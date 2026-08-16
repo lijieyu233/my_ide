@@ -1183,6 +1183,37 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('编辑配对补全：自动配对/跳过/包裹/删除配对', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const ta = $(dom, 'textarea.editor');
+    ta.value = '';
+    ta.selectionStart = 0; ta.selectionEnd = 0;
+    const type = (k) => ta.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    // 1) 输入 ( → 自动补全
+    type('(');
+    await tick();
+    assert_(ta.value === '()', '自动补全: ' + JSON.stringify(ta.value));
+    assert_(ta.selectionStart === 1, '光标在中间: ' + ta.selectionStart);
+    // 2) 输入 ) → 跳过
+    type(')');
+    await tick();
+    assert_(ta.value === '()', '闭符号跳过不重复: ' + JSON.stringify(ta.value));
+    assert_(ta.selectionStart === 2, '光标右移');
+    // 3) 选中文本包裹
+    ta.value = 'abc';
+    ta.selectionStart = 1; ta.selectionEnd = 2;
+    type('[');
+    await tick();
+    assert_(ta.value === 'a[b]c', '包裹选中: ' + JSON.stringify(ta.value));
+    // 4) Backspace 删除配对
+    ta.value = '()';
+    ta.selectionStart = 1; ta.selectionEnd = 1; // 光标在配对中间
+    type('Backspace');
+    await tick();
+    assert_(ta.value === '', '退格删除配对: ' + JSON.stringify(ta.value));
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

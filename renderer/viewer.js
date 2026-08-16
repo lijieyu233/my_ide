@@ -297,6 +297,8 @@ const Viewer = (() => {
       ta.addEventListener('keyup', reportPos);
       ta.addEventListener('click', reportPos);
       ta.addEventListener('keydown', (e) => {
+        handlePairing(e, ta);
+        if (e.defaultPrevented) return;
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTab(active); }
         if (e.key === 'Tab' && !e.shiftKey) {
           e.preventDefault();
@@ -323,6 +325,56 @@ const Viewer = (() => {
   }
 
   function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
+
+  // ---------- 括号/引号配对自动补全 ----------
+  const PAIRS = { '(': ')', '[': ']', '{': '}', "'": "'", '"': '"' };
+  function handlePairing(e, ta) {
+    const key = e.key;
+    // Backspace：删除配对（光标位于 close 前且前一个是 open）——不要求单字符
+    if (key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const bs = ta.selectionStart, ben = ta.selectionEnd;
+      const bval = ta.value;
+      if (bs === ben && bs > 0) {
+        const prev = bval[bs - 1];
+        if (PAIRS[prev] && bval[bs] === PAIRS[prev]) {
+          e.preventDefault();
+          ta.setRangeText('', bs - 1, bs + 1, 'end');
+          ta.selectionStart = bs - 1;
+          ta.selectionEnd = bs - 1;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      return;
+    }
+    if (e.ctrlKey || e.altKey || e.metaKey || key.length !== 1) return; // 组合键/功能键/IME 不处理
+    const s = ta.selectionStart, en = ta.selectionEnd;
+    const val = ta.value;
+    // 1) 输入开符号
+    if (PAIRS[key]) {
+      e.preventDefault();
+      const close = PAIRS[key];
+      if (s !== en) {
+        // 包裹选中文本
+        const selected = val.slice(s, en);
+        ta.setRangeText(key + selected + close, s, en, 'select');
+        ta.selectionStart = s + 1;
+        ta.selectionEnd = en + 1;
+      } else {
+        ta.setRangeText(key + close, s, en, 'end');
+        ta.selectionStart = s + 1;
+        ta.selectionEnd = s + 1;
+      }
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    // 2) 输入闭符号且下一个字符相同 → 跳过
+    if (Object.values(PAIRS).includes(key) && val[s] === key) {
+      e.preventDefault();
+      ta.selectionStart = s + 1;
+      ta.selectionEnd = s + 1;
+      return;
+    }
+  }
 
   // ---------- 查找 / 替换（Ctrl+F / Ctrl+H）----------
   let findState = null; // {ta, matches, idx}
