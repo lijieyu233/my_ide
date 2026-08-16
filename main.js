@@ -6,8 +6,20 @@ const G = require('./git-service');
 
 const SMOKE = process.argv.includes('--smoke');
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
-process.on('uncaughtException', (e) => { LOG('uncaught: ' + (e && e.stack || e)); });
-process.on('unhandledRejection', (e) => { LOG('unhandledRejection: ' + (e && e.stack || e)); });
+process.on('uncaughtException', (e) => {
+  LOG('uncaught: ' + (e && e.stack || e));
+  try {
+    const logFile = path.join(app.getPath('userData'), 'my-ide-error.log');
+    fs.appendFileSync(logFile, new Date().toISOString() + ' uncaught: ' + (e && e.stack || e) + '\n');
+  } catch {}
+});
+process.on('unhandledRejection', (e) => {
+  LOG('unhandledRejection: ' + (e && e.stack || e));
+  try {
+    const logFile = path.join(app.getPath('userData'), 'my-ide-error.log');
+    fs.appendFileSync(logFile, new Date().toISOString() + ' unhandledRejection: ' + (e && e.stack || e) + '\n');
+  } catch {}
+});
 LOG('main start, argv=' + JSON.stringify(process.argv.slice(1)));
 const OPEN_ARG = (() => {
   const i = process.argv.indexOf('--open');
@@ -282,11 +294,14 @@ ipcMain.handle('app:info', () => {
 // ---------- IPC：插件（含热重载）----------
 let pluginWatcher = null;
 function watchPlugins() {
+  // 打包版（asar）内 fs.watch 不受支持，热重载仅开发版启用
+  if (app.isPackaged) return;
   try {
     if (pluginWatcher) pluginWatcher.close();
     pluginWatcher = fs.watch(path.join(__dirname, 'plugins'), () => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('plugins:changed');
     });
+    pluginWatcher.on('error', () => {}); // 防未监听 error 事件导致崩溃
   } catch {}
 }
 ipcMain.handle('plugins:loadAll', () => {
