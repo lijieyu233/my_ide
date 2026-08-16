@@ -91,6 +91,9 @@ const Viewer = (() => {
       x.onclick = (e) => { e.stopPropagation(); closeTab(i); };
       el.appendChild(x);
       el.onclick = () => activate(i);
+      // 拖拽排序（手动实现：mousedown → mousemove → mouseup）
+      el.dataset.path = t.path;
+      el.onmousedown = (e) => startDrag(e, el, i);
       // 中键关闭（浏览器/PyCharm 习惯）
       el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } };
       el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, i); };
@@ -99,6 +102,48 @@ const Viewer = (() => {
     });
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
+  }
+
+  // ---------- 标签拖拽排序 ----------
+  let dragState = null;
+  function startDrag(e, el, index) {
+    if (e.button !== 0) return;
+    dragState = { el, index, startX: e.clientX, moved: false };
+    const onMove = (ev) => {
+      if (!dragState) return;
+      if (!dragState.moved && Math.abs(ev.clientX - dragState.startX) > 5) {
+        dragState.moved = true;
+        dragState.el.classList.add('dragging');
+      }
+      if (!dragState.moved) return;
+      // 按鼠标位置与各标签中心找到插入点，实时移动 DOM
+      const tabsEl = [...tabbar.children];
+      let insertAfter = -1;
+      tabsEl.forEach((t, j) => {
+        const r = t.getBoundingClientRect();
+        if (ev.clientX > r.left + r.width / 2) insertAfter = j;
+      });
+      const ref = tabsEl[insertAfter + 1];
+      if (ref && ref !== dragState.el) tabbar.insertBefore(dragState.el, ref);
+      else if (!ref) tabbar.appendChild(dragState.el);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragState) return;
+      const moved = dragState.moved;
+      dragState.el.classList.remove('dragging');
+      dragState = null;
+      if (moved) finishDrag();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+  // 按 DOM 顺序重建 tabs（触发重渲染与会话保存）
+  function finishDrag() {
+    const order = [...tabbar.querySelectorAll('.tab')].map((t) => t.dataset.path);
+    tabs.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
+    renderTabs();
   }
 
   function ctxTabMenu(x, y, i) {

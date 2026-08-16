@@ -164,6 +164,7 @@ body {
 .tab:hover .tclose { visibility: visible; }
 .tab .tclose:hover { color: var(--red); }
 .tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid var(--accent); padding-top: 4px; }
+.tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 #viewer > .viewer-toolbar { flex-shrink: 0; }

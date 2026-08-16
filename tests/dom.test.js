@@ -839,6 +839,35 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#csv-table'), '热重载后 csv 渲染仍正常');
   });
 
+  await okAsync('标签拖拽排序：拖到目标位置 + 未移动保持点击', async () => {
+    // 清空并打开 3 个标签
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await g(dom, 'Viewer.openFile("' + P + '/data.csv")');
+    await tick(); await tick();
+    // mock 每个标签的矩形（jsdom getBoundingClientRect 全 0）
+    const tabs = $allIn($(dom, '#tabbar'), '.tab');
+    tabs.forEach((t, j) => { t.getBoundingClientRect = () => ({ left: j * 100, width: 100, top: 0, height: 24, right: j * 100 + 100, bottom: 24 }); });
+    // 拖 tab0 到 tab1 之后：mousedown(50) → mousemove(160) → mouseup
+    tabs[0].dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 50 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', { bubbles: true, clientX: 160 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX: 160 }));
+    await tick();
+    const order = g(dom, 'Viewer.openTabs.map(t => t.path.split("/").pop())');
+    assert_(JSON.stringify(order) === JSON.stringify(['notes.txt', 'README.md', 'data.csv']), '拖拽后顺序: ' + JSON.stringify(order));
+    // 未移动的按下/抬起 → 顺序不变
+    const tabs2 = $allIn($(dom, '#tabbar'), '.tab');
+    tabs2[0].dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 50 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX: 52 }));
+    await tick();
+    const order2 = g(dom, 'Viewer.openTabs.map(t => t.path.split("/").pop())');
+    assert_(JSON.stringify(order2) === JSON.stringify(['notes.txt', 'README.md', 'data.csv']), '未移动顺序不变: ' + JSON.stringify(order2));
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
