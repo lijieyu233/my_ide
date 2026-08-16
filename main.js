@@ -175,6 +175,13 @@ ipcMain.handle('fs:readFile', (_e, p) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
+ipcMain.handle('fs:mkdir', (_e, p) => {
+  try {
+    fs.mkdirSync(p, { recursive: true });
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 ipcMain.handle('fs:writeFile', (_e, p, content, encoding) => {
   try {
     const enc = encoding || 'utf8';

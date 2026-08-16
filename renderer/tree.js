@@ -199,6 +199,28 @@ const Tree = (() => {
     }
   }
 
+  // ---------- 新建文件/文件夹 ----------
+  async function createItem(anchor, type) {
+    if (!rootPath) return;
+    const baseDir = anchor.type === 'dir' ? anchor.path : anchor.path.replace(/[\\/][^\\/]+$/, '');
+    const label = type === 'dir' ? '新建文件夹' : '新建文件';
+    const name = await Modal.prompt(label, '名称：', '');
+    if (!name) return;
+    const target = baseDir + '\\' + name;
+    let r;
+    if (type === 'dir') r = await window.myIDE.fs.mkdir(target);
+    else r = await window.myIDE.fs.writeFile(target, '');
+    if (r.ok) {
+      invalidateAll();
+      render();
+      App.refreshGit();
+      MI.toast('✅ 已创建 ' + name, 'ok');
+      if (type === 'file') Viewer.openFile(target);
+    } else {
+      MI.toast('创建失败: ' + (r.error || '可能已存在同名项'), 'err');
+    }
+  }
+
   // ---------- 右键菜单 ----------
   const menu = document.getElementById('ctx-menu');
   function showCtxMenu(x, y, item) {
@@ -213,6 +235,8 @@ const Tree = (() => {
     mk('📋 复制完整路径', () => copyPath(item.path));
     mk('📋 复制文件', () => copySelected());
     mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
+    mk('✨ 新建文件', () => createItem(item, 'file'));
+    mk('📁 新建文件夹', () => createItem(item, 'dir'));
     mk('📂 在文件夹中显示', () => window.myIDE.shell.showInFolder(item.path));
     if (item.type === 'file') mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
     mk('🔤 重命名', () => renameItem(item));

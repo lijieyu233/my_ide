@@ -70,8 +70,23 @@ function makeDom() {
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
-      writeFile: async (p, content) => { if (FAKE_FS[p]) FAKE_FS[p].content = content; return { ok: true }; },
+      writeFile: async (p, content) => {
+        if (!FAKE_FS[p]) {
+          FAKE_FS[p] = { type: 'file', content };
+          const parts = p.split('/');
+          const parent = parts.slice(0, -1).join('/');
+          if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir' && !FAKE_FS[parent].children.includes(p)) FAKE_FS[parent].children.push(p);
+        } else FAKE_FS[p].content = content;
+        return { ok: true };
+      },
       rename: async () => ({ ok: true }),
+      mkdir: async (p) => {
+        const parts = p.split('/');
+        FAKE_FS[p] = { type: 'dir', children: [] };
+        const parent = parts.slice(0, -1).join('/');
+        if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir') FAKE_FS[parent].children.push(p);
+        return { ok: true };
+      },
       remove: async () => ({ ok: true }),
     },
     shell: { showInFolder: async () => {} },
@@ -1033,6 +1048,37 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.logRef === 'dev', 'log 收到 ref=dev, got: ' + calls.logRef);
     await g(dom, 'App.switchTool("project")');
     await tick();
+  });
+
+  await okAsync('新建文件/文件夹：右键菜单创建', async () => {
+    // 右键 src 目录 → 新建文件
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    srcRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menuItems = $allIn($(dom, '#ctx-menu'), '.ctx-item').map((x) => x.textContent);
+    assert_(menuItems.includes('✨ 新建文件') && menuItems.includes('📁 新建文件夹'), '菜单含新建项');
+    // 新建文件（Modal.prompt 输入）
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('新建文件')));
+    await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input, '名称输入框出现');
+    input.value = 'newfile.txt';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    const newPath = P + '/src\\newfile.txt'; // 产品用反斜杠拼接（Windows 语义）
+    assert_(FAKE_FS[newPath], '文件已创建');
+    assert_(g(dom, 'Viewer.activeTab.path') === newPath, '自动打开新文件');
+    // 新建文件夹（选中 src 内）
+    const srcRow2 = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    srcRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('新建文件夹')));
+    await tick();
+    const input2 = $(dom, '#pf-input');
+    input2.value = 'sub';
+    input2.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src\\sub'] && FAKE_FS[P + '/src\\sub'].type === 'dir', '文件夹已创建');
   });
 
   await okAsync('toast 提示正常', async () => {
