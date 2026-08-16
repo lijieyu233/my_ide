@@ -182,6 +182,15 @@ ipcMain.handle('git:diffWorkdir', (_e, dir, file) => G.diffWorkdir(dir, file));
 ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => G.diffCommit(dir, oid, file));
 ipcMain.handle('git:commitFiles', (_e, dir, oid) => G.commitFiles(dir, oid));
 
+// ---------- IPC：应用信息（版本/提交，防止跑旧版本不自知）----------
+ipcMain.handle('app:info', () => {
+  let version = '0.0.0';
+  try { version = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || version; } catch {}
+  let commit = '';
+  try { commit = fs.readFileSync(path.join(__dirname, '.git', 'refs', 'heads', 'main'), 'utf8').trim().slice(0, 7); } catch {}
+  return { version, commit };
+});
+
 // ---------- IPC：插件 ----------
 ipcMain.handle('plugins:loadAll', () => {
   const dir = path.join(__dirname, 'plugins');

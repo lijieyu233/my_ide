@@ -74,6 +74,7 @@ function makeDom() {
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
     },
+    appInfo: async () => ({ version: '0.1.0', commit: 'test123' }),
     plugins: {
       loadAll: async () => [
         { name: 'csv', code: 'api.registerRenderer(["csv"], ({ content }) => {\n  const t = document.createElement("table");\n  t.id = "csv-table";\n  (content || "").split("\\n").filter((l) => l.trim() !== "").forEach((l) => { const tr = document.createElement("tr"); l.split(",").forEach((c) => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); }); t.appendChild(tr); });\n  return t;\n});' },
@@ -516,6 +517,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($allIn($(dom, '#outline'), '.outline-item').length >= 1, '切回 md 后大纲有内容');
     await g(dom, 'App.switchTool("project")');
     await tick();
+  });
+
+  await okAsync('版本号显示在状态栏右侧', async () => {
+    await tick(); await tick();
+    const el = $(dom, '#sb-version');
+    assert_(el && el.textContent.includes('0.1.0'), '版本号显示, got: ' + (el && el.textContent));
+    assert_(el.textContent.includes('test123'), '提交哈希显示');
   });
 
   await okAsync('toast 提示正常', async () => {

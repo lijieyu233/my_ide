@@ -165,6 +165,13 @@ const App = (() => {
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
+    // 版本号（防跑旧版本）
+    window.myIDE.appInfo().then((info) => {
+      const el = document.getElementById('sb-version');
+      if (el && info) el.textContent = 'v' + info.version + (info.commit ? ' (' + info.commit + ')' : '');
+    }).catch(() => {});
+      Tree.showHidden = e.target.checked;
+    };
 
     MI.loadPlugins().then(async () => {
       const last = await window.myIDE.fs.getRecent();

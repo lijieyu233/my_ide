@@ -383,6 +383,7 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
   background: var(--bg-panel); border-top: 1px solid var(--border);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
+#sb-version { margin-left: auto; color: var(--text-dim); opacity: .7; flex-shrink: 0; }
 body { display: flex; flex-direction: column; }
 
 /* ---------- 右键菜单 ---------- */

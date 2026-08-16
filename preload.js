@@ -26,4 +26,5 @@ contextBridge.exposeInMainWorld('myIDE', {
     commitFiles: (d, oid) => ipcRenderer.invoke('git:commitFiles', d, oid),
   },
   plugins: { loadAll: () => ipcRenderer.invoke('plugins:loadAll') },
+  appInfo: () => ipcRenderer.invoke('app:info'),
 });
