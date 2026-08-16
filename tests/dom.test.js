@@ -1122,6 +1122,21 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!$(dom, '.find-bar'), '查找条关闭');
   });
 
+  await okAsync('树定位：打开深层文件自动展开并高亮', async () => {
+    // 先收起 src（确保展开动作可观察）
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    if (srcRow) { click(srcRow); await tick(); }
+    assert_(!$allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), 'src 已收起');
+    // 打开深层文件 → 自动展开
+    await g(dom, 'Viewer.openFile("' + P + '/src/app.js")');
+    await tick(); await tick(); await tick();
+    const titles = $allIn($(dom, '#tree'), '.tree-row').map((r) => r.querySelector('.nm').title);
+    assert_(titles.includes(P + '/src/app.js'), '树中出现 app.js: ' + JSON.stringify(titles));
+    assert_(titles.includes(P + '/src'), 'src 已展开');
+    // 高亮选中
+    assert_($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/app.js').classList.contains('selected'), '文件行高亮');
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

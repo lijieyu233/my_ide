@@ -22,6 +22,8 @@ const Viewer = (() => {
     tabs.push(tab);
     renderTabs();
     activate(tabs.length - 1);
+    // 树定位（打开文件后展开目录链并高亮）
+    if (window.Tree) Tree.reveal(path);
     await loadTab(tab);
   }
 

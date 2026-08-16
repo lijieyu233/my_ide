@@ -149,6 +149,34 @@ const Tree = (() => {
     render();
   }
 
+  // 树定位：展开目录链 + 高亮目标文件（打开文件后调用）
+  async function reveal(filePath) {
+    if (!rootPath || !filePath) return;
+    const norm = (p) => String(p).replace(/\\/g, '/');
+    const rootN = norm(rootPath);
+    const fileN = norm(filePath);
+    if (!fileN.startsWith(rootN + '/')) return;
+    const relParts = fileN.slice(rootN.length + 1).split('/');
+    let curPath = rootPath;
+    for (let i = 0; i < relParts.length - 1; i++) {
+      const items = nodeCache[curPath];
+      if (!items) break;
+      const dir = items.find((it) => it.type === 'dir' && norm(it.name) === relParts[i]);
+      if (!dir) break;
+      if (!expanded.has(dir.path)) {
+        await loadDir(dir.path);
+        expanded.add(dir.path);
+      }
+      curPath = dir.path;
+    }
+    select(filePath, 'file');
+    render();
+    setTimeout(() => {
+      const row = [...el.querySelectorAll('.tree-row')].find((r) => norm(r.querySelector('.nm').title) === fileN);
+      if (row) { try { row.scrollIntoView({ block: 'center' }); } catch {} }
+    }, 0);
+  }
+
   function select(p, type) {
     selectedPath = p;
     selectedType = type || null;
@@ -281,7 +309,7 @@ const Tree = (() => {
     setRoot, render, select,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
-    copySelected, pasteTo, getPasteTarget,
+    copySelected, pasteTo, getPasteTarget, reveal,
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
     refresh: render,
   };
