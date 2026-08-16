@@ -222,6 +222,8 @@ ipcMain.handle('git:commit', (_e, dir, opts) => G.commit(dir, opts));
 ipcMain.handle('git:diffWorkdir', (_e, dir, file) => G.diffWorkdir(dir, file));
 ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => G.diffCommit(dir, oid, file));
 ipcMain.handle('git:commitFiles', (_e, dir, oid) => G.commitFiles(dir, oid));
+ipcMain.handle('git:getUserConfig', (_e, dir) => G.getUserConfig(dir));
+ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => G.setUserConfig(dir, cfg));
 
 // ---------- IPC：应用信息（版本/提交，防止跑旧版本不自知）----------
 ipcMain.handle('app:info', () => {

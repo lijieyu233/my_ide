@@ -44,6 +44,7 @@ const FAKE_GIT = {
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
 let fakeCopied = [];   // 内部复制的文件
+calls.setUserConfig = [];
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
 function makeDom() {
@@ -93,6 +94,8 @@ function makeDom() {
       diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] }] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
+      getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
+      setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
     },
     appInfo: async () => ({ version: '0.1.0', commit: 'test123' }),
     plugins: {
@@ -736,6 +739,30 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(dom.window.__rc === 0, '防抖窗口内未立即刷新');
     await new Promise((r) => setTimeout(r, 700));
     assert_(dom.window.__rc === 1, '防抖合并为一次刷新, got ' + dom.window.__rc);
+  });
+
+  await okAsync('设置：Git 配置分类（预填 + 保存）', async () => {
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    // 切到 Git 分类
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('Git')));
+    await tick(); await tick();
+    assert_($(dom, '#git-cfg-name'), 'Git 表单出现');
+    assert_($(dom, '#git-cfg-name').value === 'tester', '预填用户名: ' + $(dom, '#git-cfg-name').value);
+    assert_($(dom, '#git-cfg-email').value === 't@example.com', '预填邮箱');
+    // 修改并保存
+    $(dom, '#git-cfg-name').value = '张三';
+    $(dom, '#git-cfg-email').value = 'zhangsan@x.com';
+    click($(dom, '#git-cfg-save'));
+    await tick();
+    assert_(calls.setUserConfig.length === 1, '调用了 setUserConfig');
+    assert_(calls.setUserConfig[0].name === '张三' && calls.setUserConfig[0].email === 'zhangsan@x.com', '配置值正确');
+    // 切回快捷键分类仍正常
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('快捷键')));
+    await tick();
+    assert_($allIn($(dom, '#set-list'), '.set-row').length >= 10, '快捷键列表恢复');
+    click($(dom, '#set-x'));
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {

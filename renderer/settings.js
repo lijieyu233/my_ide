@@ -9,17 +9,18 @@ const Settings = (() => {
       <div class="m-head">⚙️ 设置 <span class="x" id="set-x">✕</span></div>
       <div class="set-body">
         <div class="set-side">
-          <div class="set-cat active">⌨️ 快捷键</div>
+          <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
+          <div class="set-cat" data-cat="git">🔀 Git</div>
           <div class="set-cat dim" title="敬请期待">🎨 主题</div>
         </div>
-        <div class="set-main">
+        <div class="set-main" id="set-main">
           <div class="set-toolbar">
-            <span class="set-title">快捷键（点击按键可修改）</span>
+            <span class="set-title" id="set-title">快捷键（点击按键可修改）</span>
             <span class="spacer"></span>
             <button class="tb-btn" id="set-reset-all">恢复全部默认</button>
           </div>
           <div id="set-list"></div>
-          <div class="set-hint">点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消</div>
+          <div class="set-hint" id="set-hint">点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消</div>
         </div>
       </div>`;
     Modal.show(box);
@@ -29,7 +30,58 @@ const Settings = (() => {
       renderList();
       MI.toast('已恢复全部默认快捷键', 'ok');
     };
+    // 分类切换
+    $all('.set-cat[data-cat]').forEach((cat) => {
+      cat.onclick = () => {
+        $all('.set-cat').forEach((x) => x.classList.remove('active'));
+        cat.classList.add('active');
+        if (cat.dataset.cat === 'keys') renderKeys();
+        else if (cat.dataset.cat === 'git') renderGit();
+      };
+    });
+    renderKeys();
+  }
+
+  function $all(sel) { return [...document.querySelectorAll(sel)]; }
+
+  // ---------- 快捷键视图 ----------
+  function renderKeys() {
+    document.getElementById('set-title').textContent = '快捷键（点击按键可修改）';
+    document.getElementById('set-hint').textContent = '点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消';
+    document.getElementById('set-reset-all').classList.remove('hidden');
     renderList();
+  }
+
+  // ---------- Git 视图 ----------
+  async function renderGit() {
+    document.getElementById('set-title').textContent = 'Git 配置（提交作者信息）';
+    document.getElementById('set-hint').textContent = '保存后写入当前仓库 .git/config，下次提交生效';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    list.innerHTML = '<div class="git-empty">加载中…</div>';
+    const cfg = await window.myIDE.git.getUserConfig(App.root);
+    if (!cfg.isRepo) {
+      list.innerHTML = '<div class="git-empty">当前项目不是 Git 仓库</div>';
+      return;
+    }
+    list.innerHTML = `
+      <div class="set-form">
+        <label class="m-label">用户名</label>
+        <input id="git-cfg-name" type="text" placeholder="如：zhangsan" value="${esc(cfg.name)}">
+        <label class="m-label">邮箱</label>
+        <input id="git-cfg-email" type="text" placeholder="如：zhangsan@example.com" value="${esc(cfg.email)}">
+        <div style="margin-top:14px">
+          <button class="tb-btn m-ok" id="git-cfg-save">保存</button>
+        </div>
+      </div>`;
+    document.getElementById('git-cfg-save').onclick = async () => {
+      const name = document.getElementById('git-cfg-name').value.trim();
+      const email = document.getElementById('git-cfg-email').value.trim();
+      if (!name || !email) { MI.toast('用户名和邮箱不能为空', 'err'); return; }
+      const r = await window.myIDE.git.setUserConfig(App.root, { name, email });
+      if (r.ok) MI.toast('✅ Git 配置已保存，下次提交生效', 'ok');
+      else MI.toast('保存失败: ' + r.error, 'err');
+    };
   }
 
   function renderList() {

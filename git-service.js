@@ -123,6 +123,27 @@ async function commit(dir, { message, files, amend = false }) {
   }
 }
 
+// ---------- 用户配置（提交作者）----------
+async function getUserConfig(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { name: '', email: '', isRepo: false };
+  let name = '', email = '';
+  try { name = await git.getConfig({ fs, dir: root, path: 'user.name' }); } catch {}
+  try { email = await git.getConfig({ fs, dir: root, path: 'user.email' }); } catch {}
+  return { name: name || '', email: email || '', isRepo: true };
+}
+async function setUserConfig(dir, { name, email }) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    if (name) await git.setConfig({ fs, dir: root, path: 'user.name', value: name });
+    if (email) await git.setConfig({ fs, dir: root, path: 'user.email', value: email });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 async function initRepo(dir) {
   try {
     await git.init({ fs, dir, defaultBranch: 'main' });
@@ -312,4 +333,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, commit, initRepo, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+module.exports = { findRoot, isRepo, status, log, commit, initRepo, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

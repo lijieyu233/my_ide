@@ -466,6 +466,15 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   border-top: 1px solid var(--border);
 }
 
+/* ---------- 设置表单（Git 配置） ---------- */
+.set-form { padding: 16px 18px; max-width: 420px; }
+.set-form input {
+  width: 100%; background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 12px;
+}
+.set-form input:focus { border-color: var(--accent); }
+
 /* ---------- 快速打开面板 ---------- */
 #qo-box { width: 560px; max-width: 90vw; }
 #qo-box .qo-head {

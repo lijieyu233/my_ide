@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     diffWorkdir: (d, f) => ipcRenderer.invoke('git:diffWorkdir', d, f),
     diffCommit: (d, oid, f) => ipcRenderer.invoke('git:diffCommit', d, oid, f),
     commitFiles: (d, oid) => ipcRenderer.invoke('git:commitFiles', d, oid),
+    getUserConfig: (d) => ipcRenderer.invoke('git:getUserConfig', d),
+    setUserConfig: (d, cfg) => ipcRenderer.invoke('git:setUserConfig', d, cfg),
   },
   plugins: { loadAll: () => ipcRenderer.invoke('plugins:loadAll') },
   appInfo: () => ipcRenderer.invoke('app:info'),
