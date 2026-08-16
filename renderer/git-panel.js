@@ -313,9 +313,30 @@ const GitPanel = (() => {
     box.id = 'br-box';
     Modal.show(box);
     box.innerHTML = `
-      <div class="m-head">🔀 切换分支 <span class="x" id="br-x">✕</span></div>
-      <div class="m-body" id="br-list" style="max-height:320px;overflow:auto"></div>`;
+      <div class="m-head">🔀 分支 <span class="x" id="br-x">✕</span></div>
+      <div class="m-body">
+        <div class="br-new">
+          <input id="br-new-input" type="text" placeholder="新建分支名…" spellcheck="false">
+          <button class="tb-btn" id="br-new-btn">＋ 新建</button>
+        </div>
+        <div id="br-list" style="max-height:300px;overflow:auto"></div>
+      </div>`;
     document.getElementById('br-x').onclick = () => Modal.hide();
+    const newInput = document.getElementById('br-new-input');
+    const newBtn = document.getElementById('br-new-btn');
+    newBtn.onclick = async () => {
+      const name = newInput.value.trim();
+      if (!name) { MI.toast('请输入分支名', 'err'); return; }
+      const cr = await window.myIDE.git.createBranch(root, name);
+      if (cr.ok) {
+        Modal.hide();
+        MI.toast('✅ 已创建并切换到分支 ' + name, 'ok');
+        refresh();
+      } else {
+        MI.toast('创建失败: ' + cr.error, 'err');
+      }
+    };
+    newInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') newBtn.click(); });
     const list = document.getElementById('br-list');
     if (!r.branches.length) {
       list.innerHTML = '<div class="git-empty">暂无分支</div>';

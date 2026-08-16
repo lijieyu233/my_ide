@@ -183,6 +183,19 @@ async function checkout(dir, ref) {
   }
 }
 
+// 从当前 HEAD 新建分支并切换过去（PyCharm Branches → New Branch）
+async function createBranch(dir, name) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) return { ok: false, error: '分支名不合法' };
+  try {
+    await git.branch({ fs, dir: root, ref: name, checkout: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // 放弃单个文件的修改：已跟踪 → 从 HEAD 恢复原始字节；未跟踪 → 从磁盘删除
 async function discard(dir, file) {
   const { yes, root } = await isRepo(dir);
@@ -417,4 +430,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, discard, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, createBranch, discard, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

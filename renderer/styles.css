@@ -349,6 +349,12 @@ textarea.editor {
 
 #git-branch-btn { cursor: pointer; padding: 1px 6px; border-radius: 3px; }
 #git-branch-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.br-new { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.br-new input {
+  flex: 1; min-width: 0; background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px; padding: 5px 8px; font-size: 12px; outline: none;
+}
+.br-new input:focus { border-color: var(--accent); }
 .br-item {
   padding: 8px 14px; font-size: 13px; cursor: pointer;
   border-bottom: 1px solid rgba(128,128,128,.08);

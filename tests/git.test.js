@@ -228,6 +228,16 @@ fs.mkdirSync(repo);
     assert.strictEqual(fs.existsSync(path.join(repo, 'untracked.txt')), false);
   });
 
+  await okAsync('createBranch：新建并切换分支', async () => {
+    const r = await G.createBranch(repo, 'feature');
+    assert.strictEqual(r.ok, true);
+    const br = await G.branches(repo);
+    assert.ok(br.branches.includes('feature'), '分支列表含 feature');
+    assert.strictEqual(br.current, 'feature', '已切换到 feature');
+    // 切回 main，避免影响后续
+    await G.checkout(repo, 'main');
+  });
+
   await okAsync('worker 调度链路：init/commit/status', async () => {
     const wdir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-worker-'));
     const call = (op, args) => new Promise((resolve, reject) => {

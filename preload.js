@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     commitFiles: (d, oid) => ipcRenderer.invoke('git:commitFiles', d, oid),
     branches: (d) => ipcRenderer.invoke('git:branches', d),
     checkout: (d, ref) => ipcRenderer.invoke('git:checkout', d, ref),
+    createBranch: (d, name) => ipcRenderer.invoke('git:createBranch', d, name),
     discard: (d, f) => ipcRenderer.invoke('git:discard', d, f),
     getUserConfig: (d) => ipcRenderer.invoke('git:getUserConfig', d),
     setUserConfig: (d, cfg) => ipcRenderer.invoke('git:setUserConfig', d, cfg),

@@ -53,6 +53,7 @@ let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
 calls.checkout = [];
 calls.discard = [];
+calls.createBranch = [];
 calls.logRef = null;
 calls.logAll = false;
 calls.logDepth = null;
@@ -133,6 +134,7 @@ function makeDom() {
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
+      createBranch: async (d, name) => { calls.createBranch.push(name); return { ok: true }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
@@ -1620,6 +1622,25 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(nm.textContent === 'app.js', '只显示文件名, got: ' + nm.textContent);
     click($(dom, '#cm-cancel'));
     await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Bug7：Git 新建分支（PyCharm Branches → New Branch）', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const branchBtn = $(dom, '#git-branch-btn');
+    assert_(branchBtn, '分支按钮存在');
+    click(branchBtn);
+    await tick(); await tick();
+    const input = $(dom, '#br-new-input');
+    assert_(input, '新建分支输入框存在');
+    input.value = 'feature-x';
+    click($(dom, '#br-new-btn'));
+    await tick(); await tick();
+    assert_((calls.createBranch || []).includes('feature-x'), 'createBranch 被调用');
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
