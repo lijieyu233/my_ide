@@ -45,6 +45,10 @@ function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
   const w = dom.window;
+  // 注入真实样式表：让 getComputedStyle 反映 display，防「类存在但 CSS 没定义」盲区
+  const st = w.document.createElement('style');
+  st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+  w.document.head.appendChild(st);
   w.myIDE = {
     fs: {
       openFolder: async () => P,
@@ -232,19 +236,20 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(frame.srcdoc.includes('<h1>Hi HTML</h1>'), 'srcdoc 包含内容');
   });
 
-  await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目 / 再按收起', async () => {
+  await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目 / 再按收起（计算样式验证）', async () => {
+    const display = (sel) => dom.window.getComputedStyle($(dom, sel)).display;
     key(dom, '2', { ctrl: true });
     await tick();
-    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板隐藏');
-    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲面板显示');
+    assert_(display('#panel-project') === 'none', '项目面板 display:none, got: ' + display('#panel-project'));
+    assert_(display('#panel-outline') !== 'none', '大纲面板可见, got: ' + display('#panel-outline'));
     assert_($(dom, '#tool-outline').classList.contains('active'), '大纲按钮激活');
     key(dom, '1', { ctrl: true });
     await tick();
-    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板恢复');
+    assert_(display('#panel-project') !== 'none', '项目面板恢复');
     key(dom, '1', { ctrl: true });
     await tick();
-    assert_($(dom, '#panel-project').classList.contains('hidden'), '再按 Ctrl+1 收起');
-    key(dom, '1', { ctrl: true }); // 恢复展开，避免影响后续
+    assert_(display('#panel-project') === 'none', '再按 Ctrl+1 收起');
+    key(dom, '1', { ctrl: true }); // 恢复展开
     await tick();
   });
 

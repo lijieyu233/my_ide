@@ -33,6 +33,7 @@
   --badge-d-bg: #3a2d2d; --badge-d-tx: #d16969;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+.hidden { display: none !important; }
 html, body { height: 100%; overflow: hidden; }
 body {
   background: var(--bg);
