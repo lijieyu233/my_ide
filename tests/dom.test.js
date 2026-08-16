@@ -128,6 +128,7 @@ async function loadApp(dom) {
   evalFile('session.js');
   evalFile('shortcuts.js');
   evalFile('settings.js');
+  evalFile('help.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await tick();
@@ -892,6 +893,43 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(firstTitle.includes('f'), '滚动后渲染新窗口内容: ' + firstTitle);
     // 切回原项目
     await g(dom, 'App.openProject("' + P + '")');
+    await tick();
+  });
+
+  await okAsync('帮助页：F1 打开 + 快捷键表 + 自定义反映', async () => {
+    key(dom, 'F1', {});
+    await tick();
+    assert_($(dom, '#help-box'), '帮助弹窗打开');
+    const tableText = $(dom, '.help-table').textContent;
+    assert_(tableText.includes('快速打开文件'), '表格含动作');
+    assert_(tableText.includes('ctrl + p'), '表格含默认快捷键');
+    // 自定义后表格反映（把快速打开改成 ctrl+q）
+    click($(dom, '#help-x'));
+    await tick();
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('快捷键')));
+    await tick();
+    const qoRow = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
+    click(qoRow.querySelector('.set-combo'));
+    await tick();
+    key(dom, 'Q', { ctrl: true });
+    await tick();
+    click($(dom, '#set-x'));
+    await tick();
+    key(dom, 'F1', {});
+    await tick();
+    const tableText2 = $(dom, '.help-table').textContent;
+    assert_(tableText2.includes('ctrl + q'), '自定义后帮助页反映: ' + JSON.stringify(tableText2.slice(0, 120)));
+
+    // 恢复默认
+    click($(dom, '#help-x'));
+    await tick();
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    click($(dom, '#set-reset-all'));
+    await tick();
+    click($(dom, '#set-x'));
     await tick();
   });
 

@@ -212,6 +212,7 @@ const App = (() => {
     document.getElementById('btn-refresh').onclick = refreshAll;
     document.getElementById('btn-search').onclick = () => Search.open();
     document.getElementById('btn-settings').onclick = () => Settings.open();
+    document.getElementById('btn-help').onclick = () => Help.open();
     document.getElementById('btn-theme').onclick = () => {
       Theme.toggle();
       MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok');
