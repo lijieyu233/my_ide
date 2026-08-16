@@ -193,7 +193,13 @@ const App = (() => {
     if (activeTool === 'outline') Outline.refresh(Viewer.activeTab);
     MI.toast('已刷新', 'ok');
   }
-  async function refreshGit() { if (root) await GitPanel.refresh(); }
+  // 保存后刷新 Git 状态：500ms 防抖，连续保存只刷一次
+  let gitRefreshTimer = null;
+  function refreshGit() {
+    if (!root) return;
+    clearTimeout(gitRefreshTimer);
+    gitRefreshTimer = setTimeout(() => { GitPanel.refresh(); }, 500);
+  }
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
   // ---------- 初始化 ----------

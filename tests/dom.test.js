@@ -722,6 +722,22 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!still, '项目一从列表移除');
   });
 
+  await okAsync('Git 刷新防抖：连续保存只刷一次', async () => {
+    dom.window.__rc = 0;
+    g(dom, 'GitPanel.refresh = () => { window.__rc++; return Promise.resolve(); }');
+    // 准备一个 dirty 标签
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const btns = $allIn($(dom, '.viewer-toolbar'), 'button');
+    click(btns.find((b) => b.textContent.includes('保存')));
+    await tick();
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('保存')));
+    await tick();
+    assert_(dom.window.__rc === 0, '防抖窗口内未立即刷新');
+    await new Promise((r) => setTimeout(r, 700));
+    assert_(dom.window.__rc === 1, '防抖合并为一次刷新, got ' + dom.window.__rc);
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
