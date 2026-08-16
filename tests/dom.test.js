@@ -30,6 +30,7 @@ const FAKE_FS = {
   [P + '/pic.png']: { type: 'file', content: '' },
   ['C:/proj2']: { type: 'dir', children: ['C:/proj2/other.md'] },
   ['C:/proj2/other.md']: { type: 'file', content: '# 项目二文档\n' },
+  ['C:/proj/gbk-old.txt']: { type: 'file', content: '中文老文件内容', encoding: 'gbk' },
 };
 const FAKE_GIT = {
   changed: [
@@ -65,7 +66,7 @@ function makeDom() {
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
-      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content } : { error: 'not found' }),
+      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
       writeFile: async (p, content) => { if (FAKE_FS[p]) FAKE_FS[p].content = content; return { ok: true }; },
       rename: async () => ({ ok: true }),
       remove: async () => ({ ok: true }),
@@ -931,6 +932,22 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     click($(dom, '#set-x'));
     await tick();
+  });
+
+  await okAsync('文件编码：GBK 文件打开 + 状态栏 + 保存回写', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/gbk-old.txt")');
+    await tick(); await tick();
+    const ta = $(dom, 'textarea.editor');
+    assert_(ta && ta.value.includes('中文老文件内容'), 'GBK 内容正常显示');
+    assert_($(dom, '#sb-info').textContent.includes('GBK'), '状态栏显示 GBK 编码: ' + $(dom, '#sb-info').textContent);
+    assert_(g(dom, 'Viewer.activeTab.encoding') === 'gbk', 'tab 记录编码');
+    // 修改并保存 → writeFile 收到 encoding
+    ta.value = '中文老文件内容 已编辑';
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    await g(dom, 'Viewer.saveTab(' + g(dom, 'Viewer.openTabs.findIndex(t => t.path === "' + P + '/gbk-old.txt")') + ')');
+    await tick();
+    assert_(FAKE_FS[P + '/gbk-old.txt'].content === '中文老文件内容 已编辑', '保存内容更新');
   });
 
   await okAsync('toast 提示正常', async () => {

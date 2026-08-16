@@ -109,6 +109,7 @@ const App = (() => {
     if (sbState.file) parts.push('📄 ' + sbState.file);
     if (sbState.lines) parts.push(sbState.lines + ' 行');
     if (sbState.pos) parts.push(sbState.pos);
+    if (sbState.encoding) parts.push('[' + sbState.encoding + ']');
     el.textContent = parts.join('    ');
   }
 

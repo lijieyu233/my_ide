@@ -136,6 +136,19 @@ ipcMain.handle('fs:readDir', (_e, dir, showHidden) => {
   return items;
 });
 
+// 编码检测：BOM → UTF-8 严格 → GBK 兜底
+function detectEncoding(buf) {
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'utf8';
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return 'utf16le';
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return 'utf16be';
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return 'utf8';
+  } catch {
+    return 'gbk'; // 中文 Windows 老文件兜底
+  }
+}
+
 ipcMain.handle('fs:readFile', (_e, p) => {
   try {
     const st = fs.statSync(p);
@@ -143,14 +156,36 @@ ipcMain.handle('fs:readFile', (_e, p) => {
     if (st.size > 8 * 1024 * 1024) return { tooLarge: true, size: st.size };
     const buf = fs.readFileSync(p);
     const head = buf.subarray(0, 8192);
-    if (head.includes(0)) return { binary: true, size: st.size };
-    return { content: buf.toString('utf8') };
+    if (head.includes(0) && !(buf[0] === 0xff && buf[1] === 0xfe)) return { binary: true, size: st.size };
+    const encoding = detectEncoding(buf);
+    let content;
+    if (encoding === 'utf16le') content = buf.slice(2).toString('utf16le');
+    else if (encoding === 'utf16be') {
+      const swapped = Buffer.from(buf.slice(2));
+      for (let i = 0; i + 1 < swapped.length; i += 2) {
+        const t = swapped[i]; swapped[i] = swapped[i + 1]; swapped[i + 1] = t;
+      }
+      content = swapped.toString('utf16le');
+    } else if (encoding === 'gbk') {
+      content = new TextDecoder('gbk').decode(buf);
+    } else {
+      content = buf.slice(3).toString('utf8'); // 去 BOM
+    }
+    return { content, encoding };
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-ipcMain.handle('fs:writeFile', (_e, p, content) => {
+ipcMain.handle('fs:writeFile', (_e, p, content, encoding) => {
   try {
-    fs.writeFileSync(p, content, 'utf8');
+    const enc = encoding || 'utf8';
+    if (enc === 'gbk') {
+      const iconv = require('iconv-lite');
+      fs.writeFileSync(p, iconv.encode(content, 'gbk'));
+    } else if (enc === 'utf16le') {
+      fs.writeFileSync(p, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(content, 'utf16le')]));
+    } else {
+      fs.writeFileSync(p, content, 'utf8');
+    }
     return { ok: true };
   } catch (e) { return { error: String(e.message || e) }; }
 });

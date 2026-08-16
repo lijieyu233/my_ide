@@ -18,7 +18,7 @@ const Viewer = (() => {
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => t.path === path);
     if (i >= 0) { activate(i); return; }
-    const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false };
+    const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
     tabs.push(tab);
     renderTabs();
     activate(tabs.length - 1);
@@ -39,6 +39,7 @@ const Viewer = (() => {
     else if (r.binary) { tab.binary = true; tab.mode = 'error'; }
     else {
       tab.content = r.content;
+      tab.encoding = r.encoding || 'utf8';
       tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
     }
     renderView();
@@ -225,6 +226,7 @@ const Viewer = (() => {
     if (window.App) App.updateStatusbar({
       file: tab.path,
       lines: tab.content ? tab.content.split('\n').length : 0,
+      encoding: tab.encoding && tab.encoding !== 'utf8' ? tab.encoding.toUpperCase() : null,
     });
     // 刷新大纲（md 文件）
     if (window.App) App.refreshOutline(tab);
@@ -289,7 +291,7 @@ const Viewer = (() => {
   async function saveTab(i) {
     const tab = tabs[i];
     if (!tab || !tab.ta) return;
-    const r = await window.myIDE.fs.writeFile(tab.path, tab.ta.value);
+    const r = await window.myIDE.fs.writeFile(tab.path, tab.ta.value, tab.encoding);
     if (r.ok) {
       tab.content = tab.ta.value;
       tab.dirty = false;

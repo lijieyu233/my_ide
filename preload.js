@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
-    writeFile: (p, c) => ipcRenderer.invoke('fs:writeFile', p, c),
+    writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
   },
