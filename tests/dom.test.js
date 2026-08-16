@@ -401,8 +401,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const raw = dom.window.localStorage.getItem('myide-session-v1');
     const state = JSON.parse(raw || '{}');
     assert_(!(state.tabs || []).includes(P + '/README.md'), 'dirty 标签未写入, got: ' + JSON.stringify(state.tabs));
-    // 清理 dirty 状态（避免影响后续）
-    await g(dom, 'Viewer.saveTab(0)');
+    // 清理：先保存（写入 fake），恢复 fake 内容，再精确定位关闭该 tab
+    const ridx = g(dom, "Viewer.openTabs.findIndex(t => t.path === '" + P + "/README.md')");
+    await g(dom, 'Viewer.saveTab(' + ridx + ')');
+    FAKE_FS[P + '/README.md'].content = '# 标题\n\n这是 **Markdown** 测试\n\n```js\nconst x = 1;\n```\n';
+    await g(dom, 'Viewer.closeTab(' + ridx + ')');
     await tick();
   });
 
@@ -482,6 +485,37 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
     const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
     assert_(!hasSrc, '图片无「查看源码」按钮');
+  });
+
+  await okAsync('回归：先切大纲面板再打开 md → 大纲有内容', async () => {
+    // 先保存所有 dirty 并关闭全部标签，保证 activeTab 为 null
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
+    await g(dom, 'App.switchTool("outline")');
+    await tick();
+    assert_($(dom, '#outline').textContent.includes('打开 Markdown 文件'), '无文件时提示, got: ' + $(dom, '#outline').textContent);
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick(); await tick();
+    const items = $allIn($(dom, '#outline'), '.outline-item');
+    assert_(items.length >= 1, '大纲有条目, got ' + items.length);
+    assert_(items[0].textContent.includes('标题'), '条目为标题: ' + items[0].textContent);
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('回归：先开 md 再切大纲 → 大纲有内容', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    await g(dom, 'App.switchTool("outline")');
+    await tick();
+    assert_($(dom, '#outline').textContent.includes('没有大纲'), '非 md 提示');
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick(); await tick();
+    assert_($allIn($(dom, '#outline'), '.outline-item').length >= 1, '切回 md 后大纲有内容');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {
