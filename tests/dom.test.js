@@ -1288,6 +1288,33 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($allIn(dom.window.document, '.toast').length <= 5, 'toast 上限 5: ' + $allIn(dom.window.document, '.toast').length);
   });
 
+  await okAsync('字号缩放 + diff hunk 快捷键', async () => {
+    // 字号
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const rootStyle = dom.window.document.documentElement.style;
+    key(dom, '=', { ctrl: true });
+    await tick();
+    assert_(rootStyle.getPropertyValue('--editor-font-size') === '14px', '字号 14px: ' + rootStyle.getPropertyValue('--editor-font-size'));
+    assert_(dom.window.localStorage.getItem('myide-editor-font') === '14', '字号持久化');
+    key(dom, '-', { ctrl: true });
+    await tick();
+    assert_(rootStyle.getPropertyValue('--editor-font-size') === '13px', '字号回到 13px');
+    // hunk 快捷键（diff 视图）
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    await tick(); await tick();
+    const before = $(dom, '.df-nav-label').textContent;
+    key(dom, 'ArrowDown', { alt: true });
+    await tick();
+    assert_($(dom, '.df-nav-label').textContent !== before, 'Alt+↓ 切换 hunk');
+    click($(dom, '#df-back'));
+    await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

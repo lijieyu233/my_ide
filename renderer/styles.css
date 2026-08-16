@@ -175,7 +175,7 @@ body {
   background: var(--bg-panel); border-right: 1px solid var(--border);
   color: var(--num-dim); text-align: right;
   padding: 10px 8px 10px 4px; user-select: none;
-  font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
+  font-family: var(--font-mono); font-size: var(--editor-font-size, 13px); line-height: 1.55;
   white-space: pre;
 }
 .editor-wrap textarea.editor { flex: 1; min-width: 0; }
@@ -210,7 +210,7 @@ body {
 textarea.editor {
   width: 100%; height: 100%; resize: none; border: none; outline: none;
   background: var(--bg); color: var(--editor-text);
-  font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
+  font-family: var(--font-mono); font-size: var(--editor-font-size, 13px); line-height: 1.55;
   padding: 10px 14px; tab-size: 4; white-space: pre; overflow: auto;
   user-select: text;
 }

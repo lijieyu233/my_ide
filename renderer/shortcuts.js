@@ -140,6 +140,10 @@ Shortcuts.register('theme', { desc: '切换主题', keys: ['ctrl+shift+t'], run:
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
 Shortcuts.register('help', { desc: '帮助与快捷键速查', keys: ['f1'], run: () => Help.open() });
 Shortcuts.register('find', { desc: '编辑器查找', keys: ['ctrl+f'], run: () => Viewer.openFind(false) });
+Shortcuts.register('font-inc', { desc: '编辑器字号增大', keys: ['ctrl+='], run: () => Viewer.zoomFont(1) });
+Shortcuts.register('font-dec', { desc: '编辑器字号减小', keys: ['ctrl+-'], run: () => Viewer.zoomFont(-1) });
+Shortcuts.register('hunk-next', { desc: '下一个 diff hunk', keys: ['alt+arrowdown'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="下一个 hunk"]'); if (b) b.click(); } });
+Shortcuts.register('hunk-prev', { desc: '上一个 diff hunk', keys: ['alt+arrowup'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="上一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
 Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });

@@ -328,6 +328,21 @@ const Viewer = (() => {
 
   function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
 
+  // ---------- 字号缩放（Ctrl+= / Ctrl+-）----------
+  const FONT_KEY = 'myide-editor-font';
+  function zoomFont(delta) {
+    let size = 13;
+    try { size = parseInt(localStorage.getItem(FONT_KEY) || '13', 10); } catch {}
+    size = Math.min(24, Math.max(9, size + delta));
+    try { localStorage.setItem(FONT_KEY, String(size)); } catch {}
+    document.documentElement.style.setProperty('--editor-font-size', size + 'px');
+    MI.toast('字号 ' + size + 'px', 'ok');
+  }
+  try {
+    const saved = parseInt(localStorage.getItem(FONT_KEY) || '13', 10);
+    if (saved && saved !== 13) document.documentElement.style.setProperty('--editor-font-size', saved + 'px');
+  } catch {}
+
   // ---------- 括号/引号配对自动补全 ----------
   const PAIRS = { '(': ')', '[': ']', '{': '}', "'": "'", '"': '"' };
   function handlePairing(e, ta) {
@@ -509,7 +524,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab, openFind, recentFiles,
+    openFile, closeTab, closeAll, activate, saveTab, openFind, recentFiles, zoomFont,
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },
