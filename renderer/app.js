@@ -95,6 +95,23 @@ const App = (() => {
     renderToolStrip();
   }
 
+  // ---------- 状态栏（合并式更新：各模块只更新自己负责的字段）----------
+  let sbState = {};
+  function updateStatusbar(info = {}) {
+    // 切换文件时清除旧的光标位置
+    if (info.file !== undefined && info.file !== sbState.file) sbState.pos = undefined;
+    sbState = Object.assign(sbState, info);
+    const el = document.getElementById('statusbar');
+    if (!el) return;
+    const parts = [];
+    if (sbState.branch) parts.push('⎇ ' + sbState.branch + (sbState.changed ? ' · ' + sbState.changed + ' 处修改' : ''));
+    else if (sbState.noRepo) parts.push('非 Git 仓库');
+    if (sbState.file) parts.push('📄 ' + sbState.file);
+    if (sbState.lines) parts.push(sbState.lines + ' 行');
+    if (sbState.pos) parts.push(sbState.pos);
+    el.textContent = parts.join('    ');
+  }
+
   // ---------- 打开文件夹 ----------
   async function openFolder() {
     const p = await window.myIDE.fs.openFolder();
@@ -155,7 +172,7 @@ const App = (() => {
     });
   }
 
-  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, get root() { return root; } };
+  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, get root() { return root; } };
 })();
 window.App = App;
 

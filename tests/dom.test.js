@@ -426,6 +426,23 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '面板关闭');
   });
 
+  await okAsync('状态栏：文件/行数/分支/行列号', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    console.log('DEBUG tabs:', JSON.stringify(g(dom, 'Viewer.openTabs.map(t => t.path)')), 'active:', g(dom, 'Viewer.activeTab && Viewer.activeTab.path'));
+    let sb = $(dom, '#statusbar').textContent;
+    assert_(sb.includes('notes.txt'), '状态栏含文件名, got: ' + sb);
+    assert_(sb.includes('2 行'), '状态栏含行数, got: ' + sb);
+    assert_(sb.includes('main'), '状态栏含分支, got: ' + sb);
+    // 光标行列
+    const ta = $(dom, 'textarea.editor');
+    ta.selectionStart = 3;
+    ta.dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    await tick();
+    sb = $(dom, '#statusbar').textContent;
+    assert_(sb.includes('行 1，列 4'), '行列号更新, got: ' + sb);
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

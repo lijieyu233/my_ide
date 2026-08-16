@@ -152,6 +152,14 @@ const Viewer = (() => {
 
     viewer.appendChild(toolbar);
 
+    // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）
+    if (window.App) App.updateStatusbar({
+      file: tab.path,
+      lines: tab.content ? tab.content.split('\n').length : 0,
+    });
+    // 刷新大纲（md 文件）
+    if (window.App) App.refreshOutline(tab);
+
     if (tab.mode === 'error') {
       const msg = document.createElement('div');
       msg.className = 'viewer-msg';
@@ -166,11 +174,22 @@ const Viewer = (() => {
       ta.className = 'editor';
       ta.value = tab.content ?? '';
       ta.spellcheck = false;
+      const reportPos = () => {
+        if (!window.App) return;
+        const pos = ta.selectionStart;
+        const before = ta.value.slice(0, pos);
+        const line = before.split('\n').length;
+        const col = pos - before.lastIndexOf('\n');
+        App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+      };
       ta.addEventListener('input', () => {
         tab.content = ta.value;
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
         clearTimeout(saveTimer);
+        reportPos();
       });
+      ta.addEventListener('keyup', reportPos);
+      ta.addEventListener('click', reportPos);
       ta.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTab(active); }
         if (e.key === 'Tab' && !e.shiftKey) {
@@ -183,9 +202,6 @@ const Viewer = (() => {
       tab.ta = ta;
       return;
     }
-
-    // 刷新大纲（md 文件）
-    if (window.App) window.App.refreshOutline(tab);
 
     // 预览模式：交给插件渲染
     const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });

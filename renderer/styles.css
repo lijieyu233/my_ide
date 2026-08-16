@@ -333,6 +333,16 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .m-check input { accent-color: var(--accent); }
 .m-err { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
 
+/* ---------- 状态栏 ---------- */
+#statusbar {
+  height: 22px; flex-shrink: 0;
+  display: flex; align-items: center;
+  padding: 0 10px; font-size: 11px; color: var(--text-dim);
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+body { display: flex; flex-direction: column; }
+
 /* ---------- 右键菜单 ---------- */
 #ctx-menu {
   position: fixed; z-index: 200; min-width: 170px;

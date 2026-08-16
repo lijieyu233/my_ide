@@ -13,6 +13,7 @@ const GitPanel = (() => {
     if (lg.isRepo) state.root = lg.root;
     render();
     updateToolbar();
+    App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
   }
 
   function updateToolbar() {
