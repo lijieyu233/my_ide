@@ -39,7 +39,8 @@
     "win": {
       "target": [
         "portable"
-      ]
+      ],
+      "icon": "build/icon.png"
     },
     "portable": {
       "artifactName": "MyIDE-${version}.exe"

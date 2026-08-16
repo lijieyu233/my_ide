@@ -3,3 +3,4 @@ demo/
 smoke.log
 *.log
 .idea/dist/
+build/
