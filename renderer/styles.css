@@ -496,6 +496,12 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   padding: 8px 14px; border-bottom: 1px solid var(--border);
 }
 .set-title { font-size: 12px; color: var(--text-dim); }
+#set-keys-filter {
+  margin: 8px 14px 0; padding: 5px 9px; font-size: 12px;
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px; outline: none;
+}
+#set-keys-filter:focus { border-color: var(--accent); }
 #set-list { flex: 1; overflow: auto; padding: 4px 0; }
 .set-row {
   display: flex; align-items: center; gap: 10px;

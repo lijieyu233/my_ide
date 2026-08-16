@@ -1,6 +1,7 @@
 // settings.js —— 设置页面（PyCharm Settings 风格：左分类 + 右内容）
 const Settings = (() => {
   let listening = null; // 正在修改的动作 id
+  let keysFilter = '';  // 快捷键过滤词
 
   function open() {
     const box = document.createElement('div');
@@ -50,6 +51,16 @@ const Settings = (() => {
     document.getElementById('set-title').textContent = '快捷键（点击按键可修改）';
     document.getElementById('set-hint').textContent = '点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消';
     document.getElementById('set-reset-all').classList.remove('hidden');
+    const list = document.getElementById('set-list');
+    if (!document.getElementById('set-keys-filter')) {
+      const filter = document.createElement('input');
+      filter.id = 'set-keys-filter';
+      filter.type = 'text';
+      filter.placeholder = '🔍 过滤动作…';
+      filter.value = keysFilter;
+      filter.addEventListener('input', () => { keysFilter = filter.value; renderList(); });
+      list.parentElement.insertBefore(filter, list);
+    }
     renderList();
   }
 
@@ -113,7 +124,9 @@ const Settings = (() => {
     const list = document.getElementById('set-list');
     if (!list) return;
     list.innerHTML = '';
+    const q = keysFilter.trim().toLowerCase();
     for (const b of Shortcuts.bindings()) {
+      if (q && !(b.desc + ' ' + b.id + ' ' + b.combos.join(' ')).toLowerCase().includes(q)) continue;
       const row = document.createElement('div');
       row.className = 'set-row';
       const info = document.createElement('div');

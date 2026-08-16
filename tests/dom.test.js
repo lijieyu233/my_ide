@@ -1345,6 +1345,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('设置页快捷键搜索过滤', async () => {
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('快捷键')));
+    await tick();
+    const filter = $(dom, '#set-keys-filter');
+    assert_(filter, '过滤框存在');
+    const total = $allIn($(dom, '#set-list'), '.set-row').length;
+    filter.value = '快速打开';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const rows = $allIn($(dom, '#set-list'), '.set-row');
+    assert_(rows.length === 1 && rows[0].textContent.includes('快速打开文件'), '过滤后只剩匹配: ' + rows.length);
+    filter.value = '';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_($allIn($(dom, '#set-list'), '.set-row').length === total, '清空恢复全部');
+    click($(dom, '#set-x'));
+    await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
