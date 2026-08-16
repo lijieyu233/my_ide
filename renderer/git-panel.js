@@ -224,10 +224,12 @@ const GitPanel = (() => {
       fileBox.appendChild(title);
       const table = document.createElement('table');
       table.className = 'diff-table';
-      for (const h of r.hunks) {
+      r.hunks.forEach((h, hi) => {
         const sep = document.createElement('tr');
-        sep.innerHTML = `<td colspan="6" class="diff-hunk-gap">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</td>`;
+        sep.className = 'diff-hunk-gap';
+        sep.innerHTML = `<td colspan="6">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
         table.appendChild(sep);
+        const rows = [];
         for (const row of h.rows) {
           const tr = document.createElement('tr');
           const aNum = row.aNum || '';
@@ -235,9 +237,18 @@ const GitPanel = (() => {
           const cls = row.type;
           tr.innerHTML = `<td class="ln">${aNum}</td><td class="num">${bNum}</td><td class="sep"></td>` +
             `<td class="${cls}">${esc(row.aText)}</td><td class="sep"></td><td class="${cls}">${esc(row.bText)}</td>`;
-          table.appendChild(tr);
+          rows.push(tr);
         }
-      }
+        rows.forEach((tr) => table.appendChild(tr));
+        // 折叠开关：超过 30 行默认折叠
+        const setOpen = (open) => {
+          sep.dataset.open = open ? '1' : '';
+          sep.querySelector('.hint').textContent = open ? '' : '（点击展开 ' + rows.length + ' 行）';
+          rows.forEach((tr) => { tr.style.display = open ? '' : 'none'; });
+        };
+        sep.onclick = () => setOpen(!sep.dataset.open);
+        setOpen(rows.length <= 30);
+      });
       fileBox.appendChild(table);
       bodyEl.appendChild(fileBox);
     }

@@ -382,6 +382,28 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(dom.window.localStorage.getItem('myide-theme') === 'dark', 'localStorage 更新');
   });
 
+  await okAsync('diff hunk 折叠：点击切换展开/收起', async () => {
+    // 打开一个本地修改的 diff（fake 数据 1 个 hunk 2 行）
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    const target = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    if (!target) { console.log('DEBUG: 没有找到 .git-file, git-body =', $(dom, '#git-body').innerHTML.slice(0, 300)); }
+    click(target);
+    await tick(); await tick();
+    const sep = $(dom, '.diff-hunk-gap');
+    if (!sep) { console.log('DEBUG: #viewer =', $(dom, '#viewer').innerHTML.slice(0, 300)); }
+    assert_(sep, 'hunk 分隔行存在');
+    assert_(sep.dataset.open === '1', '2 行 hunk 默认展开');
+    click(sep);
+    await tick();
+    const rows = $allIn($(dom, '.diff-table'), 'tr').filter((tr) => tr.querySelector('td.ln'));
+    assert_(rows.every((tr) => tr.style.display === 'none'), '折叠后行隐藏');
+    assert_(sep.textContent.includes('点击展开'), '显示展开提示');
+    click(sep);
+    await tick();
+    assert_($allIn($(dom, '.diff-table'), 'tr').some((tr) => tr.style.display !== 'none' && tr.querySelector('td.ln')), '再次点击恢复');
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

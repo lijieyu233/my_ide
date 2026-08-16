@@ -290,7 +290,9 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .diff-table td.del { background: var(--del-bg); color: var(--del-text); }
 .diff-table td.add { background: var(--add-bg); color: var(--add-text); }
 .diff-table td.empty { background: var(--bg); }
-.diff-hunk-gap { background: var(--panel-strong); color: var(--text-dim); font-size: 11px; text-align: center; padding: 2px 0; user-select: none; }
+.diff-hunk-gap { background: var(--panel-strong); color: var(--text-dim); font-size: 11px; text-align: center; padding: 2px 0; user-select: none; cursor: pointer; }
+.diff-hunk-gap:hover { color: var(--accent); }
+.diff-hunk-gap .hint { color: var(--text-dim); margin-left: 10px; }
 .diff-msg { padding: 30px; text-align: center; color: var(--text-dim); }
 
 /* ---------- 弹窗 ---------- */
