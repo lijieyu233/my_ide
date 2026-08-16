@@ -16,6 +16,7 @@ const Session = (() => {
         tabs,
         active: active && !active.dirty && (!rootPrefix || active.path.startsWith(rootPrefix)) ? active.path : null,
         tool: App.getTool(),
+        expanded: window.Tree ? Tree.getExpandedPaths() : [],
       };
       localStorage.setItem(KEY(), JSON.stringify(state));
     } catch {}
@@ -36,14 +37,18 @@ const Session = (() => {
       const raw = localStorage.getItem(KEY());
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (!s || !Array.isArray(s.tabs) || !s.tabs.length) return;
-      for (const p of s.tabs) {
-        await Viewer.openFile(p);
+      if (!s) return;
+      if (Array.isArray(s.tabs) && s.tabs.length) {
+        for (const p of s.tabs) {
+          await Viewer.openFile(p);
+        }
+        if (s.active) {
+          const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
+          if (i >= 0) Viewer.activate(i);
+        }
       }
-      if (s.active) {
-        const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
-        if (i >= 0) Viewer.activate(i);
-      }
+      // 恢复目录展开结构（即使没有标签也恢复）
+      if (s.expanded && window.Tree) Tree.setExpandedPaths(s.expanded);
       if (s.tool) App.setTool(s.tool);
     } catch {}
   }

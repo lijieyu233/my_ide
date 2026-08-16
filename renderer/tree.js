@@ -49,6 +49,19 @@ const Tree = (() => {
     render();
   }
 
+  // 展开状态持久化（按项目隔离，切换项目后恢复目录结构）
+  function persistExpanded() { if (window.Session) Session.save(); }
+  function getExpandedPaths() { return [...expanded]; }
+  function setExpandedPaths(paths) {
+    expanded.clear();
+    if (rootPath) expanded.add(rootPath);
+    const rootN = norm(rootPath);
+    for (const p of (paths || [])) {
+      if (rootPath && norm(p).startsWith(rootN + '/')) expanded.add(p);
+    }
+    render();
+  }
+
   async function loadDir(p) {
     if (!nodeCache[p]) nodeCache[p] = await window.myIDE.fs.readDir(p, showHidden);
     return nodeCache[p];
@@ -176,6 +189,7 @@ const Tree = (() => {
       expanded.add(item.path);
     }
     render();
+    persistExpanded();
   }
 
   // 一键收起全部目录（保留根目录展开，PyCharm Collapse All 行为）
@@ -185,6 +199,7 @@ const Tree = (() => {
     expanded.clear();
     expanded.add(rootKey);
     render();
+    persistExpanded();
   }
   // 一键展开全部目录（广度优先，逐层懒加载）
   async function expandAll() {
@@ -204,6 +219,7 @@ const Tree = (() => {
       }
     }
     render();
+    persistExpanded();
   }
 
   // 树定位：展开目录链 + 高亮目标文件（打开文件后调用）
@@ -364,6 +380,7 @@ const Tree = (() => {
 
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus,
+    getExpandedPaths, setExpandedPaths,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
     copySelected, pasteTo, getPasteTarget, reveal,

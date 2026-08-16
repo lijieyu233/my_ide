@@ -1139,9 +1139,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('树定位：打开深层文件自动展开并高亮', async () => {
-    // 先收起 src（确保展开动作可观察）
+    // 确保 src 收起（不依赖之前的展开状态，目录展开现在会跨项目持久化）
     const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
-    if (srcRow) { click(srcRow); await tick(); }
+    if (srcRow && $allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js')) {
+      click(srcRow); await tick();
+    }
     assert_(!$allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), 'src 已收起');
     // 打开深层文件 → 自动展开
     await g(dom, 'Viewer.openFile("' + P + '/src/app.js")');
@@ -1566,6 +1568,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(anchor);
     await tick();
     assert_($(dom, '.tab.active .tname') && $(dom, '.tab.active .tname').textContent.includes('notes.txt'), '锚点不切换文件');
+  });
+
+  await okAsync('Bug3：目录展开结构按项目持久化（切换项目后恢复）', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    click(srcRow);
+    await tick(); await tick();
+    assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), 'src 已展开');
+    await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
+    // 清理 dirty 标签，避免 openProject 触发确认弹窗卡住
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    await tick();
+    // 切到 proj2 再切回，验证目录结构恢复
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    await g(dom, 'App.openProject("' + P + '")');
+    await tick(); await tick();
+    assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), '切回后 src 仍展开');
   });
 
   console.log('');
