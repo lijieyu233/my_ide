@@ -38,6 +38,8 @@ const FAKE_GIT = {
   changed: [
     { file: 'README.md', status: 'modified', label: '已修改' },
     { file: 'data.csv', status: 'added', label: '已新增' },
+    { file: 'src/app.js', status: 'modified', label: '已修改' },
+    { file: 'src/deep/file.ts', status: 'added', label: '已新增' },
   ],
   commits: [
     { oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short: 'aaaaaaa', message: '第二次提交：改文档', fullMessage: '第二次提交：改文档', author: 'me', timestamp: Date.now() - 3600e3, parents: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'] },
@@ -235,7 +237,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(body.includes('第二次提交：改文档'), '日志含最新提交');
     assert_(body.includes('aaaaaaa'), '日志含短哈希');
     assert_($(dom, '#git-branch').textContent.includes('main'), '分支显示 main');
-    assert_($(dom, '#tb-git').textContent.includes('2 处修改'), '工具栏显示修改数');
+    assert_($(dom, '#tb-git').textContent.includes('4 处修改'), '工具栏显示修改数');
   });
 
   await okAsync('点击本地修改文件 → 左右分栏 diff', async () => {
@@ -254,13 +256,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'k', { ctrl: true });
     await tick();
     assert_($(dom, '#commit-msg'), '提交面板打开');
-    assert_($allIn($(dom, '#commit-files'), '.cf-check').length === 2, '2 个文件复选框');
+    assert_($allIn($(dom, '#commit-files'), '.cf-check').length === 4, '4 个文件复选框');
     $(dom, '#commit-msg').value = '测试提交信息';
     click($(dom, '#cm-ok'));
     await tick(); await tick();
     assert_(calls.commit.length === 1, '调用了 git.commit');
     assert_(calls.commit[0].message === '测试提交信息', '消息正确');
-    assert_(calls.commit[0].files.length === 2, '两个文件被提交');
+    assert_(calls.commit[0].files.length === 4, '四个文件被提交');
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '提交后弹窗关闭');
   });
 
@@ -1262,6 +1264,28 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(recent && $allIn(recent, '.proj-btn').length >= 1, '空状态最近项目出现');
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
+  });
+
+  await okAsync('Git 修改目录分组 + 折叠 + Toast 上限', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick(); await tick();
+    const groups = $allIn($(dom, '#git-body'), '.git-group');
+    assert_(groups.length === 2, '两个分组: ' + JSON.stringify(groups.map((x) => x.textContent)));
+    assert_(groups[0].textContent.includes('根目录'), '根目录组');
+    assert_(groups[1].textContent.includes('src'), 'src 组');
+    // 折叠
+    click(groups[1]);
+    await tick();
+    assert_(groups[1].textContent.includes('▸'), '组已折叠');
+    click(groups[1]);
+    await tick();
+    assert_(groups[1].textContent.includes('▾'), '组已展开');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+    // Toast 上限
+    for (let i = 0; i < 8; i++) g(dom, 'MI.toast("t' + i + '", "ok")');
+    await tick();
+    assert_($allIn(dom.window.document, '.toast').length <= 5, 'toast 上限 5: ' + $allIn(dom.window.document, '.toast').length);
   });
 
   await okAsync('toast 提示正常', async () => {

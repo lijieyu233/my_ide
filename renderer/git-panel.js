@@ -73,13 +73,36 @@ const GitPanel = (() => {
       d.textContent = state.unborn ? '还没有任何提交' : '工作区干净 ✨';
       body.appendChild(d);
     } else {
+      // 按顶层目录分组
+      const groups = new Map();
       for (const c of state.changed) {
-        const f = document.createElement('div');
-        f.className = 'git-file';
-        f.innerHTML = `<span class="badge ${c.status}">${c.label}</span><span class="nm">${c.file}</span>`;
-        f.title = '点击查看与 HEAD 的对比';
-        f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
-        body.appendChild(f);
+        const seg = c.file.split(/[\\/]/);
+        const key = seg.length > 1 ? seg[0] : '根目录';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(c);
+      }
+      for (const [dir, items] of groups) {
+        const gTitle = document.createElement('div');
+        gTitle.className = 'git-group';
+        gTitle.textContent = '▾ ' + dir + ' (' + items.length + ')';
+        const gBody = document.createElement('div');
+        gBody.className = 'git-group-body';
+        gTitle.onclick = () => {
+          const collapsed = gBody.style.display === 'none';
+          gBody.style.display = collapsed ? '' : 'none';
+          gTitle.textContent = (collapsed ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
+        };
+        body.appendChild(gTitle);
+        for (const c of items) {
+          const f = document.createElement('div');
+          f.className = 'git-file';
+          f.style.paddingLeft = '20px';
+          f.innerHTML = `<span class="badge ${c.status}">${c.label}</span><span class="nm">${c.file}</span>`;
+          f.title = '点击查看与 HEAD 的对比';
+          f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+          gBody.appendChild(f);
+        }
+        body.appendChild(gBody);
       }
     }
 

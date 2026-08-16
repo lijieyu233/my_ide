@@ -319,6 +319,13 @@ textarea.editor {
 .df-nav-label { font-size: 11px; color: var(--text-dim); min-width: 34px; text-align: center; }
 .diff-hunk-gap.nav-target td { color: var(--accent); font-weight: 600; }
 
+.git-group {
+  padding: 4px 10px; font-size: 11.5px; color: var(--text-dim);
+  cursor: pointer; user-select: none; position: sticky; top: 0;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+}
+.git-group:hover { color: var(--text-bright); }
+
 /* ---------- Git 过滤框 ---------- */
 .git-logbar { display: flex; gap: 6px; padding: 4px 10px 0; align-items: center; }
 #git-ref {

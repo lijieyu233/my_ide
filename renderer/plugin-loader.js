@@ -118,6 +118,7 @@ MI.toast = function (msg, type) {
   t.className = 'toast' + (type ? ' ' + type : '');
   t.textContent = msg;
   wrap.appendChild(t);
+  while (wrap.childElementCount > 5) wrap.firstChild.remove(); // 上限 5 条
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 2200);
   setTimeout(() => t.remove(), 2600);
 };
