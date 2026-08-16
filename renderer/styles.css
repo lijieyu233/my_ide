@@ -534,6 +534,12 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 /* ---------- 帮助页 ---------- */
 #help-box { width: 560px; max-width: 92vw; }
 .help-body { max-height: 60vh; overflow: auto; padding: 10px 14px; }
+#help-filter {
+  width: 100%; margin-bottom: 8px; padding: 5px 9px; font-size: 12px;
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px; outline: none;
+}
+#help-filter:focus { border-color: var(--accent); }
 .help-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .help-table th {
   text-align: left; padding: 5px 8px; color: var(--text-dim);

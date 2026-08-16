@@ -17,6 +17,7 @@ const Help = (() => {
       <div class="m-head">ℹ️ 帮助与快捷键 <span class="x" id="help-x">✕</span></div>
       <div class="help-body">
         <div class="help-ver" id="help-ver">加载中…</div>
+        <input id="help-filter" type="text" placeholder="🔍 过滤快捷键…" spellcheck="false">
         <table class="help-table">
           <tr><th>动作</th><th>快捷键</th></tr>
           ${rows}
@@ -26,6 +27,13 @@ const Help = (() => {
         </div>
       </div>`;
     document.getElementById('help-x').onclick = () => Modal.hide();
+    // 过滤：隐藏不匹配行
+    document.getElementById('help-filter').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      box.querySelectorAll('.help-table tr:not(:first-child)').forEach((tr) => {
+        tr.style.display = !q || tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
     // 版本信息
     window.myIDE.appInfo().then((info) => {
       const el = document.getElementById('help-ver');

@@ -1366,6 +1366,24 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('帮助页快捷键过滤', async () => {
+    key(dom, 'F1', {});
+    await tick();
+    const filter = $(dom, '#help-filter');
+    assert_(filter, '过滤框存在');
+    const total = $allIn($(dom, '.help-table'), 'tr').length - 1; // 去掉表头
+    filter.value = '快速打开';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const visible = $allIn($(dom, '.help-table'), 'tr').filter((tr) => tr.style.display !== 'none').length - 1;
+    assert_(visible === 1, '过滤后 1 行可见: ' + visible);
+    filter.value = '';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    click($(dom, '#help-x'));
+    await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

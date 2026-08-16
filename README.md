@@ -84,7 +84,7 @@ tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 ## 🧪 测试与基准
 
 ```bash
-npm test       # 82 项：git 逻辑 + 渲染层 DOM 测试
+npm test       # 93+ 项：语法检查 + git 逻辑 + 渲染层 DOM 测试
 npm run bench  # 性能基准（5000 文件 git 扫描 < 1s 实测达成）
 ```
 
