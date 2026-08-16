@@ -950,6 +950,28 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(FAKE_FS[P + '/gbk-old.txt'].content === '中文老文件内容 已编辑', '保存内容更新');
   });
 
+  await okAsync('编辑器行号：显示 + 换行增加 + 滚动同步', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/gbk-old.txt")');
+    await tick(); await tick();
+    const gutter = $(dom, '.editor-gutter');
+    assert_(gutter, '行号 gutter 存在');
+    assert_(gutter.textContent.includes('1'), '含行号 1');
+    const ta = $(dom, 'textarea.editor');
+    const before = gutter.textContent.split('\n').length;
+    // 输入换行 → 行号增加
+    ta.value = ta.value + '\n\n新行';
+
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const after = gutter.textContent.split('\n').length;
+    assert_(after > before, '行号随行数增加: ' + before + ' -> ' + after);
+    // 滚动同步
+    ta.scrollTop = 123;
+    ta.dispatchEvent(new dom.window.Event('scroll', { bubbles: true }));
+    await tick();
+    assert_(gutter.scrollTop === 123, 'gutter 滚动同步: ' + gutter.scrollTop);
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

@@ -241,6 +241,12 @@ const Viewer = (() => {
     }
 
     if (tab.mode === 'edit') {
+      // 行号 gutter + textarea
+      const wrap = document.createElement('div');
+      wrap.className = 'editor-wrap';
+      const gutter = document.createElement('div');
+      gutter.className = 'editor-gutter';
+      wrap.appendChild(gutter);
       const ta = document.createElement('textarea');
       ta.className = 'editor';
       ta.value = tab.content ?? '';
@@ -253,11 +259,23 @@ const Viewer = (() => {
         const col = pos - before.lastIndexOf('\n');
         App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
       };
+      const lineCount = () => ta.value.split('\n').length;
+      let lastLines = -1; // 强制首次渲染
+      const renderGutter = () => {
+        const n = lineCount();
+        if (n === lastLines) return; // 行数未变不重建
+        lastLines = n;
+        gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n');
+      };
+      renderGutter();
+      // 滚动同步
+      ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; });
       ta.addEventListener('input', () => {
         tab.content = ta.value;
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
         clearTimeout(saveTimer);
         reportPos();
+        renderGutter();
       });
       ta.addEventListener('keyup', reportPos);
       ta.addEventListener('click', reportPos);
@@ -269,7 +287,8 @@ const Viewer = (() => {
           ta.setRangeText('    ', s, en, 'end');
         }
       });
-      viewer.appendChild(ta);
+      wrap.appendChild(ta);
+      viewer.appendChild(wrap);
       tab.ta = ta;
       return;
     }

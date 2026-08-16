@@ -169,7 +169,16 @@ body {
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 #viewer > .viewer-toolbar { flex-shrink: 0; }
 #viewer > .md-view { flex: 1; overflow: auto; }
-#viewer > textarea.editor { flex: 1; }
+#viewer > .editor-wrap { flex: 1; display: flex; min-height: 0; }
+.editor-wrap .editor-gutter {
+  width: 46px; flex-shrink: 0; overflow: hidden;
+  background: var(--bg-panel); border-right: 1px solid var(--border);
+  color: var(--num-dim); text-align: right;
+  padding: 10px 8px 10px 4px; user-select: none;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
+  white-space: pre;
+}
+.editor-wrap textarea.editor { flex: 1; min-width: 0; }
 #viewer > .html-frame { flex: 1; }
 
 /* ---------- 空状态 ---------- */
