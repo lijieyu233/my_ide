@@ -5,13 +5,14 @@ const GitPanel = (() => {
   let root = null;
   let filterQ = ''; // 提交过滤词
   let logRef = 'HEAD'; // 日志分支视图（HEAD / 分支名 / __all__）
+  let logDepth = 100;  // 日志分页深度
   let branchList = []; // 本地分支列表
   let state = null; // {isRepo, branch, changed, commits, unborn}
 
   // ---------- 刷新 ----------
   async function refresh() {
     if (!root) return;
-    const [st, lg, br] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root, 100, logRef), window.myIDE.git.branches(root)]);
+    const [st, lg, br] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root, logDepth, logRef), window.myIDE.git.branches(root)]);
     branchList = br && br.branches ? br.branches : [];
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }), commits: lg.commits || [], unborn: lg.unborn };
     if (lg.isRepo) state.root = lg.root;
@@ -140,6 +141,7 @@ const GitPanel = (() => {
       refSel.value = logRef === '__all__' || branchList.includes(logRef) ? logRef : 'HEAD';
       refSel.addEventListener('change', () => {
         logRef = refSel.value;
+        logDepth = logRef === '__all__' ? 50 : 100;
         reloadLog();
       });
       barRow.appendChild(refSel);
@@ -183,7 +185,7 @@ const GitPanel = (() => {
   async function reloadLog() {
     const lg = logRef === '__all__'
       ? await window.myIDE.git.logAll(root, 50)
-      : await window.myIDE.git.log(root, 100, logRef);
+      : await window.myIDE.git.log(root, logDepth, logRef);
     if (lg.commits) {
       state.commits = lg.commits;
       renderHistory();
@@ -207,6 +209,18 @@ const GitPanel = (() => {
       return;
     }
     const graph = buildGraph(filtered);
+    // 分页：加载更多
+    if (!q && state.commits.length >= logDepth && logRef !== '__all__') {
+      const more = document.createElement('button');
+      more.className = 'tb-btn gbtn';
+      more.id = 'git-load-more';
+      more.textContent = '加载更多…';
+      more.onclick = async () => {
+        logDepth += 100;
+        await reloadLog();
+      };
+      list.appendChild(more);
+    }
     filtered.forEach((c, i) => {
       const row = graph[i];
       const el = document.createElement('div');

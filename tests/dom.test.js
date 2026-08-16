@@ -53,6 +53,7 @@ calls.setUserConfig = [];
 calls.checkout = [];
 calls.logRef = null;
 calls.logAll = false;
+calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
@@ -113,7 +114,13 @@ function makeDom() {
     git: {
       init: async () => ({ ok: true }),
       status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed }),
-      log: async (d, depth, ref) => { calls.logRef = ref || 'HEAD'; return { isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits, ref: ref || 'HEAD' }; },
+      log: async (d, depth, ref) => {
+        calls.logRef = ref || 'HEAD';
+        calls.logDepth = depth;
+        let commits = FAKE_GIT.commits;
+        if (ref === 'dev') commits = Array.from({ length: 100 }, (_, i) => ({ oid: 'd' + String(i).padStart(39, '0'), short: 'd' + i, message: 'commit ' + i, fullMessage: 'commit ' + i, author: 'me', timestamp: Date.now() - i * 1000, parents: [] }));
+        return { isRepo: true, root: P, branch: 'main', commits, ref: ref || 'HEAD' };
+      },
       logAll: async () => { calls.logAll = true; return { isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits, ref: '__all__' }; },
       commit: async (d, o) => { calls.commit.push(o); return { ok: true, oid: 'cccccccccccccccccccccccccccccccccccccccc' }; },
       diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [
@@ -1311,6 +1318,29 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.df-nav-label').textContent !== before, 'Alt+↓ 切换 hunk');
     click($(dom, '#df-back'));
     await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Git 日志分页：加载更多', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    // 切到 dev（100 条）
+    const sel = $(dom, '#git-ref');
+    sel.value = 'dev';
+    sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    const more = $(dom, '#git-load-more');
+    assert_(more, '加载更多按钮出现');
+    click(more);
+    await tick(); await tick();
+    assert_(calls.logDepth === 200, '深度增加到 200: ' + calls.logDepth);
+    // 切回默认
+    const sel2 = $(dom, '#git-ref');
+    sel2.value = 'HEAD';
+    sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    assert_(!$(dom, '#git-load-more'), '默认视图无加载更多（3 条 < 100）');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
