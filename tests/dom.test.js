@@ -1394,6 +1394,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.copy[calls.copy.length - 1] === P + '/notes.txt', '复制的是当前文件路径: ' + calls.copy[calls.copy.length - 1]);
   });
 
+  await okAsync('提交面板 diff 预览', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    key(dom, 'k', { ctrl: true });
+    await tick(); await tick();
+    assert_($(dom, '#commit-preview'), '预览区存在');
+    assert_($(dom, '#commit-preview .diff-table'), '默认预览第一个文件');
+    const before = calls.diffWorkdir.length;
+    // 点击第二个文件行（非 checkbox）
+    const rows = $allIn($(dom, '#commit-files'), '.commit-file');
+    const second = rows[1].querySelector('.nm');
+    click(second);
+    await tick(); await tick();
+    assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
+    assert_($(dom, '#commit-preview .diff-table'), '预览更新');
+    click($(dom, '#cm-cancel'));
+    await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

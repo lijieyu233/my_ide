@@ -410,6 +410,11 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .commit-file:hover { background: var(--bg-hover); }
 .commit-file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .commit-file input { accent-color: var(--accent); }
+#commit-preview {
+  max-height: 180px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 4px;
+  margin: 8px 0; background: var(--bg);
+}
 #commit-msg {
   width: 100%; height: 74px; resize: none; border: 1px solid var(--btn-border); border-radius: 4px;
   background: var(--bg-input); color: var(--text-bright);

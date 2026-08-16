@@ -318,8 +318,9 @@ const GitPanel = (() => {
     box.innerHTML = `
       <div class="m-head">💾 提交更改 <span class="x" id="cm-x">✕</span></div>
       <div class="m-body">
-        <label class="m-label">变更文件（${state.changed.length} 个）</label>
+        <label class="m-label">变更文件（${state.changed.length} 个，点击行预览改动）</label>
         <div id="commit-files"></div>
+        <div id="commit-preview"><div class="diff-msg">点击文件行预览改动</div></div>
         <label class="m-label">提交信息</label>
         <textarea id="commit-msg" placeholder="描述本次更改…"></textarea>
         <div class="m-check"><input type="checkbox" id="commit-amend"><label for="commit-amend">追加到上一次提交（amend）</label></div>
@@ -330,12 +331,29 @@ const GitPanel = (() => {
         <button class="tb-btn m-ok" id="cm-ok">提交 (Ctrl+Enter)</button>
       </div>`;
     const filesBox = document.getElementById('commit-files');
+    let previewing = null;
+    const showPreview = async (file) => {
+      const pane = document.getElementById('commit-preview');
+      if (!pane) return;
+      previewing = file;
+      pane.innerHTML = '<div class="diff-msg">加载中…</div>';
+      const r = await window.myIDE.git.diffWorkdir(root, file);
+      pane.innerHTML = '';
+      if (r.error) { pane.innerHTML = '<div class="diff-msg">' + esc(r.error) + '</div>'; return; }
+      if (r.unchanged) { pane.innerHTML = '<div class="diff-msg">无差异</div>'; return; }
+      pane.appendChild(buildDiffTable(r));
+    };
     for (const c of state.changed) {
       const f = document.createElement('div');
       f.className = 'commit-file';
       f.innerHTML = `<input type="checkbox" checked class="cf-check" data-file="${esc(c.file)}"><span class="badge ${c.status}">${c.label}</span><span class="nm">${esc(c.file)}</span>`;
+      f.onclick = (e) => {
+        if (e.target.type === 'checkbox') return;
+        showPreview(c.file);
+      };
       filesBox.appendChild(f);
     }
+    if (state.changed.length) showPreview(state.changed[0].file);
     const msg = document.getElementById('commit-msg');
     setTimeout(() => msg.focus(), 50);
     const doCommit = async () => {
