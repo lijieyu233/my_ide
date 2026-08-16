@@ -80,6 +80,7 @@ const Viewer = (() => {
       tabbar.appendChild(el);
     });
     empty.classList.toggle('visible', tabs.length === 0);
+    if (window.Session) Session.save();
   }
 
   function ctxTabMenu(x, y, i) {

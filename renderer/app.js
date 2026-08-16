@@ -87,6 +87,14 @@ const App = (() => {
     }
   }
 
+  function getTool() { return activeTool; }
+  // 非切换语义：直接设置（会话恢复用）
+  function setTool(name) {
+    if (!TOOLS.includes(name)) return;
+    activeTool = name;
+    renderToolStrip();
+  }
+
   // ---------- 打开文件夹 ----------
   async function openFolder() {
     const p = await window.myIDE.fs.openFolder();
@@ -102,6 +110,7 @@ const App = (() => {
     GitPanel.rootDir = p;
     QuickOpen.invalidate();
     await GitPanel.refresh();
+    Session.restore();
   }
 
   // ---------- 刷新 ----------
@@ -141,7 +150,7 @@ const App = (() => {
     });
   }
 
-  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, get root() { return root; } };
+  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, get root() { return root; } };
 })();
 window.App = App;
 

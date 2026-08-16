@@ -42,7 +42,7 @@ const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffComm
 
 function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
-  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'file:///D:/proj/renderer/index.html' });
+  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
   const w = dom.window;
   w.myIDE = {
     fs: {
@@ -87,6 +87,7 @@ async function loadApp(dom) {
   evalFile('outline.js');
   evalFile('git-panel.js');
   evalFile('quickopen.js');
+  evalFile('session.js');
   evalFile('shortcuts.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
@@ -312,6 +313,59 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     assert_($(dom, '#commit-msg'), '第二次提交面板（Modal.show 修复）');
     click($(dom, '#cm-cancel'));
+    await tick();
+  });
+
+  await okAsync('会话记忆：标签页 + 活动标签 + 工具窗口恢复', async () => {
+    dom.window.localStorage.clear(); // 清掉旧会话，避免 setRoot 的 restore 干扰
+    // 先把历史测试遗留的 dirty 标签保存，避免 closeTab 弹确认框
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    await tick();
+    // 准备会话：打开两个文件，切到 git 工具窗口
+    await g(dom, 'App.setRoot("' + P + '")');
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
+    // 清空
+    while (g(dom, 'Viewer.openTabs.length') > 0) {
+      g(dom, 'Viewer.closeTab(0)');
+      await tick();
+    }
+    assert_(g(dom, 'Viewer.openTabs.length') === 0, '标签已清空');
+    // 恢复
+    await g(dom, 'Session.restore()');
+    await tick(); await tick();
+    const paths = g(dom, 'Viewer.openTabs.map(t => t.path)');
+    assert_(paths.includes(P + '/README.md') && paths.includes(P + '/notes.txt'), '两个标签恢复, got: ' + JSON.stringify(paths));
+    assert_(g(dom, 'Viewer.activeTab.path') === P + '/notes.txt', '活动标签恢复为 notes.txt');
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 工具窗口恢复');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('会话记忆：dirty 标签不写入保存', async () => {
+    // 打开文件并弄脏
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    const btns = $allIn($(dom, '.viewer-toolbar'), 'button');
+    click(btns.find((b) => b.textContent.includes('源码')));
+    await tick();
+    const ta = $(dom, 'textarea.editor');
+    ta.value = 'dirty content';
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_(g(dom, 'Viewer.activeTab.dirty') === true, '标签已变 dirty');
+    await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
+    // 直接检查 localStorage 里的会话数据
+    const raw = dom.window.localStorage.getItem('myide-session-v1');
+    const state = JSON.parse(raw || '{}');
+    assert_(!(state.tabs || []).includes(P + '/README.md'), 'dirty 标签未写入, got: ' + JSON.stringify(state.tabs));
+    // 清理 dirty 状态（避免影响后续）
+    await g(dom, 'Viewer.saveTab(0)');
     await tick();
   });
 
