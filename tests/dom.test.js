@@ -423,7 +423,6 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'App.switchTool("git")');
     await tick();
     const target = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
-    if (!target) { console.log('DEBUG: 没有找到 .git-file, git-body =', $(dom, '#git-body').innerHTML.slice(0, 300)); }
     click(target);
     await tick(); await tick();
     const sep = $(dom, '.diff-hunk-gap');
