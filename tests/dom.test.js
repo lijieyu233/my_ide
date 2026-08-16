@@ -41,6 +41,8 @@ const FAKE_GIT = {
   ],
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
+let fakeCopied = [];   // 内部复制的文件
+let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
 function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
@@ -64,7 +66,23 @@ function makeDom() {
       remove: async () => ({ ok: true }),
     },
     shell: { showInFolder: async () => {} },
-    clip: { copy: async (t) => { calls.copy.push(t); return true; } },
+    clip: {
+      copy: async (t) => { calls.copy.push(t); return true; },
+      copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },
+      getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
+    },
+    fsCopy: async (src, destDir) => {
+      const name = src.split('/').pop();
+      const extIdx = name.lastIndexOf('.');
+      const ext = extIdx > 0 ? name.slice(extIdx) : '';
+      const base = extIdx > 0 ? name.slice(0, extIdx) : name;
+      let target = destDir + '/' + name;
+      for (let i = 1; FAKE_FS[target]; i++) target = destDir + '/' + base + ' (' + i + ')' + ext;
+      const srcEntry = FAKE_FS[src] || { type: 'file', content: 'external content' };
+      FAKE_FS[target] = { type: srcEntry.type, content: srcEntry.content || '', children: srcEntry.children ? srcEntry.children.slice() : undefined };
+      if (FAKE_FS[destDir] && FAKE_FS[destDir].type === 'dir') FAKE_FS[destDir].children.push(target);
+      return { ok: true, target };
+    },
     git: {
       init: async () => ({ ok: true }),
       status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed }),
@@ -586,6 +604,69 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#qo-input'), 'Ctrl+P 恢复生效');
     key(dom, 'Escape', {});
     await tick();
+  });
+
+  await okAsync('文件复制粘贴：Ctrl+C / Ctrl+V + 重名改名', async () => {
+    // 清除可能残留的输入框焦点（jsdom 的 blur() 无效，改用 body.focus()）
+    dom.window.document.body.focus();
+    await tick();
+    // 点选 README.md
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/README.md'));
+    await tick();
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === 1 && fakeCopied[0] === P + '/README.md', 'Ctrl+C 记录文件');
+    // 选中 src 目录 → Ctrl+V 粘贴到该目录
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src'));
+    await tick();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README.md'], '副本出现在 src 目录');
+    // 再次粘贴（选中态保持，无需重复点击）→ 重名自动改名
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README (1).md'], '重名自动改名');
+    // 选中文件时粘贴 → 粘贴到其所在目录（先展开 src）
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src'));
+    await tick(); await tick();
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md'));
+    await tick();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README (2).md'], '选中文件时粘贴到所在目录');
+  });
+
+  await okAsync('文本区聚焦时 Ctrl+C 不触发文件复制', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const ta = $(dom, 'textarea.editor');
+    ta.focus();
+    await tick();
+    const before = fakeCopied.length;
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === before, 'textarea 中 Ctrl+C 未触发文件复制');
+  });
+
+  await okAsync('外部剪贴板文件粘贴到目录', async () => {
+    fakeExternal = ['C:/external/from-explorer.txt'];
+    const dirRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    click(dirRow);
+    await tick();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/from-explorer.txt'], '外部文件粘贴成功');
+    fakeExternal = [];
+  });
+
+  await okAsync('右键菜单：复制文件 / 粘贴到此处', async () => {
+    const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
+    row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    assert_(!menu.classList.contains('hidden'), '右键菜单出现');
+    const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(items.includes('📋 复制文件') && items.includes('📌 粘贴到此处'), '菜单含复制/粘贴, got: ' + JSON.stringify(items));
   });
 
   await okAsync('toast 提示正常', async () => {

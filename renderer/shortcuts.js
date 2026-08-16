@@ -91,6 +91,10 @@ const Shortcuts = (() => {
       return;
     }
     if (!combo) return;
+    // 文本编辑豁免：仅当输入框可见时（隐藏的弹窗输入框不算正在编辑）
+    const ae = document.activeElement;
+    const aeVisible = ae && ae.offsetParent !== null;
+    if (aeVisible && /^(TEXTAREA|INPUT)$/.test(ae.tagName) && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
     if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
       Modal.hide();
@@ -134,5 +138,7 @@ Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], r
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
+Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
+Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
 
 Shortcuts.load();

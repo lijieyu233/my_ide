@@ -173,6 +173,47 @@ ipcMain.handle('fs:remove', (_e, p) => {
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
+// 文件复制：写系统剪贴板（FileNameW 供资源管理器粘贴 + 文本兜底）
+ipcMain.handle('clip:copyFiles', (_e, paths) => {
+  const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
+  if (!arr.length) return false;
+  clipboard.writeText(arr.join('
+'));
+  try {
+    clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('
+') + '
+', 'utf16le'));
+  } catch {}
+  return true;
+});
+// 读取系统剪贴板中的文件路径（外部复制 → IDE 粘贴）
+ipcMain.handle('clip:getFiles', () => {
+  try {
+    const buf = clipboard.readBuffer('FileNameW');
+    if (!buf || !buf.length) return [];
+    return buf.toString('utf16le')
+      .split(/\0|\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s && fs.existsSync(s));
+  } catch { return []; }
+});
+// 复制文件/目录到目标目录（重名自动改名 name (1).ext）
+ipcMain.handle('fs:copy', (_e, src, destDir) => {
+  try {
+    const name = path.basename(src);
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let target = path.join(destDir, name);
+    for (let i = 1; fs.existsSync(target); i++) {
+      target = path.join(destDir, base + ' (' + i + ')' + ext);
+    }
+    const st = fs.statSync(src);
+    if (st.isDirectory()) fs.cpSync(src, target, { recursive: true });
+    else fs.copyFileSync(src, target);
+    return { ok: true, target };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 // ---------- IPC：Git ----------
 ipcMain.handle('git:init', (_e, dir) => G.initRepo(dir));
 ipcMain.handle('git:status', (_e, dir) => G.status(dir));

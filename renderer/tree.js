@@ -4,6 +4,8 @@ const Tree = (() => {
   let rootPath = null;
   let showHidden = false;
   let selectedPath = null;
+  let selectedType = null;
+  let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
 
   function setRoot(p) {
     rootPath = p;
@@ -19,7 +21,7 @@ const Tree = (() => {
     const row = makeRow({ name: rootPath.split(/[\\/]/).pop() || rootPath, path: rootPath, type: 'dir', root: true });
     root.appendChild(row);
     el.appendChild(root);
-    row.querySelector('.tw').click();
+    toggleDir(row, { name: row.querySelector('.nm').textContent, path: rootPath, type: 'dir' }); // 直接展开，不触发行选中
   }
 
   function makeRow(item, depth) {
@@ -51,7 +53,7 @@ const Tree = (() => {
 
     row.addEventListener('click', async (e) => {
       if (e.target === cp) { await copyPath(item.path); return; }
-      select(item.path);
+      select(item.path, item.type);
       if (item.type === 'dir') { toggleDir(row, item); return; }
       // ★ 核心需求：单击文件 = 打开 + 复制完整路径
       await copyPath(item.path);
@@ -62,7 +64,7 @@ const Tree = (() => {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      select(item.path);
+      select(item.path, item.type);
       showCtxMenu(e.clientX, e.clientY, item);
     });
 
@@ -101,8 +103,9 @@ const Tree = (() => {
     return d;
   }
 
-  function select(p) {
+  function select(p, type) {
     selectedPath = p;
+    selectedType = type || null;
     el.querySelectorAll('.tree-row').forEach((r) => {
       r.classList.toggle('selected', r.querySelector('.nm').title === p);
     });
@@ -114,6 +117,41 @@ const Tree = (() => {
       MI.toast('📋 已复制完整路径\n' + p, 'ok');
     } catch (e) {
       MI.toast('复制失败: ' + String(e), 'err');
+    }
+  }
+
+  // ---------- 文件复制 / 粘贴 ----------
+  async function copySelected() {
+    if (!selectedPath) { MI.toast('先在文件树中选择要复制的文件', 'err'); return; }
+    copiedPaths = [selectedPath];
+    await window.myIDE.clip.copyFiles(copiedPaths);
+    MI.toast('📋 已复制：' + selectedPath.split(/[\\/]/).pop(), 'ok');
+  }
+
+  // 粘贴目标：选中目录 → 该目录；选中文件 → 所在目录；无选中 → 根目录
+  function getPasteTarget() {
+    if (!rootPath) return null;
+    if (selectedPath && selectedType === 'dir') return selectedPath;
+    if (selectedPath) return selectedPath.replace(/[\\/][^\\/]+$/, '');
+    return rootPath;
+  }
+
+  async function pasteTo(destDir) {
+    if (!destDir) { MI.toast('请先打开文件夹', 'err'); return; }
+    // 优先系统剪贴板（用户最新操作可能是外部复制）；读不到再用内部记录
+    let sources = await window.myIDE.clip.getFiles();
+    if (!sources.length) sources = copiedPaths.slice();
+    if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
+    let ok = 0;
+    for (const s of sources) {
+      const r = await window.myIDE.fsCopy(s, destDir);
+      if (r.ok) ok++;
+      else MI.toast('粘贴失败: ' + (r.error || s), 'err');
+    }
+    if (ok) {
+      render();
+      App.refreshGit();
+      MI.toast('✅ 已粘贴 ' + ok + ' 个文件', 'ok');
     }
   }
 
@@ -129,6 +167,8 @@ const Tree = (() => {
       menu.appendChild(d);
     };
     mk('📋 复制完整路径', () => copyPath(item.path));
+    mk('📋 复制文件', () => copySelected());
+    mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
     mk('📂 在文件夹中显示', () => window.myIDE.shell.showInFolder(item.path));
     if (item.type === 'file') mk('✏️ 打开', () => { select(item.path); Viewer.openFile(item.path); });
     mk('🔤 重命名', () => renameItem(item));
@@ -172,6 +212,8 @@ const Tree = (() => {
   return {
     setRoot, render, select,
     get selectedPath() { return selectedPath; },
+    get selectedType() { return selectedType; },
+    copySelected, pasteTo, getPasteTarget,
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
     refresh: render,
   };

@@ -15,7 +15,12 @@ contextBridge.exposeInMainWorld('myIDE', {
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
   },
   shell: { showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p) },
-  clip: { copy: (t) => ipcRenderer.invoke('clip:copy', t) },
+  clip: {
+    copy: (t) => ipcRenderer.invoke('clip:copy', t),
+    copyFiles: (paths) => ipcRenderer.invoke('clip:copyFiles', paths),
+    getFiles: () => ipcRenderer.invoke('clip:getFiles'),
+  },
+  fsCopy: (src, destDir) => ipcRenderer.invoke('fs:copy', src, destDir),
   git: {
     init: (d) => ipcRenderer.invoke('git:init', d),
     status: (d) => ipcRenderer.invoke('git:status', d),
