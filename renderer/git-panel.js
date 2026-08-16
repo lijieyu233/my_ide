@@ -297,6 +297,44 @@ const GitPanel = (() => {
     renderDiffView(r, label);
   }
 
+  // diff hunk 导航：滚动到相邻 @@ 分隔行（循环）
+  let hunkNavIdx = 0;
+  function makeHunkNav() {
+    const wrap = document.createElement('span');
+    wrap.className = 'df-nav';
+    const prev = document.createElement('button');
+    prev.className = 'vt-btn';
+    prev.textContent = '⤒';
+    prev.title = '上一个 hunk';
+    const next = document.createElement('button');
+    next.className = 'vt-btn';
+    next.textContent = '⤓';
+    next.title = '下一个 hunk';
+    const label = document.createElement('span');
+    label.className = 'df-nav-label';
+    const refresh = () => {
+      const gaps = [...document.querySelectorAll('.diff-hunk-gap')];
+      if (!gaps.length) { label.textContent = ''; return; }
+      label.textContent = (hunkNavIdx % gaps.length + gaps.length) % gaps.length + 1 + '/' + gaps.length;
+    };
+    const go = (dir) => {
+      const gaps = [...document.querySelectorAll('.diff-hunk-gap')];
+      if (!gaps.length) return;
+      hunkNavIdx += dir;
+      const i = ((hunkNavIdx % gaps.length) + gaps.length) % gaps.length;
+      try { gaps[i].scrollIntoView({ block: 'center' }); } catch {}
+      gaps.forEach((x, j) => x.classList.toggle('nav-target', j === i));
+      refresh();
+    };
+    prev.onclick = () => go(-1);
+    next.onclick = () => go(1);
+    wrap.appendChild(prev);
+    wrap.appendChild(next);
+    wrap.appendChild(label);
+    setTimeout(refresh, 0); // 等 diff 表格渲染完成后再统计 hunk
+    return wrap;
+  }
+
   // 构建 diff 表格（hunk 折叠逻辑），供整页 diff 与提交详情双栏共用
   function buildDiffTable(r) {
     const fileBox = document.createElement('div');
@@ -357,6 +395,7 @@ const GitPanel = (() => {
     head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
       <span class="df-path">${esc(r.file)}</span>
       <span class="df-meta">${esc(label || '')} · +${countAdd(r.hunks)} / -${countDel(r.hunks)}</span>`;
+    head.appendChild(makeHunkNav());
     head.querySelector('#df-back').onclick = () => {
       const t = Viewer.activeTab;
       if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
@@ -395,6 +434,7 @@ const GitPanel = (() => {
     head.innerHTML = `<button class="vt-btn" id="cd-back">← 返回</button>
       <span class="df-path">${esc(c.short)} ${esc(c.message)}</span>
       <span class="df-meta">${esc(c.author)} · ${new Date(c.timestamp).toLocaleString()}</span>`;
+    head.appendChild(makeHunkNav());
     head.querySelector('#cd-back').onclick = () => {
       const t = Viewer.activeTab;
       if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }

@@ -82,6 +82,14 @@ MI.registerRenderer(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'], 
   return wrap;
 });
 
+// PDF（Chromium 内置查看器，零依赖）
+MI.registerRenderer(['pdf'], ({ path }) => {
+  const frame = document.createElement('iframe');
+  frame.className = 'html-frame';
+  frame.src = 'file:///' + String(path).split('\\').join('/');
+  return frame;
+});
+
 // ---------- 加载用户插件（支持热重载去重）----------
 let builtinCount = 0; // 内置渲染器数量（用户插件重载时截断用）
 MI.loadPlugins = async function () {

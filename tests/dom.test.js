@@ -31,6 +31,7 @@ const FAKE_FS = {
   ['C:/proj2']: { type: 'dir', children: ['C:/proj2/other.md'] },
   ['C:/proj2/other.md']: { type: 'file', content: '# 项目二文档\n' },
   ['C:/proj/gbk-old.txt']: { type: 'file', content: '中文老文件内容', encoding: 'gbk' },
+  ['C:/proj/manual.pdf']: { type: 'file', content: '' },
 };
 const FAKE_GIT = {
   changed: [
@@ -94,7 +95,10 @@ function makeDom() {
       status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed }),
       log: async () => ({ isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits }),
       commit: async (d, o) => { calls.commit.push(o); return { ok: true, oid: 'cccccccccccccccccccccccccccccccccccccccc' }; },
-      diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] }] }; },
+      diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [
+        { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
+        { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
+      ] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
@@ -465,8 +469,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(sep.dataset.open === '1', '2 行 hunk 默认展开');
     click(sep);
     await tick();
-    const rows = $allIn($(dom, '.diff-table'), 'tr').filter((tr) => tr.querySelector('td.ln'));
-    assert_(rows.every((tr) => tr.style.display === 'none'), '折叠后行隐藏');
+    // 只收集第一个 hunk 的行（到下一个分隔行为止）
+    const rows = [];
+    let node = sep.nextElementSibling;
+    while (node && !node.classList.contains('diff-hunk-gap')) {
+      if (node.querySelector('td.ln')) rows.push(node);
+      node = node.nextElementSibling;
+    }
+    assert_(rows.length > 0 && rows.every((tr) => tr.style.display === 'none'), '折叠后行隐藏');
     assert_(sep.textContent.includes('点击展开'), '显示展开提示');
     click(sep);
     await tick();
@@ -970,6 +980,33 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     ta.dispatchEvent(new dom.window.Event('scroll', { bubbles: true }));
     await tick();
     assert_(gutter.scrollTop === 123, 'gutter 滚动同步: ' + gutter.scrollTop);
+  });
+
+  await okAsync('PDF 预览：iframe 加载 file:// 路径', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/manual.pdf")');
+    await tick(); await tick();
+    const frame = $(dom, 'iframe.html-frame');
+    assert_(frame, 'PDF iframe 出现');
+    assert_(frame.src.includes('manual.pdf'), 'src 指向 PDF: ' + frame.src);
+  });
+
+  await okAsync('diff hunk 导航：按钮 + 循环切换', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    await tick(); await tick();
+    const nav = $(dom, '.df-nav');
+    assert_(nav, '导航按钮组存在');
+    assert_($(dom, '.df-nav-label').textContent.includes('/'), '序号显示: ' + $(dom, '.df-nav-label').textContent);
+    const before = $(dom, '.df-nav-label').textContent;
+    click($allIn(nav, 'button').find((b) => b.textContent.includes('⤓')));
+    await tick();
+    assert_($(dom, '.df-nav-label').textContent !== before, '点击后序号变化');
+    // 返回
+    click($(dom, '#df-back'));
+    await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {

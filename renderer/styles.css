@@ -315,6 +315,10 @@ textarea.editor {
 .br-item:hover { background: var(--bg-hover); }
 .br-item.current { color: var(--accent); font-weight: 600; }
 
+.df-nav { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.df-nav-label { font-size: 11px; color: var(--text-dim); min-width: 34px; text-align: center; }
+.diff-hunk-gap.nav-target td { color: var(--accent); font-weight: 600; }
+
 /* ---------- Git 过滤框 ---------- */
 #git-filter {
   width: calc(100% - 20px); margin: 4px 10px;
