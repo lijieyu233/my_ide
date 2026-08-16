@@ -401,8 +401,11 @@ app.whenReady().then(() => {
       try {
         const demo = path.join(__dirname, 'demo');
         fs.writeFileSync(path.join(demo, '_shot测试.md'),
-          '# 测试标题\n\n[[README]]\n\n[[README|别名跳转]]\n\n[外部链接](https://example.com)\n\n![[todo.txt]]\n\n![远程图片](https://picsum.photos/300/150)\n', 'utf8');
+          '# 测试标题\n\n[[README]]\n\n[[README|别名跳转]]\n\n[外部链接](https://example.com)\n\n![[todo.txt]]\n\n![远程图片](https://picsum.photos/300/150)\n\n![本地图](src/_shot图.png)\n', 'utf8');
         fs.writeFileSync(path.join(demo, '_shot图.png'),
+          Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
+        fs.mkdirSync(path.join(demo, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(demo, 'src', '_shot图.png'),
           Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
         const bigDir = path.join(demo, '_bigdir');
         try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
@@ -414,10 +417,15 @@ app.whenReady().then(() => {
         await new Promise((r) => setTimeout(r, 1500));
         const pageScript = fs.readFileSync(path.join(__dirname, 'scripts', 'check-page.js'), 'utf8');
         const out = await wc.executeJavaScript(pageScript);
-        console.log('CHECK RESULT ' + JSON.stringify(out));
+        // 大字段只保留计数，避免日志爆炸
+        const compact = Object.assign({}, out);
+        if (Array.isArray(compact.commitNames)) compact.commitNames = compact.commitNames.length + ' items';
+        if (Array.isArray(compact.commitTitles)) compact.commitTitles = compact.commitTitles.length + ' items';
+        console.log('CHECK RESULT ' + JSON.stringify(compact));
         // 清理测试产物，避免污染 demo 仓库状态
         try { fs.rmSync(path.join(demo, '_shot测试.md'), { force: true }); } catch {}
         try { fs.rmSync(path.join(demo, '_shot图.png'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, 'src', '_shot图.png'), { force: true }); } catch {}
         try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
       } catch (e) {
         console.log('CHECK FAIL ' + String((e && e.stack) || e).slice(0, 800));

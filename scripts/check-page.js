@@ -26,6 +26,8 @@
       click(q('#tree-expand'));
       await wait(600);
       out.expandedRows = qa('.tree-row').length;
+      click(q('#tree-collapse')); // 收起，让后续测试的 README 行回到可视窗口
+      await wait(400);
     }
     // 侧栏拖拽调宽
     const resizer = q('#sidebar-resizer');
@@ -47,9 +49,11 @@
     const origCopy = MI.copyText;
     MI.copyText = () => { window.__copied++; };
     const row = qa('.tree-row').find((r) => (r.querySelector('.nm').title || '').endsWith('README.md'));
+    out.readmeRowFound = !!row;
     if (row) click(row);
     await wait(500);
     out.clickNoCopy = window.__copied === 0;
+    out.afterClick = { active: (Viewer.activeTab || {}).path, mode: (Viewer.activeTab || {}).mode, md: !!q('.md-view'), err: (Viewer.activeTab || {}).error };
     MI.copyText = origCopy;
     // Markdown 预览 + 分屏
     out.mdPreview = !!q('.md-view');
@@ -64,6 +68,9 @@
     out.wikiAnchors = qa('.md-view a').map((a) => (a.textContent || '').trim() + '→' + a.getAttribute('href'));
     const rim = q('.md-view img');
     out.remoteImg = rim ? { complete: rim.complete, naturalWidth: rim.naturalWidth } : 'no-img';
+    // 子目录相对图片（离线可验证路径解析）
+    const lim = qa('.md-view img').find((im) => (im.getAttribute('src') || '').includes('src'));
+    out.localImg = lim ? { src: lim.getAttribute('src'), ok: lim.complete && lim.naturalWidth > 0 } : 'no-local-img';
     // wiki 链接点击 → 打开 .md
     const wikiA = qa('.md-view a').find((a) => (a.textContent || '').includes('README'));
     if (wikiA) click(wikiA);

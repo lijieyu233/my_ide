@@ -58,7 +58,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       pre.insertBefore(btn, pre.firstChild);
     });
   }
-  // 图片相对路径 → 本地文件（以笔记所在目录为基准，逐段编码避免把 / 编码掉）
+  // 图片相对路径 → 本地文件（以笔记所在目录为基准；交给浏览器规范化编码，避免双重编码）
   wrap.querySelectorAll('img').forEach((img) => {
     const src = (img.getAttribute('src') || '').trim();
     if (!src || /^(https?:|data:|blob:|file:)/i.test(src)) return;
@@ -69,7 +69,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       if (seg === '..') baseDir.pop();
       else baseDir.push(seg);
     }
-    img.src = 'file:///' + baseDir.map((s) => encodeURIComponent(s)).join('/');
+    img.src = 'file:///' + baseDir.join('/');
   });
   // 链接跳转：外链 → 系统浏览器；相对路径 → 打开本地文件；#锚点 → 页内滚动
   const resolveLocal = (rel) => {
