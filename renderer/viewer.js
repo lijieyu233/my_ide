@@ -14,7 +14,22 @@ const Viewer = (() => {
   const PREVIEW_EXTS = new Set(['md', 'markdown', 'html', 'htm', 'csv', 'json']);
   const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'pdf']);
 
+  // 最近打开记录（快速打开面板用）
+  const RECENT_KEY = 'myide-recent';
+  function recordRecent(path) {
+    try {
+      const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+      const rest = list.filter((x) => x.path !== path);
+      rest.unshift({ path, ts: Date.now() });
+      localStorage.setItem(RECENT_KEY, JSON.stringify(rest.slice(0, 10)));
+    } catch {}
+  }
+  function recentFiles() {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+  }
+
   async function openFile(path) {
+    recordRecent(path);
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => t.path === path);
     if (i >= 0) { activate(i); return; }
@@ -440,7 +455,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab, openFind,
+    openFile, closeTab, closeAll, activate, saveTab, openFind, recentFiles,
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },

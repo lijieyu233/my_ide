@@ -103,9 +103,14 @@ const App = (() => {
     sbState = Object.assign(sbState, info);
     const el = document.getElementById('sb-info');
     if (!el) return;
+    // 分支 → 独立可点击元素（PyCharm 右下角习惯）
+    const brEl = document.getElementById('sb-branch');
+    if (brEl) {
+      brEl.textContent = sbState.branch ? '⎇ ' + sbState.branch + (sbState.changed ? ' · ' + sbState.changed + ' 处修改' : '') : (sbState.noRepo ? '非 Git 仓库' : '');
+      brEl.title = sbState.branch ? '点击切换分支' : '';
+      brEl.classList.toggle('clickable', !!sbState.branch);
+    }
     const parts = [];
-    if (sbState.branch) parts.push('⎇ ' + sbState.branch + (sbState.changed ? ' · ' + sbState.changed + ' 处修改' : ''));
-    else if (sbState.noRepo) parts.push('非 Git 仓库');
     if (sbState.file) parts.push('📄 ' + sbState.file);
     if (sbState.lines) parts.push(sbState.lines + ' 行');
     if (sbState.pos) parts.push(sbState.pos);
@@ -228,6 +233,7 @@ const App = (() => {
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');
+    document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };

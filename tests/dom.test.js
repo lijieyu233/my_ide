@@ -1137,6 +1137,33 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/app.js').classList.contains('selected'), '文件行高亮');
   });
 
+  await okAsync('状态栏分支点击 + 快速打开最近文件', async () => {
+    // 状态栏分支可点击 → 弹窗
+    const br = $(dom, '#sb-branch');
+    assert_(br && br.textContent.includes('main'), '状态栏分支存在');
+    click(br);
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '点击分支打开切换弹窗');
+    click($(dom, '#br-x'));
+    await tick();
+    // 最近文件：打开一个文件 → 快速打开无输入显示
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    key(dom, 'p', { ctrl: true });
+    await tick();
+    const qo = $(dom, '#qo-input');
+    assert_(qo, '快速打开打开');
+    await tick();
+    const stat = $allIn($(dom, '#qo-list'), '.sr-stat');
+    assert_(stat.length > 0 && stat[0].textContent.includes('最近打开'), '显示最近打开');
+    const recentRows = $allIn($(dom, '#qo-list'), '.qo-item');
+    assert_(recentRows.length >= 1, '最近文件列表');
+    // 点击最近项 → 打开
+    click(recentRows[0]);
+    await tick(); await tick();
+    assert_($(dom, '.tab.active .tname'), '最近项打开文件');
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

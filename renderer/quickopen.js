@@ -55,7 +55,18 @@ const QuickOpen = (() => {
     const ql = q.trim().toLowerCase();
     results = [];
     if (!ql) {
-      list.innerHTML = '<div class="qo-empty">输入关键字开始搜索…</div>';
+      // 最近打开的文件
+      const recent = Viewer.recentFiles();
+      if (!recent.length) { list.innerHTML = '<div class="qo-empty">输入关键字开始搜索…</div>'; return; }
+      list.innerHTML = '<div class="sr-stat">最近打开</div>';
+      recent.forEach((r, i) => {
+        const name = r.path.split(/[\\/]/).pop();
+        const row = document.createElement('div');
+        row.className = 'qo-item';
+        row.innerHTML = `<span class="qo-name">${esc(name)}</span><span class="qo-rel">${esc(r.path)}</span>`;
+        row.onclick = () => { Modal.hide(); Viewer.openFile(r.path); };
+        list.appendChild(row);
+      });
       return;
     }
     for (const f of files) {

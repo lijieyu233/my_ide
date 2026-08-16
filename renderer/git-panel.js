@@ -531,6 +531,6 @@ const GitPanel = (() => {
 
 
 
-  return { refresh, openCommit, set rootDir(v) { root = v; } };
+  return { refresh, openCommit, openBranchDialog, set rootDir(v) { root = v; } };
 })();
 window.GitPanel = GitPanel;
