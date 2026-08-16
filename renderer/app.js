@@ -1,4 +1,4 @@
-// app.js —— 应用入口：工具栏、弹窗（Modal）、状态管理
+// app.js —— 应用入口：工具栏、工具窗口（PyCharm 式）、弹窗（Modal）、状态管理
 const App = (() => {
   let root = null;
 
@@ -7,7 +7,9 @@ const App = (() => {
   const Modal = {
     show(box) {
       mask.classList.remove('hidden');
-      document.getElementById('modal-box').replaceWith(box);
+      const old = mask.querySelector(':scope > div');
+      if (old) old.remove();
+      mask.appendChild(box);
     },
     hide() { mask.classList.add('hidden'); },
     confirm(title, text) {
@@ -21,12 +23,14 @@ const App = (() => {
             <button class="tb-btn m-ok" id="cf-yes">确定</button>
           </div>`;
         Modal.show(box);
-        box.querySelector('#cf-yes').onclick = () => { Modal.hide(); resolve(true); };
-        box.querySelector('#cf-no').onclick = () => { Modal.hide(); resolve(false); };
-        box.querySelector('#cf-x').onclick = () => { Modal.hide(); resolve(false); };
+        const done = (v) => { Modal.hide(); resolve(v); };
+        box.querySelector('#cf-yes').onclick = () => done(true);
+        box.querySelector('#cf-no').onclick = () => done(false);
+        box.querySelector('#cf-x').onclick = () => done(false);
+        // 注意：用 { once: true }，避免每次 confirm 都堆积监听器（卡死隐患）
         mask.addEventListener('click', function h(e) {
-          if (e.target === mask) { mask.removeEventListener('click', h); Modal.hide(); resolve(false); }
-        });
+          if (e.target === mask) done(false);
+        }, { once: true });
       });
     },
     prompt(title, label, value) {
@@ -46,15 +50,42 @@ const App = (() => {
         Modal.show(box);
         const input = box.querySelector('#pf-input');
         setTimeout(() => { input.focus(); input.select(); }, 50);
-        const ok = () => { Modal.hide(); resolve(input.value); };
-        box.querySelector('#pf-yes').onclick = ok;
-        box.querySelector('#pf-no').onclick = () => { Modal.hide(); resolve(null); };
-        box.querySelector('#pf-x').onclick = () => { Modal.hide(); resolve(null); };
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') { Modal.hide(); resolve(null); } });
+        const done = (v) => { Modal.hide(); resolve(v); };
+        box.querySelector('#pf-yes').onclick = () => done(input.value);
+        box.querySelector('#pf-no').onclick = () => done(null);
+        box.querySelector('#pf-x').onclick = () => done(null);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') done(input.value);
+          if (e.key === 'Escape') done(null);
+        });
       });
     },
   };
   window.Modal = Modal;
+
+  // ---------- 工具窗口（PyCharm 式：左侧按钮条切换，同一侧同时只显示一个）----------
+  const TOOLS = ['project', 'outline', 'git'];
+  let activeTool = 'project';
+
+  function switchTool(name) {
+    if (!TOOLS.includes(name)) return;
+    if (activeTool === name) { // 再点一次收起（PyCharm 行为）
+      activeTool = null;
+    } else {
+      activeTool = name;
+    }
+    renderToolStrip();
+  }
+
+  function renderToolStrip() {
+    for (const t of TOOLS) {
+      document.getElementById('tool-' + t).classList.toggle('active', activeTool === t);
+      document.getElementById('panel-' + t).classList.toggle('hidden', activeTool !== t);
+    }
+    if (activeTool === 'outline') {
+      Outline.refresh(Viewer.activeTab);
+    }
+  }
 
   // ---------- 打开文件夹 ----------
   async function openFolder() {
@@ -69,30 +100,21 @@ const App = (() => {
     document.getElementById('tb-path').title = p;
     Tree.setRoot(p);
     GitPanel.rootDir = p;
+    QuickOpen.invalidate();
     await GitPanel.refresh();
-  }
-
-  // ---------- 侧栏切换 ----------
-  function switchSideTab(which) {
-    const t = document.getElementById('side-tab-tree');
-    const g = document.getElementById('side-tab-git');
-    const tp = document.getElementById('tree-panel');
-    const gp = document.getElementById('git-panel');
-    const treeOn = which === 'tree';
-    t.classList.toggle('active', treeOn);
-    g.classList.toggle('active', !treeOn);
-    tp.classList.toggle('hidden', !treeOn);
-    gp.classList.toggle('hidden', treeOn);
   }
 
   // ---------- 刷新 ----------
   async function refreshAll() {
     if (!root) return;
     Tree.refresh();
+    QuickOpen.invalidate();
     await GitPanel.refresh();
+    if (activeTool === 'outline') Outline.refresh(Viewer.activeTab);
     MI.toast('已刷新', 'ok');
   }
   async function refreshGit() { if (root) await GitPanel.refresh(); }
+  async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
   // ---------- 初始化 ----------
   function init() {
@@ -105,22 +127,22 @@ const App = (() => {
       MI.copyText(t.path);
       MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
     };
-    document.getElementById('tb-git').onclick = () => switchSideTab('git');
-    document.getElementById('side-tab-tree').onclick = () => switchSideTab('tree');
-    document.getElementById('side-tab-git').onclick = () => switchSideTab('git');
+    document.getElementById('tb-git').onclick = () => switchTool('git');
+    document.getElementById('tool-project').onclick = () => switchTool('project');
+    document.getElementById('tool-outline').onclick = () => switchTool('outline');
+    document.getElementById('tool-git').onclick = () => switchTool('git');
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
 
     MI.loadPlugins().then(async () => {
-      // 恢复上次打开的文件夹
       const last = await window.myIDE.fs.getRecent();
       if (last) await setRoot(last);
     });
   }
 
-  return { init, openFolder, setRoot, refreshAll, refreshGit, switchSideTab, get root() { return root; } };
+  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, get root() { return root; } };
 })();
+window.App = App;
 
 document.addEventListener('DOMContentLoaded', () => App.init());
-window.App = App;

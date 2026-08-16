@@ -62,6 +62,27 @@ ipcMain.handle('fs:setRecent', (_e, p) => {
   const s = loadState(); s.lastFolder = p; saveState(s);
 });
 
+ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
+  // 异步递归列出全部文件（Ctrl+P 快速打开用），过滤 .git/node_modules
+  const MAX = 50000;
+  const out = [];
+  const hiddenSet = new Set(['.git', 'node_modules']);
+  async function walk(dir) {
+    if (out.length >= MAX) return;
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= MAX) return;
+      if (hiddenSet.has(e.name) || (!showHidden && e.name.startsWith('.'))) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else out.push(full);
+    }
+  }
+  await walk(root);
+  return { files: out, truncated: out.length >= MAX };
+});
+
 ipcMain.handle('fs:readDir', (_e, dir, showHidden) => {
   const hidden = new Set(['.git', 'node_modules']);
   let entries;

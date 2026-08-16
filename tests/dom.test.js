@@ -25,6 +25,8 @@ const FAKE_FS = {
   [P + '/src/app.js']: { type: 'file', content: 'const a = 1;\n' },
   [P + '/data.csv']: { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n' },
   [P + '/notes.txt']: { type: 'file', content: 'hello notes\n' },
+  [P + '/page.html']: { type: 'file', content: '<h1>Hi HTML</h1><script>document.title = "ok";<\/script>' },
+  [P + '/QuickOpen.js']: { type: 'file', content: 'const q = 1;\n' },
 };
 const FAKE_GIT = {
   changed: [
@@ -48,6 +50,7 @@ function makeDom() {
       getRecent: async () => null,
       setRecent: async () => {},
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c })) : []),
+      listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content } : { error: 'not found' }),
       writeFile: async (p, content) => { if (FAKE_FS[p]) FAKE_FS[p].content = content; return { ok: true }; },
       rename: async () => ({ ok: true }),
@@ -81,7 +84,9 @@ async function loadApp(dom) {
   evalFile('plugin-loader.js');
   evalFile('tree.js');
   evalFile('viewer.js');
+  evalFile('outline.js');
   evalFile('git-panel.js');
+  evalFile('quickopen.js');
   evalFile('shortcuts.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
@@ -212,6 +217,102 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'r', { ctrl: true });
     await tick(); await tick();
     ok('Ctrl+R 无异常', () => {});
+  });
+
+  await okAsync('HTML 预览：iframe 渲染', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/page.html")');
+    await tick(); await tick();
+    const frame = $(dom, '.html-frame');
+    assert_(frame, 'iframe 出现');
+    assert_(frame.srcdoc.includes('<h1>Hi HTML</h1>'), 'srcdoc 包含内容');
+  });
+
+  await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目 / 再按收起', async () => {
+    key(dom, '2', { ctrl: true });
+    await tick();
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板隐藏');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲面板显示');
+    assert_($(dom, '#tool-outline').classList.contains('active'), '大纲按钮激活');
+    key(dom, '1', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板恢复');
+    key(dom, '1', { ctrl: true });
+    await tick();
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '再按 Ctrl+1 收起');
+    key(dom, '1', { ctrl: true }); // 恢复展开，避免影响后续
+    await tick();
+  });
+
+  await okAsync('Markdown 大纲：标题条目 + 点击跳转', async () => {
+    // 当前激活是 page.html，切回 README.md
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const items = $allIn($(dom, '#outline'), '.outline-item');
+    assert_(items.length >= 1, '大纲有条目, got ' + items.length);
+    assert_(items[0].textContent.includes('标题'), '条目文本正确: ' + items[0].textContent);
+    // 切源码模式再点大纲 → 应自动切回预览
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
+    await tick();
+    assert_($(dom, 'textarea.editor'), '已切源码');
+    click(items[0]);
+    await tick();
+    assert_($(dom, '.md-view'), '点击大纲自动切回预览');
+  });
+
+  await okAsync('Ctrl+P 快速打开：面板 + 过滤 + 回车打开', async () => {
+    key(dom, 'p', { ctrl: true });
+    await tick(); await tick();
+    const input = $(dom, '#qo-input');
+    assert_(input, '面板打开且有输入框');
+    input.value = 'readme';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const names = $allIn($(dom, '#qo-list'), '.qo-name').map((n) => n.textContent);
+    assert_(names.includes('README.md'), '匹配 README.md, got: ' + names.join(','));
+    assert_(!names.includes('notes.txt'), '不匹配的文件被过滤');
+    // 回车打开
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    const tab = $(dom, '.tab.active .tname');
+    assert_(tab && tab.textContent.includes('README.md'), '回车打开 README.md, got: ' + (tab && tab.textContent));
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '面板已关闭');
+  });
+
+  await okAsync('快速打开：分散匹配 + Esc 关闭 + 第二次打开不崩', async () => {
+    key(dom, 'p', { ctrl: true });
+    await tick();
+    const input = $(dom, '#qo-input');
+    input.value = 'qk';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const names = $allIn($(dom, '#qo-list'), '.qo-name').map((n) => n.textContent);
+    assert_(names.includes('QuickOpen.js'), 'qk 分散匹配命中 QuickOpen.js, got: ' + names.join(','));
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), 'Esc 关闭');
+    // 第二次打开（回归：Modal.show 不再依赖 #modal-box）
+    key(dom, 'p', { ctrl: true });
+    await tick();
+    assert_($(dom, '#qo-input'), '第二次打开正常');
+    input.value = '';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick();
+  });
+
+  await okAsync('Ctrl+K 连续打开两次提交面板不崩（回归）', async () => {
+    key(dom, 'k', { ctrl: true });
+    await tick();
+    assert_($(dom, '#commit-msg'), '第一次提交面板');
+    click($(dom, '#cm-cancel'));
+    await tick();
+    key(dom, 'k', { ctrl: true });
+    await tick();
+    assert_($(dom, '#commit-msg'), '第二次提交面板（Modal.show 修复）');
+    click($(dom, '#cm-cancel'));
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {

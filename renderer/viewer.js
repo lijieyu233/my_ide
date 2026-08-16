@@ -183,6 +183,9 @@ const Viewer = (() => {
       return;
     }
 
+    // 刷新大纲（md 文件）
+    if (window.App) window.App.refreshOutline(tab);
+
     // 预览模式：交给插件渲染
     const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
     const node = fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content }) : null;
@@ -214,6 +217,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, activate, saveTab,
+    renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },
   };

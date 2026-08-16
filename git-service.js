@@ -5,17 +5,19 @@ const path = require('path');
 
 // Windows 反斜杠路径 → POSIX 正斜杠（isomorphic-git 树操作需要）
 const posix = (p) => String(p).split(path.sep).join('/');
-
-const STATUS_LABEL = {
-  modified: '已修改', added: '已新增', deleted: '已删除', absent: '已删除',
-  '*modified': '已暂存修改', '*added': '已暂存新增', '*deleted': '已暂存删除', '*absent': '已暂存删除',
-};
+const native = (p) => String(p).split('/').join(path.sep);
 
 // ---------- 基础 ----------
+// 注意：不用 git.findRoot —— 它在 Windows 反斜杠路径上有 bug
+// （内部 path.posix.dirname 会把整条路径当文件名，返回 '.' 后误查相对 .git）
 async function findRoot(dir) {
-  try {
-    return await git.findRoot({ fs, filepath: dir });
-  } catch { return null; }
+  let p = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(p, '.git'))) return p;
+    const parent = path.dirname(p);
+    if (parent === p) return null;
+    p = parent;
+  }
 }
 async function isRepo(dir) {
   const root = await findRoot(dir);
@@ -28,33 +30,39 @@ async function currentBranch(root) {
   } catch { return '(无提交)'; }
 }
 
-// 递归列出目录下所有文件（跳过 .git / node_modules）
-function listFiles(dir) {
-  const out = [];
-  let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (e.name === '.git' || e.name === 'node_modules') continue;
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) out.push(...listFiles(full));
-    else out.push(full);
-  }
-  return out;
+// ---------- 状态（statusMatrix：一次 walk 批量计算，性能关键）----------
+// statusMatrix 每行 [filepath, head, workdir, stage]，值 = oid 在 [undefined, headOid, workdirOid, stageOid] 的下标：
+// 0=不存在 1=与HEAD同 2=workdir自身 3=stage自身
+function matrixToStatus(m) {
+  const [, h, w, s] = m;
+  const H = h > 0, W = w > 0, S = s > 0;
+  if (!H && !W && !S) return null;                       // 不存在
+  if (H && W && S && h === w && w === s) return null;    // 未修改
+  if (!H && W && !S) return { status: 'added', label: '新增' };                    // 未跟踪
+  if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增' }; // 已暂存新增（或暂存后又改）
+  if (H && !W && !S) return { status: 'deleted', label: '已删除' };                  // 工作区删除
+  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）' };
+  if (H && W && !S) return { status: 'modified', label: '已修改' };
+  // H && W && S：有修改
+  if (h === s) return { status: 'modified', label: '已修改' };        // [1,2,1] 未暂存
+  if (w === s) return { status: '*modified', label: '已修改（已暂存）' }; // [1,2,2]
+  return { status: '*modified', label: '已修改（暂存+未暂存）' };          // [1,2,3]
 }
 
-// ---------- 状态 ----------
 async function status(dir) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
+  let matrix;
+  try {
+    matrix = await git.statusMatrix({ fs, dir: root });
+  } catch (e) {
+    return { isRepo: true, root, branch, changed: [], error: String(e.message || e) };
+  }
   const changed = [];
-  for (const f of listFiles(root)) {
-    let st;
-    try { st = await git.status({ fs, dir: root, filepath: posix(path.relative(root, f)) }); }
-    catch { continue; }
-    if (st && st !== 'unmodified' && st !== 'ignored') {
-      changed.push({ file: path.relative(root, f), status: st, label: STATUS_LABEL[st] || st });
-    }
+  for (const row of matrix) {
+    const st = matrixToStatus(row);
+    if (st) changed.push({ file: native(row[0]), status: st.status, label: st.label });
   }
   changed.sort((a, b) => a.file.localeCompare(b.file));
   return { isRepo: true, root, branch, changed };
@@ -93,8 +101,7 @@ async function getAuthor(root) {
   return { name: name || 'me', email: email || 'me@localhost' };
 }
 
-// 注意：本版本 isomorphic-git 的 commit() 不支持 filepaths 参数，
-// 必须先显式 add / remove 暂存，再 commit。
+// 本版本 isomorphic-git 的 commit() 不支持 filepaths 参数，需先显式 add/remove 暂存
 async function commit(dir, { message, files, amend = false }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
@@ -126,18 +133,18 @@ async function initRepo(dir) {
 }
 
 // ---------- 读取某 commit 中某文件内容 ----------
-// readBlob 不解析 ref，需先 resolveRef 转成完整 SHA
 async function blobAt(root, oid, file) {
   if (!oid) return null;
   try {
     const resolved = await git.resolveRef({ fs, dir: root, ref: oid });
-    const { blob } = await git.readBlob({ fs, dir: root, oid: resolved, filepath: file });
+    const { blob } = await git.readBlob({ fs, dir: root, oid: resolved, filepath: posix(file) });
     return Buffer.from(blob).toString('utf8');
-  } catch { return null; } // 该提交中不存在此文件
+  } catch { return null; }
 }
 
 // ---------- 行级 Diff（Myers O(ND)）----------
-// 文本 → 行数组：忽略末尾换行产生的空行（与 git 显示行为一致）
+const DIFF_MAX_LINES = 4000; // 超过此行数放弃精确对齐，避免 O(N·M) 卡死
+
 function linesOf(t) {
   if (t === '') return [];
   const arr = t.split('\n');
@@ -145,7 +152,6 @@ function linesOf(t) {
   return arr;
 }
 
-// 返回 ops: [{type:'ctx'|'del'|'add', aLine?, bLine?}]（行号从 0 起）
 function diffLines(aText, bText) {
   const a = linesOf(aText), b = linesOf(bText);
   const N = a.length, M = b.length;
@@ -191,10 +197,19 @@ function diffLines(aText, bText) {
   return ops;
 }
 
-// 把 ops 分组为 hunks（带 3 行上下文），并映射成前后对比行
-// rows: [{type:'ctx'|'del'|'add', aText, bText, aNum, bNum}]  aNum/bNum 为 1 起行号，无则 0
+// 超大文件降级：不做对齐，全部显示为 del + add（线性时间，不卡）
+function coarseHunks(a, b) {
+  const rows = [];
+  for (let i = 0; i < a.length; i++) rows.push({ type: 'del', aText: a[i], bText: '', aNum: i + 1, bNum: 0 });
+  for (let j = 0; j < b.length; j++) rows.push({ type: 'add', aText: '', bText: b[j], aNum: 0, bNum: j + 1 });
+  return [{
+    oldStart: 1, oldLines: a.length, newStart: 1, newLines: b.length, rows, coarse: true,
+  }];
+}
+
 function buildHunks(aText, bText, ctx = 3) {
   const a = linesOf(aText), b = linesOf(bText);
+  if (a.length > DIFF_MAX_LINES || b.length > DIFF_MAX_LINES) return coarseHunks(a, b);
   const ops = diffLines(aText, bText);
   if (!ops.some((o) => o.type !== 'ctx')) return [];
   const groups = [];
@@ -235,8 +250,12 @@ async function diffWorkdir(dir, file) {
   if (!yes) return { error: '不是 Git 仓库' };
   const rel = path.relative(root, file);
   let oldText = null, newText = null;
-  try { oldText = await blobAt(root, 'HEAD', posix(rel)); } catch {}
-  try { newText = fs.readFileSync(file, 'utf8'); } catch {}
+  try { oldText = await blobAt(root, 'HEAD', rel); } catch {}
+  try {
+    const st = fs.statSync(file);
+    if (st.size > 20 * 1024 * 1024) return { file: rel, tooLarge: true, size: st.size };
+    newText = fs.readFileSync(file, 'utf8');
+  } catch {}
   if (oldText === null && newText === null) return { error: '无法读取文件' };
   if (oldText === newText) return { file: rel, unchanged: true };
   return { file: rel, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
@@ -284,7 +303,7 @@ async function diffCommit(dir, oid, file) {
   try {
     const c = await git.readCommit({ fs, dir: root, oid });
     const parent = c.commit.parent[0] || null;
-    const [oldText, newText] = [await blobAt(root, parent, posix(file)), await blobAt(root, oid, posix(file))];
+    const [oldText, newText] = [await blobAt(root, parent, file), await blobAt(root, oid, file)];
     if (oldText === null && newText === null) return { error: '文件中不存在于该提交' };
     if (oldText === newText) return { file, unchanged: true };
     return { file, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
@@ -293,4 +312,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, commit, initRepo, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, listFiles, linesOf };
+module.exports = { findRoot, isRepo, status, log, commit, initRepo, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

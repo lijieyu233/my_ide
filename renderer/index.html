@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' data: about:;">
 <title>My IDE</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
@@ -14,22 +14,28 @@
   <span class="spacer"></span>
   <button id="btn-copy-path" class="tb-btn" title="复制当前文件完整路径 (Ctrl+Shift+C)">📋 复制路径</button>
   <button id="btn-refresh" class="tb-btn" title="刷新 (Ctrl+R)">🔄 刷新</button>
-  <span id="tb-git" class="tb-git" title="Git 状态"></span>
+  <span id="tb-git" class="tb-git" title="Git 状态（点击打开 Git 工具窗口）"></span>
 </header>
 <div id="main">
+  <div id="tool-strip" title="工具窗口（PyCharm 式）">
+    <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">📁</button>
+    <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)">☰</button>
+    <button id="tool-git" class="tool-btn" title="Git (Ctrl+3)">🔀</button>
+  </div>
   <aside id="sidebar">
-    <div id="side-tabs">
-      <button id="side-tab-tree" class="side-tab active" title="文件树 (Ctrl+1)">📁 项目</button>
-      <button id="side-tab-git" class="side-tab" title="Git 日志 (Ctrl+2)">🔀 Git</button>
-    </div>
-    <div id="tree-panel">
+    <div id="panel-project">
+      <div class="panel-title">项目</div>
       <div id="tree-head">
         <input id="tree-hidden" type="checkbox" title="显示隐藏文件（.git 与 node_modules 始终隐藏）">
         <label for="tree-hidden">隐藏文件</label>
       </div>
       <div id="tree"></div>
     </div>
-    <div id="git-panel" class="hidden">
+    <div id="panel-outline" class="hidden">
+      <div class="panel-title">大纲</div>
+      <div id="outline"></div>
+    </div>
+    <div id="panel-git" class="hidden">
       <div id="git-branchbar"><span id="git-branch"></span></div>
       <div id="git-body"></div>
     </div>
@@ -57,7 +63,9 @@
 <script src="plugin-loader.js"></script>
 <script src="tree.js"></script>
 <script src="viewer.js"></script>
+<script src="outline.js"></script>
 <script src="git-panel.js"></script>
+<script src="quickopen.js"></script>
 <script src="shortcuts.js"></script>
 <script src="app.js"></script>
 </body>

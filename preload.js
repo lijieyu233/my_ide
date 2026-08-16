@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
+    listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
     writeFile: (p, c) => ipcRenderer.invoke('fs:writeFile', p, c),
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),

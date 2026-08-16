@@ -126,7 +126,8 @@ const GitPanel = (() => {
       MI.toast('没有可提交的更改', 'err');
       return;
     }
-    const box = document.getElementById('modal-box');
+    const box = document.createElement('div');
+    Modal.show(box);
     box.innerHTML = `
       <div class="m-head">💾 提交更改 <span class="x" id="cm-x">✕</span></div>
       <div class="m-body">
@@ -148,7 +149,6 @@ const GitPanel = (() => {
       f.innerHTML = `<input type="checkbox" checked class="cf-check" data-file="${esc(c.file)}"><span class="badge ${c.status}">${c.label}</span><span class="nm">${esc(c.file)}</span>`;
       filesBox.appendChild(f);
     }
-    Modal.show(box);
     const msg = document.getElementById('commit-msg');
     setTimeout(() => msg.focus(), 50);
     const doCommit = async () => {
@@ -263,7 +263,8 @@ const GitPanel = (() => {
       return;
     }
     // 多个文件：弹窗选择
-    const box = document.getElementById('modal-box');
+    const box = document.createElement('div');
+    Modal.show(box);
     box.innerHTML = `
       <div class="m-head">${esc(c.short)} — ${esc(c.message)}（${r.files.length} 个文件）<span class="x" id="cm-x2">✕</span></div>
       <div class="m-body">
@@ -282,7 +283,6 @@ const GitPanel = (() => {
       };
       filesBox.appendChild(row);
     }
-    Modal.show(box);
     document.getElementById('cm-cancel2').onclick = () => Modal.hide();
     document.getElementById('cm-x2').onclick = () => Modal.hide();
   }

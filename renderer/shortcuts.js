@@ -17,6 +17,8 @@ document.addEventListener('keydown', (e) => {
   }
   // Ctrl+O：打开文件夹
   if (ctrl && k === 'o') { e.preventDefault(); App.openFolder(); return; }
+  // Ctrl+P / Ctrl+Shift+N：快速打开文件
+  if (ctrl && (k === 'p' || (e.shiftKey && k === 'n'))) { e.preventDefault(); QuickOpen.open(); return; }
   // Ctrl+S：保存（textarea 内已处理，这里兜底）
   if (ctrl && k === 's') {
     const t = Viewer.activeTab;
@@ -40,9 +42,10 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
-  // Ctrl+1 / Ctrl+2：切换侧栏面板
-  if (ctrl && k === '1') { e.preventDefault(); App.switchSideTab('tree'); return; }
-  if (ctrl && k === '2') { e.preventDefault(); App.switchSideTab('git'); return; }
+  // Ctrl+1 / Ctrl+2 / Ctrl+3：切换工具窗口（PyCharm 式）
+  if (ctrl && k === '1') { e.preventDefault(); App.switchTool('project'); return; }
+  if (ctrl && k === '2') { e.preventDefault(); App.switchTool('outline'); return; }
+  if (ctrl && k === '3') { e.preventDefault(); App.switchTool('git'); return; }
   // Ctrl+R：刷新
   if (ctrl && k === 'r') { e.preventDefault(); App.refreshAll(); return; }
   // Esc：关闭弹窗（textareas 里 Esc 不拦截）
