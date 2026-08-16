@@ -10,7 +10,7 @@ if (!message) {
   console.error('用法: node scripts/git-commit.js "提交信息"');
   process.exit(1);
 }
-const SKIP = ['node_modules', 'demo', '.git', '.idea', 'smoke.log'];
+const SKIP = ['node_modules', 'demo', 'dist', '.git', '.idea', 'smoke.log'];
 
 (async () => {
   // 1) 收集待提交文件：statusMatrix（自动尊重 .gitignore），过滤 SKIP 前缀
