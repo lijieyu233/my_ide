@@ -296,6 +296,15 @@ textarea.editor {
 .git-empty { padding: 30px 20px; text-align: center; color: var(--text-dim); font-size: 12px; }
 .git-empty .gbtn { margin-top: 10px; }
 
+#git-branch-btn { cursor: pointer; padding: 1px 6px; border-radius: 3px; }
+#git-branch-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.br-item {
+  padding: 8px 14px; font-size: 13px; cursor: pointer;
+  border-bottom: 1px solid rgba(128,128,128,.08);
+}
+.br-item:hover { background: var(--bg-hover); }
+.br-item.current { color: var(--accent); font-weight: 600; }
+
 /* ---------- Git 过滤框 ---------- */
 #git-filter {
   width: calc(100% - 20px); margin: 4px 10px;

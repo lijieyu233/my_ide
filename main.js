@@ -222,6 +222,8 @@ ipcMain.handle('git:commit', (_e, dir, opts) => G.commit(dir, opts));
 ipcMain.handle('git:diffWorkdir', (_e, dir, file) => G.diffWorkdir(dir, file));
 ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => G.diffCommit(dir, oid, file));
 ipcMain.handle('git:commitFiles', (_e, dir, oid) => G.commitFiles(dir, oid));
+ipcMain.handle('git:branches', (_e, dir) => G.branches(dir));
+ipcMain.handle('git:checkout', (_e, dir, ref) => G.checkout(dir, ref));
 ipcMain.handle('git:getUserConfig', (_e, dir) => G.getUserConfig(dir));
 ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => G.setUserConfig(dir, cfg));
 

@@ -46,7 +46,13 @@ const GitPanel = (() => {
       };
       return;
     }
-    branchEl.textContent = '⎇ ' + state.branch;
+    branchEl.textContent = '';
+    const branchBtn = document.createElement('span');
+    branchBtn.id = 'git-branch-btn';
+    branchBtn.textContent = '⎇ ' + state.branch;
+    branchBtn.title = '点击切换分支';
+    branchBtn.onclick = () => openBranchDialog();
+    branchEl.appendChild(branchBtn);
     const btnCommit = document.createElement('button');
     btnCommit.className = 'tb-btn gbtn';
     btnCommit.textContent = '💾 提交 (Ctrl+K)';
@@ -171,6 +177,43 @@ const GitPanel = (() => {
     if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前';
     if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + ' 天前';
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  // ---------- 分支切换弹窗 ----------
+  async function openBranchDialog() {
+    if (!root) return;
+    const r = await window.myIDE.git.branches(root);
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    const box = document.createElement('div');
+    box.id = 'br-box';
+    Modal.show(box);
+    box.innerHTML = `
+      <div class="m-head">🔀 切换分支 <span class="x" id="br-x">✕</span></div>
+      <div class="m-body" id="br-list" style="max-height:320px;overflow:auto"></div>`;
+    document.getElementById('br-x').onclick = () => Modal.hide();
+    const list = document.getElementById('br-list');
+    if (!r.branches.length) {
+      list.innerHTML = '<div class="git-empty">暂无分支</div>';
+      return;
+    }
+    for (const b of r.branches) {
+      const row = document.createElement('div');
+      row.className = 'br-item' + (b === r.current ? ' current' : '');
+      row.textContent = (b === r.current ? '✓ ' : '') + b;
+      row.title = b === r.current ? '当前分支' : '点击切换到 ' + b;
+      row.onclick = async () => {
+        if (b === r.current) return;
+        const cr = await window.myIDE.git.checkout(root, b);
+        if (cr.ok) {
+          Modal.hide();
+          MI.toast('✅ 已切换到分支 ' + b, 'ok');
+          refresh();
+        } else {
+          MI.toast('切换失败: ' + cr.error, 'err');
+        }
+      };
+      list.appendChild(row);
+    }
   }
 
   // ---------- 提交弹窗（Ctrl+K）----------

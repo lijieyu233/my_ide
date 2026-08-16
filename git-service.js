@@ -123,6 +123,29 @@ async function commit(dir, { message, files, amend = false }) {
   }
 }
 
+// ---------- 分支 ----------
+async function branches(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', branches: [], current: '' };
+  try {
+    const list = await git.listBranches({ fs, dir: root });
+    const current = (await git.currentBranch({ fs, dir: root, fullname: false })) || '';
+    return { isRepo: true, branches: list.sort(), current };
+  } catch (e) {
+    return { isRepo: true, error: String(e.message || e), branches: [], current: '' };
+  }
+}
+async function checkout(dir, ref) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    await git.checkout({ fs, dir: root, ref });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------- 用户配置（提交作者）----------
 async function getUserConfig(dir) {
   const { yes, root } = await isRepo(dir);
@@ -333,4 +356,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, commit, initRepo, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+module.exports = { findRoot, isRepo, status, log, commit, initRepo, branches, checkout, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

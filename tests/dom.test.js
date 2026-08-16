@@ -45,6 +45,7 @@ const FAKE_GIT = {
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
 let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
+calls.checkout = [];
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
 function makeDom() {
@@ -94,6 +95,8 @@ function makeDom() {
       diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] }] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
+      branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
+      checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
     },
@@ -799,6 +802,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('关闭全部')));
     await tick();
     assert_(g(dom, 'Viewer.openTabs.length') === 0, '关闭全部后清空');
+  });
+
+  await okAsync('分支切换：弹窗列出 + 点击切换', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    const branchBtn = $(dom, '#git-branch-btn');
+    assert_(branchBtn, '分支按钮存在');
+    click(branchBtn);
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '分支弹窗打开');
+    const items = $allIn($(dom, '#br-list'), '.br-item');
+    assert_(items.length === 2, '列出 2 个分支, got ' + items.length);
+    assert_($(dom, '.br-item.current').textContent.includes('main'), '当前分支标记');
+    // 点击 dev 切换
+    click($allIn($(dom, '#br-list'), '.br-item').find((x) => x.textContent.includes('dev')));
+    await tick(); await tick();
+    assert_(calls.checkout.length === 1 && calls.checkout[0] === 'dev', 'checkout(dev) 被调用');
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {
