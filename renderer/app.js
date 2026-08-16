@@ -115,6 +115,7 @@ const App = (() => {
     if (sbState.lines) parts.push(sbState.lines + ' 行');
     if (sbState.pos) parts.push(sbState.pos);
     if (sbState.encoding) parts.push('[' + sbState.encoding + ']');
+    if (sbState.eol) parts.push('(' + sbState.eol + ')');
     el.textContent = parts.join('    ');
   }
 
@@ -184,7 +185,7 @@ const App = (() => {
     Tree.setRoot(p);
     GitPanel.rootDir = p;
     QuickOpen.invalidate();
-    await GitPanel.refresh();
+    GitPanel.refresh(); // 后台刷新，不阻塞首屏
     addProject(p);
     renderProjectBar();
     Session.restore();

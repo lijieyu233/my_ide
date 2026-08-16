@@ -32,6 +32,7 @@ const FAKE_FS = {
   ['C:/proj2/other.md']: { type: 'file', content: '# 项目二文档\n' },
   ['C:/proj/gbk-old.txt']: { type: 'file', content: '中文老文件内容', encoding: 'gbk' },
   ['C:/proj/manual.pdf']: { type: 'file', content: '' },
+  ['C:/proj/crlf-file.txt']: { type: 'file', content: 'line1\r\nline2\r\n' },
 };
 const FAKE_GIT = {
   changed: [
@@ -1212,6 +1213,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     type('Backspace');
     await tick();
     assert_(ta.value === '', '退格删除配对: ' + JSON.stringify(ta.value));
+  });
+
+  await okAsync('换行符显示：CRLF 文件状态栏标记，LF 不显示', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/crlf-file.txt")');
+    await tick(); await tick();
+    assert_($(dom, '#sb-info').textContent.includes('(CRLF)'), 'CRLF 标记: ' + $(dom, '#sb-info').textContent);
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    assert_(!$(dom, '#sb-info').textContent.includes('CRLF'), 'LF 文件无标记');
   });
 
   await okAsync('toast 提示正常', async () => {

@@ -57,6 +57,7 @@ const Viewer = (() => {
     else {
       tab.content = r.content;
       tab.encoding = r.encoding || 'utf8';
+      tab.eol = r.content && r.content.includes('\r\n') ? 'CRLF' : null;
       tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
     }
     renderView();
@@ -244,6 +245,7 @@ const Viewer = (() => {
       file: tab.path,
       lines: tab.content ? tab.content.split('\n').length : 0,
       encoding: tab.encoding && tab.encoding !== 'utf8' ? tab.encoding.toUpperCase() : null,
+      eol: tab.eol,
     });
     // 刷新大纲（md 文件）
     if (window.App) App.refreshOutline(tab);
