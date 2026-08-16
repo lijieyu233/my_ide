@@ -452,6 +452,8 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
   background: var(--bg-panel); border-top: 1px solid var(--border);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
+#sb-info { cursor: pointer; }
+#sb-info:hover { color: var(--text-bright); }
 #sb-branch { cursor: default; padding: 0 4px; }
 #sb-branch.clickable { cursor: pointer; }
 #sb-branch.clickable:hover { color: var(--accent); }

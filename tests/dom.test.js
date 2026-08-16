@@ -1384,6 +1384,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('状态栏路径点击复制', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const before = calls.copy.length;
+    click($(dom, '#sb-info'));
+    await tick();
+    assert_(calls.copy.length === before + 1, '复制触发');
+    assert_(calls.copy[calls.copy.length - 1] === P + '/notes.txt', '复制的是当前文件路径: ' + calls.copy[calls.copy.length - 1]);
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

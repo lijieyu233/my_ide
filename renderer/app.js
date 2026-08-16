@@ -261,6 +261,10 @@ const App = (() => {
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
+    // 状态栏文件路径点击复制（高频操作多入口）
+    document.getElementById('sb-info').onclick = () => {
+      if (sbState.file) { MI.copyText(sbState.file); MI.toast('📋 已复制完整路径', 'ok'); }
+    };
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
