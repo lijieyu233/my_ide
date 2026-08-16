@@ -617,6 +617,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('文件复制粘贴：Ctrl+C / Ctrl+V + 重名改名', async () => {
+
     // 清除可能残留的输入框焦点（jsdom 的 blur() 无效，改用 body.focus()）
     dom.window.document.body.focus();
     await tick();
@@ -636,9 +637,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'v', { ctrl: true });
     await tick(); await tick();
     assert_(FAKE_FS[P + '/src/README (1).md'], '重名自动改名');
-    // 选中文件时粘贴 → 粘贴到其所在目录（先展开 src）
-    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src'));
-    await tick(); await tick();
+    // 选中文件时粘贴 → 粘贴到其所在目录（src 展开状态在刷新后保持，直接点子文件）
     click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md'));
     await tick();
     key(dom, 'v', { ctrl: true });
@@ -866,6 +865,34 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     const order2 = g(dom, 'Viewer.openTabs.map(t => t.path.split("/").pop())');
     assert_(JSON.stringify(order2) === JSON.stringify(['notes.txt', 'README.md', 'data.csv']), '未移动顺序不变: ' + JSON.stringify(order2));
+  });
+
+  await okAsync('文件树虚拟滚动：大目录只渲染可视窗口', async () => {
+    // 构造 350 个文件的目录
+    const big = 'C:/big';
+    FAKE_FS[big] = { type: 'dir', children: [] };
+    for (let i = 0; i < 350; i++) {
+      const fp = big + '/f' + i + '.txt';
+      FAKE_FS[fp] = { type: 'file', content: 'x' };
+      FAKE_FS[big].children.push(fp);
+    }
+    await g(dom, 'App.openProject("C:/big")');
+    await tick(); await tick();
+    const rows = $allIn($(dom, '#tree'), '.tree-row');
+    assert_(rows.length > 0 && rows.length < 350, '虚拟模式未全量渲染: ' + rows.length);
+    const spacer = $(dom, '#tree > div');
+    assert_(spacer && spacer.style.height === (351 * 22) + 'px', 'spacer 高度正确: ' + (spacer && spacer.style.height));
+    // 滚动后重绘窗口
+    $(dom, '#tree').scrollTop = 3000;
+    $(dom, '#tree').dispatchEvent(new dom.window.Event('scroll'));
+    await tick();
+    const rows2 = $allIn($(dom, '#tree'), '.tree-row');
+    assert_(rows2.length > 0 && rows2.length < 350, '滚动后仍窗口渲染: ' + rows2.length);
+    const firstTitle = rows2[0].querySelector('.nm').title;
+    assert_(firstTitle.includes('f'), '滚动后渲染新窗口内容: ' + firstTitle);
+    // 切回原项目
+    await g(dom, 'App.openProject("' + P + '")');
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {

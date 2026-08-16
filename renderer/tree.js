@@ -1,4 +1,4 @@
-// tree.js —— 文件树：懒加载、单击打开并复制全路径、右键菜单
+// tree.js —— 文件树：懒加载、扁平行模型 + 虚拟滚动（大目录不卡）、单击复制全路径、右键菜单
 const Tree = (() => {
   const el = document.getElementById('tree');
   let rootPath = null;
@@ -6,109 +6,152 @@ const Tree = (() => {
   let selectedPath = null;
   let selectedType = null;
   let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
+  const expanded = new Set();   // 展开的目录路径（根默认展开）
+  const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
+  const ROW_H = 22;
+  const VIRTUAL_THRESHOLD = 300;
 
   function setRoot(p) {
     rootPath = p;
     selectedPath = null;
+    selectedType = null;
+    expanded.clear();
+    expanded.add(p); // 根默认展开
     render();
   }
 
-  async function render() {
-    el.innerHTML = '';
-    if (!rootPath) return;
-    const root = document.createElement('div');
-    root.className = 'tree-node tree-root';
-    const row = makeRow({ name: rootPath.split(/[\\/]/).pop() || rootPath, path: rootPath, type: 'dir', root: true });
-    root.appendChild(row);
-    el.appendChild(root);
-    toggleDir(row, { name: row.querySelector('.nm').textContent, path: rootPath, type: 'dir' }); // 直接展开，不触发行选中
+  async function loadDir(p) {
+    if (!nodeCache[p]) nodeCache[p] = await window.myIDE.fs.readDir(p, showHidden);
+    return nodeCache[p];
   }
 
-  function makeRow(item, depth) {
-    const row = document.createElement('div');
-    row.className = 'tree-row' + (item.path === selectedPath ? ' selected' : '');
-    row.style.paddingLeft = (depth * 14 + 4) + 'px';
+  // 文件操作成功后失效所有目录缓存（重建时重新懒加载）
+  function invalidateAll() {
+    for (const k in nodeCache) delete nodeCache[k];
+  }
+
+  // 可见行（扁平）：根行 + DFS 展开目录
+  function buildRows() {
+    const rows = [];
+    if (!rootPath) return rows;
+    rows.push({ item: { name: rootPath.split(/[\\/]/).pop() || rootPath, path: rootPath, type: 'dir' }, depth: 0 });
+    const walk = (dirPath, depth) => {
+      const list = nodeCache[dirPath] || [];
+      for (const it of list) {
+        rows.push({ item: it, depth });
+        if (it.type === 'dir' && expanded.has(it.path)) walk(it.path, depth + 1);
+      }
+    };
+    walk(rootPath, 1);
+    return rows;
+  }
+
+  // 渲染：小树全量，大树虚拟窗口。
+  // 串行化：并发 render（展开/粘贴连续触发）按序执行，防止旧数据覆盖新数据
+  let renderChain = Promise.resolve();
+  function render() {
+    renderChain = renderChain.then(doRender).catch(() => {});
+    return renderChain;
+  }
+  async function doRender() {
+    el.innerHTML = '';
+    el.onscroll = null;
+    if (!rootPath) return;
+    await loadDir(rootPath);
+    // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
+    const expandedDirs = [...expanded];
+    for (const d of expandedDirs) await loadDir(d);
+    const rows = buildRows();
+    if (rows.length <= VIRTUAL_THRESHOLD) {
+      for (const r of rows) el.appendChild(makeRowEl(r));
+      return;
+    }
+    const spacer = document.createElement('div');
+    spacer.style.position = 'relative';
+    spacer.style.height = rows.length * ROW_H + 'px';
+    el.appendChild(spacer);
+    const paint = () => {
+      spacer.querySelectorAll('.tree-row').forEach((x) => x.remove());
+      const top = el.scrollTop || 0;
+      const viewH = el.clientHeight || ROW_H * 20;
+      const start = Math.max(0, Math.floor(top / ROW_H) - 5);
+      const end = Math.min(rows.length, start + Math.ceil(viewH / ROW_H) + 10);
+      for (let i = start; i < end; i++) {
+        const rowEl = makeRowEl(rows[i]);
+        rowEl.style.position = 'absolute';
+        rowEl.style.top = i * ROW_H + 'px';
+        rowEl.style.left = '0';
+        rowEl.style.right = '0';
+        spacer.appendChild(rowEl);
+      }
+    };
+    el.onscroll = paint;
+    paint();
+  }
+
+  function makeRowEl(row) {
+    const item = row.item;
+    const depth = row.depth;
+    const rowEl = document.createElement('div');
+    rowEl.className = 'tree-row' + (item.path === selectedPath ? ' selected' : '');
+    rowEl.style.paddingLeft = (depth * 14 + 4) + 'px';
 
     const tw = document.createElement('span');
     tw.className = 'tw';
-    tw.textContent = item.type === 'dir' ? '▶' : '';
-    row.appendChild(tw);
+    tw.textContent = item.type === 'dir' ? (expanded.has(item.path) ? '▼' : '▶') : '';
+    rowEl.appendChild(tw);
 
     const ic = document.createElement('span');
     ic.className = 'ic';
     ic.textContent = item.type === 'dir' ? '📁' : fileIcon(item.name);
-    row.appendChild(ic);
+    rowEl.appendChild(ic);
 
     const nm = document.createElement('span');
     nm.className = 'nm';
     nm.textContent = item.name;
     nm.title = item.path;
-    row.appendChild(nm);
+    rowEl.appendChild(nm);
 
     const cp = document.createElement('span');
     cp.className = 'path-copy';
     cp.textContent = '复制路径';
     cp.title = '复制完整路径';
-    row.appendChild(cp);
+    rowEl.appendChild(cp);
 
-    row.addEventListener('click', async (e) => {
+    rowEl.addEventListener('click', async (e) => {
       if (e.target === cp) { await copyPath(item.path); return; }
       select(item.path, item.type);
-      if (item.type === 'dir') { toggleDir(row, item); return; }
+      if (item.type === 'dir') { toggleDir(item); return; }
       // ★ 核心需求：单击文件 = 打开 + 复制完整路径
       await copyPath(item.path);
       Viewer.openFile(item.path);
-      Tree.select(item.path);
+      select(item.path, item.type);
     });
 
-    row.addEventListener('contextmenu', (e) => {
+    rowEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       select(item.path, item.type);
       showCtxMenu(e.clientX, e.clientY, item);
     });
 
-    return row;
+    return rowEl;
   }
 
-  async function toggleDir(row, item) {
-    const tw = row.querySelector('.tw');
-    const kids = row.nextElementSibling;
-    if (kids && kids.classList.contains('tree-children')) {
-      kids.remove();
-      tw.textContent = '▶';
-      return;
+  // 展开/收起目录（懒加载 + 重建行列表）
+  async function toggleDir(item) {
+    if (expanded.has(item.path)) {
+      expanded.delete(item.path);
+    } else {
+      await loadDir(item.path);
+      expanded.add(item.path);
     }
-    tw.textContent = '▼';
-    const box = document.createElement('div');
-    box.className = 'tree-children';
-    const items = await window.myIDE.fs.readDir(item.path, showHidden);
-    for (const it of items) {
-      const node = document.createElement('div');
-      node.className = 'tree-node';
-      const r = makeRow(it, depthOf(row));
-      node.appendChild(r);
-      box.appendChild(node);
-    }
-    row.after(box);
-  }
-
-  function depthOf(row) {
-    let d = 0;
-    let p = row.parentElement;
-    while (p) {
-      if (p.classList.contains('tree-children')) d++;
-      p = p.parentElement;
-    }
-    return d;
+    render();
   }
 
   function select(p, type) {
     selectedPath = p;
     selectedType = type || null;
-    el.querySelectorAll('.tree-row').forEach((r) => {
-      r.classList.toggle('selected', r.querySelector('.nm').title === p);
-    });
   }
 
   async function copyPath(p) {
@@ -149,6 +192,7 @@ const Tree = (() => {
       else MI.toast('粘贴失败: ' + (r.error || s), 'err');
     }
     if (ok) {
+      invalidateAll();
       render();
       App.refreshGit();
       MI.toast('✅ 已粘贴 ' + ok + ' 个文件', 'ok');
@@ -170,7 +214,7 @@ const Tree = (() => {
     mk('📋 复制文件', () => copySelected());
     mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
     mk('📂 在文件夹中显示', () => window.myIDE.shell.showInFolder(item.path));
-    if (item.type === 'file') mk('✏️ 打开', () => { select(item.path); Viewer.openFile(item.path); });
+    if (item.type === 'file') mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
     mk('🔤 重命名', () => renameItem(item));
     mk('🗑 删除', () => removeItem(item), true);
     menu.classList.remove('hidden');
@@ -186,7 +230,7 @@ const Tree = (() => {
     const name = await Modal.prompt('重命名', '新名称：', item.name);
     if (!name || name === item.name) return;
     const r = await window.myIDE.fs.rename(item.path, name);
-    if (r.ok) { MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit(); }
+    if (r.ok) { invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit(); }
     else MI.toast('重命名失败: ' + r.error, 'err');
   }
 
@@ -194,7 +238,7 @@ const Tree = (() => {
     const yes = await Modal.confirm('删除', `确定删除「${item.name}」吗？此操作不可恢复。`);
     if (!yes) return;
     const r = await window.myIDE.fs.remove(item.path);
-    if (r.ok) { MI.toast('已删除 ' + item.name, 'ok'); render(); App.refreshGit(); }
+    if (r.ok) { invalidateAll(); MI.toast('已删除 ' + item.name, 'ok'); render(); App.refreshGit(); }
     else MI.toast('删除失败: ' + r.error, 'err');
   }
 
