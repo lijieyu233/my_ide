@@ -77,7 +77,7 @@ renderer/             渲染进程（原生 JS，无构建）
   tree.js / viewer.js / outline.js / git-panel.js / quickopen.js /
   search.js / settings.js / help.js / session.js / shortcuts.js / theme.js / app.js
 plugins/              用户插件目录（csv.js 是示例，见 plugins/README.md）
-docs/                 开发文档（27 份，每项功能一文档）
+docs/                 开发文档（42 份，每项功能一文档）
 scripts/              bench（性能基准）/ make-demo / git-commit / vendor
 tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 ```
@@ -85,7 +85,7 @@ tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 ## 🧪 测试与基准
 
 ```bash
-npm test       # 93+ 项：语法检查 + git 逻辑 + 渲染层 DOM 测试
+npm test       # 96 项：语法检查 + git 逻辑 + 渲染层 DOM 测试
 npm run bench  # 性能基准（5000 文件 git 扫描 < 1s 实测达成）
 ```
 
