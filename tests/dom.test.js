@@ -765,6 +765,42 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('标签页增强：中键关闭 / 关闭其他 / 关闭全部', async () => {
+    // 清空历史标签（dirty 先保存）
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
+    await tick();
+    // 打开 3 个标签
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await g(dom, 'Viewer.openFile("' + P + '/data.csv")');
+    await tick(); await tick();
+    assert_(g(dom, 'Viewer.openTabs.length') === 3, '3 个标签');
+    // 中键关闭第一个
+    const tabs0 = $allIn($(dom, '#tabbar'), '.tab');
+    tabs0[0].dispatchEvent(new dom.window.MouseEvent('auxclick', { bubbles: true, button: 1 }));
+    await tick();
+    assert_(g(dom, 'Viewer.openTabs.length') === 2, '中键关闭后剩 2 个: ' + g(dom, 'Viewer.openTabs.length'));
+    // 右键「关闭其他」
+    const tabs1 = $allIn($(dom, '#tabbar'), '.tab');
+    tabs1[0].dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menuItems = $allIn($(dom, '#ctx-menu'), '.ctx-item').map((x) => x.textContent);
+    assert_(menuItems.includes('🗂 关闭其他') && menuItems.includes('🗑 关闭全部'), '菜单含关闭其他/全部');
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('关闭其他')));
+    await tick();
+    assert_(g(dom, 'Viewer.openTabs.length') === 1, '关闭其他后剩 1 个');
+    // 关闭全部
+    const tabs2 = $allIn($(dom, '#tabbar'), '.tab');
+    tabs2[0].dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('关闭全部')));
+    await tick();
+    assert_(g(dom, 'Viewer.openTabs.length') === 0, '关闭全部后清空');
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

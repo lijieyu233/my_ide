@@ -91,6 +91,8 @@ const Viewer = (() => {
       x.onclick = (e) => { e.stopPropagation(); closeTab(i); };
       el.appendChild(x);
       el.onclick = () => activate(i);
+      // 中键关闭（浏览器/PyCharm 习惯）
+      el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } };
       el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, i); };
       el.title = t.path;
       tabbar.appendChild(el);
@@ -111,6 +113,12 @@ const Viewer = (() => {
     };
     mk('📋 复制完整路径', () => { MI.copyText(tabs[i].path); MI.toast('已复制路径', 'ok'); });
     mk('✕ 关闭', () => closeTab(i));
+    mk('🗂 关闭其他', () => {
+      for (let j = tabs.length - 1; j >= 0; j--) { if (j !== i) closeTab(j); } // 倒序避免索引错乱
+    });
+    mk('🗑 关闭全部', () => {
+      for (let j = tabs.length - 1; j >= 0; j--) closeTab(j);
+    });
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 80) + 'px';
