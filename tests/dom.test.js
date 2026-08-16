@@ -1164,6 +1164,25 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.tab.active .tname'), '最近项打开文件');
   });
 
+  await okAsync('diff 内容复制：旧版/新版按钮', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    await tick(); await tick();
+    const before = calls.copy.length;
+    click($(dom, '#df-copy-old'));
+    await tick();
+    assert_(calls.copy.length === before + 1, '旧版复制触发');
+    assert_(calls.copy[calls.copy.length - 1] === 'old line\n', '旧版内容正确');
+    click($(dom, '#df-copy-new'));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === 'new line\n', '新版内容正确');
+    click($(dom, '#df-back'));
+    await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

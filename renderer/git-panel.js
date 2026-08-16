@@ -438,7 +438,13 @@ const GitPanel = (() => {
     head.className = 'diff-head';
     head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
       <span class="df-path">${esc(r.file)}</span>
-      <span class="df-meta">${esc(label || '')} · +${countAdd(r.hunks)} / -${countDel(r.hunks)}</span>`;
+      <span class="df-meta">${esc(label || '')} · +${countAdd(r.hunks)} / -${countDel(r.hunks)}</span>
+      <span class="df-copy">
+        <button class="vt-btn" id="df-copy-old" title="复制旧版内容">📋 旧版</button>
+        <button class="vt-btn" id="df-copy-new" title="复制新版内容">📋 新版</button>
+      </span>`;
+    head.querySelector('#df-copy-old').onclick = () => { MI.copyText(r.oldText || ''); MI.toast('已复制旧版内容', 'ok'); };
+    head.querySelector('#df-copy-new').onclick = () => { MI.copyText(r.newText || ''); MI.toast('已复制新版内容', 'ok'); };
     head.appendChild(makeHunkNav());
     head.querySelector('#df-back').onclick = () => {
       const t = Viewer.activeTab;
