@@ -34,6 +34,9 @@ contextBridge.exposeInMainWorld('myIDE', {
     getUserConfig: (d) => ipcRenderer.invoke('git:getUserConfig', d),
     setUserConfig: (d, cfg) => ipcRenderer.invoke('git:setUserConfig', d, cfg),
   },
-  plugins: { loadAll: () => ipcRenderer.invoke('plugins:loadAll') },
+  plugins: {
+    loadAll: () => ipcRenderer.invoke('plugins:loadAll'),
+    onChanged: (cb) => ipcRenderer.on('plugins:changed', () => cb()),
+  },
   appInfo: () => ipcRenderer.invoke('app:info'),
 });

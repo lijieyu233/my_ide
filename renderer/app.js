@@ -203,7 +203,10 @@ const App = (() => {
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
   // ---------- 初始化 ----------
+  let inited = false;
   function init() {
+    if (inited) return; // 幂等：DOMContentLoaded 与手动调用只生效一次
+    inited = true;
     document.getElementById('btn-open').onclick = openFolder;
     document.getElementById('btn-open2').onclick = openFolder;
     document.getElementById('btn-refresh').onclick = refreshAll;
@@ -226,6 +229,10 @@ const App = (() => {
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
+    // 插件热重载：plugins/ 目录变更自动重载
+    window.myIDE.plugins.onChanged(() => {
+      MI.loadPlugins().then(() => MI.toast('🔌 插件已热重载', 'ok'));
+    });
     // 版本号（防跑旧版本）
     window.myIDE.appInfo().then((info) => {
       const el = document.getElementById('sb-version');

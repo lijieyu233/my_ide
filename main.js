@@ -236,7 +236,16 @@ ipcMain.handle('app:info', () => {
   return { version, commit };
 });
 
-// ---------- IPC：插件 ----------
+// ---------- IPC：插件（含热重载）----------
+let pluginWatcher = null;
+function watchPlugins() {
+  try {
+    if (pluginWatcher) pluginWatcher.close();
+    pluginWatcher = fs.watch(path.join(__dirname, 'plugins'), () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('plugins:changed');
+    });
+  } catch {}
+}
 ipcMain.handle('plugins:loadAll', () => {
   const dir = path.join(__dirname, 'plugins');
   const out = [];
@@ -254,6 +263,7 @@ ipcMain.handle('plugins:loadAll', () => {
 app.whenReady().then(() => {
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
   if (OPEN_ARG) { const s = loadState(); s.lastFolder = OPEN_ARG; saveState(s); }
+  watchPlugins();
   const win = createWindow();
 
   if (SMOKE) {

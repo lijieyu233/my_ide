@@ -82,9 +82,12 @@ MI.registerRenderer(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'], 
   return wrap;
 });
 
-// ---------- 加载用户插件 ----------
+// ---------- 加载用户插件（支持热重载去重）----------
+let builtinCount = 0; // 内置渲染器数量（用户插件重载时截断用）
 MI.loadPlugins = async function () {
   try {
+    if (!builtinCount) builtinCount = MI.renderers.length; // 首次记录内置数量
+    else MI.renderers.length = builtinCount; // 重载：丢弃旧的用户插件注册
     const list = await window.myIDE.plugins.loadAll();
     for (const p of list) {
       try {

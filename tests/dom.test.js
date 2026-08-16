@@ -46,6 +46,7 @@ const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffComm
 let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
 calls.checkout = [];
+let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
 function makeDom() {
@@ -102,6 +103,7 @@ function makeDom() {
     },
     appInfo: async () => ({ version: '0.1.0', commit: 'test123' }),
     plugins: {
+      onChanged: (cb) => { fakePluginCb = cb; },
       loadAll: async () => [
         { name: 'csv', code: 'api.registerRenderer(["csv"], ({ content }) => {\n  const t = document.createElement("table");\n  t.id = "csv-table";\n  (content || "").split("\\n").filter((l) => l.trim() !== "").forEach((l) => { const tr = document.createElement("tr"); l.split(",").forEach((c) => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); }); t.appendChild(tr); });\n  return t;\n});' },
       ],
@@ -822,6 +824,19 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
     await g(dom, 'App.switchTool("project")');
     await tick();
+  });
+
+  await okAsync('插件热重载：变更通知重载且不重复注册', async () => {
+    assert_(fakePluginCb, 'onChanged 已订阅');
+    const before = g(dom, 'MI.renderers.length');
+    fakePluginCb(); // 模拟 plugins/ 目录文件变更
+    await tick(); await tick();
+    const after = g(dom, 'MI.renderers.length');
+    assert_(after === before, '重载后渲染器数量不变（无重复）: ' + before + ' -> ' + after);
+    // csv 插件功能仍可用
+    await g(dom, 'Viewer.openFile("' + P + '/data.csv")');
+    await tick(); await tick();
+    assert_($(dom, '#csv-table'), '热重载后 csv 渲染仍正常');
   });
 
   await okAsync('toast 提示正常', async () => {
