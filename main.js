@@ -252,7 +252,8 @@ ipcMain.handle('fs:copy', (_e, src, destDir) => {
 // ---------- IPC：Git ----------
 ipcMain.handle('git:init', (_e, dir) => G.initRepo(dir));
 ipcMain.handle('git:status', (_e, dir) => G.status(dir));
-ipcMain.handle('git:log', (_e, dir, depth) => G.log(dir, depth));
+ipcMain.handle('git:log', (_e, dir, depth, ref) => G.log(dir, depth, ref));
+ipcMain.handle('git:logAll', (_e, dir, depth) => G.logAll(dir, depth));
 ipcMain.handle('git:commit', (_e, dir, opts) => G.commit(dir, opts));
 ipcMain.handle('git:diffWorkdir', (_e, dir, file) => G.diffWorkdir(dir, file));
 ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => G.diffCommit(dir, oid, file));

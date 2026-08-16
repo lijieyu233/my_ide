@@ -4,12 +4,15 @@ const GitPanel = (() => {
   const branchEl = document.getElementById('git-branch');
   let root = null;
   let filterQ = ''; // 提交过滤词
+  let logRef = 'HEAD'; // 日志分支视图（HEAD / 分支名 / __all__）
+  let branchList = []; // 本地分支列表
   let state = null; // {isRepo, branch, changed, commits, unborn}
 
   // ---------- 刷新 ----------
   async function refresh() {
     if (!root) return;
-    const [st, lg] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root)]);
+    const [st, lg, br] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root, 100, logRef), window.myIDE.git.branches(root)]);
+    branchList = br && br.branches ? br.branches : [];
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }), commits: lg.commits || [], unborn: lg.unborn };
     if (lg.isRepo) state.root = lg.root;
     render();
@@ -91,13 +94,40 @@ const GitPanel = (() => {
       d.textContent = '还没有提交，Ctrl+K 提交第一个吧';
       body.appendChild(d);
     } else {
+      const barRow = document.createElement('div');
+      barRow.className = 'git-logbar';
+      const refSel = document.createElement('select');
+      refSel.id = 'git-ref';
+      refSel.title = '日志视图：当前分支 / 指定分支 / 所有分支';
+      const optAll = document.createElement('option');
+      optAll.value = '__all__';
+      optAll.textContent = '所有分支';
+      refSel.appendChild(optAll);
+      const optHead = document.createElement('option');
+      optHead.value = 'HEAD';
+      optHead.textContent = '当前分支 (' + state.branch + ')';
+      refSel.appendChild(optHead);
+      for (const b of branchList) {
+        if (b === state.branch) continue;
+        const opt = document.createElement('option');
+        opt.value = b;
+        opt.textContent = b;
+        refSel.appendChild(opt);
+      }
+      refSel.value = logRef === '__all__' || branchList.includes(logRef) ? logRef : 'HEAD';
+      refSel.addEventListener('change', () => {
+        logRef = refSel.value;
+        reloadLog();
+      });
+      barRow.appendChild(refSel);
       const filter = document.createElement('input');
       filter.id = 'git-filter';
       filter.type = 'text';
       filter.placeholder = '🔍 过滤提交…（消息/作者/哈希）';
       filter.value = filterQ;
       filter.addEventListener('input', () => { filterQ = filter.value; renderHistory(); });
-      body.appendChild(filter);
+      barRow.appendChild(filter);
+      body.appendChild(barRow);
       const hist = document.createElement('div');
       hist.id = 'git-history';
       body.appendChild(hist);
@@ -124,6 +154,17 @@ const GitPanel = (() => {
       rows.push({ chars, isMerge: c.parents.length > 1 });
     }
     return rows;
+  }
+
+  // 切换日志分支视图
+  async function reloadLog() {
+    const lg = logRef === '__all__'
+      ? await window.myIDE.git.logAll(root, 50)
+      : await window.myIDE.git.log(root, 100, logRef);
+    if (lg.commits) {
+      state.commits = lg.commits;
+      renderHistory();
+    }
   }
 
   function renderHistory(container) {
@@ -154,7 +195,10 @@ const GitPanel = (() => {
       el.appendChild(line);
       const main = document.createElement('div');
       main.className = 'gc-main';
-      main.innerHTML = `<div class="cmsg">${esc(c.message)}${i === 0 && !q ? '<span class="badge head">HEAD</span>' : ''}</div>
+      const tipBadge = i === 0 && !q
+        ? (logRef === 'HEAD' || logRef === '__all__' ? '<span class="badge head">HEAD</span>' : '<span class="badge head">' + esc(logRef) + '</span>')
+        : '';
+      main.innerHTML = `<div class="cmsg">${esc(c.message)}${tipBadge}</div>
         <div class="cmeta"><span class="cid">${c.short}</span><span>${fmtDate(c.timestamp)}</span><span>${esc(c.author)}</span></div>`;
       el.appendChild(main);
       el.title = c.fullMessage + '\n' + c.oid + '\n点击查看该提交的修改';

@@ -48,6 +48,8 @@ const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffComm
 let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
 calls.checkout = [];
+calls.logRef = null;
+calls.logAll = false;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 
@@ -93,7 +95,8 @@ function makeDom() {
     git: {
       init: async () => ({ ok: true }),
       status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed }),
-      log: async () => ({ isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits }),
+      log: async (d, depth, ref) => { calls.logRef = ref || 'HEAD'; return { isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits, ref: ref || 'HEAD' }; },
+      logAll: async () => { calls.logAll = true; return { isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits, ref: '__all__' }; },
       commit: async (d, o) => { calls.commit.push(o); return { ok: true, oid: 'cccccccccccccccccccccccccccccccccccccccc' }; },
       diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [
         { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
@@ -1005,6 +1008,29 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 返回
     click($(dom, '#df-back'));
     await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Git 日志分支视图：下拉 + 切换 ref', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    const sel = $(dom, '#git-ref');
+    assert_(sel, '分支下拉存在');
+    const opts = $allIn(sel, 'option').map((o) => o.value);
+    assert_(opts.includes('__all__') && opts.includes('HEAD') && opts.includes('dev'), '选项完整: ' + JSON.stringify(opts));
+    // 选「所有分支」
+    sel.value = '__all__';
+    sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    assert_(calls.logAll === true, 'logAll 被调用');
+    assert_($allIn($(dom, '#git-history'), '.git-commit').length === 3, '列表刷新');
+    // 选具体分支 dev
+    const sel2 = $(dom, '#git-ref');
+    sel2.value = 'dev';
+    sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    assert_(calls.logRef === 'dev', 'log 收到 ref=dev, got: ' + calls.logRef);
     await g(dom, 'App.switchTool("project")');
     await tick();
   });

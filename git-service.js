@@ -69,11 +69,11 @@ async function status(dir) {
 }
 
 // ---------- 日志 ----------
-async function log(dir, depth = 100) {
+async function log(dir, depth = 100, ref = 'HEAD') {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库', commits: [] };
   try {
-    const commits = await git.log({ fs, dir: root, depth, ref: 'HEAD' });
+    const commits = await git.log({ fs, dir: root, depth, ref });
     const items = commits.map((c) => ({
       oid: c.oid,
       short: c.oid.slice(0, 7),
@@ -84,7 +84,7 @@ async function log(dir, depth = 100) {
       timestamp: c.commit.author.timestamp * 1000,
       parents: c.commit.parent,
     }));
-    return { isRepo: true, root, branch: await currentBranch(root), commits: items };
+    return { isRepo: true, root, branch: await currentBranch(root), commits: items, ref };
   } catch (e) {
     if (String(e.message || e).includes('HEAD')) {
       return { isRepo: true, root, branch: await currentBranch(root), commits: [], unborn: true };
@@ -120,6 +120,43 @@ async function commit(dir, { message, files, amend = false }) {
     return { ok: true, oid: r };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------- 日志：所有分支 ----------
+async function logAll(dir, depth = 50) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', commits: [] };
+  try {
+    const branches = await git.listBranches({ fs, dir: root });
+    const all = [];
+    for (const b of branches) {
+      try {
+        const cs = await git.log({ fs, dir: root, depth, ref: b });
+        all.push(...cs);
+      } catch {}
+    }
+    const seen = new Set();
+    const merged = all
+      .sort((a, b) => b.commit.author.timestamp - a.commit.author.timestamp)
+      .filter((c) => {
+        if (seen.has(c.oid)) return false;
+        seen.add(c.oid);
+        return true;
+      });
+    const items = merged.map((c) => ({
+      oid: c.oid,
+      short: c.oid.slice(0, 7),
+      message: (c.commit.message || '').split('\n')[0],
+      fullMessage: c.commit.message || '',
+      author: c.commit.author.name,
+      email: c.commit.author.email,
+      timestamp: c.commit.author.timestamp * 1000,
+      parents: c.commit.parent,
+    }));
+    return { isRepo: true, root, branch: await currentBranch(root), commits: items, ref: '__all__' };
+  } catch (e) {
+    return { isRepo: true, root, error: String(e.message || e), commits: [] };
   }
 }
 
@@ -356,4 +393,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, commit, initRepo, branches, checkout, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

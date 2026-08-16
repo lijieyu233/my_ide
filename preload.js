@@ -24,7 +24,8 @@ contextBridge.exposeInMainWorld('myIDE', {
   git: {
     init: (d) => ipcRenderer.invoke('git:init', d),
     status: (d) => ipcRenderer.invoke('git:status', d),
-    log: (d, depth) => ipcRenderer.invoke('git:log', d, depth),
+    log: (d, depth, ref) => ipcRenderer.invoke('git:log', d, depth, ref),
+    logAll: (d, depth) => ipcRenderer.invoke('git:logAll', d, depth),
     commit: (d, o) => ipcRenderer.invoke('git:commit', d, o),
     diffWorkdir: (d, f) => ipcRenderer.invoke('git:diffWorkdir', d, f),
     diffCommit: (d, oid, f) => ipcRenderer.invoke('git:diffCommit', d, oid, f),
