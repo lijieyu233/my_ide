@@ -426,7 +426,6 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(target);
     await tick(); await tick();
     const sep = $(dom, '.diff-hunk-gap');
-    if (!sep) { console.log('DEBUG: #viewer =', $(dom, '#viewer').innerHTML.slice(0, 300)); }
     assert_(sep, 'hunk 分隔行存在');
     assert_(sep.dataset.open === '1', '2 行 hunk 默认展开');
     click(sep);
