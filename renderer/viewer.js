@@ -307,6 +307,121 @@ const Viewer = (() => {
 
   function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
 
+  // ---------- 查找 / 替换（Ctrl+F / Ctrl+H）----------
+  let findState = null; // {ta, matches, idx}
+
+  function collectMatches(ta, q) {
+    const matches = [];
+    const text = ta.value;
+    let from = 0;
+    while (true) {
+      const i = text.indexOf(q, from);
+      if (i < 0) break;
+      matches.push([i, i + q.length]);
+      from = i + q.length;
+      if (matches.length > 10000) break;
+    }
+    return matches;
+  }
+
+  function closeFind() {
+    const bar = document.querySelector('.find-bar');
+    if (bar) bar.remove();
+    findState = null;
+  }
+
+  function openFind(showReplace) {
+    const tab = tabs[active];
+    if (!tab || !tab.ta) { MI.toast('请在编辑视图中查找', 'err'); return; }
+    const ta = tab.ta;
+    // 已有条：切换替换行显示
+    if (findState && findState.ta === ta) {
+      const rep = document.getElementById('find-replace-row');
+      if (rep) rep.style.display = showReplace ? '' : 'none';
+      document.getElementById('find-input').focus();
+      document.getElementById('find-input').select();
+      return;
+    }
+    const bar = document.createElement('div');
+    bar.className = 'find-bar';
+    bar.innerHTML = `<input id="find-input" type="text" placeholder="查找…" spellcheck="false">
+      <span class="find-count" id="find-count">0/0</span>
+      <button class="vt-btn" id="find-prev" title="上一个 (Shift+Enter)">⬆</button>
+      <button class="vt-btn" id="find-next" title="下一个 (Enter)">⬇</button>
+      <span id="find-replace-row" style="display:${showReplace ? '' : 'none'}">
+        <input id="find-replace-input" type="text" placeholder="替换为…" spellcheck="false">
+        <button class="vt-btn" id="find-rep-one" title="替换当前">替换</button>
+        <button class="vt-btn" id="find-rep-all" title="全部替换">全部</button>
+      </span>
+      <button class="vt-btn" id="find-close" title="关闭 (Esc)">✕</button>`;
+    const toolbar = viewer.querySelector('.viewer-toolbar');
+    if (toolbar) viewer.insertBefore(bar, toolbar.nextSibling);
+    findState = { ta, matches: [], idx: -1 };
+
+    const input = document.getElementById('find-input');
+    const countEl = document.getElementById('find-count');
+    const updateCount = () => {
+      countEl.textContent = findState.matches.length
+        ? (findState.idx + 1) + '/' + findState.matches.length
+        : '0/0';
+    };
+    const refresh = (keepIdx) => {
+      const q = input.value;
+      findState.matches = q ? collectMatches(ta, q) : [];
+      findState.idx = keepIdx != null
+        ? Math.min(keepIdx, findState.matches.length - 1)
+        : (findState.matches.length ? 0 : -1);
+      if (findState.idx >= 0) {
+        const [s, e] = findState.matches[findState.idx];
+        ta.selectionStart = s;
+        ta.selectionEnd = e;
+      }
+      updateCount();
+    };
+    const go = (dir) => {
+      if (!findState.matches.length) return;
+      const n = findState.matches.length;
+      findState.idx = (findState.idx + dir + n) % n;
+      const [s, e] = findState.matches[findState.idx];
+      ta.selectionStart = s;
+      ta.selectionEnd = e;
+      updateCount();
+    };
+    const replaceOne = () => {
+      const repInput = document.getElementById('find-replace-input');
+      const q = input.value;
+      if (!q || findState.idx < 0) return;
+      const [s, e] = findState.matches[findState.idx];
+      ta.setRangeText(repInput.value, s, e, 'select');
+      tab.content = ta.value;
+      refresh(findState.idx); // 重新收集，保持当前位置附近
+    };
+    const replaceAll = () => {
+      const repInput = document.getElementById('find-replace-input');
+      const q = input.value;
+      if (!q) return;
+      ta.value = ta.value.split(q).join(repInput.value);
+      tab.content = ta.value;
+      refresh(-1);
+    };
+    input.addEventListener('input', () => refresh());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeFind(); ta.focus(); }
+    });
+    document.getElementById('find-next').onclick = () => go(1);
+    document.getElementById('find-prev').onclick = () => go(-1);
+    document.getElementById('find-rep-one').onclick = replaceOne;
+    document.getElementById('find-rep-all').onclick = replaceAll;
+    document.getElementById('find-close').onclick = () => { closeFind(); ta.focus(); };
+    document.getElementById('find-replace-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); replaceOne(); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeFind(); ta.focus(); }
+    });
+    input.focus();
+    refresh();
+  }
+
   async function saveTab(i) {
     const tab = tabs[i];
     if (!tab || !tab.ta) return;
@@ -323,7 +438,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab,
+    openFile, closeTab, closeAll, activate, saveTab, openFind,
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },

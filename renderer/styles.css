@@ -418,6 +418,22 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .m-check input { accent-color: var(--accent); }
 .m-err { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
 
+/* ---------- 查找条 ---------- */
+.find-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; background: var(--bg-panel);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.find-bar input {
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 3px;
+  padding: 3px 8px; font-size: 12px; outline: none;
+}
+.find-bar input:focus { border-color: var(--accent); }
+.find-bar #find-input { width: 180px; }
+.find-bar #find-replace-input { width: 150px; }
+.find-count { font-size: 11px; color: var(--text-dim); min-width: 40px; text-align: center; }
+
 /* ---------- 状态栏 ---------- */
 #statusbar {
   height: 22px; flex-shrink: 0;

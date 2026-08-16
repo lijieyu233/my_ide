@@ -139,6 +139,8 @@ Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () 
 Shortcuts.register('theme', { desc: '切换主题', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
 Shortcuts.register('help', { desc: '帮助与快捷键速查', keys: ['f1'], run: () => Help.open() });
+Shortcuts.register('find', { desc: '编辑器查找', keys: ['ctrl+f'], run: () => Viewer.openFind(false) });
+Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
 Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
 

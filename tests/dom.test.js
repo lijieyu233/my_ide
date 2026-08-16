@@ -1081,6 +1081,47 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(FAKE_FS[P + '/src\\sub'] && FAKE_FS[P + '/src\\sub'].type === 'dir', '文件夹已创建');
   });
 
+  await okAsync('编辑器查找替换：Ctrl+F 计数/循环 + Ctrl+H 替换', async () => {
+    // 打开文本并构造多匹配内容
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const ta = $(dom, 'textarea.editor');
+    ta.value = 'foo bar foo baz foo';
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    // Ctrl+F
+    key(dom, 'f', { ctrl: true });
+    await tick();
+    const input = $(dom, '#find-input');
+    assert_(input, '查找条出现');
+    input.value = 'foo';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_($(dom, '#find-count').textContent === '1/3', '计数 1/3: ' + $(dom, '#find-count').textContent);
+    assert_(ta.selectionStart === 0 && ta.selectionEnd === 3, '选中第一个匹配');
+    // Enter → 下一个
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick();
+    assert_($(dom, '#find-count').textContent === '2/3', 'Enter 后 2/3');
+    assert_(ta.selectionStart === 8, '选中第二个匹配: ' + ta.selectionStart);
+    // Ctrl+H 替换
+    key(dom, 'h', { ctrl: true });
+    await tick();
+    assert_($(dom, '#find-replace-row').style.display !== 'none', '替换行展开');
+    $(dom, '#find-replace-input').value = 'X';
+    click($(dom, '#find-rep-one'));
+    await tick();
+    assert_(ta.value === 'foo bar X baz foo', '替换当前匹配: ' + ta.value);
+    // 全部替换
+    click($(dom, '#find-rep-all'));
+    await tick();
+    assert_(ta.value === 'X bar X baz X', '全部替换: ' + ta.value);
+    // 关闭
+    click($(dom, '#find-close'));
+    await tick();
+    assert_(!$(dom, '.find-bar'), '查找条关闭');
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
