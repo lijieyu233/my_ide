@@ -1,0 +1,24 @@
+{
+  "name": "my-ide",
+  "version": "0.1.0",
+  "description": "私人定制轻量编辑器：文件树 + 插件化渲染 + Git 日志/提交/Diff",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test:git": "node tests/git.test.js",
+    "test:dom": "node tests/dom.test.js",
+    "test": "npm run test:git && npm run test:dom",
+    "demo": "node scripts/make-demo.js"
+  },
+  "dependencies": {
+    "electron": "^33.2.0",
+    "highlight.js": "^11.10.0",
+    "isomorphic-git": "^1.27.1",
+    "marked": "^15.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^29.1.1"
+  }
+}
