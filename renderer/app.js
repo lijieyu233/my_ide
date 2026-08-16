@@ -101,7 +101,7 @@ const App = (() => {
     // 切换文件时清除旧的光标位置
     if (info.file !== undefined && info.file !== sbState.file) sbState.pos = undefined;
     sbState = Object.assign(sbState, info);
-    const el = document.getElementById('statusbar');
+    const el = document.getElementById('sb-info');
     if (!el) return;
     const parts = [];
     if (sbState.branch) parts.push('⎇ ' + sbState.branch + (sbState.changed ? ' · ' + sbState.changed + ' 处修改' : ''));
@@ -170,8 +170,6 @@ const App = (() => {
       const el = document.getElementById('sb-version');
       if (el && info) el.textContent = 'v' + info.version + (info.commit ? ' (' + info.commit + ')' : '');
     }).catch(() => {});
-      Tree.showHidden = e.target.checked;
-    };
 
     MI.loadPlugins().then(async () => {
       const last = await window.myIDE.fs.getRecent();
