@@ -255,7 +255,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('点击本地修改文件 → 左右分栏 diff', async () => {
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
     const table = $(dom, '.diff-table');
     assert_(table, 'diff 表格出现');
@@ -495,7 +495,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'App.switchTool("git")');
     await tick();
     const target = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
-    click(target);
+    click(target.querySelector('.git-diff'));
     await tick(); await tick();
     const sep = $(dom, '.diff-hunk-gap');
     assert_(sep, 'hunk 分隔行存在');
@@ -1029,7 +1029,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('diff hunk 导航：按钮 + 循环切换', async () => {
     await g(dom, 'App.switchTool("git")');
     await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
     const nav = $(dom, '.df-nav');
     assert_(nav, '导航按钮组存在');
@@ -1187,7 +1187,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('diff 内容复制：旧版/新版按钮', async () => {
     await g(dom, 'App.switchTool("git")');
     await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
     const before = calls.copy.length;
     click($(dom, '#df-copy-old'));
@@ -1320,7 +1320,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // hunk 快捷键（diff 视图）
     await g(dom, 'App.switchTool("git")');
     await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
     const before = $(dom, '.df-nav-label').textContent;
     key(dom, 'ArrowDown', { alt: true });
@@ -1650,6 +1650,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     assert_((calls.createBranch || []).includes('feature-x'), 'createBranch 被调用');
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Git 本地修改：只显示文件名 + 点击打开文件', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    // 切回「本地修改」页签（此前测试可能停在「提交历史」）
+    const changesTab = $allIn($(dom, '#git-body'), '.git-tab')[0];
+    if (changesTab && !changesTab.classList.contains('active')) { click(changesTab); await tick(); }
+    // src/app.js 只显示文件名
+    const nm = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title === 'src/app.js');
+    assert_(nm && nm.textContent === 'app.js', '只显示文件名, got: ' + (nm && nm.textContent));
+    // 点击行 → 打开文件而不是 diff
+    const file = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    click(file);
+    await tick(); await tick();
+    const tab = $(dom, '.tab.active .tname');
+    assert_(tab && tab.textContent.includes('README.md'), '点击打开 README.md, got: ' + (tab && tab.textContent));
+    assert_(!$(dom, '.diff-table'), '点击不再直接进 diff');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });

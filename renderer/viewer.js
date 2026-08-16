@@ -32,7 +32,12 @@ const Viewer = (() => {
     recordRecent(path);
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => t.path === path);
-    if (i >= 0) { activate(i); return; }
+    if (i >= 0) {
+      activate(i);
+      // 已打开的标签也要同步树高亮（否则高亮不切换）
+      if (window.Tree) Tree.reveal(path);
+      return;
+    }
     const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
     tabs.push(tab);
     renderTabs();

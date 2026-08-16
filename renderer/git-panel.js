@@ -104,6 +104,18 @@ const GitPanel = (() => {
     renderLog(logWrap);
   }
 
+  // 点击变更文件 → 打开文件（已删除的 → 查看对比）
+  function openChangedFile(c) {
+    if (!root) return;
+    const sep = root.includes('\\') ? '\\' : '/';
+    const abs = root + sep + c.file;
+    if (c.status === 'deleted' || c.status === '*deleted') {
+      showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+      return;
+    }
+    if (window.Viewer) Viewer.openFile(abs);
+  }
+
   // 本地修改（Local Changes）：按顶层目录分组 + 放弃修改
   function renderChanges(container) {
     if (!state.changed.length) {
@@ -136,9 +148,16 @@ const GitPanel = (() => {
         const f = document.createElement('div');
         f.className = 'git-file';
         f.style.paddingLeft = '20px';
-        f.innerHTML = `<span class="badge ${c.status}">${esc(c.label)}</span><span class="nm">${esc(c.file)}</span><span class="git-revert" title="放弃该文件的修改">↺</span>`;
-        f.title = '点击查看与 HEAD 的对比';
-        f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+        const base = c.file.split(/[\\/]/).pop();
+        f.innerHTML = `<span class="badge ${c.status}">${esc(c.label)}</span><span class="nm" title="${esc(c.file)}">${esc(base)}</span>` +
+          `<span class="git-diff" title="查看与 HEAD 的对比">↔</span><span class="git-revert" title="放弃该文件的修改">↺</span>`;
+        f.title = '点击打开文件 · ↔ 查看对比 · ↺ 放弃修改';
+        f.onclick = () => openChangedFile(c);
+        const diffBtn = f.querySelector('.git-diff');
+        diffBtn.onclick = (e) => {
+          e.stopPropagation();
+          showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+        };
         const revertBtn = f.querySelector('.git-revert');
         revertBtn.onclick = async (e) => {
           e.stopPropagation();

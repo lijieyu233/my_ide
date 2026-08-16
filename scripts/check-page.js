@@ -55,6 +55,14 @@
     out.clickNoCopy = window.__copied === 0;
     out.afterClick = { active: (Viewer.activeTab || {}).path, mode: (Viewer.activeTab || {}).mode, md: !!q('.md-view'), err: (Viewer.activeTab || {}).error };
     MI.copyText = origCopy;
+    // 高亮切换：点击 notes.txt 后高亮应移过去，README 不再高亮
+    const nrow = qa('.tree-row').find((r) => (r.querySelector('.nm').title || '').endsWith('notes.txt'));
+    if (nrow) click(nrow);
+    await wait(400);
+    out.highlightSwitched = (() => {
+      const selRows = qa('.tree-row.selected').map((r) => (r.querySelector('.nm') || {}).title);
+      return { notesSel: selRows.some((t) => t && t.endsWith('notes.txt')), readmeSel: selRows.some((t) => t && t.endsWith('README.md')), count: selRows.length };
+    })();
     // Markdown 预览 + 分屏
     out.mdPreview = !!q('.md-view');
     const srcBtn = qa('.viewer-toolbar .vt-btn').find((b) => b.textContent.includes('源码'));
@@ -92,6 +100,15 @@
     await wait(1000);
     out.gitTabs = qa('.git-tab').map((t) => t.textContent);
     out.branchBtn = !!q('#git-branch-btn');
+    // 本地修改：只显示文件名 + 点击打开文件
+    const changesTab = qa('.git-tab')[0];
+    if (changesTab && !changesTab.classList.contains('active')) { click(changesTab); await wait(300); }
+    const nmG = qa('#git-body .git-file .nm').find((x) => x.title === 'src\\app.js');
+    out.gitFileName = nmG ? { text: nmG.textContent, title: nmG.title } : 'no-src-app-row';
+    const gf = qa('#git-body .git-file').find((x) => x.textContent.includes('notes.txt'));
+    if (gf) click(gf);
+    await wait(600);
+    out.gitClickOpens = { active: (Viewer.activeTab || {}).name, isDiff: !!q('.diff-table') };
     const logTab = qa('.git-tab')[1];
     if (logTab) click(logTab);
     await wait(400);
@@ -117,7 +134,7 @@
     await wait(500);
     clearInterval(hb);
     out.bigDir.heartbeats500ms = heartbeats; // ~10 说明事件循环健康
-    // 回到 demo，验证空状态只覆盖内容区（不遮工具栏）
+    // 回到 demo，验证空状态只覆盖内容区（不遮工具栏）+ 页面无滚动溢出
     await App.setRoot(P);
     await wait(1200);
     Viewer.closeAll();
@@ -125,6 +142,16 @@
     const es = q('#empty-state').getBoundingClientRect();
     const ct = q('#content').getBoundingClientRect();
     out.emptyState = { top: Math.round(es.top), contentTop: Math.round(ct.top), width: Math.round(es.width), contentWidth: Math.round(ct.width) };
+    document.scrollingElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    await wait(100);
+    out.pageScroll = {
+      doc: document.scrollingElement.scrollTop,
+      body: document.body.scrollTop,
+      toolbarTop: Math.round(q('#toolbar').getBoundingClientRect().top),
+      viewportH: document.documentElement.clientHeight,
+      bodyScrollH: document.body.scrollHeight,
+    };
   } catch (e) {
     out.error = String((e && e.stack) || e);
   }

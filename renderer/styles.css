@@ -90,7 +90,9 @@ body {
 .tb-git.dirty { color: var(--red); background: var(--badge-d-bg); border-color: #4a3a3a; }
 
 /* ---------- 主布局 ---------- */
-#main { display: flex; height: calc(100% - 38px); }
+/* 注意：#main 用 flex:1 而非固定高度，避免工具栏+内容+状态栏超出视口 22px，
+   导致 scrollIntoView 把整页滚动、工具栏被窗口顶部遮住 */
+#main { display: flex; flex: 1; min-height: 0; }
 
 /* 工具窗口条（PyCharm 式左侧竖排按钮） */
 #tool-strip {
@@ -317,11 +319,13 @@ textarea.editor {
 }
 .git-file:hover { background: var(--bg-hover); }
 .git-file .nm { overflow: hidden; text-overflow: ellipsis; }
-.git-file .git-revert {
+.git-file .git-diff, .git-file .git-revert {
   margin-left: auto; visibility: hidden; flex-shrink: 0;
-  font-size: 12px; color: var(--text-dim); cursor: pointer; padding: 0 2px;
+  font-size: 12px; color: var(--text-dim); cursor: pointer; padding: 0 3px;
 }
-.git-file:hover .git-revert { visibility: visible; }
+.git-file .git-diff { margin-left: 0; }
+.git-file:hover .git-diff, .git-file:hover .git-revert { visibility: visible; }
+.git-file .git-diff:hover { color: var(--accent); }
 .git-file .git-revert:hover { color: var(--red); }
 .badge { font-size: 10px; border-radius: 3px; padding: 0 4px; flex-shrink: 0; }
 .badge.M, .badge.modified, .badge.\*modified { background: var(--badge-m-bg); color: var(--badge-m-tx); }

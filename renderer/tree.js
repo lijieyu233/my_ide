@@ -253,6 +253,14 @@ const Tree = (() => {
   function select(p, type) {
     selectedPath = p;
     selectedType = type || null;
+    applySelection(); // 立即刷新已有行的高亮，不等整树重建
+  }
+  // 只切换已有行的 selected 类（虚拟滚动下也轻量）
+  function applySelection() {
+    el.querySelectorAll('.tree-row').forEach((r) => {
+      const p = r.dataset.path || ((r.querySelector('.nm') || {}).title || '');
+      r.classList.toggle('selected', !!p && isSelected(p));
+    });
   }
 
   async function copyPath(p) {
