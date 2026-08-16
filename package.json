@@ -41,7 +41,8 @@
       "target": [
         "portable"
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "signExecutable": false
     },
     "portable": {
       "artifactName": "MyIDE-${version}.exe"
