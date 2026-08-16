@@ -133,18 +133,25 @@ ipcMain.handle('fs:grep', async (_e, root, query) => {
   return { results: out, truncated: out.length >= MAX_RESULTS, elapsed: Date.now() - start };
 });
 
-ipcMain.handle('fs:readDir', (_e, dir, showHidden) => {
+ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
+  // 异步 readdir（线程池执行，大目录不阻塞主进程）+ 字节序快排（localeCompare 太慢）
   const hidden = new Set(['.git', 'node_modules']);
   let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
-  const items = entries
-    .filter((e) => (showHidden ? !hidden.has(e.name) && !e.name.startsWith('.') : !e.name.startsWith('.')) || (showHidden && !hidden.has(e.name)))
-    .map((e) => ({
+  try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return []; }
+  const items = [];
+  for (const e of entries) {
+    if (hidden.has(e.name)) continue;               // .git / node_modules 始终隐藏
+    if (!showHidden && e.name.startsWith('.')) continue; // 隐藏文件开关
+    items.push({
       name: e.name,
       type: e.isDirectory() ? 'dir' : 'file',
       path: path.join(dir, e.name),
-    }));
-  items.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+    });
+  }
+  items.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // 目录在前
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
   return items;
 });
 
