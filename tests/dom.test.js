@@ -33,6 +33,7 @@ const FAKE_FS = {
   ['C:/proj/gbk-old.txt']: { type: 'file', content: '中文老文件内容', encoding: 'gbk' },
   ['C:/proj/manual.pdf']: { type: 'file', content: '' },
   ['C:/proj/crlf-file.txt']: { type: 'file', content: 'line1\r\nline2\r\n' },
+  ['C:/proj/link.md']: { type: 'file', content: '# 链接测试\n\n[外部链接](https://example.com)\n[本地文件](./notes.txt)\n[锚点](#链接测试)\n' },
 };
 const FAKE_GIT = {
   changed: [
@@ -94,7 +95,7 @@ function makeDom() {
       },
       remove: async () => ({ ok: true }),
     },
-    shell: { showInFolder: async () => {} },
+    shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; } },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
       copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },
@@ -1538,6 +1539,33 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('单栏')));
     await tick();
     assert_(!$(dom, '.md-split'), '单栏后无分屏');
+  });
+
+  await okAsync('Bug2：Markdown 链接跳转（外链/相对路径/锚点）', async () => {
+    calls.openExternal = [];
+    await g(dom, 'Viewer.openFile("' + P + '/link.md")');
+    await tick(); await tick();
+    const md = $(dom, '.md-view');
+    const links = $allIn(md, 'a');
+    // 外链 → openExternal
+    const ext = links.find((a) => a.textContent === '外部链接');
+    assert_(ext, '外链存在');
+    click(ext);
+    await tick();
+    assert_((calls.openExternal || []).includes('https://example.com'), '外链调用 openExternal');
+    // 相对路径 → 打开本地文件
+    const local = links.find((a) => a.textContent === '本地文件');
+    assert_(local, '相对链接存在');
+    click(local);
+    await tick(); await tick();
+    const tab = $(dom, '.tab.active .tname');
+    assert_(tab && tab.textContent.includes('notes.txt'), '相对链接打开 notes.txt');
+    // 锚点 → 不切换文件
+    const anchor = links.find((a) => a.textContent === '锚点');
+    assert_(anchor, '锚点链接存在');
+    click(anchor);
+    await tick();
+    assert_($(dom, '.tab.active .tname') && $(dom, '.tab.active .tname').textContent.includes('notes.txt'), '锚点不切换文件');
   });
 
   console.log('');

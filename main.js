@@ -225,6 +225,12 @@ ipcMain.handle('fs:remove', (_e, p) => {
 });
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
+ipcMain.handle('shell:openExternal', (_e, url) => {
+  try {
+    if (/^(https?:|mailto:)/i.test(String(url || ''))) shell.openExternal(String(url));
+    return true;
+  } catch (e) { return false; }
+});
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
 // 文件复制：写系统剪贴板（FileNameW 供资源管理器粘贴 + 文本兜底）

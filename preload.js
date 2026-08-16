@@ -15,7 +15,10 @@ contextBridge.exposeInMainWorld('myIDE', {
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
   },
-  shell: { showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p) },
+  shell: {
+    showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
+    openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  },
   clip: {
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
     copyFiles: (paths) => ipcRenderer.invoke('clip:copyFiles', paths),

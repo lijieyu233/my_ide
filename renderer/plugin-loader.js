@@ -19,8 +19,15 @@ MI.renderFor = function (file) {
 };
 
 // ---------- 内置渲染器 ----------
+// 页内锚点滚动（markdown 链接跳转用）
+function scrollToAnchor(container, rawId) {
+  if (!container || !rawId) return;
+  const id = decodeURIComponent(rawId);
+  const target = [...container.querySelectorAll('[id]')].find((el) => el.id === id);
+  if (target) { try { target.scrollIntoView({ block: 'start' }); } catch {} }
+}
 // Markdown
-MI.registerRenderer(['md', 'markdown'], ({ content }) => {
+MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   const wrap = document.createElement('div');
   wrap.className = 'md-view';
   let html = '';
@@ -53,6 +60,38 @@ MI.registerRenderer(['md', 'markdown'], ({ content }) => {
     if (src && !/^(https?:|data:|blob:)/.test(src)) {
       img.src = 'file:///' + String(window.MI.activeRoot || '').split('\\\\').join('/') + '/' + encodeURIComponent(src.replace(/^[\\\\/]+/, ''));
     }
+  });
+  // 链接跳转：外链 → 系统浏览器；相对路径 → 打开本地文件；#锚点 → 页内滚动
+  const resolveLocal = (rel) => {
+    const base = String(path || '');
+    const sep = base.includes('\\') ? '\\' : '/';
+    const parts = base.split(/[\\/]/);
+    parts.pop(); // 去掉文件名，保留所在目录
+    for (const seg of rel.split(/[\\/]/)) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
+    }
+    return parts.join(sep);
+  };
+  wrap.querySelectorAll('a').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      const href = a.getAttribute('href') || '';
+      if (!href) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (/^(https?:|mailto:)/i.test(href)) {
+        if (window.myIDE && window.myIDE.shell) window.myIDE.shell.openExternal(href);
+        return;
+      }
+      const hashIdx = href.indexOf('#');
+      const filePart = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+      const anchor = hashIdx >= 0 ? href.slice(hashIdx + 1) : '';
+      if (!filePart) { scrollToAnchor(wrap, anchor); return; }
+      const target = resolveLocal(filePart);
+      if (window.Viewer) Viewer.openFile(target);
+      if (anchor) setTimeout(() => scrollToAnchor(document.querySelector('#viewer .md-view'), anchor), 300);
+    });
   });
   return wrap;
 });
