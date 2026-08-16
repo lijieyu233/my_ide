@@ -8,6 +8,7 @@ const GitPanel = (() => {
   let logDepth = 100;  // 日志分页深度
   let branchList = []; // 本地分支列表
   let state = null; // {isRepo, branch, changed, commits, unborn}
+  let gitTab = 'changes'; // 'changes' | 'log'（PyCharm 式分页签）
 
   // ---------- 刷新 ----------
   async function refresh() {
@@ -78,110 +79,129 @@ const GitPanel = (() => {
     btnCommit.onclick = () => openCommit();
     branchEl.appendChild(btnCommit);
 
-    // 本地修改
-    const t1 = document.createElement('div');
-    t1.className = 'git-section-title';
-    t1.textContent = state.changed.length ? `本地修改 (${state.changed.length})` : '本地修改';
-    body.appendChild(t1);
+    // PyCharm 式分页签：本地修改 / 提交历史（提交历史可单独一个选项）
+    const tabs = document.createElement('div');
+    tabs.className = 'git-tabs';
+    const mkTab = (key, label, count) => {
+      const b = document.createElement('button');
+      b.className = 'git-tab' + (gitTab === key ? ' active' : '');
+      b.textContent = label + (count ? ` (${count})` : '');
+      b.onclick = () => { gitTab = key; render(); };
+      tabs.appendChild(b);
+    };
+    mkTab('changes', '本地修改', state.changed.length);
+    mkTab('log', '提交历史', state.commits.length);
+    body.appendChild(tabs);
+
+    const changesWrap = document.createElement('div');
+    changesWrap.className = 'git-section' + (gitTab === 'changes' ? '' : ' hidden');
+    body.appendChild(changesWrap);
+    renderChanges(changesWrap);
+
+    const logWrap = document.createElement('div');
+    logWrap.className = 'git-section' + (gitTab === 'log' ? '' : ' hidden');
+    body.appendChild(logWrap);
+    renderLog(logWrap);
+  }
+
+  // 本地修改（Local Changes）：按顶层目录分组 + 放弃修改
+  function renderChanges(container) {
     if (!state.changed.length) {
       const d = document.createElement('div');
       d.className = 'git-empty';
       d.textContent = state.unborn ? '还没有任何提交' : '工作区干净 ✨';
-      body.appendChild(d);
-    } else {
-      // 按顶层目录分组
-      const groups = new Map();
-      for (const c of state.changed) {
-        const seg = c.file.split(/[\\/]/);
-        const key = seg.length > 1 ? seg[0] : '根目录';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(c);
-      }
-      for (const [dir, items] of groups) {
-        const gTitle = document.createElement('div');
-        gTitle.className = 'git-group';
-        gTitle.textContent = '▾ ' + dir + ' (' + items.length + ')';
-        const gBody = document.createElement('div');
-        gBody.className = 'git-group-body';
-        gTitle.onclick = () => {
-          const collapsed = gBody.style.display === 'none';
-          gBody.style.display = collapsed ? '' : 'none';
-          gTitle.textContent = (collapsed ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
-        };
-        body.appendChild(gTitle);
-        for (const c of items) {
-          const f = document.createElement('div');
-          f.className = 'git-file';
-          f.style.paddingLeft = '20px';
-          f.innerHTML = `<span class="badge ${c.status}">${esc(c.label)}</span><span class="nm">${esc(c.file)}</span><span class="git-revert" title="放弃该文件的修改">↺</span>`;
-          f.title = '点击查看与 HEAD 的对比';
-          f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
-          const revertBtn = f.querySelector('.git-revert');
-          revertBtn.onclick = async (e) => {
-            e.stopPropagation();
-            const yes = await Modal.confirm('放弃修改', `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`);
-            if (!yes) return;
-            const r = await window.myIDE.git.discard(root, c.file);
-            if (r.ok) { MI.toast('已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
-            else MI.toast('放弃失败: ' + r.error, 'err');
-          };
-          gBody.appendChild(f);
-        }
-        body.appendChild(gBody);
-      }
+      container.appendChild(d);
+      return;
     }
+    const groups = new Map();
+    for (const c of state.changed) {
+      const seg = c.file.split(/[\\/]/);
+      const key = seg.length > 1 ? seg[0] : '根目录';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    for (const [dir, items] of groups) {
+      const gTitle = document.createElement('div');
+      gTitle.className = 'git-group';
+      gTitle.textContent = '▾ ' + dir + ' (' + items.length + ')';
+      const gBody = document.createElement('div');
+      gBody.className = 'git-group-body';
+      gTitle.onclick = () => {
+        const collapsed = gBody.style.display === 'none';
+        gBody.style.display = collapsed ? '' : 'none';
+        gTitle.textContent = (collapsed ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
+      };
+      container.appendChild(gTitle);
+      for (const c of items) {
+        const f = document.createElement('div');
+        f.className = 'git-file';
+        f.style.paddingLeft = '20px';
+        f.innerHTML = `<span class="badge ${c.status}">${esc(c.label)}</span><span class="nm">${esc(c.file)}</span><span class="git-revert" title="放弃该文件的修改">↺</span>`;
+        f.title = '点击查看与 HEAD 的对比';
+        f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+        const revertBtn = f.querySelector('.git-revert');
+        revertBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const yes = await Modal.confirm('放弃修改', `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`);
+          if (!yes) return;
+          const r = await window.myIDE.git.discard(root, c.file);
+          if (r.ok) { MI.toast('已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
+          else MI.toast('放弃失败: ' + r.error, 'err');
+        };
+        gBody.appendChild(f);
+      }
+      container.appendChild(gBody);
+    }
+  }
 
-    // 提交历史：过滤框 + 分支图
-    const t2 = document.createElement('div');
-    t2.className = 'git-section-title';
-    t2.textContent = `提交历史 (${state.commits.length})`;
-    body.appendChild(t2);
+  // 提交历史（Log）：分支视图下拉 + 过滤 + 分支图 + 分页
+  function renderLog(container) {
     if (!state.commits.length) {
       const d = document.createElement('div');
       d.className = 'git-empty';
       d.textContent = '还没有提交，Ctrl+K 提交第一个吧';
-      body.appendChild(d);
-    } else {
-      const barRow = document.createElement('div');
-      barRow.className = 'git-logbar';
-      const refSel = document.createElement('select');
-      refSel.id = 'git-ref';
-      refSel.title = '日志视图：当前分支 / 指定分支 / 所有分支';
-      const optAll = document.createElement('option');
-      optAll.value = '__all__';
-      optAll.textContent = '所有分支';
-      refSel.appendChild(optAll);
-      const optHead = document.createElement('option');
-      optHead.value = 'HEAD';
-      optHead.textContent = '当前分支 (' + state.branch + ')';
-      refSel.appendChild(optHead);
-      for (const b of branchList) {
-        if (b === state.branch) continue;
-        const opt = document.createElement('option');
-        opt.value = b;
-        opt.textContent = b;
-        refSel.appendChild(opt);
-      }
-      refSel.value = logRef === '__all__' || branchList.includes(logRef) ? logRef : 'HEAD';
-      refSel.addEventListener('change', () => {
-        logRef = refSel.value;
-        logDepth = logRef === '__all__' ? 50 : 100;
-        reloadLog();
-      });
-      barRow.appendChild(refSel);
-      const filter = document.createElement('input');
-      filter.id = 'git-filter';
-      filter.type = 'text';
-      filter.placeholder = '🔍 过滤提交…（消息/作者/哈希）';
-      filter.value = filterQ;
-      filter.addEventListener('input', () => { filterQ = filter.value; renderHistory(); });
-      barRow.appendChild(filter);
-      body.appendChild(barRow);
-      const hist = document.createElement('div');
-      hist.id = 'git-history';
-      body.appendChild(hist);
-      renderHistory(hist);
+      container.appendChild(d);
+      return;
     }
+    const barRow = document.createElement('div');
+    barRow.className = 'git-logbar';
+    const refSel = document.createElement('select');
+    refSel.id = 'git-ref';
+    refSel.title = '日志视图：当前分支 / 指定分支 / 所有分支';
+    const optAll = document.createElement('option');
+    optAll.value = '__all__';
+    optAll.textContent = '所有分支';
+    refSel.appendChild(optAll);
+    const optHead = document.createElement('option');
+    optHead.value = 'HEAD';
+    optHead.textContent = '当前分支 (' + state.branch + ')';
+    refSel.appendChild(optHead);
+    for (const b of branchList) {
+      if (b === state.branch) continue;
+      const opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b;
+      refSel.appendChild(opt);
+    }
+    refSel.value = logRef === '__all__' || branchList.includes(logRef) ? logRef : 'HEAD';
+    refSel.addEventListener('change', () => {
+      logRef = refSel.value;
+      logDepth = logRef === '__all__' ? 50 : 100;
+      reloadLog();
+    });
+    barRow.appendChild(refSel);
+    const filter = document.createElement('input');
+    filter.id = 'git-filter';
+    filter.type = 'text';
+    filter.placeholder = '🔍 过滤提交…（消息/作者/哈希）';
+    filter.value = filterQ;
+    filter.addEventListener('input', () => { filterQ = filter.value; renderHistory(); });
+    barRow.appendChild(filter);
+    container.appendChild(barRow);
+    const hist = document.createElement('div');
+    hist.id = 'git-history';
+    container.appendChild(hist);
+    renderHistory(hist);
   }
 
   // 分支图列状态机（gitk 简化）：返回每行 {chars, isMerge}
@@ -370,7 +390,8 @@ const GitPanel = (() => {
     for (const c of state.changed) {
       const f = document.createElement('div');
       f.className = 'commit-file';
-      f.innerHTML = `<input type="checkbox" checked class="cf-check" data-file="${esc(c.file)}"><span class="badge ${c.status}">${c.label}</span><span class="nm">${esc(c.file)}</span>`;
+      const base = c.file.split(/[\\/]/).pop();
+      f.innerHTML = `<input type="checkbox" checked class="cf-check" data-file="${esc(c.file)}"><span class="badge ${c.status}">${esc(c.label)}</span><span class="nm" title="${esc(c.file)}">${esc(base)}</span>`;
       f.onclick = (e) => {
         if (e.target.type === 'checkbox') return;
         showPreview(c.file);

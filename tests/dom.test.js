@@ -1591,6 +1591,39 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), '切回后 src 仍展开');
   });
 
+  await okAsync('Bug5：Git 面板分页签（本地修改/提交历史）', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const tabs = $allIn($(dom, '#git-body'), '.git-tab');
+    assert_(tabs.length === 2, '两个分页签, got ' + tabs.length);
+    assert_(tabs[0].textContent.includes('本地修改'), '本地修改签');
+    assert_(tabs[1].textContent.includes('提交历史'), '提交历史签');
+    assert_(tabs[0].classList.contains('active'), '默认选中本地修改');
+    click(tabs[1]);
+    await tick();
+    const sections = $allIn($(dom, '#git-body'), '.git-section');
+    assert_(sections[0].classList.contains('hidden'), '本地修改区隐藏');
+    assert_(!sections[1].classList.contains('hidden'), '提交历史区可见');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Bug6：提交弹窗只显示文件名', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    key(dom, 'k', { ctrl: true });
+    await tick(); await tick();
+    const nm = $allIn($(dom, '#commit-files'), '.commit-file .nm').find((x) => x.title === 'src/app.js');
+    assert_(nm, '找到 src/app.js 提交行');
+    assert_(nm.textContent === 'app.js', '只显示文件名, got: ' + nm.textContent);
+    click($(dom, '#cm-cancel'));
+    await tick();
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
