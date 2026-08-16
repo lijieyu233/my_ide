@@ -132,9 +132,9 @@ Shortcuts.register('commit', { desc: '提交更改', keys: ['ctrl+k'], run: () =
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
-Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.switchTool('project') });
-Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.switchTool('outline') });
-Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], run: () => App.switchTool('git') });
+Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
+Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
+Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], run: () => App.showTool('git') });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });

@@ -23,7 +23,7 @@ const Help = (() => {
           ${rows}
         </table>
         <div class="help-hint">
-          📌 技巧：单击文件即复制完整路径 · 中键关闭标签 · 标签可拖拽排序 · Ctrl+Alt+S 自定义快捷键 · Ctrl+P 快速打开
+          📌 技巧：单击文件打开 · Ctrl+Shift+C 复制路径 · 中键关闭标签 · 标签可拖拽排序 · Ctrl+Alt+S 自定义快捷键 · Ctrl+P 快速打开
         </div>
       </div>`;
     document.getElementById('help-x').onclick = () => Modal.hide();

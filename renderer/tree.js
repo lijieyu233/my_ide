@@ -8,8 +8,37 @@ const Tree = (() => {
   let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
   const expanded = new Set();   // 展开的目录路径（根默认展开）
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
+  let gitStatus = {};           // 规范路径 -> git 状态（modified/added/deleted）
   const ROW_H = 22;
   const VIRTUAL_THRESHOLD = 300;
+
+  const norm = (p) => String(p == null ? '' : p).replace(/\\/g, '/');
+  // 选中判定用规范化路径（Windows 大小写/分隔符差异不再导致高亮错位）
+  const isSelected = (p) => norm(p) === norm(selectedPath);
+
+  // Git 状态着色（PyCharm 式）
+  function gitClassFor(path) {
+    let st = gitStatus[norm(path)];
+    if (!st) return '';
+    if (st[0] === '*') st = st.slice(1);
+    if (st === 'added') return 'git-added';
+    if (st === 'modified') return 'git-modified';
+    if (st === 'deleted') return 'git-deleted';
+    return '';
+  }
+  function setGitStatus(map) {
+    gitStatus = {};
+    for (const k in (map || {})) gitStatus[norm(k)] = map[k];
+    // 不整体重建：只刷新已有行的颜色（大目录下更轻量）
+    el.querySelectorAll('.tree-row').forEach((r) => {
+      const nmEl = r.querySelector('.nm');
+      if (!nmEl) return;
+      const cls = gitClassFor(nmEl.title || r.dataset.path);
+      nmEl.classList.toggle('git-added', cls === 'git-added');
+      nmEl.classList.toggle('git-modified', cls === 'git-modified');
+      nmEl.classList.toggle('git-deleted', cls === 'git-deleted');
+    });
+  }
 
   function setRoot(p) {
     rootPath = p;
@@ -93,7 +122,7 @@ const Tree = (() => {
     const item = row.item;
     const depth = row.depth;
     const rowEl = document.createElement('div');
-    rowEl.className = 'tree-row' + (item.path === selectedPath ? ' selected' : '');
+    rowEl.className = 'tree-row' + (isSelected(item.path) ? ' selected' : '');
     rowEl.style.paddingLeft = (depth * 14 + 4) + 'px';
 
     const tw = document.createElement('span');
@@ -107,10 +136,11 @@ const Tree = (() => {
     rowEl.appendChild(ic);
 
     const nm = document.createElement('span');
-    nm.className = 'nm';
+    nm.className = 'nm' + (gitClassFor(item.path) ? ' ' + gitClassFor(item.path) : '');
     nm.textContent = item.name;
     nm.title = item.path;
     rowEl.appendChild(nm);
+    rowEl.dataset.path = item.path;
 
     const cp = document.createElement('span');
     cp.className = 'path-copy';
@@ -122,8 +152,7 @@ const Tree = (() => {
       if (e.target === cp) { await copyPath(item.path); return; }
       select(item.path, item.type);
       if (item.type === 'dir') { toggleDir(item); return; }
-      // ★ 核心需求：单击文件 = 打开 + 复制完整路径
-      await copyPath(item.path);
+      // 单击文件 = 打开（复制路径改为显式入口：悬停「复制路径」或 Ctrl+Shift+C）
       Viewer.openFile(item.path);
       select(item.path, item.type);
     });
@@ -145,6 +174,34 @@ const Tree = (() => {
     } else {
       await loadDir(item.path);
       expanded.add(item.path);
+    }
+    render();
+  }
+
+  // 一键收起全部目录（保留根目录展开，PyCharm Collapse All 行为）
+  async function collapseAll() {
+    if (!rootPath) return;
+    const rootKey = rootPath;
+    expanded.clear();
+    expanded.add(rootKey);
+    render();
+  }
+  // 一键展开全部目录（广度优先，逐层懒加载）
+  async function expandAll() {
+    if (!rootPath) return;
+    const queue = [rootPath];
+    const visited = new Set();
+    while (queue.length) {
+      const dir = queue.shift();
+      if (visited.has(dir)) continue;
+      visited.add(dir);
+      const items = await loadDir(dir);
+      for (const it of items) {
+        if (it.type === 'dir') {
+          expanded.add(it.path);
+          queue.push(it.path);
+        }
+      }
     }
     render();
   }
@@ -306,7 +363,7 @@ const Tree = (() => {
   }
 
   return {
-    setRoot, render, select,
+    setRoot, render, select, collapseAll, expandAll, setGitStatus,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
     copySelected, pasteTo, getPasteTarget, reveal,

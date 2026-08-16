@@ -3,6 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { Worker } = require('worker_threads');
 const G = require('../git-service');
 
 let passed = 0, failed = 0;
@@ -212,6 +213,38 @@ fs.mkdirSync(repo);
     assert.strictEqual(r.ok, true);
     const d = await G.diffCommit(repo, (await G.log(repo)).commits[0].oid, 'sub/deep.txt'.replace(/\//g, path.sep));
     assert.strictEqual(d.newText, 'deep\n');
+  });
+
+  await okAsync('discard：放弃修改恢复到 HEAD / 未跟踪删除', async () => {
+    // 已跟踪文件修改后放弃 → 恢复 HEAD 内容
+    fs.writeFileSync(path.join(repo, 'sub', 'deep.txt'), 'changed\n');
+    const d1 = await G.discard(repo, path.join('sub', 'deep.txt'));
+    assert.strictEqual(d1.ok, true);
+    assert.strictEqual(fs.readFileSync(path.join(repo, 'sub', 'deep.txt'), 'utf8'), 'deep\n');
+    // 未跟踪文件放弃 → 从磁盘删除
+    fs.writeFileSync(path.join(repo, 'untracked.txt'), 'tmp\n');
+    const d2 = await G.discard(repo, 'untracked.txt');
+    assert.strictEqual(d2.ok, true);
+    assert.strictEqual(fs.existsSync(path.join(repo, 'untracked.txt')), false);
+  });
+
+  await okAsync('worker 调度链路：init/commit/status', async () => {
+    const wdir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-worker-'));
+    const call = (op, args) => new Promise((resolve, reject) => {
+      const w = new Worker(path.join(__dirname, '..', 'git-worker.js'));
+      w.on('message', (m) => { w.terminate(); resolve(m.error ? { error: m.error } : m.result); });
+      w.on('error', reject);
+      w.postMessage({ id: 1, op, args });
+    });
+    const r1 = await call('initRepo', [wdir]);
+    assert.strictEqual(r1.ok, true);
+    fs.writeFileSync(path.join(wdir, 'w.txt'), 'worker\n');
+    const r2 = await call('commit', [wdir, { message: 'worker commit', files: ['w.txt'] }]);
+    assert.strictEqual(r2.ok, true);
+    const r3 = await call('status', [wdir]);
+    assert.strictEqual(r3.isRepo, true);
+    assert.strictEqual(r3.changed.length, 0);
+    fs.rmSync(wdir, { recursive: true, force: true });
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

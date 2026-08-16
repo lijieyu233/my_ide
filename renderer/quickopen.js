@@ -100,8 +100,6 @@ const QuickOpen = (() => {
     if (!r) return;
     Modal.hide();
     Viewer.openFile(r.f.path);
-    MI.copyText(r.f.path);
-    MI.toast('📋 已复制完整路径\n' + r.f.path, 'ok');
   }
 
   function esc(s) {

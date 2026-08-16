@@ -12,6 +12,8 @@ const GitPanel = (() => {
   // ---------- 刷新 ----------
   async function refresh() {
     if (!root) return;
+    const badge = document.getElementById('tb-git');
+    if (badge) { badge.textContent = '⏳ 扫描中…'; badge.className = 'tb-git branch-only'; }
     const [st, lg, br] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root, logDepth, logRef), window.myIDE.git.branches(root)]);
     branchList = br && br.branches ? br.branches : [];
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }), commits: lg.commits || [], unborn: lg.unborn };
@@ -19,6 +21,13 @@ const GitPanel = (() => {
     render();
     updateToolbar();
     App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
+    // 文件树 Git 状态着色（PyCharm 式）
+    const statusMap = {};
+    if (state.isRepo && state.changed) {
+      const sep = (root || '').includes('\\') ? '\\' : '/';
+      for (const c of state.changed) statusMap[root + sep + c.file] = c.status;
+    }
+    if (window.Tree) Tree.setGitStatus(statusMap);
   }
 
   function updateToolbar() {
@@ -57,6 +66,12 @@ const GitPanel = (() => {
     branchBtn.title = '点击切换分支';
     branchBtn.onclick = () => openBranchDialog();
     branchEl.appendChild(branchBtn);
+    const btnRefresh = document.createElement('button');
+    btnRefresh.className = 'tb-btn gbtn';
+    btnRefresh.textContent = '🔄';
+    btnRefresh.title = '刷新 Git 状态 (Ctrl+R)';
+    btnRefresh.onclick = () => refresh();
+    branchEl.appendChild(btnRefresh);
     const btnCommit = document.createElement('button');
     btnCommit.className = 'tb-btn gbtn';
     btnCommit.textContent = '💾 提交 (Ctrl+K)';
@@ -98,9 +113,18 @@ const GitPanel = (() => {
           const f = document.createElement('div');
           f.className = 'git-file';
           f.style.paddingLeft = '20px';
-          f.innerHTML = `<span class="badge ${c.status}">${c.label}</span><span class="nm">${c.file}</span>`;
+          f.innerHTML = `<span class="badge ${c.status}">${esc(c.label)}</span><span class="nm">${esc(c.file)}</span><span class="git-revert" title="放弃该文件的修改">↺</span>`;
           f.title = '点击查看与 HEAD 的对比';
           f.onclick = () => showDiff({ kind: 'workdir', file: c.file, label: c.file + '（工作区 vs HEAD）' });
+          const revertBtn = f.querySelector('.git-revert');
+          revertBtn.onclick = async (e) => {
+            e.stopPropagation();
+            const yes = await Modal.confirm('放弃修改', `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`);
+            if (!yes) return;
+            const r = await window.myIDE.git.discard(root, c.file);
+            if (r.ok) { MI.toast('已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
+            else MI.toast('放弃失败: ' + r.error, 'err');
+          };
           gBody.appendChild(f);
         }
         body.appendChild(gBody);

@@ -118,8 +118,13 @@ body {
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
-  resize: horizontal; overflow: hidden;
+  overflow: hidden;
 }
+#sidebar-resizer {
+  width: 4px; flex-shrink: 0; cursor: col-resize;
+  background: transparent; margin-left: -2px; z-index: 5;
+}
+#sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
 #panel-project, #panel-outline, #panel-git {
   flex: 1; overflow: auto; display: flex; flex-direction: column;
 }
@@ -130,6 +135,7 @@ body {
 }
 #tree-head { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
 #tree-head input { accent-color: var(--accent); }
+#tree-head .tree-head-actions { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
 #tree { flex: 1; overflow: auto; padding: 4px 0; }
 
 /* ---------- 文件树 ---------- */
@@ -138,20 +144,30 @@ body {
   display: flex; align-items: center; gap: 4px;
   padding-right: 8px; cursor: default;
   height: 22px; color: var(--text);
+  white-space: nowrap;
 }
 .tree-row:hover { background: var(--bg-hover); }
 .tree-row.selected { background: var(--bg-selected); color: #fff; }
 .tree-row .tw { width: 14px; text-align: center; color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
 .tree-row .ic { font-size: 12px; flex-shrink: 0; }
-.tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
 .tree-row .path-copy { visibility: hidden; font-size: 11px; color: var(--text-dim); cursor: pointer; }
 .tree-row:hover .path-copy { visibility: visible; }
 .tree-row .path-copy:hover { color: var(--accent); }
 .tree-children { margin-left: 14px; }
 .tree-root .tree-row { font-weight: 600; color: var(--text-bright); }
+/* Git 状态着色（PyCharm 式：新增绿 / 修改蓝 / 删除红） */
+.tree-row .nm.git-added { color: var(--green); }
+.tree-row .nm.git-modified { color: var(--accent); }
+.tree-row .nm.git-deleted { color: var(--red); text-decoration: line-through; }
+/* 选中行的文件名始终为白字，避免被 git 状态色覆盖导致高亮错误 */
+.tree-row.selected .nm { color: #fff; }
+.tree-row.selected .nm.git-added,
+.tree-row.selected .nm.git-modified,
+.tree-row.selected .nm.git-deleted { color: #fff; }
 
 /* ---------- 内容区 ---------- */
-#content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+#content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; }
 #tabbar { display: flex; background: var(--bg-tabbar); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
 .tab {
   display: flex; align-items: center; gap: 6px;
@@ -180,6 +196,12 @@ body {
 }
 .editor-wrap textarea.editor { flex: 1; min-width: 0; }
 #viewer > .html-frame { flex: 1; }
+
+/* Markdown 分屏：左侧编辑 + 右侧实时预览（预览下修改） */
+.md-split { flex: 1; display: flex; min-height: 0; }
+.md-split .editor-wrap { flex: 1; min-width: 0; border-right: 1px solid var(--border); }
+.md-split .md-split-preview { flex: 1; min-width: 0; overflow: auto; background: var(--bg); }
+.md-split .md-split-preview .md-view { max-width: none; padding: 16px 20px; }
 
 /* ---------- 空状态 ---------- */
 #empty-state {
@@ -249,10 +271,14 @@ textarea.editor {
   flex: 1; overflow: auto;
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
-  background-image: conic-gradient(var(--border-mid) 25%, transparent 0 50%, var(--border-mid) 0 75%, transparent 0);
-  background-size: 16px 16px;
+  background: var(--bg);
 }
-.img-view img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 2px 12px rgba(0,0,0,.35); }
+.img-view img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  box-shadow: 0 2px 12px rgba(0,0,0,.35);
+  border: 1px solid var(--border);
+  background: #fff; /* 透明图也保持白底可读 */
+}
 
 /* HTML 预览 */
 .html-frame { width: 100%; height: 100%; border: none; background: #fff; }
@@ -282,10 +308,16 @@ textarea.editor {
 }
 .git-file:hover { background: var(--bg-hover); }
 .git-file .nm { overflow: hidden; text-overflow: ellipsis; }
+.git-file .git-revert {
+  margin-left: auto; visibility: hidden; flex-shrink: 0;
+  font-size: 12px; color: var(--text-dim); cursor: pointer; padding: 0 2px;
+}
+.git-file:hover .git-revert { visibility: visible; }
+.git-file .git-revert:hover { color: var(--red); }
 .badge { font-size: 10px; border-radius: 3px; padding: 0 4px; flex-shrink: 0; }
-.badge.M, .badge.modified { background: var(--badge-m-bg); color: var(--badge-m-tx); }
-.badge.A, .badge.added, .badge.*added { background: var(--badge-a-bg); color: var(--green); }
-.badge.D, .badge.deleted, .badge.*deleted { background: var(--badge-d-bg); color: var(--red); }
+.badge.M, .badge.modified, .badge.\*modified { background: var(--badge-m-bg); color: var(--badge-m-tx); }
+.badge.A, .badge.added, .badge.\*added { background: var(--badge-a-bg); color: var(--green); }
+.badge.D, .badge.deleted, .badge.\*deleted { background: var(--badge-d-bg); color: var(--red); }
 .badge.absent { background: var(--badge-d-bg); color: var(--red); }
 
 .git-commit {
@@ -397,6 +429,13 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
   background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: 8px;
   width: 560px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column;
   box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+/* 所有弹窗统一不透明面板样式（Modal.show 把 box 直接挂到 mask 下） */
+.modal-panel {
+  width: 560px; max-width: 92vw; max-height: 84vh;
+  background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; overflow: hidden;
 }
 .m-head { padding: 12px 16px; font-size: 14px; color: var(--text-bright); border-bottom: 1px solid var(--border); display: flex; align-items: center; }
 .m-head .x { margin-left: auto; cursor: pointer; color: var(--text-dim); padding: 0 6px; }

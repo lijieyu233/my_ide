@@ -194,6 +194,7 @@ const Viewer = (() => {
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
     empty.classList.remove('visible');
     const tab = tabs[active];
+    const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     const toolbar = document.createElement('div');
     toolbar.className = 'viewer-toolbar';
 
@@ -231,6 +232,14 @@ const Viewer = (() => {
         btnPrev.onclick = () => { tab.mode = 'preview'; renderView(); };
         toolbar.appendChild(btnPrev);
       }
+      if (isMarkdown && !tab.binary && !tab.tooLarge) {
+        const btnSplit = document.createElement('button');
+        btnSplit.className = 'vt-btn';
+        btnSplit.textContent = tab.splitPreview === false ? '◧ 分屏预览' : '▭ 单栏编辑';
+        btnSplit.title = tab.splitPreview === false ? '显示编辑 + 实时预览分屏' : '仅显示编辑器';
+        btnSplit.onclick = () => { tab.splitPreview = (tab.splitPreview === false); renderView(); };
+        toolbar.appendChild(btnSplit);
+      }
       const btnSave = document.createElement('button');
       btnSave.className = 'vt-btn vt-save';
       btnSave.textContent = '💾 保存';
@@ -260,6 +269,7 @@ const Viewer = (() => {
     }
 
     if (tab.mode === 'edit') {
+      const splitOn = isMarkdown && tab.splitPreview !== false;
       // 行号 gutter + textarea
       const wrap = document.createElement('div');
       wrap.className = 'editor-wrap';
@@ -287,6 +297,17 @@ const Viewer = (() => {
         gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n');
       };
       renderGutter();
+      // Markdown 分屏：右侧实时预览（预览下修改）
+      let previewPane = null;
+      let mdRefreshTimer = null;
+      const refreshPreview = () => {
+        if (!previewPane) return;
+        const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
+        previewPane.innerHTML = '';
+        const node = fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: ta.value }) : null;
+        if (node instanceof HTMLElement) previewPane.appendChild(node);
+        else previewPane.textContent = node == null ? '' : String(node);
+      };
       // 滚动同步
       ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; });
       ta.addEventListener('input', () => {
@@ -295,6 +316,10 @@ const Viewer = (() => {
         clearTimeout(saveTimer);
         reportPos();
         renderGutter();
+        if (previewPane) {
+          clearTimeout(mdRefreshTimer);
+          mdRefreshTimer = setTimeout(refreshPreview, 200);
+        }
       });
       ta.addEventListener('keyup', reportPos);
       ta.addEventListener('click', reportPos);
@@ -309,7 +334,18 @@ const Viewer = (() => {
         }
       });
       wrap.appendChild(ta);
-      viewer.appendChild(wrap);
+      if (splitOn) {
+        const split = document.createElement('div');
+        split.className = 'md-split';
+        split.appendChild(wrap);
+        previewPane = document.createElement('div');
+        previewPane.className = 'md-split-preview';
+        split.appendChild(previewPane);
+        viewer.appendChild(split);
+        refreshPreview();
+      } else {
+        viewer.appendChild(wrap);
+      }
       tab.ta = ta;
       return;
     }

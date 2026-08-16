@@ -9,6 +9,7 @@ const App = (() => {
       mask.classList.remove('hidden');
       const old = mask.querySelector(':scope > div');
       if (old) old.remove();
+      box.classList.add('modal-panel');
       mask.appendChild(box);
     },
     hide() { mask.classList.add('hidden'); },
@@ -75,6 +76,14 @@ const App = (() => {
       activeTool = name;
     }
     renderToolStrip();
+  }
+  // 非切换语义：快捷键始终「显示」该工具窗口（PyCharm Alt+N 习惯，不因已激活而收起）
+  function showTool(name) {
+    if (!TOOLS.includes(name)) return;
+    if (activeTool !== name) {
+      activeTool = name;
+      renderToolStrip();
+    }
   }
 
   function renderToolStrip() {
@@ -210,7 +219,9 @@ const App = (() => {
     Tree.setRoot(p);
     GitPanel.rootDir = p;
     QuickOpen.invalidate();
-    GitPanel.refresh(); // 后台刷新，不阻塞首屏
+    // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
+    clearTimeout(gitScanTimer);
+    gitScanTimer = setTimeout(() => { GitPanel.refresh(); }, gitRefreshDelay);
     addProject(p);
     renderProjectBar();
     renderEmptyRecent();
@@ -233,7 +244,40 @@ const App = (() => {
     clearTimeout(gitRefreshTimer);
     gitRefreshTimer = setTimeout(() => { GitPanel.refresh(); }, 500);
   }
+  // 项目切换/打开后的 Git 扫描延迟（大项目打开不卡首屏；测试置 0）
+  let gitRefreshDelay = 800;
+  let gitScanTimer = null;
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
+
+  // ---------- 目录区宽度拖拽调整（持久化）----------
+  const SIDEBAR_KEY = 'myide-sidebar-width';
+  function initSidebarResizer() {
+    const sidebar = document.getElementById('sidebar');
+    const resizer = document.getElementById('sidebar-resizer');
+    if (!sidebar || !resizer) return;
+    try {
+      const saved = parseInt(localStorage.getItem(SIDEBAR_KEY) || '', 10);
+      if (saved >= 160 && saved <= 560) sidebar.style.width = saved + 'px';
+    } catch {}
+    const apply = (x) => {
+      const left = sidebar.getBoundingClientRect().left || 0;
+      const w = Math.min(560, Math.max(160, x - left));
+      sidebar.style.width = w + 'px';
+      try { localStorage.setItem(SIDEBAR_KEY, String(w)); } catch {}
+    };
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      resizer.classList.add('dragging');
+      const onMove = (ev) => apply(ev.clientX);
+      const onUp = () => {
+        resizer.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
 
   // ---------- 初始化 ----------
   let inited = false;
@@ -268,6 +312,9 @@ const App = (() => {
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
+    document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
+    document.getElementById('tree-expand').onclick = () => Tree.expandAll();
+    initSidebarResizer();
     // 插件热重载：plugins/ 目录变更自动重载
     window.myIDE.plugins.onChanged(() => {
       MI.loadPlugins().then(() => MI.toast('🔌 插件已热重载', 'ok'));
@@ -286,7 +333,13 @@ const App = (() => {
     });
   }
 
-  return { init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, getProjects, get root() { return root; } };
+  return {
+    init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
+    switchTool, showTool, getTool, setTool, updateStatusbar, getProjects,
+    get root() { return root; },
+    get gitRefreshDelay() { return gitRefreshDelay; },
+    set gitRefreshDelay(v) { gitRefreshDelay = v; },
+  };
 })();
 window.App = App;
 

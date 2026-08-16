@@ -183,6 +183,30 @@ async function checkout(dir, ref) {
   }
 }
 
+// 放弃单个文件的修改：已跟踪 → 从 HEAD 恢复原始字节；未跟踪 → 从磁盘删除
+async function discard(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const rel = posix(String(file).replace(/^[\\/]+/, ''));
+  const abs = path.isAbsolute(file) ? file : path.join(root, native(file));
+  try {
+    let blob = null;
+    try {
+      const resolved = await git.resolveRef({ fs, dir: root, ref: 'HEAD' });
+      const r = await git.readBlob({ fs, dir: root, oid: resolved, filepath: rel });
+      blob = r.blob;
+    } catch {}
+    if (blob != null) {
+      fs.writeFileSync(abs, Buffer.from(blob));
+    } else if (fs.existsSync(abs)) {
+      fs.rmSync(abs, { force: true });
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------- 用户配置（提交作者）----------
 async function getUserConfig(dir) {
   const { yes, root } = await isRepo(dir);
@@ -393,4 +417,4 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, discard, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

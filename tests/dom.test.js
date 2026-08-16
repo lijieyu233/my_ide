@@ -51,6 +51,7 @@ const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffComm
 let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
 calls.checkout = [];
+calls.discard = [];
 calls.logRef = null;
 calls.logAll = false;
 calls.logDepth = null;
@@ -131,6 +132,7 @@ function makeDom() {
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
+      discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
     },
@@ -164,6 +166,7 @@ async function loadApp(dom) {
   evalFile('help.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
+  await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
   await tick();
 }
 
@@ -189,12 +192,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(names.includes('src'), 'src 目录存在');
   });
 
-  await okAsync('★ 单击文件 → 复制完整路径 + 打开文件', async () => {
+  await okAsync('★ 单击文件 → 打开文件，但不复制路径', async () => {
     const row = $$(dom, '.tree-row').find((r) => r.querySelector('.nm').title === P + '/README.md');
     assert_(row, '找到 README.md 行');
+    const before = calls.copy.length;
     click(row);
     await tick(); await tick(); await tick();
-    assert_(calls.copy[calls.copy.length - 1] === P + '/README.md', '剪贴板收到完整路径, got: ' + calls.copy[calls.copy.length - 1]);
+    assert_(calls.copy.length === before, '单击不再自动复制路径');
     assert_($(dom, '.tab.active .tname'), '标签已打开');
   });
 
@@ -328,7 +332,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(frame.srcdoc.includes('<h1>Hi HTML</h1>'), 'srcdoc 包含内容');
   });
 
-  await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目 / 再按收起（计算样式验证）', async () => {
+  await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目（快捷键始终显示，不再收起）', async () => {
     const display = (sel) => dom.window.getComputedStyle($(dom, sel)).display;
     key(dom, '2', { ctrl: true });
     await tick();
@@ -340,9 +344,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(display('#panel-project') !== 'none', '项目面板恢复');
     key(dom, '1', { ctrl: true });
     await tick();
-    assert_(display('#panel-project') === 'none', '再按 Ctrl+1 收起');
-    key(dom, '1', { ctrl: true }); // 恢复展开
-    await tick();
+    assert_(display('#panel-project') !== 'none', 'Ctrl+1 已激活时仍保持显示（Bug8 修复）');
   });
 
   await okAsync('Markdown 大纲：标题条目 + 点击跳转', async () => {
@@ -771,6 +773,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('Git 刷新防抖：连续保存只刷一次', async () => {
     dom.window.__rc = 0;
+    g(dom, 'window.__origGitRefresh = GitPanel.refresh');
     g(dom, 'GitPanel.refresh = () => { window.__rc++; return Promise.resolve(); }');
     // 准备一个 dirty 标签
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
@@ -783,6 +786,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(dom.window.__rc === 0, '防抖窗口内未立即刷新');
     await new Promise((r) => setTimeout(r, 700));
     assert_(dom.window.__rc === 1, '防抖合并为一次刷新, got ' + dom.window.__rc);
+    // 恢复原 refresh，避免污染后续测试（Bug6 依赖真实 refresh 着色文件树）
+    g(dom, 'GitPanel.refresh = window.__origGitRefresh');
   });
 
   await okAsync('设置：Git 配置分类（预填 + 保存）', async () => {
@@ -1419,6 +1424,120 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
     assert_($allIn(dom.window.document, '.toast').some((t) => t.textContent.includes('测试提示')), 'toast 出现');
+  });
+
+  await okAsync('Bug1：空状态只覆盖内容区（#content 定位）', async () => {
+    const pos = dom.window.getComputedStyle($(dom, '#content')).position;
+    assert_(pos === 'relative', '#content 应为 relative 以约束空状态覆盖范围, got: ' + pos);
+    // 清空标签触发空状态后，侧边栏与工具栏仍在可交互区（未被绝对定位覆盖到 viewport）
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
+    await tick();
+    assert_($(dom, '#empty-state').classList.contains('visible'), '空状态可见');
+    assert_($(dom, '#tool-project') && !$(dom, '#tool-project').classList.contains('hidden'), '工具条仍可用');
+  });
+
+  await okAsync('Bug2：文件名过长不换行（nowrap）', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    const nm = $allIn($(dom, '#tree'), '.tree-row .nm').find((n) => n.title === P + '/README.md');
+    assert_(nm, 'README.md 行存在');
+    assert_(dom.window.getComputedStyle(nm).whiteSpace === 'nowrap', '文件名 nowrap, got: ' + dom.window.getComputedStyle(nm).whiteSpace);
+  });
+
+  await okAsync('Bug3：弹窗不透明面板', async () => {
+    key(dom, 'p', { ctrl: true });
+    await tick();
+    const panel = $(dom, '#qo-box');
+    assert_(panel, '弹窗面板存在');
+    assert_(panel.classList.contains('modal-panel'), '弹窗带 modal-panel 类（统一不透明面板样式）');
+    const css = $allIn(dom.window.document, 'style').map((s) => s.textContent).join('\n');
+    assert_(css.includes('.modal-panel') && css.includes('background'), '样式表含 .modal-panel 背景规则');
+    key(dom, 'Escape', {});
+    await tick();
+  });
+
+  await okAsync('Bug4：图片查看器无格子背景', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
+    await tick(); await tick();
+    const img = $(dom, '.img-view');
+    assert_(img, '图片查看器存在');
+    const bg = dom.window.getComputedStyle(img).backgroundImage;
+    assert_(bg === 'none', '无 checkerboard 背景, got: ' + bg);
+  });
+
+  await okAsync('Bug5：目录树一键收起/展开', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    // 展开 src
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    click(srcRow);
+    await tick(); await tick();
+    assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), 'src 已展开');
+    await g(dom, 'Tree.collapseAll()');
+    await tick(); await tick();
+    assert_(!$allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), '收起后 app.js 不可见');
+    await g(dom, 'Tree.expandAll()');
+    await tick(); await tick();
+    assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), '展开后 app.js 可见');
+  });
+
+  await okAsync('Bug6：文件树 Git 状态着色', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const nm = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/README.md').querySelector('.nm');
+    assert_(nm.classList.contains('git-modified'), 'README.md 显示修改色（git-modified）');
+  });
+
+  await okAsync('Bug7：Git 放弃修改（revert）', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    const file = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    assert_(file, '找到 README.md 变更行');
+    const before = calls.discard.length;
+    click(file.querySelector('.git-revert'));
+    await tick();
+    const yesBtn = $allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('确定'));
+    assert_(yesBtn, '确认弹窗出现');
+    click(yesBtn);
+    await tick(); await tick();
+    assert_(calls.discard.length === before + 1, '调用了 git.discard');
+    assert_(calls.discard[calls.discard.length - 1] === 'README.md', '丢弃的是 README.md');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Bug10：目录区宽度拖拽调整并持久化', async () => {
+    const sidebar = $(dom, '#sidebar');
+    const resizer = $(dom, '#sidebar-resizer');
+    assert_(resizer, 'resizer 存在');
+    resizer.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, clientX: 200 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', { bubbles: true, clientX: 320 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX: 320 }));
+    await tick();
+    assert_(sidebar.style.width === '320px', '宽度更新为 320px: ' + sidebar.style.width);
+    assert_(dom.window.localStorage.getItem('myide-sidebar-width') === '320', '宽度持久化');
+  });
+
+  await okAsync('Bug11：Markdown 分屏实时预览', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
+    await tick(); await tick();
+    assert_($(dom, '.md-split'), '分屏容器出现');
+    assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
+    const ta = $(dom, 'textarea.editor');
+    ta.value = '# 实时标题\n\n新内容';
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
+    const md = $(dom, '.md-split-preview .md-view');
+    assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('单栏')));
+    await tick();
+    assert_(!$(dom, '.md-split'), '单栏后无分屏');
   });
 
   console.log('');

@@ -310,6 +310,7 @@ ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => gitCall('diffCommit', d
 ipcMain.handle('git:commitFiles', (_e, dir, oid) => gitCall('commitFiles', dir, oid));
 ipcMain.handle('git:branches', (_e, dir) => gitCall('branches', dir));
 ipcMain.handle('git:checkout', (_e, dir, ref) => gitCall('checkout', dir, ref));
+ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
 ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
 ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
 
