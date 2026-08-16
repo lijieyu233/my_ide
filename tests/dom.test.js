@@ -99,6 +99,7 @@ async function loadApp(dom) {
   evalFile('search.js');
   evalFile('session.js');
   evalFile('shortcuts.js');
+  evalFile('settings.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await tick();
@@ -109,7 +110,7 @@ const $allIn = (el, sel) => [...el.querySelectorAll(sel)];
 const $$ = (dom, sel) => [...dom.window.document.querySelectorAll(sel)];
 
 const click = (el) => el.dispatchEvent(new el.ownerDocument.defaultView.MouseEvent('click', { bubbles: true, cancelable: true }));
-const key = (dom, k, opts = {}) => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ctrlKey: opts.ctrl || false, shiftKey: opts.shift || false }));
+const key = (dom, k, opts = {}) => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ctrlKey: opts.ctrl || false, altKey: opts.alt || false, shiftKey: opts.shift || false }));
 function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 
 (async () => {
@@ -524,6 +525,67 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const el = $(dom, '#sb-version');
     assert_(el && el.textContent.includes('0.1.0'), '版本号显示, got: ' + (el && el.textContent));
     assert_(el.textContent.includes('test123'), '提交哈希显示');
+  });
+
+  await okAsync('设置：Ctrl+Alt+S 打开面板，列出动作', async () => {
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    assert_($(dom, '#set-box'), '设置面板打开');
+    const rows = $allIn($(dom, '#set-list'), '.set-row');
+    assert_(rows.length >= 10, '动作列表完整, got ' + rows.length);
+    assert_($(dom, '#set-list').textContent.includes('快速打开文件'), '含快速打开动作');
+  });
+
+  await okAsync('设置：修改快捷键为 Ctrl+Q 并生效', async () => {
+    const qoRow = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
+    click(qoRow.querySelector('.set-combo'));
+    await tick();
+    assert_($(dom, '.set-combo.listening'), '进入监听态');
+    key(dom, 'Q', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '.set-combo.listening'), '监听结束');
+    const qoRow2 = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
+    assert_(qoRow2.querySelector('.set-combo').textContent.includes('ctrl + q'), '显示新按键: ' + qoRow2.querySelector('.set-combo').textContent);
+    // 关闭设置，用 Ctrl+Q 触发
+    click($(dom, '#set-x'));
+    await tick();
+    key(dom, 'Q', { ctrl: true });
+    await tick(); await tick();
+    assert_($(dom, '#qo-input'), 'Ctrl+Q 触发快速打开');
+    key(dom, 'Escape', {});
+    await tick();
+  });
+
+  await okAsync('设置：冲突检测（绑定到已占用的 Ctrl+1）', async () => {
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    const qoRow = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
+    click(qoRow.querySelector('.set-combo'));
+    await tick();
+    key(dom, '1', { ctrl: true });
+    await tick();
+    const toasts = $allIn(dom.window.document, '.toast');
+    assert_(toasts.some((t) => t.textContent.includes('冲突')), '冲突提示出现');
+    assert_($(dom, '#set-list').textContent.includes('工具窗口'), '面板仍正常');
+  });
+
+  await okAsync('设置：恢复默认', async () => {
+    click($(dom, '#set-reset-all'));
+    await tick();
+    const qoRow2 = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
+    assert_(qoRow2.querySelector('.set-combo').textContent.includes('ctrl + p'), '恢复 Ctrl+P');
+    // 验证 Ctrl+Q 不再触发
+    click($(dom, '#set-x'));
+    await tick();
+    key(dom, 'Q', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '#qo-input'), 'Ctrl+Q 已失效');
+    // 确认 Ctrl+P 恢复
+    key(dom, 'P', { ctrl: true });
+    await tick();
+    assert_($(dom, '#qo-input'), 'Ctrl+P 恢复生效');
+    key(dom, 'Escape', {});
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {

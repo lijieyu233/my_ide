@@ -1,64 +1,138 @@
-// shortcuts.js —— 全局快捷键
-document.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented) return; // textarea 等已自行处理
-  const ctrl = e.ctrlKey || e.metaKey;
-  const k = e.key.toLowerCase();
+// shortcuts.js —— 快捷键系统（动作注册表，支持自定义，PyCharm Keymap 简化版）
+const Shortcuts = (() => {
+  const registry = {}; // id -> {id, desc, keys[], run}
+  const savedKey = {}; // id -> 用户自定义 combo（未修改则无）
+  let keyMap = {};     // combo -> id
+  let captureCb = null; // 正在等待按键（设置面板修改快捷键时）
 
-  // Ctrl+K：打开提交面板
-  if (ctrl && k === 'k') { e.preventDefault(); GitPanel.openCommit(); return; }
-  // Ctrl+Shift+C：复制当前文件完整路径
-  if (ctrl && e.shiftKey && k === 'c') {
-    e.preventDefault();
-    const t = Viewer.activeTab;
-    if (!t) { MI.toast('没有打开的文件', 'err'); return; }
-    MI.copyText(t.path);
-    MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
-    return;
+  const MODS = ['control', 'alt', 'shift', 'meta'];
+
+  // 事件 → 归一化组合串：'ctrl+shift+c'
+  function comboOf(e) {
+    const parts = [];
+    if (e.ctrlKey || e.metaKey) parts.push('ctrl');
+    if (e.altKey) parts.push('alt');
+    if (e.shiftKey) parts.push('shift');
+    let k = (e.key || '').toLowerCase();
+    if (k === ' ') k = 'space';
+    if (MODS.includes(k)) return null; // 纯修饰键不算
+    if (!k || k.length > 1 && !['tab', 'escape', 'enter', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'backspace', 'delete', 'home', 'end', 'pageup', 'pagedown', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12'].includes(k)) return null;
+    parts.push(k);
+    return parts.join('+');
   }
-  // Ctrl+O：打开文件夹
-  if (ctrl && k === 'o') { e.preventDefault(); App.openFolder(); return; }
-  // Ctrl+Shift+F：内容搜索
-  if (ctrl && e.shiftKey && k === 'f') { e.preventDefault(); Search.open(); return; }
-  // Ctrl+Shift+T：切换主题
-  if (ctrl && e.shiftKey && k === 't') {
-    e.preventDefault();
-    Theme.toggle();
-    MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok');
-    return;
+
+  function load() {
+    try {
+      const s = JSON.parse(localStorage.getItem('myide-keys') || '{}');
+      for (const k in s) savedKey[k] = s[k];
+    } catch {}
+    rebuild();
   }
-  // Ctrl+P / Ctrl+Shift+N：快速打开文件
-  if (ctrl && (k === 'p' || (e.shiftKey && k === 'n'))) { e.preventDefault(); QuickOpen.open(); return; }
-  // Ctrl+S：保存（textarea 内已处理，这里兜底）
-  if (ctrl && k === 's') {
-    const t = Viewer.activeTab;
-    if (t && t.ta) { e.preventDefault(); Viewer.saveTab(Viewer.openTabs.indexOf(t)); }
-    return;
-  }
-  // Ctrl+W：关闭标签
-  if (ctrl && k === 'w') {
-    e.preventDefault();
-    const t = Viewer.activeTab;
-    if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t));
-    return;
-  }
-  // Ctrl+Tab：下一个标签
-  if (ctrl && k === 'tab') {
-    e.preventDefault();
-    const n = Viewer.openTabs.length;
-    if (n > 1) {
-      const cur = Viewer.openTabs.indexOf(Viewer.activeTab);
-      Viewer.activate((cur + 1) % n);
+  function rebuild() {
+    keyMap = {};
+    for (const id in registry) {
+      const combos = savedKey[id] ? [savedKey[id]] : registry[id].keys;
+      for (const c of combos) keyMap[c] = id;
     }
-    return;
   }
-  // Ctrl+1 / Ctrl+2 / Ctrl+3：切换工具窗口（PyCharm 式）
-  if (ctrl && k === '1') { e.preventDefault(); App.switchTool('project'); return; }
-  if (ctrl && k === '2') { e.preventDefault(); App.switchTool('outline'); return; }
-  if (ctrl && k === '3') { e.preventDefault(); App.switchTool('git'); return; }
-  // Ctrl+R：刷新
-  if (ctrl && k === 'r') { e.preventDefault(); App.refreshAll(); return; }
-  // Esc：关闭弹窗（textareas 里 Esc 不拦截）
-  if (e.key === 'Escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
-    Modal.hide();
+
+  function register(id, opts) {
+    registry[id] = { id, desc: opts.desc, keys: opts.keys, run: opts.run };
+    rebuild();
   }
-});
+
+  // 绑定列表（设置面板用）
+  function bindings() {
+    return Object.keys(registry).map((id) => ({
+      id,
+      desc: registry[id].desc,
+      combos: savedKey[id] ? [savedKey[id]] : registry[id].keys,
+      custom: !!savedKey[id],
+    }));
+  }
+
+  // 修改绑定；返回冲突的动作描述（若有）
+  function setBinding(id, combo) {
+    const conflict = keyMap[combo] && keyMap[combo] !== id ? registry[keyMap[combo]].desc : null;
+    savedKey[id] = combo;
+    rebuild();
+    save();
+    return conflict;
+  }
+  function reset(id) {
+    delete savedKey[id];
+    rebuild();
+    save();
+  }
+  function resetAll() {
+    for (const k in savedKey) delete savedKey[k];
+    rebuild();
+    save();
+  }
+  function save() {
+    try { localStorage.setItem('myide-keys', JSON.stringify(savedKey)); } catch {}
+  }
+
+  // 设置面板：捕获下一次按键
+  function captureNext(cb) { captureCb = cb; }
+  function isCapturing() { return !!captureCb; }
+
+  document.addEventListener('keydown', (e) => {
+    const combo = comboOf(e);
+    // 捕获模式（改快捷键）
+    if (captureCb) {
+      if (combo) {
+        e.preventDefault();
+        e.stopPropagation();
+        const cb = captureCb;
+        captureCb = null;
+        cb(combo);
+      }
+      return;
+    }
+    if (!combo) return;
+    // Esc 关闭弹窗（不参与自定义，防止无法取消）
+    if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
+      Modal.hide();
+      return;
+    }
+    if (e.defaultPrevented) return; // textarea 等已自行处理
+    const id = keyMap[combo];
+    if (!id) return;
+    e.preventDefault();
+    try {
+      const r = registry[id].run();
+      if (r && r.catch) r.catch(() => {});
+    } catch (err) {
+      console.error('[shortcut]', id, err);
+    }
+  });
+
+  return { register, bindings, setBinding, reset, resetAll, load, captureNext, isCapturing, comboOf };
+})();
+window.Shortcuts = Shortcuts;
+
+// ---------- 动作注册（全部现有快捷键迁移）----------
+function copyActivePath() {
+  const t = Viewer.activeTab;
+  if (!t) { MI.toast('没有打开的文件', 'err'); return; }
+  MI.copyText(t.path);
+  MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
+}
+
+Shortcuts.register('open-folder', { desc: '打开文件夹', keys: ['ctrl+o'], run: () => App.openFolder() });
+Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
+Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
+Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
+Shortcuts.register('commit', { desc: '提交更改', keys: ['ctrl+k'], run: () => GitPanel.openCommit() });
+Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
+Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
+Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
+Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.switchTool('project') });
+Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.switchTool('outline') });
+Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], run: () => App.switchTool('git') });
+Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
+Shortcuts.register('theme', { desc: '切换主题', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok'); } });
+Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
+
+Shortcuts.load();
