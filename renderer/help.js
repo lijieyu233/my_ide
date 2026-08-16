@@ -16,6 +16,7 @@ const Help = (() => {
     box.innerHTML = `
       <div class="m-head">ℹ️ 帮助与快捷键 <span class="x" id="help-x">✕</span></div>
       <div class="help-body">
+        <div class="help-ver" id="help-ver">加载中…</div>
         <table class="help-table">
           <tr><th>动作</th><th>快捷键</th></tr>
           ${rows}
@@ -25,6 +26,11 @@ const Help = (() => {
         </div>
       </div>`;
     document.getElementById('help-x').onclick = () => Modal.hide();
+    // 版本信息
+    window.myIDE.appInfo().then((info) => {
+      const el = document.getElementById('help-ver');
+      if (el && info) el.textContent = 'My IDE v' + info.version + (info.commit ? ' (' + info.commit + ')' : '');
+    }).catch(() => {});
   }
 
   return { open };

@@ -125,7 +125,7 @@ function makeDom() {
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
     },
-    appInfo: async () => ({ version: '0.1.0', commit: 'test123' }),
+    appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     plugins: {
       onChanged: (cb) => { fakePluginCb = cb; },
       loadAll: async () => [
@@ -582,7 +582,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('版本号显示在状态栏右侧', async () => {
     await tick(); await tick();
     const el = $(dom, '#sb-version');
-    assert_(el && el.textContent.includes('0.1.0'), '版本号显示, got: ' + (el && el.textContent));
+    assert_(el && el.textContent.includes('0.2.0'), '版本号显示, got: ' + (el && el.textContent));
     assert_(el.textContent.includes('test123'), '提交哈希显示');
   });
 
@@ -1222,6 +1222,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
     assert_(!$(dom, '#sb-info').textContent.includes('CRLF'), 'LF 文件无标记');
+  });
+
+  await okAsync('帮助页版本信息显示', async () => {
+    key(dom, 'F1', {});
+    await tick(); await tick();
+    const ver = $(dom, '#help-ver');
+    assert_(ver && ver.textContent.includes('0.2.0'), '版本显示: ' + (ver && ver.textContent));
+    click($(dom, '#help-x'));
+    await tick();
   });
 
   await okAsync('toast 提示正常', async () => {
