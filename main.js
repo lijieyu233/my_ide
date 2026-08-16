@@ -265,19 +265,53 @@ ipcMain.handle('fs:copy', (_e, src, destDir) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-// ---------- IPC：Git ----------
-ipcMain.handle('git:init', (_e, dir) => G.initRepo(dir));
-ipcMain.handle('git:status', (_e, dir) => G.status(dir));
-ipcMain.handle('git:log', (_e, dir, depth, ref) => G.log(dir, depth, ref));
-ipcMain.handle('git:logAll', (_e, dir, depth) => G.logAll(dir, depth));
-ipcMain.handle('git:commit', (_e, dir, opts) => G.commit(dir, opts));
-ipcMain.handle('git:diffWorkdir', (_e, dir, file) => G.diffWorkdir(dir, file));
-ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => G.diffCommit(dir, oid, file));
-ipcMain.handle('git:commitFiles', (_e, dir, oid) => G.commitFiles(dir, oid));
-ipcMain.handle('git:branches', (_e, dir) => G.branches(dir));
-ipcMain.handle('git:checkout', (_e, dir, ref) => G.checkout(dir, ref));
-ipcMain.handle('git:getUserConfig', (_e, dir) => G.getUserConfig(dir));
-ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => G.setUserConfig(dir, cfg));
+// ---------- IPC：Git（worker 线程执行，主进程不阻塞）----------
+const { Worker } = require('worker_threads');
+let gitWorker = null;
+let gitSeq = 0;
+const gitPending = new Map();
+function gitCall(op, ...args) {
+  return new Promise((resolve) => {
+    if (!gitWorker) { // 回退：worker 不可用时主进程直跑
+      G[op](...args).then((r) => resolve(r)).catch((e) => resolve({ error: String((e && e.message) || e) }));
+      return;
+    }
+    const id = ++gitSeq;
+    gitPending.set(id, resolve);
+    gitWorker.postMessage({ id, op, args });
+  });
+}
+function startGitWorker() {
+  try {
+    gitWorker = new Worker(path.join(__dirname, 'git-worker.js'));
+    gitWorker.on('message', (msg) => {
+      const r = gitPending.get(msg.id);
+      if (r) { gitPending.delete(msg.id); r(msg.error ? { error: msg.error } : msg.result); }
+    });
+    gitWorker.on('error', (e) => {
+      console.error('git worker error, fallback to main:', e);
+      gitWorker = null;
+      gitPending.forEach((r) => r({ error: 'git worker 不可用' }));
+      gitPending.clear();
+    });
+  } catch (e) {
+    console.error('git worker start failed:', e);
+    gitWorker = null;
+  }
+}
+
+ipcMain.handle('git:init', (_e, dir) => gitCall('initRepo', dir));
+ipcMain.handle('git:status', (_e, dir) => gitCall('status', dir));
+ipcMain.handle('git:log', (_e, dir, depth, ref) => gitCall('log', dir, depth, ref));
+ipcMain.handle('git:logAll', (_e, dir, depth) => gitCall('logAll', dir, depth));
+ipcMain.handle('git:commit', (_e, dir, opts) => gitCall('commit', dir, opts));
+ipcMain.handle('git:diffWorkdir', (_e, dir, file) => gitCall('diffWorkdir', dir, file));
+ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => gitCall('diffCommit', dir, oid, file));
+ipcMain.handle('git:commitFiles', (_e, dir, oid) => gitCall('commitFiles', dir, oid));
+ipcMain.handle('git:branches', (_e, dir) => gitCall('branches', dir));
+ipcMain.handle('git:checkout', (_e, dir, ref) => gitCall('checkout', dir, ref));
+ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
+ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
 
 // ---------- IPC：应用信息（版本/提交，防止跑旧版本不自知）----------
 ipcMain.handle('app:info', () => {
@@ -319,6 +353,7 @@ app.whenReady().then(() => {
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
   if (OPEN_ARG) { const s = loadState(); s.lastFolder = OPEN_ARG; saveState(s); }
   watchPlugins();
+  startGitWorker();
   const win = createWindow();
 
   if (SMOKE) {
