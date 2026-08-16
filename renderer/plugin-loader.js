@@ -58,12 +58,18 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       pre.insertBefore(btn, pre.firstChild);
     });
   }
-  // 图片相对路径 → 本地文件
+  // 图片相对路径 → 本地文件（以笔记所在目录为基准，逐段编码避免把 / 编码掉）
   wrap.querySelectorAll('img').forEach((img) => {
-    const src = img.getAttribute('src') || '';
-    if (src && !/^(https?:|data:|blob:)/.test(src)) {
-      img.src = 'file:///' + String(window.MI.activeRoot || '').split('\\\\').join('/') + '/' + encodeURIComponent(src.replace(/^[\\\\/]+/, ''));
+    const src = (img.getAttribute('src') || '').trim();
+    if (!src || /^(https?:|data:|blob:|file:)/i.test(src)) return;
+    const baseDir = String(path || '').split(/[\\/]/);
+    baseDir.pop(); // 去掉文件名，保留所在目录
+    for (const seg of src.split(/[\\/]/)) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') baseDir.pop();
+      else baseDir.push(seg);
     }
+    img.src = 'file:///' + baseDir.map((s) => encodeURIComponent(s)).join('/');
   });
   // 链接跳转：外链 → 系统浏览器；相对路径 → 打开本地文件；#锚点 → 页内滚动
   const resolveLocal = (rel) => {
