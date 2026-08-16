@@ -231,12 +231,9 @@ ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return 
 ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
-  clipboard.writeText(arr.join('
-'));
+  clipboard.writeText(arr.join('\n'));
   try {
-    clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('
-') + '
-', 'utf16le'));
+    clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\n') + '\n', 'utf16le'));
   } catch {}
   return true;
 });
