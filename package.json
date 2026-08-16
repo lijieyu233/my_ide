@@ -8,10 +8,11 @@
     "start": "electron .",
     "test:git": "node tests/git.test.js",
     "test:dom": "node tests/dom.test.js",
-    "test": "npm run test:git && npm run test:dom",
+    "test": "npm run check:js && npm run test:git && npm run test:dom",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
-    "bench": "node scripts/bench.js"
+    "bench": "node scripts/bench.js",
+    "check:js": "node scripts/syntax-check.js"
   },
   "dependencies": {
     "highlight.js": "^11.10.0",
