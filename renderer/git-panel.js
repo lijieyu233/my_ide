@@ -3,6 +3,7 @@ const GitPanel = (() => {
   const body = document.getElementById('git-body');
   const branchEl = document.getElementById('git-branch');
   let root = null;
+  let filterQ = ''; // 提交过滤词
   let state = null; // {isRepo, branch, changed, commits, unborn}
 
   // ---------- 刷新 ----------
@@ -73,7 +74,7 @@ const GitPanel = (() => {
       }
     }
 
-    // 提交历史
+    // 提交历史：过滤框 + 分支图
     const t2 = document.createElement('div');
     t2.className = 'git-section-title';
     t2.textContent = `提交历史 (${state.commits.length})`;
@@ -83,16 +84,77 @@ const GitPanel = (() => {
       d.className = 'git-empty';
       d.textContent = '还没有提交，Ctrl+K 提交第一个吧';
       body.appendChild(d);
+    } else {
+      const filter = document.createElement('input');
+      filter.id = 'git-filter';
+      filter.type = 'text';
+      filter.placeholder = '🔍 过滤提交…（消息/作者/哈希）';
+      filter.value = filterQ;
+      filter.addEventListener('input', () => { filterQ = filter.value; renderHistory(); });
+      body.appendChild(filter);
+      const hist = document.createElement('div');
+      hist.id = 'git-history';
+      body.appendChild(hist);
+      renderHistory(hist);
     }
-    for (const c of state.commits) {
+  }
+
+  // 分支图列状态机（gitk 简化）：返回每行 {chars, isMerge}
+  function buildGraph(commits) {
+    const rows = [];
+    const cols = [];
+    for (const c of commits) {
+      let col = cols.indexOf(c.oid);
+      if (col === -1) { col = cols.length; cols.push(c.oid); }
+      const chars = [];
+      for (let j = 0; j < cols.length; j++) {
+        if (j === col) chars.push('●');
+        else chars.push(cols[j] ? '│' : ' ');
+      }
+      cols[col] = c.parents[0] || null;
+      for (let p = 1; p < c.parents.length; p++) {
+        if (!cols.includes(c.parents[p])) cols.push(c.parents[p]);
+      }
+      rows.push({ chars, isMerge: c.parents.length > 1 });
+    }
+    return rows;
+  }
+
+  function renderHistory(container) {
+    const list = container || document.getElementById('git-history');
+    if (!list) return;
+    list.innerHTML = '';
+    const q = filterQ.trim().toLowerCase();
+    const filtered = q
+      ? state.commits.filter((c) =>
+          (c.message + ' ' + c.author + ' ' + c.oid).toLowerCase().includes(q))
+      : state.commits;
+    if (!filtered.length) {
+      const d = document.createElement('div');
+      d.className = 'git-empty';
+      d.textContent = '没有匹配的提交';
+      list.appendChild(d);
+      return;
+    }
+    const graph = buildGraph(filtered);
+    filtered.forEach((c, i) => {
+      const row = graph[i];
       const el = document.createElement('div');
       el.className = 'git-commit';
-      el.innerHTML = `<div class="cmsg">${esc(c.message)}</div>
+      const line = document.createElement('span');
+      line.className = 'gc-graph';
+      line.textContent = row.chars.join('');
+      line.title = row.isMerge ? '合并提交' : '';
+      el.appendChild(line);
+      const main = document.createElement('div');
+      main.className = 'gc-main';
+      main.innerHTML = `<div class="cmsg">${esc(c.message)}${i === 0 && !q ? '<span class="badge head">HEAD</span>' : ''}</div>
         <div class="cmeta"><span class="cid">${c.short}</span><span>${fmtDate(c.timestamp)}</span><span>${esc(c.author)}</span></div>`;
+      el.appendChild(main);
       el.title = c.fullMessage + '\n' + c.oid + '\n点击查看该提交的修改';
-      el.onclick = () => openCommitDiff(c);
-      body.appendChild(el);
-    }
+      el.onclick = () => openCommitDetails(c);
+      list.appendChild(el);
+    });
   }
 
   function esc(s) {
@@ -192,39 +254,23 @@ const GitPanel = (() => {
     renderDiffView(r, label);
   }
 
-  function renderDiffView(r, label) {
-    const view = document.getElementById('viewer');
-    const empty = document.getElementById('empty-state');
-    empty.classList.remove('visible');
-    view.innerHTML = '';
-    const wrap = document.createElement('div');
-    wrap.className = 'diff-wrap';
-
-    const head = document.createElement('div');
-    head.className = 'diff-head';
-    head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
-      <span class="df-path">${esc(r.file)}</span>
-      <span class="df-meta">${esc(label || '')} · +${countAdd(r.hunks)} / -${countDel(r.hunks)}</span>`;
-    head.querySelector('#df-back').onclick = () => {
-      const t = Viewer.activeTab;
-      if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
-      else { view.innerHTML = ''; empty.classList.add('visible'); }
-    };
-    wrap.appendChild(head);
-
-    const bodyEl = document.createElement('div');
-    bodyEl.className = 'diff-body';
+  // 构建 diff 表格（hunk 折叠逻辑），供整页 diff 与提交详情双栏共用
+  function buildDiffTable(r) {
+    const fileBox = document.createElement('div');
+    fileBox.className = 'diff-file';
+    const title = document.createElement('div');
+    title.className = 'diff-file-title';
+    title.innerHTML = `<span class="b">${esc(r.file)}</span>`;
+    fileBox.appendChild(title);
     if (!r.hunks || !r.hunks.length) {
-      bodyEl.innerHTML = '<div class="diff-msg">无内容差异</div>';
-    } else {
-      const fileBox = document.createElement('div');
-      fileBox.className = 'diff-file';
-      const title = document.createElement('div');
-      title.className = 'diff-file-title';
-      title.innerHTML = `<span class="b">${esc(r.file)}</span>`;
-      fileBox.appendChild(title);
-      const table = document.createElement('table');
-      table.className = 'diff-table';
+      const msg = document.createElement('div');
+      msg.className = 'diff-msg';
+      msg.textContent = '无内容差异';
+      fileBox.appendChild(msg);
+      return fileBox;
+    }
+    const table = document.createElement('table');
+    table.className = 'diff-table';
       r.hunks.forEach((h, hi) => {
         const sep = document.createElement('tr');
         sep.className = 'diff-hunk-gap';
@@ -250,11 +296,103 @@ const GitPanel = (() => {
         sep.onclick = () => setOpen(!sep.dataset.open);
         setOpen(rows.length <= 30);
       });
-      fileBox.appendChild(table);
-      bodyEl.appendChild(fileBox);
-    }
+    fileBox.appendChild(table);
+    return fileBox;
+  }
+
+  // 整页 diff 视图（本地修改/返回流程用）
+  function renderDiffView(r, label) {
+    const view = document.getElementById('viewer');
+    const empty = document.getElementById('empty-state');
+    empty.classList.remove('visible');
+    view.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'diff-wrap';
+
+    const head = document.createElement('div');
+    head.className = 'diff-head';
+    head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
+      <span class="df-path">${esc(r.file)}</span>
+      <span class="df-meta">${esc(label || '')} · +${countAdd(r.hunks)} / -${countDel(r.hunks)}</span>`;
+    head.querySelector('#df-back').onclick = () => {
+      const t = Viewer.activeTab;
+      if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
+      else { view.innerHTML = ''; empty.classList.add('visible'); }
+    };
+    wrap.appendChild(head);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'diff-body';
+    bodyEl.appendChild(buildDiffTable(r));
     wrap.appendChild(bodyEl);
     view.appendChild(wrap);
+  }
+
+  // ========== Commit 详情双栏（PyCharm Log 点击提交）==========
+  let detailOid = null;
+
+  async function openCommitDetails(c) {
+    detailOid = c.oid;
+    const r = await window.myIDE.git.commitFiles(root, c.oid);
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    if (!r.files || !r.files.length) { MI.toast('该提交没有文件变更', 'ok'); return; }
+    renderCommitDetails(c, r.files);
+  }
+
+  function renderCommitDetails(c, files) {
+    const view = document.getElementById('viewer');
+    const empty = document.getElementById('empty-state');
+    empty.classList.remove('visible');
+    view.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'cd-wrap';
+
+    const head = document.createElement('div');
+    head.className = 'diff-head';
+    head.innerHTML = `<button class="vt-btn" id="cd-back">← 返回</button>
+      <span class="df-path">${esc(c.short)} ${esc(c.message)}</span>
+      <span class="df-meta">${esc(c.author)} · ${new Date(c.timestamp).toLocaleString()}</span>`;
+    head.querySelector('#cd-back').onclick = () => {
+      const t = Viewer.activeTab;
+      if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
+      else { view.innerHTML = ''; empty.classList.add('visible'); }
+    };
+    wrap.appendChild(head);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'cd-body';
+    const fileList = document.createElement('div');
+    fileList.className = 'cd-files';
+    files.forEach((f, i) => {
+      const row = document.createElement('div');
+      row.className = 'cd-file' + (i === 0 ? ' sel' : '');
+      row.textContent = f;
+      row.title = f;
+      row.onclick = () => {
+        fileList.querySelectorAll('.cd-file').forEach((x) => x.classList.remove('sel'));
+        row.classList.add('sel');
+        loadDetailDiff(f);
+      };
+      fileList.appendChild(row);
+    });
+    const diffPane = document.createElement('div');
+    diffPane.className = 'cd-diff';
+    bodyEl.appendChild(fileList);
+    bodyEl.appendChild(diffPane);
+    wrap.appendChild(bodyEl);
+    view.appendChild(wrap);
+    loadDetailDiff(files[0]);
+  }
+
+  async function loadDetailDiff(file) {
+    const pane = document.querySelector('.cd-diff');
+    if (!pane || !detailOid) return;
+    pane.innerHTML = '<div class="diff-msg">加载中…</div>';
+    const r = await window.myIDE.git.diffCommit(root, detailOid, file);
+    if (r.error) { pane.innerHTML = '<div class="diff-msg">' + esc(r.error) + '</div>'; return; }
+    if (r.unchanged) { pane.innerHTML = '<div class="diff-msg">无差异</div>'; return; }
+    pane.innerHTML = '';
+    pane.appendChild(buildDiffTable(r));
   }
 
   function countAdd(hunks) {
@@ -264,40 +402,7 @@ const GitPanel = (() => {
     return (hunks || []).reduce((n, h) => n + h.rows.filter((r) => r.type === 'del').length, 0);
   }
 
-  // 点击某条提交 → 加载其修改文件，逐个看 diff
-  async function openCommitDiff(c) {
-    if (!root) return;
-    const r = await window.myIDE.git.commitFiles(root, c.oid);
-    if (r.error) { MI.toast(r.error, 'err'); return; }
-    if (!r.files.length) { MI.toast('该提交没有文件变更', 'ok'); return; }
-    if (r.files.length === 1) {
-      showDiff({ kind: 'commit', oid: c.oid, file: r.files[0], label: c.short + ' ' + c.message });
-      return;
-    }
-    // 多个文件：弹窗选择
-    const box = document.createElement('div');
-    Modal.show(box);
-    box.innerHTML = `
-      <div class="m-head">${esc(c.short)} — ${esc(c.message)}（${r.files.length} 个文件）<span class="x" id="cm-x2">✕</span></div>
-      <div class="m-body">
-        <div id="commit-files"></div>
-      </div>
-      <div class="m-foot"><button class="tb-btn m-cancel" id="cm-cancel2">关闭 (Esc)</button></div>`;
-    const filesBox = document.getElementById('commit-files');
-    for (const f of r.files) {
-      const row = document.createElement('div');
-      row.className = 'commit-file';
-      row.innerHTML = `<span class="nm">${esc(f)}</span>`;
-      row.style.cursor = 'pointer';
-      row.onclick = () => {
-        Modal.hide();
-        showDiff({ kind: 'commit', oid: c.oid, file: f, label: c.short + ' ' + c.message + ' — ' + f });
-      };
-      filesBox.appendChild(row);
-    }
-    document.getElementById('cm-cancel2').onclick = () => Modal.hide();
-    document.getElementById('cm-x2').onclick = () => Modal.hide();
-  }
+
 
   return { refresh, openCommit, set rootDir(v) { root = v; } };
 })();

@@ -36,7 +36,8 @@ const FAKE_GIT = {
   ],
   commits: [
     { oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short: 'aaaaaaa', message: '第二次提交：改文档', fullMessage: '第二次提交：改文档', author: 'me', timestamp: Date.now() - 3600e3, parents: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'] },
-    { oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short: 'bbbbbbb', message: '首次提交', fullMessage: '首次提交', author: 'me', timestamp: Date.now() - 7200e3, parents: [] },
+    { oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short: 'bbbbbbb', message: '合并提交', fullMessage: '合并提交', author: 'me', timestamp: Date.now() - 7200e3, parents: ['cccccccccccccccccccccccccccccccccccccccc', 'dddddddddddddddddddddddddddddddddddddddd'] },
+    { oid: 'cccccccccccccccccccccccccccccccccccccccc', short: 'ccccccc', message: '分支上的提交', fullMessage: '分支上的提交', author: 'me', timestamp: Date.now() - 10800e3, parents: [] },
   ],
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
@@ -208,18 +209,45 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '提交后弹窗关闭');
   });
 
-  await okAsync('点击提交历史 → 文件列表弹窗 → diff 视图', async () => {
-    click($allIn($(dom, '#git-body'), '.git-commit').find((x) => x.textContent.includes('第二次提交')));
+  await okAsync('Git Log：分支图 + HEAD 徽标 + 过滤', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await tick();
+    const graphs = $allIn($(dom, '#git-history'), '.gc-graph').map((x) => x.textContent);
+    assert_(graphs.length === 3, '3 行提交, got ' + graphs.length);
+    assert_(graphs[0].includes('●'), 'HEAD 行有圆点: ' + JSON.stringify(graphs[0]));
+    assert_(graphs.some((x) => x.includes('│')), '存在分支线: ' + JSON.stringify(graphs));
+    assert_($(dom, '.badge.head'), 'HEAD 徽标存在');
+    // 过滤
+    const filter = $(dom, '#git-filter');
+    filter.value = '分支';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const msgs = $allIn($(dom, '#git-history'), '.cmsg').map((x) => x.textContent);
+    assert_(msgs.length === 1 && msgs[0].includes('分支上的提交'), '过滤后只剩一条: ' + JSON.stringify(msgs));
+    filter.value = '';
+    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+  });
+
+  await okAsync('点击提交 → 详情双栏（文件列表 + diff，无弹窗）', async () => {
+    click($allIn($(dom, '#git-history'), '.git-commit').find((x) => x.textContent.includes('第二次提交')));
     await tick(); await tick();
     assert_(calls.commitFiles.length >= 1, '调用了 commitFiles');
-    assert_($(dom, '#commit-files'), '文件列表弹窗');
-    const rows = $allIn($(dom, '#commit-files'), '.commit-file');
-    assert_(rows.length === 2, '2 个变更文件');
-    click(rows[0]);
-    await tick(); await tick();
-    assert_($(dom, '.diff-table'), '进入 diff 视图');
+    assert_($(dom, '.cd-wrap'), '详情双栏出现');
+    const files = $allIn($(dom, '.cd-files'), '.cd-file');
+    assert_(files.length === 2, '2 个变更文件');
+    assert_(files[0].classList.contains('sel'), '默认选中第一个');
+    assert_($(dom, '.cd-diff .diff-table'), '右侧默认渲染 diff');
     assert_(calls.diffCommit.length >= 1, '调用了 diffCommit');
     assert_(calls.diffCommit[0].startsWith('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:'), '对比的是点击的提交');
+    // 点击第二个文件切换
+    click(files[1]);
+    await tick(); await tick();
+    assert_(files[1].classList.contains('sel'), '选中切换');
+    // 返回
+    click($(dom, '#cd-back'));
+    await tick();
+    assert_(!$(dom, '.cd-wrap'), '返回后详情关闭');
   });
 
   await okAsync('Ctrl+R 刷新（无异常）', async () => {
@@ -435,7 +463,6 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('状态栏：文件/行数/分支/行列号', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    console.log('DEBUG tabs:', JSON.stringify(g(dom, 'Viewer.openTabs.map(t => t.path)')), 'active:', g(dom, 'Viewer.activeTab && Viewer.activeTab.path'));
     let sb = $(dom, '#statusbar').textContent;
     assert_(sb.includes('notes.txt'), '状态栏含文件名, got: ' + sb);
     assert_(sb.includes('2 行'), '状态栏含行数, got: ' + sb);
