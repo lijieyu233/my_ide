@@ -1,52 +1,52 @@
 {
-    "name": "my-ide",
-    "version": "0.1.0",
-    "description": "私人定制轻量编辑器：PyCharm 核心体验（文件树/大纲/Git），低内存可扩展（插件渲染）",
-    "main": "main.js",
-    "private": true,
-    "scripts": {
-        "start": "electron .",
-        "test:git": "node tests/git.test.js",
-        "test:dom": "node tests/dom.test.js",
-        "test": "npm run test:git && npm run test:dom",
-        "demo": "node scripts/make-demo.js",
-        "build": "electron-builder --win portable",
-        "bench": "node scripts/bench.js"
+  "name": "my-ide",
+  "version": "0.2.0",
+  "description": "私人定制轻量编辑器：PyCharm 核心体验（文件树/大纲/Git），低内存可扩展（插件渲染）",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test:git": "node tests/git.test.js",
+    "test:dom": "node tests/dom.test.js",
+    "test": "npm run test:git && npm run test:dom",
+    "demo": "node scripts/make-demo.js",
+    "build": "electron-builder --win portable",
+    "bench": "node scripts/bench.js"
+  },
+  "dependencies": {
+    "highlight.js": "^11.10.0",
+    "iconv-lite": "^0.7.3",
+    "isomorphic-git": "^1.27.1",
+    "marked": "^15.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "jsdom": "^29.1.1"
+  },
+  "build": {
+    "appId": "local.myide.app",
+    "productName": "MyIDE",
+    "files": [
+      "main.js",
+      "preload.js",
+      "git-service.js",
+      "package.json",
+      "renderer/**",
+      "plugins/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
     },
-    "dependencies": {
-        "highlight.js": "^11.10.0",
-        "iconv-lite": "^0.7.3",
-        "isomorphic-git": "^1.27.1",
-        "marked": "^15.0.0"
+    "portable": {
+      "artifactName": "MyIDE-${version}.exe"
     },
-    "devDependencies": {
-        "electron": "^33.2.0",
-        "electron-builder": "^26.15.3",
-        "esbuild": "^0.28.2",
-        "jsdom": "^29.1.1"
-    },
-    "build": {
-        "appId": "local.myide.app",
-        "productName": "MyIDE",
-        "files": [
-            "main.js",
-            "preload.js",
-            "git-service.js",
-            "package.json",
-            "renderer/**",
-            "plugins/**"
-        ],
-        "win": {
-            "target": [
-                "portable"
-            ]
-        },
-        "portable": {
-            "artifactName": "MyIDE-${version}.exe"
-        },
-        "directories": {
-            "output": "dist"
-        }
-    },
-    "author": "My IDE"
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "author": "My IDE"
 }
