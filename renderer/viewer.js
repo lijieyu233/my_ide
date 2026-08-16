@@ -60,6 +60,14 @@ const Viewer = (() => {
     }
     doClose(i);
   }
+  // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
+  function closeAll() {
+    tabs.length = 0;
+    active = -1;
+    empty.classList.add('visible');
+    renderTabs();
+    renderView();
+  }
   function doClose(i) {
     tabs.splice(i, 1);
     if (active >= tabs.length) active = tabs.length - 1;
@@ -241,7 +249,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, activate, saveTab,
+    openFile, closeTab, closeAll, activate, saveTab,
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },

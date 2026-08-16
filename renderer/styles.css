@@ -61,6 +61,19 @@ body {
 }
 .tb-btn:hover { background: var(--btn-hover); color: var(--text-bright); }
 .tb-btn.big { padding: 8px 18px; font-size: 14px; margin-top: 14px; }
+#project-bar { display: flex; gap: 4px; overflow-x: auto; max-width: 40vw; flex-shrink: 0; padding: 2px 0; }
+#project-bar::-webkit-scrollbar { height: 4px; }
+.proj-btn {
+  background: transparent; color: var(--text-dim);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 2px 10px; font-size: 12px; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0;
+}
+.proj-btn:hover { color: var(--text-bright); background: var(--btn-hover); }
+.proj-btn.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+
 .tb-path {
   color: var(--text-dim); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

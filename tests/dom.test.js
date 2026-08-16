@@ -28,6 +28,8 @@ const FAKE_FS = {
   [P + '/page.html']: { type: 'file', content: '<h1>Hi HTML</h1><script>document.title = "ok";<\/script>' },
   [P + '/QuickOpen.js']: { type: 'file', content: 'const q = 1;\n' },
   [P + '/pic.png']: { type: 'file', content: '' },
+  ['C:/proj2']: { type: 'dir', children: ['C:/proj2/other.md'] },
+  ['C:/proj2/other.md']: { type: 'file', content: '# 项目二文档\n' },
 };
 const FAKE_GIT = {
   changed: [
@@ -418,7 +420,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '标签已变 dirty');
     await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
     // 直接检查 localStorage 里的会话数据
-    const raw = dom.window.localStorage.getItem('myide-session-v1');
+    const raw = dom.window.localStorage.getItem('myide-session:' + P);
     const state = JSON.parse(raw || '{}');
     assert_(!(state.tabs || []).includes(P + '/README.md'), 'dirty 标签未写入, got: ' + JSON.stringify(state.tabs));
     // 清理：先保存（写入 fake），恢复 fake 内容，再精确定位关闭该 tab
@@ -667,6 +669,57 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!menu.classList.contains('hidden'), '右键菜单出现');
     const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
     assert_(items.includes('📋 复制文件') && items.includes('📌 粘贴到此处'), '菜单含复制/粘贴, got: ' + JSON.stringify(items));
+  });
+
+  await okAsync('多项目：项目栏按钮 + 点击切换', async () => {
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    let btns = $allIn($(dom, '#project-bar'), '.proj-btn');
+    assert_(btns.length >= 2, '项目栏出现多个按钮, got ' + btns.length);
+    assert_($(dom, '#tb-path').textContent.includes('C:/proj2'), '当前是项目二');
+    // 点击切换到项目一
+    click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.textContent.includes('proj') && b.title === P));
+    await tick(); await tick();
+    assert_($(dom, '#tb-path').textContent.includes('C:/proj'), '切换回项目一');
+    const active = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.classList.contains('active'));
+    assert_(active && active.title === P, '高亮跟随切换');
+    // 切回项目二，验证树内容不同
+    click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === 'C:/proj2'));
+    await tick(); await tick();
+    const names = $allIn($(dom, '#tree'), '.tree-row .nm').map((n) => n.textContent);
+    assert_(names.includes('other.md'), '树切换到项目二内容: ' + JSON.stringify(names));
+  });
+
+  await okAsync('多项目：会话按项目独立记忆', async () => {
+    // 项目二打开 other.md
+    await g(dom, 'Viewer.openFile("C:/proj2/other.md")');
+    await tick(); await tick();
+    await new Promise((r) => setTimeout(r, 500)); // 防抖保存
+    // 切到项目一，打开 README.md
+    click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P));
+    await tick(); await tick();
+    assert_($(dom, '#tb-path').textContent.includes('C:/proj'), '已切到项目一');
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    await new Promise((r) => setTimeout(r, 500)); // 防抖保存
+    // 切回项目二 → 应恢复 other.md（项目二自己的会话）
+    click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === 'C:/proj2'));
+    await tick(); await tick();
+    const tabs = g(dom, 'Viewer.openTabs.map(t => t.name)');
+    assert_(tabs.includes('other.md'), '项目二恢复自己的标签: ' + JSON.stringify(tabs));
+  });
+
+  await okAsync('多项目：右键移除项目', async () => {
+    const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P);
+    btn.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    assert_($(dom, '#modal-mask:not(.hidden)') || $(dom, '#modal-mask'), '确认弹窗出现');
+    // 点击确认（弹窗里的确定按钮）
+    const yesBtn = $allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('确定'));
+    click(yesBtn);
+    await tick();
+    const still = $allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P);
+    assert_(!still, '项目一从列表移除');
   });
 
   await okAsync('toast 提示正常', async () => {

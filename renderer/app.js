@@ -112,10 +112,62 @@ const App = (() => {
     el.textContent = parts.join('    ');
   }
 
+  // ---------- 多项目（顶部项目栏）----------
+  let projects = []; // [{path}]
+
+  function loadProjects() {
+    try { projects = JSON.parse(localStorage.getItem('myide-projects') || '[]'); } catch { projects = []; }
+  }
+  function saveProjects() {
+    try { localStorage.setItem('myide-projects', JSON.stringify(projects)); } catch {}
+  }
+  function addProject(p) {
+    if (!projects.some((x) => x.path === p)) {
+      projects.push({ path: p });
+      saveProjects();
+      renderProjectBar();
+    }
+  }
+  function renderProjectBar() {
+    const bar = document.getElementById('project-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    for (const pr of projects) {
+      const btn = document.createElement('button');
+      btn.className = 'proj-btn' + (pr.path === root ? ' active' : '');
+      btn.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
+      btn.title = pr.path;
+      btn.onclick = () => openProject(pr.path);
+      btn.oncontextmenu = (e) => {
+        e.preventDefault();
+        Modal.confirm('移除项目', '从项目列表移除「' + btn.textContent + '」？（不影响磁盘上的文件）').then((yes) => {
+          if (yes) {
+            projects = projects.filter((x) => x.path !== pr.path);
+            saveProjects();
+            renderProjectBar();
+          }
+        });
+      };
+      bar.appendChild(btn);
+    }
+  }
+  // 切换项目：dirty 确认 → 关闭全部标签 → 重新加载
+  async function openProject(p) {
+    if (p === root) return;
+    const dirtyCount = Viewer.openTabs.filter((t) => t.dirty).length;
+    if (dirtyCount) {
+      const yes = await Modal.confirm('未保存的更改', dirtyCount + ' 个标签有未保存的修改，切换项目将丢弃这些修改。确定切换吗？');
+      if (!yes) return;
+    }
+    Session.saveNow(); // 立即保存当前项目会话，防止被 closeAll 的空状态覆盖
+    Viewer.closeAll();
+    await setRoot(p);
+  }
+
   // ---------- 打开文件夹 ----------
   async function openFolder() {
     const p = await window.myIDE.fs.openFolder();
-    if (p) setRoot(p);
+    if (p) await openProject(p);
   }
 
   async function setRoot(p) {
@@ -127,6 +179,8 @@ const App = (() => {
     GitPanel.rootDir = p;
     QuickOpen.invalidate();
     await GitPanel.refresh();
+    addProject(p);
+    renderProjectBar();
     Session.restore();
   }
 
@@ -172,13 +226,15 @@ const App = (() => {
       if (el && info) el.textContent = 'v' + info.version + (info.commit ? ' (' + info.commit + ')' : '');
     }).catch(() => {});
 
+    loadProjects();
+    renderProjectBar();
     MI.loadPlugins().then(async () => {
       const last = await window.myIDE.fs.getRecent();
       if (last) await setRoot(last);
     });
   }
 
-  return { init, openFolder, setRoot, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, get root() { return root; } };
+  return { init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, get root() { return root; } };
 })();
 window.App = App;
 
