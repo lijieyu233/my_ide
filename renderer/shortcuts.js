@@ -17,6 +17,8 @@ document.addEventListener('keydown', (e) => {
   }
   // Ctrl+O：打开文件夹
   if (ctrl && k === 'o') { e.preventDefault(); App.openFolder(); return; }
+  // Ctrl+Shift+F：内容搜索
+  if (ctrl && e.shiftKey && k === 'f') { e.preventDefault(); Search.open(); return; }
   // Ctrl+Shift+T：切换主题
   if (ctrl && e.shiftKey && k === 't') {
     e.preventDefault();

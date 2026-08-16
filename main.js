@@ -83,6 +83,44 @@ ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
   return { files: out, truncated: out.length >= MAX };
 });
 
+ipcMain.handle('fs:grep', async (_e, root, query) => {
+  // 内容搜索：异步遍历 + 每文件让出事件循环，结果上限 200，跳过二进制/大文件
+  const q = String(query || '').toLowerCase();
+  if (!q) return { results: [], truncated: false, elapsed: 0 };
+  const MAX_RESULTS = 200;
+  const MAX_FILE = 1024 * 1024;
+  const TIMEOUT = 10000;
+  const out = [];
+  const skip = new Set(['.git', 'node_modules']);
+  const start = Date.now();
+  async function walk(dir) {
+    if (out.length >= MAX_RESULTS || Date.now() - start > TIMEOUT) return;
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= MAX_RESULTS || Date.now() - start > TIMEOUT) return;
+      if (skip.has(e.name) || e.name.startsWith('.')) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { await walk(full); continue; }
+      let st;
+      try { st = await fs.promises.stat(full); } catch { continue; }
+      if (st.size > MAX_FILE || st.size === 0) continue;
+      let content;
+      try { content = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
+      if (content.includes('\u0000')) continue; // 二进制
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length && out.length < MAX_RESULTS; i++) {
+        if (lines[i].toLowerCase().includes(q)) {
+          out.push({ file: path.relative(root, full), line: i + 1, text: lines[i].trim().slice(0, 200) });
+        }
+      }
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+  await walk(root);
+  return { results: out, truncated: out.length >= MAX_RESULTS, elapsed: Date.now() - start };
+});
+
 ipcMain.handle('fs:readDir', (_e, dir, showHidden) => {
   const hidden = new Set(['.git', 'node_modules']);
   let entries;

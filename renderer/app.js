@@ -130,6 +130,7 @@ const App = (() => {
     document.getElementById('btn-open').onclick = openFolder;
     document.getElementById('btn-open2').onclick = openFolder;
     document.getElementById('btn-refresh').onclick = refreshAll;
+    document.getElementById('btn-search').onclick = () => Search.open();
     document.getElementById('btn-theme').onclick = () => {
       Theme.toggle();
       MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok');

@@ -344,6 +344,15 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .ctx-item:hover { background: var(--accent); color: #fff; }
 .ctx-item.danger:hover { background: var(--red); }
 
+/* ---------- 搜索面板 ---------- */
+#sr-box { width: 720px; max-width: 92vw; }
+.sr-stat { padding: 6px 14px 2px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+#sr-list { max-height: 380px; overflow: auto; }
+.sr-file { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+.sr-text { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qo-item.sel .sr-text { color: #ddd; }
+body.theme-light .qo-item.sel .sr-text { color: #444; }
+
 /* ---------- 快速打开面板 ---------- */
 #qo-box { width: 560px; max-width: 90vw; }
 #qo-box .qo-head {

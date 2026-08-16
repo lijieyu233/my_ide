@@ -51,6 +51,7 @@ function makeDom() {
       setRecent: async () => {},
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
+      grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content } : { error: 'not found' }),
       writeFile: async (p, content) => { if (FAKE_FS[p]) FAKE_FS[p].content = content; return { ok: true }; },
       rename: async () => ({ ok: true }),
@@ -88,6 +89,7 @@ async function loadApp(dom) {
   evalFile('outline.js');
   evalFile('git-panel.js');
   evalFile('quickopen.js');
+  evalFile('search.js');
   evalFile('session.js');
   evalFile('shortcuts.js');
   evalFile('app.js');
@@ -402,6 +404,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(sep);
     await tick();
     assert_($allIn($(dom, '.diff-table'), 'tr').some((tr) => tr.style.display !== 'none' && tr.querySelector('td.ln')), '再次点击恢复');
+  });
+
+  await okAsync('内容搜索：Ctrl+Shift+F 面板 + 结果 + 点击打开', async () => {
+    key(dom, 'F', { ctrl: true, shift: true });
+    await tick();
+    const input = $(dom, '#sr-input');
+    assert_(input, '搜索面板打开');
+    input.value = '标题';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 400)); // 等防抖+搜索
+    const items = $allIn($(dom, '#sr-list'), '.qo-item');
+    assert_(items.length === 2, '2 条结果, got ' + items.length);
+    assert_(items[0].textContent.includes('README.md:1'), '结果含文件:行号');
+    assert_($(dom, '.sr-stat').textContent.includes('2 条结果'), '统计行显示');
+    // 点击第一条 → 打开文件 + 面板关闭
+    click(items[0]);
+    await tick(); await tick();
+    const tab = $(dom, '.tab.active .tname');
+    assert_(tab && tab.textContent.includes('README.md'), '点击结果打开文件, got: ' + (tab && tab.textContent));
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '面板关闭');
   });
 
   await okAsync('toast 提示正常', async () => {
