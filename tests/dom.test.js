@@ -79,6 +79,7 @@ function makeDom() {
 async function loadApp(dom) {
   const w = dom.window;
   const evalFile = (f) => w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', f), 'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'theme.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'marked.min.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'highlight.min.js'), 'utf8'));
   evalFile('plugin-loader.js');
@@ -367,6 +368,18 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 清理 dirty 状态（避免影响后续）
     await g(dom, 'Viewer.saveTab(0)');
     await tick();
+  });
+
+  await okAsync('主题切换：默认深色 → toggle 浅色 → 快捷键', async () => {
+    assert_(!$(dom, 'body').classList.contains('theme-light'), '默认深色');
+    g(dom, 'Theme.toggle()');
+    await tick();
+    assert_($(dom, 'body').classList.contains('theme-light'), '切换后为浅色');
+    assert_(dom.window.localStorage.getItem('myide-theme') === 'light', 'localStorage 已记录');
+    key(dom, 'T', { ctrl: true, shift: true });
+    await tick();
+    assert_(!$(dom, 'body').classList.contains('theme-light'), '快捷键切回深色');
+    assert_(dom.window.localStorage.getItem('myide-theme') === 'dark', 'localStorage 更新');
   });
 
   await okAsync('toast 提示正常', async () => {

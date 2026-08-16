@@ -17,6 +17,13 @@ document.addEventListener('keydown', (e) => {
   }
   // Ctrl+O：打开文件夹
   if (ctrl && k === 'o') { e.preventDefault(); App.openFolder(); return; }
+  // Ctrl+Shift+T：切换主题
+  if (ctrl && e.shiftKey && k === 't') {
+    e.preventDefault();
+    Theme.toggle();
+    MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok');
+    return;
+  }
   // Ctrl+P / Ctrl+Shift+N：快速打开文件
   if (ctrl && (k === 'p' || (e.shiftKey && k === 'n'))) { e.preventDefault(); QuickOpen.open(); return; }
   // Ctrl+S：保存（textarea 内已处理，这里兜底）
