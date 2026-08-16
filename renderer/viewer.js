@@ -12,6 +12,7 @@ const Viewer = (() => {
   const TEXT_EXTS = new Set(['txt', 'log', 'ini', 'cfg', 'conf', 'env', 'gitignore', 'yml', 'yaml', 'toml', 'xml', 'bat', 'cmd', 'sh', 'ps1', 'sql', 'csv', 'tsv', 'properties', 'lock']);
   const CODE_EXTS = new Set(['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'json', 'css', 'scss', 'less', 'html', 'htm', 'py', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs', 'rb', 'php', 'swift', 'kt', 'scala', 'vue', 'svelte']);
   const PREVIEW_EXTS = new Set(['md', 'markdown', 'html', 'htm', 'csv', 'json']);
+  const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
 
   async function openFile(path) {
     const name = path.split(/[\\/]/).pop();
@@ -25,6 +26,13 @@ const Viewer = (() => {
   }
 
   async function loadTab(tab) {
+    // 图片：二进制无需读取内容，直接走预览渲染器
+    if (IMG_EXTS.has(extOf(tab.name))) {
+      tab.content = '';
+      tab.mode = 'preview';
+      renderView();
+      return;
+    }
     const r = await window.myIDE.fs.readFile(tab.path);
     if (r.error) { tab.error = r.error; tab.mode = 'error'; }
     else if (r.tooLarge) { tab.tooLarge = true; tab.mode = 'error'; }

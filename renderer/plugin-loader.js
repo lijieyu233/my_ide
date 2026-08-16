@@ -71,6 +71,17 @@ MI.registerRenderer(['json'], ({ content }) => {
   try { return JSON.stringify(JSON.parse(content), null, 2); } catch { return content; }
 });
 
+// 图片（解码交给 Chromium，零依赖）
+MI.registerRenderer(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'], ({ path }) => {
+  const wrap = document.createElement('div');
+  wrap.className = 'img-view';
+  const img = document.createElement('img');
+  img.src = 'file:///' + String(path).split('\\').join('/');
+  img.alt = '图片预览';
+  wrap.appendChild(img);
+  return wrap;
+});
+
 // ---------- 加载用户插件 ----------
 MI.loadPlugins = async function () {
   try {

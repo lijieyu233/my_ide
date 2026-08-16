@@ -27,6 +27,7 @@ const FAKE_FS = {
   [P + '/notes.txt']: { type: 'file', content: 'hello notes\n' },
   [P + '/page.html']: { type: 'file', content: '<h1>Hi HTML</h1><script>document.title = "ok";<\/script>' },
   [P + '/QuickOpen.js']: { type: 'file', content: 'const q = 1;\n' },
+  [P + '/pic.png']: { type: 'file', content: '' },
 };
 const FAKE_GIT = {
   changed: [
@@ -441,6 +442,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     sb = $(dom, '#statusbar').textContent;
     assert_(sb.includes('行 1，列 4'), '行列号更新, got: ' + sb);
+  });
+
+  await okAsync('图片预览：img 渲染 + 无源码按钮', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
+    await tick(); await tick();
+    const img = $(dom, '.img-view img');
+    assert_(img, 'img 元素出现');
+    assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
+    const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
+    assert_(!hasSrc, '图片无「查看源码」按钮');
   });
 
   await okAsync('toast 提示正常', async () => {

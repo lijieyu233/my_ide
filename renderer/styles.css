@@ -220,6 +220,16 @@ textarea.editor {
 }
 .md-view .code-copy:hover { color: var(--text-bright); }
 
+/* 图片预览 */
+.img-view {
+  flex: 1; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background-image: conic-gradient(var(--border-mid) 25%, transparent 0 50%, var(--border-mid) 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
+.img-view img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 2px 12px rgba(0,0,0,.35); }
+
 /* HTML 预览 */
 .html-frame { width: 100%; height: 100%; border: none; background: #fff; }
 
