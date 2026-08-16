@@ -11,7 +11,7 @@ const Settings = (() => {
         <div class="set-side">
           <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
-          <div class="set-cat dim" title="敬请期待">🎨 主题</div>
+          <div class="set-cat" data-cat="theme">🎨 主题</div>
         </div>
         <div class="set-main" id="set-main">
           <div class="set-toolbar">
@@ -37,6 +37,7 @@ const Settings = (() => {
         cat.classList.add('active');
         if (cat.dataset.cat === 'keys') renderKeys();
         else if (cat.dataset.cat === 'git') renderGit();
+        else if (cat.dataset.cat === 'theme') renderTheme();
       };
     });
     renderKeys();
@@ -50,6 +51,30 @@ const Settings = (() => {
     document.getElementById('set-hint').textContent = '点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消';
     document.getElementById('set-reset-all').classList.remove('hidden');
     renderList();
+  }
+
+  // ---------- 主题视图 ----------
+  function renderTheme() {
+    document.getElementById('set-title').textContent = '主题';
+    document.getElementById('set-hint').textContent = '选择界面配色，即时生效并保存';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    const cur = Theme.current();
+    list.innerHTML = `
+      <div class="set-form">
+        <div class="theme-options">
+          <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark">🌙 深色</button>
+          <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light">☀️ 浅色</button>
+        </div>
+      </div>`;
+    $all('.theme-opt').forEach((b) => {
+      b.onclick = () => {
+        Theme.set(b.dataset.th);
+        $all('.theme-opt').forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+        MI.toast('已切换为' + (b.dataset.th === 'light' ? '浅色' : '深色') + '主题', 'ok');
+      };
+    });
   }
 
   // ---------- Git 视图 ----------

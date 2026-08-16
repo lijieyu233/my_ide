@@ -14,12 +14,17 @@ const Theme = (() => {
     try { localStorage.setItem(KEY, t); } catch {}
     return t;
   }
+  // 显式设置主题（设置页用）
+  function set(theme) {
+    apply(theme);
+    try { localStorage.setItem(KEY, theme); } catch {}
+  }
   function init() {
     let t = null;
     try { t = localStorage.getItem(KEY); } catch {}
     if (t === 'light') apply('light');
   }
-  return { toggle, current, init };
+  return { toggle, set, current, init };
 })();
 window.Theme = Theme;
 Theme.init(); // 立即应用，避免主题闪烁

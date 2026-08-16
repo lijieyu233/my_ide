@@ -1233,6 +1233,37 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
+  await okAsync('设置页主题分类 + 空状态最近项目', async () => {
+    // 主题分类
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
+    await tick();
+    assert_($(dom, '.theme-opt'), '主题选项出现');
+    assert_($allIn(dom.window.document, '.theme-opt').find((b) => b.classList.contains('sel')).textContent.includes('深色'), '当前主题高亮');
+    click($allIn(dom.window.document, '.theme-opt').find((b) => b.dataset.th === 'light'));
+    await tick();
+    assert_($(dom, 'body').classList.contains('theme-light'), '浅色即时生效');
+    click($(dom, '#set-x'));
+    await tick();
+    // 恢复深色（避免影响后续）
+    g(dom, 'Theme.set("dark")');
+    await tick();
+    // 空状态最近项目（多项目测试已建 projects）
+    await g(dom, 'App.setRoot("C:/proj2")');
+    await tick(); await tick();
+    const recent = $(dom, '#empty-recent');
+    // 清空标签触发空状态（先保存 dirty，避免确认弹窗卡循环）
+    for (let i = 0; i < g(dom, 'Viewer.openTabs.length'); i++) {
+      if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
+    }
+    while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
+    await tick();
+    assert_(recent && $allIn(recent, '.proj-btn').length >= 1, '空状态最近项目出现');
+    await g(dom, 'App.openProject("' + P + '")');
+    await tick(); await tick();
+  });
+
   await okAsync('toast 提示正常', async () => {
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();

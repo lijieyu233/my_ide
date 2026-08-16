@@ -135,6 +135,31 @@ const App = (() => {
       renderProjectBar();
     }
   }
+  function getProjects() { return projects.slice(); }
+
+  // 空状态：最近打开的项目（快速回切）
+  function renderEmptyRecent() {
+    const box = document.getElementById('empty-recent');
+    if (!box) return;
+    box.innerHTML = '';
+    if (projects.length < 2) return;
+    const title = document.createElement('div');
+    title.className = 'empty-hint2';
+    title.textContent = '最近项目';
+    box.appendChild(title);
+    const row = document.createElement('div');
+    row.className = 'empty-projects';
+    for (const pr of projects) {
+      const b = document.createElement('button');
+      b.className = 'proj-btn' + (pr.path === root ? ' active' : '');
+      b.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
+      b.title = pr.path;
+      b.onclick = () => openProject(pr.path);
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
+
   function renderProjectBar() {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
@@ -188,6 +213,7 @@ const App = (() => {
     GitPanel.refresh(); // 后台刷新，不阻塞首屏
     addProject(p);
     renderProjectBar();
+    renderEmptyRecent();
     Session.restore();
   }
 
@@ -256,7 +282,7 @@ const App = (() => {
     });
   }
 
-  return { init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, get root() { return root; } };
+  return { init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline, switchTool, getTool, setTool, updateStatusbar, getProjects, get root() { return root; } };
 })();
 window.App = App;
 

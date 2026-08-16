@@ -418,6 +418,9 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .m-check input { accent-color: var(--accent); }
 .m-err { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
 
+#empty-recent { margin-top: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.empty-projects { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+
 /* ---------- 查找条 ---------- */
 .find-bar {
   display: flex; align-items: center; gap: 6px;
@@ -529,6 +532,15 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   margin-top: 10px; padding: 8px 10px; font-size: 11.5px; color: var(--text-dim);
   background: var(--bg-panel); border-radius: 4px; line-height: 1.6;
 }
+
+.theme-options { display: flex; gap: 10px; }
+.theme-opt {
+  flex: 1; padding: 16px 0; font-size: 13px;
+  background: var(--bg-input); color: var(--text);
+  border: 2px solid var(--btn-border); border-radius: 6px; cursor: pointer;
+}
+.theme-opt:hover { border-color: var(--accent); }
+.theme-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
 
 /* ---------- 设置表单（Git 配置） ---------- */
 .set-form { padding: 16px 18px; max-width: 420px; }
