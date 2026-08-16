@@ -33,7 +33,11 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   let html = '';
   try {
     if (window.marked && window.marked.parse) {
-      html = window.marked.parse(content || '', { breaks: true, gfm: true });
+      let src = content || '';
+      // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / ![[图片.png]] → 标准链接
+      src = src.replace(/!\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, (m, t) => `![${t.trim()}](${t.trim()})`);
+      src = src.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (m, t, _p, alias) => `[${alias ? alias.trim() : t.trim()}](${t.trim()})`);
+      html = window.marked.parse(src, { breaks: true, gfm: true });
     } else {
       html = '<pre>' + (content || '') + '</pre>';
     }
@@ -88,7 +92,9 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       const filePart = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
       const anchor = hashIdx >= 0 ? href.slice(hashIdx + 1) : '';
       if (!filePart) { scrollToAnchor(wrap, anchor); return; }
-      const target = resolveLocal(filePart);
+      let target = resolveLocal(filePart);
+      // wiki 风格无扩展名 → 默认按 .md 打开（Obsidian 习惯）
+      if (target && !/\.[A-Za-z0-9]{1,8}$/.test(target.split(/[\\/]/).pop() || target)) target += '.md';
       if (window.Viewer) Viewer.openFile(target);
       if (anchor) setTimeout(() => scrollToAnchor(document.querySelector('#viewer .md-view'), anchor), 300);
     });

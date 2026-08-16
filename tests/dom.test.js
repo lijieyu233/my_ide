@@ -33,7 +33,7 @@ const FAKE_FS = {
   ['C:/proj/gbk-old.txt']: { type: 'file', content: '中文老文件内容', encoding: 'gbk' },
   ['C:/proj/manual.pdf']: { type: 'file', content: '' },
   ['C:/proj/crlf-file.txt']: { type: 'file', content: 'line1\r\nline2\r\n' },
-  ['C:/proj/link.md']: { type: 'file', content: '# 链接测试\n\n[外部链接](https://example.com)\n[本地文件](./notes.txt)\n[锚点](#链接测试)\n' },
+  ['C:/proj/link.md']: { type: 'file', content: '# 链接测试\n\n[外部链接](https://example.com)\n[本地文件](./notes.txt)\n[锚点](#链接测试)\n\n[[README]]\n\n![[pic.png]]\n' },
 };
 const FAKE_GIT = {
   changed: [
@@ -1570,6 +1570,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(anchor);
     await tick();
     assert_($(dom, '.tab.active .tname') && $(dom, '.tab.active .tname').textContent.includes('notes.txt'), '锚点不切换文件');
+    // wiki 链接 [[README]] → 标准链接并可打开
+    const wiki = links.find((a) => a.textContent === 'README' && a.getAttribute('href') === 'README');
+    assert_(wiki, 'wiki 链接已转换');
+    click(wiki);
+    await tick(); await tick();
+    assert_($(dom, '.tab.active .tname') && $(dom, '.tab.active .tname').textContent.includes('README'), 'wiki 链接打开 README.md');
+    // ![[pic.png]] 嵌入 → 本地图片
+    const wikiImg = $allIn(md, 'img').find((im) => (im.src || '').includes('pic.png'));
+    assert_(wikiImg, 'wiki 图片嵌入渲染');
   });
 
   await okAsync('Bug3：目录展开结构按项目持久化（切换项目后恢复）', async () => {

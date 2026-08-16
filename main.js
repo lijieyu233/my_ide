@@ -393,6 +393,38 @@ app.whenReady().then(() => {
       }, 1200);
     });
   }
+
+  // 真实渲染进程自检模式：node_modules\electron\dist\electron.exe . --check
+  if (process.argv.includes('--check')) {
+    win.webContents.once('did-finish-load', async () => {
+      const wc = win.webContents;
+      try {
+        const demo = path.join(__dirname, 'demo');
+        fs.writeFileSync(path.join(demo, '_shot测试.md'),
+          '# 测试标题\n\n[[README]]\n\n[[README|别名跳转]]\n\n[外部链接](https://example.com)\n\n![[todo.txt]]\n\n![远程图片](https://picsum.photos/300/150)\n', 'utf8');
+        fs.writeFileSync(path.join(demo, '_shot图.png'),
+          Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
+        const bigDir = path.join(demo, '_bigdir');
+        try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
+        fs.mkdirSync(bigDir, { recursive: true });
+        for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(bigDir, 'f' + i + '.txt'), 'x');
+        await new Promise((r) => setTimeout(r, 1500));
+        await wc.executeJavaScript('window.__CHECK_P = ' + JSON.stringify(demo));
+        await wc.executeJavaScript('App.setRoot(' + JSON.stringify(demo) + ')');
+        await new Promise((r) => setTimeout(r, 1500));
+        const pageScript = fs.readFileSync(path.join(__dirname, 'scripts', 'check-page.js'), 'utf8');
+        const out = await wc.executeJavaScript(pageScript);
+        console.log('CHECK RESULT ' + JSON.stringify(out));
+        // 清理测试产物，避免污染 demo 仓库状态
+        try { fs.rmSync(path.join(demo, '_shot测试.md'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, '_shot图.png'), { force: true }); } catch {}
+        try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
+      } catch (e) {
+        console.log('CHECK FAIL ' + String((e && e.stack) || e).slice(0, 800));
+      }
+      app.exit(0);
+    });
+  }
 });
 
 app.on('window-all-closed', () => { app.quit(); });
