@@ -34,6 +34,8 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   try {
     if (window.marked && window.marked.parse) {
       let src = content || '';
+      // 去掉内嵌的 <!DOCTYPE html> 等声明，避免在预览顶部显示成乱文本
+      src = src.replace(/<!DOCTYPE[^>]*>/gi, '');
       // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / ![[图片.png]] → 标准链接
       src = src.replace(/!\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, (m, t) => `![${t.trim()}](${t.trim()})`);
       src = src.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (m, t, _p, alias) => `[${alias ? alias.trim() : t.trim()}](${t.trim()})`);
@@ -113,7 +115,12 @@ MI.registerRenderer(['html', 'htm'], ({ content }) => {
   const frame = document.createElement('iframe');
   frame.className = 'html-frame';
   frame.sandbox = 'allow-scripts allow-modals allow-forms';
-  frame.srcdoc = content || '';
+  // 规范化开头（BOM / 前导空白 / "< !DOCTYPE" 写法），避免 DOCTYPE 被当成正文文本显示
+  let src = String(content || '').replace(/^\uFEFF/, '');
+  src = src.replace(/^\s*< ?!DOCTYPE/i, '<!DOCTYPE');
+  // 注入按键转发：沙箱 iframe 抢走焦点后 Ctrl+1/2/3 等快捷键仍能触发
+  const forward = '<scr' + 'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr' + 'ipt>';
+  frame.srcdoc = forward + src;
   return frame;
 });
 
@@ -130,6 +137,28 @@ MI.registerRenderer(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'], 
   img.src = 'file:///' + String(path).split('\\').join('/');
   img.alt = '图片预览';
   wrap.appendChild(img);
+  return wrap;
+});
+
+// 视频（Chromium 解码，零依赖）
+MI.registerRenderer(['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov'], ({ path }) => {
+  const wrap = document.createElement('div');
+  wrap.className = 'media-view';
+  const v = document.createElement('video');
+  v.controls = true;
+  v.src = 'file:///' + String(path).split('\\').join('/');
+  wrap.appendChild(v);
+  return wrap;
+});
+
+// 音频（Chromium 解码，零依赖）
+MI.registerRenderer(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'], ({ path }) => {
+  const wrap = document.createElement('div');
+  wrap.className = 'media-view audio';
+  const a = document.createElement('audio');
+  a.controls = true;
+  a.src = 'file:///' + String(path).split('\\').join('/');
+  wrap.appendChild(a);
   return wrap;
 });
 

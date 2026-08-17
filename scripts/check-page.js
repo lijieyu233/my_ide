@@ -63,13 +63,12 @@
       const selRows = qa('.tree-row.selected').map((r) => (r.querySelector('.nm') || {}).title);
       return { notesSel: selRows.some((t) => t && t.endsWith('notes.txt')), readmeSel: selRows.some((t) => t && t.endsWith('README.md')), count: selRows.length };
     })();
-    // Markdown 预览 + 分屏
-    out.mdPreview = !!q('.md-view');
-    const srcBtn = qa('.viewer-toolbar .vt-btn').find((b) => b.textContent.includes('源码'));
-    if (srcBtn) click(srcBtn);
+    // Markdown 默认「编辑 + 实时预览」分屏并存
+    await Viewer.openFile(P + '\\README.md');
     await wait(600);
-    out.mdSplit = !!q('.md-split');
+    out.mdSplitDefault = !!q('.md-split');
     out.mdSplitPreview = !!q('.md-split-preview .md-view');
+    out.mdPreviewPane = !!q('.md-view');
     // wiki 链接 + 远程图片（CSP）
     await Viewer.openFile(P + '\\_shot测试.md');
     await wait(1200);
@@ -137,6 +136,32 @@
     // 回到 demo，验证空状态只覆盖内容区（不遮工具栏）+ 页面无滚动溢出
     await App.setRoot(P);
     await wait(1200);
+    // 自绘标题栏窗口控制按钮
+    out.winBtns = !!(q('#win-min') && q('#win-max') && q('#win-close'));
+    // 编码修复验证（无 BOM UTF-8 / 无 BOM UTF-16LE / GBK）
+    await Viewer.openFile(P + '\\_enc_utf8.md');
+    await wait(500);
+    out.encUtf8 = (() => { const t = Viewer.activeTab; return { mode: t.mode, binary: t.binary, head: (t.content || '').slice(0, 12) }; })();
+    await Viewer.openFile(P + '\\_enc_u16le.py');
+    await wait(500);
+    out.encU16le = (() => { const t = Viewer.activeTab; return { mode: t.mode, binary: t.binary, head: (t.content || '').slice(0, 16), enc: t.encoding }; })();
+    await Viewer.openFile(P + '\\_enc_gbk.txt');
+    await wait(500);
+    out.encGbk = (() => { const t = Viewer.activeTab; return { mode: t.mode, binary: t.binary, head: (t.content || '').slice(0, 10), enc: t.encoding }; })();
+    // DOCTYPE 规范化 + HTML 浏览器打开按钮
+    await Viewer.openFile(P + '\\_enc_html.html');
+    await wait(600);
+    const hframe = q('.html-frame');
+    out.htmlDoctype = hframe ? (hframe.getAttribute('srcdoc') || '').slice(0, 60) : 'no-frame';
+    out.htmlBrowserBtn = qa('.viewer-toolbar .vt-btn').some((b) => b.textContent.includes('浏览器打开'));
+    // iframe 按键转发：模拟 iframe 发来的 Ctrl+1
+    App.showTool('outline');
+    await wait(100);
+    window.postMessage({ __myideKey: 1, key: '1', ctrlKey: true }, '*');
+    await wait(200);
+    out.iframeCtrl1 = getComputedStyle(q('#panel-project')).display !== 'none';
+    // 标签「▾ 全部」下拉（打开文件过多时的合并入口）
+    out.tabAllBtn = !!q('.tab-all');
     Viewer.closeAll();
     await wait(300);
     const es = q('#empty-state').getBoundingClientRect();

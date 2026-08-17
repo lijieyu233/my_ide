@@ -176,19 +176,55 @@ const App = (() => {
     for (const pr of projects) {
       const btn = document.createElement('button');
       btn.className = 'proj-btn' + (pr.path === root ? ' active' : '');
-      btn.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
       btn.title = pr.path;
-      btn.onclick = () => openProject(pr.path);
-      btn.oncontextmenu = (e) => {
-        e.preventDefault();
-        Modal.confirm('移除项目', '从项目列表移除「' + btn.textContent + '」？（不影响磁盘上的文件）').then((yes) => {
+      btn.draggable = true;
+      btn.dataset.path = pr.path;
+      const nm = document.createElement('span');
+      nm.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
+      btn.appendChild(nm);
+      // ✕ 关闭项目（右键菜单保留）
+      const x = document.createElement('span');
+      x.className = 'proj-close';
+      x.textContent = '✕';
+      x.title = '移除项目';
+      const doRemove = () => {
+        Modal.confirm('移除项目', '从项目列表移除「' + nm.textContent + '」？（不影响磁盘上的文件）').then((yes) => {
           if (yes) {
-            projects = projects.filter((x) => x.path !== pr.path);
+            projects = projects.filter((p) => p.path !== pr.path);
             saveProjects();
             renderProjectBar();
           }
         });
       };
+      x.onclick = (e) => { e.stopPropagation(); doRemove(); };
+      btn.appendChild(x);
+      btn.onclick = () => openProject(pr.path);
+      btn.oncontextmenu = (e) => { e.preventDefault(); doRemove(); };
+      // 拖拽排序（PyCharm 项目栏习惯）
+      btn.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/proj-path', pr.path);
+        e.dataTransfer.effectAllowed = 'move';
+        btn.classList.add('dragging');
+      });
+      btn.addEventListener('dragend', () => btn.classList.remove('dragging'));
+      btn.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const src = e.dataTransfer.getData('text/proj-path');
+        if (!src || src === pr.path) return;
+        const srcEl = [...bar.children].find((b) => b.dataset.path === src);
+        if (!srcEl || srcEl === btn) return;
+        const r = btn.getBoundingClientRect();
+        bar.insertBefore(srcEl, e.clientX < r.left + r.width / 2 ? btn : btn.nextSibling);
+      });
+      btn.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const src = e.dataTransfer.getData('text/proj-path');
+        if (!src || src === pr.path) return;
+        const order = [...bar.children].map((b) => b.dataset.path).filter(Boolean);
+        projects.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
+        saveProjects();
+        renderProjectBar();
+      });
       bar.appendChild(btn);
     }
   }
@@ -249,7 +285,7 @@ const App = (() => {
   let gitScanTimer = null;
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
-  // ---------- 目录区宽度拖拽调整（持久化）----------
+  // ---------- 目录区宽度拖拽调整（持久化；覆盖层捕获事件保证跨 iframe/视频流畅）----------
   const SIDEBAR_KEY = 'myide-sidebar-width';
   function initSidebarResizer() {
     const sidebar = document.getElementById('sidebar');
@@ -259,17 +295,21 @@ const App = (() => {
       const saved = parseInt(localStorage.getItem(SIDEBAR_KEY) || '', 10);
       if (saved >= 160 && saved <= 560) sidebar.style.width = saved + 'px';
     } catch {}
-    const apply = (x) => {
-      const left = sidebar.getBoundingClientRect().left || 0;
-      const w = Math.min(560, Math.max(160, x - left));
-      sidebar.style.width = w + 'px';
-      try { localStorage.setItem(SIDEBAR_KEY, String(w)); } catch {}
-    };
     resizer.addEventListener('mousedown', (e) => {
       e.preventDefault();
       resizer.classList.add('dragging');
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:col-resize;';
+      document.body.appendChild(overlay);
+      const left = sidebar.getBoundingClientRect().left || 0;
+      const apply = (x) => {
+        const w = Math.min(560, Math.max(160, x - left));
+        sidebar.style.width = w + 'px';
+        try { localStorage.setItem(SIDEBAR_KEY, String(w)); } catch {}
+      };
       const onMove = (ev) => apply(ev.clientX);
       const onUp = () => {
+        overlay.remove();
         resizer.classList.remove('dragging');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
@@ -286,6 +326,19 @@ const App = (() => {
     inited = true;
     document.getElementById('btn-open').onclick = openFolder;
     document.getElementById('btn-open2').onclick = openFolder;
+    // 自绘标题栏窗口控制
+    document.getElementById('win-min').onclick = () => { try { window.myIDE.win.minimize(); } catch {} };
+    document.getElementById('win-max').onclick = () => { try { window.myIDE.win.toggleMaximize(); } catch {} };
+    document.getElementById('win-close').onclick = () => { try { window.myIDE.win.close(); } catch {} };
+    // HTML 预览 iframe 内的按键转发（沙箱 iframe 抢焦点导致 Ctrl+1/2/3 等快捷键失效）
+    window.addEventListener('message', (e) => {
+      const d = e.data;
+      if (!d || d.__myideKey !== 1) return;
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: d.key, ctrlKey: !!d.ctrlKey, shiftKey: !!d.shiftKey, altKey: !!d.altKey, metaKey: !!d.metaKey,
+        bubbles: true, cancelable: true,
+      }));
+    });
     document.getElementById('btn-refresh').onclick = refreshAll;
     document.getElementById('btn-search').onclick = () => Search.open();
     document.getElementById('btn-settings').onclick = () => Settings.open();

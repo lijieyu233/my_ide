@@ -45,6 +45,7 @@ function createWindow() {
     title: 'My IDE',
     backgroundColor: '#2b2b2b',
     autoHideMenuBar: true,
+    frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -56,6 +57,17 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
   return mainWindow;
 }
+
+// ---------- IPC：窗口控制（自绘标题栏）----------
+ipcMain.handle('win:minimize', () => { if (mainWindow) mainWindow.minimize(); });
+ipcMain.handle('win:toggleMaximize', () => {
+  if (!mainWindow) return false;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+  return true;
+});
+ipcMain.handle('win:close', () => { if (mainWindow) mainWindow.close(); });
+ipcMain.handle('win:isMaximized', () => (mainWindow ? mainWindow.isMaximized() : false));
 
 // ---------- IPC：文件系统 ----------
 ipcMain.handle('fs:openFolder', async () => {
@@ -155,11 +167,25 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
   return items;
 });
 
-// 编码检测：BOM → UTF-8 严格 → GBK 兜底
+// 编码检测：BOM → UTF-16 无 BOM 启发式 → UTF-8 严格 → GBK 兜底 → null（二进制）
 function detectEncoding(buf) {
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'utf8';
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return 'utf16le';
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return 'utf16be';
+  // UTF-16 无 BOM：ASCII 字符的高字节为 0（LE 落在奇数位 / BE 落在偶数位）
+  const n = Math.min(buf.length, 2048);
+  let even0 = 0, odd0 = 0, pairs = 0;
+  for (let i = 0; i + 1 < n; i += 2) {
+    pairs++;
+    if (buf[i] === 0) even0++;
+    if (buf[i + 1] === 0) odd0++;
+  }
+  if (pairs >= 4) {
+    if (even0 / pairs > 0.5) return 'utf16be';
+    if (odd0 / pairs > 0.5) return 'utf16le';
+  }
+  const head = buf.subarray(0, 8192);
+  if (head.includes(0)) return null; // 含 0x00 且不像 UTF-16 → 二进制
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(buf);
     return 'utf8';
@@ -174,23 +200,27 @@ ipcMain.handle('fs:readFile', (_e, p) => {
     if (!st.isFile()) return { error: '不是文件' };
     if (st.size > 8 * 1024 * 1024) return { tooLarge: true, size: st.size };
     const buf = fs.readFileSync(p);
-    const head = buf.subarray(0, 8192);
-    if (head.includes(0) && !(buf[0] === 0xff && buf[1] === 0xfe)) return { binary: true, size: st.size };
     const encoding = detectEncoding(buf);
+    if (!encoding) return { binary: true, size: st.size };
     let content;
-    if (encoding === 'utf16le') content = buf.slice(2).toString('utf16le');
-    else if (encoding === 'utf16be') {
-      const swapped = Buffer.from(buf.slice(2));
+    if (encoding === 'utf8') {
+      // ★ 只有真的带 BOM 才去掉，否则会吃掉正文前 3 个字节（历史 bug：开头字符消失）
+      const hasBom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+      content = (hasBom ? buf.slice(3) : buf).toString('utf8');
+    } else if (encoding === 'utf16le') {
+      const hasBom = buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe;
+      content = (hasBom ? buf.slice(2) : buf).toString('utf16le');
+    } else if (encoding === 'utf16be') {
+      const hasBom = buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff;
+      const swapped = Buffer.from(hasBom ? buf.slice(2) : buf);
       for (let i = 0; i + 1 < swapped.length; i += 2) {
         const t = swapped[i]; swapped[i] = swapped[i + 1]; swapped[i + 1] = t;
       }
       content = swapped.toString('utf16le');
-    } else if (encoding === 'gbk') {
-      content = new TextDecoder('gbk').decode(buf);
     } else {
-      content = buf.slice(3).toString('utf8'); // 去 BOM
+      content = new TextDecoder('gbk').decode(buf);
     }
-    return { content, encoding };
+    return { content, encoding: encoding === 'utf16be' ? 'utf16be' : encoding };
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
@@ -224,6 +254,22 @@ ipcMain.handle('fs:rename', (_e, p, newName) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
+// 移动文件/目录到目标目录（树内拖拽移动；重名自动改名 name (1).ext）
+ipcMain.handle('fs:move', (_e, src, destDir) => {
+  try {
+    if (!fs.existsSync(src)) return { error: '源文件不存在' };
+    const name = path.basename(src);
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let target = path.join(destDir, name);
+    for (let i = 1; fs.existsSync(target); i++) {
+      target = path.join(destDir, base + ' (' + i + ')' + ext);
+    }
+    fs.renameSync(src, target);
+    return { ok: true, target };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 ipcMain.handle('fs:remove', (_e, p) => {
   try {
     fs.rmSync(p, { recursive: true, force: true });
@@ -240,13 +286,13 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
-// 文件复制：写系统剪贴板（FileNameW 供资源管理器粘贴 + 文本兜底）
+// 文件复制：写系统剪贴板（FileNameW/CF_HDROP 格式：\0 分隔 + \0 结尾，供资源管理器粘贴 + 文本兜底）
 ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
   clipboard.writeText(arr.join('\n'));
   try {
-    clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\n') + '\n', 'utf16le'));
+    clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\0') + '\0', 'utf16le'));
   } catch {}
   return true;
 });
@@ -411,6 +457,11 @@ app.whenReady().then(() => {
         try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
         fs.mkdirSync(bigDir, { recursive: true });
         for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(bigDir, 'f' + i + '.txt'), 'x');
+        // 编码自检文件：无 BOM UTF-8 / 无 BOM UTF-16LE / GBK / 带前导空白的 DOCTYPE HTML
+        fs.writeFileSync(path.join(demo, '_enc_utf8.md'), '# 中文开头标题\n\n正文内容\n', 'utf8');
+        fs.writeFileSync(path.join(demo, '_enc_u16le.py'), Buffer.from('print("你好世界")\n', 'utf16le'));
+        fs.writeFileSync(path.join(demo, '_enc_gbk.txt'), require('iconv-lite').encode('中文老文件内容', 'gbk'));
+        fs.writeFileSync(path.join(demo, '_enc_html.html'), '  < !DOCTYPE html>\n<html><body><h1>HTML正文</h1></body></html>', 'utf8');
         await new Promise((r) => setTimeout(r, 1500));
         await wc.executeJavaScript('window.__CHECK_P = ' + JSON.stringify(demo));
         await wc.executeJavaScript('App.setRoot(' + JSON.stringify(demo) + ')');
@@ -426,6 +477,10 @@ app.whenReady().then(() => {
         try { fs.rmSync(path.join(demo, '_shot测试.md'), { force: true }); } catch {}
         try { fs.rmSync(path.join(demo, '_shot图.png'), { force: true }); } catch {}
         try { fs.rmSync(path.join(demo, 'src', '_shot图.png'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, '_enc_utf8.md'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, '_enc_u16le.py'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, '_enc_gbk.txt'), { force: true }); } catch {}
+        try { fs.rmSync(path.join(demo, '_enc_html.html'), { force: true }); } catch {}
         try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
       } catch (e) {
         console.log('CHECK FAIL ' + String((e && e.stack) || e).slice(0, 800));

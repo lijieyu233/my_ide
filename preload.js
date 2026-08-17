@@ -13,11 +13,18 @@ contextBridge.exposeInMainWorld('myIDE', {
     writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),
+    move: (src, destDir) => ipcRenderer.invoke('fs:move', src, destDir),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
   },
   shell: {
     showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  },
+  win: {
+    minimize: () => ipcRenderer.invoke('win:minimize'),
+    toggleMaximize: () => ipcRenderer.invoke('win:toggleMaximize'),
+    close: () => ipcRenderer.invoke('win:close'),
+    isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
   },
   clip: {
     copy: (t) => ipcRenderer.invoke('clip:copy', t),

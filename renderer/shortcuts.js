@@ -147,5 +147,6 @@ Shortcuts.register('hunk-prev', { desc: '上一个 diff hunk', keys: ['alt+arrow
 Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
 Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
+Shortcuts.register('undo-file', { desc: '撤销文件操作（粘贴/新建/重命名/删除/移动）', keys: ['ctrl+z'], run: () => Tree.undo() });
 
 Shortcuts.load();

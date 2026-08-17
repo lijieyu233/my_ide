@@ -13,6 +13,8 @@ const Viewer = (() => {
   const CODE_EXTS = new Set(['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'json', 'css', 'scss', 'less', 'html', 'htm', 'py', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs', 'rb', 'php', 'swift', 'kt', 'scala', 'vue', 'svelte']);
   const PREVIEW_EXTS = new Set(['md', 'markdown', 'html', 'htm', 'csv', 'json']);
   const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'pdf']);
+  const MEDIA_EXTS = new Set(['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac']);
+  const MD_EXTS = new Set(['md', 'markdown']);
 
   // 最近打开记录（快速打开面板用）
   const RECENT_KEY = 'myide-recent';
@@ -48,8 +50,8 @@ const Viewer = (() => {
   }
 
   async function loadTab(tab) {
-    // 图片：二进制无需读取内容，直接走预览渲染器
-    if (IMG_EXTS.has(extOf(tab.name))) {
+    // 图片 / 音视频：二进制无需读取内容，直接走预览渲染器
+    if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name))) {
       tab.content = '';
       tab.mode = 'preview';
       renderView();
@@ -63,7 +65,13 @@ const Viewer = (() => {
       tab.content = r.content;
       tab.encoding = r.encoding || 'utf8';
       tab.eol = r.content && r.content.includes('\r\n') ? 'CRLF' : null;
-      tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
+      // Markdown 默认「编辑 + 实时预览」分屏并存；其他可预览格式走纯预览
+      if (MD_EXTS.has(extOf(tab.name))) {
+        tab.mode = 'edit';
+        tab.splitPreview = true;
+      } else {
+        tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
+      }
     }
     renderView();
   }
@@ -124,6 +132,31 @@ const Viewer = (() => {
       el.title = t.path;
       tabbar.appendChild(el);
     });
+    // 打开文件过多时合并：右侧「▾ 全部标签」下拉
+    if (tabs.length > 1) {
+      const all = document.createElement('div');
+      all.className = 'tab-all';
+      all.textContent = '▾ ' + tabs.length;
+      all.title = '全部打开的标签';
+      all.onclick = (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        tabs.forEach((t, i) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item';
+          d.textContent = (t.dirty ? '● ' : '') + t.name;
+          d.title = t.path;
+          d.onclick = () => { menu.classList.add('hidden'); activate(i); };
+          menu.appendChild(d);
+        });
+        menu.classList.remove('hidden');
+        const r = all.getBoundingClientRect();
+        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
+        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 300) + 'px';
+      };
+      tabbar.appendChild(all);
+    }
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
   }
@@ -140,8 +173,8 @@ const Viewer = (() => {
         dragState.el.classList.add('dragging');
       }
       if (!dragState.moved) return;
-      // 按鼠标位置与各标签中心找到插入点，实时移动 DOM
-      const tabsEl = [...tabbar.children];
+      // 按鼠标位置与各标签中心找到插入点，实时移动 DOM（只考虑 .tab，忽略右侧「▾ 全部」按钮）
+      const tabsEl = [...tabbar.querySelectorAll('.tab')];
       let insertAfter = -1;
       tabsEl.forEach((t, j) => {
         const r = t.getBoundingClientRect();
@@ -228,6 +261,18 @@ const Viewer = (() => {
     btnShow.textContent = '📂 定位';
     btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
     toolbar.appendChild(btnShow);
+
+    // HTML：用系统默认浏览器打开
+    if (/\.(html|htm)$/i.test(tab.name)) {
+      const btnBrowser = document.createElement('button');
+      btnBrowser.className = 'vt-btn';
+      btnBrowser.textContent = '🌐 浏览器打开';
+      btnBrowser.title = '用系统默认浏览器打开该页面';
+      btnBrowser.onclick = () => {
+        try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
+      };
+      toolbar.appendChild(btnBrowser);
+    }
 
     if (tab.mode === 'edit') {
       if (PREVIEW_EXTS.has(extOf(tab.name)) && !tab.binary && !tab.tooLarge) {
@@ -318,7 +363,7 @@ const Viewer = (() => {
       ta.addEventListener('input', () => {
         tab.content = ta.value;
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
-        clearTimeout(saveTimer);
+        scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
         renderGutter();
         if (previewPane) {
@@ -549,7 +594,18 @@ const Viewer = (() => {
     refresh();
   }
 
-  async function saveTab(i) {
+  // ---------- 自动保存（停止输入 3 秒后写盘）----------
+  let autosaveTimer = null;
+  function scheduleAutosave() {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      for (let i = 0; i < tabs.length; i++) {
+        if (tabs[i].dirty && tabs[i].ta) saveTab(i, true);
+      }
+    }, 3000);
+  }
+
+  async function saveTab(i, quiet) {
     const tab = tabs[i];
     if (!tab || !tab.ta) return;
     const r = await window.myIDE.fs.writeFile(tab.path, tab.ta.value, tab.encoding);
@@ -557,10 +613,10 @@ const Viewer = (() => {
       tab.content = tab.ta.value;
       tab.dirty = false;
       renderTabs();
-      MI.toast('💾 已保存 ' + tab.name, 'ok');
+      if (!quiet) MI.toast('💾 已保存 ' + tab.name, 'ok');
       App.refreshGit();
     } else {
-      MI.toast('保存失败: ' + r.error, 'err');
+      if (!quiet) MI.toast('保存失败: ' + r.error, 'err');
     }
   }
 

@@ -94,9 +94,31 @@ function makeDom() {
         if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir') FAKE_FS[parent].children.push(p);
         return { ok: true };
       },
-      remove: async () => ({ ok: true }),
+      remove: async (p) => {
+        delete FAKE_FS[p];
+        const parent = p.split('/').slice(0, -1).join('/');
+        if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir') FAKE_FS[parent].children = FAKE_FS[parent].children.filter((c) => c !== p);
+        return { ok: true };
+      },
+      move: async (src, destDir) => {
+        const name = src.split('/').pop();
+        const extIdx = name.lastIndexOf('.');
+        const ext = extIdx > 0 ? name.slice(extIdx) : '';
+        const base = extIdx > 0 ? name.slice(0, extIdx) : name;
+        let target = destDir + '/' + name;
+        for (let i = 1; FAKE_FS[target]; i++) target = destDir + '/' + base + ' (' + i + ')' + ext;
+        const entry = FAKE_FS[src];
+        if (!entry) return { error: 'not found' };
+        delete FAKE_FS[src];
+        const srcParent = src.split('/').slice(0, -1).join('/');
+        if (FAKE_FS[srcParent]) FAKE_FS[srcParent].children = FAKE_FS[srcParent].children.filter((c) => c !== src);
+        FAKE_FS[target] = entry;
+        if (FAKE_FS[destDir] && FAKE_FS[destDir].type === 'dir') FAKE_FS[destDir].children.push(target);
+        return { ok: true, target };
+      },
     },
     shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; } },
+    win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
       copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },
@@ -213,18 +235,24 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(md.querySelector('pre code'), '代码块渲染');
   });
 
-  await okAsync('查看源码 ⇄ 预览切换', async () => {
-    const btns = $allIn($(dom, '.viewer-toolbar'), 'button');
-    click(btns.find((b) => b.textContent.includes('源码')));
-    await tick();
-    assert_($(dom, 'textarea.editor'), '源码模式出现 textarea');
+  await okAsync('Markdown 默认分屏编辑 + 切换纯预览', async () => {
+    // md 现在默认「编辑 + 实时预览」分屏并存
+    assert_($(dom, '.md-split'), 'md 打开即分屏');
+    assert_($(dom, 'textarea.editor'), '分屏含编辑器');
     const ta = $(dom, 'textarea.editor');
     ta.value = '# 改过的标题';
     ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300)); // 等实时预览防抖
+    assert_($(dom, '.md-split-preview .md-view h1') && $(dom, '.md-split-preview .md-view h1').textContent.includes('改过的标题'), '分屏预览实时更新');
+    // 切纯预览
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('预览')));
     await tick();
     const md = $(dom, '.md-view');
-    assert_(md && md.querySelector('h1').textContent.includes('改过的标题'), '预览使用最新内容');
+    assert_(md && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
+    // 预览里切回编辑（分屏）
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
+    await tick();
+    assert_($(dom, '.md-split'), '切回编辑仍是分屏');
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {
@@ -359,13 +387,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const items = $allIn($(dom, '#outline'), '.outline-item');
     assert_(items.length >= 1, '大纲有条目, got ' + items.length);
     assert_(items[0].textContent.includes('标题'), '条目文本正确: ' + items[0].textContent);
-    // 切源码模式再点大纲 → 应自动切回预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
-    await tick();
-    assert_($(dom, 'textarea.editor'), '已切源码');
+    // md 默认分屏（含编辑器），点大纲 → 自动切回纯预览
+    assert_($(dom, 'textarea.editor'), '分屏已含编辑器');
     click(items[0]);
     await tick();
-    assert_($(dom, '.md-view'), '点击大纲自动切回预览');
+    assert_($(dom, '.md-view') && !$(dom, '.md-split'), '点击大纲自动切回预览');
   });
 
   await okAsync('Ctrl+P 快速打开：面板 + 过滤 + 回车打开', async () => {
@@ -454,13 +480,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('会话记忆：dirty 标签不写入保存', async () => {
-    // 打开文件并弄脏
+    // 打开文件并弄脏（md 默认分屏，编辑器已存在）
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    const btns = $allIn($(dom, '.viewer-toolbar'), 'button');
-    click(btns.find((b) => b.textContent.includes('源码')));
-    await tick();
     const ta = $(dom, 'textarea.editor');
+    assert_(ta, '分屏含编辑器');
     ta.value = 'dirty content';
     ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
@@ -1527,12 +1551,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(dom.window.localStorage.getItem('myide-sidebar-width') === '320', '宽度持久化');
   });
 
-  await okAsync('Bug11：Markdown 分屏实时预览', async () => {
+  await okAsync('Bug11：Markdown 分屏实时预览（默认分屏）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
-    await tick(); await tick();
-    assert_($(dom, '.md-split'), '分屏容器出现');
+    assert_($(dom, '.md-split'), 'md 打开即分屏容器');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
     const ta = $(dom, 'textarea.editor');
     ta.value = '# 实时标题\n\n新内容';
@@ -1673,6 +1695,82 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!$(dom, '.diff-table'), '点击不再直接进 diff');
     await g(dom, 'App.switchTool("project")');
     await tick();
+  });
+
+  await okAsync('Ctrl+Z 撤销新建文件', async () => {
+    // 右键 src → 新建文件 undome.txt
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    srcRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('新建文件')));
+    await tick();
+    const input = $(dom, '#pf-input');
+    input.value = 'undome.txt';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    const created = P + '/src\\undome.txt';
+    assert_(FAKE_FS[created], '文件已创建');
+    // Ctrl+Z 撤销
+    dom.window.document.body.focus();
+    await tick();
+    key(dom, 'z', { ctrl: true });
+    await tick(); await tick();
+    assert_(!FAKE_FS[created], 'Ctrl+Z 撤销新建');
+  });
+
+  await okAsync('树内拖拽移动文件 + Ctrl+Z 撤销移动', async () => {
+    const mkDrag = (type, path) => {
+      const ev = new dom.window.Event(type, { bubbles: true, cancelable: true });
+      ev.dataTransfer = { getData: () => path, setData: () => {}, effectAllowed: '', dropEffect: '' };
+      return ev;
+    };
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    assert_(srcRow, 'src 行存在');
+    srcRow.dispatchEvent(mkDrag('dragover', P + '/notes.txt'));
+    await tick();
+    assert_(srcRow.classList.contains('drop-target'), '拖拽悬停高亮');
+    srcRow.dispatchEvent(mkDrag('drop', P + '/notes.txt'));
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/notes.txt'], '文件已移动到 src');
+    // Ctrl+Z 撤销移动
+    dom.window.document.body.focus();
+    await tick();
+    key(dom, 'z', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/notes.txt'] && !FAKE_FS[P + '/src/notes.txt'], '撤销移动回原位');
+  });
+
+  await okAsync('视频/音频预览', async () => {
+    FAKE_FS[P + '/movie.mp4'] = { type: 'file', content: '' };
+    FAKE_FS[P + '/song.mp3'] = { type: 'file', content: '' };
+    await g(dom, 'Viewer.openFile("' + P + '/movie.mp4")');
+    await tick(); await tick();
+    assert_($(dom, '.media-view video'), 'video 元素出现');
+    await g(dom, 'Viewer.openFile("' + P + '/song.mp3")');
+    await tick(); await tick();
+    assert_($(dom, '.media-view audio'), 'audio 元素出现');
+  });
+
+  await okAsync('HTML 浏览器打开按钮', async () => {
+    calls.openExternal = [];
+    await g(dom, 'Viewer.openFile("' + P + '/page.html")');
+    await tick(); await tick();
+    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('浏览器打开'));
+    assert_(btn, '浏览器打开按钮存在');
+    click(btn);
+    await tick();
+    assert_((calls.openExternal || []).some((u) => u.includes('page.html')), '调用 openExternal, got: ' + JSON.stringify(calls.openExternal));
+  });
+
+  await okAsync('自动保存：停止输入 3 秒后写盘', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    const ta = $(dom, 'textarea.editor');
+    ta.value = 'autosave content';
+    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 3400));
+    assert_(FAKE_FS[P + '/notes.txt'].content === 'autosave content', '自动保存写入');
+    assert_(g(dom, 'Viewer.activeTab.dirty') === false, '自动保存后不再 dirty');
   });
 
   console.log('');

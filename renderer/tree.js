@@ -177,6 +177,33 @@ const Tree = (() => {
       showCtxMenu(e.clientX, e.clientY, item);
     });
 
+    // 树内拖拽移动：拖到目录行上 = 移动进去
+    rowEl.draggable = true;
+    rowEl.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/myide-path', item.path);
+      e.dataTransfer.effectAllowed = 'move';
+      rowEl.classList.add('dragging-src');
+    });
+    rowEl.addEventListener('dragend', () => rowEl.classList.remove('dragging-src'));
+    if (item.type === 'dir') {
+      rowEl.addEventListener('dragover', (e) => {
+        const src = e.dataTransfer.getData('text/myide-path');
+        if (src && norm(src) !== norm(item.path)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          rowEl.classList.add('drop-target');
+        }
+      });
+      rowEl.addEventListener('dragleave', () => rowEl.classList.remove('drop-target'));
+      rowEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        rowEl.classList.remove('drop-target');
+        const src = e.dataTransfer.getData('text/myide-path');
+        if (!src || norm(src) === norm(item.path)) return;
+        moveTo(src, item.path);
+      });
+    }
+
     return rowEl;
   }
 
@@ -244,9 +271,15 @@ const Tree = (() => {
     }
     select(filePath, 'file');
     render();
+    // 只有目标行不在可视区时才滚动（点击树内文件不上下跳动）
     setTimeout(() => {
       const row = [...el.querySelectorAll('.tree-row')].find((r) => norm(r.querySelector('.nm').title) === fileN);
-      if (row) { try { row.scrollIntoView({ block: 'center' }); } catch {} }
+      if (!row) return;
+      const trect = el.getBoundingClientRect();
+      const rrect = row.getBoundingClientRect();
+      if (rrect.top < trect.top || rrect.bottom > trect.bottom) {
+        try { row.scrollIntoView({ block: 'nearest' }); } catch {}
+      }
     }, 0);
   }
 
@@ -295,16 +328,55 @@ const Tree = (() => {
     if (!sources.length) sources = copiedPaths.slice();
     if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
     let ok = 0;
+    const created = [];
     for (const s of sources) {
       const r = await window.myIDE.fsCopy(s, destDir);
-      if (r.ok) ok++;
+      if (r.ok) { ok++; created.push(r.target); }
       else MI.toast('粘贴失败: ' + (r.error || s), 'err');
     }
     if (ok) {
+      pushUndo({ type: 'paste', paths: created, label: '粘贴 ' + ok + ' 个文件' });
       invalidateAll();
       render();
       App.refreshGit();
       MI.toast('✅ 已粘贴 ' + ok + ' 个文件', 'ok');
+    }
+  }
+
+  // ---------- 拖拽移动 / 撤销 ----------
+  async function moveTo(src, destDir) {
+    if (!rootPath) return;
+    const oldDir = src.replace(/[\\/][^\\/]+$/, '');
+    const r = await window.myIDE.fs.move(src, destDir);
+    if (r.ok) {
+      pushUndo({ type: 'move', newPath: r.target, oldDir, label: src.split(/[\\/]/).pop() + ' 的移动' });
+      invalidateAll();
+      render();
+      App.refreshGit();
+      MI.toast('✅ 已移动 ' + src.split(/[\\/]/).pop(), 'ok');
+    } else {
+      MI.toast('移动失败: ' + r.error, 'err');
+    }
+  }
+
+  // Ctrl+Z 撤销栈（文件操作：粘贴/新建/重命名/删除/移动）
+  const undoStack = [];
+  function pushUndo(a) { undoStack.push(a); if (undoStack.length > 50) undoStack.shift(); }
+  async function undo() {
+    const a = undoStack.pop();
+    if (!a) { MI.toast('没有可撤销的文件操作', 'err'); return; }
+    try {
+      if (a.type === 'rename') await window.myIDE.fs.rename(a.newPath, a.oldName);
+      else if (a.type === 'create') await window.myIDE.fs.remove(a.path);
+      else if (a.type === 'delete') await window.myIDE.fs.writeFile(a.path, a.content, a.encoding);
+      else if (a.type === 'move') await window.myIDE.fs.move(a.newPath, a.oldDir);
+      else if (a.type === 'paste') { for (const p of a.paths) await window.myIDE.fs.remove(p); }
+      invalidateAll();
+      render();
+      App.refreshGit();
+      MI.toast('↩ 已撤销 ' + (a.label || '操作'), 'ok');
+    } catch (e) {
+      MI.toast('撤销失败: ' + String((e && e.message) || e), 'err');
     }
   }
 
@@ -320,6 +392,7 @@ const Tree = (() => {
     if (type === 'dir') r = await window.myIDE.fs.mkdir(target);
     else r = await window.myIDE.fs.writeFile(target, '');
     if (r.ok) {
+      pushUndo({ type: 'create', path: target, label: '新建 ' + name });
       invalidateAll();
       render();
       App.refreshGit();
@@ -363,15 +436,27 @@ const Tree = (() => {
     const name = await Modal.prompt('重命名', '新名称：', item.name);
     if (!name || name === item.name) return;
     const r = await window.myIDE.fs.rename(item.path, name);
-    if (r.ok) { invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit(); }
+    if (r.ok) {
+      pushUndo({ type: 'rename', newPath: r.path, oldName: item.name, label: item.name + ' 的重命名' });
+      invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit();
+    }
     else MI.toast('重命名失败: ' + r.error, 'err');
   }
 
   async function removeItem(item) {
-    const yes = await Modal.confirm('删除', `确定删除「${item.name}」吗？此操作不可恢复。`);
+    const yes = await Modal.confirm('删除', `确定删除「${item.name}」吗？（Ctrl+Z 可撤销删除）`);
     if (!yes) return;
+    // 文本文件先备份内容，供 Ctrl+Z 恢复（二进制/超大文件不备份）
+    let backup = null;
+    if (item.type === 'file') {
+      const rr = await window.myIDE.fs.readFile(item.path);
+      if (rr && rr.content != null && !rr.binary && !rr.tooLarge) backup = { content: rr.content, encoding: rr.encoding };
+    }
     const r = await window.myIDE.fs.remove(item.path);
-    if (r.ok) { invalidateAll(); MI.toast('已删除 ' + item.name, 'ok'); render(); App.refreshGit(); }
+    if (r.ok) {
+      if (backup) pushUndo({ type: 'delete', path: item.path, content: backup.content, encoding: backup.encoding, label: '删除 ' + item.name });
+      invalidateAll(); MI.toast('已删除 ' + item.name + (backup ? '（Ctrl+Z 可撤销）' : ''), 'ok'); render(); App.refreshGit();
+    }
     else MI.toast('删除失败: ' + r.error, 'err');
   }
 
@@ -388,7 +473,7 @@ const Tree = (() => {
 
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus,
-    getExpandedPaths, setExpandedPaths,
+    getExpandedPaths, setExpandedPaths, undo,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
     copySelected, pasteTo, getPasteTarget, reveal,
