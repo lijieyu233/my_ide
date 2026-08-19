@@ -64,6 +64,11 @@ function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
   const w = dom.window;
+  // jsdom 无布局：给 Range 补 getClientRects stub，防 CM6 measure 崩溃噪音
+  if (w.Range && !w.Range.prototype.getClientRects) {
+    const rect = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    w.Range.prototype.getClientRects = function () { return [rect]; };
+  }
   // 注入真实样式表：让 getComputedStyle 反映 display，防「类存在但 CSS 没定义」盲区
   const st = w.document.createElement('style');
   st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
@@ -176,6 +181,10 @@ async function loadApp(dom) {
   const w = dom.window;
   const evalFile = (f) => w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', f), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'theme.js'), 'utf8'));
+  try {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'cm6-bundle.min.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'md-editor.js'), 'utf8'));
+  } catch (e) { /* CM6 加载失败：viewer 内部有降级 */ }
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'marked.min.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'highlight.min.js'), 'utf8'));
   evalFile('plugin-loader.js');
@@ -228,42 +237,47 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
+    // md 默认 live（CM6），先切「👁 预览」再断言渲染
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
+    await tick();
     const md = $(dom, '.md-view');
     assert_(md, '存在 md-view');
     assert_(md.querySelector('h1') && md.querySelector('h1').textContent.includes('标题'), 'h1 渲染');
     assert_(md.querySelector('strong') && md.querySelector('strong').textContent === 'Markdown', '加粗渲染');
     assert_(md.querySelector('pre code'), '代码块渲染');
+    // 切回实时预览，保持后续用例默认态
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
+    await tick();
   });
 
-  await okAsync('Markdown 默认实时预览（Obsidian 式块编辑）+ 模式切换', async () => {
-    // md 现在默认「实时预览」：块渲染 + 点击即编辑
-    assert_($(dom, '.md-live'), 'md 打开即实时预览容器');
-    assert_($(dom, '.md-live .md-block'), '内容按块渲染');
-    // 点击块 → 进入编辑
-    const block = $(dom, '.md-live .md-block');
-    block.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-    await new Promise((r) => setTimeout(r, 50));
-    const edit = $(dom, '.md-block-edit');
-    assert_(edit, '点击块进入编辑');
-    edit.value = '# 改过的标题';
-    edit.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  await okAsync('Markdown 默认实时预览（Obsidian 式 CM6）+ 模式切换', async () => {
+    // md 现在默认「实时预览」：CM6 编辑器（光标行源码 / 其余行渲染）
+    assert_($(dom, '.editor-cm-wrap'), 'md 打开即 CM6 实时预览容器');
+    assert_($(dom, '.editor-cm-wrap .cm-editor'), 'CM 编辑器挂载');
+    assert_($(dom, '.editor-cm-wrap .cm-content').textContent.includes('Markdown'), '编辑器含文档内容');
+    // 直接编辑（CM6 内联编辑，无块切换）
+    g(dom, 'Viewer.cm.setValue("# 改过的标题\\n\\n这是 **Markdown** 测试\\n")');
     await tick();
     assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
-    // Esc 提交 → 回渲染态
-    edit.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-    await new Promise((r) => setTimeout(r, 50));
-    const h1 = $(dom, '.md-live .md-block h1');
-    assert_(h1 && h1.textContent.includes('改过的标题'), '提交后块渲染出标题');
+    assert_(g(dom, 'Viewer.activeTab.dirty') === true, '编辑后标脏');
     // 切纯预览
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
     await tick();
     const md = $(dom, '.md-view');
-    assert_(!$(dom, '.md-live'), '纯预览无实时预览容器');
+    assert_(!$(dom, '.editor-cm-wrap'), '纯预览无实时预览容器');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
     // 预览里切回实时预览
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
-    assert_($(dom, '.md-live'), '切回实时预览');
+    assert_($(dom, '.editor-cm-wrap'), '切回实时预览');
+    assert_($(dom, '.editor-cm-wrap .cm-content').textContent.includes('改过的标题'), '切回后内容保留');
+    // Ctrl+E ↔ 源码模式
+    g(dom, 'Viewer.toggleMdMode()');
+    await tick();
+    assert_($(dom, '.editor-cm-wrap'), '源码模式同为 CM 容器');
+    g(dom, 'Viewer.toggleMdMode()');
+    await tick();
+    assert_($(dom, '.editor-cm-wrap'), 'Ctrl+E 切回实时预览');
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {
@@ -398,11 +412,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const items = $allIn($(dom, '#outline'), '.outline-item');
     assert_(items.length >= 1, '大纲有条目, got ' + items.length);
     assert_(items[0].textContent.includes('标题'), '条目文本正确: ' + items[0].textContent);
-    // md 默认实时预览（块渲染），点大纲 → live 模式就地滚动（不切换模式）
-    assert_($(dom, '.md-live'), '实时预览容器存在');
+    // md 默认实时预览（CM6），点大纲 → live 模式就地滚动（不切换模式）
+    assert_($(dom, '.editor-cm-wrap'), '实时预览容器存在');
     click(items[0]);
     await tick();
-    assert_($(dom, '.md-live'), 'live 模式点击大纲不切换模式');
+    assert_($(dom, '.editor-cm-wrap'), 'live 模式点击大纲不切换模式');
   });
 
   await okAsync('Ctrl+P 快速打开：面板 + 过滤 + 回车打开', async () => {
@@ -491,17 +505,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('会话记忆：dirty 标签不写入保存', async () => {
-    // 打开文件并弄脏（md 默认实时预览，点击块进入编辑）
+    // 打开文件并弄脏（md 默认实时预览 CM6，直接编辑）
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    const block = $(dom, '.md-live .md-block');
-    assert_(block, '实时预览有内容块');
-    block.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-    await new Promise((r) => setTimeout(r, 50));
-    const edit = $(dom, '.md-block-edit');
-    assert_(edit, '进入块编辑');
-    edit.value = 'dirty content';
-    edit.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    assert_($(dom, '.editor-cm-wrap'), '实时预览容器存在');
+    g(dom, 'Viewer.cm.setValue("dirty content")');
     await tick();
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '标签已变 dirty');
     await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
@@ -1573,7 +1581,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('Bug11：Markdown 分屏模式（工具栏切换 + 实时预览）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    assert_($(dom, '.md-live'), '默认实时预览');
+    assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◧ 分屏')));
     await tick();
@@ -1588,13 +1596,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('📝 源码')));
     await tick();
     assert_(!$(dom, '.md-split'), '切源码后无分屏');
-    assert_($(dom, 'textarea.editor'), '源码模式有编辑器');
+    assert_($(dom, '.editor-cm-wrap .cm-editor'), '源码模式有 CM 编辑器');
   });
 
   await okAsync('Bug2：Markdown 链接跳转（外链/相对路径/锚点）', async () => {
     calls.openExternal = [];
     await g(dom, 'Viewer.openFile("' + P + '/link.md")');
     await tick(); await tick();
+    // live（CM6）无 .md-view，切「👁 预览」后断言渲染链接
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
+    await tick();
     const md = $(dom, '.md-view');
     const links = $allIn(md, 'a');
     // 外链 → openExternal

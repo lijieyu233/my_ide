@@ -10,6 +10,24 @@ const Search = (() => {
     return d.innerHTML;
   }
 
+  // 匹配文本高亮（大小写不敏感，与主进程 grep 行为一致）
+  let lastQuery = '';
+  function highlight(text, q) {
+    const t = String(text == null ? '' : text);
+    if (!q) return esc(t);
+    const lower = t.toLowerCase();
+    const lq = q.toLowerCase();
+    let out = '';
+    let i = 0;
+    for (;;) {
+      const idx = lower.indexOf(lq, i);
+      if (idx < 0) { out += esc(t.slice(i)); break; }
+      out += esc(t.slice(i, idx)) + '<mark class="sr-hit">' + esc(t.slice(idx, idx + q.length)) + '</mark>';
+      i = idx + q.length;
+    }
+    return out;
+  }
+
   function build() {
     const box = document.createElement('div');
     box.id = 'sr-box';
@@ -33,6 +51,7 @@ const Search = (() => {
     const r = await window.myIDE.fs.grep(App.root, q);
     results = r.results;
     sel = 0;
+    lastQuery = q;
     if (!results.length) { renderEmpty('没有匹配的内容'); return; }
     list.innerHTML = '';
     const head = document.createElement('div');
@@ -42,7 +61,7 @@ const Search = (() => {
     results.forEach((res, i) => {
       const row = document.createElement('div');
       row.className = 'qo-item' + (i === 0 ? ' sel' : '');
-      row.innerHTML = `<span class="sr-file">${esc(res.file)}:${res.line}</span><span class="sr-text">${esc(res.text)}</span>`;
+      row.innerHTML = `<span class="sr-file">${esc(res.file)}:${res.line}</span><span class="sr-text">${highlight(res.text, lastQuery)}</span>`;
       row.onmouseenter = () => setSel(i);
       row.onclick = () => pick();
       list.appendChild(row);

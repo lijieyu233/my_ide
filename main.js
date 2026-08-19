@@ -78,6 +78,17 @@ ipcMain.handle('fs:openFolder', async () => {
   return p;
 });
 
+// 选择背景图（外观设置用）
+ipcMain.handle('fs:pickImage', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: '选择背景图片',
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
+    properties: ['openFile'],
+  });
+  if (r.canceled || !r.filePaths.length) return null;
+  return r.filePaths[0];
+});
+
 ipcMain.handle('fs:getRecent', () => {
   const s = loadState();
   return s.lastFolder && fs.existsSync(s.lastFolder) ? s.lastFolder : null;

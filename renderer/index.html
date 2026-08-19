@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
 </head>
 <body>
+<div id="bg-layer" aria-hidden="true"></div>
 <header id="toolbar">
   <button id="btn-open" class="tb-btn" title="打开项目 (Ctrl+O)">📂 打开项目</button>
   <div id="project-bar" title="已打开的项目，点击切换"></div>
@@ -66,7 +67,7 @@
     </div>
   </div>
 </div>
-<footer id="statusbar"><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-version"></span></footer>
+<footer id="statusbar"><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-version"></span></footer>
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden">
   <div id="modal-box"></div>
@@ -74,6 +75,8 @@
 <div id="toast-wrap"></div>
 
 <script src="theme.js"></script>
+<script src="vendor/cm6-bundle.min.js"></script>
+<script src="md-editor.js"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/highlight.min.js"></script>
 <script src="plugin-loader.js"></script>

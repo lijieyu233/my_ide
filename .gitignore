@@ -2,5 +2,6 @@ node_modules/
 demo/
 smoke.log
 *.log
-.idea/dist/
+.idea/
+dist/
 build/

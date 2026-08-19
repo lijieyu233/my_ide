@@ -367,6 +367,14 @@ const App = (() => {
     });
     document.getElementById('btn-search').onclick = () => Search.open();
     document.getElementById('btn-settings').onclick = () => Settings.open();
+    // 状态栏字号控件：− / + 调整文档区字号
+    const fDec = document.getElementById('sb-font-dec');
+    const fInc = document.getElementById('sb-font-inc');
+    if (fDec && fInc) {
+      fDec.onclick = () => Viewer.zoomFont(-1);
+      fInc.onclick = () => Viewer.zoomFont(1);
+    }
+    Viewer.syncFontLabel();
     document.getElementById('btn-help').onclick = () => Help.open();
     document.getElementById('btn-theme').onclick = () => {
       Theme.toggle();

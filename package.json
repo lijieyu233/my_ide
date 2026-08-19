@@ -21,6 +21,15 @@
     "marked": "^15.0.0"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
+    "@lezer/common": "^1.5.2",
+    "@lezer/markdown": "^1.7.2",
     "electron": "^33.2.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",

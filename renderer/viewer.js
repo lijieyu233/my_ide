@@ -227,6 +227,12 @@ const Viewer = (() => {
 
   // ---------- 视图渲染 ----------
   function renderView() {
+    // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
+    if (cmApi) {
+      if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
+      cmApi.destroy();
+      cmApi = null;
+    }
     viewer.innerHTML = '';
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
     empty.classList.remove('visible');
@@ -294,7 +300,7 @@ const Viewer = (() => {
       toolbar.appendChild(btnBrowser);
     }
 
-    if (tab.mode === 'edit' || tab.mode === 'source' || tab.mode === 'split') {
+    if (tab.mode === 'edit' || tab.mode === 'live' || tab.mode === 'source' || tab.mode === 'split') {
       const btnSave = document.createElement('button');
       btnSave.className = 'vt-btn vt-save';
       btnSave.textContent = '💾 保存';
@@ -325,11 +331,17 @@ const Viewer = (() => {
 
     if (tab.mode === 'live') {
       tab.ta = null;
-      renderMarkdownLive(tab);
+      renderMarkdownCm(tab, true);
       return;
     }
 
-    if (tab.mode === 'edit' || tab.mode === 'source' || tab.mode === 'split') {
+    if (tab.mode === 'source') {
+      tab.ta = null;
+      renderMarkdownCm(tab, false);
+      return;
+    }
+
+    if (tab.mode === 'edit' || tab.mode === 'split') {
       const splitOn = tab.mode === 'split' || (tab.mode === 'edit' && isMarkdown && tab.splitPreview !== false);
       // 行号 gutter + textarea
       const wrap = document.createElement('div');
@@ -475,208 +487,69 @@ const Viewer = (() => {
 
   function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
 
-  // ---------- Markdown 实时预览（Obsidian 式块编辑器） ----------
-  // 按空行切块（跳过 ``` / ~~~ 围栏内的空行）；非编辑块渲染 HTML，点击任意块即就地编辑
-  function splitMdBlocks(src) {
-    const out = [];
-    let cur = [];
-    let inFence = false;
-    for (const line of String(src || '').split('\n')) {
-      if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-      if (!inFence && line.trim() === '') {
-        if (cur.length) { out.push(cur.join('\n')); cur = []; }
-      } else cur.push(line);
+  // ---------- Markdown 编辑（CodeMirror 6） ----------
+  // live：Obsidian 式 Live Preview（光标行源码 / 其余行渲染）
+  // source：纯源码模式（同一编辑器，关闭装饰层）
+  let cmApi = null;
+  let cmOutlineTimer = null;
+
+  function renderMarkdownCm(tab, live) {
+    const wrap = document.createElement('div');
+    wrap.className = 'editor-cm-wrap';
+    viewer.appendChild(wrap);
+    if (!window.MdEditor) {
+      wrap.innerHTML = '<div class="viewer-msg">CM6 未加载（vendor/cm6-bundle.min.js 缺失）</div>';
+      return;
     }
-    if (cur.length) out.push(cur.join('\n'));
-    return out;
+    MdEditor.__baseDir = tab.path ? tab.path.split(/[\\/]/).slice(0, -1).join('/') : '';
+    MdEditor.__openLink = (href) => openMdLink(tab, href);
+    cmApi = MdEditor.create({
+      parent: wrap,
+      doc: tab.content || '',
+      state: tab.cmState || null,
+      live,
+      onChange: (val) => {
+        tab.content = val;
+        if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        scheduleAutosave();
+        clearTimeout(cmOutlineTimer);
+        cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
+      },
+      onCursor: (line, col) => {
+        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+      },
+    });
+    cmApi.__tab = tab;
+    tab.ta = null;
+    setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
   }
 
-  function renderMarkdownLive(tab) {
-    const container = document.createElement('div');
-    container.className = 'md-view md-live';
-    viewer.appendChild(container);
-    let blocks = splitMdBlocks(tab.content || '');
-    if (!blocks.length) blocks = [''];
-    let editIdx = -1;
-    let outlineTimer = null;
-
-    const syncContent = () => {
-      tab.content = blocks.join('\n\n');
-      if (!tab.dirty) { tab.dirty = true; renderTabs(); }
-      scheduleAutosave();
-      clearTimeout(outlineTimer);
-      outlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
-    };
-
-    const reportPos = (ta) => {
-      if (!window.App) return;
-      const before = ta.value.slice(0, ta.selectionStart);
-      const line = before.split('\n').length;
-      const col = ta.selectionStart - before.lastIndexOf('\n');
-      App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
-    };
-
-    function makeBlockEl(src, i) {
-      let el = null;
-      const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
-      if (fn) {
-        const node = fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: src });
-        if (node instanceof HTMLElement) {
-          node.className = 'md-block' + (src.trim() ? '' : ' md-block-empty');
-          el = node;
-        }
-      }
-      if (!el) { el = document.createElement('div'); el.className = 'md-block'; el.textContent = src; }
-      // mousedown 即进入编辑（click 会与链接跳转冲突；链接/图片/复制按钮交给渲染器处理）
-      el.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        const t = e.target;
-        if (t && t.closest && t.closest('a, button, img, video, audio, iframe')) return;
-        e.preventDefault(); // 阻止焦点转移，由 enterEdit 接管
-        enterEdit(i);
-      });
-      return el;
+  // 渲染态链接点击（Ctrl+点击）→ 外链浏览器 / 本地相对路径打开
+  function openMdLink(tab, href) {
+    if (/^(https?:|mailto:)/i.test(href)) {
+      if (window.myIDE && window.myIDE.shell) window.myIDE.shell.openExternal(href);
+      return;
     }
-
-    function makeEditorEl(src, i, caret) {
-      const ta = document.createElement('textarea');
-      ta.className = 'md-block-edit';
-      ta.value = src;
-      ta.spellcheck = false;
-      ta.rows = 1;
-      const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(28, ta.scrollHeight) + 'px'; };
-      setTimeout(grow, 0);
-      ta.addEventListener('input', () => {
-        grow();
-        blocks[i] = ta.value;
-        syncContent();
-      });
-      ta.addEventListener('keyup', () => reportPos(ta));
-      ta.addEventListener('click', () => reportPos(ta));
-      ta.addEventListener('keydown', (e) => {
-        // Esc / Ctrl+Enter：结束本块编辑
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          commitEdit(i);
-          renderAll(-1);
-          return;
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-          e.preventDefault();
-          commitEdit(i);
-          if (blocks[i] && blocks[i].trim()) {
-            blocks.splice(i + 1, 0, '');
-            syncContent();
-            renderAll(i + 1, 'end');
-          } else renderAll(-1);
-          return;
-        }
-        // ↑ 在块首行 → 编辑上一块；↓ 在块末行 → 编辑下一块
-        if (e.key === 'ArrowUp' && !e.shiftKey && ta.selectionStart === 0 && ta.selectionEnd === 0) {
-          if (i > 0) { e.preventDefault(); moveEdit(i - 1, 'end'); }
-          return;
-        }
-        if (e.key === 'ArrowDown' && !e.shiftKey && ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length) {
-          if (i < blocks.length - 1) { e.preventDefault(); moveEdit(i + 1, 'start'); }
-          return;
-        }
-        // Backspace 删空块 → 回到上一块
-        if (e.key === 'Backspace' && ta.value === '' && blocks.length > 1) {
-          e.preventDefault();
-          blocks.splice(i, 1);
-          syncContent();
-          renderAll(Math.max(0, i - 1), 'end');
-          return;
-        }
-        // Tab：块尾 → 下一块；否则输入两空格缩进
-        if (e.key === 'Tab' && !e.shiftKey) {
-          if (ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length && i < blocks.length - 1) {
-            e.preventDefault();
-            moveEdit(i + 1, 'start');
-          } else {
-            e.preventDefault();
-            const s = ta.selectionStart, en = ta.selectionEnd;
-            ta.setRangeText('  ', s, en, 'end');
-            blocks[i] = ta.value;
-            syncContent();
-          }
-        }
-      });
-      // 失焦（点击工具栏/侧栏等）→ 安全提交并退出编辑
-      ta.addEventListener('blur', () => {
-        setTimeout(() => {
-          if (container.querySelector('.md-block-edit') !== ta) return; // 已被替换（块间切换）
-          if (editIdx === i) { commitEdit(i); renderAll(-1); }
-        }, 80);
-      });
-      setTimeout(() => {
-        ta.focus();
-        if (caret === 'end') ta.setSelectionRange(ta.value.length, ta.value.length);
-        else if (caret === 'start') ta.setSelectionRange(0, 0);
-        else if (typeof caret === 'number') {
-          const p = Math.max(0, Math.min(caret, ta.value.length));
-          ta.setSelectionRange(p, p);
-        }
-      }, 0);
-      return ta;
+    const parts = String(tab.path || '').split(/[\\/]/);
+    parts.pop();
+    for (const seg of String(href || '').split(/[\\/]/)) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
     }
-
-    function renderAll(editAfter = -1, caret = null) {
-      const st = container.scrollTop;
-      container.innerHTML = '';
-      if (!blocks.length) blocks = [''];
-      blocks.forEach((src, i) => {
-        if (i === editAfter) container.appendChild(makeEditorEl(src, i, caret));
-        else container.appendChild(makeBlockEl(src, i));
-      });
-      container.scrollTop = st;
-      editIdx = editAfter;
-    }
-
-    // 提交第 i 块：更新数组（含空行拆分）；返回块数变化（用于修正后续索引）
-    function commitEdit(i) {
-      const ta = container.querySelector('.md-block-edit');
-      if (ta) blocks[i] = ta.value;
-      const val = blocks[i] || '';
-      const parts = splitMdBlocks(val);
-      let delta = 0;
-      if (parts.length > 1) { blocks.splice(i, 1, ...parts); delta = parts.length - 1; }
-      else blocks[i] = parts[0] || '';
-      syncContent();
-      editIdx = -1;
-      return delta;
-    }
-
-    function enterEdit(i, caret) {
-      let target = i;
-      if (editIdx >= 0 && editIdx !== i) {
-        const prev = editIdx;
-        const delta = commitEdit(prev);
-        if (prev < i) target = i + delta; // 前块拆分 → 目标块后移
-      }
-      renderAll(target, caret);
-    }
-
-    function moveEdit(j, pos) {
-      let target = j;
-      if (editIdx >= 0 && editIdx !== j) {
-        const prev = editIdx;
-        const delta = commitEdit(prev);
-        if (prev < j) target = j + delta;
-      }
-      renderAll(Math.max(0, Math.min(target, blocks.length - 1)), pos);
-    }
-
-    renderAll();
+    let target = parts.join('\\');
+    if (target && !/\.[A-Za-z0-9]{1,8}$/.test(target.split(/[\\/]/).pop() || '')) target += '.md';
+    if (target) openFile(target);
   }
 
-  // ---------- 字号缩放（Ctrl+= / Ctrl+-，界面 + 编辑器同步调整）----------
+  // ---------- 字号缩放（只调文档编辑/阅读区，侧栏与界面字号不变）----------
   const FONT_KEY = 'myide-editor-font';
   function applyFontSize(size) {
     size = Math.min(20, Math.max(10, parseInt(size, 10) || 13));
     try { localStorage.setItem(FONT_KEY, String(size)); } catch {}
-    document.documentElement.style.setProperty('--ui-font-size', size + 'px');
     document.documentElement.style.setProperty('--editor-font-size', size + 'px');
+    const val = document.getElementById('sb-font-val');
+    if (val) val.textContent = String(size);
     return size;
   }
   function zoomFont(delta) {
@@ -689,6 +562,14 @@ const Viewer = (() => {
     const saved = parseInt(localStorage.getItem(FONT_KEY) || '13', 10);
     if (saved && saved !== 13) applyFontSize(saved);
   } catch {}
+
+  // 初始化/外部调用：同步状态栏字号显示
+  function syncFontLabel() {
+    let size = 13;
+    try { size = parseInt(localStorage.getItem(FONT_KEY) || '13', 10) || 13; } catch {}
+    const val = document.getElementById('sb-font-val');
+    if (val) val.textContent = String(size);
+  }
 
   // ---------- 括号/引号配对自动补全 ----------
   const PAIRS = { '(': ')', '[': ']', '{': '}', "'": "'", '"': '"' };
@@ -766,10 +647,10 @@ const Viewer = (() => {
   function openFind(showReplace) {
     const tab = tabs[active];
     if (!tab) { MI.toast('没有打开的文件', 'err'); return; }
-    // 实时预览模式无整体 textarea：自动切到源码模式再查找
-    if (!tab.ta && tab.mode === 'live') {
-      tab.mode = 'source';
-      renderView();
+    // Markdown live/source 模式：用 CM6 内建搜索面板
+    if (cmApi && (tab.mode === 'live' || tab.mode === 'source')) {
+      cmApi.find();
+      return;
     }
     if (!tab.ta) { MI.toast('请在编辑视图中查找', 'err'); return; }
     const ta = tab.ta;
@@ -896,9 +777,18 @@ const Viewer = (() => {
     }
   }
 
+  // Ctrl+E：Markdown live ↔ source 模式切换（对齐 Obsidian）
+  function toggleMdMode() {
+    const tab = tabs[active];
+    if (!tab || !/\.(md|markdown)$/i.test(tab.name)) { MI.toast('仅 Markdown 文件支持模式切换', 'err'); return; }
+    tab.mode = tab.mode === 'live' ? 'source' : 'live';
+    renderView();
+  }
+
   return {
     openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles,
-    zoomFont, applyFontSize,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode,
+    get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },

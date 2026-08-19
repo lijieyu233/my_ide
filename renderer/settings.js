@@ -70,12 +70,15 @@ const Settings = (() => {
   function renderFont() {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove(); // 快捷键过滤框不属于本视图
-    document.getElementById('set-title').textContent = '外观（字体大小）';
-    document.getElementById('set-hint').textContent = '拖动滑块调整界面与编辑器字号，即时生效并保存（Ctrl+= / Ctrl+- 也可调整）';
+    document.getElementById('set-title').textContent = '外观（字体大小 · 背景图）';
+    document.getElementById('set-hint').textContent = '字号只调整文档编辑区；背景图为本地图片，透明度可调';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     let size = 13;
     try { size = parseInt(localStorage.getItem('myide-editor-font') || '13', 10) || 13; } catch {}
+    const bg = window.Bg ? Bg.get() : { path: '', opacity: 0.15 };
+    const bgOp = Math.round(bg.opacity * 100);
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     list.innerHTML = `
       <div class="set-form">
         <label class="m-label">字体大小：<span id="font-size-val">${size}</span> px</label>
@@ -86,6 +89,16 @@ const Settings = (() => {
         <div style="margin-top:14px">
           <button class="tb-btn m-ok" id="font-reset">恢复默认 (13px)</button>
         </div>
+      </div>
+      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
+        <label class="m-label">背景图片</label>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+          <button class="tb-btn m-ok" id="bg-pick">🖼 选择图片…</button>
+          <button class="tb-btn" id="bg-clear">清除</button>
+        </div>
+        <div class="set-hint-path" style="color:var(--text-dim);font-size:11px;margin-bottom:12px;word-break:break-all">${bg.path ? esc(bg.path) : '未设置背景图'}</div>
+        <label class="m-label">背景透明度：<span id="bg-op-val">${bgOp}</span>%</label>
+        <input id="bg-op-range" type="range" min="5" max="50" step="1" value="${bgOp}" style="width:100%" ${bg.path ? '' : 'disabled'}>
       </div>`;
     const range = document.getElementById('font-size-range');
     range.addEventListener('input', () => {
@@ -99,6 +112,33 @@ const Settings = (() => {
       if (window.Viewer) Viewer.applyFontSize(13);
       MI.toast('已恢复默认字号', 'ok');
     };
+    // 背景图
+    const opRange = document.getElementById('bg-op-range');
+    const refreshPath = () => {
+      const cur = window.Bg ? Bg.get() : { path: '' };
+      document.querySelector('.set-hint-path').textContent = cur.path || '未设置背景图';
+      opRange.disabled = !cur.path;
+    };
+    document.getElementById('bg-pick').onclick = async () => {
+      const p = await window.myIDE.fs.pickImage();
+      if (p) {
+        Bg.set(p);
+        refreshPath();
+        MI.toast('已设置背景图', 'ok');
+      }
+    };
+    document.getElementById('bg-clear').onclick = () => {
+      Bg.set('');
+      opRange.value = 15;
+      document.getElementById('bg-op-val').textContent = 15;
+      refreshPath();
+      MI.toast('已清除背景图', 'ok');
+    };
+    opRange.addEventListener('input', () => {
+      const v = parseInt(opRange.value, 10);
+      document.getElementById('bg-op-val').textContent = v;
+      if (window.Bg) Bg.setOpacity(v / 100);
+    });
   }
 
   // ---------- 主题视图 ----------

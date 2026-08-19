@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('myIDE', {
   fs: {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
+    pickImage: () => ipcRenderer.invoke('fs:pickImage'),
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),

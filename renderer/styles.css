@@ -222,7 +222,7 @@ body {
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 #viewer > .viewer-toolbar { flex-shrink: 0; }
 #viewer > .md-view { flex: 1; overflow: auto; }
-#viewer > .editor-wrap { flex: 1; display: flex; min-height: 0; }
+.editor-wrap { flex: 1; display: flex; min-height: 0; } /* 不限 #viewer 直接子级：分屏内同样生效 */
 .editor-wrap .editor-gutter {
   width: 46px; flex-shrink: 0; overflow: hidden;
   background: var(--bg-panel); border-right: 1px solid var(--border);
@@ -266,6 +266,13 @@ body {
 .md-live .md-block.md-block-empty { min-height: 1.7em; }
 /* 模式切换分段按钮 */
 .md-mode-seg { display: flex; gap: 4px; flex-shrink: 0; }
+/* CM6 编辑器容器（Markdown live/source 模式） */
+.editor-cm-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.editor-cm-wrap .cm-editor { height: 100%; }
+.editor-cm-wrap .cm-editor.cm-focused { outline: none; }
+body.has-bg .editor-cm-wrap .cm-editor { background: transparent; }
+/* live 模式下正文更接近阅读宽度 */
+.editor-cm-wrap .cm-line { padding-left: 4px; padding-right: 4px; }
 
 /* ---------- 空状态 ---------- */
 #empty-state {
@@ -591,7 +598,36 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 #sb-branch.clickable { cursor: pointer; }
 #sb-branch.clickable:hover { color: var(--accent); }
 #sb-version { margin-left: auto; color: var(--text-dim); opacity: .7; flex-shrink: 0; }
+/* 状态栏字号控件（文档区字号） */
+.sb-font { display: flex; align-items: center; gap: 2px; margin-left: 12px; flex-shrink: 0; }
+.sb-font button {
+  width: 16px; height: 16px; padding: 0; line-height: 1;
+  background: transparent; border: 1px solid var(--border-mid); border-radius: 3px;
+  color: var(--text-dim); font-size: 11px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.sb-font button:hover { color: var(--text-bright); border-color: var(--accent); }
+.sb-font #sb-font-val { min-width: 18px; text-align: center; cursor: default; }
 body { display: flex; flex-direction: column; }
+
+/* ---------- 背景图（外观设置） ---------- */
+#bg-layer {
+  position: fixed; inset: 0; z-index: 0; display: none;
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+  pointer-events: none;
+}
+body.has-bg > *:not(#bg-layer) { position: relative; z-index: 1; }
+/* 有背景图时：面板半透明，透出背景 */
+body.has-bg #toolbar,
+body.has-bg #tabbar,
+body.has-bg #sidebar,
+body.has-bg #statusbar,
+body.has-bg .viewer-toolbar,
+body.has-bg #tool-strip { background: color-mix(in srgb, var(--bg-panel) 86%, transparent); }
+body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg #viewer > .md-view,
+body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
 
 /* ---------- 右键菜单 ---------- */
 #ctx-menu {
@@ -606,9 +642,16 @@ body { display: flex; flex-direction: column; }
 
 /* ---------- 搜索面板 ---------- */
 #sr-box { width: 720px; max-width: 92vw; }
+#sr-input {
+  width: 100%; border: none; outline: none;
+  background: var(--bg-input); color: var(--text-bright);
+  font-size: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+#sr-input:focus { box-shadow: inset 0 -2px 0 var(--accent); }
 .sr-stat { padding: 6px 14px 2px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
 #sr-list { max-height: 380px; overflow: auto; }
 .sr-file { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+.sr-hit { color: var(--text-bright); background: var(--bg-selected); border-radius: 2px; padding: 0 1px; }
 .sr-text { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qo-item.sel .sr-text { color: #ddd; }
 body.theme-light .qo-item.sel .sr-text { color: #444; }
