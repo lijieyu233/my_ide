@@ -46,7 +46,7 @@ const Viewer = (() => {
     activate(tabs.length - 1);
     // 树定位（打开文件后展开目录链并高亮）
     if (window.Tree) Tree.reveal(path);
-    await loadTab(tab);
+    await MI.perf('viewer.openFile ' + name, () => loadTab(tab), 500);
   }
 
   async function loadTab(tab) {
@@ -65,10 +65,9 @@ const Viewer = (() => {
       tab.content = r.content;
       tab.encoding = r.encoding || 'utf8';
       tab.eol = r.content && r.content.includes('\r\n') ? 'CRLF' : null;
-      // Markdown 默认「编辑 + 实时预览」分屏并存；其他可预览格式走纯预览
+      // Markdown 默认「实时预览」（Obsidian 式块编辑）；其他可预览格式走纯预览
       if (MD_EXTS.has(extOf(tab.name))) {
-        tab.mode = 'edit';
-        tab.splitPreview = true;
+        tab.mode = 'live';
       } else {
         tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
       }
@@ -248,10 +247,31 @@ const Viewer = (() => {
     btnCopy.onclick = () => { MI.copyText(tab.path); MI.toast('已复制完整路径', 'ok'); };
     toolbar.appendChild(btnCopy);
 
-    if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
+    // Markdown：分段模式切换（实时预览 / 分屏 / 源码 / 预览）
+    if (isMarkdown && !tab.binary && !tab.tooLarge) {
+      const seg = document.createElement('div');
+      seg.className = 'md-mode-seg';
+      const MODES = [
+        ['live', '✏️ 实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
+        ['split', '◧ 分屏', '左侧源码 + 右侧实时预览'],
+        ['source', '📝 源码', '纯 Markdown 源码编辑'],
+        ['preview', '👁 预览', '只读渲染视图'],
+      ];
+      const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
+      for (const [m, label, tip] of MODES) {
+        const b = document.createElement('button');
+        b.className = 'vt-btn' + (cur === m ? ' active' : '');
+        b.textContent = label;
+        b.title = tip;
+        b.onclick = () => { if (tab.mode !== m) { tab.mode = m; renderView(); } };
+        seg.appendChild(b);
+      }
+      toolbar.appendChild(seg);
+    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
       const btnToggle = document.createElement('button');
       btnToggle.className = 'vt-btn';
       btnToggle.textContent = '📄 查看源码';
+      btnToggle.title = '以源码方式编辑';
       btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
       toolbar.appendChild(btnToggle);
     }
@@ -274,22 +294,7 @@ const Viewer = (() => {
       toolbar.appendChild(btnBrowser);
     }
 
-    if (tab.mode === 'edit') {
-      if (PREVIEW_EXTS.has(extOf(tab.name)) && !tab.binary && !tab.tooLarge) {
-        const btnPrev = document.createElement('button');
-        btnPrev.className = 'vt-btn';
-        btnPrev.textContent = '👁 预览';
-        btnPrev.onclick = () => { tab.mode = 'preview'; renderView(); };
-        toolbar.appendChild(btnPrev);
-      }
-      if (isMarkdown && !tab.binary && !tab.tooLarge) {
-        const btnSplit = document.createElement('button');
-        btnSplit.className = 'vt-btn';
-        btnSplit.textContent = tab.splitPreview === false ? '◧ 分屏预览' : '▭ 单栏编辑';
-        btnSplit.title = tab.splitPreview === false ? '显示编辑 + 实时预览分屏' : '仅显示编辑器';
-        btnSplit.onclick = () => { tab.splitPreview = (tab.splitPreview === false); renderView(); };
-        toolbar.appendChild(btnSplit);
-      }
+    if (tab.mode === 'edit' || tab.mode === 'source' || tab.mode === 'split') {
       const btnSave = document.createElement('button');
       btnSave.className = 'vt-btn vt-save';
       btnSave.textContent = '💾 保存';
@@ -318,8 +323,14 @@ const Viewer = (() => {
       return;
     }
 
-    if (tab.mode === 'edit') {
-      const splitOn = isMarkdown && tab.splitPreview !== false;
+    if (tab.mode === 'live') {
+      tab.ta = null;
+      renderMarkdownLive(tab);
+      return;
+    }
+
+    if (tab.mode === 'edit' || tab.mode === 'source' || tab.mode === 'split') {
+      const splitOn = tab.mode === 'split' || (tab.mode === 'edit' && isMarkdown && tab.splitPreview !== false);
       // 行号 gutter + textarea
       const wrap = document.createElement('div');
       wrap.className = 'editor-wrap';
@@ -358,8 +369,20 @@ const Viewer = (() => {
         if (node instanceof HTMLElement) previewPane.appendChild(node);
         else previewPane.textContent = node == null ? '' : String(node);
       };
-      // 滚动同步
-      ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; });
+      // 滚动同步：行号跟随 + 预览按比例跟随（Obsidian 式分屏阅读体验）
+      ta.addEventListener('scroll', () => {
+        gutter.scrollTop = ta.scrollTop;
+        if (previewPane && !previewScrolling) {
+          const maxTa = ta.scrollHeight - ta.clientHeight;
+          if (maxTa > 0) {
+            const ratio = ta.scrollTop / maxTa;
+            previewPane.scrollTop = ratio * (previewPane.scrollHeight - previewPane.clientHeight);
+          }
+        }
+      });
+      // 用户滚预览 → 暂停跟随 800ms（避免双向抖动）
+      let previewScrolling = false;
+      let previewScrollTimer = null;
       ta.addEventListener('input', () => {
         tab.content = ta.value;
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
@@ -387,9 +410,47 @@ const Viewer = (() => {
       if (splitOn) {
         const split = document.createElement('div');
         split.className = 'md-split';
+        // 可拖动分割条（比例持久化）
+        const divider = document.createElement('div');
+        divider.className = 'md-split-divider';
+        divider.title = '拖动调整分屏比例';
+        try {
+          const savedRatio = parseFloat(localStorage.getItem('myide-md-split'));
+          if (savedRatio >= 0.2 && savedRatio <= 0.8) wrap.style.flex = '0 0 ' + (savedRatio * 100) + '%';
+        } catch {}
+        divider.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          divider.classList.add('dragging');
+          const overlay = document.createElement('div');
+          overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:col-resize;';
+          document.body.appendChild(overlay);
+          const rect = split.getBoundingClientRect();
+          const apply = (x) => {
+            const ratio = Math.min(0.8, Math.max(0.2, (x - rect.left) / rect.width));
+            wrap.style.flex = '0 0 ' + (ratio * 100) + '%';
+          };
+          const onMove = (ev) => apply(ev.clientX);
+          const onUp = () => {
+            overlay.remove();
+            divider.classList.remove('dragging');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            const m = /^([\d.]+)%$/.exec(wrap.style.flexBasis || wrap.style.flex || '');
+            if (m) { try { localStorage.setItem('myide-md-split', String(parseFloat(m[1]) / 100)); } catch {} }
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
         split.appendChild(wrap);
+        split.appendChild(divider);
         previewPane = document.createElement('div');
         previewPane.className = 'md-split-preview';
+        // 用户滚预览 → 暂停「编辑→预览」跟随，防抖恢复
+        previewPane.addEventListener('scroll', () => {
+          previewScrolling = true;
+          clearTimeout(previewScrollTimer);
+          previewScrollTimer = setTimeout(() => { previewScrolling = false; }, 800);
+        });
         split.appendChild(previewPane);
         viewer.appendChild(split);
         refreshPreview();
@@ -414,19 +475,219 @@ const Viewer = (() => {
 
   function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
 
-  // ---------- 字号缩放（Ctrl+= / Ctrl+-）----------
+  // ---------- Markdown 实时预览（Obsidian 式块编辑器） ----------
+  // 按空行切块（跳过 ``` / ~~~ 围栏内的空行）；非编辑块渲染 HTML，点击任意块即就地编辑
+  function splitMdBlocks(src) {
+    const out = [];
+    let cur = [];
+    let inFence = false;
+    for (const line of String(src || '').split('\n')) {
+      if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+      if (!inFence && line.trim() === '') {
+        if (cur.length) { out.push(cur.join('\n')); cur = []; }
+      } else cur.push(line);
+    }
+    if (cur.length) out.push(cur.join('\n'));
+    return out;
+  }
+
+  function renderMarkdownLive(tab) {
+    const container = document.createElement('div');
+    container.className = 'md-view md-live';
+    viewer.appendChild(container);
+    let blocks = splitMdBlocks(tab.content || '');
+    if (!blocks.length) blocks = [''];
+    let editIdx = -1;
+    let outlineTimer = null;
+
+    const syncContent = () => {
+      tab.content = blocks.join('\n\n');
+      if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+      scheduleAutosave();
+      clearTimeout(outlineTimer);
+      outlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
+    };
+
+    const reportPos = (ta) => {
+      if (!window.App) return;
+      const before = ta.value.slice(0, ta.selectionStart);
+      const line = before.split('\n').length;
+      const col = ta.selectionStart - before.lastIndexOf('\n');
+      App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+    };
+
+    function makeBlockEl(src, i) {
+      let el = null;
+      const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
+      if (fn) {
+        const node = fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: src });
+        if (node instanceof HTMLElement) {
+          node.className = 'md-block' + (src.trim() ? '' : ' md-block-empty');
+          el = node;
+        }
+      }
+      if (!el) { el = document.createElement('div'); el.className = 'md-block'; el.textContent = src; }
+      // mousedown 即进入编辑（click 会与链接跳转冲突；链接/图片/复制按钮交给渲染器处理）
+      el.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        const t = e.target;
+        if (t && t.closest && t.closest('a, button, img, video, audio, iframe')) return;
+        e.preventDefault(); // 阻止焦点转移，由 enterEdit 接管
+        enterEdit(i);
+      });
+      return el;
+    }
+
+    function makeEditorEl(src, i, caret) {
+      const ta = document.createElement('textarea');
+      ta.className = 'md-block-edit';
+      ta.value = src;
+      ta.spellcheck = false;
+      ta.rows = 1;
+      const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(28, ta.scrollHeight) + 'px'; };
+      setTimeout(grow, 0);
+      ta.addEventListener('input', () => {
+        grow();
+        blocks[i] = ta.value;
+        syncContent();
+      });
+      ta.addEventListener('keyup', () => reportPos(ta));
+      ta.addEventListener('click', () => reportPos(ta));
+      ta.addEventListener('keydown', (e) => {
+        // Esc / Ctrl+Enter：结束本块编辑
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          commitEdit(i);
+          renderAll(-1);
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          commitEdit(i);
+          if (blocks[i] && blocks[i].trim()) {
+            blocks.splice(i + 1, 0, '');
+            syncContent();
+            renderAll(i + 1, 'end');
+          } else renderAll(-1);
+          return;
+        }
+        // ↑ 在块首行 → 编辑上一块；↓ 在块末行 → 编辑下一块
+        if (e.key === 'ArrowUp' && !e.shiftKey && ta.selectionStart === 0 && ta.selectionEnd === 0) {
+          if (i > 0) { e.preventDefault(); moveEdit(i - 1, 'end'); }
+          return;
+        }
+        if (e.key === 'ArrowDown' && !e.shiftKey && ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length) {
+          if (i < blocks.length - 1) { e.preventDefault(); moveEdit(i + 1, 'start'); }
+          return;
+        }
+        // Backspace 删空块 → 回到上一块
+        if (e.key === 'Backspace' && ta.value === '' && blocks.length > 1) {
+          e.preventDefault();
+          blocks.splice(i, 1);
+          syncContent();
+          renderAll(Math.max(0, i - 1), 'end');
+          return;
+        }
+        // Tab：块尾 → 下一块；否则输入两空格缩进
+        if (e.key === 'Tab' && !e.shiftKey) {
+          if (ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length && i < blocks.length - 1) {
+            e.preventDefault();
+            moveEdit(i + 1, 'start');
+          } else {
+            e.preventDefault();
+            const s = ta.selectionStart, en = ta.selectionEnd;
+            ta.setRangeText('  ', s, en, 'end');
+            blocks[i] = ta.value;
+            syncContent();
+          }
+        }
+      });
+      // 失焦（点击工具栏/侧栏等）→ 安全提交并退出编辑
+      ta.addEventListener('blur', () => {
+        setTimeout(() => {
+          if (container.querySelector('.md-block-edit') !== ta) return; // 已被替换（块间切换）
+          if (editIdx === i) { commitEdit(i); renderAll(-1); }
+        }, 80);
+      });
+      setTimeout(() => {
+        ta.focus();
+        if (caret === 'end') ta.setSelectionRange(ta.value.length, ta.value.length);
+        else if (caret === 'start') ta.setSelectionRange(0, 0);
+        else if (typeof caret === 'number') {
+          const p = Math.max(0, Math.min(caret, ta.value.length));
+          ta.setSelectionRange(p, p);
+        }
+      }, 0);
+      return ta;
+    }
+
+    function renderAll(editAfter = -1, caret = null) {
+      const st = container.scrollTop;
+      container.innerHTML = '';
+      if (!blocks.length) blocks = [''];
+      blocks.forEach((src, i) => {
+        if (i === editAfter) container.appendChild(makeEditorEl(src, i, caret));
+        else container.appendChild(makeBlockEl(src, i));
+      });
+      container.scrollTop = st;
+      editIdx = editAfter;
+    }
+
+    // 提交第 i 块：更新数组（含空行拆分）；返回块数变化（用于修正后续索引）
+    function commitEdit(i) {
+      const ta = container.querySelector('.md-block-edit');
+      if (ta) blocks[i] = ta.value;
+      const val = blocks[i] || '';
+      const parts = splitMdBlocks(val);
+      let delta = 0;
+      if (parts.length > 1) { blocks.splice(i, 1, ...parts); delta = parts.length - 1; }
+      else blocks[i] = parts[0] || '';
+      syncContent();
+      editIdx = -1;
+      return delta;
+    }
+
+    function enterEdit(i, caret) {
+      let target = i;
+      if (editIdx >= 0 && editIdx !== i) {
+        const prev = editIdx;
+        const delta = commitEdit(prev);
+        if (prev < i) target = i + delta; // 前块拆分 → 目标块后移
+      }
+      renderAll(target, caret);
+    }
+
+    function moveEdit(j, pos) {
+      let target = j;
+      if (editIdx >= 0 && editIdx !== j) {
+        const prev = editIdx;
+        const delta = commitEdit(prev);
+        if (prev < j) target = j + delta;
+      }
+      renderAll(Math.max(0, Math.min(target, blocks.length - 1)), pos);
+    }
+
+    renderAll();
+  }
+
+  // ---------- 字号缩放（Ctrl+= / Ctrl+-，界面 + 编辑器同步调整）----------
   const FONT_KEY = 'myide-editor-font';
+  function applyFontSize(size) {
+    size = Math.min(20, Math.max(10, parseInt(size, 10) || 13));
+    try { localStorage.setItem(FONT_KEY, String(size)); } catch {}
+    document.documentElement.style.setProperty('--ui-font-size', size + 'px');
+    document.documentElement.style.setProperty('--editor-font-size', size + 'px');
+    return size;
+  }
   function zoomFont(delta) {
     let size = 13;
     try { size = parseInt(localStorage.getItem(FONT_KEY) || '13', 10); } catch {}
-    size = Math.min(24, Math.max(9, size + delta));
-    try { localStorage.setItem(FONT_KEY, String(size)); } catch {}
-    document.documentElement.style.setProperty('--editor-font-size', size + 'px');
+    size = applyFontSize(size + delta);
     MI.toast('字号 ' + size + 'px', 'ok');
   }
   try {
     const saved = parseInt(localStorage.getItem(FONT_KEY) || '13', 10);
-    if (saved && saved !== 13) document.documentElement.style.setProperty('--editor-font-size', saved + 'px');
+    if (saved && saved !== 13) applyFontSize(saved);
   } catch {}
 
   // ---------- 括号/引号配对自动补全 ----------
@@ -504,7 +765,13 @@ const Viewer = (() => {
 
   function openFind(showReplace) {
     const tab = tabs[active];
-    if (!tab || !tab.ta) { MI.toast('请在编辑视图中查找', 'err'); return; }
+    if (!tab) { MI.toast('没有打开的文件', 'err'); return; }
+    // 实时预览模式无整体 textarea：自动切到源码模式再查找
+    if (!tab.ta && tab.mode === 'live') {
+      tab.mode = 'source';
+      renderView();
+    }
+    if (!tab.ta) { MI.toast('请在编辑视图中查找', 'err'); return; }
     const ta = tab.ta;
     // 已有条：切换替换行显示
     if (findState && findState.ta === ta) {
@@ -600,28 +867,38 @@ const Viewer = (() => {
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
       for (let i = 0; i < tabs.length; i++) {
-        if (tabs[i].dirty && tabs[i].ta) saveTab(i, true);
+        if (tabs[i].dirty) saveTab(i, true);
       }
     }, 3000);
   }
 
   async function saveTab(i, quiet) {
     const tab = tabs[i];
-    if (!tab || !tab.ta) return;
-    const r = await window.myIDE.fs.writeFile(tab.path, tab.ta.value, tab.encoding);
+    if (!tab || tab.content == null) return;
+    const val = tab.ta ? tab.ta.value : tab.content; // live 模式无 textarea，直接写 content
+    const r = await window.myIDE.fs.writeFile(tab.path, val, tab.encoding);
     if (r.ok) {
-      tab.content = tab.ta.value;
+      tab.content = val;
       tab.dirty = false;
       renderTabs();
       if (!quiet) MI.toast('💾 已保存 ' + tab.name, 'ok');
       App.refreshGit();
     } else {
       if (!quiet) MI.toast('保存失败: ' + r.error, 'err');
+      MI.log('ERROR', 'viewer.save', '写入失败 ' + tab.path + ' → ' + (r.error || '?'));
+    }
+  }
+
+  // 静默保存全部未保存标签（切换项目用，替代确认弹窗）
+  async function saveAllDirty() {
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i].dirty) await saveTab(i, true);
     }
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab, openFind, recentFiles, zoomFont,
+    openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles,
+    zoomFont, applyFontSize,
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },
     get openTabs() { return tabs; },

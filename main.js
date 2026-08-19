@@ -43,7 +43,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     title: 'My IDE',
-    backgroundColor: '#2b2b2b',
+    backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
     webPreferences: {
@@ -280,9 +280,62 @@ ipcMain.handle('fs:remove', (_e, p) => {
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
 ipcMain.handle('shell:openExternal', (_e, url) => {
   try {
-    if (/^(https?:|mailto:)/i.test(String(url || ''))) shell.openExternal(String(url));
+    const u = String(url || '');
+    if (/^(https?:|mailto:)/i.test(u)) {
+      shell.openExternal(u);
+    } else if (/^file:\/\//i.test(u)) {
+      // 本地文件（HTML 浏览器打开等）：file:///D:/x/y.html → 系统默认应用打开
+      const p = decodeURIComponent(u.replace(/^file:\/\/\/?/i, ''));
+      if (fs.existsSync(p)) shell.openPath(p);
+      else return false;
+    }
     return true;
   } catch (e) { return false; }
+});
+
+// ---------- 目录实时监听（外部增删改文件 → 目录树自动刷新）----------
+let dirWatcher = null;
+let dirWatchTimer = null;
+ipcMain.handle('fs:watch', (_e, rootPath) => {
+  if (dirWatcher) { try { dirWatcher.close(); } catch {} dirWatcher = null; }
+  if (!rootPath || !fs.existsSync(rootPath)) return false;
+  try {
+    // Windows/macOS 支持递归监听；事件防抖聚合后通知渲染进程
+    dirWatcher = fs.watch(rootPath, { recursive: true }, (_evt, filename) => {
+      const segs = String(filename || '').replace(/\\/g, '/').split('/');
+      if (segs.some((s) => s === '.git' || s === 'node_modules')) return; // git 内部噪声不刷树
+      clearTimeout(dirWatchTimer);
+      dirWatchTimer = setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root: rootPath });
+      }, 300);
+    });
+    dirWatcher.on('error', () => {});
+    return true;
+  } catch (e) { return false; }
+});
+
+// ---------- 使用日志（卡顿/卡死问题定位用）----------
+function usageLogFile() {
+  const dir = path.join(app.getPath('userData'), 'logs');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return path.join(dir, 'usage.log');
+}
+function writeUsage(line) {
+  try {
+    const file = usageLogFile();
+    try {
+      const st = fs.statSync(file);
+      if (st.size > 2 * 1024 * 1024) { // 轮转：超过 2MB 备份为 .old
+        try { fs.rmSync(file + '.old'); } catch {}
+        fs.renameSync(file, file + '.old');
+      }
+    } catch {}
+    fs.appendFileSync(file, line);
+  } catch {}
+}
+ipcMain.handle('log:write', (_e, level, tag, msg) => {
+  writeUsage(`${new Date().toISOString()} [${level}] [${tag}] ${String(msg).slice(0, 2000)}\n`);
+  return true;
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
@@ -413,6 +466,7 @@ ipcMain.handle('plugins:loadAll', () => {
 app.whenReady().then(() => {
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
   if (OPEN_ARG) { const s = loadState(); s.lastFolder = OPEN_ARG; saveState(s); }
+  writeUsage(`===== 启动 version=${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '?'} electron=${process.versions.electron} node=${process.versions.node} =====\n`);
   watchPlugins();
   startGitWorker();
   const win = createWindow();

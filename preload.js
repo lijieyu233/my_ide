@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld('myIDE', {
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),
     move: (src, destDir) => ipcRenderer.invoke('fs:move', src, destDir),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
+    watch: (p) => ipcRenderer.invoke('fs:watch', p),
+    onChanged: (cb) => ipcRenderer.on('fs:changed', (_e, info) => cb(info)),
+  },
+  log: {
+    write: (level, tag, msg) => ipcRenderer.invoke('log:write', level, tag, msg),
   },
   shell: {
     showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),

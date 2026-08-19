@@ -44,11 +44,11 @@ const Outline = (() => {
     });
   }
 
-  // 点击大纲项 → 切换到预览并滚动到对应标题
+  // 点击大纲项 → 切换到预览（实时预览模式就地滚动）并定位标题
   function jump(i) {
     const tab = Viewer.activeTab;
     if (!tab) return;
-    if (tab.mode !== 'preview') {
+    if (tab.mode !== 'preview' && tab.mode !== 'live') {
       tab.mode = 'preview';
       Viewer.renderActive();
     }

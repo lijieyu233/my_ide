@@ -11,6 +11,7 @@ const Settings = (() => {
       <div class="set-body">
         <div class="set-side">
           <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
+          <div class="set-cat" data-cat="font">🔤 外观</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
           <div class="set-cat" data-cat="theme">🎨 主题</div>
         </div>
@@ -37,6 +38,7 @@ const Settings = (() => {
         $all('.set-cat').forEach((x) => x.classList.remove('active'));
         cat.classList.add('active');
         if (cat.dataset.cat === 'keys') renderKeys();
+        else if (cat.dataset.cat === 'font') renderFont();
         else if (cat.dataset.cat === 'git') renderGit();
         else if (cat.dataset.cat === 'theme') renderTheme();
       };
@@ -64,8 +66,45 @@ const Settings = (() => {
     renderList();
   }
 
+  // ---------- 外观视图（字体大小） ----------
+  function renderFont() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove(); // 快捷键过滤框不属于本视图
+    document.getElementById('set-title').textContent = '外观（字体大小）';
+    document.getElementById('set-hint').textContent = '拖动滑块调整界面与编辑器字号，即时生效并保存（Ctrl+= / Ctrl+- 也可调整）';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    let size = 13;
+    try { size = parseInt(localStorage.getItem('myide-editor-font') || '13', 10) || 13; } catch {}
+    list.innerHTML = `
+      <div class="set-form">
+        <label class="m-label">字体大小：<span id="font-size-val">${size}</span> px</label>
+        <input id="font-size-range" type="range" min="10" max="20" step="1" value="${size}" style="width:100%">
+        <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:11px;margin-top:2px">
+          <span>10px 小</span><span>13px 默认</span><span>20px 大</span>
+        </div>
+        <div style="margin-top:14px">
+          <button class="tb-btn m-ok" id="font-reset">恢复默认 (13px)</button>
+        </div>
+      </div>`;
+    const range = document.getElementById('font-size-range');
+    range.addEventListener('input', () => {
+      const v = parseInt(range.value, 10);
+      document.getElementById('font-size-val').textContent = v;
+      if (window.Viewer) Viewer.applyFontSize(v);
+    });
+    document.getElementById('font-reset').onclick = () => {
+      range.value = 13;
+      document.getElementById('font-size-val').textContent = 13;
+      if (window.Viewer) Viewer.applyFontSize(13);
+      MI.toast('已恢复默认字号', 'ok');
+    };
+  }
+
   // ---------- 主题视图 ----------
   function renderTheme() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove(); // 快捷键过滤框不属于本视图
     document.getElementById('set-title').textContent = '主题';
     document.getElementById('set-hint').textContent = '选择界面配色，即时生效并保存';
     document.getElementById('set-reset-all').classList.add('hidden');
@@ -76,6 +115,8 @@ const Settings = (() => {
         <div class="theme-options">
           <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark">🌙 深色</button>
           <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light">☀️ 浅色</button>
+          <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
+          <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
         </div>
       </div>`;
     $all('.theme-opt').forEach((b) => {
@@ -83,13 +124,15 @@ const Settings = (() => {
         Theme.set(b.dataset.th);
         $all('.theme-opt').forEach((x) => x.classList.remove('sel'));
         b.classList.add('sel');
-        MI.toast('已切换为' + (b.dataset.th === 'light' ? '浅色' : '深色') + '主题', 'ok');
+        MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
       };
     });
   }
 
   // ---------- Git 视图 ----------
   async function renderGit() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove(); // 快捷键过滤框不属于本视图
     document.getElementById('set-title').textContent = 'Git 配置（提交作者信息）';
     document.getElementById('set-hint').textContent = '保存后写入当前仓库 .git/config，下次提交生效';
     document.getElementById('set-reset-all').classList.add('hidden');

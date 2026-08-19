@@ -18,6 +18,34 @@ MI.renderFor = function (file) {
   return null; // 无匹配 → 走默认文本编辑器
 };
 
+// ---------- 使用日志（性能埋点 + 错误捕获，定位卡顿/卡死用）----------
+MI.log = function (level, tag, msg) {
+  try { if (window.myIDE && window.myIDE.log) window.myIDE.log.write(level, tag, msg); } catch {}
+};
+MI.logErr = function (tag, e) { MI.log('ERROR', tag, (e && e.stack) || String(e)); };
+// 性能埋点：包装 fn（同步/异步皆可），耗时超过 threshold 才记录
+MI.perf = function (tag, fn, threshold = 200) {
+  const t0 = performance.now();
+  const done = () => {
+    const ms = performance.now() - t0;
+    if (ms >= threshold) MI.log('PERF', tag, ms.toFixed(0) + 'ms');
+    return ms;
+  };
+  let r;
+  try { r = fn(); } catch (e) { done(); MI.logErr(tag, e); throw e; }
+  if (r && typeof r.then === 'function') {
+    return r.then((v) => { done(); return v; }, (e) => { done(); MI.logErr(tag, e); throw e; });
+  }
+  done();
+  return r;
+};
+window.addEventListener('error', (e) => {
+  MI.log('ERROR', 'renderer', (e.message || 'error') + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  MI.log('ERROR', 'renderer-promise', String((e.reason && e.reason.stack) || e.reason));
+});
+
 // ---------- 内置渲染器 ----------
 // 页内锚点滚动（markdown 链接跳转用）
 function scrollToAnchor(container, rawId) {

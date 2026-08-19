@@ -42,7 +42,7 @@ const App = (() => {
           <div class="m-body">
             <label class="m-label">${label}</label>
             <input id="pf-input" type="text" value="${String(value || '').replace(/"/g, '&quot;')}"
-              style="width:100%;background:var(--bg-input);border:1px solid #46494d;border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none">
+              style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none">
           </div>
           <div class="m-foot">
             <button class="tb-btn m-cancel" id="pf-no">取消</button>
@@ -130,6 +130,7 @@ const App = (() => {
 
   // ---------- 多项目（顶部项目栏）----------
   let projects = []; // [{path}]
+  let projDragPath = null; // 项目栏拖拽排序：dragstart 记录（dragover 中 getData 不可用）
 
   function loadProjects() {
     try { projects = JSON.parse(localStorage.getItem('myide-projects') || '[]'); } catch { projects = []; }
@@ -188,28 +189,25 @@ const App = (() => {
       x.textContent = '✕';
       x.title = '移除项目';
       const doRemove = () => {
-        Modal.confirm('移除项目', '从项目列表移除「' + nm.textContent + '」？（不影响磁盘上的文件）').then((yes) => {
-          if (yes) {
-            projects = projects.filter((p) => p.path !== pr.path);
-            saveProjects();
-            renderProjectBar();
-          }
-        });
+        projects = projects.filter((p) => p.path !== pr.path);
+        saveProjects();
+        renderProjectBar();
       };
       x.onclick = (e) => { e.stopPropagation(); doRemove(); };
       btn.appendChild(x);
       btn.onclick = () => openProject(pr.path);
       btn.oncontextmenu = (e) => { e.preventDefault(); doRemove(); };
-      // 拖拽排序（PyCharm 项目栏习惯）
+      // 拖拽排序（PyCharm 项目栏习惯；dragover 中 getData 恒为空 → 用模块级变量记录源）
       btn.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/proj-path', pr.path);
+        projDragPath = pr.path;
+        try { e.dataTransfer.setData('text/proj-path', pr.path); } catch {}
         e.dataTransfer.effectAllowed = 'move';
         btn.classList.add('dragging');
       });
-      btn.addEventListener('dragend', () => btn.classList.remove('dragging'));
+      btn.addEventListener('dragend', () => { btn.classList.remove('dragging'); projDragPath = null; });
       btn.addEventListener('dragover', (e) => {
         e.preventDefault();
-        const src = e.dataTransfer.getData('text/proj-path');
+        const src = projDragPath;
         if (!src || src === pr.path) return;
         const srcEl = [...bar.children].find((b) => b.dataset.path === src);
         if (!srcEl || srcEl === btn) return;
@@ -218,7 +216,7 @@ const App = (() => {
       });
       btn.addEventListener('drop', (e) => {
         e.preventDefault();
-        const src = e.dataTransfer.getData('text/proj-path');
+        const src = projDragPath || e.dataTransfer.getData('text/proj-path');
         if (!src || src === pr.path) return;
         const order = [...bar.children].map((b) => b.dataset.path).filter(Boolean);
         projects.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
@@ -227,15 +225,36 @@ const App = (() => {
       });
       bar.appendChild(btn);
     }
+    // 项目过多时的「▾」合并入口：下拉列出全部项目（点击切换）
+    if (projects.length > 1) {
+      const more = document.createElement('button');
+      more.className = 'proj-more';
+      more.textContent = '▾ ' + projects.length;
+      more.title = '全部项目（点击切换）';
+      more.onclick = (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        projects.forEach((p) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
+          d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
+          d.title = p.path;
+          d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
+          menu.appendChild(d);
+        });
+        menu.classList.remove('hidden');
+        const r = more.getBoundingClientRect();
+        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
+        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 200) + 'px';
+      };
+      bar.appendChild(more);
+    }
   }
-  // 切换项目：dirty 确认 → 关闭全部标签 → 重新加载
+  // 切换项目：静默保存未保存的标签 → 关闭全部 → 重新加载（不再弹确认）
   async function openProject(p) {
     if (p === root) return;
-    const dirtyCount = Viewer.openTabs.filter((t) => t.dirty).length;
-    if (dirtyCount) {
-      const yes = await Modal.confirm('未保存的更改', dirtyCount + ' 个标签有未保存的修改，切换项目将丢弃这些修改。确定切换吗？');
-      if (!yes) return;
-    }
+    await Viewer.saveAllDirty();
     Session.saveNow(); // 立即保存当前项目会话，防止被 closeAll 的空状态覆盖
     Viewer.closeAll();
     await setRoot(p);
@@ -248,8 +267,10 @@ const App = (() => {
   }
 
   async function setRoot(p) {
+    const t0 = performance.now();
     root = p;
     MI.activeRoot = p;
+    MI.log('INFO', 'app', '打开项目: ' + p);
     document.getElementById('tb-path').textContent = p;
     document.getElementById('tb-path').title = p;
     Tree.setRoot(p);
@@ -262,6 +283,11 @@ const App = (() => {
     renderProjectBar();
     renderEmptyRecent();
     Session.restore();
+    // 打开耗时埋点（>800ms 记日志，定位大项目卡顿）
+    setTimeout(() => {
+      const ms = performance.now() - t0;
+      if (ms > 800) MI.log('PERF', 'app.setRoot', ms.toFixed(0) + 'ms ' + p);
+    }, 1500);
   }
 
   // ---------- 刷新 ----------
@@ -339,19 +365,12 @@ const App = (() => {
         bubbles: true, cancelable: true,
       }));
     });
-    document.getElementById('btn-refresh').onclick = refreshAll;
     document.getElementById('btn-search').onclick = () => Search.open();
     document.getElementById('btn-settings').onclick = () => Settings.open();
     document.getElementById('btn-help').onclick = () => Help.open();
     document.getElementById('btn-theme').onclick = () => {
       Theme.toggle();
-      MI.toast('已切换为' + (Theme.current() === 'light' ? '浅色' : '深色') + '主题', 'ok');
-    };
-    document.getElementById('btn-copy-path').onclick = () => {
-      const t = Viewer.activeTab;
-      if (!t) { MI.toast('没有打开的文件', 'err'); return; }
-      MI.copyText(t.path);
-      MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
+      MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok');
     };
     document.getElementById('tb-git').onclick = () => switchTool('git');
     document.getElementById('tool-project').onclick = () => switchTool('project');

@@ -63,10 +63,31 @@
       const selRows = qa('.tree-row.selected').map((r) => (r.querySelector('.nm') || {}).title);
       return { notesSel: selRows.some((t) => t && t.endsWith('notes.txt')), readmeSel: selRows.some((t) => t && t.endsWith('README.md')), count: selRows.length };
     })();
-    // Markdown 默认「编辑 + 实时预览」分屏并存
+    // Markdown 默认「实时预览」（Obsidian 式块编辑）；工具栏可切分屏
     await Viewer.openFile(P + '\\README.md');
     await wait(600);
-    out.mdSplitDefault = !!q('.md-split');
+    out.mdLiveDefault = !!q('.md-live');
+    out.mdLiveBlocks = qa('.md-live .md-block').length;
+    // 点击块 → 进入编辑；Esc 提交回渲染
+    const firstBlock = q('.md-live .md-block');
+    if (firstBlock) {
+      firstBlock.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      await wait(200);
+      out.mdBlockEdit = !!q('.md-block-edit');
+      const et = q('.md-block-edit');
+      if (et) {
+        et.value = '# 实时标题检查';
+        et.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(100);
+        et.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await wait(300);
+      }
+    } else out.mdBlockEdit = false;
+    out.mdBlockH1 = (() => { const h = q('.md-live .md-block h1'); return h ? h.textContent : null; })();
+    // 切分屏模式
+    const splitBtn = qa('.viewer-toolbar .vt-btn').find((b) => b.textContent.includes('◧ 分屏'));
+    if (splitBtn) { click(splitBtn); await wait(400); }
+    out.mdSplitMode = !!q('.md-split');
     out.mdSplitPreview = !!q('.md-split-preview .md-view');
     out.mdPreviewPane = !!q('.md-view');
     // wiki 链接 + 远程图片（CSP）

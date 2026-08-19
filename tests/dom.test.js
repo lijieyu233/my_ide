@@ -235,24 +235,35 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(md.querySelector('pre code'), '代码块渲染');
   });
 
-  await okAsync('Markdown 默认分屏编辑 + 切换纯预览', async () => {
-    // md 现在默认「编辑 + 实时预览」分屏并存
-    assert_($(dom, '.md-split'), 'md 打开即分屏');
-    assert_($(dom, 'textarea.editor'), '分屏含编辑器');
-    const ta = $(dom, 'textarea.editor');
-    ta.value = '# 改过的标题';
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 300)); // 等实时预览防抖
-    assert_($(dom, '.md-split-preview .md-view h1') && $(dom, '.md-split-preview .md-view h1').textContent.includes('改过的标题'), '分屏预览实时更新');
+  await okAsync('Markdown 默认实时预览（Obsidian 式块编辑）+ 模式切换', async () => {
+    // md 现在默认「实时预览」：块渲染 + 点击即编辑
+    assert_($(dom, '.md-live'), 'md 打开即实时预览容器');
+    assert_($(dom, '.md-live .md-block'), '内容按块渲染');
+    // 点击块 → 进入编辑
+    const block = $(dom, '.md-live .md-block');
+    block.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    const edit = $(dom, '.md-block-edit');
+    assert_(edit, '点击块进入编辑');
+    edit.value = '# 改过的标题';
+    edit.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
+    // Esc 提交 → 回渲染态
+    edit.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 50));
+    const h1 = $(dom, '.md-live .md-block h1');
+    assert_(h1 && h1.textContent.includes('改过的标题'), '提交后块渲染出标题');
     // 切纯预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
     await tick();
     const md = $(dom, '.md-view');
-    assert_(md && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
-    // 预览里切回编辑（分屏）
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('源码')));
+    assert_(!$(dom, '.md-live'), '纯预览无实时预览容器');
+    assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
+    // 预览里切回实时预览
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
-    assert_($(dom, '.md-split'), '切回编辑仍是分屏');
+    assert_($(dom, '.md-live'), '切回实时预览');
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {
@@ -387,11 +398,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const items = $allIn($(dom, '#outline'), '.outline-item');
     assert_(items.length >= 1, '大纲有条目, got ' + items.length);
     assert_(items[0].textContent.includes('标题'), '条目文本正确: ' + items[0].textContent);
-    // md 默认分屏（含编辑器），点大纲 → 自动切回纯预览
-    assert_($(dom, 'textarea.editor'), '分屏已含编辑器');
+    // md 默认实时预览（块渲染），点大纲 → live 模式就地滚动（不切换模式）
+    assert_($(dom, '.md-live'), '实时预览容器存在');
     click(items[0]);
     await tick();
-    assert_($(dom, '.md-view') && !$(dom, '.md-split'), '点击大纲自动切回预览');
+    assert_($(dom, '.md-live'), 'live 模式点击大纲不切换模式');
   });
 
   await okAsync('Ctrl+P 快速打开：面板 + 过滤 + 回车打开', async () => {
@@ -480,13 +491,17 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('会话记忆：dirty 标签不写入保存', async () => {
-    // 打开文件并弄脏（md 默认分屏，编辑器已存在）
+    // 打开文件并弄脏（md 默认实时预览，点击块进入编辑）
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    assert_(ta, '分屏含编辑器');
-    ta.value = 'dirty content';
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const block = $(dom, '.md-live .md-block');
+    assert_(block, '实时预览有内容块');
+    block.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    await new Promise((r) => setTimeout(r, 50));
+    const edit = $(dom, '.md-block-edit');
+    assert_(edit, '进入块编辑');
+    edit.value = 'dirty content';
+    edit.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '标签已变 dirty');
     await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
@@ -502,15 +517,23 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：默认深色 → toggle 浅色 → 快捷键', async () => {
-    assert_(!$(dom, 'body').classList.contains('theme-light'), '默认深色');
+  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 回深色', async () => {
+    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '默认深色');
     g(dom, 'Theme.toggle()');
     await tick();
     assert_($(dom, 'body').classList.contains('theme-light'), '切换后为浅色');
     assert_(dom.window.localStorage.getItem('myide-theme') === 'light', 'localStorage 已记录');
-    key(dom, 'T', { ctrl: true, shift: true });
+    key(dom, 'T', { ctrl: true, shift: true }); // 浅色 → 粉红（四主题循环）
     await tick();
-    assert_(!$(dom, 'body').classList.contains('theme-light'), '快捷键切回深色');
+    assert_($(dom, 'body').classList.contains('theme-pink'), '快捷键切到粉红');
+    assert_(dom.window.localStorage.getItem('myide-theme') === 'pink', 'localStorage 更新为 pink');
+    g(dom, 'Theme.toggle()'); // 粉红 → 深红
+    await tick();
+    assert_($(dom, 'body').classList.contains('theme-crimson'), '切到深红');
+    assert_(dom.window.localStorage.getItem('myide-theme') === 'crimson', 'localStorage 更新为 crimson');
+    g(dom, 'Theme.toggle()'); // 深红 → 深色
+    await tick();
+    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '回到深色');
     assert_(dom.window.localStorage.getItem('myide-theme') === 'dark', 'localStorage 更新');
   });
 
@@ -785,15 +808,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(tabs.includes('other.md'), '项目二恢复自己的标签: ' + JSON.stringify(tabs));
   });
 
-  await okAsync('多项目：右键移除项目', async () => {
+  await okAsync('多项目：右键移除项目（免确认直接移除）', async () => {
     const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P);
     btn.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
-    assert_($(dom, '#modal-mask:not(.hidden)') || $(dom, '#modal-mask'), '确认弹窗出现');
-    // 点击确认（弹窗里的确定按钮）
-    const yesBtn = $allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('确定'));
-    click(yesBtn);
-    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '不再弹确认框');
     const still = $allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P);
     assert_(!still, '项目一从列表移除');
   });
@@ -1551,10 +1570,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(dom.window.localStorage.getItem('myide-sidebar-width') === '320', '宽度持久化');
   });
 
-  await okAsync('Bug11：Markdown 分屏实时预览（默认分屏）', async () => {
+  await okAsync('Bug11：Markdown 分屏模式（工具栏切换 + 实时预览）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    assert_($(dom, '.md-split'), 'md 打开即分屏容器');
+    assert_($(dom, '.md-live'), '默认实时预览');
+    // 切到分屏
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◧ 分屏')));
+    await tick();
+    assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
     const ta = $(dom, 'textarea.editor');
     ta.value = '# 实时标题\n\n新内容';
@@ -1562,9 +1585,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
     const md = $(dom, '.md-split-preview .md-view');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('单栏')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('📝 源码')));
     await tick();
-    assert_(!$(dom, '.md-split'), '单栏后无分屏');
+    assert_(!$(dom, '.md-split'), '切源码后无分屏');
+    assert_($(dom, 'textarea.editor'), '源码模式有编辑器');
   });
 
   await okAsync('Bug2：Markdown 链接跳转（外链/相对路径/锚点）', async () => {

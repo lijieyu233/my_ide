@@ -1,10 +1,12 @@
-// tree.js —— 文件树：懒加载、扁平行模型 + 虚拟滚动（大目录不卡）、单击复制全路径、右键菜单
+// tree.js —— 文件树：懒加载、扁平行模型 + 虚拟滚动（大目录不卡）、单击复制全路径、右键菜单、Ctrl/Shift 多选
 const Tree = (() => {
   const el = document.getElementById('tree');
   let rootPath = null;
   let showHidden = false;
-  let selectedPath = null;
+  let selectedPath = null;       // 主选中（最后点击的，单选语义操作用）
   let selectedType = null;
+  const selectedPaths = new Set(); // 多选集合（规范化路径，Ctrl+点击 / Shift+范围）
+  let anchorPath = null;         // Shift 范围选择的锚点
   let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
   const expanded = new Set();   // 展开的目录路径（根默认展开）
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
@@ -14,7 +16,9 @@ const Tree = (() => {
 
   const norm = (p) => String(p == null ? '' : p).replace(/\\/g, '/');
   // 选中判定用规范化路径（Windows 大小写/分隔符差异不再导致高亮错位）
-  const isSelected = (p) => norm(p) === norm(selectedPath);
+  const isSelected = (p) => selectedPaths.has(norm(p));
+  // parent 是否包含 child（防止把目录拖进自己的子目录）
+  const isInside = (parent, child) => norm(child).startsWith(norm(parent) + '/');
 
   // Git 状态着色（PyCharm 式）
   function gitClassFor(path) {
@@ -44,8 +48,14 @@ const Tree = (() => {
     rootPath = p;
     selectedPath = null;
     selectedType = null;
+    selectedPaths.clear();
+    anchorPath = null;
     expanded.clear();
     expanded.add(p); // 根默认展开
+    // 主进程递归监听目录变化（外部增删改 → 自动刷新树）
+    if (p && window.myIDE && window.myIDE.fs.watch) {
+      try { window.myIDE.fs.watch(p); } catch {}
+    }
     render();
   }
 
@@ -163,6 +173,17 @@ const Tree = (() => {
 
     rowEl.addEventListener('click', async (e) => {
       if (e.target === cp) { await copyPath(item.path); return; }
+      // Ctrl+点击：增减多选；Shift+点击：范围选择（均不打开文件/切目录）
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        select(item.path, item.type, { toggle: true });
+        return;
+      }
+      if (e.shiftKey) {
+        e.preventDefault();
+        select(item.path, item.type, { range: true });
+        return;
+      }
       select(item.path, item.type);
       if (item.type === 'dir') { toggleDir(item); return; }
       // 单击文件 = 打开（复制路径改为显式入口：悬停「复制路径」或 Ctrl+Shift+C）
@@ -173,22 +194,30 @@ const Tree = (() => {
     rowEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      select(item.path, item.type);
+      // 右键的项不在多选集合中 → 右键重置为单选该项
+      if (!isSelected(item.path)) select(item.path, item.type);
       showCtxMenu(e.clientX, e.clientY, item);
     });
 
-    // 树内拖拽移动：拖到目录行上 = 移动进去
+    // 树内拖拽移动：拖到目录行上 = 移动进去（支持多选拖拽）
     rowEl.draggable = true;
     rowEl.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/myide-path', item.path);
+      // 拖拽源集合：被拖项在多选集合中 → 整组；否则仅该项
+      dragSrcPaths = isSelected(item.path) ? getSelection() : [item.path];
+      try {
+        e.dataTransfer.setData('text/myide-paths', JSON.stringify(dragSrcPaths));
+        e.dataTransfer.setData('text/myide-path', item.path);
+      } catch {}
       e.dataTransfer.effectAllowed = 'move';
       rowEl.classList.add('dragging-src');
     });
-    rowEl.addEventListener('dragend', () => rowEl.classList.remove('dragging-src'));
+    rowEl.addEventListener('dragend', () => { rowEl.classList.remove('dragging-src'); dragSrcPaths = null; });
     if (item.type === 'dir') {
       rowEl.addEventListener('dragover', (e) => {
-        const src = e.dataTransfer.getData('text/myide-path');
-        if (src && norm(src) !== norm(item.path)) {
+        // 注意：dragover 里 dataTransfer.getData 恒为空（Chromium 安全限制），
+        // 必须用 dragstart 时记录的模块级变量判断，否则 drop 永远不触发
+        const srcs = readDragSources(e);
+        if (srcs && srcs.length && !srcs.some((s) => norm(s) === norm(item.path) || isInside(s, item.path))) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
           rowEl.classList.add('drop-target');
@@ -198,9 +227,11 @@ const Tree = (() => {
       rowEl.addEventListener('drop', (e) => {
         e.preventDefault();
         rowEl.classList.remove('drop-target');
-        const src = e.dataTransfer.getData('text/myide-path');
-        if (!src || norm(src) === norm(item.path)) return;
-        moveTo(src, item.path);
+        let srcs = readDragSources(e);
+        if (!srcs || !srcs.length) return;
+        srcs = srcs.filter((s) => norm(s) !== norm(item.path) && !isInside(s, item.path));
+        if (srcs.length) moveTo(srcs, item.path);
+        dragSrcPaths = null;
       });
     }
 
@@ -283,9 +314,52 @@ const Tree = (() => {
     }, 0);
   }
 
-  function select(p, type) {
-    selectedPath = p;
-    selectedType = type || null;
+  // ---------- 选中（单选 / Ctrl+增减 / Shift+范围）----------
+  // 多选集合中的原始路径列表（供复制/删除/拖拽用）
+  function getSelection() { return [...selectedPaths]; }
+  // Shift 范围选择：按可见行顺序取锚点 → 当前项之间的所有行
+  function rangeSelect(targetN) {
+    if (!anchorPath) return false;
+    const rows = buildRows();
+    const paths = rows.map((r) => norm(r.item.path));
+    const i1 = paths.indexOf(norm(anchorPath));
+    const i2 = paths.indexOf(targetN);
+    if (i1 < 0 || i2 < 0) return false;
+    const [lo, hi] = i1 <= i2 ? [i1, i2] : [i2, i1];
+    selectedPaths.clear();
+    for (let i = lo; i <= hi; i++) selectedPaths.add(paths[i]);
+    return true;
+  }
+
+  function select(p, type, opts) {
+    const n = norm(p);
+    if (opts && opts.toggle) {
+      // Ctrl+点击：切换该项（移除时保持主选中有效）
+      if (selectedPaths.has(n)) {
+        selectedPaths.delete(n);
+        if (norm(selectedPath) === n) {
+          const rest = getSelection();
+          selectedPath = rest.length ? rest[rest.length - 1] : null;
+          selectedType = null;
+        }
+      } else {
+        selectedPaths.add(n);
+        selectedPath = p;
+        selectedType = type || null;
+      }
+      anchorPath = n;
+    } else if (opts && opts.range && rangeSelect(n)) {
+      // Shift+点击：范围选择成功
+      selectedPath = p;
+      selectedType = type || null;
+    } else {
+      // 普通点击：单选
+      selectedPaths.clear();
+      selectedPaths.add(n);
+      selectedPath = p;
+      selectedType = type || null;
+      anchorPath = n;
+    }
     applySelection(); // 立即刷新已有行的高亮，不等整树重建
   }
   // 只切换已有行的 selected 类（虚拟滚动下也轻量）
@@ -307,10 +381,11 @@ const Tree = (() => {
 
   // ---------- 文件复制 / 粘贴 ----------
   async function copySelected() {
-    if (!selectedPath) { MI.toast('先在文件树中选择要复制的文件', 'err'); return; }
-    copiedPaths = [selectedPath];
+    const paths = getSelection();
+    if (!paths.length) { MI.toast('先在文件树中选择要复制的文件', 'err'); return; }
+    copiedPaths = paths;
     await window.myIDE.clip.copyFiles(copiedPaths);
-    MI.toast('📋 已复制：' + selectedPath.split(/[\\/]/).pop(), 'ok');
+    MI.toast('📋 已复制 ' + (paths.length > 1 ? paths.length + ' 个文件' : paths[0].split(/[\\/]/).pop()), 'ok');
   }
 
   // 粘贴目标：选中目录 → 该目录；选中文件 → 所在目录；无选中 → 根目录
@@ -344,18 +419,44 @@ const Tree = (() => {
   }
 
   // ---------- 拖拽移动 / 撤销 ----------
-  async function moveTo(src, destDir) {
+  let dragSrcPaths = null; // dragstart 时记录的拖拽源集合（dragover 中 getData 不可用）
+  // 读取拖拽源：优先模块级变量（真实浏览器），回退 dataTransfer（测试 mock / 特殊环境）
+  function readDragSources(e) {
+    if (dragSrcPaths && dragSrcPaths.length) return dragSrcPaths;
+    try {
+      const raw = e.dataTransfer.getData('text/myide-paths');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) return arr;
+      }
+    } catch {}
+    try {
+      const single = e.dataTransfer.getData('text/myide-path');
+      if (single) return [single];
+    } catch {}
+    return null;
+  }
+  async function moveTo(sources, destDir) {
     if (!rootPath) return;
-    const oldDir = src.replace(/[\\/][^\\/]+$/, '');
-    const r = await window.myIDE.fs.move(src, destDir);
-    if (r.ok) {
-      pushUndo({ type: 'move', newPath: r.target, oldDir, label: src.split(/[\\/]/).pop() + ' 的移动' });
+    const srcs = Array.isArray(sources) ? sources : [sources];
+    let ok = 0;
+    for (const src of srcs) {
+      if (!src || norm(src) === norm(destDir) || isInside(src, destDir)) continue;
+      const oldDir = src.replace(/[\\/][^\\/]+$/, '');
+      const r = await window.myIDE.fs.move(src, destDir);
+      if (r.ok) {
+        pushUndo({ type: 'move', newPath: r.target, oldDir, label: src.split(/[\\/]/).pop() + ' 的移动' });
+        ok++;
+      } else {
+        MI.toast('移动失败: ' + (r.error || src), 'err');
+      }
+    }
+    if (ok) {
       invalidateAll();
       render();
       App.refreshGit();
-      MI.toast('✅ 已移动 ' + src.split(/[\\/]/).pop(), 'ok');
-    } else {
-      MI.toast('移动失败: ' + r.error, 'err');
+      MI.toast('✅ 已移动 ' + ok + ' 项', 'ok');
+      MI.log('INFO', 'tree', 'move ' + ok + ' item(s) → ' + destDir);
     }
   }
 
@@ -407,6 +508,7 @@ const Tree = (() => {
   const menu = document.getElementById('ctx-menu');
   function showCtxMenu(x, y, item) {
     menu.innerHTML = '';
+    const multi = selectedPaths.size > 1;
     const mk = (label, fn, danger) => {
       const d = document.createElement('div');
       d.className = 'ctx-item' + (danger ? ' danger' : '');
@@ -414,15 +516,21 @@ const Tree = (() => {
       d.onclick = () => { hideCtxMenu(); fn(); };
       menu.appendChild(d);
     };
-    mk('📋 复制完整路径', () => copyPath(item.path));
-    mk('📋 复制文件', () => copySelected());
+    mk('📋 复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+      if (multi) copyPath(getSelection().join('\n'));
+      else copyPath(item.path);
+    });
+    mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
     mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
     mk('✨ 新建文件', () => createItem(item, 'file'));
     mk('📁 新建文件夹', () => createItem(item, 'dir'));
-    mk('📂 在文件夹中显示', () => window.myIDE.shell.showInFolder(item.path));
-    if (item.type === 'file') mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
-    mk('🔤 重命名', () => renameItem(item));
-    mk('🗑 删除', () => removeItem(item), true);
+    mk('📂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path));
+    if (item.type === 'file' && !multi) mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
+    if (!multi) mk('🔤 重命名', () => renameItem(item));
+    mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+      if (multi) removeItems(getSelection());
+      else removeItem(item);
+    }, true);
     menu.classList.remove('hidden');
     const mw = menu.offsetWidth, mh = menu.offsetHeight;
     menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
@@ -460,6 +568,33 @@ const Tree = (() => {
     else MI.toast('删除失败: ' + r.error, 'err');
   }
 
+  // 多选删除：逐个删除（文本文件备份内容供撤销）
+  async function removeItems(paths) {
+    const yes = await Modal.confirm('删除', `确定删除选中的 ${paths.length} 个文件/文件夹吗？（文本文件的删除可用 Ctrl+Z 撤销）`);
+    if (!yes) return;
+    let ok = 0;
+    for (const p of paths) {
+      const name = p.split(/[\\/]/).pop();
+      let backup = null;
+      const rr = await window.myIDE.fs.readFile(p).catch(() => null);
+      if (rr && rr.content != null && !rr.binary && !rr.tooLarge) backup = { content: rr.content, encoding: rr.encoding };
+      const r = await window.myIDE.fs.remove(p);
+      if (r.ok) {
+        if (backup) pushUndo({ type: 'delete', path: p, content: backup.content, encoding: backup.encoding, label: '删除 ' + name });
+        ok++;
+      } else {
+        MI.toast('删除失败: ' + (r.error || name), 'err');
+      }
+    }
+    if (ok) {
+      invalidateAll();
+      MI.toast('已删除 ' + ok + ' 项', 'ok');
+      render();
+      App.refreshGit();
+      MI.log('INFO', 'tree', 'remove ' + ok + ' item(s)');
+    }
+  }
+
   function fileIcon(name) {
     const ext = name.split('.').pop().toLowerCase();
     if (['md', 'markdown'].includes(ext)) return '📝';
@@ -471,11 +606,35 @@ const Tree = (() => {
     return '📄';
   }
 
+  // ---------- 外部文件变化实时同步（主进程 fs.watch → 失效缓存 + 防抖重渲染）----------
+  let fsRenderTimer = null;
+  if (window.myIDE && window.myIDE.fs.onChanged) {
+    window.myIDE.fs.onChanged((info) => {
+      if (!rootPath || !info || !info.root) return;
+      if (norm(info.root) !== norm(rootPath)) return; // 非当前项目
+      invalidateAll();
+      clearTimeout(fsRenderTimer);
+      fsRenderTimer = setTimeout(() => {
+        render();
+        if (window.QuickOpen) QuickOpen.invalidate();
+      }, 120);
+    });
+  }
+  // 点击树空白处清空多选
+  el.addEventListener('click', (e) => {
+    if (e.target === el && selectedPaths.size > 1) {
+      selectedPaths.clear();
+      if (selectedPath) selectedPaths.add(norm(selectedPath));
+      applySelection();
+    }
+  });
+
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus,
     getExpandedPaths, setExpandedPaths, undo,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
+    get selection() { return getSelection(); },
     copySelected, pasteTo, getPasteTarget, reveal,
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
     refresh: render,
