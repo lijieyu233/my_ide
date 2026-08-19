@@ -57,7 +57,7 @@ body {
   -webkit-app-region: drag;
   user-select: none;
 }
-#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .tb-git, #toolbar .win-btns,
+#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .win-btns,
 #toolbar #project-bar, #toolbar input, #toolbar label { -webkit-app-region: no-drag; }
 .win-btns { display: flex; gap: 2px; margin-left: 4px; flex-shrink: 0; }
 .win-btns .tb-btn { padding: 2px 9px; line-height: 1.3; }
@@ -99,20 +99,7 @@ body {
 }
 .proj-more:hover { color: var(--text-bright); background: var(--btn-hover); }
 
-.tb-path {
-  color: var(--text-dim); font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 46vw; direction: rtl; text-align: left;
-}
-.tb-path:hover { color: var(--text); }
 .spacer { flex: 1; }
-.tb-git {
-  background: var(--badge-a-bg); color: var(--green);
-  border: 1px solid var(--badge-a-bg); border-radius: 10px;
-  padding: 2px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
-}
-.tb-git.branch-only { background: var(--panel-strong); color: var(--text); border-color: var(--btn-border); }
-.tb-git.dirty { color: var(--red); background: var(--badge-d-bg); border-color: var(--badge-d-bg); }
 
 /* ---------- 主布局 ---------- */
 /* 注意：#main 用 flex:1 而非固定高度，避免工具栏+内容+状态栏超出视口 22px，
@@ -127,6 +114,11 @@ body {
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
+/* 侧栏收起/展开按钮贴底（与工具窗口按钮区分） */
+#tool-sidebar { margin-top: auto; }
+/* 侧栏整体收起（Ctrl+B / 按钮切换） */
+body.sidebar-collapsed #sidebar,
+body.sidebar-collapsed #sidebar-resizer { display: none; }
 .tool-btn {
   height: 40px; background: transparent; border: none;
   font-size: 16px; cursor: pointer; color: var(--text-dim);
@@ -179,6 +171,12 @@ body {
 .tree-row .tw { width: 14px; text-align: center; color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
 .tree-row .ic { font-size: 12px; flex-shrink: 0; }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
+/* 根行右侧项目完整路径（替代原工具栏路径显示） */
+.tree-row .root-path {
+  font-size: 10px; font-weight: 400; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 55%; flex-shrink: 1; margin-right: 4px;
+}
 .tree-row .path-copy { visibility: hidden; font-size: 11px; color: var(--text-dim); cursor: pointer; }
 .tree-row:hover .path-copy { visibility: visible; }
 .tree-row .path-copy:hover { color: var(--accent); }
@@ -270,7 +268,6 @@ body {
 .editor-cm-wrap { flex: 1; min-height: 0; overflow: hidden; }
 .editor-cm-wrap .cm-editor { height: 100%; }
 .editor-cm-wrap .cm-editor.cm-focused { outline: none; }
-body.has-bg .editor-cm-wrap .cm-editor { background: transparent; }
 /* live 模式下正文更接近阅读宽度 */
 .editor-cm-wrap .cm-line { padding-left: 4px; padding-right: 4px; }
 
@@ -611,23 +608,27 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 body { display: flex; flex-direction: column; }
 
 /* ---------- 背景图（外观设置） ---------- */
+/* z-index:-1：绘制在 body 背景之上、全部内容之下，不干预任何布局 */
 #bg-layer {
-  position: fixed; inset: 0; z-index: 0; display: none;
+  position: fixed; inset: 0; z-index: -1; display: none;
   background-size: cover; background-position: center; background-repeat: no-repeat;
   pointer-events: none;
 }
-body.has-bg > *:not(#bg-layer) { position: relative; z-index: 1; }
-/* 有背景图时：面板半透明，透出背景 */
+/* 有背景图时：面板半透明，透出背景（内容区 #content 是关键——默认不透明会整块盖住背景图） */
 body.has-bg #toolbar,
 body.has-bg #tabbar,
 body.has-bg #sidebar,
 body.has-bg #statusbar,
 body.has-bg .viewer-toolbar,
 body.has-bg #tool-strip { background: color-mix(in srgb, var(--bg-panel) 86%, transparent); }
+body.has-bg #content { background: color-mix(in srgb, var(--bg) 84%, transparent); }
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
 body.has-bg #viewer > .md-view,
 body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 80%, transparent); }
 body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
+body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 
 /* ---------- 右键菜单 ---------- */
 #ctx-menu {

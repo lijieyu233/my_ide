@@ -11,6 +11,7 @@ const Tree = (() => {
   const expanded = new Set();   // 展开的目录路径（根默认展开）
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
   let gitStatus = {};           // 规范路径 -> git 状态（modified/added/deleted）
+  let visibleRows = [];         // 当前可见行（键盘导航用）
   const ROW_H = 22;
   const VIRTUAL_THRESHOLD = 300;
 
@@ -114,6 +115,7 @@ const Tree = (() => {
     const expandedDirs = [...expanded];
     for (const d of expandedDirs) await loadDir(d);
     const rows = buildRows();
+    visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
     if (rows.length <= VIRTUAL_THRESHOLD) {
       for (const r of rows) el.appendChild(makeRowEl(r));
       return;
@@ -163,6 +165,14 @@ const Tree = (() => {
     nm.textContent = item.name;
     nm.title = item.path;
     rowEl.appendChild(nm);
+    // 根行右侧显示项目完整路径（替代原工具栏路径）
+    if (depth === 0 && item.path === rootPath) {
+      const rp = document.createElement('span');
+      rp.className = 'root-path';
+      rp.textContent = item.path;
+      rp.title = item.path;
+      rowEl.appendChild(rp);
+    }
     rowEl.dataset.path = item.path;
 
     const cp = document.createElement('span');
@@ -627,6 +637,70 @@ const Tree = (() => {
       if (selectedPath) selectedPaths.add(norm(selectedPath));
       applySelection();
     }
+  });
+
+  // ---------- 键盘导航（↑↓ 移动选中，← 收起/到父级，→ 展开/进子级，Enter 打开/切换） ----------
+  function rowElOf(path) {
+    for (const r of el.querySelectorAll('.tree-row')) {
+      if (r.dataset.path === path) return r;
+    }
+    return null;
+  }
+  function scrollRowIntoView(path) {
+    const rowEl = rowElOf(path);
+    if (rowEl) rowEl.scrollIntoView({ block: 'nearest' });
+  }
+  function moveSelection(delta) {
+    if (!visibleRows.length) return;
+    let idx = visibleRows.findIndex((r) => norm(r.item.path) === norm(selectedPath));
+    idx = idx < 0 ? 0 : Math.min(visibleRows.length - 1, Math.max(0, idx + delta));
+    const item = visibleRows[idx].item;
+    select(item.path, item.type);
+    scrollRowIntoView(item.path);
+  }
+  async function keyNav(key) {
+    if (!rootPath) return;
+    if (key === 'ArrowUp') { moveSelection(-1); return; }
+    if (key === 'ArrowDown') { moveSelection(1); return; }
+    const cur = visibleRows.find((r) => norm(r.item.path) === norm(selectedPath));
+    if (!cur) return;
+    const item = cur.item;
+    if (key === 'ArrowRight') {
+      if (item.type === 'dir' && !expanded.has(item.path)) { await toggleDir(item); return; }
+      if (item.type === 'dir') moveSelection(1); // 已展开 → 进第一个子项
+      return;
+    }
+    if (key === 'ArrowLeft') {
+      if (item.type === 'dir' && expanded.has(item.path)) { await toggleDir(item); return; }
+      // 跳到父级目录
+      const sep = item.path.includes('\\') ? '\\' : '/';
+      const parent = item.path.split(/[\\/]/).slice(0, -1).join(sep);
+      const parentRow = visibleRows.find((r) => norm(r.item.path) === norm(parent) && r.item.type === 'dir');
+      if (parentRow) { select(parentRow.item.path, 'dir'); scrollRowIntoView(parentRow.item.path); }
+      return;
+    }
+    if (key === 'Enter') {
+      if (item.type === 'dir') toggleDir(item);
+      else Viewer.openFile(item.path);
+    }
+  }
+  // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (t && t.closest && t.closest('.cm-editor')) return;
+    // 侧栏收起或项目面板隐藏时导航无意义
+    if (document.body.classList.contains('sidebar-collapsed')) return;
+    const panel = document.getElementById('panel-project');
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (e.key === 'Enter') {
+      // Enter 只在已有树选中时生效（避免劫持全局 Enter）
+      if (!selectedPath) return;
+    }
+    e.preventDefault();
+    keyNav(e.key);
   });
 
   return {

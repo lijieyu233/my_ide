@@ -237,8 +237,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
-    // md 默认 live（CM6），先切「👁 预览」再断言渲染
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
+    // md 默认 live（CM6），先切「◉ 预览」再断言渲染
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
     await tick();
     const md = $(dom, '.md-view');
     assert_(md, '存在 md-view');
@@ -261,7 +261,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '编辑后标脏');
     // 切纯预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
     await tick();
     const md = $(dom, '.md-view');
     assert_(!$(dom, '.editor-cm-wrap'), '纯预览无实时预览容器');
@@ -304,7 +304,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(body.includes('第二次提交：改文档'), '日志含最新提交');
     assert_(body.includes('aaaaaaa'), '日志含短哈希');
     assert_($(dom, '#git-branch').textContent.includes('main'), '分支显示 main');
-    assert_($(dom, '#tb-git').textContent.includes('4 处修改'), '工具栏显示修改数');
+    assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
 
   await okAsync('点击本地修改文件 → 左右分栏 diff', async () => {
@@ -783,11 +783,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     let btns = $allIn($(dom, '#project-bar'), '.proj-btn');
     assert_(btns.length >= 2, '项目栏出现多个按钮, got ' + btns.length);
-    assert_($(dom, '#tb-path').textContent.includes('C:/proj2'), '当前是项目二');
+    assert_($(dom, '.root-path').textContent.includes('C:/proj2'), '当前是项目二');
     // 点击切换到项目一
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.textContent.includes('proj') && b.title === P));
     await tick(); await tick();
-    assert_($(dom, '#tb-path').textContent.includes('C:/proj'), '切换回项目一');
+    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '切换回项目一');
     const active = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.classList.contains('active'));
     assert_(active && active.title === P, '高亮跟随切换');
     // 切回项目二，验证树内容不同
@@ -805,7 +805,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 切到项目一，打开 README.md
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P));
     await tick(); await tick();
-    assert_($(dom, '#tb-path').textContent.includes('C:/proj'), '已切到项目一');
+    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '已切到项目一');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     await new Promise((r) => setTimeout(r, 500)); // 防抖保存
@@ -829,13 +829,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     dom.window.__rc = 0;
     g(dom, 'window.__origGitRefresh = GitPanel.refresh');
     g(dom, 'GitPanel.refresh = () => { window.__rc++; return Promise.resolve(); }');
-    // 准备一个 dirty 标签
+    // 准备一个 dirty 标签（保存按钮已移除 → 直接调用 saveTab）
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    const btns = $allIn($(dom, '.viewer-toolbar'), 'button');
-    click(btns.find((b) => b.textContent.includes('保存')));
+    await g(dom, 'Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     await tick();
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('保存')));
+    await g(dom, 'Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     await tick();
     assert_(dom.window.__rc === 0, '防抖窗口内未立即刷新');
     await new Promise((r) => setTimeout(r, 700));
@@ -1583,7 +1582,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◧ 分屏')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◫ 分屏')));
     await tick();
     assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
@@ -1593,7 +1592,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
     const md = $(dom, '.md-split-preview .md-view');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('📝 源码')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('{ } 源码')));
     await tick();
     assert_(!$(dom, '.md-split'), '切源码后无分屏');
     assert_($(dom, '.editor-cm-wrap .cm-editor'), '源码模式有 CM 编辑器');
@@ -1603,8 +1602,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     calls.openExternal = [];
     await g(dom, 'Viewer.openFile("' + P + '/link.md")');
     await tick(); await tick();
-    // live（CM6）无 .md-view，切「👁 预览」后断言渲染链接
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('👁 预览')));
+    // live（CM6）无 .md-view，切「◉ 预览」后断言渲染链接
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
     await tick();
     const md = $(dom, '.md-view');
     const links = $allIn(md, 'a');

@@ -13,14 +13,11 @@ const GitPanel = (() => {
   // ---------- 刷新 ----------
   async function refresh() {
     if (!root) return;
-    const badge = document.getElementById('tb-git');
-    if (badge) { badge.textContent = '⏳ 扫描中…'; badge.className = 'tb-git branch-only'; }
     const [st, lg, br] = await Promise.all([window.myIDE.git.status(root), window.myIDE.git.log(root, logDepth, logRef), window.myIDE.git.branches(root)]);
     branchList = br && br.branches ? br.branches : [];
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }), commits: lg.commits || [], unborn: lg.unborn };
     if (lg.isRepo) state.root = lg.root;
     render();
-    updateToolbar();
     App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
     // 文件树 Git 状态着色（PyCharm 式）
     const statusMap = {};
@@ -29,18 +26,6 @@ const GitPanel = (() => {
       for (const c of state.changed) statusMap[root + sep + c.file] = c.status;
     }
     if (window.Tree) Tree.setGitStatus(statusMap);
-  }
-
-  function updateToolbar() {
-    const el = document.getElementById('tb-git');
-    if (!state || !state.isRepo) {
-      el.textContent = state && state.error ? state.error : '';
-      el.className = 'tb-git branch-only';
-      return;
-    }
-    const n = state.changed.length;
-    el.textContent = state.branch + (n ? ` · ${n} 处修改` : ' · 干净');
-    el.className = 'tb-git' + (n ? ' dirty' : '');
   }
 
   // ---------- 渲染 ----------

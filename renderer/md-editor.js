@@ -7,7 +7,7 @@ window.MdEditor = (() => {
   if (!CM) return null;
   const { State, View, Language, Commands, Md, Autocomplete, Search } = CM;
   const { Decoration, ViewPlugin, WidgetType, EditorView, keymap } = View;
-  const { RangeSetBuilder, Compartment, EditorState } = State;
+  const { Compartment, EditorState } = State;
 
   // ---------- 主题（CSS 变量适配四主题） ----------
   const baseTheme = EditorView.theme({
@@ -77,7 +77,10 @@ window.MdEditor = (() => {
   // ---------- Live Preview decoration 构建 ----------
   // 规则：光标行不装饰（显示源码）；其余行隐藏标记 + 内容加渲染样式
   function buildDecorations(view) {
-    const builder = new RangeSetBuilder();
+    // 先序遍历会先 add 父节点内部范围、再 add 子节点标记 → 直接用 RangeSetBuilder
+    // 会因乱序抛 "Ranges must be added sorted"（异常被吞 → 装饰丢失，live 预览退化为源码）。
+    // 改为数组收集 + Decoration.set(…, true) 统一排序。
+    const decos = [];
     const cursor = view.state.selection.main.head;
     const doc = view.state.doc;
     const cursorLine = doc.lineAt(cursor);
@@ -104,9 +107,9 @@ window.MdEditor = (() => {
               const src = doc.sliceString(node.from, node.to);
               const m = /^!\[([^\]]*)\]\(([^)]*)\)/.exec(src);
               if (m) {
-                builder.add(node.from, node.to, Decoration.replace({
+                decos.push(Decoration.replace({
                   widget: new ImgWidget(m[2], m[1]),
-                }));
+                }).range(node.from, node.to));
                 return;
               }
             }
@@ -122,12 +125,12 @@ window.MdEditor = (() => {
               if (name === 'QuoteMark') return;
               const text = doc.sliceString(node.from, node.to);
               if (!text.trim()) return; // 空白不处理
-              builder.add(node.from, node.to, Decoration.replace({}));
+              decos.push(Decoration.replace({}).range(node.from, node.to));
               return;
             }
             // 链接目标 URL（Link 的 (url) 部分）：光标不在行内时隐藏
             if (name === 'URL' && !onCursorLine(node.from)) {
-              builder.add(node.from, node.to, Decoration.replace({}));
+              decos.push(Decoration.replace({}).range(node.from, node.to));
               return;
             }
             // 内容样式：标题/加粗/斜体/删除线/行内代码/链接文字
@@ -138,29 +141,29 @@ window.MdEditor = (() => {
                 // 跳过 HeaderMark（已隐藏），从文本起加样式
                 const first = node.node.firstChild;
                 if (first && first.name === 'HeaderMark') start = first.to;
-                if (start < node.to) builder.add(start, node.to, Decoration.mark({ class: 'cm-md-h' + h }));
+                if (start < node.to) decos.push(Decoration.mark({ class: 'cm-md-h' + h }).range(start, node.to));
               } else if (name === 'StrongEmphasis' || name === 'Emphasis') {
                 const cls = name === 'StrongEmphasis' ? 'cm-md-strong' : 'cm-md-em';
                 let start = node.from, end = node.to;
                 const f = node.node.firstChild, l = node.node.lastChild;
                 if (f && f.name === 'EmphasisMark') start = f.to;
                 if (l && l.name === 'EmphasisMark' && l.from > start) end = l.from;
-                if (start < end) builder.add(start, end, Decoration.mark({ class: cls }));
+                if (start < end) decos.push(Decoration.mark({ class: cls }).range(start, end));
               } else if (name === 'Strikethrough') {
-                builder.add(node.from, node.to, Decoration.mark({ class: 'cm-md-strike' }));
+                decos.push(Decoration.mark({ class: 'cm-md-strike' }).range(node.from, node.to));
               } else if (name === 'InlineCode') {
-                builder.add(node.from, node.to, Decoration.mark({ class: 'cm-md-code' }));
+                decos.push(Decoration.mark({ class: 'cm-md-code' }).range(node.from, node.to));
               } else if (name === 'Link' && parentName !== 'Image') {
-                builder.add(node.from, node.to, Decoration.mark({ class: 'cm-md-link' }));
+                decos.push(Decoration.mark({ class: 'cm-md-link' }).range(node.from, node.to));
               } else if (name === 'Blockquote') {
-                builder.add(node.from, node.to, Decoration.mark({ class: 'cm-md-quote' }));
+                decos.push(Decoration.mark({ class: 'cm-md-quote' }).range(node.from, node.to));
               }
             }
           } catch (e) { /* 装饰构建失败不影响编辑 */ }
         },
       });
     }
-    return builder.finish();
+    return Decoration.set(decos, true);
   }
 
   const livePlugin = ViewPlugin.fromClass(class {

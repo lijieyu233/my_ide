@@ -249,7 +249,8 @@ const Viewer = (() => {
 
     const btnCopy = document.createElement('button');
     btnCopy.className = 'vt-btn';
-    btnCopy.textContent = '📋 复制路径';
+    btnCopy.textContent = '⧉ 复制路径';
+    btnCopy.title = '复制完整路径';
     btnCopy.onclick = () => { MI.copyText(tab.path); MI.toast('已复制完整路径', 'ok'); };
     toolbar.appendChild(btnCopy);
 
@@ -258,10 +259,10 @@ const Viewer = (() => {
       const seg = document.createElement('div');
       seg.className = 'md-mode-seg';
       const MODES = [
-        ['live', '✏️ 实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
-        ['split', '◧ 分屏', '左侧源码 + 右侧实时预览'],
-        ['source', '📝 源码', '纯 Markdown 源码编辑'],
-        ['preview', '👁 预览', '只读渲染视图'],
+        ['live', '✎ 实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
+        ['split', '◫ 分屏', '左侧源码 + 右侧实时预览'],
+        ['source', '{ } 源码', '纯 Markdown 源码编辑'],
+        ['preview', '◉ 预览', '只读渲染视图'],
       ];
       const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
       for (const [m, label, tip] of MODES) {
@@ -276,7 +277,7 @@ const Viewer = (() => {
     } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
       const btnToggle = document.createElement('button');
       btnToggle.className = 'vt-btn';
-      btnToggle.textContent = '📄 查看源码';
+      btnToggle.textContent = '{ } 查看源码';
       btnToggle.title = '以源码方式编辑';
       btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
       toolbar.appendChild(btnToggle);
@@ -284,7 +285,8 @@ const Viewer = (() => {
 
     const btnShow = document.createElement('button');
     btnShow.className = 'vt-btn';
-    btnShow.textContent = '📂 定位';
+    btnShow.textContent = '⌖ 定位';
+    btnShow.title = '在资源管理器中显示';
     btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
     toolbar.appendChild(btnShow);
 
@@ -292,7 +294,7 @@ const Viewer = (() => {
     if (/\.(html|htm)$/i.test(tab.name)) {
       const btnBrowser = document.createElement('button');
       btnBrowser.className = 'vt-btn';
-      btnBrowser.textContent = '🌐 浏览器打开';
+      btnBrowser.textContent = '↗ 浏览器打开';
       btnBrowser.title = '用系统默认浏览器打开该页面';
       btnBrowser.onclick = () => {
         try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
@@ -300,13 +302,7 @@ const Viewer = (() => {
       toolbar.appendChild(btnBrowser);
     }
 
-    if (tab.mode === 'edit' || tab.mode === 'live' || tab.mode === 'source' || tab.mode === 'split') {
-      const btnSave = document.createElement('button');
-      btnSave.className = 'vt-btn vt-save';
-      btnSave.textContent = '💾 保存';
-      btnSave.onclick = () => saveTab(active);
-      toolbar.appendChild(btnSave);
-    }
+    // 注：已全面自动保存（停止输入 3 秒写盘 + 切换/关闭静默保存），不再提供手动保存按钮
 
     viewer.appendChild(toolbar);
 

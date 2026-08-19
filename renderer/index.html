@@ -10,15 +10,13 @@
 <body>
 <div id="bg-layer" aria-hidden="true"></div>
 <header id="toolbar">
-  <button id="btn-open" class="tb-btn" title="打开项目 (Ctrl+O)">📂 打开项目</button>
+  <button id="btn-open" class="tb-btn" title="打开项目 (Ctrl+O)">⊞ 打开项目</button>
   <div id="project-bar" title="已打开的项目，点击切换"></div>
-  <span id="tb-path" class="tb-path" title="当前项目根目录"></span>
   <span class="spacer"></span>
-  <button id="btn-search" class="tb-btn" title="搜索内容 (Ctrl+Shift+F)">🔍</button>
-  <button id="btn-theme" class="tb-btn" title="切换主题 (Ctrl+Shift+T)">🌓</button>
-  <button id="btn-settings" class="tb-btn" title="设置 (Ctrl+Alt+S)">⚙️</button>
-  <button id="btn-help" class="tb-btn" title="帮助 (F1)">❓</button>
-  <span id="tb-git" class="tb-git" title="Git 状态（点击打开 Git 工具窗口）"></span>
+  <button id="btn-search" class="tb-btn" title="搜索内容 (Ctrl+Shift+F)">⌕</button>
+  <button id="btn-theme" class="tb-btn" title="切换主题 (Ctrl+Shift+T)">◑</button>
+  <button id="btn-settings" class="tb-btn" title="设置 (Ctrl+Alt+S)">⚙</button>
+  <button id="btn-help" class="tb-btn" title="帮助 (F1)">?</button>
   <span class="win-btns" title="窗口控制">
     <button id="win-min" class="tb-btn" title="最小化">─</button>
     <button id="win-max" class="tb-btn" title="最大化 / 还原">□</button>
@@ -27,9 +25,10 @@
 </header>
 <div id="main">
   <div id="tool-strip" title="工具窗口（PyCharm 式）">
-    <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">📁</button>
+    <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">▤</button>
     <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)">☰</button>
-    <button id="tool-git" class="tool-btn" title="Git (Ctrl+3)">🔀</button>
+    <button id="tool-git" class="tool-btn" title="Git (Ctrl+3)">⑂</button>
+    <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+B)">⏴</button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -67,7 +66,7 @@
     </div>
   </div>
 </div>
-<footer id="statusbar"><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-version"></span></footer>
+<footer id="statusbar"><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-version"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span></footer>
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden">
   <div id="modal-box"></div>

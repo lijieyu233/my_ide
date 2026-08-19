@@ -96,6 +96,17 @@ const App = (() => {
     }
   }
 
+  // ---------- 侧栏整体收起 / 展开 ----------
+  function toggleSidebar(force) {
+    const collapsed = typeof force === 'boolean' ? force : !document.body.classList.contains('sidebar-collapsed');
+    document.body.classList.toggle('sidebar-collapsed', collapsed);
+    const btn = document.getElementById('tool-sidebar');
+    if (btn) {
+      btn.textContent = collapsed ? '⏵' : '⏴';
+      btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+B)';
+    }
+  }
+
   function getTool() { return activeTool; }
   // 非切换语义：直接设置（会话恢复用）
   function setTool(name) {
@@ -271,8 +282,6 @@ const App = (() => {
     root = p;
     MI.activeRoot = p;
     MI.log('INFO', 'app', '打开项目: ' + p);
-    document.getElementById('tb-path').textContent = p;
-    document.getElementById('tb-path').title = p;
     Tree.setRoot(p);
     GitPanel.rootDir = p;
     QuickOpen.invalidate();
@@ -380,10 +389,10 @@ const App = (() => {
       Theme.toggle();
       MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok');
     };
-    document.getElementById('tb-git').onclick = () => switchTool('git');
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');
+    document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     // 状态栏文件路径点击复制（高频操作多入口）
     document.getElementById('sb-info').onclick = () => {
@@ -415,7 +424,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, updateStatusbar, getProjects,
+    switchTool, showTool, getTool, setTool, updateStatusbar, getProjects, toggleSidebar,
     get root() { return root; },
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },
