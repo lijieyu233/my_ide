@@ -184,6 +184,8 @@ function detectEncoding(buf) {
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return 'utf16le';
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return 'utf16be';
   // UTF-16 无 BOM：ASCII 字符的高字节为 0（LE 落在奇数位 / BE 落在偶数位）
+  // ★ 零字节只集中在一种奇偶位即认定（中文占比高时零字节 < 50%，
+  //   旧的比例阈值会把 UTF-16 的 py/json 误判成二进制文件）
   const n = Math.min(buf.length, 2048);
   let even0 = 0, odd0 = 0, pairs = 0;
   for (let i = 0; i + 1 < n; i += 2) {
@@ -192,8 +194,8 @@ function detectEncoding(buf) {
     if (buf[i + 1] === 0) odd0++;
   }
   if (pairs >= 4) {
-    if (even0 / pairs > 0.5) return 'utf16be';
-    if (odd0 / pairs > 0.5) return 'utf16le';
+    if (odd0 >= 2 && even0 === 0) return 'utf16le';
+    if (even0 >= 2 && odd0 === 0) return 'utf16be';
   }
   const head = buf.subarray(0, 8192);
   if (head.includes(0)) return null; // 含 0x00 且不像 UTF-16 → 二进制

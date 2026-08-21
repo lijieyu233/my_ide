@@ -353,6 +353,13 @@ window.MdEditor = (() => {
       setLive(on) {
         view.dispatch({ effects: liveComp.reconfigure(on ? [livePlugin] : []) });
       },
+      // 大纲跳转：光标移到指定行并滚动到可视区（live/source 模式用）
+      gotoLine(line) {
+        const n = Math.max(1, Math.min(line, view.state.doc.lines));
+        const l = view.state.doc.line(n);
+        view.dispatch({ selection: { anchor: l.from }, scrollIntoView: true });
+        view.focus();
+      },
       find() { try { Search.openSearchPanel(view); } catch {} },
       destroy() { try { view.destroy(); } catch {} },
     };

@@ -139,16 +139,28 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
 });
 
 // HTML → 沙箱 iframe 预览
-MI.registerRenderer(['html', 'htm'], ({ content }) => {
+MI.registerRenderer(['html', 'htm'], ({ path, content }) => {
   const frame = document.createElement('iframe');
   frame.className = 'html-frame';
-  frame.sandbox = 'allow-scripts allow-modals allow-forms';
+  // allow-same-origin：继承主窗口 file:// 源，页面内相对路径的 CSS/图片才能加载（否则样式全丢）
+  frame.sandbox = 'allow-scripts allow-modals allow-forms allow-same-origin';
   // 规范化开头（BOM / 前导空白 / "< !DOCTYPE" 写法），避免 DOCTYPE 被当成正文文本显示
   let src = String(content || '').replace(/^\uFEFF/, '');
   src = src.replace(/^\s*< ?!DOCTYPE/i, '<!DOCTYPE');
+  // 注入 <base>：srcdoc 文档的默认基准是主窗口路径（renderer/），相对路径资源会指错地方
+  // 以该 HTML 文件所在目录为基准后，link/script/img 的相对引用即可正确解析
+  const dir = String(path || '').split(/[\\/]/).slice(0, -1).join('/');
+  if (dir) {
+    const baseTag = '<base href="file:///' + dir + '/">';
+    if (/<head[^>]*>/i.test(src)) src = src.replace(/<head[^>]*>/i, (m) => m + baseTag);
+    else if (/<!DOCTYPE[^>]*>/i.test(src)) src = src.replace(/(<!DOCTYPE[^>]*>)/i, '$1' + baseTag);
+    else src = baseTag + src;
+  }
   // 注入按键转发：沙箱 iframe 抢走焦点后 Ctrl+1/2/3 等快捷键仍能触发
+  // ★ 必须追加到文档末尾：放在开头会把 DOCTYPE 挤到非首个 token 位置，
+  //   浏览器按正文解析它 → 预览顶部显示「OCTYPE html>」碎片
   const forward = '<scr' + 'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr' + 'ipt>';
-  frame.srcdoc = forward + src;
+  frame.srcdoc = src + forward;
   return frame;
 });
 

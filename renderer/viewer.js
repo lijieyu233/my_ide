@@ -67,7 +67,10 @@ const Viewer = (() => {
       tab.eol = r.content && r.content.includes('\r\n') ? 'CRLF' : null;
       // Markdown 默认「实时预览」（Obsidian 式块编辑）；其他可预览格式走纯预览
       if (MD_EXTS.has(extOf(tab.name))) {
-        tab.mode = 'live';
+        // 模式全局统一：记住上次使用的 md 模式，切换标签/新开文件不再重置
+        let pref = 'live';
+        try { pref = localStorage.getItem('myide-md-mode') || 'live'; } catch {}
+        tab.mode = ['live', 'split', 'source', 'preview'].includes(pref) ? pref : 'live';
       } else {
         tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
       }
@@ -270,7 +273,14 @@ const Viewer = (() => {
         b.className = 'vt-btn' + (cur === m ? ' active' : '');
         b.textContent = label;
         b.title = tip;
-        b.onclick = () => { if (tab.mode !== m) { tab.mode = m; renderView(); } };
+        b.onclick = () => {
+          if (tab.mode !== m) {
+            tab.mode = m;
+            // 模式全局统一：写入偏好，之后打开/切换其他 md 也保持该模式
+            try { localStorage.setItem('myide-md-mode', m); } catch {}
+            renderView();
+          }
+        };
         seg.appendChild(b);
       }
       toolbar.appendChild(seg);
@@ -281,6 +291,14 @@ const Viewer = (() => {
       btnToggle.title = '以源码方式编辑';
       btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
       toolbar.appendChild(btnToggle);
+    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
+      // 查看源码后提供恢复入口：切回预览模式
+      const btnBack = document.createElement('button');
+      btnBack.className = 'vt-btn';
+      btnBack.textContent = '◉ 预览';
+      btnBack.title = '切回预览渲染';
+      btnBack.onclick = () => { tab.mode = 'preview'; renderView(); };
+      toolbar.appendChild(btnBack);
     }
 
     const btnShow = document.createElement('button');
@@ -778,6 +796,7 @@ const Viewer = (() => {
     const tab = tabs[active];
     if (!tab || !/\.(md|markdown)$/i.test(tab.name)) { MI.toast('仅 Markdown 文件支持模式切换', 'err'); return; }
     tab.mode = tab.mode === 'live' ? 'source' : 'live';
+    try { localStorage.setItem('myide-md-mode', tab.mode); } catch {} // 模式全局统一
     renderView();
   }
 

@@ -4,12 +4,18 @@ const Outline = (() => {
   let headings = []; // [{level, text}]
 
   // 从 Markdown 源码解析标题（不依赖渲染 DOM，源码/预览模式都可用）
+  // ★ 跳过 ``` 围栏代码块：代码块内的「# 注释」不是标题，计入会导致大纲与渲染错位、跳转位置不对
   function parse(content) {
     const out = [];
-    const re = /^(#{1,6})\s+(.+?)\s*#*\s*$/gm;
-    let m;
-    while ((m = re.exec(content || '')) !== null) {
-      out.push({ level: m[1].length, text: m[2].trim() });
+    const lines = String(content || '').split('\n');
+    let inFence = false;
+    const re = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const m = re.exec(line);
+      if (m) out.push({ level: m[1].length, text: m[2].trim(), line: i + 1 });
     }
     return out;
   }
@@ -44,16 +50,27 @@ const Outline = (() => {
     });
   }
 
-  // 点击大纲项 → 切换到预览（实时预览模式就地滚动）并定位标题
+  // 点击大纲项 → 按当前模式定位标题
+  // live/source：CM 编辑器跳行；preview：滚动渲染标题；split：滚动预览面板里的标题
   function jump(i) {
     const tab = Viewer.activeTab;
     if (!tab) return;
-    if (tab.mode !== 'preview' && tab.mode !== 'live') {
-      tab.mode = 'preview';
-      Viewer.renderActive();
+    const h = headings[i];
+    if (!h) return;
+    // CM 编辑器模式：直接跳到标题所在行（不再强制切模式）
+    if ((tab.mode === 'live' || tab.mode === 'source') && Viewer.cm && Viewer.cm.gotoLine) {
+      Viewer.cm.gotoLine(h.line);
+      return;
     }
-    const md = document.querySelector('#viewer .md-view');
-    if (!md) return;
+    // 分屏：滚动预览面板中对应标题
+    const md = tab.mode === 'split'
+      ? document.querySelector('.md-split-preview .md-view')
+      : document.querySelector('#viewer .md-view');
+    if (!md) {
+      // 无渲染视图（如 source 下被切走）→ 回退 CM 跳行
+      if (Viewer.cm && Viewer.cm.gotoLine) Viewer.cm.gotoLine(h.line);
+      return;
+    }
     const hs = md.querySelectorAll('h1, h2, h3, h4, h5, h6');
     const target = hs[Math.min(i, hs.length - 1)];
     if (target) {

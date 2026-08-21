@@ -8,6 +8,7 @@ const Tree = (() => {
   const selectedPaths = new Set(); // 多选集合（规范化路径，Ctrl+点击 / Shift+范围）
   let anchorPath = null;         // Shift 范围选择的锚点
   let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
+  let cutMode = false;  // 剪切态：Ctrl+X 后粘贴 = 移动而非复制
   const expanded = new Set();   // 展开的目录路径（根默认展开）
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
   let gitStatus = {};           // 规范路径 -> git 状态（modified/added/deleted）
@@ -389,13 +390,24 @@ const Tree = (() => {
     }
   }
 
-  // ---------- 文件复制 / 粘贴 ----------
+  // ---------- 文件复制 / 剪切 / 粘贴 ----------
   async function copySelected() {
     const paths = getSelection();
     if (!paths.length) { MI.toast('先在文件树中选择要复制的文件', 'err'); return; }
     copiedPaths = paths;
+    cutMode = false; // 复制覆盖剪切态
     await window.myIDE.clip.copyFiles(copiedPaths);
     MI.toast('📋 已复制 ' + (paths.length > 1 ? paths.length + ' 个文件' : paths[0].split(/[\\/]/).pop()), 'ok');
+  }
+
+  // Ctrl+X 剪切：记录来源 + 标记剪切态，粘贴时改为移动
+  async function cutSelected() {
+    const paths = getSelection();
+    if (!paths.length) { MI.toast('先在文件树中选择要剪切的文件', 'err'); return; }
+    copiedPaths = paths;
+    cutMode = true;
+    await window.myIDE.clip.copyFiles(copiedPaths); // 同步写系统剪贴板（外部也能粘贴）
+    MI.toast('✂ 已剪切 ' + (paths.length > 1 ? paths.length + ' 个文件' : paths[0].split(/[\\/]/).pop()) + '，粘贴时移动', 'ok');
   }
 
   // 粘贴目标：选中目录 → 该目录；选中文件 → 所在目录；无选中 → 根目录
@@ -412,6 +424,17 @@ const Tree = (() => {
     let sources = await window.myIDE.clip.getFiles();
     if (!sources.length) sources = copiedPaths.slice();
     if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
+    // 剪切态（Ctrl+X）→ 粘贴即移动；同目录粘贴跳过
+    if (cutMode) {
+      const targets = sources.filter((s) => {
+        const parent = s.replace(/[\\/][^\\/]+$/, '');
+        return norm(parent) !== norm(destDir);
+      });
+      cutMode = false; // 一次性：粘贴后退出剪切态
+      if (targets.length) await moveTo(targets, destDir);
+      else MI.toast('源目录与目标相同，无需移动', 'err');
+      return;
+    }
     let ok = 0;
     const created = [];
     for (const s of sources) {
@@ -536,6 +559,7 @@ const Tree = (() => {
     mk('📁 新建文件夹', () => createItem(item, 'dir'));
     mk('📂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path));
     if (item.type === 'file' && !multi) mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
+    if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
     if (!multi) mk('🔤 重命名', () => renameItem(item));
     mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) removeItems(getSelection());
@@ -687,7 +711,7 @@ const Tree = (() => {
   // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
-    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) return;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Delete'].includes(e.key)) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (t && t.closest && t.closest('.cm-editor')) return;
@@ -699,6 +723,14 @@ const Tree = (() => {
       // Enter 只在已有树选中时生效（避免劫持全局 Enter）
       if (!selectedPath) return;
     }
+    // Delete：删除当前选中的文件/文件夹（多选时批量删）
+    if (e.key === 'Delete') {
+      if (!selectedPath) return;
+      e.preventDefault();
+      if (selectedPaths.size > 1) removeItems(getSelection());
+      else removeItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType || 'file' });
+      return;
+    }
     e.preventDefault();
     keyNav(e.key);
   });
@@ -709,7 +741,7 @@ const Tree = (() => {
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
     get selection() { return getSelection(); },
-    copySelected, pasteTo, getPasteTarget, reveal,
+    copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
     refresh: render,
   };

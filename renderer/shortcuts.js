@@ -92,9 +92,11 @@ const Shortcuts = (() => {
     }
     if (!combo) return;
     // 文本编辑豁免：仅当输入框可见时（隐藏的弹窗输入框不算正在编辑）
+    // CM6 编辑器是 contenteditable 的 div（非 textarea），也要豁免，否则编辑时 Ctrl+C 会触发文件复制
     const ae = document.activeElement;
     const aeVisible = ae && ae.offsetParent !== null;
-    if (aeVisible && /^(TEXTAREA|INPUT)$/.test(ae.tagName) && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
+    const aeEditable = aeVisible && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable);
+    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
     if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
       Modal.hide();
@@ -147,6 +149,7 @@ Shortcuts.register('hunk-next', { desc: '下一个 diff hunk', keys: ['alt+arrow
 Shortcuts.register('hunk-prev', { desc: '上一个 diff hunk', keys: ['alt+arrowup'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="上一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
 Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
+Shortcuts.register('cut-files', { desc: '剪切选中的文件（粘贴时移动）', keys: ['ctrl+x'], run: () => Tree.cutSelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
 Shortcuts.register('undo-file', { desc: '撤销文件操作（粘贴/新建/重命名/删除/移动）', keys: ['ctrl+z'], run: () => Tree.undo() });
 

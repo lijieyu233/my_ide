@@ -202,7 +202,25 @@ const App = (() => {
       const doRemove = () => {
         projects = projects.filter((p) => p.path !== pr.path);
         saveProjects();
+        // 关闭的是当前项目 → 切到剩余项目；一个不剩 → 清空目录树回到空状态
+        if (pr.path === root) {
+          const next = projects[0];
+          if (next) { openProject(next); return; }
+          root = null;
+          MI.activeRoot = null;
+          Viewer.saveAllDirty().then(() => {
+            Session.saveNow();
+            Viewer.closeAll();
+            Tree.setRoot(null);
+            GitPanel.rootDir = null;
+            GitPanel.refresh();
+            renderProjectBar();
+            renderEmptyRecent();
+          });
+          return;
+        }
         renderProjectBar();
+        renderEmptyRecent();
       };
       x.onclick = (e) => { e.stopPropagation(); doRemove(); };
       btn.appendChild(x);
@@ -337,10 +355,10 @@ const App = (() => {
       overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:col-resize;';
       document.body.appendChild(overlay);
       const left = sidebar.getBoundingClientRect().left || 0;
+      // 拖动过程只改样式；localStorage 是同步磁盘 IO，放 mousemove 里会掉帧卡顿
       const apply = (x) => {
         const w = Math.min(560, Math.max(160, x - left));
         sidebar.style.width = w + 'px';
-        try { localStorage.setItem(SIDEBAR_KEY, String(w)); } catch {}
       };
       const onMove = (ev) => apply(ev.clientX);
       const onUp = () => {
@@ -348,6 +366,7 @@ const App = (() => {
         resizer.classList.remove('dragging');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        try { localStorage.setItem(SIDEBAR_KEY, String(parseInt(sidebar.style.width, 10) || 220)); } catch {}
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);

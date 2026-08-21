@@ -419,6 +419,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.editor-cm-wrap'), 'live 模式点击大纲不切换模式');
   });
 
+  await okAsync('大纲解析：代码块内的 # 行不算标题（跳转错位根因）', async () => {
+    const md = '# 真标题\n\n```bash\n# 这是注释不是标题\n```\n\n## 第二个\n';
+    const hs = g(dom, 'JSON.stringify(Outline.parse(' + JSON.stringify(md) + ').map(h => h.text))');
+    const arr = JSON.parse(hs);
+    assert_(arr.length === 2 && arr[0] === '真标题' && arr[1] === '第二个', '只解析真标题: ' + hs);
+  });
+
+  await okAsync('HTML 预览：base 注入相对路径解析 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/page.html")');
+    await tick(); await tick();
+    const frame = $(dom, 'iframe.html-frame');
+    assert_(frame, 'iframe 存在');
+    const doc = frame.getAttribute('srcdoc') || '';
+    assert_(doc.includes('<base href="file:///'), '注入 base href（相对路径 CSS 可解析）');
+    const dIdx = doc.toLowerCase().indexOf('<!doctype');
+    const fIdx = doc.indexOf('__myideKey');
+    // 转发脚本必须在 DOCTYPE 之后（开头会挤掉 DOCTYPE 显示「OCTYPE html>」）
+    assert_(dIdx < 0 || fIdx > dIdx, '转发脚本位于 DOCTYPE 之后');
+  });
+
   await okAsync('Ctrl+P 快速打开：面板 + 过滤 + 回车打开', async () => {
     key(dom, 'p', { ctrl: true });
     await tick(); await tick();
@@ -755,6 +775,36 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'c', { ctrl: true });
     await tick();
     assert_(fakeCopied.length === before, 'textarea 中 Ctrl+C 未触发文件复制');
+  });
+
+  await okAsync('CM6 编辑器内 Ctrl+C 不触发文件复制（contenteditable 豁免）', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    g(dom, 'document.querySelector(".cm-content").setAttribute("contenteditable","true")');
+    g(dom, 'document.querySelector(".cm-content").focus()');
+    await tick();
+    const before = fakeCopied.length;
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === before, 'CM6 编辑器中 Ctrl+C 未触发文件复制');
+  });
+
+  await okAsync('剪切粘贴：Ctrl+X 后 Ctrl+V 移动文件（源被移走）', async () => {
+    dom.window.document.body.focus();
+    await tick();
+    // 选中 src/README.md（由复制测试创建）→ Ctrl+X
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md'));
+    await tick();
+    key(dom, 'x', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === 1 && fakeCopied[0] === P + '/src/README.md', 'Ctrl+X 记录文件');
+    // 选中根目录行 → Ctrl+V 粘贴到根目录 = 移动
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P));
+    await tick();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/README (1).md'], '文件移动到根目录（重名递增）');
+    assert_(!FAKE_FS[P + '/src/README.md'], '源位置已被移走');
   });
 
   await okAsync('外部剪贴板文件粘贴到目录', async () => {
@@ -1805,6 +1855,36 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await new Promise((r) => setTimeout(r, 3400));
     assert_(FAKE_FS[P + '/notes.txt'].content === 'autosave content', '自动保存写入');
     assert_(g(dom, 'Viewer.activeTab.dirty') === false, '自动保存后不再 dirty');
+  });
+
+  await okAsync('Markdown 模式全局统一：切换模式后新开 md 沿用', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    // 切到「◉ 预览」
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    await tick();
+    assert_($(dom, '.md-view'), '切到预览模式');
+    // 打开另一个 md → 应保持预览模式（不重置回 live）
+    await g(dom, 'Viewer.openFile("' + P + '/link.md")');
+    await tick(); await tick();
+    assert_(g(dom, 'Viewer.activeTab.mode') === 'preview', '新开 md 沿用全局模式 preview, got ' + g(dom, 'Viewer.activeTab.mode'));
+    // 恢复 live（末尾清理，不影响其他用例）
+    dom.window.localStorage.setItem('myide-md-mode', 'live');
+  });
+
+  await okAsync('关闭最后一个项目：目录树清空 + 回到空状态', async () => {
+    // 逐个移除剩余项目（最后一个移除时无剩余项目 → 清空树回到空状态）
+    let guard = 0;
+    while ($allIn($(dom, '#project-bar'), '.proj-btn').length && guard++ < 6) {
+      const b = $allIn($(dom, '#project-bar'), '.proj-btn')[0];
+      const x = b.querySelector('.proj-close');
+      if (!x) break;
+      click(x);
+      await tick(); await tick(); await tick();
+    }
+    assert_($allIn($(dom, '#project-bar'), '.proj-btn').length === 0, '项目全部移除');
+    assert_($allIn($(dom, '#tree'), '.tree-row').length === 0, '目录树已清空');
+    assert_($(dom, '#empty-state') && $(dom, '#empty-state').classList.contains('visible'), '空状态显示');
   });
 
   console.log('');
