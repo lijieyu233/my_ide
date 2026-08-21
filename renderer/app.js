@@ -135,7 +135,6 @@ const App = (() => {
       brEl.classList.toggle('clickable', !!sbState.branch);
     }
     const parts = [];
-    if (sbState.file) parts.push('📄 ' + sbState.file);
     if (sbState.lines) parts.push(sbState.lines + ' 行');
     if (sbState.pos) parts.push(sbState.pos);
     if (sbState.encoding) parts.push('[' + sbState.encoding + ']');
@@ -417,10 +416,6 @@ const App = (() => {
     document.getElementById('tool-git').onclick = () => switchTool('git');
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
-    // 状态栏文件路径点击复制（高频操作多入口）
-    document.getElementById('sb-info').onclick = () => {
-      if (sbState.file) { MI.copyText(sbState.file); MI.toast('📋 已复制完整路径', 'ok'); }
-    };
     document.getElementById('tree-hidden').onchange = (e) => {
       Tree.showHidden = e.target.checked;
     };
@@ -431,11 +426,6 @@ const App = (() => {
     window.myIDE.plugins.onChanged(() => {
       MI.loadPlugins().then(() => MI.toast('🔌 插件已热重载', 'ok'));
     });
-    // 版本号（防跑旧版本）
-    window.myIDE.appInfo().then((info) => {
-      const el = document.getElementById('sb-version');
-      if (el && info) el.textContent = 'v' + info.version + (info.commit ? ' (' + info.commit + ')' : '');
-    }).catch(() => {});
 
     loadProjects();
     renderProjectBar();

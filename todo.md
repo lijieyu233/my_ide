@@ -2,6 +2,11 @@
 
 ## 2026-08-22（第五轮 · 已完成）
 
+### UI 精简
+- [x] 状态栏去掉文件路径显示（保留行数/光标位置/编码/EOL；点击复制路径功能一并移除）
+- [x] 状态栏去掉版本号
+- [x] 背景图只在编辑区显示：bg-layer 移入 #content 内 absolute 定位，工具栏/侧栏/状态栏恢复不透明
+
 ### Bug 修复
 - [x] 自定义主题调整没有用（根因：覆盖层变量写 documentElement，被 body.theme-light/pink/crimson 选择器上的变量定义覆盖）→ 改写 body inline style，所有主题下调色立即生效
 ### 功能增强

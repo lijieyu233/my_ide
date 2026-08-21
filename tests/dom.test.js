@@ -612,11 +612,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '面板关闭');
   });
 
-  await okAsync('状态栏：文件/行数/分支/行列号', async () => {
+  await okAsync('状态栏：行数/分支/行列号（路径已移除）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
     let sb = $(dom, '#statusbar').textContent;
-    assert_(sb.includes('notes.txt'), '状态栏含文件名, got: ' + sb);
+    assert_(!sb.includes('notes.txt'), '状态栏不含文件路径, got: ' + sb);
     assert_(sb.includes('2 行'), '状态栏含行数, got: ' + sb);
     assert_(sb.includes('main'), '状态栏含分支, got: ' + sb);
     // 光标行列
@@ -669,11 +669,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('版本号显示在状态栏右侧', async () => {
+  await okAsync('状态栏不再显示版本号（已移除）', async () => {
     await tick(); await tick();
-    const el = $(dom, '#sb-version');
-    assert_(el && el.textContent.includes('0.2.0'), '版本号显示, got: ' + (el && el.textContent));
-    assert_(el.textContent.includes('test123'), '提交哈希显示');
+    assert_(!$(dom, '#sb-version'), '版本号元素已移除');
+    assert_(!$(dom, '#statusbar').textContent.includes('0.2.0'), '状态栏无版本文本');
   });
 
   await okAsync('设置：Ctrl+Alt+S 打开面板，列出动作', async () => {
@@ -1549,14 +1548,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('状态栏路径点击复制', async () => {
+  await okAsync('状态栏不再显示文件路径（已移除）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
+    assert_(!$(dom, '#sb-info').textContent.includes('notes.txt'), '状态栏无文件路径: ' + $(dom, '#sb-info').textContent);
     const before = calls.copy.length;
     click($(dom, '#sb-info'));
     await tick();
-    assert_(calls.copy.length === before + 1, '复制触发');
-    assert_(calls.copy[calls.copy.length - 1] === P + '/notes.txt', '复制的是当前文件路径: ' + calls.copy[calls.copy.length - 1]);
+    assert_(calls.copy.length === before, '点击状态栏不再触发复制');
   });
 
   await okAsync('提交面板 diff 预览', async () => {
@@ -1618,6 +1617,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('背景图显示方式与位置：fit + pos 持久化并应用', async () => {
+    // 背景图只在编辑区显示：bg-layer 挂在 #content 内
+    const layer0 = $(dom, '#bg-layer');
+    assert_(layer0 && layer0.parentElement && layer0.parentElement.id === 'content', 'bg-layer 在编辑区 #content 内, parent: ' + (layer0 && layer0.parentElement && layer0.parentElement.id));
     await g(dom, 'Bg.set("' + P + '/pic.png")');
     await g(dom, 'Bg.setFit("tile")');
     await g(dom, 'Bg.setPos("top left")');

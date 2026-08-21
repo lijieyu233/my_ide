@@ -196,7 +196,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 .tree-row.dragging-src { opacity: .4; }
 
 /* ---------- 内容区 ---------- */
-#content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; }
+#content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; z-index: 0; }
 #tabbar { display: flex; background: var(--bg-tabbar); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
 .tab {
   display: flex; align-items: center; gap: 6px;
@@ -591,14 +591,12 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
   background: var(--bg-panel); border-top: 1px solid var(--border);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-#sb-info { cursor: pointer; }
-#sb-info:hover { color: var(--text-bright); }
+#sb-info { cursor: default; }
 #sb-branch { cursor: default; padding: 0 4px; }
 #sb-branch.clickable { cursor: pointer; }
 #sb-branch.clickable:hover { color: var(--accent); }
-#sb-version { margin-left: auto; color: var(--text-dim); opacity: .7; flex-shrink: 0; }
 /* 状态栏字号控件（文档区字号） */
-.sb-font { display: flex; align-items: center; gap: 2px; margin-left: 12px; flex-shrink: 0; }
+.sb-font { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
 .sb-font button {
   width: 16px; height: 16px; padding: 0; line-height: 1;
   background: transparent; border: 1px solid var(--border-mid); border-radius: 3px;
@@ -613,21 +611,17 @@ body.has-bg #sb-bgop { display: inline-flex; }
 #sb-bgop input[type="range"] { width: 90px; height: 12px; cursor: pointer; accent-color: var(--accent); }
 body { display: flex; flex-direction: column; }
 
-/* ---------- 背景图（外观设置） ---------- */
-/* z-index:-1：绘制在 body 背景之上、全部内容之下，不干预任何布局 */
+/* ---------- 背景图（外观设置：只在编辑区显示） ---------- */
+/* #content 建立层叠上下文；bg-layer 定位其内、z-index:-1 绘制在内容之下 */
 #bg-layer {
-  position: fixed; inset: 0; z-index: -1; display: none;
+  position: absolute; inset: 0; z-index: -1; display: none;
   background-size: cover; background-position: center; background-repeat: no-repeat;
   pointer-events: none;
 }
-/* 有背景图时：面板半透明，透出背景（内容区 #content 是关键——默认不透明会整块盖住背景图） */
-body.has-bg #toolbar,
-body.has-bg #tabbar,
-body.has-bg #sidebar,
-body.has-bg #statusbar,
-body.has-bg .viewer-toolbar,
-body.has-bg #tool-strip { background: color-mix(in srgb, var(--bg-panel) 86%, transparent); }
-body.has-bg #content { background: color-mix(in srgb, var(--bg) 84%, transparent); }
+/* 有背景图时：编辑区背景透明透出图片（工具栏/侧栏/状态栏不受影响） */
+body.has-bg #content { background: transparent; }
+body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, transparent); }
+body.has-bg .viewer-toolbar { background: color-mix(in srgb, var(--bg-panel) 86%, transparent); }
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
 body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
