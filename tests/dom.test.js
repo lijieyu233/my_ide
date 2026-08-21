@@ -188,6 +188,7 @@ async function loadApp(dom) {
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'marked.min.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'highlight.min.js'), 'utf8'));
   evalFile('plugin-loader.js');
+  evalFile('pet.js');
   evalFile('tree.js');
   evalFile('viewer.js');
   evalFile('outline.js');
@@ -1583,6 +1584,84 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'MI.toast("测试提示", "ok")');
     await tick();
     assert_($allIn(dom.window.document, '.toast').some((t) => t.textContent.includes('测试提示')), 'toast 出现');
+  });
+
+  await okAsync('右下角玩宠：toast 由它播报（跳跃动画 + 头顶气泡位置）', async () => {
+    const pet = $(dom, '#pet');
+    assert_(pet, '玩宠 #pet 存在');
+    assert_(pet.querySelector('svg'), '玩宠是 SVG 小猫');
+    g(dom, 'MI.toast("喵播报", "ok")');
+    await tick();
+    assert_(pet.classList.contains('speaking'), 'toast 触发玩宠说话动画');
+    const wrapCss = dom.window.getComputedStyle($(dom, '#toast-wrap'));
+    assert_(parseInt(wrapCss.bottom, 10) >= 80, '气泡定位在玩宠头顶（bottom ≥ 80px）, got: ' + wrapCss.bottom);
+  });
+
+  await okAsync('大纲面板键盘导航：↑↓ 选择 + Enter 跳转', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true }); // Ctrl+2 切到大纲面板
+    await tick(); await tick();
+    const items = $allIn($(dom, '#outline'), '.outline-item');
+    assert_(items.length >= 1, '大纲有条目, got ' + items.length);
+    dom.window.document.body.focus();
+    key(dom, 'ArrowDown');
+    await tick();
+    assert_($(dom, '.outline-item.key-nav-sel'), '↓ 后有键盘选中高亮');
+    key(dom, 'ArrowDown');
+    await tick();
+    const selCount = $allIn($(dom, '#outline'), '.outline-item.key-nav-sel').length;
+    assert_(selCount === 1, '选中项唯一, got ' + selCount);
+    key(dom, 'Enter');
+    await tick();
+    assert_($(dom, '.editor-cm-wrap'), 'Enter 跳转不破坏编辑器');
+  });
+
+  await okAsync('背景图显示方式与位置：fit + pos 持久化并应用', async () => {
+    await g(dom, 'Bg.set("' + P + '/pic.png")');
+    await g(dom, 'Bg.setFit("tile")');
+    await g(dom, 'Bg.setPos("top left")');
+    await tick();
+    const layer = $(dom, '#bg-layer');
+    assert_(layer.style.backgroundRepeat === 'repeat', '平铺模式 repeat, got: ' + layer.style.backgroundRepeat);
+    assert_(layer.style.backgroundSize === 'auto', '平铺模式原尺寸, got: ' + layer.style.backgroundSize);
+    assert_(layer.style.backgroundPosition === 'left top' || layer.style.backgroundPosition === 'top left', '位置左上, got: ' + layer.style.backgroundPosition);
+    const bg = g(dom, 'JSON.stringify(Bg.get())');
+    const o = JSON.parse(bg);
+    assert_(o.fit === 'tile' && o.pos === 'top left', 'get() 返回 fit/pos: ' + bg);
+    await g(dom, 'Bg.setFit("cover")');
+    await tick();
+    assert_($(dom, '#bg-layer').style.backgroundSize === 'cover', '切回铺满 cover');
+    await g(dom, 'Bg.set("")'); // 清理，不影响后续测试
+  });
+
+  await okAsync('主题自定义强调色：setAccent 生效 + 空值恢复默认', async () => {
+    await g(dom, 'Theme.setAccent("#ff6600")');
+    await tick();
+    assert_($(dom, '#bg-layer') && dom.window.document.documentElement.style.getPropertyValue('--accent') === '#ff6600', '强调色写入 CSS 变量');
+    await g(dom, 'Theme.setAccent("")');
+    await tick();
+    assert_(dom.window.document.documentElement.style.getPropertyValue('--accent') === '', '空值恢复主题默认');
+  });
+
+  await okAsync('Git 面板键盘导航：↑↓ 选择本地修改行', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const files = $allIn($(dom, '#git-body'), '.git-file');
+    assert_(files.length >= 1, '有变更文件行, got ' + files.length);
+    dom.window.document.body.focus();
+    key(dom, 'ArrowDown');
+    await tick();
+    assert_($(dom, '.git-file.key-nav-sel'), '↓ 后有键盘选中高亮');
+  });
+
+  await okAsync('侧栏分隔线实色不透明', async () => {
+    // jsdom 不解析 CSS 变量（computed 恒为透明），直接断言样式表源码
+    const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    const m = /^#sidebar-resizer\s*\{[^}]*\}/m.exec(cssSrc);
+    assert_(m, '找到 #sidebar-resizer 规则');
+    assert_(/background:\s*var\(--border\)/.test(m[0]) && !/transparent/.test(m[0]), '分隔线背景为实色 var(--border), got: ' + m[0].replace(/\s+/g, ' '));
   });
 
   await okAsync('Bug1：空状态只覆盖内容区（#content 定位）', async () => {

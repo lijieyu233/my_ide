@@ -141,7 +141,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 }
 #sidebar-resizer {
   width: 4px; flex-shrink: 0; cursor: col-resize;
-  background: transparent; margin-left: -2px; z-index: 5;
+  background: var(--border); margin-left: -2px; z-index: 5;
 }
 #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
 #panel-project, #panel-outline, #panel-git {
@@ -367,6 +367,7 @@ textarea.editor {
   cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .outline-item:hover { background: var(--bg-hover); color: var(--text-bright); }
+.outline-item.key-nav-sel { background: var(--bg-selected); color: #fff; }
 .outline-item.lv2 { color: var(--text); }
 .outline-item.lv3, .outline-item.lv4, .outline-item.lv5, .outline-item.lv6 { color: var(--text-dim); font-size: 11.5px; }
 
@@ -392,6 +393,7 @@ textarea.editor {
   cursor: pointer; font-size: 12px; white-space: nowrap;
 }
 .git-file:hover { background: var(--bg-hover); }
+.git-file.key-nav-sel, .git-commit.key-nav-sel { background: var(--bg-selected); }
 .git-file .nm { overflow: hidden; text-overflow: ellipsis; }
 .git-file .git-diff, .git-file .git-revert {
   margin-left: auto; visibility: hidden; flex-shrink: 0;
@@ -739,6 +741,15 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 }
 .theme-opt:hover { border-color: var(--accent); }
 .theme-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
+.bg-fit-opts { display: flex; gap: 8px; }
+.bg-fit-opt {
+  flex: 1; padding: 6px 0; font-size: 12px;
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--btn-border); border-radius: 5px; cursor: pointer;
+}
+.bg-fit-opt:hover:not(:disabled) { border-color: var(--accent); }
+.bg-fit-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
+.bg-fit-opt:disabled { opacity: 0.45; cursor: default; }
 
 /* ---------- 设置表单（Git 配置） ---------- */
 .set-form { padding: 16px 18px; max-width: 420px; }
@@ -777,7 +788,28 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 }
 
 /* ---------- Toast ---------- */
-#toast-wrap { position: fixed; right: 16px; bottom: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+#toast-wrap { position: fixed; right: 18px; bottom: 86px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- 右下角玩宠（小橘猫，消息由它播报） ---------- */
+#pet {
+  position: fixed; right: 18px; bottom: 14px; z-index: 299;
+  width: 52px; height: 52px; cursor: pointer; user-select: none;
+  animation: pet-breathe 3s ease-in-out infinite;
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,.28));
+}
+#pet svg { display: block; width: 100%; height: 100%; pointer-events: none; }
+@keyframes pet-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.03); }
+}
+#pet.speaking { animation: pet-jump .55s ease; }
+@keyframes pet-jump {
+  0% { transform: translateY(0); }
+  35% { transform: translateY(-12px) scale(1.07); }
+  60% { transform: translateY(-2px); }
+  78% { transform: translateY(-6px); }
+  100% { transform: translateY(0); }
+}
 .toast {
   background: var(--btn-bg); border: 1px solid var(--menu-border); border-left: 3px solid var(--accent);
   color: var(--text-bright); padding: 8px 14px; border-radius: 5px; font-size: 12px;

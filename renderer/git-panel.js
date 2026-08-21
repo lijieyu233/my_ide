@@ -87,6 +87,7 @@ const GitPanel = (() => {
     logWrap.className = 'git-section' + (gitTab === 'log' ? '' : ' hidden');
     body.appendChild(logWrap);
     renderLog(logWrap);
+    gitSelIdx = -1; // 重新渲染后重置键盘导航选中
   }
 
   // 点击变更文件 → 打开文件（已删除的 → 查看对比）
@@ -661,6 +662,42 @@ const GitPanel = (() => {
   }
 
 
+
+  // ---------- 键盘导航（↑↓ 选择 + Enter 打开，与文件树一致） ----------
+  // 当前 tab 的可导航行：本地修改 → .git-file；提交历史 → .git-commit
+  let gitSelIdx = -1;
+  const navRows = () => [...body.querySelectorAll(gitTab === 'log' ? '.git-commit' : '.git-file')]
+    .filter((r) => {
+      // 跳过折叠分组里的行（组容器 display:none，行自身不变）
+      let n = r.parentElement;
+      while (n && n !== body) {
+        if (n.style && n.style.display === 'none') return false;
+        n = n.parentElement;
+      }
+      return true;
+    });
+  function setGitSel(i) {
+    const items = navRows();
+    if (!items.length) return;
+    gitSelIdx = Math.max(0, Math.min(i, items.length - 1));
+    items.forEach((r, k) => r.classList.toggle('key-nav-sel', k === gitSelIdx));
+    try { items[gitSelIdx].scrollIntoView({ block: 'nearest' }); } catch {}
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (t && t.closest && t.closest('.cm-editor')) return;
+    const panel = document.getElementById('panel-git');
+    if (!panel || panel.classList.contains('hidden')) return;
+    const items = navRows();
+    if (!items.length) return;
+    e.preventDefault();
+    if (e.key === 'ArrowDown') { setGitSel(gitSelIdx < 0 ? 0 : gitSelIdx + 1); return; }
+    if (e.key === 'ArrowUp') { setGitSel(gitSelIdx < 0 ? items.length - 1 : gitSelIdx - 1); return; }
+    if (e.key === 'Enter' && gitSelIdx >= 0) items[gitSelIdx].click();
+  });
 
   return { refresh, openCommit, openBranchDialog, set rootDir(v) { root = v; } };
 })();

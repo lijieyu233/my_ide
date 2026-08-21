@@ -99,6 +99,24 @@ const Settings = (() => {
         <div class="set-hint-path" style="color:var(--text-dim);font-size:11px;margin-bottom:12px;word-break:break-all">${bg.path ? esc(bg.path) : '未设置背景图'}</div>
         <label class="m-label">背景透明度：<span id="bg-op-val">${bgOp}</span>%</label>
         <input id="bg-op-range" type="range" min="5" max="50" step="1" value="${bgOp}" style="width:100%" ${bg.path ? '' : 'disabled'}>
+        <label class="m-label" style="margin-top:12px">显示方式</label>
+        <div class="bg-fit-opts">
+          <button class="bg-fit-opt ${bg.fit === 'cover' ? 'sel' : ''}" data-fit="cover" ${bg.path ? '' : 'disabled'} title="缩放至铺满窗口（可能裁切）">铺满</button>
+          <button class="bg-fit-opt ${bg.fit === 'contain' ? 'sel' : ''}" data-fit="contain" ${bg.path ? '' : 'disabled'} title="完整显示图片（可能留边）">完整</button>
+          <button class="bg-fit-opt ${bg.fit === 'tile' ? 'sel' : ''}" data-fit="tile" ${bg.path ? '' : 'disabled'} title="按原图大小平铺">平铺</button>
+        </div>
+        <label class="m-label" style="margin-top:12px">显示位置（铺满裁切时可见）</label>
+        <select id="bg-pos-sel" style="width:100%;background:var(--bg-input);color:var(--text);border:1px solid var(--btn-border);border-radius:4px;padding:4px 6px" ${bg.path ? '' : 'disabled'}>
+          <option value="center" ${bg.pos === 'center' ? 'selected' : ''}>居中</option>
+          <option value="top" ${bg.pos === 'top' ? 'selected' : ''}>顶部居中</option>
+          <option value="bottom" ${bg.pos === 'bottom' ? 'selected' : ''}>底部居中</option>
+          <option value="left" ${bg.pos === 'left' ? 'selected' : ''}>左侧居中</option>
+          <option value="right" ${bg.pos === 'right' ? 'selected' : ''}>右侧居中</option>
+          <option value="top left" ${bg.pos === 'top left' ? 'selected' : ''}>左上</option>
+          <option value="top right" ${bg.pos === 'top right' ? 'selected' : ''}>右上</option>
+          <option value="bottom left" ${bg.pos === 'bottom left' ? 'selected' : ''}>左下</option>
+          <option value="bottom right" ${bg.pos === 'bottom right' ? 'selected' : ''}>右下</option>
+        </select>
       </div>`;
     const range = document.getElementById('font-size-range');
     range.addEventListener('input', () => {
@@ -118,6 +136,9 @@ const Settings = (() => {
       const cur = window.Bg ? Bg.get() : { path: '' };
       document.querySelector('.set-hint-path').textContent = cur.path || '未设置背景图';
       opRange.disabled = !cur.path;
+      const posSel = document.getElementById('bg-pos-sel');
+      if (posSel) posSel.disabled = !cur.path;
+      $all('.bg-fit-opt').forEach((b) => { b.disabled = !cur.path; });
     };
     document.getElementById('bg-pick').onclick = async () => {
       const p = await window.myIDE.fs.pickImage();
@@ -139,6 +160,22 @@ const Settings = (() => {
       document.getElementById('bg-op-val').textContent = v;
       if (window.Bg) Bg.setOpacity(v / 100);
     });
+    // 显示方式：铺满 / 完整 / 平铺
+    $all('.bg-fit-opt').forEach((b) => {
+      b.onclick = () => {
+        if (b.disabled) return;
+        Bg.setFit(b.dataset.fit);
+        $all('.bg-fit-opt').forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+      };
+    });
+    // 显示位置
+    const posSel = document.getElementById('bg-pos-sel');
+    if (posSel) {
+      posSel.addEventListener('change', () => {
+        if (!posSel.disabled) Bg.setPos(posSel.value);
+      });
+    }
   }
 
   // ---------- 主题视图 ----------
@@ -150,6 +187,7 @@ const Settings = (() => {
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     const cur = Theme.current();
+    const accent = Theme.getAccent ? Theme.getAccent() : '';
     list.innerHTML = `
       <div class="set-form">
         <div class="theme-options">
@@ -158,6 +196,14 @@ const Settings = (() => {
           <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
           <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
         </div>
+      </div>
+      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
+        <label class="m-label">自定义强调色（按钮 / 链接 / 光标颜色）</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="accent-color" type="color" value="${accent || '#4f8cff'}" style="width:56px;height:28px;cursor:pointer" title="选择强调色">
+          <button class="tb-btn" id="accent-reset">恢复主题默认</button>
+        </div>
+        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">选色后立即生效并保存，对所有主题生效</div>
       </div>`;
     $all('.theme-opt').forEach((b) => {
       b.onclick = () => {
@@ -167,6 +213,19 @@ const Settings = (() => {
         MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
       };
     });
+    const accentInput = document.getElementById('accent-color');
+    if (accentInput) {
+      accentInput.addEventListener('input', () => {
+        if (Theme.setAccent) Theme.setAccent(accentInput.value);
+      });
+    }
+    const accentReset = document.getElementById('accent-reset');
+    if (accentReset) {
+      accentReset.onclick = () => {
+        if (Theme.setAccent) Theme.setAccent('');
+        MI.toast('已恢复主题默认强调色', 'ok');
+      };
+    }
   }
 
   // ---------- Git 视图 ----------

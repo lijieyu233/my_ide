@@ -23,6 +23,7 @@ const Outline = (() => {
   async function refresh(tab) {
     el.innerHTML = '';
     headings = [];
+    selIdx = -1; // 刷新后重置键盘导航选中
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || '');
     if (!isMd) {
       const d = document.createElement('div');
@@ -80,6 +81,32 @@ const Outline = (() => {
       setTimeout(() => { target.style.outline = ''; }, 1500);
     }
   }
+
+  // ---------- 键盘导航（↑↓ 选择 + Enter 跳转，与文件树一致） ----------
+  let selIdx = -1;
+  const itemRows = () => [...el.querySelectorAll('.outline-item')];
+  function setSel(i) {
+    const items = itemRows();
+    if (!items.length) return;
+    selIdx = Math.max(0, Math.min(i, items.length - 1));
+    items.forEach((r, k) => r.classList.toggle('key-nav-sel', k === selIdx));
+    try { items[selIdx].scrollIntoView({ block: 'nearest' }); } catch {}
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (t && t.closest && t.closest('.cm-editor')) return;
+    const panel = document.getElementById('panel-outline');
+    if (!panel || panel.classList.contains('hidden')) return;
+    const items = itemRows();
+    if (!items.length) return;
+    e.preventDefault();
+    if (e.key === 'ArrowDown') { setSel(selIdx < 0 ? 0 : selIdx + 1); return; }
+    if (e.key === 'ArrowUp') { setSel(selIdx < 0 ? items.length - 1 : selIdx - 1); return; }
+    if (e.key === 'Enter' && selIdx >= 0) items[selIdx].click();
+  });
 
   return { refresh, parse, get headings() { return headings; } };
 })();
