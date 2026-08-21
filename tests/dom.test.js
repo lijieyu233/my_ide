@@ -818,6 +818,60 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     fakeExternal = [];
   });
 
+  await okAsync('多选复制粘贴：Ctrl+点击多文件 → Ctrl+C → Ctrl+V 全部粘贴', async () => {
+    dom.window.document.body.focus();
+    await tick();
+    const ctrlClick = (el) => el.dispatchEvent(new el.ownerDocument.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    // 先普通点击 README.md 重置为单选（清掉上一用例残留的目录选中）
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/README.md'));
+    await tick();
+    // Ctrl+点击 notes.txt 加入多选（Ctrl+点击文件行不打开文件）
+    ctrlClick($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt'));
+    await tick();
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === 2, 'Ctrl+C 记录 2 个文件, got: ' + JSON.stringify(fakeCopied));
+    // 选中 src → Ctrl+V 粘贴全部
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src'));
+    await tick();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README.md'], '第一个文件粘贴成功');
+    assert_(FAKE_FS[P + '/src/notes.txt'], '第二个文件也粘贴成功（多文件粘贴）');
+    // 清理：删除粘贴出的 notes.txt 副本（后续「拖拽移动+撤销」用例依赖 src 下无 notes.txt）
+    delete FAKE_FS[P + '/src/notes.txt'];
+    if (FAKE_FS[P + '/src']) FAKE_FS[P + '/src'].children = FAKE_FS[P + '/src'].children.filter((c) => c !== P + '/src/notes.txt');
+    // 恢复单选（多选残留会让后续右键菜单显示「（3 项）」）
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt'));
+    await tick();
+  });
+
+  await okAsync('拖到文件行 = 移入其所在目录（文件夹下方也能放进去）', async () => {
+    const mkDrag = (type, path) => {
+      const ev = new dom.window.Event(type, { bubbles: true, cancelable: true });
+      ev.dataTransfer = { getData: () => path, setData: () => {}, effectAllowed: '', dropEffect: '' };
+      return ev;
+    };
+    // 确保目录链展开并渲染出 app.js 行
+    await g(dom, 'Tree.reveal("' + P + '/src/app.js")');
+    await tick(); await tick();
+    // 拖 data.csv 到 src/app.js（文件行）→ 应移入 app.js 所在目录 src
+    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/app.js');
+    assert_(fileRow, 'src/app.js 行存在（目录链已展开）');
+    fileRow.dispatchEvent(mkDrag('dragover', P + '/data.csv'));
+    await tick();
+    assert_(fileRow.classList.contains('drop-target'), '文件行悬停高亮');
+    fileRow.dispatchEvent(mkDrag('drop', P + '/data.csv'));
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/data.csv'], '文件移入文件行所在目录 src');
+    assert_(!FAKE_FS[P + '/data.csv'], '源位置已被移走');
+    // 还原 data.csv 到根目录（后续用例仍依赖根目录下的 data.csv）
+    delete FAKE_FS[P + '/src/data.csv'];
+    if (FAKE_FS[P + '/src']) FAKE_FS[P + '/src'].children = FAKE_FS[P + '/src'].children.filter((c) => c !== P + '/src/data.csv');
+    FAKE_FS[P + '/data.csv'] = { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n' };
+    if (FAKE_FS[P] && !FAKE_FS[P].children.includes(P + '/data.csv')) FAKE_FS[P].children.push(P + '/data.csv');
+  });
+
   await okAsync('右键菜单：复制文件 / 粘贴到此处', async () => {
     const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
     row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
@@ -1576,6 +1630,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('Bug5：目录树一键收起/展开', async () => {
     await g(dom, 'App.setRoot("' + P + '")');
     await tick(); await tick();
+    // 先收起全部（前序测试可能残留展开态，点击会变成收起）
+    await g(dom, 'Tree.collapseAll()');
+    await tick(); await tick();
     // 展开 src
     const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
     click(srcRow);
@@ -1689,6 +1746,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('Bug3：目录展开结构按项目持久化（切换项目后恢复）', async () => {
     await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    // 先收起全部（前序测试可能残留展开态，点击会变成收起）
+    await g(dom, 'Tree.collapseAll()');
     await tick(); await tick();
     const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
     click(srcRow);

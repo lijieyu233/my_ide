@@ -352,26 +352,59 @@ ipcMain.handle('log:write', (_e, level, tag, msg) => {
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
-// 文件复制：写系统剪贴板（FileNameW/CF_HDROP 格式：\0 分隔 + \0 结尾，供资源管理器粘贴 + 文本兜底）
+// 文件复制：写系统剪贴板（FileNameW 格式：\0 分隔 + \0 结尾，供资源管理器粘贴 + 自读多文件）
+// 注意顺序：writeText 在前、writeBuffer 在后 —— Electron 每次写入都会整体替换剪贴板，
+// 最终保留 FileNameW（多文件可读回），文本仅作写入瞬间的兜底。
 ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
-  clipboard.writeText(arr.join('\n'));
+  try { clipboard.writeText(arr.join('\n')); } catch {}
   try {
     clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\0') + '\0', 'utf16le'));
   } catch {}
   return true;
 });
-// 读取系统剪贴板中的文件路径（外部复制 → IDE 粘贴）
+// 读取系统剪贴板中的文件路径（多文件）
+// 三层回退：CF_HDROP（资源管理器复制的标准格式）→ FileNameW（本应用写入）→ 文本按行拆
 ipcMain.handle('clip:getFiles', () => {
+  // 1) CF_HDROP：DROPFILES 结构（20 字节头 + 文件列表，fWide 决定宽字符）
+  try {
+    const buf = clipboard.readBuffer('CF_HDROP');
+    if (buf && buf.length > 20) {
+      const pFiles = buf.readUInt32LE(0);
+      const fWide = buf.readUInt32LE(16);
+      if (pFiles > 0 && pFiles < buf.length) {
+        const rest = buf.slice(pFiles);
+        const list = (fWide ? rest.toString('utf16le') : rest.toString('latin1'))
+          .split('\0')
+          .map((s) => s.trim())
+          .filter((s) => s && fs.existsSync(s));
+        if (list.length) return list;
+      }
+    }
+  } catch {}
+  // 2) FileNameW（本应用写入的 \0 分隔宽字符列表）
   try {
     const buf = clipboard.readBuffer('FileNameW');
-    if (!buf || !buf.length) return [];
-    return buf.toString('utf16le')
-      .split(/\0|\r?\n/)
-      .map((s) => s.trim())
-      .filter((s) => s && fs.existsSync(s));
-  } catch { return []; }
+    if (buf && buf.length) {
+      const list = buf.toString('utf16le')
+        .split(/\0|\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s && fs.existsSync(s));
+      if (list.length) return list;
+    }
+  } catch {}
+  // 3) 纯文本按行拆（每行都是存在的路径才算）
+  try {
+    const t = clipboard.readText();
+    if (t) {
+      const list = t.split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s && fs.existsSync(s));
+      if (list.length) return list;
+    }
+  } catch {}
+  return [];
 });
 // 复制文件/目录到目标目录（重名自动改名 name (1).ext）
 ipcMain.handle('fs:copy', (_e, src, destDir) => {

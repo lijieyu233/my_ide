@@ -126,6 +126,7 @@ function copyActivePath() {
   MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
 }
 
+Shortcuts.register('toggle-sidebar', { desc: '收起 / 展开侧栏', keys: ['ctrl+`'], run: () => App.toggleSidebar() });
 Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run: () => App.openFolder() });
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });

@@ -103,7 +103,7 @@ const App = (() => {
     const btn = document.getElementById('tool-sidebar');
     if (btn) {
       btn.textContent = collapsed ? '⏵' : '⏴';
-      btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+B)';
+      btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+`)';
     }
   }
 

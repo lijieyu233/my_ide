@@ -114,9 +114,9 @@ body {
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
-/* 侧栏收起/展开按钮贴底（与工具窗口按钮区分） */
-#tool-sidebar { margin-top: auto; }
-/* 侧栏整体收起（Ctrl+B / 按钮切换） */
+/* 侧栏收起/展开按钮置顶（与工具窗口按钮区分） */
+#tool-sidebar { border-bottom: 1px solid var(--border); }
+/* 侧栏整体收起（Ctrl+` / 按钮切换） */
 body.sidebar-collapsed #sidebar,
 body.sidebar-collapsed #sidebar-resizer { display: none; }
 .tool-btn {
@@ -269,7 +269,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 .editor-cm-wrap .cm-editor { height: 100%; }
 .editor-cm-wrap .cm-editor.cm-focused { outline: none; }
 /* live 模式下正文更接近阅读宽度 */
-.editor-cm-wrap .cm-line { padding-left: 4px; padding-right: 4px; }
+.editor-cm-wrap .cm-line { padding-left: 0; padding-right: 0; }
 
 /* ---------- 空状态 ---------- */
 #empty-state {

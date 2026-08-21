@@ -223,12 +223,22 @@ const Tree = (() => {
       rowEl.classList.add('dragging-src');
     });
     rowEl.addEventListener('dragend', () => { rowEl.classList.remove('dragging-src'); dragSrcPaths = null; });
-    if (item.type === 'dir') {
+    // 拖放目标目录：目录行 → 移入该目录；文件行 → 移入其所在目录
+    // （拖到文件夹「下面」的文件行 = 移入那个文件夹，符合主流 IDE 行为）
+    const dropDirOf = (it) => {
+      if (it.type === 'dir') return it.path;
+      const p = String(it.path).replace(/\\/g, '/');
+      const i = p.lastIndexOf('/');
+      if (i <= 0) return rootPath;
+      return it.path.slice(0, i);
+    };
+    {
       rowEl.addEventListener('dragover', (e) => {
         // 注意：dragover 里 dataTransfer.getData 恒为空（Chromium 安全限制），
         // 必须用 dragstart 时记录的模块级变量判断，否则 drop 永远不触发
         const srcs = readDragSources(e);
-        if (srcs && srcs.length && !srcs.some((s) => norm(s) === norm(item.path) || isInside(s, item.path))) {
+        const dest = dropDirOf(item);
+        if (srcs && srcs.length && dest && !srcs.some((s) => norm(s) === norm(dest) || isInside(s, dest))) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
           rowEl.classList.add('drop-target');
@@ -240,8 +250,10 @@ const Tree = (() => {
         rowEl.classList.remove('drop-target');
         let srcs = readDragSources(e);
         if (!srcs || !srcs.length) return;
-        srcs = srcs.filter((s) => norm(s) !== norm(item.path) && !isInside(s, item.path));
-        if (srcs.length) moveTo(srcs, item.path);
+        const dest = dropDirOf(item);
+        if (!dest) return;
+        srcs = srcs.filter((s) => norm(s) !== norm(dest) && !isInside(s, dest));
+        if (srcs.length) moveTo(srcs, dest);
         dragSrcPaths = null;
       });
     }
