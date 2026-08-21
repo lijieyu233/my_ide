@@ -187,7 +187,18 @@ const Settings = (() => {
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     const cur = Theme.current();
-    const accent = Theme.getAccent ? Theme.getAccent() : '';
+    // 动态自定义：叠加在当前预设主题上，逐项调整核心颜色
+    const custom = Theme.getCustom ? Theme.getCustom() : { accent: Theme.getAccent ? Theme.getAccent() : '' };
+    const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色' } };
+    const FALLBACKS = { accent: '#4f8cff', bg: '#1e1e1e', bgPanel: '#191919', bgHover: '#2a2a2a', bgSelected: '#2d4f6b', border: '#101010', text: '#b8b8b8', textBright: '#e4e4e4' };
+    const colorRows = Object.keys(fields).map((k) => `
+      <div class="custom-theme-row" data-field="${k}">
+        <span class="custom-theme-label">${fields[k].label}</span>
+        <span class="custom-theme-ctrl">
+          <input class="ct-color" type="color" value="${custom[k] || FALLBACKS[k] || '#888888'}" title="调整${fields[k].label}">
+          <button class="tb-btn ct-reset" title="此项恢复主题默认">×</button>
+        </span>
+      </div>`).join('');
     list.innerHTML = `
       <div class="set-form">
         <div class="theme-options">
@@ -198,12 +209,12 @@ const Settings = (() => {
         </div>
       </div>
       <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
-        <label class="m-label">自定义强调色（按钮 / 链接 / 光标颜色）</label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input id="accent-color" type="color" value="${accent || '#4f8cff'}" style="width:56px;height:28px;cursor:pointer" title="选择强调色">
-          <button class="tb-btn" id="accent-reset">恢复主题默认</button>
+        <label class="m-label">动态自定义（叠加在当前主题上，改哪项哪项生效）</label>
+        ${colorRows}
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="tb-btn" id="custom-theme-reset-all">全部恢复主题默认</button>
         </div>
-        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">选色后立即生效并保存，对所有主题生效</div>
+        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">选色立即生效并保存，重启后保持；切换预设主题后自定义项继续叠加</div>
       </div>`;
     $all('.theme-opt').forEach((b) => {
       b.onclick = () => {
@@ -213,17 +224,28 @@ const Settings = (() => {
         MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
       };
     });
-    const accentInput = document.getElementById('accent-color');
-    if (accentInput) {
-      accentInput.addEventListener('input', () => {
-        if (Theme.setAccent) Theme.setAccent(accentInput.value);
-      });
-    }
-    const accentReset = document.getElementById('accent-reset');
-    if (accentReset) {
-      accentReset.onclick = () => {
-        if (Theme.setAccent) Theme.setAccent('');
-        MI.toast('已恢复主题默认强调色', 'ok');
+    // 逐项调色：input 即时生效；× 恢复该项预设
+    $all('.custom-theme-row').forEach((row) => {
+      const key = row.dataset.field;
+      const input = row.querySelector('.ct-color');
+      const reset = row.querySelector('.ct-reset');
+      input.addEventListener('input', () => Theme.pick(key, input.value));
+      reset.onclick = () => {
+        Theme.pick(key, '');
+        input.value = FALLBACKS[key] || '#888888';
+        MI.toast(fields[key].label + ' 已恢复主题默认', 'ok');
+      };
+    });
+    const resetAll = document.getElementById('custom-theme-reset-all');
+    if (resetAll) {
+      resetAll.onclick = () => {
+        Theme.clearCustom();
+        // 表单回填预设默认色
+        $all('.custom-theme-row').forEach((row) => {
+          const k = row.dataset.field;
+          row.querySelector('.ct-color').value = FALLBACKS[k] || '#888888';
+        });
+        MI.toast('已恢复主题默认配色', 'ok');
       };
     }
   }

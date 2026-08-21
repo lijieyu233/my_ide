@@ -1,10 +1,23 @@
-// theme.js —— 主题切换（深色/浅色/粉红/深红）+ 自定义强调色 + 背景图，最先加载避免闪烁
+// theme.js —— 主题切换（深色/浅色/粉红/深红）+ UI 动态自定义主题变量 + 背景图，最先加载避免闪烁
 const Theme = (() => {
   const KEY = 'myide-theme';
-  const A_KEY = 'myide-accent'; // 自定义强调色（空 = 跟随主题默认）
+  const A_KEY = 'myide-accent';        // 旧版单独强调色键（迁移兼容）
+  const C_KEY = 'myide-custom-theme';  // 自定义主题变量 JSON
   const ORDER = ['dark', 'light', 'pink', 'crimson']; // toggle 循环顺序
   const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红' };
   const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson' };
+
+  // UI 可动态调整的变量（字段名 → CSS 变量）
+  const FIELDS = {
+    accent:     { css: '--accent',      label: '强调色（按钮/链接/光标）' },
+    bg:         { css: '--bg',          label: '编辑区背景' },
+    bgPanel:    { css: '--bg-panel',    label: '侧边栏背景' },
+    bgHover:    { css: '--bg-hover',    label: '悬停背景' },
+    bgSelected: { css: '--bg-selected', label: '选中背景' },
+    border:     { css: '--border',      label: '边框线' },
+    text:       { css: '--text',        label: '正文文字' },
+    textBright: { css: '--text-bright', label: '标题亮文字' },
+  };
 
   function apply(t) {
     for (const k in CLS) document.body.classList.toggle(CLS[k], t === k);
@@ -26,27 +39,67 @@ const Theme = (() => {
     apply(theme);
     try { localStorage.setItem(KEY, theme); } catch {}
   }
-  // 自定义强调色：写入 --accent CSS 变量，全主题生效；空值恢复主题默认
-  function applyAccent() {
-    let c = '';
-    try { c = localStorage.getItem(A_KEY) || ''; } catch {}
-    document.documentElement.style.setProperty('--accent', c || null);
+
+  // ---------- UI 动态自定义主题变量 ----------
+  function loadCustom() {
+    let c = {};
+    try { c = JSON.parse(localStorage.getItem(C_KEY) || '{}') || {}; } catch {}
+    // 旧版 myide-accent 迁移（未写入新键时回退）
+    if (!c.accent) {
+      try {
+        const old = localStorage.getItem(A_KEY);
+        if (old) c.accent = old;
+      } catch {}
+    }
+    return c;
   }
-  function setAccent(color) {
-    try { color ? localStorage.setItem(A_KEY, color) : localStorage.removeItem(A_KEY); } catch {}
-    applyAccent();
+  function saveCustom(c) {
+    try { localStorage.setItem(C_KEY, JSON.stringify(c)); } catch {}
   }
-  function getAccent() {
-    try { return localStorage.getItem(A_KEY) || ''; } catch { return ''; }
+  // 应用：有值写变量，无值移除（恢复当前预设主题默认）
+  function applyCustom() {
+    const c = loadCustom();
+    const root = document.documentElement;
+    for (const k in FIELDS) {
+      const v = c[k];
+      if (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v)) root.style.setProperty(FIELDS[k].css, v);
+      else root.style.removeProperty(FIELDS[k].css);
+    }
   }
+  // 设置单项（color 为空 = 该项恢复预设）
+  function pick(field, color) {
+    if (!FIELDS[field]) return;
+    const c = loadCustom();
+    if (color) c[field] = color;
+    else delete c[field];
+    saveCustom(c);
+    applyCustom();
+  }
+  // 清空全部自定义，恢复预设主题
+  function clearCustom() {
+    try { localStorage.removeItem(C_KEY); localStorage.removeItem(A_KEY); } catch {}
+    applyCustom();
+  }
+  function getCustom() {
+    const c = loadCustom();
+    const out = {};
+    for (const k in FIELDS) out[k] = typeof c[k] === 'string' ? c[k] : '';
+    return out;
+  }
+  function getFields() { return FIELDS; }
+
+  // ---------- 兼容旧接口（强调色） ----------
+  function setAccent(color) { pick('accent', color); }
+  function getAccent() { return getCustom().accent; }
+
   function init() {
     let t = null;
     try { t = localStorage.getItem(KEY); } catch {}
     if (ORDER.includes(t) && t !== 'dark') apply(t);
-    applyAccent();
+    applyCustom();
     Bg.init();
   }
-  return { toggle, set, current, name, init, setAccent, getAccent };
+  return { toggle, set, current, name, init, setAccent, getAccent, pick, clearCustom, getCustom, getFields };
 })();
 
 // ---------- 背景图（外观设置：本地图片 + 透明度 + 显示方式/位置） ----------

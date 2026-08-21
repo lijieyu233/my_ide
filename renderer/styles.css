@@ -751,6 +751,17 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .bg-fit-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
 .bg-fit-opt:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- 主题动态自定义表单 ---------- */
+.custom-theme-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 0; border-bottom: 1px dashed var(--border-mid);
+}
+.custom-theme-row:last-of-type { border-bottom: none; }
+.custom-theme-label { font-size: 12px; color: var(--text); }
+.custom-theme-ctrl { display: flex; align-items: center; gap: 6px; }
+.custom-theme-ctrl .ct-color { width: 52px; height: 26px; cursor: pointer; background: none; border: 1px solid var(--btn-border); border-radius: 4px; padding: 1px 2px; }
+.custom-theme-ctrl .ct-reset { padding: 1px 8px; font-size: 12px; }
+
 /* ---------- 设置表单（Git 配置） ---------- */
 .set-form { padding: 16px 18px; max-width: 420px; }
 .set-form input {
