@@ -192,17 +192,32 @@ const Settings = (() => {
     const userThemes = Theme.getUserThemes ? Theme.getUserThemes() : [];
     const utBtns = userThemes.map((ut) => `
       <button class="theme-opt ut ${cur === 'user:' + ut.id ? 'sel' : ''}" data-ut="${esc(ut.id)}" title="点击应用 · × 删除">🎨 ${esc(ut.name)}<span class="ut-del" title="删除该主题">×</span></button>`).join('');
-    // 动态自定义：在当前主题上逐项调整核心颜色
+    // 动态自定义：在当前主题上逐项调整核心颜色（按分组渲染）
     const custom = Theme.getCustom ? Theme.getCustom() : { accent: Theme.getAccent ? Theme.getAccent() : '' };
-    const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色' } };
-    const FALLBACKS = { accent: '#4f8cff', bg: '#1e1e1e', bgPanel: '#191919', bgHover: '#2a2a2a', bgSelected: '#2d4f6b', border: '#101010', text: '#b8b8b8', textBright: '#e4e4e4' };
-    const colorRows = Object.keys(fields).map((k) => `
-      <div class="custom-theme-row" data-field="${k}">
-        <span class="custom-theme-label">${fields[k].label}</span>
-        <span class="custom-theme-ctrl">
-          <input class="ct-color" type="color" value="${custom[k] || FALLBACKS[k] || '#888888'}" title="调整${fields[k].label}">
-          <button class="tb-btn ct-reset" title="此项恢复主题默认">×</button>
-        </span>
+    const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色', group: '' } };
+    const FALLBACKS = {
+      accent: '#4f9cd6', green: '#6aab73', red: '#d16969',
+      bg: '#1e1e1e', bgPanel: '#191919', bgHover: '#2a2a2a', bgSelected: '#2d4f6b', bgInput: '#232323', panelStrong: '#202020',
+      text: '#b8b8b8', textBright: '#e4e4e4', textDim: '#808080', editorText: '#c8c8c8', codeText: '#e8c98a',
+      border: '#101010', borderMid: '#3a3a3a', btnBorder: '#333333',
+    };
+    const groups = [];
+    for (const k in fields) {
+      const g = fields[k].group || '其他';
+      if (!groups.some((x) => x.name === g)) groups.push({ name: g, keys: [] });
+      groups.find((x) => x.name === g).keys.push(k);
+    }
+    const colorRows = groups.map((g) => `
+      <div class="ct-group">
+        <div class="ct-group-title">${g.name}</div>
+        ${g.keys.map((k) => `
+        <div class="custom-theme-row" data-field="${k}">
+          <span class="custom-theme-label">${fields[k].label}</span>
+          <span class="custom-theme-ctrl">
+            <input class="ct-color" type="color" value="${custom[k] || FALLBACKS[k] || '#888888'}" title="调整${fields[k].label}">
+            <button class="tb-btn ct-reset" title="此项恢复主题默认">×</button>
+          </span>
+        </div>`).join('')}
       </div>`).join('');
     list.innerHTML = `
       <div class="set-form">

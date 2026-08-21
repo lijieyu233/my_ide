@@ -8,16 +8,26 @@ const Theme = (() => {
   const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红' };
   const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson' };
 
-  // UI 可动态调整的变量（字段名 → CSS 变量）
+  // UI 可动态调整的变量（字段名 → CSS 变量 + 分组）
+  // 注意：主题变量定义在 body.theme-* 选择器上，覆盖层必须写 body inline style 才能赢过它
   const FIELDS = {
-    accent:     { css: '--accent',      label: '强调色（按钮/链接/光标）' },
-    bg:         { css: '--bg',          label: '编辑区背景' },
-    bgPanel:    { css: '--bg-panel',    label: '侧边栏背景' },
-    bgHover:    { css: '--bg-hover',    label: '悬停背景' },
-    bgSelected: { css: '--bg-selected', label: '选中背景' },
-    border:     { css: '--border',      label: '边框线' },
-    text:       { css: '--text',        label: '正文文字' },
-    textBright: { css: '--text-bright', label: '标题亮文字' },
+    accent:     { css: '--accent',      label: '强调色（按钮/链接/光标）', group: '基础配色' },
+    green:      { css: '--green',       label: '成功 / 新增',              group: '基础配色' },
+    red:        { css: '--red',         label: '危险 / 删除',              group: '基础配色' },
+    bg:         { css: '--bg',          label: '编辑区背景',               group: '背景' },
+    bgPanel:    { css: '--bg-panel',    label: '侧边栏背景',               group: '背景' },
+    bgHover:    { css: '--bg-hover',    label: '悬停背景',                 group: '背景' },
+    bgSelected: { css: '--bg-selected', label: '选中背景',                 group: '背景' },
+    bgInput:    { css: '--bg-input',    label: '输入框背景',               group: '背景' },
+    panelStrong:{ css: '--panel-strong',label: '弹窗背景',                 group: '背景' },
+    text:       { css: '--text',        label: '正文文字',                 group: '文字' },
+    textBright: { css: '--text-bright', label: '标题亮文字',               group: '文字' },
+    textDim:    { css: '--text-dim',    label: '弱化文字（状态栏/提示）',  group: '文字' },
+    editorText: { css: '--editor-text', label: '编辑器正文',               group: '文字' },
+    codeText:   { css: '--code-text',   label: '行内代码文字',             group: '文字' },
+    border:     { css: '--border',      label: '边框线',                   group: '边框 / 控件' },
+    borderMid:  { css: '--border-mid',  label: '中边框（滚动条/分隔线）',  group: '边框 / 控件' },
+    btnBorder:  { css: '--btn-border',  label: '按钮边框',                 group: '边框 / 控件' },
   };
 
   let activeId = 'dark'; // 'dark' | 'light' | ... | 'user:<id>'
@@ -57,13 +67,15 @@ const Theme = (() => {
     try { localStorage.setItem(C_KEY, JSON.stringify(c)); } catch {}
   }
   // 应用：有值写变量，无值移除（恢复当前预设主题默认）
+  // 必须写 body inline style：主题变量定义在 body.theme-* 选择器上，
+  // 写 documentElement 会被 body 自身定义覆盖（light/pink/crimson 下调色无效的根因）
   function applyCustom() {
     const c = loadCustom();
-    const root = document.documentElement;
+    const host = document.body;
     for (const k in FIELDS) {
       const v = c[k];
-      if (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v)) root.style.setProperty(FIELDS[k].css, v);
-      else root.style.removeProperty(FIELDS[k].css);
+      if (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v)) host.style.setProperty(FIELDS[k].css, v);
+      else host.style.removeProperty(FIELDS[k].css);
     }
   }
   // 设置单项（color 为空 = 该项恢复预设）

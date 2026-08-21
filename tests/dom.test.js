@@ -1635,12 +1635,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Bg.set("")'); // 清理，不影响后续测试
   });
 
-  await okAsync('状态栏背景透明度滑条（右下角，设背景图后显示）', async () => {
+  await okAsync('状态栏背景透明度滑条（最右端，设背景图后显示）', async () => {
     await g(dom, 'Bg.set("' + P + '/pic.png")');
     await tick();
     assert_($(dom, 'body').classList.contains('has-bg'), 'has-bg 激活（滑条可见）');
     const sb = $(dom, '#sb-bgop-range');
     assert_(sb, '状态栏滑条存在');
+    // 位置：滑条在字号控件之后（状态栏最右端）
+    const bar = $(dom, '#statusbar');
+    const kids = [...bar.children].filter((x) => x.id);
+    assert_(kids.indexOf(bar.querySelector('#sb-bgop')) > kids.indexOf(bar.querySelector('#sb-font')), '滑条在字号控件右侧（最右端）');
     assert_(sb.value === '15', '初始值同步 15, got: ' + sb.value);
     await g(dom, 'Bg.setOpacity(0.3)');
     await tick();
@@ -1658,10 +1662,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('主题自定义强调色：setAccent 生效 + 空值恢复默认', async () => {
     await g(dom, 'Theme.setAccent("#ff6600")');
     await tick();
-    assert_(dom.window.document.documentElement.style.getPropertyValue('--accent') === '#ff6600', '强调色写入 CSS 变量');
+    assert_(dom.window.document.body.style.getPropertyValue('--accent') === '#ff6600', '强调色写入 CSS 变量');
     await g(dom, 'Theme.setAccent("")');
     await tick();
-    assert_(dom.window.document.documentElement.style.getPropertyValue('--accent') === '', '空值恢复主题默认');
+    assert_(dom.window.document.body.style.getPropertyValue('--accent') === '', '空值恢复主题默认');
   });
 
   await okAsync('UI 动态自定义主题：pick 多项变量 + clearCustom 恢复', async () => {
@@ -1669,7 +1673,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Theme.pick("text", "#cccccc")');
     await g(dom, 'Theme.pick("bgPanel", "#141414")');
     await tick();
-    const st = dom.window.document.documentElement.style;
+    const st = dom.window.document.body.style;
     assert_(st.getPropertyValue('--bg') === '#101010', '编辑区背景写入, got: ' + st.getPropertyValue('--bg'));
     assert_(st.getPropertyValue('--text') === '#cccccc', '正文文字写入, got: ' + st.getPropertyValue('--text'));
     assert_(st.getPropertyValue('--bg-panel') === '#141414', '侧栏背景写入, got: ' + st.getPropertyValue('--bg-panel'));
@@ -1694,28 +1698,52 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
     await tick();
     const rows = $allIn(dom.window.document, '.custom-theme-row');
-    assert_(rows.length >= 8, '动态自定义表单 ≥ 8 项, got ' + rows.length);
+    assert_(rows.length >= 16, '动态自定义表单 ≥ 16 项, got ' + rows.length);
+    assert_($allIn(dom.window.document, '.ct-group-title').length >= 4, '按分组渲染 ≥ 4 组');
     // 改强调色：input 事件 → CSS 变量即时写入
     const accentRow = rows.find((r) => r.dataset.field === 'accent');
     const input = accentRow.querySelector('.ct-color');
     input.value = '#00aa88';
     input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
-    assert_(dom.window.document.documentElement.style.getPropertyValue('--accent') === '#00aa88', '调色即时生效写入 --accent');
+    assert_(dom.window.document.body.style.getPropertyValue('--accent') === '#00aa88', '调色即时生效写入 --accent');
     const c = JSON.parse(g(dom, 'JSON.stringify(Theme.getCustom())'));
     assert_(c.accent === '#00aa88', '选色持久化: ' + JSON.stringify(c));
     // 逐项恢复 ×
     click(accentRow.querySelector('.ct-reset'));
     await tick();
-    assert_(dom.window.document.documentElement.style.getPropertyValue('--accent') === '', '× 恢复该项预设');
+    assert_(dom.window.document.body.style.getPropertyValue('--accent') === '', '× 恢复该项预设');
     // 全部恢复
     await g(dom, 'Theme.pick("bg", "#123456")');
     await tick();
     click($(dom, '#custom-theme-reset-all'));
     await tick();
-    assert_(dom.window.document.documentElement.style.getPropertyValue('--bg') === '', '全部恢复预设');
+    assert_(dom.window.document.body.style.getPropertyValue('--bg') === '', '全部恢复预设');
     click($(dom, '#set-x')); // 关闭设置
     await tick();
+  });
+
+  await okAsync('Bug 修复：浅色/粉红主题下调色立即生效（变量写入 body 覆盖 body.theme-*）', async () => {
+    // 此前 bug：覆盖层写 documentElement，被 body.theme-light 的变量定义覆盖 → 调色无效
+    await g(dom, 'Theme.set("light")');
+    await tick();
+    await g(dom, 'Theme.pick("bg", "#221122")');
+    await g(dom, 'Theme.pick("accent", "#00cc66")');
+    await tick();
+    const bs = dom.window.document.body.style;
+    assert_(bs.getPropertyValue('--bg') === '#221122', '浅色主题下背景调色写入 body inline');
+    assert_(bs.getPropertyValue('--accent') === '#00cc66', '浅色主题下强调色写入 body inline');
+    // 粉红主题同样生效
+    await g(dom, 'Theme.set("pink")');
+    await tick();
+    await g(dom, 'Theme.pick("text", "#abcdef")');
+    await tick();
+    assert_(dom.window.document.body.style.getPropertyValue('--text') === '#abcdef', '粉红主题下调色生效');
+    // 恢复
+    await g(dom, 'Theme.clearCustom()');
+    await g(dom, 'Theme.set("dark")');
+    await tick();
+    assert_(dom.window.document.body.style.getPropertyValue('--bg') === '', '恢复后覆盖层清空');
   });
 
   await okAsync('自定义主题 API：保存 / 应用 / 删除', async () => {
@@ -1727,7 +1755,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 应用：载入配色快照
     await g(dom, 'Theme.set("user:' + id + '")');
     await tick();
-    const st = dom.window.document.documentElement.style;
+    const st = dom.window.document.body.style;
     assert_(g(dom, 'Theme.current()') === 'user:' + id, 'current 返回用户主题');
     assert_(st.getPropertyValue('--accent') === '#123456', '配色快照载入');
     assert_(st.getPropertyValue('--bg') === '#0a0a0a', '背景快照载入');

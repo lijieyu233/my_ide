@@ -607,10 +607,9 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 }
 .sb-font button:hover { color: var(--text-bright); border-color: var(--accent); }
 .sb-font #sb-font-val { min-width: 18px; text-align: center; cursor: default; }
-/* 状态栏背景透明度滑条（右下角，设置背景图后显示） */
-#sb-bgop { display: none; align-items: center; margin-right: 2px; flex-shrink: 0; }
+/* 状态栏背景透明度滑条（最右端，设置背景图后显示） */
+#sb-bgop { display: none; align-items: center; margin-left: 10px; flex-shrink: 0; }
 body.has-bg #sb-bgop { display: inline-flex; }
-body.has-bg #sb-version { margin-left: 8px; }
 #sb-bgop input[type="range"] { width: 90px; height: 12px; cursor: pointer; accent-color: var(--accent); }
 body { display: flex; flex-direction: column; }
 
@@ -766,6 +765,11 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .bg-fit-opt:disabled { opacity: 0.45; cursor: default; }
 
 /* ---------- 主题动态自定义表单 ---------- */
+.ct-group { margin-top: 6px; }
+.ct-group-title {
+  font-size: 11px; color: var(--accent); font-weight: 600;
+  padding: 4px 0; border-bottom: 1px solid var(--border);
+}
 .custom-theme-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 5px 0; border-bottom: 1px dashed var(--border-mid);
