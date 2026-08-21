@@ -183,11 +183,16 @@ const Settings = (() => {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove(); // 快捷键过滤框不属于本视图
     document.getElementById('set-title').textContent = '主题';
-    document.getElementById('set-hint').textContent = '选择界面配色，即时生效并保存';
+    document.getElementById('set-hint').textContent = '选择或自定义界面配色，即时生效并保存';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     const cur = Theme.current();
-    // 动态自定义：叠加在当前预设主题上，逐项调整核心颜色
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    // 用户自定义主题卡片（可应用 / 可删除）
+    const userThemes = Theme.getUserThemes ? Theme.getUserThemes() : [];
+    const utBtns = userThemes.map((ut) => `
+      <button class="theme-opt ut ${cur === 'user:' + ut.id ? 'sel' : ''}" data-ut="${esc(ut.id)}" title="点击应用 · × 删除">🎨 ${esc(ut.name)}<span class="ut-del" title="删除该主题">×</span></button>`).join('');
+    // 动态自定义：在当前主题上逐项调整核心颜色
     const custom = Theme.getCustom ? Theme.getCustom() : { accent: Theme.getAccent ? Theme.getAccent() : '' };
     const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色' } };
     const FALLBACKS = { accent: '#4f8cff', bg: '#1e1e1e', bgPanel: '#191919', bgHover: '#2a2a2a', bgSelected: '#2d4f6b', border: '#101010', text: '#b8b8b8', textBright: '#e4e4e4' };
@@ -207,23 +212,55 @@ const Settings = (() => {
           <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
           <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
         </div>
+        ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
       </div>
       <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
-        <label class="m-label">动态自定义（叠加在当前主题上，改哪项哪项生效）</label>
+        <label class="m-label">动态自定义（当前主题上直接调色，改哪项哪项生效）</label>
         ${colorRows}
         <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="tb-btn m-ok" id="ut-save">💾 保存为自定义主题</button>
           <button class="tb-btn" id="custom-theme-reset-all">全部恢复主题默认</button>
         </div>
-        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">选色立即生效并保存，重启后保持；切换预设主题后自定义项继续叠加</div>
+        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">调色立即生效并保存；「保存为自定义主题」后可在上方卡片中应用或删除</div>
       </div>`;
-    $all('.theme-opt').forEach((b) => {
+    // 内置主题：点击应用并重绘（用户主题卡片高亮同步）
+    $all('.theme-opt:not(.ut)').forEach((b) => {
       b.onclick = () => {
         Theme.set(b.dataset.th);
-        $all('.theme-opt').forEach((x) => x.classList.remove('sel'));
-        b.classList.add('sel');
+        renderTheme();
         MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
       };
     });
+    // 用户主题：点击应用 / × 删除
+    $all('.theme-opt.ut').forEach((b) => {
+      b.onclick = () => {
+        Theme.set('user:' + b.dataset.ut);
+        renderTheme();
+        MI.toast('已切换为「' + Theme.name('user:' + b.dataset.ut) + '」主题', 'ok');
+      };
+      const del = b.querySelector('.ut-del');
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        const nm = Theme.name('user:' + b.dataset.ut);
+        const yes = await Modal.confirm('删除主题', '确定删除自定义主题「' + nm + '」吗？');
+        if (!yes) return;
+        Theme.removeUserTheme(b.dataset.ut);
+        renderTheme();
+        MI.toast('已删除「' + nm + '」', 'ok');
+      };
+    });
+    // 保存为自定义主题（快照当前 base + 配色）
+    const saveBtn = document.getElementById('ut-save');
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const nm = await Modal.prompt('保存为自定义主题', '主题名称：', '我的主题');
+        if (!nm || !nm.trim()) return;
+        const id = Theme.addUserTheme(nm.trim());
+        Theme.set('user:' + id);
+        renderTheme();
+        MI.toast('已保存自定义主题「' + nm.trim() + '」', 'ok');
+      };
+    }
     // 逐项调色：input 即时生效；× 恢复该项预设
     $all('.custom-theme-row').forEach((row) => {
       const key = row.dataset.field;

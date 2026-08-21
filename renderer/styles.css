@@ -607,6 +607,11 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 }
 .sb-font button:hover { color: var(--text-bright); border-color: var(--accent); }
 .sb-font #sb-font-val { min-width: 18px; text-align: center; cursor: default; }
+/* 状态栏背景透明度滑条（右下角，设置背景图后显示） */
+#sb-bgop { display: none; align-items: center; margin-right: 2px; flex-shrink: 0; }
+body.has-bg #sb-bgop { display: inline-flex; }
+body.has-bg #sb-version { margin-left: 8px; }
+#sb-bgop input[type="range"] { width: 90px; height: 12px; cursor: pointer; accent-color: var(--accent); }
 body { display: flex; flex-direction: column; }
 
 /* ---------- 背景图（外观设置） ---------- */
@@ -741,6 +746,15 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 }
 .theme-opt:hover { border-color: var(--accent); }
 .theme-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
+/* 用户自定义主题卡片（可删除） */
+.theme-options.user-themes { margin-top: 8px; flex-wrap: wrap; }
+.theme-opt.ut { flex: 1 1 calc(50% - 6px); padding: 9px 0; position: relative; }
+.theme-opt .ut-del {
+  position: absolute; top: -1px; right: -1px; width: 16px; height: 16px; line-height: 14px;
+  font-size: 12px; text-align: center; border-radius: 3px;
+  color: var(--text-dim); cursor: pointer;
+}
+.theme-opt .ut-del:hover { color: #fff; background: var(--red); }
 .bg-fit-opts { display: flex; gap: 8px; }
 .bg-fit-opt {
   flex: 1; padding: 6px 0; font-size: 12px;

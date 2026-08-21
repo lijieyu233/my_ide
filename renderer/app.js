@@ -2,17 +2,21 @@
 const App = (() => {
   let root = null;
 
-  // ---------- Modal ----------
+  // ---------- Modal（面板栈：支持设置页内再弹 confirm/prompt） ----------
   const mask = document.getElementById('modal-mask');
   const Modal = {
+    stack: [],
     show(box) {
       mask.classList.remove('hidden');
-      const old = mask.querySelector(':scope > div');
-      if (old) old.remove();
       box.classList.add('modal-panel');
       mask.appendChild(box);
+      Modal.stack.push(box);
     },
-    hide() { mask.classList.add('hidden'); },
+    hide() {
+      const top = Modal.stack.pop();
+      if (top) top.remove();
+      if (!Modal.stack.length) mask.classList.add('hidden');
+    },
     confirm(title, text) {
       return new Promise((resolve) => {
         const box = document.createElement('div');

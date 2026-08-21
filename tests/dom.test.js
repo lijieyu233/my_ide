@@ -1635,6 +1635,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Bg.set("")'); // 清理，不影响后续测试
   });
 
+  await okAsync('状态栏背景透明度滑条（右下角，设背景图后显示）', async () => {
+    await g(dom, 'Bg.set("' + P + '/pic.png")');
+    await tick();
+    assert_($(dom, 'body').classList.contains('has-bg'), 'has-bg 激活（滑条可见）');
+    const sb = $(dom, '#sb-bgop-range');
+    assert_(sb, '状态栏滑条存在');
+    assert_(sb.value === '15', '初始值同步 15, got: ' + sb.value);
+    await g(dom, 'Bg.setOpacity(0.3)');
+    await tick();
+    assert_(sb.value === '30', '透明度变化同步滑条, got: ' + sb.value);
+    // 滑条拖动 → Bg 生效
+    sb.value = '40';
+    sb.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const bg = JSON.parse(g(dom, 'JSON.stringify(Bg.get())'));
+    assert_(Math.abs(bg.opacity - 0.4) < 0.001, '拖动滑条写入透明度, got: ' + bg.opacity);
+    await g(dom, 'Bg.set("")'); // 清理
+    await tick();
+  });
+
   await okAsync('主题自定义强调色：setAccent 生效 + 空值恢复默认', async () => {
     await g(dom, 'Theme.setAccent("#ff6600")');
     await tick();
@@ -1695,6 +1715,73 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     assert_(dom.window.document.documentElement.style.getPropertyValue('--bg') === '', '全部恢复预设');
     click($(dom, '#set-x')); // 关闭设置
+    await tick();
+  });
+
+  await okAsync('自定义主题 API：保存 / 应用 / 删除', async () => {
+    await g(dom, 'Theme.pick("accent", "#123456")');
+    await g(dom, 'Theme.pick("bg", "#0a0a0a")');
+    const id = g(dom, 'Theme.addUserTheme("测试蓝")');
+    await tick();
+    assert_(id && String(id).indexOf('u') === 0, '返回主题 id: ' + id);
+    // 应用：载入配色快照
+    await g(dom, 'Theme.set("user:' + id + '")');
+    await tick();
+    const st = dom.window.document.documentElement.style;
+    assert_(g(dom, 'Theme.current()') === 'user:' + id, 'current 返回用户主题');
+    assert_(st.getPropertyValue('--accent') === '#123456', '配色快照载入');
+    assert_(st.getPropertyValue('--bg') === '#0a0a0a', '背景快照载入');
+    // 切回内置 → 恢复其默认配色
+    await g(dom, 'Theme.set("dark")');
+    await tick();
+    assert_(st.getPropertyValue('--accent') === '' && st.getPropertyValue('--bg') === '', '内置主题恢复默认配色');
+    // 再切回用户主题 → 快照恢复
+    await g(dom, 'Theme.set("user:' + id + '")');
+    await tick();
+    assert_(st.getPropertyValue('--accent') === '#123456', '重新应用快照恢复');
+    // 删除当前用户主题 → 回退 base
+    await g(dom, 'Theme.removeUserTheme("' + id + '")');
+    await tick();
+    assert_(g(dom, 'Theme.current()') === 'dark', '删除当前主题回退 dark');
+    assert_(st.getPropertyValue('--accent') === '', '配色恢复默认');
+    assert_(JSON.parse(g(dom, 'JSON.stringify(Theme.getUserThemes())')).length === 0, '主题列表已清空');
+  });
+
+  await okAsync('设置页自定义主题管理：保存 / 应用 / 删除', async () => {
+    g(dom, 'Theme.addUserTheme("预设橙")');
+    await tick();
+    key(dom, 'S', { ctrl: true, alt: true });
+    await tick();
+    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
+    await tick();
+    let card = $allIn(dom.window.document, '.theme-opt.ut').find((b) => b.textContent.includes('预设橙'));
+    assert_(card, '用户主题卡片出现');
+    // 点击卡片应用
+    click(card);
+    await tick();
+    assert_(String(g(dom, 'Theme.current()')).indexOf('user:') === 0, '点击卡片应用用户主题');
+    assert_($allIn(dom.window.document, '.theme-opt.ut').some((b) => b.classList.contains('sel')), '应用后卡片高亮');
+    // 保存为自定义主题（Modal.prompt 流程）
+    click($(dom, '#ut-save'));
+    await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input, '命名弹窗出现');
+    input.value = '我的新主题';
+    click($(dom, '#pf-yes'));
+    await tick(); await tick();
+    const card2 = $allIn(dom.window.document, '.theme-opt.ut').find((b) => b.textContent.includes('我的新主题'));
+    assert_(card2, '新主题卡片出现');
+    // 删除（Modal.confirm 流程）
+    click(card2.querySelector('.ut-del'));
+    await tick();
+    assert_($(dom, '#cf-yes'), '删除确认弹窗出现');
+    click($(dom, '#cf-yes'));
+    await tick(); await tick();
+    assert_(!$allIn(dom.window.document, '.theme-opt.ut').some((b) => b.textContent.includes('我的新主题')), '删除后卡片消失');
+    // 清理 + 关闭
+    g(dom, 'Theme.removeUserTheme(Theme.getUserThemes()[0].id)');
+    await tick();
+    click($(dom, '#set-x'));
     await tick();
   });
 

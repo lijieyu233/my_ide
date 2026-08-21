@@ -1,8 +1,9 @@
-// theme.js —— 主题切换（深色/浅色/粉红/深红）+ UI 动态自定义主题变量 + 背景图，最先加载避免闪烁
+// theme.js —— 主题切换（内置 + 用户自定义主题增删）+ UI 动态调色 + 背景图，最先加载避免闪烁
 const Theme = (() => {
   const KEY = 'myide-theme';
-  const A_KEY = 'myide-accent';        // 旧版单独强调色键（迁移兼容）
-  const C_KEY = 'myide-custom-theme';  // 自定义主题变量 JSON
+  const A_KEY = 'myide-accent';        // 旧版单独强调色键（首次加载迁移后删除）
+  const C_KEY = 'myide-custom-theme';  // 当前覆盖层颜色 JSON（用户主题激活时含其配色）
+  const UT_KEY = 'myide-user-themes';  // 用户自定义主题列表 [{id, name, base, colors}]
   const ORDER = ['dark', 'light', 'pink', 'crimson']; // toggle 循环顺序
   const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红' };
   const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson' };
@@ -19,38 +20,37 @@ const Theme = (() => {
     textBright: { css: '--text-bright', label: '标题亮文字' },
   };
 
-  function apply(t) {
-    for (const k in CLS) document.body.classList.toggle(CLS[k], t === k);
+  let activeId = 'dark'; // 'dark' | 'light' | ... | 'user:<id>'
+  const isUserId = (t) => typeof t === 'string' && t.indexOf('user:') === 0;
+
+  // ---------- 用户自定义主题存储 ----------
+  function userThemes() {
+    try { return JSON.parse(localStorage.getItem(UT_KEY) || '[]') || []; } catch { return []; }
   }
-  function current() {
-    for (const k in CLS) if (document.body.classList.contains(CLS[k])) return k;
-    return 'dark';
+  function saveUserThemes(list) {
+    try { localStorage.setItem(UT_KEY, JSON.stringify(list)); } catch {}
   }
-  function name(t) { return NAMES[t] || t; }
-  function toggle() {
-    const t = ORDER[(ORDER.indexOf(current()) + 1) % ORDER.length];
-    apply(t);
-    try { localStorage.setItem(KEY, t); } catch {}
-    return t;
+  function findUser(id) {
+    return userThemes().find((t) => t && t.id === id) || null;
   }
-  // 显式设置主题（设置页用）
-  function set(theme) {
-    if (!ORDER.includes(theme)) return;
-    apply(theme);
-    try { localStorage.setItem(KEY, theme); } catch {}
+  function baseOf(t) {
+    if (!isUserId(t)) return ORDER.includes(t) ? t : 'dark';
+    const ut = findUser(t.slice(5));
+    return ut && ORDER.includes(ut.base) ? ut.base : 'dark';
+  }
+  function applyBase(b) {
+    for (const k in CLS) document.body.classList.toggle(CLS[k], b === k);
   }
 
-  // ---------- UI 动态自定义主题变量 ----------
+  // ---------- 覆盖层（当前生效的自定义颜色） ----------
   function loadCustom() {
     let c = {};
     try { c = JSON.parse(localStorage.getItem(C_KEY) || '{}') || {}; } catch {}
-    // 旧版 myide-accent 迁移（未写入新键时回退）
-    if (!c.accent) {
-      try {
-        const old = localStorage.getItem(A_KEY);
-        if (old) c.accent = old;
-      } catch {}
-    }
+    // 旧版 myide-accent 一次性迁移（迁移后删旧键，避免清空覆盖层时旧值复活）
+    try {
+      const old = localStorage.getItem(A_KEY);
+      if (old) { if (!c.accent) c.accent = old; localStorage.removeItem(A_KEY); }
+    } catch {}
     return c;
   }
   function saveCustom(c) {
@@ -88,6 +88,58 @@ const Theme = (() => {
   }
   function getFields() { return FIELDS; }
 
+  // ---------- 主题切换 ----------
+  // set：内置主题 → 恢复其默认配色（清空覆盖层）；用户主题 → 载入其配色快照
+  function set(t) {
+    if (isUserId(t)) {
+      const ut = findUser(t.slice(5));
+      if (ut) {
+        activeId = 'user:' + ut.id;
+        applyBase(ut && ORDER.includes(ut.base) ? ut.base : 'dark');
+        saveCustom(ut.colors || {});
+        try { localStorage.setItem(KEY, activeId); } catch {}
+        applyCustom();
+        return activeId;
+      }
+      t = 'dark'; // 主题已被删除 → 回退深色
+    }
+    const b = ORDER.includes(t) ? t : 'dark';
+    activeId = b;
+    applyBase(b);
+    saveCustom({});
+    try { localStorage.setItem(KEY, b); } catch {}
+    applyCustom();
+    return b;
+  }
+  function current() { return activeId; }
+  function name(t) {
+    if (isUserId(t)) { const ut = findUser(t.slice(5)); return ut ? ut.name : '自定义'; }
+    return NAMES[t] || t;
+  }
+  function toggle() {
+    return set(ORDER[(ORDER.indexOf(baseOf(activeId)) + 1) % ORDER.length]);
+  }
+
+  // ---------- 用户主题增删 ----------
+  // 保存当前配色为新主题：快照 base + 覆盖层颜色
+  function addUserTheme(themeName) {
+    const list = userThemes();
+    const id = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const cur = getCustom();
+    const colors = {};
+    for (const k in FIELDS) if (cur[k]) colors[k] = cur[k];
+    list.push({ id, name: String(themeName || '自定义主题').slice(0, 30), base: baseOf(activeId), colors });
+    saveUserThemes(list);
+    return id;
+  }
+  function removeUserTheme(id) {
+    const ut = findUser(id);
+    saveUserThemes(userThemes().filter((t) => t && t.id !== id));
+    // 删的是当前主题 → 回退到它的 base
+    if (activeId === 'user:' + id) set(ut && ORDER.includes(ut.base) ? ut.base : 'dark');
+  }
+  function getUserThemes() { return userThemes().filter((t) => t && t.id); }
+
   // ---------- 兼容旧接口（强调色） ----------
   function setAccent(color) { pick('accent', color); }
   function getAccent() { return getCustom().accent; }
@@ -95,11 +147,22 @@ const Theme = (() => {
   function init() {
     let t = null;
     try { t = localStorage.getItem(KEY); } catch {}
-    if (ORDER.includes(t) && t !== 'dark') apply(t);
+    if (isUserId(t) && findUser(t.slice(5))) {
+      // 用户主题：恢复其 base；颜色保持 C_KEY 现值（可能含选中后的微调）
+      activeId = t;
+      applyBase(baseOf(t));
+    } else {
+      activeId = ORDER.includes(t) ? t : 'dark';
+      applyBase(activeId);
+    }
     applyCustom();
     Bg.init();
   }
-  return { toggle, set, current, name, init, setAccent, getAccent, pick, clearCustom, getCustom, getFields };
+  return {
+    toggle, set, current, name, init,
+    setAccent, getAccent, pick, clearCustom, getCustom, getFields,
+    addUserTheme, removeUserTheme, getUserThemes,
+  };
 })();
 
 // ---------- 背景图（外观设置：本地图片 + 透明度 + 显示方式/位置） ----------
@@ -136,6 +199,14 @@ const Bg = (() => {
       layer.style.backgroundPosition = pos;
       layer.style.display = 'block';
       document.body.classList.add('has-bg');
+      // 同步透明度控件：状态栏右下角滑条 + 设置页滑条
+      const op100 = Math.round(Math.min(0.5, Math.max(0.05, op)) * 100);
+      const sb = document.getElementById('sb-bgop-range');
+      if (sb) sb.value = String(op100);
+      const sv = document.getElementById('bg-op-val');
+      if (sv) sv.textContent = String(op100);
+      const sr = document.getElementById('bg-op-range');
+      if (sr) sr.value = String(op100);
     } else {
       layer.style.display = 'none';
       layer.style.backgroundImage = '';
@@ -172,7 +243,12 @@ const Bg = (() => {
     if (!POS_LIST.includes(pos)) pos = 'center';
     return { path: p, opacity: op, fit, pos };
   }
-  function init() { apply(); }
+  function init() {
+    apply();
+    // 状态栏右下角透明度滑条（设背景图后显示，随 has-bg 切换可见性）
+    const sb = document.getElementById('sb-bgop-range');
+    if (sb) sb.addEventListener('input', () => { setOpacity(parseInt(sb.value, 10) / 100); });
+  }
   return { set, setOpacity, setFit, setPos, get, init };
 })();
 window.Theme = Theme;
