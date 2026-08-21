@@ -12,7 +12,8 @@ window.MdEditor = (() => {
   // ---------- 主题（CSS 变量适配四主题） ----------
   const baseTheme = EditorView.theme({
     '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--editor-text)', fontSize: 'var(--editor-font-size, 13px)' },
-    '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.7', overflow: 'auto', paddingLeft: '28px', paddingRight: '20px' },
+    // 正文用 UI 无衬线字体 —— 与 .md-view 预览同源（Obsidian 编辑态也是 UI 字体，非等宽）
+    '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto', paddingLeft: '28px', paddingRight: '20px' },
     '.cm-content': { padding: '10px 0', caretColor: 'var(--accent)' },
     '&.cm-focused': { outline: 'none' },
     '.cm-gutters': { display: 'none' },
@@ -28,46 +29,76 @@ window.MdEditor = (() => {
     '.cm-searchMatch-selected': { backgroundColor: 'var(--accent)', color: '#fff' },
   });
 
-  // Live Preview 渲染态样式 —— 与 .md-view 预览样式系统性对齐（字号/边框/背景/行距同源）
+  // Live Preview 渲染态样式 —— 与 .md-view 预览逐项同源对齐
+  // 字号取 .md-view 的绝对值（h1 22 / h2 18 / h3 15 / 正文 13px）
   const liveTheme = EditorView.theme({
-    // 标题字号（对齐 .md-view h1 22px / h2 18px / h3 15px，正文 13px）
-    '.cm-md-h1': { fontSize: '1.7em', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.3' },
-    '.cm-md-h2': { fontSize: '1.4em', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.3' },
-    '.cm-md-h3': { fontSize: '1.16em', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
-    '.cm-md-h4': { fontSize: '1.08em', fontWeight: '600', color: 'var(--text-bright)' },
-    '.cm-md-h5': { fontSize: '1em', fontWeight: '600', color: 'var(--text-bright)' },
-    '.cm-md-h6': { fontSize: '1em', fontWeight: '500', color: 'var(--text-dim)' },
-    // 标题行下边框（对齐 .md-view h1/h2 border-bottom）
-    '.cm-line.cm-md-h1-line': { borderBottom: '1px solid var(--border)', paddingBottom: '5px', marginTop: '6px' },
-    '.cm-line.cm-md-h2-line': { borderBottom: '1px solid var(--border)', paddingBottom: '3px', marginTop: '4px' },
-    '.cm-md-strong': { fontWeight: '700' },
+    // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
+    '.cm-md-h1': { fontSize: '22px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.35' },
+    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
+    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.4' },
+    '.cm-md-h4': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h5': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h6': { fontSize: '13px', fontWeight: '500', color: 'var(--text-dim)' },
+    // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
+    '.cm-line.cm-md-h1-line': { paddingTop: '10px', paddingBottom: '5px', borderBottom: '1px solid var(--border)' },
+    '.cm-line.cm-md-h2-line': { paddingTop: '8px', paddingBottom: '3px', borderBottom: '1px solid var(--border)' },
+    '.cm-line.cm-md-h3-line': { paddingTop: '5px' },
+    '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '3px' },
+    // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）
+    '.cm-line.cm-md-blank': { lineHeight: '0.9' },
+    '.cm-md-strong': { fontWeight: '700', color: 'var(--text-bright)' },
     '.cm-md-em': { fontStyle: 'italic' },
     '.cm-md-strike': { textDecoration: 'line-through', color: 'var(--text-dim)' },
     '.cm-md-highlight': { backgroundColor: 'var(--bg-selected)', borderRadius: '2px' },
-    // 行内代码（对齐 .md-view code：btn-bg 背景 + 圆角 + 内边距）
+    // 行内代码（对齐 .md-view code：12px + padding 1px 5px + btn-bg 背景）
     '.cm-md-code': {
       fontFamily: 'var(--font-mono)', backgroundColor: 'var(--btn-bg)', color: 'var(--code-text)',
-      borderRadius: '3px', padding: '0 5px', fontSize: '0.92em',
+      borderRadius: '3px', padding: '1px 5px', fontSize: '12px',
     },
     '.cm-md-link': { color: 'var(--accent)', cursor: 'pointer' },
     '.cm-md-img': { display: 'inline-block', verticalAlign: 'middle' },
     '.cm-md-img img': { maxWidth: '100%', borderRadius: '4px' },
-    // 引用块（对齐 .md-view blockquote：左竖线 + 弱化色）
-    '.cm-line.cm-md-quote-line': { borderLeft: '3px solid var(--accent)', paddingLeft: '12px', color: 'var(--text-dim)' },
-    // 围栏代码块（对齐 .md-view pre：背景块 + 边框 + 圆角）
+    // 列表标记弱化（Obsidian 式：bullet 变暗，内容正常色）
+    '.cm-md-listmark': { color: 'var(--text-dim)' },
+    // task checkbox（对齐 preview 渲染的 input[type=checkbox] 视觉）
+    '.cm-md-task': {
+      display: 'inline-block', width: '13px', height: '13px',
+      border: '1.5px solid var(--text-dim)', borderRadius: '3px',
+      verticalAlign: 'middle', margin: '0 5px 0 1px', position: 'relative',
+    },
+    '.cm-md-task.done': { background: 'var(--accent)', borderColor: 'var(--accent)' },
+    '.cm-md-task.done::after': {
+      content: '""', position: 'absolute', left: '3.5px', top: '0px',
+      width: '4px', height: '8px', border: 'solid #fff', borderWidth: '0 2px 2px 0',
+      transform: 'rotate(45deg)',
+    },
+    // 引用块（对齐 .md-view blockquote：左竖线 + 弱化色 + 上下间距）
+    '.cm-line.cm-md-quote-line': {
+      borderLeft: '3px solid var(--accent)', paddingLeft: '12px',
+      color: 'var(--text-dim)', paddingTop: '2px', paddingBottom: '2px',
+    },
+    '.cm-line.cm-md-quote-first': { paddingTop: '8px' },
+    '.cm-line.cm-md-quote-last': { paddingBottom: '8px' },
+    // 围栏代码块（对齐 .md-view pre：背景块 + 圆角 6 + padding 12 + 12.5px/1.6）
     '.cm-line.cm-md-fence-line': {
       backgroundColor: 'var(--code-bg)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-      fontFamily: 'var(--font-mono)', fontSize: '0.95em', padding: '0 12px',
+      fontFamily: 'var(--font-mono)', fontSize: '12.5px', lineHeight: '1.6', padding: '1px 12px',
     },
-    '.cm-line.cm-md-fence-first': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px', paddingTop: '6px', marginTop: '4px' },
-    '.cm-line.cm-md-fence-last': { borderBottom: '1px solid var(--border)', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', paddingBottom: '6px', marginBottom: '4px' },
-    // 分隔线 widget（对齐 .md-view hr）
-    '.cm-md-hr': { borderTop: '1px solid var(--border)', margin: '8px 0' },
-    // 表格 widget（对齐 .md-view table）
-    '.cm-md-table-wrap': { padding: '4px 0', overflowX: 'auto' },
-    '.cm-md-table': { borderCollapse: 'collapse' },
-    '.cm-md-table th, .cm-md-table td': { border: '1px solid var(--border-mid)', padding: '4px 10px', fontSize: '0.95em' },
-    '.cm-md-table th': { background: 'var(--bg-panel)', color: 'var(--text-bright)' },
+    '.cm-line.cm-md-fence-first': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px', paddingTop: '12px', marginTop: '6px' },
+    '.cm-line.cm-md-fence-last': { borderBottom: '1px solid var(--border)', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', paddingBottom: '12px', marginBottom: '6px' },
+    // 围栏行（```js）：文本已隐藏，行高压到 0 —— 代码块背景从内容首行开始（Obsidian 式）
+    '.cm-line.cm-md-fence-hidden': { lineHeight: '0px', fontSize: '0px', paddingTop: '0', paddingBottom: '0' },
+    // 分隔线 ---：隐藏文本，行 border-top 画线（对齐 .md-view hr 的间距感）
+    '.cm-line.cm-md-hr-line': { borderTop: '1px solid var(--border-mid)', lineHeight: '0px', fontSize: '0px', marginTop: '9px', marginBottom: '9px' },
+    // 表格逐行线框（Obsidian 式：不整块 widget，光标可直接进任意行编辑）
+    '.cm-line.cm-md-tr': {
+      borderLeft: '1px solid var(--border-mid)', borderRight: '1px solid var(--border-mid)',
+      paddingLeft: '10px', paddingRight: '10px', paddingTop: '3px', paddingBottom: '3px',
+    },
+    '.cm-line.cm-md-tr-head': { borderTop: '1px solid var(--border-mid)', background: 'var(--bg-panel)', color: 'var(--text-bright)', fontWeight: '600', marginTop: '4px' },
+    '.cm-line.cm-md-tr-last': { borderBottom: '1px solid var(--border-mid)', marginBottom: '6px' },
+    '.cm-line.cm-md-tr-sep': { lineHeight: '0px', fontSize: '0px', paddingTop: '0', paddingBottom: '0' },
+    '.cm-md-pipe': { color: 'var(--text-dim)' },
   });
 
   // ---------- 图片 widget：![alt](src) → 内联 <img> ----------
@@ -87,43 +118,21 @@ window.MdEditor = (() => {
     ignoreEvent() { return false; }
   }
 
-  // ---------- 分隔线 widget：--- → 一条线（对齐 .md-view hr） ----------
-  class HrWidget extends WidgetType {
-    eq() { return true; }
-    toDOM() { const d = document.createElement('div'); d.className = 'cm-md-hr'; return d; }
-  }
+  // ---------- 分隔线 / 围栏隐藏 / 表格：不用 block widget ----------
+  // block replace 会吞掉换行符：紧邻行的 line 装饰失效、紧跟的空行整个消失
+  // （块后间距塌陷 + 行号错位）。改为「普通 replace 隐藏文本 + line 类画样式」，
+  // 所有行边界保留 —— 与 Obsidian 的实现思路一致。
 
-  // ---------- 隐藏整行 widget（围栏 ``` 行隐藏，代码块更像渲染态） ----------
-  class HideLineWidget extends WidgetType {
-    eq() { return true; }
-    toDOM() { const d = document.createElement('div'); d.style.display = 'none'; return d; }
-  }
-
-  // ---------- 表格 widget：| a | b | → 渲染表格（对齐 .md-view table） ----------
-  class TableWidget extends WidgetType {
-    constructor(src) { super(); this.src = src; }
-    eq(other) { return other.src === this.src; }
+  // ---------- task checkbox widget：- [ ] / - [x] → 勾选框 ----------
+  class TaskWidget extends WidgetType {
+    constructor(done) { super(); this.done = done; }
+    eq(other) { return other.done === this.done; }
     toDOM() {
-      const wrap = document.createElement('div');
-      wrap.className = 'cm-md-table-wrap';
-      const table = document.createElement('table');
-      table.className = 'cm-md-table';
-      // 过滤分隔行（| --- | --- |）
-      const rows = this.src.split('\n').map((s) => s.trim()).filter((l) => l && !/^[\s|:\-]+$/.test(l));
-      rows.forEach((line, idx) => {
-        const tr = document.createElement('tr');
-        const cells = line.replace(/^\|/, '').replace(/\|$/, '').split('|');
-        for (const c of cells) {
-          const el = document.createElement(idx === 0 ? 'th' : 'td');
-          el.textContent = c.trim();
-          tr.appendChild(el);
-        }
-        table.appendChild(tr);
-      });
-      wrap.appendChild(table);
-      return wrap;
+      const d = document.createElement('span');
+      d.className = 'cm-md-task' + (this.done ? ' done' : '');
+      return d;
     }
-    ignoreEvent() { return false; } // 点击表格 → CM 定位光标进表内显示源码
+    ignoreEvent() { return false; }
   }
 
   // 相对路径 → file:///（以笔记所在目录为基准）
@@ -135,78 +144,77 @@ window.MdEditor = (() => {
 
   // ---------- Live Preview decoration 构建 ----------
   // 规则：光标行不装饰（显示源码）；其余行隐藏标记 + 内容加渲染样式
-  // 块级元素（代码块/表格/分隔线）光标不在块内时整体渲染，与 preview 视觉对齐。
-  // 注意：block 装饰（block: true 的 replace）不能由 ViewPlugin 提供（CM6 限制），
-  // 必须走 StateField + EditorView.decorations facet → 拆分为两套构建。
+  // 块级元素（代码块/表格/分隔线）全部用「普通 replace + line 类」渲染 ——
+  // 不用 block widget（吞换行符会导致：相邻行 line 装饰失效、紧跟空行消失、
+  // 行号错位）。单一 ViewPlugin 提供全部装饰，无需 StateField 双轨。
 
-  // 块级装饰（StateField 用，只依赖 state，处理整个文档）
-  function buildBlockDecorations(state) {
-    const decos = [];
-    const cursor = state.selection.main.head;
-    const doc = state.doc;
-    try {
-      Language.syntaxTree(state).iterate({
-        from: 0, to: doc.length,
-        enter: (node) => {
-          const name = node.name;
-          try {
-            // 分隔线 ---：整行替换为一条线
-            if (name === 'HorizontalRule' && !(cursor >= doc.lineAt(node.from).from && cursor <= doc.lineAt(node.from).to)) {
-              const l = doc.lineAt(node.from);
-              const end = l.to < doc.length ? l.to + 1 : l.to;
-              decos.push(Decoration.replace({ widget: new HrWidget(), block: true }).range(l.from, end));
-              return;
-            }
-            // 围栏代码块：``` 行隐藏 + 内容行背景块（行级样式走内联装饰）
-            if (name === 'FencedCode' && !(cursor > node.from && cursor < node.to)) {
-              const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              for (let n = first.number; n <= last.number; n++) {
-                const l = doc.line(n);
-                if (/^\s*(```|~~~)/.test(l.text)) {
-                  const end = l.to < doc.length ? l.to + 1 : l.to;
-                  decos.push(Decoration.replace({ widget: new HideLineWidget(), block: true }).range(l.from, end));
-                }
-              }
-              return;
-            }
-            // 表格：整块替换为渲染表格
-            if (name === 'Table' && !(cursor > node.from && cursor < node.to)) {
-              const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              const end = last.to < doc.length ? last.to + 1 : last.to;
-              decos.push(Decoration.replace({ widget: new TableWidget(doc.sliceString(node.from, node.to)), block: true }).range(first.from, end));
-              return;
-            }
-          } catch (e) { /* 单节点失败不影响整体 */ }
-        },
-      });
-    } catch (e) { /* 装饰构建失败不影响编辑 */ }
-    return Decoration.set(decos, true);
-  }
-
-  // 内联装饰（ViewPlugin 用，依赖 visibleRanges 优化可视区）
+  // 内联装饰（ViewPlugin 用）
+  // Obsidian 核心行为：光标行保留渲染样式、只显示源码标记；
+  // 非光标行隐藏标记。因此「样式 mark / 行类」对所有行生效，
+  // 「标记隐藏 / URL 隐藏 / 图片 widget / task checkbox / 空行压缩」仅非光标行。
   function buildDecorations(view) {
     // 先序遍历会先 add 父节点内部范围、再 add 子节点标记 → 直接用 RangeSetBuilder
     // 会因乱序抛 "Ranges must be added sorted"（异常被吞 → 装饰丢失，live 预览退化为源码）。
     // 改为数组收集 + Decoration.set(…, true) 统一排序。
     const decos = [];
-    const cursor = view.state.selection.main.head;
     const doc = view.state.doc;
-    const cursorLine = doc.lineAt(cursor);
+    // 活动行 = 选区覆盖的行（head 或 anchor 所在行都算）——
+    // 拖选多行时整段显示源码，与 Obsidian 行为一致。
+    const sel = view.state.selection.main;
+    const selFrom = Math.min(sel.from, sel.to), selTo = Math.max(sel.from, sel.to);
+    const selFromLine = doc.lineAt(selFrom), selToLine = doc.lineAt(selTo);
 
     const onCursorLine = (pos) => {
       const l = doc.lineAt(pos);
-      return cursorLine.from <= l.to && cursorLine.to >= l.from; // 光标行 = 节点行
-    };
-    const inTable = (n) => {
-      for (let p = n.node.parent; p; p = p.parent) if (p.name === 'Table') return true;
-      return false;
+      return !(l.to < selFromLine.from || l.from > selToLine.to); // 节点行与选区行相交
     };
 
-    // jsdom 等无布局环境：visibleRanges 缺失时回退全文档范围
-    const ranges = (view.visibleRanges && view.visibleRanges.length)
-      ? view.visibleRanges
-      : [{ from: 0, to: doc.length }];
-    for (const { from, to } of ranges) {
+    // 确保语法树解析到文档末尾（CM6 分片解析是异步的：初始/滚动后未解析区域的
+    // 装饰会缺失 → live 预览局部退化成源码）。给 30ms 预算：小文档同步补全，
+    // 大文档解析推进后 CM6 会再触发 update 刷新装饰。
+    try { Language.ensureSyntaxTree(view.state, doc.length, 30); } catch {}
+    // 装饰不依赖 visibleRanges（viewport）：全文档遍历（树已解析时遍历成本极低），
+    // 滚动零重建、视口外装饰常驻 —— 消除滚动时的"源码闪烁"。
+    // 先收集围栏代码块范围：块内空行不压缩（保持背景连续）、块内 "- " 不是列表
+    const fenceRanges = [];
+    try {
+      Language.syntaxTree(view.state).iterate({
+        from: 0, to: doc.length,
+        enter: (node) => {
+          if (node.name === 'FencedCode') { fenceRanges.push([node.from, node.to]); return false; }
+        },
+      });
+    } catch {}
+    const inFence = (pos) => fenceRanges.some(([a, b]) => pos >= a && pos <= b);
+    {
+      const from = 0, to = doc.length;
+      // ---- 行级预处理：空行压缩 / task checkbox / 列表标记弱化（不依赖语法树） ----
+      let pos = from;
+      while (pos < to) {
+        const l = doc.lineAt(pos);
+        const isCur = onCursorLine(l.from);
+        if (!isCur && !inFence(l.from)) {
+          if (!l.text.trim()) {
+            decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
+          } else {
+            const m = /^(\s*)([-*+]|\d+\.)( +)/.exec(l.text);
+            if (m) {
+              // bullet 弱化（非光标行）
+              const bFrom = l.from + m[1].length;
+              decos.push(Decoration.mark({ class: 'cm-md-listmark' }).range(bFrom, bFrom + m[2].length));
+              // task checkbox：- [ ] / - [x] → 勾选框（连尾随空格一起替换，避免渲染态双空格）
+              const t = /^(\s*)([-*+]|\d+\.)( +)\[( |x|X)\]( |$)/.exec(l.text);
+              if (t) {
+                const cbFrom = l.from + t[1].length + t[2].length + t[3].length;
+                const cbTo = cbFrom + 3 + (t[5] === ' ' ? 1 : 0);
+                decos.push(Decoration.replace({ widget: new TaskWidget(t[4] !== ' ') }).range(cbFrom, cbTo));
+              }
+            }
+          }
+        }
+        pos = l.to + 1;
+      }
+
       Language.syntaxTree(view.state).iterate({
         from, to,
         enter: (node) => {
@@ -214,13 +222,21 @@ window.MdEditor = (() => {
           const parent = node.node.parent;
           const parentName = parent ? parent.name : '';
           try {
-            // ---- 块级行样式（block replace 已由 StateField 处理，这里只加行级类） ----
-            // 围栏代码块内容行：背景块 + 首尾圆角
-            if (name === 'FencedCode' && !(cursor > node.from && cursor < node.to)) {
+            // ---- 块级元素（全部行级渲染，无 block widget） ----
+            // 围栏代码块：围栏行隐藏+压缩（非光标行），内容行背景块（所有行）
+            if (name === 'FencedCode') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
-                if (!/^\s*(```|~~~)/.test(l.text)) decos.push(Decoration.line({ class: 'cm-md-fence-line' }).range(l.from));
+                if (/^\s*(```|~~~)/.test(l.text)) {
+                  // 围栏行：普通 replace 隐藏文本 + line 类压到 0 高（不吞换行）
+                  if (!onCursorLine(l.from)) {
+                    decos.push(Decoration.replace({}).range(l.from, l.to));
+                    decos.push(Decoration.line({ class: 'cm-md-fence-hidden' }).range(l.from));
+                  }
+                } else {
+                  decos.push(Decoration.line({ class: 'cm-md-fence-line' }).range(l.from));
+                }
               }
               for (let n = first.number + 1; n < last.number; n++) {
                 if (/^\s*(```|~~~)/.test(doc.line(n).text)) continue;
@@ -234,13 +250,48 @@ window.MdEditor = (() => {
               }
               return;
             }
-            // 引用块：行级左竖线（对齐 .md-view blockquote）
+            // 分隔线 ---：隐藏文本 + 行 border-top 画线（非光标行）
+            if (name === 'HorizontalRule') {
+              const l = doc.lineAt(node.from);
+              if (!onCursorLine(l.from)) {
+                decos.push(Decoration.replace({}).range(l.from, l.to));
+                decos.push(Decoration.line({ class: 'cm-md-hr-line' }).range(l.from));
+              }
+              return;
+            }
+            // 表格：逐行线框渲染（Obsidian 做法 —— 不整块 widget 化）。
+            // 表头行背景+上边框、数据行侧边框、末行下边框、分隔行隐藏压缩、| 弱化。
+            if (name === 'Table') {
+              const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
+              for (let n = first.number; n <= last.number; n++) {
+                const l = doc.line(n);
+                if (onCursorLine(l.from)) continue; // 光标行显示源码
+                if (/^[\s|:\-]+$/.test(l.text)) {
+                  // 分隔行 | --- | --- |：隐藏 + 压缩
+                  decos.push(Decoration.replace({}).range(l.from, l.to));
+                  decos.push(Decoration.line({ class: 'cm-md-tr-sep' }).range(l.from));
+                } else {
+                  let cls = 'cm-md-tr';
+                  if (n === first.number) cls += ' cm-md-tr-head';
+                  if (n === last.number) cls += ' cm-md-tr-last';
+                  decos.push(Decoration.line({ class: cls }).range(l.from));
+                  // | 分隔符弱化
+                  for (let i = 0; i < l.text.length; i++) {
+                    if (l.text[i] === '|') decos.push(Decoration.mark({ class: 'cm-md-pipe' }).range(l.from + i, l.from + i + 1));
+                  }
+                }
+              }
+              return;
+            }
+            // 引用块：行级左竖线（光标行也保留竖线 —— Obsidian 行为）
             if (name === 'Blockquote') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
-                if (!onCursorLine(l.from)) decos.push(Decoration.line({ class: 'cm-md-quote-line' }).range(l.from));
+                decos.push(Decoration.line({ class: 'cm-md-quote-line' }).range(l.from));
               }
+              decos.push(Decoration.line({ class: 'cm-md-quote-first' }).range(first.from));
+              decos.push(Decoration.line({ class: 'cm-md-quote-last' }).range(last.from));
               return;
             }
             // 图片：整块替换为 img widget（光标不在行内时）
@@ -254,15 +305,22 @@ window.MdEditor = (() => {
                 return;
               }
             }
-            // 标记隐藏：HeaderMark(#)/EmphasisMark(** * ~~ ==)/CodeMark(` 围栏)/LinkMark([]())
-            if (/^(HeaderMark|EmphasisMark|CodeMark|LinkMark|QuoteMark|ListMark)$/.test(name) && !onCursorLine(node.from)) {
-              // 围栏代码块内的 CodeMark：块级渲染已隐藏整行，跳过
+            // 标记隐藏：HeaderMark(#)/EmphasisMark(** *)/StrikethroughMark(~~)/
+            // CodeMark(` 围栏)/LinkMark([]())/QuoteMark(>)。
+            // 仅非光标行隐藏（光标行显示源码标记）。
+            // 注意：lezer-markdown 中删除线标记节点名是 StrikethroughMark（非 EmphasisMark）。
+            if (/^(HeaderMark|EmphasisMark|StrikethroughMark|CodeMark|LinkMark|QuoteMark)$/.test(name) && !onCursorLine(node.from)) {
+              // 围栏代码块内的 CodeMark：围栏行已被整行 replace 隐藏，跳过（防嵌套 replace 冲突）
               if (name === 'CodeMark' && parentName === 'FencedCode') return;
-              // 列表标记保留可见（弱化由样式处理），不隐藏
-              if (name === 'ListMark') return;
               const text = doc.sliceString(node.from, node.to);
               if (!text.trim()) return; // 空白不处理
-              decos.push(Decoration.replace({}).range(node.from, node.to));
+              // 标题/引用标记：连同后面的空格一起隐藏 ——
+              // 否则渲染态残留前导空格（" 标题"/" 引用"），视觉多一层缩进
+              let hideEnd = node.to;
+              if (name === 'HeaderMark' || name === 'QuoteMark') {
+                if (doc.sliceString(hideEnd, hideEnd + 1) === ' ') hideEnd += 1;
+              }
+              decos.push(Decoration.replace({}).range(node.from, hideEnd));
               return;
             }
             // 链接目标 URL（Link 的 (url) 部分）：光标不在行内时隐藏
@@ -271,7 +329,8 @@ window.MdEditor = (() => {
               return;
             }
             // 内容样式：标题/加粗/斜体/删除线/行内代码/链接文字
-            if (!onCursorLine(node.from) && !inTable(node)) {
+            // 所有行生效（光标行保留样式 —— Obsidian 行为）
+            {
               if (/^ATXHeading[1-6]$/.test(name)) {
                 const h = name.slice(-1);
                 let start = node.from;
@@ -279,8 +338,8 @@ window.MdEditor = (() => {
                 const first = node.node.firstChild;
                 if (first && first.name === 'HeaderMark') start = first.to;
                 if (start < node.to) decos.push(Decoration.mark({ class: 'cm-md-h' + h }).range(start, node.to));
-                // 标题行下边框（h1/h2）
-                if (h === '1' || h === '2') decos.push(Decoration.line({ class: 'cm-md-h' + h + '-line' }).range(doc.lineAt(node.from).from));
+                // 标题行高 + 边框（h1/h2 有下边框）
+                decos.push(Decoration.line({ class: 'cm-md-h' + h + '-line' }).range(doc.lineAt(node.from).from));
               } else if (name === 'StrongEmphasis' || name === 'Emphasis') {
                 const cls = name === 'StrongEmphasis' ? 'cm-md-strong' : 'cm-md-em';
                 let start = node.from, end = node.to;
@@ -289,7 +348,12 @@ window.MdEditor = (() => {
                 if (l && l.name === 'EmphasisMark' && l.from > start) end = l.from;
                 if (start < end) decos.push(Decoration.mark({ class: cls }).range(start, end));
               } else if (name === 'Strikethrough') {
-                decos.push(Decoration.mark({ class: 'cm-md-strike' }).range(node.from, node.to));
+                // mark 只覆盖内容（跳过首尾 ~~ 标记）—— 光标行标记可见时样式不覆盖标记
+                let start = node.from, end = node.to;
+                const f = node.node.firstChild, l = node.node.lastChild;
+                if (f && f.name === 'StrikethroughMark') start = f.to;
+                if (l && l.name === 'StrikethroughMark' && l.from > start) end = l.from;
+                if (start < end) decos.push(Decoration.mark({ class: 'cm-md-strike' }).range(start, end));
               } else if (name === 'InlineCode') {
                 decos.push(Decoration.mark({ class: 'cm-md-code' }).range(node.from, node.to));
               } else if (name === 'Link' && parentName !== 'Image') {
@@ -305,7 +369,11 @@ window.MdEditor = (() => {
 
   const livePlugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = buildDecorations(view); }
-    update(u) { this.decorations = buildDecorations(u); }
+    update(u) {
+      // 只在影响装饰的变化时重建（文档/选区/视口）——
+      // 无条件重建会让每次 measure 都全文档扫描，大文件输入卡顿
+      if (u.docChanged || u.selectionSet || u.viewportChanged) this.decorations = buildDecorations(u);
+    }
   }, {
     decorations: (v) => v.decorations,
     eventHandlers: {
@@ -330,16 +398,6 @@ window.MdEditor = (() => {
         }
         return false;
       },
-    },
-  });
-
-  // ---------- 块级装饰 StateField（block 装饰必须走 facet，不能走 plugin） ----------
-  const blockDecoField = State.StateField.define({
-    create(state) { return buildBlockDecorations(state); },
-    update(value, tr) {
-      // 文档或选择变化时重建（光标进/出块需要切换渲染态）
-      if (tr.docChanged || tr.selection) return buildBlockDecorations(tr.state);
-      return value.map(tr.changes);
     },
   });
 
@@ -447,7 +505,6 @@ window.MdEditor = (() => {
       Md.markdown({ base: Md.markdownLanguage }),
       baseTheme,
       liveTheme,
-      blockDecoField, // 块级装饰 field 始终注册（facet 提供者按 live 开关挂载）
       keymap.of([
         ...Autocomplete.closeBracketsKeymap,
         ...Commands.defaultKeymap,
@@ -474,8 +531,8 @@ window.MdEditor = (() => {
   function create(opts) {
     const parent = opts.parent;
     const liveOn = opts.live !== false;
-    // live 开启时的扩展集：内联装饰 plugin + 块级装饰 facet（field 本体在 baseExtensions 注册）
-    const liveExts = [livePlugin, EditorView.decorations.from(blockDecoField)];
+    // live 开启时的扩展集：单一 ViewPlugin 提供全部装饰（行级渲染，无 block widget）
+    const liveExts = [livePlugin];
     // 支持复用旧 EditorState（标签/模式切换时保留撤销历史）
     const state = opts.state || EditorState.create({
       doc: opts.doc || '',

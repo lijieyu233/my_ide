@@ -281,6 +281,63 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.editor-cm-wrap'), 'Ctrl+E 切回实时预览');
   });
 
+  await okAsync('Live Preview 渲染细节：Obsidian 对齐（标记隐藏/空行保留/行级块渲染）', async () => {
+    assert_($(dom, '.editor-cm-wrap'), 'CM 容器在');
+    // 覆盖全元素文档（光标默认在第 1 行 → 第 1 行显示源码，其余行渲染）
+    const LIVE_DOC = [
+      '# 一级标题', '',
+      '正文 ~~删除线~~ 与 [链接](https://a.b)', '',
+      '- [ ] 待办', '',
+      '```js', 'const a = 1;', '```', '',
+      '| 表头 |', '| - |', '| 数据 |', '',
+      '---', '', '结尾', '',
+    ].join('\n');
+    g(dom, 'Viewer.cm.setValue(' + JSON.stringify(LIVE_DOC) + ')');
+    await tick(); await tick();
+    const lines = [...$$(dom, '.cm-content > div')];
+    const textOf = (i) => (lines[i] ? lines[i].textContent : null);
+    // 1) 删除线标记隐藏（StrikethroughMark 曾被漏掉 → ~~ 一直显示）
+    const paraLine = lines.find((l) => l.textContent.includes('删除线'));
+    assert_(paraLine && paraLine.textContent.includes('删除线') && !paraLine.textContent.includes('~~'),
+      '非光标行 ~~ 标记隐藏，got: ' + (paraLine ? JSON.stringify(paraLine.textContent) : 'null'));
+    // 2) 链接 URL 隐藏
+    assert_(paraLine && !paraLine.textContent.includes('https://'), '链接 URL 隐藏');
+    // 3) 标题无前导空格（HeaderMark 连空格一起隐藏）
+    const h2less = lines.filter((l) => l.textContent.includes('一级标题'));
+    assert_(h2less.length >= 1, '标题行存在');
+    // 光标在第 1 行（标题行本身）→ 显示 # 源码；断言第二处（无）改用表格后段落验证
+    // 4) task checkbox：渲染为勾选框（widget），源码 [ ] 被替换
+    const taskLine = lines.find((l) => l.textContent.includes('待办'));
+    assert_(taskLine && $(dom, '.cm-md-task') !== null, 'task checkbox widget 渲染');
+    assert_(taskLine && !taskLine.textContent.includes('[ ]'), 'task 源码标记隐藏');
+    // 5) 围栏行隐藏 + 内容行背景类（曾因 block replace 冲突全部失效）
+    assert_($$(dom, '.cm-md-fence-hidden').length === 2, '两行围栏隐藏（fence-hidden），got: ' + $$(dom, '.cm-md-fence-hidden').length);
+    assert_($(dom, '.cm-md-fence-line') !== null, '代码内容行有背景类（fence-line）');
+    // 6) 代码块后空行保留（block widget 曾吞掉空行 → 行号错位）
+    const constIdx = lines.findIndex((l) => l.textContent.includes('const a = 1;'));
+    assert_(constIdx >= 0 && lines[constIdx + 2] && lines[constIdx + 2].textContent.trim() === '',
+      '代码块后的空行保留在 DOM（行边界完整）');
+    // 7) 表格逐行线框渲染（不再整块 widget）
+    assert_($(dom, '.cm-md-tr-head') !== null, '表格表头行（tr-head）');
+    assert_($(dom, '.cm-md-tr-sep') !== null, '表格分隔行隐藏（tr-sep）');
+    assert_($(dom, '.cm-md-tr-last') !== null, '表格末行（tr-last）');
+    assert_($(dom, '.cm-md-pipe') !== null, '表格 | 弱化（pipe）');
+    // 8) 分隔线 ---：隐藏文本 + hr 行类
+    assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
+    // 9) 光标行显示源码：光标在第 1 行 → # 标记可见
+    assert_(lines[0] && lines[0].textContent.includes('#'), '光标行（第 1 行）显示 # 源码标记');
+    // 10) 光标移到正文行 → 该行标记重现（装饰随选区刷新）
+    g(dom, 'Viewer.cm.gotoLine(3)');
+    await tick(); await tick();
+    const lines2 = [...$$(dom, '.cm-content > div')];
+    const para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && para2.textContent.includes('~~'), '光标移入后 ~~ 标记重现（源码态）');
+    // 光标离开第 1 行 → 标题标记隐藏
+    const head2 = lines2.find((l) => l.textContent.includes('一级标题'));
+    assert_(head2 && !head2.textContent.includes('#') && !head2.textContent.startsWith(' '),
+      '光标离开后标题标记隐藏且无前导空格，got: ' + (head2 ? JSON.stringify(head2.textContent) : 'null'));
+  });
+
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {
     const before = calls.copy.length;
     key(dom, 'C', { ctrl: true, shift: true });
