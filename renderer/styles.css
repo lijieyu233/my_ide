@@ -57,7 +57,7 @@ body {
   -webkit-app-region: drag;
   user-select: none;
 }
-#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .win-btns,
+#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .proj-all, #toolbar .win-btns,
 #toolbar #project-bar, #toolbar input, #toolbar label { -webkit-app-region: no-drag; }
 .win-btns { display: flex; gap: 2px; margin-left: 4px; flex-shrink: 0; }
 .win-btns .tb-btn { padding: 2px 9px; line-height: 1.3; }

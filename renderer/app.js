@@ -168,7 +168,11 @@ const App = (() => {
   let projDragPath = null; // 项目栏拖拽排序：dragstart 记录（dragover 中 getData 不可用）
 
   function loadProjects() {
-    try { projects = JSON.parse(localStorage.getItem('myide-projects') || '[]'); } catch { projects = []; }
+    // 防御：历史 bug 曾把 {path:{path:...}} 嵌套对象写入存储，坏条目直接剔除
+    try {
+      projects = JSON.parse(localStorage.getItem('myide-projects') || '[]')
+        .filter((x) => x && typeof x.path === 'string' && x.path);
+    } catch { projects = []; }
   }
   function saveProjects() {
     try { localStorage.setItem('myide-projects', JSON.stringify(projects)); } catch {}
@@ -273,7 +277,9 @@ const App = (() => {
         // 关闭的是当前项目 → 切到剩余项目；一个不剩 → 清空目录树回到空状态
         if (pr.path === root) {
           const next = projects[0];
-          if (next) { openProject(next); return; }
+          // ⚠ next 是 {path} 对象：必须传 next.path。曾传对象 → root 变对象
+          // → renderProjectBar 的 root.split() 抛异常（innerHTML 已清空）→ 项目栏全消失
+          if (next) { openProject(next.path); return; }
           root = null;
           MI.activeRoot = null;
           Viewer.saveAllDirty().then(() => {
@@ -293,7 +299,30 @@ const App = (() => {
       x.onclick = (e) => { e.stopPropagation(); doRemove(); };
       btn.appendChild(x);
       btn.onclick = () => openProject(pr.path);
-      btn.oncontextmenu = (e) => { e.preventDefault(); doRemove(); };
+      // 右键弹菜单（不再是直接关闭——误触右键曾把项目一个个删光）
+      btn.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        const mk = (label, fn, danger) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (danger ? ' danger' : '');
+          d.textContent = label;
+          d.onclick = () => { menu.classList.add('hidden'); fn(); };
+          menu.appendChild(d);
+        };
+        if (pr.path !== root) mk('📂 打开此项目', () => openProject(pr.path));
+        mk('📋 复制完整路径', () => {
+          navigator.clipboard.writeText(pr.path).then(() => MI.toast('路径已复制', 'ok'));
+        });
+        mk('🗂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(pr.path));
+        mk('✕ 关闭项目' + (pr.path === root ? '（当前）' : ''), () => doRemove(), true);
+        menu.classList.remove('hidden');
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+        menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+      };
       // 拖拽排序（PyCharm 项目栏习惯；dragover 中 getData 恒为空 → 用模块级变量记录源）
       btn.addEventListener('dragstart', (e) => {
         projDragPath = pr.path;

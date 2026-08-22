@@ -977,13 +977,41 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(tabs.includes('other.md'), '项目二恢复自己的标签: ' + JSON.stringify(tabs));
   });
 
-  await okAsync('多项目：右键移除项目（免确认直接移除）', async () => {
-    const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P);
+  await okAsync('多项目：右键弹菜单关闭项目（右键不误删 + 其余保留）', async () => {
+    // 当前是项目二：右键项目二按钮 → 应弹菜单而非直接移除（旧实现右键即删，误触把项目删光）
+    const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === 'C:/proj2');
     btn.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
-    assert_($(dom, '#modal-mask').classList.contains('hidden'), '不再弹确认框');
-    const still = $allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P);
-    assert_(!still, '项目一从列表移除');
+    const menu = $(dom, '#ctx-menu');
+    assert_(!menu.classList.contains('hidden'), '右键弹出菜单（不再直接移除）');
+    assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '右键未直接移除项目');
+    const close = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('关闭项目'));
+    assert_(close, '菜单含「关闭项目」项');
+    click(close);
+    await tick(); await tick(); await tick();
+    // 关掉的是当前项目 → 自动切到剩余项目一；关闭一个其余不消失
+    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '自动切换到剩余项目一');
+    assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P), '剩余项目按钮保留（不全消失）');
+    assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
+  });
+
+  await okAsync('「全部项目」入口：no-drag 可点击 + 下拉切换项目', async () => {
+    const all = $(dom, '.proj-all');
+    assert_(all, '「全部项目」按钮存在');
+    // 曾因不在 no-drag 白名单被窗口拖拽区拦截 → 点击无反应
+    //（jsdom 的 getComputedStyle 不解析 -webkit-app-region → 直接校验样式表规则）
+    const cssText = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
+    assert_(ndRules.some((r) => r.includes('.proj-all')), '「全部项目」在 no-drag 白名单（点击不被拖拽区拦截）');
+    click(all);
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    assert_(!menu.classList.contains('hidden'), '点击弹出全部项目下拉');
+    const item = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('proj'));
+    assert_(item, '下拉含项目项');
+    click(item);
+    await tick(); await tick(); await tick();
+    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '下拉点击切换项目');
   });
 
   await okAsync('Git 刷新防抖：连续保存只刷一次', async () => {
