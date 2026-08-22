@@ -202,6 +202,7 @@ async function loadApp(dom) {
   evalFile('shortcuts.js');
   evalFile('settings.js');
   evalFile('help.js');
+  evalFile('browser.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -2356,6 +2357,103 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(btn);
     await tick();
     assert_((calls.openExternal || []).some((u) => u.includes('page.html')), '调用 openExternal, got: ' + JSON.stringify(calls.openExternal));
+  });
+
+  await okAsync('内置浏览器：URL 规范化', async () => {
+    const n = (s) => g(dom, 'BrowserPanel.normalizeInput(' + JSON.stringify(s) + ')');
+    assert_(n('baidu.com') === 'https://baidu.com', '裸域名补 https, got ' + n('baidu.com'));
+    assert_(n('github.com/electron/electron') === 'https://github.com/electron/electron', '域名带路径');
+    assert_(n('localhost:3000') === 'https://localhost:3000', 'localhost 带端口');
+    assert_(n('192.168.1.1:8080/admin') === 'https://192.168.1.1:8080/admin', 'IP 带端口路径');
+    assert_(n('https://a.b/c') === 'https://a.b/c', '已带协议原样');
+    assert_(n('file:///C:/x.html') === 'file:///C:/x.html', 'file 协议原样');
+    assert_(n('vue3 watch 用法').startsWith('https://www.bing.com/search?q='), '关键词转搜索');
+    assert_(n('') === null, '空输入返回 null');
+  });
+
+  await okAsync('内置浏览器：面板开关 + 默认收藏空状态', async () => {
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '工具条按钮打开面板');
+    assert_($(dom, '#tool-browser').classList.contains('active'), '按钮高亮');
+    const chips = $allIn($(dom, '#be-favs'), '.be-chip');
+    assert_(chips.length === 5, '默认收藏 5 个, got ' + chips.length);
+    assert_(chips.some((c) => c.textContent === 'GitHub'), '默认收藏含 GitHub');
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), '再点一次收起面板');
+    assert_(!$(dom, '#tool-browser').classList.contains('active'), '按钮取消高亮');
+  });
+
+  await okAsync('内置浏览器：Ctrl+4 快捷键切换', async () => {
+    key(dom, '4', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+4 打开');
+    key(dom, '4', { ctrl: true });
+    await tick();
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+4 关闭');
+  });
+
+  await okAsync('内置浏览器：open 导航 + webview 创建 + 历史', async () => {
+    await g(dom, 'BrowserPanel.open("baidu.com")');
+    await tick();
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'open 显示面板');
+    assert_($(dom, '#bw-url').value === 'https://baidu.com', '地址栏规范化, got ' + $(dom, '#bw-url').value);
+    const wv = $(dom, '#browser-view webview');
+    assert_(wv, 'webview 元素创建');
+    assert_(wv.getAttribute('partition') === 'persist:myide-browser', '持久 partition（保留登录态）');
+    assert_($(dom, '#browser-empty').classList.contains('hidden'), '空状态隐藏');
+    // 模拟导航事件 → 写历史
+    const fire = (type, url) => { const ev = new dom.window.Event(type); ev.url = url; wv.dispatchEvent(ev); };
+    fire('did-navigate', 'https://baidu.com');
+    await tick();
+    let his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
+    assert_(his.length === 1 && his[0].url === 'https://baidu.com', '导航写入历史');
+    fire('did-navigate', 'https://github.com');
+    fire('did-navigate', 'https://baidu.com'); // 重复访问 → 去重置顶
+    await tick();
+    his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
+    assert_(his.length === 2 && his[0].url === 'https://baidu.com', '历史去重置顶, got ' + JSON.stringify(his));
+    // 上限 50
+    for (let i = 0; i < 60; i++) g(dom, 'BrowserPanel.addHistory("https://x' + i + '.com")');
+    his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
+    assert_(his.length === 50, '历史上限 50, got ' + his.length);
+    await g(dom, 'BrowserPanel.clearHistory()');
+    his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
+    assert_(his.length === 0, '清空历史');
+  });
+
+  await okAsync('内置浏览器：收藏切换', async () => {
+    await g(dom, 'BrowserPanel.open("https://example.com/x")');
+    await tick();
+    const favBtn = $(dom, '#bw-fav');
+    assert_(favBtn.textContent === '☆', '初始未收藏');
+    const wv = $(dom, '#browser-view webview');
+    const ev = new dom.window.Event('did-navigate'); ev.url = 'https://example.com/x'; wv.dispatchEvent(ev);
+    await tick();
+    click(favBtn);
+    await tick();
+    assert_(favBtn.textContent === '★', '点击后已收藏');
+    let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    assert_(favs.some((f) => f.url === 'https://example.com/x'), '收藏写入 localStorage');
+    click(favBtn);
+    await tick();
+    assert_(favBtn.textContent === '☆', '再次点击取消收藏');
+    favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    assert_(!favs.some((f) => f.url === 'https://example.com/x'), '收藏已移除');
+    await g(dom, 'BrowserPanel.hide()');
+  });
+
+  await okAsync('HTML 内置浏览器打开按钮', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/page.html")');
+    await tick(); await tick();
+    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('内置浏览器'));
+    assert_(btn, '内置浏览器按钮存在');
+    click(btn);
+    await tick();
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '点击打开内置浏览器面板');
+    assert_($(dom, '#bw-url').value.startsWith('file:///') && $(dom, '#bw-url').value.includes('page.html'), '加载 file URL, got ' + $(dom, '#bw-url').value);
+    await g(dom, 'BrowserPanel.hide()');
   });
 
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {

@@ -489,6 +489,7 @@ const App = (() => {
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');
+    if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => BrowserPanel.toggle(); }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();

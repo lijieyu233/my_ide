@@ -140,6 +140,7 @@ Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
 Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
 Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], run: () => App.showTool('git') });
+Shortcuts.register('tool-browser', { desc: '内置浏览器（打开 / 关闭）', keys: ['ctrl+4'], run: () => BrowserPanel.toggle() });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });

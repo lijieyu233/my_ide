@@ -308,8 +308,16 @@ const Viewer = (() => {
     btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
     toolbar.appendChild(btnShow);
 
-    // HTML：用系统默认浏览器打开
+    // HTML：内置浏览器 / 系统默认浏览器打开
     if (/\.(html|htm)$/i.test(tab.name)) {
+      const fileUrl = 'file:///' + tab.path.split('\\').join('/');
+      const btnInner = document.createElement('button');
+      btnInner.className = 'vt-btn';
+      btnInner.textContent = '🌐 内置浏览器';
+      btnInner.title = '在 IDE 内置浏览器中打开该页面';
+      btnInner.onclick = () => { if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
+      toolbar.appendChild(btnInner);
+
       const btnBrowser = document.createElement('button');
       btnBrowser.className = 'vt-btn';
       btnBrowser.textContent = '↗ 浏览器打开';

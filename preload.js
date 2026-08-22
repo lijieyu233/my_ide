@@ -60,5 +60,9 @@ contextBridge.exposeInMainWorld('myIDE', {
     loadAll: () => ipcRenderer.invoke('plugins:loadAll'),
     onChanged: (cb) => ipcRenderer.on('plugins:changed', () => cb()),
   },
+  browser: {
+    // 主进程转发的 webview 导航快捷键命令（toggle/back/forward/reload/focus-url）
+    onCmd: (cb) => ipcRenderer.on('browser:cmd', (_e, cmd) => cb(cmd)),
+  },
   appInfo: () => ipcRenderer.invoke('app:info'),
 });

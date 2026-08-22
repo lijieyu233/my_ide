@@ -52,12 +52,38 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true, // 内置浏览器面板（renderer/browser.js）
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
   return mainWindow;
 }
+
+// ---------- 内置浏览器（webview）主进程侧策略 ----------
+// webview 内的 window.open / target=_blank → 系统默认浏览器打开；
+// webview 聚焦时宿主收不到 keydown，导航类快捷键在主进程拦截后转发给宿主执行
+app.on('web-contents-created', (_e, wc) => {
+  if (wc.getType() !== 'webview') return;
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|file):/i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  wc.on('before-input-event', (ev, input) => {
+    if (input.type !== 'keyDown') return;
+    const k = (input.key || '').toLowerCase();
+    let cmd = null;
+    if (input.control && !input.alt && k === '4') cmd = 'toggle';
+    else if (input.alt && !input.control && k === 'arrowleft') cmd = 'back';
+    else if (input.alt && !input.control && k === 'arrowright') cmd = 'forward';
+    else if (k === 'f5' || (input.control && !input.alt && k === 'r')) cmd = 'reload';
+    else if (input.control && !input.alt && k === 'l') cmd = 'focus-url';
+    if (cmd) {
+      ev.preventDefault();
+      if (mainWindow) mainWindow.webContents.send('browser:cmd', cmd);
+    }
+  });
+});
 
 // ---------- IPC：窗口控制（自绘标题栏）----------
 ipcMain.handle('win:minimize', () => { if (mainWindow) mainWindow.minimize(); });
