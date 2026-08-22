@@ -43,6 +43,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     title: 'My IDE',
+    icon: path.join(__dirname, 'build', 'icon.png'),
     backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
