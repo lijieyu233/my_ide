@@ -70,8 +70,14 @@ function ensureBwView() {
     webPreferences: { partition: 'persist:myide-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const wc = bwView.webContents;
+  // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
+  // mailto:/tel: 等非网页协议才交系统处理
   wc.setWindowOpenHandler(({ url }) => {
-    if (/^(https?|file):/i.test(url)) shell.openExternal(url);
+    if (/^(https?|file):/i.test(url)) {
+      wc.loadURL(url).catch(() => {});
+      return { action: 'deny' };
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
   });
   // view 聚焦时宿主收不到 keydown → 导航类快捷键主进程拦截后转发宿主
