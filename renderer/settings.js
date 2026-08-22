@@ -70,8 +70,8 @@ const Settings = (() => {
   function renderFont() {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove(); // 快捷键过滤框不属于本视图
-    document.getElementById('set-title').textContent = '外观（字体大小 · 背景图）';
-    document.getElementById('set-hint').textContent = '字号只调整文档编辑区；背景图为本地图片，透明度可调';
+    document.getElementById('set-title').textContent = '外观（字体大小 · 背景图 · 玩偶）';
+    document.getElementById('set-hint').textContent = '字号只调整文档编辑区；背景支持本地图片或内置渐变，透明度可调';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     let size = 13;
@@ -79,6 +79,7 @@ const Settings = (() => {
     const bg = window.Bg ? Bg.get() : { path: '', opacity: 0.15 };
     const bgOp = Math.round(bg.opacity * 100);
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const GRAD_NAMES = { dusk: '暮色', ocean: '深海', forest: '墨绿', ember: '暖霞', galaxy: '星空', blossom: '粉黛' };
     list.innerHTML = `
       <div class="set-form">
         <label class="m-label">字体大小：<span id="font-size-val">${size}</span> px</label>
@@ -96,8 +97,17 @@ const Settings = (() => {
           <button class="tb-btn m-ok" id="bg-pick">🖼 选择图片…</button>
           <button class="tb-btn" id="bg-clear">清除</button>
         </div>
-        <div class="set-hint-path" style="color:var(--text-dim);font-size:11px;margin-bottom:12px;word-break:break-all">${bg.path ? esc(bg.path) : '未设置背景图'}</div>
-        <label class="m-label">背景透明度：<span id="bg-op-val">${bgOp}</span>%</label>
+        <div class="set-hint-path" style="color:var(--text-dim);font-size:11px;margin-bottom:4px">${bg.path && bg.path.indexOf('grad:') !== 0 ? esc(bg.path) : (bg.path ? '内置渐变：' + (GRAD_NAMES[bg.path.slice(5)] || bg.path.slice(5)) : '未设置背景图')}</div>
+        <label class="m-label" style="margin-top:4px">内置渐变背景（无需选择图片）</label>
+        <div class="grad-opts">
+          <button class="grad-opt ${bg.path === 'grad:dusk' ? 'sel' : ''}" data-grad="dusk" title="暮色">暮色</button>
+          <button class="grad-opt ${bg.path === 'grad:ocean' ? 'sel' : ''}" data-grad="ocean" title="深海">深海</button>
+          <button class="grad-opt ${bg.path === 'grad:forest' ? 'sel' : ''}" data-grad="forest" title="墨绿">墨绿</button>
+          <button class="grad-opt ${bg.path === 'grad:ember' ? 'sel' : ''}" data-grad="ember" title="暖霞">暖霞</button>
+          <button class="grad-opt ${bg.path === 'grad:galaxy' ? 'sel' : ''}" data-grad="galaxy" title="星空">星空</button>
+          <button class="grad-opt ${bg.path === 'grad:blossom' ? 'sel' : ''}" data-grad="blossom" title="粉黛">粉黛</button>
+        </div>
+        <label class="m-label" style="margin-top:12px">背景透明度：<span id="bg-op-val">${bgOp}</span>%</label>
         <input id="bg-op-range" type="range" min="5" max="50" step="1" value="${bgOp}" style="width:100%" ${bg.path ? '' : 'disabled'}>
         <label class="m-label" style="margin-top:12px">显示方式</label>
         <div class="bg-fit-opts">
@@ -117,6 +127,13 @@ const Settings = (() => {
           <option value="bottom left" ${bg.pos === 'bottom left' ? 'selected' : ''}>左下</option>
           <option value="bottom right" ${bg.pos === 'bottom right' ? 'selected' : ''}>右下</option>
         </select>
+      </div>
+      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
+        <label class="m-label">桌面玩偶</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="pet-enable" ${window.Pet && Pet.isOn() ? 'checked' : ''} style="accent-color:var(--accent)">
+          <label for="pet-enable" style="cursor:pointer">显示右下角玩偶（点击玩偶可切换形象）</label>
+        </div>
       </div>`;
     const range = document.getElementById('font-size-range');
     range.addEventListener('input', () => {
@@ -134,7 +151,12 @@ const Settings = (() => {
     const opRange = document.getElementById('bg-op-range');
     const refreshPath = () => {
       const cur = window.Bg ? Bg.get() : { path: '' };
-      document.querySelector('.set-hint-path').textContent = cur.path || '未设置背景图';
+      const hint = document.querySelector('.set-hint-path');
+      if (hint) {
+        if (!cur.path) hint.textContent = '未设置背景图';
+        else if (cur.path.indexOf('grad:') === 0) hint.textContent = '内置渐变：' + (GRAD_NAMES[cur.path.slice(5)] || cur.path.slice(5));
+        else hint.textContent = cur.path;
+      }
       opRange.disabled = !cur.path;
       const posSel = document.getElementById('bg-pos-sel');
       if (posSel) posSel.disabled = !cur.path;
@@ -144,6 +166,7 @@ const Settings = (() => {
       const p = await window.myIDE.fs.pickImage();
       if (p) {
         Bg.set(p);
+        $all('.grad-opt').forEach((x) => x.classList.remove('sel'));
         refreshPath();
         MI.toast('已设置背景图', 'ok');
       }
@@ -153,8 +176,19 @@ const Settings = (() => {
       opRange.value = 15;
       document.getElementById('bg-op-val').textContent = 15;
       refreshPath();
+      $all('.grad-opt').forEach((x) => x.classList.remove('sel'));
       MI.toast('已清除背景图', 'ok');
     };
+    // 内置渐变背景
+    $all('.grad-opt').forEach((b) => {
+      b.onclick = () => {
+        Bg.set('grad:' + b.dataset.grad);
+        $all('.grad-opt').forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+        refreshPath();
+        MI.toast('已应用渐变背景：' + GRAD_NAMES[b.dataset.grad], 'ok');
+      };
+    });
     opRange.addEventListener('input', () => {
       const v = parseInt(opRange.value, 10);
       document.getElementById('bg-op-val').textContent = v;
@@ -175,6 +209,11 @@ const Settings = (() => {
       posSel.addEventListener('change', () => {
         if (!posSel.disabled) Bg.setPos(posSel.value);
       });
+    }
+    // 桌面玩偶开关
+    const petCb = document.getElementById('pet-enable');
+    if (petCb && window.Pet) {
+      petCb.addEventListener('change', () => { Pet.setPetOn(petCb.checked); });
     }
   }
 

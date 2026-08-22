@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   shell: {
     showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+    runFile: (p) => ipcRenderer.invoke('run:file', p),
   },
   win: {
     minimize: () => ipcRenderer.invoke('win:minimize'),

@@ -28,13 +28,34 @@ const App = (() => {
             <button class="tb-btn m-ok" id="cf-yes">确定</button>
           </div>`;
         Modal.show(box);
-        const done = (v) => { Modal.hide(); resolve(v); };
-        box.querySelector('#cf-yes').onclick = () => done(true);
-        box.querySelector('#cf-no').onclick = () => done(false);
-        box.querySelector('#cf-x').onclick = () => done(false);
+        box.dataset.selfEsc = '1'; // 自管键盘 Esc（shortcuts.js 全局 Esc 会跳过此面板）
+        // 幂等 done：按钮/键盘/点遮罩任一路径触发一次后，其余入口全部失效
+        let settled = false;
+        const onKey = (e) => {
+          // 非栈顶（上面还盖着其他面板，如 prompt）不响应，避免错杀
+          if (Modal.stack[Modal.stack.length - 1] !== box) return;
+          // 焦点在输入框时不劫持 Enter（输入框自身的提交优先）
+          const ae = document.activeElement;
+          if (ae && /^(TEXTAREA|INPUT)$/.test(ae.tagName)) return;
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        };
+        const finish = (v) => {
+          if (settled) return;
+          settled = true;
+          document.removeEventListener('keydown', onKey);
+          // 面板可能已被全局 Esc 处理关掉（shortcuts.js）——栈顶不是本面板时不再 hide，
+          // 否则会错杀下层面板（如设置页）
+          if (Modal.stack[Modal.stack.length - 1] === box) Modal.hide();
+          resolve(v);
+        };
+        document.addEventListener('keydown', onKey);
+        box.querySelector('#cf-yes').onclick = () => finish(true);
+        box.querySelector('#cf-no').onclick = () => finish(false);
+        box.querySelector('#cf-x').onclick = () => finish(false);
         // 注意：用 { once: true }，避免每次 confirm 都堆积监听器（卡死隐患）
         mask.addEventListener('click', function h(e) {
-          if (e.target === mask) done(false);
+          if (e.target === mask) finish(false);
         }, { once: true });
       });
     },
@@ -188,6 +209,33 @@ const App = (() => {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
     bar.innerHTML = '';
+    // 最左侧固定「全部项目」入口：显示数量 + 当前项目名（点击下拉全部项目）
+    // —— 取代旧 sticky「▾」按钮（sticky 与项目按钮重叠是 UI 错位 bug 根因）
+    if (projects.length) {
+      const all = document.createElement('button');
+      all.className = 'proj-all';
+      const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
+      all.innerHTML = `<span class="proj-all-n">▾ ${projects.length} 项目</span><span class="proj-all-cur">${curName}</span>`;
+      all.title = '全部项目（点击切换）';
+      all.onclick = (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        projects.forEach((p) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
+          d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
+          d.title = p.path;
+          d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
+          menu.appendChild(d);
+        });
+        menu.classList.remove('hidden');
+        const r = all.getBoundingClientRect();
+        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
+        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 200) + 'px';
+      };
+      bar.appendChild(all);
+    }
     for (const pr of projects) {
       const btn = document.createElement('button');
       btn.className = 'proj-btn' + (pr.path === root ? ' active' : '');
@@ -241,7 +289,7 @@ const App = (() => {
         e.preventDefault();
         const src = projDragPath;
         if (!src || src === pr.path) return;
-        const srcEl = [...bar.children].find((b) => b.dataset.path === src);
+        const srcEl = [...bar.querySelectorAll('.proj-btn')].find((b) => b.dataset.path === src);
         if (!srcEl || srcEl === btn) return;
         const r = btn.getBoundingClientRect();
         bar.insertBefore(srcEl, e.clientX < r.left + r.width / 2 ? btn : btn.nextSibling);
@@ -250,37 +298,12 @@ const App = (() => {
         e.preventDefault();
         const src = projDragPath || e.dataTransfer.getData('text/proj-path');
         if (!src || src === pr.path) return;
-        const order = [...bar.children].map((b) => b.dataset.path).filter(Boolean);
+        const order = [...bar.querySelectorAll('.proj-btn')].map((b) => b.dataset.path).filter(Boolean);
         projects.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
         saveProjects();
         renderProjectBar();
       });
       bar.appendChild(btn);
-    }
-    // 项目过多时的「▾」合并入口：下拉列出全部项目（点击切换）
-    if (projects.length > 1) {
-      const more = document.createElement('button');
-      more.className = 'proj-more';
-      more.textContent = '▾ ' + projects.length;
-      more.title = '全部项目（点击切换）';
-      more.onclick = (e) => {
-        e.stopPropagation();
-        const menu = document.getElementById('ctx-menu');
-        menu.innerHTML = '';
-        projects.forEach((p) => {
-          const d = document.createElement('div');
-          d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
-          d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
-          d.title = p.path;
-          d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
-          menu.appendChild(d);
-        });
-        menu.classList.remove('hidden');
-        const r = more.getBoundingClientRect();
-        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
-        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 200) + 'px';
-      };
-      bar.appendChild(more);
     }
   }
   // 切换项目：静默保存未保存的标签 → 关闭全部 → 重新加载（不再弹确认）
@@ -416,9 +439,6 @@ const App = (() => {
     document.getElementById('tool-git').onclick = () => switchTool('git');
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
-    document.getElementById('tree-hidden').onchange = (e) => {
-      Tree.showHidden = e.target.checked;
-    };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();
     initSidebarResizer();

@@ -98,8 +98,10 @@ const Shortcuts = (() => {
     const aeEditable = aeVisible && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable);
     if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
+    // 栈顶面板声明「自管 Esc」（confirm/prompt 有自己的键盘处理）时跳过，避免双关闭错杀下层面板
     if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
-      Modal.hide();
+      const top = Modal.stack && Modal.stack[Modal.stack.length - 1];
+      if (!(top && top.dataset && top.dataset.selfEsc === '1')) Modal.hide();
       return;
     }
     if (e.defaultPrevented) return; // textarea 等已自行处理

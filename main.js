@@ -291,6 +291,28 @@ ipcMain.handle('fs:remove', (_e, p) => {
 });
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
+// 右键运行：按扩展名选解释器，独立进程启动（不阻塞编辑器）
+const { spawn } = require('child_process');
+ipcMain.handle('run:file', (_e, p) => {
+  try {
+    const ext = path.extname(p).toLowerCase().slice(1);
+    const cwd = path.dirname(p);
+    if (ext === 'html' || ext === 'htm') { shell.openPath(p); return { ok: true, how: '浏览器' }; }
+    const cmds = {
+      py: ['python', [p]],
+      js: ['node', [p]],
+      bat: ['cmd', ['/c', p]],
+      cmd: ['cmd', ['/c', p]],
+      ps1: ['powershell', ['-ExecutionPolicy', 'Bypass', '-File', p]],
+      sh: ['bash', [p]],
+    };
+    const c = cmds[ext];
+    if (!c) return { error: '该类型暂不支持直接运行' };
+    const child = spawn(c[0], c[1], { cwd, detached: true, shell: true, stdio: 'ignore', windowsHide: false });
+    child.unref();
+    return { ok: true, how: c[0] };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
 ipcMain.handle('shell:openExternal', (_e, url) => {
   try {
     const u = String(url || '');

@@ -143,7 +143,9 @@ MI.registerRenderer(['html', 'htm'], ({ path, content }) => {
   const frame = document.createElement('iframe');
   frame.className = 'html-frame';
   // allow-same-origin：继承主窗口 file:// 源，页面内相对路径的 CSS/图片才能加载（否则样式全丢）
-  frame.sandbox = 'allow-scripts allow-modals allow-forms allow-same-origin';
+  // allow-popups(+escape)：window.open / target=_blank 可用（原只能在浏览器实现的弹窗能力）
+  // allow-downloads：页面内 a[download] / blob 下载可用
+  frame.sandbox = 'allow-scripts allow-modals allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock';
   // 规范化开头（BOM / 前导空白 / "< !DOCTYPE" 写法），避免 DOCTYPE 被当成正文文本显示
   let src = String(content || '').replace(/^\uFEFF/, '');
   src = src.replace(/^\s*< ?!DOCTYPE/i, '<!DOCTYPE');

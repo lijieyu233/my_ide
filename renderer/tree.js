@@ -3,6 +3,37 @@ const Tree = (() => {
   const el = document.getElementById('tree');
   let rootPath = null;
   let showHidden = false;
+  // ---------- 应用内隐藏（三态视图）----------
+  // hiddenSet：右键「隐藏」的项（仅本应用生效，存 localStorage 按项目隔离）
+  // hideMode：'normal' 默认（不显示隐藏项）| 'all' 全部显示 | 'hidden' 只看隐藏项
+  let hideMode = 'normal';
+  let hiddenSet = new Set();
+  let treeFontSize = 13;
+  try {
+    treeFontSize = Math.min(18, Math.max(11, parseInt(localStorage.getItem('myide-tree-font') || '13', 10) || 13));
+  } catch {}
+  function hiddenKey() { return 'myide-hidden:' + norm(rootPath); }
+  function loadHidden() {
+    hiddenSet = new Set();
+    if (!rootPath) return;
+    try { hiddenSet = new Set(JSON.parse(localStorage.getItem(hiddenKey()) || '[]').map(norm)); } catch {}
+  }
+  function saveHidden() {
+    try { localStorage.setItem(hiddenKey(), JSON.stringify([...hiddenSet])); } catch {}
+  }
+  // 自身或祖先被隐藏
+  function isHiddenTree(p) {
+    const n = norm(p);
+    if (hiddenSet.has(n)) return true;
+    for (const h of hiddenSet) if (n.startsWith(h + '/')) return true;
+    return false;
+  }
+  function applyTreeFont() {
+    el.style.fontSize = treeFontSize + 'px';
+    el.style.setProperty('--tree-row-h', rowH() + 'px');
+  }
+  function rowH() { return Math.round(treeFontSize * 1.7); }
+
   let selectedPath = null;       // 主选中（最后点击的，单选语义操作用）
   let selectedType = null;
   const selectedPaths = new Set(); // 多选集合（规范化路径，Ctrl+点击 / Shift+范围）
@@ -13,7 +44,6 @@ const Tree = (() => {
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
   let gitStatus = {};           // 规范路径 -> git 状态（modified/added/deleted）
   let visibleRows = [];         // 当前可见行（键盘导航用）
-  const ROW_H = 22;
   const VIRTUAL_THRESHOLD = 300;
 
   const norm = (p) => String(p == null ? '' : p).replace(/\\/g, '/');
@@ -54,6 +84,8 @@ const Tree = (() => {
     anchorPath = null;
     expanded.clear();
     expanded.add(p); // 根默认展开
+    loadHidden();
+    applyTreeFont();
     // 主进程递归监听目录变化（外部增删改 → 自动刷新树）
     if (p && window.myIDE && window.myIDE.fs.watch) {
       try { window.myIDE.fs.watch(p); } catch {}
@@ -75,8 +107,28 @@ const Tree = (() => {
   }
 
   async function loadDir(p) {
-    if (!nodeCache[p]) nodeCache[p] = await window.myIDE.fs.readDir(p, showHidden);
+    if (!nodeCache[p]) {
+      let items = await window.myIDE.fs.readDir(p, showHidden || hideMode === 'all');
+      // 应用内隐藏过滤：
+      //   normal → 去掉隐藏项（含被隐藏目录的子孙）
+      //   hidden → 只留隐藏项 + 其祖先目录链（保证层级可读）
+      //   all    → 不过滤
+      if (hideMode === 'normal') items = items.filter((it) => !isHiddenTree(it.path));
+      else if (hideMode === 'hidden') {
+        items = items.filter((it) =>
+          isHiddenTree(it.path) ||
+          (it.type === 'dir' && hasHiddenDescendant(it.path))
+        );
+      }
+      nodeCache[p] = items;
+    }
     return nodeCache[p];
+  }
+  // 目录下是否有隐藏项（hidden 态下保留祖先链）
+  function hasHiddenDescendant(dirPath) {
+    const dn = norm(dirPath);
+    for (const h of hiddenSet) if (h.startsWith(dn + '/')) return true;
+    return false;
   }
 
   // 文件操作成功后失效所有目录缓存（重建时重新懒加载）
@@ -111,6 +163,8 @@ const Tree = (() => {
     el.innerHTML = '';
     el.onscroll = null;
     if (!rootPath) return;
+    // 搜索态：平铺显示匹配行（忽略展开态）
+    if (searchState && searchState.q) { renderSearch(); return; }
     await loadDir(rootPath);
     // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
     const expandedDirs = [...expanded];
@@ -121,20 +175,21 @@ const Tree = (() => {
       for (const r of rows) el.appendChild(makeRowEl(r));
       return;
     }
+    const RH = rowH();
     const spacer = document.createElement('div');
     spacer.style.position = 'relative';
-    spacer.style.height = rows.length * ROW_H + 'px';
+    spacer.style.height = rows.length * RH + 'px';
     el.appendChild(spacer);
     const paint = () => {
       spacer.querySelectorAll('.tree-row').forEach((x) => x.remove());
       const top = el.scrollTop || 0;
-      const viewH = el.clientHeight || ROW_H * 20;
-      const start = Math.max(0, Math.floor(top / ROW_H) - 5);
-      const end = Math.min(rows.length, start + Math.ceil(viewH / ROW_H) + 10);
+      const viewH = el.clientHeight || RH * 20;
+      const start = Math.max(0, Math.floor(top / RH) - 5);
+      const end = Math.min(rows.length, start + Math.ceil(viewH / RH) + 10);
       for (let i = start; i < end; i++) {
         const rowEl = makeRowEl(rows[i]);
         rowEl.style.position = 'absolute';
-        rowEl.style.top = i * ROW_H + 'px';
+        rowEl.style.top = i * RH + 'px';
         rowEl.style.left = '0';
         rowEl.style.right = '0';
         spacer.appendChild(rowEl);
@@ -143,6 +198,69 @@ const Tree = (() => {
     el.onscroll = paint;
     paint();
   }
+
+  // ---------- 目录树搜索（平铺匹配行，回车/点击打开）----------
+  let searchState = null; // { q, files: [{name, rel, path, type}] }
+  let searchIdx = 0;
+  async function renderSearch() {
+    const q = searchState.q;
+    if (!searchState.files) {
+      const r = await window.myIDE.fs.listAll(rootPath, false);
+      searchState.files = (r.files || []).map((full) => {
+        const rel = norm(full).slice(norm(rootPath).length + 1);
+        const name = rel.split('/').pop();
+        return { name, rel, path: full, type: 'file' };
+      });
+    }
+    const ql = q.toLowerCase();
+    const hits = searchState.files.filter((f) => f.name.toLowerCase().includes(ql)).slice(0, 200);
+    visibleRows = hits.map((f) => ({ item: { name: f.name, path: f.path, type: 'file' }, depth: 0 }));
+    if (searchIdx >= hits.length) searchIdx = 0;
+    el.innerHTML = '';
+    if (!hits.length) {
+      el.innerHTML = '<div class="tree-search-empty">没有匹配「' + q.replace(/</g, '&lt;') + '」的文件</div>';
+      return;
+    }
+    hits.forEach((f, i) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'tree-row tree-search-row' + (i === searchIdx ? ' selected' : '');
+      const ic = document.createElement('span');
+      ic.className = 'ic';
+      ic.textContent = fileIcon(f.name);
+      rowEl.appendChild(ic);
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = f.name;
+      nm.title = f.path;
+      rowEl.appendChild(nm);
+      const rel = document.createElement('span');
+      rel.className = 'tree-search-rel';
+      rel.textContent = f.rel;
+      rowEl.appendChild(rel);
+      rowEl.dataset.path = f.path;
+      rowEl.onclick = () => { endSearch(); Viewer.openFile(f.path); };
+      rowEl.oncontextmenu = (e) => { e.preventDefault(); };
+      el.appendChild(rowEl);
+    });
+    const selEl = el.children[searchIdx];
+    if (selEl && selEl.scrollIntoView) { try { selEl.scrollIntoView({ block: 'nearest' }); } catch {} }
+  }
+  function endSearch() {
+    const input = document.getElementById('tree-search');
+    if (input) input.value = '';
+    searchState = null;
+    render();
+  }
+
+  // ---------- 右键运行 ----------
+  async function runItem(item) {
+    if (item.type === 'dir') return;
+    const r = await window.myIDE.shell.runFile(item.path);
+    if (r && r.ok) MI.toast('▶ 已通过 ' + r.how + ' 运行 ' + item.name, 'ok');
+    else MI.toast('运行失败: ' + ((r && r.error) || '未知错误'), 'err');
+  }
+  const RUNNABLE = ['html', 'htm', 'py', 'js', 'bat', 'cmd', 'ps1', 'sh'];
+  function canRun(name) { return RUNNABLE.includes((name.split('.').pop() || '').toLowerCase()); }
 
   function makeRowEl(row) {
     const item = row.item;
@@ -158,7 +276,8 @@ const Tree = (() => {
 
     const ic = document.createElement('span');
     ic.className = 'ic';
-    ic.textContent = item.type === 'dir' ? '📁' : fileIcon(item.name);
+    // 文件夹不用图标（折叠箭头已表意），文件保留类型图标
+    ic.textContent = item.type === 'dir' ? '' : fileIcon(item.name);
     rowEl.appendChild(ic);
 
     const nm = document.createElement('span');
@@ -561,18 +680,24 @@ const Tree = (() => {
       d.onclick = () => { hideCtxMenu(); fn(); };
       menu.appendChild(d);
     };
+    // 顺序按使用频率：运行/隐藏 → 新建 → 复制粘贴 → 重命名 → 定位 → 删除
+    // 「打开」已去掉（单击即打开，菜单项无意义）
+    if (item.type === 'file' && !multi && canRun(item.name)) mk('▶ 运行', () => runItem(item));
+    if (!multi) {
+      if (hiddenSet.has(norm(item.path))) mk('👁 取消隐藏', () => unhideItem(item));
+      else mk('🙈 隐藏（仅本应用）', () => hideItem(item));
+    }
+    mk('✨ 新建文件', () => createItem(item, 'file'));
+    mk('📁 新建文件夹', () => createItem(item, 'dir'));
+    mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
+    mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
+    if (!multi) mk('🔤 重命名', () => renameItem(item));
     mk('📋 复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) copyPath(getSelection().join('\n'));
       else copyPath(item.path);
     });
-    mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
-    mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
-    mk('✨ 新建文件', () => createItem(item, 'file'));
-    mk('📁 新建文件夹', () => createItem(item, 'dir'));
     mk('📂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path));
-    if (item.type === 'file' && !multi) mk('✏️ 打开', () => { select(item.path, item.type); Viewer.openFile(item.path); });
     if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
-    if (!multi) mk('🔤 重命名', () => renameItem(item));
     mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) removeItems(getSelection());
       else removeItem(item);
@@ -581,6 +706,38 @@ const Tree = (() => {
     const mw = menu.offsetWidth, mh = menu.offsetHeight;
     menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - mh - 8) + 'px';
+  }
+
+  // ---------- 应用内隐藏 ----------
+  function hideItem(item) {
+    hiddenSet.add(norm(item.path));
+    saveHidden();
+    invalidateAll();
+    render();
+    MI.toast('已隐藏 ' + item.name + '（👁 切换只看隐藏项 / 右键取消隐藏）', 'ok');
+  }
+  function unhideItem(item) {
+    hiddenSet.delete(norm(item.path));
+    saveHidden();
+    invalidateAll();
+    render();
+    MI.toast('已取消隐藏 ' + item.name, 'ok');
+  }
+  function cycleHideMode() {
+    hideMode = hideMode === 'normal' ? 'hidden' : hideMode === 'hidden' ? 'all' : 'normal';
+    const btn = document.getElementById('tree-hide-mode');
+    const label = { normal: '👁', hidden: '🔎', all: '👁‍🗨' }[hideMode];
+    if (btn) {
+      btn.textContent = label;
+      btn.title = {
+        normal: '当前：不显示隐藏项（点击 → 只看隐藏项）',
+        hidden: '当前：只看隐藏项（点击 → 全部显示）',
+        all: '当前：全部显示（点击 → 恢复默认）',
+      }[hideMode];
+    }
+    invalidateAll();
+    render();
+    MI.toast({ normal: '视图：不显示隐藏项', hidden: '视图：只看隐藏项', all: '视图：全部显示' }[hideMode], 'ok');
   }
   function hideCtxMenu() { menu.classList.add('hidden'); }
   document.addEventListener('click', (e) => { if (!menu.contains(e.target)) hideCtxMenu(); });
@@ -747,6 +904,50 @@ const Tree = (() => {
     keyNav(e.key);
   });
 
+  // ---------- 目录树头部控件（搜索 / 字号 / 三态隐藏）----------
+  (function bindHead() {
+    const searchInput = document.getElementById('tree-search');
+    if (searchInput) {
+      let deb = null;
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value.trim();
+        clearTimeout(deb);
+        deb = setTimeout(() => {
+          if (q) { searchState = { q, files: null }; searchIdx = 0; render(); }
+          else if (searchState) { searchState = null; render(); }
+        }, 160);
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); endSearch(); searchInput.blur(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          // 打开当前高亮的搜索结果
+          const selEl = el.querySelector('.tree-search-row.selected');
+          if (selEl && selEl.dataset.path) { endSearch(); Viewer.openFile(selEl.dataset.path); }
+          return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          const rows = [...el.querySelectorAll('.tree-search-row')];
+          if (!rows.length) return;
+          const cur = rows.findIndex((r) => r.classList.contains('selected'));
+          let next = e.key === 'ArrowDown' ? cur + 1 : cur - 1;
+          next = Math.min(rows.length - 1, Math.max(0, next));
+          if (cur >= 0) rows[cur].classList.remove('selected');
+          rows[next].classList.add('selected');
+          searchIdx = next;
+          try { rows[next].scrollIntoView({ block: 'nearest' }); } catch {}
+        }
+      });
+    }
+    const fdec = document.getElementById('tree-font-dec');
+    const finc = document.getElementById('tree-font-inc');
+    if (fdec) fdec.onclick = () => Tree.setFont(-1);
+    if (finc) finc.onclick = () => Tree.setFont(1);
+    const hm = document.getElementById('tree-hide-mode');
+    if (hm) hm.onclick = () => cycleHideMode();
+  })();
+
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus,
     getExpandedPaths, setExpandedPaths, undo,
@@ -755,6 +956,15 @@ const Tree = (() => {
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
+    setFont: (d) => {
+      treeFontSize = Math.min(18, Math.max(11, treeFontSize + d));
+      try { localStorage.setItem('myide-tree-font', String(treeFontSize)); } catch {}
+      applyTreeFont();
+      render();
+    },
+    get font() { return treeFontSize; },
+    cycleHideMode,
+    endSearch,
     refresh: render,
   };
 })();

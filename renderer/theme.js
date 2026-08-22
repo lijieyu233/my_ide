@@ -185,6 +185,15 @@ const Bg = (() => {
   const POS_KEY = 'myide-bg-pos';  // 显示位置（center/top/bottom/left/right/九宫格）
   const FITS = ['cover', 'contain', 'tile'];
   const POS_LIST = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
+  // 内置渐变背景（外观设置 → 默认背景；path 存 'grad:<key>'）
+  const GRADIENTS = {
+    dusk:    { name: '暮色', css: 'linear-gradient(135deg, #2b1e3f 0%, #1e2430 50%, #16324a 100%)' },
+    ocean:   { name: '深海', css: 'linear-gradient(160deg, #0f2027 0%, #203a43 50%, #2c5364 100%)' },
+    forest:  { name: '墨绿', css: 'linear-gradient(135deg, #10241c 0%, #1a3229 50%, #0e2a1f 100%)' },
+    ember:   { name: '暖霞', css: 'linear-gradient(135deg, #3a2a24 0%, #2c2320 50%, #44322a 100%)' },
+    galaxy:  { name: '星空', css: 'radial-gradient(ellipse at top, #1b2735 0%, #090a0f 100%)' },
+    blossom: { name: '粉黛', css: 'linear-gradient(135deg, #3d2b35 0%, #2a2330 50%, #35263a 100%)' },
+  };
 
   function apply() {
     let p = '';
@@ -202,13 +211,22 @@ const Bg = (() => {
     const layer = document.getElementById('bg-layer');
     if (!layer) return;
     if (p) {
-      layer.style.backgroundImage = 'url("file:///' + p.split('\\').join('/') + '")';
+      if (p.startsWith('grad:')) {
+        // 内置渐变：CSS 渐变直出，无显示方式/位置概念
+        const g = GRADIENTS[p.slice(5)];
+        layer.style.backgroundImage = g ? g.css : '';
+        layer.style.backgroundSize = 'cover';
+        layer.style.backgroundRepeat = 'no-repeat';
+        layer.style.backgroundPosition = 'center';
+      } else {
+        layer.style.backgroundImage = 'url("file:///' + p.split('\\').join('/') + '")';
+        // 显示方式：铺满 cover / 完整 contain / 平铺 repeat（原图大小）
+        layer.style.backgroundSize = fit === 'tile' ? 'auto' : fit;
+        layer.style.backgroundRepeat = fit === 'tile' ? 'repeat' : 'no-repeat';
+        // 显示位置：九宫格（平铺模式下无意义，仅 cover 裁切时可见差异）
+        layer.style.backgroundPosition = pos;
+      }
       layer.style.opacity = String(Math.min(0.5, Math.max(0.05, op)));
-      // 显示方式：铺满 cover / 完整 contain / 平铺 repeat（原图大小）
-      layer.style.backgroundSize = fit === 'tile' ? 'auto' : fit;
-      layer.style.backgroundRepeat = fit === 'tile' ? 'repeat' : 'no-repeat';
-      // 显示位置：九宫格（平铺模式下无意义，仅 cover 裁切时可见差异）
-      layer.style.backgroundPosition = pos;
       layer.style.display = 'block';
       document.body.classList.add('has-bg');
       // 同步透明度控件：状态栏右下角滑条 + 设置页滑条
