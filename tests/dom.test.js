@@ -255,7 +255,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('Markdown 默认实时预览（Obsidian 式 CM6）+ 模式切换', async () => {
-    // md 现在默认「实时预览」：CM6 编辑器（光标行源码 / 其余行渲染）
+    // md 现在默认「实时预览」：CM6 编辑器（标记粒度显示模型：仅紧邻标记显示源码）
     assert_($(dom, '.editor-cm-wrap'), 'md 打开即 CM6 实时预览容器');
     assert_($(dom, '.editor-cm-wrap .cm-editor'), 'CM 编辑器挂载');
     assert_($(dom, '.editor-cm-wrap .cm-content').textContent.includes('Markdown'), '编辑器含文档内容');
@@ -329,16 +329,46 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
     // 9) 光标行显示源码：光标在第 1 行 → # 标记可见
     assert_(lines[0] && lines[0].textContent.includes('#'), '光标行（第 1 行）显示 # 源码标记');
-    // 10) 光标移到正文行 → 该行标记重现（装饰随选区刷新）
+    // 10) 标记粒度显示模型（Obsidian 式）：光标在行内但不紧邻标记 → 标记保持隐藏
+    //    （旧行粒度模型：光标进该行整行闪源码 —— 多次修复失败的根因）
     g(dom, 'Viewer.cm.gotoLine(3)');
     await tick(); await tick();
-    const lines2 = [...$$(dom, '.cm-content > div')];
-    const para2 = lines2.find((l) => l.textContent.includes('删除线'));
-    assert_(para2 && para2.textContent.includes('~~'), '光标移入后 ~~ 标记重现（源码态）');
+    let lines2 = [...$$(dom, '.cm-content > div')];
+    let para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && !para2.textContent.includes('~~'),
+      '光标在行首（不紧邻 ~~）标记保持隐藏，got: ' + (para2 ? JSON.stringify(para2.textContent) : 'null'));
     // 光标离开第 1 行 → 标题标记隐藏
     const head2 = lines2.find((l) => l.textContent.includes('一级标题'));
     assert_(head2 && !head2.textContent.includes('#') && !head2.textContent.startsWith(' '),
       '光标离开后标题标记隐藏且无前导空格，got: ' + (head2 ? JSON.stringify(head2.textContent) : 'null'));
+    // 11) 光标紧邻 ~~（内容首字符处）→ 该标记显形（Obsidian：贴着星号才出现）
+    const markFrom = LIVE_DOC.indexOf('~~');
+    g(dom, 'Viewer.cm.setCursor(' + (markFrom + 2) + ')');
+    await tick(); await tick();
+    lines2 = [...$$(dom, '.cm-content > div')];
+    para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && para2.textContent.includes('~~'), '光标紧邻 ~~ 时标记显形（可编辑）');
+    // 12) 光标移到内容中间（离开标记 1 字符）→ 标记重新隐藏
+    g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('删除线') + 1) + ')');
+    await tick(); await tick();
+    lines2 = [...$$(dom, '.cm-content > div')];
+    para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && !para2.textContent.includes('~~'), '光标移入内容中部 → 标记重新隐藏');
+    // 13) 拖选跨行（选区覆盖多段）→ 全部保持渲染态（旧模型整段闪源码 = 闪烁根因）
+    g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.indexOf('正文') + ', ' + (LIVE_DOC.indexOf('待办') + 2) + ')');
+    await tick(); await tick();
+    lines2 = [...$$(dom, '.cm-content > div')];
+    para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && !para2.textContent.includes('~~'), '多行选择时 ~~ 保持隐藏（不闪源码）');
+    assert_(!para2.textContent.includes('https://'), '多行选择时链接 URL 保持隐藏');
+    assert_($(dom, '.cm-md-task') !== null, '多行选择时 task 勾选框保持渲染');
+    // 14) 光标进入链接构造内部 → 完整源码显形（Obsidian 编辑链接行为）
+    g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('链接') + 1) + ')');
+    await tick(); await tick();
+    lines2 = [...$$(dom, '.cm-content > div')];
+    para2 = lines2.find((l) => l.textContent.includes('删除线'));
+    assert_(para2 && para2.textContent.includes('[') && para2.textContent.includes('https://'),
+      '光标进入链接内部 → 显示完整 [链接](url) 源码');
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {

@@ -1,7 +1,10 @@
 // md-editor.js —— CodeMirror 6 Markdown 编辑器（Obsidian 式 Live Preview）
 // 依赖 renderer/vendor/cm6-bundle.min.js（全局 CM6）
-// 文档模型始终是纯 Markdown；Live Preview 只是装饰层：
-//   光标所在行显示源码标记，其余行隐藏标记并按渲染样式显示。
+// 文档模型始终是纯 Markdown；Live Preview 只是装饰层（标记粒度显示模型）：
+//   行级构造（标题#/引用>/围栏行/分隔线）光标落在该行才显示源码；
+//   行内标记（** ~~ ` 等）仅光标紧邻该标记时才显形，光标在同行其他位置、
+//   拖选跨段时保持渲染态（对齐 Obsidian：移动光标/选择不引起整行闪源码）；
+//   链接/图片整构造在光标进入构造内部时显示完整源码。
 window.MdEditor = (() => {
   const CM = window.CM6;
   if (!CM) return null;
@@ -158,16 +161,29 @@ window.MdEditor = (() => {
     // 改为数组收集 + Decoration.set(…, true) 统一排序。
     const decos = [];
     const doc = view.state.doc;
-    // 活动行 = 选区覆盖的行（head 或 anchor 所在行都算）——
-    // 拖选多行时整段显示源码，与 Obsidian 行为一致。
+    // Obsidian 式「标记粒度」显示模型（取代旧的行粒度"光标行=源码"）：
+    //   1. 行级构造（标题#/引用>/围栏行/分隔线/表格分隔行）→ 光标落在该行才显示源码；
+    //   2. 行内标记（** ~~ ` 等）→ 仅光标紧邻该标记（前后 1 字符内）或选区完整
+    //      落在标记内部时才显形 —— 光标在同行其他位置、拖选跨段时一律保持渲染态
+    //      （消除整行闪源码 / 多行选择闪烁）；
+    //   3. 链接/图片整构造 → 光标在构造内部时显示完整源码（Obsidian 编辑链接的行为）。
     const sel = view.state.selection.main;
     const selFrom = Math.min(sel.from, sel.to), selTo = Math.max(sel.from, sel.to);
     const selFromLine = doc.lineAt(selFrom), selToLine = doc.lineAt(selTo);
+    const isCursor = selFrom === selTo; // 空选区 = 光标
 
-    const onCursorLine = (pos) => {
+    // 行级构造判定：光标/选区与该行相交
+    const onLine = (pos) => {
       const l = doc.lineAt(pos);
-      return !(l.to < selFromLine.from || l.from > selToLine.to); // 节点行与选区行相交
+      return !(l.to < selFromLine.from || l.from > selToLine.to);
     };
+    // 行内标记判定：光标紧邻标记（间隙 ∈ [from, to]，含标记前/内部/标记后三个贴身位）
+    // 或选区完整落在标记内部；否则保持隐藏
+    const revealsMark = (from, to) =>
+      isCursor ? (selFrom >= from && selFrom <= to) : (selFrom >= from && selTo <= to);
+    // 构造判定（链接/图片）：光标在构造内部（非边界）或选区完整落在构造内
+    const revealsConstruct = (from, to) =>
+      isCursor ? (selFrom > from && selFrom < to) : (selFrom >= from && selTo <= to);
 
     // 确保语法树解析到文档末尾（CM6 分片解析是异步的：初始/滚动后未解析区域的
     // 装饰会缺失 → live 预览局部退化成源码）。给 30ms 预算：小文档同步补全，
@@ -188,18 +204,19 @@ window.MdEditor = (() => {
     const inFence = (pos) => fenceRanges.some(([a, b]) => pos >= a && pos <= b);
     {
       const from = 0, to = doc.length;
-      // ---- 行级预处理：空行压缩 / task checkbox / 列表标记弱化（不依赖语法树） ----
+      // ---- 行级预处理：空行压缩 / task checkbox / 列表标记弱化（不依赖语法树、与光标无关） ----
+      // Obsidian 行为：bullet 常显但弱化、task 勾选框任何时候都是渲染态（可直接点击）——
+      // 不再随光标位置切换，消除光标扫过列表行时的源码/渲染跳变。
       let pos = from;
       while (pos < to) {
         const l = doc.lineAt(pos);
-        const isCur = onCursorLine(l.from);
-        if (!isCur && !inFence(l.from)) {
+        if (!inFence(l.from)) {
           if (!l.text.trim()) {
             decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
           } else {
             const m = /^(\s*)([-*+]|\d+\.)( +)/.exec(l.text);
             if (m) {
-              // bullet 弱化（非光标行）
+              // bullet 弱化（常显）
               const bFrom = l.from + m[1].length;
               decos.push(Decoration.mark({ class: 'cm-md-listmark' }).range(bFrom, bFrom + m[2].length));
               // task checkbox：- [ ] / - [x] → 勾选框（连尾随空格一起替换，避免渲染态双空格）
@@ -230,7 +247,8 @@ window.MdEditor = (() => {
                 const l = doc.line(n);
                 if (/^\s*(```|~~~)/.test(l.text)) {
                   // 围栏行：普通 replace 隐藏文本 + line 类压到 0 高（不吞换行）
-                  if (!onCursorLine(l.from)) {
+                  // 行级规则：光标落在围栏行本身才展开（内容行编辑时围栏保持折叠 —— Obsidian 行为）
+                  if (!onLine(l.from)) {
                     decos.push(Decoration.replace({}).range(l.from, l.to));
                     decos.push(Decoration.line({ class: 'cm-md-fence-hidden' }).range(l.from));
                   }
@@ -250,32 +268,34 @@ window.MdEditor = (() => {
               }
               return;
             }
-            // 分隔线 ---：隐藏文本 + 行 border-top 画线（非光标行）
+            // 分隔线 ---：隐藏文本 + 行 border-top 画线（光标落在该行才显示源码）
             if (name === 'HorizontalRule') {
               const l = doc.lineAt(node.from);
-              if (!onCursorLine(l.from)) {
+              if (!onLine(l.from)) {
                 decos.push(Decoration.replace({}).range(l.from, l.to));
                 decos.push(Decoration.line({ class: 'cm-md-hr-line' }).range(l.from));
               }
               return;
             }
             // 表格：逐行线框渲染（Obsidian 做法 —— 不整块 widget 化）。
-            // 表头行背景+上边框、数据行侧边框、末行下边框、分隔行隐藏压缩、| 弱化。
+            // 表头行背景+上边框、数据行侧边框、末行下边框、分隔行隐藏压缩、| 常显弱化。
+            // 光标进单元格时行保持线框渲染（不再整行退化成源码 —— Obsidian 行为）。
             if (name === 'Table') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
-                if (onCursorLine(l.from)) continue; // 光标行显示源码
                 if (/^[\s|:\-]+$/.test(l.text)) {
-                  // 分隔行 | --- | --- |：隐藏 + 压缩
-                  decos.push(Decoration.replace({}).range(l.from, l.to));
-                  decos.push(Decoration.line({ class: 'cm-md-tr-sep' }).range(l.from));
+                  // 分隔行 | --- | --- |：隐藏 + 压缩（光标落在分隔行本身才显示源码）
+                  if (!onLine(l.from)) {
+                    decos.push(Decoration.replace({}).range(l.from, l.to));
+                    decos.push(Decoration.line({ class: 'cm-md-tr-sep' }).range(l.from));
+                  }
                 } else {
                   let cls = 'cm-md-tr';
                   if (n === first.number) cls += ' cm-md-tr-head';
                   if (n === last.number) cls += ' cm-md-tr-last';
                   decos.push(Decoration.line({ class: cls }).range(l.from));
-                  // | 分隔符弱化
+                  // | 分隔符弱化（常显 —— Obsidian 表格竖线不隐藏）
                   for (let i = 0; i < l.text.length; i++) {
                     if (l.text[i] === '|') decos.push(Decoration.mark({ class: 'cm-md-pipe' }).range(l.from + i, l.from + i + 1));
                   }
@@ -294,8 +314,8 @@ window.MdEditor = (() => {
               decos.push(Decoration.line({ class: 'cm-md-quote-last' }).range(last.from));
               return;
             }
-            // 图片：整块替换为 img widget（光标不在行内时）
-            if (name === 'Image' && !onCursorLine(node.from)) {
+            // 图片：整块替换为 img widget（构造粒度 —— 光标不在构造内部时）
+            if (name === 'Image' && !revealsConstruct(node.from, node.to)) {
               const src = doc.sliceString(node.from, node.to);
               const m = /^!\[([^\]]*)\]\(([^)]*)\)/.exec(src);
               if (m) {
@@ -307,25 +327,42 @@ window.MdEditor = (() => {
             }
             // 标记隐藏：HeaderMark(#)/EmphasisMark(** *)/StrikethroughMark(~~)/
             // CodeMark(` 围栏)/LinkMark([]())/QuoteMark(>)。
-            // 仅非光标行隐藏（光标行显示源码标记）。
             // 注意：lezer-markdown 中删除线标记节点名是 StrikethroughMark（非 EmphasisMark）。
-            if (/^(HeaderMark|EmphasisMark|StrikethroughMark|CodeMark|LinkMark|QuoteMark)$/.test(name) && !onCursorLine(node.from)) {
+            // 显形规则（标记粒度显示模型）：
+            //   HeaderMark/QuoteMark → 行级：光标落在该行
+            //   EmphasisMark/StrikethroughMark/CodeMark → 标记级：光标紧邻该标记
+            //   LinkMark → 标记级 或 光标在所属 Link 构造内部（Obsidian：点进链接显示完整源码）
+            if (/^(HeaderMark|EmphasisMark|StrikethroughMark|CodeMark|LinkMark|QuoteMark)$/.test(name)) {
               // 围栏代码块内的 CodeMark：围栏行已被整行 replace 隐藏，跳过（防嵌套 replace 冲突）
               if (name === 'CodeMark' && parentName === 'FencedCode') return;
-              const text = doc.sliceString(node.from, node.to);
-              if (!text.trim()) return; // 空白不处理
-              // 标题/引用标记：连同后面的空格一起隐藏 ——
-              // 否则渲染态残留前导空格（" 标题"/" 引用"），视觉多一层缩进
-              let hideEnd = node.to;
+              let show;
               if (name === 'HeaderMark' || name === 'QuoteMark') {
-                if (doc.sliceString(hideEnd, hideEnd + 1) === ' ') hideEnd += 1;
+                show = onLine(node.from); // 行级构造
+              } else if (name === 'LinkMark') {
+                const pl = parent; // 所属 Link 构造
+                show = revealsMark(node.from, node.to) || (pl && pl.name === 'Link' && revealsConstruct(pl.from, pl.to));
+              } else {
+                show = revealsMark(node.from, node.to); // 行内标记：仅紧邻显形
               }
-              decos.push(Decoration.replace({}).range(node.from, hideEnd));
+              if (!show) {
+                const text = doc.sliceString(node.from, node.to);
+                if (!text.trim()) return; // 空白不处理
+                // 标题/引用标记：连同后面的空格一起隐藏 ——
+                // 否则渲染态残留前导空格（" 标题"/" 引用"），视觉多一层缩进
+                let hideEnd = node.to;
+                if (name === 'HeaderMark' || name === 'QuoteMark') {
+                  if (doc.sliceString(hideEnd, hideEnd + 1) === ' ') hideEnd += 1;
+                }
+                decos.push(Decoration.replace({}).range(node.from, hideEnd));
+              }
               return;
             }
-            // 链接目标 URL（Link 的 (url) 部分）：光标不在行内时隐藏
-            if (name === 'URL' && !onCursorLine(node.from)) {
-              decos.push(Decoration.replace({}).range(node.from, node.to));
+            // 链接目标 URL（Link 的 (url) 部分）：光标在所属 Link 构造内部时显示（可编辑目标）
+            if (name === 'URL') {
+              const pl = parent;
+              if (!(pl && pl.name === 'Link' && revealsConstruct(pl.from, pl.to))) {
+                decos.push(Decoration.replace({}).range(node.from, node.to));
+              }
               return;
             }
             // 内容样式：标题/加粗/斜体/删除线/行内代码/链接文字
@@ -566,6 +603,12 @@ window.MdEditor = (() => {
         const l = view.state.doc.line(n);
         view.dispatch({ selection: { anchor: l.from }, scrollIntoView: true });
         view.focus();
+      },
+      // 精确置光标/选区（测试用：验证标记粒度显形）
+      setCursor(pos, head) {
+        const p = Math.max(0, Math.min(pos, view.state.doc.length));
+        const h = head == null ? p : Math.max(0, Math.min(head, view.state.doc.length));
+        view.dispatch({ selection: { anchor: p, head: h } });
       },
       find() { try { Search.openSearchPanel(view); } catch {} },
       destroy() { try { view.destroy(); } catch {} },
