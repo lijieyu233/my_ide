@@ -4,4 +4,5 @@ smoke.log
 *.log
 .idea/
 dist/
-build/
+build/*
+!build/icon.png
