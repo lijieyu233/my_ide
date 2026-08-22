@@ -351,6 +351,11 @@ const App = (() => {
       });
       bar.appendChild(btn);
     }
+    // 渲染后把当前项目按钮滚入可视区：新开项目在末尾，曾被截断看不到、点不到 ✕
+    const act = bar.querySelector('.proj-btn.active');
+    if (act && act.scrollIntoView) {
+      try { act.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch {}
+    }
   }
   // 切换项目：静默保存未保存的标签 → 关闭全部 → 重新加载（不再弹确认）
   async function openProject(p) {
@@ -489,6 +494,15 @@ const App = (() => {
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();
     initSidebarResizer();
+    // 项目栏滚轮横向滚动：项目过多时末尾按钮被截断，垂直滚轮直接转横向
+    //（仅横向溢出且本次无 deltaX 时拦截，不影响触控板原生横滚）
+    const pbar = document.getElementById('project-bar');
+    pbar.addEventListener('wheel', (e) => {
+      if (!e.deltaX && pbar.scrollWidth > pbar.clientWidth) {
+        e.preventDefault();
+        pbar.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
     // 插件热重载：plugins/ 目录变更自动重载
     window.myIDE.plugins.onChanged(() => {
       MI.loadPlugins().then(() => MI.toast('🔌 插件已热重载', 'ok'));

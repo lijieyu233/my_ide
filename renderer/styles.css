@@ -71,7 +71,10 @@ body {
 .tb-btn:hover { background: var(--btn-hover); color: var(--text-bright); }
 .tb-btn.big { padding: 8px 18px; font-size: 14px; margin-top: 14px; }
 #project-bar { display: flex; gap: 4px; overflow-x: auto; max-width: 33vw; flex-shrink: 0; padding: 2px 0; }
-#project-bar::-webkit-scrollbar { height: 4px; }
+/* 滚动条可见（hover 加深）：项目过多时提示还有更多可滚 */
+#project-bar::-webkit-scrollbar { height: 5px; }
+#project-bar::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 3px; }
+#project-bar::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 /* 「全部项目」入口：固定最左、显示数量 + 当前项目名（替代旧 sticky ▾ 按钮） */
 .proj-all {
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;

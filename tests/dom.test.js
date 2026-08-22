@@ -1014,6 +1014,30 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.root-path').textContent.includes('C:/proj'), '下拉点击切换项目');
   });
 
+  await okAsync('项目栏溢出：滚轮横向滚动 + 当前项目自动滚入可视区', async () => {
+    const bar = $(dom, '#project-bar');
+    assert_(bar, '项目栏存在');
+    // 模拟横向溢出（jsdom 无布局，手动注入 scrollWidth/clientWidth）
+    Object.defineProperty(bar, 'scrollWidth', { configurable: true, value: 800 });
+    Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 300 });
+    bar.dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: 120, cancelable: true }));
+    assert_(bar.scrollLeft === 120, '垂直滚轮转横向滚动（末尾项目可达）, got ' + bar.scrollLeft);
+    bar.dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: -60, cancelable: true }));
+    assert_(bar.scrollLeft === 60, '反向滚动回退, got ' + bar.scrollLeft);
+    // 新开项目按钮在末尾：渲染后自动滚入可视区（此前被截断看不到、点不到 ✕）
+    const proto = dom.window.HTMLElement.prototype;
+    const origSI = proto.scrollIntoView;
+    let siOpts = null;
+    proto.scrollIntoView = function (o) { siOpts = o; };
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    if (origSI) proto.scrollIntoView = origSI; else delete proto.scrollIntoView;
+    assert_(siOpts && siOpts.inline === 'nearest', '当前项目按钮 scrollIntoView(inline nearest)');
+    // 清理：切回项目一
+    await g(dom, 'App.openProject("' + P + '")');
+    await tick(); await tick();
+  });
+
   await okAsync('Git 刷新防抖：连续保存只刷一次', async () => {
     dom.window.__rc = 0;
     g(dom, 'window.__origGitRefresh = GitPanel.refresh');
@@ -2284,13 +2308,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('关闭全部项目后空状态显示最近项目（一键重开）', async () => {
     // 前一组已全部关闭：空状态应出现「最近项目」按钮（历史来自 pushRecent）
+    // 注：doRemove 修复后，关闭当前项目切换到剩余项目也会记入历史 → 大项目测试的 C:/big 可能在最前
     const recBtns = $allIn($(dom, '#empty-recent'), '.proj-btn');
     assert_(recBtns.length >= 1, '空状态显示最近项目按钮, got ' + recBtns.length);
-    assert_(recBtns[0].title === P || recBtns[0].title === 'C:/proj2', '历史含已关闭项目: ' + recBtns[0].title);
-    // 点击历史按钮重新打开项目
+    const known = [P, 'C:/proj2', 'C:/big'];
+    assert_(known.includes(recBtns[0].title), '历史含已关闭项目: ' + recBtns[0].title);
+    // 点击历史按钮重新打开项目（用 App.root 断言：大项目虚拟滚动下 .root-path 元素可能不在可视窗口）
+    const t = recBtns[0].title;
     click(recBtns[0]);
     await tick(); await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('proj'), '点击历史重新打开项目');
+    assert_(g(dom, 'App.root') === t, '点击历史重新打开项目: ' + g(dom, 'App.root'));
     // 清理：再关掉，回到空状态供后续用例
     const b = $allIn($(dom, '#project-bar'), '.proj-btn')[0];
     const x = b && b.querySelector('.proj-close');
