@@ -2402,6 +2402,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const wv = $(dom, '#browser-view webview');
     assert_(wv, 'webview 元素创建');
     assert_(wv.getAttribute('partition') === 'persist:myide-browser', '持久 partition（保留登录态）');
+    assert_(wv.getAttribute('src') === 'https://baidu.com', 'src 写入 attribute（property 赋值在未 upgrade 的 webview 上不触发导航 → 白屏根因）, got ' + wv.getAttribute('src'));
+    assert_(!$(dom, '#browser-view').classList.contains('hidden'), 'webview 容器可见后再创建（attach 时序）');
     assert_($(dom, '#browser-empty').classList.contains('hidden'), '空状态隐藏');
     // 模拟导航事件 → 写历史
     const fire = (type, url) => { const ev = new dom.window.Event(type); ev.url = url; wv.dispatchEvent(ev); };

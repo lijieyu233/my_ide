@@ -76,8 +76,12 @@ const BrowserPanel = (() => {
       if (list[0] && list[0].url === currentUrl) { list[0].title = currentTitle; saveJSON(HISTORY_KEY, list); }
       if (isFav(currentUrl)) { const l = favs(); const f = l.find((x) => x.url === currentUrl); if (f) { f.title = currentTitle || f.title; saveJSON(FAV_KEY, l); } }
     });
-    wv.addEventListener('did-start-loading', () => panel.classList.add('loading'));
-    wv.addEventListener('did-stop-loading', () => { panel.classList.remove('loading'); prog().style.width = '0'; });
+    wv.addEventListener('did-start-loading', () => { prog().style.width = '35%'; });
+    wv.addEventListener('did-stop-loading', () => {
+      prog().style.width = '100%';
+      setTimeout(() => { if (prog().style.width === '100%') prog().style.width = '0'; }, 250);
+    });
+    // loadProgress 若触发则显示精确进度（事件名跨版本行为不一，start/stop 已兜底）
     wv.addEventListener('loadProgress', (e) => {
       const p = Math.max(0, Math.min(1, Number(e.progress) || 0));
       prog().style.width = Math.round(p * 100) + '%';
@@ -114,17 +118,20 @@ const BrowserPanel = (() => {
   function go(url) {
     const u = normalizeInput(url);
     if (!u) return;
-    ensureWv();
+    // 顺序关键：先让容器可见，再创建 webview（避免在 display:none 容器中 attach 的时序竞态）
     document.getElementById('browser-empty').classList.add('hidden');
     document.getElementById('browser-view').classList.remove('hidden');
-    if (String(wv.src || '') === u && wvCan('reload')) wv.reload(); // 同址再回车 = 刷新
-    else wv.src = u;
+    ensureWv();
+    // 动态创建的 webview 必须用 setAttribute 设 src：
+    // property 赋值在元素未被 Electron upgrade 前只是 expando，不触发导航 → 白屏
+    if (wv.getAttribute('src') === u && wvCan('reload')) wv.reload(); // 同址再回车 = 刷新
+    else wv.setAttribute('src', u);
     urlInput.value = u;
     closeDd();
   }
   function back() { if (wvCan('goBack') && wv.canGoBack()) wv.goBack(); }
   function forward() { if (wvCan('goForward') && wv.canGoForward()) wv.goForward(); }
-  function reload() { if (wvCan('reload') && wv.src) wv.reload(); else if (currentUrl) go(currentUrl); }
+  function reload() { if (wvCan('reload') && wv.getAttribute('src')) wv.reload(); else if (currentUrl) go(currentUrl); }
   function home() { go(HOME); }
 
   // ---------- 面板显隐 ----------
@@ -137,7 +144,11 @@ const BrowserPanel = (() => {
     visible = true;
     panel.classList.remove('hidden');
     syncToolBtn();
-    if (!wv) renderEmpty();
+    // 视图状态机：有已加载页面显示 webview，否则显示空状态页（收藏/历史）
+    const hasPage = !!(wv && wv.getAttribute('src'));
+    document.getElementById('browser-empty').classList.toggle('hidden', hasPage);
+    document.getElementById('browser-view').classList.toggle('hidden', !hasPage);
+    if (!hasPage) renderEmpty();
     setTimeout(() => urlInput.focus(), 0);
   }
   function hide() {
