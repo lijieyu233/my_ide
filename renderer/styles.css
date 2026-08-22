@@ -1030,8 +1030,7 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 /* 加载进度条 */
 .browser-prog { height: 2px; flex-shrink: 0; background: transparent; }
 #bw-prog { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
-#browser-view { flex: 1; min-height: 0; }
-#browser-view webview { display: block; width: 100%; height: 100%; border: none; background: #fff; }
+#browser-view { flex: 1; min-height: 0; } /* 占位区：rect 上报主进程 setBounds（网页由 WebContentsView 原生层渲染） */
 /* 地址栏下拉建议 */
 .bw-dd {
   position: absolute; top: calc(100% + 2px); left: 8px; right: 8px;

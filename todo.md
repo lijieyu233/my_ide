@@ -3,7 +3,7 @@
 ## 2026-08-23（第七轮 · 已完成）
 
 ### Bug 修复
-- [x] 内置浏览器「点击后只有上面一小部分显示、下面空白」：真实 Electron 诊断确认 webview 导航/布局/guest 渲染全部正常（getURL、866x636、guestH1 均对）——用户看到白屏是旧窗口未重启（跑的修复前代码）；同时补防御：CSP frame-src 加 http/https、加载失败显示错误占位页（含重试按钮）替代无声白屏
+- [x] 内置浏览器「只有上面一小部分显示、下面空白」彻底修复：像素级诊断实锤根因——<webview> 的 guest 视口高度同步在 flex 布局下失效（元素 rect 585px 但 guest 视口卡默认 150px，宽度跟随/高度卡死），CSS 百分比、显式像素、width/height attribute、延迟设 src 全部无效；弃用 <webview>，改主进程 WebContentsView（setBounds 显式控制视口，占位区 rect 经 ResizeObserver 上报），验证：view 截图中心+底部均纯绿（旧方案底部纯白）
 - [x] 顶部项目栏拖拽排序后切换项目又变回：顺序固化原在 drop 里，拖到空白处释放不触发 drop → DOM 已变而数据未变，重渲染弹回；改到必然触发的 dragend 统一固化
 - [x] 玩宠左键点击弹菜单：左键改为卖萌说话（随机台词），菜单移到右键
 

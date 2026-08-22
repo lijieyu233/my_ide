@@ -1,14 +1,16 @@
-// browser.js —— 内置浏览器面板（Electron <webview>）
-// 内容区覆盖式面板：地址栏（URL/关键词搜索）、前进后退刷新、收藏、最近历史
-// 登录态持久（partition persist）；webview 内新窗口 → 系统浏览器（main.js 统一处理）
+// browser.js —— 内置浏览器面板（主进程 WebContentsView）
+// 弃用 <webview>：guest 视口高度同步在 flex 布局下失效（卡默认 150px → 下半白屏）。
+// 现由主进程 WebContentsView 渲染网页，本模块只管 UI（工具栏/地址栏/收藏/历史）
+// 并通过 IPC 驱动导航、上报 #browser-view 占位区 rect（setBounds 显式控制视口尺寸）。
 const BrowserPanel = (() => {
   const HISTORY_KEY = 'myide-browser-history';
   const FAV_KEY = 'myide-browser-favs';
   const HOME = 'https://www.bing.com';
   const SEARCH = 'https://www.bing.com/search?q=';
 
-  let panel, urlInput, wv, favBtn, ddEl;
+  let panel, urlInput, favBtn, ddEl, viewEl;
   let visible = false;
+  let hasPage = false;      // 是否已打开过页面（决定 show 恢复网页 or 空状态）
   let currentUrl = '';
   let currentTitle = '';
 
@@ -62,61 +64,61 @@ const BrowserPanel = (() => {
     ]);
   }
 
-  // ---------- webview ----------
-  function ensureWv() {
-    if (wv) return wv;
-    wv = document.createElement('webview');
-    wv.setAttribute('partition', 'persist:myide-browser'); // 持久 session：保留登录态
-    wv.addEventListener('did-navigate', (e) => onNavigated(e.url, false));
-    wv.addEventListener('did-navigate-in-page', (e) => onNavigated(e.url, true));
-    wv.addEventListener('page-title-updated', (e) => {
-      currentTitle = e.title || '';
-      // 标题变化时同步最近一条历史的标题
+  // ---------- IPC 桥 ----------
+  const B = () => (window.myIDE && window.myIDE.browser) || null;
+
+  // 上报占位区 rect → 主进程 setBounds（WebContentsView 是原生层，尺寸完全由它决定）
+  function syncBounds() {
+    if (!viewEl || viewEl.classList.contains('hidden')) return;
+    const r = viewEl.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return; // 布局未就绪/不可见不报
+    const b = B(); if (b) b.viewBounds({ x: r.x, y: r.y, width: r.width, height: r.height });
+  }
+  // 容器刚从 display:none 恢复时 rect 要下一帧才有效
+  function mountView(url) {
+    const b = B(); if (!b) return;
+    b.viewOpen(url || null).then((r) => { if (r && r.error) MI.toast(r.error, 'err'); }).catch(() => {});
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      syncBounds();
+      if (url) { const bb = B(); if (bb) bb.viewNav('focus'); } // 加载新页后聚焦网页（可立即滚轮/键盘）
+    }));
+  }
+
+  // ---------- 主进程状态回推 ----------
+  function onState(s) {
+    if (!s) return;
+    if (s.err) { showError(s.err); return; }
+    if (s.navigated && s.url) {
+      currentUrl = s.url;
+      if (document.activeElement !== urlInput) urlInput.value = currentUrl;
+      document.getElementById('browser-error').classList.add('hidden');
+      if (!s.inPage) addHistory(currentUrl, currentTitle);
+    }
+    if (s.title != null) {
+      currentTitle = s.title;
+      // 同步最近一条历史的标题
       const list = history();
       if (list[0] && list[0].url === currentUrl) { list[0].title = currentTitle; saveJSON(HISTORY_KEY, list); }
       if (isFav(currentUrl)) { const l = favs(); const f = l.find((x) => x.url === currentUrl); if (f) { f.title = currentTitle || f.title; saveJSON(FAV_KEY, l); } }
-    });
-    wv.addEventListener('did-start-loading', () => { prog().style.width = '35%'; });
-    wv.addEventListener('did-stop-loading', () => {
-      prog().style.width = '100%';
-      setTimeout(() => { if (prog().style.width === '100%') prog().style.width = '0'; }, 250);
-    });
-    // loadProgress 若触发则显示精确进度（事件名跨版本行为不一，start/stop 已兜底）
-    wv.addEventListener('loadProgress', (e) => {
-      const p = Math.max(0, Math.min(1, Number(e.progress) || 0));
-      prog().style.width = Math.round(p * 100) + '%';
-    });
-    wv.addEventListener('did-fail-load', (e) => {
-      if (e.errorCode === -3) return; // ERR_ABORTED：用户发起新导航
-      showError(e.errorDescription || ('错误码 ' + e.errorCode));
-    });
-    document.getElementById('browser-view').appendChild(wv);
-    return wv;
+    }
+    if (s.canBack != null) document.getElementById('bw-back').disabled = !s.canBack;
+    if (s.canFwd != null) document.getElementById('bw-fwd').disabled = !s.canFwd;
+    renderFavBtn();
+    if (s.loading != null) {
+      if (s.loading) setProg('35%');
+      else { setProg('100%'); setTimeout(() => { if (progEl().style.width === '100%') setProg('0'); }, 250); }
+    }
+    if (s.progress != null) setProg(Math.round(Math.max(0, Math.min(1, Number(s.progress) || 0)) * 100) + '%');
   }
-  const prog = () => document.getElementById('bw-prog');
-  const wvCan = (m) => wv && typeof wv[m] === 'function';
+  const progEl = () => document.getElementById('bw-prog');
+  const setProg = (w) => { progEl().style.width = w; };
 
-  function onNavigated(url, inPage) {
-    currentUrl = url || '';
-    if (document.activeElement !== urlInput) urlInput.value = currentUrl;
-    if (!inPage) addHistory(currentUrl, currentTitle);
-    // 导航成功 → 清除错误占位
-    document.getElementById('browser-error').classList.add('hidden');
-    updateNavState();
-  }
-  // 加载失败 → webview 区域覆盖错误页（含重试），避免无声白屏无从判断
   function showError(msg) {
-    const errEl = document.getElementById('browser-error');
     document.getElementById('bw-err-msg').textContent = '加载失败：' + msg;
     document.getElementById('browser-empty').classList.add('hidden');
-    document.getElementById('browser-view').classList.remove('hidden');
-    errEl.classList.remove('hidden');
+    viewEl.classList.remove('hidden');
+    document.getElementById('browser-error').classList.remove('hidden');
     MI.toast('页面加载失败：' + msg, 'err');
-  }
-  function updateNavState() {
-    document.getElementById('bw-back').disabled = !(wvCan('canGoBack') && wv.canGoBack());
-    document.getElementById('bw-fwd').disabled = !(wvCan('canGoForward') && wv.canGoForward());
-    renderFavBtn();
   }
   function renderFavBtn() {
     const faved = currentUrl && isFav(currentUrl);
@@ -129,21 +131,22 @@ const BrowserPanel = (() => {
   function go(url) {
     const u = normalizeInput(url);
     if (!u) return;
-    // 顺序关键：先让容器可见，再创建 webview（避免在 display:none 容器中 attach 的时序竞态）
     document.getElementById('browser-empty').classList.add('hidden');
     document.getElementById('browser-error').classList.add('hidden');
-    document.getElementById('browser-view').classList.remove('hidden');
-    ensureWv();
-    // 动态创建的 webview 必须用 setAttribute 设 src：
-    // property 赋值在元素未被 Electron upgrade 前只是 expando，不触发导航 → 白屏
-    if (wv.getAttribute('src') === u && wvCan('reload')) wv.reload(); // 同址再回车 = 刷新
-    else wv.setAttribute('src', u);
+    viewEl.classList.remove('hidden');
+    hasPage = true;
+    if (u === currentUrl && hasPage) { // 同址再回车 = 刷新
+      const b = B(); if (b) b.viewNav('reload');
+      syncBounds();
+    } else {
+      mountView(u);
+    }
     urlInput.value = u;
     closeDd();
   }
-  function back() { if (wvCan('goBack') && wv.canGoBack()) wv.goBack(); }
-  function forward() { if (wvCan('goForward') && wv.canGoForward()) wv.goForward(); }
-  function reload() { if (wvCan('reload') && wv.getAttribute('src')) wv.reload(); else if (currentUrl) go(currentUrl); }
+  function back() { const b = B(); if (b) b.viewNav('back'); }
+  function forward() { const b = B(); if (b) b.viewNav('forward'); }
+  function reload() { if (currentUrl) { const b = B(); if (b) b.viewNav('reload'); } else if (urlInput.value) go(urlInput.value); }
   function home() { go(HOME); }
 
   // ---------- 面板显隐 ----------
@@ -156,11 +159,15 @@ const BrowserPanel = (() => {
     visible = true;
     panel.classList.remove('hidden');
     syncToolBtn();
-    // 视图状态机：有已加载页面显示 webview，否则显示空状态页（收藏/历史）
-    const hasPage = !!(wv && wv.getAttribute('src'));
-    document.getElementById('browser-empty').classList.toggle('hidden', hasPage);
-    document.getElementById('browser-view').classList.toggle('hidden', !hasPage);
-    if (!hasPage) renderEmpty();
+    if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
+      document.getElementById('browser-empty').classList.add('hidden');
+      viewEl.classList.remove('hidden');
+      mountView(null);
+    } else {
+      document.getElementById('browser-empty').classList.remove('hidden');
+      viewEl.classList.add('hidden');
+      renderEmpty();
+    }
     setTimeout(() => urlInput.focus(), 0);
   }
   function hide() {
@@ -169,6 +176,7 @@ const BrowserPanel = (() => {
     panel.classList.add('hidden');
     syncToolBtn();
     closeDd();
+    const b = B(); if (b) b.viewHide(); // 只摘掉显示，WebContentsView 保留
   }
   function toggle() { visible ? hide() : show(); }
   function open(url) { show(); go(url); }
@@ -278,6 +286,7 @@ const BrowserPanel = (() => {
     urlInput = document.getElementById('bw-url');
     favBtn = document.getElementById('bw-fav');
     ddEl = document.getElementById('bw-dd');
+    viewEl = document.getElementById('browser-view');
 
     document.getElementById('bw-back').onclick = back;
     document.getElementById('bw-fwd').onclick = forward;
@@ -305,9 +314,16 @@ const BrowserPanel = (() => {
     urlInput.addEventListener('input', () => renderDd(urlInput.value));
     urlInput.addEventListener('blur', () => setTimeout(closeDd, 150));
 
-    // 主进程转发的 webview 内快捷键（Ctrl+4 切换 / Alt+←→ 导航 / Ctrl+R、F5 刷新 / Ctrl+L 地址栏）
-    if (window.myIDE && window.myIDE.browser && window.myIDE.browser.onCmd) {
-      window.myIDE.browser.onCmd((cmd) => {
+    // 占位区尺寸变化（窗口 resize / 侧栏拖宽 / 面板显隐）→ 同步 view bounds
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => syncBounds()).observe(viewEl);
+    }
+    window.addEventListener('resize', () => syncBounds());
+
+    const b = B();
+    if (b) {
+      // 主进程转发的 view 内快捷键（Ctrl+4 / Alt+←→ / Ctrl+R、F5 / Ctrl+L）
+      if (b.onCmd) b.onCmd((cmd) => {
         if (cmd === 'toggle') toggle();
         else if (!visible) return;
         else if (cmd === 'back') back();
@@ -315,11 +331,13 @@ const BrowserPanel = (() => {
         else if (cmd === 'reload') reload();
         else if (cmd === 'focus-url') { urlInput.focus(); urlInput.select(); }
       });
+      // 主进程页面状态回推（url/title/loading/canBack/canFwd/progress/err）
+      if (b.onState) b.onState((s) => onState(s));
     }
   }
 
   return {
-    init, show, hide, toggle, open, go, back, forward, reload, home,
+    init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     get visible() { return visible; },
     get url() { return currentUrl; },

@@ -62,8 +62,15 @@ contextBridge.exposeInMainWorld('myIDE', {
     onChanged: (cb) => ipcRenderer.on('plugins:changed', () => cb()),
   },
   browser: {
-    // 主进程转发的 webview 导航快捷键命令（toggle/back/forward/reload/focus-url）
+    // WebContentsView 内置浏览器（主进程管理，规避 <webview> guest 视口高度同步失效）
+    viewOpen: (url) => ipcRenderer.invoke('browser:view-open', url),
+    viewBounds: (rect) => ipcRenderer.invoke('browser:view-bounds', rect),
+    viewHide: () => ipcRenderer.invoke('browser:view-hide'),
+    viewNav: (cmd) => ipcRenderer.invoke('browser:view-nav', cmd), // back/forward/reload/focus
+    // 主进程转发的 view 内导航快捷键命令（toggle/back/forward/reload/focus-url）
     onCmd: (cb) => ipcRenderer.on('browser:cmd', (_e, cmd) => cb(cmd)),
+    // 主进程推送的页面状态（url/title/loading/canBack/canFwd/progress/err）
+    onState: (cb) => ipcRenderer.on('browser:state', (_e, s) => cb(s)),
   },
   appInfo: () => ipcRenderer.invoke('app:info'),
 });

@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, ipcMain, dialog, clipboard, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const G = require('./git-service');
@@ -52,23 +52,29 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webviewTag: true, // 内置浏览器面板（renderer/browser.js）
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
   return mainWindow;
 }
 
-// ---------- 内置浏览器（webview）主进程侧策略 ----------
-// webview 内的 window.open / target=_blank → 系统默认浏览器打开；
-// webview 聚焦时宿主收不到 keydown，导航类快捷键在主进程拦截后转发给宿主执行
-app.on('web-contents-created', (_e, wc) => {
-  if (wc.getType() !== 'webview') return;
+// ---------- 内置浏览器（WebContentsView）----------
+// 弃用 <webview> 标签：其 guest 视口高度同步在 flex 布局下失效（卡默认 150px，
+// 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
+// WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
+let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+function ensureBwView() {
+  if (bwView) return bwView;
+  bwView = new WebContentsView({
+    webPreferences: { partition: 'persist:myide-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  const wc = bwView.webContents;
   wc.setWindowOpenHandler(({ url }) => {
     if (/^(https?|file):/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // view 聚焦时宿主收不到 keydown → 导航类快捷键主进程拦截后转发宿主
   wc.on('before-input-event', (ev, input) => {
     if (input.type !== 'keyDown') return;
     const k = (input.key || '').toLowerCase();
@@ -83,6 +89,62 @@ app.on('web-contents-created', (_e, wc) => {
       if (mainWindow) mainWindow.webContents.send('browser:cmd', cmd);
     }
   });
+  // 状态推送（renderer 更新地址栏/标题/进度/按钮可用性/错误页）
+  const push = (extra) => {
+    if (!mainWindow) return;
+    try {
+      mainWindow.webContents.send('browser:state', Object.assign({
+        url: wc.getURL(),
+        title: wc.getTitle(),
+        loading: wc.isLoading(),
+        canBack: wc.navigationHistory.canGoBack(),
+        canFwd: wc.navigationHistory.canGoForward(),
+      }, extra || {}));
+    } catch {}
+  };
+  wc.on('did-navigate', (_e, url) => push({ navigated: true, url }));
+  wc.on('did-navigate-in-page', (_e, url) => push({ navigated: true, inPage: true, url }));
+  wc.on('page-title-updated', (_e, title) => push({ title }));
+  wc.on('did-start-loading', () => push({ loading: true }));
+  wc.on('did-stop-loading', () => push({ loading: false }));
+  wc.on('loadProgress', (_e, p) => push({ progress: p }));
+  wc.on('did-fail-load', (_e, code, desc, _u, mainFrame) => {
+    if (mainFrame && code !== -3) push({ err: desc || ('错误码 ' + code) }); // -3 = ERR_ABORTED
+  });
+  return bwView;
+}
+ipcMain.handle('browser:view-open', (_e, url) => {
+  try {
+    if (!mainWindow) return { error: '窗口不存在' };
+    const v = ensureBwView();
+    mainWindow.contentView.addChildView(v);
+    if (url) {
+      v.webContents.loadURL(url).catch((e) => {
+        if (mainWindow) mainWindow.webContents.send('browser:state', { err: String(e.message || e) });
+      });
+    }
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('browser:view-bounds', (_e, rect) => {
+  if (!bwView || !rect) return;
+  bwView.setBounds({
+    x: Math.round(rect.x), y: Math.round(rect.y),
+    width: Math.max(0, Math.round(rect.width)), height: Math.max(0, Math.round(rect.height)),
+  });
+});
+ipcMain.handle('browser:view-hide', () => {
+  if (bwView && mainWindow) { try { mainWindow.contentView.removeChildView(bwView); } catch {} }
+});
+ipcMain.handle('browser:view-nav', (_e, cmd) => {
+  if (!bwView) return;
+  const wc = bwView.webContents;
+  try {
+    if (cmd === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+    else if (cmd === 'forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
+    else if (cmd === 'reload') wc.reload();
+    else if (cmd === 'focus') wc.focus();
+  } catch {}
 });
 
 // ---------- IPC：窗口控制（自绘标题栏）----------

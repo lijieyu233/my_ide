@@ -49,6 +49,7 @@ const FAKE_GIT = {
   ],
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
+const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
 calls.setUserConfig = [];
 calls.checkout = [];
@@ -123,6 +124,14 @@ function makeDom() {
       },
     },
     shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; }, openTerminal: async (dir) => { (calls.openTerminal = calls.openTerminal || []).push(dir); return { ok: true }; } },
+    browser: {
+      viewOpen: async (url) => { (calls.viewOpen = calls.viewOpen || []).push(url); return { ok: true }; },
+      viewBounds: async (r) => { (calls.viewBounds = calls.viewBounds || []).push(r); },
+      viewHide: async () => { (calls.viewHide = calls.viewHide || 0); calls.viewHide++; },
+      viewNav: async (cmd) => { (calls.viewNav = calls.viewNav || []).push(cmd); },
+      onCmd: () => {},
+      onState: (cb) => { stateCb.browser = cb; },
+    },
     win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
@@ -2484,28 +2493,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+4 关闭');
   });
 
-  await okAsync('内置浏览器：open 导航 + webview 创建 + 历史', async () => {
+  await okAsync('内置浏览器：open 导航（WebContentsView IPC）+ 历史', async () => {
     await g(dom, 'BrowserPanel.open("baidu.com")');
-    await tick();
+    await tick(); await tick();
     assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'open 显示面板');
     assert_($(dom, '#bw-url').value === 'https://baidu.com', '地址栏规范化, got ' + $(dom, '#bw-url').value);
-    const wv = $(dom, '#browser-view webview');
-    assert_(wv, 'webview 元素创建');
-    assert_(wv.getAttribute('partition') === 'persist:myide-browser', '持久 partition（保留登录态）');
-    assert_(wv.getAttribute('src') === 'https://baidu.com', 'src 写入 attribute（property 赋值在未 upgrade 的 webview 上不触发导航 → 白屏根因）, got ' + wv.getAttribute('src'));
-    assert_(!$(dom, '#browser-view').classList.contains('hidden'), 'webview 容器可见后再创建（attach 时序）');
+    assert_(!$(dom, '#browser-view').classList.contains('hidden'), '占位区可见');
     assert_($(dom, '#browser-empty').classList.contains('hidden'), '空状态隐藏');
-    // 模拟导航事件 → 写历史
-    const fire = (type, url) => { const ev = new dom.window.Event(type); ev.url = url; wv.dispatchEvent(ev); };
-    fire('did-navigate', 'https://baidu.com');
+    assert_(JSON.stringify(calls.viewOpen) === JSON.stringify(['https://baidu.com']), 'viewOpen 收到规范化 URL, got ' + JSON.stringify(calls.viewOpen));
+    // 模拟主进程状态回推（导航完成）→ 更新地址栏 + 写历史
+    stateCb.browser({ navigated: true, url: 'https://baidu.com', title: '百度', canBack: false, canFwd: false, loading: false });
     await tick();
+    assert_($(dom, '#bw-url').value === 'https://baidu.com', '状态回推更新地址栏');
     let his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
     assert_(his.length === 1 && his[0].url === 'https://baidu.com', '导航写入历史');
-    fire('did-navigate', 'https://github.com');
-    fire('did-navigate', 'https://baidu.com'); // 重复访问 → 去重置顶
+    stateCb.browser({ navigated: true, url: 'https://github.com', title: 'GitHub' });
+    stateCb.browser({ navigated: true, url: 'https://baidu.com', title: '百度' }); // 重复访问 → 去重置顶
     await tick();
     his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
     assert_(his.length === 2 && his[0].url === 'https://baidu.com', '历史去重置顶, got ' + JSON.stringify(his));
+    assert_(his[0].title === '百度', '标题随状态更新');
     // 上限 50
     for (let i = 0; i < 60; i++) g(dom, 'BrowserPanel.addHistory("https://x' + i + '.com")');
     his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
@@ -2513,6 +2520,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'BrowserPanel.clearHistory()');
     his = JSON.parse(dom.window.localStorage.getItem('myide-browser-history'));
     assert_(his.length === 0, '清空历史');
+    // 导航按钮可用性由状态驱动
+    stateCb.browser({ navigated: true, url: 'https://baidu.com', canBack: true, canFwd: false });
+    await tick();
+    assert_(!$(dom, '#bw-back').disabled && $(dom, '#bw-fwd').disabled, 'canBack/canFwd 驱动按钮状态');
   });
 
   await okAsync('内置浏览器：收藏切换', async () => {
@@ -2520,8 +2531,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     const favBtn = $(dom, '#bw-fav');
     assert_(favBtn.textContent === '☆', '初始未收藏');
-    const wv = $(dom, '#browser-view webview');
-    const ev = new dom.window.Event('did-navigate'); ev.url = 'https://example.com/x'; wv.dispatchEvent(ev);
+    stateCb.browser({ navigated: true, url: 'https://example.com/x', title: 'Example' });
     await tick();
     click(favBtn);
     await tick();
@@ -2533,6 +2543,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(favBtn.textContent === '☆', '再次点击取消收藏');
     favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
     assert_(!favs.some((f) => f.url === 'https://example.com/x'), '收藏已移除');
+    // 错误状态 → 错误占位页
+    stateCb.browser({ err: 'ERR_NAME_NOT_RESOLVED' });
+    await tick();
+    assert_(!$(dom, '#browser-error').classList.contains('hidden'), '加载失败显示错误页');
+    assert_($(dom, '#bw-err-msg').textContent.includes('ERR_NAME_NOT_RESOLVED'), '错误信息展示');
     await g(dom, 'BrowserPanel.hide()');
   });
 
@@ -2541,10 +2556,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('内置浏览器'));
     assert_(btn, '内置浏览器按钮存在');
+    calls.viewOpen = [];
     click(btn);
-    await tick();
+    await tick(); await tick();
     assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '点击打开内置浏览器面板');
     assert_($(dom, '#bw-url').value.startsWith('file:///') && $(dom, '#bw-url').value.includes('page.html'), '加载 file URL, got ' + $(dom, '#bw-url').value);
+    assert_((calls.viewOpen || []).some((u) => String(u).startsWith('file:///') && u.includes('page.html')), 'viewOpen 收到 file URL, got ' + JSON.stringify(calls.viewOpen));
     await g(dom, 'BrowserPanel.hide()');
   });
 
