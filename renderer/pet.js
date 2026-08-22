@@ -93,10 +93,22 @@ const Pet = (() => {
     if (el && el.isConnected) return el;
     el = document.createElement('div');
     el.id = 'pet';
-    el.title = '点击切换玩偶 / 退出';
+    el.title = '点击卖萌 · 右键菜单（切换 / 退出）';
     el.innerHTML = curPet().svg;
     document.body.appendChild(el);
-    el.addEventListener('click', (e) => { e.stopPropagation(); showPetMenu(e.clientX, e.clientY); });
+    // 左键 = 卖萌说话；右键 = 菜单（曾左键也弹菜单，用户预期左键是互动）
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = curPet();
+      const line = p.key === 'cat' ? IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)]
+        : p.line + ['~', '！', '？'][Math.floor(Math.random() * 3)];
+      MI.toast(line, 'ok');
+    });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showPetMenu(e.clientX, e.clientY);
+    });
     return el;
   }
 

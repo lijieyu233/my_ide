@@ -340,6 +340,18 @@ ipcMain.handle('run:file', (_e, p) => {
     return { ok: true, how: c[0] };
   } catch (e) { return { error: String(e.message || e) }; }
 });
+ipcMain.handle('shell:openTerminal', (_e, dir) => {
+  // 在系统终端（cmd）中打开指定目录：cmd /c start "" cmd /k cd /d <dir>
+  try {
+    if (!dir || typeof dir !== 'string' || !fs.existsSync(dir)) return { error: '目录不存在' };
+    const child = spawn('cmd.exe', ['/c', 'start', '', 'cmd.exe', '/k', `cd /d "${dir}"`], {
+      cwd: path.dirname(dir), detached: true, stdio: 'ignore', windowsHide: false,
+    });
+    child.on('error', () => {});
+    child.unref();
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
 ipcMain.handle('shell:openExternal', (_e, url) => {
   try {
     const u = String(url || '');

@@ -751,6 +751,13 @@ const Tree = (() => {
       else copyPath(item.path);
     });
     mk('📂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path));
+    // 命令行打开：目录用自身，文件用所在目录（todo：添加右键命令行打开）
+    mk('⌨ 在命令行中打开', () => {
+      const dir = item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '');
+      window.myIDE.shell.openTerminal(dir).then((r) => {
+        if (r && r.error) MI.toast(r.error, 'err');
+      });
+    });
     if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
     mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) removeItems(getSelection());

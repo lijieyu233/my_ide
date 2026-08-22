@@ -88,7 +88,7 @@ const BrowserPanel = (() => {
     });
     wv.addEventListener('did-fail-load', (e) => {
       if (e.errorCode === -3) return; // ERR_ABORTED：用户发起新导航
-      MI.toast('加载失败：' + (e.errorDescription || ('错误码 ' + e.errorCode)), 'err');
+      showError(e.errorDescription || ('错误码 ' + e.errorCode));
     });
     document.getElementById('browser-view').appendChild(wv);
     return wv;
@@ -100,7 +100,18 @@ const BrowserPanel = (() => {
     currentUrl = url || '';
     if (document.activeElement !== urlInput) urlInput.value = currentUrl;
     if (!inPage) addHistory(currentUrl, currentTitle);
+    // 导航成功 → 清除错误占位
+    document.getElementById('browser-error').classList.add('hidden');
     updateNavState();
+  }
+  // 加载失败 → webview 区域覆盖错误页（含重试），避免无声白屏无从判断
+  function showError(msg) {
+    const errEl = document.getElementById('browser-error');
+    document.getElementById('bw-err-msg').textContent = '加载失败：' + msg;
+    document.getElementById('browser-empty').classList.add('hidden');
+    document.getElementById('browser-view').classList.remove('hidden');
+    errEl.classList.remove('hidden');
+    MI.toast('页面加载失败：' + msg, 'err');
   }
   function updateNavState() {
     document.getElementById('bw-back').disabled = !(wvCan('canGoBack') && wv.canGoBack());
@@ -120,6 +131,7 @@ const BrowserPanel = (() => {
     if (!u) return;
     // 顺序关键：先让容器可见，再创建 webview（避免在 display:none 容器中 attach 的时序竞态）
     document.getElementById('browser-empty').classList.add('hidden');
+    document.getElementById('browser-error').classList.add('hidden');
     document.getElementById('browser-view').classList.remove('hidden');
     ensureWv();
     // 动态创建的 webview 必须用 setAttribute 设 src：
@@ -272,6 +284,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-reload').onclick = reload;
     document.getElementById('bw-home').onclick = home;
     document.getElementById('bw-close').onclick = hide;
+    document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
     favBtn.onclick = () => {
       if (!currentUrl) { MI.toast('先打开一个网页再收藏', 'err'); return; }
       if (isFav(currentUrl)) { removeFav(currentUrl); MI.toast('已取消收藏', 'ok'); }

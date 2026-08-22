@@ -330,7 +330,6 @@ const App = (() => {
         e.dataTransfer.effectAllowed = 'move';
         btn.classList.add('dragging');
       });
-      btn.addEventListener('dragend', () => { btn.classList.remove('dragging'); projDragPath = null; });
       btn.addEventListener('dragover', (e) => {
         e.preventDefault();
         const src = projDragPath;
@@ -340,11 +339,14 @@ const App = (() => {
         const r = btn.getBoundingClientRect();
         bar.insertBefore(srcEl, e.clientX < r.left + r.width / 2 ? btn : btn.nextSibling);
       });
-      btn.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const src = projDragPath || e.dataTransfer.getData('text/proj-path');
-        if (!src || src === pr.path) return;
+      // 顺序固化放 dragend（必然触发）：曾放在 drop 里，拖到空白处释放不触发 drop
+      // → DOM 已变而 projects 未变，切换项目重渲染时排序弹回原样
+      btn.addEventListener('dragend', () => {
+        btn.classList.remove('dragging');
+        projDragPath = null;
         const order = [...bar.querySelectorAll('.proj-btn')].map((b) => b.dataset.path).filter(Boolean);
+        if (order.length !== projects.length) return; // 防御：DOM 与数据不一致时不写
+        if (projects.every((p, i) => order[i] === p.path)) return; // 顺序未变
         projects.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
         saveProjects();
         renderProjectBar();

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file: https: http:; frame-src 'self' data: about: file:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file: https: http:; frame-src 'self' data: about: file: http: https:;">
 <title>My IDE</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
@@ -83,6 +83,12 @@
       </div>
       <div class="browser-prog"><div id="bw-prog"></div></div>
       <div id="browser-view" class="hidden"></div>
+      <div id="browser-error" class="hidden">
+        <div class="be-icon">⚠️</div>
+        <div class="be-title" id="bw-err-msg">页面加载失败</div>
+        <div class="be-sub">检查网址或网络连接后重试</div>
+        <button id="bw-err-retry" class="tb-btn big">⟳ 重试</button>
+      </div>
       <div id="browser-empty">
         <div class="be-icon">🌐</div>
         <div class="be-title">内置浏览器</div>

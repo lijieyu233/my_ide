@@ -122,7 +122,7 @@ function makeDom() {
         return { ok: true, target };
       },
     },
-    shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; } },
+    shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; }, openTerminal: async (dir) => { (calls.openTerminal = calls.openTerminal || []).push(dir); return { ok: true }; } },
     win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
@@ -1087,6 +1087,96 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.root-path').textContent.includes('C:/proj'), '自动切换到剩余项目一');
     assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P), '剩余项目按钮保留（不全消失）');
     assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
+  });
+
+  await okAsync('多项目：拖拽排序持久化（dragend 固化，切换后不弹回）', async () => {
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    const bar = $(dom, '#project-bar');
+    let btns = $allIn(bar, '.proj-btn');
+    assert_(btns.length === 2, '两个项目按钮, got ' + btns.length);
+    // 记录初始顺序（localStorage）
+    const before = JSON.parse(dom.window.localStorage.getItem('myide-projects')).map((p) => p.path);
+    // 把第一个按钮拖到第二个按钮之后：dragstart → dragover → dragend（不触发 drop，模拟拖到空白释放）
+    const dt = { setData: () => {}, effectAllowed: 'move' };
+    const ds = new dom.window.MouseEvent('dragstart', { bubbles: true, cancelable: true });
+    ds.dataTransfer = dt;
+    btns[0].dispatchEvent(ds);
+    const dov = new dom.window.MouseEvent('dragover', { bubbles: true, cancelable: true, clientX: 500 });
+    dov.dataTransfer = dt;
+    btns[1].dispatchEvent(dov);
+    const de = new dom.window.MouseEvent('dragend', { bubbles: true, cancelable: true });
+    btns[0].dispatchEvent(de);
+    await tick(); await tick();
+    // DOM 已重排 + localStorage 已固化
+    btns = $allIn(bar, '.proj-btn');
+    const afterDom = btns.map((b) => b.title);
+    const afterSaved = JSON.parse(dom.window.localStorage.getItem('myide-projects')).map((p) => p.path);
+    assert_(JSON.stringify(afterDom) === JSON.stringify(afterSaved), 'DOM 顺序与存储一致: ' + JSON.stringify({ afterDom, afterSaved }));
+    assert_(JSON.stringify(afterSaved) !== JSON.stringify(before), '顺序已变化（拖拽生效）');
+    // 切换项目（多次 renderProjectBar）后顺序不弹回
+    await g(dom, 'App.openProject("' + P + '")');
+    await tick(); await tick();
+    const finalOrder = $allIn($(dom, '#project-bar'), '.proj-btn').map((b) => b.title);
+    assert_(JSON.stringify(finalOrder) === JSON.stringify(afterSaved), '切换后顺序保持不弹回: ' + JSON.stringify(finalOrder));
+    // 恢复初始顺序（P 在前），避免影响后续「全部项目」/「溢出」测试的项目状态
+    const dt2 = { setData: () => {}, effectAllowed: 'move' };
+    const b2 = $allIn($(dom, '#project-bar'), '.proj-btn');
+    const ds2 = new dom.window.MouseEvent('dragstart', { bubbles: true, cancelable: true });
+    ds2.dataTransfer = dt2;
+    b2[0].dispatchEvent(ds2);
+    const dov2 = new dom.window.MouseEvent('dragover', { bubbles: true, cancelable: true, clientX: 500 });
+    dov2.dataTransfer = dt2;
+    b2[1].dispatchEvent(dov2);
+    const de2 = new dom.window.MouseEvent('dragend', { bubbles: true, cancelable: true });
+    b2[0].dispatchEvent(de2);
+    await tick(); await tick();
+  });
+
+  await okAsync('玩宠：左键卖萌不弹菜单，右键弹菜单', async () => {
+    const pet = $(dom, '#pet');
+    assert_(pet, '玩宠存在');
+    const menu = $(dom, '#ctx-menu');
+    // 先确保菜单关闭；清空 toast（上限 5 条，不清空计数会被截断）
+    dom.window.document.body.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await tick();
+    $(dom, '#toast-wrap').innerHTML = '';
+    click(pet); // 左键 = 卖萌
+    await tick();
+    assert_(menu.classList.contains('hidden'), '左键不弹菜单');
+    const toasts = $allIn($(dom, '#toast-wrap'), '.toast');
+    assert_(toasts.length >= 1, '左键触发挥手说话（toast）');
+    // 右键 = 菜单
+    pet.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    assert_(!menu.classList.contains('hidden'), '右键弹出菜单');
+    assert_($allIn(menu, '.ctx-item').some((x) => x.textContent.includes('退出玩偶')), '菜单含退出项');
+    assert_($allIn(menu, '.ctx-item').some((x) => x.textContent.includes('橘猫')), '菜单含切换玩偶项');
+    dom.window.document.body.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await tick();
+  });
+
+  await okAsync('目录树右键：在命令行中打开（目录用自身，文件用所在目录）', async () => {
+    // 右键项目根目录（目录行）
+    const dirRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title.endsWith('src'));
+    assert_(dirRow, '找到 src 目录行');
+    dirRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    const termItem = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('命令行'));
+    assert_(termItem, '菜单含「在命令行中打开」项');
+    calls.openTerminal = [];
+    click(termItem);
+    await tick();
+    assert_(JSON.stringify(calls.openTerminal) === JSON.stringify([P + '/src']), '目录 → 命令行打开其自身, got ' + JSON.stringify(calls.openTerminal));
+    // 右键文件行（README.md）→ 打开其所在目录
+    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title.endsWith('README.md'));
+    fileRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const termItem2 = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('命令行'));
+    click(termItem2);
+    await tick();
+    assert_(calls.openTerminal.length === 2 && calls.openTerminal[1] === P, '文件 → 命令行打开所在目录, got ' + JSON.stringify(calls.openTerminal));
   });
 
   await okAsync('「全部项目」入口：no-drag 可点击 + 下拉切换项目', async () => {
