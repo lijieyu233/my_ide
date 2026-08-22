@@ -293,7 +293,7 @@ ipcMain.handle('fs:remove', (_e, p) => {
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
 // 右键运行：按扩展名选解释器，独立进程启动（不阻塞编辑器）
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 ipcMain.handle('run:file', (_e, p) => {
   try {
     const ext = path.extname(p).toLowerCase().slice(1);
@@ -378,19 +378,60 @@ ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return 
 // 文件复制：写系统剪贴板（FileNameW 格式：\0 分隔 + \0 结尾，供资源管理器粘贴 + 自读多文件）
 // 注意顺序：writeText 在前、writeBuffer 在后 —— Electron 每次写入都会整体替换剪贴板，
 // 最终保留 FileNameW（多文件可读回），文本仅作写入瞬间的兜底。
+let lastOwnCopy = null; // 本应用最近一次写入的文件列表（区分"应用内复制"与"外部复制"）
 ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
+  lastOwnCopy = arr.slice();
   try { clipboard.writeText(arr.join('\n')); } catch {}
   try {
     clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\0') + '\0', 'utf16le'));
   } catch {}
   return true;
 });
+// PowerShell 读 CF_HDROP 完整列表（资源管理器复制的标准格式）
+// 背景：Electron readBuffer('CF_HDROP') 走 RegisterClipboardFormat 注册的是自定义格式，
+// 与标准 CF_HDROP(15) 不是同一个 → 恒读空；而 shell 写的 FileNameW 兼容格式只含第一个文件。
+// 外部复制的完整多文件列表只能通过 Get-Clipboard -Format FileDropList 读取。
+// exec + timeout + windowsHide：异常环境绝不阻塞主进程（超时杀进程返回空）。
+function psReadFileDropList() {
+  return new Promise((resolve) => {
+    const cmd = 'powershell.exe -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; (Get-Clipboard -Format FileDropList | ForEach-Object FullName) -join [char]10"';
+    try {
+      exec(cmd, { encoding: 'utf8', timeout: 1500, windowsHide: true }, (err, stdout) => {
+        if (err || !stdout) return resolve([]);
+        const list = String(stdout).trim().split('\n')
+          .map((s) => s.trim())
+          .filter((s) => s && fs.existsSync(s));
+        resolve(list);
+      });
+    } catch { resolve([]); }
+  });
+}
 // 读取系统剪贴板中的文件路径（多文件）
-// 三层回退：CF_HDROP（资源管理器复制的标准格式）→ FileNameW（本应用写入）→ 文本按行拆
-ipcMain.handle('clip:getFiles', () => {
-  // 1) CF_HDROP：DROPFILES 结构（20 字节头 + 文件列表，fWide 决定宽字符）
+// 顺序：应用内复制直读 → PowerShell 完整 CF_HDROP → CF_HDROP 原始解析（防御）→ FileNameW（外部时仅第一个，兜底）→ 文本按行拆
+ipcMain.handle('clip:getFiles', async () => {
+  const readFileNameW = () => {
+    try {
+      const buf = clipboard.readBuffer('FileNameW');
+      if (buf && buf.length) {
+        return buf.toString('utf16le')
+          .split(/\0|\r?\n/)
+          .map((s) => s.trim())
+          .filter((s) => s && fs.existsSync(s));
+      }
+    } catch {}
+    return [];
+  };
+  // 1) 应用内复制：FileNameW 读回与最近写入一致 → 免 PowerShell 直接返回（完整列表）
+  const own = readFileNameW();
+  if (own.length && lastOwnCopy && JSON.stringify(own) === JSON.stringify(lastOwnCopy)) return own;
+  // 2) 外部复制（资源管理器）：PowerShell 读完整 CF_HDROP 多文件列表
+  if (process.platform === 'win32') {
+    const ext = await psReadFileDropList();
+    if (ext.length) return ext;
+  }
+  // 3) CF_HDROP 原始解析（防御：未来 Electron 若支持标准格式名）
   try {
     const buf = clipboard.readBuffer('CF_HDROP');
     if (buf && buf.length > 20) {
@@ -406,18 +447,9 @@ ipcMain.handle('clip:getFiles', () => {
       }
     }
   } catch {}
-  // 2) FileNameW（本应用写入的 \0 分隔宽字符列表）
-  try {
-    const buf = clipboard.readBuffer('FileNameW');
-    if (buf && buf.length) {
-      const list = buf.toString('utf16le')
-        .split(/\0|\r?\n/)
-        .map((s) => s.trim())
-        .filter((s) => s && fs.existsSync(s));
-      if (list.length) return list;
-    }
-  } catch {}
-  // 3) 纯文本按行拆（每行都是存在的路径才算）
+  // 4) FileNameW（应用内复制在 1) 未命中时：文件可能已被删除；外部复制：仅第一个文件）
+  if (own.length) return own;
+  // 5) 纯文本按行拆（每行都是存在的路径才算）
   try {
     const t = clipboard.readText();
     if (t) {
@@ -429,16 +461,19 @@ ipcMain.handle('clip:getFiles', () => {
   } catch {}
   return [];
 });
-// 复制文件/目录到目标目录（重名自动改名 name (1).ext）
-ipcMain.handle('fs:copy', (_e, src, destDir) => {
+// 预检：源文件列表复制到目标目录时的同名冲突（渲染层弹确认框用）
+ipcMain.handle('fs:checkExists', (_e, srcPaths, destDir) => {
+  try {
+    const arr = Array.isArray(srcPaths) ? srcPaths : [srcPaths];
+    return arr.map((s) => path.basename(String(s))).filter((n) => fs.existsSync(path.join(destDir, n)));
+  } catch { return []; }
+});
+// 复制文件/目录到目标目录（同名：默认返回 conflict 由前端确认；overwrite=true 直接覆盖）
+ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => {
   try {
     const name = path.basename(src);
-    const ext = path.extname(name);
-    const base = path.basename(name, ext);
-    let target = path.join(destDir, name);
-    for (let i = 1; fs.existsSync(target); i++) {
-      target = path.join(destDir, base + ' (' + i + ')' + ext);
-    }
+    const target = path.join(destDir, name);
+    if (!overwrite && fs.existsSync(target)) return { conflict: true, target };
     const st = fs.statSync(src);
     if (st.isDirectory()) fs.cpSync(src, target, { recursive: true });
     else fs.copyFileSync(src, target);

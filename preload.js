@@ -38,7 +38,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     copyFiles: (paths) => ipcRenderer.invoke('clip:copyFiles', paths),
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),
   },
-  fsCopy: (src, destDir) => ipcRenderer.invoke('fs:copy', src, destDir),
+  fsCopy: (src, destDir, overwrite) => ipcRenderer.invoke('fs:copy', src, destDir, overwrite),
+  checkConflict: (srcPaths, destDir) => ipcRenderer.invoke('fs:checkExists', srcPaths, destDir),
   git: {
     init: (d) => ipcRenderer.invoke('git:init', d),
     status: (d) => ipcRenderer.invoke('git:status', d),

@@ -36,13 +36,38 @@ const Tree = (() => {
 
   let selectedPath = null;       // 主选中（最后点击的，单选语义操作用）
   let selectedType = null;
-  const selectedPaths = new Set(); // 多选集合（规范化路径，Ctrl+点击 / Shift+范围）
+  const selectedPaths = new Set(); // 多选集合（规范化路径，Ctrl/点击 / Shift+范围）
   let anchorPath = null;         // Shift 范围选择的锚点
   let copiedPaths = []; // 内部复制的文件（优先于系统剪贴板）
   let cutMode = false;  // 剪切态：Ctrl+X 后粘贴 = 移动而非复制
   const expanded = new Set();   // 展开的目录路径（根默认展开）
   const nodeCache = {};         // 目录路径 -> readDir 结果（懒加载缓存）
   let gitStatus = {};           // 规范路径 -> git 状态（modified/added/deleted）
+
+  // 树空白区域（非行上）作为外部拖入目标：资源管理器拖文件到树任意空白处 = 复制到根目录
+  //（仅外部文件；内部拖拽仍按行为目标，空白处不响应）
+  {
+    let extDragOnTree = false;
+    el.addEventListener('dragover', (e) => {
+      const isExternal = [...(e.dataTransfer.types || [])].includes('Files') && !dragSrcPaths;
+      if (isExternal && rootPath) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        extDragOnTree = true;
+      }
+    });
+    el.addEventListener('drop', (e) => {
+      if (!extDragOnTree) return;
+      extDragOnTree = false;
+      // 行级 handler 已处理（行 drop 开头 preventDefault 后冒泡到此）→ 不重复复制
+      if (e.defaultPrevented) return;
+      const files = e.dataTransfer.files || [];
+      if (!files.length || !rootPath) return;
+      e.preventDefault();
+      const extPaths = [...files].map((f) => f.path).filter(Boolean);
+      if (extPaths.length) copyInto(extPaths, rootPath, '拖入');
+    });
+  }
   let visibleRows = [];         // 当前可见行（键盘导航用）
   const VIRTUAL_THRESHOLD = 300;
 
@@ -357,6 +382,14 @@ const Tree = (() => {
         // 必须用 dragstart 时记录的模块级变量判断，否则 drop 永远不触发
         const srcs = readDragSources(e);
         const dest = dropDirOf(item);
+        // 外部文件（资源管理器拖入）：types 含 'Files'（Chromium 对外暴露完整列表，drop 时读）
+        const isExternal = !srcs && [...(e.dataTransfer.types || [])].includes('Files');
+        if (isExternal && dest) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          rowEl.classList.add('drop-target');
+          return;
+        }
         if (srcs && srcs.length && dest && !srcs.some((s) => norm(s) === norm(dest) || isInside(s, dest))) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
@@ -367,10 +400,15 @@ const Tree = (() => {
       rowEl.addEventListener('drop', (e) => {
         e.preventDefault();
         rowEl.classList.remove('drop-target');
-        let srcs = readDragSources(e);
-        if (!srcs || !srcs.length) return;
         const dest = dropDirOf(item);
         if (!dest) return;
+        // 外部文件（资源管理器拖入）：e.dataTransfer.files 完整列表（File.path 为绝对路径）
+        if (!dragSrcPaths && (e.dataTransfer.files || []).length) {
+          const extPaths = [...e.dataTransfer.files].map((f) => f.path).filter(Boolean);
+          if (extPaths.length) { copyInto(extPaths, dest, '拖入'); return; }
+        }
+        let srcs = readDragSources(e);
+        if (!srcs || !srcs.length) return;
         srcs = srcs.filter((s) => norm(s) !== norm(dest) && !isInside(s, dest));
         if (srcs.length) moveTo(srcs, dest);
         dragSrcPaths = null;
@@ -549,37 +587,53 @@ const Tree = (() => {
     return rootPath;
   }
 
-  async function pasteTo(destDir) {
-    if (!destDir) { MI.toast('请先打开文件夹', 'err'); return; }
-    // 优先系统剪贴板（用户最新操作可能是外部复制）；读不到再用内部记录
-    let sources = await window.myIDE.clip.getFiles();
-    if (!sources.length) sources = copiedPaths.slice();
-    if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
-    // 剪切态（Ctrl+X）→ 粘贴即移动；同目录粘贴跳过
-    if (cutMode) {
-      const targets = sources.filter((s) => {
-        const parent = s.replace(/[\\/][^\\/]+$/, '');
-        return norm(parent) !== norm(destDir);
-      });
-      cutMode = false; // 一次性：粘贴后退出剪切态
-      if (targets.length) await moveTo(targets, destDir);
-      else MI.toast('源目录与目标相同，无需移动', 'err');
-      return;
+  // 复制 sources 到 destDir（粘贴 / 外部拖入共用）：同名冲突先弹确认框（覆盖 / 取消）
+  async function copyInto(sources, destDir, actionLabel) {
+    // 同名预检（主进程 existsSync），有冲突先确认再动手——不再静默自动改名
+    let overwrite = false;
+    let conflicts = [];
+    try { conflicts = await window.myIDE.checkConflict(sources, destDir); } catch {}
+    if (conflicts.length) {
+      const show = conflicts.length > 5 ? conflicts.slice(0, 5).join('、') + ' 等 ' + conflicts.length + ' 项' : conflicts.join('、');
+      overwrite = await Modal.confirm('覆盖同名文件', '目标目录已存在同名项：\n' + show + '\n\n覆盖后原有内容将被替换。是否继续？');
+      if (!overwrite) { MI.toast('已取消' + actionLabel, 'ok'); return 0; }
     }
     let ok = 0;
     const created = [];
     for (const s of sources) {
-      const r = await window.myIDE.fsCopy(s, destDir);
+      const r = await window.myIDE.fsCopy(s, destDir, overwrite);
       if (r.ok) { ok++; created.push(r.target); }
-      else MI.toast('粘贴失败: ' + (r.error || s), 'err');
+      else if (!r.conflict) MI.toast(actionLabel + '失败: ' + (r.error || s), 'err');
     }
     if (ok) {
-      pushUndo({ type: 'paste', paths: created, label: '粘贴 ' + ok + ' 个文件' });
+      pushUndo({ type: 'paste', paths: created, label: actionLabel + ' ' + ok + ' 个文件' });
       invalidateAll();
       render();
       App.refreshGit();
-      MI.toast('✅ 已粘贴 ' + ok + ' 个文件', 'ok');
+      MI.toast('✅ 已' + actionLabel + ' ' + ok + ' 个文件' + (conflicts.length ? '（同名已覆盖）' : ''), 'ok');
     }
+    return ok;
+  }
+
+  async function pasteTo(destDir) {
+    if (!destDir) { MI.toast('请先打开文件夹', 'err'); return; }
+    // 剪切态（Ctrl+X）：粘贴即移动——剪切必然来自应用内记录（cutMode 只由 Ctrl+X 置位）
+    if (cutMode) {
+      cutMode = false; // 一次性：粘贴后退出剪切态
+      const targets = copiedPaths.filter((s) => {
+        const parent = s.replace(/[\\/][^\\/]+$/, '');
+        return norm(parent) !== norm(destDir);
+      });
+      if (targets.length) await moveTo(targets, destDir);
+      else MI.toast('源目录与目标相同，无需移动', 'err');
+      return;
+    }
+    // 优先系统剪贴板（应用内 / 资源管理器复制的完整列表，主进程已修复外部多文件读取）
+    let sources = await window.myIDE.clip.getFiles();
+    // 兜底：系统剪贴板完全无文件数据时才用内部记录（剪贴板被清/损坏的极端情况）
+    if (!sources.length) sources = copiedPaths.slice();
+    if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
+    await copyInto(sources, destDir, '粘贴');
   }
 
   // ---------- 拖拽移动 / 撤销 ----------

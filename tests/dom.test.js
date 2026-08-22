@@ -129,17 +129,20 @@ function makeDom() {
       copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
     },
-    fsCopy: async (src, destDir) => {
+    fsCopy: async (src, destDir, overwrite) => {
       const name = src.split('/').pop();
-      const extIdx = name.lastIndexOf('.');
-      const ext = extIdx > 0 ? name.slice(extIdx) : '';
-      const base = extIdx > 0 ? name.slice(0, extIdx) : name;
-      let target = destDir + '/' + name;
-      for (let i = 1; FAKE_FS[target]; i++) target = destDir + '/' + base + ' (' + i + ')' + ext;
+      const target = destDir + '/' + name;
+      // 同名：默认 conflict（前端弹确认框），overwrite=true 才覆盖——对齐主进程 fs:copy
+      if (!overwrite && FAKE_FS[target]) return { conflict: true, target };
       const srcEntry = FAKE_FS[src] || { type: 'file', content: 'external content' };
       FAKE_FS[target] = { type: srcEntry.type, content: srcEntry.content || '', children: srcEntry.children ? srcEntry.children.slice() : undefined };
-      if (FAKE_FS[destDir] && FAKE_FS[destDir].type === 'dir') FAKE_FS[destDir].children.push(target);
+      if (FAKE_FS[destDir] && FAKE_FS[destDir].type === 'dir') {
+        if (!FAKE_FS[destDir].children.includes(target)) FAKE_FS[destDir].children.push(target);
+      }
       return { ok: true, target };
+    },
+    checkConflict: async (srcPaths, destDir) => {
+      return srcPaths.map((s) => s.split('/').pop()).filter((n) => !!FAKE_FS[destDir + '/' + n]);
     },
     git: {
       init: async () => ({ ok: true }),
@@ -793,7 +796,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('文件复制粘贴：Ctrl+C / Ctrl+V + 重名改名', async () => {
+  await okAsync('文件复制粘贴：Ctrl+C / Ctrl+V + 重名弹确认框', async () => {
 
     // 清除可能残留的输入框焦点（jsdom 的 blur() 无效，改用 body.focus()）
     dom.window.document.body.focus();
@@ -804,22 +807,40 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'c', { ctrl: true });
     await tick();
     assert_(fakeCopied.length === 1 && fakeCopied[0] === P + '/README.md', 'Ctrl+C 记录文件');
-    // 选中 src 目录 → Ctrl+V 粘贴到该目录
+    // 选中 src 目录 → Ctrl+V 粘贴到该目录（无冲突直接粘贴）
     click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src'));
     await tick();
     key(dom, 'v', { ctrl: true });
     await tick(); await tick();
     assert_(FAKE_FS[P + '/src/README.md'], '副本出现在 src 目录');
-    // 再次粘贴（选中态保持，无需重复点击）→ 重名自动改名
+    // 再次粘贴（选中态保持）→ 重名弹确认框（不再静默自动改名）
     key(dom, 'v', { ctrl: true });
     await tick(); await tick();
-    assert_(FAKE_FS[P + '/src/README (1).md'], '重名自动改名');
-    // 选中文件时粘贴 → 粘贴到其所在目录（src 展开状态在刷新后保持，直接点子文件）
-    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md'));
+    const mask = $(dom, '#modal-mask');
+    assert_(!mask.classList.contains('hidden'), '重名粘贴弹出确认框');
+    assert_(mask.textContent.includes('同名') && mask.textContent.includes('README.md'), '确认框提示冲突文件名');
+    // 点「确定」→ 覆盖（仍只有一份，无 (1) 副本）
+    click($allIn(mask, 'button').find((b) => b.textContent.includes('确定')));
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README.md'], '覆盖后文件存在');
+    assert_(!FAKE_FS[P + '/src/README (1).md'], '不再自动改名');
+    // 第三次粘贴 → 确认框点「取消」→ 不粘贴
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick();
+    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '再次弹出确认框');
+    click($allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('取消')));
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '取消后确认框关闭');
+    // 选中文件时粘贴 → 粘贴到其所在目录（点 src 下子文件 app.js，目标 = src）
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/app.js'));
     await tick();
     key(dom, 'v', { ctrl: true });
     await tick(); await tick();
-    assert_(FAKE_FS[P + '/src/README (2).md'], '选中文件时粘贴到所在目录');
+    // src/README.md 重名 → 确认覆盖
+    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '选中文件粘贴同样弹确认框');
+    click($allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('确定')));
+    await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/README.md'], '选中文件时粘贴到所在目录（覆盖成功）');
   });
 
   await okAsync('文本区聚焦时 Ctrl+C 不触发文件复制', async () => {
@@ -901,6 +922,48 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 恢复单选（多选残留会让后续右键菜单显示「（3 项）」）
     click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt'));
     await tick();
+  });
+
+  await okAsync('资源管理器拖入：drop 多文件复制到目录（含同名确认）', async () => {
+    // 模拟 Chromium drop：dataTransfer.files 带 path 的完整列表 + types 含 'Files'
+    const mkFile = (p) => ({ path: p, name: p.split('/').pop() });
+    const mkDrop = (files) => {
+      const ev = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+      ev.dataTransfer = { files, types: ['Files'], getData: () => '', setData: () => {} };
+      return ev;
+    };
+    // 拖到 src 目录行 → 复制进去（多文件完整列表）
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    srcRow.dispatchEvent(mkDrop([mkFile('C:/external/drag-a.txt'), mkFile('C:/external/drag-b.txt')]));
+    await tick(); await tick(); await tick();
+    assert_(FAKE_FS[P + '/src/drag-a.txt'], '拖入文件 A 复制成功');
+    assert_(FAKE_FS[P + '/src/drag-b.txt'], '拖入文件 B 复制成功（多文件拖入不再只进一个）');
+    // 再拖入同名 drag-a.txt → 弹确认框 → 取消 → 不覆盖
+    srcRow.dispatchEvent(mkDrop([mkFile('C:/external/drag-a.txt')]));
+    await tick(); await tick();
+    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '同名拖入弹确认框');
+    assert_($(dom, '#modal-mask').textContent.includes('drag-a.txt'), '确认框列出冲突文件');
+    click($allIn($(dom, '#modal-mask'), 'button').find((b) => b.textContent.includes('取消')));
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '取消后关闭');
+    // 树空白处 drop（根目录目标；真实流程 dragover 先于 drop 反复触发，mock 需先发 dragover 置位）
+    const mkOver = (files) => {
+      const ev = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+      ev.dataTransfer = { files, types: ['Files'], getData: () => '', setData: () => {}, dropEffect: '' };
+      return ev;
+    };
+    $(dom, '#tree').dispatchEvent(mkOver([mkFile('C:/external/drag-root.txt')]));
+    $(dom, '#tree').dispatchEvent(mkDrop([mkFile('C:/external/drag-root.txt')]));
+    await tick(); await tick(); await tick();
+    assert_(FAKE_FS[P + '/drag-root.txt'], '拖到树空白处 = 复制到根目录');
+    // 清理：删掉拖入的副本，不影响后续用例（含父目录 children 引用，防悬空路径渲染崩树）
+    for (const f of [P + '/src/drag-a.txt', P + '/src/drag-b.txt', P + '/drag-root.txt']) {
+      delete FAKE_FS[f];
+      const parent = f.slice(0, f.lastIndexOf('/'));
+      if (FAKE_FS[parent] && FAKE_FS[parent].children) {
+        FAKE_FS[parent].children = FAKE_FS[parent].children.filter((c) => c !== f);
+      }
+    }
   });
 
   await okAsync('拖到文件行 = 移入其所在目录（文件夹下方也能放进去）', async () => {
