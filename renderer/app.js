@@ -182,24 +182,41 @@ const App = (() => {
   }
   function getProjects() { return projects.slice(); }
 
-  // 空状态：最近打开的项目（快速回切）
+  // 最近打开历史（独立于 projects：关掉全部项目后空状态仍可一键重开）
+  // 注意：键不能叫 myide-recent —— viewer.js 已用它存最近文件（{path,ts} 对象数组）
+  const RECENT_PROJ_KEY = 'myide-recent-projects';
+  function pushRecent(p) {
+    if (!p) return;
+    try {
+      let r = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]');
+      r = r.filter((x) => typeof x === 'string' && x !== p);
+      r.unshift(p);
+      localStorage.setItem(RECENT_PROJ_KEY, JSON.stringify(r.slice(0, 8)));
+    } catch {}
+  }
+
+  // 空状态：最近打开的项目（快速回切；含已全部关闭的历史项目）
   function renderEmptyRecent() {
     const box = document.getElementById('empty-recent');
     if (!box) return;
     box.innerHTML = '';
-    if (projects.length < 2) return;
+    let recents = [];
+    try { recents = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); } catch {}
+    const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
+      .filter((x) => typeof x === 'string' && x);
+    if (shown.length < 1) return;
     const title = document.createElement('div');
     title.className = 'empty-hint2';
     title.textContent = '最近项目';
     box.appendChild(title);
     const row = document.createElement('div');
     row.className = 'empty-projects';
-    for (const pr of projects) {
+    for (const pr of shown) {
       const b = document.createElement('button');
-      b.className = 'proj-btn' + (pr.path === root ? ' active' : '');
-      b.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
-      b.title = pr.path;
-      b.onclick = () => openProject(pr.path);
+      b.className = 'proj-btn' + (pr === root ? ' active' : '');
+      b.textContent = pr.split(/[\\/]/).pop() || pr;
+      b.title = pr;
+      b.onclick = () => openProject(pr);
       row.appendChild(b);
     }
     box.appendChild(row);
@@ -325,6 +342,7 @@ const App = (() => {
     const t0 = performance.now();
     root = p;
     MI.activeRoot = p;
+    pushRecent(p); // 记入最近打开历史（空状态可一键重开）
     MI.log('INFO', 'app', '打开项目: ' + p);
     Tree.setRoot(p);
     GitPanel.rootDir = p;

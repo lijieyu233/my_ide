@@ -33,16 +33,34 @@ const Settings = (() => {
       MI.toast('已恢复全部默认快捷键', 'ok');
     };
     // 分类切换
-    $all('.set-cat[data-cat]').forEach((cat) => {
-      cat.onclick = () => {
-        $all('.set-cat').forEach((x) => x.classList.remove('active'));
-        cat.classList.add('active');
-        if (cat.dataset.cat === 'keys') renderKeys();
-        else if (cat.dataset.cat === 'font') renderFont();
-        else if (cat.dataset.cat === 'git') renderGit();
-        else if (cat.dataset.cat === 'theme') renderTheme();
-      };
-    });
+    const switchCat = (cat) => {
+      $all('.set-cat').forEach((x) => x.classList.remove('active'));
+      cat.classList.add('active');
+      if (cat.dataset.cat === 'keys') renderKeys();
+      else if (cat.dataset.cat === 'font') renderFont();
+      else if (cat.dataset.cat === 'git') renderGit();
+      else if (cat.dataset.cat === 'theme') renderTheme();
+    };
+    $all('.set-cat[data-cat]').forEach((cat) => { cat.onclick = () => switchCat(cat); });
+    // ↑↓ 在分类间移动（document 级监听：焦点不必在弹窗内；仅设置页为栈顶面板时生效）
+    const onKey = (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      // 设置弹窗被关掉或上面还盖着其他面板时失效
+      if (!box.isConnected || (window.Modal && Modal.stack[Modal.stack.length - 1] !== box)) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable || (t.closest && t.closest('.set-main')))) return;
+      e.preventDefault();
+      const cats = $all('.set-cat[data-cat]');
+      const cur = cats.findIndex((c) => c.classList.contains('active'));
+      const next = e.key === 'ArrowDown'
+        ? Math.min(cats.length - 1, cur + 1)
+        : Math.max(0, cur - 1);
+      if (next !== cur) switchCat(cats[next]);
+    };
+    document.addEventListener('keydown', onKey);
+    // 弹窗关闭时解绑（hide 后 box 移出 DOM）
+    const mo = new MutationObserver(() => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); mo.disconnect(); } });
+    mo.observe(document.body, { childList: true, subtree: true });
     renderKeys();
   }
 

@@ -2254,6 +2254,65 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#empty-state') && $(dom, '#empty-state').classList.contains('visible'), '空状态显示');
   });
 
+  await okAsync('关闭全部项目后空状态显示最近项目（一键重开）', async () => {
+    // 前一组已全部关闭：空状态应出现「最近项目」按钮（历史来自 pushRecent）
+    const recBtns = $allIn($(dom, '#empty-recent'), '.proj-btn');
+    assert_(recBtns.length >= 1, '空状态显示最近项目按钮, got ' + recBtns.length);
+    assert_(recBtns[0].title === P || recBtns[0].title === 'C:/proj2', '历史含已关闭项目: ' + recBtns[0].title);
+    // 点击历史按钮重新打开项目
+    click(recBtns[0]);
+    await tick(); await tick(); await tick();
+    assert_($(dom, '.root-path').textContent.includes('proj'), '点击历史重新打开项目');
+    // 清理：再关掉，回到空状态供后续用例
+    const b = $allIn($(dom, '#project-bar'), '.proj-btn')[0];
+    const x = b && b.querySelector('.proj-close');
+    if (x) { click(x); await tick(); await tick(); await tick(); }
+  });
+
+  await okAsync('目录树三态隐藏按钮：文字标识当前视角', async () => {
+    const btn = $(dom, '#tree-hide-mode');
+    assert_(btn, '三态按钮存在');
+    assert_(btn.textContent === '常规', '默认视角显示「常规」, got ' + btn.textContent);
+    assert_(btn.classList.contains('hm-normal'), '常规态样式类');
+    click(btn); await tick();
+    assert_(btn.textContent === '仅隐藏', '切换后显示「仅隐藏」, got ' + btn.textContent);
+    assert_(btn.classList.contains('hm-hidden'), '仅隐藏态样式类');
+    click(btn); await tick();
+    assert_(btn.textContent === '全部', '再切显示「全部」, got ' + btn.textContent);
+    assert_(btn.classList.contains('hm-all'), '全部态样式类');
+    click(btn); await tick();
+    assert_(btn.textContent === '常规', '回到常规');
+  });
+
+  await okAsync('弹窗打开时方向键归弹窗：设置页 ↑↓ 切换分类', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    // 树选中一行（无弹窗时方向键归目录树）
+    const row = $$(dom, '.tree-row')[0];
+    if (row) click(row);
+    // 打开设置
+    key(dom, 's', { ctrl: true, alt: true });
+    await tick();
+    const box = $(dom, '#set-box');
+    assert_(box, '设置面板打开');
+    const activeCat = () => $allIn(box, '.set-cat').find((c) => c.classList.contains('active'));
+    assert_(activeCat() && activeCat().dataset.cat === 'keys', '默认快捷键分类');
+    // 按 ↓：应切到「外观」且目录树选中不被方向键滚动（树不接管）
+    key(dom, 'ArrowDown');
+    await tick();
+    assert_(activeCat() && activeCat().dataset.cat === 'font', '↓ 切到外观分类, got ' + (activeCat() && activeCat().dataset.cat));
+    key(dom, 'ArrowDown');
+    await tick();
+    assert_(activeCat() && activeCat().dataset.cat === 'git', '↓ 再切到 Git 分类');
+    key(dom, 'ArrowUp');
+    await tick();
+    assert_(activeCat() && activeCat().dataset.cat === 'font', '↑ 切回外观分类');
+    // 关闭设置
+    key(dom, 'Escape');
+    await tick();
+    assert_(!$(dom, '#set-box'), '设置已关闭');
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

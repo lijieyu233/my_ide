@@ -725,19 +725,23 @@ const Tree = (() => {
   }
   function cycleHideMode() {
     hideMode = hideMode === 'normal' ? 'hidden' : hideMode === 'hidden' ? 'all' : 'normal';
-    const btn = document.getElementById('tree-hide-mode');
-    const label = { normal: '👁', hidden: '🔎', all: '👁‍🗨' }[hideMode];
-    if (btn) {
-      btn.textContent = label;
-      btn.title = {
-        normal: '当前：不显示隐藏项（点击 → 只看隐藏项）',
-        hidden: '当前：只看隐藏项（点击 → 全部显示）',
-        all: '当前：全部显示（点击 → 恢复默认）',
-      }[hideMode];
-    }
+    applyHideModeBtn();
     invalidateAll();
     render();
-    MI.toast({ normal: '视图：不显示隐藏项', hidden: '视图：只看隐藏项', all: '视图：全部显示' }[hideMode], 'ok');
+    MI.toast({ normal: '视图：常规（不显示隐藏项）', hidden: '视图：只看隐藏项', all: '视图：全部显示' }[hideMode], 'ok');
+  }
+  // 三态按钮：文字 + 颜色双重标识当前视角（👁 emoji 三态难以分辨）
+  function applyHideModeBtn() {
+    const btn = document.getElementById('tree-hide-mode');
+    if (!btn) return;
+    const conf = {
+      normal: { text: '常规', cls: 'hm-normal', tip: '当前视角：常规（不显示隐藏项）\n点击 → 只看隐藏项' },
+      hidden: { text: '仅隐藏', cls: 'hm-hidden', tip: '当前视角：只看隐藏项\n点击 → 全部显示' },
+      all:    { text: '全部', cls: 'hm-all', tip: '当前视角：全部显示（含隐藏项）\n点击 → 恢复常规' },
+    }[hideMode];
+    btn.textContent = conf.text;
+    btn.className = 'vt-btn hide-mode-btn ' + conf.cls;
+    btn.title = conf.tip;
   }
   function hideCtxMenu() { menu.classList.add('hidden'); }
   document.addEventListener('click', (e) => { if (!menu.contains(e.target)) hideCtxMenu(); });
@@ -881,6 +885,8 @@ const Tree = (() => {
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Delete'].includes(e.key)) return;
+    // 有弹窗打开（设置 / 确认框等）时方向键归弹窗，目录树不接管
+    if (window.Modal && Modal.stack.length) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (t && t.closest && t.closest('.cm-editor')) return;
@@ -945,7 +951,7 @@ const Tree = (() => {
     if (fdec) fdec.onclick = () => Tree.setFont(-1);
     if (finc) finc.onclick = () => Tree.setFont(1);
     const hm = document.getElementById('tree-hide-mode');
-    if (hm) hm.onclick = () => cycleHideMode();
+    if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
   })();
 
   return {
