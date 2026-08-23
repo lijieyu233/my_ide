@@ -303,7 +303,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       '- [ ] 待办', '',
       '```js', 'const a = 1;', '```', '',
       '| 表头 |', '| - |', '| 数据 |', '',
-      '---', '', '结尾', '',
+      '---', '',
+      '==高亮文字== 与 \\*转义星号\\*', '',
+      '结尾', '',
     ].join('\n');
     g(dom, 'Viewer.cm.setValue(' + JSON.stringify(LIVE_DOC) + ')');
     await tick(); await tick();
@@ -351,6 +353,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const head2 = lines2.find((l) => l.textContent.includes('一级标题'));
     assert_(head2 && !head2.textContent.includes('#') && !head2.textContent.startsWith(' '),
       '光标离开后标题标记隐藏且无前导空格，got: ' + (head2 ? JSON.stringify(head2.textContent) : 'null'));
+    // 15) ==高亮== 隐藏标记 + 转义 \* 显示字面量（Obsidian 扩展行为）
+    const hlLine = lines2.find((l) => l.textContent.includes('高亮文字'));
+    assert_(hlLine && !hlLine.textContent.includes('==') && hlLine.textContent.includes('*转义星号*') && !hlLine.textContent.includes('\\*'),
+      '==高亮== 标记隐藏且转义 \\* 渲染为字面量，got: ' + (hlLine ? JSON.stringify(hlLine.textContent) : 'null'));
     // 11) 光标紧邻 ~~（内容首字符处）→ 该标记显形（Obsidian：贴着星号才出现）
     const markFrom = LIVE_DOC.indexOf('~~');
     g(dom, 'Viewer.cm.setCursor(' + (markFrom + 2) + ')');

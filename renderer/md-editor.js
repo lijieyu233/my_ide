@@ -228,6 +228,19 @@ window.MdEditor = (() => {
                 decos.push(Decoration.replace({ widget: new TaskWidget(t[4] !== ' ') }).range(cbFrom, cbTo));
               }
             }
+            // ==高亮==（Obsidian 扩展语法，lezer 无对应节点 → 行级正则处理）：
+            // 隐藏首尾 == 标记 + 内容加 cm-md-highlight 背景。光标紧邻时显示源码（标记粒度规则）。
+            const hRe = /==(?=\S)([\s\S]*?\S)==/g;
+            let hm;
+            while ((hm = hRe.exec(l.text))) {
+              const mFrom = l.from + hm.index;
+              const mTo = mFrom + hm[0].length;
+              if (!revealsMark(mFrom, mTo)) {
+                decos.push(Decoration.replace({}).range(mFrom, mFrom + 2));
+                decos.push(Decoration.replace({}).range(mTo - 2, mTo));
+                decos.push(Decoration.mark({ class: 'cm-md-highlight' }).range(mFrom + 2, mTo - 2));
+              }
+            }
           }
         }
         pos = l.to + 1;
@@ -325,6 +338,14 @@ window.MdEditor = (() => {
                 }).range(node.from, node.to));
                 return;
               }
+            }
+            // 转义 \x（Escape 节点）：渲染态隐藏反斜杠、显示字面字符（Obsidian 行为）。
+            // 光标紧邻时显示源码 \*（标记粒度规则）。
+            if (name === 'Escape') {
+              if (!revealsMark(node.from, node.to)) {
+                decos.push(Decoration.replace({}).range(node.from, node.from + 1));
+              }
+              return;
             }
             // 标记隐藏：HeaderMark(#)/EmphasisMark(** *)/StrikethroughMark(~~)/
             // CodeMark(` 围栏)/LinkMark([]())/QuoteMark(>)。
