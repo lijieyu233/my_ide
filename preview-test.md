@@ -34,6 +34,8 @@
 
 ![测试图片](https://example.com/pic.png) 图片语法。
 
+![本地图标](build/icon.png) 本地相对路径图片。
+
 ## 四、列表
 
 - 无序列表一
@@ -45,9 +47,12 @@
 
 1. 有序列表一
 2. 有序列表二
+3. aa
+
+
    1. 嵌套有序
    2. 嵌套有序二
-3. 有序列表三
+5. 有序列表三
 
 - [ ] 未完成任务
 - [x] 已完成任务
@@ -73,7 +78,7 @@ function greet(name) {
 }
 ```
 
-```python
+```java
 # Python 代码块
 def greet(name: str) -> str:
     """文档字符串"""

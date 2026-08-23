@@ -301,6 +301,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       '# 一级标题', '',
       '正文 ~~删除线~~ 与 [链接](https://a.b)', '',
       '- [ ] 待办', '',
+      '- 无序列表项', '',
+      '![alt文字](pic.png)', '',
       '```js', 'const a = 1;', '```', '',
       '| 表头 |', '| - |', '| 数据 |', '',
       '---', '',
@@ -343,6 +345,22 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
     // 8b) 拼写检查关闭（红波浪下划线根因）
     assert_($(dom, '.cm-content') && $(dom, '.cm-content').getAttribute('spellcheck') === 'false', 'spellcheck 关闭');
+    // 8c) 无序 bullet 圆点渲染（用户报告：无序列表没有渲染 / task 多渲染了 -）
+    const liLine = lines.find((l) => l.textContent.includes('无序列表项'));
+    assert_($(dom, '.cm-md-bullet') !== null, '无序 bullet 圆点 widget 渲染');
+    assert_(liLine && !/-\s无序/.test(liLine.textContent) && liLine.textContent.includes('•'),
+      '列表行源码 - 隐藏渲染为 •，got: ' + (liLine ? JSON.stringify(liLine.textContent) : 'null'));
+    assert_(taskLine && !/-\s*\[/.test(taskLine.textContent),
+      'task 行无源码 -（bullet 已替换），got: ' + (taskLine ? JSON.stringify(taskLine.textContent) : 'null'));
+    // 8d) 图片 widget（用户报告：图片没有显示）
+    const imgEl = $(dom, '.cm-md-img img');
+    assert_(imgEl !== null, '图片 img widget 渲染');
+    assert_(imgEl && (imgEl.getAttribute('src') || '').includes('pic.png'), '图片 src 解析相对路径');
+    // 8e) 代码块复制按钮 + 语言标签（用户报告：代码块添加复制按钮）
+    const copyBtn = $(dom, '.cm-md-copybtn');
+    assert_(copyBtn !== null, '复制按钮 widget 渲染');
+    assert_(copyBtn && copyBtn.querySelector('button') !== null, '复制按钮内含 button');
+    assert_(copyBtn && (copyBtn.querySelector('.cm-md-copybtn-lang') || {}).textContent === 'js', '语言标签显示 js');
     // 9) 光标行显示源码：光标在第 1 行 → # 标记可见
     assert_(lines[0] && lines[0].textContent.includes('#'), '光标行（第 1 行）显示 # 源码标记');
     // 10) 标记粒度显示模型（Obsidian 式）：光标在行内但不紧邻标记 → 标记保持隐藏
@@ -403,6 +421,42 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
     await tick(); await tick();
     assert_(!$(dom, '.cm-content').textContent.includes('```'), '光标移出代码块围栏隐藏');
+    // 17) task 勾选框点击切换（用户报告：无法通过点击切换）—— 不进源码态直接改文档
+    {
+      const taskEl = $(dom, '.cm-md-task');
+      assert_(taskEl !== null, 'task 勾选框存在（可点击）');
+      if (taskEl) {
+        const ME = dom.window.MouseEvent;
+        taskEl.dispatchEvent(new ME('mousedown', { bubbles: true, cancelable: true }));
+        taskEl.dispatchEvent(new ME('click', { bubbles: true, cancelable: true }));
+        await tick(); await tick();
+        assert_(g(dom, 'Viewer.cm.getValue()').includes('- [x] 待办'), '点击勾选框 [ ] → [x]');
+        const taskEl2 = $(dom, '.cm-md-task');
+        if (taskEl2) {
+          taskEl2.dispatchEvent(new ME('mousedown', { bubbles: true, cancelable: true }));
+          taskEl2.dispatchEvent(new ME('click', { bubbles: true, cancelable: true }));
+          await tick(); await tick();
+          assert_(g(dom, 'Viewer.cm.getValue()').includes('- [ ] 待办'), '再次点击 [x] → [ ]（切回）');
+        }
+      }
+    }
+    // 18) 表格单元格点击 → 光标精确进入该格源码（用户报告：表格没有直接操作功能）
+    {
+      const tblEl = $(dom, '.cm-md-table');
+      assert_(tblEl !== null, '表格 widget 存在（可点击单元格）');
+      if (tblEl) {
+        const td = tblEl.querySelectorAll('tbody td')[0];
+        if (td) {
+          td.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          await tick(); await tick();
+          const sel = g(dom, 'Viewer.cm.getSelection()');
+          const gi = LIVE_DOC.indexOf('| 数据');
+          const ge = LIVE_DOC.indexOf('\n', gi);
+          assert_(sel && sel.head >= gi && sel.head <= ge,
+            '点击单元格光标进入源码格, got ' + JSON.stringify(sel) + ' 期望 [' + gi + ',' + ge + ']');
+        } else assert_(false, '表格无 td');
+      }
+    }
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {

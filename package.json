@@ -15,6 +15,10 @@
     "check:js": "node scripts/syntax-check.js"
   },
   "dependencies": {
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-python": "^6.2.1",
     "highlight.js": "^11.10.0",
     "iconv-lite": "^0.7.3",
     "isomorphic-git": "^1.27.1",

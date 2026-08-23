@@ -8,9 +8,48 @@
 window.MdEditor = (() => {
   const CM = window.CM6;
   if (!CM) return null;
-  const { State, View, Language, Commands, Md, Autocomplete, Search } = CM;
+  const { State, View, Language, Commands, Md, Autocomplete, Search, Highlight, CodeLangs } = CM;
   const { Decoration, ViewPlugin, WidgetType, EditorView, keymap } = View;
   const { Compartment, EditorState } = State;
+
+  // ---------- 代码语法高亮（One Dark 配色，与预览的 atom-one-dark 同源） ----------
+  // 覆盖 CM6 defaultHighlightStyle（它给 heading 注入 underline —— 已定位的下划线根因）
+  const T = Highlight.tags;
+  const oneDarkHighlight = Language.HighlightStyle.define([
+    { tag: T.keyword, color: '#c678dd' },
+    { tag: [T.controlKeyword, T.moduleKeyword], color: '#c678dd' },
+    { tag: [T.string, T.special(T.string)], color: '#98c379' },
+    { tag: [T.number, T.bool, T.null, T.atom], color: '#d19a66' },
+    { tag: T.comment, color: '#7f848e', fontStyle: 'italic' },
+    { tag: T.variableName, color: '#e06c75' },
+    { tag: T.function(T.variableName), color: '#61afef' },
+    { tag: T.definition(T.variableName), color: '#e5c07b' },
+    { tag: [T.typeName, T.className], color: '#e5c07b' },
+    { tag: T.propertyName, color: '#e06c75' },
+    { tag: T.operator, color: '#56b6c2' },
+    { tag: [T.punctuation, T.bracket], color: '#abb2bf' },
+    { tag: T.tagName, color: '#e06c75' },
+    { tag: T.attributeName, color: '#d19a66' },
+    // markdown 结构 token（live 装饰已处理视觉，这里给低调色兜底 source 模式）
+    { tag: T.heading, color: '#e06c75', fontWeight: 'bold' },
+    { tag: T.strong, fontWeight: 'bold', color: '#abb2bf' },
+    { tag: T.emphasis, fontStyle: 'italic' },
+    { tag: T.link, color: '#61afef' },
+    { tag: T.monospace, color: '#98c379' },
+    { tag: T.strikethrough, textDecoration: 'line-through' },
+  ]);
+
+  // 围栏代码块语言（```js / ```python / ...）：LanguageDescription 懒加载
+  const codeLanguages = [
+    { name: 'javascript', alias: ['js', 'jsx', 'mjs', 'cjs'], load: async () => CodeLangs.javascript() },
+    { name: 'typescript', alias: ['ts', 'tsx'], load: async () => CodeLangs.javascript({ typescript: true }) },
+    { name: 'python', alias: ['py'], load: async () => CodeLangs.python() },
+    { name: 'java', load: async () => CodeLangs.java() },
+    { name: 'css', alias: ['scss'], load: async () => CodeLangs.css() },
+    { name: 'html', alias: ['xml', 'svg'], load: async () => CodeLangs.html() },
+    { name: 'json', load: async () => CodeLangs.json() },
+    { name: 'cpp', alias: ['c', 'c++', 'hpp'], load: async () => CodeLangs.cpp() },
+  ].map((d) => Language.LanguageDescription.of(d));
 
   // ---------- 主题（CSS 变量适配四主题） ----------
   const baseTheme = EditorView.theme({
@@ -66,8 +105,20 @@ window.MdEditor = (() => {
     '.cm-md-link': { color: 'var(--accent)', cursor: 'pointer' },
     '.cm-md-img': { display: 'inline-block', verticalAlign: 'middle' },
     '.cm-md-img img': { maxWidth: '100%', borderRadius: '4px' },
+    // 图片加载失败占位（不显示裂图 —— 明确可见的图名提示）
+    '.cm-md-img-broken': {
+      display: 'inline-block', padding: '4px 10px', border: '1px dashed var(--border-mid)',
+      borderRadius: '4px', color: 'var(--text-dim)', fontSize: '12px', verticalAlign: 'middle',
+    },
     // 列表标记弱化（Obsidian 式：bullet 变暗，内容正常色）
     '.cm-md-listmark': { color: 'var(--text-dim)' },
+    // 无序 bullet 圆点（Obsidian 式 • 渲染，替换源码 -/+/*）
+    '.cm-md-bullet': {
+      display: 'inline-block', width: '16px', textAlign: 'center',
+      color: 'var(--text-dim)', verticalAlign: 'middle', userSelect: 'none',
+    },
+    // 有序编号小间距
+    '.cm-md-listnum': { display: 'inline-block', minWidth: '16px' },
     // task checkbox（对齐 preview 渲染的 input[type=checkbox] 视觉）
     '.cm-md-task': {
       display: 'inline-block', width: '13px', height: '13px',
@@ -94,7 +145,22 @@ window.MdEditor = (() => {
       backgroundColor: 'var(--code-bg)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
       fontFamily: 'var(--font-mono)', fontSize: '12.5px', lineHeight: '1.6', padding: '1px 12px',
     },
-    '.cm-line.cm-md-fence-first': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px', paddingTop: '12px' },
+    '.cm-line.cm-md-fence-first': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px', paddingTop: '12px', position: 'relative' },
+    // 代码块复制按钮（hover 浮现右上角：语言名 + 复制）
+    '.cm-md-copybtn': {
+      position: 'absolute', right: '10px', top: '5px', display: 'flex', alignItems: 'center', gap: '6px',
+      opacity: '0', transition: 'opacity .12s', zIndex: '5',
+    },
+    '.cm-line.cm-md-fence-first:hover .cm-md-copybtn': { opacity: '1' },
+    '.cm-md-copybtn-lang': {
+      fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase',
+      letterSpacing: '0.5px', userSelect: 'none',
+    },
+    '.cm-md-copybtn button': {
+      fontSize: '11px', padding: '1px 9px', background: 'var(--btn-bg)', color: 'var(--text)',
+      border: '1px solid var(--btn-border)', borderRadius: '3px', cursor: 'pointer', lineHeight: '1.5',
+    },
+    '.cm-md-copybtn button:hover': { background: 'var(--btn-hover)' },
     '.cm-line.cm-md-fence-last': { borderBottom: '1px solid var(--border)', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', paddingBottom: '12px' },
     // 分隔线 ---：文本替换为 1px 线 widget（行高不变 —— 行高压 0 会让 CM6 高度
     // 模型错位导致点击偏移），间距用行 padding 表达
@@ -118,8 +184,29 @@ window.MdEditor = (() => {
       img.src = resolveImgSrc(this.src);
       img.alt = this.alt || '';
       img.draggable = false;
+      // 加载失败（路径错/网络图不存在）：隐藏裂图 → 虚线占位框显示 alt/文件名
+      img.addEventListener('error', () => {
+        img.style.display = 'none';
+        if (wrap.querySelector('.cm-md-img-broken')) return;
+        const ph = document.createElement('span');
+        ph.className = 'cm-md-img-broken';
+        ph.textContent = '🖼 ' + (this.alt || this.src);
+        wrap.appendChild(ph);
+      });
       wrap.appendChild(img);
       return wrap;
+    }
+    ignoreEvent() { return false; }
+  }
+
+  // ---------- 无序 bullet 圆点 widget：-/+/* + 空格 → • ----------
+  class BulletWidget extends WidgetType {
+    eq() { return true; }
+    toDOM() {
+      const s = document.createElement('span');
+      s.className = 'cm-md-bullet';
+      s.textContent = '•';
+      return s;
     }
     ignoreEvent() { return false; }
   }
@@ -172,32 +259,49 @@ window.MdEditor = (() => {
     if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
   }
   class TableWidget extends WidgetType {
-    constructor(src) { super(); this.src = src; }
-    eq(other) { return other.src === this.src; }
-    toDOM() {
+    // rows: [{from, text}] 表头行+数据行（不含分隔行）的文档位置 —— 单元格点击定位用
+    constructor(src, rows) { super(); this.src = src; this.rows = rows || []; }
+    eq(other) { return other.src === this.src && other.rowsKey === this.rowsKey; }
+    get rowsKey() { return this.rows.map((r) => r.from).join(','); }
+    // 单元格点击 → 光标精确放进对应源码单元格（Obsidian 式"点哪个格编辑哪个格"）
+    cellPos(rowIndex, colIndex) {
+      const row = this.rows[rowIndex];
+      if (!row) return -1;
+      const cells = row.text.replace(/^\|/, '').replace(/\|$/, '').split('|');
+      let off = /^\|/.test(row.text) ? 1 : 0;
+      for (let i = 0; i < colIndex && i < cells.length; i++) off += cells[i].length + 1;
+      return row.from + Math.min(off, row.text.length);
+    }
+    toDOM(view) {
       const wrap = document.createElement('div');
       wrap.className = 'cm-md-table-wrap';
       const t = parseTable(this.src);
       if (!t) return wrap;
       const table = document.createElement('table');
       table.className = 'cm-md-table';
+      const focusCell = (r, c) => {
+        const pos = this.cellPos(r, c);
+        if (pos >= 0 && view) view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+      };
       const thead = document.createElement('thead');
       const trh = document.createElement('tr');
       t.header.forEach((cell, i) => {
         const th = document.createElement('th');
         th.style.textAlign = t.aligns[i] || 'left';
         renderInline(th, cell);
+        th.addEventListener('mousedown', (e) => { e.preventDefault(); focusCell(0, i); });
         trh.appendChild(th);
       });
       thead.appendChild(trh);
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
-      t.rows.forEach((r) => {
+      t.rows.forEach((r, ri) => {
         const tr = document.createElement('tr');
         t.header.forEach((_, i) => {
           const td = document.createElement('td');
           td.style.textAlign = t.aligns[i] || 'left';
           renderInline(td, r[i] == null ? '' : r[i]);
+          td.addEventListener('mousedown', (e) => { e.preventDefault(); focusCell(ri + 1, i); });
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -206,19 +310,65 @@ window.MdEditor = (() => {
       wrap.appendChild(table);
       return wrap;
     }
-    ignoreEvent() { return false; } // 点击 widget → CM6 把光标放进表格范围 → 自动变源码
+    ignoreEvent() { return true; } // 单元格点击由自身处理（精确放光标进源码）
   }
 
-  // ---------- task checkbox widget：- [ ] / - [x] → 勾选框 ----------
-  class TaskWidget extends WidgetType {
-    constructor(done) { super(); this.done = done; }
-    eq(other) { return other.done === this.done; }
+  // ---------- 代码块复制按钮 widget（fence 首内容行行首，absolute 右上浮层） ----------
+  class CopyBtnWidget extends WidgetType {
+    constructor(code, lang) { super(); this.code = code; this.lang = lang; }
+    eq(other) { return other.code === this.code && other.lang === this.lang; }
     toDOM() {
+      const s = document.createElement('span');
+      s.className = 'cm-md-copybtn';
+      const lang = document.createElement('span');
+      lang.className = 'cm-md-copybtn-lang';
+      lang.textContent = this.lang || 'text';
+      const b = document.createElement('button');
+      b.textContent = '复制';
+      b.title = '复制代码';
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // 不抢编辑器焦点
+      b.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        let ok = false;
+        try { await navigator.clipboard.writeText(this.code); ok = true; } catch {}
+        if (!ok) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = this.code;
+            ta.style.cssText = 'position:fixed;opacity:0';
+            document.body.appendChild(ta);
+            ta.select();
+            ok = document.execCommand('copy');
+            ta.remove();
+          } catch {}
+        }
+        b.textContent = ok ? '已复制' : '复制失败';
+        setTimeout(() => { b.textContent = '复制'; }, 1200);
+      });
+      s.appendChild(lang);
+      s.appendChild(b);
+      return s;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  // ---------- task checkbox widget：- [ ] / - [x] → 可点击勾选框 ----------
+  class TaskWidget extends WidgetType {
+    constructor(done, from, to) { super(); this.done = done; this.from = from; this.to = to; }
+    eq(other) { return other.done === this.done && other.from === this.from; }
+    toDOM(view) {
       const d = document.createElement('span');
       d.className = 'cm-md-task' + (this.done ? ' done' : '');
+      d.title = this.done ? '点击标记为未完成' : '点击标记为已完成';
+      // 点击直接切换勾选（不进源码态 —— Obsidian 同款交互）
+      d.addEventListener('mousedown', (e) => e.preventDefault());
+      d.addEventListener('click', () => {
+        if (!view) return;
+        view.dispatch({ changes: { from: this.from, to: this.to, insert: this.done ? '[ ]' : '[x]' } });
+      });
       return d;
     }
-    ignoreEvent() { return false; }
+    ignoreEvent() { return true; } // 点击由自身处理（切换勾选），不透传 CM6
   }
 
   // 相对路径 → file:///（以笔记所在目录为基准）
@@ -291,8 +441,8 @@ window.MdEditor = (() => {
     const inFence = (pos) => fenceRanges.some(([a, b]) => pos >= a && pos <= b);
     {
       const from = 0, to = doc.length;
-      // ---- 行级预处理：空行压缩 / task checkbox / 列表标记弱化（不依赖语法树、与光标无关） ----
-      // Obsidian 行为：bullet 常显但弱化、task 勾选框任何时候都是渲染态（可直接点击）——
+      // ---- 行级预处理：空行压缩 / task checkbox / 列表 bullet 圆点（不依赖语法树、与光标无关） ----
+      // Obsidian 行为：无序 bullet 渲染成 •、task 勾选框任何时候都是渲染态（可直接点击）——
       // 不再随光标位置切换，消除光标扫过列表行时的源码/渲染跳变。
       let pos = from;
       while (pos < to) {
@@ -301,17 +451,22 @@ window.MdEditor = (() => {
           if (!l.text.trim()) {
             decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
           } else {
-            const m = /^(\s*)([-*+]|\d+\.)( +)/.exec(l.text);
+            const m = /^(\s*)([-*+]|\d+\.)( +)(?:(\[( |x|X)\])( |$))?/.exec(l.text);
             if (m) {
-              // bullet 弱化（常显）
               const bFrom = l.from + m[1].length;
-              decos.push(Decoration.mark({ class: 'cm-md-listmark' }).range(bFrom, bFrom + m[2].length));
-              // task checkbox：- [ ] / - [x] → 勾选框（连尾随空格一起替换，避免渲染态双空格）
-              const t = /^(\s*)([-*+]|\d+\.)( +)\[( |x|X)\]( |$)/.exec(l.text);
-              if (t) {
-                const cbFrom = l.from + t[1].length + t[2].length + t[3].length;
-                const cbTo = cbFrom + 3 + (t[5] === ' ' ? 1 : 0);
-                decos.push(Decoration.replace({ widget: new TaskWidget(t[4] !== ' ') }).range(cbFrom, cbTo));
+              const bTo = bFrom + m[2].length + m[3].length; // bullet + 尾随空格
+              if (m[4]) {
+                // task 行：bullet+空格 → 圆点（用户报告"多渲染了 -"），再接可点击勾选框
+                decos.push(Decoration.replace({ widget: new BulletWidget() }).range(bFrom, bTo));
+                const cbFrom = bTo;
+                const cbTo = cbFrom + 3 + (m[6] === ' ' ? 1 : 0);
+                decos.push(Decoration.replace({ widget: new TaskWidget(m[5] !== ' ', cbFrom, cbFrom + 3) }).range(cbFrom, cbTo));
+              } else if (/^[-*+]$/.test(m[2])) {
+                // 无序列表：-/+/* + 空格 → • 圆点（Obsidian 式渲染）
+                decos.push(Decoration.replace({ widget: new BulletWidget() }).range(bFrom, bTo));
+              } else {
+                // 有序列表：编号保留（弱化显示）
+                decos.push(Decoration.mark({ class: 'cm-md-listmark' }).range(bFrom, bFrom + m[2].length));
               }
             }
             // ==高亮==（Obsidian 扩展语法，lezer 无对应节点 → 行级正则处理）：
@@ -346,6 +501,7 @@ window.MdEditor = (() => {
             if (name === 'FencedCode') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               const cursorIn = !(last.to < selFromLine.from || first.from > selToLine.to);
+              let firstContent = null, lastContent = null;
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
                 if (/^\s*(```|~~~)/.test(l.text)) {
@@ -357,6 +513,8 @@ window.MdEditor = (() => {
                   }
                 } else {
                   decos.push(Decoration.line({ class: 'cm-md-fence-line' }).range(l.from));
+                  if (!firstContent) firstContent = l;
+                  lastContent = l;
                 }
               }
               for (let n = first.number + 1; n < last.number; n++) {
@@ -368,6 +526,12 @@ window.MdEditor = (() => {
                 if (/^\s*(```|~~~)/.test(doc.line(n).text)) continue;
                 decos.push(Decoration.line({ class: 'cm-md-fence-last' }).range(doc.line(n).from));
                 break;
+              }
+              // 复制按钮 + 语言名（常显挂首内容行行首，hover 浮现右上角）
+              if (firstContent && lastContent) {
+                const langM = /^\s*(```|~~~)\s*(\S+)/.exec(first.text);
+                const code = doc.sliceString(firstContent.from, lastContent.to);
+                decos.push(Decoration.widget({ widget: new CopyBtnWidget(code, langM ? langM[2] : '') }).range(firstContent.from));
               }
               return;
             }
@@ -381,14 +545,21 @@ window.MdEditor = (() => {
               return;
             }
             // 表格：整块 block widget 真表格渲染（Obsidian 式：列对齐/表头/边框）。
-            // 光标/选区进入表格 → 回退源码编辑；点击 widget CM6 会把光标放进表格
-            // 范围 → 自动切换源码态。block widget 高度由 CM6 直接测量，无点击偏移。
+            // 光标/选区进入表格 → 回退源码编辑；点击单元格精确放光标到对应源码格。
+            // block widget 高度由 CM6 直接测量，无点击偏移。
             if (name === 'Table') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               const cursorIn = !(last.to < selFromLine.from || first.from > selToLine.to);
               if (!cursorIn) {
+                // 表头行+数据行的位置（跳过分隔行）—— 单元格点击定位
+                const rows = [];
+                for (let n = first.number; n <= last.number; n++) {
+                  const l = doc.line(n);
+                  if (n > first.number && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(l.text)) continue;
+                  rows.push({ from: l.from, text: l.text });
+                }
                 decos.push(Decoration.replace({
-                  widget: new TableWidget(doc.sliceString(node.from, node.to)),
+                  widget: new TableWidget(doc.sliceString(node.from, node.to), rows),
                   block: true,
                 }).range(node.from, node.to));
               }
@@ -646,6 +817,23 @@ window.MdEditor = (() => {
     { key: 'Mod-h', run: (v) => wrapSelection(v, '==', '==') },
     { key: 'Mod-k', run: (v) => linkSelection(v) },
     { key: 'Enter', run: listContinue },
+    // 表格源码行内 Tab → 跳到下一单元格（| 之后）；行尾 Tab 走默认缩进
+    {
+      key: 'Tab',
+      run: (v) => {
+        const sel = v.state.selection.main;
+        if (!sel.empty) return false;
+        const line = v.state.doc.lineAt(sel.head);
+        if (!line.text.includes('|')) return false;
+        const rel = sel.head - line.from;
+        const next = line.text.indexOf('|', rel + 1);
+        if (next >= 0 && next < line.text.length - 1) {
+          v.dispatch({ selection: { anchor: line.from + next + 1 }, scrollIntoView: true });
+          return true;
+        }
+        return false;
+      },
+    },
   ]);
 
   // ---------- Live Preview 开关（Compartment） ----------
@@ -657,9 +845,9 @@ window.MdEditor = (() => {
       mdKeymap,
       View.drawSelection(),
       EditorState.allowMultipleSelections.of(true),
-      Language.syntaxHighlighting(Language.defaultHighlightStyle, { fallback: true }),
+      Language.syntaxHighlighting(oneDarkHighlight),
       Language.bracketMatching(),
-      Md.markdown({ base: Md.markdownLanguage }),
+      Md.markdown({ base: Md.markdownLanguage, codeLanguages }),
       baseTheme,
       liveTheme,
       keymap.of([

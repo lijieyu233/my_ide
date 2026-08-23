@@ -14,6 +14,7 @@
   const q = (sel) => document.querySelector(sel);
   const transparent = (v) => !v || v === 'rgba(0, 0, 0, 0)' || v === 'transparent';
   const lineEl = (txt) => [...document.querySelectorAll('.cm-content .cm-line')].find((el) => el.textContent.includes(txt));
+  const lineNoOf = (key) => DOC.slice(0, DOC.indexOf(key)).split('\n').length; // 动态行号（文档增删行仍稳）
   const click = (el) => {
     const r = el.getBoundingClientRect();
     const x = r.x + Math.min(60, r.width / 2), y = r.y + r.height / 2;
@@ -40,17 +41,82 @@
   add('文本: ` 行内代码标记隐藏', has('行内代码') && !/`/.test(allText()));
   add('文本: == 高亮标记隐藏', has('高亮文字') && !allText().includes('=='));
   add('文本: 链接 URL 隐藏', has('行内链接文字') && !has('https://example.com)'));
-  add('文本: 引用 > 标记隐藏', has('引用第一行') && !has('> 引用第一行'));
+  {
+    // 引用块在初始视口外（文档较长）→ 滚过去，光标移出引用行（光标行显形是设计行为）再检查
+    const quoteLineNo = DOC.slice(0, DOC.indexOf('引用第一行')).split('\n').length;
+    api.gotoLine(quoteLineNo); await sleep(300);
+    api.setCursor(DOC.length); await sleep(150); // 光标移出引用行 → 恢复渲染态（不滚动）
+    const quoteOk = has('引用第一行') && !has('> 引用第一行');
+    add('文本: 引用 > 标记隐藏', quoteOk, quoteOk ? '' : '引用第一行可见=' + has('引用第一行') + ' 源码>可见=' + has('> 引用第一行'));
+    api.gotoLine(1); await sleep(300);
+  }
   add('文本: 围栏行 ``` 隐藏', !/```/.test(allText()));
   add('文本: 表格分隔行隐藏', !has('| :--- | :---: | ---: |'));
   add('文本: 分隔线 --- 文本隐藏', !has('---'));
   add('文本: 拼写检查关闭(无红波浪下划线)', cm.spellcheck === false, String(cm.spellcheck));
-  add('文本: task 源码 [ ] 隐藏', !has('[ ]') && !has('[x]'));
-  add('文本: task checkbox widget 存在', document.querySelector('.cm-md-task') !== null);
   add('文本: 转义 \\* 显示为字面量', has('*不是斜体*'));
-  add('文本: 无序 bullet 保留', has('无序列表一'));
 
-  // ---------- 样式层（视口内元素；表格/代码块在滚动后单独检查） ----------
+  // ---------- 列表渲染（用户报告：无序列表没有渲染 / task 多渲染了 -） ----------
+  {
+    // 列表区在初始视口外 → 滚过去（bullet/task widget 与光标无关，光标行也常渲染）
+    api.gotoLine(lineNoOf('无序列表一')); await sleep(350);
+    add('文本: task 源码 [ ] 隐藏', !has('[ ]') && !has('[x]'));
+    add('文本: task checkbox widget 存在', document.querySelector('.cm-md-task') !== null);
+    const bullets = document.querySelectorAll('.cm-md-bullet');
+    add('列表: 无序 bullet 圆点渲染', bullets.length >= 3, 'count=' + bullets.length);
+    // 渲染态列表行不得残留源码 "- "
+    const liLine = lineEl('无序列表一');
+    add('列表: 无序行无源码 - ', liLine ? !/-\s无序/.test(liLine.textContent) && liLine.textContent.includes('•') : false,
+      liLine ? JSON.stringify(liLine.textContent.slice(0, 12)) : '行不在 DOM');
+    const tasks = document.querySelectorAll('.cm-md-task');
+    add('列表: task 勾选框渲染', tasks.length >= 3, 'count=' + tasks.length);
+    const doneTask = document.querySelector('.cm-md-task.done');
+    add('列表: 已完成 task 勾选样式', doneTask !== null, '');
+    // task 行不残留 "-"（bullet 已替换圆点）
+    const taskLine = lineEl('未完成任务');
+    add('列表: task 行无源码 - ', taskLine ? !/-\s*\[/.test(taskLine.textContent) : false,
+      taskLine ? JSON.stringify(taskLine.textContent.slice(0, 12)) : '行不在 DOM');
+    // 点击勾选框切换（用户报告：无法通过点击切换）
+    if (tasks.length) {
+      const t0 = tasks[0];
+      const before = api.getValue();
+      t0.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      t0.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await sleep(150);
+      const after = api.getValue();
+      const toggled = before.includes('- [ ] 未完成任务') && after.includes('- [x] 未完成任务');
+      add('行为: 点击 task 勾选框切换状态', toggled,
+        'before[ ]→after[x]=' + toggled + (toggled ? '' : ' after片段=' + JSON.stringify(after.slice(after.indexOf('未完成') - 8, after.indexOf('未完成') + 6))));
+      // 切回（保持文档原状）
+      const tasks2 = document.querySelectorAll('.cm-md-task');
+      if (tasks2.length) {
+        tasks2[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        tasks2[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        await sleep(120);
+      }
+    }
+  }
+
+  // ---------- 图片渲染（用户报告：图片没有显示） ----------
+  {
+    // 远程图（视口滚到该行；光标行首不进构造 → widget 渲染）
+    api.gotoLine(lineNoOf('测试图片')); await sleep(350);
+    const remote = [...document.querySelectorAll('.cm-md-img img')].find((im) => (im.getAttribute('src') || '').includes('example.com'));
+    add('图片: 远程图 widget 渲染', remote !== null, remote ? remote.getAttribute('src') : '未找到');
+    // 远程占位图（example.com 404）→ 虚线占位框（不显示裂图）
+    await sleep(600);
+    const broken = q('.cm-md-img-broken');
+    add('图片: 加载失败显示占位框', broken !== null, broken ? broken.textContent.slice(0, 20) : '占位未出现');
+    // 本地相对路径图（单独滚到该行 —— 视口虚拟化）
+    api.gotoLine(lineNoOf('本地图标')); await sleep(350);
+    const local = [...document.querySelectorAll('.cm-md-img img')].find((im) => (im.getAttribute('src') || '').includes('build/icon.png'));
+    add('图片: 本地图 widget 渲染', local !== null, local ? '' : '未找到本地图');
+    add('图片: 本地相对路径解析为 file:///', local && /^file:\/\/\//.test(local.getAttribute('src') || ''),
+      local ? local.getAttribute('src') : '未找到本地图');
+  }
+
+  // ---------- 样式层（视口内元素；先滚回文首 —— 前面的测试滚走了视口） ----------
+  api.gotoLine(1); await sleep(350);
   const h1 = q('.cm-md-h1');
   add('样式: h1 字号 22px', h1 && css(h1, 'font-size') === '22px', css(h1, 'font-size'));
   const h1line = q('.cm-md-h1-line');
@@ -96,8 +162,8 @@
   }
 
   // ---------- 滚动后元素检查（CM6 视口虚拟化：表格/代码块初始在视口外，gotoLine 滚过去再测） ----------
-  // 表格（用户报告：表格没有渲染）—— preview-test.md 表格在第 88-96 行附近
-  api.gotoLine(90); await sleep(350); // 滚到表格区（gotoLine 会把光标放进表格 → 源码态）
+  // 表格（用户报告：表格没有渲染）
+  api.gotoLine(lineNoOf('左对齐列')); await sleep(350); // 滚到表格区（gotoLine 会把光标放进表格 → 源码态）
   api.setCursor(DOC.length); await sleep(250); // 光标移出表格（setCursor 不滚动）→ 恢复 widget 态
   {
     const tbl = q('.cm-md-table');
@@ -119,25 +185,49 @@
     add('表格: 光标进表格回退源码', has('单元格A1') && q('.cm-md-table') === null, '');
     api.setCursor(DOC.length); await sleep(150);
     add('表格: 光标移出恢复渲染', q('.cm-md-table') !== null, '');
-    // 点击 widget → 光标进入表格范围（自动变源码可编辑）
+    // 点击单元格 → 光标精确进入对应源码格（用户报告：表格没有直接操作功能）
     const tbl2 = q('.cm-md-table');
     if (tbl2) {
       await ensureVisible(tbl2);
-      click(tbl2);
-      await sleep(120);
-      const sel = api.getSelection();
-      const tFrom = DOC.indexOf('| 左对齐列');
-      const tTo = DOC.indexOf('内容较长的一格') + 20;
-      add('行为: 点击表格widget光标进入表格', sel.head >= tFrom - 1 && sel.head <= tTo, JSON.stringify(sel));
+      // 第 1 数据行第 1 列（单元格A1）→ 光标应落在源码 "| 单元格A1" 的 A1 前
+      const td = tbl2.querySelectorAll('tbody td')[0];
+      if (td) {
+        const r = td.getBoundingClientRect();
+        td.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: r.x + 10, clientY: r.y + r.height / 2, button: 0, detail: 1 }));
+        await sleep(120);
+        const sel = api.getSelection();
+        const li = DOC.indexOf('| 单元格A1');
+        const le = DOC.indexOf('\n', li);
+        add('行为: 点击单元格光标精确进入该格', sel.head >= li && sel.head <= le,
+          'head=' + sel.head + ' 格行范围=[' + li + ',' + le + ']');
+      } else add('行为: 点击单元格光标精确进入该格', false, '无 td');
     }
   }
-  // 代码块（用户报告：代码块无法操作）—— preview-test.md js 代码块在第 68-74 行
-  api.gotoLine(70); await sleep(350);
+  // 代码块（用户报告：代码块无法操作 / 要复制按钮和语法高亮）
+  api.gotoLine(lineNoOf('const msg')); await sleep(350);
   let codeLine = lineEl('const msg');
   if (!codeLine) codeLine = lineEl('function greet');
   {
     const fence2 = q('.cm-md-fence-line');
     add('代码块(滚动后): 行背景', fence2 && !transparent(css(fence2, 'background-color')), fence2 ? css(fence2, 'background-color') : '元素不存在');
+    // 复制按钮 + 语言标签（用户报告：代码块添加复制按钮）
+    const copyBtn = q('.cm-md-copybtn');
+    add('代码块: 复制按钮渲染', copyBtn !== null, copyBtn ? '' : '元素不存在');
+    const langLabel = copyBtn && copyBtn.querySelector('.cm-md-copybtn-lang');
+    add('代码块: 语言标签显示', langLabel && langLabel.textContent.toLowerCase() === 'js',
+      langLabel ? langLabel.textContent : '无标签');
+    const copyBtnEl = copyBtn && copyBtn.querySelector('button');
+    add('代码块: 复制按钮可点击结构', copyBtnEl && copyBtnEl.textContent === '复制', copyBtnEl ? copyBtnEl.textContent : '无按钮');
+    // 真语法高亮（用户报告：识别语法显示不同颜色）：语言包异步加载后 fence 行内
+    // 出现彩色 token span；关键字 function 应为 One Dark 紫 #c678dd = rgb(198,120,221)
+    await sleep(900);
+    const fenceSpans = [...document.querySelectorAll('.cm-md-fence-line span[class^="ͼ"]')];
+    add('代码块: 语法 token 渲染', fenceSpans.length >= 5, 'tokens=' + fenceSpans.length);
+    const colors = new Set(fenceSpans.map((s) => css(s, 'color')));
+    const multiColor = [...colors].filter((c) => c && c !== 'rgb(171, 178, 191)');
+    add('代码块: 多色语法高亮', multiColor.length >= 3, 'colors=' + multiColor.slice(0, 5).join(','));
+    add('代码块: 关键字紫色(#c678dd)', colors.has('rgb(198, 120, 221)'),
+      'hasPurple=' + colors.has('rgb(198, 120, 221)') + ' 全部=' + [...colors].slice(0, 6).join(','));
     // 光标进代码块内容行 → 围栏显形（Obsidian：光标进块整块变源码态）
     api.setCursor(DOC.indexOf('const msg') + 3); await sleep(150);
     add('代码块: 光标进块围栏显形', allText().includes('```'), '');
@@ -150,42 +240,44 @@
   api.setCursor(DOC.indexOf('const msg') + 3); await sleep(150); // 源码态（围栏可见）
   if (codeLine) {
     await ensureVisible(codeLine);
+    api.focus(); await sleep(80);
     click(codeLine);
-    await sleep(100);
+    await sleep(250);
     const sel = api.getSelection();
     const i = DOC.indexOf('const msg');
     const lineEnd = DOC.indexOf('\n', i);
     add('行为: 点击代码块内容光标进入', sel && sel.head >= i - 1 && sel.head <= lineEnd, JSON.stringify(sel));
-    const cur = q('.cm-cursor');
+    const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = codeLine.getBoundingClientRect();
-    add('行为: 点击高度与光标高度一致(代码行)', cr && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
+    add('行为: 点击高度与光标高度一致(代码行)', cr && cr.height > 0 && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
       'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']');
   } else add('行为: 点击代码块内容光标进入', false, '未找到代码行');
 
-  // 2. 点击标题行（有 padding，最易出现命中偏移）—— 第 7 行
+  // 2. 点击标题行（有 padding，最易出现命中偏移）
   api.setCursor(DOC.length); await sleep(150);
-  api.gotoLine(7); await sleep(350);
+  api.gotoLine(lineNoOf('一级标题 H1')); await sleep(350);
   const h1El = lineEl('一级标题 H1');
   if (h1El) {
     await ensureVisible(h1El);
+    api.focus(); await sleep(80);
     click(h1El);
-    await sleep(100);
+    await sleep(250);
     const sel = api.getSelection();
     const i = DOC.indexOf('# 一级标题');
     const lineEnd = DOC.indexOf('\n', i);
     add('行为: 点击标题行光标进入', sel && sel.from === sel.to && sel.head >= i && sel.head <= lineEnd, JSON.stringify(sel));
-    const cur = q('.cm-cursor');
+    const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = h1El.getBoundingClientRect();
-    add('行为: 点击高度与光标高度一致(标题行)', cr && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
+    add('行为: 点击高度与光标高度一致(标题行)', cr && cr.height > 0 && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
       'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']');
   }
   // 3. 表格区点击映射（源码态下逐行点击 → 光标必须精确命中该行）
   //    先把光标放进表格（widget → 源码态），顺序：表格内行优先，表格外的行最后
   //    （点表格外的行会让表格恢复 widget，之后表格行就不在 DOM 了）
   api.setCursor(DOC.indexOf('单元格A1') + 2); await sleep(200); // 进源码态
-  api.gotoLine(92); await sleep(350);
+  api.gotoLine(lineNoOf('单元格A1')); await sleep(350);
   {
     const lineOf = (pos) => DOC.slice(0, pos).split('\n').length;
     for (const key of ['单元格A2', '内容较长的一格', '左对齐列', '单元格A1', '七、表格', '八、其他块级']) {
@@ -207,13 +299,14 @@
   const trEl = lineEl('单元格A1');
   if (trEl) {
     await ensureVisible(trEl);
+    api.focus(); await sleep(80);
     click(trEl);
-    await sleep(100);
+    await sleep(250);
     const sel = api.getSelection();
     const i = DOC.indexOf('单元格A1');
     const lineEnd = DOC.indexOf('\n', i);
     add('行为: 点击表格单元格光标进入', sel && sel.head >= i - 1 && sel.head <= lineEnd, JSON.stringify(sel));
-    const cur = q('.cm-cursor');
+    const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = trEl.getBoundingClientRect();
     add('行为: 点击高度与光标高度一致(表格行)', cr && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
