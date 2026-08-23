@@ -6,3 +6,5 @@ smoke.log
 dist/
 build/*
 !build/icon.png
+check-live-out.txt
+check-live.png

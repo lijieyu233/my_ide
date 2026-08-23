@@ -325,20 +325,24 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const taskLine = lines.find((l) => l.textContent.includes('待办'));
     assert_(taskLine && $(dom, '.cm-md-task') !== null, 'task checkbox widget 渲染');
     assert_(taskLine && !taskLine.textContent.includes('[ ]'), 'task 源码标记隐藏');
-    // 5) 围栏行隐藏 + 内容行背景类（曾因 block replace 冲突全部失效）
-    assert_($$(dom, '.cm-md-fence-hidden').length === 2, '两行围栏隐藏（fence-hidden），got: ' + $$(dom, '.cm-md-fence-hidden').length);
+    // 5) 围栏行 block replace 真移除（光标不在代码块内）+ 内容行背景类
+    const contentText = $(dom, '.cm-content').textContent;
+    assert_(!contentText.includes('```'), '围栏行 ``` 文本不显示（block replace 移除）');
     assert_($(dom, '.cm-md-fence-line') !== null, '代码内容行有背景类（fence-line）');
-    // 6) 代码块后空行保留（block widget 曾吞掉空行 → 行号错位）
+    // 6) 代码块后空行保留（行边界完整）
     const constIdx = lines.findIndex((l) => l.textContent.includes('const a = 1;'));
-    assert_(constIdx >= 0 && lines[constIdx + 2] && lines[constIdx + 2].textContent.trim() === '',
+    assert_(constIdx >= 0 && lines.slice(constIdx + 1, constIdx + 3).some((l) => l && l.textContent.trim() === ''),
       '代码块后的空行保留在 DOM（行边界完整）');
-    // 7) 表格逐行线框渲染（不再整块 widget）
-    assert_($(dom, '.cm-md-tr-head') !== null, '表格表头行（tr-head）');
-    assert_($(dom, '.cm-md-tr-sep') !== null, '表格分隔行隐藏（tr-sep）');
-    assert_($(dom, '.cm-md-tr-last') !== null, '表格末行（tr-last）');
-    assert_($(dom, '.cm-md-pipe') !== null, '表格 | 弱化（pipe）');
-    // 8) 分隔线 ---：隐藏文本 + hr 行类
+    // 7) 表格 block widget 真表格渲染（Obsidian 式：光标不在表格内 → 渲染态）
+    const tbl = $(dom, '.cm-md-table');
+    assert_(tbl !== null, '表格 block widget 渲染');
+    assert_(tbl && tbl.querySelectorAll('thead th').length === 1, '表头 1 列');
+    assert_(tbl && tbl.querySelectorAll('tbody tr').length === 1 && tbl.textContent.includes('数据'), '数据行渲染');
+    // 8) 分隔线 ---：文本替换为 1px 线 widget（行高不变防点击偏移）
+    assert_($(dom, '.cm-md-hr') !== null, '分隔线 widget 渲染（cm-md-hr）');
     assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
+    // 8b) 拼写检查关闭（红波浪下划线根因）
+    assert_($(dom, '.cm-content') && $(dom, '.cm-content').getAttribute('spellcheck') === 'false', 'spellcheck 关闭');
     // 9) 光标行显示源码：光标在第 1 行 → # 标记可见
     assert_(lines[0] && lines[0].textContent.includes('#'), '光标行（第 1 行）显示 # 源码标记');
     // 10) 标记粒度显示模型（Obsidian 式）：光标在行内但不紧邻标记 → 标记保持隐藏
@@ -385,6 +389,20 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     para2 = lines2.find((l) => l.textContent.includes('删除线'));
     assert_(para2 && para2.textContent.includes('[') && para2.textContent.includes('https://'),
       '光标进入链接内部 → 显示完整 [链接](url) 源码');
+    // 15) 光标进表格 → 回退源码（Obsidian：点击表格变源码可编辑）；移出恢复
+    g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
+    await tick(); await tick();
+    assert_($(dom, '.cm-md-table') === null && $(dom, '.cm-content').textContent.includes('| 数据'), '光标进表格回退源码');
+    g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
+    await tick(); await tick();
+    assert_($(dom, '.cm-md-table') !== null, '光标移出表格恢复渲染');
+    // 16) 光标进代码块内容行 → 围栏显形（Obsidian：光标进块整块变源码态）
+    g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('const a') + 2) + ')');
+    await tick(); await tick();
+    assert_($(dom, '.cm-content').textContent.includes('```'), '光标进代码块围栏显形');
+    g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
+    await tick(); await tick();
+    assert_(!$(dom, '.cm-content').textContent.includes('```'), '光标移出代码块围栏隐藏');
   });
 
   await okAsync('Ctrl+Shift+C 复制当前文件路径', async () => {

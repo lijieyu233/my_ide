@@ -163,6 +163,7 @@ ipcMain.handle('win:toggleMaximize', () => {
 });
 ipcMain.handle('win:close', () => { if (mainWindow) mainWindow.close(); });
 ipcMain.handle('win:isMaximized', () => (mainWindow ? mainWindow.isMaximized() : false));
+ipcMain.handle('app:getVersion', () => app.getVersion());
 
 // ---------- IPC：文件系统 ----------
 ipcMain.handle('fs:openFolder', async () => {
@@ -748,6 +749,43 @@ app.whenReady().then(() => {
         try { fs.rmSync(bigDir, { recursive: true, force: true }); } catch {}
       } catch (e) {
         console.log('CHECK FAIL ' + String((e && e.stack) || e).slice(0, 800));
+      }
+      app.exit(0);
+    });
+  }
+
+  // Live Preview 真实渲染自检：node_modules\electron\dist\electron.exe . --check-live
+  // 完整真实链路（真 main.js IPC + 真 styles.css + 真 Viewer 装配），打开 preview-test.md 逐项检查 + 截图
+  if (process.argv.includes('--check-live')) {
+    win.webContents.once('did-finish-load', async () => {
+      const wc = win.webContents;
+      try {
+        const docPath = path.join(__dirname, 'preview-test.md');
+        await new Promise((r) => setTimeout(r, 1800)); // 等 app.js 启动
+        await wc.executeJavaScript('localStorage.setItem("myide-md-mode", "live"); true');
+        await wc.executeJavaScript('Viewer.openFile(' + JSON.stringify(docPath) + '); true');
+        for (let i = 0; i < 20; i++) { // 轮询编辑器挂载
+          if (await wc.executeJavaScript('!!document.querySelector(".cm-content")')) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        await new Promise((r) => setTimeout(r, 600)); // 等解析+装饰稳定
+        await wc.executeJavaScript('window.__doc = ' + JSON.stringify(fs.readFileSync(docPath, 'utf8')) + '; true');
+        const pageScript = fs.readFileSync(path.join(__dirname, 'scripts', 'check-live-page.js'), 'utf8');
+        const out = await wc.executeJavaScript(pageScript);
+        let fail = 0;
+        const lines = [];
+        for (const it of (out.R || [])) {
+          lines.push((it.ok ? 'PASS' : 'FAIL') + '  ' + it.name + (it.detail ? '   [' + it.detail + ']' : ''));
+          if (!it.ok) fail++;
+        }
+        if (out.error) lines.push('致命: ' + out.error);
+        lines.push('LIVE CHECK: ' + ((out.R || []).length - fail) + ' 通过 / ' + fail + ' 失败 (共 ' + (out.R || []).length + ' 项)');
+        const img = await wc.capturePage();
+        fs.writeFileSync(path.join(__dirname, 'check-live.png'), img.toPNG());
+        lines.push('截图: check-live.png');
+        fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), lines.join('\n') + '\n');
+      } catch (e) {
+        fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), 'LIVE CHECK FAIL ' + String((e && e.stack) || e).slice(0, 2000) + '\n');
       }
       app.exit(0);
     });

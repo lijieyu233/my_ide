@@ -163,6 +163,14 @@ const App = (() => {
     el.textContent = parts.join('    ');
   }
 
+  // 版本号（状态栏最左显示 —— 一眼确认实际运行的版本，避免旧 exe 误判）
+  (function showVersion() {
+    const el = document.getElementById('sb-ver');
+    if (el && window.myIDE && myIDE.app) {
+      myIDE.app.getVersion().then((v) => { el.textContent = 'v' + v; }).catch(() => {});
+    }
+  })();
+
   // ---------- 多项目（顶部项目栏）----------
   let projects = []; // [{path}]
   let projDragPath = null; // 项目栏拖拽排序：dragstart 记录（dragover 中 getData 不可用）

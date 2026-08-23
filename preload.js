@@ -2,6 +2,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('myIDE', {
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
   fs: {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),
