@@ -43,8 +43,9 @@ window.MdEditor = (() => {
     '.cm-md-h5': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
     '.cm-md-h6': { fontSize: '13px', fontWeight: '500', color: 'var(--text-dim)' },
     // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
-    '.cm-line.cm-md-h1-line': { paddingTop: '10px', paddingBottom: '5px', borderBottom: '1px solid var(--border)' },
-    '.cm-line.cm-md-h2-line': { paddingTop: '8px', paddingBottom: '3px', borderBottom: '1px solid var(--border)' },
+    // Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom
+    '.cm-line.cm-md-h1-line': { paddingTop: '10px', paddingBottom: '5px' },
+    '.cm-line.cm-md-h2-line': { paddingTop: '8px', paddingBottom: '3px' },
     '.cm-line.cm-md-h3-line': { paddingTop: '5px' },
     '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '3px' },
     // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）

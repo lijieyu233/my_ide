@@ -337,8 +337,9 @@ textarea.editor {
 /* Markdown 渲染 */
 .md-view { padding: 20px 28px; max-width: 860px; user-select: text; line-height: 1.7; }
 .md-view h1, .md-view h2, .md-view h3, .md-view h4 { color: var(--text-bright); margin: 18px 0 8px; }
-.md-view h1 { font-size: 22px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-.md-view h2 { font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+/* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
+.md-view h1 { font-size: 22px; }
+.md-view h2 { font-size: 18px; }
 .md-view h3 { font-size: 15px; }
 .md-view p { margin: 8px 0; }
 .md-view a { color: var(--accent); }
