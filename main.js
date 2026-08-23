@@ -10,6 +10,7 @@ process.on('uncaughtException', (e) => {
   LOG('uncaught: ' + (e && e.stack || e));
   try {
     const logFile = path.join(app.getPath('userData'), 'my-ide-error.log');
+    if (fs.existsSync(logFile) && fs.statSync(logFile).size > 10485760) fs.writeFileSync(logFile, '');
     fs.appendFileSync(logFile, new Date().toISOString() + ' uncaught: ' + (e && e.stack || e) + '\n');
   } catch {}
 });
@@ -17,6 +18,7 @@ process.on('unhandledRejection', (e) => {
   LOG('unhandledRejection: ' + (e && e.stack || e));
   try {
     const logFile = path.join(app.getPath('userData'), 'my-ide-error.log');
+    if (fs.existsSync(logFile) && fs.statSync(logFile).size > 10485760) fs.writeFileSync(logFile, '');
     fs.appendFileSync(logFile, new Date().toISOString() + ' unhandledRejection: ' + (e && e.stack || e) + '\n');
   } catch {}
 });
@@ -793,4 +795,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { app.quit(); });
-process.on('uncaughtException', (e) => { console.error('MAIN CRASH:', e); if (SMOKE) app.exit(1); });
+process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });
