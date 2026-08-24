@@ -839,6 +839,40 @@ window.MdEditor = (() => {
   // ---------- Live Preview 开关（Compartment） ----------
   const liveComp = new Compartment();
 
+  // ---------- 折叠（Ctrl+-/= 单个块，Ctrl+Shift+-/= 全部） ----------
+  // 官方 foldCode 仅在折叠块「起始行」生效；自定义：光标在块内任意位置
+  // 都能折叠包含它的最内层块（md 标题 section 等，VSCode 式体验）
+  function foldCurrent(view) {
+    const head = view.state.selection.main.head;
+    const tree = Language.syntaxTree(view.state);
+    if (tree) {
+      let node = tree.resolveInner(head, head > 0 ? -1 : 1);
+      while (node) {
+        const fn = node.type.prop(Language.foldNodeProp);
+        if (fn) {
+          const r = typeof fn === 'function' ? fn(node) : Language.foldInside(node);
+          if (r && r.to > r.from) {
+            view.dispatch({ effects: Language.foldEffect.of(r) });
+            return true;
+          }
+        }
+        node = node.parent;
+      }
+    }
+    return Language.foldCode(view); // 兜底：光标在起始行
+  }
+  // 展开包含光标（或紧邻）的折叠范围
+  function unfoldCurrent(view) {
+    const head = view.state.selection.main.head;
+    const folded = Language.foldedRanges(view.state);
+    let found = null;
+    folded.between(0, view.state.doc.length, (from, to) => { if (from <= head && to >= head) found = { from, to }; });
+    if (!found) folded.between(Math.max(0, head - 1), Math.min(view.state.doc.length, head + 1), (from, to) => { found = { from, to }; });
+    if (!found) return Language.unfoldCode(view);
+    view.dispatch({ effects: Language.unfoldEffect.of(found) });
+    return true;
+  }
+
   function baseExtensions(opts) {
     const ext = [
       Commands.history(),
@@ -851,6 +885,12 @@ window.MdEditor = (() => {
       baseTheme,
       liveTheme,
       keymap.of([
+        // Ctrl+-/= 折叠/展开当前块；Ctrl+Shift+-/= 全部折叠/展开
+        // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
+        { key: 'Mod--', run: foldCurrent },
+        { key: 'Mod-=', run: unfoldCurrent },
+        { key: 'Mod-Shift-_', run: Language.foldAll },
+        { key: 'Mod-Shift-+', run: Language.unfoldAll },
         ...Autocomplete.closeBracketsKeymap,
         ...Commands.defaultKeymap,
         ...Search.searchKeymap,
@@ -859,6 +899,8 @@ window.MdEditor = (() => {
         Commands.indentWithTab,
       ]),
       Autocomplete.closeBrackets(),
+      Language.codeFolding(), // foldState（折叠命令依赖）
+      Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
       EditorView.updateListener.of((u) => {
         if (u.docChanged && opts.onChange) opts.onChange(u.state.doc.toString());
         if ((u.docChanged || u.selectionSet) && opts.onCursor) {

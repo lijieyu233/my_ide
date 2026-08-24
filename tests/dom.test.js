@@ -1673,7 +1673,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'f', { ctrl: true });
     await tick(); await tick();
     const panel = $(dom, '.cm-panel.cm-search');
-    assert_(panel, 'CM6 搜索面板出现');
+assert_(panel, 'CM6 搜索面板出现');
+    assert_($(dom, '.cm-panels-top .cm-panel.cm-search'), '搜索面板在编辑器顶部');
     const input = panel && panel.querySelector('.cm-textfield');
     assert_(input, '查询输入框存在');
     // 输入查询 → 3 处匹配高亮（CM6 搜索框在 change/keyup 时提交 query）
@@ -1804,6 +1805,34 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick(); await tick();
     assert_(val() === '', '退格删除配对: ' + JSON.stringify(val()));
   });
+  await okAsync('代码折叠：Ctrl+-/= 单个块，Ctrl+Shift+-/= 全部（CM6）', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/src/app.js")');
+    await tick(); await tick();
+    g(dom, 'Viewer.cm.setValue("function f() {\\n  return 1;\\n}\\nfunction g() {\\n  return 2;\\n}\\n")');
+    await tick(); await tick();
+    const ce = $(dom, '.editor-code-wrap .cm-content');
+    assert_(ce, 'CM6 内容区存在');
+    const kd = (k, mods) => ce.dispatchEvent(new dom.window.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true, cancelable: true }, mods)));
+    const ph = () => $$(dom, '.cm-foldPlaceholder').length;
+    // 光标在函数体内 → Ctrl+- 折叠该函数（官方 foldCode 只认起始行，自定义命令覆盖块内任意位置）
+    g(dom, 'Viewer.cm.setCursor(16)');
+    await tick(); await tick();
+    kd('-', { ctrlKey: true });
+    await tick(); await tick();
+    assert_(ph() === 1, '单个折叠: ' + ph());
+    // Ctrl+= 展开
+    kd('=', { ctrlKey: true });
+    await tick(); await tick();
+    assert_(ph() === 0, '单个展开: ' + ph());
+    // Ctrl+Shift+- 全部折叠
+    kd('_', { ctrlKey: true, shiftKey: true });
+    await tick(); await tick();
+    assert_(ph() === 2, '全部折叠: ' + ph());
+    // Ctrl+Shift+= 全部展开
+    kd('+', { ctrlKey: true, shiftKey: true });
+    await tick(); await tick();
+    assert_(ph() === 0, '全部展开: ' + ph());
+  });
 
   await okAsync('换行符显示：CRLF 文件状态栏标记，LF 不显示', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/crlf-file.txt")');
@@ -1881,11 +1910,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
     const rootStyle = dom.window.document.documentElement.style;
-    key(dom, '=', { ctrl: true });
+    key(dom, '+', { ctrl: true, shift: true });
     await tick();
     assert_(rootStyle.getPropertyValue('--editor-font-size') === '14px', '字号 14px: ' + rootStyle.getPropertyValue('--editor-font-size'));
     assert_(dom.window.localStorage.getItem('myide-editor-font') === '14', '字号持久化');
-    key(dom, '-', { ctrl: true });
+    key(dom, '_', { ctrl: true, shift: true });
     await tick();
     assert_(rootStyle.getPropertyValue('--editor-font-size') === '13px', '字号回到 13px');
     // hunk 快捷键（diff 视图）
