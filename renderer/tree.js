@@ -12,6 +12,42 @@ const Tree = (() => {
   try {
     treeFontSize = Math.min(18, Math.max(11, parseInt(localStorage.getItem('myide-tree-font') || '13', 10) || 13));
   } catch {}
+  // ---------- 目录树排序（全局设置，存 localStorage）----------
+  // name 名称升序（默认）| mtime 修改时间新→旧 | ctime 创建时间新→旧 | size 大小大→小 | type 按扩展名分组
+  const SORT_LABELS = {
+    name: '名称（A→Z）',
+    mtime: '修改时间（新→旧）',
+    ctime: '创建时间（新→旧）',
+    size: '大小（大→小）',
+    type: '类型（按扩展名）',
+  };
+  let sortMode = 'name';
+  try { sortMode = localStorage.getItem('myide-tree-sort') || 'name'; } catch {}
+  if (!SORT_LABELS[sortMode]) sortMode = 'name';
+  function saveSort() { try { localStorage.setItem('myide-tree-sort', sortMode); } catch {} }
+  // 排序按钮状态同步（init 后生效；非默认模式高亮提示）
+  let sortBtnEl = null;
+  function applySortBtn() {
+    if (!sortBtnEl) return;
+    sortBtnEl.title = '排序：' + SORT_LABELS[sortMode] + '（点击更改）';
+    sortBtnEl.classList.toggle('active', sortMode !== 'name');
+  }
+  const extOf = (n) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
+  // 目录始终优先（PyCharm/Obsidian 惯例），文件按当前模式排
+  function sortItems(items) {
+    const arr = [...items];
+    arr.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      switch (sortMode) {
+        case 'mtime': return (b.mtime || 0) - (a.mtime || 0);
+        case 'ctime': return (b.ctime || 0) - (a.ctime || 0);
+        case 'size': return (b.size || 0) - (a.size || 0);
+        case 'type': { const ea = extOf(a.name), eb = extOf(b.name); return ea < eb ? -1 : ea > eb ? 1 : (a.name < b.name ? -1 : 1); }
+        default: return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      }
+    });
+    return arr;
+  }
   function hiddenKey() { return 'myide-hidden:' + norm(rootPath); }
   function loadHidden() {
     hiddenSet = new Set();
@@ -145,7 +181,7 @@ const Tree = (() => {
           (it.type === 'dir' && hasHiddenDescendant(it.path))
         );
       }
-      nodeCache[p] = items;
+      nodeCache[p] = sortItems(items);
     }
     return nodeCache[p];
   }
@@ -292,6 +328,7 @@ const Tree = (() => {
     const depth = row.depth;
     const rowEl = document.createElement('div');
     rowEl.className = 'tree-row' + (isSelected(item.path) ? ' selected' : '');
+    rowEl.dataset.depth = depth;
     rowEl.style.paddingLeft = (depth * 14 + 4) + 'px';
 
     const tw = document.createElement('span');
@@ -1013,6 +1050,32 @@ const Tree = (() => {
     if (finc) finc.onclick = () => Tree.setFont(1);
     const hm = document.getElementById('tree-hide-mode');
     if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
+    // 排序菜单（复用全局 ctx-menu popover；当前模式标 ●）
+    const sb = document.getElementById('tree-sort');
+    if (sb) {
+      sortBtnEl = sb;
+      applySortBtn();
+      sb.onclick = (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        Object.keys(SORT_LABELS).forEach((k) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (k === sortMode ? ' sel' : '');
+          d.textContent = (k === sortMode ? '● ' : '') + SORT_LABELS[k];
+          d.onclick = () => {
+            menu.classList.add('hidden');
+            if (k === sortMode) return;
+            Tree.setSortMode(k);
+          };
+          menu.appendChild(d);
+        });
+        menu.classList.remove('hidden');
+        const r = sb.getBoundingClientRect();
+        menu.style.left = Math.min(r.left, window.innerWidth - 230) + 'px';
+        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 200) + 'px';
+      };
+    }
   })();
 
   return {
@@ -1033,6 +1096,15 @@ const Tree = (() => {
     cycleHideMode,
     endSearch,
     refresh: render,
+    get sortMode() { return sortMode; },
+    setSortMode: (m) => {
+      if (!SORT_LABELS[m] || m === sortMode) return;
+      sortMode = m;
+      saveSort();
+      applySortBtn();
+      invalidateAll(); // 缓存重载（含时间/大小排序）
+      if (rootPath) render();
+    },
   };
 })();
 window.Tree = Tree;

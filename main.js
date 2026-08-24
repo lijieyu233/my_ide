@@ -255,7 +255,7 @@ ipcMain.handle('fs:grep', async (_e, root, query) => {
 });
 
 ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
-  // 异步 readdir（线程池执行，大目录不阻塞主进程）+ 字节序快排（localeCompare 太慢）
+  // 异步 readdir（线程池执行，大目录不阻塞主进程）+ 并发 stat（目录树排序用）
   const hidden = new Set(['.git', 'node_modules']);
   let entries;
   try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return []; }
@@ -269,6 +269,15 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
       path: path.join(dir, e.name),
     });
   }
+  // 并发 stat：mtime（修改）/ctime（创建）/size —— 排序模式（按时间/大小）数据源
+  await Promise.all(items.map(async (it) => {
+    try {
+      const st = await fs.promises.stat(it.path);
+      it.mtime = st.mtimeMs;
+      it.ctime = st.birthtimeMs; // Windows/NTFS 真实创建时间
+      it.size = st.size;
+    } catch {}
+  }));
   items.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // 目录在前
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;

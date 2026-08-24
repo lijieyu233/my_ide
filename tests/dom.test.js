@@ -21,10 +21,10 @@ const P = 'C:/proj';
 const FAKE_FS = {
   [P]: { type: 'dir', children: [P + '/README.md', P + '/src', P + '/data.csv', P + '/notes.txt'] },
   [P + '/src']: { type: 'dir', children: [P + '/src/app.js'] },
-  [P + '/README.md']: { type: 'file', content: '# 标题\n\n这是 **Markdown** 测试\n\n```js\nconst x = 1;\n```\n' },
-  [P + '/src/app.js']: { type: 'file', content: 'const a = 1;\n' },
-  [P + '/data.csv']: { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n' },
-  [P + '/notes.txt']: { type: 'file', content: 'hello notes\n' },
+  [P + '/README.md']: { type: 'file', content: '# 标题\n\n这是 **Markdown** 测试\n\n```js\nconst x = 1;\n```\n', mtime: 2000, ctime: 3000, size: 60 },
+  [P + '/src/app.js']: { type: 'file', content: 'const a = 1;\n', mtime: 9000, ctime: 5000, size: 15 },
+  [P + '/data.csv']: { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n', mtime: 5000, ctime: 1000, size: 40 },
+  [P + '/notes.txt']: { type: 'file', content: 'hello notes\n', mtime: 1000, ctime: 9000, size: 12 },
   [P + '/page.html']: { type: 'file', content: '<h1>Hi HTML</h1><script>document.title = "ok";<\/script>' },
   [P + '/QuickOpen.js']: { type: 'file', content: 'const q = 1;\n' },
   [P + '/pic.png']: { type: 'file', content: '' },
@@ -79,7 +79,7 @@ function makeDom() {
       openFolder: async () => P,
       getRecent: async () => null,
       setRecent: async () => {},
-      readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c })) : []),
+      readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
@@ -1106,8 +1106,47 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 还原 data.csv 到根目录（后续用例仍依赖根目录下的 data.csv）
     delete FAKE_FS[P + '/src/data.csv'];
     if (FAKE_FS[P + '/src']) FAKE_FS[P + '/src'].children = FAKE_FS[P + '/src'].children.filter((c) => c !== P + '/src/data.csv');
-    FAKE_FS[P + '/data.csv'] = { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n' };
+    FAKE_FS[P + '/data.csv'] = { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n', mtime: 5000, ctime: 1000, size: 40 };
     if (FAKE_FS[P] && !FAKE_FS[P].children.includes(P + '/data.csv')) FAKE_FS[P].children.push(P + '/data.csv');
+  });
+
+  await okAsync('目录树排序：名称 / 修改时间 / 创建时间 / 大小（目录恒在前）', async () => {
+    // 清理前面用例的临时产物（剪切测试的 README (1).md），保证断言的固定项集
+    delete FAKE_FS[P + '/README (1).md'];
+    if (FAKE_FS[P]) FAKE_FS[P].children = FAKE_FS[P].children.filter((c) => c !== P + '/README (1).md');
+    const names = () => $allIn($(dom, '#tree'), '.tree-row')
+      .filter((r) => r.dataset.depth === '1')
+      .map((r) => r.querySelector('.nm').title.split('/').pop());
+    // 按修改时间（新→旧）：data.csv(5000) > README(2000) > notes(1000)；首个 setSortMode 同时失效旧缓存
+    await g(dom, 'Tree.setSortMode("mtime")');
+    await tick(); await tick();
+    let n = names();
+    assert_(n[0] === 'src' && n[1] === 'data.csv' && n[2] === 'README.md' && n[3] === 'notes.txt',
+      '修改时间新→旧，got ' + JSON.stringify(n));
+    // 按创建时间（新→旧）：notes(9000) > README(3000) > data.csv(1000)
+    await g(dom, 'Tree.setSortMode("ctime")');
+    await tick(); await tick();
+    n = names();
+    assert_(n[0] === 'src' && n[1] === 'notes.txt' && n[2] === 'README.md' && n[3] === 'data.csv',
+      '创建时间新→旧，got ' + JSON.stringify(n));
+    // 按大小（大→小）：README(60) > data.csv(40) > notes(12)
+    await g(dom, 'Tree.setSortMode("size")');
+    await tick(); await tick();
+    n = names();
+    assert_(n[0] === 'src' && n[1] === 'README.md' && n[2] === 'data.csv' && n[3] === 'notes.txt',
+      '大小大→小，got ' + JSON.stringify(n));
+    // 持久化：localStorage 写入
+    assert_(g(dom, 'localStorage.getItem("myide-tree-sort")') === 'size', '排序模式持久化到 localStorage');
+    // 排序按钮存在且高亮（非默认模式）
+    const sb = $(dom, '#tree-sort');
+    assert_(sb !== null, '排序按钮存在');
+    assert_(sb && sb.classList.contains('active'), '非默认模式按钮高亮');
+    // 还原默认名称序（后续用例依赖）：src(目录) 在前，文件按字节序（大写在前）
+    await g(dom, 'Tree.setSortMode("name")');
+    await tick(); await tick();
+    n = names();
+    assert_(n[0] === 'src' && n[1] === 'README.md' && n[2] === 'data.csv' && n[3] === 'notes.txt',
+      '名称序 A→Z（目录优先，大写字节序在前），got ' + JSON.stringify(n));
   });
 
   await okAsync('右键菜单：复制文件 / 粘贴到此处', async () => {
@@ -1256,8 +1295,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(termItem);
     await tick();
     assert_(JSON.stringify(calls.openTerminal) === JSON.stringify([P + '/src']), '目录 → 命令行打开其自身, got ' + JSON.stringify(calls.openTerminal));
-    // 右键文件行（README.md）→ 打开其所在目录
-    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title.endsWith('README.md'));
+    // 右键文件行（根目录的 README.md，精确匹配 —— src/README.md 也是合法文件）→ 打开其所在目录
+    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title === P + '/README.md');
     fileRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
     const termItem2 = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('命令行'));
