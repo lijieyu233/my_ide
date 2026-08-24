@@ -196,6 +196,7 @@ async function loadApp(dom) {
   try {
     w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'cm6-bundle.min.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'md-editor.js'), 'utf8'));
+    evalFile('code-editor.js');
   } catch (e) { /* CM6 加载失败：viewer 内部有降级 */ }
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'marked.min.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'highlight.min.js'), 'utf8'));
@@ -797,10 +798,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!sb.includes('notes.txt'), '状态栏不含文件路径, got: ' + sb);
     assert_(sb.includes('2 行'), '状态栏含行数, got: ' + sb);
     assert_(sb.includes('main'), '状态栏含分支, got: ' + sb);
-    // 光标行列
-    const ta = $(dom, 'textarea.editor');
-    ta.selectionStart = 3;
-    ta.dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    // 光标行列（CM6：setCursor 触发 onCursor → 状态栏）
+    g(dom, 'Viewer.cm.setCursor(3)');
     await tick();
     sb = $(dom, '#statusbar').textContent;
     assert_(sb.includes('行 1，列 4'), '行列号更新, got: ' + sb);
@@ -961,16 +960,17 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(FAKE_FS[P + '/src/README.md'], '选中文件时粘贴到所在目录（覆盖成功）');
   });
 
-  await okAsync('文本区聚焦时 Ctrl+C 不触发文件复制', async () => {
+  await okAsync('代码编辑器聚焦时 Ctrl+C 不触发文件复制', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    ta.focus();
+    // 代码文件现为 CM6 编辑器（contenteditable 豁免）
+    g(dom, 'document.querySelector(".cm-content").setAttribute("contenteditable","true")');
+    g(dom, 'document.querySelector(".cm-content").focus()');
     await tick();
     const before = fakeCopied.length;
     key(dom, 'c', { ctrl: true });
     await tick();
-    assert_(fakeCopied.length === before, 'textarea 中 Ctrl+C 未触发文件复制');
+    assert_(fakeCopied.length === before, '代码编辑器中 Ctrl+C 未触发文件复制');
   });
 
   await okAsync('CM6 编辑器内 Ctrl+C 不触发文件复制（contenteditable 豁免）', async () => {
@@ -1556,39 +1556,31 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('文件编码：GBK 文件打开 + 状态栏 + 保存回写', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/gbk-old.txt")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    assert_(ta && ta.value.includes('中文老文件内容'), 'GBK 内容正常显示');
+    const val = g(dom, 'Viewer.cm.getValue()');
+    assert_(val && val.includes('中文老文件内容'), 'GBK 内容正常显示');
     assert_($(dom, '#sb-info').textContent.includes('GBK'), '状态栏显示 GBK 编码: ' + $(dom, '#sb-info').textContent);
     assert_(g(dom, 'Viewer.activeTab.encoding') === 'gbk', 'tab 记录编码');
     // 修改并保存 → writeFile 收到 encoding
-    ta.value = '中文老文件内容 已编辑';
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    g(dom, 'Viewer.cm.setValue("中文老文件内容 已编辑")');
     await tick();
     await g(dom, 'Viewer.saveTab(' + g(dom, 'Viewer.openTabs.findIndex(t => t.path === "' + P + '/gbk-old.txt")') + ')');
     await tick();
     assert_(FAKE_FS[P + '/gbk-old.txt'].content === '中文老文件内容 已编辑', '保存内容更新');
   });
 
-  await okAsync('编辑器行号：显示 + 换行增加 + 滚动同步', async () => {
+  await okAsync('编辑器行号：显示 + 行数联动（CM6）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/gbk-old.txt")');
     await tick(); await tick();
-    const gutter = $(dom, '.editor-gutter');
+    const gutter = $(dom, '.editor-code-wrap .cm-gutters');
     assert_(gutter, '行号 gutter 存在');
     assert_(gutter.textContent.includes('1'), '含行号 1');
-    const ta = $(dom, 'textarea.editor');
-    const before = gutter.textContent.split('\n').length;
-    // 输入换行 → 行号增加
-    ta.value = ta.value + '\n\n新行';
-
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    await tick();
-    const after = gutter.textContent.split('\n').length;
+    const countNums = () => $allIn($(dom, '.editor-code-wrap .cm-gutters'), '.cm-gutterElement').length;
+    const before = countNums();
+    // 增加行 → 行号联动（CM6 gutter 与内容同滚动容器，无需手动同步）
+    g(dom, 'Viewer.cm.setValue("a\\n\\nb\\n\\nc\\n\\nd\\n\\ne")');
+    await tick(); await tick();
+    const after = countNums();
     assert_(after > before, '行号随行数增加: ' + before + ' -> ' + after);
-    // 滚动同步
-    ta.scrollTop = 123;
-    ta.dispatchEvent(new dom.window.Event('scroll', { bubbles: true }));
-    await tick();
-    assert_(gutter.scrollTop === 123, 'gutter 滚动同步: ' + gutter.scrollTop);
   });
 
   await okAsync('PDF 预览：iframe 加载 file:// 路径', async () => {
@@ -1672,45 +1664,35 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(FAKE_FS[P + '/src\\sub'] && FAKE_FS[P + '/src\\sub'].type === 'dir', '文件夹已创建');
   });
 
-  await okAsync('编辑器查找替换：Ctrl+F 计数/循环 + Ctrl+H 替换', async () => {
+  await okAsync('编辑器查找：Ctrl+F 搜索面板（CM6 内建）', async () => {
     // 打开文本并构造多匹配内容
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    ta.value = 'foo bar foo baz foo';
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    g(dom, 'Viewer.cm.setValue("foo bar foo baz foo")');
     await tick();
-    // Ctrl+F
     key(dom, 'f', { ctrl: true });
-    await tick();
-    const input = $(dom, '#find-input');
-    assert_(input, '查找条出现');
+    await tick(); await tick();
+    const panel = $(dom, '.cm-panel.cm-search');
+    assert_(panel, 'CM6 搜索面板出现');
+    const input = panel && panel.querySelector('.cm-textfield');
+    assert_(input, '查询输入框存在');
+    // 输入查询 → 3 处匹配高亮（CM6 搜索框在 change/keyup 时提交 query）
     input.value = 'foo';
-    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    await tick();
-    assert_($(dom, '#find-count').textContent === '1/3', '计数 1/3: ' + $(dom, '#find-count').textContent);
-    assert_(ta.selectionStart === 0 && ta.selectionEnd === 3, '选中第一个匹配');
-    // Enter → 下一个
-    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await tick();
-    assert_($(dom, '#find-count').textContent === '2/3', 'Enter 后 2/3');
-    assert_(ta.selectionStart === 8, '选中第二个匹配: ' + ta.selectionStart);
-    // Ctrl+H 替换
-    key(dom, 'h', { ctrl: true });
-    await tick();
-    assert_($(dom, '#find-replace-row').style.display !== 'none', '替换行展开');
-    $(dom, '#find-replace-input').value = 'X';
-    click($(dom, '#find-rep-one'));
-    await tick();
-    assert_(ta.value === 'foo bar X baz foo', '替换当前匹配: ' + ta.value);
-    // 全部替换
-    click($(dom, '#find-rep-all'));
-    await tick();
-    assert_(ta.value === 'X bar X baz X', '全部替换: ' + ta.value);
-    // 关闭
-    click($(dom, '#find-close'));
-    await tick();
-    assert_(!$(dom, '.find-bar'), '查找条关闭');
+    input.dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'o', bubbles: true }));
+    await tick(); await tick();
+    const matches = $$(dom, '.cm-searchMatch');
+    assert_(matches.length === 3, '3 处匹配高亮: ' + matches.length);
+    // Enter → 选中下一个匹配（面板 keydown 以 keyCode 13 判定 Enter）
+    const enterEv = new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(enterEv, 'keyCode', { get: () => 13 });
+    input.dispatchEvent(enterEv);
+    await tick(); await tick();
+    const sel = g(dom, 'Viewer.cm.getSelection()');
+    assert_(sel && sel.from === 0 && sel.to === 3, 'Enter 选中匹配: ' + JSON.stringify(sel));
+    // Esc 关闭面板
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    assert_(!$(dom, '.cm-panel.cm-search'), 'Esc 关闭搜索面板');
   });
 
   await okAsync('树定位：打开深层文件自动展开并高亮', async () => {
@@ -1776,35 +1758,51 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('编辑配对补全：自动配对/跳过/包裹/删除配对', async () => {
+  await okAsync('编辑配对补全：自动配对/跳过/包裹/删除配对（CM6 closeBrackets）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    ta.value = '';
-    ta.selectionStart = 0; ta.selectionEnd = 0;
-    const type = (k) => ta.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const ce = $(dom, '.editor-code-wrap .cm-content');
+    assert_(ce, 'CM6 编辑器内容区存在');
+    g(dom, 'Viewer.cm.setValue("")');
+    await tick();
+    // jsdom 无真实输入：直接修改 contentDOM 文本节点，CM6 经 MutationObserver 读取变化
+    // （closeBrackets 挂在 inputHandler 上，只在真实 DOM 输入链路触发，beforeinput 派发无效）
+    const insertAt = (pos, ch) => {
+      const p = g(dom, 'Viewer.cm.view.domAtPos(' + pos + ')');
+      if (p.node.nodeType === 3) p.node.data = p.node.data.slice(0, p.offset) + ch + p.node.data.slice(p.offset);
+      else p.node.insertBefore(dom.window.document.createTextNode(ch), p.node.childNodes[p.offset] || null);
+    };
+    const sel = () => g(dom, 'Viewer.cm.getSelection()');
+    const val = () => g(dom, 'Viewer.cm.getValue()');
     // 1) 输入 ( → 自动补全
-    type('(');
-    await tick();
-    assert_(ta.value === '()', '自动补全: ' + JSON.stringify(ta.value));
-    assert_(ta.selectionStart === 1, '光标在中间: ' + ta.selectionStart);
+    insertAt(0, '(');
+    await tick(); await tick(); await tick();
+    assert_(val() === '()', '自动补全: ' + JSON.stringify(val()));
+    assert_(sel().from === 1 && sel().to === 1, '光标在中间: ' + JSON.stringify(sel()));
     // 2) 输入 ) → 跳过
-    type(')');
+    insertAt(1, ')');
+    await tick(); await tick(); await tick();
+    assert_(val() === '()', '闭符号跳过不重复: ' + JSON.stringify(val()));
+    assert_(sel().from === 2, '光标右移: ' + JSON.stringify(sel()));
+    // 3) 选中文本包裹（模拟浏览器：选区内容被输入字符替换）
+    g(dom, 'Viewer.cm.setValue("abc")');
     await tick();
-    assert_(ta.value === '()', '闭符号跳过不重复: ' + JSON.stringify(ta.value));
-    assert_(ta.selectionStart === 2, '光标右移');
-    // 3) 选中文本包裹
-    ta.value = 'abc';
-    ta.selectionStart = 1; ta.selectionEnd = 2;
-    type('[');
+    g(dom, 'Viewer.cm.setCursor(1, 2)');
+    await tick(); await tick();
+    const a = g(dom, 'Viewer.cm.view.domAtPos(1)');
+    const b = g(dom, 'Viewer.cm.view.domAtPos(2)');
+    assert_(a.node === b.node && a.node.nodeType === 3, '同行文本节点');
+    a.node.data = a.node.data.slice(0, a.offset) + '[' + a.node.data.slice(b.offset);
+    await tick(); await tick(); await tick();
+    assert_(val() === 'a[b]c', '包裹选中: ' + JSON.stringify(val()));
+    // 4) Backspace 删除配对（closeBracketsKeymap）
+    g(dom, 'Viewer.cm.setValue("()")');
     await tick();
-    assert_(ta.value === 'a[b]c', '包裹选中: ' + JSON.stringify(ta.value));
-    // 4) Backspace 删除配对
-    ta.value = '()';
-    ta.selectionStart = 1; ta.selectionEnd = 1; // 光标在配对中间
-    type('Backspace');
-    await tick();
-    assert_(ta.value === '', '退格删除配对: ' + JSON.stringify(ta.value));
+    g(dom, 'Viewer.cm.setCursor(1)');
+    await tick(); await tick();
+    ce.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+    await tick(); await tick(); await tick();
+    assert_(val() === '', '退格删除配对: ' + JSON.stringify(val()));
   });
 
   await okAsync('换行符显示：CRLF 文件状态栏标记，LF 不显示', async () => {
@@ -2685,9 +2683,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
-    const ta = $(dom, 'textarea.editor');
-    ta.value = 'autosave content';
-    ta.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    g(dom, 'Viewer.cm.setValue("autosave content")');
     await new Promise((r) => setTimeout(r, 3400));
     assert_(FAKE_FS[P + '/notes.txt'].content === 'autosave content', '自动保存写入');
     assert_(g(dom, 'Viewer.activeTab.dirty') === false, '自动保存后不再 dirty');

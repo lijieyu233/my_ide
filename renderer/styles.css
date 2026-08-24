@@ -1073,3 +1073,9 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
   gap: 6px; background: var(--bg); text-align: center;
 }
 #browser-error .be-title { margin: 0; max-width: 70%; overflow-wrap: break-word; }
+
+/* ---------- 代码文件编辑器（CM6 语法高亮，code-editor.js） ---------- */
+.editor-code-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.editor-code-wrap .cm-editor { height: 100%; }
+.editor-code-wrap .cm-editor.cm-focused { outline: none; }
+body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }

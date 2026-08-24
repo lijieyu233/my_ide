@@ -238,6 +238,7 @@ const Viewer = (() => {
     }
     viewer.innerHTML = '';
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
+    if (tabs[active].mode == null) return; // 加载未完成（openFile 的 activate 提前触发）：等 loadTab 完成后再渲染
     empty.classList.remove('visible');
     const tab = tabs[active];
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
@@ -364,6 +365,8 @@ const Viewer = (() => {
     }
 
     if (tab.mode === 'edit' || tab.mode === 'split') {
+      // 代码文件（非 Markdown）：CM6 语法高亮编辑器（替代 textarea）
+      if (!isMarkdown) { renderCodeCm(tab); return; }
       const splitOn = tab.mode === 'split' || (tab.mode === 'edit' && isMarkdown && tab.splitPreview !== false);
       // 行号 gutter + textarea
       const wrap = document.createElement('div');
@@ -546,6 +549,35 @@ const Viewer = (() => {
     setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
   }
 
+  // ---------- 代码文件编辑（CodeMirror 6 + 语法高亮） ----------
+  function renderCodeCm(tab) {
+    const wrap = document.createElement('div');
+    wrap.className = 'editor-code-wrap';
+    viewer.appendChild(wrap);
+    if (!window.CodeEditor) {
+      wrap.innerHTML = '<div class="viewer-msg">CM6 未加载（vendor/cm6-bundle.min.js 缺失）</div>';
+      return;
+    }
+    cmApi = CodeEditor.create({
+      parent: wrap,
+      doc: tab.content || '',
+      state: tab.cmState || null,
+      ext: extOf(tab.name),
+      onChange: (val) => {
+        tab.content = val;
+        if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
+      },
+      onCursor: (line, col) => {
+        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+      },
+      onSave: () => saveTab(active),
+    });
+    cmApi.__tab = tab;
+    tab.ta = null;
+    setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
+  }
+
   // 渲染态链接点击（Ctrl+点击）→ 外链浏览器 / 本地相对路径打开
   function openMdLink(tab, href) {
     if (/^(https?:|mailto:)/i.test(href)) {
@@ -670,7 +702,7 @@ const Viewer = (() => {
     const tab = tabs[active];
     if (!tab) { MI.toast('没有打开的文件', 'err'); return; }
     // Markdown live/source 模式：用 CM6 内建搜索面板
-    if (cmApi && (tab.mode === 'live' || tab.mode === 'source')) {
+    if (cmApi && !tab.ta) {
       cmApi.find();
       return;
     }
