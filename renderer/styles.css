@@ -190,6 +190,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 }
 .tree-row:hover { background: var(--bg-hover); }
 .tree-row.selected { background: var(--bg-selected); color: #fff; }
+.tree-row:focus { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
 .tree-row .tw { width: 14px; text-align: center; color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
 .tree-row .ic { font-size: 12px; flex-shrink: 0; }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }

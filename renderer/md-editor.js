@@ -887,10 +887,10 @@ window.MdEditor = (() => {
       keymap.of([
         // Ctrl+-/= 折叠/展开当前块；Ctrl+Shift+-/= 全部折叠/展开
         // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
-        { key: 'Mod--', run: foldCurrent },
-        { key: 'Mod-=', run: unfoldCurrent },
-        { key: 'Mod-Shift-_', run: Language.foldAll },
-        { key: 'Mod-Shift-+', run: Language.unfoldAll },
+        { key: 'Mod--', preventDefault: true, run: foldCurrent },
+        { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
+        { key: 'Mod-_', preventDefault: true, run: Language.foldAll },
+        { key: 'Mod-+', preventDefault: true, run: Language.unfoldAll },
         ...Autocomplete.closeBracketsKeymap,
         ...Commands.defaultKeymap,
         ...Search.searchKeymap,

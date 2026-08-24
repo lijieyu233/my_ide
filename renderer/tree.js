@@ -356,6 +356,7 @@ const Tree = (() => {
       rowEl.appendChild(rp);
     }
     rowEl.dataset.path = item.path;
+    rowEl.tabIndex = -1; // 可编程聚焦：点击后焦点留在树（Delete 删文件 / 方向键导航）
 
     const cp = document.createElement('span');
     cp.className = 'path-copy';
@@ -365,6 +366,7 @@ const Tree = (() => {
 
     rowEl.addEventListener('click', async (e) => {
       if (e.target === cp) { await copyPath(item.path); return; }
+      rowEl.focus(); // 焦点进树行：Delete 删文件 / 方向键导航（否则焦点永远停在右侧编辑器）
       // Ctrl+点击：增减多选；Shift+点击：范围选择（均不打开文件/切目录）
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
@@ -379,7 +381,7 @@ const Tree = (() => {
       select(item.path, item.type);
       if (item.type === 'dir') { toggleDir(item); return; }
       // 单击文件 = 打开（复制路径改为显式入口：悬停「复制路径」或 Ctrl+Shift+C）
-      Viewer.openFile(item.path);
+      Viewer.openFile(item.path).then(() => setTimeout(() => { const r = rowElOf(item.path); if (r) r.focus(); }, 0)); // openFile 聚焦编辑器后拿回焦点（后注册的同延迟定时器后执行）
       select(item.path, item.type);
     });
 
@@ -976,7 +978,7 @@ const Tree = (() => {
     }
     if (key === 'Enter') {
       if (item.type === 'dir') toggleDir(item);
-      else Viewer.openFile(item.path);
+      else Viewer.openFile(item.path).then(() => setTimeout(() => { const r = rowElOf(item.path); if (r) r.focus(); }, 0));
     }
   }
   // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）

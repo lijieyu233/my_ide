@@ -132,7 +132,7 @@ function makeDom() {
       onCmd: () => {},
       onState: (cb) => { stateCb.browser = cb; },
     },
-    win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false },
+    win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false, zoom: async (d) => { (calls.zoom = calls.zoom || []).push(d); } },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
       copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },

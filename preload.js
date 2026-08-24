@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     toggleMaximize: () => ipcRenderer.invoke('win:toggleMaximize'),
     close: () => ipcRenderer.invoke('win:close'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
+    zoom: (dir) => ipcRenderer.invoke('win:zoom', dir), // 1 放大 / -1 缩小 / 0 重置（编辑器内 Ctrl+± 为代码折叠）
   },
   clip: {
     copy: (t) => ipcRenderer.invoke('clip:copy', t),

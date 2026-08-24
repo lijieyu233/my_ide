@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const G = require('./git-service');
@@ -165,6 +165,13 @@ ipcMain.handle('win:toggleMaximize', () => {
 });
 ipcMain.handle('win:close', () => { if (mainWindow) mainWindow.close(); });
 ipcMain.handle('win:isMaximized', () => (mainWindow ? mainWindow.isMaximized() : false));
+// 整窗缩放：dir 1=放大 -1=缩小 0=重置（渲染进程在非编辑区触发；编辑器内 Ctrl+± 为代码折叠）
+ipcMain.handle('win:zoom', (_e, dir) => {
+  if (!mainWindow) return;
+  const wc = mainWindow.webContents;
+  if (dir === 0) { wc.setZoomFactor(1); return; }
+  wc.setZoomFactor(Math.min(5, Math.max(0.25, Math.round((wc.getZoomFactor() + dir * 0.1) * 100) / 100)));
+});
 ipcMain.handle('app:getVersion', () => app.getVersion());
 
 // ---------- IPC：文件系统 ----------
@@ -691,6 +698,14 @@ app.whenReady().then(() => {
   writeUsage(`===== 启动 version=${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '?'} electron=${process.versions.electron} node=${process.versions.node} =====\n`);
   watchPlugins();
   startGitWorker();
+  // 自定义应用菜单：默认菜单的 Zoom In/Out 角色自带 Ctrl+± 加速键，会在渲染进程
+  // 之前触发（表现为「Ctrl+- 永远整窗缩放、编辑器内代码折叠无效」）。移除这两个
+  // 加速键，保留 Edit 菜单（复制/粘贴等编辑加速键）、resetZoom（Ctrl+0）与
+  // DevTools；非编辑区的整窗缩放改由渲染进程接管（shortcuts.js → win:zoom）。
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'editMenu' },
+    { label: 'View', submenu: [{ role: 'toggleDevTools' }, { role: 'resetZoom' }] },
+  ]));
   const win = createWindow();
 
   if (SMOKE) {

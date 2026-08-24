@@ -149,6 +149,15 @@ Shortcuts.register('find', { desc: '编辑器查找', keys: ['ctrl+f'], run: () 
 Shortcuts.register('md-mode', { desc: 'Markdown 实时预览 / 源码切换', keys: ['ctrl+e'], run: () => Viewer.toggleMdMode() });
 Shortcuts.register('font-inc', { desc: '字号增大（文档编辑区）', keys: ['ctrl+shift++', 'ctrl+shift+='], run: () => Viewer.zoomFont(1) });
 Shortcuts.register('font-dec', { desc: '字号减小（文档编辑区）', keys: ['ctrl+shift+_', 'ctrl+shift+-'], run: () => Viewer.zoomFont(-1) });
+// 整窗缩放（原 Chromium 菜单加速键已在主进程移除，由此接管）。编辑器内不触发：
+// CM6 的 Ctrl+± 是代码折叠（事件已被其消费，defaultPrevented）；焦点在输入框时也让位。
+const zoomOK = () => {
+  const ae = document.activeElement;
+  return !(ae && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable));
+};
+Shortcuts.register('win-zoom-in', { desc: '整窗放大（编辑器内为展开折叠块）', keys: ['ctrl+='], run: () => { if (zoomOK() && window.myIDE && myIDE.win && myIDE.win.zoom) myIDE.win.zoom(1); } });
+Shortcuts.register('win-zoom-out', { desc: '整窗缩小（编辑器内为折叠代码块）', keys: ['ctrl+-'], run: () => { if (zoomOK() && window.myIDE && myIDE.win && myIDE.win.zoom) myIDE.win.zoom(-1); } });
+Shortcuts.register('win-zoom-reset', { desc: '整窗缩放重置', keys: ['ctrl+0'], run: () => { if (window.myIDE && myIDE.win && myIDE.win.zoom) myIDE.win.zoom(0); } });
 Shortcuts.register('hunk-next', { desc: '下一个 diff hunk', keys: ['alt+arrowdown'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="下一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('hunk-prev', { desc: '上一个 diff hunk', keys: ['alt+arrowup'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="上一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
