@@ -412,6 +412,13 @@ ipcMain.handle('run:file', (_e, p) => {
     const ext = path.extname(p).toLowerCase().slice(1);
     const cwd = path.dirname(p);
     if (ext === 'html' || ext === 'htm') { shell.openPath(p); return { ok: true, how: '浏览器' }; }
+    if (ext === 'exe') { // 可执行文件：直接独立运行（cwd=所在目录，便于读取同目录资源）
+      if (!fs.existsSync(p)) return { error: '文件不存在' };
+      const child = spawn(p, [], { cwd, detached: true, stdio: 'ignore' });
+      child.on('error', () => {}); // 启动失败（占用/权限）不崩主进程
+      child.unref();
+      return { ok: true, how: 'exe' };
+    }
     const cmds = {
       py: ['python', [p]],
       js: ['node', [p]],

@@ -320,7 +320,7 @@ const Tree = (() => {
     if (r && r.ok) MI.toast('▶ 已通过 ' + r.how + ' 运行 ' + item.name, 'ok');
     else MI.toast('运行失败: ' + ((r && r.error) || '未知错误'), 'err');
   }
-  const RUNNABLE = ['html', 'htm', 'py', 'js', 'bat', 'cmd', 'ps1', 'sh'];
+  const RUNNABLE = ['exe', 'html', 'htm', 'py', 'js', 'bat', 'cmd', 'ps1', 'sh'];
   function canRun(name) { return RUNNABLE.includes((name.split('.').pop() || '').toLowerCase()); }
 
   function makeRowEl(row) {

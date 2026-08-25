@@ -20,7 +20,8 @@ const g = (dom, expr) => dom.window.eval(expr);
 const P = 'C:/proj';
 const FAKE_FS = {
   [P]: { type: 'dir', children: [P + '/README.md', P + '/src', P + '/data.csv', P + '/notes.txt'] },
-  [P + '/src']: { type: 'dir', children: [P + '/src/app.js'] },
+  [P + '/src']: { type: 'dir', children: [P + '/src/app.js', P + '/src/demo.exe'] },
+  [P + '/src/demo.exe']: { type: 'file', content: '' },
   [P + '/README.md']: { type: 'file', content: '# 标题\n\n这是 **Markdown** 测试\n\n```js\nconst x = 1;\n```\n', mtime: 2000, ctime: 3000, size: 60 },
   [P + '/src/app.js']: { type: 'file', content: 'const a = 1;\n', mtime: 9000, ctime: 5000, size: 15 },
   [P + '/data.csv']: { type: 'file', content: '名称,数量\n苹果,3\n香蕉,5\n', mtime: 5000, ctime: 1000, size: 40 },
@@ -128,7 +129,7 @@ function makeDom() {
         return { ok: true, target };
       },
     },
-    shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; }, openTerminal: async (dir) => { (calls.openTerminal = calls.openTerminal || []).push(dir); return { ok: true }; } },
+    shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; }, openTerminal: async (dir) => { (calls.openTerminal = calls.openTerminal || []).push(dir); return { ok: true }; }, runFile: async (p) => { (calls.runFile = calls.runFile || []).push(p); return { ok: true, how: 'exe' }; } },
     browser: {
       viewOpen: async (url) => { (calls.viewOpen = calls.viewOpen || []).push(url); return { ok: true }; },
       viewBounds: async (r) => { (calls.viewBounds = calls.viewBounds || []).push(r); },
@@ -1188,6 +1189,28 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!menu.classList.contains('hidden'), '右键菜单出现');
     const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
     assert_(items.includes('📋 复制文件') && items.includes('📌 粘贴到此处'), '菜单含复制/粘贴, got: ' + JSON.stringify(items));
+  });
+
+  await okAsync('右键运行 exe：exe 有「运行」项并调用 runFile，txt 无', async () => {
+    // 展开 src 令 demo.exe 行可见
+    await g(dom, 'Tree.reveal("' + P + '/src/demo.exe")');
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    const openMenuOn = async (p) => {
+      const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === p);
+      row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      await tick();
+      return $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    };
+    // exe：菜单含「▶ 运行」，点击 → runFile 收到完整路径
+    const items = await openMenuOn(P + '/src/demo.exe');
+    assert_(items.includes('▶ 运行'), 'exe 右键菜单含「运行」, got: ' + JSON.stringify(items));
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent === '▶ 运行'));
+    await tick(); await tick();
+    assert_((calls.runFile || []).includes(P + '/src/demo.exe'), 'runFile 收到 exe 路径, got: ' + JSON.stringify(calls.runFile));
+    // 负例：txt 不出现「运行」
+    const items2 = await openMenuOn(P + '/notes.txt');
+    assert_(!items2.includes('▶ 运行'), 'txt 右键菜单无「运行」项, got: ' + JSON.stringify(items2));
   });
 
   await okAsync('多项目：项目栏按钮 + 点击切换', async () => {
