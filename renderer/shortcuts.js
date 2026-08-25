@@ -133,13 +133,15 @@ Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run:
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
 Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
-Shortcuts.register('commit', { desc: '提交更改', keys: ['ctrl+k'], run: () => GitPanel.openCommit() });
+Shortcuts.register('commit', { desc: '提交更改（打开提交窗口）', keys: ['ctrl+k', 'alt+0'], run: () => GitPanel.openCommit() });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
 Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
-Shortcuts.register('tool-git', { desc: '工具窗口：Git', keys: ['ctrl+3'], run: () => App.showTool('git') });
+Shortcuts.register('tool-git', { desc: '工具窗口：提交（变更 + 提交）', keys: ['ctrl+3'], run: () => App.showTool('git') });
+Shortcuts.register('git-log', { desc: 'Git 日志窗口', keys: ['alt+9'], run: () => { if (window.GitLog) GitLog.toggle(); } });
+Shortcuts.register('hide-log', { desc: '关闭 Git 日志窗口', keys: ['shift+escape'], run: () => { if (window.GitLog && GitLog.isOpen()) GitLog.hide(); } });
 Shortcuts.register('tool-browser', { desc: '内置浏览器（打开 / 关闭）', keys: ['ctrl+4'], run: () => BrowserPanel.toggle() });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });

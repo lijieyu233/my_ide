@@ -295,6 +295,7 @@ const App = (() => {
             Viewer.closeAll();
             Tree.setRoot(null);
             GitPanel.rootDir = null;
+            if (window.GitLog) GitLog.setRoot(null);
             GitPanel.refresh();
             renderProjectBar();
             renderEmptyRecent();
@@ -390,6 +391,7 @@ const App = (() => {
     MI.log('INFO', 'app', '打开项目: ' + p);
     Tree.setRoot(p);
     GitPanel.rootDir = p;
+    if (window.GitLog) GitLog.setRoot(p);
     QuickOpen.invalidate();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
     clearTimeout(gitScanTimer);
@@ -499,6 +501,7 @@ const App = (() => {
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');
+    if (window.GitLog) document.getElementById('tool-log').onclick = () => GitLog.toggle();
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => BrowserPanel.toggle(); }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };

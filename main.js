@@ -644,7 +644,7 @@ function startGitWorker() {
 ipcMain.handle('git:init', (_e, dir) => gitCall('initRepo', dir));
 ipcMain.handle('git:status', (_e, dir) => gitCall('status', dir));
 ipcMain.handle('git:log', (_e, dir, depth, ref) => gitCall('log', dir, depth, ref));
-ipcMain.handle('git:logAll', (_e, dir, depth) => gitCall('logAll', dir, depth));
+ipcMain.handle('git:logGraph', (_e, dir, limit, ref) => gitCall('logGraph', dir, limit, ref));
 ipcMain.handle('git:commit', (_e, dir, opts) => gitCall('commit', dir, opts));
 ipcMain.handle('git:diffWorkdir', (_e, dir, file) => gitCall('diffWorkdir', dir, file));
 ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => gitCall('diffCommit', dir, oid, file));
@@ -653,6 +653,7 @@ ipcMain.handle('git:branches', (_e, dir) => gitCall('branches', dir));
 ipcMain.handle('git:checkout', (_e, dir, ref) => gitCall('checkout', dir, ref));
 ipcMain.handle('git:createBranch', (_e, dir, name) => gitCall('createBranch', dir, name));
 ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
+ipcMain.handle('git:discardFiles', (_e, dir, files) => gitCall('discardFiles', dir, files));
 ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
 ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
 

@@ -27,7 +27,8 @@
     <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+`)">⏴</button>
     <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">▤</button>
     <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)">☰</button>
-    <button id="tool-git" class="tool-btn" title="Git (Ctrl+3)">⑂</button>
+    <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3）">⑂</button>
+    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9)">⌥</button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+4)">🌐</button>
   </div>
   <aside id="sidebar">
@@ -100,6 +101,24 @@
         <div class="be-list" id="be-history"></div>
       </div>
     </div>
+    <!-- Git 日志工具窗口（PyCharm Alt+9，底部停靠：编辑器在上、日志在下） -->
+    <div id="git-log-panel" class="hidden">
+      <div id="gl-resizer" title="拖动调整高度"></div>
+      <div class="gl-toolbar">
+        <select id="gl-ref" title="分支过滤：所有 / 当前 / 指定分支"></select>
+        <input id="gl-author" type="text" placeholder="👤 作者过滤…" spellcheck="false" autocomplete="off">
+        <input id="gl-search" type="text" placeholder="🔍 消息 / 哈希…" spellcheck="false" autocomplete="off">
+        <span class="gl-tb-count" id="gl-count"></span>
+        <span class="spacer"></span>
+        <button id="gl-refresh" class="vt-btn" title="刷新">🔄</button>
+        <button id="gl-close" class="vt-btn" title="关闭 (Shift+Esc)">✕</button>
+      </div>
+      <div class="gl-body">
+        <div id="gl-left"><div id="gl-list"></div></div>
+        <div id="gl-splitter"></div>
+        <div id="gl-right"></div>
+      </div>
+    </div>
   </div>
 </div>
 <footer id="statusbar"><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
@@ -121,6 +140,7 @@
 <script src="viewer.js"></script>
 <script src="outline.js"></script>
 <script src="git-panel.js"></script>
+<script src="git-log.js"></script>
 <script src="quickopen.js"></script>
 <script src="search.js"></script>
 <script src="session.js"></script>

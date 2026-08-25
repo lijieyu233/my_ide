@@ -123,39 +123,155 @@ async function commit(dir, { message, files, amend = false }) {
   }
 }
 
-// ---------- 日志：所有分支 ----------
-async function logAll(dir, depth = 50) {
+// ---------- 提交图数据（PyCharm Log：拓扑序 + 分支头映射）----------
+// 拓扑排序：子提交先于父提交（链条连续的关键），同级按时间取最新（Kahn + 大顶堆）
+// commitMap: Map<oid, {oid, parents[], timestamp}>，返回拓扑序数组
+function topoSortNewestFirst(commitMap) {
+  const childCount = new Map(); // oid -> 集合内尚未输出的子提交数（入度）
+  for (const c of commitMap.values()) {
+    for (const p of c.parents) {
+      if (commitMap.has(p)) childCount.set(p, (childCount.get(p) || 0) + 1);
+    }
+  }
+  const heap = []; // 大顶堆（按 timestamp）
+  const push = (c) => {
+    heap.push(c);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const pi = (i - 1) >> 1;
+      if (heap[pi].timestamp >= heap[i].timestamp) break;
+      [heap[pi], heap[i]] = [heap[i], heap[pi]];
+      i = pi;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < heap.length && heap[l].timestamp > heap[m].timestamp) m = l;
+        if (r < heap.length && heap[r].timestamp > heap[m].timestamp) m = r;
+        if (m === i) break;
+        [heap[m], heap[i]] = [heap[i], heap[m]];
+        i = m;
+      }
+    }
+    return top;
+  };
+  for (const c of commitMap.values()) if (!childCount.get(c.oid)) push(c);
+  const out = [];
+  while (heap.length) {
+    const c = pop();
+    out.push(c);
+    for (const p of c.parents) {
+      if (!commitMap.has(p)) continue;
+      const n = (childCount.get(p) || 0) - 1;
+      childCount.set(p, n);
+      if (n === 0) push(commitMap.get(p));
+    }
+  }
+  return out;
+}
+
+// logGraph：ref=null 所有分支头 / 'HEAD' / 分支名。
+// 从头按时间新→旧收集 limit 个提交，再拓扑排序；branchHeads 供图上分支徽章用。
+async function logGraph(dir, limit = 500, ref = null) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库', commits: [] };
   try {
-    const branches = await git.listBranches({ fs, dir: root });
-    const all = [];
-    for (const b of branches) {
+    const branchNames = await git.listBranches({ fs, dir: root });
+    const current = (await git.currentBranch({ fs, dir: root, fullname: false })) || '';
+    const branchHeads = {}; // oid -> [分支名]（每个分支头指向的提交，徽章用，所有视图都计算）
+    for (const b of branchNames) {
       try {
-        const cs = await git.log({ fs, dir: root, depth, ref: b });
-        all.push(...cs);
+        const oid = await git.resolveRef({ fs, dir: root, ref: b });
+        (branchHeads[oid] = branchHeads[oid] || []).push(b);
       } catch {}
     }
+    let headOids = [];
+    if (ref) {
+      // 单 ref 视图：仅从该 ref 出发
+      const oid = await git.resolveRef({ fs, dir: root, ref: ref === 'HEAD' ? 'HEAD' : ref });
+      headOids.push(oid);
+    } else {
+      headOids = [...new Set(Object.keys(branchHeads))];
+    }
+    // 按时间新→旧收集（大顶堆探索，等价 git log --all -n limit 的可见集合）
+    const collected = new Map(); // oid -> {oid, parents, ts, raw}
     const seen = new Set();
-    const merged = all
-      .sort((a, b) => b.commit.author.timestamp - a.commit.author.timestamp)
-      .filter((c) => {
-        if (seen.has(c.oid)) return false;
-        seen.add(c.oid);
-        return true;
-      });
-    const items = merged.map((c) => ({
+    const frontier = []; // 小工具堆（按 ts 大顶）
+    const fpush = (e) => {
+      frontier.push(e);
+      let i = frontier.length - 1;
+      while (i > 0) {
+        const pi = (i - 1) >> 1;
+        if (frontier[pi].ts >= frontier[i].ts) break;
+        [frontier[pi], frontier[i]] = [frontier[i], frontier[pi]];
+        i = pi;
+      }
+    };
+    const fpop = () => {
+      const top = frontier[0];
+      const last = frontier.pop();
+      if (frontier.length) {
+        frontier[0] = last;
+        let i = 0;
+        for (;;) {
+          const l = 2 * i + 1, r = l + 1;
+          let m = i;
+          if (l < frontier.length && frontier[l].ts > frontier[m].ts) m = l;
+          if (r < frontier.length && frontier[r].ts > frontier[m].ts) m = r;
+          if (m === i) break;
+          [frontier[m], frontier[i]] = [frontier[i], frontier[m]];
+          i = m;
+        }
+      }
+      return top;
+    };
+    for (const oid of headOids) {
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      try {
+        const c = await git.readCommit({ fs, dir: root, oid });
+        fpush({ oid, ts: c.commit.author.timestamp, raw: c.commit });
+      } catch {}
+    }
+    while (frontier.length && collected.size < limit) {
+      const e = fpop();
+      collected.set(e.oid, { oid: e.oid, parents: e.raw.parent || [], timestamp: e.raw.author.timestamp * 1000, raw: e.raw });
+      for (const p of e.raw.parent || []) {
+        if (seen.has(p)) continue;
+        seen.add(p);
+        try {
+          const c = await git.readCommit({ fs, dir: root, oid: p });
+          fpush({ oid: p, ts: c.commit.author.timestamp, raw: c.commit });
+        } catch {}
+      }
+    }
+    const ordered = topoSortNewestFirst(collected);
+    const commits = ordered.map((c) => ({
       oid: c.oid,
       short: c.oid.slice(0, 7),
-      message: (c.commit.message || '').split('\n')[0],
-      fullMessage: c.commit.message || '',
-      author: c.commit.author.name,
-      email: c.commit.author.email,
-      timestamp: c.commit.author.timestamp * 1000,
-      parents: c.commit.parent,
+      message: (c.raw.message || '').split('\n')[0],
+      fullMessage: c.raw.message || '',
+      author: c.raw.author.name,
+      email: c.raw.author.email,
+      timestamp: c.timestamp,
+      parents: c.parents,
     }));
-    return { isRepo: true, root, branch: await currentBranch(root), commits: items, ref: '__all__' };
+    return {
+      isRepo: true, root, branch: current, commits, branchHeads,
+      headOid: (await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null)) || null,
+      truncated: collected.size >= limit && frontier.length > 0,
+    };
   } catch (e) {
+    if (String(e.message || e).includes('HEAD')) {
+      return { isRepo: true, root, branch: await currentBranch(root), commits: [], unborn: true, branchHeads: {} };
+    }
     return { isRepo: true, root, error: String(e.message || e), commits: [] };
   }
 }
@@ -405,10 +521,12 @@ async function commitFiles(dir, oid) {
     const files = new Set([...Object.keys(oldTree), ...Object.keys(newTree)]);
     const changed = [];
     for (const f of files) {
-      if (oldTree[f] !== newTree[f]) changed.push(f);
+      if (!(f in oldTree)) changed.push({ file: native(f), status: 'added' });
+      else if (!(f in newTree)) changed.push({ file: native(f), status: 'deleted' });
+      else if (oldTree[f] !== newTree[f]) changed.push({ file: native(f), status: 'modified' });
     }
-    changed.sort();
-    return { files: changed };
+    changed.sort((a, b) => a.file.localeCompare(b.file));
+    return { files: changed, isMerge: (c.commit.parent || []).length > 1 };
   } catch (e) {
     return { error: String(e.message || e) };
   }
@@ -430,4 +548,16 @@ async function diffCommit(dir, oid, file) {
   }
 }
 
-module.exports = { findRoot, isRepo, status, log, logAll, commit, initRepo, branches, checkout, createBranch, discard, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+// 批量回滚（提交窗口「回滚选中」）：循环 discard，汇总成功/失败
+async function discardFiles(dir, files) {
+  const failed = [];
+  let ok = 0;
+  for (const f of (files || [])) {
+    const r = await discard(dir, f);
+    if (r.ok) ok++;
+    else failed.push({ file: f, error: r.error });
+  }
+  return { ok, failed };
+}
+
+module.exports = { findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo, branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };

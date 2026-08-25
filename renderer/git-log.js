@@ -1,0 +1,423 @@
+// git-log.js —— Git 日志工具窗口（PyCharm Alt+9）：SVG 彩色提交图 + 提交详情双栏
+// 停靠 #content 底部（编辑器在上）；数据来自 git-service.logGraph（拓扑序 + 分支头映射）
+const GitLog = (() => {
+  const panel = document.getElementById('git-log-panel');
+  const listEl = document.getElementById('gl-list');
+  const rightEl = document.getElementById('gl-right');
+  const refSel = document.getElementById('gl-ref');
+  const authorEl = document.getElementById('gl-author');
+  const searchEl = document.getElementById('gl-search');
+
+  const RH = 38;   // 行高（两行文本：消息 + 元信息）
+  const LW = 14;   // 车道间距
+  const DOT = 4;   // 提交点半径
+  const PALETTE = ['#e06c75', '#61afef', '#98c379', '#e5c07b', '#c678dd', '#56b6c2', '#d19a66', '#ff6b81', '#4fd6be', '#8ba3d8'];
+
+  let root = null;
+  let opened = false;
+  let commits = [];
+  let branchHeads = {}; // oid -> [分支名]
+  let headOid = null;
+  let currentBranch = '';
+  let truncated = false;
+  let limit = 500;
+  let refFilter = null;      // null=所有分支 / 'HEAD' / 分支名
+  let authorQ = '';
+  let searchQ = '';
+  let selOid = null;
+  let selSeq = 0;            // 异步竞态防护：详情请求序号
+  let graph = null;          // buildGraph 结果 {rows, maxLanes}
+
+  const esc = (s) => GitPanel.esc(s);
+  const fmtDate = (ts) => GitPanel.fmtDate(ts);
+  const laneColor = (lane) => PALETTE[lane % PALETTE.length];
+  const laneX = (lane) => lane * LW + LW / 2 + 4;
+
+  // ---------- 车道分配（gitk 式状态机） ----------
+  // lanes[i] = 该车道正在等待的提交 oid（null=空闲）；每行输出绘图所需信息
+  function buildGraph(cs) {
+    const lanes = [];
+    const rows = [];
+    for (const c of cs) {
+      // 等待本提交的车道（可能多个：分叉后又汇到同一提交）
+      const waiting = [];
+      for (let i = 0; i < lanes.length; i++) if (lanes[i] === c.oid) waiting.push(i);
+      let lane;
+      const dupWaiters = [];
+      if (waiting.length) {
+        lane = waiting[0];
+        dupWaiters.push(...waiting.slice(1));
+      } else {
+        lane = lanes.indexOf(null);
+        if (lane === -1) { lanes.push(null); lane = lanes.length - 1; }
+      }
+      const row = { c, lane, dupWaiters, mergeOut: [], collapseTo: null, bornHere: waiting.length === 0 };
+      // 先占位本车道（防 merge 父抢走本提交自己尚未写入的车道，导致第二父连线断链）
+      lanes[lane] = c.oid;
+      // merge 父（第 2+ 父）：开新车道或复用已等待它的车道
+      for (let i = 1; i < c.parents.length; i++) {
+        const p = c.parents[i];
+        let pl = lanes.indexOf(p);
+        if (pl === -1) {
+          pl = lanes.indexOf(null);
+          if (pl === -1) { lanes.push(null); pl = lanes.length - 1; }
+        }
+        lanes[pl] = p;
+        row.mergeOut.push(pl);
+      }
+      // 重复等待的车道收拢进本车道后释放
+      for (const w of dupWaiters) lanes[w] = null;
+      // 第一父：延续本车道；若已有车道等待它 → 本车道收拢过去
+      const first = c.parents[0] || null;
+      if (!first) {
+        lanes[lane] = null;
+      } else {
+        const fl = lanes.indexOf(first);
+        if (fl !== -1 && fl !== lane) {
+          row.collapseTo = fl;
+          lanes[lane] = null;
+        } else {
+          lanes[lane] = first;
+        }
+      }
+      row.lanesAfter = lanes.slice();
+      rows.push(row);
+    }
+    const maxLanes = rows.reduce((m, r) => Math.max(m, r.lanesAfter.length), 1);
+    return { rows, maxLanes };
+  }
+
+  // ---------- 提交图 SVG ----------
+  function buildGraphSvg() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const W = graph.maxLanes * LW + 10;
+    const H = graph.rows.length * RH;
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'gl-svg');
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', Math.max(H, 1));
+    const el = (tag, attrs) => {
+      const e = document.createElementNS(NS, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    };
+    const curve = (x1, y1, x2, y2) => {
+      const k = Math.max(6, (y2 - y1) * 0.55);
+      return el('path', { d: `M ${x1} ${y1} C ${x1} ${y1 + k}, ${x2} ${y2 - k}, ${x2} ${y2}`, fill: 'none' });
+    };
+    graph.rows.forEach((row, i) => {
+      const y0 = i * RH, y1 = y0 + RH, cy = y0 + RH / 2;
+      const L = row.lane;
+      const after = row.lanesAfter;
+      const before = i > 0 ? graph.rows[i - 1].lanesAfter : null;
+      const actAfter = (j) => j < after.length && after[j] != null;
+      const actBefore = (j) => !!(before && j < before.length && before[j] != null);
+      const vline = (j, ya, yb) => svg.appendChild(el('line', {
+        x1: laneX(j), x2: laneX(j), y1: ya, y2: yb, stroke: laneColor(j), 'stroke-width': 1.5,
+      }));
+      // 1. 穿越线：上边界存在且下边界仍活跃的车道
+      for (let j = 0; j < after.length; j++) {
+        if (!actAfter(j) || !actBefore(j)) continue;
+        if (j === L && row.bornHere) continue;
+        vline(j, y0, y1);
+      }
+      // 2. 本行车道：上方接入 / 下方延伸
+      if (!row.bornHere && !actAfter(L)) vline(L, y0, cy);
+      if (row.bornHere && actAfter(L)) vline(L, cy, y1);
+      // 3. 收拢：重复等待本提交的车道 → 曲线并入
+      for (const w of row.dupWaiters) {
+        const p = curve(laneX(w), y0, laneX(L), cy);
+        p.setAttribute('stroke', laneColor(w));
+        p.setAttribute('stroke-width', 1.5);
+        svg.appendChild(p);
+      }
+      // 4. merge 父 / collapse：从提交点曲线到目标车道底部
+      for (const to of [...row.mergeOut, ...(row.collapseTo != null ? [row.collapseTo] : [])]) {
+        const p = curve(laneX(L), cy, laneX(to), y1);
+        p.setAttribute('stroke', laneColor(to));
+        p.setAttribute('stroke-width', 1.5);
+        svg.appendChild(p);
+      }
+      // 5. 提交点（合并提交：空心；HEAD：外圈）
+      const isMerge = row.c.parents.length > 1;
+      const isHead = row.c.oid === headOid;
+      if (isMerge) {
+        svg.appendChild(el('circle', {
+          cx: laneX(L), cy, r: DOT, fill: 'var(--bg-panel)', stroke: laneColor(L), 'stroke-width': 2,
+        }));
+      } else {
+        svg.appendChild(el('circle', { cx: laneX(L), cy, r: DOT, fill: laneColor(L) }));
+      }
+      if (isHead) {
+        svg.appendChild(el('circle', {
+          cx: laneX(L), cy, r: DOT + 2.5, fill: 'none', stroke: laneColor(L), 'stroke-width': 1,
+        }));
+      }
+    });
+    return svg;
+  }
+
+  // ---------- 列表渲染 ----------
+  function renderList() {
+    listEl.innerHTML = '';
+    if (!commits.length) {
+      const d = document.createElement('div');
+      d.className = 'git-empty';
+      d.textContent = '还没有提交';
+      listEl.appendChild(d);
+      return;
+    }
+    // 图（绝对定位在列表左列，行文本右移让位）
+    const graphW = graph.maxLanes * LW + 10;
+    listEl.appendChild(buildGraphSvg());
+    const rows = document.createElement('div');
+    rows.className = 'gl-rows';
+    rows.style.paddingLeft = graphW + 'px';
+    graph.rows.forEach((row, i) => {
+      const c = row.c;
+      const el = document.createElement('div');
+      el.className = 'gl-row' + (c.oid === selOid ? ' sel' : '');
+      el.dataset.oid = c.oid;
+      const names = branchHeads[c.oid] || [];
+      const badges = names.map((b) =>
+        `<span class="gl-branch${b === currentBranch ? ' cur' : ''}">${esc(b)}</span>`).join('');
+      const headBadge = c.oid === headOid ? '<span class="gl-head">HEAD</span>' : '';
+      el.innerHTML = `<div class="gl-l1"><span class="gl-msg" title="${esc(c.fullMessage)}">${esc(c.message)}</span>${badges}${headBadge}</div>` +
+        `<div class="gl-l2"><span class="gl-hash">${c.short}</span><span class="gl-author">${esc(c.author)}</span><span class="gl-date">${fmtDate(c.timestamp)}</span></div>`;
+      el.style.top = '0';
+      el.onclick = () => select(c.oid);
+      rows.appendChild(el);
+    });
+    listEl.appendChild(rows);
+    // 加载更多
+    if (truncated) {
+      const more = document.createElement('button');
+      more.className = 'tb-btn gbtn gl-more';
+      more.id = 'gl-load-more';
+      more.textContent = '加载更多…';
+      more.onclick = async () => { limit += 500; await refresh(); };
+      rows.appendChild(more);
+    }
+    applyFilter();
+  }
+
+  // 作者/搜索过滤：隐藏不匹配行（图不动，保持链条连续）
+  function applyFilter() {
+    const a = authorQ.trim().toLowerCase();
+    const q = searchQ.trim().toLowerCase();
+    if (!a && !q) {
+      listEl.querySelectorAll('.gl-row').forEach((el) => { el.style.display = ''; });
+      return;
+    }
+    listEl.querySelectorAll('.gl-row').forEach((el) => {
+      const c = commits.find((x) => x.oid === el.dataset.oid);
+      if (!c) return;
+      const okA = !a || (c.author + ' ' + (c.email || '')).toLowerCase().includes(a);
+      const okQ = !q || (c.message + ' ' + c.oid).toLowerCase().includes(q);
+      el.style.display = okA && okQ ? '' : 'none';
+    });
+  }
+
+  // ---------- 右侧详情 ----------
+  async function select(oid) {
+    const c = commits.find((x) => x.oid === oid);
+    if (!c) return;
+    selOid = oid;
+    const seq = ++selSeq;
+    listEl.querySelectorAll('.gl-row').forEach((el) => el.classList.toggle('sel', el.dataset.oid === oid));
+    renderDetailHead(c, null);
+    const r = await window.myIDE.git.commitFiles(root, oid);
+    if (seq !== selSeq) return; // 期间又切了别的提交
+    const files = (r && r.files) || [];
+    renderDetailHead(c, files);
+    if (!files.length) {
+      rightEl.querySelector('.gl-ddiff').innerHTML = '<div class="diff-msg">该提交没有文件变更</div>';
+      return;
+    }
+    loadDetailDiff(oid, files[0].file);
+  }
+
+  function renderDetailHead(c, files) {
+    rightEl.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'gl-dhead';
+    const mergeNote = c.parents.length > 1 ? '<div class="gl-merge-note">合并提交 · 与第一父提交比较</div>' : '';
+    head.innerHTML = `<div class="gl-dmsg">${esc(c.fullMessage)}</div>
+      <div class="gl-dmeta">
+        <span class="gl-dhash" title="点击复制完整哈希">${c.oid}</span>
+        <span>${esc(c.author)}</span><span>${new Date(c.timestamp).toLocaleString()}</span>
+      </div>${mergeNote}`;
+    head.querySelector('.gl-dhash').onclick = () => { MI.copyText(c.oid); MI.toast('已复制完整哈希', 'ok'); };
+    rightEl.appendChild(head);
+
+    const filesBox = document.createElement('div');
+    filesBox.className = 'gl-dfiles';
+    if (files == null) {
+      filesBox.innerHTML = '<div class="diff-msg">加载文件列表…</div>';
+    } else if (!files.length) {
+      filesBox.innerHTML = '<div class="diff-msg">没有文件变更</div>';
+    } else {
+      const ST = { added: ['A', 'added'], modified: ['M', 'modified'], deleted: ['D', 'deleted'] };
+      for (const f of files) {
+        const [tag, cls] = ST[f.status] || ['?', 'modified'];
+        const row = document.createElement('div');
+        row.className = 'gl-dfile';
+        row.innerHTML = `<span class="badge ${cls}">${tag}</span><span class="nm" title="${esc(f.file)}">${esc(f.file)}</span>`;
+        row.onclick = () => {
+          filesBox.querySelectorAll('.gl-dfile').forEach((x) => x.classList.remove('sel'));
+          row.classList.add('sel');
+          loadDetailDiff(c.oid, f.file);
+        };
+        filesBox.appendChild(row);
+      }
+    }
+    rightEl.appendChild(filesBox);
+
+    const diff = document.createElement('div');
+    diff.className = 'gl-ddiff';
+    diff.innerHTML = files && files.length ? '<div class="diff-msg">点击文件查看差异</div>' : '';
+    rightEl.appendChild(diff);
+  }
+
+  async function loadDetailDiff(oid, file) {
+    const seq = selSeq;
+    const pane = rightEl.querySelector('.gl-ddiff');
+    if (!pane) return;
+    pane.innerHTML = '<div class="diff-msg">加载中…</div>';
+    const r = await window.myIDE.git.diffCommit(root, oid, file);
+    if (seq !== selSeq) return;
+    if (r.error) { pane.innerHTML = '<div class="diff-msg">' + esc(r.error) + '</div>'; return; }
+    pane.innerHTML = '';
+    if (r.unchanged) { pane.innerHTML = '<div class="diff-msg">无差异（内容级）</div>'; return; }
+    pane.appendChild(GitPanel.buildDiffTable(r));
+  }
+
+  // ---------- 工具栏 ----------
+  function renderRefOptions(branchNames) {
+    refSel.textContent = '';
+    const mk = (v, t) => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = t;
+      refSel.appendChild(o);
+    };
+    mk('__all__', '所有分支');
+    mk('HEAD', '当前分支' + (currentBranch ? ' (' + currentBranch + ')' : ''));
+    for (const b of branchNames) {
+      if (b === currentBranch) continue;
+      mk(b, b);
+    }
+    refSel.value = refFilter === null ? '__all__' : (refFilter === 'HEAD' ? 'HEAD' : (branchNames.includes(refFilter) ? refFilter : 'HEAD'));
+  }
+
+  // ---------- 数据加载 ----------
+  async function refresh() {
+    if (!root) return;
+    const box = listEl.querySelector('.gl-rows');
+    if (!box) listEl.innerHTML = '<div class="diff-msg">加载中…</div>';
+    const refArg = refFilter === '__all__' || refFilter === null ? null : refFilter;
+    const [lg, br] = await Promise.all([
+      window.myIDE.git.logGraph(root, limit, refArg),
+      window.myIDE.git.branches(root),
+    ]);
+    if (!lg.isRepo) {
+      listEl.innerHTML = '<div class="git-empty">' + esc(lg.error || '不是 Git 仓库') + '</div>';
+      return;
+    }
+    commits = lg.commits || [];
+    branchHeads = lg.branchHeads || {};
+    headOid = lg.headOid || null;
+    currentBranch = lg.branch || '';
+    truncated = !!lg.truncated;
+    renderRefOptions((br && br.branches) || []);
+    graph = buildGraph(commits);
+    renderList();
+    // 恢复/默认选中第一个提交
+    if (!commits.some((c) => c.oid === selOid)) selOid = commits.length ? commits[0].oid : null;
+    if (selOid) select(selOid);
+  }
+
+  // ---------- 窗口开关 ----------
+  function open() {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    opened = true;
+    panel.classList.remove('hidden');
+    document.getElementById('tool-log').classList.add('active');
+    if (!commits.length) refresh();
+  }
+  function hide() {
+    opened = false;
+    panel.classList.add('hidden');
+    document.getElementById('tool-log').classList.remove('active');
+  }
+  function toggle() { opened ? hide() : open(); }
+  function isOpen() { return opened; }
+  function setRoot(p) {
+    root = p;
+    commits = [];
+    graph = null;
+    selOid = null;
+    if (opened) refresh();
+  }
+
+  // ---------- 事件绑定（一次） ----------
+  refSel.addEventListener('change', () => {
+    refFilter = refSel.value === '__all__' ? null : refSel.value;
+    selOid = null;
+    refresh();
+  });
+  authorEl.addEventListener('input', () => { authorQ = authorEl.value; applyFilter(); });
+  searchEl.addEventListener('input', () => { searchQ = searchEl.value; applyFilter(); });
+  document.getElementById('gl-refresh').onclick = () => refresh();
+  document.getElementById('gl-close').onclick = () => hide();
+
+  // 高度拖拽（上边缘）
+  (function initResizer() {
+    const rz = document.getElementById('gl-resizer');
+    let dragging = false;
+    rz.addEventListener('mousedown', (e) => {
+      dragging = true;
+      e.preventDefault();
+      document.body.classList.add('gl-resizing');
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const content = document.getElementById('content');
+      const rect = content.getBoundingClientRect();
+      const h = rect.bottom - e.clientY;
+      const max = rect.height * 0.85;
+      panel.style.height = Math.max(160, Math.min(h, max)) + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('gl-resizing');
+      try { localStorage.setItem('myide-gl-height', panel.style.height); } catch {}
+    });
+    try {
+      const saved = localStorage.getItem('myide-gl-height');
+      if (saved && /^\d+(\.\d+)?px$/.test(saved)) panel.style.height = saved;
+    } catch {}
+  })();
+
+  // 键盘导航：↑↓ 切换选中提交（窗口打开时）
+  document.addEventListener('keydown', (e) => {
+    if (!opened) return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (!['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const rows = [...listEl.querySelectorAll('.gl-row')].filter((el) => el.style.display !== 'none');
+    if (!rows.length) return;
+    e.preventDefault();
+    let i = rows.findIndex((el) => el.dataset.oid === selOid);
+    i = e.key === 'ArrowDown' ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0);
+    if (i < 0) i = 0;
+    const target = rows[i];
+    select(target.dataset.oid);
+    try { target.scrollIntoView({ block: 'nearest' }); } catch {}
+  });
+
+  return { open, hide, toggle, isOpen, refresh, setRoot, buildGraph };
+})();
+window.GitLog = GitLog;

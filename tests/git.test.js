@@ -92,6 +92,25 @@ ok('无差异 -> 空 hunks', () => {
   assert.strictEqual(G.buildHunks('x\ny\n', 'x\ny\n').length, 0);
 });
 
+ok('topoSortNewestFirst：子提交先于父提交（链条连续）', () => {
+  // a ← b ← c（c 最新）；d 从 a 分叉
+  const mk = (oid, parents, ts) => ({ oid, parents, timestamp: ts });
+  const map = new Map([
+    ['c', mk('c', ['b'], 30)],
+    ['b', mk('b', ['a'], 20)],
+    ['a', mk('a', [], 10)],
+    ['d', mk('d', ['a'], 25)],
+  ]);
+  const out = G.topoSortNewestFirst(map);
+  assert.strictEqual(out.length, 4);
+  const idx = new Map(out.map((c, i) => [c.oid, i]));
+  assert.ok(idx.get('c') < idx.get('b'), 'c 在 b 前');
+  assert.ok(idx.get('b') < idx.get('a'), 'b 在 a 前');
+  assert.ok(idx.get('d') < idx.get('a'), '分叉的 d 在共同祖先 a 前');
+  assert.strictEqual(out[0].oid, 'c', '无子提交且最新的先出');
+  assert.strictEqual(out[1].oid, 'd', '同级按时间 d(25) 先于 b(20)');
+});
+
 console.log('[git 集成测试]');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-test-'));
 const repo = path.join(tmp, 'repo');
@@ -153,12 +172,12 @@ fs.mkdirSync(repo);
     assert.strictEqual(lg.commits[1].message, 'first commit');
   });
 
-  await okAsync('commitFiles：列出每个提交涉及的文件', async () => {
+  await okAsync('commitFiles：列出每个提交涉及的文件（含状态）', async () => {
     const lg = await G.log(repo);
     const c2 = await G.commitFiles(repo, lg.commits[0].oid);
-    assert.deepStrictEqual(c2.files, ['a.txt']);
+    assert.deepStrictEqual(c2.files, [{ file: 'a.txt', status: 'modified' }]);
     const c1 = await G.commitFiles(repo, lg.commits[1].oid);
-    assert.deepStrictEqual(c1.files, ['a.txt']);
+    assert.deepStrictEqual(c1.files, [{ file: 'a.txt', status: 'added' }]); // 首提交无父 → 全新增
   });
 
   await okAsync('commit diff：提交 vs 父提交', async () => {
@@ -191,7 +210,7 @@ fs.mkdirSync(repo);
     assert.strictEqual(lg.commits.length, 3); // 提交数不增加（替换了最后一个）
     assert.strictEqual(lg.commits[0].message, 'second v2');
     const c = await G.commitFiles(repo, lg.commits[0].oid);
-    assert.deepStrictEqual(c.files, ['a.txt', 'b.txt']);
+    assert.deepStrictEqual(c.files, [{ file: 'a.txt', status: 'deleted' }, { file: 'b.txt', status: 'added' }]);
     const st = await G.status(repo);
     assert.strictEqual(st.changed.length, 0);
   });
@@ -228,6 +247,19 @@ fs.mkdirSync(repo);
     assert.strictEqual(fs.existsSync(path.join(repo, 'untracked.txt')), false);
   });
 
+  await okAsync('discardFiles：批量回滚（恢复 + 删除，汇总结果）', async () => {
+    fs.writeFileSync(path.join(repo, 'sub', 'deep.txt'), 'changed again\n');
+    fs.writeFileSync(path.join(repo, 'tmp2.txt'), 'temp\n');
+    const r = await G.discardFiles(repo, [path.join('sub', 'deep.txt'), 'tmp2.txt']);
+    assert.strictEqual(r.ok, 2, '两个成功: ' + JSON.stringify(r));
+    assert.strictEqual(r.failed.length, 0);
+    assert.strictEqual(fs.readFileSync(path.join(repo, 'sub', 'deep.txt'), 'utf8'), 'deep\n', '已跟踪恢复 HEAD');
+    assert.strictEqual(fs.existsSync(path.join(repo, 'tmp2.txt')), false, '未跟踪被删除');
+    // 空列表不崩
+    const r2 = await G.discardFiles(repo, []);
+    assert.deepStrictEqual(r2, { ok: 0, failed: [] });
+  });
+
   await okAsync('createBranch：新建并切换分支', async () => {
     const r = await G.createBranch(repo, 'feature');
     assert.strictEqual(r.ok, true);
@@ -236,6 +268,48 @@ fs.mkdirSync(repo);
     assert.strictEqual(br.current, 'feature', '已切换到 feature');
     // 切回 main，避免影响后续
     await G.checkout(repo, 'main');
+  });
+
+  await okAsync('logGraph：多分支拓扑序 + 分支头映射 + ref 过滤 + 截断', async () => {
+    // 制造分叉：feature 上提交 f.txt，main 上提交 g.txt
+    await G.checkout(repo, 'feature');
+    fs.writeFileSync(path.join(repo, 'f.txt'), 'f\n');
+    await G.commit(repo, { message: 'feature work', files: ['f.txt'] });
+    await G.checkout(repo, 'main');
+    fs.writeFileSync(path.join(repo, 'g.txt'), 'g\n');
+    await G.commit(repo, { message: 'main work', files: ['g.txt'] });
+
+    // 所有分支视图
+    const lg = await G.logGraph(repo);
+    assert.strictEqual(lg.isRepo, true);
+    assert.strictEqual(lg.branch, 'main');
+    assert.strictEqual(lg.commits.length, 6, '6 个提交全部可见: ' + lg.commits.length);
+    // 拓扑序：父提交必须排在子提交之后（链条连续的根因）
+    const idx = new Map(lg.commits.map((c, i) => [c.oid, i]));
+    for (const c of lg.commits) {
+      for (const p of c.parents) {
+        if (idx.has(p)) assert.ok(idx.get(p) > idx.get(c.oid), `父 ${p.slice(0, 7)} 应在子 ${c.oid.slice(0, 7)} 之后`);
+      }
+    }
+    const byMsg = Object.fromEntries(lg.commits.map((c) => [c.message, c]));
+    assert.ok(idx.get(byMsg['add deep'].oid) > idx.get(byMsg['feature work'].oid), '分叉点在 feature 头之后');
+    assert.ok(idx.get(byMsg['add deep'].oid) > idx.get(byMsg['main work'].oid), '分叉点在 main 头之后');
+    // 分支头映射（图上徽章数据源）+ HEAD
+    assert.deepStrictEqual(lg.branchHeads[byMsg['feature work'].oid], ['feature']);
+    assert.deepStrictEqual(lg.branchHeads[byMsg['main work'].oid], ['main']);
+    assert.strictEqual(lg.headOid, byMsg['main work'].oid);
+
+    // ref 视图：只看 feature 侧
+    const lf = await G.logGraph(repo, 500, 'feature');
+    const fMsgs = lf.commits.map((c) => c.message);
+    assert.ok(fMsgs.includes('feature work'), 'feature 视图含 feature work');
+    assert.ok(!fMsgs.includes('main work'), 'feature 视图不含 main work');
+    assert.strictEqual(fMsgs.length, 5, 'feature 侧 5 个提交: ' + fMsgs.join(','));
+
+    // limit 截断
+    const lt = await G.logGraph(repo, 2);
+    assert.strictEqual(lt.commits.length, 2);
+    assert.strictEqual(lt.truncated, true, '截断标记');
   });
 
   await okAsync('worker 调度链路：init/commit/status', async () => {

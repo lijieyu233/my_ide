@@ -43,10 +43,15 @@ const FAKE_GIT = {
     { file: 'src/deep/file.ts', status: 'added', label: '已新增' },
   ],
   commits: [
-    { oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short: 'aaaaaaa', message: '第二次提交：改文档', fullMessage: '第二次提交：改文档', author: 'me', timestamp: Date.now() - 3600e3, parents: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'] },
-    { oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short: 'bbbbbbb', message: '合并提交', fullMessage: '合并提交', author: 'me', timestamp: Date.now() - 7200e3, parents: ['cccccccccccccccccccccccccccccccccccccccc', 'dddddddddddddddddddddddddddddddddddddddd'] },
-    { oid: 'cccccccccccccccccccccccccccccccccccccccc', short: 'ccccccc', message: '分支上的提交', fullMessage: '分支上的提交', author: 'me', timestamp: Date.now() - 10800e3, parents: [] },
+    { oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short: 'aaaaaaa', message: '第二次提交：改文档', fullMessage: '第二次提交：改文档', author: 'me', email: 'me@x.com', timestamp: Date.now() - 3600e3, parents: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'] },
+    { oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short: 'bbbbbbb', message: '合并提交', fullMessage: '合并提交', author: 'me', email: 'me@x.com', timestamp: Date.now() - 7200e3, parents: ['cccccccccccccccccccccccccccccccccccccccc', 'dddddddddddddddddddddddddddddddddddddddd'] },
+    { oid: 'cccccccccccccccccccccccccccccccccccccccc', short: 'ccccccc', message: '分支上的提交', fullMessage: '分支上的提交', author: 'me', email: 'me@x.com', timestamp: Date.now() - 10800e3, parents: [] },
   ],
+  branchHeads: {
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa': ['main'],
+    'cccccccccccccccccccccccccccccccccccccccc': ['dev'],
+  },
+  headOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
 const stateCb = {}; // 各模块状态回调（browser 等）
@@ -163,18 +168,30 @@ function makeDom() {
         if (ref === 'dev') commits = Array.from({ length: 100 }, (_, i) => ({ oid: 'd' + String(i).padStart(39, '0'), short: 'd' + i, message: 'commit ' + i, fullMessage: 'commit ' + i, author: 'me', timestamp: Date.now() - i * 1000, parents: [] }));
         return { isRepo: true, root: P, branch: 'main', commits, ref: ref || 'HEAD' };
       },
-      logAll: async () => { calls.logAll = true; return { isRepo: true, root: P, branch: 'main', commits: FAKE_GIT.commits, ref: '__all__' }; },
+      logGraph: async (d, limit = 500, ref = null) => {
+        calls.logGraphRef = ref;
+        calls.logGraphLimit = limit;
+        let commits = FAKE_GIT.commits;
+        let truncated = false;
+        if (ref === 'dev') {
+          // dev 分支：100 条 + truncated（分页测试用）
+          commits = Array.from({ length: 100 }, (_, i) => ({ oid: 'd' + String(i).padStart(39, '0'), short: 'd' + i, message: 'commit ' + i, fullMessage: 'commit ' + i, author: 'me', email: 'me@x.com', timestamp: Date.now() - i * 1000, parents: i === 0 ? [] : ['d' + String(i - 1).padStart(39, '0')] }));
+          truncated = true;
+        }
+        return { isRepo: true, root: P, branch: 'main', commits, branchHeads: FAKE_GIT.branchHeads, headOid: FAKE_GIT.headOid, truncated };
+      },
       commit: async (d, o) => { calls.commit.push(o); return { ok: true, oid: 'cccccccccccccccccccccccccccccccccccccccc' }; },
       diffWorkdir: async (d, f) => { calls.diffWorkdir.push(f); return { file: f, oldText: 'old line\n', newText: 'new line\n', hunks: [
         { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
         { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
       ] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
-      commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: ['README.md', 'data.csv'] }; },
+      commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: [{ file: 'README.md', status: 'modified' }, { file: 'data.csv', status: 'added' }] }; },
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
       createBranch: async (d, name) => { calls.createBranch.push(name); return { ok: true }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
+      discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
     },
@@ -206,6 +223,7 @@ async function loadApp(dom) {
   evalFile('viewer.js');
   evalFile('outline.js');
   evalFile('git-panel.js');
+  evalFile('git-log.js');
   evalFile('quickopen.js');
   evalFile('search.js');
   evalFile('session.js');
@@ -476,14 +494,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(t.rows.length === 3, '3 行数据, got ' + t.rows.length);
   });
 
-  await okAsync('Git 面板：本地修改与提交历史', async () => {
+  await okAsync('Git 提交窗口：变更列表 + 分节 + 分支 + 状态栏', async () => {
     await g(dom, 'GitPanel.refresh()');
     await tick();
     const body = $(dom, '#git-body').textContent;
     assert_(body.includes('README.md'), '修改列表含 README.md');
-    assert_(body.includes('第二次提交：改文档'), '日志含最新提交');
-    assert_(body.includes('aaaaaaa'), '日志含短哈希');
+    assert_(body.includes('未版本控制的文件'), '未版本控制分节存在');
     assert_($(dom, '#git-branch').textContent.includes('main'), '分支显示 main');
+    assert_($(dom, '#git-branch #git-branch-btn'), '分支按钮存在（点击切换分支）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
 
@@ -497,61 +515,75 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#df-back'), '有返回按钮');
   });
 
-  await okAsync('Ctrl+K → 提交面板；勾选提交 → git.commit 收到消息', async () => {
+  await okAsync('Ctrl+K → 提交窗口；勾选提交 → git.commit 收到消息', async () => {
     click($(dom, '#df-back'));
     await tick();
     key(dom, 'k', { ctrl: true });
-    await tick();
-    assert_($(dom, '#commit-msg'), '提交面板打开');
-    assert_($allIn($(dom, '#commit-files'), '.cf-check').length === 4, '4 个文件复选框');
+    await tick(); await tick();
+    assert_($(dom, '#commit-msg'), '提交窗口打开（停靠侧栏）');
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 工具面板可见');
+    assert_($allIn($(dom, '#commit-list'), '.cf-check').length === 4, '4 个文件复选框');
     $(dom, '#commit-msg').value = '测试提交信息';
     click($(dom, '#cm-ok'));
     await tick(); await tick();
-    assert_(calls.commit.length === 1, '调用了 git.commit');
-    assert_(calls.commit[0].message === '测试提交信息', '消息正确');
-    assert_(calls.commit[0].files.length === 4, '四个文件被提交');
-    assert_($(dom, '#modal-mask').classList.contains('hidden'), '提交后弹窗关闭');
+    assert_(calls.commit.length >= 1, '调用了 git.commit');
+    assert_(calls.commit[calls.commit.length - 1].message === '测试提交信息', '消息正确');
+    assert_(calls.commit[calls.commit.length - 1].files.length === 4, '四个文件被提交（新文件默认勾选）');
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
   });
 
-  await okAsync('Git Log：分支图 + HEAD 徽标 + 过滤', async () => {
-    await g(dom, 'GitPanel.refresh()');
+  await okAsync('Alt+9 → Git 日志窗口：SVG 提交图 + HEAD/分支徽标 + 过滤', async () => {
+    key(dom, '9', { alt: true });
+    await tick(); await tick();
+    assert_(!$(dom, '#git-log-panel').classList.contains('hidden'), 'Alt+9 打开日志窗口');
+    const rows = $allIn($(dom, '#gl-list'), '.gl-row');
+    assert_(rows.length === 3, '3 行提交, got ' + rows.length);
+    assert_($(dom, '#gl-list svg.gl-svg'), 'SVG 提交图存在');
+    assert_($allIn($(dom, '#gl-list'), 'svg circle').length >= 4, '提交点 + HEAD 外圈存在');
+    assert_($(dom, '.gl-row .gl-head'), 'HEAD 徽标存在');
+    assert_($(dom, '.gl-row .gl-branch.cur'), '当前分支徽标（main）');
+    assert_($(dom, '.gl-row .gl-branch:not(.cur)'), '其他分支徽标（dev）');
+    // 消息过滤（过滤只隐藏行，图不动）
+    const search = $(dom, '#gl-search');
+    search.value = '分支';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
-    const graphs = $allIn($(dom, '#git-history'), '.gc-graph').map((x) => x.textContent);
-    assert_(graphs.length === 3, '3 行提交, got ' + graphs.length);
-    assert_(graphs[0].includes('●'), 'HEAD 行有圆点: ' + JSON.stringify(graphs[0]));
-    assert_(graphs.some((x) => x.includes('│')), '存在分支线: ' + JSON.stringify(graphs));
-    assert_($(dom, '.badge.head'), 'HEAD 徽标存在');
-    // 过滤
-    const filter = $(dom, '#git-filter');
-    filter.value = '分支';
-    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const visible = $allIn($(dom, '#gl-list'), '.gl-row').filter((el) => el.style.display !== 'none');
+    assert_(visible.length === 1 && visible[0].textContent.includes('分支上的提交'), '过滤后只剩一条: ' + JSON.stringify(visible.map((v) => v.textContent)));
+    search.value = '';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
-    const msgs = $allIn($(dom, '#git-history'), '.cmsg').map((x) => x.textContent);
-    assert_(msgs.length === 1 && msgs[0].includes('分支上的提交'), '过滤后只剩一条: ' + JSON.stringify(msgs));
-    filter.value = '';
-    filter.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    // 作者过滤
+    const author = $(dom, '#gl-author');
+    author.value = 'nobody';
+    author.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_($allIn($(dom, '#gl-list'), '.gl-row').every((el) => el.style.display === 'none'), '作者不匹配全部隐藏');
+    author.value = '';
+    author.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     await tick();
   });
 
-  await okAsync('点击提交 → 详情双栏（文件列表 + diff，无弹窗）', async () => {
-    click($allIn($(dom, '#git-history'), '.git-commit').find((x) => x.textContent.includes('第二次提交')));
+  await okAsync('点击提交 → 右侧详情（文件列表 + diff，无弹窗）', async () => {
+    click($allIn($(dom, '#gl-list'), '.gl-row').find((x) => x.textContent.includes('第二次提交')));
     await tick(); await tick();
     assert_(calls.commitFiles.length >= 1, '调用了 commitFiles');
-    assert_($(dom, '.cd-wrap'), '详情双栏出现');
-    const files = $allIn($(dom, '.cd-files'), '.cd-file');
+    assert_($(dom, '#gl-right .gl-dhead'), '详情头部出现');
+    assert_($(dom, '#gl-right .gl-dmsg').textContent.includes('第二次提交'), '详情显示提交信息');
+    const files = $allIn($(dom, '#gl-right'), '.gl-dfile');
     assert_(files.length === 2, '2 个变更文件');
-    assert_(files[0].classList.contains('sel'), '默认选中第一个');
-    assert_($(dom, '.cd-diff .diff-table'), '右侧默认渲染 diff');
+    assert_($(dom, '#gl-right .gl-ddiff .diff-table'), '右侧默认渲染第一个文件的 diff');
     assert_(calls.diffCommit.length >= 1, '调用了 diffCommit');
-    assert_(calls.diffCommit[0].startsWith('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:'), '对比的是点击的提交');
-    // 点击第二个文件切换
+    assert_(calls.diffCommit[calls.diffCommit.length - 1].startsWith('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:'), '对比的是点击的提交');
+    // 点击第二个文件切换 diff
     click(files[1]);
     await tick(); await tick();
-    assert_(files[1].classList.contains('sel'), '选中切换');
-    // 返回
-    click($(dom, '#cd-back'));
+    assert_(files[1].classList.contains('sel'), '选中切换到第二个文件');
+    assert_(calls.diffCommit[calls.diffCommit.length - 1].endsWith(':data.csv'), 'diff 切换到 data.csv');
+    // 关闭窗口（Shift+Esc），不干扰后续测试的键盘导航
+    key(dom, 'Escape', { shift: true });
     await tick();
-    assert_(!$(dom, '.cd-wrap'), '返回后详情关闭');
+    assert_($(dom, '#git-log-panel').classList.contains('hidden'), 'Shift+Esc 关闭日志窗口');
   });
 
   await okAsync('Ctrl+R 刷新（无异常）', async () => {
@@ -660,16 +692,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('Ctrl+K 连续打开两次提交面板不崩（回归）', async () => {
+  await okAsync('Ctrl+K 连续打开两次提交窗口不崩（回归）', async () => {
     key(dom, 'k', { ctrl: true });
-    await tick();
-    assert_($(dom, '#commit-msg'), '第一次提交面板');
-    click($(dom, '#cm-cancel'));
-    await tick();
+    await tick(); await tick();
+    assert_($(dom, '#commit-msg'), '第一次提交窗口');
     key(dom, 'k', { ctrl: true });
-    await tick();
-    assert_($(dom, '#commit-msg'), '第二次提交面板（Modal.show 修复）');
-    click($(dom, '#cm-cancel'));
+    await tick(); await tick();
+    assert_($(dom, '#commit-msg'), '第二次提交窗口（同一停靠面板幂等）');
+    // 收尾：切回项目面板，避免影响后续会话恢复测试的 switchTool 语义
+    await g(dom, 'App.switchTool("project")');
     await tick();
   });
 
@@ -1611,9 +1642,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('Git 日志分支视图：下拉 + 切换 ref', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    const sel = $(dom, '#git-ref');
+    await g(dom, 'GitLog.open()');
+    await tick(); await tick();
+    const sel = $(dom, '#gl-ref');
     assert_(sel, '分支下拉存在');
     const opts = $allIn(sel, 'option').map((o) => o.value);
     assert_(opts.includes('__all__') && opts.includes('HEAD') && opts.includes('dev'), '选项完整: ' + JSON.stringify(opts));
@@ -1621,14 +1652,20 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     sel.value = '__all__';
     sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick(); await tick();
-    assert_(calls.logAll === true, 'logAll 被调用');
-    assert_($allIn($(dom, '#git-history'), '.git-commit').length === 3, '列表刷新');
-    // 选具体分支 dev
-    const sel2 = $(dom, '#git-ref');
+    assert_(calls.logGraphRef === null, 'logGraph ref=null（所有分支）, got: ' + calls.logGraphRef);
+    assert_($allIn($(dom, '#gl-list'), '.gl-row').length === 3, '列表刷新');
+    // 选具体分支 dev → 100 条（mock）
+    const sel2 = $(dom, '#gl-ref');
     sel2.value = 'dev';
     sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick(); await tick();
-    assert_(calls.logRef === 'dev', 'log 收到 ref=dev, got: ' + calls.logRef);
+    assert_(calls.logGraphRef === 'dev', 'logGraph 收到 ref=dev, got: ' + calls.logGraphRef);
+    assert_($allIn($(dom, '#gl-list'), '.gl-row').length === 100, 'dev 分支 100 条, got: ' + $allIn($(dom, '#gl-list'), '.gl-row').length);
+    // 切回 HEAD 收尾
+    sel2.value = 'HEAD';
+    sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    await g(dom, 'GitLog.hide()');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
@@ -1886,10 +1923,15 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('Git 修改目录分组 + 折叠 + Toast 上限', async () => {
     await g(dom, 'App.switchTool("git")');
     await tick(); await tick();
+    // 变更（README.md、src/app.js）与未版本控制（data.csv、src/deep/file.ts）两节，各按顶层目录分组
+    const secs = $allIn($(dom, '#git-body'), '.git-sec-title').map((x) => x.textContent);
+    assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
+    assert_(secs[0].includes('变更 (2)'), '变更分节 2 个文件');
+    assert_(secs[1].includes('未版本控制的文件 (2)'), '未版本控制分节 2 个文件');
     const groups = $allIn($(dom, '#git-body'), '.git-group');
-    assert_(groups.length === 2, '两个分组: ' + JSON.stringify(groups.map((x) => x.textContent)));
-    assert_(groups[0].textContent.includes('根目录'), '根目录组');
-    assert_(groups[1].textContent.includes('src'), 'src 组');
+    assert_(groups.length === 4, '四个分组（2 节 × 2 目录）: ' + JSON.stringify(groups.map((x) => x.textContent)));
+    assert_(groups[0].textContent.includes('根目录'), '变更节根目录组');
+    assert_(groups[1].textContent.includes('src'), '变更节 src 组');
     // 折叠
     click(groups[1]);
     await tick();
@@ -1933,24 +1975,25 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('Git 日志分页：加载更多', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    // 切到 dev（100 条）
-    const sel = $(dom, '#git-ref');
+    await g(dom, 'GitLog.open()');
+    await tick(); await tick();
+    // 切到 dev（mock 返回 100 条 + truncated）
+    const sel = $(dom, '#gl-ref');
     sel.value = 'dev';
     sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick(); await tick();
-    const more = $(dom, '#git-load-more');
+    const more = $(dom, '#gl-load-more');
     assert_(more, '加载更多按钮出现');
     click(more);
     await tick(); await tick();
-    assert_(calls.logDepth === 200, '深度增加到 200: ' + calls.logDepth);
-    // 切回默认
-    const sel2 = $(dom, '#git-ref');
+    assert_(calls.logGraphLimit === 1000, 'limit 增加到 1000: ' + calls.logGraphLimit);
+    // 切回默认（HEAD：3 条且非 truncated）
+    const sel2 = $(dom, '#gl-ref');
     sel2.value = 'HEAD';
     sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick(); await tick();
-    assert_(!$(dom, '#git-load-more'), '默认视图无加载更多（3 条 < 100）');
+    assert_(!$(dom, '#gl-load-more'), '默认视图无加载更多（3 条且未截断）');
+    await g(dom, 'GitLog.hide()');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
@@ -2004,22 +2047,19 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(calls.copy.length === before, '点击状态栏不再触发复制');
   });
 
-  await okAsync('提交面板 diff 预览', async () => {
+  await okAsync('提交窗口：点击文件行 → 编辑区渲染 diff', async () => {
     await g(dom, 'App.switchTool("git")');
-    await tick();
-    key(dom, 'k', { ctrl: true });
+    await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
-    assert_($(dom, '#commit-preview'), '预览区存在');
-    assert_($(dom, '#commit-preview .diff-table'), '默认预览第一个文件');
     const before = calls.diffWorkdir.length;
-    // 点击第二个文件行（非 checkbox）
-    const rows = $allIn($(dom, '#commit-files'), '.commit-file');
-    const second = rows[1].querySelector('.nm');
-    click(second);
+    // 单击行（非勾选框/操作按钮）→ 在编辑区查看工作区 vs HEAD
+    const row = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    click(row);
     await tick(); await tick();
     assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
-    assert_($(dom, '#commit-preview .diff-table'), '预览更新');
-    click($(dom, '#cm-cancel'));
+    assert_($(dom, '#viewer .diff-wrap'), '编辑区渲染 diff 视图');
+    assert_($(dom, '#viewer .diff-table'), 'diff 表格出现');
+    click($(dom, '#df-back'));
     await tick();
     await g(dom, 'App.switchTool("project")');
     await tick();
@@ -2464,35 +2504,27 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($allIn($(dom, '#tree'), '.tree-row').some((r) => r.querySelector('.nm').title === P + '/src/app.js'), '切回后 src 仍展开');
   });
 
-  await okAsync('Bug5：Git 面板分页签（本地修改/提交历史）', async () => {
+  await okAsync('Bug5：提交窗口分节（变更 / 未版本控制的文件，旧分页签已移除）', async () => {
     await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
-    const tabs = $allIn($(dom, '#git-body'), '.git-tab');
-    assert_(tabs.length === 2, '两个分页签, got ' + tabs.length);
-    assert_(tabs[0].textContent.includes('本地修改'), '本地修改签');
-    assert_(tabs[1].textContent.includes('提交历史'), '提交历史签');
-    assert_(tabs[0].classList.contains('active'), '默认选中本地修改');
-    click(tabs[1]);
-    await tick();
-    const sections = $allIn($(dom, '#git-body'), '.git-section');
-    assert_(sections[0].classList.contains('hidden'), '本地修改区隐藏');
-    assert_(!sections[1].classList.contains('hidden'), '提交历史区可见');
+    assert_($allIn($(dom, '#git-body'), '.git-tab').length === 0, '旧分页签已移除');
+    const secs = $allIn($(dom, '#git-body'), '.git-sec-title').map((x) => x.textContent);
+    assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
+    assert_(secs[0].includes('变更'), '变更分节');
+    assert_(secs[1].includes('未版本控制'), '未版本控制分节');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
 
-  await okAsync('Bug6：提交弹窗只显示文件名', async () => {
+  await okAsync('Bug6：变更行只显示文件名（父路径弱化）', async () => {
     await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
-    key(dom, 'k', { ctrl: true });
-    await tick(); await tick();
-    const nm = $allIn($(dom, '#commit-files'), '.commit-file .nm').find((x) => x.title === 'src/app.js');
-    assert_(nm, '找到 src/app.js 提交行');
-    assert_(nm.textContent === 'app.js', '只显示文件名, got: ' + nm.textContent);
-    click($(dom, '#cm-cancel'));
-    await tick();
+    const nm = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title === 'src/app.js');
+    assert_(nm, '找到 src/app.js 变更行');
+    assert_(nm.textContent.startsWith('app.js'), '文件名在前, got: ' + nm.textContent);
+    assert_(nm.querySelector('.nm-dir'), '父路径弱化显示');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
@@ -2516,23 +2548,16 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('Git 本地修改：只显示文件名 + 点击打开文件', async () => {
+  await okAsync('Git 变更行：双击打开文件（单击看 diff）', async () => {
     await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
-    // 切回「本地修改」页签（此前测试可能停在「提交历史」）
-    const changesTab = $allIn($(dom, '#git-body'), '.git-tab')[0];
-    if (changesTab && !changesTab.classList.contains('active')) { click(changesTab); await tick(); }
-    // src/app.js 只显示文件名
-    const nm = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title === 'src/app.js');
-    assert_(nm && nm.textContent === 'app.js', '只显示文件名, got: ' + (nm && nm.textContent));
-    // 点击行 → 打开文件而不是 diff
+    // 双击行 → 打开文件
     const file = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
-    click(file);
+    file.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
     await tick(); await tick();
     const tab = $(dom, '.tab.active .tname');
-    assert_(tab && tab.textContent.includes('README.md'), '点击打开 README.md, got: ' + (tab && tab.textContent));
-    assert_(!$(dom, '.diff-table'), '点击不再直接进 diff');
+    assert_(tab && tab.textContent.includes('README.md'), '双击打开 README.md, got: ' + (tab && tab.textContent));
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
