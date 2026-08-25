@@ -507,10 +507,31 @@ ipcMain.handle('log:write', (_e, level, tag, msg) => {
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
-// 文件复制：写系统剪贴板（FileNameW 格式：\0 分隔 + \0 结尾，供资源管理器粘贴 + 自读多文件）
-// 注意顺序：writeText 在前、writeBuffer 在后 —— Electron 每次写入都会整体替换剪贴板，
-// 最终保留 FileNameW（多文件可读回），文本仅作写入瞬间的兜底。
+// 文件复制：写系统剪贴板双轨
+// 1) Electron 同步写 text + FileNameW（应用内直读快路径，立即生效）
+// 2) PowerShell .NET DataObject 异步覆盖写标准格式（SetFileDropList 自动写 FileDrop(CF_HDROP) + FileNameW + FileName）
+//    —— 资源管理器/桌面粘贴只认标准 CF_HDROP；Electron writeBuffer 走 RegisterClipboardFormat 是同名自定义格式，
+//       写不进标准 CF_HDROP（与读取端读不出是同一根因）→ 只能借 PowerShell。
+//    fire-and-forget：失败静默（Electron 兜底写入已在，应用内不受影响）
 let lastOwnCopy = null; // 本应用最近一次写入的文件列表（区分"应用内复制"与"外部复制"）
+function psWriteFileClipboard(arr) {
+  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const list = arr.map(q).join(',');
+  const script = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$sc = New-Object System.Collections.Specialized.StringCollection',
+    `$sc.AddRange([string[]]@(${list}))`,
+    '$do = New-Object System.Windows.Forms.DataObject',
+    '$do.SetFileDropList($sc)',
+    `$do.SetText([string]::Join([char]10, @(${list})))`,
+    '[System.Windows.Forms.Clipboard]::SetDataObject($do, $true)',
+  ].join('; ');
+  const b64 = Buffer.from(script, 'utf16le').toString('base64');
+  try {
+    exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
+      { encoding: 'utf8', timeout: 1500, windowsHide: true }, () => {});
+  } catch {}
+}
 ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
@@ -519,6 +540,7 @@ ipcMain.handle('clip:copyFiles', (_e, paths) => {
   try {
     clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\0') + '\0', 'utf16le'));
   } catch {}
+  if (process.platform === 'win32') psWriteFileClipboard(arr);
   return true;
 });
 // PowerShell 读 CF_HDROP 完整列表（资源管理器复制的标准格式）
@@ -558,6 +580,15 @@ ipcMain.handle('clip:getFiles', async () => {
   // 1) 应用内复制：FileNameW 读回与最近写入一致 → 免 PowerShell 直接返回（完整列表）
   const own = readFileNameW();
   if (own.length && lastOwnCopy && JSON.stringify(own) === JSON.stringify(lastOwnCopy)) return own;
+  // 1.5) 应用内复制（PowerShell 写入路径）：FileNameW 只含第一个文件 → 用文本完整列表比对
+  //      （Electron 兜底写与 PowerShell SetText 都写了完整路径列表文本，此快路径两态皆命中）
+  try {
+    const t = clipboard.readText();
+    if (t && lastOwnCopy) {
+      const list = t.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (list.length && JSON.stringify(list) === JSON.stringify(lastOwnCopy)) return list;
+    }
+  } catch {}
   // 2) 外部复制（资源管理器）：PowerShell 读完整 CF_HDROP 多文件列表
   if (process.platform === 'win32') {
     const ext = await psReadFileDropList();
@@ -579,9 +610,8 @@ ipcMain.handle('clip:getFiles', async () => {
       }
     }
   } catch {}
-  // 4) FileNameW（应用内复制在 1) 未命中时：文件可能已被删除；外部复制：仅第一个文件）
-  if (own.length) return own;
-  // 5) 纯文本按行拆（每行都是存在的路径才算）
+  // 4) 纯文本按行拆（每行都是存在的路径才算；PowerShell 写入的 FileNameW 仅含第一个文件，
+  //    完整列表在文本里 → 文本优先于 FileNameW，防多文件被截断）
   try {
     const t = clipboard.readText();
     if (t) {
@@ -591,6 +621,8 @@ ipcMain.handle('clip:getFiles', async () => {
       if (list.length) return list;
     }
   } catch {}
+  // 5) FileNameW（应用内复制在 1) 未命中时：文件可能已被删除；外部复制：仅第一个文件）
+  if (own.length) return own;
   return [];
 });
 // 预检：源文件列表复制到目标目录时的同名冲突（渲染层弹确认框用）
