@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
     writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
+    writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),
     move: (src, destDir) => ipcRenderer.invoke('fs:move', src, destDir),

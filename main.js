@@ -351,6 +351,15 @@ ipcMain.handle('fs:readFile', (_e, p) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
+// 写二进制文件（粘贴图片等）：base64 → Buffer 写盘，父目录自动创建
+ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, Buffer.from(String(base64 || ''), 'base64'));
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 ipcMain.handle('fs:mkdir', (_e, p) => {
   try {
     fs.mkdirSync(p, { recursive: true });

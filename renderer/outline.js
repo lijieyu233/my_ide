@@ -20,6 +20,43 @@ const Outline = (() => {
     return out;
   }
 
+  // ---------- 按层级收起（大纲工具条 → 编辑器标题节折叠） ----------
+  // foldLv 语义：0=全部展开；k>=1 = 收至 Hk（H(k+1) 及更深的节全部折叠）
+  let foldLv = 0;
+  function renderTools() {
+    const bar = document.createElement('div');
+    bar.className = 'outline-tools';
+    bar.title = '按标题层级收起编辑器中的节';
+    const mk = (label, lv, tip) => {
+      const b = document.createElement('button');
+      b.className = 'outline-tool' + (foldLv === lv ? ' active' : '');
+      b.textContent = label;
+      b.title = tip;
+      b.onclick = () => applyFold(lv);
+      bar.appendChild(b);
+    };
+    mk('全展', 0, '展开全部标题节');
+    mk('H1', 1, '收至 H1：折叠 H2 及以下全部节');
+    mk('H2', 2, '收至 H2：折叠 H3 及以下全部节');
+    mk('H3', 3, '收至 H3：折叠 H4 及以下全部节');
+    mk('H4', 4, '收至 H4：折叠 H5 及以下全部节');
+    el.appendChild(bar);
+  }
+  function applyFold(lv) {
+    foldLv = lv;
+    const tab = Viewer.activeTab;
+    if (tab && Viewer.cm && Viewer.cm.foldToLevel) {
+      // CM 编辑器（live/source/split）持有完整状态 —— 折叠随 cmState 跨模式保留
+      Viewer.cm.foldToLevel(lv === 0 ? 0 : lv + 1);
+      if (window.MI) MI.toast(lv === 0 ? '已展开全部标题节' : '已收至 H' + lv, 'ok');
+    } else if (window.MI) {
+      MI.toast('请先在实时预览 / 源码 / 分屏模式下打开 Markdown', 'err');
+    }
+    // 重建工具条高亮（不重算标题，仅刷新 active 状态）
+    const bar = el.querySelector('.outline-tools');
+    if (bar) [...bar.children].forEach((b, k) => b.classList.toggle('active', k === lv));
+  }
+
   async function refresh(tab) {
     el.innerHTML = '';
     headings = [];
@@ -40,6 +77,7 @@ const Outline = (() => {
       el.appendChild(d);
       return;
     }
+    renderTools();
     headings.forEach((h, i) => {
       const row = document.createElement('div');
       row.className = 'outline-item' + (h.level > 1 ? ' lv' + h.level : '');
@@ -75,7 +113,8 @@ const Outline = (() => {
     const hs = md.querySelectorAll('h1, h2, h3, h4, h5, h6');
     const target = hs[Math.min(i, hs.length - 1)];
     if (target) {
-      try { target.scrollIntoView({ block: 'start' }); } catch {} // jsdom 无此实现
+      // 居中定位（用户报告：跳转后标题贴底部看不到上下文）
+      try { target.scrollIntoView({ block: 'center' }); } catch {} // jsdom 无此实现
       // 临时高亮
       target.style.outline = '2px solid var(--accent)';
       setTimeout(() => { target.style.outline = ''; }, 1500);

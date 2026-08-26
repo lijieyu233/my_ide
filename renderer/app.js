@@ -234,35 +234,96 @@ const App = (() => {
     box.appendChild(row);
   }
 
+  // 「全部项目」下拉：hover 自动弹出、移开/选择后消失（含历史打开项目）
+  let projMenuTimer = null;
+  let projMenuOn = false; // 菜单当前用作项目下拉（其他来源的 ctx-menu 不受影响）
+  function closeProjMenuNow() {
+    clearTimeout(projMenuTimer);
+    document.getElementById('ctx-menu').classList.add('hidden');
+    projMenuOn = false;
+  }
+  function showProjMenu(anchor) {
+    clearTimeout(projMenuTimer);
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = '';
+    // 已开项目 + 历史项目（去重，历史点击即重开）
+    let recents = [];
+    try { recents = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); } catch {}
+    const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
+      .filter((x) => typeof x === 'string' && x);
+    if (!shown.length) return;
+    const mkTitle = (label) => {
+      const d = document.createElement('div');
+      d.className = 'ctx-item ctx-title';
+      d.textContent = label;
+      menu.appendChild(d);
+    };
+    if (projects.length) {
+      mkTitle('已打开的项目');
+      projects.forEach((p) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
+        d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
+        d.title = p.path;
+        d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
+        menu.appendChild(d);
+      });
+    }
+    const history = shown.filter((p) => !projects.some((x) => x.path === p));
+    if (history.length) {
+      mkTitle('历史项目');
+      history.forEach((p) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item';
+        d.textContent = p.split(/[\\/]/).pop() || p;
+        d.title = p;
+        d.onclick = () => { closeProjMenuNow(); openProject(p); };
+        menu.appendChild(d);
+      });
+    }
+    menu.classList.remove('hidden');
+    projMenuOn = true;
+    const r = anchor.getBoundingClientRect();
+    menu.style.left = Math.min(r.left, window.innerWidth - 230) + 'px';
+    menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 240) + 'px';
+  }
+  function hideProjMenu() {
+    clearTimeout(projMenuTimer);
+    projMenuTimer = setTimeout(() => {
+      document.getElementById('ctx-menu').classList.add('hidden');
+      projMenuOn = false;
+    }, 200);
+  }
+  // 菜单内 hover 取消隐藏延时；移出菜单本身也关闭（一次性全局绑定：ctx-menu 是共享单例）
+  {
+    const menu = document.getElementById('ctx-menu');
+    if (menu) {
+      menu.addEventListener('mouseenter', () => clearTimeout(projMenuTimer));
+      menu.addEventListener('mouseleave', () => { if (projMenuOn) hideProjMenu(); });
+    }
+    // 点击菜单外任意处立即关闭（hover 弹出的菜单不依附点击锚点，需要独立的全局关闭）
+    document.addEventListener('mousedown', (e) => {
+      if (!projMenuOn) return;
+      if (menu && menu.contains(e.target)) return;
+      closeProjMenuNow();
+    });
+  }
+
   function renderProjectBar() {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
     bar.innerHTML = '';
-    // 最左侧固定「全部项目」入口：显示数量 + 当前项目名（点击下拉全部项目）
-    // —— 取代旧 sticky「▾」按钮（sticky 与项目按钮重叠是 UI 错位 bug 根因）
+    // 最左侧固定「全部项目」入口：显示数量 + 当前项目名（hover 下拉全部 + 历史项目）
     if (projects.length) {
       const all = document.createElement('button');
       all.className = 'proj-all';
       const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
       all.innerHTML = `<span class="proj-all-n">▾ ${projects.length} 项目</span><span class="proj-all-cur">${curName}</span>`;
-      all.title = '全部项目（点击切换）';
-      all.onclick = (e) => {
-        e.stopPropagation();
-        const menu = document.getElementById('ctx-menu');
-        menu.innerHTML = '';
-        projects.forEach((p) => {
-          const d = document.createElement('div');
-          d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
-          d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
-          d.title = p.path;
-          d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
-          menu.appendChild(d);
-        });
-        menu.classList.remove('hidden');
-        const r = all.getBoundingClientRect();
-        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
-        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 200) + 'px';
-      };
+      all.title = '全部项目（移入查看历史项目）';
+      // hover 弹出 / 移开消失（原点击触发——不知道可以点，hover 更符合直觉）
+      all.onmouseenter = () => showProjMenu(all);
+      all.onmouseleave = hideProjMenu;
+      all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
       bar.appendChild(all);
     }
     for (const pr of projects) {

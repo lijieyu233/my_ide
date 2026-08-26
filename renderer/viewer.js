@@ -409,6 +409,7 @@ const Viewer = (() => {
       // 滚动同步：行号跟随 + 预览按比例跟随（Obsidian 式分屏阅读体验）
       ta.addEventListener('scroll', () => {
         gutter.scrollTop = ta.scrollTop;
+        tab.scrollTop = ta.scrollTop; // 切换文件后恢复上次位置
         if (previewPane && !previewScrolling) {
           const maxTa = ta.scrollHeight - ta.clientHeight;
           if (maxTa > 0) {
@@ -444,6 +445,8 @@ const Viewer = (() => {
         }
       });
       wrap.appendChild(ta);
+      // 恢复上次滚动位置（用户报告：每次点击文件都回到开头）
+      if (tab.scrollTop) { try { ta.scrollTop = tab.scrollTop; } catch {} }
       if (splitOn) {
         const split = document.createElement('div');
         split.className = 'md-split';
@@ -501,7 +504,15 @@ const Viewer = (() => {
     // 预览模式：交给插件渲染
     const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
     const node = fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content }) : null;
-    if (node instanceof HTMLElement) viewer.appendChild(node);
+    if (node instanceof HTMLElement) {
+      viewer.appendChild(node);
+      // 滚动位置：恢复上次 + 实时记录（切回文件不回开头）
+      const scroller = node.matches('.md-view') ? node : (node.querySelector('.md-view') || node);
+      try {
+        if (tab.scrollTop) scroller.scrollTop = tab.scrollTop;
+        scroller.addEventListener('scroll', () => { tab.scrollTop = scroller.scrollTop; }, { passive: true });
+      } catch {}
+    }
     else {
       // 插件返回字符串（如美化 JSON）→ 源码编辑
       tab.content = node ?? tab.content;
@@ -528,6 +539,31 @@ const Viewer = (() => {
     }
     MdEditor.__baseDir = tab.path ? tab.path.split(/[\\/]/).slice(0, -1).join('/') : '';
     MdEditor.__openLink = (href) => openMdLink(tab, href);
+    // 粘贴图片：写入笔记目录（存在 assets/ 子目录则放入）→ 返回相对路径插入 MD
+    MdEditor.__onPasteImage = async (file) => {
+      try {
+        const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
+        const ext = extMap[file.type] || 'png';
+        const ts = new Date();
+        const p2 = (n) => String(n).padStart(2, '0');
+        const name = '粘贴图片-' + ts.getFullYear() + p2(ts.getMonth() + 1) + p2(ts.getDate())
+          + '-' + p2(ts.getHours()) + p2(ts.getMinutes()) + p2(ts.getSeconds()) + '.' + ext;
+        const dir = String(MdEditor.__baseDir || '').replace(/\//g, '\\');
+        if (!dir || !window.myIDE.fs.writeBinary) return null;
+        let targetDir = dir, inAssets = false;
+        try {
+          const items = await window.myIDE.fs.readDir(dir, true);
+          if (items.some((x) => x.type === 'dir' && x.name === 'assets')) { targetDir = dir + '\\assets'; inAssets = true; }
+        } catch {}
+        const buf = new Uint8Array(await file.arrayBuffer());
+        let b64 = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < buf.length; i += CHUNK) b64 += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+        const r = await window.myIDE.fs.writeBinary(targetDir + '\\' + name, btoa(b64));
+        if (!r || !r.ok) { MI.toast('图片保存失败: ' + ((r && r.error) || ''), 'err'); return null; }
+        return (inAssets ? 'assets/' : '') + name;
+      } catch { return null; }
+    };
     cmApi = MdEditor.create({
       parent: wrap,
       doc: tab.content || '',
@@ -535,6 +571,7 @@ const Viewer = (() => {
       live,
       onChange: (val) => {
         tab.content = val;
+        if (tab.__extLoading) return; // 外部重载写入：不标 dirty、不触发自动保存（防写回抖动）
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
@@ -546,6 +583,12 @@ const Viewer = (() => {
     });
     cmApi.__tab = tab;
     tab.ta = null;
+    // 滚动位置实时记录 + 切回恢复（用户报告：每次点击文件都回到开头）
+    try {
+      const sd = cmApi.view.scrollDOM;
+      sd.addEventListener('scroll', () => { tab.scrollTop = sd.scrollTop; }, { passive: true });
+      if (tab.scrollTop) sd.scrollTop = tab.scrollTop;
+    } catch {}
     setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
   }
 
@@ -831,6 +874,63 @@ const Viewer = (() => {
     }
   }
 
+  // ---------- 重命名/移动同步：树里改名后标签路径跟着变 ----------
+  // 不同步的后果：① 标签仍指向旧路径，自动保存把旧文件"复活"（改名后原文件还在的根因）
+  //             ② 标签标题与磁盘文件脱节
+  function renamed(oldPath, newPath) {
+    if (!oldPath || !newPath || oldPath === newPath) return;
+    let touched = false;
+    for (const t of tabs) {
+      if (t.path === oldPath) {
+        t.path = newPath;
+        t.name = newPath.split(/[\\/]/).pop();
+        touched = true;
+      }
+    }
+    if (!touched) return;
+    renderTabs();
+    const at = tabs[active];
+    if (at && at.path === newPath) renderView(); // 激活的是改名文件 → 重渲染（工具栏路径等）
+  }
+
+  // ---------- 外部修改同步：文件在磁盘上被外部程序改动 → 未保存的标签自动重载 ----------
+  // dirty（有未保存修改）的标签不动，防丢用户输入。CM 模式就地 setValue（保留撤销历史与光标），
+  // __extLoading 抑制 onChange 把重载误判为用户编辑（防 dirty 闪烁与自动保存写回抖动）。
+  let extReloadTimer = null;
+  if (window.myIDE && window.myIDE.fs && window.myIDE.fs.onChanged) {
+    window.myIDE.fs.onChanged(() => {
+      clearTimeout(extReloadTimer);
+      extReloadTimer = setTimeout(reloadExternal, 600); // 防抖：编辑器连续保存自身不触发（watcher 已过滤断言）
+    });
+  }
+  async function reloadExternal() {
+    for (const t of tabs) {
+      if (t.dirty || t.error || t.binary || t.tooLarge) continue;
+      if (t.content == null) continue;
+      if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name))) continue;
+      try {
+        const r = await window.myIDE.fs.readFile(t.path);
+        if (r.error || r.tooLarge || r.binary || r.content == null) continue;
+        if (r.content === t.content) continue; // 内容未变（mtime 变了但内容相同）
+        t.content = r.content;
+        t.encoding = r.encoding || t.encoding;
+        if (t === tabs[active]) {
+          if (cmApi && cmApi.__tab === t) {
+            t.__extLoading = true;
+            try { cmApi.setValue(r.content); } finally { t.__extLoading = false; }
+          } else if (t.ta) {
+            t.ta.value = r.content;
+            t.ta.dispatchEvent(new Event('input', { bubbles: true })); // 触发 gutter/预览刷新（不标 dirty：内容已同步）
+          } else {
+            renderView();
+          }
+          if (window.App) App.updateStatusbar({ file: t.path, lines: r.content.split('\n').length });
+          if (window.App) App.refreshOutline(t);
+        }
+      } catch {}
+    }
+  }
+
   // Ctrl+E：Markdown live ↔ source 模式切换（对齐 Obsidian）
   function toggleMdMode() {
     const tab = tabs[active];
@@ -842,7 +942,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

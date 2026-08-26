@@ -118,7 +118,7 @@
   // ---------- 样式层（视口内元素；先滚回文首 —— 前面的测试滚走了视口） ----------
   api.gotoLine(1); await sleep(350);
   const h1 = q('.cm-md-h1');
-  add('样式: h1 字号 22px', h1 && css(h1, 'font-size') === '22px', css(h1, 'font-size'));
+  add('样式: h1 字号 26px', h1 && css(h1, 'font-size') === '26px', css(h1, 'font-size'));
   const h1line = q('.cm-md-h1-line');
   add('样式: h1 行无下划线', h1line && (css(h1line, 'border-bottom-style') === 'none' || parseFloat(css(h1line, 'border-bottom-width') || '0') === 0),
     css(h1line, 'border-bottom-style') + '/' + css(h1line, 'border-bottom-width'));
@@ -149,6 +149,31 @@
   api.setCursor(DOC.indexOf('正文包含'), DOC.indexOf('混排') + 2); await sleep(120);
   add('行为: 多行选择保持渲染态', !allText().includes('**'));
   api.setCursor(DOC.length); await sleep(120);
+
+  // ---------- 选区可见性（用户报告：多选文字没有 UI 显示，根本不知道选了哪里） ----------
+  {
+    // 跨多行渲染态选区（第21行段首 → 第23行段中，跨空行）：每行一块背景，drawSelection 必须都画
+    const a = DOC.indexOf('正文包含');
+    const b = DOC.indexOf('删除线与') + 3;
+    api.setCursor(a, b); await sleep(200);
+    const selEls = [...document.querySelectorAll('.cm-selectionBackground')];
+    const vis = selEls.filter((s) => {
+      const c = css(s, 'background-color');
+      const r = s.getBoundingClientRect();
+      return !transparent(c) && r.width > 0 && r.height > 0;
+    });
+    add('选区: 多行选择背景块渲染', vis.length >= 2, '可见块=' + vis.length + '/总=' + selEls.length);
+    add('选区: 背景色非透明', vis.length > 0 && !transparent(css(vis[0], 'background-color')),
+      vis.length ? css(vis[0], 'background-color') : '无选区块');
+    // 选区覆盖渲染态文字（选区两端落在正文中段，远离标记间隙）：正文文字上必须有背景
+    const c1 = DOC.indexOf('正文包含') + 2;
+    const c2 = DOC.indexOf('正文包含') + 6;
+    api.setCursor(c1, c2); await sleep(150);
+    const vis2 = [...document.querySelectorAll('.cm-selectionBackground')]
+      .filter((s) => s.getBoundingClientRect().width > 0 && !transparent(css(s, 'background-color')));
+    add('选区: 渲染态正文选区可见', vis2.length >= 1, '块数=' + vis2.length);
+    api.setCursor(DOC.length); await sleep(100);
+  }
 
   // 下划线全面扫描（用户报告"还是有下划线"）：编辑器内任何元素不得出现
   // text-decoration: underline（spellcheck 红波浪已由属性关闭，这里兜底样式层）

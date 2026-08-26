@@ -76,13 +76,13 @@ window.MdEditor = (() => {
   });
 
   // Live Preview 渲染态样式 —— 与 .md-view 预览逐项同源对齐
-  // 字号取 .md-view 的绝对值（h1 22 / h2 18 / h3 15 / 正文 13px）
+  // 字号取 .md-view 的绝对值（h1 26 / h2 22 / h3 18 / h4 15 / 正文 13px，与 styles.css 同步调大）
   const liveTheme = EditorView.theme({
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
-    '.cm-md-h1': { fontSize: '22px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.35' },
-    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
-    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.4' },
-    '.cm-md-h4': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h1': { fontSize: '26px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.35' },
+    '.cm-md-h2': { fontSize: '22px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
+    '.cm-md-h3': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.4' },
+    '.cm-md-h4': { fontSize: '15px', fontWeight: '600', color: 'var(--text-bright)' },
     '.cm-md-h5': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
     '.cm-md-h6': { fontSize: '13px', fontWeight: '500', color: 'var(--text-dim)' },
     // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
@@ -171,6 +171,19 @@ window.MdEditor = (() => {
     '.cm-md-table': { borderCollapse: 'collapse', width: '100%' },
     '.cm-md-table th, .cm-md-table td': { border: '1px solid var(--border-mid)', padding: '4px 10px' },
     '.cm-md-table th': { background: 'var(--bg-panel)', color: 'var(--text-bright)', fontWeight: '600' },
+    // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸
+    '.cm-md-foldctrl': {
+      display: 'inline-block', width: '18px', textAlign: 'center', fontSize: '10px',
+      color: 'var(--text-dim)', cursor: 'pointer', userSelect: 'none', verticalAlign: 'middle',
+      marginLeft: '-18px', opacity: '0', transition: 'opacity .1s',
+    },
+    '.cm-line:hover .cm-md-foldctrl, .cm-md-foldctrl.folded': { opacity: '1' },
+    '.cm-md-foldctrl:hover': { color: 'var(--accent)' },
+    // 折叠占位符样式（CM6 foldWidget 默认 "…"，弱化显示）
+    '.cm-foldPlaceholder': {
+      background: 'var(--btn-bg)', border: '1px solid var(--btn-border)', color: 'var(--text-dim)',
+      borderRadius: '3px', margin: '0 3px', padding: '0 6px', fontSize: '11px', cursor: 'pointer',
+    },
   });
 
   // ---------- 图片 widget：![alt](src) → 内联 <img> ----------
@@ -222,6 +235,36 @@ window.MdEditor = (() => {
     ignoreEvent() { return false; }
   }
 
+  // ---------- 标题折叠箭头 widget（Obsidian 式）：▾ 展开态 / ▸ 折叠态 ----------
+  // 点击折叠该标题节（到下一个同级/更高级标题前），折叠切换由 foldEffect 驱动，
+  // liveField 监听 fold/unfold effect 重建装饰 → 箭头方向同步翻转。
+  class FoldCtrlWidget extends WidgetType {
+    constructor(from, to) { super(); this.from = from; this.to = to; }
+    eq(other) { return other.from === this.from && other.to === this.to; }
+    toDOM(view) {
+      const b = document.createElement('span');
+      let folded = false;
+      try {
+        // 当前折叠范围是否完整覆盖本节（from/to 是内容范围：标题行末+1 → 节末行末）
+        Language.foldedRanges(view.state).between(this.from - 1, this.to, (f, t) => {
+          if (f <= this.from && t >= this.to) folded = true;
+        });
+      } catch {}
+      b.className = 'cm-md-foldctrl' + (folded ? ' folded' : '');
+      b.textContent = folded ? '▸' : '▾';
+      b.title = folded ? '展开此节' : '收起此节';
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (folded) view.dispatch({ effects: Language.unfoldEffect.of({ from: this.from, to: this.to }) });
+        else view.dispatch({ effects: Language.foldEffect.of({ from: this.from, to: this.to }) });
+      });
+      return b;
+    }
+    ignoreEvent() { return true; } // 点击由自身处理
+  }
+
   // ---------- 表格 widget：整块渲染真表格（Obsidian 式） ----------
   // 光标不在表格内 → 渲染 table（列对齐/表头背景/边框）；光标进入 → 回退源码编辑。
   // 竖线 split 不处理 \| 转义（GFM 表格内转义罕见，源码态仍可编辑）。
@@ -252,7 +295,9 @@ window.MdEditor = (() => {
       else if (tok.startsWith('~~')) el = document.createElement('del');
       else if (tok.startsWith('`')) { el = document.createElement('code'); el.className = 'cm-md-code'; }
       else el = document.createElement('em');
-      el.textContent = tok.slice(2, -2);
+      // 按标记类型取内容：**/~~ 是 2 字符标记取 slice(2,-2)；*/` 是 1 字符标记取 slice(1,-1)。
+      // 旧代码统一 slice(2,-2)：`code` 与 *em* 被吃掉首尾各 1 个字符（表格内 P/s 消失的根因）
+      el.textContent = tok.startsWith('**') || tok.startsWith('~~') ? tok.slice(2, -2) : tok.slice(1, -1);
       parent.appendChild(el);
       last = m.index + tok.length;
     }
@@ -441,13 +486,17 @@ window.MdEditor = (() => {
     const inFence = (pos) => fenceRanges.some(([a, b]) => pos >= a && pos <= b);
     {
       const from = 0, to = doc.length;
-      // ---- 行级预处理：空行压缩 / task checkbox / 列表 bullet 圆点（不依赖语法树、与光标无关） ----
+      // ---- 行级预处理：空行压缩 / task checkbox / 列表 bullet 圆点 / 标题行收集 ----
+      // （前四项不依赖语法树、与光标无关）
       // Obsidian 行为：无序 bullet 渲染成 •、task 勾选框任何时候都是渲染态（可直接点击）——
       // 不再随光标位置切换，消除光标扫过列表行时的源码/渲染跳变。
+      const headingLines = []; // [{l, level}] —— 标题折叠范围计算用（跳过围栏内 #）
       let pos = from;
       while (pos < to) {
         const l = doc.lineAt(pos);
         if (!inFence(l.from)) {
+          const hm = /^(#{1,6})\s/.exec(l.text);
+          if (hm) headingLines.push({ l, level: hm[1].length });
           if (!l.text.trim()) {
             decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
           } else {
@@ -647,6 +696,23 @@ window.MdEditor = (() => {
                 if (start < node.to) decos.push(Decoration.mark({ class: 'cm-md-h' + h }).range(start, node.to));
                 // 标题行高 + 边框（h1/h2 有下边框）
                 decos.push(Decoration.line({ class: 'cm-md-h' + h + '-line' }).range(doc.lineAt(node.from).from));
+                // 折叠箭头（Obsidian 式标题节收起）：范围 = 本标题下一行行首 → 下一
+                // 个同级/更高级标题前一行的行末；无内容节（标题紧跟标题）不显示箭头
+                const hIdx = headingLines.findIndex((x) => x.l.from === node.from);
+                if (hIdx >= 0) {
+                  const cur = headingLines[hIdx];
+                  let next = null;
+                  for (let k = hIdx + 1; k < headingLines.length; k++) {
+                    if (headingLines[k].level <= cur.level) { next = headingLines[k]; break; }
+                  }
+                  const endLine = next ? doc.line(next.l.number - 1) : doc.line(doc.lines);
+                  if (endLine.number > cur.l.number) {
+                    decos.push(Decoration.widget({
+                      widget: new FoldCtrlWidget(cur.l.to + 1, endLine.to),
+                      side: -1,
+                    }).range(cur.l.from));
+                  }
+                }
               } else if (name === 'StrongEmphasis' || name === 'Emphasis') {
                 const cls = name === 'StrongEmphasis' ? 'cm-md-strong' : 'cm-md-em';
                 let start = node.from, end = node.to;
@@ -682,7 +748,9 @@ window.MdEditor = (() => {
   const liveField = State.StateField.define({
     create(state) { return buildDecorations(state); },
     update(value, tr) {
-      if (tr.docChanged || tr.selection || tr.effects.some((e) => e.is(liveRefresh))) {
+      // 折叠/展开也要重建：标题折叠箭头的 ▾/▸ 方向随折叠状态翻转
+      const foldToggled = tr.effects.some((e) => e.is(Language.foldEffect) || e.is(Language.unfoldEffect));
+      if (tr.docChanged || tr.selection || foldToggled || tr.effects.some((e) => e.is(liveRefresh))) {
         return buildDecorations(tr.state);
       }
       return value;
@@ -884,6 +952,36 @@ window.MdEditor = (() => {
       Md.markdown({ base: Md.markdownLanguage, codeLanguages }),
       baseTheme,
       liveTheme,
+      // 粘贴图片（Obsidian 式）：剪贴板含图片 → 写入笔记目录并插入 ![]() 引用
+      // MdEditor.__onPasteImage(file) 由 viewer.js 注入（返回相对路径或 null）
+      EditorView.domEventHandlers({
+        paste(e, view) {
+          const items = [...(e.clipboardData ? e.clipboardData.items : [])];
+          const imgs = items.filter((it) => it.kind === 'file' && /^image\//.test(it.type));
+          if (!imgs.length || typeof MdEditor.__onPasteImage !== 'function') return false;
+          e.preventDefault();
+          (async () => {
+            const inserts = [];
+            for (const it of imgs) {
+              const f = it.getAsFile();
+              if (!f) continue;
+              try {
+                const rel = await MdEditor.__onPasteImage(f);
+                if (rel) inserts.push('![](' + rel + ')\n');
+              } catch {}
+            }
+            if (inserts.length) {
+              const pos = view.state.selection.main.head;
+              view.dispatch({
+                changes: { from: pos, insert: inserts.join('\n') },
+                selection: { anchor: pos + inserts.join('\n').length },
+                scrollIntoView: true,
+              });
+            }
+          })();
+          return true;
+        },
+      }),
       keymap.of([
         // Ctrl+-/= 折叠/展开当前块；Ctrl+Shift+-/= 全部折叠/展开
         // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
@@ -951,12 +1049,52 @@ window.MdEditor = (() => {
       setLive(on) {
         view.dispatch({ effects: liveComp.reconfigure(on ? liveExts : []) });
       },
-      // 大纲跳转：光标移到指定行并滚动到可视区（live/source 模式用）
+      // 大纲跳转：光标移到指定行并滚动到可视区中间（live/source 模式用）
       gotoLine(line) {
         const n = Math.max(1, Math.min(line, view.state.doc.lines));
         const l = view.state.doc.line(n);
-        view.dispatch({ selection: { anchor: l.from }, scrollIntoView: true });
+        view.dispatch({
+          selection: { anchor: l.from },
+          effects: EditorView.scrollIntoView(l.from, { y: 'center' }),
+        });
         view.focus();
+      },
+      // 按层级收起标题节：n=0 全部展开；n>=1 折叠所有 level>=n 的标题节（外层优先，
+      // 嵌套节被外层折叠覆盖不再重复折叠 —— foldState 的 RangeSet 不允许重叠范围）
+      foldToLevel(n) {
+        const doc = view.state.doc;
+        const hs = []; // [{l, level}]（跳过围栏内 #）
+        let inFence = false;
+        for (let i = 1; i <= doc.lines; i++) {
+          const l = doc.line(i);
+          if (/^\s*(```|~~~)/.test(l.text)) { inFence = !inFence; continue; }
+          if (inFence) continue;
+          const m = /^(#{1,6})\s/.exec(l.text);
+          if (m) hs.push({ l, level: m[1].length });
+        }
+        const effects = [];
+        // 先清空现有折叠（重放目标层级，避免残留/嵌套混乱）
+        Language.foldedRanges(view.state).between(0, doc.length, (from, to) => {
+          effects.push(Language.unfoldEffect.of({ from, to }));
+        });
+        if (n >= 1) {
+          let foldEnd = -1;
+          for (let i = 0; i < hs.length; i++) {
+            const cur = hs[i];
+            if (cur.level < n || cur.l.from < foldEnd) continue;
+            let next = null;
+            for (let k = i + 1; k < hs.length; k++) {
+              if (hs[k].level <= cur.level) { next = hs[k]; break; }
+            }
+            const endLine = next ? doc.line(next.l.number - 1) : doc.line(doc.lines);
+            if (endLine.number > cur.l.number) {
+              // 范围与 FoldCtrlWidget 一致：标题行末+1 → 节末行行末
+              effects.push(Language.foldEffect.of({ from: cur.l.to + 1, to: endLine.to }));
+              foldEnd = endLine.to;
+            }
+          }
+        }
+        if (effects.length) view.dispatch({ effects });
       },
       // 精确置光标/选区（测试用：验证标记粒度显形）
       setCursor(pos, head) {

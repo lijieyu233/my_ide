@@ -703,6 +703,7 @@ const Tree = (() => {
       const r = await window.myIDE.fs.move(src, destDir);
       if (r.ok) {
         pushUndo({ type: 'move', newPath: r.target, oldDir, label: src.split(/[\\/]/).pop() + ' 的移动' });
+        if (window.Viewer && Viewer.renamed) Viewer.renamed(src, r.target); // 同步已打开标签路径（防旧路径自动保存复活旧文件）
         ok++;
       } else {
         MI.toast('移动失败: ' + (r.error || src), 'err');
@@ -853,6 +854,8 @@ const Tree = (() => {
     const r = await window.myIDE.fs.rename(item.path, name);
     if (r.ok) {
       pushUndo({ type: 'rename', newPath: r.path, oldName: item.name, label: item.name + ' 的重命名' });
+      // 先同步已打开标签（旧路径 → 新路径）：否则 dirty 标签的自动保存会用旧路径把旧文件"复活"
+      if (window.Viewer && Viewer.renamed) Viewer.renamed(item.path, r.path);
       invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit();
     }
     else MI.toast('重命名失败: ' + r.error, 'err');
