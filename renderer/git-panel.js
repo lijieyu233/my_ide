@@ -125,7 +125,17 @@ const GitPanel = (() => {
     return sections.filter((s) => s.items.length);
   }
 
+  // 大节（变更 / 未版本控制的文件）收起状态：用户偏好，全局持久化
+  const GIT_SEC_KEY = 'myide-git-sec-collapse';
+  function loadSecCollapse() {
+    try { return JSON.parse(localStorage.getItem(GIT_SEC_KEY) || '{}'); } catch { return {}; }
+  }
+  function saveSecCollapse(map) {
+    try { localStorage.setItem(GIT_SEC_KEY, JSON.stringify(map)); } catch {}
+  }
+
   function renderFileList(container) {
+    const collapsed = loadSecCollapse();
     for (const sec of fileSections()) {
       const groups = new Map();
       for (const c of sec.items) {
@@ -134,9 +144,20 @@ const GitPanel = (() => {
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(c);
       }
+      const secBody = document.createElement('div');
       const st = document.createElement('div');
       st.className = 'git-sec-title';
-      st.textContent = sec.title + ' (' + sec.items.length + ')';
+      st.textContent = (collapsed[sec.key] ? '▸ ' : '▾ ') + sec.title + ' (' + sec.items.length + ')';
+      st.title = '点击收起 / 展开此节';
+      st.style.cursor = 'pointer';
+      st.onclick = () => {
+        const now = secBody.style.display === 'none';
+        secBody.style.display = now ? '' : 'none';
+        st.textContent = (now ? '▾ ' : '▸ ') + sec.title + ' (' + sec.items.length + ')';
+        collapsed[sec.key] = !now;
+        saveSecCollapse(collapsed);
+      };
+      if (collapsed[sec.key]) secBody.style.display = 'none';
       container.appendChild(st);
       for (const [dir, items] of groups) {
         const gTitle = document.createElement('div');
@@ -145,14 +166,15 @@ const GitPanel = (() => {
         const gBody = document.createElement('div');
         gBody.className = 'git-group-body';
         gTitle.onclick = () => {
-          const collapsed = gBody.style.display === 'none';
-          gBody.style.display = collapsed ? '' : 'none';
-          gTitle.textContent = (collapsed ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
+          const gCol = gBody.style.display === 'none';
+          gBody.style.display = gCol ? '' : 'none';
+          gTitle.textContent = (gCol ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
         };
-        container.appendChild(gTitle);
+        secBody.appendChild(gTitle);
         for (const c of items) gBody.appendChild(fileRow(c));
-        container.appendChild(gBody);
+        secBody.appendChild(gBody);
       }
+      container.appendChild(secBody);
     }
   }
 

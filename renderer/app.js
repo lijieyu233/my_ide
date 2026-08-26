@@ -265,17 +265,20 @@ const App = (() => {
         d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
         d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
         d.title = p.path;
-        d.onclick = () => { menu.classList.add('hidden'); openProject(p.path); };
+        d.onclick = () => { closeProjMenuNow(); openProject(p.path); };
         menu.appendChild(d);
       });
     }
-    const history = shown.filter((p) => !projects.some((x) => x.path === p));
+    const history = shown.filter((p) => !projects.some((x) => x.path === p)).slice(0, 5);
     if (history.length) {
-      mkTitle('历史项目');
+      mkTitle('最近打开');
       history.forEach((p) => {
         const d = document.createElement('div');
-        d.className = 'ctx-item';
-        d.textContent = p.split(/[\\/]/).pop() || p;
+        d.className = 'ctx-item proj-recent';
+        const nm = document.createElement('span');
+        nm.className = 'proj-recent-name';
+        nm.textContent = p.split(/[\\/]/).pop() || p;
+        d.appendChild(nm);
         d.title = p;
         d.onclick = () => { closeProjMenuNow(); openProject(p); };
         menu.appendChild(d);
