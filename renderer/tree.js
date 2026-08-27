@@ -799,6 +799,11 @@ const Tree = (() => {
       });
     });
     if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
+    // 文件：以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
+    if (item.type === 'file' && !multi) {
+      const pdir = item.path.replace(/[\\/][^\\/]+$/, '');
+      if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(pdir); });
+    }
     mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) removeItems(getSelection());
       else removeItem(item);

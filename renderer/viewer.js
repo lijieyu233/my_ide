@@ -216,6 +216,9 @@ const Viewer = (() => {
       menu.appendChild(d);
     };
     mk('📋 复制完整路径', () => { MI.copyText(tabs[i].path); MI.toast('已复制路径', 'ok'); });
+    // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
+    const pdir = (tabs[i].path || '').replace(/[\\/][^\\/]+$/, '');
+    if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(pdir); });
     mk('✕ 关闭', () => closeTab(i));
     mk('🗂 关闭其他', () => {
       for (let j = tabs.length - 1; j >= 0; j--) { if (j !== i) closeTab(j); } // 倒序避免索引错乱
