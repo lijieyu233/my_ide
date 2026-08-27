@@ -438,12 +438,10 @@ textarea.editor {
   display: flex; align-items: center; gap: 6px; padding: 3px 10px;
   cursor: pointer; font-size: 12px; white-space: nowrap;
 }
-.git-group-body .git-file { padding-left: 24px; }
 .git-file:hover { background: var(--bg-hover); }
 .git-file.key-nav-sel { background: var(--bg-selected); }
 .git-file .cf-check { flex-shrink: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .git-file .nm { overflow: hidden; text-overflow: ellipsis; }
-.git-file .nm .nm-dir { color: var(--text-dim); font-size: 11px; }
 .git-file .git-diff, .git-file .git-revert {
   margin-left: auto; visibility: hidden; flex-shrink: 0;
   font-size: 12px; color: var(--text-dim); cursor: pointer; padding: 0 3px;
@@ -604,11 +602,12 @@ body.gl-resizing #gl-resizer { background: var(--accent); opacity: .5; }
   display: flex; align-items: center; gap: 8px; position: sticky; left: 0;
 }
 .diff-file-title .b { color: var(--text-bright); }
-table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--font-mono); font-size: 12.5px; }
-.diff-table td { padding: 0; vertical-align: top; white-space: pre; }
-.diff-table .ln { width: 44px; text-align: right; color: var(--text-dim); background: var(--bg-panel); padding: 0 6px; user-select: none; border-right: 1px solid var(--border); font-size: 11px; }
-.diff-table .num { width: 44px; text-align: right; color: var(--num-dim); padding: 0 6px; user-select: none; font-size: 11px; }
-.diff-table .sep { width: 22px; background: var(--bg-panel); border-right: 1px solid var(--border); }
+table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; font-family: var(--font-mono); font-size: 12.5px; }
+.diff-table td { padding: 0 4px; vertical-align: top; }
+/* PyCharm 式左右分栏：[旧行号|旧内容 ‖ 新行号|新内容]，两半严格等宽（50% - 行号列） */
+.diff-table .ln { width: 52px; text-align: right; color: var(--text-dim); background: var(--bg-panel); padding: 0 6px; user-select: none; font-size: 11px; }
+.diff-table .num { width: 52px; text-align: right; color: var(--num-dim); background: var(--bg-panel); padding: 0 6px; user-select: none; border-left: 2px solid var(--border-mid); font-size: 11px; }
+.diff-table .old, .diff-table .new { width: calc(50% - 52px); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
 .diff-table td.ctx { background: var(--bg); color: var(--editor-text); }
 .diff-table td.del { background: var(--del-bg); color: var(--del-text); }
 .diff-table td.add { background: var(--add-bg); color: var(--add-text); }

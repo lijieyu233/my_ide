@@ -137,13 +137,6 @@ const GitPanel = (() => {
   function renderFileList(container) {
     const collapsed = loadSecCollapse();
     for (const sec of fileSections()) {
-      const groups = new Map();
-      for (const c of sec.items) {
-        const seg = c.file.split(/[\\/]/);
-        const key = seg.length > 1 ? seg[0] : '根目录';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(c);
-      }
       const secBody = document.createElement('div');
       const st = document.createElement('div');
       st.className = 'git-sec-title';
@@ -158,38 +151,105 @@ const GitPanel = (() => {
         saveSecCollapse(collapsed);
       };
       if (collapsed[sec.key]) secBody.style.display = 'none';
+      secBody.appendChild(renderDirTree(buildDirTree(sec.items), 0));
       container.appendChild(st);
-      for (const [dir, items] of groups) {
-        const gTitle = document.createElement('div');
-        gTitle.className = 'git-group';
-        gTitle.textContent = '▾ ' + dir + ' (' + items.length + ')';
-        const gBody = document.createElement('div');
-        gBody.className = 'git-group-body';
-        gTitle.onclick = () => {
-          const gCol = gBody.style.display === 'none';
-          gBody.style.display = gCol ? '' : 'none';
-          gTitle.textContent = (gCol ? '▾ ' : '▸ ') + dir + ' (' + items.length + ')';
-        };
-        secBody.appendChild(gTitle);
-        for (const c of items) gBody.appendChild(fileRow(c));
-        secBody.appendChild(gBody);
-      }
       container.appendChild(secBody);
     }
   }
 
-  // 单个变更文件行：勾选框 + 状态徽章 + 文件名（暗色父路径）+ 悬停操作
-  function fileRow(c) {
+  // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
+  function buildDirTree(items) {
+    const root = { dirs: new Map(), files: [] };
+    for (const c of items) {
+      const segs = c.file.split(/[\\/]/);
+      let node = root;
+      for (let i = 0; i < segs.length - 1; i++) {
+        if (!node.dirs.has(segs[i])) node.dirs.set(segs[i], { dirs: new Map(), files: [] });
+        node = node.dirs.get(segs[i]);
+      }
+      node.files.push(c);
+    }
+    return root;
+  }
+
+  // 递归渲染目录树：目录行（▾ name (n)）+ 文件行，按深度缩进
+  function renderDirTree(node, depth) {
+    const box = document.createElement('div');
+    box.className = 'git-group-body';
+    const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
+    for (const name of names) {
+      const child = node.dirs.get(name);
+      const count = treeCount(child);
+      const gTitle = document.createElement('div');
+      gTitle.className = 'git-group';
+      gTitle.style.paddingLeft = (10 + depth * 14) + 'px';
+      gTitle.textContent = '▾ ' + name + ' (' + count + ')';
+      const gBody = renderDirTree(child, depth + 1);
+      gTitle.onclick = () => {
+        const gCol = gBody.style.display === 'none';
+        gBody.style.display = gCol ? '' : 'none';
+        gTitle.textContent = (gCol ? '▾ ' : '▸ ') + name + ' (' + count + ')';
+      };
+      box.appendChild(gTitle);
+      box.appendChild(gBody);
+    }
+    for (const c of node.files.sort((a, b) => a.file.localeCompare(b.file))) {
+      box.appendChild(fileRow(c, depth));
+    }
+    return box;
+  }
+
+  function treeCount(node) {
+    let n = node.files.length;
+    for (const d of node.dirs.values()) n += treeCount(d);
+    return n;
+  }
+
+  // 单个变更文件行：勾选框 + 状态徽章 + 文件名 + 悬停操作（depth = 目录深度，用于缩进）
+  function fileRow(c, depth = 0) {
     const f = document.createElement('div');
     f.className = 'git-file';
+    f.style.paddingLeft = (10 + depth * 14) + 'px';
     const base = c.file.split(/[\\/]/).pop();
-    const parent = c.file.slice(0, c.file.length - base.length);
     const isUntracked = c.status === 'added';
     f.innerHTML = `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>` +
       `<span class="badge ${c.status}">${esc(isUntracked ? '?' : c.label)}</span>` +
-      `<span class="nm" title="${esc(c.file)}">${esc(base)}${parent ? ` <span class="nm-dir">${esc(parent)}</span>` : ''}</span>` +
+      `<span class="nm" title="${esc(c.file)}">${esc(base)}</span>` +
       `<span class="git-diff" title="查看与 HEAD 的对比">↔</span><span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`;
-    f.title = '点击查看差异 · 双击打开文件';
+    f.title = '点击查看差异 · 双击打开文件 · 右键更多操作';
+    // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
+    f.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const menu = document.getElementById('ctx-menu');
+      menu.innerHTML = '';
+      const mk = (label, fn, danger) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item' + (danger ? ' danger' : '');
+        d.textContent = label;
+        d.onclick = () => { menu.classList.add('hidden'); fn(); };
+        menu.appendChild(d);
+      };
+      mk('↔ 查看差异', () => showDiff({ kind: 'workdir', file: c.file, label: '工作区 vs HEAD' }));
+      if (c.status !== 'deleted' && c.status !== '*deleted') mk('📂 打开文件', () => {
+        if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
+      });
+      mk('📋 复制完整路径', () => {
+        if (root) { MI.copyText(root + (root.includes('\\') ? '\\' : '/') + c.file); MI.toast('已复制路径', 'ok'); }
+      });
+      mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
+        const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
+        const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
+        if (!yes) return;
+        const r = await window.myIDE.git.discard(root, c.file);
+        if (r.ok) { MI.toast(isUntracked ? '已删除 ' + c.file : '已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
+        else MI.toast('操作失败: ' + r.error, 'err');
+      }, true);
+      menu.classList.remove('hidden');
+      const mw = menu.offsetWidth, mh = menu.offsetHeight;
+      menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+      menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+    };
     f.onclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-diff, .git-revert')) return;
       showDiff({ kind: 'workdir', file: c.file, label: '工作区 vs HEAD' });
@@ -481,16 +541,14 @@ const GitPanel = (() => {
     r.hunks.forEach((h) => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
-      sep.innerHTML = `<td colspan="6">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
+      sep.innerHTML = `<td colspan="4">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
       table.appendChild(sep);
       const rows = [];
       for (const row of h.rows) {
         const tr = document.createElement('tr');
-        const aNum = row.aNum || '';
-        const bNum = row.bNum || '';
-        const cls = row.type;
-        tr.innerHTML = `<td class="ln">${aNum}</td><td class="num">${bNum}</td><td class="sep"></td>` +
-          `<td class="${cls}">${esc(row.aText)}</td><td class="sep"></td><td class="${cls}">${esc(row.bText)}</td>`;
+        // PyCharm 式左右分栏：[旧行号|旧内容][新行号|新内容]，行号紧贴各自内容
+        tr.innerHTML = `<td class="ln">${row.aNum || ''}</td><td class="old ${row.type}">${esc(row.aText)}</td>` +
+          `<td class="num">${row.bNum || ''}</td><td class="new ${row.type}">${esc(row.bText)}</td>`;
         rows.push(tr);
       }
       rows.forEach((tr) => table.appendChild(tr));
@@ -523,18 +581,7 @@ const GitPanel = (() => {
     head.className = 'diff-head';
     head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
       <span class="df-path">${esc(list.length === 1 ? list[0].file : list.length + ' 个文件')}</span>
-      <span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>
-      <span class="df-copy">
-        <button class="vt-btn" id="df-copy-old" title="复制旧版内容">📋 旧版</button>
-        <button class="vt-btn" id="df-copy-new" title="复制新版内容">📋 新版</button>
-      </span>`;
-    if (list.length === 1) {
-      head.querySelector('#df-copy-old').onclick = () => { MI.copyText(list[0].oldText || ''); MI.toast('已复制旧版内容', 'ok'); };
-      head.querySelector('#df-copy-new').onclick = () => { MI.copyText(list[0].newText || ''); MI.toast('已复制新版内容', 'ok'); };
-    } else {
-      head.querySelector('#df-copy-old').style.display = 'none';
-      head.querySelector('#df-copy-new').style.display = 'none';
-    }
+      <span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>`;
     head.appendChild(makeHunkNav());
     head.querySelector('#df-back').onclick = () => {
       const t = Viewer.activeTab;

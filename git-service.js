@@ -49,6 +49,85 @@ function matrixToStatus(m) {
   return { status: '*modified', label: '已修改（暂存+未暂存）' };          // [1,2,3]
 }
 
+// ---------- .gitignore 支持（isomorphic-git statusMatrix 不解析 .gitignore，需自行过滤）----------
+// 规则 → 正则：dirOnly=尾部'/'；anchored=含'/'（相对 .gitignore 所在目录）；否则匹配任意层级末段
+function ignoreRuleRegex(pattern) {
+  let p = pattern;
+  const dirOnly = p.endsWith('/');
+  if (dirOnly) p = p.slice(0, -1);
+  const anchored = p.includes('/');
+  p = p.replace(/^\/+/, '');
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*') {
+      if (p[i + 1] === '*') {
+        if (p[i + 2] === '/') { re += '(?:.*/)?'; i += 2; } // **/ → 任意层级前缀
+        else { re += '.*'; i += 1; }                        // ** → 任意（含 /）
+      } else re += '[^/]*';
+    } else if (c === '?') re += '[^/]';
+    else if ('\\^$.|+()[]{}'.includes(c)) re += '\\' + c;
+    else re += c;
+  }
+  const body = anchored ? '^' + re + '$' : '(?:^|/)' + re + '$';
+  return { regex: new RegExp(body), dirOnly, anchored };
+}
+
+function parseIgnoreText(text) {
+  const rules = [];
+  for (let line of String(text || '').split(/\r?\n/)) {
+    line = line.replace(/\s+$/, '');
+    if (!line || line.startsWith('#')) continue;
+    let negate = false;
+    if (line.startsWith('!')) { negate = true; line = line.slice(1); }
+    if (!line) continue;
+    const { regex, dirOnly, anchored } = ignoreRuleRegex(line);
+    rules.push({ regex, dirOnly, anchored, negate });
+  }
+  return rules;
+}
+
+// 判定 relPath（POSIX 相对 root）是否被忽略：逐前缀段（父目录用 dirOnly 也命中）+ 后到规则优先
+function isIgnoredPath(relPath, rules) {
+  const segs = relPath.split('/');
+  let ignored = false;
+  for (let i = 0; i < segs.length; i++) {
+    const sub = segs.slice(0, i + 1).join('/');
+    const isDir = i < segs.length - 1;
+    for (const r of rules) {
+      if (r.dirOnly && !isDir) continue;
+      if (r.regex.test(sub)) ignored = !r.negate;
+    }
+  }
+  return ignored;
+}
+
+// 收集 relPath 各级父目录（含 root）下的 .gitignore 规则（带缓存，读写失败静默）
+const ignoreCache = new Map(); // dirKey(绝对路径) -> rules[]（空数组=无/空文件）
+function rulesForDir(dir) {
+  let d = dir;
+  while (d) {
+    if (ignoreCache.has(d)) return ignoreCache.get(d);
+    let rules = [];
+    try {
+      const text = fs.readFileSync(path.join(d, '.gitignore'), 'utf8');
+      rules = parseIgnoreText(text);
+    } catch {}
+    ignoreCache.set(d, rules);
+    return rules;
+  }
+  return [];
+}
+function allRulesFor(rootDir, relPosix) {
+  const segs = relPosix.split('/');
+  const out = [];
+  for (let i = 0; i <= segs.length - 1; i++) { // 各级父目录（不含文件自身所在层的文件名）
+    const dirAbs = path.join(rootDir, ...segs.slice(0, i));
+    out.push(...rulesForDir(dirAbs));
+  }
+  return out;
+}
+
 async function status(dir) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库' };
@@ -59,10 +138,18 @@ async function status(dir) {
   } catch (e) {
     return { isRepo: true, root, branch, changed: [], error: String(e.message || e) };
   }
+  ignoreCache.clear(); // .gitignore 内容可能已变，每次 status 重新读
   const changed = [];
   for (const row of matrix) {
     const st = matrixToStatus(row);
-    if (st) changed.push({ file: native(row[0]), status: st.status, label: st.label });
+    if (!st) continue;
+    // 纯未跟踪文件（未暂存）尊重 .gitignore；已跟踪 / 已暂存的照常显示（与 git 行为一致）
+    if (st.status === 'added' && row[2] === 2 && row[3] === 0) {
+      const relPosix = posix(row[0]);
+      const rules = allRulesFor(root, relPosix);
+      if (rules.length && isIgnoredPath(relPosix, rules)) continue;
+    }
+    changed.push({ file: native(row[0]), status: st.status, label: st.label });
   }
   changed.sort((a, b) => a.file.localeCompare(b.file));
   return { isRepo: true, root, branch, changed };

@@ -331,6 +331,37 @@ fs.mkdirSync(repo);
     fs.rmSync(wdir, { recursive: true, force: true });
   });
 
+  await okAsync('.gitignore：未跟踪被过滤，已跟踪照常显示，否定规则生效', async () => {
+    const repo2 = path.join(tmp, 'repo2');
+    fs.mkdirSync(repo2);
+    await G.initRepo(repo2);
+    fs.writeFileSync(path.join(repo2, 'a.txt'), 'v1\n');
+    await G.commit(repo2, { message: 'init', files: ['a.txt'] });
+    // 规则：.idea/ 目录、*.log、任意层级 build/、否定 !keep.log
+    fs.writeFileSync(path.join(repo2, '.gitignore'), '.idea/\n*.log\nbuild/\n!keep.log\n');
+    // isomorphic-git statusMatrix 用 mtime 秒级判断修改：同秒内的写入检测不到，跨秒再改
+    await new Promise((r) => setTimeout(r, 1100));
+    fs.writeFileSync(path.join(repo2, 'a.txt'), 'v2\n'); // 已跟踪文件修改
+    fs.mkdirSync(path.join(repo2, '.idea'), { recursive: true });
+    fs.writeFileSync(path.join(repo2, '.idea', 'workspace.xml'), 'x');
+    fs.writeFileSync(path.join(repo2, 'debug.log'), 'log');
+    fs.writeFileSync(path.join(repo2, 'keep.log'), 'keep');
+    fs.mkdirSync(path.join(repo2, 'build'), { recursive: true });
+    fs.writeFileSync(path.join(repo2, 'build', 'out.js'), 'x');
+    fs.mkdirSync(path.join(repo2, 'sub', 'build'), { recursive: true });
+    fs.writeFileSync(path.join(repo2, 'sub', 'build', 'nested.js'), 'x');
+    fs.writeFileSync(path.join(repo2, 'c.txt'), 'normal\n');
+    const st = await G.status(repo2);
+    const files = st.changed.map((c) => c.file);
+    assert.ok(!files.some((f) => f.replace(/\\/g, '/').startsWith('.idea/')), '.idea/ 被忽略: ' + JSON.stringify(files));
+    assert.ok(!files.includes('debug.log'), '*.log 被忽略');
+    assert.ok(!files.some((f) => f.replace(/\\/g, '/') === 'build/out.js'), 'build/ 被忽略');
+    assert.ok(!files.some((f) => f.replace(/\\/g, '/') === 'sub/build/nested.js'), '任意层级 build/ 被忽略');
+    assert.ok(files.includes('keep.log'), '否定规则 !keep.log 保留');
+    assert.ok(files.includes('c.txt'), '未忽略的未跟踪文件照常显示');
+    assert.ok(files.some((c) => c === 'a.txt' && st.changed.find((x) => x.file === 'a.txt').status.includes('modified')), '已跟踪文件修改不受 .gitignore 影响');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

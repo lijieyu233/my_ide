@@ -1800,19 +1800,20 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '.tab.active .tname'), '最近项打开文件');
   });
 
-  await okAsync('diff 内容复制：旧版/新版按钮', async () => {
+  await okAsync('diff 头部：无旧版/新版按钮（已移除无意义复制）+ 左右分栏行号', async () => {
     await g(dom, 'App.switchTool("git")');
     await tick();
     click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
-    const before = calls.copy.length;
-    click($(dom, '#df-copy-old'));
-    await tick();
-    assert_(calls.copy.length === before + 1, '旧版复制触发');
-    assert_(calls.copy[calls.copy.length - 1] === 'old line\n', '旧版内容正确');
-    click($(dom, '#df-copy-new'));
-    await tick();
-    assert_(calls.copy[calls.copy.length - 1] === 'new line\n', '新版内容正确');
+    assert_(!$(dom, '#df-copy-old') && !$(dom, '#df-copy-new'), '旧版/新版按钮已移除');
+    // PyCharm 式左右分栏：[旧行号|旧内容][新行号|新内容]，行号紧贴内容
+    const delRow = $allIn($(dom, '.diff-table'), 'tr').find((tr) => tr.querySelector('td.old.del'));
+    assert_(delRow, '存在删除行');
+    const tds = delRow ? [...delRow.querySelectorAll('td')] : [];
+    assert_(tds.length === 4, '4 列结构（旧行号|旧内容|新行号|新内容）, got ' + tds.length);
+    assert_(tds[0].className.includes('ln') && tds[0].textContent !== '', '旧行号在旧内容左侧');
+    assert_(tds[1].className.includes('old') && tds[1].textContent !== '', '旧内容紧贴旧行号');
+    assert_(tds[3].className.includes('new'), '新内容列在右');
     click($(dom, '#df-back'));
     await tick();
     await g(dom, 'App.switchTool("project")');
@@ -1952,9 +1953,11 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(secs[0].includes('变更 (2)'), '变更分节 2 个文件');
     assert_(secs[1].includes('未版本控制的文件 (2)'), '未版本控制分节 2 个文件');
     const groups = $allIn($(dom, '#git-body'), '.git-group');
-    assert_(groups.length === 4, '四个分组（2 节 × 2 目录）: ' + JSON.stringify(groups.map((x) => x.textContent)));
-    assert_(groups[0].textContent.includes('根目录'), '变更节根目录组');
-    assert_(groups[1].textContent.includes('src'), '变更节 src 组');
+    // 递归树：变更节 src(1)；未跟踪节 src(1) → deep(1)（根级文件不产生分组行）
+    assert_(groups.length === 3, '三个目录行（src / src / deep）: ' + JSON.stringify(groups.map((x) => x.textContent)));
+    assert_(groups[0].textContent.includes('src'), '变更节 src 目录行');
+    assert_(groups[2].textContent.includes('deep'), '未跟踪节 deep 嵌套目录行');
+    assert_(parseInt(groups[2].style.paddingLeft) > parseInt(groups[1].style.paddingLeft), 'deep 相对 src 缩进');
     // 折叠
     click(groups[1]);
     await tick();
@@ -2540,14 +2543,49 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('Bug6：变更行只显示文件名（父路径弱化）', async () => {
+  await okAsync('Bug6：目录树嵌套缩进（PyCharm 提交窗口式）', async () => {
     await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
     const nm = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title === 'src/app.js');
     assert_(nm, '找到 src/app.js 变更行');
-    assert_(nm.textContent.startsWith('app.js'), '文件名在前, got: ' + nm.textContent);
-    assert_(nm.querySelector('.nm-dir'), '父路径弱化显示');
+    assert_(nm.textContent.trim() === 'app.js', '只显示文件名（层级由目录树表达）, got: ' + nm.textContent);
+    // src 目录行存在且文件行缩进大于目录行
+    const srcGroup = $allIn($(dom, '#git-body'), '.git-group').find((x) => x.textContent.includes('src'));
+    assert_(srcGroup, 'src 目录行存在');
+    const srcRow = nm.closest('.git-file');
+    assert_(parseInt(srcRow.style.paddingLeft) > parseInt(srcGroup.style.paddingLeft), '子文件相对父目录缩进');
+    // 未版本控制分节也有嵌套
+    const untrackedFile = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title.includes('newdir'));
+    if (untrackedFile) {
+      const row = untrackedFile.closest('.git-file');
+      assert_(parseInt(row.style.paddingLeft) >= 24, '二级目录文件缩进 ≥ 24px');
+    }
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('提交窗口右键菜单：查看差异 / 回滚 / 打开 / 复制路径', async () => {
+    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const fileRowEl = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    assert_(fileRowEl, 'README.md 变更行存在');
+    fileRowEl.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const items = $allIn($(dom, '#ctx-menu'), '.ctx-item').map((x) => x.textContent);
+    assert_(items.some((t) => t.includes('查看差异')), '菜单含查看差异');
+    assert_(items.some((t) => t.includes('回滚') || t.includes('删除文件')), '菜单含回滚/删除');
+    assert_(items.some((t) => t.includes('打开文件')), '菜单含打开文件');
+    assert_(items.some((t) => t.includes('复制完整路径')), '菜单含复制完整路径');
+    // 点击回滚 → 确认弹窗 → discard 调用
+    const before = calls.discard.length;
+    click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('回滚') || x.textContent.includes('删除文件')));
+    await tick();
+    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '回滚确认弹窗出现');
+    click($(dom, '#cf-yes'));
+    await tick(); await tick();
+    assert_(calls.discard.length === before + 1, 'discard 被调用');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });

@@ -628,6 +628,12 @@ const Tree = (() => {
 
   // 复制 sources 到 destDir（粘贴 / 外部拖入共用）：同名冲突先弹确认框（覆盖 / 取消）
   async function copyInto(sources, destDir, actionLabel) {
+    // 源目录=目标目录的项直接跳过（复制到自己所在文件夹无意义，且会触发"覆盖自己"的假冲突）
+    const movable = sources.filter((s) => norm(s.replace(/[\\/][^\\/]+$/, '')) !== norm(destDir));
+    const skipped = sources.length - movable.length;
+    if (skipped) MI.toast(skipped + ' 个项目已在目标目录，跳过', 'ok');
+    if (!movable.length) return 0;
+    sources = movable;
     // 同名预检（主进程 existsSync），有冲突先确认再动手——不再静默自动改名
     let overwrite = false;
     let conflicts = [];
