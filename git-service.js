@@ -23,6 +23,8 @@ async function isRepo(dir) {
   const root = await findRoot(dir);
   return root ? { root, yes: true } : { root: null, yes: false };
 }
+const CRLF_BUF = Buffer.from('\r\n'); // CRLF 误报校验用（见 status）
+
 async function currentBranch(root) {
   try {
     const b = await git.currentBranch({ fs, dir: root, fullname: false });
@@ -148,6 +150,18 @@ async function status(dir) {
       const relPosix = posix(row[0]);
       const rules = allRulesFor(root, relPosix);
       if (rules.length && isIgnoredPath(relPosix, rules)) continue;
+    }
+    // CRLF 误报校验：autocrlf 仓库（真实 git 提交时归一化为 LF，工作区是 CRLF），
+    // isomorphic-git 不做行尾过滤、按原始字节比对会把整仓 CRLF 文件全部误报为已修改。
+    // 归一化 \r\n 后与 HEAD 一致 → 视为未修改（与 git status 行为一致）
+    if (st.status === 'modified') {
+      let raw = null;
+      try { raw = fs.readFileSync(path.join(root, row[0])); } catch {}
+      if (raw && raw.includes(CRLF_BUF)) {
+        const headText = await blobAt(root, 'HEAD', row[0]);
+        if (headText !== null &&
+            headText.replace(/\r\n/g, '\n') === raw.toString('utf8').replace(/\r\n/g, '\n')) continue;
+      }
     }
     changed.push({ file: native(row[0]), status: st.status, label: st.label });
   }
@@ -579,6 +593,12 @@ async function diffWorkdir(dir, file) {
   } catch {}
   if (oldText === null && newText === null) return { error: '无法读取文件' };
   if (oldText === newText) return { file: rel, unchanged: true };
+  // CRLF 归一化（autocrlf 仓库）：HEAD 是 LF、工作区是 CRLF 时按归一化比对，
+  // 否则每个真实改动都会连带整文件行尾差异刷屏（与 git diff 行为一致）
+  if (oldText && newText && oldText.indexOf('\r') === -1 && newText.includes('\r\n')) {
+    newText = newText.replace(/\r\n/g, '\n');
+    if (oldText === newText) return { file: rel, unchanged: true };
+  }
   return { file: rel, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
 }
 

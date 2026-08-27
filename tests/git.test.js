@@ -362,6 +362,32 @@ fs.mkdirSync(repo);
     assert.ok(files.some((c) => c === 'a.txt' && st.changed.find((x) => x.file === 'a.txt').status.includes('modified')), '已跟踪文件修改不受 .gitignore 影响');
   });
 
+  await okAsync('CRLF 误报：autocrlf 仓库（LF 提交 + CRLF 工作区）不报已修改', async () => {
+    // 真实 git 提交时归一化 LF、工作区文件是 CRLF（autocrlf=true 场景）：
+    // isomorphic-git 按原始字节比对会把所有 CRLF 文件误报为已修改
+    const repo3 = path.join(tmp, 'repo3');
+    fs.mkdirSync(repo3);
+    await G.initRepo(repo3);
+    // 用 LF 内容提交（模拟真实 git 归一化后的仓库）
+    fs.writeFileSync(path.join(repo3, 'a.txt'), 'line1\nline2\n', 'utf8');
+    fs.mkdirSync(path.join(repo3, 'sub'));
+    fs.writeFileSync(path.join(repo3, 'sub', 'b.txt'), 'x\n', 'utf8');
+    await G.commit(repo3, { message: 'init', files: ['a.txt', 'sub/b.txt'] });
+    // 工作区改写为 CRLF（内容不变）
+    fs.writeFileSync(path.join(repo3, 'a.txt'), 'line1\r\nline2\r\n', 'utf8');
+    fs.writeFileSync(path.join(repo3, 'sub', 'b.txt'), 'x\r\n', 'utf8');
+    const st = await G.status(repo3);
+    assert.strictEqual(st.changed.length, 0, 'CRLF-only 差异不报已修改: ' + JSON.stringify(st.changed));
+    // 真实修改 + CRLF → 正常报 modified，且 diff 只显示真实改动行
+    fs.writeFileSync(path.join(repo3, 'a.txt'), 'line1\r\nline2 CHANGED\r\n', 'utf8');
+    const st2 = await G.status(repo3);
+    assert.strictEqual(st2.changed.length, 1, '真实修改照常报');
+    const d = await G.diffWorkdir(repo3, path.join(repo3, 'a.txt'));
+    assert.ok(d.hunks, 'diff 有 hunks');
+    const delRows = d.hunks.flatMap((h) => h.rows).filter((r) => r.type === 'del');
+    assert.strictEqual(delRows.length, 1, 'CRLF 归一化后 diff 只有 1 行删除（不整文件刷屏）, got ' + delRows.length);
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

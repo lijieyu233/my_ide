@@ -1806,14 +1806,19 @@ assert_(panel, 'CM6 搜索面板出现');
     click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
     await tick(); await tick();
     assert_(!$(dom, '#df-copy-old') && !$(dom, '#df-copy-new'), '旧版/新版按钮已移除');
-    // PyCharm 式左右分栏：[旧行号|旧内容][新行号|新内容]，行号紧贴内容
+    // PyCharm 式左右分栏：[旧内容|旧行号 ‖ 新行号|新内容]，行号列在两个面板中间
     const delRow = $allIn($(dom, '.diff-table'), 'tr').find((tr) => tr.querySelector('td.old.del'));
     assert_(delRow, '存在删除行');
     const tds = delRow ? [...delRow.querySelectorAll('td')] : [];
-    assert_(tds.length === 4, '4 列结构（旧行号|旧内容|新行号|新内容）, got ' + tds.length);
-    assert_(tds[0].className.includes('ln') && tds[0].textContent !== '', '旧行号在旧内容左侧');
-    assert_(tds[1].className.includes('old') && tds[1].textContent !== '', '旧内容紧贴旧行号');
-    assert_(tds[3].className.includes('new'), '新内容列在右');
+    assert_(tds.length === 4, '4 列结构（旧内容|旧行号|新行号|新内容）, got ' + tds.length);
+    assert_(tds[0].className.includes('old') && tds[0].textContent !== '', '旧内容在最左');
+    assert_(tds[1].className.includes('ln'), '旧行号紧贴中缝');
+    assert_(tds[2].className.includes('num'), '新行号紧贴中缝');
+    assert_(tds[3].className.includes('new'), '新内容在最右');
+    // 上下文行：两侧行号都有值
+    const ctxRow = $allIn($(dom, '.diff-table'), 'tr').find((tr) => tr.querySelector('td.ctx') && [...tr.querySelectorAll('td')].length === 4);
+    const ctxTds = ctxRow ? [...ctxRow.querySelectorAll('td')] : [];
+    assert_(ctxTds[1] && ctxTds[1].textContent !== '' && ctxTds[2] && ctxTds[2].textContent !== '', '上下文行两侧行号有值');
     click($(dom, '#df-back'));
     await tick();
     await g(dom, 'App.switchTool("project")');

@@ -546,9 +546,10 @@ const GitPanel = (() => {
       const rows = [];
       for (const row of h.rows) {
         const tr = document.createElement('tr');
-        // PyCharm 式左右分栏：[旧行号|旧内容][新行号|新内容]，行号紧贴各自内容
-        tr.innerHTML = `<td class="ln">${row.aNum || ''}</td><td class="old ${row.type}">${esc(row.aText)}</td>` +
-          `<td class="num">${row.bNum || ''}</td><td class="new ${row.type}">${esc(row.bText)}</td>`;
+        // PyCharm 式左右分栏，行号列居中：[旧内容|旧行号 ‖ 新行号|新内容]
+        tr.innerHTML = `<td class="old ${row.type}">${esc(row.aText)}</td>` +
+          `<td class="ln">${row.aNum || ''}</td><td class="num">${row.bNum || ''}</td>` +
+          `<td class="new ${row.type}">${esc(row.bText)}</td>`;
         rows.push(tr);
       }
       rows.forEach((tr) => table.appendChild(tr));
