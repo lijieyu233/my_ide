@@ -40,23 +40,28 @@ const App = (() => {
           if (e.key === 'Enter') { e.preventDefault(); finish(true); }
           else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
         };
+        const onMask = (e) => {
+          // 点击弹窗内部（按钮/正文）冒泡到 mask 时不能消耗监听——
+          // 旧版 { once: true } 被冒泡消耗后「点遮罩取消」永久失效（无法取消根因）
+          if (e.target === mask) finish(false);
+        };
         const finish = (v) => {
           if (settled) return;
           settled = true;
           document.removeEventListener('keydown', onKey);
-          // 面板可能已被全局 Esc 处理关掉（shortcuts.js）——栈顶不是本面板时不再 hide，
-          // 否则会错杀下层面板（如设置页）
-          if (Modal.stack[Modal.stack.length - 1] === box) Modal.hide();
+          mask.removeEventListener('click', onMask);
+          // 无论本面板是否还在栈顶（可能被外部流程动过栈），都确保自身被移除
+          const i = Modal.stack.indexOf(box);
+          if (i >= 0) Modal.stack.splice(i, 1);
+          box.remove();
+          if (!Modal.stack.length) mask.classList.add('hidden');
           resolve(v);
         };
         document.addEventListener('keydown', onKey);
+        mask.addEventListener('click', onMask);
         box.querySelector('#cf-yes').onclick = () => finish(true);
         box.querySelector('#cf-no').onclick = () => finish(false);
         box.querySelector('#cf-x').onclick = () => finish(false);
-        // 注意：用 { once: true }，避免每次 confirm 都堆积监听器（卡死隐患）
-        mask.addEventListener('click', function h(e) {
-          if (e.target === mask) finish(false);
-        }, { once: true });
       });
     },
     prompt(title, label, value) {

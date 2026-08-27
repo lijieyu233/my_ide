@@ -30,6 +30,10 @@
 
 [行内链接文字](https://example.com) 后接普通文字。
 
+空文字链接 [](https://empty-label.example.com) 之后还有文字。
+
+裸网址 https://bare-url.example.com/plain 直接出现在正文中。
+
 <https://autolink.example.com> 自动链接。
 
 ![测试图片](https://example.com/pic.png) 图片语法。

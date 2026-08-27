@@ -22,7 +22,8 @@
     "highlight.js": "^11.10.0",
     "iconv-lite": "^0.7.3",
     "isomorphic-git": "^1.27.1",
-    "marked": "^15.0.0"
+    "marked": "^15.0.0",
+    "mermaid": "^11.17.2"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",

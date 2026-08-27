@@ -676,12 +676,27 @@ window.MdEditor = (() => {
               }
               return;
             }
-            // 链接目标 URL（Link 的 (url) 部分）：光标在所属 Link 构造内部时显示（可编辑目标）
+            // URL 节点分三类处理：
+            //   1) 裸网址 / <autolink>（parent 非 Link）：常显 + 链接样式（用户报告「网址消失」的根因：
+            //      旧逻辑对非 Link 的 URL 一律隐藏 → 裸网址被吞掉只剩两侧空格）
+            //   2) Link 内的目标 URL：光标进入构造时显示（可编辑目标），否则隐藏
+            //   3) 空文字链接 [](url)：URL 作为显示文字（Obsidian 行为）
             if (name === 'URL') {
               const pl = parent;
-              if (!(pl && pl.name === 'Link' && revealsConstruct(pl.from, pl.to))) {
+              if (!(pl && (pl.name === 'Link' || pl.name === 'Autolink'))) {
+                decos.push(Decoration.mark({ class: 'cm-md-link' }).range(node.from, node.to));
+                return;
+              }
+              if (pl.name === 'Autolink') return; // <url>：URL 常显（尖括号由 Autolink 自身隐藏）
+              const emptyLabel = /^!?\[\s*\]\(/.test(doc.sliceString(pl.from, pl.to));
+              if (!emptyLabel && !revealsConstruct(pl.from, pl.to)) {
                 decos.push(Decoration.replace({}).range(node.from, node.to));
               }
+              return;
+            }
+            // <autolink> 的尖括号（Autolink 内的 LinkMark）隐藏，只留 URL 本体
+            if (name === 'LinkMark' && parentName === 'Autolink') {
+              decos.push(Decoration.replace({}).range(node.from, node.to));
               return;
             }
             // 内容样式：标题/加粗/斜体/删除线/行内代码/链接文字
@@ -781,7 +796,17 @@ window.MdEditor = (() => {
         const node = Language.syntaxTree(view.state).resolveInner(pos, -1);
         let target = null;
         for (let n = node; n; n = n.parent) {
-          if (n.name === 'Link' || n.name === 'Image') { target = n; break; }
+          if (n.name === 'Link' || n.name === 'Image' || n.name === 'Autolink') { target = n; break; }
+        }
+        // 裸网址（URL 节点，无 Link 构造）：直接以 URL 文本为目标
+        if (!target && node && node.name === 'URL') {
+          const raw = view.state.doc.sliceString(node.from, node.to);
+          if (/^https?:\/\//i.test(raw) && window.MdEditor.__openLink) {
+            e.preventDefault();
+            MdEditor.__openLink(raw);
+            return true;
+          }
+          return false;
         }
         if (!target) return false;
         const raw = view.state.doc.sliceString(target.from, target.to);

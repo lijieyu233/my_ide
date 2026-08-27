@@ -1090,6 +1090,12 @@ const Tree = (() => {
     get selectedType() { return selectedType; },
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
+    renameItem,
+    // 快捷键入口：对当前选中项重命名（无选中时提示）
+    renameSelected() {
+      if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }
+      renameItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType });
+    },
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
     setFont: (d) => {
       treeFontSize = Math.min(18, Math.max(11, treeFontSize + d));

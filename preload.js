@@ -67,6 +67,10 @@ contextBridge.exposeInMainWorld('myIDE', {
     loadAll: () => ipcRenderer.invoke('plugins:loadAll'),
     onChanged: (cb) => ipcRenderer.on('plugins:changed', () => cb()),
   },
+  llm: {
+    // OpenAI 兼容对话（翻译插件用）：cfg={baseUrl, apiKey, model}
+    chat: (cfg, messages) => ipcRenderer.invoke('llm:chat', cfg, messages),
+  },
   browser: {
     // WebContentsView 内置浏览器（主进程管理，规避 <webview> guest 视口高度同步失效）
     viewOpen: (url) => ipcRenderer.invoke('browser:view-open', url),

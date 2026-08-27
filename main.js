@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const G = require('./git-service');
@@ -357,6 +357,39 @@ ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, Buffer.from(String(base64 || ''), 'base64'));
     return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
+// LLM 对话（翻译插件等）：OpenAI 兼容 /chat/completions。
+// 走主进程 net.fetch：渲染层 CSP 不放行外部连接，且 API Key 不进页面上下文
+ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
+  try {
+    const base = String((cfg && cfg.baseUrl) || '').replace(/\/+$/, '');
+    if (!base) return { error: '未配置 LLM 服务地址（设置 → 翻译）' };
+    const model = String((cfg && cfg.model) || '').trim();
+    if (!model) return { error: '未配置模型名称（设置 → 翻译）' };
+    const headers = { 'Content-Type': 'application/json' };
+    const key = String((cfg && cfg.apiKey) || '').trim();
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    const res = await net.fetch(base + '/chat/completions', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: Array.isArray(messages) ? messages : [],
+        temperature: 0.3,
+        stream: false,
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      return { error: 'HTTP ' + res.status + (t ? '：' + t.slice(0, 300) : '') };
+    }
+    const data = await res.json();
+    const text = data && data.choices && data.choices[0] && data.choices[0].message
+      && data.choices[0].message.content;
+    if (typeof text !== 'string') return { error: '响应格式异常（无 choices[0].message.content）' };
+    return { ok: true, text: text.trim() };
   } catch (e) { return { error: String(e.message || e) }; }
 });
 

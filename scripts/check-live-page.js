@@ -41,6 +41,9 @@
   add('文本: ` 行内代码标记隐藏', has('行内代码') && !/`/.test(allText()));
   add('文本: == 高亮标记隐藏', has('高亮文字') && !allText().includes('=='));
   add('文本: 链接 URL 隐藏', has('行内链接文字') && !has('https://example.com)'));
+  // 网址消失回归（用户报告）：空文字链接 URL 应作为显示文字（Obsidian 行为）
+  add('文本: 空文字链接显示 URL', has('https://empty-label.example.com'));
+  add('文本: 裸网址正常显示', has('https://bare-url.example.com/plain'), '行内容=' + (lineEl('裸网址') ? lineEl('裸网址').textContent : '(行不存在)'));
   {
     // 引用块在初始视口外（文档较长）→ 滚过去，光标移出引用行（光标行显形是设计行为）再检查
     const quoteLineNo = DOC.slice(0, DOC.indexOf('引用第一行')).split('\n').length;

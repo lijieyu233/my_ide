@@ -88,6 +88,31 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       pre.insertBefore(btn, pre.firstChild);
     });
   }
+  // mermaid 图（```mermaid 围栏）：mermaid.render 转 SVG 替换代码块
+  if (window.mermaid) {
+    const blocks = [...wrap.querySelectorAll('pre code.language-mermaid, pre code.lang-mermaid')];
+    if (blocks.length) {
+      try { mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: document.body.classList.contains('theme-light') ? 'default' : 'dark' }); } catch {}
+      blocks.forEach(async (el) => {
+        const code = el.textContent;
+        const pre = el.parentElement;
+        const div = document.createElement('div');
+        div.className = 'mermaid-box';
+        pre.replaceWith(div);
+        try {
+          const id = 'mmd-' + Math.random().toString(36).slice(2);
+          const { svg } = await mermaid.render(id, code);
+          div.innerHTML = svg;
+        } catch (e) {
+          // 渲染失败：显示源码（可读可改），不吞错
+          const pre2 = document.createElement('pre');
+          pre2.className = 'mermaid-err';
+          pre2.textContent = 'mermaid 渲染失败:\n' + code + '\n\n' + String((e && e.message) || e);
+          div.replaceWith(pre2);
+        }
+      });
+    }
+  }
   // 图片相对路径 → 本地文件（以笔记所在目录为基准；交给浏览器规范化编码，避免双重编码）
   wrap.querySelectorAll('img').forEach((img) => {
     const src = (img.getAttribute('src') || '').trim();

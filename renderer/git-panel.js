@@ -196,6 +196,7 @@ const GitPanel = (() => {
     };
     f.ondblclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-diff, .git-revert')) return;
+      cancelDiff(); // 双击打开优先：使在途 diff 渲染失效（覆盖刚打开文件的竞态根因）
       if (c.status === 'deleted' || c.status === '*deleted') return;
       if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
     };
@@ -407,11 +408,16 @@ const GitPanel = (() => {
   }
 
   // ---------- Diff 视图 ----------
+  // 令牌法：双击打开文件 / 新 diff 请求使在途请求失效（晚到的渲染不再覆盖新视图）
+  let diffSeq = 0;
+  function cancelDiff() { diffSeq++; }
   async function showDiff({ kind, file, oid, label }) {
     if (!root) return;
+    const seq = ++diffSeq;
     let r;
     if (kind === 'workdir') r = await window.myIDE.git.diffWorkdir(root, file);
     else r = await window.myIDE.git.diffCommit(root, oid, file);
+    if (seq !== diffSeq) return; // 期间发生了双击打开/新 diff → 丢弃本次渲染
     if (r.error) { MI.toast(r.error, 'err'); return; }
     if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
     renderDiffView(r, label);

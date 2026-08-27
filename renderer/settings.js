@@ -3,7 +3,7 @@ const Settings = (() => {
   let listening = null; // 正在修改的动作 id
   let keysFilter = '';  // 快捷键过滤词
 
-  function open() {
+  function open(initCat) {
     const box = document.createElement('div');
     box.id = 'set-box';
     box.innerHTML = `
@@ -13,6 +13,7 @@ const Settings = (() => {
           <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
           <div class="set-cat" data-cat="font">🔤 外观</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
+          <div class="set-cat" data-cat="translate">🌐 翻译</div>
           <div class="set-cat" data-cat="theme">🎨 主题</div>
         </div>
         <div class="set-main" id="set-main">
@@ -39,8 +40,14 @@ const Settings = (() => {
       if (cat.dataset.cat === 'keys') renderKeys();
       else if (cat.dataset.cat === 'font') renderFont();
       else if (cat.dataset.cat === 'git') renderGit();
+      else if (cat.dataset.cat === 'translate') renderTranslate();
       else if (cat.dataset.cat === 'theme') renderTheme();
     };
+    // 初始分类（如 translate.js 未配置时直接跳到翻译配置）
+    if (initCat) {
+      const el = box.querySelector('.set-cat[data-cat="' + initCat + '"]');
+      if (el) switchCat(el);
+    }
     $all('.set-cat[data-cat]').forEach((cat) => { cat.onclick = () => switchCat(cat); });
     // ↑↓ 在分类间移动（document 级监听：焦点不必在弹窗内；仅设置页为栈顶面板时生效）
     const onKey = (e) => {
@@ -61,7 +68,7 @@ const Settings = (() => {
     // 弹窗关闭时解绑（hide 后 box 移出 DOM）
     const mo = new MutationObserver(() => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); mo.disconnect(); } });
     mo.observe(document.body, { childList: true, subtree: true });
-    renderKeys();
+    if (!initCat) renderKeys(); // 指定初始分类时 switchCat 已渲染，勿覆盖
   }
 
   function $all(sel) { return [...document.querySelectorAll(sel)]; }
@@ -390,6 +397,53 @@ const Settings = (() => {
       const r = await window.myIDE.git.setUserConfig(App.root, { name, email });
       if (r.ok) MI.toast('✅ Git 配置已保存，下次提交生效', 'ok');
       else MI.toast('保存失败: ' + r.error, 'err');
+    };
+  }
+
+  // ---------- 翻译（LLM）视图 ----------
+  function renderTranslate() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove(); // 快捷键过滤框不属于本视图
+    document.getElementById('set-title').textContent = '翻译（LLM 配置）';
+    document.getElementById('set-hint').textContent = 'OpenAI 兼容接口；选中文本后按 Ctrl+Alt+T 翻译。Key 仅存本机 localStorage';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    const cfg = window.Translate ? Translate.getConfig() : {};
+    list.innerHTML = `
+      <div class="set-form">
+        <label class="m-label">服务地址（Base URL，如 https://api.openai.com/v1）</label>
+        <input id="tr-cfg-url" type="text" placeholder="https://api.openai.com/v1" value="${esc(cfg.baseUrl || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">API Key（兼容服务可留空）</label>
+        <input id="tr-cfg-key" type="text" placeholder="sk-…" value="${esc(cfg.apiKey || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">模型名称</label>
+        <input id="tr-cfg-model" type="text" placeholder="gpt-4o-mini / deepseek-chat / qwen-plus …" value="${esc(cfg.model || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">目标语言</label>
+        <input id="tr-cfg-target" type="text" placeholder="中文" value="${esc(cfg.target || '中文')}" spellcheck="false">
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="tb-btn m-ok" id="tr-cfg-save">保存</button>
+          <button class="tb-btn" id="tr-cfg-test">测试连接</button>
+        </div>
+      </div>`;
+    document.getElementById('tr-cfg-save').onclick = () => {
+      Translate.setConfig({
+        baseUrl: document.getElementById('tr-cfg-url').value.trim(),
+        apiKey: document.getElementById('tr-cfg-key').value.trim(),
+        model: document.getElementById('tr-cfg-model').value.trim(),
+        target: document.getElementById('tr-cfg-target').value.trim() || '中文',
+      });
+      MI.toast('✅ 翻译配置已保存', 'ok');
+    };
+    document.getElementById('tr-cfg-test').onclick = async () => {
+      const c = {
+        baseUrl: document.getElementById('tr-cfg-url').value.trim(),
+        apiKey: document.getElementById('tr-cfg-key').value.trim(),
+        model: document.getElementById('tr-cfg-model').value.trim(),
+      };
+      if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }
+      MI.toast('测试中…', 'ok');
+      const r = await window.myIDE.llm.chat(c, [{ role: 'user', content: '回复"OK"两个字母即可' }]);
+      if (r && r.ok) MI.toast('✅ 连接成功：' + r.text.slice(0, 40), 'ok');
+      else MI.toast('❌ ' + (r && r.error || '未知错误'), 'err');
     };
   }
 

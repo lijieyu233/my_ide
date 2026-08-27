@@ -658,6 +658,25 @@ table.diff-table { border-collapse: collapse; width: 100%; font-family: var(--fo
 .m-check input { accent-color: var(--accent); }
 .m-err { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
 
+/* ---------- 翻译弹窗 ---------- */
+.tr-box { width: 480px; max-width: 90vw; }
+.tr-body { padding: 12px 16px; max-height: 46vh; overflow: auto; }
+.tr-src {
+  font-size: 13px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word;
+  padding: 8px 10px; background: var(--bg-input); border-radius: 4px; line-height: 1.6;
+}
+.tr-arrow { text-align: center; color: var(--text-dim); margin: 6px 0; font-size: 12px; }
+.tr-dst {
+  font-size: 14px; color: var(--text-bright); white-space: pre-wrap; word-break: break-word;
+  padding: 10px; border: 1px solid var(--border); border-radius: 4px; line-height: 1.7;
+  min-height: 40px;
+}
+
+/* ---------- mermaid 图 ---------- */
+.mermaid-box { margin: 10px 0; text-align: center; background: var(--bg-input); border-radius: 6px; padding: 10px; overflow: auto; }
+.mermaid-box svg { max-width: 100%; height: auto; }
+.mermaid-box .mermaid-err { color: var(--red); font-size: 12px; padding: 6px; white-space: pre-wrap; }
+
 #empty-recent { margin-top: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .empty-projects { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 
