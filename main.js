@@ -640,19 +640,29 @@ ipcMain.handle('clip:copyFiles', (_e, paths) => {
 // PowerShell 读 CF_HDROP 完整列表（资源管理器复制的标准格式）
 // 背景：Electron readBuffer('CF_HDROP') 走 RegisterClipboardFormat 注册的是自定义格式，
 // 与标准 CF_HDROP(15) 不是同一个 → 恒读空；而 shell 写的 FileNameW 兼容格式只含第一个文件。
-// 外部复制的完整多文件列表只能通过 Get-Clipboard -Format FileDropList 读取。
-// exec + timeout + windowsHide：异常环境绝不阻塞主进程（超时杀进程返回空）。
+// 外部复制的完整多文件列表只能读标准 CF_HDROP（FileDropList）。
+// 注意：不能用 Get-Clipboard -Format FileDropList cmdlet —— 实测部分环境下它静默返回空
+// （剪贴板明明含 FileDropList、.NET 原生 API 可正常读回），导致外部多文件粘贴被截断成
+// FileNameW 兜底的第一个文件。改用原生 [Clipboard]::GetDataObject().GetFileDropList()。
+// -STA 必需（剪贴板 API 要求 STA 线程）；exec + timeout + windowsHide：异常环境绝不阻塞主进程。
 function psReadFileDropList() {
   return new Promise((resolve) => {
-    const cmd = 'powershell.exe -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; (Get-Clipboard -Format FileDropList | ForEach-Object FullName) -join [char]10"';
+    const script = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+      '$d = [System.Windows.Forms.Clipboard]::GetDataObject()',
+      'if ($d -and $d.ContainsFileDropList()) { $d.GetFileDropList() -join [char]10 }',
+    ].join('; ');
+    const b64 = Buffer.from(script, 'utf16le').toString('base64');
     try {
-      exec(cmd, { encoding: 'utf8', timeout: 1500, windowsHide: true }, (err, stdout) => {
-        if (err || !stdout) return resolve([]);
-        const list = String(stdout).trim().split('\n')
-          .map((s) => s.trim())
-          .filter((s) => s && fs.existsSync(s));
-        resolve(list);
-      });
+      exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
+        { encoding: 'utf8', timeout: 3000, windowsHide: true }, (err, stdout) => {
+          if (err || !stdout) return resolve([]);
+          const list = String(stdout).trim().split('\n')
+            .map((s) => s.trim())
+            .filter((s) => s && fs.existsSync(s));
+          resolve(list);
+        });
     } catch { resolve([]); }
   });
 }
