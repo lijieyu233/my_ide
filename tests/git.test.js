@@ -203,6 +203,25 @@ fs.mkdirSync(repo);
     assert.strictEqual(r.ok, true);
   });
 
+  await okAsync('二进制文件 diff -> binary 标记（不渲染乱码）', async () => {
+    const brepo = path.join(tmp, 'bin-repo');
+    fs.mkdirSync(brepo);
+    await G.initRepo(brepo);
+    const bin = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    fs.writeFileSync(path.join(brepo, 'img.bin'), bin);
+    await G.commit(brepo, { message: 'add bin', files: ['img.bin'] });
+    fs.writeFileSync(path.join(brepo, 'img.bin'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xff]));
+    const d = await G.diffWorkdir(brepo, path.join(brepo, 'img.bin'));
+    assert.strictEqual(d.binary, true, '应返回 binary 标记');
+    assert.strictEqual(d.hunks, undefined, '二进制不应生成 hunks');
+    // diffCommit 同样识别
+    const r2 = await G.commit(brepo, { message: 'bin v2', files: ['img.bin'] });
+    assert.strictEqual(r2.ok, true);
+    const oid = (await G.log(brepo)).commits[0].oid;
+    const d2 = await G.diffCommit(brepo, oid, 'img.bin');
+    assert.strictEqual(d2.binary, true, 'diffCommit 也应返回 binary 标记');
+  });
+
   await okAsync('amend：合并进上一次提交', async () => {
     const r = await G.commit(repo, { message: 'second v2', files: ['b.txt'], amend: true });
     assert.strictEqual(r.ok, true);

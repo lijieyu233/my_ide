@@ -477,6 +477,12 @@ async function blobAt(root, oid, file) {
   } catch { return null; }
 }
 
+// 二进制检测（git 同款启发式）：文本内容出现 NUL 字节即视为二进制，
+// 否则 readFileSync/readBlob 的 utf8 解码会把 exe/图片渲染成乱码 diff
+function isBinaryText(t) {
+  return typeof t === 'string' && t.indexOf('\0') !== -1;
+}
+
 // ---------- 行级 Diff（Myers O(ND)）----------
 const DIFF_MAX_LINES = 4000; // 超过此行数放弃精确对齐，避免 O(N·M) 卡死
 
@@ -596,6 +602,7 @@ async function diffWorkdir(dir, file) {
   } catch {}
   if (oldText === null && newText === null) return { error: '无法读取文件' };
   if (oldText === newText) return { file: rel, unchanged: true };
+  if (isBinaryText(oldText) || isBinaryText(newText)) return { file: rel, binary: true };
   // CRLF 归一化（autocrlf 仓库）：HEAD 是 LF、工作区是 CRLF 时按归一化比对，
   // 否则每个真实改动都会连带整文件行尾差异刷屏（与 git diff 行为一致）
   if (oldText && newText && oldText.indexOf('\r') === -1 && newText.includes('\r\n')) {
@@ -652,6 +659,7 @@ async function diffCommit(dir, oid, file) {
     const [oldText, newText] = [await blobAt(root, parent, file), await blobAt(root, oid, file)];
     if (oldText === null && newText === null) return { error: '文件中不存在于该提交' };
     if (oldText === newText) return { file, unchanged: true };
+    if (isBinaryText(oldText) || isBinaryText(newText)) return { file, binary: true };
     return { file, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
   } catch (e) {
     return { error: String(e.message || e) };

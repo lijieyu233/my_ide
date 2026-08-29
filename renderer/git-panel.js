@@ -216,7 +216,7 @@ const GitPanel = (() => {
       `<span class="badge ${c.status}">${esc(isUntracked ? '?' : c.label)}</span>` +
       `<span class="nm" title="${esc(c.file)}">${esc(base)}</span>` +
       `<span class="git-diff" title="查看与 HEAD 的对比">↔</span><span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`;
-    f.title = '点击查看差异 · 双击打开文件 · 右键更多操作';
+    f.title = '点击查看差异 · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
       e.preventDefault();
@@ -257,7 +257,11 @@ const GitPanel = (() => {
     f.ondblclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-diff, .git-revert')) return;
       cancelDiff(); // 双击打开优先：使在途 diff 渲染失效（覆盖刚打开文件的竞态根因）
-      if (c.status === 'deleted' || c.status === '*deleted') return;
+      // 已删除文件磁盘上已不存在，编辑器打不开 → 双击直接看 diff（PyCharm 行为：显示被删内容）
+      if (c.status === 'deleted' || c.status === '*deleted') {
+        showDiff({ kind: 'workdir', file: c.file, label: '已删除（vs HEAD）' });
+        return;
+      }
       if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
     };
     f.querySelector('.cf-check').onchange = (e) => {
@@ -529,6 +533,20 @@ const GitPanel = (() => {
     title.className = 'diff-file-title';
     title.innerHTML = `<span class="b">${esc(r.file)}</span>`;
     fileBox.appendChild(title);
+    if (r.binary) {
+      const msg = document.createElement('div');
+      msg.className = 'diff-msg';
+      msg.textContent = '🧱 二进制文件，不支持文本对比（git diff 同款行为）';
+      fileBox.appendChild(msg);
+      return fileBox;
+    }
+    if (r.tooLarge) {
+      const msg = document.createElement('div');
+      msg.className = 'diff-msg';
+      msg.textContent = '📦 文件过大（' + (r.size / 1048576).toFixed(1) + ' MB），超出 20MB 对比限制';
+      fileBox.appendChild(msg);
+      return fileBox;
+    }
     if (!r.hunks || !r.hunks.length) {
       const msg = document.createElement('div');
       msg.className = 'diff-msg';
