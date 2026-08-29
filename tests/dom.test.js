@@ -138,6 +138,17 @@ function makeDom() {
       onCmd: () => {},
       onState: (cb) => { stateCb.browser = cb; },
     },
+    db: {
+      connect: async () => ({ ok: true, data: { id: 'c1' } }),
+      close: async () => ({ ok: true }),
+      tables: async () => ({ ok: true, data: [{ name: 'users' }, { name: 'orders' }] }),
+      columns: async () => ({ ok: true, data: [{ name: 'id', pk: 1 }, { name: 'name', pk: 0 }] }),
+      select: async () => ({ ok: true, data: { columns: ['id', 'name'], rows: [{ id: 1, name: 'alice' }], total: 1, pk: ['id'] } }),
+      query: async () => ({ ok: true, data: { columns: [], rows: [], affected: 0 } }),
+      updateCell: async () => ({ ok: true }),
+      deleteRows: async () => ({ ok: true }),
+      insertRow: async () => ({ ok: true }),
+    },
     win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false, zoom: async (d) => { (calls.zoom = calls.zoom || []).push(d); } },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
@@ -232,6 +243,7 @@ async function loadApp(dom) {
   evalFile('settings.js');
   evalFile('help.js');
   evalFile('browser.js');
+  evalFile('db-panel.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -2892,6 +2904,47 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, 'Escape');
     await tick();
     assert_(!$(dom, '#set-box'), '设置已关闭');
+  });
+
+  await okAsync('数据库工具双区布局：连接/表在侧栏，数据/SQL 在右侧', async () => {
+    // 预存一个连接配置；重新 init 让 DbPanel 读到（模块 conns 在 init 时从 localStorage 载入）
+    dom.window.localStorage.setItem('myide-db-conns', JSON.stringify([{ name: '测试库', type: 'sqlite', file: 'C:/t.db' }]));
+    await g(dom, 'DbPanel.init()');
+    await g(dom, 'App.switchTool("db")');
+    await tick();
+    const side = $(dom, '#panel-db');
+    const main = $(dom, '#db-panel');
+    assert_(side && !side.classList.contains('hidden'), '侧栏 panel-db 可见');
+    assert_(main && !main.classList.contains('hidden'), '右侧 db-panel 可见');
+    assert_($(dom, '#tool-db').classList.contains('active'), '工具条按钮高亮');
+    // 连接管理 + 表列表在侧栏内
+    assert_(side.contains($(dom, '#db-conn-select')), '连接选择器在侧栏');
+    assert_(side.contains($(dom, '#db-connect-btn')), '连接按钮在侧栏');
+    assert_(side.contains($(dom, '#db-status')), '状态指示在侧栏');
+    assert_(side.contains($(dom, '#db-tables')), '表列表在侧栏');
+    // 数据表格 + SQL 在右侧主区
+    assert_(main.contains($(dom, '#db-data')), '数据表格在右侧');
+    assert_(main.contains($(dom, '#db-sql')), 'SQL 区在右侧');
+    assert_(main.contains($(dom, '#db-close')), '关闭按钮在右侧');
+    // 连接 → 侧栏渲染表列表
+    const sel = $(dom, '#db-conn-select');
+    assert_(sel.options.length >= 2, '连接选择器含已存连接 + 新建项, got ' + sel.options.length);
+    click($(dom, '#db-connect-btn'));
+    await tick(); await tick();
+    const items = $allIn($(dom, '#db-tables'), '.db-table-item');
+    assert_(items.length === 2, '连接后侧栏显示表列表, got ' + items.length);
+    assert_($(dom, '#db-status').textContent.includes('测试库'), '状态显示连接名');
+    // 点表 → 右侧渲染数据表格
+    click(items[0]);
+    await tick(); await tick();
+    const cells = $allIn($(dom, '#db-data'), 'table.db-grid td');
+    assert_(cells.length >= 3, '右侧渲染数据单元格, got ' + cells.length);
+    // 切回项目工具：双区同时隐藏
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+    assert_($(dom, '#panel-db').classList.contains('hidden'), '切走后侧栏隐藏');
+    assert_($(dom, '#db-panel').classList.contains('hidden'), '切走后右侧隐藏');
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板恢复显示');
   });
 
   console.log('');

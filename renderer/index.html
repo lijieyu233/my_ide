@@ -56,6 +56,21 @@
       <div id="git-branchbar"><span id="git-branch"></span></div>
       <div id="git-body"></div>
     </div>
+    <div id="panel-db" class="hidden">
+      <div class="panel-title">数据库</div>
+      <div id="db-side-bar">
+        <select id="db-conn-select" title="已保存的连接"></select>
+        <button id="db-connect-btn" class="vt-btn" title="连接 / 断开">连接</button>
+      </div>
+      <div id="db-side-bar2">
+        <button id="db-conn-edit" class="vt-btn" title="新建 / 编辑连接">✎</button>
+        <button id="db-conn-del" class="vt-btn" title="删除已保存的连接">🗑</button>
+        <button id="db-tables-refresh" class="vt-btn" title="刷新表列表">🔄</button>
+      </div>
+      <div id="db-status" class="db-st">未连接</div>
+      <div class="db-side-head">表</div>
+      <div id="db-tables"><div class="db-hint">连接后此处显示表列表</div></div>
+    </div>
   </aside>
   <div id="sidebar-resizer" title="拖动调整目录区宽度"></div>
   <div id="content">
@@ -102,34 +117,18 @@
         <div class="be-list" id="be-history"></div>
       </div>
     </div>
-    <!-- 数据库工具窗口（MySQL / SQLite：连接 / 表 / 增删改查 / 分页 / SQL）-->
+    <!-- 数据库工具：数据表格 + SQL（右侧主区；连接与表列表在左侧 #panel-db）-->
     <div id="db-panel" class="hidden">
-      <div class="db-toolbar">
-        <select id="db-conn-select" title="已保存的连接"></select>
-        <button id="db-connect-btn" class="vt-btn" title="连接 / 断开">连接</button>
-        <button id="db-conn-edit" class="vt-btn" title="新建 / 编辑连接">✎</button>
-        <button id="db-conn-del" class="vt-btn" title="删除已保存的连接">🗑</button>
-        <span id="db-status" class="db-st">未连接</span>
+      <div class="db-tabs">
+        <button id="db-tab-data" class="db-tab active">数据</button>
+        <button id="db-tab-sql" class="db-tab">SQL</button>
         <span class="spacer"></span>
-        <button id="db-tables-refresh" class="vt-btn" title="刷新表列表">🔄</button>
-        <button id="db-close" class="vt-btn" title="关闭 (Ctrl+5)">✕</button>
+        <button id="db-close" class="vt-btn" title="收起数据库窗口 (Ctrl+5)">✕</button>
       </div>
-      <div class="db-body">
-        <div id="db-sidebar">
-          <div class="db-side-head">表</div>
-          <div id="db-tables"><div class="db-hint">连接后此处显示表列表</div></div>
-        </div>
-        <div class="db-main">
-          <div class="db-tabs">
-            <button id="db-tab-data" class="db-tab active">数据</button>
-            <button id="db-tab-sql" class="db-tab">SQL</button>
-          </div>
-          <div id="db-data-wrap">
-            <div id="db-data"><div class="db-hint">选择左侧表查看数据</div></div>
-          </div>
-          <div id="db-sql" class="hidden"></div>
-        </div>
+      <div id="db-data-wrap">
+        <div id="db-data"><div class="db-hint">选择左侧表查看数据</div></div>
       </div>
+      <div id="db-sql" class="hidden"></div>
     </div>
     <!-- Git 日志工具窗口（PyCharm Alt+9，底部停靠：编辑器在上、日志在下） -->
     <div id="git-log-panel" class="hidden">

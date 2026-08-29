@@ -95,7 +95,7 @@ const App = (() => {
   window.Modal = Modal;
 
   // ---------- 工具窗口（PyCharm 式：左侧按钮条切换，同一侧同时只显示一个）----------
-  const TOOLS = ['project', 'outline', 'git'];
+  const TOOLS = ['project', 'outline', 'git', 'db'];
   let activeTool = 'project';
 
   function switchTool(name) {
@@ -121,6 +121,10 @@ const App = (() => {
       document.getElementById('tool-' + t).classList.toggle('active', activeTool === t);
       document.getElementById('panel-' + t).classList.toggle('hidden', activeTool !== t);
     }
+    // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
+    const dbContent = document.getElementById('db-panel');
+    if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
+    if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
     }
@@ -572,7 +576,7 @@ const App = (() => {
     document.getElementById('tool-git').onclick = () => switchTool('git');
     if (window.GitLog) document.getElementById('tool-log').onclick = () => GitLog.toggle();
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => BrowserPanel.toggle(); }
-    if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => DbPanel.toggle(); }
+    if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();

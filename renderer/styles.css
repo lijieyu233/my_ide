@@ -152,7 +152,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   background: var(--border); margin-left: -2px; z-index: 5;
 }
 #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
-#panel-project, #panel-outline, #panel-git {
+#panel-project, #panel-outline, #panel-git, #panel-db {
   flex: 1; overflow: auto; display: flex; flex-direction: column;
   min-height: 0;
 }
@@ -1181,38 +1181,36 @@ body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--
   display: flex; flex-direction: column;
   background: var(--bg);
 }
-.db-toolbar {
-  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px;
-  background: var(--bg-panel); border-bottom: 1px solid var(--border-mid);
+/* ---- 左侧栏：连接管理 + 表列表（panel-db） ---- */
+#db-side-bar, #db-side-bar2 {
+  flex-shrink: 0; display: flex; align-items: center; gap: 5px;
+  padding: 6px 8px;
 }
+#db-side-bar2 { padding-top: 0; }
 #db-conn-select {
-  max-width: 220px; min-width: 140px;
+  flex: 1; min-width: 60px;
   background: var(--bg-input); color: var(--text-bright);
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 4px 6px; outline: none;
 }
-.db-st { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.db-st { flex-shrink: 0; padding: 2px 10px 6px; font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .db-st-on { color: #4ec9a8; }
-.db-body { flex: 1; min-height: 0; display: flex; }
-#db-sidebar {
-  width: 200px; flex-shrink: 0; overflow: auto;
-  background: var(--bg-panel); border-right: 1px solid var(--border-mid);
-}
 .db-side-head {
-  padding: 6px 10px; font-size: 11px; color: var(--text-dim);
+  flex-shrink: 0;
+  padding: 5px 10px; font-size: 11px; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 1px;
-  border-bottom: 1px solid var(--border-mid);
+  border-top: 1px solid var(--border-mid); border-bottom: 1px solid var(--border-mid);
 }
+#db-tables { flex: 1; min-height: 0; overflow: auto; }
 .db-table-item {
   padding: 5px 12px; cursor: pointer; font-size: 13px;
   color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .db-table-item:hover { background: var(--bg-hover, rgba(128,128,128,.12)); }
 .db-table-item.active { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text-bright); }
-.db-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* ---- 右侧：数据表格 / SQL（db-panel） ---- */
 .db-tabs {
-  flex-shrink: 0; display: flex; gap: 2px;
+  flex-shrink: 0; display: flex; align-items: center; gap: 2px;
   padding: 4px 10px 0; border-bottom: 1px solid var(--border-mid);
 }
 .db-tab {
@@ -1232,6 +1230,7 @@ body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--
   padding: 40px 20px; text-align: center; color: var(--text-dim); font-size: 13px;
 }
 .db-hint.db-err { color: #e06c75; }
+#db-tables .db-hint { padding: 20px 10px; font-size: 12px; }
 .db-grid-bar {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; border-bottom: 1px solid var(--border-mid);

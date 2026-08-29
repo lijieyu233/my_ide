@@ -1,9 +1,10 @@
 // db-panel.js —— 数据库工具窗口（MySQL / SQLite：连接管理 / 表浏览 / 增删改查 / 分页 / SQL）
-// 结构与 browser-panel 一致：#content 内全宽覆盖层，Ctrl+5 或工具条按钮开关。
+// 布局：左侧栏 #panel-db（连接管理 + 表列表），右侧 #db-panel（数据表格 / SQL，Ctrl+5）。
+// 可见性由 App 工具切换驱动（TOOLS 含 'db'），侧栏与右侧双区同步显隐。
 // 连接配置持久化在 localStorage（myide-db-conns）——本地单机工具，密码随配置存本机。
 window.DbPanel = (() => {
   const B = () => window.myIDE && window.myIDE.db;
-  let panel = null, visible = false;
+  let visible = false;
 
   // ---------- 状态 ----------
   let conns = [];        // 已保存的连接配置 [{name,type,host,port,user,password,database,file}]
@@ -35,20 +36,13 @@ window.DbPanel = (() => {
   }
 
   // ---------- 开关 ----------
-  function show() {
-    if (visible) return;
-    visible = true;
-    panel.classList.remove('hidden');
-    document.getElementById('tool-db').classList.add('active');
-    if (!connId) renderConnBar();
+  // 可见性由 App 工具切换驱动（switchTool/renderToolStrip）：侧栏 #panel-db 与右侧 #db-panel 同步显隐
+  function syncVisible(v) {
+    if (visible === v) return;
+    visible = v;
+    if (v && !connId) renderConnBar();
   }
-  function hide() {
-    if (!visible) return;
-    visible = false;
-    panel.classList.add('hidden');
-    document.getElementById('tool-db').classList.remove('active');
-  }
-  function toggle() { visible ? hide() : show(); }
+  function toggle() { App.switchTool('db'); }
 
   // ---------- 工具条（连接选择 / 状态） ----------
   function renderConnBar() {
@@ -495,10 +489,9 @@ window.DbPanel = (() => {
 
   // ---------- 初始化 ----------
   function init() {
-    panel = document.getElementById('db-panel');
     loadConns();
 
-    document.getElementById('db-close').onclick = hide;
+    document.getElementById('db-close').onclick = () => App.switchTool('db'); // 已激活 → 收起
     document.getElementById('db-connect-btn').onclick = () => {
       if (connId) { doDisconnect(); return; }
       const sel = document.getElementById('db-conn-select');
@@ -537,6 +530,6 @@ window.DbPanel = (() => {
     switchTab('data');
   }
 
-  return { init, toggle, show, hide, isOpen: () => visible };
+  return { init, toggle, syncVisible, isOpen: () => visible };
 })();
 window.DbPanel = DbPanel;
