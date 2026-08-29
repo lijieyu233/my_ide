@@ -151,7 +151,8 @@ const GitPanel = (() => {
         saveSecCollapse(collapsed);
       };
       if (collapsed[sec.key]) secBody.style.display = 'none';
-      secBody.appendChild(renderDirTree(buildDirTree(sec.items), 0));
+      // 初始 depth=1：子项相对大节标题整体缩进一级，区分层级
+      secBody.appendChild(renderDirTree(buildDirTree(sec.items), 1));
       container.appendChild(st);
       container.appendChild(secBody);
     }
