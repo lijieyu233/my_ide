@@ -2,6 +2,7 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const G = require('./git-service');
 
 const SMOKE = process.argv.includes('--smoke');
@@ -476,6 +477,39 @@ ipcMain.handle('run:file', (_e, p) => {
     return { ok: true, how: c[0] };
   } catch (e) { return { error: String(e.message || e) }; }
 });
+// 运行 Markdown 代码块片段：写临时文件 → 新开 cmd 窗口执行（/k 保留窗口看输出）
+ipcMain.handle('run:code', (_e, code, lang) => {
+  try {
+    const map = {
+      js: ['node', '.js'], javascript: ['node', '.js'], node: ['node', '.js'],
+      py: ['python', '.py'], python: ['python', '.py'],
+      bat: ['cmd', '.bat'], cmd: ['cmd', '.bat'], batch: ['cmd', '.bat'],
+      powershell: ['powershell', '.ps1'], ps1: ['powershell', '.ps1'], pwsh: ['powershell', '.ps1'],
+      sh: ['bash', '.sh'], bash: ['bash', '.sh'],
+    };
+    const m = map[String(lang || '').toLowerCase()];
+    if (!m) return { error: '该语言暂不支持运行（支持 js/python/bat/powershell/sh）' };
+    const dir = path.join(os.tmpdir(), 'myide-run');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'snippet-' + Date.now() + m[1]);
+    // bat 用 GBK（cmd 默认代码页），其余 UTF-8（python3 源码默认）
+    if (m[1] === '.bat') {
+      const iconv = require('iconv-lite');
+      fs.writeFileSync(file, iconv.encode(String(code), 'gbk'));
+    } else {
+      fs.writeFileSync(file, String(code), 'utf8');
+    }
+    let cmdStr;
+    if (m[0] === 'cmd') cmdStr = `"${file}"`;
+    else if (m[0] === 'powershell') cmdStr = `powershell -ExecutionPolicy Bypass -File "${file}"`;
+    else cmdStr = `${m[0]} "${file}"`;
+    // start ""  → 标题占位；cmd /k → 执行后保留窗口（能看到输出与报错）
+    const child = spawn('cmd', ['/c', 'start', 'MyIDE', 'cmd', '/k', cmdStr], { cwd: dir, detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+    return { ok: true, how: m[0] };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
 ipcMain.handle('shell:openTerminal', (_e, dir) => {
   // 在系统终端（cmd）中打开指定目录：cmd /c start "" cmd /k cd /d <dir>
   try {
@@ -556,6 +590,7 @@ ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return 
 //       写不进标准 CF_HDROP（与读取端读不出是同一根因）→ 只能借 PowerShell。
 //    fire-and-forget：失败静默（Electron 兜底写入已在，应用内不受影响）
 let lastOwnCopy = null; // 本应用最近一次写入的文件列表（区分"应用内复制"与"外部复制"）
+let lastOwnMark = null; // 配套私有剪贴板标记（外部复制清空剪贴板后失效，防快路径误命中）
 function psWriteFileClipboard(arr) {
   const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
   const list = arr.map(q).join(',');
@@ -578,9 +613,14 @@ ipcMain.handle('clip:copyFiles', (_e, paths) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
   lastOwnCopy = arr.slice();
+  lastOwnMark = String(Date.now());
   try { clipboard.writeText(arr.join('\n')); } catch {}
   try {
     clipboard.writeBuffer('FileNameW', Buffer.from(arr.join('\0') + '\0', 'utf16le'));
+    // 私有标记（应用内复制会话识别）：外部程序复制会清空重写剪贴板 → 标记消失。
+    // 没有它，残留的 lastOwnCopy 会与外部复制后 shell 写的单文件 FileNameW 撞车，
+    // 误命中快路径导致"外部复制多文件，粘贴只得第一个"
+    clipboard.writeBuffer('MyIDE_CopyMark', Buffer.from(lastOwnMark, 'utf8'));
   } catch {}
   if (process.platform === 'win32') psWriteFileClipboard(arr);
   return true;
@@ -619,14 +659,22 @@ ipcMain.handle('clip:getFiles', async () => {
     } catch {}
     return [];
   };
+  // 0) 应用内复制会话判定：私有标记仍在剪贴板（外部复制会清空重写剪贴板 → 标记消失）。
+  //    只有标记在，快路径才可信；否则一律按外部剪贴板处理（走 PowerShell 读完整列表）
+  let isOwnSession = false;
+  if (lastOwnCopy && lastOwnMark) {
+    try {
+      isOwnSession = clipboard.readBuffer('MyIDE_CopyMark').toString('utf8') === lastOwnMark;
+    } catch {}
+  }
   // 1) 应用内复制：FileNameW 读回与最近写入一致 → 免 PowerShell 直接返回（完整列表）
   const own = readFileNameW();
-  if (own.length && lastOwnCopy && JSON.stringify(own) === JSON.stringify(lastOwnCopy)) return own;
+  if (isOwnSession && own.length && JSON.stringify(own) === JSON.stringify(lastOwnCopy)) return own;
   // 1.5) 应用内复制（PowerShell 写入路径）：FileNameW 只含第一个文件 → 用文本完整列表比对
   //      （Electron 兜底写与 PowerShell SetText 都写了完整路径列表文本，此快路径两态皆命中）
   try {
     const t = clipboard.readText();
-    if (t && lastOwnCopy) {
+    if (isOwnSession && t) {
       const list = t.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
       if (list.length && JSON.stringify(list) === JSON.stringify(lastOwnCopy)) return list;
     }

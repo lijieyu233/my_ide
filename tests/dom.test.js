@@ -355,11 +355,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const constIdx = lines.findIndex((l) => l.textContent.includes('const a = 1;'));
     assert_(constIdx >= 0 && lines.slice(constIdx + 1, constIdx + 3).some((l) => l && l.textContent.trim() === ''),
       '代码块后的空行保留在 DOM（行边界完整）');
-    // 7) 表格 block widget 真表格渲染（Obsidian 式：光标不在表格内 → 渲染态）
-    const tbl = $(dom, '.cm-md-table');
-    assert_(tbl !== null, '表格 block widget 渲染');
-    assert_(tbl && tbl.querySelectorAll('thead th').length === 1, '表头 1 列');
-    assert_(tbl && tbl.querySelectorAll('tbody tr').length === 1 && tbl.textContent.includes('数据'), '数据行渲染');
+    // 7) 表格逐行线框渲染（Obsidian 式行常渲染：光标进单元格不整块退化源码）
+    assert_($(dom, '.cm-md-tr-head') !== null, '表头行线框渲染');
+    assert_($(dom, '.cm-md-tr-row') !== null, '数据行线框渲染');
+    const sepLine = $(dom, '.cm-md-tr-sep');
+    assert_(sepLine !== null, '分隔行压缩为细线');
+    assert_($(dom, '.cm-md-tpipe') !== null, '| 弱化 mark 渲染');
+    const rowLine = [...$$(dom, '.cm-content > div')].find((l) => l.textContent.includes('数据'));
+    assert_(rowLine && rowLine.textContent.includes('|'), '表格行常渲染（不退化为无样式源码，行内容保留）');
     // 8) 分隔线 ---：文本替换为 1px 线 widget（行高不变防点击偏移）
     assert_($(dom, '.cm-md-hr') !== null, '分隔线 widget 渲染（cm-md-hr）');
     assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
@@ -427,13 +430,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     para2 = lines2.find((l) => l.textContent.includes('删除线'));
     assert_(para2 && para2.textContent.includes('[') && para2.textContent.includes('https://'),
       '光标进入链接内部 → 显示完整 [链接](url) 源码');
-    // 15) 光标进表格 → 回退源码（Obsidian：点击表格变源码可编辑）；移出恢复
+    // 15) 光标进表格单元格 → 行常渲染不退化源码（Obsidian 式逐行线框）；移出仍渲染
     g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
     await tick(); await tick();
-    assert_($(dom, '.cm-md-table') === null && $(dom, '.cm-content').textContent.includes('| 数据'), '光标进表格回退源码');
+    assert_($(dom, '.cm-md-tr-row') !== null && $(dom, '.cm-md-tpipe') !== null,
+      '光标进表格单元格行仍线框渲染（不退化源码）');
     g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
     await tick(); await tick();
-    assert_($(dom, '.cm-md-table') !== null, '光标移出表格恢复渲染');
+    assert_($(dom, '.cm-md-tr-head') !== null && $(dom, '.cm-md-tr-row') !== null, '光标移出表格保持渲染');
     // 16) 光标进代码块内容行 → 围栏显形（Obsidian：光标进块整块变源码态）
     g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('const a') + 2) + ')');
     await tick(); await tick();
@@ -460,22 +464,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
         }
       }
     }
-    // 18) 表格单元格点击 → 光标精确进入该格源码（用户报告：表格没有直接操作功能）
+    // 18) 表格新模型：行常渲染 → 单元格像普通文本一样直接编辑（无独立 widget）
     {
-      const tblEl = $(dom, '.cm-md-table');
-      assert_(tblEl !== null, '表格 widget 存在（可点击单元格）');
-      if (tblEl) {
-        const td = tblEl.querySelectorAll('tbody td')[0];
-        if (td) {
-          td.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-          await tick(); await tick();
-          const sel = g(dom, 'Viewer.cm.getSelection()');
-          const gi = LIVE_DOC.indexOf('| 数据');
-          const ge = LIVE_DOC.indexOf('\n', gi);
-          assert_(sel && sel.head >= gi && sel.head <= ge,
-            '点击单元格光标进入源码格, got ' + JSON.stringify(sel) + ' 期望 [' + gi + ',' + ge + ']');
-        } else assert_(false, '表格无 td');
-      }
+      const rowLine = [...$$(dom, '.cm-content > div')].find((l) => l.textContent.includes('| 数据'));
+      assert_(rowLine !== null && String(rowLine.className).includes('cm-md-tr-row'),
+        '数据行以行级渲染存在（直接编辑，无需点击 widget）');
     }
   });
 

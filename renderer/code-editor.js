@@ -131,6 +131,7 @@ window.CodeEditor = (() => {
           { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
           { key: 'Mod-_', preventDefault: true, run: Language.foldAll },
           { key: 'Mod-+', preventDefault: true, run: Language.unfoldAll },
+          { key: 'Mod-d', preventDefault: true, run: Commands.deleteLine }, // Ctrl+D 删除当前行
           ...Autocomplete.closeBracketsKeymap,
           ...Commands.defaultKeymap,
           ...Search.searchKeymap,

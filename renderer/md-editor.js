@@ -166,11 +166,24 @@ window.MdEditor = (() => {
     // 模型错位导致点击偏移），间距用行 padding 表达
     '.cm-line.cm-md-hr-line': { paddingTop: '9px', paddingBottom: '9px' },
     '.cm-md-hr': { display: 'inline-block', width: '100%', height: '1px', background: 'var(--border-mid)', verticalAlign: 'middle' },
-    // 表格 block widget（Obsidian 式真表格：光标不在表格内时渲染，进入变源码）
-    '.cm-md-table-wrap': { display: 'block', padding: '4px 0' },
-    '.cm-md-table': { borderCollapse: 'collapse', width: '100%' },
-    '.cm-md-table th, .cm-md-table td': { border: '1px solid var(--border-mid)', padding: '4px 10px' },
-    '.cm-md-table th': { background: 'var(--bg-panel)', color: 'var(--text-bright)', fontWeight: '600' },
+    // 表格逐行线框（Obsidian 式行常渲染：光标进单元格不整块退化源码）
+    // 表头行/数据行 = 行背景+边框+左右 padding；分隔行 block replace 后压成 2px 细线
+    '.cm-line.cm-md-tr-head': {
+      background: 'var(--bg-panel)', color: 'var(--text-bright)', fontWeight: '600',
+      border: '1px solid var(--border-mid)', borderBottom: 'none',
+      borderRadius: '6px 6px 0 0', padding: '3px 10px',
+    },
+    '.cm-line.cm-md-tr-row': {
+      background: 'var(--code-bg)', border: '1px solid var(--border-mid)', borderTop: 'none',
+      padding: '3px 10px',
+    },
+    '.cm-line.cm-md-tr-row.cm-md-tr-last': { borderRadius: '0 0 6px 6px' },
+    '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0', background: 'var(--border-mid)', border: 'none' },
+    '.cm-md-tpipe': { opacity: '0.35', color: 'var(--text-dim)' },
+    // mermaid 实时渲染图（block widget）：居中 + 背景容器
+    '.cm-md-mermaid': { padding: '10px', textAlign: 'center', background: 'var(--code-bg)', borderRadius: '6px', margin: '6px 0' },
+    '.cm-md-mermaid svg': { maxWidth: '100%' },
+    '.cm-md-mermaid .mermaid-err': { textAlign: 'left', color: 'var(--del-text)', whiteSpace: 'pre-wrap' },
     // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸
     '.cm-md-foldctrl': {
       display: 'inline-block', width: '18px', textAlign: 'center', fontSize: '10px',
@@ -226,10 +239,12 @@ window.MdEditor = (() => {
 
   // ---------- 分隔线 widget：--- → 1px 水平线（行高不变，防止高度模型错位） ----------
   class HrWidget extends WidgetType {
-    eq() { return true; }
+    constructor(h) { super(); this.h = h || 1; }
+    eq(other) { return other.h === this.h; }
     toDOM() {
       const d = document.createElement('span');
       d.className = 'cm-md-hr';
+      if (this.h !== 1) d.style.height = this.h + 'px';
       return d;
     }
     ignoreEvent() { return false; }
@@ -265,100 +280,42 @@ window.MdEditor = (() => {
     ignoreEvent() { return true; } // 点击由自身处理
   }
 
-  // ---------- 表格 widget：整块渲染真表格（Obsidian 式） ----------
-  // 光标不在表格内 → 渲染 table（列对齐/表头背景/边框）；光标进入 → 回退源码编辑。
-  // 竖线 split 不处理 \| 转义（GFM 表格内转义罕见，源码态仍可编辑）。
-  function parseTable(src) {
-    const lines = src.split('\n').map((l) => l.trim()).filter(Boolean);
-    if (lines.length < 2) return null;
-    const splitRow = (line) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-    const header = splitRow(lines[0]);
-    const sep = splitRow(lines[1]);
-    if (!sep.every((c) => /^:?-+:?$/.test(c))) return null; // 第二行不是分隔行 → 不是表格
-    const aligns = sep.map((c) => {
-      if (c.startsWith(':') && c.endsWith(':')) return 'center';
-      if (c.endsWith(':')) return 'right';
-      return 'left';
-    });
-    const rows = lines.slice(2).map(splitRow);
-    return { header, aligns, rows };
-  }
-  // 单元格内轻量行内渲染：**加粗** *斜体* `代码` ~~删除线~~（其余按字面转义文本）
-  function renderInline(parent, text) {
-    const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|~~[^~]+~~)/g;
-    let last = 0, m;
-    while ((m = re.exec(text))) {
-      if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
-      const tok = m[0];
-      let el;
-      if (tok.startsWith('**')) el = document.createElement('strong');
-      else if (tok.startsWith('~~')) el = document.createElement('del');
-      else if (tok.startsWith('`')) { el = document.createElement('code'); el.className = 'cm-md-code'; }
-      else el = document.createElement('em');
-      // 按标记类型取内容：**/~~ 是 2 字符标记取 slice(2,-2)；*/` 是 1 字符标记取 slice(1,-1)。
-      // 旧代码统一 slice(2,-2)：`code` 与 *em* 被吃掉首尾各 1 个字符（表格内 P/s 消失的根因）
-      el.textContent = tok.startsWith('**') || tok.startsWith('~~') ? tok.slice(2, -2) : tok.slice(1, -1);
-      parent.appendChild(el);
-      last = m.index + tok.length;
-    }
-    if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
-  }
-  class TableWidget extends WidgetType {
-    // rows: [{from, text}] 表头行+数据行（不含分隔行）的文档位置 —— 单元格点击定位用
-    constructor(src, rows) { super(); this.src = src; this.rows = rows || []; }
-    eq(other) { return other.src === this.src && other.rowsKey === this.rowsKey; }
-    get rowsKey() { return this.rows.map((r) => r.from).join(','); }
-    // 单元格点击 → 光标精确放进对应源码单元格（Obsidian 式"点哪个格编辑哪个格"）
-    cellPos(rowIndex, colIndex) {
-      const row = this.rows[rowIndex];
-      if (!row) return -1;
-      const cells = row.text.replace(/^\|/, '').replace(/\|$/, '').split('|');
-      let off = /^\|/.test(row.text) ? 1 : 0;
-      for (let i = 0; i < colIndex && i < cells.length; i++) off += cells[i].length + 1;
-      return row.from + Math.min(off, row.text.length);
-    }
-    toDOM(view) {
+  // ---------- 表格：逐行线框渲染（见装饰器 Table 分支），无 widget ----------
+
+  // ---------- Mermaid 图 widget（```mermaid 围栏 → SVG 实时渲染） ----------
+  // 光标不在块内：整块替换为渲染图；光标进入：回退源码编辑（Obsidian 同款交互）。
+  // 渲染结果按 code 缓存（图不闪烁）；mermaid 库缺失（如测试环境）→ 不渲染，保持源码。
+  const mermaidCache = new Map(); // code -> svg string（含失败标记 null）
+  class MermaidWidget extends WidgetType {
+    constructor(code) { super(); this.code = code; }
+    eq(other) { return other.code === this.code; }
+    toDOM() {
       const wrap = document.createElement('div');
-      wrap.className = 'cm-md-table-wrap';
-      const t = parseTable(this.src);
-      if (!t) return wrap;
-      const table = document.createElement('table');
-      table.className = 'cm-md-table';
-      const focusCell = (r, c) => {
-        const pos = this.cellPos(r, c);
-        if (pos >= 0 && view) view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
-      };
-      const thead = document.createElement('thead');
-      const trh = document.createElement('tr');
-      t.header.forEach((cell, i) => {
-        const th = document.createElement('th');
-        th.style.textAlign = t.aligns[i] || 'left';
-        renderInline(th, cell);
-        th.addEventListener('mousedown', (e) => { e.preventDefault(); focusCell(0, i); });
-        trh.appendChild(th);
-      });
-      thead.appendChild(trh);
-      table.appendChild(thead);
-      const tbody = document.createElement('tbody');
-      t.rows.forEach((r, ri) => {
-        const tr = document.createElement('tr');
-        t.header.forEach((_, i) => {
-          const td = document.createElement('td');
-          td.style.textAlign = t.aligns[i] || 'left';
-          renderInline(td, r[i] == null ? '' : r[i]);
-          td.addEventListener('mousedown', (e) => { e.preventDefault(); focusCell(ri + 1, i); });
-          tr.appendChild(td);
-        });
-        tbody.appendChild(tr);
-      });
-      table.appendChild(tbody);
-      wrap.appendChild(table);
+      wrap.className = 'cm-md-mermaid';
+      const cached = mermaidCache.get(this.code);
+      if (cached != null) { wrap.innerHTML = cached; return wrap; }
+      wrap.textContent = '渲染中…';
+      (async () => {
+        try {
+          if (!window.mermaid || !mermaid.render) throw new Error('mermaid 未加载');
+          const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
+          const { svg } = await mermaid.render(id, this.code);
+          mermaidCache.set(this.code, svg);
+          if (wrap.isConnected) wrap.innerHTML = svg;
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          mermaidCache.set(this.code, null);
+          if (wrap.isConnected) wrap.innerHTML = '<pre class="mermaid-err">mermaid 渲染失败: ' + msg.replace(/</g, '&lt;') + '</pre>';
+        }
+      })();
       return wrap;
     }
-    ignoreEvent() { return true; } // 单元格点击由自身处理（精确放光标进源码）
+    ignoreEvent() { return true; }
   }
 
-  // ---------- 代码块复制按钮 widget（fence 首内容行行首，absolute 右上浮层） ----------
+  // ---------- 代码块复制/运行按钮 widget（fence 首内容行行首，absolute 右上浮层） ----------
+  // 可运行语言（run:code IPC 同款映射）：点「▶ 运行」写临时文件并在新 cmd 窗口执行
+  const RUNNABLE_LANGS = ['js', 'javascript', 'node', 'py', 'python', 'bat', 'cmd', 'batch', 'powershell', 'ps1', 'pwsh', 'sh', 'bash'];
   class CopyBtnWidget extends WidgetType {
     constructor(code, lang) { super(); this.code = code; this.lang = lang; }
     eq(other) { return other.code === this.code && other.lang === this.lang; }
@@ -392,6 +349,27 @@ window.MdEditor = (() => {
       });
       s.appendChild(lang);
       s.appendChild(b);
+      // ▶ 运行（仅可执行语言显示）：新开 cmd 窗口执行，窗口保留可看输出
+      if (RUNNABLE_LANGS.includes(String(this.lang || '').toLowerCase())) {
+        const r = document.createElement('button');
+        r.textContent = '▶ 运行';
+        r.title = '在新 cmd 窗口中运行此代码块';
+        r.addEventListener('mousedown', (e) => e.preventDefault());
+        r.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          r.textContent = '启动中…';
+          try {
+            const res = await window.myIDE.shell.runCode(this.code, this.lang);
+            if (res && res.error) { r.textContent = '失败'; MI.toast('运行失败: ' + res.error, 'err'); }
+            else r.textContent = '已运行';
+          } catch (err) {
+            r.textContent = '失败';
+            MI.toast('运行失败: ' + err, 'err');
+          }
+          setTimeout(() => { r.textContent = '▶ 运行'; }, 1500);
+        });
+        s.appendChild(r);
+      }
       return s;
     }
     ignoreEvent() { return true; }
@@ -550,6 +528,20 @@ window.MdEditor = (() => {
             if (name === 'FencedCode') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               const cursorIn = !(last.to < selFromLine.from || first.from > selToLine.to);
+              // mermaid 块（```mermaid）：光标不在 → 整块 block replace 渲染 SVG；
+              // 光标进入 → 走下方普通围栏源码模式（可编辑）。库缺失（测试环境）→ 源码模式
+              const langM0 = /^\s*(```|~~~)\s*(\S+)/.exec(first.text);
+              const isMermaid = langM0 && langM0[2].toLowerCase() === 'mermaid' && window.mermaid;
+              if (isMermaid && !cursorIn) {
+                // 去掉首尾围栏行，只传图源码给 mermaid.render
+                let code = doc.sliceString(node.from, node.to);
+                code = code.replace(/^\s*(```|~~~)\s*\S*[^\n]*\n?/, '').replace(/\n?\s*(```|~~~)\s*$/, '');
+                decos.push(Decoration.replace({
+                  block: true,
+                  widget: new MermaidWidget(code),
+                }).range(node.from, node.to));
+                return;
+              }
               let firstContent = null, lastContent = null;
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
@@ -593,24 +585,29 @@ window.MdEditor = (() => {
               }
               return;
             }
-            // 表格：整块 block widget 真表格渲染（Obsidian 式：列对齐/表头/边框）。
-            // 光标/选区进入表格 → 回退源码编辑；点击单元格精确放光标到对应源码格。
-            // block widget 高度由 CM6 直接测量，无点击偏移。
+            // 表格：逐行线框渲染（Obsidian 式行常渲染）—— 光标进单元格不整块退化源码。
+            // 表头行/数据行保持行样式（背景/边框/圆角），| 常显弱化，分隔行压缩成细线。
             if (name === 'Table') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              const cursorIn = !(last.to < selFromLine.from || first.from > selToLine.to);
-              if (!cursorIn) {
-                // 表头行+数据行的位置（跳过分隔行）—— 单元格点击定位
-                const rows = [];
-                for (let n = first.number; n <= last.number; n++) {
-                  const l = doc.line(n);
-                  if (n > first.number && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(l.text)) continue;
-                  rows.push({ from: l.from, text: l.text });
+              const SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+              for (let n = first.number; n <= last.number; n++) {
+                const l = doc.line(n);
+                if (SEP_RE.test(l.text)) {
+                  // 分隔行：内容替换为细线 widget（行保留 —— block replace 会吞行导致
+                  // line class 失效）+ line class 压高度，视觉上是表头下的分隔线
+                  decos.push(Decoration.replace({ widget: new HrWidget(2) }).range(l.from, l.to));
+                  decos.push(Decoration.line({ class: 'cm-md-tr-sep' }).range(l.from));
+                  continue;
                 }
-                decos.push(Decoration.replace({
-                  widget: new TableWidget(doc.sliceString(node.from, node.to), rows),
-                  block: true,
-                }).range(node.from, node.to));
+                const isHead = n === first.number || SEP_RE.test(doc.line(n + 1).text);
+                const cls = isHead ? 'cm-md-tr-head' : 'cm-md-tr-row';
+                decos.push(Decoration.line({ class: cls + (n === last.number ? ' cm-md-tr-last' : '') }).range(l.from));
+                // | 弱化（跳过 \| 转义）：视觉上是单元格分隔，不再是刺眼的源码竖线
+                for (let i = 0; i < l.text.length; i++) {
+                  if (l.text[i] === '|' && (i === 0 || l.text[i - 1] !== '\\')) {
+                    decos.push(Decoration.mark({ class: 'cm-md-tpipe' }).range(l.from + i, l.from + i + 1));
+                  }
+                }
               }
               return;
             }
@@ -927,6 +924,23 @@ window.MdEditor = (() => {
         return false;
       },
     },
+    // Shift+Tab：前一单元格（| 之前）
+    {
+      key: 'Shift-Tab',
+      run: (v) => {
+        const sel = v.state.selection.main;
+        if (!sel.empty) return false;
+        const line = v.state.doc.lineAt(sel.head);
+        if (!line.text.includes('|')) return false;
+        const rel = sel.head - line.from;
+        const prev = line.text.lastIndexOf('|', Math.max(0, rel - 1));
+        if (prev > 0) {
+          v.dispatch({ selection: { anchor: line.from + prev }, scrollIntoView: true });
+          return true;
+        }
+        return false;
+      },
+    },
   ]);
 
   // ---------- Live Preview 开关（Compartment） ----------
@@ -1014,6 +1028,7 @@ window.MdEditor = (() => {
         { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
         { key: 'Mod-_', preventDefault: true, run: Language.foldAll },
         { key: 'Mod-+', preventDefault: true, run: Language.unfoldAll },
+        { key: 'Mod-d', preventDefault: true, run: Commands.deleteLine }, // Ctrl+D 删除当前行
         ...Autocomplete.closeBracketsKeymap,
         ...Commands.defaultKeymap,
         ...Search.searchKeymap,

@@ -75,19 +75,39 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     html = '<pre>渲染错误: ' + String(e) + '</pre>';
   }
   wrap.innerHTML = html;
-  // 代码块语法高亮
-  if (window.hljs) {
-    wrap.querySelectorAll('pre code').forEach((el) => {
-      try { window.hljs.highlightElement(el); } catch {}
-      const btn = document.createElement('span');
-      btn.className = 'code-copy';
-      btn.textContent = '复制';
-      btn.onclick = () => { MI.copyText(el.innerText); MI.toast('已复制代码块', 'ok'); };
-      const pre = el.parentElement;
-      pre.style.position = 'relative';
-      pre.insertBefore(btn, pre.firstChild);
-    });
-  }
+  // 代码块语法高亮 + 复制/运行按钮（运行 = run:code IPC 写临时文件新开 cmd 执行）
+  const RUNNABLE = ['js', 'javascript', 'node', 'py', 'python', 'bat', 'cmd', 'batch', 'powershell', 'ps1', 'pwsh', 'sh', 'bash'];
+  wrap.querySelectorAll('pre code').forEach((el) => {
+    if (window.hljs) { try { window.hljs.highlightElement(el); } catch {} }
+    const lang = (el.className.match(/(?:language|lang)-([\w-]+)/) || [])[1] || '';
+    const btn = document.createElement('span');
+    btn.className = 'code-copy';
+    btn.textContent = '复制';
+    btn.onclick = () => { MI.copyText(el.innerText); MI.toast('已复制代码块', 'ok'); };
+    const pre = el.parentElement;
+    pre.style.position = 'relative';
+    pre.insertBefore(btn, pre.firstChild);
+    if (RUNNABLE.includes(lang.toLowerCase())) {
+      const r = document.createElement('span');
+      r.className = 'code-copy';
+      r.textContent = '▶ 运行';
+      r.title = '在新 cmd 窗口中运行此代码块';
+      r.style.marginRight = '4px';
+      r.onclick = async () => {
+        r.textContent = '启动中…';
+        try {
+          const res = await window.myIDE.shell.runCode(el.innerText, lang);
+          if (res && res.error) { r.textContent = '失败'; MI.toast('运行失败: ' + res.error, 'err'); }
+          else r.textContent = '已运行';
+        } catch (e) {
+          r.textContent = '失败';
+          MI.toast('运行失败: ' + e, 'err');
+        }
+        setTimeout(() => { r.textContent = '▶ 运行'; }, 1500);
+      };
+      pre.insertBefore(r, pre.firstChild);
+    }
+  });
   // mermaid 图（```mermaid 围栏）：mermaid.render 转 SVG 替换代码块
   if (window.mermaid) {
     const blocks = [...wrap.querySelectorAll('pre code.language-mermaid, pre code.lang-mermaid')];

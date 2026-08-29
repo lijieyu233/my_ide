@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
     openTerminal: (dir) => ipcRenderer.invoke('shell:openTerminal', dir),
     runFile: (p) => ipcRenderer.invoke('run:file', p),
+    runCode: (code, lang) => ipcRenderer.invoke('run:code', code, lang),
   },
   win: {
     minimize: () => ipcRenderer.invoke('win:minimize'),

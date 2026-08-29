@@ -583,6 +583,9 @@ function buildHunks(aText, bText, ctx = 3) {
 async function diffWorkdir(dir, file) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { error: '不是 Git 仓库' };
+  // file 可能是相对路径（提交窗口传 repo 相对路径）：相对进程 cwd 解析在打包 exe 下
+  // cwd=exe 目录 ≠ 仓库目录，会读不到文件（表现为"点击无反应/整文件假差异"）→ 统一锚定到仓库根
+  if (!path.isAbsolute(file)) file = path.join(root, file);
   const rel = path.relative(root, file);
   let oldText = null, newText = null;
   try { oldText = await blobAt(root, 'HEAD', rel); } catch {}
