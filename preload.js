@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   fs: {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),
+    pickFile: (title, filters) => ipcRenderer.invoke('fs:pickFile', title, filters),
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
@@ -84,4 +85,16 @@ contextBridge.exposeInMainWorld('myIDE', {
     onState: (cb) => ipcRenderer.on('browser:state', (_e, s) => cb(s)),
   },
   appInfo: () => ipcRenderer.invoke('app:info'),
+  db: {
+    // 数据库工具（MySQL / SQLite）：cfg 含密码，只在主进程内存中流转
+    connect: (cfg) => ipcRenderer.invoke('db:connect', cfg),
+    close: (id) => ipcRenderer.invoke('db:close', id),
+    tables: (id) => ipcRenderer.invoke('db:tables', id),
+    columns: (id, table) => ipcRenderer.invoke('db:columns', id, table),
+    select: (id, table, page, size) => ipcRenderer.invoke('db:select', id, table, page, size),
+    query: (id, sql, params) => ipcRenderer.invoke('db:query', id, sql, params),
+    updateCell: (id, table, pk, pkVals, col, val) => ipcRenderer.invoke('db:updateCell', id, table, pk, pkVals, col, val),
+    deleteRows: (id, table, pk, pkRows) => ipcRenderer.invoke('db:deleteRows', id, table, pk, pkRows),
+    insertRow: (id, table, cols, vals) => ipcRenderer.invoke('db:insertRow', id, table, cols, vals),
+  },
 });

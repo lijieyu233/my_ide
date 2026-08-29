@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const G = require('./git-service');
+const DB = require('./db-service');
 
 const SMOKE = process.argv.includes('--smoke');
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
@@ -189,6 +190,17 @@ ipcMain.handle('fs:pickImage', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: '选择背景图片',
     filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
+    properties: ['openFile'],
+  });
+  if (r.canceled || !r.filePaths.length) return null;
+  return r.filePaths[0];
+});
+
+// 通用文件选择（数据库工具选 SQLite 文件等）
+ipcMain.handle('fs:pickFile', async (_e, title, filters) => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: title || '选择文件',
+    filters: Array.isArray(filters) && filters.length ? filters : [{ name: '所有文件', extensions: ['*'] }],
     properties: ['openFile'],
   });
   if (r.canceled || !r.filePaths.length) return null;
@@ -785,6 +797,9 @@ ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
 ipcMain.handle('git:discardFiles', (_e, dir, files) => gitCall('discardFiles', dir, files));
 ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
 ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
+
+// ---------- IPC：数据库工具（MySQL / SQLite）----------
+DB.registerIpc();
 
 // ---------- IPC：应用信息（版本/提交，防止跑旧版本不自知）----------
 ipcMain.handle('app:info', () => {

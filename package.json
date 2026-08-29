@@ -23,7 +23,9 @@
     "iconv-lite": "^0.7.3",
     "isomorphic-git": "^1.27.1",
     "marked": "^15.0.0",
-    "mermaid": "^11.17.2"
+    "mermaid": "^11.17.2",
+    "mysql2": "^3.24.2",
+    "sql.js": "^1.14.2"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
