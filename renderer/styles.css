@@ -1204,6 +1204,22 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 .editor-code-wrap .cm-editor { height: 100%; }
 .editor-code-wrap .cm-editor.cm-focused { outline: none; }
 body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+/* ---------- Git Blame 注解 gutter（PyCharm Annotate 式） ---------- */
+.cm-blame-gutter {
+  white-space: nowrap;
+  text-align: left;
+  padding: 0 10px 0 8px;
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+.cm-blame-gutter .cm-blame-item {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-ui, inherit);
+  line-height: 1.6;
+  cursor: default;
+}
+.cm-blame-gutter .cm-blame-item.uncommitted { color: var(--warn, #e5c07b); font-style: italic; }
 /* ---------- 数据库工具窗口（db-panel.js） ---------- */
 #db-panel {
   position: absolute; inset: 0; z-index: 40;

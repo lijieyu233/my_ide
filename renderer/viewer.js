@@ -218,6 +218,8 @@ const Viewer = (() => {
       menu.appendChild(d);
     };
     mk('📋 复制完整路径', () => { MI.copyText(tabs[i].path); MI.toast('已复制路径', 'ok'); });
+    if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示历史', () => GitLog.showFileHistory(tabs[i].path));
+    if (tabs[i].mode === 'edit') mk('⑂ Blame 注解', () => { if (i !== active) activate(i); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     const pdir = (tabs[i].path || '').replace(/[\\/][^\\/]+$/, '');
     if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(pdir); });
@@ -235,6 +237,7 @@ const Viewer = (() => {
 
   // ---------- 视图渲染 ----------
   function renderView() {
+    blameOn = false; // 切换标签/视图后 gutter 已重建，注解需重新开启
     // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
     if (cmApi) {
       if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
@@ -533,6 +536,43 @@ const Viewer = (() => {
   // source：纯源码模式（同一编辑器，关闭装饰层）
   let cmApi = null;
   let cmOutlineTimer = null;
+  let blameOn = false; // Git Blame 注解开关（仅代码编辑模式；编辑即失效）
+
+  // ---------- Git Blame 注解（PyCharm Annotate 式，编辑器 gutter 显示每行作者/日期） ----------
+  async function toggleBlame() {
+    const tab = tabs[active];
+    if (!tab || !cmApi || !cmApi.setBlame) { MI.toast('Blame 注解仅支持代码编辑模式', 'err'); return; }
+    if (blameOn) { blameOn = false; cmApi.setBlame(null); return; }
+    const root = window.App && App.root;
+    if (!root) { MI.toast('请先打开一个项目', 'err'); return; }
+    const fp = String(tab.path).replace(/\\/g, '/');
+    const rp = String(root).replace(/\\/g, '/');
+    if (fp.toLowerCase().indexOf(rp.toLowerCase() + '/') !== 0) { MI.toast('文件不在当前项目内', 'err'); return; }
+    const rel = fp.slice(rp.length + 1);
+    const r = await window.myIDE.git.blame(root, rel);
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    blameOn = true;
+    cmApi.setBlame(r.lines);
+  }
+  function closeBlame() { blameOn = false; if (cmApi && cmApi.setBlame) cmApi.setBlame(null); }
+
+  // 编辑器右键菜单（代码编辑区）：Blame 注解 / 文件历史
+  function showEditorMenu(x, y) {
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = '';
+    const mk = (label, fn) => {
+      const d = document.createElement('div');
+      d.className = 'ctx-item';
+      d.textContent = label;
+      d.onclick = () => { menu.classList.add('hidden'); fn(); };
+      menu.appendChild(d);
+    };
+    mk(blameOn ? '✕ 关闭 Blame 注解' : '⑂ Git Blame 注解', () => toggleBlame());
+    mk('🕘 显示文件历史', () => { if (window.GitLog) GitLog.showFileHistory(tabs[active] && tabs[active].path); });
+    menu.classList.remove('hidden');
+    menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';
+  }
 
   function renderMarkdownCm(tab, live) {
     const wrap = document.createElement('div');
@@ -614,6 +654,7 @@ const Viewer = (() => {
       onChange: (val) => {
         tab.content = val;
         if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
       onCursor: (line, col) => {
@@ -623,6 +664,8 @@ const Viewer = (() => {
     });
     cmApi.__tab = tab;
     tab.ta = null;
+    // 编辑器右键菜单：Blame 注解 / 文件历史（PyCharm Annotate with Git Blame 入口）
+    wrap.oncontextmenu = (e) => { e.preventDefault(); showEditorMenu(e.clientX, e.clientY); };
     setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
   }
 
@@ -947,7 +990,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

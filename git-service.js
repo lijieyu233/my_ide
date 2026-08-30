@@ -678,4 +678,344 @@ async function discardFiles(dir, files) {
   return { ok, failed };
 }
 
-module.exports = { findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo, branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig, diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus };
+// ---------- 远程（fetch / pull / push / remote 管理）----------
+const http = require('isomorphic-git/http/node');
+const AUTH_KEY = null; // 凭证由渲染层每次传入（localStorage myide-git-auth），不落服务层状态
+
+function onAuthOf(auth) {
+  return () => {
+    if (!auth || !auth.username) throw new Error('远程需要认证：请在「远程仓库」设置中配置用户名和密码/令牌');
+    return { username: auth.username, password: auth.password || '' };
+  };
+}
+
+async function listRemotes(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', remotes: [] };
+  try {
+    const list = await git.listRemotes({ fs, dir: root });
+    return { isRepo: true, remotes: list.map((r) => ({ name: r.remote, url: r.url })) };
+  } catch (e) {
+    return { isRepo: true, error: String(e.message || e), remotes: [] };
+  }
+}
+
+async function addRemote(dir, { name, url }) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  if (!name || !/^[A-Za-z0-9._-]+$/.test(name)) return { ok: false, error: '远程名不合法' };
+  if (!url || !/\S/.test(url)) return { ok: false, error: 'URL 不能为空' };
+  try {
+    await git.addRemote({ fs, dir: root, remote: name, url, force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+async function removeRemote(dir, name) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    await git.deleteRemote({ fs, dir: root, remote: name });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// fetch：只更新 refs/remotes，不动工作区
+async function fetchRemote(dir, { auth } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
+  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  try {
+    const r = await git.fetch({
+      fs, dir: root, http, remote: 'origin',
+      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    });
+    return { ok: true, fetchHead: r && r.fetchHead };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// pull：fetch + fast-forward 合并（分叉时明确报错，不静默产生合并提交）
+async function pullRemote(dir, { auth } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const branch = await currentBranch(root);
+  if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
+  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
+  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  try {
+    const r = await git.pull({
+      fs, dir: root, http, remote: 'origin', ref: branch, fastForwardOnly: true,
+      author: await getAuthor(root),
+      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    });
+    return { ok: true, oid: r && r.oid };
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
+      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
+// push：当前分支 → origin 同名分支
+async function pushRemote(dir, { auth } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const branch = await currentBranch(root);
+  if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
+  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
+  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  try {
+    await git.push({
+      fs, dir: root, http, remote: 'origin', ref: branch,
+      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    });
+    return { ok: true };
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (msg.includes('fetch first') || msg.includes('behind')) {
+      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
+// ahead/behind：本地分支 vs refs/remotes/origin/<branch>（纯本地 refs 计算，无网络）
+async function aheadBehind(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return {};
+  const branch = await currentBranch(root);
+  if (!branch || branch === '(无提交)') return { branch };
+  let upstream = null;
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
+  if (!upstream || !head) return { branch, ahead: null, behind: null };
+  return {
+    branch,
+    ahead: await countNotReached(root, head, upstream),
+    behind: await countNotReached(root, upstream, head),
+  };
+}
+
+// 从 from 出发沿父链 BFS、不越过 stop，统计未到达 stop 的提交数（上限保护）
+async function countNotReached(root, fromOid, stopOid) {
+  const seen = new Set([stopOid]);
+  const queue = [fromOid];
+  let n = 0;
+  while (queue.length && n < 5000) {
+    const oid = queue.shift();
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    n++;
+    try {
+      const c = await git.readCommit({ fs, dir: root, oid });
+      for (const p of (c.commit.parent || [])) queue.push(p);
+    } catch { break; }
+  }
+  return n;
+}
+
+// ---------- 标签 ----------
+async function listTags(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', tags: [] };
+  try {
+    const names = await git.listTags({ fs, dir: root });
+    const tags = [];
+    for (const name of names) {
+      try {
+        const oid = await git.resolveRef({ fs, dir: root, ref: name });
+        const c = await git.readCommit({ fs, dir: root, oid });
+        tags.push({
+          name, oid,
+          short: oid.slice(0, 7),
+          message: (c.commit.message || '').split('\n')[0],
+          timestamp: c.commit.author.timestamp * 1000,
+        });
+      } catch {}
+    }
+    tags.sort((a, b) => b.timestamp - a.timestamp);
+    return { isRepo: true, tags };
+  } catch (e) {
+    return { isRepo: true, error: String(e.message || e), tags: [] };
+  }
+}
+
+async function createTag(dir, { name, message, oid }) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) return { ok: false, error: '标签名不合法' };
+  try {
+    // oid 省略 → 指向当前 HEAD；有 message → 附注标签，否则轻量标签
+    await git.tag({ fs, dir: root, ref: name, message: message || undefined, object: oid || undefined });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------- 还原提交（git revert：生成反向新提交）----------
+async function revertCommit(dir, oid) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const c = await git.readCommit({ fs, dir: root, oid });
+    const parents = c.commit.parent || [];
+    if (parents.length > 1) return { ok: false, error: '合并提交暂不支持还原' };
+    const parent = parents[0] || null;
+    const [oldTree, newTree] = [await treeFiles(root, parent), await treeFiles(root, oid)];
+    const files = new Set([...Object.keys(oldTree), ...Object.keys(newTree)]);
+    const changed = [];
+    for (const f of files) {
+      if (!(f in oldTree)) changed.push({ file: f, status: 'deleted' });   // 提交里新增 → 还原=删除
+      else if (!(f in newTree)) changed.push({ file: f, status: 'added' });// 提交里删除 → 还原=恢复
+      else if (oldTree[f] !== newTree[f]) changed.push({ file: f, status: 'modified' });
+    }
+    // 涉及文件必须工作区干净（git revert 同样要求）
+    const st = await status(dir);
+    if (st.changed && st.changed.length) {
+      const conflict = st.changed.filter((x) => changed.some((y) => posix(y.file) === posix(x.file)));
+      if (conflict.length) return { ok: false, error: '以下文件有未提交的本地修改，请先提交或回滚：\n' + conflict.map((x) => x.file).join('\n') };
+    }
+    // 生成反向补丁：写回父版本内容 / 删除新增文件
+    for (const ch of changed) {
+      const rel = posix(ch.file);
+      const abs = path.join(root, ch.file);
+      if (ch.status === 'deleted') {
+        fs.rmSync(abs, { force: true });
+        await git.remove({ fs, dir: root, filepath: rel });
+      } else {
+        const { blob } = await git.readBlob({ fs, dir: root, oid: parent, filepath: rel });
+        fs.writeFileSync(abs, Buffer.from(blob));
+        await git.add({ fs, dir: root, filepath: rel });
+      }
+    }
+    const msg = `Revert "${(c.commit.message || '').split('\n')[0]}"\n\nThis reverts commit ${oid}.`;
+    const newOid = await git.commit({ fs, dir: root, message: msg, author: await getAuthor(root) });
+    return { ok: true, oid: newOid, files: changed.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------- 文件历史（log --follow 简化版：改动的提交，不含重命名追踪）----------
+async function logFile(dir, file, limit = 500) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', commits: [] };
+  const rel = posix(String(file).replace(/^[\\/]+/, ''));
+  try {
+    const entries = await git.log({ fs, dir: root, depth: limit });
+    const oidCache = new Map(); // commitOid -> blobOid|null
+    const blobOidAt = async (commitOid) => {
+      if (oidCache.has(commitOid)) return oidCache.get(commitOid);
+      let v = null;
+      try { const r = await git.readBlob({ fs, dir: root, oid: commitOid, filepath: rel }); v = r.oid; } catch {}
+      oidCache.set(commitOid, v);
+      return v;
+    };
+    const commits = [];
+    for (const e of entries) {
+      const cOid = await blobOidAt(e.oid);
+      const hasParent = e.commit.parent && e.commit.parent[0];
+      const pVal = hasParent ? await blobOidAt(e.commit.parent[0]) : '\0'; // 首提交无父 → 必不等 → 视为新增
+      if (cOid !== pVal) {
+        commits.push({
+          oid: e.oid, short: e.oid.slice(0, 7),
+          message: (e.commit.message || '').split('\n')[0],
+          author: e.commit.author.name, email: e.commit.author.email,
+          timestamp: e.commit.author.timestamp * 1000, parents: e.commit.parent,
+        });
+      }
+    }
+    return { isRepo: true, root, file: native(rel), commits };
+  } catch (e) {
+    if (String(e.message || e).includes('HEAD')) return { isRepo: true, commits: [], unborn: true, file: native(rel) };
+    return { isRepo: true, error: String(e.message || e), commits: [], file: native(rel) };
+  }
+}
+
+// ---------- Blame（谁在哪个提交改的这行）----------
+// 算法：正向重放——从最早引入文件的提交开始，逐提交应用 diff，
+// 新增行记为该提交、上下文行携带旧归因；最后叠加未提交的工作区改动（归因 = 未提交）
+async function blame(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  const rel = posix(String(file).replace(/^[\\/]+/, ''));
+  const abs = path.isAbsolute(file) ? file : path.join(root, native(file));
+  const hist = await logFile(dir, rel, 300);
+  if (hist.error) return { error: hist.error };
+  if (!hist.commits.length) {
+    // 无历史（未跟踪/未提交）→ 全部归因为未提交
+    let text = '';
+    try { text = fs.readFileSync(abs, 'utf8'); } catch { return { error: '文件不存在' }; }
+    return {
+      file: native(rel), untracked: true,
+      lines: linesOf(text).map((t) => ({ text: t, commit: null, uncommitted: true })),
+    };
+  }
+  const blobText = async (commitOid) => {
+    try {
+      const { blob } = await git.readBlob({ fs, dir: root, oid: commitOid, filepath: rel });
+      const t = Buffer.from(blob).toString('utf8');
+      return isBinaryText(t) ? null : t;
+    } catch { return null; }
+  };
+  let lines = [];
+  let blames = [];
+  for (const c of [...hist.commits].reverse()) { // 旧 → 新重放
+    const text = await blobText(c.oid);
+    if (text === null) continue;
+    const textLines = linesOf(text);
+    const ops = diffLines(lines.map((l) => l.text).join('\n'), text);
+    const newLines = [], newBlames = [];
+    for (const o of ops) {
+      if (o.type === 'ctx') { newLines.push(lines[o.aLine]); newBlames.push(blames[o.aLine]); }
+      else if (o.type === 'add') { newLines.push({ text: textLines[o.bLine] ?? '' }); newBlames.push(c); }
+    }
+    lines = newLines; blames = newBlames;
+  }
+  // 叠加未提交的工作区改动
+  let workText = null;
+  try {
+    workText = fs.readFileSync(abs, 'utf8');
+    if (isBinaryText(workText)) workText = null;
+  } catch {}
+  if (workText !== null) {
+    const headText = lines.map((l) => l.text).join('\n');
+    if (headText !== workText) {
+      const workLines = linesOf(workText);
+      const ops = diffLines(headText, workText);
+      const newLines = [], newBlames = [];
+      for (const o of ops) {
+        if (o.type === 'ctx') { newLines.push(lines[o.aLine]); newBlames.push(blames[o.aLine]); }
+        else if (o.type === 'add') { newLines.push({ text: workLines[o.bLine] ?? '' }); newBlames.push({ uncommitted: true }); }
+      }
+      lines = newLines; blames = newBlames;
+    }
+  }
+  return {
+    file: native(rel),
+    lines: lines.map((l, i) => ({
+      text: l.text,
+      oid: blames[i] && blames[i].oid, short: blames[i] && blames[i].short,
+      author: blames[i] && blames[i].author, timestamp: blames[i] && blames[i].timestamp,
+      uncommitted: !!(blames[i] && blames[i].uncommitted),
+    })),
+  };
+}
+
+module.exports = {
+  findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo,
+  branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
+  diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
+  listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
+  listTags, createTag, revertCommit, logFile, blame,
+};

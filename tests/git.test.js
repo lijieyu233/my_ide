@@ -407,6 +407,36 @@ fs.mkdirSync(repo);
     assert.strictEqual(delRows.length, 1, 'CRLF 归一化后 diff 只有 1 行删除（不整文件刷屏）, got ' + delRows.length);
   });
 
+  await okAsync('blame：行级作者归属 + 二次修改归属 + 未提交行', async () => {
+    const repo4 = path.join(tmp, 'repo4');
+    fs.mkdirSync(repo4);
+    await G.initRepo(repo4);
+    fs.writeFileSync(path.join(repo4, 'b.txt'), 'l1\nl2\nl3\n');
+    await G.commit(repo4, { message: 'first', files: ['b.txt'] });
+    const c1 = (await G.log(repo4)).commits[0];
+    // 未提交修改：追加两行 → 前 3 行归属 first，后 2 行 uncommitted
+    fs.writeFileSync(path.join(repo4, 'b.txt'), 'l1\nl2\nl3\nl4\nl5\n');
+    let bl = await G.blame(repo4, 'b.txt');
+    assert.strictEqual(bl.lines.length, 5);
+    assert.ok(bl.lines.slice(0, 3).every((l) => l.oid === c1.oid), '原 3 行归属 first 提交');
+    assert.ok(bl.lines.slice(3).every((l) => l.uncommitted), '新增 2 行归属工作区未提交');
+    assert.strictEqual(bl.lines[0].text, 'l1');
+    // 提交修改后再改中间行并提交 → 修改行归属新提交，其余不变
+    await G.commit(repo4, { message: 'second', files: ['b.txt'] });
+    const c2 = (await G.log(repo4)).commits[0];
+    fs.writeFileSync(path.join(repo4, 'b.txt'), 'l1\nL2X\nl3\nl4\nl5\n');
+    await G.commit(repo4, { message: 'third', files: ['b.txt'] });
+    const c3 = (await G.log(repo4)).commits[0];
+    bl = await G.blame(repo4, 'b.txt');
+    assert.strictEqual(bl.lines.length, 5);
+    assert.strictEqual(bl.lines[1].oid, c3.oid, '修改行归属 third 提交');
+    assert.ok(bl.lines.slice(3).every((l) => !l.uncommitted), '无未提交行');
+    assert.ok([0, 2].every((i) => bl.lines[i].oid === c1.oid), '首次提交的行仍归属 first');
+    assert.ok([3, 4].every((i) => bl.lines[i].oid === c2.oid), 'l4/l5 在 second 提交引入，归属 second');
+    assert.strictEqual(bl.lines[1].author, c3.author, '行注解带作者');
+    assert.ok(bl.lines[1].timestamp > 0, '行注解带时间戳');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

@@ -107,10 +107,42 @@ window.CodeEditor = (() => {
     return true;
   }
 
+  // ---------- Git Blame 注解 gutter（PyCharm Annotate 式，viewer 调 setBlame 开关） ----------
+  // Compartment 动态挂载：无 blame 数据时不占 gutter 宽度；编辑文档后由 viewer 主动清空（行号会错位）
+  function blameFmtDate(ts) {
+    const d = new Date(ts || 0); // git blame 行注解的 timestamp 已是毫秒
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
   // ---------- 创建编辑器 ----------
   function create(opts) {
     const parent = opts.parent;
     const lang = codeLangOf(opts.ext);
+    let blameRows = null; // [{ oid, short, author, timestamp, uncommitted }] 按行号索引
+    const blameConf = new State.Compartment();
+    const blameGutter = View.gutter({
+      class: 'cm-blame-gutter',
+      lineMarker(view, line) {
+        if (!blameRows) return null;
+        const row = blameRows[line.number - 1];
+        if (!row) return null;
+        // 同一提交的连续行只标首行（PyCharm 式，避免整屏重复）
+        const prev = blameRows[line.number - 2];
+        if (prev && !row.uncommitted && !prev.uncommitted && row.oid && prev.oid === row.oid) return null;
+        const el = document.createElement('div');
+        el.className = 'cm-blame-item' + (row.uncommitted ? ' uncommitted' : '');
+        if (row.uncommitted) {
+          el.textContent = '未提交';
+          el.title = '工作区未提交的更改';
+        } else {
+          const ds = blameFmtDate(row.timestamp || 0);
+          el.textContent = (row.author || '未知') + ' ' + ds;
+          el.title = (row.author || '') + ' · ' + ds + ' · ' + (row.short || row.oid || '');
+        }
+        return el;
+      },
+    });
     const state = opts.state || EditorState.create({
       doc: opts.doc || '',
       extensions: [
@@ -142,6 +174,7 @@ window.CodeEditor = (() => {
         ]),
         Autocomplete.closeBrackets(),
         Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
+        blameConf.of([]), // Git Blame 注解（setBlame 动态挂载）
         lang || [],
         EditorView.updateListener.of((u) => {
           if (u.docChanged && opts.onChange) opts.onChange(u.state.doc.toString());
@@ -189,6 +222,12 @@ window.CodeEditor = (() => {
         return { from: s.from, to: s.to, head: s.head };
       },
       find() { try { Search.openSearchPanel(view); } catch {} },
+      // Git Blame 注解：rows = git blame 返回的 lines（null 关闭）
+      setBlame(rows) {
+        blameRows = Array.isArray(rows) ? rows : null;
+        view.dispatch({ effects: blameConf.reconfigure(blameRows ? [blameGutter] : []) });
+      },
+      hasBlame() { return !!blameRows; },
       destroy() { try { view.destroy(); } catch {} },
     };
   }

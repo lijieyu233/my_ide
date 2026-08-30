@@ -60,11 +60,14 @@
     <!-- Git 提交工具窗口（PyCharm 式左侧停靠：上半变更文件树 · 下半提交信息；diff 显示在主编辑区） -->
     <div id="panel-git" class="hidden">
       <div class="panel-title">提交
-        <span id="cd-branch" title="点击切换分支"></span>
+        <span id="cd-branch" title="点击切换分支 / 检出标签"></span>
         <span id="cd-dirty"></span>
         <span class="panel-title-actions">
           <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
           <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+          <button id="cd-pull" class="vt-btn" title="拉取（fetch + fast-forward 合并 origin）">⬇ 拉取</button>
+          <button id="cd-push" class="vt-btn" title="推送当前分支到 origin">⬆ 推送</button>
+          <button id="cd-remote" class="vt-btn" title="远程仓库管理（remote / 认证）">🔗</button>
           <button id="cd-refresh" class="vt-btn" title="刷新 Git 状态 (Ctrl+R)">🔄</button>
           <button id="cd-log" class="vt-btn" title="提交历史（Alt+9 / Ctrl+5）">🕘</button>
         </span>
@@ -76,6 +79,7 @@
           <label class="m-check" title="追加到上一次提交（修正提交信息）"><input type="checkbox" id="commit-amend"><span>amend</span></label>
           <span id="commit-count"></span>
           <button class="tb-btn m-ok" id="cm-ok">提交</button>
+          <button class="tb-btn m-ok" id="cm-ok-push" title="提交后推送到 origin (Ctrl+Alt+K)">提交并推送</button>
         </div>
       </div>
     </div>
@@ -163,7 +167,8 @@
       <div id="gl-resizer" title="拖动调整高度"></div>
       <div class="gl-toolbar">
         <input id="gl-author" type="text" placeholder="👤 作者过滤…" spellcheck="false" autocomplete="off">
-        <input id="gl-search" type="text" placeholder="🔍 消息 / 哈希…" spellcheck="false" autocomplete="off">
+        <input id="gl-search" type="text" placeholder="🔍 消息 / 哈希…（/开头=正则）" spellcheck="false" autocomplete="off">
+        <span id="gl-path-chip" class="hidden" title="文件历史过滤：仅显示改动该文件的提交"></span>
         <span class="gl-tb-count" id="gl-count"></span>
         <span class="spacer"></span>
         <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>

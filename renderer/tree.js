@@ -805,6 +805,10 @@ const Tree = (() => {
       });
     });
     if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
+    // Git 文件历史（PyCharm 式：日志窗口过滤到该文件）
+    if (item.type === 'file' && !multi && window.GitLog && GitLog.showFileHistory) {
+      mk('🕘 显示历史', () => GitLog.showFileHistory(item.path));
+    }
     // 文件：以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     if (item.type === 'file' && !multi) {
       const pdir = item.path.replace(/[\\/][^\\/]+$/, '');

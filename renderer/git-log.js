@@ -27,6 +27,7 @@ const GitLog = (() => {
   let selOid = null;
   let selSeq = 0;            // 异步竞态防护：详情请求序号
   let graph = null;          // buildGraph 结果 {rows, maxLanes}
+  let pathFilter = null;     // 文件历史模式：仅显示改动该文件的提交（树右键「显示历史」）
 
   const esc = (s) => GitPanel.esc(s);
   const fmtDate = (ts) => GitPanel.fmtDate(ts);
@@ -186,6 +187,40 @@ const GitLog = (() => {
         `<div class="gl-l2"><span class="gl-hash">${c.short}</span><span class="gl-author">${esc(c.author)}</span><span class="gl-date">${fmtDate(c.timestamp)}</span></div>`;
       el.style.top = '0';
       el.onclick = () => select(c.oid);
+      // 右键：还原此提交 / 新建标签 / 复制哈希（PyCharm 日志右键）
+      el.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        const mk = (label, fn, danger) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (danger ? ' danger' : '');
+          d.textContent = label;
+          d.onclick = () => { menu.classList.add('hidden'); fn(); };
+          menu.appendChild(d);
+        };
+        mk('↩ 还原此提交（Revert）', async () => {
+          const yes = await Modal.confirm('还原提交', `将生成一个反向提交，撤销「${c.message}」的更改。继续吗？`);
+          if (!yes) return;
+          const r = await window.myIDE.git.revert(root, c.oid);
+          if (r.ok) { MI.toast('✅ 已还原 ' + c.short + '（新提交 ' + String(r.oid).slice(0, 7) + '）', 'ok'); refresh(); if (window.GitPanel) GitPanel.refresh(); }
+          else MI.toast('还原失败: ' + r.error, 'err');
+        }, true);
+        mk('🏷 在此提交上新建标签', async () => {
+          const name = await Modal.prompt('新建标签', '标签名（指向提交 ' + c.short + '）', '');
+          if (!name) return;
+          const r = await window.myIDE.git.createTag(root, { name: name.trim(), oid: c.oid });
+          if (r.ok) MI.toast('✅ 已在 ' + c.short + ' 上创建标签 ' + name.trim(), 'ok');
+          else MI.toast('创建失败: ' + r.error, 'err');
+        });
+        mk('📋 复制完整哈希', () => { MI.copyText(c.oid); MI.toast('已复制', 'ok'); });
+        mk('📋 复制提交消息', () => { MI.copyText(c.message); MI.toast('已复制', 'ok'); });
+        menu.classList.remove('hidden');
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+        menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+      };
       rows.appendChild(el);
     });
     listEl.appendChild(rows);
@@ -202,10 +237,17 @@ const GitLog = (() => {
   }
 
   // 作者/搜索过滤：隐藏不匹配行（图不动，保持链条连续）
+  // 搜索支持正则：以 / 开头按正则匹配（如 /bug\s*fix/i），失败回退子串
   function applyFilter() {
     const a = authorQ.trim().toLowerCase();
-    const q = searchQ.trim().toLowerCase();
-    if (!a && !q) {
+    const rawQ = searchQ.trim();
+    let re = null;
+    if (rawQ.startsWith('/')) {
+      const m = rawQ.slice(1).match(/^(.*)\/([imu]*)$/s);
+      if (m) { try { re = new RegExp(m[1], m[2]); } catch { re = null; } }
+    }
+    const q = rawQ.toLowerCase();
+    if (!a && !rawQ) {
       listEl.querySelectorAll('.gl-row').forEach((el) => { el.style.display = ''; });
       return;
     }
@@ -213,7 +255,8 @@ const GitLog = (() => {
       const c = commits.find((x) => x.oid === el.dataset.oid);
       if (!c) return;
       const okA = !a || (c.author + ' ' + (c.email || '')).toLowerCase().includes(a);
-      const okQ = !q || (c.message + ' ' + c.oid).toLowerCase().includes(q);
+      const okQ = !rawQ || (re ? re.test(c.message + ' ' + c.oid + ' ' + c.author)
+        : (c.message + ' ' + c.oid).toLowerCase().includes(q));
       el.style.display = okA && okQ ? '' : 'none';
     });
   }
@@ -306,6 +349,33 @@ const GitLog = (() => {
     if (!root) return;
     const box = listEl.querySelector('.gl-rows');
     if (!box) listEl.innerHTML = '<div class="diff-msg">加载中…</div>';
+    // 文件历史模式（树右键「显示历史」）：数据源换成 logFile
+    const chip = document.getElementById('gl-path-chip');
+    if (pathFilter) {
+      const lf = await window.myIDE.git.logFile(root, pathFilter, limit);
+      if (chip) {
+        chip.classList.remove('hidden');
+        chip.textContent = '📁 ' + pathFilter.split(/[\\/]/).pop() + ' ✕';
+        chip.title = '文件历史：' + pathFilter + '（点击退出文件模式）';
+        chip.onclick = () => { pathFilter = null; selOid = null; refresh(); };
+      }
+      if (!lf.isRepo) {
+        listEl.innerHTML = '<div class="git-empty">' + esc(lf.error || '不是 Git 仓库') + '</div>';
+        return;
+      }
+      commits = lf.commits || [];
+      branchHeads = {};
+      headOid = null;
+      currentBranch = '';
+      truncated = false;
+      if (chip) chip.classList.toggle('hidden', false);
+      graph = buildGraph(commits);
+      renderList();
+      if (!commits.some((c) => c.oid === selOid)) selOid = commits.length ? commits[0].oid : null;
+      if (selOid) select(selOid);
+      return;
+    }
+    if (chip) chip.classList.add('hidden');
     const refArg = refFilter === '__all__' || refFilter === null ? null : refFilter;
     const [lg, br] = await Promise.all([
       window.myIDE.git.logGraph(root, limit, refArg),
@@ -326,6 +396,19 @@ const GitLog = (() => {
     // 恢复/默认选中第一个提交
     if (!commits.some((c) => c.oid === selOid)) selOid = commits.length ? commits[0].oid : null;
     if (selOid) select(selOid);
+  }
+
+  // 文件历史入口（树/标签页右键「显示历史」）：打开日志窗口并过滤到该文件
+  function showFileHistory(file) {
+    if (!root || !file) return;
+    pathFilter = String(file).replace(/\\/g, '/');
+    // 相对化（树传相对路径，其它入口可能传绝对路径）
+    if (pathFilter.toLowerCase().startsWith(String(root).toLowerCase().replace(/\\/g, '/') + '/')) {
+      pathFilter = pathFilter.slice(String(root).replace(/\\/g, '/').length + 1);
+    }
+    selOid = null;
+    if (App.getTool() !== 'log') App.showTool('log');
+    else refresh();
   }
 
   // ---------- 窗口开关 ----------
@@ -443,6 +526,6 @@ const GitLog = (() => {
     try { target.scrollIntoView({ block: 'nearest' }); } catch {}
   });
 
-  return { open, hide, toggle, isOpen, refresh, setRoot, buildGraph };
+  return { open, hide, toggle, isOpen, refresh, setRoot, buildGraph, showFileHistory };
 })();
 window.GitLog = GitLog;

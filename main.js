@@ -812,6 +812,19 @@ ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
 ipcMain.handle('git:discardFiles', (_e, dir, files) => gitCall('discardFiles', dir, files));
 ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
 ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
+// 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 一、二期）
+ipcMain.handle('git:listRemotes', (_e, dir) => gitCall('listRemotes', dir));
+ipcMain.handle('git:addRemote', (_e, dir, cfg) => gitCall('addRemote', dir, cfg));
+ipcMain.handle('git:removeRemote', (_e, dir, name) => gitCall('removeRemote', dir, name));
+ipcMain.handle('git:fetch', (_e, dir, opts) => gitCall('fetchRemote', dir, opts));
+ipcMain.handle('git:pull', (_e, dir, opts) => gitCall('pullRemote', dir, opts));
+ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
+ipcMain.handle('git:aheadBehind', (_e, dir) => gitCall('aheadBehind', dir));
+ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
+ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
+ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
+ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
+ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();

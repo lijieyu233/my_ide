@@ -17,6 +17,7 @@ const GitPanel = (() => {
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
     syncChecked();
     render();
+    updateAheadBehind();
     App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
     // 文件树 Git 状态着色（PyCharm 式）
     const statusMap = {};
@@ -36,8 +37,117 @@ const GitPanel = (() => {
     knownFiles = cur;
   }
 
-  // ---------- 面板开/关（纳入工具窗口互斥体系） ----------
-  function isOpen() { return App.getTool() === 'git'; }
+  // ---------- 远程凭证（localStorage myide-git-auth：用户名 + 密码/令牌）----------
+  function getGitAuth() {
+    try { return JSON.parse(localStorage.getItem('myide-git-auth') || 'null'); } catch { return null; }
+  }
+  function saveGitAuth(a) {
+    try { localStorage.setItem('myide-git-auth', JSON.stringify(a || null)); } catch {}
+  }
+
+  // ---------- 远程管理弹窗（remote 列表 + 新增 + 认证凭证）----------
+  async function openRemoteDialog() {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    const r = await window.myIDE.git.listRemotes(root);
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    const box = document.createElement('div');
+    box.id = 'br-box';
+    Modal.show(box);
+    const auth = getGitAuth() || {};
+    box.innerHTML = `
+      <div class="m-head">远程仓库 <span class="x" id="rm-x">✕</span></div>
+      <div class="m-body">
+        <div id="rm-list" style="max-height:180px;overflow:auto"></div>
+        <div class="br-new" style="margin-top:8px">
+          <input id="rm-name" type="text" value="origin" spellcheck="false" style="width:90px" title="远程名">
+          <input id="rm-url" type="text" placeholder="远程 URL（https://… 或本地路径）" spellcheck="false" style="flex:1">
+          <button class="tb-btn" id="rm-add">＋ 添加</button>
+        </div>
+        <div style="border-top:1px solid var(--border-mid);margin:10px 0;padding-top:10px">
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">推送/拉取认证（私有仓库的用户名 + 密码/令牌）</div>
+          <div class="br-new">
+            <input id="rm-user" type="text" placeholder="用户名" spellcheck="false" value="${esc(auth.username || '')}" style="flex:1">
+            <input id="rm-pass" type="password" placeholder="密码 / 访问令牌" spellcheck="false" value="${esc(auth.password || '')}" style="flex:1">
+          </div>
+          <button class="tb-btn" id="rm-save-auth" style="margin-top:6px">保存认证</button>
+        </div>
+      </div>`;
+    document.getElementById('rm-x').onclick = () => Modal.hide();
+    const list = document.getElementById('rm-list');
+    const renderList = async () => {
+      const rr = await window.myIDE.git.listRemotes(root);
+      list.innerHTML = '';
+      if (!rr.remotes || !rr.remotes.length) {
+        list.innerHTML = '<div class="git-empty">暂无远程仓库</div>';
+        return;
+      }
+      for (const rm of rr.remotes) {
+        const row = document.createElement('div');
+        row.className = 'br-item';
+        row.innerHTML = `<span class="rm-name">${esc(rm.name)}</span><span class="rm-url" title="${esc(rm.url)}">${esc(rm.url)}</span><span class="rm-del" title="删除该远程">✕</span>`;
+        row.querySelector('.rm-del').onclick = async () => {
+          const yes = await Modal.confirm('删除远程', `确定删除远程「${rm.name}」吗？`);
+          if (!yes) return;
+          const dr = await window.myIDE.git.removeRemote(root, rm.name);
+          if (dr.ok) { MI.toast('已删除 ' + rm.name, 'ok'); renderList(); refresh(); }
+          else MI.toast('删除失败: ' + dr.error, 'err');
+        };
+        list.appendChild(row);
+      }
+    };
+    renderList();
+    document.getElementById('rm-add').onclick = async () => {
+      const name = document.getElementById('rm-name').value.trim();
+      const url = document.getElementById('rm-url').value.trim();
+      const ar = await window.myIDE.git.addRemote(root, { name, url });
+      if (ar.ok) { MI.toast('已添加远程 ' + name, 'ok'); document.getElementById('rm-url').value = ''; renderList(); }
+      else MI.toast('添加失败: ' + ar.error, 'err');
+    };
+    document.getElementById('rm-save-auth').onclick = () => {
+      saveGitAuth({
+        username: document.getElementById('rm-user').value.trim(),
+        password: document.getElementById('rm-pass').value,
+      });
+      MI.toast('认证已保存', 'ok');
+    };
+  }
+
+  // ---------- 拉取 / 推送 ----------
+  let syncing = false;
+  async function doPull() {
+    if (!root || syncing) return;
+    syncing = true;
+    MI.toast('拉取中…');
+    const r = await window.myIDE.git.pull(root, { auth: getGitAuth() });
+    syncing = false;
+    if (r.ok) { MI.toast('✅ 已拉取', 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
+    else MI.toast('拉取失败: ' + r.error, 'err');
+  }
+  async function doPush(silent) {
+    if (!root || syncing) return false;
+    syncing = true;
+    if (!silent) MI.toast('推送中…');
+    const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
+    syncing = false;
+    if (r.ok) { MI.toast('✅ 已推送到 origin', 'ok'); refresh(); return true; }
+    else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
+  }
+
+  // ahead/behind 显示（标题栏 dirty 区域）+ 状态栏
+  async function updateAheadBehind() {
+    if (!root) return;
+    const r = await window.myIDE.git.aheadBehind(root);
+    if (!r || !r.branch) return;
+    const el = document.getElementById('cd-dirty');
+    if (!el) return;
+    const ab = [];
+    if (r.ahead) ab.push('↑' + r.ahead);
+    if (r.behind) ab.push('↓' + r.behind);
+    const changedN = state && state.changed ? state.changed.length : 0;
+    el.textContent = [ab.join(' '), changedN ? changedN + ' 处修改' : ''].filter(Boolean).join(' · ');
+    el.dataset.ahead = r.ahead == null ? '' : String(r.ahead);
+    el.dataset.behind = r.behind == null ? '' : String(r.behind);
+  }
 
   function openCommit() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
@@ -76,11 +186,9 @@ const GitPanel = (() => {
       };
       return;
     }
-    // 标题栏分支信息
+    // 标题栏分支信息（修改数/ahead-behind 由 updateAheadBehind 统一渲染）
     const br = document.getElementById('cd-branch');
     if (br) br.textContent = '⎇ ' + state.branch;
-    const dirty = document.getElementById('cd-dirty');
-    if (dirty) dirty.textContent = state.changed.length ? state.changed.length + ' 处修改' : '';
 
     // 工具栏：全选 · 回滚选中 · 显示差异
     const bar = document.createElement('div');
@@ -293,7 +401,7 @@ const GitPanel = (() => {
   }
 
   // ---------- 提交 ----------
-  async function doCommit() {
+  async function doCommit(pushAfter) {
     if (!root || !state || !state.isRepo) return;
     const files = [...checked];
     if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
@@ -312,6 +420,7 @@ const GitPanel = (() => {
       MI.toast('✅ 已提交 ' + r.oid.slice(0, 7) + '：' + text, 'ok');
       await refresh();
       if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
+      if (pushAfter) await doPush(); // 提交并推送（PyCharm Ctrl+Alt+K）
     } else {
       MI.toast('提交失败: ' + r.error, 'err');
     }
@@ -378,13 +487,14 @@ const GitPanel = (() => {
     box.id = 'br-box';
     Modal.show(box);
     box.innerHTML = `
-      <div class="m-head">🔀 分支 <span class="x" id="br-x">✕</span></div>
+      <div class="m-head">🔀 分支与标签 <span class="x" id="br-x">✕</span></div>
       <div class="m-body">
         <div class="br-new">
           <input id="br-new-input" type="text" placeholder="新建分支名…" spellcheck="false">
           <button class="tb-btn" id="br-new-btn">＋ 新建</button>
         </div>
-        <div id="br-list" style="max-height:300px;overflow:auto"></div>
+        <div id="br-list" style="max-height:240px;overflow:auto"></div>
+        <div id="br-tags" style="border-top:1px solid var(--border-mid);margin-top:8px;padding-top:8px;max-height:180px;overflow:auto"></div>
       </div>`;
     document.getElementById('br-x').onclick = () => Modal.hide();
     const newInput = document.getElementById('br-new-input');
@@ -404,6 +514,42 @@ const GitPanel = (() => {
     };
     newInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') newBtn.click(); });
     const list = document.getElementById('br-list');
+    // 标签区（点击 checkout 到该标签，detached HEAD）
+    const tagsBox = document.getElementById('br-tags');
+    const tr = await window.myIDE.git.listTags(root);
+    if (tagsBox) {
+      tagsBox.innerHTML = '';
+      const tHead = document.createElement('div');
+      tHead.style.cssText = 'font-size:12px;color:var(--text-dim);margin-bottom:4px';
+      tHead.textContent = '标签' + (tr.tags && tr.tags.length ? ' (' + tr.tags.length + ')' : '');
+      tagsBox.appendChild(tHead);
+      if (!tr.tags || !tr.tags.length) {
+        const d = document.createElement('div');
+        d.className = 'git-empty';
+        d.textContent = '暂无标签';
+        tagsBox.appendChild(d);
+      } else {
+        for (const t of tr.tags.slice(0, 50)) {
+          const row = document.createElement('div');
+          row.className = 'br-item';
+          row.innerHTML = `<span style="color:var(--accent)">🏷</span><span class="rm-name">${esc(t.name)}</span>` +
+            `<span class="rm-url" title="${esc(t.message || '')}">${esc(t.message || '')}</span><span class="gl-date" style="margin-left:auto">${fmtDate(t.timestamp)}</span>`;
+          row.title = '点击检出（detached）：' + t.name;
+          row.onclick = async () => {
+            const cr = await window.myIDE.git.checkout(root, t.name);
+            if (cr.ok) {
+              Modal.hide();
+              MI.toast('✅ 已检出到标签 ' + t.name + '（detached HEAD）', 'ok');
+              refresh();
+              afterSwitch();
+            } else {
+              MI.toast('检出失败: ' + cr.error, 'err');
+            }
+          };
+          tagsBox.appendChild(row);
+        }
+      }
+    }
     if (!r.branches.length) {
       list.innerHTML = '<div class="git-empty">暂无分支</div>';
       return;
@@ -668,13 +814,21 @@ const GitPanel = (() => {
       msg.value = commitMsg;
       msg.addEventListener('input', () => { commitMsg = msg.value; });
       msg.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCommit(); }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCommit(false); }
       });
     }
     const ok = document.getElementById('cm-ok');
-    if (ok) ok.onclick = doCommit;
+    if (ok) ok.onclick = () => doCommit(false);
+    const okp = document.getElementById('cm-ok-push');
+    if (okp) okp.onclick = () => doCommit(true);
     const rf = document.getElementById('cd-refresh');
     if (rf) rf.onclick = () => refresh();
+    const pull = document.getElementById('cd-pull');
+    if (pull) pull.onclick = doPull;
+    const push = document.getElementById('cd-push');
+    if (push) push.onclick = () => doPush();
+    const rmt = document.getElementById('cd-remote');
+    if (rmt) rmt.onclick = openRemoteDialog;
     const lg = document.getElementById('cd-log');
     if (lg) lg.onclick = () => App.showTool('log');
     const br = document.getElementById('cd-branch');
@@ -682,9 +836,17 @@ const GitPanel = (() => {
   }
   init();
 
+  // 提交工具窗口是否可见（App 处于 git 态；测试环境无 App 时回退查 DOM）
+  function isOpen() {
+    if (window.App && App.getTool) return App.getTool() === 'git';
+    const p = document.getElementById('panel-git');
+    return !!p && !p.classList.contains('hidden');
+  }
+
   return {
-    refresh, openCommit, closeDialog, isOpen, openBranchDialog, cancelDiff,
+    refresh, openCommit, closeDialog, isOpen, openBranchDialog, openRemoteDialog, cancelDiff,
     buildDiffTable, makeHunkNav, renderDiffView, closeDiffView, esc, fmtDate, countAdd, countDel,
+    doPull, doPush, updateAheadBehind,
     set rootDir(v) { root = v; },
   };
 })();
