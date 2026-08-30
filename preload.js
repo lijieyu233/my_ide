@@ -112,7 +112,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     deleteRows: (id, table, pk, pkRows) => ipcRenderer.invoke('db:deleteRows', id, table, pk, pkRows),
     insertRow: (id, table, cols, vals) => ipcRenderer.invoke('db:insertRow', id, table, cols, vals),
     ddl: (id, table) => ipcRenderer.invoke('db:ddl', id, table),
-    exportCsv: (id, table, filePath) => ipcRenderer.invoke('db:exportCsv', id, table, filePath),
+    explain: (id, sql) => ipcRenderer.invoke('db:explain', id, sql),
+    exportCsv: (id, table, filePath, format) => ipcRenderer.invoke('db:exportCsv', id, table, filePath, format),
     importCsv: (id, table, filePath) => ipcRenderer.invoke('db:importCsv', id, table, filePath),
   },
 });

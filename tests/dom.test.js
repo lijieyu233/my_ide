@@ -149,6 +149,7 @@ function makeDom() {
       deleteRows: async () => ({ ok: true }),
       insertRow: async () => ({ ok: true }),
       ddl: async () => ({ ok: true, data: { ddl: 'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)' } }),
+      explain: async () => ({ ok: true, data: { ok: 'select', columns: ['id', 'detail'], rows: [{ id: 1, detail: 'SCAN TABLE users' }] } }),
       exportCsv: async () => ({ ok: true, data: { rows: 1, file: 'C:/t.csv' } }),
       importCsv: async () => ({ ok: true, data: { inserted: 1 } }),
     },
@@ -3042,12 +3043,37 @@ assert_(panel, 'CM6 搜索面板出现');
     const ddlPre = $(dom, '#db-ddl .db-ddl-pre');
     assert_(ddlPre && ddlPre.textContent.includes('CREATE TABLE'), '结构页显示 DDL');
     assert_($allIn($(dom, '#db-ddl'), 'table.db-grid th').length >= 4, '结构页列定义表');
-    // SQL 标签：编辑器容器（CodeEditor 未加载时回退 textarea）+ 运行按钮
+    // SQL 标签：编辑器容器 + 运行按钮
+    // 禁用 CodeEditor 并移除预建的 wrap，强制 renderSql 走 textarea 回退路径（可注入值测 EXPLAIN/历史）
+    const savedCE = dom.window.CodeEditor;
+    dom.window.CodeEditor = undefined;
+    const oldWrap = $(dom, '#db-sql-input-wrap');
+    if (oldWrap) oldWrap.remove();
     click($(dom, '#db-tab-sql'));
+    await tick();
     await tick();
     assert_(!$(dom, '#db-sql').classList.contains('hidden'), 'SQL 标签页可见');
     assert_($(dom, '#db-sql-input-wrap'), 'SQL 编辑器容器存在');
     assert_($(dom, '#db-sql-run'), '运行按钮存在');
+    assert_($(dom, '#db-sql-explain'), 'EXPLAIN 按钮存在');
+    assert_($(dom, '#db-sql-history'), '历史按钮存在');
+    // EXPLAIN：填入 SELECT 后结果区渲染计划表格
+    const ta = $(dom, '#db-sql-input');
+    if (ta) ta.value = 'SELECT * FROM users';
+    click($(dom, '#db-sql-explain'));
+    await tick(); await tick();
+    assert_($(dom, '#db-sql-result table.db-grid'), 'EXPLAIN 结果渲染表格');
+    // 查询历史：运行后记录 + 历史弹窗可打开并载入
+    click($(dom, '#db-sql-run'));
+    await tick(); await tick();
+    click($(dom, '#db-sql-history'));
+    await tick();
+    const qhItems = dom.window.document.querySelectorAll('.qh-item');
+    assert_(qhItems.length >= 1, '历史弹窗列出执行记录, got ' + qhItems.length);
+    click(qhItems[0]);
+    await tick();
+    assert_($(dom, '#db-sql-input') && $(dom, '#db-sql-input').value.includes('SELECT'), '点击历史载入编辑器');
+    dom.window.CodeEditor = savedCE; // 恢复
     // 切回数据标签
     click($(dom, '#db-tab-data'));
     await tick();

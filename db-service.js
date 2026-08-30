@@ -127,6 +127,17 @@ function packResult(cols, values) {
   return { columns: cols, rows };
 }
 
+// ---------- EXPLAIN 执行计划（SELECT 语句前面加 EXPLAIN；SQLite 用 QUERY PLAN 形式） ----------
+async function explain(id, sql) {
+  const c = typeOf(id);
+  const s = String(sql || '').trim().replace(/;+\s*$/, '');
+  if (!s) throw new Error('SQL 为空');
+  if (!/^SELECT\b/i.test(s)) throw new Error('EXPLAIN 仅支持 SELECT 语句');
+  const plan = c.type === 'mysql' ? 'EXPLAIN ' + s : 'EXPLAIN QUERY PLAN ' + s;
+  const r = await query(id, plan, []);
+  return r; // { columns, rows, ok: 'select' }
+}
+
 async function query(id, sql, params) {
   const c = typeOf(id);
   if (c.type === 'mysql') {
@@ -233,27 +244,50 @@ function csvCell(v) {
   return s;
 }
 
-async function exportCsv(id, table, filePath) {
+// SQL INSERT 值字面量：字符串加引号（内部单引号翻倍）、NULL 原样、数字/其他原样
+function sqlLiteral(v) {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+  return "'" + String(v).replace(/'/g, "''") + "'";
+}
+
+// 通用导出：format = 'csv' | 'json' | 'sql'（分页流式读全表，上限 20 万行）
+async function exportCsv(id, table, filePath, format) {
   const c = typeOf(id);
+  const fmt = String(format || 'csv').toLowerCase();
+  if (!['csv', 'json', 'sql'].includes(fmt)) throw new Error('不支持的导出格式：' + fmt);
   if (!filePath) throw new Error('未指定导出路径');
   const PAGE = 500;
   const out = [];
   let page = 1;
   let cols = null;
   let total = 0;
+  const colQ = () => cols.map((x) => qid(c.type, x)).join(', ');
   for (;;) {
     const r = await query(id, 'SELECT * FROM ' + qid(c.type, table) + ' LIMIT ? OFFSET ?', [PAGE, (page - 1) * PAGE]);
     if (!cols) {
       cols = r.columns || [];
-      out.push('\ufeff' + cols.map(csvCell).join(',')); // BOM：Excel 直开不乱码
+      if (fmt === 'csv') out.push('\ufeff' + cols.map(csvCell).join(',')); // BOM：Excel 直开不乱码
+      if (fmt === 'json') out.push('[\n');
+      if (fmt === 'sql') out.push('-- 表 ' + table + ' 的数据（' + colQ() + '）\n');
     }
-    for (const row of r.rows) out.push(cols.map((k) => csvCell(row[k])).join(','));
+    for (const row of r.rows) {
+      if (fmt === 'csv') out.push(cols.map((k) => csvCell(row[k])).join(','));
+      else if (fmt === 'json') out.push(JSON.stringify(row) + ',\n');
+      else out.push('INSERT INTO ' + qid(c.type, table) + ' (' + colQ() + ') VALUES (' + cols.map((k) => sqlLiteral(row[k])).join(', ') + ');\n');
+    }
     total += r.rows.length;
     if (r.rows.length < PAGE) break;
     page++;
     if (total >= 200000) break; // 安全上限
   }
-  fs.writeFileSync(filePath, out.join('\r\n'), 'utf8');
+  let text;
+  if (fmt === 'csv') text = out.join('\r\n');
+  else if (fmt === 'json') {
+    if (!total) text = '[]';
+    else text = out.join('').replace(/,\n$/, '\n') + ']';
+  } else text = out.join('');
+  fs.writeFileSync(filePath, text, 'utf8');
   return { rows: total, file: filePath };
 }
 
@@ -318,13 +352,16 @@ async function importCsv(id, table, filePath) {
       throw e;
     }
   }
-  const ph = cols.map(() => '?').join(', ');
-  const sql = 'INSERT INTO ' + qid('mysql', table) + ' (' + cols.map((x) => qid('mysql', x)).join(', ') + ') VALUES (' + ph + ')';
-  for (let i = 1; i < rows.length; i++) {
-    const vals = cols.map((_, j) => (rows[i][j] === '' ? null : rows[i][j]));
-    await c.mysql.query(sql, vals);
+  // MySQL：多值批量 INSERT（100 行/批，参数化），千行级导入快一个数量级
+  const BATCH = 100;
+  const oneRow = '(' + cols.map(() => '?').join(', ') + ')';
+  const head = 'INSERT INTO ' + qid('mysql', table) + ' (' + cols.map((x) => qid('mysql', x)).join(', ') + ') VALUES ';
+  const dataRows = rows.slice(1).map((r) => cols.map((_, j) => (r[j] === '' ? null : r[j])));
+  for (let i = 0; i < dataRows.length; i += BATCH) {
+    const chunk = dataRows.slice(i, i + BATCH);
+    await c.mysql.query(head + Array(chunk.length).fill(oneRow).join(', '), [].concat(...chunk));
   }
-  return { inserted: rows.length - 1 };
+  return { inserted: dataRows.length };
 }
 
 // ---------- IPC 注册 ----------
@@ -344,6 +381,7 @@ function registerIpc() {
   ipcMain.handle('db:deleteRows', wrap(deleteRows));
   ipcMain.handle('db:insertRow', wrap(insertRow));
   ipcMain.handle('db:ddl', wrap(tableDdl));
+  ipcMain.handle('db:explain', wrap(explain));
   ipcMain.handle('db:exportCsv', wrap(exportCsv));
   ipcMain.handle('db:importCsv', wrap(importCsv));
 }

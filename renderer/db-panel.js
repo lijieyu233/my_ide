@@ -236,7 +236,9 @@ window.DbPanel = (() => {
       <button class="vt-btn" id="db-add-row" title="插入一行（表单填写）">＋ 行</button>
       <button class="vt-btn" id="db-del-row" title="删除勾选的行">－ 行</button>
       <button class="vt-btn" id="db-import-csv" title="从 CSV 文件导入数据（首行须为表头）">📥 导入</button>
-      <button class="vt-btn" id="db-export-csv" title="导出当前表全部数据为 CSV">📤 导出</button>
+      <button class="vt-btn" id="db-export-csv" title="导出当前表全部数据为 CSV（Excel 直开）">📤 CSV</button>
+      <button class="vt-btn" id="db-export-json" title="导出为 JSON 数组文件">📤 JSON</button>
+      <button class="vt-btn" id="db-export-sql" title="导出为 SQL INSERT 语句（可重放）">📤 SQL</button>
       <button class="vt-btn" id="db-refresh" title="刷新当前页">🔄</button>`;
     el.appendChild(head);
 
@@ -326,7 +328,9 @@ window.DbPanel = (() => {
     head.querySelector('#db-refresh').onclick = () => loadData();
     head.querySelector('#db-del-row').onclick = deleteSelected;
     head.querySelector('#db-add-row').onclick = insertRowForm;
-    head.querySelector('#db-export-csv').onclick = () => exportCsv();
+    head.querySelector('#db-export-csv').onclick = () => exportCsv('csv');
+    head.querySelector('#db-export-json').onclick = () => exportCsv('json');
+    head.querySelector('#db-export-sql').onclick = () => exportCsv('sql');
     head.querySelector('#db-import-csv').onclick = () => importCsv();
   }
 
@@ -459,12 +463,136 @@ window.DbPanel = (() => {
     return { from: word.from, options };
   }
 
+  // ---------- 查询历史（localStorage 持久化，上限 50 条） ----------
+  const HIST_KEY = 'myide-db-sql-history';
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch { return []; }
+  }
+  function saveHistoryEntry(sql, ok) {
+    if (!sql) return;
+    try {
+      const h = loadHistory().filter((x) => x.sql !== sql); // 去重（最新在前）
+      h.unshift({ sql, ts: Date.now(), ok: !!ok });
+      localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, 50)));
+    } catch {}
+  }
+
+  // 取当前编辑器中的 SQL（选中片段优先）
+  function currentSql() {
+    if (sqlCm) {
+      const sel = sqlCm.getSelection();
+      const all = sqlCm.getValue();
+      return (sel && sel.from !== sel.to ? all.slice(sel.from, sel.to) : all).trim();
+    }
+    const ta = document.getElementById('db-sql-input');
+    if (!ta) return '';
+    return (ta.value.slice(ta.selectionStart, ta.selectionEnd).trim() || ta.value.trim());
+  }
+  function setSql(text) {
+    sqlText = text;
+    if (sqlCm) sqlCm.setValue(text);
+    else { const ta = document.getElementById('db-sql-input'); if (ta) ta.value = text; }
+  }
+
+  // 结果表格渲染（runSql / EXPLAIN 共用）
+  function renderRows(out, r) {
+    out.innerHTML = '';
+    if (!r.rows.length) { out.innerHTML = '<div class="db-hint">✅ 无结果行</div>'; return; }
+    const table = document.createElement('table');
+    table.className = 'db-grid';
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    r.columns.forEach((c) => { const th = document.createElement('th'); th.textContent = c; hr.appendChild(th); });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    r.rows.slice(0, 1000).forEach((row) => {
+      const tr = document.createElement('tr');
+      r.columns.forEach((c) => {
+        const td = document.createElement('td');
+        const v = row[c];
+        td.textContent = v === null || v === undefined ? 'NULL' : String(v);
+        if (v == null) td.classList.add('db-null');
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    out.appendChild(table);
+    if (r.rows.length > 1000) {
+      const more = document.createElement('div');
+      more.className = 'db-hint';
+      more.textContent = '（仅显示前 1000 行，共 ' + r.rows.length + ' 行）';
+      out.appendChild(more);
+    }
+  }
+
+  // EXPLAIN 执行计划：SELECT 前加 EXPLAIN，结果表格化显示
+  async function runExplain() {
+    if (!connId) { MI.toast('先连接数据库', 'err'); return; }
+    const sql = currentSql();
+    if (!sql) { MI.toast('SQL 为空', 'err'); return; }
+    const out = document.getElementById('db-sql-result');
+    out.innerHTML = '<div class="db-hint">分析中…</div>';
+    const r = await call('explain', connId, sql);
+    if (!r) { out.innerHTML = '<div class="db-hint db-err">EXPLAIN 执行失败</div>'; return; }
+    const bar = document.createElement('div');
+    bar.className = 'db-hint';
+    bar.style.padding = '4px 10px';
+    bar.textContent = '⚡ 执行计划（' + (connCfg && connCfg.type === 'mysql' ? 'MySQL EXPLAIN' : 'SQLite EXPLAIN QUERY PLAN') + '）';
+    out.innerHTML = '';
+    out.appendChild(bar);
+    const grid = document.createElement('div');
+    grid.className = 'db-grid-wrap';
+    grid.style.borderTop = '1px solid var(--border-mid)';
+    out.appendChild(grid);
+    renderRows(grid, r);
+  }
+
+  // 历史弹窗：点击条目载入编辑器，Ctrl 重跑
+  function openHistory() {
+    const h = loadHistory();
+    const box = document.createElement('div');
+    box.id = 'br-box';
+    Modal.show(box);
+    box.innerHTML = `
+      <div class="m-head">查询历史 <span class="x" id="qh-x">✕</span></div>
+      <div class="m-body">
+        ${!h.length ? '<div class="db-hint">暂无执行记录（运行 SQL 后自动保存，上限 50 条）</div>' : ''}
+        <div id="qh-list" style="max-height:400px;overflow:auto"></div>
+        ${h.length ? '<div style="margin-top:8px;text-align:right"><button class="tb-btn" id="qh-clear" style="color:var(--danger,#e06c75)">清空历史</button></div>' : ''}
+      </div>`;
+    const list = box.querySelector('#qh-list');
+    h.forEach((it, idx) => {
+      const d = document.createElement('div');
+      d.className = 'qh-item' + (it.ok ? '' : ' qh-err');
+      d.title = '点击载入编辑器';
+      const t = new Date(it.ts);
+      const p = (n) => String(n).padStart(2, '0');
+      const short = it.sql.length > 120 ? it.sql.slice(0, 120) + '…' : it.sql;
+      d.innerHTML = `<span class="qh-dot">${it.ok ? '✅' : '❌'}</span>
+        <span class="qh-sql">${escapeHtml(short)}</span>
+        <span class="qh-ts">${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}</span>`;
+      d.onclick = () => {
+        setSql(it.sql);
+        Modal.close();
+        if (tab !== 'sql') switchTab('sql');
+        MI.toast('已载入历史 SQL', 'ok');
+      };
+      list.appendChild(d);
+    });
+    const clr = box.querySelector('#qh-clear');
+    if (clr) clr.onclick = () => { localStorage.removeItem(HIST_KEY); Modal.close(); MI.toast('历史已清空', 'ok'); };
+  }
+
   function renderSql() {
     const el = document.getElementById('db-sql');
     el.innerHTML = `
       <div class="db-sql-bar">
         <span class="db-sql-hint">Ctrl+Enter 运行 · 选中片段仅执行选中部分 · 输入表名/列名有补全</span>
         <span class="spacer"></span>
+        <button class="vt-btn" id="db-sql-explain" title="执行计划（对当前 SELECT 跑 EXPLAIN）">⚡ EXPLAIN</button>
+        <button class="vt-btn" id="db-sql-history" title="查询历史（最近 50 条，点击载入）">🕘 历史</button>
         <button class="vt-btn" id="db-sql-run" title="运行 SQL (Ctrl+Enter)">▶ 运行</button>
         <button class="vt-btn" id="db-sql-clear" title="清空">✕</button>
       </div>
@@ -495,63 +623,25 @@ window.DbPanel = (() => {
       wrap.appendChild(ta);
     }
     el.querySelector('#db-sql-run').onclick = runSql;
-    el.querySelector('#db-sql-clear').onclick = () => {
-      if (sqlCm) { sqlCm.setValue(''); }
-      else { const ta = el.querySelector('#db-sql-input'); if (ta) ta.value = ''; }
-      sqlText = '';
-    };
+    el.querySelector('#db-sql-explain').onclick = runExplain;
+    el.querySelector('#db-sql-history').onclick = openHistory;
+    el.querySelector('#db-sql-clear').onclick = () => setSql('');
   }
 
   async function runSql() {
     if (!connId) { MI.toast('先连接数据库', 'err'); return; }
-    let sql = '';
-    if (sqlCm) {
-      const sel = sqlCm.getSelection();
-      const all = sqlCm.getValue();
-      sql = (sel && sel.from !== sel.to ? all.slice(sel.from, sel.to) : all).trim();
-    } else {
-      const ta = document.getElementById('db-sql-input');
-      sql = (ta.value.slice(ta.selectionStart, ta.selectionEnd).trim() || ta.value.trim());
-    }
+    const sql = currentSql();
     if (!sql) { MI.toast('SQL 为空', 'err'); return; }
     const out = document.getElementById('db-sql-result');
     out.innerHTML = '<div class="db-hint">执行中…</div>';
     const r = await call('query', connId, sql, []);
+    saveHistoryEntry(sql, !!r);
     if (!r) { out.innerHTML = '<div class="db-hint db-err">执行失败</div>'; return; }
     if (r.ok === 'write') {
       out.innerHTML = '<div class="db-hint">✅ 执行成功' + (r.affected != null ? '（影响 ' + r.affected + ' 行' + (r.insertId ? '，ID=' + r.insertId : '') + '）' : '') + '</div>';
       return;
     }
-    // SELECT 结果表格
-    out.innerHTML = '';
-    if (!r.rows.length) { out.innerHTML = '<div class="db-hint">✅ 无结果行</div>'; return; }
-    const table = document.createElement('table');
-    table.className = 'db-grid';
-    const thead = document.createElement('thead');
-    const hr = document.createElement('tr');
-    r.columns.forEach((c) => { const th = document.createElement('th'); th.textContent = c; hr.appendChild(th); });
-    thead.appendChild(hr);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    r.rows.slice(0, 1000).forEach((row) => {
-      const tr = document.createElement('tr');
-      r.columns.forEach((c) => {
-        const td = document.createElement('td');
-        const v = row[c];
-        td.textContent = v === null || v === undefined ? 'NULL' : String(v);
-        if (v == null) td.classList.add('db-null');
-        tr.appendChild(td);
-      });
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    out.appendChild(table);
-    if (r.rows.length > 1000) {
-      const more = document.createElement('div');
-      more.className = 'db-hint';
-      more.textContent = '（仅显示前 1000 行，共 ' + r.rows.length + ' 行）';
-      out.appendChild(more);
-    }
+    renderRows(out, r);
   }
 
   function escapeHtml(s) {
@@ -605,15 +695,22 @@ window.DbPanel = (() => {
   }
 
   // ---------- CSV 导出 / 导入 ----------
-  async function exportCsv() {
+  // 导出（fmt: 'csv' | 'json' | 'sql'）：JSON 为数组文件，SQL 为可重放的 INSERT 语句
+  async function exportCsv(fmt) {
     if (!connId || !curTable) { MI.toast('先选择一个表', 'err'); return; }
-    const file = await window.myIDE.fs.pickSave('导出 CSV', curTable + '.csv',
-      [{ name: 'CSV 文件', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }]);
+    const FMTS = {
+      csv: { ext: 'csv', name: 'CSV 文件', label: 'CSV' },
+      json: { ext: 'json', name: 'JSON 文件', label: 'JSON' },
+      sql: { ext: 'sql', name: 'SQL 文件', label: 'SQL' },
+    };
+    const f = FMTS[fmt] || FMTS.csv;
+    const file = await window.myIDE.fs.pickSave('导出 ' + f.label, curTable + '.' + f.ext,
+      [{ name: f.name, extensions: [f.ext] }, { name: '所有文件', extensions: ['*'] }]);
     if (!file) return;
     MI.toast('正在导出 ' + curTable + '…', 'ok');
-    const r = await call('exportCsv', connId, curTable, file);
+    const r = await call('exportCsv', connId, curTable, file, fmt);
     if (!r) return;
-    MI.toast('已导出 ' + r.rows + ' 行 → ' + file, 'ok');
+    MI.toast('已导出 ' + r.rows + ' 行（' + f.label + '）→ ' + file, 'ok');
   }
 
   async function importCsv() {

@@ -133,6 +133,33 @@ function ok(cond, msg) {
   after = (await invoke('db:select', id, 'notes', 1, 50)).data.total;
   ok(after === before + 2, '失败导入不残留数据（事务回滚）');
 
+  // 14b) EXPLAIN 执行计划（仅 SELECT；非 SELECT 报错）
+  r = await invoke('db:explain', id, 'SELECT * FROM notes WHERE id = 1');
+  ok(r.ok && r.data.ok === 'select' && r.data.rows.length > 0, 'EXPLAIN：SELECT 返回计划行');
+  ok(r.data.columns.length > 0, 'EXPLAIN：返回列定义');
+  r = await invoke('db:explain', id, 'DELETE FROM notes');
+  ok(!r.ok, 'EXPLAIN：非 SELECT 语句报错');
+
+  // 14c) JSON / SQL 格式导出
+  const jsonFile = dbFile + '.json';
+  r = await invoke('db:exportCsv', id, 'notes', jsonFile, 'json');
+  ok(r.ok, 'JSON 导出成功');
+  const jdata = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+  ok(Array.isArray(jdata) && jdata.length === r.data.rows && jdata.length > 0, 'JSON 导出为合法数组且行数一致');
+  ok(typeof jdata[0].title === 'string', 'JSON 行含列字段');
+  const sqlFile = dbFile + '-ins.sql';
+  await invoke('db:query', id, "INSERT INTO notes (title, content) VALUES ('带''单引号', 'x')");
+  r = await invoke('db:exportCsv', id, 'notes', sqlFile, 'sql');
+  const stext = fs.readFileSync(sqlFile, 'utf8');
+  ok(r.ok && /INSERT INTO "notes"/.test(stext), 'SQL 导出含 INSERT 语句');
+  ok(stext.includes("'导入A'"), 'SQL 字符串值正确加引号');
+  ok(stext.includes("'带''单引号'"), 'SQL 单引号转义（翻倍）');
+  // 空表导出 JSON = []
+  await invoke('db:query', id, 'CREATE TABLE empty_t (a TEXT)');
+  const emptyJson = dbFile + '-empty.json';
+  r = await invoke('db:exportCsv', id, 'empty_t', emptyJson, 'json');
+  ok(JSON.parse(fs.readFileSync(emptyJson, 'utf8')).length === 0, '空表 JSON 导出为 []');
+
   // 15) 断开
   r = await invoke('db:close', id);
   ok(r.ok, '断开连接');
