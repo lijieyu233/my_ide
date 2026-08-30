@@ -207,6 +207,13 @@ const GitLog = (() => {
           if (r.ok) { MI.toast('✅ 已还原 ' + c.short + '（新提交 ' + String(r.oid).slice(0, 7) + '）', 'ok'); refresh(); if (window.GitPanel) GitPanel.refresh(); }
           else MI.toast('还原失败: ' + r.error, 'err');
         }, true);
+        mk('🍒 摘取此提交（Cherry-pick）', async () => {
+          const yes = await Modal.confirm('摘取提交', `将「${c.message}」的变更重放到当前分支并生成新提交。继续吗？`);
+          if (!yes) return;
+          const r = await window.myIDE.git.cherryPick(root, c.oid);
+          if (r.ok) { MI.toast('✅ 已摘取 ' + c.short + '（新提交 ' + String(r.oid).slice(0, 7) + '，' + r.files + ' 个文件）', 'ok'); refresh(); if (window.GitPanel) GitPanel.refresh(); }
+          else MI.toast('摘取失败: ' + r.error, 'err');
+        }, true);
         mk('🏷 在此提交上新建标签', async () => {
           const name = await Modal.prompt('新建标签', '标签名（指向提交 ' + c.short + '）', '');
           if (!name) return;

@@ -7,6 +7,7 @@ const { Worker } = require('worker_threads');
 const G = require('../git-service');
 
 let passed = 0, failed = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function ok(name, fn) {
   try { fn(); passed++; console.log('  ok', name); }
   catch (e) { failed++; console.log('  FAIL', name, '->', e.message); }
@@ -435,6 +436,52 @@ fs.mkdirSync(repo);
     assert.ok([3, 4].every((i) => bl.lines[i].oid === c2.oid), 'l4/l5 在 second 提交引入，归属 second');
     assert.strictEqual(bl.lines[1].author, c3.author, '行注解带作者');
     assert.ok(bl.lines[1].timestamp > 0, '行注解带时间戳');
+  });
+
+  await okAsync('cherry-pick：摘取提交到当前分支（改/增/删文件 + 脏工作区拒绝）', async () => {
+    const repo5 = path.join(tmp, 'repo5');
+    fs.mkdirSync(repo5);
+    await G.initRepo(repo5);
+    // 基线：master 上 a.txt
+    fs.writeFileSync(path.join(repo5, 'a.txt'), 'base\n');
+    await G.commit(repo5, { message: 'base', files: ['a.txt'] });
+    // 建分支 feat 改 a.txt + 新增 n.txt + 删 d.txt（先加后删验删除重放）
+    fs.writeFileSync(path.join(repo5, 'd.txt'), 'del me\n');
+    await G.commit(repo5, { message: 'add d', files: ['d.txt'] });
+    await G.createBranch(repo5, 'feat');
+    fs.writeFileSync(path.join(repo5, 'a.txt'), 'base\ncherry line\n');
+    fs.writeFileSync(path.join(repo5, 'n.txt'), 'new file\n');
+    fs.rmSync(path.join(repo5, 'd.txt'));
+    await G.commit(repo5, { message: 'feat change', files: ['a.txt', 'n.txt', 'd.txt'] });
+    const featC = (await G.log(repo5)).commits[0];
+    // 回 main 摘取（initRepo 默认分支是 main）
+    await G.checkout(repo5, 'main');
+    // 脏工作区（涉及文件）→ 拒绝
+    fs.writeFileSync(path.join(repo5, 'a.txt'), 'base\nDIRTY\n');
+    let r = await G.cherryPick(repo5, featC.oid);
+    assert.ok(!r.ok && /未提交的本地修改/.test(r.error), '涉及文件脏工作区时拒绝摘取');
+    await sleep(1200); // 跨秒：绕过 statusMatrix 的 mtime 秒级缓存（同秒写回会复用脏 oid）
+    fs.writeFileSync(path.join(repo5, 'a.txt'), 'base\n');
+    await sleep(50);
+    // 正常摘取
+    r = await G.cherryPick(repo5, featC.oid);
+    assert.ok(r.ok, '摘取成功: ' + (r.error || ''));
+    assert.strictEqual(r.files, 3, '涉及 3 个文件, got ' + r.files);
+    assert.strictEqual(fs.readFileSync(path.join(repo5, 'a.txt'), 'utf8'), 'base\ncherry line\n', '修改文件已重放');
+    assert.strictEqual(fs.readFileSync(path.join(repo5, 'n.txt'), 'utf8'), 'new file\n', '新增文件已写入');
+    assert.ok(!fs.existsSync(path.join(repo5, 'd.txt')), '删除文件已重放');
+    // 新提交在 main HEAD，完整消息带 cherry picked 溯源（log.message 只取首行，用 fullMessage 验证）
+    const head = (await G.log(repo5)).commits[0];
+    assert.ok(head.message.includes('feat change'), '新提交保留原消息');
+    assert.ok(head.fullMessage.includes('cherry picked from commit'), '消息带溯源标注');
+    // 重复摘取 → 内容一致仍生成新提交（幂等内容）
+    await sleep(1200);
+    r = await G.cherryPick(repo5, featC.oid);
+    assert.ok(r.ok, '重复摘取不报错（生成内容相同的新提交）');
+    assert.strictEqual(fs.readFileSync(path.join(repo5, 'a.txt'), 'utf8'), 'base\ncherry line\n', '内容保持一致');
+    // cherry-pick 非仓库路径报错
+    r = await G.cherryPick(path.join(tmp, '不存在目录'), featC.oid);
+    assert.ok(!r.ok, '非仓库路径报错');
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

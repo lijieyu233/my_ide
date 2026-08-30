@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     listTags: (d) => ipcRenderer.invoke('git:listTags', d),
     createTag: (d, cfg) => ipcRenderer.invoke('git:createTag', d, cfg),
     revert: (d, oid) => ipcRenderer.invoke('git:revert', d, oid),
+    cherryPick: (d, oid) => ipcRenderer.invoke('git:cherryPick', d, oid),
     logFile: (d, file, limit) => ipcRenderer.invoke('git:logFile', d, file, limit),
     blame: (d, file) => ipcRenderer.invoke('git:blame', d, file),
   },

@@ -906,6 +906,52 @@ async function revertCommit(dir, oid) {
   }
 }
 
+// ---------- Cherry-pick（摘取提交：将该提交的变更重放到当前 HEAD 并建新提交） ----------
+// isomorphic-git 无内置 cherry-pick → 手工重放：读取 提交 vs 其父 的差异，
+// 把「提交版本」内容写进工作区（revert 的镜像：revert 写回父版本）。
+async function cherryPick(dir, oid) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const c = await git.readCommit({ fs, dir: root, oid });
+    const parents = c.commit.parent || [];
+    if (parents.length > 1) return { ok: false, error: '合并提交暂不支持摘取' };
+    const parent = parents[0] || null;
+    const [oldTree, newTree] = [await treeFiles(root, parent), await treeFiles(root, oid)];
+    const files = new Set([...Object.keys(oldTree), ...Object.keys(newTree)]);
+    const changed = [];
+    for (const f of files) {
+      if (!(f in oldTree)) changed.push({ file: f, status: 'added' });     // 提交里新增 → 摘取=写入
+      else if (!(f in newTree)) changed.push({ file: f, status: 'deleted' }); // 提交里删除 → 摘取=删除
+      else if (oldTree[f] !== newTree[f]) changed.push({ file: f, status: 'modified' });
+    }
+    if (!changed.length) return { ok: false, error: '该提交没有变更可摘取' };
+    // 涉及文件必须工作区干净（避免摘取内容与本地改动混淆丢失）
+    const st = await status(dir);
+    if (st.changed && st.changed.length) {
+      const conflict = st.changed.filter((x) => changed.some((y) => posix(y.file) === posix(x.file)));
+      if (conflict.length) return { ok: false, error: '以下文件有未提交的本地修改，请先提交或回滚：\n' + conflict.map((x) => x.file).join('\n') };
+    }
+    for (const ch of changed) {
+      const rel = posix(ch.file);
+      const abs = path.join(root, ch.file);
+      if (ch.status === 'deleted') {
+        fs.rmSync(abs, { force: true });
+        await git.remove({ fs, dir: root, filepath: rel });
+      } else {
+        const { blob } = await git.readBlob({ fs, dir: root, oid, filepath: rel });
+        fs.writeFileSync(abs, Buffer.from(blob));
+        await git.add({ fs, dir: root, filepath: rel });
+      }
+    }
+    const msg = (c.commit.message || '').trim();
+    const newOid = await git.commit({ fs, dir: root, message: msg + '\n\n(cherry picked from commit ' + oid + ')', author: await getAuthor(root) });
+    return { ok: true, oid: newOid, files: changed.length, message: msg };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------- 文件历史（log --follow 简化版：改动的提交，不含重命名追踪）----------
 async function logFile(dir, file, limit = 500) {
   const { yes, root } = await isRepo(dir);
@@ -1017,5 +1063,5 @@ module.exports = {
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
   diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
-  listTags, createTag, revertCommit, logFile, blame,
+  listTags, createTag, revertCommit, cherryPick, logFile, blame,
 };
