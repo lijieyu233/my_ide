@@ -988,6 +988,138 @@ async function cherryPick(dir, oid) {
   }
 }
 
+// ---------- Shelve 搁置（PyCharm 式：未提交改动快照存 .git/myide-shelves/，不依赖 git stash） ----------
+// 快照式：搁置 = 保存工作区内容（base64，二进制安全）+ 回滚到 HEAD；恢复 = 写回快照。
+// 比 patch 式简单且无三方合并冲突问题；恢复时若目标文件有未提交改动则拒绝（force 可覆盖）。
+const SHELVES_DIR = 'myide-shelves';
+
+function shelveFile(root, id) {
+  return path.join(root, '.git', SHELVES_DIR, id + '.json');
+}
+
+async function shelveCreate(dir, { name, files } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const st = await status(dir);
+    let targets = st.changed;
+    if (files && files.length) {
+      const set = new Set(files.map((f) => posix(f)));
+      targets = st.changed.filter((c) => set.has(posix(c.file)));
+    }
+    if (!targets.length) return { ok: false, error: '没有可搁置的更改' };
+    // 快照工作区状态
+    const items = [];
+    for (const t of targets) {
+      const rel = posix(t.file);
+      const isDeleted = t.status === 'deleted' || t.status === '*deleted';
+      if (isDeleted) {
+        items.push({ path: rel, status: 'deleted', content: null });
+      } else {
+        const buf = fs.readFileSync(path.join(root, native(rel)));
+        items.push({ path: rel, status: t.status.startsWith('*') ? t.status.slice(1) : t.status, content: buf.toString('base64') });
+      }
+    }
+    const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    const meta = {
+      id, name: (name || '').trim() || '搁置 ' + items.length + ' 个文件',
+      createdAt: Date.now(),
+      branch: st.branch || '',
+      files: items,
+    };
+    fs.mkdirSync(path.join(root, '.git', SHELVES_DIR), { recursive: true });
+    fs.writeFileSync(shelveFile(root, id), JSON.stringify(meta));
+    // 回滚这些文件（工作区+暂存区恢复 HEAD）
+    // 注意：HEAD 有的文件 discard 后必须 git.add 同步 index，否则 statusMatrix 是 [1,1,0] 会误报 modified
+    for (const it of items) {
+      const inHead = await blobAt(root, 'HEAD', it.path) !== null;
+      if (inHead) {
+        const r = await discard(dir, it.path);
+        if (!r.ok) return { ok: false, error: '已搁置但部分文件回滚失败：' + it.path };
+        await git.add({ fs, dir: root, filepath: it.path });
+      } else {
+        // HEAD 没有（新增/未跟踪）：清 index + 删文件
+        try { await git.remove({ fs, dir: root, filepath: it.path }); } catch {}
+        fs.rmSync(path.join(root, native(it.path)), { force: true });
+      }
+    }
+    return { ok: true, id, files: items.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+async function shelveList(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库', shelves: [] };
+  try {
+    const dirPath = path.join(root, '.git', SHELVES_DIR);
+    if (!fs.existsSync(dirPath)) return { ok: true, shelves: [] };
+    const shelves = [];
+    for (const f of fs.readdirSync(dirPath)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(dirPath, f), 'utf8'));
+        shelves.push({
+          id: m.id, name: m.name, createdAt: m.createdAt, branch: m.branch,
+          files: (m.files || []).map((x) => ({ path: x.path, status: x.status })),
+        });
+      } catch {}
+    }
+    shelves.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return { ok: true, shelves };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e), shelves: [] };
+  }
+}
+
+async function shelveApply(dir, id, { force } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const file = shelveFile(root, id);
+    if (!fs.existsSync(file)) return { ok: false, error: '搁置不存在或已被删除' };
+    const m = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const items = m.files || [];
+    if (!items.length) return { ok: false, error: '该搁置没有文件' };
+    // 目标文件当前有未提交改动 → 拒绝（force 覆盖）
+    if (!force) {
+      const st = await status(dir);
+      const dirty = new Set(st.changed.map((c) => posix(c.file)));
+      const conflict = items.filter((x) => dirty.has(x.path)).map((x) => x.path);
+      if (conflict.length) {
+        return { ok: false, conflict: true, error: '以下文件有未提交的修改，恢复搁置会覆盖它们：\n' + conflict.join('\n') + '\n（可选择强制覆盖继续）' };
+      }
+    }
+    for (const it of items) {
+      const abs = path.join(root, native(it.path));
+      if (it.content == null) {
+        // 快照时文件被删除 → 恢复删除动作
+        fs.rmSync(abs, { force: true });
+      } else {
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, Buffer.from(it.content, 'base64'));
+      }
+    }
+    return { ok: true, files: items.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+async function shelveDelete(dir, id) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const file = shelveFile(root, id);
+    if (!fs.existsSync(file)) return { ok: false, error: '搁置不存在' };
+    fs.rmSync(file, { force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------- 文件历史（log --follow 简化版：改动的提交，不含重命名追踪）----------
 async function logFile(dir, file, limit = 500) {
   const { yes, root } = await isRepo(dir);
@@ -1099,5 +1231,6 @@ module.exports = {
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
   diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
-  listTags, createTag, revertCommit, cherryPick, listPushCommits, logFile, blame,
+  listTags, createTag, revertCommit, cherryPick, listPushCommits,
+  shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,
 };

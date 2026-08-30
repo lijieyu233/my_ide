@@ -525,6 +525,68 @@ fs.mkdirSync(repo);
     assert.ok(!r.ok, '无提交仓库报「无可推送」');
   });
 
+  await okAsync('Shelve 搁置：快照+回滚 → 列表 → 恢复（改/增/删全覆盖 + 脏冲突拒绝）', async () => {
+    const repo8 = path.join(tmp, 'repo8');
+    fs.mkdirSync(repo8);
+    await G.initRepo(repo8);
+    fs.writeFileSync(path.join(repo8, 'base.txt'), 'base\n');
+    await G.commit(repo8, { message: 'base', files: ['base.txt'] });
+    // 三种改动：修改 base.txt / 新增 new.txt / 删除 base.txt 之外先加 to-del.txt 提交后再删
+    fs.writeFileSync(path.join(repo8, 'to-del.txt'), 'del me\n');
+    await G.commit(repo8, { message: 'add to-del', files: ['to-del.txt'] });
+    await sleep(50);
+    fs.writeFileSync(path.join(repo8, 'base.txt'), 'base\nchanged\n');
+    fs.writeFileSync(path.join(repo8, 'new.txt'), 'brand new\n');
+    fs.rmSync(path.join(repo8, 'to-del.txt'));
+    // 搁置全部
+    let r = await G.shelveCreate(repo8, { name: '我的搁置' });
+    assert.ok(r.ok, '搁置成功: ' + (r.error || ''));
+    assert.strictEqual(r.files, 3, '搁置 3 个文件, got ' + r.files);
+    // 搁置后工作区回滚干净
+    const st = await G.status(repo8);
+    assert.strictEqual(st.changed.length, 0, '搁置后工作区干净, got ' + JSON.stringify(st.changed));
+    assert.strictEqual(fs.readFileSync(path.join(repo8, 'base.txt'), 'utf8'), 'base\n', '修改已回滚');
+    assert.ok(!fs.existsSync(path.join(repo8, 'new.txt')), '新增文件已删除');
+    assert.ok(fs.existsSync(path.join(repo8, 'to-del.txt')), '删除已回滚（文件恢复）');
+    // 列表
+    r = await G.shelveList(repo8);
+    assert.ok(r.ok && r.shelves.length === 1, '列表 1 条');
+    const s = r.shelves[0];
+    assert.strictEqual(s.name, '我的搁置', '名称保留');
+    assert.ok(s.branch, '记录分支');
+    assert.strictEqual(s.files.length, 3, '记录 3 个文件');
+    // 恢复
+    r = await G.shelveApply(repo8, s.id);
+    assert.ok(r.ok, '恢复成功: ' + (r.error || ''));
+    assert.strictEqual(fs.readFileSync(path.join(repo8, 'base.txt'), 'utf8'), 'base\nchanged\n', '修改已恢复');
+    assert.strictEqual(fs.readFileSync(path.join(repo8, 'new.txt'), 'utf8'), 'brand new\n', '新增已恢复');
+    assert.ok(!fs.existsSync(path.join(repo8, 'to-del.txt')), '删除已恢复');
+    // 恢复后再恢复 → 目标脏 → 冲突拒绝（conflict 标记）
+    r = await G.shelveApply(repo8, s.id);
+    assert.ok(!r.ok && r.conflict, '脏目标时返回 conflict');
+    // force 覆盖恢复
+    r = await G.shelveApply(repo8, s.id, { force: true });
+    assert.ok(r.ok, 'force 恢复成功');
+    // 指定文件搁置（只搁 base.txt）
+    r = await G.shelveCreate(repo8, { name: '部分', files: ['base.txt'] });
+    assert.ok(r.ok && r.files === 1, '指定文件搁置 1 个');
+    assert.strictEqual(fs.readFileSync(path.join(repo8, 'base.txt'), 'utf8'), 'base\n', '指定文件已回滚');
+    assert.strictEqual(fs.readFileSync(path.join(repo8, 'new.txt'), 'utf8'), 'brand new\n', '未指定文件不动');
+    // 删除搁置
+    r = await G.shelveList(repo8);
+    assert.strictEqual(r.shelves.length, 2, '共 2 条搁置');
+    r = await G.shelveDelete(repo8, r.shelves[1].id);
+    assert.ok(r.ok, '删除搁置');
+    r = await G.shelveList(repo8);
+    assert.strictEqual(r.shelves.length, 1, '删除后剩 1 条');
+    // 无改动时搁置报错
+    const repo9 = path.join(tmp, 'repo9');
+    fs.mkdirSync(repo9);
+    await G.initRepo(repo9);
+    r = await G.shelveCreate(repo9, {});
+    assert.ok(!r.ok && /没有可搁置/.test(r.error), '无改动搁置报错');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

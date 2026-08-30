@@ -402,6 +402,7 @@ const GitPanel = (() => {
       mk('📋 复制完整路径', () => {
         if (root) { MI.copyText(root + (root.includes('\\') ? '\\' : '/') + c.file); MI.toast('已复制路径', 'ok'); }
       });
+      mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
       mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
         const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
         const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
@@ -524,6 +525,108 @@ const GitPanel = (() => {
     }
     if (!results.length) { MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
     renderDiffView(results, `选中 ${results.length} 个文件 · 工作区 vs HEAD`);
+  }
+
+  // ---------- 搁置（Shelve）弹窗：上=搁置当前更改（名称+文件勾选），下=已搁置列表（恢复/删除） ----------
+  async function openShelveDialog(preselect) {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    // 需要当前改动列表（搁置区）
+    const st = await window.myIDE.git.status(root);
+    const changed = (st && st.changed) || [];
+    const listR = await window.myIDE.git.shelveList(root);
+    const shelves = (listR && listR.shelves) || [];
+
+    const box = document.createElement('div');
+    box.id = 'sv-box';
+    Modal.show(box);
+    box.innerHTML = `
+      <div class="m-head">搁置更改（Shelve）<span class="x" id="sv-x">✕</span></div>
+      <div class="m-body">
+        ${changed.length ? `
+        <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:6px">搁置当前更改（保存工作区改动并回滚文件，之后可恢复）</div>
+        <div class="br-new" style="margin-bottom:6px">
+          <input id="sv-name" type="text" placeholder="搁置名称（可选）" spellcheck="false" style="flex:1">
+          <button class="tb-btn primary" id="sv-create">🗄 搁置所选</button>
+        </div>
+        <div id="sv-files" style="max-height:160px;overflow:auto;border:1px solid var(--border-mid);border-radius:4px;padding:4px 0;margin-bottom:12px"></div>` : `
+        <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:12px">当前没有未提交的更改可搁置</div>`}
+        <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:6px">已搁置的更改（${shelves.length}）</div>
+        <div id="sv-list" style="max-height:220px;overflow:auto">${shelves.length ? '' : '<div style="font-size:12px;color:var(--text-dim);padding:8px 2px">暂无搁置记录</div>'}</div>
+      </div>`;
+    box.querySelector('#sv-x').onclick = () => Modal.hide();
+
+    // 搁置区：文件复选框（默认全选；preselect 则只选该文件）
+    if (changed.length) {
+      const filesEl = box.querySelector('#sv-files');
+      for (const c of changed) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:3px 10px;font-size:12px;cursor:pointer';
+        const checked = preselect ? c.file === preselect : true;
+        row.innerHTML = `<input type="checkbox" data-file="${esc(c.file)}" ${checked ? 'checked' : ''}>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.file)}</span>
+          <span style="color:var(--text-dim)">${esc(c.label || c.status)}</span>`;
+        filesEl.appendChild(row);
+      }
+      box.querySelector('#sv-create').onclick = async () => {
+        const files = [...filesEl.querySelectorAll('input:checked')].map((x) => x.dataset.file);
+        if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
+        const name = box.querySelector('#sv-name').value.trim();
+        const r = await window.myIDE.git.shelveCreate(root, { name, files });
+        if (r.ok) {
+          MI.toast('✅ 已搁置 ' + r.files + ' 个文件（工作区已回滚）', 'ok');
+          Modal.hide();
+          refresh();
+        } else MI.toast('搁置失败: ' + r.error, 'err');
+      };
+    }
+
+    // 已搁置列表：恢复 / 删除 / 展开文件
+    const listEl = box.querySelector('#sv-list');
+    for (const s of shelves) {
+      const row = document.createElement('div');
+      row.style.cssText = 'border:1px solid var(--border-mid);border-radius:4px;padding:6px 10px;margin-bottom:6px';
+      row.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="sv-toggle" style="cursor:pointer;color:var(--text-dim)">▸</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}"><b>${esc(s.name)}</b></span>
+          <span style="color:var(--text-dim);font-size:11px;white-space:nowrap">${s.branch ? esc(s.branch) + ' · ' : ''}${fmtDate(s.createdAt)} · ${s.files.length} 个文件</span>
+          <button class="tb-btn" title="恢复到工作区">⬇ 恢复</button>
+          <button class="tb-btn" title="删除该搁置" style="color:var(--danger,#e06c75)">🗑</button>
+        </div>
+        <div class="sv-files" style="display:none;padding:4px 10px 2px 22px"></div>`;
+      const filesEl2 = row.querySelector('.sv-files');
+      for (const f of s.files) {
+        const d = document.createElement('div');
+        d.style.cssText = 'font-size:11.5px;color:var(--text-dim);padding:1px 0';
+        d.textContent = f.path + '（' + (f.status === 'deleted' ? '已删除' : f.status === 'added' ? '新增' : '修改') + '）';
+        filesEl2.appendChild(d);
+      }
+      row.querySelector('.sv-toggle').onclick = (e) => {
+        const open = filesEl2.style.display !== 'none';
+        filesEl2.style.display = open ? 'none' : 'block';
+        e.target.textContent = open ? '▸' : '▾';
+      };
+      const [applyBtn, delBtn] = row.querySelectorAll('button');
+      applyBtn.onclick = async () => {
+        let r = await window.myIDE.git.shelveApply(root, s.id);
+        if (r.conflict) {
+          // 目标文件有未提交改动 → 询问强制覆盖
+          const yes = await Modal.confirm('恢复搁置', r.error + '\n\n强制覆盖这些文件并继续恢复吗？');
+          if (!yes) return;
+          r = await window.myIDE.git.shelveApply(root, s.id, { force: true });
+        }
+        if (r.ok) { MI.toast('✅ 已恢复 ' + r.files + ' 个文件到工作区', 'ok'); Modal.hide(); refresh(); }
+        else MI.toast('恢复失败: ' + r.error, 'err');
+      };
+      delBtn.onclick = async () => {
+        const yes = await Modal.confirm('删除搁置', `确定删除搁置「${s.name}」吗？其中的改动将无法恢复。`);
+        if (!yes) return;
+        const r = await window.myIDE.git.shelveDelete(root, s.id);
+        if (r.ok) { MI.toast('已删除搁置', 'ok'); row.remove(); }
+        else MI.toast('删除失败: ' + r.error, 'err');
+      };
+      listEl.appendChild(row);
+    }
   }
 
   // ---------- 分支切换弹窗 ----------
@@ -876,6 +979,8 @@ const GitPanel = (() => {
     if (pull) pull.onclick = doPull;
     const push = document.getElementById('cd-push');
     if (push) push.onclick = () => doPush();
+    const sv = document.getElementById('cd-shelve');
+    if (sv) sv.onclick = () => openShelveDialog();
     const rmt = document.getElementById('cd-remote');
     if (rmt) rmt.onclick = openRemoteDialog;
     const lg = document.getElementById('cd-log');

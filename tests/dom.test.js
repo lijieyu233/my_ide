@@ -234,6 +234,14 @@ function makeDom() {
         ],
       }),
       aheadBehind: async () => ({ ahead: 0, behind: 0 }),
+      shelveCreate: async (d, cfg) => { calls.shelveCreate = cfg; return { ok: true, id: 'sv1', files: cfg.files.length }; },
+      shelveList: async () => ({
+        ok: true, shelves: [
+          { id: 'sv0', name: '昨天的搁置', createdAt: Date.now() - 86400000, branch: 'main', files: [{ path: 'x.js', status: 'modified' }] },
+        ],
+      }),
+      shelveApply: async () => ({ ok: true, files: 1 }),
+      shelveDelete: async () => ({ ok: true }),
       listTags: async () => ({ tags: [] }),
       createTag: async () => ({ ok: true }),
       revert: async (d, oid) => { calls.revert = (calls.revert || []).concat(oid); return { ok: true, oid: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' }; },
@@ -561,6 +569,30 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($(dom, '#pp-ok'));
     await tick(); await tick();
     assert_(!$(dom, '#pp-box'), '确认后弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
+  });
+
+  await okAsync('Shelve 搁置：弹窗（文件勾选 + 已搁置列表）→ 搁置/恢复', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick();
+    click($(dom, '#cd-shelve'));
+    await tick(); await tick(); await tick();
+    const box = $(dom, '#sv-box');
+    assert_(box, '搁置弹窗出现');
+    // 上半：当前更改勾选列表（4 个改动文件）
+    const checks = $allIn(box, '#sv-files input[type=checkbox]');
+    assert_(checks.length === 4, '搁置区列出 4 个更改文件, got ' + checks.length);
+    // 下半：已有搁置列表（mock 返回 1 条）
+    assert_(box.textContent.includes('昨天的搁置'), '已搁置列表显示已有搁置');
+    const applyBtn = $allIn(box, 'button').find((b) => b.textContent.includes('恢复'));
+    assert_(applyBtn, '恢复按钮存在');
+    // 填名称搁置 → shelveCreate 收到勾选文件
+    $(dom, '#sv-name').value = '测试搁置';
+    click($(dom, '#sv-create'));
+    await tick(); await tick();
+    assert_(calls.shelveCreate && calls.shelveCreate.name === '测试搁置', '搁置名称已传递');
+    assert_(calls.shelveCreate.files.length === 4, '搁置全部勾选文件');
+    assert_(!$(dom, '#sv-box'), '搁置后弹窗关闭');
     await g(dom, 'GitPanel.closeDialog()');
   });
 
