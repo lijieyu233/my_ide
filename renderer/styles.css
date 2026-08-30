@@ -407,6 +407,17 @@ textarea.editor {
 .outline-item.key-nav-sel { background: var(--bg-selected); color: #fff; }
 .outline-item.lv2 { color: var(--text); }
 .outline-item.lv3, .outline-item.lv4, .outline-item.lv5, .outline-item.lv6 { color: var(--text-dim); font-size: 11.5px; }
+/* 大纲分级收起：箭头 + 隐藏行 */
+.ol-arrow {
+  display: inline-block; width: 14px; flex: none;
+  font-size: 10px; color: var(--text-dim); text-align: center;
+  cursor: pointer; user-select: none; margin-right: 2px;
+}
+.ol-arrow:hover { color: var(--text-bright); }
+.ol-arrow.ol-pad { cursor: default; color: var(--border-mid); }
+.outline-item { display: flex; align-items: center; }
+.outline-item .ol-arrow + span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-item.ol-hidden { display: none; }
 
 /* ---------- Git 提交对话框（PyCharm 式 Ctrl+K：左上文件树 · 左下提交信息 · 右侧 diff） ---------- */
 #panel-project, #panel-outline, #panel-db {

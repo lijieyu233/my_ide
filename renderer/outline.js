@@ -23,6 +23,35 @@ const Outline = (() => {
   // ---------- 按层级收起（大纲工具条 → 编辑器标题节折叠） ----------
   // foldLv 语义：0=全部展开；k>=1 = 收至 Hk（H(k+1) 及更深的节全部折叠）
   let foldLv = 0;
+  // ---------- 大纲树自身的分级收起（PyCharm Structure 式） ----------
+  // collapsed 集合存「被收起的标题 key」（行号+文本，文件内容变化后 key 失效自动全展）
+  let collapsed = new Set();
+  const LS_KEY = 'myide-outline-collapsed';
+  function loadCollapsed() {
+    try { collapsed = new Set(JSON.parse(localStorage.getItem(LS_KEY) || '[]')); } catch { collapsed = new Set(); }
+  }
+  function saveCollapsed() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify([...collapsed])); } catch {}
+  }
+  const hKey = (h) => h.line + '|' + h.text;
+  // 标题 i 的直接子层范围：[i+1, end)（直到遇到 level <= 自身的标题）
+  function childrenRange(i) {
+    let j = i + 1;
+    while (j < headings.length && headings[j].level > headings[i].level) j++;
+    return [i + 1, j];
+  }
+  // 行是否被收起：任一祖先标题被收起即隐藏（祖先 = level 严格更小的上方最近标题链）
+  function isHidden(i) {
+    let lv = headings[i].level;
+    for (let k = i - 1; k >= 0; k--) {
+      if (headings[k].level < lv) {
+        if (collapsed.has(hKey(headings[k]))) return true;
+        lv = headings[k].level; // 上溯到更浅层（同级不是祖先）
+        if (lv === 1) break;    // 到顶
+      }
+    }
+    return false;
+  }
   function renderTools() {
     const bar = document.createElement('div');
     bar.className = 'outline-tools';
@@ -60,6 +89,7 @@ const Outline = (() => {
   async function refresh(tab) {
     el.innerHTML = '';
     headings = [];
+    loadCollapsed(); // 载入持久化的收起状态（跨文件/跨会话保留）
     selIdx = -1; // 刷新后重置键盘导航选中
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || '');
     if (!isMd) {
@@ -78,15 +108,48 @@ const Outline = (() => {
       return;
     }
     renderTools();
+    // 渲染前清理失效的收起 key（内容变化后行号/文本对不上 → 丢弃）
+    const validKeys = new Set(headings.map(hKey));
+    let pruned = false;
+    for (const k of collapsed) if (!validKeys.has(k)) { collapsed.delete(k); pruned = true; }
+    if (pruned) saveCollapsed();
     headings.forEach((h, i) => {
+      // 有子层才有箭头（无子层的标题没有可收起的内容）
+      const [cs, ce] = childrenRange(i);
+      const hasKids = ce > cs;
       const row = document.createElement('div');
       row.className = 'outline-item' + (h.level > 1 ? ' lv' + h.level : '');
       row.style.paddingLeft = (h.level - 1) * 14 + 8 + 'px';
-      row.textContent = h.text;
       row.title = h.text;
+      if (hasKids) {
+        const arrow = document.createElement('span');
+        arrow.className = 'ol-arrow' + (collapsed.has(hKey(h)) ? ' closed' : '');
+        arrow.textContent = collapsed.has(hKey(h)) ? '▸' : '▾';
+        arrow.title = collapsed.has(hKey(h)) ? '展开子级' : '收起子级';
+        arrow.onclick = (e) => { e.stopPropagation(); toggleCollapse(i); };
+        row.appendChild(arrow);
+      } else {
+        const pad = document.createElement('span');
+        pad.className = 'ol-arrow ol-pad';
+        pad.textContent = '·';
+        row.appendChild(pad);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = h.text;
+      row.appendChild(txt);
+      if (isHidden(i)) row.classList.add('ol-hidden');
       row.onclick = () => jump(i);
       el.appendChild(row);
     });
+  }
+
+  // 收起/展开标题 i 的子层（全量重渲染；PyCharm Structure 同款交互）
+  function toggleCollapse(i) {
+    const k = hKey(headings[i]);
+    if (collapsed.has(k)) collapsed.delete(k);
+    else collapsed.add(k);
+    saveCollapsed();
+    refresh(Viewer.activeTab);
   }
 
   // 点击大纲项 → 按当前模式定位标题

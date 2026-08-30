@@ -731,6 +731,54 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(arr.length === 2 && arr[0] === '真标题' && arr[1] === '第二个', '只解析真标题: ' + hs);
   });
 
+  await okAsync('大纲分级收起：箭头收起子级 + 持久化 + 无子层无箭头', async () => {
+    // 用全新文件（已开标签 openFile 只 activate 不重读内容）
+    FAKE_FS[P + '/fold.md'] = { type: 'file', content: '# 根标题\n\n## 二级A\n\n### 三级A1\n\n### 三级A2\n\n## 二级B\n', mtime: 9000, ctime: 9000, size: 80 };
+    await g(dom, 'Viewer.openFile("' + P + '/fold.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    let items = $allIn(ol, '.outline-item');
+    assert_(items.length === 5, '5 个标题全展示, got ' + items.length);
+    // 有子层的标题带箭头，无子层的是占位点
+    const arrows = $allIn(ol, '.ol-arrow:not(.ol-pad)');
+    const pads = $allIn(ol, '.ol-arrow.ol-pad');
+    assert_(arrows.length === 2, 'H1+二级A 有箭头（有子层）, got ' + arrows.length);
+    assert_(pads.length === 3, '三级A1/A2/二级B 无子层用占位, got ' + pads.length);
+    // 点 H1 箭头 → 收起全部子层（只剩 H1）
+    click(arrows[0]);
+    await tick(); await tick();
+    items = $allIn(ol, '.outline-item');
+    const visible = items.filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(visible.length === 1 && visible[0].textContent.includes('根标题'), '收起 H1 只剩自己');
+    assert_(visible[0].querySelector('.ol-arrow.closed'), '箭头变 closed（▸）');
+    // localStorage 已持久化
+    const saved = JSON.parse(dom.window.localStorage.getItem('myide-outline-collapsed') || '[]');
+    assert_(saved.length === 1 && String(saved[0]).includes('根标题'), '收起状态已持久化: ' + JSON.stringify(saved));
+    // 再点 → 展开恢复
+    click($allIn(ol, '.ol-arrow:not(.ol-pad)')[0]);
+    await tick(); await tick();
+    items = $allIn(ol, '.outline-item');
+    assert_(items.filter((r) => !r.classList.contains('ol-hidden')).length === 5, '展开恢复全部 5 个');
+    // 收起「二级A」只藏其子层（三级A1/A2），不影响 H1/二级B
+    const arrowA = $allIn(ol, '.ol-arrow:not(.ol-pad)').find((a) => a.closest('.outline-item').textContent.includes('二级A'));
+    click(arrowA);
+    await tick(); await tick();
+    items = $allIn(ol, '.outline-item');
+    const vis = items.filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(vis.length === 3, '只藏三级A1/A2剩 3 个, got ' + vis.length);
+    assert_(!vis.some((r) => r.textContent.includes('三级')), '三级标题已隐藏');
+    // 内容变化（行号/文本失效）→ 收起状态自动清空全展
+    FAKE_FS[P + '/fold2.md'] = { type: 'file', content: '# 全新文档\n\n## 新二级\n', mtime: 9100, ctime: 9100, size: 30 };
+    await g(dom, 'Viewer.openFile("' + P + '/fold2.md")');
+    await tick(); await tick();
+    items = $allIn(ol, '.outline-item');
+    assert_(items.filter((r) => !r.classList.contains('ol-hidden')).length === 2, '内容变化后自动全展');
+    // 清理
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
   await okAsync('HTML 预览：base 注入相对路径解析 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
