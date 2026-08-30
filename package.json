@@ -50,6 +50,7 @@
       "preload.js",
       "git-service.js",
       "git-worker.js",
+      "db-service.js",
       "package.json",
       "renderer/**",
       "plugins/**"
