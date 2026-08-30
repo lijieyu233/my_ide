@@ -226,6 +226,13 @@ function makeDom() {
       fetch: async () => ({ ok: true }),
       pull: async () => ({ ok: true }),
       push: async () => ({ ok: true }),
+      listPushCommits: async () => ({
+        ok: true, branch: 'main', first: false, count: 2,
+        commits: [
+          { oid: 'a'.repeat(40), short: 'aaaaaaa', message: 'first change', author: 'me', timestamp: Date.now() - 86400000 },
+          { oid: 'b'.repeat(40), short: 'bbbbbbb', message: 'second change', author: 'me', timestamp: Date.now() },
+        ],
+      }),
       aheadBehind: async () => ({ ahead: 0, behind: 0 }),
       listTags: async () => ({ tags: [] }),
       createTag: async () => ({ ok: true }),
@@ -537,6 +544,24 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
     assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见（左侧停靠）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
+  });
+
+  await okAsync('Push 预览：推送按钮 → 待推送提交清单 → 确认后推送', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick();
+    click($(dom, '#cd-push'));
+    await tick(); await tick();
+    const box = $(dom, '#pp-box');
+    assert_(box, 'Push 预览弹窗出现');
+    assert_(box.textContent.includes('2 个提交'), '弹窗显示待推送数量');
+    assert_(box.textContent.includes('origin/main'), '显示目标 origin/分支');
+    const rows = $allIn(box, '#pp-list > div');
+    assert_(rows.length === 2, '列出 2 条提交, got ' + rows.length);
+    assert_(rows[0].textContent.includes('first change') && rows[1].textContent.includes('second change'), '旧→新排序');
+    click($(dom, '#pp-ok'));
+    await tick(); await tick();
+    assert_(!$(dom, '#pp-box'), '确认后弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
   });
 
   await okAsync('点击本地修改文件 → 编辑区 diff 预览', async () => {

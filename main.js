@@ -830,13 +830,14 @@ ipcMain.handle('git:removeRemote', (_e, dir, name) => gitCall('removeRemote', di
 ipcMain.handle('git:fetch', (_e, dir, opts) => gitCall('fetchRemote', dir, opts));
 ipcMain.handle('git:pull', (_e, dir, opts) => gitCall('pullRemote', dir, opts));
 ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
-ipcMain.handle('git:aheadBehind', (_e, dir) => gitCall('aheadBehind', dir));
-ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
-ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
-ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
-ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
-ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
-ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
+        ipcMain.handle('git:listPushCommits', (_e, dir) => gitCall('listPushCommits', dir));
+        ipcMain.handle('git:aheadBehind', (_e, dir) => gitCall('aheadBehind', dir));
+        ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
+        ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
+        ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
+        ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
+        ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
+        ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();

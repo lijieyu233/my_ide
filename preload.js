@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     fetch: (d, opts) => ipcRenderer.invoke('git:fetch', d, opts),
     pull: (d, opts) => ipcRenderer.invoke('git:pull', d, opts),
     push: (d, opts) => ipcRenderer.invoke('git:push', d, opts),
+    listPushCommits: (d) => ipcRenderer.invoke('git:listPushCommits', d),
     aheadBehind: (d) => ipcRenderer.invoke('git:aheadBehind', d),
     listTags: (d) => ipcRenderer.invoke('git:listTags', d),
     createTag: (d, cfg) => ipcRenderer.invoke('git:createTag', d, cfg),

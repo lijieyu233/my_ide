@@ -125,12 +125,61 @@ const GitPanel = (() => {
   }
   async function doPush(silent) {
     if (!root || syncing) return false;
+    if (!silent) {
+      // Push 预览（PyCharm 式）：推送前列出待推送提交，确认后才真正推送
+      return openPushPreview();
+    }
     syncing = true;
-    if (!silent) MI.toast('推送中…');
     const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
     syncing = false;
     if (r.ok) { MI.toast('✅ 已推送到 origin', 'ok'); refresh(); return true; }
     else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
+  }
+
+  // ---------- Push 预览弹窗（待推送提交清单 → 确认推送） ----------
+  async function openPushPreview() {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return false; }
+    if (syncing) return false;
+    const p = await window.myIDE.git.listPushCommits(root);
+    if (!p.ok) { MI.toast(p.error || '当前无可推送的提交', 'err'); return false; }
+    const box = document.createElement('div');
+    box.id = 'pp-box';
+    Modal.show(box);
+    box.innerHTML = `
+      <div class="m-head">推送预览
+        <span class="x" id="pp-x">✕</span>
+      </div>
+      <div class="m-body">
+        <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px">
+          将推送 <b style="color:var(--text-bright)">${p.count}</b> 个提交到 <b style="color:var(--text-bright)">origin/${esc(p.branch)}</b>${p.first ? '（首次推送该分支）' : ''}
+        </div>
+        <div id="pp-list" style="max-height:320px;overflow:auto;border:1px solid var(--border-mid);border-radius:4px;padding:4px 0"></div>
+      </div>
+      <div class="m-foot">
+        <button class="tb-btn" id="pp-cancel">取消</button>
+        <button class="tb-btn primary" id="pp-ok">⬆ 推送（${p.count} 个提交）</button>
+      </div>`;
+    const list = box.querySelector('#pp-list');
+    for (const c of p.commits) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:3px 10px;font-size:12px';
+      row.innerHTML = `<span style="color:var(--accent,#61afef);font-family:monospace">${c.short}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.message)}</span>
+        <span style="color:var(--text-dim);white-space:nowrap">${esc(c.author)} · ${fmtDate(c.timestamp)}</span>`;
+      list.appendChild(row);
+    }
+    box.querySelector('#pp-x').onclick = () => Modal.hide();
+    box.querySelector('#pp-cancel').onclick = () => Modal.hide();
+    box.querySelector('#pp-ok').onclick = async () => {
+      Modal.hide();
+      syncing = true;
+      MI.toast('推送中…');
+      const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
+      syncing = false;
+      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 origin/' + p.branch, 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
+      else MI.toast('推送失败: ' + r.error, 'err');
+    };
+    return true;
   }
 
   // ahead/behind 显示（标题栏 dirty 区域）+ 状态栏
@@ -420,7 +469,7 @@ const GitPanel = (() => {
       MI.toast('✅ 已提交 ' + r.oid.slice(0, 7) + '：' + text, 'ok');
       await refresh();
       if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
-      if (pushAfter) await doPush(); // 提交并推送（PyCharm Ctrl+Alt+K）
+      if (pushAfter) await doPush(true); // 提交并推送（PyCharm Ctrl+Alt+K）：提交成功后直接推，不再二次确认
     } else {
       MI.toast('提交失败: ' + r.error, 'err');
     }

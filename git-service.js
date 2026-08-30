@@ -805,6 +805,42 @@ async function aheadBehind(dir) {
   };
 }
 
+// Push 预览：列出本地领先 origin 的待推送提交（HEAD → refs/remotes/origin/<branch>，纯本地 refs，无网络）
+async function listPushCommits(dir) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const branch = await currentBranch(root);
+  if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
+  const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
+  if (!head) return { ok: false, error: '当前无可推送的提交' };
+  let upstream = null;
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  // 无上游：全部分支历史都是待推送（首次 push 场景），上限保护 500
+  const stop = upstream || '0000000000000000000000000000000000000000';
+  const seen = new Set([stop]);
+  const queue = [head];
+  const commits = [];
+  while (queue.length && commits.length < 500) {
+    const oid = queue.shift();
+    if (seen.has(oid)) continue;
+    seen.add(oid);
+    try {
+      const c = await git.readCommit({ fs, dir: root, oid });
+      commits.push({
+        oid, short: oid.slice(0, 7),
+        message: (c.commit.message || '').split('\n')[0],
+        author: c.commit.author.name,
+        timestamp: c.commit.author.timestamp * 1000,
+      });
+      for (const p of (c.commit.parent || [])) queue.push(p);
+    } catch { break; }
+  }
+  if (!upstream && !commits.length) return { ok: false, error: '当前无可推送的提交' };
+  // 时间正序展示（旧→新，推送顺序）
+  commits.reverse();
+  return { ok: true, branch, first: !upstream, count: commits.length, commits };
+}
+
 // 从 from 出发沿父链 BFS、不越过 stop，统计未到达 stop 的提交数（上限保护）
 async function countNotReached(root, fromOid, stopOid) {
   const seen = new Set([stopOid]);
@@ -1063,5 +1099,5 @@ module.exports = {
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
   diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
-  listTags, createTag, revertCommit, cherryPick, logFile, blame,
+  listTags, createTag, revertCommit, cherryPick, listPushCommits, logFile, blame,
 };

@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const G = require('../git-service');
+const git = require('isomorphic-git');
 
 let passed = 0, failed = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -482,6 +483,46 @@ fs.mkdirSync(repo);
     // cherry-pick 非仓库路径报错
     r = await G.cherryPick(path.join(tmp, '不存在目录'), featC.oid);
     assert.ok(!r.ok, '非仓库路径报错');
+  });
+
+  await okAsync('Push 预览：列出本地领先 origin 的待推送提交（旧→新）', async () => {
+    const repo6 = path.join(tmp, 'repo6');
+    fs.mkdirSync(repo6);
+    await G.initRepo(repo6);
+    // 基线提交 + 手工写 refs/remotes/origin/main 模拟已推送状态
+    // （isomorphic-git 不支持 file:// transport，无法用本地 bare 仓真推；listPushCommits 纯本地 refs 计算）
+    fs.writeFileSync(path.join(repo6, 'a.txt'), 'base\n');
+    await G.commit(repo6, { message: 'base', files: ['a.txt'] });
+    const baseOid = (await G.log(repo6)).commits[0].oid;
+    const refDir = path.join(repo6, '.git', 'refs', 'remotes', 'origin');
+    fs.mkdirSync(refDir, { recursive: true });
+    fs.writeFileSync(path.join(refDir, 'main'), baseOid + '\n');
+    const ab0 = await G.aheadBehind(repo6);
+    assert.strictEqual(ab0.ahead, 0, '上游同步时 ahead=0');
+    let r = await G.listPushCommits(repo6);
+    assert.ok(r.ok, '同步后预览应返回 ok（0 个待推送）');
+    assert.strictEqual(r.count, 0, '无待推送提交, got ' + r.count);
+    // 本地两个新提交 → 预览列出 2 个（时间正序）
+    fs.writeFileSync(path.join(repo6, 'b.txt'), 'b\n');
+    await G.commit(repo6, { message: 'second', files: ['b.txt'] });
+    fs.writeFileSync(path.join(repo6, 'c.txt'), 'c\n');
+    await G.commit(repo6, { message: 'third', files: ['c.txt'] });
+    r = await G.listPushCommits(repo6);
+    assert.ok(r.ok && r.count === 2, '待推送 2 个, got ' + (r && r.count));
+    assert.strictEqual(r.commits[0].message, 'second', '旧提交在前');
+    assert.strictEqual(r.commits[1].message, 'third', '新提交在后');
+    assert.ok(r.commits[0].short && r.commits[0].author, '条目带 short/author');
+    // 模拟推送完成（上游 ref 前移到 HEAD）→ 清零
+    const headOid = (await G.log(repo6)).commits[0].oid;
+    fs.writeFileSync(path.join(refDir, 'main'), headOid + '\n');
+    r = await G.listPushCommits(repo6);
+    assert.ok(r.ok && r.count === 0, '推送后预览清零');
+    // 无提交仓库 → 报错
+    const repo7 = path.join(tmp, 'repo7');
+    fs.mkdirSync(repo7);
+    await G.initRepo(repo7);
+    r = await G.listPushCommits(repo7);
+    assert.ok(!r.ok, '无提交仓库报「无可推送」');
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });
