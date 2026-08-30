@@ -94,41 +94,86 @@ const App = (() => {
   };
   window.Modal = Modal;
 
-  // ---------- 工具窗口（PyCharm 式：左侧按钮条切换，同一侧同时只显示一个）----------
-  const TOOLS = ['project', 'outline', 'git', 'db'];
+  // ---------- 工具窗口（PyCharm 式：互斥单选；git 提交对话框除外，不占位）----------
+  // activeTool：project/outline/db/browser/log 五选一（null=全收起）
+  // sideTool：browser/log 激活期间侧栏保留的面板（project/outline 二选一）
+  const ALL_TOOLS = ['project', 'outline', 'db', 'browser', 'log'];
+  const SIDE_TOOLS = ['project', 'outline'];
   let activeTool = 'project';
+  let sideTool = 'project';
+  let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
+
+  // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
+  function applyToolChange(prev, next) {
+    if (prev === 'browser' && window.BrowserPanel) BrowserPanel.hide();
+    if (prev === 'log' && window.GitLog && GitLog.isOpen()) GitLog.hide();
+    if (next === 'browser' && window.BrowserPanel) BrowserPanel.show();
+    if (next === 'log' && window.GitLog) GitLog.open();
+  }
+
+  function setToolState(next) {
+    const prev = activeTool;
+    activeTool = next;
+    if (SIDE_TOOLS.includes(next)) { sideTool = next; sideCollapsed = false; }
+    if (next === 'db') sideCollapsed = false;
+    applyToolChange(prev, next);
+    renderToolStrip();
+  }
 
   function switchTool(name) {
-    if (!TOOLS.includes(name)) return;
+    if (!ALL_TOOLS.includes(name)) return;
     if (activeTool === name) { // 再点一次收起（PyCharm 行为）
+      if (SIDE_TOOLS.includes(name)) sideCollapsed = true;
+      else sideCollapsed = false;
       activeTool = null;
+      applyToolChange(name, null);
+      renderToolStrip();
     } else {
-      activeTool = name;
+      setToolState(name);
     }
-    renderToolStrip();
   }
   // 非切换语义：快捷键始终「显示」该工具窗口（PyCharm Alt+N 习惯，不因已激活而收起）
   function showTool(name) {
-    if (!TOOLS.includes(name)) return;
-    if (activeTool !== name) {
-      activeTool = name;
-      renderToolStrip();
-    }
+    if (!ALL_TOOLS.includes(name)) return;
+    if (activeTool !== name) setToolState(name);
   }
 
   function renderToolStrip() {
-    for (const t of TOOLS) {
-      document.getElementById('tool-' + t).classList.toggle('active', activeTool === t);
-      document.getElementById('panel-' + t).classList.toggle('hidden', activeTool !== t);
+    // 按钮互斥高亮（tool-git 由 GitPanel 对话框自管理）
+    for (const t of ALL_TOOLS) {
+      const b = document.getElementById('tool-' + t);
+      if (b) b.classList.toggle('active', activeTool === t);
+    }
+    // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
+    let sidePanel = sideTool;
+    if (activeTool === 'db') sidePanel = 'db';
+    for (const t of ['project', 'outline', 'db']) {
+      const p = document.getElementById('panel-' + t);
+      if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
+    // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
     }
   }
+
+  // ---------- 工具窗口字号（侧栏面板 / 提交对话框 / Git 日志共用 --tool-font）----------
+  let toolFont = Math.min(18, Math.max(11, parseInt(localStorage.getItem('myide-tool-font') || '13', 10) || 13));
+  function applyToolFont() {
+    document.documentElement.style.setProperty('--tool-font', toolFont + 'px');
+  }
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('.fc-dec, .fc-inc');
+    if (!t) return;
+    toolFont = Math.min(18, Math.max(11, toolFont + (t.classList.contains('fc-inc') ? 1 : -1)));
+    try { localStorage.setItem('myide-tool-font', String(toolFont)); } catch {}
+    applyToolFont();
+  });
+  applyToolFont();
 
   // ---------- 侧栏整体收起 / 展开 ----------
   function toggleSidebar(force) {
@@ -144,9 +189,8 @@ const App = (() => {
   function getTool() { return activeTool; }
   // 非切换语义：直接设置（会话恢复用）
   function setTool(name) {
-    if (!TOOLS.includes(name)) return;
-    activeTool = name;
-    renderToolStrip();
+    if (!ALL_TOOLS.includes(name)) return;
+    setToolState(name);
   }
 
   // ---------- 状态栏（合并式更新：各模块只更新自己负责的字段）----------
@@ -573,9 +617,9 @@ const App = (() => {
     };
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
-    document.getElementById('tool-git').onclick = () => switchTool('git');
-    if (window.GitLog) document.getElementById('tool-log').onclick = () => GitLog.toggle();
-    if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => BrowserPanel.toggle(); }
+    document.getElementById('tool-git').onclick = () => GitPanel.openCommit();
+    if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
+    if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };

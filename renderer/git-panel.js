@@ -1,13 +1,18 @@
-// git-panel.js —— Git 提交工具窗口（PyCharm Alt+0 / Ctrl+K）
-// 停靠侧栏：变更文件列表（勾选/回滚/差异）+ 提交信息区；日志窗口见 git-log.js
+// git-panel.js —— Git 提交（PyCharm 式提交对话框：Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）
+// 布局：左上变更文件树 · 左下提交信息 · 右侧选中文件 diff；日志窗口见 git-log.js
 const GitPanel = (() => {
-  const body = document.getElementById('git-body');
-  const branchEl = document.getElementById('git-branch');
   let root = null;
   let state = null; // {isRepo, branch, changed, unborn}
   const checked = new Set(); // 勾选的待提交文件（跨刷新保留）
   let knownFiles = new Set(); // 上次刷新见过的文件（新出现的默认勾选）
   let commitMsg = ''; // 刷新时保留未发出的提交信息
+
+  // 对话框 DOM（openCommit 时构建）
+  let dlg = null;
+  let dlgFiles = null;   // 左侧文件列表容器
+  let dlgDiff = null;    // 右侧 diff 容器
+  let dlgDiffHead = null;// 右侧 diff 头部（文件名 + 统计 + hunk 导航）
+  let opened = false;
 
   // ---------- 刷新 ----------
   async function refresh() {
@@ -15,7 +20,7 @@ const GitPanel = (() => {
     const st = await window.myIDE.git.status(root);
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
     syncChecked();
-    render();
+    if (opened) render();
     App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
     // 文件树 Git 状态着色（PyCharm 式）
     const statusMap = {};
@@ -35,15 +40,143 @@ const GitPanel = (() => {
     knownFiles = cur;
   }
 
-  // ---------- 渲染 ----------
+  // ---------- 对话框 ----------
+  function isOpen() { return opened; }
+
+  function buildDialog() {
+    dlg = document.createElement('div');
+    dlg.className = 'commit-dlg';
+    dlg.dataset.selfEsc = '1'; // 自管 Esc（shortcuts.js 全局 Esc 跳过）
+    dlg.innerHTML = `
+      <div class="cd-head">
+        <span class="cd-title">提交</span>
+        <span id="cd-branch" title="点击切换分支"></span>
+        <span id="cd-dirty"></span>
+        <span class="spacer"></span>
+        <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+        <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+        <button class="vt-btn" id="cd-refresh" title="刷新 Git 状态 (Ctrl+R)">🔄</button>
+        <button class="vt-btn" id="cd-log" title="提交历史（Alt+9）">🕘</button>
+        <button class="vt-btn" id="cd-x" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="cd-body">
+        <div class="cd-left" id="cd-left">
+          <div class="cd-files" id="cd-files"></div>
+          <div class="cd-msgbox">
+            <textarea id="commit-msg" placeholder="提交信息…（Ctrl+Enter 提交）" spellcheck="false"></textarea>
+            <div class="commit-foot">
+              <label class="m-check" title="追加到上一次提交（修正提交信息）"><input type="checkbox" id="commit-amend"><span>amend</span></label>
+              <span id="commit-count"></span>
+              <button class="tb-btn m-ok" id="cm-ok">提交</button>
+            </div>
+          </div>
+        </div>
+        <div class="cd-splitter" id="cd-splitter" title="拖动调整左右宽度"></div>
+        <div class="cd-right">
+          <div class="cd-diff-head" id="cd-diff-head"></div>
+          <div class="cd-diff" id="cd-diff"></div>
+        </div>
+      </div>`;
+    document.body.appendChild(dlg); // 临时挂载以测量宽度（Modal.show 时会移动到 mask 下）
+
+    dlg.querySelector('#cd-x').onclick = () => closeDialog();
+    dlg.querySelector('#cd-refresh').onclick = () => refresh();
+    dlg.querySelector('#cd-log').onclick = () => { closeDialog(); if (window.GitLog) GitLog.open(); };
+    dlg.querySelector('#cd-branch').onclick = () => openBranchDialog();
+
+    const msg = dlg.querySelector('#commit-msg');
+    msg.value = commitMsg;
+    msg.addEventListener('input', () => { commitMsg = msg.value; });
+    msg.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCommit(); }
+    });
+    dlg.querySelector('#cm-ok').onclick = doCommit;
+
+    dlgFiles = dlg.querySelector('#cd-files');
+    dlgDiff = dlg.querySelector('#cd-diff');
+    dlgDiffHead = dlg.querySelector('#cd-diff-head');
+
+    // Esc 关闭（栈顶是自己时；确认弹窗在上面时先关弹窗）
+    dlg.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (Modal.stack[Modal.stack.length - 1] !== dlg) return;
+      e.preventDefault();
+      closeDialog();
+    });
+    initDlgSplitter();
+    return dlg;
+  }
+
+  function openCommit() {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    if (!state || !state.isRepo) {
+      Modal.confirm('初始化仓库', '当前目录不是 Git 仓库，要初始化吗？').then(async (yes) => {
+        if (!yes) return;
+        const r = await window.myIDE.git.init(root);
+        if (r.ok) { MI.toast('已初始化', 'ok'); refresh(); }
+        else MI.toast('失败: ' + r.error, 'err');
+      });
+      return;
+    }
+    if (opened) return;
+    opened = true;
+    buildDialog();
+    Modal.show(dlg);
+    document.getElementById('tool-git').classList.add('active');
+    render();
+    const m = document.getElementById('commit-msg');
+    if (m) setTimeout(() => m.focus(), 50);
+  }
+
+  function closeDialog() {
+    if (!opened) return;
+    opened = false;
+    const i = Modal.stack.indexOf(dlg);
+    if (i >= 0) Modal.stack.splice(i, 1);
+    if (dlg) dlg.remove();
+    dlg = dlgFiles = dlgDiff = dlgDiffHead = null;
+    if (!Modal.stack.length) document.getElementById('modal-mask').classList.add('hidden');
+    const b = document.getElementById('tool-git');
+    if (b) b.classList.remove('active');
+  }
+
+  // 对话框左右分栏拖拽（宽度持久化）
+  function initDlgSplitter() {
+    const sp = dlg.querySelector('#cd-splitter');
+    const left = dlg.querySelector('#cd-left');
+    try {
+      const saved = parseFloat(localStorage.getItem('myide-cd-left-w'));
+      if (saved >= 220 && saved <= window.innerWidth * 0.7) left.style.width = saved + 'px';
+    } catch {}
+    let dragging = false;
+    sp.addEventListener('mousedown', (e) => {
+      dragging = true;
+      e.preventDefault();
+      document.body.classList.add('gl-ew-resizing');
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging || !dlg) return;
+      const rect = dlg.getBoundingClientRect();
+      const w = Math.max(220, Math.min(e.clientX - rect.left, rect.width * 0.75));
+      left.style.width = w + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('gl-ew-resizing');
+      try { localStorage.setItem('myide-cd-left-w', left.style.width); } catch {}
+    });
+  }
+
+  // ---------- 渲染（对话框内容）----------
   function render() {
-    body.innerHTML = '';
-    branchEl.textContent = '';
+    if (!opened || !dlgFiles) { updateStatusOnly(); return; }
+    dlgFiles.innerHTML = '';
     if (!state || !state.isRepo) {
       const d = document.createElement('div');
       d.className = 'git-empty';
       d.innerHTML = '当前目录不是 Git 仓库<br><button class="tb-btn gbtn" id="git-init-btn">初始化仓库</button>';
-      body.appendChild(d);
+      dlgFiles.appendChild(d);
       const b = document.getElementById('git-init-btn');
       if (b) b.onclick = async () => {
         const r = await window.myIDE.git.init(root);
@@ -52,27 +185,13 @@ const GitPanel = (() => {
       };
       return;
     }
-    // ---- 分支栏：⎇ 分支 · 刷新 · 日志 ----
-    const branchBtn = document.createElement('span');
-    branchBtn.id = 'git-branch-btn';
-    branchBtn.textContent = '⎇ ' + state.branch;
-    branchBtn.title = '点击切换分支';
-    branchBtn.onclick = () => openBranchDialog();
-    branchEl.appendChild(branchBtn);
-    const btnRefresh = document.createElement('button');
-    btnRefresh.className = 'tb-btn gbtn';
-    btnRefresh.textContent = '🔄';
-    btnRefresh.title = '刷新 Git 状态 (Ctrl+R)';
-    btnRefresh.onclick = () => refresh();
-    branchEl.appendChild(btnRefresh);
-    const btnLog = document.createElement('button');
-    btnLog.className = 'tb-btn gbtn';
-    btnLog.textContent = '🕘 日志';
-    btnLog.title = '提交历史（Alt+9）';
-    btnLog.onclick = () => { if (window.GitLog) GitLog.open(); };
-    branchEl.appendChild(btnLog);
+    // 头部分支信息
+    const br = dlg.querySelector('#cd-branch');
+    if (br) br.textContent = '⎇ ' + state.branch;
+    const dirty = dlg.querySelector('#cd-dirty');
+    if (dirty) dirty.textContent = state.changed.length ? state.changed.length + ' 处修改' : '';
 
-    // ---- 工具栏：全选 · 回滚选中 · 显示选中差异 ----
+    // 工具栏：全选 · 回滚选中 · 显示差异
     const bar = document.createElement('div');
     bar.className = 'git-cp-bar';
     const all = document.createElement('label');
@@ -91,26 +210,49 @@ const GitPanel = (() => {
     btnDiff.title = '在编辑区查看勾选文件的差异（工作区 vs HEAD）';
     btnDiff.onclick = () => diffChecked();
     bar.appendChild(btnDiff);
-    body.appendChild(bar);
+    dlgFiles.appendChild(bar);
 
-    // ---- 文件列表 ----
     const list = document.createElement('div');
     list.id = 'commit-list';
-    body.appendChild(list);
+    dlgFiles.appendChild(list);
     if (!state.changed.length) {
       const d = document.createElement('div');
       d.className = 'git-empty';
       d.textContent = state.branch === '(无提交)' ? '还没有任何提交，勾选文件写下信息提交第一个吧' : '没有更改 ✨';
       list.appendChild(d);
     } else {
-      renderFileList(list);
+      for (const sec of fileSections()) {
+        const secBody = document.createElement('div');
+        const st = document.createElement('div');
+        st.className = 'git-sec-title';
+        st.textContent = (secCollapsed[sec.key] ? '▸ ' : '▾ ') + sec.title + ' (' + sec.items.length + ')';
+        st.title = '点击收起 / 展开此节';
+        st.style.cursor = 'pointer';
+        st.onclick = () => {
+          const now = secBody.style.display === 'none';
+          secBody.style.display = now ? '' : 'none';
+          st.textContent = (now ? '▾ ' : '▸ ') + sec.title + ' (' + sec.items.length + ')';
+          secCollapsed[sec.key] = !now;
+          saveSecCollapse(secCollapsed);
+        };
+        if (secCollapsed[sec.key]) secBody.style.display = 'none';
+        // 初始 depth=1：子项相对大节标题整体缩进一级，区分层级
+        secBody.appendChild(renderDirTree(buildDirTree(sec.items), 1));
+        list.appendChild(st);
+        list.appendChild(secBody);
+      }
     }
-
-    // ---- 提交区（底部固定）----
-    body.appendChild(buildCommitArea());
     updateCheckUI();
     gitSelIdx = -1; // 重新渲染后重置键盘导航选中
+    // 默认 diff：选中第一个文件（PyCharm 打开即预览）
+    if (state.changed.length) {
+      const first = state.changed.find((c) => c.status !== 'deleted' && c.status !== '*deleted') || state.changed[0];
+      if (first) showPaneDiff(first);
+    }
   }
+
+  // 对话框未打开时只更新状态（供定时刷新调用，不碰 DOM）
+  function updateStatusOnly() {}
 
   // 变更文件分节：已跟踪（变更）/ 未版本控制，节内按顶层目录分组
   function fileSections() {
@@ -133,30 +275,7 @@ const GitPanel = (() => {
   function saveSecCollapse(map) {
     try { localStorage.setItem(GIT_SEC_KEY, JSON.stringify(map)); } catch {}
   }
-
-  function renderFileList(container) {
-    const collapsed = loadSecCollapse();
-    for (const sec of fileSections()) {
-      const secBody = document.createElement('div');
-      const st = document.createElement('div');
-      st.className = 'git-sec-title';
-      st.textContent = (collapsed[sec.key] ? '▸ ' : '▾ ') + sec.title + ' (' + sec.items.length + ')';
-      st.title = '点击收起 / 展开此节';
-      st.style.cursor = 'pointer';
-      st.onclick = () => {
-        const now = secBody.style.display === 'none';
-        secBody.style.display = now ? '' : 'none';
-        st.textContent = (now ? '▾ ' : '▸ ') + sec.title + ' (' + sec.items.length + ')';
-        collapsed[sec.key] = !now;
-        saveSecCollapse(collapsed);
-      };
-      if (collapsed[sec.key]) secBody.style.display = 'none';
-      // 初始 depth=1：子项相对大节标题整体缩进一级，区分层级
-      secBody.appendChild(renderDirTree(buildDirTree(sec.items), 1));
-      container.appendChild(st);
-      container.appendChild(secBody);
-    }
-  }
+  const secCollapsed = loadSecCollapse();
 
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
   function buildDirTree(items) {
@@ -206,7 +325,7 @@ const GitPanel = (() => {
     return n;
   }
 
-  // 单个变更文件行：勾选框 + 状态徽章 + 文件名 + 悬停操作（depth = 目录深度，用于缩进）
+  // 单个变更文件行：勾选框 + 状态徽章 + 文件名 + 悬停回滚（depth = 目录深度，用于缩进）
   function fileRow(c, depth = 0) {
     const f = document.createElement('div');
     f.className = 'git-file';
@@ -216,8 +335,8 @@ const GitPanel = (() => {
     f.innerHTML = `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>` +
       `<span class="badge ${c.status}">${esc(isUntracked ? '?' : c.label)}</span>` +
       `<span class="nm" title="${esc(c.file)}">${esc(base)}</span>` +
-      `<span class="git-diff" title="查看与 HEAD 的对比">↔</span><span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`;
-    f.title = '点击查看差异 · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
+      `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`;
+    f.title = '点击在右侧查看差异 · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
       e.preventDefault();
@@ -231,7 +350,11 @@ const GitPanel = (() => {
         d.onclick = () => { menu.classList.add('hidden'); fn(); };
         menu.appendChild(d);
       };
-      mk('↔ 查看差异', () => showDiff({ kind: 'workdir', file: c.file, label: '工作区 vs HEAD' }));
+      mk('🔍 查看差异', () => {
+        dlgFiles.querySelectorAll('.git-file.sel').forEach((x) => x.classList.remove('sel'));
+        f.classList.add('sel');
+        showPaneDiff(c);
+      });
       if (c.status !== 'deleted' && c.status !== '*deleted') mk('📂 打开文件', () => {
         if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
       });
@@ -252,15 +375,17 @@ const GitPanel = (() => {
       menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
     };
     f.onclick = (e) => {
-      if (e.target.type === 'checkbox' || e.target.closest('.git-diff, .git-revert')) return;
-      showDiff({ kind: 'workdir', file: c.file, label: '工作区 vs HEAD' });
+      if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
+      // 选中态 + 右侧 diff 预览（PyCharm 式）
+      dlgFiles.querySelectorAll('.git-file.sel').forEach((x) => x.classList.remove('sel'));
+      f.classList.add('sel');
+      showPaneDiff(c);
     };
     f.ondblclick = (e) => {
-      if (e.target.type === 'checkbox' || e.target.closest('.git-diff, .git-revert')) return;
-      cancelDiff(); // 双击打开优先：使在途 diff 渲染失效（覆盖刚打开文件的竞态根因）
+      if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
       // 已删除文件磁盘上已不存在，编辑器打不开 → 双击直接看 diff（PyCharm 行为：显示被删内容）
       if (c.status === 'deleted' || c.status === '*deleted') {
-        showDiff({ kind: 'workdir', file: c.file, label: '已删除（vs HEAD）' });
+        showPaneDiff(c);
         return;
       }
       if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
@@ -269,10 +394,6 @@ const GitPanel = (() => {
       if (e.target.checked) checked.add(c.file);
       else checked.delete(c.file);
       updateCheckUI();
-    };
-    f.querySelector('.git-diff').onclick = (e) => {
-      e.stopPropagation();
-      showDiff({ kind: 'workdir', file: c.file, label: '工作区 vs HEAD' });
     };
     f.querySelector('.git-revert').onclick = async (e) => {
       e.stopPropagation();
@@ -286,40 +407,7 @@ const GitPanel = (() => {
     return f;
   }
 
-  // ---------- 提交区 ----------
-  function buildCommitArea() {
-    const area = document.createElement('div');
-    area.id = 'commit-area';
-    const msg = document.createElement('textarea');
-    msg.id = 'commit-msg';
-    msg.placeholder = '提交信息…（Ctrl+Enter 提交）';
-    msg.spellcheck = false;
-    msg.value = commitMsg;
-    msg.addEventListener('input', () => { commitMsg = msg.value; });
-    msg.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCommit(); }
-    });
-    area.appendChild(msg);
-    const foot = document.createElement('div');
-    foot.className = 'commit-foot';
-    const amend = document.createElement('label');
-    amend.className = 'm-check';
-    amend.innerHTML = '<input type="checkbox" id="commit-amend"><span>amend</span>';
-    amend.title = '追加到上一次提交（修正提交信息）';
-    foot.appendChild(amend);
-    const count = document.createElement('span');
-    count.id = 'commit-count';
-    foot.appendChild(count);
-    const btn = document.createElement('button');
-    btn.className = 'tb-btn m-ok';
-    btn.id = 'cm-ok';
-    btn.textContent = '提交';
-    btn.onclick = doCommit;
-    foot.appendChild(btn);
-    area.appendChild(foot);
-    return area;
-  }
-
+  // ---------- 提交 ----------
   async function doCommit() {
     if (!root || !state || !state.isRepo) return;
     const files = [...checked];
@@ -394,23 +482,6 @@ const GitPanel = (() => {
     renderDiffView(results, `选中 ${results.length} 个文件 · 工作区 vs HEAD`);
   }
 
-  // ---------- 打开提交窗口（Ctrl+K / Alt+0 / Ctrl+3）----------
-  function openCommit() {
-    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
-    if (!state || !state.isRepo) {
-      Modal.confirm('初始化仓库', '当前目录不是 Git 仓库，要初始化吗？').then(async (yes) => {
-        if (!yes) return;
-        const r = await window.myIDE.git.init(root);
-        if (r.ok) { MI.toast('已初始化', 'ok'); refresh(); }
-        else MI.toast('失败: ' + r.error, 'err');
-      });
-      return;
-    }
-    App.showTool('git');
-    const m = document.getElementById('commit-msg');
-    if (m) setTimeout(() => m.focus(), 50);
-  }
-
   // ---------- 分支切换弹窗 ----------
   async function openBranchDialog() {
     if (!root) return;
@@ -472,20 +543,28 @@ const GitPanel = (() => {
     }
   }
 
-  // ---------- Diff 视图 ----------
+  // ---------- Diff：对话框右侧预览 ----------
   // 令牌法：双击打开文件 / 新 diff 请求使在途请求失效（晚到的渲染不再覆盖新视图）
   let diffSeq = 0;
   function cancelDiff() { diffSeq++; }
-  async function showDiff({ kind, file, oid, label }) {
-    if (!root) return;
+  async function showPaneDiff(c) {
+    if (!dlgDiff || !root) return;
     const seq = ++diffSeq;
-    let r;
-    if (kind === 'workdir') r = await window.myIDE.git.diffWorkdir(root, file);
-    else r = await window.myIDE.git.diffCommit(root, oid, file);
-    if (seq !== diffSeq) return; // 期间发生了双击打开/新 diff → 丢弃本次渲染
-    if (r.error) { MI.toast(r.error, 'err'); return; }
-    if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
-    renderDiffView(r, label);
+    dlgDiffHead.innerHTML = '';
+    dlgDiff.innerHTML = '<div class="diff-msg">加载中…</div>';
+    const r = await window.myIDE.git.diffWorkdir(root, c.file);
+    if (seq !== diffSeq) return;
+    dlgDiff.innerHTML = '';
+    if (r.error) { dlgDiff.innerHTML = '<div class="diff-msg">' + esc(r.error) + '</div>'; return; }
+    // 头部：文件路径 + 统计 + hunk 导航
+    const head = document.createElement('div');
+    head.className = 'df-nav-row';
+    head.innerHTML = `<span class="df-path" title="${esc(c.file)}">${esc(c.file)}</span>` +
+      `<span class="df-meta">${r.unchanged ? '无差异' : '+' + countAdd(r.hunks) + ' / -' + countDel(r.hunks)}</span>`;
+    head.appendChild(makeHunkNav());
+    dlgDiffHead.appendChild(head);
+    if (r.unchanged) { dlgDiff.innerHTML = '<div class="diff-msg">文件无差异</div>'; return; }
+    dlgDiff.appendChild(buildDiffTable(r));
   }
 
   // diff hunk 导航：滚动到相邻 @@ 分隔行（循环）
@@ -599,15 +678,16 @@ const GitPanel = (() => {
     const dels = list.reduce((n, r) => n + countDel(r.hunks), 0);
     const head = document.createElement('div');
     head.className = 'diff-head';
-    head.innerHTML = `<button class="vt-btn" id="df-back">← 返回</button>
-      <span class="df-path">${esc(list.length === 1 ? list[0].file : list.length + ' 个文件')}</span>
-      <span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>`;
+    head.innerHTML = `<span class="df-path">${esc(list.length === 1 ? list[0].file : list.length + ' 个文件')}</span>` +
+      `<span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>`;
     head.appendChild(makeHunkNav());
-    head.querySelector('#df-back').onclick = () => {
-      const t = Viewer.activeTab;
-      if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
-      else { view.innerHTML = ''; empty.classList.add('visible'); }
-    };
+    // 关闭对比视图：回到编辑器（PyCharm 式 ✕，不再用「返回」）
+    const close = document.createElement('button');
+    close.className = 'vt-btn';
+    close.textContent = '✕';
+    close.title = '关闭对比视图 (Esc)';
+    close.onclick = closeDiffView;
+    head.appendChild(close);
     wrap.appendChild(head);
 
     const bodyEl = document.createElement('div');
@@ -615,6 +695,23 @@ const GitPanel = (() => {
     for (const r of list) bodyEl.appendChild(buildDiffTable(r));
     wrap.appendChild(bodyEl);
     view.appendChild(wrap);
+    // Esc 关闭
+    document.addEventListener('keydown', escCloseDiff);
+  }
+  function escCloseDiff(e) {
+    if (e.key !== 'Escape') return;
+    const ae = document.activeElement;
+    if (ae && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable)) return;
+    if (Modal.stack.length) return; // 有弹窗时让位
+    closeDiffView();
+  }
+  function closeDiffView() {
+    document.removeEventListener('keydown', escCloseDiff);
+    const view = document.getElementById('viewer');
+    if (!view || !view.querySelector('.diff-wrap')) return;
+    const t = Viewer.activeTab;
+    if (t) { Viewer.activate(Viewer.openTabs.indexOf(t)); }
+    else { view.innerHTML = ''; document.getElementById('empty-state').classList.add('visible'); }
   }
 
   function esc(s) {
@@ -639,18 +736,18 @@ const GitPanel = (() => {
     return (hunks || []).reduce((n, h) => n + h.rows.filter((r) => r.type === 'del').length, 0);
   }
 
-  // ---------- 键盘导航（↑↓ 选择 + Enter 查看差异，与文件树一致） ----------
+  // ---------- 键盘导航（↑↓ 选择 + Enter 差异预览） ----------
   let gitSelIdx = -1;
-  const navRows = () => [...body.querySelectorAll('.git-file')]
+  const navRows = () => dlgFiles ? [...dlgFiles.querySelectorAll('.git-file')]
     .filter((r) => {
       // 跳过折叠分组里的行（组容器 display:none，行自身不变）
       let n = r.parentElement;
-      while (n && n !== body) {
+      while (n && n !== dlgFiles) {
         if (n.style && n.style.display === 'none') return false;
         n = n.parentElement;
       }
       return true;
-    });
+    }) : [];
   function setGitSel(i) {
     const items = navRows();
     if (!items.length) return;
@@ -661,11 +758,10 @@ const GitPanel = (() => {
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
     if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key)) return;
+    if (!opened) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (t && t.closest && t.closest('.cm-editor')) return;
-    const panel = document.getElementById('panel-git');
-    if (!panel || panel.classList.contains('hidden')) return;
     if (window.GitLog && GitLog.isOpen()) return; // 日志窗口打开时让位给它的键盘导航
     const items = navRows();
     if (!items.length) return;
@@ -674,14 +770,13 @@ const GitPanel = (() => {
     if (e.key === 'ArrowUp') { setGitSel(gitSelIdx < 0 ? items.length - 1 : gitSelIdx - 1); return; }
     if (e.key === 'Enter' && gitSelIdx >= 0) {
       const row = items[gitSelIdx];
-      const file = row.querySelector('.cf-check');
-      if (file) showDiff({ kind: 'workdir', file: file.dataset.file, label: '工作区 vs HEAD' });
+      row.click();
     }
   });
 
   return {
-    refresh, openCommit, openBranchDialog, showDiff,
-    buildDiffTable, makeHunkNav, esc, fmtDate, countAdd, countDel,
+    refresh, openCommit, closeDialog, isOpen, openBranchDialog,
+    buildDiffTable, makeHunkNav, renderDiffView, closeDiffView, esc, fmtDate, countAdd, countDel,
     set rootDir(v) { root = v; },
   };
 })();

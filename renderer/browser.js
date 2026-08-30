@@ -292,7 +292,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-fwd').onclick = forward;
     document.getElementById('bw-reload').onclick = reload;
     document.getElementById('bw-home').onclick = home;
-    document.getElementById('bw-close').onclick = hide;
+    document.getElementById('bw-close').onclick = () => App.switchTool('browser'); // 已激活 → 收起
     document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
     favBtn.onclick = () => {
       if (!currentUrl) { MI.toast('先打开一个网页再收藏', 'err'); return; }

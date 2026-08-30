@@ -27,10 +27,10 @@
     <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+`)">⏴</button>
     <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">▤</button>
     <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)">☰</button>
-    <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3）">⑂</button>
-    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9)">⌥</button>
-    <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+4)">🌐</button>
-    <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+5)">⛁</button>
+    <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）">⑂</button>
+    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)">⌥</button>
+    <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)">🌐</button>
+    <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)">⛁</button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -49,15 +49,21 @@
       <div id="tree"></div>
     </div>
     <div id="panel-outline" class="hidden">
-      <div class="panel-title">大纲</div>
+      <div class="panel-title">大纲
+        <span class="panel-title-actions">
+          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+        </span>
+      </div>
       <div id="outline"></div>
     </div>
-    <div id="panel-git" class="hidden">
-      <div id="git-branchbar"><span id="git-branch"></span></div>
-      <div id="git-body"></div>
-    </div>
     <div id="panel-db" class="hidden">
-      <div class="panel-title">数据库</div>
+      <div class="panel-title">数据库
+        <span class="panel-title-actions">
+          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+        </span>
+      </div>
       <div id="db-side-bar">
         <select id="db-conn-select" title="已保存的连接"></select>
         <button id="db-connect-btn" class="vt-btn" title="连接 / 断开">连接</button>
@@ -130,21 +136,27 @@
       </div>
       <div id="db-sql" class="hidden"></div>
     </div>
-    <!-- Git 日志工具窗口（PyCharm Alt+9，底部停靠：编辑器在上、日志在下） -->
+    <!-- Git 日志工具窗口（PyCharm Alt+9 / Ctrl+5，底部停靠：编辑器在上、日志在下） -->
     <div id="git-log-panel" class="hidden">
       <div id="gl-resizer" title="拖动调整高度"></div>
       <div class="gl-toolbar">
-        <select id="gl-ref" title="分支过滤：所有 / 当前 / 指定分支"></select>
         <input id="gl-author" type="text" placeholder="👤 作者过滤…" spellcheck="false" autocomplete="off">
         <input id="gl-search" type="text" placeholder="🔍 消息 / 哈希…" spellcheck="false" autocomplete="off">
         <span class="gl-tb-count" id="gl-count"></span>
         <span class="spacer"></span>
+        <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+        <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
         <button id="gl-refresh" class="vt-btn" title="刷新">🔄</button>
         <button id="gl-close" class="vt-btn" title="关闭 (Shift+Esc)">✕</button>
       </div>
       <div class="gl-body">
-        <div id="gl-left"><div id="gl-list"></div></div>
-        <div id="gl-splitter"></div>
+        <div id="gl-left">
+          <div class="gl-left-head">
+            <select id="gl-ref" title="分支过滤：所有 / 当前 / 指定分支"></select>
+          </div>
+          <div id="gl-list"></div>
+        </div>
+        <div id="gl-splitter" title="拖动调整左右宽度"></div>
         <div id="gl-right"></div>
       </div>
     </div>

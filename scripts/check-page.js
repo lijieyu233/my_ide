@@ -115,30 +115,21 @@
     await wait(600);
     const iv = q('.img-view');
     out.imgBgImage = iv ? getComputedStyle(iv).backgroundImage : 'no-img-view';
-    // Git 分页签
-    App.showTool('git');
-    await wait(1000);
-    out.gitTabs = qa('.git-tab').map((t) => t.textContent);
-    out.branchBtn = !!q('#git-branch-btn');
-    // 本地修改：只显示文件名 + 点击打开文件
-    const changesTab = qa('.git-tab')[0];
-    if (changesTab && !changesTab.classList.contains('active')) { click(changesTab); await wait(300); }
-    const nmG = qa('#git-body .git-file .nm').find((x) => x.title === 'src\\app.js');
+    // Git 提交对话框（PyCharm 式：左上文件树 · 左下提交信息 · 右侧差异）
+    GitPanel.openCommit();
+    await wait(800);
+    out.commitDlg = !!q('.commit-dlg');
+    out.branchLabel = q('#cd-branch') ? q('#cd-branch').textContent : null;
+    // 本地修改：只显示文件名
+    const nmG = qa('#cd-files .git-file .nm').find((x) => x.title === 'src\\app.js');
     out.gitFileName = nmG ? { text: nmG.textContent, title: nmG.title } : 'no-src-app-row';
-    const gf = qa('#git-body .git-file').find((x) => x.textContent.includes('notes.txt'));
+    // 单击行 → 右侧差异预览
+    const gf = qa('#cd-files .git-file').find((x) => x.textContent.includes('notes.txt'));
     if (gf) click(gf);
     await wait(600);
-    out.gitClickOpens = { active: (Viewer.activeTab || {}).name, isDiff: !!q('.diff-table') };
-    const logTab = qa('.git-tab')[1];
-    if (logTab) click(logTab);
-    await wait(400);
-    out.gitSectionDisplays = qa('.git-section').map((s) => getComputedStyle(s).display);
-    // 提交弹窗只显示文件名
-    GitPanel.openCommit();
-    await wait(500);
-    out.commitNames = qa('#commit-files .commit-file .nm').map((n) => n.textContent);
-    out.commitTitles = qa('#commit-files .commit-file .nm').map((n) => n.title);
-    Modal.hide();
+    out.gitClickDiff = !!q('#cd-diff .diff-table');
+    out.gitSecTitles = qa('#cd-files .git-sec-title').map((s) => s.textContent);
+    GitPanel.closeDialog();
     await wait(100);
     // 大目录性能（2000 文件，验证不卡死）
     const t0 = Date.now();

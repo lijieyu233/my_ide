@@ -230,11 +230,9 @@ const GitLog = (() => {
     if (seq !== selSeq) return; // 期间又切了别的提交
     const files = (r && r.files) || [];
     renderDetailHead(c, files);
-    if (!files.length) {
-      rightEl.querySelector('.gl-ddiff').innerHTML = '<div class="diff-msg">该提交没有文件变更</div>';
-      return;
-    }
-    loadDetailDiff(oid, files[0].file);
+    if (!files.length) return;
+    // 默认在主区预览第一个文件的 diff（PyCharm 式：选中提交即看变更）
+    loadDetailDiff(oid, files[0].file, c);
   }
 
   function renderDetailHead(c, files) {
@@ -266,30 +264,23 @@ const GitLog = (() => {
         row.onclick = () => {
           filesBox.querySelectorAll('.gl-dfile').forEach((x) => x.classList.remove('sel'));
           row.classList.add('sel');
-          loadDetailDiff(c.oid, f.file);
+          loadDetailDiff(c.oid, f.file, c);
         };
         filesBox.appendChild(row);
       }
     }
     rightEl.appendChild(filesBox);
-
-    const diff = document.createElement('div');
-    diff.className = 'gl-ddiff';
-    diff.innerHTML = files && files.length ? '<div class="diff-msg">点击文件查看差异</div>' : '';
-    rightEl.appendChild(diff);
   }
 
-  async function loadDetailDiff(oid, file) {
+  // 文件 diff 渲染到右侧主窗口（编辑区，PyCharm 式），不放底部小区域
+  async function loadDetailDiff(oid, file, commit) {
     const seq = selSeq;
-    const pane = rightEl.querySelector('.gl-ddiff');
-    if (!pane) return;
-    pane.innerHTML = '<div class="diff-msg">加载中…</div>';
+    const label = commit && commit.short ? `提交 ${commit.short} · 与父提交比较` : '与父提交比较';
     const r = await window.myIDE.git.diffCommit(root, oid, file);
     if (seq !== selSeq) return;
-    if (r.error) { pane.innerHTML = '<div class="diff-msg">' + esc(r.error) + '</div>'; return; }
-    pane.innerHTML = '';
-    if (r.unchanged) { pane.innerHTML = '<div class="diff-msg">无差异（内容级）</div>'; return; }
-    pane.appendChild(GitPanel.buildDiffTable(r));
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
+    GitPanel.renderDiffView(r, label);
   }
 
   // ---------- 工具栏 ----------
@@ -369,7 +360,12 @@ const GitLog = (() => {
   authorEl.addEventListener('input', () => { authorQ = authorEl.value; applyFilter(); });
   searchEl.addEventListener('input', () => { searchQ = searchEl.value; applyFilter(); });
   document.getElementById('gl-refresh').onclick = () => refresh();
-  document.getElementById('gl-close').onclick = () => hide();
+  document.getElementById('gl-close').onclick = () => {
+    // 正常由工具条/快捷键打开（App 处于 log 态）→ 走 switchTool 收起同步按钮；
+    // 被直接 GitLog.open() 打开时 App 不在 log 态，只收面板本身
+    if (App.getTool() === 'log') App.switchTool('log');
+    else hide();
+  };
 
   // 高度拖拽（上边缘）
   (function initResizer() {
@@ -398,6 +394,35 @@ const GitLog = (() => {
       const saved = localStorage.getItem('myide-gl-height');
       if (saved && /^\d+(\.\d+)?px$/.test(saved)) panel.style.height = saved;
     } catch {}
+  })();
+
+  // 左右宽度拖拽（gl-splitter：右侧详情区宽度，百分比持久化）
+  (function initSplitter() {
+    const sp = document.getElementById('gl-splitter');
+    const right = document.getElementById('gl-right');
+    if (!sp || !right) return;
+    try {
+      const saved = parseFloat(localStorage.getItem('myide-gl-right-pct'));
+      if (saved >= 20 && saved <= 75) right.style.width = saved + '%';
+    } catch {}
+    let dragging = false;
+    sp.addEventListener('mousedown', (e) => {
+      dragging = true;
+      e.preventDefault();
+      document.body.classList.add('gl-ew-resizing');
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const bodyRect = document.querySelector('.gl-body').getBoundingClientRect();
+      const pct = ((e.clientX - bodyRect.left) / bodyRect.width) * 100;
+      right.style.width = Math.max(20, Math.min(pct, 75)) + '%';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('gl-ew-resizing');
+      try { localStorage.setItem('myide-gl-right-pct', right.style.width); } catch {}
+    });
   })();
 
   // 键盘导航：↑↓ 切换选中提交（窗口打开时）

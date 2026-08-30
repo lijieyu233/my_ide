@@ -500,34 +500,33 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(t.rows.length === 3, '3 行数据, got ' + t.rows.length);
   });
 
-  await okAsync('Git 提交窗口：变更列表 + 分节 + 分支 + 状态栏', async () => {
+  await okAsync('Git 提交对话框：变更列表 + 分节 + 分支 + 状态栏', async () => {
     await g(dom, 'GitPanel.refresh()');
     await tick();
-    const body = $(dom, '#git-body').textContent;
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const body = $(dom, '#cd-files').textContent;
     assert_(body.includes('README.md'), '修改列表含 README.md');
     assert_(body.includes('未版本控制的文件'), '未版本控制分节存在');
-    assert_($(dom, '#git-branch').textContent.includes('main'), '分支显示 main');
-    assert_($(dom, '#git-branch #git-branch-btn'), '分支按钮存在（点击切换分支）');
+    assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
+    assert_($(dom, '.commit-dlg'), '提交对话框存在（PyCharm 式）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
 
-  await okAsync('点击本地修改文件 → 左右分栏 diff', async () => {
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
+  await okAsync('点击本地修改文件 → 对话框右侧 diff 预览', async () => {
+    click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
-    const table = $(dom, '.diff-table');
+    const table = $(dom, '#cd-diff .diff-table');
     assert_(table, 'diff 表格出现');
-    assert_($allIn($(dom, '.diff-table'), 'td.del').some((td) => td.textContent === 'old line'), '左侧删除行');
-    assert_($allIn($(dom, '.diff-table'), 'td.add').some((td) => td.textContent === 'new line'), '右侧新增行');
-    assert_($(dom, '#df-back'), '有返回按钮');
+    assert_($allIn(table, 'td.del').some((td) => td.textContent === 'old line'), '左侧删除行');
+    assert_($allIn(table, 'td.add').some((td) => td.textContent === 'new line'), '右侧新增行');
   });
 
-  await okAsync('Ctrl+K → 提交窗口；勾选提交 → git.commit 收到消息', async () => {
-    click($(dom, '#df-back'));
-    await tick();
+  await okAsync('Ctrl+K → 提交对话框；勾选提交 → git.commit 收到消息', async () => {
     key(dom, 'k', { ctrl: true });
     await tick(); await tick();
-    assert_($(dom, '#commit-msg'), '提交窗口打开（停靠侧栏）');
-    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 工具面板可见');
+    assert_($(dom, '#commit-msg'), '提交窗口打开（对话框）');
+    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '提交对话框遮罩可见');
     assert_($allIn($(dom, '#commit-list'), '.cf-check').length === 4, '4 个文件复选框');
     $(dom, '#commit-msg').value = '测试提交信息';
     click($(dom, '#cm-ok'));
@@ -535,6 +534,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.commit.length >= 1, '调用了 git.commit');
     assert_(calls.commit[calls.commit.length - 1].message === '测试提交信息', '消息正确');
     assert_(calls.commit[calls.commit.length - 1].files.length === 4, '四个文件被提交（新文件默认勾选）');
+    // 关闭提交对话框（提交后 PyCharm 式可继续留在窗口，这里收尾关闭）
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
   });
 
@@ -578,7 +580,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#gl-right .gl-dmsg').textContent.includes('第二次提交'), '详情显示提交信息');
     const files = $allIn($(dom, '#gl-right'), '.gl-dfile');
     assert_(files.length === 2, '2 个变更文件');
-    assert_($(dom, '#gl-right .gl-ddiff .diff-table'), '右侧默认渲染第一个文件的 diff');
+    assert_($(dom, '#viewer .diff-wrap .diff-table'), '主区默认渲染第一个文件的 diff（PyCharm 式）');
     assert_(calls.diffCommit.length >= 1, '调用了 diffCommit');
     assert_(calls.diffCommit[calls.diffCommit.length - 1].startsWith('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:'), '对比的是点击的提交');
     // 点击第二个文件切换 diff
@@ -698,15 +700,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('Ctrl+K 连续打开两次提交窗口不崩（回归）', async () => {
+  await okAsync('Ctrl+K 连续打开两次提交对话框不崩（回归）', async () => {
     key(dom, 'k', { ctrl: true });
     await tick(); await tick();
     assert_($(dom, '#commit-msg'), '第一次提交窗口');
     key(dom, 'k', { ctrl: true });
     await tick(); await tick();
-    assert_($(dom, '#commit-msg'), '第二次提交窗口（同一停靠面板幂等）');
-    // 收尾：切回项目面板，避免影响后续会话恢复测试的 switchTool 语义
-    await g(dom, 'App.switchTool("project")');
+    assert_($(dom, '#commit-msg'), '第二次提交窗口（幂等，不重复构建）');
+    // 收尾：关闭提交对话框
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
@@ -717,11 +719,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       if (g(dom, 'Viewer.openTabs[' + i + '].dirty')) await g(dom, 'Viewer.saveTab(' + i + ')');
     }
     await tick();
-    // 准备会话：打开两个文件，切到 git 工具窗口
+    // 准备会话：打开两个文件，切到大纲工具窗口（git 提交是对话框，不再占工具位）
     await g(dom, 'App.setRoot("' + P + '")');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
-    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'App.showTool("outline")'); // showTool 语义：始终显示（switchTool 在已激活时会收起）
     await tick();
     await new Promise((r) => setTimeout(r, 500)); // 等防抖保存
     // 清空
@@ -736,7 +738,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const paths = g(dom, 'Viewer.openTabs.map(t => t.path)');
     assert_(paths.includes(P + '/README.md') && paths.includes(P + '/notes.txt'), '两个标签恢复, got: ' + JSON.stringify(paths));
     assert_(g(dom, 'Viewer.activeTab.path') === P + '/notes.txt', '活动标签恢复为 notes.txt');
-    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 工具窗口恢复');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲工具窗口恢复');
     await g(dom, 'App.switchTool("project")');
     await tick();
   });
@@ -783,13 +785,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('diff hunk 折叠：点击切换展开/收起', async () => {
-    // 打开一个本地修改的 diff（fake 数据 1 个 hunk 2 行）
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    const target = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
-    click(target.querySelector('.git-diff'));
+    // 打开提交对话框并点击本地修改行（fake 数据 2 个 hunk）
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const sep = $(dom, '.diff-hunk-gap');
+    click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
+    await tick(); await tick();
+    const sep = $(dom, '#cd-diff .diff-hunk-gap');
     assert_(sep, 'hunk 分隔行存在');
     assert_(sep.dataset.open === '1', '2 行 hunk 默认展开');
     click(sep);
@@ -806,6 +807,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(sep);
     await tick();
     assert_($allIn($(dom, '.diff-table'), 'tr').some((tr) => tr.style.display !== 'none' && tr.querySelector('td.ln')), '再次点击恢复');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
   });
 
   await okAsync('内容搜索：Ctrl+Shift+F 面板 + 结果 + 点击打开', async () => {
@@ -1486,10 +1489,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('分支切换：弹窗列出 + 点击切换', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    const branchBtn = $(dom, '#git-branch-btn');
-    assert_(branchBtn, '分支按钮存在');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const branchBtn = $(dom, '#cd-branch');
+    assert_(branchBtn, '分支入口存在（对话框头部）');
     click(branchBtn);
     await tick(); await tick();
     assert_($(dom, '#br-box'), '分支弹窗打开');
@@ -1500,9 +1503,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn($(dom, '#br-list'), '.br-item').find((x) => x.textContent.includes('dev')));
     await tick(); await tick();
     assert_(calls.checkout.length === 1 && calls.checkout[0] === 'dev', 'checkout(dev) 被调用');
-    assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
-    await g(dom, 'App.switchTool("project")');
+    assert_(!$(dom, '#br-box'), '分支弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
   });
 
   await okAsync('插件热重载：变更通知重载且不重复注册', async () => {
@@ -1651,9 +1655,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('diff hunk 导航：按钮 + 循环切换', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
     const nav = $(dom, '.df-nav');
     assert_(nav, '导航按钮组存在');
@@ -1662,15 +1666,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click($allIn(nav, 'button').find((b) => b.textContent.includes('⤓')));
     await tick();
     assert_($(dom, '.df-nav-label').textContent !== before, '点击后序号变化');
-    // 返回
-    click($(dom, '#df-back'));
-    await tick();
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('Git 日志分支视图：下拉 + 切换 ref', async () => {
-    await g(dom, 'GitLog.open()');
+    await g(dom, 'App.switchTool("log")');
     await tick(); await tick();
     const sel = $(dom, '#gl-ref');
     assert_(sel, '分支下拉存在');
@@ -1806,9 +1807,9 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('diff 头部：无旧版/新版按钮（已移除无意义复制）+ 左右分栏行号', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
     assert_(!$(dom, '#df-copy-old') && !$(dom, '#df-copy-new'), '旧版/新版按钮已移除');
     // PyCharm 式左右分栏：[旧内容|旧行号 ‖ 新行号|新内容]，行号列在两个面板中间
@@ -1824,9 +1825,7 @@ assert_(panel, 'CM6 搜索面板出现');
     const ctxRow = $allIn($(dom, '.diff-table'), 'tr').find((tr) => tr.querySelector('td.ctx') && [...tr.querySelectorAll('td')].length === 4);
     const ctxTds = ctxRow ? [...ctxRow.querySelectorAll('td')] : [];
     assert_(ctxTds[1] && ctxTds[1].textContent !== '' && ctxTds[2] && ctxTds[2].textContent !== '', '上下文行两侧行号有值');
-    click($(dom, '#df-back'));
-    await tick();
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
@@ -1955,14 +1954,14 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('Git 修改目录分组 + 折叠 + Toast 上限', async () => {
-    await g(dom, 'App.switchTool("git")');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     // 变更（README.md、src/app.js）与未版本控制（data.csv、src/deep/file.ts）两节，各按顶层目录分组
-    const secs = $allIn($(dom, '#git-body'), '.git-sec-title').map((x) => x.textContent);
+    const secs = $allIn($(dom, '#cd-files'), '.git-sec-title').map((x) => x.textContent);
     assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
     assert_(secs[0].includes('变更 (2)'), '变更分节 2 个文件');
     assert_(secs[1].includes('未版本控制的文件 (2)'), '未版本控制分节 2 个文件');
-    const groups = $allIn($(dom, '#git-body'), '.git-group');
+    const groups = $allIn($(dom, '#cd-files'), '.git-group');
     // 递归树：变更节 src(1)；未跟踪节 src(1) → deep(1)（根级文件不产生分组行）
     assert_(groups.length === 3, '三个目录行（src / src / deep）: ' + JSON.stringify(groups.map((x) => x.textContent)));
     assert_(groups[0].textContent.includes('src'), '变更节 src 目录行');
@@ -1975,7 +1974,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click(groups[1]);
     await tick();
     assert_(groups[1].textContent.includes('▾'), '组已展开');
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
     // Toast 上限
     for (let i = 0; i < 8; i++) g(dom, 'MI.toast("t' + i + '", "ok")');
@@ -1995,23 +1994,21 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, '_', { ctrl: true, shift: true });
     await tick();
     assert_(rootStyle.getPropertyValue('--editor-font-size') === '13px', '字号回到 13px');
-    // hunk 快捷键（diff 视图）
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    click($allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md')).querySelector('.git-diff'));
+    // hunk 快捷键（提交对话框右侧 diff）
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
     const before = $(dom, '.df-nav-label').textContent;
     key(dom, 'ArrowDown', { alt: true });
     await tick();
     assert_($(dom, '.df-nav-label').textContent !== before, 'Alt+↓ 切换 hunk');
-    click($(dom, '#df-back'));
-    await tick();
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('Git 日志分页：加载更多', async () => {
-    await g(dom, 'GitLog.open()');
+    await g(dom, 'App.switchTool("log")');
     await tick(); await tick();
     // 切到 dev（mock 返回 100 条 + truncated）
     const sel = $(dom, '#gl-ref');
@@ -2083,21 +2080,19 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(calls.copy.length === before, '点击状态栏不再触发复制');
   });
 
-  await okAsync('提交窗口：点击文件行 → 编辑区渲染 diff', async () => {
-    await g(dom, 'App.switchTool("git")');
+  await okAsync('提交对话框：点击文件行 → 右侧差异预览', async () => {
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     const before = calls.diffWorkdir.length;
-    // 单击行（非勾选框/操作按钮）→ 在编辑区查看工作区 vs HEAD
-    const row = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    // 单击行（非勾选框/操作按钮）→ 对话框右侧预览工作区 vs HEAD
+    const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     click(row);
     await tick(); await tick();
     assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
-    assert_($(dom, '#viewer .diff-wrap'), '编辑区渲染 diff 视图');
-    assert_($(dom, '#viewer .diff-table'), 'diff 表格出现');
-    click($(dom, '#df-back'));
-    await tick();
-    await g(dom, 'App.switchTool("project")');
+    assert_($(dom, '#cd-diff .diff-table'), '右侧差异表格出现');
+    assert_(row.classList.contains('sel'), '行显示选中态');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
@@ -2338,15 +2333,17 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('Git 面板键盘导航：↑↓ 选择本地修改行', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const files = $allIn($(dom, '#git-body'), '.git-file');
+    const files = $allIn($(dom, '#cd-files'), '.git-file');
     assert_(files.length >= 1, '有变更文件行, got ' + files.length);
     dom.window.document.body.focus();
     key(dom, 'ArrowDown');
     await tick();
     assert_($(dom, '.git-file.key-nav-sel'), '↓ 后有键盘选中高亮');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
   });
 
   await okAsync('侧栏分隔线实色不透明', async () => {
@@ -2427,9 +2424,9 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('Bug7：Git 放弃修改（revert）', async () => {
-    await g(dom, 'App.switchTool("git")');
-    await tick();
-    const file = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const file = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     assert_(file, '找到 README.md 变更行');
     const before = calls.discard.length;
     click(file.querySelector('.git-revert'));
@@ -2440,7 +2437,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_(calls.discard.length === before + 1, '调用了 git.discard');
     assert_(calls.discard[calls.discard.length - 1] === 'README.md', '丢弃的是 README.md');
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
@@ -2541,45 +2538,45 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('Bug5：提交窗口分节（变更 / 未版本控制的文件，旧分页签已移除）', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    assert_($allIn($(dom, '#git-body'), '.git-tab').length === 0, '旧分页签已移除');
-    const secs = $allIn($(dom, '#git-body'), '.git-sec-title').map((x) => x.textContent);
+    assert_($allIn($(dom, '#cd-files'), '.git-tab').length === 0, '旧分页签已移除');
+    const secs = $allIn($(dom, '#cd-files'), '.git-sec-title').map((x) => x.textContent);
     assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
     assert_(secs[0].includes('变更'), '变更分节');
     assert_(secs[1].includes('未版本控制'), '未版本控制分节');
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('Bug6：目录树嵌套缩进（PyCharm 提交窗口式）', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const nm = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title === 'src/app.js');
+    const nm = $allIn($(dom, '#cd-files'), '.git-file .nm').find((x) => x.title === 'src/app.js');
     assert_(nm, '找到 src/app.js 变更行');
     assert_(nm.textContent.trim() === 'app.js', '只显示文件名（层级由目录树表达）, got: ' + nm.textContent);
     // src 目录行存在且文件行缩进大于目录行
-    const srcGroup = $allIn($(dom, '#git-body'), '.git-group').find((x) => x.textContent.includes('src'));
+    const srcGroup = $allIn($(dom, '#cd-files'), '.git-group').find((x) => x.textContent.includes('src'));
     assert_(srcGroup, 'src 目录行存在');
     const srcRow = nm.closest('.git-file');
     assert_(parseInt(srcRow.style.paddingLeft) > parseInt(srcGroup.style.paddingLeft), '子文件相对父目录缩进');
     // 未版本控制分节也有嵌套
-    const untrackedFile = $allIn($(dom, '#git-body'), '.git-file .nm').find((x) => x.title.includes('newdir'));
+    const untrackedFile = $allIn($(dom, '#cd-files'), '.git-file .nm').find((x) => x.title.includes('newdir'));
     if (untrackedFile) {
       const row = untrackedFile.closest('.git-file');
       assert_(parseInt(row.style.paddingLeft) >= 24, '二级目录文件缩进 ≥ 24px');
     }
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('提交窗口右键菜单：查看差异 / 回滚 / 打开 / 复制路径', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const fileRowEl = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    const fileRowEl = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     assert_(fileRowEl, 'README.md 变更行存在');
     fileRowEl.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
@@ -2596,16 +2593,16 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#cf-yes'));
     await tick(); await tick();
     assert_(calls.discard.length === before + 1, 'discard 被调用');
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('Bug7：Git 新建分支（PyCharm Branches → New Branch）', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const branchBtn = $(dom, '#git-branch-btn');
-    assert_(branchBtn, '分支按钮存在');
+    const branchBtn = $(dom, '#cd-branch');
+    assert_(branchBtn, '分支入口存在');
     click(branchBtn);
     await tick(); await tick();
     const input = $(dom, '#br-new-input');
@@ -2614,22 +2611,22 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#br-new-btn'));
     await tick(); await tick();
     assert_((calls.createBranch || []).includes('feature-x'), 'createBranch 被调用');
-    assert_($(dom, '#modal-mask').classList.contains('hidden'), '弹窗关闭');
-    await g(dom, 'App.switchTool("project")');
+    assert_(!$(dom, '#br-box'), '分支弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
   await okAsync('Git 变更行：双击打开文件（单击看 diff）', async () => {
-    await g(dom, 'App.switchTool("git")');
     await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     // 双击行 → 打开文件
-    const file = $allIn($(dom, '#git-body'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    const file = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     file.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
     await tick(); await tick();
     const tab = $(dom, '.tab.active .tname');
     assert_(tab && tab.textContent.includes('README.md'), '双击打开 README.md, got: ' + (tab && tab.textContent));
-    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
 
@@ -2724,13 +2721,13 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#tool-browser').classList.contains('active'), '按钮取消高亮');
   });
 
-  await okAsync('内置浏览器：Ctrl+4 快捷键切换', async () => {
-    key(dom, '4', { ctrl: true });
+  await okAsync('内置浏览器：Ctrl+6 快捷键切换', async () => {
+    key(dom, '6', { ctrl: true });
     await tick();
-    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+4 打开');
-    key(dom, '4', { ctrl: true });
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 打开');
+    key(dom, '6', { ctrl: true });
     await tick();
-    assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+4 关闭');
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
   });
 
   await okAsync('内置浏览器：open 导航（WebContentsView IPC）+ 历史', async () => {
