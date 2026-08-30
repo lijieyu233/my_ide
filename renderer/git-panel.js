@@ -512,6 +512,11 @@ const GitPanel = (() => {
     }
     const table = document.createElement('table');
     table.className = 'diff-table';
+    // table-layout:fixed 的列宽只看第一行/colgroup；首行是 colspan=4 的 hunk 行，
+    // 不加 colgroup 会四列均分 → 行号列撑成 1/4 窗口宽（大片空白根因）
+    const cg = document.createElement('colgroup');
+    cg.innerHTML = '<col class="c-old"><col class="c-ln"><col class="c-num"><col class="c-new">';
+    table.appendChild(cg);
     r.hunks.forEach((h) => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
@@ -521,9 +526,12 @@ const GitPanel = (() => {
       for (const row of h.rows) {
         const tr = document.createElement('tr');
         // PyCharm 式左右分栏，行号列居中：[旧内容|旧行号 ‖ 新行号|新内容]
-        tr.innerHTML = `<td class="old ${row.type}">${esc(row.aText)}</td>` +
+        // 空白侧只留底色（empty），不上红绿：add 行左半、del 行右半不是变更内容
+        const oldCls = row.type === 'add' ? 'empty' : row.type;
+        const newCls = row.type === 'del' ? 'empty' : row.type;
+        tr.innerHTML = `<td class="old ${oldCls}">${esc(row.aText)}</td>` +
           `<td class="ln">${row.aNum || ''}</td><td class="num">${row.bNum || ''}</td>` +
-          `<td class="new ${row.type}">${esc(row.bText)}</td>`;
+          `<td class="new ${newCls}">${esc(row.bText)}</td>`;
         rows.push(tr);
       }
       rows.forEach((tr) => table.appendChild(tr));

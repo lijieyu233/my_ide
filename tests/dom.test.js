@@ -518,6 +518,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     const table = $(dom, '#viewer .diff-wrap .diff-table');
     assert_(table, 'diff 表格出现');
+    assert_($(dom, '.diff-table colgroup') && $allIn($(dom, '.diff-table'), 'col').length === 4, 'colgroup 定列宽（防行号列撑满回归）');
     assert_($allIn(table, 'td.del').some((td) => td.textContent === 'old line'), '左侧删除行');
     assert_($allIn(table, 'td.add').some((td) => td.textContent === 'new line'), '右侧新增行');
   });

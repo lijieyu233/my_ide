@@ -629,10 +629,14 @@ body.gl-ew-resizing #gl-splitter { background: var(--accent); opacity: .5; }
 .diff-file-title .b { color: var(--text-bright); }
 table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; font-family: var(--font-mono); font-size: 12.5px; }
 .diff-table td { padding: 0 4px; vertical-align: top; }
-/* PyCharm 式左右分栏：[旧内容|旧行号 ‖ 新行号|新内容]，两半严格等宽（50% - 行号列） */
-.diff-table .ln { width: 52px; text-align: right; color: var(--text-dim); background: var(--bg-panel); padding: 0 6px; user-select: none; font-size: 11px; }
-.diff-table .num { width: 52px; text-align: left; color: var(--num-dim); background: var(--bg-panel); padding: 0 6px; user-select: none; border-left: 2px solid var(--border-mid); font-size: 11px; }
-.diff-table .old, .diff-table .new { width: calc(50% - 52px); white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+/* PyCharm 式左右分栏：[旧内容|旧行号 ‖ 新行号|新内容]
+   fixed 布局列宽只认第一行/colgroup——首行是 colspan=4 的 hunk 行，
+   必须用 colgroup 定列宽，否则四列均分、行号列撑成 1/4 窗口宽（大片空白根因） */
+.diff-table .c-ln, .diff-table .c-num { width: 44px; }
+.diff-table .c-old, .diff-table .c-new { width: calc(50% - 44px); }
+.diff-table .ln { text-align: right; color: var(--text-dim); background: var(--bg-panel); padding: 0 5px; user-select: none; font-size: 11px; }
+.diff-table .num { text-align: left; color: var(--num-dim); background: var(--bg-panel); padding: 0 5px; user-select: none; border-left: 2px solid var(--border-mid); font-size: 11px; }
+.diff-table .old, .diff-table .new { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
 .diff-table td.ctx { background: var(--bg); color: var(--editor-text); }
 .diff-table td.del { background: var(--del-bg); color: var(--del-text); }
 .diff-table td.add { background: var(--add-bg); color: var(--add-text); }
