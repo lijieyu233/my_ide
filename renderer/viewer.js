@@ -31,6 +31,8 @@ const Viewer = (() => {
   }
 
   async function openFile(path) {
+    // 浏览器等主区工具窗口开着时会盖住编辑区：打开文件先切回编辑器（PyCharm 式）
+    if (window.App && App.getTool() === 'browser') App.backToEditor();
     recordRecent(path);
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => t.path === path);

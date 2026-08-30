@@ -138,9 +138,12 @@ ipcMain.handle('browser:view-open', (_e, url) => {
 });
 ipcMain.handle('browser:view-bounds', (_e, rect) => {
   if (!bwView || !rect) return;
+  // 渲染层上报的是 CSS 像素；宿主整窗缩放（Ctrl+=，zoomFactor≠1）时 CSS 像素≠窗口 DIP，
+  // 不换算会让原生视图错位：偏移出占位区（左侧空白）甚至盖住侧栏/工具条（左侧按钮失效）
+  const z = mainWindow ? mainWindow.webContents.getZoomFactor() : 1;
   bwView.setBounds({
-    x: Math.round(rect.x), y: Math.round(rect.y),
-    width: Math.max(0, Math.round(rect.width)), height: Math.max(0, Math.round(rect.height)),
+    x: Math.round(rect.x * z), y: Math.round(rect.y * z),
+    width: Math.max(0, Math.round(rect.width * z)), height: Math.max(0, Math.round(rect.height * z)),
   });
 });
 ipcMain.handle('browser:view-hide', () => {
@@ -171,8 +174,10 @@ ipcMain.handle('win:isMaximized', () => (mainWindow ? mainWindow.isMaximized() :
 ipcMain.handle('win:zoom', (_e, dir) => {
   if (!mainWindow) return;
   const wc = mainWindow.webContents;
-  if (dir === 0) { wc.setZoomFactor(1); return; }
-  wc.setZoomFactor(Math.min(5, Math.max(0.25, Math.round((wc.getZoomFactor() + dir * 0.1) * 100) / 100)));
+  if (dir === 0) wc.setZoomFactor(1);
+  else wc.setZoomFactor(Math.min(5, Math.max(0.25, Math.round((wc.getZoomFactor() + dir * 0.1) * 100) / 100)));
+  // 通知渲染层重算各原生视图（浏览器）bounds——zoom 改变 CSS↔DIP 映射
+  try { wc.send('ui:zoom', wc.getZoomFactor()); } catch {}
 });
 ipcMain.handle('app:getVersion', () => app.getVersion());
 

@@ -118,16 +118,21 @@ const App = (() => {
     if (next === 'db') sideCollapsed = false;
     applyToolChange(prev, next);
     renderToolStrip();
+    saveToolState();
   }
 
   function switchTool(name) {
     if (!ALL_TOOLS.includes(name)) return;
-    if (activeTool === name) { // 再点一次收起（PyCharm 行为）
+    // 侧栏整体收起（⏴）时点击任何工具项：先展开侧栏，本次点击只做展开不做收起切换
+    const wasCollapsed = document.body.classList.contains('sidebar-collapsed');
+    if (wasCollapsed) toggleSidebar(false);
+    if (activeTool === name && !wasCollapsed) { // 再点一次收起（PyCharm 行为）
       if (SIDE_TOOLS.includes(name)) sideCollapsed = true;
       else sideCollapsed = false;
       activeTool = null;
       applyToolChange(name, null);
       renderToolStrip();
+      saveToolState();
     } else {
       setToolState(name);
     }
@@ -135,7 +140,38 @@ const App = (() => {
   // 非切换语义：快捷键始终「显示」该工具窗口（PyCharm Alt+N 习惯，不因已激活而收起）
   function showTool(name) {
     if (!ALL_TOOLS.includes(name)) return;
+    if (document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
     if (activeTool !== name) setToolState(name);
+  }
+
+  // 打开文件/显示编辑区内容时，占据主区的工具窗口（浏览器）让位（PyCharm 式：编辑器优先）
+  function backToEditor() {
+    if (activeTool === 'browser' || activeTool === 'log') {
+      applyToolChange(activeTool, null);
+      activeTool = null;
+      renderToolStrip();
+      saveToolState();
+    }
+  }
+
+  // ---------- 工具窗口状态按项目记忆（不同项目各自记住侧栏/主区工具） ----------
+  const TOOL_STATE_PREFIX = 'myide-tool-state:';
+  function saveToolState() {
+    if (!root) return;
+    try { localStorage.setItem(TOOL_STATE_PREFIX + root, JSON.stringify({ activeTool, sideTool })); } catch {}
+  }
+  function restoreToolState() {
+    if (!root) return;
+    let st = null;
+    try { st = JSON.parse(localStorage.getItem(TOOL_STATE_PREFIX + root) || 'null'); } catch {}
+    const at = st && ALL_TOOLS.includes(st.activeTool) ? st.activeTool
+      : (st && st.activeTool === null ? null : 'project'); // 无记录默认项目面板
+    sideTool = st && SIDE_TOOLS.includes(st.sideTool) ? st.sideTool : 'project';
+    const prev = activeTool;
+    activeTool = at;
+    sideCollapsed = false;
+    applyToolChange(prev, at);
+    renderToolStrip();
   }
 
   function renderToolStrip() {
@@ -517,6 +553,7 @@ const App = (() => {
     renderProjectBar();
     renderEmptyRecent();
     Session.restore();
+    restoreToolState(); // 各项目记忆自己的工具窗口状态
     // 打开耗时埋点（>800ms 记日志，定位大项目卡顿）
     setTimeout(() => {
       const ms = performance.now() - t0;
@@ -650,7 +687,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, updateStatusbar, getProjects, toggleSidebar,
+    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar,
     get root() { return root; },
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },

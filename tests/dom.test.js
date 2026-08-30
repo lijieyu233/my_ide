@@ -2809,6 +2809,69 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'BrowserPanel.hide()');
   });
 
+  await okAsync('侧栏收起时点击工具项：自动展开侧栏', async () => {
+    await g(dom, 'App.switchTool("project")'); // 归一化起点
+    await g(dom, 'App.toggleSidebar(true)');
+    assert_(dom.window.document.body.classList.contains('sidebar-collapsed'), '侧栏已收起');
+    click($(dom, '#tool-outline'));
+    await tick();
+    assert_(!dom.window.document.body.classList.contains('sidebar-collapsed'), '点击工具项自动展开侧栏');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲面板显示');
+    // 未收起时再点一次 → 收起面板（互斥点击行为保留）
+    click($(dom, '#tool-outline'));
+    await tick();
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '再点一次收起面板');
+    // 面板收起 + 侧栏整体收起时点击当前工具 → 只展开侧栏，不进入收起分支
+    await g(dom, 'App.toggleSidebar(true)');
+    click($(dom, '#tool-project'));
+    await tick();
+    assert_(!dom.window.document.body.classList.contains('sidebar-collapsed'), '点击激活项也展开侧栏');
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板显示');
+  });
+
+  await okAsync('打开文件时浏览器让位（切回编辑区）', async () => {
+    await g(dom, 'App.showTool("browser")');
+    await tick();
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '浏览器面板打开');
+    await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
+    await tick(); await tick();
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), '打开文件后浏览器让位');
+    assert_(!$(dom, '#tool-browser').classList.contains('active'), '按钮取消高亮');
+    await g(dom, 'App.switchTool("project")'); // 归一化收尾
+  });
+
+  await okAsync('工具窗口状态按项目记忆（互不串扰）', async () => {
+    dom.window.localStorage.setItem('myide-tool-state:C:/tsA', JSON.stringify({ activeTool: 'outline', sideTool: 'outline' }));
+    await g(dom, 'App.setRoot("C:/tsA")');
+    await tick(); await tick();
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板');
+    await g(dom, 'App.setRoot("C:/tsB")');
+    await tick(); await tick();
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '项目B默认不显示大纲');
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目B默认项目面板');
+    // B 切到大纲 → A/B 各自记忆互不覆盖
+    await g(dom, 'App.switchTool("outline")');
+    await g(dom, 'App.setRoot("C:/tsA")');
+    await tick(); await tick();
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), 'A 仍是大纲');
+    await g(dom, 'App.setRoot("C:/tsB")');
+    await tick(); await tick();
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), 'B 记住自己切到大纲');
+    // 收尾：回到 P / 项目面板；关掉两个测试假项目并清理最近打开记录（不污染后续用例）
+    await g(dom, 'App.switchTool("project")');
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick();
+    for (const t of ['C:/tsA', 'C:/tsB']) {
+      const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.dataset.path === t);
+      if (btn) { click(btn.querySelector('.proj-close')); await tick(); }
+    }
+    try {
+      const rec = JSON.parse(dom.window.localStorage.getItem('myide-recent-projects') || '[]')
+        .filter((x) => x !== 'C:/tsA' && x !== 'C:/tsB');
+      dom.window.localStorage.setItem('myide-recent-projects', JSON.stringify(rec));
+    } catch {}
+  });
+
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();

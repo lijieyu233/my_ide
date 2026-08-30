@@ -154,6 +154,15 @@ const BrowserPanel = (() => {
     const b = document.getElementById('tool-browser');
     if (b) b.classList.toggle('active', visible);
   }
+  // 周期自愈：bounds 可能因布局时序/DPI 变化残留旧值 → 可见期间定期重报 rect（廉价，修正一切漂移）
+  let healTimer = null;
+  function startHeal() {
+    stopHeal();
+    healTimer = setInterval(() => syncBounds(), 1000);
+  }
+  function stopHeal() {
+    if (healTimer) { clearInterval(healTimer); healTimer = null; }
+  }
   function show() {
     if (visible) return;
     visible = true;
@@ -168,6 +177,7 @@ const BrowserPanel = (() => {
       viewEl.classList.add('hidden');
       renderEmpty();
     }
+    startHeal();
     setTimeout(() => urlInput.focus(), 0);
   }
   function hide() {
@@ -176,6 +186,7 @@ const BrowserPanel = (() => {
     panel.classList.add('hidden');
     syncToolBtn();
     closeDd();
+    stopHeal();
     const b = B(); if (b) b.viewHide(); // 只摘掉显示，WebContentsView 保留
   }
   function toggle() { visible ? hide() : show(); }
@@ -319,6 +330,10 @@ const BrowserPanel = (() => {
       new ResizeObserver(() => syncBounds()).observe(viewEl);
     }
     window.addEventListener('resize', () => syncBounds());
+    // 整窗缩放变化 → CSS↔DIP 映射改变，主进程换算 bounds 需重新上报
+    if (window.myIDE && myIDE.win && myIDE.win.onZoom) {
+      myIDE.win.onZoom(() => { setTimeout(syncBounds, 30); setTimeout(syncBounds, 200); });
+    }
 
     const b = B();
     if (b) {

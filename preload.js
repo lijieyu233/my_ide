@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     close: () => ipcRenderer.invoke('win:close'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
     zoom: (dir) => ipcRenderer.invoke('win:zoom', dir), // 1 放大 / -1 缩小 / 0 重置（编辑器内 Ctrl+± 为代码折叠）
+    onZoom: (cb) => ipcRenderer.on('ui:zoom', (_e, z) => cb(z)), // 整窗缩放变化（浏览器等原生视图需重算 bounds）
   },
   clip: {
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
