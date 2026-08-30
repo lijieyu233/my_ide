@@ -115,21 +115,22 @@
     await wait(600);
     const iv = q('.img-view');
     out.imgBgImage = iv ? getComputedStyle(iv).backgroundImage : 'no-img-view';
-    // Git 提交对话框（PyCharm 式：左上文件树 · 左下提交信息 · 右侧差异）
-    GitPanel.openCommit();
+    // Git 提交工具窗口（PyCharm 式左侧停靠：上半文件树 · 下半提交信息）
+    App.showTool('git');
     await wait(800);
-    out.commitDlg = !!q('.commit-dlg');
+    out.commitPanelVisible = !q('#panel-git').classList.contains('hidden');
     out.branchLabel = q('#cd-branch') ? q('#cd-branch').textContent : null;
     // 本地修改：只显示文件名
     const nmG = qa('#cd-files .git-file .nm').find((x) => x.title === 'src\\app.js');
     out.gitFileName = nmG ? { text: nmG.textContent, title: nmG.title } : 'no-src-app-row';
-    // 单击行 → 右侧差异预览
+    // 单击行 → 编辑区差异预览
     const gf = qa('#cd-files .git-file').find((x) => x.textContent.includes('notes.txt'));
     if (gf) click(gf);
     await wait(600);
-    out.gitClickDiff = !!q('#cd-diff .diff-table');
+    out.gitClickDiff = !!q('#viewer .diff-wrap .diff-table');
     out.gitSecTitles = qa('#cd-files .git-sec-title').map((s) => s.textContent);
-    GitPanel.closeDialog();
+    if (out.gitClickDiff) GitPanel.closeDiffView();
+    App.switchTool('git'); // 已激活 → 收起
     await wait(100);
     // 大目录性能（2000 文件，验证不卡死）
     const t0 = Date.now();

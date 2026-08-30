@@ -500,7 +500,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(t.rows.length === 3, '3 行数据, got ' + t.rows.length);
   });
 
-  await okAsync('Git 提交对话框：变更列表 + 分节 + 分支 + 状态栏', async () => {
+  await okAsync('Git 提交工具窗口：变更列表 + 分节 + 分支 + 状态栏', async () => {
     await g(dom, 'GitPanel.refresh()');
     await tick();
     await g(dom, 'GitPanel.openCommit()');
@@ -509,24 +509,24 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(body.includes('README.md'), '修改列表含 README.md');
     assert_(body.includes('未版本控制的文件'), '未版本控制分节存在');
     assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
-    assert_($(dom, '.commit-dlg'), '提交对话框存在（PyCharm 式）');
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见（左侧停靠）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
 
-  await okAsync('点击本地修改文件 → 对话框右侧 diff 预览', async () => {
+  await okAsync('点击本地修改文件 → 编辑区 diff 预览', async () => {
     click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
-    const table = $(dom, '#cd-diff .diff-table');
+    const table = $(dom, '#viewer .diff-wrap .diff-table');
     assert_(table, 'diff 表格出现');
     assert_($allIn(table, 'td.del').some((td) => td.textContent === 'old line'), '左侧删除行');
     assert_($allIn(table, 'td.add').some((td) => td.textContent === 'new line'), '右侧新增行');
   });
 
-  await okAsync('Ctrl+K → 提交对话框；勾选提交 → git.commit 收到消息', async () => {
+  await okAsync('Ctrl+K → 提交工具窗口；勾选提交 → git.commit 收到消息', async () => {
     key(dom, 'k', { ctrl: true });
     await tick(); await tick();
-    assert_($(dom, '#commit-msg'), '提交窗口打开（对话框）');
-    assert_(!$(dom, '#modal-mask').classList.contains('hidden'), '提交对话框遮罩可见');
+    assert_($(dom, '#commit-msg'), '提交窗口打开（左侧面板）');
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见');
     assert_($allIn($(dom, '#commit-list'), '.cf-check').length === 4, '4 个文件复选框');
     $(dom, '#commit-msg').value = '测试提交信息';
     click($(dom, '#cm-ok'));
@@ -534,10 +534,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.commit.length >= 1, '调用了 git.commit');
     assert_(calls.commit[calls.commit.length - 1].message === '测试提交信息', '消息正确');
     assert_(calls.commit[calls.commit.length - 1].files.length === 4, '四个文件被提交（新文件默认勾选）');
-    // 关闭提交对话框（提交后 PyCharm 式可继续留在窗口，这里收尾关闭）
+    // 收尾：关闭 diff 视图并收起面板
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
-    assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
+    assert_($(dom, '#panel-git').classList.contains('hidden'), '面板收起');
   });
 
   await okAsync('Alt+9 → Git 日志窗口：SVG 提交图 + HEAD/分支徽标 + 过滤', async () => {
@@ -785,12 +786,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('diff hunk 折叠：点击切换展开/收起', async () => {
-    // 打开提交对话框并点击本地修改行（fake 数据 2 个 hunk）
+    // 打开提交面板并点击本地修改行（fake 数据 2 个 hunk，diff 渲染在编辑区）
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
-    const sep = $(dom, '#cd-diff .diff-hunk-gap');
+    const sep = $(dom, '#viewer .diff-wrap .diff-hunk-gap');
     assert_(sep, 'hunk 分隔行存在');
     assert_(sep.dataset.open === '1', '2 行 hunk 默认展开');
     click(sep);
@@ -807,6 +808,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(sep);
     await tick();
     assert_($allIn($(dom, '.diff-table'), 'tr').some((tr) => tr.style.display !== 'none' && tr.querySelector('td.ln')), '再次点击恢复');
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -1659,13 +1661,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
     await tick(); await tick();
-    const nav = $(dom, '.df-nav');
+    const nav = $(dom, '#viewer .diff-wrap .df-nav');
     assert_(nav, '导航按钮组存在');
     assert_($(dom, '.df-nav-label').textContent.includes('/'), '序号显示: ' + $(dom, '.df-nav-label').textContent);
     const before = $(dom, '.df-nav-label').textContent;
     click($allIn(nav, 'button').find((b) => b.textContent.includes('⤓')));
     await tick();
     assert_($(dom, '.df-nav-label').textContent !== before, '点击后序号变化');
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -1825,6 +1828,7 @@ assert_(panel, 'CM6 搜索面板出现');
     const ctxRow = $allIn($(dom, '.diff-table'), 'tr').find((tr) => tr.querySelector('td.ctx') && [...tr.querySelectorAll('td')].length === 4);
     const ctxTds = ctxRow ? [...ctxRow.querySelectorAll('td')] : [];
     assert_(ctxTds[1] && ctxTds[1].textContent !== '' && ctxTds[2] && ctxTds[2].textContent !== '', '上下文行两侧行号有值');
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -1994,7 +1998,7 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, '_', { ctrl: true, shift: true });
     await tick();
     assert_(rootStyle.getPropertyValue('--editor-font-size') === '13px', '字号回到 13px');
-    // hunk 快捷键（提交对话框右侧 diff）
+    // hunk 快捷键（提交面板 → 编辑区 diff）
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     click($allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md')));
@@ -2003,6 +2007,7 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, 'ArrowDown', { alt: true });
     await tick();
     assert_($(dom, '.df-nav-label').textContent !== before, 'Alt+↓ 切换 hunk');
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -2080,18 +2085,19 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(calls.copy.length === before, '点击状态栏不再触发复制');
   });
 
-  await okAsync('提交对话框：点击文件行 → 右侧差异预览', async () => {
+  await okAsync('提交面板：点击文件行 → 编辑区差异预览', async () => {
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     const before = calls.diffWorkdir.length;
-    // 单击行（非勾选框/操作按钮）→ 对话框右侧预览工作区 vs HEAD
+    // 单击行（非勾选框/操作按钮）→ 编辑区预览工作区 vs HEAD
     const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     click(row);
     await tick(); await tick();
     assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
-    assert_($(dom, '#cd-diff .diff-table'), '右侧差异表格出现');
+    assert_($(dom, '#viewer .diff-wrap .diff-table'), '编辑区差异表格出现');
     assert_(row.classList.contains('sel'), '行显示选中态');
+    await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });

@@ -57,6 +57,28 @@
       </div>
       <div id="outline"></div>
     </div>
+    <!-- Git 提交工具窗口（PyCharm 式左侧停靠：上半变更文件树 · 下半提交信息；diff 显示在主编辑区） -->
+    <div id="panel-git" class="hidden">
+      <div class="panel-title">提交
+        <span id="cd-branch" title="点击切换分支"></span>
+        <span id="cd-dirty"></span>
+        <span class="panel-title-actions">
+          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+          <button id="cd-refresh" class="vt-btn" title="刷新 Git 状态 (Ctrl+R)">🔄</button>
+          <button id="cd-log" class="vt-btn" title="提交历史（Alt+9 / Ctrl+5）">🕘</button>
+        </span>
+      </div>
+      <div class="cd-files" id="cd-files"></div>
+      <div class="cd-msgbox">
+        <textarea id="commit-msg" placeholder="提交信息…（Ctrl+Enter 提交）" spellcheck="false"></textarea>
+        <div class="commit-foot">
+          <label class="m-check" title="追加到上一次提交（修正提交信息）"><input type="checkbox" id="commit-amend"><span>amend</span></label>
+          <span id="commit-count"></span>
+          <button class="tb-btn m-ok" id="cm-ok">提交</button>
+        </div>
+      </div>
+    </div>
     <div id="panel-db" class="hidden">
       <div class="panel-title">数据库
         <span class="panel-title-actions">

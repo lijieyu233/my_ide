@@ -94,11 +94,11 @@ const App = (() => {
   };
   window.Modal = Modal;
 
-  // ---------- 工具窗口（PyCharm 式：互斥单选；git 提交对话框除外，不占位）----------
-  // activeTool：project/outline/db/browser/log 五选一（null=全收起）
-  // sideTool：browser/log 激活期间侧栏保留的面板（project/outline 二选一）
-  const ALL_TOOLS = ['project', 'outline', 'db', 'browser', 'log'];
-  const SIDE_TOOLS = ['project', 'outline'];
+  // ---------- 工具窗口（PyCharm 式：互斥单选）----------
+  // activeTool：project/outline/git/db/browser/log 六选一（null=全收起）
+  // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git 三选一）
+  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log'];
+  const SIDE_TOOLS = ['project', 'outline', 'git'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
@@ -139,7 +139,7 @@ const App = (() => {
   }
 
   function renderToolStrip() {
-    // 按钮互斥高亮（tool-git 由 GitPanel 对话框自管理）
+    // 按钮互斥高亮
     for (const t of ALL_TOOLS) {
       const b = document.getElementById('tool-' + t);
       if (b) b.classList.toggle('active', activeTool === t);
@@ -147,7 +147,7 @@ const App = (() => {
     // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
-    for (const t of ['project', 'outline', 'db']) {
+    for (const t of ['project', 'outline', 'git', 'db']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
@@ -617,7 +617,7 @@ const App = (() => {
     };
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
-    document.getElementById('tool-git').onclick = () => GitPanel.openCommit();
+    document.getElementById('tool-git').onclick = () => switchTool('git');
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }

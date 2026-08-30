@@ -133,7 +133,7 @@ Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run:
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
 Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
-Shortcuts.register('commit', { desc: '提交更改（打开提交对话框：左上文件树 · 左下提交信息 · 右侧差异）', keys: ['ctrl+k', 'alt+0', 'ctrl+3', 'ctrl+4'], run: () => GitPanel.openCommit() });
+Shortcuts.register('commit', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['ctrl+k', 'alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
