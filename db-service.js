@@ -213,6 +213,120 @@ async function insertRow(id, table, cols, vals) {
   return query(id, sql, vals);
 }
 
+// ---------- 表结构（DDL / 索引） ----------
+async function tableDdl(id, table) {
+  const c = typeOf(id);
+  if (c.type === 'mysql') {
+    const [rows] = await c.mysql.query('SHOW CREATE TABLE ' + qid('mysql', table));
+    return { ddl: (rows[0] && rows[0]['Create Table']) || '' };
+  }
+  const res = c.sqlite.exec('SELECT sql FROM sqlite_master WHERE type IN (\'table\',\'view\') AND name = ' + qid('sqlite', table));
+  return { ddl: res[0] ? String(res[0].values[0][0] || '') : '' };
+}
+
+// ---------- CSV 导入 / 导出 ----------
+// CSV 行编码：含逗号/引号/换行时整体加引号，内部引号翻倍（RFC 4180）
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+async function exportCsv(id, table, filePath) {
+  const c = typeOf(id);
+  if (!filePath) throw new Error('未指定导出路径');
+  const PAGE = 500;
+  const out = [];
+  let page = 1;
+  let cols = null;
+  let total = 0;
+  for (;;) {
+    const r = await query(id, 'SELECT * FROM ' + qid(c.type, table) + ' LIMIT ? OFFSET ?', [PAGE, (page - 1) * PAGE]);
+    if (!cols) {
+      cols = r.columns || [];
+      out.push('\ufeff' + cols.map(csvCell).join(',')); // BOM：Excel 直开不乱码
+    }
+    for (const row of r.rows) out.push(cols.map((k) => csvCell(row[k])).join(','));
+    total += r.rows.length;
+    if (r.rows.length < PAGE) break;
+    page++;
+    if (total >= 200000) break; // 安全上限
+  }
+  fs.writeFileSync(filePath, out.join('\r\n'), 'utf8');
+  return { rows: total, file: filePath };
+}
+
+// CSV 解析（状态机：双引号包裹 + 引号翻倍转义），返回 string[][]
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQ = false;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { cell += '"'; i++; }
+        else inQ = false;
+      } else cell += ch;
+    } else if (ch === '"') {
+      inQ = true;
+    } else if (ch === ',') {
+      row.push(cell); cell = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && s[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else cell += ch;
+  }
+  row.push(cell);
+  if (row.length > 1 || row[0] !== '') rows.push(row);
+  return rows;
+}
+
+async function importCsv(id, table, filePath) {
+  const c = typeOf(id);
+  if (!filePath || !fs.existsSync(filePath)) throw new Error('CSV 文件不存在：' + filePath);
+  const text = fs.readFileSync(filePath, 'utf8');
+  const rows = parseCsv(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text); // 去 BOM
+  if (!rows.length) throw new Error('CSV 内容为空');
+  const cols = rows[0].map((x) => x.trim());
+  if (!cols.length || cols.some((x) => !x)) throw new Error('首行（表头）必须是目标表的列名');
+  // 校验列存在于目标表
+  const valid = new Set((await columns(id, table)).map((x) => x.name));
+  for (const cn of cols) {
+    if (!valid.has(cn)) throw new Error('表中不存在列：' + cn + '（首行必须是表头）');
+  }
+  // SQLite 用事务包裹（失败整体回滚）；MySQL 循环逐行（参数化）
+  if (c.type === 'sqlite') {
+    try { c.sqlite.exec('BEGIN'); } catch {}
+    try {
+      const ph = cols.map(() => '?').join(', ');
+      const sql = 'INSERT INTO ' + qid('sqlite', table) + ' (' + cols.map((x) => qid('sqlite', x)).join(', ') + ') VALUES (' + ph + ')';
+      for (let i = 1; i < rows.length; i++) {
+        const vals = cols.map((_, j) => (rows[i][j] === '' ? null : rows[i][j]));
+        c.sqlite.exec(sql, vals);
+      }
+      c.sqlite.exec('COMMIT');
+      fs.writeFileSync(c.file, Buffer.from(c.sqlite.export()));
+      return { inserted: rows.length - 1 };
+    } catch (e) {
+      try { c.sqlite.exec('ROLLBACK'); } catch {}
+      throw e;
+    }
+  }
+  const ph = cols.map(() => '?').join(', ');
+  const sql = 'INSERT INTO ' + qid('mysql', table) + ' (' + cols.map((x) => qid('mysql', x)).join(', ') + ') VALUES (' + ph + ')';
+  for (let i = 1; i < rows.length; i++) {
+    const vals = cols.map((_, j) => (rows[i][j] === '' ? null : rows[i][j]));
+    await c.mysql.query(sql, vals);
+  }
+  return { inserted: rows.length - 1 };
+}
+
 // ---------- IPC 注册 ----------
 function registerIpc() {
   const wrap = (fn) => (_e, ...args) => Promise.resolve()
@@ -229,6 +343,9 @@ function registerIpc() {
   ipcMain.handle('db:updateCell', wrap(updateCell));
   ipcMain.handle('db:deleteRows', wrap(deleteRows));
   ipcMain.handle('db:insertRow', wrap(insertRow));
+  ipcMain.handle('db:ddl', wrap(tableDdl));
+  ipcMain.handle('db:exportCsv', wrap(exportCsv));
+  ipcMain.handle('db:importCsv', wrap(importCsv));
 }
 
 module.exports = { registerIpc };

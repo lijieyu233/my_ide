@@ -166,6 +166,7 @@ window.DbPanel = (() => {
     connId = r.id;
     connCfg = cfg;
     page = 1; curTable = null; selRows.clear();
+    schema = { tables: [], cols: {} }; // SQL 补全缓存随连接重置
     renderConnBar();
     renderTables();
     MI.toast('已连接 ' + connLabel(cfg) + (r.serverInfo ? '（' + r.serverInfo + '）' : ''), 'ok');
@@ -174,8 +175,10 @@ window.DbPanel = (() => {
   async function doDisconnect() {
     if (connId) await call('close', connId);
     connId = null; connCfg = null; curTable = null;
+    schema = { tables: [], cols: {} };
     document.getElementById('db-tables').innerHTML = '<div class="db-hint">断开连接后此处显示表列表</div>';
     document.getElementById('db-data').innerHTML = '<div class="db-hint">选择左侧表查看数据</div>';
+    document.getElementById('db-ddl').innerHTML = '<div class="db-hint">选择左侧表查看结构</div>';
     renderConnBar();
   }
 
@@ -232,6 +235,8 @@ window.DbPanel = (() => {
       <span class="spacer"></span>
       <button class="vt-btn" id="db-add-row" title="插入一行（表单填写）">＋ 行</button>
       <button class="vt-btn" id="db-del-row" title="删除勾选的行">－ 行</button>
+      <button class="vt-btn" id="db-import-csv" title="从 CSV 文件导入数据（首行须为表头）">📥 导入</button>
+      <button class="vt-btn" id="db-export-csv" title="导出当前表全部数据为 CSV">📤 导出</button>
       <button class="vt-btn" id="db-refresh" title="刷新当前页">🔄</button>`;
     el.appendChild(head);
 
@@ -321,6 +326,8 @@ window.DbPanel = (() => {
     head.querySelector('#db-refresh').onclick = () => loadData();
     head.querySelector('#db-del-row').onclick = deleteSelected;
     head.querySelector('#db-add-row').onclick = insertRowForm;
+    head.querySelector('#db-export-csv').onclick = () => exportCsv();
+    head.querySelector('#db-import-csv').onclick = () => importCsv();
   }
 
   // ---------- 单元格编辑（双击 → input，Enter 提交 / Esc 取消） ----------
@@ -407,31 +414,105 @@ window.DbPanel = (() => {
     setTimeout(() => { const f = box.querySelector('input[data-col]'); if (f) f.focus(); }, 50);
   }
 
-  // ---------- SQL 标签页 ----------
+  // ---------- SQL 编辑器（CM6：表名/列名自动补全，Ctrl+Enter 运行） ----------
+  // Schema 缓存：连接后载表名；列名按表懒加载（补全首次触达某表时才查）
+  let schema = { tables: [], cols: {} };
+  let sqlCm = null; // CM 编辑器实例（不可用时回退 textarea）
+  const SQL_KW = ['SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'TABLE', 'DROP', 'ALTER', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'ON', 'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'AS', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'LIKE', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'UNION', 'ALL', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'INDEX', 'VIEW', 'EXISTS', 'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END'];
+
+  async function ensureSchemaTables() {
+    if (!connId || schema.tables.length) return;
+    const list = await call('tables', connId);
+    if (list) schema.tables = list.map((t) => t.name);
+  }
+  async function ensureCols(table) {
+    if (!connId || schema.cols[table]) return;
+    const r = await call('columns', connId, table);
+    schema.cols[table] = (r || []).map((c) => c.name);
+  }
+
+  // 补全源：FROM/JOIN/INTO 后补表名；tbl. 后补列名；默认关键词+表名+文中已出现表的列
+  async function sqlComplete(ctx) {
+    await ensureSchemaTables();
+    const word = ctx.matchBefore(/[\w.]+/);
+    if (!word || (word.from === word.to && !ctx.explicit)) return null;
+    const text = word.text;
+    const dot = text.lastIndexOf('.');
+    const before = ctx.state.doc.sliceString(0, word.from).toUpperCase();
+    if (dot >= 0) { // 前缀是表名 → 补列
+      const t = text.slice(0, dot).replace(/"/g, '');
+      await ensureCols(t);
+      return { from: word.from + dot + 1, options: (schema.cols[t] || []).map((c) => ({ label: c, type: 'property' })) };
+    }
+    if (/\b(FROM|JOIN|INTO|TABLE|UPDATE)\s+$/i.test(before)) {
+      return { from: word.from, options: schema.tables.map((t) => ({ label: t, type: 'type' })) };
+    }
+    const options = SQL_KW.map((k) => ({ label: k, type: 'keyword' }))
+      .concat(schema.tables.map((t) => ({ label: t, type: 'type' })));
+    const docText = ctx.state.doc.toString();
+    for (const t of schema.tables) {
+      if (new RegExp('\\b' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(docText)) {
+        await ensureCols(t);
+        for (const c of schema.cols[t] || []) options.push({ label: c, type: 'property' });
+      }
+    }
+    return { from: word.from, options };
+  }
+
   function renderSql() {
     const el = document.getElementById('db-sql');
     el.innerHTML = `
       <div class="db-sql-bar">
-        <span class="db-sql-hint">Ctrl+Enter 运行 · 选中片段仅执行选中部分</span>
+        <span class="db-sql-hint">Ctrl+Enter 运行 · 选中片段仅执行选中部分 · 输入表名/列名有补全</span>
         <span class="spacer"></span>
         <button class="vt-btn" id="db-sql-run" title="运行 SQL (Ctrl+Enter)">▶ 运行</button>
         <button class="vt-btn" id="db-sql-clear" title="清空">✕</button>
       </div>
-      <textarea id="db-sql-input" placeholder="SELECT * FROM ..." spellcheck="false">${escapeHtml(sqlText)}</textarea>
+      <div id="db-sql-input-wrap" class="db-sql-input-wrap"></div>
       <div id="db-sql-result" class="db-grid-wrap"><div class="db-hint">运行 SQL 后结果在此显示</div></div>`;
-    const ta = el.querySelector('#db-sql-input');
-    ta.addEventListener('input', () => { sqlText = ta.value; });
-    ta.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
-    });
+    const wrap = el.querySelector('#db-sql-input-wrap');
+    if (window.CodeEditor) {
+      sqlCm = CodeEditor.create({
+        parent: wrap,
+        doc: sqlText || '',
+        ext: 'sql',
+        completions: sqlComplete,
+        onRun: () => runSql(),
+        onChange: (v) => { sqlText = v; },
+      });
+    } else {
+      // CM6 未加载时回退 textarea（无补全，功能可用）
+      sqlCm = null;
+      const ta = document.createElement('textarea');
+      ta.id = 'db-sql-input';
+      ta.spellcheck = false;
+      ta.placeholder = 'SELECT * FROM ...';
+      ta.value = sqlText || '';
+      ta.addEventListener('input', () => { sqlText = ta.value; });
+      ta.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
+      });
+      wrap.appendChild(ta);
+    }
     el.querySelector('#db-sql-run').onclick = runSql;
-    el.querySelector('#db-sql-clear').onclick = () => { ta.value = ''; sqlText = ''; };
+    el.querySelector('#db-sql-clear').onclick = () => {
+      if (sqlCm) { sqlCm.setValue(''); }
+      else { const ta = el.querySelector('#db-sql-input'); if (ta) ta.value = ''; }
+      sqlText = '';
+    };
   }
 
   async function runSql() {
     if (!connId) { MI.toast('先连接数据库', 'err'); return; }
-    const ta = document.getElementById('db-sql-input');
-    const sql = (ta.value.slice(ta.selectionStart, ta.selectionEnd).trim() || ta.value.trim());
+    let sql = '';
+    if (sqlCm) {
+      const sel = sqlCm.getSelection();
+      const all = sqlCm.getValue();
+      sql = (sel && sel.from !== sel.to ? all.slice(sel.from, sel.to) : all).trim();
+    } else {
+      const ta = document.getElementById('db-sql-input');
+      sql = (ta.value.slice(ta.selectionStart, ta.selectionEnd).trim() || ta.value.trim());
+    }
     if (!sql) { MI.toast('SQL 为空', 'err'); return; }
     const out = document.getElementById('db-sql-result');
     out.innerHTML = '<div class="db-hint">执行中…</div>';
@@ -477,14 +558,88 @@ window.DbPanel = (() => {
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // ---------- 结构标签页（列定义 + DDL） ----------
+  async function renderDdl() {
+    const el = document.getElementById('db-ddl');
+    if (!connId || !curTable) { el.innerHTML = '<div class="db-hint">选择左侧表查看结构</div>'; return; }
+    el.innerHTML = '<div class="db-hint">加载中…</div>';
+    const [cols, ddl] = await Promise.all([
+      call('columns', connId, curTable),
+      call('ddl', connId, curTable),
+    ]);
+    if (!cols) { el.innerHTML = '<div class="db-hint db-err">结构加载失败</div>'; return; }
+    el.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'db-grid-bar';
+    head.innerHTML = `<span class="db-grid-title">${curTable}</span>
+      <span class="db-grid-sub">${cols.length} 列 · ${cols.filter((c) => c.pk).length} 个主键列</span>
+      <span class="spacer"></span>
+      <button class="vt-btn" id="db-ddl-copy" title="复制 CREATE 语句">⧉ 复制 DDL</button>`;
+    el.appendChild(head);
+    const table = document.createElement('table');
+    table.className = 'db-grid';
+    table.innerHTML = '<thead><tr><th>列名</th><th>类型</th><th>主键</th><th>备注</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    cols.forEach((c) => {
+      const tr = document.createElement('tr');
+      const mk = (v, cls) => { const td = document.createElement('td'); td.textContent = v; if (cls) td.className = cls; tr.appendChild(td); };
+      mk(c.name, c.pk ? 'db-pk' : '');
+      mk(c.type || '');
+      mk(c.pk ? '🔑 是' : '');
+      mk(c.extra || '');
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    const wrap = document.createElement('div');
+    wrap.className = 'db-grid-wrap';
+    wrap.appendChild(table);
+    el.appendChild(wrap);
+    const pre = document.createElement('pre');
+    pre.className = 'db-ddl-pre';
+    pre.textContent = (ddl && ddl.ddl) || '（无 DDL）';
+    el.appendChild(pre);
+    head.querySelector('#db-ddl-copy').onclick = () => {
+      MI.copyText((ddl && ddl.ddl) || '');
+      MI.toast('已复制 CREATE 语句', 'ok');
+    };
+  }
+
+  // ---------- CSV 导出 / 导入 ----------
+  async function exportCsv() {
+    if (!connId || !curTable) { MI.toast('先选择一个表', 'err'); return; }
+    const file = await window.myIDE.fs.pickSave('导出 CSV', curTable + '.csv',
+      [{ name: 'CSV 文件', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }]);
+    if (!file) return;
+    MI.toast('正在导出 ' + curTable + '…', 'ok');
+    const r = await call('exportCsv', connId, curTable, file);
+    if (!r) return;
+    MI.toast('已导出 ' + r.rows + ' 行 → ' + file, 'ok');
+  }
+
+  async function importCsv() {
+    if (!connId || !curTable) { MI.toast('先选择要导入的目标表', 'err'); return; }
+    const file = await window.myIDE.fs.pickFile('选择 CSV 文件（首行必须是表头）',
+      [{ name: 'CSV 文件', extensions: ['csv', 'txt'] }, { name: '所有文件', extensions: ['*'] }]);
+    if (!file) return;
+    const okc = await Modal.confirm('导入 CSV', '将「' + file.split(/[\\/]/).pop() + '」的数据追加到表「' + curTable + '」？\n（首行作为列名须与表列匹配，空单元格插入 NULL）');
+    if (!okc) return;
+    const r = await call('importCsv', connId, curTable, file);
+    if (!r) return;
+    MI.toast('已导入 ' + r.inserted + ' 行', 'ok');
+    loadData();
+  }
+
   // ---------- 标签切换 ----------
   function switchTab(t) {
     tab = t;
     document.getElementById('db-tab-data').classList.toggle('active', t === 'data');
+    document.getElementById('db-tab-ddl').classList.toggle('active', t === 'ddl');
     document.getElementById('db-tab-sql').classList.toggle('active', t === 'sql');
     document.getElementById('db-data-wrap').classList.toggle('hidden', t !== 'data');
+    document.getElementById('db-ddl').classList.toggle('hidden', t !== 'ddl');
     document.getElementById('db-sql').classList.toggle('hidden', t !== 'sql');
-    if (t === 'sql' && !document.getElementById('db-sql-input')) renderSql();
+    if (t === 'sql' && !document.getElementById('db-sql-input-wrap')) renderSql();
+    if (t === 'ddl') renderDdl();
   }
 
   // ---------- 初始化 ----------
@@ -523,6 +678,7 @@ window.DbPanel = (() => {
     };
     document.getElementById('db-tables-refresh').onclick = () => { if (connId) renderTables(); };
     document.getElementById('db-tab-data').onclick = () => switchTab('data');
+    document.getElementById('db-tab-ddl').onclick = () => switchTab('ddl');
     document.getElementById('db-tab-sql').onclick = () => switchTab('sql');
 
     renderConnBar();

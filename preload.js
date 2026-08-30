@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),
     pickFile: (title, filters) => ipcRenderer.invoke('fs:pickFile', title, filters),
+    pickSave: (title, defaultName, filters) => ipcRenderer.invoke('fs:pickSave', title, defaultName, filters),
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
@@ -110,5 +111,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     updateCell: (id, table, pk, pkVals, col, val) => ipcRenderer.invoke('db:updateCell', id, table, pk, pkVals, col, val),
     deleteRows: (id, table, pk, pkRows) => ipcRenderer.invoke('db:deleteRows', id, table, pk, pkRows),
     insertRow: (id, table, cols, vals) => ipcRenderer.invoke('db:insertRow', id, table, cols, vals),
+    ddl: (id, table) => ipcRenderer.invoke('db:ddl', id, table),
+    exportCsv: (id, table, filePath) => ipcRenderer.invoke('db:exportCsv', id, table, filePath),
+    importCsv: (id, table, filePath) => ipcRenderer.invoke('db:importCsv', id, table, filePath),
   },
 });

@@ -212,6 +212,17 @@ ipcMain.handle('fs:pickFile', async (_e, title, filters) => {
   return r.filePaths[0];
 });
 
+// 通用文件保存路径选择（数据库工具导出 CSV 等）
+ipcMain.handle('fs:pickSave', async (_e, title, defaultName, filters) => {
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: title || '保存文件',
+    defaultPath: defaultName || undefined,
+    filters: Array.isArray(filters) && filters.length ? filters : [{ name: '所有文件', extensions: ['*'] }],
+  });
+  if (r.canceled || !r.filePath) return null;
+  return r.filePath;
+});
+
 ipcMain.handle('fs:getRecent', () => {
   const s = loadState();
   return s.lastFolder && fs.existsSync(s.lastFolder) ? s.lastFolder : null;

@@ -171,8 +171,10 @@ window.CodeEditor = (() => {
           ...Autocomplete.completionKeymap,
           Commands.indentWithTab,
           { key: 'Mod-s', preventDefault: true, run: () => { if (opts.onSave) opts.onSave(); return true; } },
+          { key: 'Mod-Enter', preventDefault: true, run: () => { if (opts.onRun) { opts.onRun(); return true; } return false; } },
         ]),
         Autocomplete.closeBrackets(),
+        opts.completions ? Autocomplete.autocompletion({ override: [opts.completions] }) : [], // 自定义补全源（SQL 等）
         Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
         blameConf.of([]), // Git Blame 注解（setBlame 动态挂载）
         lang || [],

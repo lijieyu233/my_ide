@@ -148,6 +148,9 @@ function makeDom() {
       updateCell: async () => ({ ok: true }),
       deleteRows: async () => ({ ok: true }),
       insertRow: async () => ({ ok: true }),
+      ddl: async () => ({ ok: true, data: { ddl: 'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)' } }),
+      exportCsv: async () => ({ ok: true, data: { rows: 1, file: 'C:/t.csv' } }),
+      importCsv: async () => ({ ok: true, data: { inserted: 1 } }),
     },
     win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false, zoom: async (d) => { (calls.zoom = calls.zoom || []).push(d); } },
     clip: {
@@ -3025,6 +3028,31 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#panel-db').classList.contains('hidden'), '切走后侧栏隐藏');
     assert_($(dom, '#db-panel').classList.contains('hidden'), '切走后右侧隐藏');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板恢复显示');
+  });
+
+  await okAsync('数据库：结构标签（列定义 + DDL）与 SQL 编辑器', async () => {
+    await g(dom, 'App.switchTool("db")');
+    await tick();
+    const items = $allIn($(dom, '#db-tables'), '.db-table-item');
+    if (items.length) { click(items[0]); await tick(); await tick(); }
+    // 结构标签：列定义表 + DDL 文本
+    click($(dom, '#db-tab-ddl'));
+    await tick(); await tick();
+    assert_(!$(dom, '#db-ddl').classList.contains('hidden'), '结构标签页可见');
+    const ddlPre = $(dom, '#db-ddl .db-ddl-pre');
+    assert_(ddlPre && ddlPre.textContent.includes('CREATE TABLE'), '结构页显示 DDL');
+    assert_($allIn($(dom, '#db-ddl'), 'table.db-grid th').length >= 4, '结构页列定义表');
+    // SQL 标签：编辑器容器（CodeEditor 未加载时回退 textarea）+ 运行按钮
+    click($(dom, '#db-tab-sql'));
+    await tick();
+    assert_(!$(dom, '#db-sql').classList.contains('hidden'), 'SQL 标签页可见');
+    assert_($(dom, '#db-sql-input-wrap'), 'SQL 编辑器容器存在');
+    assert_($(dom, '#db-sql-run'), '运行按钮存在');
+    // 切回数据标签
+    click($(dom, '#db-tab-data'));
+    await tick();
+    assert_(!$(dom, '#db-data-wrap').classList.contains('hidden'), '数据标签页可见');
+    await g(dom, 'App.switchTool("project")');
   });
 
   console.log('');

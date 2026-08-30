@@ -1335,6 +1335,26 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
   resize: vertical;
 }
 #db-sql-result { border-top: 1px solid var(--border-mid); margin-top: 8px; }
+/* SQL 编辑器（CM6 容器；CodeEditor 不可用时回退 #db-sql-input textarea） */
+.db-sql-input-wrap {
+  flex-shrink: 0; height: 150px; overflow: hidden;
+  margin: 8px 10px 0;
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  background: var(--bg-input);
+}
+.db-sql-input-wrap .cm-editor { height: 100%; }
+.db-sql-input-wrap .cm-editor.cm-focused { outline: none; }
+.db-sql-input-wrap .cm-scroller { font-family: Consolas, 'Courier New', monospace; }
+.db-sql-input-wrap textarea#db-sql-input { margin: 0; border: none; border-radius: 4px; width: calc(100% - 20px); height: calc(100% - 16px); }
+/* 结构标签页（#db-ddl：列定义表 + CREATE 语句） */
+#db-ddl { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.db-ddl-pre {
+  flex-shrink: 0; margin: 10px; padding: 10px;
+  font-family: Consolas, 'Courier New', monospace; font-size: 12.5px;
+  color: var(--text); background: var(--bg-input);
+  border: 1px solid var(--border-mid); border-radius: 4px;
+  white-space: pre-wrap; word-break: break-all;
+}
 .db-conn-form select, .db-conn-form input {
   width: 100%; margin: 2px 0 10px;
   background: var(--bg-input); color: var(--text-bright);

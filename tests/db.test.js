@@ -99,7 +99,41 @@ function ok(cond, msg) {
   r = await invoke('db:select', id, 'my table', 1, 10);
   ok(r.ok, '表名带空格可查询');
 
-  // 12) 断开
+  // 12) 表结构（DDL）
+  r = await invoke('db:ddl', id, 'notes');
+  ok(r.ok && /CREATE TABLE/i.test(r.data.ddl) && r.data.ddl.includes('notes'), 'DDL：CREATE 语句');
+  r = await invoke('db:ddl', id, '不存在的表');
+  ok(r.ok && r.data.ddl === '', 'DDL：不存在的表返回空');
+
+  // 13) CSV 导出（含逗号/引号/换行转义 + BOM）
+  const csvFile = dbFile + '.csv';
+  await invoke('db:query', id, "INSERT INTO notes (title, content) VALUES ('逗号,引号\"换行', 'v')");
+  r = await invoke('db:exportCsv', id, 'notes', csvFile);
+  const raw = fs.readFileSync(csvFile, 'utf8');
+  ok(r.ok && r.data.rows >= 6, 'CSV 导出行数');
+  ok(raw.charCodeAt(0) === 0xfeff, 'CSV 带 BOM（Excel 直开不乱码）');
+  ok(raw.includes('"逗号,引号""换行"'), 'CSV 引号/逗号正确转义（RFC 4180）');
+  ok(raw.includes('title,content'), 'CSV 首行是表头');
+
+  // 14) CSV 导入（追加 + 事务回滚）
+  const csvIn = dbFile + '-in.csv';
+  fs.writeFileSync(csvIn, 'title,content\r\n导入A,a1\r\n导入B,"b,2"\r\n', 'utf8');
+  const before = (await invoke('db:select', id, 'notes', 1, 50)).data.total;
+  r = await invoke('db:importCsv', id, 'notes', csvIn);
+  ok(r.ok && r.data.inserted === 2, 'CSV 导入 2 行');
+  let after = (await invoke('db:select', id, 'notes', 1, 50)).data.total;
+  ok(after === before + 2, '导入后总数 +2');
+  r = await invoke('db:query', id, "SELECT content FROM notes WHERE title = '导入B'");
+  ok(r.ok && r.data.rows[0].content === 'b,2', '导入的引号包裹字段解析正确');
+  // 列不匹配 → 整体回滚（行数不变）
+  const csvBad = dbFile + '-bad.csv';
+  fs.writeFileSync(csvBad, 'title,不存在的列\nx,y\n', 'utf8');
+  r = await invoke('db:importCsv', id, 'notes', csvBad);
+  ok(!r.ok, '导入列不匹配报错');
+  after = (await invoke('db:select', id, 'notes', 1, 50)).data.total;
+  ok(after === before + 2, '失败导入不残留数据（事务回滚）');
+
+  // 15) 断开
   r = await invoke('db:close', id);
   ok(r.ok, '断开连接');
 
