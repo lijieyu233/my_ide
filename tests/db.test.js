@@ -160,6 +160,21 @@ function ok(cond, msg) {
   r = await invoke('db:exportCsv', id, 'empty_t', emptyJson, 'json');
   ok(JSON.parse(fs.readFileSync(emptyJson, 'utf8')).length === 0, '空表 JSON 导出为 []');
 
+  // 14d) ER 图 schema（表 + 列 + 外键关系）
+  await invoke('db:query', id, `CREATE TABLE users_er (id INTEGER PRIMARY KEY, name TEXT)`);
+  await invoke('db:query', id, `CREATE TABLE orders_er (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users_er(id), amount REAL)`);
+  await invoke('db:query', id, `CREATE TABLE items_er (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders_er(id))`);
+  r = await invoke('db:er', id);
+  ok(r.ok, 'ER schema 返回成功');
+  const names = r.data.tables.map((t) => t.name);
+  ok(names.includes('users_er') && names.includes('orders_er') && names.includes('items_er'), 'ER schema 含全部表');
+  const usersT = r.data.tables.find((t) => t.name === 'users_er');
+  ok(usersT.columns.length === 2 && usersT.columns[0].pk === true, 'ER 表节点带列定义 + 主键标记');
+  const rel = r.data.relations;
+  ok(rel.length === 2, 'ER 外键关系数, got ' + rel.length);
+  ok(rel.some((x) => x.from === 'orders_er' && x.fromCol === 'user_id' && x.to === 'users_er' && x.toCol === 'id'), 'FK orders_er.user_id → users_er.id');
+  ok(rel.some((x) => x.from === 'items_er' && x.to === 'orders_er'), 'FK items_er → orders_er');
+
   // 15) 断开
   r = await invoke('db:close', id);
   ok(r.ok, '断开连接');

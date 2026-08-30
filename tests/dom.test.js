@@ -150,6 +150,15 @@ function makeDom() {
       insertRow: async () => ({ ok: true }),
       ddl: async () => ({ ok: true, data: { ddl: 'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)' } }),
       explain: async () => ({ ok: true, data: { ok: 'select', columns: ['id', 'detail'], rows: [{ id: 1, detail: 'SCAN TABLE users' }] } }),
+      er: async () => ({
+        ok: true, data: {
+          tables: [
+            { name: 'users', columns: [{ name: 'id', type: 'INTEGER', pk: true }, { name: 'name', type: 'TEXT', pk: false }] },
+            { name: 'orders', columns: [{ name: 'id', type: 'INTEGER', pk: true }, { name: 'user_id', type: 'INTEGER', pk: false }] },
+          ],
+          relations: [{ from: 'orders', fromCol: 'user_id', to: 'users', toCol: 'id' }],
+        },
+      }),
       exportCsv: async () => ({ ok: true, data: { rows: 1, file: 'C:/t.csv' } }),
       importCsv: async () => ({ ok: true, data: { inserted: 1 } }),
     },
@@ -3074,6 +3083,16 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_($(dom, '#db-sql-input') && $(dom, '#db-sql-input').value.includes('SELECT'), '点击历史载入编辑器');
     dom.window.CodeEditor = savedCE; // 恢复
+    // ER 图：表节点 + FK 连线 + 工具栏
+    click($(dom, '#db-tab-er'));
+    await tick(); await tick(); await tick();
+    assert_(!$(dom, '#db-er').classList.contains('hidden'), 'ER 图标签页可见');
+    assert_($(dom, '#db-er .er-canvas'), 'ER 画布存在');
+    const nodes = dom.window.document.querySelectorAll('#db-er g.er-node');
+    assert_(nodes.length === 2, 'ER 渲染 2 个表节点, got ' + nodes.length);
+    const edges = dom.window.document.querySelectorAll('#db-er path.er-edge');
+    assert_(edges.length === 1, 'ER 渲染 1 条 FK 连线, got ' + edges.length);
+    assert_($(dom, '#er-relayout') && $(dom, '#er-fit'), 'ER 工具栏按钮（布局/适应窗口）');
     // 切回数据标签
     click($(dom, '#db-tab-data'));
     await tick();

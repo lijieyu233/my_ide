@@ -127,6 +127,37 @@ function packResult(cols, values) {
   return { columns: cols, rows };
 }
 
+// ---------- ER 图数据（全库 schema：表 + 列 + 外键关系） ----------
+// SQLite: PRAGMA foreign_key_list；MySQL: information_schema.KEY_COLUMN_USAGE（REFERENCED 不为空即 FK）
+async function erSchema(id) {
+  const c = typeOf(id);
+  const tbs = await tables(id);
+  const colsOf = {};
+  for (const t of tbs) colsOf[t.name] = await columns(id, t.name);
+  const rels = [];
+  if (c.type === 'mysql') {
+    const [rows] = await c.mysql.query(
+      'SELECT TABLE_NAME AS t, COLUMN_NAME AS col, REFERENCED_TABLE_NAME AS rt, REFERENCED_COLUMN_NAME AS rcol FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL',
+      [c.config.database]
+    );
+    for (const r of rows) rels.push({ from: r.t, fromCol: r.col, to: r.rt, toCol: r.rcol });
+  } else {
+    for (const t of tbs) {
+      const res = c.sqlite.exec('PRAGMA foreign_key_list(' + qid('sqlite', t.name) + ')');
+      if (!res[0]) continue;
+      const { columns: h, values } = res[0];
+      const iTable = h.indexOf('table'), iFrom = h.indexOf('from'), iTo = h.indexOf('to');
+      for (const v of values) rels.push({ from: t.name, fromCol: v[iFrom], to: v[iTable], toCol: v[iTo] });
+    }
+  }
+  // 只保留两端都在表清单里的关系（视图/已删表残引用过滤）
+  const names = new Set(tbs.map((t) => t.name));
+  return {
+    tables: tbs.map((t) => ({ name: t.name, columns: colsOf[t.name] || [] })),
+    relations: rels.filter((r) => names.has(r.from) && names.has(r.to)),
+  };
+}
+
 // ---------- EXPLAIN 执行计划（SELECT 语句前面加 EXPLAIN；SQLite 用 QUERY PLAN 形式） ----------
 async function explain(id, sql) {
   const c = typeOf(id);
@@ -381,6 +412,7 @@ function registerIpc() {
   ipcMain.handle('db:deleteRows', wrap(deleteRows));
   ipcMain.handle('db:insertRow', wrap(insertRow));
   ipcMain.handle('db:ddl', wrap(tableDdl));
+  ipcMain.handle('db:er', wrap(erSchema));
   ipcMain.handle('db:explain', wrap(explain));
   ipcMain.handle('db:exportCsv', wrap(exportCsv));
   ipcMain.handle('db:importCsv', wrap(importCsv));

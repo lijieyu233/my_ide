@@ -575,14 +575,14 @@ window.DbPanel = (() => {
         <span class="qh-ts">${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}</span>`;
       d.onclick = () => {
         setSql(it.sql);
-        Modal.close();
+        Modal.hide();
         if (tab !== 'sql') switchTab('sql');
         MI.toast('已载入历史 SQL', 'ok');
       };
       list.appendChild(d);
     });
     const clr = box.querySelector('#qh-clear');
-    if (clr) clr.onclick = () => { localStorage.removeItem(HIST_KEY); Modal.close(); MI.toast('历史已清空', 'ok'); };
+    if (clr) clr.onclick = () => { localStorage.removeItem(HIST_KEY); Modal.hide(); MI.toast('历史已清空', 'ok'); };
   }
 
   function renderSql() {
@@ -694,6 +694,266 @@ window.DbPanel = (() => {
     };
   }
 
+  // ---------- ER 图（PyCharm 式：表节点 + FK 连线 + 拖拽/缩放画布） ----------
+  // 节点尺寸：列名 22px 行高、标题栏 26px；列超 12 截断显示「…还有 N 列」
+  const ER = {
+    W_COL: 170, H_TITLE: 26, H_COL: 20, MAX_COLS: 12, PAD: 60,
+    data: null,        // erSchema 结果 {tables, relations}
+    pos: {},           // 表名 -> {x,y}（拖拽后更新；布局键持久化）
+    scale: 1, pan: { x: 0, y: 0 },
+    dragging: null,    // {table, dx, dy} 节点拖拽
+    panning: null,     // {x,y} 画布平移
+    highlight: null,   // hover/选中的表名（高亮其连线）
+  };
+
+  function erKey() {
+    if (!connCfg) return null;
+    return 'myide-db-er:' + (connCfg.type === 'mysql'
+      ? connCfg.host + ':' + connCfg.port + '/' + connCfg.database
+      : connCfg.file);
+  }
+  function erLoadPos() {
+    try { return JSON.parse(localStorage.getItem(erKey()) || '{}'); } catch { return {}; }
+  }
+  function erSavePos() {
+    try { localStorage.setItem(erKey(), JSON.stringify(ER.pos)); } catch {}
+  }
+
+  // 自动布局：按 FK 依赖分层（被引用表在上），同层横向网格
+  function erAutoLayout() {
+    const d = ER.data;
+    if (!d) return;
+    const depth = {};
+    const calc = (name, seen) => {
+      if (depth[name] !== undefined) return depth[name];
+      if (seen.has(name)) return 0; // 环
+      seen.add(name);
+      let dep = 0;
+      for (const r of d.relations) if (r.from === name) dep = Math.max(dep, calc(r.to, seen) + 1);
+      depth[name] = dep;
+      return dep;
+    };
+    d.tables.forEach((t) => calc(t.name, new Set()));
+    // 同层排网格
+    const layers = {};
+    let maxW = 0;
+    d.tables.forEach((t) => {
+      const l = depth[t.name] || 0;
+      (layers[l] = layers[l] || []).push(t);
+      maxW = Math.max(maxW, (layers[l] || []).length);
+    });
+    ER.pos = {};
+    const COL_GAP = ER.W_COL + ER.PAD;
+    const layerNames = Object.keys(layers).map(Number).sort((a, b) => a - b);
+    let y = 0;
+    for (const l of layerNames) {
+      let layerH = 0;
+      layers[l].forEach((t, i) => {
+        const h = ER.H_TITLE + Math.min(t.columns.length, ER.MAX_COLS) * ER.H_COL + 10;
+        layerH = Math.max(layerH, h);
+        ER.pos[t.name] = { x: i * COL_GAP, y };
+      });
+      y += layerH + ER.PAD;
+    }
+    erSavePos();
+  }
+
+  // 节点实际尺寸
+  function erNodeSize(t) {
+    return { w: ER.W_COL, h: ER.H_TITLE + Math.min(t.columns.length, ER.MAX_COLS) * ER.H_COL + 10 };
+  }
+  // 列在节点内的 y 坐标（用于连线锚点）
+  function erColY(t, colName) {
+    const i = t.columns.findIndex((c) => c.name === colName);
+    if (i < 0) return ER.H_TITLE / 2;
+    return ER.H_TITLE + Math.min(i, ER.MAX_COLS - 1) * ER.H_COL + ER.H_COL / 2;
+  }
+
+  function renderEr() {
+    const el = document.getElementById('db-er');
+    if (!connId) { el.innerHTML = '<div class="db-hint">先连接数据库，再查看 ER 图</div>'; return; }
+    el.innerHTML = '<div class="db-hint">加载 schema 中…</div>';
+    call('er', connId).then((d) => {
+      if (!d) { el.innerHTML = '<div class="db-hint db-err">schema 加载失败</div>'; return; }
+      ER.data = d;
+      const saved = erLoadPos();
+      if (!d.tables.length || d.tables.some((t) => !saved[t.name])) erAutoLayout(); // 首次/表结构变化 → 自动布局
+      else ER.pos = saved;
+      erDraw(el);
+    });
+  }
+
+  function erDraw(el) {
+    const d = ER.data;
+    el.innerHTML = '';
+    // 工具栏
+    const bar = document.createElement('div');
+    bar.className = 'er-bar';
+    bar.innerHTML = `
+      <span class="db-grid-sub">${d.tables.length} 张表 · ${d.relations.length} 个外键关系 · 拖动表节点调整布局 · 滚轮缩放 · 空白处拖动平移</span>
+      <span class="spacer"></span>
+      <button class="vt-btn" id="er-relayout" title="重新自动布局（清除手动位置）">⊞ 自动布局</button>
+      <button class="vt-btn" id="er-fit" title="缩放到适合窗口">⤢ 适应窗口</button>
+      <button class="vt-btn" id="er-zoom-in" title="放大">＋</button>
+      <button class="vt-btn" id="er-zoom-out" title="缩小">－</button>
+      <button class="vt-btn" id="er-zoom-reset" title="重置缩放（100%）">1:1</button>`;
+    el.appendChild(bar);
+    const canvas = document.createElement('div');
+    canvas.className = 'er-canvas';
+    el.appendChild(canvas);
+
+    const draw = () => {
+      canvas.innerHTML = '';
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('class', 'er-svg');
+      svg.style.width = '100%'; svg.style.height = '100%';
+      canvas.appendChild(svg);
+      const root = document.createElementNS(NS, 'g');
+      root.setAttribute('transform', 'translate(' + ER.pan.x + ',' + ER.pan.y + ') scale(' + ER.scale + ')');
+      svg.appendChild(root);
+      // 连线（画在节点下层）
+      for (const r of d.relations) {
+        const a = ER.pos[r.from], b = ER.pos[r.to];
+        if (!a || !b) continue;
+        const ta = d.tables.find((t) => t.name === r.from);
+        const y1 = a.y + erColY(ta, r.fromCol);
+        const x1 = a.x + ER.W_COL;
+        // 从 from 右缘连到 to 左缘；若 to 在左侧则反向
+        const toLeft = b.x < a.x;
+        const x2 = toLeft ? b.x + ER.W_COL : b.x;
+        const y2 = b.y + erColY(d.tables.find((t) => t.name === r.to), r.toCol);
+        const mid = (x1 + x2) / 2;
+        const line = document.createElementNS(NS, 'path');
+        line.setAttribute('d', 'M' + (toLeft ? x2 : x1) + ' ' + (toLeft ? y2 : y1) + ' C ' + mid + ' ' + (toLeft ? y2 : y1) + ', ' + mid + ' ' + (toLeft ? y1 : y2) + ', ' + (toLeft ? x1 : x2) + ' ' + (toLeft ? y1 : y2));
+        line.setAttribute('class', 'er-edge' + (ER.highlight === r.from || ER.highlight === r.to ? ' hl' : ''));
+        const t = document.createElementNS(NS, 'title');
+        t.textContent = r.from + '.' + r.fromCol + ' → ' + r.to + '.' + r.toCol;
+        line.appendChild(t);
+        root.appendChild(line);
+      }
+      // 表节点
+      for (const t of d.tables) {
+        const p = ER.pos[t.name];
+        if (!p) continue;
+        const { w, h } = erNodeSize(t);
+        const g = document.createElementNS(NS, 'g');
+        g.setAttribute('transform', 'translate(' + p.x + ',' + p.y + ')');
+        g.setAttribute('class', 'er-node' + (ER.highlight === t.name ? ' hl' : ''));
+        g.dataset.table = t.name;
+        const box = document.createElementNS(NS, 'rect');
+        box.setAttribute('width', w); box.setAttribute('height', h);
+        box.setAttribute('rx', 4);
+        g.appendChild(box);
+        const title = document.createElementNS(NS, 'text');
+        title.setAttribute('x', 8); title.setAttribute('y', 17);
+        title.setAttribute('class', 'er-title');
+        title.textContent = t.name;
+        g.appendChild(title);
+        const n = Math.min(t.columns.length, ER.MAX_COLS);
+        for (let i = 0; i < n; i++) {
+          const c = t.columns[i];
+          const tx = document.createElementNS(NS, 'text');
+          tx.setAttribute('x', 8); tx.setAttribute('y', ER.H_TITLE + i * ER.H_COL + 14);
+          tx.setAttribute('class', 'er-col' + (c.pk ? ' pk' : ''));
+          tx.textContent = (c.pk ? '🔑 ' : '') + c.name + '  ' + (c.type || '');
+          g.appendChild(tx);
+        }
+        if (t.columns.length > ER.MAX_COLS) {
+          const more = document.createElementNS(NS, 'text');
+          more.setAttribute('x', 8); more.setAttribute('y', ER.H_TITLE + n * ER.H_COL + 14);
+          more.setAttribute('class', 'er-more');
+          more.textContent = '…还有 ' + (t.columns.length - ER.MAX_COLS) + ' 列';
+          g.appendChild(more);
+        }
+        root.appendChild(g);
+      }
+    };
+    draw();
+
+    // ---------- 交互 ----------
+    const getSvg = () => canvas.querySelector('svg');
+
+    // 节点拖拽（mousedown 在 g.er-node 上）/ 画布平移（mousedown 在空白）
+    canvas.onmousedown = (e) => {
+      if (e.button !== 0) return;
+      const node = e.target.closest && e.target.closest('g.er-node');
+      if (node) {
+        const t = node.dataset.table;
+        ER.dragging = { table: t, dx: e.clientX, dy: e.clientY, ox: ER.pos[t].x, oy: ER.pos[t].y };
+      } else {
+        ER.panning = { x: e.clientX, y: e.clientY, px: ER.pan.x, py: ER.pan.y };
+      }
+      e.preventDefault();
+    };
+    window.addEventListener('mousemove', (e) => {
+      if (ER.dragging) {
+        const p = ER.pos[ER.dragging.table];
+        p.x = ER.dragging.ox + (e.clientX - ER.dragging.dx) / ER.scale;
+        p.y = ER.dragging.oy + (e.clientY - ER.dragging.dy) / ER.scale;
+        draw();
+      } else if (ER.panning) {
+        ER.pan.x = ER.panning.px + (e.clientX - ER.panning.x);
+        ER.pan.y = ER.panning.py + (e.clientY - ER.panning.y);
+        const s = getSvg();
+        if (s) s.firstChild.setAttribute('transform', 'translate(' + ER.pan.x + ',' + ER.pan.y + ') scale(' + ER.scale + ')');
+      }
+    });
+    window.addEventListener('mouseup', () => {
+      if (ER.dragging) { erSavePos(); ER.dragging = null; }
+      ER.panning = null;
+    });
+    // 滚轮缩放（以鼠标为中心）
+    canvas.onwheel = (e) => {
+      e.preventDefault();
+      const k = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const ns = Math.min(3, Math.max(0.2, ER.scale * k));
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      ER.pan.x = mx - (mx - ER.pan.x) * (ns / ER.scale);
+      ER.pan.y = my - (my - ER.pan.y) * (ns / ER.scale);
+      ER.scale = ns;
+      const s = getSvg();
+      if (s) s.firstChild.setAttribute('transform', 'translate(' + ER.pan.x + ',' + ER.pan.y + ') scale(' + ER.scale + ')');
+    };
+    // hover 高亮关联（节点整组 hover）
+    canvas.onmouseover = (e) => {
+      const node = e.target.closest && e.target.closest('g.er-node');
+      const name = node ? node.dataset.table : null;
+      if (name !== ER.highlight) { ER.highlight = name; draw(); }
+    };
+    // 双击表节点 → 跳到该表数据页
+    canvas.ondblclick = (e) => {
+      const node = e.target.closest && e.target.closest('g.er-node');
+      if (!node) return;
+      openTable(node.dataset.table);
+    };
+
+    bar.querySelector('#er-relayout').onclick = () => { erAutoLayout(); ER.scale = 1; ER.pan = { x: ER.PAD, y: ER.PAD }; draw(); };
+    bar.querySelector('#er-zoom-in').onclick = () => { ER.scale = Math.min(3, ER.scale * 1.2); draw(); };
+    bar.querySelector('#er-zoom-out').onclick = () => { ER.scale = Math.max(0.2, ER.scale / 1.2); draw(); };
+    bar.querySelector('#er-zoom-reset').onclick = () => { ER.scale = 1; ER.pan = { x: ER.PAD, y: ER.PAD }; draw(); };
+    bar.querySelector('#er-fit').onclick = () => {
+      // 计算内容包围盒，缩放平移到画布内
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const t of d.tables) {
+        const p = ER.pos[t.name];
+        if (!p) continue;
+        const { w, h } = erNodeSize(t);
+        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+      }
+      if (minX === Infinity) return;
+      const rect = canvas.getBoundingClientRect();
+      const s = Math.min(2, Math.max(0.2, Math.min((rect.width - 40) / (maxX - minX), (rect.height - 40) / (maxY - minY))));
+      ER.scale = s;
+      ER.pan = { x: 20 - minX * s, y: 20 - minY * s };
+      draw();
+    };
+    ER.pan = { x: ER.PAD, y: ER.PAD };
+    draw();
+  }
+
   // ---------- CSV 导出 / 导入 ----------
   // 导出（fmt: 'csv' | 'json' | 'sql'）：JSON 为数组文件，SQL 为可重放的 INSERT 语句
   async function exportCsv(fmt) {
@@ -731,12 +991,15 @@ window.DbPanel = (() => {
     tab = t;
     document.getElementById('db-tab-data').classList.toggle('active', t === 'data');
     document.getElementById('db-tab-ddl').classList.toggle('active', t === 'ddl');
+    document.getElementById('db-tab-er').classList.toggle('active', t === 'er');
     document.getElementById('db-tab-sql').classList.toggle('active', t === 'sql');
     document.getElementById('db-data-wrap').classList.toggle('hidden', t !== 'data');
     document.getElementById('db-ddl').classList.toggle('hidden', t !== 'ddl');
+    document.getElementById('db-er').classList.toggle('hidden', t !== 'er');
     document.getElementById('db-sql').classList.toggle('hidden', t !== 'sql');
     if (t === 'sql' && !document.getElementById('db-sql-input-wrap')) renderSql();
     if (t === 'ddl') renderDdl();
+    if (t === 'er') renderEr();
   }
 
   // ---------- 初始化 ----------
@@ -776,6 +1039,7 @@ window.DbPanel = (() => {
     document.getElementById('db-tables-refresh').onclick = () => { if (connId) renderTables(); };
     document.getElementById('db-tab-data').onclick = () => switchTab('data');
     document.getElementById('db-tab-ddl').onclick = () => switchTab('ddl');
+    document.getElementById('db-tab-er').onclick = () => switchTab('er');
     document.getElementById('db-tab-sql').onclick = () => switchTab('sql');
 
     renderConnBar();

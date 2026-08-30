@@ -1371,6 +1371,46 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
 }
 .qh-item .qh-ts { flex-shrink: 0; font-size: 11px; color: var(--text-dim); }
 .qh-item.qh-err .qh-sql { color: var(--danger, #e06c75); }
+/* ---------- ER 图（#db-er：工具栏 + SVG 画布） ---------- */
+#db-er { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.er-bar {
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-bottom: 1px solid var(--border-mid);
+}
+.er-canvas {
+  flex: 1; min-height: 0; overflow: hidden; position: relative;
+  background:
+    linear-gradient(90deg, var(--border) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(var(--border) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--bg-input);
+  cursor: grab;
+}
+.er-canvas:active { cursor: grabbing; }
+.er-svg { width: 100%; height: 100%; display: block; }
+/* 外键连线：三次贝塞尔（from 右缘 → to 左缘） */
+.er-edge {
+  fill: none; stroke: var(--text-dim); stroke-width: 1.5;
+  stroke-dasharray: 5 3; opacity: .6;
+}
+.er-edge.hl { stroke: var(--accent, #61afef); stroke-width: 2.2; opacity: 1; stroke-dasharray: none; }
+/* 表节点：标题栏 + 列清单 */
+.er-node rect {
+  fill: var(--bg, #282c34);
+  stroke: var(--border-mid, #3e4451); stroke-width: 1;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.25));
+}
+.er-node.hl rect { stroke: var(--accent, #61afef); stroke-width: 2; }
+.er-node { cursor: move; }
+.er-title {
+  font-size: 12px; font-weight: 600; fill: var(--text-bright, #d7dae0);
+  font-family: var(--font-ui, sans-serif); user-select: none;
+}
+.er-col {
+  font-size: 11px; fill: var(--text, #abb2bf);
+  font-family: Consolas, 'Courier New', monospace; user-select: none;
+}
+.er-col.pk { fill: var(--warn, #e5c07b); }
+.er-more { font-size: 10.5px; fill: var(--text-dim); font-style: italic; }
 .db-conn-form select, .db-conn-form input {
   width: 100%; margin: 2px 0 10px;
   background: var(--bg-input); color: var(--text-bright);
