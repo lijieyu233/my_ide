@@ -94,6 +94,13 @@ contextBridge.exposeInMainWorld('myIDE', {
     // OpenAI 兼容对话（翻译插件用）：cfg={baseUrl, apiKey, model}
     chat: (cfg, messages) => ipcRenderer.invoke('llm:chat', cfg, messages),
   },
+  ai: {
+    // AI 助手流式对话：chunk/done 事件推送；abort 中断生成
+    chat: (cfg, messages) => ipcRenderer.invoke('ai:chat', cfg, messages),
+    abort: () => ipcRenderer.invoke('ai:abort'),
+    onChunk: (cb) => ipcRenderer.on('ai:chunk', (_e, delta) => cb(delta)),
+    onDone: (cb) => ipcRenderer.on('ai:done', ( _e, r) => cb(r)),
+  },
   browser: {
     // WebContentsView 内置浏览器（主进程管理，规避 <webview> guest 视口高度同步失效）
     viewOpen: (url) => ipcRenderer.invoke('browser:view-open', url),

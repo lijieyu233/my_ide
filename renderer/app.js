@@ -97,7 +97,7 @@ const App = (() => {
   // ---------- 工具窗口（PyCharm 式：互斥单选）----------
   // activeTool：project/outline/git/db/browser/log 六选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git 三选一）
-  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log'];
+  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log', 'ai'];
   const SIDE_TOOLS = ['project', 'outline', 'git'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -191,6 +191,10 @@ const App = (() => {
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
+    // AI 助手右侧停靠面板：与编辑区并列，激活时显示（侧栏保持原工具不变）
+    const aiEl = document.getElementById('ai-panel');
+    if (aiEl) aiEl.classList.toggle('hidden', activeTool !== 'ai');
+    if (window.AiPanel) AiPanel.syncVisible(activeTool === 'ai');
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
@@ -658,6 +662,12 @@ const App = (() => {
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
+    if (window.AiPanel) {
+      AiPanel.init();
+      document.getElementById('tool-ai').onclick = () => switchTool('ai');
+      const aiClose = document.getElementById('ai-close');
+      if (aiClose) aiClose.onclick = () => switchTool('ai'); // 已激活时再点=收起
+    }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();

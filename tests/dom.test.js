@@ -249,6 +249,12 @@ function makeDom() {
       blame: async () => ({ lines: [] }),
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
+    ai: {
+      chat: async () => ({ ok: true, text: 'OK' }),
+      abort: async () => ({ ok: true }),
+      onChunk: () => {},
+      onDone: () => {},
+    },
     plugins: {
       onChanged: (cb) => { fakePluginCb = cb; },
       loadAll: async () => [
@@ -285,6 +291,7 @@ async function loadApp(dom) {
   evalFile('help.js');
   evalFile('browser.js');
   evalFile('db-panel.js');
+  evalFile('ai-panel.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -3143,6 +3150,41 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#panel-db').classList.contains('hidden'), '切走后侧栏隐藏');
     assert_($(dom, '#db-panel').classList.contains('hidden'), '切走后右侧隐藏');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板恢复显示');
+  });
+
+  await okAsync('AI 助手：右侧面板显隐 / 配置 / 对话', async () => {
+    const panel = $(dom, '#ai-panel');
+    assert_(panel, 'AI 面板 DOM 存在');
+    assert_(panel.classList.contains('hidden'), '初始隐藏');
+    // Ctrl+8 快捷键 → 显示
+    key(dom, '8', { ctrl: true });
+    await tick();
+    assert_(!panel.classList.contains('hidden'), 'Ctrl+8 显示 AI 面板');
+    assert_($(dom, '#tool-ai').classList.contains('active'), '工具条按钮高亮');
+    assert_($(dom, '#panel-project') && !$(dom, '#panel-project').classList.contains('hidden'), '侧栏项目面板不受影响');
+    // 欢迎页 + 未配置时发送被拦截
+    assert_($(dom, '.ai-welcome'), '未对话时显示欢迎页');
+    $(dom, '#ai-input').value = '你好';
+    click($(dom, '#ai-send'));
+    await tick();
+    assert_($(dom, '.ai-welcome'), '未配置模型不发送（仍显示欢迎页）');
+    // 配置保存
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "test-model", systemPrompt: "你是助手" })');
+    const cfg = JSON.parse(dom.window.localStorage.getItem('myide-ai-cfg') || '{}');
+    assert_(cfg.baseUrl === 'http://x/v1' && cfg.model === 'test-model', '配置写入 localStorage');
+    // 发送：用户气泡 + 助手气泡（mock chat 返回 OK）
+    click($(dom, '#ai-send'));
+    await tick(); await tick();
+    const msgs = $allIn($(dom, '#ai-msgs'), '.ai-msg');
+    assert_(msgs.length === 2, '对话渲染两条消息, got ' + msgs.length);
+    assert_(msgs[0].classList.contains('ai-user') && msgs[0].textContent.includes('你好'), '用户消息渲染');
+    assert_(msgs[1].classList.contains('ai-assistant') && msgs[1].textContent.includes('OK'), '助手回复渲染');
+    assert_(!$(dom, '.ai-cursor'), '流结束后光标移除');
+    // ✕ 关闭 → 收起
+    click($(dom, '#ai-close'));
+    await tick();
+    assert_(panel.classList.contains('hidden'), '关闭按钮收起面板');
+    assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
   });
 
   await okAsync('数据库：结构标签（列定义 + DDL）与 SQL 编辑器', async () => {

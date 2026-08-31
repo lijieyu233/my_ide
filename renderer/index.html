@@ -31,6 +31,7 @@
     <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)">⌥</button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)">🌐</button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)">⛁</button>
+    <button id="tool-ai" class="tool-btn" title="AI 助手 (Ctrl+8)">🤖</button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -193,6 +194,24 @@
       </div>
     </div>
   </div>
+  <!-- AI 助手（右侧停靠对话窗口，PyCharm AI Assistant 式；#main 直接子元素，编辑区自动让位） -->
+  <div id="ai-panel" class="hidden">
+    <div id="ai-resize" title="拖动调整宽度"></div>
+    <div class="ai-head">
+      <span class="ai-title">🤖 AI 助手</span>
+      <span class="panel-title-actions">
+        <button id="ai-new" class="vt-btn" title="开始新对话（清空当前会话）">✚</button>
+        <button id="ai-cfg" class="vt-btn" title="AI 模型配置">⚙</button>
+        <button id="ai-close" class="vt-btn" title="收起 AI 助手">✕</button>
+      </span>
+    </div>
+    <div id="ai-msgs"></div>
+    <div class="ai-input-bar">
+      <button id="ai-file-chip" class="ai-chip" title="把当前编辑器文件内容作为上下文">📎 附当前文件</button>
+      <textarea id="ai-input" placeholder="Ask anything…（Enter 发送 / Shift+Enter 换行）" spellcheck="false"></textarea>
+      <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+    </div>
+  </div>
 </div>
 <footer id="statusbar"><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
 <div id="ctx-menu" class="hidden"></div>
@@ -224,6 +243,7 @@
 <script src="help.js"></script>
 <script src="browser.js"></script>
 <script src="db-panel.js"></script>
+<script src="ai-panel.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

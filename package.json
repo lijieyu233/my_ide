@@ -51,6 +51,7 @@
       "git-service.js",
       "git-worker.js",
       "db-service.js",
+      "ai-service.js",
       "package.json",
       "renderer/**",
       "plugins/**"

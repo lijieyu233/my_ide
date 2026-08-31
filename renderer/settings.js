@@ -14,6 +14,7 @@ const Settings = (() => {
           <div class="set-cat" data-cat="font">🔤 外观</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
           <div class="set-cat" data-cat="translate">🌐 翻译</div>
+          <div class="set-cat" data-cat="ai">🤖 AI 助手</div>
           <div class="set-cat" data-cat="theme">🎨 主题</div>
         </div>
         <div class="set-main" id="set-main">
@@ -41,6 +42,7 @@ const Settings = (() => {
       else if (cat.dataset.cat === 'font') renderFont();
       else if (cat.dataset.cat === 'git') renderGit();
       else if (cat.dataset.cat === 'translate') renderTranslate();
+      else if (cat.dataset.cat === 'ai') renderAi();
       else if (cat.dataset.cat === 'theme') renderTheme();
     };
     // 初始分类（如 translate.js 未配置时直接跳到翻译配置）
@@ -443,6 +445,54 @@ const Settings = (() => {
       MI.toast('测试中…', 'ok');
       const r = await window.myIDE.llm.chat(c, [{ role: 'user', content: '回复"OK"两个字母即可' }]);
       if (r && r.ok) MI.toast('✅ 连接成功：' + r.text.slice(0, 40), 'ok');
+      else MI.toast('❌ ' + (r && r.error || '未知错误'), 'err');
+    };
+  }
+
+  // ---------- AI 助手视图 ----------
+  function renderAi() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove();
+    document.getElementById('set-title').textContent = 'AI 助手（模型配置）';
+    document.getElementById('set-hint').textContent = 'OpenAI 兼容接口（流式对话）；Ctrl+8 打开右侧对话面板。Key 仅存本机 localStorage';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    const cfg = window.AiPanel ? AiPanel.getConfig() : {};
+    list.innerHTML = `
+      <div class="set-form">
+        <label class="m-label">服务地址（Base URL，如 https://api.openai.com/v1）</label>
+        <input id="ai-cfg-url" type="text" placeholder="https://api.openai.com/v1" value="${esc(cfg.baseUrl || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">API Key（兼容服务可留空）</label>
+        <input id="ai-cfg-key" type="text" placeholder="sk-…" value="${esc(cfg.apiKey || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">模型名称</label>
+        <input id="ai-cfg-model" type="text" placeholder="gpt-4o-mini / deepseek-chat / qwen-plus …" value="${esc(cfg.model || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">系统提示词（System Prompt，可留空）</label>
+        <textarea id="ai-cfg-sys" rows="3" placeholder="你是一个编程助手…"
+          style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc(cfg.systemPrompt || '')}</textarea>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
+          <button class="tb-btn" id="ai-cfg-test">测试连接</button>
+        </div>
+      </div>`;
+    document.getElementById('ai-cfg-save').onclick = () => {
+      AiPanel.setConfig({
+        baseUrl: document.getElementById('ai-cfg-url').value.trim(),
+        apiKey: document.getElementById('ai-cfg-key').value.trim(),
+        model: document.getElementById('ai-cfg-model').value.trim(),
+        systemPrompt: document.getElementById('ai-cfg-sys').value,
+      });
+      MI.toast('✅ AI 助手配置已保存', 'ok');
+    };
+    document.getElementById('ai-cfg-test').onclick = async () => {
+      const c = {
+        baseUrl: document.getElementById('ai-cfg-url').value.trim(),
+        apiKey: document.getElementById('ai-cfg-key').value.trim(),
+        model: document.getElementById('ai-cfg-model').value.trim(),
+      };
+      if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }
+      MI.toast('测试中…', 'ok');
+      const r = await window.myIDE.ai.chat(c, [{ role: 'user', content: '回复"OK"两个字母即可' }]);
+      if (r && r.ok) MI.toast('✅ 连接成功：' + (r.text || '').slice(0, 40), 'ok');
       else MI.toast('❌ ' + (r && r.error || '未知错误'), 'err');
     };
   }

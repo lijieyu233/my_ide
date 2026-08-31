@@ -5,6 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const G = require('./git-service');
 const DB = require('./db-service');
+const AI = require('./ai-service');
+AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
@@ -421,6 +423,15 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
     return { ok: true, text: text.trim() };
   } catch (e) { return { error: String(e.message || e) }; }
 });
+
+// AI 助手：流式对话（chunk 事件推送渲染层）+ 中断
+ipcMain.handle('ai:chat', async (e, cfg, messages) => {
+  const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
+  const r = await AI.chatStream(cfg, messages, (delta) => send('ai:chunk', delta));
+  send('ai:done', r);
+  return r;
+});
+ipcMain.handle('ai:abort', () => { AI.abortChat(); return { ok: true }; });
 
 ipcMain.handle('fs:mkdir', (_e, p) => {
   try {
