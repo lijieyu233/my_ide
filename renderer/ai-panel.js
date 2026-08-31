@@ -48,16 +48,18 @@ const AiPanel = (() => {
     { type: 'function', function: { name: 'list_files', description: '列出目录内容（文件和子目录）。需要了解项目结构时先用这个', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的目录路径，"." 表示根目录' } }, required: [] } } },
     { type: 'function', function: { name: 'read_file', description: '读取项目内一个文本文件的完整内容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' } }, required: ['path'] } } },
     { type: 'function', function: { name: 'search_files', description: '在整个项目里搜索文本内容（支持正则）', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词或正则表达式' } }, required: ['query'] } } },
-    { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖）。会先给用户看 diff，确认后才生效', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
+    { type: 'function', function: { name: 'replace_edit', description: '修改已有文件的一小块：把 path 文件中恰好出现一次的 search 文本替换为 replace 文本（其余内容原样保留）。优先用它做局部修改，不要为改几行重写整个文件', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' }, search: { type: 'string', description: '要被替换的原文（必须与文件内容逐字符一致，含缩进；不含行号）' }, replace: { type: 'string', description: '替换后的新文本（传空字符串即删除 search 段）' }, replace_all: { type: 'boolean', description: 'search 不唯一时是否替换全部出现，默认 false' } }, required: ['path', 'search', 'replace'] } } },
+    { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖，会先给用户看 diff 确认）。仅在新建文件或大规模重写时使用；局部修改请改用 replace_edit', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
   ];
   const AGENT_SYS = [
     '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
     '',
     '## 工作规则',
     '1. 回答代码问题前先用工具查看项目（list_files / search_files / read_file），不要凭空猜测文件内容',
-    '2. write_file 的 content 必须是完整文件内容，不是片段',
-    '3. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
-    '4. 全部任务完成后用中文总结改动，不再调用工具',
+    '2. 修改已有文件优先用 replace_edit（只输出要改的片段）；只有新建文件或重写大半内容才用 write_file',
+    '3. replace_edit 的 search 必须与文件内容逐字符一致（含缩进、空行），不确定就先 read_file',
+    '4. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
+    '5. 全部任务完成后用中文总结改动，不再调用工具',
     '',
     '（如果当前服务不支持原生工具调用，也可在正文里用 ```tool_call {"name":"工具名","args":{...}}``` 代码块表达同样的调用）',
   ].join('\n');
@@ -116,6 +118,33 @@ const AiPanel = (() => {
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '搜索失败') };
       const rows = (r.results || []).slice(0, 50).map((x) => x.file + ':' + x.line + ' ' + x.text);
       return { ok: true, text: '搜索 "' + q + '" 的结果（' + (r.results || []).length + ' 处，最多显示 50）：\n' + (rows.join('\n') || '（无结果）') };
+    }
+    if (call.name === 'replace_edit') {
+      const loc = resolveInRoot(a.path);
+      if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
+      const search = typeof a.search === 'string' ? a.search : '';
+      const replace = typeof a.replace === 'string' ? a.replace : '';
+      if (!search) return { ok: false, text: '错误：search 不能为空（替换内容请用 write_file）' };
+      const full = loc.root + '/' + loc.rel;
+      const old = await window.myIDE.fs.readFile(full);
+      if (!old || old.error) return { ok: false, text: '错误：文件不存在 ' + loc.rel + '（新文件请用 write_file）' };
+      const oldText = old.content || '';
+      // 计数全部出现位置（多重匹配时报行号，帮模型精确化）
+      const hits = [];
+      let i = oldText.indexOf(search);
+      while (i >= 0) { hits.push(i); i = oldText.indexOf(search, i + search.length); }
+      if (!hits.length) {
+        return { ok: false, text: '错误：search 在 ' + loc.rel + ' 中未找到。请先 read_file 核对原文（注意逐字符一致，包括缩进和空行）' };
+      }
+      if (hits.length > 1 && !a.replace_all) {
+        const lineOf = (pos) => oldText.slice(0, pos).split('\n').length;
+        return { ok: false, text: '错误：search 在 ' + loc.rel + ' 出现 ' + hits.length + ' 次（行 ' + hits.map(lineOf).join(', ') + '）。请扩大上下文使其唯一，或设 replace_all: true' };
+      }
+      const newText = hits.length > 1
+        ? oldText.split(search).join(replace)
+        : oldText.slice(0, hits[0]) + replace + oldText.slice(hits[0] + search.length);
+      if (newText === oldText) return { ok: true, text: '无变化：replace 与 search 相同' };
+      return await applyWrite(loc, newText);
     }
     if (call.name === 'write_file') {
       const loc = resolveInRoot(a.path);
@@ -213,7 +242,7 @@ const AiPanel = (() => {
 
   // 工具活动行（消息流里的紧凑状态条）
   function renderToolRow(call) {
-    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️' };
+    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️', replace_edit: '🔧' };
     const row = document.createElement('div');
     row.className = 'ai-tool';
     const arg = (call.args && (call.args.path || call.args.query)) || '';
@@ -241,7 +270,7 @@ const AiPanel = (() => {
         const row = renderToolRow(c);
         let r;
         try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
-        setToolState(row, r.ok, c.name === 'write_file' ? (r.ok ? '已应用' : '已拒绝') : '');
+        setToolState(row, r.ok, (c.name === 'write_file' || c.name === 'replace_edit') ? (r.ok ? '已应用' : '已拒绝') : '');
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
       }

@@ -3258,6 +3258,45 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#ai-msgs').textContent.includes('tool_call'), 'tool_call 块不进渲染');
   });
 
+  await okAsync('AI Agent：replace_edit 局部替换（唯一匹配/多重拒绝/replace_all）', async () => {
+    // 场景文件：两处 "hello"
+    FAKE_FS[P + '/rp.txt'] = { content: 'hello world\nfoo\nhello again\n' };
+    // 第一回合：唯一匹配成功（hello world → hi world）
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'r1', name: 'replace_edit', args: { path: 'rp.txt', search: 'hello world', replace: 'hi world' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '改 rp';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_($(dom, '#dw-yes'), 'diff 确认弹窗出现');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/rp.txt'].content === 'hi world\nfoo\nhello again\n', '唯一匹配替换写入');
+    // 第二回合：多重匹配未设 replace_all → 报错并带行号，模型修正后 replace_all 成功
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'r2', name: 'replace_edit', args: { path: 'rp.txt', search: 'o', replace: '0' } }] },
+      { ok: true, text: '', toolCalls: [{ id: 'r3', name: 'replace_edit', args: { path: 'rp.txt', search: 'o', replace: '0', replace_all: true } }] },
+      { ok: true, text: '全部替换完成。' },
+    ];
+    $(dom, '#ai-input').value = 'o 全换成 0';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_($(dom, '#dw-yes'), 'replace_all 的 diff 弹窗出现');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/rp.txt'].content === 'hi w0rld\nf00\nhell0 again\n', 'replace_all 写入');
+    const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
+    assert_(rows.some((r) => r.textContent.includes('✗')), '多重匹配那轮标失败');
+    assert_(rows.some((r) => r.textContent.includes('replace_edit') && r.textContent.includes('已应用')), 'replace_edit 应用状态行');
+    aiScript = [];
+  });
+
   await okAsync('AI Agent：write_file 需 diff 确认（拒绝不改盘 / 同意写入）', async () => {
     const before = FAKE_FS[P + '/notes.txt'].content;
     // 第一次任务：拒绝
