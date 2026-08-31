@@ -1,6 +1,6 @@
 {
   "name": "my-ide",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "私人定制轻量编辑器：PyCharm 核心体验（文件树/大纲/Git），低内存可扩展（插件渲染）",
   "main": "main.js",
   "private": true,
