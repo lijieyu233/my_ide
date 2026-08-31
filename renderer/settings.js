@@ -478,6 +478,11 @@ const Settings = (() => {
         <label class="m-label" style="margin-top:8px">系统提示词（System Prompt，可留空）</label>
         <textarea id="ai-cfg-sys" rows="3" placeholder="你是一个编程助手…"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc(cfg.systemPrompt || '')}</textarea>
+        <label class="m-label" style="margin-top:10px">行内补全（编辑器中灰色 ghost text，Tab 接受）</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input id="ai-cfg-inline" type="checkbox" ${cfg.inlineComplete ? 'checked' : ''}>
+          <span>输入停顿后自动生成代码补全建议</span>
+        </label>
         <div style="margin-top:14px;display:flex;gap:8px">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
@@ -505,6 +510,7 @@ const Settings = (() => {
         apiKey: document.getElementById('ai-cfg-key').value.trim(),
         model: modelInput.value.trim(),
         systemPrompt: document.getElementById('ai-cfg-sys').value,
+        inlineComplete: document.getElementById('ai-cfg-inline').checked,
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };

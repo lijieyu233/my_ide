@@ -40,6 +40,60 @@ const AiPanel = (() => {
   let curText = '';
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
   let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
+  let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
+  let checkpoints = [];      // AI 写入检查点栈（回滚用）：[{path, oldText}]
+
+  // ---------- token 用量显示 ----------
+  // 粗估当前上下文（无 usage 时的近似值：英文 ~4 字符/token、中文更密，取 3.2 折中）
+  function estTokens() {
+    let chars = 0;
+    for (const m of msgs) chars += (m.content || '').length + 40;
+    return Math.round(chars / 3.2);
+  }
+  function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+  function renderUsage() {
+    const el = document.getElementById('ai-usage');
+    if (!el) return;
+    const parts = ['上下文 ~' + fmtK(estTokens()) + ' tok'];
+    if (usageSum.in || usageSum.out) {
+      parts.push('Σ 输入 ' + fmtK(usageSum.in));
+      parts.push('输出 ' + fmtK(usageSum.out));
+      if (usageSum.cacheHit || usageSum.cacheMiss) {
+        const pct = Math.round((usageSum.cacheHit / (usageSum.cacheHit + usageSum.cacheMiss)) * 100);
+        parts.push('缓存命中 ' + pct + '%（' + fmtK(usageSum.cacheHit) + ' tok）');
+      }
+    }
+    el.textContent = parts.join(' · ');
+    el.title = usageSum.cacheHit
+      ? 'DeepSeek 上下文缓存：命中的 token 按缓存价计费（约 1/10 价格），miss 部分按原价'
+      : '上下文为字符数估算值；接入模型返回 usage 后显示精确统计';
+  }
+  function addUsage(u) {
+    if (!u) return;
+    usageSum.in += u.prompt_tokens || 0;
+    usageSum.out += u.completion_tokens || 0;
+    usageSum.cacheHit += u.cache_hit || 0;
+    usageSum.cacheMiss += u.cache_miss || 0;
+    renderUsage();
+  }
+
+  // ---------- 上下文压缩 ----------
+  // 超限时从旧到新截断工具结果（read_file/search 等大块头），保留近 3 条消息不动
+  const CTX_LIMIT_CHARS = 96000; // ≈30k tokens，超过开始压缩
+  function compressHistory() {
+    const total = () => msgs.reduce((s, m) => s + (m.content || '').length, 0);
+    let guard = 0;
+    while (total() > CTX_LIMIT_CHARS && msgs.length > 6 && guard++ < 100) {
+      // 找最早的大块工具结果（role:tool 或含 <tool_results> 的伪 user）
+      const idx = msgs.findIndex((m, i) =>
+        i < msgs.length - 3 &&
+        (m.role === 'tool' || (m.role === 'user' && String(m.content).includes('<tool_results>'))) &&
+        (m.content || '').length > 800);
+      if (idx < 0) break;
+      const head = String(msgs[idx].content).slice(0, 500);
+      msgs[idx].content = head + '\n…（此工具结果已压缩，如需详情请重新调用工具）';
+    }
+  }
 
   // ---------- Agent 工具系统 ----------
   // 主通道：OpenAI 原生 function calling（请求带 tools schema，模型结构化返回 tool_calls）
@@ -50,6 +104,7 @@ const AiPanel = (() => {
     { type: 'function', function: { name: 'search_files', description: '在整个项目里搜索文本内容（支持正则）', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词或正则表达式' } }, required: ['query'] } } },
     { type: 'function', function: { name: 'replace_edit', description: '修改已有文件的一小块：把 path 文件中恰好出现一次的 search 文本替换为 replace 文本（其余内容原样保留）。优先用它做局部修改，不要为改几行重写整个文件', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' }, search: { type: 'string', description: '要被替换的原文（必须与文件内容逐字符一致，含缩进；不含行号）' }, replace: { type: 'string', description: '替换后的新文本（传空字符串即删除 search 段）' }, replace_all: { type: 'boolean', description: 'search 不唯一时是否替换全部出现，默认 false' } }, required: ['path', 'search', 'replace'] } } },
     { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖，会先给用户看 diff 确认）。仅在新建文件或大规模重写时使用；局部修改请改用 replace_edit', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
+    { type: 'function', function: { name: 'run_command', description: '在项目根目录执行一条 shell 命令（如运行脚本/装依赖/git 操作，15 秒超时）。每条命令都会先弹窗让用户确认', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' } }, required: ['command'] } } },
   ];
   const AGENT_SYS = [
     '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
@@ -59,7 +114,8 @@ const AiPanel = (() => {
     '2. 修改已有文件优先用 replace_edit（只输出要改的片段）；只有新建文件或重写大半内容才用 write_file',
     '3. replace_edit 的 search 必须与文件内容逐字符一致（含缩进、空行），不确定就先 read_file',
     '4. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
-    '5. 全部任务完成后用中文总结改动，不再调用工具',
+    '5. 需要运行验证（跑测试/启动脚本）时用 run_command，一条命令只做一件事',
+    '6. 全部任务完成后用中文总结改动，不再调用工具',
     '',
     '（如果当前服务不支持原生工具调用，也可在正文里用 ```tool_call {"name":"工具名","args":{...}}``` 代码块表达同样的调用）',
   ].join('\n');
@@ -152,6 +208,17 @@ const AiPanel = (() => {
       const content = typeof a.content === 'string' ? a.content : '';
       return await applyWrite(loc, content);
     }
+    if (call.name === 'run_command') {
+      const cmd = String(a.command || '').trim();
+      if (!cmd) return { ok: false, text: '错误：command 为空' };
+      const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
+      if (!root) return { ok: false, text: '错误：没有打开的项目' };
+      // 确认闸：命令执行有副作用，必须用户批准
+      const yes = await Modal.confirm('AI 请求执行命令', '即将在项目目录运行：\n\n' + cmd + '\n\n确认执行？');
+      if (!yes) return { ok: false, text: '用户拒绝了执行该命令' };
+      const r = await window.myIDE.ai.run(cmd, root);
+      return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
+    }
     return { ok: false, text: '错误：未知工具 ' + call.name };
   }
 
@@ -160,12 +227,30 @@ const AiPanel = (() => {
     const full = loc.root + '/' + loc.rel;
     const old = await window.myIDE.fs.readFile(full);
     const oldText = old && !old.error ? (old.content || '') : '';
+    const existed = old && !old.error;
     const applied = await confirmDiff(loc.rel, oldText, content);
     if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
+    // 检查点：写入前的旧内容入栈（新文件记 existed:false，回滚时删除）
+    checkpoints.push({ path: full, rel: loc.rel, oldText, existed });
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
     return { ok: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
+  }
+
+  // 撤销最近一次 AI 写入（栈式，可连续点）
+  async function undoCheckpoint() {
+    if (!checkpoints.length) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
+    const cp = checkpoints.pop();
+    if (cp.existed) {
+      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
+      if (!w || w.error) { MI.toast('回滚失败：' + ((w && w.error) || ''), 'err'); return; }
+    } else {
+      const d = await window.myIDE.fs.remove(cp.path);
+      if (!d || d.error) { MI.toast('删除失败：' + ((d && d.error) || ''), 'err'); return; }
+    }
+    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
+    MI.toast('已回滚 ' + cp.rel + (checkpoints.length ? '（还可撤销 ' + checkpoints.length + ' 步）' : ''), 'ok');
   }
 
   // 统一 diff（前缀/后缀裁剪 + 中段 LCS，超限退化整块替换）
@@ -242,7 +327,7 @@ const AiPanel = (() => {
 
   // 工具活动行（消息流里的紧凑状态条）
   function renderToolRow(call) {
-    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️', replace_edit: '🔧' };
+    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️', replace_edit: '🔧', run_command: '▶' };
     const row = document.createElement('div');
     row.className = 'ai-tool';
     const arg = (call.args && (call.args.path || call.args.query)) || '';
@@ -416,6 +501,8 @@ const AiPanel = (() => {
     setBusyUI(true);
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     agentStopped = false;
+    compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
+    renderUsage();
     inputEl.value = '';
     // 清空欢迎语
     const w = msgsEl.querySelector('.ai-welcome');
@@ -444,6 +531,7 @@ const AiPanel = (() => {
   // r：完整返回 {ok, text, toolCalls}（原生 function calling 的工具调用在 r.toolCalls）
   function finishStream(text, isErr, r) {
     if (!curStream) return;
+    addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     const md = curStream.querySelector('.ai-md');
     if (isErr) {
       md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
@@ -565,6 +653,8 @@ const AiPanel = (() => {
       if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
       agentRounds = 0;
       msgs = [];
+      usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
+      renderUsage();
       ctxFile = null;
       fileChip.classList.remove('on');
       fileChip.textContent = '📎 附当前文件';
@@ -572,6 +662,8 @@ const AiPanel = (() => {
       showWelcome();
       MI.toast('已开始新对话', 'ok');
     };
+    const undoBtn = document.getElementById('ai-undo');
+    if (undoBtn) undoBtn.onclick = undoCheckpoint;
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
     if (fileChip) fileChip.onclick = toggleCtxFile;

@@ -115,12 +115,94 @@ window.CodeEditor = (() => {
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
   }
 
+  // ---------- AI 行内补全（ghost text，Copilot 式：Tab 接受 / 任意编辑即隐） ----------
+  // 模块级单建议模型：同一时刻最多一个活跃 ghost（哪个编辑器触发的就存哪个 view）
+  let ghostTimer = null; // 防抖句柄
+  let ghostBusy = false; // 请求进行中（防重入）
+  let curGhost = null;   // { view, pos, text } 活跃建议
+
+  // ghost 文本装饰 widget（行内灰色斜体，不可聚焦、不拦截事件）
+  class GhostWidget extends View.WidgetType {
+    constructor(text) { super(); this.text = text; }
+    eq(o) { return o.text === this.text; }
+    toDOM() {
+      const span = document.createElement('span');
+      span.className = 'cm-ghost-text';
+      span.textContent = this.text;
+      return span;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  function ghostEnabled() {
+    try {
+      const cfg = window.AiPanel && AiPanel.getConfig ? AiPanel.getConfig() : null;
+      return !!(cfg && cfg.inlineComplete && cfg.baseUrl && cfg.model);
+    } catch { return false; }
+  }
+
+  function ghostDeco(view, text) {
+    const pos = view.state.selection.main.head;
+    return View.Decoration.set([View.Decoration.widget({ widget: new GhostWidget(text), side: 1 }).range(pos)]);
+  }
+
+  function ghostClear(view) {
+    curGhost = null;
+    if (view && view._ghostConf) {
+      try { view.dispatch({ effects: view._ghostConf.reconfigure(EditorView.decorations.of(View.Decoration.none)) }); } catch {}
+    }
+  }
+
+  // 防抖触发一次补全：取光标前 2000 / 后 500 字符作上下文（伪 FIM）
+  function ghostSchedule(view) {
+    clearTimeout(ghostTimer);
+    ghostTimer = setTimeout(() => ghostRequest(view), 700);
+  }
+
+  function ghostRequest(view) {
+    if (!view || !view.dom || ghostBusy || !ghostEnabled()) return;
+    ghostBusy = true;
+    const cfg = window.AiPanel.getConfig();
+    const pos = view.state.selection.main.head;
+    const prefix = view.state.doc.sliceString(Math.max(0, pos - 2000), pos);
+    const suffix = view.state.doc.sliceString(pos, Math.min(view.state.doc.length, pos + 500));
+    const lastLine = prefix.slice(prefix.lastIndexOf('\n') + 1);
+    if (!lastLine.trim() && !suffix.trim()) { ghostBusy = false; return; } // 空行空后缀不请求
+    const msgs = [
+      { role: 'system', content: '你是代码补全引擎。根据光标前后的代码补全光标处应插入的内容。只输出要插入的代码本身，不要解释、不要代码块围栏、不要重复光标前的内容，最多 3 行。' },
+      { role: 'user', content: '光标前：\n' + prefix + '\n⟨光标⟩\n光标后：\n' + suffix },
+    ];
+    window.myIDE.ai.chat(cfg, msgs, []).then((r) => {
+      ghostBusy = false;
+      if (!r || r.error || !r.text) return;
+      let sug = String(r.text).replace(/^```[\w]*\n?|```$/g, '').trimEnd();
+      if (!sug || sug.length > 300) return;
+      // 等待期间光标动了 / 编辑器已销毁 → 丢弃
+      if (!view.dom || view.state.selection.main.head !== pos) return;
+      curGhost = { view, pos, text: sug };
+      view.dispatch({ effects: view._ghostConf.reconfigure(EditorView.decorations.of(ghostDeco(view, sug))) });
+    }).catch(() => { ghostBusy = false; });
+  }
+
+  // Tab 接受建议（必须在 indentWithTab 之前绑定才优先生效）
+  function ghostAccept(view) {
+    if (!curGhost || curGhost.view !== view) return false;
+    if (view.state.selection.main.head !== curGhost.pos) { ghostClear(view); return false; }
+    view.dispatch({
+      changes: { from: curGhost.pos, insert: curGhost.text },
+      selection: { anchor: curGhost.pos + curGhost.text.length },
+    });
+    ghostClear(view);
+    return true;
+  }
+
   // ---------- 创建编辑器 ----------
   function create(opts) {
     const parent = opts.parent;
     const lang = codeLangOf(opts.ext);
     let blameRows = null; // [{ oid, short, author, timestamp, uncommitted }] 按行号索引
     const blameConf = new State.Compartment();
+    const ghostConf = new State.Compartment();
     const blameGutter = View.gutter({
       class: 'cm-blame-gutter',
       lineMarker(view, line) {
@@ -157,6 +239,8 @@ window.CodeEditor = (() => {
         View.rectangularSelection(),
         codeTheme,
         keymap.of([
+          // Tab 优先接受 AI 行内补全（ghost text），否则落到缩进 Tab
+          { key: 'Tab', run: ghostAccept },
           // Ctrl+-/= 折叠/展开当前块；Ctrl+Shift+-/= 全部折叠/展开
           // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
           { key: 'Mod--', preventDefault: true, run: foldCurrent },
@@ -177,8 +261,14 @@ window.CodeEditor = (() => {
         opts.completions ? Autocomplete.autocompletion({ override: [opts.completions] }) : [], // 自定义补全源（SQL 等）
         Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
         blameConf.of([]), // Git Blame 注解（setBlame 动态挂载）
+        ghostConf.of(EditorView.decorations.of(View.Decoration.none)), // AI 行内补全 ghost text
         lang || [],
         EditorView.updateListener.of((u) => {
+          // AI 行内补全：文档变化先清建议，防抖后重新请求；纯移动光标只清除
+          if (u.docChanged || u.selectionSet) {
+            if (curGhost && curGhost.view === view) ghostClear(view);
+          }
+          if (u.docChanged && ghostEnabled()) ghostSchedule(view);
           if (u.docChanged && opts.onChange) opts.onChange(u.state.doc.toString());
           if ((u.docChanged || u.selectionSet) && opts.onCursor) {
             const head = u.state.selection.main.head;
@@ -191,6 +281,7 @@ window.CodeEditor = (() => {
       ],
     });
     const view = new EditorView({ state, parent });
+    view._ghostConf = ghostConf; // ghost 补全 dispatch 用（模块级函数取）
     // 关闭 Chromium 拼写检查（代码文件不需要下划线拼写提示）
     view.contentDOM.spellcheck = false;
     view.contentDOM.setAttribute('autocorrect', 'off');

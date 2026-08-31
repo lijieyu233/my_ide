@@ -256,6 +256,7 @@ function makeDom() {
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
       chat: async (_cfg, _msgs, tools) => { aiLastTools = tools || null; return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }; },
       abort: async () => ({ ok: true }),
+      run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},
       onDone: () => {},
     },
@@ -3294,6 +3295,55 @@ assert_(panel, 'CM6 搜索面板出现');
     const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
     assert_(rows.some((r) => r.textContent.includes('✗')), '多重匹配那轮标失败');
     assert_(rows.some((r) => r.textContent.includes('replace_edit') && r.textContent.includes('已应用')), 'replace_edit 应用状态行');
+    aiScript = [];
+  });
+
+  await okAsync('AI：usage 统计显示（含 DeepSeek 缓存命中）+ 撤销检查点回滚', async () => {
+    const before = FAKE_FS[P + '/notes.txt'].content;
+    aiScript = [
+      { ok: true, text: '```tool_call\n{"name":"write_file","args":{"path":"notes.txt","content":"checkpoint test\\n"}}\n```', usage: { prompt_tokens: 1200, completion_tokens: 300, cache_hit: 1000, cache_miss: 200 } },
+      { ok: true, text: '已修改。', usage: { prompt_tokens: 800, completion_tokens: 100, cache_hit: 600, cache_miss: 200 } },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '改文件';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_($(dom, '#dw-yes'), 'diff 弹窗出现');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/notes.txt'].content === 'checkpoint test\n', 'AI 写入完成');
+    const usageEl = $(dom, '#ai-usage');
+    assert_(usageEl && usageEl.textContent.includes('上下文'), 'usage 条显示上下文估算');
+    assert_(usageEl.textContent.includes('输入 2.0k'), '累计输入 tokens（1200+800）');
+    assert_(usageEl.textContent.includes('缓存命中'), 'DeepSeek 缓存命中显示');
+    assert_(usageEl.textContent.includes('80%'), '缓存命中率（1600/2000）');
+    // 撤销检查点
+    click($(dom, '#ai-undo'));
+    await new Promise((r) => setTimeout(r, 30));
+    assert_(FAKE_FS[P + '/notes.txt'].content === before, '⟲ 撤销恢复 AI 写入前内容');
+    aiScript = [];
+  });
+
+  await okAsync('AI Agent：run_command 需用户确认后执行', async () => {
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'run_command', args: { command: 'node tests/dom.test.js' } }] },
+      { ok: true, text: '命令跑完了。' },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '跑测试';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    // Modal.confirm 确认按钮
+    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cf-yes');
+    assert_(yesBtn, '命令确认弹窗出现');
+    click(yesBtn);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
+    assert_(rows.some((r) => r.textContent.includes('run_command') && r.textContent.includes('✓')), 'run_command 执行成功状态');
     aiScript = [];
   });
 

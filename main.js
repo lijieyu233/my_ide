@@ -432,6 +432,23 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
   return r;
 });
 ipcMain.handle('ai:abort', () => { AI.abortChat(); return { ok: true }; });
+        // AI Agent 工具：run_command（项目目录内执行，15s 超时，输出截断回喂模型）
+        ipcMain.handle('ai:run', async (_e, cmd, cwd) => {
+          const { exec } = require('child_process');
+          return new Promise((resolve) => {
+            exec(String(cmd || ''), {
+              cwd: String(cwd || undefined),
+              timeout: 15000,
+              maxBuffer: 512 * 1024,
+              windowsHide: true,
+              env: process.env,
+            }, (err, stdout, stderr) => {
+              if (err && err.killed) return resolve({ ok: false, text: '命令超时（15 秒）被终止' });
+              const out = String(stdout || '').slice(0, 8000) + (stderr ? '\n[stderr]\n' + String(stderr).slice(0, 4000) : '');
+              resolve({ ok: !err, text: (err ? '退出码 ' + (err.code || 1) + '\n' : '') + (out || '（无输出）') });
+            });
+          });
+        });
 
 ipcMain.handle('fs:mkdir', (_e, p) => {
   try {

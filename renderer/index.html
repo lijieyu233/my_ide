@@ -201,11 +201,13 @@
       <span class="ai-title">🤖 AI 助手</span>
       <select id="ai-model" title="切换模型"></select>
       <span class="panel-title-actions">
+        <button id="ai-undo" class="vt-btn" title="撤销最近一次 AI 写入（可连点回滚多步）">⟲</button>
         <button id="ai-new" class="vt-btn" title="开始新对话（清空当前会话）">✚</button>
         <button id="ai-cfg" class="vt-btn" title="AI 模型配置">⚙</button>
         <button id="ai-close" class="vt-btn" title="收起 AI 助手">✕</button>
       </span>
     </div>
+    <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
       <button id="ai-file-chip" class="ai-chip" title="把当前编辑器文件内容作为上下文">📎 附当前文件</button>

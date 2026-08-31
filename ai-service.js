@@ -24,18 +24,26 @@ async function chatStream(cfg, messages, onDelta, tools) {
   activeAbort = new AbortController();
   let full = '';
   const tc = {}; // index → {id, name, args} 流式拼装中的工具调用
-  try {
+  let usageInfo = null; // SSE 末尾 usage 块（DeepSeek 含 prompt_cache_hit/miss_tokens）
+  const doFetch = async (withUsage) => {
     const body = { model, messages: Array.isArray(messages) ? messages : [], stream: true };
     if (Array.isArray(tools) && tools.length) {
       body.tools = tools;
       body.tool_choice = 'auto';
     }
-    const res = await fetcher(base + '/chat/completions', {
+    if (withUsage) body.stream_options = { include_usage: true }; // 取 usage（DeepSeek/OpenAI 支持；个别服务报错则回退）
+    return fetcher(base + '/chat/completions', {
       method: 'POST',
       headers,
       signal: activeAbort.signal,
       body: JSON.stringify(body),
     });
+  };
+  try {
+    let res = await doFetch(true);
+    if (!res.ok && (res.status === 400 || res.status === 422)) {
+      res = await doFetch(false); // 部分兼容服务不认 stream_options：去掉重试
+    }
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       return { error: 'HTTP ' + res.status + (t ? '：' + t.slice(0, 300) : '') };
@@ -45,6 +53,15 @@ async function chatStream(cfg, messages, onDelta, tools) {
     const dec = new TextDecoder();
     let buf = '';
     const collect = (j) => {
+      if (j && j.usage && typeof j.usage === 'object') {
+        usageInfo = {
+          prompt_tokens: j.usage.prompt_tokens || 0,
+          completion_tokens: j.usage.completion_tokens || 0,
+          // DeepSeek 缓存命中/未命中（其他服务商无此字段，UI 不显示缓存项）
+          cache_hit: j.usage.prompt_cache_hit_tokens || 0,
+          cache_miss: j.usage.prompt_cache_miss_tokens || 0,
+        };
+      }
       const delta = j && j.choices && j.choices[0] && j.choices[0].delta;
       if (!delta) return;
       if (typeof delta.content === 'string' && delta.content) {
@@ -72,13 +89,13 @@ async function chatStream(cfg, messages, onDelta, tools) {
         buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return { ok: true, text: full, toolCalls: packToolCalls(tc) };
+        if (payload === '[DONE]') return { ok: true, text: full, toolCalls: packToolCalls(tc), usage: usageInfo };
         try { collect(JSON.parse(payload)); } catch {}
       }
     }
-    return { ok: true, text: full, toolCalls: packToolCalls(tc) };
+    return { ok: true, text: full, toolCalls: packToolCalls(tc), usage: usageInfo };
   } catch (e) {
-    if (e && e.name === 'AbortError') return { ok: true, text: full, aborted: true, toolCalls: packToolCalls(tc) };
+    if (e && e.name === 'AbortError') return { ok: true, text: full, aborted: true, toolCalls: packToolCalls(tc), usage: usageInfo };
     return { error: String(e.message || e) };
   } finally {
     activeAbort = null;
