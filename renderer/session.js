@@ -8,9 +8,18 @@ const Session = (() => {
     try {
       // 只保存属于当前项目的标签（防会话串项目）
       const rootPrefix = App.root || '';
+      // 每个标签带浏览位置（滚动 + 光标行），切换项目回来不丢
       const tabs = Viewer.openTabs
         .filter((t) => !t.dirty && (!rootPrefix || t.path.startsWith(rootPrefix)))
-        .map((t) => t.path);
+        .map((t) => {
+          let line = null;
+          try {
+            if (t.cmState && t.cmState.selection) {
+              line = t.cmState.doc.lineAt(t.cmState.selection.main.head).number;
+            }
+          } catch {}
+          return { p: t.path, s: t.scrollTop || 0, l: line };
+        });
       const active = Viewer.activeTab;
       const state = {
         tabs,
@@ -38,14 +47,23 @@ const Session = (() => {
       if (!raw) return;
       const s = JSON.parse(raw);
       if (!s) return;
-      if (Array.isArray(s.tabs) && s.tabs.length) {
-        for (const p of s.tabs) {
-          await Viewer.openFile(p);
+      // 兼容旧格式（纯路径数组）/ 新格式（{p,s,l} 带浏览位置）
+      const list = Array.isArray(s.tabs) ? s.tabs : [];
+      if (list.length) {
+        for (const it of list) {
+          const item = typeof it === 'string' ? { p: it, s: 0, l: null } : (it || {});
+          await Viewer.openFile(item.p);
+          const t = Viewer.openTabs.find((x) => x.path === item.p);
+          if (t && item.s) t.scrollTop = item.s; // 恢复滚动（切到该标签时生效）
+          if (t && item.l) t.restoreLine = item.l;
         }
         if (s.active) {
           const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
           if (i >= 0) Viewer.activate(i);
         }
+        // 活动标签光标行恢复（编辑器已渲染，直接跳）
+        const at = Viewer.activeTab;
+        if (at && at.restoreLine) { Viewer.revealLine(at.restoreLine); delete at.restoreLine; }
       }
       // 恢复目录展开结构（即使没有标签也恢复）
       if (s.expanded && window.Tree) Tree.setExpandedPaths(s.expanded);

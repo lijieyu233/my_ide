@@ -63,7 +63,10 @@ window.MdEditor = (() => {
     '.cm-content': { padding: '10px 0', caretColor: 'var(--accent)' },
     '&.cm-focused': { outline: 'none' },
     '.cm-gutters': { display: 'none' },
-    '.cm-activeLine': { backgroundColor: 'rgba(127,127,127,0.07)' },
+    // activeLine / searchMatch 背景必须画在 ::before(z:-3)：drawSelection 的
+    // selectionLayer z=-2 在内容之下，元素自身背景会盖住选区高亮
+    '.cm-activeLine': { position: 'relative' },
+    '.cm-activeLine::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'rgba(127,127,127,0.07)' },
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-selected) !important' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
     '.cm-panels': { backgroundColor: 'var(--panel-strong)', color: 'var(--text)', borderColor: 'var(--border)' },
@@ -71,13 +74,25 @@ window.MdEditor = (() => {
       background: 'var(--bg-input)', color: 'var(--text)', border: '1px solid var(--btn-border)', borderRadius: '3px',
     },
     '.cm-panel.cm-search button:hover': { background: 'var(--btn-hover)' },
-    '.cm-searchMatch': { backgroundColor: 'var(--bg-selected)' },
-    '.cm-searchMatch-selected': { backgroundColor: 'var(--accent)', color: '#fff' },
+    '.cm-searchMatch': { position: 'relative' },
+    '.cm-searchMatch::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'var(--bg-selected)' },
+    '.cm-searchMatch-selected': { position: 'relative', color: '#fff' },
+    '.cm-searchMatch-selected::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'var(--accent)' },
   });
 
   // Live Preview 渲染态样式 —— 与 .md-view 预览逐项同源对齐
   // 字号取 .md-view 的绝对值（h1 26 / h2 22 / h3 18 / h4 15 / 正文 13px，与 styles.css 同步调大）
   const liveTheme = EditorView.theme({
+    // ===== 选区可见性修复（老问题根因）=====
+    // CM6 drawSelection 的 selectionLayer z-index=-2，绘制在 .cm-content 之下：
+    // 行级/行内装饰的背景·边框若直接设在 .cm-line / mark 元素上，会盖住选区高亮
+    // （表格、代码块、==高亮==、行内代码内选中无颜色的根因）。
+    // 统一方案：背景/边框全部移到 z-index:-3 的 ::before 上 —— 绘制顺序变为
+    // 装饰背景(-3) → 选区(-2) → 文字(最上层)，视觉零变化且选区全格式可见。
+    '.cm-line.cm-md-tr-head, .cm-line.cm-md-tr-row, .cm-line.cm-md-tr-sep, .cm-line.cm-md-fence-line, .cm-line.cm-md-quote-line': { position: 'relative' },
+    '.cm-line.cm-md-tr-head::before, .cm-line.cm-md-tr-row::before, .cm-line.cm-md-tr-sep::before, .cm-line.cm-md-fence-line::before, .cm-line.cm-md-quote-line::before': {
+      content: '""', position: 'absolute', inset: '0', zIndex: '-3',
+    },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
     '.cm-md-h1': { fontSize: '26px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.35' },
     '.cm-md-h2': { fontSize: '22px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
@@ -96,11 +111,20 @@ window.MdEditor = (() => {
     '.cm-md-strong': { fontWeight: '700', color: 'var(--text-bright)' },
     '.cm-md-em': { fontStyle: 'italic' },
     '.cm-md-strike': { textDecoration: 'line-through', color: 'var(--text-dim)' },
-    '.cm-md-highlight': { backgroundColor: 'var(--bg-selected)', borderRadius: '2px' },
+    // ==高亮== / 行内代码：背景画在 ::before(z:-3)，选区在文字下、高亮在选区下均可见
+    '.cm-md-highlight': { position: 'relative' },
+    '.cm-md-highlight::before': {
+      content: '""', position: 'absolute', inset: '0', zIndex: '-3',
+      backgroundColor: 'var(--bg-selected)', borderRadius: '2px',
+    },
     // 行内代码（对齐 .md-view code：12px + padding 1px 5px + btn-bg 背景）
     '.cm-md-code': {
-      fontFamily: 'var(--font-mono)', backgroundColor: 'var(--btn-bg)', color: 'var(--code-text)',
-      borderRadius: '3px', padding: '1px 5px', fontSize: '12px',
+      position: 'relative', fontFamily: 'var(--font-mono)', color: 'var(--code-text)',
+      padding: '1px 5px', fontSize: '12px',
+    },
+    '.cm-md-code::before': {
+      content: '""', position: 'absolute', inset: '0', zIndex: '-3',
+      backgroundColor: 'var(--btn-bg)', borderRadius: '3px',
     },
     '.cm-md-link': { color: 'var(--accent)', cursor: 'pointer' },
     '.cm-md-img': { display: 'inline-block', verticalAlign: 'middle' },
@@ -125,7 +149,11 @@ window.MdEditor = (() => {
       border: '1.5px solid var(--text-dim)', borderRadius: '3px',
       verticalAlign: 'middle', margin: '0 5px 0 1px', position: 'relative',
     },
-    '.cm-md-task.done': { background: 'var(--accent)', borderColor: 'var(--accent)' },
+    '.cm-md-task.done': { borderColor: 'var(--accent)' },
+    '.cm-md-task.done::before': {
+      content: '""', position: 'absolute', inset: '0', zIndex: '-3',
+      background: 'var(--accent)', borderRadius: '2px',
+    },
     '.cm-md-task.done::after': {
       content: '""', position: 'absolute', left: '3.5px', top: '0px',
       width: '4px', height: '8px', border: 'solid #fff', borderWidth: '0 2px 2px 0',
@@ -133,19 +161,24 @@ window.MdEditor = (() => {
     },
     // 引用块（对齐 .md-view blockquote：左竖线 + 弱化色 + 上下间距）
     '.cm-line.cm-md-quote-line': {
-      borderLeft: '3px solid var(--accent)', paddingLeft: '12px',
+      paddingLeft: '12px',
       color: 'var(--text-dim)', paddingTop: '2px', paddingBottom: '2px',
     },
+    '.cm-line.cm-md-quote-line::before': { borderLeft: '3px solid var(--accent)' },
     '.cm-line.cm-md-quote-first': { paddingTop: '8px' },
     '.cm-line.cm-md-quote-last': { paddingBottom: '8px' },
     // 围栏代码块（对齐 .md-view pre：背景块 + 圆角 6 + padding 12 + 12.5px/1.6）
     // 注意：全部用 padding 不用 margin —— CM6 行高测量不含 margin，margin 会让
     // heightmap 与 DOM 错位 → 点击偏移（fence-first/last 同理）
+    // 背景/边框画在 ::before(z:-3)，选区可见（见 liveTheme 头部注释）
     '.cm-line.cm-md-fence-line': {
-      backgroundColor: 'var(--code-bg)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
       fontFamily: 'var(--font-mono)', fontSize: '12.5px', lineHeight: '1.6', padding: '1px 12px',
     },
-    '.cm-line.cm-md-fence-first': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px', paddingTop: '12px', position: 'relative' },
+    '.cm-line.cm-md-fence-line::before': {
+      backgroundColor: 'var(--code-bg)', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+    },
+    '.cm-line.cm-md-fence-first': { paddingTop: '12px', position: 'relative' },
+    '.cm-line.cm-md-fence-first::before': { borderTop: '1px solid var(--border)', borderTopLeftRadius: '6px', borderTopRightRadius: '6px' },
     // 代码块复制按钮（hover 浮现右上角：语言名 + 复制）
     '.cm-md-copybtn': {
       position: 'absolute', right: '10px', top: '5px', display: 'flex', alignItems: 'center', gap: '6px',
@@ -161,27 +194,30 @@ window.MdEditor = (() => {
       border: '1px solid var(--btn-border)', borderRadius: '3px', cursor: 'pointer', lineHeight: '1.5',
     },
     '.cm-md-copybtn button:hover': { background: 'var(--btn-hover)' },
-    '.cm-line.cm-md-fence-last': { borderBottom: '1px solid var(--border)', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', paddingBottom: '12px' },
+    '.cm-line.cm-md-fence-last': { paddingBottom: '12px' },
+    '.cm-line.cm-md-fence-last::before': { borderBottom: '1px solid var(--border)', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px' },
     // 分隔线 ---：文本替换为 1px 线 widget（行高不变 —— 行高压 0 会让 CM6 高度
     // 模型错位导致点击偏移），间距用行 padding 表达
     '.cm-line.cm-md-hr-line': { paddingTop: '9px', paddingBottom: '9px' },
-    '.cm-md-hr': { display: 'inline-block', width: '100%', height: '1px', background: 'var(--border-mid)', verticalAlign: 'middle' },
+    '.cm-md-hr': { position: 'relative', display: 'inline-block', width: '100%', height: '1px', verticalAlign: 'middle' },
+    '.cm-md-hr::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', background: 'var(--border-mid)' },
     // 表格逐行线框（Obsidian 式行常渲染：光标进单元格不整块退化源码）
     // 表头行/数据行 = 行背景+边框+左右 padding；分隔行 block replace 后压成 2px 细线
-    '.cm-line.cm-md-tr-head': {
-      background: 'var(--bg-panel)', color: 'var(--text-bright)', fontWeight: '600',
-      border: '1px solid var(--border-mid)', borderBottom: 'none',
-      borderRadius: '6px 6px 0 0', padding: '3px 10px',
+    // 背景/边框在 ::before(z:-3)——表格内选区可见（老问题根因修复）
+    '.cm-line.cm-md-tr-head': { color: 'var(--text-bright)', fontWeight: '600', padding: '3px 10px' },
+    '.cm-line.cm-md-tr-head::before': {
+      background: 'var(--bg-panel)', border: '1px solid var(--border-mid)', borderBottom: 'none',
+      borderRadius: '6px 6px 0 0',
     },
-    '.cm-line.cm-md-tr-row': {
-      background: 'var(--code-bg)', border: '1px solid var(--border-mid)', borderTop: 'none',
-      padding: '3px 10px',
-    },
-    '.cm-line.cm-md-tr-row.cm-md-tr-last': { borderRadius: '0 0 6px 6px' },
-    '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0', background: 'var(--border-mid)', border: 'none' },
+    '.cm-line.cm-md-tr-row': { padding: '3px 10px' },
+    '.cm-line.cm-md-tr-row::before': { background: 'var(--code-bg)', border: '1px solid var(--border-mid)', borderTop: 'none' },
+    '.cm-line.cm-md-tr-row.cm-md-tr-last::before': { borderRadius: '0 0 6px 6px' },
+    '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0' },
+    '.cm-line.cm-md-tr-sep::before': { background: 'var(--border-mid)' },
     '.cm-md-tpipe': { opacity: '0.35', color: 'var(--text-dim)' },
     // mermaid 实时渲染图（block widget）：居中 + 背景容器
-    '.cm-md-mermaid': { padding: '10px', textAlign: 'center', background: 'var(--code-bg)', borderRadius: '6px', margin: '6px 0' },
+    '.cm-md-mermaid': { position: 'relative', padding: '10px', textAlign: 'center', margin: '6px 0' },
+    '.cm-md-mermaid::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', background: 'var(--code-bg)', borderRadius: '6px' },
     '.cm-md-mermaid svg': { maxWidth: '100%' },
     '.cm-md-mermaid .mermaid-err': { textAlign: 'left', color: 'var(--del-text)', whiteSpace: 'pre-wrap' },
     // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸

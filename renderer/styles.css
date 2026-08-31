@@ -152,6 +152,21 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   background: var(--border); margin-left: -2px; z-index: 5;
 }
 #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
+
+/* 右侧工具窗口条（镜像左侧：AI 助手等右侧停靠工具） */
+#tool-strip-right {
+  width: 38px; flex-shrink: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: stretch;
+  padding-top: 4px;
+}
+#tool-sidebar-r { border-bottom: 1px solid var(--border); }
+/* 右侧栏整体收起（Alt+` / 按钮切换）：AI 面板隐藏，工具条保留 */
+body.rsb-collapsed #ai-panel { display: none !important; }
+#tool-strip-right .tool-btn { border-left: none; border-right: 2px solid transparent; }
+#tool-strip-right .tool-btn.active { background: var(--bg); color: var(--accent); border-right-color: var(--accent); }
+#tool-strip-right .tool-btn.active::after { display: none; }
 #tree-head { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
 #tree-head input[type="text"] {
   flex: 1; min-width: 40px;

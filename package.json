@@ -25,6 +25,7 @@
     "marked": "^15.0.0",
     "mermaid": "^11.17.2",
     "mysql2": "^3.24.2",
+    "pg": "^8.23.0",
     "sql.js": "^1.14.2"
   },
   "devDependencies": {

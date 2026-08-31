@@ -1,8 +1,9 @@
-// db-service.js —— 数据库工具服务（主进程）：MySQL(mysql2) + SQLite(sql.js)
+// db-service.js —— 数据库工具服务（主进程）：MySQL(mysql2) + SQLite(sql.js) + PostgreSQL(pg)
 // 设计要点：
 //   - 连接会话保存在 Map（id -> 句柄），渲染层只持 id，密码不落渲染层
 //   - SQLite 用 sql.js（WASM 纯 JS，免原生编译/打包问题）：写操作后 export 回写文件
-//   - 标识符一律引号包裹（MySQL `x` / SQLite "x"），值一律参数化 —— 防 SQL 注入
+//   - PostgreSQL 用 pg Client；内部代码用 ? 占位符，执行前转 $n（仅带参数的内部调用）
+//   - 标识符一律引号包裹（MySQL `x` / SQLite·Postgres "x"），值一律参数化 —— 防 SQL 注入
 //   - 无显式主键的 SQLite 表用 rowid 定位行（SELECT 时带出 __rid）
 
 const fs = require('fs');
@@ -11,6 +12,9 @@ const { ipcMain } = require('electron');
 
 let mysql = null; // 懒加载（无 mysql 依赖的环境不至于启动崩溃）
 try { mysql = require('mysql2/promise'); } catch { mysql = null; }
+
+let pg = null; // PostgreSQL（懒加载，同上）
+try { pg = require('pg'); } catch { pg = null; }
 
 let initSqlJs = null;
 try { initSqlJs = require('sql.js'); } catch { initSqlJs = null; }
@@ -65,6 +69,25 @@ async function connect(cfg) {
     conns.set(id, { type: 'sqlite', config: cfg, sqlite: db, file });
     return { id, serverInfo: 'SQLite' };
   }
+  if (cfg.type === 'postgres') {
+    if (!pg) throw new Error('pg 未安装（npm install pg）');
+    const client = new pg.Client({
+      host: cfg.host || '127.0.0.1',
+      port: Number(cfg.port) || 5432,
+      user: cfg.user || 'postgres',
+      password: cfg.password || '',
+      database: cfg.database || undefined,
+      connectionTimeoutMillis: 8000,
+    });
+    await client.connect();
+    let ver = '';
+    try {
+      const r = await client.query('SELECT version()');
+      ver = (r.rows[0] && String(r.rows[0].version).split(' ').slice(0, 2).join(' ')) || '';
+    } catch {}
+    conns.set(id, { type: 'postgres', config: cfg, pg: client });
+    return { id, serverInfo: ver };
+  }
   throw new Error('不支持的数据库类型：' + cfg.type);
 }
 
@@ -73,8 +96,17 @@ async function close(id) {
   if (!c) return;
   try { if (c.mysql) await c.mysql.end(); } catch {}
   try { if (c.sqlite) c.sqlite.close(); } catch {}
+  try { if (c.pg) await c.pg.end(); } catch {}
   conns.delete(id);
 }
+
+// PostgreSQL：内部统一用 ? 占位符，执行前转 $n（仅带参数的内部调用；SQL 编辑器直跑不转）
+function pgRun(c, sql, params) {
+  const ps = params && params.length ? sql.replace(/\?/g, () => '$' + (++pgRun._n)) : sql;
+  pgRun._n = 0;
+  return c.pg.query(ps, params || []);
+}
+pgRun._n = 0;
 
 // ---------- 表 / 列 ----------
 async function tables(id) {
@@ -85,6 +117,10 @@ async function tables(id) {
       [c.config.database]
     );
     return rows.map((r) => ({ name: r.name, approx: Number(r.approx) || null }));
+  }
+  if (c.type === 'postgres') {
+    const r = await pgRun(c, "SELECT relname AS name, GREATEST(n_live_tup, 0) AS approx FROM pg_stat_user_tables WHERE schemaname = 'public' ORDER BY relname", []);
+    return r.rows.map((x) => ({ name: x.name, approx: Number(x.approx) || null }));
   }
   const res = c.sqlite.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
   return (res[0] ? res[0].values : []).map((v) => ({ name: v[0] }));
@@ -98,6 +134,18 @@ async function columns(id, table) {
       [c.config.database, table]
     );
     return rows.map((r) => ({ name: r.name, type: r.type, pk: r.ck === 'PRI', extra: r.extra || '' }));
+  }
+  if (c.type === 'postgres') {
+    const r = await pgRun(c,
+      "SELECT c.column_name AS name, c.data_type AS type, c.column_default AS extra, " +
+      "  CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 1 ELSE 0 END AS pk " +
+      "FROM information_schema.columns c " +
+      "LEFT JOIN information_schema.key_column_usage kcu " +
+      "  ON kcu.table_schema = c.table_schema AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name " +
+      "LEFT JOIN information_schema.table_constraints tc " +
+      "  ON tc.constraint_name = kcu.constraint_name AND tc.constraint_type = 'PRIMARY KEY' " +
+      "WHERE c.table_schema = 'public' AND c.table_name = ? ORDER BY c.ordinal_position", [table]);
+    return r.rows.map((x) => ({ name: x.name, type: x.type, pk: Number(x.pk) > 0, extra: x.extra || '' }));
   }
   const res = c.sqlite.exec('PRAGMA table_info(' + qid('sqlite', table) + ')');
   const out = [];
@@ -141,6 +189,14 @@ async function erSchema(id) {
       [c.config.database]
     );
     for (const r of rows) rels.push({ from: r.t, fromCol: r.col, to: r.rt, toCol: r.rcol });
+  } else if (c.type === 'postgres') {
+    const r = await pgRun(c,
+      "SELECT tc.table_name AS t, kcu.column_name AS col, ccu.table_name AS rt, ccu.column_name AS rcol " +
+      "FROM information_schema.table_constraints tc " +
+      "JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name " +
+      "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name " +
+      "WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'", []);
+    for (const x of r.rows) rels.push({ from: x.t, fromCol: x.col, to: x.rt, toCol: x.rcol });
   } else {
     for (const t of tbs) {
       const res = c.sqlite.exec('PRAGMA foreign_key_list(' + qid('sqlite', t.name) + ')');
@@ -178,6 +234,19 @@ async function query(id, sql, params) {
       return { ...packResult(cols, result.map((r) => Object.values(r))), ok: 'select' };
     }
     return { ok: 'write', affected: result.affectedRows, insertId: result.insertId };
+  }
+  if (c.type === 'postgres') {
+    const r = await pgRun(c, sql, params);
+    if (r.rows && r.rows.length) {
+      const cols = r.fields ? r.fields.map((f) => f.name) : Object.keys(r.rows[0]);
+      return { ...packResult(cols, r.rows.map((x) => cols.map((k) => x[k]))), ok: 'select' };
+    }
+    if (r.command && r.command !== 'SELECT') {
+      return { ok: 'write', affected: r.rowCount || 0, insertId: undefined };
+    }
+    // SELECT 空结果：fields 可能缺失，回退空列
+    const cols = r.fields ? r.fields.map((f) => f.name) : [];
+    return { columns: cols, rows: [], ok: 'select' };
   }
   // SQLite：先执行；写库（无返回集）则 export 回写文件。
   // 注意：getRowsModified 必须在 export() 之前取（export 内部会清零计数器）
@@ -218,6 +287,9 @@ async function selectTable(id, table, page, size) {
   let sql, params;
   if (c.type === 'mysql') {
     sql = 'SELECT * FROM ' + qid('mysql', table) + ' LIMIT ? OFFSET ?';
+    params = [s, (p - 1) * s];
+  } else if (c.type === 'postgres') {
+    sql = 'SELECT * FROM ' + qid('postgres', table) + ' LIMIT ? OFFSET ?';
     params = [s, (p - 1) * s];
   } else {
     sql = 'SELECT ' + (useRowid ? 'rowid AS __rid, ' : '') + '* FROM ' + qid('sqlite', table) + ' LIMIT ? OFFSET ?';
@@ -261,6 +333,16 @@ async function tableDdl(id, table) {
   if (c.type === 'mysql') {
     const [rows] = await c.mysql.query('SHOW CREATE TABLE ' + qid('mysql', table));
     return { ddl: (rows[0] && rows[0]['Create Table']) || '' };
+  }
+  if (c.type === 'postgres') {
+    // PG 无 SHOW CREATE TABLE：从 information_schema 重构 CREATE TABLE 语句
+    const cols = await columns(id, table);
+    if (!cols.length) return { ddl: '' };
+    const lines = cols.map((x) => '  ' + qid('postgres', x.name) + ' ' + (x.type || 'text') +
+      (x.extra && /^nextval\(/i.test(x.extra) ? ' GENERATED BY DEFAULT AS IDENTITY' : ''));
+    const pk = cols.filter((x) => x.pk).map((x) => qid('postgres', x.name));
+    if (pk.length) lines.push('  PRIMARY KEY (' + pk.join(', ') + ')');
+    return { ddl: 'CREATE TABLE ' + qid('postgres', table) + ' (\n' + lines.join(',\n') + '\n);' };
   }
   const res = c.sqlite.exec('SELECT sql FROM sqlite_master WHERE type IN (\'table\',\'view\') AND name = ' + qid('sqlite', table));
   return { ddl: res[0] ? String(res[0].values[0][0] || '') : '' };
@@ -382,6 +464,18 @@ async function importCsv(id, table, filePath) {
       try { c.sqlite.exec('ROLLBACK'); } catch {}
       throw e;
     }
+  }
+  // PostgreSQL：与 MySQL 同款多值批量 INSERT（100 行/批，pgRun 转 $n 占位符）
+  if (c.type === 'postgres') {
+    const BATCH = 100;
+    const oneRow = '(' + cols.map(() => '?').join(', ') + ')';
+    const head = 'INSERT INTO ' + qid('postgres', table) + ' (' + cols.map((x) => qid('postgres', x)).join(', ') + ') VALUES ';
+    const dataRows = rows.slice(1).map((r) => cols.map((_, j) => (r[j] === '' ? null : r[j])));
+    for (let i = 0; i < dataRows.length; i += BATCH) {
+      const chunk = dataRows.slice(i, i + BATCH);
+      await pgRun(c, head + Array(chunk.length).fill(oneRow).join(', '), [].concat(...chunk));
+    }
+    return { inserted: dataRows.length };
   }
   // MySQL：多值批量 INSERT（100 行/批，参数化），千行级导入快一个数量级
   const BATCH = 100;

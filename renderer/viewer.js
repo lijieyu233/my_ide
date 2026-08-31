@@ -84,6 +84,16 @@ const Viewer = (() => {
     active = i;
     renderTabs();
     renderView();
+    // 会话恢复的浏览位置：编辑器渲染完成后跳到上次光标行
+    const t = tabs[i];
+    if (t && t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; }
+  }
+
+  // 当前活动编辑器滚动到指定行（会话恢复用）
+  function revealLine(n) {
+    try {
+      if (cmApi && cmApi.gotoLine) cmApi.gotoLine(n);
+    } catch {}
   }
 
   function closeTab(i) {
@@ -989,7 +999,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles,
+    openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

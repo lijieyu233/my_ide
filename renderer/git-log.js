@@ -504,7 +504,8 @@ const GitLog = (() => {
     document.addEventListener('mousemove', (e) => {
       if (!dragging) return;
       const bodyRect = document.querySelector('.gl-body').getBoundingClientRect();
-      const pct = ((e.clientX - bodyRect.left) / bodyRect.width) * 100;
+      // 以右边缘为基准：鼠标向右 → 右侧详情区变窄（分割条跟随鼠标方向）
+      const pct = ((bodyRect.right - e.clientX) / bodyRect.width) * 100;
       right.style.width = Math.max(20, Math.min(pct, 75)) + '%';
     });
     document.addEventListener('mouseup', () => {

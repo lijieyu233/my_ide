@@ -208,10 +208,11 @@ const App = (() => {
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
-    // AI 助手右侧停靠面板：独立开关，不影响左侧任何工具
+    // AI 助手右侧停靠面板：独立开关，不影响左侧任何工具；右侧栏整体收起（Alt+`）时隐藏
+    const rsbCollapsed = document.body.classList.contains('rsb-collapsed');
     const aiEl = document.getElementById('ai-panel');
-    if (aiEl) aiEl.classList.toggle('hidden', !aiOpen);
-    if (window.AiPanel) AiPanel.syncVisible(aiOpen);
+    if (aiEl) aiEl.classList.toggle('hidden', !aiOpen || rsbCollapsed);
+    if (window.AiPanel) AiPanel.syncVisible(aiOpen && !rsbCollapsed);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
@@ -241,6 +242,18 @@ const App = (() => {
       btn.textContent = collapsed ? '⏵' : '⏴';
       btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+`)';
     }
+  }
+
+  // ---------- 右侧栏整体收起 / 展开（AI 面板所在右栏，Alt+`） ----------
+  function toggleRightSidebar(force) {
+    const collapsed = typeof force === 'boolean' ? force : !document.body.classList.contains('rsb-collapsed');
+    document.body.classList.toggle('rsb-collapsed', collapsed);
+    const btn = document.getElementById('tool-sidebar-r');
+    if (btn) {
+      btn.textContent = collapsed ? '⏴' : '⏵';
+      btn.title = (collapsed ? '展开' : '收起') + '右侧栏 (Alt+`)';
+    }
+    renderToolStrip();
   }
 
   function getTool() { return activeTool; }
@@ -686,6 +699,7 @@ const App = (() => {
       if (aiClose) aiClose.onclick = () => setAiOpen(false);
     }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
+    document.getElementById('tool-sidebar-r').onclick = () => toggleRightSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();
@@ -714,7 +728,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, showAi, toggleAi, setAiOpen,
+    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen,
     get root() { return root; },
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },

@@ -85,6 +85,7 @@ window.DbPanel = (() => {
         <select id="dbf-type">
           <option value="sqlite">SQLite（本地文件）</option>
           <option value="mysql">MySQL</option>
+          <option value="postgres">PostgreSQL</option>
         </select>
         <label class="m-label">名称（可选）</label>
         <input id="dbf-name" type="text" placeholder="如：本地笔记库">
@@ -113,7 +114,11 @@ window.DbPanel = (() => {
     const syncType = () => {
       const t = $('#dbf-type').value;
       $('#dbf-sqlite').classList.toggle('hidden', t !== 'sqlite');
-      $('#dbf-mysql').classList.toggle('hidden', t !== 'mysql');
+      $('#dbf-mysql').classList.toggle('hidden', !(t === 'mysql' || t === 'postgres'));
+      // 切换类型时同步默认端口（用户没改过的情况下）
+      const portEl = $('#dbf-port');
+      if (t === 'postgres' && (Number(portEl.value) || 0) === 3306) portEl.value = 5432;
+      if (t === 'mysql' && (Number(portEl.value) || 0) === 5432) portEl.value = 3306;
     };
     $('#dbf-type').onchange = syncType;
     syncType();
@@ -144,7 +149,7 @@ window.DbPanel = (() => {
         database: $('#dbf-db').value.trim(),
       };
       if (cfg.type === 'sqlite' && !cfg.file) { MI.toast('请填写 SQLite 文件路径', 'err'); return; }
-      if (cfg.type === 'mysql' && !cfg.database) { MI.toast('请填写数据库名', 'err'); return; }
+      if ((cfg.type === 'mysql' || cfg.type === 'postgres') && !cfg.database) { MI.toast('请填写数据库名', 'err'); return; }
       if (!cfg.name) cfg.name = cfg.type === 'sqlite' ? pathBase(cfg.file) : (cfg.user + '@' + cfg.host + '/' + cfg.database);
       // 保存
       if (idx >= 0) conns[idx] = cfg; else conns.push(cfg);
@@ -539,7 +544,7 @@ window.DbPanel = (() => {
     const bar = document.createElement('div');
     bar.className = 'db-hint';
     bar.style.padding = '4px 10px';
-    bar.textContent = '⚡ 执行计划（' + (connCfg && connCfg.type === 'mysql' ? 'MySQL EXPLAIN' : 'SQLite EXPLAIN QUERY PLAN') + '）';
+    bar.textContent = '⚡ 执行计划（' + (connCfg && connCfg.type === 'mysql' ? 'MySQL EXPLAIN' : connCfg && connCfg.type === 'postgres' ? 'PostgreSQL EXPLAIN' : 'SQLite EXPLAIN QUERY PLAN') + '）';
     out.innerHTML = '';
     out.appendChild(bar);
     const grid = document.createElement('div');
@@ -708,9 +713,9 @@ window.DbPanel = (() => {
 
   function erKey() {
     if (!connCfg) return null;
-    return 'myide-db-er:' + (connCfg.type === 'mysql'
-      ? connCfg.host + ':' + connCfg.port + '/' + connCfg.database
-      : connCfg.file);
+    return 'myide-db-er:' + (connCfg.type === 'sqlite'
+      ? connCfg.file
+      : connCfg.host + ':' + connCfg.port + '/' + connCfg.database);
   }
   function erLoadPos() {
     try { return JSON.parse(localStorage.getItem(erKey()) || '{}'); } catch { return {}; }

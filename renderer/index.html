@@ -31,7 +31,6 @@
     <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)">⌥</button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)">🌐</button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)">⛁</button>
-    <button id="tool-ai" class="tool-btn" title="AI 助手 (Ctrl+8)">🤖</button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -214,6 +213,11 @@
       <textarea id="ai-input" placeholder="Ask anything…（Enter 发送 / Shift+Enter 换行）" spellcheck="false"></textarea>
       <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
     </div>
+  </div>
+  <!-- 右侧工具窗口条（PyCharm 式：AI 助手等右侧停靠工具；Alt+` 收起/展开右侧栏） -->
+  <div id="tool-strip-right" title="右侧工具窗口">
+    <button id="tool-sidebar-r" class="tool-btn" title="收起 / 展开右侧栏 (Alt+`)">⏵</button>
+    <button id="tool-ai" class="tool-btn" title="AI 助手 (Alt+1 / Ctrl+8)">🤖</button>
   </div>
 </div>
 <footer id="statusbar"><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>

@@ -300,7 +300,8 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
   const items = [];
   for (const e of entries) {
     if (hidden.has(e.name)) continue;               // .git / node_modules 始终隐藏
-    if (!showHidden && e.name.startsWith('.')) continue; // 隐藏文件开关
+    // .env 系列（.env / .env.local / .env.production …）不算隐藏文件：只有手动隐藏才算
+    if (!showHidden && e.name.startsWith('.') && !/^\.env($|\.)/.test(e.name)) continue;
     items.push({
       name: e.name,
       type: e.isDirectory() ? 'dir' : 'file',

@@ -57,7 +57,10 @@ window.CodeEditor = (() => {
       userSelect: 'none', textAlign: 'right',
     },
     '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text)' },
-    '.cm-activeLine': { backgroundColor: 'rgba(127,127,127,0.07)' },
+    // activeLine / searchMatch 背景画在 ::before(z:-3)：drawSelection 的
+    // selectionLayer z=-2 在内容之下，元素自身背景会盖住选区高亮（与 md-editor 同源修复）
+    '.cm-activeLine': { position: 'relative' },
+    '.cm-activeLine::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'rgba(127,127,127,0.07)' },
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-selected) !important' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
     '.cm-panels': { backgroundColor: 'var(--panel-strong)', color: 'var(--text)', borderColor: 'var(--border)' },
@@ -65,8 +68,10 @@ window.CodeEditor = (() => {
       background: 'var(--bg-input)', color: 'var(--text)', border: '1px solid var(--btn-border)', borderRadius: '3px',
     },
     '.cm-panel.cm-search button:hover': { background: 'var(--btn-hover)' },
-    '.cm-searchMatch': { backgroundColor: 'var(--bg-selected)' },
-    '.cm-searchMatch-selected': { backgroundColor: 'var(--accent)', color: '#fff' },
+    '.cm-searchMatch': { position: 'relative' },
+    '.cm-searchMatch::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'var(--bg-selected)' },
+    '.cm-searchMatch-selected': { position: 'relative', color: '#fff' },
+    '.cm-searchMatch-selected::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'var(--accent)' },
     '.cm-foldPlaceholder': {
       background: 'var(--btn-bg)', border: 'none', color: 'var(--text-dim)',
       padding: '0 6px', margin: '0 2px', borderRadius: '3px',
