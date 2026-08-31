@@ -41,26 +41,25 @@ const AiPanel = (() => {
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
   let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
 
-  // ---------- Agent 工具系统（Cline 式：模型输出 tool_call 块 → 执行 → 结果喂回 → 续流） ----------
+  // ---------- Agent 工具系统 ----------
+  // 主通道：OpenAI 原生 function calling（请求带 tools schema，模型结构化返回 tool_calls）
+  // 回退通道：提示词约定 ```tool_call {...}``` 文本块（供不支持 tools 的服务用）
+  const TOOLS = [
+    { type: 'function', function: { name: 'list_files', description: '列出目录内容（文件和子目录）。需要了解项目结构时先用这个', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的目录路径，"." 表示根目录' } }, required: [] } } },
+    { type: 'function', function: { name: 'read_file', description: '读取项目内一个文本文件的完整内容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' } }, required: ['path'] } } },
+    { type: 'function', function: { name: 'search_files', description: '在整个项目里搜索文本内容（支持正则）', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词或正则表达式' } }, required: ['query'] } } },
+    { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖）。会先给用户看 diff，确认后才生效', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
+  ];
   const AGENT_SYS = [
     '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
     '',
-    '## 可用工具',
-    '需要使用工具时，在回复中输出如下格式的代码块（同一条回复里可以有多个）：',
-    'tool_call {"name":"工具名","args":{...参数}}',
-    '（即一个普通代码块，语言标记写 tool_call，代码内容是一个 JSON 对象）',
-    '',
-    '工具清单：',
-    '- list_files {"path":"."} —— 列出目录内容（文件/子目录）',
-    '- read_file {"path":"src/a.js"} —— 读取文件内容',
-    '- search_files {"query":"关键词或正则"} —— 全项目搜索',
-    '- write_file {"path":"src/a.js","content":"完整的新文件内容"} —— 写入文件（会先给用户看 diff，确认后才生效）',
-    '',
-    '## 规则',
-    '1. 回答代码问题前先用工具查看项目结构，不要凭空猜测文件内容',
+    '## 工作规则',
+    '1. 回答代码问题前先用工具查看项目（list_files / search_files / read_file），不要凭空猜测文件内容',
     '2. write_file 的 content 必须是完整文件内容，不是片段',
-    '3. 输出工具调用后就此停下，等待工具结果再继续',
+    '3. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
     '4. 全部任务完成后用中文总结改动，不再调用工具',
+    '',
+    '（如果当前服务不支持原生工具调用，也可在正文里用 ```tool_call {"name":"工具名","args":{...}}``` 代码块表达同样的调用）',
   ].join('\n');
 
   function parseToolCalls(text) {
@@ -231,24 +230,22 @@ const AiPanel = (() => {
     if (st) { st.textContent = ok ? '✓ ' + (note || '') : '✗ ' + (note || '失败'); st.classList.add(ok ? 'ok' : 'err'); }
   }
 
-  // 一轮工具执行完毕：结果以 <tool_results> 形式喂回模型，然后自动续流
-  async function agentStep(text) {
-    const calls = parseToolCalls(text);
-    if (!calls.length) return;
-    if (agentStopped) return;
+  // 一轮工具执行完毕：结果喂回模型，然后自动续流
+  // native=true 走 role:tool 消息（原生 function calling），否则走伪 user 消息（文本协议回退）
+  async function agentStep(calls, native) {
+    if (!calls || !calls.length || agentStopped) return;
     if (agentRounds >= MAX_ROUNDS) {
       msgs.push({ role: 'user', content: '（已达工具调用轮次上限，请基于现有信息总结收尾，不要再调用工具）' });
     } else {
-      const results = [];
       for (const c of calls) {
         const row = renderToolRow(c);
         let r;
         try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
         setToolState(row, r.ok, c.name === 'write_file' ? (r.ok ? '已应用' : '已拒绝') : '');
-        results.push('<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>');
+        if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
+        else msgs.push({ role: 'user', content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
       }
       agentRounds++;
-      msgs.push({ role: 'user', content: '<tool_results>\n' + results.join('\n') + '\n</tool_results>' });
     }
     if (agentStopped) return;
     await continueStream();
@@ -262,10 +259,10 @@ const AiPanel = (() => {
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
-    const r = await window.myIDE.ai.chat(cfg, buildMessages());
+    const r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS);
     if (curStream) {
-      if (r && r.error) finishStream(r.error, true);
-      else finishStream((r && r.text) || curText, false);
+      if (r && r.error) finishStream(r.error, true, r);
+      else finishStream((r && r.text) || curText, false, r);
     }
   }
 
@@ -362,12 +359,17 @@ const AiPanel = (() => {
   }
 
   // ---------- 发送 ----------
+  // 消息透传（保留原生 function calling 的 tool_calls / tool_call_id 字段）
   function buildMessages() {
     const cfg = getConfig();
     const out = [];
     // Agent 工具系统提示在前，用户自定义系统提示在后（用户可覆盖语气/角色）
     out.push({ role: 'system', content: AGENT_SYS + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : '') });
-    for (const m of msgs) out.push({ role: m.role, content: m.content });
+    for (const m of msgs) {
+      if (m.role === 'tool') out.push({ role: 'tool', tool_call_id: m.tool_call_id, content: m.content || '' });
+      else if (m.tool_calls) out.push({ role: 'assistant', content: m.content || '', tool_calls: m.tool_calls });
+      else out.push({ role: m.role, content: m.content });
+    }
     return out;
   }
 
@@ -401,15 +403,17 @@ const AiPanel = (() => {
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
 
-    const r = await window.myIDE.ai.chat(cfg, buildMessages());
+    const r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS);
     // 兜底：onDone 事件已处理时 curStream 为 null；否则用 invoke 返回值收尾（两者内容一致）
     if (curStream) {
-      if (r && r.error) finishStream(r.error, true);
-      else finishStream((r && r.text) || curText, false);
+      if (r && r.error) finishStream(r.error, true, r);
+      else finishStream((r && r.text) || curText, false, r);
     }
   }
 
-  function finishStream(text, isErr) {
+  // 收尾一轮回复：渲染 + 入历史 + 若有工具调用则续跑 Agent 循环（保持 busy）
+  // r：完整返回 {ok, text, toolCalls}（原生 function calling 的工具调用在 r.toolCalls）
+  function finishStream(text, isErr, r) {
     if (!curStream) return;
     const md = curStream.querySelector('.ai-md');
     if (isErr) {
@@ -417,13 +421,29 @@ const AiPanel = (() => {
     } else if (text) {
       md.innerHTML = renderMd(text);
     }
-    if (text && !isErr) msgs.push({ role: 'assistant', content: text });
+    const nativeCalls = (!isErr && r && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
+    const textCalls = (!isErr && text) ? parseToolCalls(text) : [];
+    if (!isErr) {
+      // 原生通道：assistant 消息要带 tool_calls（role:tool 结果的引用锚点）
+      if (nativeCalls.length) {
+        msgs.push({
+          role: 'assistant',
+          content: text || '',
+          tool_calls: nativeCalls.map((c) => ({
+            id: c.id, type: 'function',
+            function: { name: c.name, arguments: JSON.stringify(c.args || {}) },
+          })),
+        });
+      } else if (text) {
+        msgs.push({ role: 'assistant', content: text });
+      }
+    }
     curStream = null;
     curText = '';
     scrollBottom();
-    // Agent 循环：回复里有工具调用 → 执行后自动续流（保持 busy 状态）
-    if (!isErr && text && !agentStopped && parseToolCalls(text).length) {
-      agentStep(text).catch(() => {});
+    // Agent 循环：原生 tool_calls 优先，文本协议块回退
+    if (!agentStopped && (nativeCalls.length || textCalls.length)) {
+      agentStep(nativeCalls.length ? nativeCalls : textCalls, !!nativeCalls.length).catch(() => {});
       return;
     }
     busy = false;
@@ -541,7 +561,7 @@ const AiPanel = (() => {
     });
     window.myIDE.ai.onDone((r) => {
       if (!curStream) return;
-      finishStream(r && r.error ? r.error : (r && r.text) || curText, !!(r && r.error));
+      finishStream(r && r.error ? r.error : (r && r.text) || curText, !!(r && r.error), r);
     });
   }
 

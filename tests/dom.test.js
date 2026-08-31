@@ -67,6 +67,7 @@ calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
+let aiLastTools = null; // 最近一次 ai.chat 收到的 tools 参数（原生 function calling 断言）
 
 function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
@@ -252,7 +253,8 @@ function makeDom() {
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     ai: {
       // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
-      chat: async () => (aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }),
+      // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
+      chat: async (_cfg, _msgs, tools) => { aiLastTools = tools || null; return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }; },
       abort: async () => ({ ok: true }),
       onChunk: () => {},
       onDone: () => {},
@@ -3204,6 +3206,31 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(panel.classList.contains('hidden'), '关闭按钮收起面板');
     assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
+  });
+
+  await okAsync('AI Agent：原生 function calling 循环（toolCalls → role:tool → 续流）', async () => {
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'list_files', args: { path: '.' } }] },
+      { ok: true, text: '', toolCalls: [{ id: 'c2', name: 'read_file', args: { path: 'README.md' } }, { id: 'c3', name: 'search_files', args: { query: 'test' } }] },
+      { ok: true, text: '项目看完了，这是个测试项目。' },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '分析项目';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 15));
+    // 请求带了原生 tools schema
+    assert_(Array.isArray(aiLastTools) && aiLastTools.some((t) => t.function && t.function.name === 'write_file'), '请求携带 tools schema');
+    // 三次工具调用都有活动行且成功
+    const tools = $allIn($(dom, '#ai-msgs'), '.ai-tool');
+    assert_(tools.length === 3, '两轮共 3 个工具调用, got ' + tools.length);
+    assert_(tools.every((t) => t.textContent.includes('✓')), '工具行全部成功');
+    // 最终总结出现
+    const last = $allIn($(dom, '#ai-msgs'), '.ai-msg').pop();
+    assert_(last && last.textContent.includes('看完了'), '最终总结渲染');
   });
 
   await okAsync('AI Agent：工具调用循环（读文件→自动续流→总结）', async () => {

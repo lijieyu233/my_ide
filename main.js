@@ -424,10 +424,10 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-// AI 助手：流式对话（chunk 事件推送渲染层）+ 中断
-ipcMain.handle('ai:chat', async (e, cfg, messages) => {
+// AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
+ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
-  const r = await AI.chatStream(cfg, messages, (delta) => send('ai:chunk', delta));
+  const r = await AI.chatStream(cfg, messages, (delta) => send('ai:chunk', delta), tools);
   send('ai:done', r);
   return r;
 });
