@@ -94,14 +94,16 @@ const App = (() => {
   };
   window.Modal = Modal;
 
-  // ---------- 工具窗口（PyCharm 式：互斥单选）----------
+  // ---------- 工具窗口（PyCharm 式：互斥单选 + AI 右侧独立停靠）----------
   // activeTool：project/outline/git/db/browser/log 六选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git 三选一）
-  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log', 'ai'];
+  // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
+  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log'];
   const SIDE_TOOLS = ['project', 'outline', 'git'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
+  let aiOpen = false;        // AI 右侧面板是否展开（全局记忆，不按项目）
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
@@ -144,6 +146,17 @@ const App = (() => {
     if (activeTool !== name) setToolState(name);
   }
 
+  // ---------- AI 右侧面板（独立停靠，不参与左侧互斥） ----------
+  function setAiOpen(v) {
+    aiOpen = !!v;
+    try { localStorage.setItem('myide-ai-open', aiOpen ? '1' : '0'); } catch {}
+    renderToolStrip();
+  }
+  // 按钮点击：再点收起（与左侧工具按钮同款交互）
+  function toggleAi() { setAiOpen(!aiOpen); }
+  // 快捷键 Ctrl+8：始终打开（不因已开而收起）
+  function showAi() { if (!aiOpen) setAiOpen(true); }
+
   // 打开文件/显示编辑区内容时，占据主区的工具窗口（浏览器）让位（PyCharm 式：编辑器优先）
   function backToEditor() {
     if (activeTool === 'browser' || activeTool === 'log') {
@@ -170,16 +183,20 @@ const App = (() => {
     const prev = activeTool;
     activeTool = at;
     sideCollapsed = false;
+    // AI 右侧面板独立记忆（全局）
+    try { aiOpen = localStorage.getItem('myide-ai-open') === '1'; } catch {}
     applyToolChange(prev, at);
     renderToolStrip();
   }
 
   function renderToolStrip() {
-    // 按钮互斥高亮
+    // 按钮互斥高亮（AI 独立，单独判 aiOpen）
     for (const t of ALL_TOOLS) {
       const b = document.getElementById('tool-' + t);
       if (b) b.classList.toggle('active', activeTool === t);
     }
+    const aiBtn = document.getElementById('tool-ai');
+    if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
     // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
@@ -191,10 +208,10 @@ const App = (() => {
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
-    // AI 助手右侧停靠面板：与编辑区并列，激活时显示（侧栏保持原工具不变）
+    // AI 助手右侧停靠面板：独立开关，不影响左侧任何工具
     const aiEl = document.getElementById('ai-panel');
-    if (aiEl) aiEl.classList.toggle('hidden', activeTool !== 'ai');
-    if (window.AiPanel) AiPanel.syncVisible(activeTool === 'ai');
+    if (aiEl) aiEl.classList.toggle('hidden', !aiOpen);
+    if (window.AiPanel) AiPanel.syncVisible(aiOpen);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
@@ -664,9 +681,9 @@ const App = (() => {
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     if (window.AiPanel) {
       AiPanel.init();
-      document.getElementById('tool-ai').onclick = () => switchTool('ai');
+      document.getElementById('tool-ai').onclick = () => toggleAi();
       const aiClose = document.getElementById('ai-close');
-      if (aiClose) aiClose.onclick = () => switchTool('ai'); // 已激活时再点=收起
+      if (aiClose) aiClose.onclick = () => setAiOpen(false);
     }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
@@ -697,7 +714,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar,
+    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, showAi, toggleAi, setAiOpen,
     get root() { return root; },
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },

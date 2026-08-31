@@ -12,6 +12,27 @@ const AiPanel = (() => {
   const MAX_CTX = 24000; // 附带文件内容上限（字符），防 token 爆炸
   const MAX_ROUNDS = 8;  // Agent 工具循环上限（防失控烧 token）
 
+  // 服务商预设：选服务商后只需填 API Key（baseUrl/模型列表自动带出）
+  const PROVIDERS = [
+    { id: 'deepseek', name: 'DeepSeek（深度求索）', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'] },
+    { id: 'qwen', name: '通义千问（阿里百炼）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen3-max'] },
+    { id: 'moonshot', name: 'Kimi（月之暗面）', baseUrl: 'https://api.moonshot.cn/v1', models: ['kimi-k2-0905-preview', 'moonshot-v1-8k', 'moonshot-v1-32k'] },
+    { id: 'zhipu', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: ['glm-4-plus', 'glm-4-flash', 'glm-4.5'] },
+    { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'] },
+    { id: 'siliconflow', name: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', models: ['deepseek-ai/DeepSeek-V3.1', 'Qwen/Qwen2.5-72B-Instruct'] },
+    { id: 'ollama', name: 'Ollama（本地，无需 Key）', baseUrl: 'http://localhost:11434/v1', models: ['qwen3:8b', 'llama3.1:8b'] },
+    { id: 'custom', name: '自定义（手动填写）', baseUrl: '', models: [] },
+  ];
+  function providerOf(cfg) {
+    if (cfg && cfg.provider) {
+      const p = PROVIDERS.find((x) => x.id === cfg.provider);
+      if (p) return p;
+    }
+    // 旧配置迁移：按 baseUrl 匹配预设
+    if (cfg && cfg.baseUrl) return PROVIDERS.find((x) => x.baseUrl && x.baseUrl === cfg.baseUrl.replace(/\/+$/, '')) || PROVIDERS[PROVIDERS.length - 1];
+    return null;
+  }
+
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
   let ctxFile = null;       // 附带的当前文件 {path, content}
@@ -254,8 +275,29 @@ const AiPanel = (() => {
   function getConfig() {
     try { return JSON.parse(localStorage.getItem(LS_CFG) || '{}'); } catch { return {}; }
   }
+  // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
   function setConfig(c) {
-    try { localStorage.setItem(LS_CFG, JSON.stringify(c)); } catch {}
+    try {
+      const cfg = { ...getConfig(), ...(c || {}) };
+      localStorage.setItem(LS_CFG, JSON.stringify(cfg));
+      refreshModelSel();
+    } catch {}
+  }
+
+  // 面板头部模型切换器：当前模型 + 服务商预设模型列表
+  function refreshModelSel() {
+    const sel = document.getElementById('ai-model');
+    if (!sel) return;
+    const cfg = getConfig();
+    const prov = providerOf(cfg);
+    const models = [];
+    if (cfg.model && !models.includes(cfg.model)) models.push(cfg.model);
+    for (const m of (prov ? prov.models : [])) if (!models.includes(m)) models.push(m);
+    sel.innerHTML = models.length
+      ? models.map((m) => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join('')
+      : '<option value="">未选择模型</option>';
+    sel.value = cfg.model || '';
+    sel.title = '当前模型：' + (cfg.model || '未设置') + (prov ? '（' + prov.name + '）' : '');
   }
 
   function syncVisible(v) {
@@ -447,6 +489,14 @@ const AiPanel = (() => {
   function init() {
     if (!panel) return;
     showWelcome();
+    refreshModelSel();
+    const modelSel = document.getElementById('ai-model');
+    if (modelSel) modelSel.onchange = () => {
+      const m = modelSel.value;
+      if (!m) return;
+      setConfig({ model: m });
+      MI.toast('已切换模型：' + m, 'ok');
+    };
     if (sendBtn) {
       sendBtn.onclick = () => {
         if (busy) { agentStopped = true; window.myIDE.ai.abort(); return; }
@@ -495,6 +545,6 @@ const AiPanel = (() => {
     });
   }
 
-  return { init, syncVisible, getConfig, setConfig };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf };
 })();
 window.AiPanel = AiPanel;

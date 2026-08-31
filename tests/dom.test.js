@@ -3163,7 +3163,13 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(!panel.classList.contains('hidden'), 'Ctrl+8 显示 AI 面板');
     assert_($(dom, '#tool-ai').classList.contains('active'), '工具条按钮高亮');
-    assert_($(dom, '#panel-project') && !$(dom, '#panel-project').classList.contains('hidden'), '侧栏项目面板不受影响');
+    assert_($(dom, '#panel-project') && !$(dom, '#panel-project').classList.contains('hidden'), '侧栏项目面板不受影响（独立停靠）');
+    // 切到其他左侧工具，AI 面板不收起
+    await g(dom, 'App.switchTool("outline")');
+    await tick();
+    assert_(!panel.classList.contains('hidden'), '切换左侧工具 AI 仍在');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
     // 欢迎页 + 未配置时发送被拦截
     assert_($(dom, '.ai-welcome'), '未对话时显示欢迎页');
     $(dom, '#ai-input').value = '你好';
@@ -3174,6 +3180,17 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "test-model", systemPrompt: "你是助手" })');
     const cfg = JSON.parse(dom.window.localStorage.getItem('myide-ai-cfg') || '{}');
     assert_(cfg.baseUrl === 'http://x/v1' && cfg.model === 'test-model', '配置写入 localStorage');
+    // 头部模型切换器：预设模型列表 + 切换生效（合并保存不丢 Key）
+    const sel = $(dom, '#ai-model');
+    assert_(sel, '头部模型切换器存在');
+    await g(dom, 'AiPanel.setConfig({ provider: "deepseek" })');
+    const opts = $allIn(sel, 'option');
+    assert_(opts.some((o) => o.value === 'deepseek-chat'), '预设模型进下拉');
+    sel.value = 'deepseek-reasoner';
+    sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick();
+    const cfg2 = JSON.parse(dom.window.localStorage.getItem('myide-ai-cfg') || '{}');
+    assert_(cfg2.model === 'deepseek-reasoner' && cfg2.baseUrl === 'http://x/v1', '切换模型保存且不丢其他字段');
     // 发送：用户气泡 + 助手气泡（mock chat 返回 OK）
     click($(dom, '#ai-send'));
     await tick(); await tick();

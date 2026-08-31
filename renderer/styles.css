@@ -968,6 +968,12 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 12px;
 }
 .set-form input:focus { border-color: var(--accent); }
+.set-form select {
+  width: 100%; background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 12px;
+  cursor: pointer;
+}
 
 /* ---------- 快速打开面板 ---------- */
 #qo-box { width: 560px; max-width: 90vw; }
@@ -1403,6 +1409,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   -webkit-app-region: no-drag;
 }
 .ai-head .ai-title { font-weight: 600; color: var(--text); letter-spacing: .5px; }
+#ai-model {
+  flex: 1; min-width: 0; margin-left: 8px;
+  background: var(--bg-input); color: var(--text-dim);
+  border: 1px solid var(--border-mid); border-radius: 4px;
+  font-size: 11px; padding: 1px 4px; outline: none; cursor: pointer;
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis;
+}
+#ai-model:hover { color: var(--text); border-color: var(--accent); }
 #ai-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 10px; }
 /* 欢迎页 */
 .ai-welcome {

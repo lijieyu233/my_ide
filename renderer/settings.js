@@ -449,23 +449,32 @@ const Settings = (() => {
     };
   }
 
-  // ---------- AI 助手视图 ----------
+  // ---------- AI 助手视图（服务商预设：选服务商 → 只填 Key） ----------
   function renderAi() {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove();
     document.getElementById('set-title').textContent = 'AI 助手（模型配置）';
-    document.getElementById('set-hint').textContent = 'OpenAI 兼容接口（流式对话）；Ctrl+8 打开右侧对话面板。Key 仅存本机 localStorage';
+    document.getElementById('set-hint').textContent = '选择服务商后只需填 API Key（Ollama 本地无需 Key）；Ctrl+8 打开右侧对话面板';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     const cfg = window.AiPanel ? AiPanel.getConfig() : {};
+    const provs = (window.AiPanel && AiPanel.PROVIDERS) || [];
+    const curProv = (window.AiPanel && AiPanel.providerOf(cfg)) || provs[provs.length - 1];
     list.innerHTML = `
       <div class="set-form">
-        <label class="m-label">服务地址（Base URL，如 https://api.openai.com/v1）</label>
-        <input id="ai-cfg-url" type="text" placeholder="https://api.openai.com/v1" value="${esc(cfg.baseUrl || '')}" spellcheck="false">
-        <label class="m-label" style="margin-top:8px">API Key（兼容服务可留空）</label>
+        <label class="m-label">服务商</label>
+        <select id="ai-cfg-prov">
+          ${provs.map((p) => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('')}
+        </select>
+        <label class="m-label" style="margin-top:8px">API Key（Ollama 等本地服务可留空）</label>
         <input id="ai-cfg-key" type="text" placeholder="sk-…" value="${esc(cfg.apiKey || '')}" spellcheck="false">
-        <label class="m-label" style="margin-top:8px">模型名称</label>
-        <input id="ai-cfg-model" type="text" placeholder="gpt-4o-mini / deepseek-chat / qwen-plus …" value="${esc(cfg.model || '')}" spellcheck="false">
+        <label class="m-label" style="margin-top:8px">模型</label>
+        <input id="ai-cfg-model" type="text" list="ai-model-list" placeholder="从下拉选或手动输入" value="${esc(cfg.model || '')}" spellcheck="false">
+        <datalist id="ai-model-list"></datalist>
+        <div id="ai-cfg-adv" style="margin-top:8px">
+          <label class="m-label">服务地址（Base URL，选「自定义」或需覆盖时修改）</label>
+          <input id="ai-cfg-url" type="text" placeholder="https://api.openai.com/v1" value="${esc(cfg.baseUrl || '')}" spellcheck="false">
+        </div>
         <label class="m-label" style="margin-top:8px">系统提示词（System Prompt，可留空）</label>
         <textarea id="ai-cfg-sys" rows="3" placeholder="你是一个编程助手…"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc(cfg.systemPrompt || '')}</textarea>
@@ -474,26 +483,38 @@ const Settings = (() => {
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
         </div>
       </div>`;
+    const provSel = document.getElementById('ai-cfg-prov');
+    const urlInput = document.getElementById('ai-cfg-url');
+    const modelInput = document.getElementById('ai-cfg-model');
+    const dl = document.getElementById('ai-model-list');
+    const fillProv = (p, keepModel) => {
+      urlInput.value = p.baseUrl || '';
+      dl.innerHTML = (p.models || []).map((m) => '<option value="' + esc(m) + '">').join('');
+      if (!keepModel && p.models && p.models.length && !p.models.includes(modelInput.value)) modelInput.value = p.models[0];
+    };
+    provSel.value = curProv ? curProv.id : 'custom';
+    fillProv(curProv, true);
+    provSel.onchange = () => {
+      const p = provs.find((x) => x.id === provSel.value);
+      if (p) fillProv(p, false);
+    };
     document.getElementById('ai-cfg-save').onclick = () => {
       AiPanel.setConfig({
-        baseUrl: document.getElementById('ai-cfg-url').value.trim(),
+        provider: provSel.value,
+        baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),
-        model: document.getElementById('ai-cfg-model').value.trim(),
+        model: modelInput.value.trim(),
         systemPrompt: document.getElementById('ai-cfg-sys').value,
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };
     document.getElementById('ai-cfg-test').onclick = async () => {
-      const c = {
-        baseUrl: document.getElementById('ai-cfg-url').value.trim(),
-        apiKey: document.getElementById('ai-cfg-key').value.trim(),
-        model: document.getElementById('ai-cfg-model').value.trim(),
-      };
+      const c = { baseUrl: urlInput.value.trim(), apiKey: document.getElementById('ai-cfg-key').value.trim(), model: modelInput.value.trim() };
       if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }
       MI.toast('测试中…', 'ok');
       const r = await window.myIDE.ai.chat(c, [{ role: 'user', content: '回复"OK"两个字母即可' }]);
       if (r && r.ok) MI.toast('✅ 连接成功：' + (r.text || '').slice(0, 40), 'ok');
-      else MI.toast('❌ ' + (r && r.error || '未知错误'), 'err');
+      else MI.toast('❌ ' + ((r && r.error) || '未知错误'), 'err');
     };
   }
 
