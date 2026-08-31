@@ -66,6 +66,7 @@ calls.logAll = false;
 calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
+let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
 
 function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
@@ -250,7 +251,8 @@ function makeDom() {
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     ai: {
-      chat: async () => ({ ok: true, text: 'OK' }),
+      // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
+      chat: async () => (aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }),
       abort: async () => ({ ok: true }),
       onChunk: () => {},
       onDone: () => {},
@@ -3185,6 +3187,70 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(panel.classList.contains('hidden'), '关闭按钮收起面板');
     assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
+  });
+
+  await okAsync('AI Agent：工具调用循环（读文件→自动续流→总结）', async () => {
+    aiScript = [
+      { ok: true, text: '我先看下项目结构。\n```tool_call\n{"name":"list_files","args":{"path":"."}}\n```' },
+      { ok: true, text: '再读一下 README。\n```tool_call\n{"name":"read_file","args":{"path":"README.md"}}\n```' },
+      { ok: true, text: '看完了：README 是一个 Markdown 测试文档。' },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new')); // 清掉上一用例的会话（共享 dom）
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '看看项目';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15)); // 3 轮异步链
+    const tools = $allIn($(dom, '#ai-msgs'), '.ai-tool');
+    assert_(tools.length === 2, '两轮工具调用各有活动行, got ' + tools.length);
+    assert_(tools[0].textContent.includes('list_files'), '第一轮 list_files');
+    assert_(tools[1].textContent.includes('read_file'), '第二轮 read_file');
+    assert_(tools.every((t) => t.textContent.includes('✓')), '工具行全部成功');
+    const msgs = $allIn($(dom, '#ai-msgs'), '.ai-msg');
+    assert_(msgs.length === 4, 'user + 3 轮 assistant, got ' + msgs.length);
+    assert_(msgs[msgs.length - 1].textContent.includes('看完了'), '最终总结渲染');
+    assert_(!$(dom, '#ai-msgs').textContent.includes('tool_call'), 'tool_call 块不进渲染');
+  });
+
+  await okAsync('AI Agent：write_file 需 diff 确认（拒绝不改盘 / 同意写入）', async () => {
+    const before = FAKE_FS[P + '/notes.txt'].content;
+    // 第一次任务：拒绝
+    aiScript = [
+      { ok: true, text: '```tool_call\n{"name":"write_file","args":{"path":"notes.txt","content":"rejected content\\n"}}\n```' },
+      { ok: true, text: '好的，我不改了。' },
+    ];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '改 notes';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    const yes1 = $(dom, '#dw-yes');
+    assert_(yes1, 'diff 确认弹窗出现');
+    assert_($(dom, '.dw-diff .d-add'), 'diff 含新增行');
+    click($(dom, '#dw-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/notes.txt'].content === before, '拒绝后文件未改动');
+    assert_(!$(dom, '#dw-yes'), '弹窗已关闭');
+    // 第二次任务：同意
+    aiScript = [
+      { ok: true, text: '```tool_call\n{"name":"write_file","args":{"path":"notes.txt","content":"applied content\\n"}}\n```' },
+      { ok: true, text: '已写入。' },
+    ];
+    $(dom, '#ai-input').value = '再试一次';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    const yes2 = $(dom, '#dw-yes');
+    assert_(yes2, '第二次弹窗出现');
+    click(yes2);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/notes.txt'].content === 'applied content\n', '同意后内容写入');
+    const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
+    assert_(rows.some((r) => r.textContent.includes('已拒绝')), '拒绝状态行');
+    assert_(rows.some((r) => r.textContent.includes('已应用')), '应用状态行');
+    aiScript = [];
   });
 
   await okAsync('数据库：结构标签（列定义 + DDL）与 SQL 编辑器', async () => {

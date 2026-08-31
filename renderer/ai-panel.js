@@ -10,12 +10,243 @@ const AiPanel = (() => {
   const LS_CFG = 'myide-ai-cfg';
   const LS_W = 'myide-ai-width';
   const MAX_CTX = 24000; // 附带文件内容上限（字符），防 token 爆炸
+  const MAX_ROUNDS = 8;  // Agent 工具循环上限（防失控烧 token）
 
-  let msgs = [];            // 会话历史 [{role, content}]
+  let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
   let ctxFile = null;       // 附带的当前文件 {path, content}
   let curStream = null;     // 流式中的气泡元素
   let curText = '';
+  let agentRounds = 0;      // 本轮任务已用的工具循环次数
+  let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
+
+  // ---------- Agent 工具系统（Cline 式：模型输出 tool_call 块 → 执行 → 结果喂回 → 续流） ----------
+  const AGENT_SYS = [
+    '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
+    '',
+    '## 可用工具',
+    '需要使用工具时，在回复中输出如下格式的代码块（同一条回复里可以有多个）：',
+    'tool_call {"name":"工具名","args":{...参数}}',
+    '（即一个普通代码块，语言标记写 tool_call，代码内容是一个 JSON 对象）',
+    '',
+    '工具清单：',
+    '- list_files {"path":"."} —— 列出目录内容（文件/子目录）',
+    '- read_file {"path":"src/a.js"} —— 读取文件内容',
+    '- search_files {"query":"关键词或正则"} —— 全项目搜索',
+    '- write_file {"path":"src/a.js","content":"完整的新文件内容"} —— 写入文件（会先给用户看 diff，确认后才生效）',
+    '',
+    '## 规则',
+    '1. 回答代码问题前先用工具查看项目结构，不要凭空猜测文件内容',
+    '2. write_file 的 content 必须是完整文件内容，不是片段',
+    '3. 输出工具调用后就此停下，等待工具结果再继续',
+    '4. 全部任务完成后用中文总结改动，不再调用工具',
+  ].join('\n');
+
+  function parseToolCalls(text) {
+    const out = [];
+    const re = /```tool_call\s*([\s\S]*?)```/g;
+    let m;
+    while ((m = re.exec(text || ''))) {
+      try {
+        const j = JSON.parse(m[1].trim());
+        if (j && typeof j.name === 'string' && j.args && typeof j.args === 'object') out.push({ name: j.name, args: j.args });
+      } catch {}
+    }
+    return out;
+  }
+
+  // 项目内路径解析：拒绝对路径和 .. 逃逸（写操作安全闸的第一道）；'.' 与 '' = 项目根
+  function resolveInRoot(p) {
+    const root = window.App && App.root;
+    if (!root) return null;
+    const clean = String(p == null ? '' : p).replace(/\\/g, '/').replace(/^\.?\//, '');
+    if (clean === '' || clean === '.') return { root: root.replace(/[\\/]+$/, ''), rel: '' };
+    const parts = clean.split('/').filter((s) => s && s !== '.');
+    if (!parts.length || parts.includes('..')) return null;
+    return { root: root.replace(/[\\/]+$/, ''), rel: parts.join('/') };
+  }
+
+  async function executeTool(call) {
+    const a = call.args || {};
+    if (call.name === 'list_files') {
+      const loc = resolveInRoot(a.path || '.');
+      if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
+      const r = await window.myIDE.fs.readDir(loc.rel ? loc.root + '/' + loc.rel : loc.root);
+      if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '目录不存在') };
+      // 后端返回条目数组（注意 Array.prototype.entries 是内置方法，不能直接 r.entries 判断）
+      const list = Array.isArray(r) ? r : (r.files || r.children || []);
+      const items = list.map((e) => (((e.type === 'dir') || e.isDir || e.isDirectory) ? '[目录] ' : '') + e.name);
+      return { ok: true, text: '目录 ' + loc.rel + ' 的内容：\n' + (items.join('\n') || '（空）') };
+    }
+    if (call.name === 'read_file') {
+      const loc = resolveInRoot(a.path);
+      if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
+      const r = await window.myIDE.fs.readFile(loc.root + '/' + loc.rel);
+      if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '文件不存在') };
+      let c = r.content || '';
+      if (c.length > 30000) c = c.slice(0, 30000) + '\n…（内容过长已截断）';
+      return { ok: true, text: '文件 ' + loc.rel + ' 的内容：\n```\n' + c + '\n```' };
+    }
+    if (call.name === 'search_files') {
+      const root = window.App && App.root;
+      if (!root) return { ok: false, text: '错误：未打开项目' };
+      const q = String(a.query || '').trim();
+      if (!q) return { ok: false, text: '错误：query 为空' };
+      const r = await window.myIDE.fs.grep(root, q);
+      if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '搜索失败') };
+      const rows = (r.results || []).slice(0, 50).map((x) => x.file + ':' + x.line + ' ' + x.text);
+      return { ok: true, text: '搜索 "' + q + '" 的结果（' + (r.results || []).length + ' 处，最多显示 50）：\n' + (rows.join('\n') || '（无结果）') };
+    }
+    if (call.name === 'write_file') {
+      const loc = resolveInRoot(a.path);
+      if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
+      const content = typeof a.content === 'string' ? a.content : '';
+      return await applyWrite(loc, content);
+    }
+    return { ok: false, text: '错误：未知工具 ' + call.name };
+  }
+
+  // 写入安全闸：diff 预览 → 用户确认 → 写盘
+  async function applyWrite(loc, content) {
+    const full = loc.root + '/' + loc.rel;
+    const old = await window.myIDE.fs.readFile(full);
+    const oldText = old && !old.error ? (old.content || '') : '';
+    const applied = await confirmDiff(loc.rel, oldText, content);
+    if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+    const w = await window.myIDE.fs.writeFile(full, content);
+    if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
+    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
+    return { ok: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
+  }
+
+  // 统一 diff（前缀/后缀裁剪 + 中段 LCS，超限退化整块替换）
+  function lineDiff(aText, bText) {
+    const A = String(aText).split('\n'), B = String(bText).split('\n');
+    let s = 0;
+    while (s < A.length && s < B.length && A[s] === B[s]) s++;
+    let e = 0;
+    while (e < A.length - s && e < B.length - s && A[A.length - 1 - e] === B[B.length - 1 - e]) e++;
+    const midA = A.slice(s, A.length - e), midB = B.slice(s, B.length - e);
+    const rows = [];
+    for (let i = 0; i < s; i++) rows.push({ t: ' ', s: A[i] });
+    if (midA.length * midB.length > 4000000) {
+      for (const l of midA) rows.push({ t: '-', s: l });
+      for (const l of midB) rows.push({ t: '+', s: l });
+    } else {
+      const n = midA.length, m = midB.length, W = m + 1;
+      const dp = new Int32Array((n + 1) * W);
+      for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+        dp[i * W + j] = midA[i] === midB[j] ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (midA[i] === midB[j]) { rows.push({ t: ' ', s: midA[i] }); i++; j++; }
+        else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) rows.push({ t: '-', s: midA[i++] });
+        else rows.push({ t: '+', s: midB[j++] });
+      }
+      while (i < n) rows.push({ t: '-', s: midA[i++] });
+      while (j < m) rows.push({ t: '+', s: midB[j++] });
+    }
+    for (let k = e - 1; k >= 0; k--) rows.push({ t: ' ', s: A[A.length - 1 - k] });
+    return rows;
+  }
+
+  // diff 确认弹窗：返回 Promise<boolean>（true=应用）
+  function confirmDiff(rel, oldText, newText) {
+    return new Promise((resolve) => {
+      const rows = lineDiff(oldText, newText);
+      const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
+      // 上下文压缩：长未改动段折叠为 ⋯ N 行未改动 ⋯
+      const parts = [];
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].t !== ' ') { parts.push({ cls: rows[i].t === '+' ? 'd-add' : 'd-del', text: (rows[i].t === '+' ? '+' : '-') + ' ' + rows[i].s }); continue; }
+        let j = i;
+        while (j < rows.length && rows[j].t === ' ') j++;
+        const run = j - i;
+        if (run > 8 && i > 0 && j < rows.length) {
+          parts.push({ cls: 'd-skip', text: '⋯ ' + (run - 6) + ' 行未改动 ⋯' });
+          for (let k = j - 3; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+        } else {
+          for (let k = i; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+        }
+        i = j - 1;
+      }
+      let html = '';
+      for (const p of parts) html += '<div class="' + p.cls + '">' + esc(p.text) + '</div>';
+      const box = document.createElement('div');
+      box.style.cssText = 'display:flex;flex-direction:column;min-width:520px;max-width:760px;height:70vh';
+      box.innerHTML = `
+        <div class="m-head">✏️ AI 修改确认 <span class="x" id="dw-x">✕</span></div>
+        <div style="padding:8px 14px;font-size:12px;color:var(--text-dim)">${esc(rel)} <span style="float:right">+${addN} 行 / -${delN} 行</span></div>
+        <div class="dw-diff">${html}</div>
+        <div class="m-foot">
+          <button class="tb-btn m-cancel" id="dw-no">拒绝</button>
+          <button class="tb-btn m-ok" id="dw-yes">应用修改</button>
+        </div>`;
+      Modal.show(box);
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      box.querySelector('#dw-yes').onclick = () => finish(true);
+      box.querySelector('#dw-no').onclick = () => finish(false);
+      box.querySelector('#dw-x').onclick = () => finish(false);
+    });
+  }
+
+  // 工具活动行（消息流里的紧凑状态条）
+  function renderToolRow(call) {
+    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️' };
+    const row = document.createElement('div');
+    row.className = 'ai-tool';
+    const arg = (call.args && (call.args.path || call.args.query)) || '';
+    row.innerHTML = '<span class="ai-tool-ic">' + (icons[call.name] || '·') + '</span>' +
+      '<span class="ai-tool-tx">' + esc(call.name + ' ' + arg) + '</span>' +
+      '<span class="ai-tool-st">…</span>';
+    msgsEl.appendChild(row);
+    scrollBottom();
+    return row;
+  }
+  function setToolState(row, ok, note) {
+    if (!row) return;
+    const st = row.querySelector('.ai-tool-st');
+    if (st) { st.textContent = ok ? '✓ ' + (note || '') : '✗ ' + (note || '失败'); st.classList.add(ok ? 'ok' : 'err'); }
+  }
+
+  // 一轮工具执行完毕：结果以 <tool_results> 形式喂回模型，然后自动续流
+  async function agentStep(text) {
+    const calls = parseToolCalls(text);
+    if (!calls.length) return;
+    if (agentStopped) return;
+    if (agentRounds >= MAX_ROUNDS) {
+      msgs.push({ role: 'user', content: '（已达工具调用轮次上限，请基于现有信息总结收尾，不要再调用工具）' });
+    } else {
+      const results = [];
+      for (const c of calls) {
+        const row = renderToolRow(c);
+        let r;
+        try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
+        setToolState(row, r.ok, c.name === 'write_file' ? (r.ok ? '已应用' : '已拒绝') : '');
+        results.push('<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>');
+      }
+      agentRounds++;
+      msgs.push({ role: 'user', content: '<tool_results>\n' + results.join('\n') + '\n</tool_results>' });
+    }
+    if (agentStopped) return;
+    await continueStream();
+  }
+
+  // 自动续流（Agent 循环的下一轮回复；用户消息已在 msgs 里）
+  async function continueStream() {
+    const cfg = getConfig();
+    curStream = addMsg('assistant', '');
+    curText = '';
+    const dot = document.createElement('span');
+    dot.className = 'ai-cursor';
+    curStream.querySelector('.ai-md').appendChild(dot);
+    const r = await window.myIDE.ai.chat(cfg, buildMessages());
+    if (curStream) {
+      if (r && r.error) finishStream(r.error, true);
+      else finishStream((r && r.text) || curText, false);
+    }
+  }
 
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -39,7 +270,9 @@ const AiPanel = (() => {
 
   function renderMd(text) {
     try {
-      const html = window.marked.parse(text || '');
+      // 工具调用块不进渲染（含流式中的未闭合半块）
+      const clean = String(text || '').replace(/```tool_call[\s\S]*?```/g, '').replace(/```tool_call[\s\S]*$/g, '');
+      const html = window.marked.parse(clean);
       return hljsWrap(html);
     } catch { return '<p>' + esc(text) + '</p>'; }
   }
@@ -82,7 +315,7 @@ const AiPanel = (() => {
       <div class="ai-logo">🤖</div>
       <div class="ai-welcome-title">AI 助手</div>
       <div class="ai-welcome-tip">${cfg.baseUrl ? '已连接 ' + esc(cfg.model || '模型') + '，开始对话吧' : '尚未配置模型 —— 点击 ⚙ 或到 设置 → AI 助手 填写服务地址与模型'}</div>
-      <div class="ai-welcome-tip" style="margin-top:4px">支持多轮对话 · 📎 附带当前文件作为上下文 · Enter 发送</div>`;
+      <div class="ai-welcome-tip" style="margin-top:4px">支持工具调用（读文件/搜索/修改需确认）· 多轮对话 · 📎 附当前文件 · Enter 发送</div>`;
     msgsEl.appendChild(w);
   }
 
@@ -90,13 +323,9 @@ const AiPanel = (() => {
   function buildMessages() {
     const cfg = getConfig();
     const out = [];
-    if (cfg.systemPrompt && cfg.systemPrompt.trim()) out.push({ role: 'system', content: cfg.systemPrompt.trim() });
+    // Agent 工具系统提示在前，用户自定义系统提示在后（用户可覆盖语气/角色）
+    out.push({ role: 'system', content: AGENT_SYS + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : '') });
     for (const m of msgs) out.push({ role: m.role, content: m.content });
-    // 文件上下文并入最后一条 user 消息（保持消息序列合法：最后必须是 user）
-    if (ctxFile && out.length && out[out.length - 1].role === 'user') {
-      const last = out[out.length - 1];
-      last.content = '（当前编辑器文件 ' + ctxFile.path + ' 的内容：）\n```\n' + ctxFile.content + '\n```\n\n' + last.content;
-    }
     return out;
   }
 
@@ -112,12 +341,17 @@ const AiPanel = (() => {
     }
     busy = true;
     setBusyUI(true);
+    agentRounds = 0;   // 新任务重置 Agent 循环计数
+    agentStopped = false;
     inputEl.value = '';
     // 清空欢迎语
     const w = msgsEl.querySelector('.ai-welcome');
     if (w) w.remove();
+    // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
+    let content = text;
+    if (ctxFile) content = '（当前编辑器文件 ' + ctxFile.path + ' 的内容：）\n```\n' + ctxFile.content + '\n```\n\n' + text;
     addMsg('user', text);
-    msgs.push({ role: 'user', content: text });
+    msgs.push({ role: 'user', content });
 
     curStream = addMsg('assistant', '');
     curText = '';
@@ -140,15 +374,18 @@ const AiPanel = (() => {
       md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
     } else if (text) {
       md.innerHTML = renderMd(text);
-      // 最后一行光标移除 + 存入历史
     }
     if (text && !isErr) msgs.push({ role: 'assistant', content: text });
-    else if (text && isErr) { /* 失败不入历史 */ }
     curStream = null;
     curText = '';
+    scrollBottom();
+    // Agent 循环：回复里有工具调用 → 执行后自动续流（保持 busy 状态）
+    if (!isErr && text && !agentStopped && parseToolCalls(text).length) {
+      agentStep(text).catch(() => {});
+      return;
+    }
     busy = false;
     setBusyUI(false);
-    scrollBottom();
   }
 
   function setBusyUI(b) {
@@ -212,7 +449,7 @@ const AiPanel = (() => {
     showWelcome();
     if (sendBtn) {
       sendBtn.onclick = () => {
-        if (busy) { window.myIDE.ai.abort(); return; }
+        if (busy) { agentStopped = true; window.myIDE.ai.abort(); return; }
         send();
       };
     }
@@ -226,6 +463,8 @@ const AiPanel = (() => {
     }
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
+      if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+      agentRounds = 0;
       msgs = [];
       ctxFile = null;
       fileChip.classList.remove('on');
