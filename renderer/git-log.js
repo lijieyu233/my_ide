@@ -28,6 +28,8 @@ const GitLog = (() => {
   let selSeq = 0;            // 异步竞态防护：详情请求序号
   let graph = null;          // buildGraph 结果 {rows, maxLanes}
   let pathFilter = null;     // 文件历史模式：仅显示改动该文件的提交（树右键「显示历史」）
+  let cmp = null;            // 分支对比模式：{ a, b, data }（⇄ 按钮）
+  let cmpSeq = 0;            // 对比请求竞态防护
 
   const esc = (s) => GitPanel.esc(s);
   const fmtDate = (ts) => GitPanel.fmtDate(ts);
@@ -354,6 +356,8 @@ const GitLog = (() => {
   // ---------- 数据加载 ----------
   async function refresh() {
     if (!root) return;
+    // 分支对比模式：刷新 = 重跑当前对比
+    if (cmp) { await runCompare(cmp.a, cmp.b); return; }
     const box = listEl.querySelector('.gl-rows');
     if (!box) listEl.innerHTML = '<div class="diff-msg">加载中…</div>';
     // 文件历史模式（树右键「显示历史」）：数据源换成 logFile
@@ -405,6 +409,153 @@ const GitLog = (() => {
     if (selOid) select(selOid);
   }
 
+  // ---------- 分支对比（⇄ 工具栏按钮）----------
+  // 入口：点击 ⇄ → 列表顶部出现 A vs B 选择条 → 对比 → 展示双方独有提交 + 差异文件
+  async function startCompare() {
+    if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    const br = await window.myIDE.git.branches(root);
+    const names = (br && br.branches) || [];
+    if (!names.length) { MI.toast('仓库中没有分支，无法对比', 'err'); return; }
+    if (!cmp) cmp = { a: null, b: null, data: null };
+    renderCompareList(names);
+  }
+
+  // 对比条（列表顶部）：分支 A vs 分支 B + 对比 / 退出
+  function buildCompareBar(names) {
+    const bar = document.createElement('div');
+    bar.className = 'gl-cmp-bar';
+    const mkSel = (val) => {
+      const s = document.createElement('select');
+      for (const b of names) {
+        const o = document.createElement('option');
+        o.value = b; o.textContent = b;
+        s.appendChild(o);
+      }
+      if (val && names.includes(val)) s.value = val;
+      return s;
+    };
+    const sa = mkSel(cmp && cmp.a ? cmp.a : currentBranch);
+    const sb = mkSel(cmp && cmp.b ? cmp.b : (names.find((b) => b !== currentBranch) || names[0]));
+    const run = document.createElement('button');
+    run.className = 'vt-btn'; run.textContent = '对比'; run.title = '比较所选两个分支';
+    run.onclick = () => runCompare(sa.value, sb.value);
+    const exit = document.createElement('button');
+    exit.className = 'vt-btn'; exit.textContent = '✕'; exit.title = '退出对比模式';
+    exit.onclick = () => { cmp = null; refresh(); };
+    const vs = document.createElement('span');
+    vs.className = 'gl-cmp-vs'; vs.textContent = 'vs';
+    bar.appendChild(sa); bar.appendChild(vs); bar.appendChild(sb); bar.appendChild(run); bar.appendChild(exit);
+    return bar;
+  }
+
+  async function runCompare(a, b) {
+    if (!a || !b || a === b) { MI.toast('请选择两个不同的分支', 'err'); return; }
+    const seq = ++cmpSeq;
+    listEl.innerHTML = '<div class="diff-msg">对比中…</div>';
+    const data = await window.myIDE.git.compareRefs(root, a, b);
+    if (seq !== cmpSeq) return; // 期间又发起了新对比
+    if (data && data.error) { MI.toast('对比失败: ' + data.error, 'err'); return; }
+    cmp = { a, b, data };
+    const br = await window.myIDE.git.branches(root);
+    if (seq !== cmpSeq) return;
+    renderCompareList((br && br.branches) || []);
+  }
+
+  function renderCompareList(names) {
+    listEl.innerHTML = '';
+    listEl.appendChild(buildCompareBar(names));
+    if (!cmp || !cmp.data) {
+      const tip = document.createElement('div');
+      tip.className = 'diff-msg';
+      tip.textContent = '选择两个分支后点击「对比」';
+      listEl.appendChild(tip);
+      return;
+    }
+    const { a, b, data } = cmp;
+    if (data.same) {
+      const d = document.createElement('div');
+      d.className = 'diff-msg';
+      d.textContent = '两个分支指向同一提交，无差异';
+      listEl.appendChild(d);
+      return;
+    }
+    // 摘要
+    const sum = document.createElement('div');
+    sum.className = 'gl-cmp-summary';
+    sum.innerHTML = `<b>${esc(a)}</b> 独有 <b>${data.aOnly.length}</b> 个提交 · <b>${esc(b)}</b> 独有 <b>${data.bOnly.length}</b> 个提交 · <b>${data.files.length}</b> 个文件差异`;
+    listEl.appendChild(sum);
+    listEl.appendChild(buildCommitSection(a + ' 独有提交', data.aOnly));
+    listEl.appendChild(buildCommitSection(b + ' 独有提交', data.bOnly));
+    listEl.appendChild(buildFileSection('差异文件', data.files));
+  }
+
+  // 独有提交区：标题 + 提交行（消息 / 哈希 / 作者 / 日期）
+  function buildCommitSection(title, list) {
+    const box = document.createElement('div');
+    box.className = 'gl-cmp-sec';
+    const h = document.createElement('div');
+    h.className = 'gl-cmp-sec-title';
+    h.textContent = title + ' (' + list.length + ')';
+    box.appendChild(h);
+    if (!list.length) {
+      const d = document.createElement('div');
+      d.className = 'gl-cmp-empty';
+      d.textContent = '无';
+      box.appendChild(d);
+      return box;
+    }
+    for (const c of list) {
+      const el = document.createElement('div');
+      el.className = 'gl-row';
+      el.innerHTML = `<div class="gl-l1"><span class="gl-msg">${esc(c.message)}</span></div>` +
+        `<div class="gl-l2"><span class="gl-hash">${c.short}</span><span class="gl-author">${esc(c.author)}</span><span class="gl-date">${fmtDate(c.timestamp)}</span></div>`;
+      el.style.position = 'relative';
+      el.style.top = '0';
+      box.appendChild(el);
+    }
+    return box;
+  }
+
+  // 差异文件区：点击在主区预览 A → B 的文件 diff
+  function buildFileSection(title, files) {
+    const box = document.createElement('div');
+    box.className = 'gl-cmp-sec';
+    const h = document.createElement('div');
+    h.className = 'gl-cmp-sec-title';
+    h.textContent = title + ' (' + files.length + ')';
+    box.appendChild(h);
+    if (!files.length) {
+      const d = document.createElement('div');
+      d.className = 'gl-cmp-empty';
+      d.textContent = '无';
+      box.appendChild(d);
+      return box;
+    }
+    const ST = { added: ['A', 'added'], modified: ['M', 'modified'], deleted: ['D', 'deleted'] };
+    for (const f of files) {
+      const [tag, cls] = ST[f.status] || ['?', 'modified'];
+      const row = document.createElement('div');
+      row.className = 'gl-dfile';
+      row.innerHTML = `<span class="badge ${cls}">${tag}</span><span class="nm" title="${esc(f.file)}">${esc(f.file)}</span>`;
+      row.onclick = () => {
+        box.querySelectorAll('.gl-dfile').forEach((x) => x.classList.remove('sel'));
+        row.classList.add('sel');
+        loadCmpDiff(f.file);
+      };
+      box.appendChild(row);
+    }
+    return box;
+  }
+
+  async function loadCmpDiff(file) {
+    const seq = cmpSeq;
+    const r = await window.myIDE.git.diffRefs(root, cmp.a, cmp.b, file);
+    if (seq !== cmpSeq) return;
+    if (r.error) { MI.toast(r.error, 'err'); return; }
+    if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
+    GitPanel.renderDiffView(r, '分支对比 ' + cmp.a + ' → ' + cmp.b);
+  }
+
   // 文件历史入口（树/标签页右键「显示历史」）：打开日志窗口并过滤到该文件
   function showFileHistory(file) {
     if (!root || !file) return;
@@ -414,6 +565,7 @@ const GitLog = (() => {
       pathFilter = pathFilter.slice(String(root).replace(/\\/g, '/').length + 1);
     }
     selOid = null;
+    cmp = null; // 文件历史模式退出对比模式
     if (App.getTool() !== 'log') App.showTool('log');
     else refresh();
   }
@@ -438,6 +590,7 @@ const GitLog = (() => {
     commits = [];
     graph = null;
     selOid = null;
+    cmp = null; // 切项目退出对比模式
     if (opened) refresh();
   }
 
@@ -445,11 +598,13 @@ const GitLog = (() => {
   refSel.addEventListener('change', () => {
     refFilter = refSel.value === '__all__' ? null : refSel.value;
     selOid = null;
+    cmp = null; // 切分支过滤 = 离开对比视图
     refresh();
   });
   authorEl.addEventListener('input', () => { authorQ = authorEl.value; applyFilter(); });
   searchEl.addEventListener('input', () => { searchQ = searchEl.value; applyFilter(); });
   document.getElementById('gl-refresh').onclick = () => refresh();
+  document.getElementById('gl-compare').onclick = () => startCompare();
   document.getElementById('gl-close').onclick = () => {
     // 正常由工具条/快捷键打开（App 处于 log 态）→ 走 switchTool 收起同步按钮；
     // 被直接 GitLog.open() 打开时 App 不在 log 态，只收面板本身

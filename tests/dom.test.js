@@ -214,6 +214,20 @@ function makeDom() {
         { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
       ] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
+      compareRefs: async (d, a, b) => {
+        calls.compareRefs = [a, b];
+        if (a === b) return { isRepo: true, same: true, aOnly: [], bOnly: [], files: [] };
+        return {
+          isRepo: true, same: false,
+          aOnly: [{ oid: 'a1' + '0'.repeat(37), short: 'a1', message: 'main fix', author: 'me', timestamp: 1700000000000 }],
+          bOnly: [{ oid: 'b1' + '0'.repeat(37), short: 'b1', message: 'dev feat', author: 'me', timestamp: 1700000001000 }],
+          files: [{ file: 'src\\app.js', status: 'modified' }, { file: 'src\\new.js', status: 'added' }],
+        };
+      },
+      diffRefs: async (d, a, b, f) => {
+        calls.diffRefs = [a, b, f];
+        return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] };
+      },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: [{ file: 'README.md', status: 'modified' }, { file: 'data.csv', status: 'added' }] }; },
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
@@ -1858,6 +1872,38 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     sel2.value = 'HEAD';
     sel2.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick(); await tick();
+    await g(dom, 'GitLog.hide()');
+    await g(dom, 'App.switchTool("project")');
+    await tick();
+  });
+
+  await okAsync('Git 分支对比：⇄ 选择分支 → 独有提交 + 差异文件 + 文件 diff → 退出', async () => {
+    await g(dom, 'App.switchTool("log")');
+    await tick(); await tick();
+    click($(dom, '#gl-compare'));
+    await tick(); await tick();
+    assert_($(dom, '.gl-cmp-bar'), '对比条出现');
+    const sels = $allIn($(dom, '.gl-cmp-bar'), 'select');
+    assert_(sels.length === 2, '两个分支下拉, got: ' + sels.length);
+    sels[0].value = 'main';
+    sels[1].value = 'dev';
+    click($allIn($(dom, '.gl-cmp-bar'), 'button').find((b) => b.textContent === '对比'));
+    await tick(); await tick(); await tick();
+    assert_(JSON.stringify(calls.compareRefs) === JSON.stringify(['main', 'dev']), 'compareRefs 收到 main/dev, got: ' + JSON.stringify(calls.compareRefs));
+    assert_($(dom, '.gl-cmp-summary') && $(dom, '.gl-cmp-summary').textContent.includes('1'), '摘要显示独有提交数');
+    assert_($allIn($(dom, '#gl-list'), '.gl-cmp-sec').length === 3, '三个区块（双方独有提交 + 差异文件）, got: ' + $allIn($(dom, '#gl-list'), '.gl-cmp-sec').length);
+    const msgs = $allIn($(dom, '#gl-list'), '.gl-msg').map((x) => x.textContent);
+    assert_(msgs.includes('main fix') && msgs.includes('dev feat'), '双方独有提交展示');
+    // 点击差异文件 → 主区 diff
+    click($allIn($(dom, '#gl-list'), '.gl-dfile')[0]);
+    await tick(); await tick();
+    assert_(JSON.stringify(calls.diffRefs) === JSON.stringify(['main', 'dev', 'src\\app.js']), 'diffRefs 参数正确, got: ' + JSON.stringify(calls.diffRefs));
+    assert_($(dom, '.diff-head') && $(dom, '.diff-head').textContent.includes('分支对比'), '主区显示分支对比 diff');
+    // 退出对比模式 → 回普通日志列表
+    click($allIn($(dom, '.gl-cmp-bar'), 'button').find((b) => b.textContent === '✕'));
+    await tick(); await tick();
+    assert_(!$(dom, '.gl-cmp-bar'), '退出对比模式');
+    assert_($allIn($(dom, '#gl-list'), '.gl-row').length === 3, '回到普通日志列表');
     await g(dom, 'GitLog.hide()');
     await g(dom, 'App.switchTool("project")');
     await tick();

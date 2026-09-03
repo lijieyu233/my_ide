@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     commit: (d, o) => ipcRenderer.invoke('git:commit', d, o),
     diffWorkdir: (d, f) => ipcRenderer.invoke('git:diffWorkdir', d, f),
     diffCommit: (d, oid, f) => ipcRenderer.invoke('git:diffCommit', d, oid, f),
+    compareRefs: (d, a, b) => ipcRenderer.invoke('git:compareRefs', d, a, b),
+    diffRefs: (d, a, b, f) => ipcRenderer.invoke('git:diffRefs', d, a, b, f),
     commitFiles: (d, oid) => ipcRenderer.invoke('git:commitFiles', d, oid),
     branches: (d) => ipcRenderer.invoke('git:branches', d),
     checkout: (d, ref) => ipcRenderer.invoke('git:checkout', d, ref),

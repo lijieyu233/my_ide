@@ -678,6 +678,76 @@ async function discardFiles(dir, files) {
   return { ok, failed };
 }
 
+// ---------- 分支 / 提交对比（A vs B）----------
+// A 独有提交 = A 祖先集 - B 祖先集（等价 git log B..A），B 独有反之；
+// 差异文件 = 两头指向的树做 blob oid 对比（等价 git diff A B --name-status）
+async function compareRefs(dir, aRef, bRef) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  if (!aRef || !bRef) return { error: '请选择两个对比目标' };
+  try {
+    const aOid = await git.resolveRef({ fs, dir: root, ref: aRef });
+    const bOid = await git.resolveRef({ fs, dir: root, ref: bRef });
+    if (aOid === bOid) return { isRepo: true, same: true, aOnly: [], bOnly: [], files: [] };
+    const ancestors = async (oid) => {
+      const set = new Set();
+      const stack = [oid];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (set.has(cur)) continue;
+        set.add(cur);
+        try {
+          const c = await git.readCommit({ fs, dir: root, oid: cur });
+          stack.push(...(c.commit.parent || []));
+        } catch {}
+      }
+      return set;
+    };
+    const [setA, setB] = [await ancestors(aOid), await ancestors(bOid)];
+    const readCommits = async (oids) => {
+      const out = [];
+      for (const oid of oids) {
+        try {
+          const c = await git.readCommit({ fs, dir: root, oid });
+          out.push({
+            oid, short: oid.slice(0, 7),
+            message: (c.commit.message || '').split('\n')[0],
+            author: c.commit.author.name,
+            timestamp: c.commit.author.timestamp * 1000,
+          });
+        } catch {}
+      }
+      out.sort((x, y) => y.timestamp - x.timestamp);
+      return out;
+    };
+    const aOnly = await readCommits([...setA].filter((o) => !setB.has(o)));
+    const bOnly = await readCommits([...setB].filter((o) => !setA.has(o)));
+    const [ta, tb] = [await treeFiles(root, aOid), await treeFiles(root, bOid)];
+    const all = new Set([...Object.keys(ta), ...Object.keys(tb)]);
+    const files = [];
+    for (const f of all) {
+      if (!(f in ta)) files.push({ file: native(f), status: 'added' });      // B 有 A 无（相对 A 新增）
+      else if (!(f in tb)) files.push({ file: native(f), status: 'deleted' });
+      else if (ta[f] !== tb[f]) files.push({ file: native(f), status: 'modified' });
+    }
+    files.sort((x, y) => x.file.localeCompare(y.file));
+    return { isRepo: true, same: false, aOnly, bOnly, files };
+  } catch (e) { return { error: String(e.message || e) }; }
+}
+
+// 对比两 ref 的单个文件内容（blobAt 内部 resolveRef，支持分支名 / HEAD / oid）
+async function diffRefs(dir, aRef, bRef, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  try {
+    const [oldText, newText] = [await blobAt(root, aRef, file), await blobAt(root, bRef, file)];
+    if (oldText === null && newText === null) return { error: '文件不存在于两个分支' };
+    if (oldText === newText) return { file, unchanged: true };
+    if (isBinaryText(oldText) || isBinaryText(newText)) return { file, binary: true };
+    return { file, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
+  } catch (e) { return { error: String(e.message || e) }; }
+}
+
 // ---------- 远程（fetch / pull / push / remote 管理）----------
 const http = require('isomorphic-git/http/node');
 const AUTH_KEY = null; // 凭证由渲染层每次传入（localStorage myide-git-auth），不落服务层状态
@@ -1229,7 +1299,7 @@ async function blame(dir, file) {
 module.exports = {
   findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo,
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
-  diffWorkdir, diffCommit, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
+  diffWorkdir, diffCommit, diffRefs, compareRefs, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,

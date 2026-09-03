@@ -333,6 +333,38 @@ fs.mkdirSync(repo);
     assert.strictEqual(lt.truncated, true, '截断标记');
   });
 
+  await okAsync('compareRefs：分支对比（独有提交 + 差异文件 + same）', async () => {
+    // main vs feature：分叉后各自一条提交（g.txt / f.txt）
+    const r = await G.compareRefs(repo, 'main', 'feature');
+    assert.strictEqual(r.isRepo, true);
+    assert.strictEqual(r.same, false);
+    const aMsgs = r.aOnly.map((c) => c.message);
+    const bMsgs = r.bOnly.map((c) => c.message);
+    assert.ok(aMsgs.includes('main work') && !aMsgs.includes('feature work'), 'main 独有含 main work: ' + aMsgs.join(','));
+    assert.ok(bMsgs.includes('feature work') && !bMsgs.includes('main work'), 'feature 独有含 feature work: ' + bMsgs.join(','));
+    const st = Object.fromEntries(r.files.map((f) => [f.file, f.status]));
+    assert.strictEqual(st['g.txt'], 'deleted', 'g.txt 从 main → feature 为删除（feature 无）');
+    assert.strictEqual(st['f.txt'], 'added', 'f.txt 从 main → feature 为新增（feature 独有）');
+    // 同一 ref → same
+    const rs = await G.compareRefs(repo, 'main', 'main');
+    assert.strictEqual(rs.same, true);
+  });
+
+  await okAsync('diffRefs：两分支间的单文件 diff', async () => {
+    // feature → main：g.txt 在 feature 不存在、在 main 为 'g\n'
+    const d1 = await G.diffRefs(repo, 'feature', 'main', 'g.txt');
+    assert.strictEqual(d1.oldText ?? '', '', 'feature 侧无 g.txt');
+    assert.strictEqual(d1.newText, 'g\n');
+    assert.ok(d1.hunks.length >= 1);
+    // main → feature：f.txt 在 feature 独有（main 侧为空）
+    const d2 = await G.diffRefs(repo, 'main', 'feature', 'f.txt');
+    assert.strictEqual(d2.oldText ?? '', '', 'main 侧无 f.txt');
+    assert.strictEqual(d2.newText, 'f\n');
+    // 两分支都无的文件
+    const d3 = await G.diffRefs(repo, 'main', 'feature', 'no-such.txt');
+    assert.strictEqual(d3.error, '文件不存在于两个分支');
+  });
+
   await okAsync('worker 调度链路：init/commit/status', async () => {
     const wdir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-worker-'));
     const call = (op, args) => new Promise((resolve, reject) => {
