@@ -145,6 +145,7 @@ Shortcuts.register('hide-log', { desc: '关闭 Git 日志窗口', keys: ['shift+
 Shortcuts.register('tool-browser', { desc: '内置浏览器（打开 / 关闭）', keys: ['ctrl+6'], run: () => App.switchTool('browser') });
 Shortcuts.register('tool-db', { desc: '工具窗口：数据库（侧栏连接/表 + 右侧数据/SQL）', keys: ['ctrl+7'], run: () => App.showTool('db') });
 Shortcuts.register('tool-ai', { desc: '工具窗口：AI 助手（右侧对话，独立停靠）', keys: ['alt+1', 'ctrl+8'], run: () => App.showAi() });
+Shortcuts.register('tool-tasks', { desc: '工具窗口：任务（清单 + DAG 依赖图，按项目隔离）', keys: ['ctrl+9'], run: () => App.showTool('tasks') });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });

@@ -145,9 +145,10 @@ const GitLog = (() => {
       const isMerge = row.c.parents.length > 1;
       const isHead = row.c.oid === headOid;
       if (isMerge) {
-        svg.appendChild(el('circle', {
-          cx: laneX(L), cy, r: DOT, fill: 'var(--bg-panel)', stroke: laneColor(L), 'stroke-width': 2,
-        }));
+        const dot = el('circle', { cx: laneX(L), cy, r: DOT, stroke: laneColor(L), 'stroke-width': 2 });
+        // CSS 变量在 SVG 表现属性里不生效（Chromium），空心圆的填充必须走 style
+        dot.style.fill = 'var(--bg-panel)';
+        svg.appendChild(dot);
       } else {
         svg.appendChild(el('circle', { cx: laneX(L), cy, r: DOT, fill: laneColor(L) }));
       }

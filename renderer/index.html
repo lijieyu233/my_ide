@@ -31,6 +31,7 @@
     <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)">⌥</button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)">🌐</button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)">⛁</button>
+    <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）">☑</button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -104,6 +105,24 @@
       <div class="db-side-head">表</div>
       <div id="db-tables"><div class="db-hint">连接后此处显示表列表</div></div>
     </div>
+    <!-- 任务工具窗口（侧栏清单；DAG 依赖图在主区 #tasks-dag-panel，Ctrl+9） -->
+    <div id="panel-tasks" class="hidden">
+      <div class="panel-title">任务
+        <span id="tasks-count" title="已完成 / 总数"></span>
+        <span class="panel-title-actions">
+          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+          <button id="tasks-ready" class="vt-btn" title="只看现在能做的（未被阻塞且未完成）">▶</button>
+          <button id="tasks-undo" class="vt-btn hidden" title="撤销最近一次删除">⟲</button>
+          <button id="tasks-clear" class="vt-btn hidden" title="清空已完成（可撤销）">⊘</button>
+          <button id="tasks-view" class="vt-btn" title="在主区打开依赖图">⇄ 图</button>
+        </span>
+      </div>
+      <div id="tasks-body"></div>
+      <div id="tasks-new-bar">
+        <input id="tasks-new-input" type="text" placeholder="+ 新任务，回车添加" spellcheck="false" autocomplete="off">
+      </div>
+    </div>
   </aside>
   <div id="sidebar-resizer" title="拖动调整目录区宽度"></div>
   <div id="content">
@@ -166,6 +185,19 @@
       <div id="db-ddl" class="hidden"></div>
       <div id="db-er" class="hidden"></div>
       <div id="db-sql" class="hidden"></div>
+    </div>
+    <!-- 任务依赖图（主区全宽：DAG 视图；侧栏清单保持显示可对照） -->
+    <div id="tasks-dag-panel" class="hidden">
+      <div class="db-tabs">
+        <span class="tk-dag-title">⛓ 依赖图</span>
+        <span id="tasks-dag-count" class="tk-dag-count"></span>
+        <span class="spacer"></span>
+        <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
+        <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
+        <button id="tasks-dag-list" class="vt-btn" title="回到清单视图">⇄ 清单</button>
+        <button id="tasks-dag-close" class="vt-btn" title="关闭图视图">✕</button>
+      </div>
+      <div id="tasks-dag-body"></div>
     </div>
     <!-- Git 日志工具窗口（PyCharm Alt+9 / Ctrl+5，底部停靠：编辑器在上、日志在下） -->
     <div id="git-log-panel" class="hidden">
@@ -252,6 +284,7 @@
 <script src="browser.js"></script>
 <script src="db-panel.js"></script>
 <script src="ai-panel.js"></script>
+<script src="tasks.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

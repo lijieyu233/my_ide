@@ -312,6 +312,7 @@ async function loadApp(dom) {
   evalFile('browser.js');
   evalFile('db-panel.js');
   evalFile('ai-panel.js');
+  evalFile('tasks.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -3531,6 +3532,486 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(!$(dom, '#db-data-wrap').classList.contains('hidden'), '数据标签页可见');
     await g(dom, 'App.switchTool("project")');
+  });
+
+  // ==================== 任务工具窗口（侧栏清单 + 主区 DAG，Ctrl+9） ====================
+  const TK_FILE = P + '/.myide/tasks.json';
+  const TK_KEY = 'myide-tasks:' + P;
+  const tkRows = () => $allIn($(dom, '#tasks-body'), '.tk-row');
+  const tkRow = (id) => $(dom, '#tasks-body .tk-row[data-id="' + id + '"]');
+  const dagAll = (sel) => $allIn($(dom, '#tasks-dag-body'), sel);
+  const tkJson = async (expr) => JSON.parse(await g(dom, 'JSON.stringify(' + expr + ')'));
+  const ctxItem = (label) => {
+    const items = $$(dom, '#ctx-menu .ctx-item');
+    const it = items.find((i) => i.textContent.includes(label));
+    assert_(it, '右键菜单项存在：' + label + '（现有：' + items.map((x) => x.textContent).join(' | ') + '）');
+    return it;
+  };
+  const rightClick = (el) => el.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+  const dblclick = (el) => el.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  async function tkReset() {
+    delete FAKE_FS[TK_FILE]; // 存储已迁到项目内文件：清文件才等于清任务
+    dom.window.localStorage.removeItem(TK_KEY);
+    // 清会话：Session.restore 是 async 且 setRoot 不 await——它会滞后几秒再 App.setTool(旧 tool)，
+    // 把 activeTool 从 tasks 盖回 project（曾导致「图面板不显示」的诡异失败）
+    dom.window.localStorage.removeItem('myide-session:' + P);
+    dom.window.localStorage.removeItem('myide-session:C:/proj2');
+    await g(dom, 'App.setRoot("' + P + '")');
+    await g(dom, 'Tasks.reload()');
+    await g(dom, 'App.showTool("tasks")');
+    await g(dom, 'Tasks.setView("list")');
+    await tick(); await tick();
+  }
+
+  await okAsync('任务：新建 → 写入项目文件 .myide/tasks.json + 清单渲染 + 统计', async () => {
+    await tkReset();
+    const id = await g(dom, 'Tasks.add("实现剪切修复").id');
+    await tick(); await tick(); // save 异步串行
+    const raw = FAKE_FS[TK_FILE];
+    assert_(raw, '任务写入项目内文件（随项目走/可进 git）');
+    const d = JSON.parse(raw.content);
+    assert_(d.version === 1 && d.tasks.length === 1, '存储结构 {version, tasks}');
+    assert_(d.tasks[0].title === '实现剪切修复' && d.tasks[0].id === id, '任务内容正确');
+    assert_(tkRows().length === 1, '清单渲染 1 行, got ' + tkRows().length);
+    assert_($(dom, '#tasks-count').textContent === '☑ 0/1', '统计 0/1, got ' + $(dom, '#tasks-count').textContent);
+    const input = $(dom, '#tasks-new-input');
+    input.value = '通过输入框添加';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+    assert_(tkRows().length === 2, '回车新建生效, got ' + tkRows().length);
+    assert_(input.value === '', '回车后输入框清空');
+    await g(dom, 'Tasks.reload()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, 'reload 后数据从文件恢复, got ' + g(dom, 'Tasks.tasks.length'));
+  });
+
+  await okAsync('任务：勾选 todo→done→todo 往返（doneAt 写入 / 清空）', async () => {
+    await tkReset();
+    const id = await g(dom, 'Tasks.add("勾选往返").id');
+    await tick();
+    click(tkRow(id).querySelector('.tk-check'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + id + '").status') === 'done', 'todo → done');
+    assert_(typeof g(dom, 'Tasks.tasks.find(t=>t.id==="' + id + '").doneAt') === 'number', 'doneAt 已写入');
+    assert_($(dom, '#tasks-count').textContent === '☑ 1/1', '统计更新为 1/1');
+    assert_(tkRow(id).classList.contains('done'), '已完成行带 done 样式');
+    click(tkRow(id).querySelector('.tk-check'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + id + '").status') === 'todo', 'done → todo');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + id + '").doneAt') === null, 'doneAt 已清空');
+  });
+
+  await okAsync('任务：待办组内高优先置顶 + CSS 色点（不用 emoji）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("中优先")');
+    await g(dom, 'Tasks.add("低优先")');
+    await g(dom, 'Tasks.add("高优先")');
+    await g(dom, 'Tasks.setPriority(Tasks.tasks[1].id, "low")');
+    await g(dom, 'Tasks.setPriority(Tasks.tasks[2].id, "high")');
+    await tick();
+    const titles = tkRows().map((r) => r.querySelector('.tk-title').textContent);
+    assert_(titles[0] === '高优先', '高优先置顶, got ' + titles.join(','));
+    assert_(titles[2] === '低优先', '低优先垫底, got ' + titles.join(','));
+    const dot = tkRows()[0].querySelector('.tk-prio.high');
+    assert_(dot && !dot.textContent, '高优先是 CSS 色点（无 emoji 字符）');
+    const st = dom.window.getComputedStyle(dot);
+    assert_(st && st.borderRadius === '50%', '色点为圆形, got ' + (st && st.borderRadius));
+  });
+
+  await okAsync('任务：添加依赖 a→b 后 b→a 被拒（环）并提示', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("A").id');
+    const b = await g(dom, 'Tasks.add("B").id');
+    await tick();
+    assert_(g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])') === 0, 'B 依赖 A 成功');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 1, 'B 的 deps 已写入');
+    assert_(g(dom, 'Tasks.setDeps("' + a + '", ["' + b + '"])') === 1, 'A 依赖 B 被判成环');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").deps.length') === 0, '成环的依赖未写入');
+    assert_($(dom, '#toast-wrap').textContent.includes('循环依赖'), 'toast 提示循环依赖');
+    assert_(g(dom, 'Tasks.setDeps("' + a + '", ["' + a + '"])') === 1, '自引用被拒');
+    const c = await g(dom, 'Tasks.add("C").id');
+    assert_(g(dom, 'Tasks.setDeps("' + c + '", ["' + b + '"])') === 0, 'C 依赖 B 成功');
+    assert_(g(dom, 'Tasks.setDeps("' + a + '", ["' + c + '"])') === 1, 'A 依赖 C 构成间接环被拒');
+  });
+
+  await okAsync('任务：阻塞徽章递减 + tooltip 列出具体是谁在阻塞', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("先做数据层").id');
+    const b = await g(dom, 'Tasks.add("再做界面").id');
+    const c = await g(dom, 'Tasks.add("最后联调").id');
+    await g(dom, 'Tasks.setDeps("' + c + '", ["' + a + '", "' + b + '"])');
+    await tick();
+    const badge = tkRow(c).querySelector('.tk-badge');
+    assert_(badge && badge.textContent === '⛓2', '2 个未完成依赖 → ⛓2, got ' + (badge && badge.textContent));
+    assert_(badge.title.includes('先做数据层') && badge.title.includes('再做界面'), 'tooltip 列出阻塞任务名, got ' + badge.title);
+    assert_(tkRow(c).classList.contains('blocked'), '阻塞行带 blocked 类');
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await tick();
+    assert_(tkRow(c).querySelector('.tk-badge').textContent === '⛓1', '完成 1 个 → ⛓1');
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    await tick();
+    assert_(!tkRow(c).querySelector('.tk-badge'), '依赖全部完成 → 徽章消失');
+  });
+
+  await okAsync('任务：删除级联清洗；⟲ 撤销恢复任务与依赖', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("A").id');
+    const b = await g(dom, 'Tasks.add("B").id');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
+    await tick();
+    assert_(tkRow(b).querySelector('.tk-badge'), '删除前 B 有阻塞徽章');
+    await g(dom, 'Tasks.remove("' + a + '")');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, 'A 已删除');
+    assert_(g(dom, 'Tasks.tasks[0].deps.length') === 0, 'B 的 deps 已级联清洗');
+    assert_(!tkRow(b).querySelector('.tk-badge'), '阻塞徽章消失');
+    assert_(g(dom, 'Tasks.canUndo') === true, '回收栈非空');
+    await g(dom, 'Tasks.undoDelete()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '撤销后 A 恢复');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 1, '撤销后 B 的依赖恢复');
+    assert_(tkRow(b).querySelector('.tk-badge'), '阻塞徽章恢复');
+  });
+
+  await okAsync('任务：dagLayout 纯函数 —— 层级正确 / 坐标无重叠 / 孤岛 level=0', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("A").id');
+    const b = await g(dom, 'Tasks.add("B").id');
+    const c = await g(dom, 'Tasks.add("C").id');
+    await g(dom, 'Tasks.add("孤岛")');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
+    await g(dom, 'Tasks.setDeps("' + c + '", ["' + a + '", "' + b + '"])');
+    await tick();
+    const nodes = await tkJson('Tasks._dagLayout(Tasks.tasks).nodes.map(n=>({id:n.id,level:n.level,x:n.x,y:n.y}))');
+    const by = {};
+    for (const n of nodes) by[n.id] = n;
+    assert_(nodes.length === 4, '4 个节点, got ' + nodes.length);
+    assert_(by[a].level === 0, '无依赖的 A 在 level 0');
+    assert_(by[b].level === 1, 'B 依赖 A → level 1');
+    assert_(by[c].level === 2, 'C 依赖 A、B → level 2');
+    const iso = nodes.find((n) => n.id !== a && n.id !== b && n.id !== c);
+    assert_(iso && iso.level === 0, '孤岛节点 level=0');
+    const lay2 = await tkJson('Tasks._dagLayout(Tasks.tasks).edges.map(e=>({from:e.from,to:e.to}))');
+    for (const e of lay2) assert_(by[e.to].level > by[e.from].level, '层级单调：' + e.from + '→' + e.to);
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const p = nodes[i], q = nodes[j];
+        assert_(!(Math.abs(p.x - q.x) < 160 && Math.abs(p.y - q.y) < 40), '节点坐标不重叠');
+      }
+    }
+  });
+
+  await okAsync('任务：视图切换 → 主区 DAG 面板（清单保留对照）+ 记忆 + 关闭', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("A").id');
+    const b = await g(dom, 'Tasks.add("B").id');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
+    await tick();
+    click($(dom, '#tasks-view'));
+    await tick(); await tick();
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '主区 DAG 面板显示');
+    assert_($(dom, '#tasks-dag-body .tk-svg'), 'DAG 渲染 SVG');
+    assert_(tkRows().length === 2, '侧栏清单保留（可对照）');
+    assert_($(dom, '#tasks-new-input'), '输入框保留');
+    assert_(dagAll('g.tk-node').length === 2, '2 个节点');
+    const edges = dagAll('path.tk-edge');
+    assert_(edges.length === 1, '1 条依赖边');
+    assert_(edges[0].classList.contains('blocked'), '未完成依赖 → 红色虚线（blocked）');
+    assert_($(dom, '#tasks-dag-body .tk-legend'), '图例存在');
+    assert_(dom.window.localStorage.getItem('myide-tasks-view') === 'dag', '视图偏好已记忆');
+    assert_($(dom, '#tasks-dag-count').textContent.includes('2 任务'), '图统计, got ' + $(dom, '#tasks-dag-count').textContent);
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await tick();
+    assert_(!dagAll('path.tk-edge.blocked').length, '依赖完成后边转为正常');
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '切走工具后主区面板隐藏');
+    await g(dom, 'App.showTool("tasks")');
+    await tick();
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '切回任务工具后主区面板恢复');
+    click($(dom, '#tasks-dag-close'));
+    await tick();
+    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '关闭按钮收起图面板');
+    assert_(g(dom, 'Tasks.view') === 'list', '视图回到清单');
+  });
+
+  await okAsync('任务：打开文件时依赖图让位（编辑器优先）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("任务")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick();
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '图面板在显示');
+    await g(dom, 'Viewer.openFile("' + P + '/README.md")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.view') === 'list', '打开文件 → 图让位回清单');
+    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '主区面板隐藏');
+  });
+
+  await okAsync('任务：单击选中不重建 DOM（滚动位置不丢）+ 双击行改名', async () => {
+    await tkReset();
+    const id = await g(dom, 'Tasks.add("点我选中").id');
+    await g(dom, 'Tasks.add("另一条")');
+    await tick();
+    const titleEl = tkRow(id).querySelector('.tk-title'); // 元素引用：重建即失联
+    click(tkRow(id));
+    await tick();
+    assert_(titleEl.isConnected, '单击选中不重建 DOM（滚动位置随之保留）');
+    assert_(tkRow(id).classList.contains('sel'), '选中样式生效');
+    dblclick(tkRow(id));
+    await tick(); await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input, '双击弹出重命名');
+    input.value = '双击改的名';
+    click($(dom, '#pf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + id + '").title') === '双击改的名', '改名生效');
+  });
+
+  await okAsync('任务：右键菜单 → 重命名 / 备注 / 状态 / 优先级（真实弹窗路径）', async () => {
+    await tkReset();
+    const id = await g(dom, 'Tasks.add("右键目标").id');
+    await tick();
+    rightClick(tkRow(id));
+    await tick();
+    click(ctxItem('重命名'));
+    await tick(); await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input && input.value === '右键目标', '重命名弹窗载入原标题');
+    input.value = '右键改的名';
+    click($(dom, '#pf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks[0].title') === '右键改的名', '重命名生效');
+    rightClick(tkRow(id));
+    await tick();
+    click(ctxItem('编辑备注'));
+    await tick(); await tick();
+    const ta = $(dom, '#tk-pa');
+    assert_(ta, '备注弹窗（textarea）');
+    ta.value = '第一行备注\n第二行备注';
+    click($(dom, '#tk-py'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks[0].note').includes('第二行备注'), '多行备注保存');
+    assert_(tkRow(id).querySelector('.tk-note'), '清单显示备注摘要');
+    rightClick(tkRow(id));
+    await tick();
+    click(ctxItem('标记进行中'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks[0].status') === 'doing', '右键标记进行中');
+    rightClick(tkRow(id));
+    await tick();
+    click(ctxItem('高'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'high', '右键设高优先');
+  });
+
+  await okAsync('任务：依赖弹窗 —— 勾选保存 / 搜索过滤 / 防环拒绝', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("写接口文档").id');
+    const b = await g(dom, 'Tasks.add("写代码").id');
+    const c = await g(dom, 'Tasks.add("联调").id');
+    await tick();
+    rightClick(tkRow(c));
+    await tick();
+    click(ctxItem('依赖…'));
+    await tick(); await tick();
+    const dl = $(dom, '#tk-dl');
+    assert_(dl, '依赖弹窗打开');
+    assert_($allIn(dl, '.tk-dep-item').length === 2, '列出其余 2 个任务, got ' + $allIn(dl, '.tk-dep-item').length);
+    const q = $(dom, '#tk-dq');
+    assert_(q, '弹窗有搜索框');
+    q.value = '写代码';
+    q.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    const visible = $allIn(dl, '.tk-dep-item').filter((it) => it.style.display !== 'none');
+    assert_(visible.length === 1 && visible[0].textContent.includes('写代码'), '搜索过滤命中 1 条');
+    q.value = '';
+    q.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const cb = $allIn(dl, 'input[type=checkbox]').find((x) => x.value === b);
+    cb.checked = true;
+    click($(dom, '#tk-dy'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + c + '").deps[0]') === b, '弹窗保存依赖指向正确');
+    rightClick(tkRow(b));
+    await tick();
+    click(ctxItem('依赖…'));
+    await tick(); await tick();
+    const cb2 = $allIn($(dom, '#tk-dl'), 'input[type=checkbox]').find((x) => x.value === c);
+    cb2.checked = true;
+    click($(dom, '#tk-dy'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 0, '成环依赖被拒且未清空已有数据');
+  });
+
+  await okAsync('任务：删除确认弹窗 + ⟲ 撤销 + 清空已完成（可撤销）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("要删的").id');
+    await g(dom, 'Tasks.add("做完的1")');
+    await g(dom, 'Tasks.add("做完的2")');
+    await g(dom, 'Tasks.setStatus(Tasks.tasks[1].id, "done")');
+    await g(dom, 'Tasks.setStatus(Tasks.tasks[2].id, "done")');
+    await tick();
+    assert_(!$(dom, '#tasks-clear').classList.contains('hidden'), '有已完成时显示清空按钮');
+    rightClick(tkRow(a));
+    await tick();
+    click(ctxItem('删除'));
+    await tick(); await tick();
+    assert_($(dom, '#cf-yes'), '删除确认弹窗');
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '确认后删除');
+    assert_($(dom, '#toast-wrap').textContent.includes('撤销'), 'toast 提示可撤销');
+    click($(dom, '#tasks-undo'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销删除恢复');
+    assert_($(dom, '#tasks-undo').classList.contains('hidden'), '栈空后撤销按钮隐藏');
+    click($(dom, '#tasks-clear'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.filter(t=>t.status==="done").length') === 0, '已完成清空');
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '未完成的保留');
+    click($(dom, '#tasks-undo'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '清空可整体撤销');
+  });
+
+  await okAsync('任务：折叠已完成分组（只有该组可折叠）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("待办的")');
+    await g(dom, 'Tasks.add("做完了")');
+    await g(dom, 'Tasks.setStatus(Tasks.tasks[1].id, "done")');
+    await tick();
+    const groups = $allIn($(dom, '#tasks-body'), '.tk-group');
+    assert_(groups.length === 3, '三个分组, got ' + groups.length);
+    const doneHead = groups.find((h) => h.textContent.includes('已完成'));
+    assert_(doneHead.querySelector('.tk-arrow'), '已完成组有折叠箭头');
+    assert_(!groups[0].querySelector('.tk-arrow'), '进行中组无箭头（点不动的箭头是视觉欺骗）');
+    click(doneHead);
+    await tick();
+    assert_(!tkRows().some((r) => r.classList.contains('done')), '折叠后已完成行隐藏');
+    const head2 = $allIn($(dom, '#tasks-body'), '.tk-group').find((h) => h.textContent.includes('已完成'));
+    click(head2);
+    await tick();
+    assert_(tkRows().some((r) => r.classList.contains('done')), '再点展开');
+  });
+
+  await okAsync('任务：只看可执行（未被阻塞且未完成）筛选', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("前置A").id');
+    await g(dom, 'Tasks.add("被阻塞B")');
+    await g(dom, 'Tasks.add("能做C")');
+    await g(dom, 'Tasks.add("已完成D")');
+    const b = g(dom, 'Tasks.tasks[1].id');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
+    await g(dom, 'Tasks.setStatus(Tasks.tasks[3].id, "done")');
+    await tick();
+    click($(dom, '#tasks-ready'));
+    await tick();
+    assert_(g(dom, 'Tasks.onlyReady') === true, '筛选开启');
+    const shown = tkRows().map((r) => r.querySelector('.tk-title').textContent);
+    assert_(shown.includes('前置A') && shown.includes('能做C'), '可执行的显示: ' + shown.join(','));
+    assert_(!shown.includes('被阻塞B') && !shown.includes('已完成D'), '被阻塞与已完成隐藏: ' + shown.join(','));
+    assert_($(dom, '#tasks-ready').classList.contains('active'), '筛选按钮高亮');
+    click($(dom, '#tasks-ready'));
+    await tick();
+    assert_(tkRows().length === 4, '关闭筛选显示全部');
+  });
+
+  await okAsync('任务：DAG 节点点击选中联动（清单/图双向）+ 双击改名', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("图节点A").id');
+    await g(dom, 'Tasks.add("图节点B")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const node = dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === a);
+    assert_(node, '找到 A 的图节点');
+    click(node);
+    await tick();
+    assert_(dagAll('g.tk-node.sel').length === 1, '图节点选中高亮');
+    assert_(tkRow(a).classList.contains('sel'), '清单同一任务行联动选中');
+    dblclick(dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === a));
+    await tick(); await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input, '双击节点弹改名');
+    input.value = '图上改的名';
+    click($(dom, '#pf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks[0].title') === '图上改的名', '图上改名生效');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：脏数据自愈（成环 / 悬空 deps 载入时清洗）', async () => {
+    await tkReset();
+    const now = Date.now();
+    FAKE_FS[TK_FILE] = { type: 'file', content: JSON.stringify({
+      version: 1,
+      tasks: [
+        { id: 'a', title: 'A', status: 'todo', priority: 'high', deps: ['b', 'ghost'], createdAt: now, updatedAt: now },
+        { id: 'b', title: 'B', status: 'doing', deps: ['a'], createdAt: now + 1, updatedAt: now + 1 },
+        { id: 'c', title: 'C', status: 'weird', deps: 'not-an-array', createdAt: now + 2, updatedAt: now + 2 },
+      ],
+    }) };
+    await g(dom, 'Tasks.reload()');
+    await tick();
+    const a = await tkJson('Tasks.tasks.find(t=>t.id==="a").deps');
+    const b = await tkJson('Tasks.tasks.find(t=>t.id==="b").deps');
+    const c = await tkJson('Tasks.tasks.find(t=>t.id==="c").deps');
+    assert_(a.length === 0, 'A 的环边与悬空引用被清洗, got ' + JSON.stringify(a));
+    assert_(b.length === 1 && b[0] === 'a', 'B 保留指向更早节点的边, got ' + JSON.stringify(b));
+    assert_(c.length === 0, '非法 deps 字段归零');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="c").status') === 'todo', '非法状态回退 todo');
+    assert_(g(dom, 'Tasks.breakCycles(Tasks.tasks)') === 0, '清洗后无环');
+    assert_(tkRows().length === 3, '3 行全部渲染, got ' + tkRows().length);
+    await g(dom, 'Tasks.setStatus("c", "done")');
+    await tick(); await tick();
+    const saved = JSON.parse(FAKE_FS[TK_FILE].content);
+    assert_(saved.tasks.find((t) => t.id === 'a').deps.length === 0, '清洗结果已写回文件');
+  });
+
+  await okAsync('任务：旧 localStorage 数据自动迁移到项目文件', async () => {
+    await tkReset();
+    const now = Date.now();
+    delete FAKE_FS[TK_FILE];
+    dom.window.localStorage.setItem(TK_KEY, JSON.stringify({
+      version: 1,
+      tasks: [{ id: 'legacy', title: '旧数据任务', status: 'todo', priority: 'normal', deps: [], createdAt: now, updatedAt: now }],
+    }));
+    await g(dom, 'Tasks.reload()');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '迁移后数据可见');
+    assert_(g(dom, 'Tasks.tasks[0].title') === '旧数据任务', '内容正确');
+    assert_(FAKE_FS[TK_FILE] && JSON.parse(FAKE_FS[TK_FILE].content).tasks.length === 1, '已写入项目文件');
+    assert_(dom.window.localStorage.getItem(TK_KEY) === null, '旧 localStorage 键已清理');
+    assert_(g(dom, 'Tasks.storeMode') === 'file', '存储模式为文件, got ' + g(dom, 'Tasks.storeMode'));
+  });
+
+  await okAsync('任务：项目隔离（换项目空清单）+ Ctrl+9 + 工具互斥（回归）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("项目一的任务")');
+    await tick(); await tick();
+    assert_(tkRows().length === 1, '项目一 1 行');
+    await g(dom, 'App.setRoot("C:/proj2")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 0, '换项目后清单为空');
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '切回项目一数据恢复');
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    assert_($(dom, '#panel-tasks').classList.contains('hidden'), '未激活时任务面板隐藏');
+    key(dom, '9', { ctrl: true });
+    await tick(); await tick();
+    assert_(g(dom, 'App.getTool()') === 'tasks', 'Ctrl+9 激活任务工具窗口, got ' + g(dom, 'App.getTool()'));
+    assert_(!$(dom, '#panel-tasks').classList.contains('hidden'), '任务面板可见');
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板隐藏（工具窗口互斥）');
+    assert_($(dom, '#tool-tasks').classList.contains('active'), '工具条按钮高亮');
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    assert_($(dom, '#panel-tasks').classList.contains('hidden'), '切走后任务面板隐藏');
+    const bindings = await tkJson('Shortcuts.bindings().map(b=>b.id)');
+    assert_(bindings.includes('tool-tasks'), '快捷键表已注册 tool-tasks');
+    delete FAKE_FS[TK_FILE];
+    delete FAKE_FS['C:/proj2/.myide/tasks.json'];
   });
 
   console.log('');

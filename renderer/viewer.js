@@ -31,8 +31,12 @@ const Viewer = (() => {
   }
 
   async function openFile(path) {
-    // 浏览器等主区工具窗口开着时会盖住编辑区：打开文件先切回编辑器（PyCharm 式）
-    if (window.App && App.getTool() === 'browser') App.backToEditor();
+    // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
+    // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
+    if (window.App) {
+      const tool = App.getTool();
+      if (tool === 'browser' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
+    }
     recordRecent(path);
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => t.path === path);

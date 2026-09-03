@@ -848,8 +848,11 @@ const GitPanel = (() => {
 
   // 整页 diff 视图（编辑区）：单个结果或数组（多文件堆叠）
   function renderDiffView(rs, label) {
-    // 浏览器开着会盖住编辑区：diff 显示前先切回编辑器
-    if (window.App && App.getTool() === 'browser') App.backToEditor();
+    // 浏览器/依赖图占主区会盖住编辑区：diff 显示前先让位（log 底部停靠不挡，不动）
+    if (window.App) {
+      const tool = App.getTool();
+      if (tool === 'browser' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
+    }
     const list = Array.isArray(rs) ? rs : [rs];
     const view = document.getElementById('viewer');
     const empty = document.getElementById('empty-state');

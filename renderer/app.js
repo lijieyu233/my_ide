@@ -95,11 +95,11 @@ const App = (() => {
   window.Modal = Modal;
 
   // ---------- 工具窗口（PyCharm 式：互斥单选 + AI 右侧独立停靠）----------
-  // activeTool：project/outline/git/db/browser/log 六选一（null=全收起）
-  // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git 三选一）
+  // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
+  // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'git', 'db', 'browser', 'log'];
-  const SIDE_TOOLS = ['project', 'outline', 'git'];
+  const ALL_TOOLS = ['project', 'outline', 'git', 'tasks', 'db', 'browser', 'log'];
+  const SIDE_TOOLS = ['project', 'outline', 'git', 'tasks'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
@@ -164,6 +164,9 @@ const App = (() => {
       activeTool = null;
       renderToolStrip();
       saveToolState();
+    } else if (activeTool === 'tasks' && window.Tasks && Tasks.view === 'dag') {
+      // 依赖图占主区：打开文件时图让位（编辑器优先），侧栏清单保留
+      Tasks.setView('list');
     }
   }
 
@@ -200,7 +203,7 @@ const App = (() => {
     // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
-    for (const t of ['project', 'outline', 'git', 'db']) {
+    for (const t of ['project', 'outline', 'git', 'tasks', 'db']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
@@ -216,6 +219,16 @@ const App = (() => {
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
+    }
+    // 任务面板数据来自存储（无 IPC）：切到它时重渲染即可保持最新
+    if (activeTool === 'tasks' && window.Tasks) {
+      Tasks.refresh();
+    }
+    // 任务依赖图占主区：任务工具激活且处于图视图时显示（清单保留在侧栏可对照）
+    const tasksDag = document.getElementById('tasks-dag-panel');
+    if (tasksDag) {
+      tasksDag.classList.toggle('hidden',
+        !(activeTool === 'tasks' && window.Tasks && Tasks.view === 'dag'));
     }
   }
 
@@ -483,6 +496,7 @@ const App = (() => {
             Tree.setRoot(null);
             GitPanel.rootDir = null;
             if (window.GitLog) GitLog.setRoot(null);
+            if (window.Tasks) Tasks.setRoot(null);
             GitPanel.refresh();
             renderProjectBar();
             renderEmptyRecent();
@@ -579,6 +593,7 @@ const App = (() => {
     Tree.setRoot(p);
     GitPanel.rootDir = p;
     if (window.GitLog) GitLog.setRoot(p);
+    if (window.Tasks) Tasks.setRoot(p); // 任务数据按项目隔离，随项目切换换库
     QuickOpen.invalidate();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
     clearTimeout(gitScanTimer);
@@ -602,6 +617,7 @@ const App = (() => {
     QuickOpen.invalidate();
     await GitPanel.refresh();
     if (activeTool === 'outline') Outline.refresh(Viewer.activeTab);
+    if (window.Tasks) Tasks.reload(); // 任务存在 localStorage：外部改动后靠刷新重新载入
     MI.toast('已刷新', 'ok');
   }
   // 保存后刷新 Git 状态：500ms 防抖，连续保存只刷一次
@@ -692,6 +708,7 @@ const App = (() => {
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
+    if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }
     if (window.AiPanel) {
       AiPanel.init();
       document.getElementById('tool-ai').onclick = () => toggleAi();
@@ -728,7 +745,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen,
+    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip,
     get root() { return root; },
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },

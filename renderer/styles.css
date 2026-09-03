@@ -1632,3 +1632,130 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .dbf-row input { flex: 1; margin: 2px 0 10px !important; }
 .dbf-row button { flex-shrink: 0; }
 .db-insert-hint { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+
+/* ---------- 任务工具窗口（侧栏清单 + 主区 DAG 依赖图，Ctrl+9）---------- */
+#panel-tasks {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  font-size: var(--tool-font, 13px); overflow: hidden;
+}
+#tasks-count { color: var(--text-dim); font-weight: 400; font-size: 11px; margin-left: 2px; }
+#tasks-body {
+  flex: 1; min-height: 0; overflow: auto;
+  padding-bottom: 4px;
+}
+/* 分组头（进行中 / 待办 / 已完成；仅「已完成」可点击折叠） */
+.tk-group {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; font-size: 11px; color: var(--text-dim);
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 1;
+}
+#panel-tasks .tk-group:not(:first-child) { border-top: 1px solid var(--border); margin-top: 2px; }
+.tk-group[title] { cursor: pointer; user-select: none; }
+.tk-group[title]:hover { color: var(--text-bright); background: var(--bg-hover); }
+.tk-arrow { width: 10px; }
+.tk-group-name { font-weight: 600; }
+.tk-group-n { color: var(--text-dim); opacity: .8; }
+.tk-none { padding: 6px 12px 8px 26px; font-size: 11px; color: var(--text-dim); opacity: .65; }
+/* 任务行 */
+.tk-row {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 5px 10px 5px 8px; cursor: default; border-left: 2px solid transparent;
+}
+.tk-row:hover { background: var(--bg-hover); }
+.tk-row.sel { background: var(--bg-selected); border-left-color: var(--accent); }
+.tk-check { flex-shrink: 0; width: 13px; text-align: center; cursor: pointer; color: var(--text-dim); line-height: 1.5; }
+.tk-check:hover { color: var(--accent); }
+.tk-check.done { color: var(--green); }
+.tk-check.doing { color: var(--accent); }
+.tk-main { flex: 1; min-width: 0; }
+.tk-line { display: flex; align-items: center; gap: 6px; }
+.tk-title {
+  color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tk-row.done .tk-title { color: var(--text-dim); text-decoration: line-through; }
+.tk-row.blocked .tk-title { color: var(--text-dim); } /* 被阻塞：弱化，一眼看出「现在做不了」 */
+.tk-badge {
+  flex-shrink: 0; font-size: 10px; color: var(--red);
+  background: var(--badge-d-bg, rgba(209,105,105,.16)); border-radius: 8px; padding: 0 5px;
+}
+.tk-prio {
+  flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+  margin-top: 4px; /* 与单行标题视觉居中对齐 */
+}
+.tk-prio.high { background: var(--red); }
+.tk-prio.low { background: var(--accent); }
+.tk-note {
+  font-size: 11px; color: var(--text-dim); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8;
+}
+/* 底部新建输入（图视图下隐藏：图是只读投影） */
+#tasks-new-bar { flex-shrink: 0; border-top: 1px solid var(--border); padding: 6px 8px; background: var(--bg-panel); }
+#tasks-new-input {
+  width: 100%; background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 5px 8px; outline: none; font-size: 12px;
+}
+#tasks-new-input:focus { border-color: var(--accent); }
+/* 主区 DAG 依赖图（全宽面板，照 db-panel 惯例绝对定位铺满编辑区） */
+#tasks-dag-panel {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+}
+.tk-dag-title { font-size: 13px; color: var(--text-bright); padding: 4px 8px 0; }
+.tk-dag-count { font-size: 11px; color: var(--text-dim); padding: 4px 0 0 4px; }
+#tasks-dag-body {
+  flex: 1; min-height: 0; overflow: auto; position: relative; /* 图例定位基准 */
+  font-size: var(--tool-font, 13px);
+}
+/* DAG 视图（配色全走 CSS 变量：四主题自动适配，且 :hover 可覆盖） */
+.tk-dag { padding: 8px; }
+.tk-svg { display: block; }
+.tk-edge { fill: none; stroke: var(--text-dim); stroke-width: 1.4; opacity: .85; }
+.tk-edge.blocked { stroke: var(--red); stroke-dasharray: 4 3; opacity: 1; }
+.tk-arrow-head { fill: var(--text-dim); }
+.tk-arrow-head.blocked { fill: var(--red); }
+.tk-node { cursor: pointer; }
+.tk-node rect.tk-n-box { fill: var(--bg-input); stroke: var(--border-mid); stroke-width: 1; }
+.tk-node[data-status="doing"] rect.tk-n-box { stroke: var(--accent); stroke-width: 1.8; }
+.tk-node[data-status="done"] rect.tk-n-box { fill: rgba(106, 171, 115, .18); stroke: var(--green); stroke-width: 1.8; }
+/* hover 规则放在状态规则之后：同特异性下后者胜出 */
+.tk-node:hover rect.tk-n-box { stroke: var(--accent); stroke-width: 2; }
+.tk-node.sel rect.tk-n-box { stroke-width: 2.6; }
+.tk-n-prio { fill: var(--red); }
+.tk-n-title {
+  font-size: 12px; fill: var(--text-bright);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+.tk-n-sub {
+  font-size: 10px; fill: var(--text-dim);
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+}
+.tk-node text { user-select: none; }
+.tk-dag-hint { padding: 4px 12px 8px; font-size: 11px; color: var(--text-dim); }
+.tk-legend {
+  position: absolute; right: 10px; bottom: 8px; z-index: 2;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--bg-panel); border: 1px solid var(--border-mid); border-radius: 4px;
+  padding: 5px 8px; font-size: 10px; color: var(--text-dim); opacity: .95;
+}
+.tk-legend span { display: flex; align-items: center; gap: 5px; }
+.tk-legend .lg { width: 16px; height: 0; border-top: 2px solid var(--text-dim); display: inline-block; }
+.tk-legend .lg-todo { border-top: 2px solid var(--border-mid); }
+.tk-legend .lg-doing { border-top: 2px solid var(--accent); }
+.tk-legend .lg-done { border-top: 2px solid var(--green); }
+.tk-legend .lg-edge-b { border-top-style: dashed; border-top-color: var(--red); }
+/* 依赖选择弹窗 */
+.tk-dep-list { max-height: 300px; overflow: auto; margin-top: 6px; }
+.tk-dep-item {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+  border-radius: 4px; cursor: pointer; font-size: 13px;
+}
+.tk-dep-item:hover { background: var(--bg-hover); }
+.tk-dep-item input { cursor: pointer; }
+.tk-dep-st { width: 12px; text-align: center; color: var(--text-dim); }
+.tk-dep-st.done { color: var(--green); }
+.tk-dep-st.doing { color: var(--accent); }
+.tk-dep-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); }
+.m-hint { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
