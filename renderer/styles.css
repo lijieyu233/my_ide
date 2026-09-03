@@ -199,9 +199,11 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 剪切待粘贴：半透明（资源管理器剪切反馈语义） */
 .tree-row.cut-pending { opacity: 0.45; }
 .tree-row:focus { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
-.tree-row .tw { width: 14px; text-align: center; color: var(--text-dim); font-size: 10px; flex-shrink: 0; }
-/* 图标列固定宽度：目录行 ic 为空、文件行为 emoji，固定宽保证同层级名称文字起点一致 */
+/* 图标列固定宽度：目录三角与文件 emoji 同列对齐（三角=目录标志），名称起点一致 */
 .tree-row .ic { width: 18px; text-align: center; font-size: 12px; flex-shrink: 0; }
+/* 目录三角（可折叠标志）：略小弱化，hover 提亮提示可点 */
+.tree-row .ic.ic-dir { font-size: 10px; color: var(--text-dim); }
+.tree-row:hover .ic.ic-dir { color: var(--text); }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
 /* 根行右侧项目完整路径（替代原工具栏路径显示） */
 .tree-row .root-path {

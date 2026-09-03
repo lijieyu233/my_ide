@@ -333,15 +333,11 @@ const Tree = (() => {
     rowEl.dataset.depth = depth;
     rowEl.style.paddingLeft = (depth * 14 + 4) + 'px';
 
-    const tw = document.createElement('span');
-    tw.className = 'tw';
-    tw.textContent = item.type === 'dir' ? (expanded.has(item.path) ? '▼' : '▶') : '';
-    rowEl.appendChild(tw);
-
     const ic = document.createElement('span');
     ic.className = 'ic';
-    // 文件夹不用图标（折叠箭头已表意），文件保留类型图标
-    ic.textContent = item.type === 'dir' ? '' : fileIcon(item.name);
+    // 图标列：目录的折叠三角就是它的标志（与文件图标同列对齐），文件显示类型图标
+    ic.textContent = item.type === 'dir' ? (expanded.has(item.path) ? '▼' : '▶') : fileIcon(item.name);
+    ic.classList.add(item.type === 'dir' ? 'ic-dir' : 'ic-file');
     rowEl.appendChild(ic);
 
     const nm = document.createElement('span');

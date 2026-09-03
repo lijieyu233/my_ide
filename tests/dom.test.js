@@ -1186,6 +1186,30 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(fakeCopied.length === before, 'CM6 编辑器中 Ctrl+C 未触发文件复制');
   });
 
+  await okAsync('文件树图标列：目录三角=目录标志与文件图标同列（无 tw 独立列）', async () => {
+    // 目录行：图标列显示折叠三角（▼/▶），不再有独立 .tw 列
+    const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    assert_(srcRow, 'src 目录行存在');
+    assert_(!srcRow.querySelector('.tw'), '无独立 tw 列（三角并入图标列）');
+    const srcIc = srcRow.querySelector('.ic');
+    assert_(srcIc && ['▼', '▶'].includes(srcIc.textContent), '目录行图标列显示三角, got: ' + JSON.stringify(srcIc && srcIc.textContent));
+    assert_(srcIc.classList.contains('ic-dir'), '目录图标带 ic-dir 类');
+    // 文件行：图标列显示类型 emoji（同列对齐）
+    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
+    const fileIc = fileRow && fileRow.querySelector('.ic');
+    assert_(fileIc && fileIc.textContent && !['▼', '▶'].includes(fileIc.textContent), '文件行图标列为类型 emoji, got: ' + JSON.stringify(fileIc && fileIc.textContent));
+    assert_(fileIc.classList.contains('ic-file'), '文件图标带 ic-file 类');
+    // 点击目录：三角随展开态翻转
+    const before = srcIc.textContent;
+    click(srcRow);
+    await tick(); await tick();
+    const srcRow2 = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    const after = srcRow2.querySelector('.ic').textContent;
+    assert_(before !== after && ['▼', '▶'].includes(after), '点击后三角翻转: ' + before + ' → ' + after);
+    // 还原展开状态（后续用例可能依赖）
+    if (after !== before) { click(srcRow2); await tick(); await tick(); }
+  });
+
   await okAsync('剪切粘贴：Ctrl+X 后 Ctrl+V 移动文件（源被移走）', async () => {
     dom.window.document.body.focus();
     await tick();
