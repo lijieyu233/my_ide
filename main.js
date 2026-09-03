@@ -648,7 +648,7 @@ ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return 
 //    fire-and-forget：失败静默（Electron 兜底写入已在，应用内不受影响）
 let lastOwnCopy = null; // 本应用最近一次写入的文件列表（区分"应用内复制"与"外部复制"）
 let lastOwnMark = null; // 配套私有剪贴板标记（外部复制清空剪贴板后失效，防快路径误命中）
-function psWriteFileClipboard(arr) {
+function psWriteFileClipboard(arr, move) {
   const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
   const list = arr.map(q).join(',');
   const script = [
@@ -657,6 +657,14 @@ function psWriteFileClipboard(arr) {
     `$sc.AddRange([string[]]@(${list}))`,
     '$do = New-Object System.Windows.Forms.DataObject',
     '$do.SetFileDropList($sc)',
+    // Preferred DropEffect：剪切(2=Move)时外部资源管理器粘贴执行移动而非复制；
+    // 复制则不写该格式（shell 默认按复制处理）
+    ...(move ? [
+      '$ms = New-Object System.IO.MemoryStream',
+      '[void]$ms.Write([BitConverter]::GetBytes([Int32]2), 0, 4)',
+      '[void]$ms.Seek(0, [System.IO.SeekOrigin]::Begin)',
+      "[void]$do.SetData('Preferred DropEffect', $ms)",
+    ] : []),
     `$do.SetText([string]::Join([char]10, @(${list})))`,
     '[System.Windows.Forms.Clipboard]::SetDataObject($do, $true)',
   ].join('; ');
@@ -666,7 +674,7 @@ function psWriteFileClipboard(arr) {
       { encoding: 'utf8', timeout: 1500, windowsHide: true }, () => {});
   } catch {}
 }
-ipcMain.handle('clip:copyFiles', (_e, paths) => {
+ipcMain.handle('clip:copyFiles', (_e, paths, move) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
   if (!arr.length) return false;
   lastOwnCopy = arr.slice();
@@ -679,7 +687,7 @@ ipcMain.handle('clip:copyFiles', (_e, paths) => {
     // 误命中快路径导致"外部复制多文件，粘贴只得第一个"
     clipboard.writeBuffer('MyIDE_CopyMark', Buffer.from(lastOwnMark, 'utf8'));
   } catch {}
-  if (process.platform === 'win32') psWriteFileClipboard(arr);
+  if (process.platform === 'win32') psWriteFileClipboard(arr, move);
   return true;
 });
 // PowerShell 读 CF_HDROP 完整列表（资源管理器复制的标准格式）

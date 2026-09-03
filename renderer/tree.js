@@ -327,7 +327,9 @@ const Tree = (() => {
     const item = row.item;
     const depth = row.depth;
     const rowEl = document.createElement('div');
-    rowEl.className = 'tree-row' + (isSelected(item.path) ? ' selected' : '');
+    // 剪切待粘贴项半透明显示（资源管理器剪切语义的视觉反馈）
+    const isCut = cutMode && copiedPaths.some((p) => norm(p) === norm(item.path));
+    rowEl.className = 'tree-row' + (isSelected(item.path) ? ' selected' : '') + (isCut ? ' cut-pending' : '');
     rowEl.dataset.depth = depth;
     rowEl.style.paddingLeft = (depth * 14 + 4) + 'px';
 
@@ -604,7 +606,8 @@ const Tree = (() => {
     if (!paths.length) { MI.toast('先在文件树中选择要复制的文件', 'err'); return; }
     copiedPaths = paths;
     cutMode = false; // 复制覆盖剪切态
-    await window.myIDE.clip.copyFiles(copiedPaths);
+    await window.myIDE.clip.copyFiles(copiedPaths, false);
+    render(); // 清除可能的剪切半透明标记
     MI.toast('📋 已复制 ' + (paths.length > 1 ? paths.length + ' 个文件' : paths[0].split(/[\\/]/).pop()), 'ok');
   }
 
@@ -614,7 +617,8 @@ const Tree = (() => {
     if (!paths.length) { MI.toast('先在文件树中选择要剪切的文件', 'err'); return; }
     copiedPaths = paths;
     cutMode = true;
-    await window.myIDE.clip.copyFiles(copiedPaths); // 同步写系统剪贴板（外部也能粘贴）
+    await window.myIDE.clip.copyFiles(copiedPaths, true); // move=true：外部粘贴时资源管理器执行移动（剪切语义）
+    render(); // 剪切项半透明反馈（否则树上看不出剪切已生效）
     MI.toast('✂ 已剪切 ' + (paths.length > 1 ? paths.length + ' 个文件' : paths[0].split(/[\\/]/).pop()) + '，粘贴时移动', 'ok');
   }
 
@@ -664,13 +668,14 @@ const Tree = (() => {
     if (!destDir) { MI.toast('请先打开文件夹', 'err'); return; }
     // 剪切态（Ctrl+X）：粘贴即移动——剪切必然来自应用内记录（cutMode 只由 Ctrl+X 置位）
     if (cutMode) {
-      cutMode = false; // 一次性：粘贴后退出剪切态
       const targets = copiedPaths.filter((s) => {
         const parent = s.replace(/[\\/][^\\/]+$/, '');
         return norm(parent) !== norm(destDir);
       });
       if (targets.length) await moveTo(targets, destDir);
       else MI.toast('源目录与目标相同，无需移动', 'err');
+      cutMode = false; // 一次性：粘贴动作结束（无论成败）退出剪切态
+      render(); // 清除剪切半透明标记
       return;
     }
     // 优先系统剪贴板（应用内 / 资源管理器复制的完整列表，主进程已修复外部多文件读取）

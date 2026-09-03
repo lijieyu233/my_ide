@@ -57,6 +57,7 @@ const FAKE_GIT = {
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
 const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
+let fakeCopiedMove = null; // copyFiles 的 move 参数（剪切=true / 复制=false）
 calls.setUserConfig = [];
 calls.checkout = [];
 calls.discard = [];
@@ -167,7 +168,7 @@ function makeDom() {
     win: { minimize: async () => {}, toggleMaximize: async () => {}, close: async () => {}, isMaximized: async () => false, zoom: async (d) => { (calls.zoom = calls.zoom || []).push(d); } },
     clip: {
       copy: async (t) => { calls.copy.push(t); return true; },
-      copyFiles: async (paths) => { fakeCopied = paths.slice(); return true; },
+      copyFiles: async (paths, move) => { fakeCopied = paths.slice(); fakeCopiedMove = move; return true; },
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
     },
     fsCopy: async (src, destDir, overwrite) => {
@@ -1175,11 +1176,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     dom.window.document.body.focus();
     await tick();
     // 选中 src/README.md（由复制测试创建）→ Ctrl+X
-    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md'));
+    const cutRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src/README.md');
+    click(cutRow);
     await tick();
     key(dom, 'x', { ctrl: true });
-    await tick();
+    await tick(); await tick();
     assert_(fakeCopied.length === 1 && fakeCopied[0] === P + '/src/README.md', 'Ctrl+X 记录文件');
+    assert_(fakeCopiedMove === true, 'Ctrl+X 传 move=true（外部粘贴执行移动）');
+    // 剪切视觉反馈：待粘贴项半透明
+    const cutPending = $allIn($(dom, '#tree'), '.tree-row.cut-pending').map((r) => r.querySelector('.nm').title);
+    assert_(cutPending.length === 1 && cutPending[0] === P + '/src/README.md', '剪切项半透明反馈, got: ' + JSON.stringify(cutPending));
     // 选中根目录行 → Ctrl+V 粘贴到根目录 = 移动
     click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P));
     await tick();
@@ -1187,6 +1193,17 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     assert_(FAKE_FS[P + '/README (1).md'], '文件移动到根目录（重名递增）');
     assert_(!FAKE_FS[P + '/src/README.md'], '源位置已被移走');
+    assert_($allIn($(dom, '#tree'), '.tree-row.cut-pending').length === 0, '粘贴后剪切半透明清除');
+  });
+
+  await okAsync('复制粘贴：Ctrl+C 传 move=false（外部粘贴为复制语义）', async () => {
+    dom.window.document.body.focus();
+    await tick();
+    click($allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt'));
+    await tick();
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopiedMove === false, 'Ctrl+C 传 move=false');
   });
 
   await okAsync('外部剪贴板文件粘贴到目录', async () => {
