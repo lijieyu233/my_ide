@@ -56,7 +56,41 @@ const Tasks = (() => {
   let storeMode = 'file';  // 'file' | 'ls'
   let dirOk = false;       // .myide 目录已确认存在（免得每次 save 都 mkdir）
   let saveChain = Promise.resolve(); // 串行写：快速连续操作不乱序
-  let undoStack = [];      // 删除回收栈（内存，最多 10 步）：[{tasks:[...], refs:[{who,dep}]}]
+  // ---------- 统一撤销/重做（048-5.2）----------
+  // 快照式命令栈：每个写操作在 save 前把「操作后」的全量深拷贝压栈（数据量小，最简单可靠）。
+  // hist[0] = 载入时的初始态；undo = histIdx-- 恢复上一快照，redo = histIdx++。
+  // 旧「删除回收栈 undoStack」已并入：删除也只是普通一次快照，依赖引用随快照整体恢复。
+  let hist = [], histIdx = -1; // 上限 50
+  const HIST_MAX = 50;
+  function pushHist(label) {
+    hist = hist.slice(0, histIdx + 1); // undo 中途的新操作：丢弃 redo 分支
+    hist.push({ label, tasks: JSON.parse(JSON.stringify(tasks)) });
+    if (hist.length > HIST_MAX) hist.shift();
+    histIdx = hist.length - 1;
+  }
+  function resetHist() { hist = []; histIdx = -1; }
+  // 恢复快照：深拷贝落地（不能直接引用栈内对象，后续写操作会污染历史）
+  function restoreSnap(list) {
+    tasks = JSON.parse(JSON.stringify(list));
+    // 选中/聚焦指向已不存在的任务时清掉
+    if (selId && !byId(selId)) selId = null;
+    selIds = new Set([...selIds].filter((x) => byId(x)));
+    if (focusId && !byId(focusId)) focusId = null;
+    save(); render();
+  }
+  function undoHist() {
+    if (histIdx <= 0) return null;
+    const undone = hist[histIdx].label; // 正在撤销的操作
+    histIdx--;
+    restoreSnap(hist[histIdx].tasks);
+    return undone;
+  }
+  function redoHist() {
+    if (histIdx >= hist.length - 1) return null;
+    histIdx++;
+    restoreSnap(hist[histIdx].tasks);
+    return hist[histIdx].label;
+  }
   const lastPos = new Map(); // 最近一次渲染各节点的画布坐标（前后继任务就近落位用）
   let curLay = null;         // 最近一次 renderDag 的布局结果（框选命中计算用；监听挂常驻容器，需跨渲染取）
   // ---------- 画布缩放（048-5.1）----------
@@ -115,6 +149,7 @@ const Tasks = (() => {
     if (!root || !f || !window.myIDE || !myIDE.fs) {
       storeMode = 'ls';
       tasks = readLs();
+      resetHist(); pushHist('载入');
       render();
       return;
     }
@@ -126,6 +161,7 @@ const Tasks = (() => {
       let d = null;
       try { d = JSON.parse(r.content); } catch {}
       tasks = validate(d && Array.isArray(d.tasks) ? d.tasks : []);
+      resetHist(); pushHist('载入');
       render();
       return;
     }
@@ -133,6 +169,7 @@ const Tasks = (() => {
     const legacy = readLs();
     storeMode = 'file';
     tasks = legacy;
+    resetHist(); pushHist('载入');
     if (legacy.length) await save();
     try { localStorage.removeItem(LS_KEY(root)); } catch {} // 迁移完成，旧键作废
     render();
@@ -409,7 +446,7 @@ const Tasks = (() => {
     };
     tasks.push(t);
     selId = t.id;
-    save(); render();
+    pushHist('新建任务'); save(); render();
     return t;
   }
   function rename(id, title) {
@@ -418,13 +455,13 @@ const Tasks = (() => {
     const v = String(title || '').trim();
     if (!v) return;
     t.title = v.slice(0, 500);
-    touch(t); save(); render();
+    touch(t); pushHist('重命名'); save(); render();
   }
   function setNote(id, note) {
     const t = byId(id);
     if (!t) return;
     t.note = String(note || '');
-    touch(t); save(); render();
+    touch(t); pushHist('改备注'); save(); render();
   }
   function setStatus(id, st) {
     const t = byId(id);
@@ -439,7 +476,7 @@ const Tasks = (() => {
     }
     t.status = st;
     t.doneAt = st === 'done' ? Date.now() : null; // 撤销完成必须清空
-    touch(t); save(); render();
+    touch(t); pushHist('改状态'); save(); render();
   }
   // 勾选语义保持二元简洁：非完成 → 完成；完成 → 回到待办（「进行中」只走右键）
   function cycleCheck(id) {
@@ -451,7 +488,7 @@ const Tasks = (() => {
     const t = byId(id);
     if (!t || !PRIOS.includes(pr)) return;
     t.priority = pr;
-    touch(t); save(); render();
+    touch(t); pushHist('改优先级'); save(); render();
   }
   function setDeps(id, deps) {
     const t = byId(id);
@@ -467,6 +504,8 @@ const Tasks = (() => {
     }
     if (rejected && window.MI) MI.toast(rejected + ' 项依赖会造成循环依赖或与已完成状态冲突，已跳过', 'err');
     if (rejected && !t.deps.length) t.deps = saved; // 全被拒：回滚到原状而不是清空
+    // 实际有变化才入历史（全被拒回滚后 deps 与原状相同，不该产生一次空撤销）
+    if (JSON.stringify(t.deps) !== JSON.stringify(saved)) pushHist('修改依赖');
     touch(t); save(); render();
     return rejected;
   }
@@ -481,7 +520,7 @@ const Tasks = (() => {
       return { ok: false, why: '「' + clip(t.title, 16) + '」已完成，不能依赖未完成任务' };
     }
     t.deps.push(depId);
-    touch(t); save(); render();
+    touch(t); pushHist('建立依赖'); save(); render();
     return { ok: true };
   }
   // 图上右键删边的原子操作：移除一条依赖
@@ -491,7 +530,7 @@ const Tasks = (() => {
     const i = t.deps.indexOf(depId);
     if (i < 0) return false;
     t.deps.splice(i, 1);
-    touch(t); save(); render();
+    touch(t); pushHist('删除依赖'); save(); render();
     return true;
   }
   // 图上拖动节点落盘自由位置（有 x/y 的节点不再跟随自动布局）
@@ -500,7 +539,7 @@ const Tasks = (() => {
     if (!t || !Number.isFinite(x) || !Number.isFinite(y)) return false;
     t.x = Math.max(0, Math.round(x));
     t.y = Math.max(0, Math.round(y));
-    touch(t); save(); render(); // render：画布尺寸按自由位置扩大，节点不会停在可视区外
+    touch(t); pushHist('移动节点'); save(); render(); // render：画布尺寸按自由位置扩大，节点不会停在可视区外
     return true;
   }
   // 清除自由位置：节点回到自动布局
@@ -508,7 +547,7 @@ const Tasks = (() => {
     const t = byId(id);
     if (!t) return false;
     t.x = null; t.y = null;
-    touch(t); save(); render();
+    touch(t); pushHist('回自动布局'); save(); render();
     return true;
   }
   // 一键整理：清掉全部手动位置，整图回到自动布局（依赖关系不动）
@@ -517,28 +556,22 @@ const Tasks = (() => {
     for (const t of tasks) {
       if (t.x != null || t.y != null) { t.x = null; t.y = null; touch(t); n++; }
     }
-    if (n) { save(); render(); }
+    if (n) { pushHist('一键整理'); save(); render(); }
     return n;
   }
 
-  // 删除（单个 / 批量共用）：任务进回收栈，同时记录谁引用过它（撤销时恢复）
+  // 删除（单个 / 批量共用）：级联清洗引用；撤销走统一历史栈（快照整体恢复，依赖引用随之回来）
   function deleteMany(ids) {
     const idSet = new Set(ids);
     const removed = tasks.filter((t) => idSet.has(t.id));
     if (!removed.length) return null;
-    const refs = [];
-    for (const o of tasks) {
-      if (idSet.has(o.id)) continue;
-      for (const d of o.deps) if (idSet.has(d)) refs.push({ who: o.id, dep: d });
-    }
     tasks = tasks.filter((t) => !idSet.has(t.id));
     for (const o of tasks) {
       const before = o.deps.length;
       o.deps = o.deps.filter((d) => !idSet.has(d));
       if (before !== o.deps.length) touch(o);
     }
-    undoStack.push({ tasks: removed, refs });
-    if (undoStack.length > 10) undoStack.shift();
+    pushHist(removed.length > 1 ? '删除 ' + removed.length + ' 个任务' : '删除任务');
     if (selId && idSet.has(selId)) selId = null;
     selIds = new Set([...selIds].filter((x) => !idSet.has(x)));
     if (focusId && idSet.has(focusId)) focusId = null;
@@ -550,21 +583,6 @@ const Tasks = (() => {
     const done = tasks.filter((t) => t.status === 'done');
     if (!done.length) return null;
     return deleteMany(done.map((t) => t.id));
-  }
-  function undoDelete() {
-    const last = undoStack.pop();
-    if (!last) return false;
-    for (const t of last.tasks) if (!byId(t.id)) tasks.push(t);
-    for (const r of last.refs) {
-      const who = byId(r.who), dep = byId(r.dep);
-      // 已完成任务不能恢复出「被未完成依赖阻塞」的冲突状态
-      if (who && dep && !who.deps.includes(r.dep)) {
-        if (who.status === 'done' && dep.status !== 'done') continue;
-        who.deps.push(r.dep);
-      }
-    }
-    save(); render();
-    return true;
   }
 
   // ---------- 渲染 ----------
@@ -600,7 +618,7 @@ const Tasks = (() => {
       visBtn.title = '可见度：' + VIS_META[visMode].label + '（点击选择模式）';
       visBtn.classList.toggle('active', visMode !== 'all');
     }
-    if (undoBtn) undoBtn.classList.toggle('hidden', !undoStack.length);
+    if (undoBtn) undoBtn.classList.toggle('hidden', histIdx <= 0);
     if (focusBtn) {
       const ft = focusId ? byId(focusId) : null;
       focusBtn.classList.toggle('hidden', !ft);
@@ -1600,7 +1618,8 @@ const Tasks = (() => {
   }
   if (undoBtn) {
     undoBtn.onclick = () => {
-      if (undoDelete() && window.MI) MI.toast('已撤销删除', 'ok');
+      const u = undoHist();
+      if (u && window.MI) MI.toast('已撤销：' + u, 'ok');
     };
   }
   if (clearBtn) {
@@ -1618,7 +1637,7 @@ const Tasks = (() => {
     selId = null;
     selIds = new Set();
     focusId = null;
-    undoStack = [];
+    resetHist();
     dirOk = false;
     storeMode = 'file';
     load(); // 异步：完成后自行 render
@@ -1643,14 +1662,15 @@ const Tasks = (() => {
     focusOn(id) { focusId = (byId(id) ? id : null); render(); },   // 聚焦/退出（传 null 退出）
     get focusId() { return focusId; },
     relatedOf,
-    remove, clearDone, undoDelete, copySelection, selectionIds, quickNew,
+    remove, clearDone, undo: undoHist, redo: redoHist, copySelection, selectionIds, quickNew,
     get tasks() { return tasks; },
     get view() { return view; },
     get visMode() { return visMode; },
     get onlyReady() { return visMode === 'ready'; },
     get root() { return root; },
     get storeMode() { return storeMode; },
-    get canUndo() { return undoStack.length > 0; },
+    get canUndo() { return histIdx > 0; },
+    get canRedo() { return histIdx < hist.length - 1; },
     blockedCount, wouldCycle, validate, breakCycles,
     _dagLayout: dagLayout, // 纯函数导出供单测
   };
