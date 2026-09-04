@@ -18,6 +18,7 @@ const Tasks = (() => {
   const focusBtn = document.getElementById('tasks-dag-focus'); // 聚焦模式退出 chip
   const critBtn = document.getElementById('tasks-dag-crit');  // 关键路径开关（048-6.1）
   const layoutBtn = document.getElementById('tasks-dag-layout'); // 布局切换：拓扑/泳道/甘特（048-P2）
+  const aiBtn = document.getElementById('tasks-dag-ai');       // AI 分析（048-P2 AI 联动）
   const filterInputEl = document.getElementById('tasks-filter');     // 清单标题过滤（048-R12）
   const filterPrioEl = document.getElementById('tasks-filter-prio'); // 清单优先级筛选（048-R12）
 
@@ -75,6 +76,23 @@ const Tasks = (() => {
     const lm = localStorage.getItem('myide-tasks-layout');
     if (LAYOUTS.includes(lm)) layoutMode = lm;
   } catch {}
+  // 048-P2 子任务折叠：折叠组集合（父任务 id）。折叠只影响展示（图+清单），不动数据
+  const FOLD_KEY2 = 'myide-tasks-sub-fold';
+  let subFolded = new Set();
+  try {
+    const raw = JSON.parse(localStorage.getItem(FOLD_KEY2) || '[]');
+    if (Array.isArray(raw)) subFolded = new Set(raw.filter((x) => typeof x === 'string'));
+  } catch {}
+  function saveFold() { try { localStorage.setItem(FOLD_KEY2, JSON.stringify([...subFolded])); } catch {} }
+  // 子任务分组（048-P2）：parentId 树。folded 时组内子任务不渲染（图上边转接到父节点）
+  function childrenOf(pid) { return tasks.filter((t) => t.parentId === pid); }
+  // 组内全部成员（父 + 全部后代，递归）
+  function groupIds(pid) {
+    const out = new Set([pid]);
+    const walk = (p) => { for (const c of childrenOf(p)) { if (!out.has(c.id)) { out.add(c.id); walk(c.id); } } };
+    walk(pid);
+    return out;
+  }
   let selId = null;        // 清单与图共享的选中项（双向联动；多选时的主选中）
   let selIds = new Set();  // 多选集合（Ctrl+点击 / 框选累计；Ctrl+C / Delete 对整组生效）
   let storeMode = 'file';  // 'file' | 'ls'
@@ -249,6 +267,9 @@ const Tasks = (() => {
         createdAt: Number(raw.createdAt) || Date.now(),
         updatedAt: Number(raw.updatedAt) || Number(raw.createdAt) || Date.now(),
         doneAt: st === 'done' ? (Number(raw.doneAt) || Date.now()) : null,
+        // 048-P2 子任务：父任务引用（清洗统一做，此处先原样带出）
+        parentId: (typeof raw.parentId === 'string' && raw.parentId) ? raw.parentId : null,
+        estimateMin: (Number.isFinite(raw.estimateMin) && raw.estimateMin > 0) ? raw.estimateMin : null,
         // 依赖图自由位置（可选字段：拖动过的节点才有，未拖过的走自动布局）
         x: Number.isFinite(raw.x) ? raw.x : null,
         y: Number.isFinite(raw.y) ? raw.y : null,
@@ -262,6 +283,19 @@ const Tasks = (() => {
         seen.add(d);
         return true;
       });
+    }
+    // 048-P2 子任务清洗：悬空 parentId 丢弃；parentId 链成环（A→B→A）按「谁先出现谁保留」断开
+    for (const t of out) {
+      if (!t.parentId || !ids.has(t.parentId) || t.parentId === t.id) { t.parentId = null; continue; }
+      const chain = new Set([t.id]);
+      let p = t.parentId, bad = false;
+      while (p) {
+        if (chain.has(p)) { bad = true; break; } // 环：断掉本任务的 parentId
+        chain.add(p);
+        p = (out.find((x) => x.id === p) || {}).parentId || null;
+        if (p && !ids.has(p)) { bad = true; break; } // 链上引用悬空
+      }
+      if (bad) t.parentId = null;
     }
     if (breakCycles(out) && window.MI) MI.toast('任务数据存在循环依赖，已自动断开', 'err');
     return out;
@@ -597,6 +631,7 @@ const Tasks = (() => {
       note: '', status: 'todo', priority: 'normal', deps: [],
       createdAt: Date.now(), updatedAt: Date.now(), doneAt: null,
       estimateMin: null, // 预计耗时（分钟；甘特图排期用，null = 默认 30 分钟）
+      parentId: null,   // 048-P2 子任务：所属父任务 id（null = 顶层）
       x: null, y: null, // 依赖图自由位置（拖动过才有值）
     };
     tasks.push(t);
@@ -652,6 +687,63 @@ const Tasks = (() => {
     const v = Number(min);
     t.estimateMin = (Number.isFinite(v) && v > 0) ? Math.round(v) : null;
     touch(t); pushHist(t.estimateMin ? '改预计耗时' : '清除预计耗时'); save(); render();
+    return true;
+  }
+  // ---------- 子任务分组（048-P2）----------
+  // 把 child 挂到 parent 下（parent = null = 提升为顶层）。防线：自引用 / parent 是自己后代（成环）/ parent 不存在
+  function setParent(childId, parentId) {
+    const c = byId(childId);
+    if (!c) return { ok: false, why: '任务不存在' };
+    if (!parentId) {
+      if (c.parentId == null) return { ok: false, why: '已是顶层任务' };
+      c.parentId = null;
+      touch(c); pushHist('移出任务组'); save(); render();
+      return { ok: true };
+    }
+    if (parentId === childId) return { ok: false, why: '不能作为自己的子任务' };
+    const p = byId(parentId);
+    if (!p) return { ok: false, why: '父任务不存在' };
+    if (c.parentId === parentId) return { ok: false, why: '已在该组内' };
+    // 挂到自己的后代下会成环（c → p → ... → c）
+    if (groupIds(childId).has(parentId)) return { ok: false, why: '不能挂到自己的子任务下（会成环）' };
+    c.parentId = parentId;
+    subFolded.delete(parentId); // 换组后展开目标组（立刻看到落点）
+    saveFold();
+    touch(c); pushHist('移入任务组'); save(); render();
+    return { ok: true };
+  }
+  // 多选合并为组：主选中（selId）为父，其余为子（入口：右键菜单「创建子任务组」）
+  function groupFromSelection() {
+    const ids = selectionIds();
+    if (ids.length < 2) return { ok: false, why: '至少选中 2 个任务（Ctrl+点击 / 框选）' };
+    const parent = ids[0];
+    if (groupIds(parent).has(ids[1])) {
+      // 乱序多选含父子关系：先全部提层再挂到主选中下（先脱钩，防半挂状态）
+      for (let i = 1; i < ids.length; i++) { const t = byId(ids[i]); if (t) t.parentId = null; }
+    }
+    let n = 0;
+    for (let i = 1; i < ids.length; i++) {
+      const t = byId(ids[i]);
+      if (t) { t.parentId = parent; touch(t); n++; }
+    }
+    subFolded.delete(parent); saveFold();
+    pushHist('创建子任务组'); save(); render();
+    return { ok: true, n };
+  }
+  // 组解散：父的直接子任务提升为顶层（孙任务随父走——parent 还在，只是 parentId 变 null）
+  function ungroup(pid) {
+    const p = byId(pid);
+    if (!p || !childrenOf(pid).length) return { ok: false, why: '不是任务组' };
+    for (const c of childrenOf(pid)) { c.parentId = null; touch(c); }
+    subFolded.delete(pid); saveFold();
+    pushHist('解散任务组'); save(); render();
+    return { ok: true };
+  }
+  function toggleSubFold(pid) {
+    if (!byId(pid) || !childrenOf(pid).length) return false;
+    if (subFolded.has(pid)) subFolded.delete(pid); else subFolded.add(pid);
+    saveFold();
+    render();
     return true;
   }
   function setDeps(id, deps) {
@@ -733,6 +825,7 @@ const Tasks = (() => {
     for (const o of tasks) {
       const before = o.deps.length;
       o.deps = o.deps.filter((d) => !idSet.has(d));
+      if (o.parentId && idSet.has(o.parentId)) { o.parentId = null; touch(o); } // 048-P2 孤儿任务提层
       if (before !== o.deps.length) touch(o);
     }
     pushHist(removed.length > 1 ? '删除 ' + removed.length + ' 个任务' : '删除任务');
@@ -856,7 +949,17 @@ const Tasks = (() => {
       bodyEl.appendChild(none);
       return;
     }
-    for (const t of items) bodyEl.appendChild(rowEl(t));
+    // 048-P2 子任务：每个顶层任务行后紧跟其缩进子行（层级语义优先于状态分组）；
+    // 父行收起（subFolded）或组收起（folded）时子行不渲染
+    const inPool = new Set((opts.pool || items).map((t) => t.id));
+    const emitTree = (t, depth) => {
+      bodyEl.appendChild(rowEl(t, depth));
+      if (subFolded.has(t.id)) return;
+      for (const k of tasks) {
+        if (k.parentId === t.id && inPool.has(k.id)) emitTree(k, depth + 1);
+      }
+    };
+    for (const t of items) emitTree(t, 0);
   }
 
   function renderList() {
@@ -878,10 +981,14 @@ const Tasks = (() => {
       ? tasks.filter((t) => focusSet.has(t.id))
       : tasks.filter((t) => !chainHiddenIds().has(t.id));
     pool = pool.filter(match); // 过滤在可见度之后叠加
+    // 048-P2 层级语义优先于状态分组：父在 pool 的子任务不单独出现在状态组，
+    // 而是作为缩进行跟在父行后（父被过滤时子任务才升为顶层）
+    const inPool = new Set(pool.map((t) => t.id));
+    const isTop = (t) => !t.parentId || !inPool.has(t.parentId);
     if (visMode === 'ready') {
-      const ready = pool.filter(isReady)
+      const ready = pool.filter((t) => isTop(t) && isReady(t))
         .sort((a, b) => (PRIO_W[a.priority] - PRIO_W[b.priority]) || (a.createdAt - b.createdAt));
-      appendGroup('现在能做', ready);
+      appendGroup('现在能做', ready, { pool });
       return;
     }
     const hideDone = visMode === 'hideDone';
@@ -892,19 +999,35 @@ const Tasks = (() => {
     ];
     for (const g of groups) {
       if (g.key === 'done' && hideDone) continue; // 不显示已完成：整组不渲染（不是折叠）
-      const items = pool.filter((t) => t.status === g.key)
+      const items = pool.filter((t) => t.status === g.key && isTop(t))
         .sort((a, b) => (PRIO_W[a.priority] - PRIO_W[b.priority]) || (a.createdAt - b.createdAt));
-      appendGroup(g.label, items, { foldKey: g.key }); // 三个状态组均可收起（仅侧栏）
+      appendGroup(g.label, items, { foldKey: g.key, pool }); // 三个状态组均可收起（仅侧栏）；子行缩进随父
     }
   }
 
-  function rowEl(t) {
+  function rowEl(t, depth) {
     const blockers = blockedList(t);
     const n = blockers.length;
     const row = document.createElement('div');
-    row.className = 'tk-row' + (t.status === 'done' ? ' done' : '') + (isSel(t.id) ? ' sel' : '');
+    row.className = 'tk-row' + (t.status === 'done' ? ' done' : '') + (isSel(t.id) ? ' sel' : '') +
+      (depth ? ' sub d' + Math.min(depth, 3) : '');
     if (t.status !== 'done' && n > 0) row.classList.add('blocked');
     row.dataset.id = t.id;
+
+    // 048-P2 任务组行：折叠箭头（▾/▸），点击只折叠子行（不动状态组）；无子任务的行保持原样
+    if (childrenOf(t.id).length) {
+      const ar = document.createElement('span');
+      ar.className = 'tk-arrow sub-arr';
+      ar.textContent = subFolded.has(t.id) ? '▸' : '▾';
+      ar.title = subFolded.has(t.id) ? '展开 ' + childrenOf(t.id).length + ' 个子任务' : '收起 ' + childrenOf(t.id).length + ' 个子任务';
+      ar.onclick = (e) => { e.stopPropagation(); toggleSubFold(t.id); };
+      row.appendChild(ar);
+    } else if (depth) { // 深层子行占位（对齐有箭头的兄弟行）
+      const sp = document.createElement('span');
+      sp.className = 'tk-arrow sp';
+      sp.textContent = '·';
+      row.appendChild(sp);
+    }
 
     const ck = document.createElement('span');
     ck.className = 'tk-check ' + t.status;
@@ -1131,6 +1254,38 @@ const Tasks = (() => {
     fitView(); // 布局变了内容尺寸大变：自动适应一次（jsdom 无布局时内部跳过）
     return true;
   }
+  // ---------- AI 联动（048-P2）----------
+  // 任务数据序列化：紧凑 + AI 友好（id 用短名，依赖用「标题(id3)」人读得懂的格式；
+  // 含状态/优先级/预计耗时/备注摘要 + 关键路径 + 阻塞关系，聚焦「找瓶颈」）
+  function serializeForAI() {
+    const nm = {}; // id → 短名 T1..Tn（按创建序稳定编号）
+    tasks.slice().sort((a, b) => (a.createdAt - b.createdAt) || (a.id < b.id ? -1 : 1))
+      .forEach((t, i) => { nm[t.id] = 'T' + (i + 1); });
+    const lines = tasks.map((t) => {
+      let s = nm[t.id] + ' 「' + t.title + '」 [' + ST_NAME[t.status] + '/' + PRIO_NAME[t.priority] + ']';
+      if (t.estimateMin) s += ' 预计' + t.estimateMin + '分钟';
+      if (t.parentId && nm[t.parentId]) s += ' (子任务of ' + nm[t.parentId] + ')';
+      if (t.deps.length) s += ' 依赖: ' + t.deps.filter((d) => nm[d]).map((d) => nm[d]).join(',');
+      const bl = blockedList(t);
+      if (bl.length) s += ' ←被阻塞: ' + bl.map((p) => nm[p.id]).join(',');
+      if (t.note) s += ' 备注: ' + t.note.split('\n')[0].slice(0, 40);
+      return s;
+    });
+    const chain = critChain(tasks).map((id) => nm[id]).join(' → ') || '（无）';
+    const done = tasks.filter((t) => t.status === 'done').length;
+    const doing = tasks.filter((t) => t.status === 'doing').length;
+    return '共 ' + tasks.length + ' 个任务（已完成 ' + done + ' / 进行中 ' + doing + ' / 待办 ' + (tasks.length - done - doing) + '）\n'
+      + lines.join('\n')
+      + '\n关键路径（最长依赖链）: ' + chain
+      + '\n\n请基于以上任务数据：1) 找出进度瓶颈（谁卡住了关键路径/谁阻塞了最多任务）；2) 给出关键路径上的推进建议（优先做什么、什么可以并行）；3) 指出可疑的依赖设计（不必要的串行）；4) 如有大任务适合拆分为子任务，给出拆分建议。用简洁的中文分点回答。';
+  }
+  function aiAnalyze() {
+    if (!tasks.length) { if (window.MI) MI.toast('暂无任务可分析', 'err'); return false; }
+    if (!window.AiPanel || !AiPanel.ask) { if (window.MI) MI.toast('AI 面板未就绪', 'err'); return false; }
+    const ok = AiPanel.ask(serializeForAI());
+    if (!ok && window.MI) MI.toast('AI 正在生成中，请稍候', 'err');
+    return ok;
+  }
 
   // ---------- hover 链路高亮（048-6.2，清单行联动共用）----------
   function highlightChain(id) {
@@ -1231,8 +1386,55 @@ const Tasks = (() => {
     }
     // 048-P2 甘特视图：同套 vis/统计/选中/框选/缩放基础设施，走独立渲染
     if (layoutMode === 'gantt') { renderGantt(vis); return; }
+    // 048-P2 子任务折叠（仅拓扑/泳道）：折叠组的子任务从可见集合剔除，
+    // 子任务的组外依赖边转接到父节点（组内边省略）——图读起来「组」就是一个大节点。
+    // 实现：克隆任务对象并替换 deps（布局函数零改动；克隆体只用于本帧渲染，写操作全按 id 走原数据）
+    let vis2 = vis;
+    let hiddenByFold = null; // 被折叠隐藏的任务 id → 所属折叠组父 id
+    if (layoutMode !== 'gantt') {
+      hiddenByFold = new Map();
+      for (const t of vis) {
+        if (!t.parentId || !subFolded.has(t.parentId)) continue;
+        // 沿 parentId 链向上找最近的「已折叠且在可见集内」的祖先（嵌套组归最近的折叠组）
+        let p = t.parentId, host = null;
+        const seen = new Set([t.id]);
+        while (p && !seen.has(p)) {
+          seen.add(p);
+          if (subFolded.has(p) && vis.some((x) => x.id === p)) { host = p; break; }
+          p = (byId(p) || {}).parentId || null;
+        }
+        if (host) hiddenByFold.set(t.id, host);
+      }
+      if (hiddenByFold.size) {
+        const rep = (id) => hiddenByFold.get(id) || id;
+        // 被隐藏成员的「出边」（它依赖组外任务）转接并入宿主组父的 deps——
+        // 只处理 vis2 成员的 deps 会丢掉隐藏任务自己的出边（如 子B→外部 折叠后消失）
+        const extra = new Map(); // 宿主 → 并入的依赖 Set
+        for (const t of vis) {
+          const host = hiddenByFold.get(t.id);
+          if (!host) continue;
+          for (const d of t.deps) {
+            const r = rep(d);
+            if (r === host) continue; // 组内边
+            if (!extra.has(host)) extra.set(host, new Set());
+            extra.get(host).add(r);
+          }
+        }
+        vis2 = vis.filter((t) => !hiddenByFold.has(t.id)).map((t) => {
+          const ex = extra.get(t.id);
+          if (!ex && !t.deps.length) return t;
+          const base = [...new Set([...t.deps.map(rep), ...(ex || [])])];
+          const nd = [];
+          for (const d of base) {
+            if (d !== t.id && !nd.includes(d)) nd.push(d);
+          }
+          if (!ex && nd.length === t.deps.length && nd.every((x, i) => x === t.deps[i])) return t;
+          return Object.assign({}, t, { deps: nd }); // 浅克隆换 deps
+        });
+      }
+    }
     const hasDep = vis.some((t) => t.deps.length);
-    const lay = dagLayout(vis, layoutMode === 'lane' ? 'lane' : 'topo'); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
+    const lay = dagLayout(vis2, layoutMode === 'lane' ? 'lane' : 'topo'); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
     curLay = lay; // 框选监听挂常驻容器（dagBodyEl），需跨渲染取最新布局
     // 自由位置：拖动过的节点（x/y 非空）覆盖自动布局坐标；画布尺寸随之扩大。
     // 泳道模式下位置无意义（y 由状态泳道决定），跳过覆盖
@@ -1240,6 +1442,18 @@ const Tasks = (() => {
       for (const n of lay.nodes) {
         const t = n.task;
         if (t && Number.isFinite(t.x) && Number.isFinite(t.y)) { n.x = t.x; n.y = t.y; }
+      }
+      // 048-P2 展开的子任务：围绕父节点就近排布（父下方一列，避免跨大半个画布找子任务）
+      for (const n of lay.nodes) {
+        const t = n.task;
+        if (!t || !t.parentId) continue;
+        const p = lay.nodes.find((x) => x.id === t.parentId);
+        if (!p) continue; // 父被过滤（聚焦/可见度）：子按普通节点自动布局
+        const sibs = lay.nodes.filter((x) => x.task && x.task.parentId === t.parentId);
+        const idx = sibs.indexOf(n);
+        const col = idx % 3, row = Math.floor(idx / 3);
+        n.x = p.x + col * (NW + GX);
+        n.y = p.y + NH + GY + row * (NH + GY);
       }
     }
     for (const n of lay.nodes) {
@@ -1326,9 +1540,14 @@ const Tasks = (() => {
     for (const n of lay.nodes) {
       const t = n.task;
       if (!t) continue;
-      const onCrit = critOn && critIds.includes(n.id); // 048-6.1 关键路径节点
+      // 048-P2 任务组：直接子任务数（折叠态徽章数据）。折叠时链上成员的组父也算 crit（组代表成员显示）
+      const kids = childrenOf(n.id);
+      const isGroup = !!kids.length;
+      const folded = isGroup && subFolded.has(n.id);
+      const onCrit = critOn && (critIds.includes(n.id) ||
+        (hiddenByFold && critIds.some((cid) => hiddenByFold.get(cid) === n.id))); // 048-6.1 关键路径节点（含折叠组代表）
       const g = el('g', {
-        class: 'tk-node' + (isSel(n.id) ? ' sel' : '') + (onCrit ? ' crit' : ''),
+        class: 'tk-node' + (isSel(n.id) ? ' sel' : '') + (onCrit ? ' crit' : '') + (isGroup ? ' grp' : '') + (folded ? ' folded' : ''),
       });
       g.setAttribute('transform', `translate(${n.x},${n.y})`);
       g.setAttribute('data-id', n.id);
@@ -1342,6 +1561,22 @@ const Tasks = (() => {
         const nb = el('circle', { class: 'tk-n-note', cx: NW - 8, cy: 8, r: 3 });
         nb.appendChild(el('title')).textContent = '有备注：' + t.note.split('\n')[0];
         g.appendChild(nb);
+      }
+      // 048-P2 任务组徽章：子任务进度（done/total），点击折叠/展开（不冒泡成选中）
+      if (isGroup) {
+        const all = groupIds(n.id);
+        let kd = 0;
+        for (const id of all) { const x = byId(id); if (x && x.status === 'done') kd++; }
+        const badge = el('g', { class: 'tk-n-grp' + (folded ? ' folded' : '') });
+        badge.appendChild(el('rect', { class: 'tk-n-grp-bg', x: NW - 8, y: -9, width: 34, height: 15, rx: 7.5 }));
+        const bt = el('text', { class: 'tk-n-grp-t', x: NW + 9, y: 2 });
+        bt.textContent = (folded ? '▸' : '▾') + kd + '/' + (all.size - 1);
+        badge.appendChild(bt);
+        badge.appendChild(el('title')).textContent = folded
+          ? '展开 ' + (all.size - 1) + ' 个子任务'
+          : '收起 ' + (all.size - 1) + ' 个子任务（图上子任务隐藏，外部依赖转接到本节点）';
+        badge.onclick = (ev) => { ev.stopPropagation(); toggleSubFold(n.id); };
+        g.appendChild(badge);
       }
       const t1 = el('text', { class: 'tk-n-title', x: 11, y: 17 });
       t1.textContent = clip(t.title, 16);
@@ -1930,6 +2165,21 @@ const Tasks = (() => {
         focusId = (focusId === t.id) ? null : t.id;
         render();
       });
+      // 048-P2 任务组操作（多选建组 / 移出 / 解散）
+      if (selectionIds().length >= 2) {
+        mk('📦 创建子任务组（' + selectionIds().length + ' 个选中，主选中为父）', () => {
+          const r = groupFromSelection();
+          if (window.MI) MI.toast(r.ok ? '已创建任务组（' + r.n + ' 个子任务）' : r.why, r.ok ? 'ok' : 'err');
+        });
+      }
+      if (t.parentId) {
+        const pt = byId(t.parentId);
+        mk('⬆ 移出任务组' + (pt ? '（当前：' + clip(pt.title, 12) + '）' : ''), () => setParent(t.id, null));
+      }
+      if (childrenOf(t.id).length) {
+        mk(subFolded.has(t.id) ? '▾ 展开子任务' : '▴ 收起子任务', () => toggleSubFold(t.id));
+        mk('🗑 解散任务组（子任务提升为顶层）', () => ungroup(t.id), true);
+      }
       mk('⛓ 依赖…', () => openDepsDialog(t.id));
       // 拖动过的节点可交还自动布局（x/y 清空后跟随 dagLayout 排布）
       if (Number.isFinite(t.x) && Number.isFinite(t.y)) {
@@ -2004,6 +2254,8 @@ const Tasks = (() => {
   }
   // 048-6.1 关键路径开关
   if (critBtn) critBtn.onclick = () => toggleCrit();
+  // 048-P2 AI 联动：任务数据交给 AI 面板找瓶颈（未配置模型时 AiPanel.ask 内部会引导配置）
+  if (aiBtn) aiBtn.onclick = () => aiAnalyze();
   // 048-R12 清单过滤：标题关键字 + 优先级（输入即过滤，不改数据）
   if (filterInputEl) {
     filterInputEl.addEventListener('input', () => {
@@ -2299,8 +2551,11 @@ const Tasks = (() => {
     get criticalPath() { return critIds.slice(); }, // 当前最长链（有序 id）
     setLayoutMode, // 048-P2 布局切换（'topo' | 'lane' | 'gantt'）
     get layoutMode() { return layoutMode; },
+    setParent, groupFromSelection, ungroup, toggleSubFold, // 048-P2 子任务分组
+    get subFolded() { return [...subFolded]; },
+    aiAnalyze, serializeForAI, // 048-P2 AI 联动
     relatedOf,
-    remove, clearDone, undo: undoHist, redo: redoHist, copySelection, selectionIds, quickNew,
+    remove, clearDone, undo: undoHist, redo: redoHist, copySelection, selectionIds, selectOne, quickNew,
     get tasks() { return tasks; },
     get view() { return view; },
     get visMode() { return visMode; },

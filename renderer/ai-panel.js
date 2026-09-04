@@ -890,6 +890,19 @@ const AiPanel = (() => {
     });
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf };
+  // 编程式提问（048-P2 AI 联动入口）：填入并发送；面板没开先打开（App.showAi）
+  // busy 时静默拒绝（不打断进行中的生成）——调用方靠 toast 提示
+  function ask(text) {
+    const v = String(text || '').trim();
+    if (!v) return false;
+    if (busy) return false;
+    if (window.App && App.showAi) App.showAi();
+    const el2 = document.getElementById('ai-input');
+    if (el2) el2.value = v;
+    send();
+    return true;
+  }
+
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask };
 })();
 window.AiPanel = AiPanel;

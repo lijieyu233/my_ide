@@ -1873,7 +1873,24 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
   border: 1px solid var(--btn-border); border-radius: 4px;
   font-size: 11px; outline: none; cursor: pointer;
 }
-/* 048-P2 泳道布局：状态带垫底 + 泳道标签 */
+/* 048-P2 子任务：清单行层级缩进（d1/d2/d3 三档；组行折叠箭头） */
+.tk-row.sub.d1 { padding-left: 26px; }
+.tk-row.sub.d2 { padding-left: 44px; }
+.tk-row.sub.d3 { padding-left: 62px; }
+.tk-row .tk-arrow.sub-arr { cursor: pointer; width: 14px; text-align: center; color: var(--text-dim); flex: none; }
+.tk-row .tk-arrow.sp { width: 14px; text-align: center; color: var(--text-dim); opacity: .4; flex: none; }
+/* 048-P2 任务组节点（DAG）：双线边框暗示组；折叠态更醒目 */
+.tk-node.grp rect.tk-n-box { stroke-dasharray: 5 3; stroke-width: 1.6; }
+.tk-node.folded rect.tk-n-box { stroke-width: 2; }
+/* 048-P2 组徽章：子任务进度（▾2/5），点击折叠/展开 */
+.tk-n-grp { cursor: pointer; }
+.tk-n-grp-bg { fill: var(--bg-panel); stroke: var(--border-mid); stroke-width: 1; }
+.tk-n-grp-t {
+  font-size: 10px; fill: var(--text-dim); text-anchor: middle;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+.tk-n-grp:hover .tk-n-grp-bg { stroke: var(--accent); }
+.tk-n-grp:hover .tk-n-grp-t { fill: var(--accent); }
 .tk-lane-band { fill: rgba(128, 128, 128, .05); stroke: var(--border-mid); stroke-width: 1; }
 .tk-lane-band[data-status="doing"] { fill: rgba(64, 140, 255, .07); }
 .tk-lane-band[data-status="done"] { fill: rgba(64, 180, 96, .06); }

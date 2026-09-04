@@ -5095,6 +5095,119 @@ assert_(panel, 'CM6 搜索面板出现');
     delete FAKE_FS[TK_FILE];
   });
 
+  // ---------- 048-P2 子任务折叠 ----------
+  await okAsync('子任务分组：setParent 建组 + 防线（自引用/挂后代）+ 清单缩进 + 解散', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("父任务")');
+    const b = await g(dom, 'Tasks.add("子B")');
+    const c = await g(dom, 'Tasks.add("子C")');
+    const d = await g(dom, 'Tasks.add("顶层D")');
+    // 建组：b、c 挂到 a 下
+    assert_((await g(dom, 'Tasks.setParent("' + b.id + '", "' + a.id + '")')).ok === true, 'b 挂到 a');
+    assert_((await g(dom, 'Tasks.setParent("' + c.id + '", "' + a.id + '")')).ok === true, 'c 挂到 a');
+    // 防线
+    assert_((await g(dom, 'Tasks.setParent("' + a.id + '", "' + a.id + '")')).ok === false, '自引用被拒');
+    assert_((await g(dom, 'Tasks.setParent("' + a.id + '", "' + b.id + '")')).ok === false, '父挂到自己后代下被拒');
+    assert_((await g(dom, 'Tasks.setParent("' + b.id + '", "' + a.id + '")')).ok === false, '重复挂同组被拒');
+    // 清单：子行缩进跟在父行后（层级优先于状态分组）
+    await tick();
+    const rows = [...$(dom, '#tasks-body').querySelectorAll('.tk-row')];
+    assert_(rows.length === 4, '4 行都渲染, got ' + rows.length);
+    const rA = rows.findIndex((r) => r.dataset.id === a.id);
+    const rB = rows.findIndex((r) => r.dataset.id === b.id);
+    const rC = rows.findIndex((r) => r.dataset.id === c.id);
+    assert_(rA === 0, '父任务第一行');
+    assert_(rB === 1 && rC === 2, '子任务紧随其后');
+    assert_(rows[rB].classList.contains('sub') && rows[rB].classList.contains('d1'), '子行缩进类 sub d1');
+    assert_(rows[rA].querySelector('.tk-arrow.sub-arr'), '父行有折叠箭头');
+    // 折叠：子行消失，父行箭头变 ▸
+    await g(dom, 'Tasks.toggleSubFold("' + a.id + '")');
+    await tick();
+    const rows2 = [...$(dom, '#tasks-body').querySelectorAll('.tk-row')];
+    assert_(rows2.length === 2, '折叠后清单只剩父+顶层D, got ' + rows2.length);
+    assert_(rows2[0].querySelector('.tk-arrow.sub-arr').textContent === '▸', '箭头变 ▸');
+    await g(dom, 'Tasks.toggleSubFold("' + a.id + '")');
+    await tick();
+    // 解散：子任务提升为顶层
+    assert_((await g(dom, 'Tasks.ungroup("' + a.id + '")')).ok === true, '解散组');
+    await tick();
+    assert_(await g(dom, 'Tasks.tasks[1].parentId') === null, 'b 提升为顶层');
+    // 删父：子任务孤儿提层（不悬空）
+    await g(dom, 'Tasks.remove("' + a.id + '")');
+    await tick();
+    assert_(await g(dom, 'Tasks.tasks.length') === 3, '删除后剩 3 个');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('子任务折叠（DAG）：组徽章 + 子任务隐藏 + 边转接 + 撤销', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("组父")');
+    const b = await g(dom, 'Tasks.add("子B")');
+    const ext = await g(dom, 'Tasks.add("外部")');
+    // b 依赖 ext（组外边，折叠时应转接到父）
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + ext.id + '")');
+    await g(dom, 'Tasks.setParent("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    // 展开态：3 节点 + b 的组外边正常 + 父有组徽章
+    assert_(body.querySelectorAll('g.tk-node').length === 3, '展开态 3 节点');
+    const gA = body.querySelector('g.tk-node[data-id="' + a.id + '"]');
+    assert_(gA.classList.contains('grp'), '父节点有 grp 类');
+    assert_(gA.querySelector('.tk-n-grp'), '有组徽章');
+    assert_(gA.querySelector('.tk-n-grp-t').textContent.includes('0/1'), '徽章显示 0/1');
+    assert_(body.querySelectorAll('path.tk-edge').length === 1, 'ext→b 边正常');
+    // 折叠：b 隐藏，ext→b 转接为 ext→a
+    await g(dom, 'Tasks.toggleSubFold("' + a.id + '")');
+    await tick(); await tick();
+    assert_(body.querySelectorAll('g.tk-node').length === 2, '折叠后 2 节点（b 隐藏）');
+    const edges = [...body.querySelectorAll('path.tk-edge')];
+    assert_(edges.length === 1, '转接后仍 1 条边');
+    assert_(edges[0].dataset.to === a.id && edges[0].dataset.from === ext.id, '边转接：ext→a');
+    assert_(body.querySelector('g.tk-node[data-id="' + a.id + '"]').classList.contains('folded'), '父节点 folded 类');
+    // 展开：边恢复 ext→b
+    await g(dom, 'Tasks.toggleSubFold("' + a.id + '")');
+    await tick(); await tick();
+    assert_(body.querySelectorAll('g.tk-node').length === 3, '展开恢复 3 节点');
+    const edges2 = [...body.querySelectorAll('path.tk-edge')];
+    assert_(edges2[0].dataset.to === b.id, '边恢复 ext→b');
+    // 多选建组：b 先选，ext 后 Ctrl 点选（主选中 = 最后点ext）→ ext 为父
+    await g(dom, 'Tasks.selectOne("' + b.id + '", false)');
+    await g(dom, 'Tasks.selectOne("' + ext.id + '", true)');
+    const selN = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(selN.length === 2 && selN[0] === ext.id, '多选 2 项主选中 ext');
+    const r = await g(dom, 'Tasks.groupFromSelection()');
+    assert_(r.ok === true, '多选建组 ok');
+    assert_(await g(dom, 'Tasks.tasks.find(t=>t.id==="' + b.id + '").parentId') === ext.id, 'b 挂到 ext（主选中）');
+    await g(dom, 'Tasks.ungroup("' + ext.id + '")');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-P2 AI 联动 ----------
+  await okAsync('AI 联动：serializeForAI 紧凑序列化 + aiAnalyze 按钮通路', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("需求分析")');
+    const b = await g(dom, 'Tasks.add("写代码")');
+    await g(dom, 'Tasks.setEstimate("' + a.id + '", 60)');
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.setParent("' + b.id + '", "' + a.id + '")');
+    const s = await g(dom, 'Tasks.serializeForAI()');
+    assert_(typeof s === 'string' && s.includes('共 2 个任务'), '开头统计');
+    assert_(s.includes('「需求分析」'), '任务标题');
+    assert_(s.includes('预计60分钟'), '预计耗时');
+    assert_(s.includes('依赖: T1'), '依赖短名');
+    assert_(s.includes('子任务of T1'), '子任务关系');
+    assert_(s.includes('关键路径'), '关键路径段');
+    assert_(s.includes('瓶颈'), '分析指令');
+    // aiAnalyze：无任务时 false
+    await g(dom, 'Tasks.remove("' + a.id + '")');
+    await g(dom, 'Tasks.remove("' + b.id + '")');
+    await tick();
+    assert_(await g(dom, 'Tasks.aiAnalyze()') === false, '无任务时拒绝分析');
+    delete FAKE_FS[TK_FILE];
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
