@@ -20,8 +20,9 @@ const Tasks = (() => {
   const LS_KEY = (p) => 'myide-tasks:' + p; // 旧存储 / 文件写失败时的降级存储
   const FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/tasks.json' : null);
   const DIR_OF = (f) => f.slice(0, f.lastIndexOf('/'));
-  const FOLD_KEY = 'myide-tasks-done-fold';  // 「已完成」分组折叠：全局
-  const VIS_KEY = 'myide-tasks-vis';         // 可见度循环开关：'all' | 'ready' | 'hideDone' | 'doneChain'（单按钮循环）
+  const FOLD_KEY = 'myide-tasks-done-fold';  // 旧「已完成」分组折叠键：一次性迁移到 GROUP_FOLD_KEY
+  const GROUP_FOLD_KEY = 'myide-tasks-group-fold'; // 各状态组收起态 {todo,doing,done}：仅侧栏清单展示层，不影响右侧依赖图
+  const VIS_KEY = 'myide-tasks-vis';         // 可见度菜单：'all' | 'ready' | 'hideDone' | 'doneChain'
   const VIS_MODES = ['all', 'ready', 'hideDone', 'doneChain'];
   const VIS_META = {
     all: { icon: '◉', label: '显示全部' },
@@ -37,7 +38,17 @@ const Tasks = (() => {
   let root = null;
   let tasks = [];
   let view = 'dag';        // 图视图常开（任务工具一打开就是依赖图；侧栏清单常驻对照）
-  let doneFolded = false;
+  // 各状态组收起态：待办/进行中/已成都可独立收起（仅影响左侧清单，右侧依赖图照常显示）
+  let groupFold = { todo: false, doing: false, done: false };
+  {
+    let loaded = null;
+    try { loaded = JSON.parse(localStorage.getItem(GROUP_FOLD_KEY) || 'null'); } catch {}
+    if (loaded && typeof loaded === 'object') {
+      for (const k of ['todo', 'doing', 'done']) if (typeof loaded[k] === 'boolean') groupFold[k] = loaded[k];
+    } else {
+      try { groupFold.done = localStorage.getItem(FOLD_KEY) === '1'; } catch {} // 旧键一次性迁移
+    }
+  }
   let visMode = 'all';     // 单按钮循环：全部 → 只看可执行 → 不显示已完成 → 隐藏完结链路
   let focusId = null;       // 聚焦模式：只看此任务及关联（上下传导），null = 关
   let selId = null;        // 清单与图共享的选中项（双向联动；多选时的主选中）
@@ -48,7 +59,6 @@ const Tasks = (() => {
   let undoStack = [];      // 删除回收栈（内存，最多 10 步）：[{tasks:[...], refs:[{who,dep}]}]
   const lastPos = new Map(); // 最近一次渲染各节点的画布坐标（前后继任务就近落位用）
 
-  try { doneFolded = localStorage.getItem(FOLD_KEY) === '1'; } catch {}
   (function initVisMode() {
     let m = null;
     try { m = localStorage.getItem(VIS_KEY); } catch {}
@@ -572,8 +582,7 @@ const Tasks = (() => {
     if (visBtn) {
       visBtn.textContent = VIS_META[visMode].icon;
       visBtn.dataset.mode = visMode;
-      const next = VIS_MODES[(VIS_MODES.indexOf(visMode) + 1) % VIS_MODES.length];
-      visBtn.title = '可见度：' + VIS_META[visMode].label + '（点击切到「' + VIS_META[next].label + '」）';
+      visBtn.title = '可见度：' + VIS_META[visMode].label + '（点击选择模式）';
       visBtn.classList.toggle('active', visMode !== 'all');
     }
     if (undoBtn) undoBtn.classList.toggle('hidden', !undoStack.length);
@@ -600,12 +609,14 @@ const Tasks = (() => {
     host.appendChild(d);
   }
 
+  // 分组头（foldKey 有值 = 可收起；收起仅影响左侧清单，右侧依赖图照常显示）
   function appendGroup(label, items, opts = {}) {
-    const folded = !!opts.foldable && doneFolded;
+    const foldKey = opts.foldKey || null; // 'todo' | 'doing' | 'done'
+    const folded = foldKey ? !!groupFold[foldKey] : false;
     const head = document.createElement('div');
     head.className = 'tk-group';
     // ▾ 箭头只给可折叠的组：不可折叠的组画箭头却点不动，是视觉欺骗
-    if (opts.foldable) {
+    if (foldKey) {
       const ar = document.createElement('span');
       ar.className = 'tk-arrow';
       ar.textContent = folded ? '▸' : '▾';
@@ -619,12 +630,12 @@ const Tasks = (() => {
     n.className = 'tk-group-n';
     n.textContent = items.length;
     head.appendChild(n);
-    if (opts.foldable) {
-      head.title = folded ? '展开已完成' : '收起已完成';
+    if (foldKey) {
+      head.title = (folded ? '展开「' + label + '」' : '收起「' + label + '」') + '（仅左侧清单收起，不影响右侧依赖图）';
       head.style.cursor = 'pointer';
       head.onclick = () => {
-        doneFolded = !doneFolded;
-        try { localStorage.setItem(FOLD_KEY, doneFolded ? '1' : '0'); } catch {}
+        groupFold[foldKey] = !groupFold[foldKey];
+        try { localStorage.setItem(GROUP_FOLD_KEY, JSON.stringify(groupFold)); } catch {}
         render();
       };
     }
@@ -664,7 +675,7 @@ const Tasks = (() => {
       if (g.key === 'done' && hideDone) continue; // 不显示已完成：整组不渲染（不是折叠）
       const items = pool.filter((t) => t.status === g.key)
         .sort((a, b) => (PRIO_W[a.priority] - PRIO_W[b.priority]) || (a.createdAt - b.createdAt));
-      appendGroup(g.label, items, { foldable: g.key === 'done' });
+      appendGroup(g.label, items, { foldKey: g.key }); // 三个状态组均可收起（仅侧栏）
     }
   }
 
@@ -770,14 +781,15 @@ const Tasks = (() => {
   function renderDag() {
     if (!dagBodyEl) return;
     dagBodyEl.innerHTML = '';
-    // 可见度过滤（单按钮循环）：全部 / 只看可执行 / 不显示已完成 / 隐藏完结链路（doneFolded 折叠分组同样对图生效）。
+    // 可见度过滤（菜单四态）：全部 / 只看可执行 / 不显示已完成 / 隐藏完结链路。
+    // 左侧清单的分组收起（groupFold）只管清单展示，不影响右侧依赖图 —— 图的显示只由可见度菜单决定。
     // 聚焦模式优先：只看焦点任务及上下传导的关联链。阻塞判定仍按全量数据算（byId 全局查），语义不失真
     const focusSet = focusId ? relatedOf(focusId) : null;
     const vis = focusSet
       ? tasks.filter((t) => focusSet.has(t.id))
       : tasks.filter((t) =>
         (visMode !== 'ready' || isReady(t)) &&
-        (t.status !== 'done' || (!doneFolded && visMode !== 'hideDone')) &&
+        (t.status !== 'done' || visMode !== 'hideDone') &&
         !chainHiddenIds().has(t.id));
     const filtered = vis.length < tasks.length;
     if (dagCountEl) {
@@ -792,7 +804,7 @@ const Tasks = (() => {
         const why = [];
         if (focusSet) why.push('聚焦');
         if (visMode === 'ready') why.push('只看可执行');
-        if (doneFolded || visMode === 'hideDone') why.push('不显示已完成');
+        if (visMode === 'hideDone') why.push('不显示已完成');
         if (visMode === 'doneChain') why.push('隐藏完结链路');
         s += ' · 已过滤（' + why.join(' + ') + '，共 ' + tasks.length + ' 个）';
       }
@@ -915,7 +927,8 @@ const Tasks = (() => {
       tip.push('单击选中 · 双击改名 · 右键更多 · 拖动=移动 · 从底部锚点拖=建立依赖');
       g.appendChild(el('title')).textContent = tip.join('\n');
       // 选中保留 onclick（与拖拽的 mouseup 选中幂等共存；合成 click 事件也能选中）
-      g.onclick = (ev) => selectOne(n.id, !!(ev && (ev.ctrlKey || ev.metaKey)));
+      // 真实浏览器点击 = mouseup(onUp 已选中) + 紧随的合成 click：80ms 内的 click 让位，否则 Ctrl+点击会切换两次互相抵消
+      g.onclick = (ev) => { if (Date.now() - upClickAt < 80) return; selectOne(n.id, !!(ev && (ev.ctrlKey || ev.metaKey))); };
       g.ondblclick = () => editTitle(n.id);
       g.oncontextmenu = (ev) => {
         ev.preventDefault(); ev.stopPropagation();
@@ -928,6 +941,7 @@ const Tasks = (() => {
     // ---- 拖拽双模式：节点本体拖动=移动位置；从底部锚点拖到目标=建立依赖 ----
     // mousedown 记起点；位移>4px 判定开始拖，否则松手时按普通点击=选中
     let drag = null;
+    let upClickAt = 0; // onUp 处理“未拖动的点击”选中时间：紧接着浏览器合成的 click 事件据此让位（防双触发）
     const svgPt = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
@@ -1017,7 +1031,7 @@ const Tasks = (() => {
         const moved = drag && drag.moved, mode = drag && drag.mode;
         cleanup();
         if (!src) return;
-        if (!moved) { selectOne(src.id, ctrl); return; } // 普通点击=选中（Ctrl 加多选）
+        if (!moved) { selectOne(src.id, ctrl); upClickAt = Date.now(); return; } // 普通点击=选中（Ctrl 加多选）；记时间戳让紧随的合成 click 让位
         if (mode === 'move') { moveNode(src.id, src.x, src.y); return; } // 落盘自由位置
         if (!tgt) return; // 拖到空白：取消
         const r = addDep(tgt.id, src.id); // B 依赖 A（箭头 A→B）
@@ -1172,7 +1186,7 @@ const Tasks = (() => {
       box.querySelector('#tk-px').onclick = () => done(null);
       ta.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') { e.stopPropagation(); done(null); }
-        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(ta.value);
+        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.stopPropagation(); done(ta.value); }
       });
     });
   }
@@ -1320,10 +1334,30 @@ const Tasks = (() => {
   }
   // viewBtn/dagListBtn/dagCloseBtn 已退役（图视图常开，无切换/收起入口）
   if (visBtn) {
-    visBtn.onclick = () => {
-      visMode = VIS_MODES[(VIS_MODES.indexOf(visMode) + 1) % VIS_MODES.length];
-      try { localStorage.setItem(VIS_KEY, visMode); } catch {}
-      render();
+    // 可见度下拉菜单（替代单按钮循环：所有模式直接可选，不再靠连点猜）
+    visBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById('ctx-menu');
+      if (!menu) return;
+      menu.innerHTML = '';
+      VIS_MODES.forEach((m) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item' + (m === visMode ? ' sel' : '');
+        d.textContent = (m === visMode ? '● ' : '　') + VIS_META[m].icon + ' ' + VIS_META[m].label;
+        d.onclick = () => {
+          menu.classList.add('hidden');
+          if (m === visMode) return;
+          visMode = m;
+          try { localStorage.setItem(VIS_KEY, visMode); } catch {}
+          render();
+        };
+        menu.appendChild(d);
+      });
+      menu.classList.remove('hidden');
+      const r = visBtn.getBoundingClientRect();
+      const mw = menu.offsetWidth || 180;
+      menu.style.left = Math.min(r.left, window.innerWidth - mw - 8) + 'px';
+      menu.style.top = Math.min(r.bottom + 2, window.innerHeight - menu.offsetHeight - 8) + 'px';
     };
   }
   if (dagNewBtn) {
@@ -1386,6 +1420,20 @@ const Tasks = (() => {
     deleteMany(ids);
     if (window.MI) MI.toast(label, 'ok');
   });
+  // Ctrl+Enter 快捷创建（任务工具打开时）：侧栏输入框可见 → 聚焦直接打字；否则图中央弹原地输入框
+  function quickNew() {
+    const pt = document.getElementById('panel-tasks');
+    const visList = pt && !pt.classList.contains('hidden');
+    if (visList && inputEl) {
+      inputEl.focus();
+      if (window.MI) MI.toast('输入标题后 Enter 创建', 'ok');
+      return;
+    }
+    if (dagPanelEl && !dagPanelEl.classList.contains('hidden') && dagBodyEl) {
+      const r = dagBodyEl.getBoundingClientRect();
+      openDagNewInput(r.left + r.width / 2, r.top + Math.min(r.height / 2, 200));
+    }
+  }
   // Ctrl+C 复制选中任务描述（清单/图通用）：多选时逐行标题，单选附备注。
   // 由 shortcuts.js 的 copy-files（Ctrl+C）在任务工具激活时转发到这里
   async function copySelection() {
@@ -1449,7 +1497,7 @@ const Tasks = (() => {
     focusOn(id) { focusId = (byId(id) ? id : null); render(); },   // 聚焦/退出（传 null 退出）
     get focusId() { return focusId; },
     relatedOf,
-    remove, clearDone, undoDelete, copySelection, selectionIds,
+    remove, clearDone, undoDelete, copySelection, selectionIds, quickNew,
     get tasks() { return tasks; },
     get view() { return view; },
     get visMode() { return visMode; },

@@ -35,7 +35,7 @@ const AiPanel = (() => {
 
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
-  let ctxFile = null;       // 附带的当前文件 {path, content}
+  let ctxFiles = [];        // 附带上下文列表 [{path, content, isDir}]（📎 按钮 / @引用 均入此列）
   let curStream = null;     // 流式中的气泡元素
   let curText = '';
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
@@ -144,6 +144,18 @@ const AiPanel = (() => {
     return { root: root.replace(/[\\/]+$/, ''), rel: parts.join('/') };
   }
 
+  // ---------- 访问权限（设置 → AI 助手，多种档位）----------
+  // permWrite：'confirm' 每次弹 diff 确认（默认）| 'auto' 自动应用（不弹窗）| 'deny' 禁止写入
+  // permRun：'confirm' 每条命令弹窗确认（默认）| 'deny' 禁止执行命令
+  function permWrite() {
+    const v = getConfig().permWrite;
+    return ['confirm', 'auto', 'deny'].includes(v) ? v : 'confirm';
+  }
+  function permRun() {
+    const v = getConfig().permRun;
+    return ['confirm', 'deny'].includes(v) ? v : 'confirm';
+  }
+
   async function executeTool(call) {
     const a = call.args || {};
     if (call.name === 'list_files') {
@@ -213,6 +225,7 @@ const AiPanel = (() => {
       if (!cmd) return { ok: false, text: '错误：command 为空' };
       const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
+      if (permRun() === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
       // 确认闸：命令执行有副作用，必须用户批准
       const yes = await Modal.confirm('AI 请求执行命令', '即将在项目目录运行：\n\n' + cmd + '\n\n确认执行？');
       if (!yes) return { ok: false, text: '用户拒绝了执行该命令' };
@@ -222,14 +235,19 @@ const AiPanel = (() => {
     return { ok: false, text: '错误：未知工具 ' + call.name };
   }
 
-  // 写入安全闸：diff 预览 → 用户确认 → 写盘
+  // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
   async function applyWrite(loc, content) {
     const full = loc.root + '/' + loc.rel;
+    if (permWrite() === 'deny') {
+      return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
+    }
     const old = await window.myIDE.fs.readFile(full);
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
-    const applied = await confirmDiff(loc.rel, oldText, content);
-    if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+    if (permWrite() === 'confirm') {
+      const applied = await confirmDiff(loc.rel, oldText, content);
+      if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+    }
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点：写入前的旧内容入栈（新文件记 existed:false，回滚时删除）
@@ -441,20 +459,30 @@ const AiPanel = (() => {
     return div.innerHTML;
   }
 
+  // 消息气泡（含悬停复制按钮：一键复制原始 markdown 文本）
   function addMsg(role, text) {
     const row = document.createElement('div');
     row.className = 'ai-msg ' + (role === 'user' ? 'ai-user' : 'ai-assistant');
+    const pre = document.createElement('div');
+    pre.className = 'ai-md';
     if (role === 'user') {
-      const pre = document.createElement('div');
-      pre.className = 'ai-md';
       pre.innerHTML = '<p>' + esc(text).replace(/\n/g, '<br>') + '</p>';
-      row.appendChild(pre);
     } else {
-      const pre = document.createElement('div');
-      pre.className = 'ai-md';
       pre.innerHTML = renderMd(text);
-      row.appendChild(pre);
     }
+    row.appendChild(pre);
+    // 复制按钮（PyCharm AI Assistant 式悬停出现；文本可选中 + 一键复制双通道）
+    const cp = document.createElement('button');
+    cp.className = 'ai-copy';
+    cp.title = '复制全文';
+    cp.textContent = '⧉';
+    cp.onclick = async () => {
+      try {
+        await MI.copyText(String(text == null ? '' : text));
+        MI.toast('📋 已复制' + (role === 'user' ? '该消息' : '回复全文'), 'ok');
+      } catch (e) { MI.toast('复制失败: ' + String(e), 'err'); }
+    };
+    row.appendChild(cp);
     msgsEl.appendChild(row);
     scrollBottom();
     return row;
@@ -509,7 +537,10 @@ const AiPanel = (() => {
     if (w) w.remove();
     // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
     let content = text;
-    if (ctxFile) content = '（当前编辑器文件 ' + ctxFile.path + ' 的内容：）\n```\n' + ctxFile.content + '\n```\n\n' + text;
+    if (ctxFiles.length) {
+      const blocks = ctxFiles.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
+      content = blocks.join('\n\n') + '\n\n' + text;
+    }
     addMsg('user', text);
     msgs.push({ role: 'user', content });
 
@@ -574,26 +605,198 @@ const AiPanel = (() => {
     }
   }
 
-  // ---------- 附带当前文件 ----------
-  async function toggleCtxFile() {
-    if (ctxFile) {
-      ctxFile = null;
-      fileChip.classList.remove('on');
-      fileChip.textContent = '📎 附当前文件';
-      fileChip.title = '把当前编辑器文件内容作为上下文';
-      return;
+  // ---------- 附带上下文（📎 当前文件 + @ 引用文件/文件夹，统一 chips 展示）----------
+  function renderChips() {
+    const box = document.getElementById('ai-chips');
+    if (!box) return;
+    box.innerHTML = '';
+    box.classList.toggle('hidden', !ctxFiles.length);
+    for (const f of ctxFiles) {
+      const chip = document.createElement('span');
+      chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '');
+      chip.title = f.path + '（点击移除）';
+      const nm = document.createElement('span');
+      nm.textContent = (f.isDir ? '🗂 ' : '📄 ') + f.path.replace(/^.*[\\/]/, '') + (f.isDir ? '/' : '');
+      const x = document.createElement('span');
+      x.className = 'ai-ctx-x';
+      x.textContent = '✕';
+      chip.appendChild(nm);
+      chip.appendChild(x);
+      chip.onclick = () => { removeCtx(f.path); };
+      box.appendChild(chip);
     }
+  }
+  function removeCtx(path) {
+    ctxFiles = ctxFiles.filter((f) => f.path !== path);
+    renderChips();
+  }
+  function addCtx(entry) {
+    if (ctxFiles.some((f) => f.path === entry.path)) { MI.toast('已在上下文中：' + entry.path, 'ok'); return; }
+    ctxFiles.push(entry);
+    renderChips();
+  }
+  // 📎 按钮：附当前编辑器文件（已在列表中则移除，再点取消）
+  async function toggleCtxFile() {
     const tab = Viewer.activeTab;
     if (!tab || tab.dir) { MI.toast('当前没有打开的文件', 'err'); return; }
+    if (ctxFiles.some((f) => f.path === tab.path)) { removeCtx(tab.path); return; }
     const r = await window.myIDE.fs.readFile(tab.path);
     if (!r || r.error) { MI.toast('读取文件失败: ' + (r && r.error || ''), 'err'); return; }
     let content = r.content || '';
     if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
-    ctxFile = { path: tab.path, content };
-    const name = tab.path.replace(/^.*[\\/]/, '');
-    fileChip.classList.add('on');
-    fileChip.textContent = '📎 ' + name;
-    fileChip.title = tab.path + '（点击移除）';
+    addCtx({ path: tab.path, content, isDir: false });
+    MI.toast('已附上 ' + tab.path.replace(/^.*[\\/]/, ''), 'ok');
+  }
+
+  // ---------- @ 引用（文件 / 文件夹）----------
+  // 输入 @ 弹出项目文件/目录补全；选中文件附内容、选中文件夹附目录树结构
+  let mentionState = null; // {start(光标处@token起点), items, sel, popup}
+  let mentionCache = null; // [{name, rel, path, isDir}]（含从文件路径推导出的目录）
+  let mentionRoot = null; // 缓存对应的项目根（换项目自动失效）
+  async function ensureMentionList() {
+    const root = (window.App && App.root) || '';
+    if (!root) return null;
+    if (mentionCache && mentionRoot === root) return mentionCache;
+    const r = await window.myIDE.fs.listAll(root, false);
+    if (!r || r.error) return null;
+    const files = (r.files || []).map((full) => {
+      const rel = String(full).slice(root.length).replace(/^[\\/]/, '');
+      return { name: rel.replace(/^.*[\\/]/, ''), rel, path: full, isDir: false };
+    });
+    // 目录从文件路径推导（含全部非空目录；空目录罕见，可接受）
+    const dirSet = new Set();
+    for (const f of files) {
+      let p = f.rel;
+      while ((p = p.replace(/[\\/][^\\/]*$/, ''))) dirSet.add(p);
+    }
+    const dirs = [...dirSet].map((rel) => ({ name: rel.replace(/^.*[\\/]/, ''), rel, path: root + '/' + rel, isDir: true }));
+    // 目录排前（先选范围再选具体文件，符合 @ 的浏览习惯）
+    mentionCache = dirs.sort((a, b) => a.rel < b.rel ? -1 : 1).concat(files.sort((a, b) => a.rel < b.rel ? -1 : 1));
+    mentionRoot = root;
+    return mentionCache;
+  }
+  // 目录树文本（附文件夹上下文用）：递归列出 name，深度/数量双限防 token 爆炸
+  async function dirTreeText(relDir) {
+    const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
+    const out = [];
+    const MAX_ITEMS = 300;
+    const walk = async (rel, depth) => {
+      if (out.length >= MAX_ITEMS || depth > 5) return;
+      const r = await window.myIDE.fs.readDir(rel ? root + '/' + rel : root);
+      if (!r || r.error) return;
+      const list = Array.isArray(r) ? r : (r.files || r.children || []);
+      const sorted = list.slice().sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || (a.name < b.name ? -1 : 1));
+      for (const e of sorted) {
+        if (out.length >= MAX_ITEMS) { out.push('…（超过 ' + MAX_ITEMS + ' 项已截断）'); return; }
+        const isDir = e.type === 'dir' || e.isDir || e.isDirectory;
+        out.push('  '.repeat(depth) + (isDir ? '[目录] ' : '') + e.name);
+        if (isDir) await walk((rel ? rel + '/' : '') + e.name, depth + 1);
+      }
+    };
+    await walk(relDir, 0);
+    return out.join('\n') || '（空目录）';
+  }
+  function closeMention() {
+    if (mentionState && mentionState.popup && mentionState.popup.parentNode) mentionState.popup.parentNode.removeChild(mentionState.popup);
+    mentionState = null;
+  }
+  function activeMentionToken() {
+    if (!inputEl) return null;
+    const pos = inputEl.selectionStart;
+    if (pos == null) return null;
+    const before = inputEl.value.slice(0, pos);
+    const m = /(^|\s)@([^\s@]*)$/.exec(before);
+    if (!m) return null;
+    return { query: m[2], start: pos - m[2].length - 1 }; // start 含 @ 本身
+  }
+  function renderMention() {
+    if (!mentionState) return;
+    const items = mentionState.items;
+    const popup = mentionState.popup;
+    const list = popup.querySelector('.ai-at-list');
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = '<div class="ai-at-empty">没有匹配的文件或文件夹</div>';
+      return;
+    }
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'ai-at-item' + (i === mentionState.sel ? ' sel' : '');
+      row.innerHTML = '<span class="ai-at-ic">' + (it.isDir ? '🗂' : '📄') + '</span>' +
+        '<span class="ai-at-name">' + esc(it.name) + (it.isDir ? '/' : '') + '</span>' +
+        '<span class="ai-at-rel">' + esc(it.rel) + '</span>';
+      row.onclick = () => pickMention(i);
+      list.appendChild(row);
+    });
+    const selEl = list.children[mentionState.sel];
+    if (selEl && selEl.scrollIntoView) { try { selEl.scrollIntoView({ block: 'nearest' }); } catch {} }
+  }
+  async function openMention(token) {
+    const all = await ensureMentionList();
+    if (!all || !all.length) return;
+    const q = token.query.toLowerCase();
+    const items = (q
+      ? all.filter((x) => (x.name + ' ' + x.rel).toLowerCase().includes(q))
+      : all).slice(0, 50);
+    closeMention();
+    // 弹窗锚定在面板内（左右各留 12px，永不超出 AI 面板边界），出现在输入框上方
+    const popup = document.createElement('div');
+    popup.className = 'ai-at-pop';
+    popup.innerHTML = '<div class="ai-at-list"></div>';
+    const bar = inputEl.closest('.ai-input-bar');
+    (bar || panel).appendChild(popup);
+    mentionState = { start: token.start, items, sel: 0, popup };
+    renderMention();
+  }
+  async function pickMention(idx) {
+    if (!mentionState) return;
+    const it = mentionState.items[idx];
+    const start = mentionState.start;
+    closeMention();
+    if (!it) return;
+    // 替换输入框里的 @token 为 @相对路径
+    const val = inputEl.value;
+    const after = val.slice(inputEl.selectionStart == null ? start + 1 : inputEl.selectionStart);
+    inputEl.value = val.slice(0, start) + '@' + it.rel + ' ' + after;
+    inputEl.focus();
+    try { inputEl.setSelectionRange(start + it.rel.length + 2, start + it.rel.length + 2); } catch {}
+    // 附上下文：文件读内容（截断），文件夹列目录树
+    if (it.isDir) {
+      MI.toast('正在读取目录结构…', 'ok');
+      const tree = await dirTreeText(it.rel);
+      addCtx({ path: it.rel, content: tree, isDir: true });
+      MI.toast('🗂 已附上目录 ' + it.rel + ' 的结构', 'ok');
+    } else {
+      const r = await window.myIDE.fs.readFile(it.path);
+      if (!r || r.error) { MI.toast('读取文件失败: ' + ((r && r.error) || ''), 'err'); return; }
+      let content = r.content || '';
+      if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
+      addCtx({ path: it.rel, content, isDir: false });
+      MI.toast('📄 已附上 ' + it.name, 'ok');
+    }
+  }
+  function onInputMention() {
+    const token = activeMentionToken();
+    if (!token) { closeMention(); return; }
+    if (mentionState) {
+      // 已开弹窗：跟随输入过滤（保住 start 锚点）
+      const q = token.query.toLowerCase();
+      const all = mentionCache || [];
+      mentionState.items = (q ? all.filter((x) => (x.name + ' ' + x.rel).toLowerCase().includes(q)) : all).slice(0, 50);
+      mentionState.sel = 0;
+      renderMention();
+      return;
+    }
+    openMention(token);
+  }
+  // 弹窗打开时键盘接管：↑↓ 换选、Enter 选中、Esc 关闭（不与发送冲突）
+  function onKeydownMention(e) {
+    if (!mentionState) return false;
+    if (e.key === 'ArrowDown') { e.preventDefault(); mentionState.sel = Math.min(mentionState.sel + 1, mentionState.items.length - 1); renderMention(); return true; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); mentionState.sel = Math.max(mentionState.sel - 1, 0); renderMention(); return true; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pickMention(mentionState.sel); return true; }
+    if (e.key === 'Escape') { e.preventDefault(); closeMention(); return true; }
+    return false;
   }
 
   // ---------- 面板宽度拖拽 ----------
@@ -641,7 +844,9 @@ const AiPanel = (() => {
       };
     }
     if (inputEl) {
+      inputEl.addEventListener('input', onInputMention);
       inputEl.addEventListener('keydown', (e) => {
+        if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           if (!busy) send();
@@ -655,9 +860,8 @@ const AiPanel = (() => {
       msgs = [];
       usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
       renderUsage();
-      ctxFile = null;
-      fileChip.classList.remove('on');
-      fileChip.textContent = '📎 附当前文件';
+      ctxFiles = [];
+      renderChips();
       msgsEl.innerHTML = '';
       showWelcome();
       MI.toast('已开始新对话', 'ok');

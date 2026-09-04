@@ -237,16 +237,33 @@ const App = (() => {
   }
 
   // ---------- 工具窗口字号（侧栏面板 / 提交对话框 / Git 日志共用 --tool-font）----------
-  let toolFont = Math.min(18, Math.max(11, parseInt(localStorage.getItem('myide-tool-font') || '13', 10) || 13));
+  // 调节控件统一收在状态栏最左侧（#sb-tool-font）；此前每个面板标题栏各挂一对 A−/A+，
+  // 既占地方又让人以为各面板字号是独立的 —— 实际一直是同一个变量。
+  // 迁移：老版本目录树另有 myide-tree-font 键，未设过统一值时沿用树的值。
+  let toolFont = (() => {
+    const clamp = (v) => Math.min(18, Math.max(11, v || 13));
+    try {
+      const cur = parseInt(localStorage.getItem('myide-tool-font') || '', 10);
+      if (cur) return clamp(cur);
+      return clamp(parseInt(localStorage.getItem('myide-tree-font') || '', 10));
+    } catch { return 13; }
+  })();
   function applyToolFont() {
     document.documentElement.style.setProperty('--tool-font', toolFont + 'px');
+    const tfVal = document.getElementById('sb-tf-val');
+    if (tfVal) tfVal.textContent = String(toolFont);
+    // 目录树行高按字号折算，且行内写了 fontSize，CSS 变量管不到 → 显式下发
+    if (window.Tree && Tree.setFontPx) Tree.setFontPx(toolFont);
   }
-  document.addEventListener('click', (e) => {
-    const t = e.target.closest('.fc-dec, .fc-inc');
-    if (!t) return;
-    toolFont = Math.min(18, Math.max(11, toolFont + (t.classList.contains('fc-inc') ? 1 : -1)));
+  function stepToolFont(d) {
+    toolFont = Math.min(18, Math.max(11, toolFont + d));
     try { localStorage.setItem('myide-tool-font', String(toolFont)); } catch {}
     applyToolFont();
+  }
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('#sb-tf-dec, #sb-tf-inc');
+    if (!t) return;
+    stepToolFont(t.id === 'sb-tf-inc' ? 1 : -1);
   });
   applyToolFont();
 
@@ -701,6 +718,7 @@ const App = (() => {
       fInc.onclick = () => Viewer.zoomFont(1);
     }
     Viewer.syncFontLabel();
+    applyToolFont(); // 侧栏字号：脚本在 body 末尾、DOM 已就绪，这里再同步一次数值显示
     document.getElementById('btn-help').onclick = () => Help.open();
     document.getElementById('btn-theme').onclick = () => {
       Theme.toggle();

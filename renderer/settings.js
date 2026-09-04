@@ -483,6 +483,17 @@ const Settings = (() => {
           <input id="ai-cfg-inline" type="checkbox" ${cfg.inlineComplete ? 'checked' : ''}>
           <span>输入停顿后自动生成代码补全建议</span>
         </label>
+        <label class="m-label" style="margin-top:10px">访问权限 —— 文件写入</label>
+        <select id="ai-cfg-permw">
+          <option value="confirm" ${(!cfg.permWrite || cfg.permWrite === 'confirm') ? 'selected' : ''}>每次确认（弹 diff 预览，默认）</option>
+          <option value="auto" ${cfg.permWrite === 'auto' ? 'selected' : ''}>自动应用（不弹窗，⚠ 慎选）</option>
+          <option value="deny" ${cfg.permWrite === 'deny' ? 'selected' : ''}>禁止写入（只读模式）</option>
+        </select>
+        <label class="m-label" style="margin-top:8px">访问权限 —— 执行命令</label>
+        <select id="ai-cfg-permr">
+          <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
+          <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
+        </select>
         <div style="margin-top:14px;display:flex;gap:8px">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
@@ -511,6 +522,8 @@ const Settings = (() => {
         model: modelInput.value.trim(),
         systemPrompt: document.getElementById('ai-cfg-sys').value,
         inlineComplete: document.getElementById('ai-cfg-inline').checked,
+        permWrite: document.getElementById('ai-cfg-permw').value,
+        permRun: document.getElementById('ai-cfg-permr').value,
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };

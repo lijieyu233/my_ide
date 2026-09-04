@@ -8,9 +8,15 @@ const Tree = (() => {
   // hideMode：'normal' 默认（不显示隐藏项）| 'all' 全部显示 | 'hidden' 只看隐藏项
   let hideMode = 'normal';
   let hiddenSet = new Set();
+  // 与工具窗口共用 --tool-font（状态栏最左侧 A−/A+），由 App.applyToolFont 统一下发；
+  // 此处只做兜底取值，避免本模块先于 App 初始化时拿到错误的 13
   let treeFontSize = 13;
   try {
-    treeFontSize = Math.min(18, Math.max(11, parseInt(localStorage.getItem('myide-tree-font') || '13', 10) || 13));
+    const cssVar = parseInt(
+      (getComputedStyle(document.documentElement).getPropertyValue('--tool-font') || '').trim(), 10);
+    const legacy = parseInt(localStorage.getItem('myide-tree-font') || '', 10);
+    const raw = cssVar || legacy || 13;
+    treeFontSize = Math.min(18, Math.max(11, raw));
   } catch {}
   // ---------- 目录树排序（全局设置，存 localStorage）----------
   // name 名称升序（默认）| mtime 修改时间新→旧 | ctime 创建时间新→旧 | size 大小大→小 | type 按扩展名分组
@@ -1065,10 +1071,6 @@ const Tree = (() => {
         }
       });
     }
-    const fdec = document.getElementById('tree-font-dec');
-    const finc = document.getElementById('tree-font-inc');
-    if (fdec) fdec.onclick = () => Tree.setFont(-1);
-    if (finc) finc.onclick = () => Tree.setFont(1);
     const hm = document.getElementById('tree-hide-mode');
     if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
     // 排序菜单（复用全局 ctx-menu popover；当前模式标 ●）
@@ -1113,9 +1115,11 @@ const Tree = (() => {
       renameItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType });
     },
     set showHidden(v) { showHidden = v; if (rootPath) render(); },
-    setFont: (d) => {
-      treeFontSize = Math.min(18, Math.max(11, treeFontSize + d));
-      try { localStorage.setItem('myide-tree-font', String(treeFontSize)); } catch {}
+    // 由 App.applyToolFont 统一下发（绝对值，px），不再自行持久化：单一数据源在 App 侧
+    setFontPx: (px) => {
+      const next = Math.min(18, Math.max(11, parseInt(px, 10) || 13));
+      if (next === treeFontSize) return;
+      treeFontSize = next;
       applyTreeFont();
       render();
     },

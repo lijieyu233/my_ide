@@ -12,6 +12,22 @@ function init(net) { fetcher = (u, opts) => net.fetch(u, opts); }
 // tools：OpenAI 原生 function calling 的工具 schema（可空）
 // onDelta(text) 每收到增量回调；返回 {ok, text, toolCalls} 或 {error}
 // toolCalls: [{id, name, args(对象)}] —— 流式分片按 index 拼装
+// 无 tools 回退：部分服务/模型不支持 function calling（如 deepseek-reasoner）→ 直接 400。
+// 剥离 tools 与 role:tool 消息（转伪 user 文本），模型可走 ```tool_call``` 文本协议（前端已兼容解析）
+function sanitizeForNoTools(messages) {
+  const out = [];
+  for (const m of (Array.isArray(messages) ? messages : [])) {
+    if (m && m.role === 'tool') {
+      out.push({ role: 'user', content: '<tool_results>\n<result tool="' + String(m.name || '') + '">\n' + String(m.content || '') + '\n</result>\n</tool_results>' });
+    } else if (m && m.tool_calls) {
+      out.push({ role: 'assistant', content: m.content || '' }); // assistant 的 tool_calls 锚点一并去掉（无 tools 时留着也会 400）
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
+}
+
 async function chatStream(cfg, messages, onDelta, tools) {
   const base = String((cfg && cfg.baseUrl) || '').replace(/\/+$/, '');
   if (!base) return { error: '未配置 AI 服务地址（设置 → AI 助手）' };
@@ -25,9 +41,12 @@ async function chatStream(cfg, messages, onDelta, tools) {
   let full = '';
   const tc = {}; // index → {id, name, args} 流式拼装中的工具调用
   let usageInfo = null; // SSE 末尾 usage 块（DeepSeek 含 prompt_cache_hit/miss_tokens）
-  const doFetch = async (withUsage) => {
-    const body = { model, messages: Array.isArray(messages) ? messages : [], stream: true };
-    if (Array.isArray(tools) && tools.length) {
+  const hasTools = Array.isArray(tools) && tools.length;
+  // 渐进降级：完整请求 → 400/422 时去掉 stream_options 重试 → 仍 400/422 时去掉 tools（文本协议回退）再试。
+  // 覆盖两类常见 400：不支持 stream_options（部分兼容服务）、不支持 function calling（deepseek-reasoner / 部分本地模型）
+  const doFetch = async (withUsage, noTools) => {
+    const body = { model, messages: noTools ? sanitizeForNoTools(messages) : (Array.isArray(messages) ? messages : []), stream: true };
+    if (!noTools && hasTools) {
       body.tools = tools;
       body.tool_choice = 'auto';
     }
@@ -40,9 +59,12 @@ async function chatStream(cfg, messages, onDelta, tools) {
     });
   };
   try {
-    let res = await doFetch(true);
+    let res = await doFetch(true, false);
     if (!res.ok && (res.status === 400 || res.status === 422)) {
-      res = await doFetch(false); // 部分兼容服务不认 stream_options：去掉重试
+      res = await doFetch(false, false); // 部分兼容服务不认 stream_options：去掉重试
+    }
+    if (!res.ok && (res.status === 400 || res.status === 422) && hasTools) {
+      res = await doFetch(false, true); // 模型不支持 function calling：去 tools 走文本协议
     }
     if (!res.ok) {
       const t = await res.text().catch(() => '');

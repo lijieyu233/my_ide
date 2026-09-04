@@ -146,6 +146,21 @@ Shortcuts.register('tool-browser', { desc: '内置浏览器（打开 / 关闭）
 Shortcuts.register('tool-db', { desc: '工具窗口：数据库（侧栏连接/表 + 右侧数据/SQL）', keys: ['ctrl+7'], run: () => App.showTool('db') });
 Shortcuts.register('tool-ai', { desc: '工具窗口：AI 助手（右侧对话，独立停靠）', keys: ['alt+1', 'ctrl+8'], run: () => App.showAi() });
 Shortcuts.register('tool-tasks', { desc: '工具窗口：任务（清单 + DAG 依赖图，按项目隔离）', keys: ['ctrl+9'], run: () => App.showTool('tasks') });
+// Ctrl+Enter：任务工具打开时快捷创建（侧栏输入框聚焦/图中央原地输入；焦点在输入框时让位）
+Shortcuts.register('task-quick-new', { desc: '快捷创建任务（任务工具打开时）', keys: ['ctrl+enter'], run: () => {
+  if (!window.Tasks || !window.App || App.getTool() !== 'tasks') return;
+  if (window.Modal && Modal.stack && Modal.stack.length) return; // 弹窗自管 Ctrl+Enter
+  const ae = document.activeElement;
+  const editable = ae && (/^(TEXTAREA|INPUT|SELECT)$/.test(ae.tagName) || ae.isContentEditable);
+  if (editable) {
+    if (ae.id === 'tasks-new-input') { // 焦点在任务输入框：直接提交
+      const v = ae.value.trim();
+      if (v) { Tasks.add(v); ae.value = ''; }
+    }
+    return; // 其他输入框（提交信息/SQL/AI 对话等）不劫持
+  }
+  Tasks.quickNew();
+} });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });

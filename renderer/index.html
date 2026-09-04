@@ -39,8 +39,6 @@
       <div id="tree-head">
         <input id="tree-search" type="text" placeholder="🔍 搜索文件…" autocomplete="off" spellcheck="false" title="搜索项目内文件（回车跳转）">
         <span class="tree-head-actions">
-          <button id="tree-font-dec" class="vt-btn" title="目录树字号减小">A−</button>
-          <button id="tree-font-inc" class="vt-btn" title="目录树字号增大">A+</button>
           <button id="tree-hide-mode" class="vt-btn" title="三态切换：全部显示 / 不显示隐藏项 / 只看隐藏项">👁</button>
           <button id="tree-sort" class="vt-btn" title="排序">↕</button>
           <button id="tree-collapse" class="vt-btn" title="收起全部目录（PyCharm 式）">⊟</button>
@@ -50,12 +48,7 @@
       <div id="tree"></div>
     </div>
     <div id="panel-outline" class="hidden">
-      <div class="panel-title">大纲
-        <span class="panel-title-actions">
-          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
-        </span>
-      </div>
+      <div class="panel-title">大纲</div>
       <div id="outline"></div>
     </div>
     <!-- Git 提交工具窗口（PyCharm 式左侧停靠：上半变更文件树 · 下半提交信息；diff 显示在主编辑区） -->
@@ -64,8 +57,6 @@
         <span id="cd-branch" title="点击切换分支 / 检出标签"></span>
         <span id="cd-dirty"></span>
         <span class="panel-title-actions">
-          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
           <button id="cd-pull" class="vt-btn" title="拉取（fetch + fast-forward 合并 origin）">⬇ 拉取</button>
           <button id="cd-push" class="vt-btn" title="推送当前分支到 origin（先预览待推送提交）">⬆ 推送</button>
           <button id="cd-shelve" class="vt-btn" title="搁置更改（Shelve）：暂存未提交改动并可恢复">🗄</button>
@@ -86,12 +77,7 @@
       </div>
     </div>
     <div id="panel-db" class="hidden">
-      <div class="panel-title">数据库
-        <span class="panel-title-actions">
-          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
-        </span>
-      </div>
+      <div class="panel-title">数据库</div>
       <div id="db-side-bar">
         <select id="db-conn-select" title="已保存的连接"></select>
         <button id="db-connect-btn" class="vt-btn" title="连接 / 断开">连接</button>
@@ -110,8 +96,6 @@
       <div class="panel-title">任务
         <span id="tasks-count" title="已完成 / 总数"></span>
         <span class="panel-title-actions">
-          <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-          <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
           <button id="tasks-vis" class="vt-btn" title="可见度：显示全部（点击切换）">◉</button>
           <button id="tasks-undo" class="vt-btn hidden" title="撤销最近一次删除">⟲</button>
           <button id="tasks-clear" class="vt-btn hidden" title="清空已完成（可撤销）">⊘</button>
@@ -191,8 +175,6 @@
         <span class="tk-dag-title">⛓ 依赖图</span>
         <span id="tasks-dag-count" class="tk-dag-count"></span>
         <span class="spacer"></span>
-        <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-        <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
         <button id="tasks-dag-focus" class="vt-btn hidden" title="退出聚焦"></button>
         <button id="tasks-dag-tidy" class="vt-btn" title="一键整理：清除全部手动位置，回到自动布局（依赖关系不变）">🧹 整理</button>
         <button id="tasks-dag-new" class="vt-btn" title="新建任务（也可双击图中空白处）">＋ 新建</button>
@@ -208,8 +190,6 @@
         <span id="gl-path-chip" class="hidden" title="文件历史过滤：仅显示改动该文件的提交"></span>
         <span class="gl-tb-count" id="gl-count"></span>
         <span class="spacer"></span>
-        <button class="vt-btn fc-dec" title="工具窗口字号减小">A−</button>
-        <button class="vt-btn fc-inc" title="工具窗口字号增大">A+</button>
         <button id="gl-compare" class="vt-btn" title="对比两个分支（独有提交 + 差异文件）">⇄</button>
         <button id="gl-refresh" class="vt-btn" title="刷新">🔄</button>
         <button id="gl-close" class="vt-btn" title="关闭 (Shift+Esc)">✕</button>
@@ -242,8 +222,9 @@
     <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
-      <button id="ai-file-chip" class="ai-chip" title="把当前编辑器文件内容作为上下文">📎 附当前文件</button>
-      <textarea id="ai-input" placeholder="Ask anything…（Enter 发送 / Shift+Enter 换行）" spellcheck="false"></textarea>
+      <div id="ai-chips" class="hidden"></div>
+      <button id="ai-file-chip" class="ai-chip" title="把当前编辑器文件内容作为上下文（输入 @ 可引用项目内文件/文件夹）">📎 附当前文件</button>
+      <textarea id="ai-input" placeholder="Ask anything…（Enter 发送 / Shift+Enter 换行 / @ 引用文件）" spellcheck="false"></textarea>
       <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
     </div>
   </div>
@@ -253,7 +234,7 @@
     <button id="tool-ai" class="tool-btn" title="AI 助手 (Alt+1 / Ctrl+8)">🤖</button>
   </div>
 </div>
-<footer id="statusbar"><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
+<footer id="statusbar"><span id="sb-tool-font" class="sb-font" title="侧栏 / 工具窗口 / 右侧 AI 面板字号（目录树 · 大纲 · 提交 · 数据库 · 任务 · 依赖图 · Git 日志 · AI 对话）"><button id="sb-tf-dec" title="减小侧栏字号">A−</button><span id="sb-tf-val">13</span><button id="sb-tf-inc" title="增大侧栏字号">A+</button></span><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden">
   <div id="modal-box"></div>

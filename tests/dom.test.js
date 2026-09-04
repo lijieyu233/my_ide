@@ -2416,6 +2416,34 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('工具窗口字号统一：状态栏 A−/A+ 一处驱动所有面板（含右侧 AI 面板）', async () => {
+    const doc = dom.window.document;
+    // 1) 各面板标题栏的旧 A−/A+ 按钮已全部拆除
+    assert_(!doc.querySelector('.fc-dec, .fc-inc, #tree-font-dec, #tree-font-inc'), '无残留的各面板字体按钮');
+    // 2) 状态栏最左侧的统一控件存在
+    const dec = $(dom, '#sb-tf-dec'), inc = $(dom, '#sb-tf-inc'), val = $(dom, '#sb-tf-val');
+    assert_(dec && inc && val, '状态栏统一字号控件存在');
+    const bar = $(dom, '#statusbar');
+    const kids = [...bar.children].filter((x) => x.id);
+    assert_(kids.indexOf(bar.querySelector('#sb-tool-font')) === 0, '统一控件贴状态栏最左端');
+    // 3) 点击 A+ → --tool-font 变量 + 状态栏读数 + 持久化 同步
+    const before = dom.window.document.documentElement.style.getPropertyValue('--tool-font');
+    click(inc);
+    await tick();
+    const after = dom.window.document.documentElement.style.getPropertyValue('--tool-font');
+    const bv = parseInt(before, 10) || 13, av = parseInt(after, 10);
+    assert_(av === Math.min(18, bv + 1), '--tool-font 增大: ' + before + ' → ' + after);
+    assert_(val.textContent === String(av), '状态栏读数同步: ' + val.textContent);
+    assert_(dom.window.localStorage.getItem('myide-tool-font') === String(av), '持久化到 myide-tool-font');
+    // 4) 左侧栏 / 右侧 AI 面板都以 --tool-font 为基准（CSS 挂了变量；jsdom 无级联计算，查样式文本）
+    const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8').replace(/\s+/g, ' ');
+    assert_(/#sidebar \{[^}]*--tool-font/.test(cssSrc), '左侧栏以 --tool-font 为字号基准');
+    assert_(/#ai-panel \{[^}]*--tool-font/.test(cssSrc), '右侧 AI 面板以 --tool-font 为字号基准');
+    // 5) 还原默认 13，不影响后续用例
+    while (parseInt(dom.window.document.documentElement.style.getPropertyValue('--tool-font'), 10) > 13) { click(dec); await tick(); }
+    assert_(dom.window.document.documentElement.style.getPropertyValue('--tool-font') === '13px', '还原 13px');
+  });
+
   await okAsync('主题自定义强调色：setAccent 生效 + 空值恢复默认', async () => {
     await g(dom, 'Theme.setAccent("#ff6600")');
     await tick();
@@ -3549,9 +3577,21 @@ assert_(panel, 'CM6 搜索面板出现');
   };
   const rightClick = (el) => el.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
   const dblclick = (el) => el.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  // 可见度下拉菜单选择：点开 #tasks-vis → 点菜单项（替代旧单按钮循环）
+  async function pickVis(label) {
+    click($(dom, '#tasks-vis'));
+    await tick();
+    const item = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')]
+      .find((x) => x.textContent.includes(label));
+    assert_(item, '可见度菜单含「' + label + '」选项');
+    click(item);
+    await tick();
+  }
   async function tkReset() {
     delete FAKE_FS[TK_FILE]; // 存储已迁到项目内文件：清文件才等于清任务
     dom.window.localStorage.removeItem(TK_KEY);
+    dom.window.localStorage.removeItem('myide-tasks-group-fold'); // 分组收起态：防跨用例泄漏
+    dom.window.localStorage.removeItem('myide-tasks-done-fold');
     // 清会话：Session.restore 是 async 且 setRoot 不 await——它会滞后几秒再 App.setTool(旧 tool)，
     // 把 activeTool 从 tasks 盖回 project（曾导致「图面板不显示」的诡异失败）
     dom.window.localStorage.removeItem('myide-session:' + P);
@@ -3870,24 +3910,38 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(g(dom, 'Tasks.tasks.length') === 3, '清空可整体撤销');
   });
 
-  await okAsync('任务：折叠已完成分组（只有该组可折叠）', async () => {
+  await okAsync('任务：所有状态组均可收起（仅左侧清单，不影响右侧依赖图）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("待办的")');
     await g(dom, 'Tasks.add("做完了")');
     await g(dom, 'Tasks.setStatus(Tasks.tasks[1].id, "done")');
+    await g(dom, 'Tasks.setView("dag")');
     await tick();
     const groups = $allIn($(dom, '#tasks-body'), '.tk-group');
-    assert_(groups.length === 3, '三个分组, got ' + groups.length);
+    assert_(groups.length === 3, '三个分组头（进行中空组也渲染）, got ' + groups.length);
+    // 三个状态组都有折叠箭头（不止已完成）
+    assert_(groups.every((h) => h.querySelector('.tk-arrow')), '每个状态组都有收起箭头');
     const doneHead = groups.find((h) => h.textContent.includes('已完成'));
-    assert_(doneHead.querySelector('.tk-arrow'), '已完成组有折叠箭头');
-    assert_(!groups[0].querySelector('.tk-arrow'), '进行中组无箭头（点不动的箭头是视觉欺骗）');
     click(doneHead);
     await tick();
-    assert_(!tkRows().some((r) => r.classList.contains('done')), '折叠后已完成行隐藏');
+    assert_(!tkRows().some((r) => r.classList.contains('done')), '收起后已完成行隐藏（待办行保留）');
+    assert_(tkRows().some((r) => r.dataset.id), '待办行不受影响');
+    assert_(JSON.parse(dom.window.localStorage.getItem('myide-tasks-group-fold') || '{}').done === true, '收起态持久化');
+    // 收起不能影响右边的可见性：图上节点照常显示
+    assert_(dom.window.document.querySelectorAll('#tasks-dag-body g.tk-node').length === 2, '收起后右侧依赖图节点仍显示');
     const head2 = $allIn($(dom, '#tasks-body'), '.tk-group').find((h) => h.textContent.includes('已完成'));
     click(head2);
     await tick();
-    assert_(tkRows().some((r) => r.classList.contains('done')), '再点展开');
+    assert_(tkRows().length === 2, '再点展开（清单恢复 2 行）');
+    // 待办组同样可收起
+    const todoHead = $allIn($(dom, '#tasks-body'), '.tk-group').find((h) => h.textContent.includes('待办'));
+    click(todoHead);
+    await tick();
+    assert_(tkRows().length === 1, '待办组收起（只剩已完成行）');
+    click($allIn($(dom, '#tasks-body'), '.tk-group').find((h) => h.textContent.includes('待办')));
+    await tick();
+    assert_(tkRows().length === 2, '还原展开（内存/存储同步回干净态）');
+    await g(dom, 'Tasks.setView("list")');
   });
 
   await okAsync('任务：只看可执行（未被阻塞且未完成）筛选', async () => {
@@ -3900,22 +3954,18 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
     await g(dom, 'Tasks.setStatus(Tasks.tasks[3].id, "done")');
     await tick();
-    click($(dom, '#tasks-vis')); // all → ready
-    await tick();
-    assert_(g(dom, 'Tasks.onlyReady') === true, '筛选开启（循环到「只看可执行」）');
+    // 可见度下拉菜单（替代旧单按钮循环）：点开按钮 → 点菜单项
+    await pickVis('只看可执行');
+    assert_(g(dom, 'Tasks.onlyReady') === true, '筛选开启（菜单选「只看可执行」）');
     const shown = tkRows().map((r) => r.querySelector('.tk-title').textContent);
     assert_(shown.includes('前置A') && shown.includes('能做C'), '可执行的显示: ' + shown.join(','));
     assert_(!shown.includes('被阻塞B') && !shown.includes('已完成D'), '被阻塞与已完成隐藏: ' + shown.join(','));
     assert_($(dom, '#tasks-vis').classList.contains('active'), '筛选按钮高亮');
     assert_($(dom, '#tasks-vis').dataset.mode === 'ready', '按钮标记当前模式');
-    click($(dom, '#tasks-vis')); // ready → hideDone
-    await tick();
-    click($(dom, '#tasks-vis')); // hideDone → doneChain（B 未完成拖住 A→B 块；孤岛 D 全完成 → 隐藏）
-    await tick();
+    await pickVis('隐藏完结链路'); // B 未完成拖住 A→B 块；孤岛 D 全完成 → 隐藏
     assert_(tkRows().length === 3, 'doneChain：孤岛已完成 D 隐藏，活跃链 3 行, got ' + tkRows().length);
-    click($(dom, '#tasks-vis')); // doneChain → all
-    await tick();
-    assert_(tkRows().length === 4, '循环回「显示全部」');
+    await pickVis('显示全部');
+    assert_(tkRows().length === 4, '切回「显示全部」');
   });
 
   await okAsync('任务：DAG 节点点击选中联动（清单/图双向）+ 双击改名', async () => {
@@ -4035,30 +4085,29 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(dagAll('g.tk-node').length === 3, '未过滤 → 3 节点');
     assert_(dagAll('path.tk-edge').length === 1, '1 条边');
     // 只看可执行：被阻塞的 B 隐藏，边随节点消失（无断头线）
-    click($(dom, '#tasks-vis')); // all → ready
-    await tick();
+    await pickVis('只看可执行');
     assert_(dagAll('g.tk-node').length === 2, '只看可执行 → 2 节点（B 被隐藏）, got ' + dagAll('g.tk-node').length);
     assert_(dagAll('path.tk-edge').length === 0, '隐藏节点的关联边一并消失');
     assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计栏标注过滤态');
     // 阻塞判定仍按全量数据：隐藏 B ≠ 解除阻塞
     assert_(g(dom, 'Tasks.blockedCount(Tasks.tasks.find(t=>t.id==="' + b + '"))') === 1, 'blockedCount 仍按全量算');
-    click($(dom, '#tasks-vis')); // ready → hideDone
-    await tick();
-    click($(dom, '#tasks-vis')); // hideDone → doneChain（无已完成 → 无隐藏）
-    await tick();
-    click($(dom, '#tasks-vis')); // doneChain → all
-    await tick();
-    // 隐藏已完成：A 完成后折叠已完成组
+    await pickVis('隐藏完结链路'); // 无已完成 → 无隐藏
+    await pickVis('显示全部');
+    // 收起侧栏已完成组：仅清单收起，右侧图不受影响（收起不能影响右边的可见性）
     await g(dom, 'Tasks.setStatus("' + a + '", "done")');
     await tick();
-    const doneHead = $(dom, '#tasks-body .tk-group[title]');
+    const doneHead = [...dom.window.document.querySelectorAll('#tasks-body .tk-group')]
+      .find((h) => h.textContent.includes('已完成'));
     assert_(doneHead, '侧栏已完成分组头存在');
     click(doneHead);
     await tick();
-    assert_(dagAll('g.tk-node').length === 2, '折叠已完成 → done 节点隐藏, got ' + dagAll('g.tk-node').length);
+    assert_(dagAll('g.tk-node').length === 3, '收起已完成组 → 图上 done 节点仍显示（收起不影响右侧）, got ' + dagAll('g.tk-node').length);
+    const doneRows = tkRows().filter((r) => r.dataset && r.dataset.id);
+    assert_(doneRows.length === 0 || !tkRows().some((r) => r.dataset.id === a), '清单：已完成行收起');
     assert_(g(dom, 'Tasks.tasks.length') === 3, '数据层不删（只是不可见）');
-    // 还原两个开关，不影响后续用例
-    click($(dom, '#tasks-body .tk-group[title]'));
+    // 还原开关（按标题找到已完成头——第一个分组头是空的「进行中」，点它会收起错组），不影响后续用例
+    click([...dom.window.document.querySelectorAll('#tasks-body .tk-group')]
+      .find((h) => h.textContent.includes('已完成')));
     await tick();
     await g(dom, 'Tasks.setView("list")');
   });
@@ -4153,16 +4202,13 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setView("list")');
   });
 
-  await okAsync('任务：不显示已完成（vis 循环第三态：清单整组消失 + 图过滤 + 持久化）', async () => {
+  await okAsync('任务：不显示已完成（菜单模式：清单整组消失 + 图过滤 + 持久化）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("待办")');
     const d = await g(dom, 'Tasks.add("做完的").id');
     await g(dom, 'Tasks.setStatus("' + d + '", "done")');
     assert_(tkRows().length === 2, '开关前 2 行（含已完成组）');
-    click($(dom, '#tasks-vis')); // all → ready
-    await tick();
-    click($(dom, '#tasks-vis')); // ready → hideDone
-    await tick();
+    await pickVis('不显示已完成');
     assert_(tkRows().length === 1, '清单：已完成整组不渲染');
     assert_(![...tkRows()].some((r) => r.dataset.id === d), '已完成行不在');
     assert_($(dom, '#tasks-vis').classList.contains('active'), '按钮激活态');
@@ -4173,15 +4219,13 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(dagAll('g.tk-node').length === 1, '图：已完成节点隐藏');
     assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计标注过滤态');
     // 第 4 态：隐藏完结链路（本例唯一完成任务自成一块 → 也隐藏）
-    click($(dom, '#tasks-vis')); // hideDone → doneChain
-    await tick();
+    await pickVis('隐藏完结链路');
     assert_($(dom, '#tasks-vis').dataset.mode === 'doneChain', '按钮标记 doneChain');
     assert_(dagAll('g.tk-node').length === 1, '图：完结链路（孤立已完成）隐藏，待办保留');
     assert_($(dom, '#tasks-dag-count').textContent.includes('隐藏完结链路'), '统计标注链路过滤');
-    // 循环回 all 恢复
-    click($(dom, '#tasks-vis')); // doneChain → all
-    await tick();
-    assert_(dagAll('g.tk-node').length === 2, '循环回「显示全部」恢复');
+    // 切回 all 恢复
+    await pickVis('显示全部');
+    assert_(dagAll('g.tk-node').length === 2, '切回「显示全部」恢复');
     assert_(dom.window.localStorage.getItem('myide-tasks-vis') === 'all', '偏好已复位');
   });
 
@@ -4199,10 +4243,8 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setStatus("' + C + '", "done")');
     await g(dom, 'Tasks.setStatus("' + E + '", "done")'); // E 完成，但下游 D 未完成 → 整块显示
     await g(dom, 'Tasks.focusOn(null)');
-    // 切到第 4 态：all → ready → hideDone → doneChain
-    click($(dom, '#tasks-vis')); await tick();
-    click($(dom, '#tasks-vis')); await tick();
-    click($(dom, '#tasks-vis')); await tick();
+    // 切到第 4 态：菜单直接选「隐藏完结链路」
+    await pickVis('隐藏完结链路');
     assert_($(dom, '#tasks-vis').dataset.mode === 'doneChain', '已切到 doneChain');
     await tick(); await tick();
     const visIds = [...dagAll('g.tk-node')].map((n) => n.dataset.id);
@@ -4212,7 +4254,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(visIds.length === 2, '图上只剩 2 个节点, got ' + visIds.length);
     assert_(tkRows().length === 2, '清单同步：2 行（D 待办 + E 已完成）');
     // 切回 all 全恢复
-    click($(dom, '#tasks-vis')); await tick();
+    await pickVis('显示全部');
     assert_(dagAll('g.tk-node').length === 5, '切回「显示全部」5 个节点全恢复');
     await g(dom, 'Tasks.focusOn(null)');
   });
