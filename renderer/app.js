@@ -157,16 +157,20 @@ const App = (() => {
   // 快捷键 Ctrl+8：始终打开（不因已开而收起）
   function showAi() { if (!aiOpen) setAiOpen(true); }
 
-  // 打开文件/显示编辑区内容时，占据主区的工具窗口（浏览器）让位（PyCharm 式：编辑器优先）
+  // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
     if (activeTool === 'browser' || activeTool === 'log') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
       saveToolState();
-    } else if (activeTool === 'tasks' && window.Tasks && Tasks.view === 'dag') {
-      // 依赖图占主区：打开文件时图让位（编辑器优先），侧栏清单保留
-      Tasks.setView('list');
+    } else if (activeTool === 'tasks') {
+      // 依赖图全屏覆盖主区：打开文件时任务工具整体让位（侧栏清单+图都收起，侧栏回退项目面板），
+      // 再点工具栏任务按钮即回到图（图视图常开，无视图状态可言）
+      activeTool = null;
+      if (sideTool === 'tasks') sideTool = 'project';
+      renderToolStrip();
+      saveToolState();
     }
   }
 

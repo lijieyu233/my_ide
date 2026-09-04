@@ -1755,9 +1755,14 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-node.drop-no rect.tk-n-box { stroke: var(--red); stroke-width: 2.6; filter: drop-shadow(0 0 3px var(--red)); }
 /* 选中节点：主色描边 + 外发光（区别于各状态色的普通描边，一眼可辨） */
 .tk-node.sel rect.tk-n-box { stroke: var(--accent); stroke-width: 2.6; filter: drop-shadow(0 0 5px var(--accent)); }
-/* 「不显示已完成」激活态：☑ 划掉 */
-#tasks-hide-done.active { text-decoration: line-through; }
+/* 可见度三态按钮：hideDone 模式 ☑ 带划线 */
+#tasks-vis[data-mode="hideDone"] { text-decoration: line-through; }
 .tk-hot { fill: transparent; cursor: pointer; }
+/* 连线锚点（节点底部小圆点）：拖它=建依赖；拖节点本体=移动位置 */
+.tk-anchor { fill: var(--accent); opacity: .45; cursor: crosshair; }
+.tk-anchor:hover { opacity: 1; r: 6; }
+.tk-node { cursor: grab; }
+.tk-svg.tk-moving .tk-node { cursor: grabbing; }
 .tk-dag-new {
   position: absolute; z-index: 5; width: 190px;
   background: var(--bg-input); border: 1px solid var(--accent); border-radius: 4px;

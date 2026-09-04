@@ -3701,15 +3701,13 @@ assert_(panel, 'CM6 搜索面板出现');
     }
   });
 
-  await okAsync('任务：视图切换 → 主区 DAG 面板（清单保留对照）+ 记忆 + 关闭', async () => {
+  await okAsync('任务：图视图常开 —— 任务工具激活即显示 DAG（无切换/收起按钮）', async () => {
     await tkReset();
     const a = await g(dom, 'Tasks.add("A").id');
     const b = await g(dom, 'Tasks.add("B").id');
     await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
-    await tick();
-    click($(dom, '#tasks-view'));
     await tick(); await tick();
-    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '主区 DAG 面板显示');
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '任务工具激活 → 主区 DAG 面板直接显示');
     assert_($(dom, '#tasks-dag-body .tk-svg'), 'DAG 渲染 SVG');
     assert_(tkRows().length === 2, '侧栏清单保留（可对照）');
     assert_($(dom, '#tasks-new-input'), '输入框保留');
@@ -3718,7 +3716,6 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(edges.length === 1, '1 条依赖边');
     assert_(edges[0].classList.contains('blocked'), '未完成依赖 → 红色虚线（blocked）');
     assert_($(dom, '#tasks-dag-body .tk-legend'), '图例存在');
-    assert_(dom.window.localStorage.getItem('myide-tasks-view') === 'dag', '视图偏好已记忆');
     assert_($(dom, '#tasks-dag-count').textContent.includes('2 任务'), '图统计, got ' + $(dom, '#tasks-dag-count').textContent);
     await g(dom, 'Tasks.setStatus("' + a + '", "done")');
     await tick();
@@ -3728,23 +3725,21 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '切走工具后主区面板隐藏');
     await g(dom, 'App.showTool("tasks")');
     await tick();
-    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '切回任务工具后主区面板恢复');
-    click($(dom, '#tasks-dag-close'));
-    await tick();
-    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '关闭按钮收起图面板');
-    assert_(g(dom, 'Tasks.view') === 'list', '视图回到清单');
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '切回任务工具后主区面板恢复（图常开）');
   });
 
-  await okAsync('任务：打开文件时依赖图让位（编辑器优先）', async () => {
+  await okAsync('任务：打开文件时任务工具让位（编辑器优先，图不再覆盖主区）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("任务")');
-    await g(dom, 'Tasks.setView("dag")');
     await tick();
     assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '图面板在显示');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
-    assert_(g(dom, 'Tasks.view') === 'list', '打开文件 → 图让位回清单');
-    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '主区面板隐藏');
+    assert_($(dom, '#tasks-dag-panel').classList.contains('hidden'), '打开文件 → 图让位（面板隐藏）');
+    assert_($(dom, '#panel-tasks').classList.contains('hidden'), '任务工具整体让位（侧栏清单收起）');
+    await g(dom, 'App.showTool("tasks")');
+    await tick();
+    assert_(!$(dom, '#tasks-dag-panel').classList.contains('hidden'), '再点任务工具 → 图直接回来');
   });
 
   await okAsync('任务：单击选中不重建 DOM（滚动位置不丢）+ 双击行改名', async () => {
@@ -3905,16 +3900,19 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
     await g(dom, 'Tasks.setStatus(Tasks.tasks[3].id, "done")');
     await tick();
-    click($(dom, '#tasks-ready'));
+    click($(dom, '#tasks-vis')); // all → ready
     await tick();
-    assert_(g(dom, 'Tasks.onlyReady') === true, '筛选开启');
+    assert_(g(dom, 'Tasks.onlyReady') === true, '筛选开启（循环到「只看可执行」）');
     const shown = tkRows().map((r) => r.querySelector('.tk-title').textContent);
     assert_(shown.includes('前置A') && shown.includes('能做C'), '可执行的显示: ' + shown.join(','));
     assert_(!shown.includes('被阻塞B') && !shown.includes('已完成D'), '被阻塞与已完成隐藏: ' + shown.join(','));
-    assert_($(dom, '#tasks-ready').classList.contains('active'), '筛选按钮高亮');
-    click($(dom, '#tasks-ready'));
+    assert_($(dom, '#tasks-vis').classList.contains('active'), '筛选按钮高亮');
+    assert_($(dom, '#tasks-vis').dataset.mode === 'ready', '按钮标记当前模式');
+    click($(dom, '#tasks-vis')); // ready → hideDone
     await tick();
-    assert_(tkRows().length === 4, '关闭筛选显示全部');
+    click($(dom, '#tasks-vis')); // hideDone → all
+    await tick();
+    assert_(tkRows().length === 4, '循环回「显示全部」');
   });
 
   await okAsync('任务：DAG 节点点击选中联动（清单/图双向）+ 双击改名', async () => {
@@ -3985,6 +3983,37 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setView("list")');
   });
 
+  await okAsync('任务：拖动节点 —— 自由位置持久化 + 锚点连线 + 回到自动布局', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("拖我").id');
+    const b = await g(dom, 'Tasks.add("没拖过").id');
+    await tick(); await tick();
+    const nodeOf = (id) => dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === id);
+    assert_(nodeOf(a).querySelector('.tk-anchor'), '节点带底部连线锚点（拖锚点=建依赖）');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === null, '初始 x=null（走自动布局）');
+    // moveNode：拖动落盘自由位置
+    assert_(g(dom, 'Tasks.moveNode("' + a + '", 300, 240)') === true, 'moveNode 成功');
+    await g(dom, 'Tasks.render()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 300, 'x=300 已持久化');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").y') === 240, 'y=240 已持久化');
+    assert_(nodeOf(a).getAttribute('transform') === 'translate(300,240)', '自由位置覆盖自动布局');
+    assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, '负坐标 clamp 到 0');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 0, '负值被夹到 0');
+    // 拖过的节点：右键出现「回到自动布局」；点击后清除自由位置
+    rightClick(nodeOf(a));
+    await tick();
+    click(ctxItem('回到自动布局'));
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === null, '清除后 x=null');
+    assert_(nodeOf(a).getAttribute('transform') !== 'translate(300,240)', '节点回到自动布局坐标');
+    // 没拖过的节点：无「回到自动布局」菜单项
+    rightClick(nodeOf(b));
+    await tick();
+    const hasReset = $$(dom, '#ctx-menu .ctx-item').filter((i) => i.textContent.includes('回到自动布局')).length > 0;
+    assert_(!hasReset, '未拖过的节点不显示「回到自动布局」');
+  });
+
   await okAsync('任务：可见度过滤对依赖图生效（只看可执行 / 隐藏已完成）+ 阻塞语义不失真', async () => {
     await tkReset();
     const a = await g(dom, 'Tasks.add("A").id');
@@ -3996,14 +4025,16 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(dagAll('g.tk-node').length === 3, '未过滤 → 3 节点');
     assert_(dagAll('path.tk-edge').length === 1, '1 条边');
     // 只看可执行：被阻塞的 B 隐藏，边随节点消失（无断头线）
-    click($(dom, '#tasks-ready'));
+    click($(dom, '#tasks-vis')); // all → ready
     await tick();
     assert_(dagAll('g.tk-node').length === 2, '只看可执行 → 2 节点（B 被隐藏）, got ' + dagAll('g.tk-node').length);
     assert_(dagAll('path.tk-edge').length === 0, '隐藏节点的关联边一并消失');
     assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计栏标注过滤态');
     // 阻塞判定仍按全量数据：隐藏 B ≠ 解除阻塞
     assert_(g(dom, 'Tasks.blockedCount(Tasks.tasks.find(t=>t.id==="' + b + '"))') === 1, 'blockedCount 仍按全量算');
-    click($(dom, '#tasks-ready')); // 关闭只看可执行
+    click($(dom, '#tasks-vis')); // ready → hideDone
+    await tick();
+    click($(dom, '#tasks-vis')); // hideDone → all
     await tick();
     // 隐藏已完成：A 完成后折叠已完成组
     await g(dom, 'Tasks.setStatus("' + a + '", "done")');
@@ -4110,29 +4141,30 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setView("list")');
   });
 
-  await okAsync('任务：不显示已完成（☑ 开关：清单整组消失 + 图过滤 + 持久化）', async () => {
+  await okAsync('任务：不显示已完成（vis 循环第三态：清单整组消失 + 图过滤 + 持久化）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("待办")');
     const d = await g(dom, 'Tasks.add("做完的").id');
     await g(dom, 'Tasks.setStatus("' + d + '", "done")');
     assert_(tkRows().length === 2, '开关前 2 行（含已完成组）');
-    click($(dom, '#tasks-hide-done'));
+    click($(dom, '#tasks-vis')); // all → ready
+    await tick();
+    click($(dom, '#tasks-vis')); // ready → hideDone
     await tick();
     assert_(tkRows().length === 1, '清单：已完成整组不渲染');
     assert_(![...tkRows()].some((r) => r.dataset.id === d), '已完成行不在');
-    assert_($(dom, '#tasks-hide-done').classList.contains('active'), '按钮激活态');
-    assert_(dom.window.localStorage.getItem('myide-tasks-hide-done') === '1', '偏好已持久化');
-    // 图同步过滤
-    await g(dom, 'Tasks.setView("dag")');
+    assert_($(dom, '#tasks-vis').classList.contains('active'), '按钮激活态');
+    assert_($(dom, '#tasks-vis').dataset.mode === 'hideDone', '按钮标记 hideDone');
+    assert_(dom.window.localStorage.getItem('myide-tasks-vis') === 'hideDone', '偏好已持久化');
+    // 图同步过滤（图视图常开）
     await tick(); await tick();
     assert_(dagAll('g.tk-node').length === 1, '图：已完成节点隐藏');
     assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计标注过滤态');
-    // 再点一次恢复
-    click($(dom, '#tasks-hide-done'));
+    // 循环回 all 恢复
+    click($(dom, '#tasks-vis')); // hideDone → all
     await tick();
-    assert_(dagAll('g.tk-node').length === 2, '再点恢复显示');
-    assert_(dom.window.localStorage.getItem('myide-tasks-hide-done') === '0', '偏好已复位');
-    await g(dom, 'Tasks.setView("list")');
+    assert_(dagAll('g.tk-node').length === 2, '循环回「显示全部」恢复');
+    assert_(dom.window.localStorage.getItem('myide-tasks-vis') === 'all', '偏好已复位');
   });
 
   await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {
