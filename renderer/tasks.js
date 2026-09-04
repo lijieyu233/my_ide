@@ -8,6 +8,7 @@ const Tasks = (() => {
   const newBarEl = document.getElementById('tasks-new-bar');
   const viewBtn = document.getElementById('tasks-view');
   const readyBtn = document.getElementById('tasks-ready');
+  const hideBtn = document.getElementById('tasks-hide-done');
   const undoBtn = document.getElementById('tasks-undo');
   const clearBtn = document.getElementById('tasks-clear');
   const dagPanelEl = document.getElementById('tasks-dag-panel');
@@ -23,6 +24,7 @@ const Tasks = (() => {
   const VIEW_KEY = 'myide-tasks-view';       // 视图偏好：全局（非按项目）
   const FOLD_KEY = 'myide-tasks-done-fold';  // 「已完成」分组折叠：全局
   const READY_KEY = 'myide-tasks-ready-only';// 「只看可执行」筛选：全局
+  const HIDE_KEY = 'myide-tasks-hide-done';  // 「不显示已完成」：全局，清单与图都隐藏
   const STATUSES = ['todo', 'doing', 'done'];
   const PRIOS = ['low', 'normal', 'high'];
 
@@ -30,6 +32,7 @@ const Tasks = (() => {
   let tasks = [];
   let view = 'list';       // 'list' | 'dag'（dag = 主区大图，侧栏清单保持可对照）
   let doneFolded = false;
+  let hideDone = false;    // 不显示已完成：清单与依赖图都彻底隐藏（区别于「折叠」只是收起分组）
   let onlyReady = false;   // 只看「现在能做」的：未完成且未被阻塞
   let selId = null;        // 清单与图共享的选中项（双向联动）
   let storeMode = 'file';  // 'file' | 'ls'
@@ -39,6 +42,7 @@ const Tasks = (() => {
 
   try { view = localStorage.getItem(VIEW_KEY) === 'dag' ? 'dag' : 'list'; } catch {}
   try { doneFolded = localStorage.getItem(FOLD_KEY) === '1'; } catch {}
+  try { hideDone = localStorage.getItem(HIDE_KEY) === '1'; } catch {}
   try { onlyReady = localStorage.getItem(READY_KEY) === '1'; } catch {}
 
   // ---------- 小工具 ----------
@@ -311,6 +315,14 @@ const Tasks = (() => {
   function setStatus(id, st) {
     const t = byId(id);
     if (!t || !STATUSES.includes(st)) return;
+    // 完成的前置约束：前置任务全部完成才允许标记完成（热区/右键/勾选统一走这里）
+    if (st === 'done') {
+      const bl = blockedList(t);
+      if (bl.length) {
+        if (window.MI) MI.toast('前置未完成，不能标记完成：' + bl.map((p) => p.title).join('、'), 'err');
+        return;
+      }
+    }
     t.status = st;
     t.doneAt = st === 'done' ? Date.now() : null; // 撤销完成必须清空
     touch(t); save(); render();
@@ -334,21 +346,26 @@ const Tasks = (() => {
     t.deps = [];
     let rejected = 0;
     for (const d of (deps || [])) {
-      if (d === t.id || !byId(d) || wouldCycle(t.id, d)) rejected++;
+      const dt = byId(d);
+      if (d === t.id || !dt || wouldCycle(t.id, d)) rejected++;
+      else if (t.status === 'done' && dt.status !== 'done') rejected++; // 已完成任务不能新增未完成依赖
       else t.deps.push(d);
     }
-    if (rejected && window.MI) MI.toast(rejected + ' 项依赖会造成循环依赖，已跳过', 'err');
+    if (rejected && window.MI) MI.toast(rejected + ' 项依赖会造成循环依赖或与已完成状态冲突，已跳过', 'err');
     if (rejected && !t.deps.length) t.deps = saved; // 全被拒：回滚到原状而不是清空
     touch(t); save(); render();
     return rejected;
   }
   // 图上拖拽连线的原子操作：给 taskId 单独加一条 depId 依赖（返回 ok 供调用方提示）
   function addDep(taskId, depId) {
-    const t = byId(taskId);
-    if (!t || !byId(depId)) return { ok: false, why: '任务不存在' };
+    const t = byId(taskId), d = byId(depId);
+    if (!t || !d) return { ok: false, why: '任务不存在' };
     if (depId === taskId) return { ok: false, why: '不能依赖自己' };
     if (t.deps.includes(depId)) return { ok: false, why: '已存在这条依赖' };
     if (wouldCycle(taskId, depId)) return { ok: false, why: '会造成循环依赖' };
+    if (t.status === 'done' && d.status !== 'done') {
+      return { ok: false, why: '「' + clip(t.title, 16) + '」已完成，不能依赖未完成任务' };
+    }
     t.deps.push(depId);
     touch(t); save(); render();
     return { ok: true };
@@ -397,8 +414,12 @@ const Tasks = (() => {
     if (!last) return false;
     for (const t of last.tasks) if (!byId(t.id)) tasks.push(t);
     for (const r of last.refs) {
-      const who = byId(r.who);
-      if (who && byId(r.dep) && !who.deps.includes(r.dep)) who.deps.push(r.dep);
+      const who = byId(r.who), dep = byId(r.dep);
+      // 已完成任务不能恢复出「被未完成依赖阻塞」的冲突状态
+      if (who && dep && !who.deps.includes(r.dep)) {
+        if (who.status === 'done' && dep.status !== 'done') continue;
+        who.deps.push(r.dep);
+      }
     }
     save(); render();
     return true;
@@ -435,6 +456,10 @@ const Tasks = (() => {
     if (readyBtn) {
       readyBtn.classList.toggle('active', onlyReady);
       readyBtn.title = onlyReady ? '显示全部任务' : '只看现在能做的（未被阻塞且未完成）';
+    }
+    if (hideBtn) {
+      hideBtn.classList.toggle('active', hideDone);
+      hideBtn.title = hideDone ? '显示已完成任务' : '不显示已完成（清单与依赖图都隐藏）';
     }
     if (undoBtn) undoBtn.classList.toggle('hidden', !undoStack.length);
     if (clearBtn) {
@@ -507,6 +532,7 @@ const Tasks = (() => {
       { key: 'done', label: '已完成' },
     ];
     for (const g of groups) {
+      if (g.key === 'done' && hideDone) continue; // 不显示已完成：整组不渲染（不是折叠）
       const items = tasks.filter((t) => t.status === g.key)
         .sort((a, b) => (PRIO_W[a.priority] - PRIO_W[b.priority]) || (a.createdAt - b.createdAt));
       appendGroup(g.label, items, { foldable: g.key === 'done' });
@@ -588,9 +614,10 @@ const Tasks = (() => {
   function renderDag() {
     if (!dagBodyEl) return;
     dagBodyEl.innerHTML = '';
-    // 可见度过滤（与侧栏开关联动）：只看可执行 / 折叠已完成。
+    // 可见度过滤（与侧栏开关联动）：只看可执行 / 折叠已完成 / 不显示已完成。
     // 阻塞判定仍按全量数据算（byId 全局查），隐藏已完成≠解除阻塞，语义不失真
-    const vis = tasks.filter((t) => (!onlyReady || isReady(t)) && (!doneFolded || t.status !== 'done'));
+    const vis = tasks.filter((t) =>
+      (!onlyReady || isReady(t)) && (t.status !== 'done' || (!doneFolded && !hideDone)));
     const filtered = vis.length < tasks.length;
     if (dagCountEl) {
       const bl = vis.reduce((m, t) => m + blockedCount(t), 0);
@@ -599,7 +626,7 @@ const Tasks = (() => {
       if (filtered) {
         const why = [];
         if (onlyReady) why.push('只看可执行');
-        if (doneFolded) why.push('隐藏已完成');
+        if (doneFolded || hideDone) why.push('不显示已完成');
         s += ' · 已过滤（' + why.join(' + ') + '，共 ' + tasks.length + ' 个）';
       }
       dagCountEl.textContent = s;
@@ -662,8 +689,13 @@ const Tasks = (() => {
         ev.preventDefault(); ev.stopPropagation();
         const f2 = byId(e.from), t2 = byId(e.to);
         if (!f2 || !t2) return;
-        Modal.confirm('删除依赖', '「' + clip(t2.title, 30) + '」不再依赖「' + clip(f2.title, 30) + '」？')
-          .then((yes) => { if (yes) removeDep(t2.id, f2.id); });
+        openCtxMenu(ev, (mk, mkTitle) => {
+          mkTitle(clip(t2.title, 20) + ' ← ' + clip(f2.title, 20));
+          mk('✂ 删除这条依赖', () => {
+            removeDep(t2.id, f2.id);
+            if (window.MI) MI.toast('已删除依赖', 'ok');
+          }, true);
+        });
       };
       svg.appendChild(p);
     }
@@ -818,16 +850,22 @@ const Tasks = (() => {
     input.style.top = Math.max(4, cy - r.top - 14) + 'px';
     dagBodyEl.appendChild(input);
     setTimeout(() => { try { input.focus(); } catch {} }, 30);
-    const close = () => { if (input.parentNode) input.parentNode.removeChild(input); };
+    // settled 幂等：Esc 触发 close → 移除聚焦元素 → blur 再触发 commit，不能重复执行
+    let settled = false;
+    const close = () => { if (settled) return; settled = true; if (input.parentNode) input.parentNode.removeChild(input); };
+    const commit = () => {
+      if (settled) return;
+      const v = input.value.trim();
+      close();
+      if (v) add(v); // add 内部已选中并渲染
+    };
     input.addEventListener('keydown', (ev) => {
       ev.stopPropagation();
-      if (ev.key === 'Enter') {
-        const v = input.value.trim();
-        close();
-        if (v) add(v); // add 内部已选中并渲染
-      } else if (ev.key === 'Escape') close();
+      if (ev.isComposing) return; // 输入法组词中：Enter 是确认候选词，不是提交
+      if (ev.key === 'Enter') commit();
+      else if (ev.key === 'Escape') close(); // Esc = 放弃
     });
-    input.addEventListener('blur', close);
+    input.addEventListener('blur', commit); // 点到别处：已输入的内容不丢（提交而非丢弃）
   }
 
   // ---------- 弹窗 ----------
@@ -907,8 +945,8 @@ const Tasks = (() => {
     };
   }
 
-  // ---------- 右键菜单（复用 #ctx-menu）----------
-  function showCtx(e, t) {
+  // ---------- 右键菜单（复用 #ctx-menu，节点/边/空白共用骨架）----------
+  function openCtxMenu(e, build) {
     const menu = document.getElementById('ctx-menu');
     if (!menu) return;
     menu.innerHTML = '';
@@ -925,28 +963,38 @@ const Tasks = (() => {
       d.textContent = label;
       menu.appendChild(d);
     };
-    mk('✎ 重命名', () => editTitle(t.id));
-    mk('📝 编辑备注', async () => {
-      const v = await promptArea('任务备注', '备注（多行）', t.note);
-      if (v != null) setNote(t.id, v);
-    });
-    mkTitle('优先级');
-    for (const p of ['high', 'normal', 'low']) {
-      mk((t.priority === p ? '● ' : '') + '　' + PRIO_NAME[p],
-        () => setPriority(t.id, p));
-    }
-    if (t.status !== 'doing') mk('⏳ 标记进行中', () => setStatus(t.id, 'doing'));
-    if (t.status !== 'done') mk('✅ 标记完成', () => setStatus(t.id, 'done'));
-    if (t.status !== 'todo') mk('↩︎ 回到待办', () => setStatus(t.id, 'todo'));
-    mk('⛓ 依赖…', () => openDepsDialog(t.id));
-    mk('🗑 删除', async () => {
-      const yes = await Modal.confirm('删除任务', t.title + '\n（可点标题栏 ⟲ 撤销）');
-      if (yes) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
-    }, true);
+    build(mk, mkTitle);
     menu.classList.remove('hidden');
     const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 200;
     menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
     menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+  }
+
+  function showCtx(e, t) {
+    openCtxMenu(e, (mk, mkTitle) => {
+      mk('✎ 重命名', () => editTitle(t.id));
+      mk('📝 编辑备注', async () => {
+        const v = await promptArea('任务备注', '备注（多行）', t.note);
+        if (v != null) setNote(t.id, v);
+      });
+      mkTitle('优先级');
+      for (const p of ['high', 'normal', 'low']) {
+        mk((t.priority === p ? '● ' : '') + '　' + PRIO_NAME[p],
+          () => setPriority(t.id, p));
+      }
+      if (t.status !== 'doing') mk('⏳ 标记进行中', () => setStatus(t.id, 'doing'));
+      if (t.status !== 'done') {
+        const bl = blockedList(t);
+        if (bl.length) mkTitle('⛔ 前置未完成，暂不能标记完成');
+        else mk('✅ 标记完成', () => setStatus(t.id, 'done'));
+      }
+      if (t.status !== 'todo') mk('↩︎ 回到待办', () => setStatus(t.id, 'todo'));
+      mk('⛓ 依赖…', () => openDepsDialog(t.id));
+      mk('🗑 删除', async () => {
+        const yes = await Modal.confirm('删除任务', t.title + '\n（可点标题栏 ⟲ 撤销）');
+        if (yes) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
+      }, true);
+    });
   }
 
   // ---------- 事件绑定 ----------
@@ -975,6 +1023,15 @@ const Tasks = (() => {
       if (e.target.closest && e.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new')) return;
       openDagNewInput(e.clientX, e.clientY);
     });
+    // 右键图空白 → 菜单（新建入口；节点/边有自己的菜单，用 closest 排除）
+    dagBodyEl.addEventListener('contextmenu', (e) => {
+      if (view !== 'dag') return;
+      if (e.target.closest && e.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new, input, button')) return;
+      e.preventDefault();
+      openCtxMenu(e, (mk) => {
+        mk('＋ 新建任务', () => openDagNewInput(e.clientX, e.clientY));
+      });
+    });
   }
   if (readyBtn) {
     readyBtn.onclick = () => {
@@ -983,6 +1040,33 @@ const Tasks = (() => {
       render();
     };
   }
+  if (hideBtn) {
+    hideBtn.onclick = () => {
+      hideDone = !hideDone;
+      try { localStorage.setItem(HIDE_KEY, hideDone ? '1' : '0'); } catch {}
+      render();
+    };
+  }
+  // Delete 键删除选中任务（清单/图通用）：输入态、弹窗、右键菜单打开时不劫持
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Delete') return;
+    if (e.isComposing) return;
+    const ae = document.activeElement;
+    if (ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable)) return;
+    if (window.Modal && Modal.stack && Modal.stack.length) return;
+    const cm = document.getElementById('ctx-menu');
+    if (cm && !cm.classList.contains('hidden')) return;
+    // 任务工具可见才响应（侧栏清单或主区图任一）
+    const pt = document.getElementById('panel-tasks');
+    const visList = pt && !pt.classList.contains('hidden');
+    const visDag = dagPanelEl && !dagPanelEl.classList.contains('hidden');
+    if (!visList && !visDag) return;
+    const t = selId ? byId(selId) : null;
+    if (!t) return;
+    e.preventDefault();
+    remove(t.id);
+    if (window.MI) MI.toast('已删除「' + clip(t.title, 20) + '」，点 ⟲ 可撤销', 'ok');
+  });
   if (undoBtn) {
     undoBtn.onclick = () => {
       if (undoDelete() && window.MI) MI.toast('已撤销删除', 'ok');

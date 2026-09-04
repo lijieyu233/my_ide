@@ -3963,7 +3963,8 @@ assert_(panel, 'CM6 搜索面板出现');
     click(ctxItem('标记进行中'));
     await tick();
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'doing', '图上右键设状态生效');
-    // 状态热区（等价清单勾选的二元切换）
+    // 状态热区（等价清单勾选的二元切换）——前置 a 未完成时不能标记 done（守卫见后续用例）
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
     await g(dom, 'Tasks.setStatus("' + b + '", "done")');
     await tick();
     click(nodeOf(b).querySelector('.tk-hot'));
@@ -3972,13 +3973,13 @@ assert_(panel, 'CM6 搜索面板出现');
     click(nodeOf(b).querySelector('.tk-hot'));
     await tick();
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'done', '热区点击：todo → done');
-    // 右键边 → 确认后删依赖
+    // 右键边 → 弹出菜单 → 点「删除这条依赖」
     const edge = dagAll('path.tk-edge')[0];
     assert_(edge, '依赖边已渲染');
     rightClick(edge);
-    await tick(); await tick();
-    assert_($(dom, '#cf-yes'), '删依赖确认弹窗');
-    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(ctxItem('删除这条依赖'), '边右键菜单含删除选项');
+    click(ctxItem('删除这条依赖'));
     await tick();
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 0, '图上删边生效');
     await g(dom, 'Tasks.setView("list")');
@@ -4044,6 +4045,127 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#pf-yes'));
     await tick();
     assert_(g(dom, 'Tasks.tasks.length') === 3, '工具栏新建生效');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：前置未完成不能标记完成（勾选/右键/热区统一守卫，不产生冲突状态）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("前置A").id');
+    const b = await g(dom, 'Tasks.add("后继B").id');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])');
+    // setStatus 守卫：前置未完成 → 拒绝 + toast
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'todo', '前置未完成：状态仍是 todo');
+    assert_($(dom, '#toast-wrap').textContent.includes('前置未完成'), 'toast 说明被拒原因');
+    // 右键菜单不再提供「标记完成」，换成提示行
+    const rowB = tkRows().find((r) => r.dataset.id === b);
+    rightClick(rowB);
+    await tick();
+    const menuHas = (label) => $$(dom, '#ctx-menu .ctx-item').some((i) => i.textContent.includes(label));
+    assert_(!menuHas('✅ 标记完成'), '阻塞时右键菜单不出现「标记完成」');
+    assert_(menuHas('暂不能标记完成'), '出现替代提示行');
+    // 前置完成后即可标记
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'done', '前置完成后可标记 done');
+    // 反向防护：已完成任务不能新增未完成依赖（addDep / setDeps 两条路都拒）
+    const c = await g(dom, 'Tasks.add("新任务C").id');
+    const r1 = await tkJson('Tasks.addDep("' + b + '", "' + c + '")');
+    assert_(r1.ok === false && r1.why.includes('已完成'), 'addDep：已完成任务不能依赖未完成任务');
+    assert_(await g(dom, 'Tasks.setDeps("' + b + '", ["' + c + '"])') === 1, 'setDeps：同样被拒（rejected=1）');
+    await g(dom, 'Tasks.setStatus("' + b + '", "todo")'); // 回到待办后允许
+    const r2 = await tkJson('Tasks.addDep("' + b + '", "' + c + '")');
+    assert_(r2.ok === true, '回到待办后可加依赖');
+    $(dom, '#ctx-menu').classList.add('hidden'); // 收起右键菜单，别影响后续用例的 Delete 守卫
+  });
+
+  await okAsync('任务：Delete 键删除选中任务（清单/图通用，可撤销；输入态不劫持）', async () => {
+    await tkReset();
+    $(dom, '#ctx-menu').classList.add('hidden'); // 隔离：右键菜单开着时 Delete 守卫会拒绝
+    await g(dom, 'while (window.Modal && Modal.stack.length) Modal.hide()'); // 隔离：清掉历史测试残留的弹窗
+    const a = await g(dom, 'Tasks.add("删我").id');
+    await g(dom, 'Tasks.add("留着")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const node = dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === a);
+    click(node); // 选中（render 会重建 DOM，之后要重新查询）
+    await tick();
+    assert_(dagAll('g.tk-node').some((n) => n.getAttribute('data-id') === a && n.classList.contains('sel')), '节点选中态存在');
+    // 焦点在输入框时按 Delete：不能删任务
+    const newInput = $(dom, '#tasks-new-input');
+    newInput.focus();
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '输入态 Delete 不删除');
+    newInput.blur();
+    // 正常路径：body 焦点 + Delete → 删除 + toast
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, 'Delete 键删除选中任务');
+    assert_(g(dom, 'Tasks.tasks[0].title') === '留着', '删的是选中的那个');
+    assert_($(dom, '#toast-wrap').textContent.includes('⟲'), 'toast 提示可撤销');
+    assert_($(dom, '#tasks-undo') && !$(dom, '#tasks-undo').classList.contains('hidden'), '撤销按钮出现');
+    await g(dom, 'Tasks.undoDelete()');
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '撤销恢复');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：不显示已完成（☑ 开关：清单整组消失 + 图过滤 + 持久化）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("待办")');
+    const d = await g(dom, 'Tasks.add("做完的").id');
+    await g(dom, 'Tasks.setStatus("' + d + '", "done")');
+    assert_(tkRows().length === 2, '开关前 2 行（含已完成组）');
+    click($(dom, '#tasks-hide-done'));
+    await tick();
+    assert_(tkRows().length === 1, '清单：已完成整组不渲染');
+    assert_(![...tkRows()].some((r) => r.dataset.id === d), '已完成行不在');
+    assert_($(dom, '#tasks-hide-done').classList.contains('active'), '按钮激活态');
+    assert_(dom.window.localStorage.getItem('myide-tasks-hide-done') === '1', '偏好已持久化');
+    // 图同步过滤
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 1, '图：已完成节点隐藏');
+    assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计标注过滤态');
+    // 再点一次恢复
+    click($(dom, '#tasks-hide-done'));
+    await tick();
+    assert_(dagAll('g.tk-node').length === 2, '再点恢复显示');
+    assert_(dom.window.localStorage.getItem('myide-tasks-hide-done') === '0', '偏好已复位');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("既有")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    // 右键空白 → 菜单 → 新建任务
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    svg.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+    await tick();
+    assert_(ctxItem('新建任务'), '空白右键菜单含「新建任务」');
+    click(ctxItem('新建任务'));
+    await tick();
+    let inp = $(dom, '#tasks-dag-body .tk-dag-new');
+    assert_(inp, '点击菜单项 → 就地浮动输入框');
+    // Esc = 放弃
+    inp.value = '不该存在的';
+    inp.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, 'Esc 放弃：未创建');
+    assert_(!$(dom, '#tasks-dag-body .tk-dag-new'), '输入框已移除');
+    // blur = 提交（点到别处内容不丢）
+    svg.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+    await tick();
+    click(ctxItem('新建任务'));
+    await tick();
+    inp = $(dom, '#tasks-dag-body .tk-dag-new');
+    inp.value = '失焦建的';
+    inp.dispatchEvent(new dom.window.Event('blur'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, 'blur 提交：任务已创建');
+    assert_(g(dom, 'Tasks.tasks.some(t=>t.title==="失焦建的")'), '标题正确');
     await g(dom, 'Tasks.setView("list")');
   });
 
