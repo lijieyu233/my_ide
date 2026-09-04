@@ -3910,7 +3910,10 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#tasks-vis').dataset.mode === 'ready', '按钮标记当前模式');
     click($(dom, '#tasks-vis')); // ready → hideDone
     await tick();
-    click($(dom, '#tasks-vis')); // hideDone → all
+    click($(dom, '#tasks-vis')); // hideDone → doneChain（B 未完成拖住 A→B 块；孤岛 D 全完成 → 隐藏）
+    await tick();
+    assert_(tkRows().length === 3, 'doneChain：孤岛已完成 D 隐藏，活跃链 3 行, got ' + tkRows().length);
+    click($(dom, '#tasks-vis')); // doneChain → all
     await tick();
     assert_(tkRows().length === 4, '循环回「显示全部」');
   });
@@ -4041,7 +4044,9 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(g(dom, 'Tasks.blockedCount(Tasks.tasks.find(t=>t.id==="' + b + '"))') === 1, 'blockedCount 仍按全量算');
     click($(dom, '#tasks-vis')); // ready → hideDone
     await tick();
-    click($(dom, '#tasks-vis')); // hideDone → all
+    click($(dom, '#tasks-vis')); // hideDone → doneChain（无已完成 → 无隐藏）
+    await tick();
+    click($(dom, '#tasks-vis')); // doneChain → all
     await tick();
     // 隐藏已完成：A 完成后折叠已完成组
     await g(dom, 'Tasks.setStatus("' + a + '", "done")');
@@ -4167,11 +4172,191 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_(dagAll('g.tk-node').length === 1, '图：已完成节点隐藏');
     assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计标注过滤态');
+    // 第 4 态：隐藏完结链路（本例唯一完成任务自成一块 → 也隐藏）
+    click($(dom, '#tasks-vis')); // hideDone → doneChain
+    await tick();
+    assert_($(dom, '#tasks-vis').dataset.mode === 'doneChain', '按钮标记 doneChain');
+    assert_(dagAll('g.tk-node').length === 1, '图：完结链路（孤立已完成）隐藏，待办保留');
+    assert_($(dom, '#tasks-dag-count').textContent.includes('隐藏完结链路'), '统计标注链路过滤');
     // 循环回 all 恢复
-    click($(dom, '#tasks-vis')); // hideDone → all
+    click($(dom, '#tasks-vis')); // doneChain → all
     await tick();
     assert_(dagAll('g.tk-node').length === 2, '循环回「显示全部」恢复');
     assert_(dom.window.localStorage.getItem('myide-tasks-vis') === 'all', '偏好已复位');
+  });
+
+  await okAsync('任务：隐藏完结链路 —— 整块全 done 才隐藏，活跃链路里的已完成前置仍显示', async () => {
+    await tkReset();
+    const A = await g(dom, 'Tasks.add("A前置").id');
+    const B = await g(dom, 'Tasks.add("B后继").id');
+    const C = await g(dom, 'Tasks.add("C孤立完成").id');
+    const D = await g(dom, 'Tasks.add("D活跃").id');
+    const E = await g(dom, 'Tasks.add("E活跃前置").id');
+    await g(dom, 'Tasks.addDep("' + B + '", "' + A + '")'); // B 依赖 A（A→B 一条链）
+    await g(dom, 'Tasks.addDep("' + D + '", "' + E + '")'); // D 依赖 E
+    await g(dom, 'Tasks.setStatus("' + A + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + B + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + C + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + E + '", "done")'); // E 完成，但下游 D 未完成 → 整块显示
+    await g(dom, 'Tasks.focusOn(null)');
+    // 切到第 4 态：all → ready → hideDone → doneChain
+    click($(dom, '#tasks-vis')); await tick();
+    click($(dom, '#tasks-vis')); await tick();
+    click($(dom, '#tasks-vis')); await tick();
+    assert_($(dom, '#tasks-vis').dataset.mode === 'doneChain', '已切到 doneChain');
+    await tick(); await tick();
+    const visIds = [...dagAll('g.tk-node')].map((n) => n.dataset.id);
+    assert_(!visIds.includes(A) && !visIds.includes(B), '全完成链 A→B 整块隐藏');
+    assert_(!visIds.includes(C), '孤立已完成 C 隐藏');
+    assert_(visIds.includes(D) && visIds.includes(E), '活跃链 D→E 整块显示（含已完成 E）');
+    assert_(visIds.length === 2, '图上只剩 2 个节点, got ' + visIds.length);
+    assert_(tkRows().length === 2, '清单同步：2 行（D 待办 + E 已完成）');
+    // 切回 all 全恢复
+    click($(dom, '#tasks-vis')); await tick();
+    assert_(dagAll('g.tk-node').length === 5, '切回「显示全部」5 个节点全恢复');
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：聚焦 —— 只看选中任务及关联（上下传导）+ chip 退出', async () => {
+    await tkReset();
+    const A = await g(dom, 'Tasks.add("A源").id');
+    const B = await g(dom, 'Tasks.add("B中").id');
+    const C = await g(dom, 'Tasks.add("C下游").id');
+    const D = await g(dom, 'Tasks.add("D孤岛").id');
+    await g(dom, 'Tasks.addDep("' + B + '", "' + A + '")'); // B 依赖 A
+    await g(dom, 'Tasks.addDep("' + C + '", "' + B + '")'); // C 依赖 B（A→B→C 链）
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 4, '聚焦前 4 个节点');
+    // 右键 B → 只看此任务及关联
+    rightClick($(dom, '#tasks-dag-body g.tk-node[data-id="' + B + '"]'));
+    await tick();
+    click(ctxItem('只看此任务及关联'));
+    await tick(); await tick();
+    const visIds = [...dagAll('g.tk-node')].map((n) => n.dataset.id);
+    assert_(visIds.length === 3 && visIds.includes(A) && visIds.includes(B) && visIds.includes(C), '上下传导：A→B→C 全显示');
+    assert_(!visIds.includes(D), '孤岛 D 不显示');
+    assert_(tkRows().length === 3, '清单同步过滤');
+    const chip = $(dom, '#tasks-dag-focus');
+    assert_(chip && !chip.classList.contains('hidden'), '聚焦 chip 出现');
+    assert_(chip.textContent.includes('B中'), 'chip 显示焦点任务名');
+    assert_($(dom, '#tasks-dag-count').textContent.includes('聚焦'), '统计标注聚焦态');
+    // chip 退出 → 全部恢复
+    click(chip);
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 4, '退出聚焦 4 个节点全恢复');
+    assert_($(dom, '#tasks-dag-focus').classList.contains('hidden'), 'chip 隐藏');
+    // 删除焦点任务 → 聚焦自动退出（不留悬空过滤）
+    await g(dom, 'Tasks.focusOn("' + B + '")');
+    await tick();
+    await g(dom, 'Tasks.remove("' + B + '")');
+    await tick();
+    assert_(dagAll('g.tk-node').length === 3, '删除焦点任务后无过滤残留');
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：一键整理 —— 清全部手动位置回自动布局', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("散落A").id');
+    const b = await g(dom, 'Tasks.add("散落B").id');
+    await g(dom, 'Tasks.moveNode("' + a + '", 500, 700)');
+    await g(dom, 'Tasks.moveNode("' + b + '", 60, 2000)');
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 2, '整理前 2 个节点');
+    const hBefore = +$(dom, '#tasks-dag-body .tk-svg').getAttribute('height');
+    assert_(hBefore >= 2000 + 40 + 14, '手动位置把画布撑大');
+    click($(dom, '#tasks-dag-tidy')); // 一键整理
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === null, 'A 手动位置清除');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").y') === null, 'B 手动位置清除');
+    const hAfter = +$(dom, '#tasks-dag-body .tk-svg').getAttribute('height');
+    assert_(hAfter < 200, '画布回到自动布局尺寸, got ' + hAfter);
+    // 无手动位置时再点 → 不报错不变形
+    click($(dom, '#tasks-dag-tidy'));
+    await tick();
+    assert_(dagAll('g.tk-node').length === 2, '重复整理无副作用');
+  });
+
+  await okAsync('任务：新建前继/后继任务出现在源任务周围（就近落位）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("源任务").id');
+    await g(dom, 'Tasks.moveNode("' + a + '", 300, 240)');
+    await tick(); await tick();
+    // 右键源任务 → 新建后继（依赖源任务）
+    rightClick($(dom, '#tasks-dag-body g.tk-node[data-id="' + a + '"]'));
+    await tick();
+    click(ctxItem('新建后继任务'));
+    await tick(); await tick();
+    const inp = $(dom, '#pf-input');
+    assert_(inp, '后继任务弹窗');
+    inp.value = '后继任务';
+    click($(dom, '#pf-yes'));
+    await tick(); await tick();
+    const succ = g(dom, 'Tasks.tasks.find(t=>t.title==="后继任务")');
+    assert_(succ, '后继任务已创建');
+    assert_(succ.deps.includes(a), '后继依赖源任务');
+    assert_(succ.x === 300 && succ.y === 240 + 56, '后继落在源任务正下方（300, 296）, got ' + succ.x + ',' + succ.y);
+    assert_($(dom, '#tasks-dag-body g.tk-node[data-id="' + succ.id + '"]').getAttribute('transform') === 'translate(300,296)', '图上渲染在手动位置');
+    // 右键源任务 → 新建前置（源任务依赖它）
+    rightClick($(dom, '#tasks-dag-body g.tk-node[data-id="' + a + '"]'));
+    await tick();
+    click(ctxItem('新建前置任务'));
+    await tick(); await tick();
+    const inp2 = $(dom, '#pf-input');
+    assert_(inp2, '前置任务弹窗');
+    inp2.value = '前置任务';
+    click($(dom, '#pf-yes'));
+    await tick(); await tick();
+    const src = g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '")');
+    const pred = g(dom, 'Tasks.tasks.find(t=>t.title==="前置任务")');
+    assert_(pred && src.deps.includes(pred.id), '源任务依赖前置');
+    assert_(pred.y < 240 && pred.x >= 300 - 8, '前置落在源任务上方（y<240）, got ' + pred.x + ',' + pred.y);
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：多选（Ctrl+点击）+ Ctrl+C 复制描述 + Delete 批删', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("多选A").id');
+    const b = await g(dom, 'Tasks.add("多选B").id');
+    const c = await g(dom, 'Tasks.add("多选C").id');
+    await tick(); await tick();
+    const nodeA = $(dom, '#tasks-dag-body g.tk-node[data-id="' + a + '"]');
+    const nodeB = $(dom, '#tasks-dag-body g.tk-node[data-id="' + b + '"]');
+    const nodeC = $(dom, '#tasks-dag-body g.tk-node[data-id="' + c + '"]');
+    // 普通点 A → 单选
+    nodeA.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick();
+    assert_(nodeA.classList.contains('sel'), 'A 选中');
+    assert_(!nodeB.classList.contains('sel'), 'B 未选中');
+    // Ctrl+点 B、Ctrl+点 C → 三连选
+    nodeB.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    nodeC.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    assert_(nodeA.classList.contains('sel') && nodeB.classList.contains('sel') && nodeC.classList.contains('sel'), 'Ctrl+点击累计多选');
+    // Ctrl+再点 B → 移出多选
+    nodeB.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    assert_(!nodeB.classList.contains('sel'), 'Ctrl+再点移出多选');
+    assert_(nodeA.classList.contains('sel') && nodeC.classList.contains('sel'), '其余选中保留');
+    // Ctrl+C：复制选中任务描述（A、C 两行标题）
+    const before = calls.copy.length;
+    key(dom, 'c', { ctrl: true });
+    await tick(); await tick();
+    assert_(calls.copy.length === before + 1, 'Ctrl+C 触发一次剪贴板写入');
+    const copied = calls.copy[calls.copy.length - 1];
+    assert_(copied === '多选A\n多选C', '多选逐行复制标题, got ' + JSON.stringify(copied));
+    // Delete 批删：A、C 一起删（一个撤销栈条目）。
+    // 先清焦点：历史测试可能把焦点留在 AI 输入框等处（真实场景里在别的输入框打字时 Delete 本就不该删任务）
+    if (dom.window.document.activeElement && dom.window.document.activeElement.blur) dom.window.document.activeElement.blur();
+    key(dom, 'Delete');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, 'Delete 批删 2 个，剩 1, got ' + g(dom, 'Tasks.tasks.length'));
+    assert_(g(dom, 'Tasks.tasks[0].id') === b, '剩下的是未选中的 B');
+    // 撤销一次恢复两个
+    await g(dom, 'Tasks.undoDelete()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销恢复全部 2 个');
+    await g(dom, 'Tasks.focusOn(null)');
   });
 
   await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {

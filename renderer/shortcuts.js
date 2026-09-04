@@ -166,7 +166,11 @@ Shortcuts.register('win-zoom-reset', { desc: '整窗缩放重置', keys: ['ctrl+
 Shortcuts.register('hunk-next', { desc: '下一个 diff hunk', keys: ['alt+arrowdown'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="下一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('hunk-prev', { desc: '上一个 diff hunk', keys: ['alt+arrowup'], run: () => { const b = document.querySelector('.df-nav .vt-btn[title="上一个 hunk"]'); if (b) b.click(); } });
 Shortcuts.register('replace', { desc: '编辑器替换', keys: ['ctrl+h'], run: () => Viewer.openFind(true) });
-Shortcuts.register('copy-files', { desc: '复制选中的文件', keys: ['ctrl+c'], run: () => Tree.copySelected() });
+// Ctrl+C 按激活工具分流：任务工具 → 复制选中任务描述（多选逐行标题）；否则 → 复制文件树选中项
+Shortcuts.register('copy-files', { desc: '复制选中（任务工具激活时复制任务描述，否则复制选中的文件）', keys: ['ctrl+c'], run: () => {
+  if (window.Tasks && window.App && App.getTool() === 'tasks') return Tasks.copySelection();
+  return Tree.copySelected();
+} });
 Shortcuts.register('cut-files', { desc: '剪切选中的文件（粘贴时移动）', keys: ['ctrl+x'], run: () => Tree.cutSelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
 Shortcuts.register('undo-file', { desc: '撤销文件操作（粘贴/新建/重命名/删除/移动）', keys: ['ctrl+z'], run: () => Tree.undo() });

@@ -1757,6 +1757,15 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-node.sel rect.tk-n-box { stroke: var(--accent); stroke-width: 2.6; filter: drop-shadow(0 0 5px var(--accent)); }
 /* 可见度三态按钮：hideDone 模式 ☑ 带划线 */
 #tasks-vis[data-mode="hideDone"] { text-decoration: line-through; }
+#tasks-vis[data-mode="doneChain"] { text-decoration: line-through double; }
+/* 框选橡皮筋：拖空白出现的虚线框 */
+.tk-rubber {
+  position: absolute; z-index: 8; pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* 聚焦 chip（退出聚焦入口） */
+#tasks-dag-focus { color: var(--accent); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .tk-hot { fill: transparent; cursor: pointer; }
 /* 连线锚点（节点底部小圆点）：拖它=建依赖；拖节点本体=移动位置 */
 .tk-anchor { fill: var(--accent); opacity: .45; cursor: crosshair; }
