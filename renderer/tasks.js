@@ -400,7 +400,7 @@ const Tasks = (() => {
     if (!t || !Number.isFinite(x) || !Number.isFinite(y)) return false;
     t.x = Math.max(0, Math.round(x));
     t.y = Math.max(0, Math.round(y));
-    touch(t); save();
+    touch(t); save(); render(); // render：画布尺寸按自由位置扩大，节点不会停在可视区外
     return true;
   }
   // 清除自由位置：节点回到自动布局
@@ -790,7 +790,9 @@ const Tasks = (() => {
     const svgPt = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
-      return { x: (ev.clientX - r.left) * lay.width / r.width, y: (ev.clientY - r.top) * lay.height / r.height };
+      // 实时读 svg 尺寸：拖动中画布会扩大（grow），lay.width 已过期
+      const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+      return { x: (ev.clientX - r.left) * w / r.width, y: (ev.clientY - r.top) * h / r.height };
     };
     const nodeAt = (p) => lay.nodes.find(
       (n) => p.x >= n.x && p.x <= n.x + NW && p.y >= n.y && p.y <= n.y + NH) || null;
@@ -802,6 +804,13 @@ const Tasks = (() => {
     const clearHi = () => {
       svg.querySelectorAll('g.tk-node.drop-ok, g.tk-node.drop-no')
         .forEach((x) => x.classList.remove('drop-ok', 'drop-no'));
+    };
+    // 拖动中实时扩画布：节点拖到边缘外，svg 尺寸/viewBox 跟着长，容器滚动条随之出现
+    const grow = (x, y) => {
+      const W = Math.max(+svg.getAttribute('width') || 0, Math.ceil(x + NW + PAD));
+      const H = Math.max(+svg.getAttribute('height') || 0, Math.ceil(y + NH + PAD + 12));
+      svg.setAttribute('width', W); svg.setAttribute('height', H);
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     };
     // 移动节点时同步重算它的关联边（拖动中边跟手，不必全量重画）
     const relink = (id) => {
@@ -843,7 +852,12 @@ const Tasks = (() => {
           n.x = Math.max(0, origX + (p.x - p0.x));
           n.y = Math.max(0, origY + (p.y - p0.y));
           gEl.setAttribute('transform', `translate(${n.x},${n.y})`);
+          grow(n.x, n.y);
           relink(n.id);
+          // 滚动跟随：节点拖到容器可视区边缘外时，把容器滚到节点处（否则扩了画布仍看不见）
+          const vb = dagBodyEl;
+          if (n.y + NH > vb.scrollTop + vb.clientHeight - 24) vb.scrollTop = n.y + NH + 24 - vb.clientHeight;
+          if (n.x + NW > vb.scrollLeft + vb.clientWidth - 24) vb.scrollLeft = n.x + NW + 24 - vb.clientWidth;
           return;
         }
         const ax = drag.src.x + NW / 2, ay = drag.src.y + NH + 6;

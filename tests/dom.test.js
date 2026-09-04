@@ -3991,13 +3991,20 @@ assert_(panel, 'CM6 搜索面板出现');
     const nodeOf = (id) => dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === id);
     assert_(nodeOf(a).querySelector('.tk-anchor'), '节点带底部连线锚点（拖锚点=建依赖）');
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === null, '初始 x=null（走自动布局）');
-    // moveNode：拖动落盘自由位置
+    // moveNode：拖动落盘自由位置（内部自带 render，画布按位置扩大）
     assert_(g(dom, 'Tasks.moveNode("' + a + '", 300, 240)') === true, 'moveNode 成功');
-    await g(dom, 'Tasks.render()');
     await tick();
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 300, 'x=300 已持久化');
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").y') === 240, 'y=240 已持久化');
     assert_(nodeOf(a).getAttribute('transform') === 'translate(300,240)', '自由位置覆盖自动布局');
+    // 往下拖远：svg 画布高度随之扩大（节点不出视野、容器出滚动条）——「往下拖就消失」回归
+    const hBefore = +$(dom, '#tasks-dag-body .tk-svg').getAttribute('height');
+    assert_(g(dom, 'Tasks.moveNode("' + a + '", 60, 2000)') === true, 'moveNode 到 y=2000');
+    await tick();
+    const hAfter = +$(dom, '#tasks-dag-body .tk-svg').getAttribute('height');
+    assert_(hAfter >= 2000 + 40 + 14, 'svg 高度覆盖节点新位置, got ' + hBefore + ' -> ' + hAfter);
+    assert_($(dom, '#tasks-dag-body .tk-svg').getAttribute('viewBox').endsWith(' ' + hAfter), 'viewBox 与高度同步');
+    assert_(nodeOf(a).getAttribute('transform') === 'translate(60,2000)', '松手后节点仍在画布内（render 重绘）');
     assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, '负坐标 clamp 到 0');
     assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 0, '负值被夹到 0');
     // 拖过的节点：右键出现「回到自动布局」；点击后清除自由位置
