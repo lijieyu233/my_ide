@@ -3940,6 +3940,113 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setView("list")');
   });
 
+  await okAsync('任务：图上直接操作 —— addDep/removeDep 原子操作 + 节点右键菜单 + 状态热区', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("数据层").id');
+    const b = await g(dom, 'Tasks.add("界面").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const nodeOf = (id) => dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === id);
+    // 拖拽连线的原子操作（A 拖到 B = B 依赖 A）
+    assert_((await tkJson('Tasks.addDep("' + b + '", "' + a + '")')).ok === true, 'addDep：B 依赖 A');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 1, 'B.deps 已写入');
+    const dup = await tkJson('Tasks.addDep("' + b + '", "' + a + '")');
+    assert_(dup.ok === false && dup.why === '已存在这条依赖', '重复添加被拒并给原因');
+    const cyc = await tkJson('Tasks.addDep("' + a + '", "' + b + '")');
+    assert_(cyc.ok === false && cyc.why === '会造成循环依赖', '成环被拒并给原因');
+    const self = await tkJson('Tasks.addDep("' + a + '", "' + a + '")');
+    assert_(self.ok === false && self.why === '不能依赖自己', '自引用被拒');
+    // 节点右键 → 与清单同一套菜单
+    rightClick(nodeOf(b));
+    await tick();
+    click(ctxItem('标记进行中'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'doing', '图上右键设状态生效');
+    // 状态热区（等价清单勾选的二元切换）
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    await tick();
+    click(nodeOf(b).querySelector('.tk-hot'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'todo', '热区点击：done → todo');
+    click(nodeOf(b).querySelector('.tk-hot'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status') === 'done', '热区点击：todo → done');
+    // 右键边 → 确认后删依赖
+    const edge = dagAll('path.tk-edge')[0];
+    assert_(edge, '依赖边已渲染');
+    rightClick(edge);
+    await tick(); await tick();
+    assert_($(dom, '#cf-yes'), '删依赖确认弹窗');
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").deps.length') === 0, '图上删边生效');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：可见度过滤对依赖图生效（只看可执行 / 隐藏已完成）+ 阻塞语义不失真', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("A").id');
+    const b = await g(dom, 'Tasks.add("B").id');
+    await g(dom, 'Tasks.add("孤岛C")');
+    await g(dom, 'Tasks.setDeps("' + b + '", ["' + a + '"])'); // B 被 A 阻塞
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 3, '未过滤 → 3 节点');
+    assert_(dagAll('path.tk-edge').length === 1, '1 条边');
+    // 只看可执行：被阻塞的 B 隐藏，边随节点消失（无断头线）
+    click($(dom, '#tasks-ready'));
+    await tick();
+    assert_(dagAll('g.tk-node').length === 2, '只看可执行 → 2 节点（B 被隐藏）, got ' + dagAll('g.tk-node').length);
+    assert_(dagAll('path.tk-edge').length === 0, '隐藏节点的关联边一并消失');
+    assert_($(dom, '#tasks-dag-count').textContent.includes('已过滤'), '统计栏标注过滤态');
+    // 阻塞判定仍按全量数据：隐藏 B ≠ 解除阻塞
+    assert_(g(dom, 'Tasks.blockedCount(Tasks.tasks.find(t=>t.id==="' + b + '"))') === 1, 'blockedCount 仍按全量算');
+    click($(dom, '#tasks-ready')); // 关闭只看可执行
+    await tick();
+    // 隐藏已完成：A 完成后折叠已完成组
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await tick();
+    const doneHead = $(dom, '#tasks-body .tk-group[title]');
+    assert_(doneHead, '侧栏已完成分组头存在');
+    click(doneHead);
+    await tick();
+    assert_(dagAll('g.tk-node').length === 2, '折叠已完成 → done 节点隐藏, got ' + dagAll('g.tk-node').length);
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '数据层不删（只是不可见）');
+    // 还原两个开关，不影响后续用例
+    click($(dom, '#tasks-body .tk-group[title]'));
+    await tick();
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  await okAsync('任务：图上新建 —— 双击空白就地输入 + 工具栏「＋ 新建」', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("既有任务")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    assert_(dagAll('g.tk-node').length === 1, '先有 1 节点');
+    // 双击 svg 空白 → 就地浮动输入框
+    dblclick($(dom, '#tasks-dag-body .tk-svg'));
+    await tick();
+    const inp = $(dom, '#tasks-dag-body .tk-dag-new');
+    assert_(inp, '双击空白 → 浮动输入框');
+    inp.value = '图上建的';
+    inp.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick();
+    assert_(dagAll('g.tk-node').length === 2, 'Enter → 节点入图, got ' + dagAll('g.tk-node').length);
+    assert_(g(dom, 'Tasks.tasks[1].title') === '图上建的', '任务写入数据');
+    // 工具栏「＋ 新建」→ Modal.prompt 路径
+    click($(dom, '#tasks-dag-new'));
+    await tick(); await tick();
+    const pi = $(dom, '#pf-input');
+    assert_(pi, '新建任务弹窗（Modal.prompt）');
+    pi.value = '工具栏建的';
+    click($(dom, '#pf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '工具栏新建生效');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
   await okAsync('任务：脏数据自愈（成环 / 悬空 deps 载入时清洗）', async () => {
     await tkReset();
     const now = Date.now();

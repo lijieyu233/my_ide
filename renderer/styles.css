@@ -1746,6 +1746,21 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-legend .lg-doing { border-top: 2px solid var(--accent); }
 .tk-legend .lg-done { border-top: 2px solid var(--green); }
 .tk-legend .lg-edge-b { border-top-style: dashed; border-top-color: var(--red); }
+.tk-legend .lg-drag { border-top-style: dotted; border-top-color: var(--accent); }
+/* DAG 交互：边 hover / 拖拽连线 / 落点高亮 / 状态热区 / 空白新建输入框 */
+.tk-edge { cursor: context-menu; }
+.tk-edge:hover { stroke-width: 2.4; opacity: 1; }
+.tk-svg.tk-dragging { cursor: crosshair; }
+.tk-drag-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
+.tk-node.drop-ok rect.tk-n-box { stroke: var(--green); stroke-width: 2.6; filter: drop-shadow(0 0 3px var(--green)); }
+.tk-node.drop-no rect.tk-n-box { stroke: var(--red); stroke-width: 2.6; filter: drop-shadow(0 0 3px var(--red)); }
+.tk-hot { fill: transparent; cursor: pointer; }
+.tk-dag-new {
+  position: absolute; z-index: 5; width: 190px;
+  background: var(--bg-input); border: 1px solid var(--accent); border-radius: 4px;
+  color: var(--text-bright); padding: 4px 8px; outline: none; font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
 /* 依赖选择弹窗 */
 .tk-dep-list { max-height: 300px; overflow: auto; margin-top: 6px; }
 .tk-dep-item {

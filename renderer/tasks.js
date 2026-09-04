@@ -15,6 +15,7 @@ const Tasks = (() => {
   const dagCountEl = document.getElementById('tasks-dag-count');
   const dagListBtn = document.getElementById('tasks-dag-list');
   const dagCloseBtn = document.getElementById('tasks-dag-close');
+  const dagNewBtn = document.getElementById('tasks-dag-new');
 
   const LS_KEY = (p) => 'myide-tasks:' + p; // 旧存储 / 文件写失败时的降级存储
   const FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/tasks.json' : null);
@@ -341,6 +342,27 @@ const Tasks = (() => {
     touch(t); save(); render();
     return rejected;
   }
+  // 图上拖拽连线的原子操作：给 taskId 单独加一条 depId 依赖（返回 ok 供调用方提示）
+  function addDep(taskId, depId) {
+    const t = byId(taskId);
+    if (!t || !byId(depId)) return { ok: false, why: '任务不存在' };
+    if (depId === taskId) return { ok: false, why: '不能依赖自己' };
+    if (t.deps.includes(depId)) return { ok: false, why: '已存在这条依赖' };
+    if (wouldCycle(taskId, depId)) return { ok: false, why: '会造成循环依赖' };
+    t.deps.push(depId);
+    touch(t); save(); render();
+    return { ok: true };
+  }
+  // 图上右键删边的原子操作：移除一条依赖
+  function removeDep(taskId, depId) {
+    const t = byId(taskId);
+    if (!t) return false;
+    const i = t.deps.indexOf(depId);
+    if (i < 0) return false;
+    t.deps.splice(i, 1);
+    touch(t); save(); render();
+    return true;
+  }
 
   // 删除（单个 / 批量共用）：任务进回收栈，同时记录谁引用过它（撤销时恢复）
   function deleteMany(ids) {
@@ -561,17 +583,34 @@ const Tasks = (() => {
   }
 
   // ---------- DAG 视图（主区全宽）----------
+  const ST_NAME = { todo: '待办', doing: '进行中', done: '已完成' };
+
   function renderDag() {
     if (!dagBodyEl) return;
     dagBodyEl.innerHTML = '';
+    // 可见度过滤（与侧栏开关联动）：只看可执行 / 折叠已完成。
+    // 阻塞判定仍按全量数据算（byId 全局查），隐藏已完成≠解除阻塞，语义不失真
+    const vis = tasks.filter((t) => (!onlyReady || isReady(t)) && (!doneFolded || t.status !== 'done'));
+    const filtered = vis.length < tasks.length;
     if (dagCountEl) {
-      const bl = tasks.reduce((m, t) => m + blockedCount(t), 0);
-      const depN = tasks.reduce((m, t) => m + t.deps.length, 0);
-      dagCountEl.textContent = tasks.length + ' 任务 · ' + depN + ' 依赖' + (bl ? ' · ' + bl + ' 个阻塞' : '');
+      const bl = vis.reduce((m, t) => m + blockedCount(t), 0);
+      const depN = vis.reduce((m, t) => m + t.deps.length, 0);
+      let s = vis.length + ' 任务 · ' + depN + ' 依赖' + (bl ? ' · ' + bl + ' 个阻塞' : '');
+      if (filtered) {
+        const why = [];
+        if (onlyReady) why.push('只看可执行');
+        if (doneFolded) why.push('隐藏已完成');
+        s += ' · 已过滤（' + why.join(' + ') + '，共 ' + tasks.length + ' 个）';
+      }
+      dagCountEl.textContent = s;
     }
-    if (!tasks.length) { empty('暂无任务，回侧栏清单添加', dagBodyEl); return; }
-    const hasDep = tasks.some((t) => t.deps.length);
-    const lay = dagLayout(tasks);
+    if (!tasks.length) { empty('暂无任务，双击空白处或点右上「＋ 新建」添加', dagBodyEl); return; }
+    if (!vis.length) {
+      empty('没有符合当前过滤条件的任务（侧栏可关闭「只看可执行」或展开「已完成」）', dagBodyEl);
+      return;
+    }
+    const hasDep = vis.some((t) => t.deps.length);
+    const lay = dagLayout(vis); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
     const NS = 'http://www.w3.org/2000/svg';
     const el = (tag, attrs) => {
       const e = document.createElementNS(NS, tag);
@@ -615,6 +654,17 @@ const Tasks = (() => {
       });
       p.setAttribute('data-from', e.from);
       p.setAttribute('data-to', e.to);
+      // tooltip：说清谁依赖谁（边方向 = 箭头方向）
+      const fT = byId(e.from), tT = byId(e.to);
+      p.appendChild(el('title')).textContent =
+        (tT ? tT.title : e.to) + ' 依赖 ' + (fT ? fT.title : e.from) + '（右键删除这条依赖）';
+      p.oncontextmenu = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const f2 = byId(e.from), t2 = byId(e.to);
+        if (!f2 || !t2) return;
+        Modal.confirm('删除依赖', '「' + clip(t2.title, 30) + '」不再依赖「' + clip(f2.title, 30) + '」？')
+          .then((yes) => { if (yes) removeDep(t2.id, f2.id); });
+      };
       svg.appendChild(p);
     }
     for (const n of lay.nodes) {
@@ -635,13 +685,103 @@ const Tasks = (() => {
       const blockers = blockedList(t);
       t2.textContent = (t.status === 'done' ? '● ' : t.status === 'doing' ? '◐ ' : '○ ') + n.id;
       g.appendChild(t2);
+      // 状态快切热区（盖在状态图标上方，点击=清单勾选同语义）
+      const hot = el('rect', { class: 'tk-hot', x: 0, y: 0, width: 24, height: NH });
+      hot.appendChild(el('title')).textContent =
+        t.status === 'done' ? '点击回到待办' : '点击标记完成（右键节点可选进行中）';
+      hot.onclick = (ev) => { ev.stopPropagation(); cycleCheck(n.id); };
+      g.appendChild(hot);
+      // tooltip：所有节点统一给出全量信息（原来只有被阻塞节点有提示）
+      const tip = [t.title, '状态：' + ST_NAME[t.status] + ' · 优先级：' + PRIO_NAME[t.priority]];
+      if (t.note) tip.push('备注：' + t.note.split('\n')[0]);
       if (t.status !== 'done' && blockers.length) {
-        g.appendChild(el('title')).textContent = '被未完成任务阻塞：' + blockers.map((p) => p.title).join('、');
+        tip.push('被未完成任务阻塞：' + blockers.map((p) => p.title).join('、'));
       }
+      tip.push('单击选中 · 双击改名 · 右键更多 · 拖到其他节点=建立依赖');
+      g.appendChild(el('title')).textContent = tip.join('\n');
+      // 选中保留 onclick（与拖拽的 mouseup 选中幂等共存；合成 click 事件也能选中）
       g.onclick = () => { selId = n.id; applySel(); };
       g.ondblclick = () => editTitle(n.id);
+      g.oncontextmenu = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        selId = n.id; applySel(); showCtx(ev, t); // 与清单右键同一套菜单
+      };
       svg.appendChild(g);
     }
+
+    // ---- 拖拽连线：A 拖到 B = B 依赖 A（箭头 A→B，所见即所得）----
+    // mousedown 记起点；位移>4px 判定拖线，否则松手时按普通点击=选中（接管原 g.onclick）
+    let drag = null;
+    const svgPt = (ev) => {
+      const r = svg.getBoundingClientRect();
+      if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
+      return { x: (ev.clientX - r.left) * lay.width / r.width, y: (ev.clientY - r.top) * lay.height / r.height };
+    };
+    const nodeAt = (p) => lay.nodes.find(
+      (n) => p.x >= n.x && p.x <= n.x + NW && p.y >= n.y && p.y <= n.y + NH) || null;
+    const dropOk = (src, tgt) => {
+      if (tgt.id === src.id) return false;
+      const tT = byId(tgt.id);
+      return !!tT && !tT.deps.includes(src.id) && !wouldCycle(tgt.id, src.id);
+    };
+    const clearHi = () => {
+      svg.querySelectorAll('g.tk-node.drop-ok, g.tk-node.drop-no')
+        .forEach((x) => x.classList.remove('drop-ok', 'drop-no'));
+    };
+    svg.addEventListener('mousedown', (ev) => {
+      if (ev.button !== 0) return;
+      const gEl = ev.target.closest ? ev.target.closest('g.tk-node') : null;
+      if (!gEl) return;
+      const n = lay.nodes.find((x) => x.id === gEl.dataset.id);
+      if (!n) return;
+      ev.preventDefault(); // 拖线时不选中文本/拖出幽灵图
+      const x0 = ev.clientX, y0 = ev.clientY;
+      drag = { src: n, moved: false, line: null, target: null };
+      const onMove = (e2) => {
+        if (!drag) return;
+        if (!svg.isConnected) { cleanup(); return; } // 中途重渲染把 svg 换掉了
+        if (!drag.moved) {
+          if (Math.hypot(e2.clientX - x0, e2.clientY - y0) < 4) return;
+          drag.moved = true;
+          svg.classList.add('tk-dragging');
+          drag.line = el('path', { class: 'tk-drag-line' });
+          svg.appendChild(drag.line);
+        }
+        const p = svgPt(e2);
+        const ax = drag.src.x + NW / 2, ay = drag.src.y + NH;
+        drag.line.setAttribute('d', `M ${ax} ${ay} C ${ax} ${ay + 18}, ${p.x} ${p.y - 18}, ${p.x} ${p.y}`);
+        clearHi();
+        const t2 = nodeAt(p);
+        drag.target = (t2 && t2.id !== drag.src.id) ? t2 : null;
+        if (drag.target) {
+          const gT = svg.querySelector('g.tk-node[data-id="' + drag.target.id + '"]');
+          if (gT) gT.classList.add(dropOk(drag.src, drag.target) ? 'drop-ok' : 'drop-no');
+        }
+      };
+      const onUp = () => {
+        const src = drag && drag.src, tgt = drag && drag.target, moved = drag && drag.moved;
+        cleanup();
+        if (!src) return;
+        if (!moved) { selId = src.id; applySel(); return; } // 普通点击=选中
+        if (!tgt) return; // 拖到空白：取消
+        const r = addDep(tgt.id, src.id); // B 依赖 A
+        if (r.ok) {
+          if (window.MI) MI.toast('已建立依赖：「' + clip(byId(tgt.id).title, 20) + '」依赖「' + clip(byId(src.id).title, 20) + '」', 'ok');
+        } else if (window.MI) {
+          MI.toast(r.why + '，未添加', 'err');
+        }
+      };
+      const cleanup = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (drag && drag.line && drag.line.parentNode) drag.line.parentNode.removeChild(drag.line);
+        svg.classList.remove('tk-dragging');
+        clearHi();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
     const wrap = document.createElement('div');
     wrap.className = 'tk-dag';
     wrap.appendChild(svg);
@@ -650,7 +790,7 @@ const Tasks = (() => {
     if (!hasDep) {
       const hint = document.createElement('div');
       hint.className = 'tk-dag-hint';
-      hint.textContent = '任务之间还没有依赖关系，去清单里右键「依赖…」添加';
+      hint.textContent = '任务之间还没有依赖关系：右键节点「依赖…」，或直接从一个节点拖到另一个节点';
       dagBodyEl.appendChild(hint);
     }
     // 图例（固定右下角）
@@ -661,8 +801,33 @@ const Tasks = (() => {
       '<span><i class="lg lg-doing"></i>进行中</span>' +
       '<span><i class="lg lg-done"></i>已完成</span>' +
       '<span><i class="lg lg-edge"></i>依赖</span>' +
-      '<span><i class="lg lg-edge-b"></i>阻塞中</span>';
+      '<span><i class="lg lg-edge-b"></i>阻塞中</span>' +
+      '<span><i class="lg lg-drag"></i>拖拽建立</span>';
     dagBodyEl.appendChild(legend);
+  }
+
+  // 双击图空白处 → 原地弹出输入框新建任务（位置即所见；自动布局不承诺节点停在该点）
+  function openDagNewInput(cx, cy) {
+    if (!dagBodyEl || dagBodyEl.querySelector('.tk-dag-new')) return;
+    const input = document.createElement('input');
+    input.className = 'tk-dag-new';
+    input.placeholder = '任务标题 · Enter 新建 · Esc 取消';
+    input.spellcheck = false;
+    const r = dagBodyEl.getBoundingClientRect();
+    input.style.left = Math.max(4, Math.min(cx - r.left - 90, r.width - 200)) + 'px';
+    input.style.top = Math.max(4, cy - r.top - 14) + 'px';
+    dagBodyEl.appendChild(input);
+    setTimeout(() => { try { input.focus(); } catch {} }, 30);
+    const close = () => { if (input.parentNode) input.parentNode.removeChild(input); };
+    input.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') {
+        const v = input.value.trim();
+        close();
+        if (v) add(v); // add 内部已选中并渲染
+      } else if (ev.key === 'Escape') close();
+    });
+    input.addEventListener('blur', close);
   }
 
   // ---------- 弹窗 ----------
@@ -797,6 +962,20 @@ const Tasks = (() => {
   if (viewBtn) viewBtn.onclick = () => setView(view === 'list' ? 'dag' : 'list');
   if (dagListBtn) dagListBtn.onclick = () => setView('list');
   if (dagCloseBtn) dagCloseBtn.onclick = () => setView('list');
+  if (dagNewBtn) {
+    dagNewBtn.onclick = async () => {
+      const v = await Modal.prompt('新建任务', '任务标题', '');
+      if (v) add(v); // 新节点进 level 0，可立即拖线/右键设置
+    };
+  }
+  // 双击图空白处新建（绑在常驻容器上，不随 renderDag 重建叠加监听）
+  if (dagBodyEl) {
+    dagBodyEl.addEventListener('dblclick', (e) => {
+      if (view !== 'dag') return;
+      if (e.target.closest && e.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new')) return;
+      openDagNewInput(e.clientX, e.clientY);
+    });
+  }
   if (readyBtn) {
     readyBtn.onclick = () => {
       onlyReady = !onlyReady;
@@ -839,6 +1018,7 @@ const Tasks = (() => {
   return {
     setRoot, reload, refresh, render, setView,
     add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps,
+    addDep, removeDep,
     remove, clearDone, undoDelete,
     get tasks() { return tasks; },
     get view() { return view; },
