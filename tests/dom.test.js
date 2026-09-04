@@ -4710,6 +4710,88 @@ assert_(panel, 'CM6 搜索面板出现');
     delete FAKE_FS[TK_FILE];
   });
 
+  // ---------- 048-5.3 小地图 ----------
+  await okAsync('小地图：>30 可见节点时出现（节点色块 + has-mini），≤30 不出现', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.setView("dag")');
+    for (let i = 1; i <= 30; i++) await g(dom, 'Tasks.add("批量' + i + '")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    assert_(!body.querySelector('.tk-mini'), '30 节点：小地图不出现');
+    assert_(!body.classList.contains('has-mini'), '30 节点：无 has-mini（图例不让位）');
+    await g(dom, 'Tasks.add("第31个")');
+    await tick(); await tick();
+    const mini = body.querySelector('.tk-mini');
+    assert_(mini, '31 节点：小地图出现');
+    assert_(body.classList.contains('has-mini'), 'has-mini：图例让位上移');
+    const n = mini.querySelectorAll('rect.tk-mm-n').length;
+    assert_(n === 31, '小地图节点色块 31 个, got ' + n);
+    const msvg = mini.querySelector('svg');
+    assert_(msvg && msvg.getAttribute('viewBox') === body.querySelector('.tk-svg').getAttribute('viewBox'),
+      '小地图 viewBox = 大图逻辑尺寸');
+    // 可见度过滤联动：切「只看可执行」→ 可见 21 → 小地图消失
+    for (let i = 1; i <= 10; i++) await g(dom, 'Tasks.setStatus(Tasks.tasks[' + (i - 1) + '].id, "done")');
+    await tick(); await tick();
+    click($(dom, '#tasks-vis')); // 打开可见度菜单（真实 UI 路径）
+    const items = [...$(dom, '#ctx-menu').querySelectorAll('.ctx-item')];
+    const readyItem = items.find((d) => d.textContent.includes('只看可执行'));
+    assert_(readyItem, '菜单里有「只看可执行」');
+    click(readyItem);
+    await tick(); await tick();
+    assert_(!body.querySelector('.tk-mini'), '可见节点降到 21：小地图消失');
+    assert_(!body.classList.contains('has-mini'), 'has-mini 一并移除（图例归位）');
+    // 切回「显示全部」→ 小地图回来（31 色）
+    click($(dom, '#tasks-vis'));
+    click([...$(dom, '#ctx-menu').querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('显示全部')));
+    await tick(); await tick();
+    assert_(body.querySelector('.tk-mini'), '切回全部：小地图恢复');
+    assert_(body.querySelectorAll('.tk-mini rect.tk-mm-n').length === 31, '色块数恢复 31');
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('小地图：点击导航（把大图视图中心移到点击处）+ 视口框反映 scroll/zoom', async () => {
+    await tkReset();
+    for (let i = 1; i <= 32; i++) await g(dom, 'Tasks.add("导航' + i + '")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = mockDagBox(400, 300);
+    body._sl = 0; body._st = 0;
+    await tkResetZoom();
+    const mini = body.querySelector('.tk-mini');
+    assert_(mini, '小地图存在');
+    const msvg = mini.querySelector('svg');
+    const vbw = +String(msvg.getAttribute('viewBox')).split(/[\s,]+/)[2] || 1;
+    const vbh = +String(msvg.getAttribute('viewBox')).split(/[\s,]+/)[3] || 1;
+    // mock 小地图屏幕位置：left=200 top=300，渲染尺寸 160×96（等比缩放后短边贴合）
+    const mw = +msvg.getAttribute('width') || 160, mh = +msvg.getAttribute('height') || 96;
+    msvg.getBoundingClientRect = () => ({ left: 200, top: 300, width: mw, height: mh, right: 200 + mw, bottom: 300 + mh, x: 200, y: 300 });
+    // 点击小地图右下角 → 视图中心移到内容右下
+    mini.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 200 + mw * 0.95, clientY: 300 + mh * 0.95, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const z = await tkZoom();
+    assert_(Math.abs(body.scrollLeft - Math.max(0, vbw * 0.95 * z - 200)) <= 1,
+      '横向导航 scrollLeft = vx*zoom - cw/2, got ' + body.scrollLeft);
+    assert_(Math.abs(body.scrollTop - Math.max(0, vbh * 0.95 * z - 150)) <= 1,
+      '纵向导航 scrollTop = vy*zoom - ch/2, got ' + body.scrollTop);
+    assert_(body.scrollLeft > 0, '点击右下角 → 视口确实右移（扁图高度小，scrollTop 钳 0 属正常）');
+    // 视口框反映滚动与缩放：缩到 0.5 后重渲染，vp = scroll/zoom + client/zoom（逻辑坐标）
+    await g(dom, 'Tasks.applyZoom(0.5, null)');
+    body._sl = 100; body._st = 60;
+    await g(dom, 'Tasks.render()');
+    await tick();
+    const vp = body.querySelector('.tk-mini rect.tk-mm-vp'); // render() 会重建小地图，别用旧 mini 引用
+    assert_(vp, '小地图上有视口框');
+    assert_(Math.abs(+vp.getAttribute('x') - 100 / 0.5) <= 1, 'vp.x = scrollLeft/zoom, got ' + vp.getAttribute('x'));
+    assert_(Math.abs(+vp.getAttribute('y') - 60 / 0.5) <= 1, 'vp.y = scrollTop/zoom, got ' + vp.getAttribute('y'));
+    assert_(Math.abs(+vp.getAttribute('width') - 400 / 0.5) <= 1, 'vp.w = clientWidth/zoom, got ' + vp.getAttribute('width'));
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

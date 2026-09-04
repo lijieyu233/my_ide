@@ -1807,6 +1807,23 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-legend .lg-done { border-top: 2px solid var(--green); }
 .tk-legend .lg-edge-b { border-top-style: dashed; border-top-color: var(--red); }
 .tk-legend .lg-drag { border-top-style: dotted; border-top-color: var(--accent); }
+/* 小地图（048-5.3）：>30 节点时右下角出现，图例让位上移 */
+#tasks-dag-body.has-mini .tk-legend { bottom: 116px; }
+.tk-mini {
+  position: absolute; right: 10px; bottom: 8px; z-index: 3;
+  background: var(--bg-panel); border: 1px solid var(--border-mid); border-radius: 4px;
+  padding: 4px; opacity: .92; cursor: pointer;
+}
+.tk-mini:hover { opacity: 1; border-color: var(--accent); }
+.tk-mm-svg { display: block; }
+.tk-mm-n { stroke: none; }
+.tk-mm-n[data-status="todo"] { fill: var(--border-mid); }
+.tk-mm-n[data-status="doing"] { fill: var(--accent); }
+.tk-mm-n[data-status="done"] { fill: var(--green); }
+.tk-mm-vp {
+  fill: rgba(128, 128, 128, .06); stroke: var(--accent);
+  stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke;
+}
 /* DAG 交互：边 hover / 拖拽连线 / 落点高亮 / 状态热区 / 空白新建输入框 */
 .tk-edge { cursor: context-menu; }
 .tk-edge:hover { stroke-width: 2.4; opacity: 1; }

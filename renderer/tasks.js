@@ -862,6 +862,39 @@ const Tasks = (() => {
   }
   function zoomBy(f) { applyZoom(zoom * f, null); }
 
+  // ---------- 小地图（048-5.3）----------
+  // 可见节点 > MM_MIN_NODES 时右下角出现；只画节点色块 + 当前视口虚线框（点击/拖拽 = 导航）
+  const MM_W = 160, MM_H = 96, MM_MIN_NODES = 30;
+  function scheduleMinimap() {
+    if (miniRaf) return;
+    const raf = window.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
+    miniRaf = raf(() => { miniRaf = 0; renderMinimap(); });
+  }
+  function renderMinimap() {
+    if (!miniEl || !miniEl.isConnected || !curLay) return;
+    const svg = miniEl.querySelector('svg');
+    if (!svg) return;
+    const vb = { w: curLay.width || 1, h: curLay.height || 1 };
+    const s = Math.min(MM_W / vb.w, MM_H / vb.h); // 等比缩进 160×96（短边贴合）
+    // 节点色块：几百个 rect 的 innerHTML 重建代价可忽略（rAF 节流下）
+    let html = '';
+    for (const n of curLay.nodes) {
+      if (!n.task) continue;
+      html += '<rect class="tk-mm-n" data-status="' + n.task.status + '" x="' + n.x + '" y="' + n.y + '" width="' + NW + '" height="' + NH + '" rx="3"></rect>';
+    }
+    // 视口框：屏幕像素（scrollLeft/Top + clientWidth/Height）→ 逻辑坐标（÷zoom）
+    const cw = dagBodyEl ? dagBodyEl.clientWidth : 0, ch = dagBodyEl ? dagBodyEl.clientHeight : 0;
+    if (cw && ch) {
+      html += '<rect class="tk-mm-vp" x="' + (dagBodyEl.scrollLeft / zoom) + '" y="' + (dagBodyEl.scrollTop / zoom) + '" width="' + (cw / zoom) + '" height="' + (ch / zoom) + '"></rect>';
+    }
+    svg.innerHTML = html;
+    const w = Math.max(1, vb.w * s), h = Math.max(1, vb.h * s);
+    svg.setAttribute('width', Math.ceil(w));
+    svg.setAttribute('height', Math.ceil(h));
+  }
+  // 拖动节点扩画布时小地图比例已变：grow 处调用（renderDag 重建时不需要——创建即绘制）
+  function onCanvasGrow() { if (miniEl) scheduleMinimap(); }
+
   function renderDag() {
     if (!dagBodyEl) return;
     dagBodyEl.innerHTML = '';
@@ -1052,6 +1085,7 @@ const Tasks = (() => {
       setSvgSize(svg,
         Math.max(vb.w, Math.ceil(x + NW + PAD)),
         Math.max(vb.h, Math.ceil(y + NH + PAD + 12)));
+      onCanvasGrow(); // viewBox 变了，小地图比例要跟着重算
     };
     // 移动节点时同步重算它的关联边（拖动中边跟手，不必全量重画）
     const relink = (id) => {
@@ -1169,6 +1203,47 @@ const Tasks = (() => {
       '<span><i class="lg lg-edge-b"></i>阻塞中</span>' +
       '<span><i class="lg lg-drag"></i>拖拽建立</span>';
     dagBodyEl.appendChild(legend);
+
+    // 小地图（048-5.3）：可见节点 > 30 时右下角出现，图例让位上移（.has-mini）
+    miniEl = null;
+    if (lay.nodes.length > MM_MIN_NODES) {
+      dagBodyEl.classList.add('has-mini');
+      const mini = document.createElement('div');
+      mini.className = 'tk-mini';
+      mini.title = '小地图：点击/拖拽定位视图';
+      const msvg = el('svg', { class: 'tk-mm-svg' });
+      msvg.setAttribute('viewBox', `0 0 ${Math.max(1, lay.width)} ${Math.max(1, lay.height)}`);
+      mini.appendChild(msvg);
+      // 点击/拖拽 = 把大图视图中心移到该点（小地图屏幕像素 → 逻辑坐标 → 大图滚动量）
+      const nav = (ev) => {
+        const r = msvg.getBoundingClientRect();
+        if (!r.width || !r.height) return; // jsdom 无布局：别把滚动量算成 NaN
+        const vbw = Math.max(1, lay.width), vbh = Math.max(1, lay.height);
+        const vx = (ev.clientX - r.left) / r.width * vbw;
+        const vy = (ev.clientY - r.top) / r.height * vbh;
+        const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
+        dagBodyEl.scrollLeft = Math.max(0, vx * zoom - cw / 2);
+        dagBodyEl.scrollTop = Math.max(0, vy * zoom - ch / 2);
+        scheduleMinimap();
+      };
+      mini.onmousedown = (ev) => {
+        if (ev.button !== 0) return;
+        ev.stopPropagation(); ev.preventDefault(); // 别冒泡成框选/节点拖拽
+        nav(ev);
+        const mv = (e2) => nav(e2);
+        const up = () => {
+          window.removeEventListener('mousemove', mv);
+          window.removeEventListener('mouseup', up);
+        };
+        window.addEventListener('mousemove', mv);
+        window.addEventListener('mouseup', up);
+      };
+      dagBodyEl.appendChild(mini);
+      miniEl = mini;
+      renderMinimap(); // 创建即绘制一次（其后靠 scroll/zoom/grow 的 rAF 节流同步）
+    } else {
+      dagBodyEl.classList.remove('has-mini');
+    }
   }
 
   // 双击图空白处 → 原地弹出输入框新建任务（位置即所见；自动布局不承诺节点停在该点）
@@ -1425,7 +1500,7 @@ const Tasks = (() => {
     dagBodyEl.addEventListener('mousedown', (ev) => {
       if (view !== 'dag' || ev.button !== 0) return;
       if (spaceDown) return; // 空格按住 = 平移模式：框选让位（同容器的平移监听会接管）
-      if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new, input, button, textarea, select')) return; // 节点/边/浮层各有归属
+      if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-mini, .tk-dag-hint, .tk-dag-new, input, button, textarea, select')) return; // 节点/边/小地图/浮层各有归属
       const svg = dagBodyEl.querySelector('.tk-svg');
       if (!svg || !curLay) return;
       const svgPt = (e2) => {
