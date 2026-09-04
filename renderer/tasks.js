@@ -58,6 +58,7 @@ const Tasks = (() => {
   let saveChain = Promise.resolve(); // 串行写：快速连续操作不乱序
   let undoStack = [];      // 删除回收栈（内存，最多 10 步）：[{tasks:[...], refs:[{who,dep}]}]
   const lastPos = new Map(); // 最近一次渲染各节点的画布坐标（前后继任务就近落位用）
+  let curLay = null;         // 最近一次 renderDag 的布局结果（框选命中计算用；监听挂常驻容器，需跨渲染取）
 
   (function initVisMode() {
     let m = null;
@@ -817,6 +818,7 @@ const Tasks = (() => {
     }
     const hasDep = vis.some((t) => t.deps.length);
     const lay = dagLayout(vis); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
+    curLay = lay; // 框选监听挂常驻容器（dagBodyEl），需跨渲染取最新布局
     // 自由位置：拖动过的节点（x/y 非空）覆盖自动布局坐标；画布尺寸随之扩大
     for (const n of lay.nodes) {
       const t = n.task;
@@ -1052,62 +1054,8 @@ const Tasks = (() => {
       window.addEventListener('mouseup', onUp);
     });
 
-    // ---- 框选：空白按下拖出虚线框，框内节点整组进入多选（Ctrl+C 复制 / Delete 批删） ----
-    svg.addEventListener('mousedown', (ev) => {
-      if (ev.button !== 0) return;
-      if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge')) return; // 节点/边各有归属
-      const x0 = ev.clientX, y0 = ev.clientY;
-      let active = false;
-      let last = { x: x0, y: y0 };
-      const band = document.createElement('div');
-      band.className = 'tk-rubber';
-      const boxInSvg = (ax, ay, bx, by) => {
-        const pa = svgPt({ clientX: ax, clientY: ay });
-        const pb = svgPt({ clientX: bx, clientY: by });
-        return { x1: Math.min(pa.x, pb.x), y1: Math.min(pa.y, pb.y), x2: Math.max(pa.x, pb.x), y2: Math.max(pa.y, pb.y) };
-      };
-      const boxedIds = () => {
-        const b = boxInSvg(x0, y0, last.x, last.y);
-        return lay.nodes.filter((n2) =>
-          n2.x < b.x2 && n2.x + NW > b.x1 && n2.y < b.y2 && n2.y + NH > b.y1).map((n2) => n2.id);
-      };
-      const onMove = (e2) => {
-        if (!svg.isConnected) { cleanup(); return; }
-        last = { x: e2.clientX, y: e2.clientY };
-        if (!active) {
-          if (Math.hypot(e2.clientX - x0, e2.clientY - y0) < 5) return;
-          active = true;
-          e2.preventDefault(); // 拖框时避免选中文本/节点 title
-          dagBodyEl.appendChild(band);
-        }
-        const br = dagBodyEl.getBoundingClientRect();
-        band.style.left = (Math.min(x0, e2.clientX) - br.left + dagBodyEl.scrollLeft) + 'px';
-        band.style.top = (Math.min(y0, e2.clientY) - br.top + dagBodyEl.scrollTop) + 'px';
-        band.style.width = Math.abs(e2.clientX - x0) + 'px';
-        band.style.height = Math.abs(e2.clientY - y0) + 'px';
-        // 实时高亮框内节点
-        const hits = new Set(boxedIds());
-        svg.querySelectorAll('g.tk-node').forEach((g2) => {
-          g2.classList.toggle('sel', hits.has(g2.dataset.id));
-        });
-      };
-      const onUp = () => {
-        cleanup();
-        if (!active) { selId = null; selIds.clear(); applySel(); return; } // 空白单击 = 取消选中
-        const hits = boxedIds();
-        selIds = new Set(hits);
-        selId = hits.length ? hits[0] : null; // 主选中 = 框内第一个
-        applySel();
-        if (hits.length && window.MI) MI.toast('已选中 ' + hits.length + ' 个任务（Ctrl+C 复制 / Delete 删除）', 'ok');
-      };
-      const cleanup = () => {
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-        if (band.parentNode) band.parentNode.removeChild(band);
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    });
+    // 框选监听已移至常驻容器 dagBodyEl（见 init 区）：svg 高度只到内容底边，
+    // 若挂在 svg 上，其下方空白无法作为框选起点（用户实测：起点只能压着最下面一行元素）
 
     const wrap = document.createElement('div');
     wrap.className = 'tk-dag';
@@ -1379,6 +1327,72 @@ const Tasks = (() => {
       focusId = null;
       render();
     };
+  }
+  // 框选：空白按下拖出虚线框，框内节点整组进入多选（Ctrl+C 复制 / Delete 批删）。
+  // 挂在常驻容器 dagBodyEl 上（与双击/右键同模式，不随 renderDag 重建叠加）——
+  // svg 高度只到内容底边，挂在 svg 上时其下方空白无法作为起点
+  if (dagBodyEl) {
+    dagBodyEl.addEventListener('mousedown', (ev) => {
+      if (view !== 'dag' || ev.button !== 0) return;
+      if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new, input, button, textarea, select')) return; // 节点/边/浮层各有归属
+      const svg = dagBodyEl.querySelector('.tk-svg');
+      if (!svg || !curLay) return;
+      const svgPt = (e2) => {
+        const r = svg.getBoundingClientRect();
+        if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
+        const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+        // 鼠标可拖出 svg 底边之外（容器空白区）：换算出的 y 超出 svg 高度是正确语义
+        return { x: (e2.clientX - r.left) * w / r.width, y: (e2.clientY - r.top) * h / r.height };
+      };
+      const x0 = ev.clientX, y0 = ev.clientY;
+      let active = false;
+      let last = { x: x0, y: y0 };
+      const band = document.createElement('div');
+      band.className = 'tk-rubber';
+      const boxedIds = () => {
+        const pa = svgPt({ clientX: x0, clientY: y0 });
+        const pb = svgPt({ clientX: last.x, clientY: last.y });
+        const b = { x1: Math.min(pa.x, pb.x), y1: Math.min(pa.y, pb.y), x2: Math.max(pa.x, pb.x), y2: Math.max(pa.y, pb.y) };
+        return curLay.nodes.filter((n2) =>
+          n2.x < b.x2 && n2.x + NW > b.x1 && n2.y < b.y2 && n2.y + NH > b.y1).map((n2) => n2.id);
+      };
+      const onMove = (e2) => {
+        if (!svg.isConnected) { cleanup(); return; } // 中途重渲染把 svg 换掉了
+        last = { x: e2.clientX, y: e2.clientY };
+        if (!active) {
+          if (Math.hypot(e2.clientX - x0, e2.clientY - y0) < 5) return;
+          active = true;
+          e2.preventDefault(); // 拖框时避免选中文本/节点 title
+          dagBodyEl.appendChild(band);
+        }
+        const br = dagBodyEl.getBoundingClientRect();
+        band.style.left = (Math.min(x0, e2.clientX) - br.left + dagBodyEl.scrollLeft) + 'px';
+        band.style.top = (Math.min(y0, e2.clientY) - br.top + dagBodyEl.scrollTop) + 'px';
+        band.style.width = Math.abs(e2.clientX - x0) + 'px';
+        band.style.height = Math.abs(e2.clientY - y0) + 'px';
+        // 实时高亮框内节点
+        const hits = new Set(boxedIds());
+        svg.querySelectorAll('g.tk-node').forEach((g2) => {
+          g2.classList.toggle('sel', hits.has(g2.dataset.id));
+        });
+      };
+      const onUp = () => {
+        cleanup();
+        if (!active) { selId = null; selIds.clear(); applySel(); return; } // 空白单击 = 取消选中
+        const hits = boxedIds();
+        selIds = new Set(hits);
+        selId = hits.length ? hits[0] : null; // 主选中 = 框内第一个
+        applySel();
+        if (hits.length && window.MI) MI.toast('已选中 ' + hits.length + ' 个任务（Ctrl+C 复制 / Delete 删除）', 'ok');
+      };
+      const cleanup = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (band.parentNode) band.parentNode.removeChild(band);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
   }
   // 双击图空白处新建（绑在常驻容器上，不随 renderDag 重建叠加监听）
   if (dagBodyEl) {

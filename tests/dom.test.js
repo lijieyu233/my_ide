@@ -4401,6 +4401,37 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.focusOn(null)');
   });
 
+  await okAsync('任务：框选 —— svg 下方空白也能作为起点（起点不限于内容底边以上）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("框选A").id');
+    await g(dom, 'Tasks.add("框选B")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    assert_(svg, 'svg 存在');
+    // mock 布局：svg 高 100（单层），容器高 400 —— svg 底边之下 300px 是容器空白。
+    // 旧实现 mousedown 挂在 svg 上：空白处按下不触发框选，起点被压在「最下面一个元素」底边以上
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 100, right: 400, bottom: 100, x: 0, y: 0 });
+    body.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, x: 0, y: 0 });
+    // 在容器空白处按下（target=body 本身，clientY 已在 svg 底边之外）
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 390, clientY: 300 }));
+    // 位移超阈值才激活：先原地（不激活），再拉向左上
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 390, clientY: 300 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 5, clientY: 5 }));
+    await tick();
+    assert_(body.querySelector('.tk-rubber'), '从 svg 下方空白也能拉出框选虚线框');
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify([...Tasks.selectionIds()])'));
+    assert_(sel.length === 2, '框选自下而上扫过全部 2 个节点, got ' + JSON.stringify(sel));
+    // 清理选中态，不影响后续用例
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 390, clientY: 300 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    await g(dom, 'Tasks.setView("list")');
+  });
+
   await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("既有")');
