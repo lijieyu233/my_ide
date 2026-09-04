@@ -59,6 +59,20 @@ const Tasks = (() => {
   let undoStack = [];      // 删除回收栈（内存，最多 10 步）：[{tasks:[...], refs:[{who,dep}]}]
   const lastPos = new Map(); // 最近一次渲染各节点的画布坐标（前后继任务就近落位用）
   let curLay = null;         // 最近一次 renderDag 的布局结果（框选命中计算用；监听挂常驻容器，需跨渲染取）
+  // ---------- 画布缩放（048-5.1）----------
+  // 缩放 = 布局尺寸缩放：viewBox 恒为逻辑尺寸，width/height 属性 = 逻辑 × zoom。
+  // 这样滚动条随缩放自然出现，grow 扩画布只改逻辑尺寸、属性同步乘即可。
+  const ZOOM_KEY = 'myide-tasks-zoom';
+  const ZOOM_MIN = 0.25, ZOOM_MAX = 2, ZOOM_STEP = 1.1;
+  let zoom = 1;
+  try {
+    const z = parseFloat(localStorage.getItem(ZOOM_KEY) || '');
+    if (z) zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  } catch {}
+  let spaceDown = false;   // 空格按住 = 抓手平移模式
+  let curSvg = null;       // 当前渲染的 svg（常驻容器上的监听需跨渲染访问它）
+  let miniEl = null;       // 小地图容器（5.3）
+  let miniRaf = 0;
 
   (function initVisMode() {
     let m = null;
@@ -779,6 +793,57 @@ const Tasks = (() => {
   // ---------- DAG 视图（主区全宽）----------
   const ST_NAME = { todo: '待办', doing: '进行中', done: '已完成' };
 
+  // ---------- 缩放辅助（048-5.1）----------
+  // viewBox 恒为逻辑尺寸；width/height 属性 = 逻辑 × zoom（滚动条随缩放自然出现）
+  function setSvgSize(svg, w, h) {
+    if (!svg) return;
+    svg.setAttribute('viewBox', `0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}`);
+    svg.setAttribute('width', Math.max(1, Math.ceil(w * zoom)));
+    svg.setAttribute('height', Math.max(1, Math.ceil(h * zoom)));
+  }
+  // 读 viewBox 的逻辑尺寸：svg.viewBox.baseVal 在 jsdom 下不可靠 → 解析属性
+  function vbSize(svg) {
+    const p = String((svg && svg.getAttribute('viewBox')) || '0 0 1 1').split(/[\s,]+/).map(Number);
+    return { w: p[2] || 1, h: p[3] || 1 };
+  }
+  function updateZoomLabel() {
+    const zl = document.getElementById('tasks-dag-zoom');
+    if (zl) zl.textContent = Math.round(zoom * 100) + '%';
+  }
+  // anchor = 容器内像素坐标；缩放后把光标指向的那个内容点滚回光标下（光标下的内容不动）
+  function applyZoom(z, anchor) {
+    const zOld = zoom;
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+    if (!Number.isFinite(next) || next === zOld) return;
+    zoom = next;
+    try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch {}
+    if (curSvg && curSvg.isConnected) {
+      const vb = vbSize(curSvg);
+      setSvgSize(curSvg, vb.w, vb.h);
+    }
+    if (anchor && dagBodyEl) {
+      const br = dagBodyEl.getBoundingClientRect();
+      const offX = anchor.x - br.left, offY = anchor.y - br.top;
+      const ax = (offX + dagBodyEl.scrollLeft) / zOld; // 光标指向的逻辑坐标（缩放前）
+      const ay = (offY + dagBodyEl.scrollTop) / zOld;
+      dagBodyEl.scrollLeft = ax * zoom - offX;
+      dagBodyEl.scrollTop = ay * zoom - offY;
+    }
+    updateZoomLabel();
+    if (miniEl) scheduleMinimap();
+  }
+  // 适应画布：整图缩放进可视区（不超过 100%）并居中
+  function fitView() {
+    if (!dagBodyEl || !curLay) return;
+    const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
+    if (!cw || !ch) return; // jsdom 无布局：别把 zoom 压到下限
+    const W = curLay.width || 1, H = curLay.height || 1;
+    applyZoom(Math.min(cw / W, ch / H, 1), null);
+    dagBodyEl.scrollLeft = Math.max(0, (W * zoom - cw) / 2);
+    dagBodyEl.scrollTop = Math.max(0, (H * zoom - ch) / 2);
+  }
+  function zoomBy(f) { applyZoom(zoom * f, null); }
+
   function renderDag() {
     if (!dagBodyEl) return;
     dagBodyEl.innerHTML = '';
@@ -840,9 +905,8 @@ const Tasks = (() => {
 
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', 'tk-svg');
-    svg.setAttribute('width', Math.max(lay.width, 1));
-    svg.setAttribute('height', Math.max(lay.height, 1));
-    svg.setAttribute('viewBox', `0 0 ${Math.max(lay.width, 1)} ${Math.max(lay.height, 1)}`);
+    setSvgSize(svg, lay.width, lay.height); // width/height 属性 = 逻辑 × zoom，viewBox 恒为逻辑尺寸
+    curSvg = svg; // 常驻容器上的滚轮/平移监听需要跨渲染访问当前 svg
 
     // 箭头（正常 / 阻塞两色）
     // ★ 配色一律走 CSS 类：SVG 表现属性里的 var(--x) 在 Chromium 不生效，
@@ -947,9 +1011,10 @@ const Tasks = (() => {
     const svgPt = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
-      // 实时读 svg 尺寸：拖动中画布会扩大（grow），lay.width 已过期
-      const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
-      return { x: (ev.clientX - r.left) * w / r.width, y: (ev.clientY - r.top) * h / r.height };
+      // ★ 换算一律以 viewBox（逻辑尺寸）为准：缩放后 width 属性 = 逻辑 × zoom，
+      //   拿 width 属性做换算会把屏幕像素当成逻辑坐标，拖拽/框选/连线全部漂移
+      const vb = vbSize(svg); // 实时读：拖动中画布会扩大（grow），层局部变量已过期
+      return { x: (ev.clientX - r.left) * vb.w / r.width, y: (ev.clientY - r.top) * vb.h / r.height };
     };
     const nodeAt = (p) => lay.nodes.find(
       (n) => p.x >= n.x && p.x <= n.x + NW && p.y >= n.y && p.y <= n.y + NH) || null;
@@ -964,10 +1029,11 @@ const Tasks = (() => {
     };
     // 拖动中实时扩画布：节点拖到边缘外，svg 尺寸/viewBox 跟着长，容器滚动条随之出现
     const grow = (x, y) => {
-      const W = Math.max(+svg.getAttribute('width') || 0, Math.ceil(x + NW + PAD));
-      const H = Math.max(+svg.getAttribute('height') || 0, Math.ceil(y + NH + PAD + 12));
-      svg.setAttribute('width', W); svg.setAttribute('height', H);
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      // 扩的是逻辑尺寸，width/height 属性由 setSvgSize 同步乘 zoom
+      const vb = vbSize(svg);
+      setSvgSize(svg,
+        Math.max(vb.w, Math.ceil(x + NW + PAD)),
+        Math.max(vb.h, Math.ceil(y + NH + PAD + 12)));
     };
     // 移动节点时同步重算它的关联边（拖动中边跟手，不必全量重画）
     const relink = (id) => {
@@ -982,6 +1048,7 @@ const Tasks = (() => {
     };
     svg.addEventListener('mousedown', (ev) => {
       if (ev.button !== 0) return;
+      if (spaceDown) return; // 空格按住 = 平移模式：节点拖拽让位（见常驻容器上的平移监听）
       const gEl = ev.target.closest ? ev.target.closest('g.tk-node') : null;
       if (!gEl) return;
       const n = lay.nodes.find((x) => x.id === gEl.dataset.id);
@@ -1013,9 +1080,14 @@ const Tasks = (() => {
           grow(n.x, n.y);
           relink(n.id);
           // 滚动跟随：节点拖到容器可视区边缘外时，把容器滚到节点处（否则扩了画布仍看不见）
-          const vb = dagBodyEl;
-          if (n.y + NH > vb.scrollTop + vb.clientHeight - 24) vb.scrollTop = n.y + NH + 24 - vb.clientHeight;
-          if (n.x + NW > vb.scrollLeft + vb.clientWidth - 24) vb.scrollLeft = n.x + NW + 24 - vb.clientWidth;
+          // 节点坐标是逻辑值，容器滚动量是屏幕像素 → 比较前先乘 zoom
+          const box = dagBodyEl;
+          if ((n.y + NH) * zoom > box.scrollTop + box.clientHeight - 24) {
+            box.scrollTop = (n.y + NH) * zoom + 24 - box.clientHeight;
+          }
+          if ((n.x + NW) * zoom > box.scrollLeft + box.clientWidth - 24) {
+            box.scrollLeft = (n.x + NW) * zoom + 24 - box.clientWidth;
+          }
           return;
         }
         const ax = drag.src.x + NW / 2, ay = drag.src.y + NH + 6;
@@ -1334,15 +1406,17 @@ const Tasks = (() => {
   if (dagBodyEl) {
     dagBodyEl.addEventListener('mousedown', (ev) => {
       if (view !== 'dag' || ev.button !== 0) return;
+      if (spaceDown) return; // 空格按住 = 平移模式：框选让位（同容器的平移监听会接管）
       if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-dag-hint, .tk-dag-new, input, button, textarea, select')) return; // 节点/边/浮层各有归属
       const svg = dagBodyEl.querySelector('.tk-svg');
       if (!svg || !curLay) return;
       const svgPt = (e2) => {
         const r = svg.getBoundingClientRect();
         if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
-        const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+        // 与 renderDag 内同源：以 viewBox 逻辑尺寸换算（缩放后 width 属性 ≠ 逻辑尺寸）
+        const vb = vbSize(svg);
         // 鼠标可拖出 svg 底边之外（容器空白区）：换算出的 y 超出 svg 高度是正确语义
-        return { x: (e2.clientX - r.left) * w / r.width, y: (e2.clientY - r.top) * h / r.height };
+        return { x: (e2.clientX - r.left) * vb.w / r.width, y: (e2.clientY - r.top) * vb.h / r.height };
       };
       const x0 = ev.clientX, y0 = ev.clientY;
       let active = false;
@@ -1394,6 +1468,61 @@ const Tasks = (() => {
       window.addEventListener('mouseup', onUp);
     });
   }
+  // Ctrl/⌘ + 滚轮：以光标为锚缩放（无修饰键的滚轮保持原生滚动，不劫持）
+  if (dagBodyEl) {
+    dagBodyEl.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      applyZoom(zoom * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), { x: e.clientX, y: e.clientY });
+    }, { passive: false });
+    // 空格按住 / 中键按住：光标变抓手，拖拽 = 滚动容器（平移）
+    dagBodyEl.addEventListener('mousedown', (e) => {
+      const wantPan = spaceDown || e.button === 1;
+      if (!wantPan) return;
+      e.preventDefault();
+      const sx = dagBodyEl.scrollLeft, sy = dagBodyEl.scrollTop;
+      const x0 = e.clientX, y0 = e.clientY;
+      dagBodyEl.classList.add('tk-pan', 'tk-panning');
+      const onMove = (e2) => {
+        dagBodyEl.scrollLeft = sx - (e2.clientX - x0);
+        dagBodyEl.scrollTop = sy - (e2.clientY - y0);
+      };
+      const onUp = () => {
+        dagBodyEl.classList.remove('tk-panning');
+        if (!spaceDown) dagBodyEl.classList.remove('tk-pan');
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+    // 容器滚动时同步小地图视口框（5.3；目前无小地图时是空操作）
+    dagBodyEl.addEventListener('scroll', () => { if (miniEl) scheduleMinimap(); }, { passive: true });
+  }
+  // 空格状态：输入态不劫持（否则打字打不出空格）
+  const isTyping = () => {
+    const ae = document.activeElement;
+    return !!ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable);
+  };
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || isTyping()) return;
+    if (e.target.closest && e.target.closest('#tasks-dag-panel')) e.preventDefault(); // 别让空格滚页面
+    spaceDown = true;
+    if (dagBodyEl) dagBodyEl.classList.add('tk-pan'); // 按下即变抓手（体感），不必等到点下鼠标
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.code !== 'Space') return;
+    spaceDown = false;
+    if (dagBodyEl) dagBodyEl.classList.remove('tk-pan');
+  });
+  window.addEventListener('blur', () => {
+    spaceDown = false;
+    if (dagBodyEl) dagBodyEl.classList.remove('tk-pan');
+  });
+  // 工具栏：⛶ 适应画布
+  const fitBtn = document.getElementById('tasks-dag-fit');
+  if (fitBtn) fitBtn.onclick = () => { fitView(); if (window.MI) MI.toast('已适应画布（' + Math.round(zoom * 100) + '%）', 'ok'); };
+
   // 双击图空白处新建（绑在常驻容器上，不随 renderDag 重建叠加监听）
   if (dagBodyEl) {
     dagBodyEl.addEventListener('dblclick', (e) => {
@@ -1502,12 +1631,15 @@ const Tasks = (() => {
     render();
     // 主区图面板的显隐跟工具窗口状态走（App.renderToolStrip 统一裁决）
     if (window.App && App.renderToolStrip) App.renderToolStrip();
+    fitView(); // 打开任务工具自动适应一次画布（面板此时已可见；jsdom 无布局时内部跳过）
   }
 
   return {
     setRoot, reload, refresh, render, setView,
     add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps,
     addDep, removeDep, moveNode, resetNodePos, tidyLayout,
+    fitView, zoomBy, applyZoom,
+    get zoom() { return zoom; },
     focusOn(id) { focusId = (byId(id) ? id : null); render(); },   // 聚焦/退出（传 null 退出）
     get focusId() { return focusId; },
     relatedOf,

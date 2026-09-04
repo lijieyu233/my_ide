@@ -4540,6 +4540,174 @@ assert_(panel, 'CM6 搜索面板出现');
     delete FAKE_FS['C:/proj2/.myide/tasks.json'];
   });
 
+  // ---------- 048-5.1 画布缩放 / 平移 ----------
+  // jsdom 无布局：svg/容器尺寸与滚动量都要自己 mock，否则换算全是 0
+  function mockDagBox(w = 400, h = 400) {
+    const body = $(dom, '#tasks-dag-body');
+    // scrollLeft/Top 在 jsdom 里是只读 0 → 换成可读写属性才能验证锚点补偿与平移
+    body._sl = 0; body._st = 0;
+    Object.defineProperty(body, 'scrollLeft', { get() { return body._sl; }, set(v) { body._sl = v; }, configurable: true });
+    Object.defineProperty(body, 'scrollTop', { get() { return body._st; }, set(v) { body._st = v; }, configurable: true });
+    Object.defineProperty(body, 'clientWidth', { get() { return w; }, configurable: true });
+    Object.defineProperty(body, 'clientHeight', { get() { return h; }, configurable: true });
+    body.getBoundingClientRect = () => ({ left: 0, top: 0, width: w, height: h, right: w, bottom: h, x: 0, y: 0 });
+    return body;
+  }
+  // 让 svg 的渲染宽度 = viewBox 逻辑宽 × zoom（真实浏览器里 width 属性就是这么来的）
+  function mockSvgRect() {
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    if (!svg) return null;
+    const vb = String(svg.getAttribute('viewBox') || '0 0 1 1').split(/[\s,]+/).map(Number);
+    const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: w, height: h, right: w, bottom: h, x: 0, y: 0 });
+    return { svg, vbW: vb[2], vbH: vb[3] };
+  }
+  const tkZoom = () => g(dom, 'Tasks.zoom');
+  async function tkResetZoom() {
+    await g(dom, 'Tasks.applyZoom(1, null)');
+    dom.window.localStorage.removeItem('myide-tasks-zoom');
+  }
+
+  await okAsync('画布缩放：viewBox 恒为逻辑尺寸，width/height = 逻辑 × zoom + 上下限钳制', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("缩放A")');
+    await g(dom, 'Tasks.add("缩放B")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    const vb0 = svg.getAttribute('viewBox');
+    const w0 = +svg.getAttribute('width');
+    await g(dom, 'Tasks.applyZoom(0.5, null)');
+    await tick();
+    assert_(String(svg.getAttribute('viewBox')) === String(vb0), '缩放不改 viewBox（逻辑尺寸恒定）, got ' + svg.getAttribute('viewBox'));
+    assert_(Math.abs(+svg.getAttribute('width') - w0 * 0.5) <= 1, 'width 属性 = 逻辑 × zoom, got ' + svg.getAttribute('width'));
+    assert_(Math.round((await tkZoom()) * 100) === 50, 'zoom = 0.5');
+    await g(dom, 'Tasks.applyZoom(99, null)');
+    assert_(await tkZoom() === 2, '上限钳到 2, got ' + await tkZoom());
+    await g(dom, 'Tasks.applyZoom(0.0001, null)');
+    assert_(await tkZoom() === 0.25, '下限钳到 0.25, got ' + await tkZoom());
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('画布缩放：缩放后拖拽落点按逻辑坐标换算（不再把屏幕像素当逻辑值）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("拖动我")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    mockDagBox();
+    await g(dom, 'Tasks.applyZoom(0.5, null)');
+    await tick();
+    const m = mockSvgRect();
+    const g1 = $(dom, '#tasks-dag-body g.tk-node');
+    assert_(g1, '节点存在');
+    // 单层单节点：逻辑坐标 x = PAD(14)。屏幕拖 100px @zoom 0.5 → 逻辑位移 200
+    g1.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 20, clientY: 20, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 20, clientY: 20 }));      // 未过阈值
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 120, clientY: 20 }));     // 位移 100px
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick(); await tick();
+    const x = await g(dom, 'Tasks.tasks[0].x');
+    assert_(Math.abs(x - 214) <= 2, '落点 = 14 + 100/0.5 = 214, got ' + x);
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('画布缩放：Ctrl+滚轮以光标为锚（光标下的内容点不动）+ 无修饰滚轮不劫持', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("锚点测试")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = mockDagBox();
+    body._sl = 100; body._st = 50;
+    await tkResetZoom();
+    // 光标 (200,100)：缩放前指向逻辑点 (200+100, 100+50)/1 = (300,150)
+    // 放大 1.1 倍后该点位于屏幕 (330,165)，要让它在光标下 → scroll = (330-200, 165-100) = (130,65)
+    body._sl = 100; body._st = 50;
+    const wheel = new dom.window.WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 200, clientY: 100, deltaY: -100, ctrlKey: true });
+    body.dispatchEvent(wheel);
+    await tick();
+    assert_(Math.abs((await tkZoom()) - 1.1) < 1e-6, 'Ctrl+滚轮放大到 1.1, got ' + await tkZoom());
+    assert_(Math.abs(body.scrollLeft - 130) <= 1, '横向锚点补偿 scrollLeft=130, got ' + body.scrollLeft);
+    assert_(Math.abs(body.scrollTop - 65) <= 1, '纵向锚点补偿 scrollTop=65, got ' + body.scrollTop);
+    // 无修饰键的滚轮：不缩放（保持原生滚动）
+    const z0 = await tkZoom();
+    body.dispatchEvent(new dom.window.WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 200, clientY: 100, deltaY: -100 }));
+    await tick();
+    assert_(await tkZoom() === z0, '无 Ctrl 的滚轮不触发缩放');
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('画布平移：空格按住拖拽 = 滚动容器（抓手光标，松手复原）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("平移测试")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = mockDagBox();
+    body._sl = 0; body._st = 0;
+    // 空格按下（焦点不在输入框：tkReset 里侧栏输入框可能被聚焦，先 blur）
+    const ae = dom.window.document.activeElement;
+    if (ae && ae.blur) ae.blur();
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
+    await tick();
+    assert_(body.classList.contains('tk-pan'), '空格按住 → 抓手光标类');
+    // 往左上拖 60,40 → 内容跟着走，滚动量反向增加
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 200, clientY: 200, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 140, clientY: 160 }));
+    await tick();
+    assert_(body.scrollLeft === 60, '横向平移 60, got ' + body.scrollLeft);
+    assert_(body.scrollTop === 40, '纵向平移 40, got ' + body.scrollTop);
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    assert_(!body.classList.contains('tk-panning'), '松手 → 退出拖拽（grabbing 移除）');
+    assert_(body.classList.contains('tk-pan'), '空格仍按住 → 保持抓手光标');
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }));
+    await tick();
+    assert_(!body.classList.contains('tk-pan'), '空格松开 → 恢复普通光标');
+    // 未按空格时的普通拖拽不该平移（那是框选）
+    body._sl = 0; body._st = 0;
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }));
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 200, clientY: 200, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 140, clientY: 160 }));
+    await tick();
+    assert_(body.scrollLeft === 0, '未按空格：拖拽不平移（留给框选）');
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('适应画布：整图缩放进可视区并居中（不放大过 100%）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("Fit1")');
+    await g(dom, 'Tasks.add("Fit2")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await g(dom, 'Tasks.applyZoom(2, null)'); // 先放大，验证 fit 会压回来
+    const body = mockDagBox(300, 200);
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    const vb = String(svg.getAttribute('viewBox')).split(/[\s,]+/).map(Number);
+    const W = vb[2], H = vb[3];
+    await g(dom, 'Tasks.fitView()');
+    await tick();
+    const expect = Math.min(300 / W, 200 / H, 1);
+    assert_(Math.abs((await tkZoom()) - expect) < 1e-6, 'zoom = min(cw/W, ch/H, 1) = ' + expect.toFixed(3) + ', got ' + await tkZoom());
+    assert_(Math.abs(body.scrollLeft - Math.max(0, (W * (await tkZoom()) - 300) / 2)) <= 1, '水平居中');
+    // 不放大过 100%：小图 fit 后仍是 1
+    mockDagBox(5000, 5000);
+    await g(dom, 'Tasks.fitView()');
+    await tick();
+    assert_(await tkZoom() === 1, '图比视口小时不放大，保持 100%');
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

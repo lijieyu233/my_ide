@@ -1878,3 +1878,14 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
    左侧这组要贴左端，故把 auto 抵消掉 */
 #sb-tool-font { margin-left: 0; margin-right: 12px; }
 #sb-tf-val { min-width: 18px; text-align: center; cursor: default; }
+
+/* ---------- 依赖图画布：缩放 / 平移（048-5.1）---------- */
+.tk-dag-zoom {
+  font-size: 11px; color: var(--text-dim); min-width: 34px; text-align: center;
+  align-self: center; cursor: default; user-select: none; flex-shrink: 0;
+}
+/* 平移态：空格按住 / 中键按下 → 抓手光标；拖拽期间禁止文本选中 */
+#tasks-dag-body.tk-pan { cursor: grab; user-select: none; }
+#tasks-dag-body.tk-pan * { cursor: grab !important; }
+#tasks-dag-body.tk-panning { cursor: grabbing; user-select: none; }
+#tasks-dag-body.tk-panning * { cursor: grabbing !important; }
