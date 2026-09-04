@@ -17,6 +17,7 @@ const Tasks = (() => {
   const tidyBtn = document.getElementById('tasks-dag-tidy');   // 一键整理：清手动位置回自动布局
   const focusBtn = document.getElementById('tasks-dag-focus'); // 聚焦模式退出 chip
   const critBtn = document.getElementById('tasks-dag-crit');  // 关键路径开关（048-6.1）
+  const layoutBtn = document.getElementById('tasks-dag-layout'); // 布局切换：拓扑/泳道/甘特（048-P2）
   const filterInputEl = document.getElementById('tasks-filter');     // 清单标题过滤（048-R12）
   const filterPrioEl = document.getElementById('tasks-filter-prio'); // 清单优先级筛选（048-R12）
 
@@ -62,6 +63,18 @@ const Tasks = (() => {
   // 048-R12 清单过滤（临时视图不持久化）
   let listFilter = '';
   let listPrio = 'all';
+  // 048-P2 布局模式：'topo' 拓扑分层 | 'lane' 泳道（按状态）| 'gantt' 甘特（按最早开始时间排横条）
+  const LAYOUTS = ['topo', 'lane', 'gantt'];
+  const LAYOUT_META = {
+    topo: { icon: '⛓', label: '拓扑布局' },
+    lane: { icon: '☰', label: '泳道布局' },
+    gantt: { icon: '▤', label: '甘特图' },
+  };
+  let layoutMode = 'topo';
+  try {
+    const lm = localStorage.getItem('myide-tasks-layout');
+    if (LAYOUTS.includes(lm)) layoutMode = lm;
+  } catch {}
   let selId = null;        // 清单与图共享的选中项（双向联动；多选时的主选中）
   let selIds = new Set();  // 多选集合（Ctrl+点击 / 框选累计；Ctrl+C / Delete 对整组生效）
   let storeMode = 'file';  // 'file' | 'ls'
@@ -391,7 +404,9 @@ const Tasks = (() => {
       layers[i].forEach((id, k) => { pos[id] = k; });
     }
   }
-  function dagLayout(list) {
+  function dagLayout(list, mode) {
+    if (mode === 'lane') return laneLayout(list);
+    if (mode === 'gantt') return ganttLayout(list);
     const src = Array.isArray(list) ? list : [];
     const ids = new Set(src.map((t) => t && t.id));
     const deps = {};
@@ -447,12 +462,141 @@ const Tasks = (() => {
     return { nodes, edges, width: maxW, height: PAD * 2 + (maxLv + 1) * (NH + GY) - GY };
   }
 
+  // ---------- 泳道布局（048-P2）----------
+  // y 按状态分三条泳道（待办/进行中/已完成），x 按拓扑序换行排布；
+  // 自由位置无意义（渲染层跳过覆盖）——状态变了泳道就变，手放的位置留不住
+  const LANE_ORDER = ['todo', 'doing', 'done'];
+  const LANE_HEAD = 26, LANE_GAP = 16, LANE_COLS = 6;
+  function laneLayout(list) {
+    const src = Array.isArray(list) ? list : [];
+    const ids = new Set(src.map((t) => t && t.id));
+    const deps = {};
+    for (const t of src) deps[t.id] = (Array.isArray(t.deps) ? t.deps : []).filter((d) => ids.has(d) && d !== t.id);
+    // 拓扑层级（同 topo：level = max(前驱)+1）——泳道内排序键
+    const lv = {};
+    const onPath = new Set();
+    const levelOf = (id) => {
+      if (lv[id] !== undefined) return lv[id];
+      if (onPath.has(id)) return 0;
+      onPath.add(id);
+      let v = 0;
+      for (const d of (deps[id] || [])) v = Math.max(v, levelOf(d) + 1);
+      onPath.delete(id);
+      lv[id] = v;
+      return v;
+    };
+    for (const t of src) levelOf(t.id);
+    const byStatus = { todo: [], doing: [], done: [] };
+    for (const t of src) byStatus[t.status] && byStatus[t.status].push(t);
+    const nodes = [], lanes = [];
+    let y = PAD;
+    let maxCols = 1;
+    for (const st of LANE_ORDER) {
+      const group = byStatus[st].sort((a, b) => (lv[a.id] - lv[b.id]) || (a.id < b.id ? -1 : 1));
+      if (!group.length) continue;
+      const cols = Math.min(group.length, LANE_COLS);
+      maxCols = Math.max(maxCols, cols);
+      const rows = Math.ceil(group.length / LANE_COLS);
+      const laneH = LANE_HEAD + rows * (NH + GY) - GY;
+      lanes.push({ status: st, y, h: laneH, count: group.length });
+      group.forEach((t, i) => {
+        nodes.push({
+          id: t.id, x: PAD + (i % LANE_COLS) * (NW + GX),
+          y: y + LANE_HEAD + Math.floor(i / LANE_COLS) * (NH + GY),
+          level: lv[t.id] || 0, task: t,
+        });
+      });
+      y += laneH + LANE_GAP;
+    }
+    const edges = [];
+    for (const t of src) {
+      for (const d of deps[t.id]) {
+        const dep = src.find((x) => x.id === d);
+        edges.push({ from: d, to: t.id, blocked: !!dep && dep.status !== 'done' });
+      }
+    }
+    return {
+      nodes, edges, lanes,
+      width: PAD * 2 + maxCols * (NW + GX) - GX,
+      height: Math.max(PAD * 2 + NH, y - LANE_GAP + PAD),
+    };
+  }
+
+  // ---------- 甘特布局（048-P2）----------
+  // 每任务一根横条：x 起点 = 拓扑最早开始时间（所有前置做完的最早时刻），宽度 = 预计耗时；
+  // 无耗时按默认 30 分钟占位；行序 = 最早开始时间 → 拓扑层级。关键路径（工期最长链）在渲染层直读高亮
+  const G_LABEL_W = 190, G_BAR_H = 26, G_ROW_GAP = 14, G_TIME_PAD = 30, G_DEF_MIN = 30, G_PPM = 1;
+  function ganttLayout(list) {
+    const src = Array.isArray(list) ? list : [];
+    const ids = new Set(src.map((t) => t && t.id));
+    const deps = {};
+    for (const t of src) deps[t.id] = (Array.isArray(t.deps) ? t.deps : []).filter((d) => ids.has(d) && d !== t.id);
+    const dur = (t) => (Number.isFinite(t.estimateMin) && t.estimateMin > 0 ? t.estimateMin : G_DEF_MIN);
+    // Kahn 拓扑序上做最早开始时间：ES(t) = max(ES(dep) + dur(dep))，无前置 = 0
+    const indeg = new Map(), succ = new Map(), es = new Map();
+    for (const t of src) { indeg.set(t.id, deps[t.id].length); succ.set(t.id, []); }
+    for (const t of src) for (const d of deps[t.id]) succ.get(d).push(t.id);
+    const q = src.filter((t) => indeg.get(t.id) === 0).map((t) => t.id);
+    for (const t of src) if (!q.includes(t.id)) es.set(t.id, 0);
+    for (let h = 0; h < q.length; h++) {
+      const u = q[h];
+      if (!es.has(u)) es.set(u, 0);
+      const ut = src.find((t) => t.id === u);
+      for (const v of succ.get(u)) {
+        es.set(v, Math.max(es.get(v) || 0, es.get(u) + dur(ut)));
+        indeg.set(v, indeg.get(v) - 1);
+        if (indeg.get(v) === 0) q.push(v);
+      }
+    }
+    for (const t of src) if (!es.has(t.id)) es.set(t.id, 0); // 环残留：兜底 0
+    // 行序：最早开始 → 层级 → id（同刻任务上下贴紧，链路读起来顺）
+    const lv = {};
+    const levelOf = (id, seen) => {
+      if (lv[id] !== undefined) return lv[id];
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      let v = 0;
+      for (const d of (deps[id] || [])) v = Math.max(v, levelOf(d, seen) + 1);
+      seen.delete(id);
+      lv[id] = v;
+      return v;
+    };
+    for (const t of src) levelOf(t.id, new Set());
+    const rows = src.slice().sort((a, b) =>
+      (es.get(a.id) - es.get(b.id)) || ((lv[a.id] || 0) - (lv[b.id] || 0)) || (a.id < b.id ? -1 : 1));
+    const nodes = [];
+    let totalMin = 0;
+    rows.forEach((t, i) => {
+      const st = es.get(t.id) || 0, d = dur(t);
+      totalMin = Math.max(totalMin, st + d);
+      nodes.push({
+        id: t.id, x: G_LABEL_W + st * G_PPM, y: G_TIME_PAD + i * (G_BAR_H + G_ROW_GAP),
+        w: Math.max(18, Math.round(d * G_PPM)), h: G_BAR_H,
+        es: st, dur: d, level: lv[t.id] || 0, task: t,
+      });
+    });
+    const edges = [];
+    for (const t of src) {
+      for (const d of deps[t.id]) {
+        const dep = src.find((x) => x.id === d);
+        edges.push({ from: d, to: t.id, blocked: !!dep && dep.status !== 'done' });
+      }
+    }
+    return {
+      nodes, edges,
+      width: G_LABEL_W + Math.ceil(totalMin * G_PPM) + PAD,
+      height: G_TIME_PAD + rows.length * (G_BAR_H + G_ROW_GAP) + PAD,
+      totalMin, ppm: G_PPM, labelW: G_LABEL_W, timePad: G_TIME_PAD,
+    };
+  }
+
   // ---------- API（写操作：校验 → save → render）----------
   function add(title) {
     const t = {
       id: newId(), title: String(title || '').trim() || '未命名任务',
       note: '', status: 'todo', priority: 'normal', deps: [],
       createdAt: Date.now(), updatedAt: Date.now(), doneAt: null,
+      estimateMin: null, // 预计耗时（分钟；甘特图排期用，null = 默认 30 分钟）
       x: null, y: null, // 依赖图自由位置（拖动过才有值）
     };
     tasks.push(t);
@@ -500,6 +644,15 @@ const Tasks = (() => {
     if (!t || !PRIOS.includes(pr)) return;
     t.priority = pr;
     touch(t); pushHist('改优先级'); save(); render();
+  }
+  // 预计耗时（分钟）：甘特图排期依据；0/null/负数 = 清除（回落默认 30 分钟占位）
+  function setEstimate(id, min) {
+    const t = byId(id);
+    if (!t) return false;
+    const v = Number(min);
+    t.estimateMin = (Number.isFinite(v) && v > 0) ? Math.round(v) : null;
+    touch(t); pushHist(t.estimateMin ? '改预计耗时' : '清除预计耗时'); save(); render();
+    return true;
   }
   function setDeps(id, deps) {
     const t = byId(id);
@@ -634,6 +787,13 @@ const Tasks = (() => {
       critBtn.classList.toggle('active', critOn);
       critBtn.title = critOn ? '关键路径：开（最长链 ' + Math.max(critIds.length, 0) + ' 步，点击关闭）' : '关键路径：高亮最长依赖链（点击开启）';
     }
+    if (layoutBtn) { // 048-P2 布局切换（拓扑/泳道/甘特）
+      layoutBtn.textContent = LAYOUT_META[layoutMode].icon;
+      layoutBtn.dataset.mode = layoutMode;
+      layoutBtn.title = '布局：' + LAYOUT_META[layoutMode].label + '（点击选择模式）';
+      layoutBtn.classList.toggle('active', layoutMode !== 'topo');
+    }
+    if (tidyBtn) tidyBtn.classList.toggle('hidden', layoutMode !== 'topo'); // 一键整理只对自由位置有意义（拓扑模式专属）
     if (focusBtn) {
       const ft = focusId ? byId(focusId) : null;
       focusBtn.classList.toggle('hidden', !ft);
@@ -909,7 +1069,7 @@ const Tasks = (() => {
     let html = '';
     for (const n of curLay.nodes) {
       if (!n.task) continue;
-      html += '<rect class="tk-mm-n" data-status="' + n.task.status + '" x="' + n.x + '" y="' + n.y + '" width="' + NW + '" height="' + NH + '" rx="3"></rect>';
+      html += '<rect class="tk-mm-n" data-status="' + n.task.status + '" x="' + n.x + '" y="' + n.y + '" width="' + (n.w || NW) + '" height="' + (n.h || NH) + '" rx="3"></rect>';
     }
     // 视口框：屏幕像素（scrollLeft/Top + clientWidth/Height）→ 逻辑坐标（÷zoom）
     const cw = dagBodyEl ? dagBodyEl.clientWidth : 0, ch = dagBodyEl ? dagBodyEl.clientHeight : 0;
@@ -962,6 +1122,15 @@ const Tasks = (() => {
     try { localStorage.setItem('myide-tasks-crit', critOn ? '1' : '0'); } catch {}
     render();
   }
+  // 048-P2 布局切换：拓扑/泳道/甘特（持久化；切换后重适应画布）
+  function setLayoutMode(m) {
+    if (!LAYOUTS.includes(m) || m === layoutMode) return false;
+    layoutMode = m;
+    try { localStorage.setItem('myide-tasks-layout', layoutMode); } catch {}
+    render();
+    fitView(); // 布局变了内容尺寸大变：自动适应一次（jsdom 无布局时内部跳过）
+    return true;
+  }
 
   // ---------- hover 链路高亮（048-6.2，清单行联动共用）----------
   function highlightChain(id) {
@@ -1004,8 +1173,8 @@ const Tasks = (() => {
       card.querySelector('.tk-hc-title').textContent = t.title;
       card.querySelector('.tk-hc-body').textContent = lines.join('\n');
       // 定位：节点右下角（逻辑坐标 × zoom + 容器滚动补偿）
-      const left = (n.x + NW) * zoom - dagBodyEl.scrollLeft + 8;
-      const top = (n.y + NH) * zoom - dagBodyEl.scrollTop + 6;
+      const left = (n.x + (n.w || NW)) * zoom - dagBodyEl.scrollLeft + 8;
+      const top = (n.y + (n.h || NH)) * zoom - dagBodyEl.scrollTop + 6;
       card.style.left = Math.max(4, Math.min(left, dagBodyEl.clientWidth - 200)) + 'px';
       card.style.top = Math.max(4, top) + 'px';
       dagBodyEl.appendChild(card);
@@ -1060,17 +1229,22 @@ const Tasks = (() => {
       empty('没有符合当前过滤条件的任务（点上方按钮切换可见度）', dagBodyEl);
       return;
     }
+    // 048-P2 甘特视图：同套 vis/统计/选中/框选/缩放基础设施，走独立渲染
+    if (layoutMode === 'gantt') { renderGantt(vis); return; }
     const hasDep = vis.some((t) => t.deps.length);
-    const lay = dagLayout(vis); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
+    const lay = dagLayout(vis, layoutMode === 'lane' ? 'lane' : 'topo'); // 只对可见子图布局，隐藏节点的关联边一并消失（无断头线）
     curLay = lay; // 框选监听挂常驻容器（dagBodyEl），需跨渲染取最新布局
-    // 自由位置：拖动过的节点（x/y 非空）覆盖自动布局坐标；画布尺寸随之扩大
-    for (const n of lay.nodes) {
-      const t = n.task;
-      if (t && Number.isFinite(t.x) && Number.isFinite(t.y)) { n.x = t.x; n.y = t.y; }
+    // 自由位置：拖动过的节点（x/y 非空）覆盖自动布局坐标；画布尺寸随之扩大。
+    // 泳道模式下位置无意义（y 由状态泳道决定），跳过覆盖
+    if (layoutMode === 'topo') {
+      for (const n of lay.nodes) {
+        const t = n.task;
+        if (t && Number.isFinite(t.x) && Number.isFinite(t.y)) { n.x = t.x; n.y = t.y; }
+      }
     }
     for (const n of lay.nodes) {
-      lay.width = Math.max(lay.width, n.x + NW + PAD);
-      lay.height = Math.max(lay.height, n.y + NH + PAD + 12); // 底部锚点余量
+      lay.width = Math.max(lay.width, n.x + (n.w || NW) + PAD);
+      lay.height = Math.max(lay.height, n.y + (n.h || NH) + PAD + 12); // 底部锚点余量
     }
     // 记录本帧各节点画布坐标：前后继任务就近落位的基点（在过滤后可见节点上）
     lastPos.clear();
@@ -1100,6 +1274,19 @@ const Tasks = (() => {
       defs.appendChild(m);
     });
     svg.appendChild(defs);
+
+    // 048-P2 泳道模式：三条状态带垫底（整块浅色区分 + 泳道标签），节点/边画在其上
+    if (layoutMode === 'lane' && Array.isArray(lay.lanes)) {
+      for (const ln of lay.lanes) {
+        svg.appendChild(el('rect', {
+          class: 'tk-lane-band', 'data-status': ln.status,
+          x: 0, y: ln.y, width: Math.max(lay.width, 200), height: ln.h, rx: 8,
+        }));
+        const lb = el('text', { class: 'tk-lane-label', x: PAD + 4, y: ln.y + 18 });
+        lb.textContent = ST_NAME[ln.status] + '（' + ln.count + '）';
+        svg.appendChild(lb);
+      }
+    }
 
     const pos = {};
     for (const n of lay.nodes) pos[n.id] = n;
@@ -1207,6 +1394,7 @@ const Tasks = (() => {
       g.appendChild(anchor);
       // tooltip：所有节点统一给出全量信息（原来只有被阻塞节点有提示）
       const tip = [t.title, '状态：' + ST_NAME[t.status] + ' · 优先级：' + PRIO_NAME[t.priority]];
+      if (t.estimateMin) tip.push('预计耗时：' + t.estimateMin + ' 分钟');
       if (t.note) tip.push('备注：' + t.note.split('\n')[0]);
       if (t.status !== 'done' && blockers.length) {
         tip.push('被未完成任务阻塞：' + blockers.map((p) => p.title).join('、'));
@@ -1277,6 +1465,9 @@ const Tasks = (() => {
       if (!n) return;
       ev.preventDefault();
       const mode = (ev.target.closest && ev.target.closest('.tk-anchor')) ? 'link' : 'move';
+      // 048-P2 泳道/甘特模式：节点位置由布局决定（状态/时间），拖动位移忽略——
+      // 但点击仍要选中（onUp 的 !moved 分支），所以不能直接 return
+      const noMove = mode === 'move' && layoutMode !== 'topo';
       const x0 = ev.clientX, y0 = ev.clientY;
       const p0 = svgPt(ev); // move 模式基点（svg 坐标系）
       const origX = n.x, origY = n.y;
@@ -1285,6 +1476,7 @@ const Tasks = (() => {
       const onMove = (e2) => {
         if (!drag) return;
         if (!svg.isConnected) { cleanup(); return; } // 中途重渲染把 svg 换掉了
+        if (noMove) return; // 泳道/甘特：位移忽略（点击走 onUp 选中分支）
         if (!drag.moved) {
           if (Math.hypot(e2.clientX - x0, e2.clientY - y0) < 4) return;
           drag.moved = true;
@@ -1375,46 +1567,181 @@ const Tasks = (() => {
     dagBodyEl.appendChild(legend);
 
     // 小地图（048-5.3）：可见节点 > 30 时右下角出现，图例让位上移（.has-mini）
-    miniEl = null;
-    if (lay.nodes.length > MM_MIN_NODES) {
-      dagBodyEl.classList.add('has-mini');
-      const mini = document.createElement('div');
-      mini.className = 'tk-mini';
-      mini.title = '小地图：点击/拖拽定位视图';
-      const msvg = el('svg', { class: 'tk-mm-svg' });
-      msvg.setAttribute('viewBox', `0 0 ${Math.max(1, lay.width)} ${Math.max(1, lay.height)}`);
-      mini.appendChild(msvg);
-      // 点击/拖拽 = 把大图视图中心移到该点（小地图屏幕像素 → 逻辑坐标 → 大图滚动量）
-      const nav = (ev) => {
-        const r = msvg.getBoundingClientRect();
-        if (!r.width || !r.height) return; // jsdom 无布局：别把滚动量算成 NaN
-        const vbw = Math.max(1, lay.width), vbh = Math.max(1, lay.height);
-        const vx = (ev.clientX - r.left) / r.width * vbw;
-        const vy = (ev.clientY - r.top) / r.height * vbh;
-        const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
-        dagBodyEl.scrollLeft = Math.max(0, vx * zoom - cw / 2);
-        dagBodyEl.scrollTop = Math.max(0, vy * zoom - ch / 2);
-        scheduleMinimap();
-      };
-      mini.onmousedown = (ev) => {
-        if (ev.button !== 0) return;
-        ev.stopPropagation(); ev.preventDefault(); // 别冒泡成框选/节点拖拽
-        nav(ev);
-        const mv = (e2) => nav(e2);
-        const up = () => {
-          window.removeEventListener('mousemove', mv);
-          window.removeEventListener('mouseup', up);
-        };
-        window.addEventListener('mousemove', mv);
-        window.addEventListener('mouseup', up);
-      };
-      dagBodyEl.appendChild(mini);
-      miniEl = mini;
-      renderMinimap(); // 创建即绘制一次（其后靠 scroll/zoom/grow 的 rAF 节流同步）
-    } else {
-      dagBodyEl.classList.remove('has-mini');
-    }
+    createMinimap(lay);
   }
+
+  // 小地图创建（renderDag / renderGantt 共用）：mkEl = svg 工厂（不同视图的 el 助手）
+  function createMinimap(lay, mkEl) {
+    miniEl = null;
+    if (!dagBodyEl || !lay || lay.nodes.length <= MM_MIN_NODES) {
+      if (dagBodyEl) dagBodyEl.classList.remove('has-mini');
+      return;
+    }
+    const NS2 = 'http://www.w3.org/2000/svg';
+    const elM = mkEl || ((tag, attrs) => {
+      const e = document.createElementNS(NS2, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    });
+    dagBodyEl.classList.add('has-mini');
+    const mini = document.createElement('div');
+    mini.className = 'tk-mini';
+    mini.title = '小地图：点击/拖拽定位视图';
+    const msvg = elM('svg', { class: 'tk-mm-svg' });
+    msvg.setAttribute('viewBox', `0 0 ${Math.max(1, lay.width)} ${Math.max(1, lay.height)}`);
+    mini.appendChild(msvg);
+    // 点击/拖拽 = 把大图视图中心移到该点（小地图屏幕像素 → 逻辑坐标 → 大图滚动量）
+    const nav = (ev) => {
+      const r = msvg.getBoundingClientRect();
+      if (!r.width || !r.height) return; // jsdom 无布局：别把滚动量算成 NaN
+      const vbw = Math.max(1, lay.width), vbh = Math.max(1, lay.height);
+      const vx = (ev.clientX - r.left) / r.width * vbw;
+      const vy = (ev.clientY - r.top) / r.height * vbh;
+      const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
+      dagBodyEl.scrollLeft = Math.max(0, vx * zoom - cw / 2);
+      dagBodyEl.scrollTop = Math.max(0, vy * zoom - ch / 2);
+      scheduleMinimap();
+    };
+    mini.onmousedown = (ev) => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation(); ev.preventDefault(); // 别冒泡成框选/节点拖拽
+      nav(ev);
+      const mv = (e2) => nav(e2);
+      const up = () => {
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    };
+    dagBodyEl.appendChild(mini);
+    miniEl = mini;
+    renderMinimap(); // 创建即绘制一次（其后靠 scroll/zoom/grow 的 rAF 节流同步）
+  }
+
+  // ---------- 甘特视图渲染（048-P2）----------
+  // 横条 = 任务（x 起点 = 最早开始，宽 = 预计耗时）；关键路径常亮（甘特的价值就是直读工期瓶颈）。
+  // 选中/框选/缩放/平移/小地图复用 DAG 基础设施（节点统一 g.tk-node + data-id）
+  function renderGantt(vis) {
+    if (!dagBodyEl) return;
+    const lay = ganttLayout(vis);
+    curLay = lay;
+    lastPos.clear(); // 甘特无自由位置：就近落位基点不适用
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = (tag, attrs) => {
+      const e = document.createElementNS(NS, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    };
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'tk-svg tk-gantt');
+    setSvgSize(svg, lay.width, lay.height);
+    curSvg = svg;
+    const defs = el('defs');
+    [['tk-arrow', 'tk-arrow-head'], ['tk-arrow-b', 'tk-arrow-head blocked']].forEach(([id, cls]) => {
+      const m = el('marker', {
+        id, viewBox: '0 0 10 10', refX: 9, refY: 5,
+        markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse',
+      });
+      m.appendChild(el('path', { class: cls, d: 'M 0 0 L 10 5 L 0 10 z' }));
+      defs.appendChild(m);
+    });
+    svg.appendChild(defs);
+
+    // 时间网格：每 60 分钟一条竖线 + 刻度标签（>8h 改 120 分钟稀疏化）
+    const step = lay.totalMin > 480 ? 120 : 60;
+    for (let m = step; m <= lay.totalMin; m += step) {
+      const gx = lay.labelW + m * lay.ppm;
+      svg.appendChild(el('line', { class: 'tk-g-grid', x1: gx, y1: 0, x2: gx, y2: lay.height }));
+      const gt = el('text', { class: 'tk-g-tick', x: gx + 3, y: 14 });
+      gt.textContent = m >= 60 ? (m / 60) + 'h' : m + 'm';
+      svg.appendChild(gt);
+    }
+    // 标签列与横条的竖直分隔线
+    svg.appendChild(el('line', { class: 'tk-g-grid strong', x1: lay.labelW, y1: 0, x2: lay.labelW, y2: lay.height }));
+
+    const pos = {};
+    for (const n of lay.nodes) pos[n.id] = n;
+    // 依赖连线（横条终点 → 依赖横条起点的折线箭头）
+    for (const e of lay.edges) {
+      const a = pos[e.from], b = pos[e.to];
+      if (!a || !b) continue;
+      const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2;
+      const midX = Math.max(x1 + 8, x2 - 8);
+      const p = el('path', {
+        class: 'tk-edge tk-g-edge' + (e.blocked ? ' blocked' : ''),
+        d: `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2 - 2} ${y2}`,
+        'marker-end': e.blocked ? 'url(#tk-arrow-b)' : 'url(#tk-arrow)',
+      });
+      p.setAttribute('data-from', e.from);
+      p.setAttribute('data-to', e.to);
+      p.appendChild(el('title')).textContent = '依赖：前置完成后开始';
+      svg.appendChild(p);
+    }
+    // 横条 + 左侧标签
+    for (const n of lay.nodes) {
+      const t = n.task;
+      if (!t) continue;
+      const onCrit = critIds.includes(n.id); // 甘特常亮关键路径（与 ⛓ 开关无关：排期视图的立身之本）
+      const g = el('g', {
+        class: 'tk-node tk-g-node' + (isSel(n.id) ? ' sel' : '') + (onCrit ? ' crit' : ''),
+      });
+      g.setAttribute('data-id', n.id);
+      g.setAttribute('data-status', t.status);
+      // 左侧标签（标题 + 耗时）——热点区覆盖整行，点击选中
+      const lb = el('text', { class: 'tk-g-label', x: 8, y: n.y + n.h / 2 + 4 });
+      lb.textContent = clip(t.title, 13);
+      g.appendChild(lb);
+      const lt = el('text', { class: 'tk-g-dur', x: lay.labelW - 8, y: n.y + n.h / 2 + 4 });
+      lt.textContent = (n.dur >= 60 ? (Math.round(n.dur / 60 * 10) / 10) + 'h' : n.dur + 'm');
+      g.appendChild(lt);
+      // 横条本体
+      const bar = el('rect', {
+        class: 'tk-g-bar', x: n.x, y: n.y, width: n.w, height: n.h, rx: 4,
+      });
+      if (onCrit) bar.classList.add('crit');
+      g.appendChild(bar);
+      // 条内起始偏移提示（宽条才放文字，窄条 tooltip 里看）
+      if (n.w >= 64) {
+        const bt = el('text', { class: 'tk-g-bar-t', x: n.x + 6, y: n.y + n.h / 2 + 4 });
+        bt.textContent = n.es === 0 ? '开始' : '+' + (n.es >= 60 ? (n.es / 60) + 'h' : n.es + 'm');
+        g.appendChild(bt);
+      }
+      // tooltip：甘特语境的信息（最早开始/耗时/占用）
+      const tip = [
+        t.title,
+        '状态：' + ST_NAME[t.status] + ' · 优先级：' + PRIO_NAME[t.priority],
+        '最早开始：+' + (n.es >= 60 ? (n.es / 60) + 'h' : n.es + 'm') + ' · 预计耗时：' + (n.dur >= 60 ? (n.dur / 60) + 'h' : n.dur + 'm'),
+        '依赖：' + t.deps.length + ' 项',
+      ];
+      if (t.note) tip.push('备注：' + t.note.split('\n')[0]);
+      g.appendChild(el('title')).textContent = tip.join('\n');
+      g.onclick = (ev) => { if (Date.now() - gUpClickAt < 80) return; selectOne(n.id, !!(ev && (ev.ctrlKey || ev.metaKey))); };
+      g.ondblclick = () => editTitle(n.id);
+      g.oncontextmenu = (ev) => { ev.preventDefault(); ev.stopPropagation(); selectOne(n.id, false); showCtx(ev, t); };
+      g.addEventListener('mouseenter', () => highlightChain(n.id));
+      g.addEventListener('mouseleave', () => clearChainHi());
+      svg.appendChild(g);
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'tk-dag';
+    wrap.appendChild(svg);
+    dagBodyEl.appendChild(wrap);
+
+    // 图例（甘特语境）
+    const legend = document.createElement('div');
+    legend.className = 'tk-legend';
+    legend.innerHTML =
+      '<span><i class="lg lg-todo"></i>待办</span>' +
+      '<span><i class="lg lg-doing"></i>进行中</span>' +
+      '<span><i class="lg lg-done"></i>已完成</span>' +
+      '<span><i class="lg lg-crit"></i>关键路径</span>' +
+      '<span>空白起点 = 无前置</span>';
+    dagBodyEl.appendChild(legend);
+    createMinimap(lay, el);
+  }
+  let gUpClickAt = 0; // 甘特条 click 让位变量（对齐 DAG 的 upClickAt 机制；防合成 click 双触发）
 
   // 双击图空白处 → 原地弹出输入框新建任务（位置即所见；自动布局不承诺节点停在该点）
   // depOnId（048-6.3 内联＋）：新建后自动依赖该任务（建后继）
@@ -1562,6 +1889,11 @@ const Tasks = (() => {
         const v = await promptArea('任务备注', '备注（多行）', t.note);
         if (v != null) setNote(t.id, v);
       });
+      mk('⏱ 预计耗时…（分钟，甘特图排期用）', async () => {
+        const v = await Modal.prompt('预计耗时', '分钟（留空 = 清除，默认按 30 分钟占位）', t.estimateMin || '');
+        if (v == null) return;
+        setEstimate(t.id, v);
+      });
       mkTitle('优先级');
       for (const p of ['high', 'normal', 'low']) {
         mk((t.priority === p ? '● ' : '') + '　' + PRIO_NAME[p],
@@ -1696,6 +2028,29 @@ const Tasks = (() => {
       renderList();
     });
   }
+  // 048-P2 布局切换下拉（拓扑 / 泳道 / 甘特；与可见度菜单同一套 ctx-menu）
+  if (layoutBtn) {
+    layoutBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById('ctx-menu');
+      if (!menu) return;
+      menu.innerHTML = '';
+      LAYOUTS.forEach((m) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item' + (m === layoutMode ? ' sel' : '');
+        d.textContent = (m === layoutMode ? '● ' : '　') + LAYOUT_META[m].icon + ' ' + LAYOUT_META[m].label;
+        d.onclick = () => {
+          menu.classList.add('hidden');
+          setLayoutMode(m);
+        };
+        menu.appendChild(d);
+      });
+      const r = layoutBtn.getBoundingClientRect();
+      menu.classList.remove('hidden');
+      menu.style.left = Math.max(4, r.left) + 'px';
+      menu.style.top = (r.bottom + 4) + 'px';
+    };
+  }
   // 框选：空白按下拖出虚线框，框内节点整组进入多选（Ctrl+C 复制 / Delete 批删）。
   // 挂在常驻容器 dagBodyEl 上（与双击/右键同模式，不随 renderDag 重建叠加）——
   // svg 高度只到内容底边，挂在 svg 上时其下方空白无法作为起点
@@ -1724,7 +2079,7 @@ const Tasks = (() => {
         const pb = svgPt({ clientX: last.x, clientY: last.y });
         const b = { x1: Math.min(pa.x, pb.x), y1: Math.min(pa.y, pb.y), x2: Math.max(pa.x, pb.x), y2: Math.max(pa.y, pb.y) };
         return curLay.nodes.filter((n2) =>
-          n2.x < b.x2 && n2.x + NW > b.x1 && n2.y < b.y2 && n2.y + NH > b.y1).map((n2) => n2.id);
+          n2.x < b.x2 && n2.x + (n2.w || NW) > b.x1 && n2.y < b.y2 && n2.y + (n2.h || NH) > b.y1).map((n2) => n2.id);
       };
       const onMove = (e2) => {
         if (!svg.isConnected) { cleanup(); return; } // 中途重渲染把 svg 换掉了
@@ -1933,7 +2288,7 @@ const Tasks = (() => {
 
   return {
     setRoot, reload, refresh, render, setView,
-    add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps,
+    add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate,
     addDep, removeDep, moveNode, resetNodePos, tidyLayout,
     fitView, zoomBy, applyZoom,
     get zoom() { return zoom; },
@@ -1942,6 +2297,8 @@ const Tasks = (() => {
     toggleCrit, // 048-6.1 关键路径开关
     get critOn() { return critOn; },
     get criticalPath() { return critIds.slice(); }, // 当前最长链（有序 id）
+    setLayoutMode, // 048-P2 布局切换（'topo' | 'lane' | 'gantt'）
+    get layoutMode() { return layoutMode; },
     relatedOf,
     remove, clearDone, undo: undoHist, redo: redoHist, copySelection, selectionIds, quickNew,
     get tasks() { return tasks; },

@@ -1873,6 +1873,44 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
   border: 1px solid var(--btn-border); border-radius: 4px;
   font-size: 11px; outline: none; cursor: pointer;
 }
+/* 048-P2 泳道布局：状态带垫底 + 泳道标签 */
+.tk-lane-band { fill: rgba(128, 128, 128, .05); stroke: var(--border-mid); stroke-width: 1; }
+.tk-lane-band[data-status="doing"] { fill: rgba(64, 140, 255, .07); }
+.tk-lane-band[data-status="done"] { fill: rgba(64, 180, 96, .06); }
+.tk-lane-label {
+  font-size: 12px; font-weight: 600; fill: var(--text-dim);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+/* 048-P2 甘特视图 */
+.tk-g-grid { stroke: var(--border-mid); stroke-width: 1; opacity: .5; }
+.tk-g-grid.strong { opacity: .9; }
+.tk-g-tick {
+  font-size: 10px; fill: var(--text-dim);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+.tk-g-label {
+  font-size: 12px; fill: var(--text-bright); text-anchor: start;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  cursor: pointer;
+}
+.tk-g-dur {
+  font-size: 10px; fill: var(--text-dim); text-anchor: end;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  cursor: pointer;
+}
+.tk-g-bar { stroke: var(--border-mid); stroke-width: 1; cursor: pointer; }
+g[data-status="todo"] .tk-g-bar { fill: rgba(128, 128, 128, .35); }
+g[data-status="doing"] .tk-g-bar { fill: var(--accent); opacity: .75; }
+g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
+.tk-g-bar.crit, g.tk-g-node.crit .tk-g-bar { stroke: var(--accent); stroke-width: 2.2; }
+.tk-g-bar-t {
+  font-size: 10px; fill: var(--text-bright); text-anchor: start;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  pointer-events: none;
+}
+.tk-g-edge { stroke: var(--text-dim); stroke-width: 1.4; fill: none; opacity: .55; }
+/* 甘特图例的关键路径色块 */
+.tk-legend .lg-crit { border-top: none; background: var(--accent); width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 /* DAG 交互：边 hover / 拖拽连线 / 落点高亮 / 状态热区 / 空白新建输入框 */
 .tk-edge { cursor: context-menu; }
 .tk-edge:hover { stroke-width: 2.4; opacity: 1; }

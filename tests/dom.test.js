@@ -3592,12 +3592,14 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.localStorage.removeItem(TK_KEY);
     dom.window.localStorage.removeItem('myide-tasks-group-fold'); // 分组收起态：防跨用例泄漏
     dom.window.localStorage.removeItem('myide-tasks-done-fold');
+    dom.window.localStorage.removeItem('myide-tasks-layout'); // 048-P2 布局模式：防跨用例泄漏
     // 清会话：Session.restore 是 async 且 setRoot 不 await——它会滞后几秒再 App.setTool(旧 tool)，
     // 把 activeTool 从 tasks 盖回 project（曾导致「图面板不显示」的诡异失败）
     dom.window.localStorage.removeItem('myide-session:' + P);
     dom.window.localStorage.removeItem('myide-session:C:/proj2');
     await g(dom, 'App.setRoot("' + P + '")');
     await g(dom, 'Tasks.reload()');
+    await g(dom, 'Tasks.setLayoutMode("topo")'); // 048-P2 布局模式回默认（模块级状态，光删 key 不够）
     await g(dom, 'App.showTool("tasks")');
     await g(dom, 'Tasks.setView("list")');
     await tick(); await tick();
@@ -4981,6 +4983,114 @@ assert_(panel, 'CM6 搜索面板出现');
     fp.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await tick();
     assert_(rows().length === 3, '恢复全部');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-P2 泳道布局 ----------
+  await okAsync('泳道布局：状态分带（todo→doing→done 纵序）+ 拓扑序横排 + 自由位置失效', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("泳道A")');
+    const b = await g(dom, 'Tasks.add("泳道B")');
+    const c = await g(dom, 'Tasks.add("泳道C")');
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.setStatus("' + c.id + '", "doing")');
+    // 纯函数：lanes 数组按 todo→doing 顺序（done 空不出现）
+    const lay = await g(dom, 'JSON.stringify(Tasks._dagLayout(Tasks.tasks, "lane"))');
+    const L = JSON.parse(lay);
+    assert_(L.lanes.length === 2, 'todo+doing 两条泳道（done 空）, got ' + L.lanes.length);
+    assert_(L.lanes[0].status === 'todo' && L.lanes[1].status === 'doing', '泳道纵序 todo → doing');
+    assert_(L.lanes[0].count === 2 && L.lanes[1].count === 1, '泳道计数 2+1');
+    const nb = L.nodes.find((n) => n.id === b.id), na = L.nodes.find((n) => n.id === a.id);
+    assert_(nb.y === na.y && nb.x > na.x, '同泳道拓扑序横排（A 前 B 后）');
+    const nc = L.nodes.find((n) => n.id === c.id);
+    assert_(nc.y > na.y, 'doing 泳道在 todo 泳道下方');
+    // UI：切泳道 → 状态带 + 标签渲染
+    await g(dom, 'Tasks.setView("dag")');
+    await tick();
+    await g(dom, 'Tasks.setLayoutMode("lane")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const bands = [...body.querySelectorAll('rect.tk-lane-band')];
+    assert_(bands.length === 2, 'UI 状态带 2 条, got ' + bands.length);
+    const labels = [...body.querySelectorAll('text.tk-lane-label')].map((x) => x.textContent);
+    assert_(labels.some((x) => x.includes('待办')) && labels.some((x) => x.includes('进行中')), '泳道标签');
+    // 自由位置失效：moveNode 后切泳道，节点仍在泳道内（不采用手动坐标）
+    await g(dom, 'Tasks.moveNode("' + a.id + '", 800, 600)');
+    await tick(); await tick();
+    const nodeA = body.querySelector('g.tk-node[data-id="' + a.id + '"]');
+    const ty = +nodeA.getAttribute('transform').match(/,([\d.]+)\)/)[1];
+    assert_(ty < 400, '泳道模式忽略手动位置（y 在泳道带内）, got ' + ty);
+    // 切回 topo：手动位置恢复生效
+    await g(dom, 'Tasks.setLayoutMode("topo")');
+    await tick(); await tick();
+    const nodeA2 = body.querySelector('g.tk-node[data-id="' + a.id + '"]');
+    const ty2 = +nodeA2.getAttribute('transform').match(/,([\d.]+)\)/)[1];
+    assert_(ty2 === 600, '拓扑模式手动位置恢复, got ' + ty2);
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-P2 甘特图 ----------
+  await okAsync('甘特布局：最早开始时间 = max(前置 ES+耗时)；默认 30 分钟占位', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("甘特A")');
+    const b = await g(dom, 'Tasks.add("甘特B")');
+    const c = await g(dom, 'Tasks.add("甘特C")');
+    await g(dom, 'Tasks.setEstimate("' + a.id + '", 60)');
+    await g(dom, 'Tasks.setEstimate("' + b.id + '", 90)');
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.addDep("' + c.id + '", "' + b.id + '")');
+    const lay = await g(dom, 'JSON.stringify(Tasks._dagLayout(Tasks.tasks, "gantt"))');
+    const L = JSON.parse(lay);
+    const na = L.nodes.find((n) => n.id === a.id);
+    const nb = L.nodes.find((n) => n.id === b.id);
+    const nc = L.nodes.find((n) => n.id === c.id);
+    assert_(na.es === 0 && na.w === 60, 'A 零点开始，宽 60');
+    assert_(nb.es === 60 && nb.w === 90, 'B 在 A 完成后开始（ES=60），宽 90');
+    assert_(nc.es === 150 && nc.w === 30, 'C 在 B 完成后开始（ES=150），默认 30 分钟, got ' + nc.es + '/' + nc.w);
+    assert_(L.totalMin === 180, '总工期 = 关键链 60+90+30 = 180, got ' + L.totalMin);
+    // 行序：按 ES 排
+    assert_(na.y < nb.y && nb.y < nc.y, '行序按最早开始时间');
+    // setEstimate 清除（0/null → 默认 30）
+    await g(dom, 'Tasks.setEstimate("' + a.id + '", 0)');
+    const t0 = await g(dom, 'Tasks.tasks[0].estimateMin');
+    assert_(t0 === null, '0 = 清除耗时');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('甘特视图：横条 + 关键链常亮高亮 + 点击选中 + 依赖折线', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("甘特甲")');
+    const b = await g(dom, 'Tasks.add("甘特乙")');
+    const d = await g(dom, 'Tasks.add("孤岛丁")');
+    await g(dom, 'Tasks.setEstimate("' + a.id + '", 60)');
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick();
+    await g(dom, 'Tasks.setLayoutMode("gantt")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const bars = [...body.querySelectorAll('rect.tk-g-bar')];
+    assert_(bars.length === 3, '3 根横条, got ' + bars.length);
+    // 关键链 A→B 常亮（孤岛丁不在）
+    const critBars = [...body.querySelectorAll('g.tk-g-node.crit')];
+    assert_(critBars.length === 2, '关键链 2 条高亮（甘特常亮，不看 ⛓ 开关）, got ' + critBars.length);
+    assert_(critBars.some((x) => x.dataset.id === a.id) && critBars.some((x) => x.dataset.id === b.id), '高亮的正是 A/B');
+    // 依赖折线（A→B）
+    const edges = [...body.querySelectorAll('path.tk-g-edge')];
+    assert_(edges.length === 1, '1 条依赖折线');
+    // 时间刻度（totalMin=90 → 60m 一档）
+    assert_(body.querySelectorAll('.tk-g-tick').length >= 1, '有时间刻度');
+    // 点击横条选中
+    const barB = body.querySelector('g.tk-node[data-id="' + b.id + '"]');
+    barB.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick();
+    assert_(await g(dom, 'Tasks.selectionIds().includes("' + b.id + '")') === true, '点击横条选中 B');
+    // 耗时标签
+    const lblA = body.querySelector('g.tk-node[data-id="' + a.id + '"] .tk-g-dur');
+    assert_(lblA.textContent === '1h', 'A 耗时标签 1h, got ' + lblA.textContent);
+    await g(dom, 'Tasks.setLayoutMode("topo")');
     await g(dom, 'Tasks.setView("list")');
     delete FAKE_FS[TK_FILE];
   });
