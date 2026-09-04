@@ -1824,6 +1824,55 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
   fill: rgba(128, 128, 128, .06); stroke: var(--accent);
   stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke;
 }
+/* 048-6.1 关键路径：节点边框 + 边加粗着色（强调色，与状态色并存） */
+.tk-node.crit rect.tk-n-box { stroke: var(--accent); stroke-width: 2.4; }
+.tk-edge.crit { stroke: var(--accent); stroke-width: 2.4; opacity: 1; }
+/* 048-6.2 hover 链路：链上节点微强调、链外淡出（过渡 120ms） */
+.tk-node, .tk-edge { transition: opacity .12s; }
+.tk-node.dim { opacity: .16; }
+.tk-edge.dim { opacity: .1; }
+.tk-node.hl rect.tk-n-box { stroke: var(--accent); stroke-width: 2; }
+/* 048-6.3 备注角标：右上角小圆点 */
+.tk-n-note { fill: var(--text-dim); }
+/* 048-6.3 内联操作：hover 节点时浮现（＋ 建后继 / ✓ 切状态）
+   ops 画在节点上沿外（cy=-10）：顶行节点会超出 svg 顶边 → svg 需 overflow:visible */
+.tk-svg { overflow: visible; }
+.tk-ops { opacity: 0; transition: opacity .12s; pointer-events: none; }
+.tk-node:hover .tk-ops { opacity: 1; pointer-events: auto; }
+.tk-op { cursor: pointer; }
+.tk-op-bg { fill: var(--bg-panel); stroke: var(--border-mid); stroke-width: 1; }
+.tk-op:hover .tk-op-bg { stroke: var(--accent); }
+.tk-op-t {
+  font-size: 11px; fill: var(--text-bright); text-anchor: middle;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  pointer-events: none; /* 命中交给整组 circle */
+}
+/* 048-6.3 hover 信息卡片：纯展示不挡鼠标（pointer-events 关闭，防 hover 抖动/框选误触） */
+.tk-hover-card {
+  position: absolute; z-index: 4; max-width: 220px;
+  background: var(--bg-panel); border: 1px solid var(--border-mid); border-radius: 6px;
+  padding: 6px 9px; pointer-events: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .25);
+}
+.tk-hc-title { font-size: 12px; font-weight: 600; color: var(--text-bright); margin-bottom: 3px; }
+.tk-hc-body { font-size: 11px; color: var(--text-dim); white-space: pre-wrap; line-height: 1.5; }
+/* 048-R12 清单过滤栏（标题 + 优先级；只影响左侧清单） */
+#tasks-filter-bar {
+  display: flex; gap: 4px; padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+#tasks-filter-bar input {
+  flex: 1; min-width: 0; height: 22px;
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 0 6px; outline: none; font-size: 11px;
+}
+#tasks-filter-bar input.active { border-color: var(--accent); }
+#tasks-filter-bar select {
+  height: 22px; background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  font-size: 11px; outline: none; cursor: pointer;
+}
 /* DAG 交互：边 hover / 拖拽连线 / 落点高亮 / 状态热区 / 空白新建输入框 */
 .tk-edge { cursor: context-menu; }
 .tk-edge:hover { stroke-width: 2.4; opacity: 1; }

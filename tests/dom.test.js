@@ -4792,6 +4792,199 @@ assert_(panel, 'CM6 搜索面板出现');
     delete FAKE_FS[TK_FILE];
   });
 
+  // ---------- 048-6.1 关键路径 ----------
+  async function tkBuildChain(n, prefix) { // 建一条 n 节点直线链，返回 id 数组
+    const ids = [];
+    for (let i = 0; i < n; i++) {
+      const t = await g(dom, 'Tasks.add("' + prefix + (i + 1) + '")');
+      ids.push(t.id);
+      if (i > 0) await g(dom, 'Tasks.addDep("' + t.id + '", "' + ids[i - 1] + '")');
+    }
+    return ids;
+  }
+  await okAsync('关键路径：最长链高亮（双链取长链）+ done 不参与 + 开关控制渲染', async () => {
+    await tkReset();
+    const short = await tkBuildChain(2, '短');
+    const long = await tkBuildChain(4, '长');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    // 链数据：4 节点长链
+    let cp = await g(dom, 'Tasks.criticalPath');
+    assert_(cp.length === 4, '最长链 = 4 节点, got ' + cp.length);
+    assert_(JSON.stringify(cp) === JSON.stringify(long), '链内容 = 长链');
+    assert_(!cp.some((x) => short.includes(x)), '短链不在关键路径上');
+    // 默认关闭：无 crit 类
+    assert_(!$(dom, '#tasks-dag-body .tk-node.crit'), '开关关闭时无 crit 节点');
+    // 统计栏有「最长链 4 步」
+    assert_($(dom, '#tasks-dag-count').textContent.includes('最长链 4 步'), '统计栏显示链长');
+    // 开灯：长链节点 + 相邻边全亮，短链不亮
+    await g(dom, 'Tasks.toggleCrit()');
+    await tick(); await tick();
+    assert_(await g(dom, 'Tasks.critOn') === true, '开关已开');
+    const critNodes = [...$(dom, '#tasks-dag-body').querySelectorAll('g.tk-node.crit')];
+    assert_(critNodes.length === 4, '4 个 crit 节点, got ' + critNodes.length);
+    const critEdges = [...$(dom, '#tasks-dag-body').querySelectorAll('path.tk-edge.crit')];
+    assert_(critEdges.length === 3, '3 条 crit 边（4 节点 3 边）, got ' + critEdges.length);
+    // done 不参与：长链头标 done → 链缩短（剩 3）
+    await g(dom, 'Tasks.setStatus("' + long[0] + '", "done")');
+    await tick(); await tick();
+    cp = await g(dom, 'Tasks.criticalPath');
+    assert_(cp.length === 3, 'done 节点剔除后链 = 3, got ' + cp.length);
+    // 关灯：类清空
+    await g(dom, 'Tasks.toggleCrit()');
+    await tick();
+    assert_(!$(dom, '#tasks-dag-body .tk-node.crit'), '关闭后 crit 类清空');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-6.2 hover 链路 + R12 清单联动 ----------
+  await okAsync('hover 链路高亮：节点/清单行 hover 上下游亮、无关淡出、离开复原', async () => {
+    await tkReset();
+    // A → B → C 直线 + 无关孤岛 D
+    const a = await g(dom, 'Tasks.add("链A")');
+    const b = await g(dom, 'Tasks.add("链B")');
+    const c = await g(dom, 'Tasks.add("链C")');
+    await g(dom, 'Tasks.add("孤岛D")');
+    await g(dom, 'Tasks.addDep("' + b.id + '", "' + a.id + '")');
+    await g(dom, 'Tasks.addDep("' + c.id + '", "' + b.id + '")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const nodeOf = (id) => body.querySelector('g.tk-node[data-id="' + id + '"]');
+    // hover 中间节点 B：A/B/C 全亮（上下游传导），孤岛 D 淡出
+    nodeOf(b.id).dispatchEvent(new dom.window.MouseEvent('mouseenter', { bubbles: false }));
+    await tick();
+    assert_(nodeOf(a.id).classList.contains('hl') && nodeOf(b.id).classList.contains('hl') && nodeOf(c.id).classList.contains('hl'),
+      '上下游节点 hl');
+    assert_(nodeOf(a.id).classList.contains('dim') === false, '链上不 dim');
+    const dNode = [...body.querySelectorAll('g.tk-node')].find((x) => x.querySelector('.tk-n-title').textContent.includes('孤岛'));
+    assert_(dNode.classList.contains('dim'), '无关节点 dim');
+    // A→B 边亮（两端都在集合），D 无边
+    const edgeAB = body.querySelector('path.tk-edge[data-from="' + a.id + '"][data-to="' + b.id + '"]');
+    assert_(edgeAB && !edgeAB.classList.contains('dim'), '链上边不 dim');
+    nodeOf(b.id).dispatchEvent(new dom.window.MouseEvent('mouseleave', { bubbles: false }));
+    await tick();
+    assert_(!dNode.classList.contains('dim'), '离开后 dim 复原');
+    assert_(!nodeOf(a.id).classList.contains('hl'), '离开后 hl 复原');
+    // 清单行 hover 联动（R12）：悬停「链A」清单行 → 图上 B/C 亮、孤岛 D dim
+    const rowA = [...$(dom, '#tasks-body').querySelectorAll('.tk-row')].find((r) => r.textContent.includes('链A'));
+    assert_(rowA, '清单行存在');
+    rowA.dispatchEvent(new dom.window.MouseEvent('mouseenter', { bubbles: false }));
+    await tick();
+    assert_(nodeOf(b.id).classList.contains('hl'), '清单行 hover → 下游 B 亮');
+    assert_(dNode.classList.contains('dim'), '清单行 hover → 无关 D 淡出');
+    rowA.dispatchEvent(new dom.window.MouseEvent('mouseleave', { bubbles: false }));
+    await tick();
+    assert_(!dNode.classList.contains('dim'), '清单行离开 → 复原');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-6.3 备注角标 / hover 卡片 / 内联操作 ----------
+  await okAsync('节点信息密度：备注角标 + hover 卡片（150ms 防误弹）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("有备注")');
+    const t2 = await g(dom, 'Tasks.add("无备注")');
+    await g(dom, 'Tasks.setNote(Tasks.tasks[0].id, "这是备注内容\\n第二行")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const nodes = [...body.querySelectorAll('g.tk-node')];
+    const withNote = nodes.find((x) => x.querySelector('.tk-n-title').textContent.includes('有备注'));
+    const noNote = nodes.find((x) => x.querySelector('.tk-n-title').textContent.includes('无备注'));
+    assert_(withNote.querySelector('.tk-n-note'), '有备注的节点有角标');
+    assert_(!noNote.querySelector('.tk-n-note'), '无备注的节点没有角标');
+    // hover 卡片：立即查没有（150ms 防误弹），等 250ms 后出现
+    withNote.dispatchEvent(new dom.window.MouseEvent('mouseenter', { bubbles: false }));
+    await tick();
+    assert_(!body.querySelector('.tk-hover-card'), '150ms 内不弹卡片（防快速划过）');
+    await new Promise((r) => setTimeout(r, 250));
+    const card = body.querySelector('.tk-hover-card');
+    assert_(card, '延迟后出现 hover 卡片');
+    assert_(card.textContent.includes('这是备注内容'), '卡片含备注');
+    assert_(card.textContent.includes('状态：'), '卡片含状态');
+    // 离开 → 卡片移除
+    withNote.dispatchEvent(new dom.window.MouseEvent('mouseleave', { bubbles: false }));
+    await tick();
+    assert_(!body.querySelector('.tk-hover-card'), '离开后卡片移除');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  await okAsync('内联操作：＋ 建后继（自动挂依赖）+ ✓ 切换状态', async () => {
+    await tkReset();
+    const src = await g(dom, 'Tasks.add("源头任务")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const body = $(dom, '#tasks-dag-body');
+    const g1 = body.querySelector('g.tk-node[data-id="' + src.id + '"]');
+    assert_(g1 && g1.querySelector('.tk-ops'), '节点有内联操作组');
+    // ✓ 切状态
+    const opDone = g1.querySelector('.tk-op:nth-child(2)');
+    opDone.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    assert_(await g(dom, 'Tasks.tasks[0].status') === 'done', '✓ 内联切到完成');
+    // ＋ 建后继：点开输入框 → Enter → 新任务 + 依赖
+    const opAdd = g1.querySelector('.tk-op');
+    // 渲染已重建：重新查节点
+    const g2 = body.querySelector('g.tk-node[data-id="' + src.id + '"]');
+    const opAdd2 = g2.querySelector('.tk-op');
+    opAdd2.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick();
+    const input = body.querySelector('.tk-dag-new');
+    assert_(input, '点＋弹出新建输入框');
+    input.value = '后继任务';
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    assert_(await g(dom, 'Tasks.tasks.length') === 2, '新任务已创建');
+    const newDeps = await g(dom, 'JSON.stringify(Tasks.tasks[1].deps)');
+    assert_(JSON.parse(newDeps).includes(src.id), '新任务自动依赖源任务');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 048-R12 清单过滤 ----------
+  await okAsync('清单过滤：标题关键字 + 优先级筛选（只影响清单，不影响图）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("写需求文档")');
+    await g(dom, 'Tasks.add("写技术方案")');
+    await g(dom, 'Tasks.add("测试用例")');
+    await g(dom, 'Tasks.setPriority(Tasks.tasks[2].id, "high")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    const rows = () => [...$(dom, '#tasks-body').querySelectorAll('.tk-row')];
+    assert_(rows().length === 3, '初始 3 行');
+    // 标题过滤
+    const fi = $(dom, '#tasks-filter');
+    fi.value = '写';
+    fi.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_(rows().length === 2, '过滤「写」剩 2 行, got ' + rows().length);
+    assert_(rows().every((r) => r.textContent.includes('写')), '行都匹配');
+    // Esc 清空
+    fi.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick();
+    assert_(rows().length === 3, 'Esc 清空过滤恢复 3 行');
+    // 优先级筛选
+    const fp = $(dom, '#tasks-filter-prio');
+    fp.value = 'high';
+    fp.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick();
+    assert_(rows().length === 1, '高优先级筛出 1 行');
+    assert_(rows()[0].textContent.includes('测试用例'), '筛中的是高优任务');
+    assert_($(dom, '#tasks-filter').classList.contains('active'), '过滤激活态样式');
+    // 图不受影响：3 个节点都在
+    assert_($(dom, '#tasks-dag-body').querySelectorAll('g.tk-node').length === 3, '图上节点不受清单过滤影响');
+    // 清空优先级恢复
+    fp.value = 'all';
+    fp.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick();
+    assert_(rows().length === 3, '恢复全部');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
