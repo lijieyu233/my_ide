@@ -406,6 +406,36 @@ const Tasks = (() => {
     return res;
   }
 
+  // 已完成链条：从 seed 沿依赖边向上下游扩散（只经过已完成任务），得到极大完成连通段。
+  // 整链完成 = 整链删；链上有未完成 = 只取完成段（右键「删除已完成链条」用）
+  function doneChainOf(seedId) {
+    const seed = byId(seedId);
+    if (!seed || seed.status !== 'done') return [];
+    const rev = new Map(); // 反向邻接：谁依赖我 → 我的下游
+    for (const t of tasks) {
+      for (const d of t.deps) {
+        if (!rev.has(d)) rev.set(d, []);
+        rev.get(d).push(t.id);
+      }
+    }
+    const res = new Set([seedId]);
+    const st = [seedId];
+    while (st.length) {
+      const c = st.pop();
+      const ct = byId(c);
+      if (!ct) continue;
+      const nbs = ct.deps.concat(rev.get(c) || []);
+      for (const nb of nbs) {
+        if (res.has(nb)) continue;
+        const nt = byId(nb);
+        if (!nt || nt.status !== 'done') continue; // 不穿过未完成任务
+        res.add(nb);
+        st.push(nb);
+      }
+    }
+    return [...res];
+  }
+
   // 前后继任务就近落位：以源任务渲染坐标为基点，正上/正下先试，占住了往右让
   function spotNear(id, dy) {
     const p = lastPos.get(id);
@@ -806,6 +836,20 @@ const Tasks = (() => {
     touch(t); pushHist('回自动布局'); save(); render();
     return true;
   }
+  // 多选整体拖动落盘：整组位移共用一个撤销栈条目（⟲ 一次撤回整组）
+  function moveManyNodes(entries) {
+    let n = 0;
+    for (const en of entries || []) {
+      const t = byId(en.id);
+      if (!t || !Number.isFinite(en.x) || !Number.isFinite(en.y)) continue;
+      t.x = Math.max(0, Math.round(en.x));
+      t.y = Math.max(0, Math.round(en.y));
+      touch(t);
+      n++;
+    }
+    if (n) { pushHist(n > 1 ? '移动 ' + n + ' 个节点' : '移动节点'); save(); render(); }
+    return n;
+  }
   // 一键整理：清掉全部手动位置，整图回到自动布局（依赖关系不动）
   function tidyLayout() {
     let n = 0;
@@ -1077,7 +1121,8 @@ const Tasks = (() => {
     row.ondblclick = () => editTitle(t.id); // 与 DAG 节点一致：双击改名
     row.oncontextmenu = (e) => {
       e.preventDefault(); e.stopPropagation();
-      selectOne(t.id, false);
+      // 右键已选中的任务 = 保持整组多选（批量操作入口）；右键组外任务才重置为单选
+      if (!isSel(t.id)) selectOne(t.id, false);
       showCtx(e, t);
     };
     return row;
@@ -1642,7 +1687,7 @@ const Tasks = (() => {
       g.ondblclick = () => editTitle(n.id);
       g.oncontextmenu = (ev) => {
         ev.preventDefault(); ev.stopPropagation();
-        selectOne(n.id, false);
+        if (!isSel(n.id)) selectOne(n.id, false); // 右键组内节点保持多选，批量操作可达
         showCtx(ev, t); // 与清单右键同一套菜单
       };
       svg.appendChild(g);
@@ -1708,6 +1753,16 @@ const Tasks = (() => {
       const origX = n.x, origY = n.y;
       const ctrl = !!(ev.ctrlKey || ev.metaKey); // Ctrl+拖起（没拖动=点击）参与多选
       drag = { src: n, mode, moved: false, line: null, target: null };
+      // 多选整体拖动：抓起的是选中组内节点（且组 ≥2）→ 整组一起位移
+      // （只收当前画布上可见的组员；框选/聚焦过滤掉的选中项不跟着动）
+      const groupMove = (mode === 'move' && isSel(n.id) && selectionIds().length > 1)
+        ? selectionIds()
+            .filter((x) => x !== n.id && byId(x) && lay.nodes.some((m) => m.id === x))
+            .map((x) => {
+              const m = lay.nodes.find((y) => y.id === x);
+              return { m, g: svg.querySelector('g.tk-node[data-id="' + x + '"]'), ox: m.x, oy: m.y };
+            })
+        : null;
       const onMove = (e2) => {
         if (!drag) return;
         if (!svg.isConnected) { cleanup(); return; } // 中途重渲染把 svg 换掉了
@@ -1723,11 +1778,22 @@ const Tasks = (() => {
         }
         const p = svgPt(e2);
         if (drag.mode === 'move') {
-          n.x = Math.max(0, origX + (p.x - p0.x));
-          n.y = Math.max(0, origY + (p.y - p0.y));
+          const dx = p.x - p0.x, dy = p.y - p0.y;
+          n.x = Math.max(0, origX + dx);
+          n.y = Math.max(0, origY + dy);
           gEl.setAttribute('transform', `translate(${n.x},${n.y})`);
-          grow(n.x, n.y);
           relink(n.id);
+          let gx = n.x, gy = n.y; // 画布增长按整组最大边界算
+          if (groupMove) {
+            for (const o of groupMove) {
+              o.m.x = Math.max(0, o.ox + dx);
+              o.m.y = Math.max(0, o.oy + dy);
+              if (o.g) o.g.setAttribute('transform', `translate(${o.m.x},${o.m.y})`);
+              relink(o.m.id);
+              gx = Math.max(gx, o.m.x); gy = Math.max(gy, o.m.y);
+            }
+          }
+          grow(gx, gy);
           // 滚动跟随：节点拖到容器可视区边缘外时，把容器滚到节点处（否则扩了画布仍看不见）
           // 节点坐标是逻辑值，容器滚动量是屏幕像素 → 比较前先乘 zoom
           const box = dagBodyEl;
@@ -1755,7 +1821,17 @@ const Tasks = (() => {
         cleanup();
         if (!src) return;
         if (!moved) { selectOne(src.id, ctrl); upClickAt = Date.now(); return; } // 普通点击=选中（Ctrl 加多选）；记时间戳让紧随的合成 click 让位
-        if (mode === 'move') { moveNode(src.id, src.x, src.y); return; } // 落盘自由位置
+        if (mode === 'move') {
+          // 整组落盘：一个历史条目（⟲ 一次撤回整组位移）；组外/单选拖动走原单节点路径
+          if (groupMove && groupMove.length) {
+            const entries = [{ id: src.id, x: src.x, y: src.y }]
+              .concat(groupMove.map((o) => ({ id: o.m.id, x: o.m.x, y: o.m.y })));
+            const n2 = moveManyNodes(entries);
+            if (n2 > 1 && window.MI) MI.toast('已整体移动 ' + n2 + ' 个节点', 'ok');
+            return;
+          }
+          moveNode(src.id, src.x, src.y); return; // 落盘自由位置
+        }
         if (!tgt) return; // 拖到空白：取消
         const r = addDep(tgt.id, src.id); // B 依赖 A（箭头 A→B）
         if (r.ok) {
@@ -1953,7 +2029,7 @@ const Tasks = (() => {
       g.appendChild(el('title')).textContent = tip.join('\n');
       g.onclick = (ev) => { if (Date.now() - gUpClickAt < 80) return; selectOne(n.id, !!(ev && (ev.ctrlKey || ev.metaKey))); };
       g.ondblclick = () => editTitle(n.id);
-      g.oncontextmenu = (ev) => { ev.preventDefault(); ev.stopPropagation(); selectOne(n.id, false); showCtx(ev, t); };
+      g.oncontextmenu = (ev) => { ev.preventDefault(); ev.stopPropagation(); if (!isSel(n.id)) selectOne(n.id, false); showCtx(ev, t); };
       g.addEventListener('mouseenter', () => highlightChain(n.id));
       g.addEventListener('mouseleave', () => clearChainHi());
       svg.appendChild(g);
@@ -2118,6 +2194,9 @@ const Tasks = (() => {
   }
 
   function showCtx(e, t) {
+    // 右键时右键目标必在选中集内（contextmenu 已保证：组外右键会先重置为单选）
+    const selIds = selectionIds().filter((x) => byId(x));
+    const selN = selIds.length;
     openCtxMenu(e, (mk, mkTitle) => {
       mk('✎ 重命名', () => editTitle(t.id));
       mk('📝 编辑备注', async () => {
@@ -2166,8 +2245,8 @@ const Tasks = (() => {
         render();
       });
       // 048-P2 任务组操作（多选建组 / 移出 / 解散）
-      if (selectionIds().length >= 2) {
-        mk('📦 创建子任务组（' + selectionIds().length + ' 个选中，主选中为父）', () => {
+      if (selN >= 2) {
+        mk('📦 创建子任务组（' + selN + ' 个选中，主选中为父）', () => {
           const r = groupFromSelection();
           if (window.MI) MI.toast(r.ok ? '已创建任务组（' + r.n + ' 个子任务）' : r.why, r.ok ? 'ok' : 'err');
         });
@@ -2187,10 +2266,35 @@ const Tasks = (() => {
           if (resetNodePos(t.id) && window.MI) MI.toast('已回到自动布局', 'ok');
         });
       }
-      mk('🗑 删除', async () => {
-        const yes = await Modal.confirm('删除任务', t.title + '\n（可点标题栏 ⟲ 撤销）');
-        if (yes) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
-      }, true);
+      // 已完成链条：上下游均完成的连通段整链删除（代替逐个删已完成任务）
+      if (t.status === 'done') {
+        const chain = doneChainOf(t.id);
+        if (chain.length >= 2) {
+          mk('🧹 删除已完成链条（含上下游 ' + chain.length + ' 个）', async () => {
+            const yes = await Modal.confirm('删除已完成链条',
+              '「' + clip(t.title, 16) + '」上下游已完成链共 ' + chain.length + ' 个任务，整链删除？\n（未完成任务不受影响，可点标题栏 ⟲ 撤销）');
+            if (yes) {
+              deleteMany(chain);
+              if (window.MI) MI.toast('已删除链条 ' + chain.length + ' 个，点 ⟲ 可撤销', 'ok');
+            }
+          }, true);
+        }
+      }
+      // 多选批删（右键组内节点保持多选 → 这里可达；与 Delete 键同一条路径、同一个撤销条目）
+      if (selN >= 2) {
+        mk('🗑 删除选中 ' + selN + ' 个任务', async () => {
+          const yes = await Modal.confirm('批量删除', '删除选中的 ' + selN + ' 个任务？\n（可点标题栏 ⟲ 撤销）');
+          if (yes) {
+            deleteMany(selIds);
+            if (window.MI) MI.toast('已删除 ' + selIds.length + ' 个，点 ⟲ 可撤销', 'ok');
+          }
+        }, true);
+      } else {
+        mk('🗑 删除', async () => {
+          const yes = await Modal.confirm('删除任务', t.title + '\n（可点标题栏 ⟲ 撤销）');
+          if (yes) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
+        }, true);
+      }
     });
   }
 
@@ -2541,7 +2645,7 @@ const Tasks = (() => {
   return {
     setRoot, reload, refresh, render, setView,
     add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate,
-    addDep, removeDep, moveNode, resetNodePos, tidyLayout,
+    addDep, removeDep, moveNode, moveManyNodes, resetNodePos, tidyLayout, doneChainOf,
     fitView, zoomBy, applyZoom,
     get zoom() { return zoom; },
     focusOn(id) { focusId = (byId(id) ? id : null); render(); },   // 聚焦/退出（传 null 退出）

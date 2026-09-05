@@ -4405,6 +4405,127 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.focusOn(null)');
   });
 
+  await okAsync('任务：多选后右键 —— 组内右键保持多选 + 菜单批量删除', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("批删A").id');
+    const b = await g(dom, 'Tasks.add("批删B").id');
+    const c = await g(dom, 'Tasks.add("批删C").id');
+    await tick();
+    // 点 A + Ctrl 点 C → 多选 {A, C}
+    click(tkRow(a));
+    await tick();
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    // 右键组内的 A：多选保持（旧实现 selectOne(id,false) 会清空多选 → 批量项永远不可见）
+    rightClick(tkRow(a));
+    await tick();
+    const selN = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(selN.length === 2 && selN.includes(a) && selN.includes(c), '右键组内任务不破坏多选, got ' + JSON.stringify(selN));
+    ctxItem('删除选中 2 个任务'); // 菜单出现批量删除项
+    click(ctxItem('删除选中 2 个任务'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '批量删除选中的 A、C');
+    assert_(g(dom, 'Tasks.tasks[0].id') === b, '未选中的 B 保留');
+    // 一次撤销恢复整组
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销一次恢复全部 2 个（共用一个历史条目）');
+    // 右键组外任务 → 重置为单选，菜单回到单项删除
+    click(tkRow(b));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const selN2 = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(selN2.length === 1 && selN2[0] === a, '右键组外任务重置为单选, got ' + JSON.stringify(selN2));
+    const hasBatch = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('删除选中'));
+    assert_(!hasBatch, '单选时无批量删除项');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：右键已完成任务 → 一键删除已完成链条（上下游连通段）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("链头").id');
+    const b = await g(dom, 'Tasks.add("链中").id');
+    const c = await g(dom, 'Tasks.add("链尾未完").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")'); // B 依赖 A
+    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")'); // C 依赖 B（A→B→C）
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    await tick();
+    // 部分链：A、B 完成，C 未完成 → 已完成连通段 = {A,B}（不穿过未完成的 C）
+    const chain0 = await tkJson('Tasks.doneChainOf("' + a + '")');
+    assert_(chain0.length === 2 && chain0.includes(a) && chain0.includes(b), '完成段 = {A,B}（不穿过未完成的 C）, got ' + JSON.stringify(chain0));
+    rightClick(tkRow(b)); // 部分链：右键链中也能带走上游 A
+    await tick();
+    click(ctxItem('删除已完成链条'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '完成段 A、B 已整链删除');
+    assert_(g(dom, 'Tasks.tasks[0].id') === c, '未完成的 C 保留');
+    assert_(g(dom, 'Tasks.tasks[0].deps.length') === 0, 'C 的依赖已级联清洗');
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销恢复整段');
+    // 整链完成 → 从任意节点右键都能整链删光
+    await g(dom, 'Tasks.setStatus("' + c + '", "done")');
+    await tick();
+    const chain2 = await tkJson('Tasks.doneChainOf("' + b + '")');
+    assert_(chain2.length === 3, '整链完成 = 3 个, got ' + chain2.length);
+    rightClick(tkRow(a));
+    await tick();
+    click(ctxItem('删除已完成链条'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 0, '整链 3 个全删');
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：多选整体拖动 —— 抓起组内节点整组位移（一个撤销条目）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("拖A").id');
+    const b = await g(dom, 'Tasks.add("拖B").id');
+    const c = await g(dom, 'Tasks.add("拖C旁观").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await tkResetZoom();
+    mockDagBox();
+    mockSvgRect();
+    const gA = $(dom, '#tasks-dag-body g.tk-node[data-id="' + a + '"]');
+    const gB = $(dom, '#tasks-dag-body g.tk-node[data-id="' + b + '"]');
+    assert_(gA && gB, '两个节点都在图上');
+    // 自动布局初始坐标（拖前 x/y 均为 null）
+    const p0 = await tkJson('(()=>{const ns=Tasks._dagLayout(Tasks.tasks).nodes;const f=(id)=>ns.find(n=>n.id===id);return [f("' + a + '"),f("' + b + '"),f("' + c + '")].map(n=>({x:n.x,y:n.y}));})()');
+    // 选中 A，Ctrl+点 B 加入多选
+    gA.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick();
+    gB.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    assert_(gA.classList.contains('sel') && gB.classList.contains('sel'), 'A、B 已多选');
+    // 抓起 A 横向拖 100 逻辑像素（zoom=1：屏幕位移=逻辑位移）→ 整组一起动
+    gA.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 20, clientY: 20, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 20, clientY: 20 })); // 未过阈值
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 120, clientY: 20 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick(); await tick();
+    const pos = await tkJson('Tasks.tasks.map(t=>({id:t.id,x:t.x,y:t.y}))');
+    const pa = pos.find((t) => t.id === a), pb = pos.find((t) => t.id === b), pc = pos.find((t) => t.id === c);
+    assert_(Math.abs(pa.x - (p0[0].x + 100)) <= 2 && Math.abs(pa.y - p0[0].y) <= 2, 'A 移动 +100, got ' + JSON.stringify(pa));
+    assert_(Math.abs(pb.x - (p0[1].x + 100)) <= 2 && Math.abs(pb.y - p0[1].y) <= 2, 'B 跟随整组 +100, got ' + JSON.stringify(pb));
+    assert_(pc.x === null && pc.y === null, '未选中的 C 不动（仍在自动布局）');
+    // 一次撤销 = 整组回到自动布局（两条位移共用一个历史条目）
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    const pos2 = await tkJson('Tasks.tasks.map(t=>({id:t.id,x:t.x}))');
+    assert_(pos2.find((t) => t.id === a).x === null && pos2.find((t) => t.id === b).x === null, '一次撤销整组复原');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   await okAsync('任务：框选 —— svg 下方空白也能作为起点（起点不限于内容底边以上）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("框选A").id');
