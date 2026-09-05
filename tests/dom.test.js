@@ -3588,6 +3588,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   }
   async function tkReset() {
+    await tick(); await tick(); // ★ 先让在途的串行写盘全部落地，再清文件（否则删除后又被在途写重建 → 旧任务泄漏进下一用例）
     delete FAKE_FS[TK_FILE]; // 存储已迁到项目内文件：清文件才等于清任务
     dom.window.localStorage.removeItem(TK_KEY);
     dom.window.localStorage.removeItem('myide-tasks-group-fold'); // 分组收起态：防跨用例泄漏
@@ -4084,6 +4085,50 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!hasReset, '未拖过的节点不显示「回到自动布局」');
   });
 
+  await okAsync('任务：无极画布 —— 画布粘滞不回缩 + 滚动逼近边缘自动扩展（滚不到头）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("锚").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await g(dom, 'Tasks.applyZoom(1, null)'); // 钉死 zoom=1，断言按逻辑值算
+    await tick();
+    const svgOf = () => $(dom, '#tasks-dag-body .tk-svg');
+    const vbOf = () => String(svgOf().getAttribute('viewBox')).split(/[\s,]+/).map(Number);
+    // 1) 粘滞：节点拖远画布长大；节点拖回原位画布不回缩（空旷地带保留，可继续滚过去）
+    await g(dom, 'Tasks.moveNode("' + a + '", 3000, 100)');
+    await tick();
+    const wFar = +svgOf().getAttribute('width');
+    const vbFar = vbOf();
+    assert_(wFar >= 3000, '拖远后画布宽度覆盖节点, got ' + wFar);
+    await g(dom, 'Tasks.moveNode("' + a + '", 14, 14)');
+    await tick();
+    assert_(+svgOf().getAttribute('width') === wFar && String(vbOf()) === String(vbFar),
+      '节点拖回：画布不回缩（粘滞区域保留）');
+    // 2) 滚动逼近右缘 → 向右扩 1000（原点不动）；逼近左缘 → 原点左移 1000 + 滚动补偿
+    const body = mockDagBox(400, 300);
+    const vb0 = vbOf();
+    body._sl = vb0[0] + vb0[2] - 100; // 视口右缘距画布右端 100 逻辑单位（< 400 触发扩）
+    body.dispatchEvent(new dom.window.Event('scroll'));
+    await tick();
+    const vb1 = vbOf();
+    assert_(vb1[0] === vb0[0] && vb1[2] === vb0[2] + 1000, '近右缘滚动 → 向右扩 1000, got ' + vb1.join(' '));
+    // 左缘：scrollLeft=0 → 原点左移 1000、宽度 +1000，scrollLeft 补偿 +1000（内容视觉不动）
+    body._sl = 0; body._st = 150;
+    body.dispatchEvent(new dom.window.Event('scroll'));
+    await tick();
+    const vb2 = vbOf();
+    assert_(vb2[0] === vb1[0] - 1000 && vb2[2] === vb1[2] + 1000, '近左缘滚动 → 原点左移 1000（可向左无限滚）, got ' + vb2.join(' '));
+    assert_(body.scrollLeft === 1000, '左扩后滚动量补偿（视口内容不动）, got ' + body.scrollLeft);
+    // ★ 恢复被 mock 的容器属性：mockDagBox 的 defineProperty 会永久留在元素上，
+    // 污染后续用例（fitView 拿假 clientWidth 算缩放、svg 尺寸断言全偏）
+    for (const k of ['scrollLeft', 'scrollTop', 'clientWidth', 'clientHeight', 'getBoundingClientRect']) delete body[k];
+    delete body._sl; delete body._st;
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
+
   await okAsync('任务：可见度过滤对依赖图生效（只看可执行 / 隐藏已完成）+ 阻塞语义不失真', async () => {
     await tkReset();
     const a = await g(dom, 'Tasks.add("A").id');
@@ -4451,6 +4496,91 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.focusOn(null)');
   });
 
+  await okAsync('任务：多选右键批量改状态/优先级 —— 通用批量段 + 单撤销条目 + 阻塞跳过', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("批A").id');
+    const b = await g(dom, 'Tasks.add("批B").id');
+    const c = await g(dom, 'Tasks.add("批C").id');
+    const d = await g(dom, 'Tasks.add("批D不选").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + d + '")'); // B 依赖未选中的 D → 批量完成时被跳过
+    await tick();
+    click(tkRow(a));
+    await tick();
+    tkRow(b).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    // 批量段出现：全部设为待办/进行中/完成 + 优先级（全部）
+    ctxItem('全部设为进行中');
+    ctxItem('全部标记完成'); // 含阻塞提示后缀（1 个前置未完成将跳过）
+    ctxItem('优先级（全部）');
+    // 批量进行中：A、B、C 三个全变 doing（未选中的 D 不动）
+    click(ctxItem('全部设为进行中'));
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="doing").length')) === 3, '批量设为进行中：3 个全变 doing');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + d + '").status')) === 'todo', '未选中的 D 不受影响');
+    // 批量完成：B 的前置 D 未完成 → 跳过；A、C 完成
+    rightClick(tkRow(a));
+    await tick();
+    click(ctxItem('全部标记完成'));
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").status')) === 'done', 'A 已完成');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + c + '").status')) === 'done', 'C 已完成');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status')) === 'doing', 'B 前置未完成被跳过（保持 doing）');
+    // 一次撤销回批量前（共用一个历史条目）
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="done").length')) === 0, '撤销一次：批量完成整体回退');
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="doing").length')) === 0, '再撤销一次：批量进行中也整体回退');
+    // 批量优先级
+    click(tkRow(a));
+    await tick();
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const hi = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].find((x) => x.textContent.trim() === '高');
+    assert_(hi, '批量优先级里有「高」');
+    click(hi);
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.priority==="high").length')) === 2, '批量设高优先级：A、C 变高');
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.priority==="high").length')) === 0, '撤销批量优先级');
+    // 单选右键：不出现批量段（回到单任务状态/优先级）
+    click(tkRow(a));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const noBulk = ![...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('全部设为'));
+    assert_(noBulk, '单选右键无批量段');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+  });
+
+  await okAsync('任务：选中整条链 —— 点击真的生效（const 遮蔽回归）+ 链成员可再增减', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("链头").id');
+    const b = await g(dom, 'Tasks.add("链中").id');
+    const c = await g(dom, 'Tasks.add("链尾").id');
+    const d = await g(dom, 'Tasks.add("孤岛").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")');
+    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")');
+    await tick();
+    // 右键链中 → 选中整条链（旧实现 selIds 被 const 遮蔽，赋值抛 TypeError → 点击无效）
+    rightClick(tkRow(b));
+    await tick();
+    const chainItem = ctxItem('选中整条链（上下游共 3 个）');
+    click(chainItem);
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(sel.length === 3 && sel.includes(a) && sel.includes(b) && sel.includes(c) && !sel.includes(d),
+      '点击后整条链 3 个进入选中集（孤岛不在）, got ' + JSON.stringify(sel));
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+  });
+
   await okAsync('任务：已完成链条整链语义 —— 有一个未完成整链保留；一键清理只删整链完成', async () => {
     await tkReset();
     // 场景：链1 A→B→C（A/B 完成、C 未完成）；链2 D→E（全完成）；孤立 F（完成）
@@ -4688,6 +4818,42 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(bindings.includes('tool-tasks'), '快捷键表已注册 tool-tasks');
     delete FAKE_FS[TK_FILE];
     delete FAKE_FS['C:/proj2/.myide/tasks.json'];
+  });
+
+  await okAsync('任务：改完立刻切项目 —— 写入目标按入队时锁定（连线不丢、新项目不串档）', async () => {
+    await tkReset();
+    // 让写盘变慢：制造「写盘还在途时切了项目」的确定竞态
+    // （旧实现 writeStore 执行时才读 FILE(root) → 甲乙+连线写进 proj2 的文件：旧项目丢线、新项目串档）
+    const fsBridge = dom.window.myIDE.fs;
+    const origWrite = fsBridge.writeFile;
+    fsBridge.writeFile = async (p, c) => {
+      await new Promise((r) => setTimeout(r, 40));
+      return origWrite(p, c);
+    };
+    const a = await g(dom, 'Tasks.add("甲").id');
+    const b = await g(dom, 'Tasks.add("乙").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")'); // 连线（save 已入队、写盘在途）
+    await g(dom, 'App.setRoot("C:/proj2")'); // ★ 不等落盘立刻切项目
+    await new Promise((r) => setTimeout(r, 150)); // 等在途写盘全部落地
+    fsBridge.writeFile = origWrite;
+    // 旧项目文件：连线必须在
+    const savedP = JSON.parse(FAKE_FS[TK_FILE].content);
+    const sb = savedP.tasks.find((t) => t.id === b);
+    assert_(sb && Array.isArray(sb.deps) && sb.deps.includes(a), '旧项目的依赖已落盘（切项目连线不丢）');
+    // 新项目文件：不该被写进甲乙
+    const f2 = 'C:/proj2/.myide/tasks.json';
+    if (FAKE_FS[f2]) {
+      const s2 = JSON.parse(FAKE_FS[f2].content);
+      assert_(!s2.tasks || !s2.tasks.some((t) => t.id === a || t.id === b), '新项目文件未被旧项目数据串档');
+    }
+    // 切回项目一：任务和连线都在
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '切回：两个任务在');
+    const bk = await tkJson('Tasks.tasks.find(t=>t.id==="' + b + '")');
+    assert_(bk && Array.isArray(bk.deps) && bk.deps.includes(a), '切回：连线仍在（依赖持久化）');
+    delete FAKE_FS[TK_FILE];
+    delete FAKE_FS[f2];
   });
 
   // ---------- 048-5.1 画布缩放 / 平移 ----------

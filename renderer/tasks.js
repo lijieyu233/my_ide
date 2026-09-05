@@ -97,7 +97,7 @@ const Tasks = (() => {
   let selId = null;        // 清单与图共享的选中项（双向联动；多选时的主选中）
   let selIds = new Set();  // 多选集合（Ctrl+点击 / 框选累计；Ctrl+C / Delete 对整组生效）
   let storeMode = 'file';  // 'file' | 'ls'
-  let dirOk = false;       // .myide 目录已确认存在（免得每次 save 都 mkdir）
+  const okDirs = new Set(); // 已确认存在的 .myide 目录（按路径记账：切项目后旧路径的记账不失效）
   let saveChain = Promise.resolve(); // 串行写：快速连续操作不乱序
   // ---------- 统一撤销/重做（048-5.2）----------
   // 快照式命令栈：每个写操作在 save 前把「操作后」的全量深拷贝压栈（数据量小，最简单可靠）。
@@ -149,6 +149,11 @@ const Tasks = (() => {
   let spaceDown = false;   // 空格按住 = 抓手平移模式
   let curSvg = null;       // 当前渲染的 svg（常驻容器上的监听需跨渲染访问它）
   let miniEl = null;       // 小地图容器（5.3）
+  // 无极画布：画布逻辑区域是「粘滞」的 —— 只随内容/滚动增长，不随内容缩小回缩。
+  // 纯内容包围盒会把滚动范围钳死在最左上~最右下节点之间（「永远保持任务框范围」的根因）；
+  // 粘滞区域 + 滚动逼近边缘自动扩展（extendCanvas）→ 四个方向都滚不到头。
+  let cvs = { x: 0, y: 0, w: 0, h: 0 };
+  let cvsInit = false;     // 首次渲染/重载数据时按内容包围盒初始化
   let miniRaf = 0;
 
   (function initVisMode() {
@@ -188,6 +193,7 @@ const Tasks = (() => {
   }
 
   async function load() {
+    cvsInit = false; // 重载数据/切项目：画布按新内容包围盒重新起算（旧项目的扩展区域不带入）
     const f = FILE(root);
     if (!root || !f || !window.myIDE || !myIDE.fs) {
       storeMode = 'ls';
@@ -200,7 +206,7 @@ const Tasks = (() => {
     try { r = await myIDE.fs.readFile(f); } catch { r = null; }
     if (r && r.content != null) {
       storeMode = 'file';
-      dirOk = true;
+      okDirs.add(DIR_OF(f));
       let d = null;
       try { d = JSON.parse(r.content); } catch {}
       tasks = validate(d && Array.isArray(d.tasks) ? d.tasks : []);
@@ -219,29 +225,38 @@ const Tasks = (() => {
   }
 
   function save() {
+    // ★ 目标快照：saveChain 是异步串行的，排队中的写操作真正执行时 root 可能已经
+    // 切到别的项目（用户改完立刻切项目）。必须在入队那一刻锁定写入目标，
+    // 否则旧项目的数据会写进新项目的文件——旧项目改动丢失（连线消失的根因）、新项目被串档。
+    const snap = { f: FILE(root), mode: storeMode, key: LS_KEY(root) };
     const data = JSON.stringify({ version: 1, tasks });
-    saveChain = saveChain.then(() => writeStore(data)).catch(() => {});
+    saveChain = saveChain.then(() => writeStore(data, snap)).catch(() => {});
     return saveChain;
   }
-  async function writeStore(data) {
-    const f = FILE(root);
-    if (!root) return;
-    if (storeMode !== 'ls' && f && window.myIDE && myIDE.fs) {
+  async function writeStore(data, snap) {
+    const f = snap.f;
+    if (!f) return;
+    if (snap.mode !== 'ls' && f && window.myIDE && myIDE.fs) {
       try {
-        if (!dirOk) { await myIDE.fs.mkdir(DIR_OF(f)); dirOk = true; }
+        const dir = DIR_OF(f);
+        if (!okDirs.has(dir)) { await myIDE.fs.mkdir(dir); okDirs.add(dir); }
         let r = await myIDE.fs.writeFile(f, data);
         if (!r || !r.ok) {
           // 目录可能被外部删了：重建一次再试
-          await myIDE.fs.mkdir(DIR_OF(f));
+          await myIDE.fs.mkdir(dir);
+          okDirs.add(dir);
           r = await myIDE.fs.writeFile(f, data);
         }
         if (r && r.ok) return;
       } catch {}
-      // 只读盘 / 权限 / 网络盘：降级 localStorage，数据不能丢
-      storeMode = 'ls';
-      if (window.MI) MI.toast('任务文件写入失败，已改存本地（不随项目目录）', 'err');
+      // 只读盘 / 权限 / 网络盘：降级 localStorage，数据不能丢。
+      // 仅当失败的是「当前项目」的写入才全局降级（旧项目的失败不该改变新项目的存储模式）
+      if (snap.f === FILE(root)) {
+        storeMode = 'ls';
+        if (window.MI) MI.toast('任务文件写入失败，已改存本地（不随项目目录）', 'err');
+      }
     }
-    try { localStorage.setItem(LS_KEY(root), data); } catch {
+    try { localStorage.setItem(snap.key, data); } catch {
       if (window.MI) MI.toast('任务保存失败（本地存储已满？）', 'err');
     }
   }
@@ -722,6 +737,36 @@ const Tasks = (() => {
     t.priority = pr;
     touch(t); pushHist('改优先级'); save(); render();
   }
+  // 批量改状态：整个选中集一个撤销条目。「完成」仍受前置约束——未满足的跳过并计数
+  function setStatusMany(ids, st) {
+    if (!STATUSES.includes(st)) return { n: 0, blocked: 0 };
+    const list = (ids || []).map(byId).filter(Boolean);
+    let n = 0, blocked = 0;
+    for (const t of list) {
+      if (t.status === st) continue;
+      if (st === 'done' && blockedList(t).length) { blocked++; continue; }
+      t.status = st;
+      t.doneAt = st === 'done' ? Date.now() : null;
+      touch(t);
+      n++;
+    }
+    if (n) { pushHist('批量改状态（' + n + ' 个）'); save(); render(); }
+    return { n, blocked };
+  }
+  // 批量改优先级：一个撤销条目
+  function setPriorityMany(ids, pr) {
+    if (!PRIOS.includes(pr)) return 0;
+    const list = (ids || []).map(byId).filter(Boolean);
+    let n = 0;
+    for (const t of list) {
+      if (t.priority === pr) continue;
+      t.priority = pr;
+      touch(t);
+      n++;
+    }
+    if (n) { pushHist('批量改优先级（' + n + ' 个）'); save(); render(); }
+    return n;
+  }
   // 预计耗时（分钟）：甘特图排期依据；0/null/负数 = 清除（回落默认 30 分钟占位）
   function setEstimate(id, min) {
     const t = byId(id);
@@ -871,7 +916,12 @@ const Tasks = (() => {
       if (only && !only.has(t.id)) continue;
       if (t.x != null || t.y != null) { t.x = null; t.y = null; touch(t); n++; }
     }
-    if (n) { pushHist(only ? '整理选中' : '一键整理'); save(); render(); }
+    if (n) {
+      pushHist(only ? '整理选中' : '一键整理'); save();
+      // 整图整理 = 收纳干净：画布随内容回缩（粘滞的空旷区域一并丢弃；整理选中不动画布）
+      if (!only) cvsInit = false;
+      render();
+    }
     return n;
   }
 
@@ -1234,17 +1284,41 @@ const Tasks = (() => {
     updateZoomLabel();
     if (miniEl) scheduleMinimap();
   }
-  // 适应画布：整图缩放进可视区（不超过 100%）并居中
+  // 适应画布：整图缩放进可视区（不超过 100%）并居中。
+  // 居中对象 = 内容包围盒（curLay.vx/vy/width/height），不是整个画布 ——
+  // 无极画布可能远大于内容（粘滞扩展的空旷区），按画布居中会把内容顶出视野
   function fitView() {
     if (!dagBodyEl || !curLay) return;
     const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
     if (!cw || !ch) return; // jsdom 无布局：别把 zoom 压到下限
     const W = curLay.width || 1, H = curLay.height || 1;
     applyZoom(Math.min(cw / W, ch / H, 1), null);
-    dagBodyEl.scrollLeft = Math.max(0, (W * zoom - cw) / 2);
-    dagBodyEl.scrollTop = Math.max(0, (H * zoom - ch) / 2);
+    const vb = curSvg && curSvg.isConnected ? vbSize(curSvg) : { x: cvs.x, y: cvs.y };
+    // 内容在画布元素里的像素起点 = (内容原点 - 画布原点) × zoom，再把内容中心对到视口中心
+    dagBodyEl.scrollLeft = Math.max(0, ((curLay.vx || 0) - vb.x) * zoom + (W * zoom - cw) / 2);
+    dagBodyEl.scrollTop = Math.max(0, ((curLay.vy || 0) - vb.y) * zoom + (H * zoom - ch) / 2);
   }
   function zoomBy(f) { applyZoom(zoom * f, null); }
+  // 无极画布：滚动逼近画布边缘时向该方向再扩一截 —— 滚不到头。
+  // 向左/上扩 = viewBox 原点外移，内容在元素里同步位移 → 补偿滚动量，视觉位置不动
+  const EXT_TH = 400, EXT_STEP = 1000; // 距边缘 400 逻辑单位触发，每次向外扩 1000
+  function extendCanvas() {
+    if (!curSvg || !curSvg.isConnected || !dagBodyEl) return;
+    const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
+    if (!cw || !ch) return; // 无布局（jsdom）：不扩
+    const vb = vbSize(curSvg);
+    let nx = vb.x, ny = vb.y, nw = vb.w, nh = vb.h;
+    if (dagBodyEl.scrollLeft < EXT_TH * zoom) { nx -= EXT_STEP; nw += EXT_STEP; }
+    if (dagBodyEl.scrollTop < EXT_TH * zoom) { ny -= EXT_STEP; nh += EXT_STEP; }
+    if (dagBodyEl.scrollLeft + cw > (vb.x + vb.w) * zoom - EXT_TH * zoom) nw += EXT_STEP;
+    if (dagBodyEl.scrollTop + ch > (vb.y + vb.h) * zoom - EXT_TH * zoom) nh += EXT_STEP;
+    if (nx === vb.x && ny === vb.y && nw === vb.w && nh === vb.h) return;
+    setSvgSize(curSvg, nw, nh, nx, ny);
+    cvs = { x: nx, y: ny, w: nw, h: nh };
+    // 原点向左/上移：内容随之右/下移同样的量，补偿滚动保持视口内容不动
+    if (nx < vb.x) dagBodyEl.scrollLeft += (vb.x - nx) * zoom;
+    if (ny < vb.y) dagBodyEl.scrollTop += (vb.y - ny) * zoom;
+  }
 
   // ---------- 小地图（048-5.3）----------
   // 可见节点 > MM_MIN_NODES 时右下角出现；只画节点色块 + 当前视口虚线框（点击/拖拽 = 导航）
@@ -1547,6 +1621,17 @@ const Tasks = (() => {
     lay.vx = minX; lay.vy = minY;
     if (minX < 0) lay.width += -minX;
     if (minY < 0) lay.height += -minY;
+    // 无极画布（粘滞区域）：画布 = 内容包围盒 ∪ 历史画布区域（只增不减）。
+    // 滚出去的空旷地带在重渲染后仍保留 —— 拖动节点/改状态不会把视口弹回内容包围盒
+    if (!cvsInit) {
+      cvs = { x: lay.vx, y: lay.vy, w: lay.width, h: lay.height };
+      cvsInit = true;
+    } else {
+      const x2 = Math.min(cvs.x, lay.vx), y2 = Math.min(cvs.y, lay.vy);
+      const r2 = Math.max(cvs.x + cvs.w, lay.vx + lay.width);
+      const b2 = Math.max(cvs.y + cvs.h, lay.vy + lay.height);
+      cvs = { x: x2, y: y2, w: r2 - x2, h: b2 - y2 };
+    }
     // 记录本帧各节点画布坐标：前后继任务就近落位的基点（在过滤后可见节点上）
     lastPos.clear();
     for (const n of lay.nodes) lastPos.set(n.id, { x: n.x, y: n.y });
@@ -1559,7 +1644,7 @@ const Tasks = (() => {
 
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', 'tk-svg');
-    setSvgSize(svg, lay.width, lay.height, lay.vx, lay.vy); // width/height 属性 = 逻辑 × zoom，viewBox = 逻辑区域（原点可为负）
+    setSvgSize(svg, cvs.w, cvs.h, cvs.x, cvs.y); // width/height 属性 = 逻辑 × zoom，viewBox = 画布区域（原点可为负）
     curSvg = svg; // 常驻容器上的滚轮/平移监听需要跨渲染访问当前 svg
 
     // 箭头（正常 / 阻塞两色）
@@ -1772,6 +1857,7 @@ const Tasks = (() => {
       const nh = Math.max(vb.y + vb.h, Math.ceil(y + NH + PAD + 12)) - ny;
       if (nw === vb.w && nh === vb.h) return;
       setSvgSize(svg, nw, nh, nx, ny);
+      cvs = { x: nx, y: ny, w: nw, h: nh }; // 拖动中的扩展同步进粘滞画布（松手后 render 不回缩）
       // 滚动补偿：原点向左/上移了多少逻辑单位，内容就在 svg 里右/下移多少像素
       if (dagBodyEl) {
         if (nx < vb.x) dagBodyEl.scrollLeft += (vb.x - nx) * zoom;
@@ -2251,9 +2337,47 @@ const Tasks = (() => {
 
   function showCtx(e, t) {
     // 右键时右键目标必在选中集内（contextmenu 已保证：组外右键会先重置为单选）
-    const selIds = selectionIds().filter((x) => byId(x));
-    const selN = selIds.length;
+    // 注意：本函数内不再声明局部 selIds —— 旧实现 const selIds 遮蔽了模块级变量，
+    // 「选中整条链」回调里 selIds = new Set(rel) 对 const 赋值直接抛 TypeError（点击无效果）
+    const curSel = selectionIds().filter((x) => byId(x));
+    const selN = curSel.length;
+    const multi = selN >= 2;
+    // 批量改状态的统一出口：汇报改了几个、跳过几个（前置未完成不能完成）
+    const bulkStatus = (st, name) => {
+      const r = setStatusMany(curSel, st);
+      if (!window.MI) return;
+      if (!r.n && !r.blocked) MI.toast('选中的任务已全部是「' + name + '」', 'ok');
+      else MI.toast('已将 ' + r.n + ' 个任务设为「' + name + '」' + (r.blocked ? '，' + r.blocked + ' 个前置未完成已跳过' : ''), r.n ? 'ok' : 'err');
+    };
     openCtxMenu(e, (mk, mkTitle) => {
+      // ===== 批量段（多选才出现）：状态 / 优先级 / 建组 / 整理 对整个选中集生效 =====
+      if (multi) {
+        mkTitle('已选中 ' + selN + ' 个任务 —— 以下操作对全部生效');
+        mk('○ 全部设为待办', () => bulkStatus('todo', '待办'));
+        mk('⏳ 全部设为进行中', () => bulkStatus('doing', '进行中'));
+        {
+          const blN = curSel.filter((id) => {
+            const x = byId(id);
+            return x && x.status !== 'done' && blockedList(x).length;
+          }).length;
+          mk('✅ 全部标记完成' + (blN ? '（' + blN + ' 个前置未完成将跳过）' : ''), () => bulkStatus('done', '已完成'));
+        }
+        mkTitle('优先级（全部）');
+        for (const p of ['high', 'normal', 'low']) {
+          mk('　' + PRIO_NAME[p], () => setPriorityMany(curSel, p));
+        }
+        mk('📦 创建子任务组（主选中为父）', () => {
+          const r = groupFromSelection();
+          if (window.MI) MI.toast(r.ok ? '已创建任务组（' + r.n + ' 个子任务）' : r.why, r.ok ? 'ok' : 'err');
+        });
+        // 整理选中的：只有选中的清手动位置回自动布局（未选中的位置不动）
+        mk('🧩 整理选中的 ' + selN + ' 个任务（回自动布局）', () => {
+          const n = tidyLayout(curSel);
+          if (window.MI) MI.toast(n ? '已整理 ' + n + ' 个选中任务' : '选中的任务都在自动布局上', n ? 'ok' : 'err');
+        });
+        mkTitle('对右键的任务「' + clip(t.title, 14) + '」单独操作');
+      }
+      // ===== 单目标任务操作（多选时 = 只对右键的目标执行；状态/优先级走上方批量段）=====
       mk('✎ 重命名', () => editTitle(t.id));
       mk('📝 编辑备注', async () => {
         const v = await promptArea('任务备注', '备注（多行）', t.note);
@@ -2264,18 +2388,20 @@ const Tasks = (() => {
         if (v == null) return;
         setEstimate(t.id, v);
       });
-      mkTitle('优先级');
-      for (const p of ['high', 'normal', 'low']) {
-        mk((t.priority === p ? '● ' : '') + '　' + PRIO_NAME[p],
-          () => setPriority(t.id, p));
+      if (!multi) {
+        mkTitle('优先级');
+        for (const p of ['high', 'normal', 'low']) {
+          mk((t.priority === p ? '● ' : '') + '　' + PRIO_NAME[p],
+            () => setPriority(t.id, p));
+        }
+        if (t.status !== 'doing') mk('⏳ 标记进行中', () => setStatus(t.id, 'doing'));
+        if (t.status !== 'done') {
+          const bl = blockedList(t);
+          if (bl.length) mkTitle('⛔ 前置未完成，暂不能标记完成');
+          else mk('✅ 标记完成', () => setStatus(t.id, 'done'));
+        }
+        if (t.status !== 'todo') mk('↩︎ 回到待办', () => setStatus(t.id, 'todo'));
       }
-      if (t.status !== 'doing') mk('⏳ 标记进行中', () => setStatus(t.id, 'doing'));
-      if (t.status !== 'done') {
-        const bl = blockedList(t);
-        if (bl.length) mkTitle('⛔ 前置未完成，暂不能标记完成');
-        else mk('✅ 标记完成', () => setStatus(t.id, 'done'));
-      }
-      if (t.status !== 'todo') mk('↩︎ 回到待办', () => setStatus(t.id, 'todo'));
       // 创建 + 连线一步到位（省去「先建任务再拖线」两步）；新任务落位在源任务上/下方（就近可见）
       mk('➕ 新建后继任务（依赖本任务）', async () => {
         const v = await Modal.prompt('新建后继任务', '标题（新任务将依赖「' + clip(t.title, 16) + '」）', '');
@@ -2305,24 +2431,12 @@ const Tasks = (() => {
         const rel = [...relatedOf(t.id)];
         if (rel.length >= 2) {
           mk('🔗 选中整条链（上下游共 ' + rel.length + ' 个）', () => {
-            selIds = new Set(rel);
+            selIds = new Set(rel); // 模块级选中集（curSel 不再遮蔽它）
             selId = t.id;
             applySel();
             if (window.MI) MI.toast('已选中链上 ' + rel.length + ' 个任务（Delete 删除 / 右键批量操作 / 拖动任一成员整体移动）', 'ok');
           });
         }
-      }
-      // 048-P2 任务组操作（多选建组 / 移出 / 解散）
-      if (selN >= 2) {
-        mk('📦 创建子任务组（' + selN + ' 个选中，主选中为父）', () => {
-          const r = groupFromSelection();
-          if (window.MI) MI.toast(r.ok ? '已创建任务组（' + r.n + ' 个子任务）' : r.why, r.ok ? 'ok' : 'err');
-        });
-        // 整理选中的：只有选中的清手动位置回自动布局（未选中的位置不动）
-        mk('🧩 整理选中的 ' + selN + ' 个任务（回自动布局）', () => {
-          const n = tidyLayout(selIds);
-          if (window.MI) MI.toast(n ? '已整理 ' + n + ' 个选中任务' : '选中的任务都在自动布局上', n ? 'ok' : 'err');
-        });
       }
       if (t.parentId) {
         const pt = byId(t.parentId);
@@ -2354,12 +2468,12 @@ const Tasks = (() => {
         }
       }
       // 多选批删（右键组内节点保持多选 → 这里可达；与 Delete 键同一条路径、同一个撤销条目）
-      if (selN >= 2) {
+      if (multi) {
         mk('🗑 删除选中 ' + selN + ' 个任务', async () => {
           const yes = await Modal.confirm('批量删除', '删除选中的 ' + selN + ' 个任务？\n（可点标题栏 ⟲ 撤销）');
           if (yes) {
-            deleteMany(selIds);
-            if (window.MI) MI.toast('已删除 ' + selIds.length + ' 个，点 ⟲ 可撤销', 'ok');
+            deleteMany(curSel);
+            if (window.MI) MI.toast('已删除 ' + curSel.length + ' 个，点 ⟲ 可撤销', 'ok');
           }
         }, true);
       } else {
@@ -2576,8 +2690,8 @@ const Tasks = (() => {
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
     });
-    // 容器滚动时同步小地图视口框（5.3；目前无小地图时是空操作）
-    dagBodyEl.addEventListener('scroll', () => { if (miniEl) scheduleMinimap(); }, { passive: true });
+    // 容器滚动：先按需扩展画布（无极），再同步小地图视口框
+    dagBodyEl.addEventListener('scroll', () => { extendCanvas(); if (miniEl) scheduleMinimap(); }, { passive: true });
   }
   // 空格状态：输入态不劫持（否则打字打不出空格）
   const isTyping = () => {
@@ -2705,7 +2819,6 @@ const Tasks = (() => {
     selIds = new Set();
     focusId = null;
     resetHist();
-    dirOk = false;
     storeMode = 'file';
     load(); // 异步：完成后自行 render
   }
@@ -2722,7 +2835,7 @@ const Tasks = (() => {
 
   return {
     setRoot, reload, refresh, render, setView,
-    add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate,
+    add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate, setStatusMany, setPriorityMany,
     addDep, removeDep, moveNode, moveManyNodes, resetNodePos, tidyLayout, doneChainOf, doneChainIds,
     fitView, zoomBy, applyZoom,
     get zoom() { return zoom; },
