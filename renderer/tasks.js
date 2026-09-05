@@ -406,34 +406,45 @@ const Tasks = (() => {
     return res;
   }
 
-  // 已完成链条：从 seed 沿依赖边向上下游扩散（只经过已完成任务），得到极大完成连通段。
-  // 整链完成 = 整链删；链上有未完成 = 只取完成段（右键「删除已完成链条」用）
+  // 已完成链条（整链语义）：从 seed 沿依赖边无向扩散得到整条连通链。
+  // 整链全部完成 → 返回链成员（可整链删除）；链上有一个未完成 → 整条链保留（返回 []，
+  // 活跃链上的已完成前置仍有上下文价值，不许删）
   function doneChainOf(seedId) {
     const seed = byId(seedId);
     if (!seed || seed.status !== 'done') return [];
-    const rev = new Map(); // 反向邻接：谁依赖我 → 我的下游
-    for (const t of tasks) {
-      for (const d of t.deps) {
-        if (!rev.has(d)) rev.set(d, []);
-        rev.get(d).push(t.id);
-      }
-    }
-    const res = new Set([seedId]);
+    const comp = [];
+    const seen = new Set([seedId]);
     const st = [seedId];
     while (st.length) {
       const c = st.pop();
       const ct = byId(c);
       if (!ct) continue;
-      const nbs = ct.deps.concat(rev.get(c) || []);
+      comp.push(c);
+      const nbs = ct.deps.concat(tasks.filter((t) => t.deps.includes(c)).map((t) => t.id));
       for (const nb of nbs) {
-        if (res.has(nb)) continue;
-        const nt = byId(nb);
-        if (!nt || nt.status !== 'done') continue; // 不穿过未完成任务
-        res.add(nb);
-        st.push(nb);
+        if (!seen.has(nb)) { seen.add(nb); st.push(nb); }
       }
     }
-    return [...res];
+    return comp.every((id) => { const x = byId(id); return x && x.status === 'done'; }) ? comp : [];
+  }
+
+  // 一键识别：所有「整链完成」连通块的成员合集（部分完成链上的已完成任务保留）。
+  // 工具栏「清理已完成链条」按钮的数据源
+  function doneChainIds() {
+    const out = new Set();
+    const seen = new Set();
+    for (const t of tasks) {
+      if (seen.has(t.id)) continue;
+      const chain = doneChainOf(t.id);
+      if (chain.length) {
+        chain.forEach((id) => { out.add(id); seen.add(id); });
+      } else {
+        // 未完成链也要标记，防止同链成员重复扩散（各自都返回 []）
+        const rel = relatedOf(t.id);
+        rel.forEach((id) => seen.add(id));
+      }
+    }
+    return [...out];
   }
 
   // 前后继任务就近落位：以源任务渲染坐标为基点，正上/正下先试，占住了往右让
@@ -880,10 +891,12 @@ const Tasks = (() => {
     return removed;
   }
   function remove(id) { return deleteMany([id]); }
+  // 一键清理已完成链条：只删「整链完成」的任务；
+  // 链上有未完成 → 链上已完成任务保留（上下文仍在用）
   function clearDone() {
-    const done = tasks.filter((t) => t.status === 'done');
-    if (!done.length) return null;
-    return deleteMany(done.map((t) => t.id));
+    const ids = doneChainIds();
+    if (!ids.length) return null;
+    return deleteMany(ids);
   }
 
   // ---------- 渲染 ----------
@@ -940,9 +953,10 @@ const Tasks = (() => {
       }
     }
     if (clearBtn) {
-      const doneN = tasks.filter((t) => t.status === 'done').length;
-      clearBtn.classList.toggle('hidden', !doneN);
-      clearBtn.title = '清空已完成（' + doneN + ' 个，可撤销）';
+      // 显隐按「可清理数」算：已完成全在未完成链上时无可删项，按钮隐藏
+      const n = doneChainIds().length;
+      clearBtn.classList.toggle('hidden', !n);
+      clearBtn.title = '清理已完成链条（一键删除 ' + n + ' 个整链完成任务，链上有未完成则整链保留，可撤销）';
     }
   }
 
@@ -2266,13 +2280,13 @@ const Tasks = (() => {
           if (resetNodePos(t.id) && window.MI) MI.toast('已回到自动布局', 'ok');
         });
       }
-      // 已完成链条：上下游均完成的连通段整链删除（代替逐个删已完成任务）
+      // 已完成链条（整链语义）：整链全部完成才可整链删；有一个未完成 → 不出此项（活跃链上下文保留）
       if (t.status === 'done') {
         const chain = doneChainOf(t.id);
         if (chain.length >= 2) {
-          mk('🧹 删除已完成链条（含上下游 ' + chain.length + ' 个）', async () => {
+          mk('🧹 删除已完成链条（整链 ' + chain.length + ' 个）', async () => {
             const yes = await Modal.confirm('删除已完成链条',
-              '「' + clip(t.title, 16) + '」上下游已完成链共 ' + chain.length + ' 个任务，整链删除？\n（未完成任务不受影响，可点标题栏 ⟲ 撤销）');
+              '「' + clip(t.title, 16) + '」所在链整链完成，共 ' + chain.length + ' 个任务，整链删除？\n（可点标题栏 ⟲ 撤销）');
             if (yes) {
               deleteMany(chain);
               if (window.MI) MI.toast('已删除链条 ' + chain.length + ' 个，点 ⟲ 可撤销', 'ok');
@@ -2613,10 +2627,15 @@ const Tasks = (() => {
   }
   if (clearBtn) {
     clearBtn.onclick = async () => {
-      const n = tasks.filter((t) => t.status === 'done').length;
-      if (!n) return;
-      const yes = await Modal.confirm('清空已完成', '删除 ' + n + ' 个已完成任务？\n（可点标题栏 ⟲ 撤销）');
-      if (yes) { clearDone(); if (window.MI) MI.toast('已清空 ' + n + ' 个，点 ⟲ 可撤销', 'ok'); }
+      // 一键识别删除：只收「整链完成」的任务；部分完成链上的已完成保留
+      const ids = doneChainIds();
+      if (!ids.length) {
+        if (window.MI) MI.toast('没有整链完成的任务（链上有未完成则整链保留）', 'err');
+        return;
+      }
+      const yes = await Modal.confirm('清理已完成链条',
+        '一键删除 ' + ids.length + ' 个已完成任务（整链完成的链条）？\n（链上有未完成任务时，链上已完成任务会保留）\n（可点标题栏 ⟲ 撤销）');
+      if (yes) { clearDone(); if (window.MI) MI.toast('已清理 ' + ids.length + ' 个，点 ⟲ 可撤销', 'ok'); }
     };
   }
 
@@ -2645,7 +2664,7 @@ const Tasks = (() => {
   return {
     setRoot, reload, refresh, render, setView,
     add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate,
-    addDep, removeDep, moveNode, moveManyNodes, resetNodePos, tidyLayout, doneChainOf,
+    addDep, removeDep, moveNode, moveManyNodes, resetNodePos, tidyLayout, doneChainOf, doneChainIds,
     fitView, zoomBy, applyZoom,
     get zoom() { return zoom; },
     focusOn(id) { focusId = (byId(id) ? id : null); render(); },   // 聚焦/退出（传 null 退出）

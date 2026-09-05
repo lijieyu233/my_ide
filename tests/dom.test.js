@@ -4445,43 +4445,62 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.focusOn(null)');
   });
 
-  await okAsync('任务：右键已完成任务 → 一键删除已完成链条（上下游连通段）', async () => {
+  await okAsync('任务：已完成链条整链语义 —— 有一个未完成整链保留；一键清理只删整链完成', async () => {
     await tkReset();
-    const a = await g(dom, 'Tasks.add("链头").id');
-    const b = await g(dom, 'Tasks.add("链中").id');
-    const c = await g(dom, 'Tasks.add("链尾未完").id');
-    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")'); // B 依赖 A
-    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")'); // C 依赖 B（A→B→C）
+    // 场景：链1 A→B→C（A/B 完成、C 未完成）；链2 D→E（全完成）；孤立 F（完成）
+    const a = await g(dom, 'Tasks.add("链1头").id');
+    const b = await g(dom, 'Tasks.add("链1中").id');
+    const c = await g(dom, 'Tasks.add("链1尾未完").id');
+    const d = await g(dom, 'Tasks.add("链2头").id');
+    const e = await g(dom, 'Tasks.add("链2尾").id');
+    const f = await g(dom, 'Tasks.add("孤岛F").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")');
+    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")'); // 链1：A→B→C
+    await g(dom, 'Tasks.addDep("' + e + '", "' + d + '")'); // 链2：D→E
     await g(dom, 'Tasks.setStatus("' + a + '", "done")');
     await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + d + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + e + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + f + '", "done")');
     await tick();
-    // 部分链：A、B 完成，C 未完成 → 已完成连通段 = {A,B}（不穿过未完成的 C）
-    const chain0 = await tkJson('Tasks.doneChainOf("' + a + '")');
-    assert_(chain0.length === 2 && chain0.includes(a) && chain0.includes(b), '完成段 = {A,B}（不穿过未完成的 C）, got ' + JSON.stringify(chain0));
-    rightClick(tkRow(b)); // 部分链：右键链中也能带走上游 A
+    // 链1 有未完成的 C → 整条链保留（含已完成的 A、B）；右键 A 不出链条删除项
+    const chainA = await tkJson('Tasks.doneChainOf("' + a + '")');
+    assert_(chainA.length === 0, '链1 有未完成 → doneChainOf 返回空（整链保留）, got ' + JSON.stringify(chainA));
+    rightClick(tkRow(a));
     await tick();
-    click(ctxItem('删除已完成链条'));
+    const hasChainItem = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('删除已完成链条'));
+    assert_(!hasChainItem, '部分完成链：右键已完成节点无「删除已完成链条」项');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+    // 链2 全完成 → 整链可删
+    const chainD = await tkJson('Tasks.doneChainOf("' + d + '")');
+    assert_(chainD.length === 2 && chainD.includes(d) && chainD.includes(e), '链2 整链完成 = {D,E}, got ' + JSON.stringify(chainD));
+    // 一键识别：全局可清理 = 链2（D、E）+ 孤立 F；链1 的 A、B 保留
+    const all = await tkJson('Tasks.doneChainIds()');
+    assert_(all.length === 3 && all.includes(d) && all.includes(e) && all.includes(f), '一键识别 = {D,E,F}（链1 保留）, got ' + JSON.stringify(all));
+    // 工具栏一键清理按钮：确认 → 只删整链完成的三者
+    click($(dom, '#tasks-clear'));
     await tick(); await tick();
     click($(dom, '#cf-yes'));
     await tick();
-    assert_(g(dom, 'Tasks.tasks.length') === 1, '完成段 A、B 已整链删除');
-    assert_(g(dom, 'Tasks.tasks[0].id') === c, '未完成的 C 保留');
-    assert_(g(dom, 'Tasks.tasks[0].deps.length') === 0, 'C 的依赖已级联清洗');
+    const left = await tkJson('Tasks.tasks.map(t=>t.id)');
+    assert_(left.length === 3 && left.includes(a) && left.includes(b) && left.includes(c), '一键清理后只剩链1 整条（A、B、C）, got ' + JSON.stringify(left));
+    // 撤销恢复
     await g(dom, 'Tasks.undo()');
     await tick();
-    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销恢复整段');
-    // 整链完成 → 从任意节点右键都能整链删光
+    assert_(g(dom, 'Tasks.tasks.length') === 6, '一键清理可整体撤销');
+    // 链1 也全部完成 → 从链中任一节点右键可整链删（只删本链，链2/孤岛不动）
     await g(dom, 'Tasks.setStatus("' + c + '", "done")');
     await tick();
     const chain2 = await tkJson('Tasks.doneChainOf("' + b + '")');
-    assert_(chain2.length === 3, '整链完成 = 3 个, got ' + chain2.length);
+    assert_(chain2.length === 3 && chain2.includes(a) && chain2.includes(b) && chain2.includes(c), '链1 全完成 = {A,B,C}, got ' + JSON.stringify(chain2));
     rightClick(tkRow(a));
     await tick();
     click(ctxItem('删除已完成链条'));
     await tick(); await tick();
     click($(dom, '#cf-yes'));
     await tick();
-    assert_(g(dom, 'Tasks.tasks.length') === 0, '整链 3 个全删');
+    const left2 = await tkJson('Tasks.tasks.map(t=>t.id)');
+    assert_(left2.length === 3 && left2.includes(d) && left2.includes(e) && left2.includes(f), '右键整链删除只清链1（D、E、F 保留）, got ' + JSON.stringify(left2));
     await g(dom, 'Tasks.focusOn(null)');
   });
 
