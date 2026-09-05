@@ -90,7 +90,27 @@ const Viewer = (() => {
     renderView();
     // 会话恢复的浏览位置：编辑器渲染完成后跳到上次光标行
     const t = tabs[i];
+    if (t && t.lazy) {
+      // 懒恢复标签首次切入才读盘（会话恢复只登记，切换项目不再逐个打开全部文件）
+      t.lazy = false;
+      loadTab(t).then(() => {
+        if (t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; } // 编辑器就绪后再跳行
+      });
+      return; // 内容未载入（renderView 对 mode=null 直接返回）→ 常规跳行等加载完成
+    }
     if (t && t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; }
+  }
+
+  // 会话懒恢复：只登记标签条（不读盘不建编辑器），激活时才真正加载。
+  // 切换项目恢复会话用：旧实现逐个 openFile（读盘+建编辑器），标签多时切换卡数秒
+  function addLazyTab(path, opts) {
+    if (tabs.some((t) => t.path === path)) return;
+    const name = path.split(/[\\/]/).pop();
+    const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
+    if (opts && opts.scrollTop) tab.scrollTop = opts.scrollTop;
+    if (opts && opts.line) tab.restoreLine = opts.line;
+    tabs.push(tab);
+    renderTabs();
   }
 
   // 当前活动编辑器滚动到指定行（会话恢复用）
@@ -1003,7 +1023,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
+    openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

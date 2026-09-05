@@ -50,16 +50,20 @@ const Session = (() => {
       // 兼容旧格式（纯路径数组）/ 新格式（{p,s,l} 带浏览位置）
       const list = Array.isArray(s.tabs) ? s.tabs : [];
       if (list.length) {
+        // 懒恢复：只有 active 标签真正打开（读盘+建编辑器），其余只登记标签条，
+        // 切入时才加载。旧实现逐个 await openFile —— 标签一多切换项目就要逐个
+        // 重新打开全部文件（读盘+高亮），表现为「切项目卡住，自动点开一堆页面」
         for (const it of list) {
           const item = typeof it === 'string' ? { p: it, s: 0, l: null } : (it || {});
-          await Viewer.openFile(item.p);
-          const t = Viewer.openTabs.find((x) => x.path === item.p);
-          if (t && item.s) t.scrollTop = item.s; // 恢复滚动（切到该标签时生效）
-          if (t && item.l) t.restoreLine = item.l;
+          if (item.p === s.active) continue;
+          Viewer.addLazyTab(item.p, { scrollTop: item.s || 0, line: item.l || null });
         }
         if (s.active) {
           const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
           if (i >= 0) Viewer.activate(i);
+          else await Viewer.openFile(s.active);
+        } else if (Viewer.openTabs.length) {
+          Viewer.activate(0); // 无 active 记录：切入第一个（触发懒加载）
         }
         // 活动标签光标行恢复（编辑器已渲染，直接跳）
         const at = Viewer.activeTab;

@@ -54,6 +54,51 @@ function scrollToAnchor(container, rawId) {
   const target = [...container.querySelectorAll('[id]')].find((el) => el.id === id);
   if (target) { try { target.scrollIntoView({ block: 'start' }); } catch {} }
 }
+// ---------- 图片全屏查看（lightbox）：md 预览 / Live Preview 图片点击放大 ----------
+// 滚轮缩放、拖动平移、Esc/点击遮罩关闭；同一时刻只有一个实例
+MI.showImgLightbox = function (src, alt) {
+  const old = document.querySelector('.img-lightbox');
+  if (old) old.remove();
+  const box = document.createElement('div');
+  box.className = 'img-lightbox';
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = alt || '';
+  img.draggable = false;
+  const tip = document.createElement('div');
+  tip.className = 'img-lightbox-tip';
+  tip.textContent = '滚轮缩放 · 拖动平移 · Esc / 点击空白关闭';
+  box.appendChild(img);
+  box.appendChild(tip);
+  document.body.appendChild(box);
+  let scale = 1, tx = 0, ty = 0, drag = null;
+  const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
+  const onMove = (e) => {
+    if (!drag) return;
+    tx = drag.tx + e.clientX - drag.x;
+    ty = drag.ty + e.clientY - drag.y;
+    apply();
+  };
+  const onUp = () => { drag = null; };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  function close() {
+    box.remove();
+    window.removeEventListener('keydown', onKey);
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  }
+  img.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); drag = { x: e.clientX, y: e.clientY, tx, ty }; };
+  box.onclick = (e) => { if (e.target !== img) close(); }; // 点图=拖拽起点，点空白=关闭
+  box.onwheel = (e) => {
+    e.preventDefault();
+    scale = Math.min(8, Math.max(0.15, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    apply();
+  };
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+};
+
 // Markdown
 MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   const wrap = document.createElement('div');
@@ -145,6 +190,14 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       else baseDir.push(seg);
     }
     img.src = 'file:///' + baseDir.join('/');
+  });
+  // 图片点击 → 全屏查看（lightbox：滚轮缩放/拖动平移/Esc 关闭）
+  wrap.querySelectorAll('img').forEach((img) => {
+    img.title = '点击全屏查看';
+    img.addEventListener('click', (e) => {
+      e.preventDefault();
+      MI.showImgLightbox(img.src, img.alt);
+    });
   });
   // 链接跳转：外链 → 系统浏览器；相对路径 → 打开本地文件；#锚点 → 页内滚动
   const resolveLocal = (rel) => {

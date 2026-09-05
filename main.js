@@ -669,10 +669,16 @@ function psWriteFileClipboard(arr, move) {
     '[System.Windows.Forms.Clipboard]::SetDataObject($do, $true)',
   ].join('; ');
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
-  try {
-    exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
-      { encoding: 'utf8', timeout: 1500, windowsHide: true }, () => {});
-  } catch {}
+  // 超时给足 8s：Add-Type 冷加载 System.Windows.Forms 在慢盘/杀软环境下常超 1.5s，
+  // 之前 1.5s 把进程杀掉 → 标准 CF_HDROP 从未写入 → 外部应用（只认标准格式）粘贴无效。
+  // fire-and-forget 不阻塞主进程；失败自动重试一次（首次冷加载、二次命中 .NET 程序集缓存）
+  const run = (cb) => {
+    try {
+      exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
+        { encoding: 'utf8', timeout: 8000, windowsHide: true }, cb);
+    } catch { if (cb) cb(new Error('spawn')); }
+  };
+  run((err) => { if (err) run(() => {}); });
 }
 ipcMain.handle('clip:copyFiles', (_e, paths, move) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);

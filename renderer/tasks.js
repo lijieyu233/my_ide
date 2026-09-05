@@ -27,11 +27,12 @@ const Tasks = (() => {
   const DIR_OF = (f) => f.slice(0, f.lastIndexOf('/'));
   const FOLD_KEY = 'myide-tasks-done-fold';  // 旧「已完成」分组折叠键：一次性迁移到 GROUP_FOLD_KEY
   const GROUP_FOLD_KEY = 'myide-tasks-group-fold'; // 各状态组收起态 {todo,doing,done}：仅侧栏清单展示层，不影响右侧依赖图
-  const VIS_KEY = 'myide-tasks-vis';         // 可见度菜单：'all' | 'ready' | 'hideDone' | 'doneChain'
-  const VIS_MODES = ['all', 'ready', 'hideDone', 'doneChain'];
+  const VIS_KEY = 'myide-tasks-vis';         // 可见度菜单：'all' | 'ready' | 'doing' | 'hideDone' | 'doneChain'
+  const VIS_MODES = ['all', 'ready', 'doing', 'hideDone', 'doneChain'];
   const VIS_META = {
     all: { icon: '◉', label: '显示全部' },
     ready: { icon: '▶', label: '只看可执行' },
+    doing: { icon: '◐', label: '只看进行中' },
     hideDone: { icon: '☑', label: '不显示已完成' },
     doneChain: { icon: '⊘', label: '隐藏完结链路' }, // 连通块内全 done 才整块隐藏；有一个未完成就整块显示
   };
@@ -830,12 +831,12 @@ const Tasks = (() => {
     touch(t); pushHist('删除依赖'); save(); render();
     return true;
   }
-  // 图上拖动节点落盘自由位置（有 x/y 的节点不再跟随自动布局）
+  // 图上拖动节点落盘自由位置（有 x/y 的节点不再跟随自动布局；坐标可为负 = 无极画布）
   function moveNode(id, x, y) {
     const t = byId(id);
     if (!t || !Number.isFinite(x) || !Number.isFinite(y)) return false;
-    t.x = Math.max(0, Math.round(x));
-    t.y = Math.max(0, Math.round(y));
+    t.x = Math.round(x);
+    t.y = Math.round(y);
     touch(t); pushHist('移动节点'); save(); render(); // render：画布尺寸按自由位置扩大，节点不会停在可视区外
     return true;
   }
@@ -853,21 +854,24 @@ const Tasks = (() => {
     for (const en of entries || []) {
       const t = byId(en.id);
       if (!t || !Number.isFinite(en.x) || !Number.isFinite(en.y)) continue;
-      t.x = Math.max(0, Math.round(en.x));
-      t.y = Math.max(0, Math.round(en.y));
+      t.x = Math.round(en.x);
+      t.y = Math.round(en.y);
       touch(t);
       n++;
     }
     if (n) { pushHist(n > 1 ? '移动 ' + n + ' 个节点' : '移动节点'); save(); render(); }
     return n;
   }
-  // 一键整理：清掉全部手动位置，整图回到自动布局（依赖关系不动）
-  function tidyLayout() {
+  // 一键整理：清掉手动位置回自动布局。
+  // 传 ids = 只整理选中的（选中的回自动布局、未选中的手动位置保留）；不传 = 整图
+  function tidyLayout(ids) {
+    const only = Array.isArray(ids) && ids.length ? new Set(ids) : null;
     let n = 0;
     for (const t of tasks) {
+      if (only && !only.has(t.id)) continue;
       if (t.x != null || t.y != null) { t.x = null; t.y = null; touch(t); n++; }
     }
-    if (n) { pushHist('一键整理'); save(); render(); }
+    if (n) { pushHist(only ? '整理选中' : '一键整理'); save(); render(); }
     return n;
   }
 
@@ -1049,6 +1053,12 @@ const Tasks = (() => {
       appendGroup('现在能做', ready, { pool });
       return;
     }
+    if (visMode === 'doing') {
+      const doing = pool.filter((t) => isTop(t) && t.status === 'doing')
+        .sort((a, b) => (PRIO_W[a.priority] - PRIO_W[b.priority]) || (a.createdAt - b.createdAt));
+      appendGroup('进行中', doing, { pool });
+      return;
+    }
     const hideDone = visMode === 'hideDone';
     const groups = [
       { key: 'doing', label: '进行中' },
@@ -1071,6 +1081,7 @@ const Tasks = (() => {
       (depth ? ' sub d' + Math.min(depth, 3) : '');
     if (t.status !== 'done' && n > 0) row.classList.add('blocked');
     row.dataset.id = t.id;
+    row.dataset.st = t.status; // 状态色条钩子：CSS 按 todo/doing/done 染左缘
 
     // 048-P2 任务组行：折叠箭头（▾/▸），点击只折叠子行（不动状态组）；无子任务的行保持原样
     if (childrenOf(t.id).length) {
@@ -1183,17 +1194,19 @@ const Tasks = (() => {
   const ST_NAME = { todo: '待办', doing: '进行中', done: '已完成' };
 
   // ---------- 缩放辅助（048-5.1）----------
-  // viewBox 恒为逻辑尺寸；width/height 属性 = 逻辑 × zoom（滚动条随缩放自然出现）
-  function setSvgSize(svg, w, h) {
+  // viewBox 恒为逻辑尺寸（原点可为负 = 无极画布向左/上扩展）；width/height 属性 = 逻辑 × zoom
+  function setSvgSize(svg, w, h, vx, vy) {
     if (!svg) return;
-    svg.setAttribute('viewBox', `0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}`);
+    const x = Number.isFinite(vx) ? vx : 0;
+    const y = Number.isFinite(vy) ? vy : 0;
+    svg.setAttribute('viewBox', `${x} ${y} ${Math.max(w, 1)} ${Math.max(h, 1)}`);
     svg.setAttribute('width', Math.max(1, Math.ceil(w * zoom)));
     svg.setAttribute('height', Math.max(1, Math.ceil(h * zoom)));
   }
-  // 读 viewBox 的逻辑尺寸：svg.viewBox.baseVal 在 jsdom 下不可靠 → 解析属性
+  // 读 viewBox 的逻辑区域（含负原点）：svg.viewBox.baseVal 在 jsdom 下不可靠 → 解析属性
   function vbSize(svg) {
     const p = String((svg && svg.getAttribute('viewBox')) || '0 0 1 1').split(/[\s,]+/).map(Number);
-    return { w: p[2] || 1, h: p[3] || 1 };
+    return { x: p[0] || 0, y: p[1] || 0, w: p[2] || 1, h: p[3] || 1 };
   }
   function updateZoomLabel() {
     const zl = document.getElementById('tasks-dag-zoom');
@@ -1208,7 +1221,7 @@ const Tasks = (() => {
     try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch {}
     if (curSvg && curSvg.isConnected) {
       const vb = vbSize(curSvg);
-      setSvgSize(curSvg, vb.w, vb.h);
+      setSvgSize(curSvg, vb.w, vb.h, vb.x, vb.y);
     }
     if (anchor && dagBodyEl) {
       const br = dagBodyEl.getBoundingClientRect();
@@ -1245,18 +1258,23 @@ const Tasks = (() => {
     if (!miniEl || !miniEl.isConnected || !curLay) return;
     const svg = miniEl.querySelector('svg');
     if (!svg) return;
-    const vb = { w: curLay.width || 1, h: curLay.height || 1 };
-    const s = Math.min(MM_W / vb.w, MM_H / vb.h); // 等比缩进 160×96（短边贴合）
+    // 逻辑区域实时读主图 viewBox（无极画布：原点可为负 + 拖动中 grow 会扩）；
+    // 小地图与主图共用同一 viewBox → rect 直接用逻辑坐标，无需平移
+    const vb = curSvg && curSvg.isConnected
+      ? vbSize(curSvg)
+      : { x: curLay.vx || 0, y: curLay.vy || 0, w: curLay.width || 1, h: curLay.height || 1 };
+    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${Math.max(vb.w, 1)} ${Math.max(vb.h, 1)}`);
+    const s = Math.min(MM_W / Math.max(vb.w, 1), MM_H / Math.max(vb.h, 1)); // 等比缩进 160×96（短边贴合）
     // 节点色块：几百个 rect 的 innerHTML 重建代价可忽略（rAF 节流下）
     let html = '';
     for (const n of curLay.nodes) {
       if (!n.task) continue;
       html += '<rect class="tk-mm-n" data-status="' + n.task.status + '" x="' + n.x + '" y="' + n.y + '" width="' + (n.w || NW) + '" height="' + (n.h || NH) + '" rx="3"></rect>';
     }
-    // 视口框：屏幕像素（scrollLeft/Top + clientWidth/Height）→ 逻辑坐标（÷zoom）
+    // 视口框：屏幕像素（scrollLeft/Top + clientWidth/Height）→ 逻辑坐标（÷zoom + viewBox 原点）
     const cw = dagBodyEl ? dagBodyEl.clientWidth : 0, ch = dagBodyEl ? dagBodyEl.clientHeight : 0;
     if (cw && ch) {
-      html += '<rect class="tk-mm-vp" x="' + (dagBodyEl.scrollLeft / zoom) + '" y="' + (dagBodyEl.scrollTop / zoom) + '" width="' + (cw / zoom) + '" height="' + (ch / zoom) + '"></rect>';
+      html += '<rect class="tk-mm-vp" x="' + (dagBodyEl.scrollLeft / zoom + vb.x) + '" y="' + (dagBodyEl.scrollTop / zoom + vb.y) + '" width="' + (cw / zoom) + '" height="' + (ch / zoom) + '"></rect>';
     }
     svg.innerHTML = html;
     const w = Math.max(1, vb.w * s), h = Math.max(1, vb.h * s);
@@ -1412,6 +1430,7 @@ const Tasks = (() => {
       ? tasks.filter((t) => focusSet.has(t.id))
       : tasks.filter((t) =>
         (visMode !== 'ready' || isReady(t)) &&
+        (visMode !== 'doing' || t.status === 'doing') &&
         (t.status !== 'done' || visMode !== 'hideDone') &&
         !chainHiddenIds().has(t.id));
     const filtered = vis.length < tasks.length;
@@ -1432,6 +1451,7 @@ const Tasks = (() => {
         const why = [];
         if (focusSet) why.push('聚焦');
         if (visMode === 'ready') why.push('只看可执行');
+        if (visMode === 'doing') why.push('只看进行中');
         if (visMode === 'hideDone') why.push('不显示已完成');
         if (visMode === 'doneChain') why.push('隐藏完结链路');
         s += ' · 已过滤（' + why.join(' + ') + '，共 ' + tasks.length + ' 个）';
@@ -1515,10 +1535,18 @@ const Tasks = (() => {
         n.y = p.y + NH + GY + row * (NH + GY);
       }
     }
+    // 画布尺寸 = 内容包围盒 + 边距；无极画布：手动位置可为负 → viewBox 原点取内容最小坐标
+    // （自动布局恒非负，原点退化为 0 0，与旧行为一致）
+    let minX = 0, minY = 0;
     for (const n of lay.nodes) {
       lay.width = Math.max(lay.width, n.x + (n.w || NW) + PAD);
       lay.height = Math.max(lay.height, n.y + (n.h || NH) + PAD + 12); // 底部锚点余量
+      minX = Math.min(minX, Math.floor(n.x - PAD));
+      minY = Math.min(minY, Math.floor(n.y - PAD));
     }
+    lay.vx = minX; lay.vy = minY;
+    if (minX < 0) lay.width += -minX;
+    if (minY < 0) lay.height += -minY;
     // 记录本帧各节点画布坐标：前后继任务就近落位的基点（在过滤后可见节点上）
     lastPos.clear();
     for (const n of lay.nodes) lastPos.set(n.id, { x: n.x, y: n.y });
@@ -1531,7 +1559,7 @@ const Tasks = (() => {
 
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', 'tk-svg');
-    setSvgSize(svg, lay.width, lay.height); // width/height 属性 = 逻辑 × zoom，viewBox 恒为逻辑尺寸
+    setSvgSize(svg, lay.width, lay.height, lay.vx, lay.vy); // width/height 属性 = 逻辑 × zoom，viewBox = 逻辑区域（原点可为负）
     curSvg = svg; // 常驻容器上的滚轮/平移监听需要跨渲染访问当前 svg
 
     // 箭头（正常 / 阻塞两色）
@@ -1553,9 +1581,9 @@ const Tasks = (() => {
       for (const ln of lay.lanes) {
         svg.appendChild(el('rect', {
           class: 'tk-lane-band', 'data-status': ln.status,
-          x: 0, y: ln.y, width: Math.max(lay.width, 200), height: ln.h, rx: 8,
+          x: lay.vx || 0, y: ln.y, width: Math.max(lay.width, 200), height: ln.h, rx: 8,
         }));
-        const lb = el('text', { class: 'tk-lane-label', x: PAD + 4, y: ln.y + 18 });
+        const lb = el('text', { class: 'tk-lane-label', x: (lay.vx || 0) + PAD + 4, y: ln.y + 18 });
         lb.textContent = ST_NAME[ln.status] + '（' + ln.count + '）';
         svg.appendChild(lb);
       }
@@ -1714,10 +1742,13 @@ const Tasks = (() => {
     const svgPt = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
-      // ★ 换算一律以 viewBox（逻辑尺寸）为准：缩放后 width 属性 = 逻辑 × zoom，
+      // ★ 换算一律以 viewBox（逻辑区域，原点可为负）为准：缩放后 width 属性 = 逻辑 × zoom，
       //   拿 width 属性做换算会把屏幕像素当成逻辑坐标，拖拽/框选/连线全部漂移
       const vb = vbSize(svg); // 实时读：拖动中画布会扩大（grow），层局部变量已过期
-      return { x: (ev.clientX - r.left) * vb.w / r.width, y: (ev.clientY - r.top) * vb.h / r.height };
+      return {
+        x: (ev.clientX - r.left) * vb.w / r.width + vb.x,
+        y: (ev.clientY - r.top) * vb.h / r.height + vb.y,
+      };
     };
     const nodeAt = (p) => lay.nodes.find(
       (n) => p.x >= n.x && p.x <= n.x + NW && p.y >= n.y && p.y <= n.y + NH) || null;
@@ -1730,13 +1761,22 @@ const Tasks = (() => {
       svg.querySelectorAll('g.tk-node.drop-ok, g.tk-node.drop-no')
         .forEach((x) => x.classList.remove('drop-ok', 'drop-no'));
     };
-    // 拖动中实时扩画布：节点拖到边缘外，svg 尺寸/viewBox 跟着长，容器滚动条随之出现
+    // 拖动中实时扩画布（无极：四个方向都可无限扩展）：节点拖出边缘外，svg viewBox 跟着长。
+    // 向左/上扩 = viewBox 原点变负 + 宽高增大；内容在 svg 内整体平移 → 同步补偿滚动量，
+    // 视觉位置不动（否则拖到左边缘时节点会瞬移、脱手）
     const grow = (x, y) => {
-      // 扩的是逻辑尺寸，width/height 属性由 setSvgSize 同步乘 zoom
       const vb = vbSize(svg);
-      setSvgSize(svg,
-        Math.max(vb.w, Math.ceil(x + NW + PAD)),
-        Math.max(vb.h, Math.ceil(y + NH + PAD + 12)));
+      const nx = Math.min(vb.x, Math.floor(x - PAD)); // 新原点（向左扩时为负）
+      const ny = Math.min(vb.y, Math.floor(y - PAD));
+      const nw = Math.max(vb.x + vb.w, Math.ceil(x + NW + PAD)) - nx;
+      const nh = Math.max(vb.y + vb.h, Math.ceil(y + NH + PAD + 12)) - ny;
+      if (nw === vb.w && nh === vb.h) return;
+      setSvgSize(svg, nw, nh, nx, ny);
+      // 滚动补偿：原点向左/上移了多少逻辑单位，内容就在 svg 里右/下移多少像素
+      if (dagBodyEl) {
+        if (nx < vb.x) dagBodyEl.scrollLeft += (vb.x - nx) * zoom;
+        if (ny < vb.y) dagBodyEl.scrollTop += (vb.y - ny) * zoom;
+      }
       onCanvasGrow(); // viewBox 变了，小地图比例要跟着重算
     };
     // 移动节点时同步重算它的关联边（拖动中边跟手，不必全量重画）
@@ -1793,15 +1833,15 @@ const Tasks = (() => {
         const p = svgPt(e2);
         if (drag.mode === 'move') {
           const dx = p.x - p0.x, dy = p.y - p0.y;
-          n.x = Math.max(0, origX + dx);
-          n.y = Math.max(0, origY + dy);
+          n.x = origX + dx; // 无极画布：允许负坐标（grow 向左/上扩展 viewBox）
+          n.y = origY + dy;
           gEl.setAttribute('transform', `translate(${n.x},${n.y})`);
           relink(n.id);
           let gx = n.x, gy = n.y; // 画布增长按整组最大边界算
           if (groupMove) {
             for (const o of groupMove) {
-              o.m.x = Math.max(0, o.ox + dx);
-              o.m.y = Math.max(0, o.oy + dy);
+              o.m.x = o.ox + dx;
+              o.m.y = o.oy + dy;
               if (o.g) o.g.setAttribute('transform', `translate(${o.m.x},${o.m.y})`);
               relink(o.m.id);
               gx = Math.max(gx, o.m.x); gy = Math.max(gy, o.m.y);
@@ -1809,13 +1849,15 @@ const Tasks = (() => {
           }
           grow(gx, gy);
           // 滚动跟随：节点拖到容器可视区边缘外时，把容器滚到节点处（否则扩了画布仍看不见）
-          // 节点坐标是逻辑值，容器滚动量是屏幕像素 → 比较前先乘 zoom
+          // 节点坐标是逻辑值（viewBox 原点可为负）→ 先减原点再乘 zoom 才是容器内像素
           const box = dagBodyEl;
-          if ((n.y + NH) * zoom > box.scrollTop + box.clientHeight - 24) {
-            box.scrollTop = (n.y + NH) * zoom + 24 - box.clientHeight;
+          const vb2 = vbSize(svg);
+          const py = (n.y + NH - vb2.y) * zoom, px = (n.x + NW - vb2.x) * zoom;
+          if (py > box.scrollTop + box.clientHeight - 24) {
+            box.scrollTop = py + 24 - box.clientHeight;
           }
-          if ((n.x + NW) * zoom > box.scrollLeft + box.clientWidth - 24) {
-            box.scrollLeft = (n.x + NW) * zoom + 24 - box.clientWidth;
+          if (px > box.scrollLeft + box.clientWidth - 24) {
+            box.scrollLeft = px + 24 - box.clientWidth;
           }
           return;
         }
@@ -1913,18 +1955,18 @@ const Tasks = (() => {
     mini.className = 'tk-mini';
     mini.title = '小地图：点击/拖拽定位视图';
     const msvg = elM('svg', { class: 'tk-mm-svg' });
-    msvg.setAttribute('viewBox', `0 0 ${Math.max(1, lay.width)} ${Math.max(1, lay.height)}`);
+    msvg.setAttribute('viewBox', `${lay.vx || 0} ${lay.vy || 0} ${Math.max(1, lay.width)} ${Math.max(1, lay.height)}`);
     mini.appendChild(msvg);
     // 点击/拖拽 = 把大图视图中心移到该点（小地图屏幕像素 → 逻辑坐标 → 大图滚动量）
     const nav = (ev) => {
       const r = msvg.getBoundingClientRect();
       if (!r.width || !r.height) return; // jsdom 无布局：别把滚动量算成 NaN
-      const vbw = Math.max(1, lay.width), vbh = Math.max(1, lay.height);
-      const vx = (ev.clientX - r.left) / r.width * vbw;
-      const vy = (ev.clientY - r.top) / r.height * vbh;
+      const vb = vbSize(msvg); // 与主图同域（renderMinimap 实时同步；原点可为负）
+      const lx = (ev.clientX - r.left) / r.width * vb.w + vb.x;
+      const ly = (ev.clientY - r.top) / r.height * vb.h + vb.y;
       const cw = dagBodyEl.clientWidth, ch = dagBodyEl.clientHeight;
-      dagBodyEl.scrollLeft = Math.max(0, vx * zoom - cw / 2);
-      dagBodyEl.scrollTop = Math.max(0, vy * zoom - ch / 2);
+      dagBodyEl.scrollLeft = Math.max(0, (lx - vb.x) * zoom - cw / 2);
+      dagBodyEl.scrollTop = Math.max(0, (ly - vb.y) * zoom - ch / 2);
       scheduleMinimap();
     };
     mini.onmousedown = (ev) => {
@@ -2258,11 +2300,28 @@ const Tasks = (() => {
         focusId = (focusId === t.id) ? null : t.id;
         render();
       });
+      // 一次选中整条链：此任务 + 上下游全部传导（多选操作的基础；链成员仍可 Ctrl+点增减）
+      {
+        const rel = [...relatedOf(t.id)];
+        if (rel.length >= 2) {
+          mk('🔗 选中整条链（上下游共 ' + rel.length + ' 个）', () => {
+            selIds = new Set(rel);
+            selId = t.id;
+            applySel();
+            if (window.MI) MI.toast('已选中链上 ' + rel.length + ' 个任务（Delete 删除 / 右键批量操作 / 拖动任一成员整体移动）', 'ok');
+          });
+        }
+      }
       // 048-P2 任务组操作（多选建组 / 移出 / 解散）
       if (selN >= 2) {
         mk('📦 创建子任务组（' + selN + ' 个选中，主选中为父）', () => {
           const r = groupFromSelection();
           if (window.MI) MI.toast(r.ok ? '已创建任务组（' + r.n + ' 个子任务）' : r.why, r.ok ? 'ok' : 'err');
+        });
+        // 整理选中的：只有选中的清手动位置回自动布局（未选中的位置不动）
+        mk('🧩 整理选中的 ' + selN + ' 个任务（回自动布局）', () => {
+          const n = tidyLayout(selIds);
+          if (window.MI) MI.toast(n ? '已整理 ' + n + ' 个选中任务' : '选中的任务都在自动布局上', n ? 'ok' : 'err');
         });
       }
       if (t.parentId) {

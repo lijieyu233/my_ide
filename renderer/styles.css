@@ -371,10 +371,23 @@ textarea.editor {
 .md-view pre code { background: none; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.6; }
 .md-view blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-dim); margin: 8px 0; }
 .md-view table { border-collapse: collapse; margin: 10px 0; }
+/* 表格增强：宽表格自身横向滚动（不撑破版心、不挤压变形）+ 斑马纹 + 行 hover */
+.md-view table { display: block; max-width: 100%; overflow-x: auto; }
 .md-view th, .md-view td { border: 1px solid var(--border-mid); padding: 4px 10px; }
 .md-view th { background: var(--bg-panel); color: var(--text-bright); }
+.md-view tbody tr:nth-child(even) { background: rgba(128,128,128,.06); }
+.md-view tbody tr:hover { background: rgba(64,140,255,.08); }
 .md-view hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .md-view img { max-width: 100%; }
+/* 图片全屏查看（lightbox）：点击图片打开；滚轮缩放/拖动平移/Esc 关闭 */
+.img-lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.86);
+  display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.img-lightbox img { max-width: 92vw; max-height: 90vh; cursor: grab; user-select: none;
+  transition: transform .05s linear; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+.img-lightbox img:active { cursor: grabbing; }
+.img-lightbox-tip { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,.75); font-size: 12px; background: rgba(0,0,0,.5);
+  padding: 4px 14px; border-radius: 12px; pointer-events: none; }
 .md-view .code-copy {
   float: right; margin: -8px -8px 0 0; font-size: 11px; color: var(--text-dim); cursor: pointer;
   background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: 3px; padding: 1px 6px;
@@ -1736,6 +1749,11 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 }
 .tk-row.done .tk-title { color: var(--text-dim); text-decoration: line-through; }
 .tk-row.blocked .tk-title { color: var(--text-dim); } /* 被阻塞：弱化，一眼看出「现在做不了」 */
+/* 状态视觉区分（清单行）：左缘色条一眼分三态 —— todo 灰 / doing 蓝(行底微蓝) / done 绿 */
+.tk-row { border-left: 3px solid rgba(128,128,128,.4); }
+.tk-row[data-st="doing"] { border-left-color: var(--accent); background: rgba(64,140,255,.05); }
+.tk-row[data-st="done"] { border-left-color: var(--green); }
+.tk-row[data-st="doing"]:hover { background: rgba(64,140,255,.09); }
 .tk-badge {
   flex-shrink: 0; font-size: 10px; color: var(--red);
   background: var(--badge-d-bg, rgba(209,105,105,.16)); border-radius: 8px; padding: 0 5px;
@@ -1781,6 +1799,9 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-node rect.tk-n-box { fill: var(--bg-input); stroke: var(--border-mid); stroke-width: 1; }
 .tk-node[data-status="doing"] rect.tk-n-box { stroke: var(--accent); stroke-width: 1.8; }
 .tk-node[data-status="done"] rect.tk-n-box { fill: rgba(106, 171, 115, .18); stroke: var(--green); stroke-width: 1.8; }
+/* 状态视觉区分（DAG 节点）：todo 虚线灰边 / doing 实线蓝+微蓝填充 / done 绿填充，三态远看即分 */
+.tk-node[data-status="todo"] rect.tk-n-box { stroke-dasharray: 5 3; }
+.tk-node[data-status="doing"] rect.tk-n-box { fill: rgba(64,140,255,.10); }
 /* hover 规则放在状态规则之后：同特异性下后者胜出 */
 .tk-node:hover rect.tk-n-box { stroke: var(--accent); stroke-width: 2; }
 .tk-n-prio { fill: var(--red); }

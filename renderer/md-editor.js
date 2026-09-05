@@ -255,6 +255,11 @@ window.MdEditor = (() => {
         ph.textContent = '🖼 ' + (this.alt || this.src);
         wrap.appendChild(ph);
       });
+      // 点击 → 全屏查看（lightbox 由 plugin-loader 提供；运行时一定已定义）
+      img.title = '点击全屏查看';
+      img.addEventListener('click', () => {
+        if (window.MI && MI.showImgLightbox) MI.showImgLightbox(img.src, this.alt);
+      });
       wrap.appendChild(img);
       return wrap;
     }

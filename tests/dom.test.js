@@ -4062,8 +4062,14 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(hAfter >= 2000 + 40 + 14, 'svg 高度覆盖节点新位置, got ' + hBefore + ' -> ' + hAfter);
     assert_($(dom, '#tasks-dag-body .tk-svg').getAttribute('viewBox').endsWith(' ' + hAfter), 'viewBox 与高度同步');
     assert_(nodeOf(a).getAttribute('transform') === 'translate(60,2000)', '松手后节点仍在画布内（render 重绘）');
-    assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, '负坐标 clamp 到 0');
-    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 0, '负值被夹到 0');
+    // 无极画布：负坐标不再钳到 0 —— 落盘保留负值，viewBox 原点随内容向左上扩展
+    assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, 'moveNode 接受负坐标');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === -5, '负坐标原样持久化（无极画布）');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").y') === -5, '负 y 原样持久化');
+    const vbNeg = $(dom, '#tasks-dag-body .tk-svg').getAttribute('viewBox').split(/[ ,]+/).map(Number);
+    assert_(vbNeg[0] <= -5 && vbNeg[1] <= -5, 'viewBox 原点扩到负区（节点不被裁剪）, got ' + vbNeg.join(' '));
+    assert_(nodeOf(a).getAttribute('transform') === 'translate(-5,-5)', '负坐标节点照常渲染');
     // 拖过的节点：右键出现「回到自动布局」；点击后清除自由位置
     rightClick(nodeOf(a));
     await tick();
