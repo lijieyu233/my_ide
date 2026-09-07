@@ -759,12 +759,54 @@ function onAuthOf(auth) {
   };
 }
 
+// 远程跟踪分支（refs/remotes/<remote>/…）：松散 refs 目录 + packed-refs 两处合并，无网络
+// 返回 [{ name, head, oid }] —— head=true 表示远程默认分支（refs/remotes/<remote>/HEAD 指向）
+function remoteBranchesSync(root, remoteName) {
+  const branches = new Map(); // name -> oid
+  const base = path.join(root, '.git', 'refs', 'remotes', remoteName);
+  try {
+    if (fs.existsSync(base)) {
+      const walk = (dir, prefix) => {
+        for (const n of fs.readdirSync(dir)) {
+          const p = path.join(dir, n);
+          let st; try { st = fs.statSync(p); } catch { continue; }
+          if (st.isDirectory()) walk(p, prefix + n + '/');
+          else if (n !== 'HEAD') branches.set(prefix + n, fs.readFileSync(p, 'utf8').trim());
+        }
+      };
+      walk(base, '');
+    }
+  } catch {}
+  try {
+    const packed = path.join(root, '.git', 'packed-refs');
+    if (fs.existsSync(packed)) {
+      for (const line of fs.readFileSync(packed, 'utf8').split('\n')) {
+        const m = line.match(/^([0-9a-f]{40}) refs\/remotes\/([^/\s]+)\/(.+)$/);
+        if (m && m[2] === remoteName && m[3] !== 'HEAD' && !branches.has(m[3])) branches.set(m[3], m[1]);
+      }
+    }
+  } catch {}
+  // 远程默认分支：refs/remotes/<remote>/HEAD 内容形如 "ref: refs/remotes/<remote>/main"
+  let headName = null;
+  try {
+    const hf = path.join(base, 'HEAD');
+    if (fs.existsSync(hf)) {
+      const v = fs.readFileSync(hf, 'utf8').trim();
+      const m = v.match(/^ref:\s*refs\/remotes\/[^/]+\/(.+)$/);
+      if (m) headName = m[1];
+    }
+  } catch {}
+  return [...branches.entries()]
+    .sort((a, b) => (headName === b[0]) - (headName === a[0]) || a[0].localeCompare(b[0]))
+    .map(([name, oid]) => ({ name, head: name === headName, oid: String(oid).slice(0, 7) }));
+}
+
 async function listRemotes(dir) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库', remotes: [] };
   try {
     const list = await git.listRemotes({ fs, dir: root });
-    return { isRepo: true, remotes: list.map((r) => ({ name: r.remote, url: r.url })) };
+    return { isRepo: true, remotes: list.map((r) => ({ name: r.remote, url: r.url, branches: remoteBranchesSync(root, r.remote) })) };
   } catch (e) {
     return { isRepo: true, error: String(e.message || e), remotes: [] };
   }

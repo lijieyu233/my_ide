@@ -57,7 +57,7 @@ const GitPanel = (() => {
     box.innerHTML = `
       <div class="m-head">远程仓库 <span class="x" id="rm-x">✕</span></div>
       <div class="m-body">
-        <div id="rm-list" style="max-height:180px;overflow:auto"></div>
+        <div id="rm-list" style="max-height:320px;overflow:auto"></div>
         <div class="br-new" style="margin-top:8px">
           <input id="rm-name" type="text" value="origin" spellcheck="false" style="width:90px" title="远程名">
           <input id="rm-url" type="text" placeholder="远程 URL（https://… 或本地路径）" spellcheck="false" style="flex:1">
@@ -93,6 +93,22 @@ const GitPanel = (() => {
           else MI.toast('删除失败: ' + dr.error, 'err');
         };
         list.appendChild(row);
+        // 远程分支（本地跟踪 refs，无网络）：名称 + 短 oid，HEAD 标默认分支
+        const brs = rm.branches || [];
+        const brBox = document.createElement('div');
+        brBox.className = 'rm-branches';
+        if (!brs.length) {
+          brBox.innerHTML = '<div class="rm-br-empty">暂无已知分支（拉取 ⬇ 后显示）</div>';
+        } else {
+          for (const b of brs) {
+            const el = document.createElement('div');
+            el.className = 'rm-br' + (b.head ? ' rm-br-head' : '');
+            el.title = b.oid || '';
+            el.innerHTML = `<span class="rm-br-dot">${b.head ? '●' : '○'}</span><span class="rm-br-name">${esc(b.name)}</span><span class="rm-br-oid">${esc(b.oid || '')}</span>`;
+            brBox.appendChild(el);
+          }
+        }
+        list.appendChild(brBox);
       }
     };
     renderList();

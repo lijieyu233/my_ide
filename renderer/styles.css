@@ -456,7 +456,7 @@ textarea.editor {
 .outline-item.ol-hidden { display: none; }
 
 /* ---------- Git 提交对话框（PyCharm 式 Ctrl+K：左上文件树 · 左下提交信息 · 右侧 diff） ---------- */
-#panel-project, #panel-outline, #panel-db {
+#panel-project, #panel-outline, #panel-db, #panel-browser {
   flex: 1; overflow: auto; display: flex; flex-direction: column;
   min-height: 0;
 }
@@ -548,12 +548,19 @@ textarea.editor {
   border: 1px solid var(--btn-border); border-radius: 4px; padding: 5px 8px; font-size: 12px; outline: none;
 }
 .br-new input:focus { border-color: var(--accent); }
-.br-item {
-  padding: 8px 14px; font-size: 13px; cursor: pointer;
+.br-item { padding: 8px 14px; font-size: 13px; cursor: pointer;
   border-bottom: 1px solid rgba(128,128,128,.08);
 }
 .br-item:hover { background: var(--bg-hover); }
 .br-item.current { color: var(--accent); font-weight: 600; }
+.rm-branches { padding: 2px 14px 6px 26px; border-bottom: 1px solid rgba(128,128,128,.08); }
+.rm-br { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 1px 0; color: var(--text-dim); }
+.rm-br-dot { width: 12px; text-align: center; color: var(--text-dim); }
+.rm-br-head { color: var(--text-bright); }
+.rm-br-head .rm-br-dot { color: var(--accent, #61afef); }
+.rm-br-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-br-oid { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-dim); }
+.rm-br-empty { font-size: 11.5px; color: var(--text-dim); padding: 2px 0; font-style: italic; }
 
 .df-nav { display: flex; align-items: center; gap: 3px; margin-left: auto; }
 .df-nav-label { font-size: 11px; color: var(--text-dim); min-width: 34px; text-align: center; }
@@ -1284,12 +1291,7 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
   gap: 6px; background: var(--bg); text-align: center;
 }
 #browser-error .be-title { margin: 0; max-width: 70%; overflow-wrap: break-word; }
-/* 收藏侧栏（文件夹分组常驻显示） */
-#bw-sidebar {
-  width: 200px; flex-shrink: 0;
-  display: flex; flex-direction: column;
-  background: var(--bg-panel); border-right: 1px solid var(--border);
-}
+/* 收藏列表（左侧主侧栏 panel-browser 内，文件夹分组常驻显示） */
 .bw-sb-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 10px; font-size: 12px; font-weight: 600; color: var(--text-bright);

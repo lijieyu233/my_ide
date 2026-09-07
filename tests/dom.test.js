@@ -237,7 +237,15 @@ function makeDom() {
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
       // 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 二期）
-      listRemotes: async () => ({ remotes: [] }),
+      listRemotes: async () => ({
+        remotes: [
+          { name: 'origin', url: 'https://github.com/foo/bar.git', branches: [
+            { name: 'main', head: true, oid: 'abc1234' },
+            { name: 'dev', head: false, oid: 'def5678' },
+          ] },
+          { name: 'upstream', url: 'https://github.com/other/bar.git', branches: [] },
+        ],
+      }),
       addRemote: async () => ({ ok: true }),
       removeRemote: async () => ({ ok: true }),
       fetch: async () => ({ ok: true }),
@@ -1711,6 +1719,36 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
   });
 
+  await okAsync('远程管理：弹窗列出远程 + 每个远程的分支列表', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const rmtBtn = $(dom, '#cd-remote');
+    assert_(rmtBtn, '远程管理入口存在（提交对话框头部）');
+    click(rmtBtn);
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '远程弹窗打开');
+    const rows = $allIn($(dom, '#rm-list'), '.br-item');
+    assert_(rows.length === 2, '列出 2 个远程, got ' + rows.length);
+    assert_(rows[0].textContent.includes('origin'), '显示远程名 origin');
+    assert_(rows[0].textContent.includes('github.com/foo/bar'), '显示远程 URL');
+    // origin 的分支列表（本地跟踪 refs，无网络）
+    const brs = $allIn($(dom, '#rm-list'), '.rm-br');
+    assert_(brs.length === 2, 'origin 列出 2 个分支, got ' + brs.length);
+    const mainBr = brs.find((b) => b.textContent.includes('main'));
+    assert_(mainBr && mainBr.classList.contains('rm-br-head'), '默认分支 main 高亮标记');
+    assert_(brs.some((b) => b.textContent.includes('dev')), 'dev 分支显示');
+    assert_(brs.some((b) => b.textContent.includes('abc1234')), '分支短 oid 显示');
+    // upstream 无分支 → 空态提示
+    assert_($allIn($(dom, '#rm-list'), '.rm-br-empty').length === 1, '无分支远程显示空态提示');
+    // 关闭弹窗
+    click($(dom, '#rm-x'));
+    await tick();
+    assert_(!$(dom, '#br-box'), '远程弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
+  });
+
   await okAsync('插件热重载：变更通知重载且不重复注册', async () => {
     assert_(fakePluginCb, 'onChanged 已订阅');
     const before = g(dom, 'MI.renderers.length');
@@ -2978,9 +3016,23 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '工具条按钮打开面板');
     assert_($(dom, '#tool-browser').classList.contains('active'), '按钮高亮');
+    // 收藏列表在左侧主侧栏 panel-browser：浏览器工具激活时显示（不另设独立侧栏）
+    const sbPanel = $(dom, '#panel-browser');
+    assert_(sbPanel, 'panel-browser 存在于主侧栏');
+    assert_(!sbPanel.classList.contains('hidden'), '浏览器激活 → 收藏面板显示');
+    const sbItems = $allIn($(dom, '#bw-sb-list'), '.bw-sb-item');
+    assert_(sbItems.length === 5, '侧栏收藏列表渲染 5 个默认收藏, got ' + sbItems.length);
     const chips = $allIn($(dom, '#be-favs'), '.be-chip');
     assert_(chips.length === 5, '默认收藏 5 个, got ' + chips.length);
     assert_(chips.some((c) => c.textContent === 'GitHub'), '默认收藏含 GitHub');
+    // 切回项目工具：收藏面板让位（主区浏览器面板同时收起）
+    click($(dom, '#tool-project'));
+    await tick();
+    assert_(sbPanel.classList.contains('hidden'), '切走浏览器 → 收藏面板隐藏');
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), '浏览器面板收起');
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_(!sbPanel.classList.contains('hidden'), '再开浏览器 → 收藏面板恢复');
     click($(dom, '#tool-browser'));
     await tick();
     assert_($(dom, '#browser-panel').classList.contains('hidden'), '再点一次收起面板');
@@ -2994,6 +3046,31 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, '6', { ctrl: true });
     await tick();
     assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
+  });
+
+  // 回归：sideCollapsed 残留（先收起项目面板，再切浏览器 → 收藏面板必须显示）
+  await okAsync('内置浏览器：收起侧栏后再切浏览器 → 收藏面板显示（sideCollapsed 残留回归）', async () => {
+    // 1. 激活 project 再点一次 → 收起（sideCollapsed = true, activeTool = null）
+    click($(dom, '#tool-project'));
+    await tick();
+    click($(dom, '#tool-project'));
+    await tick();
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板已收起');
+    // 2. 切到浏览器：sideCollapsed 必须被重置，panel-browser 显示
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_(!$(dom, '#panel-browser').classList.contains('hidden'), '收起后切浏览器 → 收藏面板显示');
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板互斥隐藏');
+    // 3. Ctrl+6 收起再打开，收藏面板仍在
+    key(dom, '6', { ctrl: true });
+    await tick();
+    key(dom, '6', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '#panel-browser').classList.contains('hidden'), 'Ctrl+6 开关后收藏面板仍在');
+    click($(dom, '#tool-browser'));
+    await tick(); // 收起浏览器，恢复现场
+    click($(dom, '#tool-project'));
+    await tick();
   });
 
   await okAsync('内置浏览器：open 导航（WebContentsView IPC）+ 历史', async () => {
@@ -4264,6 +4341,29 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.setView("list")');
   });
 
+  // 用户实测：依赖图里改优先级后按 Ctrl+Z 无反应 —— 快捷键必须按激活工具分流到任务撤销栈
+  await okAsync('任务：Ctrl+Z 撤销依赖图内的修改（改优先级 → 键盘撤销 → 复原）', async () => {
+    await tkReset();
+    await g(dom, 'while (window.Modal && Modal.stack.length) Modal.hide()');
+    const a = await g(dom, 'Tasks.add("改优先级").id');
+    await g(dom, 'Tasks.setPriority("' + a + '", "high")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'high', '优先级已改为 high');
+    assert_(g(dom, 'Tasks.canUndo') === true, '存在可撤销历史');
+    // 焦点在输入框时 Ctrl+Z 让位原生（不劫持）；先 blur 再走正常路径
+    const ae = dom.window.document.activeElement;
+    if (ae && ae.blur) ae.blur();
+    key(dom, 'z', { ctrl: true });
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'normal', 'Ctrl+Z 后优先级复原为 normal');
+    // 重做：Ctrl+Shift+Z
+    key(dom, 'z', { ctrl: true, shift: true });
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'high', 'Ctrl+Shift+Z 重做优先级');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   await okAsync('任务：不显示已完成（菜单模式：清单整组消失 + 图过滤 + 持久化）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("待办")');
@@ -4717,6 +4817,84 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
     await tick();
     await g(dom, 'Tasks.setView("list")');
+  });
+
+  // 复现真实浏览器布局：容器在视口中偏移(200,100)、已滚动(60,30)、缩放 0.5、
+  // svg 随滚动平移到 (148,78) —— 框选必须按「屏幕→逻辑」正确反推，命中实际框住的节点
+  await okAsync('任务：框选 —— 视口偏移 + 滚动 + 缩放（真实布局反推命中）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("框选偏移A")');
+    await g(dom, 'Tasks.add("框选偏移B")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await g(dom, 'Tasks.applyZoom(0.5, null)');
+    await tick();
+    const body = mockDagBox(800, 600);
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    assert_(svg, 'svg 存在');
+    const vb = String(svg.getAttribute('viewBox') || '0 0 1 1').split(/[\s,]+/).map(Number);
+    const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+    // 真实浏览器：容器视口位置 (200,100)，滚动 (60,30)，wrap 内边距 8 → svg 屏幕 rect (148,78)
+    body._sl = 60; body._st = 30;
+    body.getBoundingClientRect = () => ({ left: 200, top: 100, width: 800, height: 600, right: 1000, bottom: 700, x: 200, y: 100 });
+    svg.getBoundingClientRect = () => ({ left: 148, top: 78, width: w, height: h, right: 148 + w, bottom: 78 + h, x: 148, y: 78 });
+    // 屏幕坐标 = svg 原点 + (逻辑坐标 - viewBox 原点) × zoom。
+    // 两节点逻辑区 [14,174]×[14,54] 与 [202,362]×[14,54]；屏幕 ≈ [155,235]×[85,105] 与 [249,329]×[85,105]
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 150, clientY: 80 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 150, clientY: 80 }));   // 未过阈值
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 330, clientY: 120 })); // 扫过两节点
+    await tick();
+    assert_(body.querySelector('.tk-rubber'), '拉出框选虚线框');
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify([...Tasks.selectionIds()])'));
+    assert_(sel.length === 2, '偏移+滚动+缩放下框中 2 个节点, got ' + JSON.stringify(sel));
+    // 清理
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 700, clientY: 650 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    await g(dom, 'Tasks.applyZoom(1, null)');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  // 用户实测：框选多个任务后「整理选中的」只对一个生效 —— 框选 → 右键组内节点 → 整理，选中集必须整组回自动布局
+  await okAsync('任务：框选 → 右键「整理选中的」整组生效（多选不缩水成单选）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("整理A").id');
+    const b = await g(dom, 'Tasks.add("整理B").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    // 先把两个节点挪离自动布局（手动位置），整理才有意义
+    await g(dom, 'Tasks.moveNode("' + a + '", 400, 300)');
+    await g(dom, 'Tasks.moveNode("' + b + '", 500, 350)');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 400, 'A 已有手动位置');
+    // 框选两个节点
+    const body = $(dom, '#tasks-dag-body');
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0 });
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 5, clientY: 5 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 950, clientY: 750 }));
+    await tick();
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify([...Tasks.selectionIds()])'));
+    assert_(sel.length === 2, '框选中 2 个, got ' + JSON.stringify(sel));
+    // 右键组内节点 → 批量菜单 → 整理选中的 2 个
+    const node = dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === a);
+    node.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    await tick();
+    const item = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')]
+      .find((x) => x.textContent.includes('整理选中'));
+    assert_(item && /2 个/.test(item.textContent), '菜单出现「整理选中的 2 个」');
+    click(item);
+    await tick(); await tick();
+    const pa = g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x');
+    const pb = g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").x');
+    assert_(pa === null && pb === null, '两个任务都回到自动布局（A=' + pa + ', B=' + pb + '）');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
   });
 
   await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {

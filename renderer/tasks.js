@@ -2756,8 +2756,10 @@ const Tasks = (() => {
         if (!r.width || !r.height) return { x: 0, y: 0 }; // jsdom 无布局：别产出 NaN
         // 与 renderDag 内同源：以 viewBox 逻辑尺寸换算（缩放后 width 属性 ≠ 逻辑尺寸）
         const vb = vbSize(svg);
+        // ★ 必须加 viewBox 原点（vb.x/y）：无极画布扩展后原点非 0，漏加会整体错位
+        //   （「框选还是失败」的根因：鼠标画的框与实际命中区域错开）
         // 鼠标可拖出 svg 底边之外（容器空白区）：换算出的 y 超出 svg 高度是正确语义
-        return { x: (e2.clientX - r.left) * vb.w / r.width, y: (e2.clientY - r.top) * vb.h / r.height };
+        return { x: (e2.clientX - r.left) * vb.w / r.width + vb.x, y: (e2.clientY - r.top) * vb.h / r.height + vb.y };
       };
       const x0 = ev.clientX, y0 = ev.clientY;
       let active = false;

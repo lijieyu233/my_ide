@@ -8,12 +8,11 @@ const BrowserPanel = (() => {
   const HOME = 'https://www.bing.com';
   const SEARCH = 'https://www.bing.com/search?q=';
 
-  let panel, urlInput, favBtn, ddEl, viewEl, sbEl, sbListEl;
+  let panel, urlInput, favBtn, ddEl, viewEl, sbListEl;
   let visible = false;
   let hasPage = false;      // 是否已打开过页面（决定 show 恢复网页 or 空状态）
   let currentUrl = '';
   let currentTitle = '';
-  const SB_KEY = 'myide-browser-sidebar'; // 收藏侧栏显隐记忆
 
   // ---------- 纯逻辑（测试直接覆盖） ----------
   // 输入规范化：带协议原样；像域名/IP/localhost 补 https；否则按关键词搜索
@@ -192,8 +191,7 @@ const BrowserPanel = (() => {
     visible = true;
     panel.classList.remove('hidden');
     syncToolBtn();
-    syncSidebar(); // 收藏侧栏显隐（含记忆）
-    renderSidebar();
+    renderSidebar(); // 收藏列表在左侧栏 panel-browser（App.renderToolStrip 控制显隐）
     if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
       document.getElementById('browser-empty').classList.add('hidden');
       viewEl.classList.remove('hidden');
@@ -317,7 +315,7 @@ const BrowserPanel = (() => {
     menu.style.top = Math.min(y, window.innerHeight - 240) + 'px';
   }
 
-  // ---------- 收藏侧栏（文件夹分组常驻显示） ----------
+  // ---------- 收藏列表（左侧主侧栏 panel-browser，App.renderToolStrip 控制显隐） ----------
   function renderSidebar() {
     if (!sbListEl) return;
     ensureDefaultFavs();
@@ -471,16 +469,6 @@ const BrowserPanel = (() => {
     menu.style.top = Math.min(y, window.innerHeight - 220) + 'px';
   }
 
-  // 侧栏显隐（记忆偏好）
-  function syncSidebar() {
-    if (!sbEl) return;
-    let showSb = true;
-    try { showSb = localStorage.getItem(SB_KEY) !== '0'; } catch {}
-    sbEl.classList.toggle('hidden', !showSb);
-    const btn = document.getElementById('bw-sb-toggle');
-    if (btn) btn.classList.toggle('active', showSb);
-  }
-
   // ---------- 初始化 ----------
   function init() {
     panel = document.getElementById('browser-panel');
@@ -488,8 +476,7 @@ const BrowserPanel = (() => {
     favBtn = document.getElementById('bw-fav');
     ddEl = document.getElementById('bw-dd');
     viewEl = document.getElementById('browser-view');
-    sbEl = document.getElementById('bw-sidebar');
-    sbListEl = document.getElementById('bw-sb-list');
+    sbListEl = document.getElementById('bw-sb-list'); // 左侧主侧栏里的收藏列表
 
     document.getElementById('bw-back').onclick = back;
     document.getElementById('bw-fwd').onclick = forward;
@@ -516,15 +503,7 @@ const BrowserPanel = (() => {
       const r = e.target.getBoundingClientRect();
       openFavMenu(r.left, r.bottom + 4);
     };
-    // 收藏侧栏：显隐切换（记忆）+ 新建文件夹
-    const sbToggle = document.getElementById('bw-sb-toggle');
-    if (sbToggle) sbToggle.onclick = () => {
-      const showSb = sbEl.classList.contains('hidden');
-      sbEl.classList.toggle('hidden', !showSb);
-      try { localStorage.setItem(SB_KEY, showSb ? '1' : '0'); } catch {}
-      sbToggle.classList.toggle('active', showSb);
-      setTimeout(syncBounds, 50); // 视口占位区尺寸变了 → 重报 bounds
-    };
+    // 收藏列表新建文件夹（列表在左侧主侧栏，工具激活时可见）
     const sbAdd = document.getElementById('bw-sb-add-folder');
     if (sbAdd) sbAdd.onclick = async () => {
       const name = await Modal.prompt('新建收藏文件夹', '文件夹名称', '');

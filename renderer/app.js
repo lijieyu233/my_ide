@@ -116,8 +116,11 @@ const App = (() => {
   function setToolState(next) {
     const prev = activeTool;
     activeTool = next;
-    if (SIDE_TOOLS.includes(next)) { sideTool = next; sideCollapsed = false; }
-    if (next === 'db') sideCollapsed = false;
+    if (SIDE_TOOLS.includes(next)) sideTool = next;
+    // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
+    //   切到 browser 时残留 true → 收藏面板永不显示（sideCollapsed 与 body 的
+    //   sidebar-collapsed 是两个独立状态，toggleSidebar 只动后者）
+    sideCollapsed = false;
     applyToolChange(prev, next);
     renderToolStrip();
     saveToolState();
@@ -204,10 +207,11 @@ const App = (() => {
     }
     const aiBtn = document.getElementById('tool-ai');
     if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
-    // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
+    // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
-    for (const t of ['project', 'outline', 'git', 'tasks', 'db']) {
+    if (activeTool === 'browser') sidePanel = 'browser';
+    for (const t of ['project', 'outline', 'git', 'tasks', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }

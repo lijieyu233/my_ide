@@ -168,12 +168,9 @@ Shortcuts.register('task-quick-new', { desc: '快捷创建任务（任务工具�
   }
   Tasks.quickNew();
 } });
-// 统一撤销 / 重做（5.2）：覆盖改名/状态/依赖/移动/删除等全部写操作；焦点在输入框时让位给原生编辑
-Shortcuts.register('task-undo', { desc: '任务：撤销', keys: ['ctrl+z'], run: () => {
-  if (!window.Tasks || !Tasks.canUndo) return;
-  const u = Tasks.undo();
-  if (u && window.MI) MI.toast('已撤销：' + u, 'ok');
-} });
+// 统一撤销 / 重做（5.2）：覆盖改名/状态/优先级/依赖/移动/删除等全部写操作；焦点在输入框时让位给原生编辑
+// ★ ctrl+z 不再注册两个动作（后注册的 keyMap 覆盖先注册的，「依赖图里 Ctrl+Z 无效」根因）——
+//   task-undo 并入 undo-file 按激活工具分流（同下方 Ctrl+C 的分流模式）
 Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z', 'ctrl+y'], run: () => {
   if (!window.Tasks || !Tasks.canRedo) return;
   const r = Tasks.redo();
@@ -206,7 +203,15 @@ Shortcuts.register('copy-files', { desc: '复制选中（任务工具激活时�
 } });
 Shortcuts.register('cut-files', { desc: '剪切选中的文件（粘贴时移动）', keys: ['ctrl+x'], run: () => Tree.cutSelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
-Shortcuts.register('undo-file', { desc: '撤销文件操作（粘贴/新建/重命名/删除/移动）', keys: ['ctrl+z'], run: () => Tree.undo() });
+Shortcuts.register('undo-file', { desc: '撤销（任务工具激活时撤销任务修改，否则撤销文件操作）', keys: ['ctrl+z'], run: () => {
+  // 任务工具激活且有可撤销历史 → 撤任务修改（依赖图里的优先级/状态/位置/删除等）
+  if (window.Tasks && window.App && App.getTool() === 'tasks' && Tasks.canUndo) {
+    const u = Tasks.undo();
+    if (u && window.MI) MI.toast('已撤销：' + u, 'ok');
+    return;
+  }
+  return Tree.undo();
+} });
 Shortcuts.register('rename-file', { desc: '重命名（目录树选中项）', keys: ['ctrl+shift+f6'], run: () => Tree.renameSelected() });
 
 Shortcuts.load();

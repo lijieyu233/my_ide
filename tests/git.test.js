@@ -619,6 +619,52 @@ fs.mkdirSync(repo);
     assert.ok(!r.ok && /没有可搁置/.test(r.error), '无改动搁置报错');
   });
 
+  await okAsync('listRemotes：远程列表 + 跟踪分支（松散 refs / packed-refs / HEAD 标记）', async () => {
+    const repo10 = path.join(tmp, 'repo10');
+    fs.mkdirSync(repo10);
+    await G.initRepo(repo10);
+    // 造一个提交，拿真实 oid
+    fs.writeFileSync(path.join(repo10, 'a.txt'), 'a\n');
+    const c = await G.commit(repo10, { message: 'init', files: ['a.txt'] });
+    assert.ok(c.ok, '初始提交成功');
+    const log = await G.log(repo10);
+    const oid = log.commits[0].oid;
+
+    // 添加两个远程
+    assert.ok((await G.addRemote(repo10, { name: 'origin', url: 'https://example.com/origin.git' })).ok);
+    assert.ok((await G.addRemote(repo10, { name: 'mirror', url: 'https://example.com/mirror.git' })).ok);
+
+    // 无跟踪 refs → branches 为空
+    let lr = await G.listRemotes(repo10);
+    assert.strictEqual(lr.remotes.length, 2, '列出 2 个远程');
+    assert.ok(lr.remotes.every((rm) => rm.branches.length === 0), '无跟踪 refs 时分支为空');
+
+    // origin：写松散 refs（main + dev + HEAD 指向 main）
+    const od = path.join(repo10, '.git', 'refs', 'remotes', 'origin');
+    fs.mkdirSync(od, { recursive: true });
+    fs.writeFileSync(path.join(od, 'main'), oid + '\n');
+    fs.writeFileSync(path.join(od, 'dev'), oid + '\n');
+    fs.writeFileSync(path.join(od, 'HEAD'), 'ref: refs/remotes/origin/main\n');
+    // mirror：走 packed-refs（feature 分支）
+    fs.writeFileSync(path.join(repo10, '.git', 'packed-refs'),
+      '# pack-refs with: peeled fully-peeled sorted\n' + oid + ' refs/remotes/mirror/feature\n');
+
+    lr = await G.listRemotes(repo10);
+    const origin = lr.remotes.find((rm) => rm.name === 'origin');
+    const mirror = lr.remotes.find((rm) => rm.name === 'mirror');
+    assert.ok(origin, 'origin 在列表中');
+    assert.ok(mirror, 'mirror 在列表中');
+    assert.strictEqual(origin.branches.length, 2, 'origin 2 个分支（HEAD 不算）');
+    const main = origin.branches.find((b) => b.name === 'main');
+    assert.ok(main && main.head === true, 'main 标记为默认分支');
+    assert.ok(origin.branches.some((b) => b.name === 'dev' && !b.head), 'dev 非默认');
+    assert.ok(main.oid === oid.slice(0, 7), '分支 oid 前 7 位: ' + main.oid);
+    assert.strictEqual(mirror.branches.length, 1, 'mirror 1 个分支（packed-refs）');
+    assert.strictEqual(mirror.branches[0].name, 'feature', 'packed-refs 分支名');
+    // HEAD 排最前
+    assert.strictEqual(origin.branches[0].name, 'main', '默认分支排最前');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
