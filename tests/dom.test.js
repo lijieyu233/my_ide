@@ -35,6 +35,9 @@ const FAKE_FS = {
   ['C:/proj/manual.pdf']: { type: 'file', content: '' },
   ['C:/proj/crlf-file.txt']: { type: 'file', content: 'line1\r\nline2\r\n' },
   ['C:/proj/link.md']: { type: 'file', content: '# 链接测试\n\n[外部链接](https://example.com)\n[本地文件](./notes.txt)\n[锚点](#链接测试)\n\n[[README]]\n\n![[pic.png]]\n' },
+  ['C:/proj/report.docx']: { type: 'file', content: '' },
+  ['C:/proj/report.xlsx']: { type: 'file', content: '' },
+  ['C:/proj/old.doc']: { type: 'file', content: '' },
 };
 const FAKE_GIT = {
   changed: [
@@ -92,6 +95,7 @@ function makeDom() {
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
+      readBuffer: async (p) => (FAKE_FS[p] ? { buffer: new ArrayBuffer(8) } : { error: 'not found' }),
       writeFile: async (p, content) => {
         if (!FAKE_FS[p]) {
           FAKE_FS[p] = { type: 'file', content };
@@ -1015,6 +1019,56 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
     const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
     assert_(!hasSrc, '图片无「查看源码」按钮');
+  });
+
+  await okAsync('Office 预览：docx 走 preview 模式 + 渲染容器 + 无源码按钮', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/report.docx")');
+    await tick(); await tick(); await tick();
+    assert_(g(dom, 'Viewer.activeTab.mode') === 'preview', 'mode 应为 preview, got: ' + g(dom, 'Viewer.activeTab.mode'));
+    assert_($(dom, '.office-view.office-docx'), 'office-view 容器出现');
+    // jsdom 无 window.docxPreview → 走错误降级分支：错误信息 + 重试按钮
+    const st = $(dom, '.office-status');
+    assert_(st, 'loading/错误状态节点出现');
+    assert_(st.textContent.includes('预览失败') || st.textContent.includes('解析'), '状态显示加载或错误, got: ' + st.textContent);
+    assert_($(dom, '.office-retry'), '错误降级提供重试按钮');
+    const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
+    assert_(!hasSrc, 'docx 无「查看源码」按钮（二进制无源码可看）');
+    const hasOpen = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('系统打开'));
+    assert_(hasOpen, 'docx 工具栏提供「系统打开」按钮');
+  });
+
+  await okAsync('Office 预览：xlsx sheet 标签条 + 点击切换', async () => {
+    // 假库：验证渲染器与 sheet 切换逻辑（真库无法在 jsdom 跑）
+    dom.window.XLSX = {
+      read: () => ({ SheetNames: ['Sheet1', '汇总'], Sheets: { Sheet1: {}, 汇总: {} } }),
+      utils: { sheet_to_html: () => '<html><body><table><tr><td>cell</td></tr></table></body></html>' },
+    };
+    try {
+      await g(dom, 'Viewer.openFile("' + P + '/report.xlsx")');
+      await tick(); await tick(); await tick();
+      assert_(g(dom, 'Viewer.activeTab.mode') === 'preview', 'mode 应为 preview, got: ' + g(dom, 'Viewer.activeTab.mode'));
+      const tabs = $allIn($(dom, '.office-view.office-xlsx .sheet-tabs'), '.sheet-tab');
+      assert_(tabs.length === 2, '出现 2 个 sheet 标签, got: ' + tabs.length);
+      assert_($(dom, '.office-view.office-xlsx table.sheet-table'), 'sheet 表格渲染');
+      assert_(tabs[0].classList.contains('active'), '默认第一个 sheet 激活');
+      click(tabs[1]); await tick();
+      assert_(tabs[1].classList.contains('active') && !tabs[0].classList.contains('active'), '点击切换后第二个 sheet 激活');
+    } finally {
+      delete dom.window.XLSX;
+    }
+  });
+
+  await okAsync('Office 老格式：doc → error 视图 + 系统打开按钮', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/old.doc")');
+    await tick(); await tick();
+    assert_(g(dom, 'Viewer.activeTab.mode') === 'error', '老格式应为 error, got: ' + g(dom, 'Viewer.activeTab.mode'));
+    const msg = $(dom, '.viewer-msg');
+    assert_(msg && msg.textContent.includes('.doc'), '提示文案提及 .doc 格式, got: ' + (msg && msg.textContent));
+    const btns = $allIn(msg, 'button');
+    assert_(btns.some((b) => b.textContent.includes('系统默认程序打开')), '提供系统默认程序打开按钮');
+    click(btns.find((b) => b.textContent.includes('系统默认程序打开')));
+    await tick();
+    assert_((calls.openExternal || []).some((u) => u.includes('old.doc')), '点击后调用 openExternal, got: ' + JSON.stringify(calls.openExternal || []));
   });
 
   await okAsync('回归：先切大纲面板再打开 md → 大纲有内容', async () => {
