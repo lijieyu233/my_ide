@@ -257,6 +257,146 @@ MI.registerRenderer(['pdf'], ({ path }) => {
   return frame;
 });
 
+// ---------- Office 预览（docx / xlsx / pptx，只读）----------
+// 统一骨架：同步返回滚动容器（loading 态），内部异步 readBuffer → 前端库渲染；
+// 失败 → 错误信息 + 重试（容器销毁时仍在跑的异步结果直接丢弃）
+function officeShell(kind) {
+  const wrap = document.createElement('div');
+  wrap.className = 'office-view office-' + kind; // 顶层滚动容器：renderView 滚动恢复自动生效
+  const status = document.createElement('div');
+  status.className = 'office-status';
+  status.textContent = '正在加载…';
+  wrap.appendChild(status);
+  return { wrap, status };
+}
+function officeFail(status, msg, retry) {
+  status.className = 'office-status office-err';
+  status.textContent = '';
+  const p = document.createElement('div');
+  p.textContent = '预览失败: ' + msg;
+  const btn = document.createElement('button');
+  btn.className = 'vt-btn office-retry';
+  btn.textContent = '↻ 重试';
+  btn.onclick = retry;
+  status.append(p, btn);
+}
+async function officeLoad(path) {
+  const r = await window.myIDE.fs.readBuffer(path);
+  if (r && r.error) throw new Error(r.error);
+  if (r && r.tooLarge) throw new Error('文件过大（' + Math.round(r.size / 1048576) + ' MB），超出 50MB 预览上限');
+  if (!r || !r.buffer) throw new Error('无法读取文件内容');
+  return r.buffer;
+}
+
+// Word（.docx）：docx-preview 渲染（分页 + 页眉页脚 + 图片表格）
+// useBase64URL：图片/字体走 data: URL（CSP 已放行），容器销毁时无 blob URL 泄漏
+MI.registerRenderer(['docx'], ({ path, name }) => {
+  const { wrap, status } = officeShell('docx');
+  const run = async () => {
+    status.className = 'office-status';
+    status.textContent = '正在解析文档…';
+    try {
+      const buf = await officeLoad(path);
+      if (!window.docxPreview) throw new Error('docx 渲染库未加载');
+      const stale = wrap.querySelector('.docx-body');
+      if (stale) stale.remove(); // 重试时清掉旧内容
+      const body = document.createElement('div');
+      body.className = 'docx-body';
+      wrap.appendChild(body);
+      await MI.perf('office.docx ' + name, () => window.docxPreview.renderAsync(buf, body, null, {
+        className: 'docx',
+        inWrapper: true,
+        breakPages: true,
+        ignoreLastRenderedPageBreak: true,
+        useBase64URL: true,
+      }), 500);
+      status.remove();
+    } catch (e) {
+      MI.logErr('office.docx', e);
+      if (status.isConnected) officeFail(status, String((e && e.message) || e), run);
+    }
+  };
+  run();
+  return wrap;
+});
+
+// Excel（.xlsx）：SheetJS 解析 → sheet 标签条切换 + 只读表格
+MI.registerRenderer(['xlsx'], ({ path, name }) => {
+  const { wrap, status } = officeShell('xlsx');
+  const run = async () => {
+    status.className = 'office-status';
+    status.textContent = '正在解析表格…（大文件可能需要数秒）';
+    try {
+      const buf = await officeLoad(path);
+      if (!window.XLSX) throw new Error('xlsx 渲染库未加载');
+      const book = await MI.perf('office.xlsx.parse ' + name,
+        () => window.XLSX.read(buf, { type: 'array' }), 500);
+      wrap.querySelectorAll('.sheet-tabs, .sheet-pane').forEach((el) => el.remove());
+      if (!book.SheetNames || !book.SheetNames.length) throw new Error('工作簿中没有工作表');
+      const tabs = document.createElement('div');
+      tabs.className = 'sheet-tabs';
+      const pane = document.createElement('div');
+      pane.className = 'sheet-pane';
+      const show = (i) => {
+        [...tabs.children].forEach((b, j) => b.classList.toggle('active', i === j));
+        // sheet_to_html 返回完整 HTML 文档串，截取 <table> 片段注入
+        const html = String(window.XLSX.utils.sheet_to_html(book.Sheets[book.SheetNames[i]]) || '');
+        const s = html.indexOf('<table'), e = html.lastIndexOf('</table>');
+        pane.innerHTML = s >= 0 && e > s ? html.slice(s, e + 8) : '';
+        const tb = pane.querySelector('table');
+        if (tb) tb.className = 'sheet-table';
+      };
+      book.SheetNames.forEach((n, i) => {
+        const b = document.createElement('button');
+        b.className = 'sheet-tab';
+        b.textContent = n;
+        b.title = n;
+        b.onclick = () => show(i);
+        tabs.appendChild(b);
+      });
+      wrap.append(tabs, pane);
+      show(0);
+      status.remove();
+    } catch (e) {
+      MI.logErr('office.xlsx', e);
+      if (status.isConnected) officeFail(status, String((e && e.message) || e), run);
+    }
+  };
+  run();
+  return wrap;
+});
+
+// PowerPoint（.pptx）：pptx-preview 渲染（幻灯片纵向排列）
+// 宽度按容器自适应初始化一次；窗口后续缩放靠横向滚动兜底
+MI.registerRenderer(['pptx'], ({ path, name }) => {
+  const { wrap, status } = officeShell('pptx');
+  const run = async () => {
+    status.className = 'office-status';
+    status.textContent = '正在解析幻灯片…（大文件可能需要数秒）';
+    try {
+      const buf = await officeLoad(path);
+      if (!window.pptxPreview) throw new Error('pptx 渲染库未加载');
+      const stale = wrap.querySelector('.pptx-body');
+      if (stale) stale.remove();
+      const body = document.createElement('div');
+      body.className = 'pptx-body';
+      wrap.appendChild(body);
+      // 异步 IPC 往返后节点已插入 DOM，clientWidth 可靠
+      const w = Math.max(Math.min((wrap.clientWidth || 960) - 48, 1280) || 960, 320);
+      await MI.perf('office.pptx ' + name, async () => {
+        const previewer = window.pptxPreview.init(body, { width: w, height: Math.round(w * 9 / 16) });
+        await previewer.preview(buf);
+      }, 500);
+      status.remove();
+    } catch (e) {
+      MI.logErr('office.pptx', e);
+      if (status.isConnected) officeFail(status, String((e && e.message) || e), run);
+    }
+  };
+  run();
+  return wrap;
+});
+
 // ---------- 加载用户插件（支持热重载去重）----------
 let builtinCount = 0; // 内置渲染器数量（用户插件重载时截断用）
 MI.loadPlugins = async function () {

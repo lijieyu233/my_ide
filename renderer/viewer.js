@@ -15,6 +15,8 @@ const Viewer = (() => {
   const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'pdf']);
   const MEDIA_EXTS = new Set(['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac']);
   const MD_EXTS = new Set(['md', 'markdown']);
+  const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx']); // Office 新格式：只读预览（二进制解析交给渲染器）
+  const OFFICE_OLD_EXTS = new Set(['doc', 'xls', 'ppt']); // 老版二进制格式：前端无法解析
 
   // 最近打开记录（快速打开面板用）
   const RECENT_KEY = 'myide-recent';
@@ -56,10 +58,19 @@ const Viewer = (() => {
   }
 
   async function loadTab(tab) {
-    // 图片 / 音视频：二进制无需读取内容，直接走预览渲染器
-    if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name))) {
+    // 图片 / 音视频 / Office 新格式：二进制无需读取文本，直接走预览渲染器
+    if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) {
       tab.content = '';
       tab.mode = 'preview';
+      renderView();
+      return;
+    }
+    // 老版 Office（.doc/.xls/.ppt）：前端无法解析 → 错误视图 + 系统默认程序打开
+    if (OFFICE_OLD_EXTS.has(extOf(tab.name))) {
+      tab.content = '';
+      tab.binary = true;
+      tab.officeOld = true;
+      tab.mode = 'error';
       renderView();
       return;
     }
@@ -351,6 +362,18 @@ const Viewer = (() => {
       toolbar.appendChild(btnBrowser);
     }
 
+    // Office（新旧格式）：系统默认程序打开（预览保真度有限时的兜底出口）
+    if (OFFICE_EXTS.has(extOf(tab.name)) || OFFICE_OLD_EXTS.has(extOf(tab.name))) {
+      const btnOffice = document.createElement('button');
+      btnOffice.className = 'vt-btn';
+      btnOffice.textContent = '↗ 系统打开';
+      btnOffice.title = '用系统默认程序打开该文件';
+      btnOffice.onclick = () => {
+        try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
+      };
+      toolbar.appendChild(btnOffice);
+    }
+
     // 注：已全面自动保存（停止输入 3 秒写盘 + 切换/关闭静默保存），不再提供手动保存按钮
 
     viewer.appendChild(toolbar);
@@ -368,8 +391,22 @@ const Viewer = (() => {
     if (tab.mode === 'error') {
       const msg = document.createElement('div');
       msg.className = 'viewer-msg';
-      msg.innerHTML = `<div class="big-ic">${tab.binary ? '🧱' : '📦'}</div>` +
-        (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 预览限制` : '读取失败: ' + tab.error);
+      if (tab.officeOld) {
+        // 老版 Office 二进制格式：前端无法解析
+        msg.innerHTML = `<div class="big-ic">📄</div>` +
+          `老版 Office 格式（.${extOf(tab.name)}）暂不支持预览<br>` +
+          `建议转换为 .${extOf(tab.name)}x 新格式后查看`;
+        const btnOld = document.createElement('button');
+        btnOld.className = 'vt-btn';
+        btnOld.style.marginTop = '12px';
+        btnOld.textContent = '↗ 用系统默认程序打开';
+        btnOld.title = '调用系统关联程序打开该文件';
+        btnOld.onclick = () => { try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {} };
+        msg.appendChild(btnOld);
+      } else {
+        msg.innerHTML = `<div class="big-ic">${tab.binary ? '🧱' : '📦'}</div>` +
+          (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 预览限制` : '读取失败: ' + tab.error);
+      }
       viewer.appendChild(msg);
       return;
     }
@@ -969,7 +1006,7 @@ const Viewer = (() => {
     for (const t of tabs) {
       if (t.dirty || t.error || t.binary || t.tooLarge) continue;
       if (t.content == null) continue;
-      if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name))) continue;
+      if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
         const r = await window.myIDE.fs.readFile(t.path);
         if (r.error || r.tooLarge || r.binary || r.content == null) continue;
