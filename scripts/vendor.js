@@ -33,6 +33,38 @@ async function main() {
     path.join(vendor, 'atom-one-dark.min.css')
   );
 
+  // 4. docx-preview → IIFE（window.docxPreview；jszip 自动 bundle）
+  const resDocx = await esbuild.build({
+    entryPoints: [path.join(root, 'node_modules', 'docx-preview', 'dist', 'docx-preview.mjs')],
+    bundle: true,
+    format: 'iife',
+    globalName: 'docxPreview',
+    minify: true,
+    platform: 'browser',
+    write: false,
+    logLevel: 'silent',
+  });
+  fs.writeFileSync(path.join(vendor, 'docx-preview.min.js'), resDocx.outputFiles[0].text);
+
+  // 5. xlsx（SheetJS）UMD 直接拷贝（同 marked 模式；全局 window.XLSX）
+  fs.copyFileSync(
+    path.join(root, 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js'),
+    path.join(vendor, 'xlsx.min.js')
+  );
+
+  // 6. pptx-preview → IIFE（window.pptxPreview；依赖 jszip/lodash/echarts 等全部 bundle，无独立 CSS）
+  const resPptx = await esbuild.build({
+    entryPoints: [path.join(root, 'node_modules', 'pptx-preview', 'dist', 'pptx-preview.es.js')],
+    bundle: true,
+    format: 'iife',
+    globalName: 'pptxPreview',
+    minify: true,
+    platform: 'browser',
+    write: false,
+    logLevel: 'silent',
+  });
+  fs.writeFileSync(path.join(vendor, 'pptx-preview.min.js'), resPptx.outputFiles[0].text);
+
   for (const f of fs.readdirSync(vendor)) {
     console.log('vendor:', f, fs.statSync(path.join(vendor, f)).size, 'bytes');
   }

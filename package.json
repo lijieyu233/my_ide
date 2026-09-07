@@ -19,6 +19,7 @@
     "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-python": "^6.2.1",
+    "docx-preview": "^0.4.0",
     "highlight.js": "^11.10.0",
     "iconv-lite": "^0.7.3",
     "isomorphic-git": "^1.27.1",
@@ -26,7 +27,9 @@
     "mermaid": "^11.17.2",
     "mysql2": "^3.24.2",
     "pg": "^8.23.0",
-    "sql.js": "^1.14.2"
+    "pptx-preview": "^1.0.5",
+    "sql.js": "^1.14.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",

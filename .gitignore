@@ -10,3 +10,4 @@ check-live-out.txt
 check-live.png
 *.db
 .workbuddy/
+.trae/

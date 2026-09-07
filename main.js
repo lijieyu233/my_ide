@@ -392,6 +392,20 @@ ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
+// 读二进制文件（Office 预览等）：返回 ArrayBuffer（结构化克隆直传渲染进程）
+// 上限 50MB：docx/xlsx/pptx 常内嵌高清图片，8MB 文本上限不适用；
+// 超过 50MB 的多为内嵌视频的极端 pptx，前端解析无意义
+ipcMain.handle('fs:readBuffer', (_e, p) => {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile()) return { error: '不是文件' };
+    if (st.size > 50 * 1024 * 1024) return { tooLarge: true, size: st.size };
+    const buf = fs.readFileSync(p);
+    // ★ 必须 slice：readFileSync 可能返回池化 Buffer 的视图（byteOffset ≠ 0），直接传 buf.buffer 会带出脏数据
+    return { buffer: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 // LLM 对话（翻译插件等）：OpenAI 兼容 /chat/completions。
 // 走主进程 net.fetch：渲染层 CSP 不放行外部连接，且 API Key 不进页面上下文
 ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
