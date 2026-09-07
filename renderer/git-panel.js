@@ -37,12 +37,33 @@ const GitPanel = (() => {
     knownFiles = cur;
   }
 
-  // ---------- 远程凭证（localStorage myide-git-auth：用户名 + 密码/令牌）----------
-  function getGitAuth() {
-    try { return JSON.parse(localStorage.getItem('myide-git-auth') || 'null'); } catch { return null; }
+  // ---------- 远程凭证（localStorage myide-git-auth-map：按主机 {host:{username,password}}，多主机互不覆盖）----------
+  function getGitAuthMap() {
+    try {
+      const m = JSON.parse(localStorage.getItem('myide-git-auth-map') || 'null');
+      if (m && typeof m === 'object') return m;
+    } catch {}
+    try { // 旧版全局单份凭证迁移 → 兜底键 '*'（对任何主机生效，优先级低于按 host 保存的）
+      const old = JSON.parse(localStorage.getItem('myide-git-auth') || 'null');
+      if (old && old.username) {
+        const m = { '*': { username: old.username, password: old.password || '' } };
+        localStorage.setItem('myide-git-auth-map', JSON.stringify(m));
+        localStorage.removeItem('myide-git-auth');
+        return m;
+      }
+    } catch {}
+    return {};
   }
-  function saveGitAuth(a) {
-    try { localStorage.setItem('myide-git-auth', JSON.stringify(a || null)); } catch {}
+  function saveGitAuthMap(host, cred) {
+    try {
+      const m = getGitAuthMap();
+      if (cred && cred.username) m[host] = cred; else delete m[host];
+      localStorage.setItem('myide-git-auth-map', JSON.stringify(m));
+    } catch {}
+  }
+  // 远程 URL → 主机（含端口），用于按主机读写凭证；解析失败返回 null
+  function hostOfUrl(url) {
+    try { return new URL(url).host; } catch { return null; }
   }
 
   // ---------- 远程管理弹窗（remote 列表 + 新增 + 认证凭证）----------
@@ -53,7 +74,12 @@ const GitPanel = (() => {
     const box = document.createElement('div');
     box.id = 'br-box';
     Modal.show(box);
-    const auth = getGitAuth() || {};
+    const authMap = getGitAuthMap();
+    // 主远程（优先 origin）的 host：凭证区默认编辑该主机的凭证
+    const primary = (r.remotes || []).find((x) => x.name === 'origin') || (r.remotes || [])[0] || null;
+    const primaryHost = primary ? hostOfUrl(primary.url) : null;
+    const firstHost = primaryHost || Object.keys(authMap).find((h) => h !== '*') || '';
+    const firstCred = authMap[firstHost] || {};
     box.innerHTML = `
       <div class="m-head">远程仓库 <span class="x" id="rm-x">✕</span></div>
       <div class="m-body">
@@ -64,14 +90,23 @@ const GitPanel = (() => {
           <button class="tb-btn" id="rm-add">＋ 添加</button>
         </div>
         <div style="border-top:1px solid var(--border-mid);margin:10px 0;padding-top:10px">
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">推送/拉取认证（私有仓库的用户名 + 密码/令牌）</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">推送/拉取认证（按主机保存，多台 Git 服务器互不覆盖；命令行已记住的凭证可自动复用）</div>
           <div class="br-new">
-            <input id="rm-user" type="text" placeholder="用户名" spellcheck="false" value="${esc(auth.username || '')}" style="flex:1">
-            <input id="rm-pass" type="password" placeholder="密码 / 访问令牌" spellcheck="false" value="${esc(auth.password || '')}" style="flex:1">
+            <input id="rm-host" type="text" placeholder="主机（如 gitlab.example.com:8080）" spellcheck="false" value="${esc(firstHost)}" style="flex:1" title="Git 服务器主机（域名:端口），凭证按主机分别保存">
           </div>
-          <button class="tb-btn" id="rm-save-auth" style="margin-top:6px">保存认证</button>
+          <div class="br-new" style="margin-top:6px">
+            <input id="rm-user" type="text" placeholder="用户名" spellcheck="false" value="${esc(firstCred.username || '')}" style="flex:1">
+            <input id="rm-pass" type="password" placeholder="密码 / 访问令牌" spellcheck="false" value="${esc(firstCred.password || '')}" style="flex:1">
+          </div>
+          <button class="tb-btn" id="rm-save-auth" style="margin-top:6px">保存该主机认证</button>
         </div>
       </div>`;
+    // 切换主机时预填该主机已存凭证
+    document.getElementById('rm-host').oninput = () => {
+      const c = authMap[document.getElementById('rm-host').value.trim()] || {};
+      document.getElementById('rm-user').value = c.username || '';
+      document.getElementById('rm-pass').value = c.password || '';
+    };
     document.getElementById('rm-x').onclick = () => Modal.hide();
     const list = document.getElementById('rm-list');
     const renderList = async () => {
@@ -120,11 +155,13 @@ const GitPanel = (() => {
       else MI.toast('添加失败: ' + ar.error, 'err');
     };
     document.getElementById('rm-save-auth').onclick = () => {
-      saveGitAuth({
-        username: document.getElementById('rm-user').value.trim(),
-        password: document.getElementById('rm-pass').value,
-      });
-      MI.toast('认证已保存', 'ok');
+      const host = document.getElementById('rm-host').value.trim();
+      if (!host) { MI.toast('请填写主机（域名:端口）', 'err'); return; }
+      const username = document.getElementById('rm-user').value.trim();
+      const password = document.getElementById('rm-pass').value;
+      if (!username) { MI.toast('请填写用户名', 'err'); return; }
+      saveGitAuthMap(host, { username, password });
+      MI.toast('已保存 ' + host + ' 的认证', 'ok');
     };
   }
 
@@ -134,7 +171,7 @@ const GitPanel = (() => {
     if (!root || syncing) return;
     syncing = true;
     MI.toast('拉取中…');
-    const r = await window.myIDE.git.pull(root, { auth: getGitAuth() });
+    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap() });
     syncing = false;
     if (r.ok) { MI.toast('✅ 已拉取', 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
     else MI.toast('拉取失败: ' + r.error, 'err');
@@ -146,7 +183,7 @@ const GitPanel = (() => {
       return openPushPreview();
     }
     syncing = true;
-    const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
+    const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
     syncing = false;
     if (r.ok) { MI.toast('✅ 已推送到 ' + (r.remote || '远程'), 'ok'); refresh(); return true; }
     else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
@@ -190,7 +227,7 @@ const GitPanel = (() => {
       Modal.hide();
       syncing = true;
       MI.toast('推送中…');
-      const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
+      const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
       syncing = false;
       if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 ' + (r.remote || p.remote || 'origin') + '/' + p.branch, 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
       else MI.toast('推送失败: ' + r.error, 'err');
@@ -206,7 +243,7 @@ const GitPanel = (() => {
     const now = Date.now();
     const doFetch = forceFetch === true || now - lastFetchAt > 60000;
     if (doFetch) lastFetchAt = now;
-    const r = await window.myIDE.git.aheadBehind(root, doFetch ? { fetch: true, auth: getGitAuth() } : {})
+    const r = await window.myIDE.git.aheadBehind(root, doFetch ? { fetch: true, auth: getGitAuthMap() } : {})
       .catch(() => null);
     if (!r || !r.branch) return;
     const el = document.getElementById('cd-dirty');

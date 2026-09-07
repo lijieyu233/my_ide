@@ -750,13 +750,68 @@ async function diffRefs(dir, aRef, bRef, file) {
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
 const http = require('isomorphic-git/http/node');
-const AUTH_KEY = null; // 凭证由渲染层每次传入（localStorage myide-git-auth），不落服务层状态
+const { execFile } = require('child_process');
 
-function onAuthOf(auth) {
-  return () => {
-    if (!auth || !auth.username) throw new Error('远程需要认证：请在「远程仓库」设置中配置用户名和密码/令牌');
-    return { username: auth.username, password: auth.password || '' };
+// 远程 URL → 主机（含端口）。http://user@host:port/path → host:port；非 http(s) 返回 null
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return null; }
+}
+
+// 系统 Git 凭证管理器查询（git credential fill，与命令行共享凭证）。
+// GCM_INTERACTIVE=never + GIT_TERMINAL_PROMPT=0：查不到直接失败，绝不弹窗阻塞 UI。
+// 结果按 protocol//host 进程内缓存（含失败 null），避免每次推送都 spawn 一次 git。
+const sysCredCache = new Map();
+function systemCredentialFill(url) {
+  let u; try { u = new URL(url); } catch { return Promise.resolve(null); }
+  if (!/^https?:$/.test(u.protocol)) return Promise.resolve(null); // 仅支持 http(s) 远程
+  const key = u.protocol + '//' + u.host;
+  if (sysCredCache.has(key)) return Promise.resolve(sysCredCache.get(key));
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; sysCredCache.set(key, v); resolve(v); } };
+    try {
+      const child = execFile('git', ['credential', 'fill'], {
+        timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
+        env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
+      }, (err, stdout) => {
+        if (err) return done(null);
+        const s = String(stdout);
+        const mu = s.match(/^username=(.*)$/m), mp = s.match(/^password=(.*)$/m);
+        done(mu && mp ? { username: mu[1], password: mp[1] } : null);
+      });
+      child.stdin.on('error', () => {}); // stdin 异常不致命（超时 kill 时可能触发）
+      child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
+      child.stdin.end();
+    } catch { done(null); }
+  });
+}
+
+// 认证链（修复「多主机一份凭证互相覆盖 → 反复要求登录」）：
+// 1) 渲染层按主机保存的凭证（myide-git-auth-map：{ host: {username,password}, '*': 兜底 }，兼容旧单份格式）
+// 2) 远程 URL 内嵌凭证（http://user:pass@host/…；isomorphic-git 不解析 URL userinfo，这里代为生效）
+// 3) 系统 Git 凭证管理器（命令行存过的凭证直接复用）
+function onAuthOf(auth, remoteUrl) {
+  return async () => {
+    const host = hostOf(remoteUrl);
+    if (auth) { // 1) 渲染层凭证
+      const cred = auth.username ? auth : (host ? (auth[host] || auth['*'] || null) : null);
+      if (cred && cred.username) return { username: cred.username, password: cred.password || '' };
+    }
+    if (remoteUrl) { // 2) URL 内嵌凭证
+      try {
+        const u = new URL(remoteUrl);
+        if (u.username) return { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') };
+      } catch {}
+    }
+    const sys = await systemCredentialFill(remoteUrl); // 3) 系统凭证
+    if (sys && sys.username) return sys;
+    throw new Error('远程需要认证：请在「远程仓库」弹窗中为 ' + (host || '该仓库') + ' 保存用户名和密码/令牌');
   };
+}
+
+// 401 兜底报错（带主机名，便于区分是哪台服务器的凭证错了）
+function onAuthFailureOf() {
+  return (url) => { throw new Error('认证失败：' + (hostOf(url) || '远程') + ' 的用户名/密码/令牌不正确'); };
 }
 
 // 远程跟踪分支（refs/remotes/<remote>/…）：松散 refs 目录 + packed-refs 两处合并，无网络
@@ -845,7 +900,7 @@ async function fetchRemote(dir, { auth } = {}) {
   try {
     const r = await git.fetch({
       fs, dir: root, http, remote: pr.name,
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
     });
     return { ok: true, fetchHead: r && r.fetchHead };
   } catch (e) {
@@ -865,7 +920,7 @@ async function pullRemote(dir, { auth } = {}) {
     const r = await git.pull({
       fs, dir: root, http, remote: pr.name, ref: branch, fastForwardOnly: true,
       author: await getAuthor(root),
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
     });
     return { ok: true, oid: r && r.oid };
   } catch (e) {
@@ -888,7 +943,7 @@ async function pushRemote(dir, { auth } = {}) {
   try {
     await git.push({
       fs, dir: root, http, remote: pr.name, ref: branch,
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
     });
     return { ok: true, remote: pr.name, branch };
   } catch (e) {
@@ -935,10 +990,8 @@ async function aheadBehind(dir, opts = {}) {
   let fetched = false;
   if (opts.fetch && pr.url) { // 无 url（纯本地 ref 回退场景）不联网
     try {
-      const auth = opts.auth && opts.auth.username
-        ? { onAuth: () => ({ username: opts.auth.username, password: opts.auth.password || '' }) }
-        : {}; // 匿名可读的公开仓库不需要凭据
-      await git.fetch({ fs, dir: root, http, remote: pr.name, ...auth });
+      // 公开仓库不触发 401 不会调 onAuth；私有仓库按 onAuthOf 认证链取凭证（渲染层 > URL 内嵌 > 系统凭证）
+      await git.fetch({ fs, dir: root, http, remote: pr.name, onAuth: onAuthOf(opts.auth, pr.url) });
       fetched = true;
     } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）
   }
