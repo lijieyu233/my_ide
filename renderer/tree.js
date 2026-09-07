@@ -950,6 +950,8 @@ const Tree = (() => {
         render();
         if (window.QuickOpen) QuickOpen.invalidate();
       }, 120);
+      // 外部变化同样触发 Git 状态刷新：否则树用旧状态重渲染，着色停留在过期值（refreshGit 自带防抖）
+      if (window.App) App.refreshGit();
     });
   }
   // 点击树空白处清空多选

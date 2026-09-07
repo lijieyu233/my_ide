@@ -70,6 +70,7 @@ calls.logAll = false;
 calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
+let fakeFsCbs = []; // fs:changed 订阅者（tree.js 重渲染 + viewer.js 标签重载都注册）
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
 let aiLastTools = null; // 最近一次 ai.chat 收到的 tools 参数（原生 function calling 断言）
 
@@ -96,6 +97,7 @@ function makeDom() {
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
       readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
       readBuffer: async (p) => (FAKE_FS[p] ? { buffer: new ArrayBuffer(8) } : { error: 'not found' }),
+      onChanged: (cb) => { fakeFsCbs.push(cb); },
       writeFile: async (p, content) => {
         if (!FAKE_FS[p]) {
           FAKE_FS[p] = { type: 'file', content };
@@ -2741,6 +2743,59 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     const nm = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/README.md').querySelector('.nm');
     assert_(nm.classList.contains('git-modified'), 'README.md 显示修改色（git-modified）');
+  });
+
+  await okAsync('Bug6b：外部文件变化 → Git 状态色及时刷新（fs:changed 联动）', async () => {
+    const nmOf = (name) => {
+      const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm') && r.querySelector('.nm').title === P + '/' + name);
+      return row ? row.querySelector('.nm') : null;
+    };
+    assert_(nmOf('README.md').classList.contains('git-modified'), '基线：README.md 有修改色');
+    // 模拟外部修改后：git 状态变为仅 notes.txt 新增
+    FAKE_GIT.changed = [{ file: 'notes.txt', status: 'added', label: '已新增' }];
+    fakeFsCbs.forEach((cb) => cb({ root: P })); // 触发 fs:changed（树重渲染 120ms 防抖 + refreshGit 500ms 防抖）
+    await new Promise((r) => setTimeout(r, 900));
+    assert_(!nmOf('README.md').classList.contains('git-modified'), '修改色已消失（README.md）');
+    assert_(nmOf('notes.txt').classList.contains('git-added'), '新增色已显示（notes.txt）');
+    // 还原共享数据（后续用例依赖原始 changed）
+    FAKE_GIT.changed = [
+      { file: 'README.md', status: 'modified', label: '已修改' },
+      { file: 'data.csv', status: 'added', label: '已新增' },
+      { file: 'src/app.js', status: 'modified', label: '已修改' },
+      { file: 'src/deep/file.ts', status: 'added', label: '已新增' },
+    ];
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+  });
+
+  await okAsync('Bug6c：Git 并发刷新竞态保护（过期响应不覆盖新状态）', async () => {
+    const nmOf = (name) => {
+      const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm') && r.querySelector('.nm').title === P + '/' + name);
+      return row ? row.querySelector('.nm') : null;
+    };
+    // 第 1 次刷新慢且返回旧状态；第 2 次刷新快返回新状态 → 慢响应晚到应被丢弃
+    const origStatus = dom.window.myIDE.git.status;
+    let callN = 0;
+    dom.window.myIDE.git.status = async () => {
+      const n = ++callN;
+      if (n === 1) {
+        await new Promise((r) => setTimeout(r, 200)); // 旧响应延迟到达
+        return { isRepo: true, root: P, branch: 'main', changed: [{ file: 'README.md', status: 'modified', label: '已修改' }] };
+      }
+      return { isRepo: true, root: P, branch: 'main', changed: [{ file: 'notes.txt', status: 'added', label: '已新增' }] };
+    };
+    const p1 = g(dom, 'GitPanel.refresh()'); // 慢调用（seq=1）
+    await tick(); await tick();               // 确保第 1 个 await 已挂起
+    const p2 = g(dom, 'GitPanel.refresh()'); // 快调用（seq=2）先完成
+    await p2; await tick(); await tick();
+    assert_(nmOf('notes.txt').classList.contains('git-added'), '新状态生效：notes.txt 新增色');
+    assert_(!nmOf('README.md').classList.contains('git-modified'), '此时 README.md 无修改色');
+    await p1; await tick(); await tick();     // 旧响应晚到
+    assert_(nmOf('notes.txt').classList.contains('git-added'), '旧响应被丢弃：notes.txt 新增色仍在');
+    assert_(!nmOf('README.md').classList.contains('git-modified'), '旧响应被丢弃：README.md 未闪回修改色');
+    dom.window.myIDE.git.status = origStatus; // 还原 mock
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
   });
 
   await okAsync('Bug7：Git 放弃修改（revert）', async () => {

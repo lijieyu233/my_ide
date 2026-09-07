@@ -11,9 +11,12 @@ const GitPanel = (() => {
   let filesEl = null; // #cd-files 上半文件区
 
   // ---------- 刷新 ----------
+  let refreshSeq = 0; // 并发保护：仅最后一次调用的结果生效（旧响应晚到时丢弃，防状态闪回）
   async function refresh() {
     if (!root) return;
+    const seq = ++refreshSeq;
     const st = await window.myIDE.git.status(root);
+    if (seq !== refreshSeq) return; // 期间又发起了新刷新：本响应已过期
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
     syncChecked();
     render();
