@@ -8,11 +8,12 @@ const BrowserPanel = (() => {
   const HOME = 'https://www.bing.com';
   const SEARCH = 'https://www.bing.com/search?q=';
 
-  let panel, urlInput, favBtn, ddEl, viewEl;
+  let panel, urlInput, favBtn, ddEl, viewEl, sbEl, sbListEl;
   let visible = false;
   let hasPage = false;      // 是否已打开过页面（决定 show 恢复网页 or 空状态）
   let currentUrl = '';
   let currentTitle = '';
+  const SB_KEY = 'myide-browser-sidebar'; // 收藏侧栏显隐记忆
 
   // ---------- 纯逻辑（测试直接覆盖） ----------
   // 输入规范化：带协议原样；像域名/IP/localhost 补 https；否则按关键词搜索
@@ -42,15 +43,38 @@ const BrowserPanel = (() => {
 
   function favs() { return loadJSON(FAV_KEY, []); }
   function isFav(url) { return favs().some((f) => f.url === url); }
-  function addFav(url, title) {
+  // 收藏文件夹列表：从收藏数据推导（避免双存储不一致），按名称排序
+  function folders() {
+    const s = new Set();
+    favs().forEach((f) => { if (f.folder) s.add(f.folder); });
+    return [...s].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }
+  function addFav(url, title, folder) {
     if (!url) return false;
     const list = favs();
     if (list.some((f) => f.url === url)) return false;
-    list.unshift({ url, title: title || url, ts: Date.now() });
+    list.unshift({ url, title: title || url, ts: Date.now(), folder: folder || '' });
     saveJSON(FAV_KEY, list);
     return true;
   }
   function removeFav(url) { saveJSON(FAV_KEY, favs().filter((f) => f.url !== url)); }
+  // 移动收藏到指定文件夹（folder='' = 根目录）
+  function moveFav(url, folder) {
+    const list = favs();
+    const f = list.find((x) => x.url === url);
+    if (!f || f.folder === (folder || '')) return false;
+    f.folder = folder || '';
+    saveJSON(FAV_KEY, list);
+    return true;
+  }
+  // 删除空文件夹：其中的收藏移回根目录
+  function removeFolder(name) {
+    const list = favs();
+    let n = 0;
+    for (const f of list) if (f.folder === name) { f.folder = ''; n++; }
+    saveJSON(FAV_KEY, list);
+    return n;
+  }
 
   // 首次使用给一组开发者常用收藏
   function ensureDefaultFavs() {
@@ -168,6 +192,8 @@ const BrowserPanel = (() => {
     visible = true;
     panel.classList.remove('hidden');
     syncToolBtn();
+    syncSidebar(); // 收藏侧栏显隐（含记忆）
+    renderSidebar();
     if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
       document.getElementById('browser-empty').classList.add('hidden');
       viewEl.classList.remove('hidden');
@@ -276,7 +302,7 @@ const BrowserPanel = (() => {
     list.forEach((f) => {
       const d = document.createElement('div');
       d.className = 'ctx-item';
-      d.textContent = '★ ' + (f.title || f.url);
+      d.textContent = (f.folder ? '📁 ' : '★ ') + (f.folder ? f.folder + ' / ' : '') + (f.title || f.url);
       d.title = f.url;
       d.onclick = () => { menu.classList.add('hidden'); go(f.url); };
       menu.appendChild(d);
@@ -291,6 +317,170 @@ const BrowserPanel = (() => {
     menu.style.top = Math.min(y, window.innerHeight - 240) + 'px';
   }
 
+  // ---------- 收藏侧栏（文件夹分组常驻显示） ----------
+  function renderSidebar() {
+    if (!sbListEl) return;
+    ensureDefaultFavs();
+    sbListEl.innerHTML = '';
+    const list = favs();
+    if (!list.length) {
+      const d = document.createElement('div');
+      d.className = 'bw-sb-none';
+      d.textContent = '暂无收藏，浏览网页后点 ☆ 收藏';
+      sbListEl.appendChild(d);
+      return;
+    }
+    const mkItem = (f) => {
+      const it = document.createElement('div');
+      it.className = 'bw-sb-item';
+      let host = '';
+      try { host = new URL(f.url).hostname.replace(/^www\./, ''); } catch {}
+      const nm = document.createElement('span');
+      nm.className = 'bw-sb-nm';
+      nm.textContent = f.title || f.url;
+      nm.title = (f.title || f.url) + '\n' + f.url;
+      const h = document.createElement('span');
+      h.className = 'bw-sb-host';
+      h.textContent = host;
+      it.appendChild(nm);
+      it.appendChild(h);
+      it.onclick = () => go(f.url);
+      // 右键：打开 / 移动到文件夹 / 删除
+      it.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const m = document.getElementById('ctx-menu');
+        m.innerHTML = '';
+        const mk = (label, fn, danger) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (danger ? ' danger' : '');
+          d.textContent = label;
+          d.onclick = () => { m.classList.add('hidden'); fn(); };
+          m.appendChild(d);
+        };
+        mk('📂 打开', () => go(f.url));
+        mk('📦 移动到…', () => openFavPosMenu(f.url, e.clientX, e.clientY, true));
+        mk('🗑 取消收藏', () => {
+          removeFav(f.url);
+          renderSidebar();
+          renderFavBtn();
+          renderEmpty();
+          MI.toast('已取消收藏', 'ok');
+        }, true);
+        m.classList.remove('hidden');
+        m.style.left = Math.min(e.clientX, window.innerWidth - 240) + 'px';
+        m.style.top = Math.min(e.clientY, window.innerHeight - 180) + 'px';
+      };
+      return it;
+    };
+    // 根收藏在前，文件夹分组随后
+    list.filter((f) => !f.folder).forEach((f) => sbListEl.appendChild(mkItem(f)));
+    folders().forEach((name) => {
+      const g = document.createElement('div');
+      g.className = 'bw-sb-group';
+      const items = list.filter((f) => f.folder === name);
+      const gTitle = document.createElement('div');
+      gTitle.className = 'bw-sb-gtitle';
+      gTitle.textContent = '📁 ' + name + '（' + items.length + '）';
+      gTitle.title = '点击收起 / 展开 · 右键删除文件夹（收藏移回根目录）';
+      const gBody = document.createElement('div');
+      gBody.className = 'bw-sb-gbody';
+      items.forEach((f) => gBody.appendChild(mkItem(f)));
+      gTitle.onclick = () => {
+        const fold = gBody.style.display === 'none';
+        gBody.style.display = fold ? '' : 'none';
+        gTitle.textContent = (fold ? '📁 ' : '📁 ') + name + '（' + items.length + '）';
+      };
+      gTitle.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const m = document.getElementById('ctx-menu');
+        m.innerHTML = '';
+        const d = document.createElement('div');
+        d.className = 'ctx-item danger';
+        d.textContent = '🗑 删除文件夹「' + name + '」';
+        d.title = '文件夹内收藏移回根目录（收藏本身不删除）';
+        d.onclick = () => {
+          m.classList.add('hidden');
+          const n = removeFolder(name);
+          renderSidebar();
+          renderEmpty();
+          MI.toast('已删除文件夹，' + n + ' 个收藏移回根目录', 'ok');
+        };
+        m.appendChild(d);
+        m.classList.remove('hidden');
+        m.style.left = Math.min(e.clientX, window.innerWidth - 240) + 'px';
+        m.style.top = Math.min(e.clientY, window.innerHeight - 80) + 'px';
+      };
+      g.appendChild(gTitle);
+      g.appendChild(gBody);
+      sbListEl.appendChild(g);
+    });
+  }
+
+  // ---------- 收藏位置选择（收藏当前页 / 移动收藏共用） ----------
+  // move = true 时是「移动已有收藏」：选中文件夹立即移动；
+  // 否则是收藏当前页：选完位置落收藏
+  function openFavPosMenu(url, x, y, move) {
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'ctx-item ctx-head';
+    head.textContent = move ? '移动到…' : '收藏到…';
+    menu.appendChild(head);
+    const pick = (folder) => {
+      menu.classList.add('hidden');
+      if (move) {
+        moveFav(url, folder);
+        renderSidebar();
+        renderEmpty();
+        MI.toast('已移动到' + (folder ? '「' + folder + '」' : '根目录'), 'ok');
+      } else {
+        addFav(url, currentTitle, folder);
+        renderFavBtn();
+        renderSidebar();
+        renderEmpty();
+        MI.toast('已收藏到' + (folder ? '「' + folder + '」' : '根目录') + '：' + (currentTitle || url), 'ok');
+      }
+    };
+    const root = document.createElement('div');
+    root.className = 'ctx-item';
+    root.textContent = '★ 根目录';
+    root.onclick = () => pick('');
+    menu.appendChild(root);
+    folders().forEach((name) => {
+      const d = document.createElement('div');
+      d.className = 'ctx-item';
+      d.textContent = '📁 ' + name;
+      d.onclick = () => pick(name);
+      menu.appendChild(d);
+    });
+    const neo = document.createElement('div');
+    neo.className = 'ctx-item';
+    neo.textContent = '＋ 新建文件夹…';
+    neo.onclick = async () => {
+      menu.classList.add('hidden');
+      const name = await Modal.prompt('新建收藏文件夹', '文件夹名称', '');
+      if (!name || !name.trim()) return;
+      const v = name.trim().slice(0, 30);
+      pick(v);
+    };
+    menu.appendChild(neo);
+    menu.classList.remove('hidden');
+    menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - 220) + 'px';
+  }
+
+  // 侧栏显隐（记忆偏好）
+  function syncSidebar() {
+    if (!sbEl) return;
+    let showSb = true;
+    try { showSb = localStorage.getItem(SB_KEY) !== '0'; } catch {}
+    sbEl.classList.toggle('hidden', !showSb);
+    const btn = document.getElementById('bw-sb-toggle');
+    if (btn) btn.classList.toggle('active', showSb);
+  }
+
   // ---------- 初始化 ----------
   function init() {
     panel = document.getElementById('browser-panel');
@@ -298,6 +488,8 @@ const BrowserPanel = (() => {
     favBtn = document.getElementById('bw-fav');
     ddEl = document.getElementById('bw-dd');
     viewEl = document.getElementById('browser-view');
+    sbEl = document.getElementById('bw-sidebar');
+    sbListEl = document.getElementById('bw-sb-list');
 
     document.getElementById('bw-back').onclick = back;
     document.getElementById('bw-fwd').onclick = forward;
@@ -305,16 +497,40 @@ const BrowserPanel = (() => {
     document.getElementById('bw-home').onclick = home;
     document.getElementById('bw-close').onclick = () => App.switchTool('browser'); // 已激活 → 收起
     document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
-    favBtn.onclick = () => {
+    favBtn.onclick = (e) => {
+      e.stopPropagation(); // tree.js 全局 click 会关掉刚弹出的菜单（共享单例 ctx-menu）
       if (!currentUrl) { MI.toast('先打开一个网页再收藏', 'err'); return; }
       if (isFav(currentUrl)) { removeFav(currentUrl); MI.toast('已取消收藏', 'ok'); }
-      else { addFav(currentUrl, currentTitle); MI.toast('已收藏 ' + (currentTitle || currentUrl), 'ok'); }
+      else {
+        // 收藏时选择位置（根目录 / 文件夹 / 新建）——点 ☆ 直接弹菜单
+        const r = favBtn.getBoundingClientRect();
+        openFavPosMenu(currentUrl, r.left, r.bottom + 4, false);
+        return;
+      }
       renderFavBtn();
+      renderSidebar();
       renderEmpty();
     };
     document.getElementById('bw-favs').onclick = (e) => {
+      e.stopPropagation(); // 同上：全局 click 关菜单
       const r = e.target.getBoundingClientRect();
       openFavMenu(r.left, r.bottom + 4);
+    };
+    // 收藏侧栏：显隐切换（记忆）+ 新建文件夹
+    const sbToggle = document.getElementById('bw-sb-toggle');
+    if (sbToggle) sbToggle.onclick = () => {
+      const showSb = sbEl.classList.contains('hidden');
+      sbEl.classList.toggle('hidden', !showSb);
+      try { localStorage.setItem(SB_KEY, showSb ? '1' : '0'); } catch {}
+      sbToggle.classList.toggle('active', showSb);
+      setTimeout(syncBounds, 50); // 视口占位区尺寸变了 → 重报 bounds
+    };
+    const sbAdd = document.getElementById('bw-sb-add-folder');
+    if (sbAdd) sbAdd.onclick = async () => {
+      const name = await Modal.prompt('新建收藏文件夹', '文件夹名称', '');
+      if (!name || !name.trim()) return;
+      MI.toast('文件夹「' + name.trim().slice(0, 30) + '」已创建（收藏网页时可选它）', 'ok');
+      renderSidebar(); // 无收藏的空文件夹不入列表：文件夹集合从收藏推导，这里仅提示
     };
 
     urlInput.addEventListener('keydown', (e) => {

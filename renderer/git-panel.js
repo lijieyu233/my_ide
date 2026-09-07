@@ -132,7 +132,7 @@ const GitPanel = (() => {
     syncing = true;
     const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已推送到 origin', 'ok'); refresh(); return true; }
+    if (r.ok) { MI.toast('✅ 已推送到 ' + (r.remote || '远程'), 'ok'); refresh(); return true; }
     else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
   }
 
@@ -151,7 +151,7 @@ const GitPanel = (() => {
       </div>
       <div class="m-body">
         <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:8px">
-          将推送 <b style="color:var(--text-bright)">${p.count}</b> 个提交到 <b style="color:var(--text-bright)">origin/${esc(p.branch)}</b>${p.first ? '（首次推送该分支）' : ''}
+          将推送 <b style="color:var(--text-bright)">${p.count}</b> 个提交到 <b style="color:var(--text-bright)">${esc(p.remote || 'origin')}/${esc(p.branch)}</b>${p.first ? '（首次推送该分支）' : ''}
         </div>
         <div id="pp-list" style="max-height:320px;overflow:auto;border:1px solid var(--border-mid);border-radius:4px;padding:4px 0"></div>
       </div>
@@ -176,16 +176,22 @@ const GitPanel = (() => {
       MI.toast('推送中…');
       const r = await window.myIDE.git.push(root, { auth: getGitAuth() });
       syncing = false;
-      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 origin/' + p.branch, 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
+      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 ' + (r.remote || p.remote || 'origin') + '/' + p.branch, 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
       else MI.toast('推送失败: ' + r.error, 'err');
     };
     return true;
   }
 
   // ahead/behind 显示（标题栏 dirty 区域）+ 状态栏
-  async function updateAheadBehind() {
+  // 带节流的静默 fetch（60s 一次）：反映远程真实状态；失败回退本地 refs
+  let lastFetchAt = 0;
+  async function updateAheadBehind(forceFetch) {
     if (!root) return;
-    const r = await window.myIDE.git.aheadBehind(root);
+    const now = Date.now();
+    const doFetch = forceFetch === true || now - lastFetchAt > 60000;
+    if (doFetch) lastFetchAt = now;
+    const r = await window.myIDE.git.aheadBehind(root, doFetch ? { fetch: true, auth: getGitAuth() } : {})
+      .catch(() => null);
     if (!r || !r.branch) return;
     const el = document.getElementById('cd-dirty');
     if (!el) return;
@@ -196,6 +202,14 @@ const GitPanel = (() => {
     el.textContent = [ab.join(' '), changedN ? changedN + ' 处修改' : ''].filter(Boolean).join(' · ');
     el.dataset.ahead = r.ahead == null ? '' : String(r.ahead);
     el.dataset.behind = r.behind == null ? '' : String(r.behind);
+    // 远程信息提示（准确显示当前操作的远程仓库与数据来源）
+    if (r.remote) {
+      const mark = r.fetched ? '已同步远程' : '基于本地缓存（60 秒内不重复联网）';
+      el.title = (r.remoteUrl || r.remote) + '\n' + mark;
+    } else {
+      el.title = '未配置远程仓库';
+    }
+    el.dataset.remote = r.remote || '';
   }
 
   function openCommit() {

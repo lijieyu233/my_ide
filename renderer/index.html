@@ -140,25 +140,37 @@
           <button id="bw-fav" class="bw-fav-btn" title="收藏 / 取消收藏当前页">☆</button>
         </div>
         <button id="bw-favs" class="vt-btn" title="收藏夹">📌</button>
+        <button id="bw-sb-toggle" class="vt-btn" title="显示 / 隐藏收藏侧栏">🔖</button>
         <button id="bw-close" class="vt-btn" title="关闭内置浏览器 (Ctrl+4)">✕</button>
         <div id="bw-dd" class="bw-dd hidden"></div>
       </div>
       <div class="browser-prog"><div id="bw-prog"></div></div>
-      <div id="browser-view" class="hidden"></div>
-      <div id="browser-error" class="hidden">
-        <div class="be-icon">⚠️</div>
-        <div class="be-title" id="bw-err-msg">页面加载失败</div>
-        <div class="be-sub">检查网址或网络连接后重试</div>
-        <button id="bw-err-retry" class="tb-btn big">⟳ 重试</button>
-      </div>
-      <div id="browser-empty">
-        <div class="be-icon">🌐</div>
-        <div class="be-title">内置浏览器</div>
-        <div class="be-sub">在 IDE 内直接浏览网页 · 登录状态自动保留 · 新窗口链接用系统浏览器打开</div>
-        <div class="be-section">收藏</div>
-        <div class="be-chips" id="be-favs"></div>
-        <div class="be-section">最近访问</div>
-        <div class="be-list" id="be-history"></div>
+      <div class="browser-body">
+        <div id="bw-sidebar" class="hidden">
+          <div class="bw-sb-head">
+            <span>收藏</span>
+            <button id="bw-sb-add-folder" class="bw-sb-act" title="新建收藏文件夹">＋</button>
+          </div>
+          <div id="bw-sb-list"></div>
+        </div>
+        <div class="browser-main">
+          <div id="browser-view" class="hidden"></div>
+          <div id="browser-error" class="hidden">
+            <div class="be-icon">⚠️</div>
+            <div class="be-title" id="bw-err-msg">页面加载失败</div>
+            <div class="be-sub">检查网址或网络连接后重试</div>
+            <button id="bw-err-retry" class="tb-btn big">⟳ 重试</button>
+          </div>
+          <div id="browser-empty">
+            <div class="be-icon">🌐</div>
+            <div class="be-title">内置浏览器</div>
+            <div class="be-sub">在 IDE 内直接浏览网页 · 登录状态自动保留 · 新窗口链接用系统浏览器打开</div>
+            <div class="be-section">收藏</div>
+            <div class="be-chips" id="be-favs"></div>
+            <div class="be-section">最近访问</div>
+            <div class="be-list" id="be-history"></div>
+          </div>
+        </div>
       </div>
     </div>
     <!-- 数据库工具：数据表格 + SQL（右侧主区；连接与表列表在左侧 #panel-db）-->

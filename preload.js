@@ -80,7 +80,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     shelveList: (d) => ipcRenderer.invoke('git:shelveList', d),
     shelveApply: (d, id, opts) => ipcRenderer.invoke('git:shelveApply', d, id, opts),
     shelveDelete: (d, id) => ipcRenderer.invoke('git:shelveDelete', d, id),
-    aheadBehind: (d) => ipcRenderer.invoke('git:aheadBehind', d),
+    aheadBehind: (d, opts) => ipcRenderer.invoke('git:aheadBehind', d, opts),
     listTags: (d) => ipcRenderer.invoke('git:listTags', d),
     createTag: (d, cfg) => ipcRenderer.invoke('git:createTag', d, cfg),
     revert: (d, oid) => ipcRenderer.invoke('git:revert', d, oid),

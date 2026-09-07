@@ -149,6 +149,10 @@ const Tasks = (() => {
   let spaceDown = false;   // 空格按住 = 抓手平移模式
   let curSvg = null;       // 当前渲染的 svg（常驻容器上的监听需跨渲染访问它）
   let miniEl = null;       // 小地图容器（5.3）
+  let lastMouse = { x: 0, y: 0 }; // 最近一次鼠标屏幕位置（新建任务就近落位用）
+  document.addEventListener('mousemove', (e) => {
+    lastMouse.x = e.clientX; lastMouse.y = e.clientY;
+  }, { passive: true });
   // 无极画布：画布逻辑区域是「粘滞」的 —— 只随内容/滚动增长，不随内容缩小回缩。
   // 纯内容包围盒会把滚动范围钳死在最左上~最右下节点之间（「永远保持任务框范围」的根因）；
   // 粘滞区域 + 滚动逼近边缘自动扩展（extendCanvas）→ 四个方向都滚不到头。
@@ -173,6 +177,25 @@ const Tasks = (() => {
     const d = document.createElement('div');
     d.textContent = s == null ? '' : String(s);
     return d.innerHTML;
+  }
+  // 新建无依赖任务的就近落位：鼠标在画布上 → 鼠标处；鼠标不在画布（如侧栏输入框
+  // 创建）→ 当前视口中心。不再落进自动布局的链尾远处（用户：创建的任务应该靠近
+  // 鼠标位置）。图不可见 / 无布局（jsdom）时返回 null，回落自动布局。
+  function nearMousePos() {
+    if (!dagBodyEl || !curSvg || !curSvg.isConnected) return null;
+    if (dagPanelEl && dagPanelEl.classList.contains('hidden')) return null;
+    const sr = curSvg.getBoundingClientRect();
+    if (!sr.width || !sr.height) return null;
+    const br = dagBodyEl.getBoundingClientRect();
+    const inBody = lastMouse.x >= br.left && lastMouse.x <= br.right
+      && lastMouse.y >= br.top && lastMouse.y <= br.bottom;
+    const px = inBody ? lastMouse.x : br.left + br.width / 2;
+    const py = inBody ? lastMouse.y : br.top + br.height / 2;
+    const vb = vbSize(curSvg);
+    return {
+      x: (px - sr.left) * vb.w / sr.width + vb.x,
+      y: (py - sr.top) * vb.h / sr.height + vb.y,
+    };
   }
   function clip(s, n) {
     const str = String(s || '');
@@ -682,7 +705,9 @@ const Tasks = (() => {
   }
 
   // ---------- API（写操作：校验 → save → render）----------
-  function add(title) {
+  // opts.x/y（可选）：图上双击/快捷创建的鼠标落点 —— 无依赖的新任务就地创建，
+  // 不再被自动布局丢到别的位置（「创建的任务无依赖就靠近鼠标位置」）
+  function add(title, opts) {
     const t = {
       id: newId(), title: String(title || '').trim() || '未命名任务',
       note: '', status: 'todo', priority: 'normal', deps: [],
@@ -691,8 +716,18 @@ const Tasks = (() => {
       parentId: null,   // 048-P2 子任务：所属父任务 id（null = 顶层）
       x: null, y: null, // 依赖图自由位置（拖动过才有值）
     };
+    if (opts && Number.isFinite(opts.x) && Number.isFinite(opts.y)) {
+      t.x = opts.x;
+      t.y = opts.y;
+    } else if (!opts || !opts.noPos) {
+      // 无依赖的新任务就近落位（鼠标处 / 视口中心）；noPos = 调用方明确要自动布局
+      // （如内联＋创建后继：位置由布局就近排在源任务方向）
+      const p = nearMousePos();
+      if (p) { t.x = Math.round(p.x); t.y = Math.round(p.y); }
+    }
     tasks.push(t);
     selId = t.id;
+    selIds = new Set();
     pushHist('新建任务'); save(); render();
     return t;
   }
@@ -1191,8 +1226,17 @@ const Tasks = (() => {
     row.addEventListener('mouseenter', () => highlightChain(t.id));
     row.addEventListener('mouseleave', () => clearChainHi());
     // 单击只切选中样式不重建 DOM（重建会丢滚动位置）；选中态由 applySel 统一同步
-    // Ctrl+点击：加入/移出多选（Ctrl+C 复制、Delete 批删对整组生效）
-    row.onclick = (e) => selectOne(t.id, e && (e.ctrlKey || e.metaKey));
+    // Ctrl+点击：加入/移出多选；Shift+点击：从上次点击行到当前行的范围多选（Ctrl+C 复制、Delete 批删对整组生效）
+    row.onclick = (e) => {
+      const ctrl = !!(e && (e.ctrlKey || e.metaKey));
+      if (e && e.shiftKey && lastRowId && lastRowId !== t.id) {
+        selectRange(lastRowId, t.id, bodyEl);
+      } else {
+        selectOne(t.id, ctrl);
+        if (!ctrl) lastRowId = t.id; // 普通点击更新 Shift 范围锚点
+      }
+      ensureNodeVisible(t.id); // 图上面板可见时把节点滚进画面
+    };
     row.ondblclick = () => editTitle(t.id); // 与 DAG 节点一致：双击改名
     row.oncontextmenu = (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -1204,6 +1248,22 @@ const Tasks = (() => {
   }
 
   // ---------- 选中（单选 + Ctrl 多选 + 框选共用）----------
+  // 焦点是否会被输入控件吞键：全屏工具面板（浏览器/数据库/依赖图）以 absolute 盖住
+  // 编辑区，viewer 不 display:none → 残留在 CM6/输入框里的焦点仍「可见」。
+  // 用户操作对象已是面板，Delete/Ctrl+Z 却被「看不见的编辑器」吃掉（「按键无效」根因）。
+  // 被面板盖住的编辑区焦点、以及隐藏容器里的输入框焦点，都不算数。
+  // （不用 offsetParent 判可见性：jsdom 无布局引擎恒为 null，测试全跑偏）
+  function isBlockedFocus() {
+    const ae = document.activeElement;
+    if (!ae || ae === document.body) return false;
+    if (!(/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable)) return false;
+    if (ae.closest && ae.closest('.hidden')) return false; // 隐藏容器里的输入框（面板收起后残留）：不吞键
+    const covered = ['browser-panel', 'db-panel', 'tasks-dag-panel']
+      .map((id) => document.getElementById(id))
+      .some((p) => p && !p.classList.contains('hidden'));
+    if (covered && ae.closest && ae.closest('#viewer')) return false; // 被面板盖住的编辑区
+    return true;
+  }
   function isSel(id) { return id === selId || selIds.has(id); }
   function selectionIds() {
     const out = selId ? [selId] : [];
@@ -1226,6 +1286,45 @@ const Tasks = (() => {
       selIds.clear();
     }
     applySel();
+  }
+  // Shift 范围多选（侧栏清单）：按清单渲染顺序取「锚点行 → 当前行」之间的全部任务
+  let lastRowId = null; // Shift 范围锚点（最近一次普通点击的行）
+  function selectRange(fromId, toId, host) {
+    const rows = host ? [...host.querySelectorAll('.tk-row')] : [];
+    // 折叠分组里的行（祖先 display:none）不进范围（与 git 面板键盘导航同款判定）
+    const visibleRow = (r) => {
+      let n = r;
+      while (n && n !== host) {
+        if (n.style && n.style.display === 'none') return false;
+        n = n.parentElement;
+      }
+      return true;
+    };
+    const i1 = rows.findIndex((r) => r.dataset.id === fromId);
+    const i2 = rows.findIndex((r) => r.dataset.id === toId);
+    if (i1 < 0 || i2 < 0) { selectOne(toId, false); return; }
+    const a = Math.min(i1, i2), b = Math.max(i1, i2);
+    selIds = new Set(rows.slice(a, b + 1).filter(visibleRow).map((r) => r.dataset.id).filter((x) => byId(x)));
+    selId = toId;
+    applySel();
+  }
+  // 侧栏选中任务不在图画面内时，把视角滚过去（节点居中）。图不可见 / 节点被
+  // 过滤或折叠隐藏时静默跳过（用户：侧边栏选中任务要能把视角移到这个任务）
+  function ensureNodeVisible(id) {
+    if (!dagBodyEl || !curSvg || !curSvg.isConnected) return;
+    if (dagPanelEl && dagPanelEl.classList.contains('hidden')) return;
+    const br = dagBodyEl.getBoundingClientRect();
+    if (!br.width || !br.height) return; // jsdom 无布局
+    const n = curLay ? curLay.nodes.find((x) => x.id === id) : null;
+    if (!n) return;
+    const vb = vbSize(curSvg);
+    const nx1 = (n.x - vb.x) * zoom, ny1 = (n.y - vb.y) * zoom;
+    const nx2 = nx1 + (n.w || NW) * zoom, ny2 = ny1 + (n.h || NH) * zoom;
+    const px1 = dagBodyEl.scrollLeft, py1 = dagBodyEl.scrollTop;
+    const px2 = px1 + dagBodyEl.clientWidth, py2 = py1 + dagBodyEl.clientHeight;
+    if (nx1 >= px1 && nx2 <= px2 && ny1 >= py1 && ny2 <= py2) return; // 已在画面内
+    dagBodyEl.scrollLeft = (nx1 + nx2) / 2 - dagBodyEl.clientWidth / 2;
+    dagBodyEl.scrollTop = (ny1 + ny2) / 2 - dagBodyEl.clientHeight / 2;
   }
 
   // 选中态同步（清单 + 图两处），只切 class 不重建
@@ -1495,6 +1594,23 @@ const Tasks = (() => {
 
   function renderDag() {
     if (!dagBodyEl) return;
+    // ★ 保留视口位置（按「逻辑坐标」锚定）：innerHTML 清空重建会把滚动归零；
+    // 且重建后画布 viewBox/尺寸常会随内容变化（新任务、粘滞扩展、grow），
+    // 只恢复旧 scrollTop/Left 像素值会指向不同内容 → 视野漂移（用户：位置老飞走）。
+    // 这里记录重建前视口左上角的画布逻辑坐标，重建后按新 viewBox 原点换算回
+    // 滚动位置 —— 无论画布怎么长，视野锁在原来的内容上。
+    const vbBefore = (curSvg && curSvg.isConnected) ? vbSize(curSvg) : null;
+    const hasLayout = dagBodyEl.clientWidth > 0 || dagBodyEl.clientHeight > 0;
+    const vpAnchor = (vbBefore && hasLayout && Number.isFinite(dagBodyEl.scrollLeft))
+      ? { lx: vbBefore.x + dagBodyEl.scrollLeft / zoom, ly: vbBefore.y + dagBodyEl.scrollTop / zoom }
+      : null;
+    const restoreScroll = () => {
+      if (!vpAnchor) return;
+      const vbNow = (curSvg && curSvg.isConnected) ? vbSize(curSvg) : null;
+      if (!vbNow) return;
+      dagBodyEl.scrollLeft = (vpAnchor.lx - vbNow.x) * zoom;
+      dagBodyEl.scrollTop = (vpAnchor.ly - vbNow.y) * zoom;
+    };
     dagBodyEl.innerHTML = '';
     // 可见度过滤（菜单四态）：全部 / 只看可执行 / 不显示已完成 / 隐藏完结链路。
     // 左侧清单的分组收起（groupFold）只管清单展示，不影响右侧依赖图 —— 图的显示只由可见度菜单决定。
@@ -1538,7 +1654,7 @@ const Tasks = (() => {
       return;
     }
     // 048-P2 甘特视图：同套 vis/统计/选中/框选/缩放基础设施，走独立渲染
-    if (layoutMode === 'gantt') { renderGantt(vis); return; }
+    if (layoutMode === 'gantt') { renderGantt(vis, restoreScroll); return; }
     // 048-P2 子任务折叠（仅拓扑/泳道）：折叠组的子任务从可见集合剔除，
     // 子任务的组外依赖边转接到父节点（组内边省略）——图读起来「组」就是一个大节点。
     // 实现：克隆任务对象并替换 deps（布局函数零改动；克隆体只用于本帧渲染，写操作全按 id 走原数据）
@@ -1884,6 +2000,13 @@ const Tasks = (() => {
       const n = lay.nodes.find((x) => x.id === gEl.dataset.id);
       if (!n) return;
       ev.preventDefault();
+      // ★ preventDefault 会阻止浏览器把焦点从输入框移走：点选节点后焦点仍留在
+      // 侧栏输入框（如刚用输入框建过任务），随后按 Delete 全被输入框吃掉
+      // （「选中图中的任务按 Delete 无效」的根因）。点进图 = 图上下文 → 释放外部输入焦点。
+      const aeDn = document.activeElement;
+      if (aeDn && aeDn !== document.body && !(dagBodyEl && dagBodyEl.contains(aeDn))) {
+        try { aeDn.blur(); } catch {}
+      }
       const mode = (ev.target.closest && ev.target.closest('.tk-anchor')) ? 'link' : 'move';
       // 048-P2 泳道/甘特模式：节点位置由布局决定（状态/时间），拖动位移忽略——
       // 但点击仍要选中（onUp 的 !moved 分支），所以不能直接 return
@@ -2021,6 +2144,7 @@ const Tasks = (() => {
 
     // 小地图（048-5.3）：可见节点 > 30 时右下角出现，图例让位上移（.has-mini）
     createMinimap(lay);
+    restoreScroll(); // ★ 重建完成：恢复重建前的视口位置（画布不飞走）
   }
 
   // 小地图创建（renderDag / renderGantt 共用）：mkEl = svg 工厂（不同视图的 el 助手）
@@ -2075,7 +2199,7 @@ const Tasks = (() => {
   // ---------- 甘特视图渲染（048-P2）----------
   // 横条 = 任务（x 起点 = 最早开始，宽 = 预计耗时）；关键路径常亮（甘特的价值就是直读工期瓶颈）。
   // 选中/框选/缩放/平移/小地图复用 DAG 基础设施（节点统一 g.tk-node + data-id）
-  function renderGantt(vis) {
+  function renderGantt(vis, restoreScroll) {
     if (!dagBodyEl) return;
     const lay = ganttLayout(vis);
     curLay = lay;
@@ -2193,6 +2317,7 @@ const Tasks = (() => {
       '<span>空白起点 = 无前置</span>';
     dagBodyEl.appendChild(legend);
     createMinimap(lay, el);
+    if (restoreScroll) restoreScroll(); // ★ 甘特重建同样保留视口位置
   }
   let gUpClickAt = 0; // 甘特条 click 让位变量（对齐 DAG 的 upClickAt 机制；防合成 click 双触发）
 
@@ -2205,8 +2330,22 @@ const Tasks = (() => {
     input.placeholder = '任务标题 · Enter 新建 · Esc 取消';
     input.spellcheck = false;
     const r = dagBodyEl.getBoundingClientRect();
-    input.style.left = Math.max(4, Math.min(cx - r.left - 90, r.width - 200)) + 'px';
-    input.style.top = Math.max(4, cy - r.top - 14) + 'px';
+    // ★ 绝对定位子元素随内容滚动：落点要补 scrollLeft/Top，否则滚动后输入框
+    //   出现在离双击位置很远的地方（视觉上「位置乱飞」的一部分）
+    input.style.left = Math.max(4, Math.min(cx - r.left + dagBodyEl.scrollLeft - 90, dagBodyEl.scrollLeft + r.width - 200)) + 'px';
+    input.style.top = Math.max(4, cy - r.top + dagBodyEl.scrollTop - 14) + 'px';
+    // ★ 双击点 → 画布逻辑坐标（新建任务的落点）：与节点拖拽同源换算（viewBox 原点可为负）。
+    //   无依赖的新任务就近鼠标落位；有 depOnId 的后继走自动布局（就近排在源任务下方）
+    let lx = null, ly = null;
+    const svg = dagBodyEl.querySelector('.tk-svg');
+    if (svg) {
+      const sr = svg.getBoundingClientRect();
+      if (sr.width && sr.height) {
+        const vb = vbSize(svg);
+        lx = (cx - sr.left) * vb.w / sr.width + vb.x;
+        ly = (cy - sr.top) * vb.h / sr.height + vb.y;
+      }
+    }
     dagBodyEl.appendChild(input);
     setTimeout(() => { try { input.focus(); } catch {} }, 30);
     // settled 幂等：Esc 触发 close → 移除聚焦元素 → blur 再触发 commit，不能重复执行
@@ -2217,7 +2356,9 @@ const Tasks = (() => {
       const v = input.value.trim();
       close();
       if (v) {
-        add(v); // add 内部已选中并渲染
+        // depOnId（创建后继）：noPos → 位置交给自动布局就近排在源任务方向；
+        // 普通新建：双击点即落点；换算失败（无布局）也走 noPos
+        add(v, (depOnId || lx == null || ly == null) ? { noPos: true } : { x: lx, y: ly }); // add 内部已选中并渲染
         if (depOnId) { // 内联＋：新任务自动依赖源任务（后继）
           addDep(selId, depOnId);
           if (window.MI) MI.toast('已创建后继任务（依赖已挂上）', 'ok');
@@ -2601,6 +2742,12 @@ const Tasks = (() => {
     dagBodyEl.addEventListener('mousedown', (ev) => {
       if (view !== 'dag' || ev.button !== 0) return;
       if (spaceDown) return; // 空格按住 = 平移模式：框选让位（同容器的平移监听会接管）
+      // 点图空白 = 图上下文：释放外部输入框焦点（与节点拖拽同款，否则焦点残留在
+      // 侧栏输入框/编辑器里，后续 Delete / Ctrl+Z 全被它吃掉）
+      const aeBox = document.activeElement;
+      if (aeBox && aeBox !== document.body && !(dagBodyEl && dagBodyEl.contains(aeBox))) {
+        try { aeBox.blur(); } catch {}
+      }
       if (ev.target.closest && ev.target.closest('g.tk-node, path.tk-edge, .tk-legend, .tk-mini, .tk-dag-hint, .tk-dag-new, input, button, textarea, select')) return; // 节点/边/小地图/浮层各有归属
       const svg = dagBodyEl.querySelector('.tk-svg');
       if (!svg || !curLay) return;
@@ -2674,6 +2821,11 @@ const Tasks = (() => {
       const wantPan = spaceDown || e.button === 1;
       if (!wantPan) return;
       e.preventDefault();
+      // 同节点拖拽：preventDefault 保住了旧焦点 → 点图后按 Delete 被输入框吃掉。释放外部焦点。
+      const aePan = document.activeElement;
+      if (aePan && aePan !== document.body && !(dagBodyEl && dagBodyEl.contains(aePan))) {
+        try { aePan.blur(); } catch {}
+      }
       const sx = dagBodyEl.scrollLeft, sy = dagBodyEl.scrollTop;
       const x0 = e.clientX, y0 = e.clientY;
       dagBodyEl.classList.add('tk-pan', 'tk-panning');
@@ -2736,10 +2888,9 @@ const Tasks = (() => {
   }
   // Delete 键删除选中任务（多选时整组批删，共用一个撤销栈条目）：输入态、弹窗、右键菜单打开时不劫持
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Delete') return;
+    if (e.key !== 'Delete' && e.key !== 'Del') return;
     if (e.isComposing) return;
-    const ae = document.activeElement;
-    if (ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable)) return;
+    if (isBlockedFocus()) return; // 可见输入框才吞键；被面板盖住/隐藏的编辑器残留焦点不吞
     if (window.Modal && Modal.stack && Modal.stack.length) return;
     const cm = document.getElementById('ctx-menu');
     if (cm && !cm.classList.contains('hidden')) return;
@@ -2830,6 +2981,12 @@ const Tasks = (() => {
     render();
     // 主区图面板的显隐跟工具窗口状态走（App.renderToolStrip 统一裁决）
     if (window.App && App.renderToolStrip) App.renderToolStrip();
+    // 打开图工具时释放编辑区残留焦点（全屏面板盖住 viewer 后 CM6/输入框焦点还在，
+    // Delete / Ctrl+Z 会被看不见的编辑器吃掉）
+    const aeSv = document.activeElement;
+    if (aeSv && aeSv !== document.body && aeSv.closest && aeSv.closest('#viewer')) {
+      try { aeSv.blur(); } catch {}
+    }
     fitView(); // 打开任务工具自动适应一次画布（面板此时已可见；jsdom 无布局时内部跳过）
   }
 

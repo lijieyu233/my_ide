@@ -96,7 +96,14 @@ const Shortcuts = (() => {
     const ae = document.activeElement;
     const aeVisible = ae && ae.offsetParent !== null;
     const aeEditable = aeVisible && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable);
-    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
+    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) {
+      // 例外：全屏工具面板（浏览器/数据库/依赖图）以 absolute 盖住编辑区，viewer 并未
+      // display:none → 残留在 CM6/输入框里的焦点仍「可见」。此时用户操作对象是面板，
+      // 豁免会让 Ctrl+Z 落到看不见的编辑器上（用户眼中「撤销无效」）。被盖住则不让位。
+      const coveredByTool = ae.closest && ae.closest('#viewer') && ['browser-panel', 'db-panel', 'tasks-dag-panel']
+        .some((id) => { const p = document.getElementById(id); return p && !p.classList.contains('hidden'); });
+      if (!coveredByTool) return;
+    }
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
     // 栈顶面板声明「自管 Esc」（confirm/prompt 有自己的键盘处理）时跳过，避免双关闭错杀下层面板
     if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
@@ -162,8 +169,16 @@ Shortcuts.register('task-quick-new', { desc: '快捷创建任务（任务工具�
   Tasks.quickNew();
 } });
 // 统一撤销 / 重做（5.2）：覆盖改名/状态/依赖/移动/删除等全部写操作；焦点在输入框时让位给原生编辑
-Shortcuts.register('task-undo', { desc: '任务：撤销', keys: ['ctrl+z'], run: () => { if (window.Tasks && Tasks.canUndo) Tasks.undo(); } });
-Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z', 'ctrl+y'], run: () => { if (window.Tasks && Tasks.canRedo) Tasks.redo(); } });
+Shortcuts.register('task-undo', { desc: '任务：撤销', keys: ['ctrl+z'], run: () => {
+  if (!window.Tasks || !Tasks.canUndo) return;
+  const u = Tasks.undo();
+  if (u && window.MI) MI.toast('已撤销：' + u, 'ok');
+} });
+Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z', 'ctrl+y'], run: () => {
+  if (!window.Tasks || !Tasks.canRedo) return;
+  const r = Tasks.redo();
+  if (r && window.MI) MI.toast('已重做：' + r, 'ok');
+} });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });

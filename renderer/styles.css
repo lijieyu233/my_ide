@@ -1236,6 +1236,9 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 }
 .bw-fav-btn:hover { color: var(--text-bright); }
 .bw-fav-btn.faved { color: #f5c518; }
+/* 主体布局：收藏侧栏 + 网页主区 */
+.browser-body { flex: 1; min-height: 0; display: flex; }
+.browser-main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 /* 加载进度条 */
 .browser-prog { height: 2px; flex-shrink: 0; background: transparent; }
 #bw-prog { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
@@ -1281,6 +1284,41 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
   gap: 6px; background: var(--bg); text-align: center;
 }
 #browser-error .be-title { margin: 0; max-width: 70%; overflow-wrap: break-word; }
+/* 收藏侧栏（文件夹分组常驻显示） */
+#bw-sidebar {
+  width: 200px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-panel); border-right: 1px solid var(--border);
+}
+.bw-sb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; font-size: 12px; font-weight: 600; color: var(--text-bright);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.bw-sb-act {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 14px; padding: 0 4px; line-height: 1;
+}
+.bw-sb-act:hover { color: var(--accent); }
+#bw-sb-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
+.bw-sb-none { color: var(--text-dim); font-size: 12px; padding: 16px 12px; text-align: center; line-height: 1.6; }
+.bw-sb-item {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 10px; cursor: pointer; border-radius: 4px; margin: 0 4px;
+}
+.bw-sb-item:hover { background: var(--bg-hover); }
+.bw-sb-nm {
+  font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bw-sb-host { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-sb-gtitle {
+  display: flex; align-items: center;
+  padding: 5px 10px; margin-top: 2px; font-size: 12px; color: var(--text-bright); cursor: pointer;
+  user-select: none;
+}
+.bw-sb-gtitle:hover { background: var(--bg-hover); }
+.bw-sb-gbody { display: flex; flex-direction: column; }
 
 /* ---------- 代码文件编辑器（CM6 语法高亮，code-editor.js） ---------- */
 .editor-code-wrap { flex: 1; min-height: 0; overflow: hidden; }

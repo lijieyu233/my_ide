@@ -3036,9 +3036,16 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(favBtn.textContent === '☆', '初始未收藏');
     stateCb.browser({ navigated: true, url: 'https://example.com/x', title: 'Example' });
     await tick();
+    // 新交互：点 ☆ 弹出「收藏到…」位置选择菜单 → 选「根目录」完成收藏
     click(favBtn);
     await tick();
-    assert_(favBtn.textContent === '★', '点击后已收藏');
+    const posMenu = dom.window.document.getElementById('ctx-menu');
+    assert_(posMenu && !posMenu.classList.contains('hidden'), '点☆弹出收藏位置菜单');
+    const rootOpt = [...posMenu.querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('根目录'));
+    assert_(!!rootOpt, '菜单含「根目录」选项');
+    click(rootOpt);
+    await tick();
+    assert_(favBtn.textContent === '★', '选择根目录后已收藏');
     let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
     assert_(favs.some((f) => f.url === 'https://example.com/x'), '收藏写入 localStorage');
     click(favBtn);

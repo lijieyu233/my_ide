@@ -798,11 +798,11 @@ async function removeRemote(dir, name) {
 async function fetchRemote(dir, { auth } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     const r = await git.fetch({
-      fs, dir: root, http, remote: 'origin',
+      fs, dir: root, http, remote: pr.name,
       onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
     });
     return { ok: true, fetchHead: r && r.fetchHead };
@@ -817,11 +817,11 @@ async function pullRemote(dir, { auth } = {}) {
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     const r = await git.pull({
-      fs, dir: root, http, remote: 'origin', ref: branch, fastForwardOnly: true,
+      fs, dir: root, http, remote: pr.name, ref: branch, fastForwardOnly: true,
       author: await getAuthor(root),
       onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
     });
@@ -835,20 +835,20 @@ async function pullRemote(dir, { auth } = {}) {
   }
 }
 
-// push：当前分支 → origin 同名分支
+// push：当前分支 → 主远程同名分支
 async function pushRemote(dir, { auth } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     await git.push({
-      fs, dir: root, http, remote: 'origin', ref: branch,
+      fs, dir: root, http, remote: pr.name, ref: branch,
       onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
     });
-    return { ok: true };
+    return { ok: true, remote: pr.name, branch };
   } catch (e) {
     const msg = String(e.message || e);
     if (msg.includes('fetch first') || msg.includes('behind')) {
@@ -858,24 +858,59 @@ async function pushRemote(dir, { auth } = {}) {
   }
 }
 
-// ahead/behind：本地分支 vs refs/remotes/origin/<branch>（纯本地 refs 计算，无网络）
-async function aheadBehind(dir) {
+// 主远程：优先 origin，否则第一个远程（避免远程名非 origin 时全链路失效）
+// config 无远程时回退扫描 refs/remotes/*（手工跟踪 ref 也能算 ahead/behind；url 置 null）
+async function primaryRemote(root) {
+  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
+  if (remotes.length) {
+    const origin = remotes.find((r) => r.remote === 'origin');
+    const r = origin || remotes[0];
+    return { name: r.remote, url: r.url };
+  }
+  try {
+    const dir = path.join(root, '.git', 'refs', 'remotes');
+    if (!fs.existsSync(dir)) return null;
+    const names = fs.readdirSync(dir).filter((n) => {
+      try {
+        return fs.statSync(path.join(dir, n)).isDirectory() && fs.readdirSync(path.join(dir, n)).length > 0;
+      } catch { return false; }
+    }).sort();
+    if (!names.length) return null;
+    const name = names.includes('origin') ? 'origin' : names[0];
+    return { name, url: null };
+  } catch { return null; }
+}
+
+// ahead/behind：本地分支 vs 远程跟踪分支
+// opts.fetch=true 时先静默 fetch（更新 refs/remotes 后再算，反映远程真实状态；失败回退本地 refs）
+async function aheadBehind(dir, opts = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return {};
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { branch };
+  const pr = await primaryRemote(root);
+  if (!pr) return { branch, remote: null, remoteUrl: null, ahead: null, behind: null };
+  let fetched = false;
+  if (opts.fetch && pr.url) { // 无 url（纯本地 ref 回退场景）不联网
+    try {
+      const auth = opts.auth && opts.auth.username
+        ? { onAuth: () => ({ username: opts.auth.username, password: opts.auth.password || '' }) }
+        : {}; // 匿名可读的公开仓库不需要凭据
+      await git.fetch({ fs, dir: root, http, remote: pr.name, ...auth });
+      fetched = true;
+    } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）
+  }
   let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
-  if (!upstream || !head) return { branch, ahead: null, behind: null };
   return {
-    branch,
-    ahead: await countNotReached(root, head, upstream),
-    behind: await countNotReached(root, upstream, head),
+    branch, remote: pr.name, remoteUrl: pr.url, fetched,
+    ahead: !upstream || !head ? null : await countNotReached(root, head, upstream),
+    behind: !upstream || !head ? null : await countNotReached(root, upstream, head),
   };
 }
 
-// Push 预览：列出本地领先 origin 的待推送提交（HEAD → refs/remotes/origin/<branch>，纯本地 refs，无网络）
+// Push 预览：列出本地领先远程跟踪分支的待推送提交（HEAD → refs/remotes/<remote>/<branch>，纯本地 refs，无网络）
 async function listPushCommits(dir) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
@@ -883,8 +918,10 @@ async function listPushCommits(dir) {
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
   if (!head) return { ok: false, error: '当前无可推送的提交' };
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
   let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
   // 无上游：全部分支历史都是待推送（首次 push 场景），上限保护 500
   const stop = upstream || '0000000000000000000000000000000000000000';
   const seen = new Set([stop]);
@@ -908,7 +945,7 @@ async function listPushCommits(dir) {
   if (!upstream && !commits.length) return { ok: false, error: '当前无可推送的提交' };
   // 时间正序展示（旧→新，推送顺序）
   commits.reverse();
-  return { ok: true, branch, first: !upstream, count: commits.length, commits };
+  return { ok: true, branch, remote: pr.name, remoteUrl: pr.url, first: !upstream, count: commits.length, commits };
 }
 
 // 从 from 出发沿父链 BFS、不越过 stop，统计未到达 stop 的提交数（上限保护）
