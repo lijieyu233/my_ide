@@ -750,7 +750,36 @@ async function diffRefs(dir, aRef, bRef, file) {
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
 const http = require('isomorphic-git/http/node');
+const { execFile } = require('child_process');
 const AUTH_KEY = null; // 凭证由渲染层每次传入（localStorage myide-git-auth），不落服务层状态
+
+// 系统 git 回退：isomorphic-git 仅支持 HTTPS，不支持 SSH；
+// 遇到 git@ / ssh:// 远程时必须调用系统 git（由其处理 SSH 密钥、凭证助手等）。
+// HTTPS 远程也优先尝试系统 git（可复用系统凭证助手），失败再回退 isomorphic-git + 应用内凭证。
+let _systemGitOk = null;
+function systemGitAvailable() {
+  if (_systemGitOk !== null) return _systemGitOk;
+  try {
+    require('child_process').execFileSync('git', ['--version'], { timeout: 5000 });
+    _systemGitOk = true;
+  } catch { _systemGitOk = false; }
+  return _systemGitOk;
+}
+function runGit(root, args) {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd: root,
+      timeout: 120000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never' },
+      maxBuffer: 50 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      resolve({ ok: !err, code: err && err.code, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+function isSshUrl(url) {
+  return /^git@|^ssh:\/\//i.test(String(url || ''));
+}
 
 function onAuthOf(auth) {
   return () => {
@@ -800,6 +829,13 @@ async function fetchRemote(dir, { auth } = {}) {
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
   if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
+  // SSH 远程 isomorphic-git 不支持，必须走系统 git
+  if (systemGitAvailable() && isSshUrl(originUrl)) {
+    const r = await runGit(root, ['fetch', 'origin', '--prune']);
+    if (r.ok) return { ok: true, fetchHead: true };
+    return { ok: false, error: r.stderr.split('\n').filter(Boolean).pop() || 'fetch 失败' };
+  }
   try {
     const r = await git.fetch({
       fs, dir: root, http, remote: 'origin',
@@ -819,6 +855,17 @@ async function pullRemote(dir, { auth } = {}) {
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
   const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
   if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
+  // SSH 远程 isomorphic-git 不支持，必须走系统 git
+  if (systemGitAvailable() && isSshUrl(originUrl)) {
+    const r = await runGit(root, ['pull', '--ff-only', 'origin', branch]);
+    if (r.ok) return { ok: true };
+    const msg = r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || 'pull 失败';
+    if (/fast-forward|non-fast-forward|refusing to merge/i.test(msg)) {
+      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
+    }
+    return { ok: false, error: msg };
+  }
   try {
     const r = await git.pull({
       fs, dir: root, http, remote: 'origin', ref: branch, fastForwardOnly: true,
@@ -843,6 +890,17 @@ async function pushRemote(dir, { auth } = {}) {
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
   const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
   if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
+  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
+  // SSH 远程 isomorphic-git 不支持，必须走系统 git
+  if (systemGitAvailable() && isSshUrl(originUrl)) {
+    const r = await runGit(root, ['push', 'origin', branch]);
+    if (r.ok) return { ok: true };
+    const msg = r.stderr.split('\n').filter(Boolean).pop() || 'push 失败';
+    if (/fetch first|behind|non-fast-forward/i.test(msg)) {
+      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    }
+    return { ok: false, error: msg };
+  }
   try {
     await git.push({
       fs, dir: root, http, remote: 'origin', ref: branch,
