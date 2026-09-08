@@ -749,12 +749,85 @@ async function diffRefs(dir, aRef, bRef, file) {
 }
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
-const http = require('isomorphic-git/http/node');
+const rawHttp = require('isomorphic-git/http/node');
 const { execFile } = require('child_process');
+const netHttp = require('http');
+const netHttps = require('https');
+const tls = require('tls');
 
 // 远程 URL → 主机（含端口）。http://user@host:port/path → host:port；非 http(s) 返回 null
 function hostOf(url) {
   try { return new URL(url).host; } catch { return null; }
+}
+
+// ---------- 代理支持（修复 isomorphic-git 忽略 git config 代理 → GitHub 直连不稳）----------
+// 命令行 git 读 http.proxy（含 http.<url>.proxy 按主机匹配）走代理；isomorphic-git 完全忽略 → 只能直连碰运气。
+// 这里用 git config --get-urlmatch 读同一份配置（三层级合并 + URL 匹配，与命令行行为一致），
+// https 目标构造 HTTP CONNECT 隧道 agent 注入底层 http client。
+
+// 查 git config 里该远程 URL 的 http.proxy（不走网络，仅读配置；结果缓存）
+const gitProxyCache = new Map(); // root \n url -> proxyUrl | ''
+function gitConfigProxy(root, url) {
+  const key = root + '\n' + url;
+  if (gitProxyCache.has(key)) return Promise.resolve(gitProxyCache.get(key));
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; gitProxyCache.set(key, v || ''); resolve(v || null); } };
+    try {
+      execFile('git', ['-C', root, 'config', '--get-urlmatch', 'http.proxy', url], {
+        timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024,
+      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null));
+    } catch { done(null); }
+  });
+}
+
+// HTTP CONNECT 隧道 agent（https 目标经 http 代理；agent 按 proxyUrl 缓存复用）
+// 注意：createConnection 是 Agent 的原型方法，构造参数传入会被忽略，必须子类覆写。
+class TunnelAgent extends netHttps.Agent {
+  constructor(proxyUrl) {
+    super({ keepAlive: false });
+    this._proxy = new URL(proxyUrl);
+  }
+  createConnection(options, callback) {
+    let settled = false;
+    const done = (err, sock) => { if (!settled) { settled = true; err ? callback(err) : callback(null, sock); } };
+    try {
+      const host = options.host, port = options.port || 443;
+      const p = this._proxy;
+      const req = netHttp.request({
+        host: p.hostname, port: parseInt(p.port || 80, 10),
+        method: 'CONNECT', path: host + ':' + port,
+      });
+      req.setTimeout(15000, () => req.destroy(new Error('代理 CONNECT 超时')));
+      req.once('connect', (res, socket) => {
+        if (res.statusCode !== 200) { socket.destroy(); return done(new Error('代理 CONNECT 被拒: HTTP ' + res.statusCode)); }
+        const sock = tls.connect({ socket, servername: host, rejectUnauthorized: true });
+        sock.once('secureConnect', () => done(null, sock));
+        sock.once('error', (e) => done(e));
+      });
+      req.once('error', (e) => done(e));
+      req.end();
+    } catch (e) { done(e); }
+  }
+}
+const tunnelAgentCache = new Map(); // proxyUrl -> TunnelAgent
+function tunnelAgentFor(proxyUrl) {
+  if (tunnelAgentCache.has(proxyUrl)) return tunnelAgentCache.get(proxyUrl);
+  try { new URL(proxyUrl); } catch { return null; }
+  if (!/^https?:/i.test(proxyUrl)) return null;
+  const agent = new TunnelAgent(proxyUrl);
+  tunnelAgentCache.set(proxyUrl, agent);
+  return agent;
+}
+
+// 按远程 URL 取 http client：git config 配了代理且目标为 https → 注入隧道 agent；否则直连原生 client
+async function httpFor(root, url) {
+  if (!url || !/^https:/i.test(url)) return rawHttp; // 仅 https 目标支持 CONNECT 隧道
+  const proxy = await gitConfigProxy(root, url);
+  if (!proxy) return rawHttp;
+  const agent = tunnelAgentFor(proxy);
+  if (!agent) return rawHttp;
+  return { request: (req) => rawHttp.request(Object.assign({}, req, { agent })) };
 }
 
 // 系统 Git 凭证管理器查询（git credential fill，与命令行共享凭证）。
@@ -786,32 +859,49 @@ function systemCredentialFill(url) {
   });
 }
 
-// 认证链（修复「多主机一份凭证互相覆盖 → 反复要求登录」）：
-// 1) 渲染层按主机保存的凭证（myide-git-auth-map：{ host: {username,password}, '*': 兜底 }，兼容旧单份格式）
-// 2) 远程 URL 内嵌凭证（http://user:pass@host/…；isomorphic-git 不解析 URL userinfo，这里代为生效）
-// 3) 系统 Git 凭证管理器（命令行存过的凭证直接复用）
+// 候选凭证迭代制（onAuth 与 onAuthFailure 共用同一迭代器）：
+// isomorphic-git 语义：首次 401 调 onAuth 取凭证，之后每次 401 调 onAuthFailure 取下一个；
+// 返回 null 即停止重试并抛 401。任一候选成功即通过。
+// 候选优先级：host 匹配的渲染层凭证 > 远程 URL 内嵌凭证 > 系统 Git 凭证管理器 > '*' 兜底凭证。
+// 注意 '*' 兜底（早期全局单份凭证迁移而来）可能是为其他主机存的，排在系统凭证之后，
+// 避免它毒害本可用系统凭证成功的推送（GitHub/GitLab 多主机混用场景）。
 function onAuthOf(auth, remoteUrl) {
+  const host = hostOf(remoteUrl);
+  const cands = [];
+  if (auth) {
+    if (host && auth[host] && auth[host].username) cands.push(auth[host]);
+    if (auth.username) cands.push(auth); // 兼容旧平铺格式 {username,password}
+  }
+  if (remoteUrl) { // URL 内嵌凭证（isomorphic-git 不解析 URL userinfo，这里代为生效）
+    try {
+      const u = new URL(remoteUrl);
+      if (u.username) cands.push({ username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') });
+    } catch {}
+  }
+  const star = auth && auth['*'] && auth['*'].username ? auth['*'] : null;
+  let i = 0, sysTried = false, starTried = false;
   return async () => {
-    const host = hostOf(remoteUrl);
-    if (auth) { // 1) 渲染层凭证
-      const cred = auth.username ? auth : (host ? (auth[host] || auth['*'] || null) : null);
-      if (cred && cred.username) return { username: cred.username, password: cred.password || '' };
+    while (i < cands.length) {
+      const c = cands[i++];
+      if (c && c.username) return { username: c.username, password: c.password || '' };
     }
-    if (remoteUrl) { // 2) URL 内嵌凭证
-      try {
-        const u = new URL(remoteUrl);
-        if (u.username) return { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') };
-      } catch {}
+    if (!sysTried) {
+      sysTried = true;
+      const sys = await systemCredentialFill(remoteUrl); // 系统 Git 凭证（命令行存过的）
+      if (sys && sys.username) return sys;
     }
-    const sys = await systemCredentialFill(remoteUrl); // 3) 系统凭证
-    if (sys && sys.username) return sys;
-    throw new Error('远程需要认证：请在「远程仓库」弹窗中为 ' + (host || '该仓库') + ' 保存用户名和密码/令牌');
+    if (!starTried && star) { starTried = true; return { username: star.username, password: star.password || '' }; }
+    return null; // 候选耗尽：isomorphic-git 停止重试，外层统一转友好报错
   };
 }
 
-// 401 兜底报错（带主机名，便于区分是哪台服务器的凭证错了）
-function onAuthFailureOf() {
-  return (url) => { throw new Error('认证失败：' + (hostOf(url) || '远程') + ' 的用户名/密码/令牌不正确'); };
+// 网络错误 → 友好提示（认证耗尽时指明已尝试所有凭证，引导到远程仓库弹窗）
+function friendlyNetError(e, pr) {
+  const msg = String((e && e.message) || e);
+  if (/HTTP Error: 40[13]/.test(msg)) {
+    return '认证失败：' + (hostOf(pr && pr.url) || '远程') + ' 拒绝了所有已存凭证，请在「远程仓库」弹窗中为该主机保存正确的用户名和密码/令牌';
+  }
+  return msg;
 }
 
 // GitLab 对不带 .git 后缀的 http(s) 远程会 301 重定向到 .git 地址，isomorphic-git 不跟随重定向 → 报 404。
@@ -921,14 +1011,15 @@ async function fetchRemote(dir, { auth } = {}) {
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
       const r = await git.fetch({
-        fs, dir: root, http, remote: pr.name,
-        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name,
+        onAuth, onAuthFailure: onAuth, // 共用迭代器：401 后自动换下一个候选凭证
       });
       return { ok: true, fetchHead: r && r.fetchHead };
     });
   } catch (e) {
-    return { ok: false, error: String(e.message || e) };
+    return { ok: false, error: friendlyNetError(e, pr) };
   }
 }
 
@@ -942,15 +1033,17 @@ async function pullRemote(dir, { auth } = {}) {
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
       const r = await git.pull({
-        fs, dir: root, http, remote: pr.name, ref: branch, fastForwardOnly: true,
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
         author: await getAuthor(root),
-        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+        onAuth, onAuthFailure: onAuth,
       });
       return { ok: true, oid: r && r.oid };
     });
   } catch (e) {
     const msg = String(e.message || e);
+    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
     if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
       return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
     }
@@ -968,14 +1061,16 @@ async function pushRemote(dir, { auth } = {}) {
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
       await git.push({
-        fs, dir: root, http, remote: pr.name, ref: branch,
-        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
+        onAuth, onAuthFailure: onAuth,
       });
       return { ok: true, remote: pr.name, branch };
     });
   } catch (e) {
     const msg = String(e.message || e);
+    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
     if (msg.includes('fetch first') || msg.includes('behind')) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
     }
@@ -1021,8 +1116,9 @@ async function aheadBehind(dir, opts = {}) {
   let fetched = false;
   if (opts.fetch && pr.url) { // 无 url（纯本地 ref 回退场景）不联网
     try {
-      // 公开仓库不触发 401 不会调 onAuth；私有仓库按 onAuthOf 认证链取凭证（渲染层 > URL 内嵌 > 系统凭证）
-      await git.fetch({ fs, dir: root, http, remote: pr.name, onAuth: onAuthOf(opts.auth, pr.url) });
+      // 公开仓库不触发 401 不会调 onAuth；私有仓库按候选迭代取凭证（host 匹配 > URL 内嵌 > 系统凭证 > '*' 兜底）
+      const onAuth = onAuthOf(opts.auth, pr.url);
+      await git.fetch({ fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, onAuth, onAuthFailure: onAuth });
       fetched = true;
     } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）
   }
