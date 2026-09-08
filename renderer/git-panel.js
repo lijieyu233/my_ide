@@ -173,7 +173,7 @@ const GitPanel = (() => {
     MI.toast('拉取中…');
     const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap() });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已拉取', 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
+    if (r.ok) { MI.toast('✅ 已拉取' + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
     else MI.toast('拉取失败: ' + r.error, 'err');
   }
   async function doPush(silent) {
@@ -185,7 +185,7 @@ const GitPanel = (() => {
     syncing = true;
     const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已推送到 ' + (r.remote || '远程'), 'ok'); refresh(); return true; }
+    if (r.ok) { MI.toast('✅ 已推送到 ' + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); return true; }
     else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
   }
 
@@ -229,7 +229,7 @@ const GitPanel = (() => {
       MI.toast('推送中…');
       const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
       syncing = false;
-      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 ' + (r.remote || p.remote || 'origin') + '/' + p.branch, 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
+      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 ' + (r.remote || p.remote || 'origin') + '/' + p.branch + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
       else MI.toast('推送失败: ' + r.error, 'err');
     };
     return true;

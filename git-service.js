@@ -814,6 +814,28 @@ function onAuthFailureOf() {
   return (url) => { throw new Error('认证失败：' + (hostOf(url) || '远程') + ' 的用户名/密码/令牌不正确'); };
 }
 
+// GitLab 对不带 .git 后缀的 http(s) 远程会 301 重定向到 .git 地址，isomorphic-git 不跟随重定向 → 报 404。
+// 这里在 404 时自动把远程 URL 规范化（补 .git，写回 git config）重试一次；仍失败则还原 URL 报原错误。
+// op 闭包内 git.fetch/push 按 remote 名从 config 重新解析 URL，addRemote(force) 更新后重试即生效。
+async function withRemoteUrlFix(root, pr, op) {
+  try {
+    return await op();
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    const fixable = /404/.test(msg) && pr && pr.url && /^https?:/i.test(pr.url) && !/\.git\/?$/.test(pr.url);
+    if (!fixable) throw e;
+    const fixedUrl = pr.url.replace(/\/+$/, '') + '.git';
+    await git.addRemote({ fs, dir: root, remote: pr.name, url: fixedUrl, force: true });
+    try {
+      const r = await op();
+      return Object.assign({}, r, { urlFixed: true, fixedUrl });
+    } catch (e2) {
+      await git.addRemote({ fs, dir: root, remote: pr.name, url: pr.url, force: true }); // 还原，避免误改无关 404
+      throw e2;
+    }
+  }
+}
+
 // 远程跟踪分支（refs/remotes/<remote>/…）：松散 refs 目录 + packed-refs 两处合并，无网络
 // 返回 [{ name, head, oid }] —— head=true 表示远程默认分支（refs/remotes/<remote>/HEAD 指向）
 function remoteBranchesSync(root, remoteName) {
@@ -898,11 +920,13 @@ async function fetchRemote(dir, { auth } = {}) {
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
-    const r = await git.fetch({
-      fs, dir: root, http, remote: pr.name,
-      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+    return await withRemoteUrlFix(root, pr, async () => {
+      const r = await git.fetch({
+        fs, dir: root, http, remote: pr.name,
+        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+      });
+      return { ok: true, fetchHead: r && r.fetchHead };
     });
-    return { ok: true, fetchHead: r && r.fetchHead };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }
@@ -917,12 +941,14 @@ async function pullRemote(dir, { auth } = {}) {
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
-    const r = await git.pull({
-      fs, dir: root, http, remote: pr.name, ref: branch, fastForwardOnly: true,
-      author: await getAuthor(root),
-      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+    return await withRemoteUrlFix(root, pr, async () => {
+      const r = await git.pull({
+        fs, dir: root, http, remote: pr.name, ref: branch, fastForwardOnly: true,
+        author: await getAuthor(root),
+        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+      });
+      return { ok: true, oid: r && r.oid };
     });
-    return { ok: true, oid: r && r.oid };
   } catch (e) {
     const msg = String(e.message || e);
     if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
@@ -941,15 +967,20 @@ async function pushRemote(dir, { auth } = {}) {
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
-    await git.push({
-      fs, dir: root, http, remote: pr.name, ref: branch,
-      onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+    return await withRemoteUrlFix(root, pr, async () => {
+      await git.push({
+        fs, dir: root, http, remote: pr.name, ref: branch,
+        onAuth: onAuthOf(auth, pr.url), onAuthFailure: onAuthFailureOf(),
+      });
+      return { ok: true, remote: pr.name, branch };
     });
-    return { ok: true, remote: pr.name, branch };
   } catch (e) {
     const msg = String(e.message || e);
     if (msg.includes('fetch first') || msg.includes('behind')) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    }
+    if (msg.includes('pre-receive hook declined')) {
+      return { ok: false, error: '服务端拒绝推送 ' + branch + '：多为受保护分支（需权限或走合并请求），也可能是提交信息不符合服务端钩子要求' };
     }
     return { ok: false, error: msg };
   }
