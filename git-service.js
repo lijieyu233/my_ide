@@ -772,12 +772,14 @@ function gitConfigProxy(root, url) {
   if (gitProxyCache.has(key)) return Promise.resolve(gitProxyCache.get(key));
   return new Promise((resolve) => {
     let settled = false;
-    const done = (v) => { if (!settled) { settled = true; gitProxyCache.set(key, v || ''); resolve(v || null); } };
+    // 失败（超时/异常/未配置读失败）不写缓存：一次抖动若把 null 固化进进程，
+    // 整个会话推送都会直连（绿盾环境直连必挂），重启应用才能恢复。
+    const done = (v, cache) => { if (!settled) { settled = true; if (cache && v) gitProxyCache.set(key, v); resolve(v || null); } };
     try {
       execFile('git', ['-C', root, 'config', '--get-urlmatch', 'http.proxy', url], {
         timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024,
-      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null));
-    } catch { done(null); }
+      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null, !err && !!stdout));
+    } catch { done(null, false); }
   });
 }
 
@@ -841,16 +843,18 @@ function systemCredentialFill(url) {
   if (sysCredCache.has(key)) return Promise.resolve(sysCredCache.get(key));
   return new Promise((resolve) => {
     let settled = false;
-    const done = (v) => { if (!settled) { settled = true; sysCredCache.set(key, v); resolve(v); } };
+    // 失败（超时/GCM 未响应等）不写缓存：一次抖动若把 null 固化进进程，
+    // 后续推送的候选链会跳过系统凭证直接 401，重启应用才能恢复。
+    const done = (v, cache) => { if (!settled) { settled = true; if (cache) sysCredCache.set(key, v); resolve(v); } };
     try {
       const child = execFile('git', ['credential', 'fill'], {
         timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
         env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
       }, (err, stdout) => {
-        if (err) return done(null);
+        if (err) return done(null, false);
         const s = String(stdout);
         const mu = s.match(/^username=(.*)$/m), mp = s.match(/^password=(.*)$/m);
-        done(mu && mp ? { username: mu[1], password: mp[1] } : null);
+        done(mu && mp ? { username: mu[1], password: mp[1] } : null, !!(mu && mp));
       });
       child.stdin.on('error', () => {}); // stdin 异常不致命（超时 kill 时可能触发）
       child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
