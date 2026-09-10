@@ -836,6 +836,11 @@ async function fetchRemote(dir, { auth } = {}) {
     if (r.ok) return { ok: true, fetchHead: true };
     return { ok: false, error: r.stderr.split('\n').filter(Boolean).pop() || 'fetch 失败' };
   }
+  // HTTPS：优先系统 git（复用系统凭证助手/凭据管理器，与命令行行为一致），失败回退应用内凭证
+  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
+    const r = await runGit(root, ['fetch', 'origin', '--prune']);
+    if (r.ok) return { ok: true, fetchHead: true };
+  }
   try {
     const r = await git.fetch({
       fs, dir: root, http, remote: 'origin',
@@ -865,6 +870,15 @@ async function pullRemote(dir, { auth } = {}) {
       return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
     }
     return { ok: false, error: msg };
+  }
+  // HTTPS：优先系统 git（复用系统凭证助手），失败回退应用内凭证
+  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
+    const r = await runGit(root, ['pull', '--ff-only', 'origin', branch]);
+    if (r.ok) return { ok: true };
+    const msg = r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || '';
+    if (/fast-forward|non-fast-forward|refusing to merge/i.test(msg)) {
+      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
+    }
   }
   try {
     const r = await git.pull({
@@ -900,6 +914,15 @@ async function pushRemote(dir, { auth } = {}) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
     }
     return { ok: false, error: msg };
+  }
+  // HTTPS：优先系统 git（复用系统凭证助手），失败回退应用内凭证
+  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
+    const r = await runGit(root, ['push', 'origin', branch]);
+    if (r.ok) return { ok: true };
+    const msg = r.stderr.split('\n').filter(Boolean).pop() || '';
+    if (/fetch first|behind|non-fast-forward/i.test(msg)) {
+      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    }
   }
   try {
     await git.push({
