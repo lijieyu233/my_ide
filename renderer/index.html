@@ -9,13 +9,19 @@
 </head>
 <body>
 <header id="toolbar">
-  <button id="btn-open" class="tb-btn" title="打开项目 (Ctrl+O)">⊞ 打开项目</button>
-  <div id="project-bar" title="已打开的项目，点击切换"></div>
+  <button id="btn-open" class="tb-btn" title="打开项目 (Ctrl+O)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>打开项目</button>
+  <span class="tb-sep" aria-hidden="true"></span>
+  <div id="project-bar-wrap">
+    <!-- 「全部项目」入口由 app.js 注入到此层（在横向滚动容器之外 → 结构上不可能压住项目按钮） -->
+    <div id="project-bar" title="已打开的项目，点击切换"></div>
+  </div>
   <span class="spacer"></span>
-  <button id="btn-search" class="tb-btn" title="搜索内容 (Ctrl+Shift+F)">⌕</button>
-  <button id="btn-theme" class="tb-btn" title="切换主题 (Ctrl+Shift+T)">◑</button>
-  <button id="btn-settings" class="tb-btn" title="设置 (Ctrl+Alt+S)">⚙</button>
-  <button id="btn-help" class="tb-btn" title="帮助 (F1)">?</button>
+  <span class="tb-sep" aria-hidden="true"></span>
+  <button id="btn-search" class="tb-btn tb-ic" title="搜索内容 (Ctrl+Shift+F)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg></button>
+  <button id="btn-theme" class="tb-btn tb-ic" title="切换主题 (Ctrl+Shift+T)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4"/><path class="fill" d="M8 2.6a5.4 5.4 0 0 1 0 10.8z"/></svg></button>
+  <button id="btn-settings" class="tb-btn tb-ic" title="设置 (Ctrl+Alt+S)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 4.9h10.8M2.6 11.1h10.8"/><circle cx="6.3" cy="4.9" r="1.7"/><circle cx="9.9" cy="11.1" r="1.7"/></svg></button>
+  <button id="btn-help" class="tb-btn tb-ic" title="帮助 (F1)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M6.3 6.4a1.8 1.8 0 1 1 2.5 1.7c-.5.24-.75.6-.75 1.05v.3"/><circle class="fill" cx="8" cy="11.6" r=".85"/></svg></button>
+  <span class="tb-sep" aria-hidden="true"></span>
   <span class="win-btns" title="窗口控制">
     <button id="win-min" class="tb-btn" title="最小化">─</button>
     <button id="win-max" class="tb-btn" title="最大化 / 还原">□</button>
@@ -24,25 +30,28 @@
 </header>
 <div id="main">
   <div id="tool-strip" title="工具窗口（PyCharm 式）">
-    <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+`)">⏴</button>
-    <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)">▤</button>
-    <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)">☰</button>
-    <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）">⑂</button>
-    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)">⌥</button>
-    <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)">🌐</button>
-    <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)">⛁</button>
-    <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）">☑</button>
+    <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+`)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg></button>
+    <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="7.8" height="9.8" rx="1.2"/><path d="M5.4 13.4h7.2a1 1 0 0 0 1-1V4.6"/></svg></button>
+    <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M2.8 8h10.4M2.8 11.8h6.4"/></svg></button>
+    <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
+    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.6"/><path d="M8 1.6v3.8M8 10.6v3.8"/></svg></button>
+    <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
+    <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
+    <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
       <div class="panel-title">项目</div>
       <div id="tree-head">
-        <input id="tree-search" type="text" placeholder="🔍 搜索文件…" autocomplete="off" spellcheck="false" title="搜索项目内文件（回车跳转）">
+        <span class="tree-search-wrap">
+          <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>
+          <input id="tree-search" type="text" placeholder="搜索文件…" autocomplete="off" spellcheck="false" title="搜索项目内文件（回车跳转）">
+        </span>
         <span class="tree-head-actions">
-          <button id="tree-hide-mode" class="vt-btn" title="三态切换：全部显示 / 不显示隐藏项 / 只看隐藏项">👁</button>
-          <button id="tree-sort" class="vt-btn" title="排序">↕</button>
-          <button id="tree-collapse" class="vt-btn" title="收起全部目录（PyCharm 式）">⊟</button>
-          <button id="tree-expand" class="vt-btn" title="展开全部目录">⊞</button>
+          <button id="tree-hide-mode" class="vt-btn hide-mode-btn hm-normal" title="三态切换：全部显示 / 不显示隐藏项 / 只看隐藏项">常规</button>
+          <button id="tree-sort" class="vt-btn" title="排序"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 12.6V3.4M2.6 5.8L5 3.4l2.4 2.4M11 3.4v9.2M8.6 10.2L11 12.6l2.4-2.4"/></svg></button>
+          <button id="tree-collapse" class="vt-btn" title="收起全部目录（PyCharm 式）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2"/><path d="M5.6 8h4.8"/></svg></button>
+          <button id="tree-expand" class="vt-btn" title="展开全部目录"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2"/><path d="M5.6 8h4.8M8 5.6v4.8"/></svg></button>
         </span>
       </div>
       <div id="tree"></div>
@@ -57,22 +66,38 @@
         <span id="cd-branch" title="点击切换分支 / 检出标签"></span>
         <span id="cd-dirty"></span>
         <span class="panel-title-actions">
-          <button id="cd-pull" class="vt-btn" title="拉取（fetch + fast-forward 合并 origin）">⬇ 拉取</button>
-          <button id="cd-push" class="vt-btn" title="推送当前分支到 origin（先预览待推送提交）">⬆ 推送</button>
-          <button id="cd-shelve" class="vt-btn" title="搁置更改（Shelve）：暂存未提交改动并可恢复">🗄</button>
-          <button id="cd-remote" class="vt-btn" title="远程仓库管理（remote / 认证）">🔗</button>
-          <button id="cd-refresh" class="vt-btn" title="刷新 Git 状态 (Ctrl+R)">🔄</button>
-          <button id="cd-log" class="vt-btn" title="提交历史（Alt+9 / Ctrl+5）">🕘</button>
+          <button id="cd-pull" class="vt-btn" title="拉取（fetch + fast-forward 合并 origin）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M8 9.6L5 6.6M8 9.6l3-3M3.2 12.6h9.6"/></svg>拉取</button>
+          <button id="cd-push" class="vt-btn" title="推送当前分支到 origin（先预览待推送提交）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.6V2.4M8 2.4L5 5.4M8 2.4l3 3M3.2 12.6h9.6"/></svg>推送</button>
+          <span class="tb-sep" aria-hidden="true"></span>
+          <button id="cd-shelve" class="vt-btn" title="搁置更改（Shelve）：暂存未提交改动并可恢复"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="3" rx="1"/><path d="M3.6 6.4v5.6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V6.4M6.6 9h2.8"/></svg></button>
+          <button id="cd-remote" class="vt-btn" title="远程仓库管理（remote / 认证）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 9.6a2.6 2.6 0 0 0 3.9.3l1.9-1.9a2.6 2.6 0 0 0-3.7-3.7l-1.1 1.1"/><path d="M9.6 6.4a2.6 2.6 0 0 0-3.9-.3L3.8 8a2.6 2.6 0 0 0 3.7 3.7l1.1-1.1"/></svg></button>
+          <button id="cd-refresh" class="vt-btn" title="刷新 Git 状态 (Ctrl+R)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 3.2v3.2H9.8"/></svg></button>
+          <button id="cd-log" class="vt-btn" title="提交历史（Alt+9 / Ctrl+5）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg></button>
         </span>
       </div>
       <div class="cd-files" id="cd-files"></div>
+      <!-- 内嵌 diff 预览（PyCharm 式「预览」开关；固定主编辑区看整体，这里看行级细节） -->
+      <div id="commit-preview" class="hidden">
+        <div class="cp-head">
+          <span id="cp-title" class="cp-title">预览</span>
+          <span id="cp-stats" class="cp-stats"></span>
+          <button id="cp-close" class="vt-btn" title="关闭预览">✕</button>
+        </div>
+        <div id="cp-body" class="cp-body"></div>
+      </div>
       <div class="cd-msgbox">
-        <textarea id="commit-msg" placeholder="提交信息…（Ctrl+Enter 提交）" spellcheck="false"></textarea>
+        <div class="commit-amend-row">
+          <label class="m-check" title="把这次改动追加到上一次提交，并自动回填上次的提交消息"><input type="checkbox" id="commit-amend"><span>修正上次提交 (Amend)</span></label>
+          <button id="commit-history" class="vt-btn" title="提交消息历史（点击填充到输入框）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg></button>
+        </div>
+        <textarea id="commit-msg" placeholder="提交消息" spellcheck="false"></textarea>
         <div class="commit-foot">
-          <label class="m-check" title="追加到上一次提交（修正提交信息）"><input type="checkbox" id="commit-amend"><span>amend</span></label>
           <span id="commit-count"></span>
-          <button class="tb-btn m-ok" id="cm-ok">提交</button>
-          <button class="tb-btn m-ok" id="cm-ok-push" title="提交后推送到 origin (Ctrl+Alt+K)">提交并推送</button>
+          <button class="tb-btn m-ok" id="cm-ok" title="提交 (Ctrl+Enter / Alt+I)">提交 (I)</button>
+          <span class="m-split">
+            <button class="tb-btn m-ok" id="cm-ok-push" title="提交并推送 (Ctrl+Shift+K / Alt+P)">提交并推送 (P)</button>
+            <button class="tb-btn m-ok m-caret" id="cm-ok-push-menu" title="更多「提交并推送」选项（其他远程 / 强制推送）">▾</button>
+          </span>
         </div>
       </div>
     </div>
@@ -131,12 +156,22 @@
     <div id="tabbar"></div>
     <div id="viewer"></div>
     <div id="empty-state">
-      <div class="empty-icon">🛠</div>
-      <div class="empty-title">My IDE</div>
-      <div class="empty-hint">点击「打开项目」选择一个项目目录</div>
-      <div class="empty-hint2">单击文件打开 · Ctrl+Shift+C 复制路径 · Ctrl+K 提交</div>
-      <button id="btn-open2" class="tb-btn big">📂 打开项目</button>
-      <div id="empty-recent"></div>
+      <div class="empty-card">
+        <div class="empty-head">
+          <span class="empty-mark"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6L4 12l5 6M15 6l5 6-5 6"/></svg></span>
+          <span class="empty-head-tx">
+            <span class="empty-title">My IDE</span>
+            <span class="empty-sub">私人定制轻量编辑器 · 选个项目目录开始</span>
+          </span>
+        </div>
+        <div class="empty-keys">
+          <span class="kbd-chip"><kbd>Ctrl+O</kbd>打开项目</span>
+          <span class="kbd-chip"><kbd>Ctrl+P</kbd>快速打开</span>
+          <span class="kbd-chip"><kbd>Ctrl+Shift+C</kbd>复制路径</span>
+        </div>
+        <button id="btn-open2" class="empty-cta"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>打开项目</button>
+        <div id="empty-recent"></div>
+      </div>
     </div>
     <div id="browser-panel" class="hidden">
       <div class="browser-toolbar">
@@ -257,11 +292,11 @@
   </div>
   <!-- 右侧工具窗口条（PyCharm 式：AI 助手等右侧停靠工具；Alt+` 收起/展开右侧栏） -->
   <div id="tool-strip-right" title="右侧工具窗口">
-    <button id="tool-sidebar-r" class="tool-btn" title="收起 / 展开右侧栏 (Alt+`)">⏵</button>
-    <button id="tool-ai" class="tool-btn" title="AI 助手 (Alt+1 / Ctrl+8)">🤖</button>
+    <button id="tool-sidebar-r" class="tool-btn" title="收起 / 展开右侧栏 (Alt+`)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5"/></svg></button>
+    <button id="tool-ai" class="tool-btn" title="AI 助手 (Alt+1 / Ctrl+8)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg></button>
   </div>
 </div>
-<footer id="statusbar"><span id="sb-tool-font" class="sb-font" title="侧栏 / 工具窗口 / 右侧 AI 面板字号（目录树 · 大纲 · 提交 · 数据库 · 任务 · 依赖图 · Git 日志 · AI 对话）"><button id="sb-tf-dec" title="减小侧栏字号">A−</button><span id="sb-tf-val">13</span><button id="sb-tf-inc" title="增大侧栏字号">A+</button></span><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="调整编辑区字体大小（Ctrl+= / Ctrl+-）"><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
+<footer id="statusbar"><span id="sb-tool-font" class="sb-font" title="侧栏 / 工具窗口 / 右侧 AI 面板字号（目录树 · 大纲 · 提交 · 数据库 · 任务 · 依赖图 · Git 日志 · AI 对话）"><span class="sb-font-tag">侧栏</span><button id="sb-tf-dec" title="减小侧栏字号">−</button><span id="sb-tf-val">13</span><button id="sb-tf-inc" title="增大侧栏字号">＋</button></span><span class="sb-sep" aria-hidden="true"></span><span id="sb-ver" title="当前运行版本"></span><span id="sb-branch"></span><span id="sb-info"></span><span id="sb-font" class="sb-font" title="编辑区字号（Ctrl+= / Ctrl+-）"><span class="sb-font-tag">编辑</span><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden">
   <div id="modal-box"></div>

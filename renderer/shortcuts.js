@@ -141,7 +141,18 @@ Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run:
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
 Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
-Shortcuts.register('commit', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['ctrl+k', 'alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
+// Ctrl+K / Alt+I = 「提交」动作（PyCharm）：打开面板 **并聚焦提交消息框**
+// Alt+0 / Ctrl+3 / Ctrl+4 = 只打开提交工具窗口（不抢焦点）
+Shortcuts.register('commit', { desc: '提交（打开提交窗口并聚焦提交消息）', keys: ['ctrl+k', 'alt+i'], run: () => {
+  App.showTool('git');
+  if (window.GitPanel && GitPanel.focusMessage) setTimeout(() => GitPanel.focusMessage(), 0);
+} });
+Shortcuts.register('commit-tool-window', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
+// Ctrl+Shift+K / Alt+P = 提交并推送（PyCharm 默认键位）；Ctrl+Alt+K 保留为兼容别名（旧 tooltip 一直写的是它）
+Shortcuts.register('commit-push', { desc: '提交并推送', keys: ['ctrl+shift+k', 'alt+p', 'ctrl+alt+k'], run: () => {
+  App.showTool('git');
+  if (window.GitPanel && GitPanel.doCommit) return GitPanel.doCommit(true);
+} });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });

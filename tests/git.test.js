@@ -665,6 +665,78 @@ fs.mkdirSync(repo);
     assert.strictEqual(origin.branches[0].name, 'main', '默认分支排最前');
   });
 
+  await okAsync('提交语义：勾选集合是唯一权威（未勾选但已暂存的文件不会被一起提交）', async () => {
+    const repo11 = path.join(tmp, 'repo11');
+    fs.mkdirSync(repo11);
+    await G.initRepo(repo11);
+    fs.writeFileSync(path.join(repo11, 'a.txt'), 'A1\n');
+    fs.writeFileSync(path.join(repo11, 'b.txt'), 'B1\n');
+    await G.commit(repo11, { message: 'init', files: ['a.txt', 'b.txt'] });
+
+    const headText = async (f) => {
+      const oid = await git.resolveRef({ fs, dir: repo11, ref: 'HEAD' });
+      const rb = await git.readBlob({ fs, dir: repo11, oid, filepath: f });
+      return Buffer.from(rb.blob).toString();
+    };
+    // 改两个文件，并把 a.txt「在别处」加进暂存区（模拟 index 里已有内容）
+    fs.writeFileSync(path.join(repo11, 'a.txt'), 'A2 staged\n');
+    fs.writeFileSync(path.join(repo11, 'b.txt'), 'B2\n');
+    await git.add({ fs, dir: repo11, filepath: 'a.txt' });
+    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status.charAt(0) === '*'),
+      'a.txt 已处于暂存状态');
+
+    // 只勾选 b.txt 提交（a.txt 在 UI 上被取消勾选）
+    const r = await G.commit(repo11, { message: '只提交 b', files: ['b.txt'] });
+    assert.ok(r.ok, '提交成功: ' + (r.error || ''));
+    assert.strictEqual((await headText('a.txt')).trim(), 'A1', '★ 未勾选的 a.txt 未被提交（旧实现会一起提交）');
+    assert.strictEqual((await headText('b.txt')).trim(), 'B2', '勾选的 b.txt 已提交');
+    assert.strictEqual(fs.readFileSync(path.join(repo11, 'a.txt'), 'utf8').trim(), 'A2 staged',
+      'a.txt 的工作区改动保留（没被提交吃掉）');
+    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status === 'modified'),
+      'a.txt 提交后回到「未暂存」，仍需用户处理');
+  });
+
+  await okAsync('.gitignore：addToGitignore / removeFromGitignore（落盘 + 忽略生效 + 幂等 + 未命中报错）', async () => {
+    const repo12 = path.join(tmp, 'repo12');
+    fs.mkdirSync(repo12);
+    await G.initRepo(repo12);
+    fs.writeFileSync(path.join(repo12, 'keep.txt'), 'k\n');
+    await G.commit(repo12, { message: 'init', files: ['keep.txt'] });
+    fs.writeFileSync(path.join(repo12, 'debug.log'), 'noise\n');
+
+    let r = await G.addToGitignore(repo12, 'debug.log');
+    assert.ok(r.ok && r.pattern === 'debug.log', '写入规则: ' + JSON.stringify(r));
+    assert.ok(fs.readFileSync(path.join(repo12, '.gitignore'), 'utf8').includes('debug.log'), '.gitignore 已落盘');
+    assert.ok(!(await G.status(repo12)).changed.some((c) => c.file === 'debug.log'),
+      '被忽略的未跟踪文件不出现在变更列表');
+
+    const again = await G.addToGitignore(repo12, 'debug.log');
+    assert.ok(again.ok && again.skipped, '重复添加被识别为已存在（幂等）');
+
+    r = await G.removeFromGitignore(repo12, 'debug.log');
+    assert.ok(r.ok, '移除成功');
+    assert.ok(!fs.readFileSync(path.join(repo12, '.gitignore'), 'utf8').includes('debug.log'), '规则行已删除');
+    assert.ok((await G.status(repo12)).changed.some((c) => c.file === 'debug.log'), '移除后重新出现在变更列表');
+
+    const miss = await G.removeFromGitignore(repo12, 'never-added.txt');
+    assert.ok(!miss.ok, '未命中时报错而不是静默成功');
+  });
+
+  await okAsync('pushRemote：可指定远程，无远程时友好报错（不抛异常）', async () => {
+    const repo13 = path.join(tmp, 'repo13');
+    fs.mkdirSync(repo13);
+    await G.initRepo(repo13);
+    fs.writeFileSync(path.join(repo13, 'f.txt'), 'x\n');
+    await G.commit(repo13, { message: 'init', files: ['f.txt'] });
+    // 没有任何远程：即使显式指定了远程名也应回退并给出明确错误
+    const r = await G.pushRemote(repo13, { remote: 'nonexistent', force: true });
+    assert.ok(!r.ok && /未配置远程/.test(r.error), '无远程时友好报错: ' + r.error);
+    await G.addRemote(repo13, { name: 'origin', url: 'https://example.invalid/a.git' });
+    await G.addRemote(repo13, { name: 'mirror', url: 'https://example.invalid/b.git' });
+    const lr = await G.listRemotes(repo13);
+    assert.strictEqual(lr.remotes.length, 2, '配置 2 个远程后列表为 2');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

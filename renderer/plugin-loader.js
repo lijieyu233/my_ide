@@ -54,49 +54,330 @@ function scrollToAnchor(container, rawId) {
   const target = [...container.querySelectorAll('[id]')].find((el) => el.id === id);
   if (target) { try { target.scrollIntoView({ block: 'start' }); } catch {} }
 }
-// ---------- 图片全屏查看（lightbox）：md 预览 / Live Preview 图片点击放大 ----------
-// 滚轮缩放、拖动平移、Esc/点击遮罩关闭；同一时刻只有一个实例
+// ---------- 缩放查看器（图片 / SVG 通用，零依赖）----------
+// 实现要点：
+//   ① 缩放用「显式像素宽高 + 滚动容器」，不用 transform —— 放大后可直接用滚动条 / 拖拽平移，
+//      且容器高度真实反映缩放结果（transform 不改变布局尺寸，父容器高度会失效）。
+//   ② 居中用「容器 flex + 子元素 margin:auto」而不用 justify-content:center ——
+//      后者在内容溢出时会把左上角推到容器外、滚动条也够不着（经典坑）。
+//   ③ 尺寸未知（图片未 load 完 / jsdom）时不写死像素，退回 CSS max-width:100%，
+//      等 load 事件再 refresh 一次重新适应。
+// 返回：{ scale, setScale, zoomBy, fit, reset, refresh, apply, destroy }
+MI.createZoomer = function (opts) {
+  const stage = opts.stage;
+  const el = opts.el;
+  const MIN = opts.min || 0.05;
+  const MAX = opts.max || 16;
+  const STEP = opts.step || 1.25;
+  let scale = 1;
+  let nat = { w: 0, h: 0 };
+  let mode = opts.initial === 1 ? 'free' : 'fit'; // fit：跟随窗口自动重算；free：用户指定倍数
+
+  const bar = opts.bar || null;
+  const pct = document.createElement('span');
+  pct.className = 'zoom-pct';
+
+  function measure() {
+    const tag = String(el.tagName || '').toLowerCase();
+    let w = 0, h = 0;
+    if (tag === 'svg') {
+      try {
+        const vb = el.viewBox && el.viewBox.baseVal;
+        if (vb && vb.width && vb.height) { w = vb.width; h = vb.height; }
+      } catch {}
+    } else {
+      w = el.naturalWidth || 0;
+      h = el.naturalHeight || 0;
+    }
+    if (!w || !h) {
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      w = (r && r.width) || w;
+      h = (r && r.height) || h;
+    }
+    nat = { w, h };
+    return nat;
+  }
+
+  function stageSize() {
+    const r = stage.getBoundingClientRect ? stage.getBoundingClientRect() : null;
+    let w = stage.clientWidth || (r && r.width) || 0;
+    let h = stage.clientHeight || (r && r.height) || 0;
+    // 减去 padding：clientWidth 含内边距，不减的话「适应」出来的图会刚好溢出、平白多出滚动条
+    try {
+      const cs = window.getComputedStyle(stage);
+      w -= (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      h -= (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    } catch {}
+    return { w: Math.max(0, w), h: Math.max(0, h) };
+  }
+
+  // 适应窗口：小图不放大（避免糊），大图缩到刚好放得下
+  function fitScale() {
+    measure();
+    const s = stageSize();
+    if (!s.w || !s.h || !nat.w || !nat.h) return 1;
+    const slack = 4; // 缩放元素按 content-box 计宽（边框不计入），留几像素余量免得「刚好」时冒出滚动条
+    return Math.min(1, (s.w - slack) / nat.w, (s.h - slack) / nat.h);
+  }
+
+  function apply() {
+    if (!nat.w || !nat.h) { // 尺寸未知：交给 CSS
+      el.style.maxWidth = '100%';
+      el.style.maxHeight = '100%';
+      return;
+    }
+    // content-box：width/height 就是图片内容尺寸（全局 * 是 border-box，会因 1px 边框挤压并轻微变形）
+    el.style.boxSizing = 'content-box';
+    el.style.width = Math.max(1, Math.round(nat.w * scale)) + 'px';
+    el.style.height = Math.max(1, Math.round(nat.h * scale)) + 'px';
+    el.style.maxWidth = 'none';
+    el.style.maxHeight = 'none';
+    pct.textContent = Math.round(scale * 100) + '%';
+  }
+
+  // ev 给定时以光标为锚点：缩放前后光标下的那一点保持不动
+  function setScale(next, ev) {
+    const before = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    scale = Math.min(MAX, Math.max(MIN, next));
+    mode = 'free';
+    apply();
+    if (ev && before && before.width && before.height) {
+      const rx = (ev.clientX - before.left) / before.width;
+      const ry = (ev.clientY - before.top) / before.height;
+      const after = el.getBoundingClientRect();
+      stage.scrollLeft += (after.left + rx * after.width) - ev.clientX;
+      stage.scrollTop += (after.top + ry * after.height) - ev.clientY;
+    }
+    return scale;
+  }
+  function zoomBy(k, ev) { return setScale(scale * k, ev); }
+  function fit() { mode = 'fit'; scale = fitScale(); apply(); return scale; }
+  function reset() { return setScale(1); }
+  function refresh(reFit) {
+    if (mode === 'fit' || reFit) return fit();
+    measure();
+    apply();
+    return scale;
+  }
+  function resized() { if (mode === 'fit') { scale = fitScale(); apply(); } }
+
+  // ---------- 控制条：－ 100% ＋ | 适应 1:1 | 附加按钮 ----------
+  if (bar) {
+    const mkBtn = (label, title, fn, cls) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'zoom-btn' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // 不抢焦点（编辑器/快捷键）
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fn(); });
+      return b;
+    };
+    bar.appendChild(mkBtn('－', '缩小（Ctrl+滚轮向下 / -）', () => zoomBy(1 / STEP)));
+    pct.title = '当前缩放比例（点击恢复 100%）';
+    pct.addEventListener('click', (e) => { e.stopPropagation(); reset(); });
+    bar.appendChild(pct);
+    bar.appendChild(mkBtn('＋', '放大（Ctrl+滚轮向上 / +）', () => zoomBy(STEP)));
+    bar.appendChild(mkBtn('适应', '适应窗口（0）', () => fit()));
+    bar.appendChild(mkBtn('1:1', '原始像素 100%（1）', () => reset()));
+    for (const [label, title, fn] of (opts.extra || [])) bar.appendChild(mkBtn(label, title, fn, 'zoom-extra'));
+  }
+
+  // ---------- 滚轮：默认滚动（画布习惯），Ctrl/⌘ + 滚轮才缩放 ----------
+  // 早期版本无修饰键也缩放，于是"滚轮被缩放抢走了，放大后没法上下滑动"。
+  // 现在纯滚轮不拦截 —— 交给容器的原生滚动（放大后就是平移看图），只处理 Ctrl+滚轮：
+  const onWheel = (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return; // 不 preventDefault：垂直/Shift 横滚都按原生行为走
+    e.preventDefault(); // 挡掉 Chromium 自己的整页缩放
+    zoomBy(e.deltaY < 0 ? STEP : 1 / STEP, e);
+  };
+  stage.addEventListener('wheel', onWheel, { passive: false });
+
+  // ---------- 拖拽平移（左键：内容溢出才接管；中键：画布习惯，随时可拖） ----------
+  let drag = null;
+  const canPan = () => stage.scrollWidth > stage.clientWidth + 1 || stage.scrollHeight > stage.clientHeight + 1;
+  const onDown = (e) => {
+    const mid = e.button === 1;
+    if (e.button !== 0 && !mid) return;
+    if (!mid && !canPan()) return;
+    drag = { x: e.clientX, y: e.clientY, sl: stage.scrollLeft, st: stage.scrollTop };
+    stage.classList.add('panning');
+    e.preventDefault(); // 阻止图片被当作拖拽源、阻止选中、阻止中键自动滚动
+  };
+  const onMove = (e) => {
+    if (!drag) return;
+    stage.scrollLeft = drag.sl - (e.clientX - drag.x);
+    stage.scrollTop = drag.st - (e.clientY - drag.y);
+  };
+  const onUp = () => { if (drag) { drag = null; stage.classList.remove('panning'); } };
+  stage.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+
+  // ---------- 双击切换「适应 ↔ 100%」 ----------
+  const onDblClick = () => { if (mode === 'fit') reset(); else fit(); };
+  if (opts.dblclick) el.addEventListener('dblclick', onDblClick);
+
+  // ---------- 窗口尺寸变化：仅 fit 态自动重算 ----------
+  let ro = null;
+  if (typeof window.ResizeObserver === 'function') {
+    ro = new window.ResizeObserver(resized);
+    try { ro.observe(stage); } catch {}
+  }
+
+  // ---------- 快捷键（全屏浮层用；Esc 由调用方处理） ----------
+  const onKey = (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return; // 组合键归应用快捷键（Ctrl+= 字号等）
+    const t = String((e.target && e.target.tagName) || '').toLowerCase();
+    if (t === 'input' || t === 'textarea') return;
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(STEP); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomBy(1 / STEP); }
+    else if (e.key === '0') { e.preventDefault(); fit(); }
+    else if (e.key === '1') { e.preventDefault(); reset(); }
+  };
+  if (opts.keys) window.addEventListener('keydown', onKey);
+
+  function destroy() {
+    stage.removeEventListener('wheel', onWheel);
+    stage.removeEventListener('mousedown', onDown);
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    if (opts.dblclick) el.removeEventListener('dblclick', onDblClick);
+    if (opts.keys) window.removeEventListener('keydown', onKey);
+    if (ro) { try { ro.disconnect(); } catch {} }
+  }
+
+  measure();
+  if (mode === 'fit') scale = fitScale();
+  apply();
+
+  return { get scale() { return scale; }, setScale, zoomBy, fit, reset, refresh, apply, destroy };
+};
+
+// ---------- 图片查看器（标签页内嵌）：缩放工具条 + 滚轮缩放 + 拖拽平移 ----------
+MI.buildImageViewer = function (src, alt) {
+  const root = document.createElement('div');
+  root.className = 'img-view';
+  const stage = document.createElement('div');
+  stage.className = 'img-stage';
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = alt || '图片预览';
+  img.draggable = false;
+  stage.appendChild(img);
+  const bar = document.createElement('div');
+  bar.className = 'zoom-bar img-bar';
+  root.appendChild(stage);
+  root.appendChild(bar);
+  const z = MI.createZoomer({
+    stage, el: img, bar, dblclick: true,
+    extra: [['⛶ 全屏', '全屏查看（Esc 关闭）', () => MI.showImgLightbox(src, alt)]],
+  });
+  // 图片解码完成才有真实尺寸：重新量一次并按适应态收口
+  img.addEventListener('load', () => z.refresh(true));
+  root.__zoomer = z; // 供测试/调试直接驱动缩放
+  return root;
+};
+
+// ---------- 图片全屏查看（lightbox）：md 预览 / Live Preview / 图片查看器共用 ----------
+// 滚轮缩放、拖拽平移、双击切换、Esc / 点击空白关闭；同一时刻只有一个实例
 MI.showImgLightbox = function (src, alt) {
   const old = document.querySelector('.img-lightbox');
   if (old) old.remove();
   const box = document.createElement('div');
   box.className = 'img-lightbox';
+  const stage = document.createElement('div');
+  stage.className = 'img-stage img-lb-stage';
   const img = document.createElement('img');
   img.src = src;
   img.alt = alt || '';
   img.draggable = false;
+  stage.appendChild(img);
+  const bar = document.createElement('div');
+  bar.className = 'zoom-bar img-bar img-lb-bar';
+  box.appendChild(stage);
+  box.appendChild(bar);
   const tip = document.createElement('div');
   tip.className = 'img-lightbox-tip';
-  tip.textContent = '滚轮缩放 · 拖动平移 · Esc / 点击空白关闭';
-  box.appendChild(img);
+  tip.textContent = '滚轮滚动 · Ctrl+滚轮缩放 · 拖动平移 · 双击切换 · Esc 关闭';
   box.appendChild(tip);
   document.body.appendChild(box);
-  let scale = 1, tx = 0, ty = 0, drag = null;
-  const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
-  const onMove = (e) => {
-    if (!drag) return;
-    tx = drag.tx + e.clientX - drag.x;
-    ty = drag.ty + e.clientY - drag.y;
-    apply();
-  };
-  const onUp = () => { drag = null; };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
   function close() {
     box.remove();
     window.removeEventListener('keydown', onKey);
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
+    z.destroy();
   }
-  img.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); drag = { x: e.clientX, y: e.clientY, tx, ty }; };
-  box.onclick = (e) => { if (e.target !== img) close(); }; // 点图=拖拽起点，点空白=关闭
-  box.onwheel = (e) => {
-    e.preventDefault();
-    scale = Math.min(8, Math.max(0.15, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-    apply();
-  };
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  const z = MI.createZoomer({
+    stage, el: img, bar, initial: 'fit', keys: true, dblclick: true,
+    extra: [['✕ 关闭', '关闭（Esc）', () => close()]],
+  });
+  img.addEventListener('load', () => z.refresh(true));
+  // 点空白关闭（图本身是拖拽起点，不算空白）
+  stage.addEventListener('click', (e) => { if (e.target === stage) close(); });
   window.addEventListener('keydown', onKey);
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
+  return z;
+};
+
+// ---------- SVG（mermaid 图）全屏查看 ----------
+// md 预览 / Live Preview 两处的 mermaid 图共用：克隆 SVG 进浮层，可缩放、Esc/点空白关闭
+MI.showSvgFullscreen = function (svgEl) {
+  if (!svgEl) return null;
+  const old = document.querySelector('.svg-fullscreen');
+  if (old) old.remove();
+  const box = document.createElement('div');
+  box.className = 'svg-fullscreen';
+  const stage = document.createElement('div');
+  stage.className = 'img-stage svg-fs-stage';
+  const svg = svgEl.cloneNode(true);
+  // 清掉原图的尺寸约束（内联 max-width / width 属性），交给缩放器接管
+  try {
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.maxWidth = 'none';
+    svg.style.maxHeight = 'none';
+  } catch {}
+  stage.appendChild(svg);
+  const bar = document.createElement('div');
+  bar.className = 'zoom-bar img-bar svg-fs-bar';
+  box.appendChild(stage);
+  box.appendChild(bar);
+  const tip = document.createElement('div');
+  tip.className = 'img-lightbox-tip';
+  tip.textContent = '滚轮滚动 · Ctrl+滚轮缩放 · 拖动平移 · Esc 关闭';
+  box.appendChild(tip);
+  document.body.appendChild(box);
+  function close() {
+    box.remove();
+    window.removeEventListener('keydown', onKey);
+    z.destroy();
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  const z = MI.createZoomer({
+    stage, el: svg, bar, initial: 'fit', keys: true,
+    extra: [['✕ 关闭', '关闭（Esc）', () => close()]],
+  });
+  stage.addEventListener('click', (e) => { if (e.target === stage) close(); });
+  window.addEventListener('keydown', onKey);
+  return z;
+};
+
+// 给承载 mermaid 图的容器挂「全屏」按钮（md 预览 .mermaid-box / Live Preview .cm-md-mermaid）
+MI.attachMermaidFullscreen = function (container, svg) {
+  if (!container || !svg) return;
+  container.classList.add('has-fs-btn');
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mmd-fs-btn';
+  b.textContent = '⛶';
+  b.title = '全屏查看此图（Esc 关闭）';
+  b.addEventListener('mousedown', (e) => e.preventDefault());
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    MI.showSvgFullscreen(svg);
+  });
+  container.appendChild(b);
 };
 
 // Markdown
@@ -168,6 +449,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
           const id = 'mmd-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, code);
           div.innerHTML = svg;
+          MI.attachMermaidFullscreen(div, div.querySelector('svg')); // 右上角「⛶ 全屏」
         } catch (e) {
           // 渲染失败：显示源码（可读可改），不吞错
           const pre2 = document.createElement('pre');
@@ -269,15 +551,9 @@ MI.registerRenderer(['json'], ({ content }) => {
   try { return JSON.stringify(JSON.parse(content), null, 2); } catch { return content; }
 });
 
-// 图片（解码交给 Chromium，零依赖）
+// 图片（解码交给 Chromium，零依赖；工具条缩放/适应/全屏见 MI.buildImageViewer）
 MI.registerRenderer(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'], ({ path }) => {
-  const wrap = document.createElement('div');
-  wrap.className = 'img-view';
-  const img = document.createElement('img');
-  img.src = 'file:///' + String(path).split('\\').join('/');
-  img.alt = '图片预览';
-  wrap.appendChild(img);
-  return wrap;
+  return MI.buildImageViewer('file:///' + String(path).split('\\').join('/'), '图片预览');
 });
 
 // 视频（Chromium 解码，零依赖）

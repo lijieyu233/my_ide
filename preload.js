@@ -87,6 +87,9 @@ contextBridge.exposeInMainWorld('myIDE', {
     cherryPick: (d, oid) => ipcRenderer.invoke('git:cherryPick', d, oid),
     logFile: (d, file, limit) => ipcRenderer.invoke('git:logFile', d, file, limit),
     blame: (d, file) => ipcRenderer.invoke('git:blame', d, file),
+    addToGitignore: (d, file) => ipcRenderer.invoke('git:addToGitignore', d, file),
+    removeFromGitignore: (d, file) => ipcRenderer.invoke('git:removeFromGitignore', d, file),
+    listIgnored: (d) => ipcRenderer.invoke('git:listIgnored', d),
   },
   plugins: {
     loadAll: () => ipcRenderer.invoke('plugins:loadAll'),

@@ -26,6 +26,7 @@
   --panel-strong: #202020;
   --menu-border: #3d3d3d;
   --border-mid: #3a3a3a;
+  --border-pane: color-mix(in srgb, var(--text) 16%, transparent); /* 主分界线（比 --border 清晰，且随主题/自定义配色走） */
   --code-bg: #161616;
   --code-text: #e8c98a;
   --editor-text: #c8c8c8;
@@ -36,6 +37,11 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 .hidden { display: none !important; }
+/* 焦点态统一：键盘聚焦才出现外框（鼠标点击不闪），编辑器自带光标故排除 */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* 输入类控件不用外框（否则和 focus:border-color 叠成双圈），编辑器自带光标也排除 */
+input:focus-visible, textarea:focus-visible, select:focus-visible,
+.cm-content:focus, .cm-content:focus-visible { outline: none; }
 html, body { height: 100%; overflow: hidden; }
 body {
   background: var(--bg);
@@ -52,13 +58,13 @@ body {
 #toolbar {
   display: flex; align-items: center; gap: 8px;
   height: 38px; padding: 0 10px;
-  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  background: var(--bg-panel); border-bottom: 1px solid var(--border-pane);
   flex-shrink: 0;
   -webkit-app-region: drag;
   user-select: none;
 }
 #toolbar .tb-btn, #toolbar .proj-btn, #toolbar .proj-all, #toolbar .win-btns,
-#toolbar #project-bar, #toolbar input, #toolbar label { -webkit-app-region: no-drag; }
+#toolbar #project-bar, #toolbar #project-bar-wrap, #toolbar input, #toolbar label { -webkit-app-region: no-drag; }
 .win-btns { display: flex; gap: 2px; margin-left: 4px; flex-shrink: 0; }
 .win-btns .tb-btn { padding: 2px 9px; line-height: 1.3; }
 .win-btns .win-close:hover { background: #e81123; color: #fff; border-color: #e81123; }
@@ -67,34 +73,63 @@ body {
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 4px 10px; font-size: 12px; cursor: pointer;
   white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
 }
 .tb-btn:hover { background: var(--btn-hover); color: var(--text-bright); }
 .tb-btn.big { padding: 8px 18px; font-size: 14px; margin-top: 14px; }
-#project-bar { display: flex; gap: 4px; overflow-x: auto; max-width: 50vw; flex-shrink: 0; padding: 2px 0; scrollbar-width: none; }
+/* 纯图标按钮：定宽定高、图标居中（文字按钮与图标按钮混排时基线一致） */
+.tb-btn.tb-ic { padding: 0; width: 26px; height: 22px; justify-content: center; }
+/* 工具栏分组分隔线：功能按钮组 / 窗口控制组 */
+.tb-sep { width: 1px; height: 16px; background: var(--border-mid); flex-shrink: 0; opacity: .8; }
+
+/* ---------- 内联图标（统一风格：线性 16px、currentColor、1.4 描边） ---------- */
+svg.ic {
+  width: 16px; height: 16px; flex-shrink: 0; display: block;
+  fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+}
+svg.ic .fill { fill: currentColor; stroke: none; }
+.tb-btn svg.ic { width: 15px; height: 15px; }
+/* 项目栏外层：「全部项目」入口固定在这一层，横向滚动只发生在内层 #project-bar
+   —— 不再用 sticky 浮层：老实现里项目按钮是从 sticky 药丸底下钻过去的，必然「覆盖」 */
+#project-bar-wrap {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0; max-width: 50vw; flex-shrink: 1;
+}
+#project-bar {
+  display: flex; align-items: center; gap: 6px;
+  overflow-x: auto; overflow-y: hidden;
+  flex: 1 1 auto; min-width: 0;
+  padding: 0;
+  scrollbar-width: none;
+}
 #project-bar::-webkit-scrollbar { display: none; }
-/* 「全部项目」入口：sticky 固定最左（项目多横向滚动时不被滚出视口） */
+/* 右侧还有项目没露出来 → 淡出提示「可以继续滚」（class 由 app.js 按溢出状态切换） */
+#project-bar.scroll-r {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
+}
+/* 「全部项目」入口：只显示计数 + 下拉。当前项目名不再重复显示
+   —— 高亮的项目按钮就在右边，同一个名字出现两遍才是上一版看着乱的原因 */
 .proj-all {
-  position: sticky; left: 0; z-index: 3;
-  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 22px; padding: 0 10px;
   background: var(--bg-panel); color: var(--text);
   border: 1px solid var(--btn-border); border-radius: 4px;
-  padding: 2px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  font-size: 12px; line-height: 1; cursor: pointer; white-space: nowrap;
   max-width: 220px; overflow: hidden;
-  box-shadow: 2px 0 5px rgba(0, 0, 0, 0.22);
 }
 .proj-all:hover { color: var(--text-bright); background: var(--btn-hover); }
 .proj-all .proj-all-n { color: var(--accent); font-weight: 600; }
-.proj-all .proj-all-cur {
-  overflow: hidden; text-overflow: ellipsis; max-width: 140px;
-  border-left: 1px solid var(--border-mid); padding-left: 6px;
-}
+/* 项目按钮：inline-flex + 固定行高 —— 纯 padding 撑高时中文上下会被挤出边框（挤压感） */
 .proj-btn {
+  display: inline-flex; align-items: center;
+  height: 22px; padding: 0 10px;
   background: transparent; color: var(--text-dim);
   border: 1px solid var(--btn-border); border-radius: 4px;
-  padding: 2px 10px; font-size: 12px; cursor: pointer;
+  font-size: 12px; line-height: 1; cursor: pointer;
   white-space: nowrap; flex-shrink: 0;
-  scroll-margin-left: 230px; /* scrollIntoView 不被 sticky「全部项目」盖住 */
 }
+.proj-btn > span:first-child { overflow: hidden; text-overflow: ellipsis; max-width: 180px; } /* 长项目名省略，不把栏撑爆 */
 .proj-btn:hover { color: var(--text-bright); background: var(--btn-hover); }
 .proj-btn.active {
   background: var(--accent); color: #fff; border-color: var(--accent);
@@ -118,7 +153,7 @@ body {
 #tool-strip {
   width: 38px; flex-shrink: 0;
   background: var(--bg-panel);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-pane);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
@@ -132,7 +167,10 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   font-size: 16px; cursor: pointer; color: var(--text-dim);
   border-left: 2px solid transparent;
   position: relative;
+  display: flex; align-items: center; justify-content: center;
 }
+/* 收起/展开箭头：默认指向要收起的方向，收起后翻转（不再靠切字符） */
+#tool-sidebar.collapsed svg.ic, #tool-sidebar-r.collapsed svg.ic { transform: rotate(180deg); }
 .tool-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
 .tool-btn.active { background: var(--bg); color: var(--accent); border-left-color: var(--accent); }
 .tool-btn.active::after {
@@ -143,7 +181,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 #sidebar {
   width: 280px; min-width: 160px; max-width: 560px;
   background: var(--bg-panel);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-pane);
   display: flex; flex-direction: column;
   overflow: hidden;
   /* 左栏字号基准：目录树 / 大纲 / 提交 / 数据库 / 任务在此统一，
@@ -160,7 +198,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 #tool-strip-right {
   width: 38px; flex-shrink: 0;
   background: var(--bg-panel);
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--border-pane);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
@@ -170,15 +208,31 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 #tool-strip-right .tool-btn { border-left: none; border-right: 2px solid transparent; }
 #tool-strip-right .tool-btn.active { background: var(--bg); color: var(--accent); border-right-color: var(--accent); }
 #tool-strip-right .tool-btn.active::after { display: none; }
-#tree-head { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
-#tree-head input[type="text"] {
-  flex: 1; min-width: 40px;
+#tree-head { padding: 5px 8px; border-bottom: 1px solid var(--border-pane); display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+/* 搜索框：图标内嵌 + 无边框静态态（focus 才描主色）—— 老版是「描边输入框 + emoji 放大镜 + 聚焦时外框」三重噪音 */
+.tree-search-wrap { position: relative; flex: 1; min-width: 40px; display: flex; align-items: center; }
+.tree-search-wrap svg.ic { position: absolute; left: 7px; width: 13px; height: 13px; color: var(--text-dim); pointer-events: none; }
+.tree-search-wrap input[type="text"] {
+  width: 100%; min-width: 40px;
   background: var(--bg-input); color: var(--text);
-  border: 1px solid var(--btn-border); border-radius: 4px;
-  padding: 2px 8px; font-size: 12px; outline: none;
+  border: 1px solid transparent; border-radius: 5px;
+  padding: 3px 8px 3px 24px; font-size: 12px; outline: none;
 }
-#tree-head input[type="text"]:focus { border-color: var(--accent); }
-#tree-head .tree-head-actions { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
+.tree-search-wrap input[type="text"]::placeholder { color: var(--text-dim); }
+.tree-search-wrap input[type="text"]:hover { border-color: var(--btn-border); }
+.tree-search-wrap input[type="text"]:focus { border-color: var(--accent); background: var(--bg); }
+.tree-search-wrap:focus-within svg.ic { color: var(--accent); }
+#tree-head .tree-head-actions { margin-left: auto; display: flex; gap: 1px; flex-shrink: 0; }
+/* 工具窗口图标按钮：无边框、hover 才浮底色（PyCharm 工具窗口按钮的观感；老版每个都带描边框） */
+#tree-head .vt-btn {
+  border: none; background: transparent; border-radius: 4px;
+  padding: 0 4px; height: 20px; min-width: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim);
+}
+#tree-head .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+#tree-head .vt-btn.active { color: var(--accent); background: transparent; }
+#tree-head .hide-mode-btn { padding: 0 6px; }
 /* 搜索结果行 + 空态 */
 .tree-row.tree-search-row { color: var(--text); }
 .tree-row.tree-search-row .tree-search-rel {
@@ -308,16 +362,80 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* live 模式下正文更接近阅读宽度 */
 .editor-cm-wrap .cm-line { padding-left: 0; padding-right: 0; }
 
-/* ---------- 空状态 ---------- */
+/* ---------- 空状态（启动页）----------
+   老版：46px emoji + 若干灰字直接铺在整片空白中间 → 没有容器、没有虚实层级、主操作还不是主题色。
+   现在：单张卡片承载（细边框 + 圆角），主操作走 accent，最近项目改成纵向列表（名字亮 / 路径暗）。 */
 #empty-state {
   position: absolute; inset: 0; display: none; flex-direction: column;
   align-items: center; justify-content: center; text-align: center;
+  padding: 24px;
 }
 #empty-state.visible { display: flex; }
-.empty-icon { font-size: 46px; margin-bottom: 14px; }
-.empty-title { font-size: 20px; color: var(--text-bright); margin-bottom: 10px; font-weight: 600; }
-.empty-hint { color: var(--text-dim); margin-bottom: 4px; }
-.empty-hint2 { color: var(--text-dim); font-size: 12px; margin-bottom: 6px; }
+.empty-card {
+  width: 100%; max-width: 400px; text-align: left;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-mid); border-radius: 10px;
+  padding: 18px 18px 14px;
+}
+.empty-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.empty-mark {
+  width: 36px; height: 36px; flex-shrink: 0; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.empty-mark svg.ic { width: 20px; height: 20px; stroke-width: 1.6; }
+.empty-head-tx { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.empty-title { font-size: 15px; font-weight: 600; color: var(--text-bright); }
+.empty-sub { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 快捷键提示：等宽胶囊，弱化到提示层 */
+.empty-keys { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.kbd-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--text-dim);
+}
+.kbd-chip kbd {
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1;
+  padding: 3px 5px; border-radius: 4px;
+  color: var(--text); background: var(--bg-input);
+  border: 1px solid var(--btn-border); border-bottom-width: 2px;
+}
+/* 主操作：整屏唯一的主按钮，用主题色 */
+.empty-cta {
+  width: 100%; height: 34px; margin-bottom: 16px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  color: #fff; background: var(--accent);
+  border: 1px solid var(--accent); border-radius: 6px;
+}
+.empty-cta:hover { filter: brightness(1.08); }
+.empty-cta svg.ic { width: 15px; height: 15px; }
+/* 最近项目：纵向列表（名字亮 / 父路径暗），比一排 chips 更清楚，也不会横向溢出 */
+.empty-list-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.empty-list-head > span:first-child { font-size: 11px; color: var(--text-dim); }
+.empty-list-line { flex: 1; height: 1px; background: var(--border-mid); opacity: .6; }
+.empty-list-all { font-size: 11px; color: var(--text-dim); cursor: pointer; }
+.empty-list-all:hover { color: var(--accent); }
+.empty-list-none { font-size: 11px; color: var(--text-dim); padding: 2px 0 4px; opacity: .85; }
+.empty-list { display: flex; flex-direction: column; gap: 1px; }
+.empty-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 8px; border: none; border-radius: 5px;
+  background: transparent; color: var(--text); cursor: pointer;
+  font-size: 12.5px; text-align: left;
+}
+.empty-item:hover { background: var(--bg-hover); }
+.empty-item.active { background: var(--bg-selected); color: #fff; }
+.empty-item svg.ic { width: 14px; height: 14px; color: var(--text-dim); }
+.empty-item.active svg.ic { color: #fff; }
+.empty-item-name { flex-shrink: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); }
+.empty-item.active .empty-item-name { color: #fff; }
+.empty-item-dir { flex: 1; min-width: 0; text-align: right; font-size: 10.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+.empty-more {
+  margin-top: 6px; width: 100%; padding: 3px 0;
+  background: transparent; border: none; cursor: pointer;
+  font-size: 11px; color: var(--text-dim);
+}
+.empty-more:hover { color: var(--accent); }
 
 /* ---------- 查看器 ---------- */
 .viewer-toolbar {
@@ -328,16 +446,16 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .viewer-toolbar .vt-path { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .vt-btn {
   background: transparent; color: var(--text-dim); border: 1px solid var(--btn-border);
-  border-radius: 3px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+  border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer;
 }
 .vt-btn:hover { color: var(--text-bright); background: var(--btn-hover); }
 .vt-btn.active { color: var(--accent); border-color: var(--accent); }
 .viewer-toolbar .vt-save { color: var(--green); }
 /* 目录树三态隐藏视角按钮：文字 + 颜色双标识当前视角 */
-.hide-mode-btn { min-width: 44px; text-align: center; font-weight: 600; }
-.hide-mode-btn.hm-normal { color: var(--text-dim); border-color: var(--btn-border); }
-.hide-mode-btn.hm-hidden { color: var(--accent); border-color: var(--accent); background: var(--bg-selected); }
-.hide-mode-btn.hm-all { color: var(--green); border-color: var(--green); }
+.hide-mode-btn { min-width: 40px; text-align: center; font-weight: 600; }
+.hide-mode-btn.hm-normal { color: var(--text-dim); }
+.hide-mode-btn.hm-hidden { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.hide-mode-btn.hm-all { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
 
 textarea.editor {
   width: 100%; height: 100%; resize: none; border: none; outline: none;
@@ -364,7 +482,7 @@ textarea.editor {
 .md-view a { color: var(--accent); }
 .md-view ul, .md-view ol { padding-left: 24px; margin: 8px 0; }
 .md-view code {
-  background: var(--btn-bg); border-radius: 3px; padding: 1px 5px;
+  background: var(--btn-bg); border-radius: 4px; padding: 1px 5px;
   font-family: var(--font-mono); font-size: 12px; color: var(--code-text);
 }
 .md-view pre { background: var(--code-bg); border-radius: 6px; padding: 12px; overflow: auto; margin: 10px 0; border: 1px solid var(--border); }
@@ -379,34 +497,79 @@ textarea.editor {
 .md-view tbody tr:hover { background: rgba(64,140,255,.08); }
 .md-view hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .md-view img { max-width: 100%; }
-/* 图片全屏查看（lightbox）：点击图片打开；滚轮缩放/拖动平移/Esc 关闭 */
-.img-lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.86);
-  display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
-.img-lightbox img { max-width: 92vw; max-height: 90vh; cursor: grab; user-select: none;
-  transition: transform .05s linear; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
-.img-lightbox img:active { cursor: grabbing; }
-.img-lightbox-tip { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-  color: rgba(255,255,255,.75); font-size: 12px; background: rgba(0,0,0,.5);
-  padding: 4px 14px; border-radius: 12px; pointer-events: none; }
 .md-view .code-copy {
   float: right; margin: -8px -8px 0 0; font-size: 11px; color: var(--text-dim); cursor: pointer;
-  background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: 3px; padding: 1px 6px;
+  background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: 4px; padding: 1px 6px;
 }
 .md-view .code-copy:hover { color: var(--text-bright); }
 
-/* 图片预览 */
-.img-view {
-  flex: 1; overflow: auto;
-  display: flex; align-items: center; justify-content: center;
-  padding: 20px;
-  background: var(--bg);
+/* ---------- 缩放查看器（图片 / SVG 通用）---------- */
+/* 浮层式工具条：－ 100% ＋ ｜ 适应 1:1 ｜ 附加按钮（全屏 / 关闭） */
+.zoom-bar {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 6px;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  border: 1px solid var(--border-mid); border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+  backdrop-filter: blur(6px);
+  user-select: none; white-space: nowrap;
 }
-.img-view img {
-  max-width: 100%; max-height: 100%; object-fit: contain;
-  box-shadow: 0 2px 12px rgba(0,0,0,.35);
+.zoom-btn {
+  background: transparent; border: none; color: var(--text-dim);
+  font-size: 12px; line-height: 1; padding: 4px 8px; border-radius: 10px; cursor: pointer;
+}
+.zoom-btn:hover { color: var(--text-bright); background: var(--btn-hover); }
+.zoom-btn.zoom-extra { border: 1px solid var(--btn-border); padding: 3px 9px; }
+.zoom-btn.zoom-extra:hover { border-color: var(--accent); }
+.zoom-pct {
+  min-width: 46px; text-align: center; color: var(--text); font-size: 12px; cursor: pointer;
+  font-variant-numeric: tabular-nums; padding: 0 2px;
+}
+.zoom-pct:hover { color: var(--accent); }
+
+/* 图片预览：可滚动舞台 + 悬浮缩放条 */
+.img-view { flex: 1; min-height: 0; position: relative; display: flex; background: var(--bg); }
+.img-stage {
+  flex: 1; min-width: 0; min-height: 0; overflow: auto;
+  display: flex;  /* 子元素 margin:auto 居中：内容溢出时左上角仍可达（justify-content:center 会推出去） */
+  padding: 20px;
+}
+.img-stage > img {
+  margin: auto; display: block;
+  max-width: 100%; max-height: 100%; /* JS 量到真实尺寸前的兜底 */
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .35);
   border: 1px solid var(--border);
   background: #fff; /* 透明图也保持白底可读 */
+  cursor: grab; user-select: none;
 }
+.img-stage > svg { margin: auto; display: block; cursor: grab; user-select: none; }
+.img-stage.panning, .img-stage.panning > img, .img-stage.panning > svg { cursor: grabbing; }
+.img-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5; }
+
+/* 图片 / SVG 全屏浮层（lightbox） */
+.img-lightbox, .svg-fullscreen {
+  position: fixed; inset: 0; z-index: 9999; background: rgba(0, 0, 0, .88);
+  display: flex;
+}
+.img-lb-stage, .svg-fs-stage { flex: 1; min-height: 0; cursor: zoom-out; }
+.img-lb-stage > img { box-shadow: 0 8px 40px rgba(0, 0, 0, .5); border: none; }
+.img-lb-bar, .svg-fs-bar { bottom: 46px; }
+.img-lightbox-tip { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  color: rgba(255, 255, 255, .75); font-size: 12px; background: rgba(0, 0, 0, .5);
+  padding: 4px 14px; border-radius: 12px; pointer-events: none; }
+
+/* mermaid 图右上角「⛶ 全屏」（md 预览 .mermaid-box / Live Preview .cm-md-mermaid） */
+.mmd-fs-btn {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 26px; height: 22px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--btn-bg); color: var(--text-dim);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .12s;
+}
+.mermaid-box:hover .mmd-fs-btn, .cm-md-mermaid:hover .mmd-fs-btn, .mmd-fs-btn:focus-visible { opacity: 1; }
+.mmd-fs-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--btn-hover); }
 
 /* 视频 / 音频查看器 */
 .media-view {
@@ -431,7 +594,7 @@ textarea.editor {
 .outline-tool {
   flex: 1; padding: 2px 0; font-size: 11px; line-height: 1.5;
   background: var(--btn-bg); color: var(--text-dim);
-  border: 1px solid var(--btn-border); border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--btn-border); border-radius: 4px; cursor: pointer;
 }
 .outline-tool:hover { background: var(--btn-hover); color: var(--text-bright); }
 .outline-tool.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -474,7 +637,7 @@ textarea.editor {
   font-size: var(--tool-font, 13px);
 }
 #cd-branch {
-  color: var(--green); cursor: pointer; padding: 1px 5px; border-radius: 3px; user-select: none;
+  color: var(--green); cursor: pointer; padding: 1px 5px; border-radius: 4px; user-select: none;
   max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #cd-branch:hover { background: var(--bg-hover); }
@@ -492,18 +655,40 @@ textarea.editor {
 .df-nav-row .df-path { color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .df-nav-row .df-meta { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 
+/* ---------- 提交窗口：工具行（纯图标按钮，对齐 PyCharm 提交窗口 Changes 工具栏）---------- */
 .git-cp-bar {
-  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; gap: 1px; padding: 4px 8px;
+  border-bottom: 1px solid var(--border-pane); flex-shrink: 0;
 }
-.git-cp-bar .gbtn { padding: 2px 8px; font-size: 11.5px; }
-.git-cp-all { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
-.git-cp-all:hover { color: var(--text-bright); }
+.git-cp-bar .vt-btn {
+  border: none; background: transparent; border-radius: 4px;
+  height: 22px; min-width: 24px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); cursor: pointer;
+}
+.git-cp-bar .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.git-cp-bar .vt-btn.active { color: var(--accent); }
+.git-cp-bar .vt-btn:disabled { opacity: .35; cursor: default; }
+.git-cp-bar .vt-btn:disabled:hover { background: transparent; color: var(--text-dim); }
+.git-cp-bar svg.ic { width: 15px; height: 15px; }
+/* 提交面板标题栏按钮：无边框、hover 才浮底色（老版每个按钮都有描边，一排下来像表单） */
+#panel-git .panel-title-actions { display: flex; align-items: center; gap: 2px; }
+#panel-git .panel-title-actions .vt-btn {
+  border: none; background: transparent; border-radius: 4px;
+  padding: 0 6px; height: 20px; gap: 4px;
+  display: inline-flex; align-items: center; color: var(--text-dim);
+}
+#panel-git .panel-title-actions .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+#panel-git .panel-title-actions .vt-btn.active { color: var(--accent); }
+#panel-git .panel-title-actions svg.ic { width: 14px; height: 14px; }
+/* ---------- 提交列表：分节标题行 = 收起箭头 + 三态复选框 + 名称 + 计数（PyCharm）---------- */
 .git-sec-title {
+  display: flex; align-items: center; gap: 6px;
   padding: 6px 10px 3px; font-size: 11px; color: var(--text-dim);
   letter-spacing: .5px; position: sticky; top: 0;
   background: var(--bg-panel); z-index: 2;
 }
+.git-sec-title .sec-name { color: var(--text); font-weight: 600; letter-spacing: 0; }
 .git-file {
   display: flex; align-items: center; gap: 6px; padding: 3px 10px;
   cursor: pointer; font-size: 12px; white-space: nowrap;
@@ -519,11 +704,20 @@ textarea.editor {
 }
 .git-file:hover .git-revert { visibility: visible; }
 .git-file .git-revert:hover { color: var(--red); }
-.badge { font-size: 10px; border-radius: 3px; padding: 0 4px; flex-shrink: 0; }
-.badge.M, .badge.modified, .badge.\*modified { background: var(--badge-m-bg); color: var(--badge-m-tx); }
-.badge.A, .badge.added, .badge.\*added { background: var(--badge-a-bg); color: var(--green); }
-.badge.D, .badge.deleted, .badge.\*deleted { background: var(--badge-d-bg); color: var(--red); }
-.badge.absent { background: var(--badge-d-bg); color: var(--red); }
+/* 状态徽章：单字母方块。未暂存 = 描边，已暂存 = 实底（一眼区分暂存与否，完整文案在 tooltip） */
+.badge {
+  font-size: 10px; line-height: 14px; min-width: 16px; text-align: center;
+  border-radius: 4px; padding: 0 3px; flex-shrink: 0;
+  font-family: var(--font-mono);
+  background: transparent; border: 1px solid currentColor;
+}
+.badge.M, .badge.modified, .badge.\*modified { color: var(--badge-m-tx); }
+.badge.A, .badge.added, .badge.\*added { color: var(--green); }
+.badge.D, .badge.deleted, .badge.\*deleted { color: var(--red); }
+.badge.absent { color: var(--red); }
+.badge.M.staged, .badge.modified.staged, .badge.\*modified.staged { background: var(--badge-m-tx); color: var(--bg-panel); }
+.badge.A.staged, .badge.added.staged, .badge.\*added.staged { background: var(--green); color: var(--bg-panel); }
+.badge.D.staged, .badge.deleted.staged, .badge.\*deleted.staged { background: var(--red); color: var(--bg-panel); }
 
 #commit-msg {
   width: 100%; min-height: 52px; max-height: 140px; resize: vertical;
@@ -535,9 +729,53 @@ textarea.editor {
 .commit-foot { display: flex; align-items: center; gap: 8px; }
 .commit-foot .m-check { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
 .commit-foot .m-check input { accent-color: var(--accent); margin: 0; }
-#commit-count { font-size: 11px; color: var(--text-dim); }
+#commit-count { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
 #cm-ok { margin-left: auto; padding: 4px 16px; }
-#cm-ok:disabled { opacity: .45; cursor: default; }
+#cm-ok:disabled, #cm-ok-push:disabled, #cm-ok-push-menu:disabled { opacity: .45; cursor: default; }
+/* 修正上次提交行（PyCharm：复选框 + 说明 + 提交消息历史 🕘） */
+.commit-amend-row { display: flex; align-items: center; gap: 6px; }
+.commit-amend-row .m-check { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+.commit-amend-row .m-check input { accent-color: var(--accent); margin: 0; }
+.commit-amend-row .m-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-amend-row .vt-btn {
+  border: none; background: transparent; border-radius: 4px; flex-shrink: 0;
+  height: 20px; min-width: 22px; padding: 0 3px; color: var(--text-dim);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.commit-amend-row .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.commit-amend-row .vt-btn.active { color: var(--accent); }
+.commit-amend-row svg.ic { width: 14px; height: 14px; }
+/* 「提交并推送」拆分按钮：主体 + ▾ 选项（其他远程 / 强制推送） */
+.m-split { display: inline-flex; }
+.m-split #cm-ok-push { border-radius: 4px 0 0 4px; }
+.m-split .m-caret { border-radius: 0 4px 4px 0; border-left: 1px solid rgba(255,255,255,.25); padding: 4px 6px; }
+/* 内嵌 diff 预览（PyCharm 提交窗口的预览开关）：侧栏窄，用紧凑 unified 视图 */
+#commit-preview {
+  flex: 0 0 auto; max-height: 42%; min-height: 90px;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border-pane); background: var(--bg);
+}
+#commit-preview.hidden { display: none; }
+.cp-head { display: flex; align-items: center; gap: 6px; padding: 3px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.cp-title { font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-stats { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.cp-head .vt-btn { border: none; background: transparent; border-radius: 4px; height: 18px; padding: 0 4px; color: var(--text-dim); cursor: pointer; }
+.cp-head .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.cp-body { flex: 1; min-height: 0; overflow: auto; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; padding-bottom: 6px; }
+.cp-hunk { padding: 2px 10px; color: var(--text-dim); background: var(--bg-panel); position: sticky; top: 0; }
+.cp-line { padding: 0 10px; white-space: pre-wrap; word-break: break-all; }
+.cp-line.add { background: rgba(80,180,90,.16); color: var(--green); }
+.cp-line.del { background: rgba(220,80,80,.16); color: var(--red); }
+.cp-line.ctx { color: var(--text); }
+.cp-msg { padding: 10px; color: var(--text-dim); font-size: 12px; }
+/* 提交信息历史 / 提交并推送选项的浮动菜单（沿用右键菜单条目样式） */
+.git-float-menu {
+  position: fixed; z-index: 210; min-width: 180px; max-width: 320px;
+  background: var(--btn-bg); border: 1px solid var(--menu-border); border-radius: 6px;
+  padding: 4px 0; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  max-height: 60vh; overflow: auto;
+}
+.git-float-menu .ctx-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .git-empty { padding: 30px 20px; text-align: center; color: var(--text-dim); font-size: 12px; }
 .git-empty .gbtn { margin-top: 10px; }
@@ -566,11 +804,21 @@ textarea.editor {
 .df-nav-label { font-size: 11px; color: var(--text-dim); min-width: 34px; text-align: center; }
 .diff-hunk-gap.nav-target td { color: var(--accent); font-weight: 600; }
 
+/* 目录行：三态复选框 + 名称 + 计数（PyCharm 提交窗口的目录节点也能勾选） */
 .git-group {
+  display: flex; align-items: center; gap: 6px;
   padding: 4px 10px; font-size: 11.5px; color: var(--text-dim);
   cursor: pointer; user-select: none; position: sticky; top: 0;
   background: var(--bg-panel); border-bottom: 1px solid var(--border);
 }
+.git-group .g-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-group .g-count, .git-sec-title .sec-hint { opacity: .8; white-space: nowrap; }
+.git-sec-title .caret, .git-group .caret { width: 10px; font-size: 9px; cursor: pointer; flex-shrink: 0; }
+.git-sec-title input[type="checkbox"], .git-group input[type="checkbox"] {
+  accent-color: var(--accent); margin: 0; flex-shrink: 0; cursor: pointer;
+}
+/* 平铺视图：父目录弱化显示在文件名前（PyCharm 关掉 Group by Directory 后的样子） */
+.git-file .dir { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
 .git-group:hover { color: var(--text-bright); }
 
 /* ---------- Git 日志工具窗口（PyCharm Alt+9，底部停靠） ---------- */
@@ -785,12 +1033,11 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 
 /* ---------- mermaid 图 ---------- */
-.mermaid-box { margin: 10px 0; text-align: center; background: var(--bg-input); border-radius: 6px; padding: 10px; overflow: auto; }
+.mermaid-box { position: relative; margin: 10px 0; text-align: center; background: var(--bg-input); border-radius: 6px; padding: 10px; overflow: auto; }
 .mermaid-box svg { max-width: 100%; height: auto; }
 .mermaid-box .mermaid-err { color: var(--red); font-size: 12px; padding: 6px; white-space: pre-wrap; }
 
-#empty-recent { margin-top: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.empty-projects { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+#empty-recent { display: block; }
 
 /* ---------- 查找条 ---------- */
 .find-bar {
@@ -800,7 +1047,7 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 .find-bar input {
   background: var(--bg-input); color: var(--text-bright);
-  border: 1px solid var(--btn-border); border-radius: 3px;
+  border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 3px 8px; font-size: 12px; outline: none;
 }
 .find-bar input:focus { border-color: var(--accent); }
@@ -813,7 +1060,7 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
   height: 22px; flex-shrink: 0;
   display: flex; align-items: center;
   padding: 0 10px; font-size: 11px; color: var(--text-dim);
-  background: var(--bg-panel); border-top: 1px solid var(--border);
+  background: var(--bg-panel); border-top: 1px solid var(--border-pane);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 #sb-info { cursor: default; }
@@ -822,9 +1069,12 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 #sb-branch.clickable:hover { color: var(--accent); }
 /* 状态栏字号控件（文档区字号） */
 .sb-font { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+/* 区域标签：两处字号控件分置状态栏两端，靠标签一眼分清改的是哪块（侧栏 / 编辑区） */
+.sb-font-tag { color: var(--text-dim); opacity: .8; margin-right: 2px; }
+.sb-sep { width: 1px; height: 12px; background: var(--border-mid); margin: 0 8px; flex-shrink: 0; opacity: .7; }
 .sb-font button {
   width: 16px; height: 16px; padding: 0; line-height: 1;
-  background: transparent; border: 1px solid var(--border-mid); border-radius: 3px;
+  background: transparent; border: 1px solid var(--border-mid); border-radius: 4px;
   color: var(--text-dim); font-size: 11px; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
 }
@@ -940,7 +1190,7 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 @keyframes set-blink { 50% { opacity: .4; } }
 .set-reset {
   background: transparent; color: var(--text-dim);
-  border: 1px solid var(--btn-border); border-radius: 3px;
+  border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 2px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0;
 }
 .set-reset:hover { color: var(--accent); border-color: var(--accent); }
@@ -983,7 +1233,7 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .theme-opt.ut { flex: 1 1 calc(50% - 6px); padding: 9px 0; position: relative; }
 .theme-opt .ut-del {
   position: absolute; top: -1px; right: -1px; width: 16px; height: 16px; line-height: 14px;
-  font-size: 12px; text-align: center; border-radius: 3px;
+  font-size: 12px; text-align: center; border-radius: 4px;
   color: var(--text-dim); cursor: pointer;
 }
 .theme-opt .ut-del:hover { color: #fff; background: var(--red); }

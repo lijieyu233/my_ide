@@ -29,10 +29,11 @@ const GitPanel = (() => {
   }
 
   // 勾选集合与最新状态同步：消失的移除，新出现的默认勾选
+  // （「忽略的文件」不参与自动勾选/移除 —— 它们是用户显式展开、显式勾的）
   function syncChecked() {
     if (!state || !state.changed) return;
     const cur = new Set(state.changed.map((c) => c.file));
-    for (const f of [...checked]) if (!cur.has(f)) checked.delete(f);
+    for (const f of [...checked]) if (!cur.has(f) && !ignoredAll.has(f)) checked.delete(f);
     for (const f of cur) if (!knownFiles.has(f)) checked.add(f);
     knownFiles = cur;
   }
@@ -176,17 +177,26 @@ const GitPanel = (() => {
     if (r.ok) { MI.toast('✅ 已拉取' + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
     else MI.toast('拉取失败: ' + r.error, 'err');
   }
-  async function doPush(silent) {
+  async function doPush(silent, opts) {
     if (!root || syncing) return false;
     if (!silent) {
       // Push 预览（PyCharm 式）：推送前列出待推送提交，确认后才真正推送
       return openPushPreview();
     }
     syncing = true;
-    const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
+    const r = await window.myIDE.git.push(root, {
+      auth: getGitAuthMap(),
+      remote: opts && opts.remote,
+      force: !!(opts && opts.force),
+    });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已推送到 ' + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); return true; }
-    else { MI.toast('推送失败: ' + r.error, 'err'); return false; }
+    if (r.ok) {
+      MI.toast('✅ 已' + (r.force ? '强制' : '') + '推送到 ' + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+      refresh();
+      return true;
+    }
+    MI.toast('推送失败: ' + r.error, 'err');
+    return false;
   }
 
   // ---------- Push 预览弹窗（待推送提交清单 → 确认推送） ----------
@@ -306,26 +316,8 @@ const GitPanel = (() => {
     const br = document.getElementById('cd-branch');
     if (br) br.textContent = '⎇ ' + state.branch;
 
-    // 工具栏：全选 · 回滚选中 · 显示差异
-    const bar = document.createElement('div');
-    bar.className = 'git-cp-bar';
-    const all = document.createElement('label');
-    all.className = 'git-cp-all';
-    all.innerHTML = '<input type="checkbox" id="git-check-all"><span>全选</span>';
-    bar.appendChild(all);
-    const btnRollback = document.createElement('button');
-    btnRollback.className = 'tb-btn gbtn';
-    btnRollback.textContent = '↺ 回滚选中';
-    btnRollback.title = '放弃勾选文件的全部修改（未版本控制文件将被删除）';
-    btnRollback.onclick = () => rollbackChecked();
-    bar.appendChild(btnRollback);
-    const btnDiff = document.createElement('button');
-    btnDiff.className = 'tb-btn gbtn';
-    btnDiff.textContent = '↔ 显示差异';
-    btnDiff.title = '在编辑区查看勾选文件的差异（工作区 vs HEAD）';
-    btnDiff.onclick = () => diffChecked();
-    bar.appendChild(btnDiff);
-    filesEl.appendChild(bar);
+    // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
+    filesEl.appendChild(buildToolbar());
 
     const list = document.createElement('div');
     list.id = 'commit-list';
@@ -336,36 +328,229 @@ const GitPanel = (() => {
       d.textContent = state.branch === '(无提交)' ? '还没有任何提交，勾选文件写下信息提交第一个吧' : '没有更改 ✨';
       list.appendChild(d);
     } else {
-      for (const sec of fileSections()) {
-        const secBody = document.createElement('div');
-        const st = document.createElement('div');
-        st.className = 'git-sec-title';
-        st.textContent = (secCollapsed[sec.key] ? '▸ ' : '▾ ') + sec.title + ' (' + sec.items.length + ')';
-        st.title = '点击收起 / 展开此节';
-        st.style.cursor = 'pointer';
-        st.onclick = () => {
-          const now = secBody.style.display === 'none';
-          secBody.style.display = now ? '' : 'none';
-          st.textContent = (now ? '▾ ' : '▸ ') + sec.title + ' (' + sec.items.length + ')';
-          secCollapsed[sec.key] = !now;
-          saveSecCollapse(secCollapsed);
-        };
-        if (secCollapsed[sec.key]) secBody.style.display = 'none';
-        // 初始 depth=1：子项相对大节标题整体缩进一级，区分层级
-        secBody.appendChild(renderDirTree(buildDirTree(sec.items), 1));
-        list.appendChild(st);
-        list.appendChild(secBody);
+      for (const sec of fileSections()) list.appendChild(renderSection(sec));
+    }
+    list.appendChild(renderIgnoredSection()); // PyCharm「忽略的文件」节点：默认收起，展开才遍历
+    updateCheckUI();
+    gitSelIdx = -1; // 重新渲染后重置键盘导航选中
+    if (previewOn) renderPreview(); else hidePreview();
+  }
+
+  // ---------- 「忽略的文件」节点（PyCharm）：默认收起，展开时才遍历工作区 ----------
+  function renderIgnoredSection() {
+    const wrap = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'git-sec-title';
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    const collapsed = secCollapsed.ignored !== false; // 默认收起
+    caret.textContent = collapsed ? '▸' : '▾';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const label = document.createElement('span');
+    label.className = 'sec-name';
+    label.textContent = '忽略的文件';
+    const hint = document.createElement('span');
+    hint.className = 'sec-hint';
+    head.appendChild(caret);
+    head.appendChild(cb);
+    head.appendChild(label);
+    head.appendChild(hint);
+    head.title = '被 .gitignore 忽略、且未跟踪的文件（勾选可强制加入提交；右键「不再忽略」）';
+
+    const body = document.createElement('div');
+    body.className = 'git-sec-body';
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+
+    const syncHint = () => {
+      if (!ignoredFiles) { hint.textContent = '展开加载'; return; }
+      const n = ignoredFiles.length;
+      hint.textContent = (ignoredTruncated ? n + '+ 个' : n + ' 个文件');
+    };
+    const draw = () => {
+      body.innerHTML = '';
+      checkNodes = checkNodes.filter((n) => n.input !== cb);
+      syncHint();
+      const items = (ignoredFiles || []).map((f) => ({
+        file: f.file,
+        status: f.dir ? 'ignoredDir' : 'ignored',
+        label: f.dir ? '已被 .gitignore 忽略的目录' : '已被 .gitignore 忽略（未跟踪）',
+      }));
+      if (!items.length) {
+        const d = document.createElement('div');
+        d.className = 'git-empty';
+        d.textContent = ignoredFiles ? '没有被忽略的文件' : '点标题展开即加载';
+        body.appendChild(d);
+      } else if (groupByDir) {
+        body.appendChild(renderDirTree(buildDirTree(items), 1, 'ignored'));
+      } else {
+        body.appendChild(buildFlatList(items));
+      }
+      const files = items.map((c) => c.file);
+      registerCheckNode(cb, files);
+      cb.disabled = !files.length;
+      cb.onchange = () => setCheckedFiles(files, cb.checked);
+    };
+    const fill = async () => {
+      // 已加载过 → 重渲染后要把行画回来（早返回会让 body 空着，看起来像「没数据」）
+      if (ignoredFiles) { draw(); return; }
+      if (ignoredLoading) return;
+      ignoredLoading = true;
+      hint.textContent = '加载中…';
+      const r = await gitSafe('listIgnored', root);
+      ignoredLoading = false;
+      ignoredFiles = (r && r.files) || [];
+      ignoredTruncated = !!(r && r.truncated);
+      ignoredAll = new Set(ignoredFiles.map((f) => f.file));
+      draw();
+      updateCheckUI();
+    };
+    const toggle = () => {
+      const now = body.style.display === 'none';
+      body.style.display = now ? '' : 'none';
+      caret.textContent = now ? '▾' : '▸';
+      secCollapsed.ignored = !now;
+      saveSecCollapse(secCollapsed);
+      if (now) fill();
+    };
+    head.onclick = (e) => { if (e.target === cb) return; toggle(); };
+    cb.onclick = (e) => e.stopPropagation();
+    if (collapsed) body.style.display = 'none';
+    else fill();
+    syncHint();
+    return wrap;
+  }
+
+  // 新 API 兜底：旧 preload 没有这些方法时会同步抛 TypeError，不能让它打到事件处理器外面
+  async function gitSafe(fn, ...args) {
+    try { return await window.myIDE.git[fn](...args); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  }
+
+  // .gitignore 改动后让「忽略的文件」失效，下次展开重新遍历
+  function invalidateIgnored() {
+    ignoredFiles = null;
+    ignoredTruncated = false;
+    ignoredAll = new Set();
+    ignoredLoading = false;
+  }
+
+  // ---------- 工具行（图标按钮：刷新 / 回滚 / 差异 / 提交 / 预览 ｜ 展开全部 / 收起全部 / 分组方式）----------
+  function buildToolbar() {
+    const bar = document.createElement('div');
+    bar.className = 'git-cp-bar';
+    const mk = (svg, title, fn) => {
+      const b = document.createElement('button');
+      b.className = 'vt-btn';
+      b.innerHTML = svg;
+      b.title = title;
+      b.onclick = fn;
+      bar.appendChild(b);
+      return b;
+    };
+    mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh());
+    const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
+    const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
+    const com = mk(IC.commit, '提交勾选的文件 (Ctrl+Enter)', () => doCommit(false));
+    const prev = mk(IC.eye, '预览：在面板内嵌显示选中文件的 diff（再点关闭）', () => togglePreview());
+    if (previewOn) prev.classList.add('active');
+    const sep = document.createElement('span');
+    sep.className = 'tb-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    bar.appendChild(sep);
+    mk(IC.expandAll, '展开全部（目录与分节）', () => setAllCollapsed(false));
+    mk(IC.collapseAll, '收起全部（目录与分节）', () => setAllCollapsed(true));
+    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）', () => {
+      groupByDir = !groupByDir;
+      saveUiPrefs();
+      render();
+    });
+    if (groupByDir) grp.classList.add('active');
+    barBtns = { roll, dif, com, prev, grp };
+    return bar;
+  }
+
+  // ---------- 分节（更改 / 未进行版本管理的文件）：标题行三态复选框 + 展开收起 ----------
+  function renderSection(sec) {
+    const wrap = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'git-sec-title';
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    caret.textContent = secCollapsed[sec.key] ? '▸' : '▾';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.title = '勾选 / 取消「' + sec.title + '」下的全部文件';
+    const label = document.createElement('span');
+    label.className = 'sec-name';
+    label.textContent = sec.title + ' ' + sec.items.length + ' 个文件';
+    head.appendChild(caret);
+    head.appendChild(cb);
+    head.appendChild(label);
+    head.title = '点击标题收起 / 展开此节';
+
+    const body = document.createElement('div');
+    body.className = 'git-sec-body';
+    const files = sec.items.map((c) => c.file);
+    registerCheckNode(cb, files);
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = () => setCheckedFiles(files, cb.checked);
+
+    const toggle = () => {
+      const now = body.style.display === 'none';
+      body.style.display = now ? '' : 'none';
+      caret.textContent = now ? '▾' : '▸';
+      secCollapsed[sec.key] = !now;
+      saveSecCollapse(secCollapsed);
+    };
+    head.onclick = (e) => { if (e.target === cb) return; toggle(); };
+    if (secCollapsed[sec.key]) body.style.display = 'none';
+    body.appendChild(groupByDir ? renderDirTree(buildDirTree(sec.items), 1, sec.key) : buildFlatList(sec.items));
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前
+  function buildFlatList(items) {
+    const box = document.createElement('div');
+    box.className = 'git-group-body';
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true));
+    return box;
+  }
+
+  // 三态节点：把节点与其下全部文件关联（文件勾选变化时反向刷新节点状态）
+  function registerCheckNode(input, files) { checkNodes.push({ input, files }); }
+
+  // 勾选一组文件（节点复选框用）：同步文件行复选框 + 全部节点三态
+  function setCheckedFiles(files, on) {
+    const set = new Set(files);
+    for (const f of files) { if (on) checked.add(f); else checked.delete(f); }
+    if (filesEl) {
+      for (const el of filesEl.querySelectorAll('.cf-check')) {
+        if (set.has(el.dataset.file)) el.checked = on;
       }
     }
     updateCheckUI();
-    gitSelIdx = -1; // 重新渲染后重置键盘导航选中
   }
 
-  // 变更文件分节：已跟踪（变更）/ 未版本控制，节内按顶层目录分组
+  // 展开 / 收起全部（目录行、分节、忽略节点一起，PyCharm「Expand / Collapse All」）
+  // 走状态 + 重渲染而不是直接改 DOM：忽略节点展开时还要触发懒加载
+  function setAllCollapsed(collapsed) {
+    if (!filesEl) return;
+    for (const k of ['changes', 'untracked', 'ignored']) secCollapsed[k] = collapsed;
+    saveSecCollapse(secCollapsed);
+    dirAllCollapsed = collapsed;
+    for (const k of Object.keys(dirCollapsed)) delete dirCollapsed[k]; // 清掉逐个覆盖，统一跟随全局
+    saveUiPrefs();
+    render();
+  }
+
+  // 变更文件分节：已跟踪（更改）/ 未进行版本管理的文件（PyCharm 同名文案），节内按顶层目录分组
   function fileSections() {
     const sections = [
-      { key: 'changes', title: '变更', items: [] },
-      { key: 'untracked', title: '未版本控制的文件', items: [] },
+      { key: 'changes', title: '更改', items: [] },
+      { key: 'untracked', title: '未进行版本管理的文件', items: [] },
     ];
     for (const c of state.changed) {
       if (c.status === 'added') sections[1].items.push(c);
@@ -384,6 +569,70 @@ const GitPanel = (() => {
   }
   const secCollapsed = loadSecCollapse();
 
+  // ---------- 视图偏好：分组方式（按目录 / 平铺）· 内嵌预览开关 · 目录展开状态 ----------
+  const GIT_UI_KEY = 'myide-git-ui';
+  function loadUiPrefs() {
+    try { return JSON.parse(localStorage.getItem(GIT_UI_KEY) || '{}') || {}; } catch { return {}; }
+  }
+  const uiPrefs = loadUiPrefs();
+  let groupByDir = uiPrefs.groupByDir !== false;  // 默认按目录（PyCharm 默认视图）
+  let previewOn = !!uiPrefs.preview;              // 面板内嵌 diff 预览（默认关，走主编辑区）
+  const dirCollapsed = uiPrefs.dirCollapsed || {}; // '节key/depth/name' → 用户显式覆盖
+  let dirAllCollapsed = !!uiPrefs.dirAllCollapsed;  // 「收起全部」的兜底（未被单独点过的目录跟随它）
+  function saveUiPrefs() {
+    try {
+      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed }));
+    } catch {}
+  }
+
+  // ---------- 提交消息历史（全局，PyCharm「Recent Messages」语义）+ 草稿（按项目）----------
+  const MSG_HIST_KEY = 'myide-commit-msgs';
+  function loadMsgHistory() {
+    try {
+      const a = JSON.parse(localStorage.getItem(MSG_HIST_KEY) || '[]');
+      return Array.isArray(a) ? a : [];
+    } catch { return []; }
+  }
+  function pushMsgHistory(text) {
+    const list = [text, ...loadMsgHistory().filter((m) => m !== text)].slice(0, 20);
+    try { localStorage.setItem(MSG_HIST_KEY, JSON.stringify(list)); } catch {}
+  }
+  const draftKeyOf = (dir) => 'myide-commit-draft:' + (dir || '');
+  function loadDraftFor(dir) { try { return localStorage.getItem(draftKeyOf(dir)) || ''; } catch { return ''; } }
+  function saveDraftFor(dir, v) {
+    try { if (v) localStorage.setItem(draftKeyOf(dir), v); else localStorage.removeItem(draftKeyOf(dir)); } catch {}
+  }
+  function loadDraft() { return loadDraftFor(root); }
+  function saveDraft(v) { saveDraftFor(root, v); }
+  let draftTimer = null; // 输入防抖，避免每敲一个字写一次 localStorage
+  function scheduleDraftSave(v) {
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => { draftTimer = null; saveDraft(v); }, 500);
+  }
+  let amendBackup = null;  // 勾 amend 之前的草稿（取消勾选要还回去）
+  let lastDraft = '';      // 当前草稿镜像（切项目时判断能否安全覆盖输入框）
+
+  // 节点三态复选框注册表：[{input, files[]}]（分节标题行 / 目录行）
+  let checkNodes = [];
+  let barBtns = null;      // 工具行按钮引用（勾选变化时联动禁用态）
+  let previewSeq = 0;      // 预览令牌（防晚到的 diff 覆盖新预览）
+  let ignoredFiles = null; // 「忽略的文件」节点数据（null = 还没加载过）
+  let ignoredTruncated = false; // 遍历是否被上限截断
+  let ignoredAll = new Set(); // 忽略文件路径集合（勾选集合的成员判定要用）
+  let ignoredLoading = false;
+
+  // 工具行图标（统一 16px 内联 SVG，与工具条/标题栏同一套观感）
+  const IC = {
+    refresh: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 3.2v3.2H9.8"/></svg>',
+    rollback: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8a4.6 4.6 0 1 0 1.5-3.4M3.4 3.4v2.8h2.8"/></svg>',
+    diff: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8h10.8M9.6 5l3 3-3 3M6.4 5l-3 3 3 3"/></svg>',
+    commit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v6.4M5.2 6.2 8 9l2.8-2.8M3 12.4h10"/></svg>',
+    eye: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 8s2.2-3.4 5.6-3.4S13.6 8 13.6 8s-2.2 3.4-5.6 3.4S2.4 8 2.4 8Z"/><circle cx="8" cy="8" r="1.5"/></svg>',
+    expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>',
+    collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>',
+    group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
+  };
+
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
   function buildDirTree(items) {
     const root = { dirs: new Map(), files: [] };
@@ -399,23 +648,51 @@ const GitPanel = (() => {
     return root;
   }
 
-  // 递归渲染目录树：目录行（▾ name (n)）+ 文件行，按深度缩进
-  function renderDirTree(node, depth) {
+  // 递归渲染目录树：目录行（三态复选框 + 名称 + 计数）+ 文件行，按深度缩进
+  function renderDirTree(node, depth, secKey) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
     const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
     for (const name of names) {
       const child = node.dirs.get(name);
       const count = treeCount(child);
+      const pathKey = secKey + '/' + depth + '/' + name;
       const gTitle = document.createElement('div');
       gTitle.className = 'git-group';
-      gTitle.style.paddingLeft = (10 + depth * 14) + 'px';
-      gTitle.textContent = '▾ ' + name + ' (' + count + ')';
-      const gBody = renderDirTree(child, depth + 1);
-      gTitle.onclick = () => {
-        const gCol = gBody.style.display === 'none';
-        gBody.style.display = gCol ? '' : 'none';
-        gTitle.textContent = (gCol ? '▾ ' : '▸ ') + name + ' (' + count + ')';
+      gTitle.style.paddingLeft = (8 + depth * 14) + 'px';
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      const nm = document.createElement('span');
+      nm.className = 'g-name';
+      nm.textContent = name;
+      const ct = document.createElement('span');
+      ct.className = 'g-count';
+      ct.textContent = count + ' 个文件';
+      gTitle.appendChild(caret);
+      gTitle.appendChild(cb);
+      gTitle.appendChild(nm);
+      gTitle.appendChild(ct);
+      gTitle.title = '点击收起 / 展开 ' + name;
+
+      const gBody = renderDirTree(child, depth + 1, secKey);
+      const files = collectFiles(child);
+      registerCheckNode(cb, files);
+      cb.title = '勾选 / 取消 ' + name + ' 下的全部文件（' + files.length + '）';
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => setCheckedFiles(files, cb.checked);
+
+      const collapsed = dirCollapsed[pathKey] !== undefined ? !!dirCollapsed[pathKey] : dirAllCollapsed;
+      caret.textContent = collapsed ? '▸' : '▾';
+      if (collapsed) gBody.style.display = 'none';
+      gTitle.onclick = (e) => {
+        if (e.target === cb) return;
+        const col = gBody.style.display === 'none';
+        gBody.style.display = col ? '' : 'none';
+        caret.textContent = col ? '▾' : '▸';
+        dirCollapsed[pathKey] = !col;
+        saveUiPrefs();
       };
       box.appendChild(gTitle);
       box.appendChild(gBody);
@@ -426,24 +703,42 @@ const GitPanel = (() => {
     return box;
   }
 
+  // 目录子树里的全部文件（节点复选框作用范围）
+  function collectFiles(node) {
+    const out = node.files.map((c) => c.file);
+    for (const d of node.dirs.values()) out.push(...collectFiles(d));
+    return out;
+  }
+
   function treeCount(node) {
     let n = node.files.length;
     for (const d of node.dirs.values()) n += treeCount(d);
     return n;
   }
 
-  // 单个变更文件行：勾选框 + 状态徽章 + 文件名 + 悬停回滚（depth = 目录深度，用于缩进）
-  function fileRow(c, depth = 0) {
+  // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
+  function fileRow(c, depth = 0, flat = false) {
     const f = document.createElement('div');
     f.className = 'git-file';
+    f.dataset.file = c.file;
     f.style.paddingLeft = (10 + depth * 14) + 'px';
-    const base = c.file.split(/[\\/]/).pop();
+    const parts = c.file.split(/[\\/]/);
+    const base = parts.pop();
+    const parent = parts.join('/');
     const isUntracked = c.status === 'added';
+    const isIgnoredRow = c.status === 'ignored' || c.status === 'ignoredDir';
+    // 徽章只显示单字母（PyCharm 式）：完整状态文案进 tooltip —— 每行重复「已删除（已暂存）」会把列表刷成一片文字
+    const LETTER = { added: 'A', '*added': 'A', modified: 'M', '*modified': 'M', deleted: 'D', '*deleted': 'D', absent: '?' };
+    const letter = isIgnoredRow ? '?' : (isUntracked ? '?' : (LETTER[c.status] || 'M'));
+    const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
+    const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
     f.innerHTML = `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>` +
-      `<span class="badge ${c.status}">${esc(isUntracked ? '?' : c.label)}</span>` +
-      `<span class="nm" title="${esc(c.file)}">${esc(base)}</span>` +
-      `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`;
-    f.title = '点击在编辑区查看差异 · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
+      `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
+      (flat && parent ? `<span class="dir" title="${esc(parent)}">${esc(parent)}/</span>` : '') +
+      `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
+      (isIgnoredRow ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
+    f.title = c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
+      ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
       e.preventDefault();
@@ -469,8 +764,22 @@ const GitPanel = (() => {
       mk('📋 复制完整路径', () => {
         if (root) { MI.copyText(root + (root.includes('\\') ? '\\' : '/') + c.file); MI.toast('已复制路径', 'ok'); }
       });
-      mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
-      mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
+      mk('🕘 显示历史', () => { if (window.GitLog && GitLog.showFileHistory) GitLog.showFileHistory(root + (root.includes('\\') ? '\\' : '/') + c.file); });
+      if (isIgnoredRow) {
+        mk('✅ 不再忽略（从 .gitignore 移除）', async () => {
+          const r = await gitSafe('removeFromGitignore', root, c.file);
+          if (r.ok) { MI.toast('已从 .gitignore 移除 ' + c.file, 'ok'); invalidateIgnored(); refresh(); }
+          else MI.toast('移除失败: ' + r.error, 'err');
+        });
+      } else {
+        mk('🚫 添加到 .gitignore', async () => {
+          const r = await gitSafe('addToGitignore', root, c.file);
+          if (r.ok) { MI.toast(r.skipped ? '已在 .gitignore 中' : '已添加 ' + r.pattern + ' 到 .gitignore', 'ok'); invalidateIgnored(); refresh(); }
+          else MI.toast('添加失败: ' + r.error, 'err');
+        });
+      }
+      if (!isIgnoredRow) mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
+      if (!isIgnoredRow) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
         const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
         const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
         if (!yes) return;
@@ -485,10 +794,11 @@ const GitPanel = (() => {
     };
     f.onclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
-      // 选中态 + 编辑区 diff 预览（PyCharm 式：diff 显示在主窗口）
+      // 选中态 + diff：previewOn 时在面板内嵌预览，否则显示在主编辑区（PyCharm 两种都支持）
       if (filesEl) filesEl.querySelectorAll('.git-file.sel').forEach((x) => x.classList.remove('sel'));
       f.classList.add('sel');
-      showFileDiff(c);
+      if (previewOn) renderPreview(c);
+      else showFileDiff(c);
     };
     f.ondblclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
@@ -505,7 +815,8 @@ const GitPanel = (() => {
       else checked.delete(c.file);
       updateCheckUI();
     };
-    f.querySelector('.git-revert').onclick = async (e) => {
+    const revBtn = f.querySelector('.git-revert'); // 忽略的行没有回滚按钮
+    if (revBtn) revBtn.onclick = async (e) => {
       e.stopPropagation();
       const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
       const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
@@ -518,55 +829,80 @@ const GitPanel = (() => {
   }
 
   // ---------- 提交 ----------
-  async function doCommit(pushAfter) {
+  async function doCommit(pushAfter, pushOpts) {
     if (!root || !state || !state.isRepo) return;
     const files = [...checked];
     if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
     const msgEl = document.getElementById('commit-msg');
     const text = (msgEl ? msgEl.value : '').trim();
-    if (!text) { MI.toast('请填写提交信息', 'err'); if (msgEl) msgEl.focus(); return; }
-    const amend = !!(document.getElementById('commit-amend') && document.getElementById('commit-amend').checked);
+    if (!text) { MI.toast('请填写提交消息', 'err'); focusMessage(); return; }
+    const amendEl = document.getElementById('commit-amend');
+    const amend = !!(amendEl && amendEl.checked);
     const btn = document.getElementById('cm-ok');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
     const r = await window.myIDE.git.commit(root, { message: text, files, amend });
-    if (btn) { btn.disabled = false; btn.textContent = '提交'; }
+    if (btn) { btn.disabled = !checked.size; btn.textContent = '提交 (I)'; }
     if (r.ok) {
+      pushMsgHistory(text);            // 提交消息进历史（🕘 下拉）
       commitMsg = '';
+      lastDraft = '';
+      amendBackup = null;
+      saveDraft('');                   // 草稿随提交一起清掉
       checked.clear();
       if (msgEl) msgEl.value = '';
+      if (amendEl) amendEl.checked = false;
       MI.toast('✅ 已提交 ' + r.oid.slice(0, 7) + '：' + text, 'ok');
       await refresh();
       if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
-      if (pushAfter) await doPush(true); // 提交并推送（PyCharm Ctrl+Alt+K）：提交成功后直接推，不再二次确认
+      if (pushAfter) await doPush(true, pushOpts); // 提交并推送：提交成功后直接推，不再二次确认
     } else {
       MI.toast('提交失败: ' + r.error, 'err');
     }
   }
 
-  // 全选框 / 提交按钮 / 计数联动
+  // Ctrl+K 打开提交窗口后聚焦提交消息框
+  function focusMessage() {
+    const el = document.getElementById('commit-msg');
+    if (!el) return;
+    el.focus();
+    try { el.selectionStart = el.selectionEnd = el.value.length; } catch {}
+  }
+
+  // 节点三态 / 提交按钮 / 计数联动（旧的「全选」单选框已被节点三态复选框取代）
   function updateCheckUI() {
-    const all = document.getElementById('git-check-all');
-    const total = state && state.changed ? state.changed.length : 0;
-    if (all) {
-      all.checked = total > 0 && checked.size === total;
-      all.indeterminate = checked.size > 0 && checked.size < total;
-      all.onchange = () => {
-        checked.clear();
-        if (all.checked) for (const c of state.changed) checked.add(c.file);
-        document.querySelectorAll('#commit-list .cf-check').forEach((el) => { el.checked = checked.has(el.dataset.file); });
-        updateCheckUI();
-      };
+    // 总数含「忽略的文件」（它们也能勾选 → 强制加入提交）
+    const total = (state && state.changed ? state.changed.length : 0) + ignoredAll.size;
+    for (const n of checkNodes) {
+      const on = n.files.reduce((k, f) => k + (checked.has(f) ? 1 : 0), 0);
+      n.input.checked = on > 0 && on === n.files.length;
+      n.input.indeterminate = on > 0 && on < n.files.length;
     }
+    const has = checked.size > 0;
     const btn = document.getElementById('cm-ok');
-    if (btn) btn.disabled = !checked.size;
+    if (btn) btn.disabled = !has;
+    const btnp = document.getElementById('cm-ok-push');
+    if (btnp) btnp.disabled = !has;
+    const btnm = document.getElementById('cm-ok-push-menu');
+    if (btnm) btnm.disabled = !has;
+    if (barBtns) {
+      barBtns.roll.disabled = !has;
+      barBtns.dif.disabled = !has;
+      barBtns.com.disabled = !has;
+    }
     const count = document.getElementById('commit-count');
-    if (count) count.textContent = checked.size ? `${checked.size}/${total} 个文件` : '';
+    if (count) {
+      const staged = state && state.changed
+        ? state.changed.filter((c) => c.status.charAt(0) === '*' && checked.has(c.file)).length : 0;
+      count.textContent = has ? `${checked.size}/${total} 个文件` + (staged ? ` · ${staged} 个已暂存` : '') : '';
+      count.title = '勾选的文件数 / 全部变更文件数' + (staged ? '（其中已在暂存区的数量）' : '');
+    }
   }
 
   // ---------- 回滚选中 ----------
   async function rollbackChecked() {
     if (!checked.size) { MI.toast('没有勾选的文件', 'err'); return; }
-    const files = [...checked];
+    const files = [...checked].filter((f) => !ignoredAll.has(f)); // 忽略的文件不参与回滚（回滚=删除）
+    if (!files.length) { MI.toast('勾选的只有被忽略的文件，它们不参与回滚', 'err'); return; }
     const untracked = files.filter((f) => {
       const c = state.changed.find((x) => x.file === f);
       return c && c.status === 'added';
@@ -584,7 +920,8 @@ const GitPanel = (() => {
   // ---------- 显示选中差异（编辑区堆叠多文件） ----------
   async function diffChecked() {
     if (!checked.size) { MI.toast('没有勾选的文件', 'err'); return; }
-    const files = [...checked];
+    const files = [...checked].filter((f) => !ignoredAll.has(f)); // 忽略的文件没有 HEAD 版本可比
+    if (!files.length) { MI.toast('勾选的只有被忽略的文件', 'err'); return; }
     const results = [];
     for (const f of files) {
       const r = await window.myIDE.git.diffWorkdir(root, f);
@@ -1027,14 +1364,190 @@ const GitPanel = (() => {
     }
   });
 
+  // ---------- 内嵌 diff 预览（PyCharm 提交窗口的「预览」开关）----------
+  // 紧凑 unified 视图：侧栏只有 ~280px，左右分栏的 diff 表格在这里读不了
+  function hidePreview() {
+    const p = document.getElementById('commit-preview');
+    if (p) p.classList.add('hidden');
+  }
+  function togglePreview(on) {
+    previewOn = on === undefined ? !previewOn : !!on;
+    saveUiPrefs();
+    if (barBtns && barBtns.prev) barBtns.prev.classList.toggle('active', previewOn);
+    if (previewOn) renderPreview(); else hidePreview();
+  }
+  async function renderPreview(target) {
+    const p = document.getElementById('commit-preview');
+    const body = document.getElementById('cp-body');
+    const title = document.getElementById('cp-title');
+    const stats = document.getElementById('cp-stats');
+    if (!p || !body || !state || !state.isRepo || !state.changed) return;
+    let c = target;
+    if (!c) { // 未指定：优先当前选中行 → 第一个勾选 → 第一个变更
+      const sel = filesEl && filesEl.querySelector('.git-file.sel');
+      const selName = sel && sel.dataset.file;
+      c = (selName && state.changed.find((x) => x.file === selName))
+        || state.changed.find((x) => checked.has(x.file))
+        || state.changed[0];
+    }
+    if (!c) { hidePreview(); return; }
+    p.classList.remove('hidden');
+    if (title) { title.textContent = c.file; title.title = c.file; }
+    const seq = ++previewSeq;
+    body.innerHTML = '<div class="cp-msg">读取差异…</div>';
+    const r = await window.myIDE.git.diffWorkdir(root, c.file);
+    if (seq !== previewSeq) return; // 晚到的响应不再覆盖新预览
+    body.innerHTML = '';
+    if (stats) stats.textContent = '';
+    const say = (t) => {
+      const d = document.createElement('div');
+      d.className = 'cp-msg';
+      d.textContent = t;
+      body.appendChild(d);
+    };
+    if (r.error) return say(r.error);
+    if (r.binary) return say('二进制文件，不显示文本差异');
+    if (r.tooLarge) return say('文件过大，超出对比限制');
+    if (r.unchanged || !r.hunks || !r.hunks.length) return say('无内容差异');
+    if (stats) stats.textContent = '+' + countAdd(r.hunks) + ' / -' + countDel(r.hunks);
+    for (const h of r.hunks) {
+      const sep = document.createElement('div');
+      sep.className = 'cp-hunk';
+      sep.textContent = '@@ -' + h.oldStart + ',' + h.oldLines + ' +' + h.newStart + ',' + h.newLines + ' @@';
+      body.appendChild(sep);
+      for (const row of h.rows) {
+        const kind = row.type === 'add' ? 'add' : row.type === 'del' ? 'del' : 'ctx';
+        const d = document.createElement('div');
+        d.className = 'cp-line ' + kind;
+        d.textContent = (kind === 'add' ? '+' : kind === 'del' ? '-' : ' ') + (kind === 'del' ? row.aText : row.bText);
+        body.appendChild(d);
+      }
+    }
+  }
+
+  // ---------- 浮动小菜单（提交消息历史 / 提交并推送 选项）----------
+  function closeFloatMenu() {
+    const m = document.getElementById('git-float-menu');
+    if (m) m.remove();
+    document.removeEventListener('mousedown', onFloatMenuOutside, true);
+  }
+  function onFloatMenuOutside(e) {
+    const m = document.getElementById('git-float-menu');
+    if (m && !m.contains(e.target)) closeFloatMenu();
+  }
+  function openFloatMenu(anchor, items) {
+    closeFloatMenu();
+    const menu = document.createElement('div');
+    menu.id = 'git-float-menu';
+    menu.className = 'git-float-menu';
+    for (const it of items) {
+      const d = document.createElement('div');
+      d.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.header ? ' ctx-title' : '');
+      d.textContent = it.label;
+      d.title = it.label;
+      if (!it.header) d.onclick = () => { closeFloatMenu(); it.run(); };
+      menu.appendChild(d);
+    }
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(6, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+    menu.style.top = Math.min(r.bottom + 2, window.innerHeight - h - 8) + 'px';
+    setTimeout(() => document.addEventListener('mousedown', onFloatMenuOutside, true), 0);
+  }
+
+  // 提交消息历史（🕘）：最近用过的提交消息，点击填充（全局，与 PyCharm 的 Recent Messages 一致）
+  function openHistoryMenu(anchor) {
+    const list = loadMsgHistory();
+    if (!list.length) { MI.toast('还没有历史提交消息', 'err'); return; }
+    const msgEl = document.getElementById('commit-msg');
+    const items = [{ label: '最近提交消息', header: true }];
+    for (const m of list.slice(0, 12)) {
+      items.push({
+        label: (m.split('\n')[0] || '(空)').slice(0, 60),
+        run: () => {
+          if (!msgEl) return;
+          amendBackup = null;
+          msgEl.value = m;
+          commitMsg = m;
+          lastDraft = m;
+          saveDraft(m);
+          focusMessage();
+        },
+      });
+    }
+    items.push({ label: '清空历史', danger: true, run: () => {
+      try { localStorage.removeItem(MSG_HIST_KEY); } catch {}
+      MI.toast('已清空提交消息历史', 'ok');
+    } });
+    openFloatMenu(anchor, items);
+  }
+
+  // 「提交并推送」下拉：其他远程 / 强制推送
+  async function openPushMenu(anchor) {
+    const items = [{ label: '提交并推送', run: () => doCommit(true) }];
+    let remotes = [];
+    try { const r = await window.myIDE.git.listRemotes(root); remotes = (r && r.remotes) || []; } catch {}
+    if (remotes.length > 1) {
+      items.push({ label: '提交并推送到…', header: true });
+      for (const rm of remotes) items.push({ label: rm.name, run: () => doCommit(true, { remote: rm.name }) });
+    }
+    items.push({
+      label: '提交并强制推送（--force）',
+      danger: true,
+      run: async () => {
+        const yes = await Modal.confirm('强制推送', '强制推送会覆盖远程分支上已有的提交，可能丢掉别人的工作。\n\n确定继续吗？');
+        if (yes) doCommit(true, { force: true });
+      },
+    });
+    openFloatMenu(anchor, items);
+  }
+
+  // ---------- 修正上次提交（amend）：勾选时自动回填上次的提交消息 ----------
+  async function onAmendToggle() {
+    const el = document.getElementById('commit-amend');
+    const msgEl = document.getElementById('commit-msg');
+    if (!el || !msgEl) return;
+    const hist = document.getElementById('commit-history');
+    if (el.checked) {
+      if (amendBackup === null) amendBackup = msgEl.value;
+      const r = await window.myIDE.git.log(root, 1).catch(() => null);
+      const last = r && r.commits && r.commits[0] ? r.commits[0].fullMessage : '';
+      if (last) {
+        msgEl.value = last;
+        commitMsg = last;
+        lastDraft = last;
+        if (hist) hist.classList.add('active');
+        MI.toast('已回填上次提交的消息（amend）', 'ok');
+      } else {
+        MI.toast('没有可修正的提交', 'err');
+        el.checked = false;
+      }
+    } else if (amendBackup !== null) {
+      msgEl.value = amendBackup;
+      commitMsg = amendBackup;
+      lastDraft = amendBackup;
+      amendBackup = null;
+      if (hist) hist.classList.remove('active');
+    }
+  }
+
   // ---------- 初始化（静态面板事件绑定） ----------
   function init() {
     filesEl = document.getElementById('cd-files');
     if (!filesEl) return;
     const msg = document.getElementById('commit-msg');
     if (msg) {
-      msg.value = commitMsg;
-      msg.addEventListener('input', () => { commitMsg = msg.value; });
+      // 草稿优先（按项目持久化）——此前 commitMsg 只在内存里，刷新一次就丢
+      const draft = loadDraft();
+      msg.value = draft || commitMsg;
+      commitMsg = msg.value;
+      lastDraft = msg.value;
+      msg.addEventListener('input', () => {
+        commitMsg = msg.value;
+        lastDraft = msg.value;
+        scheduleDraftSave(msg.value);
+      });
       msg.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCommit(false); }
       });
@@ -1043,6 +1556,14 @@ const GitPanel = (() => {
     if (ok) ok.onclick = () => doCommit(false);
     const okp = document.getElementById('cm-ok-push');
     if (okp) okp.onclick = () => doCommit(true);
+    const okm = document.getElementById('cm-ok-push-menu');
+    if (okm) okm.onclick = () => openPushMenu(okm);
+    const amd = document.getElementById('commit-amend');
+    if (amd) amd.onchange = onAmendToggle;
+    const hst = document.getElementById('commit-history');
+    if (hst) hst.onclick = () => openHistoryMenu(hst);
+    const cpClose = document.getElementById('cp-close');
+    if (cpClose) cpClose.onclick = () => togglePreview(false);
     const rf = document.getElementById('cd-refresh');
     if (rf) rf.onclick = () => refresh();
     const pull = document.getElementById('cd-pull');
@@ -1071,7 +1592,26 @@ const GitPanel = (() => {
     refresh, openCommit, closeDialog, isOpen, openBranchDialog, openRemoteDialog, cancelDiff,
     buildDiffTable, makeHunkNav, renderDiffView, closeDiffView, esc, fmtDate, countAdd, countDel,
     doPull, doPush, updateAheadBehind,
-    set rootDir(v) { root = v; },
+    doCommit, focusMessage, togglePreview, renderPreview, setAllCollapsed,
+    get rootDir() { return root; },
+    set rootDir(v) {
+      if (v !== root) {
+        // 切项目：输入框里若还是上一个项目的草稿（用户没改过），换成新项目的草稿
+        const msgEl = document.getElementById('commit-msg');
+        if (msgEl && msgEl.value === lastDraft) {
+          const d = loadDraftFor(v);
+          msgEl.value = d;
+          commitMsg = d;
+          lastDraft = d;
+        }
+        amendBackup = null;
+        const amd = document.getElementById('commit-amend');
+        if (amd) amd.checked = false;
+        const hist = document.getElementById('commit-history');
+        if (hist) hist.classList.remove('active');
+      }
+      root = v;
+    },
   };
 })();
 window.GitPanel = GitPanel;

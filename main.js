@@ -9,6 +9,20 @@ const AI = require('./ai-service');
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
+// --check-ui（UI 自检）用独立 userData：① 不碰使用者真实的 localStorage / 会话 / 最近项目；
+// ② 避免与该应用正在运行的实例抢同一份 Chromium profile（实测会出现「cache 拒绝访问」并偶发启动失败）
+// ③ 每次跑用带 PID 的独立目录：上一次自检若卡住没退出，持有的 profile 锁不会拖死这一次
+const UI_CHECK = process.argv.includes('--check-ui');
+if (UI_CHECK) {
+  // 放到系统临时目录：项目目录下建 Chromium profile 会偶发「Unable to move the cache: 拒绝访问」，
+  // 甚至整个主进程卡死在 profile 初始化（事件循环被占住 → 连看门狗定时器都不触发）
+  try { app.setPath('userData', path.join(os.tmpdir(), 'myide-ui-check-' + process.pid)); } catch {}
+  // 自检看门狗：无论卡在哪一步（页面加载 / 注入 / 截图 / CDP）都必须落盘 + 退出
+  setTimeout(() => {
+    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>200s），强制退出\n'); } catch {}
+    try { app.exit(3); } catch {}
+  }, 200000);
+}
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 process.on('uncaughtException', (e) => {
   LOG('uncaught: ' + (e && e.stack || e));
@@ -887,6 +901,9 @@ ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
         ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
         ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
         ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
+ipcMain.handle('git:addToGitignore', (_e, dir, file) => gitCall('addToGitignore', dir, file));
+ipcMain.handle('git:removeFromGitignore', (_e, dir, file) => gitCall('removeFromGitignore', dir, file));
+ipcMain.handle('git:listIgnored', (_e, dir) => gitCall('listIgnored', dir));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();
@@ -1049,6 +1066,168 @@ app.whenReady().then(() => {
         fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), 'LIVE CHECK FAIL ' + String((e && e.stack) || e).slice(0, 2000) + '\n');
       }
       app.exit(0);
+    });
+  }
+  // UI 细节自检（图片缩放 / mermaid 全屏 / 顶部项目栏）：node_modules\electron\dist\electron.exe . --check-ui
+  // 真实窗口 + 真实 IPC + 真实 styles.css：分阶段断言 + 每阶段截图（check-ui-*.png），所见即所验
+  if (process.argv.includes('--check-ui')) {
+    win.webContents.once('did-finish-load', async () => {
+      const wc = win.webContents;
+      const steps = require('./scripts/check-ui-steps');
+      const fx = require('./scripts/ui-fixtures');
+      const demo = path.join(__dirname, 'demo');
+      const lines = [];
+      let fail = 0;
+      let origProjects = null;
+      let origRecent = null;
+      // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
+      const watchdog = setTimeout(() => {
+        try {
+          lines.push('UI CHECK 超时中止（>150s），已产出断言见上');
+          fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
+        } catch {}
+        app.exit(3);
+      }, 150000);
+      const js = (fn, arg) => '(' + String(fn) + ')(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')';
+      // 截图：capturePage 对「被遮挡/后台」的窗口会返回上一帧旧画面（实测 DOM 已变、位图不变），
+      // 因此优先走 CDP Page.captureScreenshot(fromSurface:false) —— 直接从视图取当前合成结果
+      const grab = async (file, clip) => {
+        try { win.showInactive(); } catch {}
+        await new Promise((r) => setTimeout(r, 350));
+        let buf = null;
+        try {
+          if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+          // 带 clip（区域放大截图）必须用 fromSurface:true，否则该命令会一直不返回；
+          // 再加 8s 超时兜底 —— 自检脚本绝不能因为截图把整个进程挂死
+          const opts = clip ? { format: 'png', clip } : { format: 'png', fromSurface: false };
+          const send = wc.debugger.sendCommand('Page.captureScreenshot', opts);
+          const { data } = await Promise.race([
+            send,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('CDP 截图超时')), 8000)),
+          ]);
+          buf = Buffer.from(data, 'base64');
+        } catch {
+          const img = await wc.capturePage();
+          buf = img.toPNG();
+        }
+        fs.writeFileSync(path.join(__dirname, file), buf);
+        if (!fs.existsSync(path.join(__dirname, file))) throw new Error('写入后文件不存在: ' + file);
+        return buf.length;
+      };
+      const run = async (label, expr, shot) => {
+        let hover = null;
+        let out = null;
+        // 阶段标记：卡住时一眼看出停在哪一步（文件 + stdout 双份，stdout 便于外部重定向排查）
+        console.log('[check-ui] → ' + label);
+        try { fs.writeFileSync(path.join(__dirname, '.ui-check-stage.txt'), label + '\n'); } catch {}
+        try {
+          out = await wc.executeJavaScript(expr);
+          const r = (out && out.R) || out || [];
+          hover = out && out.hover;
+          for (const it of (r || [])) {
+            lines.push((it.ok ? 'PASS' : 'FAIL') + '  ' + it.name + (it.detail ? '   [' + it.detail + ']' : ''));
+            if (!it.ok) fail++;
+          }
+          if (!(r || []).length && !(out && (out.wheel || out.hover))) {
+            lines.push('FAIL  ' + label + '：没有产出断言（步骤可能提前返回）');
+            fail++;
+          }
+        } catch (e) {
+          lines.push('FAIL  ' + label + ' 注入失败: ' + String((e && e.message) || e).slice(0, 300));
+          fail++;
+        }
+        if (hover) { // 真实鼠标移动触发 CSS :hover（脚本无法伪造），否则截图看不到 hover 才出现的控件
+          try { wc.sendInputEvent({ type: 'mouseMove', x: hover.x, y: hover.y }); } catch {}
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        // 真实滚轮注入：合成(dispatchEvent)的 wheel 不触发原生滚动/缩放，必须用受信任输入
+        // ⚠ 符号约定：Chromium 内部 WebMouseWheelEvent 的 deltaY 与 DOM WheelEvent 相反
+        //   （内部正值 = 向上滚），sendInputEvent 收的是内部值 → 把 DOM 意图取反再发
+        if (out && out.wheel && hover) {
+          const w = out.wheel;
+          const dy = -(w.deltaY || 0);
+          const ev = {
+            type: 'mouseWheel', x: hover.x, y: hover.y,
+            deltaX: -(w.deltaX || 0), deltaY: dy,
+            wheelTicksX: 0, wheelTicksY: Math.round(dy / 120),
+            canScroll: true,
+          };
+          if (w.ctrl) ev.modifiers = ['control'];
+          try {
+            wc.sendInputEvent(ev);
+            lines.push('     注入真实' + (w.ctrl ? ' Ctrl+' : ' ') + '滚轮：DOM 意图 deltaY=' + (w.deltaY || 0) + ' → 内部 ' + dy + ' @' + hover.x + ',' + hover.y);
+          } catch (e) { lines.push('     滚轮注入失败: ' + String((e && e.message) || e).slice(0, 120)); }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        if (shot) {
+          try { lines.push('     截图 → ' + shot + ' (' + (await grab(shot)) + ' 字节)'); }
+          catch (e) { lines.push('     截图失败: ' + String((e && e.message) || e).slice(0, 120)); }
+        }
+      };
+      try {
+        // ⚠ 项目列表存在真实 localStorage：先备份，自检结束原样还原（不破坏使用者的项目栏）
+        origProjects = await wc.executeJavaScript('localStorage.getItem("myide-projects")');
+        origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
+        fx.writeFixtures(demo);
+        const projects = fx.seedProjects(demo);
+        await wc.executeJavaScript(
+          'localStorage.setItem("myide-projects", ' + JSON.stringify(JSON.stringify(projects.map((p) => ({ path: p })))) + '); true'
+        );
+        await wc.reload(); // 让 loadProjects/renderProjectBar 按 14 个项目重新初始化
+        await new Promise((r) => wc.once('did-finish-load', r));
+        await new Promise((r) => setTimeout(r, 1600));
+        // 先进「无项目」的启动页（空状态）与外壳检查，再打开项目
+        await run('启动页（空状态）', js(steps.emptyState), 'check-ui-0-empty-state.png');
+        await run('外壳（图标/分组/状态栏）', js(steps.chrome), 'check-ui-0b-chrome.png');
+        await wc.executeJavaScript('App.gitRefreshDelay = 0');
+        await wc.executeJavaScript('App.setRoot(' + JSON.stringify(demo) + ')');
+        await new Promise((r) => setTimeout(r, 900));
+
+        await run('项目栏', js(steps.projectBar, demo), 'check-ui-1-projectbar.png');
+        // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
+        try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
+        await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
+        await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
+        await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
+        await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
+        await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
+        await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
+        await run('真实 Ctrl+滚轮 → 缩放', js(steps.imageWheelZoomCheck));
+        await run('图片全屏（打开）', js(steps.imageFullscreenOpen), 'check-ui-3-image-fullscreen.png');
+        await run('图片全屏（关闭）', js(steps.imageFullscreenClose));
+        await run('mermaid 预览', js(steps.mermaidPreviewStatic, demo), 'check-ui-4-mermaid-preview.png');
+        await run('mermaid 预览全屏', js(steps.mermaidPreviewFs), 'check-ui-5-mermaid-preview-fs.png');
+        await run('mermaid 预览全屏（关闭）', js(steps.mermaidFsClose));
+        await run('mermaid Live', js(steps.mermaidLiveStatic, demo), 'check-ui-6-mermaid-live.png');
+        await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
+        await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
+      } catch (e) {
+        lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
+        fail++;
+      }
+      // 还原 localStorage 与测试素材
+      try {
+        await wc.executeJavaScript(origProjects == null
+          ? 'localStorage.removeItem("myide-projects"); true'
+          : 'localStorage.setItem("myide-projects", ' + JSON.stringify(origProjects) + '); true');
+        await wc.executeJavaScript(origRecent == null
+          ? 'localStorage.removeItem("myide-recent-projects"); true'
+          : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
+      } catch {}
+      clearTimeout(watchdog);
+      try { fx.cleanFixtures(demo); } catch {}
+      lines.push('UI CHECK: ' + (lines.filter((l) => l.indexOf('PASS') === 0).length) + ' 通过 / ' + fail + ' 失败');
+      try {
+        const shots = fs.readdirSync(__dirname).filter((f) => /^check-ui-.*\.png$/.test(f));
+        lines.push('产出截图: ' + (shots.length ? shots.join(', ') : '（无）'));
+      } catch {}
+      try { fs.rmSync(path.join(__dirname, '.ui-check-stage.txt'), { force: true }); } catch {}
+      try {
+        const prof = app.getPath('userData');
+        if (/myide-ui-check-/.test(prof)) fs.rmSync(prof, { recursive: true, force: true }); // 临时 profile 用完即删
+      } catch {}
+      fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
+      app.exit(fail ? 1 : 0);
     });
   }
 });

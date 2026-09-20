@@ -169,6 +169,91 @@ async function status(dir) {
   return { isRepo: true, root, branch, changed };
 }
 
+// ---------- 被忽略的文件（PyCharm 提交窗口的「忽略的文件」节点）----------
+// 只列「未跟踪 + 命中 .gitignore」的项；命中规则的目录整棵跳过（否则 node_modules 会拖死遍历）。
+// 已跟踪的文件即使命中规则也照常显示在变更列表里（与 git 行为一致），所以这里要排除它们。
+// dirOnly 规则（node_modules/）只在「有下级」时才命中 → 判定目录时补一段假尾段（见 ignoredDir）
+function ignoredDir(rel, rules) { return isIgnoredPath(rel + '/\u0001', rules); }
+async function listIgnored(dir, { limit = 800, maxDepth = 8 } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', files: [] };
+  ignoreCache.clear();
+  const tracked = new Set();
+  try {
+    const matrix = await git.statusMatrix({ fs, dir: root });
+    for (const row of matrix) if (row[1] > 0) tracked.add(posix(row[0]));
+  } catch {}
+  const out = [];
+  let truncated = false;
+  const walk = (abs, rel) => {
+    if (out.length >= limit) { truncated = true; return; }
+    let entries = [];
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= limit) { truncated = true; return; }
+      if (e.name === '.git') continue;
+      const childRel = rel ? rel + '/' + e.name : e.name;
+      const childAbs = path.join(abs, e.name);
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) {
+        try { isDir = fs.statSync(childAbs).isDirectory(); } catch { isDir = false; }
+      }
+      if (isDir) {
+        if (tracked.has(childRel)) continue; // 目录里有已跟踪文件（少见）：交给正常变更列表
+        if (ignoredDir(childRel, allRulesFor(root, childRel))) {
+          out.push({ file: native(childRel), dir: true });
+          continue; // 整目录被忽略 → 不再下钻
+        }
+        if (rel.split('/').length < maxDepth) walk(childAbs, childRel);
+        continue;
+      }
+      if (!tracked.has(childRel) && isIgnoredPath(childRel, allRulesFor(root, childRel))) {
+        out.push({ file: native(childRel), dir: false });
+      }
+    }
+  };
+  walk(root, '');
+  out.sort((a, b) => a.file.localeCompare(b.file));
+  return { isRepo: true, root, files: out, truncated };
+}
+
+// ---------- .gitignore 编辑（提交窗口右键「添加到 .gitignore」/「不再忽略」）----------
+// 只做「确切路径行」的增删（PyCharm 的 Add to .gitignore 同样是写入具体路径，不做模式推导）
+function toRepoRel(root, p) {
+  let s = String(p || '');
+  if (path.isAbsolute(s)) s = path.relative(root, s);
+  return posix(s);
+}
+async function addToGitignore(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const rel = toRepoRel(root, file);
+  if (!rel || rel === '.' || rel.startsWith('..')) return { ok: false, error: '文件不在仓库内' };
+  const gi = path.join(root, '.gitignore');
+  let text = '';
+  try { text = fs.readFileSync(gi, 'utf8'); } catch {}
+  const hit = text.split(/\r?\n/).some((l) => { const t = l.trim(); return t === rel || t === '/' + rel; });
+  if (hit) return { ok: true, skipped: true, pattern: rel };
+  const prefix = text ? text + (text.endsWith('\n') ? '' : '\n') : '';
+  fs.writeFileSync(gi, prefix + rel + '\n', 'utf8');
+  ignoreCache.clear();
+  return { ok: true, pattern: rel };
+}
+async function removeFromGitignore(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const rel = toRepoRel(root, file);
+  const gi = path.join(root, '.gitignore');
+  let text = '';
+  try { text = fs.readFileSync(gi, 'utf8'); } catch { return { ok: false, error: '仓库里没有 .gitignore' }; }
+  const lines = text.split(/\r?\n/);
+  const kept = lines.filter((l) => { const t = l.trim(); return !(t === rel || t === '/' + rel); });
+  if (kept.length === lines.length) return { ok: false, error: '该项目不在 .gitignore 的确切路径行中（可能匹配的是通配规则）' };
+  fs.writeFileSync(gi, kept.join('\n'), 'utf8');
+  ignoreCache.clear();
+  return { ok: true, removed: lines.length - kept.length };
+}
+
 // ---------- 日志 ----------
 async function log(dir, depth = 100, ref = 'HEAD') {
   const { yes, root } = await isRepo(dir);
@@ -203,15 +288,35 @@ async function getAuthor(root) {
 }
 
 // 本版本 isomorphic-git 的 commit() 不支持 filepaths 参数，需先显式 add/remove 暂存
-async function commit(dir, { message, files, amend = false }) {
+//
+// ★ 语义对齐 PyCharm：**勾选集合就是唯一权威**。commit() 提交的是整个 index，
+//   所以「未勾选但已在 index 里」的文件必须显式 resetIndex 取消暂存，否则它会被一起提交
+//   （老实现只 add 不 unstage → 取消勾选形同虚设，且暂存内容会被这次提交"吃掉"）。
+//   resetIndex 只改 index，不动工作区 → 未勾选的改动仍留在工作区，提交后照常显示为未暂存。
+async function commit(dir, { message, files, amend = false, author: authorOverride }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const author = await getAuthor(root);
+  const author = authorOverride || await getAuthor(root);
   try {
+    if (files) {
+      const sel = new Set(files.map((f) => posix(f)));
+      let matrix = [];
+      try { matrix = await git.statusMatrix({ fs, dir: root }); } catch {}
+      for (const row of matrix) {
+        const p = posix(row[0]);
+        if (sel.has(p)) continue;
+        const [, h, , s] = row;
+        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 取消暂存
+        if (s > 0 && s !== h) {
+          try { await git.resetIndex({ fs, dir: root, filepath: p }); } catch {}
+        }
+      }
+    }
     if (files && files.length) {
       for (const f of files) {
         if (fs.existsSync(path.join(root, f))) {
-          await git.add({ fs, dir: root, filepath: posix(f) });
+          // force：勾选的是被 .gitignore 忽略的文件时也要能暂存（PyCharm 勾选忽略文件即强制加入）
+          await git.add({ fs, dir: root, filepath: posix(f), force: true });
         } else {
           await git.remove({ fs, dir: root, filepath: posix(f) }); // 已删除的文件 → 暂存删除
         }
@@ -1056,21 +1161,27 @@ async function pullRemote(dir, { auth } = {}) {
 }
 
 // push：当前分支 → 主远程同名分支
-async function pushRemote(dir, { auth } = {}) {
+async function pushRemote(dir, { auth, remote, force } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
-  const pr = await primaryRemote(root);
+  let pr = null;
+  if (remote) {
+    const list = await git.listRemotes({ fs, dir: root }).catch(() => []);
+    const hit = list.find((r) => r.remote === remote);
+    if (hit) pr = { name: hit.remote, url: hit.url };
+  }
+  if (!pr) pr = await primaryRemote(root); // 未指定 / 指定的远程不存在 → 回退主远程
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   try {
     return await withRemoteUrlFix(root, pr, async () => {
       const onAuth = onAuthOf(auth, pr.url);
       await git.push({
         fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
-        onAuth, onAuthFailure: onAuth,
+        force: !!force, onAuth, onAuthFailure: onAuth,
       });
-      return { ok: true, remote: pr.name, branch };
+      return { ok: true, remote: pr.name, branch, force: !!force };
     });
   } catch (e) {
     const msg = String(e.message || e);
@@ -1566,4 +1677,5 @@ module.exports = {
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,
+  addToGitignore, removeFromGitignore, listIgnored,
 };

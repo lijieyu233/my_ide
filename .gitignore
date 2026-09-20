@@ -10,3 +10,8 @@ check-live-out.txt
 check-live.png
 *.db
 .workbuddy/
+check-ui-out.txt
+check-ui-*.png
+check-ui-timeout.txt
+.ui-check-stage.txt
+.ui-check-profile*/

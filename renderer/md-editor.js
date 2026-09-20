@@ -327,6 +327,10 @@ window.MdEditor = (() => {
   // 光标不在块内：整块替换为渲染图；光标进入：回退源码编辑（Obsidian 同款交互）。
   // 渲染结果按 code 缓存（图不闪烁）；mermaid 库缺失（如测试环境）→ 不渲染，保持源码。
   const mermaidCache = new Map(); // code -> svg string（含失败标记 null）
+  // 渲染完成/命中缓存后挂「⛶ 全屏」按钮（浮层与缩放逻辑见 plugin-loader 的 MI.showSvgFullscreen）
+  function attachFs(wrap) {
+    if (window.MI && MI.attachMermaidFullscreen) MI.attachMermaidFullscreen(wrap, wrap.querySelector('svg'));
+  }
   class MermaidWidget extends WidgetType {
     constructor(code) { super(); this.code = code; }
     eq(other) { return other.code === this.code; }
@@ -334,7 +338,7 @@ window.MdEditor = (() => {
       const wrap = document.createElement('div');
       wrap.className = 'cm-md-mermaid';
       const cached = mermaidCache.get(this.code);
-      if (cached != null) { wrap.innerHTML = cached; return wrap; }
+      if (cached != null) { wrap.innerHTML = cached; attachFs(wrap); return wrap; }
       wrap.textContent = '渲染中…';
       (async () => {
         try {
@@ -342,7 +346,7 @@ window.MdEditor = (() => {
           const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, this.code);
           mermaidCache.set(this.code, svg);
-          if (wrap.isConnected) wrap.innerHTML = svg;
+          if (wrap.isConnected) { wrap.innerHTML = svg; attachFs(wrap); }
         } catch (e) {
           const msg = String((e && e.message) || e);
           mermaidCache.set(this.code, null);
