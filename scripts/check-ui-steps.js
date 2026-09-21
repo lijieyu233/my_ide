@@ -749,8 +749,8 @@ module.exports = {
       !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
       title ? JSON.stringify(title.textContent) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏 4 个按钮全为 SVG 且无文字',
-      tb.length === 4 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('顶栏 5 个按钮全为 SVG 且无文字',
+      tb.length === 5 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     const ph = q('#ai-input').placeholder;
@@ -942,6 +942,146 @@ module.exports = {
     const c2 = await waitFor(() => (qa('#ai-msgs .ai-edit').length >= 2 ? true : null), 25000);
     add('记住授权后，第二次改文件不再弹确认，直接改完', !!c2 && !q('#dw-always'),
       c2 ? '改动卡片共 ' + qa('#ai-msgs .ai-edit').length + ' 张' : '第二张卡片没出现');
+    return { R };
+  },
+  // ---------- AI 助手：能力对齐（@ 特殊来源 / 斜杠命令 / 历史会话 / 代码块插入 / 危险命令闸）----------
+  aiParityUi: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const chipTx = () => qa('#ai-chips .ai-ctx-chip').map((c) => c.textContent).join(',');
+    const lastReply = () => {
+      const rows = qa('#ai-msgs .ai-msg.ai-assistant');
+      return rows.length ? String(rows[rows.length - 1].textContent).replace(/\s+/g, ' ').slice(0, 50) : '(无回复)';
+    };
+    // 本步骤自带配置（前面的步骤把 permRun 设成了 deny，会掩盖危险命令闸）
+    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm', permRun: 'confirm', allowPaths: [], denyCmds: [] });
+    if (window.App && App.showAi) App.showAi();
+    await sleep(400);
+    await window.Viewer.openFile(dir + '\\_ui_outline.md');
+    await sleep(600);
+    q('#ai-new').click();            // 干净起点：清空对话与临时上下文
+    await sleep(400);
+    try { window.Viewer.cm.setCursor(0, 8); } catch {}   // 选中一段，供「@当前选区」使用
+    await sleep(300);
+    const inp = q('#ai-input');
+    const type = (v) => {
+      inp.value = v;
+      try { inp.setSelectionRange(v.length, v.length); } catch {}
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const ask = async (text, waitMs) => {
+      type(text);
+      await sleep(200);
+      q('#ai-send').click();
+      await sleep(waitMs || 1800);
+    };
+    // ① @ 菜单：特殊来源排最前
+    type('@');
+    await sleep(500);
+    let items = qa('.ai-at-pop .ai-at-item').map((x) => x.textContent);
+    add('@ 菜单有 4 个特殊来源（选区 / 标签页 / Git 变更 / 剪贴板）',
+      ['当前选区', '标签页', 'Git 变更', '剪贴板'].every((k) => items.some((t) => t.includes(k))),
+      items.slice(0, 5).join(' | '));
+    const selItem = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('当前选区'));
+    if (selItem) { selItem.click(); await sleep(500); }
+    add('点「当前选区」进上下文（且不往输入框插 @token）',
+      chipTx().includes('当前选区') && inp.value === '', 'chips=' + chipTx() + ' input=' + JSON.stringify(inp.value));
+    // ② Git 变更
+    type('@Git');
+    await sleep(400);
+    const gi = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('Git'));
+    if (gi) { gi.click(); await sleep(2000); }
+    add('「Git 变更」把未提交改动带进来', chipTx().includes('Git 未提交改动'), 'chips=' + chipTx());
+    // ③ 上下文预算明细
+    q('#ai-usage').click();
+    await sleep(400);
+    const bd = qa('#modal-mask .ai-bd-row');
+    add('点用量条 → 列出每条上下文占多少', bd.length >= 2,
+      bd.length + ' 行：' + bd.slice(0, 3).map((x) => x.textContent.replace(/\s+/g, ' ').slice(0, 24)).join(' / '));
+    add('有占比条（一眼看出谁占地方）', qa('#modal-mask .ai-bd-bar').length >= 2);
+    if (q('#cb-x')) { q('#cb-x').click(); await sleep(300); }
+    // ④ 固定：跨新对话保留
+    const selChip = qa('#ai-chips .ai-ctx-chip').find((c) => c.textContent.includes('当前选区'));
+    add('上下文 chip 上有固定按钮', !!selChip && !!selChip.querySelector('.ai-ctx-pin'));
+    if (selChip) {
+      selChip.querySelector('.ai-ctx-pin').click();
+      await sleep(250);
+      add('固定后 chip 标为 pinned', !!qa('#ai-chips .ai-ctx-chip').find((c) => c.textContent.includes('当前选区') && c.classList.contains('pinned')));
+      const before = chipTx();
+      q('#ai-new').click();
+      await sleep(450);
+      add('固定的上下文在新对话里保留、未固定的被清掉',
+        chipTx().includes('当前选区') && !chipTx().includes('Git 未提交改动'),
+        before + '  →  ' + chipTx());
+      if (chipTx().includes('当前选区')) {
+        qa('#ai-chips .ai-ctx-chip').find((c) => c.textContent.includes('当前选区')).querySelector('.ai-ctx-x').click();
+        await sleep(250);
+      }
+    }
+    // ⑤ 斜杠命令
+    type('/');
+    await sleep(500);
+    items = qa('.ai-at-pop .ai-at-item').map((x) => x.textContent);
+    add('打 / 弹出命令菜单', items.length >= 8, items.length + ' 条：' + items.slice(0, 3).join(' | '));
+    add('命令里有内容整理类动作（精简 / 统一术语）', items.some((t) => t.includes('精简')) && items.some((t) => t.includes('统一术语')));
+    add('命令里有动作类（生成提交信息 / yolo）', items.some((t) => t.includes('生成提交信息')) && items.some((t) => t.includes('yolo')));
+    type('/yolo');
+    await sleep(400);
+    const yolo = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('yolo'));
+    if (yolo) { yolo.click(); await sleep(300); }
+    add('/yolo 选完就把本次对话放行', !!(window.AiPanel && AiPanel.sessionPerm && AiPanel.sessionPerm.write),
+      JSON.stringify(window.AiPanel ? AiPanel.sessionPerm : {}));
+    // ⑥ 历史会话
+    add('顶栏有「历史会话」按钮', !!q('#ai-history'));
+    q('#ai-history').click();
+    await sleep(350);
+    add('历史下拉能打开', !!q('.ai-hist-pop'),
+      q('.ai-hist-pop') ? q('.ai-hist-pop').textContent.replace(/\s+/g, ' ').slice(0, 46) : '');
+    if (q('#ai-history')) { q('#ai-history').click(); await sleep(250); }
+    add('输入区有贴图缩略图容器（贴图直接进下一条消息）', !!q('#ai-images'));
+    // ⑦ 代码块 → 插入编辑器
+    const docLen = () => { try { const v = window.Viewer.cm && window.Viewer.cm.view; return v ? v.state.doc.length : -1; } catch (e) { return -1; } };
+    const before = docLen();
+    await ask('给我一段代码', 2400);
+    const acts = qa('#ai-msgs .ai-code-acts');
+    add('回复里的代码块挂了「复制 / 插入到编辑器」',
+      acts.length >= 1 && acts[0].querySelectorAll('button').length === 2,
+      acts.length + ' 个代码块 · 末条回复=' + lastReply());
+    if (acts.length) {
+      const btn = [...acts[0].querySelectorAll('button')].find((b) => b.textContent.includes('插入'));
+      if (btn) { btn.click(); await sleep(700); }
+    }
+    add('点「插入到编辑器」后编辑器内容真的变长', docLen() > before, before + ' → ' + docLen());
+    // ⑧ 危险命令闸：/yolo 已放行，rm 仍要问且不给「总是允许」
+    add('内置危险命令判定为 danger（不受 /yolo 影响）',
+      window.AiPanel && AiPanel.runNeedsConfirm && AiPanel.runNeedsConfirm('rm -rf node_modules') === 'danger',
+      window.AiPanel && AiPanel.runNeedsConfirm ? String(AiPanel.runNeedsConfirm('rm -rf node_modules')) : 'n/a');
+    // 路径白名单：只放行你点头过的目录，其余照问。
+    // 注意先把 /yolo 的效果摘掉再验，否则测到的是 sessionPerm 而不是白名单。
+    const saveW = AiPanel.sessionPerm.write;
+    const savePerms = AiPanel.loadPerms();
+    AiPanel.sessionPerm.write = false;
+    AiPanel.savePerms({});                       // 前面的步骤可能点过「本项目内都允许」，先清掉
+    AiPanel.setConfig({ allowPaths: ['docs/**'] });
+    add('写入白名单：docs/** 放行、其他路径仍要问',
+      AiPanel.writeNeedsConfirm('docs/a.md') === 'no' && AiPanel.writeNeedsConfirm('src/a.js') === 'yes',
+      'docs/a.md=' + AiPanel.writeNeedsConfirm('docs/a.md') + ' · src/a.js=' + AiPanel.writeNeedsConfirm('src/a.js'));
+    AiPanel.setConfig({ allowPaths: [] });
+    AiPanel.sessionPerm.write = saveW;
+    AiPanel.savePerms(savePerms || {});
+    await ask('危险命令', 2400);
+    const lastUser = (() => { const rs = qa('#ai-msgs .ai-msg.ai-user'); return rs.length ? String(rs[rs.length - 1].textContent).slice(-16) : '(无)'; })();
+    add('危险命令仍然弹确认（/yolo 也不豁免）', !!q('#cr-yes'),
+      q('#cr-yes') ? q('#cr-yes').textContent : ('没弹窗 · 末条回复=' + lastReply() + ' · 末条用户消息=' + lastUser
+        + ' · 判定=' + (window.AiPanel && AiPanel.runNeedsConfirm ? AiPanel.runNeedsConfirm('rm -rf node_modules') : 'n/a')));
+    add('危险命令不给「总是允许」', !q('#cr-always'));
+    if (q('#cr-no')) { q('#cr-no').click(); await sleep(400); }
+    // ⑨ 项目规则文件
+    const rules = await (window.AiPanel && AiPanel.loadProjectRules ? AiPanel.loadProjectRules(true) : Promise.resolve(''));
+    add('读到项目规则文件 .myide/ai-rules.md', !!rules && String(rules).includes('变更列表'), String(rules).slice(0, 40));
     return { R };
   },
 };

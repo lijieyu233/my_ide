@@ -605,6 +605,13 @@ const Viewer = (() => {
     };
     mk(blameOn ? '✕ 关闭 Blame 注解' : '⑂ Git Blame 注解', () => toggleBlame());
     mk('🕘 显示文件历史', () => { if (window.GitLog) GitLog.showFileHistory(tabs[active] && tabs[active].path); });
+    // 交给 AI：内容整理最顺手的入口 —— 选中一段右键就够，不用去面板里描述「哪一段」
+    if (window.AiPanel && AiPanel.fromEditor) {
+      mk('✨ 用 AI 解释选中内容', () => AiPanel.fromEditor('explain'));
+      mk('✏️ 用 AI 修正选中内容', () => AiPanel.fromEditor('fix'));
+      mk('🔧 用 AI 改进选中内容', () => AiPanel.fromEditor('improve'));
+      mk('📄 用 AI 整理这个文件', () => AiPanel.fromEditor('doc'));
+    }
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';

@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
     copyFiles: (paths, move) => ipcRenderer.invoke('clip:copyFiles', paths, move),
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),
+    readText: () => ipcRenderer.invoke('clip:readText'),
   },
   fsCopy: (src, destDir, overwrite) => ipcRenderer.invoke('fs:copy', src, destDir, overwrite),
   checkConflict: (srcPaths, destDir) => ipcRenderer.invoke('fs:checkExists', srcPaths, destDir),

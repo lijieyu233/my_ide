@@ -662,6 +662,11 @@ ipcMain.handle('log:write', (_e, level, tag, msg) => {
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
+// 读剪贴板文本（AI 助手的「@剪贴板」上下文来源；渲染进程没有直接读的能力）
+ipcMain.handle('clip:readText', () => {
+  try { return { ok: true, text: clipboard.readText() || '' }; } catch (e) { return { ok: false, error: String(e) }; }
+});
+
 // 文件复制：写系统剪贴板双轨
 // 1) Electron 同步写 text + FileNameW（应用内直读快路径，立即生效）
 // 2) PowerShell .NET DataObject 异步覆盖写标准格式（SetFileDropList 自动写 FileDrop(CF_HDROP) + FileNameW + FileName）
@@ -1122,7 +1127,13 @@ app.whenReady().then(() => {
         } else {
           const u = [...msgs].reverse().find((m) => m.role === 'user' && typeof m.content === 'string');
           const ut = (u && u.content) || '';
-          if (ut.indexOf('第一次改') >= 0) {
+          if (ut.indexOf('危险命令') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'd1', name: 'run_command', args: { command: 'rm -rf node_modules' } }] };
+          } else if (ut.indexOf('给我一段代码') >= 0) {
+            const t2 = '给你一个例子：\n\n```js\nconst a = 1;\nconsole.log(a);\n```\n\n需要的话我可以插到光标处。';
+            for (const ch of t2) send('ai:chunk', ch);
+            r = { ok: true, text: t2, toolCalls: [] };
+          } else if (ut.indexOf('第一次改') >= 0) {
             r = { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: '_ui_perm.md', content: '第一版内容\n第二行\n' } }] };
           } else if (ut.indexOf('第二次改') >= 0) {
             r = { ok: true, text: '', toolCalls: [{ id: 'w2', name: 'write_file', args: { path: '_ui_perm.md', content: '第二版内容\n第二行\n' } }] };
@@ -1269,6 +1280,7 @@ app.whenReady().then(() => {
         await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
         await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
         await run('AI 面板：拖文件进面板 + 授权记忆', js(steps.aiDropAndPerm, demo), 'check-ui-1i-ai-drop-perm.png');
+        await run('AI 助手能力对齐', js(steps.aiParityUi, demo), 'check-ui-1j-ai-parity.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));

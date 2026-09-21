@@ -494,6 +494,16 @@ const Settings = (() => {
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
           <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
         </select>
+        <label class="m-label" style="margin-top:10px">写入白名单 —— 这些路径不再询问（每行一条，支持 docs/** 与 *.md）</label>
+        <textarea id="ai-cfg-allow" rows="3" placeholder="docs/**&#10;*.md" spellcheck="false"
+          style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.allowPaths || []).join('\n'))}</textarea>
+        <label class="m-label" style="margin-top:8px">命令黑名单 —— 这些命令永远要确认（每行一条前缀）</label>
+        <textarea id="ai-cfg-deny" rows="2" placeholder="npm publish&#10;docker" spellcheck="false"
+          style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
+          破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单与「记住授权」影响；
+          把已有文件内容清空也单独保护，必须点一次确认。
+        </div>
         <div id="ai-cfg-perms"></div>
         <div style="margin-top:14px;display:flex;gap:8px">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
@@ -525,6 +535,8 @@ const Settings = (() => {
         inlineComplete: document.getElementById('ai-cfg-inline').checked,
         permWrite: document.getElementById('ai-cfg-permw').value,
         permRun: document.getElementById('ai-cfg-permr').value,
+        allowPaths: document.getElementById('ai-cfg-allow').value.split('\n').map((x) => x.trim()).filter(Boolean),
+        denyCmds: document.getElementById('ai-cfg-deny').value.split('\n').map((x) => x.trim()).filter(Boolean),
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };
@@ -534,9 +546,11 @@ const Settings = (() => {
       if (!box || !AiPanel.loadPerms) return;
       const p = AiPanel.loadPerms() || {};
       const items = [];
+      const cfg2 = AiPanel.getConfig() || {};
       if (p.write) items.push({ k: 'write', t: '改文件不再询问（本项目）' });
       if (p.run) items.push({ k: 'run', t: '执行任何命令都不再询问（本项目）' });
       for (const c of (p.cmds || [])) items.push({ k: 'cmd:' + c, t: '以「' + c + '」开头的命令不再询问' });
+      for (const g of (cfg2.allowPaths || [])) items.push({ k: 'path:' + g, t: '写入路径 ' + g + ' 不询问（改上面白名单框可移除）' });
       box.innerHTML = '<label class="m-label" style="margin-top:12px">已记住的授权（本项目）</label>' +
         (items.length
           ? items.map((it) => '<div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;color:var(--text)">' +
@@ -547,6 +561,7 @@ const Settings = (() => {
         b.onclick = () => {
           const k = b.dataset.perm;
           const np = AiPanel.loadPerms() || {};
+          if (k.indexOf('path:') === 0) { MI.toast('路径白名单请在上面「写入白名单」框里删除该行后保存', 'err'); return; }
           if (k === 'write') delete np.write;
           else if (k === 'run') delete np.run;
           else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));

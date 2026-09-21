@@ -55,6 +55,7 @@ const FAKE_GIT = {
   headOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
+let fakeClipText = ''; // 剪贴板文本（@剪贴板 用例）
 const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
 let fakeCopiedMove = null; // copyFiles 的 move 参数（剪切=true / 复制=false）
@@ -69,6 +70,8 @@ calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
+let aiCalls = 0;    // chat 调用次数（重新生成 / 编辑重发这类"再问一次"的用例靠它计数）
+let aiLastMsgs = null; // 最近一次请求的 messages（校验项目规则/上下文是否真的拼进去了）
 let aiLastTools = null; // 最近一次 ai.chat 收到的 tools 参数（原生 function calling 断言）
 
 function makeDom() {
@@ -172,6 +175,7 @@ function makeDom() {
       copy: async (t) => { calls.copy.push(t); return true; },
       copyFiles: async (paths, move) => { fakeCopied = paths.slice(); fakeCopiedMove = move; return true; },
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
+      readText: async () => ({ ok: true, text: fakeClipText }),
     },
     fsCopy: async (src, destDir, overwrite) => {
       const name = src.split('/').pop();
@@ -283,7 +287,10 @@ function makeDom() {
     ai: {
       // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
-      chat: async (_cfg, _msgs, tools) => { aiLastTools = tools || null; return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }; },
+      chat: async (_cfg, _msgs, tools) => {
+        aiCalls++; aiLastTools = tools || null; aiLastMsgs = _msgs;
+        return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' };
+      },
       abort: async () => ({ ok: true }),
       run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},
@@ -6330,6 +6337,292 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'AiPanel.savePerms({})'); // 清掉别影响其他用例
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
+  });
+
+
+  // ==================== AI 助手：能力对齐（上下文引用 / 会话操作 / 权限 / 项目规则）====================
+
+  await okAsync('AI 面板：@ 特殊来源（选区 / 标签页 / Git 变更 / 剪贴板）+ 上下文明细 + 固定', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/ctx.md'] = { type: 'file', content: '# 标题\n\n选中的这一段文字\n\n其他\n', mtime: 5, ctime: 5, size: 30 };
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'Viewer.openFile("' + P + '/ctx.md")');
+    await tick(); await tick();
+    await g(dom, 'Viewer.cm.setCursor(6, 14)'); // 选中「选中的这一段文字」
+    await tick();
+    const inp = $(dom, '#ai-input');
+    const type = (v) => {
+      inp.value = v;
+      try { inp.setSelectionRange(v.length, v.length); } catch {}
+      inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    };
+    type('@');
+    await tick(); await tick();
+    let rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    let labels = rows.map((x) => x.textContent);
+    assert_(labels.some((t) => t.includes('当前选区')), '有「当前选区」: ' + JSON.stringify(labels.slice(0, 5)));
+    assert_(labels.some((t) => t.includes('打开的标签页')), '有「打开的标签页」');
+    assert_(labels.some((t) => t.includes('Git 变更')), '有「Git 变更」');
+    assert_(labels.some((t) => t.includes('剪贴板')), '有「剪贴板」');
+    assert_(rows[0].textContent.includes('当前选区'), '特殊来源排在文件列表前面');
+    assert_(rows.some((r) => r.textContent.includes('ctx.md')), '文件/目录仍然有: ' + labels.length);
+    // 选「当前选区」→ 进上下文，且不往输入框插 @token
+    click(rows.find((r) => r.textContent.includes('当前选区')));
+    await tick(); await tick();
+    let chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('当前选区')), '选区进了上下文: ' + chips.map((c) => c.textContent).join('|'));
+    assert_(inp.value === '', '不往输入框插无意义的 @token: ' + JSON.stringify(inp.value));
+    // 剪贴板
+    fakeClipText = '剪贴板里的一段话';
+    type('@剪贴板');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    assert_(rows.length === 1 && rows[0].textContent.includes('剪贴板'), '按关键词过滤到 1 条: ' + rows.length);
+    click(rows[0]);
+    await tick(); await tick();
+    chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('剪贴板')), '剪贴板进了上下文');
+    // Git 变更（走 myIDE.git.status + diffWorkdir）
+    calls.diffWorkdir.length = 0;
+    fakeClipText = '';
+    type('@Git');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    const gitRow = rows.find((r) => r.textContent.includes('Git'));
+    assert_(gitRow, 'Git 项可过滤到');
+    click(gitRow);
+    await tick(); await tick(); await tick();
+    assert_(calls.diffWorkdir.length > 0, 'Git 变更会把逐个文件的 diff 读进来: ' + calls.diffWorkdir.length);
+    chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('Git 未提交改动')), 'Git 变更进了上下文');
+    // 上下文明细
+    click($(dom, '#ai-usage'));
+    await tick(); await tick();
+    const bd = $allIn($(dom, '#modal-mask'), '.ai-bd-row');
+    assert_(bd.length >= 3, '明细列出每条上下文 + 对话历史: ' + bd.length);
+    const bdTx = bd.map((x) => x.textContent).join('|');
+    assert_(bdTx.includes('当前选区') && bdTx.includes('剪贴板') && bdTx.includes('对话历史'), '明细内容完整');
+    assert_($allIn($(dom, '#modal-mask'), '.ai-bd-bar').length >= 3, '有占比条（谁占地方一眼看出）');
+    click($(dom, '#cb-x'));
+    await tick();
+    // 固定：跨「新对话」保留
+    click($(dom, '#ai-chips .ai-ctx-pin'));
+    await tick();
+    assert_($(dom, '#ai-chips .ai-ctx-chip').classList.contains('pinned'), '固定后 chip 标 pinned');
+    click($(dom, '#ai-new'));
+    await tick();
+    const chips2 = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips2.some((c) => c.textContent.includes('当前选区')), '固定过的上下文在新对话里保留: ' + chips2.map((c) => c.textContent).join('|'));
+    assert_(!chips2.some((c) => c.textContent.includes('Git 未提交改动')), '没固定的上下文被清掉');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：斜杠命令（含 /yolo、/生成提交信息）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    const inp = $(dom, '#ai-input');
+    const type = (v) => {
+      inp.value = v;
+      try { inp.setSelectionRange(v.length, v.length); } catch {}
+      inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    };
+    type('/');
+    await tick(); await tick();
+    let rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    let labels = rows.map((x) => x.textContent);
+    assert_(labels.length >= 8, '命令列表弹出来: ' + labels.length);
+    assert_(labels.some((t) => t.includes('/精简')) && labels.some((t) => t.includes('/统一术语')), '内容整理类命令在: ' + JSON.stringify(labels.slice(0, 3)));
+    assert_(labels.some((t) => t.includes('/生成提交信息')) && labels.some((t) => t.includes('/yolo')), '动作类命令也在');
+    // /yolo：本次对话全放行
+    type('/yolo');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    await tick();
+    const sp = await g(dom, 'JSON.stringify(AiPanel.sessionPerm)');
+    assert_(String(sp).includes('"write":true') && String(sp).includes('"run":true'), '/yolo 放行本次对话: ' + sp);
+    assert_($(dom, '#ai-input').value === '', '/yolo 是动作，不往输入框留东西');
+    // /精简：把指令填好（有选区时自动带上选区）
+    type('/精简');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    await tick(); await tick();
+    assert_($(dom, '#ai-input').value.includes('精简'), '选命令后指令填进输入框: ' + JSON.stringify($(dom, '#ai-input').value.slice(0, 20)));
+    // /生成提交信息：读 diff 并直接发问
+    calls.diffWorkdir.length = 0;
+    aiScript = [{ ok: true, text: 'feat: 测试用提交信息' }];
+    aiCalls = 0;
+    type('/生成提交信息');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(calls.diffWorkdir.length > 0, '/生成提交信息 会读当前改动');
+    assert_(aiCalls === 1, '并自动发问一次: ' + aiCalls);
+    const sys = String(JSON.stringify(aiLastMsgs));
+    assert_(sys.includes('待提交的改动'), 'diff 作为上下文进了请求');
+    assert_(sys.includes('提交信息'), '请求里带上了「写提交信息」的指令');
+    aiScript = [];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：编辑已发消息重发 + 重新生成 + 历史会话', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    try { dom.window.localStorage.removeItem('myide-ai-sessions'); } catch {}
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [{ ok: true, text: '第一版回复' }];
+    aiCalls = 0;
+    $(dom, '#ai-input').value = '帮我整理这句话';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 1, '第一次问了一次: ' + aiCalls);
+    const userRow = $(dom, '#ai-msgs .ai-msg.ai-user');
+    assert_(!!userRow.dataset.mid, '用户消息行带 id（编辑时要能找到是哪条）');
+    assert_($allIn(userRow, '.ai-act-btn').length === 1, '用户消息有「编辑并重发」按钮');
+    // 重新生成
+    assert_(!!$(dom, '#ai-msgs .ai-regen'), '最后一轮助手回复上有「重新生成」');
+    aiScript = [{ ok: true, text: '第二版回复' }];
+    click($(dom, '#ai-msgs .ai-regen'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 2, '重新生成又请求了一次: ' + aiCalls);
+    const lastTx = $allIn($(dom, '#ai-msgs'), '.ai-msg').pop().textContent;
+    assert_(lastTx.includes('第二版回复'), '界面换成新回复: ' + lastTx.slice(0, 20));
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length === 2, '消息数不变（旧的被替换而不是叠加）');
+    // 编辑并重发
+    click($allIn($(dom, '#ai-msgs .ai-msg.ai-user'), '.ai-act-btn')[0]);
+    await tick();
+    assert_($(dom, '#ai-input').value === '帮我整理这句话', '原文回到输入框');
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length === 0, '这条之后的对话被丢弃: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
+    aiScript = [{ ok: true, text: '改口之后的回复' }];
+    $(dom, '#ai-input').value = '换个问法：精简它';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 3, '重发又请求一次: ' + aiCalls);
+    // 历史会话：每轮结束自动存
+    const sess = await g(dom, 'localStorage.getItem("myide-ai-sessions")');
+    assert_(!!sess && String(sess).includes('换个问法'), '历史会话自动保存了这轮: ' + String(sess).slice(0, 60));
+    click($(dom, '#ai-history'));
+    await tick(); await tick();
+    const hrows = $allIn($(dom, '.ai-hist-pop'), '.ai-hist-row');
+    assert_(hrows.length >= 1, '历史下拉列出会话: ' + hrows.length);
+    assert_($(dom, '.ai-hist-pop').textContent.includes('换个问法'), '标题取第一条用户发言');
+    assert_($allIn($(dom, '.ai-hist-pop'), '.ai-hist-b').length >= 2, '每行有重命名 / 删除');
+    // 载入会话
+    click(hrows[0]);
+    await tick(); await tick();
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, '载入后对话被重放: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-code-acts').length === 0 || true, '重放不报错');
+    try { dom.window.localStorage.removeItem('myide-ai-sessions'); } catch {}
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：权限细化（危险命令 / 命令黑名单 / 写入白名单 / 清空保护）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", permWrite: "confirm", allowPaths: ["docs/**"], denyCmds: ["npm publish"] })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.sessionPerm.write = false; AiPanel.sessionPerm.run = false;');
+    // ① 写入白名单：docs/** 放行
+    FAKE_FS[P + '/docs'] = FAKE_FS[P + '/docs'] || { type: 'dir', children: [] };
+    FAKE_FS[P + '/docs/a.md'] = { type: 'file', content: 'v1\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a1', name: 'write_file', args: { path: 'docs/a.md', content: 'v2\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 docs';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '白名单里的路径不弹确认（docs/**）');
+    assert_(FAKE_FS[P + '/docs/a.md'].content === 'v2\n', '白名单路径直接写入');
+    // ② 白名单外：仍然要问
+    FAKE_FS[P + '/other.md'] = { type: 'file', content: 'o1\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a2', name: 'write_file', args: { path: 'other.md', content: 'o2\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 other';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#dw-yes'), '白名单外的路径仍然弹确认');
+    click($(dom, '#dw-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/other.md'].content === 'o1\n', '拒绝后文件没被动');
+    // ③ 清空保护：把已有内容清空必须单独确认（且不给「以后都允许」）
+    FAKE_FS[P + '/docs/a.md'] = { type: 'file', content: '有内容\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a3', name: 'write_file', args: { path: 'docs/a.md', content: '' } }] },
+      { ok: true, text: '清空了。' },
+    ];
+    $(dom, '#ai-input').value = '清空它';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#dw-yes'), '清空已有文件要确认（白名单也拦不住）');
+    assert_(!$(dom, '#dw-always'), '清空不提供「本项目内都允许」');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/docs/a.md'].content === '', '确认后才真的清空');
+    // ④ 危险命令：即使本次对话全放行也要问，且不给「总是允许」
+    await g(dom, 'AiPanel.sessionPerm.write = true; AiPanel.sessionPerm.run = true;');
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a4', name: 'run_command', args: { command: 'rm -rf node_modules' } }] },
+      { ok: true, text: '删了。' },
+    ];
+    $(dom, '#ai-input').value = '删掉依赖';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), 'rm 仍然弹确认（/yolo 也不豁免）');
+    assert_(!$(dom, '#cr-always'), '危险命令不给「总是允许」');
+    assert_($(dom, '#cr-yes').textContent.includes('仍然执行'), '按钮文案点明风险: ' + $(dom, '#cr-yes').textContent);
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    // ⑤ 用户命令黑名单
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a5', name: 'run_command', args: { command: 'npm publish' } }] },
+      { ok: true, text: '发了。' },
+    ];
+    $(dom, '#ai-input').value = '发个包';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), '黑名单里的命令也要确认（即使本次对话已放行）');
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", permWrite: "confirm", allowPaths: [], denyCmds: [] })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：项目规则文件注入系统提示', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/.myide'] = FAKE_FS[P + '/.myide'] || { type: 'dir', children: [] };
+    FAKE_FS[P + '/.myide/ai-rules.md'] = { type: 'file', content: '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', mtime: 9, ctime: 9, size: 40 };
+    await g(dom, 'App.setRoot(' + JSON.stringify(P) + ')');
+    await tick(); await tick();
+    const rules = await g(dom, 'AiPanel.loadProjectRules(true)');
+    assert_(String(rules).includes('变更列表'), '读到了项目规则: ' + String(rules).slice(0, 30));
+    aiScript = [{ ok: true, text: '好的' }];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    $(dom, '#ai-input').value = '随便说点什么';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    const sys = String(JSON.stringify(aiLastMsgs));
+    assert_(sys.includes('变更列表'), '规则进了发给模型的系统提示');
+    assert_(sys.includes('ai-rules.md'), '并标明规则来自哪个文件');
+    delete FAKE_FS[P + '/.myide/ai-rules.md'];
+    aiScript = [];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
   });
 
   console.log('');

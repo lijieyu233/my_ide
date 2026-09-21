@@ -102,6 +102,9 @@ function writeFixtures(dir) {
   fs.writeFileSync(png, makePng(1200, 800));
   fs.writeFileSync(md, MMD_DOC, 'utf8');
   fs.writeFileSync(path.join(dir, '_ui_outline.md'), OUTLINE_DOC, 'utf8');
+  // 项目规则文件（AI 助手会把它注入系统提示）
+  try { fs.mkdirSync(path.join(dir, '.myide'), { recursive: true }); } catch {}
+  fs.writeFileSync(path.join(dir, '.myide', 'ai-rules.md'), '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', 'utf8');
   return { png, md };
 }
 
