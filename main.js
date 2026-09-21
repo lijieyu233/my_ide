@@ -1277,6 +1277,18 @@ app.whenReady().then(() => {
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
+        // 底部输入区放大图：尺寸刻度（chip / 输入框 / 发送按钮）这类问题整窗截图根本看不清，
+        // 用户自己也是放大截图才发现的。按元素实际位置裁剪，别硬编码坐标。
+        try {
+          const br = await wc.executeJavaScript(
+            '(() => { const v = document.querySelector("#ai-panel .ai-input-bar");'
+            + ' if (!v) return null; const r = v.getBoundingClientRect();'
+            + ' return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; })()');
+          if (br && br.width > 10) {
+            const n = await grab('check-ui-1k-ai-bottom-x3.png', { x: br.x, y: br.y, width: br.width, height: br.height, scale: 3 });
+            lines.push('     截图 → check-ui-1k-ai-bottom-x3.png (' + n + ' 字节，输入区 ' + br.width + '×' + br.height + ' @3x)');
+          }
+        } catch (e) { lines.push('     （底部放大截图失败：' + String((e && e.message) || e).slice(0, 80) + '）'); }
         await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
         await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
         await run('AI 面板：拖文件进面板 + 授权记忆', js(steps.aiDropAndPerm, demo), 'check-ui-1i-ai-drop-perm.png');
