@@ -41,7 +41,9 @@ const AiPanel = (() => {
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
   let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
   let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
-  let checkpoints = [];      // AI 写入检查点栈（回滚用）：[{path, oldText}]
+  let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
+  let followPath = null;     // 正在跟随的编辑器文件（自动作为上下文，用户不用手动点 📎）
+  const followMuted = new Set(); // 用户明确说过「不跟随」的文件（切走再切回也不再自动加）
 
   // ---------- token 用量显示 ----------
   // 粗估当前上下文（无 usage 时的近似值：英文 ~4 字符/token、中文更密，取 3.2 折中）
@@ -106,16 +108,23 @@ const AiPanel = (() => {
     { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖，会先给用户看 diff 确认）。仅在新建文件或大规模重写时使用；局部修改请改用 replace_edit', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
     { type: 'function', function: { name: 'run_command', description: '在项目根目录执行一条 shell 命令（如运行脚本/装依赖/git 操作，15 秒超时）。每条命令都会先弹窗让用户确认', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' } }, required: ['command'] } } },
   ];
+  // 定位：通用助手。用户主要用它整理内容（改文档 / 查项目内容），代码能力保留不砍；
+  // 所以规则里把「省 token」「说人话」讲清楚，而不是只教怎么改代码
   const AGENT_SYS = [
-    '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
+    '你是 My IDE 内置的 AI 助手，可以调用工具查看和修改用户项目里的文件。',
+    '用户主要拿你整理内容（改文档、查资料、归纳改写），也会让你处理代码，两者用同一套规则。',
     '',
     '## 工作规则',
-    '1. 回答代码问题前先用工具查看项目（list_files / search_files / read_file），不要凭空猜测文件内容',
-    '2. 修改已有文件优先用 replace_edit（只输出要改的片段）；只有新建文件或重写大半内容才用 write_file',
+    '1. 动手前先看真实内容（list_files / search_files / read_file），不要凭空猜测',
+    '2. 改文件优先用 replace_edit，只改要动的那一段；只有新建文件或整篇重写才用 write_file',
     '3. replace_edit 的 search 必须与文件内容逐字符一致（含缩进、空行），不确定就先 read_file',
-    '4. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
-    '5. 需要运行验证（跑测试/启动脚本）时用 run_command，一条命令只做一件事',
-    '6. 全部任务完成后用中文总结改动，不再调用工具',
+    '4. 文件很长时不要整篇读：先用 search_files 定位到相关段落，再按需读取 —— 省时间也省额度',
+    '5. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
+    '6. 只在确有必要时用 run_command（跑测试 / 验证），一条命令只做一件事',
+    '7. 全部任务完成后用中文说明改了什么，不再调用工具',
+    '',
+    '## 表达',
+    '说人话：结论先行、少堆术语，不要输出与用户要求无关的技术细节。',
     '',
     '（如果当前服务不支持原生工具调用，也可在正文里用 ```tool_call {"name":"工具名","args":{...}}``` 代码块表达同样的调用）',
   ].join('\n');
@@ -154,6 +163,45 @@ const AiPanel = (() => {
   function permRun() {
     const v = getConfig().permRun;
     return ['confirm', 'deny'].includes(v) ? v : 'confirm';
+  }
+
+  // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
+  // 范围：session = 本次对话（内存）；project = 本项目（localStorage，按项目分开存）
+  // 粒度：整类操作（写文件 / 执行命令）+ 单条命令前缀（如 git、npm test）
+  let sessionPerm = { write: false, run: false };
+  const permKey = () => 'myide-ai-perms:' + ((window.App && App.root) || '');
+  function loadPerms() {
+    try { return JSON.parse(localStorage.getItem(permKey()) || '{}') || {}; } catch { return {}; }
+  }
+  function savePerms(p) {
+    try { localStorage.setItem(permKey(), JSON.stringify(p || {})); } catch {}
+  }
+  function grantPerm(kind, scope) {
+    if (scope === 'session') { sessionPerm[kind] = true; return; }
+    const p = loadPerms();
+    p[kind] = true;
+    savePerms(p);
+  }
+  function grantCmdPrefix(pre) {
+    if (!pre) return;
+    const p = loadPerms();
+    p.cmds = [...new Set([...(p.cmds || []), pre])];
+    savePerms(p);
+  }
+  function cmdPrefixOf(cmd) { return String(cmd || '').trim().split(/\s+/)[0] || ''; }
+  function writeNeedsConfirm() {
+    const base = permWrite();
+    if (base === 'deny') return 'deny';
+    if (base === 'auto') return 'no';
+    if (sessionPerm.write || loadPerms().write) return 'no';
+    return 'yes';
+  }
+  function runNeedsConfirm(cmd) {
+    if (permRun() === 'deny') return 'deny';
+    if (sessionPerm.run || loadPerms().run) return 'no';
+    const t = String(cmd || '').trim();
+    if ((loadPerms().cmds || []).some((pre) => pre && t.startsWith(pre))) return 'no';
+    return 'yes';
   }
 
   async function executeTool(call) {
@@ -225,10 +273,14 @@ const AiPanel = (() => {
       if (!cmd) return { ok: false, text: '错误：command 为空' };
       const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
-      if (permRun() === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
-      // 确认闸：命令执行有副作用，必须用户批准
-      const yes = await Modal.confirm('AI 请求执行命令', '即将在项目目录运行：\n\n' + cmd + '\n\n确认执行？');
-      if (!yes) return { ok: false, text: '用户拒绝了执行该命令' };
+      const needR = runNeedsConfirm(cmd);
+      if (needR === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
+      if (needR === 'yes') {
+        // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口
+        const ans = await confirmRun(cmd, cmdPrefixOf(cmd)); // 'once' | 'always' | false
+        if (!ans) return { ok: false, text: '用户拒绝了执行该命令' };
+        if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
+      }
       const r = await window.myIDE.ai.run(cmd, root);
       return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
     }
@@ -238,37 +290,36 @@ const AiPanel = (() => {
   // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
   async function applyWrite(loc, content) {
     const full = loc.root + '/' + loc.rel;
-    if (permWrite() === 'deny') {
+    const needW = writeNeedsConfirm();
+    if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
     const old = await window.myIDE.fs.readFile(full);
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
-    if (permWrite() === 'confirm') {
-      const applied = await confirmDiff(loc.rel, oldText, content);
-      if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+    if (needW === 'yes') {
+      const ans = await confirmDiff(loc.rel, oldText, content); // 'once' | 'always' | false
+      if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+      if (ans === 'always') grantPerm('write', 'project');
     }
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
-    // 检查点：写入前的旧内容入栈（新文件记 existed:false，回滚时删除）
-    checkpoints.push({ path: full, rel: loc.rel, oldText, existed });
+    // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
+    const cp = { path: full, rel: loc.rel, oldText, existed, done: false, card: null };
+    checkpoints.push(cp);
+    cp.card = addEditCard(cp, content);
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
     return { ok: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
   }
 
   // 撤销最近一次 AI 写入（栈式，可连续点）
   async function undoCheckpoint() {
-    if (!checkpoints.length) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
-    const cp = checkpoints.pop();
-    if (cp.existed) {
-      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
-      if (!w || w.error) { MI.toast('回滚失败：' + ((w && w.error) || ''), 'err'); return; }
-    } else {
-      const d = await window.myIDE.fs.remove(cp.path);
-      if (!d || d.error) { MI.toast('删除失败：' + ((d && d.error) || ''), 'err'); return; }
+    let cp = null;
+    for (let i = checkpoints.length - 1; i >= 0; i--) {
+      if (!checkpoints[i].done) { cp = checkpoints[i]; break; }
     }
-    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
-    MI.toast('已回滚 ' + cp.rel + (checkpoints.length ? '（还可撤销 ' + checkpoints.length + ' 步）' : ''), 'ok');
+    if (!cp) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
+    await undoEditCp(cp);
   }
 
   // 统一 diff（前缀/后缀裁剪 + 中段 LCS，超限退化整块替换）
@@ -307,23 +358,7 @@ const AiPanel = (() => {
     return new Promise((resolve) => {
       const rows = lineDiff(oldText, newText);
       const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
-      // 上下文压缩：长未改动段折叠为 ⋯ N 行未改动 ⋯
-      const parts = [];
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i].t !== ' ') { parts.push({ cls: rows[i].t === '+' ? 'd-add' : 'd-del', text: (rows[i].t === '+' ? '+' : '-') + ' ' + rows[i].s }); continue; }
-        let j = i;
-        while (j < rows.length && rows[j].t === ' ') j++;
-        const run = j - i;
-        if (run > 8 && i > 0 && j < rows.length) {
-          parts.push({ cls: 'd-skip', text: '⋯ ' + (run - 6) + ' 行未改动 ⋯' });
-          for (let k = j - 3; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
-        } else {
-          for (let k = i; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
-        }
-        i = j - 1;
-      }
-      let html = '';
-      for (const p of parts) html += '<div class="' + p.cls + '">' + esc(p.text) + '</div>';
+      const html = diffRowsHtml(rows);
       const box = document.createElement('div');
       box.style.cssText = 'display:flex;flex-direction:column;min-width:520px;max-width:760px;height:70vh';
       box.innerHTML = `
@@ -332,12 +367,14 @@ const AiPanel = (() => {
         <div class="dw-diff">${html}</div>
         <div class="m-foot">
           <button class="tb-btn m-cancel" id="dw-no">拒绝</button>
+          <button class="tb-btn" id="dw-always" title="以后本项目里改文件都不再询问（可在 设置 → AI 助手 清除）">本项目内都允许</button>
           <button class="tb-btn m-ok" id="dw-yes">应用修改</button>
         </div>`;
       Modal.show(box);
       let settled = false;
       const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
-      box.querySelector('#dw-yes').onclick = () => finish(true);
+      box.querySelector('#dw-yes').onclick = () => finish('once');
+      box.querySelector('#dw-always').onclick = () => finish('always');
       box.querySelector('#dw-no').onclick = () => finish(false);
       box.querySelector('#dw-x').onclick = () => finish(false);
     });
@@ -488,15 +525,56 @@ const AiPanel = (() => {
     return row;
   }
 
+  // 空状态：卡片 + 场景入口 —— 点一下把指令填进输入框（用户不用自己想该怎么问）
+  const AI_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>';
+  const QUICK_PROMPTS = [
+    { label: '整理当前文档', tip: '理顺结构、统一格式，改完先看 diff', file: true, text: '把当前打开的文档整理一下：理顺结构、统一格式，改完先给我看 diff' },
+    { label: '提取要点', tip: '按章节归纳要点', file: true, text: '读一下当前文档，按章节提取要点，用简洁的列表整理给我' },
+    { label: '按标题重组', tip: '保持原意，只调结构', file: true, text: '按标题层级重新组织当前文档的内容，保持原意不变，改完给我看 diff' },
+    { label: '在项目中查找', tip: '搜项目里的内容', file: false, text: '在项目里查找：' },
+  ];
+  // 场景入口：填指令 + 聚焦；整理类顺手挂上当前文件（省得模型自己猜是哪个文件）
+  async function runQuickPrompt(q) {
+    const input = document.getElementById('ai-input');
+    if (!input) return;
+    if (q.file) {
+      const tab = window.Viewer && Viewer.activeTab;
+      if (!tab || tab.dir) { MI.toast('先在编辑器里打开一个文档，再点这个', 'err'); return; }
+      if (!ctxFiles.some((f) => f.path === tab.path)) await toggleCtxFile();
+    }
+    input.value = q.text;
+    input.focus();
+    try { input.setSelectionRange(q.text.length, q.text.length); } catch {}
+  }
   function showWelcome() {
     const cfg = getConfig();
     const w = document.createElement('div');
     w.className = 'ai-welcome';
-    w.innerHTML = `
-      <div class="ai-logo">🤖</div>
-      <div class="ai-welcome-title">AI 助手</div>
-      <div class="ai-welcome-tip">${cfg.baseUrl ? '已连接 ' + esc(cfg.model || '模型') + '，开始对话吧' : '尚未配置模型 —— 点击 ⚙ 或到 设置 → AI 助手 填写服务地址与模型'}</div>
-      <div class="ai-welcome-tip" style="margin-top:4px">支持工具调用（读文件/搜索/修改需确认）· 多轮对话 · 📎 附当前文件 · Enter 发送</div>`;
+    const card = document.createElement('div');
+    card.className = 'ai-card';
+    if (!cfg.baseUrl) {
+      card.innerHTML =
+        '<div class="ai-card-ic">' + AI_IC + '</div>' +
+        '<div class="ai-card-title">AI 助手</div>' +
+        '<div class="ai-card-sub">还没配置模型 —— 点右上角设置，或到「设置 → AI 助手」填写服务地址与模型</div>';
+    } else {
+      card.innerHTML =
+        '<div class="ai-card-ic">' + AI_IC + '</div>' +
+        '<div class="ai-card-title">整理你的文档和项目内容</div>' +
+        '<div class="ai-card-sub">我会读项目里的文件、按你的要求改文档。任何写入都先把改动摆给你看，确认了才落盘。</div>';
+      const grid = document.createElement('div');
+      grid.className = 'ai-quick';
+      for (const q of QUICK_PROMPTS) {
+        const b = document.createElement('button');
+        b.className = 'ai-quick-btn';
+        b.textContent = q.label;
+        b.title = q.tip;
+        b.onclick = () => runQuickPrompt(q);
+        grid.appendChild(b);
+      }
+      card.appendChild(grid);
+    }
+    w.appendChild(card);
     msgsEl.appendChild(w);
   }
 
@@ -516,6 +594,7 @@ const AiPanel = (() => {
   }
 
   async function send() {
+    await followActive(); // 发送前对齐一次：用户可能刚切了文件就说话
     if (busy) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
@@ -564,6 +643,15 @@ const AiPanel = (() => {
     if (!curStream) return;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     const md = curStream.querySelector('.ai-md');
+    // 空气泡不留：模型这一轮只调工具、没说话时，聊天里挂个空白框只会让人莫名其妙
+    const hasCalls = !!(r && Array.isArray(r.toolCalls) && r.toolCalls.length);
+    if (!isErr && !String(text || '').trim()) {
+      if (hasCalls) {
+        try { curStream.remove(); } catch {}
+      } else {
+        md.innerHTML = '<p class="ai-err">（模型这轮没有返回内容）</p>';
+      }
+    }
     if (isErr) {
       md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
     } else if (text) {
@@ -605,13 +693,242 @@ const AiPanel = (() => {
     }
   }
 
+  // ---------- 跟随当前编辑器文件 ----------
+  // 为什么需要：用户在面板里说「把这份文档精简一下」，AI 并不知道「这份」是哪份 ——
+  // 以前要先手动点 📎 或 @ 引用，忘了附就答非所问。现在面板始终跟着当前打开的文件走。
+  function renderFollow() {
+    const box = document.getElementById('ai-follow');
+    if (!box) return;
+    const f = ctxFiles.find((x) => x.auto);
+    box.classList.toggle('hidden', !f);
+    if (!f) return;
+    const nm = box.querySelector('.ai-follow-nm');
+    if (nm) nm.textContent = f.path.replace(/^.*[\\/]/, '');
+    box.title = f.path;
+  }
+  async function followActive() {
+    const tab = window.Viewer && Viewer.activeTab;
+    const path = (tab && !tab.dir) ? tab.path : null;
+    if (path === followPath) { renderFollow(); return; }
+    followPath = path;
+    ctxFiles = ctxFiles.filter((x) => !x.auto);
+    if (path && !followMuted.has(path)) {
+      const r = await window.myIDE.fs.readFile(path);
+      if (r && !r.error) {
+        let content = r.content || '';
+        if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
+        ctxFiles = ctxFiles.filter((x) => !x.auto);
+        ctxFiles.push({ path, content, isDir: false, auto: true });
+      }
+    }
+    renderChips();
+    renderFollow();
+  }
+  // 用户点「不再跟随」：记住这次选择，切到别的文件才会重新跟随
+  function unfollowActive() {
+    const f = ctxFiles.find((x) => x.auto);
+    if (!f) return;
+    followMuted.add(f.path);
+    ctxFiles = ctxFiles.filter((x) => !x.auto);
+    renderChips();
+    renderFollow();
+    MI.toast('已取消跟随当前文件（切到别的文件会重新跟随）', 'ok');
+  }
+
+  // ---------- 拖拽引用 ----------
+  // 把文件/文件夹直接拖进面板就进上下文。两类来源：
+  //   ① 项目树里拖过来（tree.js 已经在发 text/myide-path / text/myide-paths 自定义 MIME）
+  //   ② 从系统（资源管理器 / Finder）拖文件进来（Electron 32+ 移除了 File.path，得用 webUtils）
+  async function addDropped(paths) {
+    const uniq = [...new Set((paths || []).filter(Boolean))];
+    let added = 0;
+    for (const p of uniq) {
+      if (ctxFiles.some((f) => f.path === p)) continue;
+      const rf = await window.myIDE.fs.readFile(p);
+      if (rf && !rf.error) {                       // 是文件 → 附内容
+        let content = rf.content || '';
+        if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
+        ctxFiles.push({ path: p, content, isDir: false, dropped: true });
+        added++;
+        continue;
+      }
+      const root = String((window.App && App.root) || '').replace(/[\\/]+$/, '');
+      const norm = (x) => String(x).replace(/\\/g, '/');
+      let tree = '';
+      if (root && norm(p).startsWith(norm(root) + '/')) {
+        tree = await dirTreeText(norm(p).slice(norm(root).length + 1)); // 项目内目录：复用已有实现
+      } else {
+        const al = await window.myIDE.fs.listAll(p, false);             // 项目外目录：列一层路径清单
+        const files = ((al && al.files) || []).slice(0, 300);
+        if (files.length) {
+          const base = norm(p);
+          tree = files.map((f) => '  ' + norm(f).slice(base.length).replace(/^[\\/]/, '')).join('\n')
+            + (files.length >= 300 ? '\n…（仅列前 300 个）' : '');
+        }
+      }
+      if (!tree) continue;
+      ctxFiles.push({ path: p, content: tree, isDir: true, dropped: true });
+      added++;
+    }
+    renderChips();
+    MI.toast(added ? '已加入上下文 ' + added + ' 项' : '没有可加入的内容（可能已在上下文里）', added ? 'ok' : 'err');
+  }
+  function initDrop() {
+    if (!panel) return;
+    const isFileDrag = (e) => {
+      const dt = e.dataTransfer;
+      if (!dt) return false;
+      const types = [...(dt.types || [])];
+      // 只接管「文件类」拖拽：树内拖拽（自定义 MIME）或系统文件；纯文本拖拽不拦
+      return types.includes('Files') || types.includes('text/myide-path') || types.includes('text/myide-paths');
+    };
+    panel.addEventListener('dragover', (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch {}
+      panel.classList.add('drop-active');
+    });
+    panel.addEventListener('dragleave', (e) => {
+      if (!panel.contains(e.relatedTarget)) panel.classList.remove('drop-active');
+    });
+    panel.addEventListener('drop', async (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      panel.classList.remove('drop-active');
+      const paths = [];
+      try {                                          // ① 项目树里拖来的
+        const many = e.dataTransfer.getData('text/myide-paths');
+        if (many) paths.push(...JSON.parse(many));
+        const one = e.dataTransfer.getData('text/myide-path');
+        if (one) paths.push(one);
+      } catch {}
+      const fl = e.dataTransfer.files;               // ② 从系统拖来的
+      if (fl && fl.length) {
+        for (const f of fl) {
+          try { const p = window.myIDE.fs.pathOfDroppedFile(f); if (p) paths.push(p); } catch {}
+        }
+      }
+      if (!paths.length) { MI.toast('没识别到文件路径', 'err'); return; }
+      await addDropped(paths);
+    });
+  }
+
+  // ---------- 改动卡片 ----------
+  // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
+  // 命令确认：多给一个「记住这类命令」的出口
+  // （Cursor 是 allowlist，VS Code 是 scoped approval —— 都在解决"点十几次确认"）
+  function confirmRun(cmd, pre) {
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.style.cssText = 'display:flex;flex-direction:column;min-width:460px;max-width:640px';
+      box.innerHTML =
+        '<div class="m-head">▶ AI 请求执行命令 <span class="x" id="cr-x">✕</span></div>' +
+        '<div class="m-body">' +
+          '<div style="white-space:pre-wrap;line-height:1.6;background:var(--bg-input);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px">' + esc(cmd) + '</div>' +
+          '<div style="margin-top:8px;font-size:12px;color:var(--text-dim)">在项目目录执行。' +
+            (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（可在 设置 → AI 助手 清除）。' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="m-foot">' +
+          '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
+          (pre ? '<button class="tb-btn" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
+          '<button class="tb-btn m-ok" id="cr-yes">运行一次</button>' +
+        '</div>';
+      Modal.show(box);
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      box.querySelector('#cr-no').onclick = () => finish(false);
+      box.querySelector('#cr-yes').onclick = () => finish('once');
+      const al = box.querySelector('#cr-always');
+      if (al) al.onclick = () => finish('always');
+      box.querySelector('#cr-x').onclick = () => finish(false);
+    });
+  }
+
+  function diffRowsHtml(rows) {
+    const parts = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].t !== ' ') {
+        parts.push({ cls: rows[i].t === '+' ? 'd-add' : 'd-del', text: (rows[i].t === '+' ? '+' : '-') + ' ' + rows[i].s });
+        continue;
+      }
+      let j = i;
+      while (j < rows.length && rows[j].t === ' ') j++;
+      const run = j - i;
+      if (run > 8 && i > 0 && j < rows.length) {
+        parts.push({ cls: 'd-skip', text: '⋯ ' + (run - 6) + ' 行未改动 ⋯' });
+        for (let k = j - 3; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+      } else {
+        for (let k = i; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+      }
+      i = j - 1;
+    }
+    let html = '';
+    for (const p of parts) html += '<div class="' + p.cls + '">' + esc(p.text) + '</div>';
+    return html;
+  }
+  // AI 改完一个文件 → 在消息流里留一张卡片：改了哪个文件、加减几行、能展开、能单独撤销。
+  // 以前只留一行「🔧 replace_edit 周报.md」，用户想知道改了啥得自己翻文件。
+  function addEditCard(cp, newText) {
+    const rows = lineDiff(cp.oldText, newText);
+    const addN = rows.filter((x) => x.t === '+').length;
+    const delN = rows.filter((x) => x.t === '-').length;
+    const card = document.createElement('div');
+    card.className = 'ai-edit';
+    card.innerHTML =
+      '<div class="ai-edit-head">' +
+        '<span class="ai-edit-nm" title="' + esc(cp.rel) + '">' + esc(cp.rel) + '</span>' +
+        '<span class="ai-edit-stat"><i class="e-add">+' + addN + '</i><i class="e-del">-' + delN + '</i></span>' +
+        '<button class="ai-edit-btn e-toggle">看改动</button>' +
+        '<button class="ai-edit-btn e-undo" title="把这处改回原样">撤销</button>' +
+      '</div>' +
+      '<div class="ai-edit-body dw-diff hidden"></div>';
+    const body = card.querySelector('.ai-edit-body');
+    const tg = card.querySelector('.e-toggle');
+    tg.onclick = () => {
+      const show = body.classList.contains('hidden');
+      if (show && !body.dataset.filled) {
+        body.innerHTML = diffRowsHtml(rows); // 懒渲染：展开才铺 DOM
+        body.dataset.filled = '1';
+      }
+      body.classList.toggle('hidden', !show);
+      tg.textContent = show ? '收起' : '看改动';
+    };
+    card.querySelector('.e-undo').onclick = () => undoEditCp(cp);
+    msgsEl.appendChild(card);
+    scrollBottom();
+    return card;
+  }
+  // 按处撤销：把这处改回写入前的样子（其余改动不受影响）
+  async function undoEditCp(cp) {
+    if (!cp) { MI.toast('找不到这处改动记录', 'err'); return; }
+    if (cp.done) { MI.toast('这处已经撤销过了', 'ok'); return; }
+    if (cp.existed) {
+      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
+      if (!w || w.error) { MI.toast('撤销失败：' + ((w && w.error) || ''), 'err'); return; }
+    } else {
+      const d = await window.myIDE.fs.remove(cp.path);
+      if (!d || d.error) { MI.toast('撤销失败：' + ((d && d.error) || ''), 'err'); return; }
+    }
+    cp.done = true;
+    if (cp.card) {
+      cp.card.classList.add('undone');
+      const u = cp.card.querySelector('.e-undo');
+      if (u) { u.textContent = '已撤销'; u.disabled = true; }
+    }
+    MI.toast('已把 ' + cp.rel + ' 改回原样', 'ok');
+    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
+  }
+
   // ---------- 附带上下文（📎 当前文件 + @ 引用文件/文件夹，统一 chips 展示）----------
   function renderChips() {
     const box = document.getElementById('ai-chips');
     if (!box) return;
     box.innerHTML = '';
-    box.classList.toggle('hidden', !ctxFiles.length);
-    for (const f of ctxFiles) {
+    const manual = ctxFiles.filter((x) => !x.auto); // 自动跟随的由「正在看」条显示
+    box.classList.toggle('hidden', !manual.length);
+    for (const f of manual) {
       const chip = document.createElement('span');
       chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '');
       chip.title = f.path + '（点击移除）';
@@ -627,10 +944,14 @@ const AiPanel = (() => {
     }
   }
   function removeCtx(path) {
+    const wasAuto = ctxFiles.some((f) => f.auto && f.path === path);
     ctxFiles = ctxFiles.filter((f) => f.path !== path);
+    if (wasAuto) followMuted.add(path); // 用户主动去掉的，别自动加回来
     renderChips();
+    renderFollow();
   }
   function addCtx(entry) {
+    followMuted.delete(entry.path); // 用户手动加回来的，撤销之前「不跟随」的决定
     if (ctxFiles.some((f) => f.path === entry.path)) { MI.toast('已在上下文中：' + entry.path, 'ok'); return; }
     ctxFiles.push(entry);
     renderChips();
@@ -843,7 +1164,14 @@ const AiPanel = (() => {
         send();
       };
     }
+    const followBox = document.getElementById('ai-follow');
+    if (followBox) {
+      const fx = followBox.querySelector('.ai-follow-x');
+      if (fx) fx.onclick = unfollowActive;
+    }
     if (inputEl) {
+      // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
+      inputEl.addEventListener('focus', () => { followActive(); });
       inputEl.addEventListener('input', onInputMention);
       inputEl.addEventListener('keydown', (e) => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
@@ -860,8 +1188,10 @@ const AiPanel = (() => {
       msgs = [];
       usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
       renderUsage();
-      ctxFiles = [];
+      // 新对话保留「当前正在看的文件」（否则每开一次新对话都得重新附一次）
+      ctxFiles = ctxFiles.filter((f) => f.auto);
       renderChips();
+      renderFollow();
       msgsEl.innerHTML = '';
       showWelcome();
       MI.toast('已开始新对话', 'ok');
@@ -871,6 +1201,7 @@ const AiPanel = (() => {
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
     if (fileChip) fileChip.onclick = toggleCtxFile;
+    initDrop(); // 拖文件进面板 = 加进上下文
     initResize();
 
     // 主进程事件流
@@ -903,6 +1234,6 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm };
 })();
 window.AiPanel = AiPanel;

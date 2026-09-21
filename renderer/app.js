@@ -116,8 +116,11 @@ const App = (() => {
   function setToolState(next) {
     const prev = activeTool;
     activeTool = next;
-    if (SIDE_TOOLS.includes(next)) { sideTool = next; sideCollapsed = false; }
-    if (next === 'db') sideCollapsed = false;
+    if (SIDE_TOOLS.includes(next)) sideTool = next;
+    // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
+    //   切到 browser 时残留 true → 收藏面板永不显示（sideCollapsed 与 body 的
+    //   sidebar-collapsed 是两个独立状态，toggleSidebar 只动后者）
+    sideCollapsed = false;
     applyToolChange(prev, next);
     renderToolStrip();
     saveToolState();
@@ -204,10 +207,11 @@ const App = (() => {
     }
     const aiBtn = document.getElementById('tool-ai');
     if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
-    // 侧栏面板：db 激活时显示连接/表列表；browser/log 期间保留上次侧栏
+    // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
-    for (const t of ['project', 'outline', 'git', 'tasks', 'db']) {
+    if (activeTool === 'browser') sidePanel = 'browser';
+    for (const t of ['project', 'outline', 'git', 'tasks', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
@@ -273,7 +277,7 @@ const App = (() => {
     document.body.classList.toggle('sidebar-collapsed', collapsed);
     const btn = document.getElementById('tool-sidebar');
     if (btn) {
-      btn.textContent = collapsed ? '⏵' : '⏴';
+      btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS（不再切字符）
       btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+`)';
     }
   }
@@ -284,7 +288,7 @@ const App = (() => {
     document.body.classList.toggle('rsb-collapsed', collapsed);
     const btn = document.getElementById('tool-sidebar-r');
     if (btn) {
-      btn.textContent = collapsed ? '⏴' : '⏵';
+      btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS
       btn.title = (collapsed ? '展开' : '收起') + '右侧栏 (Alt+`)';
     }
     renderToolStrip();
@@ -364,7 +368,9 @@ const App = (() => {
     } catch {}
   }
 
-  // 空状态：最近打开的项目（快速回切；含已全部关闭的历史项目）
+  // 空状态：最近打开的项目（纵向列表：名字亮 + 父路径暗，最多 6 条，其余走「还有 N 个」下拉）
+  const EMPTY_RECENT_MAX = 6;
+  const EMPTY_FOLDER_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>';
   function renderEmptyRecent() {
     const box = document.getElementById('empty-recent');
     if (!box) return;
@@ -373,22 +379,63 @@ const App = (() => {
     try { recents = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); } catch {}
     const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
       .filter((x) => typeof x === 'string' && x);
-    if (shown.length < 1) return;
-    const title = document.createElement('div');
-    title.className = 'empty-hint2';
-    title.textContent = '最近项目';
-    box.appendChild(title);
-    const row = document.createElement('div');
-    row.className = 'empty-projects';
-    for (const pr of shown) {
-      const b = document.createElement('button');
-      b.className = 'proj-btn' + (pr === root ? ' active' : '');
-      b.textContent = pr.split(/[\\/]/).pop() || pr;
-      b.title = pr;
-      b.onclick = () => openProject(pr);
-      row.appendChild(b);
+    const openMenu = (anchorEl) => {
+      const anchor = document.querySelector('.proj-all') || anchorEl;
+      if (anchor) showProjMenu(anchor);
+    };
+    // 标题行 + 右侧「全部 N」
+    const head = document.createElement('div');
+    head.className = 'empty-list-head';
+    const t = document.createElement('span');
+    t.textContent = '最近项目';
+    const line = document.createElement('span');
+    line.className = 'empty-list-line';
+    head.appendChild(t);
+    head.appendChild(line);
+    if (shown.length > EMPTY_RECENT_MAX) {
+      const all = document.createElement('span');
+      all.className = 'empty-list-all';
+      all.textContent = '全部 ' + shown.length;
+      all.title = '查看已打开 / 最近打开的全部项目';
+      all.onclick = () => openMenu(all);
+      head.appendChild(all);
     }
-    box.appendChild(row);
+    box.appendChild(head);
+    if (!shown.length) {
+      const none = document.createElement('div');
+      none.className = 'empty-list-none';
+      none.textContent = '还没有打开过项目 · 也可以把文件夹拖进窗口';
+      box.appendChild(none);
+      return;
+    }
+    const list = document.createElement('div');
+    list.className = 'empty-list';
+    for (const pr of shown.slice(0, EMPTY_RECENT_MAX)) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'empty-item' + (pr === root ? ' active' : '');
+      row.title = pr;
+      row.innerHTML = EMPTY_FOLDER_IC; // 图标由常量控制，无用户输入拼接
+      const nm = document.createElement('span');
+      nm.className = 'empty-item-name';
+      nm.textContent = pr.split(/[\\/]/).pop() || pr;
+      const dir = document.createElement('span');
+      dir.className = 'empty-item-dir';
+      dir.textContent = pr.replace(/[\\/][^\\/]*$/, '') || pr; // 父目录（超长自动省略）
+      row.appendChild(nm);
+      row.appendChild(dir);
+      row.onclick = () => openProject(pr);
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+    if (shown.length > EMPTY_RECENT_MAX) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'empty-more';
+      more.textContent = '还有 ' + (shown.length - EMPTY_RECENT_MAX) + ' 个…';
+      more.onclick = () => openMenu(more);
+      box.appendChild(more);
+    }
   }
 
   // 「全部项目」下拉：hover 自动弹出、移开/选择后消失（含历史打开项目）
@@ -472,19 +519,26 @@ const App = (() => {
   function renderProjectBar() {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
+    const wrap = bar.parentElement; // #project-bar-wrap
+    // 「全部项目」入口挂在滚动容器之外（同层、bar 之前）：不参与横向滚动
+    // → 结构上不可能盖住项目按钮（老实现是 sticky 浮在滚动层上，按钮从它底下钻过去）
+    if (wrap) {
+      const old = wrap.querySelector('.proj-all');
+      if (old) old.remove();
+    }
     bar.innerHTML = '';
-    // 最左侧固定「全部项目」入口：显示数量 + 当前项目名（hover 下拉全部 + 历史项目）
-    if (projects.length) {
+    if (projects.length && wrap) {
       const all = document.createElement('button');
+      all.type = 'button';
       all.className = 'proj-all';
+      all.innerHTML = `<span class="proj-all-n">▾ ${projects.length} 项目</span>`;
       const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
-      all.innerHTML = `<span class="proj-all-n">▾ ${projects.length} 项目</span><span class="proj-all-cur">${curName}</span>`;
-      all.title = '全部项目（移入查看历史项目）';
+      all.title = '全部项目（当前：' + curName + '）\n点击或移入查看已打开 / 最近打开的项目';
       // hover 弹出 / 移开消失（原点击触发——不知道可以点，hover 更符合直觉）
       all.onmouseenter = () => showProjMenu(all);
       all.onmouseleave = hideProjMenu;
       all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
-      bar.appendChild(all);
+      wrap.insertBefore(all, bar);
     }
     for (const pr of projects) {
       const btn = document.createElement('button');
@@ -585,10 +639,27 @@ const App = (() => {
       bar.appendChild(btn);
     }
     // 渲染后把当前项目按钮滚入可视区：新开项目在末尾，曾被截断看不到、点不到 ✕
+    // ⚠ 必须用 getBoundingClientRect 差值算「相对滚动容器」的位置：
+    //   offsetLeft 是相对 offsetParent（这里是 body）的坐标，直接拿来跟 scrollLeft 比较会把
+    //   工具栏左侧（打开项目按钮 + 全部项目入口）的宽度算进去 → 滚到错误位置，当前项目反而被藏起来
     const act = bar.querySelector('.proj-btn.active');
-    if (act && act.scrollIntoView) {
-      try { act.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch {}
+    if (act) {
+      const br = bar.getBoundingClientRect();
+      const ar = act.getBoundingClientRect();
+      const relLeft = ar.left - br.left;              // 相对可视区左边缘
+      const overflowRight = relLeft + ar.width - bar.clientWidth;
+      if (relLeft < -1) bar.scrollLeft = Math.max(0, bar.scrollLeft + relLeft); // 左侧被滚出去了 → 拉回来
+      else if (overflowRight > 1) bar.scrollLeft += overflowRight;              // 右侧被截断 → 顶到可见
     }
+    updateProjBarOverflow();
+  }
+
+  // 项目栏溢出提示：右侧显示淡出，提示「后面还有项目」（配合滚轮横向滚动）
+  function updateProjBarOverflow() {
+    const bar = document.getElementById('project-bar');
+    if (!bar) return;
+    const hiddenRight = bar.scrollWidth - bar.clientWidth - bar.scrollLeft > 1;
+    bar.classList.toggle('scroll-r', bar.scrollWidth > bar.clientWidth + 1 && hiddenRight);
   }
   // 切换项目：静默保存未保存的标签 → 关闭全部 → 重新加载（不再弹确认）
   async function openProject(p) {
@@ -752,6 +823,8 @@ const App = (() => {
         pbar.scrollLeft += e.deltaY;
       }
     }, { passive: false });
+    pbar.addEventListener('scroll', updateProjBarOverflow, { passive: true });
+    window.addEventListener('resize', updateProjBarOverflow);
     // 插件热重载：plugins/ 目录变更自动重载
     window.myIDE.plugins.onChanged(() => {
       MI.loadPlugins().then(() => MI.toast('🔌 插件已热重载', 'ok'));
@@ -759,6 +832,9 @@ const App = (() => {
 
     loadProjects();
     renderProjectBar();
+    renderEmptyRecent(); // 启动即无项目时，空状态的「最近项目」列表也要有内容
+    // 首次启动（从未打开过项目）内容区必须显示启动页：空状态的可见性由 renderView 统一维护
+    if (window.Viewer && Viewer.renderActive) Viewer.renderActive();
     MI.loadPlugins().then(async () => {
       const last = await window.myIDE.fs.getRecent();
       if (last) await setRoot(last);

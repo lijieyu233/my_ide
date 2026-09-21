@@ -96,7 +96,14 @@ const Shortcuts = (() => {
     const ae = document.activeElement;
     const aeVisible = ae && ae.offsetParent !== null;
     const aeEditable = aeVisible && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable);
-    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) return;
+    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) {
+      // 例外：全屏工具面板（浏览器/数据库/依赖图）以 absolute 盖住编辑区，viewer 并未
+      // display:none → 残留在 CM6/输入框里的焦点仍「可见」。此时用户操作对象是面板，
+      // 豁免会让 Ctrl+Z 落到看不见的编辑器上（用户眼中「撤销无效」）。被盖住则不让位。
+      const coveredByTool = ae.closest && ae.closest('#viewer') && ['browser-panel', 'db-panel', 'tasks-dag-panel']
+        .some((id) => { const p = document.getElementById(id); return p && !p.classList.contains('hidden'); });
+      if (!coveredByTool) return;
+    }
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
     // 栈顶面板声明「自管 Esc」（confirm/prompt 有自己的键盘处理）时跳过，避免双关闭错杀下层面板
     if (combo === 'escape' && !/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) {
@@ -134,7 +141,18 @@ Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run:
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
 Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
-Shortcuts.register('commit', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['ctrl+k', 'alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
+// Ctrl+K / Alt+I = 「提交」动作（PyCharm）：打开面板 **并聚焦提交消息框**
+// Alt+0 / Ctrl+3 / Ctrl+4 = 只打开提交工具窗口（不抢焦点）
+Shortcuts.register('commit', { desc: '提交（打开提交窗口并聚焦提交消息）', keys: ['ctrl+k', 'alt+i'], run: () => {
+  App.showTool('git');
+  if (window.GitPanel && GitPanel.focusMessage) setTimeout(() => GitPanel.focusMessage(), 0);
+} });
+Shortcuts.register('commit-tool-window', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
+// Ctrl+Shift+K / Alt+P = 提交并推送（PyCharm 默认键位）；Ctrl+Alt+K 保留为兼容别名（旧 tooltip 一直写的是它）
+Shortcuts.register('commit-push', { desc: '提交并推送', keys: ['ctrl+shift+k', 'alt+p', 'ctrl+alt+k'], run: () => {
+  App.showTool('git');
+  if (window.GitPanel && GitPanel.doCommit) return GitPanel.doCommit(true);
+} });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
@@ -161,9 +179,14 @@ Shortcuts.register('task-quick-new', { desc: '快捷创建任务（任务工具�
   }
   Tasks.quickNew();
 } });
-// 统一撤销 / 重做（5.2）：覆盖改名/状态/依赖/移动/删除等全部写操作；焦点在输入框时让位给原生编辑
-Shortcuts.register('task-undo', { desc: '任务：撤销', keys: ['ctrl+z'], run: () => { if (window.Tasks && Tasks.canUndo) Tasks.undo(); } });
-Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z', 'ctrl+y'], run: () => { if (window.Tasks && Tasks.canRedo) Tasks.redo(); } });
+// 统一撤销 / 重做（5.2）：覆盖改名/状态/优先级/依赖/移动/删除等全部写操作；焦点在输入框时让位给原生编辑
+// ★ ctrl+z 不再注册两个动作（后注册的 keyMap 覆盖先注册的，「依赖图里 Ctrl+Z 无效」根因）——
+//   task-undo 并入 undo-file 按激活工具分流（同下方 Ctrl+C 的分流模式）
+Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z', 'ctrl+y'], run: () => {
+  if (!window.Tasks || !Tasks.canRedo) return;
+  const r = Tasks.redo();
+  if (r && window.MI) MI.toast('已重做：' + r, 'ok');
+} });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
 Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
@@ -191,7 +214,15 @@ Shortcuts.register('copy-files', { desc: '复制选中（任务工具激活时�
 } });
 Shortcuts.register('cut-files', { desc: '剪切选中的文件（粘贴时移动）', keys: ['ctrl+x'], run: () => Tree.cutSelected() });
 Shortcuts.register('paste-files', { desc: '粘贴文件到目标位置', keys: ['ctrl+v'], run: () => Tree.pasteTo(Tree.getPasteTarget()) });
-Shortcuts.register('undo-file', { desc: '撤销文件操作（粘贴/新建/重命名/删除/移动）', keys: ['ctrl+z'], run: () => Tree.undo() });
+Shortcuts.register('undo-file', { desc: '撤销（任务工具激活时撤销任务修改，否则撤销文件操作）', keys: ['ctrl+z'], run: () => {
+  // 任务工具激活且有可撤销历史 → 撤任务修改（依赖图里的优先级/状态/位置/删除等）
+  if (window.Tasks && window.App && App.getTool() === 'tasks' && Tasks.canUndo) {
+    const u = Tasks.undo();
+    if (u && window.MI) MI.toast('已撤销：' + u, 'ok');
+    return;
+  }
+  return Tree.undo();
+} });
 Shortcuts.register('rename-file', { desc: '重命名（目录树选中项）', keys: ['ctrl+shift+f6'], run: () => Tree.renameSelected() });
 
 Shortcuts.load();

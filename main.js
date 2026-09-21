@@ -9,6 +9,23 @@ const AI = require('./ai-service');
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
+// --check-ui（UI 自检）用独立 userData：① 不碰使用者真实的 localStorage / 会话 / 最近项目；
+// ② 避免与该应用正在运行的实例抢同一份 Chromium profile（实测会出现「cache 拒绝访问」并偶发启动失败）
+// ③ 每次跑用带 PID 的独立目录：上一次自检若卡住没退出，持有的 profile 锁不会拖死这一次
+const UI_CHECK = process.argv.includes('--check-ui');
+// 自检默认 **headless**：不显示窗口、不进任务栏、不抢焦点 —— 跑测试时不打扰使用者。
+// 需要肉眼看着它跑（排查截图异常）时加 --check-ui-show。
+const UI_CHECK_HEADLESS = UI_CHECK && !process.argv.includes('--check-ui-show');
+if (UI_CHECK) {
+  // 放到系统临时目录：项目目录下建 Chromium profile 会偶发「Unable to move the cache: 拒绝访问」，
+  // 甚至整个主进程卡死在 profile 初始化（事件循环被占住 → 连看门狗定时器都不触发）
+  try { app.setPath('userData', path.join(os.tmpdir(), 'myide-ui-check-' + process.pid)); } catch {}
+  // 自检看门狗：无论卡在哪一步（页面加载 / 注入 / 截图 / CDP）都必须落盘 + 退出
+  setTimeout(() => {
+    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>200s），强制退出\n'); } catch {}
+    try { app.exit(3); } catch {}
+  }, 200000);
+}
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 process.on('uncaughtException', (e) => {
   LOG('uncaught: ' + (e && e.stack || e));
@@ -53,11 +70,16 @@ function createWindow() {
     backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
+    // 自检 headless：窗口不显示、不进任务栏（正常启动不受影响）
+    show: !UI_CHECK_HEADLESS,
+    skipTaskbar: UI_CHECK_HEADLESS,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 隐藏窗口会被 Chromium 判为 backgrounded：不关节流的话渲染/定时器被降频，断言会假失败
+      backgroundThrottling: false,
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -683,10 +705,16 @@ function psWriteFileClipboard(arr, move) {
     '[System.Windows.Forms.Clipboard]::SetDataObject($do, $true)',
   ].join('; ');
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
-  try {
-    exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
-      { encoding: 'utf8', timeout: 1500, windowsHide: true }, () => {});
-  } catch {}
+  // 超时给足 8s：Add-Type 冷加载 System.Windows.Forms 在慢盘/杀软环境下常超 1.5s，
+  // 之前 1.5s 把进程杀掉 → 标准 CF_HDROP 从未写入 → 外部应用（只认标准格式）粘贴无效。
+  // fire-and-forget 不阻塞主进程；失败自动重试一次（首次冷加载、二次命中 .NET 程序集缓存）
+  const run = (cb) => {
+    try {
+      exec(`powershell.exe -NoProfile -STA -EncodedCommand ${b64}`,
+        { encoding: 'utf8', timeout: 8000, windowsHide: true }, cb);
+    } catch { if (cb) cb(new Error('spawn')); }
+  };
+  run((err) => { if (err) run(() => {}); });
 }
 ipcMain.handle('clip:copyFiles', (_e, paths, move) => {
   const arr = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
@@ -888,13 +916,16 @@ ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
         ipcMain.handle('git:shelveList', (_e, dir) => gitCall('shelveList', dir));
         ipcMain.handle('git:shelveApply', (_e, dir, id, opts) => gitCall('shelveApply', dir, id, opts));
         ipcMain.handle('git:shelveDelete', (_e, dir, id) => gitCall('shelveDelete', dir, id));
-        ipcMain.handle('git:aheadBehind', (_e, dir) => gitCall('aheadBehind', dir));
+        ipcMain.handle('git:aheadBehind', (_e, dir, opts) => gitCall('aheadBehind', dir, opts));
         ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
         ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
         ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
         ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
         ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
         ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
+ipcMain.handle('git:addToGitignore', (_e, dir, file) => gitCall('addToGitignore', dir, file));
+ipcMain.handle('git:removeFromGitignore', (_e, dir, file) => gitCall('removeFromGitignore', dir, file));
+ipcMain.handle('git:listIgnored', (_e, dir) => gitCall('listIgnored', dir));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();
@@ -1057,6 +1088,243 @@ app.whenReady().then(() => {
         fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), 'LIVE CHECK FAIL ' + String((e && e.stack) || e).slice(0, 2000) + '\n');
       }
       app.exit(0);
+    });
+  }
+  // UI 细节自检（图片缩放 / mermaid 全屏 / 顶部项目栏）：node_modules\electron\dist\electron.exe . --check-ui
+  // 真实窗口 + 真实 IPC + 真实 styles.css：分阶段断言 + 每阶段截图（check-ui-*.png），所见即所验
+  if (process.argv.includes('--check-ui')) {
+    win.webContents.once('did-finish-load', async () => {
+      const wc = win.webContents;
+      const steps = require('./scripts/check-ui-steps');
+      const fx = require('./scripts/ui-fixtures');
+      const demo = path.join(__dirname, 'demo');
+      const lines = [];
+      let fail = 0;
+      let origProjects = null;
+      let origRecent = null;
+      // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
+      const watchdog = setTimeout(() => {
+        try {
+          let stage = '';
+          try { stage = fs.readFileSync(path.join(__dirname, '.ui-check-stage.txt'), 'utf8').trim(); } catch {}
+          let boot = '';
+          try { boot = fs.readFileSync(path.join(__dirname, '.ui-check-boot.txt'), 'utf8').trim(); } catch {}
+          lines.push('UI CHECK 超时中止（>240s）｜最后阶段: ' + (stage || '(未进入步骤)') + '｜启动点: ' + (boot || '(无)'));
+          fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
+        } catch {}
+        app.exit(3);
+      }, 240000);
+      // 自检用的「模型」桩：把 ai:chat 这个 IPC 换成脚本化应答。
+      // 为什么不用本地 HTTP 服务：Electron 主进程里 http.createServer().listen() 在自检跑法下不回调（实测卡死）。
+      // 桩只替换「模型」这一段，页面侧（面板 → 工具调用 → 写文件 → 改动卡片 → 撤销）全部走真实代码。
+      const bootLog = (m) => { try { fs.writeFileSync(path.join(__dirname, '.ui-check-boot.txt'), m + '\n'); } catch {} };
+      bootLog('1 进入自检，准备给 ai:chat 打桩');
+      let stubRound = 0;
+      ipcMain.removeHandler('ai:chat');
+      ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
+        const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
+        // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
+        const msgs = Array.isArray(messages) ? messages : [];
+        const last = msgs[msgs.length - 1] || {};
+        const toolDone = last.role === 'tool'
+          || (typeof last.content === 'string' && last.content.indexOf('<tool_results>') >= 0);
+        let r;
+        if (toolDone) {
+          const t = '好了，改完了。';
+          for (const ch of t) send('ai:chunk', ch); // 逐字符流式，跟真实请求一样的观感
+          r = { ok: true, text: t, toolCalls: [] };
+        } else {
+          const u = [...msgs].reverse().find((m) => m.role === 'user' && typeof m.content === 'string');
+          const ut = (u && u.content) || '';
+          if (ut.indexOf('第一次改') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: '_ui_perm.md', content: '第一版内容\n第二行\n' } }] };
+          } else if (ut.indexOf('第二次改') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'w2', name: 'write_file', args: { path: '_ui_perm.md', content: '第二版内容\n第二行\n' } }] };
+          } else {
+            r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
+          }
+        }
+        send('ai:done', r);
+        return r;
+      });
+      bootLog('2 ai:chat 已打桩');
+
+      // 自证：headless 模式下窗口确实没有显示（不弹窗 / 不进任务栏 / 不抢焦点）
+      lines.push('窗口模式: ' + (UI_CHECK_HEADLESS ? 'headless（不显示窗口）' : 'visible') + ' | isVisible=' + win.isVisible());
+      const js = (fn, arg) => '(' + String(fn) + ')(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')';
+      // 截图：capturePage 对「被遮挡/后台」的窗口会返回上一帧旧画面（实测 DOM 已变、位图不变），
+      // 因此优先走 CDP Page.captureScreenshot(fromSurface:false) —— 直接从视图取当前合成结果
+      const grab = async (file, clip) => {
+        // 可见时把窗口提上来（CDP 取新帧更稳）；headless 下窗口本就不可见，跳过
+        if (!UI_CHECK_HEADLESS) { try { win.showInactive(); } catch {} }
+        await new Promise((r) => setTimeout(r, 350));
+        let buf = null;
+        try {
+          if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+          // 带 clip（区域放大截图）必须用 fromSurface:true，否则该命令会一直不返回；
+          // headless 下窗口不参与合成，fromSurface:false 会拿到空白图（实测每张都恰好 4800 字节）
+          //   → headless 统一走 fromSurface:true；可见模式下沿用已验证的 fromSurface:false（能取到新帧）
+          // 再加 8s 超时兜底 —— 自检脚本绝不能因为截图把整个进程挂死
+          const opts = clip
+            ? { format: 'png', clip, fromSurface: true }
+            : { format: 'png', fromSurface: UI_CHECK_HEADLESS ? true : false };
+          const send = wc.debugger.sendCommand('Page.captureScreenshot', opts);
+          const { data } = await Promise.race([
+            send,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('CDP 截图超时')), 8000)),
+          ]);
+          buf = Buffer.from(data, 'base64');
+        } catch {
+          const img = await wc.capturePage();
+          buf = img.toPNG();
+        }
+        fs.writeFileSync(path.join(__dirname, file), buf);
+        if (!fs.existsSync(path.join(__dirname, file))) throw new Error('写入后文件不存在: ' + file);
+        return buf.length;
+      };
+      // headless 模式窗口不显示 → sendInputEvent 派发不到页面：真实输入类步骤只能跳过。
+      // 需要连真实输入一起验时用 --check-ui-show（会短暂显示窗口）。
+      const SKIP_IN_HEADLESS = new Set([
+        '真实滚轮 → 画面滚动',
+        '注入真实 Ctrl+滚轮',
+        '真实 Ctrl+滚轮 → 缩放',
+      ]);
+      const run = async (label, expr, shot) => {
+        let hover = null;
+        let out = null;
+        if (UI_CHECK_HEADLESS && SKIP_IN_HEADLESS.has(label)) {
+          lines.push('SKIP  ' + label + '（headless 不显示窗口，无法派发真实输入；需 --check-ui-show）');
+          // 挪走上一轮可能留下的同名截图：留着它会让「产出截图」列表和视觉验证都对不上
+          // ⚠ 必须挪到**同盘**目录：本机项目在 D 盘，往 C:\...\Temp 挪会 EXDEV 失败（静默 catch 会假装清理成功）
+          if (shot) {
+            try {
+              const trash = path.join(__dirname, '.ui-check-trash');
+              fs.mkdirSync(trash, { recursive: true });
+              fs.renameSync(path.join(__dirname, shot), path.join(trash, shot));
+            } catch {}
+          }
+          return;
+        }
+        // 阶段标记：卡住时一眼看出停在哪一步（文件 + stdout 双份，stdout 便于外部重定向排查）
+        console.log('[check-ui] → ' + label);
+        try { fs.writeFileSync(path.join(__dirname, '.ui-check-stage.txt'), label + '\n'); } catch {}
+        try {
+          out = await wc.executeJavaScript(expr);
+          const r = (out && out.R) || out || [];
+          hover = out && out.hover;
+          for (const it of (r || [])) {
+            lines.push((it.ok ? 'PASS' : 'FAIL') + '  ' + it.name + (it.detail ? '   [' + it.detail + ']' : ''));
+            if (!it.ok) fail++;
+          }
+          if (!(r || []).length && !(out && (out.wheel || out.hover))) {
+            lines.push('FAIL  ' + label + '：没有产出断言（步骤可能提前返回）');
+            fail++;
+          }
+        } catch (e) {
+          lines.push('FAIL  ' + label + ' 注入失败: ' + String((e && e.message) || e).slice(0, 300));
+          fail++;
+        }
+        if (hover) { // 真实鼠标移动触发 CSS :hover（脚本无法伪造），否则截图看不到 hover 才出现的控件
+          try { wc.sendInputEvent({ type: 'mouseMove', x: hover.x, y: hover.y }); } catch {}
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        // 真实滚轮注入：合成(dispatchEvent)的 wheel 不触发原生滚动/缩放，必须用受信任输入
+        // ⚠ 符号约定：Chromium 内部 WebMouseWheelEvent 的 deltaY 与 DOM WheelEvent 相反
+        //   （内部正值 = 向上滚），sendInputEvent 收的是内部值 → 把 DOM 意图取反再发
+        if (out && out.wheel && hover) {
+          const w = out.wheel;
+          const dy = -(w.deltaY || 0);
+          const ev = {
+            type: 'mouseWheel', x: hover.x, y: hover.y,
+            deltaX: -(w.deltaX || 0), deltaY: dy,
+            wheelTicksX: 0, wheelTicksY: Math.round(dy / 120),
+            canScroll: true,
+          };
+          if (w.ctrl) ev.modifiers = ['control'];
+          try {
+            wc.sendInputEvent(ev);
+            lines.push('     注入真实' + (w.ctrl ? ' Ctrl+' : ' ') + '滚轮：DOM 意图 deltaY=' + (w.deltaY || 0) + ' → 内部 ' + dy + ' @' + hover.x + ',' + hover.y);
+          } catch (e) { lines.push('     滚轮注入失败: ' + String((e && e.message) || e).slice(0, 120)); }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        if (shot) {
+          try { lines.push('     截图 → ' + shot + ' (' + (await grab(shot)) + ' 字节)'); }
+          catch (e) { lines.push('     截图失败: ' + String((e && e.message) || e).slice(0, 120)); }
+        }
+      };
+      try {
+        // ⚠ 项目列表存在真实 localStorage：先备份，自检结束原样还原（不破坏使用者的项目栏）
+        origProjects = await wc.executeJavaScript('localStorage.getItem("myide-projects")');
+        origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
+        fx.writeFixtures(demo);
+        const projects = fx.seedProjects(demo);
+        await wc.executeJavaScript(
+          'localStorage.setItem("myide-projects", ' + JSON.stringify(JSON.stringify(projects.map((p) => ({ path: p })))) + '); true'
+        );
+        await wc.reload(); // 让 loadProjects/renderProjectBar 按 14 个项目重新初始化
+        await new Promise((r) => wc.once('did-finish-load', r));
+        await new Promise((r) => setTimeout(r, 1600));
+        // 先进「无项目」的启动页（空状态）与外壳检查，再打开项目
+        await run('启动页（空状态）', js(steps.emptyState), 'check-ui-0-empty-state.png');
+        await run('外壳（图标/分组/状态栏）', js(steps.chrome), 'check-ui-0b-chrome.png');
+        await wc.executeJavaScript('App.gitRefreshDelay = 0');
+        await wc.executeJavaScript('App.setRoot(' + JSON.stringify(demo) + ')');
+        await new Promise((r) => setTimeout(r, 900));
+
+        await run('项目栏', js(steps.projectBar, demo), 'check-ui-1-projectbar.png');
+        // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
+        try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
+        await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
+        await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
+        await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
+        await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
+        await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
+        await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
+        await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
+        await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
+        await run('AI 面板：拖文件进面板 + 授权记忆', js(steps.aiDropAndPerm, demo), 'check-ui-1i-ai-drop-perm.png');
+        await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
+        await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
+        await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
+        await run('真实 Ctrl+滚轮 → 缩放', js(steps.imageWheelZoomCheck));
+        await run('图片全屏（打开）', js(steps.imageFullscreenOpen), 'check-ui-3-image-fullscreen.png');
+        await run('图片全屏（关闭）', js(steps.imageFullscreenClose));
+        await run('mermaid 预览', js(steps.mermaidPreviewStatic, demo), 'check-ui-4-mermaid-preview.png');
+        await run('mermaid 预览全屏', js(steps.mermaidPreviewFs), 'check-ui-5-mermaid-preview-fs.png');
+        await run('mermaid 预览全屏（关闭）', js(steps.mermaidFsClose));
+        await run('mermaid Live', js(steps.mermaidLiveStatic, demo), 'check-ui-6-mermaid-live.png');
+        await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
+        await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
+      } catch (e) {
+        lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
+        fail++;
+      }
+      // 还原 localStorage 与测试素材
+      try {
+        await wc.executeJavaScript(origProjects == null
+          ? 'localStorage.removeItem("myide-projects"); true'
+          : 'localStorage.setItem("myide-projects", ' + JSON.stringify(origProjects) + '); true');
+        await wc.executeJavaScript(origRecent == null
+          ? 'localStorage.removeItem("myide-recent-projects"); true'
+          : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
+      } catch {}
+      clearTimeout(watchdog);
+      try { fs.unlinkSync(path.join(__dirname, '.ui-check-boot.txt')); } catch {}
+      try { fx.cleanFixtures(demo); } catch {}
+      const skipN = lines.filter((l) => l.indexOf('SKIP') === 0).length;
+      lines.push('UI CHECK: ' + (lines.filter((l) => l.indexOf('PASS') === 0).length) + ' 通过 / ' + fail + ' 失败'
+        + (skipN ? '（' + skipN + ' 项因 headless 跳过）' : ''));
+      try {
+        const shots = fs.readdirSync(__dirname).filter((f) => /^check-ui-.*\.png$/.test(f));
+        lines.push('产出截图: ' + (shots.length ? shots.join(', ') : '（无）'));
+      } catch {}
+      try { fs.rmSync(path.join(__dirname, '.ui-check-stage.txt'), { force: true }); } catch {}
+      try {
+        const prof = app.getPath('userData');
+        if (/myide-ui-check-/.test(prof)) fs.rmSync(prof, { recursive: true, force: true }); // 临时 profile 用完即删
+      } catch {}
+      fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
+      app.exit(fail ? 1 : 0);
     });
   }
 });

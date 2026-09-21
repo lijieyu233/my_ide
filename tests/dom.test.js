@@ -65,6 +65,7 @@ calls.setUserConfig = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
+calls.gitignore = [];
 calls.logRef = null;
 calls.logAll = false;
 calls.logDepth = null;
@@ -91,6 +92,7 @@ function makeDom() {
     fs: {
       openFolder: async () => P,
       getRecent: async () => null,
+      pathOfDroppedFile: () => P + '/osdrop.txt', // 模拟 Electron webUtils 取到的真实路径
       setRecent: async () => {},
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
@@ -243,7 +245,15 @@ function makeDom() {
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
       // 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 二期）
-      listRemotes: async () => ({ remotes: [] }),
+      listRemotes: async () => ({
+        remotes: [
+          { name: 'origin', url: 'https://github.com/foo/bar.git', branches: [
+            { name: 'main', head: true, oid: 'abc1234' },
+            { name: 'dev', head: false, oid: 'def5678' },
+          ] },
+          { name: 'upstream', url: 'https://github.com/other/bar.git', branches: [] },
+        ],
+      }),
       addRemote: async () => ({ ok: true }),
       removeRemote: async () => ({ ok: true }),
       fetch: async () => ({ ok: true }),
@@ -270,6 +280,10 @@ function makeDom() {
       revert: async (d, oid) => { calls.revert = (calls.revert || []).concat(oid); return { ok: true, oid: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' }; },
       logFile: async () => ({ commits: [] }),
       blame: async () => ({ lines: [] }),
+      addToGitignore: async (d, f) => { calls.gitignore.push('add:' + f); return { ok: true, pattern: f }; },
+      removeFromGitignore: async (d, f) => { calls.gitignore.push('rm:' + f); return { ok: true, removed: 1 }; },
+      listIgnored: async () => ({ isRepo: true, root: P, truncated: false,
+        files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }),
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     ai: {
@@ -582,7 +596,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     const body = $(dom, '#cd-files').textContent;
     assert_(body.includes('README.md'), '修改列表含 README.md');
-    assert_(body.includes('未版本控制的文件'), '未版本控制分节存在');
+    assert_(body.includes('未进行版本管理的文件'), '未进行版本管理的文件分节存在（PyCharm 文案）');
     assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
     assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见（左侧停靠）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
@@ -810,6 +824,94 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     items = $allIn(ol, '.outline-item');
     assert_(items.filter((r) => !r.classList.contains('ol-hidden')).length === 2, '内容变化后自动全展');
     // 清理
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
+  await okAsync('大纲：右键复制本章节（整节 / 只正文 / 只标题）', async () => {
+    FAKE_FS[P + '/sec.md'] = { type: 'file', content: '# 根\n\n根正文\n\n## 甲\n\n甲正文\n\n### 甲一\n\n甲一正文\n\n## 乙\n\n乙正文\n', mtime: 9200, ctime: 9200, size: 90 };
+    await g(dom, 'Viewer.openFile("' + P + '/sec.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const rows = $allIn(ol, '.outline-item');
+    assert_(rows.length === 4, '4 个标题（根/甲/甲一/乙）: ' + rows.length);
+    const menuOf = (row) => {
+      row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 60 }));
+      return $(dom, '#ctx-menu');
+    };
+    const rowJia = () => $allIn(ol, '.outline-item').find((r) => r.textContent.replace('▾', '').replace('▸', '') === '甲');
+    let menu = menuOf(rowJia());
+    const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(items.some((t) => t.includes('复制本章节')), '菜单有「复制本章节」: ' + JSON.stringify(items));
+    assert_(items.some((t) => t.includes('只复制本节正文')), '菜单有「只复制本节正文」');
+    assert_(items.some((t) => t.includes('复制标题文本')), '菜单有「复制标题文本」');
+    assert_(items.some((t) => t.includes('在编辑器中折叠到此层级')), '菜单接住了原来的编辑器折叠能力');
+    assert_($allIn(menu, '.ctx-sep').length >= 1, '菜单有分组分隔线');
+    // 整节 = 标题 + 正文 + 子章节，到下一个同级标题为止
+    calls.copy.length = 0;
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制本章节')));
+    await tick();
+    const full = String(calls.copy[calls.copy.length - 1]);
+    assert_(full.startsWith('## 甲'), '整节以标题行开头: ' + JSON.stringify(full.slice(0, 16)));
+    assert_(full.includes('甲正文') && full.includes('### 甲一') && full.includes('甲一正文'), '整节含正文与子章节');
+    assert_(!full.includes('乙正文'), '整节不含下一个同级章节');
+    assert_(!full.includes('根正文'), '整节不含上一节内容');
+    // 只正文
+    menu = menuOf(rowJia());
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('只复制本节正文')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '甲正文', '只正文 = 甲正文: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    // 只标题
+    menu = menuOf(rowJia());
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制标题文本')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '甲', '只标题 = 甲: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    // 叶子节点的整节 = 自己的标题 + 正文
+    menu = menuOf($allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲一')));
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制本章节')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '### 甲一\n\n甲一正文', '叶子节点整节: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
+  await okAsync('大纲：顶栏展开/收起全部 + 双击折叠 + ←→ 键 + 叶子不留占位符', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/sec.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const actBtns = $allIn($(dom, '#panel-outline .panel-title-actions'), '.vt-btn');
+    assert_(actBtns.length === 2, '顶栏 2 个图标按钮: ' + actBtns.length);
+    assert_(actBtns.every((b) => b.querySelector('svg') && !b.textContent.trim()), '是 SVG 图标按钮（无文字）');
+    assert_(!$(dom, '.outline-tools'), '旧的「全展 / H1..H4」工具条已移除（语义不清，易误读成按层级过滤大纲）');
+    const pads = $allIn(ol, '.ol-arrow.ol-pad');
+    assert_(pads.length >= 1 && pads.every((x) => !x.textContent.trim()), '叶子行箭头列留空（不再画占位符）');
+    click(actBtns[1]);
+    await tick(); await tick();
+    let vis = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(vis.length === 1 && vis[0].textContent.includes('根'), '收起全部只剩 H1: ' + vis.length);
+    click(actBtns[0]);
+    await tick(); await tick();
+    vis = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(vis.length === 4, '展开全部恢复 4 个: ' + vis.length);
+    const rowJia = $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'));
+    rowJia.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+    await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 3, '双击「甲」收起其子层（给了一个大点击目标）');
+    $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'))
+      .dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+    await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 4, '再双击「甲」展开回去');
+    click($allIn(ol, '.outline-item')[0]);
+    await tick();
+    key(dom, 'ArrowLeft'); await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 1, '← 收起「根」的子层');
+    key(dom, 'ArrowRight'); await tick(); await tick();
+    const visAfter = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(visAfter.length === 4, '→ 重新展开「根」: 可见=' + visAfter.length + ' 选中=' + ($allIn(ol, '.key-nav-sel').map((r) => r.textContent).join(',')) + ' 折叠集合=' + dom.window.localStorage.getItem('myide-outline-collapsed'));
+    key(dom, 'ArrowDown'); await tick();
+    assert_($allIn(ol, '.key-nav-sel').length === 1, '↓ 之后有唯一选中项（整行高亮）');
     dom.window.localStorage.removeItem('myide-outline-collapsed');
   });
 
@@ -1654,15 +1756,18 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(bar.scrollLeft === 120, '垂直滚轮转横向滚动（末尾项目可达）, got ' + bar.scrollLeft);
     bar.dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: -60, cancelable: true }));
     assert_(bar.scrollLeft === 60, '反向滚动回退, got ' + bar.scrollLeft);
-    // 新开项目按钮在末尾：渲染后自动滚入可视区（此前被截断看不到、点不到 ✕）
-    const proto = dom.window.HTMLElement.prototype;
-    const origSI = proto.scrollIntoView;
-    let siOpts = null;
-    proto.scrollIntoView = function (o) { siOpts = o; };
+    // 新开项目按钮在末尾：渲染后必须自动滚入可视区（此前被截断看不到、点不到 ✕）
+    // 滚动收口的算法细节见下面「项目栏滚动收口」用例（jsdom 无布局，这里只验证不动坏数据）
+    bar.scrollLeft = 60; // 先滚走
     await g(dom, 'App.openProject("C:/proj2")');
     await tick(); await tick();
-    if (origSI) proto.scrollIntoView = origSI; else delete proto.scrollIntoView;
-    assert_(siOpts && siOpts.inline === 'nearest', '当前项目按钮 scrollIntoView(inline nearest)');
+    assert_(bar.scrollLeft === 60, '无布局信息时不动滚动位置（不误判、不乱滚）, got ' + bar.scrollLeft);
+    // 结构回归：「全部项目」入口必须在滚动容器之外 —— 老实现 sticky 浮在滚动层上，项目按钮会从它底下钻过去（覆盖）
+    const wrap = $(dom, '#project-bar-wrap');
+    assert_(wrap, '#project-bar-wrap 存在');
+    const allBtn = $(dom, '.proj-all');
+    assert_(allBtn && allBtn.parentElement === wrap, '「全部项目」挂在滚动容器外层, got ' + (allBtn && allBtn.parentElement && allBtn.parentElement.id));
+    assert_(!$(dom, '#project-bar .proj-all'), '「全部项目」不在滚动容器内（结构上不可能盖住项目按钮）');
     // 清理：切回项目一
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
@@ -1762,6 +1867,36 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     assert_(calls.checkout.length === 1 && calls.checkout[0] === 'dev', 'checkout(dev) 被调用');
     assert_(!$(dom, '#br-box'), '分支弹窗关闭');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
+  });
+
+  await okAsync('远程管理：弹窗列出远程 + 每个远程的分支列表', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const rmtBtn = $(dom, '#cd-remote');
+    assert_(rmtBtn, '远程管理入口存在（提交对话框头部）');
+    click(rmtBtn);
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '远程弹窗打开');
+    const rows = $allIn($(dom, '#rm-list'), '.br-item');
+    assert_(rows.length === 2, '列出 2 个远程, got ' + rows.length);
+    assert_(rows[0].textContent.includes('origin'), '显示远程名 origin');
+    assert_(rows[0].textContent.includes('github.com/foo/bar'), '显示远程 URL');
+    // origin 的分支列表（本地跟踪 refs，无网络）
+    const brs = $allIn($(dom, '#rm-list'), '.rm-br');
+    assert_(brs.length === 2, 'origin 列出 2 个分支, got ' + brs.length);
+    const mainBr = brs.find((b) => b.textContent.includes('main'));
+    assert_(mainBr && mainBr.classList.contains('rm-br-head'), '默认分支 main 高亮标记');
+    assert_(brs.some((b) => b.textContent.includes('dev')), 'dev 分支显示');
+    assert_(brs.some((b) => b.textContent.includes('abc1234')), '分支短 oid 显示');
+    // upstream 无分支 → 空态提示
+    assert_($allIn($(dom, '#rm-list'), '.rm-br-empty').length === 1, '无分支远程显示空态提示');
+    // 关闭弹窗
+    click($(dom, '#rm-x'));
+    await tick();
+    assert_(!$(dom, '#br-box'), '远程弹窗关闭');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
@@ -2240,7 +2375,8 @@ assert_(panel, 'CM6 搜索面板出现');
     }
     while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
     await tick();
-    assert_(recent && $allIn(recent, '.proj-btn').length >= 1, '空状态最近项目出现');
+    assert_(recent && $allIn(recent, '.empty-item').length >= 1, '空状态最近项目出现（纵向列表）');
+    assert_($allIn(recent, '.empty-item-dir').length >= 1, '最近项目每行显示父目录');
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
   });
@@ -2250,9 +2386,10 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     // 变更（README.md、src/app.js）与未版本控制（data.csv、src/deep/file.ts）两节，各按顶层目录分组
     const secs = $allIn($(dom, '#cd-files'), '.git-sec-title').map((x) => x.textContent);
-    assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
-    assert_(secs[0].includes('变更 (2)'), '变更分节 2 个文件');
-    assert_(secs[1].includes('未版本控制的文件 (2)'), '未版本控制分节 2 个文件');
+    assert_(secs.length === 3, '三个分节（更改 / 未进行版本管理的文件 / 忽略的文件）: ' + JSON.stringify(secs));
+    assert_(secs[2].includes('忽略的文件'), '「忽略的文件」节点存在: ' + secs[2]);
+    assert_(secs[0].includes('更改 2 个文件'), '更改分节 2 个文件');
+    assert_(secs[1].includes('未进行版本管理的文件 2 个文件'), '未进行版本管理的文件分节 2 个文件');
     const groups = $allIn($(dom, '#cd-files'), '.git-group');
     // 递归树：变更节 src(1)；未跟踪节 src(1) → deep(1)（根级文件不产生分组行）
     assert_(groups.length === 3, '三个目录行（src / src / deep）: ' + JSON.stringify(groups.map((x) => x.textContent)));
@@ -2272,6 +2409,208 @@ assert_(panel, 'CM6 搜索面板出现');
     for (let i = 0; i < 8; i++) g(dom, 'MI.toast("t' + i + '", "ok")');
     await tick();
     assert_($allIn(dom.window.document, '.toast').length <= 5, 'toast 上限 5: ' + $allIn(dom.window.document, '.toast').length);
+  });
+
+  await okAsync('提交窗口：工具行图标化 + 节点三态复选框 + 展开收起 + 平铺切换 + 内嵌预览', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const bar = () => $(dom, '#cd-files .git-cp-bar');
+    const btnsOf = () => $allIn(bar(), '.vt-btn');
+    assert_(bar(), '工具行存在');
+    assert_(btnsOf().length === 8, '8 个图标按钮: ' + btnsOf().length);
+    assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
+    assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
+    assert_(!$(dom, '#git-check-all'), '旧的「全选」单选框已被节点三态复选框取代');
+
+    const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
+    assert_(secTitles().every((s) => s.querySelector('input[type="checkbox"]')), '分节标题行都带复选框');
+    const groups = () => $allIn($(dom, '#cd-files'), '.git-group');
+    assert_(groups().length > 0 && groups().every((s) => s.querySelector('input[type="checkbox"]')),
+      '目录行都带复选框（PyCharm 目录节点也能勾）');
+
+    // 三态：勾选分节 → 该节全部文件被勾选
+    // ⚠ 每步现查节点：重渲染会重建 DOM，缓存引用会脱离文档（isConnected=false）导致假失败
+    const secCbOf = (i) => secTitles()[i].querySelector('input');
+    const bodyOf = (i) => secTitles()[i].nextElementSibling;
+    const check = (el, v) => { el.checked = v; el.dispatchEvent(new dom.window.Event('change', { bubbles: true })); };
+    assert_(bodyOf(0).classList.contains('git-sec-body'), '分节体是 sticky 标题的下一个兄弟节点');
+    check(secCbOf(0), true);
+    await tick();
+    const cbs0 = $allIn(bodyOf(0), '.cf-check');
+    assert_(cbs0.length === 2 && cbs0.every((c) => c.checked), '勾选分节 → 该节 2 个文件全部勾选');
+    // 取消其中一个文件 → 分节复选框变半选
+    check(cbs0[0], false);
+    await tick();
+    assert_(secCbOf(0).indeterminate === true, '部分勾选时分节复选框为半选（indeterminate）');
+    // 目录行复选框同样生效
+    check(groups()[0].querySelector('input'), false);
+    await tick();
+    assert_($allIn(groups()[0].nextElementSibling, '.cf-check').every((c) => !c.checked),
+      '目录行取消 → 该目录下文件全取消');
+    check(secCbOf(0), true);
+    await tick();
+    assert_($allIn(bodyOf(0), '.cf-check').every((c) => c.checked),
+      '再勾分节 → 该节文件重新全选: [' + $allIn(bodyOf(0), '.cf-check').map((c) => c.dataset.file + '=' + c.checked).join(',') + ']');
+    assert_(secCbOf(0).indeterminate === false && secCbOf(0).checked, '全选时节点复选框为选中态（非半选）');
+
+    // 收起全部 / 展开全部（判定「可见文件数」而不是逐层查 display：
+    // 最外层 .git-group-body 自身不设 display，它靠父级 .git-sec-body 隐藏）
+    const visibleFiles = () => $allIn($(dom, '#cd-files'), '.git-file').filter((r) => {
+      let n = r.parentElement;
+      while (n && n !== $(dom, '#cd-files')) {
+        if (n.style && n.style.display === 'none') return false;
+        n = n.parentElement;
+      }
+      return true;
+    });
+    assert_(visibleFiles().length >= 4, '默认展开时变更文件行可见: ' + visibleFiles().length);
+    click(btnsOf()[6]);
+    await tick();
+    assert_($allIn($(dom, '#cd-files'), '.git-sec-body').every((b) => b.style.display === 'none'), '收起全部：分节体隐藏');
+    assert_(visibleFiles().length === 0, '收起全部：没有一个文件行可见: ' + visibleFiles().length);
+    click(btnsOf()[5]);
+    await tick();
+    assert_(visibleFiles().length >= 4, '展开全部：文件行恢复: ' + visibleFiles().length);
+
+    // 分组方式：按目录 ↔ 平铺
+    click(btnsOf()[7]);
+    await tick();
+    assert_(groups().length === 0, '平铺视图下目录行消失');
+    assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺视图下文件行显示父目录');
+    assert_(btnsOf()[7].classList.contains('active') === false, '平铺时「分组方式」按钮不高亮');
+    click(btnsOf()[7]);
+    await tick();
+    assert_(groups().length === 3, '切回按目录：目录行恢复');
+
+    // 内嵌预览：眼睛按钮 → 面板内出现 diff；再点关闭
+    const prevBtn = btnsOf()[4];
+    click(prevBtn);
+    await tick(); await tick(); await tick();
+    const pre = $(dom, '#commit-preview');
+    assert_(!pre.classList.contains('hidden'), '预览打开（不再只走主编辑区）');
+    assert_($allIn($(dom, '#cp-body'), '.cp-line').length >= 3, '预览里有 diff 行: ' + $allIn($(dom, '#cp-body'), '.cp-line').length);
+    assert_($allIn($(dom, '#cp-body'), '.cp-hunk').length === 2, '预览里保留 hunk 分隔');
+    assert_(/\+\d+ \/ -\d+/.test($(dom, '#cp-stats').textContent), '预览显示 +增/-删 统计: ' + $(dom, '#cp-stats').textContent);
+    assert_(prevBtn.classList.contains('active'), '预览按钮高亮');
+    click(prevBtn);
+    await tick();
+    assert_(pre.classList.contains('hidden'), '再点关闭预览');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('提交窗口右键菜单：添加到 .gitignore / 不再忽略 / 显示历史', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
+    assert_(row, '找到 README.md 行');
+    row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 80 }));
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(labels.some((t) => t.includes('.gitignore')), '右键有「添加到 .gitignore」: ' + JSON.stringify(labels));
+    assert_(labels.some((t) => t.includes('显示历史')), '右键有「显示历史」');
+    const add = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('添加到 .gitignore'));
+    click(add);
+    await tick(); await tick();
+    assert_(calls.gitignore.includes('add:README.md'), '写入 .gitignore 被调用: ' + JSON.stringify(calls.gitignore));
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('提交窗口：「忽略的文件」节点（懒加载 + 三态 + 不再忽略）', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const heads = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
+    const ignHead = () => heads()[2];
+    if (!ignHead().textContent.includes('▸')) { click(ignHead()); await tick(); } // 确保从收起态开始
+    assert_(ignHead().textContent.includes('忽略的文件'), '第三个分节是「忽略的文件」: ' + ignHead().textContent);
+    assert_(ignHead().nextElementSibling.style.display === 'none', '收起态：不遍历工作区（懒加载）');
+    click(ignHead());
+    await tick(); await tick();
+    const body = ignHead().nextElementSibling;
+    const rows = $allIn(body, '.git-file');
+    assert_(rows.length === 2, '展开后列出被忽略项: ' + rows.map((r) => r.dataset.file).join(','));
+    assert_(rows.some((r) => r.textContent.includes('node_modules/')), '被忽略的目录带 / 后缀');
+    assert_(ignHead().textContent.includes('2 个文件'), '节点显示数量: ' + ignHead().textContent);
+    assert_(body.querySelectorAll('.git-revert').length === 0, '忽略的行没有回滚按钮（回滚=删除，语义不对）');
+    // 勾选忽略节点 → 计数把它算进去
+    const cb = ignHead().querySelector('input');
+    cb.checked = true;
+    cb.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick();
+    assert_($allIn(body, '.cf-check').every((c) => c.checked), '勾选忽略节点 → 其下全部勾选');
+    assert_(/\/6 个文件/.test($(dom, '#commit-count').textContent),
+      '计数含忽略项（4 变更 + 2 忽略 = 6）: ' + $(dom, '#commit-count').textContent);
+    // 右键 → 「不再忽略」（且没有搁置/回滚）
+    const debugRow = rows.find((r) => r.dataset.file === 'debug.log');
+    debugRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 60 }));
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(labels.some((t) => t.includes('不再忽略')), '忽略行右键是「不再忽略」: ' + JSON.stringify(labels));
+    assert_(!labels.some((t) => t.includes('搁置')), '忽略行没有「搁置」');
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('不再忽略')));
+    await tick(); await tick();
+    assert_(calls.gitignore.includes('rm:debug.log'), '移除忽略被调用: ' + JSON.stringify(calls.gitignore));
+    // 复位：收起忽略节点，别影响后续用例
+    if (ignHead().textContent.includes('▾')) { click(ignHead()); await tick(); }
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('提交消息：草稿持久化 + 历史下拉（🕘）+ amend 自动回填', async () => {
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const msg = $(dom, '#commit-msg');
+    assert_(msg.placeholder === '提交消息', 'placeholder 为「提交消息」: ' + msg.placeholder);
+    assert_($(dom, '#commit-history'), '提交消息历史按钮（🕘）存在');
+    assert_($(dom, '#cm-ok-push-menu'), '「提交并推送」的 ▾ 选项按钮存在');
+    assert_(/提交并推送/.test($(dom, '#cm-ok-push').textContent), '主按钮文案: ' + $(dom, '#cm-ok-push').textContent);
+
+    // 草稿：输入 → 防抖落 localStorage（此前只在内存里，刷新就丢）
+    const proj = g(dom, 'GitPanel.rootDir');
+    const dkey = 'myide-commit-draft:' + proj;
+    dom.window.localStorage.removeItem(dkey);
+    msg.value = '草稿：远程医疗报告';
+    msg.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 700));
+    assert_(dom.window.localStorage.getItem(dkey) === '草稿：远程医疗报告',
+      '草稿已持久化: ' + dom.window.localStorage.getItem(dkey));
+
+    // 历史下拉：写入历史 → 点 🕘 → 菜单弹出 → 点击填充
+    dom.window.localStorage.setItem('myide-commit-msgs', JSON.stringify(['修 bug：登录超时', 'docs: 更新说明']));
+    click($(dom, '#commit-history'));
+    await tick();
+    const menu = dom.window.document.getElementById('git-float-menu');
+    assert_(menu, '历史菜单弹出');
+    const items = $allIn(menu, '.ctx-item');
+    assert_(items.length >= 3, '历史条目 + 清空: ' + items.length);
+    const hit = items.find((x) => x.textContent.includes('修 bug'));
+    assert_(hit, '历史条目出现');
+    click(hit);
+    await tick();
+    assert_(msg.value === '修 bug：登录超时', '点历史条目填充输入框: ' + msg.value);
+    assert_(!dom.window.document.getElementById('git-float-menu'), '选中后菜单关闭');
+
+    // amend：勾选 → 回填上次提交消息；取消 → 还原原内容
+    const amend = $(dom, '#commit-amend');
+    amend.checked = true;
+    amend.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick(); await tick();
+    assert_(msg.value === FAKE_GIT.commits[0].fullMessage, 'amend 回填上次提交消息: ' + msg.value);
+    amend.checked = false;
+    amend.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await tick();
+    assert_(msg.value === '修 bug：登录超时', '取消 amend 还原原内容: ' + msg.value);
+
+    // 清理：别把草稿/历史/输入残留带到后面的用例
+    dom.window.localStorage.removeItem(dkey);
+    dom.window.localStorage.removeItem('myide-commit-msgs');
+    msg.value = '';
+    msg.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
   });
 
   await okAsync('字号缩放 + diff hunk 快捷键', async () => {
@@ -2918,9 +3257,10 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($allIn($(dom, '#cd-files'), '.git-tab').length === 0, '旧分页签已移除');
     const secs = $allIn($(dom, '#cd-files'), '.git-sec-title').map((x) => x.textContent);
-    assert_(secs.length === 2, '两个分节: ' + JSON.stringify(secs));
-    assert_(secs[0].includes('变更'), '变更分节');
-    assert_(secs[1].includes('未版本控制'), '未版本控制分节');
+    assert_(secs.length === 3, '三个分节（更改 / 未进行版本管理的文件 / 忽略的文件）: ' + JSON.stringify(secs));
+    assert_(secs[2].includes('忽略的文件'), '「忽略的文件」节点存在: ' + secs[2]);
+    assert_(secs[0].includes('更改'), '更改分节');
+    assert_(secs[1].includes('未进行版本管理'), '未进行版本管理的文件分节');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -3087,9 +3427,23 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '工具条按钮打开面板');
     assert_($(dom, '#tool-browser').classList.contains('active'), '按钮高亮');
+    // 收藏列表在左侧主侧栏 panel-browser：浏览器工具激活时显示（不另设独立侧栏）
+    const sbPanel = $(dom, '#panel-browser');
+    assert_(sbPanel, 'panel-browser 存在于主侧栏');
+    assert_(!sbPanel.classList.contains('hidden'), '浏览器激活 → 收藏面板显示');
+    const sbItems = $allIn($(dom, '#bw-sb-list'), '.bw-sb-item');
+    assert_(sbItems.length === 5, '侧栏收藏列表渲染 5 个默认收藏, got ' + sbItems.length);
     const chips = $allIn($(dom, '#be-favs'), '.be-chip');
     assert_(chips.length === 5, '默认收藏 5 个, got ' + chips.length);
     assert_(chips.some((c) => c.textContent === 'GitHub'), '默认收藏含 GitHub');
+    // 切回项目工具：收藏面板让位（主区浏览器面板同时收起）
+    click($(dom, '#tool-project'));
+    await tick();
+    assert_(sbPanel.classList.contains('hidden'), '切走浏览器 → 收藏面板隐藏');
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), '浏览器面板收起');
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_(!sbPanel.classList.contains('hidden'), '再开浏览器 → 收藏面板恢复');
     click($(dom, '#tool-browser'));
     await tick();
     assert_($(dom, '#browser-panel').classList.contains('hidden'), '再点一次收起面板');
@@ -3103,6 +3457,31 @@ assert_(panel, 'CM6 搜索面板出现');
     key(dom, '6', { ctrl: true });
     await tick();
     assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
+  });
+
+  // 回归：sideCollapsed 残留（先收起项目面板，再切浏览器 → 收藏面板必须显示）
+  await okAsync('内置浏览器：收起侧栏后再切浏览器 → 收藏面板显示（sideCollapsed 残留回归）', async () => {
+    // 1. 激活 project 再点一次 → 收起（sideCollapsed = true, activeTool = null）
+    click($(dom, '#tool-project'));
+    await tick();
+    click($(dom, '#tool-project'));
+    await tick();
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板已收起');
+    // 2. 切到浏览器：sideCollapsed 必须被重置，panel-browser 显示
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_(!$(dom, '#panel-browser').classList.contains('hidden'), '收起后切浏览器 → 收藏面板显示');
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '项目面板互斥隐藏');
+    // 3. Ctrl+6 收起再打开，收藏面板仍在
+    key(dom, '6', { ctrl: true });
+    await tick();
+    key(dom, '6', { ctrl: true });
+    await tick();
+    assert_(!$(dom, '#panel-browser').classList.contains('hidden'), 'Ctrl+6 开关后收藏面板仍在');
+    click($(dom, '#tool-browser'));
+    await tick(); // 收起浏览器，恢复现场
+    click($(dom, '#tool-project'));
+    await tick();
   });
 
   await okAsync('内置浏览器：open 导航（WebContentsView IPC）+ 历史', async () => {
@@ -3145,9 +3524,16 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(favBtn.textContent === '☆', '初始未收藏');
     stateCb.browser({ navigated: true, url: 'https://example.com/x', title: 'Example' });
     await tick();
+    // 新交互：点 ☆ 弹出「收藏到…」位置选择菜单 → 选「根目录」完成收藏
     click(favBtn);
     await tick();
-    assert_(favBtn.textContent === '★', '点击后已收藏');
+    const posMenu = dom.window.document.getElementById('ctx-menu');
+    assert_(posMenu && !posMenu.classList.contains('hidden'), '点☆弹出收藏位置菜单');
+    const rootOpt = [...posMenu.querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('根目录'));
+    assert_(!!rootOpt, '菜单含「根目录」选项');
+    click(rootOpt);
+    await tick();
+    assert_(favBtn.textContent === '★', '选择根目录后已收藏');
     let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
     assert_(favs.some((f) => f.url === 'https://example.com/x'), '收藏写入 localStorage');
     click(favBtn);
@@ -3282,7 +3668,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('关闭全部项目后空状态显示最近项目（一键重开）', async () => {
     // 前一组已全部关闭：空状态应出现「最近项目」按钮（历史来自 pushRecent）
     // 注：doRemove 修复后，关闭当前项目切换到剩余项目也会记入历史 → 大项目测试的 C:/big 可能在最前
-    const recBtns = $allIn($(dom, '#empty-recent'), '.proj-btn');
+    const recBtns = $allIn($(dom, '#empty-recent'), '.empty-item');
     assert_(recBtns.length >= 1, '空状态显示最近项目按钮, got ' + recBtns.length);
     const known = [P, 'C:/proj2', 'C:/big'];
     assert_(known.includes(recBtns[0].title), '历史含已关闭项目: ' + recBtns[0].title);
@@ -3562,13 +3948,27 @@ assert_(panel, 'CM6 搜索面板出现');
     $(dom, '#ai-input').value = '跑测试';
     click($(dom, '#ai-send'));
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
-    // Modal.confirm 确认按钮
-    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cf-yes');
-    assert_(yesBtn, '命令确认弹窗出现');
+    // 命令确认弹窗：这次选「总是允许」—— 验的就是「以后同类命令别再问我」
+    // （用户最烦的正是同一个命令点十几次确认）
+    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cr-always');
+    assert_(yesBtn, '命令确认弹窗出现，且带「总是允许」出口');
+    assert_(!!$(dom, '#cr-yes'), '另有「运行一次」选项（不想记住时用）');
     click(yesBtn);
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
     const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
     assert_(rows.some((r) => r.textContent.includes('run_command') && r.textContent.includes('✓')), 'run_command 执行成功状态');
+    // 第二条同类命令（同前缀 node）：应当不再弹确认
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'c2', name: 'run_command', args: { command: 'node tests/dom.test.js --again' } }] },
+      { ok: true, text: '又跑完了。' },
+    ];
+    $(dom, '#ai-input').value = '再跑一次';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#cr-yes'), '记住「node」之后，同类命令不再弹确认');
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-tool').filter((r) => r.textContent.includes('run_command')).length === 2,
+      '第二条命令直接执行了（没被拦下）');
+    await g(dom, 'AiPanel.savePerms({})'); // 授权按项目存，清掉别影响后面的用例
     aiScript = [];
   });
 
@@ -3697,6 +4097,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   }
   async function tkReset() {
+    await tick(); await tick(); // ★ 先让在途的串行写盘全部落地，再清文件（否则删除后又被在途写重建 → 旧任务泄漏进下一用例）
     delete FAKE_FS[TK_FILE]; // 存储已迁到项目内文件：清文件才等于清任务
     dom.window.localStorage.removeItem(TK_KEY);
     dom.window.localStorage.removeItem('myide-tasks-group-fold'); // 分组收起态：防跨用例泄漏
@@ -4171,8 +4572,14 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(hAfter >= 2000 + 40 + 14, 'svg 高度覆盖节点新位置, got ' + hBefore + ' -> ' + hAfter);
     assert_($(dom, '#tasks-dag-body .tk-svg').getAttribute('viewBox').endsWith(' ' + hAfter), 'viewBox 与高度同步');
     assert_(nodeOf(a).getAttribute('transform') === 'translate(60,2000)', '松手后节点仍在画布内（render 重绘）');
-    assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, '负坐标 clamp 到 0');
-    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 0, '负值被夹到 0');
+    // 无极画布：负坐标不再钳到 0 —— 落盘保留负值，viewBox 原点随内容向左上扩展
+    assert_(g(dom, 'Tasks.moveNode("' + a + '", -5, -5)') === true, 'moveNode 接受负坐标');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === -5, '负坐标原样持久化（无极画布）');
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").y') === -5, '负 y 原样持久化');
+    const vbNeg = $(dom, '#tasks-dag-body .tk-svg').getAttribute('viewBox').split(/[ ,]+/).map(Number);
+    assert_(vbNeg[0] <= -5 && vbNeg[1] <= -5, 'viewBox 原点扩到负区（节点不被裁剪）, got ' + vbNeg.join(' '));
+    assert_(nodeOf(a).getAttribute('transform') === 'translate(-5,-5)', '负坐标节点照常渲染');
     // 拖过的节点：右键出现「回到自动布局」；点击后清除自由位置
     rightClick(nodeOf(a));
     await tick();
@@ -4186,6 +4593,50 @@ assert_(panel, 'CM6 搜索面板出现');
     const hasReset = $$(dom, '#ctx-menu .ctx-item').filter((i) => i.textContent.includes('回到自动布局')).length > 0;
     assert_(!hasReset, '未拖过的节点不显示「回到自动布局」');
   });
+
+  await okAsync('任务：无极画布 —— 画布粘滞不回缩 + 滚动逼近边缘自动扩展（滚不到头）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("锚").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await g(dom, 'Tasks.applyZoom(1, null)'); // 钉死 zoom=1，断言按逻辑值算
+    await tick();
+    const svgOf = () => $(dom, '#tasks-dag-body .tk-svg');
+    const vbOf = () => String(svgOf().getAttribute('viewBox')).split(/[\s,]+/).map(Number);
+    // 1) 粘滞：节点拖远画布长大；节点拖回原位画布不回缩（空旷地带保留，可继续滚过去）
+    await g(dom, 'Tasks.moveNode("' + a + '", 3000, 100)');
+    await tick();
+    const wFar = +svgOf().getAttribute('width');
+    const vbFar = vbOf();
+    assert_(wFar >= 3000, '拖远后画布宽度覆盖节点, got ' + wFar);
+    await g(dom, 'Tasks.moveNode("' + a + '", 14, 14)');
+    await tick();
+    assert_(+svgOf().getAttribute('width') === wFar && String(vbOf()) === String(vbFar),
+      '节点拖回：画布不回缩（粘滞区域保留）');
+    // 2) 滚动逼近右缘 → 向右扩 1000（原点不动）；逼近左缘 → 原点左移 1000 + 滚动补偿
+    const body = mockDagBox(400, 300);
+    const vb0 = vbOf();
+    body._sl = vb0[0] + vb0[2] - 100; // 视口右缘距画布右端 100 逻辑单位（< 400 触发扩）
+    body.dispatchEvent(new dom.window.Event('scroll'));
+    await tick();
+    const vb1 = vbOf();
+    assert_(vb1[0] === vb0[0] && vb1[2] === vb0[2] + 1000, '近右缘滚动 → 向右扩 1000, got ' + vb1.join(' '));
+    // 左缘：scrollLeft=0 → 原点左移 1000、宽度 +1000，scrollLeft 补偿 +1000（内容视觉不动）
+    body._sl = 0; body._st = 150;
+    body.dispatchEvent(new dom.window.Event('scroll'));
+    await tick();
+    const vb2 = vbOf();
+    assert_(vb2[0] === vb1[0] - 1000 && vb2[2] === vb1[2] + 1000, '近左缘滚动 → 原点左移 1000（可向左无限滚）, got ' + vb2.join(' '));
+    assert_(body.scrollLeft === 1000, '左扩后滚动量补偿（视口内容不动）, got ' + body.scrollLeft);
+    // ★ 恢复被 mock 的容器属性：mockDagBox 的 defineProperty 会永久留在元素上，
+    // 污染后续用例（fitView 拿假 clientWidth 算缩放、svg 尺寸断言全偏）
+    for (const k of ['scrollLeft', 'scrollTop', 'clientWidth', 'clientHeight', 'getBoundingClientRect']) delete body[k];
+    delete body._sl; delete body._st;
+    await tkResetZoom();
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
 
   await okAsync('任务：可见度过滤对依赖图生效（只看可执行 / 隐藏已完成）+ 阻塞语义不失真', async () => {
     await tkReset();
@@ -4313,6 +4764,29 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.undo()');
     assert_(g(dom, 'Tasks.tasks.length') === 2, '撤销恢复');
     await g(dom, 'Tasks.setView("list")');
+  });
+
+  // 用户实测：依赖图里改优先级后按 Ctrl+Z 无反应 —— 快捷键必须按激活工具分流到任务撤销栈
+  await okAsync('任务：Ctrl+Z 撤销依赖图内的修改（改优先级 → 键盘撤销 → 复原）', async () => {
+    await tkReset();
+    await g(dom, 'while (window.Modal && Modal.stack.length) Modal.hide()');
+    const a = await g(dom, 'Tasks.add("改优先级").id');
+    await g(dom, 'Tasks.setPriority("' + a + '", "high")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'high', '优先级已改为 high');
+    assert_(g(dom, 'Tasks.canUndo') === true, '存在可撤销历史');
+    // 焦点在输入框时 Ctrl+Z 让位原生（不劫持）；先 blur 再走正常路径
+    const ae = dom.window.document.activeElement;
+    if (ae && ae.blur) ae.blur();
+    key(dom, 'z', { ctrl: true });
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'normal', 'Ctrl+Z 后优先级复原为 normal');
+    // 重做：Ctrl+Shift+Z
+    key(dom, 'z', { ctrl: true, shift: true });
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks[0].priority') === 'high', 'Ctrl+Shift+Z 重做优先级');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
   });
 
   await okAsync('任务：不显示已完成（菜单模式：清单整组消失 + 图过滤 + 持久化）', async () => {
@@ -4514,6 +4988,231 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Tasks.focusOn(null)');
   });
 
+  await okAsync('任务：多选后右键 —— 组内右键保持多选 + 菜单批量删除', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("批删A").id');
+    const b = await g(dom, 'Tasks.add("批删B").id');
+    const c = await g(dom, 'Tasks.add("批删C").id');
+    await tick();
+    // 点 A + Ctrl 点 C → 多选 {A, C}
+    click(tkRow(a));
+    await tick();
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    // 右键组内的 A：多选保持（旧实现 selectOne(id,false) 会清空多选 → 批量项永远不可见）
+    rightClick(tkRow(a));
+    await tick();
+    const selN = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(selN.length === 2 && selN.includes(a) && selN.includes(c), '右键组内任务不破坏多选, got ' + JSON.stringify(selN));
+    ctxItem('删除选中 2 个任务'); // 菜单出现批量删除项
+    click(ctxItem('删除选中 2 个任务'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 1, '批量删除选中的 A、C');
+    assert_(g(dom, 'Tasks.tasks[0].id') === b, '未选中的 B 保留');
+    // 一次撤销恢复整组
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 3, '撤销一次恢复全部 2 个（共用一个历史条目）');
+    // 右键组外任务 → 重置为单选，菜单回到单项删除
+    click(tkRow(b));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const selN2 = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(selN2.length === 1 && selN2[0] === a, '右键组外任务重置为单选, got ' + JSON.stringify(selN2));
+    const hasBatch = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('删除选中'));
+    assert_(!hasBatch, '单选时无批量删除项');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：多选右键批量改状态/优先级 —— 通用批量段 + 单撤销条目 + 阻塞跳过', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("批A").id');
+    const b = await g(dom, 'Tasks.add("批B").id');
+    const c = await g(dom, 'Tasks.add("批C").id');
+    const d = await g(dom, 'Tasks.add("批D不选").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + d + '")'); // B 依赖未选中的 D → 批量完成时被跳过
+    await tick();
+    click(tkRow(a));
+    await tick();
+    tkRow(b).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    // 批量段出现：全部设为待办/进行中/完成 + 优先级（全部）
+    ctxItem('全部设为进行中');
+    ctxItem('全部标记完成'); // 含阻塞提示后缀（1 个前置未完成将跳过）
+    ctxItem('优先级（全部）');
+    // 批量进行中：A、B、C 三个全变 doing（未选中的 D 不动）
+    click(ctxItem('全部设为进行中'));
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="doing").length')) === 3, '批量设为进行中：3 个全变 doing');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + d + '").status')) === 'todo', '未选中的 D 不受影响');
+    // 批量完成：B 的前置 D 未完成 → 跳过；A、C 完成
+    rightClick(tkRow(a));
+    await tick();
+    click(ctxItem('全部标记完成'));
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").status')) === 'done', 'A 已完成');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + c + '").status')) === 'done', 'C 已完成');
+    assert_((await g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").status')) === 'doing', 'B 前置未完成被跳过（保持 doing）');
+    // 一次撤销回批量前（共用一个历史条目）
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="done").length')) === 0, '撤销一次：批量完成整体回退');
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.status==="doing").length')) === 0, '再撤销一次：批量进行中也整体回退');
+    // 批量优先级
+    click(tkRow(a));
+    await tick();
+    tkRow(c).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const hi = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].find((x) => x.textContent.trim() === '高');
+    assert_(hi, '批量优先级里有「高」');
+    click(hi);
+    await tick(); await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.priority==="high").length')) === 2, '批量设高优先级：A、C 变高');
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_((await g(dom, 'Tasks.tasks.filter(t=>t.priority==="high").length')) === 0, '撤销批量优先级');
+    // 单选右键：不出现批量段（回到单任务状态/优先级）
+    click(tkRow(a));
+    await tick();
+    rightClick(tkRow(a));
+    await tick();
+    const noBulk = ![...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('全部设为'));
+    assert_(noBulk, '单选右键无批量段');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+  });
+
+  await okAsync('任务：选中整条链 —— 点击真的生效（const 遮蔽回归）+ 链成员可再增减', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("链头").id');
+    const b = await g(dom, 'Tasks.add("链中").id');
+    const c = await g(dom, 'Tasks.add("链尾").id');
+    const d = await g(dom, 'Tasks.add("孤岛").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")');
+    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")');
+    await tick();
+    // 右键链中 → 选中整条链（旧实现 selIds 被 const 遮蔽，赋值抛 TypeError → 点击无效）
+    rightClick(tkRow(b));
+    await tick();
+    const chainItem = ctxItem('选中整条链（上下游共 3 个）');
+    click(chainItem);
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify(Tasks.selectionIds())'));
+    assert_(sel.length === 3 && sel.includes(a) && sel.includes(b) && sel.includes(c) && !sel.includes(d),
+      '点击后整条链 3 个进入选中集（孤岛不在）, got ' + JSON.stringify(sel));
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+  });
+
+  await okAsync('任务：已完成链条整链语义 —— 有一个未完成整链保留；一键清理只删整链完成', async () => {
+    await tkReset();
+    // 场景：链1 A→B→C（A/B 完成、C 未完成）；链2 D→E（全完成）；孤立 F（完成）
+    const a = await g(dom, 'Tasks.add("链1头").id');
+    const b = await g(dom, 'Tasks.add("链1中").id');
+    const c = await g(dom, 'Tasks.add("链1尾未完").id');
+    const d = await g(dom, 'Tasks.add("链2头").id');
+    const e = await g(dom, 'Tasks.add("链2尾").id');
+    const f = await g(dom, 'Tasks.add("孤岛F").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")');
+    await g(dom, 'Tasks.addDep("' + c + '", "' + b + '")'); // 链1：A→B→C
+    await g(dom, 'Tasks.addDep("' + e + '", "' + d + '")'); // 链2：D→E
+    await g(dom, 'Tasks.setStatus("' + a + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + b + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + d + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + e + '", "done")');
+    await g(dom, 'Tasks.setStatus("' + f + '", "done")');
+    await tick();
+    // 链1 有未完成的 C → 整条链保留（含已完成的 A、B）；右键 A 不出链条删除项
+    const chainA = await tkJson('Tasks.doneChainOf("' + a + '")');
+    assert_(chainA.length === 0, '链1 有未完成 → doneChainOf 返回空（整链保留）, got ' + JSON.stringify(chainA));
+    rightClick(tkRow(a));
+    await tick();
+    const hasChainItem = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')].some((x) => x.textContent.includes('删除已完成链条'));
+    assert_(!hasChainItem, '部分完成链：右键已完成节点无「删除已完成链条」项');
+    dom.window.document.getElementById('ctx-menu').classList.add('hidden');
+    // 链2 全完成 → 整链可删
+    const chainD = await tkJson('Tasks.doneChainOf("' + d + '")');
+    assert_(chainD.length === 2 && chainD.includes(d) && chainD.includes(e), '链2 整链完成 = {D,E}, got ' + JSON.stringify(chainD));
+    // 一键识别：全局可清理 = 链2（D、E）+ 孤立 F；链1 的 A、B 保留
+    const all = await tkJson('Tasks.doneChainIds()');
+    assert_(all.length === 3 && all.includes(d) && all.includes(e) && all.includes(f), '一键识别 = {D,E,F}（链1 保留）, got ' + JSON.stringify(all));
+    // 工具栏一键清理按钮：确认 → 只删整链完成的三者
+    click($(dom, '#tasks-clear'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    const left = await tkJson('Tasks.tasks.map(t=>t.id)');
+    assert_(left.length === 3 && left.includes(a) && left.includes(b) && left.includes(c), '一键清理后只剩链1 整条（A、B、C）, got ' + JSON.stringify(left));
+    // 撤销恢复
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 6, '一键清理可整体撤销');
+    // 链1 也全部完成 → 从链中任一节点右键可整链删（只删本链，链2/孤岛不动）
+    await g(dom, 'Tasks.setStatus("' + c + '", "done")');
+    await tick();
+    const chain2 = await tkJson('Tasks.doneChainOf("' + b + '")');
+    assert_(chain2.length === 3 && chain2.includes(a) && chain2.includes(b) && chain2.includes(c), '链1 全完成 = {A,B,C}, got ' + JSON.stringify(chain2));
+    rightClick(tkRow(a));
+    await tick();
+    click(ctxItem('删除已完成链条'));
+    await tick(); await tick();
+    click($(dom, '#cf-yes'));
+    await tick();
+    const left2 = await tkJson('Tasks.tasks.map(t=>t.id)');
+    assert_(left2.length === 3 && left2.includes(d) && left2.includes(e) && left2.includes(f), '右键整链删除只清链1（D、E、F 保留）, got ' + JSON.stringify(left2));
+    await g(dom, 'Tasks.focusOn(null)');
+  });
+
+  await okAsync('任务：多选整体拖动 —— 抓起组内节点整组位移（一个撤销条目）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("拖A").id');
+    const b = await g(dom, 'Tasks.add("拖B").id');
+    const c = await g(dom, 'Tasks.add("拖C旁观").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await tkResetZoom();
+    mockDagBox();
+    mockSvgRect();
+    const gA = $(dom, '#tasks-dag-body g.tk-node[data-id="' + a + '"]');
+    const gB = $(dom, '#tasks-dag-body g.tk-node[data-id="' + b + '"]');
+    assert_(gA && gB, '两个节点都在图上');
+    // 自动布局初始坐标（拖前 x/y 均为 null）
+    const p0 = await tkJson('(()=>{const ns=Tasks._dagLayout(Tasks.tasks).nodes;const f=(id)=>ns.find(n=>n.id===id);return [f("' + a + '"),f("' + b + '"),f("' + c + '")].map(n=>({x:n.x,y:n.y}));})()');
+    // 选中 A，Ctrl+点 B 加入多选
+    gA.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await tick();
+    gB.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    await tick();
+    assert_(gA.classList.contains('sel') && gB.classList.contains('sel'), 'A、B 已多选');
+    // 抓起 A 横向拖 100 逻辑像素（zoom=1：屏幕位移=逻辑位移）→ 整组一起动
+    gA.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 20, clientY: 20, button: 0 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 20, clientY: 20 })); // 未过阈值
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 120, clientY: 20 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick(); await tick();
+    const pos = await tkJson('Tasks.tasks.map(t=>({id:t.id,x:t.x,y:t.y}))');
+    const pa = pos.find((t) => t.id === a), pb = pos.find((t) => t.id === b), pc = pos.find((t) => t.id === c);
+    assert_(Math.abs(pa.x - (p0[0].x + 100)) <= 2 && Math.abs(pa.y - p0[0].y) <= 2, 'A 移动 +100, got ' + JSON.stringify(pa));
+    assert_(Math.abs(pb.x - (p0[1].x + 100)) <= 2 && Math.abs(pb.y - p0[1].y) <= 2, 'B 跟随整组 +100, got ' + JSON.stringify(pb));
+    assert_(pc.x === null && pc.y === null, '未选中的 C 不动（仍在自动布局）');
+    // 一次撤销 = 整组回到自动布局（两条位移共用一个历史条目）
+    await g(dom, 'Tasks.undo()');
+    await tick();
+    const pos2 = await tkJson('Tasks.tasks.map(t=>({id:t.id,x:t.x}))');
+    assert_(pos2.find((t) => t.id === a).x === null && pos2.find((t) => t.id === b).x === null, '一次撤销整组复原');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
+  });
+
   await okAsync('任务：框选 —— svg 下方空白也能作为起点（起点不限于内容底边以上）', async () => {
     await tkReset();
     await g(dom, 'Tasks.add("框选A").id');
@@ -4543,6 +5242,84 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
     await tick();
     await g(dom, 'Tasks.setView("list")');
+  });
+
+  // 复现真实浏览器布局：容器在视口中偏移(200,100)、已滚动(60,30)、缩放 0.5、
+  // svg 随滚动平移到 (148,78) —— 框选必须按「屏幕→逻辑」正确反推，命中实际框住的节点
+  await okAsync('任务：框选 —— 视口偏移 + 滚动 + 缩放（真实布局反推命中）', async () => {
+    await tkReset();
+    await g(dom, 'Tasks.add("框选偏移A")');
+    await g(dom, 'Tasks.add("框选偏移B")');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    await g(dom, 'Tasks.applyZoom(0.5, null)');
+    await tick();
+    const body = mockDagBox(800, 600);
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    assert_(svg, 'svg 存在');
+    const vb = String(svg.getAttribute('viewBox') || '0 0 1 1').split(/[\s,]+/).map(Number);
+    const w = +svg.getAttribute('width') || 1, h = +svg.getAttribute('height') || 1;
+    // 真实浏览器：容器视口位置 (200,100)，滚动 (60,30)，wrap 内边距 8 → svg 屏幕 rect (148,78)
+    body._sl = 60; body._st = 30;
+    body.getBoundingClientRect = () => ({ left: 200, top: 100, width: 800, height: 600, right: 1000, bottom: 700, x: 200, y: 100 });
+    svg.getBoundingClientRect = () => ({ left: 148, top: 78, width: w, height: h, right: 148 + w, bottom: 78 + h, x: 148, y: 78 });
+    // 屏幕坐标 = svg 原点 + (逻辑坐标 - viewBox 原点) × zoom。
+    // 两节点逻辑区 [14,174]×[14,54] 与 [202,362]×[14,54]；屏幕 ≈ [155,235]×[85,105] 与 [249,329]×[85,105]
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 150, clientY: 80 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 150, clientY: 80 }));   // 未过阈值
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 330, clientY: 120 })); // 扫过两节点
+    await tick();
+    assert_(body.querySelector('.tk-rubber'), '拉出框选虚线框');
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify([...Tasks.selectionIds()])'));
+    assert_(sel.length === 2, '偏移+滚动+缩放下框中 2 个节点, got ' + JSON.stringify(sel));
+    // 清理
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 700, clientY: 650 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    await g(dom, 'Tasks.applyZoom(1, null)');
+    await g(dom, 'Tasks.setView("list")');
+  });
+
+  // 用户实测：框选多个任务后「整理选中的」只对一个生效 —— 框选 → 右键组内节点 → 整理，选中集必须整组回自动布局
+  await okAsync('任务：框选 → 右键「整理选中的」整组生效（多选不缩水成单选）', async () => {
+    await tkReset();
+    const a = await g(dom, 'Tasks.add("整理A").id');
+    const b = await g(dom, 'Tasks.add("整理B").id');
+    await g(dom, 'Tasks.setView("dag")');
+    await tick(); await tick();
+    // 先把两个节点挪离自动布局（手动位置），整理才有意义
+    await g(dom, 'Tasks.moveNode("' + a + '", 400, 300)');
+    await g(dom, 'Tasks.moveNode("' + b + '", 500, 350)');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x') === 400, 'A 已有手动位置');
+    // 框选两个节点
+    const body = $(dom, '#tasks-dag-body');
+    const svg = $(dom, '#tasks-dag-body .tk-svg');
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0 });
+    body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 5, clientY: 5 }));
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 950, clientY: 750 }));
+    await tick();
+    dom.window.dispatchEvent(new dom.window.MouseEvent('mouseup'));
+    await tick();
+    const sel = JSON.parse(await g(dom, 'JSON.stringify([...Tasks.selectionIds()])'));
+    assert_(sel.length === 2, '框选中 2 个, got ' + JSON.stringify(sel));
+    // 右键组内节点 → 批量菜单 → 整理选中的 2 个
+    const node = dagAll('g.tk-node').find((n) => n.getAttribute('data-id') === a);
+    node.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    await tick();
+    const item = [...dom.window.document.querySelectorAll('#ctx-menu .ctx-item')]
+      .find((x) => x.textContent.includes('整理选中'));
+    assert_(item && /2 个/.test(item.textContent), '菜单出现「整理选中的 2 个」');
+    click(item);
+    await tick(); await tick();
+    const pa = g(dom, 'Tasks.tasks.find(t=>t.id==="' + a + '").x');
+    const pb = g(dom, 'Tasks.tasks.find(t=>t.id==="' + b + '").x');
+    assert_(pa === null && pb === null, '两个任务都回到自动布局（A=' + pa + ', B=' + pb + '）');
+    await g(dom, 'Tasks.setView("list")');
+    delete FAKE_FS[TK_FILE];
   });
 
   await okAsync('任务：右键图空白 → 新建菜单；浮动输入框失焦提交 / Esc 放弃', async () => {
@@ -4651,6 +5428,42 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(bindings.includes('tool-tasks'), '快捷键表已注册 tool-tasks');
     delete FAKE_FS[TK_FILE];
     delete FAKE_FS['C:/proj2/.myide/tasks.json'];
+  });
+
+  await okAsync('任务：改完立刻切项目 —— 写入目标按入队时锁定（连线不丢、新项目不串档）', async () => {
+    await tkReset();
+    // 让写盘变慢：制造「写盘还在途时切了项目」的确定竞态
+    // （旧实现 writeStore 执行时才读 FILE(root) → 甲乙+连线写进 proj2 的文件：旧项目丢线、新项目串档）
+    const fsBridge = dom.window.myIDE.fs;
+    const origWrite = fsBridge.writeFile;
+    fsBridge.writeFile = async (p, c) => {
+      await new Promise((r) => setTimeout(r, 40));
+      return origWrite(p, c);
+    };
+    const a = await g(dom, 'Tasks.add("甲").id');
+    const b = await g(dom, 'Tasks.add("乙").id');
+    await g(dom, 'Tasks.addDep("' + b + '", "' + a + '")'); // 连线（save 已入队、写盘在途）
+    await g(dom, 'App.setRoot("C:/proj2")'); // ★ 不等落盘立刻切项目
+    await new Promise((r) => setTimeout(r, 150)); // 等在途写盘全部落地
+    fsBridge.writeFile = origWrite;
+    // 旧项目文件：连线必须在
+    const savedP = JSON.parse(FAKE_FS[TK_FILE].content);
+    const sb = savedP.tasks.find((t) => t.id === b);
+    assert_(sb && Array.isArray(sb.deps) && sb.deps.includes(a), '旧项目的依赖已落盘（切项目连线不丢）');
+    // 新项目文件：不该被写进甲乙
+    const f2 = 'C:/proj2/.myide/tasks.json';
+    if (FAKE_FS[f2]) {
+      const s2 = JSON.parse(FAKE_FS[f2].content);
+      assert_(!s2.tasks || !s2.tasks.some((t) => t.id === a || t.id === b), '新项目文件未被旧项目数据串档');
+    }
+    // 切回项目一：任务和连线都在
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    assert_(g(dom, 'Tasks.tasks.length') === 2, '切回：两个任务在');
+    const bk = await tkJson('Tasks.tasks.find(t=>t.id==="' + b + '")');
+    assert_(bk && Array.isArray(bk.deps) && bk.deps.includes(a), '切回：连线仍在（依赖持久化）');
+    delete FAKE_FS[TK_FILE];
+    delete FAKE_FS[f2];
   });
 
   // ---------- 048-5.1 画布缩放 / 平移 ----------
@@ -5315,6 +6128,317 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(await g(dom, 'Tasks.aiAnalyze()') === false, '无任务时拒绝分析');
     delete FAKE_FS[TK_FILE];
+  });
+
+  // ---------- 049 图片缩放 / mermaid 全屏 / 项目栏美观 ----------
+  await okAsync('图片查看器：缩放工具条完整 + 缩放/适应/1:1 生效', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
+    await tick(); await tick();
+    const view = $(dom, '.img-view');
+    assert_(view, 'img-view 存在');
+    const bar = $(dom, '.img-view .img-bar');
+    assert_(bar, '缩放工具条存在');
+    const labels = $allIn(bar, '.zoom-btn').map((b) => b.textContent);
+    for (const L of ['－', '＋', '适应', '1:1', '⛶ 全屏']) {
+      assert_(labels.includes(L), '工具条含「' + L + '」, got ' + labels.join(' / '));
+    }
+    const pct = $(dom, '.img-view .zoom-pct');
+    assert_(pct, '有缩放比例显示');
+    // jsdom 不解码图片：手工给元素造尺寸，走真实缩放链路
+    const img = $(dom, '.img-view img');
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 800 });
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 600 });
+    const z = view.__zoomer;
+    assert_(z, '缩放器实例暴露给调用方');
+    z.refresh(true);
+    z.setScale(2);
+    assert_(img.style.width === '1600px' && img.style.height === '1200px', '200% → 显式像素尺寸, got ' + img.style.width + '×' + img.style.height);
+    assert_(pct.textContent === '200%', '比例文本跟随, got ' + pct.textContent);
+    assert_(img.style.maxWidth === 'none', '放大后解除 max-width 约束（否则永远长不大）');
+    // 点「－」按钮收缩一档（1/1.25）
+    const minus = $allIn(bar, '.zoom-btn').find((b) => b.textContent === '－');
+    click(minus);
+    assert_(Math.round(z.scale * 100) === 160, '点「－」缩到 160%, got ' + Math.round(z.scale * 100));
+    // 点「1:1」回原始像素
+    click($allIn(bar, '.zoom-btn').find((b) => b.textContent === '1:1'));
+    assert_(img.style.width === '800px', '1:1 → 800px, got ' + img.style.width);
+    // 点「全屏」→ lightbox（工具条同样带缩放 + 关闭）
+    click($allIn(bar, '.zoom-btn').find((b) => b.textContent === '⛶ 全屏'));
+    await tick();
+    const lb = $(dom, '.img-lightbox');
+    assert_(lb, '全屏浮层打开');
+    assert_($allIn(lb, '.zoom-bar .zoom-btn').some((b) => b.textContent.includes('关闭')), '浮层有关闭按钮');
+    // Esc 关闭
+    dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    assert_(!$(dom, '.img-lightbox'), 'Esc 关闭全屏浮层');
+  });
+
+  await okAsync('mermaid 图：渲染后可一键全屏（md 预览）', async () => {
+    // 真实 mermaid 是浏览器 bundle，jsdom 里用假渲染器替代（只验我们的接入逻辑）
+    g(dom, 'window.mermaid = { initialize(){}, render: async () => ({ svg: \'<svg viewBox="0 0 120 60"><rect x="0" y="0" width="120" height="60"/></svg>\' }) }; true');
+    FAKE_FS[P + '/mmd.md'] = { type: 'file', content: '# 图\n\n```mermaid\ngraph TD;A-->B;\n```\n' };
+    await g(dom, 'localStorage.setItem("myide-md-mode", "preview"); true');
+    await g(dom, 'Viewer.openFile("' + P + '/mmd.md")');
+    for (let i = 0; i < 12 && !$(dom, '.mermaid-box svg'); i++) await tick();
+    const box = $(dom, '.md-view .mermaid-box');
+    assert_(box, 'mermaid-box 已渲染');
+    assert_($(dom, '.mermaid-box svg'), '图 SVG 已生成');
+    const fsBtn = $(dom, '.mermaid-box .mmd-fs-btn');
+    assert_(fsBtn, '右上角全屏按钮已挂载');
+    click(fsBtn);
+    await tick();
+    const ov = $(dom, '.svg-fullscreen');
+    assert_(ov, '全屏浮层打开');
+    assert_($(dom, '.svg-fullscreen svg'), '浮层内含 SVG');
+    assert_($allIn(ov, '.zoom-btn').map((b) => b.textContent).includes('1:1'), '浮层内含缩放控件');
+    dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    assert_(!$(dom, '.svg-fullscreen'), 'Esc 关闭全屏浮层');
+    // 点空白关闭
+    click(fsBtn);
+    await tick();
+    const ov2 = $(dom, '.svg-fullscreen');
+    assert_(ov2, '再次打开');
+    click($(dom, '.svg-fullscreen .svg-fs-stage'));
+    await tick();
+    assert_(!$(dom, '.svg-fullscreen'), '点击空白关闭');
+    await g(dom, 'localStorage.setItem("myide-md-mode", "live"); true');
+    delete FAKE_FS[P + '/mmd.md'];
+  });
+
+  await okAsync('项目栏：溢出淡出提示（滚到最右自动取消）+ 结构', async () => {
+    const bar = $(dom, '#project-bar');
+    assert_(bar, '项目栏存在');
+    // 「全部项目」不在滚动层内（这是「覆盖」类问题的结构性修复）
+    assert_(!$allIn(bar, '.proj-all').length, '「全部项目」不在滚动容器里');
+    assert_($(dom, '#project-bar-wrap .proj-all'), '「全部项目」在外层容器里');
+    Object.defineProperty(bar, 'scrollWidth', { configurable: true, value: 900 });
+    Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 300 });
+    bar.scrollLeft = 0;
+    bar.dispatchEvent(new dom.window.Event('scroll'));
+    assert_(bar.classList.contains('scroll-r'), '溢出时右侧淡出提示');
+    bar.scrollLeft = 600;
+    bar.dispatchEvent(new dom.window.Event('scroll'));
+    assert_(!bar.classList.contains('scroll-r'), '滚到最右后取消淡出');
+    // 样式表必须有对应规则（防「类存在但没样式」盲区）
+    const cssText = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    assert_(/\.zoom-bar\s*\{/.test(cssText), '.zoom-bar 有样式');
+    assert_(/\.mmd-fs-btn\s*\{/.test(cssText), '.mmd-fs-btn 有样式');
+    assert_(/#project-bar\.scroll-r[^{]*\{[^}]*mask-image/.test(cssText), '溢出淡出走 mask-image');
+    assert_(/\.proj-btn\s*\{[^}]*align-items:\s*center/.test(cssText), '项目按钮垂直居中（不再挤压）');
+    assert_(/#project-bar-wrap\s*\{/.test(cssText), '#project-bar-wrap 有样式');
+    // 项目栏不再有 sticky 悬浮层（sticky + 横向滚动 = 按钮从底下钻过去）
+    assert_(!/\.proj-all\s*\{[^}]*position:\s*sticky/.test(cssText), '.proj-all 不再是 sticky');
+    const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
+    assert_(ndRules.some((r) => r.includes('project-bar-wrap')), '外层容器在 no-drag 白名单内可点击');
+  });
+
+  await okAsync('图片/图查看：滚轮=滚动（不再抢去缩放），Ctrl+滚轮才缩放', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
+    await tick(); await tick();
+    const view = $(dom, '.img-view');
+    const img = $(dom, '.img-view img');
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 800 });
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 600 });
+    const z = view.__zoomer;
+    z.refresh(true);
+    const before = z.scale;
+    // 纯滚轮：不应改变缩放，也不应被 preventDefault（要留给容器原生滚动）
+    const ev1 = new dom.window.WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    $(dom, '.img-view .img-stage').dispatchEvent(ev1);
+    assert_(z.scale === before, '纯滚轮不缩放, got ' + z.scale + '（原 ' + before + '）');
+    assert_(ev1.defaultPrevented === false, '纯滚轮不拦截（保留上下滑动）');
+    // Ctrl+滚轮：缩放
+    const ev2 = new dom.window.WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true });
+    $(dom, '.img-view .img-stage').dispatchEvent(ev2);
+    assert_(z.scale > before, 'Ctrl+滚轮向上放大, got ' + z.scale);
+    assert_(ev2.defaultPrevented === true, 'Ctrl+滚轮拦截（挡掉整页缩放）');
+    // 工具条 tooltip 与提示文案同步
+    const t = $allIn($(dom, '.img-view .img-bar'), '.zoom-btn').map((b) => b.title).join(' | ');
+    assert_(/Ctrl\+滚轮/.test(t), '按钮 tooltip 提到 Ctrl+滚轮, got ' + t);
+  });
+
+  await okAsync('项目栏滚动收口：当前项目被滚出左/右侧都会被拉回可视区', async () => {
+    // jsdom 无布局 → 手工伪造 getBoundingClientRect，直接验证「相对可视区」的算法
+    // 回归：曾用 offsetLeft 与 scrollLeft 相减，offsetParent 是 body → 把工具栏左侧宽度算进去，滚到错位置
+    const bar = $(dom, '#project-bar');
+    Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 600 });
+    const rect = (l, r) => ({ left: l, right: r, width: r - l, height: 22, top: 0, bottom: 22, x: l, y: 0 });
+    const proto = dom.window.Element.prototype;
+    const orig = proto.getBoundingClientRect;
+    let actRect = rect(-60, 40); // 初始：当前项目按钮在左侧被滚出去
+    proto.getBoundingClientRect = function () {
+      if (this.id === 'project-bar') return rect(200, 800);
+      if (this.classList && this.classList.contains('proj-btn') && this.classList.contains('active')) return actRect;
+      return orig.call(this);
+    };
+    try {
+      bar.scrollLeft = 500;
+      await g(dom, 'App.setRoot("' + P + '")');
+      await tick();
+      assert_(bar.scrollLeft === 240, '左侧被滚出 → 拉回左边缘, got ' + bar.scrollLeft);
+      actRect = rect(810, 880); // 右侧被截断
+      bar.scrollLeft = 100;
+      await g(dom, 'App.setRoot("' + P + '")');
+      await tick();
+      assert_(bar.scrollLeft === 180, '右侧被截断 → 顶到可见, got ' + bar.scrollLeft);
+      actRect = rect(400, 470); // 已完整可见
+      bar.scrollLeft = 100;
+      await g(dom, 'App.setRoot("' + P + '")');
+      await tick();
+      assert_(bar.scrollLeft === 100, '已完整可见 → 不动滚动位置, got ' + bar.scrollLeft);
+    } finally {
+      proto.getBoundingClientRect = orig;
+    }
+  });
+
+  await okAsync('AI 面板：自动知道「你在看哪份文件」（不用每次手动附）', async () => {
+    FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' + '本周完成联调。' + '\n' };
+    FAKE_FS[P + '/other.md'] = { content: '# 别的' + '\n' };
+    const boxOf = () => $(dom, '#ai-follow');
+    const following = () => boxOf() && !boxOf().classList.contains('hidden');
+
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(following(), '打开文件后，面板自己显示「正在看」');
+    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + boxOf().textContent);
+
+    // 用户说「这份不要跟随」
+    click(boxOf().querySelector('.ai-follow-x'));
+    await tick();
+    assert_(!following(), '点「不再跟随」后收起');
+
+    // 切到别的文件：新文件照常跟随（否定的只是 note.md）
+    await g(dom, 'Viewer.openFile("' + P + '/other.md")');
+    await tick(); await tick();
+    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + boxOf().textContent);
+
+    // 切回来：用户说过不跟随，就别再自动跟上
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(!following(), '取消过跟随的文件，切回来也不再自动加: ' + boxOf().textContent);
+
+    // 新开对话不该把「我在看这份文档」也清掉（人的直觉）
+    await g(dom, 'Viewer.openFile("' + P + '/other.md")');
+    await tick(); await tick();
+    click($(dom, '#ai-new'));
+    await tick(); await tick();
+    assert_(following() && boxOf().textContent.includes('other.md'), '点「新对话」后仍保持跟随当前文件');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：改完把改动摆在眼前（可展开、可单独撤销）', async () => {
+    click($(dom, '#ai-new')); // 前面的用例也会留卡片，先清空消息流
+    await tick(); await tick();
+    FAKE_FS[P + '/doc.md'] = { content: '# 纪要' + '\n' + '\n' + '本周完成联调，剩余两个问题。' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/doc.md")');
+    await tick(); await tick();
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: 'doc.md', content: '# 纪要' + '\n' + '\n' + '- 完成联调' + '\n' + '- 剩余 2 个问题' + '\n' } }] },
+      { ok: true, text: '整理好了。' },
+    ];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '把这份文档改成要点';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+
+    assert_($(dom, '#dw-yes'), '改之前先给 diff 确认（不直接动文件）');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+
+    const card = $allIn($(dom, '#ai-msgs'), '.ai-edit').pop();
+    assert_(card, '改完在消息流里出现「改动卡片」');
+    if (card) {
+      assert_(card.textContent.includes('doc.md'), '卡片写明改了哪个文件: ' + card.textContent.slice(0, 30));
+      assert_(/\+\d/.test(card.textContent) && /-\d/.test(card.textContent), '卡片显示加减行数: ' + card.textContent.replace(/\s+/g, ' ').slice(0, 40));
+
+      click(card.querySelector('.e-toggle'));
+      await tick();
+      const body = card.querySelector('.ai-edit-body');
+      assert_(!body.classList.contains('hidden'), '点「看改动」能展开');
+      assert_($allIn(body, '.d-add').length > 0 && $allIn(body, '.d-del').length > 0,
+        '展开后有红绿对比行 add=' + $allIn(body, '.d-add').length + ' del=' + $allIn(body, '.d-del').length);
+
+      click(card.querySelector('.e-undo'));
+      for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+      assert_(FAKE_FS[P + '/doc.md'].content.includes('本周完成联调'), '点撤销后文件回到原样');
+      assert_(card.classList.contains('undone'), '卡片标记为已撤销');
+    }
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：拖文件进面板就进上下文（拖过去比翻文件快）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/drop.txt'] = { content: '拖进来的内容' + '\n' };
+    const panel = $(dom, '#ai-panel');
+    const mkDt = (types, get) => ({ types, getData: get, files: [], dropEffect: '', setData() {}, clearData() {} });
+
+    // 拖到面板上：先给出「松手会怎样」的提示
+    const ov = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(ov, 'dataTransfer', { value: mkDt(['text/myide-path'], () => '') });
+    panel.dispatchEvent(ov);
+    assert_(panel.classList.contains('drop-active'), '拖到面板上时整块高亮（不让人猜松手会怎样）');
+
+    // 松手：项目树里拖过来的文件
+    const dp = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dp, 'dataTransfer', { value: mkDt(['text/myide-path'], (k) => (k === 'text/myide-path' ? P + '/drop.txt' : '')) });
+    panel.dispatchEvent(dp);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!panel.classList.contains('drop-active'), '松手后高亮撤掉');
+    const chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('drop.txt')),
+      '拖进来的文件进了上下文: ' + (chips.map((c) => c.textContent).join('|') || '(空)'));
+
+    // 从系统拖（走 webUtils 取路径那条路）
+    FAKE_FS[P + '/osdrop.txt'] = { content: '系统拖进来的' + '\n' };
+    const dp2 = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dp2, 'dataTransfer', {
+      value: { types: ['Files'], getData: () => '', dropEffect: '', setData() {}, clearData() {},
+               files: [{ name: 'osdrop.txt' }] },
+    });
+    panel.dispatchEvent(dp2);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    const chips2 = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips2.length >= 2, '从系统拖进来的文件也能进上下文: ' + chips2.length + ' 项');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：授权记忆（选「本项目内都允许」后不再反复弹窗）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/perm.txt'] = { content: 'v1' + '\n' };
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'p1', name: 'write_file', args: { path: 'perm.txt', content: 'v2' + '\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 perm';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    const al = $(dom, '#dw-always');
+    assert_(al, 'diff 弹窗里有「本项目内都允许」（不想每次点确认的出口）');
+    click(al);
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/perm.txt'].content === 'v2' + '\n', '第一次写入生效');
+    // 再改一次：不该再问
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'p2', name: 'write_file', args: { path: 'perm.txt', content: 'v3' + '\n' } }] },
+      { ok: true, text: '又改好了。' },
+    ];
+    $(dom, '#ai-input').value = '再改一次';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '记住之后不再弹 diff 确认');
+    assert_(FAKE_FS[P + '/perm.txt'].content === 'v3' + '\n', '第二次写入直接生效');
+    const remembered = await g(dom, 'JSON.stringify(AiPanel.loadPerms())');
+    assert_(String(remembered).includes('write'), '授权记录可查询（设置页据此显示与清除）: ' + remembered);
+    await g(dom, 'AiPanel.savePerms({})'); // 清掉别影响其他用例
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
   });
 
   console.log('');

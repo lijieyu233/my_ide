@@ -11,3 +11,10 @@ check-live.png
 *.db
 .workbuddy/
 .trae/
+check-ui-out.txt
+check-ui-*.png
+check-ui-timeout.txt
+.ui-check-stage.txt
+.ui-check-profile*/
+.ui-check-trash/
+.ui-check-boot.txt

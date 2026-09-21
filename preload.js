@@ -1,5 +1,5 @@
 // preload.js —— 通过 contextBridge 安全暴露 API 给渲染进程
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('myIDE', {
   app: {
@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
     readBuffer: (p) => ipcRenderer.invoke('fs:readBuffer', p),
+    // 拖进来的文件取真实路径：Electron 32+ 移除了 File.path，只能走 webUtils.getPathForFile
+    pathOfDroppedFile: (file) => { try { return webUtils.getPathForFile(file) || ''; } catch { return ''; } },
     writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
@@ -81,13 +83,16 @@ contextBridge.exposeInMainWorld('myIDE', {
     shelveList: (d) => ipcRenderer.invoke('git:shelveList', d),
     shelveApply: (d, id, opts) => ipcRenderer.invoke('git:shelveApply', d, id, opts),
     shelveDelete: (d, id) => ipcRenderer.invoke('git:shelveDelete', d, id),
-    aheadBehind: (d) => ipcRenderer.invoke('git:aheadBehind', d),
+    aheadBehind: (d, opts) => ipcRenderer.invoke('git:aheadBehind', d, opts),
     listTags: (d) => ipcRenderer.invoke('git:listTags', d),
     createTag: (d, cfg) => ipcRenderer.invoke('git:createTag', d, cfg),
     revert: (d, oid) => ipcRenderer.invoke('git:revert', d, oid),
     cherryPick: (d, oid) => ipcRenderer.invoke('git:cherryPick', d, oid),
     logFile: (d, file, limit) => ipcRenderer.invoke('git:logFile', d, file, limit),
     blame: (d, file) => ipcRenderer.invoke('git:blame', d, file),
+    addToGitignore: (d, file) => ipcRenderer.invoke('git:addToGitignore', d, file),
+    removeFromGitignore: (d, file) => ipcRenderer.invoke('git:removeFromGitignore', d, file),
+    listIgnored: (d) => ipcRenderer.invoke('git:listIgnored', d),
   },
   plugins: {
     loadAll: () => ipcRenderer.invoke('plugins:loadAll'),

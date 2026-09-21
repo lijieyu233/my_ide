@@ -169,6 +169,91 @@ async function status(dir) {
   return { isRepo: true, root, branch, changed };
 }
 
+// ---------- 被忽略的文件（PyCharm 提交窗口的「忽略的文件」节点）----------
+// 只列「未跟踪 + 命中 .gitignore」的项；命中规则的目录整棵跳过（否则 node_modules 会拖死遍历）。
+// 已跟踪的文件即使命中规则也照常显示在变更列表里（与 git 行为一致），所以这里要排除它们。
+// dirOnly 规则（node_modules/）只在「有下级」时才命中 → 判定目录时补一段假尾段（见 ignoredDir）
+function ignoredDir(rel, rules) { return isIgnoredPath(rel + '/\u0001', rules); }
+async function listIgnored(dir, { limit = 800, maxDepth = 8 } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', files: [] };
+  ignoreCache.clear();
+  const tracked = new Set();
+  try {
+    const matrix = await git.statusMatrix({ fs, dir: root });
+    for (const row of matrix) if (row[1] > 0) tracked.add(posix(row[0]));
+  } catch {}
+  const out = [];
+  let truncated = false;
+  const walk = (abs, rel) => {
+    if (out.length >= limit) { truncated = true; return; }
+    let entries = [];
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= limit) { truncated = true; return; }
+      if (e.name === '.git') continue;
+      const childRel = rel ? rel + '/' + e.name : e.name;
+      const childAbs = path.join(abs, e.name);
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) {
+        try { isDir = fs.statSync(childAbs).isDirectory(); } catch { isDir = false; }
+      }
+      if (isDir) {
+        if (tracked.has(childRel)) continue; // 目录里有已跟踪文件（少见）：交给正常变更列表
+        if (ignoredDir(childRel, allRulesFor(root, childRel))) {
+          out.push({ file: native(childRel), dir: true });
+          continue; // 整目录被忽略 → 不再下钻
+        }
+        if (rel.split('/').length < maxDepth) walk(childAbs, childRel);
+        continue;
+      }
+      if (!tracked.has(childRel) && isIgnoredPath(childRel, allRulesFor(root, childRel))) {
+        out.push({ file: native(childRel), dir: false });
+      }
+    }
+  };
+  walk(root, '');
+  out.sort((a, b) => a.file.localeCompare(b.file));
+  return { isRepo: true, root, files: out, truncated };
+}
+
+// ---------- .gitignore 编辑（提交窗口右键「添加到 .gitignore」/「不再忽略」）----------
+// 只做「确切路径行」的增删（PyCharm 的 Add to .gitignore 同样是写入具体路径，不做模式推导）
+function toRepoRel(root, p) {
+  let s = String(p || '');
+  if (path.isAbsolute(s)) s = path.relative(root, s);
+  return posix(s);
+}
+async function addToGitignore(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const rel = toRepoRel(root, file);
+  if (!rel || rel === '.' || rel.startsWith('..')) return { ok: false, error: '文件不在仓库内' };
+  const gi = path.join(root, '.gitignore');
+  let text = '';
+  try { text = fs.readFileSync(gi, 'utf8'); } catch {}
+  const hit = text.split(/\r?\n/).some((l) => { const t = l.trim(); return t === rel || t === '/' + rel; });
+  if (hit) return { ok: true, skipped: true, pattern: rel };
+  const prefix = text ? text + (text.endsWith('\n') ? '' : '\n') : '';
+  fs.writeFileSync(gi, prefix + rel + '\n', 'utf8');
+  ignoreCache.clear();
+  return { ok: true, pattern: rel };
+}
+async function removeFromGitignore(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const rel = toRepoRel(root, file);
+  const gi = path.join(root, '.gitignore');
+  let text = '';
+  try { text = fs.readFileSync(gi, 'utf8'); } catch { return { ok: false, error: '仓库里没有 .gitignore' }; }
+  const lines = text.split(/\r?\n/);
+  const kept = lines.filter((l) => { const t = l.trim(); return !(t === rel || t === '/' + rel); });
+  if (kept.length === lines.length) return { ok: false, error: '该项目不在 .gitignore 的确切路径行中（可能匹配的是通配规则）' };
+  fs.writeFileSync(gi, kept.join('\n'), 'utf8');
+  ignoreCache.clear();
+  return { ok: true, removed: lines.length - kept.length };
+}
+
 // ---------- 日志 ----------
 async function log(dir, depth = 100, ref = 'HEAD') {
   const { yes, root } = await isRepo(dir);
@@ -203,15 +288,35 @@ async function getAuthor(root) {
 }
 
 // 本版本 isomorphic-git 的 commit() 不支持 filepaths 参数，需先显式 add/remove 暂存
-async function commit(dir, { message, files, amend = false }) {
+//
+// ★ 语义对齐 PyCharm：**勾选集合就是唯一权威**。commit() 提交的是整个 index，
+//   所以「未勾选但已在 index 里」的文件必须显式 resetIndex 取消暂存，否则它会被一起提交
+//   （老实现只 add 不 unstage → 取消勾选形同虚设，且暂存内容会被这次提交"吃掉"）。
+//   resetIndex 只改 index，不动工作区 → 未勾选的改动仍留在工作区，提交后照常显示为未暂存。
+async function commit(dir, { message, files, amend = false, author: authorOverride }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const author = await getAuthor(root);
+  const author = authorOverride || await getAuthor(root);
   try {
+    if (files) {
+      const sel = new Set(files.map((f) => posix(f)));
+      let matrix = [];
+      try { matrix = await git.statusMatrix({ fs, dir: root }); } catch {}
+      for (const row of matrix) {
+        const p = posix(row[0]);
+        if (sel.has(p)) continue;
+        const [, h, , s] = row;
+        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 取消暂存
+        if (s > 0 && s !== h) {
+          try { await git.resetIndex({ fs, dir: root, filepath: p }); } catch {}
+        }
+      }
+    }
     if (files && files.length) {
       for (const f of files) {
         if (fs.existsSync(path.join(root, f))) {
-          await git.add({ fs, dir: root, filepath: posix(f) });
+          // force：勾选的是被 .gitignore 忽略的文件时也要能暂存（PyCharm 勾选忽略文件即强制加入）
+          await git.add({ fs, dir: root, filepath: posix(f), force: true });
         } else {
           await git.remove({ fs, dir: root, filepath: posix(f) }); // 已删除的文件 → 暂存删除
         }
@@ -749,28 +854,25 @@ async function diffRefs(dir, aRef, bRef, file) {
 }
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
-const http = require('isomorphic-git/http/node');
-const { execFile } = require('child_process');
-const AUTH_KEY = null; // 凭证由渲染层每次传入（localStorage myide-git-auth），不落服务层状态
-
-// 系统 git 回退：isomorphic-git 仅支持 HTTPS，不支持 SSH；
-// 遇到 git@ / ssh:// 远程时必须调用系统 git（由其处理 SSH 密钥、凭证助手等）。
-// HTTPS 远程也优先尝试系统 git（可复用系统凭证助手），失败再回退 isomorphic-git + 应用内凭证。
+// ---------- 系统 git 回退 ----------
+// isomorphic-git 仅支持 HTTPS，不支持 SSH；遇到 git@ / ssh:// 远程必须调用系统 git
+// （由其处理 SSH 密钥、凭证助手等）。HTTPS 远程也优先试系统 git（可复用系统凭证助手与 git config 代理），
+// 失败再回退 isomorphic-git + 应用内凭证。
 let _systemGitOk = null;
 function systemGitAvailable() {
   if (_systemGitOk !== null) return _systemGitOk;
   try {
-    require('child_process').execFileSync('git', ['--version'], { timeout: 5000 });
+    require('child_process').execFileSync('git', ['--version'], { timeout: 5000, windowsHide: true });
     _systemGitOk = true;
   } catch { _systemGitOk = false; }
   return _systemGitOk;
 }
-function runGit(root, args) {
+function runGit(root, args, timeout) {
   return new Promise((resolve) => {
     execFile('git', args, {
       cwd: root,
-      timeout: 120000,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never' },
+      timeout: timeout || 120000,
+      env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never' }),
       maxBuffer: 50 * 1024 * 1024,
     }, (err, stdout, stderr) => {
       resolve({ ok: !err, code: err && err.code, stdout: String(stdout || ''), stderr: String(stderr || '') });
@@ -780,12 +882,236 @@ function runGit(root, args) {
 function isSshUrl(url) {
   return /^git@|^ssh:\/\//i.test(String(url || ''));
 }
+// 该远程能否先走系统 git：SSH 必走；HTTPS 优先（失败再回退 isomorphic-git）
+function canUseSystemGit(url) {
+  return systemGitAvailable() && !!url && (isSshUrl(url) || /^https?:/i.test(url));
+}
+// 命令行 git 失败时的末行错误信息（stderr 优先，其次 stdout）
+function lastLine(r) {
+  return r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || '';
+}
 
-function onAuthOf(auth) {
-  return () => {
-    if (!auth || !auth.username) throw new Error('远程需要认证：请在「远程仓库」设置中配置用户名和密码/令牌');
-    return { username: auth.username, password: auth.password || '' };
+const rawHttp = require('isomorphic-git/http/node');
+const { execFile } = require('child_process');
+const netHttp = require('http');
+const netHttps = require('https');
+const tls = require('tls');
+
+// 远程 URL → 主机（含端口）。http://user@host:port/path → host:port；非 http(s) 返回 null
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return null; }
+}
+
+// ---------- 代理支持（修复 isomorphic-git 忽略 git config 代理 → GitHub 直连不稳）----------
+// 命令行 git 读 http.proxy（含 http.<url>.proxy 按主机匹配）走代理；isomorphic-git 完全忽略 → 只能直连碰运气。
+// 这里用 git config --get-urlmatch 读同一份配置（三层级合并 + URL 匹配，与命令行行为一致），
+// https 目标构造 HTTP CONNECT 隧道 agent 注入底层 http client。
+
+// 查 git config 里该远程 URL 的 http.proxy（不走网络，仅读配置；结果缓存）
+const gitProxyCache = new Map(); // root \n url -> proxyUrl | ''
+function gitConfigProxy(root, url) {
+  const key = root + '\n' + url;
+  if (gitProxyCache.has(key)) return Promise.resolve(gitProxyCache.get(key));
+  return new Promise((resolve) => {
+    let settled = false;
+    // 失败（超时/异常/未配置读失败）不写缓存：一次抖动若把 null 固化进进程，
+    // 整个会话推送都会直连（绿盾环境直连必挂），重启应用才能恢复。
+    const done = (v, cache) => { if (!settled) { settled = true; if (cache && v) gitProxyCache.set(key, v); resolve(v || null); } };
+    try {
+      execFile('git', ['-C', root, 'config', '--get-urlmatch', 'http.proxy', url], {
+        timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024,
+      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null, !err && !!stdout));
+    } catch { done(null, false); }
+  });
+}
+
+// HTTP CONNECT 隧道 agent（https 目标经 http 代理；agent 按 proxyUrl 缓存复用）
+// 注意：createConnection 是 Agent 的原型方法，构造参数传入会被忽略，必须子类覆写。
+class TunnelAgent extends netHttps.Agent {
+  constructor(proxyUrl) {
+    super({ keepAlive: false });
+    this._proxy = new URL(proxyUrl);
+  }
+  createConnection(options, callback) {
+    let settled = false;
+    const done = (err, sock) => { if (!settled) { settled = true; err ? callback(err) : callback(null, sock); } };
+    try {
+      const host = options.host, port = options.port || 443;
+      const p = this._proxy;
+      const req = netHttp.request({
+        host: p.hostname, port: parseInt(p.port || 80, 10),
+        method: 'CONNECT', path: host + ':' + port,
+      });
+      req.setTimeout(15000, () => req.destroy(new Error('代理 CONNECT 超时')));
+      req.once('connect', (res, socket) => {
+        if (res.statusCode !== 200) { socket.destroy(); return done(new Error('代理 CONNECT 被拒: HTTP ' + res.statusCode)); }
+        const sock = tls.connect({ socket, servername: host, rejectUnauthorized: true });
+        sock.once('secureConnect', () => done(null, sock));
+        sock.once('error', (e) => done(e));
+      });
+      req.once('error', (e) => done(e));
+      req.end();
+    } catch (e) { done(e); }
+  }
+}
+const tunnelAgentCache = new Map(); // proxyUrl -> TunnelAgent
+function tunnelAgentFor(proxyUrl) {
+  if (tunnelAgentCache.has(proxyUrl)) return tunnelAgentCache.get(proxyUrl);
+  try { new URL(proxyUrl); } catch { return null; }
+  if (!/^https?:/i.test(proxyUrl)) return null;
+  const agent = new TunnelAgent(proxyUrl);
+  tunnelAgentCache.set(proxyUrl, agent);
+  return agent;
+}
+
+// 按远程 URL 取 http client：git config 配了代理且目标为 https → 注入隧道 agent；否则直连原生 client
+async function httpFor(root, url) {
+  if (!url || !/^https:/i.test(url)) return rawHttp; // 仅 https 目标支持 CONNECT 隧道
+  const proxy = await gitConfigProxy(root, url);
+  if (!proxy) return rawHttp;
+  const agent = tunnelAgentFor(proxy);
+  if (!agent) return rawHttp;
+  return { request: (req) => rawHttp.request(Object.assign({}, req, { agent })) };
+}
+
+// 系统 Git 凭证管理器查询（git credential fill，与命令行共享凭证）。
+// GCM_INTERACTIVE=never + GIT_TERMINAL_PROMPT=0：查不到直接失败，绝不弹窗阻塞 UI。
+// 结果按 protocol//host 进程内缓存（含失败 null），避免每次推送都 spawn 一次 git。
+const sysCredCache = new Map();
+function systemCredentialFill(url) {
+  let u; try { u = new URL(url); } catch { return Promise.resolve(null); }
+  if (!/^https?:$/.test(u.protocol)) return Promise.resolve(null); // 仅支持 http(s) 远程
+  const key = u.protocol + '//' + u.host;
+  if (sysCredCache.has(key)) return Promise.resolve(sysCredCache.get(key));
+  return new Promise((resolve) => {
+    let settled = false;
+    // 失败（超时/GCM 未响应等）不写缓存：一次抖动若把 null 固化进进程，
+    // 后续推送的候选链会跳过系统凭证直接 401，重启应用才能恢复。
+    const done = (v, cache) => { if (!settled) { settled = true; if (cache) sysCredCache.set(key, v); resolve(v); } };
+    try {
+      const child = execFile('git', ['credential', 'fill'], {
+        timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
+        env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
+      }, (err, stdout) => {
+        if (err) return done(null, false);
+        const s = String(stdout);
+        const mu = s.match(/^username=(.*)$/m), mp = s.match(/^password=(.*)$/m);
+        done(mu && mp ? { username: mu[1], password: mp[1] } : null, !!(mu && mp));
+      });
+      child.stdin.on('error', () => {}); // stdin 异常不致命（超时 kill 时可能触发）
+      child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
+      child.stdin.end();
+    } catch { done(null); }
+  });
+}
+
+// 候选凭证迭代制（onAuth 与 onAuthFailure 共用同一迭代器）：
+// isomorphic-git 语义：首次 401 调 onAuth 取凭证，之后每次 401 调 onAuthFailure 取下一个；
+// 返回 null 即停止重试并抛 401。任一候选成功即通过。
+// 候选优先级：host 匹配的渲染层凭证 > 远程 URL 内嵌凭证 > 系统 Git 凭证管理器 > '*' 兜底凭证。
+// 注意 '*' 兜底（早期全局单份凭证迁移而来）可能是为其他主机存的，排在系统凭证之后，
+// 避免它毒害本可用系统凭证成功的推送（GitHub/GitLab 多主机混用场景）。
+function onAuthOf(auth, remoteUrl) {
+  const host = hostOf(remoteUrl);
+  const cands = [];
+  if (auth) {
+    if (host && auth[host] && auth[host].username) cands.push(auth[host]);
+    if (auth.username) cands.push(auth); // 兼容旧平铺格式 {username,password}
+  }
+  if (remoteUrl) { // URL 内嵌凭证（isomorphic-git 不解析 URL userinfo，这里代为生效）
+    try {
+      const u = new URL(remoteUrl);
+      if (u.username) cands.push({ username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') });
+    } catch {}
+  }
+  const star = auth && auth['*'] && auth['*'].username ? auth['*'] : null;
+  let i = 0, sysTried = false, starTried = false;
+  return async () => {
+    while (i < cands.length) {
+      const c = cands[i++];
+      if (c && c.username) return { username: c.username, password: c.password || '' };
+    }
+    if (!sysTried) {
+      sysTried = true;
+      const sys = await systemCredentialFill(remoteUrl); // 系统 Git 凭证（命令行存过的）
+      if (sys && sys.username) return sys;
+    }
+    if (!starTried && star) { starTried = true; return { username: star.username, password: star.password || '' }; }
+    return null; // 候选耗尽：isomorphic-git 停止重试，外层统一转友好报错
   };
+}
+
+// 网络错误 → 友好提示（认证耗尽时指明已尝试所有凭证，引导到远程仓库弹窗）
+function friendlyNetError(e, pr) {
+  const msg = String((e && e.message) || e);
+  if (/HTTP Error: 40[13]/.test(msg)) {
+    return '认证失败：' + (hostOf(pr && pr.url) || '远程') + ' 拒绝了所有已存凭证，请在「远程仓库」弹窗中为该主机保存正确的用户名和密码/令牌';
+  }
+  return msg;
+}
+
+// GitLab 对不带 .git 后缀的 http(s) 远程会 301 重定向到 .git 地址，isomorphic-git 不跟随重定向 → 报 404。
+// 这里在 404 时自动把远程 URL 规范化（补 .git，写回 git config）重试一次；仍失败则还原 URL 报原错误。
+// op 闭包内 git.fetch/push 按 remote 名从 config 重新解析 URL，addRemote(force) 更新后重试即生效。
+async function withRemoteUrlFix(root, pr, op) {
+  try {
+    return await op();
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    const fixable = /404/.test(msg) && pr && pr.url && /^https?:/i.test(pr.url) && !/\.git\/?$/.test(pr.url);
+    if (!fixable) throw e;
+    const fixedUrl = pr.url.replace(/\/+$/, '') + '.git';
+    await git.addRemote({ fs, dir: root, remote: pr.name, url: fixedUrl, force: true });
+    try {
+      const r = await op();
+      return Object.assign({}, r, { urlFixed: true, fixedUrl });
+    } catch (e2) {
+      await git.addRemote({ fs, dir: root, remote: pr.name, url: pr.url, force: true }); // 还原，避免误改无关 404
+      throw e2;
+    }
+  }
+}
+
+// 远程跟踪分支（refs/remotes/<remote>/…）：松散 refs 目录 + packed-refs 两处合并，无网络
+// 返回 [{ name, head, oid }] —— head=true 表示远程默认分支（refs/remotes/<remote>/HEAD 指向）
+function remoteBranchesSync(root, remoteName) {
+  const branches = new Map(); // name -> oid
+  const base = path.join(root, '.git', 'refs', 'remotes', remoteName);
+  try {
+    if (fs.existsSync(base)) {
+      const walk = (dir, prefix) => {
+        for (const n of fs.readdirSync(dir)) {
+          const p = path.join(dir, n);
+          let st; try { st = fs.statSync(p); } catch { continue; }
+          if (st.isDirectory()) walk(p, prefix + n + '/');
+          else if (n !== 'HEAD') branches.set(prefix + n, fs.readFileSync(p, 'utf8').trim());
+        }
+      };
+      walk(base, '');
+    }
+  } catch {}
+  try {
+    const packed = path.join(root, '.git', 'packed-refs');
+    if (fs.existsSync(packed)) {
+      for (const line of fs.readFileSync(packed, 'utf8').split('\n')) {
+        const m = line.match(/^([0-9a-f]{40}) refs\/remotes\/([^/\s]+)\/(.+)$/);
+        if (m && m[2] === remoteName && m[3] !== 'HEAD' && !branches.has(m[3])) branches.set(m[3], m[1]);
+      }
+    }
+  } catch {}
+  // 远程默认分支：refs/remotes/<remote>/HEAD 内容形如 "ref: refs/remotes/<remote>/main"
+  let headName = null;
+  try {
+    const hf = path.join(base, 'HEAD');
+    if (fs.existsSync(hf)) {
+      const v = fs.readFileSync(hf, 'utf8').trim();
+      const m = v.match(/^ref:\s*refs\/remotes\/[^/]+\/(.+)$/);
+      if (m) headName = m[1];
+    }
+  } catch {}
+  return [...branches.entries()]
+    .sort((a, b) => (headName === b[0]) - (headName === a[0]) || a[0].localeCompare(b[0]))
+    .map(([name, oid]) => ({ name, head: name === headName, oid: String(oid).slice(0, 7) }));
 }
 
 async function listRemotes(dir) {
@@ -793,7 +1119,7 @@ async function listRemotes(dir) {
   if (!yes) return { isRepo: false, error: '不是 Git 仓库', remotes: [] };
   try {
     const list = await git.listRemotes({ fs, dir: root });
-    return { isRepo: true, remotes: list.map((r) => ({ name: r.remote, url: r.url })) };
+    return { isRepo: true, remotes: list.map((r) => ({ name: r.remote, url: r.url, branches: remoteBranchesSync(root, r.remote) })) };
   } catch (e) {
     return { isRepo: true, error: String(e.message || e), remotes: [] };
   }
@@ -827,28 +1153,25 @@ async function removeRemote(dir, name) {
 async function fetchRemote(dir, { auth } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
-  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
-  // SSH 远程 isomorphic-git 不支持，必须走系统 git
-  if (systemGitAvailable() && isSshUrl(originUrl)) {
-    const r = await runGit(root, ['fetch', 'origin', '--prune']);
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
+  if (canUseSystemGit(pr.url)) {
+    const r = await runGit(root, ['fetch', pr.name, '--prune']);
     if (r.ok) return { ok: true, fetchHead: true };
-    return { ok: false, error: r.stderr.split('\n').filter(Boolean).pop() || 'fetch 失败' };
-  }
-  // HTTPS：优先系统 git（复用系统凭证助手/凭据管理器，与命令行行为一致），失败回退应用内凭证
-  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
-    const r = await runGit(root, ['fetch', 'origin', '--prune']);
-    if (r.ok) return { ok: true, fetchHead: true };
+    if (isSshUrl(pr.url)) return { ok: false, error: lastLine(r) || 'fetch 失败' };
   }
   try {
-    const r = await git.fetch({
-      fs, dir: root, http, remote: 'origin',
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
+      const r = await git.fetch({
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name,
+        onAuth, onAuthFailure: onAuth, // 共用迭代器：401 后自动换下一个候选凭证
+      });
+      return { ok: true, fetchHead: r && r.fetchHead };
     });
-    return { ok: true, fetchHead: r && r.fetchHead };
   } catch (e) {
-    return { ok: false, error: String(e.message || e) };
+    return { ok: false, error: friendlyNetError(e, pr) };
   }
 }
 
@@ -858,37 +1181,31 @@ async function pullRemote(dir, { auth } = {}) {
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
-  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
-  // SSH 远程 isomorphic-git 不支持，必须走系统 git
-  if (systemGitAvailable() && isSshUrl(originUrl)) {
-    const r = await runGit(root, ['pull', '--ff-only', 'origin', branch]);
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
+  if (canUseSystemGit(pr.url)) {
+    const r = await runGit(root, ['pull', '--ff-only', pr.name, branch]);
     if (r.ok) return { ok: true };
-    const msg = r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || 'pull 失败';
+    const msg = lastLine(r) || 'pull 失败';
     if (/fast-forward|non-fast-forward|refusing to merge/i.test(msg)) {
       return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
     }
-    return { ok: false, error: msg };
-  }
-  // HTTPS：优先系统 git（复用系统凭证助手），失败回退应用内凭证
-  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
-    const r = await runGit(root, ['pull', '--ff-only', 'origin', branch]);
-    if (r.ok) return { ok: true };
-    const msg = r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || '';
-    if (/fast-forward|non-fast-forward|refusing to merge/i.test(msg)) {
-      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
-    }
+    if (isSshUrl(pr.url)) return { ok: false, error: msg };
   }
   try {
-    const r = await git.pull({
-      fs, dir: root, http, remote: 'origin', ref: branch, fastForwardOnly: true,
-      author: await getAuthor(root),
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
+      const r = await git.pull({
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
+        author: await getAuthor(root),
+        onAuth, onAuthFailure: onAuth,
+      });
+      return { ok: true, oid: r && r.oid };
     });
-    return { ok: true, oid: r && r.oid };
   } catch (e) {
     const msg = String(e.message || e);
+    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
     if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
       return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
     }
@@ -896,67 +1213,107 @@ async function pullRemote(dir, { auth } = {}) {
   }
 }
 
-// push：当前分支 → origin 同名分支
-async function pushRemote(dir, { auth } = {}) {
+// push：当前分支 → 主远程同名分支
+async function pushRemote(dir, { auth, remote, force } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
-  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
-  if (!remotes.length) return { ok: false, error: '未配置远程仓库（origin）' };
-  const originUrl = (remotes.find((r) => r.remote === 'origin') || remotes[0]).url;
-  // SSH 远程 isomorphic-git 不支持，必须走系统 git
-  if (systemGitAvailable() && isSshUrl(originUrl)) {
-    const r = await runGit(root, ['push', 'origin', branch]);
-    if (r.ok) return { ok: true };
-    const msg = r.stderr.split('\n').filter(Boolean).pop() || 'push 失败';
-    if (/fetch first|behind|non-fast-forward/i.test(msg)) {
-      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
-    }
-    return { ok: false, error: msg };
+  let pr = null;
+  if (remote) {
+    const list = await git.listRemotes({ fs, dir: root }).catch(() => []);
+    const hit = list.find((r) => r.remote === remote);
+    if (hit) pr = { name: hit.remote, url: hit.url };
   }
-  // HTTPS：优先系统 git（复用系统凭证助手），失败回退应用内凭证
-  if (systemGitAvailable() && /^https?:/i.test(originUrl)) {
-    const r = await runGit(root, ['push', 'origin', branch]);
-    if (r.ok) return { ok: true };
-    const msg = r.stderr.split('\n').filter(Boolean).pop() || '';
+  if (!pr) pr = await primaryRemote(root); // 未指定 / 指定的远程不存在 → 回退主远程
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
+  if (canUseSystemGit(pr.url)) {
+    const args = ['push'];
+    if (force) args.push('--force');
+    args.push(pr.name, branch);
+    const r = await runGit(root, args);
+    if (r.ok) return { ok: true, remote: pr.name, branch, force: !!force };
+    const msg = lastLine(r) || 'push 失败';
     if (/fetch first|behind|non-fast-forward/i.test(msg)) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
     }
+    if (isSshUrl(pr.url)) return { ok: false, error: msg };
   }
   try {
-    await git.push({
-      fs, dir: root, http, remote: 'origin', ref: branch,
-      onAuth: onAuthOf(auth), onAuthFailure: () => { throw new Error('认证失败：用户名/密码/令牌不正确'); },
+    return await withRemoteUrlFix(root, pr, async () => {
+      const onAuth = onAuthOf(auth, pr.url);
+      await git.push({
+        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
+        force: !!force, onAuth, onAuthFailure: onAuth,
+      });
+      return { ok: true, remote: pr.name, branch, force: !!force };
     });
-    return { ok: true };
   } catch (e) {
     const msg = String(e.message || e);
+    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
     if (msg.includes('fetch first') || msg.includes('behind')) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    }
+    if (msg.includes('pre-receive hook declined')) {
+      return { ok: false, error: '服务端拒绝推送 ' + branch + '：多为受保护分支（需权限或走合并请求），也可能是提交信息不符合服务端钩子要求' };
     }
     return { ok: false, error: msg };
   }
 }
 
-// ahead/behind：本地分支 vs refs/remotes/origin/<branch>（纯本地 refs 计算，无网络）
-async function aheadBehind(dir) {
+// 主远程：优先 origin，否则第一个远程（避免远程名非 origin 时全链路失效）
+// config 无远程时回退扫描 refs/remotes/*（手工跟踪 ref 也能算 ahead/behind；url 置 null）
+async function primaryRemote(root) {
+  const remotes = await git.listRemotes({ fs, dir: root }).catch(() => []);
+  if (remotes.length) {
+    const origin = remotes.find((r) => r.remote === 'origin');
+    const r = origin || remotes[0];
+    return { name: r.remote, url: r.url };
+  }
+  try {
+    const dir = path.join(root, '.git', 'refs', 'remotes');
+    if (!fs.existsSync(dir)) return null;
+    const names = fs.readdirSync(dir).filter((n) => {
+      try {
+        return fs.statSync(path.join(dir, n)).isDirectory() && fs.readdirSync(path.join(dir, n)).length > 0;
+      } catch { return false; }
+    }).sort();
+    if (!names.length) return null;
+    const name = names.includes('origin') ? 'origin' : names[0];
+    return { name, url: null };
+  } catch { return null; }
+}
+
+// ahead/behind：本地分支 vs 远程跟踪分支
+// opts.fetch=true 时先静默 fetch（更新 refs/remotes 后再算，反映远程真实状态；失败回退本地 refs）
+async function aheadBehind(dir, opts = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return {};
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { branch };
+  const pr = await primaryRemote(root);
+  if (!pr) return { branch, remote: null, remoteUrl: null, ahead: null, behind: null };
+  let fetched = false;
+  if (opts.fetch && pr.url) { // 无 url（纯本地 ref 回退场景）不联网
+    try {
+      // 公开仓库不触发 401 不会调 onAuth；私有仓库按候选迭代取凭证（host 匹配 > URL 内嵌 > 系统凭证 > '*' 兜底）
+      const onAuth = onAuthOf(opts.auth, pr.url);
+      await git.fetch({ fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, onAuth, onAuthFailure: onAuth });
+      fetched = true;
+    } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）
+  }
   let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
-  if (!upstream || !head) return { branch, ahead: null, behind: null };
   return {
-    branch,
-    ahead: await countNotReached(root, head, upstream),
-    behind: await countNotReached(root, upstream, head),
+    branch, remote: pr.name, remoteUrl: pr.url, fetched,
+    ahead: !upstream || !head ? null : await countNotReached(root, head, upstream),
+    behind: !upstream || !head ? null : await countNotReached(root, upstream, head),
   };
 }
 
-// Push 预览：列出本地领先 origin 的待推送提交（HEAD → refs/remotes/origin/<branch>，纯本地 refs，无网络）
+// Push 预览：列出本地领先远程跟踪分支的待推送提交（HEAD → refs/remotes/<remote>/<branch>，纯本地 refs，无网络）
 async function listPushCommits(dir) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
@@ -964,8 +1321,10 @@ async function listPushCommits(dir) {
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
   if (!head) return { ok: false, error: '当前无可推送的提交' };
+  const pr = await primaryRemote(root);
+  if (!pr) return { ok: false, error: '未配置远程仓库' };
   let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/origin/' + branch }); } catch {}
+  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
   // 无上游：全部分支历史都是待推送（首次 push 场景），上限保护 500
   const stop = upstream || '0000000000000000000000000000000000000000';
   const seen = new Set([stop]);
@@ -989,7 +1348,7 @@ async function listPushCommits(dir) {
   if (!upstream && !commits.length) return { ok: false, error: '当前无可推送的提交' };
   // 时间正序展示（旧→新，推送顺序）
   commits.reverse();
-  return { ok: true, branch, first: !upstream, count: commits.length, commits };
+  return { ok: true, branch, remote: pr.name, remoteUrl: pr.url, first: !upstream, count: commits.length, commits };
 }
 
 // 从 from 出发沿父链 BFS、不越过 stop，统计未到达 stop 的提交数（上限保护）
@@ -1384,4 +1743,5 @@ module.exports = {
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,
+  addToGitignore, removeFromGitignore, listIgnored,
 };

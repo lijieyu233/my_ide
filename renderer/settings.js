@@ -494,6 +494,7 @@ const Settings = (() => {
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
           <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
         </select>
+        <div id="ai-cfg-perms"></div>
         <div style="margin-top:14px;display:flex;gap:8px">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
@@ -527,6 +528,35 @@ const Settings = (() => {
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };
+    // 已记住的授权：看得见、清得掉（否则"怎么不问了"会变成新的困惑）
+    const renderPerms = () => {
+      const box = document.getElementById('ai-cfg-perms');
+      if (!box || !AiPanel.loadPerms) return;
+      const p = AiPanel.loadPerms() || {};
+      const items = [];
+      if (p.write) items.push({ k: 'write', t: '改文件不再询问（本项目）' });
+      if (p.run) items.push({ k: 'run', t: '执行任何命令都不再询问（本项目）' });
+      for (const c of (p.cmds || [])) items.push({ k: 'cmd:' + c, t: '以「' + c + '」开头的命令不再询问' });
+      box.innerHTML = '<label class="m-label" style="margin-top:12px">已记住的授权（本项目）</label>' +
+        (items.length
+          ? items.map((it) => '<div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;color:var(--text)">' +
+              '<span style="flex:1">' + esc(it.t) + '</span>' +
+              '<button class="tb-btn" data-perm="' + esc(it.k) + '">清除</button></div>').join('')
+          : '<div style="font-size:12px;color:var(--text-dim)">还没有记住任何授权 —— 在确认弹窗里选「本项目内都允许」或「总是允许」后会出现在这里</div>');
+      box.querySelectorAll('[data-perm]').forEach((b) => {
+        b.onclick = () => {
+          const k = b.dataset.perm;
+          const np = AiPanel.loadPerms() || {};
+          if (k === 'write') delete np.write;
+          else if (k === 'run') delete np.run;
+          else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
+          AiPanel.savePerms(np);
+          MI.toast('已清除该授权（下次会重新询问）', 'ok');
+          renderPerms();
+        };
+      });
+    };
+    renderPerms();
     document.getElementById('ai-cfg-test').onclick = async () => {
       const c = { baseUrl: urlInput.value.trim(), apiKey: document.getElementById('ai-cfg-key').value.trim(), model: modelInput.value.trim() };
       if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }
