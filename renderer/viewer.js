@@ -88,6 +88,8 @@ const Viewer = (() => {
     active = i;
     renderTabs();
     renderView();
+    // 通知 AI 面板「当前在看哪个文件」：面板据此自动把这份文档带进上下文
+    try { if (window.AiPanel && AiPanel.followActive) AiPanel.followActive(); } catch {}
     // 会话恢复的浏览位置：编辑器渲染完成后跳到上次光标行
     const t = tabs[i];
     if (t && t.lazy) {

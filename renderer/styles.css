@@ -1880,6 +1880,46 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-chip svg.ic { width: 16px; height: 16px; }
 .ai-chip:hover { color: var(--text); border-color: var(--accent); }
 .ai-chip.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* 「正在看」条：面板始终跟着当前编辑器文件（用户说「这份文档」时它知道指哪份） */
+.ai-follow {
+  display: flex; align-items: center; gap: 5px; flex: 1 1 100%;
+  font-size: .85em; color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 6px; padding: 3px 8px; margin-bottom: 2px;
+}
+.ai-follow.hidden { display: none; }
+.ai-follow svg.ic { width: 13px; height: 13px; color: var(--accent); }
+.ai-follow .ai-follow-tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-follow .ai-follow-nm { color: var(--text-bright); font-weight: 600; }
+.ai-follow-x {
+  flex: none; background: transparent; border: none; cursor: pointer;
+  color: var(--text-dim); padding: 0 2px; font-size: .9em; line-height: 1;
+}
+.ai-follow-x:hover { color: var(--text-bright); }
+
+/* 改动卡片：AI 改完把「改了什么」摆在消息流里（可展开看红绿、可单独撤销） */
+.ai-edit {
+  margin: 6px 0; border: 1px solid var(--border-mid); border-radius: 8px;
+  overflow: hidden; background: var(--bg-input);
+}
+.ai-edit-head { display: flex; align-items: center; gap: 7px; padding: 6px 9px; font-size: .92em; }
+.ai-edit-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); }
+.ai-edit-stat { flex: none; display: flex; gap: 6px; font-style: normal; }
+.ai-edit-stat i { font-style: normal; font-weight: 600; }
+.ai-edit-stat .e-add { color: var(--ok, #98c379); }
+.ai-edit-stat .e-del { color: var(--danger, #e06c75); }
+.ai-edit-btn {
+  flex: none; cursor: pointer; color: var(--text-dim);
+  background: transparent; border: 1px solid var(--border-mid); border-radius: 4px;
+  padding: 1px 7px; font-size: .85em;
+}
+.ai-edit-btn:hover { color: var(--text-bright); border-color: var(--accent); }
+.ai-edit-btn:disabled { opacity: .5; cursor: default; }
+.ai-edit-body { max-height: 300px; overflow: auto; border-top: 1px solid var(--border); padding: 6px 0; }
+.ai-edit-body.hidden { display: none; }
+.ai-edit.undone { opacity: .55; }
+
 /* ---------- 附带上下文 chips（📎 / @ 引用统一展示）---------- */
 .ai-input-bar { position: relative; flex-wrap: wrap; } /* @ 补全弹窗的定位锚 */
 #ai-chips {

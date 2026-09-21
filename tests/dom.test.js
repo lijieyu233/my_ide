@@ -6169,6 +6169,83 @@ assert_(panel, 'CM6 搜索面板出现');
     }
   });
 
+  await okAsync('AI 面板：自动知道「你在看哪份文件」（不用每次手动附）', async () => {
+    FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' + '本周完成联调。' + '\n' };
+    FAKE_FS[P + '/other.md'] = { content: '# 别的' + '\n' };
+    const boxOf = () => $(dom, '#ai-follow');
+    const following = () => boxOf() && !boxOf().classList.contains('hidden');
+
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(following(), '打开文件后，面板自己显示「正在看」');
+    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + boxOf().textContent);
+
+    // 用户说「这份不要跟随」
+    click(boxOf().querySelector('.ai-follow-x'));
+    await tick();
+    assert_(!following(), '点「不再跟随」后收起');
+
+    // 切到别的文件：新文件照常跟随（否定的只是 note.md）
+    await g(dom, 'Viewer.openFile("' + P + '/other.md")');
+    await tick(); await tick();
+    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + boxOf().textContent);
+
+    // 切回来：用户说过不跟随，就别再自动跟上
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(!following(), '取消过跟随的文件，切回来也不再自动加: ' + boxOf().textContent);
+
+    // 新开对话不该把「我在看这份文档」也清掉（人的直觉）
+    await g(dom, 'Viewer.openFile("' + P + '/other.md")');
+    await tick(); await tick();
+    click($(dom, '#ai-new'));
+    await tick(); await tick();
+    assert_(following() && boxOf().textContent.includes('other.md'), '点「新对话」后仍保持跟随当前文件');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：改完把改动摆在眼前（可展开、可单独撤销）', async () => {
+    click($(dom, '#ai-new')); // 前面的用例也会留卡片，先清空消息流
+    await tick(); await tick();
+    FAKE_FS[P + '/doc.md'] = { content: '# 纪要' + '\n' + '\n' + '本周完成联调，剩余两个问题。' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/doc.md")');
+    await tick(); await tick();
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: 'doc.md', content: '# 纪要' + '\n' + '\n' + '- 完成联调' + '\n' + '- 剩余 2 个问题' + '\n' } }] },
+      { ok: true, text: '整理好了。' },
+    ];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    $(dom, '#ai-input').value = '把这份文档改成要点';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+
+    assert_($(dom, '#dw-yes'), '改之前先给 diff 确认（不直接动文件）');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+
+    const card = $allIn($(dom, '#ai-msgs'), '.ai-edit').pop();
+    assert_(card, '改完在消息流里出现「改动卡片」');
+    if (card) {
+      assert_(card.textContent.includes('doc.md'), '卡片写明改了哪个文件: ' + card.textContent.slice(0, 30));
+      assert_(/\+\d/.test(card.textContent) && /-\d/.test(card.textContent), '卡片显示加减行数: ' + card.textContent.replace(/\s+/g, ' ').slice(0, 40));
+
+      click(card.querySelector('.e-toggle'));
+      await tick();
+      const body = card.querySelector('.ai-edit-body');
+      assert_(!body.classList.contains('hidden'), '点「看改动」能展开');
+      assert_($allIn(body, '.d-add').length > 0 && $allIn(body, '.d-del').length > 0,
+        '展开后有红绿对比行 add=' + $allIn(body, '.d-add').length + ' del=' + $allIn(body, '.d-del').length);
+
+      click(card.querySelector('.e-undo'));
+      for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+      assert_(FAKE_FS[P + '/doc.md'].content.includes('本周完成联调'), '点撤销后文件回到原样');
+      assert_(card.classList.contains('undone'), '卡片标记为已撤销');
+    }
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

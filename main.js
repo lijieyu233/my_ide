@@ -1091,11 +1091,39 @@ app.whenReady().then(() => {
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
-          lines.push('UI CHECK 超时中止（>150s），已产出断言见上');
+          let stage = '';
+          try { stage = fs.readFileSync(path.join(__dirname, '.ui-check-stage.txt'), 'utf8').trim(); } catch {}
+          let boot = '';
+          try { boot = fs.readFileSync(path.join(__dirname, '.ui-check-boot.txt'), 'utf8').trim(); } catch {}
+          lines.push('UI CHECK 超时中止（>240s）｜最后阶段: ' + (stage || '(未进入步骤)') + '｜启动点: ' + (boot || '(无)'));
           fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
         } catch {}
         app.exit(3);
-      }, 150000);
+      }, 240000);
+      // 自检用的「模型」桩：把 ai:chat 这个 IPC 换成脚本化应答。
+      // 为什么不用本地 HTTP 服务：Electron 主进程里 http.createServer().listen() 在自检跑法下不回调（实测卡死）。
+      // 桩只替换「模型」这一段，页面侧（面板 → 工具调用 → 写文件 → 改动卡片 → 撤销）全部走真实代码。
+      const bootLog = (m) => { try { fs.writeFileSync(path.join(__dirname, '.ui-check-boot.txt'), m + '\n'); } catch {} };
+      bootLog('1 进入自检，准备给 ai:chat 打桩');
+      let stubRound = 0;
+      ipcMain.removeHandler('ai:chat');
+      ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
+        const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
+        stubRound++;
+        let r;
+        if (stubRound === 1) {
+          // 第一轮：模型决定动手改文件（原生 function calling）
+          r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
+        } else {
+          const t = '改好了：给「二级 B」加了备注。';
+          for (const ch of t) send('ai:chunk', ch); // 逐字符流式，跟真实请求一样的观感
+          r = { ok: true, text: t, toolCalls: [] };
+        }
+        send('ai:done', r);
+        return r;
+      });
+      bootLog('2 ai:chat 已打桩');
+
       // 自证：headless 模式下窗口确实没有显示（不弹窗 / 不进任务栏 / 不抢焦点）
       lines.push('窗口模式: ' + (UI_CHECK_HEADLESS ? 'headless（不显示窗口）' : 'visible') + ' | isVisible=' + win.isVisible());
       const js = (fn, arg) => '(' + String(fn) + ')(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')';
@@ -1227,6 +1255,8 @@ app.whenReady().then(() => {
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
+        await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
+        await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
@@ -1253,6 +1283,7 @@ app.whenReady().then(() => {
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
       } catch {}
       clearTimeout(watchdog);
+      try { fs.unlinkSync(path.join(__dirname, '.ui-check-boot.txt')); } catch {}
       try { fx.cleanFixtures(demo); } catch {}
       const skipN = lines.filter((l) => l.indexOf('SKIP') === 0).length;
       lines.push('UI CHECK: ' + (lines.filter((l) => l.indexOf('PASS') === 0).length) + ' 通过 / ' + fail + ' 失败'

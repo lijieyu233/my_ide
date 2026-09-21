@@ -41,7 +41,9 @@ const AiPanel = (() => {
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
   let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
   let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
-  let checkpoints = [];      // AI 写入检查点栈（回滚用）：[{path, oldText}]
+  let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
+  let followPath = null;     // 正在跟随的编辑器文件（自动作为上下文，用户不用手动点 📎）
+  const followMuted = new Set(); // 用户明确说过「不跟随」的文件（切走再切回也不再自动加）
 
   // ---------- token 用量显示 ----------
   // 粗估当前上下文（无 usage 时的近似值：英文 ~4 字符/token、中文更密，取 3.2 折中）
@@ -257,25 +259,22 @@ const AiPanel = (() => {
     }
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
-    // 检查点：写入前的旧内容入栈（新文件记 existed:false，回滚时删除）
-    checkpoints.push({ path: full, rel: loc.rel, oldText, existed });
+    // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
+    const cp = { path: full, rel: loc.rel, oldText, existed, done: false, card: null };
+    checkpoints.push(cp);
+    cp.card = addEditCard(cp, content);
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
     return { ok: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
   }
 
   // 撤销最近一次 AI 写入（栈式，可连续点）
   async function undoCheckpoint() {
-    if (!checkpoints.length) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
-    const cp = checkpoints.pop();
-    if (cp.existed) {
-      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
-      if (!w || w.error) { MI.toast('回滚失败：' + ((w && w.error) || ''), 'err'); return; }
-    } else {
-      const d = await window.myIDE.fs.remove(cp.path);
-      if (!d || d.error) { MI.toast('删除失败：' + ((d && d.error) || ''), 'err'); return; }
+    let cp = null;
+    for (let i = checkpoints.length - 1; i >= 0; i--) {
+      if (!checkpoints[i].done) { cp = checkpoints[i]; break; }
     }
-    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
-    MI.toast('已回滚 ' + cp.rel + (checkpoints.length ? '（还可撤销 ' + checkpoints.length + ' 步）' : ''), 'ok');
+    if (!cp) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
+    await undoEditCp(cp);
   }
 
   // 统一 diff（前缀/后缀裁剪 + 中段 LCS，超限退化整块替换）
@@ -314,23 +313,7 @@ const AiPanel = (() => {
     return new Promise((resolve) => {
       const rows = lineDiff(oldText, newText);
       const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
-      // 上下文压缩：长未改动段折叠为 ⋯ N 行未改动 ⋯
-      const parts = [];
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i].t !== ' ') { parts.push({ cls: rows[i].t === '+' ? 'd-add' : 'd-del', text: (rows[i].t === '+' ? '+' : '-') + ' ' + rows[i].s }); continue; }
-        let j = i;
-        while (j < rows.length && rows[j].t === ' ') j++;
-        const run = j - i;
-        if (run > 8 && i > 0 && j < rows.length) {
-          parts.push({ cls: 'd-skip', text: '⋯ ' + (run - 6) + ' 行未改动 ⋯' });
-          for (let k = j - 3; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
-        } else {
-          for (let k = i; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
-        }
-        i = j - 1;
-      }
-      let html = '';
-      for (const p of parts) html += '<div class="' + p.cls + '">' + esc(p.text) + '</div>';
+      const html = diffRowsHtml(rows);
       const box = document.createElement('div');
       box.style.cssText = 'display:flex;flex-direction:column;min-width:520px;max-width:760px;height:70vh';
       box.innerHTML = `
@@ -564,6 +547,7 @@ const AiPanel = (() => {
   }
 
   async function send() {
+    await followActive(); // 发送前对齐一次：用户可能刚切了文件就说话
     if (busy) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
@@ -612,6 +596,15 @@ const AiPanel = (() => {
     if (!curStream) return;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     const md = curStream.querySelector('.ai-md');
+    // 空气泡不留：模型这一轮只调工具、没说话时，聊天里挂个空白框只会让人莫名其妙
+    const hasCalls = !!(r && Array.isArray(r.toolCalls) && r.toolCalls.length);
+    if (!isErr && !String(text || '').trim()) {
+      if (hasCalls) {
+        try { curStream.remove(); } catch {}
+      } else {
+        md.innerHTML = '<p class="ai-err">（模型这轮没有返回内容）</p>';
+      }
+    }
     if (isErr) {
       md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
     } else if (text) {
@@ -653,13 +646,133 @@ const AiPanel = (() => {
     }
   }
 
+  // ---------- 跟随当前编辑器文件 ----------
+  // 为什么需要：用户在面板里说「把这份文档精简一下」，AI 并不知道「这份」是哪份 ——
+  // 以前要先手动点 📎 或 @ 引用，忘了附就答非所问。现在面板始终跟着当前打开的文件走。
+  function renderFollow() {
+    const box = document.getElementById('ai-follow');
+    if (!box) return;
+    const f = ctxFiles.find((x) => x.auto);
+    box.classList.toggle('hidden', !f);
+    if (!f) return;
+    const nm = box.querySelector('.ai-follow-nm');
+    if (nm) nm.textContent = f.path.replace(/^.*[\\/]/, '');
+    box.title = f.path;
+  }
+  async function followActive() {
+    const tab = window.Viewer && Viewer.activeTab;
+    const path = (tab && !tab.dir) ? tab.path : null;
+    if (path === followPath) { renderFollow(); return; }
+    followPath = path;
+    ctxFiles = ctxFiles.filter((x) => !x.auto);
+    if (path && !followMuted.has(path)) {
+      const r = await window.myIDE.fs.readFile(path);
+      if (r && !r.error) {
+        let content = r.content || '';
+        if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
+        ctxFiles = ctxFiles.filter((x) => !x.auto);
+        ctxFiles.push({ path, content, isDir: false, auto: true });
+      }
+    }
+    renderChips();
+    renderFollow();
+  }
+  // 用户点「不再跟随」：记住这次选择，切到别的文件才会重新跟随
+  function unfollowActive() {
+    const f = ctxFiles.find((x) => x.auto);
+    if (!f) return;
+    followMuted.add(f.path);
+    ctxFiles = ctxFiles.filter((x) => !x.auto);
+    renderChips();
+    renderFollow();
+    MI.toast('已取消跟随当前文件（切到别的文件会重新跟随）', 'ok');
+  }
+
+  // ---------- 改动卡片 ----------
+  // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
+  function diffRowsHtml(rows) {
+    const parts = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].t !== ' ') {
+        parts.push({ cls: rows[i].t === '+' ? 'd-add' : 'd-del', text: (rows[i].t === '+' ? '+' : '-') + ' ' + rows[i].s });
+        continue;
+      }
+      let j = i;
+      while (j < rows.length && rows[j].t === ' ') j++;
+      const run = j - i;
+      if (run > 8 && i > 0 && j < rows.length) {
+        parts.push({ cls: 'd-skip', text: '⋯ ' + (run - 6) + ' 行未改动 ⋯' });
+        for (let k = j - 3; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+      } else {
+        for (let k = i; k < j; k++) parts.push({ cls: 'd-ctx', text: '  ' + rows[k].s });
+      }
+      i = j - 1;
+    }
+    let html = '';
+    for (const p of parts) html += '<div class="' + p.cls + '">' + esc(p.text) + '</div>';
+    return html;
+  }
+  // AI 改完一个文件 → 在消息流里留一张卡片：改了哪个文件、加减几行、能展开、能单独撤销。
+  // 以前只留一行「🔧 replace_edit 周报.md」，用户想知道改了啥得自己翻文件。
+  function addEditCard(cp, newText) {
+    const rows = lineDiff(cp.oldText, newText);
+    const addN = rows.filter((x) => x.t === '+').length;
+    const delN = rows.filter((x) => x.t === '-').length;
+    const card = document.createElement('div');
+    card.className = 'ai-edit';
+    card.innerHTML =
+      '<div class="ai-edit-head">' +
+        '<span class="ai-edit-nm" title="' + esc(cp.rel) + '">' + esc(cp.rel) + '</span>' +
+        '<span class="ai-edit-stat"><i class="e-add">+' + addN + '</i><i class="e-del">-' + delN + '</i></span>' +
+        '<button class="ai-edit-btn e-toggle">看改动</button>' +
+        '<button class="ai-edit-btn e-undo" title="把这处改回原样">撤销</button>' +
+      '</div>' +
+      '<div class="ai-edit-body dw-diff hidden"></div>';
+    const body = card.querySelector('.ai-edit-body');
+    const tg = card.querySelector('.e-toggle');
+    tg.onclick = () => {
+      const show = body.classList.contains('hidden');
+      if (show && !body.dataset.filled) {
+        body.innerHTML = diffRowsHtml(rows); // 懒渲染：展开才铺 DOM
+        body.dataset.filled = '1';
+      }
+      body.classList.toggle('hidden', !show);
+      tg.textContent = show ? '收起' : '看改动';
+    };
+    card.querySelector('.e-undo').onclick = () => undoEditCp(cp);
+    msgsEl.appendChild(card);
+    scrollBottom();
+    return card;
+  }
+  // 按处撤销：把这处改回写入前的样子（其余改动不受影响）
+  async function undoEditCp(cp) {
+    if (!cp) { MI.toast('找不到这处改动记录', 'err'); return; }
+    if (cp.done) { MI.toast('这处已经撤销过了', 'ok'); return; }
+    if (cp.existed) {
+      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
+      if (!w || w.error) { MI.toast('撤销失败：' + ((w && w.error) || ''), 'err'); return; }
+    } else {
+      const d = await window.myIDE.fs.remove(cp.path);
+      if (!d || d.error) { MI.toast('撤销失败：' + ((d && d.error) || ''), 'err'); return; }
+    }
+    cp.done = true;
+    if (cp.card) {
+      cp.card.classList.add('undone');
+      const u = cp.card.querySelector('.e-undo');
+      if (u) { u.textContent = '已撤销'; u.disabled = true; }
+    }
+    MI.toast('已把 ' + cp.rel + ' 改回原样', 'ok');
+    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
+  }
+
   // ---------- 附带上下文（📎 当前文件 + @ 引用文件/文件夹，统一 chips 展示）----------
   function renderChips() {
     const box = document.getElementById('ai-chips');
     if (!box) return;
     box.innerHTML = '';
-    box.classList.toggle('hidden', !ctxFiles.length);
-    for (const f of ctxFiles) {
+    const manual = ctxFiles.filter((x) => !x.auto); // 自动跟随的由「正在看」条显示
+    box.classList.toggle('hidden', !manual.length);
+    for (const f of manual) {
       const chip = document.createElement('span');
       chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '');
       chip.title = f.path + '（点击移除）';
@@ -675,10 +788,14 @@ const AiPanel = (() => {
     }
   }
   function removeCtx(path) {
+    const wasAuto = ctxFiles.some((f) => f.auto && f.path === path);
     ctxFiles = ctxFiles.filter((f) => f.path !== path);
+    if (wasAuto) followMuted.add(path); // 用户主动去掉的，别自动加回来
     renderChips();
+    renderFollow();
   }
   function addCtx(entry) {
+    followMuted.delete(entry.path); // 用户手动加回来的，撤销之前「不跟随」的决定
     if (ctxFiles.some((f) => f.path === entry.path)) { MI.toast('已在上下文中：' + entry.path, 'ok'); return; }
     ctxFiles.push(entry);
     renderChips();
@@ -891,7 +1008,14 @@ const AiPanel = (() => {
         send();
       };
     }
+    const followBox = document.getElementById('ai-follow');
+    if (followBox) {
+      const fx = followBox.querySelector('.ai-follow-x');
+      if (fx) fx.onclick = unfollowActive;
+    }
     if (inputEl) {
+      // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
+      inputEl.addEventListener('focus', () => { followActive(); });
       inputEl.addEventListener('input', onInputMention);
       inputEl.addEventListener('keydown', (e) => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
@@ -908,8 +1032,10 @@ const AiPanel = (() => {
       msgs = [];
       usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
       renderUsage();
-      ctxFiles = [];
+      // 新对话保留「当前正在看的文件」（否则每开一次新对话都得重新附一次）
+      ctxFiles = ctxFiles.filter((f) => f.auto);
       renderChips();
+      renderFollow();
       msgsEl.innerHTML = '';
       showWelcome();
       MI.toast('已开始新对话', 'ok');
@@ -951,6 +1077,6 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive };
 })();
 window.AiPanel = AiPanel;

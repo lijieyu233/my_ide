@@ -776,10 +776,13 @@ module.exports = {
       await sleep(1000);
       add('点「整理当前文档」→ 指令填入输入框', /整理/.test(q('#ai-input').value),
         JSON.stringify(String(q('#ai-input').value).slice(0, 26)));
+      // 当前文件可以有两种形态：自动跟随（显示在上方「正在看」条）或手动附加（chips）
       const chips = qa('.ai-ctx-chip');
-      add('整理类指令自动附上当前文件（省得模型猜）',
-        chips.length === 1 && /_ui_outline/.test(chips[0].textContent),
-        chips.map((c) => c.textContent).join(' | ') || '(无)');
+      const fbNow = q('#ai-follow');
+      const viaFollow = !!fbNow && !fbNow.classList.contains('hidden') && /_ui_outline/.test(fbNow.textContent);
+      const viaChip = chips.length === 1 && /_ui_outline/.test(chips[0].textContent);
+      add('整理类指令一定带上了当前文件（跟随或手动附都算）', viaFollow || viaChip,
+        '跟随条=' + (viaFollow ? '有' : '无') + ' / chips=' + (chips.map((c) => c.textContent).join(' | ') || '(无)'));
     }
     const hoverRect = q('.ai-quick .ai-quick-btn');
     return {
@@ -789,5 +792,98 @@ module.exports = {
         y: Math.round(hoverRect.getBoundingClientRect().top + 12),
       } : undefined,
     };
+  },
+
+  // ---------- AI 面板：人对它说一句话 → 它改文档 → 人看改动 → 不满意撤销 ----------
+  aiPanelFlow: async (arg) => {
+    const dir = arg; // 模型已由主进程打桩，这里只需项目目录
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 20000)) { const v = fn(); if (v) return v; await sleep(150); }
+      return null;
+    };
+    const FILE = '_ui_outline.md';
+    const tidy = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+
+    // 自检环境没有真 API key → 指向本地假服务（这样验证的仍是真实链路，不是打桩的 DOM）
+    // baseUrl 只用来让面板认为「已配置」，实际请求被主进程的桩接管
+    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    await window.Viewer.openFile(dir + '\\' + FILE);
+    await sleep(700);
+    window.App.setAiOpen(true);
+    await sleep(600);
+
+    // —— 人的第一眼：我打开了一份文档，它知道我在看哪份吗 ——
+    const fb = q('#ai-follow');
+    add('打开文档后，面板自己显示「正在看 这份文件」（不用手动附）',
+      !!fb && !fb.classList.contains('hidden') && fb.textContent.includes(FILE),
+      fb ? tidy(fb) : '(没有这条)');
+
+    // —— 我打一句话，回车 ——
+    q('#ai-input').value = '把「二级 B」这个标题加个备注';
+    q('#ai-send').click();
+
+    const yes = await waitFor(() => q('#dw-yes'), 20000);
+    add('它要动文件之前，先给我看 diff 让我决定（没有偷偷改）', !!yes);
+    if (yes) yes.click();
+
+    const card = await waitFor(() => {
+      const all = qa('#ai-msgs .ai-edit');
+      return all.length ? all[all.length - 1] : null;
+    }, 20000);
+    add('改完之后，聊天里出现一张「改动卡片」', !!card, card ? tidy(card).slice(0, 46) : '(没有卡片)');
+
+    if (card) {
+      add('卡片一眼看出：改了哪个文件、加了几行减了几行（带 +N -M）',
+        card.textContent.includes(FILE) && /\+\d/.test(card.textContent) && /-\d/.test(card.textContent),
+        tidy(card).slice(0, 40));
+
+      const tg = card.querySelector('.e-toggle');
+      if (tg) {
+        tg.click();
+        await sleep(400);
+        const body = card.querySelector('.ai-edit-body');
+        const adds = body.querySelectorAll('.d-add').length;
+        const dels = body.querySelectorAll('.d-del').length;
+        add('点「看改动」能就地展开红绿对比', !body.classList.contains('hidden') && adds > 0,
+          '新增 ' + adds + ' 行 / 删除 ' + dels + ' 行');
+        add('展开后按钮变成「收起」，能收回去', tg.textContent === '收起', tg.textContent);
+        tg.click();
+        await sleep(250);
+      }
+
+    }
+    return { R, hover: fb ? { x: Math.round(fb.getBoundingClientRect().left + 60), y: Math.round(fb.getBoundingClientRect().top + 10) } : undefined };
+  },
+
+  // ---------- 接着上一步：人回头看了一眼，决定把刚才那处改回去 ----------
+  aiPanelUndo: async (arg) => {
+    const dir = arg;
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const tidy = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+
+    const card = qa('#ai-msgs .ai-edit').pop();
+    add('回头还能看到上次改动（卡片留在聊天里，不是一闪而过）', !!card);
+    if (!card) return { R };
+    const un = card.querySelector('.e-undo');
+    add('卡片上有「撤销」按钮（能只改回这一处）', !!un);
+    if (!un) return { R };
+    un.click();
+    await sleep(1000);
+    add('点撤销后，卡片明确标记为已撤销', card.classList.contains('undone'), tidy(card).slice(0, 44));
+    const back = await window.myIDE.fs.readFile(dir + '\\' + '_ui_outline.md');
+    add('文件内容真的回到改之前（不是只改界面）',
+      !!back && !/备注/.test(String(back.content || '')),
+      '现在开头: ' + String((back && back.content) || '').slice(0, 22).replace(/\n/g, ' '));
+    return { R };
   },
 };
