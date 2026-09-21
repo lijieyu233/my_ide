@@ -14,8 +14,18 @@
 //   · 关键：`refs/remotes` 目录**整体不存在**时，`git fetch` 能自己建好并正确落地；
 //     而只要那里留着一个空目录（或 refs/ 下有残留目录），就又开始不落地
 //
-// 所以修复手法是：**把 `.git/refs/remotes` 整个挪出 refs/ 之外，再让 git fetch 重建**。
-// 引用数据本身在 `packed-refs` 里、且能重新 fetch，挪走不会丢东西（本工具会备份而不是删除）。
+// 修复有两条路，都已验证：
+//
+// ① **结构性修复（推荐，一劳永逸）**：把 fetch refspec 改成 git 写得进去的 3 段命名空间——
+//      git config --local remote.origin.fetch '+refs/heads/*:refs/rt-origin/*'
+//      git config --local branch.main.merge refs/heads/main
+//      git config --local branch.main.remote origin
+//    之后 fetch / push 都自己写 `refs/rt-origin/<branch>`，`git status` 的 ahead/behind 恢复正常，
+//    且 `git push` 不会再擦掉跟踪引用。本工具会检查这项配置并给出建议。
+//
+// ② **目录重建（兜底）**：把 `.git/refs/remotes` 整个挪出 refs/ 之外，再让 git fetch 重建。
+//    必须整个挪走——原地留空目录会复现问题；备份目录要放 refs/ 之外。
+//    引用数据本身在 `packed-refs` 里、且能重新 fetch，挪走不会丢东西（本工具会备份而不是删除）。
 //
 // 用法：
 //   node scripts/git-doctor.js            # 体检 + 自动修复
@@ -75,12 +85,23 @@ function remoteHeads() {
     }),
   };
 }
+// 跟踪引用的真实名字由 remote.<remote>.fetch 的 refspec 决定
+// （默认是 refs/remotes/<remote>/*，但本机缺陷下已改成 3 段的 refs/rt-origin/*）
+function trackingRefs() {
+  const specs = gitTry(['config', '--local', '--get-all', `remote.${REMOTE}.fetch`]).out.split('\n').filter(Boolean);
+  const picked = specs.find((l) => /refs\/heads\/\*/.test(l) && l.includes(':')) || specs[0] || '';
+  const m = /^\+?([^:]*):([^:]*)$/.exec(picked);
+  if (!m) return { pattern: `refs/remotes/${REMOTE}/*`, root: `refs/remotes/${REMOTE}` };
+  const dest = (m[2] || '').replace(/\*$/, '*');
+  return { pattern: dest, root: dest.replace(/\/\*$/, '') };
+}
+function trackingRef(branch) { return trackingRefs().pattern.replace('*', branch); }
 function mismatches(heads) {
-  return heads.filter((h) => gitTry(['rev-parse', `refs/remotes/${REMOTE}/${h.branch}`]).out !== h.sha);
+  return heads.filter((h) => gitTry(['rev-parse', trackingRef(h.branch)]).out !== h.sha);
 }
 
 function checkRemoteRefs(gitdir, fix) {
-  console.log(`\n[2] 远端跟踪引用（refs/remotes/${REMOTE}/*）`);
+  console.log(`\n[2] 远端跟踪引用（${trackingRefs().pattern}）`);
   const ls = remoteHeads();
   if (!ls.ok) { say(false, `git ls-remote ${REMOTE} 失败`, String(ls.err).slice(0, 140)); return; }
   if (!ls.heads.length) { say(false, `远程 ${REMOTE} 没有分支`); return; }
@@ -90,15 +111,24 @@ function checkRemoteRefs(gitdir, fix) {
 
   say(false, `${bad.length}/${ls.heads.length} 个引用缺失或过期`, '`status` 里的 ahead/behind 会因此不可信');
   for (const b of bad) {
-    const got = gitTry(['rev-parse', `refs/remotes/${REMOTE}/${b.branch}`]).out;
+    const got = gitTry(['rev-parse', trackingRef(b.branch)]).out;
     // rev-parse 解析不到时会把入参原样回吐，不能当 sha 显示
     const show = /^[0-9a-f]{7,64}$/.test(got) ? got.slice(0, 12) : '(无)';
-    note(`${REMOTE}/${b.branch}  本地=${show}  远端=${b.sha.slice(0, 12)}`);
+    note(`${trackingRef(b.branch)}  本地=${show}  远端=${b.sha.slice(0, 12)}`);
   }
   if (CHECK_ONLY) { note('（--check 模式，不改动）'); return; }
 
   console.log('  → 修复：把 .git/refs/remotes 整体挪到 .git/git-doctor-backup/，再让 git fetch 重建');
-  const remotesDir = path.join(gitdir, 'refs', 'remotes');
+  const tr = trackingRefs();
+  const segs = tr.pattern.replace(/\/\*$/, '').split('/').length; // refs/A/B → 3 段；refs/A/B/C → 4 段
+  if (segs >= 4) {
+    note(`提示：当前跟踪命名空间 ${tr.pattern} 是 ${segs + 1} 段，git 在这里写不进引用。`);
+    note('      推荐改成 3 段（一劳永逸）：');
+    note(`      git config --local remote.${REMOTE}.fetch '+refs/heads/*:refs/rt-origin/*'`);
+    note('      git config --local branch.<当前分支>.merge refs/heads/<当前分支>');
+    note(`      git config --local branch.<当前分支>.remote ${REMOTE}`);
+  }
+  const remotesDir = path.join(gitdir, ...tr.root.split('/'));
   const backupRoot = path.join(gitdir, 'git-doctor-backup');
   const dest = path.join(backupRoot, `remotes-${Date.now()}`);
   try {
