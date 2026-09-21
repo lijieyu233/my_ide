@@ -869,6 +869,7 @@ const AiPanel = (() => {
     inputEl.value = text;
     pendingImages = (msgs[idx] && msgs[idx]._imgs) ? msgs[idx]._imgs.slice() : pendingImages;
     renderImages();
+    autoGrowInput();
     inputEl.focus();
     try { inputEl.setSelectionRange(text.length, text.length); } catch {}
     MI.toast('已放回输入框，改完直接回车重发', 'ok');
@@ -915,6 +916,21 @@ const AiPanel = (() => {
     fr.readAsDataURL(f);
   }
 
+  // 输入框随内容增高：从 1 行（28px）长到 160px 上限。
+  // 踩过两个坑：① 复位不能用 'auto'（空框会按内在高度算，偏高）；
+  //   ② **超长的 placeholder 会被折行算进 scrollHeight**（实测空框 47 而非 28）→ 测量时临时摘掉再量。
+  // ⚠ 凡是「代码给输入框填值」的地方（场景入口 / 斜杠命令 / 右键动作 / 编辑重发）都要调它 ——
+  //   直接赋 value 不会触发 input 事件，不调的话长指令会在 1 行的框里被裁掉。
+  function autoGrowInput() {
+    if (!inputEl) return;
+    const ph = inputEl.placeholder;
+    inputEl.placeholder = '';
+    inputEl.style.height = '28px';
+    const need = inputEl.scrollHeight;
+    inputEl.placeholder = ph;
+    inputEl.style.height = (need > 28 ? Math.min(need, 160) : 28) + 'px';
+  }
+
   // 空状态：卡片 + 场景入口 —— 点一下把指令填进输入框（用户不用自己想该怎么问）
   const AI_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>';
   const QUICK_PROMPTS = [
@@ -933,6 +949,7 @@ const AiPanel = (() => {
       if (!ctxFiles.some((f) => f.path === tab.path)) await toggleCtxFile();
     }
     input.value = q.text;
+    autoGrowInput();
     input.focus();
     try { input.setSelectionRange(q.text.length, q.text.length); } catch {}
   }
@@ -1042,6 +1059,7 @@ const AiPanel = (() => {
     } catch {}
     if (hasSel) await addSpecialCtx('sel'); else await followActive();
     inputEl.value = it.prompt;
+    autoGrowInput();
     inputEl.focus();
     try { inputEl.setSelectionRange(it.prompt.length, it.prompt.length); } catch {}
     MI.toast('指令已填好，按 Enter 发送', 'ok');
@@ -1141,6 +1159,7 @@ const AiPanel = (() => {
     compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
     renderUsage();
     inputEl.value = '';
+    autoGrowInput();   // 发完缩回 1 行
     // 清空欢迎语
     const w = msgsEl.querySelector('.ai-welcome');
     if (w) w.remove();
@@ -2060,9 +2079,13 @@ const AiPanel = (() => {
       };
     }
     if (inputEl) {
+      // 输入框自动增高：从 1 行起随内容长到上限。
+      // （原来 textarea 用默认的 rows=2，高度写死两行，长文本只能在那个小框里滚，max-height 形同虚设）
+      autoGrowInput();
       // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
       inputEl.addEventListener('focus', () => { followActive(); });
       inputEl.addEventListener('input', () => {
+        autoGrowInput();
         if (onInputSlash()) return;   // 打 / 开头 = 命令补全
         onInputMention();             // 否则看是不是 @ 引用
       });
@@ -2159,6 +2182,7 @@ const AiPanel = (() => {
       await followActive();
     }
     inputEl.value = act.text;
+    autoGrowInput();
     inputEl.focus();
     try { inputEl.setSelectionRange(act.text.length, act.text.length); } catch {}
     MI.toast('指令已填好，按 Enter 发送', 'ok');

@@ -757,19 +757,43 @@ module.exports = {
     add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);
     // 回形针按钮已移除：它的作用（附当前文件）与「跟随当前文件」+ @ 引用完全重叠
     add('输入区不再有功能重复的回形针按钮', !q('#ai-file-chip'));
-    // 底部尺寸一致性：一套刻度（chip 24 / 输入框最小高 38 = 发送按钮 38 / 圆角 8）。
-    // 之前 chip 是 21px、字号 .8em（≈10.4px），跟 13px 的输入框差一大截 —— 一眼就"高度不齐"。
+    // 底部尺寸一致性。核心是：**输入框和发送按钮不再是两个并排的框**，
+    // 而是同一个卡片（.ai-input-box）里的 textarea + 按钮 —— 结构上就没有"高度对比"这回事。
     const hv = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
     const radiusOf = (sel) => getComputedStyle(q(sel)).borderRadius;
     const chipH = hv('#ai-chips .ai-ctx-chip');
-    add('底部控件按同一套刻度：chip 24 / 发送按钮 38 / 输入框最小高 38',
-      chipH === 24 && hv('#ai-send') === 38 && getComputedStyle(q('#ai-input')).minHeight === '38px',
-      'chip=' + chipH + ' 按钮=' + hv('#ai-send') + ' 输入框 min=' + getComputedStyle(q('#ai-input')).minHeight);
-    add('输入框与发送按钮圆角统一为 8px（不再一个 6 一个 4）',
-      radiusOf('#ai-input') === '8px' && radiusOf('#ai-send') === '8px',
-      '输入框=' + radiusOf('#ai-input') + ' 按钮=' + radiusOf('#ai-send'));
-    const botGap = Math.round(q('#ai-input').getBoundingClientRect().bottom - q('#ai-send').getBoundingClientRect().bottom);
-    add('发送按钮与输入框底部对齐（输入框多行时按钮也不飘）', Math.abs(botGap) <= 1, 'bottom差=' + botGap);
+    // 清空必须派发 input 事件：输入框高度由 autoGrow 在 input 时算出来，直接赋 value 不会重算
+    const setVal0 = q('#ai-input');
+    setVal0.value = '';
+    setVal0.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(300);
+    add('输入框与发送按钮在同一个卡片里（不再是两个框比高度）',
+      !!q('.ai-input-box') && !!q('.ai-input-box #ai-send') && !!q('.ai-input-box #ai-input'));
+    add('空输入时输入卡片高 40px（= 1 行文字 + 上下内边距）', hv('.ai-input-box') === 40,
+      '卡片=' + hv('.ai-input-box') + ' 输入框=' + hv('#ai-input') + ' 按钮=' + hv('#ai-send'));
+    add('卡片与发送按钮圆角统一 8px', radiusOf('.ai-input-box') === '8px' && radiusOf('#ai-send') === '8px',
+      '卡片=' + radiusOf('.ai-input-box') + ' 按钮=' + radiusOf('#ai-send'));
+    const bb = q('.ai-input-box').getBoundingClientRect();
+    const sb2 = q('#ai-send').getBoundingClientRect();
+    const rb = bb.right - sb2.right, btm = bb.bottom - sb2.bottom;
+    add('发送按钮贴卡片内右下角（右边距 = 下边距）', Math.abs(rb - btm) <= 1,
+      '右=' + rb.toFixed(1) + ' 下=' + btm.toFixed(1));
+    // 多行输入：卡片长高，按钮仍在框内右下 —— 不再出现"输入框 57 / 按钮 38"那种落差
+    const setVal = (v) => {
+      const el = q('#ai-input');
+      el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    setVal('第一行\n第二行\n第三行');
+    await sleep(350);
+    const boxH = hv('.ai-input-box');
+    const btnIn = q('.ai-input-box #ai-send').getBoundingClientRect();
+    const boxR = q('.ai-input-box').getBoundingClientRect();
+    add('多行输入时卡片长高、按钮仍在卡片内（不会掉到框外）',
+      boxH > 40 && btnIn.bottom <= boxR.bottom + 0.5 && btnIn.top >= boxR.top - 0.5,
+      '卡片=' + boxH + ' 按钮 ' + Math.round(btnIn.top - boxR.top) + '~' + Math.round(btnIn.bottom - boxR.top) + 'px');
+    setVal('');
+    await sleep(200);
     if (chipH > 0) {
       const chip0 = q('#ai-chips .ai-ctx-chip');
       const cr = chip0.getBoundingClientRect();
@@ -799,6 +823,9 @@ module.exports = {
       await sleep(1000);
       add('点「整理当前文档」→ 指令填入输入框', /整理/.test(q('#ai-input').value),
         JSON.stringify(String(q('#ai-input').value).slice(0, 26)));
+      add('长指令填进去后输入框自动增高（不被 1 行的框裁掉）',
+        q('#ai-input').getBoundingClientRect().height > 28,
+        '输入框高=' + Math.round(q('#ai-input').getBoundingClientRect().height) + 'px');
       // 当前文件是 chips 里那条「跟随」项（.follow），也可能是手动 @ 附加的
       const chips = qa('.ai-ctx-chip');
       const viaFollow = chips.some((c) => c.classList.contains('follow') && /_ui_outline/.test(c.textContent));

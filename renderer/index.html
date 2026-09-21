@@ -291,8 +291,12 @@
            不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
       <div id="ai-chips" class="hidden"></div>
       <div class="ai-input-row">
-        <textarea id="ai-input" placeholder="描述你想怎么整理…（Enter 发送 / @ 引用文件 / / 命令 / 可直接贴图）" spellcheck="false"></textarea>
-        <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+        <!-- 输入框与发送按钮是同一个卡片：按钮在框内右下角。
+             以前是「两个并排的框」，多行输入时输入框长高、按钮留在 38px，高度看着就不齐。 -->
+        <div class="ai-input-box">
+          <textarea id="ai-input" rows="1" placeholder="描述你想怎么整理…（Enter 发送 / @ 引用文件 / / 命令 / 可直接贴图）" spellcheck="false"></textarea>
+          <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+        </div>
       </div>
     </div>
   </div>

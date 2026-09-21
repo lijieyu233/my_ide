@@ -1863,14 +1863,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   -webkit-app-region: no-drag;
 }
 .ai-input-row { flex: 1 1 100%; display: flex; align-items: flex-end; gap: 6px; }
-#ai-input {
-  flex: 1; min-height: 38px; max-height: 160px; resize: none;
-  background: var(--bg-input); color: var(--text-bright);
-  border: 1px solid var(--btn-border); border-radius: 8px;
-  padding: 8px 10px; outline: none; font-family: inherit; font-size: 1em; line-height: 1.5;
+/* 输入区 = 一个整体卡片：textarea 与发送按钮都在框内。
+   卡片高度随内容自适应（40 → 最多约 168），按钮始终贴框内右下角 —— 两者不存在"高度对比"。 */
+.ai-input-box {
+  flex: 1 1 auto; display: flex; align-items: flex-end; gap: 6px;
+  background: var(--bg-input); border: 1px solid var(--btn-border); border-radius: 8px;
+  padding: 5px 5px 5px 10px;
 }
-#ai-input:focus { border-color: var(--accent); }
-#ai-send { flex-shrink: 0; height: 38px; min-width: 38px; border-radius: 8px; }
+.ai-input-box:focus-within { border-color: var(--accent); }
+#ai-input {
+  flex: 1; height: 28px; min-height: 28px; max-height: 160px; resize: none; overflow-y: auto;
+  background: transparent; color: var(--text-bright);
+  border: none; border-radius: 0;
+  padding: 4px 0; outline: none; font-family: inherit; font-size: 1em; line-height: 1.5;
+}
+#ai-send { flex-shrink: 0; width: 28px; height: 28px; min-width: 0; padding: 0; border-radius: 8px; justify-content: center; }
 /* 附件按钮：只留回形针图标 —— 中文按钮太宽，会把输入框压窄 */
 /* 拖拽进面板：整块高亮 + 一句话说明（不让人猜"松手会怎样"） */
 #ai-panel.drop-active::after {
