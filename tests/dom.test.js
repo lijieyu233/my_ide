@@ -88,6 +88,7 @@ function makeDom() {
     fs: {
       openFolder: async () => P,
       getRecent: async () => null,
+      pathOfDroppedFile: () => P + '/osdrop.txt', // 模拟 Electron webUtils 取到的真实路径
       setRecent: async () => {},
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
@@ -3838,13 +3839,27 @@ assert_(panel, 'CM6 搜索面板出现');
     $(dom, '#ai-input').value = '跑测试';
     click($(dom, '#ai-send'));
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
-    // Modal.confirm 确认按钮
-    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cf-yes');
-    assert_(yesBtn, '命令确认弹窗出现');
+    // 命令确认弹窗：这次选「总是允许」—— 验的就是「以后同类命令别再问我」
+    // （用户最烦的正是同一个命令点十几次确认）
+    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cr-always');
+    assert_(yesBtn, '命令确认弹窗出现，且带「总是允许」出口');
+    assert_(!!$(dom, '#cr-yes'), '另有「运行一次」选项（不想记住时用）');
     click(yesBtn);
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
     const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
     assert_(rows.some((r) => r.textContent.includes('run_command') && r.textContent.includes('✓')), 'run_command 执行成功状态');
+    // 第二条同类命令（同前缀 node）：应当不再弹确认
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'c2', name: 'run_command', args: { command: 'node tests/dom.test.js --again' } }] },
+      { ok: true, text: '又跑完了。' },
+    ];
+    $(dom, '#ai-input').value = '再跑一次';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#cr-yes'), '记住「node」之后，同类命令不再弹确认');
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-tool').filter((r) => r.textContent.includes('run_command')).length === 2,
+      '第二条命令直接执行了（没被拦下）');
+    await g(dom, 'AiPanel.savePerms({})'); // 授权按项目存，清掉别影响后面的用例
     aiScript = [];
   });
 
@@ -6244,6 +6259,77 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#ai-new'));
     await tick();
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：拖文件进面板就进上下文（拖过去比翻文件快）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/drop.txt'] = { content: '拖进来的内容' + '\n' };
+    const panel = $(dom, '#ai-panel');
+    const mkDt = (types, get) => ({ types, getData: get, files: [], dropEffect: '', setData() {}, clearData() {} });
+
+    // 拖到面板上：先给出「松手会怎样」的提示
+    const ov = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(ov, 'dataTransfer', { value: mkDt(['text/myide-path'], () => '') });
+    panel.dispatchEvent(ov);
+    assert_(panel.classList.contains('drop-active'), '拖到面板上时整块高亮（不让人猜松手会怎样）');
+
+    // 松手：项目树里拖过来的文件
+    const dp = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dp, 'dataTransfer', { value: mkDt(['text/myide-path'], (k) => (k === 'text/myide-path' ? P + '/drop.txt' : '')) });
+    panel.dispatchEvent(dp);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!panel.classList.contains('drop-active'), '松手后高亮撤掉');
+    const chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('drop.txt')),
+      '拖进来的文件进了上下文: ' + (chips.map((c) => c.textContent).join('|') || '(空)'));
+
+    // 从系统拖（走 webUtils 取路径那条路）
+    FAKE_FS[P + '/osdrop.txt'] = { content: '系统拖进来的' + '\n' };
+    const dp2 = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dp2, 'dataTransfer', {
+      value: { types: ['Files'], getData: () => '', dropEffect: '', setData() {}, clearData() {},
+               files: [{ name: 'osdrop.txt' }] },
+    });
+    panel.dispatchEvent(dp2);
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    const chips2 = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips2.length >= 2, '从系统拖进来的文件也能进上下文: ' + chips2.length + ' 项');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：授权记忆（选「本项目内都允许」后不再反复弹窗）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/perm.txt'] = { content: 'v1' + '\n' };
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'p1', name: 'write_file', args: { path: 'perm.txt', content: 'v2' + '\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 perm';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    const al = $(dom, '#dw-always');
+    assert_(al, 'diff 弹窗里有「本项目内都允许」（不想每次点确认的出口）');
+    click(al);
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/perm.txt'].content === 'v2' + '\n', '第一次写入生效');
+    // 再改一次：不该再问
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'p2', name: 'write_file', args: { path: 'perm.txt', content: 'v3' + '\n' } }] },
+      { ok: true, text: '又改好了。' },
+    ];
+    $(dom, '#ai-input').value = '再改一次';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '记住之后不再弹 diff 确认');
+    assert_(FAKE_FS[P + '/perm.txt'].content === 'v3' + '\n', '第二次写入直接生效');
+    const remembered = await g(dom, 'JSON.stringify(AiPanel.loadPerms())');
+    assert_(String(remembered).includes('write'), '授权记录可查询（设置页据此显示与清除）: ' + remembered);
+    await g(dom, 'AiPanel.savePerms({})'); // 清掉别影响其他用例
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
   });
 
   console.log('');

@@ -1,5 +1,5 @@
 // preload.js —— 通过 contextBridge 安全暴露 API 给渲染进程
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('myIDE', {
   app: {
@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
+    // 拖进来的文件取真实路径：Electron 32+ 移除了 File.path，只能走 webUtils.getPathForFile
+    pathOfDroppedFile: (file) => { try { return webUtils.getPathForFile(file) || ''; } catch { return ''; } },
     writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),

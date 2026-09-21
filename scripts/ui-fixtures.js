@@ -124,6 +124,8 @@ function cleanFixtures(dir) {
   rm(path.join(dir, '_ui_big.png'));
   rm(path.join(dir, '_ui_mmd.md'));
   rm(path.join(dir, '_ui_outline.md'));
+  rm(path.join(dir, '_ui_drop.md'));   // 拖拽步骤建的
+  rm(path.join(dir, '_ui_perm.md'));   // 授权记忆步骤建的
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
 }
 

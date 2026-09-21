@@ -1880,6 +1880,16 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-chip svg.ic { width: 16px; height: 16px; }
 .ai-chip:hover { color: var(--text); border-color: var(--accent); }
 .ai-chip.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* 拖拽进面板：整块高亮 + 一句话说明（不让人猜"松手会怎样"） */
+#ai-panel.drop-active::after {
+  content: '松手 → 加入上下文';
+  position: absolute; inset: 8px; z-index: 20; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-bright); font-size: 1em;
+}
+
 /* 「正在看」条：面板始终跟着当前编辑器文件（用户说「这份文档」时它知道指哪份） */
 .ai-follow {
   display: flex; align-items: center; gap: 5px; flex: 1 1 100%;

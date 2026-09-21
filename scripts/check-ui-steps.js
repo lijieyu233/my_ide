@@ -886,4 +886,62 @@ module.exports = {
       '现在开头: ' + String((back && back.content) || '').slice(0, 22).replace(/\n/g, ' '));
     return { R };
   },
+
+  // ---------- 拖文件进面板 + 授权记忆（都在解决「少点几下」）----------
+  aiDropAndPerm: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 20000)) { const v = fn(); if (v) return v; await sleep(150); }
+      return null;
+    };
+    const mkDt = (types, get) => ({ types, getData: get, files: [], dropEffect: '', setData() {}, clearData() {} });
+    const mkEv = (type, dt) => {
+      const e = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'dataTransfer', { value: dt });
+      return e;
+    };
+
+    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    window.App.setAiOpen(true);
+    await sleep(400);
+    if (q('#ai-new')) { q('#ai-new').click(); await sleep(300); }
+
+    // —— ① 把文件拖到面板上 ——
+    const dropPath = dir + '\\_ui_drop.md';
+    await window.myIDE.fs.writeFile(dropPath, '# 拖拽测试\n第一行\n');
+    const panel = q('#ai-panel');
+    panel.dispatchEvent(mkEv('dragover', mkDt(['text/myide-path'], () => '')));
+    await sleep(250);
+    add('拖到面板上时整块高亮（不让人猜松手会怎样）', panel.classList.contains('drop-active'),
+      panel.classList.contains('drop-active') ? '已高亮' : '没反应');
+    panel.dispatchEvent(mkEv('drop', mkDt(['text/myide-path'], (k) => (k === 'text/myide-path' ? dropPath : ''))));
+    await waitFor(() => qa('#ai-chips .ai-ctx-chip').some((c) => c.textContent.indexOf('_ui_drop') >= 0), 8000);
+    const chips = qa('#ai-chips .ai-ctx-chip');
+    add('松手之后文件进了上下文', chips.some((c) => c.textContent.indexOf('_ui_drop') >= 0),
+      chips.map((c) => String(c.textContent).replace(/\s+/g, ' ')).join(' | ') || '(没有 chip)');
+
+    // —— ② 第一次改文件：选「本项目内都允许」——
+    if (q('#ai-new')) { q('#ai-new').click(); await sleep(300); }
+    q('#ai-input').value = '第一次改这个文件';
+    q('#ai-send').click();
+    const always = await waitFor(() => q('#dw-always'), 25000);
+    add('改文件前的确认弹窗，多了一个「本项目内都允许」的出口', !!always,
+      always ? String(always.textContent).trim() : '没看到这个按钮');
+    if (always) always.click();
+    const c1 = await waitFor(() => qa('#ai-msgs .ai-edit').pop(), 25000);
+    add('第一次改完，出现改动卡片', !!c1, c1 ? String(c1.textContent).replace(/\s+/g, ' ').slice(0, 36) : '(没有)');
+
+    // —— ③ 第二次改同一个文件：不该再问 ——
+    q('#ai-input').value = '第二次改这个文件';
+    q('#ai-send').click();
+    const c2 = await waitFor(() => (qa('#ai-msgs .ai-edit').length >= 2 ? true : null), 25000);
+    add('记住授权后，第二次改文件不再弹确认，直接改完', !!c2 && !q('#dw-always'),
+      c2 ? '改动卡片共 ' + qa('#ai-msgs .ai-edit').length + ' 张' : '第二张卡片没出现');
+    return { R };
+  },
 };

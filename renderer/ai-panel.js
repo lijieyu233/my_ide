@@ -165,6 +165,45 @@ const AiPanel = (() => {
     return ['confirm', 'deny'].includes(v) ? v : 'confirm';
   }
 
+  // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
+  // 范围：session = 本次对话（内存）；project = 本项目（localStorage，按项目分开存）
+  // 粒度：整类操作（写文件 / 执行命令）+ 单条命令前缀（如 git、npm test）
+  let sessionPerm = { write: false, run: false };
+  const permKey = () => 'myide-ai-perms:' + ((window.App && App.root) || '');
+  function loadPerms() {
+    try { return JSON.parse(localStorage.getItem(permKey()) || '{}') || {}; } catch { return {}; }
+  }
+  function savePerms(p) {
+    try { localStorage.setItem(permKey(), JSON.stringify(p || {})); } catch {}
+  }
+  function grantPerm(kind, scope) {
+    if (scope === 'session') { sessionPerm[kind] = true; return; }
+    const p = loadPerms();
+    p[kind] = true;
+    savePerms(p);
+  }
+  function grantCmdPrefix(pre) {
+    if (!pre) return;
+    const p = loadPerms();
+    p.cmds = [...new Set([...(p.cmds || []), pre])];
+    savePerms(p);
+  }
+  function cmdPrefixOf(cmd) { return String(cmd || '').trim().split(/\s+/)[0] || ''; }
+  function writeNeedsConfirm() {
+    const base = permWrite();
+    if (base === 'deny') return 'deny';
+    if (base === 'auto') return 'no';
+    if (sessionPerm.write || loadPerms().write) return 'no';
+    return 'yes';
+  }
+  function runNeedsConfirm(cmd) {
+    if (permRun() === 'deny') return 'deny';
+    if (sessionPerm.run || loadPerms().run) return 'no';
+    const t = String(cmd || '').trim();
+    if ((loadPerms().cmds || []).some((pre) => pre && t.startsWith(pre))) return 'no';
+    return 'yes';
+  }
+
   async function executeTool(call) {
     const a = call.args || {};
     if (call.name === 'list_files') {
@@ -234,10 +273,14 @@ const AiPanel = (() => {
       if (!cmd) return { ok: false, text: '错误：command 为空' };
       const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
-      if (permRun() === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
-      // 确认闸：命令执行有副作用，必须用户批准
-      const yes = await Modal.confirm('AI 请求执行命令', '即将在项目目录运行：\n\n' + cmd + '\n\n确认执行？');
-      if (!yes) return { ok: false, text: '用户拒绝了执行该命令' };
+      const needR = runNeedsConfirm(cmd);
+      if (needR === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
+      if (needR === 'yes') {
+        // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口
+        const ans = await confirmRun(cmd, cmdPrefixOf(cmd)); // 'once' | 'always' | false
+        if (!ans) return { ok: false, text: '用户拒绝了执行该命令' };
+        if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
+      }
       const r = await window.myIDE.ai.run(cmd, root);
       return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
     }
@@ -247,15 +290,17 @@ const AiPanel = (() => {
   // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
   async function applyWrite(loc, content) {
     const full = loc.root + '/' + loc.rel;
-    if (permWrite() === 'deny') {
+    const needW = writeNeedsConfirm();
+    if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
     const old = await window.myIDE.fs.readFile(full);
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
-    if (permWrite() === 'confirm') {
-      const applied = await confirmDiff(loc.rel, oldText, content);
-      if (!applied) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+    if (needW === 'yes') {
+      const ans = await confirmDiff(loc.rel, oldText, content); // 'once' | 'always' | false
+      if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
+      if (ans === 'always') grantPerm('write', 'project');
     }
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
@@ -322,12 +367,14 @@ const AiPanel = (() => {
         <div class="dw-diff">${html}</div>
         <div class="m-foot">
           <button class="tb-btn m-cancel" id="dw-no">拒绝</button>
+          <button class="tb-btn" id="dw-always" title="以后本项目里改文件都不再询问（可在 设置 → AI 助手 清除）">本项目内都允许</button>
           <button class="tb-btn m-ok" id="dw-yes">应用修改</button>
         </div>`;
       Modal.show(box);
       let settled = false;
       const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
-      box.querySelector('#dw-yes').onclick = () => finish(true);
+      box.querySelector('#dw-yes').onclick = () => finish('once');
+      box.querySelector('#dw-always').onclick = () => finish('always');
       box.querySelector('#dw-no').onclick = () => finish(false);
       box.querySelector('#dw-x').onclick = () => finish(false);
     });
@@ -688,8 +735,117 @@ const AiPanel = (() => {
     MI.toast('已取消跟随当前文件（切到别的文件会重新跟随）', 'ok');
   }
 
+  // ---------- 拖拽引用 ----------
+  // 把文件/文件夹直接拖进面板就进上下文。两类来源：
+  //   ① 项目树里拖过来（tree.js 已经在发 text/myide-path / text/myide-paths 自定义 MIME）
+  //   ② 从系统（资源管理器 / Finder）拖文件进来（Electron 32+ 移除了 File.path，得用 webUtils）
+  async function addDropped(paths) {
+    const uniq = [...new Set((paths || []).filter(Boolean))];
+    let added = 0;
+    for (const p of uniq) {
+      if (ctxFiles.some((f) => f.path === p)) continue;
+      const rf = await window.myIDE.fs.readFile(p);
+      if (rf && !rf.error) {                       // 是文件 → 附内容
+        let content = rf.content || '';
+        if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
+        ctxFiles.push({ path: p, content, isDir: false, dropped: true });
+        added++;
+        continue;
+      }
+      const root = String((window.App && App.root) || '').replace(/[\\/]+$/, '');
+      const norm = (x) => String(x).replace(/\\/g, '/');
+      let tree = '';
+      if (root && norm(p).startsWith(norm(root) + '/')) {
+        tree = await dirTreeText(norm(p).slice(norm(root).length + 1)); // 项目内目录：复用已有实现
+      } else {
+        const al = await window.myIDE.fs.listAll(p, false);             // 项目外目录：列一层路径清单
+        const files = ((al && al.files) || []).slice(0, 300);
+        if (files.length) {
+          const base = norm(p);
+          tree = files.map((f) => '  ' + norm(f).slice(base.length).replace(/^[\\/]/, '')).join('\n')
+            + (files.length >= 300 ? '\n…（仅列前 300 个）' : '');
+        }
+      }
+      if (!tree) continue;
+      ctxFiles.push({ path: p, content: tree, isDir: true, dropped: true });
+      added++;
+    }
+    renderChips();
+    MI.toast(added ? '已加入上下文 ' + added + ' 项' : '没有可加入的内容（可能已在上下文里）', added ? 'ok' : 'err');
+  }
+  function initDrop() {
+    if (!panel) return;
+    const isFileDrag = (e) => {
+      const dt = e.dataTransfer;
+      if (!dt) return false;
+      const types = [...(dt.types || [])];
+      // 只接管「文件类」拖拽：树内拖拽（自定义 MIME）或系统文件；纯文本拖拽不拦
+      return types.includes('Files') || types.includes('text/myide-path') || types.includes('text/myide-paths');
+    };
+    panel.addEventListener('dragover', (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch {}
+      panel.classList.add('drop-active');
+    });
+    panel.addEventListener('dragleave', (e) => {
+      if (!panel.contains(e.relatedTarget)) panel.classList.remove('drop-active');
+    });
+    panel.addEventListener('drop', async (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      panel.classList.remove('drop-active');
+      const paths = [];
+      try {                                          // ① 项目树里拖来的
+        const many = e.dataTransfer.getData('text/myide-paths');
+        if (many) paths.push(...JSON.parse(many));
+        const one = e.dataTransfer.getData('text/myide-path');
+        if (one) paths.push(one);
+      } catch {}
+      const fl = e.dataTransfer.files;               // ② 从系统拖来的
+      if (fl && fl.length) {
+        for (const f of fl) {
+          try { const p = window.myIDE.fs.pathOfDroppedFile(f); if (p) paths.push(p); } catch {}
+        }
+      }
+      if (!paths.length) { MI.toast('没识别到文件路径', 'err'); return; }
+      await addDropped(paths);
+    });
+  }
+
   // ---------- 改动卡片 ----------
   // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
+  // 命令确认：多给一个「记住这类命令」的出口
+  // （Cursor 是 allowlist，VS Code 是 scoped approval —— 都在解决"点十几次确认"）
+  function confirmRun(cmd, pre) {
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.style.cssText = 'display:flex;flex-direction:column;min-width:460px;max-width:640px';
+      box.innerHTML =
+        '<div class="m-head">▶ AI 请求执行命令 <span class="x" id="cr-x">✕</span></div>' +
+        '<div class="m-body">' +
+          '<div style="white-space:pre-wrap;line-height:1.6;background:var(--bg-input);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px">' + esc(cmd) + '</div>' +
+          '<div style="margin-top:8px;font-size:12px;color:var(--text-dim)">在项目目录执行。' +
+            (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（可在 设置 → AI 助手 清除）。' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="m-foot">' +
+          '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
+          (pre ? '<button class="tb-btn" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
+          '<button class="tb-btn m-ok" id="cr-yes">运行一次</button>' +
+        '</div>';
+      Modal.show(box);
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      box.querySelector('#cr-no').onclick = () => finish(false);
+      box.querySelector('#cr-yes').onclick = () => finish('once');
+      const al = box.querySelector('#cr-always');
+      if (al) al.onclick = () => finish('always');
+      box.querySelector('#cr-x').onclick = () => finish(false);
+    });
+  }
+
   function diffRowsHtml(rows) {
     const parts = [];
     for (let i = 0; i < rows.length; i++) {
@@ -1045,6 +1201,7 @@ const AiPanel = (() => {
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
     if (fileChip) fileChip.onclick = toggleCtxFile;
+    initDrop(); // 拖文件进面板 = 加进上下文
     initResize();
 
     // 主进程事件流
@@ -1077,6 +1234,6 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm };
 })();
 window.AiPanel = AiPanel;

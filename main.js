@@ -1109,15 +1109,26 @@ app.whenReady().then(() => {
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
-        stubRound++;
+        // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
+        const msgs = Array.isArray(messages) ? messages : [];
+        const last = msgs[msgs.length - 1] || {};
+        const toolDone = last.role === 'tool'
+          || (typeof last.content === 'string' && last.content.indexOf('<tool_results>') >= 0);
         let r;
-        if (stubRound === 1) {
-          // 第一轮：模型决定动手改文件（原生 function calling）
-          r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
-        } else {
-          const t = '改好了：给「二级 B」加了备注。';
+        if (toolDone) {
+          const t = '好了，改完了。';
           for (const ch of t) send('ai:chunk', ch); // 逐字符流式，跟真实请求一样的观感
           r = { ok: true, text: t, toolCalls: [] };
+        } else {
+          const u = [...msgs].reverse().find((m) => m.role === 'user' && typeof m.content === 'string');
+          const ut = (u && u.content) || '';
+          if (ut.indexOf('第一次改') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: '_ui_perm.md', content: '第一版内容\n第二行\n' } }] };
+          } else if (ut.indexOf('第二次改') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'w2', name: 'write_file', args: { path: '_ui_perm.md', content: '第二版内容\n第二行\n' } }] };
+          } else {
+            r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
+          }
         }
         send('ai:done', r);
         return r;
@@ -1257,6 +1268,7 @@ app.whenReady().then(() => {
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
         await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
         await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
+        await run('AI 面板：拖文件进面板 + 授权记忆', js(steps.aiDropAndPerm, demo), 'check-ui-1i-ai-drop-perm.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
