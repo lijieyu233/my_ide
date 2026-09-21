@@ -820,6 +820,94 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     dom.window.localStorage.removeItem('myide-outline-collapsed');
   });
 
+  await okAsync('大纲：右键复制本章节（整节 / 只正文 / 只标题）', async () => {
+    FAKE_FS[P + '/sec.md'] = { type: 'file', content: '# 根\n\n根正文\n\n## 甲\n\n甲正文\n\n### 甲一\n\n甲一正文\n\n## 乙\n\n乙正文\n', mtime: 9200, ctime: 9200, size: 90 };
+    await g(dom, 'Viewer.openFile("' + P + '/sec.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const rows = $allIn(ol, '.outline-item');
+    assert_(rows.length === 4, '4 个标题（根/甲/甲一/乙）: ' + rows.length);
+    const menuOf = (row) => {
+      row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 60 }));
+      return $(dom, '#ctx-menu');
+    };
+    const rowJia = () => $allIn(ol, '.outline-item').find((r) => r.textContent.replace('▾', '').replace('▸', '') === '甲');
+    let menu = menuOf(rowJia());
+    const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(items.some((t) => t.includes('复制本章节')), '菜单有「复制本章节」: ' + JSON.stringify(items));
+    assert_(items.some((t) => t.includes('只复制本节正文')), '菜单有「只复制本节正文」');
+    assert_(items.some((t) => t.includes('复制标题文本')), '菜单有「复制标题文本」');
+    assert_(items.some((t) => t.includes('在编辑器中折叠到此层级')), '菜单接住了原来的编辑器折叠能力');
+    assert_($allIn(menu, '.ctx-sep').length >= 1, '菜单有分组分隔线');
+    // 整节 = 标题 + 正文 + 子章节，到下一个同级标题为止
+    calls.copy.length = 0;
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制本章节')));
+    await tick();
+    const full = String(calls.copy[calls.copy.length - 1]);
+    assert_(full.startsWith('## 甲'), '整节以标题行开头: ' + JSON.stringify(full.slice(0, 16)));
+    assert_(full.includes('甲正文') && full.includes('### 甲一') && full.includes('甲一正文'), '整节含正文与子章节');
+    assert_(!full.includes('乙正文'), '整节不含下一个同级章节');
+    assert_(!full.includes('根正文'), '整节不含上一节内容');
+    // 只正文
+    menu = menuOf(rowJia());
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('只复制本节正文')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '甲正文', '只正文 = 甲正文: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    // 只标题
+    menu = menuOf(rowJia());
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制标题文本')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '甲', '只标题 = 甲: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    // 叶子节点的整节 = 自己的标题 + 正文
+    menu = menuOf($allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲一')));
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent.includes('复制本章节')));
+    await tick();
+    assert_(calls.copy[calls.copy.length - 1] === '### 甲一\n\n甲一正文', '叶子节点整节: ' + JSON.stringify(calls.copy[calls.copy.length - 1]));
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
+  await okAsync('大纲：顶栏展开/收起全部 + 双击折叠 + ←→ 键 + 叶子不留占位符', async () => {
+    await g(dom, 'Viewer.openFile("' + P + '/sec.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const actBtns = $allIn($(dom, '#panel-outline .panel-title-actions'), '.vt-btn');
+    assert_(actBtns.length === 2, '顶栏 2 个图标按钮: ' + actBtns.length);
+    assert_(actBtns.every((b) => b.querySelector('svg') && !b.textContent.trim()), '是 SVG 图标按钮（无文字）');
+    assert_(!$(dom, '.outline-tools'), '旧的「全展 / H1..H4」工具条已移除（语义不清，易误读成按层级过滤大纲）');
+    const pads = $allIn(ol, '.ol-arrow.ol-pad');
+    assert_(pads.length >= 1 && pads.every((x) => !x.textContent.trim()), '叶子行箭头列留空（不再画占位符）');
+    click(actBtns[1]);
+    await tick(); await tick();
+    let vis = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(vis.length === 1 && vis[0].textContent.includes('根'), '收起全部只剩 H1: ' + vis.length);
+    click(actBtns[0]);
+    await tick(); await tick();
+    vis = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(vis.length === 4, '展开全部恢复 4 个: ' + vis.length);
+    const rowJia = $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'));
+    rowJia.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+    await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 3, '双击「甲」收起其子层（给了一个大点击目标）');
+    $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'))
+      .dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+    await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 4, '再双击「甲」展开回去');
+    click($allIn(ol, '.outline-item')[0]);
+    await tick();
+    key(dom, 'ArrowLeft'); await tick(); await tick();
+    assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 1, '← 收起「根」的子层');
+    key(dom, 'ArrowRight'); await tick(); await tick();
+    const visAfter = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
+    assert_(visAfter.length === 4, '→ 重新展开「根」: 可见=' + visAfter.length + ' 选中=' + ($allIn(ol, '.key-nav-sel').map((r) => r.textContent).join(',')) + ' 折叠集合=' + dom.window.localStorage.getItem('myide-outline-collapsed'));
+    key(dom, 'ArrowDown'); await tick();
+    assert_($allIn(ol, '.key-nav-sel').length === 1, '↓ 之后有唯一选中项（整行高亮）');
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
   await okAsync('HTML 预览：base 注入相对路径解析 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();

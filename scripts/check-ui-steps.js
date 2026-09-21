@@ -539,7 +539,11 @@ module.exports = {
     // 内嵌 diff 预览
     const ey = qa('#cd-files .git-cp-bar .vt-btn')[4];
     ey.click();
-    await sleep(1500);
+    await sleep(800);
+    // 显式点一个文本文件行：默认取到的可能是二进制 / 超大文件（kiosk_patches 之类），那样预览只有提示没有 diff 行
+    const TEXTY = /\.(js|json|md|css|html|txt|yml|yaml|ts)$/;
+    const pick = qa('#cd-files .git-file').find((r) => TEXTY.test(r.dataset.file || ''));
+    if (pick) { pick.click(); await sleep(1200); }
     const pre = q('#commit-preview');
     add('预览打开：面板内出现 diff 行', !!pre && !pre.classList.contains('hidden') && qa('#cp-body .cp-line').length > 0,
       (q('#cp-stats') ? q('#cp-stats').textContent : '') + ' · hunk=' + qa('#cp-body .cp-hunk').length);
@@ -558,10 +562,13 @@ module.exports = {
       if (item) { item.click(); await sleep(300); }
       add('点历史条目填充输入框', String(msg.value).indexOf('fix:') === 0, String(msg.value).slice(0, 40));
     }
+    const beforeAmend = String(msg.value);
     const amend = q('#commit-amend');
     amend.checked = true; amend.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(1200);
-    add('勾 amend → 自动回填上次提交消息', !!msg.value && String(msg.value).indexOf('fix:') !== 0, String(msg.value).slice(0, 60).replace(/\n/g, ' '));
+    add('勾 amend → 自动回填上次提交消息',
+      !!msg.value && String(msg.value) !== beforeAmend,
+      '填入：' + String(msg.value).slice(0, 60).replace(/\n/g, ' '));
     amend.checked = false; amend.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(200);
     add('取消 amend → 还原原输入', String(msg.value).indexOf('fix:') === 0, String(msg.value).slice(0, 30));
@@ -578,5 +585,128 @@ module.exports = {
       await sleep(200);
     }
     return { R };
+  },
+
+  // ---------- 侧栏字号：确认面板内部文字也一起缩放（此前大量写死 px 不跟动）----------
+  toolFontScale: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.App.showTool('git');
+    for (let i = 0; i < 40 && !q('#cd-files .git-file'); i++) await sleep(200);
+    const SAMPLES = [
+      ['提交·分节标题', '#cd-files .git-sec-title'],
+      ['提交·文件行', '#cd-files .git-file'],
+      ['提交·状态徽章', '#cd-files .git-file .badge'],
+      ['提交·勾选计数', '#commit-count'],
+      ['提交·消息框', '#commit-msg'],
+      ['提交·面板标题', '#panel-git .panel-title'],
+      ['提交·ahead/behind', '#cd-dirty'],
+      ['目录树·行', '#tree .tree-row'],
+      ['目录树·搜索框', '#tree-search'],
+      ['目录树·图标列', '#tree .tree-row .ic'],
+    ];
+    const sizeOf = (sel) => {
+      const el = q(sel);
+      return el ? Math.round(parseFloat(getComputedStyle(el).fontSize) * 100) / 100 : null;
+    };
+    const before = SAMPLES.map(([l, s]) => ({ l, s, v: sizeOf(s) }));
+    const miss = before.filter((b) => b.v == null);
+    add('采样点齐全', miss.length === 0, miss.length ? '缺失：' + miss.map((m) => m.l).join(',') : before.length + ' 处');
+    if (miss.length) return { R };
+    const inc = q('#sb-tf-inc');
+    add('状态栏「侧栏 A+」按钮存在', !!inc);
+    if (!inc) return { R };
+    for (let i = 0; i < 3; i++) { inc.click(); await sleep(150); }
+    await sleep(500);
+    const pairs = before.map((b) => ({ ...b, a: sizeOf(b.s) }));
+    const stuck = pairs.filter((x) => Math.abs(x.a - x.v) < 0.01);
+    add('字号 +3 后面板内部文字全部跟着变', stuck.length === 0,
+      stuck.length ? '没变：' + stuck.map((x) => x.l).join(', ')
+                   : pairs.map((x) => x.l + ' ' + x.v + '→' + x.a).join(' | '));
+    const ratio = pairs[0].v ? pairs[0].a / pairs[0].v : 0;
+    add('放大比例符合 16/13', ratio > 1.15 && ratio < 1.35, 'ratio=' + ratio.toFixed(3));
+    const dec = q('#sb-tf-dec');
+    for (let i = 0; i < 3; i++) { dec.click(); await sleep(150); }
+    await sleep(400);
+    const back = before.map((b) => sizeOf(b.s));
+    add('还原后回到原字号', back.every((v, i) => Math.abs(v - before[i].v) < 0.01), back.join(', '));
+    return { R };
+  },
+
+  // ---------- 大纲面板：PyCharm Structure 形态 + 右键复制章节 ----------
+  outlineStructure: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await window.Viewer.openFile(dir + '\\_ui_outline.md');
+    await sleep(600);
+    window.App.showTool('outline');
+    for (let i = 0; i < 40 && !q('#outline .outline-item'); i++) await sleep(150);
+    const rows = qa('#outline .outline-item');
+    add('大纲渲染出 4 个标题（一级 / 二级A / 三级A1 / 二级B）', rows.length === 4, 'rows=' + rows.length);
+    if (rows.length !== 4) return { R };
+
+    const act = qa('#panel-outline .panel-title-actions .vt-btn');
+    add('顶栏 2 个图标按钮（展开全部 / 收起全部）',
+      act.length === 2 && act.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+      act.map((b) => b.title).join(' | '));
+    add('旧的「全展 / H1..H4」工具条已移除（语义易误读）', !q('.outline-tools'));
+
+    const arrows = qa('#outline .ol-arrow:not(.ol-pad)');
+    const pads = qa('#outline .ol-arrow.ol-pad');
+    add('只有含子层的行才有箭头', arrows.length === 2 && pads.length === 2,
+      '箭头 ' + arrows.length + '（一级/二级A） / 占位 ' + pads.length + '（三级A1/二级B）');
+    add('叶子行箭头列留空（不再画 · 占位符）',
+      pads.every((p) => !p.textContent.trim()), JSON.stringify(pads.map((p) => p.textContent)));
+    const textLeft = (r) => Math.round(r.querySelector('.ol-text').getBoundingClientRect().left);
+    add('文本起点按层级递进', textLeft(rows[1]) > textLeft(rows[0]) && textLeft(rows[2]) > textLeft(rows[1]),
+      [textLeft(rows[0]), textLeft(rows[1]), textLeft(rows[2])].join(' < '));
+    const sizes = [...new Set(rows.map((r) => Math.round(parseFloat(getComputedStyle(r).fontSize) * 10) / 10))];
+    add('各层级字号一致（只降对比不缩字号）', sizes.length === 1, 'sizes=' + sizes.join(','));
+    const hs = [...new Set(rows.map((r) => Math.round(r.getBoundingClientRect().height)))];
+    add('行高一致', hs.length === 1, 'heights=' + hs.join(','));
+    const rowH = rows[0].getBoundingClientRect().height;
+    add('行高足够（≥1.7em，点得中）', rowH >= 20, 'rowH=' + Math.round(rowH));
+
+    rows[1].click();
+    await sleep(250);
+    add('点击后整行高亮（选中带铺满）',
+      getComputedStyle(rows[1]).backgroundColor !== 'rgba(0, 0, 0, 0)',
+      getComputedStyle(rows[1]).backgroundColor);
+
+    rows[1].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 70, clientY: 130 }));
+    await sleep(350);
+    const menu = q('#ctx-menu');
+    const items = menu ? [...menu.querySelectorAll('.ctx-item')].map((x) => x.textContent) : [];
+    add('右键章节名弹出菜单', !!menu && items.length > 0, items.join(' | '));
+    add('菜单含「复制本章节」（emoji 前缀不影响判定）', items.some((t) => t.includes('复制本章节')));
+    add('另有「只复制本节正文」「复制标题文本」',
+      items.some((t) => t.includes('只复制本节正文')) && items.some((t) => t.includes('复制标题文本')));
+    add('原编辑器折叠能力移入菜单（不再占顶部一排按钮）',
+      items.some((t) => t.includes('在编辑器中折叠到此层级')));
+    const copyItem = menu && [...menu.querySelectorAll('.ctx-item')].find((x) => x.textContent.includes('复制本章节'));
+    if (copyItem) { copyItem.click(); await sleep(400); }
+    add('点「复制本章节」有反馈（toast）', !!q('.toast'),
+      q('.toast') ? q('.toast').textContent.slice(0, 44) : '');
+
+    const visNow = () => qa('#outline .outline-item').filter((r) => !r.classList.contains('ol-hidden')).length;
+    const before = visNow();
+    rows[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await sleep(450);
+    add('双击标题行折叠其子层（小箭头之外的大目标）', visNow() < before, before + ' → ' + visNow());
+    qa('#panel-outline .panel-title-actions .vt-btn')[0].click();
+    await sleep(450);
+    add('顶栏「展开全部」恢复 4 个', visNow() === 4, 'visible=' + visNow());
+    qa('#panel-outline .panel-title-actions .vt-btn')[1].click();
+    await sleep(450);
+    add('顶栏「收起全部」只留 H1', visNow() === 1, 'visible=' + visNow());
+    qa('#panel-outline .panel-title-actions .vt-btn')[0].click();
+    await sleep(350);
+    const r1 = qa('#outline .outline-item')[1];
+    return { R, hover: { x: Math.round(r1.getBoundingClientRect().left + 50), y: Math.round(r1.getBoundingClientRect().top + r1.getBoundingClientRect().height / 2) } };
   },
 };

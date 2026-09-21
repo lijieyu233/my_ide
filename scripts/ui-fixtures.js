@@ -82,6 +82,18 @@ const MMD_DOC = [
   '```', '',
 ].join('\n');
 
+// 大纲（PyCharm Structure 风格）验证文档：层级清晰，便于断言箭头/缩进/复制范围
+const OUTLINE_DOC = [
+  '# 一级标题', '',
+  '一级正文。', '',
+  '## 二级 A', '',
+  '二级 A 正文。', '',
+  '### 三级 A1', '',
+  '三级 A1 正文。', '',
+  '## 二级 B', '',
+  '二级 B 正文。', '',
+].join('\n');
+
 // 写入图片与 md 素材
 function writeFixtures(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -89,6 +101,7 @@ function writeFixtures(dir) {
   const md = path.join(dir, '_ui_mmd.md');
   fs.writeFileSync(png, makePng(1200, 800));
   fs.writeFileSync(md, MMD_DOC, 'utf8');
+  fs.writeFileSync(path.join(dir, '_ui_outline.md'), OUTLINE_DOC, 'utf8');
   return { png, md };
 }
 
@@ -110,7 +123,8 @@ function cleanFixtures(dir) {
   const rm = (p) => { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} };
   rm(path.join(dir, '_ui_big.png'));
   rm(path.join(dir, '_ui_mmd.md'));
+  rm(path.join(dir, '_ui_outline.md'));
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
 }
 
-module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC };
+module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC, OUTLINE_DOC };

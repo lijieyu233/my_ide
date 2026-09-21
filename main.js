@@ -1189,6 +1189,8 @@ app.whenReady().then(() => {
         await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
+        await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
+        await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
