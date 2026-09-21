@@ -749,15 +749,14 @@ module.exports = {
       !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
       title ? JSON.stringify(title.textContent) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏 5 个按钮全为 SVG 且无文字',
-      tb.length === 5 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('顶栏 6 个按钮全为 SVG 且无文字（含访问权限）',
+      tb.length === 6 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     const ph = q('#ai-input').placeholder;
     add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);
-    const chip = q('#ai-file-chip');
-    add('附件按钮图标化（回形针，无文字）',
-      !!chip && !!chip.querySelector('svg') && !chip.textContent.trim(), chip ? 'title=' + chip.title.slice(0, 20) : '');
+    // 回形针按钮已移除：它的作用（附当前文件）与「跟随当前文件」+ @ 引用完全重叠
+    add('输入区不再有功能重复的回形针按钮', !q('#ai-file-chip'));
     const barW = q('.ai-input-bar').getBoundingClientRect().width;
     const inpW = q('#ai-input').getBoundingClientRect().width;
     add('输入框占输入栏宽度 ≥ 70%（不再被按钮挤窄）', inpW / barW >= 0.7,
@@ -776,13 +775,12 @@ module.exports = {
       await sleep(1000);
       add('点「整理当前文档」→ 指令填入输入框', /整理/.test(q('#ai-input').value),
         JSON.stringify(String(q('#ai-input').value).slice(0, 26)));
-      // 当前文件可以有两种形态：自动跟随（显示在上方「正在看」条）或手动附加（chips）
+      // 当前文件是 chips 里那条「跟随」项（.follow），也可能是手动 @ 附加的
       const chips = qa('.ai-ctx-chip');
-      const fbNow = q('#ai-follow');
-      const viaFollow = !!fbNow && !fbNow.classList.contains('hidden') && /_ui_outline/.test(fbNow.textContent);
-      const viaChip = chips.length === 1 && /_ui_outline/.test(chips[0].textContent);
+      const viaFollow = chips.some((c) => c.classList.contains('follow') && /_ui_outline/.test(c.textContent));
+      const viaChip = chips.some((c) => /_ui_outline/.test(c.textContent));
       add('整理类指令一定带上了当前文件（跟随或手动附都算）', viaFollow || viaChip,
-        '跟随条=' + (viaFollow ? '有' : '无') + ' / chips=' + (chips.map((c) => c.textContent).join(' | ') || '(无)'));
+        '跟随 chip=' + (viaFollow ? '有' : '无') + ' / chips=' + (chips.map((c) => c.textContent).join(' | ') || '(无)'));
     }
     const hoverRect = q('.ai-quick .ai-quick-btn');
     return {
@@ -819,9 +817,9 @@ module.exports = {
     await sleep(600);
 
     // —— 人的第一眼：我打开了一份文档，它知道我在看哪份吗 ——
-    const fb = q('#ai-follow');
-    add('打开文档后，面板自己显示「正在看 这份文件」（不用手动附）',
-      !!fb && !fb.classList.contains('hidden') && fb.textContent.includes(FILE),
+    const fb = q('.ai-ctx-chip.follow');
+    add('打开文档后，面板自己把当前文件放进上下文（不用手动附）',
+      !!fb && fb.textContent.includes(FILE),
       fb ? tidy(fb) : '(没有这条)');
 
     // —— 我打一句话，回车 ——
@@ -952,6 +950,7 @@ module.exports = {
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chipTx = () => qa('#ai-chips .ai-ctx-chip').map((c) => c.textContent).join(',');
+    const tidy = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
     const lastReply = () => {
       const rows = qa('#ai-msgs .ai-msg.ai-assistant');
       return rows.length ? String(rows[rows.length - 1].textContent).replace(/\s+/g, ' ').slice(0, 50) : '(无回复)';
@@ -994,7 +993,7 @@ module.exports = {
     await sleep(400);
     const gi = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('Git'));
     if (gi) { gi.click(); await sleep(2000); }
-    add('「Git 变更」把未提交改动带进来', chipTx().includes('Git 未提交改动'), 'chips=' + chipTx());
+    add('「Git 变更」把未提交改动带进来', chipTx().includes('Git 变更'), 'chips=' + chipTx());
     // ③ 上下文预算明细
     q('#ai-usage').click();
     await sleep(400);
@@ -1014,7 +1013,7 @@ module.exports = {
       q('#ai-new').click();
       await sleep(450);
       add('固定的上下文在新对话里保留、未固定的被清掉',
-        chipTx().includes('当前选区') && !chipTx().includes('Git 未提交改动'),
+        chipTx().includes('当前选区') && !chipTx().includes('Git 变更'),
         before + '  →  ' + chipTx());
       if (chipTx().includes('当前选区')) {
         qa('#ai-chips .ai-ctx-chip').find((c) => c.textContent.includes('当前选区')).querySelector('.ai-ctx-x').click();
@@ -1082,6 +1081,57 @@ module.exports = {
     // ⑨ 项目规则文件
     const rules = await (window.AiPanel && AiPanel.loadProjectRules ? AiPanel.loadProjectRules(true) : Promise.resolve(''));
     add('读到项目规则文件 .myide/ai-rules.md', !!rules && String(rules).includes('变更列表'), String(rules).slice(0, 40));
+    // ⑩ 底部只有一条上下文线（不再「正在看」一行 + chips 换行 + 回形针，堆三层）
+    add('去掉了功能重复的回形针按钮（@ 已能引用一切）', !q('#ai-file-chip'));
+    add('「正在看」不再独占一整行', !q('#ai-follow'));
+    const fchip = q('#ai-chips .ai-ctx-chip.follow');
+    add('当前文件是 chips 里带图标的跟随项（不是 emoji 文字）',
+      !!fchip && !!fchip.querySelector('svg.ic') && !fchip.querySelector('.ai-ctx-pin'),
+      fchip ? tidy(fchip) : '(没有跟随 chip)');
+    const chipEl = q('#ai-chips .ai-ctx-chip');
+    const nChip = qa('#ai-chips .ai-ctx-chip').length;
+    if (chipEl) { chipEl.click(); await sleep(250); }
+    add('点 chip 本体不会误删（只有 ✕ 才移除）', qa('#ai-chips .ai-ctx-chip').length === nChip,
+      '点击前 ' + nChip + ' → 点击后 ' + qa('#ai-chips .ai-ctx-chip').length);
+    // ⑪ 预设权限：头部盾牌按钮（不用每次改文件都点确认）
+    add('头部有「访问权限」入口（不用钻设置页改下拉）', !!q('#ai-perm'));
+    if (q('#ai-perm')) { q('#ai-perm').click(); await sleep(400); }
+    const pseg = qa('.ai-perm-pop .ai-seg');
+    add('权限浮层：两个维度 × 三档（每次确认 / 自动 / 禁止）',
+      pseg.length === 2 && qa('.ai-perm-pop .ai-seg button').length === 6,
+      pseg.length + ' 组 / ' + qa('.ai-perm-pop .ai-seg button').length + ' 个档位');
+    add('权限浮层写明危险命令不豁免', !!q('.ai-perm-pop .ai-perm-note'));
+    if (pseg.length) {
+      const seg0 = () => qa('.ai-perm-pop .ai-seg')[0];   // 每次重查：切档会重渲染浮层
+      seg0().querySelectorAll('button')[1].click();
+      await sleep(300);
+      add('点「自动」档位真的切了', AiPanel.permWrite() === 'auto', 'permWrite=' + AiPanel.permWrite());
+      seg0().querySelectorAll('button')[0].click();
+      await sleep(300);
+      add('能改回「每次确认」', AiPanel.permWrite() === 'confirm', 'permWrite=' + AiPanel.permWrite());
+    }
+    if (q('#ai-perm')) { q('#ai-perm').click(); await sleep(300); }
+    add('权限浮层可收起', !q('.ai-perm-pop'));
+    // ⑫ 改动确认：贴在面板底部的浮层，不再用居中大模态把编辑器整个盖住
+    q('#ai-new').click();
+    await sleep(350);
+    AiPanel.savePerms({});
+    AiPanel.sessionPerm.write = false;
+    AiPanel.setConfig({ permWrite: 'confirm', permRun: 'confirm', allowPaths: [] });
+    await ask('第一次改', 2800);
+    const cf = q('.ai-confirm');
+    add('改动确认是贴面板底部的浮层（不是居中大模态）', !!cf,
+      cf ? '浮层在' + (q('#ai-panel .ai-confirm') ? '面板内' : '面板外') : ('没出现 · 末条回复=' + lastReply()));
+    add('弹浮层时没有全屏遮罩（编辑器不被盖住）', !q('#modal-mask:not(.hidden)'));
+    add('浮层里有文件名 + 加减行数', !!cf && !!cf.querySelector('.ai-cf-nm') && !!cf.querySelector('.ai-cf-stat'),
+      cf && cf.querySelector('.ai-cf-nm') ? cf.querySelector('.ai-cf-nm').textContent + ' · ' + cf.querySelector('.ai-cf-stat').textContent : '');
+    add('diff 直接铺在浮层里（不用再点开）', !!cf && !!cf.querySelector('.ai-cf-body .d-add'));
+    add('有「收起 / 展开 diff」折叠按钮', !!q('#dw-fold'));
+    if (q('#dw-no')) { q('#dw-no').click(); await sleep(400); }
+    add('拒绝后浮层收起', !q('.ai-confirm'));
+    // 再弹一次并留着：自检产物是给人看的，浮层到底长什么样得能看见（步骤结束后才截图）
+    await ask('第一次改', 2800);
+    add('确认浮层可再次唤起（截图用）', !!q('.ai-confirm'));
     return { R };
   },
 };

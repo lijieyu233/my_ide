@@ -492,6 +492,7 @@ const Settings = (() => {
         <label class="m-label" style="margin-top:8px">访问权限 —— 执行命令</label>
         <select id="ai-cfg-permr">
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
+          <option value="auto" ${cfg.permRun === 'auto' ? 'selected' : ''}>自动执行（普通命令不问，⚠ 慎选）</option>
           <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
         </select>
         <label class="m-label" style="margin-top:10px">写入白名单 —— 这些路径不再询问（每行一条，支持 docs/** 与 *.md）</label>
@@ -501,7 +502,8 @@ const Settings = (() => {
         <textarea id="ai-cfg-deny" rows="2" placeholder="npm publish&#10;docker" spellcheck="false"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
         <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
-          破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单与「记住授权」影响；
+          这些档位在 AI 面板顶部的「访问权限」按钮里也能直接切换，不必每次进设置页。<br>
+          破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单、「自动」档与「记住授权」影响；
           把已有文件内容清空也单独保护，必须点一次确认。
         </div>
         <div id="ai-cfg-perms"></div>

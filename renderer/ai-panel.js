@@ -5,7 +5,6 @@ const AiPanel = (() => {
   const msgsEl = document.getElementById('ai-msgs');
   const inputEl = document.getElementById('ai-input');
   const sendBtn = document.getElementById('ai-send');
-  const fileChip = document.getElementById('ai-file-chip');
 
   const LS_CFG = 'myide-ai-cfg';
   const LS_W = 'myide-ai-width';
@@ -223,7 +222,7 @@ const AiPanel = (() => {
   }
   function permRun() {
     const v = getConfig().permRun;
-    return ['confirm', 'deny'].includes(v) ? v : 'confirm';
+    return ['confirm', 'auto', 'deny'].includes(v) ? v : 'confirm';
   }
 
   // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
@@ -293,15 +292,99 @@ const AiPanel = (() => {
     return 'yes';
   }
   function runNeedsConfirm(cmd) {
-    if (permRun() === 'deny') return 'deny';
+    const base = permRun();
+    if (base === 'deny') return 'deny';
     const t = String(cmd || '').trim();
     const lc = t.toLowerCase();
     if (dangerousCmd(t)) return 'danger';                                    // 内置危险命令
     const deny = (getConfig().denyCmds || []).filter((x) => x && String(x).trim());
     if (deny.some((d2) => lc.startsWith(String(d2).trim().toLowerCase()))) return 'danger'; // 用户黑名单
+    if (base === 'auto') return 'no';            // 预设「自动执行」（危险命令 / 黑名单已在上面拦掉）
     if (sessionPerm.run || loadPerms().run) return 'no';
     if ((loadPerms().cmds || []).some((pre) => pre && t.startsWith(pre))) return 'no';
     return 'yes';
+  }
+
+  // ---------- 访问权限浮层（头部盾牌按钮）----------
+  // 用户的原话：「能不能预先给权限，不用每一个修改都要确认」。
+  // 以前只能钻进 设置 → AI 助手 改下拉，改完也不知道生效没。现在一个按钮摊开：
+  // 两个维度的档位（改文件 / 执行命令）+ 本项目已记住的授权（看得见、清得掉）。
+  let permPop = null;
+  function closePermPop() {
+    if (permPop && permPop.parentNode) permPop.parentNode.removeChild(permPop);
+    permPop = null;
+  }
+  function syncPermBtn() {
+    const b = document.getElementById('ai-perm');
+    if (!b) return;
+    const auto = permWrite() === 'auto' || !!loadPerms().write;
+    b.classList.toggle('on', auto);
+    b.title = '访问权限：改文件 ' + ({ confirm: '每次确认', auto: '自动应用', deny: '禁止' }[permWrite()] || '')
+      + ' · 命令 ' + ({ confirm: '每次确认', auto: '自动执行', deny: '禁止' }[permRun()] || '')
+      + (auto ? '（已开启自动应用）' : '');
+  }
+  function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
+  function renderPermPop() {
+    closePermPop();
+    const segHtml = (key, cur) => {
+      const opts = [{ v: 'confirm', t: '每次确认' }, { v: 'auto', t: '自动' }, { v: 'deny', t: '禁止' }];
+      return '<div class="ai-seg">' + opts.map((o) =>
+        '<button data-set="' + key + ':' + o.v + '" class="' + (o.v === cur ? 'on' : '') + '">' + o.t + '</button>').join('') + '</div>';
+    };
+    const pop = document.createElement('div');
+    pop.className = 'ai-perm-pop';
+    let html =
+      '<div class="ai-perm-sec"><span class="ai-perm-lb">改文件</span>' + segHtml('permWrite', permWrite()) + '</div>' +
+      '<div class="ai-perm-sec"><span class="ai-perm-lb">执行命令</span>' + segHtml('permRun', permRun()) + '</div>' +
+      '<div class="ai-perm-note">选「自动」后不再逐次弹确认；但危险命令（rm / del / git reset --hard…）与「把文件清空」始终要单独点一次。</div>';
+    const p = loadPerms();
+    const items = [];
+    if (p.write) items.push({ k: 'write', t: '本项目改文件不再询问' });
+    if (p.run) items.push({ k: 'run', t: '本项目执行命令不再询问' });
+    for (const c of (p.cmds || [])) items.push({ k: 'cmd:' + c, t: '「' + c + '」开头的命令不再询问' });
+    for (const g of (getConfig().allowPaths || [])) items.push({ k: 'path:' + g, t: '写入 ' + g + ' 不询问' });
+    if (items.length) {
+      html += '<div class="ai-perm-sec" style="margin:8px 0 0"><span class="ai-perm-lb">已记住的授权（本项目）</span>';
+      for (const it of items) {
+        html += '<div class="ai-perm-item"><span title="' + esc(it.t) + '">' + esc(it.t) + '</span>' +
+          '<button class="tb-btn" data-clear="' + esc(it.k) + '">清除</button></div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="ai-perm-note">还没有记住任何授权。</div>';
+    }
+    pop.innerHTML = html;
+    panel.appendChild(pop);
+    permPop = pop;
+    pop.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t.dataset && t.dataset.set) {
+        const i = t.dataset.set.indexOf(':');
+        setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
+        renderPermPop(); syncPermBtn();
+        const k = t.dataset.set.slice(0, i);
+        MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
+        return;
+      }
+      if (t.dataset && t.dataset.clear) {
+        const k = t.dataset.clear;
+        if (k.indexOf('path:') === 0) { MI.toast('路径白名单请到 设置 → AI 助手 里删该行', 'err'); return; }
+        const np = loadPerms();
+        if (k === 'write') delete np.write;
+        else if (k === 'run') delete np.run;
+        else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
+        savePerms(np);
+        renderPermPop(); syncPermBtn();
+        MI.toast('已清除该授权（下次会重新询问）', 'ok');
+      }
+    });
+    document.addEventListener('mousedown', function onOut(ev) {
+      if (!permPop) { document.removeEventListener('mousedown', onOut); return; }
+      if (!permPop.contains(ev.target) && !(ev.target.closest && ev.target.closest('#ai-perm'))) {
+        closePermPop();
+        document.removeEventListener('mousedown', onOut);
+      }
+    });
   }
 
   async function executeTool(call) {
@@ -460,32 +543,55 @@ const AiPanel = (() => {
     return rows;
   }
 
-  // diff 确认弹窗：返回 Promise<boolean>（true=应用）
+  // 改动确认：贴在面板底部的浮层（返回 'once' | 'always' | false）。
+  // 以前是居中大模态 —— 一跳出来编辑器被整个盖住，用户没法一边看真实文件一边决定改不改。
+  // Cursor（编辑器内 inline diff + Keep/Undo）、Cline（对话流里的 diff 卡片）、
+  // VS Code（Working Set 里开 diff 视图）都是「就地给 diff、决策按钮贴着 diff」，这里取同样的路子：
+  // 不抢焦点、不遮编辑器，diff 默认展开、可收起。
   function confirmDiff(rel, oldText, newText, danger) {
     return new Promise((resolve) => {
       const rows = lineDiff(oldText, newText);
       const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
-      const html = diffRowsHtml(rows);
       const box = document.createElement('div');
-      box.style.cssText = 'display:flex;flex-direction:column;min-width:520px;max-width:760px;height:70vh';
-      box.innerHTML = `
-        <div class="m-head">${danger ? '⚠️ 这会清空整个文件，请确认' : '✏️ AI 修改确认'} <span class="x" id="dw-x">✕</span></div>
-        <div style="padding:8px 14px;font-size:12px;color:var(--text-dim)">${esc(rel)} <span style="float:right">+${addN} 行 / -${delN} 行</span></div>
-        ${danger ? '<div style="padding:0 14px 8px;font-size:12px;color:var(--danger, #e06c75)">改动后文件内容会变成空 —— 等于把已有内容删掉。这一步不提供「以后都允许」。</div>' : ''}
-        <div class="dw-diff">${html}</div>
-        <div class="m-foot">
-          <button class="tb-btn m-cancel" id="dw-no">拒绝</button>
-          ${danger ? '' : '<button class="tb-btn" id="dw-always" title="以后本项目里改文件都不再询问（可在 设置 → AI 助手 清除）">本项目内都允许</button>'}
-          <button class="tb-btn ${danger ? 'm-cancel' : 'm-ok'}" id="dw-yes">${danger ? '确认清空' : '应用修改'}</button>
-        </div>`;
-      Modal.show(box);
+      box.className = 'ai-confirm';
+      box.innerHTML =
+        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
+          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
+            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
+            : '<path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/>') + '</svg>' +
+          '<span class="ai-cf-nm" title="' + esc(rel) + '">' + esc(rel) + '</span>' +
+          '<span class="ai-cf-stat"><i class="e-add">+' + addN + '</i><i class="e-del">-' + delN + '</i></span>' +
+          '<button class="ai-cf-fold" id="dw-fold">收起</button>' +
+        '</div>' +
+        '<div class="ai-cf-body dw-diff" id="dw-diff">' + diffRowsHtml(rows) + '</div>' +
+        (danger ? '<div class="ai-cf-note warn">改完这个文件就空了 —— 等于把已有内容删掉。这一步不提供「以后都允许」。</div>' : '') +
+        '<div class="ai-cf-foot">' +
+          (danger ? '' : '<button class="ai-cf-quiet" id="dw-always" title="以后本项目里改文件都不再询问（权限按钮或设置里可清除）">本项目内都允许</button>') +
+          '<button class="tb-btn m-cancel" id="dw-no">拒绝</button>' +
+          '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="dw-yes">' + (danger ? '确认清空' : '应用修改') + '</button>' +
+        '</div>';
+      const prev = panel.querySelector('.ai-confirm');
+      if (prev) prev.parentNode.removeChild(prev); // 上一处没处理完的确认先作废（它指向的文件可能已经变了）
+      panel.appendChild(box);
       let settled = false;
-      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        if (box.parentNode) box.parentNode.removeChild(box);
+        resolve(v);
+      };
+      document.addEventListener('keydown', onKey);
       box.querySelector('#dw-yes').onclick = () => finish('once');
       const al = box.querySelector('#dw-always');
       if (al) al.onclick = () => finish('always');
       box.querySelector('#dw-no').onclick = () => finish(false);
-      box.querySelector('#dw-x').onclick = () => finish(false);
+      const fold = box.querySelector('#dw-fold');
+      fold.onclick = () => {
+        const hid = box.querySelector('#dw-diff').classList.toggle('hidden');
+        fold.textContent = hid ? '展开 diff' : '收起';
+      };
     });
   }
 
@@ -1137,8 +1243,11 @@ const AiPanel = (() => {
   // 每次一轮对话结束自动存一条（localStorage，最多 30 条），标题取第一条用户发言。
   const LS_SESS = 'myide-ai-sessions';
   const SESS_LIMIT = 30;
-  function loadSessions() { try { return JSON.parse(localStorage.getItem(LS_SESS) || '[]') || []; } catch { return []; } }
-  function saveSessions(a) { try { localStorage.setItem(LS_SESS, JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
+  // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
+  // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
+  function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || ''); }
+  function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
+  function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
     const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
@@ -1250,6 +1359,43 @@ const AiPanel = (() => {
     MI.toast('已载入会话：' + se.title, 'ok');
   }
 
+  // ---------- 切换项目 ----------
+  // 会话跟着项目走：对话历史、上下文、本次对话的临时授权、项目规则缓存，
+  // 换项目一律重来（否则 AI 会把上一个项目的文件当成本项目的上下文）。
+  function onProjectChange() {
+    if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+    closeMention(); closeHist(); closeSlash(); closePermPop();
+    const cf = panel.querySelector('.ai-confirm');
+    if (cf) cf.parentNode.removeChild(cf);   // 没处理完的确认直接作废：它指的是上一个项目的文件
+    msgs = [];
+    curSessionId = null;
+    lastUserAt = null;
+    uiSeq = 0;
+    usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
+    pendingImages = [];
+    renderImages();
+    ctxFiles = [];
+    followPath = null;
+    followMuted.clear();
+    // ⚠ 原地清空，别重新赋值 —— AiPanel.sessionPerm 导出的是这个对象的引用，
+    //   赋新对象会让导出的引用永远指向旧对象（测试和设置页读到的都是过期值）
+    sessionPerm.write = false;
+    sessionPerm.run = false;
+    mentionCache = null;
+    mentionRoot = null;
+    rulesRoot = null;
+    rulesText = '';
+    rulesFile = '';
+    agentRounds = 0;
+    msgsEl.innerHTML = '';
+    renderUsage();
+    renderChips();
+    syncPermBtn();
+    loadProjectRules();
+    followActive();
+    showWelcome();
+  }
+
   // ---------- 项目规则文件 ----------
   // 「这个项目的文档用什么口吻、术语怎么写」这种事每次重复交代很烦。
   // 支持 .myide/ai-rules.md（本项目专用）/ AGENTS.md / CLAUDE.md / .cursorrules，
@@ -1279,16 +1425,8 @@ const AiPanel = (() => {
   // ---------- 跟随当前编辑器文件 ----------
   // 为什么需要：用户在面板里说「把这份文档精简一下」，AI 并不知道「这份」是哪份 ——
   // 以前要先手动点 📎 或 @ 引用，忘了附就答非所问。现在面板始终跟着当前打开的文件走。
-  function renderFollow() {
-    const box = document.getElementById('ai-follow');
-    if (!box) return;
-    const f = ctxFiles.find((x) => x.auto);
-    box.classList.toggle('hidden', !f);
-    if (!f) return;
-    const nm = box.querySelector('.ai-follow-nm');
-    if (nm) nm.textContent = f.path.replace(/^.*[\\/]/, '');
-    box.title = f.path;
-  }
+  // 「正在看」已并入 chips（class = follow），保留这个入口名，调用点不用改
+  function renderFollow() { renderChips(); }
   async function followActive() {
     await loadProjectRules();   // 项目规则只在换项目时真正读一次
     const tab = window.Viewer && Viewer.activeTab;
@@ -1405,32 +1543,49 @@ const AiPanel = (() => {
   function confirmRun(cmd, pre, danger) {
     return new Promise((resolve) => {
       const box = document.createElement('div');
-      box.style.cssText = 'display:flex;flex-direction:column;min-width:460px;max-width:640px';
+      box.className = 'ai-confirm';
       box.innerHTML =
-        '<div class="m-head">' + (danger ? '⚠️ 危险命令，请确认' : '▶ AI 请求执行命令') + ' <span class="x" id="cr-x">✕</span></div>' +
-        '<div class="m-body">' +
-          '<div style="white-space:pre-wrap;line-height:1.6;background:var(--bg-input);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px">' + esc(cmd) + '</div>' +
-          '<div style="margin-top:8px;font-size:12px;color:' + (danger ? 'var(--danger, #e06c75)' : 'var(--text-dim)') + '">' +
-            (danger
-              ? '这条命令可能是破坏性的（删除 / 重置 / 强制推送）。' + (pre ? '' : '')
-              : '在项目目录执行。') +
-            (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（可在 设置 → AI 助手 清除）。' : '') +
-            (danger ? ' 这一步不提供「总是允许」。' : '') +
-          '</div>' +
+        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
+          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
+            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
+            : '<path d="M4.7 2.7l8 5.3-8 5.3z"/>') + '</svg>' +
+          '<span class="ai-cf-nm">' + (danger ? '危险命令，请确认' : 'AI 请求执行命令') + '</span>' +
+          (pre ? '<span class="ai-cf-stat">' + esc(pre) + '</span>' : '') +
+          '<button class="ai-cf-fold" id="cr-fold">收起</button>' +
         '</div>' +
-        '<div class="m-foot">' +
+        '<div class="ai-cf-body" id="cr-body"><div class="ai-cf-cmd">' + esc(cmd) + '</div></div>' +
+        '<div class="ai-cf-note' + (danger ? ' warn' : '') + '">' +
+          (danger
+            ? '这条命令可能是破坏性的（删除 / 重置 / 强制推送）。这一步不提供「总是允许」。'
+            : '在项目目录执行。' + (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（权限按钮或设置里可清除）。' : '')) +
+        '</div>' +
+        '<div class="ai-cf-foot">' +
+          (pre ? '<button class="ai-cf-quiet" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
           '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
-          (pre ? '<button class="tb-btn" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
           '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="cr-yes">' + (danger ? '仍然执行' : '运行一次') + '</button>' +
         '</div>';
-      Modal.show(box);
+      const prev = panel.querySelector('.ai-confirm');
+      if (prev) prev.parentNode.removeChild(prev);
+      panel.appendChild(box);
       let settled = false;
-      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        if (box.parentNode) box.parentNode.removeChild(box);
+        resolve(v);
+      };
+      document.addEventListener('keydown', onKey);
       box.querySelector('#cr-no').onclick = () => finish(false);
       box.querySelector('#cr-yes').onclick = () => finish('once');
       const al = box.querySelector('#cr-always');
       if (al) al.onclick = () => finish('always');
-      box.querySelector('#cr-x').onclick = () => finish(false);
+      const fold = box.querySelector('#cr-fold');
+      fold.onclick = () => {
+        const hid = box.querySelector('#cr-body').classList.toggle('hidden');
+        fold.textContent = hid ? '展开' : '收起';
+      };
     });
   }
 
@@ -1509,33 +1664,70 @@ const AiPanel = (() => {
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
   }
 
-  // ---------- 附带上下文（📎 当前文件 + @ 引用文件/文件夹，统一 chips 展示）----------
+  // ---------- 附带上下文（跟随的当前文件 + 固定项 + @ 引用，收在一条线上）----------
+  // 以前「正在看」独占一整行、chips 又换行，外加一个回形针按钮，贴着输入框堆了三层，又高又乱。
+  // 现在全收进一条横向滚动的 chips：谁在上下文里、谁是跟随/固定，一眼看全。
+  const CTX_ICON = {
+    follow: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.4-4.2 6.3-4.2S14.3 8 14.3 8s-2.4 4.2-6.3 4.2S1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.9"/></svg>',
+    sel: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.6h10M3 8h6.4M3 12.4h8"/></svg>',
+    tabs: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.6h3.6l1.2 1.5h6.4v6.3H2.4z"/></svg>',
+    git: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4.1" r="1.5"/><circle cx="4.6" cy="11.9" r="1.5"/><circle cx="11.4" cy="6.6" r="1.5"/><path d="M4.6 5.6v4.8M6.1 5.1h3.4c1 0 1.9.7 1.9 1.7"/></svg>',
+    clip: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 5.6h4.6a1 1 0 0 1 1 1v5.3a1 1 0 0 1-1 1H5.7a1 1 0 0 1-1-1V6.6a1 1 0 0 1 1-1z"/><path d="M6.5 5.6V4.4a1.5 1.5 0 0 1 3 0v1.2"/></svg>',
+    file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
+    dir: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.6h3.6l1.2 1.5h6.4v6.3H2.4z"/></svg>',
+  };
+  // chip 上只写「短到能认出来」的名字（完整路径在悬停提示与上下文明细里）
+  function chipLabel(f) {
+    if (f.auto) return f.path.replace(/^.*[\\/]/, '');
+    if (f.special === 'sel') return '当前选区';
+    if (f.special === 'tabs') return '打开的标签页';
+    if (f.special === 'git') return 'Git 变更';
+    if (f.special === 'clip') return '剪贴板';
+    if (f.isDir) return f.path.replace(/^.*[\\/]/, '') + '/';
+    return f.path.replace(/^.*[\\/]/, '');
+  }
+  function chipIcon(f) {
+    if (f.auto) return CTX_ICON.follow;
+    if (f.special) return CTX_ICON[f.special] || CTX_ICON.file;
+    return f.isDir ? CTX_ICON.dir : CTX_ICON.file;
+  }
   function renderChips() {
     const box = document.getElementById('ai-chips');
     if (!box) return;
     box.innerHTML = '';
-    // 固定的排最前（用户明确说「这个一直带着」，就该一眼看到它在）
-    const manual = ctxFiles.filter((x) => !x.auto).sort((x, y) => ((y.pin ? 1 : 0) - (x.pin ? 1 : 0)));
-    box.classList.toggle('hidden', !manual.length);
-    for (const f of manual) {
+    // 顺序：跟随的当前文件 → 固定过的 → 其余（固定=用户明确说「一直带着」，排前面）
+    const list = ctxFiles.filter((x) => x.auto)
+      .concat(ctxFiles.filter((x) => !x.auto).sort((x, y) => ((y.pin ? 1 : 0) - (x.pin ? 1 : 0))));
+    box.classList.toggle('hidden', !list.length);
+    for (const f of list) {
       const chip = document.createElement('span');
-      chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '');
-      chip.title = f.path + '（点击移除）';
+      chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '') + (f.pin ? ' pinned' : '')
+        + (f.auto ? ' follow' : '') + (f.special ? ' special' : '');
+      chip.title = (f.auto ? '正在看：' : '') + f.path
+        + (f.auto ? '（点 ✕ 不再跟随；切到别的文件会重新跟随）' : '');
+      chip.insertAdjacentHTML('beforeend', chipIcon(f));
       const nm = document.createElement('span');
-      nm.textContent = (f.isDir ? '🗂 ' : '📄 ') + f.path.replace(/^.*[\\/]/, '') + (f.isDir ? '/' : '');
-      chip.classList.toggle('pinned', !!f.pin);
-      const pin = document.createElement('span');
-      pin.className = 'ai-ctx-pin' + (f.pin ? ' on' : '');
-      pin.textContent = '📌';
-      pin.title = f.pin ? '取消固定' : '固定（开始新对话时也保留）';
-      pin.onclick = (e) => { e.stopPropagation(); f.pin = !f.pin; renderChips(); };
+      nm.className = 'ai-ctx-nm';
+      nm.textContent = chipLabel(f);
+      chip.appendChild(nm);
+      if (!f.auto) {
+        const pin = document.createElement('span');
+        pin.className = 'ai-ctx-pin' + (f.pin ? ' on' : '');
+        pin.textContent = '📌';
+        pin.title = f.pin ? '取消固定' : '固定（开始新对话时也保留）';
+        pin.onclick = (e) => { e.stopPropagation(); f.pin = !f.pin; renderChips(); };
+        chip.appendChild(pin);
+      }
       const x = document.createElement('span');
       x.className = 'ai-ctx-x';
       x.textContent = '✕';
-      chip.appendChild(nm);
-      chip.appendChild(pin);
+      x.title = f.auto ? '不再跟随这个文件' : '从上下文移除';
+      // ⚠ 只有 ✕ 才移除：以前整块可点，想看一眼就误删，还得重新 @ 一次
+      x.onclick = (e) => {
+        e.stopPropagation();
+        if (f.auto) unfollowActive(); else removeCtx(f.path);
+      };
       chip.appendChild(x);
-      chip.onclick = () => { removeCtx(f.path); };
       box.appendChild(chip);
     }
   }
@@ -1865,11 +2057,6 @@ const AiPanel = (() => {
         send();
       };
     }
-    const followBox = document.getElementById('ai-follow');
-    if (followBox) {
-      const fx = followBox.querySelector('.ai-follow-x');
-      if (fx) fx.onclick = unfollowActive;
-    }
     if (inputEl) {
       // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
       inputEl.addEventListener('focus', () => { followActive(); });
@@ -1913,6 +2100,9 @@ const AiPanel = (() => {
     };
     const undoBtn = document.getElementById('ai-undo');
     if (undoBtn) undoBtn.onclick = undoCheckpoint;
+    const permBtn = document.getElementById('ai-perm');
+    if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); togglePermPop(); };
+    syncPermBtn();
     const usageEl = document.getElementById('ai-usage');
     if (usageEl) {
       usageEl.classList.add('clickable');
@@ -1921,7 +2111,6 @@ const AiPanel = (() => {
     }
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
-    if (fileChip) fileChip.onclick = toggleCtxFile;
     initDrop(); // 拖文件进面板 = 加进上下文
     initResize();
 
@@ -1986,6 +2175,6 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, onProjectChange };
 })();
 window.AiPanel = AiPanel;

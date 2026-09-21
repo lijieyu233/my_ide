@@ -6194,28 +6194,29 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('AI 面板：自动知道「你在看哪份文件」（不用每次手动附）', async () => {
     FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' + '本周完成联调。' + '\n' };
     FAKE_FS[P + '/other.md'] = { content: '# 别的' + '\n' };
-    const boxOf = () => $(dom, '#ai-follow');
-    const following = () => boxOf() && !boxOf().classList.contains('hidden');
+    // 「正在看」现在是上下文里的一条 chip（.follow），不再独占一整行
+    const boxOf = () => $(dom, '.ai-ctx-chip.follow');
+    const following = () => !!boxOf();
 
     await g(dom, 'Viewer.openFile("' + P + '/note.md")');
     await tick(); await tick();
-    assert_(following(), '打开文件后，面板自己显示「正在看」');
-    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + boxOf().textContent);
+    assert_(following(), '打开文件后，当前文件自己进了上下文（跟随）');
+    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + (boxOf() ? boxOf().textContent : ''));
 
-    // 用户说「这份不要跟随」
-    click(boxOf().querySelector('.ai-follow-x'));
+    // 用户点 ✕ 说「这份不要跟随」
+    click(boxOf().querySelector('.ai-ctx-x'));
     await tick();
-    assert_(!following(), '点「不再跟随」后收起');
+    assert_(!following(), '点 ✕ 后不再跟随');
 
     // 切到别的文件：新文件照常跟随（否定的只是 note.md）
     await g(dom, 'Viewer.openFile("' + P + '/other.md")');
     await tick(); await tick();
-    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + boxOf().textContent);
+    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + (boxOf() ? boxOf().textContent : ''));
 
     // 切回来：用户说过不跟随，就别再自动跟上
     await g(dom, 'Viewer.openFile("' + P + '/note.md")');
     await tick(); await tick();
-    assert_(!following(), '取消过跟随的文件，切回来也不再自动加: ' + boxOf().textContent);
+    assert_(!following(), '取消过跟随的文件，切回来也不再自动加');
 
     // 新开对话不该把「我在看这份文档」也清掉（人的直觉）
     await g(dom, 'Viewer.openFile("' + P + '/other.md")');
@@ -6397,7 +6398,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick(); await tick();
     assert_(calls.diffWorkdir.length > 0, 'Git 变更会把逐个文件的 diff 读进来: ' + calls.diffWorkdir.length);
     chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
-    assert_(chips.some((c) => c.textContent.includes('Git 未提交改动')), 'Git 变更进了上下文');
+    assert_(chips.some((c) => c.textContent.includes('Git 变更')), 'Git 变更进了上下文');
     // 上下文明细
     click($(dom, '#ai-usage'));
     await tick(); await tick();
@@ -6411,12 +6412,12 @@ assert_(panel, 'CM6 搜索面板出现');
     // 固定：跨「新对话」保留
     click($(dom, '#ai-chips .ai-ctx-pin'));
     await tick();
-    assert_($(dom, '#ai-chips .ai-ctx-chip').classList.contains('pinned'), '固定后 chip 标 pinned');
+    assert_(!!$(dom, '#ai-chips .ai-ctx-chip.pinned'), '固定后 chip 标 pinned');
     click($(dom, '#ai-new'));
     await tick();
     const chips2 = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
     assert_(chips2.some((c) => c.textContent.includes('当前选区')), '固定过的上下文在新对话里保留: ' + chips2.map((c) => c.textContent).join('|'));
-    assert_(!chips2.some((c) => c.textContent.includes('Git 未提交改动')), '没固定的上下文被清掉');
+    assert_(!chips2.some((c) => c.textContent.includes('Git 变更')), '没固定的上下文被清掉');
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
   });
 
@@ -6475,7 +6476,7 @@ assert_(panel, 'CM6 搜索面板出现');
 
   await okAsync('AI 面板：编辑已发消息重发 + 重新生成 + 历史会话', async () => {
     await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
-    try { dom.window.localStorage.removeItem('myide-ai-sessions'); } catch {}
+    try { dom.window.localStorage.removeItem('myide-ai-sessions:' + P); } catch {}
     key(dom, '8', { ctrl: true });
     await tick();
     click($(dom, '#ai-new'));
@@ -6509,7 +6510,7 @@ assert_(panel, 'CM6 搜索面板出现');
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
     assert_(aiCalls === 3, '重发又请求一次: ' + aiCalls);
     // 历史会话：每轮结束自动存
-    const sess = await g(dom, 'localStorage.getItem("myide-ai-sessions")');
+    const sess = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
     assert_(!!sess && String(sess).includes('换个问法'), '历史会话自动保存了这轮: ' + String(sess).slice(0, 60));
     click($(dom, '#ai-history'));
     await tick(); await tick();
@@ -6522,7 +6523,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, '载入后对话被重放: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
     assert_($allIn($(dom, '#ai-msgs'), '.ai-code-acts').length === 0 || true, '重放不报错');
-    try { dom.window.localStorage.removeItem('myide-ai-sessions'); } catch {}
+    try { dom.window.localStorage.removeItem('myide-ai-sessions:' + P); } catch {}
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
   });
@@ -6623,6 +6624,117 @@ assert_(panel, 'CM6 搜索面板出现');
     delete FAKE_FS[P + '/.myide/ai-rules.md'];
     aiScript = [];
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：预先给权限（不用每个修改都确认）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", permWrite: "confirm", permRun: "confirm" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    const pb = $(dom, '#ai-perm');
+    assert_(!!pb, '头部有「访问权限」入口（不用钻设置页改下拉）');
+    click(pb);
+    await tick();
+    const pop = $(dom, '.ai-perm-pop');
+    assert_(!!pop, '点开权限浮层');
+    assert_($allIn(pop, '.ai-seg').length === 2, '两个维度：改文件 / 执行命令');
+    assert_($allIn(pop, '.ai-seg button').length === 6, '每维度三档（每次确认 / 自动 / 禁止）: ' + $allIn(pop, '.ai-seg button').length);
+    // 改文件 → 自动
+    click($allIn(pop, '.ai-seg')[0].querySelectorAll('button')[1]);
+    await tick();
+    assert_(await g(dom, 'AiPanel.permWrite()') === 'auto', '档位已切到「自动」');
+    click(pb); // 再点一次收起
+    await tick();
+    assert_(!$(dom, '.ai-perm-pop'), '再点一次收起浮层');
+    // 自动档：改文件不再逐次弹确认
+    FAKE_FS[P + '/auto.txt'] = { type: 'file', content: 'v1' + '\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'z1', name: 'write_file', args: { path: 'auto.txt', content: 'v2' + '\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 auto';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '选了「自动」就不再逐次弹确认');
+    assert_(FAKE_FS[P + '/auto.txt'].content === 'v2' + '\n', '直接写入生效');
+    // 命令也预设自动：普通命令不问，危险命令照样问（铁律不破）
+    await g(dom, 'AiPanel.setConfig({ permRun: "auto" })');
+    assert_(await g(dom, 'AiPanel.runNeedsConfirm("npm test")') === 'no', '普通命令在「自动」档下不再问');
+    assert_(await g(dom, 'AiPanel.runNeedsConfirm("rm -rf node_modules")') === 'danger', '危险命令在「自动」档下仍要确认');
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'z2', name: 'run_command', args: { command: 'rm -rf node_modules' } }] },
+      { ok: true, text: '删了。' },
+    ];
+    $(dom, '#ai-input').value = '删依赖';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), '危险命令仍然弹确认（自动档也不豁免）');
+    assert_(!$(dom, '#cr-always'), '危险命令仍然不给「总是允许」');
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", permWrite: "confirm", permRun: "confirm" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：底部只有一条上下文线（不再堆三层）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    click($(dom, '#ai-new'));
+    await tick();
+    assert_(!$(dom, '#ai-file-chip'), '去掉功能重复的回形针按钮（@ 已能引用一切）');
+    assert_(!$(dom, '#ai-follow'), '「正在看」不再独占一整行');
+    FAKE_FS[P + '/a1.md'] = { type: 'file', content: '# a1' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/a1.md")');
+    await tick(); await tick();
+    const chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.length >= 1, '当前文件进了上下文: ' + chips.length);
+    assert_(chips[0].classList.contains('follow'), '跟随项有独立样式（follow）');
+    assert_($allIn(chips[0], 'svg.ic').length === 1, 'chip 用图标（不再是图标错配的 emoji 文字）');
+    // 只有 ✕ 才移除：点 chip 本体不该把它删掉（以前误点就没了，还得重新 @）
+    click(chips[0]);
+    await tick();
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === chips.length, '点 chip 本体不会误删');
+    click($(dom, '#ai-chips .ai-ctx-chip .ai-ctx-x'));
+    await tick();
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '点 ✕ 才移除');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：会话跟着项目走（换项目不再串味）', async () => {
+    const P2 = P + '_proj2';
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [{ ok: true, text: '记住了' }];
+    $(dom, '#ai-input').value = 'A 项目的私事';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, 'A 项目里聊了一轮');
+    const keyA = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
+    assert_(!!keyA && String(keyA).includes('A 项目的私事'), 'A 项目的会话存在自己项目的 key 下');
+
+    // 换项目
+    FAKE_FS[P2] = { type: 'dir', children: [] };
+    await g(dom, 'App.openProject(' + JSON.stringify(P2) + ')');
+    await tick(); await tick();
+    const nowMsgs = $allIn($(dom, '#ai-msgs'), '.ai-msg').length;
+    assert_(nowMsgs === 0, '换项目后对话被清空（不挂着上一个项目的内容）: ' + nowMsgs);
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '上下文也被清空');
+    const keyB = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
+    assert_(!keyB || !String(keyB).includes('A 项目的私事'), 'B 项目看不到 A 项目的会话: ' + String(keyB).slice(0, 30));
+
+    // 切回去：历史还在（会话跟项目走，不是被删了）
+    await g(dom, 'App.openProject(' + JSON.stringify(P) + ')');
+    await tick(); await tick();
+    click($(dom, '#ai-history'));
+    await tick(); await tick();
+    assert_($(dom, '.ai-hist-pop').textContent.includes('A 项目的私事'), '切回 A 项目还能翻到当时的会话');
+    click($(dom, '#ai-history'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
   });
 
   console.log('');

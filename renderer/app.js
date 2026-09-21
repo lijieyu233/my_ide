@@ -695,6 +695,7 @@ const App = (() => {
     renderEmptyRecent();
     Session.restore();
     restoreToolState(); // 各项目记忆自己的工具窗口状态
+    if (window.AiPanel && AiPanel.onProjectChange) AiPanel.onProjectChange(); // AI 会话跟着项目走
     // 打开耗时埋点（>800ms 记日志，定位大项目卡顿）
     setTimeout(() => {
       const ms = performance.now() - t0;

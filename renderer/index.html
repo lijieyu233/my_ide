@@ -275,6 +275,7 @@
       <span class="ai-title"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>AI 助手</span>
       <select id="ai-model" title="切换模型"></select>
       <span class="panel-title-actions">
+        <button id="ai-perm" class="vt-btn" title="访问权限：写文件 / 执行命令放行到什么程度（可一次性预设，不必每次确认）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.1l4.3 1.6v3.5c0 2.7-1.8 4.6-4.3 5.7-2.5-1.1-4.3-3-4.3-5.7V3.7z"/><path d="M6.2 7.9l1.3 1.3 2.5-2.6"/></svg></button>
         <button id="ai-history" class="vt-btn" title="历史会话（切换 / 重命名 / 删除）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.9V8l2.2 1.5"/></svg></button>
         <button id="ai-undo" class="vt-btn" title="撤销最近一次 AI 写入（可连点回滚多步）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 7.7a4 4 0 1 1 1.2 2.6"/><path d="M4.2 4.4v3.3h3.3"/></svg></button>
         <button id="ai-new" class="vt-btn" title="开始新对话（清空当前会话）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg></button>
@@ -285,17 +286,14 @@
     <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
-      <!-- 「正在看」条：面板始终知道你在编辑哪个文件，说「这份文档」才有着落 -->
-      <div id="ai-follow" class="ai-follow hidden">
-        <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.4-4.2 6.3-4.2S14.3 8 14.3 8s-2.4 4.2-6.3 4.2S1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.9"/></svg>
-        <span class="ai-follow-tx">正在看 <b class="ai-follow-nm"></b></span>
-        <button class="ai-follow-x" title="不再跟随当前文件（切到别的文件会重新跟随）">✕</button>
-      </div>
       <div id="ai-images" class="hidden"></div>
+      <!-- 上下文就一条线：跟随的当前文件 / 固定项 / @ 引用都在这一行里横向滚动，
+           不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
       <div id="ai-chips" class="hidden"></div>
-      <button id="ai-file-chip" class="ai-chip" title="把当前编辑器文件附为上下文（输入 @ 可引用项目内文件/文件夹）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.6 4.4L6.2 8.8a1.7 1.7 0 0 0 2.4 2.4l4.6-4.6a3.1 3.1 0 0 0-4.4-4.4L3.9 7.1a4.4 4.4 0 0 0 6.2 6.2l3.3-3.3"/></svg></button>
-      <textarea id="ai-input" placeholder="描述你想怎么整理…（Enter 发送 / @ 引用文件 / / 命令 / 可直接贴图）" spellcheck="false"></textarea>
-      <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+      <div class="ai-input-row">
+        <textarea id="ai-input" placeholder="描述你想怎么整理…（Enter 发送 / @ 引用文件 / / 命令 / 可直接贴图）" spellcheck="false"></textarea>
+        <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+      </div>
     </div>
   </div>
   <!-- 右侧工具窗口条（PyCharm 式：AI 助手等右侧停靠工具；Alt+` 收起/展开右侧栏） -->
