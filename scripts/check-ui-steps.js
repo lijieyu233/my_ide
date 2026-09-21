@@ -757,6 +757,30 @@ module.exports = {
     add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);
     // 回形针按钮已移除：它的作用（附当前文件）与「跟随当前文件」+ @ 引用完全重叠
     add('输入区不再有功能重复的回形针按钮', !q('#ai-file-chip'));
+    // 底部尺寸一致性：一套刻度（chip 24 / 输入框最小高 38 = 发送按钮 38 / 圆角 8）。
+    // 之前 chip 是 21px、字号 .8em（≈10.4px），跟 13px 的输入框差一大截 —— 一眼就"高度不齐"。
+    const hv = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
+    const radiusOf = (sel) => getComputedStyle(q(sel)).borderRadius;
+    const chipH = hv('#ai-chips .ai-ctx-chip');
+    add('底部控件按同一套刻度：chip 24 / 发送按钮 38 / 输入框最小高 38',
+      chipH === 24 && hv('#ai-send') === 38 && getComputedStyle(q('#ai-input')).minHeight === '38px',
+      'chip=' + chipH + ' 按钮=' + hv('#ai-send') + ' 输入框 min=' + getComputedStyle(q('#ai-input')).minHeight);
+    add('输入框与发送按钮圆角统一为 8px（不再一个 6 一个 4）',
+      radiusOf('#ai-input') === '8px' && radiusOf('#ai-send') === '8px',
+      '输入框=' + radiusOf('#ai-input') + ' 按钮=' + radiusOf('#ai-send'));
+    const botGap = Math.round(q('#ai-input').getBoundingClientRect().bottom - q('#ai-send').getBoundingClientRect().bottom);
+    add('发送按钮与输入框底部对齐（输入框多行时按钮也不飘）', Math.abs(botGap) <= 1, 'bottom差=' + botGap);
+    if (chipH > 0) {
+      const chip0 = q('#ai-chips .ai-ctx-chip');
+      const cr = chip0.getBoundingClientRect();
+      const svg = chip0.querySelector('svg.ic');
+      if (svg) {
+        const sr = svg.getBoundingClientRect();
+        const d = Math.abs((sr.top + sr.height / 2) - (cr.top + cr.height / 2));
+        add('chip 里图标与文字垂直居中（中心偏差 ≤ 1px）', d <= 1,
+          '偏差=' + d.toFixed(1) + 'px（图标 ' + Math.round(sr.height) + 'px / chip ' + Math.round(cr.height) + 'px）');
+      }
+    }
     const barW = q('.ai-input-bar').getBoundingClientRect().width;
     const inpW = q('#ai-input').getBoundingClientRect().width;
     add('输入框占输入栏宽度 ≥ 70%（不再被按钮挤窄）', inpW / barW >= 0.7,

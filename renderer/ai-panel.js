@@ -1676,6 +1676,8 @@ const AiPanel = (() => {
     file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
     dir: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.6h3.6l1.2 1.5h6.4v6.3H2.4z"/></svg>',
   };
+  // 固定按钮用 SVG：📌 是 emoji，字体会把 24px 的胶囊顶高，各平台渲染还大小不一
+  const PIN_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="2.5" class="fill"/></svg>';
   // chip 上只写「短到能认出来」的名字（完整路径在悬停提示与上下文明细里）
   function chipLabel(f) {
     if (f.auto) return f.path.replace(/^.*[\\/]/, '');
@@ -1713,7 +1715,7 @@ const AiPanel = (() => {
       if (!f.auto) {
         const pin = document.createElement('span');
         pin.className = 'ai-ctx-pin' + (f.pin ? ' on' : '');
-        pin.textContent = '📌';
+        pin.innerHTML = PIN_IC;
         pin.title = f.pin ? '取消固定' : '固定（开始新对话时也保留）';
         pin.onclick = (e) => { e.stopPropagation(); f.pin = !f.pin; renderChips(); };
         chip.appendChild(pin);

@@ -1866,11 +1866,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #ai-input {
   flex: 1; min-height: 38px; max-height: 160px; resize: none;
   background: var(--bg-input); color: var(--text-bright);
-  border: 1px solid var(--btn-border); border-radius: 6px;
+  border: 1px solid var(--btn-border); border-radius: 8px;
   padding: 8px 10px; outline: none; font-family: inherit; font-size: 1em; line-height: 1.5;
 }
 #ai-input:focus { border-color: var(--accent); }
-#ai-send { flex-shrink: 0; height: 38px; min-width: 38px; }
+#ai-send { flex-shrink: 0; height: 38px; min-width: 38px; border-radius: 8px; }
 /* 附件按钮：只留回形针图标 —— 中文按钮太宽，会把输入框压窄 */
 /* 拖拽进面板：整块高亮 + 一句话说明（不让人猜"松手会怎样"） */
 #ai-panel.drop-active::after {
@@ -1908,22 +1908,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- 附带上下文 chips（当前文件 / @ 引用统一展示）---------- */
 .ai-input-bar { position: relative; flex-wrap: wrap; } /* @ 补全弹窗的定位锚 */
-.ai-ctx-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 22px; padding: 0 4px 0 8px;
-  font-size: .85em; color: var(--text-dim); cursor: pointer;
-  background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 11px;
-  max-width: 220px; white-space: nowrap; overflow: hidden;
-}
-.ai-ctx-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.ai-ctx-chip.dir { border-color: color-mix(in srgb, #d19a44 45%, transparent); color: color-mix(in srgb, #d19a44 70%, var(--text)); }
-.ai-ctx-chip:hover { border-color: var(--accent); color: var(--text); }
-.ai-ctx-x {
-  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
-  width: 14px; height: 14px; border-radius: 50%;
-  font-size: .77em; color: var(--text-dim); background: transparent;
-}
-.ai-ctx-chip:hover .ai-ctx-x { color: var(--danger, #e06c75); }
 /* ---------- @ 文件/文件夹补全弹窗（约束在 AI 面板内）---------- */
 .ai-at-pop {
   position: absolute; left: 12px; right: 12px; bottom: calc(100% - 4px);
@@ -1962,15 +1946,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-usage.clickable { cursor: pointer; }
 .ai-usage.clickable:hover { color: var(--text-bright); text-decoration: underline dotted; }
 
-/* 上下文固定按钮：固定过的会跨「新对话」保留，所以排在最前 + 描边高亮 */
-.ai-ctx-pin {
-  font-size: .77em; opacity: .45; padding: 0 1px; cursor: pointer; flex-shrink: 0;
-  filter: grayscale(1);
-}
-.ai-ctx-chip:hover .ai-ctx-pin { filter: none; opacity: .8; }
-.ai-ctx-pin:hover { opacity: 1; }
-.ai-ctx-pin.on { opacity: 1; filter: none; }
-.ai-ctx-chip.pinned { border-color: var(--accent); color: var(--text); }
 
 /* 上下文预算明细 */
 .ai-bd-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; }
@@ -2453,28 +2428,41 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 
 /* ---------- AI 面板底部：上下文一条线（不再堆三层）---------- */
 #ai-chips {
-  display: flex; flex-wrap: nowrap; gap: 4px;
+  display: flex; flex-wrap: nowrap; gap: 5px;
   flex: 1 1 100%; overflow-x: auto; overflow-y: hidden;
-  padding: 3px 0 1px; scrollbar-width: thin; scrollbar-color: var(--border-mid) transparent;
+  padding: 2px 0 0; scrollbar-width: thin; scrollbar-color: var(--border-mid) transparent;
 }
 #ai-chips.hidden { display: none; }
 #ai-chips::-webkit-scrollbar { height: 4px; }
 #ai-chips::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 2px; }
 #ai-chips::-webkit-scrollbar-track { background: transparent; }
+/* 底部一套刻度：chip 24（胶囊 12）/ 输入框与发送按钮 38 / 圆角 8。
+   之前 chip 是 21px、字号 .8em（≈10.4px），跟 13px 的输入框差一大截，看着就是"高度不齐"。 */
 .ai-ctx-chip {
-  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
-  height: 21px; padding: 0 3px 0 7px;
-  font-size: .8em; color: var(--text-dim);
-  background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 11px;
-  max-width: 190px; white-space: nowrap; overflow: hidden;
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 4px 0 8px;
+  font-size: .88em; line-height: 1; color: var(--text-dim);
+  background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 12px;
+  max-width: 200px; white-space: nowrap; overflow: hidden;
 }
-.ai-ctx-chip svg.ic { width: 11px; height: 11px; flex-shrink: 0; opacity: .85; }
+.ai-ctx-chip svg.ic { width: 13px; height: 13px; flex-shrink: 0; opacity: .85; }
 .ai-ctx-chip > .ai-ctx-nm { overflow: hidden; text-overflow: ellipsis; }
 .ai-ctx-chip.follow { border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: color-mix(in srgb, var(--accent) 85%, var(--text)); }
 .ai-ctx-chip.dir, .ai-ctx-chip.special { border-color: color-mix(in srgb, #d19a44 40%, transparent); color: color-mix(in srgb, #d19a44 75%, var(--text)); }
 .ai-ctx-chip.pinned { border-color: var(--accent); color: var(--text); }
 .ai-ctx-chip:hover { border-color: var(--accent); color: var(--text); }
+/* chip 里的两个小动作统一 15×15（固定 / 移除），都带 hover 反馈 */
+.ai-ctx-pin, .ai-ctx-x {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%;
+  font-size: .85em; line-height: 1; color: var(--text-dim); background: transparent; cursor: pointer;
+}
+.ai-ctx-pin svg.ic { width: 12px; height: 12px; opacity: .45; }
+.ai-ctx-pin:hover svg.ic, .ai-ctx-pin.on svg.ic { opacity: 1; }
+.ai-ctx-pin.on svg.ic { color: var(--accent); }
+.ai-ctx-pin:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .ai-ctx-chip:hover .ai-ctx-x { color: var(--danger, #e06c75); }
+.ai-ctx-x:hover { background: color-mix(in srgb, var(--danger, #e06c75) 20%, transparent); }
 
 /* ---------- AI 面板：访问权限浮层（头部盾牌按钮）---------- */
 .ai-perm-pop {
