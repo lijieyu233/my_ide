@@ -12,7 +12,8 @@
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
-    "check:js": "node scripts/syntax-check.js"
+    "check:js": "node scripts/syntax-check.js",
+    "git:doctor": "node scripts/git-doctor.js"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
