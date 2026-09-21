@@ -709,4 +709,85 @@ module.exports = {
     const r1 = qa('#outline .outline-item')[1];
     return { R, hover: { x: Math.round(r1.getBoundingClientRect().left + 50), y: Math.round(r1.getBoundingClientRect().top + r1.getBoundingClientRect().height / 2) } };
   },
+
+  // ---------- AI 助手：空状态卡片 + 场景入口 + 顶栏/输入栏一致性 ----------
+  aiAssistant: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
+
+    // 自检 profile 是干净的 → 先放一份 AI 配置，才会渲染出带场景入口的卡片
+    try {
+      localStorage.setItem('myide-ai-cfg', JSON.stringify({
+        baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '',
+        permWrite: 'confirm', permRun: 'deny',
+      }));
+    } catch {}
+    window.App.setAiOpen(true);
+    await sleep(500);
+    const panel = q('#ai-panel');
+    const pw = panel ? Math.round(panel.getBoundingClientRect().width) : 0;
+    add('AI 面板已展开（以下断言的前提）',
+      !!panel && !panel.classList.contains('hidden') && pw > 0,
+      panel ? 'hidden=' + panel.classList.contains('hidden') + ' 宽=' + pw : '面板不存在');
+    const nw = q('#ai-new');
+    if (nw) { nw.click(); await sleep(400); }
+
+    const card = q('.ai-welcome .ai-card');
+    add('空状态是卡片（不再是大 emoji 飘在虚空）', !!card);
+    add('旧的大 emoji 元素已移除', !q('.ai-logo'));
+    add('卡片内无 emoji', !!card && !EMOJI.test(card.textContent), card ? JSON.stringify(card.textContent.slice(0, 40)) : '');
+    const quick = qa('.ai-quick .ai-quick-btn');
+    add('渲染出 4 个场景入口', quick.length === 4, quick.map((b) => b.textContent).join(' | '));
+    add('场景入口都带 tooltip', quick.length === 4 && quick.every((b) => !!b.title));
+
+    const title = q('.ai-head .ai-title');
+    add('顶栏标题 = SVG 图标 + 文字（无 emoji）',
+      !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
+      title ? JSON.stringify(title.textContent) : '');
+    const tb = qa('.ai-head .panel-title-actions .vt-btn');
+    add('顶栏 4 个按钮全为 SVG 且无文字',
+      tb.length === 4 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+      tb.map((b) => String(b.title).split('（')[0]).join(' | '));
+
+    const ph = q('#ai-input').placeholder;
+    add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);
+    const chip = q('#ai-file-chip');
+    add('附件按钮图标化（回形针，无文字）',
+      !!chip && !!chip.querySelector('svg') && !chip.textContent.trim(), chip ? 'title=' + chip.title.slice(0, 20) : '');
+    const barW = q('.ai-input-bar').getBoundingClientRect().width;
+    const inpW = q('#ai-input').getBoundingClientRect().width;
+    add('输入框占输入栏宽度 ≥ 70%（不再被按钮挤窄）', inpW / barW >= 0.7,
+      '输入框 ' + Math.round(inpW) + ' / 栏 ' + Math.round(barW));
+
+    // 场景入口要真能用：打开文档后点「整理当前文档」→ 填指令 + 自动挂上当前文件
+    await window.Viewer.openFile(dir + '\\_ui_outline.md');
+    await sleep(700);
+    window.App.setAiOpen(true);
+    const nw2 = q('#ai-new');
+    if (nw2) { nw2.click(); await sleep(500); }
+    const first = qa('.ai-quick .ai-quick-btn')[0];
+    add('场景入口就绪', !!first, first ? first.textContent : '');
+    if (first) {
+      first.click();
+      await sleep(1000);
+      add('点「整理当前文档」→ 指令填入输入框', /整理/.test(q('#ai-input').value),
+        JSON.stringify(String(q('#ai-input').value).slice(0, 26)));
+      const chips = qa('.ai-ctx-chip');
+      add('整理类指令自动附上当前文件（省得模型猜）',
+        chips.length === 1 && /_ui_outline/.test(chips[0].textContent),
+        chips.map((c) => c.textContent).join(' | ') || '(无)');
+    }
+    const hoverRect = q('.ai-quick .ai-quick-btn');
+    return {
+      R,
+      hover: hoverRect ? {
+        x: Math.round(hoverRect.getBoundingClientRect().left + 40),
+        y: Math.round(hoverRect.getBoundingClientRect().top + 12),
+      } : undefined,
+    };
+  },
 };

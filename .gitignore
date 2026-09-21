@@ -15,3 +15,4 @@ check-ui-*.png
 check-ui-timeout.txt
 .ui-check-stage.txt
 .ui-check-profile*/
+.ui-check-trash/

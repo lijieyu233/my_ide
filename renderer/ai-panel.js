@@ -106,16 +106,23 @@ const AiPanel = (() => {
     { type: 'function', function: { name: 'write_file', description: '写入文件（新内容完整覆盖，会先给用户看 diff 确认）。仅在新建文件或大规模重写时使用；局部修改请改用 replace_edit', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径，可新建' }, content: { type: 'string', description: '完整的新文件内容' } }, required: ['path', 'content'] } } },
     { type: 'function', function: { name: 'run_command', description: '在项目根目录执行一条 shell 命令（如运行脚本/装依赖/git 操作，15 秒超时）。每条命令都会先弹窗让用户确认', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' } }, required: ['command'] } } },
   ];
+  // 定位：通用助手。用户主要用它整理内容（改文档 / 查项目内容），代码能力保留不砍；
+  // 所以规则里把「省 token」「说人话」讲清楚，而不是只教怎么改代码
   const AGENT_SYS = [
-    '你是 My IDE 内置的 AI 编程助手，可以调用工具查看和修改用户的项目文件。',
+    '你是 My IDE 内置的 AI 助手，可以调用工具查看和修改用户项目里的文件。',
+    '用户主要拿你整理内容（改文档、查资料、归纳改写），也会让你处理代码，两者用同一套规则。',
     '',
     '## 工作规则',
-    '1. 回答代码问题前先用工具查看项目（list_files / search_files / read_file），不要凭空猜测文件内容',
-    '2. 修改已有文件优先用 replace_edit（只输出要改的片段）；只有新建文件或重写大半内容才用 write_file',
+    '1. 动手前先看真实内容（list_files / search_files / read_file），不要凭空猜测',
+    '2. 改文件优先用 replace_edit，只改要动的那一段；只有新建文件或整篇重写才用 write_file',
     '3. replace_edit 的 search 必须与文件内容逐字符一致（含缩进、空行），不确定就先 read_file',
-    '4. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
-    '5. 需要运行验证（跑测试/启动脚本）时用 run_command，一条命令只做一件事',
-    '6. 全部任务完成后用中文总结改动，不再调用工具',
+    '4. 文件很长时不要整篇读：先用 search_files 定位到相关段落，再按需读取 —— 省时间也省额度',
+    '5. 需要多步操作就分多轮调用，每轮等工具结果回来再决定下一步',
+    '6. 只在确有必要时用 run_command（跑测试 / 验证），一条命令只做一件事',
+    '7. 全部任务完成后用中文说明改了什么，不再调用工具',
+    '',
+    '## 表达',
+    '说人话：结论先行、少堆术语，不要输出与用户要求无关的技术细节。',
     '',
     '（如果当前服务不支持原生工具调用，也可在正文里用 ```tool_call {"name":"工具名","args":{...}}``` 代码块表达同样的调用）',
   ].join('\n');
@@ -488,15 +495,56 @@ const AiPanel = (() => {
     return row;
   }
 
+  // 空状态：卡片 + 场景入口 —— 点一下把指令填进输入框（用户不用自己想该怎么问）
+  const AI_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>';
+  const QUICK_PROMPTS = [
+    { label: '整理当前文档', tip: '理顺结构、统一格式，改完先看 diff', file: true, text: '把当前打开的文档整理一下：理顺结构、统一格式，改完先给我看 diff' },
+    { label: '提取要点', tip: '按章节归纳要点', file: true, text: '读一下当前文档，按章节提取要点，用简洁的列表整理给我' },
+    { label: '按标题重组', tip: '保持原意，只调结构', file: true, text: '按标题层级重新组织当前文档的内容，保持原意不变，改完给我看 diff' },
+    { label: '在项目中查找', tip: '搜项目里的内容', file: false, text: '在项目里查找：' },
+  ];
+  // 场景入口：填指令 + 聚焦；整理类顺手挂上当前文件（省得模型自己猜是哪个文件）
+  async function runQuickPrompt(q) {
+    const input = document.getElementById('ai-input');
+    if (!input) return;
+    if (q.file) {
+      const tab = window.Viewer && Viewer.activeTab;
+      if (!tab || tab.dir) { MI.toast('先在编辑器里打开一个文档，再点这个', 'err'); return; }
+      if (!ctxFiles.some((f) => f.path === tab.path)) await toggleCtxFile();
+    }
+    input.value = q.text;
+    input.focus();
+    try { input.setSelectionRange(q.text.length, q.text.length); } catch {}
+  }
   function showWelcome() {
     const cfg = getConfig();
     const w = document.createElement('div');
     w.className = 'ai-welcome';
-    w.innerHTML = `
-      <div class="ai-logo">🤖</div>
-      <div class="ai-welcome-title">AI 助手</div>
-      <div class="ai-welcome-tip">${cfg.baseUrl ? '已连接 ' + esc(cfg.model || '模型') + '，开始对话吧' : '尚未配置模型 —— 点击 ⚙ 或到 设置 → AI 助手 填写服务地址与模型'}</div>
-      <div class="ai-welcome-tip" style="margin-top:4px">支持工具调用（读文件/搜索/修改需确认）· 多轮对话 · 📎 附当前文件 · Enter 发送</div>`;
+    const card = document.createElement('div');
+    card.className = 'ai-card';
+    if (!cfg.baseUrl) {
+      card.innerHTML =
+        '<div class="ai-card-ic">' + AI_IC + '</div>' +
+        '<div class="ai-card-title">AI 助手</div>' +
+        '<div class="ai-card-sub">还没配置模型 —— 点右上角设置，或到「设置 → AI 助手」填写服务地址与模型</div>';
+    } else {
+      card.innerHTML =
+        '<div class="ai-card-ic">' + AI_IC + '</div>' +
+        '<div class="ai-card-title">整理你的文档和项目内容</div>' +
+        '<div class="ai-card-sub">我会读项目里的文件、按你的要求改文档。任何写入都先把改动摆给你看，确认了才落盘。</div>';
+      const grid = document.createElement('div');
+      grid.className = 'ai-quick';
+      for (const q of QUICK_PROMPTS) {
+        const b = document.createElement('button');
+        b.className = 'ai-quick-btn';
+        b.textContent = q.label;
+        b.title = q.tip;
+        b.onclick = () => runQuickPrompt(q);
+        grid.appendChild(b);
+      }
+      card.appendChild(grid);
+    }
+    w.appendChild(card);
     msgsEl.appendChild(w);
   }
 

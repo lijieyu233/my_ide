@@ -13,6 +13,9 @@ const SMOKE = process.argv.includes('--smoke');
 // ② 避免与该应用正在运行的实例抢同一份 Chromium profile（实测会出现「cache 拒绝访问」并偶发启动失败）
 // ③ 每次跑用带 PID 的独立目录：上一次自检若卡住没退出，持有的 profile 锁不会拖死这一次
 const UI_CHECK = process.argv.includes('--check-ui');
+// 自检默认 **headless**：不显示窗口、不进任务栏、不抢焦点 —— 跑测试时不打扰使用者。
+// 需要肉眼看着它跑（排查截图异常）时加 --check-ui-show。
+const UI_CHECK_HEADLESS = UI_CHECK && !process.argv.includes('--check-ui-show');
 if (UI_CHECK) {
   // 放到系统临时目录：项目目录下建 Chromium profile 会偶发「Unable to move the cache: 拒绝访问」，
   // 甚至整个主进程卡死在 profile 初始化（事件循环被占住 → 连看门狗定时器都不触发）
@@ -67,11 +70,16 @@ function createWindow() {
     backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
+    // 自检 headless：窗口不显示、不进任务栏（正常启动不受影响）
+    show: !UI_CHECK_HEADLESS,
+    skipTaskbar: UI_CHECK_HEADLESS,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 隐藏窗口会被 Chromium 判为 backgrounded：不关节流的话渲染/定时器被降频，断言会假失败
+      backgroundThrottling: false,
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -1088,18 +1096,25 @@ app.whenReady().then(() => {
         } catch {}
         app.exit(3);
       }, 150000);
+      // 自证：headless 模式下窗口确实没有显示（不弹窗 / 不进任务栏 / 不抢焦点）
+      lines.push('窗口模式: ' + (UI_CHECK_HEADLESS ? 'headless（不显示窗口）' : 'visible') + ' | isVisible=' + win.isVisible());
       const js = (fn, arg) => '(' + String(fn) + ')(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')';
       // 截图：capturePage 对「被遮挡/后台」的窗口会返回上一帧旧画面（实测 DOM 已变、位图不变），
       // 因此优先走 CDP Page.captureScreenshot(fromSurface:false) —— 直接从视图取当前合成结果
       const grab = async (file, clip) => {
-        try { win.showInactive(); } catch {}
+        // 可见时把窗口提上来（CDP 取新帧更稳）；headless 下窗口本就不可见，跳过
+        if (!UI_CHECK_HEADLESS) { try { win.showInactive(); } catch {} }
         await new Promise((r) => setTimeout(r, 350));
         let buf = null;
         try {
           if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
           // 带 clip（区域放大截图）必须用 fromSurface:true，否则该命令会一直不返回；
+          // headless 下窗口不参与合成，fromSurface:false 会拿到空白图（实测每张都恰好 4800 字节）
+          //   → headless 统一走 fromSurface:true；可见模式下沿用已验证的 fromSurface:false（能取到新帧）
           // 再加 8s 超时兜底 —— 自检脚本绝不能因为截图把整个进程挂死
-          const opts = clip ? { format: 'png', clip } : { format: 'png', fromSurface: false };
+          const opts = clip
+            ? { format: 'png', clip, fromSurface: true }
+            : { format: 'png', fromSurface: UI_CHECK_HEADLESS ? true : false };
           const send = wc.debugger.sendCommand('Page.captureScreenshot', opts);
           const { data } = await Promise.race([
             send,
@@ -1114,9 +1129,29 @@ app.whenReady().then(() => {
         if (!fs.existsSync(path.join(__dirname, file))) throw new Error('写入后文件不存在: ' + file);
         return buf.length;
       };
+      // headless 模式窗口不显示 → sendInputEvent 派发不到页面：真实输入类步骤只能跳过。
+      // 需要连真实输入一起验时用 --check-ui-show（会短暂显示窗口）。
+      const SKIP_IN_HEADLESS = new Set([
+        '真实滚轮 → 画面滚动',
+        '注入真实 Ctrl+滚轮',
+        '真实 Ctrl+滚轮 → 缩放',
+      ]);
       const run = async (label, expr, shot) => {
         let hover = null;
         let out = null;
+        if (UI_CHECK_HEADLESS && SKIP_IN_HEADLESS.has(label)) {
+          lines.push('SKIP  ' + label + '（headless 不显示窗口，无法派发真实输入；需 --check-ui-show）');
+          // 挪走上一轮可能留下的同名截图：留着它会让「产出截图」列表和视觉验证都对不上
+          // ⚠ 必须挪到**同盘**目录：本机项目在 D 盘，往 C:\...\Temp 挪会 EXDEV 失败（静默 catch 会假装清理成功）
+          if (shot) {
+            try {
+              const trash = path.join(__dirname, '.ui-check-trash');
+              fs.mkdirSync(trash, { recursive: true });
+              fs.renameSync(path.join(__dirname, shot), path.join(trash, shot));
+            } catch {}
+          }
+          return;
+        }
         // 阶段标记：卡住时一眼看出停在哪一步（文件 + stdout 双份，stdout 便于外部重定向排查）
         console.log('[check-ui] → ' + label);
         try { fs.writeFileSync(path.join(__dirname, '.ui-check-stage.txt'), label + '\n'); } catch {}
@@ -1191,6 +1226,7 @@ app.whenReady().then(() => {
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
+        await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
@@ -1218,7 +1254,9 @@ app.whenReady().then(() => {
       } catch {}
       clearTimeout(watchdog);
       try { fx.cleanFixtures(demo); } catch {}
-      lines.push('UI CHECK: ' + (lines.filter((l) => l.indexOf('PASS') === 0).length) + ' 通过 / ' + fail + ' 失败');
+      const skipN = lines.filter((l) => l.indexOf('SKIP') === 0).length;
+      lines.push('UI CHECK: ' + (lines.filter((l) => l.indexOf('PASS') === 0).length) + ' 通过 / ' + fail + ' 失败'
+        + (skipN ? '（' + skipN + ' 项因 headless 跳过）' : ''));
       try {
         const shots = fs.readdirSync(__dirname).filter((f) => /^check-ui-.*\.png$/.test(f));
         lines.push('产出截图: ' + (shots.length ? shots.join(', ') : '（无）'));
