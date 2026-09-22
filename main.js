@@ -1272,6 +1272,7 @@ app.whenReady().then(() => {
         // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
         try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
         await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
+        await run('侧栏上下分栏（项目树 + 大纲）', js(steps.sideSplit, demo), 'check-ui-1l-side-split.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
@@ -1305,6 +1306,8 @@ app.whenReady().then(() => {
         await run('mermaid Live', js(steps.mermaidLiveStatic, demo), 'check-ui-6-mermaid-live.png');
         await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
         await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
+        // 放最后：这一步故意把主题留在酒红上，产物截图就是它的实际观感
+        await run('主题：酒红去饱和（红只做强调色）', js(steps.themeCrimson), 'check-ui-9-theme-crimson.png');
       } catch (e) {
         lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
         fail++;

@@ -78,6 +78,20 @@ module.exports = {
     const hasFocusRule = Array.from(document.styleSheets).flatMap((s) => { try { return Array.from(s.cssRules); } catch { return []; } })
       .some((r) => r.selectorText === ':focus-visible');
     add('统一焦点态规则存在', hasFocusRule, hasFocusRule ? ':focus-visible' : '缺失');
+    // 布局尺寸只有一个来源：CSS 的默认宽度必须等于 App.LAYOUT 里的默认值，
+    // 否则「双击分隔线复位」会跳到另一个宽度上（数字分散在两处必然漂移）。
+    const cssW = (sel) => { const e = q(sel); return e ? getComputedStyle(e).width : ''; };
+    const LO = window.App.LAYOUT;
+    add('侧栏默认宽度 = App.LAYOUT.sidebar.def', cssW('#sidebar') === LO.sidebar.def + 'px',
+      cssW('#sidebar') + ' vs ' + LO.sidebar.def + 'px');
+    add('AI 面板默认宽度 = App.LAYOUT.ai.def', cssW('#ai-panel') === LO.ai.def + 'px',
+      cssW('#ai-panel') + ' vs ' + LO.ai.def + 'px');
+    add('侧栏钳制范围写进 CSS（min / max 与 LAYOUT 一致）',
+      getComputedStyle(q('#sidebar')).minWidth === LO.sidebar.min + 'px'
+      && getComputedStyle(q('#sidebar')).maxWidth === LO.sidebar.max + 'px',
+      getComputedStyle(q('#sidebar')).minWidth + ' ~ ' + getComputedStyle(q('#sidebar')).maxWidth);
+    add('右侧栏比左侧栏略宽（AI 要能读长文档片段）', LO.ai.def > LO.sidebar.def, LO.sidebar.def + ' / ' + LO.ai.def);
+
     const sbBorder = getComputedStyle(q('#statusbar')).borderTopColor;
     add('主分界线不再是近黑（--border-pane 生效）', sbBorder !== 'rgb(16, 16, 16)',
       getComputedStyle(document.documentElement).getPropertyValue('--border-pane').trim() + ' → ' + sbBorder);
@@ -219,59 +233,234 @@ module.exports = {
       while (Date.now() - t0 < (ms || 8000)) { const v = fn(); if (v) return v; await sleep(100); }
       return null;
     };
-    await waitFor(() => qa('#project-bar .proj-btn').length >= 10, 6000);
+    const opened = await waitFor(() => window.App.getProjects().length >= 5, 8000);
+    const n = window.App.getProjects().length;
+    add('已打开多个项目（以下断言的前提）', !!opened && n >= 5, 'n=' + n);
+
     const bar = q('#project-bar');
-    const pill = q('.proj-all');
     const btns = qa('#project-bar .proj-btn');
-    add('项目栏渲染出多个项目按钮', btns.length >= 10, 'count=' + btns.length);
-    // 文案从「14 项目」改成「全部项目 + 数量徽标」：前者读起来不通、也看不出这是入口
-    add('「全部项目」入口显示项目数', pill && /全部项目\s*\d+/.test(pill.textContent), pill && pill.textContent);
-    // 结构性回归：入口必须在横向滚动容器之外（老实现 sticky 浮在滚动层上 → 按钮从它底下钻过去 = 覆盖）
-    add('「全部项目」在滚动容器之外', !!pill && pill.parentElement && pill.parentElement.id === 'project-bar-wrap' && !bar.contains(pill),
-      pill && ('父=' + (pill.parentElement && pill.parentElement.id) + ' 在bar内=' + bar.contains(pill)));
-    add('「全部项目」不再是 sticky 悬浮层', pill && getComputedStyle(pill).position !== 'sticky', pill && getComputedStyle(pill).position);
-    add('不再重复显示当前项目名（高亮按钮就在旁边）', pill && pill.querySelectorAll('.proj-all-cur').length === 0, pill && pill.textContent);
-    if (!btns.length) return { R };
-    // 高度：挤压会让按钮不等高 / 文字贴边
-    const hs = [...new Set(btns.map((b) => Math.round(b.getBoundingClientRect().height)))];
-    add('所有项目按钮等高', hs.length === 1, 'heights=' + hs.join('/'));
-    const bh = btns[0].getBoundingClientRect().height;
-    const th = btns[0].querySelector('span').getBoundingClientRect().height;
-    add('按钮内文字有上下留白（不再挤压）', bh - th >= 4, 'btn=' + Math.round(bh) + ' text=' + Math.round(th));
-    add('长名字省略号截断（不撑爆栏）', btns[0].querySelector('span').scrollWidth <= 181, 'spanW=' + btns[0].querySelector('span').scrollWidth);
-    // 溢出淡出提示
-    const overflowing = bar.scrollWidth > bar.clientWidth + 1;
-    add('溢出时右侧有淡出提示', !overflowing || bar.classList.contains('scroll-r'),
-      'scrollW=' + bar.scrollWidth + ' clientW=' + bar.clientWidth + ' cls=' + bar.className);
-    // 关键回归：把当前项目按钮滚出可视区 → 重渲染后必须自动滚回
-    bar.scrollLeft = 600;
-    await sleep(150);
-    await window.App.setRoot(dir);
-    await sleep(500);
-    // ⚠ 重渲染会重建 DOM：pill 必须重新取（旧引用已脱离文档，rect 恒为 0）
-    const pill2 = q('.proj-all');
-    const act = q('#project-bar .proj-btn.active');
-    const pillR = pill2.getBoundingClientRect();
-    const barR = bar.getBoundingClientRect();
-    // 一律用 rect 差值判位置（offsetLeft 的 offsetParent 是 body，混着 scrollLeft 用会算错）
-    const actR = act.getBoundingClientRect();
-    const relL = Math.round(actR.left - barR.left);
-    const relR = Math.round(actR.right - barR.left);
-    add('「全部项目」入口宽度正常（未塌陷）', pillR.width > 60, 'pillW=' + Math.round(pillR.width));
-    add('重渲染后当前项目滚回可视区', relL >= -1 && relR <= bar.clientWidth + 1,
-      '当前=' + String(act.textContent || '').replace('✕', '') + ' 相对=[' + relL + ',' + relR + '] 容器宽=' + bar.clientWidth
-      + ' scrollLeft=' + Math.round(bar.scrollLeft)
-      + ' bar=[' + Math.round(barR.left) + ',' + Math.round(barR.right) + '] act=[' + Math.round(actR.left) + ',' + Math.round(actR.right) + ']'
-      + ' 页面横滚=' + Math.round(document.scrollingElement.scrollLeft));
-    add('入口与项目按钮分区清晰（不同容器 + 有间距）', barR.left - pillR.right >= 4,
-      'gap=' + Math.round(barR.left - pillR.right) + 'px');
-    add('项目栏没有把页面撑出横向滚动', document.scrollingElement.scrollWidth <= document.scrollingElement.clientWidth + 1,
-      'doc=' + document.scrollingElement.scrollWidth + '/' + document.scrollingElement.clientWidth);
-    let overlap = 0;
-    for (let i = 1; i < btns.length; i++) {
-      if (btns[i].getBoundingClientRect().left < btns[i - 1].getBoundingClientRect().right - 1) overlap++;
+    // 核心回归：项目多的时候不再平铺一排胶囊。原来那排和下面的文件 Tab 同一个视觉层级、
+    // 甚至更抢眼 —— 一级导航（项目）压过二级导航（文件），顶栏就读成了"功能栏"。
+    add('项目多时不再平铺项目胶囊（顶栏只留当前项目一个控件）', btns.length === 1,
+      '按钮=' + btns.length + ' / 项目=' + n);
+    add('顶栏项目区不再横向滚动（原先一排胶囊必须横滚）', bar.scrollWidth <= bar.clientWidth + 1,
+      'scrollW=' + bar.scrollWidth + ' clientW=' + bar.clientWidth);
+    const cur = q('#project-bar .proj-btn.proj-current');
+    add('当前项目控件存在且有项目名', !!cur && ((cur.querySelector('.proj-cur-name') || {}).textContent || '').length > 0,
+      cur ? cur.textContent : '无');
+    // 它是"标题"不是"选中的 Tab"：不能是实心 accent 块（那正是"处处抢注意力"的来源）
+    const bg = cur ? getComputedStyle(cur).backgroundColor : '';
+    add('当前项目不是实心 accent 块（标题化，不抢焦点）',
+      !cur || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent', 'bg=' + bg);
+    add('有下拉指示（看得出能切换项目）', !!q('#project-bar .proj-cur-caret svg'));
+    add('「关闭项目 ✕」默认隐藏（顶栏不常驻危险动作）',
+      !cur || getComputedStyle(cur.querySelector('.proj-close')).visibility === 'hidden');
+
+    const pill = q('.proj-all');
+    add('「全部项目」入口仍在且显示项目数', pill && /全部项目\s*\d+/.test(pill.textContent), pill && pill.textContent);
+    add('「全部项目」在滚动容器之外（结构上不可能盖住项目名）',
+      !!pill && pill.parentElement && pill.parentElement.id === 'project-bar-wrap' && !bar.contains(pill),
+      pill && ('父=' + (pill.parentElement && pill.parentElement.id)));
+
+    // 点当前项目控件 → 弹切换菜单（而不是"打开当前项目"这种无意义动作）
+    cur.click();
+    await sleep(300);
+    const menu = q('#ctx-menu');
+    add('点击当前项目弹出切换菜单', !!menu && !menu.classList.contains('hidden'), menu ? menu.className : '无菜单');
+    const items = menu ? [...menu.querySelectorAll('.ctx-item:not(.ctx-title)')] : [];
+    add('菜单里有可切换的其他项目', items.length >= 2, '条目=' + items.length);
+    add('菜单底部有当前项目的操作（复制路径 / 定位）',
+      items.some((x) => /复制项目路径/.test(x.textContent)) && items.some((x) => /在资源管理器中显示/.test(x.textContent)),
+      items.map((x) => x.textContent).join(' | ').slice(0, 90));
+    // 菜单里点另一个项目 → 真的切过去
+    const before = window.App.root;
+    const other = items.find((x) => x.title && x.title !== before && /[\\/]/.test(x.title));
+    if (other) {
+      other.click();
+      await sleep(1200);
+      add('从菜单切换项目生效', window.App.root === other.title, before + ' → ' + window.App.root);
+    } else {
+      add('从菜单切换项目生效', false, '菜单里没找到可切换的项目');
     }
-    add('项目按钮之间无重叠', overlap === 0, 'overlap=' + overlap);
+    add('项目栏没有把页面撑出横向滚动',
+      document.scrollingElement.scrollWidth <= document.scrollingElement.clientWidth + 1,
+      'doc=' + document.scrollingElement.scrollWidth + '/' + document.scrollingElement.clientWidth);
+
+    // ⚠ 收尾必须切回自检的 demo 项目：后面所有步骤的 fixture 都在 dir 里，
+    //   而 AI 面板解析工具路径用的是「当前项目根」—— 不还原的话它会去错误的目录里找文件，
+    //   表现成一堆莫名其妙的"文件不存在"（这一步踩过：AI 流程的 replace_edit 全挂）。
+    window.App.showTool('project');
+    if (window.App.root !== dir) await window.App.openProject(dir);
+    await sleep(700);
+    add('收尾：切回 demo 项目（后续步骤的 fixture 都在这里）', window.App.root === dir, 'root=' + window.App.root);
+    return { R };
+  },
+
+  // ---------- 侧栏上下分栏（项目树 + 大纲）：真实几何，jsdom 测不了 ----------
+  sideSplit: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.App.showTool('project');
+    await sleep(700);
+    const sb = q('#sidebar');
+    const proj = q('#panel-project');
+    const ol = q('#panel-outline');
+    const hs = q('#side-hsplit');
+    add('项目树与大纲同屏（项目工具窗口 = 上下两栏）',
+      !!proj && !!ol && !proj.classList.contains('hidden') && !ol.classList.contains('hidden'));
+    add('上下分隔线可见', !!hs && !hs.classList.contains('hidden'));
+
+    const sbR = sb.getBoundingClientRect();
+    const pR = proj.getBoundingClientRect();
+    const oR = ol.getBoundingClientRect();
+    const hR = hs.getBoundingClientRect();
+    add('两栏 + 分隔线正好填满侧栏（没有留下空隙）',
+      Math.abs((pR.height + hR.height + oR.height) - sbR.height) <= 4,
+      [Math.round(pR.height), Math.round(hR.height), Math.round(oR.height)].join(' + ')
+        + ' = ' + Math.round(pR.height + hR.height + oR.height) + ' vs ' + Math.round(sbR.height));
+    add('默认上半区占 65% 左右', Math.abs(pR.height / sbR.height - 0.65) <= 0.05,
+      (pR.height / sbR.height * 100).toFixed(0) + '%');
+    add('两栏都够高（各自 ≥ 110px，不出现"一栏被压没"）', pR.height >= 110 && oR.height >= 110,
+      Math.round(pR.height) + ' / ' + Math.round(oR.height));
+    add('项目树在上、大纲在下', pR.top < oR.top);
+
+    // 拖动分隔线 → 比例变化 + 持久化
+    const before = pR.height;
+    const y = Math.round(sbR.top + sbR.height * 0.35);
+    hs.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 120, clientY: Math.round(hR.top + 2) }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 120, clientY: y }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 120, clientY: y }));
+    await sleep(250);
+    const after = q('#panel-project').getBoundingClientRect().height;
+    add('拖动分隔线改变上下比例', Math.abs(after - before) > 20, Math.round(before) + ' → ' + Math.round(after));
+    const ratio = parseFloat(localStorage.getItem('myide-side-split') || 'NaN');
+    add('比例写回 localStorage', ratio >= 0.2 && ratio <= 0.85, 'ratio=' + ratio);
+
+    // 双击恢复默认
+    hs.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await sleep(300);
+    const back = q('#panel-project').getBoundingClientRect().height;
+    add('双击恢复默认比例 65%', Math.abs(back / sbR.height - 0.65) <= 0.05,
+      (back / sbR.height * 100).toFixed(0) + '%');
+    add('存的是比值不是 px（改侧栏宽度 / 窗口大小后仍然成立）',
+      localStorage.getItem('myide-side-split') === '0.65', localStorage.getItem('myide-side-split'));
+
+    // 切走 → 分栏收起（回到"一个面板独占侧栏"）
+    window.App.showTool('git');
+    await sleep(600);
+    add('非项目工具时不用分栏（大纲收起、分隔线隐藏）',
+      q('#panel-outline').classList.contains('hidden') && q('#side-hsplit').classList.contains('hidden'));
+    add('非项目工具时单面板独占整栏',
+      Math.abs(q('#panel-git').getBoundingClientRect().height - q('#sidebar').getBoundingClientRect().height) <= 2,
+      Math.round(q('#panel-git').getBoundingClientRect().height) + ' vs ' + Math.round(q('#sidebar').getBoundingClientRect().height));
+    window.App.showTool('project');
+    await sleep(500);
+    return { R };
+  },
+
+  // ---------- 主题：「红色只做强调色，不做环境光」的量化守卫 ----------
+  // 放在自检最后一步，故意不还原主题 —— 产物截图就是酒红主题的实际观感。
+  themeCrimson: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const hex2rgb = (h) => { const v = parseInt(h.replace('#', '').slice(0, 6), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
+    // 主题变量挂在 body 上，必须从 body 读（documentElement 只有 :root 的默认值）
+    const readVar = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
+    const lum = (h) => { const c = hex2rgb(h); return (c[0] + c[1] + c[2]) / 3; };
+    const spread = (h) => { const c = hex2rgb(h); return Math.max(...c) - Math.min(...c); };
+
+    // ⚠ 主题变量定义在 body 上（不是 :root）—— 必须从 document.body 读，
+    //   读 documentElement 会永远拿到默认主题的值（假通过/假失败各踩过一次）。
+    const keep = document.body.className;
+    const setTheme = (t) => { document.body.className = keep.replace(/theme-\w+/g, '').trim() + (t ? ' ' + t : ''); };
+    // 通用守卫：每个主题都要满足「明度阶梯」和「内容 ↔ 工具窗口 ≥ 8 级」
+    const gapBad = [];
+    const tintBad = [];
+    const seen = [];
+    for (const t of ['', 'theme-light', 'theme-pink', 'theme-crimson']) {
+      setTheme(t);
+      await sleep(120);
+      const bv = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
+      const l = (k) => lum(bv(k));
+      const gap = l('--bg') - l('--bg-panel');
+      // 四档必须单调递减：内容 > 标签栏 > 工具窗口 > 外框
+      // （浅色主题的阶梯一度是"乱"的：标签栏比工具窗口还暗，交界处看不出层级）
+      if (!(l('--bg') > l('--bg-tabbar') && l('--bg-tabbar') > l('--bg-panel') && l('--bg-panel') > l('--bg-title'))) {
+        gapBad.push((t || '默认') + '阶梯乱');
+      }
+      if (gap < 8) gapBad.push((t || '默认') + '差' + Math.round(gap));
+      // 深色主题的底色必须是中性黑灰（色相跨度小）；浅色/粉色主题本来就是彩色的，属刻意设计
+      if (t !== 'theme-light' && t !== 'theme-pink' && spread(bv('--bg')) > 3) tintBad.push(t);
+      seen.push((t || '默认') + ' ' + [l('--bg'), l('--bg-tabbar'), l('--bg-panel'), l('--bg-title')].map((x) => Math.round(x)).join('>'));
+    }
+    add('每个主题都满足「四档单调递减 + 内容↔工具窗口 ≥ 8 级」', gapBad.length === 0, seen.join('  '));
+    add('深浅两档深色主题的底色都是中性黑灰（不是"整屏泛红"）', tintBad.length === 0,
+      tintBad.length ? '偏色：' + tintBad.join(',') : '默认 + 酒红均中性');
+
+    // 收尾切到酒红（后面的断言 + 本步截图都在这个主题下）
+    setTheme('theme-crimson');
+    await sleep(500);
+
+    const bgVars = ['--bg', '--bg-tabbar', '--bg-panel', '--bg-title'];
+    const tinted = bgVars.filter((k) => spread(readVar(k)) > 3);
+    add('酒红主题的底色是中性黑灰（红不再是环境光）', tinted.length === 0,
+      bgVars.map((k) => k + '=' + readVar(k)).join(' '));
+    add('正文色也中性（原来是 #d8b3c0，整屏偏粉）', spread(readVar('--text')) <= 6, '--text=' + readVar('--text'));
+    const ac = hex2rgb(readVar('--accent'));
+    add('强调色仍是玫瑰红（品牌感保留）', ac[0] - ac[1] >= 40, '--accent=' + readVar('--accent'));
+
+    const lv = bgVars.map((k) => lum(readVar(k)));
+    add('明度阶梯在酒红主题里同样成立（内容 > 标签栏 > 工具窗口 > 外框）',
+      lv[0] > lv[1] && lv[1] > lv[2] && lv[2] > lv[3], lv.map((x) => Math.round(x)).join(' > '));
+
+    // 选中态减重：弱背景 + 2px accent 左线，而不是整块实心色
+    const tr = q('.tree-row.selected') || q('.outline-item.key-nav-sel');
+    if (tr) {
+      const raw = getComputedStyle(tr).backgroundColor;
+      const m = (raw.match(/[\d.]+/g) || []).map(Number);
+      const alpha = m.length >= 4 ? m[3] : 1;
+      add('侧栏当前项是弱背景（半透明），不是整块实心色', alpha < 0.25, raw);
+      const bar = getComputedStyle(tr, '::before');
+      add('侧栏当前项带 2px 强调色左线', bar.width === '2px' && bar.backgroundColor !== 'rgba(0, 0, 0, 0)',
+        '宽=' + bar.width + ' 色=' + bar.backgroundColor);
+    } else {
+      add('侧栏有选中项可供检查', false, '没有 .tree-row.selected / .outline-item.key-nav-sel');
+    }
+
+    // Markdown 排版收紧 + 标题不再是同一种强调色
+    const box = document.createElement('div');
+    box.className = 'md-view';
+    box.style.cssText = 'position:absolute;left:-9999px;top:0;width:600px';
+    box.innerHTML = '<h1>一级</h1><h2>二级</h2><h3>三级</h3><p>正文</p>';
+    document.body.appendChild(box);
+    const sz = [...box.querySelectorAll('h1,h2,h3')].map((e) => Math.round(parseFloat(getComputedStyle(e).fontSize)));
+    const c1 = getComputedStyle(box.querySelector('h1')).color;
+    const c3 = getComputedStyle(box.querySelector('h3')).color;
+    const bt = getComputedStyle(document.body).getPropertyValue('--text-bright').trim();
+    box.remove();
+    add('Markdown 标题字号收紧（h1 ≤ 22 / h2 ≤ 18 / h3 ≤ 16）', sz[0] <= 22 && sz[1] <= 18 && sz[2] <= 16, sz.join(' / '));
+    add('标题不再全用同一个颜色（h1 用正文亮色，h3 带强调色调）', c1 !== c3, 'h1=' + c1 + ' h3=' + c3);
+
+    // ⚠ 上面是"造一个 .md-view 探针"测的，测不到编辑器真实渲染路径 ——
+    //   实测过一次假通过：探针里的 h1 是中性色，而编辑器里的 h1 因为 heading token
+    //   被硬编码成 One Dark 红 #e06c75，在酒红主题下依然是玫瑰色。
+    //   所以这里必须直接量编辑器里真实存在的标题元素。
+    const realH = q('.cm-md-h1') || q('#viewer .md-view h1') || q('.cm-content h1');
+    if (!realH) {
+      add('量到编辑器里真实的 Markdown 标题（真实渲染路径）', false, '没找到 .cm-md-h1 / .md-view h1');
+    } else {
+      const rc = getComputedStyle(realH).color;
+      const rm = (rc.match(/[\d.]+/g) || []).map(Number);
+      add('编辑器里的标题是中性的（不再硬编码 One Dark 红 #e06c75）',
+        rm.length >= 3 && Math.max(rm[0], rm[1], rm[2]) - Math.min(rm[0], rm[1], rm[2]) < 40,
+        'h1=' + rc);
+    }
+
+    await sleep(300);
     return { R };
   },
 
@@ -913,6 +1102,19 @@ module.exports = {
       add('整理类指令一定带上了当前文件（跟随或手动附都算）', viaFollow || viaChip,
         '跟随 chip=' + (viaFollow ? '有' : '无') + ' / chips=' + (chips.map((c) => c.textContent).join(' | ') || '(无)'));
     }
+    // 三栏比例：编辑区必须是主角。原来是"左中右三块平分存在感"——
+    // 左 440 + 右 460 把中央挤到 52%，用户的原话是"PyCharm 中间大、周围退，你的是三块平分"。
+    const LO = window.App.LAYOUT;
+    const sbW = Math.round(q('#sidebar').getBoundingClientRect().width);
+    const aiW = Math.round(panel.getBoundingClientRect().width);
+    const edW = Math.round(q('#tabbar').getBoundingClientRect().width);
+    add('编辑区是三栏里最宽的一块', edW > sbW && edW > aiW, '编辑=' + edW + ' 侧栏=' + sbW + ' AI=' + aiW);
+    add('编辑区 ≥ 两侧各自 1.3 倍（不再"三块平分存在感"）',
+      edW >= sbW * 1.3 && edW >= aiW * 1.3,
+      '编辑/侧栏=' + (edW / sbW).toFixed(2) + ' 编辑/AI=' + (edW / aiW).toFixed(2));
+    add('两侧都在钳制范围内', sbW >= LO.sidebar.min && sbW <= LO.sidebar.max && aiW >= LO.ai.min && aiW <= LO.ai.max,
+      '侧栏=' + sbW + '(' + LO.sidebar.min + '~' + LO.sidebar.max + ') AI=' + aiW + '(' + LO.ai.min + '~' + LO.ai.max + ')');
+
     // 三处面板标题行等高（侧栏 / 标签栏 / AI 助手）—— 交界处的横向底线必须对齐
     const hh = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
     const vt = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);

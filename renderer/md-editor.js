@@ -30,12 +30,15 @@ window.MdEditor = (() => {
     { tag: [T.punctuation, T.bracket], color: '#abb2bf' },
     { tag: T.tagName, color: '#e06c75' },
     { tag: T.attributeName, color: '#d19a66' },
-    // markdown 结构 token（live 装饰已处理视觉，这里给低调色兜底 source 模式）
-    { tag: T.heading, color: '#e06c75', fontWeight: 'bold' },
-    { tag: T.strong, fontWeight: 'bold', color: '#abb2bf' },
+    // markdown 结构 token —— 必须走 CSS 变量，不能硬编码 One Dark 色。
+    // 踩过：heading 写死 #e06c75（One Dark 红）→ 所有主题下标题永远玫瑰红，
+    // 既跟 .cm-md-* 的变量染色打架，换主题也不跟随（用户原话："标题不要全用强调色"）。
+    // 代码 token（keyword/string/number…）继续用 One Dark：那是代码配色，本来就该独立于界面主题。
+    { tag: T.heading, color: 'var(--text-bright)', fontWeight: 'bold' },
+    { tag: T.strong, fontWeight: 'bold', color: 'var(--text-bright)' },
     { tag: T.emphasis, fontStyle: 'italic' },
-    { tag: T.link, color: '#61afef' },
-    { tag: T.monospace, color: '#98c379' },
+    { tag: T.link, color: 'var(--accent)' },
+    { tag: T.monospace, color: 'var(--code-text)' },
     { tag: T.strikethrough, textDecoration: 'line-through' },
   ]);
 
@@ -94,20 +97,20 @@ window.MdEditor = (() => {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
     },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
-    '.cm-md-h1': { fontSize: '26px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.35' },
-    '.cm-md-h2': { fontSize: '22px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.35' },
-    '.cm-md-h3': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.4' },
-    '.cm-md-h4': { fontSize: '15px', fontWeight: '600', color: 'var(--text-bright)' },
-    '.cm-md-h5': { fontSize: '13px', fontWeight: '600', color: 'var(--text-bright)' },
-    '.cm-md-h6': { fontSize: '13px', fontWeight: '500', color: 'var(--text-dim)' },
+    '.cm-md-h1': { fontSize: '21px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.3' },
+    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.3' },
+    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 62%, var(--text-bright))', lineHeight: '1.35' },
+    '.cm-md-h4': { fontSize: '14px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h5': { fontSize: '12.5px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h6': { fontSize: '12.5px', fontWeight: '500', color: 'var(--text-dim)' },
     // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
     // Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom
-    '.cm-line.cm-md-h1-line': { paddingTop: '10px', paddingBottom: '5px' },
-    '.cm-line.cm-md-h2-line': { paddingTop: '8px', paddingBottom: '3px' },
-    '.cm-line.cm-md-h3-line': { paddingTop: '5px' },
-    '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '3px' },
+    '.cm-line.cm-md-h1-line': { paddingTop: '8px', paddingBottom: '4px' },
+    '.cm-line.cm-md-h2-line': { paddingTop: '6px', paddingBottom: '3px' },
+    '.cm-line.cm-md-h3-line': { paddingTop: '4px' },
+    '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '2px' },
     // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）
-    '.cm-line.cm-md-blank': { lineHeight: '0.9' },
+    '.cm-line.cm-md-blank': { lineHeight: '0.85' },
     '.cm-md-strong': { fontWeight: '700', color: 'var(--text-bright)' },
     '.cm-md-em': { fontStyle: 'italic' },
     '.cm-md-strike': { textDecoration: 'line-through', color: 'var(--text-dim)' },

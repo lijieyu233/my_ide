@@ -1595,6 +1595,44 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
   });
 
+  await okAsync('多项目：超过 3 个时顶栏收起为「当前项目 ▾」（不再平铺一排胶囊）', async () => {
+    // 这一版的核心：十几个项目平铺出来和下面的文件 Tab 同级甚至更抢眼，
+    // 一级导航压过二级导航 → 顶栏读起来像"功能栏"。超过 3 个就收起。
+    for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
+      await g(dom, 'App.openProject("' + extra + '")');
+      await tick(); await tick();
+    }
+    const bar = $(dom, '#project-bar');
+    const btns = $allIn(bar, '.proj-btn');
+    assert_(btns.length === 1, '只渲染当前项目一个控件, got ' + btns.length);
+    const cur = $(dom, '#project-bar .proj-btn.proj-current');
+    assert_(cur, '当前项目控件存在');
+    assert_(cur.dataset.path === (await g(dom, 'App.root')), '控件指向当前项目');
+    assert_(!!cur.querySelector('.proj-cur-caret svg'), '有下拉指示');
+    assert_(!!$(dom, '.proj-all'), '「全部项目」入口仍在（切换走下拉）');
+    // 点它开的是切换菜单，不是"打开当前项目"（无意义动作）
+    click(cur);
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    assert_(!menu.classList.contains('hidden'), '弹出项目切换菜单');
+    const items = $allIn(menu, '.ctx-item:not(.ctx-title)');
+    assert_(items.length >= 2, '菜单里有其他项目可切, got ' + items.length);
+    // 从菜单切到最初的项目 → 真的切过去
+    const target = items.find((x) => x.title === P);
+    assert_(target, '菜单里能找到最初的项目');
+    click(target);
+    await tick(); await tick();
+    assert_((await g(dom, 'App.root')) === P, '从菜单切换项目生效');
+    // 收尾：关掉多加的项目，别影响后续用例的项目状态
+    for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
+      await g(dom, 'App.setRoot("' + extra + '")');
+      const rm = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.dataset.path === extra);
+      if (rm) { click(rm.querySelector('.proj-close')); await tick(); await tick(); }
+    }
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick();
+  });
+
   await okAsync('多项目：拖拽排序持久化（dragend 固化，切换后不弹回）', async () => {
     await g(dom, 'App.openProject("C:/proj2")');
     await tick(); await tick();
@@ -3069,7 +3107,7 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX: 320 }));
     await tick();
     assert_(sidebar.style.width === '320px', '宽度更新为 320px: ' + sidebar.style.width);
-    assert_(dom.window.localStorage.getItem('myide-sidebar-width') === '320', '宽度持久化');
+    assert_(dom.window.localStorage.getItem('myide-sidebar-width:v2') === '320', '宽度持久化');
   });
 
   await okAsync('Bug11：Markdown 分屏模式（工具栏切换 + 实时预览）', async () => {
@@ -3503,10 +3541,14 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.localStorage.setItem('myide-tool-state:C:/tsA', JSON.stringify({ activeTool: 'outline', sideTool: 'outline' }));
     await g(dom, 'App.setRoot("C:/tsA")');
     await tick(); await tick();
-    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板（独占侧栏）');
+    assert_($(dom, '#side-hsplit').classList.contains('hidden'), '大纲独占时没有上下分隔线');
     await g(dom, 'App.setRoot("C:/tsB")');
     await tick(); await tick();
-    assert_($(dom, '#panel-outline').classList.contains('hidden'), '项目B默认不显示大纲');
+    // 「项目」工具窗口现在是上下分栏：项目树（上）+ 大纲（下）—— 默认状态大纲本来就该在
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目B默认 = 项目树 + 下半区大纲');
+    assert_($(dom, '#panel-outline').classList.contains('side-split-bottom'), '大纲处于下半区分栏位置');
+    assert_(!$(dom, '#side-hsplit').classList.contains('hidden'), '上下分隔线出现');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目B默认项目面板');
     // B 切到大纲 → A/B 各自记忆互不覆盖
     await g(dom, 'App.switchTool("outline")');
@@ -3520,15 +3562,52 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'App.switchTool("project")');
     await g(dom, 'App.setRoot("' + P + '")');
     await tick();
+    // ⚠ 不能假设"所有项目都渲染出按钮"：项目 > 3 个时顶栏收起成「当前项目 ▾」，
+    //    别的项目的按钮根本不存在（这一条以前是靠平铺渲染侥幸通过的）。
+    //    先切成当前项目再移除 —— 两种渲染模式下当前项目一定在 #project-bar 里。
     for (const t of ['C:/tsA', 'C:/tsB']) {
+      if (!(await g(dom, 'App.getProjects()')).some((x) => x.path === t)) continue;
+      await g(dom, 'App.setRoot("' + t + '")');
+      await tick();
       const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.dataset.path === t);
-      if (btn) { click(btn.querySelector('.proj-close')); await tick(); }
+      if (btn) { click(btn.querySelector('.proj-close')); await tick(); await tick(); }
     }
     try {
       const rec = JSON.parse(dom.window.localStorage.getItem('myide-recent-projects') || '[]')
         .filter((x) => x !== 'C:/tsA' && x !== 'C:/tsB');
       dom.window.localStorage.setItem('myide-recent-projects', JSON.stringify(rec));
     } catch {}
+  });
+
+  await okAsync('侧栏上下分栏：项目树 + 大纲同屏（可拖拽 / 双击复位 / 比例持久化）', async () => {
+    // ⚠ 用 showTool 不用 switchTool：后者是"再点一次收起"的切换语义，
+    //    项目面板已激活时会把侧栏整块收起来
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目树在');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲同屏在');
+    assert_($(dom, '#panel-outline').classList.contains('side-split-bottom'), '大纲标为下半区');
+    assert_(!$(dom, '#side-hsplit').classList.contains('hidden'), '分隔线可见');
+    // 切到别的工具 → 分栏消失，回到"一个面板独占"
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '非项目工具时大纲收起');
+    assert_($(dom, '#side-hsplit').classList.contains('hidden'), '非项目工具时分隔线收起');
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    // 拖拽（jsdom 没有布局，clientHeight=0 → 比例保持；这里只验"不崩 + 写回合法值"）
+    const hs = $(dom, '#side-hsplit');
+    hs.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, clientX: 0, clientY: 100 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', { bubbles: true, clientY: 300 }));
+    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientY: 300 }));
+    await tick();
+    const saved = parseFloat(dom.window.localStorage.getItem('myide-side-split') || 'NaN');
+    assert_(saved >= 0.2 && saved <= 0.85, '拖拽后写回合法比例, got ' + saved);
+    // 双击恢复默认比例
+    dom.window.localStorage.setItem('myide-side-split', '0.3');
+    hs.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+    await tick();
+    assert_(dom.window.localStorage.getItem('myide-side-split') === '0.65', '双击恢复默认比例 0.65, got ' + dom.window.localStorage.getItem('myide-side-split'));
   });
 
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {

@@ -192,7 +192,8 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
    原来左右各有一条 accent 竖线 —— 同一个按钮两个选中指示，是噪音。 */
 
 #sidebar {
-  width: 280px; min-width: 160px; max-width: 560px;
+  /* 默认宽度与钳制范围必须与 app.js 的 App.LAYOUT.sidebar 一致（自检有断言） */
+  width: 340px; min-width: 260px; max-width: 480px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border-pane);
   display: flex; flex-direction: column;
@@ -390,7 +391,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   max-width: 860px; margin-left: auto; margin-right: auto;
   padding: 2px 8px; border-radius: 4px; cursor: text;
 }
-.md-live .md-block { min-height: 1.7em; }
+.md-live .md-block { min-height: 1.65em; }
 .md-live .md-block:hover { background: rgba(127, 127, 127, 0.07); }
 .md-live .md-block:empty::before { content: '（空行，点击输入）'; color: var(--text-dim); opacity: 0.5; }
 .md-live .md-block pre { cursor: default; }
@@ -513,34 +514,37 @@ textarea.editor {
 .viewer-msg .big-ic { font-size: 34px; margin-bottom: 10px; }
 
 /* Markdown 渲染 */
-.md-view { padding: 20px 28px; max-width: 860px; user-select: text; line-height: 1.7; }
-.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--text-bright); margin: 18px 0 8px; }
+.md-view { padding: 16px 24px; max-width: 860px; user-select: text; line-height: 1.65; }
+.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--text-bright); margin: 13px 0 6px; }
 /* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
 /* 字号与 live 编辑态（md-editor.js liveTheme）同源：h1 26 / h2 22 / h3 18 / h4 15 */
-.md-view h1 { font-size: 26px; }
-.md-view h2 { font-size: 22px; }
-.md-view h3 { font-size: 18px; }
-.md-view h4 { font-size: 15px; }
-.md-view h5 { font-size: 13px; }
-.md-view h6 { font-size: 13px; color: var(--text-dim); }
-.md-view p { margin: 8px 0; }
+.md-view h1 { font-size: 21px; margin-top: 18px; }
+.md-view h2 { font-size: 18px; margin-top: 15px; }
+.md-view h3 { font-size: 15px; color: color-mix(in srgb, var(--accent) 62%, var(--text-bright)); }
+.md-view h4 { font-size: 14px; }
+.md-view h5 { font-size: 12.5px; }
+.md-view h6 { font-size: 12.5px; color: var(--text-dim); }
+.md-view p { margin: 6px 0; }
+.md-view ul, .md-view ol { margin: 6px 0; padding-left: 22px; }
+.md-view li { margin: 2px 0; }
+.md-view li > p { margin: 2px 0; }
 .md-view a { color: var(--accent); }
 .md-view ul, .md-view ol { padding-left: 24px; margin: 8px 0; }
 .md-view code {
   background: var(--btn-bg); border-radius: 4px; padding: 1px 5px;
   font-family: var(--font-mono); font-size: 12px; color: var(--code-text);
 }
-.md-view pre { background: var(--code-bg); border-radius: 6px; padding: 12px; overflow: auto; margin: 10px 0; border: 1px solid var(--border); }
+.md-view pre { background: var(--code-bg); border-radius: 6px; padding: 10px 12px; overflow: auto; margin: 8px 0; border: 1px solid var(--border); }
 .md-view pre code { background: none; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.6; }
-.md-view blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-dim); margin: 8px 0; }
-.md-view table { border-collapse: collapse; margin: 10px 0; }
+.md-view blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-dim); margin: 6px 0; }
+.md-view table { border-collapse: collapse; margin: 8px 0; }
 /* 表格增强：宽表格自身横向滚动（不撑破版心、不挤压变形）+ 斑马纹 + 行 hover */
 .md-view table { display: block; max-width: 100%; overflow-x: auto; }
 .md-view th, .md-view td { border: 1px solid var(--border-mid); padding: 4px 10px; }
 .md-view th { background: var(--bg-panel); color: var(--text-bright); }
 .md-view tbody tr:nth-child(even) { background: rgba(128,128,128,.06); }
 .md-view tbody tr:hover { background: rgba(64,140,255,.08); }
-.md-view hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.md-view hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 .md-view img { max-width: 100%; }
 .md-view .code-copy {
   float: right; margin: -8px -8px 0 0; font-size: 11px; color: var(--text-dim); cursor: pointer;
@@ -1422,10 +1426,11 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
 body.theme-light {
+  /* 浅色主题同样「越靠外越暗」，且四档必须单调递减：内容 > 标签栏 > 工具窗口 > 外框 */
   --bg: #ffffff;
+  --bg-tabbar: #f2f2f2;
   --bg-panel: #ececec;
-  --bg-tabbar: #e7e7e7;
-  --bg-title: #dedede;      /* 浅色主题同样「越靠外越暗」 */
+  --bg-title: #e2e2e2;
   --bg-hover: #ddeeff;
   --bg-selected: #c9e2f7;
   --bg-input: #ffffff;
@@ -1457,10 +1462,11 @@ body.theme-light {
 
 /* ---------- 粉红主题（真正粉红：浅粉底 + 玫红高亮） ---------- */
 body.theme-pink {
+  /* 同浅色主题：四档单调递减 */
   --bg: #fff5f8;
-  --bg-panel: #ffe9f1;
-  --bg-tabbar: #ffdfea;
-  --bg-title: #f7d3e2;
+  --bg-tabbar: #fdeaf1;
+  --bg-panel: #f9dde8;
+  --bg-title: #f2ccda;
   --bg-hover: #ffd6e8;
   --bg-selected: #ffb7d5;
   --bg-input: #fffafc;
@@ -1492,38 +1498,43 @@ body.theme-pink {
 body.theme-pink .qo-item.sel .sr-text { color: #444; }
 
 /* ---------- 深红主题（深酒红底 + 玫瑰高亮） ---------- */
+/* 深色「酒红」主题 —— 红色只做强调色，不做环境光。
+   原来整套底色都泛红（#201318 / #26161d / #1c1015）、文字也是粉色（#d8b3c0），
+   于是 tab / 侧栏 / 编辑器 / 选中块 / 标题 / 边框全是红的 → 层级被拉平：
+   「每个地方都重要 = 没有地方最重要」。
+   现在：大面积底色一律中性黑灰（与默认深色同一阶梯），品牌感只由 --accent 承载。 */
 body.theme-crimson {
-  --bg: #201318;
-  --bg-panel: #26161d;
-  --bg-tabbar: #1c1015;
-  --bg-title: #151014;
-  --bg-hover: #3a2330;
-  --bg-selected: #6e3a52;
-  --bg-input: #2d1a22;
-  --border: #170d11;
-  --text: #d8b3c0;
-  --text-bright: #f2dce4;
-  --text-dim: #a3798a;
-  --accent: #f06292;
-  --green: #86c98f;
-  --red: #ff8a9b;
-  --add-bg: rgba(134, 201, 143, 0.16);
-  --del-bg: rgba(255, 138, 155, 0.18);
-  --add-text: #b8e6bf;
-  --del-text: #ffc2cb;
-  --btn-bg: #2d1a22;
-  --btn-border: #483039;
-  --btn-hover: #3a2330;
-  --panel-strong: #241519;
-  --menu-border: #523844;
-  --border-mid: #4a3038;
-  --code-bg: #180e13;
-  --code-text: #f0b6d0;
-  --editor-text: #e8cdd6;
-  --num-dim: #7d5b68;
-  --badge-m-bg: #3a2a20; --badge-m-tx: #e8c97a;
-  --badge-a-bg: #21301f; --badge-a-tx: #86c98f;
-  --badge-d-bg: #3a2026; --badge-d-tx: #ff8a9b;
+  --bg: #212121;            /* 内容画布（最亮）—— 与默认深色同一阶梯，保证"内容↔工具窗口 ≥8 级" */
+  --bg-tabbar: #1a1a1a;
+  --bg-panel: #171717;      /* 工具窗口 */
+  --bg-title: #121212;      /* 最外层 chrome（最暗） */
+  --bg-hover: #242428;
+  --bg-selected: #322229;   /* 去饱和的暗酒红：只用于小块高亮（引用/搜索命中） */
+  --bg-input: #1a1a1e;
+  --border: #101010;
+  --text: #b9b9bd;
+  --text-bright: #e6e6e8;
+  --text-dim: #85858c;
+  --accent: #d9687d;        /* 玫瑰红：整个主题的品牌色只剩这一个 */
+  --green: #7fb98a;
+  --red: #e08a97;
+  --add-bg: rgba(127, 185, 138, 0.16);
+  --del-bg: rgba(224, 138, 151, 0.16);
+  --add-text: #b8e0bf;
+  --del-text: #f0c2cb;
+  --btn-bg: #1e1e22;
+  --btn-border: #33333a;
+  --btn-hover: #26262c;
+  --panel-strong: #1a1a1e;
+  --menu-border: #3a3a42;
+  --border-mid: #33333a;
+  --code-bg: #151515;
+  --code-text: #e0b3c0;
+  --editor-text: #d2d2d6;
+  --num-dim: #5f5f66;
+  --badge-m-bg: #332b20; --badge-m-tx: #d8c97a;
+  --badge-a-bg: #1e2c20; --badge-a-tx: #7fb98a;
+  --badge-d-bg: #33232a; --badge-d-tx: #e08a97;
 }
 body.theme-crimson .tb-btn:hover { color: var(--text-bright); }
 body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff; border-color: #e81123; }
@@ -1810,7 +1821,8 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
 .qh-item.qh-err .qh-sql { color: var(--danger, #e06c75); }
 /* ---------- AI 助手对话面板（ai-panel.js，右侧停靠） ---------- */
 #ai-panel {
-  flex-shrink: 0; width: 400px; min-width: 280px;
+  /* 默认宽度与钳制范围必须与 app.js 的 App.LAYOUT.ai 一致（自检有断言） */
+  flex-shrink: 0; width: 380px; min-width: 320px; max-width: 520px;
   display: flex; flex-direction: column; position: relative;
   background: var(--bg-panel, var(--bg));
   border-left: 1px solid var(--border);
@@ -1852,27 +1864,25 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cm-ghost-text { color: var(--text-dim, #7a7a8c); font-style: italic; opacity: .75; pointer-events: none; }
 #ai-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 10px; }
 /* 空状态：卡片 + 场景入口（与启动页同一套视觉语言，不再是大 emoji 飘在虚空） */
-.ai-welcome { display: flex; align-items: center; justify-content: center; height: 100%; padding: 0 14px; }
-.ai-card {
-  width: 100%; max-width: 340px;
-  border: 1px solid var(--border-mid); border-radius: 10px;
-  padding: 16px 14px; text-align: left;
-  background: color-mix(in srgb, var(--text) 3%, transparent);
-}
+/* 空状态：靠上、紧凑。原来是 height:100% + 垂直居中 —— 在一个 460px 宽、几百像素高的
+   空白里漂一张卡片，四周全是空墙，面板宽度并没有换来对应的价值。 */
+.ai-welcome { display: flex; align-items: flex-start; justify-content: center; padding: 16px 14px 0; }
+/* 空状态不再是"一张浮在中间的对话框"：去掉边框与底色，当作面板顶部的引导区 */
+.ai-card { width: 100%; max-width: 100%; padding: 0; text-align: left; }
 .ai-card-ic {
-  width: 30px; height: 30px; border-radius: 8px; margin-bottom: 10px;
+  width: 26px; height: 26px; border-radius: 7px; margin-bottom: 8px;
   display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
 }
 .ai-card-ic svg.ic { width: 17px; height: 17px; }
-.ai-card-title { font-size: 1.08em; font-weight: 600; color: var(--text-bright); margin-bottom: 6px; }
-.ai-card-sub { font-size: .92em; line-height: 1.7; color: var(--text-dim); }
-.ai-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; }
+.ai-card-title { font-size: 1em; font-weight: 600; color: var(--text-bright); margin-bottom: 5px; }
+.ai-card-sub { font-size: .9em; line-height: 1.6; color: var(--text-dim); }
+.ai-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
 .ai-quick-btn {
-  font-size: .92em; color: var(--text); text-align: left;
+  font-size: .9em; color: var(--text); text-align: left;
   background: transparent; border: 1px solid var(--border-mid); border-radius: 6px;
-  padding: 7px 9px; cursor: pointer; white-space: nowrap;
+  padding: 6px 9px; cursor: pointer; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
 .ai-quick-btn:hover { border-color: var(--accent); color: var(--text-bright); background: var(--bg-hover); }
@@ -2593,3 +2603,46 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   text-decoration: underline dotted;
 }
 .ai-cf-quiet:hover { color: var(--accent); }
+
+/* ---------- 选中态分层：弱背景 + 2px accent 左线（不再整块实心色）----------
+   原来侧栏当前项整行铺 --bg-selected 实心块。加上顶部项目药丸、AI 当前文档高亮、
+   编辑器标题色，屏幕上同时有 4~5 个强焦点。
+   现在把强调权按层级分配：当前编辑文件（标签）最强 → 侧栏当前项（弱底 + 竖线）中等 → hover 最弱。 */
+.tree-row, .outline-item { position: relative; }
+.tree-row.selected, .outline-item.key-nav-sel {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text-bright);
+}
+.tree-row.selected::before, .outline-item.key-nav-sel::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--accent);
+}
+/* 搜索结果的次行（相对路径）在选中态跟着提亮，不再用 rgba(255,255,255) 硬编码 */
+.tree-row.tree-search-row.selected .tree-search-rel { color: var(--text); }
+
+/* 项目收起态（项目数 > 3）：顶栏只留「当前项目 ▾」。
+   它是一个"标题"不是一个"选中的 Tab" —— 所以不用 .proj-btn.active 的实心 accent 块。
+   （屏幕上同时 4~5 个强焦点，正是"每个地方都重要 = 没有地方最重要"的来源。） */
+.proj-btn.proj-current,
+.proj-btn.proj-current.active {
+  background: transparent; border-color: transparent;
+  color: var(--text-bright); font-weight: 600;
+  height: 24px; gap: 5px; max-width: 260px; padding: 0 6px;
+}
+.proj-btn.proj-current:hover { background: var(--btn-hover); border-color: var(--btn-border); }
+.proj-btn.proj-current .ic { width: 13px; height: 13px; opacity: .75; flex-shrink: 0; }
+.proj-btn.proj-current .proj-cur-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.proj-cur-caret { display: inline-flex; align-items: center; opacity: .55; flex-shrink: 0; }
+.proj-cur-caret .ic { width: 11px; height: 11px; }
+.proj-btn.proj-current:hover .proj-cur-caret { opacity: 1; }
+
+/* ---------- 侧栏上下分栏分隔线（项目树 / 大纲）----------
+   本 IDE 主要处理 Markdown 与开发文档，文件树与大纲天然是一对；
+   同屏比"来回切工具窗口"顺手（PyCharm 把 Structure 做成独立窗口，这里同屏更有用）。 */
+#side-hsplit {
+  height: 4px; flex-shrink: 0; cursor: row-resize;
+  background: var(--border); z-index: 6;
+}
+#side-hsplit:hover, #side-hsplit.dragging { background: var(--accent); }
+/* 下半区（大纲）加一条细上边线，与上半区在视觉上分开 */
+#panel-outline.side-split-bottom { border-top: 1px solid var(--border-pane); }

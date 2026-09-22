@@ -211,10 +211,19 @@ const App = (() => {
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
     if (activeTool === 'browser') sidePanel = 'browser';
+    // 「项目」工具窗口 = 上下两栏：项目树（上）+ 大纲 / Structure（下）。
+    // 本 IDE 主要处理 Markdown 与开发文档，文件树与大纲天然是一对；其余工具仍独占侧栏。
+    const splitWithOutline = !sideCollapsed && sidePanel === 'project';
     for (const t of ['project', 'outline', 'git', 'tasks', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
-      if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
+      if (!p) continue;
+      const on = !sideCollapsed && (sidePanel === t || (splitWithOutline && t === 'outline'));
+      p.classList.toggle('hidden', !on);
+      p.classList.toggle('side-split-bottom', splitWithOutline && t === 'outline');
     }
+    const hsplit = document.getElementById('side-hsplit');
+    if (hsplit) hsplit.classList.toggle('hidden', !splitWithOutline);
+    applySideSplit(splitWithOutline);
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
@@ -225,7 +234,7 @@ const App = (() => {
     if (aiEl) aiEl.classList.toggle('hidden', !aiOpen || rsbCollapsed);
     if (window.AiPanel) AiPanel.syncVisible(aiOpen && !rsbCollapsed);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
-    if (activeTool === 'outline') {
+    if (activeTool === 'outline' || splitWithOutline) {
       Outline.refresh(Viewer.activeTab);
     }
     // 任务面板数据来自存储（无 IPC）：切到它时重渲染即可保持最新
@@ -363,6 +372,7 @@ const App = (() => {
   }
 
   // 下拉箭头（内联 SVG）：'▾' 在部分字体下也不稳，统一走 SVG
+  const PROJ_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>';
   const CARET_DOWN = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
 
   // 分支图标（内联 SVG，避免字符字形的平台差异）
@@ -579,6 +589,22 @@ const App = (() => {
         menu.appendChild(d);
       });
     }
+    // 底部：当前项目的常用动作。收起态下右键菜单没了，这些动作需要一个去处（PyCharm 的
+    // 项目下拉里同样有 Copy Path / Reveal in Explorer）。
+    if (root) {
+      mkTitle('当前项目');
+      const mkAct = (label, fn) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item';
+        d.textContent = label;
+        d.onclick = () => { closeProjMenuNow(); fn(); };
+        menu.appendChild(d);
+      };
+      mkAct('📋 复制项目路径', () => {
+        navigator.clipboard.writeText(root).then(() => MI.toast('路径已复制', 'ok'));
+      });
+      mkAct('🗂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(root));
+    }
     menu.classList.remove('hidden');
     projMenuOn = true;
     const r = anchor.getBoundingClientRect();
@@ -607,6 +633,39 @@ const App = (() => {
     });
   }
 
+  // 项目栏平铺上限：≤3 个时平铺（一键切换很方便），超过就只留「当前项目 ▾」。
+  // 理由：十几个项目平铺出来和下面的文件 Tab 是同一个视觉层级、甚至更抢眼，
+  // 一级导航（项目）比二级导航（文件）还突出 → 顶栏读起来像"功能栏"而不是"标题栏"。
+  const PROJ_PILL_MAX = 3;
+
+  // 关闭项目（收起态 / 平铺态的 ✕ 与右键菜单共用一份实现）
+  function removeProject(prPath) {
+    projects = projects.filter((p) => p.path !== prPath);
+    saveProjects();
+    if (prPath === root) {
+      const next = projects[0];
+      // ⚠ next 是 {path} 对象：必须传 next.path。曾传对象 → root 变对象
+      // → renderProjectBar 的 root.split() 抛异常（innerHTML 已清空）→ 项目栏全消失
+      if (next) { openProject(next.path); return; }
+      root = null;
+      MI.activeRoot = null;
+      Viewer.saveAllDirty().then(() => {
+        Session.saveNow();
+        Viewer.closeAll();
+        Tree.setRoot(null);
+        GitPanel.rootDir = null;
+        if (window.GitLog) GitLog.setRoot(null);
+        if (window.Tasks) Tasks.setRoot(null);
+        GitPanel.refresh();
+        renderProjectBar();
+        renderEmptyRecent();
+      });
+      return;
+    }
+    renderProjectBar();
+    renderEmptyRecent();
+  }
+
   function renderProjectBar() {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
@@ -633,6 +692,32 @@ const App = (() => {
       all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
       wrap.insertBefore(all, bar);
     }
+    // 收起态：顶栏只留一个「当前项目 ▾」。它不是一个"选中的 Tab"，
+    // 而是标题栏上的当前项目名 —— 所以不用实心 accent 块（那正是"每个区域都在抢注意力"的来源）。
+    if (projects.length > PROJ_PILL_MAX) {
+      const cur = projects.find((p) => p.path === root) || projects[0];
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'proj-btn proj-current active';
+      btn.dataset.path = cur.path;
+      btn.title = '当前项目：' + cur.path + '\n点击切换 / 打开其他项目（Ctrl+O 打开新项目）';
+      btn.innerHTML = PROJ_IC + '<span class="proj-cur-name"></span>';
+      btn.querySelector('.proj-cur-name').textContent = cur.path.split(/[\\/]/).pop() || cur.path;
+      const caret = document.createElement('span');
+      caret.className = 'proj-cur-caret';
+      caret.innerHTML = CARET_DOWN;
+      btn.appendChild(caret);
+      const x = document.createElement('span');
+      x.className = 'proj-close';
+      x.textContent = '✕';
+      x.title = '关闭当前项目';
+      x.onclick = (e) => { e.stopPropagation(); removeProject(cur.path); };
+      btn.appendChild(x);
+      // 点击 = 打开项目切换菜单（当前项目本来就开着，再 openProject 是无意义动作）
+      btn.onclick = (e) => { e.stopPropagation(); showProjMenu(btn); };
+      btn.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); showProjMenu(btn); };
+      bar.appendChild(btn);
+    } else {
     for (const pr of projects) {
       const btn = document.createElement('button');
       btn.className = 'proj-btn' + (pr.path === root ? ' active' : '');
@@ -647,33 +732,7 @@ const App = (() => {
       x.className = 'proj-close';
       x.textContent = '✕';
       x.title = '移除项目';
-      const doRemove = () => {
-        projects = projects.filter((p) => p.path !== pr.path);
-        saveProjects();
-        // 关闭的是当前项目 → 切到剩余项目；一个不剩 → 清空目录树回到空状态
-        if (pr.path === root) {
-          const next = projects[0];
-          // ⚠ next 是 {path} 对象：必须传 next.path。曾传对象 → root 变对象
-          // → renderProjectBar 的 root.split() 抛异常（innerHTML 已清空）→ 项目栏全消失
-          if (next) { openProject(next.path); return; }
-          root = null;
-          MI.activeRoot = null;
-          Viewer.saveAllDirty().then(() => {
-            Session.saveNow();
-            Viewer.closeAll();
-            Tree.setRoot(null);
-            GitPanel.rootDir = null;
-            if (window.GitLog) GitLog.setRoot(null);
-            if (window.Tasks) Tasks.setRoot(null);
-            GitPanel.refresh();
-            renderProjectBar();
-            renderEmptyRecent();
-          });
-          return;
-        }
-        renderProjectBar();
-        renderEmptyRecent();
-      };
+      const doRemove = () => removeProject(pr.path);
       x.onclick = (e) => { e.stopPropagation(); doRemove(); };
       btn.appendChild(x);
       btn.onclick = () => openProject(pr.path);
@@ -730,6 +789,7 @@ const App = (() => {
         renderProjectBar();
       });
       bar.appendChild(btn);
+    }
     }
     // 渲染后把当前项目按钮滚入可视区：新开项目在末尾，曾被截断看不到、点不到 ✕
     // ⚠ 必须用 getBoundingClientRect 差值算「相对滚动容器」的位置：
@@ -818,16 +878,36 @@ const App = (() => {
   let gitScanTimer = null;
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
+  // ---------- 布局尺寸的唯一来源 ----------
+  // 默认宽度同时写在 styles.css（#sidebar / #ai-panel 的 width）；这里是钳制范围与
+  // 「双击分隔线复位」的目标值。**两处必须一致**（自检里有一条断言在比对）。
+  // 这一轮把左右都收窄（340 / 380），把空间还给编辑器：原来左 440 + 右 460 时
+  // 中央只剩 52%，视觉上像「三块平分存在感」而不是「编辑区是主角」。
+  const LAYOUT = {
+    sidebar: { def: 340, min: 260, max: 480 },
+    ai: { def: 380, min: 320, max: 520 },
+    // 侧栏上下分栏（项目树 / 大纲）的默认占比与范围
+    sideSplit: { def: 0.65, min: 0.2, max: 0.85 },
+  };
+  const clampSidebar = (px) => Math.min(LAYOUT.sidebar.max, Math.max(LAYOUT.sidebar.min, px));
+
   // ---------- 目录区宽度拖拽调整（持久化；覆盖层捕获事件保证跨 iframe/视频流畅）----------
-  const SIDEBAR_KEY = 'myide-sidebar-width';
+  // 键名带 :v2 —— 这一轮默认宽度变了（280 → 340、且范围收到 260~480），
+  // 沿用旧键会让老用户永远停在旧宽度上，看不到新默认值。
+  const SIDEBAR_KEY = 'myide-sidebar-width:v2';
   function initSidebarResizer() {
     const sidebar = document.getElementById('sidebar');
     const resizer = document.getElementById('sidebar-resizer');
     if (!sidebar || !resizer) return;
     try {
       const saved = parseInt(localStorage.getItem(SIDEBAR_KEY) || '', 10);
-      if (saved >= 160 && saved <= 560) sidebar.style.width = saved + 'px';
+      if (saved >= LAYOUT.sidebar.min && saved <= LAYOUT.sidebar.max) sidebar.style.width = saved + 'px';
     } catch {}
+    // 双击分隔线恢复默认宽度（VS Code / PyCharm 同款习惯：拖歪了有个确定性的退路）
+    resizer.addEventListener('dblclick', () => {
+      sidebar.style.width = LAYOUT.sidebar.def + 'px';
+      try { localStorage.setItem(SIDEBAR_KEY, String(LAYOUT.sidebar.def)); } catch {}
+    });
     resizer.addEventListener('mousedown', (e) => {
       e.preventDefault();
       resizer.classList.add('dragging');
@@ -836,21 +916,78 @@ const App = (() => {
       document.body.appendChild(overlay);
       const left = sidebar.getBoundingClientRect().left || 0;
       // 拖动过程只改样式；localStorage 是同步磁盘 IO，放 mousemove 里会掉帧卡顿
-      const apply = (x) => {
-        const w = Math.min(560, Math.max(160, x - left));
-        sidebar.style.width = w + 'px';
-      };
+      const apply = (x) => { sidebar.style.width = clampSidebar(x - left) + 'px'; };
       const onMove = (ev) => apply(ev.clientX);
       const onUp = () => {
         overlay.remove();
         resizer.classList.remove('dragging');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
-        try { localStorage.setItem(SIDEBAR_KEY, String(parseInt(sidebar.style.width, 10) || 220)); } catch {}
+        try { localStorage.setItem(SIDEBAR_KEY, String(parseInt(sidebar.style.width, 10) || LAYOUT.sidebar.def)); } catch {}
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
+  }
+
+  // ---------- 侧栏上下分栏：项目树（上）+ 大纲（下）----------
+  // 只在「项目」工具窗口激活时启用；比例持久化（拖动窗口宽度后按比例重算 px）。
+  const SIDE_SPLIT_KEY = 'myide-side-split';
+  let sideSplitRatio = LAYOUT.sideSplit.def;
+  const MIN_SPLIT_PANE = 110;   // 上下各自至少留出的高度
+
+  // 上下分栏是否生效（由 renderToolStrip 判断后传入，避免重复判断逻辑）
+  function applySideSplit(visible) {
+    const proj = document.getElementById('panel-project');
+    const sb = document.getElementById('sidebar');
+    if (!proj) return;
+    if (!visible || !sb || !sb.clientHeight) { proj.style.flex = ''; return; }
+    const h = sb.clientHeight;
+    const px = h * sideSplitRatio;
+    const clamped = Math.max(MIN_SPLIT_PANE, Math.min(h - MIN_SPLIT_PANE, px));
+    proj.style.flex = '0 0 ' + Math.round(clamped) + 'px';
+  }
+
+  function initSideSplit() {
+    const hs = document.getElementById('side-hsplit');
+    const sb = document.getElementById('sidebar');
+    if (!hs || !sb) return;
+    try {
+      const v = parseFloat(localStorage.getItem(SIDE_SPLIT_KEY) || '');
+      if (v >= LAYOUT.sideSplit.min && v <= LAYOUT.sideSplit.max) sideSplitRatio = v;
+    } catch {}
+    const ratioFrom = (clientY) => {
+      const r = sb.getBoundingClientRect();
+      const h = sb.clientHeight;
+      if (h < MIN_SPLIT_PANE * 2 + 40) return sideSplitRatio; // 太矮就别拖了，免得两栏都不可用
+      const raw = (clientY - r.top) / h;
+      return Math.max(LAYOUT.sideSplit.min, Math.min(LAYOUT.sideSplit.max, raw));
+    };
+    hs.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      hs.classList.add('dragging');
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:row-resize;';
+      document.body.appendChild(overlay);
+      const onMove = (ev) => { sideSplitRatio = ratioFrom(ev.clientY); applySideSplit(true); };
+      const onUp = () => {
+        overlay.remove();
+        hs.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try { localStorage.setItem(SIDE_SPLIT_KEY, String(sideSplitRatio)); } catch {}
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    // 双击恢复默认比例（与左右分隔线同样的退路）
+    hs.addEventListener('dblclick', () => {
+      sideSplitRatio = LAYOUT.sideSplit.def;
+      applySideSplit(true);
+      try { localStorage.setItem(SIDE_SPLIT_KEY, String(sideSplitRatio)); } catch {}
+    });
+    // 窗口尺寸变化 → 按比例重算 px（存的是比例不是 px，正是为了这里）
+    window.addEventListener('resize', () => applySideSplit(!hs.classList.contains('hidden')));
   }
 
   // ---------- 初始化 ----------
@@ -908,6 +1045,7 @@ const App = (() => {
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();
     initSidebarResizer();
+    initSideSplit();
     // 项目栏滚轮横向滚动：项目过多时末尾按钮被截断，垂直滚轮直接转横向
     //（仅横向溢出且本次无 deltaX 时拦截，不影响触控板原生横滚）
     const pbar = document.getElementById('project-bar');
@@ -937,7 +1075,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip,
+    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

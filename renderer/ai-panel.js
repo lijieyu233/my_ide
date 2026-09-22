@@ -7,7 +7,12 @@ const AiPanel = (() => {
   const sendBtn = document.getElementById('ai-send');
 
   const LS_CFG = 'myide-ai-cfg';
-  const LS_W = 'myide-ai-width';
+  // 宽度键带 :v2（默认 400 → 380、范围收到 320~520），沿用旧键会停在旧宽度上
+  const LS_W = 'myide-ai-width:v2';
+  // 与 App.LAYOUT.ai 同源；ai-panel.js 在 app.js 之前加载，init 时才读得到，
+  // 因此这里给一份兜底值（数字必须与 app.js 一致）
+  const AIL = (typeof window !== 'undefined' && window.App && window.App.LAYOUT && window.App.LAYOUT.ai)
+    || { def: 380, min: 320, max: 520 };
   const MAX_CTX = 24000; // 附带文件内容上限（字符），防 token 爆炸
   const MAX_ROUNDS = 8;  // Agent 工具循环上限（防失控烧 token）
 
@@ -626,6 +631,9 @@ const AiPanel = (() => {
         let r;
         try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
         setToolState(row, r.ok, (c.name === 'write_file' || c.name === 'replace_edit') ? (r.ok ? '已应用' : '已拒绝') : '');
+        // 工具返回的原文挂到 title 上：显示"已拒绝"时，鼠标悬停就能看到到底是权限拒绝、
+        // 还是 search 没匹配上（否则用户只能看到一个笼统的"已拒绝"）
+        if (row) row.title = String((r && r.text) || '');
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
       }
@@ -2039,25 +2047,33 @@ const AiPanel = (() => {
     const grip = document.getElementById('ai-resize');
     if (!grip || !panel) return;
     let dragging = false;
+    // 上限同时受「AIL.max」和「给编辑器留 360px」约束；窗口很窄时保底 AIL.min，
+    // 否则 max 可能小于 min（宽度会抖到 0）
+    const maxW = () => Math.max(AIL.min, Math.min(AIL.max, window.innerWidth - 360));
+    const clampW = (x) => Math.min(maxW(), Math.max(AIL.min, x));
     grip.addEventListener('mousedown', (e) => {
       dragging = true;
       e.preventDefault();
       document.body.classList.add('col-resizing');
     });
+    // 双击复位（拖歪了有个确定性的退路）
+    grip.addEventListener('dblclick', () => {
+      panel.style.width = AIL.def + 'px';
+      try { localStorage.setItem(LS_W, String(AIL.def)); } catch {}
+    });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      const w = Math.min(Math.max(window.innerWidth - e.clientX, 280), window.innerWidth * 0.6);
-      panel.style.width = w + 'px';
+      panel.style.width = clampW(window.innerWidth - e.clientX) + 'px';
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
       dragging = false;
       document.body.classList.remove('col-resizing');
-      try { localStorage.setItem(LS_W, panel.style.width); } catch {}
+      try { localStorage.setItem(LS_W, String(parseInt(panel.style.width, 10) || AIL.def)); } catch {}
     });
     try {
-      const w = localStorage.getItem(LS_W);
-      if (w && /^\d+px$/.test(w)) panel.style.width = w;
+      const w = parseInt(localStorage.getItem(LS_W) || '', 10);
+      if (w >= AIL.min && w <= AIL.max) panel.style.width = w + 'px';
     } catch {}
   }
 
