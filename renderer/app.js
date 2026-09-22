@@ -372,6 +372,11 @@ const App = (() => {
   }
 
   // 下拉箭头（内联 SVG）：'▾' 在部分字体下也不稳，统一走 SVG
+  // 「全部项目」入口的图标：叠层（= 多个项目）
+  const PROJ_LIST_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">'
+    + '<path d="M8 2.3l5.5 2.7L8 7.7 2.5 5z"/>'
+    + '<path d="M2.5 8.1L8 10.8l5.5-2.7"/>'
+    + '<path d="M2.5 11.1L8 13.8l5.5-2.7"/></svg>';
   const PROJ_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>';
   const CARET_DOWN = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
 
@@ -567,14 +572,25 @@ const App = (() => {
       mkTitle('已打开的项目');
       projects.forEach((p) => {
         const d = document.createElement('div');
-        d.className = 'ctx-item' + (p.path === root ? ' sel' : '');
-        d.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
+        d.className = 'ctx-item proj-item' + (p.path === root ? ' sel' : '');
         d.title = p.path;
+        const nm = document.createElement('span');
+        nm.className = 'proj-item-nm';
+        nm.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
+        d.appendChild(nm);
+        // ✕ 关闭该项目（平时透明，hover 才显出来）—— 平铺胶囊撤掉后，"关项目"要有去处
+        const x = document.createElement('span');
+        x.className = 'proj-item-x';
+        x.textContent = '✕';
+        x.title = '关闭项目（从列表移除，不删磁盘文件）';
+        x.onclick = (ev) => { ev.stopPropagation(); closeProjMenuNow(); removeProject(p.path); };
+        d.appendChild(x);
         d.onclick = () => { closeProjMenuNow(); openProject(p.path); };
         menu.appendChild(d);
       });
     }
-    const history = shown.filter((p) => !projects.some((x) => x.path === p)).slice(0, 5);
+    // 最近打开放宽到 8 条：这个菜单的主要用途就是「快速切回之前的项目」
+    const history = shown.filter((p) => !projects.some((x) => x.path === p)).slice(0, 8);
     if (history.length) {
       mkTitle('最近打开');
       history.forEach((p) => {
@@ -633,12 +649,7 @@ const App = (() => {
     });
   }
 
-  // 项目栏平铺上限：≤3 个时平铺（一键切换很方便），超过就只留「当前项目 ▾」。
-  // 理由：十几个项目平铺出来和下面的文件 Tab 是同一个视觉层级、甚至更抢眼，
-  // 一级导航（项目）比二级导航（文件）还突出 → 顶栏读起来像"功能栏"而不是"标题栏"。
-  const PROJ_PILL_MAX = 3;
-
-  // 关闭项目（收起态 / 平铺态的 ✕ 与右键菜单共用一份实现）
+  // 关闭项目（菜单里的 ✕ 共用一份实现）
   function removeProject(prPath) {
     projects = projects.filter((p) => p.path !== prPath);
     saveProjects();
@@ -666,45 +677,35 @@ const App = (() => {
     renderEmptyRecent();
   }
 
+  // ---------- 项目栏：平铺的项目按钮 + 「全部项目」入口 ----------
+  // 为什么平铺、而不是收成一个「当前项目 ▾」：这排按钮的用途就是**一眼看到、一下点过去**。
+  // 收成一个当前项目名之后，"我是谁"留下了、"切到别处"的能力没了 —— 那是砍功能换整洁。
+  // 项目多了横向滚动（滚轮 / 右端淡出提示），顺序可拖拽调整。
   function renderProjectBar() {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
     const wrap = bar.parentElement; // #project-bar-wrap
     bar.innerHTML = '';
-    // ⚠ 「全部项目」入口已撤掉：它和「当前项目 ▾」都是"点开同一个项目菜单"，
-    //    两个控件做同一件事（用户原话："这里两个按钮功能重复了"）。
-    //    现在只有一个入口 —— 项目控件本身就是菜单按钮，菜单里含已打开 / 最近打开 / 当前项目操作。
-    //    这里只负责清掉可能残留的旧节点（老版本 DOM / 热重载）。
+    // 「全部项目」入口（图标 + 数量）：平铺只看得到"已打开"的项目，
+    // "最近打开过但已经不在列表里"的只能靠它找回 —— 两个入口分工不同，不是重复按钮。
     if (wrap) {
       const stale = wrap.querySelector('.proj-all');
       if (stale) stale.remove();
     }
-    // 收起态：顶栏只留一个「当前项目 ▾」。它不是一个"选中的 Tab"，
-    // 而是标题栏上的当前项目名 —— 所以不用实心 accent 块（那正是"每个区域都在抢注意力"的来源）。
-    if (projects.length > PROJ_PILL_MAX) {
-      const cur = projects.find((p) => p.path === root) || projects[0];
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'proj-btn proj-current active';
-      btn.dataset.path = cur.path;
-      btn.title = '当前项目：' + cur.path + '\n点击切换 / 打开其他项目（Ctrl+O 打开新项目）';
-      btn.innerHTML = PROJ_IC + '<span class="proj-cur-name"></span>';
-      btn.querySelector('.proj-cur-name').textContent = cur.path.split(/[\\/]/).pop() || cur.path;
-      const caret = document.createElement('span');
-      caret.className = 'proj-cur-caret';
-      caret.innerHTML = CARET_DOWN;
-      btn.appendChild(caret);
-      const x = document.createElement('span');
-      x.className = 'proj-close';
-      x.textContent = '✕';
-      x.title = '关闭当前项目';
-      x.onclick = (e) => { e.stopPropagation(); removeProject(cur.path); };
-      btn.appendChild(x);
-      // 点击 = 打开项目切换菜单（当前项目本来就开着，再 openProject 是无意义动作）
-      btn.onclick = (e) => { e.stopPropagation(); showProjMenu(btn); };
-      btn.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); showProjMenu(btn); };
-      bar.appendChild(btn);
-    } else {
+    if (!projects.length || !wrap) { updateProjBarOverflow(); return; }
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'proj-all';
+    all.innerHTML = PROJ_LIST_IC + '<span class="proj-all-n">' + projects.length + '</span>';
+    const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
+    all.title = '全部项目（已打开 ' + projects.length + ' 个，当前：' + curName + '）\n'
+      + '点击或移入：快速切换 / 重新打开之前的项目';
+    // hover 自动弹出（不知道可以点也能发现），点一下也开
+    all.onmouseenter = () => showProjMenu(all);
+    all.onmouseleave = hideProjMenu;
+    all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
+    wrap.insertBefore(all, bar);
+
     for (const pr of projects) {
       const btn = document.createElement('button');
       btn.className = 'proj-btn' + (pr.path === root ? ' active' : '');
@@ -714,7 +715,7 @@ const App = (() => {
       const nm = document.createElement('span');
       nm.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
       btn.appendChild(nm);
-      // ✕ 关闭项目（右键菜单保留）
+      // ✕ 关闭项目（右键菜单保留完整动作）
       const x = document.createElement('span');
       x.className = 'proj-close';
       x.textContent = '✕';
@@ -723,7 +724,7 @@ const App = (() => {
       x.onclick = (e) => { e.stopPropagation(); doRemove(); };
       btn.appendChild(x);
       btn.onclick = () => openProject(pr.path);
-      // 右键弹菜单（不再是直接关闭——误触右键曾把项目一个个删光）
+      // 右键弹菜单（不再是直接关闭 —— 误触右键曾把项目一个个删光）
       btn.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -776,7 +777,6 @@ const App = (() => {
         renderProjectBar();
       });
       bar.appendChild(btn);
-    }
     }
     // 渲染后把当前项目按钮滚入可视区：新开项目在末尾，曾被截断看不到、点不到 ✕
     // ⚠ 必须用 getBoundingClientRect 差值算「相对滚动容器」的位置：

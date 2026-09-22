@@ -244,30 +244,27 @@ module.exports = {
 
     const bar = q('#project-bar');
     const btns = qa('#project-bar .proj-btn');
-    // 核心回归：项目多的时候不再平铺一排胶囊。原来那排和下面的文件 Tab 同一个视觉层级、
-    // 甚至更抢眼 —— 一级导航（项目）压过二级导航（文件），顶栏就读成了"功能栏"。
-    add('项目多时不再平铺项目胶囊（顶栏只留当前项目一个控件）', btns.length === 1,
+    // 平铺是刻意的：这排按钮的用途是"一眼看到、一下点过去"。曾经 >3 个项目就收成一个
+    // 「当前项目 ▾」—— 结果是"我是谁"留下了、"切到别处"的能力没了（用户原话：
+    // "你不能为了保留这个删除我的功能"）。
+    add('项目始终平铺（每个项目一个按钮，不再收成「当前项目 ▾」）',
+      btns.length === n && !q('#project-bar .proj-btn.proj-current'),
       '按钮=' + btns.length + ' / 项目=' + n);
-    add('顶栏项目区不再横向滚动（原先一排胶囊必须横滚）', bar.scrollWidth <= bar.clientWidth + 1,
-      'scrollW=' + bar.scrollWidth + ' clientW=' + bar.clientWidth);
-    const cur = q('#project-bar .proj-btn.proj-current');
-    add('当前项目控件存在且有项目名', !!cur && ((cur.querySelector('.proj-cur-name') || {}).textContent || '').length > 0,
-      cur ? cur.textContent : '无');
-    // 它是"标题"不是"选中的 Tab"：不能是实心 accent 块（那正是"处处抢注意力"的来源）
-    const bg = cur ? getComputedStyle(cur).backgroundColor : '';
-    add('当前项目不是实心 accent 块（标题化，不抢焦点）',
-      !cur || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent', 'bg=' + bg);
-    add('有下拉指示（看得出能切换项目）', !!q('#project-bar .proj-cur-caret svg'));
+    add('有且只有一个按钮是 active，且指向当前项目',
+      btns.filter((b) => b.classList.contains('active')).length === 1
+        && btns.some((b) => b.classList.contains('active') && b.dataset.path === window.App.root));
+    add('当前项目用弱背景 + 强调边线（不是实心 accent 块，也不至于看不出是哪个）',
+      (() => { const a = q('#project-bar .proj-btn.active'); if (!a) return false;
+        const s2 = getComputedStyle(a); return s2.backgroundColor !== 'rgb(217, 104, 125)' && s2.borderStyle !== 'none'; })());
     add('「关闭项目 ✕」默认隐藏（顶栏不常驻危险动作）',
-      !cur || getComputedStyle(cur.querySelector('.proj-close')).visibility === 'hidden');
+      btns.every((b) => { const x = b.querySelector('.proj-close'); return !x || getComputedStyle(x).visibility === 'hidden'; }));
+    add('「全部项目」入口在（图标 + 数量，负责"最近打开"）',
+      !!q('.proj-all') && !!q('.proj-all .proj-all-n')
+        && q('.proj-all .proj-all-n').textContent === String(n),
+      q('.proj-all') ? q('.proj-all').textContent : '无');
 
-    // 单入口：原来「全部项目」和「当前项目 ▾」都只是"点开同一个项目菜单"，重复。
-    add('项目切换只有一个入口（不再有「全部项目」第二个按钮）',
-      !q('.proj-all') && btns.length === 1,
-      'proj-all=' + !!q('.proj-all') + ' 项目控件=' + btns.length);
-
-    // 点当前项目控件 → 弹切换菜单（而不是"打开当前项目"这种无意义动作）
-    cur.click();
+    // 点「全部项目」图标 → 弹切换菜单（完整列表 + 最近打开 + 当前项目动作）
+    q('.proj-all').click();
     await sleep(300);
     const menu = q('#ctx-menu');
     add('点击当前项目弹出切换菜单', !!menu && !menu.classList.contains('hidden'), menu ? menu.className : '无菜单');

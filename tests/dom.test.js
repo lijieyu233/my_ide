@@ -1598,34 +1598,48 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
   });
 
-  await okAsync('多项目：超过 3 个时顶栏收起为「当前项目 ▾」（不再平铺一排胶囊）', async () => {
-    // 这一版的核心：十几个项目平铺出来和下面的文件 Tab 同级甚至更抢眼，
-    // 一级导航压过二级导航 → 顶栏读起来像"功能栏"。超过 3 个就收起。
+  await okAsync('多项目：始终平铺项目按钮（不再收成「当前项目 ▾」，切换能力不丢）', async () => {
+    // 平铺是刻意的：这排按钮的用途是"一眼看到、一下点过去"。
+    // 曾经 >3 个项目就收成一个「当前项目 ▾」—— 结果是"我是谁"留下了、"切到别处"的能力没了，
+    // 而切到别处正是这排按钮存在的理由（用户原话："你不能为了保留这个删除我的功能"）。
     for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
       await g(dom, 'App.openProject("' + extra + '")');
       await tick(); await tick();
     }
     const bar = $(dom, '#project-bar');
     const btns = $allIn(bar, '.proj-btn');
-    assert_(btns.length === 1, '只渲染当前项目一个控件, got ' + btns.length);
-    const cur = $(dom, '#project-bar .proj-btn.proj-current');
-    assert_(cur, '当前项目控件存在');
-    assert_(cur.dataset.path === (await g(dom, 'App.root')), '控件指向当前项目');
-    assert_(!!cur.querySelector('.proj-cur-caret svg'), '有下拉指示');
-    assert_(!$(dom, '.proj-all'), '没有第二个「全部项目」入口（单入口设计）');
-    // 点它开的是切换菜单，不是"打开当前项目"（无意义动作）
-    click(cur);
+    const n = (await g(dom, 'App.getProjects()')).length;
+    assert_(n >= 4, '已打开 >= 4 个项目（前提）, got ' + n);
+    assert_(btns.length === n, '每个项目都有按钮（始终平铺）, got ' + btns.length + ' / ' + n);
+    assert_(!$(dom, '#project-bar .proj-btn.proj-current'), '不再有「当前项目 ▾」收起控件');
+    // 当前项目仍要能一眼认出（平铺能成立的前提）
+    const active = btns.filter((b) => b.classList.contains('active'));
+    assert_(active.length === 1 && active[0].dataset.path === (await g(dom, 'App.root')),
+      '有且只有一个 active 按钮指向当前项目, got ' + active.length);
+    // 平铺的第一项能力：点一下直接切
+    const other = btns.find((b) => !b.classList.contains('active'));
+    click(other);
+    await tick(); await tick();
+    assert_((await g(dom, 'App.root')) === other.dataset.path, '点项目按钮直接切换, got ' + (await g(dom, 'App.root')));
+    // 平铺的第二项能力：右键有完整动作（复制路径 / 资源管理器 / 关闭项目）
+    const b2 = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P);
+    assert_(b2, '找到项目一按钮');
+    b2.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
     const menu = $(dom, '#ctx-menu');
-    assert_(!menu.classList.contains('hidden'), '弹出项目切换菜单');
-    const items = $allIn(menu, '.ctx-item:not(.ctx-title)');
-    assert_(items.length >= 2, '菜单里有其他项目可切, got ' + items.length);
-    // 从菜单切到最初的项目 → 真的切过去
-    const target = items.find((x) => x.title === P);
-    assert_(target, '菜单里能找到最初的项目');
-    click(target);
-    await tick(); await tick();
-    assert_((await g(dom, 'App.root')) === P, '从菜单切换项目生效');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(!menu.classList.contains('hidden'), '右键弹出菜单');
+    assert_(labels.some((t) => t.includes('复制完整路径')), '菜单含「复制完整路径」: ' + JSON.stringify(labels));
+    assert_(labels.some((t) => t.includes('在资源管理器中显示')), '菜单含「在资源管理器中显示」');
+    assert_(labels.some((t) => t.includes('关闭项目')), '菜单含「关闭项目」');
+    menu.classList.add('hidden');
+    await tick();
+    // 「全部项目」入口（图标 + 数量）：平铺只看得到"已打开"的，
+    // "最近打开过但已不在列表里"的要靠它 —— 两个入口分工不同，不是重复按钮
+    const all = $(dom, '.proj-all');
+    assert_(all && all.parentElement === $(dom, '#project-bar-wrap'), '「全部项目」入口挂在项目栏外层');
+    assert_((all.querySelector('.proj-all-n') || {}).textContent === String(n),
+      '入口显示项目数量, got ' + (all.querySelector('.proj-all-n') || {}).textContent);
     // 收尾：关掉多加的项目，别影响后续用例的项目状态
     for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
       await g(dom, 'App.setRoot("' + extra + '")');
@@ -1726,14 +1740,17 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.openTerminal.length === 2 && calls.openTerminal[1] === P, '文件 → 命令行打开所在目录, got ' + JSON.stringify(calls.openTerminal));
   });
 
-  await okAsync('项目切换单入口：项目控件在 no-drag 白名单 + 点击切换', async () => {
-    // 「全部项目」入口已撤掉 —— 它和「当前项目 ▾」都是"点开同一个项目菜单"，两个控件做同一件事
-    assert_(!$(dom, '.proj-all'), '没有第二个「全部项目」按钮（单入口）');
+  await okAsync('项目栏两个入口：都在 no-drag 白名单 + 点击都能切换', async () => {
+    // 两个入口分工不同：图标「全部项目」= 完整列表 + 最近打开；项目按钮 = 直接切换。
+    // 撤掉的是「当前项目 ▾」（它和「全部项目」才是真的重复：都只是点开同一个菜单）。
+    assert_(!!$(dom, '.proj-all'), '「全部项目」入口存在');
+    assert_(!$(dom, '#project-bar .proj-btn.proj-current'), '没有「当前项目 ▾」收起控件');
     // 曾因不在 no-drag 白名单被窗口拖拽区拦截 → 点击无反应
     //（jsdom 的 getComputedStyle 不解析 -webkit-app-region → 直接校验样式表规则）
     const cssText = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
-    assert_(ndRules.some((r) => r.includes('.proj-btn')), '项目控件在 no-drag 白名单（点击不被拖拽区拦截）');
+    assert_(ndRules.some((r) => r.includes('.proj-btn')), '项目按钮在 no-drag 白名单（点击不被拖拽区拦截）');
+    assert_(ndRules.some((r) => r.includes('.proj-all')), '「全部项目」也在 no-drag 白名单');
     assert_(ndRules.some((r) => r.includes('#project-bar-wrap')), '项目栏容器也在白名单内');
     // 平铺态（≤3 个项目）点项目控件 = 切换项目
     await g(dom, 'App.openProject("C:/proj2")');
@@ -1761,12 +1778,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'App.openProject("C:/proj2")');
     await tick(); await tick();
     assert_(bar.scrollLeft === 60, '无布局信息时不动滚动位置（不误判、不乱滚）, got ' + bar.scrollLeft);
-    // 单入口结构：只有项目控件一个入口（「全部项目」已撤掉），且它在（可滚动的）项目栏里
+    // 结构：项目按钮在（可滚动的）项目栏里，「全部项目」入口在外层（不参与横滚、不可能压住按钮）
     const wrap = $(dom, '#project-bar-wrap');
     assert_(wrap, '#project-bar-wrap 存在');
-    assert_(!$(dom, '.proj-all'), '没有额外的「全部项目」入口');
+    assert_($(dom, '#project-bar-wrap > .proj-all'), '「全部项目」入口在项目栏外层');
     const chip = $(dom, '#project-bar .proj-btn');
-    assert_(chip && chip.parentElement === bar, '项目控件在项目栏内');
+    assert_(chip && chip.parentElement === bar, '项目按钮在（可滚动的）项目栏内');
     // 清理：切回项目一
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
@@ -6197,8 +6214,9 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('项目栏：溢出淡出提示（滚到最右自动取消）+ 结构', async () => {
     const bar = $(dom, '#project-bar');
     assert_(bar, '项目栏存在');
-    // 单入口：项目栏里只有项目控件（不再有「入口在外层 + 列表在里层」的两段结构）
-    assert_(!$allIn(bar, '.proj-all').length && !$(dom, '#project-bar-wrap .proj-all'), '没有「全部项目」第二入口');
+    // 结构：项目按钮在（可滚动的）项目栏里，「全部项目」入口在外层
+    assert_(!$allIn(bar, '.proj-all').length, '「全部项目」不在滚动容器里（结构上不可能压住项目按钮）');
+    assert_($(dom, '#project-bar-wrap > .proj-all'), '「全部项目」在外层容器里');
     Object.defineProperty(bar, 'scrollWidth', { configurable: true, value: 900 });
     Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 300 });
     bar.scrollLeft = 0;
@@ -6215,7 +6233,10 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(/\.proj-btn\s*\{[^}]*align-items:\s*center/.test(cssText), '项目按钮垂直居中（不再挤压）');
     assert_(/#project-bar-wrap\s*\{/.test(cssText), '#project-bar-wrap 有样式');
     // 项目栏不再有 sticky 悬浮层（sticky + 横向滚动 = 按钮从底下钻过去）
-    assert_(!/\.proj-all\s*\{/.test(cssText), 'proj-all 的样式已彻底删除（不留死 CSS）');
+    assert_(/\.proj-all\s*\{/.test(cssText), '.proj-all 有样式（不是只有 DOM）');
+    assert_(!/\.proj-all\s*\{[^}]*position:\s*sticky/.test(cssText), '.proj-all 不是 sticky 悬浮层（否则会压住项目按钮）');
+    assert_(/\.proj-btn\s*\{/.test(cssText), '.proj-btn 有样式');
+    assert_(/\.proj-btn\.active\s*\{[^}]*color-mix/.test(cssText), '当前项目是弱背景（不是实心 accent 块）');
     assert_(/#tab-scroll[^{]*\{[^}]*scrollbar-width:\s*none/.test(cssText), '标签滚动区隐藏了原生滚动条');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
     assert_(ndRules.some((r) => r.includes('project-bar-wrap')), '外层容器在 no-drag 白名单内可点击');
