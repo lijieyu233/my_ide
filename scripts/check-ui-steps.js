@@ -222,6 +222,35 @@ module.exports = {
       return el && el.querySelector('svg');
     }), 'sort/collapse/expand');
     add('三态视角按钮保留文字（可读性）', /常规|仅隐藏|全部/.test(q('#tree-hide-mode').textContent), q('#tree-hide-mode').textContent);
+
+    // ---------- 切换文件不该让整棵树重建 ----------
+    // 重建 = 先清空 DOM 再 await 加载目录 → 中间会白一帧，用户看到的"闪"就是它。
+    // 判据用「DOM 节点身份」：真重建了，旧节点必然 isConnected === false。
+    const sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dirP = window.__CHECK_P;
+    const pickRow = (name) => qa('#tree .tree-row')
+      .find((r) => (((r.querySelector('.nm') || {}).title) || '').endsWith(name));
+    await sleep2(600);
+    const rootRow0 = q('#tree').firstElementChild; // 根行：整树重建时一定被换掉
+    const rowA = pickRow('_ui_mmd.md');
+    const rowB = pickRow('_ui_outline.md');
+    add('根目录下两个 fixture 都在树里（以下断言的前提）', !!rootRow0 && !!rowA && !!rowB,
+      'root=' + !!rootRow0 + ' A=' + !!rowA + ' B=' + !!rowB);
+    if (rootRow0 && rowA && rowB) {
+      rowA.click();
+      await sleep2(800);
+      add('打开文件后树没有被重建（根行仍是同一个 DOM 节点）',
+        rootRow0 === q('#tree').firstElementChild && rootRow0.isConnected, '同一节点=' + (rootRow0 === q('#tree').firstElementChild));
+      const rowA2 = pickRow('_ui_mmd.md');
+      rowB.click();
+      await sleep2(800);
+      add('切换文件时树不重建（只换高亮，不清空重画）',
+        rootRow0 === q('#tree').firstElementChild && rootRow0.isConnected && !!rowA2 && rowA2.isConnected,
+        '根行同节点=' + (rootRow0 === q('#tree').firstElementChild) + ' 旧行仍在=' + !!(rowA2 && rowA2.isConnected));
+      const sel = qa('#tree .tree-row.selected').map((r) => ((r.querySelector('.nm') || {}).title) || '');
+      add('切换后高亮跟到新文件', sel.some((t) => t.endsWith('_ui_outline.md')), sel.join(' | ').slice(0, 90));
+    }
+
     const r = head.getBoundingClientRect();
     return { R, hover: { x: Math.round(r.width - 40), y: Math.round(r.top + r.height / 2) } };
   },

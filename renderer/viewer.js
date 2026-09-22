@@ -416,6 +416,13 @@ const Viewer = (() => {
   // ---------- 视图渲染 ----------
   function renderView() {
     blameOn = false; // 切换标签/视图后 gutter 已重建，注解需重新开启
+    // ⚠ 先判断「这一帧有没有内容可画」，再销毁旧编辑器 / 清空容器。
+    //   新标签是「先 activate 再 loadTab」，而 loadTab 要 await 读盘 —— 旧写法上来就
+    //   viewer.innerHTML = ''，于是"正在读盘"的那段时间编辑区是**空白的**：
+    //   切成一个还没打开过的文件时看到的那一帧闪，就是它。
+    //   现在内容没就绪就保留旧画面（编辑器也不销毁），loadTab 完成后会再调一次
+    //   renderView 把新内容画上 —— 体验与 VS Code / Cursor 一致。
+    if (active >= 0 && tabs[active] && tabs[active].mode == null) return;
     // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
     if (cmApi) {
       if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
@@ -424,7 +431,6 @@ const Viewer = (() => {
     }
     viewer.innerHTML = '';
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
-    if (tabs[active].mode == null) return; // 加载未完成（openFile 的 activate 提前触发）：等 loadTab 完成后再渲染
     empty.classList.remove('visible');
     const tab = tabs[active];
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);

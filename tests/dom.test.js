@@ -372,6 +372,35 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.tab.active .tname'), '标签已打开');
   });
 
+  await okAsync('切换文件不重建整棵树（只换高亮，不闪）', async () => {
+    // 判据用「DOM 节点身份」：真重建（el.innerHTML = ''）后旧节点必然 isConnected === false。
+    // 重建同时会先清空再 await 加载目录，中间白一帧 —— 用户看到的就是这个"闪"。
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    const rootRow = $(dom, '#tree').firstElementChild;
+    assert_(rootRow, '树有根行');
+    const rowOf = (t) => $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title === t);
+    const a = rowOf(P + '/README.md');
+    const b = rowOf(P + '/notes.txt');
+    assert_(a && b, '两个同目录文件都在树里');
+    click(a);
+    await tick(); await tick(); await tick();
+    assert_(rootRow === $(dom, '#tree').firstElementChild && rootRow.isConnected, '打开文件后树没被重建（根行同一节点）');
+    const a2 = rowOf(P + '/README.md');
+    const b2 = rowOf(P + '/notes.txt');
+    assert_(a === a2 && a.isConnected, '打开文件后旧行节点仍然活着');
+    click(b2);
+    await tick(); await tick(); await tick();
+    assert_(rootRow === $(dom, '#tree').firstElementChild && rootRow.isConnected, '切换文件时树没被重建');
+    assert_(a === rowOf(P + '/README.md') && a.isConnected, '切换文件时旧行节点仍然活着');
+    const sel = $allIn($(dom, '#tree'), '.tree-row.selected').map((r) => (r.querySelector('.nm') || {}).title);
+    assert_(sel.includes(P + '/notes.txt'), '高亮跟到新文件, got: ' + JSON.stringify(sel));
+    // 收尾：切回 README.md —— 后面几条用例按「当前是 md 文件」断言（#tab-actions 里要有模式按钮）
+    click(a);
+    await tick(); await tick(); await tick();
+    assert_(($(dom, '.tab.active .tname') || {}).textContent === 'README.md', '收尾：切回 README.md');
+  });
+
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
     // md 默认 live（CM6），先切「◉ 预览」再断言渲染
     click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
