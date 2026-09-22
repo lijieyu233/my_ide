@@ -1034,24 +1034,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 回深色', async () => {
-    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '默认深色');
-    g(dom, 'Theme.toggle()');
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-light'), '切换后为浅色');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'light', 'localStorage 已记录');
-    key(dom, 'T', { ctrl: true, shift: true }); // 浅色 → 粉红（四主题循环）
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-pink'), '快捷键切到粉红');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'pink', 'localStorage 更新为 pink');
-    g(dom, 'Theme.toggle()'); // 粉红 → 深红
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-crimson'), '切到深红');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'crimson', 'localStorage 更新为 crimson');
-    g(dom, 'Theme.toggle()'); // 深红 → 深色
-    await tick();
-    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '回到深色');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'dark', 'localStorage 更新');
+  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 石墨 → 回深色', async () => {
+    const T = 'myide-theme';
+    const cls = () => $(dom, 'body').className;
+    const isDark = () => !/theme-(light|pink|crimson|graphite)/.test(cls());
+    const chain = [
+      ['toggle', 'light', 'theme-light'],
+      ['key', 'pink', 'theme-pink'],
+      ['toggle', 'crimson', 'theme-crimson'],
+      ['toggle', 'graphite', 'theme-graphite'],
+      ['toggle', 'dark', null],
+    ];
+    // 初始态：Theme.init 只设 activeId，不会写 KEY（只有 set 才写）-> 允许 null
+    assert_(isDark(), '默认深色');
+    for (const [how, id, klass] of chain) {
+      if (how === 'key') key(dom, 'T', { ctrl: true, shift: true });
+      else g(dom, 'Theme.toggle()');
+      await tick();
+      const ok = klass ? $(dom, 'body').classList.contains(klass) : isDark();
+      assert_(ok, '切到 ' + id + ', got: ' + cls());
+      assert_(dom.window.localStorage.getItem(T) === id, 'localStorage = ' + id + ', got ' + dom.window.localStorage.getItem(T));
+    }
   });
 
   await okAsync('diff hunk 折叠：点击切换展开/收起', async () => {
@@ -1609,7 +1612,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(cur, '当前项目控件存在');
     assert_(cur.dataset.path === (await g(dom, 'App.root')), '控件指向当前项目');
     assert_(!!cur.querySelector('.proj-cur-caret svg'), '有下拉指示');
-    assert_(!!$(dom, '.proj-all'), '「全部项目」入口仍在（切换走下拉）');
+    assert_(!$(dom, '.proj-all'), '没有第二个「全部项目」入口（单入口设计）');
     // 点它开的是切换菜单，不是"打开当前项目"（无意义动作）
     click(cur);
     await tick();
@@ -1723,23 +1726,23 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.openTerminal.length === 2 && calls.openTerminal[1] === P, '文件 → 命令行打开所在目录, got ' + JSON.stringify(calls.openTerminal));
   });
 
-  await okAsync('「全部项目」入口：no-drag 可点击 + 下拉切换项目', async () => {
-    const all = $(dom, '.proj-all');
-    assert_(all, '「全部项目」按钮存在');
+  await okAsync('项目切换单入口：项目控件在 no-drag 白名单 + 点击切换', async () => {
+    // 「全部项目」入口已撤掉 —— 它和「当前项目 ▾」都是"点开同一个项目菜单"，两个控件做同一件事
+    assert_(!$(dom, '.proj-all'), '没有第二个「全部项目」按钮（单入口）');
     // 曾因不在 no-drag 白名单被窗口拖拽区拦截 → 点击无反应
     //（jsdom 的 getComputedStyle 不解析 -webkit-app-region → 直接校验样式表规则）
     const cssText = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
-    assert_(ndRules.some((r) => r.includes('.proj-all')), '「全部项目」在 no-drag 白名单（点击不被拖拽区拦截）');
-    click(all);
-    await tick();
-    const menu = $(dom, '#ctx-menu');
-    assert_(!menu.classList.contains('hidden'), '点击弹出全部项目下拉');
-    const item = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('proj'));
-    assert_(item, '下拉含项目项');
-    click(item);
+    assert_(ndRules.some((r) => r.includes('.proj-btn')), '项目控件在 no-drag 白名单（点击不被拖拽区拦截）');
+    assert_(ndRules.some((r) => r.includes('#project-bar-wrap')), '项目栏容器也在白名单内');
+    // 平铺态（≤3 个项目）点项目控件 = 切换项目
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b2) => b2.title === P);
+    assert_(btn, '找到项目一按钮');
+    click(btn);
     await tick(); await tick(); await tick();
-    assert_((await g(dom, 'App.root')) === P, '下拉点击切换项目');
+    assert_((await g(dom, 'App.root')) === P, '点击项目控件切换项目');
   });
 
   await okAsync('项目栏溢出：滚轮横向滚动 + 当前项目自动滚入可视区', async () => {
@@ -1758,12 +1761,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'App.openProject("C:/proj2")');
     await tick(); await tick();
     assert_(bar.scrollLeft === 60, '无布局信息时不动滚动位置（不误判、不乱滚）, got ' + bar.scrollLeft);
-    // 结构回归：「全部项目」入口必须在滚动容器之外 —— 老实现 sticky 浮在滚动层上，项目按钮会从它底下钻过去（覆盖）
+    // 单入口结构：只有项目控件一个入口（「全部项目」已撤掉），且它在（可滚动的）项目栏里
     const wrap = $(dom, '#project-bar-wrap');
     assert_(wrap, '#project-bar-wrap 存在');
-    const allBtn = $(dom, '.proj-all');
-    assert_(allBtn && allBtn.parentElement === wrap, '「全部项目」挂在滚动容器外层, got ' + (allBtn && allBtn.parentElement && allBtn.parentElement.id));
-    assert_(!$(dom, '#project-bar .proj-all'), '「全部项目」不在滚动容器内（结构上不可能盖住项目按钮）');
+    assert_(!$(dom, '.proj-all'), '没有额外的「全部项目」入口');
+    const chip = $(dom, '#project-bar .proj-btn');
+    assert_(chip && chip.parentElement === bar, '项目控件在项目栏内');
     // 清理：切回项目一
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
@@ -6194,9 +6197,8 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('项目栏：溢出淡出提示（滚到最右自动取消）+ 结构', async () => {
     const bar = $(dom, '#project-bar');
     assert_(bar, '项目栏存在');
-    // 「全部项目」不在滚动层内（这是「覆盖」类问题的结构性修复）
-    assert_(!$allIn(bar, '.proj-all').length, '「全部项目」不在滚动容器里');
-    assert_($(dom, '#project-bar-wrap .proj-all'), '「全部项目」在外层容器里');
+    // 单入口：项目栏里只有项目控件（不再有「入口在外层 + 列表在里层」的两段结构）
+    assert_(!$allIn(bar, '.proj-all').length && !$(dom, '#project-bar-wrap .proj-all'), '没有「全部项目」第二入口');
     Object.defineProperty(bar, 'scrollWidth', { configurable: true, value: 900 });
     Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 300 });
     bar.scrollLeft = 0;
@@ -6213,7 +6215,8 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(/\.proj-btn\s*\{[^}]*align-items:\s*center/.test(cssText), '项目按钮垂直居中（不再挤压）');
     assert_(/#project-bar-wrap\s*\{/.test(cssText), '#project-bar-wrap 有样式');
     // 项目栏不再有 sticky 悬浮层（sticky + 横向滚动 = 按钮从底下钻过去）
-    assert_(!/\.proj-all\s*\{[^}]*position:\s*sticky/.test(cssText), '.proj-all 不再是 sticky');
+    assert_(!/\.proj-all\s*\{/.test(cssText), 'proj-all 的样式已彻底删除（不留死 CSS）');
+    assert_(/#tab-scroll[^{]*\{[^}]*scrollbar-width:\s*none/.test(cssText), '标签滚动区隐藏了原生滚动条');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
     assert_(ndRules.some((r) => r.includes('project-bar-wrap')), '外层容器在 no-drag 白名单内可点击');
   });

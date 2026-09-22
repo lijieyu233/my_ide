@@ -292,6 +292,7 @@ const Settings = (() => {
           <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light">☀️ 浅色</button>
           <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
           <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
+          <button class="theme-opt ${cur === 'graphite' ? 'sel' : ''}" data-th="graphite">🪨 石墨</button>
         </div>
         ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
       </div>

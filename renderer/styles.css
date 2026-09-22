@@ -35,7 +35,6 @@
   --panel-strong: #202020;
   --menu-border: #3d3d3d;
   --border-mid: #3a3a3a;
-  --border-pane: color-mix(in srgb, var(--text) 16%, transparent); /* 主分界线（比 --border 清晰，且随主题/自定义配色走） */
   --code-bg: #161616;
   --code-text: #e8c98a;
   --editor-text: #c8c8c8;
@@ -58,6 +57,14 @@ body {
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   font-size: var(--ui-font-size, 13px);
   user-select: none;
+  /* ⚠ 派生变量必须定义在 body 上（不是 :root）：主题变量都挂在 body.theme-* 上，
+     而自定义属性里的 var() 是**在声明它的那个元素上**求值的 ——
+     写在 :root 里就会按 html 的默认 --accent / --text 算死，下发到 body 时已是固定色，
+     换主题不跟随（实测：石墨主题下标题色仍在用默认蓝 accent 混合）。 */
+  --border-pane: color-mix(in srgb, var(--text) 16%, transparent); /* 主分界线（随主题走） */
+  /* Markdown 标题色：不要纯白 —— 掺一点主题强调色，标题才"有颜色"但不至于全是 accent。
+     用户原话："纯白的 md 样式很难看"。浅色主题里 --text-bright 本身是深色，混出来自动变深。 */
+  --md-heading: color-mix(in srgb, var(--text-bright) 90%, var(--accent));
 }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
@@ -72,7 +79,7 @@ body {
   -webkit-app-region: drag;
   user-select: none;
 }
-#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .proj-all, #toolbar .win-btns,
+#toolbar .tb-btn, #toolbar .proj-btn, #toolbar .win-btns,
 #toolbar #project-bar, #toolbar #project-bar-wrap, #toolbar input, #toolbar label { -webkit-app-region: no-drag; }
 .win-btns { display: flex; gap: 2px; margin-left: 4px; flex-shrink: 0; }
 .win-btns .tb-btn { padding: 2px 9px; line-height: 1.3; }
@@ -117,24 +124,8 @@ svg.ic .fill { fill: currentColor; stroke: none; }
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
   mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
 }
-/* 「全部项目」入口：只显示计数 + 下拉。当前项目名不再重复显示
-   —— 高亮的项目按钮就在右边，同一个名字出现两遍才是上一版看着乱的原因 */
-.proj-all {
-  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
-  height: 22px; padding: 0 10px;
-  background: var(--bg-panel); color: var(--text);
-  border: 1px solid var(--btn-border); border-radius: 4px;
-  font-size: 12px; line-height: 1; cursor: pointer; white-space: nowrap;
-  max-width: 220px; overflow: hidden;
-}
-.proj-all:hover { color: var(--text-bright); background: var(--btn-hover); }
-.proj-all .proj-all-tx { color: var(--text); }
-.proj-all .ic { width: 12px; height: 12px; opacity: .7; }
-.proj-all .proj-all-n {
-  color: var(--accent); font-weight: 600; font-size: 11px; line-height: 15px;
-  min-width: 15px; padding: 0 5px; text-align: center; border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
+/* 「全部项目」入口已撤掉（和「当前项目 ▾」重复：都是点开同一个菜单）——
+   死样式一并删掉，避免"CSS 里有、DOM 里没有"的误导。 */
 /* 项目按钮：inline-flex + 固定行高 —— 纯 padding 撑高时中文上下会被挤出边框（挤压感） */
 .proj-btn {
   display: inline-flex; align-items: center;
@@ -312,7 +303,10 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   background: var(--bg-tabbar); border-bottom: 1px solid var(--border);
 }
 /* 标签横向滚动区（文件多时只滚标签，右端操作区不动） */
-#tab-scroll { flex: 1; min-width: 0; display: flex; overflow-x: auto; }
+/* 标签横向滚动区：**不显示原生滚动条** —— 一条灰滚动条比它下面的几个标签还抢眼，
+   滚动改为滚轮（见 viewer.js）+ 右端「▾ N 全部标签」下拉做提示 */
+#tab-scroll { flex: 1; min-width: 0; display: flex; overflow-x: auto; scrollbar-width: none; }
+#tab-scroll::-webkit-scrollbar { display: none; }
 /* 编辑器操作区：Markdown 模式切换 / 查看源码 / 内置浏览器 +「定位」 */
 #tab-actions {
   flex-shrink: 0; display: flex; align-items: center; gap: 6px;
@@ -515,12 +509,12 @@ textarea.editor {
 
 /* Markdown 渲染 */
 .md-view { padding: 16px 24px; max-width: 860px; user-select: text; line-height: 1.65; }
-.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--text-bright); margin: 13px 0 6px; }
+.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-heading); margin: 13px 0 6px; }
 /* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
 /* 字号与 live 编辑态（md-editor.js liveTheme）同源：h1 26 / h2 22 / h3 18 / h4 15 */
 .md-view h1 { font-size: 21px; margin-top: 18px; }
 .md-view h2 { font-size: 18px; margin-top: 15px; }
-.md-view h3 { font-size: 15px; color: color-mix(in srgb, var(--accent) 62%, var(--text-bright)); }
+.md-view h3 { font-size: 15px; color: color-mix(in srgb, var(--accent) 62%, var(--md-heading)); }
 .md-view h4 { font-size: 14px; }
 .md-view h5 { font-size: 12.5px; }
 .md-view h6 { font-size: 12.5px; color: var(--text-dim); }
@@ -1426,11 +1420,10 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
 body.theme-light {
-  /* 浅色主题同样「越靠外越暗」，且四档必须单调递减：内容 > 标签栏 > 工具窗口 > 外框 */
   --bg: #ffffff;
-  --bg-tabbar: #f2f2f2;
   --bg-panel: #ececec;
-  --bg-title: #e2e2e2;
+  --bg-tabbar: #e7e7e7;
+  --bg-title: #dedede;
   --bg-hover: #ddeeff;
   --bg-selected: #c9e2f7;
   --bg-input: #ffffff;
@@ -1462,11 +1455,10 @@ body.theme-light {
 
 /* ---------- 粉红主题（真正粉红：浅粉底 + 玫红高亮） ---------- */
 body.theme-pink {
-  /* 同浅色主题：四档单调递减 */
   --bg: #fff5f8;
-  --bg-tabbar: #fdeaf1;
-  --bg-panel: #f9dde8;
-  --bg-title: #f2ccda;
+  --bg-panel: #ffe9f1;
+  --bg-tabbar: #ffdfea;
+  --bg-title: #f7d3e2;
   --bg-hover: #ffd6e8;
   --bg-selected: #ffb7d5;
   --bg-input: #fffafc;
@@ -1503,8 +1495,10 @@ body.theme-pink .qo-item.sel .sr-text { color: #444; }
    于是 tab / 侧栏 / 编辑器 / 选中块 / 标题 / 边框全是红的 → 层级被拉平：
    「每个地方都重要 = 没有地方最重要」。
    现在：大面积底色一律中性黑灰（与默认深色同一阶梯），品牌感只由 --accent 承载。 */
-body.theme-crimson {
-  --bg: #212121;            /* 内容画布（最亮）—— 与默认深色同一阶梯，保证"内容↔工具窗口 ≥8 级" */
+/* 石墨：中性黑灰 + 玫瑰红强调。红色只做强调色，不做环境光 ——
+   大面积底色与文字都是中性的，"品牌感"只由 --accent 与选中色承载。 */
+body.theme-graphite {
+  --bg: #212121;            /* 内容画布（最亮） */
   --bg-tabbar: #1a1a1a;
   --bg-panel: #171717;      /* 工具窗口 */
   --bg-title: #121212;      /* 最外层 chrome（最暗） */
@@ -1515,7 +1509,7 @@ body.theme-crimson {
   --text: #b9b9bd;
   --text-bright: #e6e6e8;
   --text-dim: #85858c;
-  --accent: #d9687d;        /* 玫瑰红：整个主题的品牌色只剩这一个 */
+  --accent: #d9687d;
   --green: #7fb98a;
   --red: #e08a97;
   --add-bg: rgba(127, 185, 138, 0.16);
@@ -1535,6 +1529,42 @@ body.theme-crimson {
   --badge-m-bg: #332b20; --badge-m-tx: #d8c97a;
   --badge-a-bg: #1e2c20; --badge-a-tx: #7fb98a;
   --badge-d-bg: #33232a; --badge-d-tx: #e08a97;
+}
+
+/* 深红：底色与文字都保留酒红 / 玫瑰的暖调（回退用户原来的观感）。
+   只在「明度阶梯」上做了对齐：内容 > 标签栏 > 工具窗口 > 外框，其余尽量保持原样。 */
+body.theme-crimson {
+  --bg: #2a171d;
+  --bg-tabbar: #221218;
+  --bg-panel: #1c0f14;
+  --bg-title: #170b10;
+  --bg-hover: #3a2330;
+  --bg-selected: #6e3a52;
+  --bg-input: #2d1a22;
+  --border: #170d11;
+  --text: #d8b3c0;
+  --text-bright: #f2dce4;
+  --text-dim: #a3798a;
+  --accent: #f06292;
+  --green: #86c98f;
+  --red: #ff8a9b;
+  --add-bg: rgba(134, 201, 143, 0.16);
+  --del-bg: rgba(255, 138, 155, 0.18);
+  --add-text: #b8e6bf;
+  --del-text: #ffc2cb;
+  --btn-bg: #2d1a22;
+  --btn-border: #483039;
+  --btn-hover: #3a2330;
+  --panel-strong: #241519;
+  --menu-border: #523844;
+  --border-mid: #4a3038;
+  --code-bg: #180e13;
+  --code-text: #f0b6d0;
+  --editor-text: #e8cdd6;
+  --num-dim: #7d5b68;
+  --badge-m-bg: #3a2a20; --badge-m-tx: #e8c97a;
+  --badge-a-bg: #21301f; --badge-a-tx: #86c98f;
+  --badge-d-bg: #3a2026; --badge-d-tx: #ff8a9b;
 }
 body.theme-crimson .tb-btn:hover { color: var(--text-bright); }
 body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff; border-color: #e81123; }

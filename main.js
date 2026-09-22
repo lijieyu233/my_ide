@@ -1307,7 +1307,9 @@ app.whenReady().then(() => {
         await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
         await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
         // 放最后：这一步故意把主题留在酒红上，产物截图就是它的实际观感
-        await run('主题：酒红去饱和（红只做强调色）', js(steps.themeCrimson), 'check-ui-9-theme-crimson.png');
+        await run('主题：石墨（中性黑灰 + 玫瑰红强调）', js(steps.themeGraphite), 'check-ui-9-theme-graphite.png');
+        // 最后一步：把主题留在「深红」上，截图就是它的实际观感
+        await run('主题：深红回退（暖调）', js(steps.themeCrimsonRevert), 'check-ui-9b-theme-crimson.png');
       } catch (e) {
         lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
         fail++;

@@ -92,6 +92,11 @@ module.exports = {
       getComputedStyle(q('#sidebar')).minWidth + ' ~ ' + getComputedStyle(q('#sidebar')).maxWidth);
     add('右侧栏比左侧栏略宽（AI 要能读长文档片段）', LO.ai.def > LO.sidebar.def, LO.sidebar.def + ' / ' + LO.ai.def);
 
+    // 标签栏：隐藏原生滚动条（一条灰滚动条比标签本身还抢眼 —— 用户截图反馈）
+    const ts = q('#tab-scroll');
+    add('标签栏不显示原生横向滚动条', !!ts && getComputedStyle(ts).scrollbarWidth === 'none',
+      ts ? 'scrollbar-width=' + getComputedStyle(ts).scrollbarWidth : '无 #tab-scroll');
+
     const sbBorder = getComputedStyle(q('#statusbar')).borderTopColor;
     add('主分界线不再是近黑（--border-pane 生效）', sbBorder !== 'rgb(16, 16, 16)',
       getComputedStyle(document.documentElement).getPropertyValue('--border-pane').trim() + ' → ' + sbBorder);
@@ -256,11 +261,10 @@ module.exports = {
     add('「关闭项目 ✕」默认隐藏（顶栏不常驻危险动作）',
       !cur || getComputedStyle(cur.querySelector('.proj-close')).visibility === 'hidden');
 
-    const pill = q('.proj-all');
-    add('「全部项目」入口仍在且显示项目数', pill && /全部项目\s*\d+/.test(pill.textContent), pill && pill.textContent);
-    add('「全部项目」在滚动容器之外（结构上不可能盖住项目名）',
-      !!pill && pill.parentElement && pill.parentElement.id === 'project-bar-wrap' && !bar.contains(pill),
-      pill && ('父=' + (pill.parentElement && pill.parentElement.id)));
+    // 单入口：原来「全部项目」和「当前项目 ▾」都只是"点开同一个项目菜单"，重复。
+    add('项目切换只有一个入口（不再有「全部项目」第二个按钮）',
+      !q('.proj-all') && btns.length === 1,
+      'proj-all=' + !!q('.proj-all') + ' 项目控件=' + btns.length);
 
     // 点当前项目控件 → 弹切换菜单（而不是"打开当前项目"这种无意义动作）
     cur.click();
@@ -362,12 +366,21 @@ module.exports = {
 
   // ---------- 主题：「红色只做强调色，不做环境光」的量化守卫 ----------
   // 放在自检最后一步，故意不还原主题 —— 产物截图就是酒红主题的实际观感。
-  themeCrimson: async () => {
+  themeGraphite: async () => {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
     const q = (s) => document.querySelector(s);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const hex2rgb = (h) => { const v = parseInt(h.replace('#', '').slice(0, 6), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
+    // 颜色字符串解析：color-mix 在现代 Chromium 里会算成 `color(srgb 0.83 0.86 0.88)`，
+    // 直接按 0-255 读会得到 0.83 这种数（踩过：跨度算成 0.05，断言全错）
+    const parseColorRgb = (str) => {
+      const nums = (String(str).match(/[\d.]+/g) || []).map(Number);
+      const isUnit = /^color\(/.test(String(str).trim());
+      const v = nums.slice(0, 3).map((x) => (isUnit ? x * 255 : x));
+      return v.length === 3 ? v : [];
+    };
+    const spreadOf = (str) => { const c = parseColorRgb(str); return c.length === 3 ? Math.max(...c) - Math.min(...c) : -1; };
     // 主题变量挂在 body 上，必须从 body 读（documentElement 只有 :root 的默认值）
     const readVar = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
     const lum = (h) => { const c = hex2rgb(h); return (c[0] + c[1] + c[2]) / 3; };
@@ -381,40 +394,48 @@ module.exports = {
     const gapBad = [];
     const tintBad = [];
     const seen = [];
-    for (const t of ['', 'theme-light', 'theme-pink', 'theme-crimson']) {
+    // 深色主题（默认 / 深红 / 石墨）要求严格单调阶梯；浅色主题只要「内容最亮 + 与工具窗口区分得开」
+    const DARK_T = ['', 'theme-crimson', 'theme-graphite'];
+    for (const t of ['', 'theme-light', 'theme-pink', 'theme-crimson', 'theme-graphite']) {
       setTheme(t);
       await sleep(120);
       const bv = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
       const l = (k) => lum(bv(k));
       const gap = l('--bg') - l('--bg-panel');
-      // 四档必须单调递减：内容 > 标签栏 > 工具窗口 > 外框
-      // （浅色主题的阶梯一度是"乱"的：标签栏比工具窗口还暗，交界处看不出层级）
-      if (!(l('--bg') > l('--bg-tabbar') && l('--bg-tabbar') > l('--bg-panel') && l('--bg-panel') > l('--bg-title'))) {
-        gapBad.push((t || '默认') + '阶梯乱');
+      if (DARK_T.includes(t)) {
+        // 深色主题：四档严格单调递减（内容 > 标签栏 > 工具窗口 > 外框）+ 内容↔工具窗口 ≥ 8 级
+        if (!(l('--bg') > l('--bg-tabbar') && l('--bg-tabbar') > l('--bg-panel') && l('--bg-panel') > l('--bg-title'))) {
+          gapBad.push((t || '默认') + '阶梯乱');
+        }
+        if (gap < 8) gapBad.push((t || '默认') + '差' + Math.round(gap));
+      } else {
+        // 浅色主题：内容必须是最亮的一档，且与工具窗口区分得开（浅色主题不强制单调 ——
+        // 用户明确要求"粉红主题尽量回退"，原样就是标签栏比面板略深）
+        const all = [l('--bg'), l('--bg-tabbar'), l('--bg-panel'), l('--bg-title')];
+        if (Math.max(...all) !== all[0]) gapBad.push((t || '默认') + '内容不是最亮');
+        if (gap < 5) gapBad.push((t || '默认') + '差' + Math.round(gap));
       }
-      if (gap < 8) gapBad.push((t || '默认') + '差' + Math.round(gap));
-      // 深色主题的底色必须是中性黑灰（色相跨度小）；浅色/粉色主题本来就是彩色的，属刻意设计
-      if (t !== 'theme-light' && t !== 'theme-pink' && spread(bv('--bg')) > 3) tintBad.push(t);
+      // 只有默认（深色中性）要求底色中性；深红是刻意的暖调、浅色/粉色本来就彩色
+      if (t === '' && spread(bv('--bg')) > 3) tintBad.push(t || '默认');
       seen.push((t || '默认') + ' ' + [l('--bg'), l('--bg-tabbar'), l('--bg-panel'), l('--bg-title')].map((x) => Math.round(x)).join('>'));
     }
-    add('每个主题都满足「四档单调递减 + 内容↔工具窗口 ≥ 8 级」', gapBad.length === 0, seen.join('  '));
-    add('深浅两档深色主题的底色都是中性黑灰（不是"整屏泛红"）', tintBad.length === 0,
-      tintBad.length ? '偏色：' + tintBad.join(',') : '默认 + 酒红均中性');
+    add('每个主题都满足各自的明度阶梯规则', gapBad.length === 0, seen.join('  '));
+    add('默认深色主题的底色是中性的', tintBad.length === 0, tintBad.join(',') || '中性');
 
-    // 收尾切到酒红（后面的断言 + 本步截图都在这个主题下）
-    setTheme('theme-crimson');
+    // 收尾切到石墨（本步截图 + 后面的断言都在这个主题下）
+    setTheme('theme-graphite');
     await sleep(500);
 
     const bgVars = ['--bg', '--bg-tabbar', '--bg-panel', '--bg-title'];
     const tinted = bgVars.filter((k) => spread(readVar(k)) > 3);
-    add('酒红主题的底色是中性黑灰（红不再是环境光）', tinted.length === 0,
+    add('石墨主题的底色是中性黑灰（红只做强调色，不做环境光）', tinted.length === 0,
       bgVars.map((k) => k + '=' + readVar(k)).join(' '));
-    add('正文色也中性（原来是 #d8b3c0，整屏偏粉）', spread(readVar('--text')) <= 6, '--text=' + readVar('--text'));
+    add('石墨主题正文色也中性', spread(readVar('--text')) <= 6, '--text=' + readVar('--text'));
     const ac = hex2rgb(readVar('--accent'));
-    add('强调色仍是玫瑰红（品牌感保留）', ac[0] - ac[1] >= 40, '--accent=' + readVar('--accent'));
+    add('石墨主题强调色是玫瑰红（品牌感保留）', ac[0] - ac[1] >= 40, '--accent=' + readVar('--accent'));
 
     const lv = bgVars.map((k) => lum(readVar(k)));
-    add('明度阶梯在酒红主题里同样成立（内容 > 标签栏 > 工具窗口 > 外框）',
+    add('明度阶梯在石墨主题里同样成立（内容 > 标签栏 > 工具窗口 > 外框）',
       lv[0] > lv[1] && lv[1] > lv[2] && lv[2] > lv[3], lv.map((x) => Math.round(x)).join(' > '));
 
     // 选中态减重：弱背景 + 2px accent 左线，而不是整块实心色
@@ -454,13 +475,68 @@ module.exports = {
       add('量到编辑器里真实的 Markdown 标题（真实渲染路径）', false, '没找到 .cm-md-h1 / .md-view h1');
     } else {
       const rc = getComputedStyle(realH).color;
-      const rm = (rc.match(/[\d.]+/g) || []).map(Number);
-      add('编辑器里的标题是中性的（不再硬编码 One Dark 红 #e06c75）',
-        rm.length >= 3 && Math.max(rm[0], rm[1], rm[2]) - Math.min(rm[0], rm[1], rm[2]) < 40,
-        'h1=' + rc);
+      // 不再硬编码 One Dark 红，但也不能是"纯白"（用户原话：「纯白的 md 样式很难看」）：
+      // 期望是"偏亮的正文色 + 一点主题色调"，因此要求色相跨度既不太大（不是全红）也不为 0（不是纯灰白）
+      const sp = spreadOf(rc);
+      add('编辑器里的标题带主题色调（既不是硬编码红，也不是纯白/纯灰）', sp >= 3 && sp < 60,
+        'h1=' + rc + ' 跨度=' + Math.round(sp));
     }
 
     await sleep(300);
+    return { R };
+  },
+
+  // ---------- 主题：深红回退（用户要求"尽量回退"成原来的暖调） ----------
+  // 同样放最后，故意把主题留在深红上 —— 产物截图就是它的实际观感。
+  themeCrimsonRevert: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const hex2rgb = (h) => { const v = parseInt(h.replace('#', '').slice(0, 6), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
+    // 颜色字符串解析：color-mix 在现代 Chromium 里会算成 `color(srgb 0.83 0.86 0.88)`，
+    // 直接按 0-255 读会得到 0.83 这种数（踩过：跨度算成 0.05，断言全错）
+    const parseColorRgb = (str) => {
+      const nums = (String(str).match(/[\d.]+/g) || []).map(Number);
+      const isUnit = /^color\(/.test(String(str).trim());
+      const v = nums.slice(0, 3).map((x) => (isUnit ? x * 255 : x));
+      return v.length === 3 ? v : [];
+    };
+    const spreadOf = (str) => { const c = parseColorRgb(str); return c.length === 3 ? Math.max(...c) - Math.min(...c) : -1; };
+    const readVar = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
+    const lum = (h) => { const c = hex2rgb(h); return (c[0] + c[1] + c[2]) / 3; };
+    const spread = (h) => { const c = hex2rgb(h); return Math.max(...c) - Math.min(...c); };
+
+    const keep = document.body.className;
+    document.body.className = keep.replace(/theme-\w+/g, '').trim() + ' theme-crimson';
+    await sleep(500);
+
+    const bgVars = ['--bg', '--bg-tabbar', '--bg-panel', '--bg-title'];
+    // 深红是"暖调"主题：底色必须带酒红/玫瑰的偏色（与石墨的"中性"正好相反）
+    const warm = bgVars.filter((k) => spread(readVar(k)) > 3);
+    add('深红主题的底色保留酒红暖调（回退成功，红是环境的一部分）', warm.length === 4,
+      bgVars.map((k) => k + '=' + readVar(k)).join(' '));
+    add('深红主题正文/标题也保留暖调', spread(readVar('--text')) > 3 && spread(readVar('--text-bright')) > 3,
+      '--text=' + readVar('--text') + ' --text-bright=' + readVar('--text-bright'));
+    const ac = hex2rgb(readVar('--accent'));
+    add('深红强调色是原样的玫瑰粉', ac[0] - ac[1] >= 40, '--accent=' + readVar('--accent'));
+    const lv = bgVars.map((k) => lum(readVar(k)));
+    add('深红也满足深色主题的单调阶梯（内容 > 标签栏 > 工具窗口 > 外框）',
+      lv[0] > lv[1] && lv[1] > lv[2] && lv[2] > lv[3], lv.map((x) => Math.round(x)).join(' > '));
+
+    // Markdown 标题在深红下应当是暖色（不是纯白）
+    const realH = q('.cm-md-h1') || q('#viewer .md-view h1');
+    if (realH) {
+      const rc = getComputedStyle(realH).color;
+      const sp = spreadOf(rc);
+      const c = parseColorRgb(rc);
+      // 暖色 = 红分量高于绿分量（玫瑰/酒红系），既不是纯白也不是默认蓝
+      add('深红下的 Markdown 标题是暖色（不是纯白 / 不是默认蓝）',
+        sp >= 3 && c.length === 3 && c[0] - c[1] > 0, 'h1=' + rc + ' 跨度=' + Math.round(sp));
+    } else {
+      add('深红下量到真实的 Markdown 标题', false, '没找到标题元素');
+    }
+    await sleep(200);
     return { R };
   },
 

@@ -481,7 +481,7 @@ const App = (() => {
     const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
       .filter((x) => typeof x === 'string' && x);
     const openMenu = (anchorEl) => {
-      const anchor = document.querySelector('.proj-all') || anchorEl;
+      const anchor = anchorEl || document.querySelector('#project-bar .proj-btn');
       if (anchor) showProjMenu(anchor);
     };
     // 标题行 + 右侧「全部 N」
@@ -670,27 +670,14 @@ const App = (() => {
     const bar = document.getElementById('project-bar');
     if (!bar) return;
     const wrap = bar.parentElement; // #project-bar-wrap
-    // 「全部项目」入口挂在滚动容器之外（同层、bar 之前）：不参与横向滚动
-    // → 结构上不可能盖住项目按钮（老实现是 sticky 浮在滚动层上，按钮从它底下钻过去）
-    if (wrap) {
-      const old = wrap.querySelector('.proj-all');
-      if (old) old.remove();
-    }
     bar.innerHTML = '';
-    if (projects.length && wrap) {
-      const all = document.createElement('button');
-      all.type = 'button';
-      all.className = 'proj-all';
-      // 「14 项目」读起来不通，而且看不出这是个"全部项目"入口 → 改成「全部项目」+ 数量徽标
-      all.innerHTML = CARET_DOWN + '<span class="proj-all-tx">全部项目</span>'
-        + '<span class="proj-all-n">' + projects.length + '</span>';
-      const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
-      all.title = '全部项目（当前：' + curName + '）\n点击或移入查看已打开 / 最近打开的项目';
-      // hover 弹出 / 移开消失（原点击触发——不知道可以点，hover 更符合直觉）
-      all.onmouseenter = () => showProjMenu(all);
-      all.onmouseleave = hideProjMenu;
-      all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
-      wrap.insertBefore(all, bar);
+    // ⚠ 「全部项目」入口已撤掉：它和「当前项目 ▾」都是"点开同一个项目菜单"，
+    //    两个控件做同一件事（用户原话："这里两个按钮功能重复了"）。
+    //    现在只有一个入口 —— 项目控件本身就是菜单按钮，菜单里含已打开 / 最近打开 / 当前项目操作。
+    //    这里只负责清掉可能残留的旧节点（老版本 DOM / 热重载）。
+    if (wrap) {
+      const stale = wrap.querySelector('.proj-all');
+      if (stale) stale.remove();
     }
     // 收起态：顶栏只留一个「当前项目 ▾」。它不是一个"选中的 Tab"，
     // 而是标题栏上的当前项目名 —— 所以不用实心 accent 块（那正是"每个区域都在抢注意力"的来源）。

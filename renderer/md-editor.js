@@ -34,7 +34,7 @@ window.MdEditor = (() => {
     // 踩过：heading 写死 #e06c75（One Dark 红）→ 所有主题下标题永远玫瑰红，
     // 既跟 .cm-md-* 的变量染色打架，换主题也不跟随（用户原话："标题不要全用强调色"）。
     // 代码 token（keyword/string/number…）继续用 One Dark：那是代码配色，本来就该独立于界面主题。
-    { tag: T.heading, color: 'var(--text-bright)', fontWeight: 'bold' },
+    { tag: T.heading, color: 'var(--md-heading)', fontWeight: 'bold' },
     { tag: T.strong, fontWeight: 'bold', color: 'var(--text-bright)' },
     { tag: T.emphasis, fontStyle: 'italic' },
     { tag: T.link, color: 'var(--accent)' },
@@ -97,11 +97,11 @@ window.MdEditor = (() => {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
     },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
-    '.cm-md-h1': { fontSize: '21px', fontWeight: '700', color: 'var(--text-bright)', lineHeight: '1.3' },
-    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--text-bright)', lineHeight: '1.3' },
-    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 62%, var(--text-bright))', lineHeight: '1.35' },
-    '.cm-md-h4': { fontSize: '14px', fontWeight: '600', color: 'var(--text-bright)' },
-    '.cm-md-h5': { fontSize: '12.5px', fontWeight: '600', color: 'var(--text-bright)' },
+    '.cm-md-h1': { fontSize: '21px', fontWeight: '700', color: 'var(--md-heading)', lineHeight: '1.3' },
+    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--md-heading)', lineHeight: '1.3' },
+    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 62%, var(--md-heading))', lineHeight: '1.35' },
+    '.cm-md-h4': { fontSize: '14px', fontWeight: '600', color: 'var(--md-heading)' },
+    '.cm-md-h5': { fontSize: '12.5px', fontWeight: '600', color: 'var(--md-heading)' },
     '.cm-md-h6': { fontSize: '12.5px', fontWeight: '500', color: 'var(--text-dim)' },
     // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
     // Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom

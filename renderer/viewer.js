@@ -3,6 +3,17 @@ const Viewer = (() => {
   const tabbar = document.getElementById('tabbar');
   const tabScroll = document.getElementById('tab-scroll');
   const tabActions = document.getElementById('tab-actions');
+  // 标签栏隐藏了原生滚动条（CSS），滚动交给滚轮：鼠标在标签上上下滚 = 左右滚。
+  // IDE 惯例；一条灰滚动条比它下面的几个标签还抢眼（用户截图反馈）。
+  if (tabScroll) {
+    tabScroll.addEventListener('wheel', (e) => {
+      if (tabScroll.scrollWidth <= tabScroll.clientWidth + 1) return;
+      const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (!d) return;
+      e.preventDefault();
+      tabScroll.scrollLeft += d;
+    }, { passive: false });
+  }
   const viewer = document.getElementById('viewer');
   const empty = document.getElementById('empty-state');
   const tabs = []; // {path, name, dirty, content, mode}
