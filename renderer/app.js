@@ -303,6 +303,42 @@ const App = (() => {
 
   // ---------- 状态栏（合并式更新：各模块只更新自己负责的字段）----------
   let sbState = {};
+  // ---------- 文件类型图标（内联 SVG + One Dark 语义色）----------
+  // 为什么不用 emoji（📝📄🌐📊）——这是"看着乱"的一个大源头：
+  // emoji 由字体渲染，**不同字号的宽度、基线、颜色都不一致**，一列文件扫下来参差不齐。
+  // 参照 PyCharm：彩色矢量图标 + 按类型分形状，才能一眼分辨"这是什么文件"。
+  const FT_SVG = {
+    md: ['#7c9cf5', '<path d="M4.4 2.2h4.2l3 3v8.6H4.4z"/><path d="M8.6 2.2v3h3"/><path d="M6.2 8.4h3.6M6.2 10.6h3.6"/>'],
+    json: ['#d9a441', '<path d="M6.4 2.6c-1.3 0-1.7.7-1.7 1.6v1.7c0 .9-.5 1.4-1.4 1.6.9.2 1.4.7 1.4 1.6v1.7c0 .9.4 1.6 1.7 1.6"/><path d="M9.6 2.6c1.3 0 1.7.7 1.7 1.6v1.7c0 .9.5 1.4 1.4 1.6-.9.2-1.4.7-1.4 1.6v1.7c0 .9-.4 1.6-1.7 1.6"/>'],
+    code: ['#e5c07b', '<path d="M6 5.4L2.6 8 6 10.6M10 5.4L13.4 8 10 10.6"/>'],
+    css: ['#61afef', '<path d="M6.6 3.2L4.8 12.8M11.2 3.2L9.4 12.8M3.4 6.4h9.2M3 9.6h9.2"/>'],
+    html: ['#e06c75', '<path d="M4.6 4.4L2 8l2.6 3.6M11.4 4.4L14 8l-2.6 3.6M9.4 3.2L6.6 12.8"/>'],
+    img: ['#98c379', '<rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4"/><circle cx="5.8" cy="6.4" r="1.1"/><path d="M3 11.6l3.2-3 2.4 2.2 1.8-1.6 2.4 2.4"/>'],
+    data: ['#56b6c2', '<rect x="2.4" y="3" width="11.2" height="10" rx="1.3"/><path d="M2.4 6.4h11.2M6.6 6.4V13"/>'],
+    zip: ['#c678dd', '<rect x="4.4" y="2.2" width="7.2" height="11.6" rx="1.2"/><path d="M8 3.6v2.2M8 7.2v2.2"/>'],
+    file: ['', '<path d="M4.4 2.3h4.2l3 3v8.4H4.4z"/><path d="M8.6 2.3v3h3"/>'],
+  };
+  function ftIcon(name) {
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    let k = 'file';
+    if (['md', 'markdown'].includes(ext)) k = 'md';
+    else if (ext === 'json') k = 'json';
+    else if (['html', 'htm'].includes(ext)) k = 'html';
+    else if (['css', 'scss', 'less'].includes(ext)) k = 'css';
+    else if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'sh', 'bat', 'ps1'].includes(ext)) k = 'code';
+    else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'].includes(ext)) k = 'img';
+    else if (['csv', 'xlsx', 'xls'].includes(ext)) k = 'data';
+    else if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) k = 'zip';
+    const pair = FT_SVG[k];
+    return '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"'
+      + (pair[0] ? ' style="color:' + pair[0] + '"' : '') + '>' + pair[1] + '</svg>';
+  }
+  // 目录折叠三角：用描边 SVG 而不是 ▶ / ▼ 字符（字符在不同字号下会变粗变笨重）
+  function dirIcon(open) {
+    return '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'
+      + (open ? 'M4.6 6.4L8 9.8l3.4-3.4' : 'M6.4 4.6L9.8 8l-3.4 3.4') + '"/></svg>';
+  }
+
   // 文件名「中段省略」：按显示宽度算（中文 2 / 半角 1），保留头部 + 扩展名。
   // 为什么不用 CSS 的末尾省略：像「开发文档-060-界面信息层整治-状态栏图标与路径.md」这类名字，
   // 辨识信息在**两头**（编号前缀 + 扩展名），末尾省略会把 060/059/057 这些唯一区分点全砍掉 ——
@@ -903,7 +939,7 @@ const App = (() => {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
     switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip,
     get root() { return root; },
-    fitName,
+    fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },
   };

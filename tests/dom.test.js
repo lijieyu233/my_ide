@@ -1300,26 +1300,29 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(fakeCopied.length === before, 'CM6 编辑器中 Ctrl+C 未触发文件复制');
   });
 
-  await okAsync('文件树图标列：目录三角=目录标志与文件图标同列（无 tw 独立列）', async () => {
-    // 目录行：图标列显示折叠三角（▼/▶），不再有独立 .tw 列
+  await okAsync('文件树图标列：目录三角与文件图标同列（SVG，不再是 emoji / 字符）', async () => {
+    // 目录行：图标列是 SVG 三角（原来用 ▼/▶ 字符，不同字号下会变粗变笨重）
     const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
     assert_(srcRow, 'src 目录行存在');
     assert_(!srcRow.querySelector('.tw'), '无独立 tw 列（三角并入图标列）');
     const srcIc = srcRow.querySelector('.ic');
-    assert_(srcIc && ['▼', '▶'].includes(srcIc.textContent), '目录行图标列显示三角, got: ' + JSON.stringify(srcIc && srcIc.textContent));
+    assert_(srcIc && !!srcIc.querySelector('svg'), '目录行图标列是 SVG 三角');
     assert_(srcIc.classList.contains('ic-dir'), '目录图标带 ic-dir 类');
-    // 文件行：图标列显示类型 emoji（同列对齐）
+    assert_((srcRow.querySelector('.nm').className || '').includes('nm-dir'), '目录名带 nm-dir 类（偏蓝，与文件名分开）');
+    // 文件行：图标列是彩色类型 SVG（原来用 emoji —— 字号一变换宽度/基线就不一致）
     const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
     const fileIc = fileRow && fileRow.querySelector('.ic');
-    assert_(fileIc && fileIc.textContent && !['▼', '▶'].includes(fileIc.textContent), '文件行图标列为类型 emoji, got: ' + JSON.stringify(fileIc && fileIc.textContent));
+    assert_(fileIc && !!fileIc.querySelector('svg'), '文件行图标列是 SVG 类型图标');
     assert_(fileIc.classList.contains('ic-file'), '文件图标带 ic-file 类');
-    // 点击目录：三角随展开态翻转
-    const before = srcIc.textContent;
+    assert_(!fileIc.textContent.trim(), '图标列里没有文字残留（不是 emoji）');
+    // 点击目录：三角随展开态翻转（比较 SVG 的 d）
+    const dOf = (el) => { const p = el && el.querySelector('svg path'); return p ? p.getAttribute('d') : ''; };
+    const before = dOf(srcIc);
     click(srcRow);
     await tick(); await tick();
     const srcRow2 = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
-    const after = srcRow2.querySelector('.ic').textContent;
-    assert_(before !== after && ['▼', '▶'].includes(after), '点击后三角翻转: ' + before + ' → ' + after);
+    const after = dOf(srcRow2.querySelector('.ic'));
+    assert_(before && after && before !== after, '点击后三角翻转: ' + before + ' → ' + after);
     // 还原展开状态（后续用例可能依赖）
     if (after !== before) { click(srcRow2); await tick(); await tick(); }
   });

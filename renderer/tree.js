@@ -293,7 +293,7 @@ const Tree = (() => {
       rowEl.className = 'tree-row tree-search-row' + (i === searchIdx ? ' selected' : '');
       const ic = document.createElement('span');
       ic.className = 'ic';
-      ic.textContent = fileIcon(f.name);
+      ic.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(f.name) : fileIcon(f.name);
       rowEl.appendChild(ic);
       const nm = document.createElement('span');
       nm.className = 'nm';
@@ -342,12 +342,16 @@ const Tree = (() => {
     const ic = document.createElement('span');
     ic.className = 'ic';
     // 图标列：目录的折叠三角就是它的标志（与文件图标同列对齐），文件显示类型图标
-    ic.textContent = item.type === 'dir' ? (expanded.has(item.path) ? '▼' : '▶') : fileIcon(item.name);
+    // 图标统一走 SVG（emoji 与 ▶▼ 字符在不同字号下宽度/基线都不一致，一列看下来就"乱"）
+    ic.innerHTML = item.type === 'dir'
+      ? ((window.App && App.dirIcon) ? App.dirIcon(expanded.has(item.path)) : (expanded.has(item.path) ? '▼' : '▶'))
+      : ((window.App && App.ftIcon) ? App.ftIcon(item.name) : fileIcon(item.name));
     ic.classList.add(item.type === 'dir' ? 'ic-dir' : 'ic-file');
     rowEl.appendChild(ic);
 
     const nm = document.createElement('span');
-    nm.className = 'nm' + (gitClassFor(item.path) ? ' ' + gitClassFor(item.path) : '');
+    nm.className = 'nm' + (item.type === 'dir' ? ' nm-dir' : '')
+      + (gitClassFor(item.path) ? ' ' + gitClassFor(item.path) : '');
     nm.textContent = item.name;
     nm.title = item.path;
     rowEl.appendChild(nm);

@@ -262,13 +262,21 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 剪切待粘贴：半透明（资源管理器剪切反馈语义） */
 .tree-row.cut-pending { opacity: 0.45; }
 .tree-row:focus { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
-/* 图标列固定宽度：目录三角与文件 emoji 同列对齐（三角=目录标志），名称起点一致 */
-.tree-row .ic { width: 18px; text-align: center; font-size: .92em; flex-shrink: 0; }
-/* 目录三角（可折叠标志）：略小弱化，hover 提亮提示可点 */
-.tree-row .ic.ic-dir { font-size: .77em; color: var(--text-dim); }
-.tree-row:hover .ic.ic-dir { color: var(--text); }
+/* 图标列固定宽度：目录三角与文件图标同列对齐，名称起点一致。
+   图标一律内联 SVG（原来文件图标是 emoji —— 不同字号的宽度与基线都不一致，一列看下来就"乱"）。 */
+.tree-row .ic {
+  width: 18px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.tree-row .ic svg { width: 14px; height: 14px; }
+/* 目录三角：略小弱化，hover 提亮提示可点 */
+.tree-row .ic.ic-dir { color: var(--text-dim); }
+.tree-row .ic.ic-dir svg { width: 12px; height: 12px; }
+.tree-row:hover .ic.ic-dir { color: var(--text-bright); }
+/* 目录名偏蓝、文件名保持高亮：PyCharm 就是靠这个把「容器」和「内容」一眼分开 */
+.tree-row .nm-dir { color: color-mix(in srgb, var(--accent) 62%, var(--text)); }
+.tree-row:hover .nm-dir { color: color-mix(in srgb, var(--accent) 78%, var(--text-bright)); }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
-/* 根行右侧项目完整路径（替代原工具栏路径显示） */
 
 .tree-row .path-copy { visibility: hidden; font-size: .85em; color: var(--text-dim); cursor: pointer; }
 .tree-row:hover .path-copy { visibility: visible; }

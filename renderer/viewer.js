@@ -186,7 +186,8 @@ const Viewer = (() => {
       el.className = 'tab' + (i === active ? ' active' : '');
       const ti = document.createElement('span');
       ti.className = 'tic';
-      ti.innerHTML = ftIcon(t.name);
+      // 与侧栏树共用同一套类型图标（App.ftIcon），两处观感一致
+      ti.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(t.name) : ftIcon(t.name);
       el.appendChild(ti);
       const nm = document.createElement('span');
       nm.className = 'tname';
