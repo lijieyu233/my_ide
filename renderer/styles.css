@@ -11,6 +11,14 @@
   --bg-tabbar: #1a1a1a;     /* 编辑器标签栏 */
   --bg-title: #121212;      /* 最外层 chrome（顶栏 / 左侧工具条 / 状态栏） */
   --head-h: 30px;           /* 各面板标题行统一高度：侧栏标题 / 标签栏 / AI 助手标题 */
+  /* 区域之间的「缝」宽度。原来区域之间是 1px 的**浅色描边** —— 浅线读起来是"边框"，
+     几块面板排在一起就成了"一个个方块只隔一条线"，又紧又粘、缺乏区分。
+     换成同宽度的**深色条**（用 --bg-title 最外层底色）之后，读起来是"间距"：
+     区域各自成块、浮在工作区里，而线条数量并没有增加。 */
+  --seam: 4px;
+  /* 缝的颜色：比最外层 chrome(--bg-title) 再暗一档。
+     只有"比所有区域都暗"的深色条才读起来是间距 —— 用 --bg-title 时它与工具窗口只差
+     3 级，看着还是一条描边。派生变量必须在 body 上（值里含 var()，写 :root 会算死）。 */
   --bg-hover: #2a2a2a;
   --bg-selected: #2d4f6b;
   --bg-input: #232323;
@@ -61,6 +69,7 @@ body {
      而自定义属性里的 var() 是**在声明它的那个元素上**求值的 ——
      写在 :root 里就会按 html 的默认 --accent / --text 算死，下发到 body 时已是固定色，
      换主题不跟随（实测：石墨主题下标题色仍在用默认蓝 accent 混合）。 */
+  --seam-color: color-mix(in srgb, var(--bg-title) 85%, #000); /* 区域之间那道缝的颜色 */
   --border-pane: color-mix(in srgb, var(--text) 11%, transparent); /* 主分界线（随主题走）——
      刻意压得很淡：区域之间靠「明度阶梯」分开，线只做提示，同屏出现多条时不会形成"框架感" */
   /* Markdown 标题色：不要纯白 —— 掺一点主题强调色，标题才"有颜色"但不至于全是 accent。
@@ -75,7 +84,7 @@ body {
 #toolbar {
   display: flex; align-items: center; gap: 8px;
   height: 38px; padding: 0 10px;
-  background: var(--bg-title); border-bottom: 1px solid var(--border-pane);
+  background: var(--bg-title);
   flex-shrink: 0;
   -webkit-app-region: drag;
   user-select: none;
@@ -172,13 +181,20 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 /* ---------- 主布局 ---------- */
 /* 注意：#main 用 flex:1 而非固定高度，避免工具栏+内容+状态栏超出视口 22px，
    导致 scrollIntoView 把整页滚动、工具栏被窗口顶部遮住 */
-#main { display: flex; flex: 1; min-height: 0; }
+/* 上下各留一道缝：顶栏 / 状态栏与内容区之间不再靠 1px 亮线分界。
+   ⚠ 缝放在 #main 自己身上（它是 flex:1），不要加到 #toolbar / #statusbar 的 height 上 ——
+   固定高度 + border-box 会把按钮压扁。 */
+#main {
+  display: flex; flex: 1; min-height: 0;
+  border-top: var(--seam) solid var(--seam-color);
+  border-bottom: var(--seam) solid var(--seam-color);
+}
 
 /* 工具窗口条（PyCharm 式左侧竖排按钮） */
 #tool-strip {
   width: 38px; flex-shrink: 0;
   background: var(--bg-title);
-  border-right: 1px solid var(--border-pane);
+  border-right: var(--seam) solid var(--seam-color);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
@@ -205,7 +221,6 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   /* 默认宽度与钳制范围必须与 app.js 的 App.LAYOUT.sidebar 一致（自检有断言） */
   width: 340px; min-width: 260px; max-width: 480px;
   background: var(--bg-panel);
-  border-right: 1px solid var(--border-pane);
   display: flex; flex-direction: column;
   overflow: hidden;
   /* 左栏字号基准：目录树 / 大纲 / 提交 / 数据库 / 任务在此统一，
@@ -213,8 +228,10 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   font-size: var(--tool-font, 13px);
 }
 #sidebar-resizer {
-  width: 4px; flex-shrink: 0; cursor: col-resize;
-  background: var(--border); margin-left: -2px; z-index: 5;
+  /* 它同时是"侧栏 ↔ 编辑区"的那道缝：宽度 = --seam，颜色 = 最外层底色。
+     原来是一根 --border 的细线 + 侧栏自己的 1px 描边（两条叠在一起还是像"一条线"）。 */
+  width: var(--seam); flex-shrink: 0; cursor: col-resize;
+  background: var(--seam-color); z-index: 5;
 }
 #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
 
@@ -222,7 +239,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 #tool-strip-right {
   width: 38px; flex-shrink: 0;
   background: var(--bg-title);
-  border-left: 1px solid var(--border-pane);
+  border-left: var(--seam) solid var(--seam-color);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
 }
@@ -1151,7 +1168,7 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
   height: 22px; flex-shrink: 0;
   display: flex; align-items: center;
   padding: 0 10px; font-size: 11px; color: var(--text-dim);
-  background: var(--bg-title); border-top: 1px solid var(--border-pane);
+  background: var(--bg-title);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 #sb-info { cursor: default; }
@@ -1913,7 +1930,7 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
   flex-shrink: 0; width: 380px; min-width: 320px; max-width: 520px;
   display: flex; flex-direction: column; position: relative;
   background: var(--bg-panel, var(--bg));
-  border-left: 1px solid var(--border);
+  border-left: var(--seam) solid var(--seam-color);
   /* 右侧展示框与左侧栏共用 --tool-font（状态栏最左侧 A−/A+ 统一驱动），内部层级用 em 相对缩放 */
   font-size: var(--tool-font, 13px);
 }

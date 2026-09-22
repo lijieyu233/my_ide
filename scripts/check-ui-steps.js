@@ -97,9 +97,45 @@ module.exports = {
     add('标签栏不显示原生横向滚动条', !!ts && getComputedStyle(ts).scrollbarWidth === 'none',
       ts ? 'scrollbar-width=' + getComputedStyle(ts).scrollbarWidth : '无 #tab-scroll');
 
-    const sbBorder = getComputedStyle(q('#statusbar')).borderTopColor;
-    add('主分界线不再是近黑（--border-pane 生效）', sbBorder !== 'rgb(16, 16, 16)',
-      getComputedStyle(document.documentElement).getPropertyValue('--border-pane').trim() + ' → ' + sbBorder);
+    // ---------- 区域之间用「缝」，不是「线」----------
+    // 1px 的**浅色**描边读起来是"边框"：几块面板排在一起就成了"一个个方块只隔一条线"，
+    // 又紧又粘、缺乏区分。换成 4px 的深色条（比所有区域都暗）之后，读起来是"间距"——
+    // 区域各自成块，而线条数量并没有增加。
+    const cssVar = (el, k) => getComputedStyle(el).getPropertyValue(k).trim();
+    const hexToRgb = (hex) => {
+      const h = String(hex || '').replace('#', '').trim();
+      const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+      const v = parseInt(full, 16);
+      return isNaN(v) ? '' : 'rgb(' + (v >> 16 & 255) + ', ' + (v >> 8 & 255) + ', ' + (v & 255) + ')';
+    };
+    const lumNorm = (str) => {
+      const v = (String(str).match(/[\d.]+/g) || []).map(Number);
+      return v.length >= 3 ? (v[0] + v[1] + v[2]) / 3 : -1;
+    };
+    const titleLum = lumNorm(hexToRgb(cssVar(document.body, '--bg-title')));
+    const mainCS = getComputedStyle(q('#main'));
+    const rzCS = getComputedStyle(q('#sidebar-resizer'));
+    const aiCS = getComputedStyle(q('#ai-panel'));
+    const tsCS = getComputedStyle(q('#tool-strip'));
+    const seamLum = lumNorm(mainCS.borderTopColor);
+    add('区域之间的缝 = 4px 深色条（不是 1px 浅色描边）',
+      mainCS.borderTopWidth === '4px' && mainCS.borderBottomWidth === '4px',
+      '上下=' + mainCS.borderTopWidth + '/' + mainCS.borderBottomWidth + ' 色=' + mainCS.borderTopColor);
+    add('缝比所有区域都暗（这才读起来是"间距"）',
+      seamLum >= 0 && seamLum + 2 < titleLum,
+      '缝=' + Math.round(seamLum) + ' 最外层底=' + Math.round(titleLum));
+    add('四道缝同宽同色（顶/底、侧栏分隔线、AI、工具条）',
+      rzCS.width === '4px' && rzCS.backgroundColor === mainCS.borderTopColor
+        && aiCS.borderLeftWidth === '4px' && aiCS.borderLeftColor === mainCS.borderTopColor
+        && tsCS.borderRightWidth === '4px' && tsCS.borderRightColor === mainCS.borderTopColor,
+      '侧栏=' + rzCS.backgroundColor + ' AI=' + aiCS.borderLeftColor + ' 工具条=' + tsCS.borderRightColor);
+    add('顶栏 / 状态栏 / 侧栏不再有浅色描边（靠缝 + 明度分层，不靠线框）',
+      getComputedStyle(q('#statusbar')).borderTopStyle === 'none'
+        && getComputedStyle(q('#toolbar')).borderBottomStyle === 'none'
+        && getComputedStyle(q('#sidebar')).borderRightStyle === 'none',
+      'statusbar=' + getComputedStyle(q('#statusbar')).borderTopStyle
+        + ' toolbar=' + getComputedStyle(q('#toolbar')).borderBottomStyle
+        + ' sidebar=' + getComputedStyle(q('#sidebar')).borderRightStyle);
 
     // ---------- 整体视觉的「结构」层面（不是某个图标，是分层的骨架） ----------
     // ① 顶栏以下只该有「标签栏 → 内容」两段。原来还夹了一条编辑器工具条

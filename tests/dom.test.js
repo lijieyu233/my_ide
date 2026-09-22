@@ -3024,12 +3024,15 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('侧栏分隔线实色不透明', async () => {
+  await okAsync('侧栏分隔线 = 区域之间的那道缝（实色不透明 + 同宽）', async () => {
     // jsdom 不解析 CSS 变量（computed 恒为透明），直接断言样式表源码
     const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     const m = /^#sidebar-resizer\s*\{[^}]*\}/m.exec(cssSrc);
     assert_(m, '找到 #sidebar-resizer 规则');
-    assert_(/background:\s*var\(--border\)/.test(m[0]) && !/transparent/.test(m[0]), '分隔线背景为实色 var(--border), got: ' + m[0].replace(/\s+/g, ' '));
+    // 它现在同时是「侧栏 ↔ 编辑区」的缝：用最外层底色（深色条），不是 --border 的细线
+    assert_(/background:\s*var\(--seam-color\)/.test(m[0]) && !/transparent/.test(m[0]),
+      '缝为实色 var(--seam-color), got: ' + m[0].replace(/\s+/g, ' '));
+    assert_(/width:\s*var\(--seam\)/.test(m[0]), '缝宽与其它区域同一来源 --seam, got: ' + m[0].replace(/\s+/g, ' '));
   });
 
   await okAsync('Bug1：空状态只覆盖内容区（#content 定位）', async () => {

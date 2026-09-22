@@ -1093,6 +1093,12 @@ app.whenReady().then(() => {
       let fail = 0;
       let origProjects = null;
       let origRecent = null;
+      // ⚠ 自检步骤会改这些持久化状态（AI 面板开合 / md 显示模式 / 侧栏上下比例）。
+      //   不还原的话，**下一轮自检的起点就变了** —— 实测：正文阅读版式那步把 AI 助手
+      //   收起来（并写进 localStorage），导致下一次运行的 chrome 步骤量到"AI 助手标题高度 0"。
+      let origAiOpen = null;
+      let origMdMode = null;
+      let origSideSplit = null;
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
@@ -1253,6 +1259,9 @@ app.whenReady().then(() => {
         // ⚠ 项目列表存在真实 localStorage：先备份，自检结束原样还原（不破坏使用者的项目栏）
         origProjects = await wc.executeJavaScript('localStorage.getItem("myide-projects")');
         origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
+        origAiOpen = await wc.executeJavaScript('localStorage.getItem("myide-ai-open")');
+        origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")');
+        origSideSplit = await wc.executeJavaScript('localStorage.getItem("myide-side-split")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
         await wc.executeJavaScript(
@@ -1330,6 +1339,11 @@ app.whenReady().then(() => {
         await wc.executeJavaScript(origRecent == null
           ? 'localStorage.removeItem("myide-recent-projects"); true'
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
+        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-side-split', origSideSplit]]) {
+          await wc.executeJavaScript(val == null
+            ? 'localStorage.removeItem(' + JSON.stringify(key) + '); true'
+            : 'localStorage.setItem(' + JSON.stringify(key) + ', ' + JSON.stringify(val) + '); true');
+        }
       } catch {}
       clearTimeout(watchdog);
       try { fs.unlinkSync(path.join(__dirname, '.ui-check-boot.txt')); } catch {}
