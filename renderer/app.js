@@ -303,6 +303,12 @@ const App = (() => {
 
   // ---------- 状态栏（合并式更新：各模块只更新自己负责的字段）----------
   let sbState = {};
+  // 下拉箭头（内联 SVG）：'▾' 在部分字体下也不稳，统一走 SVG
+  const CARET_DOWN = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
+
+  // 分支图标（内联 SVG，避免字符字形的平台差异）
+  const BRANCH_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>';
+
   function updateStatusbar(info = {}) {
     // 切换文件时清除旧的光标位置
     if (info.file !== undefined && info.file !== sbState.file) sbState.pos = undefined;
@@ -310,18 +316,44 @@ const App = (() => {
     const el = document.getElementById('sb-info');
     if (!el) return;
     // 分支 → 独立可点击元素（PyCharm 右下角习惯）
+    // ⚠ 用内联 SVG，不用字符 '⎇'：Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类
+    //   完全不相干的符号（用户看到的「⌥ generation-driven」就是这么来的）
     const brEl = document.getElementById('sb-branch');
     if (brEl) {
-      brEl.textContent = sbState.branch ? '⎇ ' + sbState.branch + (sbState.changed ? ' · ' + sbState.changed + ' 处修改' : '') : (sbState.noRepo ? '非 Git 仓库' : '');
+      brEl.textContent = '';
+      if (sbState.branch) {
+        brEl.insertAdjacentHTML('afterbegin', BRANCH_IC);
+        const nm = document.createElement('span');
+        nm.className = 'sb-br-nm';
+        nm.textContent = sbState.branch;
+        brEl.appendChild(nm);
+        if (sbState.changed) {
+          const ch = document.createElement('span');
+          ch.className = 'sb-chg';
+          ch.textContent = sbState.changed + ' 处修改';
+          brEl.appendChild(ch);
+        }
+      } else if (sbState.noRepo) {
+        brEl.textContent = '非 Git 仓库';
+      }
       brEl.title = sbState.branch ? '点击切换分支' : '';
       brEl.classList.toggle('clickable', !!sbState.branch);
     }
-    const parts = [];
-    if (sbState.lines) parts.push(sbState.lines + ' 行');
-    if (sbState.pos) parts.push(sbState.pos);
-    if (sbState.encoding) parts.push('[' + sbState.encoding + ']');
-    if (sbState.eol) parts.push('(' + sbState.eol + ')');
-    el.textContent = parts.join('    ');
+    // 状态栏信息：光标位置放最前（看得最勤），组间用统一的细竖线分隔。
+    // 旧版是「4 个空格」连接 → 「50 行    行 1，列 1」糊成一片，分不清哪是哪。
+    // 用 DOM 构造而不是拼 HTML 字符串：app.js 里没有转义工具，拼字符串等于给将来埋个坑
+    el.textContent = '';
+    const pushI = (txt, strong, tip) => {
+      if (el.childNodes.length) el.insertAdjacentHTML('beforeend', '<i class="sb-d"></i>');
+      const sp = document.createElement(strong ? 'b' : 'span');
+      if (tip) sp.title = tip;
+      sp.textContent = txt;
+      el.appendChild(sp);
+    };
+    if (sbState.pos) pushI(sbState.pos, true, '光标位置（行:列）');
+    if (sbState.lines) pushI(sbState.lines + ' 行', false, '当前文件总行数');
+    if (sbState.encoding) pushI(sbState.encoding, false, '文件编码');
+    if (sbState.eol) pushI(sbState.eol, false, '换行符');
   }
 
   // 版本号（状态栏最左显示 —— 一眼确认实际运行的版本，避免旧 exe 误判）
@@ -531,7 +563,9 @@ const App = (() => {
       const all = document.createElement('button');
       all.type = 'button';
       all.className = 'proj-all';
-      all.innerHTML = `<span class="proj-all-n">▾ ${projects.length} 项目</span>`;
+      // 「14 项目」读起来不通，而且看不出这是个"全部项目"入口 → 改成「全部项目」+ 数量徽标
+      all.innerHTML = CARET_DOWN + '<span class="proj-all-tx">全部项目</span>'
+        + '<span class="proj-all-n">' + projects.length + '</span>';
       const curName = root ? (root.split(/[\\/]/).pop() || root) : '未打开';
       all.title = '全部项目（当前：' + curName + '）\n点击或移入查看已打开 / 最近打开的项目';
       // hover 弹出 / 移开消失（原点击触发——不知道可以点，hover 更符合直觉）

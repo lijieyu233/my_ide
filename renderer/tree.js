@@ -351,14 +351,8 @@ const Tree = (() => {
     nm.textContent = item.name;
     nm.title = item.path;
     rowEl.appendChild(nm);
-    // 根行右侧显示项目完整路径（替代原工具栏路径）
-    if (depth === 0 && item.path === rootPath) {
-      const rp = document.createElement('span');
-      rp.className = 'root-path';
-      rp.textContent = item.path;
-      rp.title = item.path;
-      rowEl.appendChild(rp);
-    }
+    // 根行只显示项目名（曾经在右侧再挂一遍完整绝对路径 —— 230px 宽的树里必然截断，
+    // 而且项目名就在同一行左边、路径在编辑器工具条的 title 里也有，纯占地方）
     rowEl.dataset.path = item.path;
     rowEl.tabIndex = -1; // 可编程聚焦：点击后焦点留在树（Delete 删文件 / 方向键导航）
 

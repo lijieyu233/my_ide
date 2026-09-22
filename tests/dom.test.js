@@ -374,7 +374,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
     // md 默认 live（CM6），先切「◉ 预览」再断言渲染
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(md, '存在 md-view');
@@ -397,7 +397,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '编辑后标脏');
     // 切纯预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(!$(dom, '.editor-cm-wrap'), '纯预览无实时预览容器');
@@ -1113,7 +1113,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'Viewer.cm.setCursor(3)');
     await tick();
     sb = $(dom, '#statusbar').textContent;
-    assert_(sb.includes('行 1，列 4'), '行列号更新, got: ' + sb);
+    assert_(sb.includes('1:4'), '行列号更新（紧凑写法 行:列）, got: ' + sb);
   });
 
   await okAsync('图片预览：img 渲染 + 无源码按钮', async () => {
@@ -1537,11 +1537,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     let btns = $allIn($(dom, '#project-bar'), '.proj-btn');
     assert_(btns.length >= 2, '项目栏出现多个按钮, got ' + btns.length);
-    assert_($(dom, '.root-path').textContent.includes('C:/proj2'), '当前是项目二');
+    assert_((await g(dom, 'App.root')) === 'C:/proj2', '当前是项目二');
     // 点击切换到项目一
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.textContent.includes('proj') && b.title === P));
     await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '切换回项目一');
+    assert_((await g(dom, 'App.root')) === P, '切换回项目一');
     const active = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.classList.contains('active'));
     assert_(active && active.title === P, '高亮跟随切换');
     // 切回项目二，验证树内容不同
@@ -1559,7 +1559,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 切到项目一，打开 README.md
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P));
     await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '已切到项目一');
+    assert_((await g(dom, 'App.root')) === P, '已切到项目一');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     await new Promise((r) => setTimeout(r, 500)); // 防抖保存
@@ -1583,7 +1583,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(close);
     await tick(); await tick(); await tick();
     // 关掉的是当前项目 → 自动切到剩余项目一；关闭一个其余不消失
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '自动切换到剩余项目一');
+    assert_((await g(dom, 'App.root')) === P, '自动切换到剩余项目一');
     assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P), '剩余项目按钮保留（不全消失）');
     assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
   });
@@ -1694,7 +1694,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(item, '下拉含项目项');
     click(item);
     await tick(); await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '下拉点击切换项目');
+    assert_((await g(dom, 'App.root')) === P, '下拉点击切换项目');
   });
 
   await okAsync('项目栏溢出：滚轮横向滚动 + 当前项目自动滚入可视区', async () => {
@@ -2285,7 +2285,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('换行符显示：CRLF 文件状态栏标记，LF 不显示', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/crlf-file.txt")');
     await tick(); await tick();
-    assert_($(dom, '#sb-info').textContent.includes('(CRLF)'), 'CRLF 标记: ' + $(dom, '#sb-info').textContent);
+    assert_($(dom, '#sb-info').textContent.includes('CRLF'), 'CRLF 标记: ' + $(dom, '#sb-info').textContent);
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
     assert_(!$(dom, '#sb-info').textContent.includes('CRLF'), 'LF 文件无标记');
@@ -2771,7 +2771,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(dec && inc && val, '状态栏统一字号控件存在');
     const bar = $(dom, '#statusbar');
     const kids = [...bar.children].filter((x) => x.id);
-    assert_(kids.indexOf(bar.querySelector('#sb-tool-font')) === 0, '统一控件贴状态栏最左端');
+    assert_(kids.includes(bar.querySelector('#sb-tool-font')), '统一字号控件在状态栏内（现排在右侧，左边让给光标/分支）');
     // 3) 点击 A+ → --tool-font 变量 + 状态栏读数 + 持久化 同步
     const before = dom.window.document.documentElement.style.getPropertyValue('--tool-font');
     click(inc);
@@ -3070,7 +3070,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◫ 分屏')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '分屏'));
     await tick();
     assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
@@ -3080,7 +3080,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
     const md = $(dom, '.md-split-preview .md-view');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('{ } 源码')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '源码'));
     await tick();
     assert_(!$(dom, '.md-split'), '切源码后无分屏');
     assert_($(dom, '.editor-cm-wrap .cm-editor'), '源码模式有 CM 编辑器');
@@ -3091,7 +3091,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/link.md")');
     await tick(); await tick();
     // live（CM6）无 .md-view，切「◉ 预览」后断言渲染链接
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     const links = $allIn(md, 'a');
@@ -3537,7 +3537,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     // 切到「◉ 预览」
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     assert_($(dom, '.md-view'), '切到预览模式');
     // 打开另一个 md → 应保持预览模式（不重置回 live）
@@ -3570,7 +3570,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(recBtns.length >= 1, '空状态显示最近项目按钮, got ' + recBtns.length);
     const known = [P, 'C:/proj2', 'C:/big'];
     assert_(known.includes(recBtns[0].title), '历史含已关闭项目: ' + recBtns[0].title);
-    // 点击历史按钮重新打开项目（用 App.root 断言：大项目虚拟滚动下 .root-path 元素可能不在可视窗口）
+    // 点击历史按钮重新打开项目（用 App.root 断言：大项目虚拟滚动下树根行可能不在可视窗口）
     const t = recBtns[0].title;
     click(recBtns[0]);
     await tick(); await tick(); await tick();

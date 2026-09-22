@@ -64,8 +64,17 @@ module.exports = {
     add('状态栏字号控件带「侧栏 / 编辑」标签',
       (q('#sb-tool-font .sb-font-tag') || {}).textContent === '侧栏' && (q('#sb-font .sb-font-tag') || {}).textContent === '编辑',
       '标签已加');
-    add('状态栏有分组分隔线', !!q('#statusbar .sb-sep'));
-    add('侧栏字号控件仍贴最左端', [...q('#statusbar').children].filter((x) => x.id)[0].id === 'sb-tool-font');
+    // 分隔线是 JS 按「信息有几项」插的：只有一项时不需要分隔线，所以两种都算通过
+    add('状态栏组间有分隔线', (q('#sb-info') && q('#sb-info').childNodes.length) <= 1 || !!q('#statusbar .sb-d') || !!q('#statusbar .sb-sep'));
+    // 左边留给光标/分支，字号控件整体靠右（与 VS Code / PyCharm 一致）
+    add('字号控件在状态栏右侧（左侧让给光标/分支）',
+      [...q('#statusbar').children].filter((x) => x.id).map((x) => x.id).indexOf('sb-tool-font') >= 2,
+      [...q('#statusbar').children].filter((x) => x.id).map((x) => x.id).join(' | '));
+    add('状态栏信息在前（光标位置优先于行数/编码）',
+      (() => {
+        const ids = [...q('#statusbar').children].filter((x) => x.id).map((x) => x.id);
+        return ids[0] === 'sb-info' && ids[1] === 'sb-branch';
+      })(), '');
     const hasFocusRule = Array.from(document.styleSheets).flatMap((s) => { try { return Array.from(s.cssRules); } catch { return []; } })
       .some((r) => r.selectorText === ':focus-visible');
     add('统一焦点态规则存在', hasFocusRule, hasFocusRule ? ':focus-visible' : '缺失');
@@ -151,7 +160,8 @@ module.exports = {
     const pill = q('.proj-all');
     const btns = qa('#project-bar .proj-btn');
     add('项目栏渲染出多个项目按钮', btns.length >= 10, 'count=' + btns.length);
-    add('「全部项目」入口显示项目数', pill && /1\d\s*项目/.test(pill.textContent), pill && pill.textContent);
+    // 文案从「14 项目」改成「全部项目 + 数量徽标」：前者读起来不通、也看不出这是入口
+    add('「全部项目」入口显示项目数', pill && /全部项目\s*\d+/.test(pill.textContent), pill && pill.textContent);
     // 结构性回归：入口必须在横向滚动容器之外（老实现 sticky 浮在滚动层上 → 按钮从它底下钻过去 = 覆盖）
     add('「全部项目」在滚动容器之外', !!pill && pill.parentElement && pill.parentElement.id === 'project-bar-wrap' && !bar.contains(pill),
       pill && ('父=' + (pill.parentElement && pill.parentElement.id) + ' 在bar内=' + bar.contains(pill)));

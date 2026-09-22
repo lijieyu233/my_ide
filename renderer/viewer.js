@@ -148,6 +148,18 @@ const Viewer = (() => {
     renderView();
   }
 
+  // 编辑器工具条图标（内联 SVG）。
+  // 原来用 '⧉' '◉' '⌖' 这类字符 —— Windows 默认字体没有这些字形，fallback 之后
+  // 会变成完全不相干的符号（用户看到的「+ 定位」就是 '⌖' 掉字形后的样子）。
+  const ACT_IC = {
+    copy: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.6" y="5.6" width="8" height="8" rx="1.3"/><path d="M10.4 5.6V3.5a1.3 1.3 0 0 0-1.3-1.3H3.5A1.3 1.3 0 0 0 2.2 3.5v5.6a1.3 1.3 0 0 0 1.3 1.3h1.7"/></svg>',
+    eye: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.4-4.2 6.3-4.2S14.3 8 14.3 8s-2.4 4.2-6.3 4.2S1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.9"/></svg>',
+    code: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 4.4L2.2 8l3.4 3.6M10.4 4.4L13.8 8l-3.4 3.6"/></svg>',
+    edit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/><path d="M9.6 4.2l2.2 2.2"/></svg>',
+    split: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.2"/><path d="M8 3.2v9.6"/></svg>',
+    locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.4V3.8a1.4 1.4 0 0 1 1.4-1.4h1.6M13.6 5.4V3.8a1.4 1.4 0 0 0-1.4-1.4h-1.6M2.4 10.6v1.6a1.4 1.4 0 0 0 1.4 1.4h1.6M13.6 10.6v1.6a1.4 1.4 0 0 1-1.4 1.4h-1.6"/><circle cx="8" cy="8" r="1.7"/></svg>',
+  };
+
   function renderTabs() {
     tabbar.innerHTML = '';
     tabs.forEach((t, i) => {
@@ -291,13 +303,17 @@ const Viewer = (() => {
 
     const p = document.createElement('span');
     p.className = 'vt-path';
-    p.textContent = tab.path;
+    // 显示相对项目根的路径：绝对路径又长又总被截断，而项目名在顶部栏 / 侧栏树根已经写过几遍，
+    // 同一条路径在界面上出现三次没有任何信息增量。完整路径仍在 title 和「复制路径」里。
+    const projRoot = (window.App && App.root) || '';
+    p.textContent = (projRoot && tab.path.startsWith(projRoot))
+      ? tab.path.slice(projRoot.length).replace(/^[\\/]+/, '') : tab.path;
     p.title = tab.path;
     toolbar.appendChild(p);
 
     const btnCopy = document.createElement('button');
     btnCopy.className = 'vt-btn';
-    btnCopy.textContent = '⧉ 复制路径';
+    btnCopy.innerHTML = ACT_IC.copy + '复制路径';
     btnCopy.title = '复制完整路径';
     btnCopy.onclick = () => { MI.copyText(tab.path); MI.toast('已复制完整路径', 'ok'); };
     toolbar.appendChild(btnCopy);
@@ -307,16 +323,16 @@ const Viewer = (() => {
       const seg = document.createElement('div');
       seg.className = 'md-mode-seg';
       const MODES = [
-        ['live', '✎ 实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
-        ['split', '◫ 分屏', '左侧源码 + 右侧实时预览'],
-        ['source', '{ } 源码', '纯 Markdown 源码编辑'],
-        ['preview', '◉ 预览', '只读渲染视图'],
+        ['live', ACT_IC.edit, '实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
+        ['split', ACT_IC.split, '分屏', '左侧源码 + 右侧实时预览'],
+        ['source', ACT_IC.code, '源码', '纯 Markdown 源码编辑'],
+        ['preview', ACT_IC.eye, '预览', '只读渲染视图'],
       ];
       const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
-      for (const [m, label, tip] of MODES) {
+      for (const [m, ic, label, tip] of MODES) {
         const b = document.createElement('button');
         b.className = 'vt-btn' + (cur === m ? ' active' : '');
-        b.textContent = label;
+        b.innerHTML = ic + label;
         b.title = tip;
         b.onclick = () => {
           if (tab.mode !== m) {
@@ -332,7 +348,7 @@ const Viewer = (() => {
     } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
       const btnToggle = document.createElement('button');
       btnToggle.className = 'vt-btn';
-      btnToggle.textContent = '{ } 查看源码';
+      btnToggle.innerHTML = ACT_IC.code + '查看源码';
       btnToggle.title = '以源码方式编辑';
       btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
       toolbar.appendChild(btnToggle);
@@ -340,7 +356,7 @@ const Viewer = (() => {
       // 查看源码后提供恢复入口：切回预览模式
       const btnBack = document.createElement('button');
       btnBack.className = 'vt-btn';
-      btnBack.textContent = '◉ 预览';
+      btnBack.innerHTML = ACT_IC.eye + '预览';
       btnBack.title = '切回预览渲染';
       btnBack.onclick = () => { tab.mode = 'preview'; renderView(); };
       toolbar.appendChild(btnBack);
@@ -348,7 +364,7 @@ const Viewer = (() => {
 
     const btnShow = document.createElement('button');
     btnShow.className = 'vt-btn';
-    btnShow.textContent = '⌖ 定位';
+    btnShow.innerHTML = ACT_IC.locate + '定位';
     btnShow.title = '在资源管理器中显示';
     btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
     toolbar.appendChild(btnShow);
@@ -428,7 +444,7 @@ const Viewer = (() => {
         const before = ta.value.slice(0, pos);
         const line = before.split('\n').length;
         const col = pos - before.lastIndexOf('\n');
-        App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        App.updateStatusbar({ pos: line + ':' + col });
       };
       const lineCount = () => ta.value.split('\n').length;
       let lastLines = -1; // 强制首次渲染
@@ -666,7 +682,7 @@ const Viewer = (() => {
         cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
       },
       onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
       },
     });
     cmApi.__tab = tab;
@@ -701,7 +717,7 @@ const Viewer = (() => {
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
       onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
       },
       onSave: () => saveTab(active),
     });
