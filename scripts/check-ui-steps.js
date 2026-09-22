@@ -462,11 +462,23 @@ module.exports = {
     const hex2rgb = (h) => { const v = parseInt(h.replace('#', '').slice(0, 6), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
     // 颜色字符串解析：color-mix 在现代 Chromium 里会算成 `color(srgb 0.83 0.86 0.88)`，
     // 直接按 0-255 读会得到 0.83 这种数（踩过：跨度算成 0.05，断言全错）
+    // ⚠ 必须认 hex：getComputedStyle 读自定义属性返回的是 `#f06292` 这种写法，
+    //   只抓 [\d.]+ 会把 `#f06292` 抓成单个数字 6292 → 返回空数组 → 与全零比较时
+    //   任何深色都"匹配"，断言变成空转（踩过：焦点普查把所有中性容器都算成 accent 实心块，
+    //   主题步骤里几个"底色是否中性"的检查也一直空转）。
     const parseColorRgb = (str) => {
-      const nums = (String(str).match(/[\d.]+/g) || []).map(Number);
-      const isUnit = /^color\(/.test(String(str).trim());
-      const v = nums.slice(0, 3).map((x) => (isUnit ? x * 255 : x));
-      return v.length === 3 ? v : [];
+      const t = String(str || '').trim();
+      if (!t || t === 'none' || t === 'transparent') return [];
+      const hx = t.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+      if (hx) {
+        let h = hx[1];
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+      }
+      const nums = (t.match(/[\d.]+/g) || []).map(Number);
+      if (nums.length < 3) return [];
+      const k = /^color\(/.test(t) ? 255 : 1;
+      return nums.slice(0, 3).map((x) => x * k);
     };
     const spreadOf = (str) => { const c = parseColorRgb(str); return c.length === 3 ? Math.max(...c) - Math.min(...c) : -1; };
     // 主题变量挂在 body 上，必须从 body 读（documentElement 只有 :root 的默认值）
@@ -584,11 +596,23 @@ module.exports = {
     const hex2rgb = (h) => { const v = parseInt(h.replace('#', '').slice(0, 6), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; };
     // 颜色字符串解析：color-mix 在现代 Chromium 里会算成 `color(srgb 0.83 0.86 0.88)`，
     // 直接按 0-255 读会得到 0.83 这种数（踩过：跨度算成 0.05，断言全错）
+    // ⚠ 必须认 hex：getComputedStyle 读自定义属性返回的是 `#f06292` 这种写法，
+    //   只抓 [\d.]+ 会把 `#f06292` 抓成单个数字 6292 → 返回空数组 → 与全零比较时
+    //   任何深色都"匹配"，断言变成空转（踩过：焦点普查把所有中性容器都算成 accent 实心块，
+    //   主题步骤里几个"底色是否中性"的检查也一直空转）。
     const parseColorRgb = (str) => {
-      const nums = (String(str).match(/[\d.]+/g) || []).map(Number);
-      const isUnit = /^color\(/.test(String(str).trim());
-      const v = nums.slice(0, 3).map((x) => (isUnit ? x * 255 : x));
-      return v.length === 3 ? v : [];
+      const t = String(str || '').trim();
+      if (!t || t === 'none' || t === 'transparent') return [];
+      const hx = t.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+      if (hx) {
+        let h = hx[1];
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+      }
+      const nums = (t.match(/[\d.]+/g) || []).map(Number);
+      if (nums.length < 3) return [];
+      const k = /^color\(/.test(t) ? 255 : 1;
+      return nums.slice(0, 3).map((x) => x * k);
     };
     const spreadOf = (str) => { const c = parseColorRgb(str); return c.length === 3 ? Math.max(...c) - Math.min(...c) : -1; };
     const readVar = (k) => getComputedStyle(document.body).getPropertyValue(k).trim();
@@ -625,6 +649,174 @@ module.exports = {
       add('深红下量到真实的 Markdown 标题', false, '没找到标题元素');
     }
     await sleep(200);
+    return { R };
+  },
+
+  // ---------- 同屏「强焦点」普查：强调色同时用在多少个地方喊 ----------
+  // 「乱」= 元素密度 × 区域明度差。密度这一半里最刺眼的是「同屏有几个东西在用 accent 喊」。
+  // 判定口径：实心 accent 填充（α≥.5 且面积 ≥150px²）/ ≥2px 的 accent 边或伪元素条 /
+  // 大号粗体 accent 文字（≥13px 且 weight≥600）。半透明 tint、1px 边框、普通正文里的 accent 只算「弱」。
+  // 浮层（菜单 / 弹窗 / 空状态）不算「同屏」。
+  focusCensus: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // —— 进入「典型工作状态」：项目工具窗口 + 打开一篇 md + AI 面板打开 ——
+    window.App.showTool('project');
+    await sleep(400);
+    const mdRow = qa('#tree .tree-row').find((r) => /\.md$/.test(r.dataset.path || '') && !r.querySelector('.nm-dir'));
+    if (mdRow) { mdRow.click(); await sleep(900); }
+    window.App.setAiOpen(true);
+    await sleep(900);
+    // 清掉前面步骤留下的残留（历史消息 / 待确认浮层）—— 普查要量「干净基线」，
+    // 否则量到的是"跑了一半的调试状态"，数字不可复现。
+    const noBtn = q('#cr-no') || q('#dw-no');
+    if (noBtn) { noBtn.click(); await sleep(400); }
+    const newBtn = q('#ai-new');
+    if (newBtn) { newBtn.click(); await sleep(700); }
+    add('基线干净：AI 面板无历史消息、无待确认浮层',
+      !q('.ai-confirm') && !q('#ai-msgs .ai-tool'),
+      '确认浮层=' + !!q('.ai-confirm') + ' 工具行=' + qa('#ai-msgs .ai-tool').length);
+
+    // 带 alpha 的颜色解析（hex / rgb() / rgba() / color(srgb …) 都认）
+    const pc = (str) => {
+      const t = String(str || '').trim();
+      if (!t || t === 'none' || t === 'transparent') return [0, 0, 0, 0];
+      const hx = t.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+      if (hx) {
+        let h = hx[1];
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        const a = h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), a];
+      }
+      const nums = (t.match(/[\d.]+/g) || []).map(Number);
+      if (nums.length < 3) return [0, 0, 0, 0];
+      const k = /^color\(/.test(t) ? 255 : 1;
+      return [nums[0] * k, nums[1] * k, nums[2] * k, nums.length >= 4 ? nums[3] : 1];
+    };
+    const A = pc(getComputedStyle(document.body).getPropertyValue('--accent'));
+    if (A[3] === 0) { add('诊断：accent 变量读到了', false, '--accent 解析失败=' + getComputedStyle(document.body).getPropertyValue('--accent')); return { R }; }
+    const isAcc = (str, minA) => {
+      const c = pc(str);
+      if (c[3] < minA) return false;
+      return Math.max(Math.abs(c[0] - A[0]), Math.abs(c[1] - A[1]), Math.abs(c[2] - A[2])) <= 42;
+    };
+
+    // 区域：越具体越靠前（#main 包着 sidebar / tabbar / viewer）
+    const RG = ['#ai-panel', '#sidebar', '#tabbar', '#statusbar', '#tool-strip', '#toolbar', '#viewer'];
+    const regions = RG.map((sel) => ({ sel, el: q(sel) })).filter((r) => r.el && r.el.getBoundingClientRect().width > 0);
+    const regionOf = (el) => { for (const r of regions) if (r.el.contains(el)) return r.sel; return null; };
+    const OVERLAY = ['#ctx-menu', '#modal-mask', '.ai-at-pop', '.ai-confirm', '#empty-state', '#settings', '#help', '#search-overlay'];
+    const inOverlay = (el) => OVERLAY.some((s) => { const o = q(s); return !!o && o.contains(el); });
+
+    const strong = [];
+    const weakList = [];
+    const counted = [];   // 已计入的「载体」：它的后代不再重复计数（继承来的 color 不算新的一处）
+    const desc = (el) => (el.id ? '#' + el.id : '') +
+      (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
+
+    for (const el of document.querySelectorAll('*')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4 || rect.bottom < 0 || rect.right < 0) continue;
+      if (inOverlay(el)) continue;
+      const region = regionOf(el);
+      if (!region) continue;
+      if (counted.some((c) => c !== el && c.contains(el))) continue;   // 继承来的，不算新的一处
+      const cs = getComputedStyle(el);
+      let hit = null;
+      if (isAcc(cs.backgroundColor, 0.5) && rect.width * rect.height >= 150) {
+        hit = { kind: '实心填充', detail: Math.round(rect.width) + '×' + Math.round(rect.height) };
+      }
+      if (!hit) {
+        const sides = [['borderLeftWidth', 'borderLeftColor', rect.height],
+                       ['borderRightWidth', 'borderRightColor', rect.height],
+                       ['borderTopWidth', 'borderTopColor', rect.width],
+                       ['borderBottomWidth', 'borderBottomColor', rect.width]];
+        for (const [wp, cp, len] of sides) {
+          if (parseFloat(cs[wp]) >= 2 && len >= 12 && isAcc(cs[cp], 0.5)) {
+            hit = { kind: '强调边', detail: wp.replace('border', '').replace('Width', '') + ' ' + cs[wp] };
+            break;
+          }
+        }
+      }
+      if (!hit) {
+        for (const psel of ['::before', '::after']) {
+          const p = getComputedStyle(el, psel);
+          if (!p || p.content === 'none' || p.display === 'none') continue;
+          const pw = parseFloat(p.width), ph = parseFloat(p.height);
+          if ((pw >= 0 && pw <= 5 && ph >= 12) || (ph >= 0 && ph <= 5 && pw >= 12)) {
+            if (isAcc(p.backgroundColor, 0.5)) { hit = { kind: '伪元素条', detail: psel + ' ' + Math.round(pw) + '×' + Math.round(ph) }; break; }
+          }
+        }
+      }
+      // 盲区①：`box-shadow: inset 2px 0 0 accent`（树行 focus / 弹窗选中项都是这么写的）
+      // —— 只查 border 会看不见它
+      if (!hit && cs.boxShadow && cs.boxShadow !== 'none' && /inset/.test(cs.boxShadow)) {
+        const off = (cs.boxShadow.match(/-?[\d.]+px/g) || []).map((x) => Math.abs(parseFloat(x)));
+        const col = cs.boxShadow.replace(/inset/g, '').replace(/-?[\d.]+px/g, '').trim();
+        if (off.some((x) => x >= 2) && isAcc(col, 0.5)) hit = { kind: '强调阴影', detail: cs.boxShadow.slice(0, 44) };
+      }
+      // 盲区②：图标按钮的强调色在 `color`（SVG 用 currentColor），且它**有子节点**
+      // —— 「只查无子节点的文字」会漏掉所有强调图标按钮
+      if (!hit && !(el.textContent || '').trim() && el.querySelector && el.querySelector('svg')
+          && (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') && isAcc(cs.color, 0.85)) {
+        hit = { kind: '强调图标', detail: Math.round(rect.width) + '×' + Math.round(rect.height) };
+      }
+      if (!hit && el.children.length === 0 && (el.textContent || '').trim() && isAcc(cs.color, 0.85)
+          && parseInt(cs.fontWeight, 10) >= 600 && parseFloat(cs.fontSize) >= 13) {
+        hit = { kind: '强调文字', detail: parseFloat(cs.fontSize) + 'px/' + cs.fontWeight + ' ' + (el.textContent || '').trim().slice(0, 12) };
+      }
+      if (hit) { strong.push({ region, sel: desc(el), kind: hit.kind, detail: hit.detail }); counted.push(el); }
+      else if (isAcc(cs.backgroundColor, 0.05) || isAcc(cs.color, 0.5)) { weakList.push({ region, sel: desc(el) }); counted.push(el); }
+    }
+
+    const weak = weakList.length;
+    const byRegion = {};
+    for (const s of strong) byRegion[s.region] = (byRegion[s.region] || 0) + 1;
+    const brief = Object.entries(byRegion).map(([k, v]) => k.replace('#', '') + '×' + v).join('  ');
+
+    // —— 候选元素实测（验证检测器没瞎：这些是"最可能被当成焦点"的地方）——
+    const CAND = ['#ai-send', '#ai-perm', '#ai-model', '.ai-ctx-chip.follow', '.ai-ctx-chip.pinned',
+                  '.ai-ctx-x', '.proj-btn.active', '.proj-all', '.tab.active', '.tab-all', '.tab-locate',
+                  '.tool-btn.active', '.tree-row.selected', '.outline-item.key-nav-sel',
+                  '.sb-font button', '.panel-title', '.ai-head', '#ai-stop'];
+    const cand = [];
+    for (const sel of CAND) {
+      const el = q(sel);
+      if (!el) { cand.push(sel + '=无'); continue; }
+      const cs = getComputedStyle(el);
+      const pre = getComputedStyle(el, '::before');
+      const bit = (str, minA) => (pc(str)[3] >= minA && Math.max(Math.abs(pc(str)[0] - A[0]), Math.abs(pc(str)[1] - A[1]), Math.abs(pc(str)[2] - A[2])) <= 42 ? '●' : '·');
+      cand.push(sel + ' bg' + bit(cs.backgroundColor, 0.5) + ' tx' + bit(cs.color, 0.85)
+        + ' bl' + bit(cs.borderLeftColor, 0.5) + ' bt' + bit(cs.borderTopColor, 0.5)
+        + (pre.content !== 'none' ? ' pre' + bit(pre.backgroundColor, 0.5) : ''));
+    }
+    add('诊断：候选元素 accent 命中（●=算强焦点 ·=不算）', true, cand.join(' ').slice(0, 1400));
+
+    add('诊断：同屏 accent 强焦点总数', true,
+      '强=' + strong.length + '  弱(仅提示)=' + weak + '  [' + (brief || '无') + ']');
+    add('诊断：弱用清单（只做提示、不算焦点）', true,
+      weakList.map((s) => s.region.replace('#', '') + '|' + s.sel).join(' ; ').slice(0, 1100));
+    add('诊断：强焦点清单', true,
+      strong.map((s) => s.region.replace('#', '') + '|' + s.kind + '|' + s.sel + '|' + s.detail).join(' ; ').slice(0, 1100));
+
+    // —— 正式守卫：这轮普查定下来的规则 ——
+    // ① 每个区域最多 1 个 accent 强焦点（一个区域里只有一个"当前项"才是对的）
+    const over = Object.entries(byRegion).filter(([, v]) => v > 1);
+    add('每个区域最多 1 个 accent 强焦点（一个区域只该有一个"当前项"）', over.length === 0,
+      over.length ? '超标：' + over.map(([k, v]) => k + '×' + v).join(' ') : (brief || '无强焦点'));
+    // ② 同屏总数上限：3 个区域各 1 个 = 3，留 1 个余量给"帮助 / 搜索"这类临时态
+    add('同屏 accent 强焦点总数 ≤ 4', strong.length <= 4, '强=' + strong.length + ' [' + (brief || '无') + ']');
+    // ③ 弱用（半透明 tint / 1px 边 / 普通 accent 文字）也不能失控 —— 它们加起来会重新变成"处处都在喊"
+    // 弱用按「载体」计数（继承来的不算新的一处），阈值留了余量 ——
+    // 它是「强调色有没有在当环境光用」的粗筛，不该卡在临界值上造成假警报。
+    const weakBy = weakList.reduce((a, s2) => (a[s2.region] = (a[s2.region] || 0) + 1, a), {});
+    add('accent 的弱用（载体数）不超过 10 处', weak <= 10, '弱=' + weak + '  [' +
+      Object.entries(weakBy).map(([k, v]) => k.replace('#', '') + 'x' + v).join('  ') + ']');
+
     return { R };
   },
 

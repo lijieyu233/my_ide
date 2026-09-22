@@ -1316,6 +1316,7 @@ app.whenReady().then(() => {
         await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
         await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
         // 放最后：这一步故意把主题留在酒红上，产物截图就是它的实际观感
+        await run('同屏 accent 强焦点普查（截图用）', js(steps.focusCensus), 'check-ui-1m-focus.png');
         await run('主题：石墨（中性黑灰 + 玫瑰红强调）', js(steps.themeGraphite), 'check-ui-9-theme-graphite.png');
         // 最后一步：把主题留在「深红」上，截图就是它的实际观感
         await run('主题：深红回退（暖调）', js(steps.themeCrimsonRevert), 'check-ui-9b-theme-crimson.png');
