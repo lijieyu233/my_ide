@@ -1310,6 +1310,14 @@ app.whenReady().then(() => {
         await run('主题：石墨（中性黑灰 + 玫瑰红强调）', js(steps.themeGraphite), 'check-ui-9-theme-graphite.png');
         // 最后一步：把主题留在「深红」上，截图就是它的实际观感
         await run('主题：深红回退（暖调）', js(steps.themeCrimsonRevert), 'check-ui-9b-theme-crimson.png');
+        // 放最后一步：它故意收起 AI 助手（编辑区变宽）并留在深红主题上，产物截图就是这个状态。
+        // 同时把窗口临时加宽到 1600×900 —— 用户反馈的场景是 1800+ 宽的窗口，1380 宽时编辑区
+        // 只有 962，"正文列收窄"看不出效果。截图后窗口即关闭，不需要还原。
+        try {
+          if (win && win.setContentSize) win.setContentSize(1600, 900);
+          await new Promise((r) => setTimeout(r, 900));
+        } catch {}
+        await run('正文阅读版式（收窄后，截图用）', js(steps.mdReading, demo), 'check-ui-8-md-reading.png');
       } catch (e) {
         lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
         fail++;

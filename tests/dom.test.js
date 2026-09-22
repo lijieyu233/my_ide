@@ -2813,7 +2813,8 @@ assert_(panel, 'CM6 搜索面板出现');
     const bar = $(dom, '#statusbar');
     const kids = [...bar.children].filter((x) => x.id);
     assert_(kids.indexOf(bar.querySelector('#sb-bgop')) > kids.indexOf(bar.querySelector('#sb-font')), '滑条在字号控件右侧（最右端）');
-    assert_(sb.value === '15', '初始值同步 15, got: ' + sb.value);
+    // 默认透明度 0.15 → 0.10：底图是氛围，在本来就偏满的页面里会再加一层视觉信息
+    assert_(sb.value === '10', '初始值同步 10, got: ' + sb.value);
     await g(dom, 'Bg.setOpacity(0.3)');
     await tick();
     assert_(sb.value === '30', '透明度变化同步滑条, got: ' + sb.value);

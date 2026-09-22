@@ -198,12 +198,12 @@ const Bg = (() => {
 
   function apply() {
     let p = '';
-    let op = 0.15;
+    let op = 0.10; // 默认更淡：底图是氛围，不该和正文抢信息
     let fit = 'cover';
     let pos = 'center';
     try {
       p = localStorage.getItem(P_KEY) || '';
-      op = parseFloat(localStorage.getItem(O_KEY) || '0.15') || 0.15;
+      op = parseFloat(localStorage.getItem(O_KEY) || '0.10') || 0.10;
       fit = localStorage.getItem(F_KEY) || 'cover';
       pos = localStorage.getItem(POS_KEY) || 'center';
     } catch {}
@@ -263,10 +263,10 @@ const Bg = (() => {
     apply();
   }
   function get() {
-    let p = '', op = 0.15, fit = 'cover', pos = 'center';
+    let p = '', op = 0.10, fit = 'cover', pos = 'center';
     try {
       p = localStorage.getItem(P_KEY) || '';
-      op = parseFloat(localStorage.getItem(O_KEY) || '0.15') || 0.15;
+      op = parseFloat(localStorage.getItem(O_KEY) || '0.10') || 0.10;
       fit = localStorage.getItem(F_KEY) || 'cover';
       pos = localStorage.getItem(POS_KEY) || 'center';
     } catch {}

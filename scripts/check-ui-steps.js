@@ -297,6 +297,32 @@ module.exports = {
     return { R };
   },
 
+  // ---------- 正文阅读版式：收窄后的实际观感（产物截图用）----------
+  // 放最后 + 故意收起 AI 助手：编辑区足够宽，才看得出"正文列收窄、内容浮在工作区里"。
+  mdReading: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.App.setAiOpen(false);
+    localStorage.setItem('myide-md-mode', 'live');
+    window.Viewer.closeAll();
+    await sleep(200);
+    await window.Viewer.openFile(dir + '\\_ui_mmd.md');
+    await sleep(2000);
+    const content = q('.editor-cm-wrap .cm-content');
+    const ed = q('#viewer');
+    if (content && ed) {
+      const cR = content.getBoundingClientRect(), eR = ed.getBoundingClientRect();
+      add('正文列收窄后在宽编辑区里居中（截图用）', cR.width <= 860,
+        '列宽=' + Math.round(cR.width) + ' 编辑区=' + Math.round(eR.width)
+        + ' 左=' + Math.round(cR.left - eR.left) + ' 右=' + Math.round(eR.right - cR.right));
+    } else {
+      add('正文列收窄后在宽编辑区里居中（截图用）', false, '没找到正文列');
+    }
+    return { R };
+  },
+
   // ---------- 侧栏上下分栏（项目树 + 大纲）：真实几何，jsdom 测不了 ----------
   sideSplit: async (dir) => {
     const R = [];
@@ -707,6 +733,47 @@ module.exports = {
     if (!box) return { R };
     add('两处 mermaid 图都渲染出来', document.querySelectorAll('.md-view .mermaid-box svg').length === 2,
       'got ' + document.querySelectorAll('.md-view .mermaid-box svg').length);
+    // 颜色解析：兼容 rgb()/rgba() 与 color-mix 算出来的 color(srgb r g b / a)
+    const parseC = (str) => {
+      if (!str) return null;
+      const v = (str.match(/[\d.]+/g) || []).map(Number);
+      if (v.length < 3) return null;
+      return /^color\(/.test(str)
+        ? { r: v[0] * 255, g: v[1] * 255, b: v[2] * 255, a: v.length > 3 ? v[3] : 1 }
+        : { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 };
+    };
+    const lum = (c) => (c ? (c.r + c.g + c.b) / 3 : -1);
+    const pageBgLum = () => lum(parseC(getComputedStyle(document.body).backgroundColor));
+
+    // ---- 纯视觉：正文列"收窄 + 居中"、流程图"独立成块" ----
+    // 要看出"列宽上限"需要一块足够宽的编辑区：临时收起 AI 助手，量完原样还原
+    const aiEl = q('#ai-panel');
+    const aiWas = !!aiEl && !aiEl.classList.contains('hidden');
+    if (aiWas) { window.App.setAiOpen(false); await sleep(800); }
+    {
+      const mv = q('#viewer > .md-view') || q('.md-view');
+      const ed = q('#viewer');
+      const mvR = mv.getBoundingClientRect(), edR = ed.getBoundingClientRect();
+      const lGap = Math.round(mvR.left - edR.left), rGap = Math.round(edR.right - mvR.right);
+      add('正文列有可读宽度上限（<= 860px，不再满宽铺开）', mvR.width <= 860,
+        '列宽=' + Math.round(mvR.width) + ' 编辑区=' + Math.round(edR.width));
+      add('编辑区变宽时列宽被上限托住（不是跟着内容缩水）',
+        edR.width <= 860 || mvR.width >= 700,
+        '编辑区=' + Math.round(edR.width) + ' 列宽=' + Math.round(mvR.width));
+      add('正文列在编辑区里居中（左右留白对称）', Math.abs(lGap - rGap) <= 2, '左=' + lGap + ' 右=' + rGap);
+      add('正文两侧留白足够（呼吸区，不贴边）',
+        edR.width <= 860 || Math.min(lGap, rGap) >= 60, '左=' + lGap + ' 右=' + rGap);
+      const bR = box.getBoundingClientRect();
+      add('流程图块不超出正文列（不再铺满整宽 / 贴窗口边）',
+        bR.left >= mvR.left - 1 && bR.right <= mvR.right + 1,
+        '块=' + Math.round(bR.left) + '~' + Math.round(bR.right) + ' 列=' + Math.round(mvR.left) + '~' + Math.round(mvR.right));
+      const boxLum = lum(parseC(getComputedStyle(box).backgroundColor));
+      add('流程图底色贴近正文（不是页面中间的大黑块）',
+        boxLum >= 0 && Math.abs(boxLum - pageBgLum()) <= 12,
+        '图=' + Math.round(boxLum) + ' 正文=' + Math.round(pageBgLum()));
+    }
+    if (aiWas) { window.App.setAiOpen(true); await sleep(700); }
+
     const fsb = q('.mermaid-box .mmd-fs-btn');
     add('图上挂载「⛶ 全屏」按钮', !!fsb, fsb && fsb.textContent);
     add('全屏按钮默认隐藏（hover 才浮现，不干扰阅读）', fsb && getComputedStyle(fsb).opacity === '0', fsb && getComputedStyle(fsb).opacity);
@@ -790,6 +857,47 @@ module.exports = {
     const box = await waitFor(() => q('.cm-md-mermaid svg') && q('.cm-md-mermaid'), 15000);
     add('Live Preview 中 mermaid 渲染成 SVG', !!box, box && box.className);
     if (!box) return { R };
+    // 颜色解析：兼容 rgb()/rgba() 与 color-mix 算出来的 color(srgb r g b / a)
+    const parseC = (str) => {
+      if (!str) return null;
+      const v = (str.match(/[\d.]+/g) || []).map(Number);
+      if (v.length < 3) return null;
+      return /^color\(/.test(str)
+        ? { r: v[0] * 255, g: v[1] * 255, b: v[2] * 255, a: v.length > 3 ? v[3] : 1 }
+        : { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 };
+    };
+    const lum = (c) => (c ? (c.r + c.g + c.b) / 3 : -1);
+    const pageBgLum = () => lum(parseC(getComputedStyle(document.body).backgroundColor));
+
+    // ---- 纯视觉：正文列"收窄 + 居中"、流程图"独立成块" ----
+    // 要看出"列宽上限"需要一块足够宽的编辑区：临时收起 AI 助手，量完原样还原
+    const aiEl = q('#ai-panel');
+    const aiWas = !!aiEl && !aiEl.classList.contains('hidden');
+    if (aiWas) { window.App.setAiOpen(false); await sleep(800); }
+    {
+      const mv = q('.editor-cm-wrap .cm-content');
+      const ed = q('#viewer');
+      const mvR = mv.getBoundingClientRect(), edR = ed.getBoundingClientRect();
+      const lGap = Math.round(mvR.left - edR.left), rGap = Math.round(edR.right - mvR.right);
+      add('Live Preview 正文列有可读宽度上限（<= 860px，不再满宽铺开）', mvR.width <= 860,
+        '列宽=' + Math.round(mvR.width) + ' 编辑区=' + Math.round(edR.width));
+      add('Live Preview 编辑区变宽时列宽被上限托住（不是跟着内容缩水）',
+        edR.width <= 860 || mvR.width >= 700,
+        '编辑区=' + Math.round(edR.width) + ' 列宽=' + Math.round(mvR.width));
+      add('Live Preview 正文列在编辑区里居中（左右留白对称）', Math.abs(lGap - rGap) <= 2, '左=' + lGap + ' 右=' + rGap);
+      add('Live Preview 正文两侧留白足够（呼吸区，不贴边）',
+        edR.width <= 860 || Math.min(lGap, rGap) >= 60, '左=' + lGap + ' 右=' + rGap);
+      const bR = box.getBoundingClientRect();
+      add('Live Preview 流程图块不超出正文列（不再铺满整宽 / 贴窗口边）',
+        bR.left >= mvR.left - 1 && bR.right <= mvR.right + 1,
+        '块=' + Math.round(bR.left) + '~' + Math.round(bR.right) + ' 列=' + Math.round(mvR.left) + '~' + Math.round(mvR.right));
+      const boxLum = lum(parseC(getComputedStyle(box, '::before').backgroundColor));
+      add('Live Preview 流程图底色贴近正文（不是页面中间的大黑块）',
+        boxLum >= 0 && Math.abs(boxLum - pageBgLum()) <= 12,
+        '图=' + Math.round(boxLum) + ' 正文=' + Math.round(pageBgLum()));
+    }
+    if (aiWas) { window.App.setAiOpen(true); await sleep(700); }
+
     const fsb = q('.cm-md-mermaid .mmd-fs-btn');
     add('Live Preview 图上挂载「⛶ 全屏」按钮', !!fsb, fsb && fsb.textContent);
     const r = fsb ? fsb.getBoundingClientRect() : null;

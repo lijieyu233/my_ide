@@ -61,10 +61,11 @@ body {
      而自定义属性里的 var() 是**在声明它的那个元素上**求值的 ——
      写在 :root 里就会按 html 的默认 --accent / --text 算死，下发到 body 时已是固定色，
      换主题不跟随（实测：石墨主题下标题色仍在用默认蓝 accent 混合）。 */
-  --border-pane: color-mix(in srgb, var(--text) 16%, transparent); /* 主分界线（随主题走） */
+  --border-pane: color-mix(in srgb, var(--text) 11%, transparent); /* 主分界线（随主题走）——
+     刻意压得很淡：区域之间靠「明度阶梯」分开，线只做提示，同屏出现多条时不会形成"框架感" */
   /* Markdown 标题色：不要纯白 —— 掺一点主题强调色，标题才"有颜色"但不至于全是 accent。
      用户原话："纯白的 md 样式很难看"。浅色主题里 --text-bright 本身是深色，混出来自动变深。 */
-  --md-heading: color-mix(in srgb, var(--text-bright) 90%, var(--accent));
+  --md-heading: color-mix(in srgb, var(--text-bright) 93%, var(--accent));
 }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
@@ -291,7 +292,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tree-row .ic.ic-dir svg { width: 12px; height: 12px; }
 .tree-row:hover .ic.ic-dir { color: var(--text-bright); }
 /* 目录名偏蓝、文件名保持高亮：PyCharm 就是靠这个把「容器」和「内容」一眼分开 */
-.tree-row .nm-dir { color: color-mix(in srgb, var(--accent) 62%, var(--text)); }
+.tree-row .nm-dir { color: color-mix(in srgb, var(--accent) 44%, var(--text)); }
 .tree-row:hover .nm-dir { color: color-mix(in srgb, var(--accent) 78%, var(--text-bright)); }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
 
@@ -318,7 +319,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 #tabbar {
   display: flex; align-items: stretch; flex-shrink: 0;
   height: var(--head-h);
-  background: var(--bg-tabbar); border-bottom: 1px solid var(--border);
+  background: var(--bg-tabbar); border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 /* 标签横向滚动区（文件多时只滚标签，右端操作区不动） */
 /* 标签横向滚动区：**不显示原生滚动条** —— 一条灰滚动条比它下面的几个标签还抢眼，
@@ -328,14 +329,14 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 编辑器操作区：Markdown 模式切换 / 查看源码 / 内置浏览器 +「定位」 */
 #tab-actions {
   flex-shrink: 0; display: flex; align-items: center; gap: 6px;
-  padding: 0 8px; border-left: 1px solid var(--border);
+  padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 #tab-actions:empty { display: none; }
 #tab-actions .md-mode-seg, #tab-actions .ed-actions { display: flex; align-items: center; gap: 4px; }
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px; font-size: 12px; color: var(--text-dim);
-  border-right: 1px solid var(--border); cursor: default;
+  border-right: 1px solid color-mix(in srgb, var(--text) 8%, transparent); cursor: default;
   height: 100%; box-sizing: border-box;
   /* 统一宽度：宽度跟着文件名走的话，一排 tab 参差不齐，看着就"乱" */
   flex: 0 0 164px; min-width: 0; white-space: nowrap;
@@ -343,7 +344,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab-all {
   flex-shrink: 0; margin-left: auto; padding: 0 12px; font-size: 12px;
   display: flex; align-items: center;
-  color: var(--text-dim); cursor: pointer; border-left: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
   position: sticky; right: 0; background: var(--bg-tabbar);
 }
 .tab-all:hover { color: var(--text-bright); background: var(--bg-hover); }
@@ -368,11 +369,13 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 当前标签常驻关闭按钮：想关的多半就是眼前这个，不该非得先把鼠标移上去 */
 .tab.active .tclose { visibility: visible; }
 .tab .tclose:hover { color: var(--red); }
-.tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid var(--accent); }
+.tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); }
 .tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
-#viewer > .md-view { flex: 1; overflow: auto; max-width: none; } /* 预览占满右侧全部宽度 */
+/* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
+   所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
+#viewer > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */
 .editor-wrap { flex: 1; display: flex; min-height: 0; } /* 不限 #viewer 直接子级：分屏内同样生效 */
 .editor-wrap .editor-gutter {
   width: 46px; flex-shrink: 0; overflow: hidden;
@@ -397,7 +400,15 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .md-split .md-split-preview .md-view { max-width: none; padding: 16px 20px; }
 
 /* ---------- Markdown 实时预览（Obsidian 式块编辑器） ---------- */
-#viewer > .md-live { flex: 1; overflow: auto; max-width: none; width: 100%; }
+/* 正文列宽上限：挂在 scroller 上而不是 .cm-content —— .cm-content 的 flex-grow 会把自由
+   空间全吃掉，auto margin 拿不到剩余空间，居中不生效。876 = 820 + 左右各 28 内边距。 */
+#viewer > .editor-cm-wrap .cm-scroller {
+  width: 100%; max-width: 876px; align-self: center;
+  /* 纵向滚动条会吃掉右侧 10px → 文字列看起来偏左（实测左 71 / 右 81）。
+     两侧都预留滚动条宽度，正文才是真正居中。 */
+  scrollbar-gutter: stable both-edges;
+}
+#viewer > .md-live { flex: 1; overflow: auto; width: 100%; }
 .md-live .md-block,
 .md-live .md-block-edit {
   max-width: 860px; margin-left: auto; margin-right: auto;
@@ -526,17 +537,30 @@ textarea.editor {
 .viewer-msg .big-ic { font-size: 34px; margin-bottom: 10px; }
 
 /* Markdown 渲染 */
-.md-view { padding: 16px 24px; max-width: 860px; user-select: text; line-height: 1.65; }
-.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-heading); margin: 13px 0 6px; }
+/* 正文列：给一个明确的可读宽度，并在编辑区里居中 —— 内容"浮在工作区里"，而不是铺满。
+   满宽时一行要横向扫很远，眼睛累、读起来也显"满"（用户原话："横向元素太长"）。
+   内边距比原来各多 10px 左右，标题上下的间距同步加大。 */
+/* ⚠ 定宽写法：`margin: 0 auto` 在 flex 容器里会让元素变成 fit-content（跟随内容宽窄），
+   实测编辑区 582 时列宽只有 417、换一篇文档又变成另一个宽度。
+   width:100% + max-width 给确定宽度；居中：#viewer 是 flex 用 align-self，
+   非 flex 的父容器（分屏预览）靠 margin auto。 */
+.md-view {
+  padding: 22px 34px 38px; width: 100%; max-width: 820px;
+  align-self: center; margin: 0 auto;
+  /* 同上：两侧预留滚动条宽度，正文列在视觉上对称 */
+  scrollbar-gutter: stable both-edges;
+  user-select: text; line-height: 1.65;
+}
+.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-heading); margin: 18px 0 8px; }
 /* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
 /* 字号与 live 编辑态（md-editor.js liveTheme）同源：h1 26 / h2 22 / h3 18 / h4 15 */
-.md-view h1 { font-size: 21px; margin-top: 18px; }
-.md-view h2 { font-size: 18px; margin-top: 15px; }
-.md-view h3 { font-size: 15px; color: color-mix(in srgb, var(--accent) 62%, var(--md-heading)); }
+.md-view h1 { font-size: 21px; margin-top: 24px; }
+.md-view h2 { font-size: 18px; margin-top: 20px; }
+.md-view h3 { font-size: 15px; color: color-mix(in srgb, var(--accent) 34%, var(--md-heading)); }
 .md-view h4 { font-size: 14px; }
 .md-view h5 { font-size: 12.5px; }
 .md-view h6 { font-size: 12.5px; color: var(--text-dim); }
-.md-view p { margin: 6px 0; }
+.md-view p { margin: 9px 0; }
 .md-view ul, .md-view ol { margin: 6px 0; padding-left: 22px; }
 .md-view li { margin: 2px 0; }
 .md-view li > p { margin: 2px 0; }
@@ -546,17 +570,18 @@ textarea.editor {
   background: var(--btn-bg); border-radius: 4px; padding: 1px 5px;
   font-family: var(--font-mono); font-size: 12px; color: var(--code-text);
 }
-.md-view pre { background: var(--code-bg); border-radius: 6px; padding: 10px 12px; overflow: auto; margin: 8px 0; border: 1px solid var(--border); }
+/* 代码块只靠底色区分，不再描边（一条深色描边+深色底 = 页面上的"框"） */
+.md-view pre { background: var(--code-bg); border-radius: 8px; padding: 13px 16px; overflow: auto; margin: 12px 0; }
 .md-view pre code { background: none; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.6; }
-.md-view blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text-dim); margin: 6px 0; }
+.md-view blockquote { border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); padding-left: 14px; color: var(--text-dim); margin: 10px 0; }
 .md-view table { border-collapse: collapse; margin: 8px 0; }
 /* 表格增强：宽表格自身横向滚动（不撑破版心、不挤压变形）+ 斑马纹 + 行 hover */
 .md-view table { display: block; max-width: 100%; overflow-x: auto; }
-.md-view th, .md-view td { border: 1px solid var(--border-mid); padding: 4px 10px; }
+.md-view th, .md-view td { border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); padding: 5px 11px; }
 .md-view th { background: var(--bg-panel); color: var(--text-bright); }
 .md-view tbody tr:nth-child(even) { background: rgba(128,128,128,.06); }
 .md-view tbody tr:hover { background: rgba(64,140,255,.08); }
-.md-view hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.md-view hr { border: none; border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent); margin: 18px 0; }
 .md-view img { max-width: 100%; }
 .md-view .code-copy {
   float: right; margin: -8px -8px 0 0; font-size: 11px; color: var(--text-dim); cursor: pointer;
@@ -1091,7 +1116,15 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 
 /* ---------- mermaid 图 ---------- */
-.mermaid-box { position: relative; margin: 10px 0; text-align: center; background: var(--bg-input); border-radius: 6px; padding: 10px; overflow: auto; }
+/* 流程图 = 独立内容块：自己的底色 + 细边 + 圆角 + 上下留白，不再"整块铺满"。
+   底色取 bg-input 与正文底色的中间值 —— 原来是一整块 --code-bg / --bg-input 的深色，
+   面积大就成了页面中间的一个"黑洞"（用户原话："避免出现一个很大的黑洞"）。 */
+.mermaid-box {
+  position: relative; margin: 18px 0; text-align: center;
+  background: color-mix(in srgb, var(--bg-input) 52%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 10px; padding: 18px 16px; overflow: auto; max-width: 100%;
+}
 .mermaid-box svg { max-width: 100%; height: auto; }
 .mermaid-box .mermaid-err { color: var(--red); font-size: 12px; padding: 6px; white-space: pre-wrap; }
 
@@ -1172,13 +1205,13 @@ body { display: flex; flex-direction: column; }
 /* 有背景图时：编辑区背景透明透出图片（工具栏/侧栏/状态栏不受影响） */
 body.has-bg #content { background: transparent; }
 body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, transparent); }
-body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
-body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
+body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
 body.has-bg #viewer > .md-view,
-body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
-body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 88%, transparent); }
+body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transparent); }
 
 /* ---------- 右键菜单 ---------- */
 #ctx-menu {
@@ -1586,6 +1619,10 @@ body.theme-crimson {
   --badge-m-bg: #3a2a20; --badge-m-tx: #e8c97a;
   --badge-a-bg: #21301f; --badge-a-tx: #86c98f;
   --badge-d-bg: #3a2026; --badge-d-tx: #ff8a9b;
+  /* 正文标题用"偏白灰"：本主题的 --text-bright 是粉白 (#f2dce4)，
+     与 accent 混出来的标题是 #f2cfdb（R−G=34）—— 一屏标题全发粉。
+     这里直接给一个中性的暖白（R−G=5），粉红只留给 h3 / 竖线 / 链接这些"少量重点"。 */
+  --md-heading: #f2eef0;
 }
 body.theme-crimson .tb-btn:hover { color: var(--text-bright); }
 body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff; border-color: #e81123; }
@@ -1702,7 +1739,7 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 .editor-code-wrap { flex: 1; min-height: 0; overflow: hidden; }
 .editor-code-wrap .cm-editor { height: 100%; }
 .editor-code-wrap .cm-editor.cm-focused { outline: none; }
-body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+body.has-bg .editor-code-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 /* ---------- Git Blame 注解 gutter（PyCharm Annotate 式） ---------- */
 .cm-blame-gutter {
   white-space: nowrap;
