@@ -1098,7 +1098,6 @@ app.whenReady().then(() => {
       //   收起来（并写进 localStorage），导致下一次运行的 chrome 步骤量到"AI 助手标题高度 0"。
       let origAiOpen = null;
       let origMdMode = null;
-      let origSideSplit = null;
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
@@ -1261,7 +1260,6 @@ app.whenReady().then(() => {
         origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
         origAiOpen = await wc.executeJavaScript('localStorage.getItem("myide-ai-open")');
         origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")');
-        origSideSplit = await wc.executeJavaScript('localStorage.getItem("myide-side-split")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
         await wc.executeJavaScript(
@@ -1281,7 +1279,7 @@ app.whenReady().then(() => {
         // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
         try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
         await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
-        await run('侧栏上下分栏（项目树 + 大纲）', js(steps.sideSplit, demo), 'check-ui-1l-side-split.png');
+        await run('侧栏项目面板（取消上下分栏）', js(steps.sidePanelOnly, demo), 'check-ui-1l-side-panel.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
@@ -1340,7 +1338,7 @@ app.whenReady().then(() => {
         await wc.executeJavaScript(origRecent == null
           ? 'localStorage.removeItem("myide-recent-projects"); true'
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
-        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-side-split', origSideSplit]]) {
+        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode]]) {
           await wc.executeJavaScript(val == null
             ? 'localStorage.removeItem(' + JSON.stringify(key) + '); true'
             : 'localStorage.setItem(' + JSON.stringify(key) + ', ' + JSON.stringify(val) + '); true');

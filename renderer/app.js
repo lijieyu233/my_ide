@@ -211,19 +211,12 @@ const App = (() => {
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
     if (activeTool === 'browser') sidePanel = 'browser';
-    // 「项目」工具窗口 = 上下两栏：项目树（上）+ 大纲 / Structure（下）。
-    // 本 IDE 主要处理 Markdown 与开发文档，文件树与大纲天然是一对；其余工具仍独占侧栏。
-    const splitWithOutline = !sideCollapsed && sidePanel === 'project';
+    // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
+    // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
     for (const t of ['project', 'outline', 'git', 'tasks', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
-      if (!p) continue;
-      const on = !sideCollapsed && (sidePanel === t || (splitWithOutline && t === 'outline'));
-      p.classList.toggle('hidden', !on);
-      p.classList.toggle('side-split-bottom', splitWithOutline && t === 'outline');
+      if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
-    const hsplit = document.getElementById('side-hsplit');
-    if (hsplit) hsplit.classList.toggle('hidden', !splitWithOutline);
-    applySideSplit(splitWithOutline);
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
@@ -234,7 +227,7 @@ const App = (() => {
     if (aiEl) aiEl.classList.toggle('hidden', !aiOpen || rsbCollapsed);
     if (window.AiPanel) AiPanel.syncVisible(aiOpen && !rsbCollapsed);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
-    if (activeTool === 'outline' || splitWithOutline) {
+    if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
     }
     // 任务面板数据来自存储（无 IPC）：切到它时重渲染即可保持最新
@@ -873,8 +866,6 @@ const App = (() => {
   const LAYOUT = {
     sidebar: { def: 340, min: 260, max: 480 },
     ai: { def: 380, min: 320, max: 520 },
-    // 侧栏上下分栏（项目树 / 大纲）的默认占比与范围
-    sideSplit: { def: 0.65, min: 0.2, max: 0.85 },
   };
   const clampSidebar = (px) => Math.min(LAYOUT.sidebar.max, Math.max(LAYOUT.sidebar.min, px));
 
@@ -915,66 +906,6 @@ const App = (() => {
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
-  }
-
-  // ---------- 侧栏上下分栏：项目树（上）+ 大纲（下）----------
-  // 只在「项目」工具窗口激活时启用；比例持久化（拖动窗口宽度后按比例重算 px）。
-  const SIDE_SPLIT_KEY = 'myide-side-split';
-  let sideSplitRatio = LAYOUT.sideSplit.def;
-  const MIN_SPLIT_PANE = 110;   // 上下各自至少留出的高度
-
-  // 上下分栏是否生效（由 renderToolStrip 判断后传入，避免重复判断逻辑）
-  function applySideSplit(visible) {
-    const proj = document.getElementById('panel-project');
-    const sb = document.getElementById('sidebar');
-    if (!proj) return;
-    if (!visible || !sb || !sb.clientHeight) { proj.style.flex = ''; return; }
-    const h = sb.clientHeight;
-    const px = h * sideSplitRatio;
-    const clamped = Math.max(MIN_SPLIT_PANE, Math.min(h - MIN_SPLIT_PANE, px));
-    proj.style.flex = '0 0 ' + Math.round(clamped) + 'px';
-  }
-
-  function initSideSplit() {
-    const hs = document.getElementById('side-hsplit');
-    const sb = document.getElementById('sidebar');
-    if (!hs || !sb) return;
-    try {
-      const v = parseFloat(localStorage.getItem(SIDE_SPLIT_KEY) || '');
-      if (v >= LAYOUT.sideSplit.min && v <= LAYOUT.sideSplit.max) sideSplitRatio = v;
-    } catch {}
-    const ratioFrom = (clientY) => {
-      const r = sb.getBoundingClientRect();
-      const h = sb.clientHeight;
-      if (h < MIN_SPLIT_PANE * 2 + 40) return sideSplitRatio; // 太矮就别拖了，免得两栏都不可用
-      const raw = (clientY - r.top) / h;
-      return Math.max(LAYOUT.sideSplit.min, Math.min(LAYOUT.sideSplit.max, raw));
-    };
-    hs.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      hs.classList.add('dragging');
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:row-resize;';
-      document.body.appendChild(overlay);
-      const onMove = (ev) => { sideSplitRatio = ratioFrom(ev.clientY); applySideSplit(true); };
-      const onUp = () => {
-        overlay.remove();
-        hs.classList.remove('dragging');
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        try { localStorage.setItem(SIDE_SPLIT_KEY, String(sideSplitRatio)); } catch {}
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-    // 双击恢复默认比例（与左右分隔线同样的退路）
-    hs.addEventListener('dblclick', () => {
-      sideSplitRatio = LAYOUT.sideSplit.def;
-      applySideSplit(true);
-      try { localStorage.setItem(SIDE_SPLIT_KEY, String(sideSplitRatio)); } catch {}
-    });
-    // 窗口尺寸变化 → 按比例重算 px（存的是比例不是 px，正是为了这里）
-    window.addEventListener('resize', () => applySideSplit(!hs.classList.contains('hidden')));
   }
 
   // ---------- 初始化 ----------
@@ -1032,7 +963,6 @@ const App = (() => {
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();
     initSidebarResizer();
-    initSideSplit();
     // 项目栏滚轮横向滚动：项目过多时末尾按钮被截断，垂直滚轮直接转横向
     //（仅横向溢出且本次无 deltaX 时拦截，不影响触控板原生横滚）
     const pbar = document.getElementById('project-bar');

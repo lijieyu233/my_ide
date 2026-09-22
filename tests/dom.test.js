@@ -3594,14 +3594,10 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.localStorage.setItem('myide-tool-state:C:/tsA', JSON.stringify({ activeTool: 'outline', sideTool: 'outline' }));
     await g(dom, 'App.setRoot("C:/tsA")');
     await tick(); await tick();
-    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板（独占侧栏）');
-    assert_($(dom, '#side-hsplit').classList.contains('hidden'), '大纲独占时没有上下分隔线');
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板');
     await g(dom, 'App.setRoot("C:/tsB")');
     await tick(); await tick();
-    // 「项目」工具窗口现在是上下分栏：项目树（上）+ 大纲（下）—— 默认状态大纲本来就该在
-    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目B默认 = 项目树 + 下半区大纲');
-    assert_($(dom, '#panel-outline').classList.contains('side-split-bottom'), '大纲处于下半区分栏位置');
-    assert_(!$(dom, '#side-hsplit').classList.contains('hidden'), '上下分隔线出现');
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '项目B默认不显示大纲（项目树独占侧栏）');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目B默认项目面板');
     // B 切到大纲 → A/B 各自记忆互不覆盖
     await g(dom, 'App.switchTool("outline")');
@@ -3632,35 +3628,27 @@ assert_(panel, 'CM6 搜索面板出现');
     } catch {}
   });
 
-  await okAsync('侧栏上下分栏：项目树 + 大纲同屏（可拖拽 / 双击复位 / 比例持久化）', async () => {
+  await okAsync('侧栏「项目」工具窗口只放项目树（上下分栏已取消）', async () => {
     // ⚠ 用 showTool 不用 switchTool：后者是"再点一次收起"的切换语义，
     //    项目面板已激活时会把侧栏整块收起来
     await g(dom, 'App.showTool("project")');
     await tick();
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目树在');
-    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲同屏在');
-    assert_($(dom, '#panel-outline').classList.contains('side-split-bottom'), '大纲标为下半区');
-    assert_(!$(dom, '#side-hsplit').classList.contains('hidden'), '分隔线可见');
-    // 切到别的工具 → 分栏消失，回到"一个面板独占"
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '下面不再挂大纲（分栏已取消）');
+    assert_(!$(dom, '#panel-project').classList.contains('side-split-bottom'), '项目树没有「下半区」标记');
+    assert_(!$(dom, '#side-hsplit'), '上下分隔线元素已彻底移除（DOM 里没有）');
+    // 大纲仍是独立工具窗口：单独打开时独占侧栏（功能没被删掉）
+    await g(dom, 'App.showTool("outline")');
+    await tick();
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲仍可单独打开');
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '大纲独占时项目树让位');
+    // 切到别的工具 → 依然"一个面板独占侧栏"
     await g(dom, 'App.switchTool("git")');
     await tick();
-    assert_($(dom, '#panel-outline').classList.contains('hidden'), '非项目工具时大纲收起');
-    assert_($(dom, '#side-hsplit').classList.contains('hidden'), '非项目工具时分隔线收起');
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 面板独占');
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '非大纲工具时大纲收起');
     await g(dom, 'App.showTool("project")');
     await tick();
-    // 拖拽（jsdom 没有布局，clientHeight=0 → 比例保持；这里只验"不崩 + 写回合法值"）
-    const hs = $(dom, '#side-hsplit');
-    hs.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, clientX: 0, clientY: 100 }));
-    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mousemove', { bubbles: true, clientY: 300 }));
-    dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientY: 300 }));
-    await tick();
-    const saved = parseFloat(dom.window.localStorage.getItem('myide-side-split') || 'NaN');
-    assert_(saved >= 0.2 && saved <= 0.85, '拖拽后写回合法比例, got ' + saved);
-    // 双击恢复默认比例
-    dom.window.localStorage.setItem('myide-side-split', '0.3');
-    hs.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
-    await tick();
-    assert_(dom.window.localStorage.getItem('myide-side-split') === '0.65', '双击恢复默认比例 0.65, got ' + dom.window.localStorage.getItem('myide-side-split'));
   });
 
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {

@@ -2725,17 +2725,6 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 /* 搜索结果的次行（相对路径）在选中态跟着提亮，不再用 rgba(255,255,255) 硬编码 */
 .tree-row.tree-search-row.selected .tree-search-rel { color: var(--text); }
 
-/* ---------- 侧栏上下分栏分隔线（项目树 / 大纲）----------
-   本 IDE 主要处理 Markdown 与开发文档，文件树与大纲天然是一对；
-   同屏比"来回切工具窗口"顺手（PyCharm 把 Structure 做成独立窗口，这里同屏更有用）。 */
-#side-hsplit {
-  height: 4px; flex-shrink: 0; cursor: row-resize;
-  background: var(--border); z-index: 6;
-}
-#side-hsplit:hover, #side-hsplit.dragging { background: var(--accent); }
-/* 下半区（大纲）加一条细上边线，与上半区在视觉上分开 */
-#panel-outline.side-split-bottom { border-top: 1px solid var(--border-pane); }
-
 /* 项目菜单里的项目项：名字占满宽度，✕ 平时透明、hover 才显示
    （平铺胶囊撤掉后，关闭项目的能力收进菜单） */
 .ctx-item.proj-item { display: flex; align-items: center; gap: 8px; }

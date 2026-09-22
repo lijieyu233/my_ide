@@ -388,65 +388,36 @@ module.exports = {
     return { R };
   },
 
-  // ---------- 侧栏上下分栏（项目树 + 大纲）：真实几何，jsdom 测不了 ----------
-  sideSplit: async (dir) => {
+  // ---------- 侧栏面板：项目工具窗口只放项目树（不做上下分栏）----------
+  // 曾经在项目树下面挂过「大纲 / Structure」下半区；用户要求去掉。大纲仍是独立工具窗口。
+  sidePanelOnly: async (dir) => {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
     const q = (s) => document.querySelector(s);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const hOf = (sel) => Math.round(q(sel).getBoundingClientRect().height);
+
     window.App.showTool('project');
     await sleep(700);
-    const sb = q('#sidebar');
-    const proj = q('#panel-project');
-    const ol = q('#panel-outline');
-    const hs = q('#side-hsplit');
-    add('项目树与大纲同屏（项目工具窗口 = 上下两栏）',
-      !!proj && !!ol && !proj.classList.contains('hidden') && !ol.classList.contains('hidden'));
-    add('上下分隔线可见', !!hs && !hs.classList.contains('hidden'));
+    add('项目工具窗口 = 只有项目树（下面不再挂大纲）',
+      !q('#panel-project').classList.contains('hidden') && q('#panel-outline').classList.contains('hidden'),
+      '项目树=' + !q('#panel-project').classList.contains('hidden')
+        + ' 大纲=' + !q('#panel-outline').classList.contains('hidden'));
+    add('上下分隔线已彻底移除（DOM 里没有 #side-hsplit）', !q('#side-hsplit'));
+    add('项目树独占整栏（不是上面半截）',
+      Math.abs(hOf('#panel-project') - hOf('#sidebar')) <= 2,
+      hOf('#panel-project') + ' vs ' + hOf('#sidebar'));
 
-    const sbR = sb.getBoundingClientRect();
-    const pR = proj.getBoundingClientRect();
-    const oR = ol.getBoundingClientRect();
-    const hR = hs.getBoundingClientRect();
-    add('两栏 + 分隔线正好填满侧栏（没有留下空隙）',
-      Math.abs((pR.height + hR.height + oR.height) - sbR.height) <= 4,
-      [Math.round(pR.height), Math.round(hR.height), Math.round(oR.height)].join(' + ')
-        + ' = ' + Math.round(pR.height + hR.height + oR.height) + ' vs ' + Math.round(sbR.height));
-    add('默认上半区占 65% 左右', Math.abs(pR.height / sbR.height - 0.65) <= 0.05,
-      (pR.height / sbR.height * 100).toFixed(0) + '%');
-    add('两栏都够高（各自 ≥ 110px，不出现"一栏被压没"）', pR.height >= 110 && oR.height >= 110,
-      Math.round(pR.height) + ' / ' + Math.round(oR.height));
-    add('项目树在上、大纲在下', pR.top < oR.top);
+    // 大纲没被删掉：它仍是独立工具窗口，单独打开时独占整栏
+    window.App.showTool('outline');
+    await sleep(700);
+    const olTxt = (q('#outline') ? q('#outline').textContent : '').trim();
+    add('大纲仍是独立工具窗口（从左侧工具条可打开，功能没被删）',
+      !q('#panel-outline').classList.contains('hidden') && q('#panel-project').classList.contains('hidden'));
+    add('大纲独占整栏', Math.abs(hOf('#panel-outline') - hOf('#sidebar')) <= 2,
+      hOf('#panel-outline') + ' vs ' + hOf('#sidebar'));
+    add('大纲有内容（当前文档的标题）', olTxt.length > 0, olTxt.slice(0, 40) || '(空)');
 
-    // 拖动分隔线 → 比例变化 + 持久化
-    const before = pR.height;
-    const y = Math.round(sbR.top + sbR.height * 0.35);
-    hs.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 120, clientY: Math.round(hR.top + 2) }));
-    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 120, clientY: y }));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 120, clientY: y }));
-    await sleep(250);
-    const after = q('#panel-project').getBoundingClientRect().height;
-    add('拖动分隔线改变上下比例', Math.abs(after - before) > 20, Math.round(before) + ' → ' + Math.round(after));
-    const ratio = parseFloat(localStorage.getItem('myide-side-split') || 'NaN');
-    add('比例写回 localStorage', ratio >= 0.2 && ratio <= 0.85, 'ratio=' + ratio);
-
-    // 双击恢复默认
-    hs.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    await sleep(300);
-    const back = q('#panel-project').getBoundingClientRect().height;
-    add('双击恢复默认比例 65%', Math.abs(back / sbR.height - 0.65) <= 0.05,
-      (back / sbR.height * 100).toFixed(0) + '%');
-    add('存的是比值不是 px（改侧栏宽度 / 窗口大小后仍然成立）',
-      localStorage.getItem('myide-side-split') === '0.65', localStorage.getItem('myide-side-split'));
-
-    // 切走 → 分栏收起（回到"一个面板独占侧栏"）
-    window.App.showTool('git');
-    await sleep(600);
-    add('非项目工具时不用分栏（大纲收起、分隔线隐藏）',
-      q('#panel-outline').classList.contains('hidden') && q('#side-hsplit').classList.contains('hidden'));
-    add('非项目工具时单面板独占整栏',
-      Math.abs(q('#panel-git').getBoundingClientRect().height - q('#sidebar').getBoundingClientRect().height) <= 2,
-      Math.round(q('#panel-git').getBoundingClientRect().height) + ' vs ' + Math.round(q('#sidebar').getBoundingClientRect().height));
     window.App.showTool('project');
     await sleep(500);
     return { R };
