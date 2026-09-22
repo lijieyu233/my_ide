@@ -148,6 +148,25 @@ const Viewer = (() => {
     renderView();
   }
 
+  // 标签页上的文件类型图标（小尺寸用线条 SVG，比 emoji 尺寸稳定）
+  const FT_IC = {
+    md: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1.6"/><path d="M4.8 10.4V6.2l1.8 2.2 1.8-2.2v4.2M10.6 6.2v4.2h1.4"/></svg>',
+    code: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 4.6L2.4 8l3.2 3.4M10.4 4.6L13.6 8l-3.2 3.4"/></svg>',
+    json: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.6c-1.4 0-1.8.7-1.8 1.6v1.7c0 .9-.5 1.3-1.3 1.5.8.2 1.3.6 1.3 1.5v1.7c0 .9.4 1.6 1.8 1.6M9.8 2.6c1.4 0 1.8.7 1.8 1.6v1.7c0 .9.5 1.3 1.3 1.5-.8.2-1.3.6-1.3 1.5v1.7c0 .9-.4 1.6-1.8 1.6"/></svg>',
+    img: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.5"/><circle cx="5.8" cy="6.4" r="1.1"/><path d="M3 11.4l3.2-3 2.4 2.2 1.8-1.6 2.4 2.4"/></svg>',
+    csv: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1.4"/><path d="M2.4 6.4h11.2M6.6 6.4V13"/></svg>',
+    file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
+  };
+  function ftIcon(name) {
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    if (['md', 'markdown'].includes(ext)) return FT_IC.md;
+    if (ext === 'json') return FT_IC.json;
+    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(ext)) return FT_IC.img;
+    if (['csv', 'xlsx', 'xls'].includes(ext)) return FT_IC.csv;
+    if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'css', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'sh'].includes(ext)) return FT_IC.code;
+    return FT_IC.file;
+  }
+
   // 编辑器工具条图标（内联 SVG）。
   // 原来用 '⧉' '◉' '⌖' 这类字符 —— Windows 默认字体没有这些字形，fallback 之后
   // 会变成完全不相干的符号（用户看到的「+ 定位」就是 '⌖' 掉字形后的样子）。
@@ -165,9 +184,14 @@ const Viewer = (() => {
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
       el.className = 'tab' + (i === active ? ' active' : '');
+      const ti = document.createElement('span');
+      ti.className = 'tic';
+      ti.innerHTML = ftIcon(t.name);
+      el.appendChild(ti);
       const nm = document.createElement('span');
       nm.className = 'tname';
-      nm.textContent = (t.dirty ? '● ' : '') + t.name;
+      // 中段省略：保住编号前缀与扩展名（末尾省略会让一排 tab 全长得一样）
+      nm.textContent = (t.dirty ? '● ' : '') + (window.App && App.fitName ? App.fitName(t.name, 17) : t.name);
       el.appendChild(nm);
       const x = document.createElement('span');
       x.className = 'tclose';
@@ -208,6 +232,16 @@ const Viewer = (() => {
         menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 300) + 'px';
       };
       tabbar.appendChild(all);
+    }
+    // 「定位」放标签栏右端（属于文件操作，跟标签在一起更顺手）
+    const cur = tabs[active];
+    if (cur) {
+      const loc = document.createElement('button');
+      loc.className = 'tab-locate';
+      loc.innerHTML = ACT_IC.locate;
+      loc.title = '在资源管理器中显示：' + cur.path;
+      loc.onclick = (e) => { e.stopPropagation(); window.myIDE.shell.showInFolder(cur.path); };
+      tabbar.appendChild(loc);
     }
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
@@ -301,22 +335,10 @@ const Viewer = (() => {
     const toolbar = document.createElement('div');
     toolbar.className = 'viewer-toolbar';
 
-    const p = document.createElement('span');
-    p.className = 'vt-path';
-    // 显示相对项目根的路径：绝对路径又长又总被截断，而项目名在顶部栏 / 侧栏树根已经写过几遍，
-    // 同一条路径在界面上出现三次没有任何信息增量。完整路径仍在 title 和「复制路径」里。
-    const projRoot = (window.App && App.root) || '';
-    p.textContent = (projRoot && tab.path.startsWith(projRoot))
-      ? tab.path.slice(projRoot.length).replace(/^[\\/]+/, '') : tab.path;
-    p.title = tab.path;
-    toolbar.appendChild(p);
+    // 路径不在这里显示：文件名已经在上面的标签页上，完整路径在标签的 title 与树里都有。
+    // 一整行只为摆一个路径字符串，纯占地方（用户原话：「这里的路径也没有显示必要」）。
 
-    const btnCopy = document.createElement('button');
-    btnCopy.className = 'vt-btn';
-    btnCopy.innerHTML = ACT_IC.copy + '复制路径';
-    btnCopy.title = '复制完整路径';
-    btnCopy.onclick = () => { MI.copyText(tab.path); MI.toast('已复制完整路径', 'ok'); };
-    toolbar.appendChild(btnCopy);
+    // 「复制路径」按钮撤掉：Ctrl+Shift+C 快捷键与树的右键菜单都有，工具栏里再摆一个是冗余
 
     // Markdown：分段模式切换（实时预览 / 分屏 / 源码 / 预览）
     if (isMarkdown && !tab.binary && !tab.tooLarge) {
@@ -362,12 +384,8 @@ const Viewer = (() => {
       toolbar.appendChild(btnBack);
     }
 
-    const btnShow = document.createElement('button');
-    btnShow.className = 'vt-btn';
-    btnShow.innerHTML = ACT_IC.locate + '定位';
-    btnShow.title = '在资源管理器中显示';
-    btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
-    toolbar.appendChild(btnShow);
+    // 「定位」按钮由 renderTabs() 统一挂在标签栏右端（renderTabs 每次会清空 tabbar，
+    // 在这里挂会被清掉，而且会挂出两个来）
 
     // HTML：内置浏览器 / 系统默认浏览器打开
     if (/\.(html|htm)$/i.test(tab.name)) {
@@ -391,7 +409,8 @@ const Viewer = (() => {
 
     // 注：已全面自动保存（停止输入 3 秒写盘 + 切换/关闭静默保存），不再提供手动保存按钮
 
-    viewer.appendChild(toolbar);
+    // 工具条只在真有按钮时占一行（路径与「复制路径」都撤了，非 Markdown / 非网页文件这里是空的）
+    if (toolbar.children.length) viewer.appendChild(toolbar);
 
     // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）
     if (window.App) App.updateStatusbar({

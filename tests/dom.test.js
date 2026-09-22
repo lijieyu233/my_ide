@@ -1122,8 +1122,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const img = $(dom, '.img-view img');
     assert_(img, 'img 元素出现');
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
-    const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
+    // 工具条现在只在真有按钮时才渲染（路径与「复制路径」都撤了）——图片这类文件整行都不出现，
+    // 所以「没有源码按钮」要把「工具条不存在」也算通过
+    const tl = $(dom, '.viewer-toolbar');
+    const hasSrc = tl ? $allIn(tl, 'button').some((x) => x.textContent.includes('源码')) : false;
     assert_(!hasSrc, '图片无「查看源码」按钮');
+    assert_(!tl || !$(dom, '.viewer-toolbar .vt-path'), '图片页没有多余的路径行（工具条整行不渲染）');
   });
 
   await okAsync('回归：先切大纲面板再打开 md → 大纲有内容', async () => {
@@ -6735,6 +6739,31 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
+  });
+
+  await okAsync('文件名中段省略 + 标签页类型图标（一排 tab 不再长得一样）', async () => {
+    // 这些文档名（开发文档-060-界面信息层整治-…md）辨识信息在两头：
+    // 编号前缀 + 扩展名。CSS 的末尾省略会把唯一的区分点全砍掉 → 一排 tab 一模一样。
+    const fn = (n, m) => g(dom, 'App.fitName(' + JSON.stringify(n) + ',' + m + ')');
+    const long = '开发文档-060-界面信息层整治-状态栏图标与路径.md';
+    const out = await fn(long, 17);
+    assert_(out !== long && out.length < long.length, '超长名字被截短: ' + out);
+    assert_(out.indexOf('开发文档-06') === 0, '保住了编号前缀（真正的区分点）: ' + out);
+    assert_(out.slice(-3) === '.md', '保住了扩展名: ' + out);
+    assert_(out.indexOf('…') > 0, '用省略号标示中段被截: ' + out);
+    assert_((await fn('notes.txt', 40)) === 'notes.txt', '短名字原样返回');
+    assert_((await fn('a-very-long-english-file-name-here.md', 17)).slice(-3) === '.md', '英文长名同样保留扩展名');
+    // 标签页：左边有类型图标
+    FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(!!$(dom, '.tab.active .tic svg'), '标签页左侧有文件类型图标（SVG，不是 emoji）');
+    assert_($allIn($(dom, '.tab.active'), '.tname').length === 1, '标签页仍有名字节点');
+    // 工具条：不再摆路径
+    const tl = $(dom, '.viewer-toolbar');
+    assert_(!tl || !$(dom, '.viewer-toolbar .vt-path'), '工具条里不再摆路径');
+    await g(dom, 'Viewer.closeAll()');
+    await tick();
   });
 
   console.log('');

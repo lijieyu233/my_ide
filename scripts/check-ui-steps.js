@@ -275,6 +275,12 @@ module.exports = {
     await sleep(300);
     add('放大后容器可滚动（可上下滑动看画面）', stageEl.scrollHeight > stageEl.clientHeight + 1 || stageEl.scrollWidth > stageEl.clientWidth + 1,
       'scroll=' + stageEl.scrollWidth + 'x' + stageEl.scrollHeight + ' client=' + stageEl.clientWidth + 'x' + stageEl.clientHeight);
+    // 编辑器工具条只在真有按钮时占一行：路径与「复制路径」都撤了，图片这类文件整行都不出现
+    add('图片文件不再有那一行工具条（路径已撤 → 整行隐藏）', !q('.viewer-toolbar'),
+      q('.viewer-toolbar') ? '仍有工具条' : '整行隐藏 ✓');
+    add('标签页左侧有文件类型图标（SVG，不是 emoji）', !!q('.tab.active .tic svg'));
+    add('标签栏右端「在资源管理器显示」只有 1 个', document.querySelectorAll('.tab-locate').length === 1,
+      document.querySelectorAll('.tab-locate').length + ' 个');
     // 交给主进程发真实滚轮事件（合成事件不会触发原生滚动，只有真实输入才能验证）
     const sr = stageEl.getBoundingClientRect();
     return { R, hover: { x: Math.round(sr.left + sr.width / 2), y: Math.round(sr.top + sr.height / 2) }, wheel: { deltaY: 400 } };

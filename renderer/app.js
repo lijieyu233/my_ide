@@ -303,6 +303,29 @@ const App = (() => {
 
   // ---------- 状态栏（合并式更新：各模块只更新自己负责的字段）----------
   let sbState = {};
+  // 文件名「中段省略」：按显示宽度算（中文 2 / 半角 1），保留头部 + 扩展名。
+  // 为什么不用 CSS 的末尾省略：像「开发文档-060-界面信息层整治-状态栏图标与路径.md」这类名字，
+  // 辨识信息在**两头**（编号前缀 + 扩展名），末尾省略会把 060/059/057 这些唯一区分点全砍掉 ——
+  // 一排 tab / 一列树全长得一模一样，这才是"看着乱"的真正原因。
+  function fitName(name, max) {
+    const s = String(name || '');
+    const cw = (ch) => (ch.charCodeAt(0) > 0x2e80 ? 2 : 1);
+    const dw = (x) => { let n = 0; for (const ch of x) n += cw(ch); return n; };
+    if (dw(s) <= max) return s;
+    const dot = s.lastIndexOf('.');
+    const hasExt = dot > 0 && s.length - dot <= 9;      // .md / .markdown / .json
+    const ext = hasExt ? s.slice(dot) : '';
+    const body = hasExt ? s.slice(0, dot) : s;
+    const room = Math.max(4, max - dw(ext) - 1);        // 1 = 省略号
+    let out = '', used = 0;
+    for (const ch of body) {
+      const w = cw(ch);
+      if (used + w > room) break;
+      out += ch; used += w;
+    }
+    return out + '…' + ext;
+  }
+
   // 下拉箭头（内联 SVG）：'▾' 在部分字体下也不稳，统一走 SVG
   const CARET_DOWN = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
 
@@ -880,6 +903,7 @@ const App = (() => {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
     switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip,
     get root() { return root; },
+    fitName,
     get gitRefreshDelay() { return gitRefreshDelay; },
     set gitRefreshDelay(v) { gitRefreshDelay = v; },
   };
