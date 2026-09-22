@@ -153,7 +153,9 @@
   <div id="sidebar-resizer" title="拖动调整目录区宽度"></div>
   <div id="content">
     <div id="bg-layer" aria-hidden="true"></div>
-    <div id="tabbar"></div>
+    <!-- 标签栏 = 左「可滚动标签区」+ 右「操作区（模式切换 / 定位）」。
+         拆开的原因：整条一起横向滚动的话，文件一多模式按钮就被推出视野看不见了 -->
+    <div id="tabbar"><div id="tab-scroll"></div><div id="tab-actions"></div></div>
     <div id="viewer"></div>
     <div id="empty-state">
       <div class="empty-card">

@@ -374,7 +374,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
     // md 默认 live（CM6），先切「◉ 预览」再断言渲染
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(md, '存在 md-view');
@@ -382,7 +382,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(md.querySelector('strong') && md.querySelector('strong').textContent === 'Markdown', '加粗渲染');
     assert_(md.querySelector('pre code'), '代码块渲染');
     // 切回实时预览，保持后续用例默认态
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
   });
 
@@ -397,13 +397,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '编辑后标脏');
     // 切纯预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(!$(dom, '.editor-cm-wrap'), '纯预览无实时预览容器');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
     // 预览里切回实时预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
     assert_($(dom, '.editor-cm-wrap'), '切回实时预览');
     assert_($(dom, '.editor-cm-wrap .cm-content').textContent.includes('改过的标题'), '切回后内容保留');
@@ -1122,12 +1122,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const img = $(dom, '.img-view img');
     assert_(img, 'img 元素出现');
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
-    // 工具条现在只在真有按钮时才渲染（路径与「复制路径」都撤了）——图片这类文件整行都不出现，
-    // 所以「没有源码按钮」要把「工具条不存在」也算通过
-    const tl = $(dom, '.viewer-toolbar');
-    const hasSrc = tl ? $allIn(tl, 'button').some((x) => x.textContent.includes('源码')) : false;
+    // 编辑器操作区现在挂在标签栏右端（#tab-actions）：图片这类文件除了「定位」不该有别的按钮
+    const acts = $(dom, '#tab-actions');
+    const hasSrc = acts ? $allIn(acts, 'button').some((x) => x.textContent.includes('源码')) : false;
     assert_(!hasSrc, '图片无「查看源码」按钮');
-    assert_(!tl || !$(dom, '.viewer-toolbar .vt-path'), '图片页没有多余的路径行（工具条整行不渲染）');
+    assert_(!$(dom, '#tab-actions .vt-path'), '不再有路径行');
+    assert_(!$(dom, '#tab-actions .vt-btn'), '图片文件在标签栏右端没有视图按钮（只剩「定位」）');
   });
 
   await okAsync('回归：先切大纲面板再打开 md → 大纲有内容', async () => {
@@ -3077,7 +3077,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '分屏'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '分屏'));
     await tick();
     assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
@@ -3087,7 +3087,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
     const md = $(dom, '.md-split-preview .md-view');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '源码'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '源码'));
     await tick();
     assert_(!$(dom, '.md-split'), '切源码后无分屏');
     assert_($(dom, '.editor-cm-wrap .cm-editor'), '源码模式有 CM 编辑器');
@@ -3098,7 +3098,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/link.md")');
     await tick(); await tick();
     // live（CM6）无 .md-view，切「◉ 预览」后断言渲染链接
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     const links = $allIn(md, 'a');
@@ -3308,7 +3308,7 @@ assert_(panel, 'CM6 搜索面板出现');
     calls.openExternal = [];
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
-    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('浏览器打开'));
+    const btn = $allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('浏览器打开'));
     assert_(btn, '浏览器打开按钮存在');
     click(btn);
     await tick();
@@ -3457,7 +3457,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('HTML 内置浏览器打开按钮', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
-    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('内置浏览器'));
+    const btn = $allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('内置浏览器'));
     assert_(btn, '内置浏览器按钮存在');
     calls.viewOpen = [];
     click(btn);
@@ -3544,7 +3544,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     // 切到「◉ 预览」
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.trim() === '预览'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     assert_($(dom, '.md-view'), '切到预览模式');
     // 打开另一个 md → 应保持预览模式（不重置回 live）
@@ -6762,9 +6762,27 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_(!!$(dom, '.tab.active .tic svg'), '标签页左侧有文件类型图标（SVG，不是 emoji）');
     assert_($allIn($(dom, '.tab.active'), '.tname').length === 1, '标签页仍有名字节点');
-    // 工具条：不再摆路径
-    const tl = $(dom, '.viewer-toolbar');
-    assert_(!tl || !$(dom, '.viewer-toolbar .vt-path'), '工具条里不再摆路径');
+    // 编辑器操作区：不再摆路径
+    assert_(!$(dom, '#tab-actions .vt-path'), '编辑器操作区里不再摆路径');
+    await g(dom, 'Viewer.closeAll()');
+    await tick();
+  });
+
+  // ---------- 整体视觉：chrome 只留 3 行 + 三个标题行等高 + 明度阶梯 ----------
+  await okAsync('整体视觉：编辑区不再有独立工具条行，操作区跟着标签栏', async () => {
+    FAKE_FS[P + '/note.md'] = { content: '# 标题' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    // 原结构：标签栏一行 + 编辑器工具条一行（左边 500px 全空，只为右侧摆 4 个按钮）
+    assert_(!$(dom, '.viewer-toolbar'), '编辑器不再有独立的工具条行');
+    assert_($(dom, '#tabbar'), '标签栏还在');
+    // 模式切换按钮必须挂在「不随标签滚动」的操作区里，否则文件一多就被推出视野
+    const seg = $(dom, '#tab-actions .md-mode-seg');
+    assert_(seg, 'Markdown 模式切换挂到了标签栏右端操作区');
+    assert_($(dom, '#tab-actions').parentElement.id === 'tabbar', '操作区与标签滚动区是兄弟节点');
+    assert_(!!$(dom, '#tab-scroll .tab'), '标签本体在可滚动区里');
+    assert_(!!$(dom, '#tab-actions .tab-locate'), '「定位」也在操作区（只有 1 个）');
+    assert_($allIn($(dom, '#tab-actions'), '.tab-locate').length === 1, '「定位」不重复');
     await g(dom, 'Viewer.closeAll()');
     await tick();
   });

@@ -1,7 +1,16 @@
 :root {
-  --bg: #1e1e1e;            /* 编辑器背景（纯深黑，不泛白） */
-  --bg-panel: #191919;      /* 侧边栏 */
-  --bg-tabbar: #141414;
+  /* ---- 明度阶梯（整体视觉的主心骨）----
+     内容最亮、越靠外越暗，共四档；相邻至少 3 级、内容与工具窗口差 10 级，
+     分层靠「明度」而不是靠 1px 黑线画格子（原来 191919/1e1e1e 只差 5 级，肉眼分不出）。
+        --bg       内容画布（编辑器 / 预览）        #212121
+        --bg-tabbar 编辑器标签栏（贴内容，略暗）     #1a1a1a
+        --bg-panel 工具窗口（侧栏 / AI 助手 / 底部） #171717
+        --bg-title 最外层 chrome（顶栏 / 工具条 / 状态栏） #121212 */
+  --bg: #212121;            /* 编辑器背景 */
+  --bg-panel: #171717;      /* 工具窗口 */
+  --bg-tabbar: #1a1a1a;     /* 编辑器标签栏 */
+  --bg-title: #121212;      /* 最外层 chrome（顶栏 / 左侧工具条 / 状态栏） */
+  --head-h: 30px;           /* 各面板标题行统一高度：侧栏标题 / 标签栏 / AI 助手标题 */
   --bg-hover: #2a2a2a;
   --bg-selected: #2d4f6b;
   --bg-input: #232323;
@@ -58,7 +67,7 @@ body {
 #toolbar {
   display: flex; align-items: center; gap: 8px;
   height: 38px; padding: 0 10px;
-  background: var(--bg-panel); border-bottom: 1px solid var(--border-pane);
+  background: var(--bg-title); border-bottom: 1px solid var(--border-pane);
   flex-shrink: 0;
   -webkit-app-region: drag;
   user-select: none;
@@ -158,7 +167,7 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 /* 工具窗口条（PyCharm 式左侧竖排按钮） */
 #tool-strip {
   width: 38px; flex-shrink: 0;
-  background: var(--bg-panel);
+  background: var(--bg-title);
   border-right: 1px solid var(--border-pane);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
@@ -179,10 +188,8 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 #tool-sidebar.collapsed svg.ic, #tool-sidebar-r.collapsed svg.ic { transform: rotate(180deg); }
 .tool-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
 .tool-btn.active { background: var(--bg); color: var(--accent); border-left-color: var(--accent); }
-.tool-btn.active::after {
-  content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 2px;
-  background: var(--accent);
-}
+/* 选中态只留左侧 accent 竖条（上面 .tool-btn.active 的 border-left）。
+   原来左右各有一条 accent 竖线 —— 同一个按钮两个选中指示，是噪音。 */
 
 #sidebar {
   width: 280px; min-width: 160px; max-width: 560px;
@@ -203,7 +210,7 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 /* 右侧工具窗口条（镜像左侧：AI 助手等右侧停靠工具） */
 #tool-strip-right {
   width: 38px; flex-shrink: 0;
-  background: var(--bg-panel);
+  background: var(--bg-title);
   border-left: 1px solid var(--border-pane);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
@@ -298,16 +305,31 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 
 /* ---------- 内容区 ---------- */
 #content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; z-index: 0; }
-#tabbar { display: flex; background: var(--bg-tabbar); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
+#tabbar {
+  display: flex; align-items: stretch; flex-shrink: 0;
+  height: var(--head-h);
+  background: var(--bg-tabbar); border-bottom: 1px solid var(--border);
+}
+/* 标签横向滚动区（文件多时只滚标签，右端操作区不动） */
+#tab-scroll { flex: 1; min-width: 0; display: flex; overflow-x: auto; }
+/* 编辑器操作区：Markdown 模式切换 / 查看源码 / 内置浏览器 +「定位」 */
+#tab-actions {
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+  padding: 0 8px; border-left: 1px solid var(--border);
+}
+#tab-actions:empty { display: none; }
+#tab-actions .md-mode-seg, #tab-actions .ed-actions { display: flex; align-items: center; gap: 4px; }
 .tab {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px; font-size: 12px; color: var(--text-dim);
+  padding: 0 10px; font-size: 12px; color: var(--text-dim);
   border-right: 1px solid var(--border); cursor: default;
+  height: 100%; box-sizing: border-box;
   /* 统一宽度：宽度跟着文件名走的话，一排 tab 参差不齐，看着就"乱" */
   flex: 0 0 164px; min-width: 0; white-space: nowrap;
 }
 .tab-all {
-  flex-shrink: 0; margin-left: auto; padding: 6px 12px; font-size: 12px;
+  flex-shrink: 0; margin-left: auto; padding: 0 12px; font-size: 12px;
+  display: flex; align-items: center;
   color: var(--text-dim); cursor: pointer; border-left: 1px solid var(--border);
   position: sticky; right: 0; background: var(--bg-tabbar);
 }
@@ -321,7 +343,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 标签栏右端：全部标签下拉 + 在资源管理器中显示 */
 .tab-all { margin-left: auto; }
 .tab-locate {
-  flex-shrink: 0; align-self: center; margin-left: auto; margin-right: 8px;
+  flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0;
   background: transparent; color: var(--text-dim);
@@ -333,11 +355,10 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 当前标签常驻关闭按钮：想关的多半就是眼前这个，不该非得先把鼠标移上去 */
 .tab.active .tclose { visibility: visible; }
 .tab .tclose:hover { color: var(--red); }
-.tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid var(--accent); padding-top: 4px; }
+.tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid var(--accent); }
 .tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
-#viewer > .viewer-toolbar { flex-shrink: 0; }
 #viewer > .md-view { flex: 1; overflow: auto; max-width: none; } /* 预览占满右侧全部宽度 */
 .editor-wrap { flex: 1; display: flex; min-height: 0; } /* 不限 #viewer 直接子级：分屏内同样生效 */
 .editor-wrap .editor-gutter {
@@ -466,14 +487,6 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .empty-more:hover { color: var(--accent); }
 
 /* ---------- 查看器 ---------- */
-.viewer-toolbar {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-bottom: 1px solid var(--border);
-  background: var(--bg-panel); font-size: 12px; flex-shrink: 0;
-  /* 路径撤掉后按钮靠右排 —— 左边空着比"摆个没人看的路径"干净 */
-  justify-content: flex-end;
-}
-.viewer-toolbar .vt-path { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .vt-btn {
   background: transparent; color: var(--text-dim); border: 1px solid var(--btn-border);
   border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
@@ -483,7 +496,6 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .vt-btn:hover .ic, .vt-btn.active .ic { opacity: 1; }
 .vt-btn:hover { color: var(--text-bright); background: var(--btn-hover); }
 .vt-btn.active { color: var(--accent); border-color: var(--accent); }
-.viewer-toolbar .vt-save { color: var(--green); }
 /* 目录树三态隐藏视角按钮：文字 + 颜色双标识当前视角 */
 .hide-mode-btn { min-width: 40px; text-align: center; font-weight: 600; }
 .hide-mode-btn.hm-normal { color: var(--text-dim); }
@@ -653,7 +665,8 @@ textarea.editor {
   min-height: 0;
 }
 .panel-title {
-  padding: 7px 12px; font-size: .92em; font-weight: 600; color: var(--text-bright);
+  height: var(--head-h); box-sizing: border-box;
+  padding: 0 12px; font-size: .92em; font-weight: 600; color: var(--text-bright);
   border-bottom: 1px solid var(--border); flex-shrink: 0;
   background: var(--bg-panel);
   display: flex; align-items: center; gap: 6px;
@@ -1089,7 +1102,7 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
   height: 22px; flex-shrink: 0;
   display: flex; align-items: center;
   padding: 0 10px; font-size: 11px; color: var(--text-dim);
-  background: var(--bg-panel); border-top: 1px solid var(--border-pane);
+  background: var(--bg-title); border-top: 1px solid var(--border-pane);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 #sb-info { cursor: default; }
@@ -1143,7 +1156,6 @@ body { display: flex; flex-direction: column; }
 /* 有背景图时：编辑区背景透明透出图片（工具栏/侧栏/状态栏不受影响） */
 body.has-bg #content { background: transparent; }
 body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, transparent); }
-body.has-bg .viewer-toolbar { background: color-mix(in srgb, var(--bg-panel) 86%, transparent); }
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
 body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 80%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
@@ -1413,6 +1425,7 @@ body.theme-light {
   --bg: #ffffff;
   --bg-panel: #ececec;
   --bg-tabbar: #e7e7e7;
+  --bg-title: #dedede;      /* 浅色主题同样「越靠外越暗」 */
   --bg-hover: #ddeeff;
   --bg-selected: #c9e2f7;
   --bg-input: #ffffff;
@@ -1447,6 +1460,7 @@ body.theme-pink {
   --bg: #fff5f8;
   --bg-panel: #ffe9f1;
   --bg-tabbar: #ffdfea;
+  --bg-title: #f7d3e2;
   --bg-hover: #ffd6e8;
   --bg-selected: #ffb7d5;
   --bg-input: #fffafc;
@@ -1482,6 +1496,7 @@ body.theme-crimson {
   --bg: #201318;
   --bg-panel: #26161d;
   --bg-tabbar: #1c1015;
+  --bg-title: #151014;
   --bg-hover: #3a2330;
   --bg-selected: #6e3a52;
   --bg-input: #2d1a22;
@@ -1811,7 +1826,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #ai-resize:hover { background: var(--accent); }
 .ai-head {
   flex-shrink: 0; display: flex; align-items: center;
-  padding: 6px 10px; font-size: 0.92em; color: var(--text-dim);
+  height: var(--head-h); box-sizing: border-box;
+  padding: 0 10px; font-size: 0.92em; color: var(--text-dim);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: no-drag;
 }

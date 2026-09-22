@@ -81,6 +81,70 @@ module.exports = {
     const sbBorder = getComputedStyle(q('#statusbar')).borderTopColor;
     add('主分界线不再是近黑（--border-pane 生效）', sbBorder !== 'rgb(16, 16, 16)',
       getComputedStyle(document.documentElement).getPropertyValue('--border-pane').trim() + ' → ' + sbBorder);
+
+    // ---------- 整体视觉的「结构」层面（不是某个图标，是分层的骨架） ----------
+    // ① 顶栏以下只该有「标签栏 → 内容」两段。原来还夹了一条编辑器工具条
+    //    （左边 500px 全空、只为右侧摆 4 个小按钮），chrome 一共占掉 99px。
+    add('编辑区没有独立的工具条行（chrome 4 行 → 3 行）', !q('.viewer-toolbar'),
+      q('.viewer-toolbar') ? '仍有独立工具条行' : '无 ✓');
+    // ② 标题行等高 —— 原来侧栏 32 / 标签栏 28 / AI 助手 30 三种，交界处的底线对不齐。
+    //    AI 面板在这一步可能收着（高度 0），三处齐平留到 aiAssistant 步骤测。
+    const hOf = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
+    const visTitle = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);
+    const hs = [hOf('#tabbar'), visTitle ? Math.round(visTitle.getBoundingClientRect().height) : -1];
+    add('侧栏标题与标签栏等高（三处齐平在 AI 面板展开时测）', hs.every((x) => x > 0) && new Set(hs).size === 1, hs.join(' / '));
+    // ③ 明度阶梯：内容最亮、越靠外越暗。分层该靠明度而不是 1px 黑线画格子
+    const L = (v) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(v).trim().slice(1, 3), 16);
+    const lv = { bg: L('--bg'), tabbar: L('--bg-tabbar'), panel: L('--bg-panel'), title: L('--bg-title') };
+    add('明度阶梯 内容 > 标签栏 > 工具窗口 > 外框',
+      lv.bg > lv.tabbar && lv.tabbar > lv.panel && lv.panel > lv.title,
+      lv.bg + ' > ' + lv.tabbar + ' > ' + lv.panel + ' > ' + lv.title);
+    const gap = Math.abs(lv.bg - lv.panel);
+    add('内容 ↔ 工具窗口明度差 ≥ 8 级（原来只有 5 级，肉眼分不出）', gap >= 8, gap + ' 级');
+    // ② 跨主题的两个不变量：内容比标签栏亮（选中标签能"并进"内容）、
+    //    外框比工具窗口暗（最外层退到最后）。浅色/粉色主题是同一套关系，方向一致。
+    const lum = (hex) => { const v = parseInt(hex.slice(1), 16); return ((v >> 16 & 255) + (v >> 8 & 255) + (v & 255)) / 3; };
+    const raw = {};
+    ['--bg', '--bg-tabbar', '--bg-panel', '--bg-title'].forEach((k) => {
+      const mm = getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+      raw[k] = mm.startsWith('#') ? lum(mm) : -1;
+    });
+    add('内容比标签栏亮（选中标签能与内容连成一片）', raw['--bg'] > raw['--bg-tabbar'],
+      Math.round(raw['--bg']) + ' > ' + Math.round(raw['--bg-tabbar']));
+    add('外框比工具窗口暗（最外层退到最后）', raw['--bg-title'] < raw['--bg-panel'],
+      Math.round(raw['--bg-title']) + ' < ' + Math.round(raw['--bg-panel']));
+    // ③ 守卫：任何定义了 --bg-panel 的主题都必须同时定义 --bg-title，
+    //    否则该主题的顶栏/状态栏会掉回默认深色（浅色主题直接变黑条）
+    const themeRules = Array.from(document.styleSheets).flatMap((ss) => { try { return Array.from(ss.cssRules); } catch { return []; } })
+      .filter((r) => r.style && (r.style.getPropertyValue('--bg-panel') || '').trim());
+    const missing = themeRules.filter((r) => !(r.style.getPropertyValue('--bg-title') || '').trim()).map((r) => r.selectorText);
+    add('每个主题都定义了 --bg-title（否则该主题顶栏变黑条）', missing.length === 0,
+      missing.length ? '缺失：' + missing.join(',') : themeRules.length + ' 个主题全有');
+    // ④ 跨主题实测：切到每个主题量一次「外框 vs 工具窗口」的明度关系。
+    //    只检查 CSS 变量不够 —— 变量名漏了的主题会静默掉回默认深色（浅色主题直接变黑条）。
+    const lumOf = (rgb) => { const m = rgb.match(/\d+/g) || [0, 0, 0]; return (Number(m[0]) + Number(m[1]) + Number(m[2])) / 3; };
+    const themeBad = [];
+    const themeSeen = [];
+    const keep = document.body.className;
+    ['', 'theme-light', 'theme-pink', 'theme-crimson'].forEach((t) => {
+      document.body.className = keep.replace(/theme-\w+/g, '').trim() + (t ? ' ' + t : '');
+      const tb = lumOf(getComputedStyle(q('#toolbar')).backgroundColor);
+      const sb = lumOf(getComputedStyle(q('#sidebar')).backgroundColor);
+      themeSeen.push((t || '默认') + ' ' + Math.round(tb) + '/' + Math.round(sb));
+      if (!(tb < sb)) themeBad.push(t || '默认');
+    });
+    document.body.className = keep;
+    add('每个主题的顶栏都比侧栏暗（外框退到最后；漏定义变量会静默掉回深色）',
+      themeBad.length === 0, '顶栏/侧栏明度：' + themeSeen.join('  '));
+
+    // ⑤ 选中态只留一个指示（原来左侧 accent 边框 + 右侧 accent 竖条，同一个按钮两个标记）
+    const act0 = q('#tool-strip .tool-btn.active');
+    const after = act0 ? getComputedStyle(act0, '::after').content : '';
+    add('左侧工具条选中态只有一个 accent 指示', after === 'none' || after === '',
+      'active::after content=' + after);
+    // ⑤ 标签区与操作区分离：文件多了操作按钮不跟着滚走
+    add('标签栏拆成「滚动区 + 操作区」且是兄弟节点',
+      !!q('#tab-scroll') && !!q('#tab-actions') && q('#tab-actions').parentElement.id === 'tabbar');
     return { R };
   },
 
@@ -275,9 +339,9 @@ module.exports = {
     await sleep(300);
     add('放大后容器可滚动（可上下滑动看画面）', stageEl.scrollHeight > stageEl.clientHeight + 1 || stageEl.scrollWidth > stageEl.clientWidth + 1,
       'scroll=' + stageEl.scrollWidth + 'x' + stageEl.scrollHeight + ' client=' + stageEl.clientWidth + 'x' + stageEl.clientHeight);
-    // 编辑器工具条只在真有按钮时占一行：路径与「复制路径」都撤了，图片这类文件整行都不出现
-    add('图片文件不再有那一行工具条（路径已撤 → 整行隐藏）', !q('.viewer-toolbar'),
-      q('.viewer-toolbar') ? '仍有工具条' : '整行隐藏 ✓');
+    // 编辑器操作区挂在标签栏右端：图片这类文件只剩「定位」，不该有视图按钮
+    add('图片文件在标签栏右端没有多余视图按钮（只剩「定位」）', !q('#tab-actions .vt-btn'),
+      q('#tab-actions .vt-btn') ? '仍有视图按钮' : '无 ✓');
     add('标签页左侧有文件类型图标（SVG，不是 emoji）', !!q('.tab.active .tic svg'));
     add('标签栏右端「在资源管理器显示」只有 1 个', document.querySelectorAll('.tab-locate').length === 1,
       document.querySelectorAll('.tab-locate').length + ' 个');
@@ -849,6 +913,12 @@ module.exports = {
       add('整理类指令一定带上了当前文件（跟随或手动附都算）', viaFollow || viaChip,
         '跟随 chip=' + (viaFollow ? '有' : '无') + ' / chips=' + (chips.map((c) => c.textContent).join(' | ') || '(无)'));
     }
+    // 三处面板标题行等高（侧栏 / 标签栏 / AI 助手）—— 交界处的横向底线必须对齐
+    const hh = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
+    const vt = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);
+    const h3 = [hh('#tabbar'), vt ? Math.round(vt.getBoundingClientRect().height) : -1, hh('.ai-head')];
+    add('侧栏标题 / 标签栏 / AI 助手标题 三行等高', h3.every((x) => x > 0) && new Set(h3).size === 1, h3.join(' / '));
+
     const hoverRect = q('.ai-quick .ai-quick-btn');
     return {
       R,

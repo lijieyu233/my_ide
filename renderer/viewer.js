@@ -1,6 +1,8 @@
 // viewer.js —— 标签页 + 内容区：打开/编辑/保存/预览切换
 const Viewer = (() => {
   const tabbar = document.getElementById('tabbar');
+  const tabScroll = document.getElementById('tab-scroll');
+  const tabActions = document.getElementById('tab-actions');
   const viewer = document.getElementById('viewer');
   const empty = document.getElementById('empty-state');
   const tabs = []; // {path, name, dirty, content, mode}
@@ -176,11 +178,102 @@ const Viewer = (() => {
     code: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 4.4L2.2 8l3.4 3.6M10.4 4.4L13.8 8l-3.4 3.6"/></svg>',
     edit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/><path d="M9.6 4.2l2.2 2.2"/></svg>',
     split: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.2"/><path d="M8 3.2v9.6"/></svg>',
+    globe: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M2.6 8h10.8"/><path d="M8 2.4c1.5 1.6 2.3 3.5 2.3 5.6S9.5 12 8 13.6C6.5 12 5.7 10.1 5.7 8s.8-4 2.3-5.6z"/></svg>',
+    external: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.6h4v4"/><path d="M13.4 2.6L7.6 8.4"/><path d="M12.2 9.6v3.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1h3.2"/></svg>',
     locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.4V3.8a1.4 1.4 0 0 1 1.4-1.4h1.6M13.6 5.4V3.8a1.4 1.4 0 0 0-1.4-1.4h-1.6M2.4 10.6v1.6a1.4 1.4 0 0 0 1.4 1.4h1.6M13.6 10.6v1.6a1.4 1.4 0 0 1-1.4 1.4h-1.6"/><circle cx="8" cy="8" r="1.7"/></svg>',
   };
 
+  // 编辑器操作区（Markdown 模式切换 / 查看源码 / 内置浏览器）+「定位」—— 统一挂在标签栏右端。
+  // ⚠ 必须跟 renderTabs() 同生命周期：标签栏这一片会被 renderTabs 清空，
+  //   而「标脏点」等路径只调 renderTabs 不调 renderView —— 挂在 renderView 里会被清掉
+  //   （症状：右端按钮"有时有一个有时没有"，之前踩过）。
+  function renderTabActions() {
+    tabActions.innerHTML = '';
+    const tab = tabs[active];
+    if (!tab) return;
+    const acts = document.createElement('div');
+    acts.className = 'ed-actions';
+
+    const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
+    const ext = extOf(tab.name);
+
+    // Markdown：模式切换（实时预览 / 分屏 / 源码 / 预览）
+    if (isMarkdown && !tab.binary && !tab.tooLarge) {
+      const seg = document.createElement('div');
+      seg.className = 'md-mode-seg';
+      const MODES = [
+        ['live', ACT_IC.edit, '实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
+        ['split', ACT_IC.split, '分屏', '左侧源码 + 右侧实时预览'],
+        ['source', ACT_IC.code, '源码', '纯 Markdown 源码编辑'],
+        ['preview', ACT_IC.eye, '预览', '只读渲染视图'],
+      ];
+      const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
+      for (const [m, ic, label, tip] of MODES) {
+        const b = document.createElement('button');
+        b.className = 'vt-btn' + (cur === m ? ' active' : '');
+        b.innerHTML = ic + label;
+        b.title = tip;
+        b.onclick = (e) => {
+          e.stopPropagation();
+          if (tab.mode !== m) {
+            tab.mode = m;
+            // 模式全局统一：写入偏好，之后打开/切换其他 md 也保持该模式
+            try { localStorage.setItem('myide-md-mode', m); } catch {}
+            renderView();
+          }
+        };
+        seg.appendChild(b);
+      }
+      acts.appendChild(seg);
+    } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'preview') {
+      const btnToggle = document.createElement('button');
+      btnToggle.className = 'vt-btn';
+      btnToggle.innerHTML = ACT_IC.code + '查看源码';
+      btnToggle.title = '以源码方式编辑';
+      btnToggle.onclick = (e) => { e.stopPropagation(); tab.mode = 'edit'; renderView(); };
+      acts.appendChild(btnToggle);
+    } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
+      // 查看源码后提供恢复入口：切回预览模式
+      const btnBack = document.createElement('button');
+      btnBack.className = 'vt-btn';
+      btnBack.innerHTML = ACT_IC.eye + '预览';
+      btnBack.title = '切回预览渲染';
+      btnBack.onclick = (e) => { e.stopPropagation(); tab.mode = 'preview'; renderView(); };
+      acts.appendChild(btnBack);
+    }
+
+    // HTML：内置浏览器 / 系统默认浏览器打开
+    if (/\.(html|htm)$/i.test(tab.name)) {
+      const fileUrl = 'file:///' + tab.path.split('\\').join('/');
+      const btnInner = document.createElement('button');
+      btnInner.className = 'vt-btn';
+      btnInner.innerHTML = ACT_IC.globe + '内置浏览器';
+      btnInner.title = '在 IDE 内置浏览器中打开该页面';
+      btnInner.onclick = (e) => { e.stopPropagation(); if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
+      acts.appendChild(btnInner);
+
+      const btnBrowser = document.createElement('button');
+      btnBrowser.className = 'vt-btn';
+      btnBrowser.innerHTML = ACT_IC.external + '浏览器打开';
+      btnBrowser.title = '用系统默认浏览器打开该页面';
+      btnBrowser.onclick = (e) => { e.stopPropagation(); try { window.myIDE.shell.openExternal(fileUrl); } catch {} };
+      acts.appendChild(btnBrowser);
+    }
+
+    if (acts.children.length) tabActions.appendChild(acts);
+
+    // 「定位」属于文件操作，跟标签放一起最顺手；常驻最右端
+    const loc = document.createElement('button');
+    loc.className = 'tab-locate';
+    loc.innerHTML = ACT_IC.locate;
+    loc.title = '在资源管理器中显示：' + tab.path;
+    loc.onclick = (e) => { e.stopPropagation(); window.myIDE.shell.showInFolder(tab.path); };
+    tabActions.appendChild(loc);
+  }
+
   function renderTabs() {
-    tabbar.innerHTML = '';
+    tabScroll.innerHTML = '';
+    tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
       el.className = 'tab' + (i === active ? ' active' : '');
@@ -207,7 +300,7 @@ const Viewer = (() => {
       el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } };
       el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, i); };
       el.title = t.path;
-      tabbar.appendChild(el);
+      tabScroll.appendChild(el);
     });
     // 打开文件过多时合并：右侧「▾ 全部标签」下拉
     if (tabs.length > 1) {
@@ -232,18 +325,9 @@ const Viewer = (() => {
         menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
         menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 300) + 'px';
       };
-      tabbar.appendChild(all);
+      tabScroll.appendChild(all);
     }
-    // 「定位」放标签栏右端（属于文件操作，跟标签在一起更顺手）
-    const cur = tabs[active];
-    if (cur) {
-      const loc = document.createElement('button');
-      loc.className = 'tab-locate';
-      loc.innerHTML = ACT_IC.locate;
-      loc.title = '在资源管理器中显示：' + cur.path;
-      loc.onclick = (e) => { e.stopPropagation(); window.myIDE.shell.showInFolder(cur.path); };
-      tabbar.appendChild(loc);
-    }
+    renderTabActions();
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
   }
@@ -261,15 +345,15 @@ const Viewer = (() => {
       }
       if (!dragState.moved) return;
       // 按鼠标位置与各标签中心找到插入点，实时移动 DOM（只考虑 .tab，忽略右侧「▾ 全部」按钮）
-      const tabsEl = [...tabbar.querySelectorAll('.tab')];
+      const tabsEl = [...tabScroll.querySelectorAll('.tab')];
       let insertAfter = -1;
       tabsEl.forEach((t, j) => {
         const r = t.getBoundingClientRect();
         if (ev.clientX > r.left + r.width / 2) insertAfter = j;
       });
       const ref = tabsEl[insertAfter + 1];
-      if (ref && ref !== dragState.el) tabbar.insertBefore(dragState.el, ref);
-      else if (!ref) tabbar.appendChild(dragState.el);
+      if (ref && ref !== dragState.el) tabScroll.insertBefore(dragState.el, ref);
+      else if (!ref) tabScroll.appendChild(dragState.el);
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
@@ -285,7 +369,7 @@ const Viewer = (() => {
   }
   // 按 DOM 顺序重建 tabs（触发重渲染与会话保存）
   function finishDrag() {
-    const order = [...tabbar.querySelectorAll('.tab')].map((t) => t.dataset.path);
+    const order = [...tabScroll.querySelectorAll('.tab')].map((t) => t.dataset.path);
     tabs.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
     renderTabs();
   }
@@ -333,85 +417,10 @@ const Viewer = (() => {
     empty.classList.remove('visible');
     const tab = tabs[active];
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
-    const toolbar = document.createElement('div');
-    toolbar.className = 'viewer-toolbar';
-
-    // 路径不在这里显示：文件名已经在上面的标签页上，完整路径在标签的 title 与树里都有。
-    // 一整行只为摆一个路径字符串，纯占地方（用户原话：「这里的路径也没有显示必要」）。
-
-    // 「复制路径」按钮撤掉：Ctrl+Shift+C 快捷键与树的右键菜单都有，工具栏里再摆一个是冗余
-
-    // Markdown：分段模式切换（实时预览 / 分屏 / 源码 / 预览）
-    if (isMarkdown && !tab.binary && !tab.tooLarge) {
-      const seg = document.createElement('div');
-      seg.className = 'md-mode-seg';
-      const MODES = [
-        ['live', ACT_IC.edit, '实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
-        ['split', ACT_IC.split, '分屏', '左侧源码 + 右侧实时预览'],
-        ['source', ACT_IC.code, '源码', '纯 Markdown 源码编辑'],
-        ['preview', ACT_IC.eye, '预览', '只读渲染视图'],
-      ];
-      const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
-      for (const [m, ic, label, tip] of MODES) {
-        const b = document.createElement('button');
-        b.className = 'vt-btn' + (cur === m ? ' active' : '');
-        b.innerHTML = ic + label;
-        b.title = tip;
-        b.onclick = () => {
-          if (tab.mode !== m) {
-            tab.mode = m;
-            // 模式全局统一：写入偏好，之后打开/切换其他 md 也保持该模式
-            try { localStorage.setItem('myide-md-mode', m); } catch {}
-            renderView();
-          }
-        };
-        seg.appendChild(b);
-      }
-      toolbar.appendChild(seg);
-    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
-      const btnToggle = document.createElement('button');
-      btnToggle.className = 'vt-btn';
-      btnToggle.innerHTML = ACT_IC.code + '查看源码';
-      btnToggle.title = '以源码方式编辑';
-      btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
-      toolbar.appendChild(btnToggle);
-    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
-      // 查看源码后提供恢复入口：切回预览模式
-      const btnBack = document.createElement('button');
-      btnBack.className = 'vt-btn';
-      btnBack.innerHTML = ACT_IC.eye + '预览';
-      btnBack.title = '切回预览渲染';
-      btnBack.onclick = () => { tab.mode = 'preview'; renderView(); };
-      toolbar.appendChild(btnBack);
-    }
-
-    // 「定位」按钮由 renderTabs() 统一挂在标签栏右端（renderTabs 每次会清空 tabbar，
-    // 在这里挂会被清掉，而且会挂出两个来）
-
-    // HTML：内置浏览器 / 系统默认浏览器打开
-    if (/\.(html|htm)$/i.test(tab.name)) {
-      const fileUrl = 'file:///' + tab.path.split('\\').join('/');
-      const btnInner = document.createElement('button');
-      btnInner.className = 'vt-btn';
-      btnInner.textContent = '🌐 内置浏览器';
-      btnInner.title = '在 IDE 内置浏览器中打开该页面';
-      btnInner.onclick = () => { if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
-      toolbar.appendChild(btnInner);
-
-      const btnBrowser = document.createElement('button');
-      btnBrowser.className = 'vt-btn';
-      btnBrowser.textContent = '↗ 浏览器打开';
-      btnBrowser.title = '用系统默认浏览器打开该页面';
-      btnBrowser.onclick = () => {
-        try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
-      };
-      toolbar.appendChild(btnBrowser);
-    }
-
-    // 注：已全面自动保存（停止输入 3 秒写盘 + 切换/关闭静默保存），不再提供手动保存按钮
-
-    // 工具条只在真有按钮时占一行（路径与「复制路径」都撤了，非 Markdown / 非网页文件这里是空的）
-    if (toolbar.children.length) viewer.appendChild(toolbar);
+    // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
+    // 跟「定位」一起挂在标签栏右端。原来那一行左边 500px 全空，只为右侧摆 4 个小按钮。
+    // 模式切换后要刷新按钮的 active 态，所以这里也重建一次。
+    renderTabActions();
 
     // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）
     if (window.App) App.updateStatusbar({
@@ -898,8 +907,8 @@ const Viewer = (() => {
         <button class="vt-btn" id="find-rep-all" title="全部替换">全部</button>
       </span>
       <button class="vt-btn" id="find-close" title="关闭 (Esc)">✕</button>`;
-    const toolbar = viewer.querySelector('.viewer-toolbar');
-    if (toolbar) viewer.insertBefore(bar, toolbar.nextSibling);
+    // 编辑器工具条已并入标签栏 → 查找条直接放在内容区最上方
+    viewer.insertBefore(bar, viewer.firstChild);
     findState = { ta, matches: [], idx: -1 };
 
     const input = document.getElementById('find-input');
