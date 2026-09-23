@@ -88,6 +88,8 @@ function makeDom() {
   st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
   w.document.head.appendChild(st);
   w.myIDE = {
+    // 翻译插件走 llm:chat：桩直接回 "译:<最后一条 user 内容>"，断言可以精确比对
+    llm: { chat: async (cfg, msgs) => ({ text: '译:' + String((msgs[msgs.length - 1] || {}).content || '') }) },
     fs: {
       openFolder: async () => P,
       getRecent: async () => null,
@@ -334,6 +336,7 @@ async function loadApp(dom) {
   evalFile('db-panel.js');
   evalFile('ai-panel.js');
   evalFile('tasks.js');
+  evalFile('translate.js');   // 翻译插件（Ctrl+Alt+T）：依赖 Modal/Shortcuts，需在 app.js 之前
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -3626,6 +3629,32 @@ assert_(panel, 'CM6 搜索面板出现');
         .filter((x) => x !== 'C:/tsA' && x !== 'C:/tsB');
       dom.window.localStorage.setItem('myide-recent-projects', JSON.stringify(rec));
     } catch {}
+  });
+
+  await okAsync('翻译弹窗：未选中文本也能打开 / 原文可自己填 / 遮罩里没有遗留空容器', async () => {
+    dom.window.localStorage.setItem('myide-translate-cfg', JSON.stringify({ baseUrl: 'http://stub', model: 'stub', target: '中文' }));
+    await g(dom, 'Translate.run("")');
+    await tick(); await tick();
+    const box = $(dom, '.tr-box');
+    assert_(box, '未选中文本也弹出翻译框（原实现只弹 toast 就 return）');
+    const src = $(dom, '#tr-src');
+    assert_(src && src.tagName === 'TEXTAREA', '原文是可编辑的 textarea, got: ' + (src && src.tagName));
+    assert_(src.value === '', '未选中时进来是空的');
+    assert_(!$(dom, '#modal-box'), '遮罩里没有遗留的 #modal-box（它宽 560px，曾把弹窗整体挤偏）');
+    assert_($(dom, '#modal-mask').children.length === 1, 'mask 里只有弹窗一个子节点');
+    src.value = '页面设置';
+    click($(dom, '#tr-do'));
+    await tick(); await tick();
+    assert_($(dom, '#tr-dst').textContent === '译:页面设置', '手动填的文本能翻, got: ' + $(dom, '#tr-dst').textContent);
+    click($(dom, '#tr-close'));
+    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '关闭后遮罩隐藏');
+    await g(dom, 'Translate.run("你好")');
+    await tick(); await tick();
+    assert_($(dom, '#tr-dst').textContent === '译:你好', '选中文本进来仍自动翻, got: ' + $(dom, '#tr-dst').textContent);
+    assert_($(dom, '#tr-src').value === '你好', '原文框预填选中文本');
+    await g(dom, 'Translate.closeBox()');
+    await tick();
   });
 
   await okAsync('侧栏「项目」工具窗口只放项目树（上下分栏已取消）', async () => {

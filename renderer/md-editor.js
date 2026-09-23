@@ -73,7 +73,12 @@ window.MdEditor = (() => {
     // selectionLayer z=-2 在内容之下，元素自身背景会盖住选区高亮
     '.cm-activeLine': { position: 'relative' },
     '.cm-activeLine::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', backgroundColor: 'rgba(127,127,127,0.07)' },
-    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-selected) !important' },
+    // 选区颜色：不能用 --bg-selected（#2d4f6b 实心蓝）。跨行选中时 CM6 会给**每一行**
+    // 画一整条（含行尾空白与空行），实心重色叠起来就是用户截图里那条 818px 的"大蓝块"，
+    // 看起来像渲染坏了。改成主题强调色的半透明 tint —— 与全应用「选中态减重」同一套语言，
+    // 空行/行尾的那截也就不刺眼了。
+    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground':
+      { backgroundColor: 'color-mix(in srgb, var(--accent) 32%, transparent) !important' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
     '.cm-panels': { backgroundColor: 'var(--panel-strong)', color: 'var(--text)', borderColor: 'var(--border)' },
     '.cm-panel.cm-search input, .cm-panel.cm-search button': {
@@ -1039,6 +1044,10 @@ window.MdEditor = (() => {
       Commands.history(),
       mdKeymap,
       View.drawSelection(),
+      // ⚠ 必须显式开启：CodeMirror 6 **默认不换行**（长行横向滚动）。
+      // 正文列限到 820px 之后，长行（长段落 / 表格源码 / 长路径）就不再是"刚好放得下"，
+      // 而是直接从列右边溢出被切掉 —— 用户原话「你调低了框度 但是它没有在这个框度换行」。
+      EditorView.lineWrapping,
       EditorState.allowMultipleSelections.of(true),
       Language.syntaxHighlighting(oneDarkHighlight),
       Language.bracketMatching(),

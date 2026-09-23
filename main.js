@@ -22,9 +22,9 @@ if (UI_CHECK) {
   try { app.setPath('userData', path.join(os.tmpdir(), 'myide-ui-check-' + process.pid)); } catch {}
   // 自检看门狗：无论卡在哪一步（页面加载 / 注入 / 截图 / CDP）都必须落盘 + 退出
   setTimeout(() => {
-    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>200s），强制退出\n'); } catch {}
+    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>420s），强制退出\n'); } catch {}
     try { app.exit(3); } catch {}
-  }, 200000);
+  }, 420000);
 }
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 process.on('uncaughtException', (e) => {
@@ -1098,6 +1098,7 @@ app.whenReady().then(() => {
       //   收起来（并写进 localStorage），导致下一次运行的 chrome 步骤量到"AI 助手标题高度 0"。
       let origAiOpen = null;
       let origMdMode = null;
+      let origTransCfg = null;
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
@@ -1109,13 +1110,20 @@ app.whenReady().then(() => {
           fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
         } catch {}
         app.exit(3);
-      }, 240000);
+      }, 480000);
       // 自检用的「模型」桩：把 ai:chat 这个 IPC 换成脚本化应答。
       // 为什么不用本地 HTTP 服务：Electron 主进程里 http.createServer().listen() 在自检跑法下不回调（实测卡死）。
       // 桩只替换「模型」这一段，页面侧（面板 → 工具调用 → 写文件 → 改动卡片 → 撤销）全部走真实代码。
       const bootLog = (m) => { try { fs.writeFileSync(path.join(__dirname, '.ui-check-boot.txt'), m + '\n'); } catch {} };
       bootLog('1 进入自检，准备给 ai:chat 打桩');
       let stubRound = 0;
+      // 翻译插件（llm:chat）同样打桩：自检要验「未选中文本也能弹窗 / 手动填文本能翻」，
+      // 不能真去连 LLM（没配 key 会报错并弹设置页，步骤就跑偏了）
+      ipcMain.removeHandler('llm:chat');
+      ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
+        const last = (messages || [])[messages.length - 1] || {};
+        return { text: '译:' + String(last.content || '') };
+      });
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
@@ -1260,6 +1268,7 @@ app.whenReady().then(() => {
         origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
         origAiOpen = await wc.executeJavaScript('localStorage.getItem("myide-ai-open")');
         origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")');
+        origTransCfg = await wc.executeJavaScript('localStorage.getItem("myide-translate-cfg")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
         await wc.executeJavaScript(
@@ -1314,6 +1323,9 @@ app.whenReady().then(() => {
         await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
         await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
         // 放最后：这一步故意把主题留在酒红上，产物截图就是它的实际观感
+        await run('长行换行（正文列内折行）', js(steps.textWrapping, demo), 'check-ui-10-wrap.png');
+        await run('翻译弹窗（居中 / 可自填 / 未选中也能弹）', js(steps.translateDialog), 'check-ui-7b-translate.png');
+        await run('翻译弹窗（Esc / ✕ 关闭）', js(steps.translateDialogClose));
         await run('同屏 accent 强焦点普查（截图用）', js(steps.focusCensus), 'check-ui-1m-focus.png');
         await run('主题：石墨（中性黑灰 + 玫瑰红强调）', js(steps.themeGraphite), 'check-ui-9-theme-graphite.png');
         // 最后一步：把主题留在「深红」上，截图就是它的实际观感
@@ -1338,7 +1350,7 @@ app.whenReady().then(() => {
         await wc.executeJavaScript(origRecent == null
           ? 'localStorage.removeItem("myide-recent-projects"); true'
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
-        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode]]) {
+        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-translate-cfg', origTransCfg]]) {
           await wc.executeJavaScript(val == null
             ? 'localStorage.removeItem(' + JSON.stringify(key) + '); true'
             : 'localStorage.setItem(' + JSON.stringify(key) + ', ' + JSON.stringify(val) + '); true');

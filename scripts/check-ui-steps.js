@@ -623,6 +623,187 @@ module.exports = {
     return { R };
   },
 
+  // ---------- 长行换行：正文列限宽后，长行必须在列内折行（不能横向溢出被切掉） ----------
+  // 背景：CM6 **默认不换行**。正文列限到 820px 之后，长段落 / 表格源码 / 长路径
+  // 就从列右边溢出被切掉了 —— 用户原话「你调低了框度 但是它没有在这个框度换行」。
+  textWrapping: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 8000)) { const v = fn(); if (v) return v; await sleep(120); }
+      return null;
+    };
+    const overflow = (el) => (el ? el.scrollWidth - el.clientWidth : -1);
+
+    async function openIn(mode) {
+      window.Viewer.closeAll();
+      localStorage.setItem('myide-md-mode', mode);
+      await sleep(200);
+      await window.Viewer.openFile(dir + '\\_ui_wrap.md');
+      await waitFor(() => q('#viewer .cm-content') || q('#viewer .md-view'), 8000);
+      await sleep(350);
+    }
+    async function wrapCheck(mode, label) {
+      const sc = q('#viewer .cm-scroller');
+      const colW = sc ? Math.round(sc.getBoundingClientRect().width) : -1;
+      add(label + '：正文列限宽生效（≤ 876px）', colW > 0 && colW <= 877, '列宽=' + colW);
+      add(label + '：长行在列内折行，没有横向溢出', !!sc && overflow(sc) <= 1,
+        '溢出=' + overflow(sc) + 'px（scrollWidth=' + (sc ? sc.scrollWidth : -1) + '）');
+      const hs = [...document.querySelectorAll('#viewer .cm-line')]
+        .map((l) => Math.round(l.getBoundingClientRect().height)).filter((h) => h > 0).sort((a, b) => a - b);
+      // 用中位数当"单行高度"：最小值可能是折叠行/空行（实测出现过 2px），会把基准算歪
+      const base = hs.length ? hs[Math.floor(hs.length / 2)] : 0;
+      const maxH = hs.length ? hs[hs.length - 1] : 0;
+      add(label + '：确认有长行被折成了多行（行高 > 单行的 1.8 倍）',
+        base > 0 && maxH >= base * 1.8, '单行=' + base + 'px 最高=' + maxH + 'px');
+    }
+
+    await openIn('live');
+    await wrapCheck('live', 'Live Preview');
+    await openIn('source');
+    await wrapCheck('source', '源码模式');
+
+    // 静态预览：表格是真实 <table>，允许它自己横向滚动，但不能撑破正文列
+    await openIn('preview');
+    const mv = q('#viewer .md-view');
+    add('静态预览：.md-view 不横向溢出（内容不出列）', !!mv && overflow(mv) <= 1,
+      '溢出=' + overflow(mv) + 'px');
+
+    // 「真正的溢出」= 内容从列右边漏出去、且自己不能滚（= 会撑破版心 / 被切掉）。
+    // ⚠ 必须排除"自己就在滚动容器里"的（pre / code / 宽表格）：它们的内部溢出是设计如此，
+    //   上一版没排除，把 `code.language-python` 那 500px（本来就是横向滚动的代码块）报成了溢出项。
+    const inScroller = (el) => {
+      for (let n = el.parentElement; n && n !== mv; n = n.parentElement) {
+        const ox = getComputedStyle(n).overflowX;
+        if (ox === 'auto' || ox === 'scroll' || ox === 'hidden') return true;
+      }
+      return false;
+    };
+    const chain = (el) => {
+      const out = [];
+      for (let n = el; n && n !== mv && out.length < 4; n = n.parentElement) {
+        out.unshift(n.tagName.toLowerCase() +
+          (typeof n.className === 'string' && n.className.trim() ? '.' + n.className.trim().split(/\s+/)[0] : ''));
+      }
+      return out.join('>');
+    };
+    const spill = mv ? [...mv.querySelectorAll('*')]
+      .map((e) => ({ el: e, over: e.scrollWidth - e.clientWidth }))
+      .filter((x) => x.over > 1 && !inScroller(x.el)) : [];
+    add('静态预览：没有任何"漏出列外"的元素（代码块与宽表格在滚动容器里，不计）',
+      !!mv && spill.length === 0,
+      spill.length ? spill.slice(0, 4).map((x) => chain(x.el) + ' +' + x.over + 'px').join(' | ')
+                   : '0 个（代码块/表格内部滚动已排除）');
+
+    // 点名那条长路径：它是这一轮的真凶（\ 不是断行机会点，整段从列右边漏出去）
+    const pathP = mv ? [...mv.querySelectorAll('p')].find((p) => /source_timeline_rolling_playback/.test(p.textContent)) : null;
+    add('静态预览：无空格的长路径在列内折断（overflow-wrap:anywhere）',
+      !!pathP && pathP.scrollWidth <= pathP.clientWidth + 1,
+      pathP ? '路径段溢出=' + (pathP.scrollWidth - pathP.clientWidth) + 'px 高=' +
+        Math.round(pathP.getBoundingClientRect().height) + 'px 折行设置=' + getComputedStyle(pathP).overflowWrap
+        : '没找到那段长路径');
+
+    const tbl = q('#viewer .md-view table');
+    add('静态预览：宽表格自己在列内滚动（不是撑破布局）',
+      !!tbl && tbl.scrollWidth >= tbl.clientWidth && getComputedStyle(tbl).overflowX === 'auto',
+      tbl ? 'overflowX=' + getComputedStyle(tbl).overflowX + ' 表宽=' + Math.round(tbl.getBoundingClientRect().width) : '无表格');
+    add('静态预览：长段落折行（段落高度 > 单行）',
+      !!mv && [...mv.querySelectorAll('p')].some((p) => p.getBoundingClientRect().height > 34),
+      mv ? mv.querySelectorAll('p').length + ' 段' : '无');
+
+    // ⚠ 收尾：**故意不关**这个文档 —— 截图在步骤返回之后才拍，关掉的话产物只剩空状态
+    //   （上一版就踩了：check-ui-10-wrap.png 拍到的是一张"最近项目"首页）。
+    //   静态预览留在这里，截图能直接看见长段落 / 长路径 / 宽表格都在 820px 列内。
+    //   文档的 md 模式复位成 live，避免影响后面步骤（当前已渲染的这个不受影响）。
+    localStorage.setItem('myide-md-mode', 'live');
+    return { R };
+  },
+
+  // ---------- 翻译弹窗：居中 / 原文可自己填 / 未选中文本也能打开 ----------
+  // llm:chat 已在主进程打桩（返回 "译:<原文>"），这里验的是弹窗本身的三条交互。
+  translateDialog: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    localStorage.setItem('myide-translate-cfg', JSON.stringify({ baseUrl: 'http://stub', model: 'stub', target: '中文' }));
+
+    // ① 未选中文本按快捷键 → 也要弹（原实现只弹 toast 就 return）
+    window.Translate.run('');
+    await sleep(500);
+    const box = q('.tr-box');
+    add('未选中文本也能弹出翻译框（不再只弹 toast）', !!box);
+    if (!box) return { R };
+    const src = q('#tr-src'), dst = q('#tr-dst'), mask = q('#modal-mask');
+    add('原文是可编辑的输入框（以前是只读 div）', !!src && src.tagName === 'TEXTAREA',
+      src ? src.tagName : '无 #tr-src');
+    add('空框进来是空的、且已聚焦（直接打字就能填）', src.value === '' && document.activeElement === src,
+      'value=' + JSON.stringify(src.value) + ' focused=' + (document.activeElement === src));
+    add('译文区为空态（占位文案，不是上一轮的残留）', dst.textContent === '', JSON.stringify(dst.textContent.slice(0, 20)));
+
+    // ② 居中：根因是 #modal-mask 里遗留过一个 560px 宽的空 #modal-box，把弹窗整体挤偏
+    const mR = mask.getBoundingClientRect(), bR = box.getBoundingClientRect();
+    const dx = Math.abs((bR.left + bR.right) / 2 - (mR.left + mR.width / 2));
+    const dy = Math.abs((bR.top + bR.bottom) / 2 - (mR.top + mR.height / 2));
+    add('弹窗在遮罩里水平居中', dx <= 3, '偏差=' + dx.toFixed(1) + 'px');
+    add('弹窗在遮罩里垂直居中', dy <= 3, '偏差=' + dy.toFixed(1) + 'px');
+    add('遮罩盖满整窗', mR.width >= window.innerWidth - 1 && mR.height >= window.innerHeight - 1,
+      Math.round(mR.width) + 'x' + Math.round(mR.height) + ' vs ' + window.innerWidth + 'x' + window.innerHeight);
+    add('遮罩里只有弹窗一个子节点（遗留空容器已删）',
+      !q('#modal-box') && mask.children.length === 1,
+      'children=' + mask.children.length);
+
+    // ③ 自己填文本 → 点「翻译」→ 出结果
+    src.value = '页面设置';
+    q('#tr-do').click();
+    await sleep(700);
+    add('手动填的文本能翻译（llm:chat 已打桩）',
+      dst.textContent === '译:页面设置', JSON.stringify(dst.textContent.slice(0, 30)));
+
+    // ⑤ 选中文本进来的老路径：预填 + 自动翻译
+    window.Translate.run('你好');
+    await sleep(800);
+    add('带选中文本进来仍会自动翻译', !!q('#tr-dst') && q('#tr-dst').textContent === '译:你好',
+      q('#tr-dst') ? q('#tr-dst').textContent.slice(0, 30) : '(无弹窗)');
+    add('原文框预填了选中的文本', q('#tr-src').value === '你好', JSON.stringify(q('#tr-src').value));
+
+    // 收尾：留一个"填了原文、翻出译文"的状态给截图（截图在步骤结束后才拍，
+    // 这里关掉的话产物就只剩背景了 —— 060 那轮踩过同样的坑）
+    window.Translate.run('页面设置');
+    await sleep(800);
+    add('收尾：弹窗留在打开状态（截图用）',
+      !!q('.tr-box') && q('#tr-src').value === '页面设置' && q('#tr-dst').textContent === '译:页面设置',
+      '原文=' + JSON.stringify(q('#tr-src').value) + ' 译文=' + JSON.stringify(q('#tr-dst').textContent.slice(0, 20)));
+    return { R };
+  },
+
+  // ---------- 翻译弹窗（关闭）：Esc 与 ✕ 都能收 ----------
+  translateDialogClose: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    add('上一步留下的弹窗还在', !!q('.tr-box'));
+
+    // Esc（焦点在原文框里也要能关 —— 自管 Esc）
+    const src = q('#tr-src');
+    if (src) src.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await sleep(300);
+    add('Esc 关闭翻译框（焦点在输入框里也一样）', !q('.tr-box'));
+    add('遮罩随之隐藏', q('#modal-mask').classList.contains('hidden'));
+
+    // ✕ 也能关
+    window.Translate.run('再开一次');
+    await sleep(500);
+    if (q('#tr-x')) q('#tr-x').click();
+    await sleep(300);
+    add('右上角 ✕ 也能关闭', !q('.tr-box'));
+    return { R };
+  },
+
   // ---------- 同屏「强焦点」普查：强调色同时用在多少个地方喊 ----------
   // 「乱」= 元素密度 × 区域明度差。密度这一半里最刺眼的是「同屏有几个东西在用 accent 喊」。
   // 判定口径：实心 accent 填充（α≥.5 且面积 ≥150px²）/ ≥2px 的 accent 边或伪元素条 /

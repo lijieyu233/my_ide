@@ -567,6 +567,12 @@ textarea.editor {
   /* 同上：两侧预留滚动条宽度，正文列在视觉上对称 */
   scrollbar-gutter: stable both-edges;
   user-select: text; line-height: 1.65;
+  /* ⚠ 长行换行：中文能自由断行，但**长路径 / 长 URL / 长表格**是"一个词"，
+     浏览器默认不在这些字符间断（`\` 不是断行机会点）→ 整段从列右边溢出被切掉
+     （自检实测：一条 130 字符的 .ts 路径让 `p` 溢出 45px，连带 .md-view 溢出 11px）。
+     `anywhere` 只在"这个词单独一行也放不下"时才断，正常文本的行长不受影响；
+     代码块（white-space: pre）不参与换行，仍按原样横向滚动。 */
+  overflow-wrap: anywhere;
 }
 .md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-heading); margin: 18px 0 8px; }
 /* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
@@ -1084,11 +1090,15 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
   display: flex; align-items: center; justify-content: center;
 }
 #modal-mask.hidden { display: none; }
-#modal-box {
-  background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: 8px;
-  width: 560px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column;
-  box-shadow: 0 8px 30px rgba(0,0,0,.5);
-}
+/* 文本选区统一成主题色的半透明 tint（编辑器已单独设 .cm-selectionBackground，
+   这里管的是正文预览 / AI 消息 / 输入框这些走原生 ::selection 的地方）。
+   默认的操作系统蓝在暗色主题里非常突兀，也是"选中很奇怪"观感的一部分。 */
+::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+
+/* 这里曾有 #modal-box（旧版 Modal 的固定容器）—— 它已经不再被任何代码使用，
+   但一直留在 #modal-mask 里当一个空 flex 子项，宽 560px，把真正的弹窗整体挤偏。
+   Modal.show 是「把面板 appendChild 进 mask」，mask 自身就是居中的 flex 容器，
+   不需要中间层。已删除（自检有断言守着：mask 里只能有 1 个子节点）。 */
 /* 所有弹窗统一不透明面板样式（Modal.show 把 box 直接挂到 mask 下） */
 .modal-panel {
   width: 560px; max-width: 92vw; max-height: 84vh;
@@ -1121,16 +1131,28 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 /* ---------- 翻译弹窗 ---------- */
 .tr-box { width: 480px; max-width: 90vw; }
 .tr-body { padding: 12px 16px; max-height: 46vh; overflow: auto; }
+/* 原文框 = 可编辑的 textarea（用户要求"可以自己填文本"）：未选中文本进来时是空的，
+   直接写 / 粘贴都行。以前是个 div，只能看不能改。 */
 .tr-src {
-  font-size: 13px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word;
+  display: block; width: 100%; box-sizing: border-box;
+  font-size: 13px; font-family: inherit; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
   padding: 8px 10px; background: var(--bg-input); border-radius: 4px; line-height: 1.6;
+  border: 1px solid var(--border); outline: none; resize: vertical;
+  min-height: 62px; max-height: 30vh;
 }
+.tr-src:focus { border-color: var(--accent); color: var(--text-bright); }
+.tr-src::placeholder { color: var(--text-dim); }
 .tr-arrow { text-align: center; color: var(--text-dim); margin: 6px 0; font-size: 12px; }
 .tr-dst {
   font-size: 14px; color: var(--text-bright); white-space: pre-wrap; word-break: break-word;
   padding: 10px; border: 1px solid var(--border); border-radius: 4px; line-height: 1.7;
   min-height: 40px;
 }
+.tr-dst:empty::before { content: '译文会显示在这里'; color: var(--text-dim); }
+.tr-dst.tr-pending { color: var(--text-dim); }
+/* 底部左侧的快捷键提示（靠 margin-right:auto 顶到最左，按钮仍靠右） */
+.tr-hint { font-size: 12px; color: var(--text-dim); margin-right: auto; user-select: none; }
 
 /* ---------- mermaid 图 ---------- */
 /* 流程图 = 独立内容块：自己的底色 + 细边 + 圆角 + 上下留白，不再"整块铺满"。

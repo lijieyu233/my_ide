@@ -94,6 +94,28 @@ const OUTLINE_DOC = [
   '二级 B 正文。', '',
 ].join('\n');
 
+// 换行验证文档：正文列被限到 820px 后，这些长行必须在列内折行而不是溢出
+//   · LONG_PARA：一整个长段落（中文折行）
+//   · 表格源码：live 预览里表格不是 widget，就是一行超长的 | a | b | 源码
+//   · 长路径 / 长 URL：中途没有空格，靠 overflow-wrap 断
+const WRAP_DOC = [
+  '# 换行验证', '',
+  '## 1. 长段落', '',
+  '这段文字故意写得很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长，用来验证正文列在 820px 处会正常折行。', '',
+  '## 2. 长路径（无空格，靠 overflow-wrap 断）', '',
+  'D:\\document\\code\\ditto-takinghead-benchmark\\feature\\worker\\generation\\timeline\\source_timeline_rolling_playback_controller.ts', '',
+  '## 3. 表格源码（live 预览里就是一行超长文本）', '',
+  '| 模块 / 入口 | 当前实际行次 | 本次必须处理的边界与改造要点 | 备注 |',
+  '| --- | --- | --- | --- |',
+  '| app.py:create_app | 应用级创建 Timeline / WorkerEngineProxy / DialogueManager | 按运行会话拆分子媒体与调度 | 阶段一 |',
+  '', '## 4. 长代码行（围栏里不折行是正常的，这里只保证它不出列）', '',
+  '```python',
+  'result = engine.dispatch(session_id=session.id, timeline=source_timeline, rolling=True, cover=cover, extra={"a": 1, "b": 2})',
+  '```', '',
+  '## 5. 引用块里的长行', '',
+  '> 代码基线：D:\\document\\code\\ditto-takinghead-benchmark，本次复核 HEAD 为 0945727，同时参考工作区已有修订与未提交改动。', '',
+].join('\n');
+
 // 写入图片与 md 素材
 function writeFixtures(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -102,6 +124,7 @@ function writeFixtures(dir) {
   fs.writeFileSync(png, makePng(1200, 800));
   fs.writeFileSync(md, MMD_DOC, 'utf8');
   fs.writeFileSync(path.join(dir, '_ui_outline.md'), OUTLINE_DOC, 'utf8');
+  fs.writeFileSync(path.join(dir, '_ui_wrap.md'), WRAP_DOC, 'utf8');
   // 项目规则文件（AI 助手会把它注入系统提示）
   try { fs.mkdirSync(path.join(dir, '.myide'), { recursive: true }); } catch {}
   fs.writeFileSync(path.join(dir, '.myide', 'ai-rules.md'), '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', 'utf8');
@@ -127,9 +150,10 @@ function cleanFixtures(dir) {
   rm(path.join(dir, '_ui_big.png'));
   rm(path.join(dir, '_ui_mmd.md'));
   rm(path.join(dir, '_ui_outline.md'));
+  rm(path.join(dir, '_ui_wrap.md'));
   rm(path.join(dir, '_ui_drop.md'));   // 拖拽步骤建的
   rm(path.join(dir, '_ui_perm.md'));   // 授权记忆步骤建的
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
 }
 
-module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC, OUTLINE_DOC };
+module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };
