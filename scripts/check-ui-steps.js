@@ -1503,6 +1503,12 @@ module.exports = {
     add('默认宽度下 ahead/behind + 修改数 完整显示（没被省略）',
       !!dirty && dirty.scrollWidth <= dirty.clientWidth + 1,
       dirty ? JSON.stringify(dirty.textContent) + ' 需要=' + dirty.scrollWidth + 'px 实际=' + dirty.clientWidth + 'px' : '无 #cd-dirty');
+    // 分支前缀必须是内联 SVG，不能是 '⎇' 字符：Windows 默认字体没这个字形，
+    // 会 fallback 成 '⌥' 之类完全不相干的符号（状态栏早就为此改过，提交面板漏了一处）
+    const br = q('#cd-branch');
+    add('分支前缀是内联 SVG（不是 ⎇ 字符）',
+      !!br && !!br.querySelector('svg') && !/\u2387/.test(br.textContent),
+      br ? '文本=' + JSON.stringify(br.textContent) + ' svg=' + !!br.querySelector('svg') : '无 #cd-branch');
 
     sb.style.width = window.App.LAYOUT.sidebar.min + 'px';
     await sleep(450);

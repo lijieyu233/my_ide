@@ -749,8 +749,12 @@ textarea.editor {
 }
 #cd-branch {
   color: var(--green); cursor: pointer; padding: 1px 5px; border-radius: 4px; user-select: none;
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+  max-width: 90px; overflow: hidden; white-space: nowrap; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 4px;
 }
+/* 图标固定宽、名字可省略：原来是纯文本 + text-overflow，换成 SVG 后省略号要挂在名字那个 span 上 */
+#cd-branch svg.ic { width: 12px; height: 12px; flex-shrink: 0; }
+#cd-branch .cd-br-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #cd-branch:hover { background: var(--bg-hover); }
 /* ahead/behind + 修改数：标题行里**唯一允许被压缩**的一项（min-width:0 + 省略号）。
    右侧的拉取/推送是操作、不能被裁，所以让这段信息当缓冲垫 —— 挤的时候先省略它，

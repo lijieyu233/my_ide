@@ -314,7 +314,13 @@ const GitPanel = (() => {
     }
     // 标题栏分支信息（修改数/ahead-behind 由 updateAheadBehind 统一渲染）
     const br = document.getElementById('cd-branch');
-    if (br) br.textContent = '⎇ ' + state.branch;
+    if (br) {
+      // 分支名前缀用 SVG（不再用 '⎇' 字符，见 IC.branch 说明）；名字部分单独一个 span 负责省略号
+      br.innerHTML = IC.branch + '<span class="cd-br-nm"></span>';
+      const nm = br.querySelector('.cd-br-nm');
+      if (nm) nm.textContent = state.branch;
+      br.title = '当前分支 ' + state.branch + ' —— 点击切换分支 / 检出标签';
+    }
 
     // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
     filesEl.appendChild(buildToolbar());
@@ -652,6 +658,9 @@ const GitPanel = (() => {
     shelve: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="3" rx="1"/><path d="M3.6 6.4v5.6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V6.4M6.6 9h2.8"/></svg>',
     remote: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 9.6a2.6 2.6 0 0 0 3.9.3l1.9-1.9a2.6 2.6 0 0 0-3.7-3.7l-1.1 1.1"/><path d="M9.6 6.4a2.6 2.6 0 0 0-3.9-.3L3.8 8a2.6 2.6 0 0 0 3.7 3.7l1.1-1.1"/></svg>',
     log: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg>',
+    // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
+    // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
+    branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
   };
 
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）

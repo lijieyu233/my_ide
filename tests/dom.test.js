@@ -631,6 +631,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(body.includes('README.md'), '修改列表含 README.md');
     assert_(body.includes('未进行版本管理的文件'), '未进行版本管理的文件分节存在（PyCharm 文案）');
     assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
+    // 分支前缀必须是内联 SVG：'⎇' 在 Windows 默认字体里缺字形，会 fallback 成不相干符号
+    assert_($(dom, '#cd-branch').querySelector('svg'), '分支前缀是 SVG（不是 ⎇ 字符）');
+    assert_(!/\u2387/.test($(dom, '#cd-branch').textContent), '分支名文本里没有 ⎇');
     assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见（左侧停靠）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
