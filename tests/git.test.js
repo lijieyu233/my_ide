@@ -905,7 +905,8 @@ fs.mkdirSync(repo);
 
       const m = await NATIVE.merge(rp, 'feat');
       // ⚠ merge 冲突不是"失败"：git 退出码非 0，但仓库进入了 MERGING 状态 → 应当是 ok + conflict
-      assert.ok(m.ok, 'merge 不该被当成失败: ' + (m.error || ''));
+      // ⚠ 失败信息要带上整个返回（这台机器偶发"冲突被误判成失败"，只打 error 时它是空的）
+      assert.ok(m.ok, 'merge 不该被当成失败: ' + JSON.stringify(m).slice(0, 200));
       assert.strictEqual(m.conflict, true, '应报冲突');
       assert.strictEqual(m.state.state, 'MERGING', '状态应变成 MERGING');
       assert.strictEqual(m.state.target, 'feat', 'MERGE_MSG 里应还原出被合并的分支名');
@@ -935,7 +936,7 @@ fs.mkdirSync(repo);
       const rp = await mkConflictRepo('rebase');
       const before = fs.readFileSync(path.join(rp, 'a.txt'), 'utf8');
       const rb = await NATIVE.rebase(rp, 'feat');
-      assert.ok(rb.ok, 'rebase 不该被当成失败: ' + (rb.error || ''));
+      assert.ok(rb.ok, 'rebase 不该被当成失败: ' + JSON.stringify(rb).slice(0, 200));
       assert.strictEqual(rb.conflict, true, '应报冲突');
       const st = await NATIVE.opState(rp);
       assert.strictEqual(st.state, 'REBASING', '状态应变成 REBASING');
@@ -985,9 +986,18 @@ fs.mkdirSync(repo);
     });
 
     // ---- pull 策略：用本地 bare 仓库当 origin（不需要网络，命令行语义完全一致）----
-    const runGit = async (cwd, args) => {
-      const r = await NATIVE.run(args, { cwd, env: NATIVE.NO_EDIT });
-      assert.ok(r.ok, 'git ' + args.join(' ') + ' 失败: ' + (r.stderr || r.error));
+    // ⚠ 本机偶发：临时目录里的 bare 仓库会被扫描/短暂占用，push 刚写完 "To <url>" 就失败。
+    //   这是只读-幂等的本地操作，失败重试一次比让整轮测试假红好；失败信息要带 stdout
+    //   （git push 的进度与结论常常一个在 stderr、一个在 stdout，只打 stderr 会看不出原因）。
+    const runGit = async (cwd, args, tries = 2) => {
+      let r = null;
+      for (let i = 0; i < tries; i++) {
+        r = await NATIVE.run(args, { cwd, env: NATIVE.NO_EDIT });
+        if (r.ok) return r;
+        await new Promise((res) => setTimeout(res, 400));
+      }
+      assert.ok(false, 'git ' + args.join(' ') + ' 失败: '
+        + [(r.stderr || '').trim(), (r.stdout || '').trim(), r.error].filter(Boolean).join(' | ').slice(0, 400));
       return r;
     };
     await okAsync('M4 收尾：pull 策略 —— ff-only 拒绝分叉 / rebase 线性 / merge 建合并提交', async () => {

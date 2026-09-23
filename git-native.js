@@ -91,6 +91,18 @@ function run(args, { cwd, timeout = 15000, input = null, exe = null, env = null 
   });
 }
 
+// 本机偶发：临时/新写入的仓库会短暂被占用（扫描、锁），git 命令无辜失败（exit 128/lock）。
+// 只对**幂等**命令重试一次 —— merge / rebase 这类"重试会改变语义"的绝不能套这层。
+async function runRetry(args, opts, tries = 2) {
+  let r = null;
+  for (let i = 0; i < tries; i++) {
+    r = await run(args, opts);
+    if (r.ok) return r;
+    await new Promise((s) => setTimeout(s, 400));
+  }
+  return r;
+}
+
 // 不拉编辑器 / 不弹凭证框 / 不起后台 gc：所有可能触发交互或留后台进程的命令都套这一层。
 // ⚠ `GIT_OPTIONAL_LOCKS=0` 是实测加的：不加时 git 会顺手起后台 `gc --auto`，
 //   那个进程继承当前 stdio，会让「跑完命令的父进程」（npm test / 自检）卡在等管道关闭上。
@@ -217,7 +229,7 @@ const readTrim = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catc
 async function opState(repo) {
   const state = { state: 'NORMAL', target: '', onto: '', step: '', total: '' };
   try {
-    const dot = await run(['rev-parse', '--git-dir'], { cwd: repo, timeout: 5000 });
+    const dot = await runRetry(['rev-parse', '--git-dir'], { cwd: repo, timeout: 5000 });
     if (!dot.ok) return state;
     const g = path.isAbsolute(dot.stdout.trim()) ? dot.stdout.trim() : path.join(repo, dot.stdout.trim());
     const f = (n) => path.join(g, n);
@@ -251,11 +263,7 @@ async function opState(repo) {
 // ⚠ 本机偶发一次 `git diff` 非零退出（空 stderr，重试即成功 —— 环境层面的抖动，不是代码问题）；
 //   这是只读命令，失败重试一次比直接报错给用户体验好得多。
 async function conflicts(repo) {
-  let r = await run(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
-  if (!r.ok) {
-    await new Promise((s) => setTimeout(s, 250));
-    r = await run(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
-  }
+  const r = await runRetry(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
   if (!r.ok) return { ok: false, error: r.stderr.trim() || r.error, files: [] };
   const files = r.stdout.split('\0').map((s) => s.trim()).filter(Boolean);
   // 顺带给出每个文件是否已经解决（status --porcelain 里 UU=未解决，M /A = 已 add 过）
@@ -287,23 +295,40 @@ async function conflictSides(repo, file) {
 // 取某一侧覆盖冲突文件并标记为已解决（git checkout --ours/--theirs + git add）
 async function resolveFile(repo, file, side) {
   const flag = side === 'theirs' ? '--theirs' : '--ours';
-  const a = await run(['checkout', flag, '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  const a = await runRetry(['checkout', flag, '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
   if (!a.ok) return { ok: false, error: a.stderr.trim() || a.error };
-  const b = await run(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  const b = await runRetry(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
   return b.ok ? { ok: true } : { ok: false, error: b.stderr.trim() || b.error };
 }
 
 // merge：默认允许 fast-forward；noFf 强制建合并提交；ffOnly 只接受快进
+// ⚠ 本机有个必须绕的坑：刚跑完的 git 进程与随后的状态探测之间会偶发"看不见标记文件"
+//   （`rev-parse --git-dir` 瞬时失败 / MERGE_HEAD 还没可见），于是"冲突"被误判成"命令失败"。
+//   两者都是只读探测 → 多重试几次；真的失败也有上限（1.2s 内必然得出结论）。
+async function stateAfter(repo, want, tries = 5) {
+  let st = null;
+  for (let i = 0; i < tries; i++) {
+    st = await opState(repo);
+    if (!want || st.state === want) return st;
+    await new Promise((s) => setTimeout(s, 250));
+  }
+  return st;
+}
+
 async function merge(repo, ref, opts = {}) {
   const args = ['merge'];
   if (opts.noFf) args.push('--no-ff');
   if (opts.ffOnly) args.push('--ff-only');
   args.push('--', ref);
-  const r = await run(args, { cwd: repo, timeout: 30000, env: NO_EDIT });
-  const st = await opState(repo);
-  if (r.ok) return { ok: true, conflict: false, state: st, out: r.stdout.trim() };
-  // merge 冲突时 git 退出码非 0，但仓库进入了 MERGING —— 这不是"失败"，是"待你解决"
-  if (st.state === 'MERGING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+  let r = null, st = null;
+  for (let i = 0; i < 2; i++) {
+    r = await run(args, { cwd: repo, timeout: 30000, env: NO_EDIT });
+    if (r.ok) return { ok: true, conflict: false, state: await stateAfter(repo), out: r.stdout.trim() };
+    // merge 冲突时 git 退出码非 0，但仓库进入了 MERGING —— 这不是"失败"，是"待你解决"
+    st = await stateAfter(repo, 'MERGING');
+    if (st.state === 'MERGING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+    // 状态还是 NORMAL = 这条命令什么都没做（瞬时锁 / 探测抖动）→ 可以安全重试一次
+  }
   return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error, state: st };
 }
 
@@ -312,10 +337,14 @@ async function rebase(repo, ref) {
   //   "rebase 到 FETCH_HEAD/远程提交"时会报 `could not mark as interactive` 并把**整个 .git 删掉**
   //   （灾难级数据损失，试验 5+ 次全部复现；apply 后端 100% 正常，冲突时写 rebase-apply，
   //   opState 对两个目录都认）。别删这个参数。
-  const r = await run(['-c', 'rebase.backend=apply', 'rebase', '--', ref], { cwd: repo, timeout: 60000, env: NO_EDIT });
-  const st = await opState(repo);
-  if (r.ok) return { ok: true, conflict: false, state: st, out: r.stdout.trim() };
-  if (st.state === 'REBASING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+  const args = ['-c', 'rebase.backend=apply', 'rebase', '--', ref];
+  let r = null, st = null;
+  for (let i = 0; i < 2; i++) {
+    r = await run(args, { cwd: repo, timeout: 60000, env: NO_EDIT });
+    if (r.ok) return { ok: true, conflict: false, state: await stateAfter(repo), out: r.stdout.trim() };
+    st = await stateAfter(repo, 'REBASING');
+    if (st.state === 'REBASING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+  }
   return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error, state: st };
 }
 
@@ -371,7 +400,7 @@ async function branchDelete(repo, name, force) {
 async function resolveCustom(repo, file, content) {
   const abs = path.isAbsolute(file) ? file : path.join(repo, file);
   try { fs.writeFileSync(abs, String(content ?? ''), 'utf8'); } catch (e) { return { ok: false, error: String(e.message || e) }; }
-  const a = await run(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  const a = await runRetry(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
   return a.ok ? { ok: true } : { ok: false, error: a.stderr.trim() || a.error };
 }
 
