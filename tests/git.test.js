@@ -114,6 +114,27 @@ ok('topoSortNewestFirst：子提交先于父提交（链条连续）', () => {
 });
 
 console.log('[git 集成测试]');
+// 读 HEAD 里某文件的内容 / 读 index（暂存区）里那一份 —— 「提交事务」的断言靠这两个
+async function headText(repo, file) {
+  const oid = await git.resolveRef({ fs, dir: repo, ref: 'HEAD' });
+  const { blob } = await git.readBlob({ fs, dir: repo, oid, filepath: file });
+  return Buffer.from(blob).toString('utf8');
+}
+async function indexText(repo, file) {
+  let oid = null;
+  await git.walk({
+    fs, dir: repo, trees: [git.STAGE()],
+    map: async (fp, [st]) => {
+      if (!st) return 'null';
+      const t = await st.type();                 // walker 条目是带异步方法的对象，且返回 null 会剪掉子树
+      if (t === 'blob' && fp === file) oid = await st.oid();
+      return t;
+    },
+  });
+  if (!oid) return null;
+  const { blob } = await git.readBlob({ fs, dir: repo, oid });
+  return Buffer.from(blob).toString('utf8');
+}
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-test-'));
 const repo = path.join(tmp, 'repo');
 fs.mkdirSync(repo);
@@ -692,8 +713,10 @@ fs.mkdirSync(repo);
     assert.strictEqual((await headText('b.txt')).trim(), 'B2', '勾选的 b.txt 已提交');
     assert.strictEqual(fs.readFileSync(path.join(repo11, 'a.txt'), 'utf8').trim(), 'A2 staged',
       'a.txt 的工作区改动保留（没被提交吃掉）');
-    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status === 'modified'),
-      'a.txt 提交后回到「未暂存」，仍需用户处理');
+    // ⚠ 这句在 M1 改过：老实现提交前顺手把未勾选的暂存内容 unstage（"回到未暂存"），
+    //   M1 的提交事务改成**原样保留**用户的暂存状态 → 提交后 a.txt 仍然是已暂存（*modified）。
+    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status === '*modified'),
+      'a.txt 提交后仍留在暂存区（M1：不再替用户 unstage）');
   });
 
   await okAsync('.gitignore：addToGitignore / removeFromGitignore（落盘 + 忽略生效 + 幂等 + 未命中报错）', async () => {
@@ -735,6 +758,63 @@ fs.mkdirSync(repo);
     await G.addRemote(repo13, { name: 'mirror', url: 'https://example.invalid/b.git' });
     const lr = await G.listRemotes(repo13);
     assert.strictEqual(lr.remotes.length, 2, '配置 2 个远程后列表为 2');
+  });
+
+  // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但不许动用户的暂存区 ----------
+  // 场景来自 M1 需求原文：HEAD A=a0 B=b0；用户在终端 `git add A`（index A=a1）；
+  // 工作区 A=a1 B=b1；IDE 只勾 B 提交 → 新 HEAD 里 A 仍是 a0、B 是 b1，且 **A 依然留在暂存区**。
+  await okAsync('提交事务：只提交勾选的文件，外部暂存的内容原样保留', async () => {
+    const rp = path.join(tmp, 'repo-tx');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    // ⚠ 每个版本内容长度都不一样：isomorphic-git 的 statusMatrix 对「同尺寸 + 同秒写入」的文件
+    //   会命中 stat 缓存而漏报修改（racy-git 场景），测试数据必须避开，否则断言会时过时不过。
+    fs.writeFileSync(path.join(rp, 'a.txt'), 'a0\n');
+    fs.writeFileSync(path.join(rp, 'b.txt'), 'b0\n');
+    await G.commit(rp, { message: 'base', files: ['a.txt', 'b.txt'] });
+
+    fs.writeFileSync(path.join(rp, 'a.txt'), 'a1 staged\n');
+    await git.add({ fs, dir: rp, filepath: 'a.txt' });   // 模拟"终端里 git add A"
+    fs.writeFileSync(path.join(rp, 'b.txt'), 'b1 in worktree\n');    // B 未暂存
+
+    let st = await G.status(rp);
+    const ca = st.changed.find((c) => c.file === 'a.txt');
+    const cb = st.changed.find((c) => c.file === 'b.txt');
+    assert.ok(ca && ca.inIndexOnly === true, 'a.txt 应标为"整份在暂存区"');
+    assert.ok(cb && !cb.inIndexOnly, 'b.txt 不该标为在暂存区，got ' + JSON.stringify(cb));
+
+    const r = await G.commit(rp, { message: 'only b', files: ['b.txt'] });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.restored, 1, '应当有 1 个文件的暂存条目被原样还回');
+
+    assert.strictEqual(await headText(rp, 'a.txt'), 'a0\n', 'HEAD 里的 a.txt 不该被这次提交带走');
+    assert.strictEqual(await headText(rp, 'b.txt'), 'b1 in worktree\n', 'HEAD 里的 b.txt 应是工作区那份');
+    assert.strictEqual(await indexText(rp, 'a.txt'), 'a1 staged\n', 'a.txt 必须仍留在暂存区且仍是 a1');
+    st = await G.status(rp);
+    assert.ok(st.changed.find((c) => c.file === 'a.txt'), 'a.txt 提交后仍应显示为暂存中的变更');
+    assert.ok(!st.changed.find((c) => c.file === 'b.txt'), 'b.txt 提交后应变干净');
+  });
+
+  await okAsync('提交事务：暂存后又改过工作区的文件，还回的是"当时暂存的那一份"', async () => {
+    const rp = path.join(tmp, 'repo-tx2');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c0\n');
+    fs.writeFileSync(path.join(rp, 'd.txt'), 'd0\n');
+    await G.commit(rp, { message: 'base', files: ['c.txt', 'd.txt'] });
+
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c1 staged\n');
+    await git.add({ fs, dir: rp, filepath: 'c.txt' });   // 暂存 c1
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c2 in worktree\n');    // 工作区又改成 c2
+    fs.writeFileSync(path.join(rp, 'd.txt'), 'd1 in worktree\n');
+
+    const r = await G.commit(rp, { message: 'only d', files: ['d.txt'] });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(await headText(rp, 'c.txt'), 'c0\n', 'HEAD 的 c.txt 不动');
+    assert.strictEqual(await indexText(rp, 'c.txt'), 'c1 staged\n', '还回的是当时暂存的 c1，不是工作区的 c2');
+    const st = await G.status(rp);
+    const cc = st.changed.find((x) => x.file === 'c.txt');
+    assert.ok(cc && cc.status === '*modified', 'c.txt 应是「暂存+未暂存」，got ' + (cc && cc.status));
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

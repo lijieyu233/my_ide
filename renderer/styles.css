@@ -850,6 +850,34 @@ textarea.editor {
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 6px 8px; font-size: .96em; font-family: inherit; outline: none;
 }
+/* ---------- 只读分节（「已暂存（外部）」/ 非活动变更列表）----------
+   M1：index 里已有的内容只展示、不增删；非活动列表也不参与本次提交。
+   表达上整节降一级（不给勾选框、文字压暗），避免它看起来"可以操作"。 */
+.git-sec-title.ro .sec-name { color: var(--text-dim); font-weight: 500; }
+.sec-ro {
+  flex-shrink: 0; font-size: .74em; line-height: 14px; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+}
+.sec-note { margin-left: auto; font-size: .8em; color: var(--text-dim); white-space: nowrap; }
+.cf-lock { width: 13px; flex-shrink: 0; text-align: center; color: var(--text-dim); opacity: .55; }
+.git-file.ro { cursor: default; opacity: .7; }
+.git-file.ro:hover { background: transparent; }
+
+/* 「移入变更列表」弹窗 */
+.cl-file { font-size: 12.5px; color: var(--text-bright); word-break: break-all; margin-bottom: 4px; }
+.cl-cur { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.cl-item {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px;
+  border: 1px solid var(--border); margin-bottom: 4px;
+}
+.cl-item.active { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.cl-item.cur { background: var(--bg-hover); }
+.cl-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.cl-badge { flex-shrink: 0; font-size: .74em; color: var(--text-dim); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.cl-item .cl-set, .cl-item .cl-move { flex-shrink: 0; padding: 2px 8px; font-size: 12px; }
+.cl-tip { margin-top: 10px; font-size: 11.5px; color: var(--text-dim); line-height: 1.6; }
+.cl-tip code { background: var(--bg-input); border-radius: 3px; padding: 0 4px; font-size: 11px; }
+
 #commit-msg:focus { border-color: var(--accent); }
 .commit-foot { display: flex; align-items: center; gap: 8px; }
 .commit-foot .m-check { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }

@@ -38,17 +38,20 @@ async function currentBranch(root) {
 function matrixToStatus(m) {
   const [, h, w, s] = m;
   const H = h > 0, W = w > 0, S = s > 0;
+  // inIndexOnly：这份变更**整份已经在 index 里**（stage=2 = index 与工作区一致）。
+  // stage=3（index 与工作区不一致）说明 index 与工作区各有一份改动，不算「只在暂存区」。
+  const inIndexOnly = s === 2;
   if (!H && !W && !S) return null;                       // 不存在
   if (H && W && S && h === w && w === s) return null;    // 未修改
-  if (!H && W && !S) return { status: 'added', label: '新增' };                    // 未跟踪
-  if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增' }; // 已暂存新增（或暂存后又改）
-  if (H && !W && !S) return { status: 'deleted', label: '已删除' };                  // 工作区删除
-  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）' };
-  if (H && W && !S) return { status: 'modified', label: '已修改' };
+  if (!H && W && !S) return { status: 'added', label: '新增', inIndexOnly };                    // 未跟踪
+  if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增', inIndexOnly }; // 已暂存新增（或暂存后又改）
+  if (H && !W && !S) return { status: 'deleted', label: '已删除', inIndexOnly };                  // 工作区删除
+  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）', inIndexOnly };
+  if (H && W && !S) return { status: 'modified', label: '已修改', inIndexOnly };
   // H && W && S：有修改
-  if (h === s) return { status: 'modified', label: '已修改' };        // [1,2,1] 未暂存
-  if (w === s) return { status: '*modified', label: '已修改（已暂存）' }; // [1,2,2]
-  return { status: '*modified', label: '已修改（暂存+未暂存）' };          // [1,2,3]
+  if (h === s) return { status: 'modified', label: '已修改', inIndexOnly };        // [1,2,1] 未暂存
+  if (w === s) return { status: '*modified', label: '已修改（已暂存）', inIndexOnly }; // [1,2,2]
+  return { status: '*modified', label: '已修改（暂存+未暂存）', inIndexOnly };          // [1,2,3]
 }
 
 // ---------- .gitignore 支持（isomorphic-git statusMatrix 不解析 .gitignore，需自行过滤）----------
@@ -163,7 +166,7 @@ async function status(dir) {
             headText.replace(/\r\n/g, '\n') === raw.toString('utf8').replace(/\r\n/g, '\n')) continue;
       }
     }
-    changed.push({ file: native(row[0]), status: st.status, label: st.label });
+    changed.push({ file: native(row[0]), status: st.status, label: st.label, inIndexOnly: !!st.inIndexOnly });
   }
   changed.sort((a, b) => a.file.localeCompare(b.file));
   return { isRepo: true, root, branch, changed };
@@ -293,10 +296,61 @@ async function getAuthor(root) {
 //   所以「未勾选但已在 index 里」的文件必须显式 resetIndex 取消暂存，否则它会被一起提交
 //   （老实现只 add 不 unstage → 取消勾选形同虚设，且暂存内容会被这次提交"吃掉"）。
 //   resetIndex 只改 index，不动工作区 → 未勾选的改动仍留在工作区，提交后照常显示为未暂存。
+// ---------- index（暂存区）工具：提交事务要用 ----------
+// .git 可能是文件（worktree / submodule 的 gitdir 指针），别假设它是目录
+function resolveGitDir(root) {
+  const g = path.join(root, '.git');
+  try {
+    if (fs.statSync(g).isDirectory()) return g;
+    const txt = fs.readFileSync(g, 'utf8');
+    const m = txt.match(/^gitdir:\s*(.+)$/mi);
+    if (m) return path.resolve(root, m[1].trim());
+  } catch {}
+  return g;
+}
+
+// 读 index 里每个条目的 {oid, mode}（提交事务要在改 index 之前留好"原件"）
+// ⚠ walker 给的是**带异步方法的条目对象**（`await e.type()` / `await e.oid()` / `await e.mode()`），
+//   不是普通对象；而且 `map` 返回 null 会把整棵子树剪掉（实测只吐根目录一条）→ 目录必须返回真值。
+async function readIndexEntries(root) {
+  const map = new Map();
+  try {
+    await git.walk({
+      fs, dir: root, cache: {},
+      trees: [git.STAGE()],
+      map: async (filepath, [stage]) => {
+        if (!stage) return 'null';
+        const t = await stage.type();
+        if (t !== 'blob') return t;
+        map.set(posix(filepath), { oid: await stage.oid(), mode: await stage.mode() });
+        return t;
+      },
+    });
+  } catch {}
+  return map;
+}
+
 async function commit(dir, { message, files, amend = false, author: authorOverride }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const author = authorOverride || await getAuthor(root);
+  // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但**不许动用户的暂存区** ----------
+  // 背景：`git.commit()` 提交的是"当前 index 那一棵树"，而 index 是全仓库一份（.git/index）。
+  // 所以"只提交勾选的文件"必然要先临时把 index 改成"只有勾选内容"的样子 —— 老实现只做了这一步，
+  // 提交完就不管了，于是"用户在终端 git add 过、这次没勾"的内容会被顺手 unstage（真实的数据损失）。
+  //
+  // 事务三步：
+  //   ① 改 index 之前，把 index 里每个条目的 {oid, mode} 留一份（readIndexEntries）
+  //   ② 临时把未勾选文件的 index 条目退回 HEAD（resetIndex）→ 只暂存勾选内容 → commit
+  //   ③ 用 updateIndex 把①里记下的条目**原样写回**（其余文件的暂存状态一点不变）
+  // 例：HEAD A=a0 B=b0，用户终端 `git add A`（index A=a1），工作区 A=a1 B=b1；IDE 只勾 B。
+  //     → 提交后 HEAD A=a0 B=b1，index 仍是 A=a1（仍 staged）+ B=b1（与新 HEAD 一致，干净）。
+  const idxEntries = await readIndexEntries(root);
+  const idxPath = path.join(resolveGitDir(root), 'index');
+  let idxBytes = null;
+  try { if (fs.existsSync(idxPath)) idxBytes = fs.readFileSync(idxPath); } catch {}
+  const touched = [];   // 我们改过 index 条目的文件（提交后要还回去）
+  let committed = false;
   try {
     if (files) {
       const sel = new Set(files.map((f) => posix(f)));
@@ -306,9 +360,9 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
         const p = posix(row[0]);
         if (sel.has(p)) continue;
         const [, h, , s] = row;
-        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 取消暂存
+        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 先把暂存内容挪开，保证不混进本次提交
         if (s > 0 && s !== h) {
-          try { await git.resetIndex({ fs, dir: root, filepath: p }); } catch {}
+          try { await git.resetIndex({ fs, dir: root, filepath: p }); touched.push(p); } catch {}
         }
       }
     }
@@ -323,9 +377,30 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
       }
     }
     const r = await git.commit({ fs, dir: root, message, author, amend });
-    return { ok: true, oid: r };
+    committed = true;
+    // ③ 把①里记下的 index 条目原样写回（含"暂存后又改过"的情形：写回的是当时的 oid，不是工作区内容）
+    for (const p of touched) {
+      const e = idxEntries.get(p);
+      try {
+        if (e) await git.updateIndex({ fs, dir: root, filepath: p, oid: e.oid, mode: e.mode });
+        else await git.updateIndex({ fs, dir: root, filepath: p, remove: true });
+      } catch {}
+    }
+    // 本次提交带走的文件：index 拉回与新 HEAD 一致（否则会显示成"暂存了回退内容"）
+    if (files && files.length) {
+      for (const f of files) {
+        try {
+          if (fs.existsSync(path.join(root, f))) await git.add({ fs, dir: root, filepath: posix(f), force: true });
+          else await git.remove({ fs, dir: root, filepath: posix(f) });
+        } catch {}
+      }
+    }
+    return { ok: true, oid: r, restored: touched.length };
   } catch (e) {
-    return { ok: false, error: String(e.message || e) };
+    // 事务失败：尽量把 index 恢复到进入时的样子（字节级兜底），别把用户的暂存状态弄丢
+    if (idxBytes) { try { fs.writeFileSync(idxPath, idxBytes); } catch {} }
+    else { try { for (const p of touched) await git.resetIndex({ fs, dir: root, filepath: p }); } catch {} }
+    return { ok: false, error: String(e.message || e) + (committed ? '（提交已产生，但暂存区恢复失败）' : '') };
   }
 }
 

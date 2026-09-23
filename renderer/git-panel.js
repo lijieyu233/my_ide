@@ -30,12 +30,84 @@ const GitPanel = (() => {
 
   // 勾选集合与最新状态同步：消失的移除，新出现的默认勾选
   // （「忽略的文件」不参与自动勾选/移除 —— 它们是用户显式展开、显式勾的）
+  // ⚠ 「已在暂存区」的文件同样不参与自动勾选：它们在自己的只读分节里，
+  //    M1 不改动它们的暂存状态（用户终端 git add 过的东西不该被 IDE 顺手提交/清掉）。
   function syncChecked() {
     if (!state || !state.changed) return;
     const cur = new Set(state.changed.map((c) => c.file));
-    for (const f of [...checked]) if (!cur.has(f) && !ignoredAll.has(f)) checked.delete(f);
-    for (const f of cur) if (!knownFiles.has(f)) checked.add(f);
+    for (const f of [...checked]) if ((!cur.has(f) || isInIndexOnly(f)) && !ignoredAll.has(f)) checked.delete(f);
+    for (const f of cur) if (!knownFiles.has(f) && !isInIndexOnly(f)) checked.add(f);
     knownFiles = cur;
+  }
+  const isInIndexOnly = (f) => {
+    const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
+    return !!(c && c.inIndexOnly);
+  };
+
+  // ---------- 变更列表（Changelist）：命名分组 + 活动列表 + 随项目持久化 ----------
+  // 存储：<项目根>/.myide/changelists.json（与 tasks.json 同思路：随项目走、可进 git）；
+  // 写失败 / 只读盘 → 降级 localStorage（数据不能丢）。文件归属只记「非 Default 列表」，
+  // 不在任何列表里 = 属于 Default —— 工作区永远是事实来源，列表只存归属覆盖。
+  const CL_LSKEY = (p) => 'myide-changelists:' + p;
+  const CL_FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/changelists.json' : null);
+  let cls = { active: 'default', lists: [] };   // lists: [{id, name, files:[posix 相对路径]}]
+  const clPath = (f) => String(f == null ? '' : f).replace(/\\/g, '/');
+  function clNormalize(raw) {
+    const o = raw && typeof raw === 'object' ? raw : {};
+    const lists = Array.isArray(o.lists) ? o.lists
+      .filter((l) => l && l.id && l.id !== 'default' && l.name)
+      .map((l) => ({ id: String(l.id), name: String(l.name), files: Array.isArray(l.files) ? l.files.map(clPath) : [] })) : [];
+    const active = o.active && (o.active === 'default' || lists.some((l) => l.id === o.active)) ? o.active : 'default';
+    return { active, lists };
+  }
+  async function loadCls() {
+    const f = CL_FILE(root);
+    if (!f) { cls = { active: 'default', lists: [] }; return; }
+    let raw = null;
+    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    if (!raw) { try { raw = JSON.parse(localStorage.getItem(CL_LSKEY(root)) || 'null'); } catch {} }
+    cls = clNormalize(raw);
+    render();
+  }
+  function saveCls() {
+    // 锁定写入目标：排队期间用户可能已经切项目（tasks.js 踩过这个串档坑）
+    const snapRoot = root, f = CL_FILE(root), data = JSON.stringify(cls, null, 2);
+    try { localStorage.setItem(CL_LSKEY(snapRoot), data); } catch {}
+    if (!f) return;
+    (async () => {
+      try {
+        const dir = f.slice(0, f.lastIndexOf('/'));
+        await window.myIDE.fs.mkdir(dir);
+        await window.myIDE.fs.writeFile(f, data);
+      } catch {}
+    })();
+  }
+  const clNameOf = (id) => (id === 'default' ? 'Default' : ((cls.lists.find((l) => l.id === id) || {}).name || id));
+  function clListOf(file) {
+    const p = clPath(file);
+    for (const l of cls.lists) if (l.files.indexOf(p) >= 0) return l.id;
+    return 'default';
+  }
+  function clMoveTo(file, lid) {
+    const p = clPath(file);
+    for (const l of cls.lists) l.files = l.files.filter((x) => x !== p);
+    const t = cls.lists.find((l) => l.id === lid);
+    if (t && t.files.indexOf(p) < 0) t.files.push(p);
+    saveCls();
+    render();
+    MI.toast(t ? '已移入「' + t.name + '」' : '已移回 Default', 'ok');
+  }
+  function clNew(name) {
+    const id = 'cl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    cls.lists.push({ id, name: String(name).trim(), files: [] });
+    saveCls();
+    return id;
+  }
+  function clSetActive(lid) {
+    cls.active = lid;
+    saveCls();
+    render();
+    MI.toast('活动变更列表：' + clNameOf(lid), 'ok');
   }
 
   // ---------- 远程凭证（localStorage myide-git-auth-map：按主机 {host:{username,password}}，多主机互不覆盖）----------
@@ -494,27 +566,71 @@ const GitPanel = (() => {
   function renderSection(sec) {
     const wrap = document.createElement('div');
     const head = document.createElement('div');
-    head.className = 'git-sec-title';
+    head.className = 'git-sec-title' + (sec.readonly ? ' ro' : '');
     const caret = document.createElement('span');
     caret.className = 'caret';
     caret.textContent = secCollapsed[sec.key] ? '▸' : '▾';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.title = '勾选 / 取消「' + sec.title + '」下的全部文件';
     const label = document.createElement('span');
     label.className = 'sec-name';
     label.textContent = sec.title + ' ' + sec.items.length + ' 个文件';
     head.appendChild(caret);
-    head.appendChild(cb);
+    // 只读分节（「已暂存」）：没有复选框 —— 里面的内容是 index 里已有的，M1 不替用户增删
+    if (sec.readonly) {
+      const ro = document.createElement('span');
+      ro.className = 'sec-ro';
+      ro.textContent = '只读';
+      ro.title = sec.roTip || '这些内容已经在 Git 暂存区（index）里。提交本次勾选时它们原样保留，不会被 unstage。';
+      head.appendChild(ro);
+    } else {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.title = '勾选 / 取消「' + sec.title + '」下的全部文件';
+      head.appendChild(cb);
+      const files = sec.items.map((c) => c.file);
+      registerCheckNode(cb, files);
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => setCheckedFiles(files, cb.checked);
+      head.dataset.cb = '1';
+    }
     head.appendChild(label);
-    head.title = '点击标题收起 / 展开此节';
+    if (sec.note) {
+      const nt = document.createElement('span');
+      nt.className = 'sec-note';
+      nt.textContent = sec.note;
+      head.appendChild(nt);
+    }
+    head.title = sec.readonly ? label.title : '点击标题收起 / 展开此节';
+    // 非活动变更列表的分节头：右键 = 设为活动列表 / 整节移回 Default
+    if (sec.cl) {
+      head.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        const mk = (label, fn, danger) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (danger ? ' danger' : '');
+          d.textContent = label;
+          d.onclick = () => { menu.classList.add('hidden'); fn(); };
+          menu.appendChild(d);
+        };
+        mk('✓ 设为活动列表', () => clSetActive(sec.cl));
+        mk('↩ 全部移回 Default', () => {
+          const t = cls.lists.find((l) => l.id === sec.cl);
+          if (t) { const ps = sec.items.map((c) => clPath(c.file)); t.files = t.files.filter((x) => ps.indexOf(x) < 0); }
+          saveCls();
+          render();
+          MI.toast('已移回 Default', 'ok');
+        });
+        menu.classList.remove('hidden');
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+        menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+      };
+    }
 
     const body = document.createElement('div');
     body.className = 'git-sec-body';
-    const files = sec.items.map((c) => c.file);
-    registerCheckNode(cb, files);
-    cb.onclick = (e) => e.stopPropagation();
-    cb.onchange = () => setCheckedFiles(files, cb.checked);
 
     const toggle = () => {
       const now = body.style.display === 'none';
@@ -523,19 +639,21 @@ const GitPanel = (() => {
       secCollapsed[sec.key] = !now;
       saveSecCollapse(secCollapsed);
     };
-    head.onclick = (e) => { if (e.target === cb) return; toggle(); };
+    head.onclick = (e) => { if (e.target.type === 'checkbox') return; toggle(); };
     if (secCollapsed[sec.key]) body.style.display = 'none';
-    body.appendChild(groupByDir ? renderDirTree(buildDirTree(sec.items), 1, sec.key) : buildFlatList(sec.items));
+    body.appendChild(groupByDir
+      ? renderDirTree(buildDirTree(sec.items), 1, sec.key, !!sec.readonly)
+      : buildFlatList(sec.items, !!sec.readonly));
     wrap.appendChild(head);
     wrap.appendChild(body);
     return wrap;
   }
 
   // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前
-  function buildFlatList(items) {
+  function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
     return box;
   }
 
@@ -566,17 +684,31 @@ const GitPanel = (() => {
     render();
   }
 
-  // 变更文件分节：已跟踪（更改）/ 未进行版本管理的文件（PyCharm 同名文案），节内按顶层目录分组
+  // 变更文件分节：更改（= 活动变更列表）/ 其它变更列表（只读）/ 未跟踪 / 已暂存（只读）
+  // M1 的语义：*可勾选的只有「活动列表里的文件」*；「已暂存」与「其它列表」都只展示。
   function fileSections() {
-    const sections = [
-      { key: 'changes', title: '更改', items: [] },
-      { key: 'untracked', title: '未进行版本管理的文件', items: [] },
-    ];
+    const changes = [], untracked = [], staged = [], other = new Map();
     for (const c of state.changed) {
-      if (c.status === 'added') sections[1].items.push(c);
-      else sections[0].items.push(c);
+      if (c.inIndexOnly) { staged.push(c); continue; }   // 整份已在 index → 只读展示，本次提交不带它
+      const lid = clListOf(c.file);
+      if (lid !== cls.active) {
+        if (!other.has(lid)) other.set(lid, []);
+        other.get(lid).push(c);
+        continue;
+      }
+      if (c.status === 'added') untracked.push(c);
+      else changes.push(c);
     }
-    return sections.filter((s) => s.items.length);
+    const out = [];
+    out.push({ key: 'changes', title: '更改', items: changes,
+      note: cls.active !== 'default' ? '列表：' + clNameOf(cls.active) : '' });
+    for (const [lid, items] of other) {
+      out.push({ key: 'cl:' + lid, title: clNameOf(lid), items, readonly: true, cl: lid, note: '非活动列表',
+        roTip: '这个变更列表不是活动列表，本次提交不包含它 —— 右键本节可「设为活动列表」' });
+    }
+    out.push({ key: 'untracked', title: '未进行版本管理的文件', items: untracked });
+    out.push({ key: 'staged', title: '已暂存（外部）', items: staged, readonly: true, note: '保持不动' });
+    return out.filter((s) => s.items.length);
   }
 
   // 大节（变更 / 未版本控制的文件）收起状态：用户偏好，全局持久化
@@ -679,7 +811,7 @@ const GitPanel = (() => {
   }
 
   // 递归渲染目录树：目录行（三态复选框 + 名称 + 计数）+ 文件行，按深度缩进
-  function renderDirTree(node, depth, secKey) {
+  function renderDirTree(node, depth, secKey, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
     const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
@@ -692,8 +824,6 @@ const GitPanel = (() => {
       gTitle.style.paddingLeft = (8 + depth * 14) + 'px';
       const caret = document.createElement('span');
       caret.className = 'caret';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
       const nm = document.createElement('span');
       nm.className = 'g-name';
       nm.textContent = name;
@@ -701,23 +831,36 @@ const GitPanel = (() => {
       ct.className = 'g-count';
       ct.textContent = count + ' 个文件';
       gTitle.appendChild(caret);
-      gTitle.appendChild(cb);
+      // 只读分节的目录行同样不给复选框
+      let cb = null;
+      if (ro) {
+        const lk = document.createElement('span');
+        lk.className = 'cf-lock';
+        lk.textContent = '·';
+        gTitle.appendChild(lk);
+      } else {
+        cb = document.createElement('input');
+        cb.type = 'checkbox';
+        gTitle.appendChild(cb);
+      }
       gTitle.appendChild(nm);
       gTitle.appendChild(ct);
       gTitle.title = '点击收起 / 展开 ' + name;
 
-      const gBody = renderDirTree(child, depth + 1, secKey);
+      const gBody = renderDirTree(child, depth + 1, secKey, ro);
       const files = collectFiles(child);
-      registerCheckNode(cb, files);
-      cb.title = '勾选 / 取消 ' + name + ' 下的全部文件（' + files.length + '）';
-      cb.onclick = (e) => e.stopPropagation();
-      cb.onchange = () => setCheckedFiles(files, cb.checked);
+      if (cb) {
+        registerCheckNode(cb, files);
+        cb.title = '勾选 / 取消 ' + name + ' 下的全部文件（' + files.length + '）';
+        cb.onclick = (e) => e.stopPropagation();
+        cb.onchange = () => setCheckedFiles(files, cb.checked);
+      }
 
       const collapsed = dirCollapsed[pathKey] !== undefined ? !!dirCollapsed[pathKey] : dirAllCollapsed;
       caret.textContent = collapsed ? '▸' : '▾';
       if (collapsed) gBody.style.display = 'none';
       gTitle.onclick = (e) => {
-        if (e.target === cb) return;
+        if (cb && e.target === cb) return;
         const col = gBody.style.display === 'none';
         gBody.style.display = col ? '' : 'none';
         caret.textContent = col ? '▾' : '▸';
@@ -728,7 +871,7 @@ const GitPanel = (() => {
       box.appendChild(gBody);
     }
     for (const c of node.files.sort((a, b) => a.file.localeCompare(b.file))) {
-      box.appendChild(fileRow(c, depth));
+      box.appendChild(fileRow(c, depth, false, ro));
     }
     return box;
   }
@@ -747,9 +890,10 @@ const GitPanel = (() => {
   }
 
   // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
-  function fileRow(c, depth = 0, flat = false) {
+  // ro=true（只读分节，如「已暂存」）：不给勾选框、不给回滚按钮 —— 只展示、不动作
+  function fileRow(c, depth = 0, flat = false, ro = false) {
     const f = document.createElement('div');
-    f.className = 'git-file';
+    f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
     f.style.paddingLeft = (10 + depth * 14) + 'px';
     const parts = c.file.split(/[\\/]/);
@@ -762,13 +906,16 @@ const GitPanel = (() => {
     const letter = isIgnoredRow ? '?' : (isUntracked ? '?' : (LETTER[c.status] || 'M'));
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
-    f.innerHTML = `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>` +
+    f.innerHTML = (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
+                      : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
       (flat && parent ? `<span class="dir" title="${esc(parent)}">${esc(parent)}/</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
-      (isIgnoredRow ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
-    f.title = c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
-      ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
+      (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
+    f.title = ro
+      ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
+      : c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
+        ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
       e.preventDefault();
@@ -795,21 +942,24 @@ const GitPanel = (() => {
         if (root) { MI.copyText(root + (root.includes('\\') ? '\\' : '/') + c.file); MI.toast('已复制路径', 'ok'); }
       });
       mk('🕘 显示历史', () => { if (window.GitLog && GitLog.showFileHistory) GitLog.showFileHistory(root + (root.includes('\\') ? '\\' : '/') + c.file); });
+      if (!isIgnoredRow && !ro) mk('📁 移入变更列表…（当前：' + clNameOf(clListOf(c.file)) + '）', () => openChangelistDialog(c.file));
       if (isIgnoredRow) {
         mk('✅ 不再忽略（从 .gitignore 移除）', async () => {
           const r = await gitSafe('removeFromGitignore', root, c.file);
           if (r.ok) { MI.toast('已从 .gitignore 移除 ' + c.file, 'ok'); invalidateIgnored(); refresh(); }
           else MI.toast('移除失败: ' + r.error, 'err');
         });
-      } else {
+      } else if (!ro) {
         mk('🚫 添加到 .gitignore', async () => {
           const r = await gitSafe('addToGitignore', root, c.file);
           if (r.ok) { MI.toast(r.skipped ? '已在 .gitignore 中' : '已添加 ' + r.pattern + ' 到 .gitignore', 'ok'); invalidateIgnored(); refresh(); }
           else MI.toast('添加失败: ' + r.error, 'err');
         });
       }
-      if (!isIgnoredRow) mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
-      if (!isIgnoredRow) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
+      // ⚠ 只读分节（已暂存 / 非活动列表）不提供会改动 index 或工作区的操作：
+      //    M1 不替用户处理暂存区，回滚/搁置/忽略放在这里会和 index 状态打架。
+      if (!isIgnoredRow && !ro) mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
+      if (!isIgnoredRow && !ro) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
         const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
         const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
         if (!yes) return;
@@ -840,7 +990,8 @@ const GitPanel = (() => {
       cancelDiff(); // 取消在途 diff，防止晚到的渲染覆盖刚打开的文件
       if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
     };
-    f.querySelector('.cf-check').onchange = (e) => {
+    const cbEl = f.querySelector('.cf-check');   // 只读行没有勾选框
+    if (cbEl) cbEl.onchange = (e) => {
       if (e.target.checked) checked.add(c.file);
       else checked.delete(c.file);
       updateCheckUI();
@@ -1061,6 +1212,53 @@ const GitPanel = (() => {
       };
       listEl.appendChild(row);
     }
+  }
+
+  // ---------- 「移入变更列表」弹窗（M1：命名分组 + 活动列表）----------
+  function openChangelistDialog(file) {
+    if (!root) return;
+    const cur = clListOf(file);
+    const box = document.createElement('div');
+    box.id = 'cl-box';
+    Modal.show(box);
+    const all = [{ id: 'default', name: 'Default' }].concat(cls.lists.map((l) => ({ id: l.id, name: l.name })));
+    box.innerHTML = `
+      <div class="m-head">移入变更列表 <span class="x" id="cl-x">✕</span></div>
+      <div class="m-body">
+        <div class="cl-file" title="${esc(file)}">${esc(file)}</div>
+        <div class="cl-cur">当前：<b>${esc(clNameOf(cur))}</b> · 活动列表：<b>${esc(clNameOf(cls.active))}</b></div>
+        <div id="cl-list"></div>
+        <div class="br-new" style="margin-top:10px">
+          <input id="cl-new-input" type="text" placeholder="新建变更列表名…" spellcheck="false">
+          <button class="tb-btn" id="cl-new-btn">＋ 新建并移入</button>
+        </div>
+        <div class="cl-tip">活动列表里的文件才会出现在「更改」里、可勾选提交；其它列表只展示、不参与本次提交。<br>
+          列表归属存在项目里的 <code>.myide/changelists.json</code>（不进 Git 历史）。</div>
+      </div>`;
+    box.querySelector('#cl-x').onclick = () => Modal.hide();
+    const listBox = box.querySelector('#cl-list');
+    for (const l of all) {
+      const row = document.createElement('div');
+      row.className = 'cl-item' + (l.id === cur ? ' cur' : '') + (l.id === cls.active ? ' active' : '');
+      row.innerHTML = `<span class="cl-nm">${esc(l.name)}</span>` +
+        (l.id === cls.active ? '<span class="cl-badge">活动</span>' : '') +
+        (l.id === cur ? '<span class="cl-badge cur-badge">当前</span>' : '') +
+        `<button class="tb-btn cl-set" title="把「${esc(l.name)}」设为活动列表">设为活动</button>` +
+        `<button class="tb-btn cl-move" title="把此文件移入「${esc(l.name)}」">移入</button>`;
+      row.querySelector('.cl-move').onclick = () => { Modal.hide(); clMoveTo(file, l.id); };
+      row.querySelector('.cl-set').onclick = () => { clSetActive(l.id); Modal.hide(); };
+      listBox.appendChild(row);
+    }
+    const ni = box.querySelector('#cl-new-input');
+    box.querySelector('#cl-new-btn').onclick = () => {
+      const name = ni.value.trim();
+      if (!name) { MI.toast('请输入列表名', 'err'); return; }
+      const id = clNew(name);
+      Modal.hide();
+      clMoveTo(file, id);
+    };
+    ni.addEventListener('keydown', (e) => { if (e.key === 'Enter') box.querySelector('#cl-new-btn').click(); });
+    setTimeout(() => { try { ni.focus(); } catch {} }, 0);
   }
 
   // ---------- 分支切换弹窗 ----------
@@ -1639,7 +1837,14 @@ const GitPanel = (() => {
         if (hist) hist.classList.remove('active');
       }
       root = v;
+      loadCls();   // 变更列表随项目：切项目要换成该项目自己的列表（异步，读完自己 render）
     },
+    // 变更列表（M1）：给测试/自检用的读写口
+    openChangelistDialog, clMoveTo, clSetActive, clNameOf, clListOf,
+    get changelists() { return JSON.parse(JSON.stringify(cls)); },
+    set changelists(v) { cls = clNormalize(v); saveCls(); render(); },
+    get activeChangelist() { return cls.active; },
+    reloadChangelists: () => loadCls(),
   };
 })();
 window.GitPanel = GitPanel;

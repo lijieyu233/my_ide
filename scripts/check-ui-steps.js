@@ -806,6 +806,90 @@ module.exports = {
     return { R };
   },
 
+  // ---------- M1 提交模型：已暂存只读分节 + 变更列表（命名分组 / 活动列表 / 持久化） ----------
+  // ① 只读分节与 status 的 inIndexOnly 标志一致（不硬编码"存在与否" —— 仓库里有没有暂存内容是环境决定的）
+  // ② 变更列表：非活动列表成节且只读、活动列表并进「更改」、归属落盘到 <项目>/.myide/changelists.json
+  m1CommitModel: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const secByTitle = (name) => qa('#cd-files .git-sec-title').find((s) => {
+      const n = s.querySelector('.sec-name');
+      return n && n.textContent.indexOf(name) === 0;
+    });
+    const bodyOf = (name) => { const s = secByTitle(name); return s && s.nextElementSibling ? s.nextElementSibling : null; };
+    const bodyText = (name) => { const b = bodyOf(name); return b ? b.textContent : ''; };
+
+    window.App.showTool('git');
+    for (let i = 0; i < 40 && !q('#cd-files .git-file'); i++) await sleep(200);
+    await window.GitPanel.refresh();
+    await sleep(900);
+
+    // ① 「已暂存（外部）」只读分节：跟 status 的真实标志位对齐
+    const root = window.App.root;
+    const st = await window.myIDE.git.status(root);
+    const idxOnly = (st.changed || []).filter((c) => c.inIndexOnly);
+    const sec = secByTitle('已暂存（外部）');
+    const rows = bodyOf('已暂存（外部）') ? bodyOf('已暂存（外部）').querySelectorAll('.git-file').length : 0;
+    add('status 里「整份在暂存区」的文件数 = 只读分节行数', rows === idxOnly.length,
+      'status=' + idxOnly.length + ' 行=' + rows + (idxOnly.length ? ' [' + idxOnly.map((c) => c.file).slice(0, 3).join(', ') + ']' : ''));
+    add('只读分节没有勾选框（M1 不改 index）', !sec || !sec.querySelector('input[type="checkbox"]'),
+      sec ? '复选框=' + !!sec.querySelector('input[type="checkbox"]') : '当前没有已暂存文件 → 分节不显示（符合预期）');
+    if (sec) {
+      add('只读行带 .git-file.ro 且没有回滚按钮',
+        !!bodyOf('已暂存（外部）').querySelector('.git-file.ro') && !bodyOf('已暂存（外部）').querySelector('.git-revert'));
+      add('只读分节里 .cf-check 数量为 0', bodyOf('已暂存（外部）').querySelectorAll('.cf-check').length === 0);
+    }
+
+    // ② 变更列表：把一个文件移进新列表
+    const row = qa('#cd-files .git-file').find((r) => r.querySelector('.cf-check'));
+    const fname = row ? row.dataset.file : '';
+    add('找到一个可勾选的变更文件', !!fname, fname);
+    if (!fname) return { R };
+    const posixName = fname.replace(/\\/g, '/');
+    const base = fname.split(/[\\/]/).pop();
+    window.GitPanel.changelists = { active: 'default', lists: [{ id: 'clck', name: 'M1 自检列表', files: [posixName] }] };
+    await sleep(700);
+    const clSec = secByTitle('M1 自检列表');
+    add('非活动列表成节且只读（没有复选框）', !!clSec && !clSec.querySelector('input[type="checkbox"]'),
+      clSec ? clSec.textContent.trim().slice(0, 40) : '无该分节');
+    add('移入的文件显示在该列表下', bodyText('M1 自检列表').indexOf(base) >= 0, bodyText('M1 自检列表').trim().slice(0, 40));
+    add('它不再出现在「更改」里', bodyText('更改').indexOf(base) < 0, '「更改」里还有它');
+    const clFile = root.replace(/[\\/]+$/, '') + '/.myide/changelists.json';
+    let saved = null;
+    try { const r = await window.myIDE.fs.readFile(clFile); saved = r && r.content; } catch {}
+    add('归属落盘到 <项目>/.myide/changelists.json', !!(saved && saved.indexOf('M1 自检列表') >= 0),
+      saved ? clFile + ' · ' + String(saved).replace(/\s+/g, ' ').slice(0, 70) : '读不到 ' + clFile);
+
+    window.GitPanel.clSetActive('clck');
+    await sleep(700);
+    add('设为活动列表 → 该文件回到「更改」且可勾选',
+      bodyText('更改').indexOf(base) >= 0 && !secByTitle('M1 自检列表'),
+      '「更改」里有它=' + (bodyText('更改').indexOf(base) >= 0));
+    // 留一个"列表分节 + 只读分节"都在的画面给截图（清场交给下一步）
+    window.GitPanel.changelists = { active: 'default', lists: [{ id: 'clck', name: 'M1 自检列表', files: [posixName] }] };
+    await sleep(600);
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：清空变更列表（别把状态留给下一次运行） ----------
+  m1CommitModelCleanup: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.GitPanel.changelists = { active: 'default', lists: [] };
+    await sleep(600);
+    add('收尾：变更列表已清空（下次运行不会读到残留列表）',
+      (window.GitPanel.changelists.lists || []).length === 0, JSON.stringify(window.GitPanel.changelists));
+    add('收尾：列表分节已从界面消失',
+      ![...document.querySelectorAll('#cd-files .git-sec-title .sec-name')].some((n) => /M1 自检列表/.test(n.textContent)));
+    const files = [...document.querySelectorAll('#cd-files .git-file')];
+    add('收尾：文件列表仍在（面板没被清空）', files.length > 0, files.length + ' 行');
+    return { R };
+  },
+
   // ---------- Git 日志窗口（底部停靠）：截图 + 结构断言（文档要贴图） ----------
   gitLogWindow: async () => {
     const R = [];

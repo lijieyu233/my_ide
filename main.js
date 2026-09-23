@@ -1307,6 +1307,8 @@ app.whenReady().then(() => {
         } catch (e) { lines.push('     （提交窗口放大截图失败：' + String((e && e.message) || e).slice(0, 80) + '）'); }
         await run('Git 日志窗口（底部停靠 + 详情）', js(steps.gitLogWindow), 'check-ui-1p-gitlog.png');
         await run('Git 日志窗口（收尾：关掉）', js(steps.gitLogWindowClose));
+        await run('M1 提交模型（已暂存只读分节 + 变更列表）', js(steps.m1CommitModel), 'check-ui-1q-m1-changelist.png');
+        await run('M1 提交模型（收尾：清空变更列表）', js(steps.m1CommitModelCleanup));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

@@ -2565,6 +2565,55 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('M1 提交模型：已暂存只读分节 + 变更列表（命名分组 / 活动列表 / 持久化）', async () => {
+    const saveChanged = FAKE_GIT.changed.map((c) => ({ ...c }));
+    const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
+    const secByTitle = (name) => secTitles().find((s) => {
+      const n = s.querySelector('.sec-name');
+      return n && n.textContent.indexOf(name) === 0;
+    });
+    const bodyOf = (sec) => (sec ? sec.nextElementSibling : null);
+    const bodyText = (name) => { const b = bodyOf(secByTitle(name)); return b ? b.textContent : '(无此分节)'; };
+    try {
+      // ① 「整份已在 index 里」的文件 → 进只读分节，且不进提交集合
+      FAKE_GIT.changed = saveChanged.map((c) => (c.file === 'src/app.js' ? { ...c, inIndexOnly: true } : c));
+      await g(dom, 'GitPanel.openCommit()');
+      await g(dom, 'GitPanel.refresh()');   // openCommit 只 render，不重新拉 status
+      await tick(); await tick(); await tick();
+      const stagedSec = secByTitle('已暂存（外部）');
+      assert_(stagedSec, '出现「已暂存（外部）」分节');
+      assert_(!stagedSec.querySelector('input[type="checkbox"]'), '只读分节没有复选框');
+      assert_(bodyText('已暂存（外部）').includes('app.js'), '已暂存的文件列在只读分节里');
+      assert_(!bodyText('更改').includes('app.js'), '已暂存的文件不再出现在「更改」里');
+      assert_(bodyOf(stagedSec).querySelector('.git-file.ro'), '只读行带 .git-file.ro');
+      assert_(!bodyOf(stagedSec).querySelector('.cf-check'), '只读行没有 .cf-check（不可勾选）');
+      assert_(!bodyOf(stagedSec).querySelector('.git-revert'), '只读行没有回滚按钮');
+
+      // ② 变更列表：非活动列表只读、活动列表回到「更改」、归属落盘
+      await g(dom, 'GitPanel.changelists = { active: "default", lists: [{ id: "cl1", name: "当前任务", files: ["README.md"] }] }');
+      await tick(); await tick();
+      const clSec = secByTitle('当前任务');
+      assert_(clSec, '出现以列表名命名的分节');
+      assert_(!clSec.querySelector('input[type="checkbox"]'), '非活动列表只读（没有复选框）');
+      assert_(bodyText('当前任务').includes('README.md'), '移入的文件显示在该列表下');
+      assert_(!bodyText('更改').includes('README.md'), '非活动列表的文件不在「更改」里');
+      const clFile = Object.keys(FAKE_FS).find((k) => /changelists\.json$/.test(k));
+      assert_(clFile, '变更列表落盘到 .myide/changelists.json');
+      assert_(clFile && /当前任务/.test(FAKE_FS[clFile].content), '文件内容含列表名');
+
+      await g(dom, 'GitPanel.clSetActive("cl1")');
+      await tick(); await tick();
+      assert_(bodyText('更改').includes('README.md'), '设为活动列表后文件回到「更改」');
+      assert_(secByTitle('当前任务') === undefined, '活动列表不再单独成节（并进「更改」）');
+    } finally {
+      // 兜底还原：这个用例挂了也不能把仓库状态与列表漏给后面的用例
+      FAKE_GIT.changed = saveChanged;
+      await g(dom, 'GitPanel.changelists = { active: "default", lists: [] }');
+      await g(dom, 'GitPanel.closeDialog()');
+      await tick(); await tick();
+    }
+  });
+
   await okAsync('提交窗口右键菜单：添加到 .gitignore / 不再忽略 / 显示历史', async () => {
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
