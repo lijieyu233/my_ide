@@ -1293,6 +1293,20 @@ app.whenReady().then(() => {
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
         await run('提交面板标题行（窄侧栏不竖排）+ 内嵌预览出口', js(steps.commitTitleLayout), 'check-ui-1n-commit-narrow.png');
         await run('提交面板标题行（收尾：关预览 / 还原侧栏宽度）', js(steps.commitTitleLayoutReset));
+        // 提交窗口放大图：整窗截图里侧栏只有 340px、字号 13px 的元素根本看不清（文档/复盘要贴图）。
+        // 同样按元素实际位置裁剪，不硬编码坐标。放在收尾步骤之后 = 拍的是「默认宽度 + 预览关」的常态。
+        try {
+          const gb = await wc.executeJavaScript(
+            '(() => { const v = document.querySelector("#panel-git");'
+            + ' if (!v) return null; const r = v.getBoundingClientRect();'
+            + ' return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; })()');
+          if (gb && gb.width > 10) {
+            const n = await grab('check-ui-1o-commit-zoom.png', { x: gb.x, y: gb.y, width: gb.width, height: gb.height, scale: 2 });
+            lines.push('     截图 → check-ui-1o-commit-zoom.png (' + n + ' 字节，提交窗口 ' + gb.width + '×' + gb.height + ' @2x)');
+          }
+        } catch (e) { lines.push('     （提交窗口放大截图失败：' + String((e && e.message) || e).slice(0, 80) + '）'); }
+        await run('Git 日志窗口（底部停靠 + 详情）', js(steps.gitLogWindow), 'check-ui-1p-gitlog.png');
+        await run('Git 日志窗口（收尾：关掉）', js(steps.gitLogWindowClose));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

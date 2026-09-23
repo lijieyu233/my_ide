@@ -806,6 +806,47 @@ module.exports = {
     return { R };
   },
 
+  // ---------- Git 日志窗口（底部停靠）：截图 + 结构断言（文档要贴图） ----------
+  gitLogWindow: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.App.showTool('log');
+    for (let i = 0; i < 40 && !q('#gl-list .gl-row'); i++) await sleep(250);
+    await sleep(1200);
+    const p = q('#git-log-panel');
+    const h = p ? Math.round(p.getBoundingClientRect().height) : -1;
+    add('日志窗口打开（底部停靠）', !!p && !p.classList.contains('hidden') && h > 80, '高=' + h + 'px');
+    const rows = qa('#gl-list .gl-row');
+    add('左侧提交列表有行（图 + 列表同一行高）', rows.length > 0, rows.length + ' 行');
+    add('左侧有提交图 SVG（gitk 式车道）', !!q('#gl-left svg'), q('#gl-left svg') ? 'svg 存在' : '无 svg');
+    add('顶部有 refs 下拉（所有分支 / 当前分支 / 各分支）',
+      (q('#gl-ref') ? q('#gl-ref').options.length : 0) >= 2,
+      q('#gl-ref') ? [...q('#gl-ref').options].slice(0, 3).map((o) => o.textContent).join(' | ') : '无 #gl-ref');
+    if (rows.length) { rows[0].click(); await sleep(1600); }
+    const right = q('#gl-right');
+    add('点提交行 → 右侧出详情（提交头 + 变更文件）',
+      !!right && !!q('#gl-right .gl-dhead') && qa('#gl-right .gl-dfile').length > 0,
+      right ? qa('#gl-right .gl-dfile').length + ' 个文件 · 头=' + !!q('#gl-right .gl-dhead') : '无 #gl-right');
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：关掉日志窗口，把主区还给编辑器 ----------
+  gitLogWindowClose: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.GitLog.hide();
+    await sleep(500);
+    const p = q('#git-log-panel');
+    add('日志窗口已关（后面步骤的编辑区基线要干净）', !p || p.classList.contains('hidden'),
+      p ? 'hidden=' + p.classList.contains('hidden') : '无 #git-log-panel');
+    return { R };
+  },
+
   // ---------- 同屏「强焦点」普查：强调色同时用在多少个地方喊 ----------
   // 「乱」= 元素密度 × 区域明度差。密度这一半里最刺眼的是「同屏有几个东西在用 accent 喊」。
   // 判定口径：实心 accent 填充（α≥.5 且面积 ≥150px²）/ ≥2px 的 accent 边或伪元素条 /
