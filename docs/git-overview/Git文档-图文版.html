@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>开发文档-073 · Git 提交相关功能总览（现状清单 + UI/交互）</title>
+<title>MyIDE · Git 提交功能总览与下一阶段路线图</title>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #1a1a1a; color: #b9b9bd;
@@ -25,11 +25,13 @@
   tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
   img { max-width: 100%; border: 1px solid #2f2f2f; border-radius: 6px; background: #171717;
         display: block; margin: 14px 0; }
-  hr { border: none; border-top: 1px solid #2a2a2a; margin: 28px 0; }
+  hr { border: none; border-top: 2px solid #2a2a2a; margin: 48px 0; }
+  .part { color: #d9687d; font-size: 12.5px; letter-spacing: 1px; margin: 0 0 6px; }
   .meta { color: #7a7a7f; font-size: 12.5px; margin-bottom: 24px; }
 </style></head>
 <body><div class="wrap">
-<div class="meta">MyIDE 文档 · 图片已内联（单文件，可直接发给别人）· 源文件：docs/开发文档-073-Git提交功能总览.md</div>
+<div class="meta">MyIDE · Git 文档（图片已内联，单文件可直接发给别人）· 源文件：<code>docs/开发文档-073</code> + <code>docs/开发文档-074</code>，未做清单 <code>docs/待办-提交窗口剩余项.md</code></div>
+<div class="part">第一部分 · 现状总览</div>
 <h1>开发文档-073 · Git 提交相关功能总览（现状清单 + UI/交互）</h1>
 <blockquote>
 <p>用途：动手改/加 Git 功能前先看这份 —— 避免重复实现，也避免踩&quot;必须三处同改&quot;的坑。
@@ -38,10 +40,10 @@
 <strong>未做的部分</strong>看 <code>docs/待办-提交窗口剩余项.md</code>。</p>
 <p>📦 <strong>图文放一起的版本</strong>（原文 + 4 张截图在一个文件/一个包里，方便直接发给别人）：</p>
 <ul>
-<li><code>docs/git-overview/Git提交功能总览-图文版.html</code> —— 单文件，图片已 base64 内联，双击用浏览器打开即可</li>
-<li><code>docs/git-overview/Git提交功能总览-图文包.zip</code> —— <code>Git提交功能总览.md</code> + 上面那个 html + <code>img/</code> 4 张原图</li>
+<li><code>docs/git-overview/Git文档-图文版.html</code> —— 单文件，<strong>073 现状 + 074 路线图</strong>两篇都在里面，图片已 base64 内联，双击用浏览器打开即可</li>
+<li><code>docs/git-overview/Git提交功能总览-图文包.zip</code> —— 073 + 074 + <code>待办-提交窗口剩余项.md</code> + 上面那个 html + <code>img/</code> 4 张原图</li>
 </ul>
-<p>生成方式：改完本文后重跑 <code>node &lt;临时脚本&gt; md2html</code> 那套（把 md 里的 <code>![](img/x.png)</code> 内联成 data URI），再打包；
+<p>生成方式：改完 md 后重跑内联脚本（把 <code>![](img/x.png)</code> 换成 data URI 再拼成一份 HTML），再用 Python <code>zipfile</code> 打包；
 图片本身由 <code>electron . --check-ui</code> 产出后拷进 <code>docs/img/</code>。</p>
 </blockquote>
 <h2>0. 三层 + 一个约束</h2>
@@ -51,7 +53,14 @@
 </code></pre>
 <p><strong>约束</strong>：新增任何 git 能力都要<strong>同时改三处</strong>（<code>git-service.js</code> 导出 → <code>main.js</code> 的 <code>ipcMain.handle(&#39;git:xxx&#39;)</code> →
 <code>preload.js</code> 的 <code>window.myIDE.git.xxx</code>），并在 <code>tests/dom.test.js</code> 的 <code>myIDE.git</code> mock 里补一份，
-否则自检/单测跑不起来。isomorphic-git <strong>没有</strong> <code>add -p</code> / <code>merge</code> / <code>rebase</code> / hooks / credential helper。</p>
+否则自检/单测跑不起来。isomorphic-git <strong>没有</strong> <code>add -p</code> / <code>merge</code> / <code>rebase</code> / hooks。</p>
+<blockquote>
+<p>⚠ <strong>一处更正（2026-09-23）</strong>：本文早先写&quot;也没有 credential helper&quot;是<strong>错的</strong>。
+<code>git-service.js:940-960</code> 的 <code>systemCredentialFill()</code> 已经在用 <code>execFile(&#39;git&#39;, [&#39;credential&#39;,&#39;fill&#39;])</code>
+读<strong>系统 Git 凭证</strong>（按 protocol//host 进程内缓存），<code>:884</code> 还用 <code>git config --get-urlmatch http.proxy</code> 拿代理
+—— 也就是说<strong>原生 git 早就在被 spawn 了</strong>；按主机存的 <code>myide-git-auth-map</code> 只是没有 helper 时的兜底 UI。
+后续规划见 <code>docs/开发文档-074-Git下一阶段路线图（评审回应）.md</code>。</p>
+</blockquote>
 <p>当前 IPC 通道（38 个，<code>grep -o &quot;ipcMain.handle(&#39;git:[a-zA-Z]*&#39;&quot; main.js</code>）：</p>
 <pre><code>init status log logGraph commit diffWorkdir diffCommit compareRefs diffRefs commitFiles
 branches checkout createBranch discard discardFiles getUserConfig setUserConfig
@@ -578,5 +587,210 @@ addToGitignore removeFromGitignore listIgnored
 <li>提交窗口相关截图：<code>check-ui-1c-commit-panel.png</code>（第一轮）、<code>check-ui-1d-commit-parity.png</code>（PyCharm 对齐）、
 <code>check-ui-1n-commit-narrow.png</code>（最窄侧栏 + 内嵌预览）</li>
 </ul>
+
+<hr>
+<div class="part">第二部分 · 下一阶段路线图</div>
+<h1>开发文档-074 · Git 下一阶段路线图（对评审意见的回应）</h1>
+<blockquote>
+<p>输入：用户给的 PyCharm 2026.2 工作流对照评审（P0/P1/P2 表 + 13 条建议 + 五阶段排序）。
+配套：<code>docs/开发文档-073-Git提交功能总览.md</code>（现状）、<code>docs/待办-提交窗口剩余项.md</code>（已列未做项）。
+本文只做两件事：<strong>用代码事实校正评审里的判断</strong>，然后给出<strong>我认为该走的顺序</strong>。</p>
+</blockquote>
+<h2>0. 一句话</h2>
+<p>评审的方向<strong>大方向我同意</strong>（提交模型、后端、分支工作流是真的欠账），
+但里面两条最关键的&quot;问题描述&quot;<strong>与当前代码不符</strong> —— 如果照那个描述开工，会先做一个不需要做的重构。
+先把事实摆出来，再谈顺序。</p>
+<h2>1. 事实校正（都带代码位置）</h2>
+<h3>① 「勾选 = 实际操作 Git Index」——不成立（但结论仍然成立，只是位置不同）</h3>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>实际发生了什么</th>
+<th>位置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>点复选框</td>
+<td><strong>只改内存里的 <code>checked</code> Set</strong> + 刷 UI，<strong>不碰 index</strong></td>
+<td><code>renderer/git-panel.js:843-847</code></td>
+</tr>
+<tr>
+<td>点提交</td>
+<td>才拿这个集合去反推 index：不在集合里、且 index 与 HEAD 不一致的文件 → <code>resetIndex</code>（取消暂存）；集合里的文件 → <code>git add {force:true}</code> / <code>git remove</code></td>
+<td><code>git-service.js:306-313</code>、<code>:319</code></td>
+</tr>
+</tbody></table>
+<p>也就是说**&quot;提交选择&quot;这一层其实已经存在**（内存 Set + 提交时一次性物化），不是&quot;两件事混成一件&quot;。
+真正的问题有三个，比评审说的更具体、也更好修：</p>
+<ol>
+<li><strong>不持久</strong>：Set 在内存里，刷新/重开就回到&quot;全不勾&quot;。Changelist 缺的是<strong>命名 + 落盘</strong>（<code>.myide/changelists.json</code>），不是解耦。</li>
+<li><strong>提交时会把别人暂存的内容 unstage</strong>：你在终端 <code>git add</code> 过、或者上一次用 IDE 之外工具暂存过的东西，
+只要这次没勾，提交时会被 IDE <strong>顺手取消暂存</strong>（<code>:306-313</code> 那个循环）。
+这是&quot;IDE 把 index 当成自己的草稿区&quot;的直接后果 —— 评审担心的&quot;混在一起&quot;体现在这里，<strong>这条要修</strong>。</li>
+<li><strong>没有子文件粒度</strong>：<code>checked</code> 的粒度是 &quot;文件路径&quot;，没有任何 hunk/行 概念。</li>
+</ol>
+<p>→ 结论：<strong>别做&quot;把 Index 和选择分离&quot;的重构</strong>（已经分开了）；要做的是
+「Changelist（持久化 + 命名）+ 不动别人的暂存 + 子文件粒度」。工作量比评审估计的小一大截，收益一样。</p>
+<h3>② 「IDE 自己维护密码」——已经接了系统凭证，且<strong>已经在 spawn 原生 git</strong></h3>
+<ul>
+<li><code>git-service.js:940-960</code> <code>systemCredentialFill(url)</code> → <code>execFile(&#39;git&#39;, [&#39;credential&#39;,&#39;fill&#39;])</code>：
+<strong>已经直接用 Git Credential Helper</strong>（命令行存过的凭证可复用），结果按 <code>protocol//host</code> 进程内缓存。</li>
+<li><code>git-service.js:884</code> → <code>execFile(&#39;git&#39;, [&#39;-C&#39;, root, &#39;config&#39;,&#39;--get-urlmatch&#39;,&#39;http.proxy&#39;, url])</code>：代理也是问原生 git。</li>
+<li>按主机存的 <code>myide-git-auth-map</code> 只是<strong>没有 helper 的主机</strong>的兜底 UI（多台 Git 服务器场景）。</li>
+</ul>
+<p>→ 结论：<strong>&quot;接 Credential Helper&quot;不是新功能，是已有能力</strong>；要做的是「凭证优先级 UI 化」
+（显示 GitHub ✓ 已认证 / 来源是 Credential Manager 还是 IDE 兜底 / 冲突时怎么选），而不是推倒重来。
+另外这条也说明：<strong>原生 git 早就不是&quot;要不要引入&quot;的问题了，<code>execFile(&#39;git&#39;, ...)</code> 已经在跑</strong> ——
+评审 P0 的 Native Backend 是&quot;把已经在跑的东西<strong>正规化</strong>&quot;，而不是从零引依赖。</p>
+<h3>③ 其余核对</h3>
+<table>
+<thead>
+<tr>
+<th>评审说法</th>
+<th>事实</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pull 只有 fetch + fast-forward</td>
+<td>✅ 对，<code>git-service.js:1147</code> <code>fastForwardOnly: true</code>；分叉时文案把用户推给命令行</td>
+</tr>
+<tr>
+<td>没有 stash</td>
+<td>✅ 对，全仓库 <code>stash</code> 只出现在一句注释里（<code>git-service.js:1435</code> 「不依赖 git stash」）</td>
+</tr>
+<tr>
+<td>Shelve 自造存储</td>
+<td>✅ 对，内容 base64 存 <code>&lt;repo&gt;/.git/myide-shelves/</code></td>
+</tr>
+<tr>
+<td>没有 git 可执行文件路径配置</td>
+<td>✅ 对，设置页 Git 分类只有 user.name / user.email（<code>renderer/settings.js:381-400</code>）</td>
+</tr>
+<tr>
+<td>没有 merge / rebase / hooks / add -p</td>
+<td>✅ 对（isomorphic-git 无这些能力）</td>
+</tr>
+<tr>
+<td>我自己的 073 文档写&quot;<strong>没有 credential helper</strong>&quot;</td>
+<td>❌ <strong>我那句写错了</strong>，见 ②；已在 073 里改掉</td>
+</tr>
+</tbody></table>
+<h2>2. 逐条表态</h2>
+<table>
+<thead>
+<tr>
+<th>评审建议</th>
+<th>我的态度</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Native Git CLI Backend</td>
+<td><strong>同意，但按&quot;正规化&quot;做</strong>：<code>git -C &lt;root&gt; ...</code> 已有两处调用，先抽成 <code>GitBackend</code> 接口 + 能力探测，<strong>只把 merge/rebase/stash/hooks/credential 迁过去</strong>，现有 38 个通道行为不动</td>
+</tr>
+<tr>
+<td>Commit Selection 与 Index 分离</td>
+<td><strong>部分同意</strong>：分离已有，改成「持久化 + 不误 unstage 别人的暂存 + 子文件粒度」</td>
+</tr>
+<tr>
+<td>Changelist</td>
+<td><strong>同意，且建议第一个做</strong>（纯客户端概念，零 Git 风险，用户可感知最强）</td>
+</tr>
+<tr>
+<td>hunk / 行级部分提交</td>
+<td><strong>同意</strong>，但要排在 Backend 之后（native <code>git apply --cached</code> 比自研 patch 稳得多）</td>
+</tr>
+<tr>
+<td>Merge / Rebase / 冲突解决器</td>
+<td><strong>同意</strong>，这是&quot;像 IDE&quot;和&quot;真的能用&quot;的分界线</td>
+</tr>
+<tr>
+<td>分支弹窗升级成分支操作中心</td>
+<td><strong>同意</strong>（本地/远程、upstream、compare、merge/rebase 入口）</td>
+</tr>
+<tr>
+<td>Pull 支持 Merge / Rebase / FF-only</td>
+<td><strong>同意</strong>（顺带把&quot;分叉就把用户推去命令行&quot;的文案干掉）</td>
+</tr>
+<tr>
+<td>接 Git Credential Helper</td>
+<td><strong>已在做</strong>，改成「优先级 + 状态 UI 化」</td>
+</tr>
+<tr>
+<td>Shelf 与 Stash 分开</td>
+<td><strong>同意概念，不同意现在拆</strong>：先加 <code>git stash</code> 作为一等公民（apply/pop/drop/keep-index/include-untracked），Shelf 保留并加「导出/导入 patch」，两者在 UI 上明确标注来源，不重写已有稳定的 Shelve</td>
+</tr>
+<tr>
+<td>Before Commit</td>
+<td><strong>同意</strong>，且建议<strong>和 Hooks 一起做</strong>（同一套&quot;提交前跑命令 + 结果面板&quot;）</td>
+</tr>
+<tr>
+<td>Git Log 加 Branches Pane</td>
+<td><strong>同意</strong>（三栏：Branches ｜ Commits ｜ Changes / Commit Detail）</td>
+</tr>
+<tr>
+<td>Local History</td>
+<td><strong>同意，且我认为它在本项目里优先级比评审给的更高</strong> —— 见 §3</td>
+</tr>
+<tr>
+<td>Multi-root / Worktree / Submodule</td>
+<td><strong>同意放最后</strong></td>
+</tr>
+<tr>
+<td>视觉：工具行收 <code>⋮ More</code>、&lt;400px 自动走编辑区 diff</td>
+<td><strong>同意</strong>，但先别急：这个是&quot;等新功能进来之后再做&quot;的收纳动作，现在做等于白做一遍</td>
+</tr>
+</tbody></table>
+<p><strong>我明确反对的一条</strong>：评审末尾自己也点了 —— 不要做 <code>git.exec(任意字符串)</code> 这种通用通道。
+白名单操作（<code>git.branch.merge(...)</code>）必须保留，registry 只是省掉&quot;手抄三遍接口定义&quot;。</p>
+<h2>3. 我的额外一条：Local History × AI checkpoint</h2>
+<p>评审把 Local History 放 P1，我认为应该<strong>提前到提交模型之后</strong>，理由是本项目有 AI 改代码：</p>
+<ul>
+<li>触发点天然存在：<strong>AI 每次写文件前自动打一个 checkpoint</strong>（现在 AI 已经在写文件了，加一个快照钩子成本极低）。</li>
+<li>存储：<code>.myide/history/&lt;路径哈希&gt;/&lt;时间戳&gt;.snap</code> + 一个 <code>index.json</code>（含触发原因：编辑 / AI / 重构 / 运行配置）。</li>
+<li>UI 复用现有 diff 视图（<code>GitPanel.renderDiffView</code> 已是通用渲染器）。</li>
+<li>价值：<strong>&quot;AI 改坏了 → 一键回到那一步&quot;</strong>，这是 Git 给不了的（未提交的内容 Git 管不到），
+而 AI 大量改写文件恰恰让这个能力变成刚需。</li>
+</ul>
+<h2>4. 我建议的顺序（5 个里程碑）</h2>
+<p>每一步都能独立验收、独立回滚。</p>
+<h3>M1 · Changelist v1（纯客户端，零 Git 风险）</h3>
+<ul>
+<li>数据：<code>.myide/changelists.json</code>（与 <code>tasks.json</code> 同源同思路：随项目走，写失败降级 localStorage）</li>
+<li>渲染：活动列表正常渲染可勾选；其它列表折叠成 <code>▸ 列表名 N 个文件</code>（<strong>不可勾选</strong>，避免&quot;勾了却不提交&quot;的误导）</li>
+<li>操作：右键「移入变更列表…」、<code>F6</code>；文件不属于任何列表 = 属于 <code>Default</code></li>
+<li>同时修：提交时<strong>不再 unstage</strong> 未被选中但 index 与 HEAD 不一致的文件
+（改成：只 unstage &quot;本次勾选集合里被反选过的&quot;，其余保持原样，并在 UI 上提示&quot;检测到暂存内容&quot;）</li>
+<li>验收：新增自检步骤 + dom 用例；<code>--check-ui</code> 全绿</li>
+</ul>
+<h3>M2 · GitBackend 抽象 + 能力探测（行为不变）</h3>
+<ul>
+<li><code>git-service.js</code> → <code>backends/{native,isomorphic}.js</code>，<code>GitBackend</code> 接口；<code>execFile(&#39;git&#39;, ...)</code> 收口</li>
+<li>新增 <code>backend.info</code>（版本、能力位：<code>merge/rebase/stash/hooks/apply-cached</code>）</li>
+<li>设置页加「Git 可执行文件」路径（默认 <code>git</code>，可指定，如 WSL）</li>
+<li><strong>只迁</strong> merge / rebase / stash / hooks / apply-cached；其余留在 isomorphic，行为零变化</li>
+<li>验收：现有 38 通道全绿 + 新增能力探测断言</li>
+</ul>
+<h3>M3 · 子文件粒度提交（hunk / 行）</h3>
+<ul>
+<li>native <code>git apply --cached --unidiff-zero</code>（从 diff 生成 patch，按 hunk/行选择）</li>
+<li>UI：diff 视图每行加勾选位；工具栏补 <code>Stage/Unstage/Revert Hunk</code></li>
+<li>双区视图：<code>Changes</code>（未暂存）与 <code>Staged</code> 分开显示（此时才真正引入&quot;暂存区模式&quot;）</li>
+</ul>
+<h3>M4 · 分支工作流 + 冲突解决</h3>
+<ul>
+<li>统一操作状态机：<code>NORMAL / MERGING / REBASING / CHERRY_PICKING / REVERTING</code></li>
+<li>冲突面板（文件列表 + Yours/Theirs/Result 三方）+ <code>继续 / 跳过 / 终止</code></li>
+<li>Pull 策略：Merge / Rebase / FF-only；Push 用 <code>--force-with-lease</code></li>
+</ul>
+<h3>M5 · IDE 增值</h3>
+<p>Before Commit（lint/format/test + 结果面板，与 Hooks 同一套）→ Local History（AI checkpoint）→
+Git Log 三栏（Branches Pane）→ 工具行收 <code>⋮ More</code> → 高级 Git（interactive rebase / reset / worktree / submodule / multi-root / signing）</p>
+<h2>5. 需要拍板的三件事</h2>
+<ol>
+<li><strong>后端策略</strong>：<code>native 优先 + isomorphic 兜底</code>（我推荐，无 git 环境也能降级）／ 全面 native ／ 暂不动</li>
+<li><strong>M1 范围</strong>：只做「命名分组 + 活动列表 + 修误 unstage」／ 直接连「Staged 只读视图」一起做</li>
+<li><strong>是否接受&quot;IDE 依赖本机 git 可执行文件&quot;</strong>（评测里 PyCharm 也是要求配置 Git executable；差别只是我们允许降级）</li>
+</ol>
 
 </div></body></html>
