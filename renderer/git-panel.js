@@ -247,14 +247,28 @@ const GitPanel = (() => {
 
   // ---------- 拉取 / 推送 ----------
   let syncing = false;
-  async function doPull() {
+  // 拉取策略（M4 收尾）：默认快进保持一键直达；分叉时的两种策略收进下拉，
+  // 不给"悄悄合并改历史"的默认行为 —— 用户点了什么就该发生什么。
+  const PULL_STRATEGIES = [
+    { key: 'ff', label: '拉取（快进，默认）', title: '只在可以快进时更新本地分支；已分叉会提示' },
+    { key: 'ff-only', label: '仅快进（分叉时报错）', title: 'git merge --ff-only FETCH_HEAD：任何分叉都拒绝' },
+    { key: 'merge', label: '拉取并合并（分叉时建合并提交）', title: 'fetch + merge：保留两条历史，出冲突进解决流程' },
+    { key: 'rebase', label: '拉取并变基（把本地提交重放上去）', title: 'fetch + rebase：历史线性，出冲突进解决流程' },
+  ];
+  async function doPull(strategy) {
     if (!root || syncing) return;
     syncing = true;
     MI.toast('拉取中…');
-    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap() });
+    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap(), strategy });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已拉取' + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
-    else MI.toast('拉取失败: ' + r.error, 'err');
+    if (!r.ok) { MI.toast('拉取失败: ' + r.error, 'err'); await refresh(); return; }
+    await refresh();
+    if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
+    if (r.conflict) MI.toast('⚠ 拉取（' + (r.strategy || '') + '）出现冲突，请在上方「解决冲突」里处理', 'err');
+    else MI.toast('✅ 已拉取' + (r.strategy && r.strategy !== 'ff' ? '（' + r.strategy + '）' : '') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+  }
+  function openPullMenu(anchor) {
+    openFloatMenu(anchor, PULL_STRATEGIES.map((s) => ({ label: s.label, title: s.title, run: () => doPull(s.key) })));
   }
   async function doPush(silent, opts) {
     if (!root || syncing) return false;
@@ -263,14 +277,23 @@ const GitPanel = (() => {
       return openPushPreview();
     }
     syncing = true;
-    const r = await window.myIDE.git.push(root, {
-      auth: getGitAuthMap(),
-      remote: opts && opts.remote,
-      force: !!(opts && opts.force),
-    });
+    let r;
+    if (opts && opts.lease) {
+      // M4 收尾：安全强推 —— --force-with-lease 以「本地记录的远程跟踪引用」为租约，
+      // 上次 fetch 之后远程又被别人推过 → 推送被拒绝。裸 --force 会悄悄覆盖别人的提交。
+      r = await window.myIDE.git.pushForceWithLease(root, (opts && opts.remote) || 'origin', state.branch);
+      if (r && r.ok) r = { ok: true, remote: (opts && opts.remote) || 'origin', lease: true };
+    } else {
+      r = await window.myIDE.git.push(root, {
+        auth: getGitAuthMap(),
+        remote: opts && opts.remote,
+        force: !!(opts && opts.force),
+      });
+    }
     syncing = false;
     if (r.ok) {
-      MI.toast('✅ 已' + (r.force ? '强制' : '') + '推送到 ' + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+      MI.toast('✅ 已' + (r.lease ? '安全强推（--force-with-lease）到 ' : r.force ? '强制推送到 ' : '推送到 ')
+        + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
       refresh();
       return true;
     }
@@ -624,6 +647,7 @@ const GitPanel = (() => {
         <div class="cf-right">
           <div class="cf-file-head" id="cf-file-head"></div>
           <div id="cf-sides"><div class="cf-loading">加载中…</div></div>
+          <div id="cf-result-wrap"></div>
         </div>
       </div>
       <div class="m-foot">
@@ -686,12 +710,48 @@ const GitPanel = (() => {
           const r = await gitSafe('resolveFile', root, cur, b.dataset.side);
           if (!r || !r.ok) { MI.toast((r && r.error) || '应用失败', 'err'); return; }
           MI.toast('已用「' + (b.dataset.side === 'ours' ? oursLabel : theirsLabel) + '」解决 ' + cur, 'ok');
-          await reloadConflicts();
-          Modal.hide();
-          await refresh();
-          openConflictDialog(cur);
+          await afterResolve();
         };
       });
+
+      // ---- 可编辑的合并结果（M4 收尾）：起始 = 工作区里带冲突标记的版本，手工拼完写回 ----
+      const rp = await gitSafe('readWorktreeText', root, cur);
+      const el2 = box.querySelector('#cf-result-wrap');
+      el2.innerHTML = `
+        <div class="cf-side-head">
+          <span>合并结果（可编辑）</span>
+          <button class="cf-fill" data-side="base">填入共同祖先</button>
+          <button class="cf-fill" data-side="ours">填入${esc(oursLabel)}</button>
+          <button class="cf-fill" data-side="theirs">填入${esc(theirsLabel)}</button>
+          <button class="cf-save" id="cf-save" title="把这份内容写进文件并标记为已解决">💾 保存并标记为已解决</button>
+        </div>
+        <textarea class="cf-textarea" id="cf-result" spellcheck="false"></textarea>`;
+      const ta = el2.querySelector('#cf-result');
+      // 工作区版本（带 <<<<<<< ======= >>>>>>> 标记）是手工合并最自然的起点 —— 用户在原地改标记就行
+      ta.value = rp && rp.ok && rp.text != null ? rp.text
+        : sides.ours == null ? '' : '<<<<<<< ' + oursLabel + '\n' + sides.ours + '=======\n' + sides.theirs + '>>>>>>> ' + theirsLabel;
+      if (rp && !rp.ok) ta.value = '（读取工作区版本失败：' + (rp.error || '') + '，可从右侧填入某一侧后手工编辑）\n' + ta.value;
+      el2.querySelectorAll('.cf-fill').forEach((b) => {
+        b.onclick = () => {
+          const v = b.dataset.side === 'base' ? sides.base : b.dataset.side === 'ours' ? sides.ours : sides.theirs;
+          if (v == null) { MI.toast('这一侧没有内容', 'err'); return; }
+          ta.value = v;
+        };
+      });
+      el2.querySelector('#cf-save').onclick = async () => {
+        const r = await gitSafe('resolveCustom', root, cur, ta.value);
+        if (!r || !r.ok) { MI.toast((r && r.error) || '保存失败', 'err'); return; }
+        MI.toast('已把手工合并的结果写回 ' + cur, 'ok');
+        await afterResolve();
+      };
+    };
+
+    // 解决完一个文件后：重拉清单 → 关窗 → 刷新面板 → 重开窗口（展示新状态）
+    const afterResolve = async () => {
+      await reloadConflicts();
+      Modal.hide();
+      await refresh();
+      openConflictDialog(cur);
     };
 
     drawList();
@@ -1471,6 +1531,7 @@ const GitPanel = (() => {
           <button class="tb-btn" id="br-new-btn">＋ 新建</button>
         </div>
         <div id="br-list" style="max-height:240px;overflow:auto"></div>
+        <div id="br-remotes" style="border-top:1px solid var(--border-mid);margin-top:8px;padding-top:8px;max-height:180px;overflow:auto"></div>
         <div id="br-tags" style="border-top:1px solid var(--border-mid);margin-top:8px;padding-top:8px;max-height:180px;overflow:auto"></div>
       </div>`;
     document.getElementById('br-x').onclick = () => Modal.hide();
@@ -1524,6 +1585,83 @@ const GitPanel = (() => {
             }
           };
           tagsBox.appendChild(row);
+        }
+      }
+    }
+    // 远程分支（M4 收尾）：本地分支列表下面单独一节 —— PyCharm Branches 的 Remote 分区。
+    // 没接本机 git（caps）时这些操作做不了 → 整节不给，而不是给了点不动。
+    const remoteBox = document.getElementById('br-remotes');
+    if (remoteBox) {
+      remoteBox.innerHTML = '';
+      const rHead = document.createElement('div');
+      rHead.style.cssText = 'font-size:12px;color:var(--text-dim);margin-bottom:4px';
+      rHead.textContent = '远程分支' + (r.remotes && r.remotes.length ? ' (' + r.remotes.length + ')' : '');
+      remoteBox.appendChild(rHead);
+      if (r.upstream) {
+        const up = document.createElement('div');
+        up.className = 'br-item br-up';
+        up.innerHTML = '<span class="br-cur"></span><span class="rm-name"></span>';
+        up.querySelector('.rm-name').textContent = '当前分支跟踪 ' + r.upstream;
+        up.title = 'pull / push 的默认去向';
+        const un = document.createElement('span');
+        un.className = 'br-more'; un.textContent = '解除'; un.style.opacity = '1';
+        un.title = '解除当前分支的 upstream 跟踪';
+        un.onclick = async (e) => {
+          e.stopPropagation();
+          const cr = await gitSafe('unsetUpstream', root);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '解除失败', 'err'); return; }
+          MI.toast('已解除 upstream 跟踪', 'ok'); Modal.hide(); refresh();
+        };
+        up.appendChild(un);
+        remoteBox.appendChild(up);
+      }
+      if (!canOps) {
+        const d = document.createElement('div');
+        d.className = 'git-empty';
+        d.textContent = r.remotes && r.remotes.length ? '远程分支操作需要本机 git（设置 → Git → 原生 Git 后端）' : '暂无远程分支';
+        remoteBox.appendChild(d);
+      } else {
+        for (const rb of (r.remotes || []).slice(0, 30)) {
+          const row = document.createElement('div');
+          row.className = 'br-item';
+          row.innerHTML = '<span class="br-cur" style="color:var(--text-dim)">⇱</span><span class="rm-name"></span><span class="br-more" title="更多操作">⋯</span>';
+          row.querySelector('.rm-name').textContent = rb;
+          row.title = rb + '（点击 ⋯ 看操作；检出会新建同名本地分支）';
+          row.querySelector('.br-more').onclick = (e) => {
+            e.stopPropagation();
+            const short = rb.includes('/') ? rb.slice(rb.indexOf('/') + 1) : rb;
+            openFloatMenu(e.currentTarget, [
+              { label: '检出为本地分支…', title: '以 ' + rb + ' 为起点新建并切换到 ' + short, run: async () => {
+                  const name = await Modal.prompt('检出远程分支', '本地分支名', short);
+                  if (!name) return;
+                  const cr = await gitSafe('branchCreate', root, name, rb, true);
+                  if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '检出失败', 'err'); return; }
+                  Modal.hide(); MI.toast('✅ 已检出 ' + name + '（跟踪 ' + rb + '）', 'ok'); refresh(); afterSwitch();
+                } },
+              { label: '合并「' + rb + '」到当前分支', title: 'git merge ' + rb + '（出冲突进解决流程）', run: async () => {
+                  Modal.hide();
+                  const mr = await gitSafe('merge', root, rb);
+                  if (!mr || !mr.ok) { MI.toast((mr && mr.error) || '合并失败', 'err'); await refresh(); return; }
+                  await refresh();
+                  if (mr.conflict) MI.toast('⚠ 合并出现冲突，请在上方「解决冲突」里处理', 'err');
+                  else MI.toast('✅ 已合并 ' + rb, 'ok');
+                } },
+              { label: '把当前分支变基到「' + rb + '」', title: 'git rebase ' + rb + '（出冲突进解决流程）', run: async () => {
+                  Modal.hide();
+                  const rr = await gitSafe('rebase', root, rb);
+                  if (!rr || !rr.ok) { MI.toast((rr && rr.error) || '变基失败', 'err'); await refresh(); return; }
+                  await refresh();
+                  if (rr.conflict) MI.toast('⚠ 变基出现冲突，请在上方「解决冲突」里处理', 'err');
+                  else MI.toast('✅ 已变基到 ' + rb, 'ok');
+                } },
+              { label: '设为当前分支的 upstream', title: 'pull / push 的默认去向改为 ' + rb, run: async () => {
+                  const cr = await gitSafe('setUpstream', root, rb);
+                  if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '设置失败', 'err'); return; }
+                  MI.toast('✅ 当前分支已跟踪 ' + rb, 'ok'); Modal.hide(); refresh();
+                } },
+            ]);
+          };
+          remoteBox.appendChild(row);
         }
       }
     }
@@ -2040,11 +2178,13 @@ const GitPanel = (() => {
       for (const rm of remotes) items.push({ label: rm.name, run: () => doCommit(true, { remote: rm.name }) });
     }
     items.push({
-      label: '提交并强制推送（--force）',
+      label: '提交并安全强推（--force-with-lease）',
+      title: '以本地记录的远程分支为租约：上次拉取后远程又被别人推过 → 推送被拒绝（比裸 --force 安全）',
       danger: true,
       run: async () => {
-        const yes = await Modal.confirm('强制推送', '强制推送会覆盖远程分支上已有的提交，可能丢掉别人的工作。\n\n确定继续吗？');
-        if (yes) doCommit(true, { force: true });
+        const yes = await Modal.confirm('安全强推（--force-with-lease）',
+          '会覆盖远程分支上你本地已知的提交。若别人在你上次拉取之后推过新内容，推送会被拒绝（不会丢别人的工作）。\n\n确定继续吗？');
+        if (yes) doCommit(true, { lease: true });
       },
     });
     openFloatMenu(anchor, items);
@@ -2115,7 +2255,7 @@ const GitPanel = (() => {
     const cpOpen = document.getElementById('cp-open');
     if (cpOpen) cpOpen.onclick = () => { if (previewCur) showFileDiff(previewCur); };
     const pull = document.getElementById('cd-pull');
-    if (pull) pull.onclick = doPull;
+    if (pull) pull.onclick = (e) => openPullMenu(e.currentTarget);
     const push = document.getElementById('cd-push');
     if (push) push.onclick = () => doPush();
     // 搁置 / 远程 / 日志 已在 buildToolbar 里创建并直接绑好 handler（它们随 render 重建，

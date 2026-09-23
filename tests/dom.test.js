@@ -77,6 +77,12 @@ calls.abortOp = [];
 calls.branchCreate = [];
 calls.branchRename = [];
 calls.branchDelete = [];
+calls.resolveCustom = [];
+calls.readWorktreeText = [];
+calls.pushLease = [];
+calls.setUpstream = [];
+calls.unsetUpstream = [];
+calls.pull = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -270,7 +276,7 @@ function makeDom() {
         return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] };
       },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: [{ file: 'README.md', status: 'modified' }, { file: 'data.csv', status: 'added' }] }; },
-      branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
+      branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main', upstream: '', remotes: ['origin/dev', 'origin/main'] }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
       createBranch: async (d, name) => { calls.createBranch.push(name); return { ok: true }; },
       // M4：分支工作流 / 冲突解决
@@ -286,6 +292,11 @@ function makeDom() {
       branchCreate: async (d, name, ref, co) => { calls.branchCreate.push([name, ref, !!co]); return { ok: true }; },
       branchRename: async (d, f, t) => { calls.branchRename.push([f, t]); return { ok: true }; },
       branchDelete: async (d, name, force) => { calls.branchDelete.push([name, !!force]); return { ok: true }; },
+      resolveCustom: async (d, f, text) => { calls.resolveCustom.push([f, text]); return { ok: true }; },
+      readWorktreeText: async (d, f) => ({ ok: true, text: '<<<<<<< ours\ncurrent\n=======\nincoming\n>>>>>>> theirs\n' }),
+      pushForceWithLease: async (d, remote, branch) => { calls.pushLease.push([remote, branch]); return { ok: true }; },
+      setUpstream: async (d, ref) => { calls.setUpstream.push(ref); return { ok: true }; },
+      unsetUpstream: async (d) => { calls.unsetUpstream.push(1); return { ok: true }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
@@ -319,7 +330,7 @@ function makeDom() {
       addRemote: async () => ({ ok: true }),
       removeRemote: async () => ({ ok: true }),
       fetch: async () => ({ ok: true }),
-      pull: async () => ({ ok: true }),
+      pull: async (d, opts) => { calls.pull.push(opts || {}); return { ok: true }; },
       push: async () => ({ ok: true }),
       listPushCommits: async () => ({
         ok: true, branch: 'main', first: false, count: 2,
@@ -2044,6 +2055,90 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'Modal.hide()');
     await tick(); await tick();
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M4-C 收尾：分支弹窗的远程分支段（检出 / 合并 / 变基 / upstream）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-branch'));
+    await tick(); await tick();
+    const rbox = $(dom, '#br-remotes');
+    assert_(rbox, '分支弹窗出现「远程分支」段');
+    const rrows = $allIn(rbox, '.br-item');
+    assert_(rrows.length === 2, '列出 2 个远程分支: ' + rrows.length);
+    // origin/dev 的 ⋯ 菜单
+    const devRemote = rrows.find((x) => x.textContent.includes('origin/dev'));
+    click(devRemote.querySelector('.br-more'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.some((l) => /检出为本地分支/.test(l)), '有「检出为本地分支」');
+    assert_(labels.some((l) => /合并「origin\/dev」到当前分支/.test(l)), '有「合并」');
+    assert_(labels.some((l) => /变基/.test(l)), '有「变基」');
+    assert_(labels.some((l) => /设为当前分支的 upstream/.test(l)), '有「设为 upstream」');
+    // 点「设为 upstream」→ setUpstream(root, 'origin/dev')
+    click($allIn(menu, '.ctx-item').find((x) => /设为当前分支的 upstream/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.setUpstream.length === 1 && calls.setUpstream[0] === 'origin/dev',
+      'setUpstream(root, origin/dev): ' + JSON.stringify(calls.setUpstream));
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M4 收尾：冲突窗口的可编辑合并结果（手工拼接后写回）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const solve = $allIn($(dom, '#cd-files .git-op-bar'), '.git-op-btn').find((b) => b.textContent.trim() === '解决冲突');
+    click(solve);
+    await tick(); await tick(); await tick();
+    const box = $(dom, '#cf-box');
+    assert_(box, '冲突窗口打开');
+    const ta = $(dom, '#cf-result');
+    assert_(ta && ta.tagName === 'TEXTAREA', '有可编辑的「合并结果」文本域');
+    assert_(ta.value.includes('<<<<<<<'), '起始内容是工作区里带冲突标记的版本: ' + JSON.stringify(ta.value.slice(0, 40)));
+    const fills = $allIn(box, '.cf-fill').map((b) => b.textContent.trim());
+    assert_(fills.some((t) => /填入当前分支/.test(t)) && fills.some((t) => /填入传入的改动/.test(t)),
+      '有一键填入某一侧: ' + fills.join('/'));
+    // 手工改成想要的内容 → 保存并标记为已解决
+    ta.value = 'merged by hand\n';
+    const save = $(dom, '#cf-save');
+    click(save);
+    await tick(); await tick(); await tick();
+    assert_(calls.resolveCustom.length === 1 && calls.resolveCustom[0][0] === 'src/app.js'
+      && calls.resolveCustom[0][1] === 'merged by hand\n',
+      'resolveCustom(file, 手工内容): ' + JSON.stringify(calls.resolveCustom));
+    await g(dom, 'Modal.hide()');
+    await g(dom, 'GitPanel.closeDialog()');
+    // 收尾：回 NORMAL
+    await g(dom, 'GitPanel.op = { state: "NORMAL" }');
+    await g(dom, 'GitPanel.conflicts = []');
+    await tick(); await tick();
+  });
+
+  await okAsync('M4 收尾：拉取策略菜单（默认快进 + 三种策略都走得到）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-pull'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.length === 4, '4 种策略: ' + labels.join('/'));
+    assert_(/快进，默认/.test(labels[0]) && /仅快进/.test(labels[1]) && /合并/.test(labels[2]) && /变基/.test(labels[3]),
+      '策略齐: ' + labels.join(' | '));
+    // 点「拉取并合并」→ pull(root, { strategy: 'merge' })
+    click($allIn(menu, '.ctx-item').find((x) => /拉取并合并/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.pull.length === 1 && calls.pull[0] && calls.pull[0].strategy === 'merge',
+      'pull 带策略参数: ' + JSON.stringify(calls.pull));
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });

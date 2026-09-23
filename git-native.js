@@ -226,8 +226,9 @@ async function opState(repo) {
       const dir = has(f('rebase-merge')) ? f('rebase-merge') : f('rebase-apply');
       state.target = readTrim(path.join(dir, 'head-name')).replace(/^refs\/heads\//, '');
       state.onto = readTrim(path.join(dir, 'onto')).slice(0, 7);
-      state.step = readTrim(path.join(dir, 'msgnum'));
-      state.total = readTrim(path.join(dir, 'end'));
+      // merge 后端叫 msgnum/end，apply 后端（本机强制用的那个）叫 next/last
+      state.step = readTrim(path.join(dir, 'msgnum')) || readTrim(path.join(dir, 'next'));
+      state.total = readTrim(path.join(dir, 'end')) || readTrim(path.join(dir, 'last'));
     } else if (has(f('MERGE_HEAD'))) {
       state.state = 'MERGING';
       state.target = readTrim(f('MERGE_HEAD')).slice(0, 7);
@@ -307,7 +308,11 @@ async function merge(repo, ref, opts = {}) {
 }
 
 async function rebase(repo, ref) {
-  const r = await run(['rebase', '--', ref], { cwd: repo, timeout: 60000, env: NO_EDIT });
+  // ⚠ **必须 `-c rebase.backend=apply`**：本机实测（git 2.55 + 绿盾），默认的 merge 后端在
+  //   "rebase 到 FETCH_HEAD/远程提交"时会报 `could not mark as interactive` 并把**整个 .git 删掉**
+  //   （灾难级数据损失，试验 5+ 次全部复现；apply 后端 100% 正常，冲突时写 rebase-apply，
+  //   opState 对两个目录都认）。别删这个参数。
+  const r = await run(['-c', 'rebase.backend=apply', 'rebase', '--', ref], { cwd: repo, timeout: 60000, env: NO_EDIT });
   const st = await opState(repo);
   if (r.ok) return { ok: true, conflict: false, state: st, out: r.stdout.trim() };
   if (st.state === 'REBASING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
@@ -360,6 +365,50 @@ async function branchDelete(repo, name, force) {
   return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
 }
 
+// M4 收尾：自定义合并结果（冲突窗口里手工编辑后的那份）→ 写文件 + git add 标记已解决。
+// ⚠ 写文件要在**这一侧**做而不是走渲染层的 fs IPC：resolveFile 之后的 add 必须和写入是同一份内容，
+//   分两步走会让"写失败但已 add"成为可能（把空文件/旧内容提交出去）。
+async function resolveCustom(repo, file, content) {
+  const abs = path.isAbsolute(file) ? file : path.join(repo, file);
+  try { fs.writeFileSync(abs, String(content ?? ''), 'utf8'); } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  const a = await run(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  return a.ok ? { ok: true } : { ok: false, error: a.stderr.trim() || a.error };
+}
+
+// M4 收尾：安全强推。--force-with-lease 不带参数 = 以「本地记录的远程跟踪引用」为租约：
+// 上次 fetch 之后远程又被别人推过 → 推送被拒绝（比 --force 裸推安全）。
+async function pushForceWithLease(repo, remote, branch) {
+  const r = await run(['push', '--force-with-lease', remote || 'origin', branch], {
+    cwd: repo, timeout: 60000, env: NO_EDIT,
+  });
+  if (r.ok) return { ok: true };
+  const err = r.stderr.trim() || r.stdout.trim() || r.error;
+  if (/stale info|rejected.*fetch first|cannot be expected/i.test(err)) {
+    return { ok: false, error: '远程在你上次拉取之后有新提交，租约校验拒绝强推。先 ⬇ 拉取看一眼再决定。' };
+  }
+  return { ok: false, error: err };
+}
+
+// M4 收尾：读工作区里那份（带 <<<<<<< ======= >>>>>>> 标记）—— 手工合并最自然的起点。
+// 走原生侧而不是渲染层 fs：与 resolveCustom 的写入同一侧，路径拼接语义一致。
+async function readWorktreeText(repo, file) {
+  const abs = path.isAbsolute(file) ? file : path.join(repo, file);
+  try { return { ok: true, text: fs.readFileSync(abs, 'utf8') }; } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
+// M4 收尾：upstream（当前分支 ↔ 远程分支的跟踪关系）
+async function setUpstream(repo, ref) {
+  const r = await run(['branch', '--set-upstream-to=' + ref], { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+}
+async function unsetUpstream(repo) {
+  const branch = await run(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, timeout: 5000, env: NO_EDIT });
+  const name = branch.ok ? branch.stdout.trim() : '';
+  if (!name || name === 'HEAD') return { ok: false, error: '当前不在分支上（detached HEAD）' };
+  const r = await run(['branch', '--unset-upstream', name], { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+}
+
 // 「按能力路由」的表：现在只有 credential / proxy 内部走 native（M2）；M3/M4 往这里加
 // partialStaging（apply --cached）与 merge/rebase/stash/hooks。**没有 git.exec(任意字符串) 这种口子**，
 // 上层只能调用明确列出的能力。
@@ -375,4 +424,5 @@ module.exports = {
   // M4：分支工作流与冲突（本机 git；无本机 git 时由上层按 caps 隐藏）
   opState, conflicts, conflictSides, resolveFile, merge, rebase, continueOp, skipOp, abortOp,
   branchCreate, branchRename, branchDelete,
+  resolveCustom, readWorktreeText, pushForceWithLease, setUpstream, unsetUpstream, NO_EDIT,
 };

@@ -560,13 +560,28 @@ async function logGraph(dir, limit = 500, ref = null) {
 // ---------- 分支 ----------
 async function branches(dir) {
   const { yes, root } = await isRepo(dir);
-  if (!yes) return { isRepo: false, error: '不是 Git 仓库', branches: [], current: '' };
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', branches: [], current: '', remotes: [], upstream: '' };
   try {
     const list = await git.listBranches({ fs, dir: root });
     const current = (await git.currentBranch({ fs, dir: root, fullname: false })) || '';
-    return { isRepo: true, branches: list.sort(), current };
+    // M4 收尾：远程分支（各 remote 下的引用）+ 当前分支的 upstream（命令行 pull/push 的默认去向）
+    const remotes = [];
+    try {
+      const rs = await git.listRemotes({ fs, dir: root }).catch(() => []);
+      for (const rm of rs) {
+        const bs = await git.listBranches({ fs, dir: root, remote: rm.remote }).catch(() => []);
+        for (const b of bs) remotes.push(rm.remote + '/' + b);
+      }
+    } catch {}
+    let upstream = '';
+    try {
+      const N = require('./git-native');
+      const u = await N.run(['rev-parse', '--abbrev-ref', 'HEAD@{upstream}'], { cwd: root, timeout: 5000, env: N.NO_EDIT });
+      if (u.ok) upstream = u.stdout.trim();
+    } catch {}
+    return { isRepo: true, branches: list.sort(), current, remotes, upstream };
   } catch (e) {
-    return { isRepo: true, error: String(e.message || e), branches: [], current: '' };
+    return { isRepo: true, error: String(e.message || e), branches: [], current: '', remotes: [], upstream: '' };
   }
 }
 async function checkout(dir, ref) {
@@ -1327,31 +1342,51 @@ async function fetchRemote(dir, { auth } = {}) {
 }
 
 // pull：fetch + fast-forward 合并（分叉时明确报错，不静默产生合并提交）
-async function pullRemote(dir, { auth } = {}) {
+// 拉取策略（M4 收尾）：ff=默认快进（isomorphic，保留既有凭证/代理兜底链）；
+// ff-only=分叉就报错；merge=分叉时建合并提交；rebase=把本地提交重放上去。
+// merge / rebase / ff-only 走**原生 git**（isomorphic 没有真合并；fetch 也用原生，
+// 这样 FETCH_HEAD 语义与命令行完全一致），撞冲突交给 M4 的解决流程。
+async function pullRemote(dir, { auth, strategy } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
-  try {
-    return await withRemoteUrlFix(root, pr, async () => {
-      const onAuth = onAuthOf(auth, pr.url);
-      const r = await git.pull({
-        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
-        author: await getAuthor(root),
-        onAuth, onAuthFailure: onAuth,
+  const strat = ['ff', 'ff-only', 'merge', 'rebase'].includes(strategy) ? strategy : 'ff';
+  if (strat === 'ff') {
+    try {
+      return await withRemoteUrlFix(root, pr, async () => {
+        const onAuth = onAuthOf(auth, pr.url);
+        const r = await git.pull({
+          fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
+          author: await getAuthor(root),
+          onAuth, onAuthFailure: onAuth,
+        });
+        return { ok: true, oid: r && r.oid, strategy: strat };
       });
-      return { ok: true, oid: r && r.oid };
-    });
-  } catch (e) {
-    const msg = String(e.message || e);
-    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
-    if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
-      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
+      if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
+        return { ok: false, error: '本地与远程已分叉：请换「拉取并合并 / 拉取并变基」，或先处理本地更改' };
+      }
+      return { ok: false, error: msg };
     }
-    return { ok: false, error: msg };
   }
+  // ---- 以下策略走原生 git ----
+  const N = require('./git-native');
+  const f = await N.run(['fetch', '--prune', pr.name], { cwd: root, timeout: 120000, env: N.NO_EDIT });
+  if (!f.ok) return { ok: false, error: '拉取失败：' + (f.stderr.trim() || f.error) };
+  if (strat === 'ff-only') {
+    const m = await N.run(['merge', '--ff-only', 'FETCH_HEAD'], { cwd: root, timeout: 30000, env: N.NO_EDIT });
+    return m.ok ? { ok: true, strategy: strat }
+      : { ok: false, error: '不是快进（本地与远程已分叉）：' + (m.stderr.trim() || m.stdout.trim() || m.error) };
+  }
+  const r = strat === 'rebase' ? await N.rebase(root, 'FETCH_HEAD') : await N.merge(root, 'FETCH_HEAD');
+  if (!r.ok) return { ok: false, error: r.error, strategy: strat, state: r.state };
+  if (r.conflict) return { ok: true, strategy: strat, conflict: true, state: r.state };
+  return { ok: true, strategy: strat, out: r.out };
 }
 
 // push：当前分支 → 主远程同名分支

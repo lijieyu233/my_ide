@@ -967,6 +967,84 @@ fs.mkdirSync(repo);
         assert.ok(/没有进行中的 Git 操作/.test(r.error || ''), fn + ' 的错误文案应说明原因，got: ' + r.error);
       }
     });
+
+    await okAsync('M4 收尾：可编辑合并结果 —— resolveCustom 写回的是手工拼的那一份', async () => {
+      const rp = await mkConflictRepo('custom');
+      await NATIVE.merge(rp, 'feat');
+      const r = await NATIVE.resolveCustom(rp, 'a.txt', 'merged by hand\n');
+      assert.ok(r.ok, 'resolveCustom 失败: ' + (r.error || ''));
+      const norm = (s) => String(s).replace(/\r\n/g, '\n');
+      assert.strictEqual(norm(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8')), 'merged by hand\n',
+        '文件内容应是手工拼的那一份（不是 ours 也不是 theirs）');
+      const cf = await NATIVE.conflicts(rp);
+      assert.ok(cf.ok && cf.files.length === 0, '写回 + add 后冲突清零');
+      const c = await NATIVE.continueOp(rp);
+      assert.ok(c.ok, 'continue 失败: ' + (c.error || ''));
+      const h = await NATIVE.run(['show', 'HEAD:a.txt'], { cwd: rp, env: NATIVE.NO_EDIT });
+      assert.strictEqual(norm(h.stdout), 'merged by hand\n', '手工合并结果真的进了提交');
+    });
+
+    // ---- pull 策略：用本地 bare 仓库当 origin（不需要网络，命令行语义完全一致）----
+    const runGit = async (cwd, args) => {
+      const r = await NATIVE.run(args, { cwd, env: NATIVE.NO_EDIT });
+      assert.ok(r.ok, 'git ' + args.join(' ') + ' 失败: ' + (r.stderr || r.error));
+      return r;
+    };
+    await okAsync('M4 收尾：pull 策略 —— ff-only 拒绝分叉 / rebase 线性 / merge 建合并提交', async () => {
+      const bare = path.join(tmp, 'origin.git');
+      fs.mkdirSync(bare);
+      await NATIVE.run(['init', '--bare', '--initial-branch=main', bare], { env: NATIVE.NO_EDIT });
+      const A = path.join(tmp, 'pull-A');
+      fs.mkdirSync(A);
+      await G.initRepo(A);
+      await G.setUserConfig(A, { name: 'pull', email: 'pull@example.com' });
+      fs.writeFileSync(path.join(A, 'a0.txt'), 'base\n');
+      await G.commit(A, { message: 'base', files: ['a0.txt'] });
+      await runGit(A, ['remote', 'add', 'origin', bare]);
+      await runGit(A, ['push', '-u', 'origin', 'main']);
+      // B 克隆，往上推一个提交（改 b.txt，避免和 A 的改动冲突）
+      const B = path.join(tmp, 'pull-B');
+      await runGit(tmp, ['clone', '--branch', 'main', bare, B]);
+      await G.setUserConfig(B, { name: 'pull', email: 'pull@example.com' });
+      fs.writeFileSync(path.join(B, 'b1.txt'), 'from B\n');
+      await G.commit(B, { message: 'B: b1', files: ['b1.txt'] });
+      await runGit(B, ['push', 'origin', 'main']);
+
+      // ① A 也提交一个 → 两边分叉 → ff-only 必须明确拒绝（而不是悄悄合并）
+      fs.writeFileSync(path.join(A, 'a1.txt'), 'from A\n');
+      await G.commit(A, { message: 'A: a1', files: ['a1.txt'] });
+      const ff = await G.pullRemote(A, { strategy: 'ff-only' });
+      assert.strictEqual(ff.ok, false, '分叉时 ff-only 不该成功');
+      assert.ok(/不是快进/.test(ff.error || ''), '拒绝文案要说清原因: ' + ff.error);
+
+      // ② rebase：本地提交重放上去，历史保持线性
+      const rb = await G.pullRemote(A, { strategy: 'rebase' });
+      assert.ok(rb.ok && !rb.conflict, 'rebase 拉取失败: ' + (rb && rb.error));
+      assert.strictEqual(fs.existsSync(path.join(A, 'b1.txt')), true, '远程的 b1.txt 应该进来了');
+      const log1 = (await runGit(A, ['log', '--format=%s', 'main'])).stdout;
+      assert.ok(!log1.includes('Merge'), 'rebase 不该产生合并提交: ' + log1);
+
+      // ③ merge：再来一轮分叉，这次应建合并提交（冲突留给冲突流程，这里两文件不相交）
+      await runGit(B, ['pull', '--quiet', 'origin', 'main']);
+      fs.writeFileSync(path.join(B, 'b2.txt'), 'from B 2\n');
+      await G.commit(B, { message: 'B: b2', files: ['b2.txt'] });
+      await runGit(B, ['push', 'origin', 'main']);
+      fs.writeFileSync(path.join(A, 'a2.txt'), 'from A 2\n');
+      await G.commit(A, { message: 'A: a2', files: ['a2.txt'] });
+      const mg = await G.pullRemote(A, { strategy: 'merge' });
+      assert.ok(mg.ok && !mg.conflict, 'merge 拉取失败: ' + (mg && mg.error));
+      const log2 = (await runGit(A, ['log', '--format=%s', 'main'])).stdout;
+      assert.ok(log2.includes('Merge'), 'merge 策略应产生合并提交: ' + log2);
+      assert.strictEqual(fs.existsSync(path.join(A, 'b2.txt')), true, '远程的 b2.txt 应该进来了');
+
+      // ④ 同步状态下再拉一次（merge / rebase 都应"无事可做"且成功，不产生空提交）
+      const again = await G.pullRemote(A, { strategy: 'rebase' });
+      assert.ok(again.ok && !again.conflict, '同步状态 rebase 拉取失败: ' + (again && again.error));
+      const again2 = await G.pullRemote(A, { strategy: 'merge' });
+      assert.ok(again2.ok && !again2.conflict, '同步状态 merge 拉取失败: ' + (again2 && again2.error));
+      // （默认 strategy='ff' 走 isomorphic 的老路径，只支持 http(s) 远程 —— 本地 bare 路径它不认，
+      //   故不在本用例覆盖；该路径是既有行为，未改。）
+    });
   }
 
   // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管

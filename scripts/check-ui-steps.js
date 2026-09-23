@@ -1023,12 +1023,24 @@ module.exports = {
       const heads = qa('#cf-box .cf-side-head').map((x) => x.textContent.trim());
       add('merge 语义：ours=当前分支、theirs=传入的改动（文案说清楚）',
         /当前分支/.test(heads[1] || '') && /传入的改动/.test(heads[2] || ''), heads.join(' | ').slice(0, 70));
-      const pick = qa('#cf-box .cf-pick').find((b) => b.dataset.side === 'ours');
-      if (pick) {
-        pick.click();
+      add('每侧有「用这一份」快捷键 + 有可编辑的合并结果区',
+        qa('#cf-box .cf-pick').length === 2 && !!q('#cf-result') && !!q('#cf-save'),
+        'pick=' + qa('#cf-box .cf-pick').length + ' result=' + !!q('#cf-result'));
+      // 走**手工编辑**这条路（而不是选一侧）：结果区起始应是带冲突标记的工作区版本
+      const ta = q('#cf-result');
+      add('结果区起始 = 工作区里带冲突标记的版本', !!ta && /<<<<<<<|=======|>>>>>>>/.test(ta.value),
+        ta ? JSON.stringify(ta.value.slice(0, 60)) : '没有结果区');
+      if (ta) {
+        ta.value = 'line1\nmerged by hand\nline3\n';
+        const save = q('#cf-save');
+        save.click();
         await sleep(2200);
         const cf2 = await G.conflicts(repo);
-        add('点「用这一份」后该文件已标记为已解决', cf2.ok && cf2.files.length === 0, JSON.stringify(cf2).slice(0, 70));
+        // ⚠ 解决后 :2:（ours stage）已经不在了，不能用 conflictSides 验内容 → 读工作区文件
+        const wt = await G.readWorktreeText(repo, 'c.txt');
+        add('保存手工结果后冲突清零，文件内容就是拼的那份',
+          cf2.ok && cf2.files.length === 0 && wt.ok && /merged by hand/.test(wt.text || ''),
+          JSON.stringify(cf2).slice(0, 50) + ' wt=' + (wt.ok ? JSON.stringify((wt.text || '').slice(0, 40)) : wt.error));
       }
       await sleep(800);
       const cont1 = qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '继续');

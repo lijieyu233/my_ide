@@ -920,6 +920,29 @@ textarea.editor {
   margin: 0; padding: 6px 8px; flex: 1; overflow: auto; white-space: pre-wrap; word-break: break-all;
   font-size: 11.5px; line-height: 1.55; color: var(--text);
 }
+/* M4 收尾：可编辑的合并结果区（三方只读对比收窄，把空间让给真正要编辑的那一块） */
+#cf-sides { flex: 1.1; min-height: 0; }
+#cf-result-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  border-top: 2px solid var(--border); background: var(--bg-panel);
+}
+.cf-textarea {
+  flex: 1; margin: 0; padding: 6px 8px; border: none; outline: none; resize: none;
+  background: var(--bg); color: var(--text-bright);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre; overflow: auto;
+}
+.cf-side-head .cf-fill {
+  border: 1px solid var(--border); background: transparent; border-radius: 3px;
+  padding: 0 5px; height: 17px; font-size: 10.5px; color: var(--text-dim); cursor: pointer;
+}
+.cf-side-head .cf-fill:hover { background: var(--bg-hover); color: var(--text-bright); }
+.cf-side-head .cf-save {
+  margin-left: auto; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: transparent; border-radius: 3px; padding: 0 7px; height: 18px;
+  font-size: 10.5px; color: var(--accent); cursor: pointer;
+}
+.cf-side-head .cf-save:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 
 /* ---------- 只读分节（「已暂存（外部）」/ 非活动变更列表）----------
    M1：index 里已有的内容只展示、不增删；非活动列表也不参与本次提交。

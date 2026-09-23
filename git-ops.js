@@ -50,6 +50,12 @@ module.exports = [
   { ch: 'branchCreate', native: 'branchCreate' },
   { ch: 'branchRename', native: 'branchRename' },
   { ch: 'branchDelete', native: 'branchDelete' },
+  // M4 收尾：可编辑合并结果 / 安全强推 / upstream
+  { ch: 'resolveCustom', native: 'resolveCustom' },
+  { ch: 'readWorktreeText', native: 'readWorktreeText' },
+  { ch: 'pushForceWithLease', native: 'pushForceWithLease' },
+  { ch: 'setUpstream', native: 'setUpstream' },
+  { ch: 'unsetUpstream', native: 'unsetUpstream' },
   { ch: 'discard', op: 'discard' },
   { ch: 'discardFiles', op: 'discardFiles' },
   { ch: 'getUserConfig', op: 'getUserConfig' },
