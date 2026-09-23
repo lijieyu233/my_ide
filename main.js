@@ -1249,6 +1249,8 @@ app.whenReady().then(() => {
         origTransCfg = await wc.executeJavaScript('localStorage.getItem("myide-translate-cfg")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
+        // M3：hunk 级暂存的端到端夹具（真实独立小仓库 —— 绝不在 demo 本体上动 index）
+        const hunkRepo = await fx.writeHunkFixture(demo);
         await wc.executeJavaScript(
           'localStorage.setItem("myide-projects", ' + JSON.stringify(JSON.stringify(projects.map((p) => ({ path: p })))) + '); true'
         );
@@ -1289,6 +1291,9 @@ app.whenReady().then(() => {
         await run('M1 提交模型（收尾：清空变更列表）', js(steps.m1CommitModelCleanup));
         await run('原生 Git 后端（能力探测 + 设置页）', js(steps.gitBackend), 'check-ui-1r-git-backend.png');
         await run('原生 Git 后端（收尾：关设置）', js(steps.gitBackendClose));
+        // M3：hunk 级部分暂存（夹具是独立小仓库，不动 demo 本体的 index）
+        await run('M3 hunk 级部分暂存（双区差异 + 真实点击）', js(steps.m3Hunk, { repo: hunkRepo, demo: demo }), 'check-ui-1s-m3-hunk.png');
+        await run('M3 hunk（收尾：撤销暂存 / 关面板 / 还原项目根）', js(steps.m3HunkCleanup, { repo: hunkRepo, demo: demo }));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

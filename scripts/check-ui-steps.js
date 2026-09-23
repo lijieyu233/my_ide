@@ -973,6 +973,111 @@ module.exports = {
     return { R };
   },
 
+  // ---------- M3：hunk 级部分暂存（真实仓库 + 真实 UI 点击） ----------
+  // ⚠ 在自检夹具仓库 demo/_ui_hunkrepo 里做（真实 git 仓库、跑完挪进回收站），
+  //   **绝不在 demo 本体上动 index** —— demo 的仓库根就是 my_ide 自己，在那儿暂存等于改使用者的仓库。
+  // 两层：先验 IPC 语义（双区差异各自成立），再验 UI（点文件 → 差异视图 → 点「暂存此块」）。
+  m3Hunk: async (opts) => {
+    const repo = (opts && opts.repo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const G = window.myIDE.git;
+    const statusOf = async () => ((await G.status(repo)).changed || []).find((x) => x.file === 'h.txt');
+    const marks = (d) => (d.hunks || []).map((h) => h.rows.filter((r) => r.type !== 'ctx')
+      .map((r) => (r.aText || '') + (r.bText || '')).join(' ')).join(' | ');
+
+    if (!repo) { add('M3 夹具仓库路径没传进来', false, JSON.stringify(opts)); return { R }; }
+
+    // ---------- 第一层：IPC 语义 ----------
+    let du = await G.diffUnstaged(repo, 'h.txt');
+    add('未暂存差异切成 2 个 hunk（两处改动隔得够远）', (du.hunks || []).length === 2,
+      'hunks=' + (du.hunks || []).length + ' :: ' + marks(du).slice(0, 90));
+    add('双区差异自带 side 标记（unstaged = 工作区 vs 暂存区）', du.side === 'unstaged', 'side=' + du.side);
+
+    const rs = await G.stageHunk(repo, 'h.txt', 0);
+    add('stageHunk 只把第 1 块写进 index', !!(rs && rs.ok), JSON.stringify(rs).slice(0, 70));
+    let ds = await G.diffStaged(repo, 'h.txt');
+    add('已暂存区只剩被暂存的那块（line 2）', (ds.hunks || []).length === 1 && /line 2 CHANGED/.test(marks(ds)),
+      'hunks=' + (ds.hunks || []).length + ' :: ' + marks(ds).slice(0, 70));
+    du = await G.diffUnstaged(repo, 'h.txt');
+    add('未暂存区只剩没被暂存的那块（line 18）', (du.hunks || []).length === 1 && /line 18 CHANGED/.test(marks(du)),
+      'hunks=' + (du.hunks || []).length + ' :: ' + marks(du).slice(0, 70));
+    let c = await statusOf();
+    add('状态变成「部分暂存」*modified（既不是整份已暂存，也不是纯未暂存）',
+      c && c.status === '*modified' && !c.inIndexOnly, 'status=' + (c && c.status) + ' inIndexOnly=' + (c && c.inIndexOnly));
+
+    const ru = await G.unstageHunk(repo, 'h.txt', 0);
+    add('unstageHunk 把那一块撤出来（改动仍留在工作区）', !!(ru && ru.ok), JSON.stringify(ru).slice(0, 70));
+    c = await statusOf();
+    add('取消暂存后回到纯未暂存 modified', c && c.status === 'modified', 'status=' + (c && c.status));
+
+    // ---------- 第二层：真实 UI ----------
+    window.GitPanel.rootDir = repo;
+    window.GitPanel.togglePreview(false);   // 关内嵌预览 → 单击行走「编辑区差异」这条真路径
+    await window.GitPanel.refresh();        // openCommit 靠 state.isRepo 判断，不 refresh 会去弹「初始化仓库」
+    window.GitPanel.openCommit();
+    await sleep(1400);
+    const row = qa('#cd-files .git-file').find((x) => x.textContent.includes('h.txt'));
+    add('提交面板列出夹具仓库的 h.txt', !!row, row ? row.textContent.replace(/\s+/g, ' ').slice(0, 40) : '没有该行');
+    if (!row) return { R };
+    row.click();
+    await sleep(1400);
+    const gaps = qa('#viewer .diff-hunk-gap');
+    add('差异视图出现 2 个 @@ 块分隔行', gaps.length === 2, '块数=' + gaps.length);
+    const acts = qa('#viewer .diff-hunk-gap .hunk-act');
+    add('未暂存侧每块挂 2 个按钮（暂存 / 回退）',
+      acts.length === 4 && /暂存此块/.test(acts[0].textContent) && /回退此块/.test(acts[1].textContent),
+      acts.map((b) => b.textContent.trim()).join(' / ').slice(0, 90));
+
+    const stageBtn = acts.find((b) => /暂存此块/.test(b.textContent));
+    if (stageBtn) {
+      stageBtn.click();
+      await sleep(1800);
+      c = await statusOf();
+      add('点「暂存此块」后 index 真的只进了这一块（*modified）', c && c.status === '*modified', 'status=' + (c && c.status));
+      // 双区并排：同一个文件两块各挂各自的按钮
+      const tags = qa('#viewer .diff-file-title .side-tag').map((x) => x.textContent.trim());
+      add('双区并排：出现「已暂存」「未暂存」两个文件头', tags.length === 2 && tags.includes('已暂存') && tags.includes('未暂存'),
+        tags.join(' / '));
+      const acts2 = qa('#viewer .diff-hunk-gap .hunk-act').map((b) => b.textContent.trim());
+      add('已暂存那块给「取消暂存此块」，未暂存那块给「暂存 / 回退」',
+        acts2.some((t) => /取消暂存此块/.test(t)) && acts2.some((t) => /暂存此块/.test(t)), acts2.join(' / ').slice(0, 90));
+      ds = await G.diffStaged(repo, 'h.txt');
+      add('已暂存区确实是 line 2、不含 line 18', /line 2 CHANGED/.test(marks(ds)) && !/line 18/.test(marks(ds)),
+        marks(ds).slice(0, 60));
+    }
+    // ⚠ 末尾不清场：截图是步骤返回之后才拍的，要把「双区并排 + 块级按钮」这个状态留着
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：撤销暂存 + 关提交窗口 + 还原项目根 ----------
+  m3HunkCleanup: async (opts) => {
+    const repo = (opts && opts.repo) || '';
+    const demo = (opts && opts.demo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 把 stage 出去的那一块撤回来（夹具仓库跑完就回收，但撤销能让下一次运行看到同样的起点）
+    if (repo) {
+      try {
+        const st = await window.myIDE.git.status(repo);
+        const c = (st.changed || []).find((x) => x.file === 'h.txt');
+        if (c && String(c.status).charAt(0) === '*') await window.myIDE.git.unstageHunk(repo, 'h.txt', 0);
+      } catch {}
+    }
+    window.GitPanel.closeDialog();
+    await sleep(400);
+    if (demo) window.GitPanel.rootDir = demo;
+    await sleep(600);
+    add('提交窗口已关、项目根已还原（后面步骤基线干净）',
+      window.GitPanel.rootDir === demo && !window.GitPanel.isOpen(),
+      'root=' + String(window.GitPanel.rootDir).slice(-24) + ' isOpen=' + window.GitPanel.isOpen());
+    return { R };
+  },
+
   // ---------- Git 日志窗口（底部停靠）：截图 + 结构断言（文档要贴图） ----------
   gitLogWindow: async () => {
     const R = [];

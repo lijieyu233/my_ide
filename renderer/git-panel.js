@@ -1105,11 +1105,16 @@ const GitPanel = (() => {
     if (!files.length) { MI.toast('勾选的只有被忽略的文件', 'err'); return; }
     const results = [];
     for (const f of files) {
-      const r = await window.myIDE.git.diffWorkdir(root, f);
+      const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
+      // M3：按双区取差异（「已暂存」的文件看暂存区那一侧，其余看未暂存那一侧）
+      const r = c && c.inIndexOnly
+        ? await window.myIDE.git.diffStaged(root, f)
+        : await window.myIDE.git.diffUnstaged(root, f);
       if (r && !r.error && !r.unchanged) results.push(r);
     }
     if (!results.length) { MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
-    renderDiffView(results, `选中 ${results.length} 个文件 · 工作区 vs HEAD`);
+    renderDiffView(results, `选中 ${results.length} 个文件 · 未暂存 / 已暂存`,
+      { sideOf: (f) => diffSideOf(state && state.changed ? state.changed.find((x) => x.file === f) : null), onHunk: hunkAction });
   }
 
   // ---------- 搁置（Shelve）弹窗：上=搁置当前更改（名称+文件勾选），下=已搁置列表（恢复/删除） ----------
@@ -1363,14 +1368,53 @@ const GitPanel = (() => {
   // 令牌法：双击打开文件 / 新 diff 请求使在途请求失效（晚到的渲染不再覆盖新视图）
   let diffSeq = 0;
   function cancelDiff() { diffSeq++; }
+  // ---------- M3：双区差异 ----------
+  // 「更改」里的文件看 **index → 工作区**（还没进暂存区的那部分）；「已暂存」里的看 **HEAD → index**
+  // （已经进暂存区、下次提交会带走的那部分）。文件同时有暂存与未暂存改动时两边各自成立。
+  // 双区差异才有意义的东西：hunk 级暂存按钮（`act`）。
+  const diffSideOf = (c) => (c && c.inIndexOnly ? 'staged' : 'unstaged');
+  const SIDE_LABEL = { unstaged: '未暂存（工作区 vs 暂存区）', staged: '已暂存（暂存区 vs HEAD）' };
+
+  async function hunkAction(file, kind, idx) {
+    if (!root) return;
+    if (kind === 'revert') {
+      const yes = await Modal.confirm('回退这一块', '会把工作区的这一处改动丢弃（其它块不受影响）。不可恢复，确定吗？');
+      if (!yes) return;
+    }
+    const api = window.myIDE.git;
+    const r = kind === 'stage' ? await api.stageHunk(root, file, idx)
+      : kind === 'unstage' ? await api.unstageHunk(root, file, idx)
+        : await api.revertHunk(root, file, idx);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '操作失败', 'err'); return; }
+    MI.toast(kind === 'stage' ? '已暂存这一块' : kind === 'unstage' ? '已取消暂存这一块' : '已回退这一块', 'ok');
+    await refresh();                                   // 列表状态变了（可能进出「已暂存」）
+    const c = state && state.changed ? state.changed.find((x) => x.file === file) : null;
+    if (c) await showFileDiff(c);                      // 重新打开：那块已从当前视图消失
+  }
+
   async function showFileDiff(c) {
     if (!root) return;
     const seq = ++diffSeq;
-    const r = await window.myIDE.git.diffWorkdir(root, c.file);
+    const both = !c.inIndexOnly && String(c.status || '').charAt(0) === '*';  // 同一个文件既有暂存又有未暂存
+    let r;
+    if (c.inIndexOnly) r = await window.myIDE.git.diffStaged(root, c.file);
+    else if (both) {
+      // 双区并排：先「已暂存（HEAD→index）」再「未暂存（index→工作区）」，
+      // 两块各挂各的按钮（暂存 / 取消暂存 / 回退），这就是 PyCharm 那套「一个文件里挑着提交」的入口
+      const a = await window.myIDE.git.diffStaged(root, c.file);
+      const b = await window.myIDE.git.diffUnstaged(root, c.file);
+      r = [a, b].filter((x) => x && !x.error && !x.unchanged && x.hunks && x.hunks.length);
+      if (!r.length) r = b;
+    } else r = await window.myIDE.git.diffUnstaged(root, c.file);
     if (seq !== diffSeq) return;
+    if (Array.isArray(r)) {
+      renderDiffView(r, '已暂存 + 未暂存（同一个文件挑着提交）', { sideOf: () => 'both', onHunk: hunkAction });
+      return;
+    }
     if (r.error) { MI.toast(r.error, 'err'); return; }
     if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
-    renderDiffView(r, '工作区 vs HEAD');
+    const side = r.side || diffSideOf(c);
+    renderDiffView(r, SIDE_LABEL[side], { side, sideOf: () => side, onHunk: hunkAction });
   }
 
   // diff hunk 导航：滚动到相邻 @@ 分隔行（循环）
@@ -1412,12 +1456,19 @@ const GitPanel = (() => {
   }
 
   // 构建 diff 表格（hunk 折叠逻辑），供提交窗口 / 日志窗口共用
-  function buildDiffTable(r) {
+  // act（M3）：可选。给了就在每个 hunk 头挂上该模式下允许的操作按钮。
+  //   side='unstaged'（index→工作区）→「暂存此块」「回退此块」
+  //   side='staged'  （HEAD→index）  →「取消暂存此块」
+  //   其他来源（提交详情 / 分支对比）不传 act → 纯只读。
+  function buildDiffTable(r, act) {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
     const title = document.createElement('div');
     title.className = 'diff-file-title';
-    title.innerHTML = `<span class="b">${esc(r.file)}</span>`;
+    // 同一个文件「已暂存 + 未暂存」两块并排时标题会重名 → 带上侧的标记，否则两块看不出谁是谁
+    const sideTag = r.side === 'staged' ? '<span class="side-tag staged">已暂存</span>'
+      : r.side === 'unstaged' ? '<span class="side-tag">未暂存</span>' : '';
+    title.innerHTML = `<span class="b">${esc(r.file)}</span>${sideTag}`;
     fileBox.appendChild(title);
     if (r.binary) {
       const msg = document.createElement('div');
@@ -1447,10 +1498,33 @@ const GitPanel = (() => {
     const cg = document.createElement('colgroup');
     cg.innerHTML = '<col class="c-old"><col class="c-ln"><col class="c-num"><col class="c-new">';
     table.appendChild(cg);
-    r.hunks.forEach((h) => {
+    r.hunks.forEach((h, hIdx) => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
       sep.innerHTML = `<td colspan="4">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
+      if (act && act.onHunk) {
+        // 多文件视图里每个文件的侧可能不同（有的已暂存、有的没有）→ 先用结果自带的 side，
+        // 没有再按文件解析（同一个文件「已暂存 + 未暂存」两块并排时，只能靠 r.side 区分）
+        const side = r.side || (act.sideOf ? act.sideOf(r.file) : act.side);
+        const td = sep.querySelector('td');
+        const box = document.createElement('span');
+        box.className = 'hunk-actions';
+        const mk = (label, kind, title, danger) => {
+          const b = document.createElement('button');
+          b.className = 'vt-btn hunk-act' + (danger ? ' danger' : '');
+          b.textContent = label;
+          b.title = title;
+          b.onclick = (e) => { e.stopPropagation(); act.onHunk(r.file, kind, hIdx); };
+          box.appendChild(b);
+        };
+        if (side === 'unstaged') {
+          mk('＋ 暂存此块', 'stage', '只把这一块加进暂存区（git add -p 的那一步）');
+          mk('↺ 回退此块', 'revert', '只把工作区的这一块改回暂存区的样子（丢弃这处修改）', true);
+        } else if (side === 'staged') {
+          mk('－ 取消暂存此块', 'unstage', '把这一块从暂存区撤出来，改动仍留在工作区');
+        }
+        td.appendChild(box);
+      }
       table.appendChild(sep);
       const rows = [];
       for (const row of h.rows) {
@@ -1479,7 +1553,7 @@ const GitPanel = (() => {
   }
 
   // 整页 diff 视图（编辑区）：单个结果或数组（多文件堆叠）
-  function renderDiffView(rs, label) {
+  function renderDiffView(rs, label, act) {
     // 浏览器/依赖图占主区会盖住编辑区：diff 显示前先让位（log 底部停靠不挡，不动）
     if (window.App) {
       const tool = App.getTool();
@@ -1511,7 +1585,7 @@ const GitPanel = (() => {
 
     const bodyEl = document.createElement('div');
     bodyEl.className = 'diff-body';
-    for (const r of list) bodyEl.appendChild(buildDiffTable(r));
+    for (const r of list) bodyEl.appendChild(buildDiffTable(r, act));
     wrap.appendChild(bodyEl);
     view.appendChild(wrap);
     // Esc 关闭
@@ -1837,6 +1911,9 @@ const GitPanel = (() => {
         if (hist) hist.classList.remove('active');
       }
       root = v;
+      // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
+      //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
+      invalidateIgnored();
       loadCls();   // 变更列表随项目：切项目要换成该项目自己的列表（异步，读完自己 render）
     },
     // 变更列表（M1）：给测试/自检用的读写口

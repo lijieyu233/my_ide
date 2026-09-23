@@ -62,6 +62,12 @@ let fakeCopiedMove = null; // copyFiles 的 move 参数（剪切=true / 复制=f
 calls.setUserConfig = [];
 calls.setGitExe = [];
 calls.testGitExe = [];
+calls.diffUnstaged = [];
+calls.diffStaged = [];
+calls.stageHunk = [];
+calls.unstageHunk = [];
+calls.revertHunk = [];
+calls.listIgnored = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -224,6 +230,22 @@ function makeDom() {
         { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
       ] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
+      // M3：双区差异 + hunk 级暂存
+      diffUnstaged: async (d, f) => {
+        calls.diffUnstaged.push(f);
+        // M3 起：点文件行走「index → 工作区」这一侧。内容沿用原 diffWorkdir 的 fixture，
+        // 那几个 diff 视图用例（分栏 / 行号 / hunk 导航）才能继续按原样验。
+        return { file: f, side: 'unstaged', oldText: 'old line\n', newText: 'new line\n', hunks: [
+          { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
+          { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
+        ] };
+      },
+      diffStaged: async (d, f) => { calls.diffStaged.push(f); return { file: f, side: 'staged', oldText: 'x\n', newText: 'y\n', hunks: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'del', aText: 'x', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'y', aNum: 0, bNum: 1 }] },
+      ] }; },
+      stageHunk: async (d, f, i) => { calls.stageHunk.push([f, i]); return { ok: true, oid: 'ssssssssssssssssssssssssssssssssssssssss' }; },
+      unstageHunk: async (d, f, i) => { calls.unstageHunk.push([f, i]); return { ok: true, oid: 'uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu' }; },
+      revertHunk: async (d, f, i) => { calls.revertHunk.push([f, i]); return { ok: true }; },
       compareRefs: async (d, a, b) => {
         calls.compareRefs = [a, b];
         if (a === b) return { isRepo: true, same: true, aOnly: [], bOnly: [], files: [] };
@@ -302,8 +324,8 @@ function makeDom() {
       blame: async () => ({ lines: [] }),
       addToGitignore: async (d, f) => { calls.gitignore.push('add:' + f); return { ok: true, pattern: f }; },
       removeFromGitignore: async (d, f) => { calls.gitignore.push('rm:' + f); return { ok: true, removed: 1 }; },
-      listIgnored: async () => ({ isRepo: true, root: P, truncated: false,
-        files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }),
+      listIgnored: async () => { calls.listIgnored.push(1); return { isRepo: true, root: P, truncated: false,
+        files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }; },
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     ai: {
@@ -2873,15 +2895,80 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const before = calls.diffWorkdir.length;
-    // 单击行（非勾选框/操作按钮）→ 编辑区预览工作区 vs HEAD
+    const before = calls.diffUnstaged.length;
+    // 单击行（非勾选框/操作按钮）→ 编辑区打开**未暂存**那一侧（M3 双区差异：index → 工作区）
     const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     click(row);
     await tick(); await tick();
-    assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
+    assert_(calls.diffUnstaged.length === before + 1, '点击触发了 diffUnstaged（未暂存侧）');
     assert_($(dom, '#viewer .diff-wrap .diff-table'), '编辑区差异表格出现');
     assert_(row.classList.contains('sel'), '行显示选中态');
+    // 每块头上有块级操作（暂存 / 回退）
+    const acts = $allIn($(dom, '#viewer .diff-table'), '.hunk-act');
+    assert_(acts.length >= 2, 'hunk 头有块级操作按钮: ' + acts.length);
+    assert_(acts.some((b) => /暂存此块/.test(b.textContent)) && acts.some((b) => /回退此块/.test(b.textContent)), '含「暂存此块」「回退此块」');
+    // 点「暂存此块」→ 走 stageHunk(file, 块序号)
+    const stageBtn = acts.find((b) => /暂存此块/.test(b.textContent));
+    click(stageBtn);
+    await tick(); await tick();
+    assert_(calls.stageHunk.length === 1, '调用了 stageHunk');
+    assert_(calls.stageHunk[0][0] === row.dataset.file && calls.stageHunk[0][1] === 0, '参数是 [文件, 块序号]: ' + JSON.stringify(calls.stageHunk[0]));
     await g(dom, 'GitPanel.closeDiffView()');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M3 双区：同一个文件既有暂存又有未暂存 → 两块并排各挂各的按钮', async () => {
+    const save = FAKE_GIT.changed.map((c) => ({ ...c }));
+    // '*modified' = 暂存 + 未暂存（不是整份已暂存 → 不是 inIndexOnly）
+    FAKE_GIT.changed = save.map((c) => (c.file === 'src/app.js' ? { ...c, status: '*modified', label: '已修改（暂存+未暂存）', inIndexOnly: false } : c));
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('app.js'));
+    click(row);
+    await tick(); await tick(); await tick();
+    assert_(calls.diffStaged.length >= 1 && calls.diffUnstaged.length >= 1, '两侧都取了差异');
+    const titles = $allIn($(dom, '#viewer'), '.diff-file-title');
+    assert_(titles.length === 2, '出现两个文件块（已暂存 / 未暂存）: ' + titles.length);
+    const tags = $allIn($(dom, '#viewer'), '.diff-file-title .side-tag').map((x) => x.textContent.trim());
+    assert_(tags.includes('已暂存') && tags.includes('未暂存'), '两块各带侧标记: ' + tags.join('/'));
+    const acts = $allIn($(dom, '#viewer'), '.hunk-act').map((b) => b.textContent.trim());
+    assert_(acts.some((t) => /取消暂存此块/.test(t)), '已暂存那块给「取消暂存此块」');
+    assert_(acts.some((t) => /暂存此块/.test(t)), '未暂存那块给「暂存此块」');
+    // 点「取消暂存此块」→ 走 unstageHunk
+    const un = $allIn($(dom, '#viewer'), '.hunk-act').find((b) => /取消暂存此块/.test(b.textContent));
+    click(un);
+    await tick(); await tick();
+    assert_(calls.unstageHunk.length === 1, '调用了 unstageHunk');
+    FAKE_GIT.changed = save;
+    await g(dom, 'GitPanel.closeDiffView()');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('切项目：忽略文件缓存跟着作废（不再显示上一个项目的清单）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const ignHead = () => $allIn($(dom, '#cd-files'), '.git-sec-title').find((s) => /忽略的文件/.test(s.textContent));
+    // 保证「忽略的文件」是展开的（前面的用例可能已经加载过它 → 这里只关心「切项目后必须重新拉」）
+    const ensureOpen = () => {
+      const b = ignHead() && ignHead().nextElementSibling;
+      if (b && b.style.display === 'none') click(ignHead());
+    };
+    ensureOpen();
+    await tick(); await tick();
+    const before = calls.listIgnored.length;
+    // 切项目 → 缓存必须作废（ignoredFiles/ignoredAll 是整个会话缓存的，不随 root 走）
+    await g(dom, 'GitPanel.rootDir = "C:/other/proj"');
+    await tick(); await tick();
+    ensureOpen();
+    await tick(); await tick();
+    assert_(calls.listIgnored.length > before,
+      '切项目后重新拉取忽略清单（缓存作废）: ' + before + ' → ' + calls.listIgnored.length);
+    await g(dom, 'GitPanel.rootDir = ' + JSON.stringify(P));
+    await tick(); await tick();
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });

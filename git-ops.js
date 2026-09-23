@@ -22,6 +22,12 @@ module.exports = [
   { ch: 'logGraph', op: 'logGraph' },
   { ch: 'commit', op: 'commit' },
   { ch: 'diffWorkdir', op: 'diffWorkdir' },
+  // M3：双区差异（index↔工作区 / HEAD↔index）+ hunk 级暂存
+  { ch: 'diffUnstaged', op: 'diffUnstaged' },
+  { ch: 'diffStaged', op: 'diffStaged' },
+  { ch: 'stageHunk', op: 'stageHunk' },
+  { ch: 'unstageHunk', op: 'unstageHunk' },
+  { ch: 'revertHunk', op: 'revertHunk' },
   { ch: 'diffCommit', op: 'diffCommit' },
   { ch: 'compareRefs', op: 'compareRefs' },
   { ch: 'diffRefs', op: 'diffRefs' },

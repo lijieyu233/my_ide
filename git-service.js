@@ -733,23 +733,27 @@ function buildHunks(aText, bText, ctx = 3) {
   if (a.length > DIFF_MAX_LINES || b.length > DIFF_MAX_LINES) return coarseHunks(a, b);
   const ops = diffLines(aText, bText);
   if (!ops.some((o) => o.type !== 'ctx')) return [];
+  // 分块规则与 git 一致：**两处改动之间隔了 > 2×ctx 行未改动内容就断成两块**。
+  // ⚠ 老实现是"从第一处改动一路吃到最后一处"，一个文件永远只有 1 块 —— 那样 M3 的
+  //   hunk 级暂存就成了"整文件暂存"，等于没做。（改动 ≤ 2×ctx 行时仍合成一块，与 git 相同）
+  const changeIdx = [];
+  for (let i = 0; i < ops.length; i++) if (ops[i].type !== 'ctx') changeIdx.push(i);
   const groups = [];
-  let cur = null;
-  for (const o of ops) {
-    if (o.type === 'ctx') {
-      if (cur) cur.push(o);
-    } else {
-      if (!cur) { cur = []; groups.push(cur); }
-      cur.push(o);
-    }
+  let cur = [changeIdx[0]];
+  for (let k = 1; k < changeIdx.length; k++) {
+    let gap = 0;
+    for (let i = changeIdx[k - 1] + 1; i < changeIdx[k]; i++) if (ops[i].type === 'ctx') gap++;
+    if (gap > ctx * 2) { groups.push(cur); cur = []; }
+    cur.push(changeIdx[k]);
   }
+  groups.push(cur);
   const hunks = [];
   for (const g of groups) {
-    const first = g[0], last = g[g.length - 1];
+    const first = ops[g[0]], last = ops[g[g.length - 1]];
     const rows = [];
     const ctxHead = ops.filter((o) => o.type === 'ctx' && o.aLine < first.aLine).slice(-ctx);
     const ctxTail = ops.filter((o) => o.type === 'ctx' && o.aLine > last.aLine).slice(0, ctx);
-    for (const o of [...ctxHead, ...g, ...ctxTail]) {
+    for (const o of [...ctxHead, ...g.map((i) => ops[i]), ...ctxTail]) {
       if (o.type === 'ctx') rows.push({ type: 'ctx', aText: a[o.aLine] ?? '', bText: b[o.bLine] ?? '', aNum: o.aLine + 1, bNum: o.bLine + 1 });
       else if (o.type === 'del') rows.push({ type: 'del', aText: a[o.aLine] ?? '', bText: '', aNum: o.aLine + 1, bNum: 0 });
       else rows.push({ type: 'add', aText: '', bText: b[o.bLine] ?? '', aNum: 0, bNum: o.bLine + 1 });
@@ -791,6 +795,161 @@ async function diffWorkdir(dir, file) {
   }
   return { file: rel, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
 }
+
+// ---------- M3：双区差异（未暂存 / 已暂存）+ hunk 级暂存 ----------
+// 双区语义（对齐 git status 的两栏，也是 M3 的 UI 依据）：
+//   「更改」区   → **index → 工作区**：diffUnstaged（这是"还没进暂存区"的那部分）
+//   「已暂存」区 → **HEAD → index**：diffStaged  （这是"已经进暂存区、下次提交会带走"的那部分）
+// 文件同时有暂存与未暂存改动时（statusMatrix 的 stage=3），两个 diff 各自成立、互不干扰。
+
+const stripCR = (s) => (String(s).endsWith('\r') ? String(s).slice(0, -1) : String(s));
+const detectEol = (t) => (/\r\n/.test(t) ? '\r\n' : '\n');
+function splitEol(t) {
+  if (t === '') return { lines: [], had: false };   // 空文本 = 0 行（别变成 ['']）
+  const had = /\n$/.test(t);
+  const lines = String(t).split('\n');
+  if (had) lines.pop();
+  return { lines, had };
+}
+
+// 用同一套 CRLF 规则把两段文本变成 hunk（与 diffWorkdir 完全一致，别各写一套）
+function hunkify(aText, bText) {
+  let a = aText, b = bText;
+  if (a && b && a.indexOf('\r') === -1 && b.includes('\r\n')) b = b.replace(/\r\n/g, '\n');
+  if (a === b) return { oldText: a, newText: b, hunks: [] };
+  return { oldText: a, newText: b, hunks: buildHunks(a, b) };
+}
+
+// 读 index 里该文件的文本（拿不到 = 文件还没进过 index）
+async function indexTextOf(root, rel) {
+  const entries = await readIndexEntries(root);
+  const e = entries.get(posix(rel));
+  if (!e) return { text: null, mode: 33188 };
+  try {
+    const { blob } = await git.readBlob({ fs, dir: root, oid: e.oid });
+    return { text: Buffer.from(blob).toString('utf8'), mode: e.mode || 33188 };
+  } catch { return { text: null, mode: e.mode || 33188 }; }
+}
+
+async function diffUnstaged(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const idx = await indexTextOf(root, rel);
+  let newText = null;
+  try {
+    const st = fs.statSync(abs);
+    if (st.size > 20 * 1024 * 1024) return { file: rel, tooLarge: true, size: st.size };
+    newText = fs.readFileSync(abs, 'utf8');
+  } catch {}
+  if (idx.text === null && newText === null) return { file: rel, unchanged: true };
+  if (isBinaryText(idx.text) || isBinaryText(newText)) return { file: rel, binary: true };
+  const h = hunkify(idx.text ?? '', newText ?? '');
+  return { file: rel, base: 'index', side: 'unstaged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
+}
+
+async function diffStaged(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
+  const idx = await indexTextOf(root, rel);
+  if (idx.text === null) return { file: rel, unchanged: true };   // index 里没有它 = 没有已暂存内容
+  if (isBinaryText(headText) || isBinaryText(idx.text)) return { file: rel, binary: true };
+  const h = hunkify(headText ?? '', idx.text);
+  return { file: rel, base: 'head', side: 'staged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
+}
+
+// 把 hunk 应用到一段文本（forward: a→b / reverse: b→a）。
+// ⚠ **带前置校验**：目标位置的现有内容必须与 hunk 对应侧逐行相符，否则拒绝并让上层提示刷新。
+//   这是"自研拼接"能站得住脚的关键 —— 我们不猜，改不动就报错（比 git apply 的模糊匹配更保守）。
+// ⚠ 行尾：比对时统一剥掉行尾 \r，写回时按原文的 EOL 约定拼（autocrlf 仓库的文件不会被改成 LF）。
+function applyHunkToText(text, hunk, reverse) {
+  const { lines, had } = splitEol(text);
+  const eol = detectEol(text);
+  const start = reverse ? hunk.newStart : hunk.oldStart;
+  const count = reverse ? hunk.newLines : hunk.oldLines;
+  const expect = hunk.rows.filter((r) => (reverse ? r.bNum : r.aNum)).map((r) => stripCR(reverse ? r.bText : r.aText));
+  const want = hunk.rows.filter((r) => (reverse ? r.aNum : r.bNum)).map((r) => stripCR(reverse ? r.aText : r.bText));
+  const have = lines.slice(start - 1, start - 1 + count).map(stripCR);
+  if (have.length !== expect.length || have.some((l, i) => l !== expect[i])) {
+    return { ok: false, error: '文件内容与差异不一致（可能已被改动），请刷新后重试' };
+  }
+  const out = lines.slice(0, start - 1).concat(want, lines.slice(start - 1 + count));
+  // 统一剥掉行尾 \r 再按原文的 EOL 拼回：混着来的话会拼出 \r\r\n
+  return { ok: true, text: out.map(stripCR).join(eol) + (had ? eol : '') };
+}
+
+// 暂存一个 hunk：把「index → 工作区」的第 idx 块写进 index（= git add -p 的那一步）
+async function stageHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffUnstaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块暂存' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  const idxText = await indexTextOf(root, rel);
+  const r = applyHunkToText(idxText.text ?? '', h, false);
+  if (!r.ok) return r;
+  // ⚠ writeBlob 返回的是 **oid 字符串**（不是 {oid}）；传 undefined 给 updateIndex 会让它
+  //    退回"拿工作区内容算哈希"——表现为"暂存整块变成暂存整个文件"（踩过，见 M3 文档）
+  const oid = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
+  if (!oid) return { ok: false, error: '写入 blob 失败' };
+  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid, mode: idxText.mode });
+  return { ok: true, oid };
+}
+
+// 取消暂存一个 hunk：把「HEAD → index」的第 idx 块从 index 里撤掉（= git reset -p 的那一步）
+async function unstageHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffStaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块取消暂存' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  const idxText = await indexTextOf(root, rel);
+  const r = applyHunkToText(idxText.text ?? '', h, true);
+  if (!r.ok) return r;
+  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
+  // 还原到与 HEAD 完全一致时，直接 resetIndex（index 条目回到 HEAD，状态最干净）
+  if ((headText ?? '') === r.text) {
+    await git.resetIndex({ fs, dir: root, filepath: posix(rel) });
+    return { ok: true, reset: true };
+  }
+  const w = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
+  if (!w) return { ok: false, error: '写入 blob 失败' };
+  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid: w, mode: idxText.mode });
+  return { ok: true, oid: w };
+}
+
+// 回退一个 hunk：把工作区那一块改回 index 里的样子（**只动工作区，不碰 index**）
+async function revertHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffUnstaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块回退' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  let raw = null;
+  try { raw = fs.readFileSync(abs, 'utf8'); } catch {}
+  if (raw === null) return { ok: false, error: '读不到工作区文件' };
+  const r = applyHunkToText(raw, h, true);
+  if (!r.ok) return r;
+  try { fs.writeFileSync(abs, r.text); } catch (e) { return { ok: false, error: '写回失败：' + String(e.message || e) }; }
+  return { ok: true };
+}
+
 
 // ---------- 某提交涉及的文件列表 ----------
 async function treeFiles(root, oid) {
@@ -1709,6 +1868,8 @@ module.exports = {
   findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo,
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
   diffWorkdir, diffCommit, diffRefs, compareRefs, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
+  // M3：双区差异 + hunk 级暂存/取消暂存/回退（+ 供测试直接验的纯拼接函数）
+  diffUnstaged, diffStaged, stageHunk, unstageHunk, revertHunk, applyHunkToText,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,

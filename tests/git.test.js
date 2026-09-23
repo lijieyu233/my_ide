@@ -817,6 +817,63 @@ fs.mkdirSync(repo);
     assert.ok(cc && cc.status === '*modified', 'c.txt 应是「暂存+未暂存」，got ' + (cc && cc.status));
   });
 
+  // ---------- M3：hunk 级部分提交（拼接 + 真实仓库往返） ----------
+  await okAsync('M3 hunk：applyHunkToText 前置校验 + CRLF 保真', async () => {
+    const h = {
+      oldStart: 2, oldLines: 1, newStart: 2, newLines: 1,
+      rows: [{ type: 'del', aText: 'l2', bText: '', aNum: 2, bNum: 0 },
+             { type: 'add', aText: '', bText: 'L2', aNum: 0, bNum: 2 }],
+    };
+    assert.strictEqual(G.applyHunkToText('l1\nl2\nl3\n', h, false).text, 'l1\nL2\nl3\n', '正向拼接');
+    assert.strictEqual(G.applyHunkToText('l1\nL2\nl3\n', h, true).text, 'l1\nl2\nl3\n', '反向拼接');
+    const bad = G.applyHunkToText('l1\nXX\nl3\n', h, false);
+    assert.ok(!bad.ok && /不一致/.test(bad.error), '内容对不上必须拒绝，不能硬改');
+    assert.strictEqual(G.applyHunkToText('l1\r\nl2\r\nl3\r\n', h, false).text, 'l1\r\nL2\r\nl3\r\n', 'CRLF 文件写回仍是 CRLF');
+    assert.strictEqual(G.applyHunkToText('l1\nl2', h, false).text, 'l1\nL2', '末行无换行也保持无换行');
+  });
+
+  await okAsync('M3 hunk：暂存 → 回退 → 取消暂存（真实仓库，双区差异各自成立）', async () => {
+    const rp = path.join(tmp, 'repo-hunk');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    const base = Array.from({ length: 20 }, (_, i) => 'line ' + (i + 1)).join('\n') + '\n';
+    fs.writeFileSync(path.join(rp, 'h.txt'), base);
+    await G.commit(rp, { message: 'base', files: ['h.txt'] });
+    // 两处改动隔得够远 → 必然切成两块
+    fs.writeFileSync(path.join(rp, 'h.txt'), base.replace('line 2\n', 'line 2 CHANGED\n').replace('line 18\n', 'line 18 CHANGED\n'));
+
+    let du = await G.diffUnstaged(rp, 'h.txt');
+    assert.strictEqual(du.hunks.length, 2, '未暂存差异分成 2 块，got ' + (du.hunks || []).length);
+
+    const r1 = await G.stageHunk(rp, 'h.txt', 0);           // 只暂存第 1 块
+    assert.ok(r1.ok, 'stageHunk 失败: ' + (r1.error || ''));
+    let c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
+    assert.strictEqual(c && c.status, '*modified', '暂存一块后应是「暂存+未暂存」，got ' + (c && c.status));
+
+    const ds = await G.diffStaged(rp, 'h.txt');
+    assert.strictEqual(ds.hunks.length, 1, '已暂存差异只剩 1 块，got ' + ds.hunks.length);
+    assert.ok(ds.newText.includes('line 2 CHANGED') && !ds.newText.includes('line 18 CHANGED'),
+      '已暂存的是第 1 块');
+    du = await G.diffUnstaged(rp, 'h.txt');
+    assert.strictEqual(du.hunks.length, 1, '未暂存差异只剩 1 块，got ' + du.hunks.length);
+    assert.ok(du.oldText.includes('line 2 CHANGED'), '未暂存差异的基线是 index（已含第 1 块）');
+
+    const rv = await G.revertHunk(rp, 'h.txt', 0);          // 回退第 2 块（只动工作区）
+    assert.ok(rv.ok, 'revertHunk 失败: ' + (rv.error || ''));
+    const wt = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
+    assert.ok(wt.includes('line 18') && !wt.includes('line 18 CHANGED'), '工作区第 2 块已回退');
+    assert.ok(wt.includes('line 2 CHANGED'), '工作区第 1 块保持（与 index 一致）');
+
+    const wtBefore = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
+    const ru = await G.unstageHunk(rp, 'h.txt', 0);         // 取消暂存第 1 块
+    assert.ok(ru.ok, 'unstageHunk 失败: ' + (ru.error || ''));
+    c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
+    assert.ok(!c || c.status === 'modified', '取消暂存后回到「未暂存」，got ' + (c && c.status));
+    assert.strictEqual(fs.readFileSync(path.join(rp, 'h.txt'), 'utf8'), wtBefore,
+      '取消暂存只动 index，工作区一个字节都不该变');
+    assert.ok(wtBefore.includes('line 2 CHANGED'), '取消暂存后工作区仍保留那处改动（回到未暂存而已）');
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

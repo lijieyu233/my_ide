@@ -131,6 +131,30 @@ function writeFixtures(dir) {
   return { png, md };
 }
 
+// M3 夹具：一个**真实的独立小仓库**，用来端到端验 hunk 级暂存。
+// ⚠ 不能用 demo 项目做这件事 —— demo 的仓库根就是 my_ide 本体，在那里暂存 hunk 等于改使用者的 index。
+//   这里建的仓库在 demo/_ui_hunkrepo（被 .gitignore 排除），每次跑自检重建一次，结束进回收站。
+async function writeHunkFixture(baseDir) {
+  const G = require('../git-service');
+  const rp = path.join(baseDir, '_ui_hunkrepo');
+  if (fs.existsSync(rp)) {
+    // ⚠ 不能用 fs.rmSync（本机 safe-delete 会接管批量/递归删除）→ 挪到同盘回收站
+    const trash = path.join(baseDir, '..', '.ui-check-trash');
+    try {
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(rp, path.join(trash, '_ui_hunkrepo_' + Date.now()));
+    } catch {}
+  }
+  fs.mkdirSync(rp, { recursive: true });
+  await G.initRepo(rp);
+  const base = Array.from({ length: 20 }, (_, i) => 'line ' + (i + 1)).join('\n') + '\n';
+  fs.writeFileSync(path.join(rp, 'h.txt'), base);
+  await G.commit(rp, { message: 'base', files: ['h.txt'] });
+  // 两处改动隔得够远 → 必然切成两个 hunk（供「只暂存其中一块」验证）
+  fs.writeFileSync(path.join(rp, 'h.txt'), base.replace('line 2\n', 'line 2 CHANGED\n').replace('line 18\n', 'line 18 CHANGED\n'));
+  return rp;
+}
+
 // 项目栏压力：13 个真实小目录（只入项目列表，不逐个打开扫盘），用于复现「按钮挤压/覆盖/截断」
 function seedProjects(baseDir) {
   const list = [baseDir];
@@ -154,6 +178,14 @@ function cleanFixtures(dir) {
   rm(path.join(dir, '_ui_drop.md'));   // 拖拽步骤建的
   rm(path.join(dir, '_ui_perm.md'));   // 授权记忆步骤建的
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
+  // M3 夹具仓库（真实 git 仓库，含 .git）：rmSync 在本机会被 safe-delete 接管 → 挪到同盘回收站
+  const rp = path.join(dir, '_ui_hunkrepo');
+  if (fs.existsSync(rp)) {
+    const trash = path.join(dir, '..', '.ui-check-trash');
+    try {
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(rp, path.join(trash, '_ui_hunkrepo_' + Date.now()));
+    } catch {}
+  }
 }
-
-module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };
+module.exports = { makePng, writeFixtures, seedProjects, writeHunkFixture, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };

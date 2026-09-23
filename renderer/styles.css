@@ -850,6 +850,23 @@ textarea.editor {
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 6px 8px; font-size: .96em; font-family: inherit; outline: none;
 }
+/* M3：每个 hunk 头上的块级操作（暂存 / 取消暂存 / 回退）。
+   按钮挂在 @@ 行右侧、hover 才提亮 —— 不另起一行，避免多块文件时刷成按钮墙。 */
+.diff-hunk-gap .hunk-actions { margin-left: auto; display: inline-flex; gap: 4px; }
+.diff-hunk-gap .hunk-act {
+  border: 1px solid var(--border); background: transparent; border-radius: 3px;
+  padding: 0 6px; height: 18px; font-size: 11px; color: var(--text-dim); cursor: pointer;
+}
+.diff-hunk-gap .hunk-act:hover { background: var(--bg-hover); color: var(--text-bright); }
+.diff-hunk-gap .hunk-act.danger:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.diff-hunk-gap td { display: flex; align-items: center; gap: 8px; }
+/* 双区并排时，文件标题后标出这一块属于哪一侧（同一个文件两块会重名） */
+.diff-file-title .side-tag {
+  margin-left: 6px; font-size: 11px; padding: 0 5px; border-radius: 3px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.diff-file-title .side-tag.staged { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
 /* ---------- 只读分节（「已暂存（外部）」/ 非活动变更列表）----------
    M1：index 里已有的内容只展示、不增删；非活动列表也不参与本次提交。
    表达上整节降一级（不给勾选框、文字压暗），避免它看起来"可以操作"。 */
