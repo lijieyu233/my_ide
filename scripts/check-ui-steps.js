@@ -890,6 +890,89 @@ module.exports = {
     return { R };
   },
 
+  // ---------- 原生 Git 后端（M2）：能力探测 + 设置页 ----------
+  // ⚠ 只调只读接口（backendInfo / testGitExe），**绝不点「保存」** —— 那会写 ~/.myide/git-native.json，
+  //   自检不该动用户的配置。
+  gitBackend: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    const info = await window.myIDE.git.backendInfo(false);
+    add('backendInfo 形状正确（git / caps / fallback 三段）',
+      !!(info && info.git && info.caps && info.fallback),
+      info && info.git ? JSON.stringify(info.git).slice(0, 90) : '拿不到 info');
+    if (!info || !info.git) return { R };
+    const capKeys = Object.keys(info.caps || {});
+    add('caps 7 项且全是布尔值', capKeys.length === 7 && capKeys.every((k) => typeof info.caps[k] === 'boolean'),
+      JSON.stringify(info.caps));
+    add('git 可用 → 版本号形如 x.y.z；不可用 → exe 为空且 caps 全 false（软依赖，不是硬依赖）',
+      info.git.available
+        ? /^\d+\.\d+/.test(String(info.git.version))
+        : (!info.git.exe && capKeys.every((k) => info.caps[k] === false)),
+      'available=' + info.git.available + ' version=' + info.git.version + ' exe=' + info.git.exe);
+    add('写明回退后端 isomorphic-git + 版本',
+      /isomorphic-git/.test(String(info.fallback && info.fallback.name)) && !!info.fallback.version,
+      (info.fallback || {}).name + ' ' + (info.fallback || {}).version);
+    add('路由表存在且没有"任意命令"口子（只有明确能力）',
+      !!(info.routing && Array.isArray(info.routing.native) && Array.isArray(info.routing.isomorphic)),
+      'native=' + JSON.stringify((info.routing || {}).native) + ' isomorphic=' + ((info.routing || {}).isomorphic || []).length + ' 项');
+    // 漂移检查：git-ops.js 清单里的每个通道，preload 都必须在 window.myIDE.git 上暴露出来
+    const ops = Array.isArray(info.ops) ? info.ops : [];
+    const bridge = (window.myIDE && window.myIDE.git) || {};
+    const missing = ops.filter((ch) => typeof bridge[ch] !== 'function');
+    add('清单里的 ' + ops.length + ' 个通道 preload 全部暴露（漏一个就是"按钮点不动"）',
+      ops.length >= 40 && missing.length === 0, missing.length ? '缺：' + missing.join(', ') : '无缺失');
+
+    window.Settings.open('git');
+    await sleep(900);
+    add('设置页 Git 分类出现「原生 Git 后端」区', !!q('#git-exe') && !!q('#git-backend-status'),
+      q('#git-exe') ? '有输入框与状态区' : '没渲染出来');
+    const chips = qa('#git-backend-status .cap');
+    const onCount = chips.filter((c) => c.classList.contains('on')).length;
+    const wantOn = capKeys.filter((k) => info.caps[k]).length;
+    add('能力胶囊 7 个，且 on 的数量与 backendInfo().caps 一致',
+      chips.length === 7 && onCount === wantOn, '胶囊=' + chips.length + ' on=' + onCount + ' 期望=' + wantOn);
+    add('状态区与探测结果一致（可用→显示版本；不可用→显示未检测到）',
+      info.git.available
+        ? new RegExp('Git ' + String(info.git.version).replace(/\./g, '\\.')).test(q('#git-backend-status').textContent)
+        : /未检测到/.test(q('#git-backend-status').textContent),
+      (q('#git-backend-status').textContent || '').replace(/\s+/g, ' ').slice(0, 80));
+    add('输入框初值 = 手动配置的路径（未配置时为空）',
+      q('#git-exe').value === (info.git.source === 'configured' ? info.git.exe : ''),
+      JSON.stringify(q('#git-exe').value) + ' source=' + info.git.source);
+
+    // 「测试路径」只读试跑：把结果写进状态区，不落盘
+    q('#git-exe-test').click();
+    await sleep(1500);
+    add('「测试路径」把试跑结果写进状态区（不落盘）',
+      /可用|不可用/.test(q('#git-backend-status').textContent),
+      (q('#git-backend-status').textContent || '').replace(/\s+/g, ' ').slice(0, 60));
+    // 「自动检测」按一遍：能找到就刷新出真实版本
+    q('#git-exe-detect').click();
+    await sleep(2000);
+    add('「自动检测」后状态区仍是有效状态（探测不抛错）',
+      /Git \d|未检测到/.test(q('#git-backend-status').textContent),
+      (q('#git-backend-status').textContent || '').replace(/\s+/g, ' ').slice(0, 60));
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：关掉设置弹窗 ----------
+  gitBackendClose: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const x = q('#set-x');
+    if (x) x.click();
+    await sleep(500);
+    add('设置弹窗已关（后面步骤基线干净）', !q('#set-box') || q('#modal-mask').classList.contains('hidden'),
+      q('#set-box') ? 'mask hidden=' + q('#modal-mask').classList.contains('hidden') : '已移除');
+    return { R };
+  },
+
   // ---------- Git 日志窗口（底部停靠）：截图 + 结构断言（文档要贴图） ----------
   gitLogWindow: async () => {
     const R = [];

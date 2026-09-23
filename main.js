@@ -878,45 +878,23 @@ function startGitWorker() {
   }
 }
 
-ipcMain.handle('git:init', (_e, dir) => gitCall('initRepo', dir));
-ipcMain.handle('git:status', (_e, dir) => gitCall('status', dir));
-ipcMain.handle('git:log', (_e, dir, depth, ref) => gitCall('log', dir, depth, ref));
-ipcMain.handle('git:logGraph', (_e, dir, limit, ref) => gitCall('logGraph', dir, limit, ref));
-ipcMain.handle('git:commit', (_e, dir, opts) => gitCall('commit', dir, opts));
-ipcMain.handle('git:diffWorkdir', (_e, dir, file) => gitCall('diffWorkdir', dir, file));
-ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => gitCall('diffCommit', dir, oid, file));
-ipcMain.handle('git:compareRefs', (_e, dir, aRef, bRef) => gitCall('compareRefs', dir, aRef, bRef));
-ipcMain.handle('git:diffRefs', (_e, dir, aRef, bRef, file) => gitCall('diffRefs', dir, aRef, bRef, file));
-ipcMain.handle('git:commitFiles', (_e, dir, oid) => gitCall('commitFiles', dir, oid));
-ipcMain.handle('git:branches', (_e, dir) => gitCall('branches', dir));
-ipcMain.handle('git:checkout', (_e, dir, ref) => gitCall('checkout', dir, ref));
-ipcMain.handle('git:createBranch', (_e, dir, name) => gitCall('createBranch', dir, name));
-ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
-ipcMain.handle('git:discardFiles', (_e, dir, files) => gitCall('discardFiles', dir, files));
-ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
-ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
-// 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 一、二期）
-ipcMain.handle('git:listRemotes', (_e, dir) => gitCall('listRemotes', dir));
-ipcMain.handle('git:addRemote', (_e, dir, cfg) => gitCall('addRemote', dir, cfg));
-ipcMain.handle('git:removeRemote', (_e, dir, name) => gitCall('removeRemote', dir, name));
-ipcMain.handle('git:fetch', (_e, dir, opts) => gitCall('fetchRemote', dir, opts));
-ipcMain.handle('git:pull', (_e, dir, opts) => gitCall('pullRemote', dir, opts));
-ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
-        ipcMain.handle('git:listPushCommits', (_e, dir) => gitCall('listPushCommits', dir));
-        ipcMain.handle('git:shelveCreate', (_e, dir, cfg) => gitCall('shelveCreate', dir, cfg));
-        ipcMain.handle('git:shelveList', (_e, dir) => gitCall('shelveList', dir));
-        ipcMain.handle('git:shelveApply', (_e, dir, id, opts) => gitCall('shelveApply', dir, id, opts));
-        ipcMain.handle('git:shelveDelete', (_e, dir, id) => gitCall('shelveDelete', dir, id));
-        ipcMain.handle('git:aheadBehind', (_e, dir, opts) => gitCall('aheadBehind', dir, opts));
-        ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
-        ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
-        ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
-        ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
-        ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
-        ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
-ipcMain.handle('git:addToGitignore', (_e, dir, file) => gitCall('addToGitignore', dir, file));
-ipcMain.handle('git:removeFromGitignore', (_e, dir, file) => gitCall('removeFromGitignore', dir, file));
-ipcMain.handle('git:listIgnored', (_e, dir) => gitCall('listIgnored', dir));
+// ---------- Git IPC：由 git-ops.js 的清单统一注册（M2 的 Registry）----------
+// 通道名 → 服务函数的映射只写在 git-ops.js 一处，这里按表生成 handler（参数原样透传）。
+// ⚠ preload / dom mock 仍是显式写（sandbox:true 的 preload 不能 require 本地模块），
+//   但自检 `gitBackend` 步骤会拿这张表和 window.myIDE.git 的键做漂移检查。
+const GIT_OPS = require('./git-ops');
+const nativeGit = require('./git-native');
+for (const spec of GIT_OPS) {
+  if (spec.native) {
+    const fn = nativeGit[spec.native];
+    ipcMain.handle('git:' + spec.ch, (_e, ...args) => fn(...args));
+  } else {
+    ipcMain.handle('git:' + spec.ch, (_e, ...args) => gitCall(spec.op, ...args));
+  }
+}
+// backendInfo 额外带上通道清单：渲染层用它做「preload 有没有漏加」的漂移检查
+ipcMain.removeHandler('git:backendInfo');
+ipcMain.handle('git:backendInfo', async (_e, force) => Object.assign(await nativeGit.info(!!force), { ops: GIT_OPS.map((s) => s.ch) }));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();
@@ -1309,6 +1287,8 @@ app.whenReady().then(() => {
         await run('Git 日志窗口（收尾：关掉）', js(steps.gitLogWindowClose));
         await run('M1 提交模型（已暂存只读分节 + 变更列表）', js(steps.m1CommitModel), 'check-ui-1q-m1-changelist.png');
         await run('M1 提交模型（收尾：清空变更列表）', js(steps.m1CommitModelCleanup));
+        await run('原生 Git 后端（能力探测 + 设置页）', js(steps.gitBackend), 'check-ui-1r-git-backend.png');
+        await run('原生 Git 后端（收尾：关设置）', js(steps.gitBackendClose));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

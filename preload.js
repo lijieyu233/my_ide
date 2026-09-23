@@ -93,6 +93,10 @@ contextBridge.exposeInMainWorld('myIDE', {
     addToGitignore: (d, file) => ipcRenderer.invoke('git:addToGitignore', d, file),
     removeFromGitignore: (d, file) => ipcRenderer.invoke('git:removeFromGitignore', d, file),
     listIgnored: (d) => ipcRenderer.invoke('git:listIgnored', d),
+    // 原生 git 后端（M2）：能力探测 / 测试候选路径（只读）/ 保存路径（写 ~/.myide/git-native.json）
+    backendInfo: (force) => ipcRenderer.invoke('git:backendInfo', force),
+    testGitExe: (cand) => ipcRenderer.invoke('git:testGitExe', cand),
+    setGitExe: (p) => ipcRenderer.invoke('git:setGitExe', p),
   },
   plugins: {
     loadAll: () => ipcRenderer.invoke('plugins:loadAll'),

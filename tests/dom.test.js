@@ -60,6 +60,8 @@ const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
 let fakeCopiedMove = null; // copyFiles 的 move 参数（剪切=true / 复制=false）
 calls.setUserConfig = [];
+calls.setGitExe = [];
+calls.testGitExe = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -244,6 +246,22 @@ function makeDom() {
       discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
+      // 原生 git 后端（M2）：探测形状与 main 侧 git-native.info() 一致
+      backendInfo: async () => ({
+        git: { available: true, exe: 'git', version: '2.55.0', source: 'PATH', error: '', candidates: ['git'] },
+        caps: { merge: true, rebase: true, stash: true, hooks: true, partialStaging: true, credential: true, worktree: true },
+        fallback: { name: 'isomorphic-git', version: '1.41.4' },
+        routing: { native: ['credential'], isomorphic: ['status', 'commit'], planned: {} },
+      }),
+      testGitExe: async (cand) => { calls.testGitExe.push(cand); return { ok: true, exe: cand || 'git', version: '2.55.0' }; },
+      setGitExe: async (p) => {
+        calls.setGitExe.push(p);
+        return {
+          git: { available: true, exe: p || 'git', version: '2.55.0', source: p ? 'configured' : 'PATH', error: '', candidates: [p || 'git'] },
+          caps: { merge: true, rebase: true, stash: true, hooks: true, partialStaging: true, credential: true, worktree: true },
+          fallback: { name: 'isomorphic-git', version: '1.41.4' },
+        };
+      },
       // 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 二期）
       listRemotes: async () => ({
         remotes: [
@@ -278,6 +296,8 @@ function makeDom() {
       listTags: async () => ({ tags: [] }),
       createTag: async () => ({ ok: true }),
       revert: async (d, oid) => { calls.revert = (calls.revert || []).concat(oid); return { ok: true, oid: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' }; },
+      // 清单漂移检查（Git IPC Registry）会发现少了这个 —— 补上后 mock 与 git-ops.js 一一对应
+      cherryPick: async (d, oid) => { calls.cherryPick = (calls.cherryPick || []).concat(oid); return { ok: true, oid, files: 1 }; },
       logFile: async () => ({ commits: [] }),
       blame: async () => ({ lines: [] }),
       addToGitignore: async (d, f) => { calls.gitignore.push('add:' + f); return { ok: true, pattern: f }; },
@@ -1842,6 +1862,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'GitPanel.refresh = window.__origGitRefresh');
   });
 
+  await okAsync('Git IPC Registry：清单里的通道在 dom mock 里都有对应实现', async () => {
+    const OPS = require('../git-ops');   // 唯一清单（main.js 按它注册 handler）
+    const bridge = dom.window.myIDE.git || {};
+    const miss = OPS.map((o) => o.ch).filter((ch) => typeof bridge[ch] !== 'function');
+    assert_(OPS.length >= 40, '清单至少有 40 个通道: ' + OPS.length);
+    assert_(miss.length === 0, 'mock 缺这些通道（新增能力时忘了补 mock）: ' + miss.join(', '));
+    assert_(OPS.every((o) => o.ch && (o.op || o.native)), '每项都要有 ch 且指定 op 或 native');
+  });
+
   await okAsync('设置：Git 配置分类（预填 + 保存）', async () => {
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
@@ -1858,6 +1887,19 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     assert_(calls.setUserConfig.length === 1, '调用了 setUserConfig');
     assert_(calls.setUserConfig[0].name === '张三' && calls.setUserConfig[0].email === 'zhangsan@x.com', '配置值正确');
+    // 原生 Git 后端（M2）：能力清单一并渲染，保存路径走 setGitExe
+    assert_($(dom, '#git-exe'), '原生后端：可执行文件路径输入框');
+    assert_($(dom, '.git-native-caps .cap'), '原生后端：能力清单有胶囊');
+    assert_($(dom, '.git-native-caps .cap.on'), '可用能力标 on（模拟环境探测到 git）');
+    assert_($(dom, '#git-backend-status').textContent.includes('Git 2.55.0'), '显示探测到的版本: ' + $(dom, '#git-backend-status').textContent.slice(0, 60));
+    assert_($(dom, '#git-backend-status').textContent.includes('isomorphic-git'), '显示回退后端');
+    $(dom, '#git-exe').value = 'D:/software/Git/bin/git.exe';
+    click($(dom, '#git-exe-save'));
+    await tick(); await tick();
+    assert_(calls.setGitExe.length === 1 && calls.setGitExe[0] === 'D:/software/Git/bin/git.exe', '调用了 setGitExe 且带路径');
+    click($(dom, '#git-exe-test'));
+    await tick(); await tick();
+    assert_(calls.testGitExe.length === 1, '「测试路径」调用了 testGitExe');
     // 切回快捷键分类仍正常
     click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('快捷键')));
     await tick();

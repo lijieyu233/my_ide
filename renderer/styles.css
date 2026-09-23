@@ -1489,6 +1489,30 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .custom-theme-ctrl .ct-reset { padding: 1px 8px; font-size: 12px; }
 
 /* ---------- 设置表单（Git 配置） ---------- */
+/* 原生 Git 后端（M2）：与"提交作者信息"同页但独立成块 —— 这块和仓库无关（本机 git 在哪对所有项目一样） */
+.set-sec { padding: 14px 18px 18px; max-width: 640px; border-top: 1px solid var(--border); }
+.set-sec-t { font-size: 13px; font-weight: 500; color: var(--text-bright); margin-bottom: 10px; }
+.git-native-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.git-native-row input {
+  flex: 1; min-width: 220px; background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--btn-border); border-radius: 4px;
+  padding: 6px 8px; font-size: 13px; outline: none;
+}
+.git-native-row input:focus { border-color: var(--accent); }
+.git-native-status { margin-top: 10px; font-size: 12.5px; line-height: 1.7; }
+.git-native-line { color: var(--text); }
+.git-native-line b { color: var(--text-bright); }
+.git-native-caps { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.git-native-caps .cap {
+  font-size: 12px; border-radius: 3px; padding: 1px 6px;
+  border: 1px solid var(--border);
+}
+.git-native-caps .cap.on { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+.git-native-caps .cap.off { color: var(--text-dim); opacity: .8; }
+.git-native-tip { margin-top: 8px; font-size: 11.5px; line-height: 1.7; }
+.git-native-status .dim, .git-native-tip.dim { color: var(--text-dim); }
+.git-native-status .warn { color: var(--red); }
+
 .set-form { padding: 16px 18px; max-width: 420px; }
 .set-form input {
   width: 100%; background: var(--bg-input); color: var(--text-bright);

@@ -930,7 +930,8 @@ async function diffRefs(dir, aRef, bRef, file) {
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
 const rawHttp = require('isomorphic-git/http/node');
-const { execFile } = require('child_process');
+// 原生 git 后端（M2）：只承担 credential / proxy 这类"必须问命令行"的能力
+const nativeGit = require('./git-native');
 const netHttp = require('http');
 const netHttps = require('https');
 const tls = require('tls');
@@ -946,22 +947,8 @@ function hostOf(url) {
 // https 目标构造 HTTP CONNECT 隧道 agent 注入底层 http client。
 
 // 查 git config 里该远程 URL 的 http.proxy（不走网络，仅读配置；结果缓存）
-const gitProxyCache = new Map(); // root \n url -> proxyUrl | ''
-function gitConfigProxy(root, url) {
-  const key = root + '\n' + url;
-  if (gitProxyCache.has(key)) return Promise.resolve(gitProxyCache.get(key));
-  return new Promise((resolve) => {
-    let settled = false;
-    // 失败（超时/异常/未配置读失败）不写缓存：一次抖动若把 null 固化进进程，
-    // 整个会话推送都会直连（绿盾环境直连必挂），重启应用才能恢复。
-    const done = (v, cache) => { if (!settled) { settled = true; if (cache && v) gitProxyCache.set(key, v); resolve(v || null); } };
-    try {
-      execFile('git', ['-C', root, 'config', '--get-urlmatch', 'http.proxy', url], {
-        timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024,
-      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null, !err && !!stdout));
-    } catch { done(null, false); }
-  });
-}
+// —— 已收编进原生后端（git-native.js 的 proxyFor，实现与缓存都在那边）
+function gitConfigProxy(root, url) { return nativeGit.proxyFor(root, url); }
 
 // HTTP CONNECT 隧道 agent（https 目标经 http 代理；agent 按 proxyUrl 缓存复用）
 // 注意：createConnection 是 Agent 的原型方法，构造参数传入会被忽略，必须子类覆写。
@@ -1012,36 +999,9 @@ async function httpFor(root, url) {
   return { request: (req) => rawHttp.request(Object.assign({}, req, { agent })) };
 }
 
-// 系统 Git 凭证管理器查询（git credential fill，与命令行共享凭证）。
-// GCM_INTERACTIVE=never + GIT_TERMINAL_PROMPT=0：查不到直接失败，绝不弹窗阻塞 UI。
-// 结果按 protocol//host 进程内缓存（含失败 null），避免每次推送都 spawn 一次 git。
-const sysCredCache = new Map();
-function systemCredentialFill(url) {
-  let u; try { u = new URL(url); } catch { return Promise.resolve(null); }
-  if (!/^https?:$/.test(u.protocol)) return Promise.resolve(null); // 仅支持 http(s) 远程
-  const key = u.protocol + '//' + u.host;
-  if (sysCredCache.has(key)) return Promise.resolve(sysCredCache.get(key));
-  return new Promise((resolve) => {
-    let settled = false;
-    // 失败（超时/GCM 未响应等）不写缓存：一次抖动若把 null 固化进进程，
-    // 后续推送的候选链会跳过系统凭证直接 401，重启应用才能恢复。
-    const done = (v, cache) => { if (!settled) { settled = true; if (cache) sysCredCache.set(key, v); resolve(v); } };
-    try {
-      const child = execFile('git', ['credential', 'fill'], {
-        timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
-        env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
-      }, (err, stdout) => {
-        if (err) return done(null, false);
-        const s = String(stdout);
-        const mu = s.match(/^username=(.*)$/m), mp = s.match(/^password=(.*)$/m);
-        done(mu && mp ? { username: mu[1], password: mp[1] } : null, !!(mu && mp));
-      });
-      child.stdin.on('error', () => {}); // stdin 异常不致命（超时 kill 时可能触发）
-      child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
-      child.stdin.end();
-    } catch { done(null); }
-  });
-}
+// 系统 Git 凭证管理器查询 —— 已收编进原生后端（git-native.js）
+// （M2「按能力路由」：credential / proxy 走 native，其余继续走 isomorphic-git）
+function systemCredentialFill(url) { return nativeGit.credentialFill(url); }
 
 // 候选凭证迭代制（onAuth 与 onAuthFailure 共用同一迭代器）：
 // isomorphic-git 语义：首次 401 调 onAuth 取凭证，之后每次 401 调 onAuthFailure 取下一个；
