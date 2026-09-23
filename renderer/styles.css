@@ -729,11 +729,16 @@ textarea.editor {
   min-height: 0;
 }
 .panel-title {
-  height: var(--head-h); box-sizing: border-box;
+  min-height: var(--head-h); box-sizing: border-box;
   padding: 0 12px; font-size: .92em; font-weight: 600; color: var(--text-bright);
   border-bottom: 1px solid var(--border); flex-shrink: 0;
   background: var(--bg-panel);
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; flex-wrap: wrap; column-gap: 6px; row-gap: 2px;
+  /* ⚠ 标题文字是 flex 里唯一的「匿名项」，默认 min-width:auto 会被压到 min-content
+     = 一个汉字宽 → 侧栏窄时两个字竖着排（用户截图：提交 竖着，好难看）。
+     nowrap 把它的 min-content 抬到整词宽度；真放不下时整行换行（flex-wrap），
+     而不是把标题压成竖排。min-height（不是 height）保证不换行时仍是 30px，与其他标题行齐平。 */
+  white-space: nowrap;
 }
 .panel-title-actions { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
 /* ---------- Git 提交工具窗口（左侧停靠，与项目/大纲同栏互斥） ---------- */
@@ -744,10 +749,13 @@ textarea.editor {
 }
 #cd-branch {
   color: var(--green); cursor: pointer; padding: 1px 5px; border-radius: 4px; user-select: none;
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
 }
 #cd-branch:hover { background: var(--bg-hover); }
-#cd-dirty { color: var(--text-dim); font-size: .85em; white-space: nowrap; }
+/* ahead/behind + 修改数：标题行里**唯一允许被压缩**的一项（min-width:0 + 省略号）。
+   右侧的拉取/推送是操作、不能被裁，所以让这段信息当缓冲垫 —— 挤的时候先省略它，
+   而不是把标题挤成竖排或让整行换行。默认宽度下它是完整显示的（自检有断言守着）。 */
+#cd-dirty { color: var(--text-dim); font-size: .85em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cd-files { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #commit-list { flex: 1; min-height: 0; overflow: auto; }
 .cd-msgbox {
@@ -765,6 +773,10 @@ textarea.editor {
 .git-cp-bar {
   display: flex; align-items: center; gap: 1px; padding: 4px 8px;
   border-bottom: 1px solid var(--border-pane); flex-shrink: 0;
+  /* 兜底换行：按钮从 8 个增加到 11 个（搁置/远程/日志 从标题行挪下来）。
+     工具行在文件列表上方、高度是弹性的，真放不下时换行只是少显示两行文件；
+     标题行不一样（必须与其他标题行齐平），那边是靠"不让它超宽"解决的。 */
+  flex-wrap: wrap; row-gap: 2px;
 }
 .git-cp-bar .vt-btn {
   border: none; background: transparent; border-radius: 4px;
@@ -773,7 +785,10 @@ textarea.editor {
   color: var(--text-dim); cursor: pointer;
 }
 .git-cp-bar .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
-.git-cp-bar .vt-btn.active { color: var(--accent); }
+/* 「开着的」哪个开关要说清楚：老版只把图标染成强调色，24px 的图标上几乎看不出来
+   （用户原话「这个预览是什么意思」—— 他连它开着都没意识到）。加一层 tint 底，
+   仍然走「弱用」的语言（不是实心强调块，不占焦点预算）。 */
+.git-cp-bar .vt-btn.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .git-cp-bar .vt-btn:disabled { opacity: .35; cursor: default; }
 .git-cp-bar .vt-btn:disabled:hover { background: transparent; color: var(--text-dim); }
 .git-cp-bar svg.ic { width: 15px; height: 15px; }
@@ -863,6 +878,12 @@ textarea.editor {
 }
 #commit-preview.hidden { display: none; }
 .cp-head { display: flex; align-items: center; gap: 6px; padding: 3px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+/* 「面板内预览」标签：这个框是什么、怎么关，都要在框上写清楚 —— 之前只有工具栏一个眼睛图标，
+   开着的时候没有任何文字说明（用户：「这个预览是什么意思 / 为什么改成在侧边栏显示了」）。 */
+.cp-tag {
+  flex-shrink: 0; font-size: .8em; color: var(--text-dim);
+  background: var(--btn-bg); border-radius: 3px; padding: 1px 5px; white-space: nowrap;
+}
 .cp-title { font-size: .88em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-stats { margin-left: auto; font-size: .85em; color: var(--text-dim); white-space: nowrap; }
 .cp-head .vt-btn { border: none; background: transparent; border-radius: 4px; height: 18px; padding: 0 4px; color: var(--text-dim); cursor: pointer; }

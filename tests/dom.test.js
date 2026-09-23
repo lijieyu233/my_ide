@@ -2465,9 +2465,13 @@ assert_(panel, 'CM6 搜索面板出现');
     const bar = () => $(dom, '#cd-files .git-cp-bar');
     const btnsOf = () => $allIn(bar(), '.vt-btn');
     assert_(bar(), '工具行存在');
-    assert_(btnsOf().length === 8, '8 个图标按钮: ' + btnsOf().length);
+    // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
+    assert_(btnsOf().length === 11, '11 个图标按钮: ' + btnsOf().length);
     assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
     assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
+    // 挪进来的三个保留原 id：dom 测试与快捷键都按 id 找它们
+    assert_($(dom, '#cd-shelve') && $(dom, '#cd-remote') && $(dom, '#cd-log'), '搁置 / 远程 / 日志 三个按钮（原 id 保留）');
+    assert_($(dom, '#cd-shelve').parentElement === bar(), '它们都在工具行里（不再挤标题行）');
     assert_(!$(dom, '#git-check-all'), '旧的「全选」单选框已被节点三态复选框取代');
 
     const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
@@ -2540,6 +2544,17 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($allIn($(dom, '#cp-body'), '.cp-hunk').length === 2, '预览里保留 hunk 分隔');
     assert_(/\+\d+ \/ -\d+/.test($(dom, '#cp-stats').textContent), '预览显示 +增/-删 统计: ' + $(dom, '#cp-stats').textContent);
     assert_(prevBtn.classList.contains('active'), '预览按钮高亮');
+    // 面板内预览的「说明 + 出口」：框上要写明这是什么（用户问过「这个预览是什么意思」），
+    // 并且能一键把同一个文件转到编辑区看整体（用户问过「这么小的地方怎么看」）
+    assert_(/面板内预览/.test($(dom, '.cp-tag').textContent), '预览框上写明「面板内预览」: ' + $(dom, '.cp-tag').textContent);
+    const cpOpen = $(dom, '#cp-open');
+    assert_(cpOpen, '预览框里有「在编辑区打开」按钮');
+    const curFile = $(dom, '#cp-title').textContent;
+    click(cpOpen);
+    await tick(); await tick(); await tick();
+    assert_($(dom, '#viewer .diff-wrap'), '点它 → 在编辑区打开差异（面板窄的出口）');
+    assert_($(dom, '#viewer .df-path') && $(dom, '#viewer .df-path').textContent === curFile,
+      '编辑区打开的正是预览的那个文件: ' + ($(dom, '#viewer .df-path') ? $(dom, '#viewer .df-path').textContent : '(无)'));
     click(prevBtn);
     await tick();
     assert_(pre.classList.contains('hidden'), '再点关闭预览');

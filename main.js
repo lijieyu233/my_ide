@@ -1291,6 +1291,8 @@ app.whenReady().then(() => {
         await run('侧栏项目面板（取消上下分栏）', js(steps.sidePanelOnly, demo), 'check-ui-1l-side-panel.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
+        await run('提交面板标题行（窄侧栏不竖排）+ 内嵌预览出口', js(steps.commitTitleLayout), 'check-ui-1n-commit-narrow.png');
+        await run('提交面板标题行（收尾：关预览 / 还原侧栏宽度）', js(steps.commitTitleLayoutReset));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

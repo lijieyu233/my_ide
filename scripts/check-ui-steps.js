@@ -277,9 +277,11 @@ module.exports = {
     add('已暂存 / 未暂存视觉可区分（实底 vs 描边）',
       badges.every((b) => (b.classList.contains('staged') ? getComputedStyle(b).backgroundColor !== 'rgba(0, 0, 0, 0)' : getComputedStyle(b).backgroundColor === 'rgba(0, 0, 0, 0)')),
       'staged=' + badges.filter((b) => b.classList.contains('staged')).length + '/' + badges.length);
-    // 标题栏按钮：无边框 + SVG
+    // 标题栏按钮：无边框 + SVG。原为 7 个（含搁置/远程/刷新/日志），一行 436px 塞进 340px
+    // 会把「提交」压成竖排 —— 那 4 个已移入工具行，这里只剩拉取/推送两个主操作。
     const tb = qa('#panel-git .panel-title-actions .vt-btn');
-    add('标题栏按钮去边框', tb.length >= 4 && tb.every((b) => getComputedStyle(b).borderTopStyle === 'none'), tb.length + ' 个');
+    add('标题栏只留拉取/推送两个主操作', tb.length === 2, tb.length + ' 个：' + tb.map((b) => b.textContent.trim()).join(' | '));
+    add('标题栏按钮去边框', tb.length >= 2 && tb.every((b) => getComputedStyle(b).borderTopStyle === 'none'), tb.length + ' 个');
     add('标题栏按钮为 SVG 图标（不再用 emoji）',
       tb.every((b) => b.querySelector('svg') || /拉取|推送/.test(b.textContent)),
       tb.map((b) => b.textContent.trim() || 'icon').join(' | '));
@@ -1342,7 +1344,8 @@ module.exports = {
     add('工具行存在', !!bar);
     if (!bar) return { R };
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
-    add('工具行 8 个纯图标按钮', btns.length === 8 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
+    add('工具行 11 个纯图标按钮', btns.length === 11 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // 节点三态
@@ -1443,6 +1446,122 @@ module.exports = {
       document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
       await sleep(200);
     }
+    return { R };
+  },
+
+  // ---------- 提交面板标题行：窄侧栏下不许把「提交」压成竖排 + 内嵌预览的出口 ----------
+  // 用户反馈：「提交两个字怎么竖着 好难看」「这个预览是什么意思 为什么改成在侧边栏显示了 这么小的地方怎么看」
+  // ① 标题竖排的根因：.panel-title 是 flex，标题文字是「匿名项」→ min-width:auto → 被压到 min-content
+  //    = 一个汉字宽。侧栏 340 时标题行的内容（分支 + ahead/behind + 拉取/推送 + 4 个图标）刚好放不下。
+  // ② 内嵌预览是工具栏那个「眼睛」开关（默认关 = 走主编辑区），但开着时框上没有任何文字说明，认不出来。
+  commitTitleLayout: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sb = q('#sidebar');
+    window.__ckOrigSbW = sb ? sb.style.width : '';   // 收尾要用（宽度是 JS 写在 style 上的，置 '' 不等于还原）
+
+    window.App.showTool('git');
+    for (let i = 0; i < 40 && !q('#cd-files .git-file'); i++) await sleep(200);
+    const title = q('#panel-git .panel-title');
+    add('提交工具窗口可见 + 标题行存在', !!title,
+      title ? Math.round(title.getBoundingClientRect().width) + 'px 宽' : '无');
+    if (!title) return { R };
+
+    // 「提交」两个字必须排在同一行：Range 只框这两个字 —— 竖排会变成两个 rect
+    // （或一个只有 1 字宽 / 1 行高的 rect），一次量准。
+    const titleText = () => {
+      const tn = title.firstChild;
+      if (!tn || tn.nodeType !== 3) return null;
+      const rg = document.createRange();
+      rg.setStart(tn, 0);
+      rg.setEnd(tn, Math.min(2, tn.textContent.length));
+      const rs = [...rg.getClientRects()];
+      return { n: rs.length, w: rs.length ? Math.round(rs[0].width) : 0 };
+    };
+    const rowH = () => Math.round(title.getBoundingClientRect().height);
+    const tabH = Math.round(q('#tabbar').getBoundingClientRect().height);
+    const clipped = () => title.scrollHeight - title.clientHeight;
+
+    sb.style.width = window.App.LAYOUT.sidebar.def + 'px';
+    await sleep(400);
+    const t1 = titleText();
+    add('默认宽度下「提交」排在一行（不是竖排）', !!t1 && t1.n === 1 && t1.w >= 20,
+      t1 ? 'rect 数=' + t1.n + ' 宽=' + t1.w + 'px' : '取不到文本节点');
+    add('标题行与标签栏等高（30px，交界底线对齐）', rowH() === tabH, rowH() + ' vs ' + tabH);
+    // 标题行只留「上下文 + 两个主操作」：搁置 / 远程 / 日志 / 刷新 已移入工具行
+    // （原来一行 436px 的内容塞进 340px，浏览器只能把标题压成竖排）
+    const tActs = qa('#panel-git .panel-title .panel-title-actions .vt-btn');
+    add('标题行只剩分支 + 修改数 + 拉取/推送（多余的按钮已移入工具行）',
+      tActs.length === 2 && !q('#cd-refresh') && !q('#panel-git .panel-title #cd-shelve')
+      && !!q('#cd-files .git-cp-bar #cd-shelve'),
+      '标题行按钮=' + tActs.length + '（' + tActs.map((b) => b.textContent.trim()).join('/') + '） 工具行按钮='
+      + qa('#cd-files .git-cp-bar .vt-btn').length);
+    const dirty = q('#cd-dirty');
+    add('默认宽度下 ahead/behind + 修改数 完整显示（没被省略）',
+      !!dirty && dirty.scrollWidth <= dirty.clientWidth + 1,
+      dirty ? JSON.stringify(dirty.textContent) + ' 需要=' + dirty.scrollWidth + 'px 实际=' + dirty.clientWidth + 'px' : '无 #cd-dirty');
+
+    sb.style.width = window.App.LAYOUT.sidebar.min + 'px';
+    await sleep(450);
+    const t2 = titleText();
+    add('拉到最窄时「提交」仍横排（宁可整行换行，也不把标题压成竖排）',
+      !!t2 && t2.n === 1 && t2.w >= 20, t2 ? 'rect 数=' + t2.n + ' 宽=' + t2.w + 'px' : '取不到');
+    add('窄侧栏下标题行内容不被裁掉（换行代替溢出裁剪）', clipped() <= 1,
+      '裁掉=' + clipped() + 'px 行高=' + rowH());
+
+    // 「面板内预览」：开着的时候要能看出这是什么，并且一键能转到编辑区
+    window.GitPanel.togglePreview(true);
+    await sleep(500);
+    const tag = q('.cp-tag');
+    add('预览框上写明它是「面板内预览」', !!tag && /面板内预览/.test(tag.textContent || ''),
+      tag ? JSON.stringify(tag.textContent) : '无 .cp-tag');
+    const ey = qa('#cd-files .git-cp-bar .vt-btn')[4];
+    add('工具栏的眼睛按钮有可见的「开」状态', !!ey && ey.classList.contains('active'),
+      ey ? 'class=' + ey.className : '无');
+    const TEXTY = /\.(js|json|md|css|html|txt|yml|yaml|ts)$/;
+    const pick = qa('#cd-files .git-file').find((r) => TEXTY.test(r.dataset.file || ''));
+    if (pick) { pick.click(); await sleep(1300); }
+    add('面板内预览能看到行级 diff', qa('#cp-body .cp-line').length > 0,
+      qa('#cp-body .cp-line').length + ' 行 · ' + (q('#cp-stats') ? q('#cp-stats').textContent : ''));
+    const op = q('#cp-open');
+    add('预览框里有「在编辑区打开」按钮（面板窄时的出口）', !!op, op ? op.title.slice(0, 26) : '无');
+    if (op) {
+      op.click();
+      await sleep(1300);
+      const dw = q('#viewer .diff-wrap');
+      const dfp = q('#viewer .df-path');
+      add('点它 → 同一个文件在编辑区打开（面板窄就看编辑区）',
+        !!dw && !!dfp && dfp.textContent === (pick ? pick.dataset.file : '#'),
+        dfp ? '编辑区=' + dfp.textContent : '编辑区没有 .diff-wrap');
+    }
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：关预览 / 还原侧栏宽度 / 关掉编辑区对比视图 ----------
+  // ⚠ 别省这一步：`togglePreview` 会把开关写进 `myide-git-ui`，留着它后面所有步骤
+  //   量到的都是"面板内嵌预览开着"的状态（本轮之前它一直是泄漏的）。
+  commitTitleLayoutReset: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.GitPanel.togglePreview(false);
+    window.GitPanel.closeDiffView();
+    const sb = q('#sidebar');
+    if (sb) sb.style.width = window.__ckOrigSbW || '';
+    await sleep(400);
+    const cp = q('#commit-preview');
+    add('内嵌预览已关（开关不再留在 localStorage 里）', !cp || cp.classList.contains('hidden'),
+      cp ? 'hidden=' + cp.classList.contains('hidden') : '无 #commit-preview');
+    // 用「进来时的宽度」当基准（不是 LAYOUT.def）：前面若干步骤可能合法地调过侧栏宽度
+    const want = parseInt(window.__ckOrigSbW, 10) || window.App.LAYOUT.sidebar.def;
+    add('侧栏宽度已还原（双击分隔线复位不会跳到别的宽度）',
+      Math.round(sb.getBoundingClientRect().width) === want,
+      Math.round(sb.getBoundingClientRect().width) + ' vs ' + want);
+    add('编辑区对比视图已关（后面步骤的编辑区基线要干净）', !q('#viewer .diff-wrap'));
     return { R };
   },
 

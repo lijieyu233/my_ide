@@ -439,11 +439,12 @@ const GitPanel = (() => {
   function buildToolbar() {
     const bar = document.createElement('div');
     bar.className = 'git-cp-bar';
-    const mk = (svg, title, fn) => {
+    const mk = (svg, title, fn, id) => {
       const b = document.createElement('button');
       b.className = 'vt-btn';
       b.innerHTML = svg;
       b.title = title;
+      if (id) b.id = id;   // 从标题行挪过来的按钮保留原 id（dom 测试 / 快捷键按 id 找）
       b.onclick = fn;
       bar.appendChild(b);
       return b;
@@ -452,7 +453,10 @@ const GitPanel = (() => {
     const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
     const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
     const com = mk(IC.commit, '提交勾选的文件 (Ctrl+Enter)', () => doCommit(false));
-    const prev = mk(IC.eye, '预览：在面板内嵌显示选中文件的 diff（再点关闭）', () => togglePreview());
+    const prev = mk(IC.eye, previewOn
+      ? '内嵌预览：开 —— 选中文件的 diff 显示在下面这个小框里。点一下关掉：关掉后点文件是在编辑区打开差异（面板窄，编辑区看得全）'
+      : '内嵌预览：关 —— 点文件是在编辑区打开差异。点一下改成在面板内嵌显示（PyCharm 提交窗口的预览开关）',
+      () => togglePreview());
     if (previewOn) prev.classList.add('active');
     const sep = document.createElement('span');
     sep.className = 'tb-sep';
@@ -466,6 +470,16 @@ const GitPanel = (() => {
       render();
     });
     if (groupByDir) grp.classList.add('active');
+    // 仓库级操作（搁置 / 远程 / 日志）—— 原在标题行右侧挤着，见 IC 里那段说明。
+    // ⚠ 追加在**最后**：dom 测试与自检步骤按索引取工具行按钮（[4]=预览 [6][7]=展开/分组），
+    //   插在中间会把这些索引全打乱。
+    const sep2 = document.createElement('span');
+    sep2.className = 'tb-sep';
+    sep2.setAttribute('aria-hidden', 'true');
+    bar.appendChild(sep2);
+    mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve');
+    mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote');
+    mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
     barBtns = { roll, dif, com, prev, grp };
     return bar;
   }
@@ -616,6 +630,7 @@ const GitPanel = (() => {
   let checkNodes = [];
   let barBtns = null;      // 工具行按钮引用（勾选变化时联动禁用态）
   let previewSeq = 0;      // 预览令牌（防晚到的 diff 覆盖新预览）
+  let previewCur = null;   // 当前正在面板内预览的变更项（「在编辑区打开」要复用同一个文件）
   let ignoredFiles = null; // 「忽略的文件」节点数据（null = 还没加载过）
   let ignoredTruncated = false; // 遍历是否被上限截断
   let ignoredAll = new Set(); // 忽略文件路径集合（勾选集合的成员判定要用）
@@ -631,6 +646,12 @@ const GitPanel = (() => {
     expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>',
     collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>',
     group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
+    // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
+    // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
+    // 移到工具行：它们本来就是"仓库级操作"，和刷新/回滚/差异同层。
+    shelve: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="3" rx="1"/><path d="M3.6 6.4v5.6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V6.4M6.6 9h2.8"/></svg>',
+    remote: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 9.6a2.6 2.6 0 0 0 3.9.3l1.9-1.9a2.6 2.6 0 0 0-3.7-3.7l-1.1 1.1"/><path d="M9.6 6.4a2.6 2.6 0 0 0-3.9-.3L3.8 8a2.6 2.6 0 0 0 3.7 3.7l1.1-1.1"/></svg>',
+    log: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg>',
   };
 
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
@@ -1392,6 +1413,7 @@ const GitPanel = (() => {
     }
     if (!c) { hidePreview(); return; }
     p.classList.remove('hidden');
+    previewCur = c;
     if (title) { title.textContent = c.file; title.title = c.file; }
     const seq = ++previewSeq;
     body.innerHTML = '<div class="cp-msg">读取差异…</div>';
@@ -1564,18 +1586,15 @@ const GitPanel = (() => {
     if (hst) hst.onclick = () => openHistoryMenu(hst);
     const cpClose = document.getElementById('cp-close');
     if (cpClose) cpClose.onclick = () => togglePreview(false);
-    const rf = document.getElementById('cd-refresh');
-    if (rf) rf.onclick = () => refresh();
+    // 面板内预览太窄时的一键出口：同一个文件，改在编辑区看整体
+    const cpOpen = document.getElementById('cp-open');
+    if (cpOpen) cpOpen.onclick = () => { if (previewCur) showFileDiff(previewCur); };
     const pull = document.getElementById('cd-pull');
     if (pull) pull.onclick = doPull;
     const push = document.getElementById('cd-push');
     if (push) push.onclick = () => doPush();
-    const sv = document.getElementById('cd-shelve');
-    if (sv) sv.onclick = () => openShelveDialog();
-    const rmt = document.getElementById('cd-remote');
-    if (rmt) rmt.onclick = openRemoteDialog;
-    const lg = document.getElementById('cd-log');
-    if (lg) lg.onclick = () => App.showTool('log');
+    // 搁置 / 远程 / 日志 已在 buildToolbar 里创建并直接绑好 handler（它们随 render 重建，
+    // 不能在这里按 id 绑一次 —— 重建后就是新节点了）
     const br = document.getElementById('cd-branch');
     if (br) br.onclick = () => openBranchDialog();
   }
