@@ -944,6 +944,54 @@ textarea.editor {
 }
 .cf-side-head .cf-save:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 
+/* ---------- M5：提交前检查 / 作者覆盖弹窗 ---------- */
+#pc-box { width: 560px; max-width: 92vw; }
+#au-box { width: 380px; max-width: 92vw; }
+#pc-box .m-body, #au-box .m-body { padding: 12px 16px; }
+#pc-box .m-label, #au-box .m-label { margin: 10px 0 8px; }
+#pc-box .m-label input, #au-box .m-label input {
+  display: block; width: 100%; margin-top: 4px; box-sizing: border-box;
+  background: var(--bg-input); border: 1px solid var(--btn-border); border-radius: 4px;
+  color: var(--text-bright); padding: 5px 8px; font-size: 12.5px; outline: none;
+  font-family: inherit;
+}
+#pc-box .m-label input:focus, #au-box .m-label input:focus { border-color: var(--accent); }
+.pc-row { margin: 6px 0; }
+.pc-two { display: flex; gap: 12px; align-items: flex-end; }
+.pc-two .m-label { flex: 1; }
+.pc-cmds-head {
+  display: flex; align-items: center; gap: 8px; margin: 14px 0 6px;
+  font-size: 12px; color: var(--text-dim);
+}
+.pc-cmds-head .tb-btn { height: 20px; padding: 0 8px; font-size: 11.5px; }
+.pc-cmds { display: flex; flex-direction: column; gap: 4px; }
+.pc-cmd { display: flex; gap: 6px; align-items: center; }
+.pc-cmd input {
+  background: var(--bg-input); border: 1px solid var(--btn-border); border-radius: 4px;
+  color: var(--text-bright); padding: 4px 7px; font-size: 12px; outline: none; font-family: inherit;
+}
+.pc-cmd .pc-nm { width: 130px; flex-shrink: 0; }
+.pc-cmd .pc-sh { flex: 1; min-width: 0; font-family: var(--font-mono); }
+.pc-cmd .pc-del { flex-shrink: 0; color: var(--text-dim); }
+.pc-cmd .pc-del:hover { color: var(--red); }
+.pc-empty { font-size: 12px; color: var(--text-dim); padding: 2px 0 4px; }
+.pc-hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.6; margin-top: 10px; }
+/* 结果面板：通过项压暗、失败项给一眼能看到的红标记（不要整块红底 —— 抢注意力） */
+#pcr-box { width: 620px; max-width: 94vw; }
+#pcr-box .m-body { padding: 12px 16px; max-height: 56vh; overflow: auto; }
+.pcr-sum { font-size: 12.5px; color: var(--text-bright); margin-bottom: 10px; }
+.pcr-item { border-left: 2px solid var(--border); padding: 4px 0 4px 8px; margin-bottom: 8px; }
+.pcr-item.ok { border-left-color: var(--green); }
+.pcr-item.bad { border-left-color: var(--red); }
+.pcr-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.pcr-item.ok .pcr-mark { color: var(--green); }
+.pcr-item.bad .pcr-mark { color: var(--red); }
+.pcr-out {
+  margin: 4px 0 0; padding: 6px 8px; max-height: 200px; overflow: auto;
+  background: var(--bg); border-radius: 3px; white-space: pre-wrap; word-break: break-all;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+}
+
 /* ---------- 只读分节（「已暂存（外部）」/ 非活动变更列表）----------
    M1：index 里已有的内容只展示、不增删；非活动列表也不参与本次提交。
    表达上整节降一级（不给勾选框、文字压暗），避免它看起来"可以操作"。 */
@@ -980,7 +1028,10 @@ textarea.editor {
 #cm-ok { margin-left: auto; padding: 4px 16px; }
 #cm-ok:disabled, #cm-ok-push:disabled, #cm-ok-push-menu:disabled { opacity: .45; cursor: default; }
 /* 修正上次提交行（PyCharm：复选框 + 说明 + 提交消息历史 🕘） */
-.commit-amend-row { display: flex; align-items: center; gap: 6px; }
+.commit-amend-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Sign-off 是不定长文字里最次要的一个：允许被压（Amend 是主项，不能被压成竖排） */
+.commit-amend-row .m-check-signoff { flex: 0 1 auto; min-width: 0; }
+.commit-amend-row .m-check-signoff span { overflow: hidden; text-overflow: ellipsis; }
 .commit-amend-row .m-check { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
 .commit-amend-row .m-check input { accent-color: var(--accent); margin: 0; }
 .commit-amend-row .m-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

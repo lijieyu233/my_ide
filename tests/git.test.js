@@ -1037,6 +1037,62 @@ fs.mkdirSync(repo);
       assert.ok(log2.includes('Merge'), 'merge 策略应产生合并提交: ' + log2);
       assert.strictEqual(fs.existsSync(path.join(A, 'b2.txt')), true, '远程的 b2.txt 应该进来了');
 
+    await okAsync('M5：提交前检查 —— 用户命令按顺序跑、失败即停；hook 走 git 自己跑', async () => {
+      const rp = path.join(tmp, 'repo-precommit');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      await G.setUserConfig(rp, { name: 'pc', email: 'pc@example.com' });
+      const norm = (x) => String(x).replace(/\r\n/g, '\n').trim();
+
+      // ① 没有 hook 时不算失败（skipped）
+      let r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [] });
+      assert.strictEqual(r.ok, true, '没有 hook 不该失败');
+      assert.ok(r.results[0].skipped, '标记为跳过: ' + JSON.stringify(r.results[0]));
+
+      // ② 用户命令：成功 → 继续跑下一条；失败 → 立即停（后面的不该被执行）
+      r = await NATIVE.precommitRun(rp, { runHooks: false, commands: [
+        { name: '第一步', cmd: 'echo one' },
+        { name: '第二步', cmd: 'echo two && exit 7' },
+        { name: '第三步', cmd: 'echo three' },
+      ] });
+      assert.strictEqual(r.ok, false, '有命令失败 → 整体不通过');
+      assert.strictEqual(r.results.length, 2, '失败即停（第三条没跑）: ' + r.results.map((x) => x.name).join(','));
+      assert.ok(norm(r.results[0].out).includes('one'), '第一条的输出拿到了');
+      assert.strictEqual(r.results[1].code, 7, '退出码透传: ' + r.results[1].code);
+
+      // ③ 真的写一个 pre-commit 钩子（交给 git 自己跑，Windows 下由 git 找 sh）
+      const hookFile = path.join(rp, '.git', 'hooks', 'pre-commit');
+      fs.writeFileSync(hookFile, '#!/bin/sh\necho "hook: 检查中"\nexit 1\n');
+      r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [{ name: '不该跑', cmd: 'echo nope' }] });
+      assert.strictEqual(r.ok, false, 'hook 非 0 → 不通过');
+      assert.ok(/hook: 检查中/.test(r.results[0].out), 'hook 输出被捕获: ' + JSON.stringify(r.results[0].out));
+      assert.strictEqual(r.results.length, 1, 'hook 失败即停，后面的命令不跑');
+      // 钩子改成 0 → 通过
+      fs.writeFileSync(hookFile, '#!/bin/sh\nexit 0\n');
+      r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [] });
+      assert.strictEqual(r.ok, true, 'hook 返回 0 → 通过');
+    });
+
+    await okAsync('M5：TODO 扫描 —— 命中带行号，大文件 / 二进制不动', async () => {
+      const rp = path.join(tmp, 'repo-todo');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      fs.writeFileSync(path.join(rp, 'a.js'), 'const x = 1;\n// TODO: 改成配置\n// FIXME 这里有问题\nconst y = 2;\n');
+      fs.writeFileSync(path.join(rp, 'b.js'), 'nothing here\n');
+      fs.writeFileSync(path.join(rp, 'bin.dat'), Buffer.from([0x00, 0x01, 0x54, 0x4f, 0x44, 0x4f]));
+      const r = await NATIVE.scanTodo(rp, ['a.js', 'b.js', 'bin.dat', '不存在.js'], ['TODO', 'FIXME']);
+      assert.strictEqual(r.ok, true, r.error);
+      assert.strictEqual(r.hits.length, 2, '两个命中: ' + JSON.stringify(r.hits));
+      assert.strictEqual(r.hits[0].file, 'a.js');
+      assert.strictEqual(r.hits[0].line, 2, '行号要对得上: ' + r.hits[0].line);
+      assert.strictEqual(r.hits[0].kind, 'TODO', '关键字识别');
+      assert.strictEqual(r.hits[1].line, 3, '第二个命中的行号');
+      assert.ok(!r.hits.some((h) => h.file === 'bin.dat'), '含 NUL 的二进制不扫');
+      // 关键字可配：只扫 FIXME 时只剩一条
+      const r2 = await NATIVE.scanTodo(rp, ['a.js'], ['FIXME']);
+      assert.strictEqual(r2.hits.length, 1, '关键字可配: ' + JSON.stringify(r2.hits));
+    });
+
       // ④ 同步状态下再拉一次（merge / rebase 都应"无事可做"且成功，不产生空提交）
       const again = await G.pullRemote(A, { strategy: 'rebase' });
       assert.ok(again.ok && !again.conflict, '同步状态 rebase 拉取失败: ' + (again && again.error));

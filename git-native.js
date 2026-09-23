@@ -10,7 +10,7 @@
 // ⚠ 本文件同时被主进程与 git-worker 线程加载（git-service 会 require 它），所以配置**不靠内存注入**：
 //   每次用之前读一次配置文件（1 秒缓存），跨进程 / 跨线程都一致。
 //   `sandbox: true` 的 preload 不能 require 本地模块 → 渲染层只通过 IPC 拿 backendInfo / setGitExe。
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -409,6 +409,85 @@ async function unsetUpstream(repo) {
   return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
 }
 
+// ---------- M5：提交前检查（Before Commit）----------
+// 同一套执行器跑两类东西：**用户配置的命令**（如 npm run lint）与 **`.git/hooks/pre-commit`**。
+// 后者交给 git 自己跑（`git hook run pre-commit`）—— 它知道怎么在 Windows 上找 sh、
+// 怎么处理不可执行位，我们自己 spawn 只会踩平台差异。
+
+// 用户配置的命令走 shell（要用到管道/&&/npm 等）：windowsHide + 清掉交互类环境变量
+function runShell(cmd, { cwd, timeout = 300000 } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    const done = (err, stdout, stderr) => resolve({
+      ok: !err,
+      code: err && typeof err.code === 'number' ? err.code : (err ? 1 : 0),
+      stdout: String(stdout || ''), stderr: String(stderr || ''),
+      error: err ? String(err.message || err) : '',
+    });
+    try {
+      child = exec(cmd, {
+        cwd: cwd || undefined, timeout, windowsHide: true, maxBuffer: 16 * 1024 * 1024,
+        env: Object.assign({}, process.env, NO_EDIT),
+      }, (err, stdout, stderr) => done(err, stdout, stderr));
+    } catch (e) { done(e, '', ''); return; }
+    if (child && child.stdin) { try { child.stdin.end(); } catch {} }
+  });
+}
+
+const clip = (s, n = 6000) => {
+  const t = String(s || '').trim();
+  return t.length > n ? '…（只保留末尾 ' + n + ' 字符）\n' + t.slice(-n) : t;
+};
+
+// 依次跑：hook → 用户命令。**失败即停**（PyCharm 行为：前一项没过就不必再跑后面的）
+async function precommitRun(repo, opts = {}) {
+  const results = [];
+  const push = (r) => { results.push(r); return r.ok; };
+  if (opts.runHooks !== false) {
+    const dot = await run(['rev-parse', '--git-dir'], { cwd: repo, timeout: 5000 });
+    let hookFile = '';
+    if (dot.ok) {
+      const g = path.isAbsolute(dot.stdout.trim()) ? dot.stdout.trim() : path.join(repo, dot.stdout.trim());
+      hookFile = path.join(g, 'hooks', 'pre-commit');
+    }
+    if (!hookFile || !fs.existsSync(hookFile)) {
+      push({ name: 'Git 钩子 pre-commit', ok: true, skipped: true, out: '没有 pre-commit 脚本（正常）' });
+    } else {
+      const r = await run(['hook', 'run', 'pre-commit'], { cwd: repo, timeout: opts.timeout || 600000, env: NO_EDIT });
+      push({ name: 'Git 钩子 pre-commit', ok: r.ok, code: r.code, out: clip(r.stdout + r.stderr) || '(无输出)' });
+      if (!r.ok) return { ok: false, results };
+    }
+  }
+  for (const c of (Array.isArray(opts.commands) ? opts.commands : [])) {
+    if (!c || !String(c.cmd || '').trim()) continue;
+    const r = await runShell(String(c.cmd), { cwd: repo, timeout: Number(c.timeout) || opts.timeout || 600000 });
+    push({ name: String(c.name || c.cmd), cmd: String(c.cmd), ok: r.ok, code: r.code, out: clip(r.stdout + r.stderr) || '(无输出)' });
+    if (!r.ok) return { ok: false, results };   // 失败即停
+  }
+  return { ok: true, results };
+}
+
+// TODO / FIXME 之类标记扫描：只看**这次要提交的文件**（PyCharm 的 Check TODO 同理）
+async function scanTodo(repo, files, kinds) {
+  const pat = new RegExp('\\b(' + ((Array.isArray(kinds) && kinds.length ? kinds : ['TODO', 'FIXME', 'XXX', 'HACK']).join('|')) + ')\\b');
+  const hits = [];
+  for (const f of (Array.isArray(files) ? files : [])) {
+    const abs = path.isAbsolute(f) ? f : path.join(repo, f);
+    let text = '';
+    try {
+      const st = fs.statSync(abs);
+      if (st.size > 2 * 1024 * 1024) continue;      // 大文件不扫（避免把二进制/日志当代码）
+      text = fs.readFileSync(abs, 'utf8');
+    } catch { continue; }
+    if (text.indexOf('\u0000') !== -1) continue;    // 二进制
+    text.split(/\r?\n/).forEach((line, i) => {
+      const m = line.match(pat);
+      if (m) hits.push({ file: f, line: i + 1, kind: m[1], text: line.trim().slice(0, 160) });
+    });
+  }
+  return { ok: true, hits: hits.slice(0, 500), truncated: hits.length > 500 };
+}
+
 // 「按能力路由」的表：现在只有 credential / proxy 内部走 native（M2）；M3/M4 往这里加
 // partialStaging（apply --cached）与 merge/rebase/stash/hooks。**没有 git.exec(任意字符串) 这种口子**，
 // 上层只能调用明确列出的能力。
@@ -425,4 +504,5 @@ module.exports = {
   opState, conflicts, conflictSides, resolveFile, merge, rebase, continueOp, skipOp, abortOp,
   branchCreate, branchRename, branchDelete,
   resolveCustom, readWorktreeText, pushForceWithLease, setUpstream, unsetUpstream, NO_EDIT,
+  precommitRun, scanTodo, runShell,
 };

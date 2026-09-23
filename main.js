@@ -1077,6 +1077,7 @@ app.whenReady().then(() => {
       let origAiOpen = null;
       let origMdMode = null;
       let origTransCfg = null;
+      let origGitUi = null;   // myide-git-ui：视图偏好 + Sign-off（M5），自检里会被改到
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
@@ -1247,6 +1248,7 @@ app.whenReady().then(() => {
         origAiOpen = await wc.executeJavaScript('localStorage.getItem("myide-ai-open")');
         origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")');
         origTransCfg = await wc.executeJavaScript('localStorage.getItem("myide-translate-cfg")');
+        origGitUi = await wc.executeJavaScript('localStorage.getItem("myide-git-ui")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
         // M3：hunk 级暂存的端到端夹具（真实独立小仓库 —— 绝不在 demo 本体上动 index）
@@ -1298,6 +1300,9 @@ app.whenReady().then(() => {
         const confRepo = await fx.writeConflictFixture(demo);
         await run('M4 merge 冲突与解决（操作条 + 三方对比）', js(steps.m4Conflict, { repo: confRepo, demo: demo }), 'check-ui-1t-m4-conflict.png');
         await run('M4 merge（收尾：继续完成合并 / 还原项目根）', js(steps.m4ConflictCleanup, { repo: confRepo, demo: demo }));
+        // M5：提交前检查 + Sign-off / 作者（不跑真实 lint，用 echo / exit 4 证明执行器通了）
+        await run('M5 提交前检查 + Sign-off / 作者', js(steps.m5PreCommit, { demo: demo }), 'check-ui-1u-m5-precommit.png');
+        await run('M5 提交前检查（收尾：还原配置 / 签名 / 作者）', js(steps.m5PreCommitCleanup, { demo: demo }));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
@@ -1357,7 +1362,7 @@ app.whenReady().then(() => {
         await wc.executeJavaScript(origRecent == null
           ? 'localStorage.removeItem("myide-recent-projects"); true'
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
-        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-translate-cfg', origTransCfg]]) {
+        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-translate-cfg', origTransCfg], ['myide-git-ui', origGitUi]]) {
           await wc.executeJavaScript(val == null
             ? 'localStorage.removeItem(' + JSON.stringify(key) + '); true'
             : 'localStorage.setItem(' + JSON.stringify(key) + ', ' + JSON.stringify(val) + '); true');

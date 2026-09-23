@@ -973,6 +973,133 @@ module.exports = {
     return { R };
   },
 
+  // ---------- M5：提交前检查（命令 + 钩子 + TODO + 消息校验）+ Sign-off / 作者 ----------
+  // ⚠ 不在这里跑真实 lint（可能几十秒）；用 `echo` / `exit 4` 这类瞬时命令证明"执行器真的跑得通"。
+  m5PreCommit: async (opts) => {
+    const demo = (opts && opts.demo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const G = window.myIDE.git;
+
+    // ---- ① 执行器：用户命令（成功 / 失败 / 退出码透传）----
+    let r = await G.precommitRun(demo, { runHooks: false, commands: [{ name: '自检', cmd: 'echo m5-ok' }] });
+    add('自定义命令真的跑起来了，输出被捕获',
+      r && r.ok && /m5-ok/.test((r.results[0] || {}).out || ''), JSON.stringify(r).slice(0, 90));
+    r = await G.precommitRun(demo, { runHooks: false, commands: [{ name: '失败', cmd: 'exit 4' }] });
+    add('命令非 0 退出 → 整体不通过且退出码透传',
+      r && !r.ok && r.results[0].code === 4, JSON.stringify(r).slice(0, 90));
+    r = await G.precommitRun(demo, { runHooks: true, commands: [] });
+    add('没有 pre-commit 钩子时不算失败（标 skipped）',
+      r && r.ok && r.results[0].skipped, JSON.stringify(r).slice(0, 90));
+
+    // ---- ② TODO 扫描：只扫这次要提交的文件 ----
+    const st = await G.status(demo);
+    const some = ((st.changed || [])[0] || {}).file;
+    if (some) {
+      const t = await G.scanTodo(demo, [some], ['TODO', 'FIXME']);
+      add('TODO 扫描返回结构正确（hits 数组，命中项带 file/line/kind）',
+        t && t.ok && Array.isArray(t.hits) && t.hits.every((h) => h.file && h.line && h.kind),
+        '文件=' + some + ' 命中=' + (t.hits || []).length);
+    }
+
+    // ---- ③ 配置弹窗：加一条命令并保存 ----
+    window.GitPanel.rootDir = demo;
+    await window.GitPanel.refresh();
+    window.GitPanel.openCommit();
+    await sleep(1200);
+    q('#commit-precheck').click();
+    await sleep(900);
+    add('提交前检查弹窗打开（三个勾选项 + 命令列表）',
+      !!q('#pc-box') && !!q('#pc-enabled') && !!q('#pc-hooks') && !!q('#pc-todo') && !!q('#pc-cmds'),
+      q('#pc-box') ? 'ok' : '没打开');
+    q('#pc-add').click();
+    await sleep(300);
+    const rows = qa('#pc-box .pc-cmd');
+    if (rows.length) {
+      rows[0].querySelector('.pc-nm').value = '自检命令';
+      rows[0].querySelector('.pc-sh').value = 'echo m5-from-ui';
+    }
+    q('#pc-max').value = '100';
+    q('#pc-regex').value = '^(feat|fix|docs|chore): ';
+    q('#pc-yes').click();
+    await sleep(900);
+    const cfg = window.GitPanel.preCfg;
+    add('配置保存进 preCfg（命令 / 正则 / 长度上限）',
+      cfg.commands.length === 1 && cfg.commands[0].cmd === 'echo m5-from-ui'
+      && cfg.messageRegex === '^(feat|fix|docs|chore): ' && cfg.maxSubject === 100,
+      JSON.stringify(cfg).slice(0, 120));
+
+    // ---- ④ 消息校验真的会拦 ----
+    const pre = await window.GitPanel.runPreChecks(['x.js'], '没有前缀的消息');
+    add('消息不符合正则 → 记为阻断项（problems）',
+      pre.problems.some((p) => /提交消息格式/.test(p.name)), JSON.stringify(pre.problems.map((p) => p.name)));
+    const pre2 = await window.GitPanel.runPreChecks(['x.js'], 'feat: 合格的消息');
+    add('消息合格后不再阻断', pre2.problems.length === 0, JSON.stringify(pre2.problems.map((p) => p.name)));
+
+    // ---- ⑤ Sign-off + 作者覆盖 ----
+    const so = q('#commit-signoff');
+    so.checked = true;
+    so.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await sleep(300);
+    add('Sign-off 勾上后写进偏好（myide-git-ui）',
+      window.GitPanel.signoff === true && /signoff/.test(localStorage.getItem('myide-git-ui') || ''),
+      localStorage.getItem('myide-git-ui') || '(空)');
+    q('#commit-author').click();
+    await sleep(800);
+    add('作者弹窗打开且写明"不改 git config"',
+      !!q('#au-box') && /不会改写/.test((q('#au-box') || {}).textContent || ''), q('#au-box') ? 'ok' : '没打开');
+    q('#au-name').value = '自检临时作者';
+    q('#au-email').value = 'selfcheck@example.com';
+    q('#au-yes').click();
+    await sleep(600);
+    const ao = window.GitPanel.authorOverride;
+    add('作者覆盖只进内存（按钮进入"已覆盖"态）',
+      !!ao && ao.name === '自检临时作者' && q('#commit-author').classList.contains('active'),
+      JSON.stringify(ao));
+    const signed = await window.GitPanel.appendSignoff('feat: 演示签名');
+    add('Sign-off 生成的签名行用覆盖后的作者',
+      /Signed-off-by: 自检临时作者 <selfcheck@example.com>/.test(signed), JSON.stringify(signed).slice(-70));
+
+    // ---- ⑥ 结果面板留屏给截图（不点按钮 —— 交给收尾步）----
+    window.__m5Pcr = window.GitPanel.showPreCheckResult({
+      problems: [{ name: '自检命令（echo m5-from-ui）', ok: false, code: 4, out: 'm5-from-ui\nnpm ERR! code 4\n（示例输出：这条命令返回了非 0）' }],
+      warnings: [{ name: 'TODO 扫描', ok: true, out: '2 处命中（只提示，不阻断）：\nrenderer/git-panel.js:102  TODO: 改成配置\nsrc/app.js:40  TODO 收口' }],
+    });
+    await sleep(700);
+    add('结果面板列出失败项与提示项（失败项在最前）',
+      !!q('#pcr-box') && qa('#pcr-box .pcr-item.bad').length === 1 && qa('#pcr-box .pcr-item').length === 2,
+      q('#pcr-box') ? 'bad=' + qa('#pcr-box .pcr-item.bad').length : '没打开');
+    // ⚠ 末尾不清场：截图要拍这个面板
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：收掉面板 + 还原配置/签名/作者 ----------
+  m5PreCommitCleanup: async (opts) => {
+    const demo = (opts && opts.demo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const q = (s) => document.querySelector(s);
+    if (q('#pcr-yes')) q('#pcr-yes').click();      // 把上一步挂着的 Promise 收掉
+    await sleep(400);
+    if (window.__m5Pcr) { try { await window.__m5Pcr; } catch {} delete window.__m5Pcr; }
+    // 配置写进了 demo/.myide/precommit.json（demo 被 gitignore）→ 恢复默认并落盘一次
+    window.GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: true, commands: [] };
+    add('提交前检查配置已恢复默认', window.GitPanel.preCfg.commands.length === 0 && window.GitPanel.preCfg.messageRegex === '', JSON.stringify(window.GitPanel.preCfg).slice(0, 90));
+    window.GitPanel.signoff = false;
+    window.GitPanel.authorOverride = null;
+    window.GitPanel.closeDialog();
+    await sleep(500);
+    add('Sign-off / 作者覆盖 / 弹窗都已还原（后面步骤基线干净）',
+      window.GitPanel.signoff === false && window.GitPanel.authorOverride === null
+      && !q('#pcr-box') && !q('#pc-box') && !q('#au-box') && !q('#modal-mask').classList.contains('hidden') === false,
+      'signoff=' + window.GitPanel.signoff + ' author=' + JSON.stringify(window.GitPanel.authorOverride));
+    return { R };
+  },
+
   // ---------- M4：merge 冲突 → 操作条 → 冲突解决窗口 → 继续 ----------
   // 夹具仓库 demo/_ui_confrepo（base → feat 改同一行 → main 也改同一行，merge 必然冲突）。
   // 走的是**真实 native git**：merge / opState / conflicts / resolveFile / continueOp 全链路。
@@ -1042,8 +1169,14 @@ module.exports = {
           cf2.ok && cf2.files.length === 0 && wt.ok && /merged by hand/.test(wt.text || ''),
           JSON.stringify(cf2).slice(0, 50) + ' wt=' + (wt.ok ? JSON.stringify((wt.text || '').slice(0, 40)) : wt.error));
       }
-      await sleep(800);
-      const cont1 = qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '继续');
+      // ⚠ 解决后 UI 是**异步**重刷的（reloadConflicts → refresh → 重建操作条）：读太早会读到旧状态。
+      //   这里轮询等它变可用，而不是死等一个固定毫秒数（更慢的机器上固定值一定会偶发失败）。
+      let cont1 = null;
+      for (let i = 0; i < 20; i++) {
+        cont1 = qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '继续');
+        if (cont1 && !cont1.disabled) break;
+        await sleep(300);
+      }
       add('冲突全部解决后「继续」可用', cont1 && !cont1.disabled, cont1 ? 'disabled=' + cont1.disabled : '没找到');
       // ⚠ 末尾不清场：截图要拍「操作条 + 冲突已解决 + 继续可用」这个状态，清场交给下一步
     }
@@ -1761,7 +1894,8 @@ module.exports = {
     if (!bar) return { R };
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
-    add('工具行 11 个纯图标按钮', btns.length === 11 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
+    add('工具行 13 个纯图标按钮', btns.length === 13 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // 节点三态
@@ -1816,6 +1950,9 @@ module.exports = {
 
     // 内嵌 diff 预览
     const ey = qa('#cd-files .git-cp-bar .vt-btn')[4];
+    // ⚠ 先归零再点开：这个开关是持久化的，上一次运行/上一个步骤留下的值会让"点一下就开"
+    //   变成"点一下就关"（然后就断言不到预览 —— 已踩过一次）
+    if (ey.classList.contains('active')) { ey.click(); await sleep(500); }
     ey.click();
     await sleep(800);
     // 显式点一个文本文件行：默认取到的可能是二进制 / 超大文件（kiosk_patches 之类），那样预览只有提示没有 diff 行

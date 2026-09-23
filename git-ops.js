@@ -56,6 +56,9 @@ module.exports = [
   { ch: 'pushForceWithLease', native: 'pushForceWithLease' },
   { ch: 'setUpstream', native: 'setUpstream' },
   { ch: 'unsetUpstream', native: 'unsetUpstream' },
+  // M5：提交前检查（同一套执行器跑用户命令与 pre-commit 钩子）+ TODO 扫描
+  { ch: 'precommitRun', native: 'precommitRun' },
+  { ch: 'scanTodo', native: 'scanTodo' },
   { ch: 'discard', op: 'discard' },
   { ch: 'discardFiles', op: 'discardFiles' },
   { ch: 'getUserConfig', op: 'getUserConfig' },

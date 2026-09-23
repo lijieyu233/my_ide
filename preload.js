@@ -91,6 +91,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     pushForceWithLease: (d, remote, branch) => ipcRenderer.invoke('git:pushForceWithLease', d, remote, branch),
     setUpstream: (d, ref) => ipcRenderer.invoke('git:setUpstream', d, ref),
     unsetUpstream: (d) => ipcRenderer.invoke('git:unsetUpstream', d),
+    precommitRun: (d, o) => ipcRenderer.invoke('git:precommitRun', d, o),
+    scanTodo: (d, files, kinds) => ipcRenderer.invoke('git:scanTodo', d, files, kinds),
     discard: (d, f) => ipcRenderer.invoke('git:discard', d, f),
     discardFiles: (d, files) => ipcRenderer.invoke('git:discardFiles', d, files),
     getUserConfig: (d) => ipcRenderer.invoke('git:getUserConfig', d),

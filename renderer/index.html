@@ -88,6 +88,8 @@
       <div class="cd-msgbox">
         <div class="commit-amend-row">
           <label class="m-check" title="把这次改动追加到上一次提交，并自动回填上次的提交消息"><input type="checkbox" id="commit-amend"><span>修正上次提交 (Amend)</span></label>
+          <!-- M5：Sign-off（DCO）。勾上后提交时在消息末尾追加 Signed-off-by，不写进输入框（避免重复追加） -->
+          <label class="m-check m-check-signoff" title="在提交消息末尾追加 Signed-off-by: 姓名 &lt;邮箱&gt;（DCO）"><input type="checkbox" id="commit-signoff"><span>Sign-off</span></label>
           <button id="commit-history" class="vt-btn" title="提交消息历史（点击填充到输入框）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg></button>
         </div>
         <textarea id="commit-msg" placeholder="提交消息" spellcheck="false"></textarea>

@@ -83,6 +83,8 @@ calls.pushLease = [];
 calls.setUpstream = [];
 calls.unsetUpstream = [];
 calls.pull = [];
+calls.precommit = [];
+calls.scanTodo = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -297,6 +299,8 @@ function makeDom() {
       pushForceWithLease: async (d, remote, branch) => { calls.pushLease.push([remote, branch]); return { ok: true }; },
       setUpstream: async (d, ref) => { calls.setUpstream.push(ref); return { ok: true }; },
       unsetUpstream: async (d) => { calls.unsetUpstream.push(1); return { ok: true }; },
+      precommitRun: async (d, o) => { calls.precommit.push(o || {}); return FAKE_GIT.precommitResult || { ok: true, results: [{ name: 'echo hi', ok: true, out: 'hi' }] }; },
+      scanTodo: async (d, files, kinds) => { calls.scanTodo.push({ files, kinds }); return { ok: true, hits: FAKE_GIT.todoHits || [] }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
@@ -2689,7 +2693,7 @@ assert_(panel, 'CM6 搜索面板出现');
     const btnsOf = () => $allIn(bar(), '.vt-btn');
     assert_(bar(), '工具行存在');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
-    assert_(btnsOf().length === 11, '11 个图标按钮: ' + btnsOf().length);
+    assert_(btnsOf().length === 13, '13 个图标按钮（M5 追加了提交前检查 / 本次作者）: ' + btnsOf().length);
     assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
     assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
     // 挪进来的三个保留原 id：dom 测试与快捷键都按 id 找它们
@@ -3199,6 +3203,123 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.conflicts = []');
     await tick(); await tick();
     assert_(!$(dom, '#cd-files .git-op-bar'), '收尾：操作条消失');
+  });
+
+  await okAsync('M5：提交前检查 —— 有阻断项时先弹结果面板，取消/仍然提交都生效', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    // 配一条必定失败的命令 + 关掉 TODO（免得无关项干扰断言）
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: false, commands: [{ name: "lint", cmd: "npm run lint" }] }');
+    FAKE_GIT.precommitResult = { ok: false, results: [{ name: 'lint', cmd: 'npm run lint', ok: false, code: 1, out: '3 problems' }] };
+    $(dom, '#commit-msg').value = 'feat: 试试提交前检查';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    assert_(calls.commit.length === before, '检查没过时没有提交');
+    const box = $(dom, '#pcr-box');
+    assert_(box, '结果面板弹出');
+    assert_(/没通过/.test($(dom, '#pcr-sum').textContent), '汇总说明有几项没过: ' + $(dom, '#pcr-sum').textContent);
+    assert_($allIn(box, '.pcr-item.bad').length === 1, '失败项标红: ' + $allIn(box, '.pcr-item.bad').length);
+    assert_(/3 problems/.test($(dom, '#pcr-list').textContent), '输出展示出来了');
+    // ① 取消提交 → 不提交
+    click($(dom, '#pcr-no'));
+    await tick(); await tick();
+    assert_(calls.commit.length === before, '点「取消提交」不提交');
+    // ② 仍然提交 → 提交，且跑过 precommitRun（带我们的命令）
+    // ⚠ calls 是全局累积的，要看**最后一条**（前面的提交用例也跑过 precommitRun，只是没配命令）
+    const pcLast = calls.precommit[calls.precommit.length - 1] || {};
+    assert_(pcLast.commands && pcLast.commands[0] && pcLast.commands[0].cmd === 'npm run lint',
+      'precommitRun 收到配置的命令: ' + JSON.stringify(pcLast));
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    click($(dom, '#pcr-yes'));
+    await tick(); await tick();
+    assert_(calls.commit.length === before + 1, '点「仍然提交」才真的提交');
+    // 收尾：恢复默认配置
+    FAKE_GIT.precommitResult = null;
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: true, commands: [] }');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M5：Sign-off 追加签名（不重复）+ 作者覆盖只影响这一次', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.signoff = true');
+    await g(dom, 'GitPanel.authorOverride = { name: "临时工", email: "tmp@example.com" }');
+    // ⚠ 上一个用例真的提交过 → 勾选集合已被清空，这里得重新勾上（否则 doCommit 直接 early return）
+    click($allIn($(dom, '#commit-list'), '.cf-check')[0]);
+    await tick();
+    $(dom, '#commit-msg').value = 'fix: 带签名提交';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    const last = calls.commit[calls.commit.length - 1];
+    assert_(calls.commit.length === before + 1, '提交成功');
+    assert_(/Signed-off-by: 临时工 <tmp@example.com>/.test(last.message),
+      '签名跟作者走且用覆盖后的作者: ' + JSON.stringify(last.message));
+    assert_($(dom, '#commit-msg').value === '' || !/Signed-off-by/.test($(dom, '#commit-msg').value),
+      '签名不写回输入框');
+    assert_(last.author && last.author.name === '临时工', 'commit 收到 author 覆盖: ' + JSON.stringify(last.author));
+    // 重复勾选不会加第二遍（直接测内部函数：同样内容再签一次）
+    const twice = await g(dom, 'GitPanel.appendSignoff(' + JSON.stringify(last.message) + ')');
+    assert_((twice.match(/Signed-off-by/g) || []).length === 1, '不会出现两遍签名');
+    // 作者按钮状态：覆盖时高亮
+    assert_($(dom, '#commit-author').classList.contains('active'), '作者按钮显示"已覆盖"态');
+    // 收尾：清掉覆盖与签名（后面用例基线）
+    await g(dom, 'GitPanel.authorOverride = null');
+    await g(dom, 'GitPanel.signoff = false');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+    assert_(!$(dom, '#commit-author').classList.contains('active'), '收尾：作者按钮回到默认态');
+    assert_($(dom, '#commit-signoff').checked === false, '收尾：Sign-off 取消勾选');
+  });
+
+  await okAsync('M5：提交前检查弹窗（配置持久化到 preCfg）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#commit-precheck'));
+    await tick(); await tick();
+    const box = $(dom, '#pc-box');
+    assert_(box, '提交前检查弹窗打开');
+    assert_($(dom, '#pc-enabled') && $(dom, '#pc-hooks') && $(dom, '#pc-todo'), '三个勾选项都在');
+    assert_($allIn(box, '.pc-cmd').length === 0 && $(dom, '.pc-empty'), '初始没有命令（给空态提示）');
+    click($(dom, '#pc-add'));
+    await tick();
+    assert_($allIn(box, '.pc-cmd').length === 1, '点「添加」出现一行命令');
+    const rowEl = $allIn(box, '.pc-cmd')[0];
+    rowEl.querySelector('.pc-nm').value = 'lint';
+    rowEl.querySelector('.pc-sh').value = 'npm run lint';
+    $(dom, '#pc-max').value = '120';
+    $(dom, '#pc-regex').value = '^(feat|fix): ';
+    click($(dom, '#pc-yes'));
+    await tick(); await tick();
+    const cfg = await g(dom, 'JSON.stringify(GitPanel.preCfg)');
+    const o = JSON.parse(cfg);
+    assert_(o.commands.length === 1 && o.commands[0].cmd === 'npm run lint' && o.commands[0].name === 'lint',
+      '命令保存进配置: ' + JSON.stringify(o.commands));
+    assert_(o.maxSubject === 120 && o.messageRegex === '^(feat|fix): ', '正则与长度上限也存了: ' + cfg);
+    // 消息校验真的生效：写个不符合正则的主题 → 阻断
+    o.commands = [];        // 不跑命令，单独验正则
+    await g(dom, 'GitPanel.preCfg = ' + JSON.stringify(o));
+    click($allIn($(dom, '#commit-list'), '.cf-check')[0]);   // 前面真的提交过 → 重新勾一个文件
+    await tick();
+    $(dom, '#commit-msg').value = '不加前缀的主题';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    assert_(calls.commit.length === before && $(dom, '#pcr-box'), '主题不匹配 → 阻断并弹面板');
+    assert_(/提交消息格式/.test($(dom, '#pcr-list').textContent), '面板里指出是消息格式问题');
+    click($(dom, '#pcr-no'));
+    await tick(); await tick();
+    // 收尾：配置恢复默认
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: true, commands: [] }');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
   });
 
   await okAsync('toast 提示正常', async () => {

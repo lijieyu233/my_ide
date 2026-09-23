@@ -431,6 +431,7 @@ const GitPanel = (() => {
 
     // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
     filesEl.appendChild(buildToolbar());
+    updateAuthorBtn();   // 工具行刚重建 → 作者按钮的"已覆盖"态要重新贴一次
 
     const list = document.createElement('div');
     list.id = 'commit-list';
@@ -758,6 +759,305 @@ const GitPanel = (() => {
     load();
   }
 
+  // ---------- M5：提交前检查（Before Commit）+ Sign-off / 作者覆盖 ----------
+  // 配置按项目存 <项目根>/.myide/precommit.json（与变更列表同思路：随项目走；写失败降级 localStorage）。
+  // **不做 Reformat / Optimize imports / Analyze** —— 那需要把四个语言的 lint/format 工具链全接进来，
+  // 是另一个量级的工程；这里只做真实有效的三项 + 与 Git 钩子共用同一套执行器。
+  const PC_LSKEY = (p) => 'myide-precommit:' + p;
+  const PC_FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/precommit.json' : null);
+  const PC_DEFAULT = {
+    enabled: true, runHooks: true, checkTodo: true,
+    todoKinds: ['TODO', 'FIXME', 'XXX', 'HACK'],
+    messageRegex: '', maxSubject: 72, commands: [],
+  };
+  function pcNormalize(raw) {
+    const o = raw && typeof raw === 'object' ? raw : {};
+    return {
+      enabled: o.enabled !== false,
+      runHooks: o.runHooks !== false,
+      checkTodo: o.checkTodo !== false,
+      todoKinds: (Array.isArray(o.todoKinds) && o.todoKinds.length ? o.todoKinds : PC_DEFAULT.todoKinds).map(String),
+      messageRegex: typeof o.messageRegex === 'string' ? o.messageRegex : '',
+      maxSubject: Number(o.maxSubject) > 0 ? Number(o.maxSubject) : 0,   // 0 = 不限制
+      commands: (Array.isArray(o.commands) ? o.commands : [])
+        .filter((c) => c && String(c.cmd || '').trim())
+        .map((c) => ({ name: String(c.name || '').trim() || String(c.cmd).trim(), cmd: String(c.cmd).trim() })),
+    };
+  }
+  let preCfg = pcNormalize(null);
+  async function loadPreCfg() {
+    const f = PC_FILE(root);
+    if (!f) { preCfg = pcNormalize(null); return; }
+    let raw = null;
+    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    if (!raw) { try { raw = JSON.parse(localStorage.getItem(PC_LSKEY(root)) || 'null'); } catch {} }
+    preCfg = pcNormalize(raw);
+  }
+  function savePreCfg() {
+    const snapRoot = root, f = PC_FILE(root), data = JSON.stringify(preCfg, null, 2);
+    try { localStorage.setItem(PC_LSKEY(snapRoot), data); } catch {}
+    if (!f) return;
+    (async () => {
+      try {
+        const dir = f.slice(0, f.lastIndexOf('/'));
+        await window.myIDE.fs.mkdir(dir);
+        await window.myIDE.fs.writeFile(f, data);
+      } catch {}
+    })();
+  }
+
+  // 作者覆盖：只对「这一次提交」生效，**不写回 git config**（PyCharm 的 Author 下拉同语义）
+  let authorOverride = null;   // { name, email }
+  async function openAuthorDialog() {
+    const cur = await gitSafe('getUserConfig', root);
+    const u = (cur && cur.config) || (cur && cur.user) || cur || {};
+    const name0 = (authorOverride && authorOverride.name) || u.name || '';
+    const mail0 = (authorOverride && authorOverride.email) || u.email || '';
+    const box = document.createElement('div');
+    box.id = 'au-box';
+    box.innerHTML = `
+      <div class="m-head">本次提交的作者<span class="x" id="au-x">✕</span></div>
+      <div class="m-body">
+        <div class="pc-hint">只影响这一次提交，<b>不会改写</b>仓库的 git config。</div>
+        <label class="m-label">姓名<input id="au-name" type="text" value=""></label>
+        <label class="m-label">邮箱<input id="au-email" type="text" value=""></label>
+        <div id="au-cur" class="pc-hint"></div>
+      </div>
+      <div class="m-foot">
+        <button class="tb-btn" id="au-reset">恢复默认</button>
+        <span class="grow"></span>
+        <button class="tb-btn m-cancel" id="au-no">取消</button>
+        <button class="tb-btn m-ok" id="au-yes">确定</button>
+      </div>`;
+    Modal.show(box);
+    box.querySelector('#au-name').value = name0;
+    box.querySelector('#au-email').value = mail0;
+    box.querySelector('#au-cur').textContent = '仓库默认：' + (u.name || '(未配置)') + ' <' + (u.email || '') + '>';
+    box.querySelector('#au-x').onclick = () => Modal.hide();
+    box.querySelector('#au-no').onclick = () => Modal.hide();
+    box.querySelector('#au-reset').onclick = () => {
+      authorOverride = null;
+      Modal.hide();
+      updateAuthorBtn();
+      MI.toast('已恢复默认作者', 'ok');
+    };
+    box.querySelector('#au-yes').onclick = () => {
+      const n = box.querySelector('#au-name').value.trim();
+      const e2 = box.querySelector('#au-email').value.trim();
+      if (!n || !e2) { MI.toast('姓名与邮箱都要填', 'err'); return; }
+      if (n === u.name && e2 === u.email) authorOverride = null;   // 与默认一致就不必覆盖
+      else authorOverride = { name: n, email: e2 };
+      Modal.hide();
+      updateAuthorBtn();
+      MI.toast(authorOverride ? ('本次提交作者：' + n + ' <' + e2 + '>') : '已恢复默认作者', 'ok');
+    };
+  }
+  function updateAuthorBtn() {
+    const b = document.getElementById('commit-author');
+    if (!b) return;
+    b.classList.toggle('active', !!authorOverride);
+    b.title = authorOverride
+      ? '本次提交作者：' + authorOverride.name + ' <' + authorOverride.email + '>（点开可改 / 恢复默认）'
+      : '本次提交的作者（只影响这一次，不写回 git config）';
+  }
+
+  // 提交前配置弹窗（勾选项 + 命令列表）
+  async function openPrecheckDialog() {
+    await loadPreCfg();
+    const box = document.createElement('div');
+    box.id = 'pc-box';
+    const row = (id, label, title) => '<label class="m-check pc-row" title="' + esc(title) + '"><input type="checkbox" id="' + id + '"><span>' + esc(label) + '</span></label>';
+    box.innerHTML = `
+      <div class="m-head">提交前检查<span class="x" id="pc-x">✕</span></div>
+      <div class="m-body">
+        ${row('pc-enabled', '提交前执行检查', '总开关：关掉后提交时什么都不跑')}
+        ${row('pc-hooks', '运行 Git 钩子 pre-commit', '交给 git 自己跑（git hook run pre-commit）：退出码非 0 会中断提交')}
+        ${row('pc-todo', '扫描 TODO / FIXME（只提示，不阻断）', '只扫这次要提交的文件；命中项列出来由你决定')}
+        <label class="m-label">标记关键字（逗号分隔）<input id="pc-kinds" type="text" spellcheck="false"></label>
+        <div class="pc-two">
+          <label class="m-label">提交消息必须匹配（正则，可空）<input id="pc-regex" type="text" spellcheck="false" placeholder="如 ^(feat|fix|docs)(\\(.+\\))?: "></label>
+          <label class="m-label">主题长度上限<input id="pc-max" type="number" min="0" max="200" step="1" style="width:90px"></label>
+        </div>
+        <div class="pc-cmds-head">自定义命令（按顺序跑，前一条失败就停）<button class="tb-btn" id="pc-add">＋ 添加</button></div>
+        <div id="pc-cmds" class="pc-cmds"></div>
+        <div class="pc-hint">只做「命令 + 钩子 + TODO + 消息校验」；Reformat / 优化 import / 静态分析<b>不做</b>（需要接入完整工具链）。</div>
+      </div>
+      <div class="m-foot">
+        <span class="grow"></span>
+        <button class="tb-btn m-cancel" id="pc-no">取消</button>
+        <button class="tb-btn m-ok" id="pc-yes">保存</button>
+      </div>`;
+    Modal.show(box);
+    const q = (x) => box.querySelector(x);
+    q('#pc-enabled').checked = preCfg.enabled;
+    q('#pc-hooks').checked = preCfg.runHooks;
+    q('#pc-todo').checked = preCfg.checkTodo;
+    q('#pc-kinds').value = preCfg.todoKinds.join(', ');
+    q('#pc-regex').value = preCfg.messageRegex;
+    q('#pc-max').value = String(preCfg.maxSubject);
+    const cmdsEl = q('#pc-cmds');
+    const drawCmds = (list) => {
+      cmdsEl.innerHTML = '';
+      if (!list.length) {
+        const d = document.createElement('div');
+        d.className = 'pc-empty';
+        d.textContent = '还没有命令（例如 npm run lint）';
+        cmdsEl.appendChild(d);
+        return;
+      }
+      list.forEach((c, i) => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'pc-cmd';
+        rowEl.innerHTML = '<input class="pc-nm" placeholder="名称" spellcheck="false">'
+          + '<input class="pc-sh" placeholder="命令（在项目根目录执行）" spellcheck="false">'
+          + '<button class="vt-btn pc-del" title="删除这条">✕</button>';
+        rowEl.querySelector('.pc-nm').value = c.name || '';
+        rowEl.querySelector('.pc-sh').value = c.cmd || '';
+        rowEl.querySelector('.pc-del').onclick = () => {
+          const cur = readCmds();
+          cur.splice(i, 1);
+          drawCmds(cur);
+        };
+        cmdsEl.appendChild(rowEl);
+      });
+    };
+    const readCmds = () => [...cmdsEl.querySelectorAll('.pc-cmd')].map((r) => ({
+      name: r.querySelector('.pc-nm').value.trim(),
+      cmd: r.querySelector('.pc-sh').value.trim(),
+    })).filter((c) => c.cmd);
+    drawCmds(preCfg.commands);
+    q('#pc-add').onclick = () => {
+      const cur = readCmds();
+      cur.push({ name: '', cmd: '' });
+      drawCmds(cur);
+      const rows = cmdsEl.querySelectorAll('.pc-cmd');
+      const last = rows[rows.length - 1];
+      if (last) last.querySelector('.pc-sh').focus();
+    };
+    q('#pc-x').onclick = () => Modal.hide();
+    q('#pc-no').onclick = () => Modal.hide();
+    q('#pc-yes').onclick = () => {
+      preCfg = pcNormalize({
+        enabled: q('#pc-enabled').checked,
+        runHooks: q('#pc-hooks').checked,
+        checkTodo: q('#pc-todo').checked,
+        todoKinds: q('#pc-kinds').value.split(',').map((x) => x.trim()).filter(Boolean),
+        messageRegex: q('#pc-regex').value,   // ⚠ 不 trim：正则里的尾空格可能是规则的一部分
+        maxSubject: Number(q('#pc-max').value) || 0,
+        commands: readCmds(),
+      });
+      savePreCfg();
+      Modal.hide();
+      MI.toast('提交前检查已保存' + (preCfg.commands.length ? '（' + preCfg.commands.length + ' 条命令）' : ''), 'ok');
+    };
+  }
+
+  // 跑检查：返回 { problems（阻断，需"仍然提交"才过）, warnings（只提示） }
+  async function runPreChecks(files, message) {
+    const cfg = preCfg;
+    const problems = [], warnings = [];
+    const subject = String(message).split('\n')[0];
+    if (cfg.maxSubject > 0 && subject.length > cfg.maxSubject) {
+      problems.push({ name: '提交消息长度', ok: false, out: '主题 ' + subject.length + ' 字，超过上限 ' + cfg.maxSubject });
+    }
+    if (cfg.messageRegex) {
+      let re = null;
+      try { re = new RegExp(cfg.messageRegex); } catch (e) {
+        warnings.push({ name: '消息正则无效', ok: false, out: String((e && e.message) || e) + '\n（这条规则被跳过，改好再存一次）' });
+      }
+      if (re && !re.test(subject)) {
+        problems.push({ name: '提交消息格式', ok: false, out: '主题不匹配 /' + cfg.messageRegex + '/\n主题：' + subject });
+      }
+    }
+    if (cfg.checkTodo) {
+      const r = await gitSafe('scanTodo', root, files, cfg.todoKinds);
+      if (r && r.ok) {
+        const hits = r.hits || [];
+        warnings.push({
+          name: 'TODO 扫描', ok: true,
+          out: hits.length
+            ? hits.length + ' 处命中（只提示，不阻断）：\n' + hits.slice(0, 40).map((h) => h.file + ':' + h.line + '  ' + h.text).join('\n') + (hits.length > 40 ? '\n…' : '')
+            : '没有 ' + cfg.todoKinds.join(' / ') + ' 命中',
+        });
+      } else if (r && r.error) warnings.push({ name: 'TODO 扫描', ok: false, out: r.error });
+    }
+    if (cfg.runHooks || cfg.commands.length) {
+      const r = await gitSafe('precommitRun', root, { runHooks: cfg.runHooks, commands: cfg.commands });
+      if (r && Array.isArray(r.results)) {
+        for (const s of r.results) {
+          const item = { name: s.name, ok: !!s.ok, skipped: !!s.skipped, out: s.out || '' };
+          if (s.ok) warnings.push(item); else problems.push(item);
+        }
+      } else if (r && r.error) {
+        problems.push({ name: '提交前命令', ok: false, out: r.error });
+      }
+    }
+    return { problems, warnings };
+  }
+
+  // 结果面板：有阻断项时给「仍然提交」（PyCharm 也允许带警告提交）
+  function showPreCheckResult(r) {
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.id = 'pcr-box';
+      const item = (s) => '<div class="pcr-item ' + (s.ok ? 'ok' : 'bad') + '">'
+        + '<div class="pcr-head"><span class="pcr-mark">' + (s.skipped ? '·' : s.ok ? '✓' : '✗') + '</span>'
+        + '<span class="pcr-nm"></span></div>'
+        + '<pre class="pcr-out"></pre></div>';
+      box.innerHTML = `
+        <div class="m-head">提交前检查<span class="x" id="pcr-x">✕</span></div>
+        <div class="m-body">
+          <div id="pcr-sum" class="pcr-sum"></div>
+          <div id="pcr-list"></div>
+        </div>
+        <div class="m-foot">
+          <span class="grow"></span>
+          <button class="tb-btn m-cancel" id="pcr-no">取消提交</button>
+          <button class="tb-btn m-ok" id="pcr-yes">仍然提交</button>
+        </div>`;
+      Modal.show(box);
+      const list = box.querySelector('#pcr-list');
+      const all = [...(r.problems || []), ...(r.warnings || [])];
+      for (const s of all) {
+        const d = document.createElement('div');
+        d.innerHTML = item(s);
+        d.querySelector('.pcr-nm').textContent = s.name;
+        d.querySelector('.pcr-out').textContent = s.out || '';
+        list.appendChild(d);
+      }
+      const bad = (r.problems || []).length;
+      box.querySelector('#pcr-sum').textContent = bad
+        ? bad + ' 项没通过 —— 可以修完再来，也可以「仍然提交」'
+        : '全部通过' + ((r.warnings || []).length ? '（' + r.warnings.length + ' 条提示）' : '');
+      const done = (v) => {
+        Modal.hide();
+        document.removeEventListener('keydown', onKey);
+        resolve(v);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') done(false); };
+      document.addEventListener('keydown', onKey);
+      box.querySelector('#pcr-x').onclick = () => done(false);
+      box.querySelector('#pcr-no').onclick = () => done(false);
+      box.querySelector('#pcr-yes').onclick = () => done(true);
+    });
+  }
+
+  // Sign-off：追加到消息末尾（已有就不重复），用 getGitAuthMap 之外的 git config（与作者覆盖一致）
+  async function appendSignoff(text) {
+    // 用与本次提交相同的作者信息（PyCharm 的签名跟作者走）
+    let name = '', email = '';
+    if (authorOverride) { name = authorOverride.name; email = authorOverride.email; }
+    else {
+      const u = await gitSafe('getUserConfig', root);
+      const cfg = (u && (u.config || u.user)) || u || {};
+      name = cfg.name || ''; email = cfg.email || '';
+    }
+    if (!name || !email) return text;
+    const line = 'Signed-off-by: ' + name + ' <' + email + '>';
+    if (text.split('\n').some((l) => l.trim() === line)) return text;   // 重复勾选不加第二遍
+    return text.replace(/\s+$/, '') + '\n\n' + line;
+  }
+
   // ---------- 工具行（图标按钮：刷新 / 回滚 / 差异 / 提交 / 预览 ｜ 展开全部 / 收起全部 / 分组方式）----------
   function buildToolbar() {
     const bar = document.createElement('div');
@@ -803,7 +1103,12 @@ const GitPanel = (() => {
     mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve');
     mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote');
     mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
-    barBtns = { roll, dif, com, prev, grp };
+    // M5：提交前检查 / 本次作者。本来放在提交输入框上面那行，但 340px 侧栏里会把
+    // 「修正上次提交 (Amend)」压成省略号（截断比多两个图标难看得多）→ 挪进工具行末尾。
+    // ⚠ 仍按 id 取，dom 测试与自检按 id 点击不受影响。
+    mk(IC.check, '提交前检查：自定义命令 / Git 钩子 / TODO 扫描 / 消息校验', () => openPrecheckDialog(), 'commit-precheck');
+    const au = mk(IC.user, '本次提交的作者（只影响这一次，不写回 git config）', () => openAuthorDialog(), 'commit-author');
+    barBtns = { roll, dif, com, prev, grp, au };
     return bar;
   }
 
@@ -978,9 +1283,11 @@ const GitPanel = (() => {
   let dirAllCollapsed = !!uiPrefs.dirAllCollapsed;  // 「收起全部」的兜底（未被单独点过的目录跟随它）
   function saveUiPrefs() {
     try {
-      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed }));
+      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed, signoff }));
     } catch {}
   }
+  // M5：Sign-off（DCO）—— 与视图偏好同一个键，但它影响提交内容，所以单独取名
+  let signoff = !!uiPrefs.signoff;
 
   // ---------- 提交消息历史（全局，PyCharm「Recent Messages」语义）+ 草稿（按项目）----------
   const MSG_HIST_KEY = 'myide-commit-msgs';
@@ -1038,6 +1345,9 @@ const GitPanel = (() => {
     // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
     // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
     branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
+    // M5：提交前检查 = 对勾；本次作者 = 人像
+    check: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg>',
+    user: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c0-2.6 2.1-4.2 4.8-4.2s4.8 1.6 4.8 4.2"/></svg>',
   };
 
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
@@ -1255,7 +1565,7 @@ const GitPanel = (() => {
   }
 
   // ---------- 提交 ----------
-  async function doCommit(pushAfter, pushOpts) {
+  async function doCommit(pushAfter, pushOpts, opts) {
     if (!root || !state || !state.isRepo) return;
     const files = [...checked];
     if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
@@ -1264,9 +1574,21 @@ const GitPanel = (() => {
     if (!text) { MI.toast('请填写提交消息', 'err'); focusMessage(); return; }
     const amendEl = document.getElementById('commit-amend');
     const amend = !!(amendEl && amendEl.checked);
+    // M5：提交前检查。**有阻断项才打断**（弹结果面板）；只有提示时不拦，避免每次提交都点一次弹窗
+    if (!(opts && opts.skipChecks) && preCfg.enabled) {
+      const pre = await runPreChecks(files, text);
+      if (pre.problems.length) {
+        const go = await showPreCheckResult(pre);
+        if (!go) { MI.toast('已取消提交（提交前检查没过）', 'err'); return; }
+      }
+    }
+    // Sign-off 在这里追加、**不写进输入框**（PyCharm 同语义：避免重复追加、也不污染草稿/历史）
+    const finalMsg = signoff ? await appendSignoff(text) : text;
     const btn = document.getElementById('cm-ok');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
-    const r = await window.myIDE.git.commit(root, { message: text, files, amend });
+    const r = await window.myIDE.git.commit(root, {
+      message: finalMsg, files, amend, author: authorOverride || undefined,
+    });
     if (btn) { btn.disabled = !checked.size; btn.textContent = '提交 (I)'; }
     if (r.ok) {
       pushMsgHistory(text);            // 提交消息进历史（🕘 下拉）
@@ -2223,6 +2545,7 @@ const GitPanel = (() => {
   function init() {
     filesEl = document.getElementById('cd-files');
     if (!filesEl) return;
+    loadPreCfg();   // M5：提交前检查配置（按项目，懒加载一次；切项目时重载）
     const msg = document.getElementById('commit-msg');
     if (msg) {
       // 草稿优先（按项目持久化）——此前 commitMsg 只在内存里，刷新一次就丢
@@ -2254,6 +2577,14 @@ const GitPanel = (() => {
     // 面板内预览太窄时的一键出口：同一个文件，改在编辑区看整体
     const cpOpen = document.getElementById('cp-open');
     if (cpOpen) cpOpen.onclick = () => { if (previewCur) showFileDiff(previewCur); };
+    // M5：Sign-off 勾选（持久化）+ 提交前检查 / 作者入口
+    const so = document.getElementById('commit-signoff');
+    if (so) {
+      so.checked = signoff;
+      so.onchange = () => { signoff = !!so.checked; saveUiPrefs(); };
+    }
+    // ⚠ 「提交前 / 作者」两个按钮现在由 buildToolbar 每次重建时创建并绑定（见那里的说明），
+    //   这里不能再按 id 绑一次 —— render() 之后拿到的是新节点，绑旧节点等于没绑。
     const pull = document.getElementById('cd-pull');
     if (pull) pull.onclick = (e) => openPullMenu(e.currentTarget);
     const push = document.getElementById('cd-push');
@@ -2289,6 +2620,10 @@ const GitPanel = (() => {
           lastDraft = d;
         }
         amendBackup = null;
+        // M5：提交前检查配置随项目；作者覆盖是"这一次"的临时状态 → 切项目即失效
+        loadPreCfg();
+        authorOverride = null;
+        updateAuthorBtn();
         const amd = document.getElementById('commit-amend');
         if (amd) amd.checked = false;
         const hist = document.getElementById('commit-history');
@@ -2304,6 +2639,15 @@ const GitPanel = (() => {
     openChangelistDialog, clMoveTo, clSetActive, clNameOf, clListOf,
     // M4：进行中的 Git 操作与冲突解决（给测试/自检用的读写口）
     openConflictDialog, doContinue, doSkip, doAbort, buildOpBar, closeFloatMenu,
+    // M5：提交前检查 / Sign-off / 作者覆盖（给测试与自检用的读写口）
+    openPrecheckDialog, openAuthorDialog, runPreChecks, showPreCheckResult, appendSignoff,
+    get preCfg() { return Object.assign({}, preCfg, { commands: preCfg.commands.slice() }); },
+    set preCfg(v) { preCfg = pcNormalize(v); },
+    get signoff() { return signoff; },
+    set signoff(v) { signoff = !!v; saveUiPrefs(); const el = document.getElementById('commit-signoff'); if (el) el.checked = signoff; },
+    get authorOverride() { return authorOverride ? Object.assign({}, authorOverride) : null; },
+    set authorOverride(v) { authorOverride = v || null; updateAuthorBtn(); },
+    loadPreCfg,
     get op() { return op ? Object.assign({}, op) : null; },
     set op(v) { op = v; render(); },
     get conflicts() { return conflictFiles.slice(); },
