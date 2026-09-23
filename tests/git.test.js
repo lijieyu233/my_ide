@@ -874,7 +874,106 @@ fs.mkdirSync(repo);
     assert.ok(wtBefore.includes('line 2 CHANGED'), '取消暂存后工作区仍保留那处改动（回到未暂存而已）');
   });
 
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // ---------- M4：分支工作流（merge / rebase / 操作状态机 / 冲突解决）----------
+  // ⚠ 走**本机 git**（isomorphic-git 没有 merge/rebase）。没装 git 就跳过并说明，不算失败
+  //   —— 本机 git 是软依赖，这条测试同理。
+  const NATIVE = require('../git-native');
+  const ninfo = await NATIVE.probe(true);
+  if (!ninfo.available) {
+    console.log('  SKIP M4 分支工作流（未检测到本机 git，合并/变基能力不可用）');
+  } else {
+    // 造一个「两边都改了同一个文件」的仓库：base → feat 分支改 a.txt → main 也改 a.txt
+    const mkConflictRepo = async (tag) => {
+      const rp = path.join(tmp, 'repo-' + tag);
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      await G.setUserConfig(rp, { name: 'm4', email: 'm4@example.com' });
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'base\n');
+      await G.commit(rp, { message: 'base', files: ['a.txt'] });
+      await G.createBranch(rp, 'feat');
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'feat\n');
+      await G.commit(rp, { message: 'feat', files: ['a.txt'] });
+      await G.checkout(rp, 'main');
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'main\n');
+      await G.commit(rp, { message: 'main', files: ['a.txt'] });
+      return rp;
+    };
+
+    await okAsync('M4 状态机：NORMAL → merge 冲突 → MERGING → 解决 → continue → NORMAL', async () => {
+      const rp = await mkConflictRepo('merge');
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', '起始应是 NORMAL');
+
+      const m = await NATIVE.merge(rp, 'feat');
+      // ⚠ merge 冲突不是"失败"：git 退出码非 0，但仓库进入了 MERGING 状态 → 应当是 ok + conflict
+      assert.ok(m.ok, 'merge 不该被当成失败: ' + (m.error || ''));
+      assert.strictEqual(m.conflict, true, '应报冲突');
+      assert.strictEqual(m.state.state, 'MERGING', '状态应变成 MERGING');
+      assert.strictEqual(m.state.target, 'feat', 'MERGE_MSG 里应还原出被合并的分支名');
+
+      const cf = await NATIVE.conflicts(rp);
+      assert.ok(cf.ok, cf.error);
+      assert.deepStrictEqual(cf.files.map((f) => f.file), ['a.txt'], '冲突文件是 a.txt');
+      assert.strictEqual(cf.files[0].resolved, false, '还没解决');
+
+      const sides = await NATIVE.conflictSides(rp, 'a.txt');
+      assert.strictEqual(sides.base, 'base\n', '共同祖先');
+      assert.strictEqual(sides.ours, 'main\n', 'merge 时 ours = 当前分支');
+      assert.strictEqual(sides.theirs, 'feat\n', 'merge 时 theirs = 被合并进来的');
+
+      const rs = await NATIVE.resolveFile(rp, 'a.txt', 'ours');
+      assert.ok(rs.ok, 'resolveFile 失败: ' + (rs.error || ''));
+      assert.strictEqual((await NATIVE.conflicts(rp)).files.length, 0, '解决后不再有未合并条目');
+
+      const c = await NATIVE.continueOp(rp);
+      assert.ok(c.ok, 'continue 失败: ' + (c.error || ''));
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', 'continue 后回到 NORMAL');
+      assert.ok(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8').includes('main'),
+        '选了 ours → 文件内容应是当前分支那一份');
+    });
+
+    await okAsync('M4 状态机：rebase 冲突 → REBASING → abort → NORMAL（且回到 rebase 之前）', async () => {
+      const rp = await mkConflictRepo('rebase');
+      const before = fs.readFileSync(path.join(rp, 'a.txt'), 'utf8');
+      const rb = await NATIVE.rebase(rp, 'feat');
+      assert.ok(rb.ok, 'rebase 不该被当成失败: ' + (rb.error || ''));
+      assert.strictEqual(rb.conflict, true, '应报冲突');
+      const st = await NATIVE.opState(rp);
+      assert.strictEqual(st.state, 'REBASING', '状态应变成 REBASING');
+      assert.strictEqual(st.target, 'main', 'head-name 应是正在被 rebase 的分支');
+      assert.ok(st.step && st.total, '应读出进度: ' + st.step + '/' + st.total);
+
+      // ⚠ rebase 时 ours/theirs 的语义与 merge **相反**：ours = 新基底，theirs = 正在重放的提交
+      const sides = await NATIVE.conflictSides(rp, 'a.txt');
+      assert.strictEqual(sides.ours, 'feat\n', 'rebase 时 ours = 新基底（feat）');
+      assert.strictEqual(sides.theirs, 'main\n', 'rebase 时 theirs = 正在重放的提交（main）');
+
+      const ab = await NATIVE.abortOp(rp);
+      assert.ok(ab.ok, 'abort 失败: ' + (ab.error || ''));
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', 'abort 后回到 NORMAL');
+      // ⚠ 比内容要剥掉 \r：本机 core.autocrlf 生效时，git 检出会把 LF 写成 CRLF，
+      //   "内容一样"不等于"字节一样"（比字节会在别的机器上莫名其妙红）
+      const norm = (s) => String(s).replace(/\r\n/g, '\n');
+      assert.strictEqual(norm(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8')), norm(before),
+        'abort 应回到 rebase 之前的内容');
+    });
+
+    await okAsync('M4 状态机：没有进行中的操作时 continue / skip / abort 都明确拒绝', async () => {
+      const rp = path.join(tmp, 'repo-idle');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      for (const fn of ['continueOp', 'skipOp', 'abortOp']) {
+        const r = await NATIVE[fn](rp);
+        assert.strictEqual(r.ok, false, fn + ' 在 NORMAL 下不该成功');
+        assert.ok(/没有进行中的 Git 操作/.test(r.error || ''), fn + ' 的错误文案应说明原因，got: ' + r.error);
+      }
+    });
+  }
+
+  // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
+  //   （实测在 npm run 下直接挂住不返回 —— 同样的代码直跑 node 却正常，最容易踩的假死）。
+  //   改成 rename 到同盘的回收站目录（renameSync 不被垫片拦），留给系统临时目录自己回收。
+  const trash = path.join(os.tmpdir(), 'myide-git-test-trash-' + Date.now());
+  try { fs.renameSync(tmp, trash); } catch (e) { console.log('  (清理失败，留着不管: ' + e.message + ')'); }
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

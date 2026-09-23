@@ -973,6 +973,96 @@ module.exports = {
     return { R };
   },
 
+  // ---------- M4：merge 冲突 → 操作条 → 冲突解决窗口 → 继续 ----------
+  // 夹具仓库 demo/_ui_confrepo（base → feat 改同一行 → main 也改同一行，merge 必然冲突）。
+  // 走的是**真实 native git**：merge / opState / conflicts / resolveFile / continueOp 全链路。
+  m4Conflict: async (opts) => {
+    const repo = (opts && opts.repo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const G = window.myIDE.git;
+    if (!repo) { add('M4 夹具仓库路径没传进来', false, JSON.stringify(opts)); return { R }; }
+
+    const m = await G.merge(repo, 'feat');
+    add('merge 冲突不是"失败"：ok=true + conflict=true', !!(m && m.ok && m.conflict),
+      JSON.stringify(m).slice(0, 90));
+    const st = await G.opState(repo);
+    add('状态机进入 MERGING，并从 MERGE_MSG 还原出分支名', st.state === 'MERGING' && st.target === 'feat',
+      JSON.stringify(st));
+    const cf = await G.conflicts(repo);
+    add('冲突清单：c.txt 待解决', cf.ok && cf.files.length === 1 && cf.files[0].file === 'c.txt' && !cf.files[0].resolved,
+      JSON.stringify(cf).slice(0, 80));
+    const sides = await G.conflictSides(repo, 'c.txt');
+    add('三方内容齐：base / ours(=main) / theirs(=feat)',
+      sides.base === 'line1\nline2\nline3\n' && sides.ours === 'line1\nmain\nline3\n' && sides.theirs === 'line1\nfeat\nline3\n',
+      JSON.stringify(sides).slice(0, 80));
+
+    // 真实 UI：切根 → 刷新 → 提交面板顶部出现操作条
+    window.GitPanel.rootDir = repo;
+    await window.GitPanel.refresh();
+    window.GitPanel.openCommit();
+    await sleep(1400);
+    const bar = q('#cd-files .git-op-bar');
+    add('操作条出现：说明在做什么 + 还剩几个冲突',
+      !!bar && /正在合并\s*feat/.test(bar.textContent) && /1 个冲突待解决/.test(bar.textContent),
+      bar ? bar.textContent.replace(/\s+/g, ' ').slice(0, 60) : '没有操作条');
+    const cont0 = bar && qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '继续');
+    add('有未解决冲突时「继续」禁用（不让用户点了撞墙）', cont0 && cont0.disabled, cont0 ? 'disabled=' + cont0.disabled : '没找到按钮');
+
+    const solve = bar && qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '解决冲突');
+    if (solve) {
+      solve.click();
+      await sleep(1000);
+      const box = q('#cf-box');
+      add('冲突窗口打开：文件列表 + 三方对比',
+        !!box && qa('#cf-box .cf-file').length === 1 && qa('#cf-box .cf-side').length === 3,
+        box ? 'sides=' + qa('#cf-box .cf-side').length : '没打开');
+      const heads = qa('#cf-box .cf-side-head').map((x) => x.textContent.trim());
+      add('merge 语义：ours=当前分支、theirs=传入的改动（文案说清楚）',
+        /当前分支/.test(heads[1] || '') && /传入的改动/.test(heads[2] || ''), heads.join(' | ').slice(0, 70));
+      const pick = qa('#cf-box .cf-pick').find((b) => b.dataset.side === 'ours');
+      if (pick) {
+        pick.click();
+        await sleep(2200);
+        const cf2 = await G.conflicts(repo);
+        add('点「用这一份」后该文件已标记为已解决', cf2.ok && cf2.files.length === 0, JSON.stringify(cf2).slice(0, 70));
+      }
+      await sleep(800);
+      const cont1 = qa('#cd-files .git-op-btn').find((b) => b.textContent.trim() === '继续');
+      add('冲突全部解决后「继续」可用', cont1 && !cont1.disabled, cont1 ? 'disabled=' + cont1.disabled : '没找到');
+      // ⚠ 末尾不清场：截图要拍「操作条 + 冲突已解决 + 继续可用」这个状态，清场交给下一步
+    }
+    return { R };
+  },
+
+  // ---------- 上面那步的收尾：点继续完成合并 + 还原项目根 ----------
+  m4ConflictCleanup: async (opts) => {
+    const repo = (opts && opts.repo) || '';
+    const demo = (opts && opts.demo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const G = window.myIDE.git;
+    // 上一步末尾不清场（截图要用）→ 这里先把可能开着的冲突窗口收掉
+    const cfb = document.querySelector('#cf-box');
+    if (cfb) { window.Modal.hide(); await sleep(300); }
+    // 把挂着的那次 merge 真正做完（夹具仓库跑完就回收，但要验"继续"这条路真的通）
+    const st0 = await G.opState(repo);
+    if (st0.state === 'MERGING') {
+      const c = await G.continueOp(repo);
+      add('「继续」完成合并，状态回到 NORMAL', c.ok && c.state.state === 'NORMAL', JSON.stringify(c).slice(0, 80));
+    }
+    window.GitPanel.closeDialog();
+    if (demo) { window.GitPanel.rootDir = demo; await window.GitPanel.refresh(); }
+    await sleep(800);
+    add('提交面板已切回 demo（后面步骤基线干净）', window.GitPanel.rootDir === demo && !window.GitPanel.isOpen(),
+      'root=' + String(window.GitPanel.rootDir).slice(-20) + ' isOpen=' + window.GitPanel.isOpen());
+    return { R };
+  },
+
   // ---------- M3：hunk 级部分暂存（真实仓库 + 真实 UI 点击） ----------
   // ⚠ 在自检夹具仓库 demo/_ui_hunkrepo 里做（真实 git 仓库、跑完挪进回收站），
   //   **绝不在 demo 本体上动 index** —— demo 的仓库根就是 my_ide 自己，在那儿暂存等于改使用者的仓库。
@@ -1069,6 +1159,7 @@ module.exports = {
       } catch {}
     }
     window.GitPanel.closeDialog();
+    window.GitPanel.closeDiffView();   // ⚠ 不收的话，M4 步骤切根后编辑区还挂着上一个仓库的差异视图（截图串台）
     await sleep(400);
     if (demo) window.GitPanel.rootDir = demo;
     await sleep(600);

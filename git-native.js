@@ -68,7 +68,9 @@ function candidates() {
 }
 
 // 跑一条 git 命令：**永不抛**，统一返回 { ok, code, stdout, stderr, error }
-function run(args, { cwd, timeout = 15000, input = null, exe = null } = {}) {
+// ⚠ `env` 只做**叠加**（默认继承 process.env）。M4 的 continue 类命令必须带 GIT_EDITOR=true，
+//   否则 git 会去拉编辑器、进程永远不退出（无头环境下表现为"卡住"）。
+function run(args, { cwd, timeout = 15000, input = null, exe = null, env = null } = {}) {
   const bin = exe || configuredExe() || 'git';
   return new Promise((resolve) => {
     let child;
@@ -82,11 +84,20 @@ function run(args, { cwd, timeout = 15000, input = null, exe = null } = {}) {
     try {
       child = execFile(bin, args, {
         cwd: cwd || undefined, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+        env: env ? Object.assign({}, process.env, env) : undefined,
       }, (err, stdout, stderr) => done(err, stdout, stderr));
     } catch (e) { done(e, '', ''); return; }
     if (input != null && child && child.stdin) { try { child.stdin.end(input); } catch {} }
   });
 }
+
+// 不拉编辑器 / 不弹凭证框 / 不起后台 gc：所有可能触发交互或留后台进程的命令都套这一层。
+// ⚠ `GIT_OPTIONAL_LOCKS=0` 是实测加的：不加时 git 会顺手起后台 `gc --auto`，
+//   那个进程继承当前 stdio，会让「跑完命令的父进程」（npm test / 自检）卡在等管道关闭上。
+const NO_EDIT = {
+  GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_TERMINAL_PROMPT: '0',
+  GCM_INTERACTIVE: 'never', GIT_OPTIONAL_LOCKS: '0',
+};
 
 // 探测：git 路径 + 版本 + 能力位。设置页「测试」、启动、自检都问这一个（默认 60s 缓存）。
 async function probe(force) {
@@ -192,16 +203,176 @@ async function info(force) {
   };
 }
 
+// ---------- M4：分支工作流（merge / rebase / 操作状态机 / 冲突解决） ----------
+// 全部走本机 git —— isomorphic-git **没有** merge / rebase，自己实现等于重写一遍合并算法（不可接受）。
+// 入口仍是白名单能力（`merge` / `rebase` / `opState` / `conflicts` / `resolveFile` / `continueOp` …），
+// 不提供任意命令口子。
+
+const has = (p) => { try { fs.accessSync(p); return true; } catch { return false; } };
+const readTrim = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return ''; } };
+
+// 当前 Git 操作状态：NORMAL / MERGING / REBASING / CHERRY_PICKING / REVERTING
+// 判据就是 `.git` 下的标记文件（与 git 自己判断 "You have not concluded your merge" 同源）。
+// ⚠ `rebase-merge` = 交互式 rebase（`-i`），`rebase-apply` = 普通 rebase / am。两者都算 REBASING。
+async function opState(repo) {
+  const state = { state: 'NORMAL', target: '', onto: '', step: '', total: '' };
+  try {
+    const dot = await run(['rev-parse', '--git-dir'], { cwd: repo, timeout: 5000 });
+    if (!dot.ok) return state;
+    const g = path.isAbsolute(dot.stdout.trim()) ? dot.stdout.trim() : path.join(repo, dot.stdout.trim());
+    const f = (n) => path.join(g, n);
+    if (has(f('rebase-merge')) || has(f('rebase-apply'))) {
+      state.state = 'REBASING';
+      const dir = has(f('rebase-merge')) ? f('rebase-merge') : f('rebase-apply');
+      state.target = readTrim(path.join(dir, 'head-name')).replace(/^refs\/heads\//, '');
+      state.onto = readTrim(path.join(dir, 'onto')).slice(0, 7);
+      state.step = readTrim(path.join(dir, 'msgnum'));
+      state.total = readTrim(path.join(dir, 'end'));
+    } else if (has(f('MERGE_HEAD'))) {
+      state.state = 'MERGING';
+      state.target = readTrim(f('MERGE_HEAD')).slice(0, 7);
+      // 尽量还原成分支名（MERGE_MSG 第一行就是 "Merge branch 'x'"）
+      const mm = readTrim(f('MERGE_MSG'));
+      const m = mm.match(/Merge (?:branch|commit|remote-tracking branch) '([^']+)'/);
+      if (m) state.target = m[1];
+    } else if (has(f('CHERRY_PICK_HEAD'))) {
+      state.state = 'CHERRY_PICKING';
+      state.target = readTrim(f('CHERRY_PICK_HEAD')).slice(0, 7);
+    } else if (has(f('REVERT_HEAD'))) {
+      state.state = 'REVERTING';
+      state.target = readTrim(f('REVERT_HEAD')).slice(0, 7);
+    }
+  } catch {}
+  return state;
+}
+
+// 冲突文件列表（`git diff --name-only --diff-filter=U` = 未合并的条目；git 自己的口径）
+// ⚠ 本机偶发一次 `git diff` 非零退出（空 stderr，重试即成功 —— 环境层面的抖动，不是代码问题）；
+//   这是只读命令，失败重试一次比直接报错给用户体验好得多。
+async function conflicts(repo) {
+  let r = await run(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  if (!r.ok) {
+    await new Promise((s) => setTimeout(s, 250));
+    r = await run(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  }
+  if (!r.ok) return { ok: false, error: r.stderr.trim() || r.error, files: [] };
+  const files = r.stdout.split('\0').map((s) => s.trim()).filter(Boolean);
+  // 顺带给出每个文件是否已经解决（status --porcelain 里 UU=未解决，M /A = 已 add 过）
+  const st = await run(['status', '--porcelain', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  const map = new Map();
+  for (const line of String(st.stdout).split('\0')) {
+    if (line.length < 4) continue;
+    const xy = line.slice(0, 2).trim();
+    map.set(line.slice(3).trim(), xy);
+  }
+  return {
+    ok: true,
+    files: files.map((f) => ({ file: f, resolved: map.has(f) && !/U/.test(map.get(f) || '') })),
+  };
+}
+
+// 冲突文件的三方内容：:1=共同祖先(base) :2=ours :3=theirs
+// ⚠ rebase 时 ours/theirs 的含义会**反过来**（git 语义：ours=新基底、theirs=正在重放的提交），
+//   UI 文案必须按 opState 说明，不能一律写成"你的修改"。
+async function conflictSides(repo, file) {
+  const get = async (n) => {
+    const r = await run(['show', ':' + n + ':' + file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+    return r.ok ? r.stdout : null;
+  };
+  const [base, ours, theirs] = [await get(1), await get(2), await get(3)];
+  return { ok: ours !== null || theirs !== null, base, ours, theirs };
+}
+
+// 取某一侧覆盖冲突文件并标记为已解决（git checkout --ours/--theirs + git add）
+async function resolveFile(repo, file, side) {
+  const flag = side === 'theirs' ? '--theirs' : '--ours';
+  const a = await run(['checkout', flag, '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  if (!a.ok) return { ok: false, error: a.stderr.trim() || a.error };
+  const b = await run(['add', '--', file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  return b.ok ? { ok: true } : { ok: false, error: b.stderr.trim() || b.error };
+}
+
+// merge：默认允许 fast-forward；noFf 强制建合并提交；ffOnly 只接受快进
+async function merge(repo, ref, opts = {}) {
+  const args = ['merge'];
+  if (opts.noFf) args.push('--no-ff');
+  if (opts.ffOnly) args.push('--ff-only');
+  args.push('--', ref);
+  const r = await run(args, { cwd: repo, timeout: 30000, env: NO_EDIT });
+  const st = await opState(repo);
+  if (r.ok) return { ok: true, conflict: false, state: st, out: r.stdout.trim() };
+  // merge 冲突时 git 退出码非 0，但仓库进入了 MERGING —— 这不是"失败"，是"待你解决"
+  if (st.state === 'MERGING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+  return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error, state: st };
+}
+
+async function rebase(repo, ref) {
+  const r = await run(['rebase', '--', ref], { cwd: repo, timeout: 60000, env: NO_EDIT });
+  const st = await opState(repo);
+  if (r.ok) return { ok: true, conflict: false, state: st, out: r.stdout.trim() };
+  if (st.state === 'REBASING') return { ok: true, conflict: true, state: st, out: r.stdout.trim() || r.stderr.trim() };
+  return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error, state: st };
+}
+
+// 继续 / 跳过 / 终止 —— 按当前状态选命令（用户不需要知道自己在哪种状态）
+async function continueOp(repo) {
+  const st = await opState(repo);
+  const cmd = { MERGING: ['merge', '--continue'], REBASING: ['rebase', '--continue'],
+    CHERRY_PICKING: ['cherry-pick', '--continue'], REVERTING: ['revert', '--continue'] }[st.state];
+  if (!cmd) return { ok: false, error: '当前没有进行中的 Git 操作' };
+  const r = await run(cmd, { cwd: repo, timeout: 60000, env: NO_EDIT });
+  return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo), out: r.stdout.trim() };
+}
+async function skipOp(repo) {
+  const st = await opState(repo);
+  // merge / revert 没有 --skip（语义上无处可跳）→ 明确拒绝，别让按钮点了没反应
+  const cmd = { REBASING: ['rebase', '--skip'], CHERRY_PICKING: ['cherry-pick', '--skip'] }[st.state];
+  if (!cmd) return { ok: false, error: st.state === 'NORMAL' ? '当前没有进行中的 Git 操作' : st.state + ' 不支持跳过（只有 rebase / cherry-pick 可以）' };
+  const r = await run(cmd, { cwd: repo, timeout: 60000, env: NO_EDIT });
+  return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo), out: r.stdout.trim() };
+}
+async function abortOp(repo) {
+  const st = await opState(repo);
+  const cmd = { MERGING: ['merge', '--abort'], REBASING: ['rebase', '--abort'],
+    CHERRY_PICKING: ['cherry-pick', '--abort'], REVERTING: ['revert', '--abort'] }[st.state];
+  if (!cmd) return { ok: false, error: '当前没有进行中的 Git 操作' };
+  const r = await run(cmd, { cwd: repo, timeout: 30000, env: NO_EDIT });
+  return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo) };
+}
+
+// ---------- M4-C：分支操作（从指定提交建分支 / 重命名 / 删除） ----------
+// ⚠ isomorphic-git 的 `git.branch` 只能从 HEAD 建分支、不能删/改名 —— 这三个只能靠本机 git。
+//   checkout 保留 isomorphic 的实现（已在 git-service），这里不重复。
+async function branchCreate(repo, name, ref, checkout) {
+  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) return { ok: false, error: '分支名不合法' };
+  const args = checkout ? ['checkout', '-b', name] : ['branch', name];
+  if (ref) args.push(ref);
+  const r = await run(args, { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+}
+async function branchRename(repo, from, to) {
+  const r = await run(['branch', '-m', from, to], { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+}
+async function branchDelete(repo, name, force) {
+  // -D（强删，丢弃未合并提交）需明确确认；默认 -d（未合并的会拒绝，更安全）
+  const r = await run(['branch', force ? '-D' : '-d', name], { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+}
+
 // 「按能力路由」的表：现在只有 credential / proxy 内部走 native（M2）；M3/M4 往这里加
 // partialStaging（apply --cached）与 merge/rebase/stash/hooks。**没有 git.exec(任意字符串) 这种口子**，
 // 上层只能调用明确列出的能力。
 const ROUTING_DOC = {
-  native: ['credential'],
+  native: ['credential', 'merge', 'rebase', 'opState', 'conflicts', 'resolveFile', 'continue/skip/abort'],
   isomorphic: ['status', 'log', 'diff', 'commit', 'branch', 'tag', 'shelve', 'revert', 'cherryPick', 'blame'],
-  planned: { partialStaging: 'git apply --cached', merge: 'git merge', rebase: 'git rebase', stash: 'git stash', hooks: '提交时执行 .git/hooks/*' },
+  planned: { partialStaging: 'git apply --cached', stash: 'git stash', hooks: '提交时执行 .git/hooks/*' },
 };
 
 module.exports = {
   setConfigPath, probe, info, setExe, testExe, run, credentialFill, proxyFor,
   getExe: () => configuredExe() || 'git', EMPTY_CAPS,
+  // M4：分支工作流与冲突（本机 git；无本机 git 时由上层按 caps 隐藏）
+  opState, conflicts, conflictSides, resolveFile, merge, rebase, continueOp, skipOp, abortOp,
+  branchCreate, branchRename, branchDelete,
 };

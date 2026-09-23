@@ -35,6 +35,21 @@ module.exports = [
   { ch: 'branches', op: 'branches' },
   { ch: 'checkout', op: 'checkout' },
   { ch: 'createBranch', op: 'createBranch' },
+  // M4：分支工作流 —— merge / rebase / 操作状态机 / 冲突解决。
+  // 全部走**原生后端**（isomorphic-git 没有 merge/rebase），无本机 git 时由 caps 隐藏入口。
+  { ch: 'opState', native: 'opState' },
+  { ch: 'merge', native: 'merge' },
+  { ch: 'rebase', native: 'rebase' },
+  { ch: 'conflicts', native: 'conflicts' },
+  { ch: 'conflictSides', native: 'conflictSides' },
+  { ch: 'resolveFile', native: 'resolveFile' },
+  { ch: 'continueOp', native: 'continueOp' },
+  { ch: 'skipOp', native: 'skipOp' },
+  { ch: 'abortOp', native: 'abortOp' },
+  // M4-C：分支操作（isomorphic-git 的 branch 只能从 HEAD 建、不能删/改名 → 走原生）
+  { ch: 'branchCreate', native: 'branchCreate' },
+  { ch: 'branchRename', native: 'branchRename' },
+  { ch: 'branchDelete', native: 'branchDelete' },
   { ch: 'discard', op: 'discard' },
   { ch: 'discardFiles', op: 'discardFiles' },
   { ch: 'getUserConfig', op: 'getUserConfig' },

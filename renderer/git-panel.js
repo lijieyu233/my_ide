@@ -6,6 +6,9 @@ const GitPanel = (() => {
   const checked = new Set(); // 勾选的待提交文件（跨刷新保留）
   let knownFiles = new Set(); // 上次刷新见过的文件（新出现的默认勾选）
   let commitMsg = ''; // 刷新时保留未发出的提交信息
+  // M4：进行中的 Git 操作与冲突清单（无本机 git 时后端返回 NORMAL / 空列表 → 天然隐藏）
+  let op = null;            // { state, target, onto, step, total }
+  let conflictFiles = [];   // [{ file, resolved }]
 
   // 面板 DOM（index.html 静态结构，init 时绑定事件）
   let filesEl = null; // #cd-files 上半文件区
@@ -15,6 +18,10 @@ const GitPanel = (() => {
     if (!root) return;
     const st = await window.myIDE.git.status(root);
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
+    // M4：进行中的 Git 操作 + 冲突清单（并行取；失败/不支持就当没有 —— 软依赖，不阻塞主流程）
+    const [opR, cfR] = await Promise.all([gitSafe('opState', root), gitSafe('conflicts', root)]);
+    op = opR && opR.state ? opR : null;
+    conflictFiles = cfR && Array.isArray(cfR.files) ? cfR.files : [];
     syncChecked();
     render();
     updateAheadBehind();
@@ -394,6 +401,11 @@ const GitPanel = (() => {
       br.title = '当前分支 ' + state.branch + ' —— 点击切换分支 / 检出标签';
     }
 
+    // M4：「操作进行中」条（有 merge/rebase/cherry-pick/revert 未完成时才出现）——放在最上面，
+    // 它是当前最该处理的事，比工具行更优先
+    const opBar = buildOpBar();
+    if (opBar) filesEl.appendChild(opBar);
+
     // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
     filesEl.appendChild(buildToolbar());
 
@@ -511,6 +523,179 @@ const GitPanel = (() => {
     ignoredTruncated = false;
     ignoredAll = new Set();
     ignoredLoading = false;
+  }
+
+  // ---------- M4：进行中的 Git 操作（merge / rebase / cherry-pick / revert）----------
+  // 状态机：NORMAL → MERGING / REBASING / CHERRY_PICKING / REVERTING → 解决完继续 → NORMAL
+  const OP_TEXT = {
+    MERGING: (o) => '正在合并 ' + (o.target || '选定分支'),
+    REBASING: (o) => '正在变基：把 ' + (o.target || '当前分支') + ' 重放到 ' + (o.onto || '目标')
+      + (o.step && o.total ? '（第 ' + o.step + '/' + o.total + ' 步）' : ''),
+    CHERRY_PICKING: (o) => '正在摘取 ' + (o.target || '某个提交'),
+    REVERTING: (o) => '正在还原 ' + (o.target || '某个提交'),
+  };
+  const curOp = () => (op && op.state && op.state !== 'NORMAL' ? op : null);
+  const unresolved = () => conflictFiles.filter((f) => !f.resolved);
+
+  // 面板顶部的「操作进行中」条：说清在做什么、还剩几个冲突、下一步能按什么
+  function buildOpBar() {
+    const o = curOp();
+    if (!o) return null;
+    const bar = document.createElement('div');
+    bar.className = 'git-op-bar';
+    const head = document.createElement('div');
+    head.className = 'git-op-head';
+    head.innerHTML = '<span class="op-warn">⚠</span><span class="op-text"></span>';
+    head.querySelector('.op-text').textContent = (OP_TEXT[o.state] || (() => 'Git 操作进行中'))(o);
+    bar.appendChild(head);
+
+    const todo = unresolved();
+    const meta = document.createElement('div');
+    meta.className = 'git-op-meta';
+    meta.textContent = todo.length
+      ? todo.length + ' 个冲突待解决' + (conflictFiles.length > todo.length ? '（已解决 ' + (conflictFiles.length - todo.length) + '）' : '')
+      : '冲突已全部解决，可以继续';
+    bar.appendChild(meta);
+
+    const acts = document.createElement('div');
+    acts.className = 'git-op-acts';
+    const mk = (label, title, fn, cls) => {
+      const b = document.createElement('button');
+      b.className = 'vt-btn git-op-btn' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      b.title = title;
+      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      acts.appendChild(b);
+      return b;
+    };
+    if (todo.length) mk('解决冲突', '打开冲突解决窗口（三方对比 + 选一侧）', openConflictDialog, 'primary');
+    const cont = mk('继续', '完成这一步（merge --continue / rebase --continue …）', doContinue, 'primary');
+    if (todo.length) { cont.disabled = true; cont.title = '还有未解决的冲突'; }
+    // 跳过只有 rebase / cherry-pick 有意义（merge、revert 无处可跳）→ 不显示比点了报"不支持"好
+    if (o.state === 'REBASING' || o.state === 'CHERRY_PICKING') {
+      mk('跳过', '放弃这一步的改动，继续下一步（rebase --skip / cherry-pick --skip）', doSkip);
+    }
+    mk('终止', '放弃整个操作，回到开始之前（--abort）', doAbort, 'danger');
+    bar.appendChild(acts);
+    return bar;
+  }
+
+  async function doContinue() {
+    const r = await gitSafe('continueOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '继续失败', 'err'); return; }
+    MI.toast('已继续并完成该操作', 'ok');
+    await refresh();
+  }
+  async function doSkip() {
+    const r = await gitSafe('skipOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '跳过失败', 'err'); return; }
+    MI.toast('已跳过这一步', 'ok');
+    await refresh();
+  }
+  async function doAbort() {
+    const yes = await Modal.confirm('终止该操作', '会放弃这次操作的所有改动，回到开始之前的状态。确定吗？');
+    if (!yes) return;
+    const r = await gitSafe('abortOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '终止失败', 'err'); return; }
+    MI.toast('已终止，回到操作之前的状态', 'ok');
+    await refresh();
+  }
+
+  async function reloadConflicts() {
+    const r = await gitSafe('conflicts', root);
+    conflictFiles = (r && Array.isArray(r.files)) ? r.files : [];
+  }
+
+  // ---------- 冲突解决窗口：左文件列表 + 右三方对比（base / ours / theirs）----------
+  async function openConflictDialog(preselect) {
+    const list = conflictFiles.slice();
+    if (!list.length) { MI.toast('当前没有冲突文件', 'ok'); return; }
+    let cur = preselect && list.some((f) => f.file === preselect) ? preselect : list[0].file;
+
+    const box = document.createElement('div');
+    box.id = 'cf-box';
+    box.innerHTML = `
+      <div class="m-head">解决冲突<span class="x" id="cfl-x">✕</span></div>
+      <div class="m-body cf-body">
+        <div class="cf-left">
+          <div class="cf-sec-title">冲突文件</div>
+          <div id="cf-files"></div>
+        </div>
+        <div class="cf-right">
+          <div class="cf-file-head" id="cf-file-head"></div>
+          <div id="cf-sides"><div class="cf-loading">加载中…</div></div>
+        </div>
+      </div>
+      <div class="m-foot">
+        <span id="cf-hint" class="dim"></span>
+        <span class="grow"></span>
+        <button class="tb-btn" id="cf-refresh">重新加载</button>
+        <button class="tb-btn m-ok" id="cf-continue">继续</button>
+      </div>`;
+    Modal.show(box);
+    box.querySelector('#cfl-x').onclick = () => Modal.hide();
+    box.querySelector('#cf-refresh').onclick = () => load();
+    box.querySelector('#cf-continue').onclick = async () => { Modal.hide(); await doContinue(); };
+
+    const drawList = () => {
+      const el = box.querySelector('#cf-files');
+      el.innerHTML = '';
+      for (const f of list) {
+        const row = document.createElement('div');
+        row.className = 'cf-file' + (f.file === cur ? ' sel' : '') + (f.resolved ? ' done' : '');
+        row.innerHTML = `<span class="cf-mark">${f.resolved ? '✓' : '⚠'}</span><span class="cf-nm"></span>`;
+        row.querySelector('.cf-nm').textContent = f.file;
+        row.title = f.file;
+        row.onclick = () => { cur = f.file; drawList(); load(); };
+        el.appendChild(row);
+      }
+      box.querySelector('#cf-hint').textContent =
+        list.filter((f) => !f.resolved).length + ' 个待解决 / 共 ' + list.length;
+    };
+
+    const load = async () => {
+      box.querySelector('#cf-file-head').textContent = cur;
+      const sides = await gitSafe('conflictSides', root, cur);
+      const el = box.querySelector('#cf-sides');
+      if (!sides || !sides.ok) { el.innerHTML = '<div class="cf-loading">读取三方内容失败</div>'; return; }
+      // ⚠ rebase 时 git 的 ours/theirs 含义是**反的**（ours = 新基底，theirs = 正在重放的提交）。
+      //   文案必须跟着状态变，一律写"你的修改"会把用户坑掉。
+      const o = curOp() || { state: 'MERGING' };
+      const isRb = o.state === 'REBASING';
+      const oursLabel = isRb ? '新基底（' + (o.target || '目标') + ' 侧）' : '当前分支（HEAD）';
+      const theirsLabel = isRb ? '正在重放的提交（你的改动）' : '传入的改动（被合并进来）';
+      el.innerHTML = `
+        <div class="cf-side">
+          <div class="cf-side-head">共同祖先（base）</div>
+          <pre class="cf-pre"></pre>
+        </div>
+        <div class="cf-side">
+          <div class="cf-side-head">${esc(oursLabel)}<button class="cf-pick" data-side="ours">用这一份</button></div>
+          <pre class="cf-pre"></pre>
+        </div>
+        <div class="cf-side">
+          <div class="cf-side-head">${esc(theirsLabel)}<button class="cf-pick" data-side="theirs">用这一份</button></div>
+          <pre class="cf-pre"></pre>
+        </div>`;
+      const pres = el.querySelectorAll('.cf-pre');
+      pres[0].textContent = sides.base == null ? '（无共同祖先）' : sides.base;
+      pres[1].textContent = sides.ours == null ? '（无此版本）' : sides.ours;
+      pres[2].textContent = sides.theirs == null ? '（无此版本）' : sides.theirs;
+      el.querySelectorAll('.cf-pick').forEach((b) => {
+        b.onclick = async () => {
+          const r = await gitSafe('resolveFile', root, cur, b.dataset.side);
+          if (!r || !r.ok) { MI.toast((r && r.error) || '应用失败', 'err'); return; }
+          MI.toast('已用「' + (b.dataset.side === 'ours' ? oursLabel : theirsLabel) + '」解决 ' + cur, 'ok');
+          await reloadConflicts();
+          Modal.hide();
+          await refresh();
+          openConflictDialog(cur);
+        };
+      });
+    };
+
+    drawList();
+    load();
   }
 
   // ---------- 工具行（图标按钮：刷新 / 回滚 / 差异 / 提交 / 预览 ｜ 展开全部 / 收起全部 / 分组方式）----------
@@ -1271,6 +1456,9 @@ const GitPanel = (() => {
     if (!root) return;
     const r = await window.myIDE.git.branches(root);
     if (r.error) { MI.toast(r.error, 'err'); return; }
+    // merge / rebase / 删除 / 改名 都要本机 git（isomorphic 没有）→ 没有就少给几项，而不是点了报错
+    const bi = await gitSafe('backendInfo', false);
+    const canOps = !!(bi && bi.caps && bi.caps.merge && bi.caps.rebase);
     const afterSwitch = () => { if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); };
     const box = document.createElement('div');
     box.id = 'br-box';
@@ -1346,9 +1534,10 @@ const GitPanel = (() => {
     for (const b of r.branches) {
       const row = document.createElement('div');
       row.className = 'br-item' + (b === r.current ? ' current' : '');
-      row.textContent = (b === r.current ? '✓ ' : '') + b;
+      row.innerHTML = `<span class="br-cur">${b === r.current ? '✓' : ''}</span><span class="rm-name">${esc(b)}</span><span class="br-more" title="更多分支操作">⋯</span>`;
       row.title = b === r.current ? '当前分支' : '点击切换到 ' + b;
-      row.onclick = async () => {
+      row.onclick = async (e) => {
+        if (e.target.closest('.br-more')) return;  // ⋯ 自己有菜单
         if (b === r.current) return;
         const cr = await window.myIDE.git.checkout(root, b);
         if (cr.ok) {
@@ -1359,6 +1548,61 @@ const GitPanel = (() => {
         } else {
           MI.toast('切换失败: ' + cr.error, 'err');
         }
+      };
+      // M4-C：分支操作菜单（PyCharm Branches 的那套：从它新建 / 合并进来 / 变基上去 / 改名 / 删除）
+      const isCur = b === r.current;
+      row.querySelector('.br-more').onclick = (e) => {
+        e.stopPropagation();
+        const items = [];
+        if (!isCur) items.push({ label: '检出 ' + b, run: () => row.click() });
+        items.push({ label: '从「' + b + '」新建分支…', title: '以 ' + b + ' 为起点建新分支（不必先切过去）', run: async () => {
+          const name = await Modal.prompt('从「' + b + '」新建分支', '新分支名', '');
+          if (!name) return;
+          const cr = await gitSafe('branchCreate', root, name, b, true);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '创建失败', 'err'); return; }
+          Modal.hide(); MI.toast('✅ 已从 ' + b + ' 创建并切换到 ' + name, 'ok'); refresh(); afterSwitch();
+        } });
+        if (!isCur && canOps) {
+          items.push({ label: '合并「' + b + '」到当前分支', title: 'git merge ' + b + '（产生冲突会进入解决流程）', run: async () => {
+            Modal.hide();
+            const mr = await gitSafe('merge', root, b);
+            if (!mr || !mr.ok) { MI.toast((mr && mr.error) || '合并失败', 'err'); await refresh(); return; }
+            await refresh();
+            if (mr.conflict) MI.toast('⚠ 合并出现冲突，请在上方「解决冲突」里处理', 'err');
+            else MI.toast('✅ 已合并 ' + b, 'ok');
+          } });
+          items.push({ label: '把当前分支变基到「' + b + '」', title: 'git rebase ' + b + '（产生冲突会进入解决流程）', run: async () => {
+            Modal.hide();
+            const rr = await gitSafe('rebase', root, b);
+            if (!rr || !rr.ok) { MI.toast((rr && rr.error) || '变基失败', 'err'); await refresh(); return; }
+            await refresh();
+            if (rr.conflict) MI.toast('⚠ 变基出现冲突，请在上方「解决冲突」里处理', 'err');
+            else MI.toast('✅ 已变基到 ' + b, 'ok');
+          } });
+        }
+        if (canOps) items.push({ label: '重命名为…', run: async () => {
+          const nn = await Modal.prompt('重命名分支', '新分支名', b);
+          if (!nn || nn === b) return;
+          const cr = await gitSafe('branchRename', root, b, nn);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '重命名失败', 'err'); return; }
+          MI.toast('✅ 已重命名 ' + b + ' → ' + nn, 'ok');
+          Modal.hide(); refresh(); afterSwitch();
+        } });
+        if (!isCur) items.push({ label: '删除「' + b + '」', danger: true, run: async () => {
+          const yes = await Modal.confirm('删除分支', '确定删除分支「' + b + '」吗？\n未合并的提交会被 git 拒绝（更安全）；确认强删会丢弃它们。');
+          if (!yes) return;
+          let cr = await gitSafe('branchDelete', root, b, false);
+          if (!cr || !cr.ok) {
+            // -d 被拒（有未合并提交）→ 问一次是否强删，不悄悄替用户做决定
+            const force = await Modal.confirm('分支有未合并的提交', (cr && cr.error || '删除被拒绝') + '\n\n强删（-D）会永久丢弃这些提交。确定吗？');
+            if (!force) return;
+            cr = await gitSafe('branchDelete', root, b, true);
+          }
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '删除失败', 'err'); return; }
+          MI.toast('已删除分支 ' + b, 'ok');
+          Modal.hide(); refresh();
+        } });
+        openFloatMenu(e.currentTarget, items);
       };
       list.appendChild(row);
     }
@@ -1747,7 +1991,7 @@ const GitPanel = (() => {
       const d = document.createElement('div');
       d.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.header ? ' ctx-title' : '');
       d.textContent = it.label;
-      d.title = it.label;
+      d.title = it.title || it.label;
       if (!it.header) d.onclick = () => { closeFloatMenu(); it.run(); };
       menu.appendChild(d);
     }
@@ -1918,6 +2162,12 @@ const GitPanel = (() => {
     },
     // 变更列表（M1）：给测试/自检用的读写口
     openChangelistDialog, clMoveTo, clSetActive, clNameOf, clListOf,
+    // M4：进行中的 Git 操作与冲突解决（给测试/自检用的读写口）
+    openConflictDialog, doContinue, doSkip, doAbort, buildOpBar, closeFloatMenu,
+    get op() { return op ? Object.assign({}, op) : null; },
+    set op(v) { op = v; render(); },
+    get conflicts() { return conflictFiles.slice(); },
+    set conflicts(v) { conflictFiles = Array.isArray(v) ? v : []; render(); },
     get changelists() { return JSON.parse(JSON.stringify(cls)); },
     set changelists(v) { cls = clNormalize(v); saveCls(); render(); },
     get activeChangelist() { return cls.active; },

@@ -68,6 +68,15 @@ calls.stageHunk = [];
 calls.unstageHunk = [];
 calls.revertHunk = [];
 calls.listIgnored = [];
+calls.merge = [];
+calls.rebase = [];
+calls.resolveFile = [];
+calls.continueOp = [];
+calls.skipOp = [];
+calls.abortOp = [];
+calls.branchCreate = [];
+calls.branchRename = [];
+calls.branchDelete = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -264,6 +273,19 @@ function makeDom() {
       branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
       createBranch: async (d, name) => { calls.createBranch.push(name); return { ok: true }; },
+      // M4：分支工作流 / 冲突解决
+      opState: async () => ({ state: 'NORMAL', target: '', onto: '', step: '', total: '' }),
+      merge: async (d, ref, o) => { calls.merge.push([ref, o]); return { ok: true, conflict: /conflict/.test(String(ref)), state: { state: 'NORMAL' } }; },
+      rebase: async (d, ref) => { calls.rebase.push(ref); return { ok: true, conflict: false, state: { state: 'NORMAL' } }; },
+      conflicts: async () => ({ ok: true, files: calls.conflictFiles || [] }),
+      conflictSides: async (d, f) => ({ ok: true, base: 'base\n', ours: 'ours\n', theirs: 'theirs\n' }),
+      resolveFile: async (d, f, side) => { calls.resolveFile.push([f, side]); return { ok: true }; },
+      continueOp: async () => { calls.continueOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      skipOp: async () => { calls.skipOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      abortOp: async () => { calls.abortOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      branchCreate: async (d, name, ref, co) => { calls.branchCreate.push([name, ref, !!co]); return { ok: true }; },
+      branchRename: async (d, f, t) => { calls.branchRename.push([f, t]); return { ok: true }; },
+      branchDelete: async (d, name, force) => { calls.branchDelete.push([name, !!force]); return { ok: true }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
@@ -1987,6 +2009,45 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
   });
 
+  await okAsync('M4-C：分支行 ⋯ 菜单（合并 / 变基 / 从它新建 / 删除）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-branch'));
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '分支弹窗打开');
+    const devRow = $allIn($(dom, '#br-list'), '.br-item').find((x) => x.textContent.includes('dev'));
+    const curRow = $allIn($(dom, '#br-list'), '.br-item.current')[0];
+    assert_(devRow.querySelector('.br-more'), '每个分支行有 ⋯ 菜单入口');
+    // dev（非当前）→ 有合并 / 变基 / 从它新建 / 删除
+    click(devRow.querySelector('.br-more'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    assert_(menu, '⋯ 打开浮动菜单');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.some((l) => /合并「dev」到当前分支/.test(l)), '有「合并到当前」: ' + labels.join('/'));
+    assert_(labels.some((l) => /变基/.test(l)), '有「变基」');
+    assert_(labels.some((l) => /从「dev」新建分支/.test(l)), '有「从它新建」');
+    assert_(labels.some((l) => /删除「dev」/.test(l)), '有「删除」');
+    // 点合并 → 走 native merge（mock 记录）
+    click($allIn(menu, '.ctx-item').find((x) => /合并「dev」/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.merge.length === 1 && calls.merge[0][0] === 'dev',
+      '合并调用 merge(root, dev): ' + JSON.stringify(calls.merge));
+    await tick(); await tick();
+    // 当前分支不给合并 / 变基 / 删除（也不能删自己）
+    click(curRow.querySelector('.br-more'));
+    await tick();
+    const curLabels = $allIn($(dom, '#git-float-menu'), '.ctx-item').map((x) => x.textContent.trim());
+    assert_(!curLabels.some((l) => /合并|变基|删除/.test(l)), '当前分支不给合并/变基/删除: ' + curLabels.join('/'));
+    g(dom, 'GitPanel.closeFloatMenu()');
+    await g(dom, 'Modal.hide()');
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
   await okAsync('远程管理：弹窗列出远程 + 每个远程的分支列表', async () => {
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
@@ -2971,6 +3032,78 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
+  });
+
+  await okAsync('M4：Git 操作进行中条 + 冲突解决窗口（三方对比 + 选一侧）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    assert_(!$(dom, '#cd-files .git-op-bar'), 'NORMAL 时不显示操作条');
+    // 进入 MERGING + 一个未解决冲突
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const bar = $(dom, '#cd-files .git-op-bar');
+    assert_(bar, 'MERGING 时出现操作条');
+    assert_(/正在合并\s*feat/.test(bar.textContent), '说明在做什么: ' + bar.textContent.replace(/\s+/g, ' ').slice(0, 40));
+    assert_(/1 个冲突待解决/.test(bar.textContent), '说明还剩几个冲突');
+    const btns = $allIn(bar, '.git-op-btn');
+    const cont = btns.find((b) => b.textContent.trim() === '继续');
+    assert_(cont && cont.disabled, '有未解决冲突时「继续」禁用');
+    assert_(!btns.some((b) => b.textContent.trim() === '跳过'), 'merge 不给「跳过」（无处可跳）');
+    assert_(btns.some((b) => b.textContent.trim() === '终止'), '给「终止」');
+
+    // 打开冲突窗口
+    const solve = btns.find((b) => b.textContent.trim() === '解决冲突');
+    click(solve);
+    await tick(); await tick();
+    const box = $(dom, '#cf-box');
+    assert_(box, '冲突窗口打开');
+    assert_($allIn(box, '.cf-file').length === 1, '列出 1 个冲突文件');
+    assert_($allIn(box, '.cf-side').length === 3, '三方对比（base / ours / theirs）');
+    const heads = $allIn(box, '.cf-side-head').map((x) => x.textContent.trim());
+    assert_(/当前分支/.test(heads[1]) && /传入的改动/.test(heads[2]),
+      'merge 时 ours=当前分支、theirs=传入: ' + heads.join(' | '));
+    // 选一侧解决
+    const pick = $allIn(box, '.cf-pick').find((b) => b.dataset.side === 'ours');
+    click(pick);
+    await tick(); await tick(); await tick();
+    assert_(calls.resolveFile.length === 1 && calls.resolveFile[0][1] === 'ours',
+      '点了「用这一份」→ resolveFile(file, ours): ' + JSON.stringify(calls.resolveFile));
+    await g(dom, 'Modal.hide()');   // 解决后代码会重开窗口（真实环境里展示新状态）；mock 里列表已空，直接关掉
+    await tick();
+
+    // 全部解决 → 「继续」可用（⚠ refresh 会重新拉 mock 的 opState=NORMAL，得重设回去）
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: true }]');
+    await tick(); await tick();
+    const cont2 = $allIn($(dom, '#cd-files .git-op-bar'), '.git-op-btn').find((b) => b.textContent.trim() === '继续');
+    assert_(cont2 && !cont2.disabled, '冲突解决后「继续」可用');
+    click(cont2);
+    await tick(); await tick();
+    assert_(calls.continueOp.length === 1, '点「继续」调 continueOp');
+
+    // rebase 时 ours/theirs 的文案必须反过来（否则用户会选错）
+    await g(dom, 'GitPanel.op = { state: "REBASING", target: "main", onto: "feat", step: "1", total: "2" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const bar2 = $(dom, '#cd-files .git-op-bar');
+    assert_(/正在变基/.test(bar2.textContent) && /第 1\/2 步/.test(bar2.textContent),
+      'rebase 显示进度: ' + bar2.textContent.replace(/\s+/g, ' ').slice(0, 50));
+    assert_($allIn(bar2, '.git-op-btn').some((b) => b.textContent.trim() === '跳过'), 'rebase 给「跳过」');
+    await g(dom, 'GitPanel.openConflictDialog()');
+    await tick(); await tick();
+    const heads2 = $allIn($(dom, '#cf-box'), '.cf-side-head').map((x) => x.textContent.trim());
+    assert_(/新基底/.test(heads2[1]) && /正在重放的提交/.test(heads2[2]),
+      'rebase 时 ours=新基底、theirs=正在重放的提交: ' + heads2.join(' | '));
+    await g(dom, 'Modal.hide()');     // ⚠ 必须收掉：mask 里不许留常驻子节点（否则下一个用例的 mask 断言会炸）
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+
+    // 收尾：回到 NORMAL（后面用例的基线）
+    await g(dom, 'GitPanel.op = { state: "NORMAL" }');
+    await g(dom, 'GitPanel.conflicts = []');
+    await tick(); await tick();
+    assert_(!$(dom, '#cd-files .git-op-bar'), '收尾：操作条消失');
   });
 
   await okAsync('toast 提示正常', async () => {

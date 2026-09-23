@@ -1294,6 +1294,10 @@ app.whenReady().then(() => {
         // M3：hunk 级部分暂存（夹具是独立小仓库，不动 demo 本体的 index）
         await run('M3 hunk 级部分暂存（双区差异 + 真实点击）', js(steps.m3Hunk, { repo: hunkRepo, demo: demo }), 'check-ui-1s-m3-hunk.png');
         await run('M3 hunk（收尾：撤销暂存 / 关面板 / 还原项目根）', js(steps.m3HunkCleanup, { repo: hunkRepo, demo: demo }));
+        // M4：merge 冲突 → 操作条 → 冲突解决窗口 → 继续（独立夹具仓库，走真实 native git）
+        const confRepo = await fx.writeConflictFixture(demo);
+        await run('M4 merge 冲突与解决（操作条 + 三方对比）', js(steps.m4Conflict, { repo: confRepo, demo: demo }), 'check-ui-1t-m4-conflict.png');
+        await run('M4 merge（收尾：继续完成合并 / 还原项目根）', js(steps.m4ConflictCleanup, { repo: confRepo, demo: demo }));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');

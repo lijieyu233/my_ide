@@ -155,6 +155,33 @@ async function writeHunkFixture(baseDir) {
   return rp;
 }
 
+// M4 夹具：一个**必然冲突**的小仓库（base → feat 改同一行 → main 也改同一行）。
+// 与 hunk 夹具同一套规矩：独立仓库、被 .gitignore 覆盖、跑完进回收站。
+async function writeConflictFixture(baseDir) {
+  const G = require('../git-service');
+  const rp = path.join(baseDir, '_ui_confrepo');
+  if (fs.existsSync(rp)) {
+    const trash = path.join(baseDir, '..', '.ui-check-trash');
+    try {
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(rp, path.join(trash, '_ui_confrepo_' + Date.now()));
+    } catch {}
+  }
+  fs.mkdirSync(rp, { recursive: true });
+  await G.initRepo(rp);
+  await G.setUserConfig(rp, { name: 'ui-check', email: 'ui-check@example.com' });
+  const base = 'line1\nline2\nline3\n';
+  fs.writeFileSync(path.join(rp, 'c.txt'), base);
+  await G.commit(rp, { message: 'base', files: ['c.txt'] });
+  await G.createBranch(rp, 'feat');
+  fs.writeFileSync(path.join(rp, 'c.txt'), 'line1\nfeat\nline3\n');
+  await G.commit(rp, { message: 'feat: 改同一行', files: ['c.txt'] });
+  await G.checkout(rp, 'main');
+  fs.writeFileSync(path.join(rp, 'c.txt'), 'line1\nmain\nline3\n');
+  await G.commit(rp, { message: 'main: 也改这一行', files: ['c.txt'] });
+  return rp;
+}
+
 // 项目栏压力：13 个真实小目录（只入项目列表，不逐个打开扫盘），用于复现「按钮挤压/覆盖/截断」
 function seedProjects(baseDir) {
   const list = [baseDir];
@@ -178,14 +205,16 @@ function cleanFixtures(dir) {
   rm(path.join(dir, '_ui_drop.md'));   // 拖拽步骤建的
   rm(path.join(dir, '_ui_perm.md'));   // 授权记忆步骤建的
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
-  // M3 夹具仓库（真实 git 仓库，含 .git）：rmSync 在本机会被 safe-delete 接管 → 挪到同盘回收站
-  const rp = path.join(dir, '_ui_hunkrepo');
-  if (fs.existsSync(rp)) {
-    const trash = path.join(dir, '..', '.ui-check-trash');
-    try {
-      fs.mkdirSync(trash, { recursive: true });
-      fs.renameSync(rp, path.join(trash, '_ui_hunkrepo_' + Date.now()));
-    } catch {}
+  // M3/M4 夹具仓库（真实 git 仓库，含 .git）：rmSync 在本机会被 safe-delete 接管 → 挪到同盘回收站
+  for (const name of ['_ui_hunkrepo', '_ui_confrepo']) {
+    const rp = path.join(dir, name);
+    if (fs.existsSync(rp)) {
+      const trash = path.join(dir, '..', '.ui-check-trash');
+      try {
+        fs.mkdirSync(trash, { recursive: true });
+        fs.renameSync(rp, path.join(trash, name + '_' + Date.now()));
+      } catch {}
+    }
   }
 }
-module.exports = { makePng, writeFixtures, seedProjects, writeHunkFixture, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };
+module.exports = { makePng, writeFixtures, seedProjects, writeHunkFixture, writeConflictFixture, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };
