@@ -1676,12 +1676,16 @@ const GitPanel = (() => {
     const showDir = flat && flatNeedsDirCol();
     // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
     if (flat) f.classList.add('flat');
+    // ⚠ 行内顺序：徽章在**行尾**（路径之后），不占名字前面的位置。
+    //   以前徽章挤在复选框和名字中间 → 文件名比"分节标题的文字"靠右 20px，
+    //   用户看到的正是"子文件缩进竟然比父目录靠右"。徽章挪到行尾后，所有行的名字都在 cb+19，
+    //   与分节标题的文字、同层目录名完全同列；状态字母仍然可见，只是换了个位置。
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
-      `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
       (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
+      `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
       ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'

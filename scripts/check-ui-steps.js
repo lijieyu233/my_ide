@@ -2119,6 +2119,22 @@ module.exports = {
       add('平铺：名字**文字**起点一致（第一列对齐 —— 用户报的"缩进不对"就是这一列）',
         nfirst.length >= 3 && Math.max(...nfirst) - Math.min(...nfirst) <= 1,
         'xs=' + [...new Set(nfirst)].join(','));
+      // ⚠ 用户报的本体：平铺行是 depth 0，名字必须和**分节标题的文字**同列
+      //   （以前徽章挤在名字前面 → 文件名比父级文字靠右 20px，"子文件缩进竟然比父目录靠右"）。
+      //   ⚠ 只能在平铺段比：树形里文件在子目录下，名字本来就该更深，拿树形行比是拿错样本。
+      {
+        const sec0 = qa('#cd-files .git-sec-title')[0];
+        const secTx = (() => {
+          const n = sec0 && sec0.querySelector('.sec-name');
+          const tn = n && [...n.childNodes].find((x) => x.nodeType === 3);
+          if (!tn) return null;
+          const r = document.createRange(); r.setStart(tn, 0); r.setEnd(tn, 1);
+          return Math.round(r.getBoundingClientRect().left);
+        })();
+        add('平铺：文件名与分节标题的文字同列（不再"子文件比父目录靠右"）',
+          secTx != null && nfirst.length >= 3 && Math.abs(nfirst[0] - secTx) <= 2,
+          '分节文字 x=' + secTx + ' 文件名 x=' + nfirst[0] + ' Δ=' + (nfirst[0] != null && secTx != null ? nfirst[0] - secTx : '?'));
+      }
       const ls = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
       add('平铺：路径列左缘一致（固定宽列，不随名字漂移）',
         ls.length >= 3 && Math.max(...ls) - Math.min(...ls) <= 1, 'left=' + [...new Set(ls)].join(','));
@@ -2165,10 +2181,19 @@ module.exports = {
     add('目录行：名字紧跟复选框（偏移只有一份取值 —— 不留徽章空位）',
       dirOffs.length === 1, '目录名偏移=' + dirOffs.join(','));
     add('文件行：名字偏移唯一（同层必然对齐）', fileOffs.length === 1, '文件名偏移=' + fileOffs.join(','));
-    add('目录名比文件名更靠左（差值 = 徽章列，目录没有徽章）',
-      dirOffs.length === 1 && fileOffs.length === 1 && (fileOffs[0] - dirOffs[0]) >= 18
-        && (fileOffs[0] - dirOffs[0]) <= 26,
-      '目录=' + dirOffs[0] + ' 文件=' + fileOffs[0] + ' Δ=' + (fileOffs[0] - dirOffs[0]));
+    // ⚠ 徽章已挪到行尾：目录名与文件名**同列**（都 = 复选框 + 19）。
+    //   以前徽章挤在名字前面 → 文件名比"分节标题的文字"靠右 20px，用户报"子文件缩进竟然比父目录靠右"。
+    add('目录名与文件名同列（徽章在行尾，不再挤占名字前面的位置）',
+      dirOffs.length === 1 && fileOffs.length === 1 && Math.abs(fileOffs[0] - dirOffs[0]) <= 1,
+      '目录=' + dirOffs[0] + ' 文件=' + fileOffs[0] + ' Δ=' + Math.abs(fileOffs[0] - dirOffs[0]));
+    add('文件行的徽章在行尾（路径之后 / 行内最后一个元素）',
+      qa('#cd-files .git-file:not(.ro)').every((el) => {
+        const b = el.querySelector('.badge');
+        if (!b) return false;
+        const next = b.nextElementSibling;
+        return !next || next.classList.contains('git-revert');
+      }),
+      '文件行 ' + qa('#cd-files .git-file:not(.ro)').length + ' 行');
     add('目录行里复选框的下一个元素就是名字（中间没有空占位）',
       qa('#cd-files .git-group').every((el) => {
         const cb = el.querySelector('input[type=checkbox], .cf-lock');

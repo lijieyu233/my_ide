@@ -825,7 +825,7 @@ textarea.editor {
 .git-file.sel { background: var(--bg-selected); }
 .git-file.key-nav-sel { background: var(--bg-selected); }
 .git-file .cf-check { flex-shrink: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.git-file .nm { overflow: hidden; text-overflow: ellipsis; }
+.git-file .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .git-file .git-revert {
   margin-left: auto; visibility: hidden; flex-shrink: 0;
   font-size: .92em; color: var(--text-dim); cursor: pointer; padding: 0 3px;
