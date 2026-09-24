@@ -2700,9 +2700,10 @@ assert_(panel, 'CM6 搜索面板出现');
     const btnsOf = () => $allIn(bar(), '.vt-btn');
     assert_(bar(), '工具行存在');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
-    // 13 → 9：删掉「提交」（底部 footer 已有同一入口）与「内嵌预览」（340px 侧栏读不了），
-    // 提交前检查 / 本次作者收进提交消息那行的 ⋯ 菜单。
-    assert_(btnsOf().length === 9, '9 个图标按钮: ' + btnsOf().length);
+    // 13 → 9 → 10：删掉「提交」（底部 footer 已有同一入口）与「内嵌预览」（340px 侧栏读不了），
+    // 提交前检查 / 本次作者收进提交消息那行的 ⋯ 菜单；末尾又加了「显示选项」⋯（PyCharm 的 Show Options Menu）。
+    assert_(btnsOf().length === 10, '10 个图标按钮: ' + btnsOf().length);
+    assert_($(dom, '#cd-files #cd-view-opts'), '工具行末尾有「显示选项」按钮');
     assert_(!$(dom, '#cd-files #commit-precheck') && !$(dom, '#cd-files #commit-author'),
       '提交前检查 / 本次作者不再占工具行图标位（收进 ⋯ 菜单）');
     assert_($(dom, '#commit-more'), '提交消息那行有 ⋯ 更多入口');

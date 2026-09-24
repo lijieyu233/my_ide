@@ -1989,7 +1989,7 @@ module.exports = {
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
     // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
-    add('工具行 9 个纯图标按钮', btns.length === 9 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('工具行 10 个纯图标按钮', btns.length === 10 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
@@ -2057,9 +2057,24 @@ module.exports = {
     add('平铺：所有文件名的起始 x 一致（名字在前，天然对齐）',
       nxs.length >= 2 && Math.max(...nxs) - Math.min(...nxs) <= 1, 'xs=' + nxs.join(','));
     const withDir = qa('#cd-files .git-file').find((r) => r.querySelector('.dir'));
-    add('平铺：路径在文件名**之后**（不再把路径当第一列）',
-      !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 4) !== 0,
+    add('平铺：路径在文件名**之前**（路径 → 名字，像面包屑）',
+      !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 2) !== 0,
       withDir ? withDir.dataset.file : '没有带路径的行');
+    // ⚠ 这一条是本轮的关键：上一版路径 `flex:1` 紧跟名字 → **路径起点随名字长短漂移**（实测 120~161px），
+    //   用户看到的就是"第二列参差"。现在路径列固定宽 + 右对齐 → 左缘/右缘都固定。
+    {
+      const dirs = qa('#cd-files .git-file .dir').filter((d) => d.textContent.trim());
+      const ls = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
+      const rs = dirs.map((d) => Math.round(d.getBoundingClientRect().right));
+      add('平铺：路径列左缘一致（固定宽列，不再随名字漂移）',
+        ls.length >= 3 && Math.max(...ls) - Math.min(...ls) <= 1, 'left=' + [...new Set(ls)].join(','));
+      add('平铺：路径列右缘一致（右对齐贴住文件名）',
+        rs.length >= 3 && Math.max(...rs) - Math.min(...rs) <= 1, 'right=' + [...new Set(rs)].join(','));
+      const deep = dirs.find((d) => /…/.test(d.textContent));
+      add('平铺：深层路径做中段省略（首段/…/末段，不把整条路径截成两三个字）',
+        !!deep ? /\/…\//.test(deep.textContent) : true,
+        deep ? JSON.stringify(deep.textContent) : '（本例路径层数少，未触发省略）');
+    }
     add('平铺：名字保持完整（路径可省略，名字不被压没）',
       !!withDir && withDir.querySelector('.nm').getBoundingClientRect().width > 8,
       withDir ? '名字宽=' + Math.round(withDir.querySelector('.nm').getBoundingClientRect().width) + 'px' : '-');
@@ -2263,6 +2278,34 @@ module.exports = {
       add('多文件时仍按文件分块（表格标题保留）',
         qa('#viewer .diff-body .diff-file').length === 1,
         '文件块 ' + qa('#viewer .diff-body .diff-file').length + ' 个');
+    }
+    // 显示选项菜单（PyCharm 工具栏的 ⋯ Show Options Menu）：分组方式 + 忽略的文件
+    {
+      const vb = q('#cd-view-opts');
+      add('工具行末尾有「显示选项」⋯ 按钮', !!vb && !!vb.querySelector('svg'), vb ? vb.title : '没有');
+      if (vb) {
+        vb.click();
+        await sleep(500);
+        const items = qa('#git-float-menu .ctx-item').map((x) => x.textContent.trim());
+        const heads = qa('#git-float-menu .ctx-item.ctx-title').map((x) => x.textContent.trim());
+        add('显示选项菜单有两组（分组方式 / 显示）',
+          heads.some((h) => /分组方式/.test(h)) && heads.some((h) => /显示/.test(h)), heads.join(' | '));
+        add('「分组方式」里有按目录 / 平铺，且当前项打勾',
+          items.some((t) => /按目录/.test(t) && /^✓/.test(t)) && items.some((t) => /平铺/.test(t)),
+          items.filter((t) => /目录|平铺/.test(t)).join(' | '));
+        add('「显示」里有「忽略的文件」',
+          items.some((t) => /忽略的文件/.test(t)), items.filter((t) => /忽略/.test(t)).join(' | '));
+        // 点「平铺」→ 真的切过去（并验证勾选状态随之互换）
+        const flatItem = qa('#git-float-menu .ctx-item').find((x) => /平铺/.test(x.textContent));
+        const wasGrouped = window.GitPanel.groupByDir;
+        if (flatItem) flatItem.click();
+        await sleep(700);
+        add('点菜单里的「平铺」→ 真的切换了分组方式',
+          window.GitPanel.groupByDir === !wasGrouped,
+          'before=' + wasGrouped + ' after=' + window.GitPanel.groupByDir);
+        // 切回去，保持后面步骤的基线
+        if (window.GitPanel.groupByDir !== wasGrouped) { window.GitPanel.toggleGroupByDir(); await sleep(600); }
+      }
     }
     return { R };
   },

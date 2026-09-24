@@ -1171,14 +1171,16 @@ textarea.editor {
 /* （.caret-spacer / .badge-spacer 的宽度定义在 .badge 那一块，靠近它的"真身"） */
 .git-file .cf-check { flex: 0 0 13px; }
 .git-file .badge, .git-group .g-name { flex-shrink: 0; }
-/* 平铺视图：文件名在前、所属目录在后（VS Code 搜索结果就是这种排法，也是人读列表的顺序）。
-   ⚠ 路径放**前面**时，"固定宽列"会把长路径截成 `项目/心理健...` —— 整行看起来像两列错位的数据，
-   用户两轮都报"缩进还是错的"。名字在前 → 所有文件名从同一 x 起（天然对齐），路径随剩余宽度省略。
-   空间不够时先压路径（flex:1 1 auto）再压名字，文件名优先保持完整。 */
+/* 平铺视图的路径列（四版反复后的定论，见 git-panel.js fileRow 里的注释）：
+   **固定宽 + 右对齐**，右缘紧贴文件名 → 路径左缘/右缘固定、名字左缘也固定，两列同时对齐。
+   路径内容在 JS 里做中段省略（`项目/…/数字人/`）：既不会"某一边被截成两三个字"，
+   也不会因为路径长短把文件名推来推去（那正是上一版 120~161px 漂移的原因）。 */
 .git-file .dir {
-  color: var(--text-dim); font-size: .88em; overflow: hidden; text-overflow: ellipsis;
-  flex: 1 1 auto; min-width: 0; white-space: nowrap; margin-left: 8px;
+  color: var(--text-dim); font-size: .88em; white-space: nowrap;
+  flex: 0 0 46%; min-width: 0; overflow: hidden;
+  text-align: right; padding-right: 8px; box-sizing: border-box;
 }
+.git-file .nm { flex: 1 1 auto; min-width: 0; }
 .git-file .nm { flex: 0 1 auto; min-width: 0; }
 .git-group:hover { color: var(--text-bright); }
 

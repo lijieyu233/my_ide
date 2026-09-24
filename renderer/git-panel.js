@@ -929,6 +929,28 @@ const GitPanel = (() => {
       : '更多提交选项：本次提交的作者 / 提交前检查';
   }
 
+  // 显示选项菜单（PyCharm「Show Options Menu」）：分组方式 + 忽略的文件。
+  // 用户是拿 PyCharm 的截图点名的这两项（Group By / Show）。
+  function openViewOptionsMenu(anchorEl) {
+    const hasIgnored = !!document.querySelector('#cd-files .git-sec-title');
+    openFloatMenu(anchorEl, [
+      { header: true, label: '分组方式' },
+      { label: (groupByDir ? '✓ ' : '\u3000') + '按目录（Directory）',
+        title: 'Ctrl+Alt+P —— 目录行 + 缩进的文件行', run: () => { if (!groupByDir) GitPanel.toggleGroupByDir(); } },
+      { label: (groupByDir ? '\u3000' : '✓ ') + '平铺（Flat）',
+        title: '所有文件同一层，用路径前缀表示位置', run: () => { if (groupByDir) GitPanel.toggleGroupByDir(); } },
+      { header: true, label: '显示' },
+      { label: '忽略的文件',
+        title: hasIgnored ? '跳到并展开「忽略的文件」节点（在列表末尾）' : '当前没有「忽略的文件」节点',
+        run: () => {
+          const head = [...document.querySelectorAll('#cd-files .git-sec-title')]
+            .find((h) => /忽略的文件/.test(h.textContent));
+          if (head) { head.scrollIntoView({ block: 'nearest' }); head.click(); }
+          else MI.toast('当前没有被忽略的文件', 'ok');
+        } },
+    ]);
+  }
+
   // 提交相关的一次性设置（原来在工具行占两个图标位 —— 一次性的东西不该抢高频按钮的位置）
   function openCommitMoreMenu(anchorEl) {
     openFloatMenu(anchorEl, [
@@ -1203,6 +1225,9 @@ const GitPanel = (() => {
     mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
     // M5 的「提交前检查 / 本次作者」都搬进了提交消息框那行的「⋯ 更多」菜单（见 openCommitMoreMenu）：
     // 一次性的设置不该和刷新/回滚这些高频操作抢位置。
+    // 显示选项（PyCharm 提交窗口工具栏的 ⋯ Show Options Menu）：分组方式 / 忽略的文件。
+    // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
+    mk(IC.more, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
     barBtns = { roll, dif, grp };
     return bar;
   }
@@ -1444,6 +1469,8 @@ const GitPanel = (() => {
     // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
     // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
     branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
+    // 显示选项 = 三点（工具行末尾的 Show Options Menu）
+    more: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle class="fill" cx="3.6" cy="8" r="1.05"/><circle class="fill" cx="8" cy="8" r="1.05"/><circle class="fill" cx="12.4" cy="8" r="1.05"/></svg>',
     // M5：提交前检查 = 对勾（用在「⋯ 更多」菜单里的图标位）
     check: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg>',
     user: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c0-2.6 2.1-4.2 4.8-4.2s4.8 1.6 4.8 4.2"/></svg>',
@@ -1550,6 +1577,17 @@ const GitPanel = (() => {
 
   // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
   // ro=true（只读分节，如「已暂存」）：不给勾选框、不给回滚按钮 —— 只展示、不动作
+  // 平铺视图里的路径前缀：首段 + … + 末段（`项目/…/数字人/`）。
+  // 完整路径在 340px 面板里会把文件名挤到屏幕外，而中间那几层对"这是哪个文件"没帮助
+  //（IDEA 的 breadcrumb、VS Code 的路径显示都是这么压的）。
+  function shortDir(parent) {
+    if (!parent) return '';
+    const segs = String(parent).split(/[\\/]+/).filter(Boolean);
+    if (!segs.length) return '';
+    if (segs.length === 1) return segs[0] + '/';
+    return segs[0] + '/…/' + segs[segs.length - 1] + '/';
+  }
+
   // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
   //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
   function flatNeedsDirCol() {
@@ -1580,18 +1618,19 @@ const GitPanel = (() => {
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
     // caret 占位：平铺视图也要（否则同一层级的目录名与文件名差一个 caret 列宽，看着就是没对齐）
-    // ⚠ 平铺视图里"路径列"要么全有、要么全无：顶层文件不画这一列的话，它的名字会跳到左边
-    //   （比别的行少一列宽）—— 那就又变成"参差不齐"了。是否保留该列由整份列表统一决定。
-    // ⚠⚠ **路径必须放在文件名后面**：放前面时，"固定宽列 → 长路径被截成 `项目/心理健...`"
-    //   看起来像两列错位的数据（用户两轮都报"缩进还是错的"）。名字在前 = 所有文件名从同一 x 起
-    //   （对齐），路径随后自然省略（VS Code 的搜索结果就是这么排的，也是人读列表的顺序）。
+    // ⚠⚠ 平铺视图的路径列（四版反复后的定论）：
+    //   v1 路径在前、宽度自适应      → 文件名参差（"换个视角更离谱"）
+    //   v2 路径在前、固定 72px       → 名字对了，路径被截成 `项目/心理健...`，像两列错位的数据
+    //   v3 名字在前、路径 flex:1 紧跟 → **路径起点随名字长短漂移**（实测 120~161px），第二列参差
+    //   v4（本版）**路径列固定宽 + 右对齐贴住文件名** + 路径中段省略：
+    //      路径左缘/右缘固定、名字左缘固定 → 两列同时对齐，也不会"某一边被截成两三个字"。
     const showDir = flat && flatNeedsDirCol();
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
+      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
-      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(parent) : ''}</span>` : '') +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
       ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
@@ -2673,7 +2712,7 @@ const GitPanel = (() => {
     refresh, openCommit, closeDialog, isOpen, openBranchDialog, openRemoteDialog, cancelDiff,
     buildDiffTable, makeHunkNav, renderDiffView, closeDiffView, esc, fmtDate, countAdd, countDel,
     doPull, doPush, updateAheadBehind,
-    doCommit, focusMessage, setAllCollapsed, openCommitMoreMenu, closeFloatMenu,
+    doCommit, focusMessage, setAllCollapsed, openCommitMoreMenu, openViewOptionsMenu, closeFloatMenu,
     get rootDir() { return root; },
     set rootDir(v) {
       if (v !== root) {
