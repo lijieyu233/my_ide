@@ -285,7 +285,8 @@ async function conflicts(repo) {
 //   UI 文案必须按 opState 说明，不能一律写成"你的修改"。
 async function conflictSides(repo, file) {
   const get = async (n) => {
-    const r = await run(['show', ':' + n + ':' + file], { cwd: repo, timeout: 10000, env: NO_EDIT });
+    // 只读 → 允许重试：本机偶发空错误的抖动，别让它变成"读不到三方内容"
+    const r = await runRetry(['show', ':' + n + ':' + file], { cwd: repo, timeout: 10000, env: NO_EDIT });
     return r.ok ? r.stdout : null;
   };
   const [base, ours, theirs] = [await get(1), await get(2), await get(3)];
@@ -349,12 +350,25 @@ async function rebase(repo, ref) {
 }
 
 // 继续 / 跳过 / 终止 —— 按当前状态选命令（用户不需要知道自己在哪种状态）
+// ⚠ 这几个命令的重试规则与 merge/rebase 一致：**只在"状态没动"时重试一次**
+//   （状态已从 MERGING 变 NORMAL = 上一次其实成功了，绝不能再来一次）。
+async function runOpStep(repo, cmd, before, timeout = 60000) {
+  let r = null;
+  for (let i = 0; i < 2; i++) {
+    r = await run(cmd, { cwd: repo, timeout, env: NO_EDIT });
+    if (r.ok) break;
+    const now = await stateAfter(repo);
+    if (now.state !== before) break;      // 状态变了 = 已经生效，别再动
+  }
+  return r;
+}
+
 async function continueOp(repo) {
   const st = await opState(repo);
   const cmd = { MERGING: ['merge', '--continue'], REBASING: ['rebase', '--continue'],
     CHERRY_PICKING: ['cherry-pick', '--continue'], REVERTING: ['revert', '--continue'] }[st.state];
   if (!cmd) return { ok: false, error: '当前没有进行中的 Git 操作' };
-  const r = await run(cmd, { cwd: repo, timeout: 60000, env: NO_EDIT });
+  const r = await runOpStep(repo, cmd, st.state);
   return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo), out: r.stdout.trim() };
 }
 async function skipOp(repo) {
@@ -362,7 +376,7 @@ async function skipOp(repo) {
   // merge / revert 没有 --skip（语义上无处可跳）→ 明确拒绝，别让按钮点了没反应
   const cmd = { REBASING: ['rebase', '--skip'], CHERRY_PICKING: ['cherry-pick', '--skip'] }[st.state];
   if (!cmd) return { ok: false, error: st.state === 'NORMAL' ? '当前没有进行中的 Git 操作' : st.state + ' 不支持跳过（只有 rebase / cherry-pick 可以）' };
-  const r = await run(cmd, { cwd: repo, timeout: 60000, env: NO_EDIT });
+  const r = await runOpStep(repo, cmd, st.state);
   return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo), out: r.stdout.trim() };
 }
 async function abortOp(repo) {
@@ -370,7 +384,7 @@ async function abortOp(repo) {
   const cmd = { MERGING: ['merge', '--abort'], REBASING: ['rebase', '--abort'],
     CHERRY_PICKING: ['cherry-pick', '--abort'], REVERTING: ['revert', '--abort'] }[st.state];
   if (!cmd) return { ok: false, error: '当前没有进行中的 Git 操作' };
-  const r = await run(cmd, { cwd: repo, timeout: 30000, env: NO_EDIT });
+  const r = await runOpStep(repo, cmd, st.state, 30000);
   return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo) };
 }
 
