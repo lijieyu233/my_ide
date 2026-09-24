@@ -819,6 +819,15 @@ lease 的基线可能永不更新、push 的 ahead/behind 依赖 fetch —— �
 <h3>M5 · IDE 增值</h3>
 <p>Before Commit（lint/format/test + 结果面板，与 Hooks 同一套）→ Local History（AI checkpoint）→
 Git Log 三栏（Branches Pane）→ 工具行收 <code>⋮ More</code> → 高级 Git（interactive rebase / reset / worktree / submodule / multi-root / signing）</p>
+<blockquote>
+<p>✅ <strong>第一批已完成</strong>（2026-09-23）：见 <code>docs/开发文档-080-M5-A-提交前检查与Sign-off与作者覆盖.md</code>。
+提交前检查（自定义命令 + <code>git hook run pre-commit</code> 同一套执行器、失败即停、结果面板、消息正则/长度校验、
+TODO 扫描只提示不阻断）+ Sign-off（幂等追加）+ 作者覆盖（不写 git config）。
+<strong>明确不做</strong>：Reformat / Rearrange / Optimize imports / Analyze code（要接入四套 lint/format 工具链，
+等于重做 IDE 的 lint 层 —— 在 UI 与文档里都写明了不做，避免交半成品）。
+仍未做：Local History（AI checkpoint）· Git Log 三栏 · 工具行 <code>⋮ More</code> · 高级 Git（interactive rebase / reset /
+worktree / submodule / multi-root / signing）· 待办第 5 节的作者下拉已顺手做完、第 6 节小项未动。</p>
+</blockquote>
 <h2>5. 需要拍板的三件事</h2>
 <ol>
 <li><strong>后端策略</strong>：<code>native 优先 + isomorphic 兜底</code>（我推荐，无 git 环境也能降级）／ 全面 native ／ 暂不动</li>
@@ -1670,5 +1679,114 @@ ff-only 分叉明确拒绝 → rebase 后历史线性（无 Merge 提交）且�
 <h2>7. 下一步（M5 剩余）</h2>
 <p>Local History（AI checkpoint）→ Git Log 三栏（Branches Pane）→ 工具行收 <code>⋮ More</code> →
 高级 Git（interactive rebase / reset / worktree / submodule / multi-root / signing）。</p>
+
+<hr>
+<div class="part">第九部分 · UI 修复</div>
+<h1>081 · 提交面板三处视觉错位修复（缩进 / 对齐 / 标题重复）</h1>
+<blockquote>
+<p>用户拿三张截图报的：①「文件和文件夹缩进怎么一样」②「换个视角更离谱，上层的缩进还更高」
+③「这里还重复了」。三处都是<strong>能用数字判定</strong>的结构问题，所以每条修复都配了断言。</p>
+</blockquote>
+<h2>1. 缩进：层级根本没体现出来（截图 ①）</h2>
+<p><strong>现象</strong>：树形视图里，父目录 <code>build</code> 与它的子文件 <code>icon.png</code>，<strong>复选框在同一列</strong>（实测都在 x=44），
+只有名字差 22px（因为文件行多一个徽章）。看着就像&quot;平铺&quot;而不是树。</p>
+<p><strong>根因</strong>：目录行与文件行各自拼列，但列组成不同：</p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>列组成</th>
+<th>名字相对左边距的偏移</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>目录行</td>
+<td><code>caret(10)</code> + 复选框(13) + 名字</td>
+<td>43</td>
+</tr>
+<tr>
+<td>文件行</td>
+<td>复选框(13) + 徽章(22) + 名字</td>
+<td>57</td>
+</tr>
+</tbody></table>
+<p>再加上左边距公式还差 2px（目录 <code>8+depth*14</code>、文件 <code>10+depth*14</code>），结果子文件的复选框正好被&quot;抵&quot;回父目录那一列。</p>
+<p><strong>修法</strong>：定一条铁律 —— <strong>只有 <code>depth</code> 决定左边距</strong>，列结构用固定宽度的占位元素统一：</p>
+<pre><code>缩进 = 8 + depth*14        ← 目录行与文件行用同一个公式
+目录行 = [缩进] caret(10) · 复选框(13) · 徽章占位(16) · 名字 …
+文件行 = [缩进] caret占位(10) · 复选框(13) · 徽章(16) · 名字 …
+</code></pre>
+<p>于是：同层的目录名与文件名从同一个 x 起（偏移恒等于 95），子级永远比父级深一级（刚好 14px）。</p>
+<p>⚠ 顺带踩到的一个细节：全局有 <code>* { box-sizing: border-box }</code>，所以徽章写 <code>min-width:16px + padding:0 3px</code>
+的<strong>实测总宽是 16px</strong>，而占位写 22px 就会差 6px。现在两处都写死成确定值（<code>.badge { width:16px }</code>
+与 <code>.badge-spacer { flex:0 0 16px }</code>），并在注释里互相指认 —— 改一个必须改另一个。</p>
+<h2>2. 平铺视图：文件名参差不齐（截图 ②）</h2>
+<p><strong>现象</strong>：平铺视图每行是 <code>父目录/ 文件名</code>，父目录前缀宽度随字面变化（<code>build/</code> 29px、<code>plugins/</code> 40px），
+于是后面的<strong>文件名各自起始在不同 x</strong>，看着就是&quot;有的更靠右有的更靠左&quot;。</p>
+<p><strong>修法</strong>：父目录前缀改占<strong>固定宽列</strong>（<code>flex: 0 0 72px</code> + 省略号），所有行的名字从同一个 x 起
+（自检实测 12 行全是 x=181）。</p>
+<p>⚠ 这里还踩了第二个坑：<strong>顶层文件没有父目录</strong>，如果它不画这一列，名字就会比别的行少 78px 跳到左边
+（第一版自检立刻报出 <code>xs=181,103,181,…</code>）。所以&quot;要不要保留父目录列&quot;必须由<strong>整份变更列表</strong>统一决定
+（<code>flatNeedsDirCol()</code>：只要有任何一个文件带目录，所有行都留这一列，顶层文件留空列）——
+按&quot;单个文件有没有父目录&quot;决定，就还是会参差。另外平铺行也补上 caret 占位，与目录行共用同一套列宽 ——
+否则同一层级的&quot;目录名&quot;与&quot;文件名&quot;会差一个 caret 列宽（那正是截图 ① 的另一种形态）。</p>
+<h2>3. 差异视图：文件名写了两遍（截图 ③）</h2>
+<p><strong>现象</strong>：编辑区差异视图顶部一行是 <code>plugins/README.md  未暂存（工作区 vs 暂存区）  +12 / -8</code>，
+紧接着又一行 <code>plugins/README.md  未暂存</code> —— 同一个文件、同一个侧别，重复。</p>
+<p><strong>根因</strong>：<code>renderDiffView</code> 画了 <code>.diff-head</code>（路径 + 侧别 + 行数），而它调用的 <code>buildDiffTable</code>
+<strong>总是</strong>再画一个 <code>.diff-file-title</code>（M3 加侧标记时加上的）。</p>
+<p><strong>修法</strong>：<code>buildDiffTable(r, act, { hideTitle })</code> —— 只在<strong>单文件</strong>视图里跳过表格标题。
+⚠ 不能一刀切删掉：M3 的&quot;同一个文件已暂存 + 未暂存两块并排&quot;必须保留各自的标题与侧标记
+（否则两块看不出谁是谁），多文件堆叠同理。dom 测试里两条断言分别守着这两种情况。</p>
+<h2>4. 验证</h2>
+<ul>
+<li><p>自检新增 5 条<strong>可量化的</strong>断言（都在提交窗口那一步，跑的是真实渲染 + <code>getBoundingClientRect</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>断言</th>
+<th>实测</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>平铺：所有文件名起始 x 一致</td>
+<td><code>181,181,…</code>（12 行全相同）</td>
+</tr>
+<tr>
+<td>树形：子文件复选框比父目录复选框右移一级</td>
+<td><code>76 → 90</code>，Δ=14</td>
+</tr>
+<tr>
+<td>层级递进：文件名比父目录名更靠右</td>
+<td><code>117 → 131</code>，Δ=14</td>
+</tr>
+<tr>
+<td>列结构一致：目录行/文件行的名字偏移相同</td>
+<td><code>95</code>（73 行样本只有一个取值）</td>
+</tr>
+<tr>
+<td>单文件差异：文件名只出现一次</td>
+<td>重复标题 0 个</td>
+</tr>
+<tr>
+<td>多文件/双区仍按文件分块</td>
+<td>2 块各有标题 + 侧标记</td>
+</tr>
+</tbody></table>
+<p>最后一条&quot;列结构一致&quot;是关键：<strong>不依赖真实仓库里恰好凑到两个同层的行</strong>（我第一次就这么写，
+结果比到了两个不同 depth 的行、误报 28px —— 这类断言必须验&quot;结构不变量&quot;，不能靠取样）。</p>
+</li>
+<li><p><code>npm test</code> 56 + 255（+2 dom：行结构占位、单文件不重复标题 / 双区保留侧标记）</p>
+</li>
+<li><p><code>electron . --check-ui</code> <strong>404 通过 / 0 失败</strong></p>
+</li>
+</ul>
+<h2>5. 顺手记下的两条方法论</h2>
+<ol>
+<li><strong>视觉 bug 先量化再改</strong>：这次用 Python 手解 PNG（本机没有 PIL）量出&quot;复选框同列、名字差 22px&quot;，
+才定位到&quot;列组成不同&quot;这个真因；只凭&quot;看着没缩进&quot;改 padding 会越改越乱。</li>
+<li><strong>修完要有断言，且断言要验不变量</strong>：位置类断言尽量写成&quot;结构恒定&quot;（偏移值唯一），
+而不是&quot;拿两个样本比&quot; —— 后者在真实数据里很难凑齐，还会误报。</li>
+</ol>
 
 </div></body></html>

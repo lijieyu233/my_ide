@@ -832,11 +832,18 @@ textarea.editor {
 .git-file .git-revert:hover { color: var(--red); }
 /* 状态徽章：单字母方块。未暂存 = 描边，已暂存 = 实底（一眼区分暂存与否，完整文案在 tooltip） */
 .badge {
-  font-size: .77em; line-height: 14px; min-width: 16px; text-align: center;
-  border-radius: 4px; padding: 0 3px; flex-shrink: 0;
+  /* ⚠ 这里必须是**确定宽度**（不是 min-width）：全局 `* { box-sizing: border-box }` 下
+     min-width:16px + padding 6 的实测总宽是 16px，而缩进对齐要求它和目录行的 .badge-spacer
+     一模一样宽（差 1px 就会让"同层名字"看起来没对齐）。 */
+  font-size: .77em; line-height: 14px; width: 16px; text-align: center;
+  border-radius: 4px; padding: 0; flex: 0 0 16px;
   font-family: var(--font-mono);
   background: transparent; border: 1px solid currentColor;
 }
+
+/* 缩进对齐用的两个占位：宽度必须分别等于 caret / 徽章（改这两处就要同步改 fileRow 的注释） */
+.caret-spacer { flex: 0 0 10px; }
+.badge-spacer { flex: 0 0 16px; }
 .badge.M, .badge.modified, .badge.\*modified { color: var(--badge-m-tx); }
 .badge.A, .badge.added, .badge.\*added { color: var(--green); }
 .badge.D, .badge.deleted, .badge.\*deleted { color: var(--red); }
@@ -1124,14 +1131,26 @@ textarea.editor {
   cursor: pointer; user-select: none; position: sticky; top: 0;
   background: var(--bg-panel); border-bottom: 1px solid var(--border);
 }
-.git-group .g-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-group .g-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .git-group .g-count, .git-sec-title .sec-hint { opacity: .8; white-space: nowrap; }
-.git-sec-title .caret, .git-group .caret { width: 10px; font-size: .69em; cursor: pointer; flex-shrink: 0; }
+.git-sec-title .caret, .git-group .caret { width: 10px; font-size: .69em; cursor: pointer; flex: 0 0 10px; }
 .git-sec-title input[type="checkbox"], .git-group input[type="checkbox"] {
-  accent-color: var(--accent); margin: 0; flex-shrink: 0; cursor: pointer;
+  accent-color: var(--accent); margin: 0; flex: 0 0 13px; cursor: pointer;
 }
-/* 平铺视图：父目录弱化显示在文件名前（PyCharm 关掉 Group by Directory 后的样子） */
-.git-file .dir { color: var(--text-dim); font-size: .88em; overflow: hidden; text-overflow: ellipsis; }
+/* ---- 缩进列（目录行与文件行共用同一套列宽，见 git-panel.js 里 fileRow 的说明）----
+   caret 列 10 + gap 6 + 复选框 13 + gap 6 + 徽章/占位 22 + gap 6 → 名字的起点只由 depth 决定。
+   目录行用 .badge-spacer 占住徽章那一列，于是"同层目录名与文件名对齐、子级刚好深一级"。 */
+/* （.caret-spacer / .badge-spacer 的宽度定义在 .badge 那一块，靠近它的"真身"） */
+.git-file .cf-check { flex: 0 0 13px; }
+.git-file .badge, .git-group .g-name { flex-shrink: 0; }
+/* 平铺视图：父目录弱化显示在文件名前（PyCharm 关掉 Group by Directory 后的样子）。
+   ⚠ 目录前缀必须占**固定宽度**，否则 "build/" 与 "plugins/" 后面的文件名对不齐
+   （用户截图："换个视角更离谱"）。 */
+.git-file .dir {
+  color: var(--text-dim); font-size: .88em; overflow: hidden; text-overflow: ellipsis;
+  flex: 0 0 72px; white-space: nowrap;
+}
+.git-file .nm { min-width: 0; }
 .git-group:hover { color: var(--text-bright); }
 
 /* ---------- Git 日志工具窗口（PyCharm Alt+9，底部停靠） ---------- */

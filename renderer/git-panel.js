@@ -1087,11 +1087,8 @@ const GitPanel = (() => {
     bar.appendChild(sep);
     mk(IC.expandAll, '展开全部（目录与分节）', () => setAllCollapsed(false));
     mk(IC.collapseAll, '收起全部（目录与分节）', () => setAllCollapsed(true));
-    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）', () => {
-      groupByDir = !groupByDir;
-      saveUiPrefs();
-      render();
-    });
+    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）',
+      () => GitPanel.toggleGroupByDir());
     if (groupByDir) grp.classList.add('active');
     // 仓库级操作（搁置 / 远程 / 日志）—— 原在标题行右侧挤着，见 IC 里那段说明。
     // ⚠ 追加在**最后**：dom 测试与自检步骤按索引取工具行按钮（[4]=预览 [6][7]=展开/分组），
@@ -1398,6 +1395,11 @@ const GitPanel = (() => {
         cb.type = 'checkbox';
         gTitle.appendChild(cb);
       }
+      // 空占位：对齐文件行的徽章列，让"同层目录名 / 文件名"从同一个 x 起
+      const bsp = document.createElement('span');
+      bsp.className = 'badge-spacer';
+      bsp.setAttribute('aria-hidden', 'true');
+      gTitle.appendChild(bsp);
       gTitle.appendChild(nm);
       gTitle.appendChild(ct);
       gTitle.title = '点击收起 / 展开 ' + name;
@@ -1446,11 +1448,25 @@ const GitPanel = (() => {
 
   // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
   // ro=true（只读分节，如「已暂存」）：不给勾选框、不给回滚按钮 —— 只展示、不动作
+  // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
+  //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
+  function flatNeedsDirCol() {
+    const all = (state && state.changed) || [];
+    return all.some((x) => /[\\/]/.test(x.file));
+  }
+
+  // ⚠ 缩进的铁律：**只有 depth 决定左边距**（目录行与文件行用同一个公式），
+  //   列结构靠固定宽度的占位元素对齐：
+  //     目录行 = [缩进][caret 10][gap][复选框 13][gap][空占位 22][gap][名字]…
+  //     文件行 = [缩进][空占位 10][gap][复选框 13][gap][徽章 22][gap][名字]
+  //   这样"同层的目录名与文件名对齐、子级正好比父级多一级"。
+  //   以前文件行少一个 caret 占位、又没有徽章占位，结果**子文件的复选框和父目录的复选框在同一列**，
+  //   层级完全看不出来（用户截图："文件和文件夹缩进一样"）。
   function fileRow(c, depth = 0, flat = false, ro = false) {
     const f = document.createElement('div');
     f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
-    f.style.paddingLeft = (10 + depth * 14) + 'px';
+    f.style.paddingLeft = (8 + depth * 14) + 'px';
     const parts = c.file.split(/[\\/]/);
     const base = parts.pop();
     const parent = parts.join('/');
@@ -1461,10 +1477,15 @@ const GitPanel = (() => {
     const letter = isIgnoredRow ? '?' : (isUntracked ? '?' : (LETTER[c.status] || 'M'));
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
-    f.innerHTML = (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
+    // caret 占位：平铺视图也要（否则同一层级的目录名与文件名差一个 caret 列宽，看着就是没对齐）
+    // ⚠ 平铺视图里"父目录列"要么全有、要么全无：顶层文件不画这一列的话，它的名字会跳到左边
+    //   （比别的行少 78px）—— 那就又变成"参差不齐"了。是否保留该列由整份列表统一决定。
+    const showDir = flat && flatNeedsDirCol();
+    f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
+      (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
-      (flat && parent ? `<span class="dir" title="${esc(parent)}">${esc(parent)}/</span>` : '') +
+      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(parent) + '/' : ''}</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
@@ -2164,16 +2185,20 @@ const GitPanel = (() => {
   //   side='unstaged'（index→工作区）→「暂存此块」「回退此块」
   //   side='staged'  （HEAD→index）  →「取消暂存此块」
   //   其他来源（提交详情 / 分支对比）不传 act → 纯只读。
-  function buildDiffTable(r, act) {
+  // opts.hideTitle：调用方（renderDiffView）**只有一个文件**时已经在顶部显示过路径 + 侧别，
+  //   表格再画一次就是同一行文字出现两遍（用户截图指出过）。多文件堆叠时每块仍然需要自己的标题。
+  function buildDiffTable(r, act, opts) {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
-    const title = document.createElement('div');
-    title.className = 'diff-file-title';
-    // 同一个文件「已暂存 + 未暂存」两块并排时标题会重名 → 带上侧的标记，否则两块看不出谁是谁
-    const sideTag = r.side === 'staged' ? '<span class="side-tag staged">已暂存</span>'
-      : r.side === 'unstaged' ? '<span class="side-tag">未暂存</span>' : '';
-    title.innerHTML = `<span class="b">${esc(r.file)}</span>${sideTag}`;
-    fileBox.appendChild(title);
+    if (!(opts && opts.hideTitle)) {
+      const title = document.createElement('div');
+      title.className = 'diff-file-title';
+      // 同一个文件「已暂存 + 未暂存」两块并排时标题会重名 → 带上侧的标记，否则两块看不出谁是谁
+      const sideTag = r.side === 'staged' ? '<span class="side-tag staged">已暂存</span>'
+        : r.side === 'unstaged' ? '<span class="side-tag">未暂存</span>' : '';
+      title.innerHTML = `<span class="b">${esc(r.file)}</span>${sideTag}`;
+      fileBox.appendChild(title);
+    }
     if (r.binary) {
       const msg = document.createElement('div');
       msg.className = 'diff-msg';
@@ -2289,7 +2314,8 @@ const GitPanel = (() => {
 
     const bodyEl = document.createElement('div');
     bodyEl.className = 'diff-body';
-    for (const r of list) bodyEl.appendChild(buildDiffTable(r, act));
+    // 只有一个文件时顶部已经写了路径 + 侧别 → 表格里不再重复一遍
+    for (const r of list) bodyEl.appendChild(buildDiffTable(r, act, { hideTitle: list.length === 1 }));
     wrap.appendChild(bodyEl);
     view.appendChild(wrap);
     // Esc 关闭
@@ -2641,6 +2667,9 @@ const GitPanel = (() => {
     openConflictDialog, doContinue, doSkip, doAbort, buildOpBar, closeFloatMenu,
     // M5：提交前检查 / Sign-off / 作者覆盖（给测试与自检用的读写口）
     openPrecheckDialog, openAuthorDialog, runPreChecks, showPreCheckResult, appendSignoff,
+    // 分组方式切换（按目录 ↔ 平铺）：给测试与自检一个稳定入口，不用去猜工具行的索引
+    toggleGroupByDir() { groupByDir = !groupByDir; saveUiPrefs(); render(); },
+    get groupByDir() { return groupByDir; },
     get preCfg() { return Object.assign({}, preCfg, { commands: preCfg.commands.slice() }); },
     set preCfg(v) { preCfg = pcNormalize(v); },
     get signoff() { return signoff; },

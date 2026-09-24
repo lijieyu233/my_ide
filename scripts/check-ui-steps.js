@@ -1929,11 +1929,47 @@ module.exports = {
     add('收起全部 → 无可见文件行', visible().length === 0, '收起前 ' + before);
     btns[5].click(); await sleep(900);
     add('展开全部 → 文件行恢复', visible().length >= before, '恢复 ' + visible().length);
-    btns[7].click(); await sleep(400);
+    btns[7].click(); await sleep(500);
     add('切到平铺：目录行消失 + 显示父目录', qa('#cd-files .git-group').length === 0 && qa('#cd-files .git-file .dir').length > 0,
       '父目录列 ' + qa('#cd-files .git-file .dir').length + ' 个');
-    btns[7].click(); await sleep(400);
+    // 平铺视图里**所有文件名的起点必须一致**：父目录前缀占固定宽列，否则 build/ 与 plugins/
+    // 后面的名字参差不齐（用户截图："换个视角更离谱"）
+    const nms = qa('#cd-files .git-file .nm');
+    const nxs = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().left));
+    add('平铺：所有文件名的起始 x 一致（父目录列固定宽）',
+      nxs.length >= 2 && Math.max(...nxs) - Math.min(...nxs) <= 1, 'xs=' + nxs.join(','));
+    btns[7].click(); await sleep(500);
     add('切回按目录：目录行恢复', qa('#cd-files .git-group').length > 0);
+
+    // 树形缩进：**子级必须比父级深一级**（以前目录行与文件行的复选框同列 → 层级看不出来）
+    const gcbx = (el) => { const c = el.querySelector('input[type=checkbox], .cf-lock'); return c ? Math.round(c.getBoundingClientRect().left) : null; };
+    const nmx = (el) => { const n = el.querySelector('.g-name, .nm'); return n ? Math.round(n.getBoundingClientRect().left) : null; };
+    const topDir = qa('#cd-files .git-group')[0];
+    const childFile = qa('#cd-files .git-file')[0];
+    const dx = gcbx(childFile) - gcbx(topDir);
+    add('树形缩进：子文件的复选框比父目录的复选框右移一级（约 14px）', dx >= 10 && dx <= 20,
+      '父目录 cb.x=' + gcbx(topDir) + ' 子文件 cb.x=' + gcbx(childFile) + ' Δ=' + dx);
+    add('层级递进：文件名比父目录名更靠右（不是"缩进一样"）',
+      (nmx(childFile) - nmx(topDir)) >= 12,
+      '父目录名 x=' + nmx(topDir) + ' → 子文件名 x=' + nmx(childFile) + ' Δ=' + (nmx(childFile) - nmx(topDir)));
+    // 列结构的硬约束：目录行与文件行的「名字相对自己缩进的偏移」必须**完全相同**
+    //   （目录行 = caret + 复选框 + 徽章占位；文件行 = caret 占位 + 复选框 + 徽章）
+    //   → 只要在同一个 depth，两类行的名字就必然对齐；子级永远比父级深一级。
+    //   这条比"拿两个刚好同层的行去比"更可靠：后者在真实仓库里很难凑到样本（踩过一次：比到了不同 depth 的行）。
+    const offs = [];
+    for (const el of qa('#cd-files .git-group')) {
+      const n = el.querySelector('.g-name');
+      const pad = parseFloat(el.style.paddingLeft);
+      if (n && !isNaN(pad)) offs.push(Math.round(n.getBoundingClientRect().left - pad));
+    }
+    for (const el of qa('#cd-files .git-file:not(.ro)')) {
+      const n = el.querySelector('.nm');
+      const pad = parseFloat(el.style.paddingLeft);
+      if (n && !isNaN(pad)) offs.push(Math.round(n.getBoundingClientRect().left - pad));
+    }
+    const uniq = [...new Set(offs)].sort((a, b) => a - b);
+    add('列结构一致：目录行与文件行的名字偏移相同（同层必然对齐）',
+      offs.length >= 4 && uniq.length === 1, '偏移值=' + uniq.join(',') + '（样本 ' + offs.length + ' 行）');
 
     // 忽略的文件节点（懒加载）
     const ignHead = qa('#cd-files .git-sec-title').find((h) => h.textContent.includes('忽略的文件'));
@@ -2095,6 +2131,15 @@ module.exports = {
       add('点它 → 同一个文件在编辑区打开（面板窄就看编辑区）',
         !!dw && !!dfp && dfp.textContent === (pick ? pick.dataset.file : '#'),
         dfp ? '编辑区=' + dfp.textContent : '编辑区没有 .diff-wrap');
+      // ⚠ 单文件视图顶部已经写了路径 + 侧别 → 表格里不该再画一次文件名（用户截图指出过"重复了"）
+      const dupTitle = qa('#viewer .diff-file-title');
+      add('单文件差异：文件名只出现一次（表格里不再重复标题）',
+        !!dw && dupTitle.length === 0,
+        '重复标题 ' + dupTitle.length + ' 个' + (dupTitle[0] ? '：' + dupTitle[0].textContent : ''));
+      // 多文件（勾选多个）时每块仍然需要自己的标题 —— 反向断言，防止"一刀切删掉"
+      add('多文件时仍按文件分块（表格标题保留）',
+        qa('#viewer .diff-body .diff-file').length === 1,
+        '文件块 ' + qa('#viewer .diff-body .diff-file').length + ' 个');
     }
     return { R };
   },

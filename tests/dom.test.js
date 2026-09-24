@@ -3205,6 +3205,52 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#cd-files .git-op-bar'), '收尾：操作条消失');
   });
 
+  await okAsync('提交面板行结构：目录行与文件行共用同一套缩进列（同层名字对齐）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    // ① 树形：文件行必须有 caret 占位、目录行必须有徽章占位 —— 否则同层名字会差一个列宽
+    const fileRows = $allIn($(dom, '#commit-list'), '.git-file');
+    const dirRows = $allIn($(dom, '#commit-list'), '.git-group');
+    assert_(fileRows.length > 0 && dirRows.length > 0, '树形下有目录行与文件行: ' + fileRows.length + '/' + dirRows.length);
+    assert_(fileRows.every((r) => r.querySelector('.caret-spacer')), '文件行都有 caret 占位');
+    assert_(dirRows.every((r) => r.querySelector('.badge-spacer')), '目录行都有徽章占位');
+    // 两类的"列数"必须一致：caret(占位) + 复选框 + 徽章(占位) + 名字
+    const cols = (r) => [...r.children].filter((c) => !c.classList.contains('g-count') && !c.classList.contains('git-revert')).length;
+    assert_(cols(fileRows[0]) === cols(dirRows[0]),
+      '目录行与文件行的列结构一致: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
+    // ② 平铺：文件行也要带 caret 占位（与目录行同列宽）
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick(); await tick();
+    const flatRows = $allIn($(dom, '#commit-list'), '.git-file');
+    assert_(flatRows.length > 0 && flatRows.every((r) => r.querySelector('.caret-spacer')), '平铺行也有 caret 占位');
+    assert_($allIn($(dom, '#commit-list'), '.git-file .dir').length > 0, '平铺行显示父目录前缀');
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('差异视图：单文件不重复标题 / 双区两块各自带侧标记', async () => {
+    // ① 单文件：顶部 .diff-head 已经写了路径 + 侧别 → 表格里不再画标题
+    await g(dom, 'GitPanel.renderDiffView({ file: "a.txt", side: "unstaged", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: "add", aText: "", bText: "x", aNum: 0, bNum: 1 }] }] }, "未暂存（工作区 vs 暂存区）")');
+    await tick(); await tick();
+    assert_($(dom, '#viewer .df-path'), '顶部有路径');
+    assert_($allIn($(dom, '#viewer'), '.diff-file-title').length === 0,
+      '单文件不重复画标题: ' + $allIn($(dom, '#viewer'), '.diff-file-title').length + ' 个');
+    assert_($allIn($(dom, '#viewer'), '.diff-file').length === 1, '只有一个文件块');
+    // ② 双区（同一个文件两块）：必须每块都有标题 + 侧标记，否则两块看不出谁是谁
+    const mk = (side) => ({ file: 'a.txt', side, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'add', aText: '', bText: 'x', aNum: 0, bNum: 1 }] }] });
+    await g(dom, 'GitPanel.renderDiffView([' + JSON.stringify(mk('staged')) + ',' + JSON.stringify(mk('unstaged')) + '], "2 个文件")');
+    await tick(); await tick();
+    const titles = $allIn($(dom, '#viewer'), '.diff-file-title');
+    assert_(titles.length === 2, '双区：两块各有标题: ' + titles.length + ' 个');
+    const tags = $allIn($(dom, '#viewer'), '.side-tag').map((x) => x.textContent.trim());
+    assert_(tags.includes('已暂存') && tags.includes('未暂存'), '侧标记齐全: ' + tags.join('/'));
+    await g(dom, 'GitPanel.closeDiffView()');
+    await tick();
+  });
+
   await okAsync('M5：提交前检查 —— 有阻断项时先弹结果面板，取消/仍然提交都生效', async () => {
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
