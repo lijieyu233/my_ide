@@ -844,8 +844,9 @@ textarea.editor {
 }
 
 /* 缩进对齐用的两个占位：宽度必须分别等于 caret / 徽章（改这两处就要同步改 fileRow 的注释） */
+/* caret 占位：文件行用（目录行有真 caret；两者同宽，保证同层复选框对齐）。
+   ⚠ 已删掉 `.badge-spacer` —— 目录行不再留徽章空位（用户："这里空一大片是干什么的"）。 */
 .caret-spacer { flex: 0 0 10px; }
-.badge-spacer { flex: 0 0 16px; }
 .badge.M, .badge.modified, .badge.\*modified { color: var(--badge-m-tx); }
 .badge.A, .badge.added, .badge.\*added { color: var(--green); }
 .badge.D, .badge.deleted, .badge.\*deleted { color: var(--red); }
@@ -1172,9 +1173,9 @@ textarea.editor {
 .git-file .cf-check { flex: 0 0 13px; }
 .git-file .badge, .git-group .g-name { flex-shrink: 0; }
 /* 平铺视图（第六版定论，见 git-panel.js fileRow 里的注释）：**名字在前、路径在后**，照 PyCharm。
-   ⚠ 名字列必须是**固定宽**：v3 用过"名字自适应 + 路径 flex:1"，结果**路径起点随名字长短漂移**
-   （实测 120~161px）——用户看到的"缩进不对"就是它。名字列固定 → 两列起点都固定。
-   ⚠ 固定宽只加在平铺行（.flat）：树形行的名字要吃满剩余宽度，不能被截成 46%。 */
+   ⚠ 名字列宽度由 JS 按"这一列里最长的名字"算好（`applyFlatNameCol` 写 inline flex-basis）——
+   v3 用"名字自适应"→ 路径起点随行漂移；固定 46% → 名字都短时留"一大片空白"（用户圈过）。
+   46% 只是**兜底/上限**（JS 没跑或名字特别长时用它）。 */
 .git-file.flat .nm {
   flex: 0 0 46%; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

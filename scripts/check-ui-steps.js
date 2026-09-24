@@ -2069,10 +2069,28 @@ module.exports = {
     const nxs = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().left));
     add('平铺：所有文件名的起始 x 一致（名字列固定宽）',
       nxs.length >= 2 && Math.max(...nxs) - Math.min(...nxs) <= 1, 'xs=' + nxs.join(','));
-    // 名字列的宽度必须**完全一致**（固定宽）—— 树形行不在此列（它们吃满剩余宽度）
+    // 名字列宽度：**按这一列表里最长的名字**算（JS 写 inline flex-basis）→ 每行同一个值，
+    //   而且不留"一大片空白"（固定 46% 时用户圈着空白问过"这里空一大片是干什么的"）。
     const nws = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().width));
-    add('平铺：名字列宽度一致（固定宽 46%，不是各自自适应）',
+    add('平铺：名字列宽度一致（按最长名字统一，不是各自自适应）',
       nws.length >= 2 && Math.max(...nws) - Math.min(...nws) <= 1, 'ws=' + [...new Set(nws)].join(','));
+    {
+      const rowW = (q('.git-group-body') || q('#cd-files')).getBoundingClientRect().width;
+      const colW = nws[0] || 0;
+      add('平铺：名字列不浪费（≤ 行宽 46%，不是固定占满）',
+        colW > 20 && colW <= rowW * 0.46 + 2, '列宽=' + colW + 'px 行宽=' + Math.round(rowW) + 'px');
+      // 最长名字那一行：名字右缘与路径左缘之间不该有空档
+      const widest = withDir2 => withDir2;
+      let best = null, bestW = 0;
+      for (const r of qa('#cd-files .git-file.flat')) {
+        const n = r.querySelector('.nm'); const d = r.querySelector('.dir');
+        if (!n || !d) continue;
+        const gap = Math.round(d.getBoundingClientRect().left - n.getBoundingClientRect().right);
+        if (gap > bestW) { bestW = gap; best = r; }
+      }
+      add('平铺：最长名字那行的 名字→路径 空档很小（不留大片空白）',
+        !!best && bestW <= 24, (best ? best.dataset.file : '-') + ' 空档=' + bestW + 'px');
+    }
     add('平铺：树形行不带 .flat（名字不会被截成 46%）',
       qa('#cd-files .git-file').every((r) => r.classList.contains('flat')) && !!q('#cd-files .git-file.flat .nm'),
       'flat 行 ' + qa('#cd-files .git-file.flat').length + '/' + qa('#cd-files .git-file').length);
@@ -2134,24 +2152,29 @@ module.exports = {
     add('层级递进：文件名比父目录名更靠右（不是"缩进一样"）',
       (nmx(childFile) - nmx(topDir)) >= 12,
       '父目录名 x=' + nmx(topDir) + ' → 子文件名 x=' + nmx(childFile) + ' Δ=' + (nmx(childFile) - nmx(topDir)));
-    // 列结构的硬约束：目录行与文件行的「名字相对自己缩进的偏移」必须**完全相同**
-    //   （目录行 = caret + 复选框 + 徽章占位；文件行 = caret 占位 + 复选框 + 徽章）
-    //   → 只要在同一个 depth，两类行的名字就必然对齐；子级永远比父级深一级。
-    //   这条比"拿两个刚好同层的行去比"更可靠：后者在真实仓库里很难凑到样本（踩过一次：比到了不同 depth 的行）。
-    const offs = [];
-    for (const el of qa('#cd-files .git-group')) {
-      const n = el.querySelector('.g-name');
+    // 列结构：**目录行不留徽章空位**（名字紧跟复选框，PyCharm 同款；用户圈着那块空白问过
+    //   "这里空一大片是干什么的"），文件行要留徽章列。所以两类各自的偏移必须唯一，
+    //   且目录行的偏移**小于**文件行的偏移（差值 = 徽章列 16 + gap 6）。
+    const offOf = (el, sel) => {
+      const n = el.querySelector(sel);
       const pad = parseFloat(el.style.paddingLeft);
-      if (n && !isNaN(pad)) offs.push(Math.round(n.getBoundingClientRect().left - pad));
-    }
-    for (const el of qa('#cd-files .git-file:not(.ro)')) {
-      const n = el.querySelector('.nm');
-      const pad = parseFloat(el.style.paddingLeft);
-      if (n && !isNaN(pad)) offs.push(Math.round(n.getBoundingClientRect().left - pad));
-    }
-    const uniq = [...new Set(offs)].sort((a, b) => a - b);
-    add('列结构一致：目录行与文件行的名字偏移相同（同层必然对齐）',
-      offs.length >= 4 && uniq.length === 1, '偏移值=' + uniq.join(',') + '（样本 ' + offs.length + ' 行）');
+      return n && !isNaN(pad) ? Math.round(n.getBoundingClientRect().left - pad) : null;
+    };
+    const dirOffs = [...new Set(qa('#cd-files .git-group').map((el) => offOf(el, '.g-name')).filter((v) => v != null))];
+    const fileOffs = [...new Set(qa('#cd-files .git-file:not(.ro)').map((el) => offOf(el, '.nm')).filter((v) => v != null))];
+    add('目录行：名字紧跟复选框（偏移只有一份取值 —— 不留徽章空位）',
+      dirOffs.length === 1, '目录名偏移=' + dirOffs.join(','));
+    add('文件行：名字偏移唯一（同层必然对齐）', fileOffs.length === 1, '文件名偏移=' + fileOffs.join(','));
+    add('目录名比文件名更靠左（差值 = 徽章列，目录没有徽章）',
+      dirOffs.length === 1 && fileOffs.length === 1 && (fileOffs[0] - dirOffs[0]) >= 18
+        && (fileOffs[0] - dirOffs[0]) <= 26,
+      '目录=' + dirOffs[0] + ' 文件=' + fileOffs[0] + ' Δ=' + (fileOffs[0] - dirOffs[0]));
+    add('目录行里复选框的下一个元素就是名字（中间没有空占位）',
+      qa('#cd-files .git-group').every((el) => {
+        const cb = el.querySelector('input[type=checkbox], .cf-lock');
+        return cb && cb.nextElementSibling && cb.nextElementSibling.classList.contains('g-name');
+      }),
+      '目录行 ' + qa('#cd-files .git-group').length + ' 行');
 
     // 忽略的文件节点（懒加载）
     const ignHead = qa('#cd-files .git-sec-title').find((h) => h.textContent.includes('忽略的文件'));

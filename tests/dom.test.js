@@ -3249,22 +3249,34 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    // ① 树形：文件行必须有 caret 占位、目录行必须有徽章占位 —— 否则同层名字会差一个列宽
+    // ① 树形：文件行要 caret 占位（目录行有真 caret）；**目录行不留徽章空位** ——
+    //    用户圈着那块空白问"这里空一大片是干什么的"，目录没有状态徽章，留空纯浪费。
     const fileRows = $allIn($(dom, '#commit-list'), '.git-file');
     const dirRows = $allIn($(dom, '#commit-list'), '.git-group');
     assert_(fileRows.length > 0 && dirRows.length > 0, '树形下有目录行与文件行: ' + fileRows.length + '/' + dirRows.length);
     assert_(fileRows.every((r) => r.querySelector('.caret-spacer')), '文件行都有 caret 占位');
-    assert_(dirRows.every((r) => r.querySelector('.badge-spacer')), '目录行都有徽章占位');
-    // 两类的"列数"必须一致：caret(占位) + 复选框 + 徽章(占位) + 名字
+    assert_(dirRows.every((r) => !r.querySelector('.badge-spacer')), '目录行没有徽章空位（名字紧跟复选框）');
+    // 目录行的名字必须是复选框的**下一个**元素（中间不许再塞占位）
+    const cbOf = (r) => r.querySelector('input[type=checkbox], .cf-lock');
+    assert_(dirRows.every((r) => cbOf(r) && cbOf(r).nextElementSibling && cbOf(r).nextElementSibling.classList.contains('g-name')),
+      '目录行：复选框的下一个元素就是名字');
+    // 目录行比文件行少一列（目录没有徽章）
     const cols = (r) => [...r.children].filter((c) => !c.classList.contains('g-count') && !c.classList.contains('git-revert')).length;
-    assert_(cols(fileRows[0]) === cols(dirRows[0]),
-      '目录行与文件行的列结构一致: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
-    // ② 平铺：文件行也要带 caret 占位（与目录行同列宽）
+    assert_(cols(dirRows[0]) === cols(fileRows[0]) - 1,
+      '目录行比文件行少一个徽章列: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
+    assert_(fileRows.every((r) => r.querySelector('.badge')), '文件行都有状态徽章');
+    // ② 平铺：文件行也带 caret 占位；名字列宽由 JS 按"最长名字"统一写 inline flex-basis
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick(); await tick();
     const flatRows = $allIn($(dom, '#commit-list'), '.git-file');
     assert_(flatRows.length > 0 && flatRows.every((r) => r.querySelector('.caret-spacer')), '平铺行也有 caret 占位');
     assert_($allIn($(dom, '#commit-list'), '.git-file .dir').length > 0, '平铺行显示父目录前缀');
+    // 平铺名字列宽：JS 量最长名字后统一写 flex-basis → 所有行必须**同一个值**（否则就是各自自适应）
+    const bases = $allIn($(dom, '#commit-list'), '.git-file.flat .nm').map((n) => n.style.flexBasis);
+    assert_(bases.length > 1 && bases.every((b) => b && b === bases[0]),
+      '平铺：所有名字列宽相同（JS 按最长名字统一）: ' + [...new Set(bases)].join(','));
+    assert_(!/46%/.test(bases[0]) && parseFloat(bases[0]) > 20,
+      '平铺：名字列宽是按内容算出来的 px（不是兜底的 46%）: ' + bases[0]);
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick(); await tick();
     await g(dom, 'GitPanel.closeDialog()');

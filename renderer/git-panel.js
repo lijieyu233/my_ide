@@ -509,6 +509,9 @@ const GitPanel = (() => {
     list.appendChild(renderIgnoredSection()); // PyCharm「忽略的文件」节点：默认收起，展开才遍历
     updateCheckUI();
     gitSelIdx = -1; // 重新渲染后重置键盘导航选中
+    // ⚠ 必须在**这里**量（列表已挂到 DOM，Range 才量得到文字宽度）：
+    //   平铺名字列宽 = 这一列表里最长名字的宽度（不留"一大片空白"）。放在 buildFlatList 里量会拿到 0。
+    applyFlatNameCol(filesEl);
   }
 
   // ---------- 「忽略的文件」节点（PyCharm）：默认收起，展开时才遍历工作区 ----------
@@ -1527,11 +1530,10 @@ const GitPanel = (() => {
         cb.type = 'checkbox';
         gTitle.appendChild(cb);
       }
-      // 空占位：对齐文件行的徽章列，让"同层目录名 / 文件名"从同一个 x 起
-      const bsp = document.createElement('span');
-      bsp.className = 'badge-spacer';
-      bsp.setAttribute('aria-hidden', 'true');
-      gTitle.appendChild(bsp);
+      // ⚠ 目录行**不留徽章空位**：名称紧跟复选框（PyCharm 同款）。
+      //   以前这里放了个 16px 空占位，为的是让"同层目录名与文件名对齐" —— 但用户直接圈着那块空白问
+      //   "这里空一大片是干什么的"：目录没有状态徽章，留空纯属浪费；那一列只有文件行需要（M/?/A）。
+      //   层级靠**复选框阶梯**（每级 20px）表达，不靠把目录名推到徽章列。
       gTitle.appendChild(nm);
       gTitle.appendChild(ct);
       gTitle.title = '点击收起 / 展开 ' + name;
@@ -1596,6 +1598,42 @@ const GitPanel = (() => {
   //   「分节标题 → 一级目录」正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）；
   //   平铺行不参与层级，保持原基准 8（否则平铺视图整体右移 8px，与刚定版的列对齐打架）。
   const TREE_INDENT = 20;
+
+  // 平铺视图的名字列宽 = **这一列表里最长名字的自然宽度**（封顶行宽的 46%）。
+  //   ⚠ 固定 46% 在名字都很短时会留出"一大片空白"（用户圈着截图问"这里空一大片"）；
+  //     而让名字列各自自适应又会让路径起点随行漂移（v3 的老毛病）。取"最长名字"两头都占：
+  //     列起点固定（所有名字/路径都对齐）+ 名字与路径之间不留空。
+  //   ⚠ 必须在**挂到 DOM 之后**量（Range 量文字要有布局）→ 由 render() 末尾调用，不是 buildFlatList。
+  function applyFlatNameCol(scopeEl) {
+    const nms = [...(scopeEl || document).querySelectorAll('.git-file.flat .nm')];
+    if (!nms.length) return;
+    const host = nms[0].closest('.git-group-body') || scopeEl;
+    const avail = ((host && host.getBoundingClientRect().width) || 320) * 0.46;
+    const cap = Math.max(80, avail);
+    let w = 0;
+    for (const el of nms) {
+      const tn = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!tn) { el.style.flexBasis = ''; continue; }
+      // ⚠ jsdom 的 Range **没有** getBoundingClientRect（会直接抛 "is not a function"，
+      //   连累一大片无关用例）→ 量不到就退回按字符估宽（CJK 12px / 拉丁 6.6px @ .92em）。
+      let tw = 0;
+      try {
+        const r = document.createRange();
+        r.setStart(tn, 0);
+        r.setEnd(tn, tn.textContent.length);
+        if (typeof r.getBoundingClientRect === 'function') {
+          const rect = r.getBoundingClientRect();
+          tw = (rect && rect.width) || 0;
+        }
+      } catch { tw = 0; }
+      if (!tw) {
+        for (const ch of String(tn.textContent)) tw += /[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 12 : 6.6;
+      }
+      w = Math.max(w, tw);
+    }
+    const px = Math.min(Math.ceil(w) + 2, cap);
+    for (const el of nms) el.style.flexBasis = px + 'px';
+  }
 
   // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
   //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
