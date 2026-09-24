@@ -153,6 +153,12 @@ Shortcuts.register('commit-push', { desc: '提交并推送', keys: ['ctrl+shift+
   App.showTool('git');
   if (window.GitPanel && GitPanel.doCommit) return GitPanel.doCommit(true);
 } });
+// Ctrl+Alt+P = 提交面板：切换分组方式（按目录 ↔ 平铺）—— PyCharm 同款键位
+Shortcuts.register('commit-group-by-dir', { desc: '提交面板：切换分组方式（按目录 / 平铺）', keys: ['ctrl+alt+p'], run: () => {
+  if (!window.GitPanel || !GitPanel.isOpen()) return;
+  App.showTool('git');
+  GitPanel.toggleGroupByDir();
+} });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });

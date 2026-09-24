@@ -1002,11 +1002,3 @@ const App = (() => {
 window.App = App;
 
 document.addEventListener('DOMContentLoaded', () => App.init());
-
-// Ctrl+Alt+P：切换提交面板的分组方式（按目录 ↔ 平铺）—— PyCharm 同款快捷键
-document.addEventListener('keydown', (e) => {
-  if (!e.ctrlKey || !e.altKey || e.key.toLowerCase() !== 'p') return;
-  if (!window.GitPanel || !window.GitPanel.isOpen || !window.GitPanel.isOpen()) return;
-  e.preventDefault();
-  window.GitPanel.toggleGroupByDir();
-});
