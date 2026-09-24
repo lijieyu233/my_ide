@@ -1263,9 +1263,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(st, 'loading/错误状态节点出现');
     assert_(st.textContent.includes('预览失败') || st.textContent.includes('解析'), '状态显示加载或错误, got: ' + st.textContent);
     assert_($(dom, '.office-retry'), '错误降级提供重试按钮');
-    const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
+    // 编辑器操作区已从 body 内的工具条行迁到标签栏右端（#tab-actions）
+    const hasSrc = $allIn($(dom, '#tab-actions'), 'button').some((b) => b.textContent.includes('源码'));
     assert_(!hasSrc, 'docx 无「查看源码」按钮（二进制无源码可看）');
-    const hasOpen = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('系统打开'));
+    const hasOpen = $allIn($(dom, '#tab-actions'), 'button').some((b) => b.textContent.includes('系统打开'));
     assert_(hasOpen, 'docx 工具栏提供「系统打开」按钮');
   });
 
