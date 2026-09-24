@@ -38,17 +38,20 @@ async function currentBranch(root) {
 function matrixToStatus(m) {
   const [, h, w, s] = m;
   const H = h > 0, W = w > 0, S = s > 0;
+  // inIndexOnly：这份变更**整份已经在 index 里**（stage=2 = index 与工作区一致）。
+  // stage=3（index 与工作区不一致）说明 index 与工作区各有一份改动，不算「只在暂存区」。
+  const inIndexOnly = s === 2;
   if (!H && !W && !S) return null;                       // 不存在
   if (H && W && S && h === w && w === s) return null;    // 未修改
-  if (!H && W && !S) return { status: 'added', label: '新增' };                    // 未跟踪
-  if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增' }; // 已暂存新增（或暂存后又改）
-  if (H && !W && !S) return { status: 'deleted', label: '已删除' };                  // 工作区删除
-  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）' };
-  if (H && W && !S) return { status: 'modified', label: '已修改' };
+  if (!H && W && !S) return { status: 'added', label: '新增', inIndexOnly };                    // 未跟踪
+  if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增', inIndexOnly }; // 已暂存新增（或暂存后又改）
+  if (H && !W && !S) return { status: 'deleted', label: '已删除', inIndexOnly };                  // 工作区删除
+  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）', inIndexOnly };
+  if (H && W && !S) return { status: 'modified', label: '已修改', inIndexOnly };
   // H && W && S：有修改
-  if (h === s) return { status: 'modified', label: '已修改' };        // [1,2,1] 未暂存
-  if (w === s) return { status: '*modified', label: '已修改（已暂存）' }; // [1,2,2]
-  return { status: '*modified', label: '已修改（暂存+未暂存）' };          // [1,2,3]
+  if (h === s) return { status: 'modified', label: '已修改', inIndexOnly };        // [1,2,1] 未暂存
+  if (w === s) return { status: '*modified', label: '已修改（已暂存）', inIndexOnly }; // [1,2,2]
+  return { status: '*modified', label: '已修改（暂存+未暂存）', inIndexOnly };          // [1,2,3]
 }
 
 // ---------- .gitignore 支持（isomorphic-git statusMatrix 不解析 .gitignore，需自行过滤）----------
@@ -163,7 +166,7 @@ async function status(dir) {
             headText.replace(/\r\n/g, '\n') === raw.toString('utf8').replace(/\r\n/g, '\n')) continue;
       }
     }
-    changed.push({ file: native(row[0]), status: st.status, label: st.label });
+    changed.push({ file: native(row[0]), status: st.status, label: st.label, inIndexOnly: !!st.inIndexOnly });
   }
   changed.sort((a, b) => a.file.localeCompare(b.file));
   return { isRepo: true, root, branch, changed };
@@ -293,10 +296,61 @@ async function getAuthor(root) {
 //   所以「未勾选但已在 index 里」的文件必须显式 resetIndex 取消暂存，否则它会被一起提交
 //   （老实现只 add 不 unstage → 取消勾选形同虚设，且暂存内容会被这次提交"吃掉"）。
 //   resetIndex 只改 index，不动工作区 → 未勾选的改动仍留在工作区，提交后照常显示为未暂存。
+// ---------- index（暂存区）工具：提交事务要用 ----------
+// .git 可能是文件（worktree / submodule 的 gitdir 指针），别假设它是目录
+function resolveGitDir(root) {
+  const g = path.join(root, '.git');
+  try {
+    if (fs.statSync(g).isDirectory()) return g;
+    const txt = fs.readFileSync(g, 'utf8');
+    const m = txt.match(/^gitdir:\s*(.+)$/mi);
+    if (m) return path.resolve(root, m[1].trim());
+  } catch {}
+  return g;
+}
+
+// 读 index 里每个条目的 {oid, mode}（提交事务要在改 index 之前留好"原件"）
+// ⚠ walker 给的是**带异步方法的条目对象**（`await e.type()` / `await e.oid()` / `await e.mode()`），
+//   不是普通对象；而且 `map` 返回 null 会把整棵子树剪掉（实测只吐根目录一条）→ 目录必须返回真值。
+async function readIndexEntries(root) {
+  const map = new Map();
+  try {
+    await git.walk({
+      fs, dir: root, cache: {},
+      trees: [git.STAGE()],
+      map: async (filepath, [stage]) => {
+        if (!stage) return 'null';
+        const t = await stage.type();
+        if (t !== 'blob') return t;
+        map.set(posix(filepath), { oid: await stage.oid(), mode: await stage.mode() });
+        return t;
+      },
+    });
+  } catch {}
+  return map;
+}
+
 async function commit(dir, { message, files, amend = false, author: authorOverride }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const author = authorOverride || await getAuthor(root);
+  // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但**不许动用户的暂存区** ----------
+  // 背景：`git.commit()` 提交的是"当前 index 那一棵树"，而 index 是全仓库一份（.git/index）。
+  // 所以"只提交勾选的文件"必然要先临时把 index 改成"只有勾选内容"的样子 —— 老实现只做了这一步，
+  // 提交完就不管了，于是"用户在终端 git add 过、这次没勾"的内容会被顺手 unstage（真实的数据损失）。
+  //
+  // 事务三步：
+  //   ① 改 index 之前，把 index 里每个条目的 {oid, mode} 留一份（readIndexEntries）
+  //   ② 临时把未勾选文件的 index 条目退回 HEAD（resetIndex）→ 只暂存勾选内容 → commit
+  //   ③ 用 updateIndex 把①里记下的条目**原样写回**（其余文件的暂存状态一点不变）
+  // 例：HEAD A=a0 B=b0，用户终端 `git add A`（index A=a1），工作区 A=a1 B=b1；IDE 只勾 B。
+  //     → 提交后 HEAD A=a0 B=b1，index 仍是 A=a1（仍 staged）+ B=b1（与新 HEAD 一致，干净）。
+  const idxEntries = await readIndexEntries(root);
+  const idxPath = path.join(resolveGitDir(root), 'index');
+  let idxBytes = null;
+  try { if (fs.existsSync(idxPath)) idxBytes = fs.readFileSync(idxPath); } catch {}
+  const touched = [];   // 我们改过 index 条目的文件（提交后要还回去）
+  let committed = false;
   try {
     if (files) {
       const sel = new Set(files.map((f) => posix(f)));
@@ -306,9 +360,9 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
         const p = posix(row[0]);
         if (sel.has(p)) continue;
         const [, h, , s] = row;
-        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 取消暂存
+        // s > 0 && s !== h → index 与 HEAD 不一致（有暂存内容）→ 先把暂存内容挪开，保证不混进本次提交
         if (s > 0 && s !== h) {
-          try { await git.resetIndex({ fs, dir: root, filepath: p }); } catch {}
+          try { await git.resetIndex({ fs, dir: root, filepath: p }); touched.push(p); } catch {}
         }
       }
     }
@@ -323,9 +377,30 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
       }
     }
     const r = await git.commit({ fs, dir: root, message, author, amend });
-    return { ok: true, oid: r };
+    committed = true;
+    // ③ 把①里记下的 index 条目原样写回（含"暂存后又改过"的情形：写回的是当时的 oid，不是工作区内容）
+    for (const p of touched) {
+      const e = idxEntries.get(p);
+      try {
+        if (e) await git.updateIndex({ fs, dir: root, filepath: p, oid: e.oid, mode: e.mode });
+        else await git.updateIndex({ fs, dir: root, filepath: p, remove: true });
+      } catch {}
+    }
+    // 本次提交带走的文件：index 拉回与新 HEAD 一致（否则会显示成"暂存了回退内容"）
+    if (files && files.length) {
+      for (const f of files) {
+        try {
+          if (fs.existsSync(path.join(root, f))) await git.add({ fs, dir: root, filepath: posix(f), force: true });
+          else await git.remove({ fs, dir: root, filepath: posix(f) });
+        } catch {}
+      }
+    }
+    return { ok: true, oid: r, restored: touched.length };
   } catch (e) {
-    return { ok: false, error: String(e.message || e) };
+    // 事务失败：尽量把 index 恢复到进入时的样子（字节级兜底），别把用户的暂存状态弄丢
+    if (idxBytes) { try { fs.writeFileSync(idxPath, idxBytes); } catch {} }
+    else { try { for (const p of touched) await git.resetIndex({ fs, dir: root, filepath: p }); } catch {} }
+    return { ok: false, error: String(e.message || e) + (committed ? '（提交已产生，但暂存区恢复失败）' : '') };
   }
 }
 
@@ -485,13 +560,28 @@ async function logGraph(dir, limit = 500, ref = null) {
 // ---------- 分支 ----------
 async function branches(dir) {
   const { yes, root } = await isRepo(dir);
-  if (!yes) return { isRepo: false, error: '不是 Git 仓库', branches: [], current: '' };
+  if (!yes) return { isRepo: false, error: '不是 Git 仓库', branches: [], current: '', remotes: [], upstream: '' };
   try {
     const list = await git.listBranches({ fs, dir: root });
     const current = (await git.currentBranch({ fs, dir: root, fullname: false })) || '';
-    return { isRepo: true, branches: list.sort(), current };
+    // M4 收尾：远程分支（各 remote 下的引用）+ 当前分支的 upstream（命令行 pull/push 的默认去向）
+    const remotes = [];
+    try {
+      const rs = await git.listRemotes({ fs, dir: root }).catch(() => []);
+      for (const rm of rs) {
+        const bs = await git.listBranches({ fs, dir: root, remote: rm.remote }).catch(() => []);
+        for (const b of bs) remotes.push(rm.remote + '/' + b);
+      }
+    } catch {}
+    let upstream = '';
+    try {
+      const N = require('./git-native');
+      const u = await N.run(['rev-parse', '--abbrev-ref', 'HEAD@{upstream}'], { cwd: root, timeout: 5000, env: N.NO_EDIT });
+      if (u.ok) upstream = u.stdout.trim();
+    } catch {}
+    return { isRepo: true, branches: list.sort(), current, remotes, upstream };
   } catch (e) {
-    return { isRepo: true, error: String(e.message || e), branches: [], current: '' };
+    return { isRepo: true, error: String(e.message || e), branches: [], current: '', remotes: [], upstream: '' };
   }
 }
 async function checkout(dir, ref) {
@@ -658,23 +748,27 @@ function buildHunks(aText, bText, ctx = 3) {
   if (a.length > DIFF_MAX_LINES || b.length > DIFF_MAX_LINES) return coarseHunks(a, b);
   const ops = diffLines(aText, bText);
   if (!ops.some((o) => o.type !== 'ctx')) return [];
+  // 分块规则与 git 一致：**两处改动之间隔了 > 2×ctx 行未改动内容就断成两块**。
+  // ⚠ 老实现是"从第一处改动一路吃到最后一处"，一个文件永远只有 1 块 —— 那样 M3 的
+  //   hunk 级暂存就成了"整文件暂存"，等于没做。（改动 ≤ 2×ctx 行时仍合成一块，与 git 相同）
+  const changeIdx = [];
+  for (let i = 0; i < ops.length; i++) if (ops[i].type !== 'ctx') changeIdx.push(i);
   const groups = [];
-  let cur = null;
-  for (const o of ops) {
-    if (o.type === 'ctx') {
-      if (cur) cur.push(o);
-    } else {
-      if (!cur) { cur = []; groups.push(cur); }
-      cur.push(o);
-    }
+  let cur = [changeIdx[0]];
+  for (let k = 1; k < changeIdx.length; k++) {
+    let gap = 0;
+    for (let i = changeIdx[k - 1] + 1; i < changeIdx[k]; i++) if (ops[i].type === 'ctx') gap++;
+    if (gap > ctx * 2) { groups.push(cur); cur = []; }
+    cur.push(changeIdx[k]);
   }
+  groups.push(cur);
   const hunks = [];
   for (const g of groups) {
-    const first = g[0], last = g[g.length - 1];
+    const first = ops[g[0]], last = ops[g[g.length - 1]];
     const rows = [];
     const ctxHead = ops.filter((o) => o.type === 'ctx' && o.aLine < first.aLine).slice(-ctx);
     const ctxTail = ops.filter((o) => o.type === 'ctx' && o.aLine > last.aLine).slice(0, ctx);
-    for (const o of [...ctxHead, ...g, ...ctxTail]) {
+    for (const o of [...ctxHead, ...g.map((i) => ops[i]), ...ctxTail]) {
       if (o.type === 'ctx') rows.push({ type: 'ctx', aText: a[o.aLine] ?? '', bText: b[o.bLine] ?? '', aNum: o.aLine + 1, bNum: o.bLine + 1 });
       else if (o.type === 'del') rows.push({ type: 'del', aText: a[o.aLine] ?? '', bText: '', aNum: o.aLine + 1, bNum: 0 });
       else rows.push({ type: 'add', aText: '', bText: b[o.bLine] ?? '', aNum: 0, bNum: o.bLine + 1 });
@@ -716,6 +810,161 @@ async function diffWorkdir(dir, file) {
   }
   return { file: rel, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
 }
+
+// ---------- M3：双区差异（未暂存 / 已暂存）+ hunk 级暂存 ----------
+// 双区语义（对齐 git status 的两栏，也是 M3 的 UI 依据）：
+//   「更改」区   → **index → 工作区**：diffUnstaged（这是"还没进暂存区"的那部分）
+//   「已暂存」区 → **HEAD → index**：diffStaged  （这是"已经进暂存区、下次提交会带走"的那部分）
+// 文件同时有暂存与未暂存改动时（statusMatrix 的 stage=3），两个 diff 各自成立、互不干扰。
+
+const stripCR = (s) => (String(s).endsWith('\r') ? String(s).slice(0, -1) : String(s));
+const detectEol = (t) => (/\r\n/.test(t) ? '\r\n' : '\n');
+function splitEol(t) {
+  if (t === '') return { lines: [], had: false };   // 空文本 = 0 行（别变成 ['']）
+  const had = /\n$/.test(t);
+  const lines = String(t).split('\n');
+  if (had) lines.pop();
+  return { lines, had };
+}
+
+// 用同一套 CRLF 规则把两段文本变成 hunk（与 diffWorkdir 完全一致，别各写一套）
+function hunkify(aText, bText) {
+  let a = aText, b = bText;
+  if (a && b && a.indexOf('\r') === -1 && b.includes('\r\n')) b = b.replace(/\r\n/g, '\n');
+  if (a === b) return { oldText: a, newText: b, hunks: [] };
+  return { oldText: a, newText: b, hunks: buildHunks(a, b) };
+}
+
+// 读 index 里该文件的文本（拿不到 = 文件还没进过 index）
+async function indexTextOf(root, rel) {
+  const entries = await readIndexEntries(root);
+  const e = entries.get(posix(rel));
+  if (!e) return { text: null, mode: 33188 };
+  try {
+    const { blob } = await git.readBlob({ fs, dir: root, oid: e.oid });
+    return { text: Buffer.from(blob).toString('utf8'), mode: e.mode || 33188 };
+  } catch { return { text: null, mode: e.mode || 33188 }; }
+}
+
+async function diffUnstaged(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const idx = await indexTextOf(root, rel);
+  let newText = null;
+  try {
+    const st = fs.statSync(abs);
+    if (st.size > 20 * 1024 * 1024) return { file: rel, tooLarge: true, size: st.size };
+    newText = fs.readFileSync(abs, 'utf8');
+  } catch {}
+  if (idx.text === null && newText === null) return { file: rel, unchanged: true };
+  if (isBinaryText(idx.text) || isBinaryText(newText)) return { file: rel, binary: true };
+  const h = hunkify(idx.text ?? '', newText ?? '');
+  return { file: rel, base: 'index', side: 'unstaged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
+}
+
+async function diffStaged(dir, file) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
+  const idx = await indexTextOf(root, rel);
+  if (idx.text === null) return { file: rel, unchanged: true };   // index 里没有它 = 没有已暂存内容
+  if (isBinaryText(headText) || isBinaryText(idx.text)) return { file: rel, binary: true };
+  const h = hunkify(headText ?? '', idx.text);
+  return { file: rel, base: 'head', side: 'staged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
+}
+
+// 把 hunk 应用到一段文本（forward: a→b / reverse: b→a）。
+// ⚠ **带前置校验**：目标位置的现有内容必须与 hunk 对应侧逐行相符，否则拒绝并让上层提示刷新。
+//   这是"自研拼接"能站得住脚的关键 —— 我们不猜，改不动就报错（比 git apply 的模糊匹配更保守）。
+// ⚠ 行尾：比对时统一剥掉行尾 \r，写回时按原文的 EOL 约定拼（autocrlf 仓库的文件不会被改成 LF）。
+function applyHunkToText(text, hunk, reverse) {
+  const { lines, had } = splitEol(text);
+  const eol = detectEol(text);
+  const start = reverse ? hunk.newStart : hunk.oldStart;
+  const count = reverse ? hunk.newLines : hunk.oldLines;
+  const expect = hunk.rows.filter((r) => (reverse ? r.bNum : r.aNum)).map((r) => stripCR(reverse ? r.bText : r.aText));
+  const want = hunk.rows.filter((r) => (reverse ? r.aNum : r.bNum)).map((r) => stripCR(reverse ? r.aText : r.bText));
+  const have = lines.slice(start - 1, start - 1 + count).map(stripCR);
+  if (have.length !== expect.length || have.some((l, i) => l !== expect[i])) {
+    return { ok: false, error: '文件内容与差异不一致（可能已被改动），请刷新后重试' };
+  }
+  const out = lines.slice(0, start - 1).concat(want, lines.slice(start - 1 + count));
+  // 统一剥掉行尾 \r 再按原文的 EOL 拼回：混着来的话会拼出 \r\r\n
+  return { ok: true, text: out.map(stripCR).join(eol) + (had ? eol : '') };
+}
+
+// 暂存一个 hunk：把「index → 工作区」的第 idx 块写进 index（= git add -p 的那一步）
+async function stageHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffUnstaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块暂存' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  const idxText = await indexTextOf(root, rel);
+  const r = applyHunkToText(idxText.text ?? '', h, false);
+  if (!r.ok) return r;
+  // ⚠ writeBlob 返回的是 **oid 字符串**（不是 {oid}）；传 undefined 给 updateIndex 会让它
+  //    退回"拿工作区内容算哈希"——表现为"暂存整块变成暂存整个文件"（踩过，见 M3 文档）
+  const oid = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
+  if (!oid) return { ok: false, error: '写入 blob 失败' };
+  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid, mode: idxText.mode });
+  return { ok: true, oid };
+}
+
+// 取消暂存一个 hunk：把「HEAD → index」的第 idx 块从 index 里撤掉（= git reset -p 的那一步）
+async function unstageHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffStaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块取消暂存' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  const idxText = await indexTextOf(root, rel);
+  const r = applyHunkToText(idxText.text ?? '', h, true);
+  if (!r.ok) return r;
+  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
+  // 还原到与 HEAD 完全一致时，直接 resetIndex（index 条目回到 HEAD，状态最干净）
+  if ((headText ?? '') === r.text) {
+    await git.resetIndex({ fs, dir: root, filepath: posix(rel) });
+    return { ok: true, reset: true };
+  }
+  const w = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
+  if (!w) return { ok: false, error: '写入 blob 失败' };
+  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid: w, mode: idxText.mode });
+  return { ok: true, oid: w };
+}
+
+// 回退一个 hunk：把工作区那一块改回 index 里的样子（**只动工作区，不碰 index**）
+async function revertHunk(dir, file, idx) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  const abs = path.isAbsolute(file) ? file : path.join(root, file);
+  const rel = path.relative(root, abs);
+  const d = await diffUnstaged(root, rel);
+  if (d.error) return { ok: false, error: d.error };
+  if (d.binary) return { ok: false, error: '二进制文件不能按块回退' };
+  const h = (d.hunks || [])[idx];
+  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
+  let raw = null;
+  try { raw = fs.readFileSync(abs, 'utf8'); } catch {}
+  if (raw === null) return { ok: false, error: '读不到工作区文件' };
+  const r = applyHunkToText(raw, h, true);
+  if (!r.ok) return r;
+  try { fs.writeFileSync(abs, r.text); } catch (e) { return { ok: false, error: '写回失败：' + String(e.message || e) }; }
+  return { ok: true };
+}
+
 
 // ---------- 某提交涉及的文件列表 ----------
 async function treeFiles(root, oid) {
@@ -854,45 +1103,18 @@ async function diffRefs(dir, aRef, bRef, file) {
 }
 
 // ---------- 远程（fetch / pull / push / remote 管理）----------
-// ---------- 系统 git 回退 ----------
-// isomorphic-git 仅支持 HTTPS，不支持 SSH；遇到 git@ / ssh:// 远程必须调用系统 git
-// （由其处理 SSH 密钥、凭证助手等）。HTTPS 远程也优先试系统 git（可复用系统凭证助手与 git config 代理），
-// 失败再回退 isomorphic-git + 应用内凭证。
-let _systemGitOk = null;
-function systemGitAvailable() {
-  if (_systemGitOk !== null) return _systemGitOk;
-  try {
-    require('child_process').execFileSync('git', ['--version'], { timeout: 5000, windowsHide: true });
-    _systemGitOk = true;
-  } catch { _systemGitOk = false; }
-  return _systemGitOk;
-}
-function runGit(root, args, timeout) {
-  return new Promise((resolve) => {
-    execFile('git', args, {
-      cwd: root,
-      timeout: timeout || 120000,
-      env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never' }),
-      maxBuffer: 50 * 1024 * 1024,
-    }, (err, stdout, stderr) => {
-      resolve({ ok: !err, code: err && err.code, stdout: String(stdout || ''), stderr: String(stderr || '') });
-    });
-  });
-}
-function isSshUrl(url) {
+// ---------- SSH 远程必须走原生 git ----------
+// isomorphic-git 只认 http(s)，`git@host:` / `ssh://` 一律不支持（会直接抛错），
+// 且 SSH 要靠系统 ssh 密钥/known_hosts，只能交给命令行 git。
+// 这里只做「是否必须走原生」的判定；实际执行统一交给 git-native
+// （能力探测选 exe、幂等重试、NO_EDIT 环境），不另起一套 spawn。
+function needNativeRemote(url) {
   return /^git@|^ssh:\/\//i.test(String(url || ''));
-}
-// 该远程能否先走系统 git：SSH 必走；HTTPS 优先（失败再回退 isomorphic-git）
-function canUseSystemGit(url) {
-  return systemGitAvailable() && !!url && (isSshUrl(url) || /^https?:/i.test(url));
-}
-// 命令行 git 失败时的末行错误信息（stderr 优先，其次 stdout）
-function lastLine(r) {
-  return r.stderr.split('\n').filter(Boolean).pop() || r.stdout.split('\n').filter(Boolean).pop() || '';
 }
 
 const rawHttp = require('isomorphic-git/http/node');
-const { execFile } = require('child_process');
+// 原生 git 后端（M2）：只承担 credential / proxy 这类"必须问命令行"的能力
+const nativeGit = require('./git-native');
 const netHttp = require('http');
 const netHttps = require('https');
 const tls = require('tls');
@@ -908,22 +1130,8 @@ function hostOf(url) {
 // https 目标构造 HTTP CONNECT 隧道 agent 注入底层 http client。
 
 // 查 git config 里该远程 URL 的 http.proxy（不走网络，仅读配置；结果缓存）
-const gitProxyCache = new Map(); // root \n url -> proxyUrl | ''
-function gitConfigProxy(root, url) {
-  const key = root + '\n' + url;
-  if (gitProxyCache.has(key)) return Promise.resolve(gitProxyCache.get(key));
-  return new Promise((resolve) => {
-    let settled = false;
-    // 失败（超时/异常/未配置读失败）不写缓存：一次抖动若把 null 固化进进程，
-    // 整个会话推送都会直连（绿盾环境直连必挂），重启应用才能恢复。
-    const done = (v, cache) => { if (!settled) { settled = true; if (cache && v) gitProxyCache.set(key, v); resolve(v || null); } };
-    try {
-      execFile('git', ['-C', root, 'config', '--get-urlmatch', 'http.proxy', url], {
-        timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024,
-      }, (err, stdout) => done(!err && stdout ? stdout.trim() : null, !err && !!stdout));
-    } catch { done(null, false); }
-  });
-}
+// —— 已收编进原生后端（git-native.js 的 proxyFor，实现与缓存都在那边）
+function gitConfigProxy(root, url) { return nativeGit.proxyFor(root, url); }
 
 // HTTP CONNECT 隧道 agent（https 目标经 http 代理；agent 按 proxyUrl 缓存复用）
 // 注意：createConnection 是 Agent 的原型方法，构造参数传入会被忽略，必须子类覆写。
@@ -974,36 +1182,9 @@ async function httpFor(root, url) {
   return { request: (req) => rawHttp.request(Object.assign({}, req, { agent })) };
 }
 
-// 系统 Git 凭证管理器查询（git credential fill，与命令行共享凭证）。
-// GCM_INTERACTIVE=never + GIT_TERMINAL_PROMPT=0：查不到直接失败，绝不弹窗阻塞 UI。
-// 结果按 protocol//host 进程内缓存（含失败 null），避免每次推送都 spawn 一次 git。
-const sysCredCache = new Map();
-function systemCredentialFill(url) {
-  let u; try { u = new URL(url); } catch { return Promise.resolve(null); }
-  if (!/^https?:$/.test(u.protocol)) return Promise.resolve(null); // 仅支持 http(s) 远程
-  const key = u.protocol + '//' + u.host;
-  if (sysCredCache.has(key)) return Promise.resolve(sysCredCache.get(key));
-  return new Promise((resolve) => {
-    let settled = false;
-    // 失败（超时/GCM 未响应等）不写缓存：一次抖动若把 null 固化进进程，
-    // 后续推送的候选链会跳过系统凭证直接 401，重启应用才能恢复。
-    const done = (v, cache) => { if (!settled) { settled = true; if (cache) sysCredCache.set(key, v); resolve(v); } };
-    try {
-      const child = execFile('git', ['credential', 'fill'], {
-        timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
-        env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
-      }, (err, stdout) => {
-        if (err) return done(null, false);
-        const s = String(stdout);
-        const mu = s.match(/^username=(.*)$/m), mp = s.match(/^password=(.*)$/m);
-        done(mu && mp ? { username: mu[1], password: mp[1] } : null, !!(mu && mp));
-      });
-      child.stdin.on('error', () => {}); // stdin 异常不致命（超时 kill 时可能触发）
-      child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
-      child.stdin.end();
-    } catch { done(null); }
-  });
-}
+// 系统 Git 凭证管理器查询 —— 已收编进原生后端（git-native.js）
+// （M2「按能力路由」：credential / proxy 走 native，其余继续走 isomorphic-git）
+function systemCredentialFill(url) { return nativeGit.credentialFill(url); }
 
 // 候选凭证迭代制（onAuth 与 onAuthFailure 共用同一迭代器）：
 // isomorphic-git 语义：首次 401 调 onAuth 取凭证，之后每次 401 调 onAuthFailure 取下一个；
@@ -1155,11 +1336,12 @@ async function fetchRemote(dir, { auth } = {}) {
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
-  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
-  if (canUseSystemGit(pr.url)) {
-    const r = await runGit(root, ['fetch', pr.name, '--prune']);
-    if (r.ok) return { ok: true, fetchHead: true };
-    if (isSshUrl(pr.url)) return { ok: false, error: lastLine(r) || 'fetch 失败' };
+  // SSH 远程 isomorphic-git 不支持 → 走原生 git（fetch 幂等，允许重试一次抖动的失败）
+  if (needNativeRemote(pr.url)) {
+    const N = require('./git-native');
+    const r = await N.runRetry(['fetch', '--prune', pr.name], { cwd: root, timeout: 120000, env: N.NO_EDIT });
+    return r.ok ? { ok: true, fetchHead: true }
+      : { ok: false, error: (r.stderr.trim() || r.error || 'fetch 失败') };
   }
   try {
     return await withRemoteUrlFix(root, pr, async () => {
@@ -1176,41 +1358,52 @@ async function fetchRemote(dir, { auth } = {}) {
 }
 
 // pull：fetch + fast-forward 合并（分叉时明确报错，不静默产生合并提交）
-async function pullRemote(dir, { auth } = {}) {
+// 拉取策略（M4 收尾）：ff=默认快进（isomorphic，保留既有凭证/代理兜底链）；
+// ff-only=分叉就报错；merge=分叉时建合并提交；rebase=把本地提交重放上去。
+// merge / rebase / ff-only 走**原生 git**（isomorphic 没有真合并；fetch 也用原生，
+// 这样 FETCH_HEAD 语义与命令行完全一致），撞冲突交给 M4 的解决流程。
+async function pullRemote(dir, { auth, strategy } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无分支' };
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
-  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
-  if (canUseSystemGit(pr.url)) {
-    const r = await runGit(root, ['pull', '--ff-only', pr.name, branch]);
-    if (r.ok) return { ok: true };
-    const msg = lastLine(r) || 'pull 失败';
-    if (/fast-forward|non-fast-forward|refusing to merge/i.test(msg)) {
-      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
-    }
-    if (isSshUrl(pr.url)) return { ok: false, error: msg };
-  }
-  try {
-    return await withRemoteUrlFix(root, pr, async () => {
-      const onAuth = onAuthOf(auth, pr.url);
-      const r = await git.pull({
-        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
-        author: await getAuthor(root),
-        onAuth, onAuthFailure: onAuth,
+  const strat = ['ff', 'ff-only', 'merge', 'rebase'].includes(strategy) ? strategy : 'ff';
+  // SSH 远程 isomorphic 完全不支持 → 不进这个分支，直接落到下面的原生 git 流程（语义等价）
+  if (strat === 'ff' && !needNativeRemote(pr.url)) {
+    try {
+      return await withRemoteUrlFix(root, pr, async () => {
+        const onAuth = onAuthOf(auth, pr.url);
+        const r = await git.pull({
+          fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
+          author: await getAuthor(root),
+          onAuth, onAuthFailure: onAuth,
+        });
+        return { ok: true, oid: r && r.oid, strategy: strat };
       });
-      return { ok: true, oid: r && r.oid };
-    });
-  } catch (e) {
-    const msg = String(e.message || e);
-    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
-    if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
-      return { ok: false, error: '本地与远程已分叉，暂不支持合并（请先提交本地更改或用命令行处理）' };
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
+      if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
+        return { ok: false, error: '本地与远程已分叉：请换「拉取并合并 / 拉取并变基」，或先处理本地更改' };
+      }
+      return { ok: false, error: msg };
     }
-    return { ok: false, error: msg };
   }
+  // ---- 以下策略走原生 git ----
+  const N = require('./git-native');
+  const f = await N.run(['fetch', '--prune', pr.name], { cwd: root, timeout: 120000, env: N.NO_EDIT });
+  if (!f.ok) return { ok: false, error: '拉取失败：' + (f.stderr.trim() || f.error) };
+  if (strat === 'ff-only') {
+    const m = await N.run(['merge', '--ff-only', 'FETCH_HEAD'], { cwd: root, timeout: 30000, env: N.NO_EDIT });
+    return m.ok ? { ok: true, strategy: strat }
+      : { ok: false, error: '不是快进（本地与远程已分叉）：' + (m.stderr.trim() || m.stdout.trim() || m.error) };
+  }
+  const r = strat === 'rebase' ? await N.rebase(root, 'FETCH_HEAD') : await N.merge(root, 'FETCH_HEAD');
+  if (!r.ok) return { ok: false, error: r.error, strategy: strat, state: r.state };
+  if (r.conflict) return { ok: true, strategy: strat, conflict: true, state: r.state };
+  return { ok: true, strategy: strat, out: r.out };
 }
 
 // push：当前分支 → 主远程同名分支
@@ -1227,18 +1420,19 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
   }
   if (!pr) pr = await primaryRemote(root); // 未指定 / 指定的远程不存在 → 回退主远程
   if (!pr) return { ok: false, error: '未配置远程仓库' };
-  // 系统 git 优先（SSH 必走；HTTPS 复用系统凭证助手），失败再回退 isomorphic-git
-  if (canUseSystemGit(pr.url)) {
+  // SSH 远程 isomorphic-git 不支持 → 走原生 git（重复 push 是幂等 no-op，允许重试抖动的失败）
+  if (needNativeRemote(pr.url)) {
+    const N = require('./git-native');
     const args = ['push'];
     if (force) args.push('--force');
     args.push(pr.name, branch);
-    const r = await runGit(root, args);
+    const r = await N.runRetry(args, { cwd: root, timeout: 120000, env: N.NO_EDIT });
     if (r.ok) return { ok: true, remote: pr.name, branch, force: !!force };
-    const msg = lastLine(r) || 'push 失败';
+    const msg = r.stderr.trim() || r.error || 'push 失败';
     if (/fetch first|behind|non-fast-forward/i.test(msg)) {
       return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
     }
-    if (isSshUrl(pr.url)) return { ok: false, error: msg };
+    return { ok: false, error: msg };
   }
   try {
     return await withRemoteUrlFix(root, pr, async () => {
@@ -1740,6 +1934,8 @@ module.exports = {
   findRoot, isRepo, status, log, logGraph, topoSortNewestFirst, commit, initRepo,
   branches, checkout, createBranch, discard, discardFiles, getUserConfig, setUserConfig,
   diffWorkdir, diffCommit, diffRefs, compareRefs, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
+  // M3：双区差异 + hunk 级暂存/取消暂存/回退（+ 供测试直接验的纯拼接函数）
+  diffUnstaged, diffStaged, stageHunk, unstageHunk, revertHunk, applyHunkToText,
   listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,

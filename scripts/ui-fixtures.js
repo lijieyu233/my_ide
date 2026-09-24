@@ -94,6 +94,28 @@ const OUTLINE_DOC = [
   '二级 B 正文。', '',
 ].join('\n');
 
+// 换行验证文档：正文列被限到 820px 后，这些长行必须在列内折行而不是溢出
+//   · LONG_PARA：一整个长段落（中文折行）
+//   · 表格源码：live 预览里表格不是 widget，就是一行超长的 | a | b | 源码
+//   · 长路径 / 长 URL：中途没有空格，靠 overflow-wrap 断
+const WRAP_DOC = [
+  '# 换行验证', '',
+  '## 1. 长段落', '',
+  '这段文字故意写得很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长，用来验证正文列在 820px 处会正常折行。', '',
+  '## 2. 长路径（无空格，靠 overflow-wrap 断）', '',
+  'D:\\document\\code\\ditto-takinghead-benchmark\\feature\\worker\\generation\\timeline\\source_timeline_rolling_playback_controller.ts', '',
+  '## 3. 表格源码（live 预览里就是一行超长文本）', '',
+  '| 模块 / 入口 | 当前实际行次 | 本次必须处理的边界与改造要点 | 备注 |',
+  '| --- | --- | --- | --- |',
+  '| app.py:create_app | 应用级创建 Timeline / WorkerEngineProxy / DialogueManager | 按运行会话拆分子媒体与调度 | 阶段一 |',
+  '', '## 4. 长代码行（围栏里不折行是正常的，这里只保证它不出列）', '',
+  '```python',
+  'result = engine.dispatch(session_id=session.id, timeline=source_timeline, rolling=True, cover=cover, extra={"a": 1, "b": 2})',
+  '```', '',
+  '## 5. 引用块里的长行', '',
+  '> 代码基线：D:\\document\\code\\ditto-takinghead-benchmark，本次复核 HEAD 为 0945727，同时参考工作区已有修订与未提交改动。', '',
+].join('\n');
+
 // 写入图片与 md 素材
 function writeFixtures(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -102,7 +124,62 @@ function writeFixtures(dir) {
   fs.writeFileSync(png, makePng(1200, 800));
   fs.writeFileSync(md, MMD_DOC, 'utf8');
   fs.writeFileSync(path.join(dir, '_ui_outline.md'), OUTLINE_DOC, 'utf8');
+  fs.writeFileSync(path.join(dir, '_ui_wrap.md'), WRAP_DOC, 'utf8');
+  // 项目规则文件（AI 助手会把它注入系统提示）
+  try { fs.mkdirSync(path.join(dir, '.myide'), { recursive: true }); } catch {}
+  fs.writeFileSync(path.join(dir, '.myide', 'ai-rules.md'), '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', 'utf8');
   return { png, md };
+}
+
+// M3 夹具：一个**真实的独立小仓库**，用来端到端验 hunk 级暂存。
+// ⚠ 不能用 demo 项目做这件事 —— demo 的仓库根就是 my_ide 本体，在那里暂存 hunk 等于改使用者的 index。
+//   这里建的仓库在 demo/_ui_hunkrepo（被 .gitignore 排除），每次跑自检重建一次，结束进回收站。
+async function writeHunkFixture(baseDir) {
+  const G = require('../git-service');
+  const rp = path.join(baseDir, '_ui_hunkrepo');
+  if (fs.existsSync(rp)) {
+    // ⚠ 不能用 fs.rmSync（本机 safe-delete 会接管批量/递归删除）→ 挪到同盘回收站
+    const trash = path.join(baseDir, '..', '.ui-check-trash');
+    try {
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(rp, path.join(trash, '_ui_hunkrepo_' + Date.now()));
+    } catch {}
+  }
+  fs.mkdirSync(rp, { recursive: true });
+  await G.initRepo(rp);
+  const base = Array.from({ length: 20 }, (_, i) => 'line ' + (i + 1)).join('\n') + '\n';
+  fs.writeFileSync(path.join(rp, 'h.txt'), base);
+  await G.commit(rp, { message: 'base', files: ['h.txt'] });
+  // 两处改动隔得够远 → 必然切成两个 hunk（供「只暂存其中一块」验证）
+  fs.writeFileSync(path.join(rp, 'h.txt'), base.replace('line 2\n', 'line 2 CHANGED\n').replace('line 18\n', 'line 18 CHANGED\n'));
+  return rp;
+}
+
+// M4 夹具：一个**必然冲突**的小仓库（base → feat 改同一行 → main 也改同一行）。
+// 与 hunk 夹具同一套规矩：独立仓库、被 .gitignore 覆盖、跑完进回收站。
+async function writeConflictFixture(baseDir) {
+  const G = require('../git-service');
+  const rp = path.join(baseDir, '_ui_confrepo');
+  if (fs.existsSync(rp)) {
+    const trash = path.join(baseDir, '..', '.ui-check-trash');
+    try {
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(rp, path.join(trash, '_ui_confrepo_' + Date.now()));
+    } catch {}
+  }
+  fs.mkdirSync(rp, { recursive: true });
+  await G.initRepo(rp);
+  await G.setUserConfig(rp, { name: 'ui-check', email: 'ui-check@example.com' });
+  const base = 'line1\nline2\nline3\n';
+  fs.writeFileSync(path.join(rp, 'c.txt'), base);
+  await G.commit(rp, { message: 'base', files: ['c.txt'] });
+  await G.createBranch(rp, 'feat');
+  fs.writeFileSync(path.join(rp, 'c.txt'), 'line1\nfeat\nline3\n');
+  await G.commit(rp, { message: 'feat: 改同一行', files: ['c.txt'] });
+  await G.checkout(rp, 'main');
+  fs.writeFileSync(path.join(rp, 'c.txt'), 'line1\nmain\nline3\n');
+  await G.commit(rp, { message: 'main: 也改这一行', files: ['c.txt'] });
+  return rp;
 }
 
 // 项目栏压力：13 个真实小目录（只入项目列表，不逐个打开扫盘），用于复现「按钮挤压/覆盖/截断」
@@ -124,9 +201,20 @@ function cleanFixtures(dir) {
   rm(path.join(dir, '_ui_big.png'));
   rm(path.join(dir, '_ui_mmd.md'));
   rm(path.join(dir, '_ui_outline.md'));
+  rm(path.join(dir, '_ui_wrap.md'));
   rm(path.join(dir, '_ui_drop.md'));   // 拖拽步骤建的
   rm(path.join(dir, '_ui_perm.md'));   // 授权记忆步骤建的
   for (let i = 1; i <= 13; i++) rm(path.join(dir, '_ui_proj' + String(i).padStart(2, '0')));
+  // M3/M4 夹具仓库（真实 git 仓库，含 .git）：rmSync 在本机会被 safe-delete 接管 → 挪到同盘回收站
+  for (const name of ['_ui_hunkrepo', '_ui_confrepo']) {
+    const rp = path.join(dir, name);
+    if (fs.existsSync(rp)) {
+      const trash = path.join(dir, '..', '.ui-check-trash');
+      try {
+        fs.mkdirSync(trash, { recursive: true });
+        fs.renameSync(rp, path.join(trash, name + '_' + Date.now()));
+      } catch {}
+    }
+  }
 }
-
-module.exports = { makePng, writeFixtures, seedProjects, cleanFixtures, MMD_DOC, OUTLINE_DOC };
+module.exports = { makePng, writeFixtures, seedProjects, writeHunkFixture, writeConflictFixture, cleanFixtures, MMD_DOC, OUTLINE_DOC, WRAP_DOC };

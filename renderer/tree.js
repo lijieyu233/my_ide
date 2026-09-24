@@ -227,17 +227,20 @@ const Tree = (() => {
     return renderChain;
   }
   async function doRender() {
-    el.innerHTML = '';
-    el.onscroll = null;
-    if (!rootPath) return;
-    // 搜索态：平铺显示匹配行（忽略展开态）
-    if (searchState && searchState.q) { renderSearch(); return; }
+    // 搜索态：平铺显示匹配行（忽略展开态）—— renderSearch 自己会清空并重画
+    if (rootPath && searchState && searchState.q) { renderSearch(); return; }
+    if (!rootPath) { el.innerHTML = ''; el.onscroll = null; visibleRows = []; return; }
+    // ⚠ 先把数据取齐，最后才动 DOM。
+    //   原来这里第一行就是 `el.innerHTML = ''`，然后 `await loadDir(...)` 一串异步 ——
+    //   中间浏览器会把**空树**绘制一帧，看起来就是"切换文件时闪一下"。
     await loadDir(rootPath);
     // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
     const expandedDirs = [...expanded];
     for (const d of expandedDirs) await loadDir(d);
     const rows = buildRows();
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
+    el.innerHTML = '';
+    el.onscroll = null;
     if (rows.length <= VIRTUAL_THRESHOLD) {
       for (const r of rows) el.appendChild(makeRowEl(r));
       return;
@@ -293,7 +296,7 @@ const Tree = (() => {
       rowEl.className = 'tree-row tree-search-row' + (i === searchIdx ? ' selected' : '');
       const ic = document.createElement('span');
       ic.className = 'ic';
-      ic.textContent = fileIcon(f.name);
+      ic.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(f.name) : fileIcon(f.name);
       rowEl.appendChild(ic);
       const nm = document.createElement('span');
       nm.className = 'nm';
@@ -342,23 +345,21 @@ const Tree = (() => {
     const ic = document.createElement('span');
     ic.className = 'ic';
     // 图标列：目录的折叠三角就是它的标志（与文件图标同列对齐），文件显示类型图标
-    ic.textContent = item.type === 'dir' ? (expanded.has(item.path) ? '▼' : '▶') : fileIcon(item.name);
+    // 图标统一走 SVG（emoji 与 ▶▼ 字符在不同字号下宽度/基线都不一致，一列看下来就"乱"）
+    ic.innerHTML = item.type === 'dir'
+      ? ((window.App && App.dirIcon) ? App.dirIcon(expanded.has(item.path)) : (expanded.has(item.path) ? '▼' : '▶'))
+      : ((window.App && App.ftIcon) ? App.ftIcon(item.name) : fileIcon(item.name));
     ic.classList.add(item.type === 'dir' ? 'ic-dir' : 'ic-file');
     rowEl.appendChild(ic);
 
     const nm = document.createElement('span');
-    nm.className = 'nm' + (gitClassFor(item.path) ? ' ' + gitClassFor(item.path) : '');
+    nm.className = 'nm' + (item.type === 'dir' ? ' nm-dir' : '')
+      + (gitClassFor(item.path) ? ' ' + gitClassFor(item.path) : '');
     nm.textContent = item.name;
     nm.title = item.path;
     rowEl.appendChild(nm);
-    // 根行右侧显示项目完整路径（替代原工具栏路径）
-    if (depth === 0 && item.path === rootPath) {
-      const rp = document.createElement('span');
-      rp.className = 'root-path';
-      rp.textContent = item.path;
-      rp.title = item.path;
-      rowEl.appendChild(rp);
-    }
+    // 根行只显示项目名（曾经在右侧再挂一遍完整绝对路径 —— 230px 宽的树里必然截断，
+    // 而且项目名就在同一行左边、路径在编辑器工具条的 title 里也有，纯占地方）
     rowEl.dataset.path = item.path;
     rowEl.tabIndex = -1; // 可编程聚焦：点击后焦点留在树（Delete 删文件 / 方向键导航）
 
@@ -512,6 +513,7 @@ const Tree = (() => {
     if (!fileN.startsWith(rootN + '/')) return;
     const relParts = fileN.slice(rootN.length + 1).split('/');
     let curPath = rootPath;
+    let structural = false; // 展开链是否有变化（只有它需要重建整棵树）
     for (let i = 0; i < relParts.length - 1; i++) {
       const items = nodeCache[curPath];
       if (!items) break;
@@ -520,11 +522,14 @@ const Tree = (() => {
       if (!expanded.has(dir.path)) {
         await loadDir(dir.path);
         expanded.add(dir.path);
+        structural = true;
       }
       curPath = dir.path;
     }
-    select(filePath, 'file');
-    render();
+    select(filePath, 'file'); // 高亮立刻切（只改类名，不动结构）
+    // ⚠ 只有展开链变了才 render()。原来无条件重建 —— 而重建要清空再重画，
+    //   切换文件时看到的就是那一帧空白（用户反馈的"闪"）。
+    if (structural) render();
     // 只有目标行不在可视区时才滚动（点击树内文件不上下跳动）
     setTimeout(() => {
       const row = [...el.querySelectorAll('.tree-row')].find((r) => norm(r.querySelector('.nm').title) === fileN);

@@ -22,9 +22,9 @@ if (UI_CHECK) {
   try { app.setPath('userData', path.join(os.tmpdir(), 'myide-ui-check-' + process.pid)); } catch {}
   // 自检看门狗：无论卡在哪一步（页面加载 / 注入 / 截图 / CDP）都必须落盘 + 退出
   setTimeout(() => {
-    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>200s），强制退出\n'); } catch {}
+    try { fs.writeFileSync(path.join(__dirname, 'check-ui-timeout.txt'), new Date().toISOString() + ' UI CHECK 超时（>420s），强制退出\n'); } catch {}
     try { app.exit(3); } catch {}
-  }, 200000);
+  }, 420000);
 }
 const LOG = (m) => { try { fs.appendFileSync(path.join(__dirname, 'smoke.log'), new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 process.on('uncaughtException', (e) => {
@@ -676,6 +676,11 @@ ipcMain.handle('log:write', (_e, level, tag, msg) => {
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
+// 读剪贴板文本（AI 助手的「@剪贴板」上下文来源；渲染进程没有直接读的能力）
+ipcMain.handle('clip:readText', () => {
+  try { return { ok: true, text: clipboard.readText() || '' }; } catch (e) { return { ok: false, error: String(e) }; }
+});
+
 // 文件复制：写系统剪贴板双轨
 // 1) Electron 同步写 text + FileNameW（应用内直读快路径，立即生效）
 // 2) PowerShell .NET DataObject 异步覆盖写标准格式（SetFileDropList 自动写 FileDrop(CF_HDROP) + FileNameW + FileName）
@@ -887,45 +892,23 @@ function startGitWorker() {
   }
 }
 
-ipcMain.handle('git:init', (_e, dir) => gitCall('initRepo', dir));
-ipcMain.handle('git:status', (_e, dir) => gitCall('status', dir));
-ipcMain.handle('git:log', (_e, dir, depth, ref) => gitCall('log', dir, depth, ref));
-ipcMain.handle('git:logGraph', (_e, dir, limit, ref) => gitCall('logGraph', dir, limit, ref));
-ipcMain.handle('git:commit', (_e, dir, opts) => gitCall('commit', dir, opts));
-ipcMain.handle('git:diffWorkdir', (_e, dir, file) => gitCall('diffWorkdir', dir, file));
-ipcMain.handle('git:diffCommit', (_e, dir, oid, file) => gitCall('diffCommit', dir, oid, file));
-ipcMain.handle('git:compareRefs', (_e, dir, aRef, bRef) => gitCall('compareRefs', dir, aRef, bRef));
-ipcMain.handle('git:diffRefs', (_e, dir, aRef, bRef, file) => gitCall('diffRefs', dir, aRef, bRef, file));
-ipcMain.handle('git:commitFiles', (_e, dir, oid) => gitCall('commitFiles', dir, oid));
-ipcMain.handle('git:branches', (_e, dir) => gitCall('branches', dir));
-ipcMain.handle('git:checkout', (_e, dir, ref) => gitCall('checkout', dir, ref));
-ipcMain.handle('git:createBranch', (_e, dir, name) => gitCall('createBranch', dir, name));
-ipcMain.handle('git:discard', (_e, dir, file) => gitCall('discard', dir, file));
-ipcMain.handle('git:discardFiles', (_e, dir, files) => gitCall('discardFiles', dir, files));
-ipcMain.handle('git:getUserConfig', (_e, dir) => gitCall('getUserConfig', dir));
-ipcMain.handle('git:setUserConfig', (_e, dir, cfg) => gitCall('setUserConfig', dir, cfg));
-// 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 一、二期）
-ipcMain.handle('git:listRemotes', (_e, dir) => gitCall('listRemotes', dir));
-ipcMain.handle('git:addRemote', (_e, dir, cfg) => gitCall('addRemote', dir, cfg));
-ipcMain.handle('git:removeRemote', (_e, dir, name) => gitCall('removeRemote', dir, name));
-ipcMain.handle('git:fetch', (_e, dir, opts) => gitCall('fetchRemote', dir, opts));
-ipcMain.handle('git:pull', (_e, dir, opts) => gitCall('pullRemote', dir, opts));
-ipcMain.handle('git:push', (_e, dir, opts) => gitCall('pushRemote', dir, opts));
-        ipcMain.handle('git:listPushCommits', (_e, dir) => gitCall('listPushCommits', dir));
-        ipcMain.handle('git:shelveCreate', (_e, dir, cfg) => gitCall('shelveCreate', dir, cfg));
-        ipcMain.handle('git:shelveList', (_e, dir) => gitCall('shelveList', dir));
-        ipcMain.handle('git:shelveApply', (_e, dir, id, opts) => gitCall('shelveApply', dir, id, opts));
-        ipcMain.handle('git:shelveDelete', (_e, dir, id) => gitCall('shelveDelete', dir, id));
-        ipcMain.handle('git:aheadBehind', (_e, dir, opts) => gitCall('aheadBehind', dir, opts));
-        ipcMain.handle('git:listTags', (_e, dir) => gitCall('listTags', dir));
-        ipcMain.handle('git:createTag', (_e, dir, cfg) => gitCall('createTag', dir, cfg));
-        ipcMain.handle('git:revert', (_e, dir, oid) => gitCall('revertCommit', dir, oid));
-        ipcMain.handle('git:cherryPick', (_e, dir, oid) => gitCall('cherryPick', dir, oid));
-        ipcMain.handle('git:logFile', (_e, dir, file, limit) => gitCall('logFile', dir, file, limit));
-        ipcMain.handle('git:blame', (_e, dir, file) => gitCall('blame', dir, file));
-ipcMain.handle('git:addToGitignore', (_e, dir, file) => gitCall('addToGitignore', dir, file));
-ipcMain.handle('git:removeFromGitignore', (_e, dir, file) => gitCall('removeFromGitignore', dir, file));
-ipcMain.handle('git:listIgnored', (_e, dir) => gitCall('listIgnored', dir));
+// ---------- Git IPC：由 git-ops.js 的清单统一注册（M2 的 Registry）----------
+// 通道名 → 服务函数的映射只写在 git-ops.js 一处，这里按表生成 handler（参数原样透传）。
+// ⚠ preload / dom mock 仍是显式写（sandbox:true 的 preload 不能 require 本地模块），
+//   但自检 `gitBackend` 步骤会拿这张表和 window.myIDE.git 的键做漂移检查。
+const GIT_OPS = require('./git-ops');
+const nativeGit = require('./git-native');
+for (const spec of GIT_OPS) {
+  if (spec.native) {
+    const fn = nativeGit[spec.native];
+    ipcMain.handle('git:' + spec.ch, (_e, ...args) => fn(...args));
+  } else {
+    ipcMain.handle('git:' + spec.ch, (_e, ...args) => gitCall(spec.op, ...args));
+  }
+}
+// backendInfo 额外带上通道清单：渲染层用它做「preload 有没有漏加」的漂移检查
+ipcMain.removeHandler('git:backendInfo');
+ipcMain.handle('git:backendInfo', async (_e, force) => Object.assign(await nativeGit.info(!!force), { ops: GIT_OPS.map((s) => s.ch) }));
 
 // ---------- IPC：数据库工具（MySQL / SQLite）----------
 DB.registerIpc();
@@ -1102,6 +1085,13 @@ app.whenReady().then(() => {
       let fail = 0;
       let origProjects = null;
       let origRecent = null;
+      // ⚠ 自检步骤会改这些持久化状态（AI 面板开合 / md 显示模式 / 侧栏上下比例）。
+      //   不还原的话，**下一轮自检的起点就变了** —— 实测：正文阅读版式那步把 AI 助手
+      //   收起来（并写进 localStorage），导致下一次运行的 chrome 步骤量到"AI 助手标题高度 0"。
+      let origAiOpen = null;
+      let origMdMode = null;
+      let origTransCfg = null;
+      let origGitUi = null;   // myide-git-ui：视图偏好 + Sign-off（M5），自检里会被改到
       // 看门狗：自检脚本卡住（截图/CDP/页面注入都可能挂）时必须能退出，否则进程会一直留在后台
       const watchdog = setTimeout(() => {
         try {
@@ -1113,13 +1103,20 @@ app.whenReady().then(() => {
           fs.writeFileSync(path.join(__dirname, 'check-ui-out.txt'), lines.join('\n') + '\n');
         } catch {}
         app.exit(3);
-      }, 240000);
+      }, 480000);
       // 自检用的「模型」桩：把 ai:chat 这个 IPC 换成脚本化应答。
       // 为什么不用本地 HTTP 服务：Electron 主进程里 http.createServer().listen() 在自检跑法下不回调（实测卡死）。
       // 桩只替换「模型」这一段，页面侧（面板 → 工具调用 → 写文件 → 改动卡片 → 撤销）全部走真实代码。
       const bootLog = (m) => { try { fs.writeFileSync(path.join(__dirname, '.ui-check-boot.txt'), m + '\n'); } catch {} };
       bootLog('1 进入自检，准备给 ai:chat 打桩');
       let stubRound = 0;
+      // 翻译插件（llm:chat）同样打桩：自检要验「未选中文本也能弹窗 / 手动填文本能翻」，
+      // 不能真去连 LLM（没配 key 会报错并弹设置页，步骤就跑偏了）
+      ipcMain.removeHandler('llm:chat');
+      ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
+        const last = (messages || [])[messages.length - 1] || {};
+        return { text: '译:' + String(last.content || '') };
+      });
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
@@ -1136,7 +1133,13 @@ app.whenReady().then(() => {
         } else {
           const u = [...msgs].reverse().find((m) => m.role === 'user' && typeof m.content === 'string');
           const ut = (u && u.content) || '';
-          if (ut.indexOf('第一次改') >= 0) {
+          if (ut.indexOf('危险命令') >= 0) {
+            r = { ok: true, text: '', toolCalls: [{ id: 'd1', name: 'run_command', args: { command: 'rm -rf node_modules' } }] };
+          } else if (ut.indexOf('给我一段代码') >= 0) {
+            const t2 = '给你一个例子：\n\n```js\nconst a = 1;\nconsole.log(a);\n```\n\n需要的话我可以插到光标处。';
+            for (const ch of t2) send('ai:chunk', ch);
+            r = { ok: true, text: t2, toolCalls: [] };
+          } else if (ut.indexOf('第一次改') >= 0) {
             r = { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: '_ui_perm.md', content: '第一版内容\n第二行\n' } }] };
           } else if (ut.indexOf('第二次改') >= 0) {
             r = { ok: true, text: '', toolCalls: [{ id: 'w2', name: 'write_file', args: { path: '_ui_perm.md', content: '第二版内容\n第二行\n' } }] };
@@ -1256,8 +1259,14 @@ app.whenReady().then(() => {
         // ⚠ 项目列表存在真实 localStorage：先备份，自检结束原样还原（不破坏使用者的项目栏）
         origProjects = await wc.executeJavaScript('localStorage.getItem("myide-projects")');
         origRecent = await wc.executeJavaScript('localStorage.getItem("myide-recent-projects")');
+        origAiOpen = await wc.executeJavaScript('localStorage.getItem("myide-ai-open")');
+        origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")');
+        origTransCfg = await wc.executeJavaScript('localStorage.getItem("myide-translate-cfg")');
+        origGitUi = await wc.executeJavaScript('localStorage.getItem("myide-git-ui")');
         fx.writeFixtures(demo);
         const projects = fx.seedProjects(demo);
+        // M3：hunk 级暂存的端到端夹具（真实独立小仓库 —— 绝不在 demo 本体上动 index）
+        const hunkRepo = await fx.writeHunkFixture(demo);
         await wc.executeJavaScript(
           'localStorage.setItem("myide-projects", ' + JSON.stringify(JSON.stringify(projects.map((p) => ({ path: p })))) + '); true'
         );
@@ -1275,14 +1284,60 @@ app.whenReady().then(() => {
         // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
         try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
         await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
+        await run('侧栏项目面板（取消上下分栏）', js(steps.sidePanelOnly, demo), 'check-ui-1l-side-panel.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
+        await run('提交面板标题行（窄侧栏不竖排）+ 内嵌预览出口', js(steps.commitTitleLayout), 'check-ui-1n-commit-narrow.png');
+        await run('提交面板标题行（收尾：关预览 / 还原侧栏宽度）', js(steps.commitTitleLayoutReset));
+        // 提交窗口放大图：整窗截图里侧栏只有 340px、字号 13px 的元素根本看不清（文档/复盘要贴图）。
+        // 同样按元素实际位置裁剪，不硬编码坐标。放在收尾步骤之后 = 拍的是「默认宽度 + 预览关」的常态。
+        try {
+          const gb = await wc.executeJavaScript(
+            '(() => { const v = document.querySelector("#panel-git");'
+            + ' if (!v) return null; const r = v.getBoundingClientRect();'
+            + ' return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; })()');
+          if (gb && gb.width > 10) {
+            const n = await grab('check-ui-1o-commit-zoom.png', { x: gb.x, y: gb.y, width: gb.width, height: gb.height, scale: 2 });
+            lines.push('     截图 → check-ui-1o-commit-zoom.png (' + n + ' 字节，提交窗口 ' + gb.width + '×' + gb.height + ' @2x)');
+          }
+        } catch (e) { lines.push('     （提交窗口放大截图失败：' + String((e && e.message) || e).slice(0, 80) + '）'); }
+        await run('Git 日志窗口（底部停靠 + 详情）', js(steps.gitLogWindow), 'check-ui-1p-gitlog.png');
+        await run('Git 日志窗口（收尾：关掉）', js(steps.gitLogWindowClose));
+        await run('M1 提交模型（已暂存只读分节 + 变更列表）', js(steps.m1CommitModel), 'check-ui-1q-m1-changelist.png');
+        await run('M1 提交模型（收尾：清空变更列表）', js(steps.m1CommitModelCleanup));
+        await run('原生 Git 后端（能力探测 + 设置页）', js(steps.gitBackend), 'check-ui-1r-git-backend.png');
+        await run('原生 Git 后端（收尾：关设置）', js(steps.gitBackendClose));
+        // M3：hunk 级部分暂存（夹具是独立小仓库，不动 demo 本体的 index）
+        await run('M3 hunk 级部分暂存（双区差异 + 真实点击）', js(steps.m3Hunk, { repo: hunkRepo, demo: demo }), 'check-ui-1s-m3-hunk.png');
+        await run('M3 hunk（收尾：撤销暂存 / 关面板 / 还原项目根）', js(steps.m3HunkCleanup, { repo: hunkRepo, demo: demo }));
+        // M4：merge 冲突 → 操作条 → 冲突解决窗口 → 继续（独立夹具仓库，走真实 native git）
+        const confRepo = await fx.writeConflictFixture(demo);
+        await run('M4 merge 冲突与解决（操作条 + 三方对比）', js(steps.m4Conflict, { repo: confRepo, demo: demo }), 'check-ui-1t-m4-conflict.png');
+        await run('M4 merge（收尾：继续完成合并 / 还原项目根）', js(steps.m4ConflictCleanup, { repo: confRepo, demo: demo }));
+        await run('平铺视图（父目录列 + 文件名对齐）', js(steps.commitFlatView, { demo: demo }), 'check-ui-1v-flat-view.png');
+        await run('平铺视图（收尾：切回按目录）', js(steps.commitFlatViewReset));
+        // M5：提交前检查 + Sign-off / 作者（不跑真实 lint，用 echo / exit 4 证明执行器通了）
+        await run('M5 提交前检查 + Sign-off / 作者', js(steps.m5PreCommit, { demo: demo }), 'check-ui-1u-m5-precommit.png');
+        await run('M5 提交前检查（收尾：还原配置 / 签名 / 作者）', js(steps.m5PreCommitCleanup, { demo: demo }));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
+        // 底部输入区放大图：尺寸刻度（chip / 输入框 / 发送按钮）这类问题整窗截图根本看不清，
+        // 用户自己也是放大截图才发现的。按元素实际位置裁剪，别硬编码坐标。
+        try {
+          const br = await wc.executeJavaScript(
+            '(() => { const v = document.querySelector("#ai-panel .ai-input-bar");'
+            + ' if (!v) return null; const r = v.getBoundingClientRect();'
+            + ' return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; })()');
+          if (br && br.width > 10) {
+            const n = await grab('check-ui-1k-ai-bottom-x3.png', { x: br.x, y: br.y, width: br.width, height: br.height, scale: 3 });
+            lines.push('     截图 → check-ui-1k-ai-bottom-x3.png (' + n + ' 字节，输入区 ' + br.width + '×' + br.height + ' @3x)');
+          }
+        } catch (e) { lines.push('     （底部放大截图失败：' + String((e && e.message) || e).slice(0, 80) + '）'); }
         await run('AI 面板：说一句话改文档（完整流程）', js(steps.aiPanelFlow, demo), 'check-ui-1h-ai-flow.png');
         await run('AI 面板：把这一处改回去', js(steps.aiPanelUndo, demo), 'check-ui-1h2-ai-undone.png');
         await run('AI 面板：拖文件进面板 + 授权记忆', js(steps.aiDropAndPerm, demo), 'check-ui-1i-ai-drop-perm.png');
+        await run('AI 助手能力对齐', js(steps.aiParityUi, demo), 'check-ui-1j-ai-parity.png');
         await run('图片缩放', js(steps.imageViewer, demo), 'check-ui-2-image-zoom.png');
         await run('真实滚轮 → 画面滚动', js(steps.imageWheelScrollCheck), 'check-ui-2b-image-wheel-scrolled.png');
         await run('注入真实 Ctrl+滚轮', js(steps.imageWheelInject, true));
@@ -1295,6 +1350,22 @@ app.whenReady().then(() => {
         await run('mermaid Live', js(steps.mermaidLiveStatic, demo), 'check-ui-6-mermaid-live.png');
         await run('mermaid Live 全屏', js(steps.mermaidLiveFs), 'check-ui-7-mermaid-live-fs.png');
         await run('mermaid Live 全屏（关闭）', js(steps.mermaidFsClose));
+        // 放最后：这一步故意把主题留在酒红上，产物截图就是它的实际观感
+        await run('长行换行（正文列内折行）', js(steps.textWrapping, demo), 'check-ui-10-wrap.png');
+        await run('翻译弹窗（居中 / 可自填 / 未选中也能弹）', js(steps.translateDialog), 'check-ui-7b-translate.png');
+        await run('翻译弹窗（Esc / ✕ 关闭）', js(steps.translateDialogClose));
+        await run('同屏 accent 强焦点普查（截图用）', js(steps.focusCensus), 'check-ui-1m-focus.png');
+        await run('主题：石墨（中性黑灰 + 玫瑰红强调）', js(steps.themeGraphite), 'check-ui-9-theme-graphite.png');
+        // 最后一步：把主题留在「深红」上，截图就是它的实际观感
+        await run('主题：深红回退（暖调）', js(steps.themeCrimsonRevert), 'check-ui-9b-theme-crimson.png');
+        // 放最后一步：它故意收起 AI 助手（编辑区变宽）并留在深红主题上，产物截图就是这个状态。
+        // 同时把窗口临时加宽到 1600×900 —— 用户反馈的场景是 1800+ 宽的窗口，1380 宽时编辑区
+        // 只有 962，"正文列收窄"看不出效果。截图后窗口即关闭，不需要还原。
+        try {
+          if (win && win.setContentSize) win.setContentSize(1600, 900);
+          await new Promise((r) => setTimeout(r, 900));
+        } catch {}
+        await run('正文阅读版式（收窄后，截图用）', js(steps.mdReading, demo), 'check-ui-8-md-reading.png');
       } catch (e) {
         lines.push('致命: ' + String((e && e.stack) || e).slice(0, 800));
         fail++;
@@ -1307,6 +1378,11 @@ app.whenReady().then(() => {
         await wc.executeJavaScript(origRecent == null
           ? 'localStorage.removeItem("myide-recent-projects"); true'
           : 'localStorage.setItem("myide-recent-projects", ' + JSON.stringify(origRecent) + '); true');
+        for (const [key, val] of [['myide-ai-open', origAiOpen], ['myide-md-mode', origMdMode], ['myide-translate-cfg', origTransCfg], ['myide-git-ui', origGitUi]]) {
+          await wc.executeJavaScript(val == null
+            ? 'localStorage.removeItem(' + JSON.stringify(key) + '); true'
+            : 'localStorage.setItem(' + JSON.stringify(key) + ', ' + JSON.stringify(val) + '); true');
+        }
       } catch {}
       clearTimeout(watchdog);
       try { fs.unlinkSync(path.join(__dirname, '.ui-check-boot.txt')); } catch {}

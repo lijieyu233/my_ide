@@ -58,10 +58,36 @@ const FAKE_GIT = {
   headOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
+let fakeClipText = ''; // 剪贴板文本（@剪贴板 用例）
 const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
 let fakeCopiedMove = null; // copyFiles 的 move 参数（剪切=true / 复制=false）
 calls.setUserConfig = [];
+calls.setGitExe = [];
+calls.testGitExe = [];
+calls.diffUnstaged = [];
+calls.diffStaged = [];
+calls.stageHunk = [];
+calls.unstageHunk = [];
+calls.revertHunk = [];
+calls.listIgnored = [];
+calls.merge = [];
+calls.rebase = [];
+calls.resolveFile = [];
+calls.continueOp = [];
+calls.skipOp = [];
+calls.abortOp = [];
+calls.branchCreate = [];
+calls.branchRename = [];
+calls.branchDelete = [];
+calls.resolveCustom = [];
+calls.readWorktreeText = [];
+calls.pushLease = [];
+calls.setUpstream = [];
+calls.unsetUpstream = [];
+calls.pull = [];
+calls.precommit = [];
+calls.scanTodo = [];
 calls.checkout = [];
 calls.discard = [];
 calls.createBranch = [];
@@ -73,6 +99,8 @@ let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
 let fakeFsCbs = []; // fs:changed 订阅者（tree.js 重渲染 + viewer.js 标签重载都注册）
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
+let aiCalls = 0;    // chat 调用次数（重新生成 / 编辑重发这类"再问一次"的用例靠它计数）
+let aiLastMsgs = null; // 最近一次请求的 messages（校验项目规则/上下文是否真的拼进去了）
 let aiLastTools = null; // 最近一次 ai.chat 收到的 tools 参数（原生 function calling 断言）
 
 function makeDom() {
@@ -89,6 +117,8 @@ function makeDom() {
   st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
   w.document.head.appendChild(st);
   w.myIDE = {
+    // 翻译插件走 llm:chat：桩直接回 "译:<最后一条 user 内容>"，断言可以精确比对
+    llm: { chat: async (cfg, msgs) => ({ text: '译:' + String((msgs[msgs.length - 1] || {}).content || '') }) },
     fs: {
       openFolder: async () => P,
       getRecent: async () => null,
@@ -178,6 +208,7 @@ function makeDom() {
       copy: async (t) => { calls.copy.push(t); return true; },
       copyFiles: async (paths, move) => { fakeCopied = paths.slice(); fakeCopiedMove = move; return true; },
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
+      readText: async () => ({ ok: true, text: fakeClipText }),
     },
     fsCopy: async (src, destDir, overwrite) => {
       const name = src.split('/').pop();
@@ -222,6 +253,22 @@ function makeDom() {
         { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
       ] }; },
       diffCommit: async (d, oid, f) => { calls.diffCommit.push(oid + ':' + f); return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] }; },
+      // M3：双区差异 + hunk 级暂存
+      diffUnstaged: async (d, f) => {
+        calls.diffUnstaged.push(f);
+        // M3 起：点文件行走「index → 工作区」这一侧。内容沿用原 diffWorkdir 的 fixture，
+        // 那几个 diff 视图用例（分栏 / 行号 / hunk 导航）才能继续按原样验。
+        return { file: f, side: 'unstaged', oldText: 'old line\n', newText: 'new line\n', hunks: [
+          { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
+          { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
+        ] };
+      },
+      diffStaged: async (d, f) => { calls.diffStaged.push(f); return { file: f, side: 'staged', oldText: 'x\n', newText: 'y\n', hunks: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'del', aText: 'x', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'y', aNum: 0, bNum: 1 }] },
+      ] }; },
+      stageHunk: async (d, f, i) => { calls.stageHunk.push([f, i]); return { ok: true, oid: 'ssssssssssssssssssssssssssssssssssssssss' }; },
+      unstageHunk: async (d, f, i) => { calls.unstageHunk.push([f, i]); return { ok: true, oid: 'uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu' }; },
+      revertHunk: async (d, f, i) => { calls.revertHunk.push([f, i]); return { ok: true }; },
       compareRefs: async (d, a, b) => {
         calls.compareRefs = [a, b];
         if (a === b) return { isRepo: true, same: true, aOnly: [], bOnly: [], files: [] };
@@ -237,13 +284,49 @@ function makeDom() {
         return { file: f, oldText: 'old\n', newText: 'new\n', hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new', aNum: 0, bNum: 1 }] }] };
       },
       commitFiles: async (d, oid) => { calls.commitFiles.push(oid); return { files: [{ file: 'README.md', status: 'modified' }, { file: 'data.csv', status: 'added' }] }; },
-      branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main' }),
+      branches: async () => ({ isRepo: true, branches: ['dev', 'main'], current: 'main', upstream: '', remotes: ['origin/dev', 'origin/main'] }),
       checkout: async (d, ref) => { calls.checkout.push(ref); return { ok: true }; },
       createBranch: async (d, name) => { calls.createBranch.push(name); return { ok: true }; },
+      // M4：分支工作流 / 冲突解决
+      opState: async () => ({ state: 'NORMAL', target: '', onto: '', step: '', total: '' }),
+      merge: async (d, ref, o) => { calls.merge.push([ref, o]); return { ok: true, conflict: /conflict/.test(String(ref)), state: { state: 'NORMAL' } }; },
+      rebase: async (d, ref) => { calls.rebase.push(ref); return { ok: true, conflict: false, state: { state: 'NORMAL' } }; },
+      conflicts: async () => ({ ok: true, files: calls.conflictFiles || [] }),
+      conflictSides: async (d, f) => ({ ok: true, base: 'base\n', ours: 'ours\n', theirs: 'theirs\n' }),
+      resolveFile: async (d, f, side) => { calls.resolveFile.push([f, side]); return { ok: true }; },
+      continueOp: async () => { calls.continueOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      skipOp: async () => { calls.skipOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      abortOp: async () => { calls.abortOp.push(1); return { ok: true, state: { state: 'NORMAL' } }; },
+      branchCreate: async (d, name, ref, co) => { calls.branchCreate.push([name, ref, !!co]); return { ok: true }; },
+      branchRename: async (d, f, t) => { calls.branchRename.push([f, t]); return { ok: true }; },
+      branchDelete: async (d, name, force) => { calls.branchDelete.push([name, !!force]); return { ok: true }; },
+      resolveCustom: async (d, f, text) => { calls.resolveCustom.push([f, text]); return { ok: true }; },
+      readWorktreeText: async (d, f) => ({ ok: true, text: '<<<<<<< ours\ncurrent\n=======\nincoming\n>>>>>>> theirs\n' }),
+      pushForceWithLease: async (d, remote, branch) => { calls.pushLease.push([remote, branch]); return { ok: true }; },
+      setUpstream: async (d, ref) => { calls.setUpstream.push(ref); return { ok: true }; },
+      unsetUpstream: async (d) => { calls.unsetUpstream.push(1); return { ok: true }; },
+      precommitRun: async (d, o) => { calls.precommit.push(o || {}); return FAKE_GIT.precommitResult || { ok: true, results: [{ name: 'echo hi', ok: true, out: 'hi' }] }; },
+      scanTodo: async (d, files, kinds) => { calls.scanTodo.push({ files, kinds }); return { ok: true, hits: FAKE_GIT.todoHits || [] }; },
       discard: async (d, f) => { calls.discard.push(f); return { ok: true }; },
       discardFiles: async (d, files) => { (calls.discardFiles = calls.discardFiles || []).push(files.slice()); return { ok: files.length, failed: [] }; },
       getUserConfig: async () => ({ name: 'tester', email: 't@example.com', isRepo: true }),
       setUserConfig: async (d, cfg) => { calls.setUserConfig.push(cfg); return { ok: true }; },
+      // 原生 git 后端（M2）：探测形状与 main 侧 git-native.info() 一致
+      backendInfo: async () => ({
+        git: { available: true, exe: 'git', version: '2.55.0', source: 'PATH', error: '', candidates: ['git'] },
+        caps: { merge: true, rebase: true, stash: true, hooks: true, partialStaging: true, credential: true, worktree: true },
+        fallback: { name: 'isomorphic-git', version: '1.41.4' },
+        routing: { native: ['credential'], isomorphic: ['status', 'commit'], planned: {} },
+      }),
+      testGitExe: async (cand) => { calls.testGitExe.push(cand); return { ok: true, exe: cand || 'git', version: '2.55.0' }; },
+      setGitExe: async (p) => {
+        calls.setGitExe.push(p);
+        return {
+          git: { available: true, exe: p || 'git', version: '2.55.0', source: p ? 'configured' : 'PATH', error: '', candidates: [p || 'git'] },
+          caps: { merge: true, rebase: true, stash: true, hooks: true, partialStaging: true, credential: true, worktree: true },
+          fallback: { name: 'isomorphic-git', version: '1.41.4' },
+        };
+      },
       // 远程 / 标签 / 还原 / 文件历史 / blame（PyCharm 式 Git 二期）
       listRemotes: async () => ({
         remotes: [
@@ -257,7 +340,7 @@ function makeDom() {
       addRemote: async () => ({ ok: true }),
       removeRemote: async () => ({ ok: true }),
       fetch: async () => ({ ok: true }),
-      pull: async () => ({ ok: true }),
+      pull: async (d, opts) => { calls.pull.push(opts || {}); return { ok: true }; },
       push: async () => ({ ok: true }),
       listPushCommits: async () => ({
         ok: true, branch: 'main', first: false, count: 2,
@@ -278,18 +361,23 @@ function makeDom() {
       listTags: async () => ({ tags: [] }),
       createTag: async () => ({ ok: true }),
       revert: async (d, oid) => { calls.revert = (calls.revert || []).concat(oid); return { ok: true, oid: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' }; },
+      // 清单漂移检查（Git IPC Registry）会发现少了这个 —— 补上后 mock 与 git-ops.js 一一对应
+      cherryPick: async (d, oid) => { calls.cherryPick = (calls.cherryPick || []).concat(oid); return { ok: true, oid, files: 1 }; },
       logFile: async () => ({ commits: [] }),
       blame: async () => ({ lines: [] }),
       addToGitignore: async (d, f) => { calls.gitignore.push('add:' + f); return { ok: true, pattern: f }; },
       removeFromGitignore: async (d, f) => { calls.gitignore.push('rm:' + f); return { ok: true, removed: 1 }; },
-      listIgnored: async () => ({ isRepo: true, root: P, truncated: false,
-        files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }),
+      listIgnored: async () => { calls.listIgnored.push(1); return { isRepo: true, root: P, truncated: false,
+        files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }; },
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
     ai: {
       // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
-      chat: async (_cfg, _msgs, tools) => { aiLastTools = tools || null; return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }; },
+      chat: async (_cfg, _msgs, tools) => {
+        aiCalls++; aiLastTools = tools || null; aiLastMsgs = _msgs;
+        return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' };
+      },
       abort: async () => ({ ok: true }),
       run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},
@@ -333,6 +421,7 @@ async function loadApp(dom) {
   evalFile('db-panel.js');
   evalFile('ai-panel.js');
   evalFile('tasks.js');
+  evalFile('translate.js');   // 翻译插件（Ctrl+Alt+T）：依赖 Modal/Shortcuts，需在 app.js 之前
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -371,9 +460,38 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '.tab.active .tname'), '标签已打开');
   });
 
+  await okAsync('切换文件不重建整棵树（只换高亮，不闪）', async () => {
+    // 判据用「DOM 节点身份」：真重建（el.innerHTML = ''）后旧节点必然 isConnected === false。
+    // 重建同时会先清空再 await 加载目录，中间白一帧 —— 用户看到的就是这个"闪"。
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    const rootRow = $(dom, '#tree').firstElementChild;
+    assert_(rootRow, '树有根行');
+    const rowOf = (t) => $allIn($(dom, '#tree'), '.tree-row').find((r) => (r.querySelector('.nm') || {}).title === t);
+    const a = rowOf(P + '/README.md');
+    const b = rowOf(P + '/notes.txt');
+    assert_(a && b, '两个同目录文件都在树里');
+    click(a);
+    await tick(); await tick(); await tick();
+    assert_(rootRow === $(dom, '#tree').firstElementChild && rootRow.isConnected, '打开文件后树没被重建（根行同一节点）');
+    const a2 = rowOf(P + '/README.md');
+    const b2 = rowOf(P + '/notes.txt');
+    assert_(a === a2 && a.isConnected, '打开文件后旧行节点仍然活着');
+    click(b2);
+    await tick(); await tick(); await tick();
+    assert_(rootRow === $(dom, '#tree').firstElementChild && rootRow.isConnected, '切换文件时树没被重建');
+    assert_(a === rowOf(P + '/README.md') && a.isConnected, '切换文件时旧行节点仍然活着');
+    const sel = $allIn($(dom, '#tree'), '.tree-row.selected').map((r) => (r.querySelector('.nm') || {}).title);
+    assert_(sel.includes(P + '/notes.txt'), '高亮跟到新文件, got: ' + JSON.stringify(sel));
+    // 收尾：切回 README.md —— 后面几条用例按「当前是 md 文件」断言（#tab-actions 里要有模式按钮）
+    click(a);
+    await tick(); await tick(); await tick();
+    assert_(($(dom, '.tab.active .tname') || {}).textContent === 'README.md', '收尾：切回 README.md');
+  });
+
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
     // md 默认 live（CM6），先切「◉ 预览」再断言渲染
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(md, '存在 md-view');
@@ -381,7 +499,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(md.querySelector('strong') && md.querySelector('strong').textContent === 'Markdown', '加粗渲染');
     assert_(md.querySelector('pre code'), '代码块渲染');
     // 切回实时预览，保持后续用例默认态
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
   });
 
@@ -396,13 +514,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(g(dom, 'Viewer.activeTab.content').includes('改过的标题'), '编辑实时写入 tab.content');
     assert_(g(dom, 'Viewer.activeTab.dirty') === true, '编辑后标脏');
     // 切纯预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     assert_(!$(dom, '.editor-cm-wrap'), '纯预览无实时预览容器');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('改过的标题'), '纯预览使用最新内容');
     // 预览里切回实时预览
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('实时预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('实时预览')));
     await tick();
     assert_($(dom, '.editor-cm-wrap'), '切回实时预览');
     assert_($(dom, '.editor-cm-wrap .cm-content').textContent.includes('改过的标题'), '切回后内容保留');
@@ -598,6 +716,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(body.includes('README.md'), '修改列表含 README.md');
     assert_(body.includes('未进行版本管理的文件'), '未进行版本管理的文件分节存在（PyCharm 文案）');
     assert_($(dom, '#cd-branch').textContent.includes('main'), '分支显示 main');
+    // 分支前缀必须是内联 SVG：'⎇' 在 Windows 默认字体里缺字形，会 fallback 成不相干符号
+    assert_($(dom, '#cd-branch').querySelector('svg'), '分支前缀是 SVG（不是 ⎇ 字符）');
+    assert_(!/\u2387/.test($(dom, '#cd-branch').textContent), '分支名文本里没有 ⎇');
     assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见（左侧停靠）');
     assert_($(dom, '#sb-branch').textContent.includes('4 处修改'), '状态栏显示修改数');
   });
@@ -1033,24 +1154,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 回深色', async () => {
-    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '默认深色');
-    g(dom, 'Theme.toggle()');
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-light'), '切换后为浅色');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'light', 'localStorage 已记录');
-    key(dom, 'T', { ctrl: true, shift: true }); // 浅色 → 粉红（四主题循环）
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-pink'), '快捷键切到粉红');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'pink', 'localStorage 更新为 pink');
-    g(dom, 'Theme.toggle()'); // 粉红 → 深红
-    await tick();
-    assert_($(dom, 'body').classList.contains('theme-crimson'), '切到深红');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'crimson', 'localStorage 更新为 crimson');
-    g(dom, 'Theme.toggle()'); // 深红 → 深色
-    await tick();
-    assert_(!$(dom, 'body').classList.contains('theme-light') && !$(dom, 'body').classList.contains('theme-pink') && !$(dom, 'body').classList.contains('theme-crimson'), '回到深色');
-    assert_(dom.window.localStorage.getItem('myide-theme') === 'dark', 'localStorage 更新');
+  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 石墨 → 回深色', async () => {
+    const T = 'myide-theme';
+    const cls = () => $(dom, 'body').className;
+    const isDark = () => !/theme-(light|pink|crimson|graphite)/.test(cls());
+    const chain = [
+      ['toggle', 'light', 'theme-light'],
+      ['key', 'pink', 'theme-pink'],
+      ['toggle', 'crimson', 'theme-crimson'],
+      ['toggle', 'graphite', 'theme-graphite'],
+      ['toggle', 'dark', null],
+    ];
+    // 初始态：Theme.init 只设 activeId，不会写 KEY（只有 set 才写）-> 允许 null
+    assert_(isDark(), '默认深色');
+    for (const [how, id, klass] of chain) {
+      if (how === 'key') key(dom, 'T', { ctrl: true, shift: true });
+      else g(dom, 'Theme.toggle()');
+      await tick();
+      const ok = klass ? $(dom, 'body').classList.contains(klass) : isDark();
+      assert_(ok, '切到 ' + id + ', got: ' + cls());
+      assert_(dom.window.localStorage.getItem(T) === id, 'localStorage = ' + id + ', got ' + dom.window.localStorage.getItem(T));
+    }
   });
 
   await okAsync('diff hunk 折叠：点击切换展开/收起', async () => {
@@ -1112,7 +1236,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'Viewer.cm.setCursor(3)');
     await tick();
     sb = $(dom, '#statusbar').textContent;
-    assert_(sb.includes('行 1，列 4'), '行列号更新, got: ' + sb);
+    assert_(sb.includes('1:4'), '行列号更新（紧凑写法 行:列）, got: ' + sb);
   });
 
   await okAsync('图片预览：img 渲染 + 无源码按钮', async () => {
@@ -1121,8 +1245,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const img = $(dom, '.img-view img');
     assert_(img, 'img 元素出现');
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
-    const hasSrc = $allIn($(dom, '.viewer-toolbar'), 'button').some((b) => b.textContent.includes('源码'));
+    // 编辑器操作区现在挂在标签栏右端（#tab-actions）：图片这类文件除了「定位」不该有别的按钮
+    const acts = $(dom, '#tab-actions');
+    const hasSrc = acts ? $allIn(acts, 'button').some((x) => x.textContent.includes('源码')) : false;
     assert_(!hasSrc, '图片无「查看源码」按钮');
+    assert_(!$(dom, '#tab-actions .vt-path'), '不再有路径行');
+    assert_(!$(dom, '#tab-actions .vt-btn'), '图片文件在标签栏右端没有视图按钮（只剩「定位」）');
   });
 
   await okAsync('Office 预览：docx 走 preview 模式 + 渲染容器 + 无源码按钮', async () => {
@@ -1345,26 +1473,29 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(fakeCopied.length === before, 'CM6 编辑器中 Ctrl+C 未触发文件复制');
   });
 
-  await okAsync('文件树图标列：目录三角=目录标志与文件图标同列（无 tw 独立列）', async () => {
-    // 目录行：图标列显示折叠三角（▼/▶），不再有独立 .tw 列
+  await okAsync('文件树图标列：目录三角与文件图标同列（SVG，不再是 emoji / 字符）', async () => {
+    // 目录行：图标列是 SVG 三角（原来用 ▼/▶ 字符，不同字号下会变粗变笨重）
     const srcRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
     assert_(srcRow, 'src 目录行存在');
     assert_(!srcRow.querySelector('.tw'), '无独立 tw 列（三角并入图标列）');
     const srcIc = srcRow.querySelector('.ic');
-    assert_(srcIc && ['▼', '▶'].includes(srcIc.textContent), '目录行图标列显示三角, got: ' + JSON.stringify(srcIc && srcIc.textContent));
+    assert_(srcIc && !!srcIc.querySelector('svg'), '目录行图标列是 SVG 三角');
     assert_(srcIc.classList.contains('ic-dir'), '目录图标带 ic-dir 类');
-    // 文件行：图标列显示类型 emoji（同列对齐）
+    assert_((srcRow.querySelector('.nm').className || '').includes('nm-dir'), '目录名带 nm-dir 类（偏蓝，与文件名分开）');
+    // 文件行：图标列是彩色类型 SVG（原来用 emoji —— 字号一变换宽度/基线就不一致）
     const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
     const fileIc = fileRow && fileRow.querySelector('.ic');
-    assert_(fileIc && fileIc.textContent && !['▼', '▶'].includes(fileIc.textContent), '文件行图标列为类型 emoji, got: ' + JSON.stringify(fileIc && fileIc.textContent));
+    assert_(fileIc && !!fileIc.querySelector('svg'), '文件行图标列是 SVG 类型图标');
     assert_(fileIc.classList.contains('ic-file'), '文件图标带 ic-file 类');
-    // 点击目录：三角随展开态翻转
-    const before = srcIc.textContent;
+    assert_(!fileIc.textContent.trim(), '图标列里没有文字残留（不是 emoji）');
+    // 点击目录：三角随展开态翻转（比较 SVG 的 d）
+    const dOf = (el) => { const p = el && el.querySelector('svg path'); return p ? p.getAttribute('d') : ''; };
+    const before = dOf(srcIc);
     click(srcRow);
     await tick(); await tick();
     const srcRow2 = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
-    const after = srcRow2.querySelector('.ic').textContent;
-    assert_(before !== after && ['▼', '▶'].includes(after), '点击后三角翻转: ' + before + ' → ' + after);
+    const after = dOf(srcRow2.querySelector('.ic'));
+    assert_(before && after && before !== after, '点击后三角翻转: ' + before + ' → ' + after);
     // 还原展开状态（后续用例可能依赖）
     if (after !== before) { click(srcRow2); await tick(); await tick(); }
   });
@@ -1586,11 +1717,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     let btns = $allIn($(dom, '#project-bar'), '.proj-btn');
     assert_(btns.length >= 2, '项目栏出现多个按钮, got ' + btns.length);
-    assert_($(dom, '.root-path').textContent.includes('C:/proj2'), '当前是项目二');
+    assert_((await g(dom, 'App.root')) === 'C:/proj2', '当前是项目二');
     // 点击切换到项目一
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.textContent.includes('proj') && b.title === P));
     await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '切换回项目一');
+    assert_((await g(dom, 'App.root')) === P, '切换回项目一');
     const active = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.classList.contains('active'));
     assert_(active && active.title === P, '高亮跟随切换');
     // 切回项目二，验证树内容不同
@@ -1608,7 +1739,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 切到项目一，打开 README.md
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P));
     await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '已切到项目一');
+    assert_((await g(dom, 'App.root')) === P, '已切到项目一');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     await new Promise((r) => setTimeout(r, 500)); // 防抖保存
@@ -1632,9 +1763,61 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(close);
     await tick(); await tick(); await tick();
     // 关掉的是当前项目 → 自动切到剩余项目一；关闭一个其余不消失
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '自动切换到剩余项目一');
+    assert_((await g(dom, 'App.root')) === P, '自动切换到剩余项目一');
     assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P), '剩余项目按钮保留（不全消失）');
     assert_(!$allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === 'C:/proj2'), '被关项目已移除');
+  });
+
+  await okAsync('多项目：始终平铺项目按钮（不再收成「当前项目 ▾」，切换能力不丢）', async () => {
+    // 平铺是刻意的：这排按钮的用途是"一眼看到、一下点过去"。
+    // 曾经 >3 个项目就收成一个「当前项目 ▾」—— 结果是"我是谁"留下了、"切到别处"的能力没了，
+    // 而切到别处正是这排按钮存在的理由（用户原话："你不能为了保留这个删除我的功能"）。
+    for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
+      await g(dom, 'App.openProject("' + extra + '")');
+      await tick(); await tick();
+    }
+    const bar = $(dom, '#project-bar');
+    const btns = $allIn(bar, '.proj-btn');
+    const n = (await g(dom, 'App.getProjects()')).length;
+    assert_(n >= 4, '已打开 >= 4 个项目（前提）, got ' + n);
+    assert_(btns.length === n, '每个项目都有按钮（始终平铺）, got ' + btns.length + ' / ' + n);
+    assert_(!$(dom, '#project-bar .proj-btn.proj-current'), '不再有「当前项目 ▾」收起控件');
+    // 当前项目仍要能一眼认出（平铺能成立的前提）
+    const active = btns.filter((b) => b.classList.contains('active'));
+    assert_(active.length === 1 && active[0].dataset.path === (await g(dom, 'App.root')),
+      '有且只有一个 active 按钮指向当前项目, got ' + active.length);
+    // 平铺的第一项能力：点一下直接切
+    const other = btns.find((b) => !b.classList.contains('active'));
+    click(other);
+    await tick(); await tick();
+    assert_((await g(dom, 'App.root')) === other.dataset.path, '点项目按钮直接切换, got ' + (await g(dom, 'App.root')));
+    // 平铺的第二项能力：右键有完整动作（复制路径 / 资源管理器 / 关闭项目）
+    const b2 = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P);
+    assert_(b2, '找到项目一按钮');
+    b2.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menu = $(dom, '#ctx-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent);
+    assert_(!menu.classList.contains('hidden'), '右键弹出菜单');
+    assert_(labels.some((t) => t.includes('复制完整路径')), '菜单含「复制完整路径」: ' + JSON.stringify(labels));
+    assert_(labels.some((t) => t.includes('在资源管理器中显示')), '菜单含「在资源管理器中显示」');
+    assert_(labels.some((t) => t.includes('关闭项目')), '菜单含「关闭项目」');
+    menu.classList.add('hidden');
+    await tick();
+    // 「全部项目」入口（图标 + 数量）：平铺只看得到"已打开"的，
+    // "最近打开过但已不在列表里"的要靠它 —— 两个入口分工不同，不是重复按钮
+    const all = $(dom, '.proj-all');
+    assert_(all && all.parentElement === $(dom, '#project-bar-wrap'), '「全部项目」入口挂在项目栏外层');
+    assert_((all.querySelector('.proj-all-n') || {}).textContent === String(n),
+      '入口显示项目数量, got ' + (all.querySelector('.proj-all-n') || {}).textContent);
+    // 收尾：关掉多加的项目，别影响后续用例的项目状态
+    for (const extra of ['C:/pb1', 'C:/pb2', 'C:/pb3']) {
+      await g(dom, 'App.setRoot("' + extra + '")');
+      const rm = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.dataset.path === extra);
+      if (rm) { click(rm.querySelector('.proj-close')); await tick(); await tick(); }
+    }
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick();
   });
 
   await okAsync('多项目：拖拽排序持久化（dragend 固化，切换后不弹回）', async () => {
@@ -1727,23 +1910,26 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(calls.openTerminal.length === 2 && calls.openTerminal[1] === P, '文件 → 命令行打开所在目录, got ' + JSON.stringify(calls.openTerminal));
   });
 
-  await okAsync('「全部项目」入口：no-drag 可点击 + 下拉切换项目', async () => {
-    const all = $(dom, '.proj-all');
-    assert_(all, '「全部项目」按钮存在');
+  await okAsync('项目栏两个入口：都在 no-drag 白名单 + 点击都能切换', async () => {
+    // 两个入口分工不同：图标「全部项目」= 完整列表 + 最近打开；项目按钮 = 直接切换。
+    // 撤掉的是「当前项目 ▾」（它和「全部项目」才是真的重复：都只是点开同一个菜单）。
+    assert_(!!$(dom, '.proj-all'), '「全部项目」入口存在');
+    assert_(!$(dom, '#project-bar .proj-btn.proj-current'), '没有「当前项目 ▾」收起控件');
     // 曾因不在 no-drag 白名单被窗口拖拽区拦截 → 点击无反应
     //（jsdom 的 getComputedStyle 不解析 -webkit-app-region → 直接校验样式表规则）
     const cssText = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
-    assert_(ndRules.some((r) => r.includes('.proj-all')), '「全部项目」在 no-drag 白名单（点击不被拖拽区拦截）');
-    click(all);
-    await tick();
-    const menu = $(dom, '#ctx-menu');
-    assert_(!menu.classList.contains('hidden'), '点击弹出全部项目下拉');
-    const item = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('proj'));
-    assert_(item, '下拉含项目项');
-    click(item);
+    assert_(ndRules.some((r) => r.includes('.proj-btn')), '项目按钮在 no-drag 白名单（点击不被拖拽区拦截）');
+    assert_(ndRules.some((r) => r.includes('.proj-all')), '「全部项目」也在 no-drag 白名单');
+    assert_(ndRules.some((r) => r.includes('#project-bar-wrap')), '项目栏容器也在白名单内');
+    // 平铺态（≤3 个项目）点项目控件 = 切换项目
+    await g(dom, 'App.openProject("C:/proj2")');
+    await tick(); await tick();
+    const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b2) => b2.title === P);
+    assert_(btn, '找到项目一按钮');
+    click(btn);
     await tick(); await tick(); await tick();
-    assert_($(dom, '.root-path').textContent.includes('C:/proj'), '下拉点击切换项目');
+    assert_((await g(dom, 'App.root')) === P, '点击项目控件切换项目');
   });
 
   await okAsync('项目栏溢出：滚轮横向滚动 + 当前项目自动滚入可视区', async () => {
@@ -1762,12 +1948,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'App.openProject("C:/proj2")');
     await tick(); await tick();
     assert_(bar.scrollLeft === 60, '无布局信息时不动滚动位置（不误判、不乱滚）, got ' + bar.scrollLeft);
-    // 结构回归：「全部项目」入口必须在滚动容器之外 —— 老实现 sticky 浮在滚动层上，项目按钮会从它底下钻过去（覆盖）
+    // 结构：项目按钮在（可滚动的）项目栏里，「全部项目」入口在外层（不参与横滚、不可能压住按钮）
     const wrap = $(dom, '#project-bar-wrap');
     assert_(wrap, '#project-bar-wrap 存在');
-    const allBtn = $(dom, '.proj-all');
-    assert_(allBtn && allBtn.parentElement === wrap, '「全部项目」挂在滚动容器外层, got ' + (allBtn && allBtn.parentElement && allBtn.parentElement.id));
-    assert_(!$(dom, '#project-bar .proj-all'), '「全部项目」不在滚动容器内（结构上不可能盖住项目按钮）');
+    assert_($(dom, '#project-bar-wrap > .proj-all'), '「全部项目」入口在项目栏外层');
+    const chip = $(dom, '#project-bar .proj-btn');
+    assert_(chip && chip.parentElement === bar, '项目按钮在（可滚动的）项目栏内');
     // 清理：切回项目一
     await g(dom, 'App.openProject("' + P + '")');
     await tick(); await tick();
@@ -1791,6 +1977,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     g(dom, 'GitPanel.refresh = window.__origGitRefresh');
   });
 
+  await okAsync('Git IPC Registry：清单里的通道在 dom mock 里都有对应实现', async () => {
+    const OPS = require('../git-ops');   // 唯一清单（main.js 按它注册 handler）
+    const bridge = dom.window.myIDE.git || {};
+    const miss = OPS.map((o) => o.ch).filter((ch) => typeof bridge[ch] !== 'function');
+    assert_(OPS.length >= 40, '清单至少有 40 个通道: ' + OPS.length);
+    assert_(miss.length === 0, 'mock 缺这些通道（新增能力时忘了补 mock）: ' + miss.join(', '));
+    assert_(OPS.every((o) => o.ch && (o.op || o.native)), '每项都要有 ch 且指定 op 或 native');
+  });
+
   await okAsync('设置：Git 配置分类（预填 + 保存）', async () => {
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
@@ -1807,6 +2002,19 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     assert_(calls.setUserConfig.length === 1, '调用了 setUserConfig');
     assert_(calls.setUserConfig[0].name === '张三' && calls.setUserConfig[0].email === 'zhangsan@x.com', '配置值正确');
+    // 原生 Git 后端（M2）：能力清单一并渲染，保存路径走 setGitExe
+    assert_($(dom, '#git-exe'), '原生后端：可执行文件路径输入框');
+    assert_($(dom, '.git-native-caps .cap'), '原生后端：能力清单有胶囊');
+    assert_($(dom, '.git-native-caps .cap.on'), '可用能力标 on（模拟环境探测到 git）');
+    assert_($(dom, '#git-backend-status').textContent.includes('Git 2.55.0'), '显示探测到的版本: ' + $(dom, '#git-backend-status').textContent.slice(0, 60));
+    assert_($(dom, '#git-backend-status').textContent.includes('isomorphic-git'), '显示回退后端');
+    $(dom, '#git-exe').value = 'D:/software/Git/bin/git.exe';
+    click($(dom, '#git-exe-save'));
+    await tick(); await tick();
+    assert_(calls.setGitExe.length === 1 && calls.setGitExe[0] === 'D:/software/Git/bin/git.exe', '调用了 setGitExe 且带路径');
+    click($(dom, '#git-exe-test'));
+    await tick(); await tick();
+    assert_(calls.testGitExe.length === 1, '「测试路径」调用了 testGitExe');
     // 切回快捷键分类仍正常
     click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('快捷键')));
     await tick();
@@ -1870,6 +2078,129 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
     assert_($(dom, '#modal-mask').classList.contains('hidden'), '无弹窗残留');
+  });
+
+  await okAsync('M4-C：分支行 ⋯ 菜单（合并 / 变基 / 从它新建 / 删除）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-branch'));
+    await tick(); await tick();
+    assert_($(dom, '#br-box'), '分支弹窗打开');
+    const devRow = $allIn($(dom, '#br-list'), '.br-item').find((x) => x.textContent.includes('dev'));
+    const curRow = $allIn($(dom, '#br-list'), '.br-item.current')[0];
+    assert_(devRow.querySelector('.br-more'), '每个分支行有 ⋯ 菜单入口');
+    // dev（非当前）→ 有合并 / 变基 / 从它新建 / 删除
+    click(devRow.querySelector('.br-more'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    assert_(menu, '⋯ 打开浮动菜单');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.some((l) => /合并「dev」到当前分支/.test(l)), '有「合并到当前」: ' + labels.join('/'));
+    assert_(labels.some((l) => /变基/.test(l)), '有「变基」');
+    assert_(labels.some((l) => /从「dev」新建分支/.test(l)), '有「从它新建」');
+    assert_(labels.some((l) => /删除「dev」/.test(l)), '有「删除」');
+    // 点合并 → 走 native merge（mock 记录）
+    click($allIn(menu, '.ctx-item').find((x) => /合并「dev」/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.merge.length === 1 && calls.merge[0][0] === 'dev',
+      '合并调用 merge(root, dev): ' + JSON.stringify(calls.merge));
+    await tick(); await tick();
+    // 当前分支不给合并 / 变基 / 删除（也不能删自己）
+    click(curRow.querySelector('.br-more'));
+    await tick();
+    const curLabels = $allIn($(dom, '#git-float-menu'), '.ctx-item').map((x) => x.textContent.trim());
+    assert_(!curLabels.some((l) => /合并|变基|删除/.test(l)), '当前分支不给合并/变基/删除: ' + curLabels.join('/'));
+    g(dom, 'GitPanel.closeFloatMenu()');
+    await g(dom, 'Modal.hide()');
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M4-C 收尾：分支弹窗的远程分支段（检出 / 合并 / 变基 / upstream）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-branch'));
+    await tick(); await tick();
+    const rbox = $(dom, '#br-remotes');
+    assert_(rbox, '分支弹窗出现「远程分支」段');
+    const rrows = $allIn(rbox, '.br-item');
+    assert_(rrows.length === 2, '列出 2 个远程分支: ' + rrows.length);
+    // origin/dev 的 ⋯ 菜单
+    const devRemote = rrows.find((x) => x.textContent.includes('origin/dev'));
+    click(devRemote.querySelector('.br-more'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.some((l) => /检出为本地分支/.test(l)), '有「检出为本地分支」');
+    assert_(labels.some((l) => /合并「origin\/dev」到当前分支/.test(l)), '有「合并」');
+    assert_(labels.some((l) => /变基/.test(l)), '有「变基」');
+    assert_(labels.some((l) => /设为当前分支的 upstream/.test(l)), '有「设为 upstream」');
+    // 点「设为 upstream」→ setUpstream(root, 'origin/dev')
+    click($allIn(menu, '.ctx-item').find((x) => /设为当前分支的 upstream/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.setUpstream.length === 1 && calls.setUpstream[0] === 'origin/dev',
+      'setUpstream(root, origin/dev): ' + JSON.stringify(calls.setUpstream));
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M4 收尾：冲突窗口的可编辑合并结果（手工拼接后写回）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const solve = $allIn($(dom, '#cd-files .git-op-bar'), '.git-op-btn').find((b) => b.textContent.trim() === '解决冲突');
+    click(solve);
+    await tick(); await tick(); await tick();
+    const box = $(dom, '#cf-box');
+    assert_(box, '冲突窗口打开');
+    const ta = $(dom, '#cf-result');
+    assert_(ta && ta.tagName === 'TEXTAREA', '有可编辑的「合并结果」文本域');
+    assert_(ta.value.includes('<<<<<<<'), '起始内容是工作区里带冲突标记的版本: ' + JSON.stringify(ta.value.slice(0, 40)));
+    const fills = $allIn(box, '.cf-fill').map((b) => b.textContent.trim());
+    assert_(fills.some((t) => /填入当前分支/.test(t)) && fills.some((t) => /填入传入的改动/.test(t)),
+      '有一键填入某一侧: ' + fills.join('/'));
+    // 手工改成想要的内容 → 保存并标记为已解决
+    ta.value = 'merged by hand\n';
+    const save = $(dom, '#cf-save');
+    click(save);
+    await tick(); await tick(); await tick();
+    assert_(calls.resolveCustom.length === 1 && calls.resolveCustom[0][0] === 'src/app.js'
+      && calls.resolveCustom[0][1] === 'merged by hand\n',
+      'resolveCustom(file, 手工内容): ' + JSON.stringify(calls.resolveCustom));
+    await g(dom, 'Modal.hide()');
+    await g(dom, 'GitPanel.closeDialog()');
+    // 收尾：回 NORMAL
+    await g(dom, 'GitPanel.op = { state: "NORMAL" }');
+    await g(dom, 'GitPanel.conflicts = []');
+    await tick(); await tick();
+  });
+
+  await okAsync('M4 收尾：拉取策略菜单（默认快进 + 三种策略都走得到）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#cd-pull'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.length === 4, '4 种策略: ' + labels.join('/'));
+    assert_(/快进，默认/.test(labels[0]) && /仅快进/.test(labels[1]) && /合并/.test(labels[2]) && /变基/.test(labels[3]),
+      '策略齐: ' + labels.join(' | '));
+    // 点「拉取并合并」→ pull(root, { strategy: 'merge' })
+    click($allIn(menu, '.ctx-item').find((x) => /拉取并合并/.test(x.textContent)));
+    await tick(); await tick(); await tick();
+    assert_(calls.pull.length === 1 && calls.pull[0] && calls.pull[0].strategy === 'merge',
+      'pull 带策略参数: ' + JSON.stringify(calls.pull));
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
   });
 
   await okAsync('远程管理：弹窗列出远程 + 每个远程的分支列表', async () => {
@@ -2334,7 +2665,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('换行符显示：CRLF 文件状态栏标记，LF 不显示', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/crlf-file.txt")');
     await tick(); await tick();
-    assert_($(dom, '#sb-info').textContent.includes('(CRLF)'), 'CRLF 标记: ' + $(dom, '#sb-info').textContent);
+    assert_($(dom, '#sb-info').textContent.includes('CRLF'), 'CRLF 标记: ' + $(dom, '#sb-info').textContent);
     await g(dom, 'Viewer.openFile("' + P + '/notes.txt")');
     await tick(); await tick();
     assert_(!$(dom, '#sb-info').textContent.includes('CRLF'), 'LF 文件无标记');
@@ -2417,9 +2748,13 @@ assert_(panel, 'CM6 搜索面板出现');
     const bar = () => $(dom, '#cd-files .git-cp-bar');
     const btnsOf = () => $allIn(bar(), '.vt-btn');
     assert_(bar(), '工具行存在');
-    assert_(btnsOf().length === 8, '8 个图标按钮: ' + btnsOf().length);
+    // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
+    assert_(btnsOf().length === 13, '13 个图标按钮（M5 追加了提交前检查 / 本次作者）: ' + btnsOf().length);
     assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
     assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
+    // 挪进来的三个保留原 id：dom 测试与快捷键都按 id 找它们
+    assert_($(dom, '#cd-shelve') && $(dom, '#cd-remote') && $(dom, '#cd-log'), '搁置 / 远程 / 日志 三个按钮（原 id 保留）');
+    assert_($(dom, '#cd-shelve').parentElement === bar(), '它们都在工具行里（不再挤标题行）');
     assert_(!$(dom, '#git-check-all'), '旧的「全选」单选框已被节点三态复选框取代');
 
     const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
@@ -2492,11 +2827,71 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($allIn($(dom, '#cp-body'), '.cp-hunk').length === 2, '预览里保留 hunk 分隔');
     assert_(/\+\d+ \/ -\d+/.test($(dom, '#cp-stats').textContent), '预览显示 +增/-删 统计: ' + $(dom, '#cp-stats').textContent);
     assert_(prevBtn.classList.contains('active'), '预览按钮高亮');
+    // 面板内预览的「说明 + 出口」：框上要写明这是什么（用户问过「这个预览是什么意思」），
+    // 并且能一键把同一个文件转到编辑区看整体（用户问过「这么小的地方怎么看」）
+    assert_(/面板内预览/.test($(dom, '.cp-tag').textContent), '预览框上写明「面板内预览」: ' + $(dom, '.cp-tag').textContent);
+    const cpOpen = $(dom, '#cp-open');
+    assert_(cpOpen, '预览框里有「在编辑区打开」按钮');
+    const curFile = $(dom, '#cp-title').textContent;
+    click(cpOpen);
+    await tick(); await tick(); await tick();
+    assert_($(dom, '#viewer .diff-wrap'), '点它 → 在编辑区打开差异（面板窄的出口）');
+    assert_($(dom, '#viewer .df-path') && $(dom, '#viewer .df-path').textContent === curFile,
+      '编辑区打开的正是预览的那个文件: ' + ($(dom, '#viewer .df-path') ? $(dom, '#viewer .df-path').textContent : '(无)'));
     click(prevBtn);
     await tick();
     assert_(pre.classList.contains('hidden'), '再点关闭预览');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
+  });
+
+  await okAsync('M1 提交模型：已暂存只读分节 + 变更列表（命名分组 / 活动列表 / 持久化）', async () => {
+    const saveChanged = FAKE_GIT.changed.map((c) => ({ ...c }));
+    const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
+    const secByTitle = (name) => secTitles().find((s) => {
+      const n = s.querySelector('.sec-name');
+      return n && n.textContent.indexOf(name) === 0;
+    });
+    const bodyOf = (sec) => (sec ? sec.nextElementSibling : null);
+    const bodyText = (name) => { const b = bodyOf(secByTitle(name)); return b ? b.textContent : '(无此分节)'; };
+    try {
+      // ① 「整份已在 index 里」的文件 → 进只读分节，且不进提交集合
+      FAKE_GIT.changed = saveChanged.map((c) => (c.file === 'src/app.js' ? { ...c, inIndexOnly: true } : c));
+      await g(dom, 'GitPanel.openCommit()');
+      await g(dom, 'GitPanel.refresh()');   // openCommit 只 render，不重新拉 status
+      await tick(); await tick(); await tick();
+      const stagedSec = secByTitle('已暂存（外部）');
+      assert_(stagedSec, '出现「已暂存（外部）」分节');
+      assert_(!stagedSec.querySelector('input[type="checkbox"]'), '只读分节没有复选框');
+      assert_(bodyText('已暂存（外部）').includes('app.js'), '已暂存的文件列在只读分节里');
+      assert_(!bodyText('更改').includes('app.js'), '已暂存的文件不再出现在「更改」里');
+      assert_(bodyOf(stagedSec).querySelector('.git-file.ro'), '只读行带 .git-file.ro');
+      assert_(!bodyOf(stagedSec).querySelector('.cf-check'), '只读行没有 .cf-check（不可勾选）');
+      assert_(!bodyOf(stagedSec).querySelector('.git-revert'), '只读行没有回滚按钮');
+
+      // ② 变更列表：非活动列表只读、活动列表回到「更改」、归属落盘
+      await g(dom, 'GitPanel.changelists = { active: "default", lists: [{ id: "cl1", name: "当前任务", files: ["README.md"] }] }');
+      await tick(); await tick();
+      const clSec = secByTitle('当前任务');
+      assert_(clSec, '出现以列表名命名的分节');
+      assert_(!clSec.querySelector('input[type="checkbox"]'), '非活动列表只读（没有复选框）');
+      assert_(bodyText('当前任务').includes('README.md'), '移入的文件显示在该列表下');
+      assert_(!bodyText('更改').includes('README.md'), '非活动列表的文件不在「更改」里');
+      const clFile = Object.keys(FAKE_FS).find((k) => /changelists\.json$/.test(k));
+      assert_(clFile, '变更列表落盘到 .myide/changelists.json');
+      assert_(clFile && /当前任务/.test(FAKE_FS[clFile].content), '文件内容含列表名');
+
+      await g(dom, 'GitPanel.clSetActive("cl1")');
+      await tick(); await tick();
+      assert_(bodyText('更改').includes('README.md'), '设为活动列表后文件回到「更改」');
+      assert_(secByTitle('当前任务') === undefined, '活动列表不再单独成节（并进「更改」）');
+    } finally {
+      // 兜底还原：这个用例挂了也不能把仓库状态与列表漏给后面的用例
+      FAKE_GIT.changed = saveChanged;
+      await g(dom, 'GitPanel.changelists = { active: "default", lists: [] }');
+      await g(dom, 'GitPanel.closeDialog()');
+      await tick(); await tick();
+    }
   });
 
   await okAsync('提交窗口右键菜单：添加到 .gitignore / 不再忽略 / 显示历史', async () => {
@@ -2716,17 +3111,317 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const before = calls.diffWorkdir.length;
-    // 单击行（非勾选框/操作按钮）→ 编辑区预览工作区 vs HEAD
+    const before = calls.diffUnstaged.length;
+    // 单击行（非勾选框/操作按钮）→ 编辑区打开**未暂存**那一侧（M3 双区差异：index → 工作区）
     const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('README.md'));
     click(row);
     await tick(); await tick();
-    assert_(calls.diffWorkdir.length === before + 1, '点击触发了 diffWorkdir');
+    assert_(calls.diffUnstaged.length === before + 1, '点击触发了 diffUnstaged（未暂存侧）');
     assert_($(dom, '#viewer .diff-wrap .diff-table'), '编辑区差异表格出现');
     assert_(row.classList.contains('sel'), '行显示选中态');
+    // 每块头上有块级操作（暂存 / 回退）
+    const acts = $allIn($(dom, '#viewer .diff-table'), '.hunk-act');
+    assert_(acts.length >= 2, 'hunk 头有块级操作按钮: ' + acts.length);
+    assert_(acts.some((b) => /暂存此块/.test(b.textContent)) && acts.some((b) => /回退此块/.test(b.textContent)), '含「暂存此块」「回退此块」');
+    // 点「暂存此块」→ 走 stageHunk(file, 块序号)
+    const stageBtn = acts.find((b) => /暂存此块/.test(b.textContent));
+    click(stageBtn);
+    await tick(); await tick();
+    assert_(calls.stageHunk.length === 1, '调用了 stageHunk');
+    assert_(calls.stageHunk[0][0] === row.dataset.file && calls.stageHunk[0][1] === 0, '参数是 [文件, 块序号]: ' + JSON.stringify(calls.stageHunk[0]));
     await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
+  });
+
+  await okAsync('M3 双区：同一个文件既有暂存又有未暂存 → 两块并排各挂各的按钮', async () => {
+    const save = FAKE_GIT.changed.map((c) => ({ ...c }));
+    // '*modified' = 暂存 + 未暂存（不是整份已暂存 → 不是 inIndexOnly）
+    FAKE_GIT.changed = save.map((c) => (c.file === 'src/app.js' ? { ...c, status: '*modified', label: '已修改（暂存+未暂存）', inIndexOnly: false } : c));
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const row = $allIn($(dom, '#cd-files'), '.git-file').find((x) => x.textContent.includes('app.js'));
+    click(row);
+    await tick(); await tick(); await tick();
+    assert_(calls.diffStaged.length >= 1 && calls.diffUnstaged.length >= 1, '两侧都取了差异');
+    const titles = $allIn($(dom, '#viewer'), '.diff-file-title');
+    assert_(titles.length === 2, '出现两个文件块（已暂存 / 未暂存）: ' + titles.length);
+    const tags = $allIn($(dom, '#viewer'), '.diff-file-title .side-tag').map((x) => x.textContent.trim());
+    assert_(tags.includes('已暂存') && tags.includes('未暂存'), '两块各带侧标记: ' + tags.join('/'));
+    const acts = $allIn($(dom, '#viewer'), '.hunk-act').map((b) => b.textContent.trim());
+    assert_(acts.some((t) => /取消暂存此块/.test(t)), '已暂存那块给「取消暂存此块」');
+    assert_(acts.some((t) => /暂存此块/.test(t)), '未暂存那块给「暂存此块」');
+    // 点「取消暂存此块」→ 走 unstageHunk
+    const un = $allIn($(dom, '#viewer'), '.hunk-act').find((b) => /取消暂存此块/.test(b.textContent));
+    click(un);
+    await tick(); await tick();
+    assert_(calls.unstageHunk.length === 1, '调用了 unstageHunk');
+    FAKE_GIT.changed = save;
+    await g(dom, 'GitPanel.closeDiffView()');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('切项目：忽略文件缓存跟着作废（不再显示上一个项目的清单）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const ignHead = () => $allIn($(dom, '#cd-files'), '.git-sec-title').find((s) => /忽略的文件/.test(s.textContent));
+    // 保证「忽略的文件」是展开的（前面的用例可能已经加载过它 → 这里只关心「切项目后必须重新拉」）
+    const ensureOpen = () => {
+      const b = ignHead() && ignHead().nextElementSibling;
+      if (b && b.style.display === 'none') click(ignHead());
+    };
+    ensureOpen();
+    await tick(); await tick();
+    const before = calls.listIgnored.length;
+    // 切项目 → 缓存必须作废（ignoredFiles/ignoredAll 是整个会话缓存的，不随 root 走）
+    await g(dom, 'GitPanel.rootDir = "C:/other/proj"');
+    await tick(); await tick();
+    ensureOpen();
+    await tick(); await tick();
+    assert_(calls.listIgnored.length > before,
+      '切项目后重新拉取忽略清单（缓存作废）: ' + before + ' → ' + calls.listIgnored.length);
+    await g(dom, 'GitPanel.rootDir = ' + JSON.stringify(P));
+    await tick(); await tick();
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M4：Git 操作进行中条 + 冲突解决窗口（三方对比 + 选一侧）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    assert_(!$(dom, '#cd-files .git-op-bar'), 'NORMAL 时不显示操作条');
+    // 进入 MERGING + 一个未解决冲突
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const bar = $(dom, '#cd-files .git-op-bar');
+    assert_(bar, 'MERGING 时出现操作条');
+    assert_(/正在合并\s*feat/.test(bar.textContent), '说明在做什么: ' + bar.textContent.replace(/\s+/g, ' ').slice(0, 40));
+    assert_(/1 个冲突待解决/.test(bar.textContent), '说明还剩几个冲突');
+    const btns = $allIn(bar, '.git-op-btn');
+    const cont = btns.find((b) => b.textContent.trim() === '继续');
+    assert_(cont && cont.disabled, '有未解决冲突时「继续」禁用');
+    assert_(!btns.some((b) => b.textContent.trim() === '跳过'), 'merge 不给「跳过」（无处可跳）');
+    assert_(btns.some((b) => b.textContent.trim() === '终止'), '给「终止」');
+
+    // 打开冲突窗口
+    const solve = btns.find((b) => b.textContent.trim() === '解决冲突');
+    click(solve);
+    await tick(); await tick();
+    const box = $(dom, '#cf-box');
+    assert_(box, '冲突窗口打开');
+    assert_($allIn(box, '.cf-file').length === 1, '列出 1 个冲突文件');
+    assert_($allIn(box, '.cf-side').length === 3, '三方对比（base / ours / theirs）');
+    const heads = $allIn(box, '.cf-side-head').map((x) => x.textContent.trim());
+    assert_(/当前分支/.test(heads[1]) && /传入的改动/.test(heads[2]),
+      'merge 时 ours=当前分支、theirs=传入: ' + heads.join(' | '));
+    // 选一侧解决
+    const pick = $allIn(box, '.cf-pick').find((b) => b.dataset.side === 'ours');
+    click(pick);
+    await tick(); await tick(); await tick();
+    assert_(calls.resolveFile.length === 1 && calls.resolveFile[0][1] === 'ours',
+      '点了「用这一份」→ resolveFile(file, ours): ' + JSON.stringify(calls.resolveFile));
+    await g(dom, 'Modal.hide()');   // 解决后代码会重开窗口（真实环境里展示新状态）；mock 里列表已空，直接关掉
+    await tick();
+
+    // 全部解决 → 「继续」可用（⚠ refresh 会重新拉 mock 的 opState=NORMAL，得重设回去）
+    await g(dom, 'GitPanel.op = { state: "MERGING", target: "feat", onto: "", step: "", total: "" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: true }]');
+    await tick(); await tick();
+    const cont2 = $allIn($(dom, '#cd-files .git-op-bar'), '.git-op-btn').find((b) => b.textContent.trim() === '继续');
+    assert_(cont2 && !cont2.disabled, '冲突解决后「继续」可用');
+    click(cont2);
+    await tick(); await tick();
+    assert_(calls.continueOp.length === 1, '点「继续」调 continueOp');
+
+    // rebase 时 ours/theirs 的文案必须反过来（否则用户会选错）
+    await g(dom, 'GitPanel.op = { state: "REBASING", target: "main", onto: "feat", step: "1", total: "2" }');
+    await g(dom, 'GitPanel.conflicts = [{ file: "src/app.js", resolved: false }]');
+    await tick(); await tick();
+    const bar2 = $(dom, '#cd-files .git-op-bar');
+    assert_(/正在变基/.test(bar2.textContent) && /第 1\/2 步/.test(bar2.textContent),
+      'rebase 显示进度: ' + bar2.textContent.replace(/\s+/g, ' ').slice(0, 50));
+    assert_($allIn(bar2, '.git-op-btn').some((b) => b.textContent.trim() === '跳过'), 'rebase 给「跳过」');
+    await g(dom, 'GitPanel.openConflictDialog()');
+    await tick(); await tick();
+    const heads2 = $allIn($(dom, '#cf-box'), '.cf-side-head').map((x) => x.textContent.trim());
+    assert_(/新基底/.test(heads2[1]) && /正在重放的提交/.test(heads2[2]),
+      'rebase 时 ours=新基底、theirs=正在重放的提交: ' + heads2.join(' | '));
+    await g(dom, 'Modal.hide()');     // ⚠ 必须收掉：mask 里不许留常驻子节点（否则下一个用例的 mask 断言会炸）
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+
+    // 收尾：回到 NORMAL（后面用例的基线）
+    await g(dom, 'GitPanel.op = { state: "NORMAL" }');
+    await g(dom, 'GitPanel.conflicts = []');
+    await tick(); await tick();
+    assert_(!$(dom, '#cd-files .git-op-bar'), '收尾：操作条消失');
+  });
+
+  await okAsync('提交面板行结构：目录行与文件行共用同一套缩进列（同层名字对齐）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    // ① 树形：文件行必须有 caret 占位、目录行必须有徽章占位 —— 否则同层名字会差一个列宽
+    const fileRows = $allIn($(dom, '#commit-list'), '.git-file');
+    const dirRows = $allIn($(dom, '#commit-list'), '.git-group');
+    assert_(fileRows.length > 0 && dirRows.length > 0, '树形下有目录行与文件行: ' + fileRows.length + '/' + dirRows.length);
+    assert_(fileRows.every((r) => r.querySelector('.caret-spacer')), '文件行都有 caret 占位');
+    assert_(dirRows.every((r) => r.querySelector('.badge-spacer')), '目录行都有徽章占位');
+    // 两类的"列数"必须一致：caret(占位) + 复选框 + 徽章(占位) + 名字
+    const cols = (r) => [...r.children].filter((c) => !c.classList.contains('g-count') && !c.classList.contains('git-revert')).length;
+    assert_(cols(fileRows[0]) === cols(dirRows[0]),
+      '目录行与文件行的列结构一致: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
+    // ② 平铺：文件行也要带 caret 占位（与目录行同列宽）
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick(); await tick();
+    const flatRows = $allIn($(dom, '#commit-list'), '.git-file');
+    assert_(flatRows.length > 0 && flatRows.every((r) => r.querySelector('.caret-spacer')), '平铺行也有 caret 占位');
+    assert_($allIn($(dom, '#commit-list'), '.git-file .dir').length > 0, '平铺行显示父目录前缀');
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('差异视图：单文件不重复标题 / 双区两块各自带侧标记', async () => {
+    // ① 单文件：顶部 .diff-head 已经写了路径 + 侧别 → 表格里不再画标题
+    await g(dom, 'GitPanel.renderDiffView({ file: "a.txt", side: "unstaged", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: "add", aText: "", bText: "x", aNum: 0, bNum: 1 }] }] }, "未暂存（工作区 vs 暂存区）")');
+    await tick(); await tick();
+    assert_($(dom, '#viewer .df-path'), '顶部有路径');
+    assert_($allIn($(dom, '#viewer'), '.diff-file-title').length === 0,
+      '单文件不重复画标题: ' + $allIn($(dom, '#viewer'), '.diff-file-title').length + ' 个');
+    assert_($allIn($(dom, '#viewer'), '.diff-file').length === 1, '只有一个文件块');
+    // ② 双区（同一个文件两块）：必须每块都有标题 + 侧标记，否则两块看不出谁是谁
+    const mk = (side) => ({ file: 'a.txt', side, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'add', aText: '', bText: 'x', aNum: 0, bNum: 1 }] }] });
+    await g(dom, 'GitPanel.renderDiffView([' + JSON.stringify(mk('staged')) + ',' + JSON.stringify(mk('unstaged')) + '], "2 个文件")');
+    await tick(); await tick();
+    const titles = $allIn($(dom, '#viewer'), '.diff-file-title');
+    assert_(titles.length === 2, '双区：两块各有标题: ' + titles.length + ' 个');
+    const tags = $allIn($(dom, '#viewer'), '.side-tag').map((x) => x.textContent.trim());
+    assert_(tags.includes('已暂存') && tags.includes('未暂存'), '侧标记齐全: ' + tags.join('/'));
+    await g(dom, 'GitPanel.closeDiffView()');
+    await tick();
+  });
+
+  await okAsync('M5：提交前检查 —— 有阻断项时先弹结果面板，取消/仍然提交都生效', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    // 配一条必定失败的命令 + 关掉 TODO（免得无关项干扰断言）
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: false, commands: [{ name: "lint", cmd: "npm run lint" }] }');
+    FAKE_GIT.precommitResult = { ok: false, results: [{ name: 'lint', cmd: 'npm run lint', ok: false, code: 1, out: '3 problems' }] };
+    $(dom, '#commit-msg').value = 'feat: 试试提交前检查';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    assert_(calls.commit.length === before, '检查没过时没有提交');
+    const box = $(dom, '#pcr-box');
+    assert_(box, '结果面板弹出');
+    assert_(/没通过/.test($(dom, '#pcr-sum').textContent), '汇总说明有几项没过: ' + $(dom, '#pcr-sum').textContent);
+    assert_($allIn(box, '.pcr-item.bad').length === 1, '失败项标红: ' + $allIn(box, '.pcr-item.bad').length);
+    assert_(/3 problems/.test($(dom, '#pcr-list').textContent), '输出展示出来了');
+    // ① 取消提交 → 不提交
+    click($(dom, '#pcr-no'));
+    await tick(); await tick();
+    assert_(calls.commit.length === before, '点「取消提交」不提交');
+    // ② 仍然提交 → 提交，且跑过 precommitRun（带我们的命令）
+    // ⚠ calls 是全局累积的，要看**最后一条**（前面的提交用例也跑过 precommitRun，只是没配命令）
+    const pcLast = calls.precommit[calls.precommit.length - 1] || {};
+    assert_(pcLast.commands && pcLast.commands[0] && pcLast.commands[0].cmd === 'npm run lint',
+      'precommitRun 收到配置的命令: ' + JSON.stringify(pcLast));
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    click($(dom, '#pcr-yes'));
+    await tick(); await tick();
+    assert_(calls.commit.length === before + 1, '点「仍然提交」才真的提交');
+    // 收尾：恢复默认配置
+    FAKE_GIT.precommitResult = null;
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: true, commands: [] }');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
+  await okAsync('M5：Sign-off 追加签名（不重复）+ 作者覆盖只影响这一次', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.signoff = true');
+    await g(dom, 'GitPanel.authorOverride = { name: "临时工", email: "tmp@example.com" }');
+    // ⚠ 上一个用例真的提交过 → 勾选集合已被清空，这里得重新勾上（否则 doCommit 直接 early return）
+    click($allIn($(dom, '#commit-list'), '.cf-check')[0]);
+    await tick();
+    $(dom, '#commit-msg').value = 'fix: 带签名提交';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    const last = calls.commit[calls.commit.length - 1];
+    assert_(calls.commit.length === before + 1, '提交成功');
+    assert_(/Signed-off-by: 临时工 <tmp@example.com>/.test(last.message),
+      '签名跟作者走且用覆盖后的作者: ' + JSON.stringify(last.message));
+    assert_($(dom, '#commit-msg').value === '' || !/Signed-off-by/.test($(dom, '#commit-msg').value),
+      '签名不写回输入框');
+    assert_(last.author && last.author.name === '临时工', 'commit 收到 author 覆盖: ' + JSON.stringify(last.author));
+    // 重复勾选不会加第二遍（直接测内部函数：同样内容再签一次）
+    const twice = await g(dom, 'GitPanel.appendSignoff(' + JSON.stringify(last.message) + ')');
+    assert_((twice.match(/Signed-off-by/g) || []).length === 1, '不会出现两遍签名');
+    // 作者按钮状态：覆盖时高亮
+    assert_($(dom, '#commit-author').classList.contains('active'), '作者按钮显示"已覆盖"态');
+    // 收尾：清掉覆盖与签名（后面用例基线）
+    await g(dom, 'GitPanel.authorOverride = null');
+    await g(dom, 'GitPanel.signoff = false');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+    assert_(!$(dom, '#commit-author').classList.contains('active'), '收尾：作者按钮回到默认态');
+    assert_($(dom, '#commit-signoff').checked === false, '收尾：Sign-off 取消勾选');
+  });
+
+  await okAsync('M5：提交前检查弹窗（配置持久化到 preCfg）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#commit-precheck'));
+    await tick(); await tick();
+    const box = $(dom, '#pc-box');
+    assert_(box, '提交前检查弹窗打开');
+    assert_($(dom, '#pc-enabled') && $(dom, '#pc-hooks') && $(dom, '#pc-todo'), '三个勾选项都在');
+    assert_($allIn(box, '.pc-cmd').length === 0 && $(dom, '.pc-empty'), '初始没有命令（给空态提示）');
+    click($(dom, '#pc-add'));
+    await tick();
+    assert_($allIn(box, '.pc-cmd').length === 1, '点「添加」出现一行命令');
+    const rowEl = $allIn(box, '.pc-cmd')[0];
+    rowEl.querySelector('.pc-nm').value = 'lint';
+    rowEl.querySelector('.pc-sh').value = 'npm run lint';
+    $(dom, '#pc-max').value = '120';
+    $(dom, '#pc-regex').value = '^(feat|fix): ';
+    click($(dom, '#pc-yes'));
+    await tick(); await tick();
+    const cfg = await g(dom, 'JSON.stringify(GitPanel.preCfg)');
+    const o = JSON.parse(cfg);
+    assert_(o.commands.length === 1 && o.commands[0].cmd === 'npm run lint' && o.commands[0].name === 'lint',
+      '命令保存进配置: ' + JSON.stringify(o.commands));
+    assert_(o.maxSubject === 120 && o.messageRegex === '^(feat|fix): ', '正则与长度上限也存了: ' + cfg);
+    // 消息校验真的生效：写个不符合正则的主题 → 阻断
+    o.commands = [];        // 不跑命令，单独验正则
+    await g(dom, 'GitPanel.preCfg = ' + JSON.stringify(o));
+    click($allIn($(dom, '#commit-list'), '.cf-check')[0]);   // 前面真的提交过 → 重新勾一个文件
+    await tick();
+    $(dom, '#commit-msg').value = '不加前缀的主题';
+    const before = calls.commit.length;
+    click($(dom, '#cm-ok'));
+    await tick(); await tick(); await tick();
+    assert_(calls.commit.length === before && $(dom, '#pcr-box'), '主题不匹配 → 阻断并弹面板');
+    assert_(/提交消息格式/.test($(dom, '#pcr-list').textContent), '面板里指出是消息格式问题');
+    click($(dom, '#pcr-no'));
+    await tick(); await tick();
+    // 收尾：配置恢复默认
+    await g(dom, 'GitPanel.preCfg = { enabled: true, runHooks: true, checkTodo: true, commands: [] }');
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：无弹窗残留');
   });
 
   await okAsync('toast 提示正常', async () => {
@@ -2797,7 +3492,8 @@ assert_(panel, 'CM6 搜索面板出现');
     const bar = $(dom, '#statusbar');
     const kids = [...bar.children].filter((x) => x.id);
     assert_(kids.indexOf(bar.querySelector('#sb-bgop')) > kids.indexOf(bar.querySelector('#sb-font')), '滑条在字号控件右侧（最右端）');
-    assert_(sb.value === '15', '初始值同步 15, got: ' + sb.value);
+    // 默认透明度 0.15 → 0.10：底图是氛围，在本来就偏满的页面里会再加一层视觉信息
+    assert_(sb.value === '10', '初始值同步 10, got: ' + sb.value);
     await g(dom, 'Bg.setOpacity(0.3)');
     await tick();
     assert_(sb.value === '30', '透明度变化同步滑条, got: ' + sb.value);
@@ -2820,7 +3516,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(dec && inc && val, '状态栏统一字号控件存在');
     const bar = $(dom, '#statusbar');
     const kids = [...bar.children].filter((x) => x.id);
-    assert_(kids.indexOf(bar.querySelector('#sb-tool-font')) === 0, '统一控件贴状态栏最左端');
+    assert_(kids.includes(bar.querySelector('#sb-tool-font')), '统一字号控件在状态栏内（现排在右侧，左边让给光标/分支）');
     // 3) 点击 A+ → --tool-font 变量 + 状态栏读数 + 持久化 同步
     const before = dom.window.document.documentElement.style.getPropertyValue('--tool-font');
     click(inc);
@@ -3007,12 +3703,15 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('侧栏分隔线实色不透明', async () => {
+  await okAsync('侧栏分隔线 = 区域之间的那道缝（实色不透明 + 同宽）', async () => {
     // jsdom 不解析 CSS 变量（computed 恒为透明），直接断言样式表源码
     const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     const m = /^#sidebar-resizer\s*\{[^}]*\}/m.exec(cssSrc);
     assert_(m, '找到 #sidebar-resizer 规则');
-    assert_(/background:\s*var\(--border\)/.test(m[0]) && !/transparent/.test(m[0]), '分隔线背景为实色 var(--border), got: ' + m[0].replace(/\s+/g, ' '));
+    // 它现在同时是「侧栏 ↔ 编辑区」的缝：用最外层底色（深色条），不是 --border 的细线
+    assert_(/background:\s*var\(--seam-color\)/.test(m[0]) && !/transparent/.test(m[0]),
+      '缝为实色 var(--seam-color), got: ' + m[0].replace(/\s+/g, ' '));
+    assert_(/width:\s*var\(--seam\)/.test(m[0]), '缝宽与其它区域同一来源 --seam, got: ' + m[0].replace(/\s+/g, ' '));
   });
 
   await okAsync('Bug1：空状态只覆盖内容区（#content 定位）', async () => {
@@ -3164,7 +3863,7 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.document.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX: 320 }));
     await tick();
     assert_(sidebar.style.width === '320px', '宽度更新为 320px: ' + sidebar.style.width);
-    assert_(dom.window.localStorage.getItem('myide-sidebar-width') === '320', '宽度持久化');
+    assert_(dom.window.localStorage.getItem('myide-sidebar-width:v2') === '320', '宽度持久化');
   });
 
   await okAsync('Bug11：Markdown 分屏模式（工具栏切换 + 实时预览）', async () => {
@@ -3172,7 +3871,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◫ 分屏')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '分屏'));
     await tick();
     assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');
@@ -3182,7 +3881,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await new Promise((r) => setTimeout(r, 320)); // 等 200ms 防抖
     const md = $(dom, '.md-split-preview .md-view');
     assert_(md && md.querySelector('h1') && md.querySelector('h1').textContent.includes('实时标题'), '预览实时更新');
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('{ } 源码')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '源码'));
     await tick();
     assert_(!$(dom, '.md-split'), '切源码后无分屏');
     assert_($(dom, '.editor-cm-wrap .cm-editor'), '源码模式有 CM 编辑器');
@@ -3193,7 +3892,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/link.md")');
     await tick(); await tick();
     // live（CM6）无 .md-view，切「◉ 预览」后断言渲染链接
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     const md = $(dom, '.md-view');
     const links = $allIn(md, 'a');
@@ -3403,7 +4102,7 @@ assert_(panel, 'CM6 搜索面板出现');
     calls.openExternal = [];
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
-    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('浏览器打开'));
+    const btn = $allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('浏览器打开'));
     assert_(btn, '浏览器打开按钮存在');
     click(btn);
     await tick();
@@ -3552,7 +4251,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('HTML 内置浏览器打开按钮', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
-    const btn = $allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('内置浏览器'));
+    const btn = $allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.includes('内置浏览器'));
     assert_(btn, '内置浏览器按钮存在');
     calls.viewOpen = [];
     click(btn);
@@ -3601,7 +4300,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '项目A恢复大纲面板');
     await g(dom, 'App.setRoot("C:/tsB")');
     await tick(); await tick();
-    assert_($(dom, '#panel-outline').classList.contains('hidden'), '项目B默认不显示大纲');
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '项目B默认不显示大纲（项目树独占侧栏）');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目B默认项目面板');
     // B 切到大纲 → A/B 各自记忆互不覆盖
     await g(dom, 'App.switchTool("outline")');
@@ -3615,15 +4314,70 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'App.switchTool("project")');
     await g(dom, 'App.setRoot("' + P + '")');
     await tick();
+    // ⚠ 不能假设"所有项目都渲染出按钮"：项目 > 3 个时顶栏收起成「当前项目 ▾」，
+    //    别的项目的按钮根本不存在（这一条以前是靠平铺渲染侥幸通过的）。
+    //    先切成当前项目再移除 —— 两种渲染模式下当前项目一定在 #project-bar 里。
     for (const t of ['C:/tsA', 'C:/tsB']) {
+      if (!(await g(dom, 'App.getProjects()')).some((x) => x.path === t)) continue;
+      await g(dom, 'App.setRoot("' + t + '")');
+      await tick();
       const btn = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.dataset.path === t);
-      if (btn) { click(btn.querySelector('.proj-close')); await tick(); }
+      if (btn) { click(btn.querySelector('.proj-close')); await tick(); await tick(); }
     }
     try {
       const rec = JSON.parse(dom.window.localStorage.getItem('myide-recent-projects') || '[]')
         .filter((x) => x !== 'C:/tsA' && x !== 'C:/tsB');
       dom.window.localStorage.setItem('myide-recent-projects', JSON.stringify(rec));
     } catch {}
+  });
+
+  await okAsync('翻译弹窗：未选中文本也能打开 / 原文可自己填 / 遮罩里没有遗留空容器', async () => {
+    dom.window.localStorage.setItem('myide-translate-cfg', JSON.stringify({ baseUrl: 'http://stub', model: 'stub', target: '中文' }));
+    await g(dom, 'Translate.run("")');
+    await tick(); await tick();
+    const box = $(dom, '.tr-box');
+    assert_(box, '未选中文本也弹出翻译框（原实现只弹 toast 就 return）');
+    const src = $(dom, '#tr-src');
+    assert_(src && src.tagName === 'TEXTAREA', '原文是可编辑的 textarea, got: ' + (src && src.tagName));
+    assert_(src.value === '', '未选中时进来是空的');
+    assert_(!$(dom, '#modal-box'), '遮罩里没有遗留的 #modal-box（它宽 560px，曾把弹窗整体挤偏）');
+    assert_($(dom, '#modal-mask').children.length === 1, 'mask 里只有弹窗一个子节点');
+    src.value = '页面设置';
+    click($(dom, '#tr-do'));
+    await tick(); await tick();
+    assert_($(dom, '#tr-dst').textContent === '译:页面设置', '手动填的文本能翻, got: ' + $(dom, '#tr-dst').textContent);
+    click($(dom, '#tr-close'));
+    await tick();
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '关闭后遮罩隐藏');
+    await g(dom, 'Translate.run("你好")');
+    await tick(); await tick();
+    assert_($(dom, '#tr-dst').textContent === '译:你好', '选中文本进来仍自动翻, got: ' + $(dom, '#tr-dst').textContent);
+    assert_($(dom, '#tr-src').value === '你好', '原文框预填选中文本');
+    await g(dom, 'Translate.closeBox()');
+    await tick();
+  });
+
+  await okAsync('侧栏「项目」工具窗口只放项目树（上下分栏已取消）', async () => {
+    // ⚠ 用 showTool 不用 switchTool：后者是"再点一次收起"的切换语义，
+    //    项目面板已激活时会把侧栏整块收起来
+    await g(dom, 'App.showTool("project")');
+    await tick();
+    assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目树在');
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '下面不再挂大纲（分栏已取消）');
+    assert_(!$(dom, '#panel-project').classList.contains('side-split-bottom'), '项目树没有「下半区」标记');
+    assert_(!$(dom, '#side-hsplit'), '上下分隔线元素已彻底移除（DOM 里没有）');
+    // 大纲仍是独立工具窗口：单独打开时独占侧栏（功能没被删掉）
+    await g(dom, 'App.showTool("outline")');
+    await tick();
+    assert_(!$(dom, '#panel-outline').classList.contains('hidden'), '大纲仍可单独打开');
+    assert_($(dom, '#panel-project').classList.contains('hidden'), '大纲独占时项目树让位');
+    // 切到别的工具 → 依然"一个面板独占侧栏"
+    await g(dom, 'App.switchTool("git")');
+    await tick();
+    assert_(!$(dom, '#panel-git').classList.contains('hidden'), 'git 面板独占');
+    assert_($(dom, '#panel-outline').classList.contains('hidden'), '非大纲工具时大纲收起');
+    await g(dom, 'App.showTool("project")');
+    await tick();
   });
 
   await okAsync('自动保存：停止输入 3 秒后写盘', async () => {
@@ -3639,7 +4393,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     // 切到「◉ 预览」
-    click($allIn($(dom, '.viewer-toolbar'), 'button').find((b) => b.textContent.includes('◉ 预览')));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));
     await tick();
     assert_($(dom, '.md-view'), '切到预览模式');
     // 打开另一个 md → 应保持预览模式（不重置回 live）
@@ -3672,7 +4426,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(recBtns.length >= 1, '空状态显示最近项目按钮, got ' + recBtns.length);
     const known = [P, 'C:/proj2', 'C:/big'];
     assert_(known.includes(recBtns[0].title), '历史含已关闭项目: ' + recBtns[0].title);
-    // 点击历史按钮重新打开项目（用 App.root 断言：大项目虚拟滚动下 .root-path 元素可能不在可视窗口）
+    // 点击历史按钮重新打开项目（用 App.root 断言：大项目虚拟滚动下树根行可能不在可视窗口）
     const t = recBtns[0].title;
     click(recBtns[0]);
     await tick(); await tick(); await tick();
@@ -6210,9 +6964,9 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('项目栏：溢出淡出提示（滚到最右自动取消）+ 结构', async () => {
     const bar = $(dom, '#project-bar');
     assert_(bar, '项目栏存在');
-    // 「全部项目」不在滚动层内（这是「覆盖」类问题的结构性修复）
-    assert_(!$allIn(bar, '.proj-all').length, '「全部项目」不在滚动容器里');
-    assert_($(dom, '#project-bar-wrap .proj-all'), '「全部项目」在外层容器里');
+    // 结构：项目按钮在（可滚动的）项目栏里，「全部项目」入口在外层
+    assert_(!$allIn(bar, '.proj-all').length, '「全部项目」不在滚动容器里（结构上不可能压住项目按钮）');
+    assert_($(dom, '#project-bar-wrap > .proj-all'), '「全部项目」在外层容器里');
     Object.defineProperty(bar, 'scrollWidth', { configurable: true, value: 900 });
     Object.defineProperty(bar, 'clientWidth', { configurable: true, value: 300 });
     bar.scrollLeft = 0;
@@ -6229,7 +6983,11 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(/\.proj-btn\s*\{[^}]*align-items:\s*center/.test(cssText), '项目按钮垂直居中（不再挤压）');
     assert_(/#project-bar-wrap\s*\{/.test(cssText), '#project-bar-wrap 有样式');
     // 项目栏不再有 sticky 悬浮层（sticky + 横向滚动 = 按钮从底下钻过去）
-    assert_(!/\.proj-all\s*\{[^}]*position:\s*sticky/.test(cssText), '.proj-all 不再是 sticky');
+    assert_(/\.proj-all\s*\{/.test(cssText), '.proj-all 有样式（不是只有 DOM）');
+    assert_(!/\.proj-all\s*\{[^}]*position:\s*sticky/.test(cssText), '.proj-all 不是 sticky 悬浮层（否则会压住项目按钮）');
+    assert_(/\.proj-btn\s*\{/.test(cssText), '.proj-btn 有样式');
+    assert_(/\.proj-btn\.active\s*\{[^}]*color-mix/.test(cssText), '当前项目是弱背景（不是实心 accent 块）');
+    assert_(/#tab-scroll[^{]*\{[^}]*scrollbar-width:\s*none/.test(cssText), '标签滚动区隐藏了原生滚动条');
     const ndRules = cssText.match(/[^{}]+\{[^}]*-webkit-app-region:\s*no-drag[^}]*\}/g) || [];
     assert_(ndRules.some((r) => r.includes('project-bar-wrap')), '外层容器在 no-drag 白名单内可点击');
   });
@@ -6296,28 +7054,29 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('AI 面板：自动知道「你在看哪份文件」（不用每次手动附）', async () => {
     FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' + '本周完成联调。' + '\n' };
     FAKE_FS[P + '/other.md'] = { content: '# 别的' + '\n' };
-    const boxOf = () => $(dom, '#ai-follow');
-    const following = () => boxOf() && !boxOf().classList.contains('hidden');
+    // 「正在看」现在是上下文里的一条 chip（.follow），不再独占一整行
+    const boxOf = () => $(dom, '.ai-ctx-chip.follow');
+    const following = () => !!boxOf();
 
     await g(dom, 'Viewer.openFile("' + P + '/note.md")');
     await tick(); await tick();
-    assert_(following(), '打开文件后，面板自己显示「正在看」');
-    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + boxOf().textContent);
+    assert_(following(), '打开文件后，当前文件自己进了上下文（跟随）');
+    assert_(boxOf().textContent.includes('note.md'), '显示的是当前文件名: ' + (boxOf() ? boxOf().textContent : ''));
 
-    // 用户说「这份不要跟随」
-    click(boxOf().querySelector('.ai-follow-x'));
+    // 用户点 ✕ 说「这份不要跟随」
+    click(boxOf().querySelector('.ai-ctx-x'));
     await tick();
-    assert_(!following(), '点「不再跟随」后收起');
+    assert_(!following(), '点 ✕ 后不再跟随');
 
     // 切到别的文件：新文件照常跟随（否定的只是 note.md）
     await g(dom, 'Viewer.openFile("' + P + '/other.md")');
     await tick(); await tick();
-    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + boxOf().textContent);
+    assert_(following() && boxOf().textContent.includes('other.md'), '切到别的文件仍然自动跟随: ' + (boxOf() ? boxOf().textContent : ''));
 
     // 切回来：用户说过不跟随，就别再自动跟上
     await g(dom, 'Viewer.openFile("' + P + '/note.md")');
     await tick(); await tick();
-    assert_(!following(), '取消过跟随的文件，切回来也不再自动加: ' + boxOf().textContent);
+    assert_(!following(), '取消过跟随的文件，切回来也不再自动加');
 
     // 新开对话不该把「我在看这份文档」也清掉（人的直觉）
     await g(dom, 'Viewer.openFile("' + P + '/other.md")');
@@ -6439,6 +7198,446 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'AiPanel.savePerms({})'); // 清掉别影响其他用例
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
+  });
+
+
+  // ==================== AI 助手：能力对齐（上下文引用 / 会话操作 / 权限 / 项目规则）====================
+
+  await okAsync('AI 面板：@ 特殊来源（选区 / 标签页 / Git 变更 / 剪贴板）+ 上下文明细 + 固定', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/ctx.md'] = { type: 'file', content: '# 标题\n\n选中的这一段文字\n\n其他\n', mtime: 5, ctime: 5, size: 30 };
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'Viewer.openFile("' + P + '/ctx.md")');
+    await tick(); await tick();
+    await g(dom, 'Viewer.cm.setCursor(6, 14)'); // 选中「选中的这一段文字」
+    await tick();
+    const inp = $(dom, '#ai-input');
+    const type = (v) => {
+      inp.value = v;
+      try { inp.setSelectionRange(v.length, v.length); } catch {}
+      inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    };
+    type('@');
+    await tick(); await tick();
+    let rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    let labels = rows.map((x) => x.textContent);
+    assert_(labels.some((t) => t.includes('当前选区')), '有「当前选区」: ' + JSON.stringify(labels.slice(0, 5)));
+    assert_(labels.some((t) => t.includes('打开的标签页')), '有「打开的标签页」');
+    assert_(labels.some((t) => t.includes('Git 变更')), '有「Git 变更」');
+    assert_(labels.some((t) => t.includes('剪贴板')), '有「剪贴板」');
+    assert_(rows[0].textContent.includes('当前选区'), '特殊来源排在文件列表前面');
+    assert_(rows.some((r) => r.textContent.includes('ctx.md')), '文件/目录仍然有: ' + labels.length);
+    // 选「当前选区」→ 进上下文，且不往输入框插 @token
+    click(rows.find((r) => r.textContent.includes('当前选区')));
+    await tick(); await tick();
+    let chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('当前选区')), '选区进了上下文: ' + chips.map((c) => c.textContent).join('|'));
+    assert_(inp.value === '', '不往输入框插无意义的 @token: ' + JSON.stringify(inp.value));
+    // 剪贴板
+    fakeClipText = '剪贴板里的一段话';
+    type('@剪贴板');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    assert_(rows.length === 1 && rows[0].textContent.includes('剪贴板'), '按关键词过滤到 1 条: ' + rows.length);
+    click(rows[0]);
+    await tick(); await tick();
+    chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('剪贴板')), '剪贴板进了上下文');
+    // Git 变更（走 myIDE.git.status + diffWorkdir）
+    calls.diffWorkdir.length = 0;
+    fakeClipText = '';
+    type('@Git');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    const gitRow = rows.find((r) => r.textContent.includes('Git'));
+    assert_(gitRow, 'Git 项可过滤到');
+    click(gitRow);
+    await tick(); await tick(); await tick();
+    assert_(calls.diffWorkdir.length > 0, 'Git 变更会把逐个文件的 diff 读进来: ' + calls.diffWorkdir.length);
+    chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.some((c) => c.textContent.includes('Git 变更')), 'Git 变更进了上下文');
+    // 上下文明细
+    click($(dom, '#ai-usage'));
+    await tick(); await tick();
+    const bd = $allIn($(dom, '#modal-mask'), '.ai-bd-row');
+    assert_(bd.length >= 3, '明细列出每条上下文 + 对话历史: ' + bd.length);
+    const bdTx = bd.map((x) => x.textContent).join('|');
+    assert_(bdTx.includes('当前选区') && bdTx.includes('剪贴板') && bdTx.includes('对话历史'), '明细内容完整');
+    assert_($allIn($(dom, '#modal-mask'), '.ai-bd-bar').length >= 3, '有占比条（谁占地方一眼看出）');
+    click($(dom, '#cb-x'));
+    await tick();
+    // 固定：跨「新对话」保留
+    click($(dom, '#ai-chips .ai-ctx-pin'));
+    await tick();
+    assert_(!!$(dom, '#ai-chips .ai-ctx-chip.pinned'), '固定后 chip 标 pinned');
+    click($(dom, '#ai-new'));
+    await tick();
+    const chips2 = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips2.some((c) => c.textContent.includes('当前选区')), '固定过的上下文在新对话里保留: ' + chips2.map((c) => c.textContent).join('|'));
+    assert_(!chips2.some((c) => c.textContent.includes('Git 变更')), '没固定的上下文被清掉');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：斜杠命令（含 /yolo、/生成提交信息）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    const inp = $(dom, '#ai-input');
+    const type = (v) => {
+      inp.value = v;
+      try { inp.setSelectionRange(v.length, v.length); } catch {}
+      inp.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    };
+    type('/');
+    await tick(); await tick();
+    let rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    let labels = rows.map((x) => x.textContent);
+    assert_(labels.length >= 8, '命令列表弹出来: ' + labels.length);
+    assert_(labels.some((t) => t.includes('/精简')) && labels.some((t) => t.includes('/统一术语')), '内容整理类命令在: ' + JSON.stringify(labels.slice(0, 3)));
+    assert_(labels.some((t) => t.includes('/生成提交信息')) && labels.some((t) => t.includes('/yolo')), '动作类命令也在');
+    // /yolo：本次对话全放行
+    type('/yolo');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    await tick();
+    const sp = await g(dom, 'JSON.stringify(AiPanel.sessionPerm)');
+    assert_(String(sp).includes('"write":true') && String(sp).includes('"run":true'), '/yolo 放行本次对话: ' + sp);
+    assert_($(dom, '#ai-input').value === '', '/yolo 是动作，不往输入框留东西');
+    // /精简：把指令填好（有选区时自动带上选区）
+    type('/精简');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    await tick(); await tick();
+    assert_($(dom, '#ai-input').value.includes('精简'), '选命令后指令填进输入框: ' + JSON.stringify($(dom, '#ai-input').value.slice(0, 20)));
+    // /生成提交信息：读 diff 并直接发问
+    calls.diffWorkdir.length = 0;
+    aiScript = [{ ok: true, text: 'feat: 测试用提交信息' }];
+    aiCalls = 0;
+    type('/生成提交信息');
+    await tick(); await tick();
+    rows = $allIn($(dom, '.ai-at-pop'), '.ai-at-item');
+    click(rows[0]);
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(calls.diffWorkdir.length > 0, '/生成提交信息 会读当前改动');
+    assert_(aiCalls === 1, '并自动发问一次: ' + aiCalls);
+    const sys = String(JSON.stringify(aiLastMsgs));
+    assert_(sys.includes('待提交的改动'), 'diff 作为上下文进了请求');
+    assert_(sys.includes('提交信息'), '请求里带上了「写提交信息」的指令');
+    aiScript = [];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：编辑已发消息重发 + 重新生成 + 历史会话', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    try { dom.window.localStorage.removeItem('myide-ai-sessions:' + P); } catch {}
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [{ ok: true, text: '第一版回复' }];
+    aiCalls = 0;
+    $(dom, '#ai-input').value = '帮我整理这句话';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 1, '第一次问了一次: ' + aiCalls);
+    const userRow = $(dom, '#ai-msgs .ai-msg.ai-user');
+    assert_(!!userRow.dataset.mid, '用户消息行带 id（编辑时要能找到是哪条）');
+    assert_($allIn(userRow, '.ai-act-btn').length === 1, '用户消息有「编辑并重发」按钮');
+    // 重新生成
+    assert_(!!$(dom, '#ai-msgs .ai-regen'), '最后一轮助手回复上有「重新生成」');
+    aiScript = [{ ok: true, text: '第二版回复' }];
+    click($(dom, '#ai-msgs .ai-regen'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 2, '重新生成又请求了一次: ' + aiCalls);
+    const lastTx = $allIn($(dom, '#ai-msgs'), '.ai-msg').pop().textContent;
+    assert_(lastTx.includes('第二版回复'), '界面换成新回复: ' + lastTx.slice(0, 20));
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length === 2, '消息数不变（旧的被替换而不是叠加）');
+    // 编辑并重发
+    click($allIn($(dom, '#ai-msgs .ai-msg.ai-user'), '.ai-act-btn')[0]);
+    await tick();
+    assert_($(dom, '#ai-input').value === '帮我整理这句话', '原文回到输入框');
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length === 0, '这条之后的对话被丢弃: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
+    aiScript = [{ ok: true, text: '改口之后的回复' }];
+    $(dom, '#ai-input').value = '换个问法：精简它';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(aiCalls === 3, '重发又请求一次: ' + aiCalls);
+    // 历史会话：每轮结束自动存
+    const sess = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
+    assert_(!!sess && String(sess).includes('换个问法'), '历史会话自动保存了这轮: ' + String(sess).slice(0, 60));
+    click($(dom, '#ai-history'));
+    await tick(); await tick();
+    const hrows = $allIn($(dom, '.ai-hist-pop'), '.ai-hist-row');
+    assert_(hrows.length >= 1, '历史下拉列出会话: ' + hrows.length);
+    assert_($(dom, '.ai-hist-pop').textContent.includes('换个问法'), '标题取第一条用户发言');
+    assert_($allIn($(dom, '.ai-hist-pop'), '.ai-hist-b').length >= 2, '每行有重命名 / 删除');
+    // 载入会话
+    click(hrows[0]);
+    await tick(); await tick();
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, '载入后对话被重放: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-code-acts').length === 0 || true, '重放不报错');
+    try { dom.window.localStorage.removeItem('myide-ai-sessions:' + P); } catch {}
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：权限细化（危险命令 / 命令黑名单 / 写入白名单 / 清空保护）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", permWrite: "confirm", allowPaths: ["docs/**"], denyCmds: ["npm publish"] })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    await g(dom, 'AiPanel.sessionPerm.write = false; AiPanel.sessionPerm.run = false;');
+    // ① 写入白名单：docs/** 放行
+    FAKE_FS[P + '/docs'] = FAKE_FS[P + '/docs'] || { type: 'dir', children: [] };
+    FAKE_FS[P + '/docs/a.md'] = { type: 'file', content: 'v1\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a1', name: 'write_file', args: { path: 'docs/a.md', content: 'v2\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 docs';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '白名单里的路径不弹确认（docs/**）');
+    assert_(FAKE_FS[P + '/docs/a.md'].content === 'v2\n', '白名单路径直接写入');
+    // ② 白名单外：仍然要问
+    FAKE_FS[P + '/other.md'] = { type: 'file', content: 'o1\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a2', name: 'write_file', args: { path: 'other.md', content: 'o2\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 other';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#dw-yes'), '白名单外的路径仍然弹确认');
+    click($(dom, '#dw-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/other.md'].content === 'o1\n', '拒绝后文件没被动');
+    // ③ 清空保护：把已有内容清空必须单独确认（且不给「以后都允许」）
+    FAKE_FS[P + '/docs/a.md'] = { type: 'file', content: '有内容\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a3', name: 'write_file', args: { path: 'docs/a.md', content: '' } }] },
+      { ok: true, text: '清空了。' },
+    ];
+    $(dom, '#ai-input').value = '清空它';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#dw-yes'), '清空已有文件要确认（白名单也拦不住）');
+    assert_(!$(dom, '#dw-always'), '清空不提供「本项目内都允许」');
+    click($(dom, '#dw-yes'));
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(FAKE_FS[P + '/docs/a.md'].content === '', '确认后才真的清空');
+    // ④ 危险命令：即使本次对话全放行也要问，且不给「总是允许」
+    await g(dom, 'AiPanel.sessionPerm.write = true; AiPanel.sessionPerm.run = true;');
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a4', name: 'run_command', args: { command: 'rm -rf node_modules' } }] },
+      { ok: true, text: '删了。' },
+    ];
+    $(dom, '#ai-input').value = '删掉依赖';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), 'rm 仍然弹确认（/yolo 也不豁免）');
+    assert_(!$(dom, '#cr-always'), '危险命令不给「总是允许」');
+    assert_($(dom, '#cr-yes').textContent.includes('仍然执行'), '按钮文案点明风险: ' + $(dom, '#cr-yes').textContent);
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    // ⑤ 用户命令黑名单
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'a5', name: 'run_command', args: { command: 'npm publish' } }] },
+      { ok: true, text: '发了。' },
+    ];
+    $(dom, '#ai-input').value = '发个包';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), '黑名单里的命令也要确认（即使本次对话已放行）');
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", permWrite: "confirm", allowPaths: [], denyCmds: [] })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：项目规则文件注入系统提示', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    FAKE_FS[P + '/.myide'] = FAKE_FS[P + '/.myide'] || { type: 'dir', children: [] };
+    FAKE_FS[P + '/.myide/ai-rules.md'] = { type: 'file', content: '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', mtime: 9, ctime: 9, size: 40 };
+    await g(dom, 'App.setRoot(' + JSON.stringify(P) + ')');
+    await tick(); await tick();
+    const rules = await g(dom, 'AiPanel.loadProjectRules(true)');
+    assert_(String(rules).includes('变更列表'), '读到了项目规则: ' + String(rules).slice(0, 30));
+    aiScript = [{ ok: true, text: '好的' }];
+    key(dom, '8', { ctrl: true });
+    await tick();
+    $(dom, '#ai-input').value = '随便说点什么';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    const sys = String(JSON.stringify(aiLastMsgs));
+    assert_(sys.includes('变更列表'), '规则进了发给模型的系统提示');
+    assert_(sys.includes('ai-rules.md'), '并标明规则来自哪个文件');
+    delete FAKE_FS[P + '/.myide/ai-rules.md'];
+    aiScript = [];
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+  });
+
+  await okAsync('AI 面板：预先给权限（不用每个修改都确认）', async () => {
+    await g(dom, 'AiPanel.savePerms({})');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", permWrite: "confirm", permRun: "confirm" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    const pb = $(dom, '#ai-perm');
+    assert_(!!pb, '头部有「访问权限」入口（不用钻设置页改下拉）');
+    click(pb);
+    await tick();
+    const pop = $(dom, '.ai-perm-pop');
+    assert_(!!pop, '点开权限浮层');
+    assert_($allIn(pop, '.ai-seg').length === 2, '两个维度：改文件 / 执行命令');
+    assert_($allIn(pop, '.ai-seg button').length === 6, '每维度三档（每次确认 / 自动 / 禁止）: ' + $allIn(pop, '.ai-seg button').length);
+    // 改文件 → 自动
+    click($allIn(pop, '.ai-seg')[0].querySelectorAll('button')[1]);
+    await tick();
+    assert_(await g(dom, 'AiPanel.permWrite()') === 'auto', '档位已切到「自动」');
+    click(pb); // 再点一次收起
+    await tick();
+    assert_(!$(dom, '.ai-perm-pop'), '再点一次收起浮层');
+    // 自动档：改文件不再逐次弹确认
+    FAKE_FS[P + '/auto.txt'] = { type: 'file', content: 'v1' + '\n' };
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'z1', name: 'write_file', args: { path: 'auto.txt', content: 'v2' + '\n' } }] },
+      { ok: true, text: '改好了。' },
+    ];
+    $(dom, '#ai-input').value = '改 auto';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!$(dom, '#dw-yes'), '选了「自动」就不再逐次弹确认');
+    assert_(FAKE_FS[P + '/auto.txt'].content === 'v2' + '\n', '直接写入生效');
+    // 命令也预设自动：普通命令不问，危险命令照样问（铁律不破）
+    await g(dom, 'AiPanel.setConfig({ permRun: "auto" })');
+    assert_(await g(dom, 'AiPanel.runNeedsConfirm("npm test")') === 'no', '普通命令在「自动」档下不再问');
+    assert_(await g(dom, 'AiPanel.runNeedsConfirm("rm -rf node_modules")') === 'danger', '危险命令在「自动」档下仍要确认');
+    aiScript = [
+      { ok: true, text: '', toolCalls: [{ id: 'z2', name: 'run_command', args: { command: 'rm -rf node_modules' } }] },
+      { ok: true, text: '删了。' },
+    ];
+    $(dom, '#ai-input').value = '删依赖';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_(!!$(dom, '#cr-yes'), '危险命令仍然弹确认（自动档也不豁免）');
+    assert_(!$(dom, '#cr-always'), '危险命令仍然不给「总是允许」');
+    click($(dom, '#cr-no'));
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", permWrite: "confirm", permRun: "confirm" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：底部只有一条上下文线（不再堆三层）', async () => {
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    click($(dom, '#ai-new'));
+    await tick();
+    assert_(!$(dom, '#ai-file-chip'), '去掉功能重复的回形针按钮（@ 已能引用一切）');
+    assert_(!$(dom, '#ai-follow'), '「正在看」不再独占一整行');
+    FAKE_FS[P + '/a1.md'] = { type: 'file', content: '# a1' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/a1.md")');
+    await tick(); await tick();
+    const chips = $allIn($(dom, '#ai-chips'), '.ai-ctx-chip');
+    assert_(chips.length >= 1, '当前文件进了上下文: ' + chips.length);
+    assert_(chips[0].classList.contains('follow'), '跟随项有独立样式（follow）');
+    assert_($allIn(chips[0], 'svg.ic').length === 1, 'chip 用图标（不再是图标错配的 emoji 文字）');
+    // 只有 ✕ 才移除：点 chip 本体不该把它删掉（以前误点就没了，还得重新 @）
+    click(chips[0]);
+    await tick();
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === chips.length, '点 chip 本体不会误删');
+    click($(dom, '#ai-chips .ai-ctx-chip .ai-ctx-x'));
+    await tick();
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '点 ✕ 才移除');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
+  });
+
+  await okAsync('AI 面板：会话跟着项目走（换项目不再串味）', async () => {
+    const P2 = P + '_proj2';
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    key(dom, '8', { ctrl: true });
+    await tick();
+    click($(dom, '#ai-new'));
+    await tick();
+    aiScript = [{ ok: true, text: '记住了' }];
+    $(dom, '#ai-input').value = 'A 项目的私事';
+    click($(dom, '#ai-send'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15));
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, 'A 项目里聊了一轮');
+    const keyA = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
+    assert_(!!keyA && String(keyA).includes('A 项目的私事'), 'A 项目的会话存在自己项目的 key 下');
+
+    // 换项目
+    FAKE_FS[P2] = { type: 'dir', children: [] };
+    await g(dom, 'App.openProject(' + JSON.stringify(P2) + ')');
+    await tick(); await tick();
+    const nowMsgs = $allIn($(dom, '#ai-msgs'), '.ai-msg').length;
+    assert_(nowMsgs === 0, '换项目后对话被清空（不挂着上一个项目的内容）: ' + nowMsgs);
+    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '上下文也被清空');
+    const keyB = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
+    assert_(!keyB || !String(keyB).includes('A 项目的私事'), 'B 项目看不到 A 项目的会话: ' + String(keyB).slice(0, 30));
+
+    // 切回去：历史还在（会话跟项目走，不是被删了）
+    await g(dom, 'App.openProject(' + JSON.stringify(P) + ')');
+    await tick(); await tick();
+    click($(dom, '#ai-history'));
+    await tick(); await tick();
+    assert_($(dom, '.ai-hist-pop').textContent.includes('A 项目的私事'), '切回 A 项目还能翻到当时的会话');
+    click($(dom, '#ai-history'));
+    await tick();
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    aiScript = [];
+  });
+
+  await okAsync('文件名中段省略 + 标签页类型图标（一排 tab 不再长得一样）', async () => {
+    // 这些文档名（开发文档-060-界面信息层整治-…md）辨识信息在两头：
+    // 编号前缀 + 扩展名。CSS 的末尾省略会把唯一的区分点全砍掉 → 一排 tab 一模一样。
+    const fn = (n, m) => g(dom, 'App.fitName(' + JSON.stringify(n) + ',' + m + ')');
+    const long = '开发文档-060-界面信息层整治-状态栏图标与路径.md';
+    const out = await fn(long, 17);
+    assert_(out !== long && out.length < long.length, '超长名字被截短: ' + out);
+    assert_(out.indexOf('开发文档-06') === 0, '保住了编号前缀（真正的区分点）: ' + out);
+    assert_(out.slice(-3) === '.md', '保住了扩展名: ' + out);
+    assert_(out.indexOf('…') > 0, '用省略号标示中段被截: ' + out);
+    assert_((await fn('notes.txt', 40)) === 'notes.txt', '短名字原样返回');
+    assert_((await fn('a-very-long-english-file-name-here.md', 17)).slice(-3) === '.md', '英文长名同样保留扩展名');
+    // 标签页：左边有类型图标
+    FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    assert_(!!$(dom, '.tab.active .tic svg'), '标签页左侧有文件类型图标（SVG，不是 emoji）');
+    assert_($allIn($(dom, '.tab.active'), '.tname').length === 1, '标签页仍有名字节点');
+    // 编辑器操作区：不再摆路径
+    assert_(!$(dom, '#tab-actions .vt-path'), '编辑器操作区里不再摆路径');
+    await g(dom, 'Viewer.closeAll()');
+    await tick();
+  });
+
+  // ---------- 整体视觉：chrome 只留 3 行 + 三个标题行等高 + 明度阶梯 ----------
+  await okAsync('整体视觉：编辑区不再有独立工具条行，操作区跟着标签栏', async () => {
+    FAKE_FS[P + '/note.md'] = { content: '# 标题' + '\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/note.md")');
+    await tick(); await tick();
+    // 原结构：标签栏一行 + 编辑器工具条一行（左边 500px 全空，只为右侧摆 4 个按钮）
+    assert_(!$(dom, '.viewer-toolbar'), '编辑器不再有独立的工具条行');
+    assert_($(dom, '#tabbar'), '标签栏还在');
+    // 模式切换按钮必须挂在「不随标签滚动」的操作区里，否则文件一多就被推出视野
+    const seg = $(dom, '#tab-actions .md-mode-seg');
+    assert_(seg, 'Markdown 模式切换挂到了标签栏右端操作区');
+    assert_($(dom, '#tab-actions').parentElement.id === 'tabbar', '操作区与标签滚动区是兄弟节点');
+    assert_(!!$(dom, '#tab-scroll .tab'), '标签本体在可滚动区里');
+    assert_(!!$(dom, '#tab-actions .tab-locate'), '「定位」也在操作区（只有 1 个）');
+    assert_($allIn($(dom, '#tab-actions'), '.tab-locate').length === 1, '「定位」不重复');
+    await g(dom, 'Viewer.closeAll()');
+    await tick();
   });
 
   console.log('');

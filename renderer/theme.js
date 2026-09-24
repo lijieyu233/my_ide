@@ -4,9 +4,9 @@ const Theme = (() => {
   const A_KEY = 'myide-accent';        // 旧版单独强调色键（首次加载迁移后删除）
   const C_KEY = 'myide-custom-theme';  // 当前覆盖层颜色 JSON（用户主题激活时含其配色）
   const UT_KEY = 'myide-user-themes';  // 用户自定义主题列表 [{id, name, base, colors}]
-  const ORDER = ['dark', 'light', 'pink', 'crimson']; // toggle 循环顺序
-  const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红' };
-  const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson' };
+  const ORDER = ['dark', 'light', 'pink', 'crimson', 'graphite']; // toggle 循环顺序
+  const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红', graphite: '石墨' };
+  const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson', graphite: 'theme-graphite' };
 
   // UI 可动态调整的变量（字段名 → CSS 变量 + 分组）
   // 注意：主题变量定义在 body.theme-* 选择器上，覆盖层必须写 body inline style 才能赢过它
@@ -25,6 +25,7 @@ const Theme = (() => {
     textDim:    { css: '--text-dim',    label: '弱化文字（状态栏/提示）',  group: '文字' },
     editorText: { css: '--editor-text', label: '编辑器正文',               group: '文字' },
     codeText:   { css: '--code-text',   label: '行内代码文字',             group: '文字' },
+    mdHeading:  { css: '--md-heading',  label: 'Markdown 标题',             group: '文字' },
     border:     { css: '--border',      label: '边框线',                   group: '边框 / 控件' },
     borderMid:  { css: '--border-mid',  label: '中边框（滚动条/分隔线）',  group: '边框 / 控件' },
     btnBorder:  { css: '--btn-border',  label: '按钮边框',                 group: '边框 / 控件' },
@@ -197,12 +198,12 @@ const Bg = (() => {
 
   function apply() {
     let p = '';
-    let op = 0.15;
+    let op = 0.10; // 默认更淡：底图是氛围，不该和正文抢信息
     let fit = 'cover';
     let pos = 'center';
     try {
       p = localStorage.getItem(P_KEY) || '';
-      op = parseFloat(localStorage.getItem(O_KEY) || '0.15') || 0.15;
+      op = parseFloat(localStorage.getItem(O_KEY) || '0.10') || 0.10;
       fit = localStorage.getItem(F_KEY) || 'cover';
       pos = localStorage.getItem(POS_KEY) || 'center';
     } catch {}
@@ -262,10 +263,10 @@ const Bg = (() => {
     apply();
   }
   function get() {
-    let p = '', op = 0.15, fit = 'cover', pos = 'center';
+    let p = '', op = 0.10, fit = 'cover', pos = 'center';
     try {
       p = localStorage.getItem(P_KEY) || '';
-      op = parseFloat(localStorage.getItem(O_KEY) || '0.15') || 0.15;
+      op = parseFloat(localStorage.getItem(O_KEY) || '0.10') || 0.10;
       fit = localStorage.getItem(F_KEY) || 'cover';
       pos = localStorage.getItem(POS_KEY) || 'center';
     } catch {}

@@ -292,6 +292,7 @@ const Settings = (() => {
           <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light">☀️ 浅色</button>
           <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
           <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
+          <button class="theme-opt ${cur === 'graphite' ? 'sel' : ''}" data-th="graphite">🪨 石墨</button>
         </div>
         ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
       </div>
@@ -369,20 +370,70 @@ const Settings = (() => {
   }
 
   // ---------- Git 视图 ----------
+  // 两块：① 提交作者信息（写当前仓库 .git/config）② 原生 git 后端（M2：可执行文件 + 能力清单）
+  // ⚠ 第二块与仓库无关（"本机 git 在哪"对所有项目一样），所以非仓库状态下也要显示。
+  const CAP_LABEL = {
+    merge: 'Merge', rebase: 'Rebase', stash: 'Git Stash', hooks: 'Hooks',
+    partialStaging: 'Hunk staging（部分提交）', credential: 'Credential Helper', worktree: 'Worktree',
+  };
+  function capChips(caps) {
+    return Object.keys(CAP_LABEL).map((k) => '<span class="cap ' + (caps && caps[k] ? 'on' : 'off') + '">'
+      + (caps && caps[k] ? '✓' : '✕') + ' ' + CAP_LABEL[k] + '</span>').join('');
+  }
+  function backendSectionHtml() {
+    return `
+      <div class="set-sec">
+        <div class="set-sec-t">原生 Git 后端</div>
+        <div class="git-native-row">
+          <input id="git-exe" type="text" placeholder="git 可执行文件路径（留空 = 用 PATH 里的 git）" spellcheck="false">
+          <button class="tb-btn" id="git-exe-detect">自动检测</button>
+          <button class="tb-btn" id="git-exe-test">测试路径</button>
+          <button class="tb-btn m-ok" id="git-exe-save">保存</button>
+        </div>
+        <div id="git-backend-status" class="git-native-status"><span class="dim">检测中…</span></div>
+        <div class="git-native-tip dim">Merge / Rebase / Stash / Hooks / 部分提交这些能力 isomorphic-git 没有，
+          由本机 git 提供；检测不到时这些功能不可用，基础 Git 功能照常（软依赖）。</div>
+      </div>`;
+  }
+  function paintBackend(info) {
+    const box = document.getElementById('git-backend-status');
+    if (!box || !info) return;
+    const g = info.git || {}, caps = info.caps || {}, fb = info.fallback || {};
+    const src = g.source === 'configured' ? '手动配置' : (g.source === 'PATH' ? 'PATH' : '自动探测');
+    if (g.available) {
+      box.innerHTML =
+        '<div class="git-native-line"><b>Git ' + esc(g.version) + '</b> <span class="dim">' + esc(g.exe) + '（来源：' + src + '）</span></div>' +
+        '<div class="git-native-caps">' + capChips(caps) + '</div>' +
+        '<div class="git-native-line dim">回退后端：' + esc(fb.name || '') + ' ' + esc(fb.version || '') + '</div>';
+    } else {
+      box.innerHTML =
+        '<div class="git-native-line warn">未检测到本机 Git' + (g.error ? '（' + esc(g.error) + '）' : '') + '</div>' +
+        '<div class="git-native-line dim">基础 Git 功能可用（isomorphic-git ' + esc(fb.version || '') + '）；下列高级功能不可用：</div>' +
+        '<div class="git-native-caps">' + capChips(caps) + '</div>' +
+        '<div class="git-native-line dim">已尝试的位置：' + esc((g.candidates || []).join('  ·  ')) + '</div>';
+    }
+    const inp = document.getElementById('git-exe');
+    if (inp) inp.value = g.source === 'configured' ? (g.exe || '') : '';
+  }
+  async function refreshBackend(force) {
+    const box = document.getElementById('git-backend-status');
+    if (box) box.innerHTML = '<span class="dim">检测中…</span>';
+    let info = null;
+    try { info = await window.myIDE.git.backendInfo(!!force); } catch (e) { if (box) box.innerHTML = '<span class="warn">探测失败：' + esc(String(e && e.message || e)) + '</span>'; return null; }
+    paintBackend(info);
+    return info;
+  }
+
   async function renderGit() {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove(); // 快捷键过滤框不属于本视图
-    document.getElementById('set-title').textContent = 'Git 配置（提交作者信息）';
-    document.getElementById('set-hint').textContent = '保存后写入当前仓库 .git/config，下次提交生效';
+    document.getElementById('set-title').textContent = 'Git 配置（作者信息 + 原生后端）';
+    document.getElementById('set-hint').textContent = '作者信息写入当前仓库 .git/config；原生 Git 路径写入 ~/.myide/git-native.json';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     list.innerHTML = '<div class="git-empty">加载中…</div>';
     const cfg = await window.myIDE.git.getUserConfig(App.root);
-    if (!cfg.isRepo) {
-      list.innerHTML = '<div class="git-empty">当前项目不是 Git 仓库</div>';
-      return;
-    }
-    list.innerHTML = `
+    list.innerHTML = (cfg.isRepo ? `
       <div class="set-form">
         <label class="m-label">用户名</label>
         <input id="git-cfg-name" type="text" placeholder="如：zhangsan" value="${esc(cfg.name)}">
@@ -391,8 +442,11 @@ const Settings = (() => {
         <div style="margin-top:14px">
           <button class="tb-btn m-ok" id="git-cfg-save">保存</button>
         </div>
-      </div>`;
-    document.getElementById('git-cfg-save').onclick = async () => {
+      </div>` : '<div class="git-empty">当前项目不是 Git 仓库 —— 仓库级的作者信息不可用（下面与仓库无关的设置照常）</div>')
+      + backendSectionHtml();
+
+    const saveBtn = document.getElementById('git-cfg-save');
+    if (saveBtn) saveBtn.onclick = async () => {
       const name = document.getElementById('git-cfg-name').value.trim();
       const email = document.getElementById('git-cfg-email').value.trim();
       if (!name || !email) { MI.toast('用户名和邮箱不能为空', 'err'); return; }
@@ -400,6 +454,27 @@ const Settings = (() => {
       if (r.ok) MI.toast('✅ Git 配置已保存，下次提交生效', 'ok');
       else MI.toast('保存失败: ' + r.error, 'err');
     };
+
+    // 原生后端：自动检测 = 拿空路径试跑（不改配置）；测试 = 试跑输入框里的路径；保存 = 落盘
+    document.getElementById('git-exe-detect').onclick = async () => {
+      const r = await window.myIDE.git.testGitExe('');
+      if (r && r.ok) { MI.toast('找到 Git ' + r.version + '：' + r.exe, 'ok'); await refreshBackend(true); }
+      else MI.toast('没找到可用的 git（PATH / 常见安装位置都试过了）', 'err');
+    };
+    document.getElementById('git-exe-test').onclick = async () => {
+      const cand = document.getElementById('git-exe').value.trim();
+      const r = await window.myIDE.git.testGitExe(cand);
+      const box = document.getElementById('git-backend-status');
+      if (r && r.ok) { if (box) box.innerHTML = '<div class="git-native-line"><b>✓ 可用：Git ' + esc(r.version) + '</b> <span class="dim">' + esc(r.exe) + '</span></div>'; }
+      else if (box) box.innerHTML = '<div class="git-native-line warn">✕ 不可用：' + esc((r && r.error) || '未知错误') + '</div>';
+    };
+    document.getElementById('git-exe-save').onclick = async () => {
+      const cand = document.getElementById('git-exe').value.trim();
+      const info = await window.myIDE.git.setGitExe(cand);
+      paintBackend(info);
+      MI.toast(info && info.git && info.git.available ? '已保存并生效：Git ' + info.git.version : '已保存，但该路径没跑起来', info && info.git && info.git.available ? 'ok' : 'err');
+    };
+    await refreshBackend(false);
   }
 
   // ---------- 翻译（LLM）视图 ----------
@@ -492,8 +567,20 @@ const Settings = (() => {
         <label class="m-label" style="margin-top:8px">访问权限 —— 执行命令</label>
         <select id="ai-cfg-permr">
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
+          <option value="auto" ${cfg.permRun === 'auto' ? 'selected' : ''}>自动执行（普通命令不问，⚠ 慎选）</option>
           <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
         </select>
+        <label class="m-label" style="margin-top:10px">写入白名单 —— 这些路径不再询问（每行一条，支持 docs/** 与 *.md）</label>
+        <textarea id="ai-cfg-allow" rows="3" placeholder="docs/**&#10;*.md" spellcheck="false"
+          style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.allowPaths || []).join('\n'))}</textarea>
+        <label class="m-label" style="margin-top:8px">命令黑名单 —— 这些命令永远要确认（每行一条前缀）</label>
+        <textarea id="ai-cfg-deny" rows="2" placeholder="npm publish&#10;docker" spellcheck="false"
+          style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
+          这些档位在 AI 面板顶部的「访问权限」按钮里也能直接切换，不必每次进设置页。<br>
+          破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单、「自动」档与「记住授权」影响；
+          把已有文件内容清空也单独保护，必须点一次确认。
+        </div>
         <div id="ai-cfg-perms"></div>
         <div style="margin-top:14px;display:flex;gap:8px">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
@@ -525,6 +612,8 @@ const Settings = (() => {
         inlineComplete: document.getElementById('ai-cfg-inline').checked,
         permWrite: document.getElementById('ai-cfg-permw').value,
         permRun: document.getElementById('ai-cfg-permr').value,
+        allowPaths: document.getElementById('ai-cfg-allow').value.split('\n').map((x) => x.trim()).filter(Boolean),
+        denyCmds: document.getElementById('ai-cfg-deny').value.split('\n').map((x) => x.trim()).filter(Boolean),
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
     };
@@ -534,9 +623,11 @@ const Settings = (() => {
       if (!box || !AiPanel.loadPerms) return;
       const p = AiPanel.loadPerms() || {};
       const items = [];
+      const cfg2 = AiPanel.getConfig() || {};
       if (p.write) items.push({ k: 'write', t: '改文件不再询问（本项目）' });
       if (p.run) items.push({ k: 'run', t: '执行任何命令都不再询问（本项目）' });
       for (const c of (p.cmds || [])) items.push({ k: 'cmd:' + c, t: '以「' + c + '」开头的命令不再询问' });
+      for (const g of (cfg2.allowPaths || [])) items.push({ k: 'path:' + g, t: '写入路径 ' + g + ' 不询问（改上面白名单框可移除）' });
       box.innerHTML = '<label class="m-label" style="margin-top:12px">已记住的授权（本项目）</label>' +
         (items.length
           ? items.map((it) => '<div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;color:var(--text)">' +
@@ -547,6 +638,7 @@ const Settings = (() => {
         b.onclick = () => {
           const k = b.dataset.perm;
           const np = AiPanel.loadPerms() || {};
+          if (k.indexOf('path:') === 0) { MI.toast('路径白名单请在上面「写入白名单」框里删除该行后保存', 'err'); return; }
           if (k === 'write') delete np.write;
           else if (k === 'run') delete np.run;
           else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));

@@ -1,6 +1,19 @@
 // viewer.js —— 标签页 + 内容区：打开/编辑/保存/预览切换
 const Viewer = (() => {
   const tabbar = document.getElementById('tabbar');
+  const tabScroll = document.getElementById('tab-scroll');
+  const tabActions = document.getElementById('tab-actions');
+  // 标签栏隐藏了原生滚动条（CSS），滚动交给滚轮：鼠标在标签上上下滚 = 左右滚。
+  // IDE 惯例；一条灰滚动条比它下面的几个标签还抢眼（用户截图反馈）。
+  if (tabScroll) {
+    tabScroll.addEventListener('wheel', (e) => {
+      if (tabScroll.scrollWidth <= tabScroll.clientWidth + 1) return;
+      const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (!d) return;
+      e.preventDefault();
+      tabScroll.scrollLeft += d;
+    }, { passive: false });
+  }
   const viewer = document.getElementById('viewer');
   const empty = document.getElementById('empty-state');
   const tabs = []; // {path, name, dirty, content, mode}
@@ -159,14 +172,152 @@ const Viewer = (() => {
     renderView();
   }
 
+  // 标签页上的文件类型图标（小尺寸用线条 SVG，比 emoji 尺寸稳定）
+  const FT_IC = {
+    md: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1.6"/><path d="M4.8 10.4V6.2l1.8 2.2 1.8-2.2v4.2M10.6 6.2v4.2h1.4"/></svg>',
+    code: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 4.6L2.4 8l3.2 3.4M10.4 4.6L13.6 8l-3.2 3.4"/></svg>',
+    json: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.6c-1.4 0-1.8.7-1.8 1.6v1.7c0 .9-.5 1.3-1.3 1.5.8.2 1.3.6 1.3 1.5v1.7c0 .9.4 1.6 1.8 1.6M9.8 2.6c1.4 0 1.8.7 1.8 1.6v1.7c0 .9.5 1.3 1.3 1.5-.8.2-1.3.6-1.3 1.5v1.7c0 .9-.4 1.6-1.8 1.6"/></svg>',
+    img: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.5"/><circle cx="5.8" cy="6.4" r="1.1"/><path d="M3 11.4l3.2-3 2.4 2.2 1.8-1.6 2.4 2.4"/></svg>',
+    csv: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1.4"/><path d="M2.4 6.4h11.2M6.6 6.4V13"/></svg>',
+    file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
+  };
+  function ftIcon(name) {
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    if (['md', 'markdown'].includes(ext)) return FT_IC.md;
+    if (ext === 'json') return FT_IC.json;
+    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(ext)) return FT_IC.img;
+    if (['csv', 'xlsx', 'xls'].includes(ext)) return FT_IC.csv;
+    if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'css', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'sh'].includes(ext)) return FT_IC.code;
+    return FT_IC.file;
+  }
+
+  // 编辑器工具条图标（内联 SVG）。
+  // 原来用 '⧉' '◉' '⌖' 这类字符 —— Windows 默认字体没有这些字形，fallback 之后
+  // 会变成完全不相干的符号（用户看到的「+ 定位」就是 '⌖' 掉字形后的样子）。
+  const ACT_IC = {
+    copy: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.6" y="5.6" width="8" height="8" rx="1.3"/><path d="M10.4 5.6V3.5a1.3 1.3 0 0 0-1.3-1.3H3.5A1.3 1.3 0 0 0 2.2 3.5v5.6a1.3 1.3 0 0 0 1.3 1.3h1.7"/></svg>',
+    eye: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.4-4.2 6.3-4.2S14.3 8 14.3 8s-2.4 4.2-6.3 4.2S1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.9"/></svg>',
+    code: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 4.4L2.2 8l3.4 3.6M10.4 4.4L13.8 8l-3.4 3.6"/></svg>',
+    edit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/><path d="M9.6 4.2l2.2 2.2"/></svg>',
+    split: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.2"/><path d="M8 3.2v9.6"/></svg>',
+    globe: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M2.6 8h10.8"/><path d="M8 2.4c1.5 1.6 2.3 3.5 2.3 5.6S9.5 12 8 13.6C6.5 12 5.7 10.1 5.7 8s.8-4 2.3-5.6z"/></svg>',
+    external: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.6h4v4"/><path d="M13.4 2.6L7.6 8.4"/><path d="M12.2 9.6v3.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1h3.2"/></svg>',
+    locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.4V3.8a1.4 1.4 0 0 1 1.4-1.4h1.6M13.6 5.4V3.8a1.4 1.4 0 0 0-1.4-1.4h-1.6M2.4 10.6v1.6a1.4 1.4 0 0 0 1.4 1.4h1.6M13.6 10.6v1.6a1.4 1.4 0 0 1-1.4 1.4h-1.6"/><circle cx="8" cy="8" r="1.7"/></svg>',
+  };
+
+  // 编辑器操作区（Markdown 模式切换 / 查看源码 / 内置浏览器）+「定位」—— 统一挂在标签栏右端。
+  // ⚠ 必须跟 renderTabs() 同生命周期：标签栏这一片会被 renderTabs 清空，
+  //   而「标脏点」等路径只调 renderTabs 不调 renderView —— 挂在 renderView 里会被清掉
+  //   （症状：右端按钮"有时有一个有时没有"，之前踩过）。
+  function renderTabActions() {
+    tabActions.innerHTML = '';
+    const tab = tabs[active];
+    if (!tab) return;
+    const acts = document.createElement('div');
+    acts.className = 'ed-actions';
+
+    const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
+    const ext = extOf(tab.name);
+
+    // Markdown：模式切换（实时预览 / 分屏 / 源码 / 预览）
+    if (isMarkdown && !tab.binary && !tab.tooLarge) {
+      const seg = document.createElement('div');
+      seg.className = 'md-mode-seg';
+      const MODES = [
+        ['live', ACT_IC.edit, '实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
+        ['split', ACT_IC.split, '分屏', '左侧源码 + 右侧实时预览'],
+        ['source', ACT_IC.code, '源码', '纯 Markdown 源码编辑'],
+        ['preview', ACT_IC.eye, '预览', '只读渲染视图'],
+      ];
+      const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
+      for (const [m, ic, label, tip] of MODES) {
+        const b = document.createElement('button');
+        b.className = 'vt-btn' + (cur === m ? ' active' : '');
+        b.innerHTML = ic + label;
+        b.title = tip;
+        b.onclick = (e) => {
+          e.stopPropagation();
+          if (tab.mode !== m) {
+            tab.mode = m;
+            // 模式全局统一：写入偏好，之后打开/切换其他 md 也保持该模式
+            try { localStorage.setItem('myide-md-mode', m); } catch {}
+            renderView();
+          }
+        };
+        seg.appendChild(b);
+      }
+      acts.appendChild(seg);
+    } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'preview') {
+      const btnToggle = document.createElement('button');
+      btnToggle.className = 'vt-btn';
+      btnToggle.innerHTML = ACT_IC.code + '查看源码';
+      btnToggle.title = '以源码方式编辑';
+      btnToggle.onclick = (e) => { e.stopPropagation(); tab.mode = 'edit'; renderView(); };
+      acts.appendChild(btnToggle);
+    } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
+      // 查看源码后提供恢复入口：切回预览模式
+      const btnBack = document.createElement('button');
+      btnBack.className = 'vt-btn';
+      btnBack.innerHTML = ACT_IC.eye + '预览';
+      btnBack.title = '切回预览渲染';
+      btnBack.onclick = (e) => { e.stopPropagation(); tab.mode = 'preview'; renderView(); };
+      acts.appendChild(btnBack);
+    }
+
+    // HTML：内置浏览器 / 系统默认浏览器打开
+    if (/\.(html|htm)$/i.test(tab.name)) {
+      const fileUrl = 'file:///' + tab.path.split('\\').join('/');
+      const btnInner = document.createElement('button');
+      btnInner.className = 'vt-btn';
+      btnInner.innerHTML = ACT_IC.globe + '内置浏览器';
+      btnInner.title = '在 IDE 内置浏览器中打开该页面';
+      btnInner.onclick = (e) => { e.stopPropagation(); if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
+      acts.appendChild(btnInner);
+
+      const btnBrowser = document.createElement('button');
+      btnBrowser.className = 'vt-btn';
+      btnBrowser.innerHTML = ACT_IC.external + '浏览器打开';
+      btnBrowser.title = '用系统默认浏览器打开该页面';
+      btnBrowser.onclick = (e) => { e.stopPropagation(); try { window.myIDE.shell.openExternal(fileUrl); } catch {} };
+      acts.appendChild(btnBrowser);
+    }
+
+    // Office（新旧格式）：系统默认程序打开（预览保真度有限时的兜底出口）
+    if (OFFICE_EXTS.has(ext) || OFFICE_OLD_EXTS.has(ext)) {
+      const btnOffice = document.createElement('button');
+      btnOffice.className = 'vt-btn';
+      btnOffice.innerHTML = ACT_IC.external + '系统打开';
+      btnOffice.title = '用系统默认程序打开该文件';
+      btnOffice.onclick = (e) => { e.stopPropagation(); try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {} };
+      acts.appendChild(btnOffice);
+    }
+
+    if (acts.children.length) tabActions.appendChild(acts);
+
+    // 「定位」属于文件操作，跟标签放一起最顺手；常驻最右端
+    const loc = document.createElement('button');
+    loc.className = 'tab-locate';
+    loc.innerHTML = ACT_IC.locate;
+    loc.title = '在资源管理器中显示：' + tab.path;
+    loc.onclick = (e) => { e.stopPropagation(); window.myIDE.shell.showInFolder(tab.path); };
+    tabActions.appendChild(loc);
+  }
+
   function renderTabs() {
-    tabbar.innerHTML = '';
+    tabScroll.innerHTML = '';
+    tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
       el.className = 'tab' + (i === active ? ' active' : '');
+      const ti = document.createElement('span');
+      ti.className = 'tic';
+      // 与侧栏树共用同一套类型图标（App.ftIcon），两处观感一致
+      ti.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(t.name) : ftIcon(t.name);
+      el.appendChild(ti);
       const nm = document.createElement('span');
       nm.className = 'tname';
-      nm.textContent = (t.dirty ? '● ' : '') + t.name;
+      // 中段省略：保住编号前缀与扩展名（末尾省略会让一排 tab 全长得一样）
+      nm.textContent = (t.dirty ? '● ' : '') + (window.App && App.fitName ? App.fitName(t.name, 17) : t.name);
       el.appendChild(nm);
       const x = document.createElement('span');
       x.className = 'tclose';
@@ -181,7 +332,7 @@ const Viewer = (() => {
       el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } };
       el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, i); };
       el.title = t.path;
-      tabbar.appendChild(el);
+      tabScroll.appendChild(el);
     });
     // 打开文件过多时合并：右侧「▾ 全部标签」下拉
     if (tabs.length > 1) {
@@ -206,8 +357,9 @@ const Viewer = (() => {
         menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
         menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 300) + 'px';
       };
-      tabbar.appendChild(all);
+      tabScroll.appendChild(all);
     }
+    renderTabActions();
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
   }
@@ -225,15 +377,15 @@ const Viewer = (() => {
       }
       if (!dragState.moved) return;
       // 按鼠标位置与各标签中心找到插入点，实时移动 DOM（只考虑 .tab，忽略右侧「▾ 全部」按钮）
-      const tabsEl = [...tabbar.querySelectorAll('.tab')];
+      const tabsEl = [...tabScroll.querySelectorAll('.tab')];
       let insertAfter = -1;
       tabsEl.forEach((t, j) => {
         const r = t.getBoundingClientRect();
         if (ev.clientX > r.left + r.width / 2) insertAfter = j;
       });
       const ref = tabsEl[insertAfter + 1];
-      if (ref && ref !== dragState.el) tabbar.insertBefore(dragState.el, ref);
-      else if (!ref) tabbar.appendChild(dragState.el);
+      if (ref && ref !== dragState.el) tabScroll.insertBefore(dragState.el, ref);
+      else if (!ref) tabScroll.appendChild(dragState.el);
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
@@ -249,7 +401,7 @@ const Viewer = (() => {
   }
   // 按 DOM 顺序重建 tabs（触发重渲染与会话保存）
   function finishDrag() {
-    const order = [...tabbar.querySelectorAll('.tab')].map((t) => t.dataset.path);
+    const order = [...tabScroll.querySelectorAll('.tab')].map((t) => t.dataset.path);
     tabs.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
     renderTabs();
   }
@@ -285,6 +437,13 @@ const Viewer = (() => {
   // ---------- 视图渲染 ----------
   function renderView() {
     blameOn = false; // 切换标签/视图后 gutter 已重建，注解需重新开启
+    // ⚠ 先判断「这一帧有没有内容可画」，再销毁旧编辑器 / 清空容器。
+    //   新标签是「先 activate 再 loadTab」，而 loadTab 要 await 读盘 —— 旧写法上来就
+    //   viewer.innerHTML = ''，于是"正在读盘"的那段时间编辑区是**空白的**：
+    //   切成一个还没打开过的文件时看到的那一帧闪，就是它。
+    //   现在内容没就绪就保留旧画面（编辑器也不销毁），loadTab 完成后会再调一次
+    //   renderView 把新内容画上 —— 体验与 VS Code / Cursor 一致。
+    if (active >= 0 && tabs[active] && tabs[active].mode == null) return;
     // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
     if (cmApi) {
       if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
@@ -293,112 +452,13 @@ const Viewer = (() => {
     }
     viewer.innerHTML = '';
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
-    if (tabs[active].mode == null) return; // 加载未完成（openFile 的 activate 提前触发）：等 loadTab 完成后再渲染
     empty.classList.remove('visible');
     const tab = tabs[active];
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
-    const toolbar = document.createElement('div');
-    toolbar.className = 'viewer-toolbar';
-
-    const p = document.createElement('span');
-    p.className = 'vt-path';
-    p.textContent = tab.path;
-    p.title = tab.path;
-    toolbar.appendChild(p);
-
-    const btnCopy = document.createElement('button');
-    btnCopy.className = 'vt-btn';
-    btnCopy.textContent = '⧉ 复制路径';
-    btnCopy.title = '复制完整路径';
-    btnCopy.onclick = () => { MI.copyText(tab.path); MI.toast('已复制完整路径', 'ok'); };
-    toolbar.appendChild(btnCopy);
-
-    // Markdown：分段模式切换（实时预览 / 分屏 / 源码 / 预览）
-    if (isMarkdown && !tab.binary && !tab.tooLarge) {
-      const seg = document.createElement('div');
-      seg.className = 'md-mode-seg';
-      const MODES = [
-        ['live', '✎ 实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
-        ['split', '◫ 分屏', '左侧源码 + 右侧实时预览'],
-        ['source', '{ } 源码', '纯 Markdown 源码编辑'],
-        ['preview', '◉ 预览', '只读渲染视图'],
-      ];
-      const cur = ['live', 'split', 'source', 'preview'].includes(tab.mode) ? tab.mode : 'live';
-      for (const [m, label, tip] of MODES) {
-        const b = document.createElement('button');
-        b.className = 'vt-btn' + (cur === m ? ' active' : '');
-        b.textContent = label;
-        b.title = tip;
-        b.onclick = () => {
-          if (tab.mode !== m) {
-            tab.mode = m;
-            // 模式全局统一：写入偏好，之后打开/切换其他 md 也保持该模式
-            try { localStorage.setItem('myide-md-mode', m); } catch {}
-            renderView();
-          }
-        };
-        seg.appendChild(b);
-      }
-      toolbar.appendChild(seg);
-    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'preview') {
-      const btnToggle = document.createElement('button');
-      btnToggle.className = 'vt-btn';
-      btnToggle.textContent = '{ } 查看源码';
-      btnToggle.title = '以源码方式编辑';
-      btnToggle.onclick = () => { tab.mode = 'edit'; renderView(); };
-      toolbar.appendChild(btnToggle);
-    } else if (PREVIEW_EXTS.has(extOf(tab.name)) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
-      // 查看源码后提供恢复入口：切回预览模式
-      const btnBack = document.createElement('button');
-      btnBack.className = 'vt-btn';
-      btnBack.textContent = '◉ 预览';
-      btnBack.title = '切回预览渲染';
-      btnBack.onclick = () => { tab.mode = 'preview'; renderView(); };
-      toolbar.appendChild(btnBack);
-    }
-
-    const btnShow = document.createElement('button');
-    btnShow.className = 'vt-btn';
-    btnShow.textContent = '⌖ 定位';
-    btnShow.title = '在资源管理器中显示';
-    btnShow.onclick = () => window.myIDE.shell.showInFolder(tab.path);
-    toolbar.appendChild(btnShow);
-
-    // HTML：内置浏览器 / 系统默认浏览器打开
-    if (/\.(html|htm)$/i.test(tab.name)) {
-      const fileUrl = 'file:///' + tab.path.split('\\').join('/');
-      const btnInner = document.createElement('button');
-      btnInner.className = 'vt-btn';
-      btnInner.textContent = '🌐 内置浏览器';
-      btnInner.title = '在 IDE 内置浏览器中打开该页面';
-      btnInner.onclick = () => { if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
-      toolbar.appendChild(btnInner);
-
-      const btnBrowser = document.createElement('button');
-      btnBrowser.className = 'vt-btn';
-      btnBrowser.textContent = '↗ 浏览器打开';
-      btnBrowser.title = '用系统默认浏览器打开该页面';
-      btnBrowser.onclick = () => {
-        try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
-      };
-      toolbar.appendChild(btnBrowser);
-    }
-
-    // Office（新旧格式）：系统默认程序打开（预览保真度有限时的兜底出口）
-    if (OFFICE_EXTS.has(extOf(tab.name)) || OFFICE_OLD_EXTS.has(extOf(tab.name))) {
-      const btnOffice = document.createElement('button');
-      btnOffice.className = 'vt-btn';
-      btnOffice.textContent = '↗ 系统打开';
-      btnOffice.title = '用系统默认程序打开该文件';
-      btnOffice.onclick = () => {
-        try { window.myIDE.shell.openExternal('file:///' + tab.path.split('\\').join('/')); } catch {}
-      };
-      toolbar.appendChild(btnOffice);
-    }
-
-    // 注：已全面自动保存（停止输入 3 秒写盘 + 切换/关闭静默保存），不再提供手动保存按钮
-
-    viewer.appendChild(toolbar);
+    // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
+    // 跟「定位」一起挂在标签栏右端。原来那一行左边 500px 全空，只为右侧摆 4 个小按钮。
+    // 模式切换后要刷新按钮的 active 态，所以这里也重建一次。
+    renderTabActions();
 
     // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）
     if (window.App) App.updateStatusbar({
@@ -465,7 +525,7 @@ const Viewer = (() => {
         const before = ta.value.slice(0, pos);
         const line = before.split('\n').length;
         const col = pos - before.lastIndexOf('\n');
-        App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        App.updateStatusbar({ pos: line + ':' + col });
       };
       const lineCount = () => ta.value.split('\n').length;
       let lastLines = -1; // 强制首次渲染
@@ -642,6 +702,13 @@ const Viewer = (() => {
     };
     mk(blameOn ? '✕ 关闭 Blame 注解' : '⑂ Git Blame 注解', () => toggleBlame());
     mk('🕘 显示文件历史', () => { if (window.GitLog) GitLog.showFileHistory(tabs[active] && tabs[active].path); });
+    // 交给 AI：内容整理最顺手的入口 —— 选中一段右键就够，不用去面板里描述「哪一段」
+    if (window.AiPanel && AiPanel.fromEditor) {
+      mk('✨ 用 AI 解释选中内容', () => AiPanel.fromEditor('explain'));
+      mk('✏️ 用 AI 修正选中内容', () => AiPanel.fromEditor('fix'));
+      mk('🔧 用 AI 改进选中内容', () => AiPanel.fromEditor('improve'));
+      mk('📄 用 AI 整理这个文件', () => AiPanel.fromEditor('doc'));
+    }
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';
@@ -696,7 +763,7 @@ const Viewer = (() => {
         cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
       },
       onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
       },
     });
     cmApi.__tab = tab;
@@ -731,7 +798,7 @@ const Viewer = (() => {
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
       onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: '行 ' + line + '，列 ' + col });
+        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
       },
       onSave: () => saveTab(active),
     });
@@ -892,8 +959,8 @@ const Viewer = (() => {
         <button class="vt-btn" id="find-rep-all" title="全部替换">全部</button>
       </span>
       <button class="vt-btn" id="find-close" title="关闭 (Esc)">✕</button>`;
-    const toolbar = viewer.querySelector('.viewer-toolbar');
-    if (toolbar) viewer.insertBefore(bar, toolbar.nextSibling);
+    // 编辑器工具条已并入标签栏 → 查找条直接放在内容区最上方
+    viewer.insertBefore(bar, viewer.firstChild);
     findState = { ta, matches: [], idx: -1 };
 
     const input = document.getElementById('find-input');

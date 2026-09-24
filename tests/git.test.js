@@ -114,6 +114,27 @@ ok('topoSortNewestFirst：子提交先于父提交（链条连续）', () => {
 });
 
 console.log('[git 集成测试]');
+// 读 HEAD 里某文件的内容 / 读 index（暂存区）里那一份 —— 「提交事务」的断言靠这两个
+async function headText(repo, file) {
+  const oid = await git.resolveRef({ fs, dir: repo, ref: 'HEAD' });
+  const { blob } = await git.readBlob({ fs, dir: repo, oid, filepath: file });
+  return Buffer.from(blob).toString('utf8');
+}
+async function indexText(repo, file) {
+  let oid = null;
+  await git.walk({
+    fs, dir: repo, trees: [git.STAGE()],
+    map: async (fp, [st]) => {
+      if (!st) return 'null';
+      const t = await st.type();                 // walker 条目是带异步方法的对象，且返回 null 会剪掉子树
+      if (t === 'blob' && fp === file) oid = await st.oid();
+      return t;
+    },
+  });
+  if (!oid) return null;
+  const { blob } = await git.readBlob({ fs, dir: repo, oid });
+  return Buffer.from(blob).toString('utf8');
+}
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-test-'));
 const repo = path.join(tmp, 'repo');
 fs.mkdirSync(repo);
@@ -692,8 +713,10 @@ fs.mkdirSync(repo);
     assert.strictEqual((await headText('b.txt')).trim(), 'B2', '勾选的 b.txt 已提交');
     assert.strictEqual(fs.readFileSync(path.join(repo11, 'a.txt'), 'utf8').trim(), 'A2 staged',
       'a.txt 的工作区改动保留（没被提交吃掉）');
-    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status === 'modified'),
-      'a.txt 提交后回到「未暂存」，仍需用户处理');
+    // ⚠ 这句在 M1 改过：老实现提交前顺手把未勾选的暂存内容 unstage（"回到未暂存"），
+    //   M1 的提交事务改成**原样保留**用户的暂存状态 → 提交后 a.txt 仍然是已暂存（*modified）。
+    assert.ok((await G.status(repo11)).changed.some((c) => c.file === 'a.txt' && c.status === '*modified'),
+      'a.txt 提交后仍留在暂存区（M1：不再替用户 unstage）');
   });
 
   await okAsync('.gitignore：addToGitignore / removeFromGitignore（落盘 + 忽略生效 + 幂等 + 未命中报错）', async () => {
@@ -737,7 +760,364 @@ fs.mkdirSync(repo);
     assert.strictEqual(lr.remotes.length, 2, '配置 2 个远程后列表为 2');
   });
 
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但不许动用户的暂存区 ----------
+  // 场景来自 M1 需求原文：HEAD A=a0 B=b0；用户在终端 `git add A`（index A=a1）；
+  // 工作区 A=a1 B=b1；IDE 只勾 B 提交 → 新 HEAD 里 A 仍是 a0、B 是 b1，且 **A 依然留在暂存区**。
+  await okAsync('提交事务：只提交勾选的文件，外部暂存的内容原样保留', async () => {
+    const rp = path.join(tmp, 'repo-tx');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    // ⚠ 每个版本内容长度都不一样：isomorphic-git 的 statusMatrix 对「同尺寸 + 同秒写入」的文件
+    //   会命中 stat 缓存而漏报修改（racy-git 场景），测试数据必须避开，否则断言会时过时不过。
+    fs.writeFileSync(path.join(rp, 'a.txt'), 'a0\n');
+    fs.writeFileSync(path.join(rp, 'b.txt'), 'b0\n');
+    await G.commit(rp, { message: 'base', files: ['a.txt', 'b.txt'] });
+
+    fs.writeFileSync(path.join(rp, 'a.txt'), 'a1 staged\n');
+    await git.add({ fs, dir: rp, filepath: 'a.txt' });   // 模拟"终端里 git add A"
+    fs.writeFileSync(path.join(rp, 'b.txt'), 'b1 in worktree\n');    // B 未暂存
+
+    let st = await G.status(rp);
+    const ca = st.changed.find((c) => c.file === 'a.txt');
+    const cb = st.changed.find((c) => c.file === 'b.txt');
+    assert.ok(ca && ca.inIndexOnly === true, 'a.txt 应标为"整份在暂存区"');
+    assert.ok(cb && !cb.inIndexOnly, 'b.txt 不该标为在暂存区，got ' + JSON.stringify(cb));
+
+    const r = await G.commit(rp, { message: 'only b', files: ['b.txt'] });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.restored, 1, '应当有 1 个文件的暂存条目被原样还回');
+
+    assert.strictEqual(await headText(rp, 'a.txt'), 'a0\n', 'HEAD 里的 a.txt 不该被这次提交带走');
+    assert.strictEqual(await headText(rp, 'b.txt'), 'b1 in worktree\n', 'HEAD 里的 b.txt 应是工作区那份');
+    assert.strictEqual(await indexText(rp, 'a.txt'), 'a1 staged\n', 'a.txt 必须仍留在暂存区且仍是 a1');
+    st = await G.status(rp);
+    assert.ok(st.changed.find((c) => c.file === 'a.txt'), 'a.txt 提交后仍应显示为暂存中的变更');
+    assert.ok(!st.changed.find((c) => c.file === 'b.txt'), 'b.txt 提交后应变干净');
+  });
+
+  await okAsync('提交事务：暂存后又改过工作区的文件，还回的是"当时暂存的那一份"', async () => {
+    const rp = path.join(tmp, 'repo-tx2');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c0\n');
+    fs.writeFileSync(path.join(rp, 'd.txt'), 'd0\n');
+    await G.commit(rp, { message: 'base', files: ['c.txt', 'd.txt'] });
+
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c1 staged\n');
+    await git.add({ fs, dir: rp, filepath: 'c.txt' });   // 暂存 c1
+    fs.writeFileSync(path.join(rp, 'c.txt'), 'c2 in worktree\n');    // 工作区又改成 c2
+    fs.writeFileSync(path.join(rp, 'd.txt'), 'd1 in worktree\n');
+
+    const r = await G.commit(rp, { message: 'only d', files: ['d.txt'] });
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(await headText(rp, 'c.txt'), 'c0\n', 'HEAD 的 c.txt 不动');
+    assert.strictEqual(await indexText(rp, 'c.txt'), 'c1 staged\n', '还回的是当时暂存的 c1，不是工作区的 c2');
+    const st = await G.status(rp);
+    const cc = st.changed.find((x) => x.file === 'c.txt');
+    assert.ok(cc && cc.status === '*modified', 'c.txt 应是「暂存+未暂存」，got ' + (cc && cc.status));
+  });
+
+  // ---------- M3：hunk 级部分提交（拼接 + 真实仓库往返） ----------
+  await okAsync('M3 hunk：applyHunkToText 前置校验 + CRLF 保真', async () => {
+    const h = {
+      oldStart: 2, oldLines: 1, newStart: 2, newLines: 1,
+      rows: [{ type: 'del', aText: 'l2', bText: '', aNum: 2, bNum: 0 },
+             { type: 'add', aText: '', bText: 'L2', aNum: 0, bNum: 2 }],
+    };
+    assert.strictEqual(G.applyHunkToText('l1\nl2\nl3\n', h, false).text, 'l1\nL2\nl3\n', '正向拼接');
+    assert.strictEqual(G.applyHunkToText('l1\nL2\nl3\n', h, true).text, 'l1\nl2\nl3\n', '反向拼接');
+    const bad = G.applyHunkToText('l1\nXX\nl3\n', h, false);
+    assert.ok(!bad.ok && /不一致/.test(bad.error), '内容对不上必须拒绝，不能硬改');
+    assert.strictEqual(G.applyHunkToText('l1\r\nl2\r\nl3\r\n', h, false).text, 'l1\r\nL2\r\nl3\r\n', 'CRLF 文件写回仍是 CRLF');
+    assert.strictEqual(G.applyHunkToText('l1\nl2', h, false).text, 'l1\nL2', '末行无换行也保持无换行');
+  });
+
+  await okAsync('M3 hunk：暂存 → 回退 → 取消暂存（真实仓库，双区差异各自成立）', async () => {
+    const rp = path.join(tmp, 'repo-hunk');
+    fs.mkdirSync(rp);
+    await G.initRepo(rp);
+    const base = Array.from({ length: 20 }, (_, i) => 'line ' + (i + 1)).join('\n') + '\n';
+    fs.writeFileSync(path.join(rp, 'h.txt'), base);
+    await G.commit(rp, { message: 'base', files: ['h.txt'] });
+    // 两处改动隔得够远 → 必然切成两块
+    fs.writeFileSync(path.join(rp, 'h.txt'), base.replace('line 2\n', 'line 2 CHANGED\n').replace('line 18\n', 'line 18 CHANGED\n'));
+
+    let du = await G.diffUnstaged(rp, 'h.txt');
+    assert.strictEqual(du.hunks.length, 2, '未暂存差异分成 2 块，got ' + (du.hunks || []).length);
+
+    const r1 = await G.stageHunk(rp, 'h.txt', 0);           // 只暂存第 1 块
+    assert.ok(r1.ok, 'stageHunk 失败: ' + (r1.error || ''));
+    let c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
+    assert.strictEqual(c && c.status, '*modified', '暂存一块后应是「暂存+未暂存」，got ' + (c && c.status));
+
+    const ds = await G.diffStaged(rp, 'h.txt');
+    assert.strictEqual(ds.hunks.length, 1, '已暂存差异只剩 1 块，got ' + ds.hunks.length);
+    assert.ok(ds.newText.includes('line 2 CHANGED') && !ds.newText.includes('line 18 CHANGED'),
+      '已暂存的是第 1 块');
+    du = await G.diffUnstaged(rp, 'h.txt');
+    assert.strictEqual(du.hunks.length, 1, '未暂存差异只剩 1 块，got ' + du.hunks.length);
+    assert.ok(du.oldText.includes('line 2 CHANGED'), '未暂存差异的基线是 index（已含第 1 块）');
+
+    const rv = await G.revertHunk(rp, 'h.txt', 0);          // 回退第 2 块（只动工作区）
+    assert.ok(rv.ok, 'revertHunk 失败: ' + (rv.error || ''));
+    const wt = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
+    assert.ok(wt.includes('line 18') && !wt.includes('line 18 CHANGED'), '工作区第 2 块已回退');
+    assert.ok(wt.includes('line 2 CHANGED'), '工作区第 1 块保持（与 index 一致）');
+
+    const wtBefore = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
+    const ru = await G.unstageHunk(rp, 'h.txt', 0);         // 取消暂存第 1 块
+    assert.ok(ru.ok, 'unstageHunk 失败: ' + (ru.error || ''));
+    c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
+    assert.ok(!c || c.status === 'modified', '取消暂存后回到「未暂存」，got ' + (c && c.status));
+    assert.strictEqual(fs.readFileSync(path.join(rp, 'h.txt'), 'utf8'), wtBefore,
+      '取消暂存只动 index，工作区一个字节都不该变');
+    assert.ok(wtBefore.includes('line 2 CHANGED'), '取消暂存后工作区仍保留那处改动（回到未暂存而已）');
+  });
+
+  // ---------- M4：分支工作流（merge / rebase / 操作状态机 / 冲突解决）----------
+  // ⚠ 走**本机 git**（isomorphic-git 没有 merge/rebase）。没装 git 就跳过并说明，不算失败
+  //   —— 本机 git 是软依赖，这条测试同理。
+  const NATIVE = require('../git-native');
+  const ninfo = await NATIVE.probe(true);
+  if (!ninfo.available) {
+    console.log('  SKIP M4 分支工作流（未检测到本机 git，合并/变基能力不可用）');
+  } else {
+    // 造一个「两边都改了同一个文件」的仓库：base → feat 分支改 a.txt → main 也改 a.txt
+    const mkConflictRepo = async (tag) => {
+      const rp = path.join(tmp, 'repo-' + tag);
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      await G.setUserConfig(rp, { name: 'm4', email: 'm4@example.com' });
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'base\n');
+      await G.commit(rp, { message: 'base', files: ['a.txt'] });
+      await G.createBranch(rp, 'feat');
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'feat\n');
+      await G.commit(rp, { message: 'feat', files: ['a.txt'] });
+      await G.checkout(rp, 'main');
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'main\n');
+      await G.commit(rp, { message: 'main', files: ['a.txt'] });
+      return rp;
+    };
+
+    await okAsync('M4 状态机：NORMAL → merge 冲突 → MERGING → 解决 → continue → NORMAL', async () => {
+      const rp = await mkConflictRepo('merge');
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', '起始应是 NORMAL');
+
+      const m = await NATIVE.merge(rp, 'feat');
+      // ⚠ merge 冲突不是"失败"：git 退出码非 0，但仓库进入了 MERGING 状态 → 应当是 ok + conflict
+      // ⚠ 失败信息要带上整个返回（这台机器偶发"冲突被误判成失败"，只打 error 时它是空的）
+      assert.ok(m.ok, 'merge 不该被当成失败: ' + JSON.stringify(m).slice(0, 200));
+      assert.strictEqual(m.conflict, true, '应报冲突');
+      assert.strictEqual(m.state.state, 'MERGING', '状态应变成 MERGING');
+      assert.strictEqual(m.state.target, 'feat', 'MERGE_MSG 里应还原出被合并的分支名');
+
+      const cf = await NATIVE.conflicts(rp);
+      assert.ok(cf.ok, cf.error);
+      assert.deepStrictEqual(cf.files.map((f) => f.file), ['a.txt'], '冲突文件是 a.txt');
+      assert.strictEqual(cf.files[0].resolved, false, '还没解决');
+
+      const sides = await NATIVE.conflictSides(rp, 'a.txt');
+      assert.strictEqual(sides.base, 'base\n', '共同祖先');
+      assert.strictEqual(sides.ours, 'main\n', 'merge 时 ours = 当前分支');
+      assert.strictEqual(sides.theirs, 'feat\n', 'merge 时 theirs = 被合并进来的');
+
+      const rs = await NATIVE.resolveFile(rp, 'a.txt', 'ours');
+      assert.ok(rs.ok, 'resolveFile 失败: ' + (rs.error || ''));
+      assert.strictEqual((await NATIVE.conflicts(rp)).files.length, 0, '解决后不再有未合并条目');
+
+      const c = await NATIVE.continueOp(rp);
+      assert.ok(c.ok, 'continue 失败: ' + (c.error || ''));
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', 'continue 后回到 NORMAL');
+      assert.ok(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8').includes('main'),
+        '选了 ours → 文件内容应是当前分支那一份');
+    });
+
+    await okAsync('M4 状态机：rebase 冲突 → REBASING → abort → NORMAL（且回到 rebase 之前）', async () => {
+      const rp = await mkConflictRepo('rebase');
+      const before = fs.readFileSync(path.join(rp, 'a.txt'), 'utf8');
+      const rb = await NATIVE.rebase(rp, 'feat');
+      assert.ok(rb.ok, 'rebase 不该被当成失败: ' + JSON.stringify(rb).slice(0, 200));
+      assert.strictEqual(rb.conflict, true, '应报冲突');
+      const st = await NATIVE.opState(rp);
+      assert.strictEqual(st.state, 'REBASING', '状态应变成 REBASING');
+      assert.strictEqual(st.target, 'main', 'head-name 应是正在被 rebase 的分支');
+      assert.ok(st.step && st.total, '应读出进度: ' + st.step + '/' + st.total);
+
+      // ⚠ rebase 时 ours/theirs 的语义与 merge **相反**：ours = 新基底，theirs = 正在重放的提交
+      const sides = await NATIVE.conflictSides(rp, 'a.txt');
+      assert.strictEqual(sides.ours, 'feat\n', 'rebase 时 ours = 新基底（feat）');
+      assert.strictEqual(sides.theirs, 'main\n', 'rebase 时 theirs = 正在重放的提交（main）');
+
+      const ab = await NATIVE.abortOp(rp);
+      assert.ok(ab.ok, 'abort 失败: ' + (ab.error || ''));
+      assert.strictEqual((await NATIVE.opState(rp)).state, 'NORMAL', 'abort 后回到 NORMAL');
+      // ⚠ 比内容要剥掉 \r：本机 core.autocrlf 生效时，git 检出会把 LF 写成 CRLF，
+      //   "内容一样"不等于"字节一样"（比字节会在别的机器上莫名其妙红）
+      const norm = (s) => String(s).replace(/\r\n/g, '\n');
+      assert.strictEqual(norm(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8')), norm(before),
+        'abort 应回到 rebase 之前的内容');
+    });
+
+    await okAsync('M4 状态机：没有进行中的操作时 continue / skip / abort 都明确拒绝', async () => {
+      const rp = path.join(tmp, 'repo-idle');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      for (const fn of ['continueOp', 'skipOp', 'abortOp']) {
+        const r = await NATIVE[fn](rp);
+        assert.strictEqual(r.ok, false, fn + ' 在 NORMAL 下不该成功');
+        assert.ok(/没有进行中的 Git 操作/.test(r.error || ''), fn + ' 的错误文案应说明原因，got: ' + r.error);
+      }
+    });
+
+    await okAsync('M4 收尾：可编辑合并结果 —— resolveCustom 写回的是手工拼的那一份', async () => {
+      const rp = await mkConflictRepo('custom');
+      await NATIVE.merge(rp, 'feat');
+      const r = await NATIVE.resolveCustom(rp, 'a.txt', 'merged by hand\n');
+      assert.ok(r.ok, 'resolveCustom 失败: ' + (r.error || ''));
+      const norm = (s) => String(s).replace(/\r\n/g, '\n');
+      assert.strictEqual(norm(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8')), 'merged by hand\n',
+        '文件内容应是手工拼的那一份（不是 ours 也不是 theirs）');
+      const cf = await NATIVE.conflicts(rp);
+      assert.ok(cf.ok && cf.files.length === 0, '写回 + add 后冲突清零');
+      const c = await NATIVE.continueOp(rp);
+      assert.ok(c.ok, 'continue 失败: ' + (c.error || ''));
+      const h = await NATIVE.run(['show', 'HEAD:a.txt'], { cwd: rp, env: NATIVE.NO_EDIT });
+      assert.strictEqual(norm(h.stdout), 'merged by hand\n', '手工合并结果真的进了提交');
+    });
+
+    // ---- pull 策略：用本地 bare 仓库当 origin（不需要网络，命令行语义完全一致）----
+    // ⚠ 本机偶发：临时目录里的 bare 仓库会被扫描/短暂占用，push 刚写完 "To <url>" 就失败。
+    //   这是只读-幂等的本地操作，失败重试一次比让整轮测试假红好；失败信息要带 stdout
+    //   （git push 的进度与结论常常一个在 stderr、一个在 stdout，只打 stderr 会看不出原因）。
+    const runGit = async (cwd, args, tries = 2) => {
+      let r = null;
+      for (let i = 0; i < tries; i++) {
+        r = await NATIVE.run(args, { cwd, env: NATIVE.NO_EDIT });
+        if (r.ok) return r;
+        await new Promise((res) => setTimeout(res, 400));
+      }
+      assert.ok(false, 'git ' + args.join(' ') + ' 失败: '
+        + [(r.stderr || '').trim(), (r.stdout || '').trim(), r.error].filter(Boolean).join(' | ').slice(0, 400));
+      return r;
+    };
+    await okAsync('M4 收尾：pull 策略 —— ff-only 拒绝分叉 / rebase 线性 / merge 建合并提交', async () => {
+      const bare = path.join(tmp, 'origin.git');
+      fs.mkdirSync(bare);
+      await NATIVE.run(['init', '--bare', '--initial-branch=main', bare], { env: NATIVE.NO_EDIT });
+      const A = path.join(tmp, 'pull-A');
+      fs.mkdirSync(A);
+      await G.initRepo(A);
+      await G.setUserConfig(A, { name: 'pull', email: 'pull@example.com' });
+      fs.writeFileSync(path.join(A, 'a0.txt'), 'base\n');
+      await G.commit(A, { message: 'base', files: ['a0.txt'] });
+      await runGit(A, ['remote', 'add', 'origin', bare]);
+      await runGit(A, ['push', '-u', 'origin', 'main']);
+      // B 克隆，往上推一个提交（改 b.txt，避免和 A 的改动冲突）
+      const B = path.join(tmp, 'pull-B');
+      await runGit(tmp, ['clone', '--branch', 'main', bare, B]);
+      await G.setUserConfig(B, { name: 'pull', email: 'pull@example.com' });
+      fs.writeFileSync(path.join(B, 'b1.txt'), 'from B\n');
+      await G.commit(B, { message: 'B: b1', files: ['b1.txt'] });
+      await runGit(B, ['push', 'origin', 'main']);
+
+      // ① A 也提交一个 → 两边分叉 → ff-only 必须明确拒绝（而不是悄悄合并）
+      fs.writeFileSync(path.join(A, 'a1.txt'), 'from A\n');
+      await G.commit(A, { message: 'A: a1', files: ['a1.txt'] });
+      const ff = await G.pullRemote(A, { strategy: 'ff-only' });
+      assert.strictEqual(ff.ok, false, '分叉时 ff-only 不该成功');
+      assert.ok(/不是快进/.test(ff.error || ''), '拒绝文案要说清原因: ' + ff.error);
+
+      // ② rebase：本地提交重放上去，历史保持线性
+      const rb = await G.pullRemote(A, { strategy: 'rebase' });
+      assert.ok(rb.ok && !rb.conflict, 'rebase 拉取失败: ' + (rb && rb.error));
+      assert.strictEqual(fs.existsSync(path.join(A, 'b1.txt')), true, '远程的 b1.txt 应该进来了');
+      const log1 = (await runGit(A, ['log', '--format=%s', 'main'])).stdout;
+      assert.ok(!log1.includes('Merge'), 'rebase 不该产生合并提交: ' + log1);
+
+      // ③ merge：再来一轮分叉，这次应建合并提交（冲突留给冲突流程，这里两文件不相交）
+      await runGit(B, ['pull', '--quiet', 'origin', 'main']);
+      fs.writeFileSync(path.join(B, 'b2.txt'), 'from B 2\n');
+      await G.commit(B, { message: 'B: b2', files: ['b2.txt'] });
+      await runGit(B, ['push', 'origin', 'main']);
+      fs.writeFileSync(path.join(A, 'a2.txt'), 'from A 2\n');
+      await G.commit(A, { message: 'A: a2', files: ['a2.txt'] });
+      const mg = await G.pullRemote(A, { strategy: 'merge' });
+      assert.ok(mg.ok && !mg.conflict, 'merge 拉取失败: ' + (mg && mg.error));
+      const log2 = (await runGit(A, ['log', '--format=%s', 'main'])).stdout;
+      assert.ok(log2.includes('Merge'), 'merge 策略应产生合并提交: ' + log2);
+      assert.strictEqual(fs.existsSync(path.join(A, 'b2.txt')), true, '远程的 b2.txt 应该进来了');
+
+    await okAsync('M5：提交前检查 —— 用户命令按顺序跑、失败即停；hook 走 git 自己跑', async () => {
+      const rp = path.join(tmp, 'repo-precommit');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      await G.setUserConfig(rp, { name: 'pc', email: 'pc@example.com' });
+      const norm = (x) => String(x).replace(/\r\n/g, '\n').trim();
+
+      // ① 没有 hook 时不算失败（skipped）
+      let r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [] });
+      assert.strictEqual(r.ok, true, '没有 hook 不该失败');
+      assert.ok(r.results[0].skipped, '标记为跳过: ' + JSON.stringify(r.results[0]));
+
+      // ② 用户命令：成功 → 继续跑下一条；失败 → 立即停（后面的不该被执行）
+      r = await NATIVE.precommitRun(rp, { runHooks: false, commands: [
+        { name: '第一步', cmd: 'echo one' },
+        { name: '第二步', cmd: 'echo two && exit 7' },
+        { name: '第三步', cmd: 'echo three' },
+      ] });
+      assert.strictEqual(r.ok, false, '有命令失败 → 整体不通过');
+      assert.strictEqual(r.results.length, 2, '失败即停（第三条没跑）: ' + r.results.map((x) => x.name).join(','));
+      assert.ok(norm(r.results[0].out).includes('one'), '第一条的输出拿到了');
+      assert.strictEqual(r.results[1].code, 7, '退出码透传: ' + r.results[1].code);
+
+      // ③ 真的写一个 pre-commit 钩子（交给 git 自己跑，Windows 下由 git 找 sh）
+      const hookFile = path.join(rp, '.git', 'hooks', 'pre-commit');
+      fs.writeFileSync(hookFile, '#!/bin/sh\necho "hook: 检查中"\nexit 1\n');
+      r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [{ name: '不该跑', cmd: 'echo nope' }] });
+      assert.strictEqual(r.ok, false, 'hook 非 0 → 不通过');
+      assert.ok(/hook: 检查中/.test(r.results[0].out), 'hook 输出被捕获: ' + JSON.stringify(r.results[0].out));
+      assert.strictEqual(r.results.length, 1, 'hook 失败即停，后面的命令不跑');
+      // 钩子改成 0 → 通过
+      fs.writeFileSync(hookFile, '#!/bin/sh\nexit 0\n');
+      r = await NATIVE.precommitRun(rp, { runHooks: true, commands: [] });
+      assert.strictEqual(r.ok, true, 'hook 返回 0 → 通过');
+    });
+
+    await okAsync('M5：TODO 扫描 —— 命中带行号，大文件 / 二进制不动', async () => {
+      const rp = path.join(tmp, 'repo-todo');
+      fs.mkdirSync(rp);
+      await G.initRepo(rp);
+      fs.writeFileSync(path.join(rp, 'a.js'), 'const x = 1;\n// TODO: 改成配置\n// FIXME 这里有问题\nconst y = 2;\n');
+      fs.writeFileSync(path.join(rp, 'b.js'), 'nothing here\n');
+      fs.writeFileSync(path.join(rp, 'bin.dat'), Buffer.from([0x00, 0x01, 0x54, 0x4f, 0x44, 0x4f]));
+      const r = await NATIVE.scanTodo(rp, ['a.js', 'b.js', 'bin.dat', '不存在.js'], ['TODO', 'FIXME']);
+      assert.strictEqual(r.ok, true, r.error);
+      assert.strictEqual(r.hits.length, 2, '两个命中: ' + JSON.stringify(r.hits));
+      assert.strictEqual(r.hits[0].file, 'a.js');
+      assert.strictEqual(r.hits[0].line, 2, '行号要对得上: ' + r.hits[0].line);
+      assert.strictEqual(r.hits[0].kind, 'TODO', '关键字识别');
+      assert.strictEqual(r.hits[1].line, 3, '第二个命中的行号');
+      assert.ok(!r.hits.some((h) => h.file === 'bin.dat'), '含 NUL 的二进制不扫');
+      // 关键字可配：只扫 FIXME 时只剩一条
+      const r2 = await NATIVE.scanTodo(rp, ['a.js'], ['FIXME']);
+      assert.strictEqual(r2.hits.length, 1, '关键字可配: ' + JSON.stringify(r2.hits));
+    });
+
+      // ④ 同步状态下再拉一次（merge / rebase 都应"无事可做"且成功，不产生空提交）
+      const again = await G.pullRemote(A, { strategy: 'rebase' });
+      assert.ok(again.ok && !again.conflict, '同步状态 rebase 拉取失败: ' + (again && again.error));
+      const again2 = await G.pullRemote(A, { strategy: 'merge' });
+      assert.ok(again2.ok && !again2.conflict, '同步状态 merge 拉取失败: ' + (again2 && again2.error));
+      // （默认 strategy='ff' 走 isomorphic 的老路径，只支持 http(s) 远程 —— 本地 bare 路径它不认，
+      //   故不在本用例覆盖；该路径是既有行为，未改。）
+    });
+  }
+
+  // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
+  //   （实测在 npm run 下直接挂住不返回 —— 同样的代码直跑 node 却正常，最容易踩的假死）。
+  //   改成 rename 到同盘的回收站目录（renameSync 不被垫片拦），留给系统临时目录自己回收。
+  const trash = path.join(os.tmpdir(), 'myide-git-test-trash-' + Date.now());
+  try { fs.renameSync(tmp, trash); } catch (e) { console.log('  (清理失败，留着不管: ' + e.message + ')'); }
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

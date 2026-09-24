@@ -5,10 +5,14 @@ const AiPanel = (() => {
   const msgsEl = document.getElementById('ai-msgs');
   const inputEl = document.getElementById('ai-input');
   const sendBtn = document.getElementById('ai-send');
-  const fileChip = document.getElementById('ai-file-chip');
 
   const LS_CFG = 'myide-ai-cfg';
-  const LS_W = 'myide-ai-width';
+  // 宽度键带 :v2（默认 400 → 380、范围收到 320~520），沿用旧键会停在旧宽度上
+  const LS_W = 'myide-ai-width:v2';
+  // 与 App.LAYOUT.ai 同源；ai-panel.js 在 app.js 之前加载，init 时才读得到，
+  // 因此这里给一份兜底值（数字必须与 app.js 一致）
+  const AIL = (typeof window !== 'undefined' && window.App && window.App.LAYOUT && window.App.LAYOUT.ai)
+    || { def: 380, min: 320, max: 520 };
   const MAX_CTX = 24000; // 附带文件内容上限（字符），防 token 爆炸
   const MAX_ROUNDS = 8;  // Agent 工具循环上限（防失控烧 token）
 
@@ -44,13 +48,23 @@ const AiPanel = (() => {
   let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
   let followPath = null;     // 正在跟随的编辑器文件（自动作为上下文，用户不用手动点 📎）
   const followMuted = new Set(); // 用户明确说过「不跟随」的文件（切走再切回也不再自动加）
+  let pendingImages = [];    // 待发送的图片（dataURL）：贴图直接进下一条消息
+  let uiSeq = 0;             // 消息序号（给 DOM 行挂 id，编辑/重发时要能找到是哪条）
+  let lastUserAt = null;     // 上一条用户消息在 msgs 里的下标（重新生成时回退到这里）
+  let curSessionId = null;   // 当前会话 id（历史会话列表用）
 
   // ---------- token 用量显示 ----------
   // 粗估当前上下文（无 usage 时的近似值：英文 ~4 字符/token、中文更密，取 3.2 折中）
   function estTokens() {
     let chars = 0;
-    for (const m of msgs) chars += (m.content || '').length + 40;
+    for (const m of msgs) chars += msgChars(m) + 40;
     return Math.round(chars / 3.2);
+  }
+  // 消息内容可能是字符串，也可能是多模态数组（贴图时）——按「图片≈800 tok」折算
+  function msgChars(m) {
+    if (typeof m.content === 'string') return m.content.length;
+    if (Array.isArray(m.content)) return m.content.reduce((n, p) => n + (p && p.type === 'image_url' ? 2560 : String((p && p.text) || '').length), 0);
+    return 0;
   }
   function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
   function renderUsage() {
@@ -77,6 +91,57 @@ const AiPanel = (() => {
     usageSum.cacheHit += u.cache_hit || 0;
     usageSum.cacheMiss += u.cache_miss || 0;
     renderUsage();
+  }
+
+  // ---------- 上下文预算明细 ----------
+  // 「上下文 ~12k tok」这种单个数字没法指导行动：用户想知道「谁在占地方、要不要摘掉」。
+  // VS Code Copilot 会把每条上下文的占比列出来，这里照做（点用量条弹出）。
+  function showCtxBreakdown() {
+    const estOf = (n) => Math.round(n / 3.2);
+    const rows = [];
+    for (const f of ctxFiles) {
+      const n = String(f.content || '').length;
+      rows.push({
+        ic: f.isDir ? '\u{1F5C2}' : '\u{1F4C4}',
+        nm: f.path,
+        sub: fmtK(n) + ' 字符 · ~' + fmtK(estOf(n)) + ' tok',
+        tag: f.pin ? '已固定' : (f.auto ? '跟随当前文件' : (f.dropped ? '拖入' : '')),
+        weight: n,
+      });
+    }
+    let msgChars = 0;
+    for (const mm of msgs) msgChars += (typeof mm.content === 'string' ? mm.content.length : 200);
+    rows.push({ ic: '\u{1F5E8}', nm: '对话历史（' + msgs.length + ' 条）', sub: fmtK(msgChars) + ' 字符 · ~' + fmtK(estOf(msgChars)) + ' tok', tag: '不可摘', weight: msgChars });
+    const maxW = Math.max(1, ...rows.map((r) => r.weight));
+    const box = document.createElement('div');
+    box.style.cssText = 'display:flex;flex-direction:column;min-width:420px;max-width:600px;max-height:64vh';
+    let html = '<div class="m-head">\u{1F4CA} 上下文占用 <span class="x" id="cb-x">\u2715</span></div>' +
+      '<div class="m-body" style="overflow:auto">' +
+      '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">' +
+        '当前上下文约 <b>' + fmtK(estTokens()) + ' tok</b>（按字符数估算；接入模型返回 usage 后以真实值为准）。' +
+        '附带的文件每条消息都会重发一次 —— 太大就摘掉一些。</div>';
+    for (const r of rows) {
+      const pct = Math.max(2, Math.round((r.weight / maxW) * 100));
+      html += '<div class="ai-bd-row">' +
+        '<span class="ai-bd-ic">' + r.ic + '</span>' +
+        '<span class="ai-bd-main"><span class="ai-bd-nm" title="' + esc(r.nm) + '">' + esc(r.nm) + '</span>' +
+        '<span class="ai-bd-sub">' + esc(r.sub) + (r.tag ? ' · ' + esc(r.tag) : '') + '</span>' +
+        '<span class="ai-bd-bar"><i style="width:' + pct + '%"></i></span></span></div>';
+    }
+    if (ctxFiles.length > 1) {
+      html += '<div style="margin-top:10px"><button class="tb-btn" id="cb-clear">摘掉所有未固定的上下文</button></div>';
+    }
+    html += '</div>';
+    box.innerHTML = html;
+    Modal.show(box);
+    const close = () => Modal.hide();
+    box.querySelector('#cb-x').onclick = close;
+    const cl = box.querySelector('#cb-clear');
+    if (cl) cl.onclick = () => {
+      ctxFiles = ctxFiles.filter((f) => f.auto || f.pin);
+      renderChips(); renderFollow(); renderUsage(); close();
+      MI.toast('已摘掉未固定的上下文', 'ok');
+    };
   }
 
   // ---------- 上下文压缩 ----------
@@ -162,7 +227,7 @@ const AiPanel = (() => {
   }
   function permRun() {
     const v = getConfig().permRun;
-    return ['confirm', 'deny'].includes(v) ? v : 'confirm';
+    return ['confirm', 'auto', 'deny'].includes(v) ? v : 'confirm';
   }
 
   // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
@@ -189,19 +254,142 @@ const AiPanel = (() => {
     savePerms(p);
   }
   function cmdPrefixOf(cmd) { return String(cmd || '').trim().split(/\s+/)[0] || ''; }
-  function writeNeedsConfirm() {
+  // 危险命令永远要问一次：路径白名单 / 记住授权 / /yolo 都不豁免。
+  // （Cursor 的 deny 优先级高于 allow，同一条规矩：能一键放行「改文件」，但不能一键放行 rm。）
+  const DANGER_TOKENS = ['rm', 'rmdir', 'rd', 'del', 'erase', 'format', 'diskpart', 'dd', 'shutdown', 'reboot',
+    'taskkill', 'kill', 'pkill', 'chmod', 'chown', 'takeown', 'icacls', 'reg'];
+  const DANGER_SEQ = ['git clean', 'git reset --hard', 'git reset --keep', 'git push --force', 'git push -f',
+    'git branch -d', 'git branch -D', 'git checkout --', 'git restore', '> /dev/sda'];
+  function dangerousCmd(cmd) {
+    const t = String(cmd || '').trim().toLowerCase();
+    if (!t) return false;
+    for (const sq of DANGER_SEQ) if (t.includes(sq.toLowerCase())) return true;
+    // 按管道 / 分号 / && 拆开，逐段看第一个词（`npm run x && rm -rf y` 也要认出来）
+    for (const seg of t.split(/[;&|]+/)) {
+      const first = (seg.trim().split(/\s+/)[0] || '');
+      const base = first.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat|sh|ps1|com)$/, '');
+      if (base && DANGER_TOKENS.includes(base)) return true;
+    }
+    return false;
+  }
+  // 简化的 glob（支持 ** 与 *），用来做写入路径白名单
+  const RE_META = '\\^$.|?*+()[]{}';
+  function escRe(x) { return String(x).split('').map((c) => (RE_META.indexOf(c) >= 0 ? '\\' + c : c)).join(''); }
+  function globMatch(pat, rel) {
+    const p = String(pat || '').replace(/\\/g, '/').replace(/^\.?\//, '').trim();
+    const r = String(rel || '').replace(/\\/g, '/');
+    if (!p) return false;
+    const rx = '^' + p.split('**').map((seg) => seg.split('*').map(escRe).join('[^/]*')).join('.*') + '$';
+    try { return new RegExp(rx).test(r); } catch { return false; }
+  }
+  function pathAllowed(rel) {
+    const list = getConfig().allowPaths;
+    if (!Array.isArray(list) || !list.length) return false;
+    return list.some((x) => x && globMatch(x, rel));
+  }
+
+  function writeNeedsConfirm(rel) {
     const base = permWrite();
     if (base === 'deny') return 'deny';
     if (base === 'auto') return 'no';
     if (sessionPerm.write || loadPerms().write) return 'no';
+    if (rel && pathAllowed(rel)) return 'no';   // 只放行你点头过的目录，避免「一处放心 = 全项目放行」
     return 'yes';
   }
   function runNeedsConfirm(cmd) {
-    if (permRun() === 'deny') return 'deny';
-    if (sessionPerm.run || loadPerms().run) return 'no';
+    const base = permRun();
+    if (base === 'deny') return 'deny';
     const t = String(cmd || '').trim();
+    const lc = t.toLowerCase();
+    if (dangerousCmd(t)) return 'danger';                                    // 内置危险命令
+    const deny = (getConfig().denyCmds || []).filter((x) => x && String(x).trim());
+    if (deny.some((d2) => lc.startsWith(String(d2).trim().toLowerCase()))) return 'danger'; // 用户黑名单
+    if (base === 'auto') return 'no';            // 预设「自动执行」（危险命令 / 黑名单已在上面拦掉）
+    if (sessionPerm.run || loadPerms().run) return 'no';
     if ((loadPerms().cmds || []).some((pre) => pre && t.startsWith(pre))) return 'no';
     return 'yes';
+  }
+
+  // ---------- 访问权限浮层（头部盾牌按钮）----------
+  // 用户的原话：「能不能预先给权限，不用每一个修改都要确认」。
+  // 以前只能钻进 设置 → AI 助手 改下拉，改完也不知道生效没。现在一个按钮摊开：
+  // 两个维度的档位（改文件 / 执行命令）+ 本项目已记住的授权（看得见、清得掉）。
+  let permPop = null;
+  function closePermPop() {
+    if (permPop && permPop.parentNode) permPop.parentNode.removeChild(permPop);
+    permPop = null;
+  }
+  function syncPermBtn() {
+    const b = document.getElementById('ai-perm');
+    if (!b) return;
+    const auto = permWrite() === 'auto' || !!loadPerms().write;
+    b.classList.toggle('on', auto);
+    b.title = '访问权限：改文件 ' + ({ confirm: '每次确认', auto: '自动应用', deny: '禁止' }[permWrite()] || '')
+      + ' · 命令 ' + ({ confirm: '每次确认', auto: '自动执行', deny: '禁止' }[permRun()] || '')
+      + (auto ? '（已开启自动应用）' : '');
+  }
+  function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
+  function renderPermPop() {
+    closePermPop();
+    const segHtml = (key, cur) => {
+      const opts = [{ v: 'confirm', t: '每次确认' }, { v: 'auto', t: '自动' }, { v: 'deny', t: '禁止' }];
+      return '<div class="ai-seg">' + opts.map((o) =>
+        '<button data-set="' + key + ':' + o.v + '" class="' + (o.v === cur ? 'on' : '') + '">' + o.t + '</button>').join('') + '</div>';
+    };
+    const pop = document.createElement('div');
+    pop.className = 'ai-perm-pop';
+    let html =
+      '<div class="ai-perm-sec"><span class="ai-perm-lb">改文件</span>' + segHtml('permWrite', permWrite()) + '</div>' +
+      '<div class="ai-perm-sec"><span class="ai-perm-lb">执行命令</span>' + segHtml('permRun', permRun()) + '</div>' +
+      '<div class="ai-perm-note">选「自动」后不再逐次弹确认；但危险命令（rm / del / git reset --hard…）与「把文件清空」始终要单独点一次。</div>';
+    const p = loadPerms();
+    const items = [];
+    if (p.write) items.push({ k: 'write', t: '本项目改文件不再询问' });
+    if (p.run) items.push({ k: 'run', t: '本项目执行命令不再询问' });
+    for (const c of (p.cmds || [])) items.push({ k: 'cmd:' + c, t: '「' + c + '」开头的命令不再询问' });
+    for (const g of (getConfig().allowPaths || [])) items.push({ k: 'path:' + g, t: '写入 ' + g + ' 不询问' });
+    if (items.length) {
+      html += '<div class="ai-perm-sec" style="margin:8px 0 0"><span class="ai-perm-lb">已记住的授权（本项目）</span>';
+      for (const it of items) {
+        html += '<div class="ai-perm-item"><span title="' + esc(it.t) + '">' + esc(it.t) + '</span>' +
+          '<button class="tb-btn" data-clear="' + esc(it.k) + '">清除</button></div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="ai-perm-note">还没有记住任何授权。</div>';
+    }
+    pop.innerHTML = html;
+    panel.appendChild(pop);
+    permPop = pop;
+    pop.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t.dataset && t.dataset.set) {
+        const i = t.dataset.set.indexOf(':');
+        setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
+        renderPermPop(); syncPermBtn();
+        const k = t.dataset.set.slice(0, i);
+        MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
+        return;
+      }
+      if (t.dataset && t.dataset.clear) {
+        const k = t.dataset.clear;
+        if (k.indexOf('path:') === 0) { MI.toast('路径白名单请到 设置 → AI 助手 里删该行', 'err'); return; }
+        const np = loadPerms();
+        if (k === 'write') delete np.write;
+        else if (k === 'run') delete np.run;
+        else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
+        savePerms(np);
+        renderPermPop(); syncPermBtn();
+        MI.toast('已清除该授权（下次会重新询问）', 'ok');
+      }
+    });
+    document.addEventListener('mousedown', function onOut(ev) {
+      if (!permPop) { document.removeEventListener('mousedown', onOut); return; }
+      if (!permPop.contains(ev.target) && !(ev.target.closest && ev.target.closest('#ai-perm'))) {
+        closePermPop();
+        document.removeEventListener('mousedown', onOut);
+      }
+    });
   }
 
   async function executeTool(call) {
@@ -275,9 +463,10 @@ const AiPanel = (() => {
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
       const needR = runNeedsConfirm(cmd);
       if (needR === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
-      if (needR === 'yes') {
-        // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口
-        const ans = await confirmRun(cmd, cmdPrefixOf(cmd)); // 'once' | 'always' | false
+      if (needR === 'yes' || needR === 'danger') {
+        // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口。
+        // danger（rm / git reset --hard / 用户黑名单）不给「总是允许」，只能逐次点。
+        const ans = await confirmRun(cmd, needR === 'danger' ? '' : cmdPrefixOf(cmd), needR === 'danger');
         if (!ans) return { ok: false, text: '用户拒绝了执行该命令' };
         if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
       }
@@ -290,21 +479,27 @@ const AiPanel = (() => {
   // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
   async function applyWrite(loc, content) {
     const full = loc.root + '/' + loc.rel;
-    const needW = writeNeedsConfirm();
+    let needW = writeNeedsConfirm(loc.rel);
     if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
     const old = await window.myIDE.fs.readFile(full);
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
-    if (needW === 'yes') {
-      const ans = await confirmDiff(loc.rel, oldText, content); // 'once' | 'always' | false
+    // 删除保护：把已有内容清空 = 删内容。即便前面放行了写入（白名单 / 记住授权 / auto），
+    // 这一步也必须问一次 —— 这是最容易造成不可逆损失的操作（Cursor 也单独保护删除）。
+    const isWipe = existed && String(oldText).trim() !== '' && String(content).trim() === '';
+    if (needW === 'no' && isWipe) needW = 'danger';
+    if (needW === 'yes' || needW === 'danger') {
+      const ans = await confirmDiff(loc.rel, oldText, content, needW === 'danger'); // 'once' | 'always' | false
       if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
       if (ans === 'always') grantPerm('write', 'project');
     }
     const w = await window.myIDE.fs.writeFile(full, content);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
+    // 刚写完的就是规则文件 → 让缓存失效，下次提问立即按新规则（否则要切项目才生效）
+    if (RULE_FILES.includes(String(loc.rel).replace(/^\.\//, ''))) rulesRoot = null;
     const cp = { path: full, rel: loc.rel, oldText, existed, done: false, card: null };
     checkpoints.push(cp);
     cp.card = addEditCard(cp, content);
@@ -353,30 +548,55 @@ const AiPanel = (() => {
     return rows;
   }
 
-  // diff 确认弹窗：返回 Promise<boolean>（true=应用）
-  function confirmDiff(rel, oldText, newText) {
+  // 改动确认：贴在面板底部的浮层（返回 'once' | 'always' | false）。
+  // 以前是居中大模态 —— 一跳出来编辑器被整个盖住，用户没法一边看真实文件一边决定改不改。
+  // Cursor（编辑器内 inline diff + Keep/Undo）、Cline（对话流里的 diff 卡片）、
+  // VS Code（Working Set 里开 diff 视图）都是「就地给 diff、决策按钮贴着 diff」，这里取同样的路子：
+  // 不抢焦点、不遮编辑器，diff 默认展开、可收起。
+  function confirmDiff(rel, oldText, newText, danger) {
     return new Promise((resolve) => {
       const rows = lineDiff(oldText, newText);
       const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
-      const html = diffRowsHtml(rows);
       const box = document.createElement('div');
-      box.style.cssText = 'display:flex;flex-direction:column;min-width:520px;max-width:760px;height:70vh';
-      box.innerHTML = `
-        <div class="m-head">✏️ AI 修改确认 <span class="x" id="dw-x">✕</span></div>
-        <div style="padding:8px 14px;font-size:12px;color:var(--text-dim)">${esc(rel)} <span style="float:right">+${addN} 行 / -${delN} 行</span></div>
-        <div class="dw-diff">${html}</div>
-        <div class="m-foot">
-          <button class="tb-btn m-cancel" id="dw-no">拒绝</button>
-          <button class="tb-btn" id="dw-always" title="以后本项目里改文件都不再询问（可在 设置 → AI 助手 清除）">本项目内都允许</button>
-          <button class="tb-btn m-ok" id="dw-yes">应用修改</button>
-        </div>`;
-      Modal.show(box);
+      box.className = 'ai-confirm';
+      box.innerHTML =
+        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
+          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
+            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
+            : '<path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/>') + '</svg>' +
+          '<span class="ai-cf-nm" title="' + esc(rel) + '">' + esc(rel) + '</span>' +
+          '<span class="ai-cf-stat"><i class="e-add">+' + addN + '</i><i class="e-del">-' + delN + '</i></span>' +
+          '<button class="ai-cf-fold" id="dw-fold">收起</button>' +
+        '</div>' +
+        '<div class="ai-cf-body dw-diff" id="dw-diff">' + diffRowsHtml(rows) + '</div>' +
+        (danger ? '<div class="ai-cf-note warn">改完这个文件就空了 —— 等于把已有内容删掉。这一步不提供「以后都允许」。</div>' : '') +
+        '<div class="ai-cf-foot">' +
+          (danger ? '' : '<button class="ai-cf-quiet" id="dw-always" title="以后本项目里改文件都不再询问（权限按钮或设置里可清除）">本项目内都允许</button>') +
+          '<button class="tb-btn m-cancel" id="dw-no">拒绝</button>' +
+          '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="dw-yes">' + (danger ? '确认清空' : '应用修改') + '</button>' +
+        '</div>';
+      const prev = panel.querySelector('.ai-confirm');
+      if (prev) prev.parentNode.removeChild(prev); // 上一处没处理完的确认先作废（它指向的文件可能已经变了）
+      panel.appendChild(box);
       let settled = false;
-      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        if (box.parentNode) box.parentNode.removeChild(box);
+        resolve(v);
+      };
+      document.addEventListener('keydown', onKey);
       box.querySelector('#dw-yes').onclick = () => finish('once');
-      box.querySelector('#dw-always').onclick = () => finish('always');
+      const al = box.querySelector('#dw-always');
+      if (al) al.onclick = () => finish('always');
       box.querySelector('#dw-no').onclick = () => finish(false);
-      box.querySelector('#dw-x').onclick = () => finish(false);
+      const fold = box.querySelector('#dw-fold');
+      fold.onclick = () => {
+        const hid = box.querySelector('#dw-diff').classList.toggle('hidden');
+        fold.textContent = hid ? '展开 diff' : '收起';
+      };
     });
   }
 
@@ -411,6 +631,9 @@ const AiPanel = (() => {
         let r;
         try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
         setToolState(row, r.ok, (c.name === 'write_file' || c.name === 'replace_edit') ? (r.ok ? '已应用' : '已拒绝') : '');
+        // 工具返回的原文挂到 title 上：显示"已拒绝"时，鼠标悬停就能看到到底是权限拒绝、
+        // 还是 search 没匹配上（否则用户只能看到一个笼统的"已拒绝"）
+        if (row) row.title = String((r && r.text) || '');
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
       }
@@ -424,6 +647,7 @@ const AiPanel = (() => {
   async function continueStream() {
     const cfg = getConfig();
     curStream = addMsg('assistant', '');
+    curStream.dataset.mid = 'a' + (++uiSeq);
     curText = '';
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
@@ -497,13 +721,22 @@ const AiPanel = (() => {
   }
 
   // 消息气泡（含悬停复制按钮：一键复制原始 markdown 文本）
-  function addMsg(role, text) {
+  function addMsg(role, text, opts) {
     const row = document.createElement('div');
     row.className = 'ai-msg ' + (role === 'user' ? 'ai-user' : 'ai-assistant');
     const pre = document.createElement('div');
     pre.className = 'ai-md';
     if (role === 'user') {
       pre.innerHTML = '<p>' + esc(text).replace(/\n/g, '<br>') + '</p>';
+      // 贴图：气泡里也把图显示出来（否则发完就看不见自己发了什么）
+      const imgs = (opts && opts.imgs) || [];
+      for (const u of imgs) {
+        const im = document.createElement('img');
+        im.className = 'ai-msg-img';
+        im.src = u;
+        im.alt = '发送的图片';
+        pre.appendChild(im);
+      }
     } else {
       pre.innerHTML = renderMd(text);
     }
@@ -520,9 +753,190 @@ const AiPanel = (() => {
       } catch (e) { MI.toast('复制失败: ' + String(e), 'err'); }
     };
     row.appendChild(cp);
+    if (role === 'user') {
+      // 编辑并重发（Cursor / Copilot 都有）：说错一句话不用重开一轮
+      const acts = document.createElement('div');
+      acts.className = 'ai-msg-acts';
+      const eb = document.createElement('button');
+      eb.className = 'ai-act-btn';
+      eb.textContent = '\u270E 编辑并重发';
+      eb.title = '把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
+      eb.onclick = () => editUserMsg(row.dataset.mid);
+      acts.appendChild(eb);
+      row.appendChild(acts);
+    } else {
+      decorateCodeBlocks(row);
+    }
     msgsEl.appendChild(row);
     scrollBottom();
     return row;
+  }
+
+  // ---------- 代码块：逐块复制 / 插入编辑器 ----------
+  // 以前回复里的代码只能整个复制到剪贴板，再自己去编辑器粘贴定位。
+  function decorateCodeBlocks(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('pre').forEach((pre) => {
+      if (pre.dataset.acts) return;
+      pre.dataset.acts = '1';
+      const code = pre.querySelector('code');
+      const txtOf = () => (code ? code.textContent : pre.textContent);
+      const bar = document.createElement('div');
+      bar.className = 'ai-code-acts';
+      const mk = (label, title, fn) => {
+        const bt = document.createElement('button');
+        bt.className = 'ai-code-act';
+        bt.textContent = label;
+        bt.title = title;
+        bt.onclick = (e) => { e.stopPropagation(); fn(); };
+        bar.appendChild(bt);
+      };
+      mk('复制', '复制这段内容', async () => {
+        try { await MI.copyText(txtOf()); MI.toast('已复制代码块', 'ok'); } catch (e) { MI.toast('复制失败', 'err'); }
+      });
+      mk('插入到编辑器', '插入到当前编辑器的光标处（有选区则替换选区）', () => insertIntoEditor(txtOf()));
+      pre.appendChild(bar);
+    });
+  }
+
+  // 插入到当前编辑器（CM6 优先；纯文本模式回退到 textarea）
+  function insertIntoEditor(text) {
+    const t = String(text == null ? '' : text);
+    if (!t) return false;
+    try {
+      const cm = window.Viewer && Viewer.cm;
+      if (cm && cm.view && cm.view.dispatch) {
+        const v = cm.view;
+        const sel = v.state.selection.main;
+        v.dispatch({
+          changes: { from: sel.from, to: sel.to, insert: t },
+          selection: { anchor: sel.from + t.length },
+        });
+        v.focus();
+        MI.toast('已插入到编辑器', 'ok');
+        return true;
+      }
+    } catch {}
+    const ae = document.activeElement;
+    if (ae && ae.tagName === 'TEXTAREA' && ae.selectionStart != null) {
+      const p = ae.selectionStart, q = ae.selectionEnd == null ? p : ae.selectionEnd;
+      ae.value = ae.value.slice(0, p) + t + ae.value.slice(q);
+      ae.selectionStart = ae.selectionEnd = p + t.length;
+      MI.toast('已插入到编辑器', 'ok');
+      return true;
+    }
+    MI.toast('先在编辑器里打开一个文件，再点插入', 'err');
+    return false;
+  }
+
+  // ---------- 编辑已发消息 / 重新生成 ----------
+  function removeRegen() {
+    try { msgsEl.querySelectorAll('.ai-regen').forEach((b) => b.remove()); } catch {}
+  }
+  // 只在「最后一条助手回复」上挂 ⟳：中间那些重新生成没有意义，到处挂只会误点
+  function markRegen() {
+    removeRegen();
+    if (busy || lastUserAt == null || lastUserAt >= msgs.length) return;
+    const rows = [...msgsEl.querySelectorAll('.ai-msg.ai-assistant')];
+    const last = rows[rows.length - 1];
+    if (!last) return;
+    const b = document.createElement('button');
+    b.className = 'ai-regen';
+    b.textContent = '\u27F3 重新生成';
+    b.title = '丢弃这个回复，让模型重新答一次';
+    b.onclick = regenerate;
+    last.appendChild(b);
+  }
+  async function regenerate() {
+    if (busy) { MI.toast('正在生成中…', 'err'); return; }
+    if (lastUserAt == null || lastUserAt >= msgs.length) { MI.toast('没有可重新生成的回复', 'err'); return; }
+    msgs.length = lastUserAt + 1;             // 保留那条用户消息，丢掉之后的
+    const keep = msgs[lastUserAt] && msgs[lastUserAt]._ui;
+    const rows = [...msgsEl.querySelectorAll('.ai-msg, .ai-tool')];
+    const at = rows.findIndex((r) => r.dataset.mid === keep);
+    for (let i = rows.length - 1; i > at; i--) rows[i].remove(); // 改动卡片留着（文件确实改了，撤销入口不能丢）
+    removeRegen();
+    agentRounds = 0;
+    agentStopped = false;
+    busy = true;
+    setBusyUI(true);
+    await continueStream();
+  }
+  function editUserMsg(mid) {
+    if (!mid) { MI.toast('找不到这条消息', 'err'); return; }
+    if (busy) { MI.toast('正在生成中，先点停止再编辑', 'err'); return; }
+    const idx = msgs.findIndex((m) => m._ui === mid);
+    if (idx < 0) { MI.toast('找不到这条消息', 'err'); return; }
+    const text = msgs[idx]._text || (typeof msgs[idx].content === 'string' ? msgs[idx].content : '');
+    const rows = [...msgsEl.querySelectorAll('.ai-msg, .ai-tool')];
+    const at = rows.findIndex((r) => r.dataset.mid === mid);
+    msgs.length = idx;                        // 这条及其之后全部丢弃（重发会重新生成）
+    for (let i = rows.length - 1; i >= at && at >= 0; i--) rows[i].remove();
+    removeRegen();
+    lastUserAt = null;
+    inputEl.value = text;
+    pendingImages = (msgs[idx] && msgs[idx]._imgs) ? msgs[idx]._imgs.slice() : pendingImages;
+    renderImages();
+    autoGrowInput();
+    inputEl.focus();
+    try { inputEl.setSelectionRange(text.length, text.length); } catch {}
+    MI.toast('已放回输入框，改完直接回车重发', 'ok');
+  }
+
+  // ---------- 贴图（内容整理经常要「照这张图改」）----------
+  function renderImages() {
+    const box = document.getElementById('ai-images');
+    if (!box) return;
+    box.innerHTML = '';
+    box.classList.toggle('hidden', !pendingImages.length);
+    pendingImages.forEach((u, i) => {
+      const d = document.createElement('span');
+      d.className = 'ai-img-thumb';
+      const im = document.createElement('img');
+      im.src = u;
+      im.alt = '待发送图片';
+      const x = document.createElement('button');
+      x.className = 'ai-img-x';
+      x.textContent = '\u2715';
+      x.title = '移除这张图';
+      x.onclick = (e) => { e.stopPropagation(); pendingImages.splice(i, 1); renderImages(); };
+      d.appendChild(im);
+      d.appendChild(x);
+      box.appendChild(d);
+    });
+  }
+  function onPasteImage(e) {
+    const dt = e.clipboardData;
+    if (!dt || !dt.items) return;
+    const item = [...dt.items].find((it) => it.kind === 'file' && /^image\//.test(it.type || ''));
+    if (!item) return;
+    e.preventDefault();
+    const f = item.getAsFile();
+    if (!f) return;
+    if (f.size > 4 * 1024 * 1024) { MI.toast('图片超过 4MB，先压缩一下再贴（大图又贵又慢）', 'err'); return; }
+    const fr = new FileReader();
+    fr.onload = () => {
+      pendingImages.push(String(fr.result || ''));
+      renderImages();
+      MI.toast('已附上图片，发送时一并给模型（需要模型支持看图）', 'ok');
+    };
+    fr.onerror = () => MI.toast('读图片失败', 'err');
+    fr.readAsDataURL(f);
+  }
+
+  // 输入框随内容增高：从 1 行（28px）长到 160px 上限。
+  // 踩过两个坑：① 复位不能用 'auto'（空框会按内在高度算，偏高）；
+  //   ② **超长的 placeholder 会被折行算进 scrollHeight**（实测空框 47 而非 28）→ 测量时临时摘掉再量。
+  // ⚠ 凡是「代码给输入框填值」的地方（场景入口 / 斜杠命令 / 右键动作 / 编辑重发）都要调它 ——
+  //   直接赋 value 不会触发 input 事件，不调的话长指令会在 1 行的框里被裁掉。
+  function autoGrowInput() {
+    if (!inputEl) return;
+    const ph = inputEl.placeholder;
+    inputEl.placeholder = '';
+    inputEl.style.height = '28px';
+    const need = inputEl.scrollHeight;
+    inputEl.placeholder = ph;
+    inputEl.style.height = (need > 28 ? Math.min(need, 160) : 28) + 'px';
   }
 
   // 空状态：卡片 + 场景入口 —— 点一下把指令填进输入框（用户不用自己想该怎么问）
@@ -543,6 +957,7 @@ const AiPanel = (() => {
       if (!ctxFiles.some((f) => f.path === tab.path)) await toggleCtxFile();
     }
     input.value = q.text;
+    autoGrowInput();
     input.focus();
     try { input.setSelectionRange(q.text.length, q.text.length); } catch {}
   }
@@ -578,13 +993,153 @@ const AiPanel = (() => {
     msgsEl.appendChild(w);
   }
 
+  // ---------- 斜杠命令 ----------
+  // 内容整理高频动作的快捷入口（Cursor/Copilot 的 /命令 同款）。视觉上复用 @ 补全的弹窗样式，
+  // 少一套 CSS、行为也一致（↑↓ 选择 / Enter 确认 / Esc 关闭）。
+  const SLASH_CMDS = [
+    { cmd: '/精简', tip: '压缩篇幅、去掉废话，保持原意', prompt: '把当前内容精简一下：去掉重复和废话，保持原意不变。' },
+    { cmd: '/扩写', tip: '把要点展开成完整表达', prompt: '把当前内容扩写成完整表达，补上必要的细节和过渡。' },
+    { cmd: '/润色', tip: '只改表达，不动事实和结构', prompt: '润色当前内容：只改表达和语气，不要改变事实与结构。' },
+    { cmd: '/纠错', tip: '改错别字、标点、语法', prompt: '检查当前内容的错别字、标点和语法问题并改正，改完给我看 diff。' },
+    { cmd: '/统一术语', tip: '同一概念统一用词', prompt: '统一当前文档里的术语和称呼（同一概念用同一个词），改完给我看 diff。' },
+    { cmd: '/提炼要点', tip: '归纳成简洁列表', prompt: '提炼当前内容的要点，用简洁的列表整理。' },
+    { cmd: '/转表格', tip: '把并列信息变成表格', prompt: '把当前内容里并列的信息整理成表格。' },
+    { cmd: '/生成提交信息', tip: '按当前改动写 commit message', action: 'commitmsg' },
+    { cmd: '/压缩上下文', tip: '压掉旧工具结果，省额度', action: 'compact' },
+    { cmd: '/yolo', tip: '本次对话内改文件 / 跑命令都不再询问', action: 'yolo' },
+  ];
+  let slashState = null;
+  function activeSlashToken() {
+    if (!inputEl) return null;
+    const v = inputEl.value;
+    if (!v || v.charAt(0) !== '/') return null;
+    const pos = inputEl.selectionStart == null ? v.length : inputEl.selectionStart;
+    const head = v.slice(0, pos);
+    if (/\s/.test(head)) return null;   // 只在第一个词上生效（正文里出现 / 不弹）
+    return { query: head.slice(1) };
+  }
+  function closeSlash() {
+    if (slashState && slashState.popup && slashState.popup.parentNode) slashState.popup.parentNode.removeChild(slashState.popup);
+    slashState = null;
+  }
+  function renderSlash() {
+    if (!slashState) return;
+    const list = slashState.popup.querySelector('.ai-at-list');
+    list.innerHTML = '';
+    if (!slashState.items.length) {
+      list.innerHTML = '<div class="ai-at-empty">没有匹配的命令</div>';
+      return;
+    }
+    slashState.items.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'ai-at-item' + (i === slashState.sel ? ' sel' : '');
+      row.innerHTML = '<span class="ai-at-name">' + esc(c.cmd) + '</span>' +
+        '<span class="ai-at-rel">' + esc(c.tip) + '</span>';
+      row.onclick = () => pickSlash(i);
+      list.appendChild(row);
+    });
+    const el = list.children[slashState.sel];
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ block: 'nearest' }); } catch {} }
+  }
+  function openSlash(items) {
+    closeMention();
+    closeSlash();
+    const popup = document.createElement('div');
+    popup.className = 'ai-at-pop';
+    popup.innerHTML = '<div class="ai-at-list"></div>';
+    const bar = inputEl.closest('.ai-input-bar');
+    (bar || panel).appendChild(popup);
+    slashState = { items, sel: 0, popup };
+    renderSlash();
+  }
+  async function pickSlash(idx) {
+    if (!slashState) return;
+    const it = slashState.items[idx];
+    closeSlash();
+    if (!it) return;
+    inputEl.value = '';
+    if (it.action) { await runSlashAction(it.action); return; }
+    // 内容整理类命令：有选区就带上选区（用户说「精简」多半指他选中的那段），否则跟随当前文件
+    let hasSel = false;
+    try {
+      const cm = window.Viewer && Viewer.cm;
+      hasSel = !!(cm && cm.view && !cm.view.state.selection.main.empty);
+    } catch {}
+    if (hasSel) await addSpecialCtx('sel'); else await followActive();
+    inputEl.value = it.prompt;
+    autoGrowInput();
+    inputEl.focus();
+    try { inputEl.setSelectionRange(it.prompt.length, it.prompt.length); } catch {}
+    MI.toast('指令已填好，按 Enter 发送', 'ok');
+  }
+  async function runSlashAction(kind) {
+    if (kind === 'compact') {
+      const before = msgs.reduce((n, m) => n + msgChars(m), 0);
+      compressHistory();
+      const after = msgs.reduce((n, m) => n + msgChars(m), 0);
+      renderUsage();
+      const saved = Math.max(0, before - after);
+      MI.toast(saved ? '已压缩上下文，省下约 ' + fmtK(Math.round(saved / 3.2)) + ' tok' : '上下文还不需要压缩', 'ok');
+      return;
+    }
+    if (kind === 'yolo') {
+      sessionPerm.write = true;
+      sessionPerm.run = true;
+      MI.toast('本次对话内改文件 / 执行命令都不再询问（关掉面板或开新对话即恢复；永久授权请到设置页）', 'ok');
+      return;
+    }
+    if (kind === 'commitmsg') { await genCommitMsg(); return; }
+  }
+  // 按当前工作区改动生成提交信息（把 diff 作为上下文，不需要执行命令）
+  async function genCommitMsg() {
+    const root = (window.App && App.root) || '';
+    if (!root) { MI.toast('没有打开的项目', 'err'); return; }
+    const st = await window.myIDE.git.status(root);
+    if (!st || st.error || !Array.isArray(st.changed) || !st.changed.length) { MI.toast('工作区没有未提交的改动', 'err'); return; }
+    const parts = [st.changed.map((c) => c.label + '  ' + c.file).join('\n')];
+    for (const c of st.changed.slice(0, 15)) {
+      const d = await window.myIDE.git.diffWorkdir(root, c.file).catch(() => null);
+      if (!d || d.error || d.binary || d.tooLarge) continue;
+      const rows = lineDiff(d.oldText || '', d.newText || '')
+        .filter((r) => r.t !== ' ').slice(0, 120).map((r) => (r.t === '+' ? '+ ' : '- ') + r.s);
+      if (rows.length) parts.push('--- ' + c.file + ' ---\n' + rows.join('\n'));
+    }
+    addCtx({ path: '（待提交的改动）', content: parts.join('\n\n').slice(0, 40000), isDir: true, special: 'git' });
+    inputEl.value = '根据上面的改动写一条 Git 提交信息。格式「<类型>: <中文说明>」，类型用 feat/fix/docs/refactor/test/chore 之一；'
+      + '一行讲清做了什么，事情多就另起一段用短句列明细。只给提交信息本身，不要解释、不要加代码块。';
+    await send();
+  }
+  function onInputSlash() {
+    const tok = activeSlashToken();
+    if (!tok) { closeSlash(); return false; }
+    const q = tok.query.toLowerCase();
+    const items = SLASH_CMDS.filter((c) => (c.cmd + ' ' + c.tip).toLowerCase().includes(q)).slice(0, 12);
+    if (slashState) { slashState.items = items; slashState.sel = 0; renderSlash(); return true; }
+    if (items.length) openSlash(items);
+    return true;
+  }
+  function onKeydownSlash(e) {
+    if (!slashState) return false;
+    if (e.key === 'ArrowDown') { e.preventDefault(); slashState.sel = Math.min(slashState.sel + 1, slashState.items.length - 1); renderSlash(); return true; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); slashState.sel = Math.max(slashState.sel - 1, 0); renderSlash(); return true; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pickSlash(slashState.sel); return true; }
+    if (e.key === 'Tab') { e.preventDefault(); pickSlash(slashState.sel); return true; }
+    if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return true; }
+    return false;
+  }
+
   // ---------- 发送 ----------
   // 消息透传（保留原生 function calling 的 tool_calls / tool_call_id 字段）
   function buildMessages() {
     const cfg = getConfig();
     const out = [];
-    // Agent 工具系统提示在前，用户自定义系统提示在后（用户可覆盖语气/角色）
-    out.push({ role: 'system', content: AGENT_SYS + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : '') });
+    // Agent 工具系统提示在前，项目规则居中，用户自定义系统提示在最后（优先级从低到高）
+    out.push({
+      role: 'system',
+      content: AGENT_SYS
+        + (rulesText ? '\n\n# 项目规则（读取自 ' + rulesFile + '，请遵守）\n' + rulesText : '')
+        + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : ''),
+    });
     for (const m of msgs) {
       if (m.role === 'tool') out.push({ role: 'tool', tool_call_id: m.tool_call_id, content: m.content || '' });
       else if (m.tool_calls) out.push({ role: 'assistant', content: m.content || '', tool_calls: m.tool_calls });
@@ -608,9 +1163,11 @@ const AiPanel = (() => {
     setBusyUI(true);
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     agentStopped = false;
+    closeSlash();
     compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
     renderUsage();
     inputEl.value = '';
+    autoGrowInput();   // 发完缩回 1 行
     // 清空欢迎语
     const w = msgsEl.querySelector('.ai-welcome');
     if (w) w.remove();
@@ -620,10 +1177,21 @@ const AiPanel = (() => {
       const blocks = ctxFiles.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
       content = blocks.join('\n\n') + '\n\n' + text;
     }
-    addMsg('user', text);
-    msgs.push({ role: 'user', content });
+    const imgs = pendingImages.slice();
+    pendingImages = [];
+    renderImages();
+    if (imgs.length) {
+      // 多模态消息：文本 + 图片（OpenAI 兼容格式；不支持看图的模型会忽略图片部分）
+      content = [{ type: 'text', text: content }].concat(imgs.map((u) => ({ type: 'image_url', image_url: { url: u } })));
+    }
+    const urow = addMsg('user', text, { imgs });
+    const mid = 'u' + (++uiSeq);
+    urow.dataset.mid = mid;
+    lastUserAt = msgs.length;                  // 重新生成时回退到这里（保留这条用户消息）
+    msgs.push({ role: 'user', content, _ui: mid, _text: text, _imgs: imgs });
 
     curStream = addMsg('assistant', '');
+    curStream.dataset.mid = 'a' + (++uiSeq);
     curText = '';
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
@@ -656,6 +1224,7 @@ const AiPanel = (() => {
       md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
     } else if (text) {
       md.innerHTML = renderMd(text);
+      decorateCodeBlocks(curStream);
     }
     const nativeCalls = (!isErr && r && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
     const textCalls = (!isErr && text) ? parseToolCalls(text) : [];
@@ -684,6 +1253,9 @@ const AiPanel = (() => {
     }
     busy = false;
     setBusyUI(false);
+    lastUserAt = msgs.map((m) => m.role).lastIndexOf('user');
+    persistSession();   // 每轮结束存一次：关掉面板也翻得回来
+    markRegen();
   }
 
   function setBusyUI(b) {
@@ -693,20 +1265,197 @@ const AiPanel = (() => {
     }
   }
 
+  // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
+  // 以前关掉面板对话就没了：改到一半想翻回上一轮的说法，翻不到。
+  // 每次一轮对话结束自动存一条（localStorage，最多 30 条），标题取第一条用户发言。
+  const LS_SESS = 'myide-ai-sessions';
+  const SESS_LIMIT = 30;
+  // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
+  // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
+  function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || ''); }
+  function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
+  function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
+  function sessTitle(list) {
+    const first = (list || []).find((m) => m.role === 'user');
+    const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
+    return t.replace(/\s+/g, ' ').trim().slice(0, 40) || '（空对话）';
+  }
+  function relTime(ts) {
+    const d = Date.now() - (ts || 0);
+    if (d < 60000) return '刚刚';
+    if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前';
+    if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前';
+    if (d < 86400000 * 30) return Math.floor(d / 86400000) + ' 天前';
+    const dt = new Date(ts);
+    return (dt.getMonth() + 1) + '-' + dt.getDate();
+  }
+  function persistSession() {
+    const has = msgs.some((m) => m.role === 'user' || m.role === 'assistant');
+    if (!has) return;
+    if (!curSessionId) curSessionId = 's' + Date.now().toString(36);
+    const rest = loadSessions().filter((x) => x.id !== curSessionId);
+    rest.unshift({ id: curSessionId, ts: Date.now(), title: sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
+    saveSessions(rest);
+  }
+  function replayMsgs() {
+    msgsEl.innerHTML = '';
+    lastUserAt = null;
+    if (!msgs.length) { showWelcome(); return; }
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
+      if (m.role === 'user') {
+        const t = m._text || (typeof m.content === 'string' ? m.content : '（含图片的消息）');
+        const row = addMsg('user', t, { imgs: m._imgs || [] });
+        if (m._ui) row.dataset.mid = m._ui;
+        lastUserAt = i;
+      } else if (m.role === 'assistant') {
+        const row = addMsg('assistant', m.content || '');
+        decorateCodeBlocks(row);
+      }
+    }
+    if (lastUserAt != null) markRegen();
+    scrollBottom();
+  }
+  let histPop = null;
+  function closeHist() {
+    if (histPop && histPop.parentNode) histPop.parentNode.removeChild(histPop);
+    histPop = null;
+  }
+  function toggleHist() { if (histPop) closeHist(); else renderHist(); }
+  function renderHist() {
+    closeHist();
+    const all = loadSessions();
+    const pop = document.createElement('div');
+    pop.className = 'ai-hist-pop';
+    let html = '<div class="ai-hist-head">历史会话<span class="ai-hist-n">' + all.length + '</span></div>';
+    if (!all.length) html += '<div class="ai-hist-empty">还没有历史会话 —— 每轮对话结束会自动存一条</div>';
+    for (const se of all) {
+      html += '<div class="ai-hist-row' + (se.id === curSessionId ? ' cur' : '') + '" data-id="' + esc(se.id) + '">' +
+        '<span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span>' +
+        '<span class="ai-hist-ts">' + relTime(se.ts) + '</span>' +
+        '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button>' +
+        '<button class="ai-hist-b" data-act="del" title="删除">\u2715</button></div>';
+    }
+    pop.innerHTML = html;
+    panel.appendChild(pop);
+    histPop = pop;
+    pop.addEventListener('click', async (e) => {
+      const row = e.target.closest && e.target.closest('.ai-hist-row');
+      if (!row) return;
+      const id = row.dataset.id;
+      const act = e.target.dataset && e.target.dataset.act;
+      const all2 = loadSessions();
+      const se = all2.find((x) => x.id === id);
+      if (!se) return;
+      if (act === 'del') {
+        saveSessions(all2.filter((x) => x.id !== id));
+        if (id === curSessionId) curSessionId = null;
+        renderHist();
+        MI.toast('已删除该会话', 'ok');
+        return;
+      }
+      if (act === 'ren') {
+        const nm = await Modal.prompt('重命名会话', '会话名称：', se.title);
+        if (nm == null) return;
+        se.title = String(nm).trim().slice(0, 60) || se.title;
+        saveSessions(all2);
+        renderHist();
+        return;
+      }
+      openSession(id);
+    });
+    document.addEventListener('mousedown', function onOut(ev) {
+      if (!histPop) { document.removeEventListener('mousedown', onOut); return; }
+      if (!histPop.contains(ev.target) && ev.target.id !== 'ai-history' && !ev.target.closest('#ai-history')) {
+        closeHist();
+        document.removeEventListener('mousedown', onOut);
+      }
+    });
+  }
+  function openSession(id) {
+    const se = loadSessions().find((x) => x.id === id);
+    if (!se) { MI.toast('找不到该会话', 'err'); return; }
+    if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+    closeHist();
+    msgs = (se.msgs || []).slice();
+    usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
+    curSessionId = se.id;
+    renderUsage();
+    replayMsgs();
+    MI.toast('已载入会话：' + se.title, 'ok');
+  }
+
+  // ---------- 切换项目 ----------
+  // 会话跟着项目走：对话历史、上下文、本次对话的临时授权、项目规则缓存，
+  // 换项目一律重来（否则 AI 会把上一个项目的文件当成本项目的上下文）。
+  function onProjectChange() {
+    if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+    closeMention(); closeHist(); closeSlash(); closePermPop();
+    const cf = panel.querySelector('.ai-confirm');
+    if (cf) cf.parentNode.removeChild(cf);   // 没处理完的确认直接作废：它指的是上一个项目的文件
+    msgs = [];
+    curSessionId = null;
+    lastUserAt = null;
+    uiSeq = 0;
+    usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
+    pendingImages = [];
+    renderImages();
+    ctxFiles = [];
+    followPath = null;
+    followMuted.clear();
+    // ⚠ 原地清空，别重新赋值 —— AiPanel.sessionPerm 导出的是这个对象的引用，
+    //   赋新对象会让导出的引用永远指向旧对象（测试和设置页读到的都是过期值）
+    sessionPerm.write = false;
+    sessionPerm.run = false;
+    mentionCache = null;
+    mentionRoot = null;
+    rulesRoot = null;
+    rulesText = '';
+    rulesFile = '';
+    agentRounds = 0;
+    msgsEl.innerHTML = '';
+    renderUsage();
+    renderChips();
+    syncPermBtn();
+    loadProjectRules();
+    followActive();
+    showWelcome();
+  }
+
+  // ---------- 项目规则文件 ----------
+  // 「这个项目的文档用什么口吻、术语怎么写」这种事每次重复交代很烦。
+  // 支持 .myide/ai-rules.md（本项目专用）/ AGENTS.md / CLAUDE.md / .cursorrules，
+  // 找到第一个非空的就作为项目规则注入系统提示（Cline 的 .clinerules、Cursor 的 rules 同款）。
+  const RULE_FILES = ['.myide/ai-rules.md', 'AGENTS.md', 'CLAUDE.md', '.cursorrules'];
+  let rulesText = '';
+  let rulesFile = '';
+  let rulesRoot = null;
+  async function loadProjectRules(force) {
+    const root = (window.App && App.root) || '';
+    if (!root) { rulesText = ''; rulesFile = ''; rulesRoot = null; return ''; }
+    if (rulesRoot === root && !force) return rulesText;
+    rulesRoot = root;
+    rulesText = '';
+    rulesFile = '';
+    for (const f of RULE_FILES) {
+      const r = await window.myIDE.fs.readFile(root + '/' + f).catch(() => null);
+      if (r && !r.error && r.content && String(r.content).trim()) {
+        rulesText = String(r.content).trim().slice(0, 8000);
+        rulesFile = f;
+        break;
+      }
+    }
+    return rulesText;
+  }
+
   // ---------- 跟随当前编辑器文件 ----------
   // 为什么需要：用户在面板里说「把这份文档精简一下」，AI 并不知道「这份」是哪份 ——
   // 以前要先手动点 📎 或 @ 引用，忘了附就答非所问。现在面板始终跟着当前打开的文件走。
-  function renderFollow() {
-    const box = document.getElementById('ai-follow');
-    if (!box) return;
-    const f = ctxFiles.find((x) => x.auto);
-    box.classList.toggle('hidden', !f);
-    if (!f) return;
-    const nm = box.querySelector('.ai-follow-nm');
-    if (nm) nm.textContent = f.path.replace(/^.*[\\/]/, '');
-    box.title = f.path;
-  }
+  // 「正在看」已并入 chips（class = follow），保留这个入口名，调用点不用改
+  function renderFollow() { renderChips(); }
   async function followActive() {
+    await loadProjectRules();   // 项目规则只在换项目时真正读一次
     const tab = window.Viewer && Viewer.activeTab;
     const path = (tab && !tab.dir) ? tab.path : null;
     if (path === followPath) { renderFollow(); return; }
@@ -818,31 +1567,52 @@ const AiPanel = (() => {
   // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
   // 命令确认：多给一个「记住这类命令」的出口
   // （Cursor 是 allowlist，VS Code 是 scoped approval —— 都在解决"点十几次确认"）
-  function confirmRun(cmd, pre) {
+  function confirmRun(cmd, pre, danger) {
     return new Promise((resolve) => {
       const box = document.createElement('div');
-      box.style.cssText = 'display:flex;flex-direction:column;min-width:460px;max-width:640px';
+      box.className = 'ai-confirm';
       box.innerHTML =
-        '<div class="m-head">▶ AI 请求执行命令 <span class="x" id="cr-x">✕</span></div>' +
-        '<div class="m-body">' +
-          '<div style="white-space:pre-wrap;line-height:1.6;background:var(--bg-input);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px">' + esc(cmd) + '</div>' +
-          '<div style="margin-top:8px;font-size:12px;color:var(--text-dim)">在项目目录执行。' +
-            (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（可在 设置 → AI 助手 清除）。' : '') +
-          '</div>' +
+        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
+          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
+            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
+            : '<path d="M4.7 2.7l8 5.3-8 5.3z"/>') + '</svg>' +
+          '<span class="ai-cf-nm">' + (danger ? '危险命令，请确认' : 'AI 请求执行命令') + '</span>' +
+          (pre ? '<span class="ai-cf-stat">' + esc(pre) + '</span>' : '') +
+          '<button class="ai-cf-fold" id="cr-fold">收起</button>' +
         '</div>' +
-        '<div class="m-foot">' +
+        '<div class="ai-cf-body" id="cr-body"><div class="ai-cf-cmd">' + esc(cmd) + '</div></div>' +
+        '<div class="ai-cf-note' + (danger ? ' warn' : '') + '">' +
+          (danger
+            ? '这条命令可能是破坏性的（删除 / 重置 / 强制推送）。这一步不提供「总是允许」。'
+            : '在项目目录执行。' + (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（权限按钮或设置里可清除）。' : '')) +
+        '</div>' +
+        '<div class="ai-cf-foot">' +
+          (pre ? '<button class="ai-cf-quiet" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
           '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
-          (pre ? '<button class="tb-btn" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
-          '<button class="tb-btn m-ok" id="cr-yes">运行一次</button>' +
+          '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="cr-yes">' + (danger ? '仍然执行' : '运行一次') + '</button>' +
         '</div>';
-      Modal.show(box);
+      const prev = panel.querySelector('.ai-confirm');
+      if (prev) prev.parentNode.removeChild(prev);
+      panel.appendChild(box);
       let settled = false;
-      const finish = (v) => { if (settled) return; settled = true; Modal.hide(); resolve(v); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        if (box.parentNode) box.parentNode.removeChild(box);
+        resolve(v);
+      };
+      document.addEventListener('keydown', onKey);
       box.querySelector('#cr-no').onclick = () => finish(false);
       box.querySelector('#cr-yes').onclick = () => finish('once');
       const al = box.querySelector('#cr-always');
       if (al) al.onclick = () => finish('always');
-      box.querySelector('#cr-x').onclick = () => finish(false);
+      const fold = box.querySelector('#cr-fold');
+      fold.onclick = () => {
+        const hid = box.querySelector('#cr-body').classList.toggle('hidden');
+        fold.textContent = hid ? '展开' : '收起';
+      };
     });
   }
 
@@ -921,25 +1691,72 @@ const AiPanel = (() => {
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
   }
 
-  // ---------- 附带上下文（📎 当前文件 + @ 引用文件/文件夹，统一 chips 展示）----------
+  // ---------- 附带上下文（跟随的当前文件 + 固定项 + @ 引用，收在一条线上）----------
+  // 以前「正在看」独占一整行、chips 又换行，外加一个回形针按钮，贴着输入框堆了三层，又高又乱。
+  // 现在全收进一条横向滚动的 chips：谁在上下文里、谁是跟随/固定，一眼看全。
+  const CTX_ICON = {
+    follow: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.7 8s2.4-4.2 6.3-4.2S14.3 8 14.3 8s-2.4 4.2-6.3 4.2S1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.9"/></svg>',
+    sel: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.6h10M3 8h6.4M3 12.4h8"/></svg>',
+    tabs: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.6h3.6l1.2 1.5h6.4v6.3H2.4z"/></svg>',
+    git: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4.1" r="1.5"/><circle cx="4.6" cy="11.9" r="1.5"/><circle cx="11.4" cy="6.6" r="1.5"/><path d="M4.6 5.6v4.8M6.1 5.1h3.4c1 0 1.9.7 1.9 1.7"/></svg>',
+    clip: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 5.6h4.6a1 1 0 0 1 1 1v5.3a1 1 0 0 1-1 1H5.7a1 1 0 0 1-1-1V6.6a1 1 0 0 1 1-1z"/><path d="M6.5 5.6V4.4a1.5 1.5 0 0 1 3 0v1.2"/></svg>',
+    file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
+    dir: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.6h3.6l1.2 1.5h6.4v6.3H2.4z"/></svg>',
+  };
+  // 固定按钮用 SVG：📌 是 emoji，字体会把 24px 的胶囊顶高，各平台渲染还大小不一
+  const PIN_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="2.5" class="fill"/></svg>';
+  // chip 上只写「短到能认出来」的名字（完整路径在悬停提示与上下文明细里）
+  function chipLabel(f) {
+    if (f.auto) return f.path.replace(/^.*[\\/]/, '');
+    if (f.special === 'sel') return '当前选区';
+    if (f.special === 'tabs') return '打开的标签页';
+    if (f.special === 'git') return 'Git 变更';
+    if (f.special === 'clip') return '剪贴板';
+    if (f.isDir) return f.path.replace(/^.*[\\/]/, '') + '/';
+    return f.path.replace(/^.*[\\/]/, '');
+  }
+  function chipIcon(f) {
+    if (f.auto) return CTX_ICON.follow;
+    if (f.special) return CTX_ICON[f.special] || CTX_ICON.file;
+    return f.isDir ? CTX_ICON.dir : CTX_ICON.file;
+  }
   function renderChips() {
     const box = document.getElementById('ai-chips');
     if (!box) return;
     box.innerHTML = '';
-    const manual = ctxFiles.filter((x) => !x.auto); // 自动跟随的由「正在看」条显示
-    box.classList.toggle('hidden', !manual.length);
-    for (const f of manual) {
+    // 顺序：跟随的当前文件 → 固定过的 → 其余（固定=用户明确说「一直带着」，排前面）
+    const list = ctxFiles.filter((x) => x.auto)
+      .concat(ctxFiles.filter((x) => !x.auto).sort((x, y) => ((y.pin ? 1 : 0) - (x.pin ? 1 : 0))));
+    box.classList.toggle('hidden', !list.length);
+    for (const f of list) {
       const chip = document.createElement('span');
-      chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '');
-      chip.title = f.path + '（点击移除）';
+      chip.className = 'ai-ctx-chip' + (f.isDir ? ' dir' : '') + (f.pin ? ' pinned' : '')
+        + (f.auto ? ' follow' : '') + (f.special ? ' special' : '');
+      chip.title = (f.auto ? '正在看：' : '') + f.path
+        + (f.auto ? '（点 ✕ 不再跟随；切到别的文件会重新跟随）' : '');
+      chip.insertAdjacentHTML('beforeend', chipIcon(f));
       const nm = document.createElement('span');
-      nm.textContent = (f.isDir ? '🗂 ' : '📄 ') + f.path.replace(/^.*[\\/]/, '') + (f.isDir ? '/' : '');
+      nm.className = 'ai-ctx-nm';
+      nm.textContent = chipLabel(f);
+      chip.appendChild(nm);
+      if (!f.auto) {
+        const pin = document.createElement('span');
+        pin.className = 'ai-ctx-pin' + (f.pin ? ' on' : '');
+        pin.innerHTML = PIN_IC;
+        pin.title = f.pin ? '取消固定' : '固定（开始新对话时也保留）';
+        pin.onclick = (e) => { e.stopPropagation(); f.pin = !f.pin; renderChips(); };
+        chip.appendChild(pin);
+      }
       const x = document.createElement('span');
       x.className = 'ai-ctx-x';
       x.textContent = '✕';
-      chip.appendChild(nm);
+      x.title = f.auto ? '不再跟随这个文件' : '从上下文移除';
+      // ⚠ 只有 ✕ 才移除：以前整块可点，想看一眼就误删，还得重新 @ 一次
+      x.onclick = (e) => {
+        e.stopPropagation();
+        if (f.auto) unfollowActive(); else removeCtx(f.path);
+      };
       chip.appendChild(x);
-      chip.onclick = () => { removeCtx(f.path); };
       box.appendChild(chip);
     }
   }
@@ -974,9 +1791,90 @@ const AiPanel = (() => {
   let mentionState = null; // {start(光标处@token起点), items, sel, popup}
   let mentionCache = null; // [{name, rel, path, isDir}]（含从文件路径推导出的目录）
   let mentionRoot = null; // 缓存对应的项目根（换项目自动失效）
+  // 文件/文件夹之外，用户高频想引用的其实还有几样：我正在选的那段、我开着的那几个文件、
+  // 仓库里还没提交的改动、剪贴板。别的编辑器都把它们做成一等入口（Continue 的 context
+  // provider / Cline 的 @git @terminal），我们原来只能 @ 文件。
+  function specialMentions() {
+    const openN = (((window.Viewer && Viewer.openTabs) || []).filter((t) => t && !t.dir)).length;
+    return [
+      { special: 'sel', name: '当前选区', rel: '选区', isDir: false },
+      { special: 'tabs', name: '打开的标签页' + (openN ? '（' + openN + '）' : ''), rel: '标签页', isDir: false },
+      { special: 'git', name: 'Git 变更', rel: 'Git变更', isDir: false },
+      { special: 'clip', name: '剪贴板', rel: '剪贴板', isDir: false },
+    ];
+  }
+
+  // 把特殊来源塞进上下文（不往输入框插 @token —— 那是文件路径的写法，模型看到「@选区」只会困惑）
+  async function addSpecialCtx(kind) {
+    const CAP = 24000;
+    if (kind === 'sel') {
+      let sel = '';
+      try {
+        const cm = window.Viewer && Viewer.cm;
+        if (cm && cm.view) {
+          const s2 = cm.view.state.selection.main;
+          if (!s2.empty) sel = cm.view.state.sliceDoc(s2.from, s2.to);
+        }
+      } catch {}
+      if (!sel) { try { sel = String((window.getSelection && window.getSelection()) || ''); } catch {} }
+      sel = String(sel || '').trim();
+      if (!sel) { MI.toast('先在编辑器里选中一段文字，再引用选区', 'err'); return; }
+      addCtx({ path: '（编辑器当前选区）', content: sel.slice(0, CAP), isDir: false, special: 'sel' });
+      MI.toast('已带上当前选区（' + sel.length + ' 字）', 'ok');
+      return;
+    }
+    if (kind === 'tabs') {
+      const tabs2 = (((window.Viewer && Viewer.openTabs) || []).filter((t) => t && !t.dir));
+      if (!tabs2.length) { MI.toast('当前没有打开的文件', 'err'); return; }
+      const parts = [];
+      let total = 0;
+      for (const t of tabs2) {
+        let c = String(t.content == null ? '' : t.content);
+        if (total + c.length > 60000) c = c.slice(0, Math.max(0, 60000 - total)) + '\n…（已截断）';
+        total += c.length;
+        parts.push('（文件 ' + t.path + ' 的内容：）\n```\n' + c + '\n```');
+        if (total >= 60000) break;
+      }
+      addCtx({ path: '（打开的 ' + tabs2.length + ' 个标签页）', content: parts.join('\n\n'), isDir: true, special: 'tabs' });
+      MI.toast('已带上 ' + tabs2.length + ' 个打开的文件', 'ok');
+      return;
+    }
+    if (kind === 'git') {
+      const root = (window.App && App.root) || '';
+      if (!root) { MI.toast('没有打开的项目', 'err'); return; }
+      const st = await window.myIDE.git.status(root);
+      if (!st || st.error || !Array.isArray(st.changed) || !st.changed.length) {
+        MI.toast('工作区没有未提交的改动', 'err');
+        return;
+      }
+      const parts = ['（Git 未提交改动，分支 ' + (st.branch || '?') + '，共 ' + st.changed.length + ' 个文件）',
+        st.changed.map((c) => c.label + '  ' + c.file).join('\n')];
+      for (const c of st.changed.slice(0, 12)) {
+        const d = await window.myIDE.git.diffWorkdir(root, c.file).catch(() => null);
+        if (!d || d.error || d.binary || d.tooLarge) continue;
+        const rows = lineDiff(d.oldText || '', d.newText || '')
+          .filter((r) => r.t !== ' ')
+          .slice(0, 200)
+          .map((r) => (r.t === '+' ? '+ ' : '- ') + r.s);
+        if (rows.length) parts.push('--- ' + c.file + ' ---\n' + rows.join('\n'));
+      }
+      addCtx({ path: '（Git 未提交改动）', content: parts.join('\n\n').slice(0, 60000), isDir: true, special: 'git' });
+      MI.toast('已带上 ' + st.changed.length + ' 个改动文件', 'ok');
+      return;
+    }
+    if (kind === 'clip') {
+      const r = await window.myIDE.clip.readText().catch(() => null);
+      const txt = String((r && r.text) || '').trim();
+      if (!txt) { MI.toast('剪贴板里没有文本', 'err'); return; }
+      addCtx({ path: '（剪贴板内容）', content: txt.slice(0, CAP), isDir: false, special: 'clip' });
+      MI.toast('已带上剪贴板内容（' + txt.length + ' 字）', 'ok');
+      return;
+    }
+  }
+
   async function ensureMentionList() {
     const root = (window.App && App.root) || '';
-    if (!root) return null;
+    if (!root) return specialMentions(); // 没开项目也能引用选区 / 标签页 / 剪贴板
     if (mentionCache && mentionRoot === root) return mentionCache;
     const r = await window.myIDE.fs.listAll(root, false);
     if (!r || r.error) return null;
@@ -985,14 +1883,28 @@ const AiPanel = (() => {
       return { name: rel.replace(/^.*[\\/]/, ''), rel, path: full, isDir: false };
     });
     // 目录从文件路径推导（含全部非空目录；空目录罕见，可接受）
+    // ⚠ 早先写成 while ((p = p.replace(正则剥掉最后一段))) —— rel 里没有分隔符时
+    //   （根目录下的文件，如 package.json）replace 找不到匹配会**原样返回**，p 永远非空，
+    //   于是死循环把整个应用卡死：用户一打「@」就中招。必须显式判「还有没有分隔符」。
     const dirSet = new Set();
     for (const f of files) {
-      let p = f.rel;
-      while ((p = p.replace(/[\\/][^\\/]*$/, ''))) dirSet.add(p);
+      let rel = String(f.rel || '');
+      const SEP = String.fromCharCode(92);   // 反斜杠（Windows 路径）
+      for (;;) {
+        const i1 = rel.indexOf('/');
+        const i2 = rel.indexOf(SEP);
+        const cut = i1 < 0 ? i2 : (i2 < 0 ? i1 : Math.min(i1, i2));
+        if (cut < 0) break;                  // 没有分隔符 = 已到顶层，收工
+        rel = rel.slice(0, cut);
+        if (!rel) break;
+        dirSet.add(rel);
+      }
     }
     const dirs = [...dirSet].map((rel) => ({ name: rel.replace(/^.*[\\/]/, ''), rel, path: root + '/' + rel, isDir: true }));
     // 目录排前（先选范围再选具体文件，符合 @ 的浏览习惯）
-    mentionCache = dirs.sort((a, b) => a.rel < b.rel ? -1 : 1).concat(files.sort((a, b) => a.rel < b.rel ? -1 : 1));
+    mentionCache = specialMentions()
+      .concat(dirs.sort((a, b) => a.rel < b.rel ? -1 : 1))
+      .concat(files.sort((a, b) => a.rel < b.rel ? -1 : 1));
     mentionRoot = root;
     return mentionCache;
   }
@@ -1043,7 +1955,7 @@ const AiPanel = (() => {
     items.forEach((it, i) => {
       const row = document.createElement('div');
       row.className = 'ai-at-item' + (i === mentionState.sel ? ' sel' : '');
-      row.innerHTML = '<span class="ai-at-ic">' + (it.isDir ? '🗂' : '📄') + '</span>' +
+      row.innerHTML = '<span class="ai-at-ic">' + (it.special ? '✨' : (it.isDir ? '🗂' : '📄')) + '</span>' +
         '<span class="ai-at-name">' + esc(it.name) + (it.isDir ? '/' : '') + '</span>' +
         '<span class="ai-at-rel">' + esc(it.rel) + '</span>';
       row.onclick = () => pickMention(i);
@@ -1075,6 +1987,16 @@ const AiPanel = (() => {
     const start = mentionState.start;
     closeMention();
     if (!it) return;
+    if (it.special) {
+      // 特殊来源：把用户打出的 @token 从输入框里抹掉（它不是文件路径），再直接进上下文
+      const val0 = inputEl.value;
+      const cur0 = inputEl.selectionStart == null ? start + 1 : inputEl.selectionStart;
+      inputEl.value = val0.slice(0, start) + val0.slice(cur0);
+      inputEl.focus();
+      try { inputEl.setSelectionRange(start, start); } catch {}
+      await addSpecialCtx(it.special);
+      return;
+    }
     // 替换输入框里的 @token 为 @相对路径
     const val = inputEl.value;
     const after = val.slice(inputEl.selectionStart == null ? start + 1 : inputEl.selectionStart);
@@ -1125,25 +2047,33 @@ const AiPanel = (() => {
     const grip = document.getElementById('ai-resize');
     if (!grip || !panel) return;
     let dragging = false;
+    // 上限同时受「AIL.max」和「给编辑器留 360px」约束；窗口很窄时保底 AIL.min，
+    // 否则 max 可能小于 min（宽度会抖到 0）
+    const maxW = () => Math.max(AIL.min, Math.min(AIL.max, window.innerWidth - 360));
+    const clampW = (x) => Math.min(maxW(), Math.max(AIL.min, x));
     grip.addEventListener('mousedown', (e) => {
       dragging = true;
       e.preventDefault();
       document.body.classList.add('col-resizing');
     });
+    // 双击复位（拖歪了有个确定性的退路）
+    grip.addEventListener('dblclick', () => {
+      panel.style.width = AIL.def + 'px';
+      try { localStorage.setItem(LS_W, String(AIL.def)); } catch {}
+    });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      const w = Math.min(Math.max(window.innerWidth - e.clientX, 280), window.innerWidth * 0.6);
-      panel.style.width = w + 'px';
+      panel.style.width = clampW(window.innerWidth - e.clientX) + 'px';
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
       dragging = false;
       document.body.classList.remove('col-resizing');
-      try { localStorage.setItem(LS_W, panel.style.width); } catch {}
+      try { localStorage.setItem(LS_W, String(parseInt(panel.style.width, 10) || AIL.def)); } catch {}
     });
     try {
-      const w = localStorage.getItem(LS_W);
-      if (w && /^\d+px$/.test(w)) panel.style.width = w;
+      const w = parseInt(localStorage.getItem(LS_W) || '', 10);
+      if (w >= AIL.min && w <= AIL.max) panel.style.width = w + 'px';
     } catch {}
   }
 
@@ -1164,32 +2094,45 @@ const AiPanel = (() => {
         send();
       };
     }
-    const followBox = document.getElementById('ai-follow');
-    if (followBox) {
-      const fx = followBox.querySelector('.ai-follow-x');
-      if (fx) fx.onclick = unfollowActive;
-    }
     if (inputEl) {
+      // 输入框自动增高：从 1 行起随内容长到上限。
+      // （原来 textarea 用默认的 rows=2，高度写死两行，长文本只能在那个小框里滚，max-height 形同虚设）
+      autoGrowInput();
       // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
       inputEl.addEventListener('focus', () => { followActive(); });
-      inputEl.addEventListener('input', onInputMention);
+      inputEl.addEventListener('input', () => {
+        autoGrowInput();
+        if (onInputSlash()) return;   // 打 / 开头 = 命令补全
+        onInputMention();             // 否则看是不是 @ 引用
+      });
       inputEl.addEventListener('keydown', (e) => {
+        if (onKeydownSlash(e)) return;   // / 命令弹窗接管
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           if (!busy) send();
         }
       });
+      inputEl.addEventListener('paste', onPasteImage);
     }
+    const histBtn = document.getElementById('ai-history');
+    if (histBtn) histBtn.onclick = (e) => { e.stopPropagation(); toggleHist(); };
+    renderImages();
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
       if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+      persistSession();          // 先把当前这轮存进历史，再开新的
+      curSessionId = null;
+      lastUserAt = null;
+      pendingImages = [];
+      renderImages();
+      removeRegen();
       agentRounds = 0;
       msgs = [];
       usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
       renderUsage();
-      // 新对话保留「当前正在看的文件」（否则每开一次新对话都得重新附一次）
-      ctxFiles = ctxFiles.filter((f) => f.auto);
+      // 新对话保留「当前正在看的文件」+ 用户固定过的上下文（固定就是为了跨会话一直带着）
+      ctxFiles = ctxFiles.filter((f) => f.auto || f.pin);
       renderChips();
       renderFollow();
       msgsEl.innerHTML = '';
@@ -1198,9 +2141,17 @@ const AiPanel = (() => {
     };
     const undoBtn = document.getElementById('ai-undo');
     if (undoBtn) undoBtn.onclick = undoCheckpoint;
+    const permBtn = document.getElementById('ai-perm');
+    if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); togglePermPop(); };
+    syncPermBtn();
+    const usageEl = document.getElementById('ai-usage');
+    if (usageEl) {
+      usageEl.classList.add('clickable');
+      usageEl.title = '点击查看上下文都被什么占用了';
+      usageEl.onclick = showCtxBreakdown;
+    }
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
-    if (fileChip) fileChip.onclick = toggleCtxFile;
     initDrop(); // 拖文件进面板 = 加进上下文
     initResize();
 
@@ -1221,6 +2172,38 @@ const AiPanel = (() => {
     });
   }
 
+  // 编辑器右键菜单的动作：把选中内容作为上下文，指令填好等用户自己按回车
+  // （不直接发送：用户可能想改一下措辞再问）
+  const EDITOR_ACTIONS = {
+    explain: { needSel: true, text: '解释一下选中的这段内容：它在说什么、有哪些容易误解或需要注意的地方。用中文回答。' },
+    fix: { needSel: true, text: '修正选中这段内容里的问题（错别字、标点、语法、前后不一致），只改真正有问题的地方，改完给我看 diff。' },
+    improve: { needSel: true, text: '改进选中这段内容的表达：让它更清楚、更简洁、更连贯，保持原意和事实不变，改完给我看 diff。' },
+    doc: { needSel: false, text: '把当前打开的文件整理一下：理顺结构、统一格式、把重复的内容合并，改完先给我看 diff。' },
+  };
+  async function fromEditor(kind) {
+    const act = EDITOR_ACTIONS[kind] || EDITOR_ACTIONS.improve;
+    let sel = '';
+    try {
+      const cm = window.Viewer && Viewer.cm;
+      if (cm && cm.view) {
+        const s2 = cm.view.state.selection.main;
+        if (!s2.empty) sel = cm.view.state.sliceDoc(s2.from, s2.to);
+      }
+    } catch {}
+    if (act.needSel && !String(sel).trim()) { MI.toast('先在编辑器里选中一段文字', 'err'); return; }
+    if (window.App && App.showAi) App.showAi();
+    if (act.needSel) {
+      addCtx({ path: '（编辑器当前选区）', content: String(sel).slice(0, 24000), isDir: false, special: 'sel' });
+    } else {
+      await followActive();
+    }
+    inputEl.value = act.text;
+    autoGrowInput();
+    inputEl.focus();
+    try { inputEl.setSelectionRange(act.text.length, act.text.length); } catch {}
+    MI.toast('指令已填好，按 Enter 发送', 'ok');
+  }
+
   // 编程式提问（048-P2 AI 联动入口）：填入并发送；面板没开先打开（App.showAi）
   // busy 时静默拒绝（不打断进行中的生成）——调用方靠 toast 提示
   function ask(text) {
@@ -1234,6 +2217,6 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, onProjectChange };
 })();
 window.AiPanel = AiPanel;

@@ -6,6 +6,9 @@ const GitPanel = (() => {
   const checked = new Set(); // 勾选的待提交文件（跨刷新保留）
   let knownFiles = new Set(); // 上次刷新见过的文件（新出现的默认勾选）
   let commitMsg = ''; // 刷新时保留未发出的提交信息
+  // M4：进行中的 Git 操作与冲突清单（无本机 git 时后端返回 NORMAL / 空列表 → 天然隐藏）
+  let op = null;            // { state, target, onto, step, total }
+  let conflictFiles = [];   // [{ file, resolved }]
 
   // 面板 DOM（index.html 静态结构，init 时绑定事件）
   let filesEl = null; // #cd-files 上半文件区
@@ -18,6 +21,10 @@ const GitPanel = (() => {
     const st = await window.myIDE.git.status(root);
     if (seq !== refreshSeq) return; // 期间又发起了新刷新：本响应已过期
     state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
+    // M4：进行中的 Git 操作 + 冲突清单（并行取；失败/不支持就当没有 —— 软依赖，不阻塞主流程）
+    const [opR, cfR] = await Promise.all([gitSafe('opState', root), gitSafe('conflicts', root)]);
+    op = opR && opR.state ? opR : null;
+    conflictFiles = cfR && Array.isArray(cfR.files) ? cfR.files : [];
     syncChecked();
     render();
     updateAheadBehind();
@@ -33,12 +40,84 @@ const GitPanel = (() => {
 
   // 勾选集合与最新状态同步：消失的移除，新出现的默认勾选
   // （「忽略的文件」不参与自动勾选/移除 —— 它们是用户显式展开、显式勾的）
+  // ⚠ 「已在暂存区」的文件同样不参与自动勾选：它们在自己的只读分节里，
+  //    M1 不改动它们的暂存状态（用户终端 git add 过的东西不该被 IDE 顺手提交/清掉）。
   function syncChecked() {
     if (!state || !state.changed) return;
     const cur = new Set(state.changed.map((c) => c.file));
-    for (const f of [...checked]) if (!cur.has(f) && !ignoredAll.has(f)) checked.delete(f);
-    for (const f of cur) if (!knownFiles.has(f)) checked.add(f);
+    for (const f of [...checked]) if ((!cur.has(f) || isInIndexOnly(f)) && !ignoredAll.has(f)) checked.delete(f);
+    for (const f of cur) if (!knownFiles.has(f) && !isInIndexOnly(f)) checked.add(f);
     knownFiles = cur;
+  }
+  const isInIndexOnly = (f) => {
+    const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
+    return !!(c && c.inIndexOnly);
+  };
+
+  // ---------- 变更列表（Changelist）：命名分组 + 活动列表 + 随项目持久化 ----------
+  // 存储：<项目根>/.myide/changelists.json（与 tasks.json 同思路：随项目走、可进 git）；
+  // 写失败 / 只读盘 → 降级 localStorage（数据不能丢）。文件归属只记「非 Default 列表」，
+  // 不在任何列表里 = 属于 Default —— 工作区永远是事实来源，列表只存归属覆盖。
+  const CL_LSKEY = (p) => 'myide-changelists:' + p;
+  const CL_FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/changelists.json' : null);
+  let cls = { active: 'default', lists: [] };   // lists: [{id, name, files:[posix 相对路径]}]
+  const clPath = (f) => String(f == null ? '' : f).replace(/\\/g, '/');
+  function clNormalize(raw) {
+    const o = raw && typeof raw === 'object' ? raw : {};
+    const lists = Array.isArray(o.lists) ? o.lists
+      .filter((l) => l && l.id && l.id !== 'default' && l.name)
+      .map((l) => ({ id: String(l.id), name: String(l.name), files: Array.isArray(l.files) ? l.files.map(clPath) : [] })) : [];
+    const active = o.active && (o.active === 'default' || lists.some((l) => l.id === o.active)) ? o.active : 'default';
+    return { active, lists };
+  }
+  async function loadCls() {
+    const f = CL_FILE(root);
+    if (!f) { cls = { active: 'default', lists: [] }; return; }
+    let raw = null;
+    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    if (!raw) { try { raw = JSON.parse(localStorage.getItem(CL_LSKEY(root)) || 'null'); } catch {} }
+    cls = clNormalize(raw);
+    render();
+  }
+  function saveCls() {
+    // 锁定写入目标：排队期间用户可能已经切项目（tasks.js 踩过这个串档坑）
+    const snapRoot = root, f = CL_FILE(root), data = JSON.stringify(cls, null, 2);
+    try { localStorage.setItem(CL_LSKEY(snapRoot), data); } catch {}
+    if (!f) return;
+    (async () => {
+      try {
+        const dir = f.slice(0, f.lastIndexOf('/'));
+        await window.myIDE.fs.mkdir(dir);
+        await window.myIDE.fs.writeFile(f, data);
+      } catch {}
+    })();
+  }
+  const clNameOf = (id) => (id === 'default' ? 'Default' : ((cls.lists.find((l) => l.id === id) || {}).name || id));
+  function clListOf(file) {
+    const p = clPath(file);
+    for (const l of cls.lists) if (l.files.indexOf(p) >= 0) return l.id;
+    return 'default';
+  }
+  function clMoveTo(file, lid) {
+    const p = clPath(file);
+    for (const l of cls.lists) l.files = l.files.filter((x) => x !== p);
+    const t = cls.lists.find((l) => l.id === lid);
+    if (t && t.files.indexOf(p) < 0) t.files.push(p);
+    saveCls();
+    render();
+    MI.toast(t ? '已移入「' + t.name + '」' : '已移回 Default', 'ok');
+  }
+  function clNew(name) {
+    const id = 'cl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    cls.lists.push({ id, name: String(name).trim(), files: [] });
+    saveCls();
+    return id;
+  }
+  function clSetActive(lid) {
+    cls.active = lid;
+    saveCls();
+    render();
+    MI.toast('活动变更列表：' + clNameOf(lid), 'ok');
   }
 
   // ---------- 远程凭证（localStorage myide-git-auth-map：按主机 {host:{username,password}}，多主机互不覆盖）----------
@@ -171,14 +250,28 @@ const GitPanel = (() => {
 
   // ---------- 拉取 / 推送 ----------
   let syncing = false;
-  async function doPull() {
+  // 拉取策略（M4 收尾）：默认快进保持一键直达；分叉时的两种策略收进下拉，
+  // 不给"悄悄合并改历史"的默认行为 —— 用户点了什么就该发生什么。
+  const PULL_STRATEGIES = [
+    { key: 'ff', label: '拉取（快进，默认）', title: '只在可以快进时更新本地分支；已分叉会提示' },
+    { key: 'ff-only', label: '仅快进（分叉时报错）', title: 'git merge --ff-only FETCH_HEAD：任何分叉都拒绝' },
+    { key: 'merge', label: '拉取并合并（分叉时建合并提交）', title: 'fetch + merge：保留两条历史，出冲突进解决流程' },
+    { key: 'rebase', label: '拉取并变基（把本地提交重放上去）', title: 'fetch + rebase：历史线性，出冲突进解决流程' },
+  ];
+  async function doPull(strategy) {
     if (!root || syncing) return;
     syncing = true;
     MI.toast('拉取中…');
-    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap() });
+    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap(), strategy });
     syncing = false;
-    if (r.ok) { MI.toast('✅ 已拉取' + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
-    else MI.toast('拉取失败: ' + r.error, 'err');
+    if (!r.ok) { MI.toast('拉取失败: ' + r.error, 'err'); await refresh(); return; }
+    await refresh();
+    if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
+    if (r.conflict) MI.toast('⚠ 拉取（' + (r.strategy || '') + '）出现冲突，请在上方「解决冲突」里处理', 'err');
+    else MI.toast('✅ 已拉取' + (r.strategy && r.strategy !== 'ff' ? '（' + r.strategy + '）' : '') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+  }
+  function openPullMenu(anchor) {
+    openFloatMenu(anchor, PULL_STRATEGIES.map((s) => ({ label: s.label, title: s.title, run: () => doPull(s.key) })));
   }
   async function doPush(silent, opts) {
     if (!root || syncing) return false;
@@ -187,14 +280,23 @@ const GitPanel = (() => {
       return openPushPreview();
     }
     syncing = true;
-    const r = await window.myIDE.git.push(root, {
-      auth: getGitAuthMap(),
-      remote: opts && opts.remote,
-      force: !!(opts && opts.force),
-    });
+    let r;
+    if (opts && opts.lease) {
+      // M4 收尾：安全强推 —— --force-with-lease 以「本地记录的远程跟踪引用」为租约，
+      // 上次 fetch 之后远程又被别人推过 → 推送被拒绝。裸 --force 会悄悄覆盖别人的提交。
+      r = await window.myIDE.git.pushForceWithLease(root, (opts && opts.remote) || 'origin', state.branch);
+      if (r && r.ok) r = { ok: true, remote: (opts && opts.remote) || 'origin', lease: true };
+    } else {
+      r = await window.myIDE.git.push(root, {
+        auth: getGitAuthMap(),
+        remote: opts && opts.remote,
+        force: !!(opts && opts.force),
+      });
+    }
     syncing = false;
     if (r.ok) {
-      MI.toast('✅ 已' + (r.force ? '强制' : '') + '推送到 ' + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+      MI.toast('✅ 已' + (r.lease ? '安全强推（--force-with-lease）到 ' : r.force ? '强制推送到 ' : '推送到 ')
+        + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
       refresh();
       return true;
     }
@@ -317,10 +419,22 @@ const GitPanel = (() => {
     }
     // 标题栏分支信息（修改数/ahead-behind 由 updateAheadBehind 统一渲染）
     const br = document.getElementById('cd-branch');
-    if (br) br.textContent = '⎇ ' + state.branch;
+    if (br) {
+      // 分支名前缀用 SVG（不再用 '⎇' 字符，见 IC.branch 说明）；名字部分单独一个 span 负责省略号
+      br.innerHTML = IC.branch + '<span class="cd-br-nm"></span>';
+      const nm = br.querySelector('.cd-br-nm');
+      if (nm) nm.textContent = state.branch;
+      br.title = '当前分支 ' + state.branch + ' —— 点击切换分支 / 检出标签';
+    }
+
+    // M4：「操作进行中」条（有 merge/rebase/cherry-pick/revert 未完成时才出现）——放在最上面，
+    // 它是当前最该处理的事，比工具行更优先
+    const opBar = buildOpBar();
+    if (opBar) filesEl.appendChild(opBar);
 
     // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
     filesEl.appendChild(buildToolbar());
+    updateAuthorBtn();   // 工具行刚重建 → 作者按钮的"已覆盖"态要重新贴一次
 
     const list = document.createElement('div');
     list.id = 'commit-list';
@@ -438,15 +552,530 @@ const GitPanel = (() => {
     ignoredLoading = false;
   }
 
+  // ---------- M4：进行中的 Git 操作（merge / rebase / cherry-pick / revert）----------
+  // 状态机：NORMAL → MERGING / REBASING / CHERRY_PICKING / REVERTING → 解决完继续 → NORMAL
+  const OP_TEXT = {
+    MERGING: (o) => '正在合并 ' + (o.target || '选定分支'),
+    REBASING: (o) => '正在变基：把 ' + (o.target || '当前分支') + ' 重放到 ' + (o.onto || '目标')
+      + (o.step && o.total ? '（第 ' + o.step + '/' + o.total + ' 步）' : ''),
+    CHERRY_PICKING: (o) => '正在摘取 ' + (o.target || '某个提交'),
+    REVERTING: (o) => '正在还原 ' + (o.target || '某个提交'),
+  };
+  const curOp = () => (op && op.state && op.state !== 'NORMAL' ? op : null);
+  const unresolved = () => conflictFiles.filter((f) => !f.resolved);
+
+  // 面板顶部的「操作进行中」条：说清在做什么、还剩几个冲突、下一步能按什么
+  function buildOpBar() {
+    const o = curOp();
+    if (!o) return null;
+    const bar = document.createElement('div');
+    bar.className = 'git-op-bar';
+    const head = document.createElement('div');
+    head.className = 'git-op-head';
+    head.innerHTML = '<span class="op-warn">⚠</span><span class="op-text"></span>';
+    head.querySelector('.op-text').textContent = (OP_TEXT[o.state] || (() => 'Git 操作进行中'))(o);
+    bar.appendChild(head);
+
+    const todo = unresolved();
+    const meta = document.createElement('div');
+    meta.className = 'git-op-meta';
+    meta.textContent = todo.length
+      ? todo.length + ' 个冲突待解决' + (conflictFiles.length > todo.length ? '（已解决 ' + (conflictFiles.length - todo.length) + '）' : '')
+      : '冲突已全部解决，可以继续';
+    bar.appendChild(meta);
+
+    const acts = document.createElement('div');
+    acts.className = 'git-op-acts';
+    const mk = (label, title, fn, cls) => {
+      const b = document.createElement('button');
+      b.className = 'vt-btn git-op-btn' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      b.title = title;
+      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      acts.appendChild(b);
+      return b;
+    };
+    if (todo.length) mk('解决冲突', '打开冲突解决窗口（三方对比 + 选一侧）', openConflictDialog, 'primary');
+    const cont = mk('继续', '完成这一步（merge --continue / rebase --continue …）', doContinue, 'primary');
+    if (todo.length) { cont.disabled = true; cont.title = '还有未解决的冲突'; }
+    // 跳过只有 rebase / cherry-pick 有意义（merge、revert 无处可跳）→ 不显示比点了报"不支持"好
+    if (o.state === 'REBASING' || o.state === 'CHERRY_PICKING') {
+      mk('跳过', '放弃这一步的改动，继续下一步（rebase --skip / cherry-pick --skip）', doSkip);
+    }
+    mk('终止', '放弃整个操作，回到开始之前（--abort）', doAbort, 'danger');
+    bar.appendChild(acts);
+    return bar;
+  }
+
+  async function doContinue() {
+    const r = await gitSafe('continueOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '继续失败', 'err'); return; }
+    MI.toast('已继续并完成该操作', 'ok');
+    await refresh();
+  }
+  async function doSkip() {
+    const r = await gitSafe('skipOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '跳过失败', 'err'); return; }
+    MI.toast('已跳过这一步', 'ok');
+    await refresh();
+  }
+  async function doAbort() {
+    const yes = await Modal.confirm('终止该操作', '会放弃这次操作的所有改动，回到开始之前的状态。确定吗？');
+    if (!yes) return;
+    const r = await gitSafe('abortOp', root);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '终止失败', 'err'); return; }
+    MI.toast('已终止，回到操作之前的状态', 'ok');
+    await refresh();
+  }
+
+  async function reloadConflicts() {
+    const r = await gitSafe('conflicts', root);
+    conflictFiles = (r && Array.isArray(r.files)) ? r.files : [];
+  }
+
+  // ---------- 冲突解决窗口：左文件列表 + 右三方对比（base / ours / theirs）----------
+  async function openConflictDialog(preselect) {
+    const list = conflictFiles.slice();
+    if (!list.length) { MI.toast('当前没有冲突文件', 'ok'); return; }
+    let cur = preselect && list.some((f) => f.file === preselect) ? preselect : list[0].file;
+
+    const box = document.createElement('div');
+    box.id = 'cf-box';
+    box.innerHTML = `
+      <div class="m-head">解决冲突<span class="x" id="cfl-x">✕</span></div>
+      <div class="m-body cf-body">
+        <div class="cf-left">
+          <div class="cf-sec-title">冲突文件</div>
+          <div id="cf-files"></div>
+        </div>
+        <div class="cf-right">
+          <div class="cf-file-head" id="cf-file-head"></div>
+          <div id="cf-sides"><div class="cf-loading">加载中…</div></div>
+          <div id="cf-result-wrap"></div>
+        </div>
+      </div>
+      <div class="m-foot">
+        <span id="cf-hint" class="dim"></span>
+        <span class="grow"></span>
+        <button class="tb-btn" id="cf-refresh">重新加载</button>
+        <button class="tb-btn m-ok" id="cf-continue">继续</button>
+      </div>`;
+    Modal.show(box);
+    box.querySelector('#cfl-x').onclick = () => Modal.hide();
+    box.querySelector('#cf-refresh').onclick = () => load();
+    box.querySelector('#cf-continue').onclick = async () => { Modal.hide(); await doContinue(); };
+
+    const drawList = () => {
+      const el = box.querySelector('#cf-files');
+      el.innerHTML = '';
+      for (const f of list) {
+        const row = document.createElement('div');
+        row.className = 'cf-file' + (f.file === cur ? ' sel' : '') + (f.resolved ? ' done' : '');
+        row.innerHTML = `<span class="cf-mark">${f.resolved ? '✓' : '⚠'}</span><span class="cf-nm"></span>`;
+        row.querySelector('.cf-nm').textContent = f.file;
+        row.title = f.file;
+        row.onclick = () => { cur = f.file; drawList(); load(); };
+        el.appendChild(row);
+      }
+      box.querySelector('#cf-hint').textContent =
+        list.filter((f) => !f.resolved).length + ' 个待解决 / 共 ' + list.length;
+    };
+
+    const load = async () => {
+      box.querySelector('#cf-file-head').textContent = cur;
+      const sides = await gitSafe('conflictSides', root, cur);
+      const el = box.querySelector('#cf-sides');
+      if (!sides || !sides.ok) { el.innerHTML = '<div class="cf-loading">读取三方内容失败</div>'; return; }
+      // ⚠ rebase 时 git 的 ours/theirs 含义是**反的**（ours = 新基底，theirs = 正在重放的提交）。
+      //   文案必须跟着状态变，一律写"你的修改"会把用户坑掉。
+      const o = curOp() || { state: 'MERGING' };
+      const isRb = o.state === 'REBASING';
+      const oursLabel = isRb ? '新基底（' + (o.target || '目标') + ' 侧）' : '当前分支（HEAD）';
+      const theirsLabel = isRb ? '正在重放的提交（你的改动）' : '传入的改动（被合并进来）';
+      el.innerHTML = `
+        <div class="cf-side">
+          <div class="cf-side-head">共同祖先（base）</div>
+          <pre class="cf-pre"></pre>
+        </div>
+        <div class="cf-side">
+          <div class="cf-side-head">${esc(oursLabel)}<button class="cf-pick" data-side="ours">用这一份</button></div>
+          <pre class="cf-pre"></pre>
+        </div>
+        <div class="cf-side">
+          <div class="cf-side-head">${esc(theirsLabel)}<button class="cf-pick" data-side="theirs">用这一份</button></div>
+          <pre class="cf-pre"></pre>
+        </div>`;
+      const pres = el.querySelectorAll('.cf-pre');
+      pres[0].textContent = sides.base == null ? '（无共同祖先）' : sides.base;
+      pres[1].textContent = sides.ours == null ? '（无此版本）' : sides.ours;
+      pres[2].textContent = sides.theirs == null ? '（无此版本）' : sides.theirs;
+      el.querySelectorAll('.cf-pick').forEach((b) => {
+        b.onclick = async () => {
+          const r = await gitSafe('resolveFile', root, cur, b.dataset.side);
+          if (!r || !r.ok) { MI.toast((r && r.error) || '应用失败', 'err'); return; }
+          MI.toast('已用「' + (b.dataset.side === 'ours' ? oursLabel : theirsLabel) + '」解决 ' + cur, 'ok');
+          await afterResolve();
+        };
+      });
+
+      // ---- 可编辑的合并结果（M4 收尾）：起始 = 工作区里带冲突标记的版本，手工拼完写回 ----
+      const rp = await gitSafe('readWorktreeText', root, cur);
+      const el2 = box.querySelector('#cf-result-wrap');
+      el2.innerHTML = `
+        <div class="cf-side-head">
+          <span>合并结果（可编辑）</span>
+          <button class="cf-fill" data-side="base">填入共同祖先</button>
+          <button class="cf-fill" data-side="ours">填入${esc(oursLabel)}</button>
+          <button class="cf-fill" data-side="theirs">填入${esc(theirsLabel)}</button>
+          <button class="cf-save" id="cf-save" title="把这份内容写进文件并标记为已解决">💾 保存并标记为已解决</button>
+        </div>
+        <textarea class="cf-textarea" id="cf-result" spellcheck="false"></textarea>`;
+      const ta = el2.querySelector('#cf-result');
+      // 工作区版本（带 <<<<<<< ======= >>>>>>> 标记）是手工合并最自然的起点 —— 用户在原地改标记就行
+      ta.value = rp && rp.ok && rp.text != null ? rp.text
+        : sides.ours == null ? '' : '<<<<<<< ' + oursLabel + '\n' + sides.ours + '=======\n' + sides.theirs + '>>>>>>> ' + theirsLabel;
+      if (rp && !rp.ok) ta.value = '（读取工作区版本失败：' + (rp.error || '') + '，可从右侧填入某一侧后手工编辑）\n' + ta.value;
+      el2.querySelectorAll('.cf-fill').forEach((b) => {
+        b.onclick = () => {
+          const v = b.dataset.side === 'base' ? sides.base : b.dataset.side === 'ours' ? sides.ours : sides.theirs;
+          if (v == null) { MI.toast('这一侧没有内容', 'err'); return; }
+          ta.value = v;
+        };
+      });
+      el2.querySelector('#cf-save').onclick = async () => {
+        const r = await gitSafe('resolveCustom', root, cur, ta.value);
+        if (!r || !r.ok) { MI.toast((r && r.error) || '保存失败', 'err'); return; }
+        MI.toast('已把手工合并的结果写回 ' + cur, 'ok');
+        await afterResolve();
+      };
+    };
+
+    // 解决完一个文件后：重拉清单 → 关窗 → 刷新面板 → 重开窗口（展示新状态）
+    const afterResolve = async () => {
+      await reloadConflicts();
+      Modal.hide();
+      await refresh();
+      openConflictDialog(cur);
+      // ⚠ 再补一次"落定刷新"：`git add` 刚写完的那一瞬，紧接着的 `git diff --diff-filter=U`
+      //   偶发仍看到未合并条目（本机 index 落盘有延迟）→ 操作条会停在"还有冲突、继续禁用"，
+      //   而后面没有任何东西再刷它，用户就卡在那儿了。延迟再刷一次让状态自愈。
+      const settleRoot = root;
+      setTimeout(() => { if (root === settleRoot) refresh(); }, 1500);
+    };
+
+    drawList();
+    load();
+  }
+
+  // ---------- M5：提交前检查（Before Commit）+ Sign-off / 作者覆盖 ----------
+  // 配置按项目存 <项目根>/.myide/precommit.json（与变更列表同思路：随项目走；写失败降级 localStorage）。
+  // **不做 Reformat / Optimize imports / Analyze** —— 那需要把四个语言的 lint/format 工具链全接进来，
+  // 是另一个量级的工程；这里只做真实有效的三项 + 与 Git 钩子共用同一套执行器。
+  const PC_LSKEY = (p) => 'myide-precommit:' + p;
+  const PC_FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/precommit.json' : null);
+  const PC_DEFAULT = {
+    enabled: true, runHooks: true, checkTodo: true,
+    todoKinds: ['TODO', 'FIXME', 'XXX', 'HACK'],
+    messageRegex: '', maxSubject: 72, commands: [],
+  };
+  function pcNormalize(raw) {
+    const o = raw && typeof raw === 'object' ? raw : {};
+    return {
+      enabled: o.enabled !== false,
+      runHooks: o.runHooks !== false,
+      checkTodo: o.checkTodo !== false,
+      todoKinds: (Array.isArray(o.todoKinds) && o.todoKinds.length ? o.todoKinds : PC_DEFAULT.todoKinds).map(String),
+      messageRegex: typeof o.messageRegex === 'string' ? o.messageRegex : '',
+      maxSubject: Number(o.maxSubject) > 0 ? Number(o.maxSubject) : 0,   // 0 = 不限制
+      commands: (Array.isArray(o.commands) ? o.commands : [])
+        .filter((c) => c && String(c.cmd || '').trim())
+        .map((c) => ({ name: String(c.name || '').trim() || String(c.cmd).trim(), cmd: String(c.cmd).trim() })),
+    };
+  }
+  let preCfg = pcNormalize(null);
+  async function loadPreCfg() {
+    const f = PC_FILE(root);
+    if (!f) { preCfg = pcNormalize(null); return; }
+    let raw = null;
+    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    if (!raw) { try { raw = JSON.parse(localStorage.getItem(PC_LSKEY(root)) || 'null'); } catch {} }
+    preCfg = pcNormalize(raw);
+  }
+  function savePreCfg() {
+    const snapRoot = root, f = PC_FILE(root), data = JSON.stringify(preCfg, null, 2);
+    try { localStorage.setItem(PC_LSKEY(snapRoot), data); } catch {}
+    if (!f) return;
+    (async () => {
+      try {
+        const dir = f.slice(0, f.lastIndexOf('/'));
+        await window.myIDE.fs.mkdir(dir);
+        await window.myIDE.fs.writeFile(f, data);
+      } catch {}
+    })();
+  }
+
+  // 作者覆盖：只对「这一次提交」生效，**不写回 git config**（PyCharm 的 Author 下拉同语义）
+  let authorOverride = null;   // { name, email }
+  async function openAuthorDialog() {
+    const cur = await gitSafe('getUserConfig', root);
+    const u = (cur && cur.config) || (cur && cur.user) || cur || {};
+    const name0 = (authorOverride && authorOverride.name) || u.name || '';
+    const mail0 = (authorOverride && authorOverride.email) || u.email || '';
+    const box = document.createElement('div');
+    box.id = 'au-box';
+    box.innerHTML = `
+      <div class="m-head">本次提交的作者<span class="x" id="au-x">✕</span></div>
+      <div class="m-body">
+        <div class="pc-hint">只影响这一次提交，<b>不会改写</b>仓库的 git config。</div>
+        <label class="m-label">姓名<input id="au-name" type="text" value=""></label>
+        <label class="m-label">邮箱<input id="au-email" type="text" value=""></label>
+        <div id="au-cur" class="pc-hint"></div>
+      </div>
+      <div class="m-foot">
+        <button class="tb-btn" id="au-reset">恢复默认</button>
+        <span class="grow"></span>
+        <button class="tb-btn m-cancel" id="au-no">取消</button>
+        <button class="tb-btn m-ok" id="au-yes">确定</button>
+      </div>`;
+    Modal.show(box);
+    box.querySelector('#au-name').value = name0;
+    box.querySelector('#au-email').value = mail0;
+    box.querySelector('#au-cur').textContent = '仓库默认：' + (u.name || '(未配置)') + ' <' + (u.email || '') + '>';
+    box.querySelector('#au-x').onclick = () => Modal.hide();
+    box.querySelector('#au-no').onclick = () => Modal.hide();
+    box.querySelector('#au-reset').onclick = () => {
+      authorOverride = null;
+      Modal.hide();
+      updateAuthorBtn();
+      MI.toast('已恢复默认作者', 'ok');
+    };
+    box.querySelector('#au-yes').onclick = () => {
+      const n = box.querySelector('#au-name').value.trim();
+      const e2 = box.querySelector('#au-email').value.trim();
+      if (!n || !e2) { MI.toast('姓名与邮箱都要填', 'err'); return; }
+      if (n === u.name && e2 === u.email) authorOverride = null;   // 与默认一致就不必覆盖
+      else authorOverride = { name: n, email: e2 };
+      Modal.hide();
+      updateAuthorBtn();
+      MI.toast(authorOverride ? ('本次提交作者：' + n + ' <' + e2 + '>') : '已恢复默认作者', 'ok');
+    };
+  }
+  function updateAuthorBtn() {
+    const b = document.getElementById('commit-author');
+    if (!b) return;
+    b.classList.toggle('active', !!authorOverride);
+    b.title = authorOverride
+      ? '本次提交作者：' + authorOverride.name + ' <' + authorOverride.email + '>（点开可改 / 恢复默认）'
+      : '本次提交的作者（只影响这一次，不写回 git config）';
+  }
+
+  // 提交前配置弹窗（勾选项 + 命令列表）
+  async function openPrecheckDialog() {
+    await loadPreCfg();
+    const box = document.createElement('div');
+    box.id = 'pc-box';
+    const row = (id, label, title) => '<label class="m-check pc-row" title="' + esc(title) + '"><input type="checkbox" id="' + id + '"><span>' + esc(label) + '</span></label>';
+    box.innerHTML = `
+      <div class="m-head">提交前检查<span class="x" id="pc-x">✕</span></div>
+      <div class="m-body">
+        ${row('pc-enabled', '提交前执行检查', '总开关：关掉后提交时什么都不跑')}
+        ${row('pc-hooks', '运行 Git 钩子 pre-commit', '交给 git 自己跑（git hook run pre-commit）：退出码非 0 会中断提交')}
+        ${row('pc-todo', '扫描 TODO / FIXME（只提示，不阻断）', '只扫这次要提交的文件；命中项列出来由你决定')}
+        <label class="m-label">标记关键字（逗号分隔）<input id="pc-kinds" type="text" spellcheck="false"></label>
+        <div class="pc-two">
+          <label class="m-label">提交消息必须匹配（正则，可空）<input id="pc-regex" type="text" spellcheck="false" placeholder="如 ^(feat|fix|docs)(\\(.+\\))?: "></label>
+          <label class="m-label">主题长度上限<input id="pc-max" type="number" min="0" max="200" step="1" style="width:90px"></label>
+        </div>
+        <div class="pc-cmds-head">自定义命令（按顺序跑，前一条失败就停）<button class="tb-btn" id="pc-add">＋ 添加</button></div>
+        <div id="pc-cmds" class="pc-cmds"></div>
+        <div class="pc-hint">只做「命令 + 钩子 + TODO + 消息校验」；Reformat / 优化 import / 静态分析<b>不做</b>（需要接入完整工具链）。</div>
+      </div>
+      <div class="m-foot">
+        <span class="grow"></span>
+        <button class="tb-btn m-cancel" id="pc-no">取消</button>
+        <button class="tb-btn m-ok" id="pc-yes">保存</button>
+      </div>`;
+    Modal.show(box);
+    const q = (x) => box.querySelector(x);
+    q('#pc-enabled').checked = preCfg.enabled;
+    q('#pc-hooks').checked = preCfg.runHooks;
+    q('#pc-todo').checked = preCfg.checkTodo;
+    q('#pc-kinds').value = preCfg.todoKinds.join(', ');
+    q('#pc-regex').value = preCfg.messageRegex;
+    q('#pc-max').value = String(preCfg.maxSubject);
+    const cmdsEl = q('#pc-cmds');
+    const drawCmds = (list) => {
+      cmdsEl.innerHTML = '';
+      if (!list.length) {
+        const d = document.createElement('div');
+        d.className = 'pc-empty';
+        d.textContent = '还没有命令（例如 npm run lint）';
+        cmdsEl.appendChild(d);
+        return;
+      }
+      list.forEach((c, i) => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'pc-cmd';
+        rowEl.innerHTML = '<input class="pc-nm" placeholder="名称" spellcheck="false">'
+          + '<input class="pc-sh" placeholder="命令（在项目根目录执行）" spellcheck="false">'
+          + '<button class="vt-btn pc-del" title="删除这条">✕</button>';
+        rowEl.querySelector('.pc-nm').value = c.name || '';
+        rowEl.querySelector('.pc-sh').value = c.cmd || '';
+        rowEl.querySelector('.pc-del').onclick = () => {
+          const cur = readCmds();
+          cur.splice(i, 1);
+          drawCmds(cur);
+        };
+        cmdsEl.appendChild(rowEl);
+      });
+    };
+    const readCmds = () => [...cmdsEl.querySelectorAll('.pc-cmd')].map((r) => ({
+      name: r.querySelector('.pc-nm').value.trim(),
+      cmd: r.querySelector('.pc-sh').value.trim(),
+    })).filter((c) => c.cmd);
+    drawCmds(preCfg.commands);
+    q('#pc-add').onclick = () => {
+      const cur = readCmds();
+      cur.push({ name: '', cmd: '' });
+      drawCmds(cur);
+      const rows = cmdsEl.querySelectorAll('.pc-cmd');
+      const last = rows[rows.length - 1];
+      if (last) last.querySelector('.pc-sh').focus();
+    };
+    q('#pc-x').onclick = () => Modal.hide();
+    q('#pc-no').onclick = () => Modal.hide();
+    q('#pc-yes').onclick = () => {
+      preCfg = pcNormalize({
+        enabled: q('#pc-enabled').checked,
+        runHooks: q('#pc-hooks').checked,
+        checkTodo: q('#pc-todo').checked,
+        todoKinds: q('#pc-kinds').value.split(',').map((x) => x.trim()).filter(Boolean),
+        messageRegex: q('#pc-regex').value,   // ⚠ 不 trim：正则里的尾空格可能是规则的一部分
+        maxSubject: Number(q('#pc-max').value) || 0,
+        commands: readCmds(),
+      });
+      savePreCfg();
+      Modal.hide();
+      MI.toast('提交前检查已保存' + (preCfg.commands.length ? '（' + preCfg.commands.length + ' 条命令）' : ''), 'ok');
+    };
+  }
+
+  // 跑检查：返回 { problems（阻断，需"仍然提交"才过）, warnings（只提示） }
+  async function runPreChecks(files, message) {
+    const cfg = preCfg;
+    const problems = [], warnings = [];
+    const subject = String(message).split('\n')[0];
+    if (cfg.maxSubject > 0 && subject.length > cfg.maxSubject) {
+      problems.push({ name: '提交消息长度', ok: false, out: '主题 ' + subject.length + ' 字，超过上限 ' + cfg.maxSubject });
+    }
+    if (cfg.messageRegex) {
+      let re = null;
+      try { re = new RegExp(cfg.messageRegex); } catch (e) {
+        warnings.push({ name: '消息正则无效', ok: false, out: String((e && e.message) || e) + '\n（这条规则被跳过，改好再存一次）' });
+      }
+      if (re && !re.test(subject)) {
+        problems.push({ name: '提交消息格式', ok: false, out: '主题不匹配 /' + cfg.messageRegex + '/\n主题：' + subject });
+      }
+    }
+    if (cfg.checkTodo) {
+      const r = await gitSafe('scanTodo', root, files, cfg.todoKinds);
+      if (r && r.ok) {
+        const hits = r.hits || [];
+        warnings.push({
+          name: 'TODO 扫描', ok: true,
+          out: hits.length
+            ? hits.length + ' 处命中（只提示，不阻断）：\n' + hits.slice(0, 40).map((h) => h.file + ':' + h.line + '  ' + h.text).join('\n') + (hits.length > 40 ? '\n…' : '')
+            : '没有 ' + cfg.todoKinds.join(' / ') + ' 命中',
+        });
+      } else if (r && r.error) warnings.push({ name: 'TODO 扫描', ok: false, out: r.error });
+    }
+    if (cfg.runHooks || cfg.commands.length) {
+      const r = await gitSafe('precommitRun', root, { runHooks: cfg.runHooks, commands: cfg.commands });
+      if (r && Array.isArray(r.results)) {
+        for (const s of r.results) {
+          const item = { name: s.name, ok: !!s.ok, skipped: !!s.skipped, out: s.out || '' };
+          if (s.ok) warnings.push(item); else problems.push(item);
+        }
+      } else if (r && r.error) {
+        problems.push({ name: '提交前命令', ok: false, out: r.error });
+      }
+    }
+    return { problems, warnings };
+  }
+
+  // 结果面板：有阻断项时给「仍然提交」（PyCharm 也允许带警告提交）
+  function showPreCheckResult(r) {
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.id = 'pcr-box';
+      const item = (s) => '<div class="pcr-item ' + (s.ok ? 'ok' : 'bad') + '">'
+        + '<div class="pcr-head"><span class="pcr-mark">' + (s.skipped ? '·' : s.ok ? '✓' : '✗') + '</span>'
+        + '<span class="pcr-nm"></span></div>'
+        + '<pre class="pcr-out"></pre></div>';
+      box.innerHTML = `
+        <div class="m-head">提交前检查<span class="x" id="pcr-x">✕</span></div>
+        <div class="m-body">
+          <div id="pcr-sum" class="pcr-sum"></div>
+          <div id="pcr-list"></div>
+        </div>
+        <div class="m-foot">
+          <span class="grow"></span>
+          <button class="tb-btn m-cancel" id="pcr-no">取消提交</button>
+          <button class="tb-btn m-ok" id="pcr-yes">仍然提交</button>
+        </div>`;
+      Modal.show(box);
+      const list = box.querySelector('#pcr-list');
+      const all = [...(r.problems || []), ...(r.warnings || [])];
+      for (const s of all) {
+        const d = document.createElement('div');
+        d.innerHTML = item(s);
+        d.querySelector('.pcr-nm').textContent = s.name;
+        d.querySelector('.pcr-out').textContent = s.out || '';
+        list.appendChild(d);
+      }
+      const bad = (r.problems || []).length;
+      box.querySelector('#pcr-sum').textContent = bad
+        ? bad + ' 项没通过 —— 可以修完再来，也可以「仍然提交」'
+        : '全部通过' + ((r.warnings || []).length ? '（' + r.warnings.length + ' 条提示）' : '');
+      const done = (v) => {
+        Modal.hide();
+        document.removeEventListener('keydown', onKey);
+        resolve(v);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') done(false); };
+      document.addEventListener('keydown', onKey);
+      box.querySelector('#pcr-x').onclick = () => done(false);
+      box.querySelector('#pcr-no').onclick = () => done(false);
+      box.querySelector('#pcr-yes').onclick = () => done(true);
+    });
+  }
+
+  // Sign-off：追加到消息末尾（已有就不重复），用 getGitAuthMap 之外的 git config（与作者覆盖一致）
+  async function appendSignoff(text) {
+    // 用与本次提交相同的作者信息（PyCharm 的签名跟作者走）
+    let name = '', email = '';
+    if (authorOverride) { name = authorOverride.name; email = authorOverride.email; }
+    else {
+      const u = await gitSafe('getUserConfig', root);
+      const cfg = (u && (u.config || u.user)) || u || {};
+      name = cfg.name || ''; email = cfg.email || '';
+    }
+    if (!name || !email) return text;
+    const line = 'Signed-off-by: ' + name + ' <' + email + '>';
+    if (text.split('\n').some((l) => l.trim() === line)) return text;   // 重复勾选不加第二遍
+    return text.replace(/\s+$/, '') + '\n\n' + line;
+  }
+
   // ---------- 工具行（图标按钮：刷新 / 回滚 / 差异 / 提交 / 预览 ｜ 展开全部 / 收起全部 / 分组方式）----------
   function buildToolbar() {
     const bar = document.createElement('div');
     bar.className = 'git-cp-bar';
-    const mk = (svg, title, fn) => {
+    const mk = (svg, title, fn, id) => {
       const b = document.createElement('button');
       b.className = 'vt-btn';
       b.innerHTML = svg;
       b.title = title;
+      if (id) b.id = id;   // 从标题行挪过来的按钮保留原 id（dom 测试 / 快捷键按 id 找）
       b.onclick = fn;
       bar.appendChild(b);
       return b;
@@ -455,7 +1084,10 @@ const GitPanel = (() => {
     const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
     const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
     const com = mk(IC.commit, '提交勾选的文件 (Ctrl+Enter)', () => doCommit(false));
-    const prev = mk(IC.eye, '预览：在面板内嵌显示选中文件的 diff（再点关闭）', () => togglePreview());
+    const prev = mk(IC.eye, previewOn
+      ? '内嵌预览：开 —— 选中文件的 diff 显示在下面这个小框里。点一下关掉：关掉后点文件是在编辑区打开差异（面板窄，编辑区看得全）'
+      : '内嵌预览：关 —— 点文件是在编辑区打开差异。点一下改成在面板内嵌显示（PyCharm 提交窗口的预览开关）',
+      () => togglePreview());
     if (previewOn) prev.classList.add('active');
     const sep = document.createElement('span');
     sep.className = 'tb-sep';
@@ -463,13 +1095,25 @@ const GitPanel = (() => {
     bar.appendChild(sep);
     mk(IC.expandAll, '展开全部（目录与分节）', () => setAllCollapsed(false));
     mk(IC.collapseAll, '收起全部（目录与分节）', () => setAllCollapsed(true));
-    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）', () => {
-      groupByDir = !groupByDir;
-      saveUiPrefs();
-      render();
-    });
+    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）',
+      () => GitPanel.toggleGroupByDir());
     if (groupByDir) grp.classList.add('active');
-    barBtns = { roll, dif, com, prev, grp };
+    // 仓库级操作（搁置 / 远程 / 日志）—— 原在标题行右侧挤着，见 IC 里那段说明。
+    // ⚠ 追加在**最后**：dom 测试与自检步骤按索引取工具行按钮（[4]=预览 [6][7]=展开/分组），
+    //   插在中间会把这些索引全打乱。
+    const sep2 = document.createElement('span');
+    sep2.className = 'tb-sep';
+    sep2.setAttribute('aria-hidden', 'true');
+    bar.appendChild(sep2);
+    mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve');
+    mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote');
+    mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
+    // M5：提交前检查 / 本次作者。本来放在提交输入框上面那行，但 340px 侧栏里会把
+    // 「修正上次提交 (Amend)」压成省略号（截断比多两个图标难看得多）→ 挪进工具行末尾。
+    // ⚠ 仍按 id 取，dom 测试与自检按 id 点击不受影响。
+    mk(IC.check, '提交前检查：自定义命令 / Git 钩子 / TODO 扫描 / 消息校验', () => openPrecheckDialog(), 'commit-precheck');
+    const au = mk(IC.user, '本次提交的作者（只影响这一次，不写回 git config）', () => openAuthorDialog(), 'commit-author');
+    barBtns = { roll, dif, com, prev, grp, au };
     return bar;
   }
 
@@ -477,27 +1121,71 @@ const GitPanel = (() => {
   function renderSection(sec) {
     const wrap = document.createElement('div');
     const head = document.createElement('div');
-    head.className = 'git-sec-title';
+    head.className = 'git-sec-title' + (sec.readonly ? ' ro' : '');
     const caret = document.createElement('span');
     caret.className = 'caret';
     caret.textContent = secCollapsed[sec.key] ? '▸' : '▾';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.title = '勾选 / 取消「' + sec.title + '」下的全部文件';
     const label = document.createElement('span');
     label.className = 'sec-name';
     label.textContent = sec.title + ' ' + sec.items.length + ' 个文件';
     head.appendChild(caret);
-    head.appendChild(cb);
+    // 只读分节（「已暂存」）：没有复选框 —— 里面的内容是 index 里已有的，M1 不替用户增删
+    if (sec.readonly) {
+      const ro = document.createElement('span');
+      ro.className = 'sec-ro';
+      ro.textContent = '只读';
+      ro.title = sec.roTip || '这些内容已经在 Git 暂存区（index）里。提交本次勾选时它们原样保留，不会被 unstage。';
+      head.appendChild(ro);
+    } else {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.title = '勾选 / 取消「' + sec.title + '」下的全部文件';
+      head.appendChild(cb);
+      const files = sec.items.map((c) => c.file);
+      registerCheckNode(cb, files);
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => setCheckedFiles(files, cb.checked);
+      head.dataset.cb = '1';
+    }
     head.appendChild(label);
-    head.title = '点击标题收起 / 展开此节';
+    if (sec.note) {
+      const nt = document.createElement('span');
+      nt.className = 'sec-note';
+      nt.textContent = sec.note;
+      head.appendChild(nt);
+    }
+    head.title = sec.readonly ? label.title : '点击标题收起 / 展开此节';
+    // 非活动变更列表的分节头：右键 = 设为活动列表 / 整节移回 Default
+    if (sec.cl) {
+      head.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = document.getElementById('ctx-menu');
+        menu.innerHTML = '';
+        const mk = (label, fn, danger) => {
+          const d = document.createElement('div');
+          d.className = 'ctx-item' + (danger ? ' danger' : '');
+          d.textContent = label;
+          d.onclick = () => { menu.classList.add('hidden'); fn(); };
+          menu.appendChild(d);
+        };
+        mk('✓ 设为活动列表', () => clSetActive(sec.cl));
+        mk('↩ 全部移回 Default', () => {
+          const t = cls.lists.find((l) => l.id === sec.cl);
+          if (t) { const ps = sec.items.map((c) => clPath(c.file)); t.files = t.files.filter((x) => ps.indexOf(x) < 0); }
+          saveCls();
+          render();
+          MI.toast('已移回 Default', 'ok');
+        });
+        menu.classList.remove('hidden');
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+        menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+      };
+    }
 
     const body = document.createElement('div');
     body.className = 'git-sec-body';
-    const files = sec.items.map((c) => c.file);
-    registerCheckNode(cb, files);
-    cb.onclick = (e) => e.stopPropagation();
-    cb.onchange = () => setCheckedFiles(files, cb.checked);
 
     const toggle = () => {
       const now = body.style.display === 'none';
@@ -506,19 +1194,21 @@ const GitPanel = (() => {
       secCollapsed[sec.key] = !now;
       saveSecCollapse(secCollapsed);
     };
-    head.onclick = (e) => { if (e.target === cb) return; toggle(); };
+    head.onclick = (e) => { if (e.target.type === 'checkbox') return; toggle(); };
     if (secCollapsed[sec.key]) body.style.display = 'none';
-    body.appendChild(groupByDir ? renderDirTree(buildDirTree(sec.items), 1, sec.key) : buildFlatList(sec.items));
+    body.appendChild(groupByDir
+      ? renderDirTree(buildDirTree(sec.items), 1, sec.key, !!sec.readonly)
+      : buildFlatList(sec.items, !!sec.readonly));
     wrap.appendChild(head);
     wrap.appendChild(body);
     return wrap;
   }
 
   // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前
-  function buildFlatList(items) {
+  function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
     return box;
   }
 
@@ -549,17 +1239,31 @@ const GitPanel = (() => {
     render();
   }
 
-  // 变更文件分节：已跟踪（更改）/ 未进行版本管理的文件（PyCharm 同名文案），节内按顶层目录分组
+  // 变更文件分节：更改（= 活动变更列表）/ 其它变更列表（只读）/ 未跟踪 / 已暂存（只读）
+  // M1 的语义：*可勾选的只有「活动列表里的文件」*；「已暂存」与「其它列表」都只展示。
   function fileSections() {
-    const sections = [
-      { key: 'changes', title: '更改', items: [] },
-      { key: 'untracked', title: '未进行版本管理的文件', items: [] },
-    ];
+    const changes = [], untracked = [], staged = [], other = new Map();
     for (const c of state.changed) {
-      if (c.status === 'added') sections[1].items.push(c);
-      else sections[0].items.push(c);
+      if (c.inIndexOnly) { staged.push(c); continue; }   // 整份已在 index → 只读展示，本次提交不带它
+      const lid = clListOf(c.file);
+      if (lid !== cls.active) {
+        if (!other.has(lid)) other.set(lid, []);
+        other.get(lid).push(c);
+        continue;
+      }
+      if (c.status === 'added') untracked.push(c);
+      else changes.push(c);
     }
-    return sections.filter((s) => s.items.length);
+    const out = [];
+    out.push({ key: 'changes', title: '更改', items: changes,
+      note: cls.active !== 'default' ? '列表：' + clNameOf(cls.active) : '' });
+    for (const [lid, items] of other) {
+      out.push({ key: 'cl:' + lid, title: clNameOf(lid), items, readonly: true, cl: lid, note: '非活动列表',
+        roTip: '这个变更列表不是活动列表，本次提交不包含它 —— 右键本节可「设为活动列表」' });
+    }
+    out.push({ key: 'untracked', title: '未进行版本管理的文件', items: untracked });
+    out.push({ key: 'staged', title: '已暂存（外部）', items: staged, readonly: true, note: '保持不动' });
+    return out.filter((s) => s.items.length);
   }
 
   // 大节（变更 / 未版本控制的文件）收起状态：用户偏好，全局持久化
@@ -584,9 +1288,11 @@ const GitPanel = (() => {
   let dirAllCollapsed = !!uiPrefs.dirAllCollapsed;  // 「收起全部」的兜底（未被单独点过的目录跟随它）
   function saveUiPrefs() {
     try {
-      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed }));
+      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed, signoff }));
     } catch {}
   }
+  // M5：Sign-off（DCO）—— 与视图偏好同一个键，但它影响提交内容，所以单独取名
+  let signoff = !!uiPrefs.signoff;
 
   // ---------- 提交消息历史（全局，PyCharm「Recent Messages」语义）+ 草稿（按项目）----------
   const MSG_HIST_KEY = 'myide-commit-msgs';
@@ -619,6 +1325,7 @@ const GitPanel = (() => {
   let checkNodes = [];
   let barBtns = null;      // 工具行按钮引用（勾选变化时联动禁用态）
   let previewSeq = 0;      // 预览令牌（防晚到的 diff 覆盖新预览）
+  let previewCur = null;   // 当前正在面板内预览的变更项（「在编辑区打开」要复用同一个文件）
   let ignoredFiles = null; // 「忽略的文件」节点数据（null = 还没加载过）
   let ignoredTruncated = false; // 遍历是否被上限截断
   let ignoredAll = new Set(); // 忽略文件路径集合（勾选集合的成员判定要用）
@@ -634,6 +1341,18 @@ const GitPanel = (() => {
     expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>',
     collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>',
     group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
+    // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
+    // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
+    // 移到工具行：它们本来就是"仓库级操作"，和刷新/回滚/差异同层。
+    shelve: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="3" rx="1"/><path d="M3.6 6.4v5.6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V6.4M6.6 9h2.8"/></svg>',
+    remote: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 9.6a2.6 2.6 0 0 0 3.9.3l1.9-1.9a2.6 2.6 0 0 0-3.7-3.7l-1.1 1.1"/><path d="M9.6 6.4a2.6 2.6 0 0 0-3.9-.3L3.8 8a2.6 2.6 0 0 0 3.7 3.7l1.1-1.1"/></svg>',
+    log: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg>',
+    // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
+    // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
+    branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
+    // M5：提交前检查 = 对勾；本次作者 = 人像
+    check: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg>',
+    user: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c0-2.6 2.1-4.2 4.8-4.2s4.8 1.6 4.8 4.2"/></svg>',
   };
 
   // 文件路径 → 目录树（PyCharm 提交窗口式嵌套）
@@ -652,7 +1371,7 @@ const GitPanel = (() => {
   }
 
   // 递归渲染目录树：目录行（三态复选框 + 名称 + 计数）+ 文件行，按深度缩进
-  function renderDirTree(node, depth, secKey) {
+  function renderDirTree(node, depth, secKey, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
     const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
@@ -665,8 +1384,6 @@ const GitPanel = (() => {
       gTitle.style.paddingLeft = (8 + depth * 14) + 'px';
       const caret = document.createElement('span');
       caret.className = 'caret';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
       const nm = document.createElement('span');
       nm.className = 'g-name';
       nm.textContent = name;
@@ -674,23 +1391,41 @@ const GitPanel = (() => {
       ct.className = 'g-count';
       ct.textContent = count + ' 个文件';
       gTitle.appendChild(caret);
-      gTitle.appendChild(cb);
+      // 只读分节的目录行同样不给复选框
+      let cb = null;
+      if (ro) {
+        const lk = document.createElement('span');
+        lk.className = 'cf-lock';
+        lk.textContent = '·';
+        gTitle.appendChild(lk);
+      } else {
+        cb = document.createElement('input');
+        cb.type = 'checkbox';
+        gTitle.appendChild(cb);
+      }
+      // 空占位：对齐文件行的徽章列，让"同层目录名 / 文件名"从同一个 x 起
+      const bsp = document.createElement('span');
+      bsp.className = 'badge-spacer';
+      bsp.setAttribute('aria-hidden', 'true');
+      gTitle.appendChild(bsp);
       gTitle.appendChild(nm);
       gTitle.appendChild(ct);
       gTitle.title = '点击收起 / 展开 ' + name;
 
-      const gBody = renderDirTree(child, depth + 1, secKey);
+      const gBody = renderDirTree(child, depth + 1, secKey, ro);
       const files = collectFiles(child);
-      registerCheckNode(cb, files);
-      cb.title = '勾选 / 取消 ' + name + ' 下的全部文件（' + files.length + '）';
-      cb.onclick = (e) => e.stopPropagation();
-      cb.onchange = () => setCheckedFiles(files, cb.checked);
+      if (cb) {
+        registerCheckNode(cb, files);
+        cb.title = '勾选 / 取消 ' + name + ' 下的全部文件（' + files.length + '）';
+        cb.onclick = (e) => e.stopPropagation();
+        cb.onchange = () => setCheckedFiles(files, cb.checked);
+      }
 
       const collapsed = dirCollapsed[pathKey] !== undefined ? !!dirCollapsed[pathKey] : dirAllCollapsed;
       caret.textContent = collapsed ? '▸' : '▾';
       if (collapsed) gBody.style.display = 'none';
       gTitle.onclick = (e) => {
-        if (e.target === cb) return;
+        if (cb && e.target === cb) return;
         const col = gBody.style.display === 'none';
         gBody.style.display = col ? '' : 'none';
         caret.textContent = col ? '▾' : '▸';
@@ -701,7 +1436,7 @@ const GitPanel = (() => {
       box.appendChild(gBody);
     }
     for (const c of node.files.sort((a, b) => a.file.localeCompare(b.file))) {
-      box.appendChild(fileRow(c, depth));
+      box.appendChild(fileRow(c, depth, false, ro));
     }
     return box;
   }
@@ -720,11 +1455,26 @@ const GitPanel = (() => {
   }
 
   // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
-  function fileRow(c, depth = 0, flat = false) {
+  // ro=true（只读分节，如「已暂存」）：不给勾选框、不给回滚按钮 —— 只展示、不动作
+  // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
+  //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
+  function flatNeedsDirCol() {
+    const all = (state && state.changed) || [];
+    return all.some((x) => /[\\/]/.test(x.file));
+  }
+
+  // ⚠ 缩进的铁律：**只有 depth 决定左边距**（目录行与文件行用同一个公式），
+  //   列结构靠固定宽度的占位元素对齐：
+  //     目录行 = [缩进][caret 10][gap][复选框 13][gap][空占位 22][gap][名字]…
+  //     文件行 = [缩进][空占位 10][gap][复选框 13][gap][徽章 22][gap][名字]
+  //   这样"同层的目录名与文件名对齐、子级正好比父级多一级"。
+  //   以前文件行少一个 caret 占位、又没有徽章占位，结果**子文件的复选框和父目录的复选框在同一列**，
+  //   层级完全看不出来（用户截图："文件和文件夹缩进一样"）。
+  function fileRow(c, depth = 0, flat = false, ro = false) {
     const f = document.createElement('div');
-    f.className = 'git-file';
+    f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
-    f.style.paddingLeft = (10 + depth * 14) + 'px';
+    f.style.paddingLeft = (8 + depth * 14) + 'px';
     const parts = c.file.split(/[\\/]/);
     const base = parts.pop();
     const parent = parts.join('/');
@@ -735,13 +1485,21 @@ const GitPanel = (() => {
     const letter = isIgnoredRow ? '?' : (isUntracked ? '?' : (LETTER[c.status] || 'M'));
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
-    f.innerHTML = `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>` +
+    // caret 占位：平铺视图也要（否则同一层级的目录名与文件名差一个 caret 列宽，看着就是没对齐）
+    // ⚠ 平铺视图里"父目录列"要么全有、要么全无：顶层文件不画这一列的话，它的名字会跳到左边
+    //   （比别的行少 78px）—— 那就又变成"参差不齐"了。是否保留该列由整份列表统一决定。
+    const showDir = flat && flatNeedsDirCol();
+    f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
+      (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
+                      : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
-      (flat && parent ? `<span class="dir" title="${esc(parent)}">${esc(parent)}/</span>` : '') +
+      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(parent) + '/' : ''}</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
-      (isIgnoredRow ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
-    f.title = c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
-      ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
+      (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
+    f.title = ro
+      ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
+      : c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
+        ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
       e.preventDefault();
@@ -768,21 +1526,24 @@ const GitPanel = (() => {
         if (root) { MI.copyText(root + (root.includes('\\') ? '\\' : '/') + c.file); MI.toast('已复制路径', 'ok'); }
       });
       mk('🕘 显示历史', () => { if (window.GitLog && GitLog.showFileHistory) GitLog.showFileHistory(root + (root.includes('\\') ? '\\' : '/') + c.file); });
+      if (!isIgnoredRow && !ro) mk('📁 移入变更列表…（当前：' + clNameOf(clListOf(c.file)) + '）', () => openChangelistDialog(c.file));
       if (isIgnoredRow) {
         mk('✅ 不再忽略（从 .gitignore 移除）', async () => {
           const r = await gitSafe('removeFromGitignore', root, c.file);
           if (r.ok) { MI.toast('已从 .gitignore 移除 ' + c.file, 'ok'); invalidateIgnored(); refresh(); }
           else MI.toast('移除失败: ' + r.error, 'err');
         });
-      } else {
+      } else if (!ro) {
         mk('🚫 添加到 .gitignore', async () => {
           const r = await gitSafe('addToGitignore', root, c.file);
           if (r.ok) { MI.toast(r.skipped ? '已在 .gitignore 中' : '已添加 ' + r.pattern + ' 到 .gitignore', 'ok'); invalidateIgnored(); refresh(); }
           else MI.toast('添加失败: ' + r.error, 'err');
         });
       }
-      if (!isIgnoredRow) mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
-      if (!isIgnoredRow) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
+      // ⚠ 只读分节（已暂存 / 非活动列表）不提供会改动 index 或工作区的操作：
+      //    M1 不替用户处理暂存区，回滚/搁置/忽略放在这里会和 index 状态打架。
+      if (!isIgnoredRow && !ro) mk('🗄 搁置此更改（Shelve）', () => openShelveDialog(c.file));
+      if (!isIgnoredRow && !ro) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
         const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
         const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
         if (!yes) return;
@@ -813,7 +1574,8 @@ const GitPanel = (() => {
       cancelDiff(); // 取消在途 diff，防止晚到的渲染覆盖刚打开的文件
       if (root) Viewer.openFile(root + (root.includes('\\') ? '\\' : '/') + c.file);
     };
-    f.querySelector('.cf-check').onchange = (e) => {
+    const cbEl = f.querySelector('.cf-check');   // 只读行没有勾选框
+    if (cbEl) cbEl.onchange = (e) => {
       if (e.target.checked) checked.add(c.file);
       else checked.delete(c.file);
       updateCheckUI();
@@ -832,7 +1594,7 @@ const GitPanel = (() => {
   }
 
   // ---------- 提交 ----------
-  async function doCommit(pushAfter, pushOpts) {
+  async function doCommit(pushAfter, pushOpts, opts) {
     if (!root || !state || !state.isRepo) return;
     const files = [...checked];
     if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
@@ -841,9 +1603,21 @@ const GitPanel = (() => {
     if (!text) { MI.toast('请填写提交消息', 'err'); focusMessage(); return; }
     const amendEl = document.getElementById('commit-amend');
     const amend = !!(amendEl && amendEl.checked);
+    // M5：提交前检查。**有阻断项才打断**（弹结果面板）；只有提示时不拦，避免每次提交都点一次弹窗
+    if (!(opts && opts.skipChecks) && preCfg.enabled) {
+      const pre = await runPreChecks(files, text);
+      if (pre.problems.length) {
+        const go = await showPreCheckResult(pre);
+        if (!go) { MI.toast('已取消提交（提交前检查没过）', 'err'); return; }
+      }
+    }
+    // Sign-off 在这里追加、**不写进输入框**（PyCharm 同语义：避免重复追加、也不污染草稿/历史）
+    const finalMsg = signoff ? await appendSignoff(text) : text;
     const btn = document.getElementById('cm-ok');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
-    const r = await window.myIDE.git.commit(root, { message: text, files, amend });
+    const r = await window.myIDE.git.commit(root, {
+      message: finalMsg, files, amend, author: authorOverride || undefined,
+    });
     if (btn) { btn.disabled = !checked.size; btn.textContent = '提交 (I)'; }
     if (r.ok) {
       pushMsgHistory(text);            // 提交消息进历史（🕘 下拉）
@@ -927,11 +1701,16 @@ const GitPanel = (() => {
     if (!files.length) { MI.toast('勾选的只有被忽略的文件', 'err'); return; }
     const results = [];
     for (const f of files) {
-      const r = await window.myIDE.git.diffWorkdir(root, f);
+      const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
+      // M3：按双区取差异（「已暂存」的文件看暂存区那一侧，其余看未暂存那一侧）
+      const r = c && c.inIndexOnly
+        ? await window.myIDE.git.diffStaged(root, f)
+        : await window.myIDE.git.diffUnstaged(root, f);
       if (r && !r.error && !r.unchanged) results.push(r);
     }
     if (!results.length) { MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
-    renderDiffView(results, `选中 ${results.length} 个文件 · 工作区 vs HEAD`);
+    renderDiffView(results, `选中 ${results.length} 个文件 · 未暂存 / 已暂存`,
+      { sideOf: (f) => diffSideOf(state && state.changed ? state.changed.find((x) => x.file === f) : null), onHunk: hunkAction });
   }
 
   // ---------- 搁置（Shelve）弹窗：上=搁置当前更改（名称+文件勾选），下=已搁置列表（恢复/删除） ----------
@@ -1036,11 +1815,61 @@ const GitPanel = (() => {
     }
   }
 
+  // ---------- 「移入变更列表」弹窗（M1：命名分组 + 活动列表）----------
+  function openChangelistDialog(file) {
+    if (!root) return;
+    const cur = clListOf(file);
+    const box = document.createElement('div');
+    box.id = 'cl-box';
+    Modal.show(box);
+    const all = [{ id: 'default', name: 'Default' }].concat(cls.lists.map((l) => ({ id: l.id, name: l.name })));
+    box.innerHTML = `
+      <div class="m-head">移入变更列表 <span class="x" id="cl-x">✕</span></div>
+      <div class="m-body">
+        <div class="cl-file" title="${esc(file)}">${esc(file)}</div>
+        <div class="cl-cur">当前：<b>${esc(clNameOf(cur))}</b> · 活动列表：<b>${esc(clNameOf(cls.active))}</b></div>
+        <div id="cl-list"></div>
+        <div class="br-new" style="margin-top:10px">
+          <input id="cl-new-input" type="text" placeholder="新建变更列表名…" spellcheck="false">
+          <button class="tb-btn" id="cl-new-btn">＋ 新建并移入</button>
+        </div>
+        <div class="cl-tip">活动列表里的文件才会出现在「更改」里、可勾选提交；其它列表只展示、不参与本次提交。<br>
+          列表归属存在项目里的 <code>.myide/changelists.json</code>（不进 Git 历史）。</div>
+      </div>`;
+    box.querySelector('#cl-x').onclick = () => Modal.hide();
+    const listBox = box.querySelector('#cl-list');
+    for (const l of all) {
+      const row = document.createElement('div');
+      row.className = 'cl-item' + (l.id === cur ? ' cur' : '') + (l.id === cls.active ? ' active' : '');
+      row.innerHTML = `<span class="cl-nm">${esc(l.name)}</span>` +
+        (l.id === cls.active ? '<span class="cl-badge">活动</span>' : '') +
+        (l.id === cur ? '<span class="cl-badge cur-badge">当前</span>' : '') +
+        `<button class="tb-btn cl-set" title="把「${esc(l.name)}」设为活动列表">设为活动</button>` +
+        `<button class="tb-btn cl-move" title="把此文件移入「${esc(l.name)}」">移入</button>`;
+      row.querySelector('.cl-move').onclick = () => { Modal.hide(); clMoveTo(file, l.id); };
+      row.querySelector('.cl-set').onclick = () => { clSetActive(l.id); Modal.hide(); };
+      listBox.appendChild(row);
+    }
+    const ni = box.querySelector('#cl-new-input');
+    box.querySelector('#cl-new-btn').onclick = () => {
+      const name = ni.value.trim();
+      if (!name) { MI.toast('请输入列表名', 'err'); return; }
+      const id = clNew(name);
+      Modal.hide();
+      clMoveTo(file, id);
+    };
+    ni.addEventListener('keydown', (e) => { if (e.key === 'Enter') box.querySelector('#cl-new-btn').click(); });
+    setTimeout(() => { try { ni.focus(); } catch {} }, 0);
+  }
+
   // ---------- 分支切换弹窗 ----------
   async function openBranchDialog() {
     if (!root) return;
     const r = await window.myIDE.git.branches(root);
     if (r.error) { MI.toast(r.error, 'err'); return; }
+    // merge / rebase / 删除 / 改名 都要本机 git（isomorphic 没有）→ 没有就少给几项，而不是点了报错
+    const bi = await gitSafe('backendInfo', false);
+    const canOps = !!(bi && bi.caps && bi.caps.merge && bi.caps.rebase);
     const afterSwitch = () => { if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); };
     const box = document.createElement('div');
     box.id = 'br-box';
@@ -1053,6 +1882,7 @@ const GitPanel = (() => {
           <button class="tb-btn" id="br-new-btn">＋ 新建</button>
         </div>
         <div id="br-list" style="max-height:240px;overflow:auto"></div>
+        <div id="br-remotes" style="border-top:1px solid var(--border-mid);margin-top:8px;padding-top:8px;max-height:180px;overflow:auto"></div>
         <div id="br-tags" style="border-top:1px solid var(--border-mid);margin-top:8px;padding-top:8px;max-height:180px;overflow:auto"></div>
       </div>`;
     document.getElementById('br-x').onclick = () => Modal.hide();
@@ -1109,6 +1939,83 @@ const GitPanel = (() => {
         }
       }
     }
+    // 远程分支（M4 收尾）：本地分支列表下面单独一节 —— PyCharm Branches 的 Remote 分区。
+    // 没接本机 git（caps）时这些操作做不了 → 整节不给，而不是给了点不动。
+    const remoteBox = document.getElementById('br-remotes');
+    if (remoteBox) {
+      remoteBox.innerHTML = '';
+      const rHead = document.createElement('div');
+      rHead.style.cssText = 'font-size:12px;color:var(--text-dim);margin-bottom:4px';
+      rHead.textContent = '远程分支' + (r.remotes && r.remotes.length ? ' (' + r.remotes.length + ')' : '');
+      remoteBox.appendChild(rHead);
+      if (r.upstream) {
+        const up = document.createElement('div');
+        up.className = 'br-item br-up';
+        up.innerHTML = '<span class="br-cur"></span><span class="rm-name"></span>';
+        up.querySelector('.rm-name').textContent = '当前分支跟踪 ' + r.upstream;
+        up.title = 'pull / push 的默认去向';
+        const un = document.createElement('span');
+        un.className = 'br-more'; un.textContent = '解除'; un.style.opacity = '1';
+        un.title = '解除当前分支的 upstream 跟踪';
+        un.onclick = async (e) => {
+          e.stopPropagation();
+          const cr = await gitSafe('unsetUpstream', root);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '解除失败', 'err'); return; }
+          MI.toast('已解除 upstream 跟踪', 'ok'); Modal.hide(); refresh();
+        };
+        up.appendChild(un);
+        remoteBox.appendChild(up);
+      }
+      if (!canOps) {
+        const d = document.createElement('div');
+        d.className = 'git-empty';
+        d.textContent = r.remotes && r.remotes.length ? '远程分支操作需要本机 git（设置 → Git → 原生 Git 后端）' : '暂无远程分支';
+        remoteBox.appendChild(d);
+      } else {
+        for (const rb of (r.remotes || []).slice(0, 30)) {
+          const row = document.createElement('div');
+          row.className = 'br-item';
+          row.innerHTML = '<span class="br-cur" style="color:var(--text-dim)">⇱</span><span class="rm-name"></span><span class="br-more" title="更多操作">⋯</span>';
+          row.querySelector('.rm-name').textContent = rb;
+          row.title = rb + '（点击 ⋯ 看操作；检出会新建同名本地分支）';
+          row.querySelector('.br-more').onclick = (e) => {
+            e.stopPropagation();
+            const short = rb.includes('/') ? rb.slice(rb.indexOf('/') + 1) : rb;
+            openFloatMenu(e.currentTarget, [
+              { label: '检出为本地分支…', title: '以 ' + rb + ' 为起点新建并切换到 ' + short, run: async () => {
+                  const name = await Modal.prompt('检出远程分支', '本地分支名', short);
+                  if (!name) return;
+                  const cr = await gitSafe('branchCreate', root, name, rb, true);
+                  if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '检出失败', 'err'); return; }
+                  Modal.hide(); MI.toast('✅ 已检出 ' + name + '（跟踪 ' + rb + '）', 'ok'); refresh(); afterSwitch();
+                } },
+              { label: '合并「' + rb + '」到当前分支', title: 'git merge ' + rb + '（出冲突进解决流程）', run: async () => {
+                  Modal.hide();
+                  const mr = await gitSafe('merge', root, rb);
+                  if (!mr || !mr.ok) { MI.toast((mr && mr.error) || '合并失败', 'err'); await refresh(); return; }
+                  await refresh();
+                  if (mr.conflict) MI.toast('⚠ 合并出现冲突，请在上方「解决冲突」里处理', 'err');
+                  else MI.toast('✅ 已合并 ' + rb, 'ok');
+                } },
+              { label: '把当前分支变基到「' + rb + '」', title: 'git rebase ' + rb + '（出冲突进解决流程）', run: async () => {
+                  Modal.hide();
+                  const rr = await gitSafe('rebase', root, rb);
+                  if (!rr || !rr.ok) { MI.toast((rr && rr.error) || '变基失败', 'err'); await refresh(); return; }
+                  await refresh();
+                  if (rr.conflict) MI.toast('⚠ 变基出现冲突，请在上方「解决冲突」里处理', 'err');
+                  else MI.toast('✅ 已变基到 ' + rb, 'ok');
+                } },
+              { label: '设为当前分支的 upstream', title: 'pull / push 的默认去向改为 ' + rb, run: async () => {
+                  const cr = await gitSafe('setUpstream', root, rb);
+                  if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '设置失败', 'err'); return; }
+                  MI.toast('✅ 当前分支已跟踪 ' + rb, 'ok'); Modal.hide(); refresh();
+                } },
+            ]);
+          };
+          remoteBox.appendChild(row);
+        }
+      }
+    }
     if (!r.branches.length) {
       list.innerHTML = '<div class="git-empty">暂无分支</div>';
       return;
@@ -1116,9 +2023,10 @@ const GitPanel = (() => {
     for (const b of r.branches) {
       const row = document.createElement('div');
       row.className = 'br-item' + (b === r.current ? ' current' : '');
-      row.textContent = (b === r.current ? '✓ ' : '') + b;
+      row.innerHTML = `<span class="br-cur">${b === r.current ? '✓' : ''}</span><span class="rm-name">${esc(b)}</span><span class="br-more" title="更多分支操作">⋯</span>`;
       row.title = b === r.current ? '当前分支' : '点击切换到 ' + b;
-      row.onclick = async () => {
+      row.onclick = async (e) => {
+        if (e.target.closest('.br-more')) return;  // ⋯ 自己有菜单
         if (b === r.current) return;
         const cr = await window.myIDE.git.checkout(root, b);
         if (cr.ok) {
@@ -1130,6 +2038,61 @@ const GitPanel = (() => {
           MI.toast('切换失败: ' + cr.error, 'err');
         }
       };
+      // M4-C：分支操作菜单（PyCharm Branches 的那套：从它新建 / 合并进来 / 变基上去 / 改名 / 删除）
+      const isCur = b === r.current;
+      row.querySelector('.br-more').onclick = (e) => {
+        e.stopPropagation();
+        const items = [];
+        if (!isCur) items.push({ label: '检出 ' + b, run: () => row.click() });
+        items.push({ label: '从「' + b + '」新建分支…', title: '以 ' + b + ' 为起点建新分支（不必先切过去）', run: async () => {
+          const name = await Modal.prompt('从「' + b + '」新建分支', '新分支名', '');
+          if (!name) return;
+          const cr = await gitSafe('branchCreate', root, name, b, true);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '创建失败', 'err'); return; }
+          Modal.hide(); MI.toast('✅ 已从 ' + b + ' 创建并切换到 ' + name, 'ok'); refresh(); afterSwitch();
+        } });
+        if (!isCur && canOps) {
+          items.push({ label: '合并「' + b + '」到当前分支', title: 'git merge ' + b + '（产生冲突会进入解决流程）', run: async () => {
+            Modal.hide();
+            const mr = await gitSafe('merge', root, b);
+            if (!mr || !mr.ok) { MI.toast((mr && mr.error) || '合并失败', 'err'); await refresh(); return; }
+            await refresh();
+            if (mr.conflict) MI.toast('⚠ 合并出现冲突，请在上方「解决冲突」里处理', 'err');
+            else MI.toast('✅ 已合并 ' + b, 'ok');
+          } });
+          items.push({ label: '把当前分支变基到「' + b + '」', title: 'git rebase ' + b + '（产生冲突会进入解决流程）', run: async () => {
+            Modal.hide();
+            const rr = await gitSafe('rebase', root, b);
+            if (!rr || !rr.ok) { MI.toast((rr && rr.error) || '变基失败', 'err'); await refresh(); return; }
+            await refresh();
+            if (rr.conflict) MI.toast('⚠ 变基出现冲突，请在上方「解决冲突」里处理', 'err');
+            else MI.toast('✅ 已变基到 ' + b, 'ok');
+          } });
+        }
+        if (canOps) items.push({ label: '重命名为…', run: async () => {
+          const nn = await Modal.prompt('重命名分支', '新分支名', b);
+          if (!nn || nn === b) return;
+          const cr = await gitSafe('branchRename', root, b, nn);
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '重命名失败', 'err'); return; }
+          MI.toast('✅ 已重命名 ' + b + ' → ' + nn, 'ok');
+          Modal.hide(); refresh(); afterSwitch();
+        } });
+        if (!isCur) items.push({ label: '删除「' + b + '」', danger: true, run: async () => {
+          const yes = await Modal.confirm('删除分支', '确定删除分支「' + b + '」吗？\n未合并的提交会被 git 拒绝（更安全）；确认强删会丢弃它们。');
+          if (!yes) return;
+          let cr = await gitSafe('branchDelete', root, b, false);
+          if (!cr || !cr.ok) {
+            // -d 被拒（有未合并提交）→ 问一次是否强删，不悄悄替用户做决定
+            const force = await Modal.confirm('分支有未合并的提交', (cr && cr.error || '删除被拒绝') + '\n\n强删（-D）会永久丢弃这些提交。确定吗？');
+            if (!force) return;
+            cr = await gitSafe('branchDelete', root, b, true);
+          }
+          if (!cr || !cr.ok) { MI.toast((cr && cr.error) || '删除失败', 'err'); return; }
+          MI.toast('已删除分支 ' + b, 'ok');
+          Modal.hide(); refresh();
+        } });
+        openFloatMenu(e.currentTarget, items);
+      };
       list.appendChild(row);
     }
   }
@@ -1138,14 +2101,53 @@ const GitPanel = (() => {
   // 令牌法：双击打开文件 / 新 diff 请求使在途请求失效（晚到的渲染不再覆盖新视图）
   let diffSeq = 0;
   function cancelDiff() { diffSeq++; }
+  // ---------- M3：双区差异 ----------
+  // 「更改」里的文件看 **index → 工作区**（还没进暂存区的那部分）；「已暂存」里的看 **HEAD → index**
+  // （已经进暂存区、下次提交会带走的那部分）。文件同时有暂存与未暂存改动时两边各自成立。
+  // 双区差异才有意义的东西：hunk 级暂存按钮（`act`）。
+  const diffSideOf = (c) => (c && c.inIndexOnly ? 'staged' : 'unstaged');
+  const SIDE_LABEL = { unstaged: '未暂存（工作区 vs 暂存区）', staged: '已暂存（暂存区 vs HEAD）' };
+
+  async function hunkAction(file, kind, idx) {
+    if (!root) return;
+    if (kind === 'revert') {
+      const yes = await Modal.confirm('回退这一块', '会把工作区的这一处改动丢弃（其它块不受影响）。不可恢复，确定吗？');
+      if (!yes) return;
+    }
+    const api = window.myIDE.git;
+    const r = kind === 'stage' ? await api.stageHunk(root, file, idx)
+      : kind === 'unstage' ? await api.unstageHunk(root, file, idx)
+        : await api.revertHunk(root, file, idx);
+    if (!r || !r.ok) { MI.toast((r && r.error) || '操作失败', 'err'); return; }
+    MI.toast(kind === 'stage' ? '已暂存这一块' : kind === 'unstage' ? '已取消暂存这一块' : '已回退这一块', 'ok');
+    await refresh();                                   // 列表状态变了（可能进出「已暂存」）
+    const c = state && state.changed ? state.changed.find((x) => x.file === file) : null;
+    if (c) await showFileDiff(c);                      // 重新打开：那块已从当前视图消失
+  }
+
   async function showFileDiff(c) {
     if (!root) return;
     const seq = ++diffSeq;
-    const r = await window.myIDE.git.diffWorkdir(root, c.file);
+    const both = !c.inIndexOnly && String(c.status || '').charAt(0) === '*';  // 同一个文件既有暂存又有未暂存
+    let r;
+    if (c.inIndexOnly) r = await window.myIDE.git.diffStaged(root, c.file);
+    else if (both) {
+      // 双区并排：先「已暂存（HEAD→index）」再「未暂存（index→工作区）」，
+      // 两块各挂各的按钮（暂存 / 取消暂存 / 回退），这就是 PyCharm 那套「一个文件里挑着提交」的入口
+      const a = await window.myIDE.git.diffStaged(root, c.file);
+      const b = await window.myIDE.git.diffUnstaged(root, c.file);
+      r = [a, b].filter((x) => x && !x.error && !x.unchanged && x.hunks && x.hunks.length);
+      if (!r.length) r = b;
+    } else r = await window.myIDE.git.diffUnstaged(root, c.file);
     if (seq !== diffSeq) return;
+    if (Array.isArray(r)) {
+      renderDiffView(r, '已暂存 + 未暂存（同一个文件挑着提交）', { sideOf: () => 'both', onHunk: hunkAction });
+      return;
+    }
     if (r.error) { MI.toast(r.error, 'err'); return; }
     if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
-    renderDiffView(r, '工作区 vs HEAD');
+    const side = r.side || diffSideOf(c);
+    renderDiffView(r, SIDE_LABEL[side], { side, sideOf: () => side, onHunk: hunkAction });
   }
 
   // diff hunk 导航：滚动到相邻 @@ 分隔行（循环）
@@ -1187,13 +2189,24 @@ const GitPanel = (() => {
   }
 
   // 构建 diff 表格（hunk 折叠逻辑），供提交窗口 / 日志窗口共用
-  function buildDiffTable(r) {
+  // act（M3）：可选。给了就在每个 hunk 头挂上该模式下允许的操作按钮。
+  //   side='unstaged'（index→工作区）→「暂存此块」「回退此块」
+  //   side='staged'  （HEAD→index）  →「取消暂存此块」
+  //   其他来源（提交详情 / 分支对比）不传 act → 纯只读。
+  // opts.hideTitle：调用方（renderDiffView）**只有一个文件**时已经在顶部显示过路径 + 侧别，
+  //   表格再画一次就是同一行文字出现两遍（用户截图指出过）。多文件堆叠时每块仍然需要自己的标题。
+  function buildDiffTable(r, act, opts) {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
-    const title = document.createElement('div');
-    title.className = 'diff-file-title';
-    title.innerHTML = `<span class="b">${esc(r.file)}</span>`;
-    fileBox.appendChild(title);
+    if (!(opts && opts.hideTitle)) {
+      const title = document.createElement('div');
+      title.className = 'diff-file-title';
+      // 同一个文件「已暂存 + 未暂存」两块并排时标题会重名 → 带上侧的标记，否则两块看不出谁是谁
+      const sideTag = r.side === 'staged' ? '<span class="side-tag staged">已暂存</span>'
+        : r.side === 'unstaged' ? '<span class="side-tag">未暂存</span>' : '';
+      title.innerHTML = `<span class="b">${esc(r.file)}</span>${sideTag}`;
+      fileBox.appendChild(title);
+    }
     if (r.binary) {
       const msg = document.createElement('div');
       msg.className = 'diff-msg';
@@ -1222,10 +2235,33 @@ const GitPanel = (() => {
     const cg = document.createElement('colgroup');
     cg.innerHTML = '<col class="c-old"><col class="c-ln"><col class="c-num"><col class="c-new">';
     table.appendChild(cg);
-    r.hunks.forEach((h) => {
+    r.hunks.forEach((h, hIdx) => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
       sep.innerHTML = `<td colspan="4">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
+      if (act && act.onHunk) {
+        // 多文件视图里每个文件的侧可能不同（有的已暂存、有的没有）→ 先用结果自带的 side，
+        // 没有再按文件解析（同一个文件「已暂存 + 未暂存」两块并排时，只能靠 r.side 区分）
+        const side = r.side || (act.sideOf ? act.sideOf(r.file) : act.side);
+        const td = sep.querySelector('td');
+        const box = document.createElement('span');
+        box.className = 'hunk-actions';
+        const mk = (label, kind, title, danger) => {
+          const b = document.createElement('button');
+          b.className = 'vt-btn hunk-act' + (danger ? ' danger' : '');
+          b.textContent = label;
+          b.title = title;
+          b.onclick = (e) => { e.stopPropagation(); act.onHunk(r.file, kind, hIdx); };
+          box.appendChild(b);
+        };
+        if (side === 'unstaged') {
+          mk('＋ 暂存此块', 'stage', '只把这一块加进暂存区（git add -p 的那一步）');
+          mk('↺ 回退此块', 'revert', '只把工作区的这一块改回暂存区的样子（丢弃这处修改）', true);
+        } else if (side === 'staged') {
+          mk('－ 取消暂存此块', 'unstage', '把这一块从暂存区撤出来，改动仍留在工作区');
+        }
+        td.appendChild(box);
+      }
       table.appendChild(sep);
       const rows = [];
       for (const row of h.rows) {
@@ -1254,7 +2290,7 @@ const GitPanel = (() => {
   }
 
   // 整页 diff 视图（编辑区）：单个结果或数组（多文件堆叠）
-  function renderDiffView(rs, label) {
+  function renderDiffView(rs, label, act) {
     // 浏览器/依赖图占主区会盖住编辑区：diff 显示前先让位（log 底部停靠不挡，不动）
     if (window.App) {
       const tool = App.getTool();
@@ -1286,7 +2322,8 @@ const GitPanel = (() => {
 
     const bodyEl = document.createElement('div');
     bodyEl.className = 'diff-body';
-    for (const r of list) bodyEl.appendChild(buildDiffTable(r));
+    // 只有一个文件时顶部已经写了路径 + 侧别 → 表格里不再重复一遍
+    for (const r of list) bodyEl.appendChild(buildDiffTable(r, act, { hideTitle: list.length === 1 }));
     wrap.appendChild(bodyEl);
     view.appendChild(wrap);
     // Esc 关闭
@@ -1395,6 +2432,7 @@ const GitPanel = (() => {
     }
     if (!c) { hidePreview(); return; }
     p.classList.remove('hidden');
+    previewCur = c;
     if (title) { title.textContent = c.file; title.title = c.file; }
     const seq = ++previewSeq;
     body.innerHTML = '<div class="cp-msg">读取差异…</div>';
@@ -1447,7 +2485,7 @@ const GitPanel = (() => {
       const d = document.createElement('div');
       d.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.header ? ' ctx-title' : '');
       d.textContent = it.label;
-      d.title = it.label;
+      d.title = it.title || it.label;
       if (!it.header) d.onclick = () => { closeFloatMenu(); it.run(); };
       menu.appendChild(d);
     }
@@ -1496,11 +2534,13 @@ const GitPanel = (() => {
       for (const rm of remotes) items.push({ label: rm.name, run: () => doCommit(true, { remote: rm.name }) });
     }
     items.push({
-      label: '提交并强制推送（--force）',
+      label: '提交并安全强推（--force-with-lease）',
+      title: '以本地记录的远程分支为租约：上次拉取后远程又被别人推过 → 推送被拒绝（比裸 --force 安全）',
       danger: true,
       run: async () => {
-        const yes = await Modal.confirm('强制推送', '强制推送会覆盖远程分支上已有的提交，可能丢掉别人的工作。\n\n确定继续吗？');
-        if (yes) doCommit(true, { force: true });
+        const yes = await Modal.confirm('安全强推（--force-with-lease）',
+          '会覆盖远程分支上你本地已知的提交。若别人在你上次拉取之后推过新内容，推送会被拒绝（不会丢别人的工作）。\n\n确定继续吗？');
+        if (yes) doCommit(true, { lease: true });
       },
     });
     openFloatMenu(anchor, items);
@@ -1539,6 +2579,7 @@ const GitPanel = (() => {
   function init() {
     filesEl = document.getElementById('cd-files');
     if (!filesEl) return;
+    loadPreCfg();   // M5：提交前检查配置（按项目，懒加载一次；切项目时重载）
     const msg = document.getElementById('commit-msg');
     if (msg) {
       // 草稿优先（按项目持久化）——此前 commitMsg 只在内存里，刷新一次就丢
@@ -1567,18 +2608,23 @@ const GitPanel = (() => {
     if (hst) hst.onclick = () => openHistoryMenu(hst);
     const cpClose = document.getElementById('cp-close');
     if (cpClose) cpClose.onclick = () => togglePreview(false);
-    const rf = document.getElementById('cd-refresh');
-    if (rf) rf.onclick = () => refresh();
+    // 面板内预览太窄时的一键出口：同一个文件，改在编辑区看整体
+    const cpOpen = document.getElementById('cp-open');
+    if (cpOpen) cpOpen.onclick = () => { if (previewCur) showFileDiff(previewCur); };
+    // M5：Sign-off 勾选（持久化）+ 提交前检查 / 作者入口
+    const so = document.getElementById('commit-signoff');
+    if (so) {
+      so.checked = signoff;
+      so.onchange = () => { signoff = !!so.checked; saveUiPrefs(); };
+    }
+    // ⚠ 「提交前 / 作者」两个按钮现在由 buildToolbar 每次重建时创建并绑定（见那里的说明），
+    //   这里不能再按 id 绑一次 —— render() 之后拿到的是新节点，绑旧节点等于没绑。
     const pull = document.getElementById('cd-pull');
-    if (pull) pull.onclick = doPull;
+    if (pull) pull.onclick = (e) => openPullMenu(e.currentTarget);
     const push = document.getElementById('cd-push');
     if (push) push.onclick = () => doPush();
-    const sv = document.getElementById('cd-shelve');
-    if (sv) sv.onclick = () => openShelveDialog();
-    const rmt = document.getElementById('cd-remote');
-    if (rmt) rmt.onclick = openRemoteDialog;
-    const lg = document.getElementById('cd-log');
-    if (lg) lg.onclick = () => App.showTool('log');
+    // 搁置 / 远程 / 日志 已在 buildToolbar 里创建并直接绑好 handler（它们随 render 重建，
+    // 不能在这里按 id 绑一次 —— 重建后就是新节点了）
     const br = document.getElementById('cd-branch');
     if (br) br.onclick = () => openBranchDialog();
   }
@@ -1608,13 +2654,45 @@ const GitPanel = (() => {
           lastDraft = d;
         }
         amendBackup = null;
+        // M5：提交前检查配置随项目；作者覆盖是"这一次"的临时状态 → 切项目即失效
+        loadPreCfg();
+        authorOverride = null;
+        updateAuthorBtn();
         const amd = document.getElementById('commit-amend');
         if (amd) amd.checked = false;
         const hist = document.getElementById('commit-history');
         if (hist) hist.classList.remove('active');
       }
       root = v;
+      // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
+      //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
+      invalidateIgnored();
+      loadCls();   // 变更列表随项目：切项目要换成该项目自己的列表（异步，读完自己 render）
     },
+    // 变更列表（M1）：给测试/自检用的读写口
+    openChangelistDialog, clMoveTo, clSetActive, clNameOf, clListOf,
+    // M4：进行中的 Git 操作与冲突解决（给测试/自检用的读写口）
+    openConflictDialog, doContinue, doSkip, doAbort, buildOpBar, closeFloatMenu,
+    // M5：提交前检查 / Sign-off / 作者覆盖（给测试与自检用的读写口）
+    openPrecheckDialog, openAuthorDialog, runPreChecks, showPreCheckResult, appendSignoff,
+    // 分组方式切换（按目录 ↔ 平铺）：给测试与自检一个稳定入口，不用去猜工具行的索引
+    toggleGroupByDir() { groupByDir = !groupByDir; saveUiPrefs(); render(); },
+    get groupByDir() { return groupByDir; },
+    get preCfg() { return Object.assign({}, preCfg, { commands: preCfg.commands.slice() }); },
+    set preCfg(v) { preCfg = pcNormalize(v); },
+    get signoff() { return signoff; },
+    set signoff(v) { signoff = !!v; saveUiPrefs(); const el = document.getElementById('commit-signoff'); if (el) el.checked = signoff; },
+    get authorOverride() { return authorOverride ? Object.assign({}, authorOverride) : null; },
+    set authorOverride(v) { authorOverride = v || null; updateAuthorBtn(); },
+    loadPreCfg,
+    get op() { return op ? Object.assign({}, op) : null; },
+    set op(v) { op = v; render(); },
+    get conflicts() { return conflictFiles.slice(); },
+    set conflicts(v) { conflictFiles = Array.isArray(v) ? v : []; render(); },
+    get changelists() { return JSON.parse(JSON.stringify(cls)); },
+    set changelists(v) { cls = clNormalize(v); saveCls(); render(); },
+    get activeChangelist() { return cls.active; },
+    reloadChangelists: () => loadCls(),
   };
 })();
 window.GitPanel = GitPanel;
