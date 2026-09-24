@@ -973,6 +973,40 @@ module.exports = {
     return { R };
   },
 
+  // ---------- 平铺视图留一张截图（用户报过"换个视角名字参差不齐"）----------
+  commitFlatView: async (opts) => {
+    const demo = (opts && opts.demo) || '';
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (demo) { window.GitPanel.rootDir = demo; await window.GitPanel.refresh(); }
+    window.GitPanel.openCommit();
+    await sleep(1200);
+    if (window.GitPanel.groupByDir) { window.GitPanel.toggleGroupByDir(); await sleep(700); }
+    const nms = qa('#commit-list .git-file .nm');
+    const xs = [...new Set(nms.map((n) => Math.round(n.getBoundingClientRect().left)))];
+    add('平铺：父目录列 + 文件名对齐（截图留证）',
+      nms.length >= 3 && xs.length === 1 && qa('#commit-list .git-file .dir').length > 0,
+      xs.length + ' 种起始 x：' + xs.join(',') + '（' + nms.length + ' 行）');
+    // ⚠ 末尾不清场（截图要拍平铺视图）→ 下个步骤收尾切回按目录
+    return { R };
+  },
+
+  // 上面那步的收尾：切回按目录 + 关面板
+  commitFlatViewReset: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (!window.GitPanel.groupByDir) { window.GitPanel.toggleGroupByDir(); await sleep(600); }
+    window.GitPanel.closeDialog();
+    await sleep(400);
+    add('收尾：切回按目录视图 + 关闭提交窗口', window.GitPanel.groupByDir === true && !window.GitPanel.isOpen(),
+      'groupByDir=' + window.GitPanel.groupByDir + ' isOpen=' + window.GitPanel.isOpen());
+    return { R };
+  },
+
   // ---------- M5：提交前检查（命令 + 钩子 + TODO + 消息校验）+ Sign-off / 作者 ----------
   // ⚠ 不在这里跑真实 lint（可能几十秒）；用 `echo` / `exit 4` 这类瞬时命令证明"执行器真的跑得通"。
   m5PreCommit: async (opts) => {
@@ -2641,11 +2675,25 @@ module.exports = {
     add('点「当前选区」进上下文（且不往输入框插 @token）',
       chipTx().includes('当前选区') && inp.value === '', 'chips=' + chipTx() + ' input=' + JSON.stringify(inp.value));
     // ② Git 变更
+    // ⚠ 弹窗与 chip 都是异步刷出来的：固定 400ms 在忙的时候会读空（本轮就偶发过一次）。
+    //   统一改成**轮询等条件成立**，并把"菜单项在不在"单独断言出来，失败时能直接看出是哪一步。
     type('@Git');
-    await sleep(400);
-    const gi = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('Git'));
-    if (gi) { gi.click(); await sleep(2000); }
-    add('「Git 变更」把未提交改动带进来', chipTx().includes('Git 变更'), 'chips=' + chipTx());
+    let gi = null;
+    for (let i = 0; i < 12; i++) {
+      gi = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('Git'));
+      if (gi) break;
+      await sleep(250);
+    }
+    add('@Git 能搜到「Git 变更」来源', !!gi, gi ? gi.textContent.trim() : '菜单项没出现');
+    if (gi) {
+      gi.click();
+      let got = false;
+      for (let i = 0; i < 24; i++) {
+        if (chipTx().includes('Git 变更')) { got = true; break; }
+        await sleep(250);
+      }
+      add('「Git 变更」把未提交改动带进来', got, 'chips=' + chipTx());
+    }
     // ③ 上下文预算明细
     q('#ai-usage').click();
     await sleep(400);

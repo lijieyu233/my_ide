@@ -753,6 +753,11 @@ const GitPanel = (() => {
       Modal.hide();
       await refresh();
       openConflictDialog(cur);
+      // ⚠ 再补一次"落定刷新"：`git add` 刚写完的那一瞬，紧接着的 `git diff --diff-filter=U`
+      //   偶发仍看到未合并条目（本机 index 落盘有延迟）→ 操作条会停在"还有冲突、继续禁用"，
+      //   而后面没有任何东西再刷它，用户就卡在那儿了。延迟再刷一次让状态自愈。
+      const settleRoot = root;
+      setTimeout(() => { if (root === settleRoot) refresh(); }, 1500);
     };
 
     drawList();
