@@ -1334,12 +1334,19 @@ const GitPanel = (() => {
   // 工具行图标（统一 16px 内联 SVG，与工具条/标题栏同一套观感）
   const IC = {
     refresh: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 3.2v3.2H9.8"/></svg>',
-    rollback: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8a4.6 4.6 0 1 0 1.5-3.4M3.4 3.4v2.8h2.8"/></svg>',
+    // 回滚（放弃修改）：**箭头折回一条竖线**。原来和"刷新"是两个镜像的圆弧箭头，
+    //   在一行里根本分不清谁是谁（截图里那两个圈就是这个毛病）。
+    rollback: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 3.4v9.2"/><path d="M12.6 8H6.4M9.4 4.8 6.2 8l3.2 3.2"/></svg>',
     diff: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8h10.8M9.6 5l3 3-3 3M6.4 5l-3 3 3 3"/></svg>',
     commit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v6.4M5.2 6.2 8 9l2.8-2.8M3 12.4h10"/></svg>',
     eye: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 8s2.2-3.4 5.6-3.4S13.6 8 13.6 8s-2.2 3.4-5.6 3.4S2.4 8 2.4 8Z"/><circle cx="8" cy="8" r="1.5"/></svg>',
-    expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>',
-    collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>',
+    // 展开 / 收起：**双箭头**朝外 / 朝内（VS Code、IntelliJ 的通用写法）。
+    // ⚠ 原来用 + / − —— 那个形状在工具行里读起来是"新建 / 删除"或"放大 / 缩小"，
+    //   完全不像"缩进层级展开"（用户直接问"+ - 怎么能代表缩进展开"）。
+    // ⚠ 每根 chevron 只占 2.6px 高、中间留 3.6px 空 —— 第一版画得太高（3.4px）且上下相接，
+    //   16px 下两根会连成一个菱形/叉（截图里就是那样）。平缓之后才是"往外 / 往里"的双箭头。
+    expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 6.2 8 3.6l2.8 2.6"/><path d="M5.2 9.8 8 12.4l2.8-2.6"/></svg>',
+    collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6 8 6.2l2.8-2.6"/><path d="M5.2 12.4 8 9.8l2.8 2.6"/></svg>',
     group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
     // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
     // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
