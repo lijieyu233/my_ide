@@ -1301,6 +1301,19 @@ app.whenReady().then(() => {
         await run('M4 merge 冲突与解决（操作条 + 三方对比）', js(steps.m4Conflict, { repo: confRepo, demo: demo }), 'check-ui-1t-m4-conflict.png');
         await run('M4 merge（收尾：继续完成合并 / 还原项目根）', js(steps.m4ConflictCleanup, { repo: confRepo, demo: demo }));
         await run('平铺视图（父目录列 + 文件名对齐）', js(steps.commitFlatView, { demo: demo }), 'check-ui-1v-flat-view.png');
+        // 工具行放大图：13 个图标 @3x（用户报过"+ / − 代表展开"这种语义问题，留一张能看清的图）
+        try {
+          const barBox = await wc.executeJavaScript(`(() => {
+            const b = document.querySelector('#cd-files .git-cp-bar');
+            if (!b) return null;
+            const r = b.getBoundingClientRect();
+            return { x: Math.max(0, Math.floor(r.left)), y: Math.max(0, Math.floor(r.top)), width: Math.ceil(r.width), height: Math.ceil(r.height) };
+          })()`);
+          if (barBox && barBox.width > 0) {
+            const n = await grab('check-ui-1w-toolbar-icons.png', Object.assign({ scale: 3 }, barBox));
+            lines.push('     截图 → check-ui-1w-toolbar-icons.png (' + n + ' 字节)');
+          }
+        } catch {}
         await run('平铺视图（收尾：切回按目录）', js(steps.commitFlatViewReset));
         // M5：提交前检查 + Sign-off / 作者（不跑真实 lint，用 echo / exit 4 证明执行器通了）
         await run('M5 提交前检查 + Sign-off / 作者', js(steps.m5PreCommit, { demo: demo }), 'check-ui-1u-m5-precommit.png');

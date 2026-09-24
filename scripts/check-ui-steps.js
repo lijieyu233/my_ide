@@ -1932,6 +1932,27 @@ module.exports = {
     add('工具行 13 个纯图标按钮', btns.length === 13 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
+    // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
+    const dOf = (btn) => [...btn.querySelectorAll('path')].map((p2) => p2.getAttribute('d') || '').join(' ');
+    const expBtn = btns[5], colBtn = btns[6];
+    const expD = dOf(expBtn), colD = dOf(colBtn);
+    // 展开/收起必须是**双箭头**：两条 path、每条都是折线（含两个拐点），且不再有 h/v 命令
+    //（+/− 的特征正是"一条横线/一条竖线"：旧实现里出现了 v 与 h）
+    add('展开 / 收起用「双箭头」而不是 + / −',
+      expBtn.querySelectorAll('path').length === 2 && colBtn.querySelectorAll('path').length === 2
+      && !/[hvHV]/.test(expD + colD),
+      'expand=' + expD.slice(0, 60) + ' | collapse=' + colD.slice(0, 60));
+    // 刷新与回滚必须一眼能分开（旧实现是两个镜像圆弧 → 一行里分不清）
+    //   判据：刷新是**圆弧**（含 a 命令），回滚是**折线箭头**（全是直线，没有 a）
+    const refD = dOf(btns[0]), rbD = dOf(btns[1]);
+    add('刷新与回滚不再雷同（一个圆弧、一个折线箭头）',
+      refD !== rbD && /a/i.test(refD) && !/a/i.test(rbD),
+      'refresh=' + refD.slice(0, 50) + ' | rollback=' + rbD.slice(0, 50));
+    // 全行图标两两不同：同一行里出现两个一样的图标 = 一定有谁画错了
+    const svgHtml = qa('#cd-files .git-cp-bar .vt-btn svg').map((x) => x.innerHTML);
+    add('工具行图标两两不同', new Set(svgHtml).size === svgHtml.length,
+      new Set(svgHtml).size + '/' + svgHtml.length + ' 种');
+
     // 节点三态
     const heads = qa('#cd-files .git-sec-title');
     add('分节标题都带三态复选框', heads.length >= 2 && heads.every((h) => h.querySelector('input[type=checkbox]')), heads.length + ' 个分节：' + heads.map((h) => h.textContent).join(' / '));
