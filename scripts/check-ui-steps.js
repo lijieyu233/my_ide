@@ -2122,8 +2122,15 @@ module.exports = {
     const topDir = qa('#cd-files .git-group')[0];
     const childFile = qa('#cd-files .git-file')[0];
     const dx = gcbx(childFile) - gcbx(topDir);
-    add('树形缩进：子文件的复选框比父目录的复选框右移一级（约 14px）', dx >= 10 && dx <= 20,
+    // ⚠ 步长 2026-09-24 从 14 改成 20（用户：14px 时层级"一直看不出来"）→ 断言收紧到 18~22
+    add('树形缩进：子文件的复选框比父目录的复选框右移一级（步长 20px）', dx >= 18 && dx <= 22,
       '父目录 cb.x=' + gcbx(topDir) + ' 子文件 cb.x=' + gcbx(childFile) + ' Δ=' + dx);
+    {
+      const sec = qa('#cd-files .git-sec-title')[0];
+      const sdx = gcbx(topDir) - gcbx(sec);
+      add('树形缩进：分节标题 → 一级目录也是同一档 20px（阶梯统一）', sdx >= 18 && sdx <= 22,
+        '分节 cb.x=' + gcbx(sec) + ' 一级目录 cb.x=' + gcbx(topDir) + ' Δ=' + sdx);
+    }
     add('层级递进：文件名比父目录名更靠右（不是"缩进一样"）',
       (nmx(childFile) - nmx(topDir)) >= 12,
       '父目录名 x=' + nmx(topDir) + ' → 子文件名 x=' + nmx(childFile) + ' Δ=' + (nmx(childFile) - nmx(topDir)));

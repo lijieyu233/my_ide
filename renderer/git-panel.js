@@ -1505,7 +1505,7 @@ const GitPanel = (() => {
       const pathKey = secKey + '/' + depth + '/' + name;
       const gTitle = document.createElement('div');
       gTitle.className = 'git-group';
-      gTitle.style.paddingLeft = (8 + depth * 14) + 'px';
+      gTitle.style.paddingLeft = (10 + depth * TREE_INDENT) + 'px';
       const caret = document.createElement('span');
       caret.className = 'caret';
       const nm = document.createElement('span');
@@ -1591,6 +1591,12 @@ const GitPanel = (() => {
     return segs[0] + '/…/' + segs[segs.length - 1] + '/';
   }
 
+  // 树形每级缩进步长。⚠ 原来是 14px，用户 2026-09-24 说"层级一直看不出来" → 定为 20px。
+  //   树形行的基准 10（不是 8）：分节标题自身有 10px 左内边距，行也用 10 才能让
+  //   「分节标题 → 一级目录」正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）；
+  //   平铺行不参与层级，保持原基准 8（否则平铺视图整体右移 8px，与刚定版的列对齐打架）。
+  const TREE_INDENT = 20;
+
   // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
   //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
   function flatNeedsDirCol() {
@@ -1609,7 +1615,7 @@ const GitPanel = (() => {
     const f = document.createElement('div');
     f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
-    f.style.paddingLeft = (8 + depth * 14) + 'px';
+    f.style.paddingLeft = ((flat ? 8 : 10) + depth * TREE_INDENT) + 'px';
     const parts = c.file.split(/[\\/]/);
     const base = parts.pop();
     const parent = parts.join('/');
