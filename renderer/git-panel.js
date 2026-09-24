@@ -1322,11 +1322,15 @@ const GitPanel = (() => {
     return wrap;
   }
 
-  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前
+  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前。
+  // ⚠ **平铺也要有正确的缩进**（用户 2026-09-24 明确要求）：按**路径里的目录段数**缩进，
+  //   `kiosk_patches/x` 深一级、`kiosk_patches/backup/x` 深两级 —— 层级不因关掉分组而消失，
+  //   只是改用缩进 + 路径列表达。深度封顶 6（120px），防止超深路径把内容推出面板。
   function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
+    const depthOf = (f) => Math.min(6, Math.max(0, String(f).split(/[\\/]+/).filter(Boolean).length - 1));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, depthOf(c.file), true, ro));
     return box;
   }
 
@@ -1676,16 +1680,14 @@ const GitPanel = (() => {
     const showDir = flat && flatNeedsDirCol();
     // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
     if (flat) f.classList.add('flat');
-    // ⚠ 行内顺序：徽章在**行尾**（路径之后），不占名字前面的位置。
-    //   以前徽章挤在复选框和名字中间 → 文件名比"分节标题的文字"靠右 20px，
-    //   用户看到的正是"子文件缩进竟然比父目录靠右"。徽章挪到行尾后，所有行的名字都在 cb+19，
-    //   与分节标题的文字、同层目录名完全同列；状态字母仍然可见，只是换了个位置。
+    // ⚠ 行内顺序（用户 2026-09-24 定稿）：**徽章在名字前面** —— `☑ [M] 名字 路径`。
+    //   层级由**缩进**表达（平铺 = 路径深度 × 20px；树形 = 每级 20px），不靠挪徽章。
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
+      `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
       (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
-      `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
       ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
