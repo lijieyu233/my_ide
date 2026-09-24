@@ -2774,10 +2774,25 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 0, '平铺视图下目录行消失');
+    const flatRows = $allIn($(dom, '#cd-files'), '.git-file');
     assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺视图下文件行显示父目录');
+    // 平铺列序 = **名字在前、路径在后**（照 PyCharm 抄）：v1~v5 在"谁在前 / 哪条边对齐"上反复了五次，
+    //   根因是 v3 的"名字列自适应"让路径起点漂移。现在名字列固定宽（.flat）+ 路径吃剩余宽度。
+    assert_(flatRows.every((r) => r.classList.contains('flat')), '平铺行带 .flat 类（名字列才用固定宽）');
+    // ⚠ 取"路径列非空"的行：顶层文件的那一列是空占位（title 也是空），拿它断言会假失败
+    const withDir = flatRows.find((r) => r.querySelector('.dir') && r.querySelector('.dir').textContent.trim());
+    assert_(!!withDir, '有带路径的平铺行');
+    assert_((withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 4) !== 0,
+      '平铺：路径节点在名字**之后**（名字在前）: '
+      + $allIn(withDir, '*').map((x) => x.className).join(','));
+    assert_(withDir.querySelector('.nm').getAttribute('title') === withDir.dataset.file,
+      '平铺：名字的 tooltip = 完整路径（路径可能被省略，名字要能查到全路径）');
+    assert_((withDir.querySelector('.dir').getAttribute('title') || '').length > 0, '平铺：路径有 tooltip');
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 3, '切回按目录：目录行恢复');
+    // 树形行不能带 .flat（否则名字被截成 46%）
+    assert_($allIn($(dom, '#cd-files'), '.git-file.flat').length === 0, '树形行没有 .flat');
 
     // 点文件行 → 始终在编辑区打开差异（内嵌预览已移除，这是 PyCharm 的默认行为）
     const row0 = $allIn($(dom, '#commit-list'), '.git-file')[0];

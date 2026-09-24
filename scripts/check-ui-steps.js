@@ -1994,6 +1994,17 @@ module.exports = {
 
     // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
     const dOf = (btn) => [...btn.querySelectorAll('path')].map((p2) => p2.getAttribute('d') || '').join(' ');
+    // 显示选项那个按钮：图标必须是**眼睛 + 下拉箭头**（PyCharm 的 Show Options Menu），
+    //   ⚠ 原来是三个点 —— 三点在工具栏里的通用含义是"更多操作"（用户拿 PyCharm 截图问过"咱们还是三个点？"）
+    {
+      const vo = q('#cd-view-opts');
+      const svg = vo ? vo.querySelector('svg') : null;
+      const paths = svg ? [...svg.querySelectorAll('path')] : [];
+      const closed = paths.some((p) => /[zZ]/.test(p.getAttribute('d') || ''));
+      add('「显示选项」图标 = 眼睛（闭合轮廓 + 单个瞳孔）+ 下拉箭头，不是三个点',
+        !!svg && paths.length >= 2 && closed && svg.querySelectorAll('circle').length === 1,
+        svg ? svg.outerHTML.replace(/></g, '> <').slice(0, 150) : '没有 #cd-view-opts');
+    }
     const expBtn = btns[3], colBtn = btns[4];   // ⚠ 索引随工具行前移（删掉「提交」「预览」）
     const expD = dOf(expBtn), colD = dOf(colBtn);
     // 展开/收起必须是**双箭头**：两条 path、每条都是折线（含两个拐点），且不再有 h/v 命令
@@ -2052,16 +2063,23 @@ module.exports = {
     window.GitPanel.toggleGroupByDir(); await sleep(600);
     add('切到平铺：目录行消失 + 显示所属目录', qa('#cd-files .git-group').length === 0 && qa('#cd-files .git-file .dir').length > 0,
       '路径列 ' + qa('#cd-files .git-file .dir').length + ' 个');
-    // 平铺视图：**文件名在前、路径在后**。
-    //   路径放前面时，"固定宽列 + 长路径"会把前缀截成 `项目/心理健...`，整行看起来像两列错位的数据
-    //   （用户两轮都报"缩进还是错的"）。名字在前 → 所有文件名天然从同一 x 起。
+    // 平铺视图 = **名字在前、路径在后**（第六版定论：照 PyCharm 抄）。名字列**固定宽** → 两列起点都固定。
+    //   前五版在"谁在前 / 哪条边对齐"上反复；根因是 v3 的"名字列自适应"让路径起点漂移 120~161px。
     const nms = qa('#cd-files .git-file .nm');
     const nxs = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().left));
-    add('平铺：所有文件名的起始 x 一致（名字在前，天然对齐）',
+    add('平铺：所有文件名的起始 x 一致（名字列固定宽）',
       nxs.length >= 2 && Math.max(...nxs) - Math.min(...nxs) <= 1, 'xs=' + nxs.join(','));
-    const withDir = qa('#cd-files .git-file').find((r) => r.querySelector('.dir'));
-    add('平铺：路径在文件名**之前**（路径 → 名字，像面包屑）',
-      !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 2) !== 0,
+    // 名字列的宽度必须**完全一致**（固定宽）—— 树形行不在此列（它们吃满剩余宽度）
+    const nws = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().width));
+    add('平铺：名字列宽度一致（固定宽 46%，不是各自自适应）',
+      nws.length >= 2 && Math.max(...nws) - Math.min(...nws) <= 1, 'ws=' + [...new Set(nws)].join(','));
+    add('平铺：树形行不带 .flat（名字不会被截成 46%）',
+      qa('#cd-files .git-file').every((r) => r.classList.contains('flat')) && !!q('#cd-files .git-file.flat .nm'),
+      'flat 行 ' + qa('#cd-files .git-file.flat').length + '/' + qa('#cd-files .git-file').length);
+    // ⚠ 取"路径列非空"的行：顶层文件那一列是空占位
+    const withDir = qa('#cd-files .git-file').find((r) => r.querySelector('.dir') && r.querySelector('.dir').textContent.trim());
+    add('平铺：路径在文件名**之后**（名字 → 路径，PyCharm 同款）',
+      !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 4) !== 0,
       withDir ? withDir.dataset.file : '没有带路径的行');
     // ⚠ 本轮的关键（用户第三次报"缩进不对"）：**量路径文字的首字符 x**，不是量元素框。
     //   上一版用 `text-align: right` 想让右缘贴住文件名 → 短路径被推到右边、起点不齐
@@ -2075,9 +2093,14 @@ module.exports = {
         r.setStart(tn, 0); r.setEnd(tn, 1);
         return Math.round(r.getBoundingClientRect().left);
       };
+      // ⚠ 量的是**文字首字符 x**（元素框对齐 ≠ 文字起点对齐；v4 的 text-align:right 就是栽在这里）
       const xs = dirs.map(firstX).filter((x) => x != null);
-      add('平铺：路径**文字**起点一致（左对齐 + 中段省略 → 缩进一致）',
+      add('平铺：路径**文字**起点一致（第二列对齐）',
         xs.length >= 3 && Math.max(...xs) - Math.min(...xs) <= 1, 'xs=' + [...new Set(xs)].join(','));
+      const nfirst = qa('#cd-files .git-file .nm').map(firstX).filter((x) => x != null);
+      add('平铺：名字**文字**起点一致（第一列对齐 —— 用户报的"缩进不对"就是这一列）',
+        nfirst.length >= 3 && Math.max(...nfirst) - Math.min(...nfirst) <= 1,
+        'xs=' + [...new Set(nfirst)].join(','));
       const ls = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
       add('平铺：路径列左缘一致（固定宽列，不随名字漂移）',
         ls.length >= 3 && Math.max(...ls) - Math.min(...ls) <= 1, 'left=' + [...new Set(ls)].join(','));
@@ -2086,9 +2109,10 @@ module.exports = {
         !!deep ? /\/…\//.test(deep.textContent) : true,
         deep ? JSON.stringify(deep.textContent) : '（本例路径层数少，未触发省略）');
     }
-    add('平铺：名字保持完整（路径可省略，名字不被压没）',
-      !!withDir && withDir.querySelector('.nm').getBoundingClientRect().width > 8,
-      withDir ? '名字宽=' + Math.round(withDir.querySelector('.nm').getBoundingClientRect().width) + 'px' : '-');
+    add('平铺：名字列占了至少 1/3 行宽（名字比路径重要，不能被路径挤没）',
+      !!withDir && withDir.querySelector('.nm').getBoundingClientRect().width
+        >= q('#cd-files').getBoundingClientRect().width / 3 - 4,   // ⚠ 这一步里的选择器助手叫 q()，没有 $
+      withDir ? '名字列宽=' + Math.round(withDir.querySelector('.nm').getBoundingClientRect().width) + 'px' : '-');
     window.GitPanel.toggleGroupByDir(); await sleep(600);
     add('切回按目录：目录行恢复', qa('#cd-files .git-group').length > 0);
 

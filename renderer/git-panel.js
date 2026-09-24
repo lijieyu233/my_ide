@@ -1227,7 +1227,7 @@ const GitPanel = (() => {
     // 一次性的设置不该和刷新/回滚这些高频操作抢位置。
     // 显示选项（PyCharm 提交窗口工具栏的 ⋯ Show Options Menu）：分组方式 / 忽略的文件。
     // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
-    mk(IC.more, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
+    mk(IC.viewOpts, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
     barBtns = { roll, dif };
     return bar;
   }
@@ -1468,8 +1468,12 @@ const GitPanel = (() => {
     // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
     // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
     branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
-    // 显示选项 = 三点（工具行末尾的 Show Options Menu）
-    more: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle class="fill" cx="3.6" cy="8" r="1.05"/><circle class="fill" cx="8" cy="8" r="1.05"/><circle class="fill" cx="12.4" cy="8" r="1.05"/></svg>',
+    // 显示选项（工具行末尾的 Show Options Menu）：**眼睛 + 右下角小箭头**。
+    //   ⚠ 原来是三个点 —— 三点在工具栏里的通用含义是"更多操作"，而 PyCharm 这里根本不是三点，
+    //     是"眼睛 + 下拉箭头"（眼睛 = 显示什么，小箭头 = 这是个菜单）。
+    //     用户拿 PyCharm 截图问"咱们还是三个点？"，就是这一处。
+    //   ⚠ 眼睛要整体偏左上，把右下角让给箭头；两者不能重叠（16px 下会糊成一团）。
+    viewOpts: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.4 6.6s2.2-3.3 5.5-3.3S12.4 6.6 12.4 6.6s-2.2 3.3-5.5 3.3S1.4 6.6 1.4 6.6Z"/><circle cx="6.9" cy="6.6" r="1.5"/><path d="M11.5 11.3l1.6 1.8 1.6-1.8"/></svg>',
     // M5：提交前检查 = 对勾（用在「⋯ 更多」菜单里的图标位）
     check: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg>',
     user: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c0-2.6 2.1-4.2 4.8-4.2s4.8 1.6 4.8 4.2"/></svg>',
@@ -1617,19 +1621,23 @@ const GitPanel = (() => {
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
     // caret 占位：平铺视图也要（否则同一层级的目录名与文件名差一个 caret 列宽，看着就是没对齐）
-    // ⚠⚠ 平铺视图的路径列（四版反复后的定论）：
-    //   v1 路径在前、宽度自适应      → 文件名参差（"换个视角更离谱"）
-    //   v2 路径在前、固定 72px       → 名字对了，路径被截成 `项目/心理健...`，像两列错位的数据
-    //   v3 名字在前、路径 flex:1 紧跟 → **路径起点随名字长短漂移**（实测 120~161px），第二列参差
-    //   v4（本版）**路径列固定宽 + 右对齐贴住文件名** + 路径中段省略：
-    //      路径左缘/右缘固定、名字左缘固定 → 两列同时对齐，也不会"某一边被截成两三个字"。
+    // ⚠⚠ 平铺视图 = **名字在前、路径在后**（第六版定论：照 PyCharm 抄，用户给过截图）。
+    //   行结构： [缩进][勾选][徽章] **名字（固定宽，超出末尾省略）** 路径（灰色，吃剩余宽度，末尾省略）
+    //   v1 路径在前、宽度自适应       → 文件名参差（"换个视角更离谱"）
+    //   v2 路径在前、固定 72px        → 名字齐了，路径被截成 `项目/心理健...`（"缩进还是错的"）
+    //   v3 名字在前、但名字列自适应    → **路径起点随名字长短漂移**（实测 120~161px）
+    //   v4/v5 路径在前、固定 46%（右对齐 → 左对齐）→ 还是不对：顺序反了，名字被挤到右边
+    //   🔴 根因：v3 的错不在"名字在前"，在**名字列宽度自适应**。PyCharm 的名字列是**固定宽**的，
+    //      所以两列的起点都固定：名字对齐、路径也对齐（各自末尾省略）。
     const showDir = flat && flatNeedsDirCol();
+    // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
+    if (flat) f.classList.add('flat');
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
-      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
+      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
       ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
