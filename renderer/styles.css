@@ -1171,14 +1171,16 @@ textarea.editor {
 /* （.caret-spacer / .badge-spacer 的宽度定义在 .badge 那一块，靠近它的"真身"） */
 .git-file .cf-check { flex: 0 0 13px; }
 .git-file .badge, .git-group .g-name { flex-shrink: 0; }
-/* 平铺视图的路径列（四版反复后的定论，见 git-panel.js fileRow 里的注释）：
-   **固定宽 + 右对齐**，右缘紧贴文件名 → 路径左缘/右缘固定、名字左缘也固定，两列同时对齐。
-   路径内容在 JS 里做中段省略（`项目/…/数字人/`）：既不会"某一边被截成两三个字"，
-   也不会因为路径长短把文件名推来推去（那正是上一版 120~161px 漂移的原因）。 */
+/* 平铺视图的路径列（五版反复后的定论，见 git-panel.js fileRow 里的注释）：
+   **固定宽 + 左对齐** + 内容中段省略（`项目/…/数字人/`）。
+   ⚠ 上一版用了 `text-align: right` 想让右缘贴住文件名 —— 结果**短路径被推到右边、起点不齐**
+   （实测：`项目/…/数字人/` 起点 146、`项目/…/测试/` 起点 160），用户看到的就是"缩进不齐"。
+   左对齐 + 中段省略才是正解：路径起点一致（缩进一致）、名字起点由固定列宽保证，
+   而且因为有省略，路径也不会长到把名字挤走。 */
 .git-file .dir {
   color: var(--text-dim); font-size: .88em; white-space: nowrap;
   flex: 0 0 46%; min-width: 0; overflow: hidden;
-  text-align: right; padding-right: 8px; box-sizing: border-box;
+  padding-right: 8px; box-sizing: border-box;
 }
 .git-file .nm { flex: 1 1 auto; min-width: 0; }
 .git-file .nm { flex: 0 1 auto; min-width: 0; }

@@ -2702,7 +2702,10 @@ assert_(panel, 'CM6 搜索面板出现');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
     // 13 → 9 → 10：删掉「提交」（底部 footer 已有同一入口）与「内嵌预览」（340px 侧栏读不了），
     // 提交前检查 / 本次作者收进提交消息那行的 ⋯ 菜单；末尾又加了「显示选项」⋯（PyCharm 的 Show Options Menu）。
-    assert_(btnsOf().length === 10, '10 个图标按钮: ' + btnsOf().length);
+    assert_(btnsOf().length === 9, '9 个图标按钮: ' + btnsOf().length);
+    // 分组方式收进 ⋯ 显示选项菜单后，工具行里不该再有一个独立的按钮（同一功能两个入口 = 用户说的"重复功能未删除"）
+    assert_(!btnsOf().some((b) => /^分组方式：/.test(b.title || '')),
+      '工具行没有独立的「分组方式」按钮: ' + btnsOf().map((b) => b.title).join(' | '));
     assert_($(dom, '#cd-files #cd-view-opts'), '工具行末尾有「显示选项」按钮');
     assert_(!$(dom, '#cd-files #commit-precheck') && !$(dom, '#cd-files #commit-author'),
       '提交前检查 / 本次作者不再占工具行图标位（收进 ⋯ 菜单）');
@@ -2767,13 +2770,12 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_(visibleFiles().length >= 4, '展开全部：文件行恢复: ' + visibleFiles().length);
 
-    // 分组方式：按目录 ↔ 平铺
-    click(btnsOf()[5]);
+    // 分组方式：按目录 ↔ 平铺（工具行里没有独立按钮 → 走 ⋯ 菜单 / Ctrl+Alt+P 那个入口）
+    await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 0, '平铺视图下目录行消失');
     assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺视图下文件行显示父目录');
-    assert_(btnsOf()[5].classList.contains('active') === false, '平铺时「分组方式」按钮不高亮');
-    click(btnsOf()[5]);
+    await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 3, '切回按目录：目录行恢复');
 

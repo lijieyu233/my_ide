@@ -1210,9 +1210,9 @@ const GitPanel = (() => {
     bar.appendChild(sep);
     mk(IC.expandAll, '展开全部（目录与分节）', () => setAllCollapsed(false));
     mk(IC.collapseAll, '收起全部（目录与分节）', () => setAllCollapsed(true));
-    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）',
-      () => GitPanel.toggleGroupByDir());
-    if (groupByDir) grp.classList.add('active');
+    // ⚠ 这里**故意没有独立的「分组方式」按钮**：它和下面 ⋯ 显示选项菜单里的「分组方式」是同一个功能
+    //   （PyCharm 的工具栏也没有这个按钮 —— 分组方式在 Show Options Menu 里，外加 Ctrl+Alt+P）。
+    //   用户原话："按钮外观乱搞 重复功能未删除"。
     // 仓库级操作（搁置 / 远程 / 日志）—— 原在标题行右侧挤着，见 IC 里那段说明。
     // ⚠ 追加在**最后**：dom 测试与自检步骤按索引取工具行按钮（[4]=预览 [6][7]=展开/分组），
     //   插在中间会把这些索引全打乱。
@@ -1228,7 +1228,7 @@ const GitPanel = (() => {
     // 显示选项（PyCharm 提交窗口工具栏的 ⋯ Show Options Menu）：分组方式 / 忽略的文件。
     // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
     mk(IC.more, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
-    barBtns = { roll, dif, grp };
+    barBtns = { roll, dif };
     return bar;
   }
 
@@ -1459,7 +1459,6 @@ const GitPanel = (() => {
     //   16px 下两根会连成一个菱形/叉（截图里就是那样）。平缓之后才是"往外 / 往里"的双箭头。
     expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 6.2 8 3.6l2.8 2.6"/><path d="M5.2 9.8 8 12.4l2.8-2.6"/></svg>',
     collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6 8 6.2l2.8-2.6"/><path d="M5.2 12.4 8 9.8l2.8 2.6"/></svg>',
-    group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
     // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
     // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
     // 移到工具行：它们本来就是"仓库级操作"，和刷新/回滚/差异同层。

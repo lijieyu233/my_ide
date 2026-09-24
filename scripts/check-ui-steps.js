@@ -1989,7 +1989,7 @@ module.exports = {
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
     // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
-    add('工具行 10 个纯图标按钮', btns.length === 10 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('工具行 9 个纯图标按钮', btns.length === 9 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
@@ -2039,14 +2039,17 @@ module.exports = {
       while (n && n !== q('#cd-files')) { if (n.style && n.style.display === 'none') return false; n = n.parentElement; }
       return true;
     });
-    // ⚠ 工具行索引变了（删掉「提交」「内嵌预览」后整体前移 2 位）：
-    //   0 刷新 / 1 回滚 / 2 差异 / 3 展开全部 / 4 收起全部 / 5 分组 / 6 搁置 / 7 远程 / 8 日志
+    // ⚠ 工具行索引：0 刷新 / 1 回滚 / 2 差异 / 3 展开全部 / 4 收起全部 / 5 搁置 / 6 远程 / 7 日志 / 8 显示选项
+    //   （「提交」「内嵌预览」删掉后前移 2 位；独立的「分组方式」删掉后 5 号变成搁置）
+    add('工具行里没有独立的「分组方式」按钮（与 ⋯ 显示选项菜单重复，已删）',
+      !btns.some((b) => /^分组方式：/.test(b.title || '')),
+      btns.map((b) => String(b.title).split('（')[0]).join(' | '));
     const before = visible().length;
     btns[4].click(); await sleep(400);
     add('收起全部 → 无可见文件行', visible().length === 0, '收起前 ' + before);
     btns[3].click(); await sleep(900);
     add('展开全部 → 文件行恢复', visible().length >= before, '恢复 ' + visible().length);
-    btns[5].click(); await sleep(500);
+    window.GitPanel.toggleGroupByDir(); await sleep(600);
     add('切到平铺：目录行消失 + 显示所属目录', qa('#cd-files .git-group').length === 0 && qa('#cd-files .git-file .dir').length > 0,
       '路径列 ' + qa('#cd-files .git-file .dir').length + ' 个');
     // 平铺视图：**文件名在前、路径在后**。
@@ -2060,16 +2063,24 @@ module.exports = {
     add('平铺：路径在文件名**之前**（路径 → 名字，像面包屑）',
       !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 2) !== 0,
       withDir ? withDir.dataset.file : '没有带路径的行');
-    // ⚠ 这一条是本轮的关键：上一版路径 `flex:1` 紧跟名字 → **路径起点随名字长短漂移**（实测 120~161px），
-    //   用户看到的就是"第二列参差"。现在路径列固定宽 + 右对齐 → 左缘/右缘都固定。
+    // ⚠ 本轮的关键（用户第三次报"缩进不对"）：**量路径文字的首字符 x**，不是量元素框。
+    //   上一版用 `text-align: right` 想让右缘贴住文件名 → 短路径被推到右边、起点不齐
+    //   （实测 `项目/…/数字人/` 起点 146、`项目/…/测试/` 起点 160），看起来就是"缩进不一致"。
     {
       const dirs = qa('#cd-files .git-file .dir').filter((d) => d.textContent.trim());
+      const firstX = (el) => {
+        const tn = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+        if (!tn) return null;
+        const r = document.createRange();
+        r.setStart(tn, 0); r.setEnd(tn, 1);
+        return Math.round(r.getBoundingClientRect().left);
+      };
+      const xs = dirs.map(firstX).filter((x) => x != null);
+      add('平铺：路径**文字**起点一致（左对齐 + 中段省略 → 缩进一致）',
+        xs.length >= 3 && Math.max(...xs) - Math.min(...xs) <= 1, 'xs=' + [...new Set(xs)].join(','));
       const ls = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
-      const rs = dirs.map((d) => Math.round(d.getBoundingClientRect().right));
-      add('平铺：路径列左缘一致（固定宽列，不再随名字漂移）',
+      add('平铺：路径列左缘一致（固定宽列，不随名字漂移）',
         ls.length >= 3 && Math.max(...ls) - Math.min(...ls) <= 1, 'left=' + [...new Set(ls)].join(','));
-      add('平铺：路径列右缘一致（右对齐贴住文件名）',
-        rs.length >= 3 && Math.max(...rs) - Math.min(...rs) <= 1, 'right=' + [...new Set(rs)].join(','));
       const deep = dirs.find((d) => /…/.test(d.textContent));
       add('平铺：深层路径做中段省略（首段/…/末段，不把整条路径截成两三个字）',
         !!deep ? /\/…\//.test(deep.textContent) : true,
@@ -2078,7 +2089,7 @@ module.exports = {
     add('平铺：名字保持完整（路径可省略，名字不被压没）',
       !!withDir && withDir.querySelector('.nm').getBoundingClientRect().width > 8,
       withDir ? '名字宽=' + Math.round(withDir.querySelector('.nm').getBoundingClientRect().width) + 'px' : '-');
-    btns[5].click(); await sleep(500);
+    window.GitPanel.toggleGroupByDir(); await sleep(600);
     add('切回按目录：目录行恢复', qa('#cd-files .git-group').length > 0);
 
     // 树形缩进：**子级必须比父级深一级**（以前目录行与文件行的复选框同列 → 层级看不出来）
