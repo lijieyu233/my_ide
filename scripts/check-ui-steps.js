@@ -1044,11 +1044,36 @@ module.exports = {
     await window.GitPanel.refresh();
     window.GitPanel.openCommit();
     await sleep(1200);
-    q('#commit-precheck').click();
+    // 「提交前检查」不再占工具行图标位 → 从提交消息那行的 ⋯ 菜单进（用户：两个一次性设置不该抢高频按钮的位置）
+    q('#commit-more').click();
+    await sleep(400);
+    const pcItems = qa('#git-float-menu .ctx-item');
+    add('⋯ 菜单里有「提交前检查」与「本次提交的作者」',
+      pcItems.some((x) => /提交前检查/.test(x.textContent)) && pcItems.some((x) => /本次提交的作者/.test(x.textContent)),
+      pcItems.map((x) => x.textContent.trim()).join(' | '));
+    const pcEntry = pcItems.find((x) => /提交前检查/.test(x.textContent));
+    if (pcEntry) pcEntry.click();
     await sleep(900);
-    add('提交前检查弹窗打开（三个勾选项 + 命令列表）',
-      !!q('#pc-box') && !!q('#pc-enabled') && !!q('#pc-hooks') && !!q('#pc-todo') && !!q('#pc-cmds'),
-      q('#pc-box') ? 'ok' : '没打开');
+    add('提交前检查弹窗打开（说明条 + 三个勾选项 + 命令列表）',
+      !!q('#pc-box') && !!q('#pc-enabled') && !!q('#pc-hooks') && !!q('#pc-todo') && !!q('#pc-cmds')
+      && !!q('#pc-box .pc-cap'),
+      q('#pc-box') ? 'cap=' + !!q('#pc-box .pc-cap') : '没打开');
+    add('弹窗顶部写清了"什么时候跑、会不会拦"（用户："这个又是怎么用的"）',
+      /点「提交」时/.test((q('#pc-box .pc-cap') || {}).textContent || ''), (q('#pc-box .pc-cap') || {}).textContent || '无说明');
+    add('有「插入示例」按钮（空列表只写一句"例如 npm run lint"等于没说）', !!q('#pc-demo'));
+    if (q('#pc-demo')) { q('#pc-demo').click(); await sleep(400); }
+    add('点「插入示例」后命令列表出现可改的样例', qa('#pc-box .pc-cmd').length >= 2,
+      qa('#pc-box .pc-cmd').length + ' 条：' + qa('#pc-box .pc-cmd .pc-sh').map((x) => x.value).join(' / '));
+    // ⚠ 示例只是给用户看的：这里必须删干净。留着的话 ①「保存后只有 1 条命令」的断言会失败
+    //   ② 示例里的 npm test 会在 runPreChecks 里真的跑起来（几十秒 + 可能失败）
+    while (qa('#pc-box .pc-cmd').length) {
+      const del = qa('#pc-box .pc-cmd .pc-del')[0];
+      if (!del) break;
+      del.click();
+      await sleep(150);
+    }
+    add('示例可以逐条删掉（回到空态提示）', qa('#pc-box .pc-cmd').length === 0 && !!q('.pc-empty'),
+      qa('#pc-box .pc-cmd').length + ' 条');
     q('#pc-add').click();
     await sleep(300);
     const rows = qa('#pc-box .pc-cmd');
@@ -1081,7 +1106,10 @@ module.exports = {
     add('Sign-off 勾上后写进偏好（myide-git-ui）',
       window.GitPanel.signoff === true && /signoff/.test(localStorage.getItem('myide-git-ui') || ''),
       localStorage.getItem('myide-git-ui') || '(空)');
-    q('#commit-author').click();
+    q('#commit-more').click();
+    await sleep(400);
+    const auEntry = qa('#git-float-menu .ctx-item').find((x) => /本次提交的作者/.test(x.textContent));
+    if (auEntry) auEntry.click();
     await sleep(800);
     add('作者弹窗打开且写明"不改 git config"',
       !!q('#au-box') && /不会改写/.test((q('#au-box') || {}).textContent || ''), q('#au-box') ? 'ok' : '没打开');
@@ -1091,7 +1119,7 @@ module.exports = {
     await sleep(600);
     const ao = window.GitPanel.authorOverride;
     add('作者覆盖只进内存（按钮进入"已覆盖"态）',
-      !!ao && ao.name === '自检临时作者' && q('#commit-author').classList.contains('active'),
+      !!ao && ao.name === '自检临时作者' && q('#commit-more').classList.contains('active'),
       JSON.stringify(ao));
     const signed = await window.GitPanel.appendSignoff('feat: 演示签名');
     add('Sign-off 生成的签名行用覆盖后的作者',
@@ -1285,7 +1313,7 @@ module.exports = {
 
     // ---------- 第二层：真实 UI ----------
     window.GitPanel.rootDir = repo;
-    window.GitPanel.togglePreview(false);   // 关内嵌预览 → 单击行走「编辑区差异」这条真路径
+    // （内嵌预览已整体移除 → 单击文件行本来就是「编辑区差异」这条真路径，不需要再关什么开关）
     await window.GitPanel.refresh();        // openCommit 靠 state.isRepo 判断，不 refresh 会去弹「初始化仓库」
     window.GitPanel.openCommit();
     await sleep(1400);
@@ -1367,6 +1395,38 @@ module.exports = {
     add('顶部有 refs 下拉（所有分支 / 当前分支 / 各分支）',
       (q('#gl-ref') ? q('#gl-ref').options.length : 0) >= 2,
       q('#gl-ref') ? [...q('#gl-ref').options].slice(0, 3).map((o) => o.textContent).join(' | ') : '无 #gl-ref');
+    // 工具栏按钮与主界面同一套（原来是 ⇄ 🔄 ✕ 三个字符/emoji，跟别处的内联 SVG 图标不是一个东西）
+    add('日志工具栏三个按钮都是内联 SVG（风格对齐主界面）',
+      ['gl-compare', 'gl-refresh', 'gl-close'].every((id) => {
+        const b = q('#' + id);
+        return !!b && !!b.querySelector('svg') && !b.textContent.trim();
+      }),
+      qa('.gl-toolbar .vt-btn').map((b) => JSON.stringify(b.textContent.trim())).join(' '));
+    // 分支区分：当前分支的标签走 .cur，其它分支按分支名着色（--bc）
+    const gt = qa('#gl-list .gl-branch');
+    const curT = gt.filter((t) => t.classList.contains('cur'));
+    const othT = gt.filter((t) => !t.classList.contains('cur'));
+    add('分支标签：当前分支 .cur、其它分支按名字着色（--bc）—— 一行挂两个分支也分得开',
+      curT.length >= 1 && othT.every((t) => (t.getAttribute('style') || '').includes('--bc')),
+      'cur=' + curT.length + ' 其它=' + othT.length + (othT[0] ? ' ' + (othT[0].getAttribute('style') || '') : ''));
+    add('不在当前分支上的提交带 off-branch（整行压暗）',
+      typeof q('#gl-list .gl-row.off-branch') !== 'undefined',
+      qa('#gl-list .gl-row.off-branch').length + ' 行');
+    // 活动栏：Git 日志被挪到底部（用户：「这个按钮移动到左侧栏下面 且不和左侧栏上面的冲突了」）
+    {
+      const strip = q('#tool-strip');
+      const logBtn = q('#tool-log');
+      const stripBtns = qa('#tool-strip .tool-btn');
+      const others = stripBtns.filter((b) => b !== logBtn);
+      const lb = logBtn ? logBtn.getBoundingClientRect() : null;
+      const lowest = others.length ? Math.max(...others.map((b) => b.getBoundingClientRect().bottom)) : -1;
+      add('活动栏：Git 日志被放到最下方（与上面的工具按钮拉开距离）',
+        !!strip && !!logBtn && strip.contains(logBtn) && lb.top > lowest,
+        logBtn ? '日志 top=' + Math.round(lb.top) + ' 其它最低 bottom=' + Math.round(lowest) : '无 #tool-log');
+      add('活动栏：日志是最后一个按钮（DOM 顺序也在末尾）',
+        stripBtns[stripBtns.length - 1] === logBtn,
+        stripBtns.map((b) => b.id).join(' → '));
+    }
     if (rows.length) { rows[0].click(); await sleep(1600); }
     const right = q('#gl-right');
     add('点提交行 → 右侧出详情（提交头 + 变更文件）',
@@ -1929,12 +1989,12 @@ module.exports = {
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
     // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
-    add('工具行 13 个纯图标按钮', btns.length === 13 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('工具行 9 个纯图标按钮', btns.length === 9 && btns.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
     const dOf = (btn) => [...btn.querySelectorAll('path')].map((p2) => p2.getAttribute('d') || '').join(' ');
-    const expBtn = btns[5], colBtn = btns[6];
+    const expBtn = btns[3], colBtn = btns[4];   // ⚠ 索引随工具行前移（删掉「提交」「预览」）
     const expD = dOf(expBtn), colD = dOf(colBtn);
     // 展开/收起必须是**双箭头**：两条 path、每条都是折线（含两个拐点），且不再有 h/v 命令
     //（+/− 的特征正是"一条横线/一条竖线"：旧实现里出现了 v 与 h）
@@ -1979,21 +2039,31 @@ module.exports = {
       while (n && n !== q('#cd-files')) { if (n.style && n.style.display === 'none') return false; n = n.parentElement; }
       return true;
     });
+    // ⚠ 工具行索引变了（删掉「提交」「内嵌预览」后整体前移 2 位）：
+    //   0 刷新 / 1 回滚 / 2 差异 / 3 展开全部 / 4 收起全部 / 5 分组 / 6 搁置 / 7 远程 / 8 日志
     const before = visible().length;
-    btns[6].click(); await sleep(400);
+    btns[4].click(); await sleep(400);
     add('收起全部 → 无可见文件行', visible().length === 0, '收起前 ' + before);
-    btns[5].click(); await sleep(900);
+    btns[3].click(); await sleep(900);
     add('展开全部 → 文件行恢复', visible().length >= before, '恢复 ' + visible().length);
-    btns[7].click(); await sleep(500);
-    add('切到平铺：目录行消失 + 显示父目录', qa('#cd-files .git-group').length === 0 && qa('#cd-files .git-file .dir').length > 0,
-      '父目录列 ' + qa('#cd-files .git-file .dir').length + ' 个');
-    // 平铺视图里**所有文件名的起点必须一致**：父目录前缀占固定宽列，否则 build/ 与 plugins/
-    // 后面的名字参差不齐（用户截图："换个视角更离谱"）
+    btns[5].click(); await sleep(500);
+    add('切到平铺：目录行消失 + 显示所属目录', qa('#cd-files .git-group').length === 0 && qa('#cd-files .git-file .dir').length > 0,
+      '路径列 ' + qa('#cd-files .git-file .dir').length + ' 个');
+    // 平铺视图：**文件名在前、路径在后**。
+    //   路径放前面时，"固定宽列 + 长路径"会把前缀截成 `项目/心理健...`，整行看起来像两列错位的数据
+    //   （用户两轮都报"缩进还是错的"）。名字在前 → 所有文件名天然从同一 x 起。
     const nms = qa('#cd-files .git-file .nm');
     const nxs = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().left));
-    add('平铺：所有文件名的起始 x 一致（父目录列固定宽）',
+    add('平铺：所有文件名的起始 x 一致（名字在前，天然对齐）',
       nxs.length >= 2 && Math.max(...nxs) - Math.min(...nxs) <= 1, 'xs=' + nxs.join(','));
-    btns[7].click(); await sleep(500);
+    const withDir = qa('#cd-files .git-file').find((r) => r.querySelector('.dir'));
+    add('平铺：路径在文件名**之后**（不再把路径当第一列）',
+      !!withDir && (withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 4) !== 0,
+      withDir ? withDir.dataset.file : '没有带路径的行');
+    add('平铺：名字保持完整（路径可省略，名字不被压没）',
+      !!withDir && withDir.querySelector('.nm').getBoundingClientRect().width > 8,
+      withDir ? '名字宽=' + Math.round(withDir.querySelector('.nm').getBoundingClientRect().width) + 'px' : '-');
+    btns[5].click(); await sleep(500);
     add('切回按目录：目录行恢复', qa('#cd-files .git-group').length > 0);
 
     // 树形缩进：**子级必须比父级深一级**（以前目录行与文件行的复选框同列 → 层级看不出来）
@@ -2039,21 +2109,18 @@ module.exports = {
       add('忽略行没有回滚按钮（回滚=删除，语义不对）', ib.querySelectorAll('.git-revert').length === 0);
     }
 
-    // 内嵌 diff 预览
-    const ey = qa('#cd-files .git-cp-bar .vt-btn')[4];
-    // ⚠ 先归零再点开：这个开关是持久化的，上一次运行/上一个步骤留下的值会让"点一下就开"
-    //   变成"点一下就关"（然后就断言不到预览 —— 已踩过一次）
-    if (ey.classList.contains('active')) { ey.click(); await sleep(500); }
-    ey.click();
-    await sleep(800);
-    // 显式点一个文本文件行：默认取到的可能是二进制 / 超大文件（kiosk_patches 之类），那样预览只有提示没有 diff 行
+    // 内嵌预览已整体移除（用户：340px 侧栏里读不了，"一点用没有"）→ 差异统一在编辑区看
+    add('工具行不再有「内嵌预览」按钮、面板里也没有预览框', !q('#commit-preview'), 'ok');
     const TEXTY = /\.(js|json|md|css|html|txt|yml|yaml|ts)$/;
     const pick = qa('#cd-files .git-file').find((r) => TEXTY.test(r.dataset.file || ''));
     if (pick) { pick.click(); await sleep(1200); }
-    const pre = q('#commit-preview');
-    add('预览打开：面板内出现 diff 行', !!pre && !pre.classList.contains('hidden') && qa('#cp-body .cp-line').length > 0,
-      (q('#cp-stats') ? q('#cp-stats').textContent : '') + ' · hunk=' + qa('#cp-body .cp-hunk').length);
-    add('预览按钮高亮', ey.classList.contains('active'));
+    {
+      const dw = q('#viewer .diff-wrap');
+      const dfp = q('#viewer .df-path');
+      add('点文件行 → 直接在编辑区打开差异（移除预览后的唯一路径）',
+        !!dw && !!dfp && dfp.textContent === (pick ? pick.dataset.file : '#'),
+        dfp ? '编辑区=' + dfp.textContent : '编辑区没有 .diff-wrap');
+    }
 
     // 提交消息历史 + amend 回填
     const msg = q('#commit-msg');
@@ -2143,6 +2210,14 @@ module.exports = {
       && !!q('#cd-files .git-cp-bar #cd-shelve'),
       '标题行按钮=' + tActs.length + '（' + tActs.map((b) => b.textContent.trim()).join('/') + '） 工具行按钮='
       + qa('#cd-files .git-cp-bar .vt-btn').length);
+    // amend 行塞了 Amend + Sign-off + 时钟 + ⋯ —— 340px 下最容易把第一个标签压成「修正上次提交 (Am...」
+    {
+      const rowEl = q('#panel-git .commit-amend-row');
+      const bad = rowEl ? [...rowEl.querySelectorAll('.m-check span')].filter((x) => x.scrollWidth > x.clientWidth + 1) : [];
+      add('amend 行四个控件都完整显示（文字没被压成省略号）',
+        !!rowEl && bad.length === 0 && !/Am\.\.\.|…/.test(rowEl.textContent),
+        rowEl ? JSON.stringify(rowEl.textContent) + ' 溢出=' + bad.length : '无 amend 行');
+    }
     const dirty = q('#cd-dirty');
     add('默认宽度下 ahead/behind + 修改数 完整显示（没被省略）',
       !!dirty && dirty.scrollWidth <= dirty.clientWidth + 1,
@@ -2162,28 +2237,21 @@ module.exports = {
     add('窄侧栏下标题行内容不被裁掉（换行代替溢出裁剪）', clipped() <= 1,
       '裁掉=' + clipped() + 'px 行高=' + rowH());
 
-    // 「面板内预览」：开着的时候要能看出这是什么，并且一键能转到编辑区
-    window.GitPanel.togglePreview(true);
-    await sleep(500);
-    const tag = q('.cp-tag');
-    add('预览框上写明它是「面板内预览」', !!tag && /面板内预览/.test(tag.textContent || ''),
-      tag ? JSON.stringify(tag.textContent) : '无 .cp-tag');
-    const ey = qa('#cd-files .git-cp-bar .vt-btn')[4];
-    add('工具栏的眼睛按钮有可见的「开」状态', !!ey && ey.classList.contains('active'),
-      ey ? 'class=' + ey.className : '无');
-    const TEXTY = /\.(js|json|md|css|html|txt|yml|yaml|ts)$/;
-    const pick = qa('#cd-files .git-file').find((r) => TEXTY.test(r.dataset.file || ''));
-    if (pick) { pick.click(); await sleep(1300); }
-    add('面板内预览能看到行级 diff', qa('#cp-body .cp-line').length > 0,
-      qa('#cp-body .cp-line').length + ' 行 · ' + (q('#cp-stats') ? q('#cp-stats').textContent : ''));
-    const op = q('#cp-open');
-    add('预览框里有「在编辑区打开」按钮（面板窄时的出口）', !!op, op ? op.title.slice(0, 26) : '无');
-    if (op) {
-      op.click();
-      await sleep(1300);
+    // 工具行精简后的反向断言：不该再有「提交」（底部 footer 已有）与「内嵌预览」
+    const LBL = qa('#cd-files .git-cp-bar .vt-btn').map((b) => b.title || '');
+    add('工具行没有「提交」按钮（底部 footer 的「提交 (I)」才是唯一入口）',
+      !LBL.some((t) => /提交勾选的文件/.test(t)), LBL.length + ' 个按钮');
+    add('工具行没有「内嵌预览」按钮', !LBL.some((t) => /内嵌预览/.test(t)), 'ok');
+    add('「提交前检查 / 本次作者」不在工具行（收进 ⋯ 菜单）',
+      !LBL.some((t) => /提交前检查/.test(t)) && !LBL.some((t) => /本次提交的作者/.test(t)) && !!q('#commit-more'),
+      '⋯ 入口=' + !!q('#commit-more'));
+    {
+      const TEXTY = /\.(js|json|md|css|html|txt|yml|yaml|ts)$/;
+      const pick = qa('#cd-files .git-file').find((r) => TEXTY.test(r.dataset.file || ''));
+      if (pick) { pick.click(); await sleep(1300); }
       const dw = q('#viewer .diff-wrap');
       const dfp = q('#viewer .df-path');
-      add('点它 → 同一个文件在编辑区打开（面板窄就看编辑区）',
+      add('点文件行 → 编辑区打开差异（面板窄时看编辑区）',
         !!dw && !!dfp && dfp.textContent === (pick ? pick.dataset.file : '#'),
         dfp ? '编辑区=' + dfp.textContent : '编辑区没有 .diff-wrap');
       // ⚠ 单文件视图顶部已经写了路径 + 侧别 → 表格里不该再画一次文件名（用户截图指出过"重复了"）
@@ -2199,22 +2267,17 @@ module.exports = {
     return { R };
   },
 
-  // ---------- 上面那步的收尾：关预览 / 还原侧栏宽度 / 关掉编辑区对比视图 ----------
-  // ⚠ 别省这一步：`togglePreview` 会把开关写进 `myide-git-ui`，留着它后面所有步骤
-  //   量到的都是"面板内嵌预览开着"的状态（本轮之前它一直是泄漏的）。
+  // ---------- 上面那步的收尾：还原侧栏宽度 / 关掉编辑区对比视图 ----------
   commitTitleLayoutReset: async () => {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
     const q = (s) => document.querySelector(s);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    window.GitPanel.togglePreview(false);
     window.GitPanel.closeDiffView();
     const sb = q('#sidebar');
     if (sb) sb.style.width = window.__ckOrigSbW || '';
     await sleep(400);
-    const cp = q('#commit-preview');
-    add('内嵌预览已关（开关不再留在 localStorage 里）', !cp || cp.classList.contains('hidden'),
-      cp ? 'hidden=' + cp.classList.contains('hidden') : '无 #commit-preview');
+    add('内嵌预览相关 DOM 已不存在（功能整体移除）', !q('#commit-preview') && !q('#cp-body'), 'ok');
     // 用「进来时的宽度」当基准（不是 LAYOUT.def）：前面若干步骤可能合法地调过侧栏宽度
     const want = parseInt(window.__ckOrigSbW, 10) || window.App.LAYOUT.sidebar.def;
     add('侧栏宽度已还原（双击分隔线复位不会跳到别的宽度）',

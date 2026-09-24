@@ -34,10 +34,14 @@
     <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="7.8" height="9.8" rx="1.2"/><path d="M5.4 13.4h7.2a1 1 0 0 0 1-1V4.6"/></svg></button>
     <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M2.8 8h10.4M2.8 11.8h6.4"/></svg></button>
     <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
-    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.6"/><path d="M8 1.6v3.8M8 10.6v3.8"/></svg></button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
+    <!-- Git 日志放活动栏**底部**：「提交」和「日志」是两个不同的 git 入口、图标又都带分支/圆点，
+         挨在一起容易点错；日志是低频入口，不该占上半区的好位置
+         （用户：「这个按钮移动到左侧栏下面 且不和左侧栏上面的冲突了」） -->
+    <span class="tool-strip-gap" aria-hidden="true"></span>
+    <button id="tool-log" class="tool-btn" title="Git 日志 (Alt+9 / Ctrl+5)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.6"/><path d="M8 1.6v3.8M8 10.6v3.8"/></svg></button>
   </div>
   <aside id="sidebar">
     <div id="panel-project">
@@ -74,23 +78,15 @@
              它们都是"仓库级操作"，已挪进下面的工具行（与刷新/回滚/差异同层）。 -->
       </div>
       <div class="cd-files" id="cd-files"></div>
-      <!-- 内嵌 diff 预览（PyCharm 式「预览」开关；固定主编辑区看整体，这里看行级细节） -->
-      <div id="commit-preview" class="hidden">
-        <div class="cp-head">
-          <span class="cp-tag" title="这是「面板内预览」：在侧栏这个小框里看 diff。点工具栏的眼睛图标可以关掉，改成在编辑区打开">面板内预览</span>
-          <span id="cp-title" class="cp-title">预览</span>
-          <span id="cp-stats" class="cp-stats"></span>
-          <button id="cp-open" class="vt-btn" title="在编辑区打开这个文件的差异（面板太窄时用这个看整体）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.8h3.8v3.8M13.2 2.8 7.6 8.4"/><path d="M12 9.4v2.8a1 1 0 0 1-1 1H4.2a1 1 0 0 1-1-1V5.4a1 1 0 0 1 1-1h2.8"/></svg></button>
-          <button id="cp-close" class="vt-btn" title="关闭预览（回到「点文件在编辑区看差异」）">✕</button>
-        </div>
-        <div id="cp-body" class="cp-body"></div>
-      </div>
       <div class="cd-msgbox">
         <div class="commit-amend-row">
-          <label class="m-check" title="把这次改动追加到上一次提交，并自动回填上次的提交消息"><input type="checkbox" id="commit-amend"><span>修正上次提交 (Amend)</span></label>
+          <label class="m-check m-check-amend" title="修正上次提交（Amend）：把这次改动追加到上一次提交，并自动回填上次的提交消息"><input type="checkbox" id="commit-amend"><span>修正上次提交</span></label>
           <!-- M5：Sign-off（DCO）。勾上后提交时在消息末尾追加 Signed-off-by，不写进输入框（避免重复追加） -->
           <label class="m-check m-check-signoff" title="在提交消息末尾追加 Signed-off-by: 姓名 &lt;邮箱&gt;（DCO）"><input type="checkbox" id="commit-signoff"><span>Sign-off</span></label>
           <button id="commit-history" class="vt-btn" title="提交消息历史（点击填充到输入框）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg></button>
+          <!-- 「提交前检查 / 本次提交的作者」原来是工具行里两个独立图标：它们都是一次性设置，
+               不该和刷新/回滚这些高频操作抢位置 → 收进这里一个 ⋯ 菜单 -->
+          <button id="commit-more" class="vt-btn" title="更多提交选项：本次提交的作者 / 提交前检查"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle class="fill" cx="3.6" cy="8" r="1.05"/><circle class="fill" cx="8" cy="8" r="1.05"/><circle class="fill" cx="12.4" cy="8" r="1.05"/></svg></button>
         </div>
         <textarea id="commit-msg" placeholder="提交消息" spellcheck="false"></textarea>
         <div class="commit-foot">
@@ -250,15 +246,16 @@
     <!-- Git 日志工具窗口（PyCharm Alt+9 / Ctrl+5，底部停靠：编辑器在上、日志在下） -->
     <div id="git-log-panel" class="hidden">
       <div id="gl-resizer" title="拖动调整高度"></div>
+      <!-- 工具栏按钮用与主界面一致的内联 SVG（原来是 ⇄ 🔄 ✕ 三个 emoji/字符，跟别处的图标按钮不是一套东西） -->
       <div class="gl-toolbar">
-        <input id="gl-author" type="text" placeholder="👤 作者过滤…" spellcheck="false" autocomplete="off">
-        <input id="gl-search" type="text" placeholder="🔍 消息 / 哈希…（/开头=正则）" spellcheck="false" autocomplete="off">
+        <input id="gl-author" type="text" placeholder="作者" spellcheck="false" autocomplete="off" title="按作者过滤（包含匹配）">
+        <input id="gl-search" type="text" placeholder="消息 / 哈希（/ 开头=正则）" spellcheck="false" autocomplete="off" title="按提交消息或哈希搜索；以 / 开头按正则匹配">
         <span id="gl-path-chip" class="hidden" title="文件历史过滤：仅显示改动该文件的提交"></span>
-        <span class="gl-tb-count" id="gl-count"></span>
         <span class="spacer"></span>
-        <button id="gl-compare" class="vt-btn" title="对比两个分支（独有提交 + 差异文件）">⇄</button>
-        <button id="gl-refresh" class="vt-btn" title="刷新">🔄</button>
-        <button id="gl-close" class="vt-btn" title="关闭 (Shift+Esc)">✕</button>
+        <span class="gl-tb-count" id="gl-count"></span>
+        <button id="gl-compare" class="vt-btn" title="对比两个分支（独有提交 + 差异文件）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 5.4h9.4M9.6 3.2l2.2 2.2-2.2 2.2M13.2 10.6H3.8M6.4 8.4l-2.2 2.2 2.2 2.2"/></svg></button>
+        <button id="gl-refresh" class="vt-btn" title="刷新"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 3.2v3.2H9.8"/></svg></button>
+        <button id="gl-close" class="vt-btn" title="关闭 (Shift+Esc)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </div>
       <div class="gl-body">
         <div id="gl-left">

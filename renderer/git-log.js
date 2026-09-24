@@ -34,6 +34,29 @@ const GitLog = (() => {
   const esc = (s) => GitPanel.esc(s);
   const fmtDate = (ts) => GitPanel.fmtDate(ts);
   const laneColor = (lane) => PALETTE[lane % PALETTE.length];
+  // 分支 → 颜色：当前分支走 CSS 的 .cur（强调色），其余按名字散列到调色板。
+  // 用户反馈"分支树这里好像没能很好区分不同分支"——同一行挂两个分支时，光看名字不够快。
+  const branchColor = (name) => {
+    if (!name || name === currentBranch) return null;
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return PALETTE[h % PALETTE.length];
+  };
+  // 当前分支（HEAD）可达的提交集合：不在集合里的行整体压暗 —— 一眼分得清"我这条线"和"别的分支的历史"
+  function reachableFromHead() {
+    const byOid = new Map(commits.map((c) => [c.oid, c]));
+    const seen = new Set();
+    if (!headOid) return new Set(commits.map((c) => c.oid));   // 无 HEAD（文件历史模式等）→ 不压暗
+    const st = [headOid];
+    while (st.length) {
+      const o = st.pop();
+      if (seen.has(o)) continue;
+      seen.add(o);
+      const c = byOid.get(o);
+      if (c) for (const p of c.parents) st.push(p);
+    }
+    return seen;
+  }
   const laneX = (lane) => lane * LW + LW / 2 + 4;
 
   // ---------- 车道分配（gitk 式状态机） ----------
@@ -177,14 +200,20 @@ const GitLog = (() => {
     const rows = document.createElement('div');
     rows.className = 'gl-rows';
     rows.style.paddingLeft = graphW + 'px';
+    const reach = reachableFromHead();
     graph.rows.forEach((row, i) => {
       const c = row.c;
       const el = document.createElement('div');
-      el.className = 'gl-row' + (c.oid === selOid ? ' sel' : '');
+      const off = headOid && !reach.has(c.oid);
+      el.className = 'gl-row' + (c.oid === selOid ? ' sel' : '') + (off ? ' off-branch' : '');
+      if (off) el.title = '不在当前分支上（别的分支的历史）';
       el.dataset.oid = c.oid;
       const names = branchHeads[c.oid] || [];
-      const badges = names.map((b) =>
-        `<span class="gl-branch${b === currentBranch ? ' cur' : ''}">${esc(b)}</span>`).join('');
+      const badges = names.map((b) => {
+        const bc = branchColor(b);
+        return `<span class="gl-branch${b === currentBranch ? ' cur' : ''}"`
+          + (bc ? ` style="--bc:${bc}"` : '') + `>${esc(b)}</span>`;
+      }).join('');
       const headBadge = c.oid === headOid ? '<span class="gl-head">HEAD</span>' : '';
       el.innerHTML = `<div class="gl-l1"><span class="gl-msg" title="${esc(c.fullMessage)}">${esc(c.message)}</span>${badges}${headBadge}</div>` +
         `<div class="gl-l2"><span class="gl-hash">${c.short}</span><span class="gl-author">${esc(c.author)}</span><span class="gl-date">${fmtDate(c.timestamp)}</span></div>`;

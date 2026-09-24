@@ -201,6 +201,8 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 }
 /* 侧栏收起/展开按钮置顶（与工具窗口按钮区分） */
 #tool-sidebar { border-bottom: 1px solid var(--border); }
+/* 弹性占位：它之后的按钮被推到底部（Git 日志）——「提交」与「日志」两个 git 入口挨着容易点错 */
+.tool-strip-gap { margin-top: auto; flex: 0 0 auto; }
 /* 侧栏整体收起（Ctrl+` / 按钮切换） */
 body.sidebar-collapsed #sidebar,
 body.sidebar-collapsed #sidebar-resizer { display: none; }
@@ -964,6 +966,14 @@ textarea.editor {
 }
 #pc-box .m-label input:focus, #au-box .m-label input:focus { border-color: var(--accent); }
 .pc-row { margin: 6px 0; }
+/* 弹窗顶部说明：原来只有一个标题 + 一排勾选框，用户第一反应是"这个又是怎么用的" */
+.pc-cap {
+  font-size: 12px; color: var(--text-dim); line-height: 1.75;
+  background: var(--bg-input); border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0; padding: 7px 10px; margin-bottom: 10px;
+}
+.pc-cap b { color: var(--text); font-weight: 600; }
+.pc-cap code { font-family: var(--font-mono); font-size: .92em; color: var(--text); }
 .pc-two { display: flex; gap: 12px; align-items: flex-end; }
 .pc-two .m-label { flex: 1; }
 .pc-cmds-head {
@@ -971,6 +981,7 @@ textarea.editor {
   font-size: 12px; color: var(--text-dim);
 }
 .pc-cmds-head .tb-btn { height: 20px; padding: 0 8px; font-size: 11.5px; }
+.pc-cmds-head .grow { flex: 1; }
 .pc-cmds { display: flex; flex-direction: column; gap: 4px; }
 .pc-cmd { display: flex; gap: 6px; align-items: center; }
 .pc-cmd input {
@@ -1037,6 +1048,9 @@ textarea.editor {
 /* 修正上次提交行（PyCharm：复选框 + 说明 + 提交消息历史 🕘） */
 .commit-amend-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 /* Sign-off 是不定长文字里最次要的一个：允许被压（Amend 是主项，不能被压成竖排） */
+/* 这一行塞了三样：Amend（主项，不能被压）+ Sign-off + 两个图标。
+   标签文字一律用短版（"(Amend)" 进 tooltip）—— 否则 340px 下会被压成「修正上次提交 (Am...」 */
+.commit-amend-row .m-check { flex: 0 0 auto; white-space: nowrap; }
 .commit-amend-row .m-check-signoff { flex: 0 1 auto; min-width: 0; }
 .commit-amend-row .m-check-signoff span { overflow: hidden; text-overflow: ellipsis; }
 .commit-amend-row .m-check { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
@@ -1054,31 +1068,6 @@ textarea.editor {
 .m-split { display: inline-flex; }
 .m-split #cm-ok-push { border-radius: 4px 0 0 4px; }
 .m-split .m-caret { border-radius: 0 4px 4px 0; border-left: 1px solid rgba(255,255,255,.25); padding: 4px 6px; }
-/* 内嵌 diff 预览（PyCharm 提交窗口的预览开关）：侧栏窄，用紧凑 unified 视图 */
-#commit-preview {
-  flex: 0 0 auto; max-height: 42%; min-height: 90px;
-  display: flex; flex-direction: column;
-  border-top: 1px solid var(--border-pane); background: var(--bg);
-}
-#commit-preview.hidden { display: none; }
-.cp-head { display: flex; align-items: center; gap: 6px; padding: 3px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-/* 「面板内预览」标签：这个框是什么、怎么关，都要在框上写清楚 —— 之前只有工具栏一个眼睛图标，
-   开着的时候没有任何文字说明（用户：「这个预览是什么意思 / 为什么改成在侧边栏显示了」）。 */
-.cp-tag {
-  flex-shrink: 0; font-size: .8em; color: var(--text-dim);
-  background: var(--btn-bg); border-radius: 3px; padding: 1px 5px; white-space: nowrap;
-}
-.cp-title { font-size: .88em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-stats { margin-left: auto; font-size: .85em; color: var(--text-dim); white-space: nowrap; }
-.cp-head .vt-btn { border: none; background: transparent; border-radius: 4px; height: 18px; padding: 0 4px; color: var(--text-dim); cursor: pointer; }
-.cp-head .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
-.cp-body { flex: 1; min-height: 0; overflow: auto; font-family: var(--font-mono); font-size: .88em; line-height: 1.5; padding-bottom: 6px; }
-.cp-hunk { padding: 2px 10px; color: var(--text-dim); background: var(--bg-panel); position: sticky; top: 0; }
-.cp-line { padding: 0 10px; white-space: pre-wrap; word-break: break-all; }
-.cp-line.add { background: rgba(80,180,90,.16); color: var(--green); }
-.cp-line.del { background: rgba(220,80,80,.16); color: var(--red); }
-.cp-line.ctx { color: var(--text); }
-.cp-msg { padding: 10px; color: var(--text-dim); font-size: .92em; }
 /* 提交信息历史 / 提交并推送选项的浮动菜单（沿用右键菜单条目样式） */
 .git-float-menu {
   position: fixed; z-index: 210; min-width: 180px; max-width: 320px;
@@ -1088,7 +1077,9 @@ textarea.editor {
 }
 .git-float-menu .ctx-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.git-empty { padding: 30px 20px; text-align: center; color: var(--text-dim); font-size: .92em; }
+/* 列表里的空状态：靠上、左对齐。原来是 30px 上下留白 + 居中 —— 没有变更时那一大坨留白
+   把下面的「忽略的文件」挤到老远，看起来像页面坏了（用户：「这里的展示很奇怪」）。 */
+.git-empty { padding: 12px 12px; text-align: left; color: var(--text-dim); font-size: .92em; line-height: 1.6; }
 .git-empty .gbtn { margin-top: 10px; }
 
 .br-new { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
@@ -1111,7 +1102,43 @@ textarea.editor {
 }
 .br-item:hover .br-more { opacity: 1; }
 .br-item .br-more:hover { color: var(--text-bright); background: var(--bg-hover); }
-.rm-branches { padding: 2px 14px 6px 26px; border-bottom: 1px solid rgba(128,128,128,.08); }
+/* ---------- 远程仓库弹窗（重做）---------- */
+/* 原来：远程名与 URL 挤在同一行、URL 明文带密码、区块之间只有一条横线（看着像进度条），
+   用户反馈「这个怎么用 ui也不好看」。现在：卡片 + 区块标题 + 说明，地址里的凭证一律打码。 */
+#br-box { width: 620px; max-width: 94vw; }
+#br-box .m-body { padding: 12px 16px; max-height: 70vh; overflow: auto; }
+.rm-cap { font-size: 12px; color: var(--text-dim); line-height: 1.7; margin: 2px 0 8px; }
+.rm-cap b { color: var(--text); font-weight: 600; }
+.rm-cap code { font-family: var(--font-mono); font-size: .92em; color: var(--text); }
+#rm-list { display: flex; flex-direction: column; gap: 6px; }
+.rm-item {
+  border: 1px solid var(--border); border-radius: 5px; padding: 7px 10px;
+  background: var(--bg-input);
+}
+.rm-item-head { display: flex; align-items: center; gap: 8px; }
+.rm-item .rm-name { color: var(--text-bright); font-weight: 600; font-size: 12.5px; }
+.rm-item .rm-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.rm-cred {
+  font-size: 11px; color: #e5c07b; border: 1px solid currentColor; border-radius: 8px;
+  padding: 0 6px; white-space: nowrap;
+}
+.rm-del { font-size: 11.5px; color: var(--text-dim); cursor: pointer; border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+.rm-del:hover { color: var(--red); background: var(--bg-hover); }
+.rm-item-url {
+  margin-top: 3px; font-size: 11.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rm-item-url .rm-host { color: var(--text); }
+.rm-empty {
+  font-size: 12px; color: var(--text-dim); line-height: 1.7;
+  padding: 8px 10px; border: 1px dashed var(--border); border-radius: 5px;
+}
+.rm-sec { border-top: 1px solid var(--border-mid); margin-top: 12px; padding-top: 12px; }
+.rm-add-row { padding: 10px 0 0; border-bottom: none; }
+.rm-add-row #rm-name { flex: 0 0 92px; }
+.rm-auth-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.rm-note { font-size: 11.5px; color: var(--text-dim); }
+.rm-branches { padding: 6px 2px 2px 14px; border-bottom: none; border-left: 2px solid var(--border); margin: 6px 0 2px 8px; }
 .rm-br { display: flex; align-items: center; gap: 6px; font-size: .92em; padding: 1px 0; color: var(--text-dim); }
 .rm-br-dot { width: 12px; text-align: center; color: var(--text-dim); }
 .rm-br-head { color: var(--text-bright); }
@@ -1133,6 +1160,7 @@ textarea.editor {
 }
 .git-group .g-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .git-group .g-count, .git-sec-title .sec-hint { opacity: .8; white-space: nowrap; }
+.git-sec-title .sec-hint { opacity: .55; font-size: .92em; }
 .git-sec-title .caret, .git-group .caret { width: 10px; font-size: .69em; cursor: pointer; flex: 0 0 10px; }
 .git-sec-title input[type="checkbox"], .git-group input[type="checkbox"] {
   accent-color: var(--accent); margin: 0; flex: 0 0 13px; cursor: pointer;
@@ -1143,14 +1171,15 @@ textarea.editor {
 /* （.caret-spacer / .badge-spacer 的宽度定义在 .badge 那一块，靠近它的"真身"） */
 .git-file .cf-check { flex: 0 0 13px; }
 .git-file .badge, .git-group .g-name { flex-shrink: 0; }
-/* 平铺视图：父目录弱化显示在文件名前（PyCharm 关掉 Group by Directory 后的样子）。
-   ⚠ 目录前缀必须占**固定宽度**，否则 "build/" 与 "plugins/" 后面的文件名对不齐
-   （用户截图："换个视角更离谱"）。 */
+/* 平铺视图：文件名在前、所属目录在后（VS Code 搜索结果就是这种排法，也是人读列表的顺序）。
+   ⚠ 路径放**前面**时，"固定宽列"会把长路径截成 `项目/心理健...` —— 整行看起来像两列错位的数据，
+   用户两轮都报"缩进还是错的"。名字在前 → 所有文件名从同一 x 起（天然对齐），路径随剩余宽度省略。
+   空间不够时先压路径（flex:1 1 auto）再压名字，文件名优先保持完整。 */
 .git-file .dir {
   color: var(--text-dim); font-size: .88em; overflow: hidden; text-overflow: ellipsis;
-  flex: 0 0 72px; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; margin-left: 8px;
 }
-.git-file .nm { min-width: 0; }
+.git-file .nm { flex: 0 1 auto; min-width: 0; }
 .git-group:hover { color: var(--text-bright); }
 
 /* ---------- Git 日志工具窗口（PyCharm Alt+9，底部停靠） ---------- */
@@ -1181,7 +1210,8 @@ body.gl-ew-resizing #gl-splitter { background: var(--accent); opacity: .5; }
 }
 #gl-ref:focus { border-color: var(--accent); }
 #gl-author, #gl-search {
-  width: 130px; margin: 0;
+  /* 可伸缩：窄窗口下两个框 + 计数 + 三个按钮挤在一行会互相压 */
+  flex: 0 1 160px; min-width: 76px; margin: 0;
   background: var(--bg-input); color: var(--text-bright);
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 4px 8px; font-size: 12px; outline: none;
@@ -1208,9 +1238,11 @@ body.gl-ew-resizing #gl-splitter { background: var(--accent); opacity: .5; }
 .gl-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .gl-msg { color: var(--text-bright); font-size: .96em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gl-branch {
+  /* 文字 + 边框用该分支的颜色（--bc，由 JS 按分支名分配）：同一行挂两个分支时一眼分得开 */
   font-size: .77em; padding: 0 6px; border-radius: 8px; flex-shrink: 0;
-  background: rgba(79, 156, 214, 0.15); color: var(--accent);
-  border: 1px solid rgba(79, 156, 214, 0.4);
+  background: rgba(128, 128, 128, .13);
+  color: var(--bc, var(--accent));
+  border: 1px solid var(--bc, var(--accent));
 }
 .gl-branch.cur { background: var(--accent); color: #fff; font-weight: 600; }
 .gl-head {
@@ -1218,6 +1250,11 @@ body.gl-ew-resizing #gl-splitter { background: var(--accent); opacity: .5; }
   background: var(--green); color: #fff;
 }
 .gl-l2 { display: flex; gap: 10px; font-size: .85em; color: var(--text-dim); }
+/* 不在当前分支上的提交（HEAD 不可达）：消息与哈希一起压暗 —— 只看主线时它们是"别的分支的历史"，
+   高亮着反而抢注意力（gitk / GitKraken 也是这个约定） */
+.gl-row.off-branch .gl-msg { color: var(--text-dim); }
+.gl-row.off-branch .gl-l2 .gl-hash { color: var(--text-dim); }
+.gl-row.off-branch:hover .gl-msg { color: var(--text); }
 .gl-l2 .gl-hash { color: var(--accent); font-family: var(--font-mono); }
 .gl-l2 .gl-author { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gl-more { margin: 8px auto; display: block; }
