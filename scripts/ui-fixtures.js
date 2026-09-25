@@ -127,7 +127,9 @@ function writeFixtures(dir) {
   fs.writeFileSync(path.join(dir, '_ui_wrap.md'), WRAP_DOC, 'utf8');
   // 项目规则文件（AI 助手会把它注入系统提示）
   try { fs.mkdirSync(path.join(dir, '.myide'), { recursive: true }); } catch {}
-  fs.writeFileSync(path.join(dir, '.myide', 'ai-rules.md'), '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', 'utf8');
+  // 沙箱/杀软可能短暂持锁：演示用的规则文件，写失败不致命（内容已在）—— 别让它崩掉整个自检
+  try { fs.writeFileSync(path.join(dir, '.myide', 'ai-rules.md'), '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', 'utf8'); }
+  catch (e) { console.error('[fixture] ai-rules.md 写入跳过:', e.code || e.message); }
   return { png, md };
 }
 

@@ -150,6 +150,28 @@ const GitPanel = (() => {
   }
 
   // ---------- 远程管理弹窗（remote 列表 + 新增 + 认证凭证）----------
+  // 远程地址拆解 + 打码：界面上只显示 host / path（凭证不该明文铺在列表里），
+  // 但 tooltip 要给出完整地址（打码后）——不然用户没法核对到底配的是哪个仓库。
+  function splitRemote(u) {
+    const full = String(u || '');
+    let rest = full, scheme = '';
+    const m = rest.match(/^([a-zA-Z+]+):\/\//);
+    if (m) { scheme = m[1] + '://'; rest = rest.slice(m[0].length); }
+    const at = rest.lastIndexOf('@');
+    let cred = '';
+    if (at >= 0 && rest.slice(0, at).indexOf('/') === -1) { cred = rest.slice(0, at); rest = rest.slice(at + 1); }
+    const slash = rest.indexOf('/');
+    const host = slash >= 0 ? rest.slice(0, slash) : rest;
+    const path = slash >= 0 ? rest.slice(slash + 1) : '';
+    return { scheme, cred, host, path, hasCred: !!cred };
+  }
+  function maskRemote(u) {
+    const p = splitRemote(u);
+    return p.scheme + (p.cred ? p.cred.split(':')[0] + ':***@' : '') + p.host + (p.path ? '/' + p.path : '');
+  }
+
+  // 远程仓库 / 认证（重做过一版：原来 origin 与 URL 挤在一行、URL 里明文带密码、
+  // 区块之间只有一条像"进度条"的横线 —— 用户反馈「这个怎么用 ui也不好看」）
   async function openRemoteDialog() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
     const r = await window.myIDE.git.listRemotes(root);
@@ -162,49 +184,85 @@ const GitPanel = (() => {
     const primary = (r.remotes || []).find((x) => x.name === 'origin') || (r.remotes || [])[0] || null;
     const primaryHost = primary ? hostOfUrl(primary.url) : null;
     const firstHost = primaryHost || Object.keys(authMap).find((h) => h !== '*') || '';
+    const savedHosts = Object.keys(authMap).filter((h) => h !== '*');
     const firstCred = authMap[firstHost] || {};
     box.innerHTML = `
       <div class="m-head">远程仓库 <span class="x" id="rm-x">✕</span></div>
       <div class="m-body">
-        <div id="rm-list" style="max-height:320px;overflow:auto"></div>
-        <div class="br-new" style="margin-top:8px">
-          <input id="rm-name" type="text" value="origin" spellcheck="false" style="width:90px" title="远程名">
-          <input id="rm-url" type="text" placeholder="远程 URL（https://… 或本地路径）" spellcheck="false" style="flex:1">
+        <div class="rm-cap">远程地址 —— <b>推送 / 拉取</b>的目标仓库（<b>origin</b> 是默认那个）。
+          想换个地址就删掉再加一条。</div>
+        <div id="rm-list"></div>
+        <div class="br-new rm-add-row">
+          <input id="rm-name" type="text" value="origin" spellcheck="false" title="远程名（习惯上就叫 origin）">
+          <input id="rm-url" type="text" spellcheck="false" placeholder="粘贴地址：https://github.com/用户/仓库.git 或本机路径">
           <button class="tb-btn" id="rm-add">＋ 添加</button>
         </div>
-        <div style="border-top:1px solid var(--border-mid);margin:10px 0;padding-top:10px">
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">推送/拉取认证（按主机保存，多台 Git 服务器互不覆盖；命令行已记住的凭证可自动复用）</div>
+        <div class="rm-sec">
+          <div class="rm-cap">推送 / 拉取认证 —— <b>按主机分开保存</b>，多台 Git 服务器互不覆盖。
+            命令行里已经记住的凭证会自动复用，所以这里留空通常也能拉取；只有遇到反复要密码时才需要填。</div>
           <div class="br-new">
-            <input id="rm-host" type="text" placeholder="主机（如 gitlab.example.com:8080）" spellcheck="false" value="${esc(firstHost)}" style="flex:1" title="Git 服务器主机（域名:端口），凭证按主机分别保存">
+            <input id="rm-host" type="text" spellcheck="false" value="${esc(firstHost)}"
+              placeholder="主机（域名:端口，如 gitlab.example.com:8080）" title="凭证按这个键保存：只填域名和端口，不要带 https:// 和路径">
           </div>
-          <div class="br-new" style="margin-top:6px">
-            <input id="rm-user" type="text" placeholder="用户名" spellcheck="false" value="${esc(firstCred.username || '')}" style="flex:1">
-            <input id="rm-pass" type="password" placeholder="密码 / 访问令牌" spellcheck="false" value="${esc(firstCred.password || '')}" style="flex:1">
+          <div class="br-new">
+            <input id="rm-user" type="text" spellcheck="false" placeholder="用户名" value="${esc(firstCred.username || '')}">
+            <input id="rm-pass" type="password" spellcheck="false" placeholder="密码 / 访问令牌（GitHub 要用 PAT，不能填登录密码）" value="${esc(firstCred.password || '')}">
           </div>
-          <button class="tb-btn" id="rm-save-auth" style="margin-top:6px">保存该主机认证</button>
+          <div class="rm-auth-foot">
+            <button class="tb-btn" id="rm-save-auth">保存该主机认证</button>
+            <span id="rm-auth-note" class="rm-note"></span>
+          </div>
         </div>
       </div>`;
+    const showAuthNote = (h) => {
+      const note = document.getElementById('rm-auth-note');
+      if (!note) return;
+      const n = savedHosts.length;
+      note.textContent = h
+        ? (savedHosts.includes(h) ? '这台主机已保存过凭证（保存会覆盖）' : '这台主机还没有凭证')
+        : (n ? '本机已保存 ' + n + ' 台主机的凭证' : '本机还没有保存过任何凭证');
+    };
     // 切换主机时预填该主机已存凭证
     document.getElementById('rm-host').oninput = () => {
-      const c = authMap[document.getElementById('rm-host').value.trim()] || {};
+      const h = document.getElementById('rm-host').value.trim();
+      const c = authMap[h] || {};
       document.getElementById('rm-user').value = c.username || '';
       document.getElementById('rm-pass').value = c.password || '';
+      showAuthNote(h);
     };
+    showAuthNote(firstHost);
     document.getElementById('rm-x').onclick = () => Modal.hide();
     const list = document.getElementById('rm-list');
     const renderList = async () => {
       const rr = await window.myIDE.git.listRemotes(root);
       list.innerHTML = '';
       if (!rr.remotes || !rr.remotes.length) {
-        list.innerHTML = '<div class="git-empty">暂无远程仓库</div>';
+        const d = document.createElement('div');
+        d.className = 'rm-empty';
+        d.textContent = '还没有配远程仓库 —— 把地址粘到下面那行、点「＋ 添加」就行（常见的 GitHub 地址长得像 https://github.com/你自己/仓库.git）。';
+        list.appendChild(d);
         return;
       }
       for (const rm of rr.remotes) {
+        const sp = splitRemote(rm.url);
         const row = document.createElement('div');
-        row.className = 'br-item';
-        row.innerHTML = `<span class="rm-name">${esc(rm.name)}</span><span class="rm-url" title="${esc(rm.url)}">${esc(rm.url)}</span><span class="rm-del" title="删除该远程">✕</span>`;
+        row.className = 'rm-item';
+        row.innerHTML = '<div class="rm-item-head">'
+          + '<span class="rm-name"></span>'
+          + '<span class="rm-acts">'
+          + '<span class="rm-cred" title="这个地址里带了用户名/密码（这里已打码显示）">带凭证</span>'
+          + '<span class="rm-del">删除</span>'
+          + '</span></div>'
+          + '<div class="rm-item-url"><span class="rm-host"></span><span class="rm-path"></span></div>';
+        row.querySelector('.rm-name').textContent = rm.name;
+        if (!sp.hasCred) row.querySelector('.rm-cred').remove();
+        const hostEl = row.querySelector('.rm-host');
+        hostEl.textContent = sp.host || (sp.path ? '' : '(空地址)');
+        const pathEl = row.querySelector('.rm-path');
+        pathEl.textContent = sp.path ? ' / ' + sp.path : '';
+        row.title = '完整地址（凭证已打码）：' + maskRemote(rm.url);
         row.querySelector('.rm-del').onclick = async () => {
-          const yes = await Modal.confirm('删除远程', `确定删除远程「${rm.name}」吗？`);
+          const yes = await Modal.confirm('删除远程', '确定删除远程「' + rm.name + '」吗？（只删本机这份配置，不影响远端仓库）');
           if (!yes) return;
           const dr = await window.myIDE.git.removeRemote(root, rm.name);
           if (dr.ok) { MI.toast('已删除 ' + rm.name, 'ok'); renderList(); refresh(); }
@@ -216,7 +274,7 @@ const GitPanel = (() => {
         const brBox = document.createElement('div');
         brBox.className = 'rm-branches';
         if (!brs.length) {
-          brBox.innerHTML = '<div class="rm-br-empty">暂无已知分支（拉取 ⬇ 后显示）</div>';
+          brBox.innerHTML = '<div class="rm-br-empty">本机还没有它的分支信息（拉取一次后就有了）</div>';
         } else {
           for (const b of brs) {
             const el = document.createElement('div');
@@ -233,8 +291,9 @@ const GitPanel = (() => {
     document.getElementById('rm-add').onclick = async () => {
       const name = document.getElementById('rm-name').value.trim();
       const url = document.getElementById('rm-url').value.trim();
+      if (!url) { MI.toast('请先粘贴远程地址', 'err'); return; }
       const ar = await window.myIDE.git.addRemote(root, { name, url });
-      if (ar.ok) { MI.toast('已添加远程 ' + name, 'ok'); document.getElementById('rm-url').value = ''; renderList(); }
+      if (ar.ok) { MI.toast('已添加远程 ' + name, 'ok'); document.getElementById('rm-url').value = ''; renderList(); refresh(); }
       else MI.toast('添加失败: ' + ar.error, 'err');
     };
     document.getElementById('rm-save-auth').onclick = () => {
@@ -244,6 +303,8 @@ const GitPanel = (() => {
       const password = document.getElementById('rm-pass').value;
       if (!username) { MI.toast('请填写用户名', 'err'); return; }
       saveGitAuthMap(host, { username, password });
+      if (!savedHosts.includes(host)) savedHosts.push(host);
+      showAuthNote(host);
       MI.toast('已保存 ' + host + ' 的认证', 'ok');
     };
   }
@@ -442,7 +503,8 @@ const GitPanel = (() => {
     if (!state.changed.length) {
       const d = document.createElement('div');
       d.className = 'git-empty';
-      d.textContent = state.branch === '(无提交)' ? '还没有任何提交，勾选文件写下信息提交第一个吧' : '没有更改 ✨';
+      // 文案朴素、靠上：原来的「没有更改 ✨」占着 30px 上下留白还居中，看起来像页面坏了
+      d.textContent = state.branch === '(无提交)' ? '还没有任何提交 —— 勾选文件、写下提交信息，提交第一个吧' : '没有未提交的更改';
       list.appendChild(d);
     } else {
       for (const sec of fileSections()) list.appendChild(renderSection(sec));
@@ -450,7 +512,9 @@ const GitPanel = (() => {
     list.appendChild(renderIgnoredSection()); // PyCharm「忽略的文件」节点：默认收起，展开才遍历
     updateCheckUI();
     gitSelIdx = -1; // 重新渲染后重置键盘导航选中
-    if (previewOn) renderPreview(); else hidePreview();
+    // ⚠ 必须在**这里**量（列表已挂到 DOM，Range 才量得到文字宽度）：
+    //   平铺名字列宽 = 这一列表里最长名字的宽度（不留"一大片空白"）。放在 buildFlatList 里量会拿到 0。
+    applyFlatNameCol(filesEl);
   }
 
   // ---------- 「忽略的文件」节点（PyCharm）：默认收起，展开时才遍历工作区 ----------
@@ -481,7 +545,7 @@ const GitPanel = (() => {
     wrap.appendChild(body);
 
     const syncHint = () => {
-      if (!ignoredFiles) { hint.textContent = '展开加载'; return; }
+      if (!ignoredFiles) { hint.textContent = '点击展开'; return; }
       const n = ignoredFiles.length;
       hint.textContent = (ignoredTruncated ? n + '+ 个' : n + ' 个文件');
     };
@@ -861,12 +925,55 @@ const GitPanel = (() => {
     };
   }
   function updateAuthorBtn() {
-    const b = document.getElementById('commit-author');
+    // 「本次作者」不再有独立图标（收进 ⋯ 菜单）—— 覆盖生效时让 ⋯ 亮起来 + 在 tooltip 里写明，
+    // 否则用户会忘记自己还挂着一个临时作者。
+    const b = document.getElementById('commit-more');
     if (!b) return;
     b.classList.toggle('active', !!authorOverride);
     b.title = authorOverride
-      ? '本次提交作者：' + authorOverride.name + ' <' + authorOverride.email + '>（点开可改 / 恢复默认）'
-      : '本次提交的作者（只影响这一次，不写回 git config）';
+      ? '更多提交选项 —— 本次提交作者：' + authorOverride.name + ' <' + authorOverride.email + '>（点开可改 / 恢复默认）'
+      : '更多提交选项：本次提交的作者 / 提交前检查';
+  }
+
+  // 显示选项菜单（PyCharm「Show Options Menu」）：分组方式 + 忽略的文件。
+  // 用户是拿 PyCharm 的截图点名的这两项（Group By / Show）。
+  function openViewOptionsMenu(anchorEl) {
+    const hasIgnored = !!document.querySelector('#cd-files .git-sec-title');
+    openFloatMenu(anchorEl, [
+      { header: true, label: '分组方式' },
+      { label: (groupByDir ? '✓ ' : '\u3000') + '按目录（Directory）',
+        title: 'Ctrl+Alt+P —— 目录行 + 缩进的文件行', run: () => { if (!groupByDir) GitPanel.toggleGroupByDir(); } },
+      { label: (groupByDir ? '\u3000' : '✓ ') + '平铺（Flat）',
+        title: '所有文件同一层，用路径前缀表示位置', run: () => { if (groupByDir) GitPanel.toggleGroupByDir(); } },
+      { header: true, label: '显示' },
+      { label: '忽略的文件',
+        title: hasIgnored ? '跳到并展开「忽略的文件」节点（在列表末尾）' : '当前没有「忽略的文件」节点',
+        run: () => {
+          const head = [...document.querySelectorAll('#cd-files .git-sec-title')]
+            .find((h) => /忽略的文件/.test(h.textContent));
+          if (head) { head.scrollIntoView({ block: 'nearest' }); head.click(); }
+          else MI.toast('当前没有被忽略的文件', 'ok');
+        } },
+    ]);
+  }
+
+  // 提交相关的一次性设置（原来在工具行占两个图标位 —— 一次性的东西不该抢高频按钮的位置）
+  function openCommitMoreMenu(anchorEl) {
+    openFloatMenu(anchorEl, [
+      { header: true, label: '提交选项' },
+      {
+        label: '本次提交的作者…',
+        title: authorOverride
+          ? '当前：' + authorOverride.name + ' <' + authorOverride.email + '>（只影响这一次）'
+          : '只影响这一次提交，不写回仓库的 git config',
+        run: () => openAuthorDialog(),
+      },
+      {
+        label: '提交前检查…',
+        title: '自定义命令 / Git 钩子 / TODO 扫描 / 提交消息校验 —— 点「提交」时才跑',
+        run: () => openPrecheckDialog(),
+      },
+    ]);
   }
 
   // 提交前配置弹窗（勾选项 + 命令列表）
@@ -878,15 +985,22 @@ const GitPanel = (() => {
     box.innerHTML = `
       <div class="m-head">提交前检查<span class="x" id="pc-x">✕</span></div>
       <div class="m-body">
-        ${row('pc-enabled', '提交前执行检查', '总开关：关掉后提交时什么都不跑')}
-        ${row('pc-hooks', '运行 Git 钩子 pre-commit', '交给 git 自己跑（git hook run pre-commit）：退出码非 0 会中断提交')}
-        ${row('pc-todo', '扫描 TODO / FIXME（只提示，不阻断）', '只扫这次要提交的文件；命中项列出来由你决定')}
+        <div class="pc-cap">点「<b>提交</b>」时自动按下面的顺序跑一遍。
+          只有<b>不通过</b>的项会拦一下（弹结果面板，还能选「仍然提交」）；TODO 这类只是提示，不会打断。
+          配置跟着项目走，存在 <code>.myide/precommit.json</code>。</div>
+        ${row('pc-enabled', '提交前执行检查', '总开关：关掉后点提交什么都不跑（适合临时绕过）')}
+        ${row('pc-hooks', '运行 Git 钩子 pre-commit', '交给 git 自己跑（git hook run pre-commit）。仓库里没有这个钩子时记为「跳过」，不算失败')}
+        ${row('pc-todo', '扫描 TODO / FIXME（只提示，不阻断）', '只扫这次要提交的文件，列出「文件:行号」；跳过二进制与超大文件')}
         <label class="m-label">标记关键字（逗号分隔）<input id="pc-kinds" type="text" spellcheck="false"></label>
         <div class="pc-two">
           <label class="m-label">提交消息必须匹配（正则，可空）<input id="pc-regex" type="text" spellcheck="false" placeholder="如 ^(feat|fix|docs)(\\(.+\\))?: "></label>
           <label class="m-label">主题长度上限<input id="pc-max" type="number" min="0" max="200" step="1" style="width:90px"></label>
         </div>
-        <div class="pc-cmds-head">自定义命令（按顺序跑，前一条失败就停）<button class="tb-btn" id="pc-add">＋ 添加</button></div>
+        <div class="pc-cmds-head">自定义命令（在项目根目录执行，按顺序跑，前一条失败就停）
+          <span class="grow"></span>
+          <button class="tb-btn" id="pc-demo">插入示例</button>
+          <button class="tb-btn" id="pc-add">＋ 添加</button>
+        </div>
         <div id="pc-cmds" class="pc-cmds"></div>
         <div class="pc-hint">只做「命令 + 钩子 + TODO + 消息校验」；Reformat / 优化 import / 静态分析<b>不做</b>（需要接入完整工具链）。</div>
       </div>
@@ -909,7 +1023,7 @@ const GitPanel = (() => {
       if (!list.length) {
         const d = document.createElement('div');
         d.className = 'pc-empty';
-        d.textContent = '还没有命令（例如 npm run lint）';
+        d.textContent = '还没有命令 —— 点右上「＋ 添加」写一条（例如 npm run lint），或者点「插入示例」看个样子';
         cmdsEl.appendChild(d);
         return;
       }
@@ -934,6 +1048,15 @@ const GitPanel = (() => {
       cmd: r.querySelector('.pc-sh').value.trim(),
     })).filter((c) => c.cmd);
     drawCmds(preCfg.commands);
+    q('#pc-demo').onclick = () => {
+      // 「插入示例」：填两条最常见的（前端 / Python），用户改成自己的即可 —— 空列表配一句"例如 npm run lint"
+      // 对不熟的人等于没说（用户反馈："这个又是怎么用的"）
+      const cur = readCmds();
+      if (!cur.some((c) => c.cmd === 'npm run lint')) cur.push({ name: 'lint', cmd: 'npm run lint' });
+      if (!cur.some((c) => c.cmd === 'npm test --silent')) cur.push({ name: 'test', cmd: 'npm test --silent' });
+      drawCmds(cur);
+      MI.toast('已插入示例命令，改成你自己的再保存', 'ok');
+    };
     q('#pc-add').onclick = () => {
       const cur = readCmds();
       cur.push({ name: '', cmd: '' });
@@ -1080,24 +1203,22 @@ const GitPanel = (() => {
       bar.appendChild(b);
       return b;
     };
+    // ⚠ 这里**故意没有「提交」**：底部 footer 就是「提交 (I) / 提交并推送 (P)」，
+    //   两个入口做同一件事只会让人犹豫按哪个（用户指出过"这个提交按钮多余了 下面就有"）。
+    // ⚠ 也**没有「内嵌预览」**：340px 侧栏里 unified diff 每行都要折行、读不出结构，
+    //   用户判定"一点用没有"；差异统一在编辑区看（点文件行 / 「差异」按钮）。
     mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh());
     const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
     const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
-    const com = mk(IC.commit, '提交勾选的文件 (Ctrl+Enter)', () => doCommit(false));
-    const prev = mk(IC.eye, previewOn
-      ? '内嵌预览：开 —— 选中文件的 diff 显示在下面这个小框里。点一下关掉：关掉后点文件是在编辑区打开差异（面板窄，编辑区看得全）'
-      : '内嵌预览：关 —— 点文件是在编辑区打开差异。点一下改成在面板内嵌显示（PyCharm 提交窗口的预览开关）',
-      () => togglePreview());
-    if (previewOn) prev.classList.add('active');
     const sep = document.createElement('span');
     sep.className = 'tb-sep';
     sep.setAttribute('aria-hidden', 'true');
     bar.appendChild(sep);
     mk(IC.expandAll, '展开全部（目录与分节）', () => setAllCollapsed(false));
     mk(IC.collapseAll, '收起全部（目录与分节）', () => setAllCollapsed(true));
-    const grp = mk(IC.group, groupByDir ? '分组方式：按目录（点击切换为平铺）' : '分组方式：平铺（点击切换为按目录）',
-      () => GitPanel.toggleGroupByDir());
-    if (groupByDir) grp.classList.add('active');
+    // ⚠ 这里**故意没有独立的「分组方式」按钮**：它和下面 ⋯ 显示选项菜单里的「分组方式」是同一个功能
+    //   （PyCharm 的工具栏也没有这个按钮 —— 分组方式在 Show Options Menu 里，外加 Ctrl+Alt+P）。
+    //   用户原话："按钮外观乱搞 重复功能未删除"。
     // 仓库级操作（搁置 / 远程 / 日志）—— 原在标题行右侧挤着，见 IC 里那段说明。
     // ⚠ 追加在**最后**：dom 测试与自检步骤按索引取工具行按钮（[4]=预览 [6][7]=展开/分组），
     //   插在中间会把这些索引全打乱。
@@ -1108,12 +1229,12 @@ const GitPanel = (() => {
     mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve');
     mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote');
     mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
-    // M5：提交前检查 / 本次作者。本来放在提交输入框上面那行，但 340px 侧栏里会把
-    // 「修正上次提交 (Amend)」压成省略号（截断比多两个图标难看得多）→ 挪进工具行末尾。
-    // ⚠ 仍按 id 取，dom 测试与自检按 id 点击不受影响。
-    mk(IC.check, '提交前检查：自定义命令 / Git 钩子 / TODO 扫描 / 消息校验', () => openPrecheckDialog(), 'commit-precheck');
-    const au = mk(IC.user, '本次提交的作者（只影响这一次，不写回 git config）', () => openAuthorDialog(), 'commit-author');
-    barBtns = { roll, dif, com, prev, grp, au };
+    // M5 的「提交前检查 / 本次作者」都搬进了提交消息框那行的「⋯ 更多」菜单（见 openCommitMoreMenu）：
+    // 一次性的设置不该和刷新/回滚这些高频操作抢位置。
+    // 显示选项（PyCharm 提交窗口工具栏的 ⋯ Show Options Menu）：分组方式 / 忽略的文件。
+    // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
+    mk(IC.viewOpts, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
+    barBtns = { roll, dif };
     return bar;
   }
 
@@ -1204,11 +1325,15 @@ const GitPanel = (() => {
     return wrap;
   }
 
-  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前
+  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前。
+  // ⚠ **平铺也要有正确的缩进**（用户 2026-09-24 明确要求）：按**路径里的目录段数**缩进，
+  //   `kiosk_patches/x` 深一级、`kiosk_patches/backup/x` 深两级 —— 层级不因关掉分组而消失，
+  //   只是改用缩进 + 路径列表达。深度封顶 6（120px），防止超深路径把内容推出面板。
   function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
+    const depthOf = (f) => Math.min(6, Math.max(0, String(f).split(/[\\/]+/).filter(Boolean).length - 1));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, depthOf(c.file), true, ro));
     return box;
   }
 
@@ -1283,12 +1408,11 @@ const GitPanel = (() => {
   }
   const uiPrefs = loadUiPrefs();
   let groupByDir = uiPrefs.groupByDir !== false;  // 默认按目录（PyCharm 默认视图）
-  let previewOn = !!uiPrefs.preview;              // 面板内嵌 diff 预览（默认关，走主编辑区）
   const dirCollapsed = uiPrefs.dirCollapsed || {}; // '节key/depth/name' → 用户显式覆盖
   let dirAllCollapsed = !!uiPrefs.dirAllCollapsed;  // 「收起全部」的兜底（未被单独点过的目录跟随它）
   function saveUiPrefs() {
     try {
-      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, preview: previewOn, dirCollapsed, dirAllCollapsed, signoff }));
+      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, dirCollapsed, dirAllCollapsed, signoff }));
     } catch {}
   }
   // M5：Sign-off（DCO）—— 与视图偏好同一个键，但它影响提交内容，所以单独取名
@@ -1324,8 +1448,6 @@ const GitPanel = (() => {
   // 节点三态复选框注册表：[{input, files[]}]（分节标题行 / 目录行）
   let checkNodes = [];
   let barBtns = null;      // 工具行按钮引用（勾选变化时联动禁用态）
-  let previewSeq = 0;      // 预览令牌（防晚到的 diff 覆盖新预览）
-  let previewCur = null;   // 当前正在面板内预览的变更项（「在编辑区打开」要复用同一个文件）
   let ignoredFiles = null; // 「忽略的文件」节点数据（null = 还没加载过）
   let ignoredTruncated = false; // 遍历是否被上限截断
   let ignoredAll = new Set(); // 忽略文件路径集合（勾选集合的成员判定要用）
@@ -1347,7 +1469,6 @@ const GitPanel = (() => {
     //   16px 下两根会连成一个菱形/叉（截图里就是那样）。平缓之后才是"往外 / 往里"的双箭头。
     expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 6.2 8 3.6l2.8 2.6"/><path d="M5.2 9.8 8 12.4l2.8-2.6"/></svg>',
     collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6 8 6.2l2.8-2.6"/><path d="M5.2 12.4 8 9.8l2.8 2.6"/></svg>',
-    group: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5.2h5.4M3 8h10M3 10.8h7.6"/></svg>',
     // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
     // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
     // 移到工具行：它们本来就是"仓库级操作"，和刷新/回滚/差异同层。
@@ -1357,7 +1478,13 @@ const GitPanel = (() => {
     // 分支图标：与状态栏 (#sb-branch) 用同一枚 SVG。⚠ 别用字符 '⎇' ——
     // Windows 默认字体没有这个字形，会 fallback 成 '⌥' 之类完全不相干的符号（状态栏踩过）。
     branch: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>',
-    // M5：提交前检查 = 对勾；本次作者 = 人像
+    // 显示选项（工具行末尾的 Show Options Menu）：**眼睛 + 右下角小箭头**。
+    //   ⚠ 原来是三个点 —— 三点在工具栏里的通用含义是"更多操作"，而 PyCharm 这里根本不是三点，
+    //     是"眼睛 + 下拉箭头"（眼睛 = 显示什么，小箭头 = 这是个菜单）。
+    //     用户拿 PyCharm 截图问"咱们还是三个点？"，就是这一处。
+    //   ⚠ 眼睛要整体偏左上，把右下角让给箭头；两者不能重叠（16px 下会糊成一团）。
+    viewOpts: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.4 6.6s2.2-3.3 5.5-3.3S12.4 6.6 12.4 6.6s-2.2 3.3-5.5 3.3S1.4 6.6 1.4 6.6Z"/><circle cx="6.9" cy="6.6" r="1.5"/><path d="M11.5 11.3l1.6 1.8 1.6-1.8"/></svg>',
+    // M5：提交前检查 = 对勾（用在「⋯ 更多」菜单里的图标位）
     check: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg>',
     user: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c0-2.6 2.1-4.2 4.8-4.2s4.8 1.6 4.8 4.2"/></svg>',
   };
@@ -1388,7 +1515,7 @@ const GitPanel = (() => {
       const pathKey = secKey + '/' + depth + '/' + name;
       const gTitle = document.createElement('div');
       gTitle.className = 'git-group';
-      gTitle.style.paddingLeft = (8 + depth * 14) + 'px';
+      gTitle.style.paddingLeft = (10 + depth * TREE_INDENT) + 'px';
       const caret = document.createElement('span');
       caret.className = 'caret';
       const nm = document.createElement('span');
@@ -1410,11 +1537,10 @@ const GitPanel = (() => {
         cb.type = 'checkbox';
         gTitle.appendChild(cb);
       }
-      // 空占位：对齐文件行的徽章列，让"同层目录名 / 文件名"从同一个 x 起
-      const bsp = document.createElement('span');
-      bsp.className = 'badge-spacer';
-      bsp.setAttribute('aria-hidden', 'true');
-      gTitle.appendChild(bsp);
+      // ⚠ 目录行**不留徽章空位**：名称紧跟复选框（PyCharm 同款）。
+      //   以前这里放了个 16px 空占位，为的是让"同层目录名与文件名对齐" —— 但用户直接圈着那块空白问
+      //   "这里空一大片是干什么的"：目录没有状态徽章，留空纯属浪费；那一列只有文件行需要（M/?/A）。
+      //   层级靠**复选框阶梯**（每级 20px）表达，不靠把目录名推到徽章列。
       gTitle.appendChild(nm);
       gTitle.appendChild(ct);
       gTitle.title = '点击收起 / 展开 ' + name;
@@ -1463,6 +1589,59 @@ const GitPanel = (() => {
 
   // 单个变更文件行：勾选框 + 状态徽章 + （平铺视图下）父目录 + 文件名 + 悬停回滚
   // ro=true（只读分节，如「已暂存」）：不给勾选框、不给回滚按钮 —— 只展示、不动作
+  // 平铺视图里的路径前缀：首段 + … + 末段（`项目/…/数字人/`）。
+  // 完整路径在 340px 面板里会把文件名挤到屏幕外，而中间那几层对"这是哪个文件"没帮助
+  //（IDEA 的 breadcrumb、VS Code 的路径显示都是这么压的）。
+  function shortDir(parent) {
+    if (!parent) return '';
+    const segs = String(parent).split(/[\\/]+/).filter(Boolean);
+    if (!segs.length) return '';
+    if (segs.length === 1) return segs[0] + '/';
+    return segs[0] + '/…/' + segs[segs.length - 1] + '/';
+  }
+
+  // 树形每级缩进步长。⚠ 原来是 14px，用户 2026-09-24 说"层级一直看不出来" → 定为 20px。
+  //   树形行的基准 10（不是 8）：分节标题自身有 10px 左内边距，行也用 10 才能让
+  //   「分节标题 → 一级目录」正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）；
+  //   平铺行不参与层级，保持原基准 8（否则平铺视图整体右移 8px，与刚定版的列对齐打架）。
+  const TREE_INDENT = 20;
+
+  // 平铺视图的名字列宽 = **这一列表里最长名字的自然宽度**（封顶行宽的 46%）。
+  //   ⚠ 固定 46% 在名字都很短时会留出"一大片空白"（用户圈着截图问"这里空一大片"）；
+  //     而让名字列各自自适应又会让路径起点随行漂移（v3 的老毛病）。取"最长名字"两头都占：
+  //     列起点固定（所有名字/路径都对齐）+ 名字与路径之间不留空。
+  //   ⚠ 必须在**挂到 DOM 之后**量（Range 量文字要有布局）→ 由 render() 末尾调用，不是 buildFlatList。
+  function applyFlatNameCol(scopeEl) {
+    const nms = [...(scopeEl || document).querySelectorAll('.git-file.flat .nm')];
+    if (!nms.length) return;
+    const host = nms[0].closest('.git-group-body') || scopeEl;
+    const avail = ((host && host.getBoundingClientRect().width) || 320) * 0.46;
+    const cap = Math.max(80, avail);
+    let w = 0;
+    for (const el of nms) {
+      const tn = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!tn) { el.style.flexBasis = ''; continue; }
+      // ⚠ jsdom 的 Range **没有** getBoundingClientRect（会直接抛 "is not a function"，
+      //   连累一大片无关用例）→ 量不到就退回按字符估宽（CJK 12px / 拉丁 6.6px @ .92em）。
+      let tw = 0;
+      try {
+        const r = document.createRange();
+        r.setStart(tn, 0);
+        r.setEnd(tn, tn.textContent.length);
+        if (typeof r.getBoundingClientRect === 'function') {
+          const rect = r.getBoundingClientRect();
+          tw = (rect && rect.width) || 0;
+        }
+      } catch { tw = 0; }
+      if (!tw) {
+        for (const ch of String(tn.textContent)) tw += /[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 12 : 6.6;
+      }
+      w = Math.max(w, tw);
+    }
+    const px = Math.min(Math.ceil(w) + 2, cap);
+    for (const el of nms) el.style.flexBasis = px + 'px';
+  }
+
   // 平铺视图是否保留「父目录列」：只看**整份变更列表**里有没有带目录的文件
   //（顶层文件也要留这一列，否则它的名字会比别人靠左一整列）
   function flatNeedsDirCol() {
@@ -1481,7 +1660,7 @@ const GitPanel = (() => {
     const f = document.createElement('div');
     f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
-    f.style.paddingLeft = (8 + depth * 14) + 'px';
+    f.style.paddingLeft = ((flat ? 8 : 10) + depth * TREE_INDENT) + 'px';
     const parts = c.file.split(/[\\/]/);
     const base = parts.pop();
     const parent = parts.join('/');
@@ -1493,19 +1672,29 @@ const GitPanel = (() => {
     const isStaged = !isIgnoredRow && c.status.charAt(0) === '*';
     const shown = isIgnoredRow && c.status === 'ignoredDir' ? base + '/' : base;
     // caret 占位：平铺视图也要（否则同一层级的目录名与文件名差一个 caret 列宽，看着就是没对齐）
-    // ⚠ 平铺视图里"父目录列"要么全有、要么全无：顶层文件不画这一列的话，它的名字会跳到左边
-    //   （比别的行少 78px）—— 那就又变成"参差不齐"了。是否保留该列由整份列表统一决定。
+    // ⚠⚠ 平铺视图 = **名字在前、路径在后**（第六版定论：照 PyCharm 抄，用户给过截图）。
+    //   行结构： [缩进][勾选][徽章] **名字（固定宽，超出末尾省略）** 路径（灰色，吃剩余宽度，末尾省略）
+    //   v1 路径在前、宽度自适应       → 文件名参差（"换个视角更离谱"）
+    //   v2 路径在前、固定 72px        → 名字齐了，路径被截成 `项目/心理健...`（"缩进还是错的"）
+    //   v3 名字在前、但名字列自适应    → **路径起点随名字长短漂移**（实测 120~161px）
+    //   v4/v5 路径在前、固定 46%（右对齐 → 左对齐）→ 还是不对：顺序反了，名字被挤到右边
+    //   🔴 根因：v3 的错不在"名字在前"，在**名字列宽度自适应**。PyCharm 的名字列是**固定宽**的，
+    //      所以两列的起点都固定：名字对齐、路径也对齐（各自末尾省略）。
     const showDir = flat && flatNeedsDirCol();
+    // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
+    if (flat) f.classList.add('flat');
+    // ⚠ 行内顺序（用户 2026-09-24 定稿）：**徽章在名字前面** —— `☑ [M] 名字 路径`。
+    //   层级由**缩进**表达（平铺 = 路径深度 × 20px；树形 = 每级 20px），不靠挪徽章。
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
       `<span class="badge ${c.status}${isStaged ? ' staged' : ''}" title="${esc(c.label)}">${letter}</span>` +
-      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(parent) + '/' : ''}</span>` : '') +
       `<span class="nm" title="${esc(c.file)}">${esc(shown)}</span>` +
+      (showDir ? `<span class="dir" title="${esc(parent)}">${parent ? esc(shortDir(parent)) : ''}</span>` : '') +
       (isIgnoredRow || ro ? '' : `<span class="git-revert" title="${isUntracked ? '删除该文件' : '放弃该文件的修改'}">↺</span>`);
     f.title = ro
       ? c.label + ' · 已在 Git 暂存区（index）：本次提交不会带走它，也不会把它 unstage'
-      : c.label + ' · 点击' + (previewOn ? '在面板内预览差异' : '在编辑区查看差异') +
+      : c.label + ' · 点击在编辑区查看差异' +
         ' · 双击' + (c.status === 'deleted' || c.status === '*deleted' ? '查看被删内容' : '打开文件') + ' · 右键更多操作';
     // 右键菜单（PyCharm 提交窗口式：差异 / 回滚 / 打开 / 复制路径）
     f.oncontextmenu = (e) => {
@@ -1565,11 +1754,10 @@ const GitPanel = (() => {
     };
     f.onclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
-      // 选中态 + diff：previewOn 时在面板内嵌预览，否则显示在主编辑区（PyCharm 两种都支持）
+      // 选中态 + diff：统一在编辑区打开（PyCharm 默认行为）
       if (filesEl) filesEl.querySelectorAll('.git-file.sel').forEach((x) => x.classList.remove('sel'));
       f.classList.add('sel');
-      if (previewOn) renderPreview(c);
-      else showFileDiff(c);
+      showFileDiff(c);
     };
     f.ondblclick = (e) => {
       if (e.target.type === 'checkbox' || e.target.closest('.git-revert')) return;
@@ -1669,9 +1857,9 @@ const GitPanel = (() => {
     const btnm = document.getElementById('cm-ok-push-menu');
     if (btnm) btnm.disabled = !has;
     if (barBtns) {
+      // ⚠ 工具行里已经没有「提交」了（与底部 footer 重复，已删）——别再引用 barBtns.com
       barBtns.roll.disabled = !has;
       barBtns.dif.disabled = !has;
-      barBtns.com.disabled = !has;
     }
     const count = document.getElementById('commit-count');
     if (count) {
@@ -2411,68 +2599,6 @@ const GitPanel = (() => {
     }
   });
 
-  // ---------- 内嵌 diff 预览（PyCharm 提交窗口的「预览」开关）----------
-  // 紧凑 unified 视图：侧栏只有 ~280px，左右分栏的 diff 表格在这里读不了
-  function hidePreview() {
-    const p = document.getElementById('commit-preview');
-    if (p) p.classList.add('hidden');
-  }
-  function togglePreview(on) {
-    previewOn = on === undefined ? !previewOn : !!on;
-    saveUiPrefs();
-    if (barBtns && barBtns.prev) barBtns.prev.classList.toggle('active', previewOn);
-    if (previewOn) renderPreview(); else hidePreview();
-  }
-  async function renderPreview(target) {
-    const p = document.getElementById('commit-preview');
-    const body = document.getElementById('cp-body');
-    const title = document.getElementById('cp-title');
-    const stats = document.getElementById('cp-stats');
-    if (!p || !body || !state || !state.isRepo || !state.changed) return;
-    let c = target;
-    if (!c) { // 未指定：优先当前选中行 → 第一个勾选 → 第一个变更
-      const sel = filesEl && filesEl.querySelector('.git-file.sel');
-      const selName = sel && sel.dataset.file;
-      c = (selName && state.changed.find((x) => x.file === selName))
-        || state.changed.find((x) => checked.has(x.file))
-        || state.changed[0];
-    }
-    if (!c) { hidePreview(); return; }
-    p.classList.remove('hidden');
-    previewCur = c;
-    if (title) { title.textContent = c.file; title.title = c.file; }
-    const seq = ++previewSeq;
-    body.innerHTML = '<div class="cp-msg">读取差异…</div>';
-    const r = await window.myIDE.git.diffWorkdir(root, c.file);
-    if (seq !== previewSeq) return; // 晚到的响应不再覆盖新预览
-    body.innerHTML = '';
-    if (stats) stats.textContent = '';
-    const say = (t) => {
-      const d = document.createElement('div');
-      d.className = 'cp-msg';
-      d.textContent = t;
-      body.appendChild(d);
-    };
-    if (r.error) return say(r.error);
-    if (r.binary) return say('二进制文件，不显示文本差异');
-    if (r.tooLarge) return say('文件过大，超出对比限制');
-    if (r.unchanged || !r.hunks || !r.hunks.length) return say('无内容差异');
-    if (stats) stats.textContent = '+' + countAdd(r.hunks) + ' / -' + countDel(r.hunks);
-    for (const h of r.hunks) {
-      const sep = document.createElement('div');
-      sep.className = 'cp-hunk';
-      sep.textContent = '@@ -' + h.oldStart + ',' + h.oldLines + ' +' + h.newStart + ',' + h.newLines + ' @@';
-      body.appendChild(sep);
-      for (const row of h.rows) {
-        const kind = row.type === 'add' ? 'add' : row.type === 'del' ? 'del' : 'ctx';
-        const d = document.createElement('div');
-        d.className = 'cp-line ' + kind;
-        d.textContent = (kind === 'add' ? '+' : kind === 'del' ? '-' : ' ') + (kind === 'del' ? row.aText : row.bText);
-        body.appendChild(d);
-      }
-    }
-  }
-
   // ---------- 浮动小菜单（提交消息历史 / 提交并推送 选项）----------
   function closeFloatMenu() {
     const m = document.getElementById('git-float-menu');
@@ -2613,11 +2739,9 @@ const GitPanel = (() => {
     if (amd) amd.onchange = onAmendToggle;
     const hst = document.getElementById('commit-history');
     if (hst) hst.onclick = () => openHistoryMenu(hst);
-    const cpClose = document.getElementById('cp-close');
-    if (cpClose) cpClose.onclick = () => togglePreview(false);
-    // 面板内预览太窄时的一键出口：同一个文件，改在编辑区看整体
-    const cpOpen = document.getElementById('cp-open');
-    if (cpOpen) cpOpen.onclick = () => { if (previewCur) showFileDiff(previewCur); };
+    // 「⋯ 更多」：本次作者 / 提交前检查（原来在工具行占了两个图标位）
+    const cm = document.getElementById('commit-more');
+    if (cm) cm.onclick = () => openCommitMoreMenu(cm);
     // M5：Sign-off 勾选（持久化）+ 提交前检查 / 作者入口
     const so = document.getElementById('commit-signoff');
     if (so) {
@@ -2648,7 +2772,7 @@ const GitPanel = (() => {
     refresh, openCommit, closeDialog, isOpen, openBranchDialog, openRemoteDialog, cancelDiff,
     buildDiffTable, makeHunkNav, renderDiffView, closeDiffView, esc, fmtDate, countAdd, countDel,
     doPull, doPush, updateAheadBehind,
-    doCommit, focusMessage, togglePreview, renderPreview, setAllCollapsed,
+    doCommit, focusMessage, setAllCollapsed, openCommitMoreMenu, openViewOptionsMenu, closeFloatMenu,
     get rootDir() { return root; },
     set rootDir(v) {
       if (v !== root) {

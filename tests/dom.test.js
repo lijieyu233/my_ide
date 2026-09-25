@@ -2212,10 +2212,17 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     click(rmtBtn);
     await tick(); await tick();
     assert_($(dom, '#br-box'), '远程弹窗打开');
-    const rows = $allIn($(dom, '#rm-list'), '.br-item');
+    const rows = $allIn($(dom, '#rm-list'), '.rm-item');
     assert_(rows.length === 2, '列出 2 个远程, got ' + rows.length);
     assert_(rows[0].textContent.includes('origin'), '显示远程名 origin');
-    assert_(rows[0].textContent.includes('github.com/foo/bar'), '显示远程 URL');
+    assert_(rows[0].textContent.includes('github.com') && rows[0].textContent.includes('foo/bar.git'),
+      '显示主机与仓库路径: ' + rows[0].textContent);
+    // 重做后的三点：① 不再把整条 URL（可能带 user:pass）铺在列表里 ② 区块有说明 ③ 认证区有状态提示
+    assert_(!/https?:\/\//.test($(dom, '#rm-list').textContent),
+      '列表不铺完整 URL（凭证不落到界面）: ' + $(dom, '#rm-list').textContent.slice(0, 80));
+    assert_(/已打码/.test(rows[0].title), '完整地址在 tooltip 里且写明已打码: ' + rows[0].title);
+    assert_($allIn($(dom, '#br-box'), '.rm-cap').length >= 2, '两个区块都有说明文字（用户："这个怎么用"）');
+    assert_($(dom, '#rm-auth-note') && $(dom, '#rm-auth-note').textContent.length > 0, '认证区有"本机保存了几台主机"的提示');
     // origin 的分支列表（本地跟踪 refs，无网络）
     const brs = $allIn($(dom, '#rm-list'), '.rm-br');
     assert_(brs.length === 2, 'origin 列出 2 个分支, got ' + brs.length);
@@ -2743,14 +2750,24 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($allIn(dom.window.document, '.toast').length <= 5, 'toast 上限 5: ' + $allIn(dom.window.document, '.toast').length);
   });
 
-  await okAsync('提交窗口：工具行图标化 + 节点三态复选框 + 展开收起 + 平铺切换 + 内嵌预览', async () => {
+  await okAsync('提交窗口：工具行图标化 + 节点三态复选框 + 展开收起 + 平铺切换', async () => {
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
     const bar = () => $(dom, '#cd-files .git-cp-bar');
     const btnsOf = () => $allIn(bar(), '.vt-btn');
     assert_(bar(), '工具行存在');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
-    assert_(btnsOf().length === 13, '13 个图标按钮（M5 追加了提交前检查 / 本次作者）: ' + btnsOf().length);
+    // 13 → 9 → 10：删掉「提交」（底部 footer 已有同一入口）与「内嵌预览」（340px 侧栏读不了），
+    // 提交前检查 / 本次作者收进提交消息那行的 ⋯ 菜单；末尾又加了「显示选项」⋯（PyCharm 的 Show Options Menu）。
+    assert_(btnsOf().length === 9, '9 个图标按钮: ' + btnsOf().length);
+    // 分组方式收进 ⋯ 显示选项菜单后，工具行里不该再有一个独立的按钮（同一功能两个入口 = 用户说的"重复功能未删除"）
+    assert_(!btnsOf().some((b) => /^分组方式：/.test(b.title || '')),
+      '工具行没有独立的「分组方式」按钮: ' + btnsOf().map((b) => b.title).join(' | '));
+    assert_($(dom, '#cd-files #cd-view-opts'), '工具行末尾有「显示选项」按钮');
+    assert_(!$(dom, '#cd-files #commit-precheck') && !$(dom, '#cd-files #commit-author'),
+      '提交前检查 / 本次作者不再占工具行图标位（收进 ⋯ 菜单）');
+    assert_($(dom, '#commit-more'), '提交消息那行有 ⋯ 更多入口');
+    assert_(!$(dom, '#commit-preview'), '内嵌预览区已整体移除（差异统一在编辑区看）');
     assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
     assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
     // 挪进来的三个保留原 id：dom 测试与快捷键都按 id 找它们
@@ -2800,48 +2817,71 @@ assert_(panel, 'CM6 搜索面板出现');
       return true;
     });
     assert_(visibleFiles().length >= 4, '默认展开时变更文件行可见: ' + visibleFiles().length);
-    click(btnsOf()[6]);
+    // ⚠ 工具行按钮索引：0 刷新 / 1 回滚 / 2 差异 / 3 展开全部 / 4 收起全部 / 5 分组 / 6 搁置 / 7 远程 / 8 日志
+    //   （删掉「提交」「预览」后整体前移了 2 位 —— 改工具行一定要同步看这里）
+    click(btnsOf()[4]);
     await tick();
     assert_($allIn($(dom, '#cd-files'), '.git-sec-body').every((b) => b.style.display === 'none'), '收起全部：分节体隐藏');
     assert_(visibleFiles().length === 0, '收起全部：没有一个文件行可见: ' + visibleFiles().length);
-    click(btnsOf()[5]);
+    click(btnsOf()[3]);
     await tick();
     assert_(visibleFiles().length >= 4, '展开全部：文件行恢复: ' + visibleFiles().length);
 
-    // 分组方式：按目录 ↔ 平铺
-    click(btnsOf()[7]);
+    // 分组方式：按目录 ↔ 平铺（工具行里没有独立按钮 → 走 ⋯ 菜单 / Ctrl+Alt+P 那个入口）
+    await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 0, '平铺视图下目录行消失');
+    const flatRows = $allIn($(dom, '#cd-files'), '.git-file');
     assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺视图下文件行显示父目录');
-    assert_(btnsOf()[7].classList.contains('active') === false, '平铺时「分组方式」按钮不高亮');
-    click(btnsOf()[7]);
+    // 平铺列序 = **名字在前、路径在后**（照 PyCharm 抄）：v1~v5 在"谁在前 / 哪条边对齐"上反复了五次，
+    //   根因是 v3 的"名字列自适应"让路径起点漂移。现在名字列固定宽（.flat）+ 路径吃剩余宽度。
+    assert_(flatRows.every((r) => r.classList.contains('flat')), '平铺行带 .flat 类（名字列才用固定宽）');
+    // ⚠ 取"路径列非空"的行：顶层文件的那一列是空占位（title 也是空），拿它断言会假失败
+    const withDir = flatRows.find((r) => r.querySelector('.dir') && r.querySelector('.dir').textContent.trim());
+    assert_(!!withDir, '有带路径的平铺行');
+    assert_((withDir.querySelector('.nm').compareDocumentPosition(withDir.querySelector('.dir')) & 4) !== 0,
+      '平铺：路径节点在名字**之后**（名字在前）: '
+      + $allIn(withDir, '*').map((x) => x.className).join(','));
+    assert_(withDir.querySelector('.nm').getAttribute('title') === withDir.dataset.file,
+      '平铺：名字的 tooltip = 完整路径（路径可能被省略，名字要能查到全路径）');
+    assert_((withDir.querySelector('.dir').getAttribute('title') || '').length > 0, '平铺：路径有 tooltip');
+    await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     assert_(groups().length === 3, '切回按目录：目录行恢复');
+    // 树形行不能带 .flat（否则名字被截成 46%）
+    assert_($allIn($(dom, '#cd-files'), '.git-file.flat').length === 0, '树形行没有 .flat');
 
-    // 内嵌预览：眼睛按钮 → 面板内出现 diff；再点关闭
-    const prevBtn = btnsOf()[4];
-    click(prevBtn);
+    // 点文件行 → 始终在编辑区打开差异（内嵌预览已移除，这是 PyCharm 的默认行为）
+    const row0 = $allIn($(dom, '#commit-list'), '.git-file')[0];
+    const f0 = row0.dataset.file;
+    click(row0);
     await tick(); await tick(); await tick();
-    const pre = $(dom, '#commit-preview');
-    assert_(!pre.classList.contains('hidden'), '预览打开（不再只走主编辑区）');
-    assert_($allIn($(dom, '#cp-body'), '.cp-line').length >= 3, '预览里有 diff 行: ' + $allIn($(dom, '#cp-body'), '.cp-line').length);
-    assert_($allIn($(dom, '#cp-body'), '.cp-hunk').length === 2, '预览里保留 hunk 分隔');
-    assert_(/\+\d+ \/ -\d+/.test($(dom, '#cp-stats').textContent), '预览显示 +增/-删 统计: ' + $(dom, '#cp-stats').textContent);
-    assert_(prevBtn.classList.contains('active'), '预览按钮高亮');
-    // 面板内预览的「说明 + 出口」：框上要写明这是什么（用户问过「这个预览是什么意思」），
-    // 并且能一键把同一个文件转到编辑区看整体（用户问过「这么小的地方怎么看」）
-    assert_(/面板内预览/.test($(dom, '.cp-tag').textContent), '预览框上写明「面板内预览」: ' + $(dom, '.cp-tag').textContent);
-    const cpOpen = $(dom, '#cp-open');
-    assert_(cpOpen, '预览框里有「在编辑区打开」按钮');
-    const curFile = $(dom, '#cp-title').textContent;
-    click(cpOpen);
-    await tick(); await tick(); await tick();
-    assert_($(dom, '#viewer .diff-wrap'), '点它 → 在编辑区打开差异（面板窄的出口）');
-    assert_($(dom, '#viewer .df-path') && $(dom, '#viewer .df-path').textContent === curFile,
-      '编辑区打开的正是预览的那个文件: ' + ($(dom, '#viewer .df-path') ? $(dom, '#viewer .df-path').textContent : '(无)'));
-    click(prevBtn);
+    assert_($(dom, '#viewer .diff-wrap'), '点文件行 → 编辑区打开差异');
+    assert_($(dom, '#viewer .df-path') && $(dom, '#viewer .df-path').textContent === f0,
+      '编辑区打开的正是点的那个文件: ' + ($(dom, '#viewer .df-path') ? $(dom, '#viewer .df-path').textContent : '(无)'));
+    await g(dom, 'GitPanel.closeDialog()');
     await tick();
-    assert_(pre.classList.contains('hidden'), '再点关闭预览');
+  });
+
+  await okAsync('提交面板：⋯ 更多菜单里是「本次作者 / 提交前检查」（不再各占一个图标）', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    click($(dom, '#commit-more'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    assert_(menu, '⋯ 菜单弹出来了');
+    const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
+    assert_(labels.some((t) => /本次提交的作者/.test(t)), '菜单里有「本次提交的作者…」: ' + labels.join(' | '));
+    assert_(labels.some((t) => /提交前检查/.test(t)), '菜单里有「提交前检查…」: ' + labels.join(' | '));
+    // 点「提交前检查…」→ 打开配置弹窗
+    const item = $allIn(menu, '.ctx-item').find((x) => /提交前检查/.test(x.textContent));
+    click(item);
+    await tick(); await tick();
+    assert_($(dom, '#pc-box'), '菜单项真的打开了提交前检查弹窗');
+    await g(dom, 'Modal.hide()');
+    for (let i = 0; i < 6; i++) { await tick(); }   // openPrecheckDialog 内有 await（读配置）→ 等它落定
+    assert_($(dom, '#modal-mask').classList.contains('hidden'), '收尾：没有弹窗残留');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
   });
@@ -3266,22 +3306,34 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    // ① 树形：文件行必须有 caret 占位、目录行必须有徽章占位 —— 否则同层名字会差一个列宽
+    // ① 树形：文件行要 caret 占位（目录行有真 caret）；**目录行不留徽章空位** ——
+    //    用户圈着那块空白问"这里空一大片是干什么的"，目录没有状态徽章，留空纯浪费。
     const fileRows = $allIn($(dom, '#commit-list'), '.git-file');
     const dirRows = $allIn($(dom, '#commit-list'), '.git-group');
     assert_(fileRows.length > 0 && dirRows.length > 0, '树形下有目录行与文件行: ' + fileRows.length + '/' + dirRows.length);
     assert_(fileRows.every((r) => r.querySelector('.caret-spacer')), '文件行都有 caret 占位');
-    assert_(dirRows.every((r) => r.querySelector('.badge-spacer')), '目录行都有徽章占位');
-    // 两类的"列数"必须一致：caret(占位) + 复选框 + 徽章(占位) + 名字
+    assert_(dirRows.every((r) => !r.querySelector('.badge-spacer')), '目录行没有徽章空位（名字紧跟复选框）');
+    // 目录行的名字必须是复选框的**下一个**元素（中间不许再塞占位）
+    const cbOf = (r) => r.querySelector('input[type=checkbox], .cf-lock');
+    assert_(dirRows.every((r) => cbOf(r) && cbOf(r).nextElementSibling && cbOf(r).nextElementSibling.classList.contains('g-name')),
+      '目录行：复选框的下一个元素就是名字');
+    // 目录行比文件行少一列（目录没有徽章）
     const cols = (r) => [...r.children].filter((c) => !c.classList.contains('g-count') && !c.classList.contains('git-revert')).length;
-    assert_(cols(fileRows[0]) === cols(dirRows[0]),
-      '目录行与文件行的列结构一致: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
-    // ② 平铺：文件行也要带 caret 占位（与目录行同列宽）
+    assert_(cols(dirRows[0]) === cols(fileRows[0]) - 1,
+      '目录行比文件行少一个徽章列: ' + cols(dirRows[0]) + ' vs ' + cols(fileRows[0]));
+    assert_(fileRows.every((r) => r.querySelector('.badge')), '文件行都有状态徽章');
+    // ② 平铺：文件行也带 caret 占位；名字列宽由 JS 按"最长名字"统一写 inline flex-basis
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick(); await tick();
     const flatRows = $allIn($(dom, '#commit-list'), '.git-file');
     assert_(flatRows.length > 0 && flatRows.every((r) => r.querySelector('.caret-spacer')), '平铺行也有 caret 占位');
     assert_($allIn($(dom, '#commit-list'), '.git-file .dir').length > 0, '平铺行显示父目录前缀');
+    // 平铺名字列宽：JS 量最长名字后统一写 flex-basis → 所有行必须**同一个值**（否则就是各自自适应）
+    const bases = $allIn($(dom, '#commit-list'), '.git-file.flat .nm').map((n) => n.style.flexBasis);
+    assert_(bases.length > 1 && bases.every((b) => b && b === bases[0]),
+      '平铺：所有名字列宽相同（JS 按最长名字统一）: ' + [...new Set(bases)].join(','));
+    assert_(!/46%/.test(bases[0]) && parseFloat(bases[0]) > 20,
+      '平铺：名字列宽是按内容算出来的 px（不是兜底的 46%）: ' + bases[0]);
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick(); await tick();
     await g(dom, 'GitPanel.closeDialog()');
@@ -3370,13 +3422,13 @@ assert_(panel, 'CM6 搜索面板出现');
     const twice = await g(dom, 'GitPanel.appendSignoff(' + JSON.stringify(last.message) + ')');
     assert_((twice.match(/Signed-off-by/g) || []).length === 1, '不会出现两遍签名');
     // 作者按钮状态：覆盖时高亮
-    assert_($(dom, '#commit-author').classList.contains('active'), '作者按钮显示"已覆盖"态');
+    assert_($(dom, '#commit-more').classList.contains('active'), '⋯ 按钮显示"已覆盖作者"态');
     // 收尾：清掉覆盖与签名（后面用例基线）
     await g(dom, 'GitPanel.authorOverride = null');
     await g(dom, 'GitPanel.signoff = false');
     await g(dom, 'GitPanel.closeDialog()');
     await tick(); await tick();
-    assert_(!$(dom, '#commit-author').classList.contains('active'), '收尾：作者按钮回到默认态');
+    assert_(!$(dom, '#commit-more').classList.contains('active'), '收尾：⋯ 按钮回到默认态');
     assert_($(dom, '#commit-signoff').checked === false, '收尾：Sign-off 取消勾选');
   });
 
@@ -3384,7 +3436,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    click($(dom, '#commit-precheck'));
+    await g(dom, 'GitPanel.openPrecheckDialog()');
     await tick(); await tick();
     const box = $(dom, '#pc-box');
     assert_(box, '提交前检查弹窗打开');
