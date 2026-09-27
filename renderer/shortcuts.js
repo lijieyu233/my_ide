@@ -96,13 +96,28 @@ const Shortcuts = (() => {
     const ae = document.activeElement;
     const aeVisible = ae && ae.offsetParent !== null;
     const aeEditable = aeVisible && (/^(TEXTAREA|INPUT)$/.test(ae.tagName) || ae.isContentEditable);
-    if (aeEditable && ['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) {
-      // 例外：全屏工具面板（浏览器/数据库/依赖图）以 absolute 盖住编辑区，viewer 并未
-      // display:none → 残留在 CM6/输入框里的焦点仍「可见」。此时用户操作对象是面板，
-      // 豁免会让 Ctrl+Z 落到看不见的编辑器上（用户眼中「撤销无效」）。被盖住则不让位。
-      const coveredByTool = ae.closest && ae.closest('#viewer') && ['browser-panel', 'db-panel', 'tasks-dag-panel']
-        .some((id) => { const p = document.getElementById(id); return p && !p.classList.contains('hidden'); });
-      if (!coveredByTool) return;
+    if (['ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+a', 'ctrl+z', 'ctrl+y', 'ctrl+shift+z'].includes(combo)) {
+      // 只读文本选区豁免：AI 对话 / diff / 预览这类区域没有 focus 概念，鼠标拖选一段字后
+      // activeElement 仍是 body（不是 editable）→ 只看 activeElement 的旧逻辑会把 Ctrl+C
+      // 交给 copy-files，剪贴板被写成文件树里选中文件的路径：用户明明选了字，粘出来却是路径
+      // （2026-09-27 反馈）。判据 = 页面上有非折叠的文本选区。
+      // 例外是文件树内部：那里的 Ctrl+C 语义就是「复制文件」（树里选中的是行，不是文字）。
+      const sel = window.getSelection && window.getSelection();
+      let textSel = !!(sel && !sel.isCollapsed && String(sel).length);
+      if (textSel) {
+        const an = sel.anchorNode;
+        const anEl = an && (an.nodeType === 1 ? an : an.parentElement);
+        if (anEl && anEl.closest && anEl.closest('#tree')) textSel = false;
+      }
+      if (textSel && (combo === 'ctrl+c' || combo === 'ctrl+x')) return; // 交回浏览器原生复制 / 剪切
+      if (aeEditable) {
+        // 例外：全屏工具面板（浏览器/数据库/依赖图）以 absolute 盖住编辑区，viewer 并未
+        // display:none → 残留在 CM6/输入框里的焦点仍「可见」。此时用户操作对象是面板，
+        // 豁免会让 Ctrl+Z 落到看不见的编辑器上（用户眼中「撤销无效」）。被盖住则不让位。
+        const coveredByTool = ae.closest && ae.closest('#viewer') && ['browser-panel', 'db-panel', 'tasks-dag-panel']
+          .some((id) => { const p = document.getElementById(id); return p && !p.classList.contains('hidden'); });
+        if (!coveredByTool) return;
+      }
     }
     // Esc 关闭弹窗（不参与自定义，防止无法取消）
     // 栈顶面板声明「自管 Esc」（confirm/prompt 有自己的键盘处理）时跳过，避免双关闭错杀下层面板

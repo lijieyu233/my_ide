@@ -4679,6 +4679,39 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
   });
 
+  await okAsync('只读文本选区里的 Ctrl+C 不触发文件复制（AI 对话里选字，粘出来却是文件路径）', async () => {
+    // 复现用户 2026-09-27 的反馈：在 AI 回复里拖选一段字按 Ctrl+C —— 只读区没有 focus 概念，
+    // activeElement 仍是 body（不是 editable），旧逻辑于是把 Ctrl+C 交给了 copy-files，
+    // 剪贴板被写成文件树里选中文件的路径。
+    key(dom, '8', { ctrl: true }); // 上一个用例用 ✕ 收起了面板，先显示出来
+    await tick();
+    // 文件树先选一个文件：否则 copySelected() 只 toast 不写剪贴板，断言会空洞
+    const rowOf = (t) => $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/' + t);
+    const target = rowOf('README.md');
+    assert_(target, '文件树里有 README.md 可选中（前提）');
+    click(target);
+    await tick();
+    const msg = $allIn($(dom, '#ai-msgs'), '.ai-msg').pop();
+    assert_(msg, 'AI 面板里有消息可选中（前提）');
+    const sel = dom.window.getSelection();
+    const selOn = (node) => { const r = dom.window.document.createRange(); r.selectNodeContents(node); sel.removeAllRanges(); sel.addRange(r); };
+    selOn(msg);
+    assert_(!sel.isCollapsed, '选区已建立（前提）');
+    fakeCopied = []; // fakeCopied 是"最近一次复制"（copyFiles 里整体重赋值），清掉才看得出这次有没有写
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === 0, '有文本选区时 Ctrl+C 不再被文件复制抢走, got ' + JSON.stringify(fakeCopied));
+    // 树内部的选区仍按「复制文件」处理：树里选中的是行，那里 Ctrl+C 的语义就是复制文件
+    selOn($allIn($(dom, '#tree'), '.tree-row .nm')[0]);
+    click(rowOf('notes.txt'));
+    fakeCopied = [];
+    key(dom, 'c', { ctrl: true });
+    await tick();
+    assert_(fakeCopied.length === 1 && fakeCopied[0] === P + '/notes.txt', '树里的 Ctrl+C 仍是复制文件, got ' + JSON.stringify(fakeCopied));
+    sel.removeAllRanges(); // 别把选区留给后面的用例（任务列表 Ctrl+C 等依赖「无选区」）
+    await tick();
+  });
+
   await okAsync('AI Agent：原生 function calling 循环（toolCalls → role:tool → 续流）', async () => {
     aiScript = [
       { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'list_files', args: { path: '.' } }] },
