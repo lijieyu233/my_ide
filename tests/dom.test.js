@@ -2869,13 +2869,13 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
     const ignHead = () => secTitles().find((s) => /忽略的文件/.test(s.textContent));
-    // ① 平铺 = **同一层**：所有行同一个基准缩进（不再按路径深度递进），层级交给路径列
+    // ① 平铺 = 分节标题(文件夹) + 其下**所有文件统一缩进一级**（10 + 20 = 30px），跟路径深浅无关
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();
     const flat = $allIn($(dom, '#cd-files'), '.git-file.flat');
     assert_(flat.length >= 2, '平铺行 >= 2: ' + flat.length);
-    assert_(flat.every((r) => parseInt(r.style.paddingLeft, 10) === 8),
-      '平铺所有行同一缩进: ' + [...new Set(flat.map((r) => r.style.paddingLeft))].join(','));
+    assert_(flat.every((r) => parseInt(r.style.paddingLeft, 10) === 30),
+      '平铺所有文件行同为标题下一级（30px）: ' + [...new Set(flat.map((r) => r.style.paddingLeft))].join(','));
     assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺仍显示所属目录（层级由路径列表达）');
     await g(dom, 'GitPanel.toggleGroupByDir()');
     await tick();

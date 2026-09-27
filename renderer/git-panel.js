@@ -1348,15 +1348,17 @@ const GitPanel = (() => {
   }
 
   // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名后。
-  // ⚠ **平铺 = 同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
-  //   早先按**路径里的目录段数**缩进（每级 20px），结果名字列/路径列的起点随行漂移 ——
-  //   同一个列表里 `electron/package.json` 靠左、`electron/x/src/backend.js` 靠右，看着就是"缩进错乱"。
-  //   菜单项自己写的也是「所有文件同一层，用路径列表示位置」→ 层级交给**路径列**表达，
-  //   所有行统一基准缩进（8px），名字列与路径列才对得齐（PyCharm 同款）。
+  // ⚠⚠ 平铺的缩进（用户 2026-09-27 三轮才说清，原话：「你把这个当文件夹就行了，
+  //   选中就是相当于选择了下面所有的文件」「像我框选的位置缩进不就行了」）：
+  //   - 分节标题行（「更改 3 个文件」/「忽略的文件 300 个文件」）= **文件夹行**，在基准层；
+  //   - 它下面的**所有文件行统一缩进一级**（+20px），跟层级深浅无关（不用路径段数缩进！）；
+  //   - 所以平铺 = 标题(文件夹) + 一排同级文件，呼应的就是「选中标题 = 选中下面所有文件」。
+  //   走过的弯路：按路径段数缩进（文件起点随深度漂移 → "缩进错乱"）；一刀切 depth 0
+  //   （文件跟标题挤在同一层 → 看着还是"没缩进"）。
   function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 1, true, ro));
     return box;
   }
 
@@ -1627,9 +1629,8 @@ const GitPanel = (() => {
   }
 
   // 树形每级缩进步长。⚠ 原来是 14px，用户 2026-09-24 说"层级一直看不出来" → 定为 20px。
-  //   树形行的基准 10（不是 8）：分节标题自身有 10px 左内边距，行也用 10 才能让
-  //   「分节标题 → 一级目录」正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）；
-  //   平铺行不做层级（同一层），固定基准 8。
+  //   行的基准 10 与分节标题的左内边距（10px）一致 —— 这样「分节标题 → 它下一级」
+  //   正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）。平铺的文件行同样是这一级（10+20）。
   const TREE_INDENT = 20;
 
   // 平铺视图的名字列宽 = **这一列表里最长名字的自然宽度**（封顶行宽的 46%）。
@@ -1686,7 +1687,7 @@ const GitPanel = (() => {
     const f = document.createElement('div');
     f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
-    f.style.paddingLeft = ((flat ? 8 : 10) + depth * TREE_INDENT) + 'px';
+    f.style.paddingLeft = (10 + depth * TREE_INDENT) + 'px';
     const parts = c.file.split(/[\\/]/);
     const base = parts.pop();
     const parent = parts.join('/');
@@ -1710,7 +1711,7 @@ const GitPanel = (() => {
     // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
     if (flat) f.classList.add('flat');
     // ⚠ 行内顺序（用户 2026-09-24 定稿）：**徽章在名字前面** —— `☑ [M] 名字 路径`。
-    //   层级：树形靠**缩进**（每级 20px）；平铺所有行同一层（depth 恒为 0），层级交给后面的路径列。
+    //   层级靠**缩进**表达：树形 = 每级 20px；平铺 = 分节标题(文件夹)下一级，所有文件行同为一级。
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +

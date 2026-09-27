@@ -986,12 +986,13 @@ module.exports = {
     await sleep(1200);
     if (window.GitPanel.groupByDir) { window.GitPanel.toggleGroupByDir(); await sleep(700); }
     const nms = qa('#commit-list .git-file .nm');
-    // ⚠ 平铺 = **同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
-    //   所有行同一个缩进（基准 8px），名字列与路径列才对得齐 —— 层级交给后面的路径列表达。
+    // ⚠ 平铺的缩进（用户 2026-09-27 三轮说清）：分节标题 = 文件夹（基准层），
+    //   它下面**所有文件行统一缩进一级**（10 + 20 = 30px），跟路径深浅无关 ——
+    //   于是"所有名字同一个 x、路径列同一个 x"，且都比标题低一级。
     const xs = nms.map((n) => Math.round(n.getBoundingClientRect().left));
-    add('平铺：所有行同一缩进 + 名字列对齐（同一层，层级交给路径列）',
+    add('平铺：文件行统一缩进一级（30px）+ 名字列对齐',
       nms.length >= 3 && Math.max(...xs) - Math.min(...xs) <= 1
-        && qa('#commit-list .git-file').every((r) => parseInt(r.style.paddingLeft, 10) === 8)
+        && qa('#commit-list .git-file').every((r) => parseInt(r.style.paddingLeft, 10) === 30)
         && qa('#commit-list .git-file .dir').length > 0,
       '名字起点 x=' + [...new Set(xs)].join(',') + ' | paddingLeft='
         + [...new Set(qa('#commit-list .git-file').map((r) => r.style.paddingLeft))].join(','));
@@ -2071,12 +2072,13 @@ module.exports = {
     // 平铺视图 = **名字在前、路径在后**（第六版定论：照 PyCharm 抄）。名字列**固定宽** → 两列起点都固定。
     //   前五版在"谁在前 / 哪条边对齐"上反复；根因是 v3 的"名字列自适应"让路径起点漂移 120~161px。
     const nms = qa('#cd-files .git-file .nm');
-    // ⚠ 平铺 = **同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
-    //   早先按「路径深度 × 20px」缩进，名字列/路径列起点随行漂移，看着就是"缩进错乱"。
-    //   现在所有行同一个基准缩进（8px），层级交给后面的路径列表达 —— 目标回到"所有行同一个 x"。
+    // ⚠ 平铺的缩进（用户 2026-09-27 三轮说清）：分节标题 = **文件夹行**（在基准层），
+    //   它下面所有文件行**统一缩进一级**（10 + 20 = 30px），跟路径深浅无关。
+    //   不再按路径段数缩进（那样文件起点随深度漂移 = "缩进错乱"），也不是 level 0
+    //   （文件跟标题挤平 → 用户截图说"没缩进"）。
     const rowsFlat = qa('#cd-files .git-file.flat');
-    add('平铺：所有行同一缩进（基准 8px，同一层）',
-      rowsFlat.length >= 2 && rowsFlat.every((r) => parseInt(r.style.paddingLeft, 10) === 8),
+    add('平铺：文件行统一缩进一级（30px = 标题下一级）',
+      rowsFlat.length >= 2 && rowsFlat.every((r) => parseInt(r.style.paddingLeft, 10) === 30),
       [...new Set(rowsFlat.map((r) => r.style.paddingLeft))].join(','));
     const nameXs = nms.map((n) => Math.round(n.getBoundingClientRect().left));
     add('平铺：所有名字起点一致（第一列对齐）',
@@ -2125,7 +2127,7 @@ module.exports = {
         return Math.round(r.getBoundingClientRect().left);
       };
       // ⚠ 量的是**文字首字符 x**（元素框对齐 ≠ 文字起点对齐；v4 的 text-align:right 就是栽在这里）。
-      //   平铺所有行同一层（无深度缩进）→ **所有行的两列文字都该同一个 x**（不再按深度分组）。
+      //   平铺所有文件行同为一级 → **所有行的两列文字都该同一个 x**（不按深度分组）。
       const colXs = (els) => els.map(firstX).filter((x) => x != null);
       const pathXs = colXs(dirs);
       add('平铺：所有路径**文字**起点一致（第二列对齐）',
@@ -2135,18 +2137,13 @@ module.exports = {
       add('平铺：所有名字**文字**起点一致（第一列对齐）',
         nameX2.length >= 1 && Math.max(...nameX2) - Math.min(...nameX2) <= 1,
         [...new Set(nameX2)].join(','));
-      // 名字列的文字起点与分节标题的文字同列（同一层 → 天然对齐）
-      const sec0 = qa('#cd-files .git-sec-title')[0];
-      const secTx = (() => {
-        const n = sec0 && sec0.querySelector('.sec-name');
-        const tn = n && [...n.childNodes].find((x) => x.nodeType === 3);
-        if (!tn) return null;
-        const r = document.createRange(); r.setStart(tn, 0); r.setEnd(tn, 1);
-        return Math.round(r.getBoundingClientRect().left);
-      })();
-      add('平铺：名字与分节标题的文字同列（同一层的必然结果）',
-        !nameX2.length || (secTx != null && Math.abs(nameX2[0] - secTx) <= 2),
-        '分节文字 x=' + secTx + ' 名字 x=' + (nameX2[0] == null ? '（无）' : nameX2[0]));
+      // 标题(文件夹) → 它下面的文件行：**正好一级**（勾选框差 20px）——
+      //   这就是用户要的"把标题当文件夹、下面的文件缩进一级"。
+      const hcb = qa('#cd-files .git-sec-title input[type=checkbox]')[0];
+      const fcb = qa('#cd-files .git-file input[type=checkbox]')[0];
+      const dx = (hcb && fcb) ? Math.round(fcb.getBoundingClientRect().left - hcb.getBoundingClientRect().left) : null;
+      add('平铺：文件行比「文件夹」标题正好低一级（勾选框差 20px）',
+        dx != null && Math.abs(dx - 20) <= 1, '标题勾选框 → 文件勾选框 = ' + dx + 'px');
       const lsXs = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
       add('平铺：路径列左缘一致（元素框也齐）',
         lsXs.length >= 1 && Math.max(...lsXs) - Math.min(...lsXs) <= 1,
