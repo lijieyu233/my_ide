@@ -1787,6 +1787,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const active = btns.filter((b) => b.classList.contains('active'));
     assert_(active.length === 1 && active[0].dataset.path === (await g(dom, 'App.root')),
       '有且只有一个 active 按钮指向当前项目, got ' + active.length);
+    // 项目名里的 `_` 必须真的画得出来：名字 span 是 overflow:hidden（长名省略），裁剪盒**就是行盒**
+    // —— 行高一旦小于字体完整行高（含下伸区），画在基线更低处的下划线就被整段切掉，
+    // 项目名 my_ide 显示成 "my ide"（用户 2026-09-27 截图报的就是这个）。
+    const nm = active[0].querySelector('span');
+    const nmCs = dom.window.getComputedStyle(nm);
+    const nmLh = nmCs.lineHeight, nmFs = parseFloat(nmCs.fontSize);
+    assert_(nmLh === 'normal' || parseFloat(nmLh) >= nmFs,
+      '名字 span 的行高不得小于字号（否则下划线被裁掉）, got line-height=' + nmLh + ' / font-size=' + nmCs.fontSize);
     // 平铺的第一项能力：点一下直接切
     const other = btns.find((b) => !b.classList.contains('active'));
     click(other);

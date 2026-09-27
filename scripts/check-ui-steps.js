@@ -323,6 +323,27 @@ module.exports = {
     add('当前项目用弱背景 + 强调边线（不是实心 accent 块，也不至于看不出是哪个）',
       (() => { const a = q('#project-bar .proj-btn.active'); if (!a) return false;
         const s2 = getComputedStyle(a); return s2.backgroundColor !== 'rgb(217, 104, 125)' && s2.borderStyle !== 'none'; })());
+    // 项目名 `my_ide` 的下划线曾经不显示：.proj-btn 的 line-height:1 让名字 span 的行盒只有 12px
+    // （= 字号），而 overflow:hidden 的裁剪盒**就是行盒** —— 画在基线下方更低处的 "_" 被整段切掉，
+    // 名字显示成 "my ide"。判据 = 裁剪盒装得下"基线 + 下划线墨迹深度"——
+    // 关键量是**基线以下的墨迹深度**（canvas 现量字体度量，不是拿字号猜）。
+    {
+      const r = (() => {
+        const s = q('#project-bar .proj-btn.active > span:first-child');
+        if (!s) return { ok: false, d: '没找到名字 span' };
+        const cs2 = getComputedStyle(s);
+        const cv = document.createElement('canvas').getContext('2d');
+        cv.font = cs2.fontSize + ' ' + cs2.fontFamily;          // 与 span 同字体
+        const fm = cv.measureText('H_');
+        const u = cv.measureText('_').actualBoundingBoxDescent; // 下划线墨迹在基线下多深
+        const h = s.getBoundingClientRect().height;             // 裁剪盒高度 = 行盒
+        const base = (h - (fm.fontBoundingBoxAscent + fm.fontBoundingBoxDescent)) / 2 + fm.fontBoundingBoxAscent;
+        return { ok: base + u <= h + 0.5,
+          d: '行盒 ' + h.toFixed(1) + 'px / 基线 ' + base.toFixed(1) + ' + 下划线深 ' + u.toFixed(1)
+            + ' = 墨迹底 ' + (base + u).toFixed(1) + 'px' };
+      })();
+      add('项目名不被垂直裁切（`_` 画得出来，my_ide 不显示成 "my ide"）', r.ok, r.d);
+    }
     add('「关闭项目 ✕」默认隐藏（顶栏不常驻危险动作）',
       btns.every((b) => { const x = b.querySelector('.proj-close'); return !x || getComputedStyle(x).visibility === 'hidden'; }));
     add('「全部项目」入口在（图标 + 数量，负责"最近打开"）',

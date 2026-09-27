@@ -175,7 +175,13 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 .proj-btn:hover .proj-close { visibility: visible; }
 .proj-btn .proj-close:hover { opacity: 1; }
 .proj-btn.dragging { opacity: .4; }
-.proj-btn > span:first-child { overflow: hidden; text-overflow: ellipsis; max-width: 180px; } /* 长项目名省略，不把栏撑爆 */
+/* 长项目名省略，不把栏撑爆。
+   ⚠ 行高必须显式写 normal：.proj-btn 的 line-height: 1 会让这个 span 的行盒只有 12px
+   （= 字号），比字体的下伸区还矮 —— 而 overflow: hidden 的裁剪盒**就是行盒**，
+   于是画在基线下方更低处的 "_" 被整段切掉：项目名 my_ide 显示成 "my ide"
+   （连 y/g 的下伸尾巴也被削平，笔画断在一条水平线上）。
+   normal 让裁剪盒回到字体完整行高；基线位置不变（flex 居中 + 对称 leading 抵消）。 */
+.proj-btn > span:first-child { overflow: hidden; text-overflow: ellipsis; max-width: 180px; line-height: normal; }
 
 .spacer { flex: 1; }
 
