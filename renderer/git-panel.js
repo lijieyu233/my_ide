@@ -509,7 +509,8 @@ const GitPanel = (() => {
     } else {
       for (const sec of fileSections()) list.appendChild(renderSection(sec));
     }
-    list.appendChild(renderIgnoredSection()); // PyCharm「忽略的文件」节点：默认收起，展开才遍历
+    // 显示选项关掉「忽略的文件」时**不挂这个节点**（真隐藏，不是折叠）——用户 2026-09-27 明确要求
+    if (showIgnored) list.appendChild(renderIgnoredSection());
     updateCheckUI();
     gitSelIdx = -1; // 重新渲染后重置键盘导航选中
     // ⚠ 必须在**这里**量（列表已挂到 DOM，Range 才量得到文字宽度）：
@@ -614,6 +615,27 @@ const GitPanel = (() => {
     ignoredTruncated = false;
     ignoredAll = new Set();
     ignoredLoading = false;
+  }
+
+  // 显示选项：「忽略的文件」节点显示 / 隐藏（**真开关**——关掉即从列表里移除，不是折叠）。
+  //   关掉时把已缓存的忽略清单一起作废：否则隐藏期间 `ignoredAll` 还挂着，
+  //   计数会算进看不见的文件、勾过的忽略文件也会被悄悄带进提交。
+  //   打开时自动滚到节点并展开（懒加载），保住原来「跳到并展开」的用途。
+  function setShowIgnored(on) {
+    showIgnored = !!on;
+    if (!showIgnored) {
+      for (const f of ignoredAll) checked.delete(f);
+      invalidateIgnored();
+    }
+    saveUiPrefs();
+    render();
+    if (!showIgnored) return;
+    const head = filesEl && [...filesEl.querySelectorAll('.git-sec-title')]
+      .find((h) => /忽略的文件/.test(h.textContent));
+    if (!head) return;
+    try { head.scrollIntoView({ block: 'nearest' }); } catch {} // jsdom 无此实现
+    const body = head.nextElementSibling;
+    if (body && body.style.display === 'none') head.click(); // 展开 + 懒加载
   }
 
   // ---------- M4：进行中的 Git 操作（merge / rebase / cherry-pick / revert）----------
@@ -935,25 +957,25 @@ const GitPanel = (() => {
       : '更多提交选项：本次提交的作者 / 提交前检查';
   }
 
-  // 显示选项菜单（PyCharm「Show Options Menu」）：分组方式 + 忽略的文件。
+  // 显示选项菜单（PyCharm「Show Options Menu」）：分组方式 + 显示（忽略的文件）。
   // 用户是拿 PyCharm 的截图点名的这两项（Group By / Show）。
+  // ⚠ 每一项都是**有勾选态的状态项**（checked），当前值一眼可见；「忽略的文件」是真开关
+  //   （取消勾选 = 从列表里移除该节点），不是"跳过去折叠一下"（用户 2026-09-27 两条反馈）。
   function openViewOptionsMenu(anchorEl) {
-    const hasIgnored = !!document.querySelector('#cd-files .git-sec-title');
     openFloatMenu(anchorEl, [
       { header: true, label: '分组方式' },
-      { label: (groupByDir ? '✓ ' : '\u3000') + '按目录（Directory）',
-        title: 'Ctrl+Alt+P —— 目录行 + 缩进的文件行', run: () => { if (!groupByDir) GitPanel.toggleGroupByDir(); } },
-      { label: (groupByDir ? '\u3000' : '✓ ') + '平铺（Flat）',
-        title: '所有文件同一层，用路径前缀表示位置', run: () => { if (groupByDir) GitPanel.toggleGroupByDir(); } },
+      { label: '按目录（Directory）', checked: groupByDir,
+        title: 'Ctrl+Alt+P —— 目录行 + 缩进的文件行',
+        run: () => { if (!groupByDir) GitPanel.toggleGroupByDir(); } },
+      { label: '平铺（Flat）', checked: !groupByDir,
+        title: '所有文件同一层，用路径列表示位置',
+        run: () => { if (groupByDir) GitPanel.toggleGroupByDir(); } },
       { header: true, label: '显示' },
-      { label: '忽略的文件',
-        title: hasIgnored ? '跳到并展开「忽略的文件」节点（在列表末尾）' : '当前没有「忽略的文件」节点',
-        run: () => {
-          const head = [...document.querySelectorAll('#cd-files .git-sec-title')]
-            .find((h) => /忽略的文件/.test(h.textContent));
-          if (head) { head.scrollIntoView({ block: 'nearest' }); head.click(); }
-          else MI.toast('当前没有被忽略的文件', 'ok');
-        } },
+      { label: '忽略的文件', checked: showIgnored,
+        title: showIgnored
+          ? '当前显示「忽略的文件」节点（取消勾选 = 从列表里真正隐藏）'
+          : '当前隐藏「忽略的文件」节点（勾选 = 显示并展开）',
+        run: () => setShowIgnored(!showIgnored) },
     ]);
   }
 
@@ -1325,15 +1347,16 @@ const GitPanel = (() => {
     return wrap;
   }
 
-  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名前。
-  // ⚠ **平铺也要有正确的缩进**（用户 2026-09-24 明确要求）：按**路径里的目录段数**缩进，
-  //   `kiosk_patches/x` 深一级、`kiosk_patches/backup/x` 深两级 —— 层级不因关掉分组而消失，
-  //   只是改用缩进 + 路径列表达。深度封顶 6（120px），防止超深路径把内容推出面板。
+  // 平铺视图（PyCharm「Group by Directory」关掉后）：一行一个文件，父目录弱化显示在文件名后。
+  // ⚠ **平铺 = 同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
+  //   早先按**路径里的目录段数**缩进（每级 20px），结果名字列/路径列的起点随行漂移 ——
+  //   同一个列表里 `electron/package.json` 靠左、`electron/x/src/backend.js` 靠右，看着就是"缩进错乱"。
+  //   菜单项自己写的也是「所有文件同一层，用路径列表示位置」→ 层级交给**路径列**表达，
+  //   所有行统一基准缩进（8px），名字列与路径列才对得齐（PyCharm 同款）。
   function buildFlatList(items, ro = false) {
     const box = document.createElement('div');
     box.className = 'git-group-body';
-    const depthOf = (f) => Math.min(6, Math.max(0, String(f).split(/[\\/]+/).filter(Boolean).length - 1));
-    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, depthOf(c.file), true, ro));
+    for (const c of items.slice().sort((a, b) => a.file.localeCompare(b.file))) box.appendChild(fileRow(c, 0, true, ro));
     return box;
   }
 
@@ -1408,11 +1431,14 @@ const GitPanel = (() => {
   }
   const uiPrefs = loadUiPrefs();
   let groupByDir = uiPrefs.groupByDir !== false;  // 默认按目录（PyCharm 默认视图）
+  // 「忽略的文件」节点是否**显示**（默认显示）。⚠ 它必须是**真开关**：关掉 = 从列表里彻底移除，
+  //   不是把节点折叠起来（用户 2026-09-27："这里的隐藏只是折叠 并不是真正的隐藏"）。
+  let showIgnored = uiPrefs.showIgnored !== false;
   const dirCollapsed = uiPrefs.dirCollapsed || {}; // '节key/depth/name' → 用户显式覆盖
   let dirAllCollapsed = !!uiPrefs.dirAllCollapsed;  // 「收起全部」的兜底（未被单独点过的目录跟随它）
   function saveUiPrefs() {
     try {
-      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, dirCollapsed, dirAllCollapsed, signoff }));
+      localStorage.setItem(GIT_UI_KEY, JSON.stringify({ groupByDir, showIgnored, dirCollapsed, dirAllCollapsed, signoff }));
     } catch {}
   }
   // M5：Sign-off（DCO）—— 与视图偏好同一个键，但它影响提交内容，所以单独取名
@@ -1603,7 +1629,7 @@ const GitPanel = (() => {
   // 树形每级缩进步长。⚠ 原来是 14px，用户 2026-09-24 说"层级一直看不出来" → 定为 20px。
   //   树形行的基准 10（不是 8）：分节标题自身有 10px 左内边距，行也用 10 才能让
   //   「分节标题 → 一级目录」正好是 20px（实测 16 会多出 6px，整条阶梯就不齐了）；
-  //   平铺行不参与层级，保持原基准 8（否则平铺视图整体右移 8px，与刚定版的列对齐打架）。
+  //   平铺行不做层级（同一层），固定基准 8。
   const TREE_INDENT = 20;
 
   // 平铺视图的名字列宽 = **这一列表里最长名字的自然宽度**（封顶行宽的 46%）。
@@ -1684,7 +1710,7 @@ const GitPanel = (() => {
     // ⚠ 只有平铺行用固定宽名字列（.flat）—— 树形行的名字要吃满剩余宽度，不能被截成 46%
     if (flat) f.classList.add('flat');
     // ⚠ 行内顺序（用户 2026-09-24 定稿）：**徽章在名字前面** —— `☑ [M] 名字 路径`。
-    //   层级由**缩进**表达（平铺 = 路径深度 × 20px；树形 = 每级 20px），不靠挪徽章。
+    //   层级：树形靠**缩进**（每级 20px）；平铺所有行同一层（depth 恒为 0），层级交给后面的路径列。
     f.innerHTML = '<span class="caret-spacer" aria-hidden="true"></span>' +
       (ro ? '<span class="cf-lock" title="已在 Git 暂存区：只展示，不做增删">·</span>'
                       : `<input type="checkbox" class="cf-check" data-file="${esc(c.file)}"${checked.has(c.file) ? ' checked' : ''}>`) +
@@ -2616,8 +2642,24 @@ const GitPanel = (() => {
     menu.className = 'git-float-menu';
     for (const it of items) {
       const d = document.createElement('div');
-      d.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.header ? ' ctx-title' : '');
-      d.textContent = it.label;
+      // `checked` 不为 undefined 的条目 = **可勾选的状态项**（分组方式 / 显示开关）：
+      //   渲染成「固定宽勾选列 + 文字」，并把当前项高亮（.on）—— 只靠一个 ✓ 字符，
+      //   用户看不出当前选的是哪个（2026-09-27："不能很好的看出当前选择的状态"）。
+      const isCheck = it.checked !== undefined;
+      d.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.header ? ' ctx-title' : '')
+        + (isCheck ? ' ctx-check' + (it.checked ? ' on' : '') : '');
+      if (isCheck) {
+        const ck = document.createElement('span');
+        ck.className = 'ck';
+        ck.textContent = it.checked ? '✓' : '';
+        const tx = document.createElement('span');
+        tx.className = 'tx';
+        tx.textContent = it.label;
+        d.appendChild(ck);
+        d.appendChild(tx);
+      } else {
+        d.textContent = it.label;
+      }
       d.title = it.title || it.label;
       if (!it.header) d.onclick = () => { closeFloatMenu(); it.run(); };
       menu.appendChild(d);
@@ -2809,6 +2851,10 @@ const GitPanel = (() => {
     // 分组方式切换（按目录 ↔ 平铺）：给测试与自检一个稳定入口，不用去猜工具行的索引
     toggleGroupByDir() { groupByDir = !groupByDir; saveUiPrefs(); render(); },
     get groupByDir() { return groupByDir; },
+    // 「忽略的文件」显示开关（真隐藏）：同上，给测试与自检一个入口
+    toggleShowIgnored() { setShowIgnored(!showIgnored); },
+    get showIgnored() { return showIgnored; },
+    set showIgnored(v) { setShowIgnored(v); },
     get preCfg() { return Object.assign({}, preCfg, { commands: preCfg.commands.slice() }); },
     set preCfg(v) { preCfg = pcNormalize(v); },
     get signoff() { return signoff; },

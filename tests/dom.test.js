@@ -2863,6 +2863,50 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('提交窗口：平铺同一层缩进 + 「忽略的文件」真隐藏开关', async () => {
+    await g(dom, 'GitPanel.refresh()');
+    await g(dom, 'GitPanel.openCommit()');
+    await tick(); await tick();
+    const secTitles = () => $allIn($(dom, '#cd-files'), '.git-sec-title');
+    const ignHead = () => secTitles().find((s) => /忽略的文件/.test(s.textContent));
+    // ① 平铺 = **同一层**：所有行同一个基准缩进（不再按路径深度递进），层级交给路径列
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick();
+    const flat = $allIn($(dom, '#cd-files'), '.git-file.flat');
+    assert_(flat.length >= 2, '平铺行 >= 2: ' + flat.length);
+    assert_(flat.every((r) => parseInt(r.style.paddingLeft, 10) === 8),
+      '平铺所有行同一缩进: ' + [...new Set(flat.map((r) => r.style.paddingLeft))].join(','));
+    assert_($allIn($(dom, '#cd-files'), '.git-file .dir').length >= 1, '平铺仍显示所属目录（层级由路径列表达）');
+    await g(dom, 'GitPanel.toggleGroupByDir()');
+    await tick();
+    // ② 显示选项的状态项：固定勾选列 + 当前项高亮（不再靠拼一个 ✓ 字符）
+    click($(dom, '#cd-view-opts'));
+    await tick();
+    const menu = $(dom, '#git-float-menu');
+    assert_(menu, '显示选项菜单弹出');
+    const checks = $allIn(menu, '.ctx-item.ctx-check');
+    assert_(checks.length === 3, '三个状态项（按目录 / 平铺 / 忽略的文件）: ' + checks.length);
+    assert_(checks.every((c) => c.querySelector('.ck')), '每项都有固定宽勾选列 .ck');
+    const onLabels = $allIn(menu, '.ctx-item.on').map((x) => x.textContent);
+    assert_(onLabels.some((t) => /按目录/.test(t)) === g(dom, 'GitPanel.groupByDir'),
+      '「按目录」的选中态与 groupByDir 一致: ' + onLabels.join(' | '));
+    assert_(onLabels.some((t) => /忽略的文件/.test(t)), '「忽略的文件」当前选中（有高亮）');
+    // ③ 「忽略的文件」是**真开关**：取消勾选 → 节点从列表里移除（不是折叠）
+    assert_(ignHead(), '默认有「忽略的文件」节点');
+    click($allIn(menu, '.ctx-item').find((x) => /忽略的文件/.test(x.textContent)));
+    await tick(); await tick();
+    assert_(!ignHead() && g(dom, 'GitPanel.showIgnored') === false,
+      '关掉开关 → 节点从列表里移除（不是折叠）');
+    // 打开 → 节点回来
+    await g(dom, 'GitPanel.showIgnored = true');
+    await tick(); await tick(); await tick();
+    assert_(!!ignHead() && g(dom, 'GitPanel.showIgnored') === true, '打开开关 → 节点回来');
+    // 收尾：收起忽略节点（别给后面的用例留展开态）
+    if (ignHead() && ignHead().textContent.includes('▾')) { click(ignHead()); await tick(); }
+    await g(dom, 'GitPanel.closeDialog()');
+    await tick();
+  });
+
   await okAsync('提交面板：⋯ 更多菜单里是「本次作者 / 提交前检查」（不再各占一个图标）', async () => {
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');

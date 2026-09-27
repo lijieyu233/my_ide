@@ -1118,6 +1118,17 @@ textarea.editor {
   max-height: 60vh; overflow: auto;
 }
 .git-float-menu .ctx-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 有勾选态的状态项（显示选项菜单：分组方式 / 忽略的文件）：固定宽勾选列 + 文字，当前项高亮。
+   以前用 '✓ ' / '\u3000' 拼字符串 —— 勾选列不等宽、又没有"选中"的视觉强调，
+   用户看不出当前选的是哪个（2026-09-27："不能很好的看出当前选择的状态"）。 */
+.git-float-menu .ctx-item.ctx-check { display: flex; align-items: center; gap: 7px; }
+.git-float-menu .ctx-item.ctx-check .ck {
+  flex: 0 0 12px; text-align: center; font-weight: 700; color: var(--accent);
+}
+.git-float-menu .ctx-item.ctx-check .tx { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-float-menu .ctx-item.ctx-check.on .tx { color: var(--accent); font-weight: 600; }
+.git-float-menu .ctx-item.ctx-check:hover .ck,
+.git-float-menu .ctx-item.ctx-check:hover .tx { color: #fff; }
 
 /* 列表里的空状态：靠上、左对齐。原来是 30px 上下留白 + 居中 —— 没有变更时那一大坨留白
    把下面的「忽略的文件」挤到老远，看起来像页面坏了（用户：「这里的展示很奇怪」）。 */

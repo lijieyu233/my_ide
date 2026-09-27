@@ -986,22 +986,15 @@ module.exports = {
     await sleep(1200);
     if (window.GitPanel.groupByDir) { window.GitPanel.toggleGroupByDir(); await sleep(700); }
     const nms = qa('#commit-list .git-file .nm');
-    // ⚠ 平铺按**路径深度**缩进后，名字起点随深度递进（每级 20px）——
-    //   断言改成「同深度同 x」+「相邻深度差 20」，而不是"所有行一个 x"。
-    const depthOf = (f) => Math.min(6, Math.max(0, String(f).split(/[\\/]+/).filter(Boolean).length - 1));
-    const byDepth = {};
-    for (const n of nms) {
-      const row = n.closest('.git-file');
-      (byDepth[depthOf(row.dataset.file)] = byDepth[depthOf(row.dataset.file)] || [])
-        .push(Math.round(n.getBoundingClientRect().left));
-    }
-    const groups = Object.keys(byDepth).map((k) => [Number(k), byDepth[k]]).sort((a, b) => a[0] - b[0]);
-    add('平铺：同深度名字对齐 + 相邻深度差 20（截图留证）',
-      nms.length >= 3 && groups.length >= 1
-        && groups.every(([, xs]) => Math.max(...xs) - Math.min(...xs) <= 1)
-        && groups.slice(1).every(([, xs], i) => xs[0] - groups[i][1][0] === 20)
+    // ⚠ 平铺 = **同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
+    //   所有行同一个缩进（基准 8px），名字列与路径列才对得齐 —— 层级交给后面的路径列表达。
+    const xs = nms.map((n) => Math.round(n.getBoundingClientRect().left));
+    add('平铺：所有行同一缩进 + 名字列对齐（同一层，层级交给路径列）',
+      nms.length >= 3 && Math.max(...xs) - Math.min(...xs) <= 1
+        && qa('#commit-list .git-file').every((r) => parseInt(r.style.paddingLeft, 10) === 8)
         && qa('#commit-list .git-file .dir').length > 0,
-      groups.map(([d, xs]) => '深度' + d + ': x=' + xs[0] + '（' + xs.length + ' 行）').join(' | '));
+      '名字起点 x=' + [...new Set(xs)].join(',') + ' | paddingLeft='
+        + [...new Set(qa('#commit-list .git-file').map((r) => r.style.paddingLeft))].join(','));
     // ⚠ 末尾不清场（截图要拍平铺视图）→ 下个步骤收尾切回按目录
     return { R };
   },
@@ -2078,26 +2071,17 @@ module.exports = {
     // 平铺视图 = **名字在前、路径在后**（第六版定论：照 PyCharm 抄）。名字列**固定宽** → 两列起点都固定。
     //   前五版在"谁在前 / 哪条边对齐"上反复；根因是 v3 的"名字列自适应"让路径起点漂移 120~161px。
     const nms = qa('#cd-files .git-file .nm');
-    // ⚠ 平铺行**按路径深度缩进**（用户 2026-09-24："给平铺界面的文件加上正确的缩进"）：
-    //   深度 = 路径里的目录段数，每级 20px —— "所有行同一个 x"不再是目标，
-    //   目标是「行的 paddingLeft 正好 = 8 + 深度×20」且「同深度同 x、跨深度差 20」。
-    const depthOf = (f) => Math.min(6, Math.max(0, String(f).split(/[\\/]+/).filter(Boolean).length - 1));
+    // ⚠ 平铺 = **同一层**（用户 2026-09-27 报「平铺视角缩进错误」）：
+    //   早先按「路径深度 × 20px」缩进，名字列/路径列起点随行漂移，看着就是"缩进错乱"。
+    //   现在所有行同一个基准缩进（8px），层级交给后面的路径列表达 —— 目标回到"所有行同一个 x"。
     const rowsFlat = qa('#cd-files .git-file.flat');
-    add('平铺：每行缩进 = 路径深度 × 20px（正确的缩进）',
-      rowsFlat.length >= 2 && rowsFlat.every((r) => parseInt(r.style.paddingLeft, 10) === 8 + depthOf(r.dataset.file) * 20),
-      rowsFlat.slice(0, 5).map((r) => depthOf(r.dataset.file) + '级→' + r.style.paddingLeft).join(' | '));
-    const byDepth = {};
-    for (const n of nms) {
-      const d = depthOf(n.closest('.git-file').dataset.file);
-      (byDepth[d] = byDepth[d] || []).push(Math.round(n.getBoundingClientRect().left));
-    }
-    const depthXs = Object.keys(byDepth).map((k) => [Number(k), byDepth[k]]).sort((a, b) => a[0] - b[0]);
-    add('平铺：同一深度的名字起点一致',
-      depthXs.length >= 1 && depthXs.every(([, xs]) => Math.max(...xs) - Math.min(...xs) <= 1),
-      depthXs.map(([d, xs]) => '深度' + d + ': x=' + xs[0]).join(' | '));
-    add('平铺：相邻深度相差正好 20px',
-      depthXs.length >= 2 && depthXs.slice(1).every(([, xs], i) => xs[0] - depthXs[i][1][0] === 20),
-      depthXs.map(([d, xs]) => d + '→' + xs[0]).join(' / '));
+    add('平铺：所有行同一缩进（基准 8px，同一层）',
+      rowsFlat.length >= 2 && rowsFlat.every((r) => parseInt(r.style.paddingLeft, 10) === 8),
+      [...new Set(rowsFlat.map((r) => r.style.paddingLeft))].join(','));
+    const nameXs = nms.map((n) => Math.round(n.getBoundingClientRect().left));
+    add('平铺：所有名字起点一致（第一列对齐）',
+      nameXs.length >= 1 && Math.max(...nameXs) - Math.min(...nameXs) <= 1,
+      [...new Set(nameXs)].join(','));
     // 名字列宽度：**按这一列表里最长的名字**算（JS 写 inline flex-basis）→ 每行同一个值，
     //   而且不留"一大片空白"（固定 46% 时用户圈着空白问过"这里空一大片是干什么的"）。
     const nws = nms.slice(0, 12).map((n) => Math.round(n.getBoundingClientRect().width));
@@ -2141,28 +2125,17 @@ module.exports = {
         return Math.round(r.getBoundingClientRect().left);
       };
       // ⚠ 量的是**文字首字符 x**（元素框对齐 ≠ 文字起点对齐；v4 的 text-align:right 就是栽在这里）。
-      //   平铺按深度缩进后，"所有行同一个 x"不成立 → 按**深度分组**比较：组内一致、组间差 20。
-      const groupByDepth = (els) => {
-        const g = {};
-        for (const el of els) {
-          const row = el.closest('.git-file');
-          if (!row) continue;
-          const x = firstX(el);
-          if (x == null) continue;
-          (g[depthOf(row.dataset.file)] = g[depthOf(row.dataset.file)] || []).push(x);
-        }
-        return Object.keys(g).map((k) => [Number(k), g[k]]).sort((a, b) => a[0] - b[0]);
-      };
-      const pathGroups = groupByDepth(dirs);
-      add('平铺：同一深度的路径**文字**起点一致（第二列对齐）',
-        pathGroups.length >= 1 && pathGroups.every(([, xs]) => Math.max(...xs) - Math.min(...xs) <= 1),
-        pathGroups.map(([d, xs]) => '深度' + d + ': ' + [...new Set(xs)].join(',')).join(' | '));
-      const nameGroups = groupByDepth(qa('#cd-files .git-file .nm'));
-      add('平铺：同一深度的名字**文字**起点一致（第一列对齐）',
-        nameGroups.length >= 1 && nameGroups.every(([, xs]) => Math.max(...xs) - Math.min(...xs) <= 1),
-        nameGroups.map(([d, xs]) => '深度' + d + ': ' + [...new Set(xs)].join(',')).join(' | '));
-      // 深度 0 的行（如果有）：名字与分节标题的文字同列
-      const d0 = nameGroups.find(([d]) => d === 0);
+      //   平铺所有行同一层（无深度缩进）→ **所有行的两列文字都该同一个 x**（不再按深度分组）。
+      const colXs = (els) => els.map(firstX).filter((x) => x != null);
+      const pathXs = colXs(dirs);
+      add('平铺：所有路径**文字**起点一致（第二列对齐）',
+        pathXs.length >= 1 && Math.max(...pathXs) - Math.min(...pathXs) <= 1,
+        [...new Set(pathXs)].join(','));
+      const nameX2 = colXs(qa('#cd-files .git-file .nm'));
+      add('平铺：所有名字**文字**起点一致（第一列对齐）',
+        nameX2.length >= 1 && Math.max(...nameX2) - Math.min(...nameX2) <= 1,
+        [...new Set(nameX2)].join(','));
+      // 名字列的文字起点与分节标题的文字同列（同一层 → 天然对齐）
       const sec0 = qa('#cd-files .git-sec-title')[0];
       const secTx = (() => {
         const n = sec0 && sec0.querySelector('.sec-name');
@@ -2171,21 +2144,13 @@ module.exports = {
         const r = document.createRange(); r.setStart(tn, 0); r.setEnd(tn, 1);
         return Math.round(r.getBoundingClientRect().left);
       })();
-      add('平铺：深度 0 的名字与分节标题的文字同列',
-        !d0 || (secTx != null && Math.abs(d0[1][0] - secTx) <= 2),
-        '分节文字 x=' + secTx + ' 深度0名字 x=' + (d0 ? d0[1][0] : '（本例没有顶层文件）'));
-      const lsByDepth = {};
-      for (const d of dirs) {
-        const row = d.closest('.git-file');
-        (lsByDepth[depthOf(row.dataset.file)] = lsByDepth[depthOf(row.dataset.file)] || [])
-          .push(Math.round(d.getBoundingClientRect().left));
-      }
-      add('平铺：同一深度的路径列左缘一致',
-        Object.keys(lsByDepth).every((k) => {
-          const xs = lsByDepth[k];
-          return Math.max(...xs) - Math.min(...xs) <= 1;
-        }),
-        Object.keys(lsByDepth).map((k) => '深度' + k + ': ' + [...new Set(lsByDepth[k])].join(',')).join(' | '));
+      add('平铺：名字与分节标题的文字同列（同一层的必然结果）',
+        !nameX2.length || (secTx != null && Math.abs(nameX2[0] - secTx) <= 2),
+        '分节文字 x=' + secTx + ' 名字 x=' + (nameX2[0] == null ? '（无）' : nameX2[0]));
+      const lsXs = dirs.map((d) => Math.round(d.getBoundingClientRect().left));
+      add('平铺：路径列左缘一致（元素框也齐）',
+        lsXs.length >= 1 && Math.max(...lsXs) - Math.min(...lsXs) <= 1,
+        [...new Set(lsXs)].join(','));
       const deep = dirs.find((d) => /…/.test(d.textContent));
       add('平铺：深层路径做中段省略（首段/…/末段，不把整条路径截成两三个字）',
         !!deep ? /\/…\//.test(deep.textContent) : true,
@@ -2433,6 +2398,30 @@ module.exports = {
           items.filter((t) => /目录|平铺/.test(t)).join(' | '));
         add('「显示」里有「忽略的文件」',
           items.some((t) => /忽略的文件/.test(t)), items.filter((t) => /忽略/.test(t)).join(' | '));
+        // 状态项必须"看得出当前值"：固定宽勾选列（.ck）+ 当前项高亮（.on），不再靠拼一个 ✓ 字符
+        add('显示选项的状态项有勾选列 + 当前项高亮（一眼看出选了哪个）',
+          qa('#git-float-menu .ctx-item.ctx-check .ck').length >= 3
+            && qa('#git-float-menu .ctx-item.ctx-check.on').length >= 2,
+          '勾选列 ' + qa('#git-float-menu .ctx-item.ctx-check .ck').length
+            + ' 个 / 高亮 ' + qa('#git-float-menu .ctx-item.ctx-check.on').length + ' 个');
+        // 「忽略的文件」是**真开关**：取消勾选 → 节点从列表里移除；再勾选 → 节点回来并展开
+        const ignItem = () => qa('#git-float-menu .ctx-item').find((x) => /忽略的文件/.test(x.textContent));
+        const ignNode = () => qa('#cd-files .git-sec-title').find((h) => /忽略的文件/.test(h.textContent));
+        const hadNode = !!ignNode();
+        ignItem().click();
+        await sleep(700);
+        add('取消勾选「忽略的文件」→ 节点真的从列表里隐藏（不是折叠）',
+          hadNode && !ignNode() && window.GitPanel.showIgnored === false,
+          'showIgnored=' + window.GitPanel.showIgnored + ' 节点还在=' + !!ignNode());
+        vb.click();
+        await sleep(300);
+        ignItem().click();
+        await sleep(900);
+        add('再勾选「忽略的文件」→ 节点回来并自动展开',
+          !!ignNode() && window.GitPanel.showIgnored === true && ignNode().textContent.includes('▾'),
+          'showIgnored=' + window.GitPanel.showIgnored + ' head=' + (ignNode() ? ignNode().textContent : '(无)'));
+        vb.click();   // 上面点了菜单项 → 菜单已关，重开再做后面的分组方式检查
+        await sleep(300);
         // 点「平铺」→ 真的切过去（并验证勾选状态随之互换）
         const flatItem = qa('#git-float-menu .ctx-item').find((x) => /平铺/.test(x.textContent));
         const wasGrouped = window.GitPanel.groupByDir;
