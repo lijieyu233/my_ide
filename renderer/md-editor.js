@@ -656,6 +656,11 @@ window.MdEditor = (() => {
     const selFrom = Math.min(sel.from, sel.to), selTo = Math.max(sel.from, sel.to);
     const selFromLine = doc.lineAt(selFrom), selToLine = doc.lineAt(selTo);
     const isCursor = selFrom === selTo; // 空选区 = 光标
+    // 🔴 块级 widget（表格/mermaid）的"源码态"判定只看**光标（head）**，不看选区范围：
+    //   用范围判定时，用户拖选一大段、只要**经过**表格/图，它们就整块退回源码（满屏 |），
+    //   看起来像"渲染修复无效"（2026-09-28 用户实测）。正确交互（Obsidian 同款）：光标
+    //   点进块内才编辑源码；选择跨越时块保持渲染。
+    const selHeadLine = doc.lineAt(sel.head);
 
     // 行级构造判定：光标/选区与该行相交
     const onLine = (pos) => {
@@ -752,7 +757,7 @@ window.MdEditor = (() => {
             // 进代码块整块变源码态），内容行保持背景块样式。
             if (name === 'FencedCode') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              const cursorIn = !(last.to < selFromLine.from || first.from > selToLine.to);
+              const cursorIn = !(last.to < selHeadLine.from || first.from > selHeadLine.to);
               // mermaid 块（```mermaid）：光标不在 → 整块 block replace 渲染 SVG；
               // 光标进入 → 走下方普通围栏源码模式（可编辑）。库缺失（测试环境）→ 源码模式
               const langM0 = /^\s*(```|~~~)\s*(\S+)/.exec(first.text);
@@ -816,7 +821,7 @@ window.MdEditor = (() => {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
               // 光标不在表内 → 整块渲染成真表格（TableWidget）；光标进入 → 落到下面的逐行源码态
               // （所以"点一下表格就能编辑单元格"这条体验没丢，只是不再常显源码符号）
-              if (!(last.to < selFromLine.from || first.from > selToLine.to)) { /* 光标在表内：源码态 */ }
+              if (!(last.to < selHeadLine.from || first.from > selHeadLine.to)) { /* 光标在表内：源码态（只看 head，选区经过不算）*/ }
               else {
                 const tsrc = doc.sliceString(node.from, node.to);
                 if (parseTable(tsrc)) {
