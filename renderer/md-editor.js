@@ -155,17 +155,22 @@ window.MdEditor = (() => {
     // 列表标记弱化（Obsidian 式：bullet 变暗，内容正常色）
     '.cm-md-listmark': { color: 'var(--text-dim)' },
     // 无序 bullet 圆点（Obsidian 式 • 渲染，替换源码 -/+/*）
+    // ⚠ vertical-align 必须用 baseline：middle 会把行盒撑高 ~2px（实测列表行 24 vs 正文 22），
+    //   而 CM6 的高度模型按 line-height 记账 → 选区色带与行盒每行差 2~5px，列表区一累积
+    //   就出现"色带压住上一行 / 下面少一截"（2026-09-28 实测量化的根因）
     '.cm-md-bullet': {
       display: 'inline-block', width: '16px', textAlign: 'center',
-      color: 'var(--text-dim)', verticalAlign: 'middle', userSelect: 'none',
+      color: 'var(--text-dim)', verticalAlign: 'baseline', userSelect: 'none',
     },
     // 有序编号小间距
     '.cm-md-listnum': { display: 'inline-block', minWidth: '16px' },
     // task checkbox（对齐 preview 渲染的 input[type=checkbox] 视觉）
+    // ⚠ 同上：baseline + 相对位移回正，不能 middle（撑行盒 → 选区错位）
     '.cm-md-task': {
       display: 'inline-block', width: '13px', height: '13px',
       border: '1.5px solid var(--text-dim)', borderRadius: '3px',
-      verticalAlign: 'middle', margin: '0 5px 0 1px', position: 'relative',
+      verticalAlign: 'baseline', position: 'relative', top: '1px',
+      margin: '0 5px 0 1px',
     },
     '.cm-md-task.done': { borderColor: 'var(--accent)' },
     '.cm-md-task.done::before': {
