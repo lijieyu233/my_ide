@@ -1103,6 +1103,60 @@ fs.mkdirSync(repo);
       assert.strictEqual(r2.hits.length, 1, '关键字可配: ' + JSON.stringify(r2.hits));
     });
 
+    // ---------- checkout 走原生（2026-09-28）----------
+    // 背景：isomorphic-git 不实现 core.autocrlf 归一化，拿工作区磁盘字节直接算 sha1 → autocrlf 仓库里
+    // 每个 CRLF 文件都被算成"已修改" → 切换分支抛 CheckoutConflictError 报一串**没动过**的文件
+    // （实测本仓 13 个：git-service.js / main.js / renderer/* …），而 `git status` 干干净净。
+    await okAsync('checkout：autocrlf 仓库（LF 提交 + CRLF 工作区）能正常切换，真有改动仍被拦', async () => {
+      // ① 路由：这条通道必须注册原生实现，否则又退回 isomorphic 的误报路径
+      const spec = require('../git-ops').find((s) => s.ch === 'checkout');
+      assert.strictEqual(spec.native, 'checkout', 'checkout 必须走原生（isomorphic 认不出 autocrlf）');
+
+      const rp = path.join(tmp, 'repo-checkout-crlf');
+      fs.mkdirSync(rp);
+      // ⚠ 夹具必须"和真实仓库同构"：**index/HEAD 由原生 git 自己写**。
+      //   用 isomorphic 提交的话，index 里记的 stat 是 LF 那份的 size，磁盘换成 CRLF 后对不上 →
+      //   连**原生 git 自己**都会保守报"有本地改动"（实测 update-index --refresh 都刷不掉）。
+      //   那不是用户遇到的场景：真实仓库的 index 是 git 检出时写的，stat 本来就是 CRLF 那份。
+      const g = (args) => NATIVE.run(args, { cwd: rp, env: NATIVE.NO_EDIT });
+      await g(['init', '-q', '-b', 'main']);
+      await g(['config', 'user.name', 'c']);
+      await g(['config', 'user.email', 'c@example.com']);
+      await g(['config', 'core.autocrlf', 'true']);
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'l1\nl2\n');
+      await g(['add', '--', 'a.txt']);
+      await g(['commit', '-q', '-m', 'base']);
+      await g(['checkout', '-q', '-b', 'feat']);
+      fs.writeFileSync(path.join(rp, 'a.txt'), 'l1\nl2\nl3\n');
+      await g(['add', '--', 'a.txt']);
+      await g(['commit', '-q', '-m', 'feat']);
+
+      // 复现 autocrlf 检出后的真实状态：删掉再从 index 检出 → 磁盘是 CRLF、index 的 stat 由 git 自己记
+      fs.unlinkSync(path.join(rp, 'a.txt'));
+      await g(['checkout', '--', 'a.txt']);
+      const disk = fs.readFileSync(path.join(rp, 'a.txt'), 'utf8');
+      assert.ok(disk.includes('\r\n'), '夹具前提：工作区应该是 CRLF: ' + JSON.stringify(disk));
+      assert.strictEqual((await g(['status', '--porcelain'])).stdout.trim(), '',
+        '夹具前提：这种状态下原生 git 必须认为干净（否则夹具建模错了）');
+
+      // ③ 切换。isomorphic 在这个状态下会抛 CheckoutConflictError 报一串没动过的文件
+      const r = await NATIVE.checkout(rp, 'main');
+      assert.ok(r.ok, 'CRLF 工作区下切换分支不该失败: ' + (r.error || ''));
+      assert.strictEqual((await g(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim(), 'main', 'HEAD 应指向 main');
+      const after = fs.readFileSync(path.join(rp, 'a.txt'), 'utf8').replace(/\r\n/g, '\n');
+      assert.strictEqual(after, 'l1\nl2\n', '切换后工作区是 main 那一版: ' + JSON.stringify(after));
+
+      // ④ 反向护栏：真的改了内容必须拦住，且工作区一个字节都不许动（不能为了"能过"就覆盖用户改动）
+      fs.writeFileSync(path.join(rp, 'a.txt'), '真改了\n');
+      const bad = await NATIVE.checkout(rp, 'feat');
+      assert.strictEqual(bad.ok, false, '有未提交改动时必须拒绝切换');
+      assert.strictEqual(fs.readFileSync(path.join(rp, 'a.txt'), 'utf8'), '真改了\n', '被拒绝时工作区必须原样');
+
+      // ⑤ 参数注入：`-` 开头的 ref 不能被当选项传下去
+      const inj = await NATIVE.checkout(rp, '-f');
+      assert.strictEqual(inj.ok, false, '`-f` 这种 ref 必须被白名单挡掉');
+    });
+
       // ④ 同步状态下再拉一次（merge / rebase 都应"无事可做"且成功，不产生空提交）
       const again = await G.pullRemote(A, { strategy: 'rebase' });
       assert.ok(again.ok && !again.conflict, '同步状态 rebase 拉取失败: ' + (again && again.error));

@@ -14,7 +14,9 @@
 // 字段：
 //   ch    —— IPC 通道名（渲染层 `window.myIDE.git.<ch>`）
 //   op    —— git-service.js 里的函数名（经 git worker 执行）
-//   native—— 走原生后端 git-native.js 的函数名（不经过 worker；目前只有探测类只读操作）
+//   native—— 走原生后端 git-native.js 的函数名（不经过 worker）
+//   ⚠ 两个字段**同时出现** = 原生优先、没装本机 git 时回落 `op`（目前只有 checkout —— 因为
+//     isomorphic-git 不认 core.autocrlf，会把 CRLF 工作区误判成"有本地改动"）
 module.exports = [
   { ch: 'init', op: 'initRepo' },
   { ch: 'status', op: 'status' },
@@ -33,7 +35,11 @@ module.exports = [
   { ch: 'diffRefs', op: 'diffRefs' },
   { ch: 'commitFiles', op: 'commitFiles' },
   { ch: 'branches', op: 'branches' },
-  { ch: 'checkout', op: 'checkout' },
+  // ⚠ 双实现通道：**原生优先**，没装本机 git 时回落 `op`（唯一同时写两个字段的通道）。
+  //   为什么 checkout 必须优先原生：isomorphic-git 不实现 core.autocrlf 归一化 → autocrlf 仓库里
+  //   工作区的 CRLF 文件被算成"已修改" → 切分支抛 CheckoutConflictError 报一堆没动过的文件
+  //   （2026-09-28 实测，本仓 dev↔main 必挂）。原生归一化后比对，只在真有改动时拒绝。
+  { ch: 'checkout', op: 'checkout', native: 'checkout' },
   { ch: 'createBranch', op: 'createBranch' },
   // M4：分支工作流 —— merge / rebase / 操作状态机 / 冲突解决。
   // 全部走**原生后端**（isomorphic-git 没有 merge/rebase），无本机 git 时由 caps 隐藏入口。
