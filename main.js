@@ -899,7 +899,17 @@ function startGitWorker() {
 const GIT_OPS = require('./git-ops');
 const nativeGit = require('./git-native');
 for (const spec of GIT_OPS) {
-  if (spec.native) {
+  if (spec.native && spec.op) {
+    // 双实现通道（目前只有 checkout）：**原生优先**，本机没有 git 时回落到 JS 实现（worker）。
+    // 为什么不能只用 isomorphic：它不实现 core.autocrlf 归一化，会把工作区的 CRLF 文件当成
+    // "已修改" → 切换分支报 CheckoutConflictError（详细原因见 git-native.js 里 checkout 的注释）。
+    const fn = nativeGit[spec.native];
+    ipcMain.handle('git:' + spec.ch, async (_e, ...args) => {
+      const i = await nativeGit.info(false);
+      if (i && i.git && i.git.available) return fn(...args);
+      return gitCall(spec.op, ...args);
+    });
+  } else if (spec.native) {
     const fn = nativeGit[spec.native];
     ipcMain.handle('git:' + spec.ch, (_e, ...args) => fn(...args));
   } else {

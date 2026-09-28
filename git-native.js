@@ -388,21 +388,37 @@ async function abortOp(repo) {
   return { ok: r.ok, error: r.ok ? '' : r.stderr.trim() || r.stdout.trim() || r.error, state: await opState(repo) };
 }
 
-// ---------- M4-C：分支操作（从指定提交建分支 / 重命名 / 删除） ----------
-// ⚠ isomorphic-git 的 `git.branch` 只能从 HEAD 建分支、不能删/改名 —— 这三个只能靠本机 git。
-//   checkout 保留 isomorphic 的实现（已在 git-service），这里不重复。
-async function branchCreate(repo, name, ref, checkout) {
-  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) return { ok: false, error: '分支名不合法' };
-  const args = checkout ? ['checkout', '-b', name] : ['branch', name];
+// ---------- M4-C：分支操作（切换 / 从指定提交建分支 / 重命名 / 删除） ----------
+// ⚠ isomorphic-git 的 `git.branch` 只能从 HEAD 建分支、不能删/改名 —— 这几个只能靠本机 git。
+//
+// 🔴 `checkout` 也必须走原生（2026-09-28 修）：isomorphic-git **不实现 core.autocrlf 归一化**，
+//   它拿工作区磁盘字节直接算 sha1，而 index 里存的是归一化后的 LF blob → 本仓（autocrlf=true、
+//   无 .gitattributes）里每个 CRLF 文件都被算成"已修改"。切换分支时它只对"这次要写盘的文件"做
+//   冲突检查，于是抛 CheckoutConflictError 报一串**根本没动过**的文件（13 个），而 `git status` 是干净的。
+//   原生 git 会先归一化再比对，只在**真有本地改动**时拒绝 —— 报错文案也是给用户看的标准版。
+//   ⚠ git-service.js 里那份 isomorphic 实现**保留**（没装本机 git 时的回落，见 git-ops.js 的双字段）。
+async function checkout(repo, ref) {
+  // 白名单同时挡住 `-` 开头的参数注入（`git checkout -x` 会变成选项）
+  if (!ref || !/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-')) return { ok: false, error: '分支名不合法' };
+  const r = await run(['checkout', ref], { cwd: repo, timeout: 30000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error };
+}
+async function branchCreate(repo, name, ref, switchTo) {
+  // 白名单同时挡住 `-` 开头的参数注入（`git branch -x` 会变成选项）；参数名不用 `checkout` 免得遮蔽上面的函数
+  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name) || name.startsWith('-')) return { ok: false, error: '分支名不合法' };
+  const args = switchTo ? ['checkout', '-b', name] : ['branch', name];
   if (ref) args.push(ref);
   const r = await run(args, { cwd: repo, timeout: 15000, env: NO_EDIT });
   return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
 }
 async function branchRename(repo, from, to) {
+  const bad = (s) => !s || !/^[A-Za-z0-9._/-]+$/.test(s) || s.startsWith('-');
+  if (bad(from) || bad(to)) return { ok: false, error: '分支名不合法' };
   const r = await run(['branch', '-m', from, to], { cwd: repo, timeout: 15000, env: NO_EDIT });
   return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
 }
 async function branchDelete(repo, name, force) {
+  if (!name || !/^[A-Za-z0-9._/-]+$/.test(name) || name.startsWith('-')) return { ok: false, error: '分支名不合法' };
   // -D（强删，丢弃未合并提交）需明确确认；默认 -d（未合并的会拒绝，更安全）
   const r = await run(['branch', force ? '-D' : '-d', name], { cwd: repo, timeout: 15000, env: NO_EDIT });
   return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
@@ -535,7 +551,7 @@ async function scanTodo(repo, files, kinds) {
 // partialStaging（apply --cached）与 merge/rebase/stash/hooks。**没有 git.exec(任意字符串) 这种口子**，
 // 上层只能调用明确列出的能力。
 const ROUTING_DOC = {
-  native: ['credential', 'merge', 'rebase', 'opState', 'conflicts', 'resolveFile', 'continue/skip/abort'],
+  native: ['credential', 'checkout', 'merge', 'rebase', 'opState', 'conflicts', 'resolveFile', 'continue/skip/abort'],
   isomorphic: ['status', 'log', 'diff', 'commit', 'branch', 'tag', 'shelve', 'revert', 'cherryPick', 'blame'],
   planned: { partialStaging: 'git apply --cached', stash: 'git stash', hooks: '提交时执行 .git/hooks/*' },
 };
@@ -545,7 +561,7 @@ module.exports = {
   getExe: () => configuredExe() || 'git', EMPTY_CAPS,
   // M4：分支工作流与冲突（本机 git；无本机 git 时由上层按 caps 隐藏）
   opState, conflicts, conflictSides, resolveFile, merge, rebase, continueOp, skipOp, abortOp,
-  branchCreate, branchRename, branchDelete,
+  checkout, branchCreate, branchRename, branchDelete,
   resolveCustom, readWorktreeText, pushForceWithLease, setUpstream, unsetUpstream, NO_EDIT,
   precommitRun, scanTodo, runShell,
 };

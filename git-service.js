@@ -584,6 +584,12 @@ async function branches(dir) {
     return { isRepo: true, error: String(e.message || e), branches: [], current: '', remotes: [], upstream: '' };
   }
 }
+// ⚠ 这是**回落实现**：应用里 `git:checkout` 现在优先走原生 git（`git-ops.js` 里 checkout 同时写了
+//   `op` 与 `native` 两个字段，main.js 按"原生可用就用原生"注册）。本函数只在**本机没找到 git 可执行文件**
+//   时被调用 —— 因为它有个已知缺陷：isomorphic-git 不实现 core.autocrlf 归一化，autocrlf 仓库里工作区的
+//   CRLF 文件会被算成"已修改"，于是切分支抛 CheckoutConflictError 报一串没动过的文件（2026-09-28 实测，13 个）。
+//   `status()` 里有针对同一缺陷的「CRLF 误报校验」补丁（见上方），但**不给这里加**：这里没法区分
+//   "真改动" 与 "只差行尾"，而 checkout 一旦误判放行就是**覆盖用户没提交的内容**，不能赌。
 async function checkout(dir, ref) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
