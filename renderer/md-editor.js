@@ -241,7 +241,10 @@ window.MdEditor = (() => {
     },
     // ===== 表格 widget（光标不在表内时的真 <table>）=====
     // 表头刻意用 --md-heading + 面板底色 + 700：用户要的"起码标题颜色不同"就在这里
-    '.cm-md-table': { position: 'relative', margin: '10px 0' },
+    // ⚠ block widget 的垂直间距**只能用 padding 不能用 margin**：CM6 行高测量不含 margin，
+    //   widget 实际占位会比高度模型高 → 下方所有行的选区/点击坐标整体错位
+    //   （用户看到的"选区前面少一截、后面多一截"就是它，与 fence 用 padding 是同一条铁律）
+    '.cm-md-table': { position: 'relative', padding: '10px 0' },
     '.cm-md-table table': { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' },
     // ⚠ 表头底色别用纯 --bg-panel：它比正文底色只暗一点，截图里几乎看不出"这是表头"
     //   → 掺一层 accent tint（用户要的"起码标题颜色不同"要一眼看得出来）
@@ -271,7 +274,7 @@ window.MdEditor = (() => {
     // mermaid 实时渲染图（block widget）：居中，**不画容器底色**
     // （用户 2026-09-28：图外面那块底色"有视觉影响" —— 面积一大就在正文中间压出一整块灰，
     //   而且图本身已经有自己的方框，外面再套一层纯属多余）
-    '.cm-md-mermaid': { position: 'relative', padding: '6px 0', textAlign: 'center', margin: '10px 0' },
+    '.cm-md-mermaid': { position: 'relative', padding: '14px 0 10px', textAlign: 'center' },
     '.cm-md-mermaid svg': { maxWidth: '100%' },
     '.cm-md-mermaid .mermaid-err': { textAlign: 'left', color: 'var(--del-text)', whiteSpace: 'pre-wrap' },
     // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸
