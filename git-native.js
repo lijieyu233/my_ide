@@ -456,16 +456,34 @@ async function readWorktreeText(repo, file) {
 }
 
 // M4 收尾：upstream（当前分支 ↔ 远程分支的跟踪关系）
+// ⚠ 本机 git.exe 写不进 `refs/remotes/**`（4 段路径 rc=0 但不落地）→ `refs/remotes/origin/main`
+//   压根不存在，`git branch --set-upstream-to=origin/main` 会以"分支不存在"拒绝。
+//   但用户要的其实就是 branch.<name>.remote/merge（git 自己存 upstream 的方式），这两条
+//   **是能写进去的**（实测 push -u 之后 config 里确实有）→ 拿不到引用时直接写 config。
 async function setUpstream(repo, ref) {
   const r = await run(['branch', '--set-upstream-to=' + ref], { cwd: repo, timeout: 15000, env: NO_EDIT });
-  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+  if (r.ok) return { ok: true };
+  const m = String(ref || '').match(/^([^/]+)\/(.+)$/);
+  const cur = await run(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, timeout: 5000, env: NO_EDIT });
+  const name = cur.ok ? cur.stdout.trim() : '';
+  if (m && name && name !== 'HEAD') {
+    const a = await run(['config', 'branch.' + name + '.remote', m[1]], { cwd: repo, timeout: 10000, env: NO_EDIT });
+    const b = await run(['config', 'branch.' + name + '.merge', 'refs/heads/' + m[2]], { cwd: repo, timeout: 10000, env: NO_EDIT });
+    if (a.ok && b.ok) return { ok: true, viaConfig: true, note: 'remote-tracking 引用不可用，已直接写入 config' };
+  }
+  return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error };
 }
 async function unsetUpstream(repo) {
   const branch = await run(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, timeout: 5000, env: NO_EDIT });
   const name = branch.ok ? branch.stdout.trim() : '';
   if (!name || name === 'HEAD') return { ok: false, error: '当前不在分支上（detached HEAD）' };
   const r = await run(['branch', '--unset-upstream', name], { cwd: repo, timeout: 15000, env: NO_EDIT });
-  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.error };
+  if (r.ok) return { ok: true };
+  // 兜底：直接删 config 那两行（键不存在时 --unset 返回非 0，所以"删掉任一行"就算成功）
+  const a = await run(['config', '--unset', 'branch.' + name + '.remote'], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  const b = await run(['config', '--unset', 'branch.' + name + '.merge'], { cwd: repo, timeout: 10000, env: NO_EDIT });
+  if (a.ok || b.ok) return { ok: true, viaConfig: true };
+  return { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error };
 }
 
 // ---------- M5：提交前检查（Before Commit）----------
@@ -557,7 +575,7 @@ const ROUTING_DOC = {
 };
 
 module.exports = {
-  setConfigPath, probe, info, setExe, testExe, run, credentialFill, proxyFor,
+  setConfigPath, probe, info, setExe, testExe, run, runRetry, credentialFill, proxyFor,
   getExe: () => configuredExe() || 'git', EMPTY_CAPS,
   // M4：分支工作流与冲突（本机 git；无本机 git 时由上层按 caps 隐藏）
   opState, conflicts, conflictSides, resolveFile, merge, rebase, continueOp, skipOp, abortOp,

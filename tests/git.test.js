@@ -1047,6 +1047,55 @@ fs.mkdirSync(repo);
       assert.ok(log2.includes('Merge'), 'merge 策略应产生合并提交: ' + log2);
       assert.strictEqual(fs.existsSync(path.join(A, 'b2.txt')), true, '远程的 b2.txt 应该进来了');
 
+    await okAsync('远程状态：反斜杠 remote 不写坏 config；refs/remotes 不落地时 ahead/behind 与 push 预览仍算得出来', async () => {
+      // 🔴 两条都是 2026-09-28 实测踩出来的：
+      //   ① addRemote 把 `C:\...` 原样写进 .git/config → git config 的 `\` 是转义符 →
+      //      所有原生 git 命令报 `bad config line N`（status/push/merge/钩子全挂）。
+      //   ② 本机 git.exe 写不进 refs/remotes/** → fetch 明明成功但 origin/main 不存在 →
+      //      ahead/behind 恒为 null、push 预览把已推送的也算进去（还标 first:true）。
+      const bare = path.join(tmp, 'ab-bare.git');
+      await runGit(tmp, ['init', '--bare', '--initial-branch=main', bare]);
+      const A = path.join(tmp, 'ab-A');
+      fs.mkdirSync(A);
+      await G.initRepo(A);
+      await G.setUserConfig(A, { name: 'ab', email: 'ab@example.com' });
+      fs.writeFileSync(path.join(A, 'a.txt'), '1\n');
+      await G.commit(A, { message: 'c1', files: ['a.txt'] });
+
+      // ① 故意用**反斜杠**（本机原生路径就是这种）→ 应被规范成正斜杠再落盘
+      await G.addRemote(A, { name: 'origin', url: bare });
+      const urlLine = fs.readFileSync(path.join(A, '.git', 'config'), 'utf8')
+        .split('\n').find((l) => /\burl\s*=/.test(l)) || '';
+      assert.ok(urlLine.indexOf('\\') < 0, 'config 里不能有未转义的反斜杠（会让原生 git 报 bad config line）: ' + urlLine);
+      const st = await runGit(A, ['status', '--porcelain']);
+      assert.strictEqual(st.ok, true, '原生 git status 不该被坏 config 打断: ' + (st.stderr || '').trim().split('\n')[0]);
+
+      // ② 同步状态
+      await runGit(A, ['push', '-q', '-u', 'origin', 'main']);
+      await runGit(A, ['fetch', 'origin']);
+      const ab0 = await G.aheadBehind(A);
+      assert.strictEqual(ab0.ahead, 0, '同步时 ahead=0: ' + JSON.stringify(ab0));
+      assert.strictEqual(ab0.behind, 0, '同步时 behind=0: ' + JSON.stringify(ab0));
+
+      // ③ 本地领先一个 → ahead=1 且 **behind=0**（曾把整段历史数成 behind）
+      fs.writeFileSync(path.join(A, 'a.txt'), '2\n');
+      await G.commit(A, { message: 'c2', files: ['a.txt'] });
+      const ab1 = await G.aheadBehind(A);
+      assert.strictEqual(ab1.ahead, 1, '本地领先 1: ' + JSON.stringify(ab1));
+      assert.strictEqual(ab1.behind, 0, '不该把整段历史数成 behind: ' + JSON.stringify(ab1));
+      const pc = await G.listPushCommits(A);
+      assert.strictEqual(pc.count, 1, 'push 预览只该列未推送的那一个: ' + JSON.stringify({ count: pc.count, first: pc.first }));
+      assert.strictEqual(pc.first, false, '推过一次了 → 不该再标 first');
+
+      // ④ upstream：config 的 branch.<name>.remote/merge 才是权威来源（不依赖 refs/remotes 落地）
+      const br = await G.branches(A);
+      assert.strictEqual(br.upstream, 'origin/main', 'upstream 应读得到: ' + JSON.stringify(br.upstream));
+      const su = await NATIVE.setUpstream(A, 'origin/main');
+      assert.ok(su.ok, 'setUpstream 失败: ' + (su.error || ''));
+      const uu = await NATIVE.unsetUpstream(A);
+      assert.ok(uu.ok, 'unsetUpstream 失败: ' + (uu.error || ''));
+    });
+
     await okAsync('M5：提交前检查 —— 用户命令按顺序跑、失败即停；hook 走 git 自己跑', async () => {
       const rp = path.join(tmp, 'repo-precommit');
       fs.mkdirSync(rp);

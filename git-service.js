@@ -579,6 +579,19 @@ async function branches(dir) {
       const u = await N.run(['rev-parse', '--abbrev-ref', 'HEAD@{upstream}'], { cwd: root, timeout: 5000, env: N.NO_EDIT });
       if (u.ok) upstream = u.stdout.trim();
     } catch {}
+    // ⚠ 兜底：`HEAD@{upstream}` 依赖 refs/remotes，本机 git 写不进 → 解析失败（实测还会原样返回
+    //   "@{upstream}"）。但 config 里的 branch.<name>.remote/merge 是**真的写进去了**的 → 直接读它，
+    //   这才是 upstream 的权威来源（git 自己也是这么存的）。
+    if ((!upstream || upstream === '@{upstream}') && current) {
+      try {
+        const N = require('./git-native');
+        const rn = await N.run(['config', '--get', 'branch.' + current + '.remote'], { cwd: root, timeout: 5000, env: N.NO_EDIT });
+        const mg = await N.run(['config', '--get', 'branch.' + current + '.merge'], { cwd: root, timeout: 5000, env: N.NO_EDIT });
+        const r0 = rn.ok ? rn.stdout.trim() : '';
+        const m0 = mg.ok ? mg.stdout.trim() : '';
+        if (r0 && m0) upstream = r0 + '/' + String(m0).replace(/^refs\/heads\//, '');
+      } catch {}
+    }
     return { isRepo: true, branches: list.sort(), current, remotes, upstream };
   } catch (e) {
     return { isRepo: true, error: String(e.message || e), branches: [], current: '', remotes: [], upstream: '' };
@@ -1115,7 +1128,12 @@ async function diffRefs(dir, aRef, bRef, file) {
 // 这里只做「是否必须走原生」的判定；实际执行统一交给 git-native
 // （能力探测选 exe、幂等重试、NO_EDIT 环境），不另起一套 spawn。
 function needNativeRemote(url) {
-  return /^git@|^ssh:\/\//i.test(String(url || ''));
+  const u = String(url || '');
+  if (/^git@|^ssh:\/\//i.test(u)) return true;
+  // 🔴 isomorphic-git **只认 http(s)**：本地路径（C:\...、/home/x/repo）、UNC（\\host\share）、
+  //   file:// 在它那儿一律是 `Cannot parse remote URL` —— push / fetch / pull(ff) 三条通道
+  //   在这些远程下 100% 失败。交给原生 git（本来它们也只有原生能干），https 链路不受影响。
+  return !/^https?:\/\//i.test(u);
 }
 
 const rawHttp = require('isomorphic-git/http/node');
@@ -1317,6 +1335,12 @@ async function addRemote(dir, { name, url }) {
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   if (!name || !/^[A-Za-z0-9._-]+$/.test(name)) return { ok: false, error: '远程名不合法' };
   if (!url || !/\S/.test(url)) return { ok: false, error: 'URL 不能为空' };
+  // 🔴 Windows 本地路径 / UNC 里的反斜杠必须先规范成正斜杠：git config 把 `\` 当转义符，
+  //   原样写进 .git/config 会让**所有原生 git 命令**报 `bad config line N` —— status / push /
+  //   merge / rebase / 冲突处理 / pre-commit 钩子全线失效，而且报错完全看不懂。
+  //   实测原生 `git remote add` 就是这么规范化的（C:\a\b → C:/a/b），这里保持一致行为。
+  //   ⚠ 只对"没有 scheme"的输入做（本地路径 / UNC / scp-like），http(s)、ssh、git+ssh 原样保留。
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) url = url.replace(/\\/g, '/');
   try {
     await git.addRemote({ fs, dir: root, remote: name, url, force: true });
     return { ok: true };
@@ -1401,10 +1425,17 @@ async function pullRemote(dir, { auth, strategy } = {}) {
   const N = require('./git-native');
   const f = await N.run(['fetch', '--prune', pr.name], { cwd: root, timeout: 120000, env: N.NO_EDIT });
   if (!f.ok) return { ok: false, error: '拉取失败：' + (f.stderr.trim() || f.error) };
-  if (strat === 'ff-only') {
+  // ⚠ ff 与 ff-only 都是"只快进"：以前 ff 只在 isomorphic 分支成立，落到原生后会被当成 merge
+  //   （分叉时静默建合并提交）——本地路径远程现在也走原生，这里必须补上，否则语义不一致。
+  if (strat === 'ff-only' || strat === 'ff') {
     const m = await N.run(['merge', '--ff-only', 'FETCH_HEAD'], { cwd: root, timeout: 30000, env: N.NO_EDIT });
-    return m.ok ? { ok: true, strategy: strat }
-      : { ok: false, error: '不是快进（本地与远程已分叉）：' + (m.stderr.trim() || m.stdout.trim() || m.error) };
+    if (m.ok) return { ok: true, strategy: strat };
+    const why = m.stderr.trim() || m.stdout.trim() || m.error;
+    return {
+      ok: false, strategy: strat,
+      error: strat === 'ff-only' ? '不是快进（本地与远程已分叉）：' + why
+        : '本地与远程已分叉：请换「拉取并合并 / 拉取并变基」，或先处理本地更改',
+    };
   }
   const r = strat === 'rebase' ? await N.rebase(root, 'FETCH_HEAD') : await N.merge(root, 'FETCH_HEAD');
   if (!r.ok) return { ok: false, error: r.error, strategy: strat, state: r.state };
@@ -1485,6 +1516,40 @@ async function primaryRemote(root) {
   } catch { return null; }
 }
 
+// 远端某个分支的真实 oid —— ⚠ **不能只信 refs/remotes**。
+// 🔴 本机 git.exe 写不进 `refs/remotes/**`（4 段路径 rc=0 但文件不落地）→ `git fetch` 明明成功输出
+//    `* [new branch] main -> origin/main`，`refs/remotes/origin/main` 却不存在。后果是 ahead/behind
+//    恒为 null、push 预览把已推送的提交也算进去（还误标"首次推送"）、set-upstream 被拒。
+//    三级兜底：① 标准 remote-tracking 引用（正常机器上都走这条）
+//             ② .git/FETCH_HEAD（fetch 的产物，2 段路径 → 本机也落得下来，形如
+//                "<oid>\t\tbranch 'main' of <url>"）
+//             ③ git ls-remote（最后手段，要走网络，只读不改工作区）
+async function remoteOid(root, remote, branch, remoteUrl) {
+  if (!remote || !branch) return null;
+  try {
+    const oid = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + remote + '/' + branch });
+    if (oid) return String(oid);
+  } catch {}
+  try {
+    const txt = fs.readFileSync(path.join(root, '.git', 'FETCH_HEAD'), 'utf8');
+    const want = new RegExp("branch\\s+'" + branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "'\\s+of\\s");
+    const urlKey = remoteUrl ? String(remoteUrl).replace(/\\/g, '/') : '';
+    for (const line of txt.split('\n')) {
+      const m = line.match(/^([0-9a-f]{40})\s+(.*)$/);
+      if (!m || !want.test(m[2])) continue;
+      if (urlKey && m[2].indexOf(urlKey) < 0) continue;  // 多远程时按 url 区分
+      return m[1];
+    }
+  } catch {}
+  try {
+    const N = require('./git-native');
+    const r = await N.run(['ls-remote', remote, 'refs/heads/' + branch], { cwd: root, timeout: 15000, env: N.NO_EDIT });
+    const m = r.ok && String(r.stdout).match(/^([0-9a-f]{40})/);
+    if (m) return m[1];
+  } catch {}
+  return null;
+}
+
 // ahead/behind：本地分支 vs 远程跟踪分支
 // opts.fetch=true 时先静默 fetch（更新 refs/remotes 后再算，反映远程真实状态；失败回退本地 refs）
 async function aheadBehind(dir, opts = {}) {
@@ -1503,14 +1568,25 @@ async function aheadBehind(dir, opts = {}) {
       fetched = true;
     } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）
   }
-  let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
+  // ⚠ 走 remoteOid 的三级兜底（refs/remotes → FETCH_HEAD → ls-remote）：本机 git 写不进
+  //   refs/remotes 时，只 resolveRef 会恒为 null → 面板上的 ↑/↓ 永远不显示。
+  const upstream = await remoteOid(root, pr.name, branch, pr.url);
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
-  return {
-    branch, remote: pr.name, remoteUrl: pr.url, fetched,
-    ahead: !upstream || !head ? null : await countNotReached(root, head, upstream),
-    behind: !upstream || !head ? null : await countNotReached(root, upstream, head),
-  };
+  let ahead = null, behind = null;
+  if (upstream && head) {
+    // ⚠ 必须先找 merge-base 再各自计数：直接 `countNotReached(upstream, head)` 在**本地领先**时
+    //   （远端是本地的祖先，沿父链永远到不了 head）会把整段历史都数成 behind —— 实测本地多提交
+    //   一个后报 ahead=1 behind=1。分叉时同理，两边都只数"自己独有"的那段才是对的。
+    let base = null;
+    try {
+      const bs = await git.findMergeBase({ fs, dir: root, oids: [String(head), String(upstream)] });
+      base = (bs && bs[0]) || null;
+    } catch {}
+    const stop = base || '0000000000000000000000000000000000000000';   // 无共同祖先 = 整段都算
+    ahead = await countNotReached(root, head, stop);
+    behind = await countNotReached(root, upstream, stop);
+  }
+  return { branch, remote: pr.name, remoteUrl: pr.url, fetched, ahead, behind };
 }
 
 // Push 预览：列出本地领先远程跟踪分支的待推送提交（HEAD → refs/remotes/<remote>/<branch>，纯本地 refs，无网络）
@@ -1523,8 +1599,9 @@ async function listPushCommits(dir) {
   if (!head) return { ok: false, error: '当前无可推送的提交' };
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
-  let upstream = null;
-  try { upstream = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + pr.name + '/' + branch }); } catch {}
+  // ⚠ 同上走三级兜底：拿不到远端 oid 时会把**已推送过**的提交也列成待推送（还标 first:true），
+  //   本机 refs/remotes 不落地就是这种情况。
+  const upstream = await remoteOid(root, pr.name, branch, pr.url);
   // 无上游：全部分支历史都是待推送（首次 push 场景），上限保护 500
   const stop = upstream || '0000000000000000000000000000000000000000';
   const seen = new Set([stop]);
