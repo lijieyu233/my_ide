@@ -18,3 +18,5 @@ check-ui-timeout.txt
 .ui-check-profile*/
 .ui-check-trash/
 .ui-check-boot.txt
+md-check-report.txt
+md-check.png
