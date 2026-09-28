@@ -303,6 +303,8 @@ window.MdEditor = (() => {
       img.src = resolveImgSrc(this.src);
       img.alt = this.alt || '';
       img.draggable = false;
+      // 图片异步加载完高度才确定 → 触发重测（否则下方内容的选区/点击坐标错位）
+      img.addEventListener('load', remeasureSoon);
       // 加载失败（路径错/网络图不存在）：隐藏裂图 → 虚线占位框显示 alt/文件名
       img.addEventListener('error', () => {
         img.style.display = 'none';
@@ -482,6 +484,9 @@ window.MdEditor = (() => {
   // ---------- Mermaid 图 widget（```mermaid 围栏 → SVG 实时渲染） ----------
   // 光标不在块内：整块替换为渲染图；光标进入：回退源码编辑（Obsidian 同款交互）。
   // 渲染结果按 code 缓存（图不闪烁）；mermaid 库缺失（如测试环境）→ 不渲染，保持源码。
+  // 当前活动的编辑器视图（create() 里赋值）：widget 异步改高度后用它触发重测量
+  let liveView = null;
+  const remeasureSoon = () => { if (liveView) { try { liveView.requestMeasure(); } catch {} } };
   const mermaidCache = new Map(); // code -> svg string（含失败标记 null）
   // ⚠ mermaid 的**全局主题**原先只在 md 预览那条路上按需 initialize（plugin-loader 只在
   //   页面里真有 mermaid 块时才调）→ Live Preview 这条路径**从来没初始化过**，于是暗色主题下
@@ -516,7 +521,7 @@ window.MdEditor = (() => {
           const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, this.code);
           mermaidCache.set(this.code, svg);
-          if (wrap.isConnected) { wrap.innerHTML = svg; attachFs(wrap); }
+          if (wrap.isConnected) { wrap.innerHTML = svg; attachFs(wrap); remeasureSoon(); }
         } catch (e) {
           const msg = String((e && e.message) || e);
           mermaidCache.set(this.code, null);
@@ -1296,6 +1301,9 @@ window.MdEditor = (() => {
       ],
     });
     const view = new EditorView({ state, parent });
+    // widget（mermaid/图片）异步把高度撑大后，必须让 CM6 立刻重测 —— 否则它对
+    // viewport 外的行仍用估算高度，下方内容的选区/点击坐标整体错位
+    liveView = view;
     // 关闭 Chromium 拼写检查（否则英文/代码下标红波浪"下划线"—— Obsidian 同款关闭）
     view.contentDOM.spellcheck = false;
     view.contentDOM.setAttribute('autocorrect', 'off');
