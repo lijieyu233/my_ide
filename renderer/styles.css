@@ -1421,7 +1421,7 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 /* 文本选区统一成主题色的半透明 tint（编辑器已单独设 .cm-selectionBackground，
    这里管的是正文预览 / AI 消息 / 输入框这些走原生 ::selection 的地方）。
    默认的操作系统蓝在暗色主题里非常突兀，也是"选中很奇怪"观感的一部分。 */
-::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
 /* 这里曾有 #modal-box（旧版 Modal 的固定容器）—— 它已经不再被任何代码使用，
    但一直留在 #modal-mask 里当一个空 flex 子项，宽 560px，把真正的弹窗整体挤偏。

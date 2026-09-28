@@ -79,6 +79,13 @@ window.MdEditor = (() => {
     // 空行/行尾的那截也就不刺眼了。
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground':
       { backgroundColor: 'color-mix(in srgb, var(--accent) 20%, transparent) !important' },
+    // 🔴 编辑器内的**原生选区必须透明**：drawSelection 已经画了整行选区层，而全局
+    //   `::selection`（styles.css）还会再画一层只盖文字的 —— 两层颜色不一致时，文字处
+    //   双层叠加、行尾只有一层，看起来就是"一段选区两种颜色"（2026-09-28 用户截图）。
+    //   编辑器里只留 CM6 这一层，颜色才均匀；全局 ::selection 留给 AI 面板等非 CM6 区域。
+    '& .cm-content ::selection': { backgroundColor: 'transparent' },
+    '& .cm-content::selection': { backgroundColor: 'transparent' },
+    '& .cm-line::selection': { backgroundColor: 'transparent' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
     '.cm-panels': { backgroundColor: 'var(--panel-strong)', color: 'var(--text)', borderColor: 'var(--border)' },
     '.cm-panel.cm-search input, .cm-panel.cm-search button': {
