@@ -78,7 +78,7 @@ window.MdEditor = (() => {
     // 看起来像渲染坏了。改成主题强调色的半透明 tint —— 与全应用「选中态减重」同一套语言，
     // 空行/行尾的那截也就不刺眼了。
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground':
-      { backgroundColor: 'color-mix(in srgb, var(--accent) 32%, transparent) !important' },
+      { backgroundColor: 'color-mix(in srgb, var(--accent) 20%, transparent) !important' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
     '.cm-panels': { backgroundColor: 'var(--panel-strong)', color: 'var(--text)', borderColor: 'var(--border)' },
     '.cm-panel.cm-search input, .cm-panel.cm-search button': {
@@ -213,7 +213,9 @@ window.MdEditor = (() => {
     // 表格逐行线框（Obsidian 式行常渲染：光标进单元格不整块退化源码）
     // 表头行/数据行 = 行背景+边框+左右 padding；分隔行 block replace 后压成 2px 细线
     // 背景/边框在 ::before(z:-3)——表格内选区可见（老问题根因修复）
-    '.cm-line.cm-md-tr-head': { color: 'var(--text-bright)', fontWeight: '600', padding: '3px 10px' },
+    // 表头文字：--text-bright 在暗色主题下几乎等于正文白（用户："起码标题颜色不同"）→
+    // 换成标题色 + 700，与正文一眼分得开
+    '.cm-line.cm-md-tr-head': { color: 'var(--md-heading)', fontWeight: '700', padding: '3px 10px' },
     '.cm-line.cm-md-tr-head::before': {
       background: 'var(--bg-panel)', border: '1px solid color-mix(in srgb, var(--text) 12%, transparent)', borderBottom: 'none',
       borderRadius: '6px 6px 0 0',
@@ -223,15 +225,46 @@ window.MdEditor = (() => {
     '.cm-line.cm-md-tr-row.cm-md-tr-last::before': { borderRadius: '0 0 6px 6px' },
     '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0' },
     '.cm-line.cm-md-tr-sep::before': { background: 'color-mix(in srgb, var(--text) 12%, transparent)' },
-    '.cm-md-tpipe': { opacity: '0.35', color: 'var(--text-dim)' },
-    // mermaid 实时渲染图（block widget）：居中 + 背景容器
-    '.cm-md-mermaid': { position: 'relative', padding: '18px 16px', textAlign: 'center', margin: '18px 0' },
-    // 底色取 bg-input 与正文底色的中间值：原来用 --code-bg（比正文暗 18 级），
-    // 面积一大就成了页面中间的一个"黑洞"
-    '.cm-md-mermaid::before': {
-      content: '""', position: 'absolute', inset: '0', zIndex: '-3', borderRadius: '10px',
-      background: 'color-mix(in srgb, var(--bg-input) 52%, var(--bg))',
+    // 源码态（光标进表内）里的 `|`：不再显示半透明源码字符，改画一条 1px 细竖线 ——
+    // 用户原话"显示太奇怪"，半透明的竖线字符看着就像没渲染完
+    '.cm-md-tpipe': { position: 'relative', color: 'transparent', display: 'inline-block', width: '5px' },
+    '.cm-md-tpipe::before': {
+      content: '""', position: 'absolute', left: '2px', top: '1px', bottom: '1px',
+      width: '1px', background: 'color-mix(in srgb, var(--text) 22%, transparent)',
     },
+    // ===== 表格 widget（光标不在表内时的真 <table>）=====
+    // 表头刻意用 --md-heading + 面板底色 + 700：用户要的"起码标题颜色不同"就在这里
+    '.cm-md-table': { position: 'relative', margin: '10px 0' },
+    '.cm-md-table table': { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' },
+    // ⚠ 表头底色别用纯 --bg-panel：它比正文底色只暗一点，截图里几乎看不出"这是表头"
+    //   → 掺一层 accent tint（用户要的"起码标题颜色不同"要一眼看得出来）
+    '.cm-md-table th': {
+      background: 'color-mix(in srgb, var(--accent) 16%, var(--bg-panel))',
+      color: 'var(--md-heading)', fontWeight: '700',
+      padding: '5px 10px', textAlign: 'left', whiteSpace: 'nowrap',
+      border: '1px solid color-mix(in srgb, var(--text) 22%, transparent)',
+    },
+    '.cm-md-table td': {
+      padding: '4px 10px', color: 'var(--text)', verticalAlign: 'top',
+      border: '1px solid color-mix(in srgb, var(--text) 13%, transparent)',
+    },
+    '.cm-md-table tbody tr:nth-child(even) td': { background: 'color-mix(in srgb, var(--bg-panel) 85%, transparent)' },
+    '.cm-md-table tbody tr:hover td': { background: 'var(--btn-hover)' },
+    '.cm-md-table td code, .cm-md-table th code': {
+      fontFamily: 'var(--font-mono)', fontSize: '12px', padding: '1px 5px',
+      background: 'var(--btn-bg)', color: 'var(--code-text)', borderRadius: '3px',
+    },
+    '.cm-md-tlink': { color: 'var(--accent)' },
+    '.cm-md-tablecopy': {
+      position: 'absolute', right: '2px', top: '-17px', fontSize: '11px', padding: '1px 9px',
+      background: 'var(--btn-bg)', color: 'var(--text)', border: '1px solid var(--btn-border)',
+      borderRadius: '3px', cursor: 'pointer', opacity: '0', transition: 'opacity .12s',
+    },
+    '.cm-md-table:hover .cm-md-tablecopy': { opacity: '1' },
+    // mermaid 实时渲染图（block widget）：居中，**不画容器底色**
+    // （用户 2026-09-28：图外面那块底色"有视觉影响" —— 面积一大就在正文中间压出一整块灰，
+    //   而且图本身已经有自己的方框，外面再套一层纯属多余）
+    '.cm-md-mermaid': { position: 'relative', padding: '6px 0', textAlign: 'center', margin: '10px 0' },
     '.cm-md-mermaid svg': { maxWidth: '100%' },
     '.cm-md-mermaid .mermaid-err': { textAlign: 'left', color: 'var(--del-text)', whiteSpace: 'pre-wrap' },
     // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸
@@ -335,12 +368,124 @@ window.MdEditor = (() => {
     ignoreEvent() { return true; } // 点击由自身处理
   }
 
-  // ---------- 表格：逐行线框渲染（见装饰器 Table 分支），无 widget ----------
+  // ---------- 表格 widget：光标不在表内 → 渲染成真 <table>；光标进入 → 逐行源码态 ----------
+  // 2026-09-28 用户反馈："表格显示太奇怪 / 功能也不完善 / 一般 md 表格能当 excel 表格操作 /
+  // 起码标题颜色不同"。旧实现是"逐行线框渲染"（| 半透明可见、表头与正文几乎同色、列完全
+  // 不对齐）→ 改成 Obsidian 同款：光标不在表内时整块替换为真表格（列对齐、表头底色+强调色、
+  // 斑马纹、按 :---: 对齐、可一键复制成 TSV 粘进 Excel）；点一下表格 → CM6 把光标落到表内
+  // → 装饰器重算 → 自动切回逐行源码态，单元格仍能像普通文本一样直接编辑。
+  const TABLE_SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  function splitRow(line) {
+    const s = String(line).trim().replace(/^\|/, '').replace(/\|$/, '');
+    const cells = []; let cur = '';
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '\\' && s[i + 1] === '|') { cur += '|'; i++; continue; }
+      if (s[i] === '|') { cells.push(cur); cur = ''; continue; }
+      cur += s[i];
+    }
+    cells.push(cur);
+    return cells.map((c) => c.trim());
+  }
+  function parseTable(src) {
+    const lines = String(src).split('\n').filter((l) => l.trim() !== '');
+    if (lines.length < 2 || !TABLE_SEP_RE.test(lines[1])) return null;
+    const head = splitRow(lines[0]);
+    const aligns = splitRow(lines[1]).map((c) => {
+      const l = c.startsWith(':'), r = c.endsWith(':');
+      return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
+    });
+    return { head, aligns, rows: lines.slice(2).map(splitRow) };
+  }
+  // 单元格内联：只支持最常见的几种（**粗** *斜* `码` ~~删~~ [文字](链接)）——
+  // 表格里不值得为此引一个解析器，目标是"看起来像表格"，不是富文本
+  function cellInline(text) {
+    const frag = document.createDocumentFragment();
+    const re = /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(`([^`]+)`)|(~~([^~]+)~~)|(\[([^\]]*)\]\([^)]*\))/g;
+    let last = 0, m;
+    const push = (s) => { if (s) frag.appendChild(document.createTextNode(s)); };
+    while ((m = re.exec(text))) {
+      push(text.slice(last, m.index));
+      let el = null;
+      if (m[2] != null) { el = document.createElement('strong'); el.textContent = m[2]; }
+      else if (m[4] != null) { el = document.createElement('em'); el.textContent = m[4]; }
+      else if (m[6] != null) { el = document.createElement('code'); el.textContent = m[6]; }
+      else if (m[8] != null) { el = document.createElement('del'); el.textContent = m[8]; }
+      else if (m[10] != null) { el = document.createElement('span'); el.className = 'cm-md-tlink'; el.textContent = m[10]; }
+      if (el) frag.appendChild(el);
+      last = m.index + m[0].length;
+    }
+    push(text.slice(last));
+    return frag;
+  }
+  class TableWidget extends WidgetType {
+    constructor(src) { super(); this.src = src; }
+    eq(other) { return other.src === this.src; }
+    toDOM() {
+      const parsed = parseTable(this.src);
+      const wrap = document.createElement('div');
+      wrap.className = 'cm-md-table';
+      if (!parsed) { wrap.textContent = this.src; return wrap; }
+      const cols = Math.max(parsed.head.length, ...parsed.rows.map((r) => r.length));
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const htr = document.createElement('tr');
+      for (let i = 0; i < cols; i++) {
+        const th = document.createElement('th');
+        if (parsed.aligns[i]) th.style.textAlign = parsed.aligns[i];
+        th.appendChild(cellInline(parsed.head[i] != null ? parsed.head[i] : ''));
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const r of parsed.rows) {
+        const tr = document.createElement('tr');
+        for (let i = 0; i < cols; i++) {
+          const td = document.createElement('td');
+          if (parsed.aligns[i]) td.style.textAlign = parsed.aligns[i];
+          td.appendChild(cellInline(r[i] != null ? r[i] : ''));
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody); wrap.appendChild(table);
+      // 复制整表（TSV —— 能直接粘进 Excel / 表格软件）
+      const btn = document.createElement('button');
+      btn.className = 'cm-md-tablecopy';
+      btn.textContent = '复制';
+      btn.title = '复制整表（TSV，可直接粘进 Excel）';
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const tsv = [parsed.head, ...parsed.rows].map((r) => r.join('\t')).join('\n');
+        let ok = false;
+        try { await navigator.clipboard.writeText(tsv); ok = true; } catch {}
+        btn.textContent = ok ? '已复制' : '失败';
+        setTimeout(() => { btn.textContent = '复制'; }, 1200);
+      });
+      wrap.appendChild(btn);
+      return wrap;
+    }
+    // false = 事件穿透：点表格 → CM6 把光标放进表内 → 装饰器重算 → 自动切成可编辑的源码态
+    ignoreEvent() { return false; }
+  }
 
   // ---------- Mermaid 图 widget（```mermaid 围栏 → SVG 实时渲染） ----------
   // 光标不在块内：整块替换为渲染图；光标进入：回退源码编辑（Obsidian 同款交互）。
   // 渲染结果按 code 缓存（图不闪烁）；mermaid 库缺失（如测试环境）→ 不渲染，保持源码。
   const mermaidCache = new Map(); // code -> svg string（含失败标记 null）
+  // ⚠ mermaid 的**全局主题**原先只在 md 预览那条路上按需 initialize（plugin-loader 只在
+  //   页面里真有 mermaid 块时才调）→ Live Preview 这条路径**从来没初始化过**，于是暗色主题下
+  //   渲染出来的图是「白底白框」那种浅色配色（用户截图里的图就是）。这里在渲染前按当前主题
+  //   惰性初始化；主题变了要重新 initialize 并**清空缓存**（已渲染的 SVG 配色是固化的）。
+  let mmdTheme = null;
+  function ensureMermaidTheme() {
+    if (!window.mermaid || !mermaid.initialize) return;
+    const want = document.body.classList.contains('theme-light') ? 'default' : 'dark';
+    if (mmdTheme === want) return;
+    try { mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: want }); } catch {}
+    mmdTheme = want;
+    mermaidCache.clear();
+  }
   // 渲染完成/命中缓存后挂「⛶ 全屏」按钮（浮层与缩放逻辑见 plugin-loader 的 MI.showSvgFullscreen）
   function attachFs(wrap) {
     if (window.MI && MI.attachMermaidFullscreen) MI.attachMermaidFullscreen(wrap, wrap.querySelector('svg'));
@@ -357,6 +502,7 @@ window.MdEditor = (() => {
       (async () => {
         try {
           if (!window.mermaid || !mermaid.render) throw new Error('mermaid 未加载');
+          ensureMermaidTheme();                 // 按当前主题初始化（首次 / 换主题后）
           const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, this.code);
           mermaidCache.set(this.code, svg);
@@ -648,7 +794,17 @@ window.MdEditor = (() => {
             // 表头行/数据行保持行样式（背景/边框/圆角），| 常显弱化，分隔行压缩成细线。
             if (name === 'Table') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              const SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+              // 光标不在表内 → 整块渲染成真表格（TableWidget）；光标进入 → 落到下面的逐行源码态
+              // （所以"点一下表格就能编辑单元格"这条体验没丢，只是不再常显源码符号）
+              if (!(last.to < selFromLine.from || first.from > selToLine.to)) { /* 光标在表内：源码态 */ }
+              else {
+                const tsrc = doc.sliceString(node.from, node.to);
+                if (parseTable(tsrc)) {
+                  decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc) }).range(node.from, node.to));
+                  return;
+                }
+              }
+              const SEP_RE = TABLE_SEP_RE;
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
                 if (SEP_RE.test(l.text)) {

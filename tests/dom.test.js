@@ -574,14 +574,18 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const constIdx = lines.findIndex((l) => l.textContent.includes('const a = 1;'));
     assert_(constIdx >= 0 && lines.slice(constIdx + 1, constIdx + 3).some((l) => l && l.textContent.trim() === ''),
       '代码块后的空行保留在 DOM（行边界完整）');
-    // 7) 表格逐行线框渲染（Obsidian 式行常渲染：光标进单元格不整块退化源码）
-    assert_($(dom, '.cm-md-tr-head') !== null, '表头行线框渲染');
-    assert_($(dom, '.cm-md-tr-row') !== null, '数据行线框渲染');
-    const sepLine = $(dom, '.cm-md-tr-sep');
-    assert_(sepLine !== null, '分隔行压缩为细线');
-    assert_($(dom, '.cm-md-tpipe') !== null, '| 弱化 mark 渲染');
-    const rowLine = [...$$(dom, '.cm-content > div')].find((l) => l.textContent.includes('数据'));
-    assert_(rowLine && rowLine.textContent.includes('|'), '表格行常渲染（不退化为无样式源码，行内容保留）');
+    // 7) 表格：**光标不在表内 → 渲染成真 <table>**（2026-09-28 用户反馈"显示太奇怪 /
+    //    一般 md 表格能当 excel 表格操作 / 起码标题颜色不同"→ 旧"逐行线框"改为真表格）。
+    //    光标进表内退回逐行源码态的那条在后面的用例里测。
+    const tbl = $(dom, '.cm-md-table table');
+    assert_(tbl !== null, '表格渲染成真 <table>（cm-md-table）');
+    assert_(tbl.querySelectorAll('thead th').length >= 1, '表头是 <th>（夹具是单列表格），列数=' + tbl.querySelectorAll('thead th').length);
+    assert_(tbl.querySelectorAll('tbody td').length >= 1, '数据是 <td>');
+    assert_(tbl.querySelectorAll('tbody tr').length >= 1, '表体有数据行');
+    assert_([...tbl.querySelectorAll('thead th')].map((x) => x.textContent.trim()).join('').length > 0,
+      '表头有文字: ' + JSON.stringify([...tbl.querySelectorAll('thead th')].map((x) => x.textContent)));
+    assert_($(dom, '.cm-md-tablecopy') !== null, '表格带「复制整表（TSV）」按钮');
+    assert_(String($(dom, '.cm-content').textContent).indexOf('数据') >= 0, '表格内容出现在渲染结果里');
     // 8) 分隔线 ---：文本替换为 1px 线 widget（行高不变防点击偏移）
     assert_($(dom, '.cm-md-hr') !== null, '分隔线 widget 渲染（cm-md-hr）');
     assert_($(dom, '.cm-md-hr-line') !== null, '分隔线行级渲染（hr-line）');
@@ -656,7 +660,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       '光标进表格单元格行仍线框渲染（不退化源码）');
     g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
     await tick(); await tick();
-    assert_($(dom, '.cm-md-tr-head') !== null && $(dom, '.cm-md-tr-row') !== null, '光标移出表格保持渲染');
+    assert_($(dom, '.cm-md-table table') !== null, '光标移出表格 → 渲染成真表格（不再是逐行线框）');
     // 16) 光标进代码块内容行 → 围栏显形（Obsidian：光标进块整块变源码态）
     g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('const a') + 2) + ')');
     await tick(); await tick();
@@ -683,11 +687,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
         }
       }
     }
-    // 18) 表格新模型：行常渲染 → 单元格像普通文本一样直接编辑（无独立 widget）
+    // 18) 表格编辑：光标进表格 → 退回逐行源码态，单元格仍能像普通文本一样直接编辑
+    //     （这一条是新表格的关键体验保证：不是"点了变成只读 widget 就编不动了"）
     {
+      g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
+      await tick(); await tick();
       const rowLine = [...$$(dom, '.cm-content > div')].find((l) => l.textContent.includes('| 数据'));
       assert_(rowLine !== null && String(rowLine.className).includes('cm-md-tr-row'),
-        '数据行以行级渲染存在（直接编辑，无需点击 widget）');
+        '光标进表格 → 该行回到行级源码渲染（可直接编辑单元格）');
     }
   });
 
