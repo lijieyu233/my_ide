@@ -149,6 +149,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     clearLogs: (id) => ipcRenderer.invoke('launch:clear-logs', id),
     portCheck: (p) => ipcRenderer.invoke('launch:port-check', p),
     openUrl: (u) => ipcRenderer.invoke('launch:open-url', u),
+    getKeep: () => ipcRenderer.invoke('launch:get-keep'),
+    setKeep: (v) => ipcRenderer.invoke('launch:set-keep', v),
   },
   ai: {
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling

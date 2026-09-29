@@ -47,6 +47,7 @@ function loadConfig() {
     return {
       apiOrigins: Array.isArray(cfg.apiOrigins) ? cfg.apiOrigins : [DEFAULT_API_ORIGIN],
       entries: Array.isArray(cfg.entries) ? cfg.entries : [],
+      keepOnExit: cfg.keepOnExit === true,   // 后台保留开关（默认 false = 退出全停）
     };
   } catch {
     return emptyConfig();
@@ -56,6 +57,7 @@ function saveConfig(cfg) {
   const next = {
     apiOrigins: Array.isArray(cfg && cfg.apiOrigins) ? cfg.apiOrigins : [DEFAULT_API_ORIGIN],
     entries: Array.isArray(cfg && cfg.entries) ? cfg.entries : [],
+    keepOnExit: !!(cfg && cfg.keepOnExit),
   };
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(configFile, JSON.stringify(next, null, 2), 'utf8');
@@ -265,15 +267,27 @@ function importFrom(srcPath) {
   return { ok: true, count: entries.length };
 }
 
-// 退出时：后台保留 → **不杀**子进程，只把内存状态落盘（PID 已在 start 时写过）
-function shutdown() {
+// 退出时：keepOnExit（后台保留）→ 只落盘不杀；否则整树杀光（不留孤儿）
+async function shutdown() {
+  const keep = loadConfig().keepOnExit === true;
   for (const [id, info] of procs) {
     setState(id, { pid: info.pid, startedAt: info.startedAt, command: (info.command || '') });
+    if (!keep) await killTree(info.pid);
   }
+  procs.clear();
+  return { kept: keep, stopped: keep ? 0 : 1 };
+}
+
+function getKeepOnExit() { return loadConfig().keepOnExit === true; }
+function setKeepOnExit(v) {
+  const cfg = loadConfig();
+  cfg.keepOnExit = v === true;
+  saveConfig(cfg);
+  return cfg.keepOnExit;
 }
 
 module.exports = {
-  setConfigDir, paths,
+  setConfigDir, paths, getKeepOnExit, setKeepOnExit,
   loadConfig, saveConfig, addOrigin, removeOrigin, importFrom,
   startEntry, stopEntry, restartEntry, aliveEntry, statusOf,
   getLogs, clearLogs, checkPort,

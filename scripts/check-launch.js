@@ -149,6 +149,64 @@ app.whenReady().then(async () => {
       await sleep(800);
     }
 
+    // ---------- ③g 后台保留开关：持久化到 launch.json ----------
+    {
+      const setR = await wc.executeJavaScript(`window.myIDE.launch.setKeep(true)`, true);
+      const gotR = await wc.executeJavaScript(`window.myIDE.launch.getKeep()`, true);
+      let inFile = false;
+      try { inFile = JSON.parse(fs.readFileSync((await wc.executeJavaScript('window.myIDE.launch.paths()', true)).configFile, 'utf8')).keepOnExit === true; } catch {}
+      add('③g 后台保留开关持久化（setKeep→getKeep→文件）', setR === true && gotR === true && inFile,
+          'set=' + setR + ' get=' + gotR + ' 文件.keepOnExit=' + inFile);
+      // 关掉开关不影响其它字段
+      const cfgAfter = await wc.executeJavaScript(`window.myIDE.launch.config()`, true);
+      add('③g2 开关写入不破坏条目', (cfgAfter.entries || []).length === entryCount,
+          '条数=' + (cfgAfter.entries || []).length + '/' + entryCount);
+      await wc.executeJavaScript(`window.myIDE.launch.setKeep(false)`, true);
+    }
+
+    // ---------- ③h 添加/编辑对话框：USB 隧道字段存在 ----------
+    {
+      const f = await wc.executeJavaScript(probe(`
+        const form = document.getElementById('launch-form');
+        if (!form) return { err: 'no form' };
+        const names = ['name','category','cwd','command','port','apiOrigin','openUrl','kind','python','script'];
+        const missing = names.filter((n) => !form.elements[n]);
+        const dlg = document.getElementById('launch-dialog');
+        return { missing: missing, hasDialog: !!dlg };
+      `), true);
+      add('③h 对话框字段齐全（含 USB 隧道的 kind/python/script）',
+          !f.err && f.missing.length === 0 && f.hasDialog, JSON.stringify(f));
+    }
+
+    // ---------- ③g 后台保留开关：持久化到 launch.json ----------
+    {
+      const setR = await wc.executeJavaScript(`window.myIDE.launch.setKeep(true)`, true);
+      const gotR = await wc.executeJavaScript(`window.myIDE.launch.getKeep()`, true);
+      let inFile = false;
+      try { inFile = JSON.parse(fs.readFileSync((await wc.executeJavaScript('window.myIDE.launch.paths()', true)).configFile, 'utf8')).keepOnExit === true; } catch {}
+      add('③g 后台保留开关持久化（setKeep→getKeep→文件）', setR === true && gotR === true && inFile,
+          'set=' + setR + ' get=' + gotR + ' 文件.keepOnExit=' + inFile);
+      // 关掉开关不影响其它字段
+      const cfgAfter = await wc.executeJavaScript(`window.myIDE.launch.config()`, true);
+      add('③g2 开关写入不破坏条目', (cfgAfter.entries || []).length === entryCount,
+          '条数=' + (cfgAfter.entries || []).length + '/' + entryCount);
+      await wc.executeJavaScript(`window.myIDE.launch.setKeep(false)`, true);
+    }
+
+    // ---------- ③h 添加/编辑对话框：USB 隧道字段存在 ----------
+    {
+      const f = await wc.executeJavaScript(probe(`
+        const form = document.getElementById('launch-form');
+        if (!form) return { err: 'no form' };
+        const names = ['name','category','cwd','command','port','apiOrigin','openUrl','kind','python','script'];
+        const missing = names.filter((n) => !form.elements[n]);
+        const dlg = document.getElementById('launch-dialog');
+        return { missing: missing, hasDialog: !!dlg };
+      `), true);
+      add('③h 对话框字段齐全（含 USB 隧道的 kind/python/script）',
+          !f.err && f.missing.length === 0 && f.hasDialog, JSON.stringify(f));
+    }
+
     // ---------- ④ 配置持久化（机器级 ~/.myide/launch.json） ----------
     {
       const p = await wc.executeJavaScript(`window.myIDE.launch.paths()`, true);

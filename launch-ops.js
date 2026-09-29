@@ -17,4 +17,6 @@ module.exports = [
   { ch: 'logs', op: 'getLogs' },
   { ch: 'clear-logs', op: 'clearLogs' },
   { ch: 'port-check', op: 'checkPort' },
+  { ch: 'get-keep', op: 'getKeepOnExit' },
+  { ch: 'set-keep', op: 'setKeepOnExit' },
 ];
