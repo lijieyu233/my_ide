@@ -5,6 +5,7 @@
 const BrowserPanel = (() => {
   const HISTORY_KEY = 'myide-browser-history';
   const FAV_KEY = 'myide-browser-favs';
+  const FOLDER_KEY = 'myide-browser-folders'; // 显式创建的空文件夹（有收藏的文件夹从收藏数据推导）
   const HOME = 'https://www.bing.com';
   const SEARCH = 'https://www.bing.com/search?q=';
 
@@ -13,6 +14,7 @@ const BrowserPanel = (() => {
   let hasPage = false;      // 是否已打开过页面（决定 show 恢复网页 or 空状态）
   let currentUrl = '';
   let currentTitle = '';
+  const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
 
   // ---------- 纯逻辑（测试直接覆盖） ----------
   // 输入规范化：带协议原样；像域名/IP/localhost 补 https；否则按关键词搜索
@@ -42,11 +44,21 @@ const BrowserPanel = (() => {
 
   function favs() { return loadJSON(FAV_KEY, []); }
   function isFav(url) { return favs().some((f) => f.url === url); }
-  // 收藏文件夹列表：从收藏数据推导（避免双存储不一致），按名称排序
+  // 收藏文件夹列表 = 显式创建的空文件夹 ∪ 收藏数据里的文件夹（避免双存储不一致），按名称排序
   function folders() {
-    const s = new Set();
+    const s = new Set(loadJSON(FOLDER_KEY, []));
     favs().forEach((f) => { if (f.folder) s.add(f.folder); });
     return [...s].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }
+  // 新建空文件夹（显式落盘：否则没收藏时不显示，"+"就是假功能）
+  function addFolder(name) {
+    name = String(name || '').trim().slice(0, 30);
+    if (!name) return false;
+    const s = new Set(loadJSON(FOLDER_KEY, []));
+    if (s.has(name)) return false;
+    s.add(name);
+    saveJSON(FOLDER_KEY, [...s]);
+    return true;
   }
   function addFav(url, title, folder) {
     if (!url) return false;
@@ -66,13 +78,26 @@ const BrowserPanel = (() => {
     saveJSON(FAV_KEY, list);
     return true;
   }
-  // 删除空文件夹：其中的收藏移回根目录
+  // 删除文件夹：其中的收藏移回根目录，并从显式文件夹集合移除（空文件夹也能删）
   function removeFolder(name) {
     const list = favs();
     let n = 0;
     for (const f of list) if (f.folder === name) { f.folder = ''; n++; }
     saveJSON(FAV_KEY, list);
+    saveJSON(FOLDER_KEY, loadJSON(FOLDER_KEY, []).filter((x) => x !== name));
     return n;
+  }
+  // 重命名收藏（只改显示标题，URL 不动；custom 标记防止页面标题回推覆盖）
+  function renameFav(url, title) {
+    const list = favs();
+    const f = list.find((x) => x.url === url);
+    if (!f) return false;
+    const t = String(title || '').trim().slice(0, 60);
+    if (!t || t === f.title) return false;
+    f.title = t;
+    f.custom = true;
+    saveJSON(FAV_KEY, list);
+    return true;
   }
 
   // 首次使用给一组开发者常用收藏
@@ -122,7 +147,7 @@ const BrowserPanel = (() => {
       // 同步最近一条历史的标题
       const list = history();
       if (list[0] && list[0].url === currentUrl) { list[0].title = currentTitle; saveJSON(HISTORY_KEY, list); }
-      if (isFav(currentUrl)) { const l = favs(); const f = l.find((x) => x.url === currentUrl); if (f) { f.title = currentTitle || f.title; saveJSON(FAV_KEY, l); } }
+      if (isFav(currentUrl)) { const l = favs(); const f = l.find((x) => x.url === currentUrl); if (f && !f.custom) { f.title = currentTitle || f.title; saveJSON(FAV_KEY, l); } }
     }
     if (s.canBack != null) document.getElementById('bw-back').disabled = !s.canBack;
     if (s.canFwd != null) document.getElementById('bw-fwd').disabled = !s.canFwd;
@@ -357,6 +382,15 @@ const BrowserPanel = (() => {
           m.appendChild(d);
         };
         mk('📂 打开', () => go(f.url));
+        mk('✏️ 重命名', async () => {
+          const name = await Modal.prompt('重命名收藏', '名称', f.title || f.url);
+          if (!name || !name.trim()) return;
+          if (!renameFav(f.url, name)) { MI.toast('名称未变化', 'err'); return; }
+          renderSidebar();
+          renderEmpty();
+          renderFavBtn();
+          MI.toast('已重命名', 'ok');
+        });
         mk('📦 移动到…', () => openFavPosMenu(f.url, e.clientX, e.clientY, true));
         mk('🗑 取消收藏', () => {
           removeFav(f.url);
@@ -379,15 +413,18 @@ const BrowserPanel = (() => {
       const items = list.filter((f) => f.folder === name);
       const gTitle = document.createElement('div');
       gTitle.className = 'bw-sb-gtitle';
-      gTitle.textContent = '📁 ' + name + '（' + items.length + '）';
+      const gLabel = () => (foldedFolders.has(name) ? '📁 ' : '📂 ') + name + '（' + items.length + '）';
+      gTitle.textContent = gLabel();
       gTitle.title = '点击收起 / 展开 · 右键删除文件夹（收藏移回根目录）';
       const gBody = document.createElement('div');
       gBody.className = 'bw-sb-gbody';
+      if (foldedFolders.has(name)) gBody.style.display = 'none';
       items.forEach((f) => gBody.appendChild(mkItem(f)));
       gTitle.onclick = () => {
-        const fold = gBody.style.display === 'none';
-        gBody.style.display = fold ? '' : 'none';
-        gTitle.textContent = (fold ? '📁 ' : '📁 ') + name + '（' + items.length + '）';
+        const fold = gBody.style.display !== 'none'; // 当前展开 → 折叠
+        if (fold) foldedFolders.add(name); else foldedFolders.delete(name);
+        gBody.style.display = fold ? 'none' : '';
+        gTitle.textContent = gLabel();
       };
       gTitle.oncontextmenu = (e) => {
         e.preventDefault();
@@ -401,9 +438,10 @@ const BrowserPanel = (() => {
         d.onclick = () => {
           m.classList.add('hidden');
           const n = removeFolder(name);
+          foldedFolders.delete(name);
           renderSidebar();
           renderEmpty();
-          MI.toast('已删除文件夹，' + n + ' 个收藏移回根目录', 'ok');
+          MI.toast(n ? '已删除文件夹，' + n + ' 个收藏移回根目录' : '已删除空文件夹「' + name + '」', 'ok');
         };
         m.appendChild(d);
         m.classList.remove('hidden');
@@ -503,13 +541,15 @@ const BrowserPanel = (() => {
       const r = e.target.getBoundingClientRect();
       openFavMenu(r.left, r.bottom + 4);
     };
-    // 收藏列表新建文件夹（列表在左侧主侧栏，工具激活时可见）
+    // 收藏列表新建文件夹（真正落盘：空文件夹也常驻显示，右键收藏可移动进去）
     const sbAdd = document.getElementById('bw-sb-add-folder');
     if (sbAdd) sbAdd.onclick = async () => {
       const name = await Modal.prompt('新建收藏文件夹', '文件夹名称', '');
       if (!name || !name.trim()) return;
-      MI.toast('文件夹「' + name.trim().slice(0, 30) + '」已创建（收藏网页时可选它）', 'ok');
-      renderSidebar(); // 无收藏的空文件夹不入列表：文件夹集合从收藏推导，这里仅提示
+      const v = name.trim().slice(0, 30);
+      if (!addFolder(v)) { MI.toast('文件夹「' + v + '」已存在', 'err'); return; }
+      renderSidebar();
+      MI.toast('文件夹「' + v + '」已创建，右键收藏可移动进去', 'ok');
     };
 
     urlInput.addEventListener('keydown', (e) => {
@@ -549,6 +589,7 @@ const BrowserPanel = (() => {
   return {
     init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
+    folders, addFolder, removeFolder, moveFav, renameFav,
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

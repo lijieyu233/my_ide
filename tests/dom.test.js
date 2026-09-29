@@ -4433,6 +4433,85 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'BrowserPanel.hide()');
   });
 
+  await okAsync('内置浏览器：收藏文件夹（新建/移动/折叠/删除）', async () => {
+    await g(dom, 'BrowserPanel.open("https://example.com/f1")');
+    await tick();
+    stateCb.browser({ navigated: true, url: 'https://example.com/f1', title: 'F1' });
+    await tick();
+    const enter = () => new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    const fillPrompt = async (v) => {
+      await tick(); await tick();
+      const input = $(dom, '#pf-input');
+      input.value = v;
+      input.dispatchEvent(enter());
+      await tick(); await tick();
+    };
+    // 收藏到新文件夹：点 ☆ → 「＋ 新建文件夹…」→ 输入「文档」
+    click($(dom, '#bw-fav'));
+    await tick();
+    let menu = dom.window.document.getElementById('ctx-menu');
+    const neo = [...menu.querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('新建文件夹'));
+    click(neo);
+    await fillPrompt('文档');
+    let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    assert_(favs[0] && favs[0].folder === '文档', '收藏落进新文件夹, got ' + JSON.stringify(favs[0]));
+    // 侧栏出现分组，计数 1，展开图标 📂
+    const gtitleOf = (name) => $allIn($(dom, '#bw-sb-list'), '.bw-sb-gtitle').find((t) => t.textContent.includes(name));
+    let gt = gtitleOf('文档（1）');
+    assert_(gt, '侧栏出现「文档（1）」分组');
+    assert_(gt.textContent.includes('📂'), '展开态图标 📂');
+    // 折叠：点击 → display none + 📁；再点 → 展开 + 📂
+    click(gt);
+    await tick();
+    let gbody = gt.parentElement.querySelector('.bw-sb-gbody');
+    assert_(gbody.style.display === 'none' && gt.textContent.includes('📁'), '折叠生效且图标切换');
+    click(gt);
+    await tick();
+    gbody = gt.parentElement.querySelector('.bw-sb-gbody');
+    assert_(gbody.style.display !== 'none' && gt.textContent.includes('📂'), '再点展开且图标还原');
+    // 空文件夹：＋ 新建 → 真正落盘并显示（0），可删除
+    click($(dom, '#bw-sb-add-folder'));
+    await fillPrompt('空组');
+    assert_(JSON.parse(dom.window.localStorage.getItem('myide-browser-folders')).includes('空组'), '空文件夹持久化');
+    gt = gtitleOf('空组（0）');
+    assert_(gt, '空文件夹分组显示');
+    gt.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    menu = dom.window.document.getElementById('ctx-menu');
+    const del = [...menu.querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('删除文件夹'));
+    click(del);
+    await tick();
+    assert_(!gtitleOf('空组'), '空文件夹已从侧栏移除');
+    assert_(!(JSON.parse(dom.window.localStorage.getItem('myide-browser-folders')) || []).includes('空组'), '空文件夹已从存储移除');
+    // 重命名：右键收藏项（「文档」组内的 F1）→ ✏️ 重命名（预填当前标题）
+    const f1Item = $allIn($(dom, '#bw-sb-list'), '.bw-sb-item').find((it) => it.querySelector('.bw-sb-nm').textContent === 'F1');
+    assert_(f1Item, '「文档」组内找到 F1 收藏项');
+    f1Item.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    menu = dom.window.document.getElementById('ctx-menu');
+    const rn = [...menu.querySelectorAll('.ctx-item')].find((d) => d.textContent.includes('重命名'));
+    click(rn);
+    await tick(); await tick();
+    const input = $(dom, '#pf-input');
+    assert_(input.value === 'F1', '重命名预填当前标题, got ' + input.value);
+    input.value = '我的收藏';
+    input.dispatchEvent(enter());
+    await tick(); await tick();
+    favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    const f1 = favs.find((f) => f.url === 'https://example.com/f1');
+    assert_(f1.title === '我的收藏' && f1.custom, '重命名落盘 + custom 标记');
+    assert_($allIn($(dom, '#bw-sb-list'), '.bw-sb-nm').some((n) => n.textContent === '我的收藏'), '侧栏显示新名称');
+    // 页面标题回推不覆盖手动重命名
+    stateCb.browser({ navigated: true, url: 'https://example.com/f1', title: 'PageTitle' });
+    await tick();
+    favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    assert_(favs.find((f) => f.url === 'https://example.com/f1').title === '我的收藏', 'custom 标题不被回推覆盖');
+    // 清理现场
+    await g(dom, 'BrowserPanel.removeFav("https://example.com/f1")');
+    dom.window.localStorage.setItem('myide-browser-folders', '[]');
+    await g(dom, 'BrowserPanel.hide()');
+  });
+
   await okAsync('HTML 内置浏览器打开按钮', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
