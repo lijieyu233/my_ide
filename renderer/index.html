@@ -118,10 +118,12 @@
     </div>
     <!-- 浏览器收藏（左侧栏面板，浏览器工具激活时显示；网页在主区，仿数据库双区联动） -->
     <div id="panel-browser" class="hidden">
-      <div class="panel-title">收藏</div>
-      <div class="bw-sb-head">
-        <span>书签</span>
-        <button id="bw-sb-add-folder" class="bw-sb-act" title="新建收藏文件夹">＋</button>
+      <!-- 统一术语：本功能只说「收藏」（不用「书签」）。列表就是收藏列表，
+           不再在标题下挂一个同义词小标题；＋ 走全项目通用的 panel-title-actions。 -->
+      <div class="panel-title">收藏
+        <span class="panel-title-actions">
+          <button id="bw-sb-add-folder" class="bw-sb-act" title="新建收藏文件夹">＋</button>
+        </span>
       </div>
       <div id="bw-sb-list"></div>
     </div>

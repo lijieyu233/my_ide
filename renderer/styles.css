@@ -2113,11 +2113,7 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 }
 #browser-error .be-title { margin: 0; max-width: 70%; overflow-wrap: break-word; }
 /* 收藏列表（左侧主侧栏 panel-browser 内，文件夹分组常驻显示） */
-.bw-sb-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 10px; font-size: 12px; font-weight: 600; color: var(--text-bright);
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
+/* 术语统一为「收藏」后，「书签」小标题行（原 .bw-sb-head）已删除，＋ 并入 .panel-title-actions */
 .bw-sb-act {
   background: transparent; border: none; cursor: pointer;
   color: var(--text-dim); font-size: 14px; padding: 0 4px; line-height: 1;
