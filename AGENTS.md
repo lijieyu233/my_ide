@@ -26,6 +26,13 @@
    - 重启参数照原样：`node_modules\electron\dist\electron.exe --disable-gpu --no-sandbox <仓库绝对路径>`，
      用 `Start-Process` 拉起（别用会随 shell 一起退出的前台方式）。
 3. **临时脚本 / 截图用完就删**：验证用的脚本别留在工作区，否则会被「每次改动都要提交」的规矩带进版本库。
+   - 仓库根的检查产物（`check-ui-*.png`、`*-check-report.txt`、`*.log`、`.ui-check-*`）全是 gitignore 的，
+     可以随手清；根目录**只剩 20 来个文件**才是正常状态。
+   - `.ui-check-trash/` 是 main.js / `scripts/ui-fixtures.js` 主动往里挪产物的同盘暂存区，**目录本身别删**
+     （代码里有 `mkdirSync` 兜底，但它是"清产物"设计的落点）。里面的东西可以清，
+     **但被 docs 引用的取证脚本要留**：先 `git grep -h -o -E '\.ui-check-trash/[A-Za-z0-9_.-]+' -- .`
+     查出引用（注意文档里常省略前缀，同段出现的兄弟文件名也要一起看），再删其余。
+     实测这个目录能攒到 5682 个文件 / 180 MB。
 
 ## 三、这台机器上的坑（Electron / 编码）
 
