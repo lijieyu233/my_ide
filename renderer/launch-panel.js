@@ -243,15 +243,6 @@ const LaunchPanel = (() => {
     }
     const add = q('launch-add');
     if (add) add.addEventListener('click', () => openDialog(null));
-    const imp = q('launch-import');
-    if (imp) imp.addEventListener('click', async () => {
-      const p = window.prompt('导入 mh_launch_panel 的 panel-config.json 路径：',
-        'D:\\document\\code\\tools\\mh_launch_panel\\panel-config.json');
-      if (!p) return;
-      const r = await L().import(p);
-      if (r && r.ok) { toast('已导入 ' + r.count + ' 个条目', 'ok'); await load(); }
-      else toast('导入失败：' + ((r && r.error) || '未知'), 'err');
-    });
     const sa = q('launch-start-all');
     if (sa) sa.addEventListener('click', async () => { for (const e of cfg.entries) if (!stOf(e.id).alive) await act(e, 'start'); });
     const so = q('launch-stop-all');
