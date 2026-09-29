@@ -4512,6 +4512,35 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'BrowserPanel.hide()');
   });
 
+  await okAsync('内置浏览器：HTML 浮层弹出时 WebContentsView 让位（防原生层遮挡）', async () => {
+    await g(dom, 'BrowserPanel.open("https://example.com/ov")');
+    await tick(); await tick();
+    const opens0 = (calls.viewOpen || []).length;
+    // Modal 弹窗打开（「＋新建文件夹」触发 prompt）→ view 必须摘除，否则被原生层盖住
+    calls.viewHide = 0;
+    click($(dom, '#bw-sb-add-folder'));
+    await tick(); await tick();
+    assert_($(dom, '#modal-mask') && !$(dom, '#modal-mask').classList.contains('hidden'), '弹窗出现');
+    assert_(calls.viewHide >= 1, '弹窗期间 view 摘除, got ' + calls.viewHide);
+    // 弹窗关闭 → view 挂回
+    click($(dom, '#pf-no'));
+    await tick(); await tick(); await tick();
+    assert_((calls.viewOpen || []).length > opens0, '弹窗关闭后 view 挂回');
+    // ctx-menu 右键菜单同理
+    const hid0 = calls.viewHide;
+    const opens1 = (calls.viewOpen || []).length;
+    const item = $allIn($(dom, '#bw-sb-list'), '.bw-sb-item')[0];
+    item.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    assert_(!dom.window.document.getElementById('ctx-menu').classList.contains('hidden'), '右键菜单出现');
+    assert_(calls.viewHide > hid0, '菜单期间 view 摘除');
+    dom.window.document.body.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await tick(); await tick(); await tick();
+    assert_(dom.window.document.getElementById('ctx-menu').classList.contains('hidden'), '点空白处菜单关闭');
+    assert_((calls.viewOpen || []).length > opens1, '菜单关闭后 view 挂回');
+    await g(dom, 'BrowserPanel.hide()');
+  });
+
   await okAsync('HTML 内置浏览器打开按钮', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();

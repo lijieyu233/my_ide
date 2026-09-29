@@ -132,6 +132,27 @@ const BrowserPanel = (() => {
     }));
   }
 
+  // ---------- HTML 浮层遮挡规避 ----------
+  // WebContentsView 是原生层，永远盖在窗口 HTML 之上：Modal 弹窗 / ctx-menu 右键菜单
+  // 落到网页区域就被整个盖住（实测：「新建收藏文件夹」弹窗只剩侧栏边上一条）。
+  // 通用规避：任何浮层可见期间摘掉 view（实例保留），全部关闭后挂回。
+  function overlayOpen() {
+    const mask = document.getElementById('modal-mask');
+    const menu = document.getElementById('ctx-menu');
+    return !!(mask && !mask.classList.contains('hidden')) || !!(menu && !menu.classList.contains('hidden'));
+  }
+  let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
+  function syncOverlay() {
+    if (!visible || !hasPage) return;
+    const b = B(); if (!b) return;
+    if (overlayOpen()) {
+      if (!overlayHid) { overlayHid = true; b.viewHide(); }
+    } else if (overlayHid) {
+      overlayHid = false;
+      mountView(null); // viewOpen 幂等（addChildView 重复无害），rAF 内重报 bounds
+    }
+  }
+
   // ---------- 主进程状态回推 ----------
   function onState(s) {
     if (!s) return;
@@ -220,7 +241,8 @@ const BrowserPanel = (() => {
     if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
       document.getElementById('browser-empty').classList.add('hidden');
       viewEl.classList.remove('hidden');
-      mountView(null);
+      if (overlayOpen()) { overlayHid = true; } // 浮层开着：先不挂 view，浮层关闭时 syncOverlay 统一恢复
+      else mountView(null);
     } else {
       document.getElementById('browser-empty').classList.remove('hidden');
       viewEl.classList.add('hidden');
@@ -232,6 +254,7 @@ const BrowserPanel = (() => {
   function hide() {
     if (!visible) return;
     visible = false;
+    overlayHid = false; // 面板隐藏本身就摘了 view，状态复位
     panel.classList.add('hidden');
     syncToolBtn();
     closeDd();
@@ -565,6 +588,12 @@ const BrowserPanel = (() => {
       new ResizeObserver(() => syncBounds()).observe(viewEl);
     }
     window.addEventListener('resize', () => syncBounds());
+    // 浮层（Modal / ctx-menu）显隐 → 摘掉或挂回 WebContentsView（见 syncOverlay 注释）
+    const overlayMo = new MutationObserver(syncOverlay);
+    const maskEl = document.getElementById('modal-mask');
+    const menuEl = document.getElementById('ctx-menu');
+    if (maskEl) overlayMo.observe(maskEl, { attributes: true, attributeFilter: ['class'] });
+    if (menuEl) overlayMo.observe(menuEl, { attributes: true, attributeFilter: ['class'] });
     // 整窗缩放变化 → CSS↔DIP 映射改变，主进程换算 bounds 需重新上报
     if (window.myIDE && myIDE.win && myIDE.win.onZoom) {
       myIDE.win.onZoom(() => { setTimeout(syncBounds, 30); setTimeout(syncBounds, 200); });
