@@ -223,15 +223,40 @@ async function info(force) {
 const has = (p) => { try { fs.accessSync(p); return true; } catch { return false; } };
 const readTrim = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return ''; } };
 
+// 从项目目录向上找 .git（目录；worktree/submodule 的 .git 是文件，按内容里的 gitdir 解析）
+// ⚡ 纯 fs 实现，取代 opState 原来每次 spawn `git rev-parse --git-dir`（本机 git.exe 启动 ~1.1s）
+function resolveGitdir(repo) {
+  let p = path.resolve(repo);
+  for (;;) {
+    const dot = path.join(p, '.git');
+    if (has(dot)) {
+      if (fs.statSync(dot).isDirectory()) return dot;
+      const m = readTrim(dot).match(/^gitdir:\s*(.+)$/m);
+      if (m) { const g = m[1].trim(); return path.isAbsolute(g) ? g : path.resolve(p, g); }
+      return null;
+    }
+    const parent = path.dirname(p);
+    if (parent === p) return null;
+    p = parent;
+  }
+}
+
+// 进行中的 Git 操作标记（与 opState 的判据同源）：一个都不在 = NORMAL，无需 spawn 任何命令
+const OP_MARKERS = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'];
+function hasPendingOp(gitdir) {
+  return OP_MARKERS.some((n) => has(path.join(gitdir, n)));
+}
+
 // 当前 Git 操作状态：NORMAL / MERGING / REBASING / CHERRY_PICKING / REVERTING
 // 判据就是 `.git` 下的标记文件（与 git 自己判断 "You have not concluded your merge" 同源）。
 // ⚠ `rebase-merge` = 交互式 rebase（`-i`），`rebase-apply` = 普通 rebase / am。两者都算 REBASING。
 async function opState(repo) {
   const state = { state: 'NORMAL', target: '', onto: '', step: '', total: '' };
   try {
-    const dot = await runRetry(['rev-parse', '--git-dir'], { cwd: repo, timeout: 5000 });
-    if (!dot.ok) return state;
-    const g = path.isAbsolute(dot.stdout.trim()) ? dot.stdout.trim() : path.join(repo, dot.stdout.trim());
+    // ⚡ 零 spawn：gitdir 用 fs 向上找；没有任何操作标记时直接 NORMAL ——
+    //   每次刷新省掉一次 `git rev-parse`（本机 ~1.1s），分支逻辑与原来逐字等价
+    const g = resolveGitdir(repo);
+    if (!g || !hasPendingOp(g)) return state;
     const f = (n) => path.join(g, n);
     if (has(f('rebase-merge')) || has(f('rebase-apply'))) {
       state.state = 'REBASING';
@@ -262,7 +287,11 @@ async function opState(repo) {
 // 冲突文件列表（`git diff --name-only --diff-filter=U` = 未合并的条目；git 自己的口径）
 // ⚠ 本机偶发一次 `git diff` 非零退出（空 stderr，重试即成功 —— 环境层面的抖动，不是代码问题）；
 //   这是只读命令，失败重试一次比直接报错给用户体验好得多。
+// ⚡ 没有 merge/rebase/cherry-pick/revert 标记时不可能有未合并条目 → 零 spawn 直接返回空
+//   （本机两次 git.exe ≈ 2.2s，是每次刷新的最大固定开销之一）
 async function conflicts(repo) {
+  const g = resolveGitdir(repo);
+  if (!g || !hasPendingOp(g)) return { ok: true, files: [] };
   const r = await runRetry(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: repo, timeout: 10000, env: NO_EDIT });
   if (!r.ok) return { ok: false, error: r.stderr.trim() || r.error, files: [] };
   const files = r.stdout.split('\0').map((s) => s.trim()).filter(Boolean);

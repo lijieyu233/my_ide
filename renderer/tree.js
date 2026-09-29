@@ -178,8 +178,7 @@ const Tree = (() => {
     gitOnly = next;
     saveGitOnly();
     applyGitOnlyBtn();
-    invalidateAll();
-    render();
+    render(); // 过滤在视图层：缓存是全量的，切换零 IPC
     MI.toast(!gitOnly ? '视图：显示全部文件'
       : gitActive() ? '视图：只显示 Git 跟踪的文件（未跟踪 / 被忽略的已隐藏）'
         : gitIsRepo ? '视图：只显示 Git 跟踪的文件（还没拿到 Git 状态，稍后自动生效）'
@@ -210,9 +209,9 @@ const Tree = (() => {
     gitTrackedKnown = Array.isArray(st.tracked);
     const trackedChanged = setTracked(gitTrackedKnown ? st.tracked : [], st.root || rootPath);
     applyGitOnlyBtn();
-    // 过滤生效时，清单或仓库状态一变就得重画（否则列表还是旧的）—— render 里自带重新着色
+    // 过滤生效时，清单或仓库状态一变就得重画（否则列表还是旧的）—— render 里自带重新着色。
+    // 缓存是全量的（过滤在视图层）→ 只需重画，不必失效重读
     if (gitOnly && (trackedChanged || wasRepo !== gitIsRepo || wasKnown !== gitTrackedKnown)) {
-      invalidateAll();
       render();
       return;
     }
@@ -274,10 +273,8 @@ const Tree = (() => {
           (it.type === 'dir' && hasHiddenDescendant(it.path))
         );
       }
-      // 只看 Git 跟踪的文件：文件要在清单里；目录留着（有跟踪文件的目录才会进 gitTrackedDirs）
-      if (gitActive()) {
-        items = items.filter((it) => (it.type === 'dir' ? gitTrackedDirs.has(norm(it.path)) : gitTracked.has(norm(it.path))));
-      }
+      // ⚠ 「只看 Git 文件」**不在这一层过滤**：过滤放视图层（buildRows），开关切换才不用
+      //   失效全部目录缓存重读一遍（否则每次点开关 = N 个展开目录串行 IPC，肉眼可见的卡）
       nodeCache[p] = sortItems(items);
     }
     return nodeCache[p];
@@ -294,14 +291,21 @@ const Tree = (() => {
     for (const k in nodeCache) delete nodeCache[k];
   }
 
-  // 可见行（扁平）：根行 + DFS 展开目录
+  // 可见行（扁平）：根行 + DFS 展开目录。
+  // 「只看 Git 文件」是**视图层过滤**（在这里做，不进目录缓存）：开关切换零 IPC、即刻生效；
+  // 目录在 gitTrackedDirs 里才会下钻（没有跟踪文件的目录整枝隐藏）
   function buildRows() {
     const rows = [];
     if (!rootPath) return rows;
+    const active = gitActive();
     rows.push({ item: { name: rootPath.split(/[\\/]/).pop() || rootPath, path: rootPath, type: 'dir' }, depth: 0 });
     const walk = (dirPath, depth) => {
       const list = nodeCache[dirPath] || [];
       for (const it of list) {
+        if (active) {
+          const n = norm(it.path);
+          if (it.type === 'dir' ? !gitTrackedDirs.has(n) : !gitTracked.has(n)) continue;
+        }
         rows.push({ item: it, depth });
         if (it.type === 'dir' && expanded.has(it.path)) walk(it.path, depth + 1);
       }

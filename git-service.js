@@ -2,6 +2,7 @@
 const git = require('isomorphic-git');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Windows 反斜杠路径 → POSIX 正斜杠（isomorphic-git 树操作需要）
 const posix = (p) => String(p).split(path.sep).join('/');
@@ -133,21 +134,200 @@ function allRulesFor(rootDir, relPosix) {
   return out;
 }
 
-async function status(dir) {
+// ---------- 快速矩阵（git 的 index stat 捷径 + 忽略目录剪枝）----------
+// isomorphic 的 statusMatrix 每次刷新都把整棵工作区走一遍：node_modules 这类**被忽略的目录**
+// 里的每个条目都要 readdir/lstat + 问一次忽略规则（本机实测 ~1.2s，绿盾会放大每一次 IO）。
+// 而 git 自己的 fast path 是「index 里本来就存着每个文件的 stat——stat 没变 = 内容没变」：
+//   * 走查时整棵剪掉「被忽略且下面没有已跟踪文件」的目录（node_modules 一次都不进）
+//   * 文件 stat 与 index 一致 → workdir oid 直接取 index oid，一个字节都不读
+//   * 只有 stat 对不上的文件才真正 read+sha1（通常就是刚保存的那一个）
+// 行编码与 statusMatrix 完全一致（[path, head, workdir, stage]，值 = oid 在
+// [undefined, headOid, workdirOid, stageOid] 里的下标），matrixToStatus 无需任何改动。
+// 任何异常（index v4 / 解析失败 / 权限）都向上抛，由 status() 回落 statusMatrix —— 宁慢勿错。
+
+// HEAD 树缓存（按 root，HEAD 一变就整体重建）：CRLF 校验要对每个"已修改"文件读一次
+// HEAD blob，本机 readBlob 30~40ms/次，12 个文件就是 0.5s；HEAD 不变时树与 blob 全部可复用
+const headTreeCache = new Map(); // root -> { headOid, tree: Map<path, oid>, blobs: Map<path, string> }
+async function headInfo(root) {
+  const headOid = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
+  if (!headOid) return null;
+  const hit = headTreeCache.get(root);
+  if (hit && hit.headOid === headOid) return hit;
+  const tree = new Map();
+  const walkTree = async (oid, prefix) => {
+    const { tree: entries } = await git.readTree({ fs, dir: root, oid });
+    for (const e of entries) {
+      const p = prefix ? prefix + '/' + e.path : e.path;
+      if (e.type === 'tree') await walkTree(e.oid, p);
+      else if (e.type === 'blob') tree.set(p, e.oid);
+    }
+  };
+  const commit = await git.readCommit({ fs, dir: root, oid: headOid });
+  await walkTree(commit.commit.tree, '');
+  const info = { headOid, tree, blobs: new Map() };
+  if (headTreeCache.size > 8) headTreeCache.clear(); // 多项目轮换时的简单上限
+  headTreeCache.set(root, info);
+  return info;
+}
+
+function gitdirOf(root) {
+  const dot = path.join(root, '.git');
+  let st;
+  try { st = fs.statSync(dot); } catch { return null; }
+  if (st.isDirectory()) return dot;
+  try {
+    const m = fs.readFileSync(dot, 'utf8').match(/^gitdir:\s*(.+)\r?$/m); // worktree/submodule 的 .git 是文件
+    const p = m && m[1].trim();
+    return p ? (path.isAbsolute(p) ? p : path.resolve(root, p)) : null;
+  } catch { return null; }
+}
+
+// 解析 .git/index（v2/v3；v4 前缀压缩不解析 → 抛错走回落）。返回 Map<path, {oid, mtimeMs, size, ctimeSec}>
+// （⚠ 与下面提交事务用的 readIndexEntries 是两回事：那个走 isomorphic 的 STAGE walker，
+//   只有 oid/mode 没有 stat —— stat 捷径必须要磁盘 stat，所以这里直接读 index 原始字节）
+function readIndexStat(gitdir) {
+  let buf;
+  try { buf = fs.readFileSync(path.join(gitdir, 'index')); } catch (e) {
+    if (e && e.code === 'ENOENT') return new Map(); // 全新仓库还没有 index = 全部未跟踪
+    throw e;
+  }
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'DIRC') throw new Error('index 头不对');
+  const version = buf.readUInt32BE(4);
+  if (version !== 2 && version !== 3) throw new Error('index v' + version + ' 不支持');
+  const count = buf.readUInt32BE(8);
+  const out = new Map();
+  let o = 12;
+  for (let i = 0; i < count; i++) {
+    const start = o;
+    if (o + 62 > buf.length) throw new Error('index 被截断');
+    const ctimeSec = buf.readUInt32BE(o);
+    const mtimeSec = buf.readUInt32BE(o + 8);
+    const mtimeNs = buf.readUInt32BE(o + 12);
+    const size = buf.readUInt32BE(o + 36);
+    const oid = buf.toString('hex', o + 40, o + 60);
+    const flags = buf.readUInt16BE(o + 60);
+    const stage = (flags >> 12) & 0x3;
+    const extended = version >= 3 && (flags & 0x4000) !== 0;
+    const nameLen = flags & 0xfff;
+    o += 62 + (extended ? 2 : 0);
+    let name;
+    if (nameLen < 0xfff) {
+      name = buf.toString('utf8', o, o + nameLen);
+    } else {
+      const end = buf.indexOf(0, o);
+      if (end === -1) throw new Error('index 名字没有终止符');
+      name = buf.toString('utf8', o, end);
+    }
+    o += nameLen;
+    o = start + Math.ceil((o - start + 1) / 8) * 8; // 条目按 8 字节对齐（至少 1 个 NUL）
+    if (stage === 0) out.set(name.replace(/\\/g, '/'), {
+      oid,
+      size,
+      mtimeMs: mtimeSec * 1000 + Math.floor(mtimeNs / 1e6),
+      ctimeSec,
+    });
+  }
+  return out;
+}
+
+const blobSha = (content) => crypto.createHash('sha1')
+  .update(Buffer.concat([Buffer.from('blob ' + content.length + '\0'), content]))
+  .digest('hex');
+
+async function matrixFast(root) {
+  const head = await headInfo(root);
+  if (!head) throw new Error('HEAD 不可用（空仓库）→ 回落 statusMatrix');
+  const gitdir = gitdirOf(root);
+  if (!gitdir) throw new Error('找不到 .git → 回落');
+  const idx = readIndexStat(gitdir);
+  let indexMtimeMs = 0;
+  try { indexMtimeMs = fs.lstatSync(path.join(gitdir, 'index')).mtimeMs; } catch {}
+  // 含已跟踪文件的目录（index ∪ HEAD 的全部祖先）：剪枝时必须放行 —— 被忽略的目录里
+  // 若有已跟踪文件，它们照常要进矩阵（与 git 行为一致，见 listIgnored 的注释）
+  const trackedDirs = new Set();
+  const addDirs = (p) => {
+    let i = p.lastIndexOf('/');
+    while (i > 0) { trackedDirs.add(p.slice(0, i)); i = p.lastIndexOf('/', i - 1); }
+  };
+  for (const p of idx.keys()) addDirs(p);
+  for (const p of head.tree.keys()) addDirs(p);
+
+  const rows = [];
+  const seen = new Set();
+  const walkDir = (abs, rel) => {
+    let es;
+    try { es = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      if (e.name === '.git') continue;
+      const childAbs = path.join(abs, e.name);
+      const childRel = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) {
+        // 被忽略且没有已跟踪文件 → 整棵剪掉（node_modules 从此一次都不进）
+        if (!trackedDirs.has(childRel)) {
+          const rules = allRulesFor(root, childRel);
+          if (rules.length && ignoredDir(childRel, rules)) continue;
+        }
+        walkDir(childAbs, childRel);
+        continue;
+      }
+      seen.add(childRel);
+      const entry = idx.get(childRel);
+      const headOid = head.tree.get(childRel);
+      let wOid;
+      if (entry) {
+        let st = null;
+        try { st = fs.lstatSync(childAbs); } catch {}
+        const match = st
+          && Math.floor(st.mtimeMs) === entry.mtimeMs
+          && Math.floor(st.ctimeMs / 1000) === entry.ctimeSec
+          && st.size === entry.size
+          && st.mtimeMs < indexMtimeMs; // racy-git：index 写入之后动过的文件不信任 stat，老实哈希
+        wOid = match ? entry.oid : blobSha(st && st.isSymbolicLink() ? fs.readlinkSync(childAbs) : fs.readFileSync(childAbs));
+      } else {
+        wOid = '\u0002workdir'; // 未跟踪：内容不参与状态判断（cell 恒为 2），不必哈希
+      }
+      const sOid = entry ? entry.oid : undefined;
+      rows.push([
+        childRel,
+        headOid ? 1 : 0,
+        wOid === undefined ? 0 : (wOid === headOid ? 1 : 2),
+        !sOid ? 0 : (sOid === headOid ? 1 : (sOid === wOid ? 2 : 3)),
+      ]);
+    }
+  };
+  walkDir(root, '');
+
+  // 只在 index / HEAD 里、磁盘上已不在的文件（删除类状态）也要进矩阵
+  const pushAbsent = (p, headOid, sOid) => {
+    if (seen.has(p)) return;
+    seen.add(p);
+    rows.push([p, headOid ? 1 : 0, 0, !sOid ? 0 : (sOid === headOid ? 1 : 3)]);
+  };
+  for (const [p, entry] of idx) pushAbsent(p, head.tree.get(p), entry.oid);
+  for (const [p] of head.tree) pushAbsent(p, head.tree.get(p), undefined);
+
+  return rows;
+}
+
+async function status(dir, opts = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
+  // legacy：测试对照用 —— 强制走 isomorphic 的 statusMatrix 原实现（tests/git.test.js 对拍两条路径）
+  const buildMatrix = () => (opts.legacy
+    ? git.statusMatrix({ fs, dir: root })
+    : matrixFast(root).catch(() => git.statusMatrix({ fs, dir: root }))); // 任何异常回落原实现，宁慢勿错
   let matrix;
   try {
-    matrix = await git.statusMatrix({ fs, dir: root });
+    matrix = await buildMatrix();
   } catch {
-    // 工作区正在被改写时（自检里"挪目录 / 建夹具"与 0 延迟的 git 刷新撞在一起）statusMatrix
+    // 工作区正在被改写时（自检里"挪目录 / 建夹具"与 0 延迟的 git 刷新撞在一起）走查
     // 会偶发抛 "An internal error caused this command to fail."，表现为 changed=[] + tracked=[]
     // → 提交窗口空列表、文件树状态色全丢、"只看 Git 文件"把树清空（2026-09-29 实测复现）。
     // status 是**只读且幂等**的 → 稍等再试一次；仍失败才如实报错（上层按"没拿到状态"处理）。
     await new Promise((r) => setTimeout(r, 90));
     try {
-      matrix = await git.statusMatrix({ fs, dir: root });
+      matrix = await buildMatrix();
     } catch (e2) {
       return { isRepo: true, root, branch, changed: [], tracked: [], error: String(e2.message || e2) };
     }
@@ -701,6 +881,24 @@ async function initRepo(dir) {
 async function blobAt(root, oid, file) {
   if (!oid) return null;
   try {
+    // HEAD 快路径：树与 blob 内容按 HEAD oid 缓存（headInfo），免去逐层读树 ——
+    // 本机 readBlob 30~40ms/次，modified 文件一多 CRLF 校验就是 0.5s（headTreeCache 的由来）
+    if (oid === 'HEAD') {
+      const hit = headTreeCache.get(root);
+      // 先验 HEAD 没变（终端里 commit 会绕过本进程）：变了就走通用路径，绝不拿旧树比对新工作区
+      if (hit && (await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null)) === hit.headOid) {
+        const p = posix(file);
+        const blobOid = hit.tree.get(p);
+        if (blobOid === undefined) return null; // HEAD 树里没有 = 读不到
+        let text = hit.blobs.get(p);
+        if (text === undefined) {
+          const { blob } = await git.readBlob({ fs, dir: root, oid: blobOid });
+          text = Buffer.from(blob).toString('utf8');
+          hit.blobs.set(p, text);
+        }
+        return text;
+      }
+    }
     const resolved = await git.resolveRef({ fs, dir: root, ref: oid });
     const { blob } = await git.readBlob({ fs, dir: root, oid: resolved, filepath: posix(file) });
     return Buffer.from(blob).toString('utf8');

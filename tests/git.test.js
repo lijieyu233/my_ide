@@ -1217,10 +1217,11 @@ fs.mkdirSync(repo);
   }
 
   // ---------- status：走查失败时重试一次 ----------
-  // 真实现场：工作区正被改写（自检里挪夹具目录 / 自动刷新 0 延迟）时 statusMatrix 会偶发抛
+  // 真实现场：工作区正被改写（自检里挪夹具目录 / 自动刷新 0 延迟）时矩阵走查会偶发抛
   // InternalError，表现是 changed=[] + tracked=[] —— 提交窗口空列表、文件树状态色全丢、
   // 「只看 Git 文件」把整棵树清空。status 只读幂等 → 必须重试，不能把"读失败"当成"没有变更"。
-  await okAsync('status：statusMatrix 偶发抛错时重试一次（不把读失败当成没有变更）', async () => {
+  // （用 {legacy:true} 走 statusMatrix 原实现来打桩 —— 重试逻辑是两条矩阵路径共用的）
+  await okAsync('status：矩阵走查偶发抛错时重试一次（不把读失败当成没有变更）', async () => {
     const repo = path.join(tmp, 'repo-status-retry');
     fs.mkdirSync(repo);
     await G.initRepo(repo);
@@ -1235,7 +1236,7 @@ fs.mkdirSync(repo);
       return orig(args);
     };
     try {
-      const st = await G.status(repo);
+      const st = await G.status(repo, { legacy: true });
       assert.strictEqual(calls, 2, '应该恰好重试一次，实际调用 ' + calls + ' 次');
       assert.ok(!st.error, '重试成功后不该报错: ' + st.error);
       assert.ok((st.tracked || []).includes('a.txt'), '重试后 tracked 清单应包含 a.txt（被 git 管理的文件）');
@@ -1243,6 +1244,77 @@ fs.mkdirSync(repo);
     } finally {
       git.statusMatrix = orig;
     }
+  });
+
+  // ---------- status：快速矩阵 vs statusMatrix 原实现逐项对拍 ----------
+  // matrixFast（index stat 捷径 + 忽略目录剪枝）必须与原实现在同一夹具上给出完全一致的结果。
+  // 夹具覆盖：干净 / 未暂存修改 / 已暂存修改 / 暂存后又改 / 工作区删除 / git rm / 已暂存新增 /
+  // 未跟踪 / 忽略文件 / 忽略目录里的未跟踪文件 / 被忽略目录里的已跟踪文件（照常进列表）
+  await okAsync('status：快速矩阵与 statusMatrix 原实现逐项对拍（状态/tracked/忽略语义）', async () => {
+    const repo = path.join(tmp, 'repo-status-parity');
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'ignored-dir'), { recursive: true });
+    await G.initRepo(repo);
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'ignored-dir/\n*.log\n');
+    fs.writeFileSync(path.join(repo, 'clean.txt'), 'clean\n');
+    fs.writeFileSync(path.join(repo, 'mod.txt'), 'v1\n');
+    fs.writeFileSync(path.join(repo, 'stage.txt'), 'v1\n');
+    fs.writeFileSync(path.join(repo, 'both.txt'), 'v1\n');
+    fs.writeFileSync(path.join(repo, 'del-work.txt'), 'x\n');
+    fs.writeFileSync(path.join(repo, 'del-index.txt'), 'x\n');
+    fs.writeFileSync(path.join(repo, 'src', 'nested.txt'), 'n\n');
+    fs.writeFileSync(path.join(repo, 'ignored-dir', 'tracked-inside.txt'), 'keep\n');
+    await G.commit(repo, {
+      message: 'base',
+      files: ['.gitignore', 'clean.txt', 'mod.txt', 'stage.txt', 'both.txt', 'del-work.txt', 'del-index.txt', 'src/nested.txt', 'ignored-dir/tracked-inside.txt'],
+    });
+    // 变更一波（原生 git 造出真实的暂存 / 删除状态）
+    // ⚠ mod.txt 的新内容故意用不同尺寸：同秒+同尺寸的修改会命中 isomorphic statusMatrix 的
+    //   stat 缓存（racy-git 已知缺陷，MEMORY 有记）→ legacy 漏报；快速路径有 racy 规则会抓到。
+    //   对拍夹具要避开这个"故意的差异"，其余状态两路径必须完全一致。
+    const NATIVE = require('../git-native');
+    const g = (args) => NATIVE.run(args, { cwd: repo, env: NATIVE.NO_EDIT });
+    fs.writeFileSync(path.join(repo, 'mod.txt'), 'v2-不同长度\n');             // 未暂存修改
+    fs.writeFileSync(path.join(repo, 'stage.txt'), 'v2\n');
+    await g(['add', '--', 'stage.txt']);                                        // 已暂存修改
+    fs.writeFileSync(path.join(repo, 'both.txt'), 'v2\n');
+    await g(['add', '--', 'both.txt']);
+    fs.writeFileSync(path.join(repo, 'both.txt'), 'v3\n');                      // 暂存后又改
+    fs.writeFileSync(path.join(repo, 'staged-new.txt'), 'sn\n');
+    await g(['add', '--', 'staged-new.txt']);                                   // 已暂存新增
+    fs.unlinkSync(path.join(repo, 'del-work.txt'));                             // 工作区删除
+    await g(['rm', '-q', '--', 'del-index.txt']);                               // git rm（index+workdir）
+    fs.writeFileSync(path.join(repo, 'added-work.txt'), 'new\n');               // 未跟踪
+    fs.writeFileSync(path.join(repo, 'noise.log'), 'log\n');                    // 忽略文件
+    fs.writeFileSync(path.join(repo, 'ignored-dir', 'untracked.txt'), 'u\n');   // 忽略目录里的未跟踪文件
+    fs.writeFileSync(path.join(repo, 'ignored-dir', 'tracked-inside.txt'), '改动\n'); // 忽略目录里的已跟踪文件有改动 → 必须照常进列表
+
+    const fast = await G.status(repo);
+    const legacy = await G.status(repo, { legacy: true });
+    const key = (r) => JSON.stringify({
+      c: (r.changed || []).map((c) => [String(c.file).replace(/\\/g, '/'), c.status, c.label, !!c.inIndexOnly]),
+      t: (r.tracked || []).map((x) => String(x).replace(/\\/g, '/')).sort(),
+    });
+    assert.strictEqual(key(fast), key(legacy),
+      '两条路径输出不一致\nfast  =' + key(fast) + '\nlegacy=' + key(legacy));
+    // 关键语义再各断一遍（防止两条路径"一致地错"）
+    const stOf = (n) => (fast.changed || []).find((c) => String(c.file).replace(/\\/g, '/') === n);
+    assert.strictEqual(stOf('mod.txt').status, 'modified', '未暂存修改');
+    assert.strictEqual(stOf('stage.txt').status, '*modified', '已暂存修改');
+    assert.strictEqual(stOf('stage.txt').inIndexOnly, true, '已暂存修改 inIndexOnly');
+    assert.strictEqual(stOf('both.txt').status, '*modified', '暂存后又改');
+    assert.strictEqual(stOf('staged-new.txt').status, 'added', '已暂存新增');
+    assert.ok(['added', '*added'].includes(stOf('added-work.txt').status), '未跟踪 = added');
+    assert.ok(['deleted', '*deleted'].includes(stOf('del-work.txt').status), '工作区删除');
+    assert.ok(['deleted', '*deleted'].includes(stOf('del-index.txt').status), 'git rm');
+    assert.ok(stOf('ignored-dir/tracked-inside.txt'), '被忽略目录里的已跟踪文件照常出现');
+    assert.ok(!stOf('noise.log'), '忽略文件不进变更列表');
+    assert.ok(!stOf('ignored-dir/untracked.txt'), '忽略目录里的未跟踪文件不进变更列表');
+    const tracked = new Set(fast.tracked);
+    for (const t of ['clean.txt', 'mod.txt', 'src/nested.txt', 'ignored-dir/tracked-inside.txt']) {
+      assert.ok(tracked.has(t), 'tracked 应包含 ' + t);
+    }
+    assert.ok(!tracked.has('added-work.txt') && !tracked.has('noise.log'), 'tracked 不含未跟踪/忽略文件');
   });
 
   // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
