@@ -151,8 +151,10 @@ async function startEntry(entry) {
   const opts = {
     cwd: entry.cwd && fs.existsSync(entry.cwd) ? entry.cwd : undefined,
     env: envFor(entry, cfg),
-    windowsHide: true,
-    detached: true,          // ★ 后台保留：脱离父进程，关 my_ide 不死
+    windowsHide: true,       // 静默：不弹 cmd 窗口
+    // ⚠ 不能加 detached —— Windows 上 detached+cmd 会开新控制台（windowsHide 被覆盖），
+    //   用户看到的就是启动时弹黑框。后台保留不需要 detached：Windows 子进程本来就不随
+    //   父进程退出而死，关 my_ide 后照样活着（mh 原版也是这么静默的）。
   };
   let child;
   try {
@@ -161,7 +163,7 @@ async function startEntry(entry) {
     pushLog(entry.id, '启动失败: ' + (e && e.message || e));
     return { ok: false, error: String(e && e.message || e) };
   }
-  child.unref();
+  child.unref();   // 不阻塞 my_ide 退出（进程本身不受影响，继续跑）
   procs.set(entry.id, { proc: child, pid: child.pid, startedAt: Date.now() });
   setState(entry.id, { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '' });
 
