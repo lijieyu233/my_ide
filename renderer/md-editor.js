@@ -426,6 +426,31 @@ window.MdEditor = (() => {
     ignoreEvent() { return false; }
   }
 
+  // 脚注序号：按**定义行出现顺序**编号（Obsidian 同款；引用在前、定义在后也按定义序）。
+  // 两种模式必须用同一套规则，否则 live 显示 [1]、预览显示 [2] 就对不上了。
+  // 做成纯函数（传文本进来）而不是读 liveView：预览模式下 liveView 已销毁，
+  // 读它会退回"序号=标签文本"，两边立刻不一致（实测踩过）。
+  function footnoteNoIn(text, label) {
+    const re = /^ {0,3}\[\^([^\]]+)\]:/gm;
+    let m, i = 0;
+    while ((m = re.exec(String(text)))) {
+      i++;
+      if (m[1] === label) return i;
+    }
+    return i + 1;
+  }
+  // 一次构建里把"标签 → 序号"算好（避免每行每标记都全文扫一遍）
+  function footnoteIndex(text) {
+    const map = new Map();
+    const re = /^ {0,3}\[\^([^\]]+)\]:/gm;
+    let m, i = 0;
+    while ((m = re.exec(String(text)))) { i++; if (!map.has(m[1])) map.set(m[1], i); }
+    return map;
+  }
+  // 预览侧用同一套规则（plugin-loader 的 marked 扩展调它）
+  window.MI = window.MI || {};
+  MI.footnoteNoIn = footnoteNoIn;
+
   // ---------- 嵌套列表缩进 widget：源码前导空格 → 固定宽度缩进 ----------
   // 为什么不能只留着源码里的空格：正文是比例字体，2 个空格实测只有 9px，而预览那边是
   // `ul { padding-left: 1.85em }`（17px 字号下 31px）—— 用户的嵌套子项看起来跟父项齐平
@@ -930,6 +955,8 @@ window.MdEditor = (() => {
     // 改为数组收集 + Decoration.set(…, true) 统一排序。
     const decos = [];
     const doc = state.doc;
+    // 脚注序号表（按定义行出现顺序）：一次构建只扫一遍全文，行内引用与定义行都用它
+    const fnIdx = footnoteIndex(doc.toString());
     // Obsidian 式「标记粒度」显示模型（取代旧的行粒度"光标行=源码"）：
     //   1. 行级构造（标题#/引用>/围栏行/分隔线/表格分隔行）→ 光标落在该行才显示源码；
     //   2. 行内标记（** ~~ ` 等）→ 仅光标紧邻该标记（前后 1 字符内）或选区完整
@@ -1023,6 +1050,36 @@ window.MdEditor = (() => {
                 decos.push(Decoration.replace({}).range(mFrom, mFrom + 2));
                 decos.push(Decoration.replace({}).range(mTo - 2, mTo));
                 decos.push(Decoration.mark({ class: 'cm-md-highlight' }).range(mFrom + 2, mTo - 2));
+              }
+            }
+            // 脚注（Obsidian 的 [^1]）：lezer 无对应节点 → 行级正则。
+            // 定义行 `[^1]: 内容` → 标记换序号上标 + 正文弱化（与预览的 .md-footnotes 同源）；
+            // 行内 `[^1]` → 上标 widget。光标落在定义行时显示源码，方便改内容。
+            const fnDef = /^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/.exec(l.text);
+            if (fnDef) {
+              const label = fnDef[1];
+              const no = fnIdx.get(label) || label;
+              const markerFrom = l.from + l.text.indexOf('[^');
+              const markerTo = markerFrom + fnDef[0].length - fnDef[2].length;   // 含 `]:` 与空白
+              if (!onLine(l.from)) {
+                decos.push(Decoration.replace({}).range(markerFrom, markerTo));
+                decos.push(Decoration.widget({
+                  widget: new CalloutIconWidget('[' + no + ']', 'cm-md-fnno'), side: -1,
+                }).range(markerFrom));
+              }
+              decos.push(Decoration.line({ class: 'cm-md-fnline' }).range(l.from));
+            } else {
+              // 行内引用：跳过定义行与代码（代码块内容行在围栏内，fence 状态用 l.text 判断）
+              const fnRefRe = /\[\^([^\]]+)\]/g;
+              let fm2;
+              while ((fm2 = fnRefRe.exec(l.text))) {
+                const rFrom = l.from + fm2.index;
+                const rTo = rFrom + fm2[0].length;
+                if (revealsMark(rFrom, rTo)) continue;
+                const no = fnIdx.get(fm2[1]) || fm2[1];
+                decos.push(Decoration.replace({
+                  widget: new CalloutIconWidget('[' + no + ']', 'cm-md-fnref'),
+                }).range(rFrom, rTo));
               }
             }
           }

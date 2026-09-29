@@ -42,6 +42,94 @@ if (window.marked && typeof window.marked.use === 'function') {
   } catch (e) { MI.logErr('md.markedExt', e); }
 }
 
+// ---------- 脚注（Obsidian 的 [^1]） ----------
+// 不做的话 marked 会把 `[^1]: 脚注内容` 当成**链接引用定义**（`[label]: url`）→ 正文里的
+// `[^1]` 变成指向"脚注内容文字。"的怪链接、脚注正文整段从页面消失（实测）。
+// 做法：**预扫描**（跳过代码围栏）把定义行收集起来并从源码里摘掉，再让 marked 正常解析；
+// 行内 `[^1]` 用一个内联扩展渲染成上标。序号按定义出现顺序 —— 与 live 侧
+// MI.footnoteNoIn 同一套规则（各写一套会出现 live [1] / 预览 [2]）。
+// ⚠ 序号必须在 parse **之前**就算好：引用在正文、定义在文末时，marked 是先渲染引用
+//   后渲染定义的（渲染期采集表还是空的，实测会退回显示标签文本）。
+let mdFootnoteDefs = new Map();   // label -> { no, text }
+function stripAndCollectFootnotes(src) {
+  const lines = String(src).split('\n');
+  const out = [];
+  const defs = new Map();
+  let fence = null, no = 0;
+  const defRe = /^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fm = /^\s*(```+|~~~+)/.exec(line);
+    if (fm) {
+      const mark = fm[1][0];
+      if (!fence) fence = mark;
+      else if (fence === mark) fence = null;
+      out.push(line);
+      continue;
+    }
+    if (!fence) {
+      const d = defRe.exec(line);
+      if (d) {
+        no++;
+        // 续行（缩进 2 空格以上）也算定义内容
+        let text = d[2];
+        while (i + 1 < lines.length && /^[ \t]{2,}\S/.test(lines[i + 1])) { text += '\n' + lines[++i].trim(); }
+        defs.set(d[1], { no, text: text.trim() });
+        continue;   // 定义行从源码里摘掉
+      }
+    }
+    out.push(line);
+  }
+  mdFootnoteDefs = defs;
+  return out.join('\n');
+}
+MI.footnoteCount = () => mdFootnoteDefs.size;
+MI.resetFootnotes = () => { mdFootnoteDefs = new Map(); };
+if (window.marked && typeof window.marked.use === 'function') {
+  try {
+    window.marked.use({
+      extensions: [{
+        name: 'mdFootnoteRef',
+        level: 'inline',
+        start(src) { const i = src.indexOf('[^'); return i < 0 ? undefined : i; },
+        tokenizer(src) {
+          const m = /^\[\^([^\]]+)\]/.exec(src);
+          if (!m) return undefined;
+          return { type: 'mdFootnoteRef', raw: m[0], label: m[1] };
+        },
+        renderer(token) {
+          const def = mdFootnoteDefs.get(token.label);
+          const no = def ? def.no : token.label;
+          return '<sup class="md-fnref" id="fnref-' + escapeAttr(token.label) + '">[' + no + ']</sup>';
+        },
+      }],
+    });
+  } catch (e) { MI.logErr('md.markedExt', e); }
+}
+function escapeAttr(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+// 文末脚注区（parse 之后调用）
+MI.renderFootnotes = function (container) {
+  if (!container || !mdFootnoteDefs.size) return;
+  const list = document.createElement('div');
+  list.className = 'md-footnotes';
+  [...mdFootnoteDefs.entries()].forEach(([label, def]) => {
+    const row = document.createElement('div');
+    row.className = 'md-footnote';
+    row.id = 'fn-' + label;
+    const no = document.createElement('span');
+    no.className = 'md-footnote-no';
+    no.textContent = '[' + def.no + ']';
+    const body = document.createElement('span');
+    body.className = 'md-footnote-body';
+    // 脚注内容里允许行内 markdown
+    try { body.innerHTML = window.marked.parseInline(def.text); } catch { body.textContent = def.text; }
+    row.appendChild(no); row.appendChild(body);
+    list.appendChild(row);
+  });
+  container.appendChild(list);
+  mdFootnoteDefs = new Map();
+};
+
 // ---------- 使用日志（性能埋点 + 错误捕获，定位卡顿/卡死用）----------
 MI.log = function (level, tag, msg) {
   try { if (window.myIDE && window.myIDE.log) window.myIDE.log.write(level, tag, msg); } catch {}
@@ -412,6 +500,8 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   try {
     if (window.marked && window.marked.parse) {
       let src = content || '';
+      // 脚注：先摘掉定义行（顺便跳过代码围栏）再交给 marked，避免它把 `[^1]:` 当链接引用定义
+      src = stripAndCollectFootnotes(src);
       // 去掉内嵌的 <!DOCTYPE html> 等声明，避免在预览顶部显示成乱文本
       src = src.replace(/<!DOCTYPE[^>]*>/gi, '');
       // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / ![[图片.png]] → 标准链接
@@ -438,20 +528,26 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     const raw = String(m[2] || '');
     // ⚠ marked 配了 `breaks: true` → 引用块里换行被渲染成 **<br> 元素**，textContent 里
     // 根本没有 `\n`（实测：标题会把后面的正文整段吞掉）。所以标题/正文必须按**首个 <br>**
-    // 切分 DOM，而不是按换行符切字符串。
-    let titleText = raw, bodyText = '';
+    // 切分，而且要用 **DOM 节点**搬运正文 —— 早先版本把正文 toString() 出来再 textContent
+    // 塞回去，正文里的 **加粗**/`代码`/换行全被抹平（截图里 callout 两行正文挤成一行）。
+    let titleText = raw;
+    const bodyNodes = [];
     const brs = [...first.querySelectorAll('br')];
     if (brs.length) {
       const rg = document.createRange();
       rg.setStart(first, 0); rg.setEndBefore(brs[0]);
       titleText = rg.toString().replace(/^\s*\[![A-Za-z]+\][-+]?[ \t]*/, '');
-      rg.setStartAfter(brs[0]); rg.setEnd(first, first.childNodes.length);
-      bodyText = rg.toString();
+      // 标题行之后的节点整段搬走（保留 <strong>/<code>/<br> 原样）
+      const frag = document.createDocumentFragment();
+      let n = brs[0].nextSibling;
+      while (n) { const next = n.nextSibling; frag.appendChild(n); n = next; }
+      brs[0].remove();
+      if (frag.childNodes.length) bodyNodes.push(frag);
     } else {
       const nl = raw.indexOf('\n');
-      if (nl >= 0) { titleText = raw.slice(0, nl); bodyText = raw.slice(nl + 1); }
+      if (nl >= 0) titleText = raw.slice(0, nl);
     }
-    titleText = titleText.trim(); bodyText = bodyText.trim();
+    titleText = titleText.trim();
     const box = document.createElement('div');
     box.className = 'md-callout ' + meta.cls;
     const title = document.createElement('div');
@@ -464,15 +560,18 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     title.appendChild(ic); title.appendChild(tx);
     // 引用块的其余内容（除首段）搬进 callout，标题行放最前
     const restNodes = [...bq.children].filter((c) => c !== first);
-    if (bodyText) {
+    // 首段里标题之后的正文 → 单独一个 <p>（节点级搬运，行内格式与换行都保留）
+    if (bodyNodes.length) {
       const body = document.createElement('p');
-      body.textContent = bodyText;
+      bodyNodes.forEach((n) => body.appendChild(n));
       restNodes.unshift(body);
     }
     box.appendChild(title);
     restNodes.forEach((n) => box.appendChild(n));
     bq.replaceWith(box);
   });
+  // 脚注区：定义行已被块级扩展吃掉（渲染为空），这里在文末汇总成 Obsidian 同款脚注列表
+  if (MI.renderFootnotes) MI.renderFootnotes(wrap);
   // 代码块语法高亮 + 复制/运行按钮（运行 = run:code IPC 写临时文件新开 cmd 执行）
   const RUNNABLE = ['js', 'javascript', 'node', 'py', 'python', 'bat', 'cmd', 'batch', 'powershell', 'ps1', 'pwsh', 'sh', 'bash'];
   wrap.querySelectorAll('pre code').forEach((el) => {

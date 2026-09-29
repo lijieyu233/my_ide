@@ -664,6 +664,41 @@
     api.gotoLine(1); await sleep(250);
   }
 
+  // ---------- 脚注（Obsidian 的 [^1]）：两种模式编号必须一致、定义不得丢 ----------
+  {
+    api.gotoLine(lineNoOf('正文里引用脚注甲')); await sleep(400);
+    api.setCursor(DOC.length); await sleep(250);
+    const liveRefs = [...document.querySelectorAll('.cm-md-fnref')].map((e) => e.textContent);
+    const liveNos = [...document.querySelectorAll('.cm-md-fnno')].map((e) => e.textContent);
+    add('脚注(live): 行内引用渲染成上标', liveRefs.length >= 3, 'refs=' + liveRefs.join(','));
+    add('脚注(live): 定义行渲染成 [N] 条目', liveNos.length >= 3, 'nos=' + liveNos.join(','));
+    add('脚注(live): 渲染态隐藏 [^label] 源码',
+      !allText().includes('[^fn-a]') && !allText().includes('[^fn-b]'), '');
+    // 预览：同屏对照
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+    document.body.appendChild(holder);
+    try {
+      const fn = MI.renderFor({ path: 'x.md', name: 'x.md', ext: 'md' });
+      const node = fn({ path: 'x.md', name: 'x.md', ext: 'md', content: DOC });
+      holder.appendChild(node);
+      const pvRefs = [...node.querySelectorAll('.md-fnref')].map((e) => e.textContent);
+      const pvNotes = [...node.querySelectorAll('.md-footnote')];
+      add('脚注(preview): 渲染成脚注区', pvNotes.length >= 3, 'count=' + pvNotes.length);
+      add('脚注(preview): 脚注正文不丢', pvNotes.some((n) => n.textContent.includes('脚注甲的内容')), '');
+      add('脚注(preview): 没有残留 [^label] 源码', !node.textContent.includes('[^fn-a]'), '');
+      add('脚注: 两模式编号一致', liveRefs.length > 0 && JSON.stringify(liveRefs) === JSON.stringify(pvRefs),
+        'live=' + liveRefs.join(',') + ' preview=' + pvRefs.join(','));
+      add('脚注(preview): 编号与条目一一对应',
+        pvNotes.length === pvRefs.length && pvNotes.every((n, i) => n.querySelector('.md-footnote-no').textContent === pvRefs[i]),
+        'notes=' + pvNotes.length + ' refs=' + pvRefs.length);
+    } catch (e) {
+      add('脚注(preview): 渲染成脚注区', false, String(e));
+    }
+    holder.remove();
+    api.gotoLine(1); await sleep(250);
+  }
+
   api.setCursor(DOC.length);
   await sleep(80);
   return { R };

@@ -654,6 +654,25 @@ textarea.editor {
 .md-view pre code { background: none; padding: 0; color: inherit; font-size: 0.96em; line-height: 1.6; }
 .md-view blockquote { border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); padding-left: 1.08em; color: var(--text-dim); margin: 0.77em 0; }
 
+/* ---------- 脚注（Obsidian 的 [^1]） ---------- */
+/* 正文里的上标引用 + 文末脚注列表；两种模式共用这套类名（live 用行内 widget 画同一个上标） */
+.md-view .md-fnref,
+.cm-md-fnref {
+  color: var(--accent); font-size: 0.85em; vertical-align: super; line-height: 0;
+  cursor: pointer;
+}
+.md-view .md-fnref:hover, .cm-md-fnref:hover { text-decoration: underline; }
+.md-view .md-footnotes {
+  margin-top: 1.54em; padding-top: 0.77em;
+  border-top: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  font-size: 0.92em; color: var(--text-dim);
+}
+.md-view .md-footnote { display: flex; gap: 0.46em; margin: 0.23em 0; }
+.md-view .md-footnote-no { color: var(--accent); flex-shrink: 0; }
+/* 脚注定义行在实时预览里的样式（光标进该行时可编辑） */
+.cm-line.cm-md-fnline { color: var(--text-dim); font-size: 0.92em; }
+.cm-md-fnno { color: var(--accent); margin-right: 0.31em; }
+
 /* ---------- Callout（Obsidian 的 > [!note] 提示块） ---------- */
 /* 两种模式共用这一套变量与类名：live 是逐行 line class（.cm-line.cm-callout-*），
    预览是块级容器（.md-callout）。色板取 Obsidian 官方各类型的主色，
