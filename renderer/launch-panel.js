@@ -36,8 +36,8 @@ const LaunchPanel = (() => {
     body.innerHTML = [...m.entries()].map(([cat, list]) => {
       const isCol = !!collapsed[cat];
       return '<div class="launch-group">'
-        + '<div class="launch-cat" data-cat="' + esc(cat) + '">'
-        + '<span class="launch-caret">' + (isCol ? '▸' : '▾') + '</span>'
+        + '<div class="launch-cat' + (isCol ? ' col' : '') + '" data-cat="' + esc(cat) + '">'
+        + '<span class="launch-caret">' + ICO_CARET + '</span>'
         + '<span class="launch-cat-nm">' + esc(cat) + '</span>'
         + '<span class="launch-cat-n">' + list.length + '</span></div>'
         + (isCol ? '' : '<div class="launch-cards">' + list.map(cardHtml).join('') + '</div>')
@@ -46,9 +46,12 @@ const LaunchPanel = (() => {
     refreshDots();
   }
 
-  const ICO_PLAY = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z" fill="currentColor"/></svg>';
+  // 图标一律内联 SVG（项目规矩：列表/工具条上不用 emoji 或文字字形，字号与基线不受控）。
+  // 三角用 .ic 的 1.4px 描边，折叠态交给 CSS rotate(-90deg)，跟收藏侧栏/文件树一致。
+  const ICO_CARET = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
+  const ICO_PLAY = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z" fill="currentColor"/></svg>';
   const ICO_STOP = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.6" fill="currentColor"/></svg>';
-  const ICO_OPEN = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M5 7 10.2 1.8M6.2 1.8h4v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 7.2v2.6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  const ICO_OPEN = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M5 7 10.2 1.8M6.2 1.8h4v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 7.2v2.6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
   function cardHtml(e) {
     const s = stOf(e.id);
@@ -342,16 +345,19 @@ const LaunchPanel = (() => {
       if (dlg && typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
     });
 
-    // 后台保留开关（主区）
-    const keep = q('launch-keep');
-    if (keep) {
-      keep.addEventListener('change', async () => {
-        await L().setKeep(keep.checked);
-        toast(keep.checked ? '退出时保留后台进程' : '退出时停止全部终端', 'ok');
-      });
-      L().getKeep().then((v) => { keep.checked = v === true; }).catch(() => {});
+    // 后台保留开关：侧栏底栏和主区底栏各有一个（原来两个都是 id="launch-keep"，
+    // getElementById 只拿到第一个 → 主区那个点了没反应也不回显）。现在按类全绑、互相同步。
+    const keeps = [...document.querySelectorAll('.lp-keep')];
+    if (keeps.length) {
+      keeps.forEach((k) => k.addEventListener('change', async () => {
+        await L().setKeep(k.checked);
+        syncKeep(k.checked);
+        toast(k.checked ? '退出时保留后台进程' : '退出时停止全部终端', 'ok');
+      }));
+      L().getKeep().then((v) => syncKeep(v === true)).catch(() => {});
     }
   }
+  function syncKeep(v) { document.querySelectorAll('.lp-keep').forEach((k) => { k.checked = v; }); }
 
   function init() {
     if (inited) return;

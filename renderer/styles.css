@@ -3171,30 +3171,40 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .ctx-item.proj-item .proj-item-x:hover { opacity: 1; }
 
 /* ===== 启动面板（panel-launch，侧栏）=====
-   颜色一律走主题变量；状态点用 --ok / --del 语义色，不硬编码。 */
+   颜色一律走主题变量；状态点用 --ok / --del 语义色，不硬编码。
+   列表语言照文件树 / git 列表那一套：**行不带边框、hover 才浮底**，按钮**无描边、hover 才浮底**。
+   老版每行一张描边卡 + 两个描边按钮，12 行下来就是"一片表单"——和提交面板当初改掉的是同一个毛病
+   （见 .git-cp-bar .vt-btn 的注释：老版每个按钮都有描边，一排下来像表单）。 */
 #panel-launch {
   display: flex; flex-direction: column; min-height: 0; flex: 1;
   /* 字号基准跟随 --tool-font（状态栏 A−/A+），内部层级一律 em 相对缩放 */
   font-size: var(--tool-font, 13px);
 }
-#launch-body { flex: 1; overflow: auto; padding: 4px 0 8px; }
+#launch-body { flex: 1; overflow: auto; padding: 2px 0 8px; }
 .launch-empty { padding: 14px 16px; color: var(--text-dim); font-size: 0.92em; line-height: 1.7; }
 .launch-group { margin-top: 2px; }
+.launch-group + .launch-group { border-top: 1px solid var(--border); }
 .launch-cat {
-  display: flex; align-items: center; gap: 6px; padding: 4px 10px;
-  color: var(--text-dim); font-size: 0.85em; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 4px; padding: 5px 10px;
+  color: var(--text); font-size: 0.92em; cursor: pointer; user-select: none;
 }
-.launch-cat:hover { color: var(--text); background: var(--btn-hover); }
-.launch-caret { display: inline-block; width: 13px; font-size: 12px; line-height: 1; color: var(--text-dim); }
-.launch-cat-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.launch-cat-n { font-size: 0.77em; opacity: .7; }
-.launch-cards { padding: 0 6px; }
+.launch-cat:hover { color: var(--text-bright); background: var(--bg-hover); }
+/* 三角列宽固定，多个分类的名称起点才对齐（同 .bw-sb-gcaret / .tree-row .ic 的做法） */
+.launch-caret {
+  width: 14px; flex-shrink: 0; color: var(--text-dim);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.launch-caret svg.ic { width: 12px; height: 12px; transition: transform .12s; }
+.launch-cat.col .launch-caret svg.ic { transform: rotate(-90deg); }
+.launch-cat:hover .launch-caret { color: var(--text); }
+.launch-cat-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launch-cat-n { flex-shrink: 0; margin-left: 2px; font-size: .85em; color: var(--text-dim); }
+.launch-cards { padding: 0 4px 2px; }
 .launch-card {
-  padding: 5px 8px; margin: 2px 0; border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
-  background: color-mix(in srgb, var(--bg-panel) 60%, transparent);
+  padding: 4px 8px; border-radius: 4px; cursor: pointer;
+  border: 0; background: transparent;
 }
-.launch-card:hover { background: var(--btn-hover); }
+.launch-card:hover { background: var(--bg-hover); }
 .launch-card-head { display: flex; align-items: center; gap: 6px; }
 .launch-dot {
   width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px;
@@ -3204,26 +3214,28 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .launch-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.96em; color: var(--text); }
 .launch-port { font-size: 0.81em; color: var(--text-dim); font-family: var(--font-mono); }
 .launch-acts { display: flex; gap: 2px; flex: 0 0 auto; }
-.launch-acts { gap: 4px; }
+/* 行内动作按钮：无描边、无底色，hover 才浮一层（同 .git-cp-bar .vt-btn） */
 .launch-acts .lp-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 20px; padding: 0;
-  border: 1px solid var(--btn-border); border-radius: 5px;
-  background: var(--btn-bg); color: var(--text-dim);
-  transition: background .12s, color .12s, border-color .12s;
+  width: 20px; height: 18px; padding: 0;
+  border: 0; background: transparent; border-radius: 4px; color: var(--text-dim);
+  transition: background .12s, color .12s;
 }
-.launch-acts .lp-btn:hover { background: var(--btn-hover); color: var(--text); border-color: var(--btn-border); }
+.launch-acts .lp-btn:hover { background: var(--btn-hover); color: var(--text-bright); }
 .launch-acts .lp-btn svg { display: block; }
 /* 运行中的停止键：红调；停止态的启动键：绿调 —— 颜色即状态，不用读字 */
 .launch-card.run .act-run { color: color-mix(in srgb, var(--red, #e5534b) 75%, var(--text)); }
-.launch-card.run .act-run:hover { background: color-mix(in srgb, var(--red, #e5534b) 16%, transparent); border-color: color-mix(in srgb, var(--red, #e5534b) 45%, transparent); }
+.launch-card.run .act-run:hover { background: color-mix(in srgb, var(--red, #e5534b) 16%, transparent); color: var(--red, #e5534b); }
 .launch-card:not(.run) .act-idle { color: color-mix(in srgb, var(--ok, #4caf50) 70%, var(--text)); }
-.launch-card:not(.run) .act-idle:hover { background: color-mix(in srgb, var(--ok, #4caf50) 14%, transparent); border-color: color-mix(in srgb, var(--ok, #4caf50) 40%, transparent); }
+.launch-card:not(.run) .act-idle:hover { background: color-mix(in srgb, var(--ok, #4caf50) 14%, transparent); color: var(--ok, #4caf50); }
 .launch-acts .lp-btn.hide { display: none; }
 /* 运行态卡片：左侧细绿条 + 名字提亮 */
 .launch-card.run { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ok, #4caf50) 65%, transparent); }
 .launch-card.run .launch-nm { color: var(--text-bright, var(--text)); }
 .launch-card:not(.run) .launch-nm { color: var(--text-dim); }
+/* 选中态：跟文件树选中同一套语言（弱底 + 2px 强调色左线），比"描边一圈"安静且不挤 */
+.launch-card.sel { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+.launch-card.sel .launch-nm { color: var(--text-bright); }
 .launch-cmd {
   font-family: var(--font-mono); font-size: 0.81em; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;
@@ -3238,9 +3250,26 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   color: var(--text); white-space: pre-wrap; word-break: break-all;
 }
 #launch-foot {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 6px 10px; border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 4px 8px; border-top: 1px solid var(--border); flex-shrink: 0;
 }
+/* 底栏按钮复用工具行那套（无描边 / hover 浮底 / svg.ic 13px）；只给主次动作上语义色 */
+#launch-foot .vt-btn {
+  border: 0; background: transparent; border-radius: 4px;
+  height: 22px; padding: 0 8px; gap: 5px; font-size: .85em;
+  display: inline-flex; align-items: center; color: var(--text-dim); cursor: pointer;
+}
+#launch-foot .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+#launch-foot .vt-btn.primary { color: color-mix(in srgb, var(--ok, #4caf50) 72%, var(--text)); }
+#launch-foot .vt-btn.primary:hover { background: color-mix(in srgb, var(--ok, #4caf50) 14%, transparent); color: var(--ok, #4caf50); }
+#launch-foot .vt-btn.danger { color: color-mix(in srgb, var(--red, #e5534b) 72%, var(--text)); }
+#launch-foot .vt-btn.danger:hover { background: color-mix(in srgb, var(--red, #e5534b) 14%, transparent); color: var(--red, #e5534b); }
+#launch-foot svg.ic { width: 13px; height: 13px; opacity: 1; }
+/* 「后台保留」推到最右，当设置项而不是第三个按钮 */
+.launch-hint { display: inline-flex; align-items: center; gap: 5px; font-size: .8em; color: var(--text-dim); cursor: pointer; }
+#launch-foot .launch-hint { margin-left: auto; }
+.launch-hint input[type="checkbox"] { accent-color: var(--accent); margin: 0; cursor: pointer; }
+/* 对话框里的按钮仍然是"描边实心"那一档：弹窗需要明确的按钮边界，跟列表行内按钮不是一回事 */
 .lp-foot-btn {
   font-size: 0.85em; padding: 2px 10px; border-radius: 4px; cursor: pointer;
   background: var(--btn-bg); color: var(--text); border: 1px solid var(--btn-border);
@@ -3248,7 +3277,6 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .lp-foot-btn:hover { background: var(--btn-hover); }
 .lp-foot-btn.primary { border-color: color-mix(in srgb, var(--accent) 55%, var(--btn-border)); }
 .lp-foot-btn.danger { border-color: color-mix(in srgb, var(--del-text, #e06c75) 50%, var(--btn-border)); }
-#launch-hint { font-size: 0.77em; color: var(--text-dim); }
 #launch-toast { position: fixed; right: 12px; bottom: 12px; z-index: 60; display: flex; flex-direction: column; gap: 6px; }
 .launch-toast-item {
   padding: 5px 12px; border-radius: 5px; font-size: 0.92em;

@@ -161,9 +161,11 @@
       </div>
       <div id="launch-body"></div>
       <div id="launch-foot">
-        <button id="launch-start-all" class="lp-foot-btn primary"><span class="bi">▶</span>全部启动</button>
-        <button id="launch-stop-all" class="lp-foot-btn danger"><span class="bi">■</span>全部停止</button>
-        <label id="launch-hint" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" id="launch-keep"> 后台保留</label>
+        <!-- 图标走 svg.ic（实心部分用 .fill），跟工具条/提交面板一个语言；
+             按钮本身无描边、hover 才浮底 —— 老版 ▶/■ 文字字形 + 描边按钮像两个表单控件 -->
+        <button id="launch-start-all" class="vt-btn primary" title="启动全部条目（端口占用的会跳过）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path class="fill" d="M4.6 2.9a.5.5 0 0 1 .76-.43l7.2 4.6a.5.5 0 0 1 0 .86l-7.2 4.6a.5.5 0 0 1-.76-.43z"/></svg>全部启动</button>
+        <button id="launch-stop-all" class="vt-btn danger" title="停止全部条目（按端口反查补杀，停不掉会如实报错）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="3.6" y="3.6" width="8.8" height="8.8" rx="1.6"/></svg>全部停止</button>
+        <label class="launch-hint lp-keep-label" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" class="lp-keep"> 后台保留</label>
       </div>
       <dialog id="launch-dialog">
         <h2 id="launch-dialog-title">添加终端</h2>
@@ -222,7 +224,9 @@
       <div class="launch-meta" id="lm-meta"></div>
       <div class="launch-logview"><pre id="lm-log"></pre></div>
       <div class="launch-main-foot">
-        <label id="launch-hint" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" id="launch-keep"> 关闭 my_ide 后保留后台进程</label>
+        <!-- 这里原来是 id="launch-keep" 的重复 id：JS 用 getElementById 只拿到侧栏那一个，
+             于是这个勾选框点了不落盘也不跟着状态走（死控件）。改成一个类，两个都绑、互相同步。 -->
+        <label class="launch-hint lp-keep-label" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" class="lp-keep"> 关闭 my_ide 后保留后台进程</label>
       </div>
     </div>
 <div id="empty-state">
