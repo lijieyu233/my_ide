@@ -167,6 +167,44 @@ const LaunchPanel = (() => {
     set('command', entry && entry.command);
     set('port', entry && entry.port);
     set('apiOrigin', entry && entry.apiOrigin);
+
+    // 后端地址历史下拉（▼ 选历史 / ✕ 移除）
+    {
+      const of = dlg.querySelector('.origin-field');
+      const drop = of.querySelector('.origin-dropdown');
+      const inp = of.querySelector('input[name="apiOrigin"]');
+      const render = () => {
+        drop.innerHTML = '';
+        const list = (cfg.apiOrigins || []);
+        if (!list.length) { drop.innerHTML = '<div class="origin-empty">暂无历史后端地址</div>'; return; }
+        for (const o of list) {
+          const it = document.createElement('div');
+          it.className = 'origin-item';
+          const t = document.createElement('span'); t.className = 'origin-text'; t.textContent = o;
+          const x = document.createElement('button'); x.type = 'button'; x.className = 'origin-x'; x.title = '从列表移除'; x.textContent = '✕';
+          it.append(t, x);
+          it.addEventListener('click', async (ev) => {
+            if (ev.target.closest('.origin-x')) {
+              await L().removeOrigin(o);
+              cfg = await L().load();
+              render();
+              return;
+            }
+            inp.value = o;
+            drop.hidden = true;
+          });
+          drop.appendChild(it);
+        }
+      };
+      of.querySelector('.origin-toggle').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const willOpen = drop.hidden;
+        if (willOpen) render();
+        drop.hidden = !willOpen;
+      });
+      inp.addEventListener('focus', () => { drop.hidden = true; });
+    }
+
     set('openUrl', entry && entry.openUrl);
     set('kind', (entry && entry.kind) || '');
     set('python', (entry && entry.python) || 'python');
@@ -184,6 +222,7 @@ const LaunchPanel = (() => {
       name: v('name'), category: v('category') || '未分类', cwd: v('cwd'),
       command: v('command'), port: Number(v('port')) || 0,
       apiOrigin: v('apiOrigin'), openUrl: v('openUrl'),
+      /* 保存后写入历史（addOrigin 去重，服务端处理） */
       kind: v('kind'), script: v('script'), python: v('python') || 'python',
     };
     if (!item.name || !item.command) { toast('名称与启动命令必填', 'err'); return; }
@@ -196,7 +235,9 @@ const LaunchPanel = (() => {
       item.id = 'e' + Date.now().toString(36);
       list.push(item);
     }
+    if (item.apiOrigin) await L().addOrigin(item.apiOrigin);
     cfg = await L().save({ apiOrigins: cfg.apiOrigins, entries: list, keepOnExit: cfg.keepOnExit });
+    if (item.apiOrigin) cfg = await L().load();
     dlg.__editing = null;
     if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
     renderList();

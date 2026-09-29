@@ -210,18 +210,39 @@ app.whenReady().then(async () => {
       await wc.executeJavaScript(`window.myIDE.launch.setKeep(false)`, true);
     }
 
-    // ---------- ③h 添加/编辑对话框：USB 隧道字段存在 ----------
+    // ---------- ③i 后端地址历史下拉：展开 / 选中填入 ----------
     {
-      const f = await wc.executeJavaScript(probe(`
-        const form = document.getElementById('launch-form');
-        if (!form) return { err: 'no form' };
-        const names = ['name','category','cwd','command','port','apiOrigin','openUrl','kind','python','script'];
-        const missing = names.filter((n) => !form.elements[n]);
+      const r = await wc.executeJavaScript(probe(`
         const dlg = document.getElementById('launch-dialog');
-        return { missing: missing, hasDialog: !!dlg };
+        if (!dlg) return { err: 'no dialog' };
+        // 走真实入口：先选中第一张卡片，再点主区「编辑」→ openDialog 绑定下拉监听
+        const card = document.querySelector('#launch-body .launch-card');
+        if (card) card.click();
+        const editBtn = document.getElementById('lm-edit');
+        if (!editBtn) return { err: 'no lm-edit' };
+        editBtn.click();
+        if (!dlg.hasAttribute('open') && typeof dlg.showModal === 'function') { try { dlg.showModal(); } catch {} }
+        const of = dlg.querySelector('.origin-field');
+        if (!of) return { err: 'no origin-field' };
+        const drop = of.querySelector('.origin-dropdown');
+        const inp = of.querySelector('input[name="apiOrigin"]');
+        const tg = of.querySelector('.origin-toggle');
+        if (!drop || !inp || !tg) return { err: 'missing parts' };
+        tg.click();
+        const items = [...drop.querySelectorAll('.origin-item')];
+        const cnt = items.length;
+        const first = items[0] && items[0].querySelector('.origin-text');
+        const firstVal = first ? first.textContent : '';
+        if (items[0]) items[0].click();   // 选中第一项（不带 ✕）
+        const filled = inp.value;
+        const stillOpen = !drop.hidden;
+        inp.value = '';
+        if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
+        return { cnt, firstVal, filled, stillOpen };
       `), true);
-      add('③h 对话框字段齐全（含 USB 隧道的 kind/python/script）',
-          !f.err && f.missing.length === 0 && f.hasDialog, JSON.stringify(f));
+      add('③i 后端地址下拉：历史项可选可填入',
+          !r.err && r.cnt >= 1 && r.filled === r.firstVal && !r.stillOpen,
+          JSON.stringify(r));
     }
 
     // ---------- ④ 配置持久化（机器级 ~/.myide/launch.json） ----------

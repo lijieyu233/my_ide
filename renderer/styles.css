@@ -3254,3 +3254,25 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 
 /* 侧栏卡片选中态 */
 .launch-card.sel { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel)); }
+
+/* 启动面板 · 后端地址历史下拉 */
+#launch-dialog .origin-row { display: flex; gap: 6px; align-items: stretch; }
+#launch-dialog .origin-row input { flex: 1; min-width: 0; }
+#launch-dialog .origin-toggle {
+  flex: none; width: 28px; border: 1px solid var(--btn-border); border-radius: 5px;
+  background: var(--btn-bg); color: var(--text-dim); cursor: pointer; font-size: 0.85em;
+}
+#launch-dialog .origin-toggle:hover { background: var(--btn-hover); color: var(--text); }
+#launch-dialog .origin-dropdown {
+  margin-top: 4px; border: 1px solid var(--btn-border); border-radius: 6px;
+  background: var(--bg-panel); max-height: 9em; overflow: auto; padding: 2px;
+}
+#launch-dialog .origin-item {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border-radius: 4px; cursor: pointer; font-size: 1em; color: var(--text);
+}
+#launch-dialog .origin-item:hover { background: var(--btn-hover); }
+#launch-dialog .origin-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 0.92em; }
+#launch-dialog .origin-x { flex: none; border: 0; background: transparent; color: var(--text-dim); cursor: pointer; padding: 0 2px; }
+#launch-dialog .origin-x:hover { color: var(--red, #e5534b); }
+#launch-dialog .origin-empty { padding: 6px 8px; color: var(--text-dim); font-size: 0.95em; }
