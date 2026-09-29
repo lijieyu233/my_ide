@@ -14,8 +14,23 @@ const ROOT = path.join(__dirname, '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const probe = (js) => `(function(){ try { ${js} } catch(e) { return { err: String(e && e.message || e) } } })()`;
 
+// ⚠ 这个自检会把**用户真实**的 ~/.myide/launch.json 覆盖成「导入的 mh 配置」（步骤②），
+//   而步骤⑤只把条目恢复到"导入的那一套"，用户自己加过的条目就没了 —— 实测踩过：
+//   跑一次 check:launch，用户第 12 条（原型 :8899）丢失，且没有任何备份可回滚。
+//   所以开跑前把两份机器级文件读进内存，退出前（正常 / 异常 / 看门狗三条路）原样写回。
+const USER_CFG = path.join(os.homedir(), '.myide', 'launch.json');
+const USER_STATE = path.join(os.homedir(), '.myide', 'launch-state.json');
+const userBackup = {};
+for (const f of [USER_CFG, USER_STATE]) { try { userBackup[f] = fs.readFileSync(f, 'utf8'); } catch {} }
+function restoreUserFiles() {
+  for (const f of Object.keys(userBackup)) {
+    try { fs.writeFileSync(f, userBackup[f]); } catch {}
+  }
+}
+function finish(code) { restoreUserFiles(); app.exit(code); }
+
 app.whenReady().then(async () => {
-  const watchdog = setTimeout(() => { say('WATCHDOG TIMEOUT'); app.exit(3); }, 180000);
+  const watchdog = setTimeout(() => { say('WATCHDOG TIMEOUT'); finish(3); }, 180000);
   const R = [];
   const add = (name, ok, detail) => {
     R.push({ name, ok, detail });
@@ -260,8 +275,10 @@ app.whenReady().then(async () => {
           if (portEl) withPort++;
         }
         const caret = document.querySelector('.launch-caret');
-        const fs = caret ? parseFloat(getComputedStyle(caret).fontSize) : 0;
-        return { n: cards.length, badState, withPort, withOpen, caretPx: fs };
+        // 三角已从文字字形（▸/▾）换成内联 SVG → 量 SVG 的实际宽度，别再量字号
+        const csvg = caret ? caret.querySelector('svg') : null;
+        const fs = csvg ? csvg.getBoundingClientRect().width : 0;
+        return { n: cards.length, badState, withPort, withOpen, caretPx: Math.round(fs * 10) / 10 };
       `), true);
       add('③j 卡片双态互斥（启动/停止恰一个可见）',
           !r.err && r.n > 0 && r.badState === 0, JSON.stringify(r));
@@ -378,11 +395,13 @@ app.whenReady().then(async () => {
     say('================ 汇总 ================');
     say('共 ' + R.length + ' 项：通过 ' + (R.length - bad.length) + ' / 失败 ' + bad.length);
     bad.forEach((b, i) => say('  ' + (i + 1) + '. ' + b.name + '  →  ' + (b.detail || '')));
+    say('用户机器级配置：' + (userBackup[USER_CFG] ? '已在退出时还原（自检期间的导入不外泄）' : '原本不存在（自检留下的 launch.json 会被删）'));
+    if (!userBackup[USER_CFG]) { try { fs.unlinkSync(USER_CFG); } catch {} }
     clearTimeout(watchdog);
-    app.exit(bad.length ? 1 : 0);
+    finish(bad.length ? 1 : 0);
   } catch (e) {
     say('EXC: ' + (e && e.message || e));
     clearTimeout(watchdog);
-    app.exit(2);
+    finish(2);
   }
 });
