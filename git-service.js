@@ -154,7 +154,13 @@ async function status(dir) {
   }
   ignoreCache.clear(); // .gitignore 内容可能已变，每次 status 重新读
   const changed = [];
+  // tracked：**被 git 管理的文件**（存在于 HEAD 或 index）。与 `git ls-files` 等价 ——
+  // 2026-09-29 实测对拍：本仓 statusMatrix 的 h>0||s>0 共 181 条 = ls-files 181 条，
+  // 未跟踪的纯工作区文件（h=0,s=0）不算。文件树「只看 Git 文件」直接用它过滤，零额外遍历
+  // （statusMatrix 本来就已经走完整个工作区）。
+  const tracked = [];
   for (const row of matrix) {
+    if (row[1] > 0 || row[3] > 0) tracked.push(posix(row[0]));
     const st = matrixToStatus(row);
     if (!st) continue;
     // 纯未跟踪文件（未暂存）尊重 .gitignore；已跟踪 / 已暂存的照常显示（与 git 行为一致）
@@ -178,7 +184,8 @@ async function status(dir) {
     changed.push({ file: native(row[0]), status: st.status, label: st.label, inIndexOnly: !!st.inIndexOnly });
   }
   changed.sort((a, b) => a.file.localeCompare(b.file));
-  return { isRepo: true, root, branch, changed };
+  tracked.sort();
+  return { isRepo: true, root, branch, changed, tracked };
 }
 
 // ---------- 被忽略的文件（PyCharm 提交窗口的「忽略的文件」节点）----------

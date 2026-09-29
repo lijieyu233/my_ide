@@ -46,6 +46,9 @@ const FAKE_GIT = {
     { file: 'src/app.js', status: 'modified', label: '已修改' },
     { file: 'src/deep/file.ts', status: 'added', label: '已新增' },
   ],
+  // 被 git 管理的文件（等价 `git ls-files`，repo 相对 posix 路径）——「只看 Git 文件」视图的数据源。
+  // 故意比 changed 小：notes.txt / QuickOpen.js / page.html 是"未跟踪"的，过滤后必须消失
+  tracked: ['README.md', 'data.csv', 'src/app.js', 'src/demo.exe', 'src/deep/file.ts'],
   commits: [
     { oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short: 'aaaaaaa', message: '第二次提交：改文档', fullMessage: '第二次提交：改文档', author: 'me', email: 'me@x.com', timestamp: Date.now() - 3600e3, parents: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'] },
     { oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short: 'bbbbbbb', message: '合并提交', fullMessage: '合并提交', author: 'me', email: 'me@x.com', timestamp: Date.now() - 7200e3, parents: ['cccccccccccccccccccccccccccccccccccccccc', 'dddddddddddddddddddddddddddddddddddddddd'] },
@@ -227,7 +230,7 @@ function makeDom() {
     },
     git: {
       init: async () => ({ ok: true }),
-      status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed }),
+      status: async () => ({ isRepo: true, root: P, branch: 'main', changed: FAKE_GIT.changed, tracked: FAKE_GIT.tracked }),
       log: async (d, depth, ref) => {
         calls.logRef = ref || 'HEAD';
         calls.logDepth = depth;
@@ -3946,6 +3949,76 @@ assert_(panel, 'CM6 搜索面板出现');
     dom.window.myIDE.git.status = origStatus; // 还原 mock
     await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
+  });
+
+  await okAsync('Bug6d：Git 状态色是跨主题固定色板（新增/修改/删除/冲突各一色）', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    await g(dom, 'Tree.setGitOnly(false)');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const nmOf = (name) => {
+      const row = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm') && r.querySelector('.nm').title === P + '/' + name);
+      return row ? row.querySelector('.nm') : null;
+    };
+    assert_(nmOf('README.md').classList.contains('git-modified'), '已修改 → git-modified');
+    assert_(nmOf('data.csv').classList.contains('git-added'), '新增 → git-added');
+    // 色板固定：切主题（body.theme-*）后取值不变 —— 老实现挂的是 --green/--accent/--red，5 个主题 5 种颜色
+    const body = $(dom, 'body');
+    const keepCls = body.className;
+    const readVars = () => ['--git-added', '--git-modified', '--git-deleted', '--git-conflict']
+      .map((k) => dom.window.getComputedStyle(body).getPropertyValue(k).trim());
+    const varsDark = readVars();
+    body.className = keepCls + ' theme-light';
+    const varsLight = readVars();
+    body.className = keepCls;
+    assert_(varsDark.every((v) => v.length > 0), '固定色板四个变量都有值: ' + JSON.stringify(varsDark));
+    assert_(JSON.stringify(varsDark) === JSON.stringify(varsLight), '浅色主题下取到同一个色值: ' + JSON.stringify(varsLight));
+    // 冲突单独一色（未解决的冲突要盖过「已修改/新增」）
+    calls.conflictFiles = [{ file: 'data.csv', resolved: false }];
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    assert_(nmOf('data.csv').classList.contains('git-conflict'), '未解决冲突 → git-conflict');
+    assert_(!nmOf('data.csv').classList.contains('git-added'), '冲突色盖掉新增色（不会两个色类并存）');
+    calls.conflictFiles = [];
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+  });
+
+  await okAsync('Bug6e：项目树「只看 Git 跟踪的文件」视图', async () => {
+    await g(dom, 'App.setRoot("' + P + '")');
+    await tick(); await tick();
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    const titles = () => $allIn($(dom, '#tree'), '.tree-row').map((r) => (r.querySelector('.nm') || {}).title).filter(Boolean);
+    assert_(titles().includes(P + '/notes.txt'), '前提：常规视图能看到未跟踪的 notes.txt');
+    await g(dom, 'Tree.setGitOnly(true)');
+    await tick(); await tick();
+    const btn = $(dom, '#tree-git-only');
+    assert_(g(dom, 'Tree.gitOnly') === true, '视图已打开（Tree.gitOnly）');
+    assert_(btn && btn.classList.contains('active'), '头部按钮进入高亮态');
+    assert_(btn && btn.getAttribute('aria-pressed') === 'true', '按钮 aria-pressed=true');
+    assert_(g(dom, 'localStorage.getItem("myide-tree-git-only")') === '1', '开关持久化到 localStorage');
+    const t = titles();
+    assert_(t.includes(P + '/README.md') && t.includes(P + '/data.csv'), '被跟踪的文件依然可见: ' + JSON.stringify(t));
+    assert_(!t.includes(P + '/notes.txt'), '未跟踪文件被隐藏（notes.txt）: ' + JSON.stringify(t));
+    assert_(t.includes(P + '/src'), '含被跟踪文件的目录保留（src）');
+    // 还原（后续用例依赖"全量树"）：关掉视图 + 清掉持久化
+    await g(dom, 'Tree.setGitOnly(false)');
+    await tick(); await tick();
+    assert_(titles().includes(P + '/notes.txt'), '关闭后未跟踪文件回到列表');
+    assert_(g(dom, 'localStorage.getItem("myide-tree-git-only")') === '0', '关闭状态已持久化');
+    assert_(!btn.classList.contains('active'), '按钮回到常态');
+    // 防御：状态拿不到（tracked 缺失，如 status 报错）时必须"不生效"，不能把树当空清单清空
+    await g(dom, 'Tree.setGitStatus({}, { isRepo: true })');
+    assert_(g(dom, 'Tree.gitTrackedCount') === -1, '清单未知时用 -1 标记（区别于 0 条）');
+    await g(dom, 'Tree.setGitOnly(true)');
+    await tick(); await tick();
+    assert_(titles().includes(P + '/notes.txt'), '未知清单下不过滤（树保持全量，不会凭空清空）');
+    await g(dom, 'Tree.setGitOnly(false)');
+    await g(dom, 'GitPanel.refresh()');
+    await tick(); await tick();
+    assert_(g(dom, 'Tree.gitTrackedCount') === FAKE_GIT.tracked.length, '状态恢复后清单条数正确');
   });
 
   await okAsync('Bug7：Git 放弃修改（revert）', async () => {

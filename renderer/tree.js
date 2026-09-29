@@ -113,33 +113,115 @@ const Tree = (() => {
   let visibleRows = [];         // 当前可见行（键盘导航用）
   const VIRTUAL_THRESHOLD = 300;
 
+  // ---------- 只看 Git 跟踪的文件（视图过滤，全局设置，存 localStorage）----------
+  // 语义 = 「被 git 管理的文件」：存在于 HEAD 或 index（等价 `git ls-files`），
+  // 未跟踪 / 被 .gitignore 忽略的文件连同没有跟踪文件的目录一起隐藏。
+  // 清单由 GitPanel 的 status() 结果下发（见 setGitStatus 第二个参数），本模块不再单独探测。
+  let gitOnly = false;
+  try { gitOnly = localStorage.getItem('myide-tree-git-only') === '1'; } catch {}
+  let gitIsRepo = false;        // 当前项目是不是 Git 仓库（非仓库时该视图不生效，按钮置灰）
+  let gitTrackedKnown = false;  // 跟踪清单是否真的拿到了（status 报错时是 false —— **未知 ≠ 空**：
+                                // 未知却按"空"过滤 = 整棵树凭空消失，比不过滤更糟）
+  let gitSig = '';              // 跟踪集合签名（变了才重建缓存，避免每次 git 刷新都重画整棵树）
+  let gitTracked = new Set();   // 规范路径 → 被跟踪的文件
+  let gitTrackedDirs = new Set(); // 含被跟踪文件的目录（含各级祖先）
+  function saveGitOnly() { try { localStorage.setItem('myide-tree-git-only', gitOnly ? '1' : '0'); } catch {} }
+  // 数据齐了才敢过滤
+  const gitReady = () => gitIsRepo && gitTrackedKnown;
+  // 过滤当前是否真的生效（用户开了开关 + 仓库 + 清单到手）
+  const gitActive = () => gitOnly && gitReady();
+
   const norm = (p) => String(p == null ? '' : p).replace(/\\/g, '/');
   // 选中判定用规范化路径（Windows 大小写/分隔符差异不再导致高亮错位）
   const isSelected = (p) => selectedPaths.has(norm(p));
   // parent 是否包含 child（防止把目录拖进自己的子目录）
   const isInside = (parent, child) => norm(child).startsWith(norm(parent) + '/');
 
-  // Git 状态着色（PyCharm 式）
+  // Git 状态着色（PyCharm 式；颜色是**跨主题固定**的，见 styles.css 的 --git-* 色板）
+  const GIT_CLASSES = ['git-added', 'git-modified', 'git-deleted', 'git-conflict'];
   function gitClassFor(path) {
     let st = gitStatus[norm(path)];
     if (!st) return '';
-    if (st[0] === '*') st = st.slice(1);
+    if (st[0] === '*') st = st.slice(1); // '*modified' = 已暂存：与工作区同色（PyCharm 同款，不再分色）
     if (st === 'added') return 'git-added';
     if (st === 'modified') return 'git-modified';
     if (st === 'deleted') return 'git-deleted';
+    if (st === 'conflict') return 'git-conflict';
     return '';
   }
-  function setGitStatus(map) {
+  // 「只看 Git 文件」用：把 repo 相对路径清单转成两套绝对路径集合（文件 + 目录祖先）
+  function setTracked(relList, repoRoot) {
+    const list = Array.isArray(relList) ? relList : [];
+    const base = norm(repoRoot || rootPath).replace(/\/+$/, '');
+    const abs = list.map((rel) => norm(base + '/' + String(rel).replace(/\\/g, '/')));
+    // 签名带上 base：两个项目的跟踪清单恰好相同时，也不能沿用上一个项目的索引
+    const sig = base + '\u0000' + abs.slice().sort().join('|');
+    if (sig === gitSig) return false;
+    gitSig = sig;
+    gitTracked = new Set(abs);
+    gitTrackedDirs = new Set();
+    for (const p of abs) {
+      let i = p.lastIndexOf('/');
+      while (i > base.length) {
+        const d = p.slice(0, i);
+        if (gitTrackedDirs.has(d)) break; // 该祖先已收录 → 更上层也一定收录过
+        gitTrackedDirs.add(d);
+        i = d.lastIndexOf('/');
+      }
+    }
+    return true;
+  }
+  // 三态视角切换的姊妹按钮：只显示 Git 跟踪的文件（开关式，不是三态）
+  function toggleGitOnly(force) {
+    const next = typeof force === 'boolean' ? force : !gitOnly;
+    if (next === gitOnly) { applyGitOnlyBtn(); return; }
+    gitOnly = next;
+    saveGitOnly();
+    applyGitOnlyBtn();
+    invalidateAll();
+    render();
+    MI.toast(!gitOnly ? '视图：显示全部文件'
+      : gitActive() ? '视图：只显示 Git 跟踪的文件（未跟踪 / 被忽略的已隐藏）'
+        : gitIsRepo ? '视图：只显示 Git 跟踪的文件（还没拿到 Git 状态，稍后自动生效）'
+          : '视图：只显示 Git 跟踪的文件（当前项目不是 Git 仓库，切到 Git 项目后生效）', 'ok');
+    // 状态还没到（刚开项目就点了）→ 主动拉一次，免得用户对着空树等
+    if (gitOnly && !gitTrackedKnown && window.App && App.refreshGit) App.refreshGit();
+  }
+  function applyGitOnlyBtn() {
+    const btn = document.getElementById('tree-git-only');
+    if (!btn) return;
+    btn.classList.toggle('active', gitOnly);
+    btn.classList.toggle('disabled', !gitReady());
+    btn.setAttribute('aria-pressed', gitOnly ? 'true' : 'false');
+    btn.title = !gitReady()
+      ? '只显示 Git 跟踪的文件（' + (gitIsRepo ? '当前拿不到 Git 状态' : '当前项目不是 Git 仓库') + '）'
+      : gitOnly
+        ? '当前：只显示 Git 跟踪的文件\n点击 → 显示全部文件'
+        : '只显示 Git 跟踪的文件\n（隐藏未跟踪 / 被 .gitignore 忽略的文件）';
+  }
+  function setGitStatus(map, info) {
     gitStatus = {};
     for (const k in (map || {})) gitStatus[norm(k)] = map[k];
+    const st = info || {};
+    const wasRepo = gitIsRepo;
+    const wasKnown = gitTrackedKnown;
+    gitIsRepo = st.isRepo !== false;
+    // 清单缺失（status 报错 / 老调用方）→ 标为"未知"，宁可不生效也不清空整棵树
+    gitTrackedKnown = Array.isArray(st.tracked);
+    const trackedChanged = setTracked(gitTrackedKnown ? st.tracked : [], st.root || rootPath);
+    applyGitOnlyBtn();
+    // 过滤生效时，清单或仓库状态一变就得重画（否则列表还是旧的）—— render 里自带重新着色
+    if (gitOnly && (trackedChanged || wasRepo !== gitIsRepo || wasKnown !== gitTrackedKnown)) {
+      invalidateAll();
+      render();
+      return;
+    }
     // 不整体重建：只刷新已有行的颜色（大目录下更轻量）
     el.querySelectorAll('.tree-row').forEach((r) => {
       const nmEl = r.querySelector('.nm');
       if (!nmEl) return;
       const cls = gitClassFor(nmEl.title || r.dataset.path);
-      nmEl.classList.toggle('git-added', cls === 'git-added');
-      nmEl.classList.toggle('git-modified', cls === 'git-modified');
-      nmEl.classList.toggle('git-deleted', cls === 'git-deleted');
+      for (const c of GIT_CLASSES) nmEl.classList.toggle(c, c === cls);
     });
   }
 
@@ -153,6 +235,11 @@ const Tree = (() => {
     expanded.add(p); // 根默认展开
     loadHidden();
     applyTreeFont();
+    // 换项目 → 上一份跟踪清单已不代表当前项目（未知 ≠ 空：直接按"未知"处理，
+    // 否则新项目会先拿旧清单过滤一下 → 用户看到闪一下空树）。新状态到达后自然生效
+    gitIsRepo = false;
+    gitTrackedKnown = false;
+    applyGitOnlyBtn();
     // 主进程递归监听目录变化（外部增删改 → 自动刷新树）
     if (p && window.myIDE && window.myIDE.fs.watch) {
       try { window.myIDE.fs.watch(p); } catch {}
@@ -186,6 +273,10 @@ const Tree = (() => {
           isHiddenTree(it.path) ||
           (it.type === 'dir' && hasHiddenDescendant(it.path))
         );
+      }
+      // 只看 Git 跟踪的文件：文件要在清单里；目录留着（有跟踪文件的目录才会进 gitTrackedDirs）
+      if (gitActive()) {
+        items = items.filter((it) => (it.type === 'dir' ? gitTrackedDirs.has(norm(it.path)) : gitTracked.has(norm(it.path))));
       }
       nodeCache[p] = sortItems(items);
     }
@@ -241,8 +332,20 @@ const Tree = (() => {
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
     el.innerHTML = '';
     el.onscroll = null;
+    // 「只看 Git 文件」下连根行都没有子项 → 明说一句，别让用户对着空面板猜
+    const gitEmpty = gitActive() && rows.length <= 1;
     if (rows.length <= VIRTUAL_THRESHOLD) {
       for (const r of rows) el.appendChild(makeRowEl(r));
+      if (gitEmpty) {
+        const hint = document.createElement('div');
+        hint.className = 'tree-search-empty';
+        // 「项目根本身不在仓库跟踪范围内」（被 .gitignore 忽略的子目录当项目打开）要说清原因，
+        // 否则用户只看到空面板，会以为是这个开关坏了
+        const rp = norm(rootPath).replace(/\/+$/, '');
+        const noneHere = gitTracked.size > 0 && ![...gitTracked].some((p) => p === rp || p.startsWith(rp + '/'));
+        hint.textContent = noneHere ? '此文件夹不在 Git 跟踪范围内' : '没有 Git 跟踪的文件';
+        el.appendChild(hint);
+      }
       return;
     }
     const RH = rowH();
@@ -283,7 +386,9 @@ const Tree = (() => {
       });
     }
     const ql = q.toLowerCase();
-    const hits = searchState.files.filter((f) => f.name.toLowerCase().includes(ql)).slice(0, 200);
+    // 搜索结果同样尊重「只看 Git 文件」视图（否则搜出来的全是未跟踪文件，与左侧视图自相矛盾）
+    const pool = gitActive() ? searchState.files.filter((f) => gitTracked.has(norm(f.path))) : searchState.files;
+    const hits = pool.filter((f) => f.name.toLowerCase().includes(ql)).slice(0, 200);
     visibleRows = hits.map((f) => ({ item: { name: f.name, path: f.path, type: 'file' }, depth: 0 }));
     if (searchIdx >= hits.length) searchIdx = 0;
     el.innerHTML = '';
@@ -1080,6 +1185,8 @@ const Tree = (() => {
     }
     const hm = document.getElementById('tree-hide-mode');
     if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
+    const go = document.getElementById('tree-git-only');
+    if (go) { applyGitOnlyBtn(); go.onclick = () => toggleGitOnly(); }
     // 排序菜单（复用全局 ctx-menu popover；当前模式标 ●）
     const sb = document.getElementById('tree-sort');
     if (sb) {
@@ -1132,6 +1239,12 @@ const Tree = (() => {
     },
     get font() { return treeFontSize; },
     cycleHideMode,
+    // 只看 Git 跟踪的文件（视图开关；setGitOnly(bool) 供设置页/自检调用）
+    setGitOnly: (v) => toggleGitOnly(!!v),
+    get gitOnly() { return gitOnly; },
+    get gitIsRepo() { return gitIsRepo; },
+    // 自检/调试用：跟踪清单是否可用 + 条数（区分「未知」与「空」）
+    get gitTrackedCount() { return gitTrackedKnown ? gitTracked.size : -1; },
     endSearch,
     refresh: render,
     get sortMode() { return sortMode; },

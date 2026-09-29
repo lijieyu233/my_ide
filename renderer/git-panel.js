@@ -30,12 +30,30 @@ const GitPanel = (() => {
     updateAheadBehind();
     App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
     // 文件树 Git 状态着色（PyCharm 式）
+    // ⚠ 路径基准是**仓库根**（statusMatrix 返回的就是 repo 相对路径），不是项目根 ——
+    //   把子目录当项目打开时，用项目根拼键会全部对不上（老写法就是这个毛病）。
+    const repoRoot = state.root || root;
+    const sep = String(repoRoot).includes('\\') ? '\\' : '/';
     const statusMap = {};
     if (state.isRepo && state.changed) {
-      const sep = (root || '').includes('\\') ? '\\' : '/';
-      for (const c of state.changed) statusMap[root + sep + c.file] = c.status;
+      for (const c of state.changed) statusMap[repoRoot + sep + c.file] = c.status;
     }
-    if (window.Tree) Tree.setGitStatus(statusMap);
+    // M4：未解决的冲突文件改标「冲突」（比"已修改"更要紧，颜色单独一档）。
+    // 冲突清单来自原生 git（cwd = 项目根）→ 项目根与仓库根不同时两套前缀都挂，保证能对上
+    if (state.isRepo) {
+      const psep = String(root || '').includes('\\') ? '\\' : '/';
+      for (const f of conflictFiles) {
+        if (!f || !f.file || f.resolved) continue;
+        statusMap[repoRoot + sep + f.file] = 'conflict';
+        if (root && root !== repoRoot) statusMap[root + psep + f.file] = 'conflict';
+      }
+    }
+    // 顺带把「被 git 管理的文件」全量清单下发给文件树（「只看 Git 文件」过滤用）
+    if (window.Tree) Tree.setGitStatus(statusMap, {
+      isRepo: !!state.isRepo,
+      root: repoRoot,
+      tracked: state.tracked || [],
+    });
   }
 
   // 勾选集合与最新状态同步：消失的移除，新出现的默认勾选

@@ -255,6 +255,96 @@ module.exports = {
     return { R, hover: { x: Math.round(r.width - 40), y: Math.round(r.top + r.height / 2) } };
   },
 
+  // ---------- 项目树：只看 Git 跟踪的文件 + Git 状态「跨主题固定色板」 ----------
+  treeGitOnly: async () => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => [...document.querySelectorAll(s)];
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const btn = q('#tree-git-only');
+    add('树头出现「只看 Git 文件」按钮（内联 SVG，非 emoji）', !!btn && !!btn.querySelector('svg'), btn ? btn.className : 'no-btn');
+    add('按钮初始未激活 + aria-pressed=false（可访问性）',
+      !!btn && !btn.classList.contains('active') && btn.getAttribute('aria-pressed') === 'false',
+      btn ? btn.className + ' pressed=' + btn.getAttribute('aria-pressed') : 'no-btn');
+
+    // ---- 固定色板：插 4 个探针行（复用真实类名 → 量的是真实 CSS），深/浅两个主题各量一次 ----
+    const probe = document.createElement('div');
+    probe.className = 'tree-row';
+    probe.style.cssText = 'position:absolute;left:-9999px;top:0';
+    probe.innerHTML = '<span class="nm git-added">a</span><span class="nm git-modified">m</span>'
+      + '<span class="nm git-deleted">d</span><span class="nm git-conflict">c</span>';
+    q('#tree').appendChild(probe);
+    const toRgb = (s) => {
+      s = String(s).trim();
+      if (s.startsWith('#')) { const v = parseInt(s.slice(1, 7), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; }
+      return (s.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+    };
+    const lum = (s) => { const c = toRgb(s); return (c[0] + c[1] + c[2]) / 3; };
+    const KEYS = ['git-added', 'git-modified', 'git-deleted', 'git-conflict'];
+    const read = () => KEYS.map((c) => getComputedStyle(probe.querySelector('.' + c)).color);
+    const keepCls = document.body.className;
+    const dark = read();
+    const bgDark = getComputedStyle(document.body).getPropertyValue('--bg');
+    document.body.className = keepCls + ' theme-light';
+    await sleep(80);
+    const light = read();
+    const bgLight = getComputedStyle(document.body).getPropertyValue('--bg');
+    document.body.className = keepCls;
+    probe.remove();
+    add('四个 Git 状态各一色（新增/修改/删除/冲突互不重复）', new Set(dark).size === 4, dark.join(' | '));
+    add('状态色跨主题恒定（切到浅色主题后四个色值一模一样）',
+      JSON.stringify(dark) === JSON.stringify(light), '浅色下=' + light.join(','));
+    add('深色主题下状态色可读（与底色亮度差 ≥ 40）',
+      dark.every((c) => Math.abs(lum(c) - lum(bgDark)) >= 40),
+      dark.map((c) => Math.round(lum(c))).join('/') + ' bg=' + Math.round(lum(bgDark)));
+    add('浅色主题下状态色同样可读（与底色亮度差 ≥ 40）',
+      light.every((c) => Math.abs(lum(c) - lum(bgLight)) >= 40),
+      light.map((c) => Math.round(lum(c))).join('/') + ' bg=' + Math.round(lum(bgLight)));
+
+    // ---- 过滤生效：与真实 git 状态对拍（可见文件必须都在 tracked 清单里）----
+    const root = (window.MI && MI.activeRoot) || window.__CHECK_P;
+    let st = null;
+    try { st = await window.myIDE.git.status(root); } catch (e) { st = { error: String(e && e.message) }; }
+    const isRepo = !!(st && st.isRepo);
+    const tracked = new Set((st && st.tracked) || []);
+    const repoRoot = String((st && st.root) || root).replace(/\\/g, '/');
+    const diag = 'isRepo=' + isRepo + ' tracked=' + tracked.size + ' treeRepo=' + window.Tree.gitIsRepo
+      + ' treeTracked=' + window.Tree.gitTrackedCount + (st && st.error ? ' err=' + String(st.error).slice(0, 60) : '');
+    const relOf = (p) => String(p).replace(/\\/g, '/').slice(repoRoot.length + 1);
+    const files = () => qa('#tree .tree-row')
+      .filter((r) => r.querySelector('.ic-file'))
+      .map((r) => ((r.querySelector('.nm') || {}).title) || '')
+      .filter(Boolean).map(relOf);
+    const before = files();
+    if (btn) btn.click();
+    await sleep(1000);
+    const after = files();
+    add('点按钮后开关打开（按钮高亮 + 状态落 localStorage）',
+      !!btn && btn.classList.contains('active') && localStorage.getItem('myide-tree-git-only') === '1',
+      (btn ? btn.className : 'no-btn') + ' ls=' + localStorage.getItem('myide-tree-git-only'));
+    add('过滤后可见文件不多于过滤前（只减不增）', after.length <= before.length, before.length + ' → ' + after.length + ' | ' + diag);
+    if (isRepo && tracked.size) {
+      const leaked = after.filter((f) => !tracked.has(f));
+      add('过滤后每个可见文件都在 git 管理范围内（tracked 清单）', leaked.length === 0,
+        after.length + '/' + before.length + ' 可见；越界=' + JSON.stringify(leaked.slice(0, 5)));
+      add('无跟踪文件时给出空态说明（不是静默空白）', after.length > 0 || !!q('#tree .tree-search-empty'),
+        ((q('#tree .tree-search-empty') || {}).textContent || '有文件可见') + ' | ' + diag);
+    } else {
+      // 状态拿不到（status 报错）或不是仓库 → 视图必须"不生效"，不能把树清空
+      add('拿不到 Git 状态时视图不生效（树保持全量，不当成"空清单"过滤）',
+        after.length === before.length, before.length + ' → ' + after.length + ' | ' + diag);
+    }
+    // ⚠ 收尾必须关掉：否则后续步骤面对的是被过滤过的树（级联失败源头）
+    if (btn) btn.click();
+    await sleep(800);
+    add('再点一次恢复全量视图（开关可逆 + 持久化回写）',
+      files().length === before.length && localStorage.getItem('myide-tree-git-only') === '0',
+      files().length + ' vs ' + before.length + ' ls=' + localStorage.getItem('myide-tree-git-only'));
+    const r = btn ? btn.getBoundingClientRect() : q('#tree-head').getBoundingClientRect();
+    return { R, hover: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } };
+  },
+
   // ---------- 提交工具窗口（对齐 PyCharm 提交窗口） ----------
   commitPanel: async () => {
     const R = [];
