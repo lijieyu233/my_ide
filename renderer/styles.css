@@ -3263,9 +3263,13 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   background: var(--btn-bg); color: var(--text-dim); cursor: pointer; font-size: 0.85em;
 }
 #launch-dialog .origin-toggle:hover { background: var(--btn-hover); color: var(--text); }
+#launch-dialog .origin-field { position: relative; }
 #launch-dialog .origin-dropdown {
-  margin-top: 4px; border: 1px solid var(--btn-border); border-radius: 6px;
+  /* 绝对定位浮层：展开不撑高对话框（否则垂直居中的 dialog 整体重排跳动） */
+  position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 10;
+  border: 1px solid var(--btn-border); border-radius: 6px;
   background: var(--bg-panel); max-height: 9em; overflow: auto; padding: 2px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
 }
 #launch-dialog .origin-item {
   display: flex; align-items: center; gap: 6px; padding: 4px 8px;

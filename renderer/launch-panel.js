@@ -203,6 +203,22 @@ const LaunchPanel = (() => {
         drop.hidden = !willOpen;
       });
       inp.addEventListener('focus', () => { drop.hidden = true; });
+      // 点下拉/对话框以外区域收起（浮层不占流，点了别处还挂着很难看）；只挂一次
+      if (!dlg.__originOutside) {
+        dlg.__originOutside = true;
+        dlg.addEventListener('click', (ev) => {
+          const d = dlg.querySelector('.origin-dropdown');
+          if (d && !d.hidden && !ev.target.closest('.origin-field')) d.hidden = true;
+        });
+      }
+      // 点下拉/对话框以外区域收起（浮层不占流，点了别处还挂着很难看）；只挂一次
+      if (!dlg.__originOutside) {
+        dlg.__originOutside = true;
+        dlg.addEventListener('click', (ev) => {
+          const d = dlg.querySelector('.origin-dropdown');
+          if (d && !d.hidden && !ev.target.closest('.origin-field')) d.hidden = true;
+        });
+      }
     }
 
     set('openUrl', entry && entry.openUrl);
