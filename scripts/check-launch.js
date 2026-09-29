@@ -47,14 +47,31 @@ app.whenReady().then(async () => {
           const el = document.getElementById('panel-' + t);
           return { t: t, hidden: el ? el.classList.contains('hidden') : null };
         });
-        return { hidden: p.classList.contains('hidden'), others: others,
+        // 🔴 祖先链真实可见性：本面板任何祖先挂 hidden / display:none，自己就是看不见
+        //    （本轮 panel-launch 被嵌进 panel-tasks，class 检查全绿但视觉空白 —— 就是漏在这）
+        const chain = [];
+        let n = p.parentElement;
+        while (n && n !== document.body) {
+          if (n.classList && n.classList.contains('hidden')) chain.push(n.id || n.className);
+          const d = getComputedStyle(n).display;
+          if (d === 'none') chain.push((n.id || n.className) + '(display:none)');
+          n = n.parentElement;
+        }
+        return { hidden: p.classList.contains('hidden'), others: others, chain: chain,
+                 parent: p.parentElement ? p.parentElement.id || p.parentElement.className : '',
+                 rect: (function(){ const b = p.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height) }; })(),
                  body: !!document.getElementById('launch-body'),
                  foot: !!document.getElementById('launch-foot') };
       `), true);
       const othersHidden = v && v.others && v.others.every((o) => o.hidden === true);
+      const chainClean = v && v.chain && v.chain.length === 0;
+      const parentOk = v && /sidebar|^\s*$/.test(String(v.parent).trim()) || (v && String(v.parent).indexOf('sidebar') >= 0);
       add('① 工具条有「启动面板」入口且能切过去（launch 显示、其余侧栏隐藏）',
-        !!(r && r.hasBtn) && v && !v.hidden && othersHidden,
-        'launch.hidden=' + (v && v.hidden) + ' 其它=' + JSON.stringify(v && v.others) + (v && v.err ? ' err=' + v.err : ''));
+        !!(r && r.hasBtn) && v && !v.hidden && othersHidden && chainClean,
+        'launch.hidden=' + (v && v.hidden) + ' 其它=' + JSON.stringify(v && v.others) + ' 祖先链=' + JSON.stringify(v && v.chain));
+      add('①b panel-launch 必须是侧栏直接子级（防嵌套进别的面板）',
+        !!parentOk && v && v.rect && v.rect.h > 0,
+        'parent=' + (v && v.parent) + ' rect=' + JSON.stringify(v && v.rect));
       add('①b 面板结构完整（body + 底部工具行）', !!(v && v.body && v.foot),
         'body=' + (v && v.body) + ' foot=' + (v && v.foot));
     }

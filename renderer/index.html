@@ -148,50 +148,50 @@
       <div id="tasks-new-bar">
         <input id="tasks-new-input" type="text" placeholder="+ 新任务，回车添加" spellcheck="false" autocomplete="off">
       </div>
-      <!-- 启动面板（侧栏；终端/脚本的启停与日志。后台保留：关 my_ide 不停止） -->
-      <div id="panel-launch" class="hidden">
-        <div class="panel-title">启动面板
-          <span id="launch-count" title="运行中 / 总数"></span>
-          <span class="panel-title-actions">
-            <button id="launch-import" class="vt-btn" title="导入 mh_launch_panel 的 panel-config.json">⇩</button>
-            <button id="launch-add" class="vt-btn" title="添加终端 / 脚本">＋</button>
-          </span>
-        </div>
-        <div id="launch-body"></div>
-        <div id="launch-foot">
-          <button id="launch-start-all" class="lp-foot-btn primary"><span class="bi">▶</span>全部启动</button>
-          <button id="launch-stop-all" class="lp-foot-btn danger"><span class="bi">■</span>全部停止</button>
-          <label id="launch-hint" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" id="launch-keep"> 后台保留</label>
-        </div>
-        <dialog id="launch-dialog">
-          <h2 id="launch-dialog-title">添加终端</h2>
-          <form id="launch-form" method="dialog">
-            <div class="grid2">
-              <div class="field"><label>名称 *</label><input type="text" name="name" placeholder="如: 后端服务 / 重启Docker" required></div>
-              <div class="field"><label>分类</label><input type="text" name="category" placeholder="如: 业务终端 / 系统工具"></div>
-            </div>
-            <div class="grid2">
-              <div class="field"><label>工作目录（脚本可留空）</label><input type="text" name="cwd" placeholder="D:\document\code\mh\..."></div>
-              <div class="field"><label>端口（留空 = 脚本型，按进程状态显示）</label><input type="number" name="port" placeholder="5173"></div>
-            </div>
-            <div class="field"><label>启动命令 *</label><input type="text" name="command" placeholder="npm run dev / docker desktop stop && ..." required></div>
-            <div class="grid2">
-              <div class="field"><label>后端地址（留空用全局第一个）</label><input type="text" name="apiOrigin" placeholder="http://127.0.0.1:18000"></div>
-              <div class="field"><label>启动后打开的页面（可留空）</label><input type="text" name="openUrl" placeholder="https://localhost:5173"></div>
-            </div>
-            <div class="grid2">
-              <div class="field"><label>类型</label><select name="kind"><option value="">普通（spawn 命令）</option><option value="usb-tunnel">USB 隧道（python 桥）</option></select></div>
-              <div class="field"><label>python（USB 隧道用）</label><input type="text" name="python" placeholder="python"></div>
-            </div>
-            <div class="field"><label>桥接脚本（USB 隧道用）</label><input type="text" name="script" placeholder="D:\document\code\tools\mh_launch_panel\phone_usb_bridge.py"></div>
-            <div class="dlg-actions">
-              <button type="button" id="launch-dialog-cancel" class="lp-foot-btn">取消</button>
-              <button type="button" id="launch-dialog-ok" class="lp-foot-btn primary">保存</button>
-            </div>
-          </form>
-        </dialog>
-        <div id="launch-toast"></div>
+    </div>
+    <!-- 启动面板（侧栏；终端/脚本的启停与日志。后台保留：关 my_ide 不停止） -->
+    <div id="panel-launch" class="hidden">
+      <div class="panel-title">启动面板
+        <span id="launch-count" title="运行中 / 总数"></span>
+        <span class="panel-title-actions">
+          <button id="launch-import" class="vt-btn" title="导入 mh_launch_panel 的 panel-config.json">⇩</button>
+          <button id="launch-add" class="vt-btn" title="添加终端 / 脚本">＋</button>
+        </span>
       </div>
+      <div id="launch-body"></div>
+      <div id="launch-foot">
+        <button id="launch-start-all" class="lp-foot-btn primary"><span class="bi">▶</span>全部启动</button>
+        <button id="launch-stop-all" class="lp-foot-btn danger"><span class="bi">■</span>全部停止</button>
+        <label id="launch-hint" title="勾选：关闭 my_ide 后这些终端继续在后台跑（detached）；不勾：退出时全部停止（整树杀）"><input type="checkbox" id="launch-keep"> 后台保留</label>
+      </div>
+      <dialog id="launch-dialog">
+        <h2 id="launch-dialog-title">添加终端</h2>
+        <form id="launch-form" method="dialog">
+          <div class="grid2">
+            <div class="field"><label>名称 *</label><input type="text" name="name" placeholder="如: 后端服务 / 重启Docker" required></div>
+            <div class="field"><label>分类</label><input type="text" name="category" placeholder="如: 业务终端 / 系统工具"></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>工作目录（脚本可留空）</label><input type="text" name="cwd" placeholder="D:\document\code\mh\..."></div>
+            <div class="field"><label>端口（留空 = 脚本型，按进程状态显示）</label><input type="number" name="port" placeholder="5173"></div>
+          </div>
+          <div class="field"><label>启动命令 *</label><input type="text" name="command" placeholder="npm run dev / docker desktop stop && ..." required></div>
+          <div class="grid2">
+            <div class="field"><label>后端地址（留空用全局第一个）</label><input type="text" name="apiOrigin" placeholder="http://127.0.0.1:18000"></div>
+            <div class="field"><label>启动后打开的页面（可留空）</label><input type="text" name="openUrl" placeholder="https://localhost:5173"></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>类型</label><select name="kind"><option value="">普通（spawn 命令）</option><option value="usb-tunnel">USB 隧道（python 桥）</option></select></div>
+            <div class="field"><label>python（USB 隧道用）</label><input type="text" name="python" placeholder="python"></div>
+          </div>
+          <div class="field"><label>桥接脚本（USB 隧道用）</label><input type="text" name="script" placeholder="D:\document\code\tools\mh_launch_panel\phone_usb_bridge.py"></div>
+          <div class="dlg-actions">
+            <button type="button" id="launch-dialog-cancel" class="lp-foot-btn">取消</button>
+            <button type="button" id="launch-dialog-ok" class="lp-foot-btn primary">保存</button>
+          </div>
+        </form>
+      </dialog>
+      <div id="launch-toast"></div>
     </div>
   </aside>
   <div id="sidebar-resizer" title="拖动调整目录区宽度"></div>
