@@ -166,6 +166,10 @@ contextBridge.exposeInMainWorld('myIDE', {
     viewBounds: (rect) => ipcRenderer.invoke('browser:view-bounds', rect),
     viewHide: () => ipcRenderer.invoke('browser:view-hide'),
     viewNav: (cmd) => ipcRenderer.invoke('browser:view-nav', cmd), // back/forward/reload/focus
+    // 网页深色模式：主进程 nativeTheme.themeSource（'dark'|'light'|'system'）。
+    // 是进程级的 —— 网页里的 prefers-color-scheme 跟着变，本 IDE 自己的界面不受影响
+    // （styles.css 里没有任何 prefers-color-scheme 规则，主题由 body.theme-* 显式决定）
+    setColorScheme: (mode) => ipcRenderer.invoke('browser:color-scheme', mode),
     // 主进程转发的 view 内导航快捷键命令（toggle/back/forward/reload/focus-url）
     onCmd: (cb) => ipcRenderer.on('browser:cmd', (_e, cmd) => cb(cmd)),
     // 主进程推送的页面状态（url/title/loading/canBack/canFwd/progress/err）

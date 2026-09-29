@@ -17,6 +17,33 @@ const BrowserPanel = (() => {
   const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
   let dragFavUrl = null; // 拖拽源（dragover 里 dataTransfer.getData 恒为空，只能靠它判断，见 renderSidebar）
 
+  // ---------- 侧栏图标：一律内联 SVG ----------
+  // 为什么不用 📁/📂：跟文件树当初一样的教训（见 styles.css 里 .tree-row .ic 的注释）——
+  // emoji 的字号与基线不受控，夹在一排 1.4px 线性图标里又大又花，跟整套 UI 不是一个语言。
+  const IC = (d) => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + d + '</svg>';
+  const IC_CARET_DOWN = IC('<path d="M4.4 6.4L8 10l3.6-3.6"/>'); // 折叠态靠 CSS rotate(-90deg)
+  const IC_FOLDER_OPEN = IC('<path d="M1.8 4h4l1.2 1.6h6.6v1.4"/><path d="M1.8 4v9.4a1 1 0 0 0 1 1h9.9a1 1 0 0 0 1-1l.9-6.4H4.5z"/>');
+  const IC_FOLDER_CLOSED = IC('<path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/>');
+  const IC_ARROW_DOWN = IC('<path d="M8 2.8v7.4M5.4 7.6 8 10.2l2.6-2.6M3.4 12.8h9.2"/>');
+  const IC_MOON = IC('<path d="M13.2 9.8A5.5 5.5 0 0 1 6.2 2.8a5.5 5.5 0 1 0 7 7z"/>');
+  const IC_SUN = IC('<circle cx="8" cy="8" r="3.1"/><path d="M8 1.5v1.7M8 12.8v1.7M1.5 8h1.7M12.8 8h1.7M3.4 3.4l1.2 1.2M11.4 11.4l1.2 1.2M12.6 3.4l-1.2 1.2M4.6 11.4l-1.2 1.2"/>');
+  const IC_SYSTEM = IC('<rect x="2.3" y="3" width="11.4" height="7.6" rx="1.3"/><path d="M6.2 13.4h3.6M8 10.6v2.8"/>');
+
+  // ---------- 网页深色模式 ----------
+  // 走主进程 nativeTheme.themeSource（进程级）：网页里的 prefers-color-scheme 跟着变，
+  // GitHub / MDN / npm 这类自带深色的站点会直接切过去 —— 比 CSS 反色滤镜干净（图片不会发神经）。
+  // 代价：只有声明了 prefers-color-scheme 的站点会变，死写白底的页面仍然白。Chromium 那个
+  // 「强制深色」开关用不了：只能启动前设，而且会连本 IDE 自己的界面一起反色。
+  const DARK_KEY = 'myide-browser-darkmode'; // 'dark' | 'light' | 'system'
+  const DARK_ORDER = ['dark', 'light', 'system'];
+  const DARK_META = {
+    dark: { icon: IC_MOON, tip: '网页深色：开（跟 IDE 一样深）' },
+    light: { icon: IC_SUN, tip: '网页深色：关（网页保持浅色）' },
+    system: { icon: IC_SYSTEM, tip: '网页深色：跟随系统' },
+  };
+  let darkMode = 'dark';
+  let darkBtnEl = null;
+
   // ---------- 纯逻辑（测试直接覆盖） ----------
   // 输入规范化：带协议原样；像域名/IP/localhost 补 https；否则按关键词搜索
   function normalizeInput(q) {
@@ -222,6 +249,36 @@ const BrowserPanel = (() => {
     favBtn.title = faved ? '取消收藏：' + (currentTitle || currentUrl) : '收藏当前页';
   }
 
+  // ---------- 网页深色（工具栏按钮三态循环：深色 → 浅色 → 跟随系统） ----------
+  function renderDarkBtn() {
+    if (!darkBtnEl) return;
+    const m = DARK_META[darkMode] || DARK_META.dark;
+    darkBtnEl.innerHTML = m.icon;
+    darkBtnEl.title = m.tip + '（点击切换）';
+    // 「跟随系统」不点亮：只有明确深色才算"开着"，否则看不出当前是哪种
+    darkBtnEl.classList.toggle('active', darkMode === 'dark');
+  }
+  function applyDarkMode(mode, persist) {
+    darkMode = DARK_ORDER.includes(mode) ? mode : 'dark';
+    if (persist) { try { localStorage.setItem(DARK_KEY, darkMode); } catch {} }
+    const b = B();
+    if (b && b.setColorScheme) b.setColorScheme(darkMode);
+    renderDarkBtn();
+  }
+  function cycleDarkMode() {
+    const i = DARK_ORDER.indexOf(darkMode);
+    applyDarkMode(DARK_ORDER[(i + 1) % DARK_ORDER.length], true);
+  }
+  // 首次使用跟着 IDE 主题走（IDE 深色 → 网页也深色），之后听用户自己的
+  function initDarkMode() {
+    let saved = null;
+    try { saved = localStorage.getItem(DARK_KEY); } catch {}
+    if (DARK_ORDER.includes(saved)) { applyDarkMode(saved, false); return; }
+    let ideDark = true;
+    try { ideDark = Theme.current() !== 'light'; } catch {}
+    applyDarkMode(ideDark ? 'dark' : 'light', false);
+  }
+
   // ---------- 导航 ----------
   function go(url) {
     const u = normalizeInput(url);
@@ -401,7 +458,7 @@ const BrowserPanel = (() => {
     if (!sbListEl || sbListEl.querySelector('.bw-sb-rootzone')) return;
     const z = document.createElement('div');
     z.className = 'bw-sb-rootzone';
-    z.textContent = '⬇ 拖到这里 = 移回根目录';
+    z.innerHTML = IC_ARROW_DOWN + '<span>拖到这里 = 移回根目录</span>';
     z.addEventListener('dragover', (e) => {
       if (!dragFavUrl) return;
       e.preventDefault();
@@ -553,9 +610,13 @@ const BrowserPanel = (() => {
       const g = document.createElement('div');
       g.className = 'bw-sb-group';
       const items = list.filter((f) => f.folder === name);
-      // 标题拆成 图标 / 名称 / 计数 三段：计数走弱色，名称过长省略号（整段 textContent 仍是「📂名称（n）」）
+      // 标题拆成 三角 / 图标 / 名称 / 计数 四段（整段 textContent 只剩「名称（n）」）：
+      // 三角与图标列宽固定，多个组看下来名称起点才对齐 —— 跟文件树 .tree-row .ic 一个道理
       const gTitle = document.createElement('div');
       gTitle.className = 'bw-sb-gtitle';
+      const gCaret = document.createElement('span');
+      gCaret.className = 'bw-sb-gcaret';
+      gCaret.innerHTML = IC_CARET_DOWN; // 折叠态用 CSS rotate(-90deg)，同工具条折叠箭头
       const gIcon = document.createElement('span');
       gIcon.className = 'bw-sb-gicon';
       const gName = document.createElement('span');
@@ -565,6 +626,7 @@ const BrowserPanel = (() => {
       const gCnt = document.createElement('span');
       gCnt.className = 'bw-sb-gcnt';
       gCnt.textContent = '（' + items.length + '）';
+      gTitle.appendChild(gCaret);
       gTitle.appendChild(gIcon);
       gTitle.appendChild(gName);
       gTitle.appendChild(gCnt);
@@ -572,7 +634,7 @@ const BrowserPanel = (() => {
       gBody.className = 'bw-sb-gbody';
       const paintTitle = () => {
         const folded = foldedFolders.has(name);
-        gIcon.textContent = folded ? '📁' : '📂';
+        gIcon.innerHTML = folded ? IC_FOLDER_CLOSED : IC_FOLDER_OPEN;
         gTitle.classList.toggle('folded', folded);
         gTitle.classList.toggle('empty', !items.length);
       };
@@ -709,6 +771,10 @@ const BrowserPanel = (() => {
     ddEl = document.getElementById('bw-dd');
     viewEl = document.getElementById('browser-view');
     sbListEl = document.getElementById('bw-sb-list'); // 左侧主侧栏里的收藏列表
+    // 网页深色：按钮三态循环 + 启动时把上次的选择推给主进程（nativeTheme）
+    darkBtnEl = document.getElementById('bw-dark');
+    if (darkBtnEl) darkBtnEl.onclick = (e) => { e.stopPropagation(); cycleDarkMode(); };
+    initDarkMode();
     // 列表空白处 = 根目录落点（分组外的区域本来就是「根」；子元素都 stopPropagation，不会误判）
     if (sbListEl) {
       sbListEl.addEventListener('dragover', (e) => {
@@ -815,6 +881,7 @@ const BrowserPanel = (() => {
     init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
+    cycleDarkMode, get darkMode() { return darkMode; },
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

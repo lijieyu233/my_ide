@@ -179,6 +179,7 @@ function makeDom() {
       viewBounds: async (r) => { (calls.viewBounds = calls.viewBounds || []).push(r); },
       viewHide: async () => { (calls.viewHide = calls.viewHide || 0); calls.viewHide++; },
       viewNav: async (cmd) => { (calls.viewNav = calls.viewNav || []).push(cmd); },
+      setColorScheme: async (mode) => { (calls.colorScheme = calls.colorScheme || []).push(mode); return { ok: true, source: mode }; },
       onCmd: () => {},
       onState: (cb) => { stateCb.browser = cb; },
     },
@@ -4455,20 +4456,25 @@ assert_(panel, 'CM6 搜索面板出现');
     await fillPrompt('文档');
     let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
     assert_(favs[0] && favs[0].folder === '文档', '收藏落进新文件夹, got ' + JSON.stringify(favs[0]));
-    // 侧栏出现分组，计数 1，展开图标 📂
+    // 侧栏出现分组，计数 1；图标是内联 SVG（不再用 📁/📂 emoji —— 跟文件树同一套规矩）
     const gtitleOf = (name) => $allIn($(dom, '#bw-sb-list'), '.bw-sb-gtitle').find((t) => t.textContent.includes(name));
     let gt = gtitleOf('文档（1）');
     assert_(gt, '侧栏出现「文档（1）」分组');
-    assert_(gt.textContent.includes('📂'), '展开态图标 📂');
-    // 折叠：点击 → display none + 📁；再点 → 展开 + 📂
+    const giconPaths = () => [...gt.querySelectorAll('.bw-sb-gicon svg path')].map((p) => p.getAttribute('d')).join('|');
+    const openShape = giconPaths();
+    assert_(!!gt.querySelector('.bw-sb-gcaret svg') && !!gt.querySelector('.bw-sb-gicon svg'), '三角与文件夹都是内联 SVG');
+    assert_(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test($(dom, '#bw-sb-list').textContent), '侧栏无 emoji 残留');
+    // 折叠：点击 → display none + 图标换形态 + 三角转 -90°；再点 → 展开还原
     click(gt);
     await tick();
     let gbody = gt.parentElement.querySelector('.bw-sb-gbody');
-    assert_(gbody.style.display === 'none' && gt.textContent.includes('📁'), '折叠生效且图标切换');
+    assert_(gbody.style.display === 'none' && gt.classList.contains('folded'), '折叠生效（folded 类 + 隐藏内容）');
+    assert_(giconPaths() !== openShape, '折叠后文件夹图标换形态（开→合）');
     click(gt);
     await tick();
     gbody = gt.parentElement.querySelector('.bw-sb-gbody');
-    assert_(gbody.style.display !== 'none' && gt.textContent.includes('📂'), '再点展开且图标还原');
+    assert_(gbody.style.display !== 'none' && !gt.classList.contains('folded'), '再点展开');
+    assert_(giconPaths() === openShape, '展开后图标还原');
     // 空文件夹：＋ 新建 → 真正落盘并显示（0），可删除
     click($(dom, '#bw-sb-add-folder'));
     await fillPrompt('空组');
@@ -4608,6 +4614,45 @@ assert_(panel, 'CM6 搜索面板出现');
     // 清理现场（下一组用例复用默认收藏）
     dom.window.localStorage.removeItem('myide-browser-favs');
     dom.window.localStorage.setItem('myide-browser-folders', '[]');
+    await g(dom, 'BrowserPanel.hide()');
+  });
+
+  // 网页深色模式：三态循环（深色 → 浅色 → 跟随系统）+ 落盘 + 推给主进程 nativeTheme
+  await okAsync('内置浏览器：网页深色模式三态切换', async () => {
+    await g(dom, 'BrowserPanel.open("https://example.com/dark")');
+    await tick();
+    const btn = $(dom, '#bw-dark');
+    assert_(btn, '工具栏有网页深色按钮');
+    assert_(!!btn.querySelector('svg.ic'), '按钮是内联 SVG（不是 emoji）');
+    const mode = () => g(dom, 'BrowserPanel.darkMode');
+    const icons = [];
+    const seen = [await mode()];
+    icons.push(btn.innerHTML);
+    calls.colorScheme = [];
+    for (let i = 0; i < 3; i++) {
+      click(btn);
+      await tick();
+      seen.push(await mode());
+      icons.push(btn.innerHTML);
+    }
+    assert_(seen[3] === seen[0], '点三下一圈回到起点, got ' + seen.join(' → '));
+    assert_(new Set(seen.slice(0, 3)).size === 3, '三个状态互不相同（深/浅/跟随系统）: ' + seen.join(' → '));
+    assert_(seen.slice(0, 3).every((m) => ['dark', 'light', 'system'].includes(m)), '状态取值合法: ' + seen.join(' → '));
+    assert_(new Set(icons.slice(0, 3)).size === 3, '三种状态图标各不相同（月亮/太阳/显示器）');
+    assert_(dom.window.localStorage.getItem('myide-browser-darkmode') === seen[3], '选择落盘到 localStorage（最后一次点到的状态）');
+    assert_(calls.colorScheme.length === 3, '每次切换都推给主进程 nativeTheme, got ' + JSON.stringify(calls.colorScheme));
+    assert_(calls.colorScheme[0] === seen[1] && calls.colorScheme[2] === seen[0], '推送顺序与点击顺序一致: ' + calls.colorScheme.join(' → '));
+    // 按钮点亮规则：只有明确「深色」才 active（跟随系统不点亮，否则看不出当前是哪种）
+    const toDark = () => { let i = 0; while ((modeSync() !== 'dark') && i++ < 4) click(btn); };
+    const modeSync = () => { try { return g(dom, 'BrowserPanel.darkMode'); } catch { return null; } };
+    toDark();
+    await tick();
+    assert_(modeSync() === 'dark' && btn.classList.contains('active'), '深色态点亮按钮');
+    click(btn);
+    await tick();
+    assert_(modeSync() === 'light' && !btn.classList.contains('active'), '非深色态不点亮');
+    // 清理：别把深色偏好留给后面的用例
+    dom.window.localStorage.removeItem('myide-browser-darkmode');
     await g(dom, 'BrowserPanel.hide()');
   });
 

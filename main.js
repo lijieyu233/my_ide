@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -182,6 +182,15 @@ ipcMain.handle('browser:view-nav', (_e, cmd) => {
     else if (cmd === 'reload') wc.reload();
     else if (cmd === 'focus') wc.focus();
   } catch {}
+});
+// 网页深色模式：nativeTheme 是进程级的，改的是「网页看到的 prefers-color-scheme」，
+// 而本 IDE 自己的界面不吃这个（无 prefers-color-scheme 规则，主题由 body.theme-* 决定），
+// 所以拉起网页深色不会把 IDE 一起刷白/刷黑。
+ipcMain.handle('browser:color-scheme', (_e, mode) => {
+  try {
+    nativeTheme.themeSource = (mode === 'light' || mode === 'system') ? mode : 'dark';
+    return { ok: true, source: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors };
+  } catch (e) { return { error: String(e.message || e) }; }
 });
 
 // ---------- IPC：窗口控制（自绘标题栏）----------
