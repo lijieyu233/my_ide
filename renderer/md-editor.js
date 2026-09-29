@@ -62,11 +62,12 @@ window.MdEditor = (() => {
     '& .cm-content [class^="ͼ"]': { textDecorationLine: 'none' },
     '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--editor-text)', fontSize: 'var(--editor-font-size, 13px)' },
     // 正文用 UI 无衬线字体 —— 与 .md-view 预览同源（Obsidian 编辑态也是 UI 字体，非等宽）
-    // 左右内边距对称：内容列要居中，28/20 不对称会让居中看起来偏
-    '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto', paddingLeft: '28px', paddingRight: '28px' },
+    // 左右内边距与列宽上限**全部交给 .cm-content**（22/34/38 + 820），与 .md-view 逐项相同：
+    // 见 styles.css 里 `#viewer > .editor-cm-wrap .cm-scroller` 的注释（行长不一致的坑）
+    '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto' },
     // 正文列：可读宽度 + 居中（与 .md-view 同一套数字）。原来没有任何上限 →
     // 一行横跨整个编辑区，横向元素都变得很长
-    '.cm-content': { padding: '16px 0 40px', maxWidth: '820px', margin: '0 auto', caretColor: 'var(--accent)' },
+    '.cm-content': { padding: '22px 34px 38px', maxWidth: '820px', margin: '0 auto', caretColor: 'var(--accent)' },
     '&.cm-focused': { outline: 'none' },
     '.cm-gutters': { display: 'none' },
     // activeLine / searchMatch 背景必须画在 ::before(z:-3)：drawSelection 的
@@ -99,7 +100,12 @@ window.MdEditor = (() => {
   });
 
   // Live Preview 渲染态样式 —— 与 .md-view 预览逐项同源对齐
-  // 字号取 .md-view 的绝对值（h1 26 / h2 22 / h3 18 / h4 15 / 正文 13px，与 styles.css 同步调大）
+  // 🔴 尺寸单位铁律：这里**只能写相对单位（em）**，绝对值只允许出现在 1px 级细节上。
+  //   原因（用户原话：「实时预览和预览差别非常大」「实时预览根本没法看」「样式非常差」）：
+  //   编辑区字号是可调的（--editor-font-size，状态栏 编辑 −/+），正文跟随变量，
+  //   而标题/行内代码曾写死 px → 字号调到 17px 时 h3 以下（15/14/12.5px）全都比正文小，
+  //   层级整个塌掉；预览那边又不跟随字号 → 同一文档两种模式长得完全不一样。
+  //   现在两边的字号与间距都以 13px 时代的 px ÷ 13 换算成 em，任意字号下层级一致。
   const liveTheme = EditorView.theme({
     // ===== 选区可见性修复（老问题根因）=====
     // CM6 drawSelection 的 selectionLayer z-index=-2，绘制在 .cm-content 之下：
@@ -112,18 +118,20 @@ window.MdEditor = (() => {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
     },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
-    '.cm-md-h1': { fontSize: '21px', fontWeight: '700', color: 'var(--md-heading)', lineHeight: '1.3' },
-    '.cm-md-h2': { fontSize: '18px', fontWeight: '600', color: 'var(--md-heading)', lineHeight: '1.3' },
-    '.cm-md-h3': { fontSize: '15px', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 34%, var(--md-heading))', lineHeight: '1.35' },
-    '.cm-md-h4': { fontSize: '14px', fontWeight: '600', color: 'var(--md-heading)' },
-    '.cm-md-h5': { fontSize: '12.5px', fontWeight: '600', color: 'var(--md-heading)' },
-    '.cm-md-h6': { fontSize: '12.5px', fontWeight: '500', color: 'var(--text-dim)' },
-    // 标题行：行高 + padding 模拟 .md-view margin 18px 0 8px（叠加空行压缩后的间距）
+    // 数值 = .md-view 的 em 值（21/18/15/14px ÷ 13，h5/h6 保底 1em 不得小于正文）
+    '.cm-md-h1': { fontSize: '1.62em', fontWeight: '700', color: 'var(--md-heading)', lineHeight: '1.3' },
+    '.cm-md-h2': { fontSize: '1.38em', fontWeight: '600', color: 'var(--md-heading)', lineHeight: '1.3' },
+    '.cm-md-h3': { fontSize: '1.15em', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 34%, var(--md-heading))', lineHeight: '1.35' },
+    '.cm-md-h4': { fontSize: '1.08em', fontWeight: '600', color: 'var(--md-heading)' },
+    '.cm-md-h5': { fontSize: '1em', fontWeight: '600', color: 'var(--md-heading)' },
+    '.cm-md-h6': { fontSize: '1em', fontWeight: '500', color: 'var(--text-dim)' },
+    // 标题行：行 padding 模拟 .md-view margin（18px 0 8px / h1 24px / h2 20px，÷13 得 em）
     // Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom
-    '.cm-line.cm-md-h1-line': { paddingTop: '12px', paddingBottom: '6px' },
-    '.cm-line.cm-md-h2-line': { paddingTop: '9px', paddingBottom: '4px' },
-    '.cm-line.cm-md-h3-line': { paddingTop: '6px' },
-    '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '2px' },
+    // ⚠ em 取的是 .cm-line 自身的字号（= 基准字号），不是标题 span 的：所以数值与 .md-view 同源
+    '.cm-line.cm-md-h1-line': { paddingTop: '0.92em', paddingBottom: '0.46em' },
+    '.cm-line.cm-md-h2-line': { paddingTop: '0.69em', paddingBottom: '0.31em' },
+    '.cm-line.cm-md-h3-line': { paddingTop: '0.46em' },
+    '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '0.15em' },
     // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）
     '.cm-line.cm-md-blank': { lineHeight: '0.85' },
     '.cm-md-strong': { fontWeight: '700', color: 'var(--text-bright)' },
@@ -135,10 +143,10 @@ window.MdEditor = (() => {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
       backgroundColor: 'var(--bg-selected)', borderRadius: '2px',
     },
-    // 行内代码（对齐 .md-view code：12px + padding 1px 5px + btn-bg 背景）
+    // 行内代码（对齐 .md-view code：0.92em + padding 0.08/0.38em + btn-bg 背景）
     '.cm-md-code': {
       position: 'relative', fontFamily: 'var(--font-mono)', color: 'var(--code-text)',
-      padding: '1px 5px', fontSize: '12px',
+      padding: '0.08em 0.38em', fontSize: '0.92em',
     },
     '.cm-md-code::before': {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
@@ -149,8 +157,8 @@ window.MdEditor = (() => {
     '.cm-md-img img': { maxWidth: '100%', borderRadius: '4px' },
     // 图片加载失败占位（不显示裂图 —— 明确可见的图名提示）
     '.cm-md-img-broken': {
-      display: 'inline-block', padding: '4px 10px', border: '1px dashed var(--border-mid)',
-      borderRadius: '4px', color: 'var(--text-dim)', fontSize: '12px', verticalAlign: 'middle',
+      display: 'inline-block', padding: '0.31em 0.77em', border: '1px dashed var(--border-mid)',
+      borderRadius: '4px', color: 'var(--text-dim)', fontSize: '0.92em', verticalAlign: 'middle',
     },
     // 列表标记弱化（Obsidian 式：bullet 变暗，内容正常色）
     '.cm-md-listmark': { color: 'var(--text-dim)' },
@@ -159,18 +167,19 @@ window.MdEditor = (() => {
     //   而 CM6 的高度模型按 line-height 记账 → 选区色带与行盒每行差 2~5px，列表区一累积
     //   就出现"色带压住上一行 / 下面少一截"（2026-09-28 实测量化的根因）
     '.cm-md-bullet': {
-      display: 'inline-block', width: '16px', textAlign: 'center',
+      display: 'inline-block', width: '1.23em', textAlign: 'center',
       color: 'var(--text-dim)', verticalAlign: 'baseline', userSelect: 'none',
     },
     // 有序编号小间距
-    '.cm-md-listnum': { display: 'inline-block', minWidth: '16px' },
-    // task checkbox（对齐 preview 渲染的 input[type=checkbox] 视觉）
+    '.cm-md-listnum': { display: 'inline-block', minWidth: '1.23em' },
+    // task checkbox（对齐 preview 渲染的 input[type=checkbox] 视觉：styles.css 里
+    // .md-view input[type=checkbox] 同为 0.95em / margin 0.38em —— 两边尺寸同源）
     // ⚠ 同上：baseline + 相对位移回正，不能 middle（撑行盒 → 选区错位）
     '.cm-md-task': {
-      display: 'inline-block', width: '13px', height: '13px',
+      display: 'inline-block', width: '0.95em', height: '0.95em',
       border: '1.5px solid var(--text-dim)', borderRadius: '3px',
-      verticalAlign: 'baseline', position: 'relative', top: '1px',
-      margin: '0 5px 0 1px',
+      verticalAlign: 'baseline', position: 'relative', top: '0.08em',
+      margin: '0 0.38em 0 0.08em',
     },
     '.cm-md-task.done': { borderColor: 'var(--accent)' },
     '.cm-md-task.done::before': {
@@ -178,48 +187,48 @@ window.MdEditor = (() => {
       background: 'var(--accent)', borderRadius: '2px',
     },
     '.cm-md-task.done::after': {
-      content: '""', position: 'absolute', left: '3.5px', top: '0px',
-      width: '4px', height: '8px', border: 'solid #fff', borderWidth: '0 2px 2px 0',
+      content: '""', position: 'absolute', left: '0.27em', top: '0px',
+      width: '0.31em', height: '0.62em', border: 'solid #fff', borderWidth: '0 2px 2px 0',
       transform: 'rotate(45deg)',
     },
     // 引用块（对齐 .md-view blockquote：左竖线 + 弱化色 + 上下间距）
     '.cm-line.cm-md-quote-line': {
-      paddingLeft: '12px',
-      color: 'var(--text-dim)', paddingTop: '2px', paddingBottom: '2px',
+      paddingLeft: '0.92em',
+      color: 'var(--text-dim)', paddingTop: '0.15em', paddingBottom: '0.15em',
     },
     '.cm-line.cm-md-quote-line::before': { borderLeft: '2px solid color-mix(in srgb, var(--accent) 55%, transparent)' },
-    '.cm-line.cm-md-quote-first': { paddingTop: '8px' },
-    '.cm-line.cm-md-quote-last': { paddingBottom: '8px' },
-    // 围栏代码块（对齐 .md-view pre：背景块 + 圆角 6 + padding 12 + 12.5px/1.6）
+    '.cm-line.cm-md-quote-first': { paddingTop: '0.62em' },
+    '.cm-line.cm-md-quote-last': { paddingBottom: '0.62em' },
+    // 围栏代码块（对齐 .md-view pre：背景块 + 圆角 6 + padding 1em/1.23em + 0.96em/1.6）
     // 注意：全部用 padding 不用 margin —— CM6 行高测量不含 margin，margin 会让
     // heightmap 与 DOM 错位 → 点击偏移（fence-first/last 同理）
     // 背景/边框画在 ::before(z:-3)，选区可见（见 liveTheme 头部注释）
     '.cm-line.cm-md-fence-line': {
-      fontFamily: 'var(--font-mono)', fontSize: '12.5px', lineHeight: '1.6', padding: '1px 12px',
+      fontFamily: 'var(--font-mono)', fontSize: '0.96em', lineHeight: '1.6', padding: '0.08em 0.92em',
     },
     '.cm-line.cm-md-fence-line::before': { backgroundColor: 'var(--code-bg)' },
-    '.cm-line.cm-md-fence-first': { paddingTop: '12px', position: 'relative' },
+    '.cm-line.cm-md-fence-first': { paddingTop: '0.92em', position: 'relative' },
     '.cm-line.cm-md-fence-first::before': { borderTopLeftRadius: '8px', borderTopRightRadius: '8px' },
     // 代码块复制按钮（hover 浮现右上角：语言名 + 复制）
     '.cm-md-copybtn': {
-      position: 'absolute', right: '10px', top: '5px', display: 'flex', alignItems: 'center', gap: '6px',
+      position: 'absolute', right: '0.77em', top: '0.38em', display: 'flex', alignItems: 'center', gap: '6px',
       opacity: '0', transition: 'opacity .12s', zIndex: '5',
     },
     '.cm-line.cm-md-fence-first:hover .cm-md-copybtn': { opacity: '1' },
     '.cm-md-copybtn-lang': {
-      fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase',
+      fontSize: '0.77em', color: 'var(--text-dim)', textTransform: 'uppercase',
       letterSpacing: '0.5px', userSelect: 'none',
     },
     '.cm-md-copybtn button': {
-      fontSize: '11px', padding: '1px 9px', background: 'var(--btn-bg)', color: 'var(--text)',
+      fontSize: '0.85em', padding: '0.08em 0.69em', background: 'var(--btn-bg)', color: 'var(--text)',
       border: '1px solid var(--btn-border)', borderRadius: '3px', cursor: 'pointer', lineHeight: '1.5',
     },
     '.cm-md-copybtn button:hover': { background: 'var(--btn-hover)' },
-    '.cm-line.cm-md-fence-last': { paddingBottom: '12px' },
+    '.cm-line.cm-md-fence-last': { paddingBottom: '0.92em' },
     '.cm-line.cm-md-fence-last::before': { borderBottomLeftRadius: '8px', borderBottomRightRadius: '8px' },
     // 分隔线 ---：文本替换为 1px 线 widget（行高不变 —— 行高压 0 会让 CM6 高度
-    // 模型错位导致点击偏移），间距用行 padding 表达
-    '.cm-line.cm-md-hr-line': { paddingTop: '9px', paddingBottom: '9px' },
+    // 模型错位导致点击偏移），间距用行 padding 表达（.md-view hr margin 1.38em 同源）
+    '.cm-line.cm-md-hr-line': { paddingTop: '0.69em', paddingBottom: '0.69em' },
     '.cm-md-hr': { position: 'relative', display: 'inline-block', width: '100%', height: '1px', verticalAlign: 'middle' },
     '.cm-md-hr::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-3', background: 'color-mix(in srgb, var(--text) 10%, transparent)' },
     // 表格逐行线框（Obsidian 式行常渲染：光标进单元格不整块退化源码）
@@ -227,21 +236,21 @@ window.MdEditor = (() => {
     // 背景/边框在 ::before(z:-3)——表格内选区可见（老问题根因修复）
     // 表头文字：--text-bright 在暗色主题下几乎等于正文白（用户："起码标题颜色不同"）→
     // 换成标题色 + 700，与正文一眼分得开
-    '.cm-line.cm-md-tr-head': { color: 'var(--md-heading)', fontWeight: '700', padding: '3px 10px' },
+    '.cm-line.cm-md-tr-head': { color: 'var(--md-heading)', fontWeight: '700', padding: '0.23em 0.77em' },
     '.cm-line.cm-md-tr-head::before': {
       background: 'var(--bg-panel)', border: '1px solid color-mix(in srgb, var(--text) 12%, transparent)', borderBottom: 'none',
       borderRadius: '6px 6px 0 0',
     },
-    '.cm-line.cm-md-tr-row': { padding: '3px 10px' },
+    '.cm-line.cm-md-tr-row': { padding: '0.23em 0.77em' },
     '.cm-line.cm-md-tr-row::before': { background: 'var(--code-bg)', border: '1px solid color-mix(in srgb, var(--text) 12%, transparent)', borderTop: 'none' },
     '.cm-line.cm-md-tr-row.cm-md-tr-last::before': { borderRadius: '0 0 6px 6px' },
     '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0' },
     '.cm-line.cm-md-tr-sep::before': { background: 'color-mix(in srgb, var(--text) 12%, transparent)' },
     // 源码态（光标进表内）里的 `|`：不再显示半透明源码字符，改画一条 1px 细竖线 ——
     // 用户原话"显示太奇怪"，半透明的竖线字符看着就像没渲染完
-    '.cm-md-tpipe': { position: 'relative', color: 'transparent', display: 'inline-block', width: '5px' },
+    '.cm-md-tpipe': { position: 'relative', color: 'transparent', display: 'inline-block', width: '0.38em' },
     '.cm-md-tpipe::before': {
-      content: '""', position: 'absolute', left: '2px', top: '1px', bottom: '1px',
+      content: '""', position: 'absolute', left: '0.15em', top: '1px', bottom: '1px',
       width: '1px', background: 'color-mix(in srgb, var(--text) 22%, transparent)',
     },
     // ===== 表格 widget（光标不在表内时的真 <table>）=====
@@ -249,29 +258,29 @@ window.MdEditor = (() => {
     // ⚠ block widget 的垂直间距**只能用 padding 不能用 margin**：CM6 行高测量不含 margin，
     //   widget 实际占位会比高度模型高 → 下方所有行的选区/点击坐标整体错位
     //   （用户看到的"选区前面少一截、后面多一截"就是它，与 fence 用 padding 是同一条铁律）
-    '.cm-md-table': { position: 'relative', padding: '10px 0' },
-    '.cm-md-table table': { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' },
+    '.cm-md-table': { position: 'relative', padding: '0.77em 0' },
+    '.cm-md-table table': { borderCollapse: 'collapse', width: '100%', fontSize: '0.96em' },
     // ⚠ 表头底色别用纯 --bg-panel：它比正文底色只暗一点，截图里几乎看不出"这是表头"
     //   → 掺一层 accent tint（用户要的"起码标题颜色不同"要一眼看得出来）
     '.cm-md-table th': {
       background: 'color-mix(in srgb, var(--accent) 16%, var(--bg-panel))',
       color: 'var(--md-heading)', fontWeight: '700',
-      padding: '5px 10px', textAlign: 'left', whiteSpace: 'nowrap',
+      padding: '0.38em 0.77em', textAlign: 'left', whiteSpace: 'nowrap',
       border: '1px solid color-mix(in srgb, var(--text) 22%, transparent)',
     },
     '.cm-md-table td': {
-      padding: '4px 10px', color: 'var(--text)', verticalAlign: 'top',
+      padding: '0.31em 0.77em', color: 'var(--text)', verticalAlign: 'top',
       border: '1px solid color-mix(in srgb, var(--text) 13%, transparent)',
     },
     '.cm-md-table tbody tr:nth-child(even) td': { background: 'color-mix(in srgb, var(--bg-panel) 85%, transparent)' },
     '.cm-md-table tbody tr:hover td': { background: 'var(--btn-hover)' },
     '.cm-md-table td code, .cm-md-table th code': {
-      fontFamily: 'var(--font-mono)', fontSize: '12px', padding: '1px 5px',
+      fontFamily: 'var(--font-mono)', fontSize: '0.92em', padding: '0.08em 0.38em',
       background: 'var(--btn-bg)', color: 'var(--code-text)', borderRadius: '3px',
     },
     '.cm-md-tlink': { color: 'var(--accent)' },
     '.cm-md-tablecopy': {
-      position: 'absolute', right: '2px', top: '-17px', fontSize: '11px', padding: '1px 9px',
+      position: 'absolute', right: '0.15em', top: '-1.31em', fontSize: '0.85em', padding: '0.08em 0.69em',
       background: 'var(--btn-bg)', color: 'var(--text)', border: '1px solid var(--btn-border)',
       borderRadius: '3px', cursor: 'pointer', opacity: '0', transition: 'opacity .12s',
     },
@@ -279,21 +288,21 @@ window.MdEditor = (() => {
     // mermaid 实时渲染图（block widget）：居中，**不画容器底色**
     // （用户 2026-09-28：图外面那块底色"有视觉影响" —— 面积一大就在正文中间压出一整块灰，
     //   而且图本身已经有自己的方框，外面再套一层纯属多余）
-    '.cm-md-mermaid': { position: 'relative', padding: '14px 0 10px', textAlign: 'center' },
+    '.cm-md-mermaid': { position: 'relative', padding: '1.08em 0 0.77em', textAlign: 'center' },
     '.cm-md-mermaid svg': { maxWidth: '100%' },
     '.cm-md-mermaid .mermaid-err': { textAlign: 'left', color: 'var(--del-text)', whiteSpace: 'pre-wrap' },
     // 标题折叠箭头（Obsidian 式）：hover 标题行浮现，已折叠时常显 ▸
     '.cm-md-foldctrl': {
-      display: 'inline-block', width: '18px', textAlign: 'center', fontSize: '10px',
+      display: 'inline-block', width: '1.38em', textAlign: 'center', fontSize: '0.77em',
       color: 'var(--text-dim)', cursor: 'pointer', userSelect: 'none', verticalAlign: 'middle',
-      marginLeft: '-18px', opacity: '0', transition: 'opacity .1s',
+      marginLeft: '-1.38em', opacity: '0', transition: 'opacity .1s',
     },
     '.cm-line:hover .cm-md-foldctrl, .cm-md-foldctrl.folded': { opacity: '1' },
     '.cm-md-foldctrl:hover': { color: 'var(--accent)' },
     // 折叠占位符样式（CM6 foldWidget 默认 "…"，弱化显示）
     '.cm-foldPlaceholder': {
       background: 'var(--btn-bg)', border: '1px solid var(--btn-border)', color: 'var(--text-dim)',
-      borderRadius: '3px', margin: '0 3px', padding: '0 6px', fontSize: '11px', cursor: 'pointer',
+      borderRadius: '3px', margin: '0 3px', padding: '0 6px', fontSize: '0.85em', cursor: 'pointer',
     },
   });
 
@@ -434,10 +443,60 @@ window.MdEditor = (() => {
     push(text.slice(last));
     return frag;
   }
+  // 表格源码行里各单元格的起始偏移（用于「点哪个格，光标就落在哪个格」）
+  // 规则与 splitRow 对齐：可省略首尾竖线、\| 是转义、单元格内容前的空格不计。
+  function cellOffsets(line) {
+    const s = String(line);
+    const offs = [];
+    let end = s.length;
+    while (end > 0 && /\s/.test(s[end - 1])) end--;      // 尾部空白不算内容
+    let i = 0;
+    while (i < end && /\s/.test(s[i])) i++;              // 行首缩进
+    if (s[i] === '|') { i++; offs.push(i); }             // 首竖线后的第一格
+    else offs.push(i);
+    for (; i < end; i++) {
+      if (s[i] === '\\') { i++; continue; }
+      if (s[i] === '|') {
+        if (i >= end - 1) break;                         // 尾竖线：后面没有格了
+        offs.push(i + 1);
+      }
+    }
+    return offs.map((o) => { let k = o; while (k < s.length && s[k] === ' ') k++; return k; });
+  }
   class TableWidget extends WidgetType {
-    constructor(src) { super(); this.src = src; }
-    eq(other) { return other.src === this.src; }
-    toDOM() {
+    constructor(src, from) { super(); this.src = src; this.from = from || 0; }
+    eq(other) { return other.src === this.src && other.from === this.from; }
+    // 点击的单元格 → 源码里的绝对位置。
+    // 🔴 为什么必须自己做映射：整块表格是 block widget，CM6 只把点击换算成**该块的起止位置**，
+    //   点第 3 行第 2 列也会把光标丢到表格首行 —— 用户原话「没法编辑」。
+    //   （自检里「点击单元格光标精确进入该格」长期是红的，就是这条。）
+    cellPos(cell) {
+      const row = cell.closest('tr');
+      if (!row) return null;
+      const cellsInRow = [...row.children];
+      const col = cellsInRow.indexOf(cell);
+      if (col < 0) return null;
+      let lineIdx = 0;                                   // 表头 = 源码第 0 行
+      if (!cell.closest('thead')) {
+        const tbody = cell.closest('tbody');
+        const rows = tbody ? [...tbody.children] : [];
+        // +2：源码里数据行前面还有「表头行 + |---| 分隔行」，index 0 是表头、
+        // index 1 是分隔行，第一行数据从 2 开始（踩过：写成 +1 会整体落到分隔行上）
+        lineIdx = rows.indexOf(row) + 2;
+      }
+      const rawLines = this.src.split('\n');
+      const idxMap = [];
+      rawLines.forEach((l, i) => { if (l.trim() !== '') idxMap.push(i); });
+      const rawNo = idxMap[lineIdx];
+      if (rawNo == null) return null;
+      let off = 0;
+      for (let i = 0; i < rawNo; i++) off += rawLines[i].length + 1;
+      const line = rawLines[rawNo];
+      const offs = cellOffsets(line);
+      const inLine = offs[col] != null ? offs[col] : Math.max(0, line.length - 1);
+      return this.from + off + Math.min(inLine, line.length);
+    }
+    toDOM(view) {
       const parsed = parseTable(this.src);
       const wrap = document.createElement('div');
       wrap.className = 'cm-md-table';
@@ -480,9 +539,24 @@ window.MdEditor = (() => {
         setTimeout(() => { btn.textContent = '复制'; }, 1200);
       });
       wrap.appendChild(btn);
+      // 点击 → 光标精确落到该单元格的源码位置（捕获阶段：必须抢在 CM6 自己的
+      // mousedown 换算之前，否则会被它按"整块起点"覆盖掉）
+      if (view) {
+        wrap.addEventListener('mousedown', (e) => {
+          const cell = e.target && e.target.closest ? e.target.closest('th,td') : null;
+          if (!cell) return; // 复制按钮等：走默认行为
+          const pos = this.cellPos(cell);
+          if (pos == null) return;
+          e.preventDefault();
+          e.stopPropagation();
+          view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+          view.focus();
+        }, true);
+      }
       return wrap;
     }
     // false = 事件穿透：点表格 → CM6 把光标放进表内 → 装饰器重算 → 自动切成可编辑的源码态
+    // （精确到单元格的位置由上面的 mousedown 捕获处理）
     ignoreEvent() { return false; }
   }
 
@@ -713,8 +787,10 @@ window.MdEditor = (() => {
               const bFrom = l.from + m[1].length;
               const bTo = bFrom + m[2].length + m[3].length; // bullet + 尾随空格
               if (m[4]) {
-                // task 行：bullet+空格 → 圆点（用户报告"多渲染了 -"），再接可点击勾选框
-                decos.push(Decoration.replace({ widget: new BulletWidget() }).range(bFrom, bTo));
+                // task 行：`- ` 整体隐藏，**不画圆点** —— 预览那边是原生 <input type=checkbox>，
+                // 勾选框前面没有 bullet；这里再补一个 • 就成了「• ☐ 任务」，两种模式对不上
+                // （历史：为了消掉源码里的 "-" 反而多渲染了一个圆点）
+                decos.push(Decoration.replace({}).range(bFrom, bTo));
                 const cbFrom = bTo;
                 const cbTo = cbFrom + 3 + (m[6] === ' ' ? 1 : 0);
                 decos.push(Decoration.replace({ widget: new TaskWidget(m[5] !== ' ', cbFrom, cbFrom + 3) }).range(cbFrom, cbTo));
@@ -825,7 +901,7 @@ window.MdEditor = (() => {
               else {
                 const tsrc = doc.sliceString(node.from, node.to);
                 if (parseTable(tsrc)) {
-                  decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc) }).range(node.from, node.to));
+                  decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc, node.from) }).range(node.from, node.to));
                   return;
                 }
               }

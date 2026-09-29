@@ -18,6 +18,30 @@ MI.renderFor = function (file) {
   return null; // 无匹配 → 走默认文本编辑器
 };
 
+// ---------- marked 扩展：Obsidian 的 ==高亮== ----------
+// 为什么必须扩展而不是事后正则：marked 的内联 tokenizer 顺序是「扩展 → 内置规则」，
+// 扩展匹配不上时反引号代码段会整段被 codespan 吃掉，所以代码块里的 == 不会被误染
+// （事后对 HTML 做正则会连 <code> 里的内容一起改，行级正则又会漏掉跨行/嵌套）。
+// 不注册的后果：同一份文档在实时预览里是高亮、在预览里是裸 ==文本== ——
+// 用户报的「实时预览和预览差别非常大」里就有这一条。
+if (window.marked && typeof window.marked.use === 'function') {
+  try {
+    window.marked.use({
+      extensions: [{
+        name: 'mdHighlight',
+        level: 'inline',
+        start(src) { const i = src.indexOf('=='); return i < 0 ? undefined : i; },
+        tokenizer(src) {
+          const m = /^==(?=\S)([\s\S]*?\S)==/.exec(src);
+          if (!m) return undefined;
+          return { type: 'mdHighlight', raw: m[0], tokens: this.lexer.inlineTokens(m[1]) };
+        },
+        renderer(token) { return '<mark>' + this.parser.parseInline(token.tokens) + '</mark>'; },
+      }],
+    });
+  } catch (e) { MI.logErr('md.markedExt', e); }
+}
+
 // ---------- 使用日志（性能埋点 + 错误捕获，定位卡顿/卡死用）----------
 MI.log = function (level, tag, msg) {
   try { if (window.myIDE && window.myIDE.log) window.myIDE.log.write(level, tag, msg); } catch {}
@@ -463,6 +487,16 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   // 图片相对路径 → 本地文件（以笔记所在目录为基准；交给浏览器规范化编码，避免双重编码）
   wrap.querySelectorAll('img').forEach((img) => {
     const src = (img.getAttribute('src') || '').trim();
+    // 加载失败（路径错 / 网络图 404）：不显示裂图，改成虚线占位框 ——
+    // 与 live 的 .cm-md-img-broken 同款（两种模式都得看得出"这里本来有张图"）
+    img.addEventListener('error', () => {
+      if (img.dataset.brokenHandled) return;
+      img.dataset.brokenHandled = '1';
+      const ph = document.createElement('span');
+      ph.className = 'md-img-broken';
+      ph.textContent = '🖼 ' + (img.getAttribute('alt') || src);
+      img.replaceWith(ph);
+    });
     if (!src || /^(https?:|data:|blob:|file:)/i.test(src)) return;
     const baseDir = String(path || '').split(/[\\/]/);
     baseDir.pop(); // 去掉文件名，保留所在目录
@@ -472,6 +506,11 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       else baseDir.push(seg);
     }
     img.src = 'file:///' + baseDir.join('/');
+  });
+  // 空文字链接 [](url)：marked 会渲染成没有任何文字的 <a>（页面上那一截直接消失），
+  // 而 live 侧显示 URL —— 统一成显示 URL（Obsidian 同款，标签为空时不丢信息）
+  wrap.querySelectorAll('a').forEach((a) => {
+    if (!a.textContent.trim()) a.textContent = a.getAttribute('href') || '';
   });
   // 图片点击 → 全屏查看（lightbox：滚轮缩放/拖动平移/Esc 关闭）
   wrap.querySelectorAll('img').forEach((img) => {
