@@ -1095,6 +1095,17 @@ app.whenReady().then(() => {
         let origMdMode = null;
         try { origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")'); } catch {}
         await wc.executeJavaScript('localStorage.setItem("myide-md-mode", "live"); true');
+        // wiki 补全自检需要"项目里真的有 md 文件"：在 .ui-check-trash 下造一个临时项目
+        // （gitignore 的暂存区，收盘时随其它产物一起清）
+        const wikiProj = path.join(__dirname, '.ui-check-trash', 'wikiproj');
+        try {
+          fs.mkdirSync(path.join(wikiProj, 'notes'), { recursive: true });
+          fs.writeFileSync(path.join(wikiProj, 'index.md'), '# 索引\n\n正文\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'alpha.md'), '# Alpha 标题\n\n## 第一节\n\n## 第二节\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'beta.md'), '# Beta\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'notes', 'gamma.md'), '# Gamma 笔记\n\n## 细节说明\n', 'utf8');
+        } catch {}
+        await wc.executeJavaScript('window.__wikiProj = ' + JSON.stringify(wikiProj) + '; true');
         await wc.executeJavaScript('Viewer.openFile(' + JSON.stringify(docPath) + '); true');
         for (let i = 0; i < 20; i++) { // 轮询编辑器挂载
           if (await wc.executeJavaScript('!!document.querySelector(".cm-content")')) break;

@@ -504,9 +504,13 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       src = stripAndCollectFootnotes(src);
       // 去掉内嵌的 <!DOCTYPE html> 等声明，避免在预览顶部显示成乱文本
       src = src.replace(/<!DOCTYPE[^>]*>/gi, '');
-      // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / ![[图片.png]] → 标准链接
-      src = src.replace(/!\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, (m, t) => `![${t.trim()}](${t.trim()})`);
-      src = src.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (m, t, _p, alias) => `[${alias ? alias.trim() : t.trim()}](${t.trim()})`);
+      // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / [[笔记#标题]] / ![[图片.png]] → 标准链接
+      // ⚠ 显示文字与 live 侧必须一致：没写别名时只显示**笔记名**，`#标题` 不进 label
+      //   （Obsidian 同款；早先直接把整串当 label，两种模式会显示得不一样）。
+      src = src.replace(/!\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, _h, _p, alias) =>
+        `![${(alias || t).trim()}](${(t + (_h || '')).trim()})`);
+      src = src.replace(/\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, h, _p, alias) =>
+        `[${(alias || t).trim()}](${(t + (h || '')).trim()})`);
       html = window.marked.parse(src, { breaks: true, gfm: true });
     } else {
       html = '<pre>' + (content || '') + '</pre>';

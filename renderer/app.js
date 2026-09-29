@@ -823,6 +823,7 @@ const App = (() => {
     if (window.GitLog) GitLog.setRoot(p);
     if (window.Tasks) Tasks.setRoot(p); // 任务数据按项目隔离，随项目切换换库
     QuickOpen.invalidate();
+    if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
     clearTimeout(gitScanTimer);
     gitScanTimer = setTimeout(() => { GitPanel.refresh(); }, gitRefreshDelay);
@@ -844,6 +845,7 @@ const App = (() => {
     if (!root) return;
     Tree.refresh();
     QuickOpen.invalidate();
+    if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
     await GitPanel.refresh();
     if (activeTool === 'outline') Outline.refresh(Viewer.activeTab);
     if (window.Tasks) Tasks.reload(); // 任务存在 localStorage：外部改动后靠刷新重新载入

@@ -1039,6 +1039,33 @@ window.MdEditor = (() => {
                 decos.push(Decoration.mark({ class: 'cm-md-listmark' }).range(bFrom, bFrom + m[2].length));
               }
             }
+            // wiki 链接（Obsidian 语法）：`[[目标]]` / `[[目标|别名]]` / `[[目标#标题]]` / `![[图片]]`。
+            // ⚠ 必须在**行级正则**里做，不能靠语法树：lezer 把 `[[alpha]]` 解析成
+            //   `Link` 节点只覆盖 `[alpha]`（外层方括号是普通文本，实测），按节点处理会
+            //   剩下 `[`/`]` 残留。渲染态只留别名（没别名用目标名），与预览侧
+            //   plugin-loader 的 wiki 预处理（→ `[别名](目标)`）视觉一致。
+            if (true) {
+              const wRe = /(!?)\[\[([^\]\n|#]+)(#[^\]\n|]*)?(\|([^\]\n]*))?\]\]/g;
+              let wm2;
+              while ((wm2 = wRe.exec(l.text))) {
+                const wFrom = l.from + wm2.index;
+                const wTo = wFrom + wm2[0].length;
+                if (revealsConstruct(wFrom, wTo)) continue;
+                const alias = (wm2[5] || '').trim();
+                const target = wm2[2].trim() + (wm2[3] || '');
+                const label = alias || wm2[2].trim();
+                const isEmbed = wm2[1] === '!';
+                // 嵌入图片 ![[x.png]] 交给图片渲染；这里只处理链接
+                if (isEmbed && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(target)) continue;
+                // 隐藏 `[[目标#标题|` 与 `]]`，只显示 label
+                const pipe = wm2[0].indexOf('|');
+                const labelStart = pipe >= 0 ? wFrom + pipe + 1 : wFrom + (isEmbed ? 3 : 2);
+                const labelEnd = labelStart + label.length;
+                if (labelStart > wFrom) decos.push(Decoration.replace({}).range(wFrom, labelStart));
+                if (wTo > labelEnd) decos.push(Decoration.replace({}).range(labelEnd, wTo));
+                if (labelEnd > labelStart) decos.push(Decoration.mark({ class: 'cm-md-link' }).range(labelStart, labelEnd));
+              }
+            }
             // ==高亮==（Obsidian 扩展语法，lezer 无对应节点 → 行级正则处理）：
             // 隐藏首尾 == 标记 + 内容加 cm-md-highlight 背景。光标紧邻时显示源码（标记粒度规则）。
             const hRe = /==(?=\S)([\s\S]*?\S)==/g;
@@ -1447,6 +1474,129 @@ window.MdEditor = (() => {
     },
   });
 
+  // ---------- wiki 链接补全（[[笔记]] / [[笔记|别名]] / [[笔记#标题]]） ----------
+  // 数据源：项目内 .md 文件（走 window.myIDE.fs.listAll，与 QuickOpen 同一个接口；
+  // 单独缓存一份，避免每次敲 [[ 都全盘扫描）。文件树/新建文件后由 viewer 调
+  // MdEditor.invalidateWikiIndex() 让它失效。
+  let wikiFiles = null;      // [{ name, rel, path }]
+  let wikiLoading = null;
+  async function loadWikiFiles() {
+    if (wikiFiles) return wikiFiles;
+    if (wikiLoading) return wikiLoading;
+    const root = window.App && App.root;
+    if (!root) { wikiFiles = []; return wikiFiles; }
+    wikiLoading = (async () => {
+      try {
+        const r = await window.myIDE.fs.listAll(root, false);
+        wikiFiles = (r.files || [])
+          .filter((f) => /\.(md|markdown)$/i.test(f))
+          .map((full) => {
+            const rel = String(full).slice(root.length).replace(/^[\\/]/, '');
+            const name = rel.split(/[\\/]/).pop().replace(/\.(md|markdown)$/i, '');
+            return { name, rel, path: full };
+          });
+      } catch { wikiFiles = []; }
+      wikiLoading = null;
+      return wikiFiles;
+    })();
+    return wikiLoading;
+  }
+  // 标题候选：当前文件用 Outline 已解析的 headings；其他文件按需读盘（只读一次并缓存）
+  const headingCache = new Map();   // path -> [text]
+  function headingsOfCurrent() {
+    try {
+      if (window.Outline && Outline.headings) return Outline.headings.map((h) => h.text);
+    } catch {}
+    return [];
+  }
+  async function headingsOf(path) {
+    if (headingCache.has(path)) return headingCache.get(path);
+    let out = [];
+    try {
+      const r = await window.myIDE.fs.readFile(path);
+      if (r && typeof r.content === 'string') {
+        const lines = r.content.split('\n');
+        let fence = null;
+        for (const line of lines) {
+          const fm = /^\s*(```+|~~~+)/.exec(line);
+          if (fm) { const m = fm[1][0]; if (!fence) fence = m; else if (fence === m) fence = null; continue; }
+          if (fence) continue;
+          const h = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+          if (h) out.push(h[1].trim());
+        }
+      }
+    } catch {}
+    headingCache.set(path, out);
+    return out;
+  }
+  // CM6 补全源
+  function wikiCompletion(ctx) {
+    const line = ctx.state.doc.lineAt(ctx.pos);
+    const before = ctx.state.sliceDoc(line.from, ctx.pos);
+    // `#` 之后：补当前文件（或 `[[文件#`）的标题
+    const inHeading = /\[\[([^\]#|]*)#([^\]|]*)$/.exec(before);
+    if (inHeading) {
+      const filePart = inHeading[1].trim();
+      const q = inHeading[2];
+      const from = ctx.pos - q.length;
+      if (!filePart) {
+        // 当前文件的标题：同步给（Outline 已经解析过）
+        const hs = headingsOfCurrent().filter((t) => !q || t.toLowerCase().includes(q.toLowerCase()));
+        if (!hs.length) return null;
+        return { from, options: hs.slice(0, 50).map((t) => ({ label: t, type: 'keyword', apply: t + ']]' })), filter: false };
+      }
+      // 指定文件的标题：异步读盘
+      const f = (wikiFiles || []).find((x) => x.name === filePart || x.rel === filePart);
+      if (!f) return null;
+      return headingsOf(f.path).then((hs) => {
+        const hit = hs.filter((t) => !q || t.toLowerCase().includes(q.toLowerCase()));
+        if (!hit.length) return null;
+        return { from, options: hit.slice(0, 50).map((t) => ({ label: t, type: 'keyword', apply: t + ']]' })), filter: false };
+      });
+    }
+    // `[[` 之后：补文件名
+    const m = /(!?\[\[)([^\]\n]*)$/.exec(before);
+    if (!m) return null;
+    const q = m[2];
+    const from = ctx.pos - q.length;
+    const files = wikiFiles;
+    if (!files) {
+      // 索引还没建好：先触发加载，同时给一个"正在索引"的提示项
+      loadWikiFiles();
+      return {
+        from,
+        options: [{ label: '正在索引项目文件…', type: 'text', apply: '' }],
+        filter: false,
+      };
+    }
+    const ql = q.toLowerCase();
+    const hit = files
+      .filter((f) => !ql || f.name.toLowerCase().includes(ql) || f.rel.toLowerCase().includes(ql))
+      .sort((a, b) => {
+        const an = a.name.toLowerCase(), bn = b.name.toLowerCase();
+        const as = an.startsWith(ql) ? 0 : an.includes(ql) ? 1 : 2;
+        const bs = bn.startsWith(ql) ? 0 : bn.includes(ql) ? 1 : 2;
+        return as - bs || a.name.length - b.name.length;
+      })
+      .slice(0, 50);
+    if (!hit.length) return null;
+    return {
+      from,
+      options: hit.map((f) => ({
+        label: f.name,
+        detail: f.rel.includes('\\') ? f.rel.split('\\').slice(0, -1).join('/') : f.rel.split('/').slice(0, -1).join('/'),
+        type: 'text',
+        apply: f.name + ']]',
+      })),
+      filter: false,
+    };
+  }
+  // 文件增删/重命名后让索引失效（viewer 在树变化时调用）
+  function invalidateWikiIndex() {
+    wikiFiles = null;
+    headingCache.clear();
+  }
+
   // ---------- wiki 链接与 URL 提取 ----------
   function n_isWiki(raw) { return /\[\[/.test(raw); }
   function extractHref(raw) {
@@ -1642,6 +1792,15 @@ window.MdEditor = (() => {
         Commands.indentWithTab,
       ]),
       Autocomplete.closeBrackets(),
+      // wiki 链接补全（文档 046 §1.6）：输入 `[[` / `![[` 触发，数据源 = 项目内 .md 文件
+      // （复用 QuickOpen 的文件索引），`#` 之后补当前文件的标题（复用 Outline.headings）。
+      // Obsidian 的核心手感：`[[` 一敲就出候选列表，Enter 直接补全。
+      Autocomplete.autocompletion({
+        override: [wikiCompletion],
+        activateOnTyping: true,
+        closeOnBlur: true,
+        icons: false,
+      }),
       Language.codeFolding(), // foldState（折叠命令依赖）
       Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
       EditorView.updateListener.of((u) => {
@@ -1771,5 +1930,5 @@ window.MdEditor = (() => {
     return meta ? { icon: meta[0], title: meta[1], cls: CALLOUT_CLS[t] || 'co-note' } : null;
   };
 
-  return { create, resolveImgSrc };
+  return { create, resolveImgSrc, invalidateWikiIndex, loadWikiFiles };
 })();

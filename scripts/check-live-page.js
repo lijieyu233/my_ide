@@ -699,6 +699,78 @@
     api.gotoLine(1); await sleep(250);
   }
 
+  // ---------- wiki 链接：补全（文档 046 §1.6）+ 渲染态只显示别名 ----------
+  {
+    // 补全需要项目根 + 索引：用 main.js 造好的临时项目（--check-live 里建的 wikiproj）
+    const saved = api.getValue();
+    const setDoc = (text) => { api.setValue(text); };
+    if (window.__wikiProj && window.App && App.setRoot) {
+      App.setRoot(window.__wikiProj);
+      await sleep(900);
+      if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
+      await MdEditor.loadWikiFiles();
+      await sleep(300);
+      add('wiki(live): 项目文件索引建好', true, '');
+    } else {
+      add('wiki(live): 项目文件索引建好', false, '没有 __wikiProj（main.js 未造临时项目）');
+    }
+    // 渲染：写一行四种形式，渲染态文本里不应再有 `[[` 或 `|别名` 残留
+    setDoc('# 索引\n\n[[alpha]] 与 [[beta|贝塔]] 与 [[notes/gamma#细节说明|G]]\n');
+    api.setCursor(api.view.state.doc.length); await sleep(450);
+    const rendered = document.querySelector('.cm-content').textContent;
+    add('wiki(live): 渲染态隐藏 [[ ]] 与别名竖线',
+      !rendered.includes('[[') && !rendered.includes('|贝塔') && !rendered.includes('#细节说明'),
+      JSON.stringify(rendered.slice(Math.max(0, rendered.indexOf('alpha') - 4), rendered.indexOf('alpha') + 30)));
+    add('wiki(live): 无别名时显示目标名', rendered.includes('alpha'), '');
+    add('wiki(live): 有别名时显示别名', rendered.includes('贝塔') && rendered.includes('G'), '');
+    // 补全：[[ 触发候选（文件索引由 MdEditor.loadWikiFiles 建好）
+    setDoc('# 索引\n\n[[al');
+    api.setCursor(api.view.state.doc.length); await sleep(150);
+    const A = window.CM6.Autocomplete;
+    A.startCompletion(api.view);
+    await sleep(600);
+    const panel = document.querySelector('.cm-tooltip-autocomplete');
+    const labels = panel ? [...panel.querySelectorAll('li')].map((li) => li.textContent) : [];
+    add('wiki(live): [[ 触发补全候选', labels.length > 0, 'labels=' + labels.slice(0, 5).join(','));
+    add('wiki(live): 候选按输入过滤', labels.some((t) => /alpha/.test(t)), 'labels=' + labels.slice(0, 5).join(','));
+    // 接受补全 → 文本变成 [[alpha]]
+    const okAcc = A.acceptCompletion(api.view);
+    await sleep(250);
+    add('wiki(live): 接受补全写入 [[文件]]', !!okAcc && /\[\[alpha\]\]/.test(api.getValue()), JSON.stringify(api.getValue().slice(-20)));
+    // [[文件# 触发该文件的标题候选
+    setDoc('# 索引\n\n[[alpha#第');
+    api.setCursor(api.view.state.doc.length); await sleep(150);
+    A.startCompletion(api.view);
+    await sleep(800);
+    const panel2 = document.querySelector('.cm-tooltip-autocomplete');
+    const labels2 = panel2 ? [...panel2.querySelectorAll('li')].map((li) => li.textContent) : [];
+    add('wiki(live): [[文件# 触发标题候选', labels2.some((t) => /第一节|第二节/.test(t)), 'labels=' + labels2.slice(0, 5).join(','));
+    // 预览侧：别名显示 + 目标不丢（`[[beta|贝塔别名]]` → 文字"贝塔别名"、href 指向 beta）
+    {
+      const holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+      document.body.appendChild(holder);
+      try {
+        const fn = MI.renderFor({ path: 'x.md', name: 'x.md', ext: 'md' });
+        const node = fn({ path: 'x.md', name: 'x.md', ext: 'md', content: DOC });
+        holder.appendChild(node);
+        const links = [...node.querySelectorAll('a')].filter((a) => /beta|notes\/gamma/.test(decodeURIComponent(a.getAttribute('href') || '')));
+        add('wiki(preview): 别名显示为目标别名', links.some((a) => a.textContent === '贝塔别名'), links.map((a) => a.textContent).join(','));
+        // 无别名时只显示笔记名（`[[notes/gamma#细节说明]]` → 文字 notes/gamma，不带 #标题）
+        add('wiki(preview): 无别名时只显示笔记名（不带 #标题）',
+          [...node.querySelectorAll('a')].some((a) => a.textContent === 'notes/gamma'),
+          [...node.querySelectorAll('a')].map((a) => a.textContent).join(','));
+        // href 里的 #标题 会被 URL 编码（%E7%BB%86…），断言前先解码
+        add('wiki(preview): 链接目标保留 #标题',
+          links.some((a) => decodeURIComponent(a.getAttribute('href') || '').includes('#细节说明')),
+          links.map((a) => decodeURIComponent(a.getAttribute('href'))).join(','));
+      } catch (e) { add('wiki(preview): 别名显示为目标别名', false, String(e)); }
+      holder.remove();
+    }
+    setDoc(saved);
+    api.setCursor(DOC.length); await sleep(200);
+  }
+
   api.setCursor(DOC.length);
   await sleep(80);
   return { R };

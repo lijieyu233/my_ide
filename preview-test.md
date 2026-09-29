@@ -141,4 +141,8 @@ def greet(name: str) -> str:
 > [!unknown-type] 未知类型
 > 应退回普通引用。
 
+## 十、wiki 链接（Obsidian 语法）
+
+[[alpha]] 与 [[beta|贝塔别名]] 与 [[notes/gamma#细节说明|带标题的别名]] 与 [[notes/gamma#细节说明]]。
+
 结尾段落，光标请到这里再观察上方渲染。
