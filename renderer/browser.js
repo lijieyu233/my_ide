@@ -15,6 +15,7 @@ const BrowserPanel = (() => {
   let currentUrl = '';
   let currentTitle = '';
   const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
+  let dragFavUrl = null; // 拖拽源（dragover 里 dataTransfer.getData 恒为空，只能靠它判断，见 renderSidebar）
 
   // ---------- 纯逻辑（测试直接覆盖） ----------
   // 输入规范化：带协议原样；像域名/IP/localhost 补 https；否则按关键词搜索
@@ -75,6 +76,31 @@ const BrowserPanel = (() => {
     const f = list.find((x) => x.url === url);
     if (!f || f.folder === (folder || '')) return false;
     f.folder = folder || '';
+    saveJSON(FAV_KEY, list);
+    return true;
+  }
+  // 拖动落位（比 moveFav 多一个「插到谁之前」）：folder='' 为根目录；
+  // beforeUrl=null 表示放到目标组末尾；数组顺序即组内显示顺序（renderSidebar 分组时保持相对次序）。
+  // beforeUrl 必须是目标文件夹内的收藏 —— 拖到条目上时天然成立（目标条目就属于那个文件夹）。
+  function moveFavTo(url, folder, beforeUrl) {
+    const list = favs();
+    const from = list.findIndex((x) => x.url === url);
+    if (from < 0) return false;
+    const dest = folder || '';
+    const [f] = list.splice(from, 1);
+    const sameFolder = (f.folder || '') === dest;
+    f.folder = dest;
+    let at;
+    if (beforeUrl) {
+      at = list.findIndex((x) => x.url === beforeUrl);
+      if (at < 0) at = list.length;
+    } else {
+      at = 0; // → 该组最后一条之后
+      list.forEach((x, k) => { if ((x.folder || '') === dest) at = k + 1; });
+    }
+    list.splice(at, 0, f);
+    // 位置和文件夹都没变 → 不落盘、不提示（否则「拖回原地」也会报一句已移动）
+    if (sameFolder && at === from) return false;
     saveJSON(FAV_KEY, list);
     return true;
   }
@@ -364,6 +390,46 @@ const BrowserPanel = (() => {
   }
 
   // ---------- 收藏列表（左侧主侧栏 panel-browser，App.renderToolStrip 控制显隐） ----------
+  // 拖拽落点标记清理：条目上的插入线 + 文件夹标题高亮
+  function clearDropMarks() {
+    if (!sbListEl) return;
+    sbListEl.querySelectorAll('.drop-before, .drop-after, .drop-target')
+      .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
+  }
+  // 「移回根目录」落点：平时不占位，拖起来才出现（不然用户不知道还能拖出文件夹）
+  function showRootZone() {
+    if (!sbListEl || sbListEl.querySelector('.bw-sb-rootzone')) return;
+    const z = document.createElement('div');
+    z.className = 'bw-sb-rootzone';
+    z.textContent = '⬇ 拖到这里 = 移回根目录';
+    z.addEventListener('dragover', (e) => {
+      if (!dragFavUrl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      z.classList.add('drop-target');
+    });
+    z.addEventListener('dragleave', () => z.classList.remove('drop-target'));
+    z.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      z.classList.remove('drop-target');
+      const src = dragFavUrl;
+      dragFavUrl = null;
+      hideRootZone();
+      if (!src || !moveFavTo(src, '', null)) return;
+      renderSidebar();
+      renderEmpty();
+      MI.toast('已移回根目录', 'ok');
+    });
+    sbListEl.appendChild(z);
+  }
+  function hideRootZone() {
+    if (!sbListEl) return;
+    const z = sbListEl.querySelector('.bw-sb-rootzone');
+    if (z) z.remove();
+    sbListEl.classList.remove('drop-root');
+  }
   function renderSidebar() {
     if (!sbListEl) return;
     ensureDefaultFavs();
@@ -426,7 +492,60 @@ const BrowserPanel = (() => {
         m.style.left = Math.min(e.clientX, window.innerWidth - 240) + 'px';
         m.style.top = Math.min(e.clientY, window.innerHeight - 180) + 'px';
       };
+      // 拖动换位置：拖到条目上 = 插到它的前/后（并跟着它换文件夹）；拖到文件夹标题 = 放进该文件夹
+      // 注意：dragover 里 dataTransfer.getData 恒为空（Chromium 安全限制）→ 用模块级 dragFavUrl 判断源
+      it.draggable = true;
+      it.addEventListener('dragstart', (e) => {
+        dragFavUrl = f.url;
+        try {
+          e.dataTransfer.setData('text/plain', f.url);
+          e.dataTransfer.effectAllowed = 'move';
+        } catch {}
+        it.classList.add('dragging-src');
+        showRootZone();
+      });
+      it.addEventListener('dragend', () => {
+        dragFavUrl = null;
+        it.classList.remove('dragging-src');
+        clearDropMarks();
+        hideRootZone();
+      });
+      it.addEventListener('dragover', (e) => {
+        if (!dragFavUrl || dragFavUrl === f.url) return; // 拖到自己身上不算落点
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        const r = it.getBoundingClientRect();
+        // jsdom / 未布局时高度为 0 → 一律当「插到前面」，行为可预期
+        const after = !!r.height && e.clientY - r.top > r.height / 2;
+        clearDropMarks();
+        it.classList.add(after ? 'drop-after' : 'drop-before');
+      });
+      it.addEventListener('dragleave', () => it.classList.remove('drop-before', 'drop-after'));
+      it.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const src = dragFavUrl;
+        dragFavUrl = null;
+        const r = it.getBoundingClientRect();
+        const after = !!r.height && e.clientY - r.top > r.height / 2;
+        clearDropMarks();
+        hideRootZone();
+        if (!src || src === f.url) return;
+        const dest = f.folder || '';
+        if (!moveFavTo(src, dest, after ? nextInFolder(list, f) : f.url)) return;
+        renderSidebar();
+        renderEmpty();
+        MI.toast(dest ? '已移到「' + dest + '」' : '已移到根目录', 'ok');
+      });
       return it;
+    };
+    // 「插到这条之后」需要一条同组锚点：取组内下一条，没有就 null（= 放到该组末尾）
+    const nextInFolder = (arr, f) => {
+      for (let k = arr.indexOf(f) + 1; k < arr.length; k++) {
+        if ((arr[k].folder || '') === (f.folder || '')) return arr[k].url;
+      }
+      return null;
     };
     // 根收藏在前，文件夹分组随后
     list.filter((f) => !f.folder).forEach((f) => sbListEl.appendChild(mkItem(f)));
@@ -434,20 +553,38 @@ const BrowserPanel = (() => {
       const g = document.createElement('div');
       g.className = 'bw-sb-group';
       const items = list.filter((f) => f.folder === name);
+      // 标题拆成 图标 / 名称 / 计数 三段：计数走弱色，名称过长省略号（整段 textContent 仍是「📂名称（n）」）
       const gTitle = document.createElement('div');
       gTitle.className = 'bw-sb-gtitle';
-      const gLabel = () => (foldedFolders.has(name) ? '📁 ' : '📂 ') + name + '（' + items.length + '）';
-      gTitle.textContent = gLabel();
-      gTitle.title = '点击收起 / 展开 · 右键删除文件夹（收藏移回根目录）';
+      const gIcon = document.createElement('span');
+      gIcon.className = 'bw-sb-gicon';
+      const gName = document.createElement('span');
+      gName.className = 'bw-sb-gname';
+      gName.textContent = name;
+      gName.title = name;
+      const gCnt = document.createElement('span');
+      gCnt.className = 'bw-sb-gcnt';
+      gCnt.textContent = '（' + items.length + '）';
+      gTitle.appendChild(gIcon);
+      gTitle.appendChild(gName);
+      gTitle.appendChild(gCnt);
       const gBody = document.createElement('div');
       gBody.className = 'bw-sb-gbody';
+      const paintTitle = () => {
+        const folded = foldedFolders.has(name);
+        gIcon.textContent = folded ? '📁' : '📂';
+        gTitle.classList.toggle('folded', folded);
+        gTitle.classList.toggle('empty', !items.length);
+      };
+      paintTitle();
+      gTitle.title = '点击收起 / 展开 · 右键删除文件夹 · 可把收藏拖进来';
       if (foldedFolders.has(name)) gBody.style.display = 'none';
       items.forEach((f) => gBody.appendChild(mkItem(f)));
       gTitle.onclick = () => {
         const fold = gBody.style.display !== 'none'; // 当前展开 → 折叠
         if (fold) foldedFolders.add(name); else foldedFolders.delete(name);
         gBody.style.display = fold ? 'none' : '';
-        gTitle.textContent = gLabel();
+        paintTitle();
       };
       gTitle.oncontextmenu = (e) => {
         e.preventDefault();
@@ -471,6 +608,40 @@ const BrowserPanel = (() => {
         m.style.left = Math.min(e.clientX, window.innerWidth - 240) + 'px';
         m.style.top = Math.min(e.clientY, window.innerHeight - 80) + 'px';
       };
+      // 拖进文件夹：标题（折叠着也行）和内容区都是落点 → 放到该组末尾
+      const asFolderTarget = (el) => {
+        el.addEventListener('dragover', (e) => {
+          if (!dragFavUrl) return;
+          e.preventDefault();
+          e.stopPropagation(); // 别冒泡到列表容器（那是「移回根目录」）
+          e.dataTransfer.dropEffect = 'move';
+          clearDropMarks();
+          gTitle.classList.add('drop-target');
+        });
+        el.addEventListener('dragleave', (e) => {
+          if (el.contains(e.relatedTarget)) return;
+          gTitle.classList.remove('drop-target');
+        });
+        el.addEventListener('drop', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const src = dragFavUrl;
+          dragFavUrl = null;
+          clearDropMarks();
+          hideRootZone();
+          if (!src) return;
+          // 收着的文件夹被放进东西 → 自动展开，让用户看见东西去哪了
+          foldedFolders.delete(name);
+          gBody.style.display = '';
+          paintTitle();
+          if (!moveFavTo(src, name, null)) return;
+          renderSidebar();
+          renderEmpty();
+          MI.toast('已移到「' + name + '」', 'ok');
+        });
+      };
+      asFolderTarget(gTitle);
+      asFolderTarget(gBody);
       g.appendChild(gTitle);
       g.appendChild(gBody);
       sbListEl.appendChild(g);
@@ -538,6 +709,31 @@ const BrowserPanel = (() => {
     ddEl = document.getElementById('bw-dd');
     viewEl = document.getElementById('browser-view');
     sbListEl = document.getElementById('bw-sb-list'); // 左侧主侧栏里的收藏列表
+    // 列表空白处 = 根目录落点（分组外的区域本来就是「根」；子元素都 stopPropagation，不会误判）
+    if (sbListEl) {
+      sbListEl.addEventListener('dragover', (e) => {
+        if (!dragFavUrl) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        sbListEl.classList.add('drop-root');
+      });
+      sbListEl.addEventListener('dragleave', (e) => {
+        if (!sbListEl.contains(e.relatedTarget)) sbListEl.classList.remove('drop-root');
+      });
+      sbListEl.addEventListener('drop', (e) => {
+        sbListEl.classList.remove('drop-root');
+        const src = dragFavUrl;
+        dragFavUrl = null;
+        clearDropMarks();
+        hideRootZone();
+        if (!src) return; // 外部拖入（文件等）不接管，交给默认行为
+        e.preventDefault();
+        if (!moveFavTo(src, '', null)) return;
+        renderSidebar();
+        renderEmpty();
+        MI.toast('已移回根目录', 'ok');
+      });
+    }
 
     document.getElementById('bw-back').onclick = back;
     document.getElementById('bw-fwd').onclick = forward;
@@ -618,7 +814,7 @@ const BrowserPanel = (() => {
   return {
     init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
-    folders, addFolder, removeFolder, moveFav, renameFav,
+    folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

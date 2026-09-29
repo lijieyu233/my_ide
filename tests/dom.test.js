@@ -4512,6 +4512,105 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'BrowserPanel.hide()');
   });
 
+  // 收藏侧栏：缩进（组内容凹进去）+ 拖动换位置（拖到条目 = 精确插入、拖到文件夹 = 放进该组、拖到提示行/空白 = 回根目录）
+  await okAsync('内置浏览器：收藏侧栏缩进 + 拖动换位置', async () => {
+    const seed = [
+      { url: 'https://a.example', title: 'A', ts: 1, folder: '' },
+      { url: 'https://b.example', title: 'B', ts: 2, folder: '文档' },
+      { url: 'https://c.example', title: 'C', ts: 3, folder: '文档' },
+      { url: 'https://d.example', title: 'D', ts: 4, folder: '' },
+    ];
+    dom.window.localStorage.setItem('myide-browser-favs', JSON.stringify(seed));
+    dom.window.localStorage.setItem('myide-browser-folders', JSON.stringify(['文档']));
+    await g(dom, 'BrowserPanel.open("https://example.com/sb")');
+    await tick();
+    const list = $(dom, '#bw-sb-list');
+    const favState = () => JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
+    const itemOf = (nm) => $allIn(list, '.bw-sb-item').find((it) => it.querySelector('.bw-sb-nm').textContent === nm);
+    // ① 缩进：组内容区 margin-left + padding-left + 引导线（CSS 落地，jsdom 不算布局所以直接查规则）
+    const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    const gbodyRule = (css.match(/\.bw-sb-gbody\s*\{[^}]*\}/) || [''])[0];
+    const px = (re) => { const m = gbodyRule.match(re); return m ? parseFloat(m[1]) : NaN; };
+    // 子项文字落点 = margin-left + 1(引导线) + padding-left + 4(条目 margin) + 10(条目 padding)。
+    // 必须明显越过文件夹「名字」那一列（实测：图标 10~21px、名字 26px 起），否则看着根本不像缩进
+    // —— 第一版 12+1+6+14 = 33px 就踩过这个坑，真窗口截图里子项和文件夹名几乎齐平。
+    const textX = px(/margin-left:\s*([\d.]+)px/) + 1 + px(/padding-left:\s*([\d.]+)px/) + 14;
+    assert_(textX >= 36 && /border-left/.test(gbodyRule),
+      '组内容缩进 + 引导线规则落地（子项文字 x≈' + textX + '）: ' + gbodyRule.replace(/\s+/g, ' '));
+    // 标题三段式：图标 / 名称 / 计数（计数走弱色，不再是标题正文的一部分）
+    const gt = () => $allIn(list, '.bw-sb-gtitle')[0];
+    assert_(gt().querySelector('.bw-sb-gicon') && gt().querySelector('.bw-sb-gname') && gt().querySelector('.bw-sb-gcnt'), '标题拆成图标/名称/计数三段');
+    assert_(gt().querySelector('.bw-sb-gname').textContent === '文档', '名称单独成段');
+    assert_(gt().querySelector('.bw-sb-gcnt').textContent === '（2）', '计数单独成段, got ' + gt().querySelector('.bw-sb-gcnt').textContent);
+    assert_(gt().textContent.includes('文档（2）'), '整段文案不变（旧断言兼容）');
+    // ② 拖根目录的 A 到「文档」组内 C 上 → A 进该组并排在 C 之前
+    const dt = { setData: () => {}, getData: () => '', effectAllowed: '', dropEffect: '' };
+    const dragEv = (el, type) => {
+      const ev = new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, clientY: 0 });
+      ev.dataTransfer = dt;
+      el.dispatchEvent(ev);
+    };
+    dragEv(itemOf('A'), 'dragstart');
+    await tick();
+    assert_(list.querySelector('.bw-sb-rootzone'), '拖起来才出现「移回根目录」落点');
+    assert_(itemOf('A').classList.contains('dragging-src'), '拖拽源半透明标记');
+    dragEv(itemOf('C'), 'dragover');
+    await tick();
+    assert_(itemOf('C').classList.contains('drop-before'), '目标条目显示插入线（jsdom 无高度 → 一律插到前面）');
+    dragEv(itemOf('C'), 'drop');
+    await tick();
+    assert_(favState().find((f) => f.url === 'https://a.example').folder === '文档', 'A 被拖进「文档」组');
+    assert_(favState().filter((f) => f.folder === '文档').map((f) => f.url).join(',') === 'https://b.example,https://a.example,https://c.example',
+      'A 插在 C 之前（组内顺序 = 数组顺序）, got ' + favState().filter((f) => f.folder === '文档').map((f) => f.url).join(','));
+    assert_(!list.querySelector('.bw-sb-rootzone'), '松手后落点提示消失');
+    // ③ 折叠「文档」后把 D 拖到它的标题上 → 放进该组末尾，并自动展开（让用户看见东西去哪了）
+    click(gt());
+    await tick();
+    assert_(gt().parentElement.querySelector('.bw-sb-gbody').style.display === 'none', '先折叠「文档」');
+    dragEv(itemOf('D'), 'dragstart');
+    await tick();
+    dragEv(gt(), 'dragover');
+    await tick();
+    assert_(gt().classList.contains('drop-target'), '文件夹标题高亮为落点');
+    dragEv(gt(), 'drop');
+    await tick();
+    assert_(favState().find((f) => f.url === 'https://d.example').folder === '文档', 'D 被拖进「文档」组');
+    assert_(favState().filter((f) => f.folder === '文档').map((f) => f.url).join(',') === 'https://b.example,https://a.example,https://c.example,https://d.example',
+      'D 落到该组末尾');
+    assert_(gt().parentElement.querySelector('.bw-sb-gbody').style.display !== 'none', '放进折叠的文件夹 → 自动展开');
+    // ④ 拖到「移回根目录」提示行 → 回到根目录
+    dragEv(itemOf('A'), 'dragstart');
+    await tick();
+    const zone = list.querySelector('.bw-sb-rootzone');
+    assert_(zone, '提示行存在');
+    dragEv(zone, 'drop');
+    await tick();
+    assert_((favState().find((f) => f.url === 'https://a.example').folder || '') === '', 'A 被拖回根目录');
+    // ⑤ 拖到列表空白（容器本身）= 同一个语义：dragover 期间整个列表描边
+    dragEv(itemOf('B'), 'dragstart');
+    await tick();
+    dragEv(list, 'dragover');
+    await tick();
+    assert_(list.classList.contains('drop-root'), '悬停列表空白 → drop-root 标记');
+    dragEv(list, 'drop');
+    await tick();
+    assert_((favState().find((f) => f.url === 'https://b.example').folder || '') === '', 'B 被拖回根目录');
+    assert_(favState().filter((f) => !f.folder).map((f) => f.url).join(',') === 'https://a.example,https://b.example',
+      '根目录组内顺序 = 拖回来的先后（C/D 留在「文档」）, got ' + favState().filter((f) => !f.folder).map((f) => f.url).join(','));
+    // 原地拖（自己拖到自己身上）不该产生「已移动」提示，也不动数据
+    const before = JSON.stringify(favState());
+    dragEv(itemOf('B'), 'dragstart');
+    await tick();
+    dragEv(itemOf('B'), 'dragover'); // 拖到自己身上 → 不作为落点
+    dragEv(itemOf('B'), 'drop');
+    await tick();
+    assert_(JSON.stringify(favState()) === before, '拖到自己身上不动数据');
+    // 清理现场（下一组用例复用默认收藏）
+    dom.window.localStorage.removeItem('myide-browser-favs');
+    dom.window.localStorage.setItem('myide-browser-folders', '[]');
+    await g(dom, 'BrowserPanel.hide()');
+  });
+
   await okAsync('内置浏览器：HTML 浮层弹出时 WebContentsView 让位（防原生层遮挡）', async () => {
     await g(dom, 'BrowserPanel.open("https://example.com/ov")');
     await tick(); await tick();
