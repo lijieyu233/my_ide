@@ -625,7 +625,9 @@ const BrowserPanel = (() => {
       gName.title = name;
       const gCnt = document.createElement('span');
       gCnt.className = 'bw-sb-gcnt';
-      gCnt.textContent = '（' + items.length + '）';
+      // 计数不用全角括号「（2）」：跟本项目其它计数一个口径（.g-count 的「2 个文件」/ #tasks-count），
+      // 弱色 + 单位，读起来是一句话而不是「名字后面挂个括号」
+      gCnt.textContent = items.length + ' 个收藏';
       gTitle.appendChild(gCaret);
       gTitle.appendChild(gIcon);
       gTitle.appendChild(gName);

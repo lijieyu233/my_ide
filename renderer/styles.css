@@ -2166,7 +2166,10 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
 .bw-sb-gtitle:hover .bw-sb-gcaret, .bw-sb-gtitle:hover .bw-sb-gicon { color: var(--text-bright); }
 .bw-sb-gtitle.drop-target .bw-sb-gcaret, .bw-sb-gtitle.drop-target .bw-sb-gicon { color: var(--accent); }
 .bw-sb-gname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bw-sb-gcnt { flex-shrink: 0; color: var(--text-dim); font-weight: 400; }
+.bw-sb-gcnt {
+  flex-shrink: 0; margin-left: 2px; white-space: nowrap;
+  font-size: .85em; font-weight: 400; color: var(--text-dim);
+}
 .bw-sb-gbody {
   display: flex; flex-direction: column;
   /* 缩进要让子项明显越过文件夹「名字」那一列（实测：三角 10~24px、图标 24~40px、名字 44px 起）：

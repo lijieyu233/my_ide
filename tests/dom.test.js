@@ -4457,9 +4457,13 @@ assert_(panel, 'CM6 搜索面板出现');
     let favs = JSON.parse(dom.window.localStorage.getItem('myide-browser-favs'));
     assert_(favs[0] && favs[0].folder === '文档', '收藏落进新文件夹, got ' + JSON.stringify(favs[0]));
     // 侧栏出现分组，计数 1；图标是内联 SVG（不再用 📁/📂 emoji —— 跟文件树同一套规矩）
-    const gtitleOf = (name) => $allIn($(dom, '#bw-sb-list'), '.bw-sb-gtitle').find((t) => t.textContent.includes(name));
-    let gt = gtitleOf('文档（1）');
-    assert_(gt, '侧栏出现「文档（1）」分组');
+    // 计数按本项目口径：弱色 +「N 个收藏」（不用全角括号 —— 括号又宽又抢眼）
+    const gtitleOf = (name) => $allIn($(dom, '#bw-sb-list'), '.bw-sb-gtitle')
+      .find((t) => (t.querySelector('.bw-sb-gname') || {}).textContent === name);
+    let gt = gtitleOf('文档');
+    assert_(gt, '侧栏出现「文档」分组');
+    assert_(gt.querySelector('.bw-sb-gcnt').textContent === '1 个收藏',
+      '计数显示为「1 个收藏」且无括号, got ' + gt.querySelector('.bw-sb-gcnt').textContent);
     const giconPaths = () => [...gt.querySelectorAll('.bw-sb-gicon svg path')].map((p) => p.getAttribute('d')).join('|');
     const openShape = giconPaths();
     assert_(!!gt.querySelector('.bw-sb-gcaret svg') && !!gt.querySelector('.bw-sb-gicon svg'), '三角与文件夹都是内联 SVG');
@@ -4475,12 +4479,12 @@ assert_(panel, 'CM6 搜索面板出现');
     gbody = gt.parentElement.querySelector('.bw-sb-gbody');
     assert_(gbody.style.display !== 'none' && !gt.classList.contains('folded'), '再点展开');
     assert_(giconPaths() === openShape, '展开后图标还原');
-    // 空文件夹：＋ 新建 → 真正落盘并显示（0），可删除
+    // 空文件夹：＋ 新建 → 真正落盘并显示「0 个收藏」，可删除
     click($(dom, '#bw-sb-add-folder'));
     await fillPrompt('空组');
     assert_(JSON.parse(dom.window.localStorage.getItem('myide-browser-folders')).includes('空组'), '空文件夹持久化');
-    gt = gtitleOf('空组（0）');
-    assert_(gt, '空文件夹分组显示');
+    gt = gtitleOf('空组');
+    assert_(gt && gt.querySelector('.bw-sb-gcnt').textContent === '0 个收藏', '空文件夹分组显示「0 个收藏」');
     gt.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
     menu = dom.window.document.getElementById('ctx-menu');
@@ -4543,12 +4547,13 @@ assert_(panel, 'CM6 搜索面板出现');
     const textX = px(/margin-left:\s*([\d.]+)px/) + 1 + px(/padding-left:\s*([\d.]+)px/) + 14;
     assert_(textX >= 36 && /border-left/.test(gbodyRule),
       '组内容缩进 + 引导线规则落地（子项文字 x≈' + textX + '）: ' + gbodyRule.replace(/\s+/g, ' '));
-    // 标题三段式：图标 / 名称 / 计数（计数走弱色，不再是标题正文的一部分）
+    // 标题四段式：三角 / 图标 / 名称 / 计数（计数走弱色 + 「N 个收藏」，不是全角括号）
     const gt = () => $allIn(list, '.bw-sb-gtitle')[0];
-    assert_(gt().querySelector('.bw-sb-gicon') && gt().querySelector('.bw-sb-gname') && gt().querySelector('.bw-sb-gcnt'), '标题拆成图标/名称/计数三段');
+    assert_(gt().querySelector('.bw-sb-gcaret') && gt().querySelector('.bw-sb-gicon') && gt().querySelector('.bw-sb-gname') && gt().querySelector('.bw-sb-gcnt'),
+      '标题拆成三角/图标/名称/计数四段');
     assert_(gt().querySelector('.bw-sb-gname').textContent === '文档', '名称单独成段');
-    assert_(gt().querySelector('.bw-sb-gcnt').textContent === '（2）', '计数单独成段, got ' + gt().querySelector('.bw-sb-gcnt').textContent);
-    assert_(gt().textContent.includes('文档（2）'), '整段文案不变（旧断言兼容）');
+    assert_(gt().querySelector('.bw-sb-gcnt').textContent === '2 个收藏', '计数为「2 个收藏」, got ' + gt().querySelector('.bw-sb-gcnt').textContent);
+    assert_(!/[（）]/.test(gt().textContent), '标题里没有全角括号, got ' + gt().textContent);
     // ② 拖根目录的 A 到「文档」组内 C 上 → A 进该组并排在 C 之前
     const dt = { setData: () => {}, getData: () => '', effectAllowed: '', dropEffect: '' };
     const dragEv = (el, type) => {
