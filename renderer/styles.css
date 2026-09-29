@@ -626,6 +626,10 @@ textarea.editor {
 .md-view li { margin: 0.15em 0; }
 .md-view li > p { margin: 0.15em 0; }
 .md-view a { color: var(--accent); }
+/* 列表圆点与删除线：与 live 的 .cm-md-bullet / .cm-md-strike 同源
+   （实时预览那边圆点是弱化的，预览这边默认跟正文同色 → 同一份文档两种观感） */
+.md-view li::marker { color: var(--text-dim); }
+.md-view del { color: var(--text-dim); }
 .md-view ul, .md-view ol { padding-left: 1.85em; margin: 0.62em 0; }
 .md-view code {
   background: var(--btn-bg); border-radius: 4px; padding: 0.08em 0.38em;

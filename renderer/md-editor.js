@@ -35,7 +35,9 @@ window.MdEditor = (() => {
     // 既跟 .cm-md-* 的变量染色打架，换主题也不跟随（用户原话："标题不要全用强调色"）。
     // 代码 token（keyword/string/number…）继续用 One Dark：那是代码配色，本来就该独立于界面主题。
     { tag: T.heading, color: 'var(--md-heading)', fontWeight: 'bold' },
-    { tag: T.strong, fontWeight: 'bold', color: 'var(--text-bright)' },
+    // 加粗**不另上色**：预览那边 <strong> 继承正文色，只有字重变化 —— 之前这里写
+    // --text-bright，同一份文档在实时预览里"加粗的地方更白"，用户看到的就是"文字几乎全是白色"
+    { tag: T.strong, fontWeight: 'bold' },
     { tag: T.emphasis, fontStyle: 'italic' },
     { tag: T.link, color: 'var(--accent)' },
     { tag: T.monospace, color: 'var(--code-text)' },
@@ -67,7 +69,10 @@ window.MdEditor = (() => {
     '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto' },
     // 正文列：可读宽度 + 居中（与 .md-view 同一套数字）。原来没有任何上限 →
     // 一行横跨整个编辑区，横向元素都变得很长
-    '.cm-content': { padding: '22px 34px 38px', maxWidth: '820px', margin: '0 auto', caretColor: 'var(--accent)' },
+    // 🔴 前景色取 --text（= .md-view 预览正文色），不是 --editor-text：两者在多数主题里
+    //   差一档亮度（crimson 实测 #d8b3c0 vs #e8cdd6），实时预览整体更白 →
+    //   用户原话「文字几乎全是白色」。源码模式不受这里影响（liveTheme 只在 live 挂载）。
+    '.cm-content': { padding: '22px 34px 38px', maxWidth: '820px', margin: '0 auto', caretColor: 'var(--accent)', color: 'var(--text)' },
     '&.cm-focused': { outline: 'none' },
     '.cm-gutters': { display: 'none' },
     // activeLine / searchMatch 背景必须画在 ::before(z:-3)：drawSelection 的
@@ -134,7 +139,7 @@ window.MdEditor = (() => {
     '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '0.15em' },
     // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）
     '.cm-line.cm-md-blank': { lineHeight: '0.85' },
-    '.cm-md-strong': { fontWeight: '700', color: 'var(--text-bright)' },
+    '.cm-md-strong': { fontWeight: '700' },
     '.cm-md-em': { fontStyle: 'italic' },
     '.cm-md-strike': { textDecoration: 'line-through', color: 'var(--text-dim)' },
     // ==高亮== / 行内代码：背景画在 ::before(z:-3)，选区在文字下、高亮在选区下均可见
@@ -162,6 +167,8 @@ window.MdEditor = (() => {
     },
     // 列表标记弱化（Obsidian 式：bullet 变暗，内容正常色）
     '.cm-md-listmark': { color: 'var(--text-dim)' },
+    // 嵌套列表缩进宽度（IndentWidget 内联设定宽度，这里只兜底 display）
+    '.cm-md-indent': { display: 'inline-block' },
     // 无序 bullet 圆点（Obsidian 式 • 渲染，替换源码 -/+/*）
     // ⚠ vertical-align 必须用 baseline：middle 会把行盒撑高 ~2px（实测列表行 24 vs 正文 22），
     //   而 CM6 的高度模型按 line-height 记账 → 选区色带与行盒每行差 2~5px，列表区一累积
@@ -236,12 +243,16 @@ window.MdEditor = (() => {
     // 背景/边框在 ::before(z:-3)——表格内选区可见（老问题根因修复）
     // 表头文字：--text-bright 在暗色主题下几乎等于正文白（用户："起码标题颜色不同"）→
     // 换成标题色 + 700，与正文一眼分得开
-    '.cm-line.cm-md-tr-head': { color: 'var(--md-heading)', fontWeight: '700', padding: '0.23em 0.77em' },
+    // ⚠ 等宽字体 + 不换行：Tab/Enter 会把管道按显示宽度重排（tableEdit），只有等宽字体下
+    //   那些补位空格才真的让各行的 `|` 对齐成网格（用户要的"像 excel 那样"）；
+    //   而一旦折行，对齐就散了（实测窄编辑区里表头末尾的 `|` 会被挤到下一行）
+    //   → 表格行不参与折行，过长时由 scroller 横向滚动（表格本来就该横向滚）
+    '.cm-line.cm-md-tr-head': { color: 'var(--md-heading)', fontWeight: '700', padding: '0.23em 0.77em', fontFamily: 'var(--font-mono)', whiteSpace: 'pre' },
     '.cm-line.cm-md-tr-head::before': {
       background: 'var(--bg-panel)', border: '1px solid color-mix(in srgb, var(--text) 12%, transparent)', borderBottom: 'none',
       borderRadius: '6px 6px 0 0',
     },
-    '.cm-line.cm-md-tr-row': { padding: '0.23em 0.77em' },
+    '.cm-line.cm-md-tr-row': { padding: '0.23em 0.77em', fontFamily: 'var(--font-mono)', whiteSpace: 'pre' },
     '.cm-line.cm-md-tr-row::before': { background: 'var(--code-bg)', border: '1px solid color-mix(in srgb, var(--text) 12%, transparent)', borderTop: 'none' },
     '.cm-line.cm-md-tr-row.cm-md-tr-last::before': { borderRadius: '0 0 6px 6px' },
     '.cm-line.cm-md-tr-sep': { height: '2px', padding: '0' },
@@ -346,6 +357,22 @@ window.MdEditor = (() => {
       const s = document.createElement('span');
       s.className = 'cm-md-bullet';
       s.textContent = '•';
+      return s;
+    }
+    ignoreEvent() { return false; }
+  }
+
+  // ---------- 嵌套列表缩进 widget：源码前导空格 → 固定宽度缩进 ----------
+  // 为什么不能只留着源码里的空格：正文是比例字体，2 个空格实测只有 9px，而预览那边是
+  // `ul { padding-left: 1.85em }`（17px 字号下 31px）—— 用户的嵌套子项看起来跟父项齐平
+  // （原话「这里缩进也没有」）。这里按**语法树里的真实层级**换算宽度，与预览同源。
+  class IndentWidget extends WidgetType {
+    constructor(level) { super(); this.level = level; }
+    eq(other) { return other.level === this.level; }
+    toDOM() {
+      const s = document.createElement('span');
+      s.className = 'cm-md-indent';
+      s.style.width = (1.85 * this.level) + 'em';
       return s;
     }
     ignoreEvent() { return false; }
@@ -462,6 +489,125 @@ window.MdEditor = (() => {
       }
     }
     return offs.map((o) => { let k = o; while (k < s.length && s[k] === ' ') k++; return k; });
+  }
+
+  // ================= 表格编辑（Excel 式：Tab 换格 / 末格增行 / Enter 下行 / 自动对齐） =================
+  // 用户原话：「表格也不能像 excel 那样的表格使用」。旧的 Tab 只在**本行**里找下一个 `|`：
+  // 走到行尾就停住、不会换行、不会增行，Enter 还会把一行表格劈成两行（结构坏掉）。
+  // 这里按「整张表」来算：光标所在行列 → 目标行列 → 需要时补一行 → 顺手把管道对齐重排。
+  // 显示宽度：CJK 全角按 2 列算 —— 光标进表时逐行按等宽字体渲染，源码对齐了才真的是网格。
+  function dispWidth(s) {
+    let w = 0;
+    for (const ch of String(s)) {
+      w += /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
+    }
+    return w;
+  }
+  function parseAlignCell(c) {
+    const s = String(c).trim();
+    const l = s.startsWith(':'), r = s.endsWith(':');
+    return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
+  }
+  // 光标所在的整张表；不在表内（或结构不标准）→ null
+  function tableContext(state, pos) {
+    let node = null;
+    try {
+      let n = Language.syntaxTree(state).resolveInner(pos, -1);
+      for (; n; n = n.parent) if (n.name === 'Table') { node = n; break; }
+    } catch { node = null; }
+    if (!node) return null;
+    const first = state.doc.lineAt(node.from), last = state.doc.lineAt(node.to);
+    const lines = [];
+    for (let k = first.number; k <= last.number; k++) lines.push(state.doc.line(k));
+    if (lines.length < 2 || !TABLE_SEP_RE.test(lines[1].text)) return null;
+    // 只处理"每行都以 | 开头"的标准写法：行首可能是 `> ` 的引用内表格一律不动（重排会拆掉结构）
+    if (lines.some((l) => !/^\s*\|/.test(l.text))) return null;
+    const rows = lines.map((l, i) => ({ line: l, isSep: i === 1, cells: splitRow(l.text) }));
+    const sepAligns = rows[1].cells.map(parseAlignCell);
+    let cur = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].isSep) continue;
+      if (pos >= rows[i].line.from && pos <= rows[i].line.to) { cur = i; break; }
+    }
+    if (cur < 0) return null;
+    const offs = cellOffsets(rows[cur].line.text);
+    const rel = pos - rows[cur].line.from;
+    let col = 0;
+    for (let i = 0; i < offs.length; i++) if (offs[i] <= rel) col = i;
+    // 行列按"去掉分隔行后的数据序"给：row 0 = 表头
+    const row = cur === 0 ? 0 : cur - 1;
+    return { from: node.from, to: node.to, lines, rows, sepAligns, row, col, nCols: Math.max(...rows.map((r) => r.cells.length)) };
+  }
+  // 用单元格矩阵重建整张表：返回文本 + 每行各格内容起点偏移（光标重定位用）
+  function buildTable(matrix, aligns) {
+    const nCols = Math.max(...matrix.map((r) => r.length));
+    const widths = [];
+    for (let c = 0; c < nCols; c++) widths[c] = Math.max(3, ...matrix.map((r) => dispWidth(r[c] || '')));
+    const outLines = [], offsets = [];
+    const mkRow = (cells) => {
+      let s = '|'; const offs = [];
+      for (let c = 0; c < nCols; c++) {
+        const cell = String(cells[c] == null ? '' : cells[c]).trim().split('|').join('\\|');
+        const pad = widths[c] - dispWidth(cell);
+        offs.push(s.length + 2);              // 「| 」之后就是内容起点
+        s += ' ' + cell + ' '.repeat(pad) + ' |';
+      }
+      outLines.push(s); offsets.push(offs);
+      return s;
+    };
+    const sep = (() => {
+      let s = '|';
+      for (let c = 0; c < nCols; c++) {
+        const a = aligns[c] || '';
+        const w = widths[c];
+        // 每格占「1 空格 + w 列 + 1 空格」——与内容行同宽，各行的 `|` 才会落在同一列
+        // （踩过：分隔行写 w+2 个横线 → 比内容行宽 2 列，整张表的竖线错开）
+        const dash = a === 'center' ? ':' + '-'.repeat(Math.max(1, w - 2)) + ':'
+          : a === 'right' ? '-'.repeat(Math.max(2, w - 1)) + ':'
+            : a === 'left' ? ':' + '-'.repeat(Math.max(2, w - 1))
+              : '-'.repeat(w);
+        s += ' ' + dash + ' |';
+      }
+      return s;
+    })();
+    // 生成文本的行序：第 0 行 = 表头、第 1 行 = 分隔行、第 2 行起 = 数据行
+    mkRow(matrix[0]);
+    outLines.push(sep); offsets.push(null);
+    for (let i = 1; i < matrix.length; i++) mkRow(matrix[i]);
+    return { text: outLines.join('\n'), offsets };
+  }
+  // dCol：横向换格；dRow：纵向换行；addIfLast：越界时补一行（Excel 里 Tab/Enter 到末行会新建）
+  function tableEdit(view, opts) {
+    const state = view.state, sel = state.selection.main;
+    if (!sel.empty) return false;
+    const t = tableContext(state, sel.head);
+    if (!t) return false;
+    const matrix = t.rows.filter((r) => !r.isSep).map((r) => r.cells.slice());
+    const nCols = t.nCols;
+    for (const r of matrix) while (r.length < nCols) r.push('');
+    let row = t.row + (opts.dRow || 0), col = t.col + (opts.dCol || 0);
+    if (col >= nCols) { col = 0; row += 1; }
+    if (col < 0) { col = nCols - 1; row -= 1; }
+    if (row < 0) { row = 0; col = 0; }
+    if (row > matrix.length - 1) {
+      if (opts.addIfLast === false) { row = matrix.length - 1; col = nCols - 1; }
+      else matrix.push(new Array(nCols).fill(''));
+    }
+    const built = buildTable(matrix, t.sepAligns);
+    const gen = built.text.split('\n');
+    // 生成文本里：矩阵第 0 行（表头）→ 下标 0；数据行 row → 下标 row + 1（中间隔着分隔行）
+    const genIdx = row === 0 ? 0 : row + 1;
+    let pos = t.from;
+    for (let i = 0; i < genIdx; i++) pos += gen[i].length + 1;
+    const offs = built.offsets[genIdx];
+    pos += offs ? offs[col] : 1;
+    view.dispatch({
+      changes: { from: t.from, to: t.to, insert: built.text },
+      selection: { anchor: pos },
+      scrollIntoView: true,
+      userEvent: 'input.table',
+    });
+    return true;
   }
   class TableWidget extends WidgetType {
     constructor(src, from) { super(); this.src = src; this.from = from || 0; }
@@ -820,6 +966,9 @@ window.MdEditor = (() => {
         pos = l.to + 1;
       }
 
+      // 列表嵌套深度（按语法树数，比"猜前导空格几格 = 一级"可靠）：
+      // 进入 BulletList/OrderedList 记 +1，离开 -1；ListItem 用它换算缩进宽度
+      let listDepth = 0;
       Language.syntaxTree(state).iterate({
         from, to,
         enter: (node) => {
@@ -827,6 +976,15 @@ window.MdEditor = (() => {
           const parent = node.node.parent;
           const parentName = parent ? parent.name : '';
           try {
+            if (name === 'BulletList' || name === 'OrderedList') { listDepth++; return; }
+            // 嵌套列表项：前导空白替换成与预览同宽的缩进（见 IndentWidget 注释）
+            if (name === 'ListItem' && listDepth > 1) {
+              const l = doc.lineAt(node.from);
+              const ind = /^[ \t]*/.exec(l.text)[0].length;
+              if (ind > 0 && l.from + ind <= node.from) {
+                decos.push(Decoration.replace({ widget: new IndentWidget(listDepth - 1) }).range(l.from, l.from + ind));
+              }
+            }
             // ---- 块级元素 ----
             // 围栏代码块：围栏行 block replace（含换行符）真移除 —— CM6 高度模型精确
             // 感知，点击不偏移。光标在代码块内任意行时围栏显示源码（Obsidian：光标
@@ -1063,6 +1221,10 @@ window.MdEditor = (() => {
             }
           } catch (e) { /* 装饰构建失败不影响编辑 */ }
         },
+        // 离开列表节点 → 深度回退（enter 里 return false 的分支不会进列表，无副作用）
+        leave: (node) => {
+          if (node.name === 'BulletList' || node.name === 'OrderedList') listDepth--;
+        },
       });
     }
     return Decoration.set(decos, true);
@@ -1222,41 +1384,14 @@ window.MdEditor = (() => {
     { key: 'Mod-i', run: (v) => wrapSelection(v, '*', '*') },
     { key: 'Mod-h', run: (v) => wrapSelection(v, '==', '==') },
     { key: 'Mod-k', run: (v) => linkSelection(v) },
-    { key: 'Enter', run: listContinue },
-    // 表格源码行内 Tab → 跳到下一单元格（| 之后）；行尾 Tab 走默认缩进
+    // Enter：表格内 → 下移一行（末行补一行）；列表/引用 → 续行；否则走默认
     {
-      key: 'Tab',
-      run: (v) => {
-        const sel = v.state.selection.main;
-        if (!sel.empty) return false;
-        const line = v.state.doc.lineAt(sel.head);
-        if (!line.text.includes('|')) return false;
-        const rel = sel.head - line.from;
-        const next = line.text.indexOf('|', rel + 1);
-        if (next >= 0 && next < line.text.length - 1) {
-          v.dispatch({ selection: { anchor: line.from + next + 1 }, scrollIntoView: true });
-          return true;
-        }
-        return false;
-      },
+      key: 'Enter',
+      run: (v) => tableEdit(v, { dRow: 1 }) || listContinue(v),
     },
-    // Shift+Tab：前一单元格（| 之前）
-    {
-      key: 'Shift-Tab',
-      run: (v) => {
-        const sel = v.state.selection.main;
-        if (!sel.empty) return false;
-        const line = v.state.doc.lineAt(sel.head);
-        if (!line.text.includes('|')) return false;
-        const rel = sel.head - line.from;
-        const prev = line.text.lastIndexOf('|', Math.max(0, rel - 1));
-        if (prev > 0) {
-          v.dispatch({ selection: { anchor: line.from + prev }, scrollIntoView: true });
-          return true;
-        }
-        return false;
-      },
-    },
+    // Tab / Shift-Tab：表格内换格（末格 → 下一行首格，末行末格 → 追加一行并重排对齐）
+    { key: 'Tab', run: (v) => tableEdit(v, { dCol: 1 }) },
+    { key: 'Shift-Tab', run: (v) => tableEdit(v, { dCol: -1, addIfLast: false }) },
   ]);
 
   // ---------- Live Preview 开关（Compartment） ----------

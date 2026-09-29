@@ -407,25 +407,33 @@
     if (pv) {
       const num = (el, prop) => (el ? parseFloat(css(el, prop)) || 0 : 0);
       const show = (el, prop) => (el ? css(el, prop) : '缺');
+      // 行内元素（加粗/斜体/行内代码/高亮）在两边的**同一个源行**里取，否则会拿 live 的
+      // 引用块内加粗去比预览正文里的加粗（实测踩过：颜色对不上是取错元素，不是真差异）
+      const findLive = (c) => (c.scope ? (lineEl(c.scope) || { querySelector: () => null }).querySelector(c.live) : q(c.live));
+      const findPv = (c) => {
+        if (!c.scope) return pv.querySelector(c.pv);
+        const holder = [...pv.querySelectorAll('p,li,blockquote,td,th')].find((e) => e.textContent.includes(c.scope));
+        return holder ? (holder.matches(c.pv) ? holder : holder.querySelector(c.pv)) : null;
+      };
       // live 元素可能因视口虚拟化不在 DOM → 先滚到该行（光标随后移开，恢复渲染态）
       const ensureLive = async (c) => {
-        if (!q(c.live)) {
-          api.gotoLine(lineNoOf(c.doc)); await sleep(320);
+        if (!findLive(c)) {
+          api.gotoLine(lineNoOf(c.doc || c.scope)); await sleep(320);
           api.setCursor(DOC.length); await sleep(180);
         }
       };
       const CASES = [
-        { name: 'h1', live: '.cm-md-h1', pv: 'h1' },
-        { name: 'h2', live: '.cm-md-h2', pv: 'h2' },
-        { name: 'h3', live: '.cm-md-h3', pv: 'h3' },
-        { name: 'h4', live: '.cm-md-h4', pv: 'h4' },
-        { name: 'h5', live: '.cm-md-h5', pv: 'h5' },
-        { name: 'h6', live: '.cm-md-h6', pv: 'h6' },
+        { name: 'h1', live: '.cm-md-h1', pv: 'h1', doc: '一级标题 H1' },
+        { name: 'h2', live: '.cm-md-h2', pv: 'h2', doc: '二级标题 H2' },
+        { name: 'h3', live: '.cm-md-h3', pv: 'h3', doc: '三级标题 H3' },
+        { name: 'h4', live: '.cm-md-h4', pv: 'h4', doc: '四级标题 H4' },
+        { name: 'h5', live: '.cm-md-h5', pv: 'h5', doc: '五级标题 H5' },
+        { name: 'h6', live: '.cm-md-h6', pv: 'h6', doc: '六级标题 H6' },
         { name: '正文', live: '.cm-line:not([class*="cm-md-"])', pv: 'p', doc: '正文包含' },
-        { name: '加粗', live: '.cm-md-strong', pv: 'strong' },
-        { name: '斜体', live: '.cm-md-em', pv: 'em' },
-        { name: '行内代码', live: '.cm-md-code', pv: 'code' },
-        { name: '高亮', live: '.cm-md-highlight', pv: 'mark' },
+        { name: '加粗', live: '.cm-md-strong', pv: 'strong', scope: '正文包含' },
+        { name: '斜体', live: '.cm-md-em', pv: 'em', scope: '正文包含' },
+        { name: '行内代码', live: '.cm-md-code', pv: 'code', scope: '删除线与' },
+        { name: '高亮', live: '.cm-md-highlight', pv: 'mark', scope: '高亮文字' },
         { name: '引用', live: '.cm-line.cm-md-quote-line', pv: 'blockquote', doc: '引用第一行' },
         { name: '代码块', live: '.cm-line.cm-md-fence-line', pv: 'pre code', doc: 'const msg' },
         { name: '表头格', live: '.cm-md-table th', pv: 'th', doc: '左对齐列' },
@@ -433,11 +441,63 @@
       ];
       api.gotoLine(1); await sleep(320);
       for (const c of CASES) {
-        if (c.doc) await ensureLive(c);
-        const le = q(c.live), ve = pv.querySelector(c.pv);
+        await ensureLive(c);
+        const le = findLive(c), ve = findPv(c);
         const lf = num(le, 'font-size'), vf = num(ve, 'font-size');
         add('一致性: ' + c.name + ' 字号两边相同', !!(le && ve) && Math.abs(lf - vf) <= 0.75,
           'live=' + (le ? show(le, 'font-size') : '元素不在视口') + ' preview=' + (ve ? show(ve, 'font-size') : '缺'));
+      }
+      // 颜色也必须一致：只锁字号是不够的 —— 用户报的「文字几乎全是白色」就是颜色漂移
+      // （实时预览正文用 --editor-text、加粗用 --text-bright，预览用 --text，crimson 下差一档亮度）。
+      // 两边可能一个给 rgb()、一个给 color(srgb …)（color-mix 的结果），这里统一归一化后比。
+      const parseColor = (c) => {
+        if (!c) return null;
+        let m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?/.exec(c);
+        if (m) return [1, 2, 3].map((i) => parseFloat(m[i]) * 255).concat(m[4] != null ? [parseFloat(m[4]) * 255] : []);
+        m = /^rgba?\(([^)]+)\)/.exec(c);
+        if (m) return m[1].split(',').map((v) => parseFloat(v)).slice(0, 4);
+        return null;
+      };
+      const closeColor = (a, b) => {
+        const x = parseColor(a), y = parseColor(b);
+        if (!x || !y) return String(a) === String(b);
+        if (Math.abs(x.length - y.length) > 1) return false;
+        for (let i = 0; i < 3; i++) if (Math.abs((x[i] || 0) - (y[i] || 0)) > 2) return false;
+        return true;
+      };
+      // ⚠ 颜色循环前必须滚回文首：上一轮已经滚到表格，视口外的标题不在 DOM（会量成「缺」）
+      api.gotoLine(1); await sleep(320);
+      for (const c of CASES) {
+        await ensureLive(c);
+        const le = findLive(c), ve = findPv(c);
+        const lc = show(le, 'color'), vc = show(ve, 'color');
+        add('一致性: ' + c.name + ' 颜色两边相同', !!(le && ve) && closeColor(lc, vc),
+          'live=' + lc + ' preview=' + vc);
+      }
+      // 嵌套列表缩进量：实时预览用 IndentWidget 撑出与预览 ul padding-left 同宽的缩进
+      // （历史：源码里的 2 空格在比例字体下只有 9px vs 预览 24px → 子项看起来跟父项齐平）
+      {
+        const textLeft = (el) => {
+          if (!el) return null;
+          const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          let n;
+          while ((n = w.nextNode())) {
+            if (n.textContent.trim()) {
+              const rg = document.createRange();
+              rg.setStart(n, 0); rg.setEnd(n, 1);
+              return Math.round(rg.getBoundingClientRect().left);
+            }
+          }
+          return null;
+        };
+        api.gotoLine(lineNoOf('无序列表一')); await sleep(400);
+        const dLive = textLeft(lineEl('嵌套列表二一')) - textLeft(lineEl('无序列表一'));
+        const pvParent = [...pv.querySelectorAll('li')].find((e) => e.textContent.includes('无序列表一') && !e.textContent.includes('嵌套'));
+        const pvChild = [...pv.querySelectorAll('li')].find((e) => e.textContent.trim().startsWith('嵌套列表二一'));
+        const dPv = textLeft(pvChild) - textLeft(pvParent);
+        add('一致性: 嵌套列表缩进量相同', Number.isFinite(dLive) && Number.isFinite(dPv) && Math.abs(dLive - dPv) <= 3,
+          'live=' + dLive + 'px preview=' + dPv + 'px');
+        api.gotoLine(1); await sleep(250);
       }
       // 字重/列宽/内边距也一并锁：层级感与行长都靠它们
       // ⚠ 必须先把视口滚回文首 —— 上面的字号循环会滚到引用/代码块/表格处，
@@ -466,6 +526,60 @@
         '');
     }
     tmp.remove();
+  }
+
+  // ---------- 表格 Excel 式编辑（Tab 换格 / 末行末格增行 / Enter 下行 / 自动对齐） ----------
+  // 用户原话：「表格也不能像 excel 那样的表格使用」。旧实现 Tab 只在本行找下一个 `|`，
+  // 行尾就停住；Enter 会把一行表格劈成两行。这里按键盘真实路径验（合成 keydown → CM6 keymap）。
+  {
+    const pressKey = (k, keyCode) => {
+      const ev = new KeyboardEvent('keydown', { key: k, keyCode, which: keyCode, bubbles: true, cancelable: true });
+      document.querySelector('.cm-content').dispatchEvent(ev);
+      return ev.defaultPrevented;
+    };
+    const tblOrig = api.getValue();
+    // 等宽显示宽度（CJK 算 2 列）——判断"各行竖线是否落在同一列"
+    const dw = (s) => { let n = 0; for (const ch of s) n += /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1; return n; };
+    const tableLines = () => api.getValue().split('\n').filter((l) => /^\s*\|/.test(l));
+    const gridAligned = () => {
+      const pos = tableLines().map((l) => { const p = []; for (let k = 0; k < l.length; k++) if (l[k] === '|') p.push(dw(l.slice(0, k))); return p; });
+      return pos.length > 1 && pos.every((p) => JSON.stringify(p) === JSON.stringify(pos[0]));
+    };
+    const cursorCell = () => {
+      const st = api.view.state, line = st.doc.lineAt(st.selection.main.head);
+      const rel = st.selection.main.head - line.from;
+      return { col: (line.text.slice(0, rel).match(/\|/g) || []).length - 1, lineNo: line.number, line };
+    };
+    api.gotoLine(lineNoOf('左对齐列') + 2); await sleep(350);   // 第 1 数据行
+    api.setCursor(DOC.indexOf('| 单元格A1') + 2); await sleep(250);
+    const startCell = cursorCell();
+    add('表格: 光标初始在第 1 格', startCell.col === 0, 'col=' + startCell.col);
+    const handled = pressKey('Tab', 9); await sleep(300);
+    const cell2 = cursorCell();
+    add('表格: Tab 被表格接管', handled, '');
+    add('表格: Tab 换到下一格', cell2.col === 1 && cell2.lineNo === startCell.lineNo,
+      'row ' + startCell.lineNo + '→' + cell2.lineNo + ' col ' + startCell.col + '→' + cell2.col);
+    add('表格: Tab 后整表竖线对齐（含分隔行）', gridAligned(), tableLines().map((l) => dw(l)).join('/'));
+    // 末行末格 Tab → 追加一行并对齐
+    const lastRowText = tableLines().filter((l) => !/^\s*\|[\s:|-]*\|/.test(l)).pop();
+    const lastIdx = api.getValue().lastIndexOf(lastRowText);
+    api.setCursor(lastIdx + 2); await sleep(250);
+    const linesBefore = api.view.state.doc.lines;
+    for (let i = 0; i < 4; i++) { pressKey('Tab', 9); await sleep(200); }
+    const linesAfter = api.view.state.doc.lines;
+    add('表格: 末行末格 Tab 追加一行', linesAfter === linesBefore + 1, 'lines ' + linesBefore + '→' + linesAfter);
+    add('表格: 追加后仍对齐', gridAligned(), tableLines().map((l) => dw(l)).join('/'));
+    // Enter：表内下移一行（不劈裂表格）
+    api.setCursor(api.getValue().indexOf('| 单元格A2') + 2); await sleep(250);
+    const beforeEnter = { lines: api.view.state.doc.lines, cell: cursorCell() };
+    pressKey('Enter', 13); await sleep(300);
+    const afterEnter = { lines: api.view.state.doc.lines, cell: cursorCell() };
+    add('表格: Enter 表内下移一行不劈裂', afterEnter.lines === beforeEnter.lines && afterEnter.cell.lineNo === beforeEnter.cell.lineNo + 1,
+      'lines ' + beforeEnter.lines + '→' + afterEnter.lines + ' 行 ' + beforeEnter.cell.lineNo + '→' + afterEnter.cell.lineNo);
+    // 还原文档（自检不得改用户文件：还原后自动保存写回的还是原文）
+    api.setValue(tblOrig);
+    await sleep(200);
+    add('表格: 自检后文档已还原', api.getValue() === tblOrig, '');
   }
 
   api.setCursor(DOC.length);
