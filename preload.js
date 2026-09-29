@@ -133,6 +133,23 @@ contextBridge.exposeInMainWorld('myIDE', {
     // OpenAI 兼容对话（翻译插件用）：cfg={baseUrl, apiKey, model}
     chat: (cfg, messages) => ipcRenderer.invoke('llm:chat', cfg, messages),
   },
+  launch: {
+    config: () => ipcRenderer.invoke('launch:config'),
+    save: (cfg) => ipcRenderer.invoke('launch:save', cfg),
+    import: (p) => ipcRenderer.invoke('launch:import', p),
+    paths: () => ipcRenderer.invoke('launch:paths'),
+    addOrigin: (o) => ipcRenderer.invoke('launch:origin-add', o),
+    removeOrigin: (o) => ipcRenderer.invoke('launch:origin-remove', o),
+    start: (e) => ipcRenderer.invoke('launch:start', e),
+    stop: (e) => ipcRenderer.invoke('launch:stop', e),
+    restart: (e) => ipcRenderer.invoke('launch:restart', e),
+    status: (entries) => ipcRenderer.invoke('launch:status', entries),
+    alive: (e) => ipcRenderer.invoke('launch:alive', e),
+    logs: (id) => ipcRenderer.invoke('launch:logs', id),
+    clearLogs: (id) => ipcRenderer.invoke('launch:clear-logs', id),
+    portCheck: (p) => ipcRenderer.invoke('launch:port-check', p),
+    openUrl: (u) => ipcRenderer.invoke('launch:open-url', u),
+  },
   ai: {
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling
     chat: (cfg, messages, tools) => ipcRenderer.invoke('ai:chat', cfg, messages, tools),

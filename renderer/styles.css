@@ -282,6 +282,9 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 }
 #tree-head .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
 #tree-head .vt-btn.active { color: var(--accent); background: transparent; }
+/* 「只看 Git 文件」在非 Git 仓库项目里不生效 → 置灰（仍可点，切到 Git 项目后自动生效） */
+#tree-head .vt-btn.disabled { opacity: .4; }
+#tree-head .vt-btn.disabled:hover { background: transparent; color: var(--text-dim); }
 #tree-head .hide-mode-btn { padding: 0 6px; }
 /* 搜索结果行 + 空态 */
 .tree-row.tree-search-row { color: var(--text); }
@@ -327,15 +330,29 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tree-row .path-copy:hover { color: var(--accent); }
 .tree-children { margin-left: 14px; }
 .tree-root .tree-row { font-weight: 600; color: var(--text-bright); }
-/* Git 状态着色（PyCharm 式：新增绿 / 修改蓝 / 删除红） */
-.tree-row .nm.git-added { color: var(--green); }
-.tree-row .nm.git-modified { color: var(--accent); }
-.tree-row .nm.git-deleted { color: var(--red); text-decoration: line-through; }
-/* 选中行的文件名始终为白字，避免被 git 状态色覆盖导致高亮错误 */
-.tree-row.selected .nm { color: #fff; }
-.tree-row.selected .nm.git-added,
-.tree-row.selected .nm.git-modified,
-.tree-row.selected .nm.git-deleted { color: #fff; }
+/* Git 状态着色（PyCharm 式：新增绿 / 修改蓝 / 删除红 / 冲突橙）
+   ⚠ 这一组色板是**跨主题固定色**，故意不引用 --green/--accent/--red：
+   那三个变量 5 个主题各有一套（深色 #6aab73 / 浅色 #2e7d32 / 玫红 #e91e63 …），
+   同一个「已修改」在不同主题下会变成 5 种颜色，状态语义就没了。
+   固定值取的是「深浅底都能读」的中间明度（对 #1e1e1e 与 #ffffff 都有足够对比度）。
+   主题块（body.theme-*）**不要**覆盖 --git-*。 */
+:root {
+  --git-added: #2da44e;     /* 新增 / 未跟踪 */
+  --git-modified: #3b82f6;  /* 已修改（含已暂存） */
+  --git-deleted: #e5534b;   /* 已删除 */
+  --git-conflict: #d29922;  /* 冲突（未解决） */
+}
+.tree-row .nm.git-added { color: var(--git-added); }
+.tree-row .nm.git-modified { color: var(--git-modified); }
+.tree-row .nm.git-deleted { color: var(--git-deleted); text-decoration: line-through; }
+.tree-row .nm.git-conflict { color: var(--git-conflict); font-weight: 600; }
+/* 选中行：不再把文件名刷成白字（浅色主题下是白字铺浅底 = 看不见），
+   而是保留 Git 状态色 —— 选中信号由 2px 强调色左线 + 弱背景承担（见文件末尾「选中态分层」） */
+.tree-row.selected .nm { color: var(--text-bright); }
+.tree-row.selected .nm.git-added { color: var(--git-added); }
+.tree-row.selected .nm.git-modified { color: var(--git-modified); }
+.tree-row.selected .nm.git-deleted { color: var(--git-deleted); }
+.tree-row.selected .nm.git-conflict { color: var(--git-conflict); }
 /* 树内拖拽移动 */
 .tree-row.drop-target { outline: 1px dashed var(--accent); outline-offset: -1px; background: var(--bg-hover); }
 .tree-row.dragging-src { opacity: .4; }
@@ -3106,3 +3123,67 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .ctx-item.proj-item .proj-item-x { flex-shrink: 0; font-size: 10px; opacity: 0; padding: 0 2px; transition: opacity .12s; }
 .ctx-item.proj-item:hover .proj-item-x { opacity: .75; }
 .ctx-item.proj-item .proj-item-x:hover { opacity: 1; }
+
+/* ===== 启动面板（panel-launch，侧栏）=====
+   颜色一律走主题变量；状态点用 --ok / --del 语义色，不硬编码。 */
+#panel-launch { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+#launch-body { flex: 1; overflow: auto; padding: 4px 0 8px; }
+.launch-empty { padding: 14px 16px; color: var(--text-dim); font-size: 12px; line-height: 1.7; }
+.launch-group { margin-top: 2px; }
+.launch-cat {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px;
+  color: var(--text-dim); font-size: 11px; cursor: pointer; user-select: none;
+}
+.launch-cat:hover { color: var(--text); background: var(--btn-hover); }
+.launch-caret { display: inline-block; width: 10px; font-size: 9px; }
+.launch-cat-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launch-cat-n { font-size: 10px; opacity: .7; }
+.launch-cards { padding: 0 6px; }
+.launch-card {
+  padding: 5px 8px; margin: 2px 0; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 60%, transparent);
+}
+.launch-card:hover { background: var(--btn-hover); }
+.launch-card-head { display: flex; align-items: center; gap: 6px; }
+.launch-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px;
+  background: color-mix(in srgb, var(--text) 28%, transparent);
+}
+.launch-dot.on { background: var(--ok, #4caf50); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok, #4caf50) 22%, transparent); }
+.launch-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+.launch-port { font-size: 10.5px; color: var(--text-dim); font-family: var(--font-mono); }
+.launch-acts { display: flex; gap: 2px; flex: 0 0 auto; }
+.launch-acts .lp-btn { padding: 0 4px; font-size: 10px; line-height: 1.5; }
+.launch-cmd {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;
+}
+.launch-log { margin-top: 4px; }
+.launch-log-bar { display: flex; align-items: center; gap: 4px; }
+.launch-log-t { font-size: 10px; color: var(--text-dim); }
+.launch-log pre {
+  max-height: 190px; overflow: auto; margin: 3px 0 0; padding: 6px 8px;
+  background: var(--code-bg); border-radius: 6px;
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1.55;
+  color: var(--text); white-space: pre-wrap; word-break: break-all;
+}
+#launch-foot {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 10px; border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+.lp-foot-btn {
+  font-size: 11px; padding: 2px 10px; border-radius: 4px; cursor: pointer;
+  background: var(--btn-bg); color: var(--text); border: 1px solid var(--btn-border);
+}
+.lp-foot-btn:hover { background: var(--btn-hover); }
+.lp-foot-btn.primary { border-color: color-mix(in srgb, var(--accent) 55%, var(--btn-border)); }
+.lp-foot-btn.danger { border-color: color-mix(in srgb, var(--del-text, #e06c75) 50%, var(--btn-border)); }
+#launch-hint { font-size: 10px; color: var(--text-dim); }
+#launch-toast { position: fixed; right: 12px; bottom: 12px; z-index: 60; display: flex; flex-direction: column; gap: 6px; }
+.launch-toast-item {
+  padding: 5px 12px; border-radius: 5px; font-size: 12px;
+  background: var(--panel-strong); color: var(--text);
+  border: 1px solid var(--btn-border); box-shadow: 0 3px 10px rgba(0,0,0,.25);
+}
+.launch-toast-item.err { border-color: color-mix(in srgb, var(--del-text, #e06c75) 60%, var(--btn-border)); }

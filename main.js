@@ -916,6 +916,21 @@ for (const spec of GIT_OPS) {
     ipcMain.handle('git:' + spec.ch, (_e, ...args) => gitCall(spec.op, ...args));
   }
 }
+// ---------- 启动面板 IPC（由 launch-ops.js 的清单统一注册）----------
+// 与 git 同一套路：通道 → 服务函数的映射只写在 launch-ops.js 一处。
+// ⚠ 后台保留（用户拍板）：子进程 detached，关闭 my_ide **不杀**；退出时只把 PID 落盘，
+//   下次打开靠端口探测 / 落盘 PID 找回运行状态，仍然可以停止。
+const LAUNCH_OPS = require('./launch-ops');
+const launchService = require('./launch-service');
+for (const spec of LAUNCH_OPS) {
+  ipcMain.handle('launch:' + spec.ch, (_e, ...args) => launchService[spec.op](...args));
+}
+// 打开页面（要 shell，不放进 service）
+ipcMain.handle('launch:open-url', (_e, url) => {
+  if (url && /^[a-z][a-z0-9+.-]*:/i.test(String(url))) shell.openExternal(String(url)).catch(() => {});
+  return { ok: true };
+});
+
 // backendInfo 额外带上通道清单：渲染层用它做「preload 有没有漏加」的漂移检查
 ipcMain.removeHandler('git:backendInfo');
 ipcMain.handle('git:backendInfo', async (_e, force) => Object.assign(await nativeGit.info(!!force), { ops: GIT_OPS.map((s) => s.ch) }));
@@ -1294,6 +1309,7 @@ app.whenReady().then(() => {
         // 项目栏放大 3 倍细看：挤压 / 覆盖 / 截断这类问题全窗口截图看不清
         try { lines.push('     截图 → check-ui-1b-projectbar-x3.png (' + (await grab('check-ui-1b-projectbar-x3.png', { x: 0, y: 0, width: 1000, height: 40, scale: 3 })) + ' 字节)'); } catch {}
         await run('项目面板顶部工具条', js(steps.treeHead), 'check-ui-1a-treehead.png');
+        await run('项目树：只看 Git 文件 + 状态固定色板', js(steps.treeGitOnly), 'check-ui-1x-git-only.png');
         await run('侧栏项目面板（取消上下分栏）', js(steps.sidePanelOnly, demo), 'check-ui-1l-side-panel.png');
         await run('提交面板', js(steps.commitPanel), 'check-ui-1c-commit-panel.png');
         await run('提交面板（PyCharm 复刻）', js(steps.commitPanelParity), 'check-ui-1d-commit-parity.png');
@@ -1428,5 +1444,6 @@ app.whenReady().then(() => {
   }
 });
 
+app.on('before-quit', () => { try { launchService.shutdown(); } catch {} });
 app.on('window-all-closed', () => { app.quit(); });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

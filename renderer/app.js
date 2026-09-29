@@ -98,8 +98,8 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'git', 'tasks', 'db', 'browser', 'log'];
-  const SIDE_TOOLS = ['project', 'outline', 'git', 'tasks'];
+  const ALL_TOOLS = ['project', 'outline', 'git', 'tasks', 'launch', 'db', 'browser', 'log'];
+  const SIDE_TOOLS = ['project', 'outline', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
@@ -213,7 +213,7 @@ const App = (() => {
     if (activeTool === 'browser') sidePanel = 'browser';
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
-    for (const t of ['project', 'outline', 'git', 'tasks', 'db', 'browser']) {
+    for (const t of ['project', 'outline', 'git', 'tasks', 'launch', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
@@ -951,6 +951,7 @@ const App = (() => {
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }
+    if (window.LaunchPanel) { LaunchPanel.init(); document.getElementById('tool-launch').onclick = () => switchTool('launch'); }
     if (window.AiPanel) {
       AiPanel.init();
       document.getElementById('tool-ai').onclick = () => toggleAi();
