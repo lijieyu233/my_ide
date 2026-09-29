@@ -140,8 +140,17 @@ async function status(dir) {
   let matrix;
   try {
     matrix = await git.statusMatrix({ fs, dir: root });
-  } catch (e) {
-    return { isRepo: true, root, branch, changed: [], error: String(e.message || e) };
+  } catch {
+    // 工作区正在被改写时（自检里"挪目录 / 建夹具"与 0 延迟的 git 刷新撞在一起）statusMatrix
+    // 会偶发抛 "An internal error caused this command to fail."，表现为 changed=[] + tracked=[]
+    // → 提交窗口空列表、文件树状态色全丢、"只看 Git 文件"把树清空（2026-09-29 实测复现）。
+    // status 是**只读且幂等**的 → 稍等再试一次；仍失败才如实报错（上层按"没拿到状态"处理）。
+    await new Promise((r) => setTimeout(r, 90));
+    try {
+      matrix = await git.statusMatrix({ fs, dir: root });
+    } catch (e2) {
+      return { isRepo: true, root, branch, changed: [], tracked: [], error: String(e2.message || e2) };
+    }
   }
   ignoreCache.clear(); // .gitignore 内容可能已变，每次 status 重新读
   const changed = [];

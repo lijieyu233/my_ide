@@ -1216,6 +1216,35 @@ fs.mkdirSync(repo);
     });
   }
 
+  // ---------- status：走查失败时重试一次 ----------
+  // 真实现场：工作区正被改写（自检里挪夹具目录 / 自动刷新 0 延迟）时 statusMatrix 会偶发抛
+  // InternalError，表现是 changed=[] + tracked=[] —— 提交窗口空列表、文件树状态色全丢、
+  // 「只看 Git 文件」把整棵树清空。status 只读幂等 → 必须重试，不能把"读失败"当成"没有变更"。
+  await okAsync('status：statusMatrix 偶发抛错时重试一次（不把读失败当成没有变更）', async () => {
+    const repo = path.join(tmp, 'repo-status-retry');
+    fs.mkdirSync(repo);
+    await G.initRepo(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+    await G.commit(repo, { message: 'init', files: ['a.txt'] });
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a changed\n');
+    const orig = git.statusMatrix;
+    let calls = 0;
+    git.statusMatrix = async (args) => {
+      calls++;
+      if (calls === 1) throw new Error('An internal error caused this command to fail.');
+      return orig(args);
+    };
+    try {
+      const st = await G.status(repo);
+      assert.strictEqual(calls, 2, '应该恰好重试一次，实际调用 ' + calls + ' 次');
+      assert.ok(!st.error, '重试成功后不该报错: ' + st.error);
+      assert.ok((st.tracked || []).includes('a.txt'), '重试后 tracked 清单应包含 a.txt（被 git 管理的文件）');
+      assert.ok((st.changed || []).some((c) => c.file === 'a.txt'), '重试后变更列表应有 a.txt');
+    } finally {
+      git.statusMatrix = orig;
+    }
+  });
+
   // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
   //   （实测在 npm run 下直接挂住不返回 —— 同样的代码直跑 node 却正常，最容易踩的假死）。
   //   改成 rename 到同盘的回收站目录（renameSync 不被垫片拦），留给系统临时目录自己回收。
