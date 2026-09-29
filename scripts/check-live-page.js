@@ -354,13 +354,26 @@
   api.gotoLine(lineNoOf('单元格A1')); await sleep(350);
   {
     const lineOf = (pos) => DOC.slice(0, pos).split('\n').length;
+    // ⚠ 隐藏窗口（headless 自检）里 Chromium 不跑 rAF → CM6 的 measure 循环可能滞后一拍，
+    //   第一次按 rect 点击会落到上一行的位置（实测偶发：「单元格A2」落到 A1 那行）。
+    //   命中失败才重试一次（先 scrollIntoView + 等一拍），而不是无条件点两次。
+    const clickLine = async (key, el) => {
+      const i = DOC.indexOf(key), lineEnd = DOC.indexOf('\n', i);
+      let sel = api.getSelection();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await ensureVisible(el);
+        await sleep(150);
+        click(el);
+        await sleep(180);
+        sel = api.getSelection();
+        if (sel.head >= i - 1 && sel.head <= lineEnd) return sel;
+      }
+      return sel;
+    };
     for (const key of ['单元格A2', '内容较长的一格', '左对齐列', '单元格A1', '七、表格', '八、其他块级']) {
       const el = lineEl(key);
       if (!el) { add('映射: ' + key, false, '行不在 DOM'); continue; }
-      await ensureVisible(el);
-      click(el);
-      await sleep(60);
-      const sel = api.getSelection();
+      const sel = await clickLine(key, el);
       const i = DOC.indexOf(key);
       const lineEnd = DOC.indexOf('\n', i);
       add('映射: 点击「' + key.slice(0, 6) + '」行 → 落在第 ' + lineOf(sel.head) + ' 行',
@@ -394,8 +407,11 @@
   // 这里把两边的计算样式逐项对比锁死：以后谁再把 px 写回去，这里立刻红。
   {
     // 预览侧：临时把 .md-view 渲染到屏幕外（仍有布局 → 计算样式有效），不切模式即可同屏对比
+    // ⚠ 容器宽度必须取「编辑区实际宽度」：固定 900px 时预览会拿到满 820 的列宽，而 live 那边
+    //   受编辑区实际宽度限制（实测 800 → 正文列 732）→ 会量出一个假差异
     const tmp = document.createElement('div');
-    tmp.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+    const editorW = (() => { const e = document.querySelector('.editor-cm-wrap'); return e ? Math.round(e.getBoundingClientRect().width) : 900; })();
+    tmp.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + (editorW || 900) + 'px;';
     document.body.appendChild(tmp);
     let pv = null;
     try {
@@ -509,12 +525,23 @@
       }
       api.gotoLine(1); await sleep(300);
       const cw = document.querySelector('.cm-content');
-      add('一致性: 正文列宽上限相同(820px)',
-        num(cw, 'max-width') === num(pv, 'max-width') && num(cw, 'max-width') > 0,
-        'live=' + show(cw, 'max-width') + ' preview=' + show(pv, 'max-width'));
-      add('一致性: 正文左右内边距相同(34/34)',
-        num(cw, 'padding-left') === num(pv, 'padding-left') && num(cw, 'padding-right') === num(pv, 'padding-right'),
-        'live=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' preview=' + show(pv, 'padding-left') + '/' + show(pv, 'padding-right'));
+      // 正文档位现在挂在 scroller 上（`.cm-content` 不能吃横向内边距 —— 那会让 CM6 的
+      // 整行选区矩形比正文列宽出这段，见 md-editor.js baseTheme 的注释）
+      const sc = q('.editor-cm-wrap .cm-scroller');
+      // ⚠ 不去比"实际像素宽"：live 的 scroller 带 `scrollbar-gutter: stable both-edges`
+      //   （左右各预留滚动条宽度），而屏幕外的预览容器里没有滚动条 → 量出来会差 20px 的假差异。
+      //   真正决定"正文列一致"的是这三个同源值：列宽上限 + 左右内边距。
+      add('一致性: 正文列宽上限与左右内边距同源（scroller vs .md-view）',
+        num(sc, 'max-width') === num(pv, 'max-width') && num(sc, 'max-width') > 0
+        && num(sc, 'padding-left') === num(pv, 'padding-left') && num(sc, 'padding-right') === num(pv, 'padding-right'),
+        'live scroller=' + show(sc, 'max-width') + '/' + show(sc, 'padding-left') + '/' + show(sc, 'padding-right')
+        + ' preview=' + show(pv, 'max-width') + '/' + show(pv, 'padding-left') + '/' + show(pv, 'padding-right'));
+      add('一致性: .cm-content 不吃横向内边距（否则选区色块会宽出这段）',
+        num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0 && num(sc, 'padding-left') === num(pv, 'padding-left'),
+        'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' scroller=' + show(sc, 'padding-left') + ' preview=' + show(pv, 'padding-left'));
+      add('一致性: .cm-content 不吃横向内边距（否则选区色块会宽出这段）',
+        num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0 && num(sc, 'padding-left') === num(pv, 'padding-left'),
+        'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' scroller=' + show(sc, 'padding-left') + ' preview=' + show(pv, 'padding-left'));
       // 预览必须跟随「编辑区字号」：状态栏那个 − 17 + 调的就是它，不跟随 = 用户改了字号没反应
       add('一致性: 预览跟随编辑区字号',
         Math.abs(num(pv, 'font-size') - num(cw, 'font-size')) <= 0.75,

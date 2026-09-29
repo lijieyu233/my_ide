@@ -443,13 +443,16 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .md-split .md-split-preview .md-view { max-width: none; padding: 16px 20px; }
 
 /* ---------- Markdown 实时预览（Obsidian 式块编辑器） ---------- */
-/* 正文列宽上限：挂在 scroller 上而不是 .cm-content —— .cm-content 的 flex-grow 会把自由
-   空间全吃掉，auto margin 拿不到剩余空间，居中不生效。
-   ⚠ 820 与 .md-view 的 max-width 必须相等，且左右内边距也由 .cm-content 承担（22/34/38），
-   否则同一篇文档在实时预览里行宽比预览多出一整条内边距（历史：876 = 820 + 左右各 28，
-   实际正文列 820 而预览只有 752 —— 两种模式行长肉眼可见不一样）。 */
+/* 正文档位：列宽上限 + 左右内边距一律挂在这里，`.cm-content` 只留上下内边距。
+   ⚠ 为什么左右内边距不能写在 .cm-content 上：CM6 画整行选区矩形时，横向边界取
+   `.cm-content` 的**边框盒** + 首个 `.cm-line` 的 padding，**不扣 content 自己的左右
+   padding**（实测它只读 .cm-line 的 paddingLeft/Right）→ content 带横向内边距时，选区色块
+   会比正文列左右各宽出这一段，也就是用户原话「选中 UI 覆盖的范围不对」。
+   888 的由来（⚠ 别写成"正文列 820 + 68"）：`.md-view` 的盒子是 820、内边距 34×2 →
+   它里面的**正文列是 752**；实时预览这边要让正文列也 = 752，于是盒子上限 = 752 + 34×2 = 820。
+   两端同宽时，正文列左边界两边实测一致（两种模式同一列位置）。 */
 #viewer > .editor-cm-wrap .cm-scroller {
-  width: 100%; max-width: 820px; align-self: center;
+  width: 100%; max-width: 820px; align-self: center; padding: 0 34px;
   /* 纵向滚动条会吃掉右侧 10px → 文字列看起来偏左（实测左 71 / 右 81）。
      两侧都预留滚动条宽度，正文才是真正居中。 */
   scrollbar-gutter: stable both-edges;

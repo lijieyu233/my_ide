@@ -64,15 +64,16 @@ window.MdEditor = (() => {
     '& .cm-content [class^="ͼ"]': { textDecorationLine: 'none' },
     '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--editor-text)', fontSize: 'var(--editor-font-size, 13px)' },
     // 正文用 UI 无衬线字体 —— 与 .md-view 预览同源（Obsidian 编辑态也是 UI 字体，非等宽）
-    // 左右内边距与列宽上限**全部交给 .cm-content**（22/34/38 + 820），与 .md-view 逐项相同：
-    // 见 styles.css 里 `#viewer > .editor-cm-wrap .cm-scroller` 的注释（行长不一致的坑）
     '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto' },
-    // 正文列：可读宽度 + 居中（与 .md-view 同一套数字）。原来没有任何上限 →
-    // 一行横跨整个编辑区，横向元素都变得很长
-    // 🔴 前景色取 --text（= .md-view 预览正文色），不是 --editor-text：两者在多数主题里
-    //   差一档亮度（crimson 实测 #d8b3c0 vs #e8cdd6），实时预览整体更白 →
-    //   用户原话「文字几乎全是白色」。源码模式不受这里影响（liveTheme 只在 live 挂载）。
-    '.cm-content': { padding: '22px 34px 38px', maxWidth: '820px', margin: '0 auto', caretColor: 'var(--accent)', color: 'var(--text)' },
+    // 正文列：可读宽度 + 居中（与 .md-view 同一套数字）→ 见 styles.css 的 scroller 规则。
+    // 🔴 左右内边距只能是 0：CM6 画整行选区矩形（RectangleMarker.forRange）时，横向边界取
+    //   `.cm-content` 的**边框盒** + 首个 .cm-line 的 padding，**不扣 content 自己的左右 padding**
+    //   （实测：CM6 的选区几何只读 `.cm-line` 的 paddingLeft/Right）。所以 content 一旦有横向
+    //   内边距，选区色块就比正文列左右各宽出这一段 —— 用户原话「选中 UI 覆盖的范围不对」就是它。
+    //   列宽上限与左右内边距因此都交给 scroller（它不在 content 的边框盒里，不进选区几何）。
+    // 🔴 前景色取 --text（= .md-view 预览正文色），不是 --editor-text：两者多数主题差一档亮度
+    //   （crimson 实测 #d8b3c0 vs #e8cdd6），实时预览整体更白 → 用户原话「文字几乎全是白色」。
+    '.cm-content': { padding: '22px 0 38px', maxWidth: 'none', margin: '0 auto', caretColor: 'var(--accent)', color: 'var(--text)' },
     '&.cm-focused': { outline: 'none' },
     '.cm-gutters': { display: 'none' },
     // activeLine / searchMatch 背景必须画在 ::before(z:-3)：drawSelection 的

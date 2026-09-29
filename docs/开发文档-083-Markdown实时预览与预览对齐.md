@@ -109,7 +109,7 @@ headless 带来的两个坑（已处理）：
 | 项目 | 结果 |
 |------|------|
 | `npm test` | 269 通过 / 0 失败（基线不变） |
-| `electron . --check-live`（headless，默认） | 125 通过 / 0 失败 / 6 跳过（共 131，含第二轮新增的颜色/缩进/表格断言） |
+| `electron . --check-live`（headless，默认） | 126 通过 / 0 失败 / 6 跳过（共 132，含第二轮新增的颜色/缩进/表格/几何断言） |
 | `electron . --check-live --check-live-show` | 107 通过 / 0 失败（焦点相关项真量） |
 | 13px 与 17px 两档对照（截图 + 计算样式） | 15 项字号、字重逐项相等 |
 
@@ -125,15 +125,39 @@ headless 带来的两个坑（已处理）：
 | 文字几乎全是白色 | 正文 live `#e8cdd6` / 加粗 `#f2dce4` vs 预览 `#d8b3c0` | live 用 `--editor-text`、加粗再加一层 `--text-bright`；预览正文用 `--text`、加粗只改字重 | `.cm-content` 前景色改 `--text`；`oneDarkHighlight` 与 `.cm-md-strong` 都去掉加粗的额外颜色（与预览一致：加粗只变字重）；预览侧补 `li::marker` / `del` 与 live 同源 |
 | 表格不能像 excel 用 | 旧 Tab 只在本行找下一个 `\|`，行尾即停；Enter 会把一行表格**劈成两行** | 只按"行"处理，且从不重排 | 按整张表处理：`tableContext` 定位行列 → Tab 换格/末格换行/末行末格**追加一行**、Shift+Tab 反向、Enter 下移一行（末行补行）；每次编辑后**按显示宽度（CJK 算 2 列）重排管道**，光标重定位到目标单元格。表格源码行改等宽字体 + 不折行 → 光标进表时是一张对齐的网格（过长横向滚动，跟 Excel 一样） |
 
-> 「选中 ui 覆盖的范围不对」这条 HEADLESS 量不了：CM6 的 `drawSelection` 只在编辑器拿到 DOM 焦点时
-> 绘制选区层/光标层（隐藏窗口拿不到，`view.hasFocus` 与 `document.hasFocus()` 都靠 rAF/焦点事件），
-> 所以自检里这 6 项记 SKIP。要定位这条得开一次 `--check-live-show`（或用户描述具体差在哪：
-> 是"色块铺满整行到右边缘"还是"色块比选中的文字偏了一行"）。
+### 5.6 「选中 UI 覆盖的范围不对」：根因找到并修掉（无需再问用户）
+
+一开始以为这条量不了（CM6 只在聚焦时绘制选区层），后来**改从几何上算**：读
+`cm6-bundle.min.js` 里绘制选区的 `RectangleMarker.forRange()`，它算整行矩形的横向边界用的是
+
+```
+left  = .cm-content 的边框盒 left  + 首个 .cm-line 的 paddingLeft
+right = .cm-content 的边框盒 right − 首个 .cm-line 的 paddingRight
+```
+
+**不扣 `.cm-content` 自己的左右 padding**（实测只读 `.cm-line` 的）。而上一轮我为了和预览对齐，
+把 34px 左右内边距写在了 `.cm-content` 上 → 选区色块比正文列**左右各宽 34px**。用真实 profile 实测：
+
+| | 正文列 | 选区矩形边界 |
+|---|---|---|
+| 修复前 | `[456..1188]` | `[422..1222]`（左右各多 34px） |
+| 修复后 | `[456..1188]` | `[456..1188]`（完全重合） |
+| 预览正文列 | `[456..1188]` | — |
+
+修法：`.cm-content` 的左右内边距改 0，列宽上限与 34px 内边距挪到 **scroller**（它不在 `.cm-content`
+的边框盒里，因此不进选区几何）。scroller `max-width: 820px`（= `.md-view` 的盒子宽；两者正文列
+都是 752，实测左边界都是 456）。自检里同步加了断言：
+「正文列宽上限与左右内边距同源（scroller vs .md-view）」+
+「`.cm-content` 不吃横向内边距（否则选区色块会宽出这段）」。
+
+> 附带发现：屏幕外渲染 `.md-view` 做对照时**不能比实际像素宽** —— live 的 scroller 带
+> `scrollbar-gutter: stable both-edges`（左右各预留滚动条宽），屏幕外容器里没有滚动条，
+> 会比出 20px 的假差异（132 项里那次唯一红的假失败）。所以改成比 max-width + 内边距。
 
 新增断言（`--check-live-page.js`）：颜色逐项对比（h1–h6/正文/加粗/斜体/行内代码/高亮/引用/代码块/表头格/数据格，
-归一化 `rgb()` 与 `color(srgb …)` 后比）、嵌套列表缩进量相同、以及 7 条表格 Excel 式编辑
+归一化 `rgb()` 与 `color(srgb …)` 后比）、嵌套列表缩进量相同、正文档位同源，以及 7 条表格 Excel 式编辑
 （Tab 接管 / 换格 / 竖线对齐含分隔行 / 末行末格增行 / 追加后仍对齐 / Enter 不劈裂 / 自检后文档还原）。
-自检基线：**125 通过 / 0 失败 / 6 跳过（共 131 项）**。
+自检基线：**126 通过 / 0 失败 / 6 跳过（共 132 项）**。
 
 ## 6. 铁律（写在这里免得下次再踩）
 
@@ -142,3 +166,6 @@ headless 带来的两个坑（已处理）：
 3. CM6 行内间距**只能用 padding**（heightmap 不含 margin，用 margin 会让点击坐标整体错位）。
 4. block widget 的点击必须自己做映射（CM6 只知道整块起止位置）。
 5. 自检脚本默认 headless；要显示窗口的跑法必须显式加 `-show` 后缀，别默认弹到用户桌面。
+6. **`.cm-content` 永远不要吃横向内边距**：CM6 的整行选区矩形只按 `.cm-line` 的 padding 收缩，
+   content 自己的左右 padding 会让色块比正文列宽出这一段（「选中范围不对」的根因）。
+   列宽上限与左右内边距一律挂 scroller。
