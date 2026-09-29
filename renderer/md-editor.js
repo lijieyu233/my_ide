@@ -119,8 +119,8 @@ window.MdEditor = (() => {
     // （表格、代码块、==高亮==、行内代码内选中无颜色的根因）。
     // 统一方案：背景/边框全部移到 z-index:-3 的 ::before 上 —— 绘制顺序变为
     // 装饰背景(-3) → 选区(-2) → 文字(最上层)，视觉零变化且选区全格式可见。
-    '.cm-line.cm-md-tr-head, .cm-line.cm-md-tr-row, .cm-line.cm-md-tr-sep, .cm-line.cm-md-fence-line, .cm-line.cm-md-quote-line': { position: 'relative' },
-    '.cm-line.cm-md-tr-head::before, .cm-line.cm-md-tr-row::before, .cm-line.cm-md-tr-sep::before, .cm-line.cm-md-fence-line::before, .cm-line.cm-md-quote-line::before': {
+    '.cm-line.cm-md-tr-head, .cm-line.cm-md-tr-row, .cm-line.cm-md-tr-sep, .cm-line.cm-md-fence-line, .cm-line.cm-md-quote-line, .cm-line.cm-md-callout-line': { position: 'relative' },
+    '.cm-line.cm-md-tr-head::before, .cm-line.cm-md-tr-row::before, .cm-line.cm-md-tr-sep::before, .cm-line.cm-md-fence-line::before, .cm-line.cm-md-quote-line::before, .cm-line.cm-md-callout-line::before': {
       content: '""', position: 'absolute', inset: '0', zIndex: '-3',
     },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
@@ -207,6 +207,19 @@ window.MdEditor = (() => {
     '.cm-line.cm-md-quote-line::before': { borderLeft: '2px solid color-mix(in srgb, var(--accent) 55%, transparent)' },
     '.cm-line.cm-md-quote-first': { paddingTop: '0.62em' },
     '.cm-line.cm-md-quote-last': { paddingBottom: '0.62em' },
+    // Callout（Obsidian > [!note] 提示块）：整块用类型色左竖线 + 极淡底色 + 标题行
+    // 与预览 .md-view .md-callout 同源（同一套 .co-* 变量，见 styles.css）
+    '.cm-line.cm-md-callout-line': { paddingLeft: '0.92em', color: 'var(--text)', paddingTop: '0.15em', paddingBottom: '0.15em' },
+    '.cm-line.cm-md-callout-line::before': {
+      borderLeft: '3px solid var(--co-color, var(--callout-note))',
+      backgroundColor: 'color-mix(in srgb, var(--co-color, var(--callout-note)) 8%, transparent)',
+      borderRadius: '0 6px 6px 0',
+    },
+    '.cm-line.cm-md-callout-first': { paddingTop: '0.62em', borderTopLeftRadius: '6px' },
+    '.cm-line.cm-md-callout-last': { paddingBottom: '0.62em', borderBottomLeftRadius: '6px' },
+    // 标题行（> [!note] 标题）：类型色 + 加粗；图标由 widget 画
+    '.cm-md-callout-title': { color: 'var(--co-color, var(--callout-note))', fontWeight: '700' },
+    '.cm-md-callout-ic': { marginRight: '0.31em', userSelect: 'none' },
     // 围栏代码块（对齐 .md-view pre：背景块 + 圆角 6 + padding 1em/1.23em + 0.96em/1.6）
     // 注意：全部用 padding 不用 margin —— CM6 行高测量不含 margin，margin 会让
     // heightmap 与 DOM 错位 → 点击偏移（fence-first/last 同理）
@@ -358,6 +371,56 @@ window.MdEditor = (() => {
       const s = document.createElement('span');
       s.className = 'cm-md-bullet';
       s.textContent = '•';
+      return s;
+    }
+    ignoreEvent() { return false; }
+  }
+
+  // ---------- Callout（Obsidian 的 > [!note] 提示块） ----------
+  // 语法：块首行 `> [!type] 可选标题`（type 大小写不敏感，支持折叠标记 - / +，这里忽略折叠）。
+  // 两种模式共用同一张表：live 用行 class + 图标 widget，预览用容器 + 标题行。
+  // 图标沿用项目惯例用内联 SVG？—— 这里刻意用 emoji：Obsidian 自己的 callout 图标就是图形符号，
+  // 且它在标题行内是"内容"而不是工具条图标（UI 文案约定里的两套图标规矩针对的是列表/工具条）。
+  const CALLOUT_TYPES = {
+    note: ['📘', 'Note'], info: ['ℹ️', 'Info'], tip: ['🔥', 'Tip'], hint: ['🔥', 'Hint'],
+    important: ['🔥', 'Important'], success: ['✅', 'Success'], check: ['✅', 'Check'], done: ['✅', 'Done'],
+    question: ['❓', 'Question'], help: ['❓', 'Help'], faq: ['❓', 'FAQ'],
+    warning: ['⚠️', 'Warning'], caution: ['⚠️', 'Caution'], attention: ['⚠️', 'Attention'],
+    danger: ['⛔', 'Danger'], error: ['⛔', 'Error'],
+    failure: ['❌', 'Failure'], fail: ['❌', 'Fail'], missing: ['❌', 'Missing'],
+    example: ['📋', 'Example'], quote: ['💬', 'Quote'], cite: ['💬', 'Cite'],
+    bug: ['🐛', 'Bug'], abstract: ['📄', 'Abstract'], summary: ['📄', 'Summary'], tldr: ['📄', 'TLDR'],
+    todo: ['🕐', 'Todo'],
+  };
+  // 类型名 → 颜色 class（与 styles.css 的 .co-* 一一对应，两边共用）
+  const CALLOUT_CLS = {
+    note: 'co-note', info: 'co-info', tip: 'co-tip', hint: 'co-hint', important: 'co-tip',
+    success: 'co-success', check: 'co-success', done: 'co-success',
+    question: 'co-question', help: 'co-question', faq: 'co-question',
+    warning: 'co-warning', caution: 'co-warning', attention: 'co-warning',
+    danger: 'co-danger', error: 'co-danger',
+    failure: 'co-failure', fail: 'co-failure', missing: 'co-failure',
+    example: 'co-example', quote: 'co-quote', cite: 'co-quote',
+    bug: 'co-bug', abstract: 'co-abstract', summary: 'co-abstract', tldr: 'co-abstract',
+    todo: 'co-todo',
+  };
+  // 解析块首行 `[!type]`（允许 `> [!note]-` 折叠标记与 `> [!note] 自定义标题`）
+  function parseCallout(text) {
+    const m = /^\s*>\s*\[!([A-Za-z]+)\][-+]?\s*(.*)$/.exec(String(text));
+    if (!m) return null;
+    const type = m[1].toLowerCase();
+    const meta = CALLOUT_TYPES[type];
+    if (!meta) return null;
+    return { type, icon: meta[0], title: (m[2] || '').trim() || meta[1], cls: CALLOUT_CLS[type] || 'co-note' };
+  }
+  // 标题行里的 `[!type]` 与可选标题 → 图标 + 标题（保留标题文本可编辑）
+  class CalloutIconWidget extends WidgetType {
+    constructor(text, cls) { super(); this.text = text; this.cls = cls || 'cm-md-callout-ic'; }
+    eq(other) { return other.text === this.text && other.cls === this.cls; }
+    toDOM() {
+      const s = document.createElement('span');
+      s.className = this.cls;
+      s.textContent = this.text;
       return s;
     }
     ignoreEvent() { return false; }
@@ -1087,8 +1150,37 @@ window.MdEditor = (() => {
               return;
             }
             // 引用块：行级左竖线（光标行也保留竖线 —— Obsidian 行为）
+            // 块首行是 `> [!type]` 时按 Callout 渲染：类型色竖线 + 淡底色 + 图标标题
             if (name === 'Blockquote') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
+              const co = parseCallout(first.text);
+              if (co) {
+                for (let n = first.number; n <= last.number; n++) {
+                  const l = doc.line(n);
+                  decos.push(Decoration.line({ class: 'cm-md-callout-line ' + co.cls }).range(l.from));
+                }
+                decos.push(Decoration.line({ class: 'cm-md-callout-first' }).range(first.from));
+                decos.push(Decoration.line({ class: 'cm-md-callout-last' }).range(last.from));
+                // 首行的 `> [!type]` → 图标 + 标题样式（标题文本保留可编辑；
+                // 光标落在首行时整段源码显形，方便改类型/标题）
+                const m = /^(\s*>\s*)(\[![A-Za-z]+\][-+]?\s*)(.*)$/.exec(first.text);
+                if (m && !onLine(first.from)) {
+                  const markerFrom = first.from + m[1].length;
+                  const markerTo = markerFrom + m[2].length;
+                  decos.push(Decoration.replace({}).range(markerFrom, markerTo));
+                  decos.push(Decoration.widget({ widget: new CalloutIconWidget(co.icon), side: -1 }).range(markerFrom));
+                  const titleFrom = markerTo, titleTo = first.to;
+                  if (titleTo > titleFrom) {
+                    decos.push(Decoration.mark({ class: 'cm-md-callout-title' }).range(titleFrom, titleTo));
+                  } else {
+                    // 没写自定义标题 → 补类型默认名（Obsidian 行为：`> [!warning]` 显示 "⚠️ Warning"）
+                    decos.push(Decoration.widget({
+                      widget: new CalloutIconWidget(co.title, 'cm-md-callout-title cm-md-callout-ic'), side: 1,
+                    }).range(markerTo));
+                  }
+                }
+                return;
+              }
               for (let n = first.number; n <= last.number; n++) {
                 const l = doc.line(n);
                 decos.push(Decoration.line({ class: 'cm-md-quote-line' }).range(l.from));
@@ -1610,6 +1702,17 @@ window.MdEditor = (() => {
       destroy() { try { view.destroy(); } catch {} },
     };
   }
+
+  // Callout 类型表对预览侧开放（plugin-loader 后加载）：两边共用一张表，
+  // 不会出现"实时预览认得这个类型、预览不认"的漂移。
+  // ⚠ `window.MI` 是 plugin-loader.js（后加载）建的 → 这里必须自己兜底建出来，
+  //   否则 `if (window.MI)` 永远为假，预览侧拿不到表（实测：预览一个 callout 都不渲染）。
+  window.MI = window.MI || {};
+  MI.calloutMeta = (type) => {
+    const t = String(type || '').toLowerCase();
+    const meta = CALLOUT_TYPES[t];
+    return meta ? { icon: meta[0], title: meta[1], cls: CALLOUT_CLS[t] || 'co-note' } : null;
+  };
 
   return { create, resolveImgSrc };
 })();

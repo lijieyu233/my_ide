@@ -115,4 +115,22 @@ def greet(name: str) -> str:
     缩进代码块（4 空格）
     第二行缩进代码
 
+## 九、Callout（Obsidian 提示块）
+
+> [!note] 自定义标题
+> callout 正文第一行
+> callout 正文第二行。
+
+> [!warning]
+> 没写标题时用类型默认名。
+
+> [!tip] 列表
+> - callout 里的列表项一
+> - callout 里的列表项二
+
+> 普通引用不该变成 callout。
+
+> [!unknown-type] 未知类型
+> 应退回普通引用。
+
 结尾段落，光标请到这里再观察上方渲染。

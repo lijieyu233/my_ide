@@ -609,6 +609,61 @@
     add('表格: 自检后文档已还原', api.getValue() === tblOrig, '');
   }
 
+  // ---------- Callout（Obsidian > [!note] 提示块）两种模式对照 ----------
+  {
+    // live：滚到 callout 区（视口虚拟化）
+    api.gotoLine(lineNoOf('自定义标题')); await sleep(400);
+    api.setCursor(DOC.length); await sleep(250);   // 光标移开 → 渲染态
+    const coLines = [...document.querySelectorAll('.cm-line.cm-md-callout-line')];
+    add('Callout(live): 逐行渲染成 callout', coLines.length >= 5, 'count=' + coLines.length);
+    add('Callout(live): 图标 widget 渲染', document.querySelectorAll('.cm-md-callout-ic').length >= 3,
+      'count=' + document.querySelectorAll('.cm-md-callout-ic').length);
+    add('Callout(live): 标题用类型色', document.querySelectorAll('.cm-md-callout-title').length >= 2,
+      'count=' + document.querySelectorAll('.cm-md-callout-title').length);
+    const noteLine = coLines.find((e) => e.className.includes('co-note'));
+    add('Callout(live): 左竖线/底色画在 ::before 且非透明',
+      !!noteLine && (() => {
+        const b = getComputedStyle(noteLine, '::before');
+        return parseFloat(b.borderLeftWidth || '0') >= 2 && !transparent(b.backgroundColor);
+      })(),
+      noteLine ? getComputedStyle(noteLine, '::before').borderLeftWidth + '/' + getComputedStyle(noteLine, '::before').backgroundColor : '无 co-note 行');
+    // 源码标记 `> [!note]` 在渲染态应隐藏（光标移开后）
+    add('Callout(live): 渲染态隐藏 [!type] 标记', !allText().includes('[!note]') && !allText().includes('[!warning]'),
+      '');
+    // 普通引用不受影响（引用竖线仍在）
+    add('Callout(live): 普通引用仍是引用样式', document.querySelector('.cm-line.cm-md-quote-line') !== null, '');
+    // 预览：同屏对照（屏幕外渲染）
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+    document.body.appendChild(holder);
+    try {
+      const fn = MI.renderFor({ path: 'x.md', name: 'x.md', ext: 'md' });
+      const node = fn({ path: 'x.md', name: 'x.md', ext: 'md', content: DOC });
+      holder.appendChild(node);
+      const boxes = [...node.querySelectorAll('.md-callout')];
+      add('Callout(preview): 渲染成容器', boxes.length === 3, 'count=' + boxes.length);
+      add('Callout(preview): 标题行含图标', boxes.length > 0 && boxes.every((b) => (b.querySelector('.md-callout-title') || {}).textContent),
+        boxes.map((b) => (b.querySelector('.md-callout-title') || {}).textContent).join(' / '));
+      add('Callout(preview): 默认标题用类型名', boxes.some((b) => /Warning/.test((b.querySelector('.md-callout-title') || {}).textContent || '')), '');
+      add('Callout(preview): 正文没被标题吞掉', boxes[0] && boxes[0].textContent.includes('callout 正文第二行'), boxes[0] ? boxes[0].textContent.replace(/\s+/g, ' ').slice(0, 50) : '');
+      // 普通引用必须原样保留（不能被误判成 callout）—— 按内容找那一条，别按总数猜
+      // （preview-test.md 里本来就有好几条普通引用：引用示例 / 嵌套引用 / 这条）
+      const plain = [...node.querySelectorAll('blockquote')].find((b) => b.textContent.includes('普通引用不该变成 callout'));
+      add('Callout(preview): 普通引用没变 callout', !!plain && !plain.classList.contains('md-callout'), '');
+      add('Callout(preview): 未知类型退回普通引用',
+        [...node.querySelectorAll('blockquote')].some((b) => b.textContent.includes('[!unknown-type]')), '');
+      // 两种模式同类型同色
+      const pvNote = boxes.find((b) => b.className.includes('co-note'));
+      const pvColor = pvNote ? getComputedStyle(pvNote).borderLeftColor : '';
+      const liveColor = noteLine ? getComputedStyle(noteLine, '::before').borderLeftColor : '';
+      add('Callout: 同类型颜色两边相同', !!pvColor && !!liveColor && pvColor === liveColor, 'live=' + liveColor + ' preview=' + pvColor);
+    } catch (e) {
+      add('Callout(preview): 渲染成容器', false, String(e));
+    }
+    holder.remove();
+    api.gotoLine(1); await sleep(250);
+  }
+
   api.setCursor(DOC.length);
   await sleep(80);
   return { R };

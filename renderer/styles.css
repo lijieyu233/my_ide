@@ -653,6 +653,57 @@ textarea.editor {
 .md-view pre { background: var(--code-bg); border-radius: 8px; padding: 1em 1.23em; overflow: auto; margin: 0.92em 0; }
 .md-view pre code { background: none; padding: 0; color: inherit; font-size: 0.96em; line-height: 1.6; }
 .md-view blockquote { border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); padding-left: 1.08em; color: var(--text-dim); margin: 0.77em 0; }
+
+/* ---------- Callout（Obsidian 的 > [!note] 提示块） ---------- */
+/* 两种模式共用这一套变量与类名：live 是逐行 line class（.cm-line.cm-callout-*），
+   预览是块级容器（.md-callout）。色板取 Obsidian 官方各类型的主色，
+   用 color-mix 掺进主题底色 —— 四套主题下都不会变成刺眼的纯色块。 */
+:root {
+  --callout-note: #448aff;
+  --callout-info: #00b8d4;
+  --callout-tip: #00bfa5;
+  --callout-success: #00c853;
+  --callout-question: #64dd17;
+  --callout-warning: #ff9100;
+  --callout-danger: #ff5252;
+  --callout-failure: #ff5252;
+  --callout-example: #7c4dff;
+  --callout-quote: #9e9e9e;
+  --callout-bug: #f50057;
+  --callout-abstract: #00b0ff;
+  --callout-todo: #448aff;
+}
+/* 预览侧容器：左竖线 + 极淡底色 + 标题行 */
+.md-view .md-callout {
+  border-left: 3px solid var(--co-color, var(--callout-note));
+  background: color-mix(in srgb, var(--co-color, var(--callout-note)) 8%, transparent);
+  border-radius: 0 6px 6px 0;
+  padding: 0.62em 1em 0.62em 0.92em;
+  margin: 0.92em 0;
+  color: var(--text);
+}
+.md-view .md-callout > :first-child { margin-top: 0; }
+.md-view .md-callout > :last-child { margin-bottom: 0; }
+.md-view .md-callout-title {
+  display: flex; align-items: center; gap: 0.46em;
+  color: var(--co-color, var(--callout-note)); font-weight: 700;
+  margin: 0 0 0.31em;
+}
+.md-view .md-callout-title .co-ic { font-size: 1.08em; line-height: 1; }
+/* 类型 → 颜色（两种模式共用同一张映射表，避免"预览有颜色、实时预览没颜色"） */
+.co-note { --co-color: var(--callout-note); }
+.co-info { --co-color: var(--callout-info); }
+.co-tip, .co-hint, .co-important { --co-color: var(--callout-tip); }
+.co-success, .co-check, .co-done { --co-color: var(--callout-success); }
+.co-question, .co-help, .co-faq { --co-color: var(--callout-question); }
+.co-warning, .co-caution, .co-attention { --co-color: var(--callout-warning); }
+.co-danger, .co-error { --co-color: var(--callout-danger); }
+.co-failure, .co-fail, .co-missing { --co-color: var(--callout-failure); }
+.co-example { --co-color: var(--callout-example); }
+.co-quote, .co-cite { --co-color: var(--callout-quote); }
+.co-bug { --co-color: var(--callout-bug); }
+.co-abstract, .co-summary, .co-tldr { --co-color: var(--callout-abstract); }
+.co-todo { --co-color: var(--callout-todo); }
 .md-view table { border-collapse: collapse; margin: 0.62em 0; }
 /* 表格增强：宽表格自身横向滚动（不撑破版心、不挤压变形）+ 斑马纹 + 行 hover */
 /* 字号 0.96em 与 live 的 .cm-md-table table 同源（两边表格里的字都比正文略小） */

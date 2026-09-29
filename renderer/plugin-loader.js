@@ -425,6 +425,54 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     html = '<pre>渲染错误: ' + String(e) + '</pre>';
   }
   wrap.innerHTML = html;
+  // Callout（Obsidian 的 > [!note] 提示块）：marked 只会把 `> [!note]` 当普通引用，
+  // 这里后处理成容器 + 图标标题行 —— 与 live 侧（md-editor.js 的 CALLOUT_TYPES/CALLOUT_CLS）
+  // 共用同一张类型表（MI.calloutMeta）与同一套 .co-* 颜色 class（styles.css），两边不会各写一套。
+  wrap.querySelectorAll('blockquote').forEach((bq) => {
+    const first = bq.firstElementChild;
+    if (!first) return;
+    const m = /^\s*\[!([A-Za-z]+)\][-+]?[ \t]*([\s\S]*)$/.exec(first.textContent || '');
+    if (!m) return;
+    const meta = MI.calloutMeta && MI.calloutMeta(m[1]);
+    if (!meta) return;
+    const raw = String(m[2] || '');
+    // ⚠ marked 配了 `breaks: true` → 引用块里换行被渲染成 **<br> 元素**，textContent 里
+    // 根本没有 `\n`（实测：标题会把后面的正文整段吞掉）。所以标题/正文必须按**首个 <br>**
+    // 切分 DOM，而不是按换行符切字符串。
+    let titleText = raw, bodyText = '';
+    const brs = [...first.querySelectorAll('br')];
+    if (brs.length) {
+      const rg = document.createRange();
+      rg.setStart(first, 0); rg.setEndBefore(brs[0]);
+      titleText = rg.toString().replace(/^\s*\[![A-Za-z]+\][-+]?[ \t]*/, '');
+      rg.setStartAfter(brs[0]); rg.setEnd(first, first.childNodes.length);
+      bodyText = rg.toString();
+    } else {
+      const nl = raw.indexOf('\n');
+      if (nl >= 0) { titleText = raw.slice(0, nl); bodyText = raw.slice(nl + 1); }
+    }
+    titleText = titleText.trim(); bodyText = bodyText.trim();
+    const box = document.createElement('div');
+    box.className = 'md-callout ' + meta.cls;
+    const title = document.createElement('div');
+    title.className = 'md-callout-title';
+    const ic = document.createElement('span');
+    ic.className = 'co-ic';
+    ic.textContent = meta.icon;
+    const tx = document.createElement('span');
+    tx.textContent = titleText || meta.title;
+    title.appendChild(ic); title.appendChild(tx);
+    // 引用块的其余内容（除首段）搬进 callout，标题行放最前
+    const restNodes = [...bq.children].filter((c) => c !== first);
+    if (bodyText) {
+      const body = document.createElement('p');
+      body.textContent = bodyText;
+      restNodes.unshift(body);
+    }
+    box.appendChild(title);
+    restNodes.forEach((n) => box.appendChild(n));
+    bq.replaceWith(box);
+  });
   // 代码块语法高亮 + 复制/运行按钮（运行 = run:code IPC 写临时文件新开 cmd 执行）
   const RUNNABLE = ['js', 'javascript', 'node', 'py', 'python', 'bat', 'cmd', 'batch', 'powershell', 'ps1', 'pwsh', 'sh', 'bash'];
   wrap.querySelectorAll('pre code').forEach((el) => {

@@ -159,6 +159,29 @@ right = .cm-content 的边框盒 right − 首个 .cm-line 的 paddingRight
 （Tab 接管 / 换格 / 竖线对齐含分隔行 / 末行末格增行 / 追加后仍对齐 / Enter 不劈裂 / 自检后文档还原）。
 自检基线：**126 通过 / 0 失败 / 6 跳过（共 132 项）**。
 
+## 5.7 对标 Obsidian：Callout（`> [!note]` 提示块）
+
+文档 046 的 P2 清单里 Callout 一直没做。这次补上，**两种模式共用一张类型表**：
+
+- 类型表在 `md-editor.js`（`CALLOUT_TYPES` / `CALLOUT_CLS`，25 个别名：note/info/tip/warning/danger/
+  success/question/example/quote/bug/abstract/todo…），通过 `MI.calloutMeta(type)` 对预览侧开放。
+  ⚠ `window.MI` 是后加载的 `plugin-loader.js` 建的 → 这里必须自己 `window.MI = window.MI || {}` 兜底，
+  否则 `if (window.MI)` 永远为假、预览一个 callout 都不渲染（实测踩过）。
+- **live**：`Blockquote` 首行匹配 `^\s*>\s*\[!type\][-+]?\s*(.*)$` → 整块加
+  `.cm-md-callout-line` + 类型色 class（`co-*`）+ 首/末行圆角；`[!type]` 标记 replace 掉、
+  用 widget 画图标；没写标题时补类型默认名（`> [!warning]` → "⚠️ Warning"）。
+  左竖线与淡底色画在 `::before(z:-3)`（与表格/代码块同一套做法，保证选区可见）。
+- **preview**：`marked` 只把 `> [!note]` 当普通引用 → 后处理 `blockquote` 成
+  `.md-callout` 容器 + `.md-callout-title` 标题行。
+  ⚠ `marked` 配了 `breaks: true`，引用块内换行是 **`<br>` 元素**而不是 `\n` —— 标题/正文必须按
+  **首个 `<br>`** 切分 DOM；按字符串切换行会让标题把整段正文吞掉（实测踩过）。
+- 颜色：`styles.css` 里一份 `--callout-*` 色板 + `.co-*` 变量映射，两边都用
+  `var(--co-color)`；自检断言「同类型颜色两边相同」（note 实测两边都是 `rgb(68, 138, 255)`）。
+- 未知类型（`> [!unknown-type]`）退回普通引用；普通引用不受影响。
+
+自检新增 13 条 Callout 断言（live 6 条 + preview 6 条 + 跨模式同色 1 条），
+`preview-test.md` 增加「九、Callout」小节作为基准。基线：**139 通过 / 0 失败 / 6 跳过（共 145 项）**。
+
 ## 6. 铁律（写在这里免得下次再踩）
 
 1. liveTheme 里**只准写 em**，绝对值只允许出现在 1px 级细节（边框/圆角/滚动条）。
