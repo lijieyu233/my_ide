@@ -3,6 +3,9 @@
 (async () => {
   const R = [];
   const add = (name, ok, detail) => R.push({ name, ok: !!ok, detail: detail == null ? '' : String(detail) });
+  // 隐藏窗口（默认的 headless 自检）里 CM6 拿不到 DOM 焦点 → 它不绘制选区层，
+  // 这类"必须聚焦才画得出来"的项要显式记 SKIP，不能记 FAIL（会误导成真回归）
+  const skip = (name, detail) => R.push({ name, ok: true, skip: true, detail: detail == null ? '' : String(detail) });
   const api = window.Viewer && Viewer.cm;
   const cm = document.querySelector('.cm-content');
   if (!api || !cm) return { error: '编辑器未挂载（Viewer.cm=' + !!api + ', .cm-content=' + !!cm + '）', R };
@@ -13,6 +16,14 @@
   const has = (s) => allText().includes(s);
   const q = (sel) => document.querySelector(sel);
   const transparent = (v) => !v || v === 'rgba(0, 0, 0, 0)' || v === 'transparent';
+  // 装饰背景现在画在 ::before(z:-3) 上（见 md-editor.js liveTheme 头部注释：让选区可见）。
+  // 只测元素自身的 background-color 会永远得到 transparent —— 假的"没背景"。
+  const bgOf = (el) => {
+    if (!el) return '';
+    const own = css(el, 'background-color');
+    if (!transparent(own)) return own;
+    try { return getComputedStyle(el, '::before').backgroundColor || own; } catch { return own; }
+  };
   const lineEl = (txt) => [...document.querySelectorAll('.cm-content .cm-line')].find((el) => el.textContent.includes(txt));
   const lineNoOf = (key) => DOC.slice(0, DOC.indexOf(key)).split('\n').length; // 动态行号（文档增删行仍稳）
   const click = (el) => {
@@ -26,10 +37,23 @@
     el.scrollIntoView({ block: 'center' });
     await sleep(250); // 等 CM6 挂载行 + 应用装饰
   };
+  // 光标层只在编辑器持有 DOM 焦点时绘制；隐藏窗口（headless 自检）拿不到焦点，
+  // 量到 cursor=[0,0] 是环境限制（不是点击错位），记 SKIP；真聚焦了就必须量准 ——
+  // 这才是「点哪光标在哪」的回归线。
+  const cursorFits = (cr, lineR, label) => {
+    if (!viewFocused()) return { skip: true, detail: label + ' 隐藏窗口无 DOM 焦点，CM6 不绘制光标层' };
+    return {
+      ok: !!cr && cr.height > 0 && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
+      detail: 'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']',
+    };
+  };
 
   // ---------- 环境 ----------
   add('环境: live 模式 CM 编辑器挂载', !!document.querySelector('.editor-cm-wrap'));
   add('环境: 状态栏版本号显示', (document.getElementById('sb-ver').textContent || '').length > 0, document.getElementById('sb-ver').textContent);
+  // 视图是否真正持有 DOM 焦点（隐藏窗口里拿不到）—— 选区层/光标高度这类绘制依赖它
+  const viewFocused = () => !!api.view.hasFocus;
+  const VIEW_FOCUSED = viewFocused();
 
   // ---------- 文本层（光标在文末） ----------
   for (const lv of ['一级标题 H1', '二级标题 H2', '三级标题 H3', '四级标题 H4', '五级标题 H5', '六级标题 H6']) {
@@ -63,21 +87,25 @@
   {
     // 列表区在初始视口外 → 滚过去（bullet/task widget 与光标无关，光标行也常渲染）
     api.gotoLine(lineNoOf('无序列表一')); await sleep(350);
-    add('文本: task 源码 [ ] 隐藏', !has('[ ]') && !has('[x]'));
-    add('文本: task checkbox widget 存在', document.querySelector('.cm-md-task') !== null);
     const bullets = document.querySelectorAll('.cm-md-bullet');
     add('列表: 无序 bullet 圆点渲染', bullets.length >= 3, 'count=' + bullets.length);
     // 渲染态列表行不得残留源码 "- "
     const liLine = lineEl('无序列表一');
     add('列表: 无序行无源码 - ', liLine ? !/-\s无序/.test(liLine.textContent) && liLine.textContent.includes('•') : false,
       liLine ? JSON.stringify(liLine.textContent.slice(0, 12)) : '行不在 DOM');
+    // ⚠ task 区（第 61~63 行）与无序列表（第 45~50 行）相隔十几行：视口高度一变
+    //   （隐藏窗口会被系统按工作区压矮）它就不在 DOM 里 → 必须单独滚过去再断言，
+    //   否则会量成 count=0 的假失败（实测 headless 下就是这么红的）
+    api.gotoLine(lineNoOf('未完成任务')); await sleep(400);
+    add('文本: task 源码 [ ] 隐藏', !has('[ ]') && !has('[x]'));
+    add('文本: task checkbox widget 存在', document.querySelector('.cm-md-task') !== null);
     const tasks = document.querySelectorAll('.cm-md-task');
     add('列表: task 勾选框渲染', tasks.length >= 3, 'count=' + tasks.length);
     const doneTask = document.querySelector('.cm-md-task.done');
     add('列表: 已完成 task 勾选样式', doneTask !== null, '');
-    // task 行不残留 "-"（bullet 已替换圆点）
+    // task 行不残留 "-"（`- ` 整体隐藏后接勾选框，不是「• ☐」）
     const taskLine = lineEl('未完成任务');
-    add('列表: task 行无源码 - ', taskLine ? !/-\s*\[/.test(taskLine.textContent) : false,
+    add('列表: task 行无源码 - ', taskLine ? !/-\s*\[/.test(taskLine.textContent) && !taskLine.textContent.includes('•') : false,
       taskLine ? JSON.stringify(taskLine.textContent.slice(0, 12)) : '行不在 DOM');
     // 点击勾选框切换（用户报告：无法通过点击切换）
     if (tasks.length) {
@@ -121,7 +149,16 @@
   // ---------- 样式层（视口内元素；先滚回文首 —— 前面的测试滚走了视口） ----------
   api.gotoLine(1); await sleep(350);
   const h1 = q('.cm-md-h1');
-  add('样式: h1 字号 26px', h1 && css(h1, 'font-size') === '26px', css(h1, 'font-size'));
+  // 字号不再写死绝对值：编辑区字号可调（--editor-font-size），写死就会在用户调大字号时
+  // 变成"标题比正文还小"。这里锁「层级关系」与「跨模式一致」（后者见文件末尾的一致性块）。
+  const bodyFont = parseFloat(css(q('.cm-line:not([class*="cm-md-h"])'), 'font-size') || '0');
+  const h1Font = parseFloat(css(h1, 'font-size') || '0');
+  add('样式: h1 字号 > 正文字号', h1 && h1Font > bodyFont && bodyFont > 0, 'h1=' + css(h1, 'font-size') + ' 正文=' + bodyFont + 'px');
+  const h2 = q('.cm-md-h2'), h3 = q('.cm-md-h3'), h4 = q('.cm-md-h4'), h5 = q('.cm-md-h5'), h6 = q('.cm-md-h6');
+  const sizes = [h2, h3, h4, h5, h6].map((e) => parseFloat(css(e, 'font-size') || '0'));
+  add('样式: 标题层级不塌（h2≥h3≥h4≥h5=h6≥正文）',
+    sizes.every((s) => s >= bodyFont - 0.1) && sizes[0] >= sizes[1] && sizes[1] >= sizes[2] && sizes[2] >= sizes[3] && sizes[3] >= sizes[4],
+    'body=' + bodyFont + ' h2..h6=' + sizes.join('/'));
   const h1line = q('.cm-md-h1-line');
   add('样式: h1 行无下划线', h1line && (css(h1line, 'border-bottom-style') === 'none' || parseFloat(css(h1line, 'border-bottom-width') || '0') === 0),
     css(h1line, 'border-bottom-style') + '/' + css(h1line, 'border-bottom-width'));
@@ -132,9 +169,9 @@
   const strike = q('.cm-md-strike');
   add('样式: 删除线', strike && css(strike, 'text-decoration-line').includes('line-through'), css(strike, 'text-decoration-line'));
   const code = q('.cm-md-code');
-  add('样式: 行内代码背景', code && !transparent(css(code, 'background-color')), css(code, 'background-color'));
+  add('样式: 行内代码背景', code && !transparent(bgOf(code)), code ? bgOf(code) : '元素不存在');
   const hl = q('.cm-md-highlight');
-  add('样式: ==高亮== 背景', !!hl && !transparent(css(hl, 'background-color')), hl ? css(hl, 'background-color') : '元素不存在');
+  add('样式: ==高亮== 背景', !!hl && !transparent(bgOf(hl)), hl ? bgOf(hl) : '元素不存在');
 
   // ---------- 行为层 ----------
   api.setCursor(DOC.length); await sleep(150);
@@ -154,7 +191,14 @@
   api.setCursor(DOC.length); await sleep(120);
 
   // ---------- 选区可见性（用户报告：多选文字没有 UI 显示，根本不知道选了哪里） ----------
-  {
+  // ⚠ CM6 的 drawSelection 只在编辑器持有焦点时画选区层：隐藏窗口（headless 自检）里
+  //   拿不到 DOM 焦点 → 选区层根本不存在，记 FAIL 是假回归。此时记 SKIP，
+  //   要全量校验就用 --check-live-show（窗口真正显示的那次跑）。
+  if (!viewFocused()) {
+    skip('选区: 多行选择背景块渲染', '隐藏窗口无 DOM 焦点，CM6 不绘制选区层');
+    skip('选区: 背景色非透明', '同上');
+    skip('选区: 渲染态正文选区可见', '同上');
+  } else {
     // 跨多行渲染态选区（第21行段首 → 第23行段中，跨空行）：每行一块背景，drawSelection 必须都画
     const a = DOC.indexOf('正文包含');
     const b = DOC.indexOf('删除线与') + 3;
@@ -237,7 +281,7 @@
   if (!codeLine) codeLine = lineEl('function greet');
   {
     const fence2 = q('.cm-md-fence-line');
-    add('代码块(滚动后): 行背景', fence2 && !transparent(css(fence2, 'background-color')), fence2 ? css(fence2, 'background-color') : '元素不存在');
+    add('代码块(滚动后): 行背景', fence2 && !transparent(bgOf(fence2)), fence2 ? bgOf(fence2) : '元素不存在');
     // 复制按钮 + 语言标签（用户报告：代码块添加复制按钮）
     const copyBtn = q('.cm-md-copybtn');
     add('代码块: 复制按钮渲染', copyBtn !== null, copyBtn ? '' : '元素不存在');
@@ -278,8 +322,9 @@
     const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = codeLine.getBoundingClientRect();
-    add('行为: 点击高度与光标高度一致(代码行)', cr && cr.height > 0 && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
-      'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']');
+    const fit = cursorFits(cr, lineR, '代码行');
+    if (fit.skip) skip('行为: 点击高度与光标高度一致(代码行)', fit.detail);
+    else add('行为: 点击高度与光标高度一致(代码行)', fit.ok, fit.detail);
   } else add('行为: 点击代码块内容光标进入', false, '未找到代码行');
 
   // 2. 点击标题行（有 padding，最易出现命中偏移）
@@ -298,8 +343,9 @@
     const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = h1El.getBoundingClientRect();
-    add('行为: 点击高度与光标高度一致(标题行)', cr && cr.height > 0 && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
-      'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']');
+    const fit = cursorFits(cr, lineR, '标题行');
+    if (fit.skip) skip('行为: 点击高度与光标高度一致(标题行)', fit.detail);
+    else add('行为: 点击高度与光标高度一致(标题行)', fit.ok, fit.detail);
   }
   // 3. 表格区点击映射（源码态下逐行点击 → 光标必须精确命中该行）
   //    先把光标放进表格（widget → 源码态），顺序：表格内行优先，表格外的行最后
@@ -337,9 +383,90 @@
     const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
     const cr = cur && cur.getBoundingClientRect();
     const lineR = trEl.getBoundingClientRect();
-    add('行为: 点击高度与光标高度一致(表格行)', cr && cr.top >= lineR.top - 3 && cr.bottom <= lineR.bottom + 3,
-      'cursor=[' + (cr && Math.round(cr.top)) + ',' + (cr && Math.round(cr.bottom)) + '] line=[' + Math.round(lineR.top) + ',' + Math.round(lineR.bottom) + ']');
+    const fit = cursorFits(cr, lineR, '表格行');
+    if (fit.skip) skip('行为: 点击高度与光标高度一致(表格行)', fit.detail);
+    else add('行为: 点击高度与光标高度一致(表格行)', fit.ok, fit.detail);
   } else add('行为: 点击表格单元格光标进入', false, '未找到表格行');
+
+  // ---------- 一致性：同一份文档「实时预览」与「预览」的排版必须对得上 ----------
+  // 用户报告的原话：「markdown 的实时预览和预览差别非常大，实时预览根本没法看，样式非常差」。
+  // 根因是两边各写一套绝对 px，且只有 live 跟随 --editor-font-size → 字号一调层级就塌。
+  // 这里把两边的计算样式逐项对比锁死：以后谁再把 px 写回去，这里立刻红。
+  {
+    // 预览侧：临时把 .md-view 渲染到屏幕外（仍有布局 → 计算样式有效），不切模式即可同屏对比
+    const tmp = document.createElement('div');
+    tmp.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+    document.body.appendChild(tmp);
+    let pv = null;
+    try {
+      const fn = MI.renderFor({ path: 'x.md', name: 'x.md', ext: 'md' });
+      pv = fn && fn({ path: 'x.md', name: 'x.md', ext: 'md', content: DOC });
+      if (pv) tmp.appendChild(pv);
+    } catch (e) { pv = null; }
+    add('一致性: 预览侧渲染成功（对照基准）', !!pv, pv ? '' : '渲染失败');
+    if (pv) {
+      const num = (el, prop) => (el ? parseFloat(css(el, prop)) || 0 : 0);
+      const show = (el, prop) => (el ? css(el, prop) : '缺');
+      // live 元素可能因视口虚拟化不在 DOM → 先滚到该行（光标随后移开，恢复渲染态）
+      const ensureLive = async (c) => {
+        if (!q(c.live)) {
+          api.gotoLine(lineNoOf(c.doc)); await sleep(320);
+          api.setCursor(DOC.length); await sleep(180);
+        }
+      };
+      const CASES = [
+        { name: 'h1', live: '.cm-md-h1', pv: 'h1' },
+        { name: 'h2', live: '.cm-md-h2', pv: 'h2' },
+        { name: 'h3', live: '.cm-md-h3', pv: 'h3' },
+        { name: 'h4', live: '.cm-md-h4', pv: 'h4' },
+        { name: 'h5', live: '.cm-md-h5', pv: 'h5' },
+        { name: 'h6', live: '.cm-md-h6', pv: 'h6' },
+        { name: '正文', live: '.cm-line:not([class*="cm-md-"])', pv: 'p', doc: '正文包含' },
+        { name: '加粗', live: '.cm-md-strong', pv: 'strong' },
+        { name: '斜体', live: '.cm-md-em', pv: 'em' },
+        { name: '行内代码', live: '.cm-md-code', pv: 'code' },
+        { name: '高亮', live: '.cm-md-highlight', pv: 'mark' },
+        { name: '引用', live: '.cm-line.cm-md-quote-line', pv: 'blockquote', doc: '引用第一行' },
+        { name: '代码块', live: '.cm-line.cm-md-fence-line', pv: 'pre code', doc: 'const msg' },
+        { name: '表头格', live: '.cm-md-table th', pv: 'th', doc: '左对齐列' },
+        { name: '数据格', live: '.cm-md-table td', pv: 'td', doc: '左对齐列' },
+      ];
+      api.gotoLine(1); await sleep(320);
+      for (const c of CASES) {
+        if (c.doc) await ensureLive(c);
+        const le = q(c.live), ve = pv.querySelector(c.pv);
+        const lf = num(le, 'font-size'), vf = num(ve, 'font-size');
+        add('一致性: ' + c.name + ' 字号两边相同', !!(le && ve) && Math.abs(lf - vf) <= 0.75,
+          'live=' + (le ? show(le, 'font-size') : '元素不在视口') + ' preview=' + (ve ? show(ve, 'font-size') : '缺'));
+      }
+      // 字重/列宽/内边距也一并锁：层级感与行长都靠它们
+      // ⚠ 必须先把视口滚回文首 —— 上面的字号循环会滚到引用/代码块/表格处，
+      //   视口虚拟化后 .cm-md-h1 不在 DOM 里，量到的是「缺」而不是真值
+      api.gotoLine(1); await sleep(320);
+      for (const [n, sel, tag] of [['h1', '.cm-md-h1', 'h1'], ['h2', '.cm-md-h2', 'h2'], ['h3', '.cm-md-h3', 'h3']]) {
+        const lw = show(q(sel), 'font-weight'), vw2 = show(pv.querySelector(tag), 'font-weight');
+        add('一致性: ' + n + ' 字重两边相同', lw === vw2, 'live=' + lw + ' preview=' + vw2);
+      }
+      api.gotoLine(1); await sleep(300);
+      const cw = document.querySelector('.cm-content');
+      add('一致性: 正文列宽上限相同(820px)',
+        num(cw, 'max-width') === num(pv, 'max-width') && num(cw, 'max-width') > 0,
+        'live=' + show(cw, 'max-width') + ' preview=' + show(pv, 'max-width'));
+      add('一致性: 正文左右内边距相同(34/34)',
+        num(cw, 'padding-left') === num(pv, 'padding-left') && num(cw, 'padding-right') === num(pv, 'padding-right'),
+        'live=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' preview=' + show(pv, 'padding-left') + '/' + show(pv, 'padding-right'));
+      // 预览必须跟随「编辑区字号」：状态栏那个 − 17 + 调的就是它，不跟随 = 用户改了字号没反应
+      add('一致性: 预览跟随编辑区字号',
+        Math.abs(num(pv, 'font-size') - num(cw, 'font-size')) <= 0.75,
+        '预览正文=' + show(pv, 'font-size') + ' 编辑器基准=' + show(cw, 'font-size'));
+      // 预览的语法渲染必须补上 live 有的扩展语法（==高亮== 曾是 live 有、预览没有）
+      add('一致性: 预览渲染 ==高亮== 为 <mark>', !!pv.querySelector('mark'), pv.querySelector('mark') ? '' : '未渲染（显示为裸 ==文本==）');
+      add('一致性: 预览的空文字链接显示 URL',
+        [...pv.querySelectorAll('a')].some((a) => a.getAttribute('href') === 'https://empty-label.example.com' && a.textContent.trim()),
+        '');
+    }
+    tmp.remove();
+  }
 
   api.setCursor(DOC.length);
   await sleep(80);

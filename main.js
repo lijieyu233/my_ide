@@ -16,6 +16,12 @@ const UI_CHECK = process.argv.includes('--check-ui');
 // 自检默认 **headless**：不显示窗口、不进任务栏、不抢焦点 —— 跑测试时不打扰使用者。
 // 需要肉眼看着它跑（排查截图异常）时加 --check-ui-show。
 const UI_CHECK_HEADLESS = UI_CHECK && !process.argv.includes('--check-ui-show');
+// --check-live（Live Preview 真实渲染自检）：同样默认隐藏窗口。
+// 实测教训：这一步以前是"正常窗口"，自检一跑就在用户桌面上弹窗并抢走焦点，
+// 用户正在用 MyIDE 时被反复打断（原话「你把桌面占据了我怎么用」）。
+// 截图（capturePage）与断言都不依赖窗口可见性；要看着它跑用 --check-live-show。
+const LIVE_CHECK = process.argv.includes('--check-live');
+const HIDDEN_WINDOW = process.argv.includes('--headless') || UI_CHECK_HEADLESS || (LIVE_CHECK && !process.argv.includes('--check-live-show'));
 if (UI_CHECK) {
   // 放到系统临时目录：项目目录下建 Chromium profile 会偶发「Unable to move the cache: 拒绝访问」，
   // 甚至整个主进程卡死在 profile 初始化（事件循环被占住 → 连看门狗定时器都不触发）
@@ -71,8 +77,9 @@ function createWindow() {
     autoHideMenuBar: true,
     frame: false, // 去掉 Windows 原生标题栏，用自绘顶栏（拖拽区域见 renderer）
     // 自检 headless：窗口不显示、不进任务栏（正常启动不受影响）
-    show: !UI_CHECK_HEADLESS,
-    skipTaskbar: UI_CHECK_HEADLESS,
+    // 看门狗/close 逻辑与 --check-ui 同款：隐藏窗口也不会挡住截图与断言
+    show: !HIDDEN_WINDOW,
+    skipTaskbar: HIDDEN_WINDOW,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1079,6 +1086,14 @@ app.whenReady().then(() => {
       try {
         const docPath = path.join(__dirname, 'preview-test.md');
         await new Promise((r) => setTimeout(r, 1800)); // 等 app.js 启动
+        // 光标层（drawSelection）只在编辑器持有焦点时绘制 —— 窗口不聚焦时自检量到的
+        // 光标高度是 0，会把「点击高度与光标一致」三项误判成失败。
+        // ⚠ 只在非 headless（--check-live-show）时才 show/focus：默认 headless 下弹窗 = 抢用户桌面。
+        //   headless 时页面脚本的 cursorFits() 会记 SKIP + 说明"隐藏窗口不绘制光标层"。
+        if (!HIDDEN_WINDOW) { try { win.show(); win.focus(); win.webContents.focus(); } catch {} }
+        // 模式偏好是使用者的真实设置（localStorage）：自检按 live 跑，跑完原样还原
+        let origMdMode = null;
+        try { origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")'); } catch {}
         await wc.executeJavaScript('localStorage.setItem("myide-md-mode", "live"); true');
         await wc.executeJavaScript('Viewer.openFile(' + JSON.stringify(docPath) + '); true');
         for (let i = 0; i < 20; i++) { // 轮询编辑器挂载
@@ -1087,19 +1102,33 @@ app.whenReady().then(() => {
         }
         await new Promise((r) => setTimeout(r, 600)); // 等解析+装饰稳定
         await wc.executeJavaScript('window.__doc = ' + JSON.stringify(fs.readFileSync(docPath, 'utf8')) + '; true');
+        // ⚠ headless（隐藏窗口）下 Chromium 会把窗口尺寸按屏幕工作区压缩（实测 880 → 728），
+        //   视口一变矮，原来自检里"顺手在视口内"的行（task 列表、表格行）就不在 DOM 里了
+        //   → 量成 count=0 的假失败。这里显式把内容尺寸设回正常值（隐藏窗口可以超出屏幕）。
+        try { win.setContentSize(1380, 880); } catch {}
+        await new Promise((r) => setTimeout(r, 400));
         const pageScript = fs.readFileSync(path.join(__dirname, 'scripts', 'check-live-page.js'), 'utf8');
         const out = await wc.executeJavaScript(pageScript);
-        let fail = 0;
+        let fail = 0, skipped = 0;
         const lines = [];
         for (const it of (out.R || [])) {
+          if (it.skip) { skipped++; lines.push('SKIP  ' + it.name + (it.detail ? '   [' + it.detail + ']' : '')); continue; }
           lines.push((it.ok ? 'PASS' : 'FAIL') + '  ' + it.name + (it.detail ? '   [' + it.detail + ']' : ''));
           if (!it.ok) fail++;
         }
         if (out.error) lines.push('致命: ' + out.error);
-        lines.push('LIVE CHECK: ' + ((out.R || []).length - fail) + ' 通过 / ' + fail + ' 失败 (共 ' + (out.R || []).length + ' 项)');
+        lines.push('LIVE CHECK: ' + ((out.R || []).length - fail - skipped) + ' 通过 / ' + fail + ' 失败'
+          + (skipped ? ' / ' + skipped + ' 跳过（隐藏窗口下无法量焦点相关项，全量校验用 --check-live-show）' : '')
+          + ' (共 ' + (out.R || []).length + ' 项)');
         const img = await wc.capturePage();
         fs.writeFileSync(path.join(__dirname, 'check-live.png'), img.toPNG());
         lines.push('截图: check-live.png');
+        // 还原使用者的模式偏好（自检临时改成 live；不还原 = 悄悄改掉用户设置）
+        try {
+          await wc.executeJavaScript(origMdMode
+            ? 'localStorage.setItem("myide-md-mode", ' + JSON.stringify(origMdMode) + '); true'
+            : 'localStorage.removeItem("myide-md-mode"); true');
+        } catch {}
         fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), lines.join('\n') + '\n');
       } catch (e) {
         fs.writeFileSync(path.join(__dirname, 'check-live-out.txt'), 'LIVE CHECK FAIL ' + String((e && e.stack) || e).slice(0, 2000) + '\n');

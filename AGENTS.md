@@ -71,8 +71,18 @@
 | `npm run test:dom` | jsdom 全套交互断言（当前基线 **269 通过 / 0 失败**） |
 | `npm run check:md` / `npm run check:launch` | 真 Electron 窗口里的脚本化走查 |
 | `node_modules\electron\dist\electron.exe . --check-ui` | UI 细节自检：真实窗口 + 真实 IPC + 每阶段截图 `check-ui-*.png`，步骤在 `scripts/check-ui-steps.js` |
+| `node_modules\electron\dist\electron.exe . --check-live` | Live Preview 自检：打开 `preview-test.md` 逐项断言 + `check-live.png` + `check-live-out.txt`，含 live↔preview **一致性**断言组（脚本 `scripts/check-live-page.js`）。当前基线 **101 通过 / 0 失败 / 6 跳过** |
+
+**所有自检默认 headless（`show:false` + `skipTaskbar`）** —— 一跑就在用户桌面上弹窗抢焦点是绝对禁忌
+（用户原话：「你把桌面占据了我怎么用」）。要肉眼看着它跑才加 `-show` 后缀（`--check-ui-show` / `--check-live-show`）；
+自己写的一次性取证脚本记得带 `--headless`。headless 的两个坑见
+`docs/开发文档-083-Markdown实时预览与预览对齐.md` §4：隐藏窗口会被系统按工作区压矮（自检里显式
+`setContentSize` 复位），且拿不到 DOM 焦点（CM6 不绘制选区层/光标层 → 这类断言记 SKIP，别记 FAIL）。
 
 改了渲染层至少跑 `check:js` + `test:dom`；改 UI 细节再跑 `--check-ui` 并**看截图**，别只看断言。
+
+**Markdown 排版铁律**（详见文档 083）：live 的 `liveTheme` 里**只准写 em**（绝对值只留给 1px 级细节），
+字号/间距/列宽/内边距必须与 `.md-view` 同源；改了任一边，`--check-live` 的一致性断言组会拦住你。
 
 ## 六、UI 文案约定
 
