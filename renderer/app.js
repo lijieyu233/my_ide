@@ -220,6 +220,9 @@ const App = (() => {
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
+    // 启动面板同款双区联动：侧栏选条目，右侧主区看详情/日志
+    const launchMain = document.getElementById('launch-main');
+    if (launchMain) launchMain.classList.toggle('hidden', activeTool !== 'launch');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
     // AI 助手右侧停靠面板：独立开关，不影响左侧任何工具；右侧栏整体收起（Alt+`）时隐藏
     const rsbCollapsed = document.body.classList.contains('rsb-collapsed');

@@ -233,6 +233,80 @@ app.whenReady().then(async () => {
         p.configFile + ' 条数=' + cnt);
     }
 
+    // ---------- ④b 主区 #launch-main：可见 + 选中渲染（本轮新增的双区视图） ----------
+    {
+      const selR = await wc.executeJavaScript(probe(`
+        const v = (window.Viewer.cm.view || window.Viewer.cm);
+        const d = v.state.doc ? v.state.doc.toString() : '';
+        return true;
+      `), true);
+      // 让 LaunchPanel 选中第一个条目：直接点侧栏第一张卡片
+      await wc.executeJavaScript(probe(`
+        const card = document.querySelector('#launch-body .launch-card');
+        if (card) card.click();
+        return true;
+      `), true);
+      await sleep(900);
+      const m = await wc.executeJavaScript(probe(`
+        const main = document.getElementById('launch-main');
+        if (!main) return { err: 'no launch-main' };
+        const b = main.getBoundingClientRect();
+        const cs = getComputedStyle(main);
+        const chain = [];
+        let n = main.parentElement;
+        while (n && n !== document.body) {
+          if (n.classList && n.classList.contains('hidden')) chain.push(n.id || n.className);
+          if (getComputedStyle(n).display === 'none') chain.push((n.id || n.className) + ':none');
+          n = n.parentElement;
+        }
+        return { hidden: main.classList.contains('hidden'), w: Math.round(b.width), h: Math.round(b.height),
+                 chain: chain, name: document.getElementById('lm-name').textContent,
+                 hasLog: !!document.getElementById('lm-log') };
+      `), true);
+      add('④b 主区 launch-main 可见（切到 launch 时）',
+          m && !m.hidden && m.w > 300 && m.chain.length === 0,
+          'hidden=' + (m && m.hidden) + ' rect=' + JSON.stringify(m && { w: m.w, h: m.h }) + ' 祖先链=' + JSON.stringify(m && m.chain));
+      add('④c 选中条目后主区显示名称与日志容器',
+          m && m.name && m.name !== '—' && m.hasLog, 'name=' + JSON.stringify(m && m.name));
+    }
+
+    // ---------- ④b 主区 #launch-main：可见 + 选中渲染（本轮新增的双区视图） ----------
+    {
+      const selR = await wc.executeJavaScript(probe(`
+        const v = (window.Viewer.cm.view || window.Viewer.cm);
+        const d = v.state.doc ? v.state.doc.toString() : '';
+        return true;
+      `), true);
+      // 让 LaunchPanel 选中第一个条目：直接点侧栏第一张卡片
+      await wc.executeJavaScript(probe(`
+        const card = document.querySelector('#launch-body .launch-card');
+        if (card) card.click();
+        return true;
+      `), true);
+      await sleep(900);
+      const m = await wc.executeJavaScript(probe(`
+        const main = document.getElementById('launch-main');
+        if (!main) return { err: 'no launch-main' };
+        const b = main.getBoundingClientRect();
+        const cs = getComputedStyle(main);
+        const chain = [];
+        let n = main.parentElement;
+        while (n && n !== document.body) {
+          if (n.classList && n.classList.contains('hidden')) chain.push(n.id || n.className);
+          if (getComputedStyle(n).display === 'none') chain.push((n.id || n.className) + ':none');
+          n = n.parentElement;
+        }
+        return { hidden: main.classList.contains('hidden'), w: Math.round(b.width), h: Math.round(b.height),
+                 chain: chain, name: document.getElementById('lm-name').textContent,
+                 hasLog: !!document.getElementById('lm-log') };
+      `), true);
+      add('④b 主区 launch-main 可见（切到 launch 时）',
+          m && !m.hidden && m.w > 300 && m.chain.length === 0,
+          'hidden=' + (m && m.hidden) + ' rect=' + JSON.stringify(m && { w: m.w, h: m.h }) + ' 祖先链=' + JSON.stringify(m && m.chain));
+      add('④c 选中条目后主区显示名称与日志容器',
+          m && m.name && m.name !== '—' && m.hasLog, 'name=' + JSON.stringify(m && m.name));
+    }
+
     // ---------- ⑤ 面板不报错（控制台无异常） ----------
     {
       const errs = await wc.executeJavaScript(probe(`

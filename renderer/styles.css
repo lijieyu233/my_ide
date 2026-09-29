@@ -3187,3 +3187,64 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   border: 1px solid var(--btn-border); box-shadow: 0 3px 10px rgba(0,0,0,.25);
 }
 .launch-toast-item.err { border-color: color-mix(in srgb, var(--del-text, #e06c75) 60%, var(--btn-border)); }
+
+
+/* ===== 启动面板·主区（#launch-main，照 #db-panel 的覆盖模式）===== */
+#launch-main {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+}
+.launch-main-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 12px; border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+.launch-main-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.launch-main-title #lm-name {
+  font-size: 14px; font-weight: 600; color: var(--md-heading);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.launch-main-acts { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.launch-meta {
+  padding: 5px 12px; font-size: 11.5px; color: var(--text-dim);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  display: flex; gap: 14px; overflow: hidden; white-space: nowrap;
+}
+.launch-meta .lm-k {
+  color: var(--accent); font-size: 10px; margin-right: 4px;
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.launch-logview { flex: 1; min-height: 0; overflow: hidden; }
+.launch-logview pre {
+  height: 100%; margin: 0; padding: 10px 14px; overflow: auto;
+  background: var(--code-bg); color: var(--text);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all;
+}
+.launch-main-foot {
+  padding: 6px 12px; border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+.launch-main-foot label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); cursor: pointer; }
+
+/* ===== 添加/编辑终端对话框 ===== */
+#launch-dialog {
+  width: 560px; max-width: 92vw; max-height: 88vh; overflow: auto;
+  background: var(--panel-strong); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  border-radius: 10px; padding: 16px 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+}
+#launch-dialog h2 { margin: 0 0 12px; font-size: 15px; color: var(--md-heading); }
+#launch-dialog .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+#launch-dialog .field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; min-width: 0; }
+#launch-dialog .field label { font-size: 11px; color: var(--text-dim); }
+#launch-dialog .field input, #launch-dialog .field select {
+  background: var(--bg-input); color: var(--text); border: 1px solid var(--btn-border);
+  border-radius: 4px; padding: 4px 8px; font-size: 12.5px; min-width: 0;
+  font-family: inherit;
+}
+#launch-dialog .field input:focus, #launch-dialog .field select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+#launch-dialog .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* 侧栏卡片选中态 */
+.launch-card.sel { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel)); }
