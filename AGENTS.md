@@ -14,7 +14,30 @@
 - 一个逻辑改动一个 commit，**不要把无关的脏文件顺手混进来**；工作区里别人的未完成改动先问，别替他决定。
 - 推完核对一眼：`git ls-remote --heads origin dev` 应与本地 `HEAD` 一致。
 
-## 二、这台机器上推送的坑（改完推不上去时先看这里）
+## 二、每次改完的收尾动作（用户点名要求，别省）
+
+1. **测试丢后台跑**：`npm test` 要几十秒，前台白等。用后台任务跑，先干别的（写提交信息 / 收拾现场），
+   跑完再核对结果；`npm run test:dom` 基线是 **268 通过 / 0 失败**，数字不对就是真出事了。
+2. **改完重启 MyIDE**：用户是开着 app 看效果的，代码改完不重启他看不到。做法：
+   - 找主进程：`Get-CimInstance Win32_Process -Filter "Name LIKE '%electron%'"`，
+     取 `CommandLine` 里带 `my_ide` 的**那个不带 `--type=` 的进程**（PID 每次不同）。
+   - ⚠ 别误杀：DSH 自己也是 Electron（`D:\programfie\deepseek\resources\app.asar`），
+     机器上还有别的 Electron 应用；只杀掉命令行里含本仓库路径的那个主进程。
+   - 重启参数照原样：`node_modules\electron\dist\electron.exe --disable-gpu --no-sandbox <仓库绝对路径>`，
+     用 `Start-Process` 拉起（别用会随 shell 一起退出的前台方式）。
+3. **临时脚本 / 截图用完就删**：验证用的脚本别留在工作区，否则会被「每次改动都要提交」的规矩带进版本库。
+
+## 三、这台机器上跑 Electron 的坑
+
+- **先清 `ELECTRON_RUN_AS_NODE`**：DSH harness 会把它设成 `1`，此时 `electron.exe` 退化成纯 Node ——
+  症状是 `require('electron')` 返回一个路径字符串、`app.setPath(...)` 报
+  `Cannot read properties of undefined (reading 'setPath')`。
+  `npm test` 不受影响；但凡 `npm run check:launch` / `check:md` / `--check-ui` / 自己写的 electron 脚本，
+  都要先在同一个 shell 里 `Remove-Item env:ELECTRON_RUN_AS_NODE`。
+- 自己写一次性验证脚本时先 `app.setPath('userData', <临时目录>)`：别把用户真实的
+  `%APPDATA%\my-ide`（收藏 / 会话 / 主题）写脏。
+
+## 四、这台机器上推送的坑（改完推不上去时先看这里）
 
 1. **代理只覆盖 HTTPS**：`http.https://github.com/.proxy = http://127.0.0.1:10808`。
    SSH 那条路走不通（`~/.ssh/config` 里配的 `ssh.github.com:443` 实测 connection refused），别浪费时间试。
@@ -27,19 +50,19 @@
    **这行不进版本库**，换机器/换账号要重设；排查手法：`git -c credential.helper= -c "credential.helper=!<gh路径> auth git-credential" credential fill`。
 4. GCM（Git Credential Manager）也在 helper 列表里但没有存 github 凭据，它只会弹一个开不了 `/dev/tty` 的框。
 
-## 三、测试
+## 五、测试
 
 | 命令 | 内容 |
 |---|---|
 | `npm test` | `check:js`（语法）+ `test:git` + `test:dom` |
 | `npm run check:js` | 纯语法检查，27 个文件，秒级 |
-| `npm run test:dom` | jsdom 全套交互断言（当前基线 **267 通过 / 0 失败**） |
+| `npm run test:dom` | jsdom 全套交互断言（当前基线 **268 通过 / 0 失败**） |
 | `npm run check:md` / `npm run check:launch` | 真 Electron 窗口里的脚本化走查 |
 | `node_modules\electron\dist\electron.exe . --check-ui` | UI 细节自检：真实窗口 + 真实 IPC + 每阶段截图 `check-ui-*.png`，步骤在 `scripts/check-ui-steps.js` |
 
 改了渲染层至少跑 `check:js` + `test:dom`；改 UI 细节再跑 `--check-ui` 并**看截图**，别只看断言。
 
-## 四、UI 文案约定
+## 六、UI 文案约定
 
 - **一个功能只能有一个名字**。历史教训：内置浏览器侧栏同时出现了「收藏 / 书签 / 收藏夹」三个词
   （`renderer/index.html` 里已注释说明）。新加文案前先 grep 一遍现有叫法，不一致就统一，别叠加。
