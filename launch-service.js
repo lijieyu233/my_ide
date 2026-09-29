@@ -185,8 +185,31 @@ async function startEntry(entry) {
 function killTree(pid) {
   return new Promise((resolve) => {
     if (!pid) return resolve(false);
-    exec('taskkill /T /F /PID ' + pid, () => resolve(true));
+    exec('taskkill /T /F /PID ' + pid, (err, _so, se) => {
+      // ⚠ 不能吞错误：PID 已死时 taskkill 报"没有找到进程"，若当成功就是"假停止"
+      if (err) console.warn('[launch] taskkill /PID ' + pid + ' 失败: ' + String(se || err.message).trim());
+      resolve(!err);
+    });
   });
+}
+
+// 端口反查：谁在 LISTENING 这个端口（外壳死掉后真实进程的唯一线索）
+function pidsListeningOnPort(port) {
+  const p = Number(port);
+  if (!p) return [];
+  try {
+    const r = spawnSync('cmd', ['/c', 'netstat -ano -p tcp'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+    const pids = new Set();
+    for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      if (!/LISTENING/i.test(line)) continue;
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 4) continue;
+      const m = String(cols[1]).match(/:(\d+)$/);
+      const pid = Number(cols[cols.length - 1]);
+      if (m && Number(m[1]) === p && pid > 0) pids.add(pid);
+    }
+    return [...pids];
+  } catch { return []; }
 }
 
 async function stopEntry(entry) {
@@ -205,11 +228,30 @@ async function stopEntry(entry) {
     procs.delete(entry.id);
     return { ok: true, killed: 0 };
   }
-  await killTree(pid);
+  // ① 先杀记忆中的树（内存句柄 / 落盘 PID）
+  const killed = [];
+  if (pid && await killTree(pid)) killed.push(pid);
+  // ② 兜底：外壳已死/树断链时，按端口反查真实监听进程补杀
+  if (entry.port) {
+    for (const p of pidsListeningOnPort(entry.port)) {
+      if (killed.includes(p)) continue;
+      await killTree(p);
+      killed.push(p);
+    }
+  }
   procs.delete(entry.id);
   setState(entry.id, null);
-  pushLog(entry.id, '[已停止] pid=' + (pid || '-'));
-  return { ok: true, killed: pid || 0 };
+  pushLog(entry.id, '[已停止] 杀掉 pid=' + (killed.join(',') || '-'));
+  // ③ 验证：端口条目必须确认端口真释放，否则如实报失败（不让 UI 假成功）
+  if (entry.port) {
+    await new Promise((r) => setTimeout(r, 300));
+    const left = pidsListeningOnPort(entry.port);
+    if (left.length) {
+      pushLog(entry.id, '[警告] 端口 ' + entry.port + ' 仍被占用：pid=' + left.join(','));
+      return { ok: false, error: '端口 ' + entry.port + ' 仍被 pid ' + left.join(',') + ' 占用（可能权限不足或已被其他程序接管）' };
+    }
+  }
+  return { ok: true, killed };
 }
 
 async function restartEntry(entry) {

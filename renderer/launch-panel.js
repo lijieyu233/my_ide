@@ -128,8 +128,8 @@ const LaunchPanel = (() => {
       const r = await api.start(e);
       if (r && r.error) toast('启动失败：' + r.error, 'err'); else toast('已启动：' + e.name, 'ok');
     } else if (kind === 'stop') {
-      await api.stop(e);
-      toast('已停止：' + e.name, 'ok');
+      const r = await api.stop(e);
+      if (r && r.error) toast('停止失败：' + r.error, 'err'); else toast('已停止：' + e.name, 'ok');
     } else if (kind === 'restart') {
       const r = await api.restart(e);
       if (r && r.error) toast('重启失败：' + r.error, 'err'); else toast('已重启：' + e.name, 'ok');
@@ -197,7 +197,7 @@ const LaunchPanel = (() => {
           it.addEventListener('click', async (ev) => {
             if (ev.target.closest('.origin-x')) {
               await L().removeOrigin(o);
-              cfg = await L().load();
+              cfg = await L().config();
               render();
               return;
             }
@@ -253,22 +253,27 @@ const LaunchPanel = (() => {
       kind: v('kind'), script: v('script'), python: v('python') || 'python',
     };
     if (!item.name || !item.command) { toast('名称与启动命令必填', 'err'); return; }
-    const editing = dlg.__editing;
-    const list = cfg.entries.slice();
-    if (editing) {
-      const i = list.findIndex((x) => x.id === editing);
-      if (i >= 0) list[i] = Object.assign({}, list[i], item);
-    } else {
-      item.id = 'e' + Date.now().toString(36);
-      list.push(item);
+    try {
+      const editing = dlg.__editing;
+      const list = cfg.entries.slice();
+      if (editing) {
+        const i = list.findIndex((x) => x.id === editing);
+        if (i >= 0) list[i] = Object.assign({}, list[i], item);
+      } else {
+        item.id = 'e' + Date.now().toString(36);
+        list.push(item);
+      }
+      if (item.apiOrigin) await L().addOrigin(item.apiOrigin);
+      cfg = await L().save({ apiOrigins: cfg.apiOrigins, entries: list, keepOnExit: cfg.keepOnExit });
+      if (item.apiOrigin) cfg = await L().config();
+      dlg.__editing = null;
+      if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
+      renderList();
+      await pollOnce();
+    } catch (err) {
+      // 兜底：任何一步失败都提示，而不是弹窗无声卡死（历史上 L().load 笔误就是这样卡住的）
+      toast('保存失败：' + (err && err.message ? err.message : err), 'err');
     }
-    if (item.apiOrigin) await L().addOrigin(item.apiOrigin);
-    cfg = await L().save({ apiOrigins: cfg.apiOrigins, entries: list, keepOnExit: cfg.keepOnExit });
-    if (item.apiOrigin) cfg = await L().load();
-    dlg.__editing = null;
-    if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
-    renderList();
-    await pollOnce();
   }
 
   async function removeEntry(id) {
