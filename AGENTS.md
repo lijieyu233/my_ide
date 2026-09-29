@@ -17,7 +17,7 @@
 ## 二、每次改完的收尾动作（用户点名要求，别省）
 
 1. **测试丢后台跑**：`npm test` 要几十秒，前台白等。用后台任务跑，先干别的（写提交信息 / 收拾现场），
-   跑完再核对结果；`npm run test:dom` 基线是 **268 通过 / 0 失败**，数字不对就是真出事了。
+   跑完再核对结果；`npm run test:dom` 基线是 **269 通过 / 0 失败**，数字不对就是真出事了。
 2. **改完重启 MyIDE**：用户是开着 app 看效果的，代码改完不重启他看不到。做法：
    - 找主进程：`Get-CimInstance Win32_Process -Filter "Name LIKE '%electron%'"`，
      取 `CommandLine` 里带 `my_ide` 的**那个不带 `--type=` 的进程**（PID 每次不同）。
@@ -27,15 +27,20 @@
      用 `Start-Process` 拉起（别用会随 shell 一起退出的前台方式）。
 3. **临时脚本 / 截图用完就删**：验证用的脚本别留在工作区，否则会被「每次改动都要提交」的规矩带进版本库。
 
-## 三、这台机器上跑 Electron 的坑
+## 三、这台机器上的坑（Electron / 编码）
 
+- **别用 PowerShell 的 `Set-Content` / `-replace` 改带中文的源码**：这台机器上 PS 的编码链路会把 UTF-8
+  写成坏字节 —— 实测一次 `Get-Content -Raw` → `.Replace()` → `Set-Content` 就把 `renderer/browser.js`
+  写坏了 179 个字符（解码后全是 U+FFFD），还混进了 CRLF。**改文件用编辑工具或 Node/Python 脚本**，
+  改完 `git diff` 复核；真写坏了别硬修，直接 `git checkout -- <file>` 重来。
 - **先清 `ELECTRON_RUN_AS_NODE`**：DSH harness 会把它设成 `1`，此时 `electron.exe` 退化成纯 Node ——
   症状是 `require('electron')` 返回一个路径字符串、`app.setPath(...)` 报
   `Cannot read properties of undefined (reading 'setPath')`。
   `npm test` 不受影响；但凡 `npm run check:launch` / `check:md` / `--check-ui` / 自己写的 electron 脚本，
   都要先在同一个 shell 里 `Remove-Item env:ELECTRON_RUN_AS_NODE`。
 - 自己写一次性验证脚本时先 `app.setPath('userData', <临时目录>)`：别把用户真实的
-  `%APPDATA%\my-ide`（收藏 / 会话 / 主题）写脏。
+  `%APPDATA%\my-ide`（收藏 / 会话 / 主题）写脏。脚本可以丢在 `.ui-check-trash/`（已 gitignore），
+  但收盘前清掉。
 
 ## 四、这台机器上推送的坑（改完推不上去时先看这里）
 
@@ -56,7 +61,7 @@
 |---|---|
 | `npm test` | `check:js`（语法）+ `test:git` + `test:dom` |
 | `npm run check:js` | 纯语法检查，27 个文件，秒级 |
-| `npm run test:dom` | jsdom 全套交互断言（当前基线 **268 通过 / 0 失败**） |
+| `npm run test:dom` | jsdom 全套交互断言（当前基线 **269 通过 / 0 失败**） |
 | `npm run check:md` / `npm run check:launch` | 真 Electron 窗口里的脚本化走查 |
 | `node_modules\electron\dist\electron.exe . --check-ui` | UI 细节自检：真实窗口 + 真实 IPC + 每阶段截图 `check-ui-*.png`，步骤在 `scripts/check-ui-steps.js` |
 
@@ -66,5 +71,9 @@
 
 - **一个功能只能有一个名字**。历史教训：内置浏览器侧栏同时出现了「收藏 / 书签 / 收藏夹」三个词
   （`renderer/index.html` 里已注释说明）。新加文案前先 grep 一遍现有叫法，不一致就统一，别叠加。
+- **图标分两套，别用错**：列表 / 工具条 / 面板标题上的图标一律内联 SVG（`<svg class="ic" viewBox="0 0 16 16">`，
+  1.4px 线性描边，见 `styles.css` 的 `svg.ic`）。理由和文件树当初 emoji→SVG 的迁移一样：emoji 的字号与
+  基线不受控，混在一排线性图标里又大又花。**右键菜单文案**倒是惯例带 emoji 前缀（`✨ 新建文件`/`📋 复制文件`），
+  别去"顺手统一"。
 - 注释写**为什么**（尤其是"实测结论 / 踩过的坑"），不写"做了什么"—— 照现有 `browser.js` / `launch-service.js`
   里那种带原因和实测数据的注释风格来。
