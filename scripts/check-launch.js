@@ -245,6 +245,31 @@ app.whenReady().then(async () => {
           JSON.stringify(r));
     }
 
+    // ---------- ③j 侧栏卡片：双态互斥 + 跳转按钮 + 三角尺寸 ----------
+    {
+      const r = await wc.executeJavaScript(probe(`
+        const cards = [...document.querySelectorAll('#launch-body .launch-card')];
+        let badState = 0, withPort = 0, withOpen = 0;
+        for (const c of cards) {
+          const idle = c.querySelector('.act-idle'), run = c.querySelector('.act-run');
+          const vIdle = idle && !idle.classList.contains('hide');
+          const vRun = run && !run.classList.contains('hide');
+          if (vIdle === vRun) badState++;
+          if (c.querySelector('.act-open')) withOpen++;
+          const portEl = c.querySelector('.launch-port');
+          if (portEl) withPort++;
+        }
+        const caret = document.querySelector('.launch-caret');
+        const fs = caret ? parseFloat(getComputedStyle(caret).fontSize) : 0;
+        return { n: cards.length, badState, withPort, withOpen, caretPx: fs };
+      `), true);
+      add('③j 卡片双态互斥（启动/停止恰一个可见）',
+          !r.err && r.n > 0 && r.badState === 0, JSON.stringify(r));
+      add('③j 有端口的条目都有跳转按钮', !r.err && r.withPort === r.withOpen && r.withPort > 0,
+          'port=' + r.withPort + ' open=' + r.withOpen);
+      add('③j 分组三角 ≥11px（原 9px 太小）', !r.err && r.caretPx >= 11, 'caret=' + r.caretPx + 'px');
+    }
+
     // ---------- ④ 配置持久化（机器级 ~/.myide/launch.json） ----------
     {
       const p = await wc.executeJavaScript(`window.myIDE.launch.paths()`, true);

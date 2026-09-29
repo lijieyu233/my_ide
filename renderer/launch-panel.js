@@ -46,18 +46,25 @@ const LaunchPanel = (() => {
     refreshDots();
   }
 
+  const ICO_PLAY = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z" fill="currentColor"/></svg>';
+  const ICO_STOP = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.6" fill="currentColor"/></svg>';
+  const ICO_OPEN = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M5 7 10.2 1.8M6.2 1.8h4v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 7.2v2.6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
   function cardHtml(e) {
     const s = stOf(e.id);
     const sel = e.id === selectedId ? ' sel' : '';
+    const run = s.alive ? ' run' : '';
     const dot = s.alive ? 'launch-dot on' : 'launch-dot';
-    return '<div class="launch-card' + sel + '" data-id="' + esc(e.id) + '" title="点击在右侧查看详情与日志">'
+    const url = e.openUrl || (e.port ? 'http://127.0.0.1:' + e.port : '');
+    return '<div class="launch-card' + run + sel + '" data-id="' + esc(e.id) + '" title="点击在右侧查看详情与日志">'
       + '<div class="launch-card-head">'
       + '<span class="' + dot + '"></span>'
       + '<span class="launch-nm">' + esc(e.name) + '</span>'
       + (e.port ? '<span class="launch-port">:' + e.port + '</span>' : '')
       + '<span class="launch-acts">'
-      + '<button class="vt-btn lp-btn" data-act="start" title="启动">▶</button>'
-      + '<button class="vt-btn lp-btn" data-act="stop" title="停止">■</button>'
+      + '<button class="vt-btn lp-btn act-idle' + (s.alive ? ' hide' : '') + '" data-act="start" title="启动">' + ICO_PLAY + '</button>'
+      + '<button class="vt-btn lp-btn act-run' + (s.alive ? '' : ' hide') + '" data-act="stop" title="停止">' + ICO_STOP + '</button>'
+      + (url ? '<button class="vt-btn lp-btn act-open" data-act="open" title="打开页面 ' + esc(url) + '">' + ICO_OPEN + '</button>' : '')
       + '</span></div></div>';
   }
 
@@ -70,6 +77,10 @@ const LaunchPanel = (() => {
       const s = stOf(id);
       const dot = el.querySelector('.launch-dot');
       if (dot) dot.className = s.alive ? 'launch-dot on' : 'launch-dot';
+      el.classList.toggle('run', !!s.alive);
+      const bStart = el.querySelector('.act-idle'), bStop = el.querySelector('.act-run');
+      if (bStart) bStart.classList.toggle('hide', !!s.alive);
+      if (bStop) bStop.classList.toggle('hide', !s.alive);
     }
   }
 
@@ -295,6 +306,10 @@ const LaunchPanel = (() => {
           const e = byId(id);
           const kind = btn.getAttribute('data-act');
           if (e && (kind === 'start' || kind === 'stop')) act(e, kind);
+          if (e && kind === 'open') {
+            const url = e.openUrl || (e.port ? 'http://127.0.0.1:' + e.port : '');
+            if (url) L().openUrl(url);
+          }
         }
       });
     }

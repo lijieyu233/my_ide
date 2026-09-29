@@ -3139,7 +3139,7 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   color: var(--text-dim); font-size: 0.85em; cursor: pointer; user-select: none;
 }
 .launch-cat:hover { color: var(--text); background: var(--btn-hover); }
-.launch-caret { display: inline-block; width: 10px; font-size: 9px; }
+.launch-caret { display: inline-block; width: 13px; font-size: 12px; line-height: 1; color: var(--text-dim); }
 .launch-cat-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .launch-cat-n { font-size: 0.77em; opacity: .7; }
 .launch-cards { padding: 0 6px; }
@@ -3158,7 +3158,26 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .launch-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.96em; color: var(--text); }
 .launch-port { font-size: 0.81em; color: var(--text-dim); font-family: var(--font-mono); }
 .launch-acts { display: flex; gap: 2px; flex: 0 0 auto; }
-.launch-acts .lp-btn { padding: 0 4px; font-size: 0.77em; line-height: 1.5; }
+.launch-acts { gap: 4px; }
+.launch-acts .lp-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 20px; padding: 0;
+  border: 1px solid var(--btn-border); border-radius: 5px;
+  background: var(--btn-bg); color: var(--text-dim);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.launch-acts .lp-btn:hover { background: var(--btn-hover); color: var(--text); border-color: var(--btn-border); }
+.launch-acts .lp-btn svg { display: block; }
+/* 运行中的停止键：红调；停止态的启动键：绿调 —— 颜色即状态，不用读字 */
+.launch-card.run .act-run { color: color-mix(in srgb, var(--red, #e5534b) 75%, var(--text)); }
+.launch-card.run .act-run:hover { background: color-mix(in srgb, var(--red, #e5534b) 16%, transparent); border-color: color-mix(in srgb, var(--red, #e5534b) 45%, transparent); }
+.launch-card:not(.run) .act-idle { color: color-mix(in srgb, var(--ok, #4caf50) 70%, var(--text)); }
+.launch-card:not(.run) .act-idle:hover { background: color-mix(in srgb, var(--ok, #4caf50) 14%, transparent); border-color: color-mix(in srgb, var(--ok, #4caf50) 40%, transparent); }
+.launch-acts .lp-btn.hide { display: none; }
+/* 运行态卡片：左侧细绿条 + 名字提亮 */
+.launch-card.run { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ok, #4caf50) 65%, transparent); }
+.launch-card.run .launch-nm { color: var(--text-bright, var(--text)); }
+.launch-card:not(.run) .launch-nm { color: var(--text-dim); }
 .launch-cmd {
   font-family: var(--font-mono); font-size: 0.81em; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;
