@@ -719,8 +719,10 @@ const Settings = (() => {
       healthLine = h.writable
         ? '<span class="ok">✓ 本地存储可写</span><span class="dim"> · ' + esc(h.userData || '') + '</span>'
         : '<span class="warn">✗ 本地存储不可写：' + esc(h.error || '目录不可写') + '</span>'
-          + '<div class="dim" style="margin-top:4px">改动不会存进浏览器存储，但会保留在兜底镜像里（主题/项目/标签页不会丢）。</div>'
-          + '<div class="dim" style="margin-top:4px">要根治请检查该目录权限：<code>' + esc(h.userData || '') + '</code></div>';
+          + '<div class="dim" style="margin-top:4px">' + (h.mirrorOk === true
+            ? '兜底镜像目录可写。请用「立刻写入镜像」确认保存成功，或先导出设置。'
+            : '兜底镜像也不可写；改动可能在重启后丢失，请立即导出设置。') + '</div>'
+          + '<div class="dim" style="margin-top:4px">请检查目录权限及应用进程的完整性级别：<code>' + esc(h.userData || '') + '</code></div>';
     }
 
     list.innerHTML = `

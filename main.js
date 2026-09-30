@@ -68,15 +68,15 @@ function saveState(s) {
 // ---------- 本地设置镜像（容错：Chromium profile 写不进去时的兜底）----------
 // 🔴 为什么需要这层（2026-09-30 实测，用户原话「上次的记录没有保存」）：
 //   全部设置都躺在 localStorage 里，而 localStorage 落在 `%APPDATA%\my-ide`（Chromium profile）。
-//   一旦那个目录不可写（实测：`%APPDATA%` 上有一条被继承下来的只读权限
-//   `CodexSandboxUsers =(I)(RX)`，会传播到所有子目录），**setItem 在内存里照样成功、
-//   落盘静默失败** —— 渲染层那 57 处 `catch {}` 一个都发现不了，
+//   2026-09-30 核对主进程令牌与文件 SACL：仓库的 Low 完整性标记被 electron.exe
+//   继承，主进程以 Low 运行，MIC 禁止它写 Medium 的 profile；不是 Allow RX 条目拦写。
+//   **setItem 在内存里照样成功、落盘失败** —— 仅靠渲染层 catch 无法发现，
 //   用户看到的现象是"主题/项目/标签页每次打开全没了"。
 //   更糟的是原先没有任何备份：坏了就一直坏。
 //   （数据本身完好：leveldb 的 SST 魔术字与 MANIFEST 的 632 条 CRC 全部校验通过，
 //     同一份字节放到可读路径就能正常读出 120 项 —— 详见 docs/开发文档-085。）
-//   所以这里用 **主进程的 node fs** 另存一份 —— 它走的是普通文件 API，
-//   `~/.myide/` 既能写、也不受 Chromium profile 那套权限影响（同 git-native.json 的做法）。
+//   镜像另存一份，避免只依赖 Chromium profile；但主进程的 node fs 同样受 MIC 约束，
+//   `~/.myide/` 也必须实际可写，不能把「启用镜像」当作「保存成功」。
 const SETTINGS_MIRROR = () => path.join(os.homedir(), '.myide', 'settings.json');
 
 function readMirror() {

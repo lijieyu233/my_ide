@@ -1069,7 +1069,7 @@ module.exports = {
       (q('#git-backend-status').textContent || '').replace(/\s+/g, ' ').slice(0, 60));
 
     // ---------- 本地设置（容错）分类：真实 IPC 下必须能渲染出状态与四个动作 ----------
-    // 2026-09-30：%APPDATA% 被加只读权限 → localStorage 落盘静默失败 → 设置全丢。
+    // 2026-09-30：electron.exe 继承 Low 标记，MIC 拒绝写入 Medium profile。
     // 这步在真实窗口 + 真实 IPC 下确认容错层接得上（settings:probe / mirror-* 三个通道）。
     const storageCat = qa('.set-cat[data-cat]').find((c) => c.dataset.cat === 'storage');
     add('设置页有「本地设置」分类', !!storageCat, storageCat ? storageCat.textContent.trim() : '没找到');

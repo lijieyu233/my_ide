@@ -8127,7 +8127,7 @@ assert_(panel, 'CM6 搜索面板出现');
 
   // ---------- 本地设置容错层（settings-store.js，2026-09-30 用户现场）----------
   // 背景：全部设置存 localStorage，而它落在 Chromium profile（%APPDATA%\my-ide）。
-  //   那个目录被加了一条继承下来的只读权限后，setItem 内存里成功、**落盘静默失败**
+  //   Low 完整性主进程不能写 Medium profile；setItem 内存里成功不代表已落盘
   //   → 每次打开主题/项目/标签页全没了，且没有备份。这组用例守住四件事：
   //   ① 写设置会同步一份镜像 ② 镜像能补回本地缺失的键 ③ 补回时**不覆盖**已有值 ④ 导出/导入闭环。
   await okAsync('本地设置容错：写设置会写镜像（防抖后用 flushMirror 收口）', async () => {
@@ -8209,6 +8209,44 @@ assert_(panel, 'CM6 搜索面板出现');
     await g(dom, 'Modal.hide()');
     await tick();
   });
+
+  for (const mirrorOk of [false, true]) {
+    await okAsync('本地设置容错：失败提示按镜像可写状态区分（mirrorOk=' + mirrorOk + '）', async () => {
+      const isolated = new JSDOM('<!doctype html><html><body></body></html>', {
+        url: 'http://localhost/', runScripts: 'outside-only',
+      });
+      try {
+        const toasts = [], logs = [];
+        isolated.window.MI = { toast: (s) => toasts.push(s), log: (_level, _scope, s) => logs.push(s) };
+        isolated.window.myIDE = { settings: {
+          probe: async () => ({ writable: false, mirrorOk, userData: 'C:/ud', mirror: 'C:/mirror', error: 'EPERM' }),
+        } };
+        isolated.window.eval(fs.readFileSync(path.join(__dirname, '../renderer/settings-store.js'), 'utf8'));
+        await isolated.window.SettingsStore.checkHealth();
+        const text = toasts.join(' ') + logs.join(' ');
+        assert_(toasts.length === 1, '应明确提示一次存储不可写');
+        assert_(!/改动仍会保留|不会丢/.test(text), '探针不能保证实际保存成功');
+        assert_(mirrorOk ? text.includes('请确认镜像写入成功') : text.includes('请立即导出设置'),
+          '镜像可写时需确认落盘；不可写时应提示导出');
+      } finally { isolated.window.close(); }
+    });
+    await okAsync('本地设置容错：设置页不承诺未确认的镜像保存（mirrorOk=' + mirrorOk + '）', async () => {
+      const before = FAKE_SETTINGS.probe;
+      try {
+        FAKE_SETTINGS.probe = { writable: false, mirrorOk, userData: 'C:/ud', mirror: 'C:/mirror', error: 'EPERM' };
+        await g(dom, 'SettingsStore.checkHealth()');
+        await g(dom, 'Settings.open("storage")');
+        await tick();
+        const text = $(dom, '#set-list').textContent;
+        assert_(!/不会丢|会保留在兜底镜像里/.test(text), '设置页不能错误承诺不会丢');
+        assert_(mirrorOk ? text.includes('确认保存成功') : text.includes('镜像也不可写'), '应显示对应的操作建议');
+      } finally {
+        FAKE_SETTINGS.probe = before;
+        await g(dom, 'SettingsStore.checkHealth()');
+        await g(dom, 'Modal.hide()');
+      }
+    });
+  }
 
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

@@ -2,8 +2,8 @@
 //
 // 为什么必须有这一层（2026-09-30 实测，用户原话「上次的记录没有保存」）：
 //   本应用全部设置都存 localStorage，而它落在 Chromium profile（%APPDATA%\my-ide）。
-//   一旦那个目录不可写 —— 实测是被加了一条**继承下来的只读权限**
-//   （%APPDATA% 上 `CodexSandboxUsers =(I)(RX)`，会传播到所有子目录）—— 现象极其隐蔽：
+//   本机的 electron.exe 继承仓库的 Low 完整性标记，主进程不能写 Medium 的 profile。
+//   Allow RX 条目不是拒写原因；应核对实际进程令牌和文件 SACL，不能只看用户名称：
 //     · `setItem` 在内存里照样成功，**落盘静默失败**：渲染层 57 处 `catch {}` 一处都发现不了；
 //     · 下次启动 localStorage 近乎为空 → 主题 / 项目 / 标签页全部"没保存"。
 //   原先既没有备份、也没有自愈，**坏了就一直坏**（数据其实还完好地躺在 leveldb 的 .ldb 里，
@@ -11,7 +11,7 @@
 //
 // 这一层做四件事：
 //   ① 兜底镜像：每次写 myide-* 设置，防抖同步一份到 `~/.myide/settings.json`
-//      （交给**主进程的 node fs** 写，绕开 Chromium profile 那套权限；同 git-native.json 的做法）
+//      （主进程的 node fs 仍受 MIC 约束，必须检查镜像目录和实际写入结果）
 //   ② 启动自愈：镜像里有、本地没有的键，开机同步补回来 ——「坏了就一直坏」到此为止
 //      ⚠ 只补缺失、**绝不覆盖**：本地可能已有更新的值（镜像只是还没跟上），覆盖会倒退回旧设置
 //   ③ 失败可见：向主进程查 profile 到底能不能写，不能写就明确告诉用户，不再当没发生
@@ -125,12 +125,16 @@ const SettingsStore = (() => {
   function warnDegraded(h) {
     if (warned) return;
     warned = true;
+    // 目录探针成功也不等于镜像已落盘；失败时更不能承诺重启后设置仍在。
+    const mirrorHint = h.mirrorOk === true
+      ? '兜底镜像目录可写；请确认镜像写入成功，或先导出设置。'
+      : '兜底镜像也不可写；改动可能在重启后丢失，请立即导出设置。';
     const msg = '⚠ 设置无法保存到磁盘：' + (h.userData || '') + '\n'
       + '（' + (h.error || '目录不可写') + '）\n'
-      + '已启用兜底镜像：' + h.mirror + '；改动仍会保留。';
+      + mirrorHint + ' 镜像路径：' + (h.mirror || '未知');
     try { if (window.MI && MI.log) MI.log('ERROR', 'settings', msg.replace(/\n/g, ' ')); } catch {}
     // MI 可能还没就绪：等一小会儿再弹，避免启动早期 toast 被后续渲染吞掉
-    const fire = () => { try { if (window.MI && MI.toast) MI.toast('⚠ 设置无法保存到磁盘，已启用兜底镜像（改动仍会保留）', 'err'); } catch {} };
+    const fire = () => { try { if (window.MI && MI.toast) MI.toast('⚠ 本地存储不可写。' + mirrorHint, 'err'); } catch {} };
     if (window.MI && MI.toast) fire(); else setTimeout(fire, 2500);
   }
   async function checkHealth() {
