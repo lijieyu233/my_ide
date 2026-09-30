@@ -1602,10 +1602,24 @@ async function fetchRemote(dir, { auth } = {}) {
 }
 
 // pull：fetch + fast-forward 合并（分叉时明确报错，不静默产生合并提交）
-// 拉取策略（M4 收尾）：ff=默认快进（isomorphic，保留既有凭证/代理兜底链）；
-// ff-only=分叉就报错；merge=分叉时建合并提交；rebase=把本地提交重放上去。
-// merge / rebase / ff-only 走**原生 git**（isomorphic 没有真合并；fetch 也用原生，
-// 这样 FETCH_HEAD 语义与命令行完全一致），撞冲突交给 M4 的解决流程。
+// 拉取策略（M4 收尾）：ff=默认快进；ff-only=分叉就报错；merge=分叉时建合并提交；
+// rebase=把本地提交重放上去。merge / rebase / ff-only 整条走**原生 git**
+// （isomorphic 没有真合并；fetch 也用原生，这样 FETCH_HEAD 语义与命令行完全一致），
+// 撞冲突交给 M4 的解决流程。
+//
+// 🔴 ff（默认策略）是 2026-09-30 修过的一条：**fetch 留 isomorphic，快进合并改走原生**。
+//   原因（用户现场："我刚拉下代码怎么就显示有更改"）：isomorphic 的 `git.pull` 内部是
+//   `_merge` → `_checkout` 两步，而它的快进分支**只写 ref、不碰工作区**
+//   （见 node_modules/isomorphic-git/index.cjs 的 `_merge`：`writeRef` 后直接 return），
+//   真正落盘靠紧随其后的 `_checkout`；可那个 checkout 不认 core.autocrlf（见 git-native.js
+//   里 checkout 的注释），在本仓这种「LF 提交 + CRLF 工作区」的仓库上把每个 CRLF 文件都算成
+//   "有本地改动" → 抛 CheckoutConflictError。于是 refs 前进了、工作区留在旧版本，两者的差集
+//   被提交窗口显示成一屏从没动过的改动（实测 10 项：6 个 CRLF 文件 + 被删的文档 + 2 个 LF 文件）。
+//   ⚠ 只把落盘那步交给原生：原生 git 先做行尾归一化再比对，**只在真有本地改动时拒绝**，
+//     且拒绝发生在移动 ref 之前 —— 不会再有"指针走了、文件没走"的半吊子状态。
+//   为什么 fetch 不一起交给原生：应用「远程仓库」弹窗里存的凭证是经 `auth` 传进来的，
+//   只有 isomorphic 这条路认；原生 git 只认系统凭证助手（gh CLI），
+//   用户若只在弹窗里填过 token，整条拉取就会拉不动。代理同理（后端已注入 CONNECT 隧道）。
 async function pullRemote(dir, { auth, strategy } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
@@ -1619,12 +1633,38 @@ async function pullRemote(dir, { auth, strategy } = {}) {
     try {
       return await withRemoteUrlFix(root, pr, async () => {
         const onAuth = onAuthOf(auth, pr.url);
-        const r = await git.pull({
-          fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
-          author: await getAuthor(root),
+        // ① fetch：isomorphic（凭证 / 代理兜底链在这条路上）。ref: branch 必须传 ——
+        //    不传它会拉全部远程分支，fetchHead 可能落在别的分支上，下面的快进就并错分支了。
+        const f = await git.fetch({
+          fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
           onAuth, onAuthFailure: onAuth,
         });
-        return { ok: true, oid: r && r.oid, strategy: strat };
+        const head = f && f.fetchHead;
+        if (!head) return { ok: true, strategy: strat, fetchHead: true };
+        // ② 快进合并：原生。取不到本机 git 时只能退回 isomorphic 的老路径（那条在本仓
+        //    这类 autocrlf 仓库上会留下"refs 走了、工作区没走"的半吊子状态 —— 无本机 git 时无解）
+        const info = await nativeGit.info(false).catch(() => null);
+        if (!(info && info.git && info.git.available)) {
+          const r = await git.pull({
+            fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
+            author: await getAuthor(root),
+            onAuth, onAuthFailure: onAuth,
+          });
+          return { ok: true, oid: r && r.oid, strategy: strat };
+        }
+        const m = await nativeGit.merge(root, head, { ffOnly: true });
+        if (!m.ok) {
+          const why = String(m.error || '');
+          if (/not possible to fast-forward|not a fast-forward/i.test(why)) {
+            return { ok: false, strategy: strat, error: '本地与远程已分叉：请换「拉取并合并 / 拉取并变基」，或先处理本地更改' };
+          }
+          // 真有未提交改动时原生 git 会拒绝并**保持工作区与 refs 原样**（这正是要的行为）
+          if (/would be overwritten|local changes/i.test(why)) {
+            return { ok: false, strategy: strat, error: '本地有未提交的改动，会被远程更新覆盖：先提交或暂存后再拉取' };
+          }
+          return { ok: false, strategy: strat, error: why };
+        }
+        return { ok: true, oid: head, strategy: strat };
       });
     } catch (e) {
       const msg = String(e.message || e);

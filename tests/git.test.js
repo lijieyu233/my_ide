@@ -1211,8 +1211,137 @@ fs.mkdirSync(repo);
       assert.ok(again.ok && !again.conflict, '同步状态 rebase 拉取失败: ' + (again && again.error));
       const again2 = await G.pullRemote(A, { strategy: 'merge' });
       assert.ok(again2.ok && !again2.conflict, '同步状态 merge 拉取失败: ' + (again2 && again2.error));
-      // （默认 strategy='ff' 走 isomorphic 的老路径，只支持 http(s) 远程 —— 本地 bare 路径它不认，
-      //   故不在本用例覆盖；该路径是既有行为，未改。）
+      // （默认 strategy='ff' 只支持 http(s) 远程 —— 本地 bare 路径 isomorphic 不认，
+      //   故不在本用例覆盖；它由下面那条「ff 快进必须真的落盘」用本地 http 服务单独覆盖。）
+    });
+
+    // ---------- pull(ff)：快进必须真的落盘（2026-09-30 用户现场）----------
+    // 症状：用户在应用里点「拉取（快进）」，提示成功、远端提交也进来了，但工作区文件还是旧的，
+    //   提交窗口冒出一屏"更改"（本机实测 10 项：6 个 CRLF 文件 + 被删的文档 + 2 个 LF 文件），
+    //   全是 HEAD 与工作区快照的差集，没有一项是用户改的。
+    // 根因：isomorphic 的 `git.pull` = `_merge` → `_checkout`。它的快进分支**只写 ref、
+    //   不碰工作区**（node_modules/isomorphic-git/index.cjs 的 `_merge`：writeRef 后直接 return），
+    //   落盘全靠后面那次 `_checkout`；而那个 checkout 不认 core.autocrlf（见 git-native.js 的
+    //   checkout 注释），在「LF 提交 + CRLF 工作区」的仓库里把每个 CRLF 文件都算成"有本地改动"
+    //   → 抛 CheckoutConflictError。于是 refs 前进、工作区留在旧版本。
+    // 修法：fetch 仍走 isomorphic（应用弹窗里存的凭证只在那条路上认），
+    //   落盘那一步交给原生 git —— 它先做行尾归一化再比对，且拒绝发生在移动 ref **之前**。
+    await okAsync('pull：ff 快进必须真的落盘（autocrlf 仓库不再"refs 走了、工作区没走"）', async () => {
+      const http = require('http');
+      const { spawn } = require('child_process');
+      // 本地 git http-backend：isomorphic-git 只认 http(s)，用文件路径当 origin 走不到这条路径
+      const serveGitHttp = (rootDir, project) => new Promise((resolve) => {
+        const server = http.createServer((req, res) => {
+          const u = new URL(req.url, 'http://127.0.0.1');
+          const cgi = spawn('git', ['http-backend'], {
+            env: Object.assign({}, process.env, {
+              GIT_PROJECT_ROOT: rootDir, GIT_HTTP_EXPORT_ALL: '1',
+              PATH_INFO: u.pathname, QUERY_STRING: u.search.replace(/^\?/, ''),
+              REQUEST_METHOD: req.method, CONTENT_TYPE: req.headers['content-type'] || '',
+              REMOTE_ADDR: '127.0.0.1', SERVER_PROTOCOL: 'HTTP/1.1',
+            }),
+          });
+          req.pipe(cgi.stdin);
+          let buf = Buffer.alloc(0), sent = false;
+          cgi.stdout.on('data', (c) => {
+            if (sent) return res.write(c);
+            buf = Buffer.concat([buf, c]);
+            const i = buf.indexOf('\r\n\r\n');
+            if (i < 0) return;
+            let status = 200;
+            for (const line of buf.slice(0, i).toString('utf8').split('\r\n')) {
+              const s = line.match(/^Status:\s*(\d+)/i);
+              if (s) { status = parseInt(s[1], 10); continue; }
+              const h = line.match(/^([^:]+):\s*(.*)$/);
+              if (h) res.setHeader(h[1], h[2]);
+            }
+            sent = true; res.writeHead(status); res.write(buf.slice(i + 4));
+          });
+          cgi.stdout.on('end', () => res.end());
+        });
+        server.listen(0, '127.0.0.1', () => resolve({
+          url: `http://127.0.0.1:${server.address().port}/${project}`,
+          close: () => server.close(),
+        }));
+      });
+
+      const bare2 = path.join(tmp, 'ff-origin.git');
+      fs.mkdirSync(bare2);
+      await NATIVE.run(['init', '--bare', '--initial-branch=main', bare2], { env: NATIVE.NO_EDIT });
+      const seed = path.join(tmp, 'ff-seed');
+      fs.mkdirSync(seed);
+      await G.initRepo(seed);
+      await G.setUserConfig(seed, { name: 'ff', email: 'ff@example.com' });
+      fs.writeFileSync(path.join(seed, 'a.txt'), 'l1\nl2\n');
+      fs.writeFileSync(path.join(seed, 'b.txt'), 'keep\n');
+      await G.commit(seed, { message: 'base', files: ['a.txt', 'b.txt'] });
+      await runGit(seed, ['remote', 'add', 'origin', bare2]);
+      await runGit(seed, ['push', '-q', 'origin', 'main']);
+      await runGit(bare2, ['update-server-info']);
+
+      // 🔴 夹具的两个关键条件（少一个就复现不出来，实测踩过 —— 第一版夹具两条都不满足，
+      //    旧代码照样通过，是条假绿测试）：
+      //   ① `core.autocrlf` 只能在**全局**配置里。isomorphic-git 只读仓库**本地** config
+      //      （node_modules/isomorphic-git 的 `GitConfigManager`：注释明写"目前只能读写本地 $GIT_DIR/config"），
+      //      所以本地一写 autocrlf，它就会自己做归一化、不再误判 —— bug 被"治"没了。
+      //      真实机器上它正好只在 ~/.gitconfig（本仓 .git/config 里没有），踩中。
+      //   ② 文件的 stat 必须与 index 记录**不一致**。isomorphic 的 `compareStats` 在 stat
+      //      吻合时直接信 index 里的 oid（不读盘、不哈希）；只有 stat 对不上才会去读盘重算，
+      //      这时才轮到"CRLF 字节 vs LF blob"的误判。真实仓库里文件被编辑器/检出程序写过，
+      //      stat 早就变了 —— 所以这条测试必须显式制造一次 stat 失效（删掉再 checkout 恢复）。
+      const gcfg = path.join(tmp, 'ff-global-gitconfig');
+      fs.writeFileSync(gcfg, '[core]\n\tautocrlf = true\n[user]\n\tname = ff\n\temail = ff@example.com\n');
+      const genv = Object.assign({}, NATIVE.NO_EDIT, { GIT_CONFIG_GLOBAL: gcfg });
+      const nrun = (cwd, args) => NATIVE.run(args, { cwd, env: genv });
+
+      const srv = await serveGitHttp(tmp, 'ff-origin.git');
+      // pullRemote 内部的原生 merge 走 git-native 的 run()，它叠加的是 process.env → 这里临时挂上
+      const savedGlobalCfg = process.env.GIT_CONFIG_GLOBAL;
+      process.env.GIT_CONFIG_GLOBAL = gcfg;
+      try {
+        // 本地仓库：与远端同源（从 seed 克隆；走 http 克隆会因 isomorphic 的 fetch 不建本地分支
+        // 而变成两条无关历史，实测报 "refusing to merge unrelated histories"），再把 origin 指到 http 服务
+        const local = path.join(tmp, 'ff-local');
+        await nrun(tmp, ['clone', '-q', '--branch', 'main', seed, local]);
+        await nrun(local, ['remote', 'set-url', 'origin', srv.url]);
+        const disk0 = fs.readFileSync(path.join(local, 'a.txt'), 'utf8');
+        assert.ok(disk0.includes('\r\n'), '夹具前提①：工作区应是 CRLF: ' + JSON.stringify(disk0));
+        assert.strictEqual((await nrun(local, ['config', '--local', '--get', 'core.autocrlf'])).stdout.trim(), '',
+          '夹具前提①：core.autocrlf 必须**不在**本地配置里（只在全局），否则 isomorphic 会自己归一化');
+        assert.strictEqual((await nrun(local, ['status', '--porcelain'])).stdout.trim(), '',
+          '夹具前提：拉取前原生 git 必须认为干净（否则夹具建模错了）');
+
+        // 制造 stat 失效：删掉再从 index 恢复（真实仓库里是编辑器/检出写出的新 mtime）
+        fs.unlinkSync(path.join(local, 'a.txt'));
+        await nrun(local, ['checkout', '--', 'a.txt']);
+        const mis = await git.statusMatrix({ fs, dir: local });
+        const aRow = mis.find((r) => r[0] === 'a.txt');
+        assert.ok(aRow && aRow[2] !== aRow[1],
+          '夹具前提②：isomorphic 必须把这份 CRLF 工作区误判成已修改（这正是不落盘的根因），matrix=' + JSON.stringify(aRow));
+
+        // 远端前进：改的正是那个被误判的 CRLF 文件
+        fs.writeFileSync(path.join(seed, 'a.txt'), 'l1\nl2\nl3\n');
+        await G.commit(seed, { message: 'remote: a.txt +l3', files: ['a.txt'] });
+        await runGit(seed, ['push', '-q', 'origin', 'main']);
+
+        const r = await G.pullRemote(local, { strategy: 'ff' });
+        assert.ok(r.ok, 'ff 拉取应成功（旧实现会抛 CheckoutConflictError 并把工作区留在旧版本）: ' + (r && r.error));
+
+        // ① 工作区必须真的拿到新内容（旧实现只动 ref，这里会停在 l1\r\nl2\r\n）
+        const disk1 = fs.readFileSync(path.join(local, 'a.txt'), 'utf8');
+        assert.strictEqual(disk1.replace(/\r\n/g, '\n'), 'l1\nl2\nl3\n',
+          'ff 拉取后工作区必须是远端那一版（refs 走了、工作区没走 = 本次修的 bug）: ' + JSON.stringify(disk1));
+        // ② 不许留下一屏假改动 —— 这正是用户看到的症状
+        const st = await G.status(local);
+        assert.deepStrictEqual((st.changed || []).map((c) => c.file), [],
+          'ff 拉取后不该有任何"更改": ' + JSON.stringify((st.changed || []).map((c) => [c.file, c.status])));
+        assert.strictEqual((await nrun(local, ['status', '--porcelain'])).stdout.trim(), '',
+          '原生 git 也应认为干净');
+      } finally {
+        if (savedGlobalCfg === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = savedGlobalCfg;
+        srv.close();
+      }
     });
   }
 

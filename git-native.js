@@ -599,7 +599,11 @@ async function scanTodo(repo, files, kinds) {
 // 上层只能调用明确列出的能力。
 const ROUTING_DOC = {
   native: ['credential', 'checkout', 'merge', 'rebase', 'opState', 'conflicts', 'resolveFile', 'continue/skip/abort'],
-  isomorphic: ['status', 'log', 'diff', 'commit', 'branch', 'tag', 'shelve', 'revert', 'cherryPick', 'blame'],
+  // ⚠ pull 是**混合**：fetch 走 isomorphic（应用弹窗里存的凭证只在那条路上认），
+  //   快进落盘走 native merge —— 理由见 git-service.js 的 pullRemote（isomorphic 的
+  //   _merge 只写 ref，落盘靠的 _checkout 不认 autocrlf → "指针走了、工作区没走"）。
+  isomorphic: ['status', 'log', 'diff', 'commit', 'branch', 'tag', 'shelve', 'revert', 'cherryPick', 'blame', 'pull.fetch'],
+  nativePartial: ['pull.merge'],
   planned: { partialStaging: 'git apply --cached', stash: 'git stash', hooks: '提交时执行 .git/hooks/*' },
 };
 
