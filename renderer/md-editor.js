@@ -138,8 +138,9 @@ window.MdEditor = (() => {
     '.cm-line.cm-md-h2-line': { paddingTop: '0.69em', paddingBottom: '0.31em' },
     '.cm-line.cm-md-h3-line': { paddingTop: '0.46em' },
     '.cm-line.cm-md-h4-line, .cm-line.cm-md-h5-line, .cm-line.cm-md-h6-line': { paddingTop: '0.15em' },
-    // 空行压缩：段落间空行不再占整行高（对齐 .md-view p margin 8px 的视觉间隙）
-    '.cm-line.cm-md-blank': { lineHeight: '0.85' },
+    // 空行保留半行间距，但字体也要同比缩小：只减 line-height 时，浏览器仍返回
+    // 正文字号的 caret rect（17px 字号下高 22px），会越过 14px 空行、侵入相邻段落。
+    '.cm-line.cm-md-blank': { fontSize: '0.5em', lineHeight: '1.7' },
     '.cm-md-strong': { fontWeight: '700' },
     '.cm-md-em': { fontStyle: 'italic' },
     '.cm-md-strike': { textDecoration: 'line-through', color: 'var(--text-dim)' },

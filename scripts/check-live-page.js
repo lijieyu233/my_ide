@@ -577,20 +577,20 @@
       // 正文档位现在挂在 scroller 上（`.cm-content` 不能吃横向内边距 —— 那会让 CM6 的
       // 整行选区矩形比正文列宽出这段，见 md-editor.js baseTheme 的注释）
       const sc = q('.editor-cm-wrap .cm-scroller');
-      // ⚠ 不去比"实际像素宽"：live 的 scroller 带 `scrollbar-gutter: stable both-edges`
-      //   （左右各预留滚动条宽度），而屏幕外的预览容器里没有滚动条 → 量出来会差 20px 的假差异。
-      //   真正决定"正文列一致"的是这三个同源值：列宽上限 + 左右内边距。
-      add('一致性: 正文列宽上限与左右内边距同源（scroller vs .md-view）',
+      // live 把左侧滚动条 gutter 换成等宽普通 padding，避免 CM6 图层原点偏移。
+      // 比较时扣掉这一段补偿；仍检查左右基础间距、列宽上限与预览同源。
+      const gutter = sc.offsetWidth - sc.clientWidth - num(sc, 'border-left-width') - num(sc, 'border-right-width');
+      const baseLeft = num(sc, 'padding-left') - gutter;
+      add('一致性: 正文列宽上限与左右基础间距同源（扣除滚动条补偿）',
         num(sc, 'max-width') === num(pv, 'max-width') && num(sc, 'max-width') > 0
-        && num(sc, 'padding-left') === num(pv, 'padding-left') && num(sc, 'padding-right') === num(pv, 'padding-right'),
-        'live scroller=' + show(sc, 'max-width') + '/' + show(sc, 'padding-left') + '/' + show(sc, 'padding-right')
+        && Math.abs(baseLeft - num(pv, 'padding-left')) <= 1 && num(sc, 'padding-right') === num(pv, 'padding-right'),
+        'live=' + show(sc, 'max-width') + '/' + baseLeft + 'px/' + show(sc, 'padding-right') + ' gutter=' + gutter
         + ' preview=' + show(pv, 'max-width') + '/' + show(pv, 'padding-left') + '/' + show(pv, 'padding-right'));
       add('一致性: .cm-content 不吃横向内边距（否则选区色块会宽出这段）',
-        num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0 && num(sc, 'padding-left') === num(pv, 'padding-left'),
-        'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' scroller=' + show(sc, 'padding-left') + ' preview=' + show(pv, 'padding-left'));
-      add('一致性: .cm-content 不吃横向内边距（否则选区色块会宽出这段）',
-        num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0 && num(sc, 'padding-left') === num(pv, 'padding-left'),
-        'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right') + ' scroller=' + show(sc, 'padding-left') + ' preview=' + show(pv, 'padding-left'));
+        num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0,
+        'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right'));
+      add('坐标: scroller 左侧无 gutter（光标与选区原点一致）',
+        sc.clientLeft === num(sc, 'border-left-width'), 'clientLeft=' + sc.clientLeft);
       // 预览必须跟随「编辑区字号」：状态栏那个 − 17 + 调的就是它，不跟随 = 用户改了字号没反应
       add('一致性: 预览跟随编辑区字号',
         Math.abs(num(pv, 'font-size') - num(cw, 'font-size')) <= 0.75,
