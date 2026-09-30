@@ -2656,8 +2656,8 @@ module.exports = {
     window.App.showTool('outline');
     for (let i = 0; i < 40 && !q('#outline .outline-item'); i++) await sleep(150);
     const rows = qa('#outline .outline-item');
-    add('大纲渲染出 4 个标题（一级 / 二级A / 三级A1 / 二级B）', rows.length === 4, 'rows=' + rows.length);
-    if (rows.length !== 4) return { R };
+    add('大纲渲染出 6 个标题（一级 / 二级A / 三级A1 / 四级A1a / 五级A1a1 / 二级B）', rows.length === 6, 'rows=' + rows.length);
+    if (rows.length !== 6) return { R };
 
     const act = qa('#panel-outline .panel-title-actions .vt-btn');
     add('顶栏 2 个图标按钮（展开全部 / 收起全部）',
@@ -2667,10 +2667,27 @@ module.exports = {
 
     const arrows = qa('#outline .ol-arrow:not(.ol-pad)');
     const pads = qa('#outline .ol-arrow.ol-pad');
-    add('只有含子层的行才有箭头', arrows.length === 2 && pads.length === 2,
-      '箭头 ' + arrows.length + '（一级/二级A） / 占位 ' + pads.length + '（三级A1/二级B）');
+    add('只有含子层的行才有箭头', arrows.length === 4 && pads.length === 2,
+      '箭头 ' + arrows.length + '（一级/二级A/三级A1/四级A1a） / 占位 ' + pads.length + '（五级A1a1/二级B）');
     add('叶子行箭头列留空（不再画 · 占位符）',
       pads.every((p) => !p.textContent.trim()), JSON.stringify(pads.map((p) => p.textContent)));
+    // 三角必须走内联 SVG（▾▸ 字符的字号/基线不受控，与文件树、启动面板的图标体系不一致）
+    add('三角是内联 SVG（不再用 ▾▸ 字符）',
+      arrows.length > 0 && arrows.every((a) => a.querySelector('svg.ic')) && arrows.every((a) => !/[▾▸]/.test(a.textContent)),
+      arrows.map((a) => (a.querySelector('svg.ic') ? 'svg' : JSON.stringify(a.textContent))).join(','));
+    // 层级可区分：真 Chromium 会把 color-mix / var 解析成 rgb，这里按最终色值比
+    const byLv = (lv) => rows.find((r) => (lv === 1 ? !/lv\d/.test(r.className) : r.classList.contains('lv' + lv)));
+    const cols = [1, 2, 3, 4, 5].map((lv) => { const r = byLv(lv); return r ? getComputedStyle(r).color : null; });
+    const lumOf = (c) => { const m = String(c).match(/(\d+(?:\.\d+)?)/g) || []; return m.slice(0, 3).reduce((a, b) => a + parseFloat(b), 0); };
+    const uniq = new Set(cols).size;
+    add('层级颜色至少分 3 档（旧实现只 2 档：H1/H2 同色、H3~H6 同色）',
+      cols.every(Boolean) && uniq >= 3, uniq + ' 档 → ' + cols.join(' | '));
+    add('逐级降对比（H1 > H2 > H4）',
+      lumOf(cols[0]) > lumOf(cols[1]) && lumOf(cols[1]) > lumOf(cols[3]),
+      [lumOf(cols[0]), lumOf(cols[1]), lumOf(cols[3])].join(' > '));
+    add('H3 是独立过渡档（亮度落在 H2 与 H4 之间）',
+      cols[2] !== cols[1] && cols[2] !== cols[3] && lumOf(cols[2]) <= lumOf(cols[1]) && lumOf(cols[2]) >= lumOf(cols[3]),
+      'H2=' + lumOf(cols[1]) + ' H3=' + lumOf(cols[2]) + ' H4=' + lumOf(cols[3]));
     const textLeft = (r) => Math.round(r.querySelector('.ol-text').getBoundingClientRect().left);
     add('文本起点按层级递进', textLeft(rows[1]) > textLeft(rows[0]) && textLeft(rows[2]) > textLeft(rows[1]),
       [textLeft(rows[0]), textLeft(rows[1]), textLeft(rows[2])].join(' < '));
@@ -2709,7 +2726,7 @@ module.exports = {
     add('双击标题行折叠其子层（小箭头之外的大目标）', visNow() < before, before + ' → ' + visNow());
     qa('#panel-outline .panel-title-actions .vt-btn')[0].click();
     await sleep(450);
-    add('顶栏「展开全部」恢复 4 个', visNow() === 4, 'visible=' + visNow());
+    add('顶栏「展开全部」恢复 6 个', visNow() === 6, 'visible=' + visNow());
     qa('#panel-outline .panel-title-actions .vt-btn')[1].click();
     await sleep(450);
     add('顶栏「收起全部」只留 H1', visNow() === 1, 'visible=' + visNow());

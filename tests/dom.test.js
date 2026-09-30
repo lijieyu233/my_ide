@@ -1057,6 +1057,56 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     dom.window.localStorage.removeItem('myide-outline-collapsed');
   });
 
+  await okAsync('大纲：三角用内联 SVG（不再用 ▾▸ 字符）+ 层级颜色分档', async () => {
+    // 起因：用户截图反馈「这里的页面不好看」。实测两个真实缺陷：
+    //   ① 三角是 ▾/▸ 字符 —— 与文件树/启动面板（早已迁 SVG）不一致，且字号基线不受控；
+    //   ② 层级颜色**只分两档**：H1/H2 同为 --text、H3~H6 四级同为 --text-dim，
+    //      六个层级压成两档，一屏看下去分不清哪层是哪层（还和箭头同色）。
+    FAKE_FS[P + '/lv.md'] = { type: 'file', mtime: 9500, ctime: 9500, size: 120,
+      content: '# 根标题\n\n## 二级\n\n### 三级\n\n#### 四级\n\n##### 五级\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/lv.md")');
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const items = $allIn(ol, '.outline-item');
+    assert_(items.length === 5, '5 个层级各一条, got ' + items.length);
+
+    // ① 三角：有子层的行必须是 <svg class="ic">，且**不含**字符字形
+    const arrows = $allIn(ol, '.ol-arrow:not(.ol-pad)');
+    assert_(arrows.length > 0, '存在带子层的行');
+    assert_(arrows.every((a) => a.querySelector('svg.ic')), '箭头是内联 SVG（svg.ic）');
+    assert_(arrows.every((a) => !/[▾▸]/.test(a.textContent)), '箭头里不再残留 ▾▸ 字符');
+    assert_($allIn(ol, '.ol-arrow.ol-pad').every((p) => !p.querySelector('svg')),
+      '叶子行占位不画三角（同旧行为，只是从"空文本"变成"无 svg"）');
+
+    // ② 层级颜色：至少 3 档不同（旧实现只有 2 档）
+    // ⚠ jsdom 不解析 CSS 变量与 color-mix()，getComputedStyle 会原样返回 `var(--x)` /
+    //   `color-mix(...)` 字符串（实测，真 Chromium 才会算成 rgb）。所以这里**不能按 rgb 比亮度**，
+    //   改为断言"用的颜色来源不同档"——真机上的最终色值由 `--check-ui` 的大纲步骤截图把关。
+    const srcOf = (r) => dom.window.getComputedStyle(r).color.replace(/\s+/g, ' ').trim();
+    const rows5 = (lv) => (lv === 1
+      ? items.find((x) => !/lv\d/.test(x.className))
+      : items.find((x) => x.classList.contains('lv' + lv)));
+    const levels = [1, 2, 3, 4, 5].map((lv) => (rows5(lv) ? srcOf(rows5(lv)) : null));
+    assert_(levels.every(Boolean), '五个层级都能取到颜色: ' + JSON.stringify(levels));
+    const distinct = new Set(levels).size;
+    assert_(distinct >= 3, '层级颜色至少分 3 档（旧实现仅 2 档，H3~H6 全同色）: ' + distinct + ' → ' + JSON.stringify(levels));
+    // H1 用最亮变量、H4+ 用最暗变量，且两者不同（旧实现 H1/H2 同色）
+    assert_(levels[0] !== levels[1], 'H1 与 H2 不同档（旧实现两层同为 --text）: ' + levels[0] + ' vs ' + levels[1]);
+    assert_(levels[2] !== levels[1] && levels[2] !== levels[3],
+      'H3 是独立过渡档（既不同于 H2 也不同于 H4）: ' + levels[2]);
+    assert_(levels[1] !== levels[3], 'H2 与 H4 不同档: ' + levels[1] + ' vs ' + levels[3]);
+    // 各层级字号仍然一致（PyCharm 约定：只降对比、不缩字号）
+    const fonts = new Set(items.map((r) => dom.window.getComputedStyle(r).fontSize));
+    assert_(fonts.size === 1, '各层级字号一致（只降对比不缩字号）: ' + [...fonts].join(','));
+    // 缩进仍逐级递进（颜色只是补充信号，主信号是缩进）
+    const padL = items.map((r) => parseFloat(dom.window.getComputedStyle(r).paddingLeft));
+    assert_(padL[0] < padL[1] && padL[1] < padL[2] && padL[2] < padL[3] && padL[3] < padL[4],
+      '缩进逐级递进: ' + padL.join(' < '));
+    // H1 独有字重（顶层可一眼定位）
+    const w1 = dom.window.getComputedStyle(rows5(1)).fontWeight;
+    assert_(Number(w1) >= 500, 'H1 有更重字重以突出顶层: ' + w1);
+  });
+
   await okAsync('HTML 预览：base 注入相对路径解析 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();

@@ -907,18 +907,34 @@ textarea.editor {
 .outline-item.key-nav-sel { background: var(--bg-selected); color: #fff; }
 .outline-item.key-nav-sel .ol-arrow { color: #fff; }
 .outline-item.key-nav-sel .ol-arrow:hover { background: rgba(255,255,255,.18); }
+/* 层级区分：**只降对比、不缩字号**（PyCharm 各层级字号一致）。
+   ⚠ 实测（crimson 主题）旧规则下 H1/H2 同为 --text、H3/H4/H5/H6 四级同为 --text-dim
+   → 六个层级压成两档，一屏看下去"哪层是哪层"完全分不出；而且 H3+ 与箭头同色，
+   三角和文字糊在一起。现在按层级分四档，每档都从主题变量混出来（不写死颜色，换主题自动跟随）：
+     H1 = --text-bright（最亮，唯一的顶层）
+     H2 = --text
+     H3 = --text 与 --text-dim 之间（过渡档，避免 H2→H3 掉得太狠）
+     H4+ = --text-dim（最弱，深层级本来就该退后）
+   缩进仍按 (level-1)*13+4 递进，颜色只是补充信号。 */
 .outline-item.lv2 { color: var(--text); }
-/* 深层级只降对比、不缩字号（PyCharm 里各层级字号一致） */
-.outline-item.lv3, .outline-item.lv4, .outline-item.lv5, .outline-item.lv6 { color: var(--text-dim); }
+.outline-item.lv3 { color: color-mix(in srgb, var(--text) 62%, var(--text-dim)); }
+.outline-item.lv4, .outline-item.lv5, .outline-item.lv6 { color: var(--text-dim); }
+/* H1 是文档标题、也是唯一的顶层：给它最亮色 + 轻微字重，一眼能定位"这篇在讲什么"。
+   只加颜色不加粗体以外的装饰（避免又变成"一屏多个焦点"）。 */
+.outline-item:not([class*=' lv']) { color: var(--text-bright); font-weight: 500; }
 .outline-item.ol-hidden { display: none; }
 .outline-item .ol-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 箭头列：独占点击区（点箭头只折叠、点文本只跳转）；叶子行留空占位、不画符号 */
+/* 箭头列：独占点击区（点箭头只折叠、点文本只跳转）；叶子行留空占位、不画符号。
+   ⚠ 三角改内联 SVG 后，宽度要给够 —— svg.ic 本身是 16px，这里用 1em 列宽 + 居中，
+   并靠 `.closed` 旋转表示折叠态（不做两套路径）。 */
 .ol-arrow {
-  width: 1.15em; flex: none;
-  font-size: .85em; line-height: 1; color: var(--text-dim);
-  text-align: center; cursor: pointer; user-select: none;
+  width: 1.15em; flex: none; height: 1.15em;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); cursor: pointer; user-select: none;
   border-radius: 3px;
 }
+.ol-arrow svg.ic { width: 1em; height: 1em; transition: transform .12s ease; }
+.ol-arrow.closed svg.ic { transform: rotate(-90deg); }
 .ol-arrow:hover { color: var(--text-bright); background: var(--bg-hover); }
 .ol-arrow.ol-pad { cursor: inherit; }
 .ol-arrow.ol-pad:hover { background: transparent; color: inherit; }

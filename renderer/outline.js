@@ -17,6 +17,8 @@ const Outline = (() => {
 
   const LS_KEY = 'myide-outline-collapsed';
   const hKey = (h) => h.line + '|' + h.text;
+  // 折叠三角（内联 SVG，1.4px 描边，见 styles.css 的 svg.ic）—— 与文件树 dirIcon 同一套画法
+  const ICO_CHEV = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 6.4L8 9.8l3.4-3.4"/></svg>';
 
   // 从 Markdown 源码解析标题（不依赖渲染 DOM，源码/预览模式都可用）
   // ★ 跳过 ``` 围栏代码块：代码块内的「# 注释」不是标题，计入会导致大纲与渲染错位、跳转位置不对
@@ -229,7 +231,10 @@ const Outline = (() => {
       const arrow = document.createElement('span');
       arrow.className = 'ol-arrow' + (hasKids ? (isCol ? ' closed' : '') : ' ol-pad');
       if (hasKids) {
-        arrow.textContent = isCol ? '▸' : '▾';
+        // 三角用内联 SVG（同文件树 / 启动面板）：▾▸ 字符的字号与基线不受控，
+        // 混在一列里会随字号变粗变笨重，宽度也对不齐 —— 实测 16px 下 13.6px 字形撑不满 1.15em 列。
+        // 折叠态由 CSS 的 `.closed svg` 旋转 -90° 表示（不做两套路径，旋转动画也更顺）。
+        arrow.innerHTML = ICO_CHEV;
         arrow.title = isCol ? '展开子级' : '收起子级';
         arrow.onclick = (ev) => { ev.stopPropagation(); toggleCollapse(i); };
       }
