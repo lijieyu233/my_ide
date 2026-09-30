@@ -65,6 +65,73 @@ function saveState(s) {
   try { fs.writeFileSync(stateFile, JSON.stringify(s)); } catch {}
 }
 
+// ---------- 本地设置镜像（容错：Chromium profile 写不进去时的兜底）----------
+// 🔴 为什么需要这层（2026-09-30 实测，用户原话「上次的记录没有保存」）：
+//   全部设置都躺在 localStorage 里，而 localStorage 落在 `%APPDATA%\my-ide`（Chromium profile）。
+//   一旦那个目录不可写（实测：`%APPDATA%` 上有一条被继承下来的只读权限
+//   `CodexSandboxUsers =(I)(RX)`，会传播到所有子目录），**setItem 在内存里照样成功、
+//   落盘静默失败** —— 渲染层那 57 处 `catch {}` 一个都发现不了，
+//   用户看到的现象是"主题/项目/标签页每次打开全没了"。
+//   更糟的是原先没有任何备份：坏了就一直坏。
+//   （数据本身完好：leveldb 的 SST 魔术字与 MANIFEST 的 632 条 CRC 全部校验通过，
+//     同一份字节放到可读路径就能正常读出 120 项 —— 详见 docs/开发文档-085。）
+//   所以这里用 **主进程的 node fs** 另存一份 —— 它走的是普通文件 API，
+//   `~/.myide/` 既能写、也不受 Chromium profile 那套权限影响（同 git-native.json 的做法）。
+const SETTINGS_MIRROR = () => path.join(os.homedir(), '.myide', 'settings.json');
+
+function readMirror() {
+  try { return JSON.parse(fs.readFileSync(SETTINGS_MIRROR(), 'utf8')) || null; } catch { return null; }
+}
+// 写入采用「临时文件 + rename」：镜像本身也不能被半截写入毁掉（rename 在同盘是原子的）
+function writeMirror(data) {
+  const file = SETTINGS_MIRROR();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, file);
+    return { ok: true, file };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e), file }; }
+}
+
+ipcMain.handle('settings:mirror-write', (_e, data) => writeMirror(data));
+ipcMain.handle('settings:mirror-read', () => {
+  const d = readMirror();
+  return d ? { ok: true, data: d, file: SETTINGS_MIRROR() }
+    : { ok: false, data: null, file: SETTINGS_MIRROR() };
+});
+// 同步版：渲染层启动自愈要赶在第一批设置读取之前（详见 preload.js 的说明）。
+// ⚠ sendSync 会阻塞渲染进程，因此这里只做一次小文件读（settings.json 实测几十 KB 级）。
+//   绝不能在这个 handler 里做探测 / 网络 / 遍历 —— 那会把启动卡住。
+ipcMain.on('settings:mirror-read-sync', (e) => {
+  const d = readMirror();
+  e.returnValue = d ? { ok: true, data: d, file: SETTINGS_MIRROR() }
+    : { ok: false, data: null, file: SETTINGS_MIRROR() };
+});
+
+// 探针：userData（Chromium profile）到底能不能写。
+// ⚠ 不能只做「同一个进程里写 localStorage 再读回来」——那永远成功（写的是内存），
+//   正是这个假象让问题藏了很久。这里直接问文件系统：能不能在 profile 里建文件。
+ipcMain.handle('settings:probe', () => {
+  const ud = app.getPath('userData');
+  const out = { userData: ud, writable: false, error: '', mirror: SETTINGS_MIRROR(), mirrorOk: false };
+  try {
+    fs.mkdirSync(ud, { recursive: true });
+    const probe = path.join(ud, '.myide-write-probe');
+    fs.writeFileSync(probe, String(Date.now()));
+    fs.unlinkSync(probe);
+    out.writable = true;
+  } catch (e) { out.error = String((e && e.message) || e); }
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_MIRROR()), { recursive: true });
+    const p2 = SETTINGS_MIRROR() + '.probe';
+    fs.writeFileSync(p2, 'x');
+    fs.unlinkSync(p2);
+    out.mirrorOk = true;
+  } catch (e) { if (!out.error) out.error = '镜像目录不可写：' + String((e && e.message) || e); }
+  return out;
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1380,

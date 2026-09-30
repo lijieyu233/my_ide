@@ -16,6 +16,7 @@ const Settings = (() => {
           <div class="set-cat" data-cat="translate">🌐 翻译</div>
           <div class="set-cat" data-cat="ai">🤖 AI 助手</div>
           <div class="set-cat" data-cat="theme">🎨 主题</div>
+          <div class="set-cat" data-cat="storage">💾 本地设置</div>
         </div>
         <div class="set-main" id="set-main">
           <div class="set-toolbar">
@@ -44,6 +45,7 @@ const Settings = (() => {
       else if (cat.dataset.cat === 'translate') renderTranslate();
       else if (cat.dataset.cat === 'ai') renderAi();
       else if (cat.dataset.cat === 'theme') renderTheme();
+      else if (cat.dataset.cat === 'storage') renderStorage();
     };
     // 初始分类（如 translate.js 未配置时直接跳到翻译配置）
     if (initCat) {
@@ -684,6 +686,104 @@ const Settings = (() => {
       row.appendChild(comboBtn);
       list.appendChild(row);
     }
+  }
+
+  // ---------- 本地设置视图（容错：镜像 / 自愈 / 导出导入）----------
+  // 起因（2026-09-30）：%APPDATA% 被加了一条继承下来的只读权限 → localStorage 落盘静默失败
+  // → 每次打开主题/项目/标签页全没了，而且没有任何备份。这个页面把状态摊开给用户看。
+  function renderStorage() {
+    const f = document.getElementById('set-keys-filter');
+    if (f) f.remove();
+    document.getElementById('set-title').textContent = '本地设置（存储健康 · 镜像 · 导出导入）';
+    document.getElementById('set-hint').textContent = '设置存在浏览器本地存储里；存储不可用时自动用镜像兜底，并可从镜像恢复';
+    document.getElementById('set-reset-all').classList.add('hidden');
+    const list = document.getElementById('set-list');
+    const S = window.SettingsStore;
+    if (!S) {
+      list.innerHTML = '<div class="set-form"><span class="warn">容错层未加载（settings-store.js）</span></div>';
+      return;
+    }
+    const snap = S.snapshot();
+    const n = Object.keys(snap).length;
+    const heal = S.healResult || {};
+    const h = S.health;
+
+    const healLine = heal.reason === 'restored'
+      ? '<span class="ok">✓ 本次启动从镜像恢复了 ' + heal.healed + ' 项设置</span>'
+      : heal.reason === 'intact' ? '<span class="dim">本地设置完整（镜像 ' + (heal.total || 0) + ' 项，无需恢复）</span>'
+        : heal.reason === 'no-mirror' ? '<span class="dim">还没有镜像（改动设置后会自动生成）</span>'
+          : '<span class="dim">' + esc(heal.reason || '未知') + '</span>';
+
+    let healthLine = '<span class="dim">检测中…</span>';
+    if (h) {
+      healthLine = h.writable
+        ? '<span class="ok">✓ 本地存储可写</span><span class="dim"> · ' + esc(h.userData || '') + '</span>'
+        : '<span class="warn">✗ 本地存储不可写：' + esc(h.error || '目录不可写') + '</span>'
+          + '<div class="dim" style="margin-top:4px">改动不会存进浏览器存储，但会保留在兜底镜像里（主题/项目/标签页不会丢）。</div>'
+          + '<div class="dim" style="margin-top:4px">要根治请检查该目录权限：<code>' + esc(h.userData || '') + '</code></div>';
+    }
+
+    list.innerHTML = `
+      <div class="set-form st-wide">
+        <label class="m-label">存储状态</label>
+        <div class="st-line" style="margin-bottom:8px">${healthLine}</div>
+        <div class="st-line">${healLine}</div>
+        <div class="st-dim" style="margin-top:8px">当前本地设置 <b>${n}</b> 项
+          ${h && h.mirror ? '· 兜底镜像：<code>' + esc(h.mirror) + '</code>' : ''}</div>
+      </div>
+      <div class="set-form st-wide" style="border-top:1px solid var(--border)">
+        <label class="m-label">备份与恢复</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="tb-btn m-ok" id="st-export">📤 导出设置…</button>
+          <button class="tb-btn" id="st-import">📥 导入设置…</button>
+          <button class="tb-btn" id="st-mirror-now">💾 立刻写入镜像</button>
+          <button class="tb-btn" id="st-heal">♻️ 从镜像恢复</button>
+        </div>
+        <div class="st-dim" style="margin-top:8px">导出为一份 JSON（含全部 ${n} 项设置），可用于备份或换机迁移。
+          导入只认设置项，不会动你的文件。</div>
+        <div class="st-dim" style="margin-top:10px">
+          本次启动自愈结果：<b>${esc(heal.reason || '')}</b>
+          ${heal.healed ? '（恢复 ' + heal.healed + ' 项）' : ''}</div>
+      </div>`;
+
+    const exp = document.getElementById('st-export');
+    if (exp) exp.onclick = async () => {
+      const payload = S.exportPayload();
+      const json = JSON.stringify(payload, null, 2);
+      const name = 'myide-settings-' + new Date().toISOString().slice(0, 10) + '.json';
+      const p = await window.myIDE.fs.pickSave('导出设置', name, [{ name: 'JSON', extensions: ['json'] }]);
+      if (!p) return;
+      const r = await window.myIDE.fs.writeFile(p, json, 'utf8');
+      if (r && r.ok === false) MI.toast('导出失败：' + (r.error || ''), 'err');
+      else MI.toast('已导出 ' + Object.keys(payload.keys).length + ' 项设置', 'ok');
+    };
+    const imp = document.getElementById('st-import');
+    if (imp) imp.onclick = async () => {
+      const p = await window.myIDE.fs.pickFile('导入设置', [{ name: 'JSON', extensions: ['json'] }]);
+      if (!p) return;
+      const r = await window.myIDE.fs.readFile(p);
+      if (!r || r.content == null) { MI.toast('读取失败', 'err'); return; }
+      let obj = null;
+      try { obj = JSON.parse(r.content); } catch { MI.toast('不是合法的 JSON 文件', 'err'); return; }
+      const cnt = S.applyImport(obj);
+      if (!cnt) { MI.toast('文件里没有可导入的设置项', 'err'); return; }
+      await S.flushMirror();
+      MI.toast('已导入 ' + cnt + ' 项设置，正在重载…', 'ok');
+      setTimeout(() => location.reload(), 600);
+    };
+    const mnow = document.getElementById('st-mirror-now');
+    if (mnow) mnow.onclick = async () => {
+      const r = await S.flushMirror();
+      if (r && r.ok) MI.toast('镜像已更新：' + r.file, 'ok');
+      else MI.toast('镜像写入失败：' + ((r && r.error) || '未知原因'), 'err');
+    };
+    const healBtn = document.getElementById('st-heal');
+    if (healBtn) healBtn.onclick = () => {
+      const r = S.healFromMirror();
+      if (r.healed) { MI.toast('已从镜像恢复 ' + r.healed + ' 项，正在重载…', 'ok'); setTimeout(() => location.reload(), 600); }
+      else if (r.reason === 'no-mirror') MI.toast('还没有镜像可恢复', 'err');
+      else MI.toast('本地设置已完整，无需恢复', 'ok');
+    };
   }
 
   function startListen(id, btn) {

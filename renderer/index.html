@@ -387,6 +387,9 @@
 <div id="modal-mask" class="hidden"></div>
 <div id="toast-wrap"></div>
 
+<!-- 容错层必须排在最前：它在加载期就把「镜像里有、本地没有」的设置补回 localStorage，
+     晚于 theme.js/tree.js 等就会读到空值（表现为主题/侧栏宽度先闪默认值再变）-->
+<script src="settings-store.js"></script>
 <script src="theme.js"></script>
 <script src="vendor/cm6-bundle.min.js"></script>
 <script src="md-editor.js"></script>

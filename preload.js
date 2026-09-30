@@ -5,6 +5,17 @@ contextBridge.exposeInMainWorld('myIDE', {
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },
+  // 本地设置镜像（容错）：localStorage 落盘失败时的兜底 —— 详见 main.js 里 SETTINGS_MIRROR 的注释
+  settings: {
+    probe: () => ipcRenderer.invoke('settings:probe'),
+    mirrorWrite: (data) => ipcRenderer.invoke('settings:mirror-write', data),
+    mirrorRead: () => ipcRenderer.invoke('settings:mirror-read'),
+    // ⚠ 同步版：启动自愈必须在**任何模块读设置之前**完成（theme/tree/git-panel 在脚本加载期
+    //   就读 localStorage），异步会晚一拍 → 表现为"主题先闪默认色再变回来"。
+    mirrorReadSync: () => {
+      try { return ipcRenderer.sendSync('settings:mirror-read-sync'); } catch { return { ok: false, data: null }; }
+    },
+  },
   fs: {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),

@@ -1067,6 +1067,37 @@ module.exports = {
     add('「自动检测」后状态区仍是有效状态（探测不抛错）',
       /Git \d|未检测到/.test(q('#git-backend-status').textContent),
       (q('#git-backend-status').textContent || '').replace(/\s+/g, ' ').slice(0, 60));
+
+    // ---------- 本地设置（容错）分类：真实 IPC 下必须能渲染出状态与四个动作 ----------
+    // 2026-09-30：%APPDATA% 被加只读权限 → localStorage 落盘静默失败 → 设置全丢。
+    // 这步在真实窗口 + 真实 IPC 下确认容错层接得上（settings:probe / mirror-* 三个通道）。
+    const storageCat = qa('.set-cat[data-cat]').find((c) => c.dataset.cat === 'storage');
+    add('设置页有「本地设置」分类', !!storageCat, storageCat ? storageCat.textContent.trim() : '没找到');
+    if (storageCat) {
+      storageCat.click();
+      await sleep(1200);
+      add('本地设置区渲染出四个动作按钮',
+        !!q('#st-export') && !!q('#st-import') && !!q('#st-mirror-now') && !!q('#st-heal'),
+        ['st-export', 'st-import', 'st-mirror-now', 'st-heal']
+          .map((id) => id + '=' + !!q('#' + id)).join(' '));
+      // 状态行必须给出明确结论（可写 / 不可写），不能停在"检测中…"
+      const stTxt = (q('#set-list') || {}).textContent || '';
+      add('存储状态给出明确结论（可写 / 不可写，不停留在"检测中"）',
+        /本地存储可写|本地存储不可写/.test(stTxt),
+        stTxt.replace(/\s+/g, ' ').slice(0, 110));
+      add('容错层已就绪（window.SettingsStore 有导出/自愈能力）',
+        !!(window.SettingsStore && typeof SettingsStore.exportPayload === 'function'
+          && typeof SettingsStore.healFromMirror === 'function'),
+        'SettingsStore=' + typeof window.SettingsStore);
+      // 快照能力：写一个探针键后必须能枚举到（自检用独立 userData，不能假设已有设置）
+      let cnt = 0;
+      try {
+        localStorage.setItem('myide-check-probe', '1');
+        cnt = window.SettingsStore ? Object.keys(SettingsStore.snapshot()).length : 0;
+        localStorage.removeItem('myide-check-probe');
+      } catch (e) { cnt = -1; }
+      add('能从 localStorage 枚举出设置项（容错快照可用）', cnt > 0, 'settings=' + cnt + ' 项');
+    }
     return { R };
   },
 

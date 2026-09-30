@@ -61,6 +61,8 @@ const FAKE_GIT = {
   headOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 const calls = { copy: [], commit: [], commitFiles: [], diffWorkdir: [], diffCommit: [] };
+// 本地设置容错层（settings-store.js）的镜像桩：mirror = 镜像内容，writes = 收到的镜像写入
+const FAKE_SETTINGS = { mirror: null, writes: [], probe: null };
 let fakeClipText = ''; // 剪贴板文本（@剪贴板 用例）
 const stateCb = {}; // 各模块状态回调（browser 等）
 let fakeCopied = [];   // 内部复制的文件
@@ -375,6 +377,13 @@ function makeDom() {
         files: [{ file: 'node_modules', dir: true }, { file: 'debug.log', dir: false }] }; },
     },
     appInfo: async () => ({ version: '0.2.0', commit: 'test123' }),
+    // 本地设置容错层（settings-store.js）：镜像桩。测试可以改 FAKE_SETTINGS 控制行为
+    settings: {
+      probe: async () => (FAKE_SETTINGS.probe || { userData: 'C:/ud', writable: true, error: '', mirror: 'C:/home/.myide/settings.json', mirrorOk: true }),
+      mirrorWrite: async (data) => { FAKE_SETTINGS.writes.push(data); return { ok: true, file: 'C:/home/.myide/settings.json' }; },
+      mirrorRead: async () => ({ ok: !!FAKE_SETTINGS.mirror, data: FAKE_SETTINGS.mirror || null, file: 'C:/home/.myide/settings.json' }),
+      mirrorReadSync: () => ({ ok: !!FAKE_SETTINGS.mirror, data: FAKE_SETTINGS.mirror || null, file: 'C:/home/.myide/settings.json' }),
+    },
     ai: {
       // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
@@ -400,6 +409,7 @@ function makeDom() {
 async function loadApp(dom) {
   const w = dom.window;
   const evalFile = (f) => w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', f), 'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'settings-store.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'theme.js'), 'utf8'));
   try {
     w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'cm6-bundle.min.js'), 'utf8'));
@@ -8112,6 +8122,91 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!!$(dom, '#tab-actions .tab-locate'), '「定位」也在操作区（只有 1 个）');
     assert_($allIn($(dom, '#tab-actions'), '.tab-locate').length === 1, '「定位」不重复');
     await g(dom, 'Viewer.closeAll()');
+    await tick();
+  });
+
+  // ---------- 本地设置容错层（settings-store.js，2026-09-30 用户现场）----------
+  // 背景：全部设置存 localStorage，而它落在 Chromium profile（%APPDATA%\my-ide）。
+  //   那个目录被加了一条继承下来的只读权限后，setItem 内存里成功、**落盘静默失败**
+  //   → 每次打开主题/项目/标签页全没了，且没有备份。这组用例守住四件事：
+  //   ① 写设置会同步一份镜像 ② 镜像能补回本地缺失的键 ③ 补回时**不覆盖**已有值 ④ 导出/导入闭环。
+  await okAsync('本地设置容错：写设置会写镜像（防抖后用 flushMirror 收口）', async () => {
+    FAKE_SETTINGS.writes.length = 0;
+    await g(dom, 'localStorage.setItem("myide-tolerance-probe", "v1")');
+    await g(dom, 'SettingsStore.flushMirror()');
+    assert_(FAKE_SETTINGS.writes.length >= 1, '写设置后应触发一次镜像写入，got ' + FAKE_SETTINGS.writes.length);
+    const last = FAKE_SETTINGS.writes[FAKE_SETTINGS.writes.length - 1];
+    assert_(last['myide-tolerance-probe'] === 'v1',
+      '镜像里应含刚写的键，got ' + JSON.stringify(last['myide-tolerance-probe']));
+    assert_(typeof last.__meta === 'object' && last.__meta.count >= 0, '镜像带 __meta 元信息（时间/条数）');
+    assert_(Object.keys(last).filter((k) => k !== '__meta').every((k) => k.startsWith('myide-')),
+      '镜像只收 myide-* 键（__meta 是唯一例外），不把别的 localStorage 混进去');
+    await g(dom, 'localStorage.removeItem("myide-tolerance-probe")');
+  });
+
+  await okAsync('本地设置容错：镜像能补回本地缺失的键，且不覆盖已有值', async () => {
+    // 模拟"profile 写不进去 → 这次启动 localStorage 是空的，但镜像里有"
+    await g(dom, 'localStorage.removeItem("myide-theme")');
+    await g(dom, 'localStorage.removeItem("myide-restored-key")');
+    FAKE_SETTINGS.mirror = {
+      'myide-theme': 'user:healed',            // 本地缺 → 应补回
+      'myide-restored-key': 'from-mirror',     // 本地缺 → 应补回
+      'myide-tool-font': '999',                // 本地已有值 → **不能被镜像覆盖**
+    };
+    await g(dom, 'localStorage.setItem("myide-tool-font", "13")');
+    const r = await g(dom, 'JSON.stringify(SettingsStore.healFromMirror())');
+    const res = JSON.parse(r);
+    assert_(res.healed === 2, '应补回 2 项缺失设置，got ' + JSON.stringify(res));
+    assert_(res.reason === 'restored', 'reason 应为 restored，got ' + res.reason);
+    assert_(await g(dom, 'localStorage.getItem("myide-theme")') === 'user:healed', '缺失的主题被镜像补回');
+    assert_(await g(dom, 'localStorage.getItem("myide-restored-key")') === 'from-mirror', '缺失的普通键被补回');
+    assert_(await g(dom, 'localStorage.getItem("myide-tool-font")') === '13',
+      '已有值不能被镜像覆盖（镜像可能还没跟上，覆盖会倒退回旧设置）');
+    FAKE_SETTINGS.mirror = null;
+    await g(dom, 'localStorage.removeItem("myide-restored-key")');
+  });
+
+  await okAsync('本地设置容错：没有镜像时不报错，本地完整时不写任何键', async () => {
+    FAKE_SETTINGS.mirror = null;
+    const a = JSON.parse(await g(dom, 'JSON.stringify(SettingsStore.healFromMirror())'));
+    assert_(a.healed === 0 && a.reason === 'no-mirror', '无镜像应安静跳过，got ' + JSON.stringify(a));
+    // 镜像与本地完全一致 → 一项都不该动
+    const snap = JSON.parse(await g(dom, 'JSON.stringify(SettingsStore.snapshot())'));
+    FAKE_SETTINGS.mirror = Object.assign({}, snap);
+    const b = JSON.parse(await g(dom, 'JSON.stringify(SettingsStore.healFromMirror())'));
+    assert_(b.healed === 0 && b.reason === 'intact', '本地完整时应报告 intact，got ' + JSON.stringify(b));
+    FAKE_SETTINGS.mirror = null;
+  });
+
+  await okAsync('本地设置容错：导出/导入闭环，且导入只认 myide-* 的字符串值', async () => {
+    const payload = JSON.parse(await g(dom, 'JSON.stringify(SettingsStore.exportPayload())'));
+    assert_(payload.kind === 'settings-export' && payload.app === 'my-ide', '导出带来源标识');
+    assert_(Object.keys(payload.keys).length > 0, '导出应含设置项');
+    assert_(Object.keys(payload.keys).every((k) => k.startsWith('myide-')), '导出只含 myide-* 键');
+    // 导入：混入脏数据，只有 myide-* 的字符串值能落地
+    const before = await g(dom, 'String(localStorage.getItem("myide-import-a"))');
+    const n = await g(dom, `SettingsStore.applyImport({ keys: {
+      "myide-import-a": "A", "myide-import-b": "B",
+      "other-app-key": "X", "myide-bad-num": 123, "myide-bad-null": null } })`);
+    assert_(n === 2, '只有 2 项合法的 myide-* 字符串应被导入，got ' + n);
+    assert_(await g(dom, 'localStorage.getItem("myide-import-a")') === 'A', '合法项被写入');
+    assert_(await g(dom, 'localStorage.getItem("other-app-key")') === null, '非 myide- 键必须被丢弃');
+    assert_(await g(dom, 'localStorage.getItem("myide-bad-num")') === null, '非字符串值必须被丢弃');
+    void before;
+    await g(dom, 'localStorage.removeItem("myide-import-a"); localStorage.removeItem("myide-import-b")');
+  });
+
+  await okAsync('本地设置容错：设置页有「本地设置」分类，能显示存储状态与四个动作', async () => {
+    await g(dom, 'Settings.open("storage")');
+    await tick();
+    const cats = $$(dom, '.set-cat[data-cat]').map((c) => c.dataset.cat);
+    assert_(cats.includes('storage'), '设置页应有「本地设置」分类，got ' + JSON.stringify(cats));
+    await tick();
+    assert_($(dom, '#st-export') && $(dom, '#st-import'), '导出/导入按钮都在');
+    assert_($(dom, '#st-mirror-now') && $(dom, '#st-heal'), '「立刻写入镜像」「从镜像恢复」都在');
+    const txt = $(dom, '#set-list').textContent;
+    assert_(!/undefined|NaN/.test(txt), '状态文案不该出现 undefined/NaN：' + txt.slice(0, 200));
+    await g(dom, 'Modal.hide()');
     await tick();
   });
 

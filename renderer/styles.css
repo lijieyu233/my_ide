@@ -1939,6 +1939,16 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .git-native-status .warn { color: var(--red); }
 
 .set-form { padding: 16px 18px; max-width: 420px; }
+/* 本地设置（容错）视图：内容比其它分类宽，且要放状态行与按钮组 */
+#set-list .st-wide { max-width: 640px; }
+.st-line { font-size: 12.5px; line-height: 1.8; }
+.st-line .ok { color: var(--green); }
+.st-line .warn { color: var(--red); }
+.st-line .dim, .st-dim { color: var(--text-dim); }
+.st-line code, .st-dim code {
+  font-family: Consolas, monospace; font-size: 11.5px;
+  background: var(--bg-input); padding: 1px 4px; border-radius: 3px;
+}
 .set-form input {
   width: 100%; background: var(--bg-input); color: var(--text-bright);
   border: 1px solid var(--btn-border); border-radius: 4px;
