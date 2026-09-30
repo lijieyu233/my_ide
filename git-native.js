@@ -463,6 +463,31 @@ async function resolveCustom(repo, file, content) {
   return a.ok ? { ok: true } : { ok: false, error: a.stderr.trim() || a.error };
 }
 
+// 把工作区文件写进 index —— **必须走原生**（2026-09-29 修，见文档 088）。
+//
+// 🔴 根因：isomorphic-git 的 `git.add` 只读**仓库本地** `.git/config` 里的 `core.autocrlf`
+//   （`GitConfigManager` 注释明写"目前只能读写本地 $GIT_DIR/config"），而真实机器上 autocrlf
+//   通常只写在**全局** `~/.gitconfig` —— 于是它读到的永远是 undefined，`FileSystem.read` 里
+//   那段 `if (options.autocrlf === 'true') buffer.replace(/\r\n/g,'\n')` 根本不执行，
+//   工作区的 CRLF 字节被原样算 sha1 写进 index。
+//   实测取证（本仓 commit() vs 原生 git 对照，同一份 `l1\r\nl2\r\n`）：
+//     本仓：`git ls-files --eol` → `i/crlf w/crlf`，HEAD blob = "l1\r\nl2\r\n"（含 CR）
+//     原生：`git ls-files --eol` → `i/lf   w/crlf`，HEAD blob = "l1\nl2\n"
+//   → 提交进仓库的是 CRLF 版本，与所有协作者/所有 CI 都"整文件重写"，且**别人检出后
+//     再提交会把行尾来回翻转**。这是数据损坏级别的问题，不只是显示问题。
+//   ⚠ 和 084 修的 checkout / pull 是**同一个根因的另一半**：那次修了"从 index 落盘到工作区"，
+//     这次修"从工作区收进 index"，两条路合起来 autocrlf 才真正闭环。
+//
+// 语义与 `git.add --force` 对齐（PyCharm 勾选被忽略的文件 = 强制加入）；
+// 路径统一走 `--` 分隔，杜绝以 `-` 开头的文件名被当成选项。
+async function addPath(repo, file, force) {
+  const args = ['add'];
+  if (force !== false) args.push('--force');   // 默认强加：调用点大多是"用户明确勾选了它"
+  args.push('--', file);
+  const r = await runRetry(args, { cwd: repo, timeout: 15000, env: NO_EDIT });
+  return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim() || r.stdout.trim() || r.error };
+}
+
 // M4 收尾：安全强推。--force-with-lease 不带参数 = 以「本地记录的远程跟踪引用」为租约：
 // 上次 fetch 之后远程又被别人推过 → 推送被拒绝（比 --force 裸推安全）。
 async function pushForceWithLease(repo, remote, branch) {
@@ -615,4 +640,6 @@ module.exports = {
   checkout, branchCreate, branchRename, branchDelete,
   resolveCustom, readWorktreeText, pushForceWithLease, setUpstream, unsetUpstream, NO_EDIT,
   precommitRun, scanTodo, runShell,
+  // 行尾归一化闭环（文档 088）：从工作区收进 index 的那一步
+  addPath,
 };

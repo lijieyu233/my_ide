@@ -1314,6 +1314,15 @@ fs.mkdirSync(repo);
         // 制造 stat 失效：删掉再从 index 恢复（真实仓库里是编辑器/检出写出的新 mtime）
         fs.unlinkSync(path.join(local, 'a.txt'));
         await nrun(local, ['checkout', '--', 'a.txt']);
+        // ⚠ 2026-09-29 复测：`unlink + checkout` **已经不足以**让 stat 对不上了 ——
+        //   本机（NTFS + 较新 Node）删除后立刻重建的文件，mtime 与 .git/index 的写入时刻
+        //   落在**同一毫秒**，于是 isomorphic 的 compareStats 判定"stat 吻合"、直接信 index 里的
+        //   oid，根本不去读盘重算 → 前提② 不成立（实测 matrix=[["a.txt",1,1,1]]）。
+        //   曾经它成立是因为 checkout 写文件必然晚于 index 落盘；现在这个时序不再可靠。
+        //   改成**显式**把 mtime 推后（等价于"编辑器保存过这个文件"），把前提重新钉死。
+        const aAbs = path.join(local, 'a.txt');
+        const future = new Date(Date.now() + 2000);
+        fs.utimesSync(aAbs, future, future);
         const mis = await git.statusMatrix({ fs, dir: local });
         const aRow = mis.find((r) => r[0] === 'a.txt');
         assert.ok(aRow && aRow[2] !== aRow[1],
@@ -1445,6 +1454,58 @@ fs.mkdirSync(repo);
     }
     assert.ok(!tracked.has('added-work.txt') && !tracked.has('noise.log'), 'tracked 不含未跟踪/忽略文件');
   });
+
+  // ---------- 行尾归一化：autocrlf 仓库提交后 index/HEAD 必须是 LF（文档 088） ----------
+  // 🔴 修之前：commit() 走 isomorphic 的 git.add，而它只读**本地** .git/config 的 core.autocrlf
+  //   → autocrlf 只在全局 ~/.gitconfig 的真实机器上，它读到 undefined、不做归一化，
+  //   把工作区的 CRLF 字节原样写进 index/HEAD（实测 ls-files --eol 是 i/crlf，原生 git 是 i/lf）。
+  //   这是数据损坏级别：提交进仓库的行尾是错的，协作者/CI 会看到整文件重写。
+  // ⚠ 无本机 git 时这条只能跳过 —— 回落实现（isomorphic）**做不到**归一化，属于已知能力差距。
+  //   所以断言里带 skip 语义：没 git 就打印跳过，不记 FAIL（否则没装 git 的机器上会假红）。
+  {
+    const ninfoCrlf = await NATIVE.probe(true);
+    if (!ninfoCrlf.available) {
+      console.log('  SKIP 行尾归一化：本机没有可用的 git（回落实现不具备 core.autocrlf 归一化能力）');
+    } else {
+      await okAsync('行尾归一化：autocrlf 仓库（只有全局配置）提交后 index 与 HEAD 都是 LF', async () => {
+        const repo = path.join(tmp, 'repo-crlf-commit');
+        fs.mkdirSync(repo);
+        // 全局配置里才有 autocrlf —— 这正是"isomorphic 看不见"的那个关键条件（见文档 084 夹具说明）
+        const gcfg = path.join(tmp, 'crlf-global-gitconfig');
+        fs.writeFileSync(gcfg, '[core]\n\tautocrlf = true\n[user]\n\tname = crlf\n\temail = crlf@example.com\n');
+        const savedG = process.env.GIT_CONFIG_GLOBAL;
+        process.env.GIT_CONFIG_GLOBAL = gcfg;
+        try {
+          await G.initRepo(repo);
+          await G.setUserConfig(repo, { name: 'crlf', email: 'crlf@example.com' });
+          fs.writeFileSync(path.join(repo, 'crlf.txt'), 'l1\r\nl2\r\n');
+          const r = await G.commit(repo, { message: 'crlf', files: ['crlf.txt'] });
+          assert.ok(r.ok, '提交应成功: ' + (r && r.error));
+
+          // ① index 里必须是 LF（`i/lf  w/crlf`）—— 修复前是 `i/crlf  w/crlf`
+          const eol = (await NATIVE.run(['ls-files', '--eol'], { cwd: repo, env: NATIVE.NO_EDIT })).stdout;
+          assert.ok(/i\/lf\s/.test(eol),
+            'index 里应存 LF（i/lf），实际: ' + JSON.stringify(eol.trim()));
+          assert.ok(/w\/crlf/.test(eol),
+            '工作区仍应是 CRLF（不许顺手改写用户的文件），实际: ' + JSON.stringify(eol.trim()));
+
+          // ② HEAD 里的 blob 不许含 CR —— 这是"提交进仓库的字节"，最要命的一条
+          const blob = (await NATIVE.run(['show', 'HEAD:crlf.txt'], { cwd: repo, env: NATIVE.NO_EDIT })).stdout;
+          assert.ok(!blob.includes('\r'), 'HEAD blob 不该含 CR，实际: ' + JSON.stringify(blob));
+
+          // ③ 提交后工作区内容**一点没变**（归一化只作用于 index，绝不回写用户文件）
+          const disk = fs.readFileSync(path.join(repo, 'crlf.txt'), 'utf8');
+          assert.strictEqual(disk, 'l1\r\nl2\r\n', '工作区文件不该被改写: ' + JSON.stringify(disk));
+
+          // ④ 原生 git 认为干净（否则用户会看到"一提交完就一屏假改动"）
+          const porcelain = (await NATIVE.run(['status', '--porcelain'], { cwd: repo, env: NATIVE.NO_EDIT })).stdout;
+          assert.strictEqual(porcelain.trim(), '', '提交后原生 git 应认为干净: ' + JSON.stringify(porcelain));
+        } finally {
+          if (savedG === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = savedG;
+        }
+      });
+    }
+  }
 
   // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
   //   （实测在 npm run 下直接挂住不返回 —— 同样的代码直跑 node 却正常，最容易踩的假死）。

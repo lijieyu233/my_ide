@@ -505,6 +505,43 @@ function resolveGitDir(root) {
   return g;
 }
 
+// ---------- 收进 index 的唯一入口：原生优先、无本机 git 回落 isomorphic ----------
+// 为什么不能直接用 `git.add`：isomorphic-git 只读**仓库本地** `.git/config` 的 core.autocrlf
+// （GitConfigManager 注释：只能读写本地 $GIT_DIR/config），而 autocrlf 真实机器上通常只在
+// **全局** ~/.gitconfig → 它读到 undefined，不做 CRLF→LF 归一化，把工作区 CRLF 字节原样写进 index。
+// 实测（文档 088）：本仓 commit() 提交 `l1\r\nl2\r\n` 后 `git ls-files --eol` 是 `i/crlf`，
+// 而原生 git 是 `i/lf` —— 提交进仓库的行尾是错的，协作者会看到整文件重写。
+//
+// ⚠ 只在**确实有本机 git** 时走原生；探测失败（caps 全 false / 用户没装 git）时回落 isomorphic，
+//   并保留 084 的定位：这条回落路径在 autocrlf 仓库上仍然不完美，但"没有 git 可用"时
+//   它是唯一选择 —— 宁可行尾不归一化，也不能让提交直接失败（用户会丢工作）。
+function nativeGitOrNull() {
+  try { return require('./git-native'); } catch { return null; }
+}
+async function nativeAvailable() {
+  const N = nativeGitOrNull();
+  if (!N) return null;
+  try {
+    // ⚠ probe() 的返回字段是 `available`（不是 `ok`）—— 写错过一次，表现为"永远回落 isomorphic"，
+    //   修完 CRLF 缺陷却完全没生效（复现脚本仍是 i/crlf）。
+    const p = await N.probe();
+    return p && p.available ? N : null;
+  } catch { return null; }
+}
+// 暂存一个工作区文件（force：勾选被 .gitignore 忽略的文件时也要能收，= PyCharm 的强制加入）
+async function stageFile(root, relPosix, { force = true } = {}) {
+  const N = await nativeAvailable();
+  if (N) {
+    const r = await N.addPath(root, relPosix, force);
+    if (r.ok) return { ok: true, via: 'native' };
+    // 原生失败了也别直接认输：可能是"路径不在仓库内"之类 isomorphic 反而能处理的情形
+    try { await git.add({ fs, dir: root, filepath: relPosix, force }); return { ok: true, via: 'iso-fallback' }; }
+    catch { return { ok: false, error: r.error || '暂存失败' }; }
+  }
+  try { await git.add({ fs, dir: root, filepath: relPosix, force }); return { ok: true, via: 'iso' }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
 // 读 index 里每个条目的 {oid, mode}（提交事务要在改 index 之前留好"原件"）
 // ⚠ walker 给的是**带异步方法的条目对象**（`await e.type()` / `await e.oid()` / `await e.mode()`），
 //   不是普通对象；而且 `map` 返回 null 会把整棵子树剪掉（实测只吐根目录一条）→ 目录必须返回真值。
@@ -566,7 +603,9 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
       for (const f of files) {
         if (fs.existsSync(path.join(root, f))) {
           // force：勾选的是被 .gitignore 忽略的文件时也要能暂存（PyCharm 勾选忽略文件即强制加入）
-          await git.add({ fs, dir: root, filepath: posix(f), force: true });
+          // ⚠ 走 stageFile（原生优先）而不是裸 git.add —— 见该函数上方关于 autocrlf 的说明
+          const r = await stageFile(root, posix(f), { force: true });
+          if (!r.ok) throw new Error('暂存失败 ' + f + '：' + (r.error || ''));
         } else {
           await git.remove({ fs, dir: root, filepath: posix(f) }); // 已删除的文件 → 暂存删除
         }
@@ -586,7 +625,7 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
     if (files && files.length) {
       for (const f of files) {
         try {
-          if (fs.existsSync(path.join(root, f))) await git.add({ fs, dir: root, filepath: posix(f), force: true });
+          if (fs.existsSync(path.join(root, f))) await stageFile(root, posix(f), { force: true });
           else await git.remove({ fs, dir: root, filepath: posix(f) });
         } catch {}
       }
@@ -1972,7 +2011,7 @@ async function revertCommit(dir, oid) {
       } else {
         const { blob } = await git.readBlob({ fs, dir: root, oid: parent, filepath: rel });
         fs.writeFileSync(abs, Buffer.from(blob));
-        await git.add({ fs, dir: root, filepath: rel });
+        await stageFile(root, rel);
       }
     }
     const msg = `Revert "${(c.commit.message || '').split('\n')[0]}"\n\nThis reverts commit ${oid}.`;
@@ -2018,7 +2057,7 @@ async function cherryPick(dir, oid) {
       } else {
         const { blob } = await git.readBlob({ fs, dir: root, oid, filepath: rel });
         fs.writeFileSync(abs, Buffer.from(blob));
-        await git.add({ fs, dir: root, filepath: rel });
+        await stageFile(root, rel);
       }
     }
     const msg = (c.commit.message || '').trim();
@@ -2077,7 +2116,7 @@ async function shelveCreate(dir, { name, files } = {}) {
       if (inHead) {
         const r = await discard(dir, it.path);
         if (!r.ok) return { ok: false, error: '已搁置但部分文件回滚失败：' + it.path };
-        await git.add({ fs, dir: root, filepath: it.path });
+        await stageFile(root, posix(it.path));
       } else {
         // HEAD 没有（新增/未跟踪）：清 index + 删文件
         try { await git.remove({ fs, dir: root, filepath: it.path }); } catch {}
