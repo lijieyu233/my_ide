@@ -450,6 +450,82 @@ window.MdEditor = (() => {
   // 预览侧用同一套规则（plugin-loader 的 marked 扩展调它）
   window.MI = window.MI || {};
   MI.footnoteNoIn = footnoteNoIn;
+  // 嵌入笔记的 `#标题` 切片规则也共用（两模式切出同一段，否则内容对不上）
+  MI.sliceMdSection = sliceSection;
+
+  // ---------- 嵌入 widget：![[笔记]] / ![[笔记#标题]] → 内嵌只读卡片 ----------
+  // 文档 046 §2.4。不做的话 `![[笔记]]` 会走图片分支变成**裂图**（实测），比不做还糟。
+  // 深度限 1 层防递归；被嵌入内容用同一套预览渲染（MI.renderFor），保证与预览模式同款排版。
+  const embedCache = new Map();   // path|heading -> HTMLElement
+  function resolveEmbedPath(target) {
+    const base = String(MdEditor.__baseDir || '');
+    const t = String(target || '').trim().replace(/\\/g, '/');
+    if (!t) return '';
+    const sep = base.includes('\\') ? '\\' : '/';
+    const parts = base.split(/[\\/]/).filter(Boolean);
+    for (const seg of t.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
+    }
+    let p = parts.join(sep);
+    if (!/\.[A-Za-z0-9]{1,8}$/.test(p.split(/[\\/]/).pop() || '')) p += '.md';
+    return p;
+  }
+  class EmbedWidget extends WidgetType {
+    constructor(target, heading, key) { super(); this.target = target; this.heading = heading || ''; this.key = key; }
+    eq(other) { return other.key === this.key; }
+    toDOM(view) {
+      const box = document.createElement('div');
+      box.className = 'cm-md-embed';
+      const cached = embedCache.get(this.key);
+      if (cached) { box.appendChild(cached.cloneNode(true)); return box; }
+      box.textContent = '载入中…';
+      (async () => {
+        try {
+          const p = resolveEmbedPath(this.target);
+          const r = await window.myIDE.fs.readFile(p);
+          if (!r || typeof r.content !== 'string') throw new Error('读不到 ' + p);
+          let content = r.content;
+          if (this.heading) content = sliceSection(content, this.heading);
+          const node = (window.MI && MI.renderFor)
+            ? MI.renderFor({ path: p, name: p.split(/[\\/]/).pop(), ext: 'md' })({ path: p, name: p.split(/[\\/]/).pop(), ext: 'md', content })
+            : null;
+          const body = node || document.createElement('pre');
+          if (!node) body.textContent = content;
+          body.classList.add('md-embed-body');
+          embedCache.set(this.key, body);
+          if (box.isConnected) { box.innerHTML = ''; box.appendChild(body); remeasureSoon(); }
+        } catch (e) {
+          box.className = 'cm-md-embed cm-md-embed-err';
+          box.textContent = '嵌入失败：' + this.target + '（' + ((e && e.message) || e) + '）';
+          remeasureSoon();
+        }
+      })();
+      return box;
+    }
+    ignoreEvent() { return false; }
+  }
+  // 取 `#标题` 那一段（到下一个同级或更高级标题为止）；找不到就整篇
+  // 导出给预览侧复用（嵌入笔记 `![[x#标题]]` 两边必须切出同一段）
+  function sliceSection(content, heading) {
+    const lines = String(content).split('\n');
+    const want = String(heading).trim();
+    let start = -1, level = 0, fence = null;
+    for (let i = 0; i < lines.length; i++) {
+      const fm = /^\s*(```+|~~~+)/.exec(lines[i]);
+      if (fm) { const m = fm[1][0]; if (!fence) fence = m; else if (fence === m) fence = null; continue; }
+      if (fence) continue;
+      const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+      if (!h) continue;
+      if (start < 0) {
+        if (h[2].trim() === want) { start = i; level = h[1].length; }
+      } else if (h[1].length <= level) {
+        return lines.slice(start, i).join('\n');
+      }
+    }
+    return start < 0 ? content : lines.slice(start).join('\n');
+  }
 
   // ---------- 嵌套列表缩进 widget：源码前导空格 → 固定宽度缩进 ----------
   // 为什么不能只留着源码里的空格：正文是比例字体，2 个空格实测只有 9px，而预览那边是
@@ -1057,6 +1133,18 @@ window.MdEditor = (() => {
                 const isEmbed = wm2[1] === '!';
                 // 嵌入图片 ![[x.png]] 交给图片渲染；这里只处理链接
                 if (isEmbed && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(target)) continue;
+                // 嵌入笔记 ![[笔记]] / ![[笔记#标题]]：整行就是它 → 块级 widget 内嵌渲染
+                // （不做的话会走图片分支变裂图，比不做还糟 —— 文档 046 §2.4）
+                if (isEmbed && !alias) {
+                  const only = /^\s*!\[\[[^\]\n]+\]\]\s*$/.test(l.text);
+                  if (only && !revealsConstruct(wFrom, wTo)) {
+                    decos.push(Decoration.replace({
+                      block: true,
+                      widget: new EmbedWidget(wm2[2].trim(), (wm2[3] || '').replace(/^#/, ''), target),
+                    }).range(l.from, l.to));
+                    continue;
+                  }
+                }
                 // 隐藏 `[[目标#标题|` 与 `]]`，只显示 label
                 const pipe = wm2[0].indexOf('|');
                 const labelStart = pipe >= 0 ? wFrom + pipe + 1 : wFrom + (isEmbed ? 3 : 2);
@@ -1481,6 +1569,9 @@ window.MdEditor = (() => {
   let wikiFiles = null;      // [{ name, rel, path }]
   let wikiLoading = null;
   async function loadWikiFiles() {
+    // 自检用钩子：允许外部直接给一份文件表。自检**不能**去 App.setRoot 临时项目 ——
+    // 那会触发 Session.restore() 把使用者的会话标签拉起来，后面的断言全跑错文档（实测 108 条集体变红）。
+    if (Array.isArray(MdEditor.__wikiFiles)) { wikiFiles = MdEditor.__wikiFiles; return wikiFiles; }
     if (wikiFiles) return wikiFiles;
     if (wikiLoading) return wikiLoading;
     const root = window.App && App.root;

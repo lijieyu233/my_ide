@@ -56,7 +56,8 @@ function stripAndCollectFootnotes(src) {
   const out = [];
   const defs = new Map();
   let fence = null, no = 0;
-  const defRe = /^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/;
+  // ⚠ `\r?$`：文档多为 CRLF，按 `\n` 切分后行尾留着 `\r`，`(.*)$` 会把 `\r` 吃进脚注正文
+  const defRe = /^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*?)\r?$/;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const fm = /^\s*(```+|~~~+)/.exec(line);
@@ -497,6 +498,21 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   const wrap = document.createElement('div');
   wrap.className = 'md-view';
   let html = '';
+  const embeds = [];   // 嵌入笔记占位（parse 之后替换成内嵌卡片）
+  // 以笔记所在目录为基准解析相对路径（与下面 img/a 的 resolveLocal 同一套规则；
+  // 这里单独抽出来是因为嵌入块要在 resolveLocal 定义之前用到）
+  const resolveRel = (rel) => {
+    const parts = String(path || '').split(/[\\/]/);
+    parts.pop();
+    for (const seg of String(rel).split(/[\\/]/)) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
+    }
+    let p = parts.join(String(path || '').includes('\\') ? '\\' : '/');
+    if (!/\.[A-Za-z0-9]{1,8}$/.test(p.split(/[\\/]/).pop() || '')) p += '.md';
+    return p;
+  };
   try {
     if (window.marked && window.marked.parse) {
       let src = content || '';
@@ -507,6 +523,17 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / [[笔记#标题]] / ![[图片.png]] → 标准链接
       // ⚠ 显示文字与 live 侧必须一致：没写别名时只显示**笔记名**，`#标题` 不进 label
       //   （Obsidian 同款；早先直接把整串当 label，两种模式会显示得不一样）。
+      // 嵌入笔记 ![[笔记]] / ![[笔记#标题]]（非图片）：先摘出来占位，parse 完再换成内嵌卡片
+      // （直接转成 ![](笔记) 会变裂图 —— 实测，比不做还糟；文档 046 §2.4）。
+      // ⚠ 行尾必须容忍 CRLF：文档常常是 CRLF 换行，多行模式下的 `$` 落在 `\r` 之前匹配不上
+      //   → 整个嵌入占位替换会静默失效（实测：预览里一个嵌入卡片都没有）
+      // ⚠ 占位符不能用 `\u0000`：`wrap.innerHTML = html` 时 HTML 解析器会把 NUL 直接丢掉，
+      //   剩下 "EMBED0" 就再也匹配不上了（实测踩过）。用一个不可能出现在正文里的安全标记。
+      src = src.replace(/^[ \t]*!\[\[([^\]|#]+)(#[^\]|]*)?\]\][ \t]*\r?$/gm, (m, t, h) => {
+        const key = 'MYIDEEMBEDPLACEHOLDER' + embeds.length + 'X';
+        embeds.push({ target: t.trim(), heading: (h || '').replace(/^#/, '') });
+        return key;
+      });
       src = src.replace(/!\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, _h, _p, alias) =>
         `![${(alias || t).trim()}](${(t + (_h || '')).trim()})`);
       src = src.replace(/\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, h, _p, alias) =>
@@ -519,6 +546,47 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     html = '<pre>渲染错误: ' + String(e) + '</pre>';
   }
   wrap.innerHTML = html;
+  // 嵌入笔记：把占位文本换成内嵌卡片（异步读盘 + 用同一套 md 渲染器渲染，深度限 1 层）
+  if (embeds.length) {
+    const nodes = [];
+    const walker = document.createTreeWalker(wrap, NodeFilter.SHOW_TEXT);
+    let n;
+    const PH = /MYIDEEMBEDPLACEHOLDER(\d+)X/;
+    while ((n = walker.nextNode())) {
+      if (n.nodeValue && PH.test(n.nodeValue)) nodes.push(n);
+    }
+    nodes.forEach((tn) => {
+      const parts = String(tn.nodeValue).split(/(MYIDEEMBEDPLACEHOLDER\d+X)/);
+      if (parts.length < 2) return;
+      const frag = document.createDocumentFragment();
+      parts.forEach((part) => {
+        const em = /^MYIDEEMBEDPLACEHOLDER(\d+)X$/.exec(part);
+        if (!em) { if (part) frag.appendChild(document.createTextNode(part)); return; }
+        const info = embeds[+em[1]];
+        const box = document.createElement('div');
+        box.className = 'md-embed';
+        box.textContent = '载入中…';
+        frag.appendChild(box);
+        (async () => {
+          try {
+            const p = resolveRel(info.target);
+            const r = await window.myIDE.fs.readFile(p);
+            if (!r || typeof r.content !== 'string') throw new Error('读不到 ' + p);
+            let content = r.content;
+            if (info.heading) content = (MI.sliceMdSection ? MI.sliceMdSection(content, info.heading) : content);
+            const inner = MI.renderFor({ path: p, name: p.split(/[\\/]/).pop(), ext: 'md' })({ path: p, name: p.split(/[\\/]/).pop(), ext: 'md', content });
+            inner.classList.add('md-embed-body');
+            box.innerHTML = '';
+            box.appendChild(inner);
+          } catch (e) {
+            box.className = 'md-embed md-embed-err';
+            box.textContent = '嵌入失败：' + info.target + '（' + ((e && e.message) || e) + '）';
+          }
+        })();
+      });
+      if (tn.parentNode) tn.parentNode.replaceChild(frag, tn);
+    });
+  }
   // Callout（Obsidian 的 > [!note] 提示块）：marked 只会把 `> [!note]` 当普通引用，
   // 这里后处理成容器 + 图标标题行 —— 与 live 侧（md-editor.js 的 CALLOUT_TYPES/CALLOUT_CLS）
   // 共用同一张类型表（MI.calloutMeta）与同一套 .co-* 颜色 class（styles.css），两边不会各写一套。

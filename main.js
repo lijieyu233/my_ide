@@ -1095,17 +1095,28 @@ app.whenReady().then(() => {
         let origMdMode = null;
         try { origMdMode = await wc.executeJavaScript('localStorage.getItem("myide-md-mode")'); } catch {}
         await wc.executeJavaScript('localStorage.setItem("myide-md-mode", "live"); true');
-        // wiki 补全自检需要"项目里真的有 md 文件"：在 .ui-check-trash 下造一个临时项目
-        // （gitignore 的暂存区，收盘时随其它产物一起清）
+        // wiki 补全 / 嵌入自检需要"项目里真的有 md 文件"。**不能另开一个项目**：
+        //   App.setRoot 会触发 Session.restore()，把使用者的会话标签重新拉起来，
+        //   自检后面的断言就全跑在别的文档上了（实测：108 条集体变红）。
+        //   所以在当前项目（仓库根）下造一个被 gitignore 的目录放这些笔记。
         const wikiProj = path.join(__dirname, '.ui-check-trash', 'wikiproj');
         try {
           fs.mkdirSync(path.join(wikiProj, 'notes'), { recursive: true });
-          fs.writeFileSync(path.join(wikiProj, 'index.md'), '# 索引\n\n正文\n', 'utf8');
-          fs.writeFileSync(path.join(wikiProj, 'alpha.md'), '# Alpha 标题\n\n## 第一节\n\n## 第二节\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'index.md'), '# 索引\n\n正文\n\n![[alpha]]\n\n![[notes/gamma#细节说明]]\n\n![[不存在的笔记]]\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'alpha.md'), '# Alpha 标题\n\n这是被嵌入的正文，含 **加粗**。\n\n## 第一节\n\n第一节正文。\n', 'utf8');
           fs.writeFileSync(path.join(wikiProj, 'beta.md'), '# Beta\n', 'utf8');
-          fs.writeFileSync(path.join(wikiProj, 'notes', 'gamma.md'), '# Gamma 笔记\n\n## 细节说明\n', 'utf8');
+          fs.writeFileSync(path.join(wikiProj, 'notes', 'gamma.md'), '# Gamma 笔记\n\n## 细节说明\n\n细节正文，**嵌入测试**。\n', 'utf8');
         } catch {}
         await wc.executeJavaScript('window.__wikiProj = ' + JSON.stringify(wikiProj) + '; true');
+        // 直接给补全源一份文件表（见 md-editor.js loadWikiFiles 里的注释：不切项目、不碰会话）
+        {
+          const sep = path.sep;
+          const files = ['index.md', 'alpha.md', 'beta.md', 'notes' + sep + 'gamma.md'].map((rel) => {
+            const full = path.join(wikiProj, rel);
+            return { name: (rel.split(sep).pop() || '').replace(/\.md$/, ''), rel, path: full };
+          });
+          await wc.executeJavaScript('MdEditor.__wikiFiles = ' + JSON.stringify(files) + '; true');
+        }
         await wc.executeJavaScript('Viewer.openFile(' + JSON.stringify(docPath) + '); true');
         for (let i = 0; i < 20; i++) { // 轮询编辑器挂载
           if (await wc.executeJavaScript('!!document.querySelector(".cm-content")')) break;
@@ -1113,6 +1124,12 @@ app.whenReady().then(() => {
         }
         await new Promise((r) => setTimeout(r, 600)); // 等解析+装饰稳定
         await wc.executeJavaScript('window.__doc = ' + JSON.stringify(fs.readFileSync(docPath, 'utf8')) + '; true');
+        await wc.executeJavaScript('window.__docPath = ' + JSON.stringify(docPath) + '; true');
+        // ⚠ 基准文本要用**编辑器里的实际内容**，不能用 readFileSync 的原始字节：
+        //   仓库在 Windows 上检出是 CRLF，而编辑器/读盘链路会归一成 LF —— 两者长度不同，
+        //   页面脚本里所有 DOC.indexOf() 算出来的偏移都会整体错位（实测：点击映射/表格断言
+        //   集体失败，报"落在第 94 行，期望第 102 行"这类错）。编辑器内容才是权威。
+        await wc.executeJavaScript('try { if (Viewer.cm) window.__doc = Viewer.cm.getValue(); } catch (e) {} true');
         // ⚠ headless（隐藏窗口）下 Chromium 会把窗口尺寸按屏幕工作区压缩（实测 880 → 728），
         //   视口一变矮，原来自检里"顺手在视口内"的行（task 列表、表格行）就不在 DOM 里了
         //   → 量成 count=0 的假失败。这里显式把内容尺寸设回正常值（隐藏窗口可以超出屏幕）。

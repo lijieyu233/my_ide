@@ -6,10 +6,59 @@
   // 隐藏窗口（默认的 headless 自检）里 CM6 拿不到 DOM 焦点 → 它不绘制选区层，
   // 这类"必须聚焦才画得出来"的项要显式记 SKIP，不能记 FAIL（会误导成真回归）
   const skip = (name, detail) => R.push({ name, ok: true, skip: true, detail: detail == null ? '' : String(detail) });
-  const api = window.Viewer && Viewer.cm;
-  const cm = document.querySelector('.cm-content');
+  // api 用取值器：自愈重开文档后 Viewer.cm 会换成新实例，捕获一次的旧引用会失效
+  const A = () => (window.Viewer && Viewer.cm) || null;
+  let api = A();
+  let cm = document.querySelector('.cm-content');
   if (!api || !cm) return { error: '编辑器未挂载（Viewer.cm=' + !!api + ', .cm-content=' + !!cm + '）', R };
-  const DOC = window.__doc;
+  // 基准文本（下面会用编辑器当前内容覆盖：Windows 检出的 CRLF vs 编辑器 LF，
+  // 两者 length 不同，用原始文件文本会让所有 indexOf 偏移整体错位）
+  let DOC = window.__doc;
+  // 🔴 自检会临时改写文档内容（表格/脚注/wiki/嵌入用例），而渲染层有「停手 3 秒自动保存」——
+  //   不拦的话这些测试内容会被**写回真实的 preview-test.md**（实测：整份基准文档被覆盖成
+  //   一行 `# 索引`，随后 100+ 条断言因为文档变了集体变红）。
+  //   这里全程把标签标成 non-dirty 并清掉自动保存定时器，收尾再还原内容。
+  const guardAutosave = () => {
+    try {
+      for (const t of (Viewer.openTabs || [])) t.dirty = false;
+      const at = Viewer.activeTab;
+      if (at) at.dirty = false;
+    } catch {}
+  };
+  guardAutosave();
+  const autosaveWatch = setInterval(guardAutosave, 400);
+  // 双保险：自检期间直接拦掉写盘（哪怕 dirty 判定漏了一次也不会污染真实文件）。
+  // 只拦「写到基准文档」这一种；其它路径（读盘、用户其它文件）照常。
+  const origWrite = (window.myIDE && window.myIDE.fs && window.myIDE.fs.writeFile) || null;
+  if (origWrite && window.__docPath) {
+    try {
+      window.myIDE.fs.writeFile = function (p, ...rest) {
+        if (String(p) === String(window.__docPath)) return Promise.resolve({ ok: true, skipped: 'check-live' });
+        return origWrite.call(this, p, ...rest);
+      };
+    } catch {}
+  }
+  // ⚠ 自愈：`Session.restore()` 是**异步**的，可能在 main.js 打开基准文档之后又把使用者的
+  //   真实会话标签激活回来 → 后面 100+ 条断言全跑在别的文档上（实测：整份自检集体变红）。
+  //   这里先确认活动标签就是基准文档，不是就重新打开并等它真正生效。
+  if (window.__docPath) {
+    for (let i = 0; i < 12; i++) {
+      const at = window.Viewer && Viewer.activeTab;
+      if (at && at.path === window.__docPath && Viewer.cm) break;
+      try { Viewer.openFile(window.__docPath); } catch {}
+      await sleep(400);
+    }
+    api = A() || api;
+    cm = document.querySelector('.cm-content') || cm;
+  }
+  // DOC 必须以编辑器当前内容为准（Windows 检出是 CRLF、编辑器归一成 LF；用原始文件文本
+  // 会让所有 indexOf 偏移整体错位）
+  if (api && api.getValue) {
+    try {
+      const live = api.getValue();
+      if (live && live.length) DOC = live;
+    } catch {}
+  }
   const allText = () => cm.textContent;
   const css = (el, prop) => (el ? getComputedStyle(el).getPropertyValue(prop) : '');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -701,18 +750,17 @@
 
   // ---------- wiki 链接：补全（文档 046 §1.6）+ 渲染态只显示别名 ----------
   {
-    // 补全需要项目根 + 索引：用 main.js 造好的临时项目（--check-live 里建的 wikiproj）
+    // 补全需要项目文件表：main.js 已把 MdEditor.__wikiFiles 注入（不切项目、不碰会话）
     const saved = api.getValue();
     const setDoc = (text) => { api.setValue(text); };
-    if (window.__wikiProj && window.App && App.setRoot) {
-      App.setRoot(window.__wikiProj);
-      await sleep(900);
-      if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
+    if (window.__wikiProj && window.MdEditor && Array.isArray(MdEditor.__wikiFiles)) {
+      if (MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
+      MdEditor.__wikiFiles = MdEditor.__wikiFiles;   // 保留注入的表
       await MdEditor.loadWikiFiles();
       await sleep(300);
       add('wiki(live): 项目文件索引建好', true, '');
     } else {
-      add('wiki(live): 项目文件索引建好', false, '没有 __wikiProj（main.js 未造临时项目）');
+      add('wiki(live): 项目文件索引建好', false, '没有 __wikiProj / __wikiFiles（main.js 未注入）');
     }
     // 渲染：写一行四种形式，渲染态文本里不应再有 `[[` 或 `|别名` 残留
     setDoc('# 索引\n\n[[alpha]] 与 [[beta|贝塔]] 与 [[notes/gamma#细节说明|G]]\n');
@@ -767,10 +815,74 @@
       } catch (e) { add('wiki(preview): 别名显示为目标别名', false, String(e)); }
       holder.remove();
     }
+    // 嵌入笔记 ![[x]] / ![[x#标题]]（文档 046 §2.4）
+    // ⚠ 不切标签页：直接把 index.md 的内容写进当前编辑器（上一步的 setDoc 已经在做这件事），
+    //   跑完用 saved 还原 —— 早先版本用 Viewer.openFile 切文档，后面的断言会全跑错文档。
+    {
+      const embDir = window.__wikiProj;
+      const sep = (embDir || '').includes('\\') ? '\\' : '/';
+      const embPath = embDir + sep + 'index.md';
+      let embContent = '';
+      try {
+        const r = await window.myIDE.fs.readFile(embPath);
+        embContent = (r && r.content) || '';
+      } catch {}
+      if (embContent) {
+        // live：当前编辑器基准目录要指向 wikiproj（嵌入按 baseDir 相对解析）
+        const prevBase = MdEditor.__baseDir;
+        MdEditor.__baseDir = embDir;
+        setDoc(embContent);
+        api.setCursor(api.view.state.doc.length);
+        for (let i = 0; i < 20; i++) {
+          if (document.querySelector('.cm-md-embed')) break;
+          await sleep(300);
+        }
+        await sleep(500);
+        const boxes = [...document.querySelectorAll('.cm-md-embed')];
+        add('嵌入(live): ![[笔记]] 渲染成内嵌卡片', boxes.length >= 2, 'count=' + boxes.length);
+        add('嵌入(live): 嵌入内容真的读进来了',
+          boxes.some((b) => b.textContent.includes('这是被嵌入的正文')), boxes.map((b) => b.textContent.replace(/\s+/g, ' ').slice(0, 24)).join(' | '));
+        add('嵌入(live): ![[x#标题]] 只切该节',
+          boxes.some((b) => b.textContent.includes('细节正文') && !b.textContent.includes('这是被嵌入的正文')),
+          boxes.map((b) => b.textContent.replace(/\s+/g, ' ').slice(0, 18)).join(' | '));
+        add('嵌入(live): 嵌入内容保留行内格式', boxes.some((b) => b.querySelector('strong')), '');
+        add('嵌入(live): 读不到时给错误卡片而不是裂图',
+          document.querySelectorAll('.cm-md-embed-err').length >= 1, 'errs=' + document.querySelectorAll('.cm-md-embed-err').length);
+        add('嵌入(live): 渲染态不残留 ![[]] 源码', !document.querySelector('.cm-content').textContent.includes('![['), '');
+        MdEditor.__baseDir = prevBase;
+        // 预览侧同一份文档
+        const holder = document.createElement('div');
+        holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';
+        document.body.appendChild(holder);
+        try {
+          const fn = MI.renderFor({ path: embPath, name: 'index.md', ext: 'md' });
+          const node = fn({ path: embPath, name: 'index.md', ext: 'md', content: embContent });
+          holder.appendChild(node);
+          // 嵌入卡片是异步读盘后填充的：轮询等它出现（固定等待在慢盘上不够，实测会 count=0）
+          for (let i = 0; i < 20; i++) {
+            if (node.querySelector('.md-embed') && node.querySelector('.md-embed').textContent.length > 12) break;
+            await sleep(300);
+          }
+          await sleep(300);
+          const pvBoxes = [...node.querySelectorAll('.md-embed')];
+          add('嵌入(preview): ![[笔记]] 渲染成内嵌卡片', pvBoxes.length >= 2, 'count=' + pvBoxes.length);
+          add('嵌入(preview): 与 live 内容一致',
+            pvBoxes.some((b) => b.textContent.includes('这是被嵌入的正文')) && pvBoxes.some((b) => b.textContent.includes('细节正文')),
+            pvBoxes.map((b) => b.textContent.replace(/\s+/g, ' ').slice(0, 20)).join(' | '));
+          add('嵌入(preview): 不残留 ![[]] 源码', !node.textContent.includes('![['), '');
+        } catch (e) { add('嵌入(preview): ![[笔记]] 渲染成内嵌卡片', false, String(e)); }
+        holder.remove();
+      } else {
+        add('嵌入(live): ![[笔记]] 渲染成内嵌卡片', false, '读不到 wikiproj/index.md');
+      }
+    }
     setDoc(saved);
     api.setCursor(DOC.length); await sleep(200);
   }
 
+  // 收尾：解除自动保存拦截 + 还原真实 writeFile
+  clearInterval(autosaveWatch);
+  if (origWrite) { try { window.myIDE.fs.writeFile = origWrite; } catch {} }
   api.setCursor(DOC.length);
   await sleep(80);
   return { R };
