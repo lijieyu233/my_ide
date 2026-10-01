@@ -849,6 +849,7 @@ const App = (() => {
     if (window.GitLog) GitLog.setRoot(p);
     if (window.Tasks) Tasks.setRoot(p); // 任务数据按项目隔离，随项目切换换库
     QuickOpen.invalidate(true);
+    window.Shortcuts?.invalidateContext();
     if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
     clearTimeout(gitScanTimer);
@@ -959,8 +960,19 @@ const App = (() => {
         bubbles: true, cancelable: true,
       }));
     });
-    document.getElementById('btn-search').onclick = () => Search.open();
-    document.getElementById('btn-settings').onclick = () => Settings.open();
+    const actionButtons = { 'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-commands': 'command-palette',
+      'btn-search': 'search', 'btn-settings': 'settings', 'btn-theme': 'theme', 'btn-help': 'help' };
+    const syncActionButtons = () => {
+      const bindings = new Map(Shortcuts.bindings().map(binding => [binding.id, binding]));
+      for (const [buttonId, actionId] of Object.entries(actionButtons)) {
+        const button = document.getElementById(buttonId), binding = bindings.get(actionId);
+        if (button && binding) button.title = binding.desc + '（' + (binding.effectiveCombos.length ? binding.effectiveCombos.join(' / ') : '未设置快捷键') + '）';
+      }
+    };
+    for (const [buttonId, actionId] of Object.entries(actionButtons)) document.getElementById(buttonId).onclick = () => {
+      Shortcuts.execute(actionId).then(result => { if (result.disabled) MI.toast(result.error, 'err'); });
+    };
+    Shortcuts.onChanged(syncActionButtons); syncActionButtons();
     // 状态栏字号控件：− / + 调整文档区字号
     const fDec = document.getElementById('sb-font-dec');
     const fInc = document.getElementById('sb-font-inc');
@@ -970,11 +982,6 @@ const App = (() => {
     }
     Viewer.syncFontLabel();
     applyToolFont(); // 侧栏字号：脚本在 body 末尾、DOM 已就绪，这里再同步一次数值显示
-    document.getElementById('btn-help').onclick = () => Help.open();
-    document.getElementById('btn-theme').onclick = () => {
-      Theme.toggle();
-      MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok');
-    };
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-git').onclick = () => switchTool('git');

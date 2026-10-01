@@ -4,6 +4,9 @@ const Shortcuts = (() => {
   const savedKey = {}; // id -> 用户自定义 combo（未修改则无）
   let keyMap = {};     // combo -> id
   let captureCb = null; // 正在等待按键（设置面板修改快捷键时）
+  let projectEpoch = 0, lastFailure = null;
+  const listeners = new Set();
+  const changed = () => { for (const listener of listeners) { try { listener(); } catch (error) { console.error('[actions]', error); } } };
 
   const MODS = ['control', 'alt', 'shift', 'meta'];
 
@@ -30,14 +33,16 @@ const Shortcuts = (() => {
   }
   function rebuild() {
     keyMap = {};
-    for (const id in registry) {
-      const combos = savedKey[id] ? [savedKey[id]] : registry[id].keys;
-      for (const c of combos) keyMap[c] = id;
+    // 新动作的默认键不能盖掉用户已有的绑定；用户之间的旧冲突仍按注册顺序决胜。
+    for (const id in registry) if (!savedKey[id]) {
+      for (const combo of registry[id].keys) keyMap[combo] = id;
     }
+    for (const id in registry) if (savedKey[id]) keyMap[savedKey[id]] = id;
+    changed();
   }
 
   function register(id, opts) {
-    registry[id] = { id, desc: opts.desc, keys: opts.keys, run: opts.run };
+    registry[id] = { ...opts, id, desc: opts.desc, label: opts.label || opts.desc, keys: opts.keys || [], aliases: opts.aliases || [], category: opts.category || '工作台' };
     rebuild();
   }
 
@@ -47,6 +52,7 @@ const Shortcuts = (() => {
       id,
       desc: registry[id].desc,
       combos: savedKey[id] ? [savedKey[id]] : registry[id].keys,
+      effectiveCombos: (savedKey[id] ? [savedKey[id]] : registry[id].keys).filter(combo => keyMap[combo] === id),
       custom: !!savedKey[id],
     }));
   }
@@ -77,7 +83,63 @@ const Shortcuts = (() => {
   function captureNext(cb) { captureCb = cb; }
   function isCapturing() { return !!captureCb; }
 
+  function context(tab = window.Viewer?.activeTab) {
+    const cm = window.Viewer?.cm;
+    const selection = tab === window.Viewer?.activeTab && cm?.__tab === tab && cm.view?.dom.isConnected ? cm.view.state.selection : null;
+    return { root: window.App?.root || null, projectEpoch, documentId: tab?.id, path: tab?.path || null,
+      pathGeneration: tab?.pathGeneration || 0, revision: tab?.editRevision, invoker: document.activeElement,
+      selection: selection ? selection.ranges.map(range => ({ anchor: range.anchor, head: range.head })) : null,
+      modalDepth: window.Modal?.stack.length || 0 };
+  }
+  function availability(id, ctx = context()) {
+    const action = registry[id];
+    if (!action) return { enabled: false, reason: '命令已移除' };
+    if (ctx.projectEpoch !== projectEpoch || DocumentPaths.key(ctx.root) !== DocumentPaths.key(window.App?.root))
+      return { enabled: false, reason: '项目已改变，请重新打开命令面板' };
+    if (ctx.source === 'palette' && ctx.modalDepth) return { enabled: false, reason: '请先关闭下层弹窗再执行命令' };
+    if (action.requiresProject && !ctx.root) return { enabled: false, reason: '请先打开一个项目' };
+    if (action.requiresDocument) {
+      const tab = window.Viewer?.openTabs.find(tab => tab.id === ctx.documentId);
+      if (!tab) return { enabled: false, reason: '请先打开一个文件' };
+      if (DocumentPaths.key(tab.path) !== DocumentPaths.key(ctx.path) || (tab.pathGeneration || 0) !== ctx.pathGeneration
+        || !action.allowBackgroundDocument && window.Viewer.activeTab !== tab)
+        return { enabled: false, reason: '文件已改变，请重新打开命令面板' };
+      if (action.requiresText && (tab.content == null || tab.mode == null || tab.mode === 'error' || tab.binary || tab.tooLarge))
+        return { enabled: false, reason: '当前文件没有可编辑的文本' };
+    }
+    try {
+      const allowed = action.isEnabled?.(ctx) ?? true;
+      return allowed === true ? { enabled: true, reason: '' } : { enabled: false, reason: typeof allowed === 'string' ? allowed : '当前不可用' };
+    } catch (error) { return { enabled: false, reason: '当前不可用：' + String(error?.message || error) }; }
+  }
+  function commands(ctx = context()) {
+    const keys = new Map(bindings().map(binding => [binding.id, binding.effectiveCombos]));
+    return Object.values(registry).filter(action => action.palette).map(action => ({
+      id: action.id, label: action.label, category: action.category, aliases: [...action.aliases], combos: [...keys.get(action.id)], ...availability(action.id, ctx),
+    }));
+  }
+  async function execute(id, ctx = context()) {
+    const state = availability(id, ctx);
+    if (!state.enabled) return { ok: false, disabled: true, error: state.reason };
+    const action = registry[id];
+    try {
+      const result = await action.run(ctx);
+      if (result === false || result?.cancelled || result?.errorCode === 'CANCELLED') return { ok: false, cancelled: true };
+      if (result?.ok === false || result?.error) throw new Error(result.error || '命令未完成：' + (result.errorCode || action.label));
+      return { ok: true, result };
+    } catch (error) {
+      const message = String(error?.message || error);
+      lastFailure = { id, label: action.label, message, root: ctx.root, path: ctx.path, time: Date.now() };
+      changed(); window.MI?.toast(action.label + '失败：' + message, 'err');
+      return { ok: false, error: message };
+    }
+  }
+  function onChanged(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+  function describe(id, metadata) { if (registry[id]) { Object.assign(registry[id], metadata, { palette: true }); changed(); } }
+  function invalidateContext() { projectEpoch++; window.CommandPalette?.invalidate(); changed(); }
+
   document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     const combo = comboOf(e);
     // 捕获模式（改快捷键）
     if (captureCb) {
@@ -130,15 +192,12 @@ const Shortcuts = (() => {
     const id = keyMap[combo];
     if (!id) return;
     e.preventDefault();
-    try {
-      const r = registry[id].run();
-      if (r && r.catch) r.catch(() => {});
-    } catch (err) {
-      console.error('[shortcut]', id, err);
-    }
+    execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
 
-  return { register, bindings, setBinding, reset, resetAll, load, captureNext, isCapturing, comboOf };
+  return { register, bindings, setBinding, reset, resetAll, load, captureNext, isCapturing, comboOf,
+    context, availability, commands, execute, onChanged, describe, invalidateContext,
+    get lastFailure() { return lastFailure; }, clearFailure() { lastFailure = null; changed(); } };
 })();
 window.Shortcuts = Shortcuts;
 
@@ -174,8 +233,8 @@ Shortcuts.register('commit-group-by-dir', { desc: '提交面板：切换分组�
   App.showTool('git');
   GitPanel.toggleGroupByDir();
 } });
-Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => { const t = Viewer.activeTab; if (t && t.ta) Viewer.saveTab(Viewer.openTabs.indexOf(t)); } });
-Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
+Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab)) });
+Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) return Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
 Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
@@ -249,3 +308,36 @@ Shortcuts.register('undo-file', { desc: '撤销（任务工具激活时撤销任
 Shortcuts.register('rename-file', { desc: '重命名（目录树选中项）', keys: ['ctrl+shift+f6'], run: () => Tree.renameSelected() });
 
 Shortcuts.load();
+
+// 首包接可核对的既有动作；复制/粘贴/外部执行等依赖其他选择身份的动作另按各自合同接入。
+const paletteActions = {
+  'open-folder': { category: '项目', aliases: ['open project', '打开文件夹'] },
+  'quick-open': { category: '项目', aliases: ['go to file', '查找文件'], requiresProject: true },
+  search: { category: '项目', aliases: ['search', 'find in files', '项目搜索'], requiresProject: true },
+  'git-log': { category: '项目', aliases: ['git log', '提交历史'], requiresProject: true },
+  save: { category: '文件', aliases: ['save'], requiresDocument: true, requiresText: true },
+  'close-tab': { category: '文件', aliases: ['close file'], requiresDocument: true },
+  'next-tab': { category: '文件', aliases: ['next tab'], requiresDocument: true, isEnabled: () => Viewer.openTabs.length > 1 || '至少打开两个标签' },
+  settings: { category: '工作台', aliases: ['settings', 'keymap', '快捷键设置'] },
+  theme: { category: '工作台', aliases: ['toggle theme', '深色', '浅色'] },
+  help: { category: '工作台', aliases: ['help', '帮助'] },
+  'toggle-sidebar': { category: '工作台', aliases: ['sidebar', '侧栏'] },
+  'toggle-sidebar-right': { category: '工作台', aliases: ['right sidebar'] },
+  'tool-project': { category: '工作台', aliases: ['project', '文件树'], requiresProject: true },
+  'tool-outline': { category: '工作台', aliases: ['outline', '标题'], requiresDocument: true, requiresText: true },
+  'tool-browser': { category: '工作台', aliases: ['browser', '浏览器'] },
+  'tool-db': { category: '工作台', aliases: ['database', 'SQL', '数据库'] },
+  'tool-tasks': { category: '工作台', aliases: ['tasks', '任务'], requiresProject: true },
+  'tool-ai': { category: '工作台', aliases: ['AI', '对话'] },
+};
+for (const binding of Shortcuts.bindings()) {
+  const metadata = paletteActions[binding.id];
+  if (!metadata) continue;
+  // 元数据通过注册表自身更新，执行函数不另抄一份。
+  Shortcuts.describe(binding.id, metadata);
+}
+Shortcuts.register('theme-settings', { desc: '主题设置', keys: [], palette: true, category: '工作台', aliases: ['theme', '颜色', '主题配置'], run: () => Settings.open('theme') });
+Shortcuts.register('file-history', { desc: '显示文件历史', keys: [], palette: true, category: '文件', aliases: ['file history', 'history', '文件版本'],
+  requiresProject: true, requiresDocument: true, allowBackgroundDocument: true,
+  isEnabled: ctx => DocumentPaths.contains(ctx.root, ctx.path) || '当前文件不在此项目内', run: ctx => GitLog.showFileHistory(ctx.path) });
+Shortcuts.register('command-palette', { desc: '查找命令', keys: ['ctrl+shift+p'], run: () => CommandPalette.open() });

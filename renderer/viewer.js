@@ -703,7 +703,7 @@ const Viewer = (() => {
       menu.appendChild(d);
     };
     mk('📋 复制完整路径', () => { MI.copyText(tab.path); MI.toast('已复制路径', 'ok'); });
-    if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示历史', () => GitLog.showFileHistory(tab.path));
+    if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
     if (tab.mode === 'edit') mk('⑂ Blame 注解', () => { if (tab !== currentTab()) activate(tabs.indexOf(tab)); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     const pdir = (tab.path || '').replace(/[\\/][^\\/]+$/, '');
@@ -1011,7 +1011,7 @@ const Viewer = (() => {
       menu.appendChild(d);
     };
     mk(blameOn ? '✕ 关闭 Blame 注解' : '⑂ Git Blame 注解', () => toggleBlame());
-    mk('🕘 显示文件历史', () => { if (window.GitLog) GitLog.showFileHistory(currentTab() && currentTab().path); });
+    mk('🕘 显示文件历史', () => { if (window.GitLog) return Shortcuts.execute('file-history'); });
     // 交给 AI：内容整理最顺手的入口 —— 选中一段右键就够，不用去面板里描述「哪一段」
     if (window.AiPanel && AiPanel.fromEditor) {
       mk('✨ 用 AI 解释选中内容', () => AiPanel.fromEditor('explain'));
@@ -1113,7 +1113,7 @@ const Viewer = (() => {
       onCursor: (line, col) => {
         if (window.App) App.updateStatusbar({ pos: line + ':' + col });
       },
-      onSave: () => saveSnapshot(tab, false),
+      saveKeysInShortcuts: true,
     });
     cmApi.__tab = tab;
     tab.ta = null;

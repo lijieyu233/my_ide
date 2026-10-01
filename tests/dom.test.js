@@ -516,6 +516,7 @@ async function loadApp(dom) {
   evalFile('search.js');
   evalFile('session.js');
   evalFile('shortcuts.js');
+  evalFile('command-palette.js');
   evalFile('settings.js');
   evalFile('help.js');
   evalFile('browser.js');
@@ -8420,6 +8421,121 @@ assert_(panel, 'CM6 搜索面板出现');
 
   const qoKey = (w, target, key, options = {}) => target.dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
   const qoQuery = (w, value) => { const input=w.document.querySelector('#qo-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input; };
+  const cpQuery = (w, value) => { const input=w.document.querySelector('#command-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input; };
+  await saveCase('CM保存真实键位只归注册表，自定义后旧CtrlS不抢写且新键沿用队列',async(d,viewer,bridge)=>{
+    const w=d.window,write=bridge.writeFile;let writes=0;bridge.writeFile=async(...args)=>{writes++;return write(...args);};
+    w.Shortcuts.setBinding('save','ctrl+alt+s');viewer.cm.focus();viewer.cm.setValue('自定义保存键正文');const input=viewer.cm.view.contentDOM;
+    qoKey(w,input,'s',{ctrlKey:true});await tick();assert.equal(writes,0);assert(viewer.activeTab.dirty);
+    qoKey(w,input,'s',{ctrlKey:true,altKey:true});await tick();await tick();assert.equal(writes,1);assert.equal(FAKE_FS[viewer.activeTab.path].content,'自定义保存键正文');assert(!viewer.activeTab.dirty);
+    w.CommandPalette.open();cpQuery(w,'保存当前文件');assert(w.document.querySelector('.cp-keys').textContent.includes('ctrl + alt + s'));
+  });
+  await saveCase('命令入口共用动作，重复打开单实例，中文与英文别名可执行',async(d)=>{
+    const w=d.window;let calls=0;w.Search.open=()=>{calls++;};
+    qoKey(w,w.document.body,'P',{ctrlKey:true,shiftKey:true});w.document.querySelector('#btn-commands').click();
+    assert.equal(w.document.querySelectorAll('#command-box').length,1);
+    const input=cpQuery(w,'find in files');assert.equal(w.document.querySelector('#command-list .sel').dataset.action,'search');
+    qoKey(w,input,'Enter');await tick();assert.equal(calls,1);assert(!w.document.querySelector('#command-box'));
+    qoKey(w,w.document.body,'F',{ctrlKey:true,shiftKey:true});w.document.querySelector('#btn-search').click();await tick();assert.equal(calls,3);
+    w.CommandPalette.open();cpQuery(w,'搜索内容');w.document.querySelector('[data-action="search"]').click();await tick();assert.equal(calls,4);
+  });
+  await saveCase('命令用户键位优先于新增默认，面板与工具栏只显示实际生效键',async(d)=>{
+    const w=d.window;let calls=0;w.Search.open=()=>{calls++;};
+    w.Shortcuts.setBinding('search','ctrl+shift+p');w.Shortcuts.register('command-palette',{desc:'查找命令',keys:['ctrl+shift+p'],run:()=>w.CommandPalette.open()});
+    qoKey(w,w.document.body,'P',{ctrlKey:true,shiftKey:true});await tick();assert.equal(calls,1);assert(!w.document.querySelector('#command-box'));
+    assert(w.document.querySelector('#btn-commands').title.includes('未设置快捷键'));
+    w.CommandPalette.open();cpQuery(w,'搜索内容');assert(w.document.querySelector('[data-action="search"] .cp-keys').textContent.includes('ctrl + shift + p'));
+    w.Shortcuts.setBinding('search','ctrl+alt+f');assert(w.document.querySelector('[data-action="search"] .cp-keys').textContent.includes('ctrl + alt + f'));
+    assert(w.document.querySelector('#btn-search').title.includes('ctrl+alt+f'));
+    w.Shortcuts.resetAll();assert(w.document.querySelector('[data-action="search"] .cp-keys').textContent.includes('ctrl + shift + f'));
+  });
+  await saveCase('命令全候选排序先于top30，稳定同分、无结果不执行，文本不解释HTML',async(d)=>{
+    const w=d.window;let count=0;
+    for(let i=0;i<410;i++)w.Shortcuts.register('fixture-'+i,{desc:'needle '+String(i).padStart(3,'0'),keys:[],palette:true,category:'测试',run:()=>{count++;}});
+    w.Shortcuts.register('tail',{desc:'needle',keys:[],palette:true,category:'测试',run:()=>{count++;}});
+    w.Shortcuts.register('literal',{desc:'<img src=x onerror=alert(1)>',keys:[],palette:true,run:()=>{count++;}});
+    w.CommandPalette.open();let input=cpQuery(w,'needle'),ids=[...w.document.querySelectorAll('.cp-item')].map(row=>row.dataset.action);
+    assert.equal(ids.length,30);assert.equal(ids[0],'tail');w.Modal.hide();w.CommandPalette.open();cpQuery(w,'needle');assert.deepEqual([...w.document.querySelectorAll('.cp-item')].map(row=>row.dataset.action),ids);
+    input=cpQuery(w,'不存在的命令');qoKey(w,input,'Enter');assert.equal(count,0);assert(!input.hasAttribute('aria-activedescendant'));assert(w.document.querySelector('#command-box'));
+    cpQuery(w,'onerror');assert(!w.document.querySelector('#command-list img'));w.document.querySelector('.cp-item').click();await tick();assert.equal(count,1);
+  });
+  await okAsync('命令禁用原因可选择阅读，不打开项目和文件时不执行',async()=>{
+    const d=makeDom();try { await loadApp(d);const w=d.window;let calls=0;w.Search.open=()=>{calls++;};
+    w.CommandPalette.open();const input=cpQuery(w,'搜索内容'),row=w.document.querySelector('.cp-item');
+    assert.equal(row.getAttribute('aria-disabled'),'true');assert(w.document.querySelector('#command-status').textContent.includes('先打开一个项目'));
+    qoKey(w,input,'Enter');row.click();assert.equal(calls,0);assert(w.document.querySelector('#command-box'));
+    cpQuery(w,'主题设置');qoKey(w,input,'Enter');await tick();assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'theme');assert(!w.document.querySelector('#command-box'));
+    } finally { while(d.window.Modal?.stack.length)d.window.Modal.hide();await tick();d.window.close(); }
+  });
+  await saveCase('命令执行复核文件身份和路径代次，旧行不能保存另一标签',async(d,viewer,bridge)=>{
+    const w=d.window,old=viewer.activeTab;let writes=0;bridge.writeFile=async()=>{writes++;return {ok:true};};
+    w.CommandPalette.open();cpQuery(w,'保存当前文件');const row=w.document.querySelector('[data-action="save"]');
+    await viewer.openFile(P+'/README.md');row.click();await tick();assert.equal(writes,0);assert(w.document.querySelector('#command-box'));
+    assert(w.document.querySelector('#command-status').textContent.includes('文件已改变'));
+    w.Modal.hide();viewer.activate(viewer.openTabs.indexOf(old));w.CommandPalette.open();cpQuery(w,'保存当前文件');const renamed=w.document.querySelector('[data-action="save"]');old.pathGeneration=(old.pathGeneration||0)+1;renamed.click();await tick();assert.equal(writes,0);
+  });
+  await saveCase('命令切项目关闭旧面板，A回A也拒绝原上下文和卸载按钮',async(d)=>{
+    const w=d.window;let runs=0;w.Shortcuts.register('fixture-run',{desc:'运行测试',keys:[],palette:true,run:()=>{runs++;}});
+    w.CommandPalette.open();cpQuery(w,'运行测试');const old=w.document.querySelector('.cp-item'),ctx=w.Shortcuts.context();
+    await w.App.setRoot('C:/proj2');assert(!w.document.querySelector('#command-box'));assert(!w.document.querySelector('[inert]'));
+    await w.App.setRoot(P);old.click();const result=await w.Shortcuts.execute('fixture-run',ctx);assert(result.disabled);assert.equal(runs,0);
+  });
+  await saveCase('命令保存沿用真实Viewer队列，失败保留dirty与原因，新输入不被成功清空',async(d,viewer,bridge)=>{
+    const w=d.window,tab=viewer.activeTab,write=bridge.writeFile;viewer.cm.setValue('用户正文');bridge.writeFile=async()=>({error:'fixture EACCES',errorCode:'EACCES'});
+    w.CommandPalette.open();qoKey(w,cpQuery(w,'保存当前文件'),'Enter');await tick();await tick();
+    assert(tab.dirty&&tab.content==='用户正文');assert.equal(w.Shortcuts.lastFailure.id,'save');assert.equal(w.Shortcuts.lastFailure.path,tab.path);
+    w.CommandPalette.open();assert(w.document.querySelector('#command-failure-text').textContent.includes('fixture EACCES'));w.document.querySelector('#command-clear').click();assert.equal(w.Shortcuts.lastFailure,null);w.Modal.hide();
+    const gate=deferred();bridge.writeFile=async(...args)=>{await gate.promise;return write(...args);};
+    viewer.cm.setValue('派发正文');const pending=w.Shortcuts.execute('save');await tick();viewer.cm.setValue('保存中新正文');gate.resolve();assert((await pending).ok);assert(tab.dirty&&tab.content==='保存中新正文');assert.equal(FAKE_FS[tab.path].content,'派发正文');
+  });
+  await saveCase('命令关闭复用原确认，取消和确认期间新输入均保留标签',async(d,viewer)=>{
+    const w=d.window,tab=viewer.activeTab;viewer.cm.setValue('未保存');w.CommandPalette.open();qoKey(w,cpQuery(w,'关闭当前标签'),'Enter');
+    assert(!w.document.querySelector('#command-box'));assert.equal(w.document.querySelectorAll('.close-tabs-dialog').length,1);assert.equal(w.document.activeElement.className,'tb-btn m-cancel');
+    w.document.querySelector('.m-cancel').click();await tick();assert(viewer.openTabs.includes(tab));assert.equal(w.Shortcuts.lastFailure,null);
+    const pending=w.Shortcuts.execute('close-tab');viewer.cm.setValue('确认中新输入');w.document.querySelector('.close-tabs-discard').click();assert((await pending).cancelled);assert(tab.dirty&&tab.content==='确认中新输入');
+  });
+  await saveCase('命令焦点返回CM，Tab循环，迟到编辑器focus与背景快捷键被隔离',async(d,viewer)=>{
+    const w=d.window;viewer.cm.focus();const origin=w.document.activeElement;w.CommandPalette.open();const input=cpQuery(w,'主题设置');
+    viewer.cm.focus();assert(w.document.activeElement===input,'迟到CM焦点不得离开面板');qoKey(w,input,'Tab',{shiftKey:true});assert.equal(w.document.activeElement.id,'command-close');qoKey(w,w.document.activeElement,'Tab');assert(w.document.activeElement===input);
+    qoKey(w,input,'w',{ctrlKey:true});await tick();assert.equal(viewer.openTabs.length,1);qoKey(w,input,'Escape');assert(w.document.activeElement===origin,'取消回CM');assert(!w.document.querySelector('[inert]'));
+    w.CommandPalette.open();w.Modal.hide();assert(w.document.activeElement===origin,'外部关闭也回CM');
+    const button=w.document.createElement('button');w.document.body.appendChild(button);button.focus();w.CommandPalette.open();button.remove();w.Modal.hide();assert(w.document.activeElement===origin,'入口卸载回当前CM');
+    const removed=w.document.createElement('button');w.document.body.appendChild(removed);removed.focus();w.CommandPalette.open();removed.remove();viewer.cm.view.dom.remove();w.Modal.hide();assert.equal(w.document.activeElement.id,'btn-commands');
+    assert.equal(w.Shortcuts.context().selection,null);
+  });
+  await saveCase('命令叠加弹窗只关闭栈顶，下层仍可恢复且执行被明确禁用',async(d)=>{
+    const w=d.window,box=w.document.createElement('div'),button=w.document.createElement('button');box.appendChild(button);w.Modal.show(box);button.focus();
+    w.CommandPalette.open();const input=cpQuery(w,'主题设置');qoKey(w,input,'Enter');assert(w.document.querySelector('#command-status').textContent.includes('下层弹窗'));
+    const confirm=w.Modal.confirm('确认','上层');w.document.querySelector('#cf-no').focus();qoKey(w,w.document.activeElement,'Escape');assert.equal(await confirm,false);assert(w.document.querySelector('#command-box'));
+    input.focus();qoKey(w,input,'Escape');assert.equal(w.Modal.stack.length,1);assert(box.isConnected&&!box.hasAttribute('inert'));assert(w.document.activeElement===button);
+  });
+  await saveCase('命令组合输入Enter方向Esc和229不消费，默认快捷键也不抢IME',async(d)=>{
+    const w=d.window;qoKey(w,w.document.body,'P',{ctrlKey:true,shiftKey:true,isComposing:true});assert(!w.document.querySelector('#command-box'));
+    w.CommandPalette.open();const input=cpQuery(w,'主题设置'),selected=input.getAttribute('aria-activedescendant');
+    for(const key of ['Enter','ArrowDown','Escape'])qoKey(w,input,key,{isComposing:true});qoKey(w,input,'Enter',{keyCode:229});
+    input.dispatchEvent(new w.CompositionEvent('compositionstart'));for(const key of ['Enter','ArrowDown','Escape'])qoKey(w,input,key);
+    assert(w.document.querySelector('#command-box'));assert.equal(input.getAttribute('aria-activedescendant'),selected);assert(!w.document.querySelector('#set-box'));
+    input.dispatchEvent(new w.CompositionEvent('compositionend'));qoKey(w,input,'Escape');assert(!w.document.querySelector('#command-box'));
+  });
+  await saveCase('命令同步异常与异步拒绝有单条可回看原因，迟到失败不抢新面板焦点',async(d)=>{
+    const w=d.window,gate=deferred();w.Shortcuts.register('fixture-sync',{desc:'同步失败',keys:[],palette:true,run:()=>{throw Error('<script>同步原因</script>');}});
+    assert(!(await w.Shortcuts.execute('fixture-sync')).ok);w.CommandPalette.open();assert(!w.document.querySelector('#command-failure script'));assert(w.document.querySelector('#command-failure-text').textContent.includes('<script>'));
+    w.Modal.hide();w.Shortcuts.register('fixture-async',{desc:'异步失败',keys:[],palette:true,run:()=>gate.promise});
+    const pending=w.Shortcuts.execute('fixture-async');await w.App.setRoot('C:/proj2');w.CommandPalette.open();const input=cpQuery(w,'主题设置');gate.reject(Error('异步原因'));assert(!(await pending).ok);
+    assert(w.document.activeElement===input);assert.equal(input.value,'主题设置');assert.equal(w.Shortcuts.lastFailure.root,P);assert(w.document.querySelector('#command-failure-text').textContent.includes('异步原因'));
+  });
+  await saveCase('文件历史复用原入口并绑定后台标签，项目外文件禁用',async(d,viewer)=>{
+    const w=d.window,tab=viewer.activeTab,seen=[];w.GitLog.showFileHistory=path=>{seen.push(path);};await viewer.openFile(P+'/README.md');
+    const el=[...w.document.querySelectorAll('#tab-scroll .tab')].find(el=>el.dataset.tabId===String(tab.id));el.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
+    [...w.document.querySelectorAll('#ctx-menu .ctx-item')].find(row=>row.textContent==='🕘 显示文件历史').click();await tick();assert.deepEqual(seen,[tab.path]);assert(viewer.activeTab!==tab);
+    w.CommandPalette.open();cpQuery(w,'file history');w.document.querySelector('[data-action="file-history"]').click();await tick();assert.equal(seen[1],P+'/README.md');
+    viewer.activeTab.path='C:/outside/file.txt';assert(!w.Shortcuts.availability('file-history').enabled);assert((await w.Shortcuts.execute('file-history')).disabled);assert.equal(seen.length,2);
+  });
+  await saveCase('命令到原搜索和主题设置交接焦点，ARIA选择有对应可读结果',async(d)=>{
+    const w=d.window;w.CommandPalette.open();let input=cpQuery(w,'主题设置'),row=w.document.getElementById(input.getAttribute('aria-activedescendant'));
+    assert(row&&row.getAttribute('role')==='option'&&row.getAttribute('aria-selected')==='true');assert.equal(input.getAttribute('aria-controls'),'command-list');
+    qoKey(w,input,'Enter');assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'theme');assert(w.document.activeElement.closest('#set-box'));w.Modal.hide();
+    w.CommandPalette.open();input=cpQuery(w,'搜索内容');qoKey(w,input,'Enter');assert(w.document.activeElement.closest('#sr-box'));assert(!w.document.querySelector('#command-box'));
+  });
   await saveCase('快速打开最近项方向键/回车和路径别名去重，点击不依赖悬停',async(d,viewer)=>{
     const w=d.window;
     w.localStorage.setItem('myide-recent',JSON.stringify([{path:P+'/README.md'},{path:'C:\\PROJ\\README.md'},{path:P+'/notes.txt'}]));

@@ -1992,6 +1992,27 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 }
 
 /* ---------- 快速打开面板 ---------- */
+/* 命令结果跟随主题；不可用原因仍可选择阅读，键位列保持独立。 */
+#command-box { width: 640px; max-width: 90vw; max-height: calc(100vh - 64px); display: flex; flex-direction: column; }
+#command-box .cp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; color: var(--text-bright); font-weight: 600; border-bottom: 1px solid var(--border); }
+#command-context { padding: 6px 14px; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+#command-input { width: 100%; border: none; outline: none; padding: 10px 14px; font-size: 14px; background: var(--bg-input); color: var(--text-bright); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#command-input:focus { box-shadow: inset 0 -2px 0 var(--accent); }
+#command-list { max-height: 320px; overflow: auto; min-height: 0; }
+#command-box .cp-group { padding: 6px 14px; font-size: 11px; color: var(--text-dim); }
+#command-box .cp-item { padding: 8px 14px; cursor: pointer; color: var(--text-bright); }
+#command-box .cp-item.sel { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
+#command-box .cp-line { display: flex; align-items: baseline; gap: 14px; font-size: 13px; }
+#command-box .cp-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#command-box .cp-keys { font-size: 11px; color: var(--text-dim); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+#command-box .cp-reason { color: var(--text-dim); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+#command-box .cp-empty { padding: 24px; text-align: center; color: var(--text-dim); }
+#command-status, #command-box .cp-foot { padding: 6px 14px; font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+#command-box .cp-foot { border-top: 1px solid var(--border); }
+#command-failure { padding: 8px 14px; border-bottom: 1px solid var(--border); max-height: 110px; overflow: auto; font-size: 12px; }
+#command-failure[hidden] { display: none; }
+#command-failure-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-bright); margin-bottom: 4px; }
+#command-box .cp-head { flex-shrink: 0; }
 #qo-box { width: 560px; max-width: 90vw; }
 #qo-box .qo-head {
   display: flex; align-items: center; justify-content: space-between;

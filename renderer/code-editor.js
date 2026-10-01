@@ -261,7 +261,8 @@ window.CodeEditor = (() => {
           ...Commands.historyKeymap,
           ...Autocomplete.completionKeymap,
           Commands.indentWithTab,
-          { key: 'Mod-s', preventDefault: true, run: () => { if (opts.onSave) opts.onSave(); return true; } },
+          // Viewer的保存键由Shortcuts统一消费，不能让CM默认Ctrl+S抢掉用户改过的键位。
+          ...(opts.saveKeysInShortcuts ? [] : [{ key: 'Mod-s', preventDefault: true, run: () => { if (opts.onSave) opts.onSave(); return true; } }]),
           { key: 'Mod-Enter', preventDefault: true, run: () => { if (opts.onRun) { opts.onRun(); return true; } return false; } },
         ]),
         Autocomplete.closeBrackets(),
