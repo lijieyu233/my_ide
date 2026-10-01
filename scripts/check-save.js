@@ -49,14 +49,14 @@ os.homedir = () => path.join(temp, 'home');
 if (!process.argv.includes('--headless')) process.argv.push('--headless');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lines = [];
-let passed = 0, failed = 0, releaseWrite = null, writeStarted = false;
+let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null;
 const add = (name, ok) => {
   if (ok) passed++; else failed++;
   lines.push((ok ? 'PASS ' : 'FAIL ') + name);
   console.log(lines[lines.length - 1]);
 };
 const register = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:writeFile' ? async (...args) => {
+ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:pickSave' ? () => saveChoice : channel === 'fs:writeFile' ? async (...args) => {
   if (releaseWrite) {
     const gate = releaseWrite;
     writeStarted = true;
@@ -65,7 +65,7 @@ ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:writeFi
   }
   return handler(...args);
 } : handler);
-const watchdog = setTimeout(() => { console.error('TIMEOUT'); app.exit(3); }, 60000);
+const watchdog = setTimeout(() => { console.error('TIMEOUT'); app.exit(3); }, 90000);
 
 app.whenReady().then(async () => {
   try {
@@ -100,6 +100,10 @@ app.whenReady().then(async () => {
     fs.writeFileSync(screenshot, Buffer.from(shot.data, 'base64'));
     win.webContents.debugger.detach();
     fs.rmdirSync(file); fs.writeFileSync(file, 'original');
+    // 初始目录失败夹具已替换了原文件对象；显式查看磁盘版本后再批准本次覆盖。
+    await run('Viewer.showSaveRecovery()');
+    await run('document.querySelector(".save-overwrite").click()');
+    for (let i=0;i<100 && await run('Viewer.activeTab.dirty');i++) await sleep(20);
     const retry = await run(`App.openProject(${JSON.stringify(projectB)})`);
     add('修复目标后重试真实 IPC 保存并切换成功', retry === true && fs.readFileSync(file, 'utf8') === '失败后必须保留的正文');
     await run(`App.openProject(${JSON.stringify(projectA)})`);
@@ -193,7 +197,7 @@ app.whenReady().then(async () => {
       if(bom)original=Buffer.concat([Buffer.from(encoding==='utf8'?[239,187,191]:[254,255]),original]);
       fs.writeFileSync(legacy,original);
       const reread=await run(`myIDE.fs.readFile(${JSON.stringify(legacy)})`);
-      const kept=await run(`myIDE.fs.writeFile(${JSON.stringify(legacy)},${JSON.stringify(reread.content)})`);
+      const kept=await run(`myIDE.fs.writeFile(${JSON.stringify(legacy)},${JSON.stringify(reread.content)},undefined,{expectedVersion:${JSON.stringify(reread.version)}})`);
       add('旧无格式IPC '+encoding+'保留目标原格式',kept.ok&&fs.readFileSync(legacy).equals(original));
     }
     const unknown=await run(`myIDE.fs.writeFile(${JSON.stringify(pure)},"不能落盘",{encoding:"shift-jis",bom:false})`);
@@ -207,6 +211,54 @@ app.whenReady().then(async () => {
     }
     win.webContents.debugger.detach();
     await run('document.querySelector(".encoding-dialog .m-cancel").click()');
+    const conflictFile=path.join(projectA,'conflict.txt');fs.writeFileSync(conflictFile,'base00');
+    await run(`Viewer.openFile(${JSON.stringify(conflictFile)})`);
+    const base=await run('Viewer.activeTab.diskVersion'), baseStat=fs.statSync(conflictFile);
+    await run('Viewer.cm.setValue("我的未保存输入")');fs.writeFileSync(conflictFile,'later0');fs.utimesSync(conflictFile,baseStat.atime,baseStat.mtime);
+    const conflict=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab),true)');
+    add('真实保存拒绝同尺寸mtime复原的外部修改，内存仍dirty',conflict.errorCode==='VERSION_CONFLICT'&&fs.readFileSync(conflictFile,'utf8')==='later0'&&await run('Viewer.activeTab.dirty&&Viewer.activeTab.content==="我的未保存输入"'));
+    add('真实自动保存冲突不弹窗且有持续恢复入口',await run('!document.querySelector(".save-recovery")&&document.querySelector(".save-recovery-button").textContent==="保存冲突"'));
+    const legacyDeny=await run(`myIDE.fs.writeFile(${JSON.stringify(conflictFile)},"legacy bypass")`);
+    add('旧无条件文本IPC不能绕过版本覆盖',!legacyDeny.ok&&fs.readFileSync(conflictFile,'utf8')==='later0');
+    const missingVersion=await run(`myIDE.fs.writeFile(${JSON.stringify(conflictFile)},"stale",{encoding:"utf8"},{expectedVersion:${JSON.stringify(base)}})`);
+    add('实际IPC旧版本写入保留外部正文',missingVersion.errorCode==='VERSION_CONFLICT'&&fs.readFileSync(conflictFile,'utf8')==='later0');
+    await run('document.querySelector(".save-recovery-button").click()');
+    for(let i=0;i<100&&!await run('!!document.querySelector(".save-recovery")');i++)await sleep(20);
+    add('真实比较展示两方全文且零写盘',await run('document.querySelector(".save-memory").textContent==="我的未保存输入"&&document.querySelector(".save-disk").textContent==="later0"')&&fs.readFileSync(conflictFile,'utf8')==='later0');
+    win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');
+    for(const theme of ['dark','light']){
+      await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(250);
+      const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});
+      fs.writeFileSync(path.join(ROOT,'.ui-check-trash','conflict-check-'+theme+'.png'),Buffer.from(shot.data,'base64'));
+    }
+    win.setMinimumSize(520,300);win.setContentSize(520,760);await sleep(250);
+    add('窄窗口比较与动作均在可见范围',await run('(()=>{const box=document.querySelector(".save-recovery"),r=box.getBoundingClientRect();return window.innerWidth<=600&&getComputedStyle(box.querySelector(".save-compare")).flexDirection==="column"&&r.left>=0&&r.right<=window.innerWidth&&[...box.querySelectorAll(".m-foot button")].every(b=>{const a=b.getBoundingClientRect();return a.left>=r.left&&a.right<=r.right&&a.bottom<=window.innerHeight;});})()'));
+    const narrow=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});
+    fs.writeFileSync(path.join(ROOT,'.ui-check-trash','conflict-check-narrow.png'),Buffer.from(narrow.data,'base64'));
+    win.setContentSize(1200,800);win.webContents.debugger.detach();
+    fs.writeFileSync(conflictFile,'external again');
+    await run('document.querySelector(".save-overwrite").click()');await sleep(80);
+    add('查看后磁盘又变化仍拒绝明确覆盖',fs.readFileSync(conflictFile,'utf8')==='external again'&&await run('Viewer.activeTab.dirty&&Viewer.activeTab.saveErrorCode==="VERSION_CONFLICT"'));
+    await run('Viewer.showSaveRecovery()');await run('document.querySelector(".save-overwrite").click()');await sleep(80);
+    add('再次比较后明确覆盖成功返回可用新基线',fs.readFileSync(conflictFile,'utf8')==='我的未保存输入'&&await run('!Viewer.activeTab.dirty&&!!Viewer.activeTab.diskVersion.hash'));
+    await run('Viewer.cm.setValue("要带走的副本输入")');saveChoice=null;
+    add('实际另存路径取消不清dirty', (await run('Viewer.saveCopy()')).errorCode==='CANCELLED'&&await run('Viewer.activeTab.dirty'));
+    const copyFile=path.join(projectA,'copy.txt');saveChoice=copyFile;
+    const copied=await run('Viewer.saveCopy()');
+    add('实际另存副本新建排他且原路径dirty保留',copied.ok&&fs.readFileSync(copyFile,'utf8')==='要带走的副本输入'&&fs.readFileSync(conflictFile,'utf8')==='我的未保存输入'&&await run(`Viewer.activeTab.dirty&&Viewer.activeTab.path===${JSON.stringify(conflictFile)}`));
+    const third=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('自写新基线后下一笔保存不误报冲突',third.ok&&fs.readFileSync(conflictFile,'utf8')==='要带走的副本输入');
+    const sharedBase=await run(`myIDE.fs.readFile(${JSON.stringify(conflictFile)})`);
+    const parallel=await run(`Promise.all([myIDE.fs.writeFile(${JSON.stringify(conflictFile)},"A",undefined,{expectedVersion:${JSON.stringify(sharedBase.version)}}),myIDE.fs.writeFile(${JSON.stringify(conflictFile)},"B",undefined,{expectedVersion:${JSON.stringify(sharedBase.version)}})])`);
+    add('同版本两条真实IPC串行只有一条成功',parallel.filter(r=>r.ok).length===1&&parallel.filter(r=>r.errorCode==='VERSION_CONFLICT').length===1);
+    const deleted=path.join(projectA,'deleted.txt');fs.writeFileSync(deleted,'old');const old=await run(`myIDE.fs.readFile(${JSON.stringify(deleted)})`);fs.unlinkSync(deleted);
+    const noRevive=await run(`myIDE.fs.writeFile(${JSON.stringify(deleted)},"revive",undefined,{expectedVersion:${JSON.stringify(old.version)}})`);
+    add('实际旧版本保存不复活外部删除的文件',noRevive.errorCode==='VERSION_CONFLICT'&&!fs.existsSync(deleted));
+    const absent=await run(`myIDE.fs.readFile(${JSON.stringify(deleted)})`);fs.writeFileSync(deleted,'new external');
+    const noClobber=await run(`myIDE.fs.writeFile(${JSON.stringify(deleted)},"mine",undefined,{expectedVersion:${JSON.stringify(absent.version)}})`);
+    add('实际缺失版本拒绝后来出现的同名文件',noClobber.errorCode==='VERSION_CONFLICT'&&fs.readFileSync(deleted,'utf8')==='new external');
+    const taskFile=path.join(projectA,'.myide','tasks.json');fs.mkdirSync(path.dirname(taskFile),{recursive:true});fs.writeFileSync(taskFile,JSON.stringify({version:1,tasks:[]}));
+    await run(`Tasks.setRoot(${JSON.stringify(projectA)}); Tasks.reload()`);fs.writeFileSync(taskFile,'{"version":1,"tasks":[],"external":true}');await run('Tasks.add("不可覆盖外部任务文件")');await sleep(150);
+    add('真实任务外部变化保留磁盘并降级本地副本',fs.readFileSync(taskFile,'utf8').includes('"external":true')&&await run('Tasks.storeMode==="ls"&&Tasks.tasks.some(t=>t.title==="不可覆盖外部任务文件")'));
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
   } finally {

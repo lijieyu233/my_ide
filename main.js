@@ -432,11 +432,19 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
 });
 
 ipcMain.handle('fs:readFile', (_e, p, encoding) => {
+  let snapshot;
   try {
-    const st = fs.statSync(p);
-    if (!st.isFile()) return { error: '不是文件' };
-    if (st.size > 8 * 1024 * 1024) return { tooLarge: true, size: st.size };
-    return TextFormat.decodeText(fs.readFileSync(p), encoding);
+    snapshot = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+    if (snapshot.absent) return { error: '文件不存在', errorCode: 'ENOENT', version: snapshot.version };
+    if (snapshot.tooLarge) return snapshot;
+    return { ...TextFormat.decodeText(snapshot.bytes, encoding), version: snapshot.version };
+  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED', version: snapshot && snapshot.version }; }
+});
+ipcMain.handle('fs:fileVersion', (_e, p) => {
+  try {
+    const r = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+    if (r.tooLarge) return { error: '目标超过8MB，不能在此安全覆盖', errorCode: 'TOO_LARGE' };
+    return { version: r.version, absent: !!r.absent };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED' }; }
 });
 
@@ -528,7 +536,7 @@ ipcMain.handle('fs:mkdir', (_e, p) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-ipcMain.handle('fs:writeFile', (_e, p, content, format) => {
+ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
   try {
     if (!format || typeof format === 'string') {
       const selected = format && String(format).toLowerCase().replace(/[-_]/g, '');
@@ -541,9 +549,12 @@ ipcMain.handle('fs:writeFile', (_e, p, content, format) => {
     }
     const bytes = TextFormat.encodeText(content, format);
     const saved = TextFormat.decodeText(bytes, typeof format === 'string' ? format : format.encoding);
-    const result = FileWrite.atomicWrite(p, bytes);
+    // 缺条件的旧插件只准排他创建；已有目标必须带原读取版本，不能绕过编辑器保护。
+    const guard = condition && (condition.expectedVersion || condition.expectedAbsent)
+      ? { ...condition, requireVersion: true } : { expectedAbsent: true };
+    const result = FileWrite.atomicWrite(p, bytes, guard);
     return { ...result, textFormat: saved.textFormat };
-  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError }; }
+  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 });
 
 ipcMain.handle('fs:rename', (_e, p, newName) => {

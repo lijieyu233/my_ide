@@ -3543,3 +3543,13 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 #launch-dialog .origin-x { flex: none; border: 0; background: transparent; color: var(--text-dim); cursor: pointer; padding: 0 2px; }
 #launch-dialog .origin-x:hover { color: var(--red, #e5534b); }
 #launch-dialog .origin-empty { padding: 6px 8px; color: var(--text-dim); font-size: 0.95em; }
+.save-recovery-button { color: var(--text-warn, var(--text)); }
+.save-recovery { width: min(900px, calc(100vw - 32px)); }
+.save-recovery-path { overflow-wrap: anywhere; color: var(--text-bright); }
+.save-recovery-note { color: var(--text-dim); line-height: 1.6; }
+.save-compare { display: flex; gap: 12px; }
+.save-compare section { flex: 1; min-width: 0; }
+.save-compare h3 { font-size: 1em; margin: 0 0 8px; }
+.save-compare pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; height: min(45vh, 360px); margin: 0; padding: 10px; background: var(--bg-input); border: 1px solid var(--btn-border); }
+.save-recovery .m-foot { flex-wrap: wrap; }
+@media (max-width: 600px) { .save-compare { flex-direction: column; } .save-compare pre { height: 20vh; } }

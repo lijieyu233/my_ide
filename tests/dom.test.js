@@ -132,7 +132,8 @@ function makeDom() {
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
-      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8', textFormat: FAKE_FS[p].textFormat } : { error: 'not found' }),
+      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8', textFormat: FAKE_FS[p].textFormat, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision || 0), hash: String(FAKE_FS[p].content) } } : { error: 'not found', errorCode: 'ENOENT', version: { schema: 1, target: p, absent: true } }),
+      fileVersion: async (p) => ({ absent: !FAKE_FS[p], version: FAKE_FS[p] ? { schema: 1, target: p, stamp: String(FAKE_FS[p].revision || 0), hash: String(FAKE_FS[p].content) } : { schema: 1, target: p, absent: true } }),
       readBuffer: async (p) => (FAKE_FS[p] ? { buffer: new ArrayBuffer(8) } : { error: 'not found' }),
       onChanged: (cb) => { fakeFsCbs.push(cb); },
       writeFile: async (p, content) => {
@@ -142,7 +143,8 @@ function makeDom() {
           const parent = parts.slice(0, -1).join('/');
           if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir' && !FAKE_FS[parent].children.includes(p)) FAKE_FS[parent].children.push(p);
         } else FAKE_FS[p].content = content;
-        return { ok: true };
+        FAKE_FS[p].revision = (FAKE_FS[p].revision || 0) + 1;
+        return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       rename: async () => ({ ok: true }),
       mkdir: async (p) => {
@@ -8635,6 +8637,118 @@ assert_(panel, 'CM6 搜索面板出现');
     let path; bridge.writeFile=async(p)=>{path=p;return{ok:true};};
     const original=viewer.activeTab;await viewer.openFile(P+'/README.md');box.querySelector('.encoding-save').click();await tick();
     assert_(path===original.path && original.encoding==='utf16be' && viewer.activeTab!==original,'切标签不转换错误文件');
+  });
+  const conditionalWrites = (bridge) => {
+    const original = bridge.writeFile;
+    bridge.writeFile = async (p,c,f,guard) => {
+      const current = await bridge.fileVersion(p);
+      if (JSON.stringify(guard?.expectedVersion) !== JSON.stringify(current.version)) return { error:'磁盘版本变化',errorCode:'VERSION_CONFLICT' };
+      return original(p,c,f,guard);
+    };
+  };
+  await saveCase('外部修改拒绝覆盖，自动保存不弹窗，项目切换保留dirty', async (d,viewer,bridge)=>{
+    conditionalWrites(bridge); const tab=viewer.activeTab;
+    viewer.cm.setValue('我的输入'); FAKE_FS[tab.path].content='外部输入';
+    const r=await viewer.saveTab(0,true);
+    assert_(!r.ok && r.errorCode==='VERSION_CONFLICT' && tab.dirty && tab.content==='我的输入' && FAKE_FS[tab.path].content==='外部输入','保留两方正文');
+    assert_(!$(d,'.save-recovery') && $(d,'.save-recovery-button').textContent==='保存冲突','自动保存只有持续入口');
+    assert_(await d.window.App.openProject('C:/proj2')===false && viewer.openTabs.includes(tab),'阻止离开');
+  });
+  await saveCase('排队保存承接自己新磁盘基线，仍固定正文', async (_d,viewer,bridge)=>{
+    conditionalWrites(bridge); const write=bridge.writeFile,wait=deferred(); let first=true;
+    bridge.writeFile=async(...args)=>{if(first){first=false;await wait.promise;}return write(...args);};
+    viewer.cm.setValue('一'); const a=viewer.saveTab(0,true);
+    viewer.cm.setValue('二'); const b=viewer.saveTab(0,true);
+    await tick(); wait.resolve(); const results=await Promise.all([a,b]);
+    assert_(results.every(r=>r.ok) && !viewer.activeTab.dirty && FAKE_FS[viewer.activeTab.path].content==='二','后续不误报自己写入冲突');
+  });
+  await saveCase('磁盘同正文新版本重载基线，保存等待期间watcher不抢读', async (_d,viewer,bridge,callbacks)=>{
+    conditionalWrites(bridge);const tab=viewer.activeTab;FAKE_FS[tab.path].revision=50;
+    callbacks.forEach(cb=>cb());await new Promise(r=>setTimeout(r,750));
+    assert_(tab.diskVersion.stamp==='50','正文相同也更新版本');
+    const write=bridge.writeFile,wait=deferred();bridge.writeFile=async(...args)=>{await wait.promise;return write(...args);};
+    let reads=0;const read=bridge.readFile;bridge.readFile=async(...args)=>{if(args[0]===tab.path)reads++;return read(...args);};
+    const pending=viewer.saveTab(0,true);await tick();callbacks.forEach(cb=>cb());await new Promise(r=>setTimeout(r,750));
+    assert_(reads===0,'在途clean保存不读盘');wait.resolve();assert_((await pending).ok,'等待结束仍成功');
+  });
+  await saveCase('比较只读且安全，取消/IME/焦点可用；已查看版本再变化拒绝覆盖', async(d,viewer,bridge)=>{
+    conditionalWrites(bridge);const tab=viewer.activeTab;viewer.cm.setValue('<script>我的输入</script>');
+    FAKE_FS[tab.path].content='外部一';await viewer.saveTab(0,true);
+    const button=$(d,'.save-recovery-button');button.focus();await viewer.showSaveRecovery();
+    let box=$(d,'.save-recovery');assert_(box.querySelector('.save-memory').textContent===tab.content && !box.querySelector('script'),'安全全文比较');
+    box.dispatchEvent(new d.window.KeyboardEvent('keydown',{key:'Escape',isComposing:true,bubbles:true}));assert_($(d,'.save-recovery'),'IME不关闭');
+    box.querySelector('.m-cancel').click();assert_(!$(d,'.save-recovery')&&d.window.document.activeElement===button,'取消保留并还原焦点');
+    await viewer.showSaveRecovery();FAKE_FS[tab.path].content='外部二';$(d,'.save-overwrite').click();await tick();
+    assert_(tab.dirty&&FAKE_FS[tab.path].content==='外部二','再次变化拒绝覆盖');
+    await viewer.showSaveRecovery();$(d,'.save-overwrite').click();await tick();
+    assert_(!tab.dirty&&FAKE_FS[tab.path].content==='<script>我的输入</script>','重新比较后明确覆盖');
+  });
+  await saveCase('比较动作绑定原标签，新输入或迟到读取使确认失效',async(d,viewer,bridge)=>{
+    const tab=viewer.activeTab;viewer.cm.setValue('原输入');await viewer.showSaveRecovery();
+    let writes=0;bridge.writeFile=async()=>{writes++;return{ok:true};};
+    viewer.cm.setValue('新输入');$(d,'.save-overwrite').click();await tick();assert_(writes===0&&tab.dirty,'新输入不能消费旧确认');
+    const wait=deferred();bridge.readFile=()=>wait.promise;const pending=viewer.showSaveRecovery();await tick();viewer.cm.setValue('读取期间输入');
+    wait.resolve({content:'disk',version:tab.diskVersion});await pending;assert_(!$(d,'.save-recovery'),'迟到比较不展示旧正文');
+  });
+  await saveCase('另存副本取消/同路径/迟到输入均零写入',async(_d,viewer,bridge)=>{
+    viewer.cm.setValue('要保留的输入');let writes=0;bridge.writeFile=async()=>{writes++;return{ok:true};};
+    bridge.pickSave=async()=>null;assert_((await viewer.saveCopy()).errorCode==='CANCELLED','可取消');
+    bridge.pickSave=async()=>viewer.activeTab.path;assert_((await viewer.saveCopy()).errorCode==='SAME_PATH','不能绕过原路径保护');
+    const wait=deferred();bridge.pickSave=()=>wait.promise;const pending=viewer.saveCopy();viewer.cm.setValue('稍后输入');wait.resolve(P+'/copy.txt');
+    assert_((await pending).errorCode==='STALE_COPY'&&writes===0&&viewer.activeTab.dirty,'迟到选路径不写旧输入');
+  });
+  await saveCase('另存既有目标确认后变化拒绝，成功副本不清原dirty或路径',async(d,viewer,bridge)=>{
+    conditionalWrites(bridge);const tab=viewer.activeTab;viewer.cm.setValue('副本输入');bridge.pickSave=async()=>P+'/README.md';
+    d.window.Modal.confirm=async()=>{FAKE_FS[P+'/README.md'].content='目标后来的输入';return true;};
+    assert_(!(await viewer.saveCopy()).ok&&FAKE_FS[P+'/README.md'].content==='目标后来的输入','目标二次变化不覆盖');
+    d.window.Modal.confirm=async()=>true;const r=await viewer.saveCopy();
+    assert_(r.ok&&tab.dirty&&tab.path===P+'/notes.txt'&&FAKE_FS[P+'/README.md'].content==='副本输入','副本成功仍保留原标签dirty');
+  });
+  await saveCase('比较读取拒绝仍可另存，不能授予无版本覆盖',async(d,viewer,bridge)=>{
+    bridge.readFile=async()=>{throw Error('fixture-read-denied');};await viewer.showSaveRecovery();
+    const box=$(d,'.save-recovery');assert_(box&&box.querySelector('.save-overwrite').disabled&&!box.querySelector('.save-copy').disabled,'失败不丢恢复入口');
+    box.querySelector('.m-cancel').click();
+  });
+  await saveCase('watcher解码失败不更新覆盖授权',async(_d,viewer,bridge,callbacks)=>{
+    const tab=viewer.activeTab, before=tab.diskVersion;
+    bridge.readFile=async()=>({error:'编码坏字节',errorCode:'INVALID_ENCODING',version:{schema:1,target:tab.path,stamp:'99',hash:'unread'}});
+    callbacks.forEach(cb=>cb());await new Promise(r=>setTimeout(r,720));
+    assert_(tab.diskVersion===before&&!tab.dirty,'未读取正文不能授权覆盖');
+  });
+  await saveCase('AI替换确认等待外部改动拒绝落盘',async(d,_viewer,bridge)=>{
+    conditionalWrites(bridge);const ai=d.window.AiPanel, file=P+'/notes.txt';FAKE_FS[file].content='original text';
+    aiScript=[{ok:true,text:'',toolCalls:[{id:'version-replace',name:'replace_edit',args:{path:'notes.txt',search:'original',replace:'mine'}}]},{ok:true,text:'结束'}];
+    try {
+      ai.setConfig({baseUrl:'http://x/v1',model:'m'});$(d,'#ai-input').value='替换';$(d,'#ai-send').click();
+      for(let i=0;i<30&&!$(d,'#dw-yes');i++)await tick();assert_($(d,'#dw-yes'),'实际AI工具确认出现');
+      FAKE_FS[file].content='external after approval preview';$(d,'#dw-yes').click();await new Promise(r=>setTimeout(r,120));
+      assert_(FAKE_FS[file].content==='external after approval preview'&&[...d.window.document.querySelectorAll('.ai-tool')].some(el=>el.textContent.includes('✗')),'不覆盖确认期间外部字节：'+FAKE_FS[file].content+' / '+$(d,'#ai-msgs').textContent);
+    } finally {aiScript=[];}
+  });
+  await saveCase('AI既有文件undo带写后版本，外部新输入保留',async(d,_viewer,bridge)=>{
+    conditionalWrites(bridge);const file=P+'/notes.txt';FAKE_FS[file].content='before AI';
+    aiScript=[{ok:true,text:'',toolCalls:[{id:'version-write',name:'write_file',args:{path:'notes.txt',content:'AI write'}}]},{ok:true,text:'结束'}];
+    try {
+      d.window.AiPanel.setConfig({baseUrl:'http://x/v1',model:'m'});$(d,'#ai-input').value='写入';$(d,'#ai-send').click();
+      for(let i=0;i<30&&!$(d,'#dw-yes');i++)await tick();assert_($(d,'#dw-yes'),'写入确认出现');$(d,'#dw-yes').click();await new Promise(r=>setTimeout(r,120));
+      assert_(FAKE_FS[file].content==='AI write','先成功写入');FAKE_FS[file].content='later human';$(d,'#ai-undo').click();await tick();
+      assert_(FAKE_FS[file].content==='later human','undo不覆盖后来正文');
+    } finally {aiScript=[];}
+  });
+  await saveCase('任务与项目配置携带原版本，外部修改保存本地副本',async(d,_viewer,bridge)=>{
+    conditionalWrites(bridge);const taskFile=P+'/.myide/tasks.json',configFile=P+'/.myide/changelists.json';
+    const beforeTask=FAKE_FS[taskFile],beforeConfig=FAKE_FS[configFile];
+    try {
+      FAKE_FS[taskFile]={type:'file',content:'{"version":1,"tasks":[]}'};d.window.Tasks.setRoot(P);await d.window.Tasks.reload();
+      FAKE_FS[taskFile].content='{"tasks":[],"external":true}';d.window.Tasks.add('内存任务');await new Promise(r=>setTimeout(r,60));
+      assert_(FAKE_FS[taskFile].content.includes('external')&&d.window.Tasks.storeMode==='ls'&&d.window.localStorage.getItem('myide-tasks:'+P).includes('内存任务'),'任务保留磁盘并保存本地副本');
+      FAKE_FS[configFile]={type:'file',content:'{"lists":[],"external":true}'};
+      d.window.GitPanel.changelists={active:'default',lists:[{id:'new',name:'本地列表',files:[]}]};await new Promise(r=>setTimeout(r,60));
+      assert_(FAKE_FS[configFile].content.includes('external')&&d.window.localStorage.getItem('myide-changelists:'+P).includes('本地列表'),'项目配置不自动覆盖新对象');
+    } finally {
+      if(beforeTask)FAKE_FS[taskFile]=beforeTask;else delete FAKE_FS[taskFile];
+      if(beforeConfig)FAKE_FS[configFile]=beforeConfig;else delete FAKE_FS[configFile];
+    }
   });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

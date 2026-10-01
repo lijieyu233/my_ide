@@ -854,7 +854,10 @@ const Tree = (() => {
     try {
       if (a.type === 'rename') await window.myIDE.fs.rename(a.newPath, a.oldName);
       else if (a.type === 'create') await window.myIDE.fs.remove(a.path);
-      else if (a.type === 'delete') await window.myIDE.fs.writeFile(a.path, a.content, a.encoding);
+      else if (a.type === 'delete') {
+        const r = await window.myIDE.fs.writeFile(a.path, a.content, a.encoding, { expectedAbsent: true });
+        if (!r || !r.ok) { undoStack.push(a); throw Error(r?.error || '恢复失败'); }
+      }
       else if (a.type === 'move') await window.myIDE.fs.move(a.newPath, a.oldDir);
       else if (a.type === 'paste') { for (const p of a.paths) await window.myIDE.fs.remove(p); }
       invalidateAll();
@@ -876,7 +879,7 @@ const Tree = (() => {
     const target = baseDir + '\\' + name;
     let r;
     if (type === 'dir') r = await window.myIDE.fs.mkdir(target);
-    else r = await window.myIDE.fs.writeFile(target, '');
+    else r = await window.myIDE.fs.writeFile(target, '', undefined, { expectedAbsent: true });
     if (r.ok) {
       pushUndo({ type: 'create', path: target, label: '新建 ' + name });
       invalidateAll();

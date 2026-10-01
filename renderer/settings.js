@@ -755,8 +755,11 @@ const Settings = (() => {
       const name = 'myide-settings-' + new Date().toISOString().slice(0, 10) + '.json';
       const p = await window.myIDE.fs.pickSave('导出设置', name, [{ name: 'JSON', extensions: ['json'] }]);
       if (!p) return;
-      const r = await window.myIDE.fs.writeFile(p, json, 'utf8');
-      if (r && r.ok === false) MI.toast('导出失败：' + (r.error || ''), 'err');
+      const target = await window.myIDE.fs.fileVersion(p);
+      if (!target || !target.version) { MI.toast('导出失败：无法读取目标版本', 'err'); return; }
+      if (!target.absent && !await Modal.confirm('覆盖导出目标', '所选文件已经存在，确定用本次设置导出替换吗？')) return;
+      const r = await window.myIDE.fs.writeFile(p, json, 'utf8', { expectedVersion: target.version });
+      if (!r || !r.ok) MI.toast('导出失败：' + (r?.error || ''), 'err');
       else MI.toast('已导出 ' + Object.keys(payload.keys).length + ' 项设置', 'ok');
     };
     const imp = document.getElementById('st-import');

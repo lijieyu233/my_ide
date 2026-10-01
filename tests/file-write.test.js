@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert/strict');
-const { createWriter } = require('../file-write');
+const { createWriter, readSnapshot, sameVersion } = require('../file-write');
 const { createReplacer } = require('../file-replace-win');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-file-write-test-'));
 const original = Buffer.from('原始正文\r\nORIGINAL FULL DATA\0\xff');
@@ -29,6 +29,80 @@ function denied(name, changes, code = 'EIO') {
 }
 
 try {
+  check('读取原字节与版本一致，正常条件保存返回新基线', () => {
+    const { file, folder } = fixture(), base = readSnapshot(file);
+    assert.deepEqual(base.bytes, original); assert.equal(base.version.hash.length, 64);
+    const saved = createWriter().atomicWrite(file, next, { expectedVersion: base.version });
+    assert(saved.ok && sameVersion(saved.version, readSnapshot(file).version));
+    assert(!sameVersion(base.version, saved.version)); noLeftovers(folder);
+  });
+  check('同尺寸且复原mtime的外部修改不被旧版本覆盖', () => {
+    const { file, folder } = fixture(), base = readSnapshot(file), stat = fs.statSync(file);
+    const external = Buffer.alloc(original.length, 65); fs.writeFileSync(file, external); fs.utimesSync(file, stat.atime, stat.mtime);
+    assert.throws(() => createWriter().atomicWrite(file, next, { expectedVersion: base.version }), { code: 'VERSION_CONFLICT' });
+    assert.deepEqual(fs.readFileSync(file), external); noLeftovers(folder);
+  });
+  check('stat完全伪装不变时SHA256仍拦截同尺寸修改', () => {
+    const { file, folder } = fixture(), base = readSnapshot(file), oldStat = fs.statSync(file);
+    fs.writeFileSync(file, Buffer.alloc(original.length, 66));
+    const io = facade({ statSync(p) { return p === file ? oldStat : fs.statSync(p); } });
+    assert.throws(() => createWriter(io).atomicWrite(file, next, { expectedVersion: base.version }), { code: 'VERSION_CONFLICT' });
+    assert.equal(fs.readFileSync(file)[0], 66); noLeftovers(folder);
+  });
+  check('删除后旧版本不复活文件', () => {
+    const { file, folder } = fixture(), base = readSnapshot(file); fs.unlinkSync(file);
+    assert.throws(() => createWriter().atomicWrite(file, next, { expectedVersion: base.version }), { code: 'VERSION_CONFLICT' });
+    assert.deepEqual(fs.readdirSync(folder), []);
+  });
+  check('删除重建同字节的新对象不冒充原版本', () => {
+    const { file, folder } = fixture(), base = readSnapshot(file);
+    fs.renameSync(file, file+'.old'); fs.writeFileSync(file, original);
+    assert.throws(() => createWriter().atomicWrite(file, next, { expectedVersion: base.version }), { code: 'VERSION_CONFLICT' });
+    assert.deepEqual(fs.readFileSync(file), original); fs.unlinkSync(file+'.old'); noLeftovers(folder);
+  });
+  check('缺失版本排他创建，后来出现目标不被覆盖', () => {
+    const folder = fs.mkdtempSync(path.join(temp, 'absent-')), file = path.join(folder, 'notes.bin');
+    const base = readSnapshot(file); assert(base.absent);
+    fs.writeFileSync(file, 'external');
+    assert.throws(() => createWriter().atomicWrite(file, next, { expectedVersion: base.version }), { code: 'VERSION_CONFLICT' });
+    assert.equal(fs.readFileSync(file,'utf8'), 'external'); noLeftovers(folder);
+  });
+  check('未建父目录的缺失版本可在mkdir后排他新建', () => {
+    const folder = fs.mkdtempSync(path.join(temp, 'parents-')), file = path.join(folder,'sub','notes.bin');
+    const base = readSnapshot(file); fs.mkdirSync(path.dirname(file));
+    assert(createWriter().atomicWrite(file, next, { expectedVersion: base.version }).ok);
+    assert.deepEqual(fs.readFileSync(file), next);
+  });
+  check('读取过程中目标变化拒绝给出混合快照', () => {
+    const { file } = fixture();
+    const io = facade({ readFileSync(p) { const bytes=fs.readFileSync(p); fs.writeFileSync(p,'changed'); return bytes; } });
+    assert.throws(() => readSnapshot(file, io), { code: 'VERSION_CONFLICT' });
+  });
+  check('成功写入返回前外部又改动不授予该版本', () => {
+    const { file, folder } = fixture();
+    const writer = createWriter(fs, (source,target) => { fs.renameSync(source,target); fs.writeFileSync(target,'later'); });
+    assert.throws(() => writer.atomicWrite(file,next), (e) => e.code==='VERSION_CONFLICT' && e.committed);
+    assert.equal(fs.readFileSync(file,'utf8'),'later'); noLeftovers(folder);
+  });
+  check('显式覆盖只能授权已看到的版本，第二次变化再次拒绝', () => {
+    const { file, folder } = fixture(); fs.writeFileSync(file,'first external');
+    const shown = readSnapshot(file); fs.writeFileSync(file,'second external');
+    assert.throws(() => createWriter().atomicWrite(file,next,{expectedVersion:shown.version}),{code:'VERSION_CONFLICT'});
+    const shownAgain = readSnapshot(file); assert(createWriter().atomicWrite(file,next,{expectedVersion:shownAgain.version}).ok);
+    assert.deepEqual(fs.readFileSync(file),next); noLeftovers(folder);
+  });
+  check('目录junction重定向后旧目标授权不覆盖新目标', () => {
+    const folder=fs.mkdtempSync(path.join(temp,'version-link-')),a=path.join(folder,'A'),b=path.join(folder,'B'),link=path.join(folder,'alias');
+    fs.mkdirSync(a);fs.mkdirSync(b);fs.writeFileSync(path.join(a,'note'),'A');fs.writeFileSync(path.join(b,'note'),'B');
+    fs.symlinkSync(a,link,process.platform==='win32'?'junction':'dir');const file=path.join(link,'note'),base=readSnapshot(file);
+    fs.rmdirSync(link);fs.symlinkSync(b,link,process.platform==='win32'?'junction':'dir');
+    assert.throws(()=>createWriter().atomicWrite(file,next,{expectedVersion:base.version}),{code:'VERSION_CONFLICT'});
+    assert.equal(fs.readFileSync(path.join(a,'note'),'utf8'),'A');assert.equal(fs.readFileSync(path.join(b,'note'),'utf8'),'B');
+  });
+  if(process.platform==='win32')check('Windows不同大小写读取同一版本可正常保存',()=>{
+    const {file,folder}=fixture(),base=readSnapshot(file.toUpperCase());
+    assert(createWriter().atomicWrite(file,next,{expectedVersion:base.version}).ok);assert.deepEqual(fs.readFileSync(file),next);noLeftovers(folder);
+  });
   check('普通替换完整字节且没有临时文件', () => {
     const { folder, file } = fixture();
     assert(createWriter().atomicWrite(file, next).ok);

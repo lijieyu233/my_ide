@@ -99,6 +99,7 @@ const Tasks = (() => {
   let storeMode = 'file';  // 'file' | 'ls'
   const okDirs = new Set(); // 已确认存在的 .myide 目录（按路径记账：切项目后旧路径的记账不失效）
   let saveChain = Promise.resolve(); // 串行写：快速连续操作不乱序
+  const diskVersions = new Map();
   // ---------- 统一撤销/重做（048-5.2）----------
   // 快照式命令栈：每个写操作在 save 前把「操作后」的全量深拷贝压栈（数据量小，最简单可靠）。
   // hist[0] = 载入时的初始态；undo = histIdx-- 恢复上一快照，redo = histIdx++。
@@ -227,11 +228,14 @@ const Tasks = (() => {
     }
     let r = null;
     try { r = await myIDE.fs.readFile(f); } catch { r = null; }
+    diskVersions.set(f, r && r.version && r.version.absent ? r.version : null);
     if (r && r.content != null) {
       storeMode = 'file';
       okDirs.add(DIR_OF(f));
       let d = null;
       try { d = JSON.parse(r.content); } catch {}
+      // 坏JSON不能成为覆盖授权；保留磁盘取证，后续写入走已有本地降级。
+      if (d && Array.isArray(d.tasks)) diskVersions.set(f, r.version);
       tasks = validate(d && Array.isArray(d.tasks) ? d.tasks : []);
       resetHist(); pushHist('载入');
       render();
@@ -243,7 +247,7 @@ const Tasks = (() => {
     tasks = legacy;
     resetHist(); pushHist('载入');
     if (legacy.length) await save();
-    try { localStorage.removeItem(LS_KEY(root)); } catch {} // 迁移完成，旧键作废
+    if (storeMode === 'file') { try { localStorage.removeItem(LS_KEY(root)); } catch {} }
     render();
   }
 
@@ -263,14 +267,14 @@ const Tasks = (() => {
       try {
         const dir = DIR_OF(f);
         if (!okDirs.has(dir)) { await myIDE.fs.mkdir(dir); okDirs.add(dir); }
-        let r = await myIDE.fs.writeFile(f, data);
+        let r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: diskVersions.get(f) });
         if (!r || !r.ok) {
           // 目录可能被外部删了：重建一次再试
           await myIDE.fs.mkdir(dir);
           okDirs.add(dir);
-          r = await myIDE.fs.writeFile(f, data);
+          r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: diskVersions.get(f) });
         }
-        if (r && r.ok) return;
+        if (r && r.ok) { diskVersions.set(f, r.version); return; }
       } catch {}
       // 只读盘 / 权限 / 网络盘：降级 localStorage，数据不能丢。
       // 仅当失败的是「当前项目」的写入才全局降级（旧项目的失败不该改变新项目的存储模式）

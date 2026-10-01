@@ -67,10 +67,10 @@ const Viewer = (() => {
         MI.toast('重新打开失败: ' + (r.error || '无法解码为文本') + '；当前内容已保留', 'err');
         return { ok: false, errorCode: r.errorCode || 'READ_FAILED' };
       }
-      tab.content = r.content; tab.encoding = r.encoding || encoding;
+      tab.content = r.content; tab.encoding = r.encoding || encoding; tab.diskVersion = r.version;
       tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: false };
       tab.eol = r.textFormat && r.textFormat.eol;
-      tab.error = null; tab.binary = false; tab.saveError = null;
+      tab.error = null; tab.binary = false; tab.saveError = null; tab.saveErrorCode = null;
       tab.editRevision++; tab.savedRevision = tab.editRevision;
       tab.cmState = null; tab.ta = null;
       if (tab.mode === 'error') tab.mode = MD_EXTS.has(extOf(tab.name)) ? 'source' : 'edit';
@@ -125,6 +125,79 @@ const Viewer = (() => {
         if (e.shiftKey && index <= 0 || !e.shiftKey && index === controls.length - 1) {
           e.preventDefault(); controls[e.shiftKey ? controls.length - 1 : 0].focus();
         }
+      }
+    });
+    box.querySelector('.m-cancel').focus();
+  }
+
+  async function saveCopy(tab = tabs[active]) {
+    if (!tab || tab.content == null || tab.binary || tab.tooLarge) return { ok: false, errorCode: 'NO_CONTENT' };
+    const path = tab.path, revision = tab.editRevision, content = tab.content, format = { ...tab.textFormat };
+    try {
+      const dest = await window.myIDE.fs.pickSave('另存副本', path);
+      if (!dest) return { ok: false, errorCode: 'CANCELLED' };
+      if (!validFormatTarget(tab, path, revision)) return { ok: false, errorCode: 'STALE_COPY' };
+      if (dest.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase()) {
+        MI.toast('请选择其他路径；原文件请通过比较后的覆盖操作保存', 'err');
+        return { ok: false, errorCode: 'SAME_PATH' };
+      }
+      const observed = await window.myIDE.fs.fileVersion(dest);
+      if (!observed || observed.error || !observed.version) throw Error(observed?.error || '不能读取目标版本');
+      if (tab.diskVersion && observed.version.target.toLowerCase() === tab.diskVersion.target.toLowerCase()) {
+        MI.toast('所选路径指向原文件，请选择其他路径', 'err');
+        return { ok: false, errorCode: 'SAME_PATH' };
+      }
+      if (!observed.absent) {
+        const yes = await Modal.confirm('覆盖副本目标', '所选文件已经存在。确定用本次正文替换此目标吗？');
+        if (!yes) return { ok: false, errorCode: 'CANCELLED' };
+      }
+      if (!validFormatTarget(tab, path, revision)) return { ok: false, errorCode: 'STALE_COPY' };
+      const r = await window.myIDE.fs.writeFile(dest, content, format, { expectedVersion: observed.version });
+      if (!r || !r.ok) throw Error(r?.error || '副本未保存');
+      MI.toast('副本已保存：' + dest + '；原文件的修改仍未保存', 'ok');
+      return { ok: true, path: dest, savedRevision: revision };
+    } catch (e) {
+      MI.toast('另存副本失败：' + String(e.message || e) + '；当前输入已保留', 'err');
+      return { ok: false, errorCode: 'COPY_FAILED' };
+    }
+  }
+  async function showSaveRecovery(tab = tabs[active]) {
+    if (!tab || tab.content == null) return;
+    const path = tab.path, revision = tab.editRevision, content = tab.content;
+    const sequence = tab.recoveryRead = (tab.recoveryRead || 0) + 1;
+    let disk;
+    try { disk = await window.myIDE.fs.readFile(path, tab.textFormat?.detection === 'selected' ? tab.encoding : undefined); }
+    catch (e) { disk = { error: String(e.message || e) }; }
+    disk ||= { error: '读取磁盘未返回结果' };
+    if (!validFormatTarget(tab, path, revision) || sequence !== tab.recoveryRead) { MI.toast('文档已变化，请重新比较', 'err'); return; }
+    const box = document.createElement('div'); box.className = 'save-recovery'; box.dataset.selfEsc = '1';
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', '保存恢复');
+    box.innerHTML = '<div class="m-head">保存恢复</div><div class="m-body"><div class="save-recovery-path"></div><p class="save-recovery-note"></p>'
+      + '<div class="save-compare"><section><h3>当前输入（未保存）</h3><pre class="save-memory"></pre></section><section><h3>磁盘版本（只读）</h3><pre class="save-disk"></pre></section></div></div>'
+      + '<div class="m-foot"><button class="tb-btn m-cancel">保留并关闭</button><button class="tb-btn save-copy">另存副本…</button><button class="tb-btn save-overwrite">用当前输入覆盖此磁盘版本</button></div>';
+    box.querySelector('.save-recovery-path').textContent = path;
+    box.querySelector('.save-recovery-note').textContent = '比较不会修改文件。覆盖仅针对这里读取到的磁盘版本；磁盘再次变化会拒绝保存。';
+    box.querySelector('.save-memory').textContent = content;
+    box.querySelector('.save-disk').textContent = disk.content ?? (disk.version?.absent ? '文件已被移除' : disk.error || '磁盘不是可比较文本');
+    box.querySelector('.save-overwrite').disabled = !disk.version || disk.binary || disk.tooLarge;
+    const origin = document.activeElement;
+    const finish = () => { if (Modal.stack.at(-1) === box) Modal.hide(); if (origin?.isConnected) origin.focus(); };
+    Modal.show(box);
+    box.querySelector('.m-cancel').onclick = finish;
+    box.querySelector('.save-copy').onclick = () => {
+      if (!validFormatTarget(tab, path, revision)) { finish(); MI.toast('输入或路径已变化，请重新比较', 'err'); return; }
+      finish(); saveCopy(tab);
+    };
+    box.querySelector('.save-overwrite').onclick = () => {
+      if (!validFormatTarget(tab, path, revision)) { finish(); MI.toast('输入或路径已变化，请重新比较', 'err'); return; }
+      finish(); saveSnapshot(tab, false, disk.version);
+    };
+    box.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229 || Modal.stack.at(-1) !== box) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); }
+      if (e.key === 'Tab') {
+        const controls = [...box.querySelectorAll('button')].filter((el) => !el.disabled), index = controls.indexOf(document.activeElement);
+        if (e.shiftKey && index <= 0 || !e.shiftKey && index === controls.length - 1) { e.preventDefault(); controls[e.shiftKey ? controls.length - 1 : 0].focus(); }
       }
     });
     box.querySelector('.m-cancel').focus();
@@ -201,6 +274,7 @@ const Viewer = (() => {
     else if (r.binary) { tab.binary = true; tab.mode = 'error'; }
     else {
       tab.content = r.content;
+      tab.diskVersion = r.version;
       tab.encoding = r.encoding || 'utf8';
       tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') };
       tab.eol = r.textFormat ? r.textFormat.eol : r.content && r.content.includes('\r\n') ? 'CRLF' : null;
@@ -325,6 +399,12 @@ const Viewer = (() => {
     if (!tab) return;
     const acts = document.createElement('div');
     acts.className = 'ed-actions';
+    if (tab.saveError) {
+      const recover = document.createElement('button'); recover.className = 'tb-btn save-recovery-button';
+      recover.textContent = tab.saveErrorCode === 'VERSION_CONFLICT' ? '保存冲突' : '保存失败';
+      recover.title = '查看磁盘版本、另存副本或明确覆盖'; recover.onclick = () => showSaveRecovery(tab);
+      acts.appendChild(recover);
+    }
 
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     const ext = extOf(tab.name);
@@ -1165,7 +1245,7 @@ const Viewer = (() => {
     return saveSnapshot(tabs[i], quiet);
   }
 
-  function saveSnapshot(tab, quiet) {
+  function saveSnapshot(tab, quiet, overwriteVersion) {
     if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
     const snapshot = { tabId: tab.id, path: tab.path, content: tab.content,
       encoding: { ...(tab.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') }) }, revision: tab.editRevision };
@@ -1177,7 +1257,8 @@ const Viewer = (() => {
       try {
         if (!tabs.includes(tab)) r = { errorCode: 'TAB_CLOSED', error: '标签已关闭' };
         else if (tab.path !== snapshot.path) r = { errorCode: 'PATH_CHANGED', error: '文件路径已变化，请重新保存' };
-        else r = await window.myIDE.fs.writeFile(snapshot.path, snapshot.content, snapshot.encoding);
+        else if (!overwriteVersion && !tab.diskVersion) r = { errorCode: 'VERSION_REQUIRED', error: '缺少读取时的磁盘版本，请通过保存恢复查看磁盘' };
+        else r = await window.myIDE.fs.writeFile(snapshot.path, snapshot.content, snapshot.encoding, { expectedVersion: overwriteVersion || tab.diskVersion });
       } catch (e) {
         r = { errorCode: (e && e.code) || 'WRITE_FAILED', error: String((e && e.message) || e) };
       }
@@ -1191,6 +1272,8 @@ const Viewer = (() => {
           tab.savedRevision = snapshot.revision;
           tab.dirty = tab.editRevision !== snapshot.revision;
           tab.saveError = null;
+          tab.saveErrorCode = null;
+          tab.diskVersion = r.version || tab.diskVersion;
           if (tab.editRevision === snapshot.revision && r.textFormat) {
             tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
           }
@@ -1202,6 +1285,9 @@ const Viewer = (() => {
           // 自动保存失败也必须可见；同一错误不每三秒重复提示，正文始终留在内存中。
           if (!quiet || tab.saveError !== result.error) MI.toast('保存失败: ' + result.error + '；修改仍未保存，可按 Ctrl+S 重试', 'err');
           tab.saveError = result.error;
+          tab.saveErrorCode = result.errorCode;
+          tab.dirty = true;
+          renderTabs();
           MI.log('ERROR', 'viewer.save', '写入失败 ' + snapshot.path + ' → ' + result.error);
         }
       }
@@ -1255,15 +1341,16 @@ const Viewer = (() => {
   }
   async function reloadExternal() {
     for (const t of tabs) {
-      if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy) continue;
+      if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy || saveQueues.has(t.path.replace(/\\/g, '/').toLowerCase())) continue;
       if (t.content == null) continue;
       if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
         const path = t.path, revision = t.editRevision;
         // 用户明确选过编码后，watcher不能再用启发式把无BOM纯中文UTF-16误读为GBK。
         const r = await window.myIDE.fs.readFile(path, t.textFormat?.detection === 'selected' ? t.encoding : undefined);
-        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision || t.formatBusy) continue;
+        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision || t.formatBusy || saveQueues.has(path.replace(/\\/g, '/').toLowerCase())) continue;
         if (r.error || r.tooLarge || r.binary || r.content == null) continue;
+        if (r.version) t.diskVersion = r.version;
         const sameContent = r.content === t.content;
         const sameFormat = JSON.stringify(t.textFormat) === JSON.stringify(r.textFormat);
         if (sameContent && sameFormat) continue;
@@ -1303,7 +1390,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

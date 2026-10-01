@@ -448,7 +448,7 @@ const AiPanel = (() => {
         ? oldText.split(search).join(replace)
         : oldText.slice(0, hits[0]) + replace + oldText.slice(hits[0] + search.length);
       if (newText === oldText) return { ok: true, text: '无变化：replace 与 search 相同' };
-      return await applyWrite(loc, newText);
+      return await applyWrite(loc, newText, old);
     }
     if (call.name === 'write_file') {
       const loc = resolveInRoot(a.path);
@@ -477,13 +477,15 @@ const AiPanel = (() => {
   }
 
   // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
-  async function applyWrite(loc, content) {
+  async function applyWrite(loc, content, source) {
     const full = loc.root + '/' + loc.rel;
     let needW = writeNeedsConfirm(loc.rel);
     if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
-    const old = await window.myIDE.fs.readFile(full);
+    const old = source || await window.myIDE.fs.readFile(full);
+    if (!old || old.binary || old.tooLarge || old.error && old.errorCode !== 'ENOENT')
+      return { ok: false, text: '错误：不能读取可靠的原文本，未写入 ' + loc.rel };
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
     // 删除保护：把已有内容清空 = 删内容。即便前面放行了写入（白名单 / 记住授权 / auto），
@@ -495,12 +497,12 @@ const AiPanel = (() => {
       if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
       if (ans === 'always') grantPerm('write', 'project');
     }
-    const w = await window.myIDE.fs.writeFile(full, content);
+    const w = await window.myIDE.fs.writeFile(full, content, old.textFormat, { expectedVersion: old.version });
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
     // 刚写完的就是规则文件 → 让缓存失效，下次提问立即按新规则（否则要切项目才生效）
     if (RULE_FILES.includes(String(loc.rel).replace(/^\.\//, ''))) rulesRoot = null;
-    const cp = { path: full, rel: loc.rel, oldText, existed, done: false, card: null };
+    const cp = { path: full, rel: loc.rel, oldText, existed, format: old.textFormat, version: w.version, done: false, card: null };
     checkpoints.push(cp);
     cp.card = addEditCard(cp, content);
     try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
@@ -1675,7 +1677,7 @@ const AiPanel = (() => {
     if (!cp) { MI.toast('找不到这处改动记录', 'err'); return; }
     if (cp.done) { MI.toast('这处已经撤销过了', 'ok'); return; }
     if (cp.existed) {
-      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText);
+      const w = await window.myIDE.fs.writeFile(cp.path, cp.oldText, cp.format, { expectedVersion: cp.version });
       if (!w || w.error) { MI.toast('撤销失败：' + ((w && w.error) || ''), 'err'); return; }
     } else {
       const d = await window.myIDE.fs.remove(cp.path);

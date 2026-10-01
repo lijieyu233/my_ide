@@ -30,7 +30,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     readBuffer: (p) => ipcRenderer.invoke('fs:readBuffer', p),
     // 拖进来的文件取真实路径：Electron 32+ 移除了 File.path，只能走 webUtils.getPathForFile
     pathOfDroppedFile: (file) => { try { return webUtils.getPathForFile(file) || ''; } catch { return ''; } },
-    writeFile: (p, c, enc) => ipcRenderer.invoke('fs:writeFile', p, c, enc),
+    fileVersion: (p) => ipcRenderer.invoke('fs:fileVersion', p),
+    writeFile: (p, c, enc, condition) => ipcRenderer.invoke('fs:writeFile', p, c, enc, condition),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
     rename: (p, n) => ipcRenderer.invoke('fs:rename', p, n),

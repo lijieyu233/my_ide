@@ -78,6 +78,22 @@ const GitPanel = (() => {
   // 不在任何列表里 = 属于 Default —— 工作区永远是事实来源，列表只存归属覆盖。
   const CL_LSKEY = (p) => 'myide-changelists:' + p;
   const CL_FILE = (p) => (p ? String(p).replace(/[\\/]+$/, '') + '/.myide/changelists.json' : null);
+  const configVersions = new Map(), configWrites = new Map();
+  async function readConfig(f) {
+    const r = await window.myIDE.fs.readFile(f);
+    configVersions.set(f, r && r.version && r.version.absent ? r.version : null);
+    if (!r || r.content == null) return null;
+    const data = JSON.parse(r.content); configVersions.set(f, r.version); return data;
+  }
+  function writeConfig(f, data) {
+    const tail = (configWrites.get(f) || Promise.resolve()).then(async () => {
+      await window.myIDE.fs.mkdir(f.slice(0, f.lastIndexOf('/')));
+      const r = await window.myIDE.fs.writeFile(f, data, undefined, { expectedVersion: configVersions.get(f) });
+      if (r && r.ok) configVersions.set(f, r.version);
+      else MI.toast('项目配置保存失败，已保留本地副本：' + (r?.error || '未返回成功'), 'err');
+    }).catch((e) => MI.toast('项目配置保存失败，已保留本地副本：' + String(e.message || e), 'err'));
+    configWrites.set(f, tail); tail.then(() => { if (configWrites.get(f) === tail) configWrites.delete(f); });
+  }
   let cls = { active: 'default', lists: [] };   // lists: [{id, name, files:[posix 相对路径]}]
   const clPath = (f) => String(f == null ? '' : f).replace(/\\/g, '/');
   function clNormalize(raw) {
@@ -92,7 +108,7 @@ const GitPanel = (() => {
     const f = CL_FILE(root);
     if (!f) { cls = { active: 'default', lists: [] }; return; }
     let raw = null;
-    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    try { raw = await readConfig(f); } catch {}
     if (!raw) { try { raw = JSON.parse(localStorage.getItem(CL_LSKEY(root)) || 'null'); } catch {} }
     cls = clNormalize(raw);
     render();
@@ -102,13 +118,7 @@ const GitPanel = (() => {
     const snapRoot = root, f = CL_FILE(root), data = JSON.stringify(cls, null, 2);
     try { localStorage.setItem(CL_LSKEY(snapRoot), data); } catch {}
     if (!f) return;
-    (async () => {
-      try {
-        const dir = f.slice(0, f.lastIndexOf('/'));
-        await window.myIDE.fs.mkdir(dir);
-        await window.myIDE.fs.writeFile(f, data);
-      } catch {}
-    })();
+    writeConfig(f, data);
   }
   const clNameOf = (id) => (id === 'default' ? 'Default' : ((cls.lists.find((l) => l.id === id) || {}).name || id));
   function clListOf(file) {
@@ -901,7 +911,7 @@ const GitPanel = (() => {
     const f = PC_FILE(root);
     if (!f) { preCfg = pcNormalize(null); return; }
     let raw = null;
-    try { const r = await window.myIDE.fs.readFile(f); if (r && r.content != null) raw = JSON.parse(r.content); } catch {}
+    try { raw = await readConfig(f); } catch {}
     if (!raw) { try { raw = JSON.parse(localStorage.getItem(PC_LSKEY(root)) || 'null'); } catch {} }
     preCfg = pcNormalize(raw);
   }
@@ -909,13 +919,7 @@ const GitPanel = (() => {
     const snapRoot = root, f = PC_FILE(root), data = JSON.stringify(preCfg, null, 2);
     try { localStorage.setItem(PC_LSKEY(snapRoot), data); } catch {}
     if (!f) return;
-    (async () => {
-      try {
-        const dir = f.slice(0, f.lastIndexOf('/'));
-        await window.myIDE.fs.mkdir(dir);
-        await window.myIDE.fs.writeFile(f, data);
-      } catch {}
-    })();
+    writeConfig(f, data);
   }
 
   // 作者覆盖：只对「这一次提交」生效，**不写回 git config**（PyCharm 的 Author 下拉同语义）

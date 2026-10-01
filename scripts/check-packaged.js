@@ -131,6 +131,13 @@ async function checkPackaged(executable, noGit = false) {
     await renderer('Viewer.cm.setValue("打包正文保存成功")');
     const saved = await renderer('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     add('包内CM6与真实IPC保存文本', saved.ok && fs.readFileSync(file, 'utf8') === '打包正文保存成功', saved);
+    await renderer('Viewer.cm.setValue("包内未保存输入")'); fs.writeFileSync(file,'打包外部新输入');
+    const conflict=await renderer('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab),true)');
+    add('包内真实IPC版本冲突保留两方正文',conflict.errorCode==='VERSION_CONFLICT' && fs.readFileSync(file,'utf8')==='打包外部新输入'
+      && await renderer('Viewer.activeTab.dirty && Viewer.activeTab.content==="包内未保存输入"'),conflict);
+    await renderer('Viewer.showSaveRecovery()');await renderer('document.querySelector(".save-overwrite").click()');
+    for(let i=0;i<50 && await renderer('Viewer.activeTab.dirty');i++)await sleep(50);
+    add('包内比较后的明确覆盖返回新版本',fs.readFileSync(file,'utf8')==='包内未保存输入' && await renderer('!Viewer.activeTab.dirty && !!Viewer.activeTab.diskVersion.hash'));
     console.log('CHECK Git init/status');
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);
