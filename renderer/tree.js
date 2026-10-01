@@ -881,6 +881,22 @@ const Tree = (() => {
   async function undo() {
     if(undoBusy)return;
     const latest=undoStack[undoStack.length-1];
+    if(latest?.type==='create') {
+      if(DocumentPaths.key(rootPath)!==DocumentPaths.key(latest.projectRoot||'')){MI.toast('此撤销属于项目 '+latest.projectRoot+'，请先切回该项目；记录已保留','err');return;}
+      if(!latest.after){MI.toast('新建后的版本未能核对，记录已保留，请先核对磁盘','err');return;}
+      undoBusy=true;
+      const operationRoot=rootPath;
+      try {
+        const perform=()=>rootPath===operationRoot?window.myIDE.fs.undoCreate(latest.projectRoot,latest.path,latest.after):{error:'项目已切换，未撤销',errorCode:'PROJECT_CHANGED'};
+        const r=window.Viewer?.withCreatedPathRemoval?await Viewer.withCreatedPathRemoval(latest.path,perform):await perform();
+        if(!r?.ok){MI.toast('撤销失败: '+(r?.error||'未返回成功')+'；记录已保留，可重试','err');return;}
+        const i=undoStack.indexOf(latest);if(i>=0)undoStack.splice(i,1);
+        if(rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
+        MI.toast('↩ 已撤销 '+latest.label,'ok');
+      }catch(e){MI.toast('撤销失败: '+String(e.message||e)+'；记录已保留，可重试','err');}
+      finally{undoBusy=false;}
+      return;
+    }
     if(latest && ['rename','move'].includes(latest.type)) {
       if(!latest.oldPath||!latest.after){MI.toast('迁移后的版本未能核对，撤销记录已保留，请先核对磁盘', 'err');return;}
       undoBusy=true;
@@ -896,7 +912,6 @@ const Tree = (() => {
     if (!a) { MI.toast('没有可撤销的文件操作', 'err'); return; }
     try {
       if (a.type === 'rename') await window.myIDE.fs.rename(a.newPath, a.oldName);
-      else if (a.type === 'create') await window.myIDE.fs.remove(a.path);
       else if (a.type === 'delete') {
         const r = await window.myIDE.fs.writeFile(a.path, a.content, a.encoding, { expectedAbsent: true });
         if (!r || !r.ok) { undoStack.push(a); throw Error(r?.error || '恢复失败'); }
@@ -915,23 +930,25 @@ const Tree = (() => {
   // ---------- 新建文件/文件夹 ----------
   async function createItem(anchor, type) {
     if (!rootPath) return;
+    const operationRoot=rootPath;
     const baseDir = anchor.type === 'dir' ? anchor.path : anchor.path.replace(/[\\/][^\\/]+$/, '');
     const label = type === 'dir' ? '新建文件夹' : '新建文件';
     const name = await Modal.prompt(label, '名称：', '');
     if (!name) return;
-    const target = baseDir + '\\' + name;
+    if(rootPath!==operationRoot){MI.toast('项目已切换，新建未执行','err');return;}
+    const target=baseDir+'\\'+name;
+    if(window.Viewer?.openTabs?.some(t=>DocumentPaths.contains(target,t.path))){MI.toast('新建位置有已打开文档，请先处理保存恢复','err');return;}
     let r;
-    if (type === 'dir') r = await window.myIDE.fs.mkdir(target);
-    else r = await window.myIDE.fs.writeFile(target, '', undefined, { expectedAbsent: true });
-    if (r.ok) {
-      pushUndo({ type: 'create', path: target, label: '新建 ' + name });
-      invalidateAll();
-      render();
-      App.refreshGit();
-      MI.toast('✅ 已创建 ' + name, 'ok');
-      if (type === 'file') Viewer.openFile(target);
-    } else {
-      MI.toast('创建失败: ' + (r.error || '可能已存在同名项'), 'err');
+    try { r=await window.myIDE.fs.createItem(operationRoot,baseDir,name,type); }
+    catch(e){MI.toast('创建失败: '+String(e.message||e),'err');return;}
+    if(!r?.ok){MI.toast('创建失败: '+(r?.error||'未返回成功')+(r?.pendingPath?'；临时项已保留：'+r.pendingPath:''),'err');return;}
+    pushUndo({type:'create',path:r.path,projectRoot:operationRoot,after:r.after,label:'新建 '+name});
+    MI.toast('✅ 已创建 '+name+(rootPath!==operationRoot?'（原项目）':''),'ok');
+    if(r.warning)MI.toast(r.warning+'；撤销记录已保留','err');
+    if(rootPath===operationRoot){
+      invalidateAll();render();App.refreshGit();
+      try{if(type==='file')await Viewer.openFile(r.path);}
+      catch(e){MI.toast('文件已创建并保留，但无法打开：'+String(e.message||e),'err');}
     }
   }
 
@@ -1274,6 +1291,7 @@ const Tree = (() => {
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
     renameItem,
+    createItem,
     // 快捷键入口：对当前选中项重命名（无选中时提示）
     renameSelected() {
       if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }

@@ -49,14 +49,17 @@ os.homedir = () => path.join(temp, 'home');
 if (!process.argv.includes('--headless')) process.argv.push('--headless');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lines = [];
-let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null;
+let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false;
 const add = (name, ok) => {
   if (ok) passed++; else failed++;
   lines.push((ok ? 'PASS ' : 'FAIL ') + name);
   console.log(lines[lines.length - 1]);
 };
 const register = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:pickSave' ? () => saveChoice : channel === 'fs:writeFile' ? async (...args) => {
+ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:undoCreate' ? async(...args)=>{
+  if(releaseCreateUndo){createUndoStarted=true;await releaseCreateUndo.promise;releaseCreateUndo=null;}
+  return handler(...args);
+} : channel === 'fs:pickSave' ? () => saveChoice : channel === 'fs:writeFile' ? async (...args) => {
   if (releaseWrite) {
     const gate = releaseWrite;
     writeStarted = true;
@@ -322,6 +325,38 @@ app.whenReady().then(async () => {
     lines.push('1000文件迁移期间无关IPC响应 '+Math.round(timing.responsiveMs)+'ms');
     await run(`(async()=>{const prompt=Modal.prompt;try{Modal.prompt=async()=>"current-project-moved";await Tree.renameItem({path:${JSON.stringify(projectA)},name:"A",type:"dir"});}finally{Modal.prompt=prompt;}})()`);
     add('真实当前项目根迁移拒绝且项目/磁盘保持一致',fs.existsSync(projectA)&&!fs.existsSync(path.join(temp,'current-project-moved'))&&await run(`App.root===${JSON.stringify(projectA)}`));
+    const createPath=path.join(projectA,'新建可靠性.txt'),createDir=path.join(projectA,'新建可靠性目录');
+    const createWithTree=async(name,type)=>run(`(async()=>{const prompt=Modal.prompt;try{Modal.prompt=async()=>${JSON.stringify(name)};await Tree.createItem({path:${JSON.stringify(projectA)},type:"dir"},${JSON.stringify(type)});}finally{Modal.prompt=prompt;}})()`);
+    await createWithTree('新建可靠性目录','dir');
+    add('真实IPC新建空目录有可用版本并正常撤销',fs.statSync(createDir).isDirectory()&&(await run(`myIDE.fs.pathSnapshot(${JSON.stringify(createDir)})`)).snapshot.count===1);
+    await run('Tree.undo()');add('真实Tree撤销只移除本次空目录',!fs.existsSync(createDir));
+    fs.mkdirSync(createDir);fs.writeFileSync(path.join(createDir,'保留.bin'),Buffer.from([0,255,1]));
+    const refused=await run(`Promise.all([myIDE.fs.createItem(${JSON.stringify(projectA)},${JSON.stringify(projectA)},"新建可靠性目录","dir"),myIDE.fs.createItem(${JSON.stringify(projectA)},${JSON.stringify(projectA)},"../逃出","file"),myIDE.fs.createItem(${JSON.stringify(projectA)},${JSON.stringify(projectB)},"外部","file")])`);
+    add('真实IPC同名非空目录/非法名称/外部父目录均拒绝',refused[0].errorCode==='DEST_CONFLICT'&&refused[1].errorCode==='INVALID_NAME'&&refused[2].errorCode==='OUTSIDE_PROJECT'&&fs.readFileSync(path.join(createDir,'保留.bin')).equals(Buffer.from([0,255,1]))&&!fs.existsSync(path.join(projectB,'外部')));
+    await createWithTree('新建可靠性.txt','file');
+    add('真实CM6打开新建实际路径且正文为空',await run(`Viewer.activeTab.path===${JSON.stringify(createPath)}&&Viewer.cm.getValue()===""`));
+    await run('Viewer.cm.setValue("新建后尚未保存的输入");Tree.undo()');
+    add('真实Tree拒绝dirty新建撤销并保留CM6输入',fs.existsSync(createPath)&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="新建后尚未保存的输入"'));
+    await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab));');await run('Tree.undo()');
+    add('真实保存后旧创建undo不删除正文',fs.readFileSync(createPath,'utf8')==='新建后尚未保存的输入'&&await run(`Viewer.activeTab.path===${JSON.stringify(createPath)}`));
+    await run('Tree.refresh()');await sleep(150);
+    win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');
+    const createShot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});
+    fs.writeFileSync(path.join(ROOT,'.ui-check-trash','create114-protection.png'),Buffer.from(createShot.data,'base64'));win.webContents.debugger.detach();
+    const latePath=path.join(projectA,'撤销等待输入.txt');await createWithTree('撤销等待输入.txt','file');
+    let releaseUndo;createUndoStarted=false;releaseCreateUndo={promise:new Promise(resolve=>{releaseUndo=resolve;})};
+    await run('window.__createUndoPending=Tree.undo();"started"');
+    for(let i=0;i<100&&!createUndoStarted;i++)await sleep(20);
+    if(!createUndoStarted)throw Error('新建撤销未进入受控真实IPC');
+    await run('Viewer.cm.setValue("撤销提交等待中新输入")');
+    const busySave=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+    add('真实新建撤销等待期间新保存拒绝且不清输入',busySave.errorCode==='PATH_BUSY'&&await run('Viewer.activeTab.dirty'));
+    releaseUndo();await run('window.__createUndoPending');
+    add('真实撤销完成后迟到新输入仍在CM6及标签',!fs.existsSync(latePath)&&await run(`Viewer.activeTab.path===${JSON.stringify(latePath)}&&Viewer.activeTab.dirty&&Viewer.cm.getValue()==="撤销提交等待中新输入"`));
+    const createNoRevive=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+    add('真实旧基线保存拒绝复活已撤销路径',createNoRevive.errorCode==='VERSION_CONFLICT'&&!fs.existsSync(latePath)&&await run('Viewer.activeTab.dirty'));
+    const cleanPath=path.join(projectA,'正常撤销.txt');await createWithTree('正常撤销.txt','file');await run('Tree.undo()');
+    add('真实干净新文件撤销关闭对应标签且保留其他dirty输入',!fs.existsSync(cleanPath)&&await run(`!Viewer.openTabs.some(t=>t.path===${JSON.stringify(cleanPath)})&&Viewer.openTabs.some(t=>t.path===${JSON.stringify(latePath)}&&t.dirty&&t.content==="撤销提交等待中新输入")`));
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
   } finally {

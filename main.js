@@ -561,7 +561,13 @@ ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 });
 
-const pathResult = async (fn) => { try { return await fn(); } catch(e) { return { error: String(e.message || e), errorCode: e.code || 'MOVE_FAILED' }; } };
+const pathResult = async (fn) => { try { return await fn(); } catch(e) { return { error: String(e.message || e), errorCode: e.code || 'MOVE_FAILED', committed:e.committed, pendingPath:e.pendingPath, cleanupError:e.cleanupError }; } };
+ipcMain.handle('fs:createItem', (_e, project, parent, name, type) => pathResult(() => {
+  require('./path-create').validateName(name);
+  const target=path.join(parent,name);
+  return PathJobs.withMove(target,target,()=>PathJobs.run('create',[project,parent,name,type]));
+}));
+ipcMain.handle('fs:undoCreate', (_e, project, p, after) => pathResult(() => PathJobs.withMove(p,p,()=>PathJobs.run('undoCreate',[project,p,after]))));
 ipcMain.handle('fs:pathSnapshot', (_e, p) => pathResult(async () => ({ snapshot: await PathJobs.run('snapshot',[p]) })));
 ipcMain.handle('fs:relocate', (_e, p, target, condition) => pathResult(() => PathJobs.withMove(p,target,()=>PathJobs.run('relocate',[p,target,condition]))));
 ipcMain.handle('fs:rename', (_e, p, newName, condition) => pathResult(() => PathJobs.withMove(p,path.join(path.dirname(p),String(newName)),()=>PathJobs.run('rename',[p,newName,condition]))));

@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const files = ['main.js', 'preload.js', 'git-service.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js'];
+const files = ['main.js', 'preload.js', 'git-service.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js'];
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (f.endsWith('.js')) files.push('renderer/' + f);
 }

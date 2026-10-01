@@ -1364,6 +1364,34 @@ const Viewer = (() => {
     } catch(e) {return {error:String(e.message||e),errorCode:e.code||'MOVE_FAILED'};}
     finally {pathChanges.delete(change);}
   }
+  async function withCreatedPathRemoval(path, perform) {
+    if ([...pathChanges].some(change=>change.ranges.some(range=>DocumentPaths.contains(range,path)||DocumentPaths.contains(path,range))))
+      return {error:'相关路径已有操作，请等待完成',errorCode:'PATH_BUSY'};
+    const change={ranges:[path]};pathChanges.add(change);
+    try {
+      const affected=tabs.filter(t=>DocumentPaths.contains(path,t.path));
+      const pending=[...saveQueues].filter(([p])=>DocumentPaths.contains(path,p)).map(([,tail])=>tail);
+      await Promise.all([...pending,...affected.map(t=>t.loadPromise).filter(Boolean)]);
+      if(affected.some(t=>tabs.includes(t)&&(t.dirty||t.formatBusy)))return {error:'新建项有未保存的输入，请先保存或另存；未撤销',errorCode:'DIRTY_DOCUMENT'};
+      const revisions=new Map(affected.map(t=>[t,t.editRevision]));
+      const result=await perform();
+      if(result?.ok) {
+        for(const t of affected) {
+          if(!tabs.includes(t))continue;
+          t.pathGeneration=(t.pathGeneration||0)+1;
+          if(!t.dirty && t.editRevision===revisions.get(t))doClose(tabs.indexOf(t));
+          else {
+            // 删除等待中仍允许输入；保留正文和旧磁盘版本，旧保存不能据此创建原路径。
+            t.saveError='磁盘上的新建项已撤销，输入仍保留，请另存副本';t.saveErrorCode='VERSION_CONFLICT';
+            MI.toast(t.saveError,'err');
+          }
+        }
+        renderTabs();
+      }
+      return result;
+    } catch(e) {return {error:String(e.message||e),errorCode:e.code||'REMOVE_FAILED'};}
+    finally {pathChanges.delete(change);}
+  }
 
   // ---------- 外部修改同步：文件在磁盘上被外部程序改动 → 未保存的标签自动重载 ----------
   // dirty（有未保存修改）的标签不动，防丢用户输入。CM 模式就地 setValue（保留撤销历史与光标），
@@ -1426,7 +1454,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

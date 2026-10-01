@@ -144,6 +144,16 @@ async function checkPackaged(executable, noGit = false) {
     await renderer('Tree.undo()');
     const savedUndo=await renderer('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     add('包内undo原路径与新基线可保存',savedUndo.ok&&fs.readFileSync(file,'utf8')==='迁移保留的包内输入'&&!fs.existsSync(movedFile));
+    const newFile=path.join(project,'packaged-new.txt'),newDir=path.join(project,'packaged-new-dir');
+    const dirCreated=await renderer(`myIDE.fs.createItem(${JSON.stringify(project)},${JSON.stringify(project)},"packaged-new-dir","dir")`);
+    add('包内worker排他创建空目录及版本可加载',dirCreated.ok&&dirCreated.after&&fs.statSync(newDir).isDirectory());
+    const dirUndo=await renderer(`myIDE.fs.undoCreate(${JSON.stringify(project)},${JSON.stringify(newDir)},${JSON.stringify(dirCreated.after)})`);
+    add('包内原生句柄撤销空目录',dirUndo.ok&&!fs.existsSync(newDir),dirUndo);
+    await renderer(`(async()=>{const prompt=Modal.prompt;try{Modal.prompt=async()=>"packaged-new.txt";await Tree.createItem({path:${JSON.stringify(project)},type:"dir"},"file");}finally{Modal.prompt=prompt;}})()`);
+    add('包内Tree新建打开真实空文件',fs.existsSync(newFile)&&await renderer(`Viewer.activeTab.path===${JSON.stringify(newFile)}&&Viewer.cm.getValue()===""`));
+    await renderer('Tree.undo()');add('包内新文件撤销关闭正确标签',!fs.existsSync(newFile)&&await renderer(`!Viewer.openTabs.some(t=>t.path===${JSON.stringify(newFile)})`));
+    const createConflict=await renderer(`myIDE.fs.createItem(${JSON.stringify(project)},${JSON.stringify(project)},"notes.txt","file")`);
+    add('包内同名新建拒绝并保留原正文',createConflict.errorCode==='DEST_CONFLICT'&&fs.readFileSync(file,'utf8')==='迁移保留的包内输入');
     console.log('CHECK Git init/status');
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);

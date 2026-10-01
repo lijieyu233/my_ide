@@ -167,6 +167,19 @@ function makeDom() {
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
+      createItem: async(project,parent,name,type)=>{
+        parent=normMove(parent);const p=parent+'/'+name;
+        if(!FAKE_FS[parent]||!FAKE_FS[project]||!(parent===project||parent.startsWith(project+'/')))return {error:'invalid parent',errorCode:'OUTSIDE_PROJECT'};
+        if(!name||/[\\/:*?"<>|]/.test(name)||['.','..'].includes(name))return {error:'invalid name',errorCode:'INVALID_NAME'};
+        if(FAKE_FS[p])return {error:'already exists',errorCode:'DEST_CONFLICT'};
+        if(type==='dir')await w.myIDE.fs.mkdir(p);else await w.myIDE.fs.writeFile(p,'');
+        return {ok:true,path:p,type,after:{...fakeSnapshot(p),bytes:0}};
+      },
+      undoCreate: async(project,p,after)=>{
+        p=normMove(p);
+        if(FAKE_FS[p] && (!after||after.hash!==fakeSnapshot(p).hash))return {error:'changed after creation',errorCode:'STALE_OPERATION'};
+        await w.myIDE.fs.remove(p);return {ok:true};
+      },
       relocate: relocateFake,
       rename: async(p,name,condition)=>relocateFake(p,normMove(p).replace(/\/[^/]+$/,'')+'/'+name,condition),
       mkdir: async (p) => {
@@ -2578,7 +2591,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     input.value = 'newfile.txt';
     input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await tick(); await tick();
-    const newPath = P + '/src\\newfile.txt'; // 产品用反斜杠拼接（Windows 语义）
+    const newPath = P + '/src/newfile.txt'; // 主进程返回实际路径；桩文件系统统一正斜杠。
     assert_(FAKE_FS[newPath], '文件已创建');
     assert_(g(dom, 'Viewer.activeTab.path') === newPath, '自动打开新文件');
     // 新建文件夹（选中 src 内）
@@ -2591,7 +2604,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     input2.value = 'sub';
     input2.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await tick(); await tick();
-    assert_(FAKE_FS[P + '/src\\sub'] && FAKE_FS[P + '/src\\sub'].type === 'dir', '文件夹已创建');
+    assert_(FAKE_FS[P + '/src/sub'] && FAKE_FS[P + '/src/sub'].type === 'dir', '文件夹已创建');
   });
 
   await okAsync('编辑器查找：Ctrl+F 搜索面板（CM6 内建）', async () => {
@@ -4321,7 +4334,7 @@ assert_(panel, 'CM6 搜索面板出现');
     input.value = 'undome.txt';
     input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await tick(); await tick();
-    const created = P + '/src\\undome.txt';
+    const created = P + '/src/undome.txt';
     assert_(FAKE_FS[created], '文件已创建');
     // Ctrl+Z 撤销
     dom.window.document.body.focus();
@@ -8833,6 +8846,51 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(tab.path===P+'/Case/notes.txt'&&tab.dirty&&tab.content==='保留输入','Windows大小写和分隔符规则');
   });
   console.log('');
+  await saveCase('同名文件/非空目录新建拒绝不产生误删undo',async(d,_viewer,bridge)=>{
+    const originalChild=FAKE_FS[P+'/src/app.js'].content,originalFile=FAKE_FS[P+'/notes.txt'].content;
+    const tree=d.window.Tree;d.window.Modal.prompt=async()=> 'src';
+    await tree.createItem({path:P,type:'dir'},'dir');assert_(FAKE_FS[P+'/src/app.js'].content===originalChild,'保留原目录后代');
+    d.window.Modal.prompt=async()=> 'notes.txt';await tree.createItem({path:P,type:'dir'},'file');assert_(FAKE_FS[P+'/notes.txt'].content===originalFile,'保留原文件正文');
+    let removes=0;bridge.undoCreate=async()=>{removes++;return {ok:true};};await tree.undo();assert_(removes===0,'失败创建不产生撤销');
+  });
+  await saveCase('新建空对象撤销关闭正确标签并保留其他文档',async(d,viewer)=>{
+    d.window.Modal.prompt=async()=> 'empty.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');const tab=viewer.activeTab;
+    assert_(tab.path===P+'/empty.txt'&&FAKE_FS[tab.path],'打开实际返回路径');await d.window.Tree.undo();
+    assert_(!FAKE_FS[tab.path]&&!viewer.openTabs.includes(tab)&&viewer.openTabs.some(t=>t.path===P+'/notes.txt'),'只撤销并关闭原空对象');
+    d.window.Modal.prompt=async()=> 'empty-dir';await d.window.Tree.createItem({path:P,type:'dir'},'dir');await d.window.Tree.undo();assert_(!FAKE_FS[P+'/empty-dir'],'正常空目录可撤销');
+  });
+  await saveCase('新建撤销错误对象/rejection保留记录且可以重试',async(d,_viewer,bridge)=>{
+    d.window.Modal.prompt=async()=> 'retry.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');const undo=bridge.undoCreate;
+    bridge.undoCreate=async()=>({error:'fixture-denied',errorCode:'EACCES'});await d.window.Tree.undo();assert_(FAKE_FS[P+'/retry.txt']&&d.window.document.getElementById('toast-wrap').textContent.includes('记录已保留'),'错误对象不报成功');
+    bridge.undoCreate=async()=>{throw Error('fixture-rejection');};await d.window.Tree.undo();assert_(FAKE_FS[P+'/retry.txt'],'rejection仍保留');
+    bridge.undoCreate=undo;await d.window.Tree.undo();assert_(!FAKE_FS[P+'/retry.txt'],'原记录可重试');
+  });
+  await saveCase('新建dirty和后续保存正文拒绝旧撤销',async(d,viewer,bridge)=>{
+    d.window.Modal.prompt=async()=> 'edited.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');const tab=viewer.activeTab,undo=bridge.undoCreate;let attempts=0;bridge.undoCreate=(...a)=>{attempts++;return undo(...a);};
+    viewer.cm.setValue('后来的输入');await d.window.Tree.undo();assert_(attempts===0&&tab.dirty&&viewer.cm.getValue()==='后来的输入','dirty在IPC前拒绝');
+    await viewer.saveTab(viewer.openTabs.indexOf(tab));await d.window.Tree.undo();assert_(FAKE_FS[tab.path].content==='后来的输入'&&viewer.openTabs.includes(tab),'保存正文不被旧undo删除');
+  });
+  await saveCase('新建目录后代和外部替换保留后来内容',async(d)=>{
+    d.window.Modal.prompt=async()=> 'folder';await d.window.Tree.createItem({path:P,type:'dir'},'dir');FAKE_FS[P+'/folder/child.bin']={type:'file',content:'binary'};FAKE_FS[P+'/folder'].children.push(P+'/folder/child.bin');await d.window.Tree.undo();assert_(FAKE_FS[P+'/folder/child.bin'].content==='binary','不递归删除后来后代');
+    d.window.Modal.prompt=async()=> 'replaced.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');FAKE_FS[P+'/replaced.txt']={type:'file',content:'',revision:999};await d.window.Tree.undo();assert_(FAKE_FS[P+'/replaced.txt'].revision===999,'同样空白的外部对象也不删除');
+  });
+  await saveCase('新建撤销等待旧保存并保护等待期间新输入',async(d,viewer,bridge)=>{
+    d.window.Modal.prompt=async()=> 'pending.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');const wait=deferred(),write=bridge.writeFile;
+    bridge.writeFile=async(...a)=>{await wait.promise;return write(...a);};viewer.cm.setValue('保存版本');const save=viewer.saveTab(viewer.openTabs.indexOf(viewer.activeTab));await tick();
+    let finished=false;const undo=d.window.Tree.undo().then(()=>{finished=true;});await tick();assert_(!finished,'在途保存未结束不得撤销');viewer.cm.setValue('等待期间新输入');wait.resolve();await save;await undo;
+    assert_(viewer.activeTab.dirty&&viewer.cm.getValue()==='等待期间新输入'&&FAKE_FS[P+'/pending.txt'].content==='保存版本','磁盘保存及新dirty正文保全');
+  });
+  await saveCase('新建确认/迟到成功绑定原项目与撤销归属',async(d,viewer,bridge)=>{
+    const prompt=deferred();d.window.Modal.prompt=()=>prompt.promise;const aborted=d.window.Tree.createItem({path:P,type:'dir'},'file');await tick();await d.window.App.setRoot('C:/proj2');prompt.resolve('cancelled.txt');await aborted;assert_(!FAKE_FS[P+'/cancelled.txt'],'切换前确认失效');
+    await d.window.App.setRoot(P);const wait=deferred(),create=bridge.createItem;d.window.Modal.prompt=async()=> 'late.txt';bridge.createItem=async(...a)=>{await wait.promise;return create(...a);};const pending=d.window.Tree.createItem({path:P,type:'dir'},'file');await tick();await d.window.App.setRoot('C:/proj2');wait.resolve();await pending;
+    assert_(FAKE_FS[P+'/late.txt']&&!viewer.openTabs.some(t=>t.path===P+'/late.txt'),'迟到创建不打开到新项目');await d.window.Tree.undo();assert_(FAKE_FS[P+'/late.txt'],'不同项目不消费原撤销');await d.window.App.setRoot(P);await d.window.Tree.undo();assert_(!FAKE_FS[P+'/late.txt'],'切回原项目仍可撤销');
+  });
+  await saveCase('撤销发布等待中新输入留在标签且旧保存不复活路径',async(d,viewer,bridge)=>{
+    d.window.Modal.prompt=async()=> 'during.txt';await d.window.Tree.createItem({path:P,type:'dir'},'file');const tab=viewer.activeTab,wait=deferred(),undoCreate=bridge.undoCreate;
+    bridge.undoCreate=async(...a)=>{await wait.promise;return undoCreate(...a);};const operation=d.window.Tree.undo();await tick();viewer.cm.setValue('删除等待中新输入');const busy=await viewer.saveTab(viewer.openTabs.indexOf(tab));assert_(busy.errorCode==='PATH_BUSY','锁内新保存拒绝');wait.resolve();await operation;
+    assert_(!FAKE_FS[tab.path]&&viewer.openTabs.includes(tab)&&tab.dirty&&viewer.cm.getValue()==='删除等待中新输入','保留迟到输入与标签');
+    bridge.writeFile=async()=>({error:'original object missing',errorCode:'VERSION_CONFLICT'});const r=await viewer.saveTab(viewer.openTabs.indexOf(tab));assert_(!r.ok&&!FAKE_FS[tab.path]&&tab.dirty,'旧保存失败不会创建原路径');
+  });
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
 })();

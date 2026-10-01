@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     writeFile: (p, c, enc, condition) => ipcRenderer.invoke('fs:writeFile', p, c, enc, condition),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
+    createItem: (project, parent, name, type) => ipcRenderer.invoke('fs:createItem', project, parent, name, type),
+    undoCreate: (project, p, after) => ipcRenderer.invoke('fs:undoCreate', project, p, after),
     pathSnapshot: (p) => ipcRenderer.invoke('fs:pathSnapshot', p),
     relocate: (p, target, condition) => ipcRenderer.invoke('fs:relocate', p, target, condition),
     rename: (p, n, condition) => ipcRenderer.invoke('fs:rename', p, n, condition),
