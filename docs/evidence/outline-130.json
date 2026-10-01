@@ -1,0 +1,165 @@
+{
+  "date": "2026-10-02",
+  "baseline": "9b08f42fb63393f83443f0c36deda67b6ca3b837",
+  "mode": "实际outline.js/index.html/marked，独立JSDOM；Viewer/剪贴板为内存桥；无用户文件/网络/真实OS焦点/产品实施",
+  "sourceHashes": {
+    "renderer/outline.js": "048a183d7754ca7cdaf9b6e59e3e617bfd9374c92bb66257216d444bb344fae8",
+    "renderer/vendor/marked.min.js": "d7931d1cd7bf727dd756c871637edcc9e0f8538003b927368400ec1ee47a9dd9",
+    "renderer/index.html": "1c20f93a7caf96493096e519f560de70465e1cd7c2f0721c5bd9e2474db93d76"
+  },
+  "observations": [
+    {
+      "id": "C1",
+      "name": "正常ATX跳转与章节复制",
+      "detail": {
+        "line": 3,
+        "copied": "# TOP\nintro\n## CHILD\nbody"
+      }
+    },
+    {
+      "id": "C2",
+      "name": "大纲箭头折叠不触发跳转",
+      "detail": {
+        "childHidden": true,
+        "jumpCalls": 1
+      }
+    },
+    {
+      "id": "R1",
+      "name": "长围栏内短围栏造成伪标题与漏标题",
+      "detail": {
+        "input": "````\n# CODE_A\n```\n# CODE_B\n````\n# REAL\n",
+        "outline": [
+          {
+            "text": "CODE_B",
+            "line": 4,
+            "level": 1
+          }
+        ],
+        "preview": [
+          "REAL"
+        ]
+      }
+    },
+    {
+      "id": "R2",
+      "name": "Setext标题未进入大纲",
+      "detail": {
+        "input": "SETEXT\n======\nbody\n# REAL\n",
+        "outline": [
+          {
+            "text": "REAL",
+            "line": 4,
+            "level": 1
+          }
+        ],
+        "preview": [
+          "SETEXT",
+          "REAL"
+        ]
+      }
+    },
+    {
+      "id": "R3",
+      "name": "缩进/空标题与尾井号识别不一致",
+      "detail": {
+        "input": "  # INDENT\n#\n# C#\n",
+        "outline": [
+          {
+            "text": "C",
+            "line": 3,
+            "level": 1
+          }
+        ],
+        "preview": [
+          "INDENT",
+          "",
+          "C#"
+        ]
+      }
+    },
+    {
+      "id": "R4",
+      "name": "HTML块内正文被当标题",
+      "detail": {
+        "input": "<div>\n# HTML_BODY\n</div>\n\n# REAL\n",
+        "outline": [
+          {
+            "text": "HTML_BODY",
+            "line": 2,
+            "level": 1
+          },
+          {
+            "text": "REAL",
+            "line": 5,
+            "level": 1
+          }
+        ],
+        "preview": [
+          "REAL"
+        ]
+      }
+    },
+    {
+      "id": "R5",
+      "name": "点击REAL实际定位SETEXT",
+      "detail": {
+        "clicked": "REAL",
+        "highlighted": [
+          "SETEXT"
+        ],
+        "scroll": [
+          {
+            "scroll": "SETEXT"
+          }
+        ]
+      }
+    },
+    {
+      "id": "R6",
+      "name": "折叠状态跨文件沿用且被别的文件清除",
+      "detail": {
+        "hiddenB": true,
+        "hiddenAAfterC": false
+      }
+    },
+    {
+      "id": "R7",
+      "name": "正文前插入导致可识别章节展开",
+      "detail": {
+        "childHiddenAfterInsert": false
+      }
+    },
+    {
+      "id": "R8",
+      "name": "无选中时右键方向抛异常",
+      "detail": {
+        "prevented": true,
+        "errors": [
+          "Cannot read properties of undefined (reading 'level')"
+        ]
+      }
+    },
+    {
+      "id": "R9",
+      "name": "外部按钮焦点仍被大纲接管",
+      "detail": {
+        "activeElement": "tool-project",
+        "selected": "TOP",
+        "prevented": true
+      }
+    },
+    {
+      "id": "R10",
+      "name": "合成组合输入Enter仍触发跳转",
+      "detail": {
+        "isComposing": true,
+        "calls": [
+          {
+            "line": 1
+          }
+        ]
+      }
+    }
+  ]
+}
