@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-02",
+  "mode": "JSDOM原始App/Session+Viewer真实函数片段；存储/Viewer/桥内存桩，0网络/0用户磁盘，非产品验收",
+  "sha256": {
+    "app.js": "390a26931111d7124926bb1784fce32e5c49b706005bb88286ea0031100f8b5d",
+    "session.js": "501209fbd71a0936e03930fcead64c1e87363819d9a39b21b8f4592e6f56c32d",
+    "viewer.js": "6037be5b044be9627c01d925340847f6f863deb3a11d8def9f64a932eaf2c58a"
+  },
+  "observations": [
+    {
+      "id": "C1",
+      "name": "实际项目切换等待前一次会话恢复",
+      "detail": "B恢复未完成时C未执行；完成后依次到C，当前用户切换入口已串行"
+    },
+    {
+      "id": "C2",
+      "name": "保存失败保留当前项目与标签",
+      "detail": "返回false，root=A，不调用closeAll"
+    },
+    {
+      "id": "R1",
+      "name": "最近项目列表先显示已开顺序而非最近顺序",
+      "detail": "recent=C,B,A；“最近项目”显示A,B,C，已开列表优先"
+    },
+    {
+      "id": "R2",
+      "name": "同名项目栏及菜单只有末级名称",
+      "detail": "两个alpha需依靠hover title路径区分；菜单项目行无键盘tabIndex/角色"
+    },
+    {
+      "id": "R3",
+      "name": "最近项切换不更新主进程最近目录入口",
+      "detail": "真实openProject切到B，未调用fs.setRecent；未验证实际重启，需结合main:lastFolder静态控制流"
+    },
+    {
+      "id": "R4",
+      "name": "会话归属纳入邻居路径且漏大小写变体",
+      "detail": "保存包含repo-old邻居，排除c:/REPO变体；只证明字符串策略，非文件系统身份"
+    },
+    {
+      "id": "R5",
+      "name": "活动标签恢复未传原位置，非活动已有懒恢复",
+      "detail": "活动openFile只收到路径；非活动lazy收到scrollTop=220/line=2；未验证真实CM6像素"
+    },
+    {
+      "id": "R6",
+      "name": "坏会话条目使后续树与工具恢复静默中止",
+      "detail": "实际addLazyTab(undefined)抛错被Session吞掉，expanded/tool未执行，restore正常resolve"
+    },
+    {
+      "id": "R7",
+      "name": "dirty标签没有会话正文备份",
+      "detail": "dirty标签排除，未存UNSAVED；正常切换有C2保护，崩溃草稿尚非会话功能"
+    }
+  ]
+}
