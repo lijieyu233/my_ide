@@ -13,7 +13,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create",
+    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -24,7 +24,8 @@
     "check:save": "node scripts/check-save.js",
     "check:package": "node scripts/check-package.js",
     "check:packaged": "node scripts/check-packaged.js",
-    "git:doctor": "node scripts/git-doctor.js"
+    "git:doctor": "node scripts/git-doctor.js",
+    "test:copy": "node tests/copy-journal.test.js"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -72,6 +73,8 @@
       "path-worker.js",
       "path-create.js",
       "file-create-win.js",
+      "copy-journal.js",
+      "file-copy-win.js",
       "file-replace-win.js",
       "preload.js",
       "git-service.js",

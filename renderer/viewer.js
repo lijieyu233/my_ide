@@ -1393,6 +1393,43 @@ const Viewer = (() => {
     finally {pathChanges.delete(change);}
   }
 
+  async function withCopyChange(readRanges, writeRanges, perform) {
+    const ranges=[...readRanges,...writeRanges];
+    const contains=(p,list=ranges)=>list.some(range=>DocumentPaths.contains(range,p));
+    if([...pathChanges].some(change=>change.ranges.some(a=>ranges.some(b=>DocumentPaths.contains(a,b)||DocumentPaths.contains(b,a)))))
+      return {error:'相关路径已有操作，请等待完成',errorCode:'PATH_BUSY'};
+    const change={ranges};pathChanges.add(change);
+    try {
+      const affected=tabs.filter(t=>contains(t.path));
+      await Promise.all([...saveQueues].filter(([p])=>contains(p)).map(([,tail])=>tail).concat(affected.map(t=>t.loadPromise).filter(Boolean)));
+      if(affected.some(t=>tabs.includes(t)&&t.formatBusy))return {error:'相关文档正在切换编码，请完成后重试',errorCode:'PATH_BUSY'};
+      const revisions=new Map(affected.map(t=>[t,t.editRevision]));
+      const result=await perform(affected.filter(t=>tabs.includes(t)&&t.dirty).map(t=>({path:t.path,target:contains(t.path,writeRanges)})));
+      const changed=result?.changedPaths||[];
+      for(const t of affected.filter(t=>tabs.includes(t)&&contains(t.path,changed))) {
+        t.pathGeneration=(t.pathGeneration||0)+1;
+        const keepInput=()=>{t.saveError='磁盘文件已复制或恢复，输入仍保留，请比较磁盘或另存副本';t.saveErrorCode='VERSION_CONFLICT';};
+        if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
+        const originalPath=t.path,generation=t.pathGeneration;
+        const r=await window.myIDE.fs.readFile(originalPath,t.textFormat?.detection==='selected'?t.encoding:undefined);
+        if(!tabs.includes(t)||t.path!==originalPath||t.pathGeneration!==generation)continue;
+        // 等待复制/重载仍允许输入；迟到的磁盘正文不能覆盖这个窗口内的新输入。
+        if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
+        if(r.errorCode==='ENOENT'){doClose(tabs.indexOf(t));continue;}
+        if(r.error||r.binary||r.tooLarge||r.content==null){t.saveError=r.error||'复制/恢复后暂不能重载，请重新打开';t.saveErrorCode='VERSION_CONFLICT';continue;}
+        t.content=r.content;t.diskVersion=r.version;t.textFormat=r.textFormat;t.encoding=r.encoding||t.encoding;t.eol=r.textFormat?.eol;
+        t.saveError=null;t.saveErrorCode=null;t.cmState=null;
+        if(t===tabs[active]) {
+          if(cmApi?.__tab===t){t.__extLoading=true;try{cmApi.setValue(r.content);}finally{t.__extLoading=false;}}
+          else if(t.ta)t.ta.value=r.content;else renderView();
+          updateFormatStatus(t);window.App?.refreshOutline(t);
+        }
+      }
+      renderTabs();return result;
+    }catch(e){return {error:String(e.message||e),errorCode:e.code||'COPY_FAILED'};}
+    finally{pathChanges.delete(change);}
+  }
+
   // ---------- 外部修改同步：文件在磁盘上被外部程序改动 → 未保存的标签自动重载 ----------
   // dirty（有未保存修改）的标签不动，防丢用户输入。CM 模式就地 setValue（保留撤销历史与光标），
   // __extLoading 抑制 onChange 把重载误判为用户编辑（防 dirty 闪烁与自动保存写回抖动）。
@@ -1454,7 +1491,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

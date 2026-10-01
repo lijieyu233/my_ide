@@ -748,36 +748,80 @@ const Tree = (() => {
 
   // 复制 sources 到 destDir（粘贴 / 外部拖入共用）：同名冲突先弹确认框（覆盖 / 取消）
   async function copyInto(sources, destDir, actionLabel) {
+    if(!rootPath)return 0;
+    const operationRoot=rootPath;
     // 源目录=目标目录的项直接跳过（复制到自己所在文件夹无意义，且会触发"覆盖自己"的假冲突）
     const movable = sources.filter((s) => norm(s.replace(/[\\/][^\\/]+$/, '')) !== norm(destDir));
     const skipped = sources.length - movable.length;
     if (skipped) MI.toast(skipped + ' 个项目已在目标目录，跳过', 'ok');
     if (!movable.length) return 0;
-    sources = movable;
-    // 同名预检（主进程 existsSync），有冲突先确认再动手——不再静默自动改名
-    let overwrite = false;
-    let conflicts = [];
-    try { conflicts = await window.myIDE.checkConflict(sources, destDir); } catch {}
-    if (conflicts.length) {
-      const show = conflicts.length > 5 ? conflicts.slice(0, 5).join('、') + ' 等 ' + conflicts.length + ' 项' : conflicts.join('、');
-      overwrite = await Modal.confirm('覆盖同名文件', '目标目录已存在同名项：\n' + show + '\n\n覆盖后原有内容将被替换。是否继续？');
-      if (!overwrite) { MI.toast('已取消' + actionLabel, 'ok'); return 0; }
+    const targets=movable.map(s=>destDir+'/'+s.split(/[\\/]/).pop());
+    const perform=async(dirty=[])=>{
+      if(dirty.length&&!await Modal.confirm('复制与未保存的输入',dirty.map(d=>d.path.split(/[\\/]/).pop()).join('、')+' 有未保存的输入。\n\n复制使用磁盘版本；目标输入仍保留，之后需比较磁盘或另存副本。是否继续？'))return {cancelled:true};
+      if(rootPath!==operationRoot)return {error:'项目已切换，复制未执行',errorCode:'PROJECT_CHANGED'};
+      const prepared=await window.myIDE.fs.copyPrepare(operationRoot,movable,destDir);
+      if(!prepared?.ok)return prepared;
+      let overwrite=false;
+      if(prepared.conflicts.length){
+        const show=prepared.conflicts.slice(0,5).join('、')+(prepared.conflicts.length>5?' 等 '+prepared.conflicts.length+' 项':'');
+        overwrite=await Modal.confirm('覆盖同名文件','目标目录已存在同名项：\n'+show+'\n\n覆盖前原字节已保留；目录合并保留未选内容。可从「恢复文件操作」撤销或导出。是否继续？');
+        if(!overwrite)return {cancelled:true,operationId:prepared.operationId};
+      }
+      if(rootPath!==operationRoot)return {error:'项目已切换，复制未执行；恢复记录已保留',errorCode:'PROJECT_CHANGED'};
+      const result=await window.myIDE.fs.copyCommit(operationRoot,prepared.operationId,overwrite);
+      return {...result,operationId:prepared.operationId,targets:prepared.targets};
+    };
+    const result=window.Viewer?.withCopyChange?await Viewer.withCopyChange(movable,targets,perform):await perform();
+    if(result?.operationId&&result.published)pushUndo({type:'copy',operationId:result.operationId,projectRoot:operationRoot,targets:result.targets,label:actionLabel+' '+result.targets.length+' 项'});
+    if(result?.cancelled){MI.toast('已取消'+actionLabel+(result.operationId?'；恢复记录已保留':''),'ok');return 0;}
+    if(result?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
+    if(!result?.ok){MI.toast(actionLabel+'失败: '+(result?.error||'未返回成功')+'；可从「恢复文件操作」核对已完成部分','err');return 0;}
+    MI.toast('✅ 已'+actionLabel+' '+result.targets.length+' 项'+(rootPath!==operationRoot?'（原项目）':''),'ok');return result.targets.length;
+  }
+
+  async function restoreCopy(operationRoot,record) {
+    const perform=async(dirty=[])=>{
+      if(dirty.length&&!await Modal.confirm('恢复与未保存的输入','恢复只改变磁盘文件；当前输入仍保留，之后需比较磁盘或另存副本。是否继续？'))return {cancelled:true};
+      if(rootPath!==operationRoot)return {error:'项目已切换，恢复未执行',errorCode:'PROJECT_CHANGED'};
+      return window.myIDE.fs.copyUndo(operationRoot,record.operationId);
+    };
+    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],record.targets||[],perform):await perform();
+    if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
+    if(r?.ok){for(let i=undoStack.length-1;i>=0;i--)if(undoStack[i].operationId===record.operationId)undoStack.splice(i,1);MI.toast('↩ 已恢复 '+record.label,'ok');}
+    else if(!r?.cancelled)MI.toast('恢复未完成: '+(r?.error||'未返回成功')+'；记录已保留，可重试或导出','err');
+    return r;
+  }
+
+  async function showCopyRecovery() {
+    if(!rootPath)return;
+    const operationRoot=rootPath,box=document.createElement('div');box.className='copy-recovery';
+    const head=document.createElement('div');head.className='m-head';head.textContent='恢复文件操作';
+    const close=document.createElement('span');close.className='x';close.textContent='✕';close.onclick=()=>{const i=Modal.stack.indexOf(box);if(i>=0)Modal.stack.splice(i,1);box.remove();if(!Modal.stack.length)document.getElementById('modal-mask').classList.add('hidden');};head.appendChild(close);
+    const body=document.createElement('div');body.className='m-body';box.append(head,body);Modal.show(box);
+    let busy=false;
+    const phases={preparing:'准备中断',prepared:'已准备，未发布','prepare-failed':'准备失败',copying:'复制中断',complete:'已复制',partial:'部分复制','undo-partial':'部分恢复',undone:'已恢复',uncertain:'结果待核对',corrupt:'记录不可读取'};
+    async function refresh(){const r=await window.myIDE.fs.copyList(operationRoot);if(!box.isConnected)return;body.replaceChildren();
+      const note=document.createElement('p');note.textContent='覆盖前的原字节与实际新增项按项目持久保留。恢复会核对当前版本；后来编辑的文件不会被旧记录删除或覆盖。';body.appendChild(note);
+      if(!r?.ok){note.textContent=r?.error||'无法读取恢复记录';return;}
+      if(!r.records.length){const empty=document.createElement('p');empty.textContent='当前项目没有恢复记录';body.appendChild(empty);}
+      for(const record of r.records){
+        const row=document.createElement('div');row.className='copy-recovery-row';
+        const text=document.createElement('div');text.textContent=record.label+' · '+(phases[record.phase]||'结果待核对')+(record.createdAt?' · '+new Date(record.createdAt).toLocaleString():'');row.appendChild(text);
+        if(record.temporaryPaths?.length){const pending=document.createElement('p');pending.textContent='保留的暂存项：'+record.temporaryPaths.join('、');row.appendChild(pending);}
+        const buttons=document.createElement('div');buttons.className='copy-recovery-actions';row.appendChild(buttons);
+        const add=(label,action,disabled=false)=>{const b=document.createElement('button');b.className='tb-btn';b.textContent=label;b.disabled=disabled;b.onclick=async()=>{
+          if(busy)return;if(rootPath!==operationRoot){MI.toast('项目已切换，请重新打开恢复文件操作','err');return;}
+          busy=true;buttons.querySelectorAll('button').forEach(x=>x.disabled=true);
+          try{await action();}catch(e){MI.toast(String(e.message||e),'err');}finally{busy=false;await refresh();}
+        };buttons.appendChild(b);};
+        add('恢复',()=>restoreCopy(operationRoot,record),!record.hasChanges||['corrupt','uncertain'].includes(record.phase));
+        add('导出副本',async()=>{const r=await window.myIDE.fs.copyExport(operationRoot,record.operationId);if(r?.ok)MI.toast('恢复副本已导出：'+r.path,'ok');else if(!r?.cancelled)MI.toast(r?.error||'导出失败，记录已保留','err');},record.phase==='corrupt');
+        add('打开恢复目录',async()=>{const r=await window.myIDE.fs.copyOpen(record.operationId);if(r?.error)MI.toast(r.error,'err');});
+        add('清理记录',async()=>{if(!await Modal.confirm('清理恢复记录','将永久删除此记录的原字节恢复副本，之后不能用它撤销。磁盘目标不变。建议先导出副本。是否继续？'))return;if(rootPath!==operationRoot)return;const r=await window.myIDE.fs.copyClear(operationRoot,record.operationId);if(r?.ok)MI.toast('恢复记录已清理','ok');else MI.toast(r?.error||'清理失败，记录已保留','err');},record.phase==='corrupt');
+        body.appendChild(row);
+      }
     }
-    let ok = 0;
-    const created = [];
-    for (const s of sources) {
-      const r = await window.myIDE.fsCopy(s, destDir, overwrite);
-      if (r.ok) { ok++; created.push(r.target); }
-      else if (!r.conflict) MI.toast(actionLabel + '失败: ' + (r.error || s), 'err');
-    }
-    if (ok) {
-      pushUndo({ type: 'paste', paths: created, label: actionLabel + ' ' + ok + ' 个文件' });
-      invalidateAll();
-      render();
-      App.refreshGit();
-      MI.toast('✅ 已' + actionLabel + ' ' + ok + ' 个文件' + (conflicts.length ? '（同名已覆盖）' : ''), 'ok');
-    }
-    return ok;
+    await refresh();
   }
 
   async function pasteTo(destDir) {
@@ -881,6 +925,10 @@ const Tree = (() => {
   async function undo() {
     if(undoBusy)return;
     const latest=undoStack[undoStack.length-1];
+    if(latest?.type==='copy'){
+      if(DocumentPaths.key(rootPath)!==DocumentPaths.key(latest.projectRoot)){MI.toast('此撤销属于另一项目，请先切回；记录已保留','err');return;}
+      undoBusy=true;try{await restoreCopy(latest.projectRoot,latest);}finally{undoBusy=false;}return;
+    }
     if(latest?.type==='create') {
       if(DocumentPaths.key(rootPath)!==DocumentPaths.key(latest.projectRoot||'')){MI.toast('此撤销属于项目 '+latest.projectRoot+'，请先切回该项目；记录已保留','err');return;}
       if(!latest.after){MI.toast('新建后的版本未能核对，记录已保留，请先核对磁盘','err');return;}
@@ -917,7 +965,6 @@ const Tree = (() => {
         if (!r || !r.ok) { undoStack.push(a); throw Error(r?.error || '恢复失败'); }
       }
       else if (a.type === 'move') await window.myIDE.fs.move(a.newPath, a.oldDir);
-      else if (a.type === 'paste') { for (const p of a.paths) await window.myIDE.fs.remove(p); }
       invalidateAll();
       render();
       App.refreshGit();
@@ -975,6 +1022,7 @@ const Tree = (() => {
     mk('📁 新建文件夹', () => createItem(item, 'dir'));
     mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
     mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
+    mk('↩ 恢复文件操作', () => showCopyRecovery());
     if (!multi) mk('🔤 重命名', () => renameItem(item));
     mk('📋 复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) copyPath(getSelection().join('\n'));
@@ -1291,7 +1339,7 @@ const Tree = (() => {
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
     renameItem,
-    createItem,
+    createItem, copyInto, showCopyRecovery,
     // 快捷键入口：对当前选中项重命名（无选中时提示）
     renameSelected() {
       if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }

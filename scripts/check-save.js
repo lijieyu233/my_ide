@@ -49,14 +49,17 @@ os.homedir = () => path.join(temp, 'home');
 if (!process.argv.includes('--headless')) process.argv.push('--headless');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lines = [];
-let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false;
+let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false, releaseCopy = null, copyStarted = false;
 const add = (name, ok) => {
   if (ok) passed++; else failed++;
   lines.push((ok ? 'PASS ' : 'FAIL ') + name);
   console.log(lines[lines.length - 1]);
 };
 const register = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:undoCreate' ? async(...args)=>{
+ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:copyCommit' ? async(...args)=>{
+  if(releaseCopy){copyStarted=true;await releaseCopy.promise;releaseCopy=null;}
+  return handler(...args);
+} : channel === 'fs:undoCreate' ? async(...args)=>{
   if(releaseCreateUndo){createUndoStarted=true;await releaseCreateUndo.promise;releaseCreateUndo=null;}
   return handler(...args);
 } : channel === 'fs:pickSave' ? () => saveChoice : channel === 'fs:writeFile' ? async (...args) => {
@@ -357,6 +360,38 @@ app.whenReady().then(async () => {
     add('真实旧基线保存拒绝复活已撤销路径',createNoRevive.errorCode==='VERSION_CONFLICT'&&!fs.existsSync(latePath)&&await run('Viewer.activeTab.dirty'));
     const cleanPath=path.join(projectA,'正常撤销.txt');await createWithTree('正常撤销.txt','file');await run('Tree.undo()');
     add('真实干净新文件撤销关闭对应标签且保留其他dirty输入',!fs.existsSync(cleanPath)&&await run(`!Viewer.openTabs.some(t=>t.path===${JSON.stringify(cleanPath)})&&Viewer.openTabs.some(t=>t.path===${JSON.stringify(latePath)}&&t.dirty&&t.content==="撤销提交等待中新输入")`));
+    {
+    const copySource=path.join(temp,'copy-source'),copyTarget=path.join(projectA,'覆盖恢复.txt');fs.mkdirSync(copySource);
+    const copyFile=path.join(copySource,'覆盖恢复.txt');fs.writeFileSync(copyFile,'复制来源');fs.writeFileSync(copyTarget,'覆盖前原正文');fs.writeFileSync(copyTarget+':private','原数据流');
+    await run(`(async()=>{window.__copyConfirm=Modal.confirm;Modal.confirm=async()=>true;await Viewer.openFile(${JSON.stringify(copyTarget)});await Tree.copyInto([${JSON.stringify(copyFile)}],${JSON.stringify(projectA)},"粘贴");})()`);
+    add('真实Tree覆盖粘贴重载干净CM6并接新磁盘基线',fs.readFileSync(copyTarget,'utf8')==='复制来源'&&await run('Viewer.cm.getValue()==="复制来源"&&!Viewer.activeTab.dirty&&!!Viewer.activeTab.diskVersion'));
+    await run('Tree.undo()');
+    add('真实Tree覆盖undo恢复原字节及NTFS数据流并同步CM6',fs.readFileSync(copyTarget,'utf8')==='覆盖前原正文'&&fs.readFileSync(copyTarget+':private','utf8')==='原数据流'&&await run('Viewer.cm.getValue()==="覆盖前原正文"&&!Viewer.activeTab.dirty'));
+    const mergeSource=path.join(copySource,'merge'),mergeTarget=path.join(projectA,'merge');fs.mkdirSync(mergeSource);fs.mkdirSync(mergeTarget);fs.writeFileSync(path.join(mergeSource,'same.bin'),Buffer.from([255,1]));fs.writeFileSync(path.join(mergeSource,'new.txt'),'新增');fs.writeFileSync(path.join(mergeTarget,'same.bin'),Buffer.from([0,128]));fs.writeFileSync(path.join(mergeTarget,'keep.txt'),'未参与合并');
+    await run(`Tree.copyInto([${JSON.stringify(mergeSource)}],${JSON.stringify(projectA)},"粘贴")`);
+    add('真实Tree目录合并覆盖/新增且keep原样保留',fs.readFileSync(path.join(mergeTarget,'same.bin')).equals(Buffer.from([255,1]))&&fs.readFileSync(path.join(mergeTarget,'keep.txt'),'utf8')==='未参与合并');await run('Tree.undo()');
+    add('真实Tree目录merge撤销保留旧目录及keep，只移除实际新增项',fs.existsSync(mergeTarget)&&!fs.existsSync(path.join(mergeTarget,'new.txt'))&&fs.readFileSync(path.join(mergeTarget,'same.bin')).equals(Buffer.from([0,128]))&&fs.readFileSync(path.join(mergeTarget,'keep.txt'),'utf8')==='未参与合并');
+    const laterSource=path.join(copySource,'后来副本.txt'),laterTarget=path.join(projectA,'后来副本.txt');fs.writeFileSync(laterSource,'原复制');await run(`Tree.copyInto([${JSON.stringify(laterSource)}],${JSON.stringify(projectA)},"粘贴")`);fs.writeFileSync(laterTarget,'后来写入');await run('Tree.undo()');
+    add('真实新副本后来被编辑，旧undo拒绝删除且持久记录仍在',fs.readFileSync(laterTarget,'utf8')==='后来写入'&&(await run(`myIDE.fs.copyList(${JSON.stringify(projectA)})`)).records.some(r=>r.phase==='undo-partial'&&r.hasChanges));
+    await run(`Viewer.openFile(${JSON.stringify(copyTarget)});Viewer.cm.setValue("尚未保存的覆盖目标输入")`);
+    await run(`Tree.copyInto([${JSON.stringify(copyFile)}],${JSON.stringify(projectA)},"粘贴")`);
+    add('真实dirty目标覆盖只改磁盘，CM6输入与旧版本保留',fs.readFileSync(copyTarget,'utf8')==='复制来源'&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="尚未保存的覆盖目标输入"&&Viewer.activeTab.saveErrorCode==="VERSION_CONFLICT"'));
+    const copyConflict=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('真实dirty旧基线不能无提示覆盖复制结果',copyConflict.errorCode==='VERSION_CONFLICT'&&fs.readFileSync(copyTarget,'utf8')==='复制来源');
+    await run('Tree.undo()');
+    add('真实dirty覆盖undo恢复磁盘仍不丢编辑器输入',fs.readFileSync(copyTarget,'utf8')==='覆盖前原正文'&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="尚未保存的覆盖目标输入"'));
+    const lateCopySource=path.join(copySource,'复制等待输入.txt'),lateCopyTarget=path.join(projectA,'复制等待输入.txt');fs.writeFileSync(lateCopySource,'等待发布正文');fs.writeFileSync(lateCopyTarget,'等待前正文');await run(`Viewer.openFile(${JSON.stringify(lateCopyTarget)})`);
+    let releaseCopyGate;copyStarted=false;releaseCopy={promise:new Promise(resolve=>{releaseCopyGate=resolve;})};
+    await run(`window.__copyPending=Tree.copyInto([${JSON.stringify(lateCopySource)}],${JSON.stringify(projectA)},"粘贴");"started"`);
+    for(let i=0;i<100&&!copyStarted;i++)await sleep(20);if(!copyStarted)throw Error('复制未进入受控真实IPC');
+    await run('Viewer.cm.setValue("发布等待中新输入")');const blockedCopySave=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('真实复制等待期间新保存被拒绝',blockedCopySave.errorCode==='PATH_BUSY');releaseCopyGate();await run('window.__copyPending');
+    add('真实复制发布后迟到输入留在CM6及旧版本',fs.readFileSync(lateCopyTarget,'utf8')==='等待发布正文'&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="发布等待中新输入"'));
+    const lateCopySave=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('真实复制迟到输入旧基线保存冲突且不改磁盘',lateCopySave.errorCode==='VERSION_CONFLICT'&&fs.readFileSync(lateCopyTarget,'utf8')==='等待发布正文');
+    await run('Tree.showCopyRecovery()');
+    add('真实持久恢复列表入口与各操作按钮可见',await run('document.querySelector(".copy-recovery").textContent.includes("后来副本.txt")&&[...document.querySelectorAll(".copy-recovery button")].some(b=>b.textContent==="导出副本"&&!b.disabled)'));
+    win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');
+    for(const theme of ['dark','light']){await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(100);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(ROOT,'.ui-check-trash','copy115-recovery-'+theme+'.png'),Buffer.from(shot.data,'base64'));}
+    win.webContents.debugger.detach();await run('Modal.hide();Modal.confirm=__copyConfirm;true');
+    }
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
   } finally {

@@ -48,11 +48,13 @@ async function connect(address) {
   };
 }
 
-async function checkPackaged(executable, noGit = false) {
+async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) {
   executable = path.resolve(executable);
   if (!fs.existsSync(executable)) throw Error('找不到打包可执行文件：' + executable);
   if (typeof WebSocket !== 'function') throw Error('打包检查客户端需要Node.js 22或更高版本');
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-packaged-check-'));
+  // 宿主受限令牌有时只授予工作区写权限；可指定隔离夹具落点，不给真实用户目录扩权。
+  tempBase=path.resolve(tempBase);fs.mkdirSync(tempBase,{recursive:true});
+  const temp = fs.mkdtempSync(path.join(tempBase, 'myide-packaged-check-'));
   const profile = path.join(temp, 'profile'), home = path.join(temp, 'home'), project = path.join(temp, 'project');
   for (const dir of [profile, home, project]) fs.mkdirSync(dir);
   const file = path.join(project, 'notes.txt'), database = path.join(project, 'test.db');
@@ -154,6 +156,21 @@ async function checkPackaged(executable, noGit = false) {
     await renderer('Tree.undo()');add('包内新文件撤销关闭正确标签',!fs.existsSync(newFile)&&await renderer(`!Viewer.openTabs.some(t=>t.path===${JSON.stringify(newFile)})`));
     const createConflict=await renderer(`myIDE.fs.createItem(${JSON.stringify(project)},${JSON.stringify(project)},"notes.txt","file")`);
     add('包内同名新建拒绝并保留原正文',createConflict.errorCode==='DEST_CONFLICT'&&fs.readFileSync(file,'utf8')==='迁移保留的包内输入');
+    const copySource=path.join(temp,'copy-source');fs.mkdirSync(copySource);const copyFile=path.join(copySource,'notes.txt');fs.writeFileSync(copyFile,'包内复制正文');fs.writeFileSync(file+':private','包内原数据流');
+    await renderer(`(async()=>{const confirm=Modal.confirm;try{Modal.confirm=async()=>true;await Tree.copyInto([${JSON.stringify(copyFile)}],${JSON.stringify(project)},"粘贴");}finally{Modal.confirm=confirm;}})()`);
+    add('包内worker及原生备份/覆盖模块可加载且重载干净CM6',fs.readFileSync(file,'utf8')==='包内复制正文'&&await renderer('Viewer.cm.getValue()==="包内复制正文"&&!Viewer.activeTab.dirty'));
+    const records=await renderer(`myIDE.fs.copyList(${JSON.stringify(project)})`);const copied=records.records.find(r=>r.hasChanges);
+    add('包内独立profile保存完整持久恢复记录',!!copied&&fs.existsSync(path.join(profile,'file-operations',copied.operationId,'manifest.json')));
+    await evaluate("new Promise(resolve=>{const wc=process.mainModule.require('electron').BrowserWindow.getAllWindows()[0].webContents;wc.once('did-finish-load',()=>resolve(true));wc.reload();})");
+    await sleep(300);await renderer(`App.openProject(${JSON.stringify(project)})`);
+    await renderer('Tree.undo()');
+    add('包内窗口重载丢失内存undo仍保留复制结果',fs.readFileSync(file,'utf8')==='包内复制正文');
+    await renderer('Tree.showCopyRecovery()');
+    add('包内重载后恢复入口仍可发现操作',await renderer('document.querySelector(".copy-recovery").textContent.includes("notes.txt")'));
+    await renderer('[...document.querySelectorAll(".copy-recovery button")].find(b=>b.textContent==="恢复"&&!b.disabled).click();true');
+    for(let i=0;i<100&&fs.readFileSync(file,'utf8')!=='迁移保留的包内输入';i++)await sleep(50);
+    add('包内持久记录恢复原正文及ADS，不依赖内存栈',fs.readFileSync(file,'utf8')==='迁移保留的包内输入'&&fs.readFileSync(file+':private','utf8')==='包内原数据流');
+    await renderer('Modal.hide();true');
     console.log('CHECK Git init/status');
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);
@@ -189,7 +206,7 @@ async function checkPackaged(executable, noGit = false) {
     if (client) client.close();
     await exited;
     const resolved = path.resolve(temp);
-    if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('myide-packaged-check-')) throw Error('Unsafe cleanup');
+    if (path.dirname(resolved) !== tempBase || !path.basename(resolved).startsWith('myide-packaged-check-')) throw Error('Unsafe cleanup');
     for (let i = 0; ; i++) {
       try { fs.rmSync(resolved, { recursive: true, force: true }); break; }
       catch (e) { if (i === 9) throw e; await sleep(200); }
@@ -201,6 +218,6 @@ async function checkPackaged(executable, noGit = false) {
 module.exports = { checkPackaged };
 if (require.main === module) {
   if (!process.argv[2]) { console.error('用法：node scripts/check-packaged.js <MyIDE.exe> [--no-git]'); process.exitCode = 1; }
-  else checkPackaged(process.argv[2], process.argv.includes('--no-git')).then((result) => console.log(JSON.stringify(result)))
+  else checkPackaged(process.argv[2], process.argv.includes('--no-git'),process.argv.includes('--fixture-base')?process.argv[process.argv.indexOf('--fixture-base')+1]:undefined).then((result) => console.log(JSON.stringify(result)))
     .catch((e) => { console.error(e.stack || e); process.exitCode = 1; });
 }

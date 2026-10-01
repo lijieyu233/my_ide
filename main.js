@@ -575,6 +575,24 @@ ipcMain.handle('fs:rename', (_e, p, newName, condition) => pathResult(() => Path
 // 移动文件/目录到目标目录（树内拖拽移动；重名自动改名 name (1).ext）
 ipcMain.handle('fs:move', (_e, src, destDir, condition) => pathResult(() => PathJobs.withMove(src,destDir,()=>PathJobs.run('moveTo',[src,destDir,condition]))));
 
+// 配额/阶段记录共用一条队列；原字节检查仍在worker，不能阻塞窗口或并发越过恢复预算。
+let copyTail=Promise.resolve();
+const copySerial=fn=>{const next=copyTail.catch(()=>{}).then(fn);copyTail=next;return next;};
+const copyRun=(op,...args)=>PathJobs.run('copy:'+op,[path.join(app.getPath('userData'),'file-operations'),...args]);
+const copyPrepare=(project,sources,dest)=>copySerial(()=>PathJobs.withRanges([...sources,dest],()=>copyRun('prepare',project,sources,dest)));
+const copyChange=(op,project,id,...args)=>copySerial(async()=>{const ranges=await copyRun('ranges',project,id);return PathJobs.withRanges(ranges,()=>copyRun(op,project,id,...args));});
+ipcMain.handle('fs:copyPrepare',(_e,project,sources,dest)=>pathResult(()=>copyPrepare(project,sources,dest)));
+ipcMain.handle('fs:copyCommit',(_e,project,id,overwrite)=>pathResult(()=>copyChange('commit',project,id,overwrite)));
+ipcMain.handle('fs:copyUndo',(_e,project,id)=>pathResult(()=>copyChange('undo',project,id)));
+ipcMain.handle('fs:copyList',(_e,project)=>pathResult(()=>copySerial(async()=>({ok:true,records:await copyRun('list',project)}))));
+ipcMain.handle('fs:copyClear',(_e,project,id)=>pathResult(()=>copySerial(()=>copyRun('clear',project,id))));
+ipcMain.handle('fs:copyExport',async(_e,project,id)=>pathResult(async()=>{
+  const picked=await dialog.showOpenDialog({title:'导出文件操作恢复副本',properties:['openDirectory']});
+  if(picked.canceled)return {cancelled:true};
+  return copySerial(()=>PathJobs.withRanges([picked.filePaths[0]],()=>copyRun('exportRecovery',project,id,picked.filePaths[0])));
+}));
+ipcMain.handle('fs:copyOpen',(_e,id)=>pathResult(async()=>{const folder=await copyRun('location',id);const error=await shell.openPath(folder);return error?{error}:{ok:true};}));
+
 ipcMain.handle('fs:remove', (_e, p) => {
   try {
     PathJobs.assertWritable(p);
@@ -888,18 +906,11 @@ ipcMain.handle('fs:checkExists', (_e, srcPaths, destDir) => {
   } catch { return []; }
 });
 // 复制文件/目录到目标目录（同名：默认返回 conflict 由前端确认；overwrite=true 直接覆盖）
-ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => {
-  try {
-    PathJobs.assertWritable(src);PathJobs.assertWritable(destDir);
-    const name = path.basename(src);
-    const target = path.join(destDir, name);
-    if (!overwrite && fs.existsSync(target)) return { conflict: true, target };
-    const st = fs.statSync(src);
-    if (st.isDirectory()) fs.cpSync(src, target, { recursive: true });
-    else fs.copyFileSync(src, target);
-    return { ok: true, target };
-  } catch (e) { return { error: String(e.message || e), errorCode:e.code||'COPY_FAILED' }; }
-});
+ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => pathResult(async()=>{
+  const prepared=await copyPrepare(destDir,[src],destDir);
+  if(!prepared.ok)return prepared;
+  return copyChange('commit',destDir,prepared.operationId,!!overwrite);
+}));
 
 // ---------- IPC：Git（worker 线程执行，主进程不阻塞）----------
 const { Worker } = require('worker_threads');

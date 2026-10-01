@@ -8,8 +8,10 @@ function assertWritable(p){
   if([...locks].some(ranges=>ranges.some(range=>overlaps(range,p))))throw fail('PATH_BUSY','相关路径正在操作，未执行写入，请完成后重试');
 }
 async function withMove(source,target,perform){
-  assertWritable(source);assertWritable(target);
-  const ranges=[source,target];locks.add(ranges);
+  return withRanges([source,target],perform);
+}
+async function withRanges(ranges,perform){
+  ranges.forEach(assertWritable);locks.add(ranges);
   try{return await perform();}finally{locks.delete(ranges);}
 }
 function run(op,args){
@@ -26,4 +28,4 @@ function run(op,args){
     worker.once('exit',()=>{if(!settled)finish(fail('MOVE_UNCERTAIN','路径worker未返回结果，请核对源与目标后重试'));});
   });
 }
-module.exports={run,withMove,assertWritable};
+module.exports={run,withMove,withRanges,assertWritable};

@@ -3553,3 +3553,8 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .save-compare pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; height: min(45vh, 360px); margin: 0; padding: 10px; background: var(--bg-input); border: 1px solid var(--btn-border); }
 .save-recovery .m-foot { flex-wrap: wrap; }
 @media (max-width: 600px) { .save-compare { flex-direction: column; } .save-compare pre { height: 20vh; } }
+/* 记录按文件操作阅读；窄窗口可换行，原路径名称不能撑出弹窗。 */
+.copy-recovery { width:min(720px,90vw); }
+.copy-recovery .m-body { max-height:65vh; overflow:auto; }
+.copy-recovery-row { border-top:1px solid var(--border); padding:12px 0; overflow-wrap:anywhere; }
+.copy-recovery-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }

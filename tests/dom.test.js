@@ -3,6 +3,7 @@
 const { JSDOM } = require('jsdom');
 const fs = require('fs');
 const path = require('path');
+const assert = require('assert/strict');
 
 let passed = 0, failed = 0;
 function ok(name, fn) {
@@ -115,6 +116,9 @@ function makeDom() {
   Object.defineProperty(w.navigator,'platform',{value:'Win32'});
   const normMove=p=>String(p).replace(/\\/g,'/');
   const fakeSnapshot=p=>({schema:1,path:normMove(p),hash:JSON.stringify(Object.entries(FAKE_FS).filter(([f])=>f===normMove(p)||f.startsWith(normMove(p)+'/')).sort()),count:1});
+  const copyRecords=new Map();let copySeq=0;
+  const entryClone=value=>value==null?null:JSON.parse(JSON.stringify(value));
+  const entryHash=p=>JSON.stringify(FAKE_FS[p]||null);
   const relocateFake=async(src,dest,condition={})=>{
     src=normMove(src);dest=normMove(dest);
     if(!FAKE_FS[src])return {error:'not found',errorCode:'ENOENT'};
@@ -167,6 +171,34 @@ function makeDom() {
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
+      copyPrepare: async(project,sources,dest)=>{
+        sources=sources.map(normMove);dest=normMove(dest);const targets=sources.map(s=>dest+'/'+s.split('/').pop()),rows=[];
+        for(let i=0;i<sources.length;i++){
+          const src=sources[i],entries=Object.keys(FAKE_FS).filter(p=>p===src||p.startsWith(src+'/'));
+          if(!entries.length)entries.push(src);
+          for(const p of entries){const target=targets[i]+p.slice(src.length),payload=entryClone(FAKE_FS[p]||{type:'file',content:'external content'});if(payload.children)payload.children=payload.children.map(c=>targets[i]+c.slice(src.length));rows.push({source:p,target,payload,before:entryClone(FAKE_FS[target]),sourceHash:entryHash(p),beforeHash:entryHash(target)});}
+        }
+        const operationId='fake-copy-'+(++copySeq);copyRecords.set(operationId,{operationId,projectRoot:project,targets,rows,phase:'prepared',label:targets.map(p=>p.split('/').pop()).join('、')});
+        return {ok:true,operationId,targets,conflicts:rows.filter(r=>r.before?.type==='file').map(r=>r.target.split('/').pop())};
+      },
+      copyCommit: async(project,id,overwrite)=>{
+        const record=copyRecords.get(id);if(!record||record.projectRoot!==project)return {error:'wrong project',errorCode:'PROJECT_CHANGED'};
+        if(record.rows.some(r=>entryHash(r.source)!==r.sourceHash||entryHash(r.target)!==r.beforeHash))return {error:'changed',errorCode:'STALE_OPERATION'};
+        if(!overwrite&&record.rows.some(r=>r.before?.type==='file'))return {conflict:true};
+        for(const r of record.rows){if(r.before?.type==='dir')continue;FAKE_FS[r.target]=entryClone(r.payload);const parent=r.target.slice(0,r.target.lastIndexOf('/'));if(FAKE_FS[parent]?.children&&!FAKE_FS[parent].children.includes(r.target))FAKE_FS[parent].children.push(r.target);r.published=true;}
+        for(const r of record.rows)r.afterHash=entryHash(r.target);record.phase='complete';
+        return {ok:true,operationId:id,targets:record.targets,published:record.rows.filter(r=>r.published).length,changedPaths:record.rows.filter(r=>r.published).map(r=>r.target)};
+      },
+      copyUndo: async(project,id)=>{
+        const record=copyRecords.get(id);if(!record||record.projectRoot!==project)return {error:'wrong project',errorCode:'PROJECT_CHANGED'};
+        const changedPaths=[];let failed=false;
+        for(const r of [...record.rows].reverse()){if(!r.published)continue;if(entryHash(r.target)!==r.afterHash){failed=true;continue;}if(r.before)FAKE_FS[r.target]=entryClone(r.before);else await w.myIDE.fs.remove(r.target);r.published=false;changedPaths.push(r.target);}
+        record.phase=failed?'undo-partial':'undone';return {ok:!failed,error:failed?'later changes':undefined,changedPaths};
+      },
+      copyList: async(project)=>({ok:true,records:[...copyRecords.values()].filter(r=>r.projectRoot===project).map(r=>({...r,hasChanges:r.rows.some(item=>item.published),remaining:r.rows.filter(item=>item.published).length}))}),
+      copyClear: async(_project,id)=>{copyRecords.delete(id);return {ok:true};},
+      copyExport: async()=>({ok:true,path:'C:/recovery'}),
+      copyOpen: async()=>({ok:true}),
       createItem: async(project,parent,name,type)=>{
         parent=normMove(parent);const p=parent+'/'+name;
         if(!FAKE_FS[parent]||!FAKE_FS[project]||!(parent===project||parent.startsWith(project+'/')))return {error:'invalid parent',errorCode:'OUTSIDE_PROJECT'};
@@ -8358,6 +8390,43 @@ assert_(panel, 'CM6 搜索面板出现');
       Object.keys(FAKE_FS).forEach(p=>delete FAKE_FS[p]);Object.assign(FAKE_FS,beforeFiles);
       fakeFsCbs.splice(cbStart);
     }
+  });
+
+  await saveCase('覆盖粘贴重载干净标签，undo恢复原正文与磁盘基线',async(d,viewer,bridge)=>{
+    const w=d.window;w.Modal.confirm=async()=>true;const old=viewer.activeTab.content;
+    const source='C:/external/notes.txt';FAKE_FS[source]={type:'file',content:'复制来的内容'};
+    assert.equal(await w.Tree.copyInto([source],P,'粘贴'),1);assert.equal(viewer.cm.getValue(),'复制来的内容');assert.equal(viewer.activeTab.diskVersion.hash,'复制来的内容');
+    await w.Tree.undo();assert.equal(FAKE_FS[P+'/notes.txt'].content,old);assert.equal(viewer.cm.getValue(),old);assert(!viewer.activeTab.dirty);
+  });
+  await saveCase('覆盖目标dirty输入与旧版本保留，取消无磁盘副作用',async(d,viewer)=>{
+    const w=d.window,source='C:/external/notes.txt';FAKE_FS[source]={type:'file',content:'复制正文'};
+    viewer.cm.setValue('尚未保存');const oldVersion=viewer.activeTab.diskVersion,oldDisk=FAKE_FS[P+'/notes.txt'].content;
+    w.Modal.confirm=async()=>false;assert.equal(await w.Tree.copyInto([source],P,'粘贴'),0);assert.equal(FAKE_FS[P+'/notes.txt'].content,oldDisk);
+    w.Modal.confirm=async()=>true;await w.Tree.copyInto([source],P,'粘贴');assert.equal(FAKE_FS[P+'/notes.txt'].content,'复制正文');assert.equal(viewer.cm.getValue(),'尚未保存');assert(viewer.activeTab.dirty);assert.equal(viewer.activeTab.diskVersion,oldVersion);assert.equal(viewer.activeTab.saveErrorCode,'VERSION_CONFLICT');
+  });
+  await saveCase('复制源等待旧保存，期间新保存被闸门拒绝',async(d,viewer,bridge)=>{
+    const w=d.window,wait=deferred(),write=bridge.writeFile,prepare=bridge.copyPrepare;let prepared=0;
+    bridge.writeFile=async(...args)=>{await wait.promise;return write(...args);};bridge.copyPrepare=async(...args)=>{prepared++;return prepare(...args);};w.Modal.confirm=async()=>true;
+    viewer.cm.setValue('旧队列正文');const oldSave=viewer.saveTab(0);await tick();const pending=w.Tree.copyInto([P+'/notes.txt'],P+'/src','粘贴');await tick();assert.equal(prepared,0);
+    viewer.cm.setValue('等待期间新输入');assert.equal((await viewer.saveTab(0)).errorCode,'PATH_BUSY');wait.resolve();await oldSave;assert.equal(await pending,1);assert.equal(FAKE_FS[P+'/src/notes.txt'].content,'旧队列正文');assert.equal(viewer.cm.getValue(),'等待期间新输入');assert(viewer.activeTab.dirty);
+  });
+  await saveCase('发布等待中新输入保留且不会被迟到重载覆盖',async(d,viewer,bridge)=>{
+    const w=d.window,wait=deferred(),commit=bridge.copyCommit,source='C:/external/notes.txt';FAKE_FS[source]={type:'file',content:'磁盘新正文'};w.Modal.confirm=async()=>true;
+    const oldVersion=viewer.activeTab.diskVersion;let started=false;bridge.copyCommit=async(...args)=>{started=true;await wait.promise;return commit(...args);};
+    const pending=w.Tree.copyInto([source],P,'粘贴');for(let i=0;i<20&&!started;i++)await tick();assert(started);viewer.cm.setValue('发布期间输入');wait.resolve();await pending;
+    assert.equal(FAKE_FS[P+'/notes.txt'].content,'磁盘新正文');assert.equal(viewer.cm.getValue(),'发布期间输入');assert(viewer.activeTab.dirty);assert.equal(viewer.activeTab.diskVersion,oldVersion);
+  });
+  await saveCase('同名确认绑定项目与准备版本，迟到确认不复制新项目',async(d,viewer,bridge)=>{
+    const w=d.window,wait=deferred(),source='C:/external/notes.txt';FAKE_FS[source]={type:'file',content:'复制正文'};w.Modal.confirm=()=>wait.promise;
+    let commits=0;bridge.copyCommit=async()=>{commits++;return {ok:true};};const old=FAKE_FS[P+'/notes.txt'].content;
+    const pending=w.Tree.copyInto([source],P,'粘贴');await tick();await w.App.setRoot(P+'/src');wait.resolve(true);await pending;assert.equal(commits,0);assert.equal(FAKE_FS[P+'/notes.txt'].content,old);assert.equal((await bridge.copyList(P)).records.length,1);
+  });
+  await saveCase('后来编辑拒绝复制undo，持久列表导出/清理入口可用',async(d,viewer,bridge)=>{
+    const w=d.window,source='C:/external/new.txt';FAKE_FS[source]={type:'file',content:'初始'};await w.Tree.copyInto([source],P,'粘贴');FAKE_FS[P+'/new.txt'].content='后来';
+    await w.Tree.undo();assert.equal(FAKE_FS[P+'/new.txt'].content,'后来');assert((await bridge.copyList(P)).records[0].hasChanges);
+    await w.Tree.showCopyRecovery();assert(d.window.document.querySelector('.copy-recovery').textContent.includes('new.txt'));
+    assert([...d.window.document.querySelectorAll('.copy-recovery button')].some(b=>b.textContent==='导出副本'&&!b.disabled));
+    w.Modal.confirm=async()=>true;const clear=[...d.window.document.querySelectorAll('.copy-recovery button')].find(b=>b.textContent==='清理记录');clear.click();await tick();assert.equal((await bridge.copyList(P)).records.length,0);assert.equal(FAKE_FS[P+'/new.txt'].content,'后来');
   });
 
   await saveCase('旧保存回调不覆盖新输入或清 dirty', async (_d, viewer, bridge) => {
