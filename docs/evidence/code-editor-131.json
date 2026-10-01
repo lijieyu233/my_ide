@@ -1,0 +1,114 @@
+{
+  "date": "2026-10-02",
+  "baseline": "a1c155723c8fdfd270213f91bc0ef1bb7fa66c3c",
+  "mode": "独立JSDOM执行仓库CM6/TextLines/CodeEditor；真实EditorState交易与合成按键；AI仅内存延迟桥，0网络/0用户文件/0真实OS输入；非修复验收",
+  "sourceHashes": {
+    "renderer/vendor/cm6-bundle.min.js": "1e7640d49031843ba4b34b6dc64aca2bbae0d0e5c19533bb011298c1f54371ae",
+    "renderer/text-lines.js": "28082fbce7c594e8fefebd8e4f8eb86a26db31017ca665d7b4ae800ab05acc16",
+    "renderer/code-editor.js": "91be38896edff1a70528d4107d8d69bc4d8de612b48a1967fe90530489df4144"
+  },
+  "observations": [
+    {
+      "id": "C1",
+      "name": "真实CM6编辑与撤销保留混合行尾",
+      "detail": {
+        "editedRaw": "let alpha = 1;\r\nlet b = 2;\n",
+        "undoRaw": "let a = 1;\r\nlet b = 2;\n"
+      }
+    },
+    {
+      "id": "C2",
+      "name": "正常JS高亮语言解析",
+      "detail": {
+        "errors": 0
+      }
+    },
+    {
+      "id": "R1",
+      "name": "JSX未启用JSX语法配置",
+      "detail": {
+        "input": "const App = () => <main>Hello</main>;",
+        "currentErrors": [
+          {
+            "from": 18,
+            "to": 18
+          }
+        ],
+        "configuredErrors": []
+      }
+    },
+    {
+      "id": "R2",
+      "name": "TSX未启用JSX语法配置",
+      "detail": {
+        "input": "const App = () => <Widget label={\"ok\"} />;",
+        "currentErrors": [
+          {
+            "from": 26,
+            "to": 31
+          },
+          {
+            "from": 37,
+            "to": 37
+          },
+          {
+            "from": 39,
+            "to": 40
+          },
+          {
+            "from": 41,
+            "to": 41
+          }
+        ],
+        "configuredErrors": []
+      }
+    },
+    {
+      "id": "R3",
+      "name": "恢复EditorState继续调用旧创建回调",
+      "detail": {
+        "aChanges": [
+          "let other = 1;"
+        ],
+        "bChanges": []
+      }
+    },
+    {
+      "id": "R4",
+      "name": "默认状态未保留请求的两组选区",
+      "detail": {
+        "requested": 2,
+        "actual": 1,
+        "allowMultipleSelections": false
+      }
+    },
+    {
+      "id": "R5",
+      "name": "相同光标位置的旧正文建议仍显示并可接受",
+      "detail": {
+        "requestedBody": "光标前：\nlet other = 1\n⟨光标⟩\n光标后：\n;",
+        "currentBody": "var other = 1 OLD_SUGGESTION;",
+        "ghost": " OLD_SUGGESTION",
+        "accepted": true
+      }
+    },
+    {
+      "id": "R6",
+      "name": "关闭行内补全后在途响应仍显示",
+      "detail": {
+        "inlineComplete": false,
+        "ghost": " DISABLED_SUGGESTION"
+      }
+    },
+    {
+      "id": "R7",
+      "name": "另一编辑器的触发被全局busy吞掉且无后续请求",
+      "detail": {
+        "countWhileBusy": 1,
+        "finalCount": 1,
+        "ghostB": null
+      }
+    }
+  ],
+  "workspaceNote": "首次取证后另有未提交canEdit/动态只读/Viewer加载与查找保护开发改动；按当前源码哈希重跑9项。夹具不传canEdit，不评价生产Viewer闸门或完整标签生命周期。"
+}
