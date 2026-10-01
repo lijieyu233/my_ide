@@ -345,11 +345,17 @@ ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
   // 异步递归列出全部文件（Ctrl+P 快速打开用），过滤 .git/node_modules
   const MAX = 50000;
   const out = [];
+  let failure = null, failedDirectories = 0;
   const hiddenSet = new Set(['.git', 'node_modules']);
   async function walk(dir) {
     if (out.length >= MAX) return;
     let entries;
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+    catch (error) {
+      // 无权限或失效路径不能冒充「没有文件」；保留首个原因且不攒无界错误列表。
+      failure ||= '无法读取目录 ' + dir + '：' + String(error?.message || error);
+      failedDirectories++; return;
+    }
     for (const e of entries) {
       if (out.length >= MAX) return;
       if (hiddenSet.has(e.name) || (!showHidden && e.name.startsWith('.'))) continue;
@@ -359,7 +365,8 @@ ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
     }
   }
   await walk(root);
-  return { files: out, truncated: out.length >= MAX };
+  return { files: out, truncated: out.length >= MAX,
+    ...(failure ? { error: failure + (failedDirectories > 1 ? '；共 ' + failedDirectories + ' 个目录读取失败' : '') } : {}) };
 });
 
 ipcMain.handle('fs:grep', async (_e, root, query) => {

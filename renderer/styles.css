@@ -1994,6 +1994,7 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 /* ---------- 快速打开面板 ---------- */
 #qo-box { width: 560px; max-width: 90vw; }
 #qo-box .qo-head {
+  display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--text-bright);
   border-bottom: 1px solid var(--border);
 }
@@ -2012,6 +2013,12 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .qo-item .qo-rel { color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qo-item.sel { background: var(--bg-selected); }
 .qo-item.sel .qo-name { color: #fff; }
+#qo-box .qo-item.sel .qo-name { color: var(--text-bright); }
+#qo-box .qo-item.sel { box-shadow: inset 2px 0 var(--accent); }
+#qo-box .qo-name { max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+#qo-status { padding: 6px 14px; color: var(--text-dim); font-size: 12px; overflow-wrap: anywhere; }
+#qo-status:empty { display: none; }
+#qo-retry[hidden] { display: none; }
 .qo-empty { padding: 24px; text-align: center; color: var(--text-dim); font-size: 12px; }
 .qo-foot {
   padding: 6px 14px; font-size: 11px; color: var(--text-dim);

@@ -8418,6 +8418,94 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
 
+  const qoKey = (w, target, key, options = {}) => target.dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
+  const qoQuery = (w, value) => { const input=w.document.querySelector('#qo-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input; };
+  await saveCase('快速打开最近项方向键/回车和路径别名去重，点击不依赖悬停',async(d,viewer)=>{
+    const w=d.window;
+    w.localStorage.setItem('myide-recent',JSON.stringify([{path:P+'/README.md'},{path:'C:\\PROJ\\README.md'},{path:P+'/notes.txt'}]));
+    await w.QuickOpen.open();let input=w.document.querySelector('#qo-input');
+    assert.equal(w.document.querySelectorAll('#qo-list .qo-item').length,2);
+    qoKey(w,input,'ArrowDown');assert(w.document.querySelectorAll('#qo-list .qo-item')[1].classList.contains('sel'));
+    qoKey(w,input,'Enter');await tick();assert.equal(viewer.activeTab.path,P+'/notes.txt');assert(!w.document.querySelector('#qo-box'));
+    await w.QuickOpen.open();input=qoQuery(w,'readme');qoQuery(w,'');
+    const rows=[...w.document.querySelectorAll('#qo-list .qo-item')], clicked=rows.find(r=>r.title===P+'/README.md');
+    clicked.click();await tick();assert.equal(viewer.activeTab.path,P+'/README.md');
+  });
+  await saveCase('快速打开索引完成保持已选最近项，损坏最近记录不锁住面板',async(d,viewer,bridge)=>{
+    const w=d.window,gate=deferred();bridge.listAll=()=>gate.promise;
+    w.localStorage.setItem('myide-recent',JSON.stringify([{path:P+'/README.md'},{path:P+'/notes.txt'}]));
+    const opening=w.QuickOpen.open(),input=w.document.querySelector('#qo-input');qoKey(w,input,'ArrowDown');
+    gate.resolve({files:[P+'/notes.txt'],truncated:false});await opening;
+    assert.equal(w.document.querySelector('#qo-list .sel').title,P+'/notes.txt');qoKey(w,input,'Enter');await tick();assert.equal(viewer.activeTab.path,P+'/notes.txt');
+    w.localStorage.setItem('myide-recent',JSON.stringify({invalid:true}));await w.QuickOpen.open();assert(!w.document.querySelector('#qo-list .qo-item'));qoKey(w,w.document.querySelector('#qo-input'),'Escape');assert(!w.document.querySelector('#qo-box'));
+  });
+  await saveCase('快速打开扫描尾部更好匹配、完整top30与稳定排序，无结果回车不导航',async(d,viewer,bridge)=>{
+    const w=d.window;
+    const names=Array.from({length:450},(_,i)=>P+'/needle-folder/'+String(i).padStart(3,'0')+'.txt');
+    bridge.listAll=async()=>({files:[...names,P+'/needle.txt'],truncated:false});
+    await w.QuickOpen.open();let input=qoQuery(w,'needle');
+    assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'needle.txt');assert.equal(w.document.querySelectorAll('#qo-list .qo-item').length,30);
+    const original=[...w.document.querySelectorAll('#qo-list .qo-item')].map(r=>r.title);
+    w.Modal.hide();w.QuickOpen.invalidate();bridge.listAll=async()=>({files:[P+'/needle.txt',...names.slice().reverse()],truncated:false});
+    await w.QuickOpen.open();input=qoQuery(w,'needle');assert.deepEqual([...w.document.querySelectorAll('#qo-list .qo-item')].map(r=>r.title),original);
+    const tab=viewer.activeTab;input=qoQuery(w,'没有这个文件');qoKey(w,input,'ArrowDown');qoKey(w,input,'Enter');await tick();
+    assert.equal(viewer.activeTab,tab);assert(w.document.querySelector('#qo-box'));assert(!input.hasAttribute('aria-activedescendant'));
+  });
+  await saveCase('快速打开重复打开/关闭重开共用加载，旧输入与迟到焦点不污染新面板',async(d,viewer,bridge)=>{
+    const w=d.window,gate=deferred();let calls=0;bridge.listAll=()=>{calls++;return gate.promise;};
+    const first=w.QuickOpen.open();await w.QuickOpen.open();assert.equal(w.document.querySelectorAll('#qo-box').length,1);assert.equal(calls,1);
+    const old=qoQuery(w,'readme');w.Modal.hide();assert(!w.document.querySelector('[inert]'));
+    const second=w.QuickOpen.open(),input=qoQuery(w,'notes');gate.resolve({files:[P+'/README.md',P+'/notes.txt'],truncated:false});await Promise.all([first,second]);
+    assert.equal(calls,1);assert.equal(input.value,'notes');assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'notes.txt');assert.equal(w.document.activeElement,input);
+    old.value='readme';old.dispatchEvent(new w.Event('input'));assert.equal(input.value,'notes');
+  });
+  await saveCase('快速打开项目A/B乱序和失效缓存不显示旧项目',async(d,viewer,bridge)=>{
+    const w=d.window,a=deferred(),b=deferred();bridge.listAll=root=>root===P?a.promise:b.promise;
+    const first=w.QuickOpen.open();await w.App.setRoot('C:/proj2');assert(!w.document.querySelector('#qo-box'));
+    const second=w.QuickOpen.open();const input=qoQuery(w,'other');b.resolve({files:['C:/proj2/other.md'],truncated:false});await second;
+    a.resolve({files:[P+'/README.md'],truncated:true});await first;
+    assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'other.md');assert.equal(w.document.activeElement,input);
+    assert(!w.document.querySelector('#qo-status').textContent.includes('5 万'));w.Modal.hide();await w.QuickOpen.open();qoQuery(w,'readme');assert(!w.document.querySelector('#qo-list .qo-item'));
+  });
+  await saveCase('快速打开文件监听刷新保留查询焦点，旧索引完成不能覆盖新索引',async(d,viewer,bridge,callbacks)=>{
+    const w=d.window,a=deferred(),b=deferred();let scans=0;bridge.listAll=()=>++scans===1?a.promise:b.promise;
+    const first=w.QuickOpen.open(),input=qoQuery(w,'notes');
+    for(const callback of callbacks)callback({root:P});await new Promise(r=>setTimeout(r,180));
+    const keptFocus=w.document.activeElement===input;
+    b.resolve({files:[P+'/notes.txt'],truncated:false});await tick();a.resolve({files:[P+'/README.md'],truncated:true});await first;
+    assert(w.document.querySelector('#qo-box'));assert.equal(input.value,'notes');assert(keptFocus,'监听刷新保留输入焦点');assert.equal(scans,2);
+    assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'notes.txt');assert(!w.document.querySelector('#qo-status').textContent.includes('5 万'));assert(w.document.activeElement===input,'旧索引完成不抢焦点');
+  });
+  await saveCase('快速打开读取失败可重试且上限提示持续可见',async(d,viewer,bridge)=>{
+    const w=d.window;let count=0;bridge.listAll=async()=>{if(++count===1)throw new Error('无法读取目录');return {files:[P+'/notes.txt'],truncated:true};};
+    await w.QuickOpen.open();const input=qoQuery(w,'notes');assert(w.document.querySelector('#qo-status').textContent.includes('无法读取目录'));
+    qoKey(w,input,'Enter');assert(w.document.querySelector('#qo-box'));w.document.querySelector('#qo-retry').click();await tick();await tick();
+    assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'notes.txt');assert(w.document.querySelector('#qo-status').textContent.includes('可能不完整'));
+    qoQuery(w,'无结果');assert(w.document.querySelector('#qo-status').textContent.includes('可能不完整'));
+  });
+  await saveCase('快速打开取消/外部关闭返回原编辑器，Tab循环且背景快捷键不执行',async(d,viewer)=>{
+    const w=d.window;viewer.cm.focus();const origin=w.document.activeElement;await w.QuickOpen.open();const input=w.document.querySelector('#qo-input');
+    qoKey(w,input,'Tab',{shiftKey:true});assert.equal(w.document.activeElement.id,'qo-close');qoKey(w,w.document.activeElement,'Tab');assert.equal(w.document.activeElement,input);
+    qoKey(w,input,'w',{ctrlKey:true});await tick();assert.equal(viewer.openTabs.length,1);assert(!w.document.querySelector('.close-tabs-box'));
+    qoKey(w,input,'Escape');assert.equal(w.document.activeElement,origin);assert(!w.document.querySelector('[inert]'));
+    await w.QuickOpen.open();w.Modal.hide();assert.equal(w.document.activeElement,origin);assert(!w.document.querySelector('[inert]'));
+    await w.QuickOpen.open();qoQuery(w,'notes');qoKey(w,w.document.activeElement,'Enter');await tick();assert.equal(w.document.activeElement,viewer.cm.view.contentDOM);
+  });
+  await saveCase('快速打开Esc只关闭栈顶并回到仍存在的下层入口',async(d,viewer)=>{
+    const w=d.window,box=w.document.createElement('div'),button=w.document.createElement('button');button.textContent='打开文件';box.appendChild(button);w.Modal.show(box);button.focus();
+    await w.QuickOpen.open();const quick=w.document.querySelector('#qo-box');assert(box.hasAttribute('inert'));
+    const confirm=w.Modal.confirm('确认','上层');w.document.querySelector('#cf-no').focus();qoKey(w,w.document.activeElement,'Escape');assert.equal(await confirm,false);assert(quick.isConnected);
+    quick.querySelector('#qo-input').focus();qoKey(w,w.document.activeElement,'Escape');assert(box.isConnected);assert.equal(w.Modal.stack.length,1);assert.equal(w.document.activeElement,button);assert(!box.hasAttribute('inert'));
+  });
+  await saveCase('快速打开组合输入Enter/方向/Esc和229不消费动作',async(d,viewer)=>{
+    const w=d.window;await w.QuickOpen.open();const input=qoQuery(w,'notes'),active=input.getAttribute('aria-activedescendant'),tab=viewer.activeTab;
+    for(const key of ['Enter','ArrowDown','Escape'])qoKey(w,input,key,{isComposing:true});
+    qoKey(w,input,'Enter',{keyCode:229});input.dispatchEvent(new w.CompositionEvent('compositionstart'));
+    for(const key of ['Enter','ArrowDown','Escape'])qoKey(w,input,key);
+    assert.equal(viewer.activeTab,tab);assert(w.document.querySelector('#qo-box'));assert.equal(input.getAttribute('aria-activedescendant'),active);
+    input.dispatchEvent(new w.CompositionEvent('compositionend'));qoKey(w,input,'Escape');assert(!w.document.querySelector('#qo-box'));
+  });
+
   await saveCase('查找加载期间旧CM只读，旧搜索按钮/事务零修改；返回原标签仍可编辑',async(d,viewer,bridge)=>{
     const w=d.window,old=viewer.cm,tab=viewer.activeTab,base=tab.content,read=bridge.readFile,gate=deferred();
     old.find();old.view.dispatch({effects:w.CM6.Search.setSearchQuery.of(new w.CM6.Search.SearchQuery({search:'hello',replace:'WRONG'}))});

@@ -16,6 +16,8 @@ const App = (() => {
       const top = Modal.stack.pop();
       if (top) top.remove();
       if (!Modal.stack.length) mask.classList.add('hidden');
+      // 拥有键盘/焦点资源的面板也可能被外部关闭；由面板释放，避免遗留监听。
+      top?.onModalHide?.();
     },
     confirm(title, text) {
       return new Promise((resolve) => {
@@ -846,7 +848,7 @@ const App = (() => {
     GitPanel.rootDir = p;
     if (window.GitLog) GitLog.setRoot(p);
     if (window.Tasks) Tasks.setRoot(p); // 任务数据按项目隔离，随项目切换换库
-    QuickOpen.invalidate();
+    QuickOpen.invalidate(true);
     if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占
     clearTimeout(gitScanTimer);
