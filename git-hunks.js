@@ -28,7 +28,14 @@ function createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText}){
  function text(bytes){if(bytes==null)return '';const value=bytes.toString('utf8');if(value.includes('\0')||!Buffer.from(value,'utf8').equals(bytes))throw fail('BINARY_DIFF','二进制或不可逆显示编码不能按文本块操作');return value;}
  async function diff(dir,file,side){try{
   const c=await context(dir,file),before=await state(c),indexEntries=await entries(c),entry=indexEntries.get(c.rel),indexBytes=entry?await blob(c,entry.oid):null,headBytes=side==='staged'?await blob(c,before.headOid,c.rel):null;
-  const a=side==='staged'?headBytes:indexBytes,b=side==='staged'?indexBytes:before.workBytes,h=hunkify(text(a),text(b)),after=await state(c);if(fingerprint(serial(before))!==fingerprint(serial(after)))throw fail('STALE_DIFF','读取期间Git或工作区版本已变化，请刷新差异');
+  const a=side==='staged'?headBytes:indexBytes,b=side==='staged'?indexBytes:before.workBytes,h=hunkify(text(a),text(b));
+  // 旧排版去掉 CR 后可能没有块；原始行尾变更仍须可读，但不能把展示符号当正文写回。
+  if(!h.hunks.length&&a&&b&&!a.equals(b)&&text(a).replace(/\r\n/g,'\n')===text(b).replace(/\r\n/g,'\n')){
+   let changed=true;const info=await NativeGit.info(false);
+   if(side==='unstaged'&&info.git?.available){const normalized=await NativeGit.run(['hash-object','--path='+c.rel,c.abs],{cwd:c.root,exe:info.git.exe,env:{GIT_OPTIONAL_LOCKS:'0'}});if(!normalized.ok||normalized.stderr.trim())throw fail('ATTRIBUTES_UNAVAILABLE','无法核实行尾属性语义');changed=normalized.stdout.trim()!==entry?.oid;}
+   if(changed){if(fingerprint(serial(before))!==fingerprint(serial(await state(c))))throw fail('STALE_DIFF','读取期间版本变化');return {file:path.relative(c.root,c.abs),side,base:side==='staged'?'head':'index',...hunkify(text(a).replace(/\r/g,'␍'),text(b).replace(/\r/g,'␍')),unchanged:false,readOnlyReason:'原始行尾差异（␍ 表示 CR）。此类块写入尚未支持，可按整份文件处理。'};}
+  }
+  const after=await state(c);if(fingerprint(serial(before))!==fingerprint(serial(after)))throw fail('STALE_DIFF','读取期间Git或工作区版本已变化，请刷新差异');
   const id=crypto.randomUUID(),snapshot={snapshotId:id,root:c.root,project:c.project,path:c.rel,side,generation:++generation,...serial(before),indexOid:entry?.oid||null,indexMode:entry?.mode||null,oldExists:a!=null,newExists:b!=null,oldEof:a?.at(-1)===10,newEof:b?.at(-1)===10};
   const hunks=h.hunks.map((row,i)=>({...row,hunkId:fingerprint([id,i,row])})),r={...c,id,at:Date.now(),state:before,snapshot,entry,headBytes,indexBytes,rawText:text(before.workBytes),hunks,size:(a?.length||0)+(b?.length||0)+(before.indexBytes?.length||0)+Buffer.byteLength(JSON.stringify(hunks))};
   r.size=(before.workBytes?.length||0)+(before.indexBytes?.length||0)+(indexBytes?.length||0)+(headBytes?.length||0)+Buffer.byteLength(r.rawText)+Buffer.byteLength(h.oldText)+Buffer.byteLength(h.newText)+Buffer.byteLength(JSON.stringify(hunks));

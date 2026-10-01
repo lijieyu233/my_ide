@@ -3,8 +3,7 @@
 // 定位：**只负责"调用本机 git"这一件事**。
 //   · merge / rebase / stash / hooks / partial staging / credential 这些 isomorphic-git 没有
 //     （或做不好）的能力从这里走；
-//   · status / log / diff / commit / branch 继续留在 git-service.js（isomorphic-git 实现，
-//     已经稳定，不为"架构漂亮"重写）。
+//   · 状态优先使用原生属性与过滤语义；无Git时的简单仓库扫描由 git-service.js 保留。
 //   也就是说：**这不是推倒重建 Git 层，而是把已经在跑的 spawn git 收编成正式后端**。
 //
 // ⚠ 本文件同时被主进程与 git-worker 线程加载（git-service 会 require 它），所以配置**不靠内存注入**：
@@ -70,20 +69,20 @@ function candidates() {
 // 跑一条 git 命令：**永不抛**，统一返回 { ok, code, stdout, stderr, error }
 // ⚠ `env` 只做**叠加**（默认继承 process.env）。M4 的 continue 类命令必须带 GIT_EDITOR=true，
 //   否则 git 会去拉编辑器、进程永远不退出（无头环境下表现为"卡住"）。
-function run(args, { cwd, timeout = 15000, input = null, exe = null, env = null } = {}) {
+function run(args, { cwd, timeout = 15000, input = null, exe = null, env = null, raw = false } = {}) {
   const bin = exe || configuredExe() || 'git';
   return new Promise((resolve) => {
     let child;
     const done = (err, stdout, stderr) => resolve({
       ok: !err,
       code: err && typeof err.code === 'number' ? err.code : (err ? 1 : 0),
-      stdout: String(stdout || ''),
+      stdout: raw ? Buffer.from(stdout || '') : String(stdout || ''),
       stderr: String(stderr || ''),
       error: err ? String(err.message || err) : '',
     });
     try {
       child = execFile(bin, args, {
-        cwd: cwd || undefined, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+        cwd: cwd || undefined, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: raw ? null : 'utf8',
         env: env ? Object.assign({}, process.env, env) : undefined,
       }, (err, stdout, stderr) => done(err, stdout, stderr));
     } catch (e) { done(e, '', ''); return; }
@@ -481,7 +480,11 @@ async function resolveCustom(repo, file, content) {
 // 语义与 `git.add --force` 对齐（PyCharm 勾选被忽略的文件 = 强制加入）；
 // 路径统一走 `--` 分隔，杜绝以 `-` 开头的文件名被当成选项。
 async function addPath(repo, file, force) {
-  const args = ['add'];
+  const lookup=await run(['--literal-pathspecs','ls-files','--cached','-z','--',file],{cwd:repo,env:NO_EDIT});
+  if(!lookup.ok)return {ok:false,error:lookup.stderr.trim()||lookup.error};
+  const args = ['--literal-pathspecs','add'];
+  // isomorphic 写过的同尺寸 stat 可能被 git add 信任；已跟踪文件必须重新 clean/hash。
+  if(lookup.stdout)args.push('--renormalize');
   if (force !== false) args.push('--force');   // 默认强加：调用点大多是"用户明确勾选了它"
   args.push('--', file);
   const r = await runRetry(args, { cwd: repo, timeout: 15000, env: NO_EDIT });

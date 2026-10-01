@@ -84,7 +84,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   checkConflict: (srcPaths, destDir) => ipcRenderer.invoke('fs:checkExists', srcPaths, destDir),
   git: {
     init: (d) => ipcRenderer.invoke('git:init', d),
-    status: (d) => ipcRenderer.invoke('git:status', d),
+    status: (d, options) => ipcRenderer.invoke('git:status', d, options),
     log: (d, depth, ref) => ipcRenderer.invoke('git:log', d, depth, ref),
     logGraph: (d, limit, ref) => ipcRenderer.invoke('git:logGraph', d, limit, ref),
     commit: (d, o) => ipcRenderer.invoke('git:commit', d, o),

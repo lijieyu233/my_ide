@@ -13,7 +13,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks",
+    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -27,7 +27,8 @@
     "git:doctor": "node scripts/git-doctor.js",
     "test:copy": "node tests/copy-journal.test.js",
     "test:delete": "node tests/delete-journal.test.js",
-    "test:hunks": "node tests/git-hunks.test.js"
+    "test:hunks": "node tests/git-hunks.test.js",
+    "test:status": "node tests/git-status.test.js"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -79,6 +80,8 @@
       "file-copy-win.js",
       "file-replace-win.js",
       "preload.js",
+      "git-status.js",
+      "git-index.js",
       "git-hunks.js",
       "git-queue.js",
       "git-service.js",

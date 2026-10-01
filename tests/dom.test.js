@@ -3429,12 +3429,14 @@ assert_(panel, 'CM6 搜索面板出现');
     const before = calls.listIgnored.length;
     // 切项目 → 缓存必须作废（ignoredFiles/ignoredAll 是整个会话缓存的，不随 root 走）
     await g(dom, 'GitPanel.rootDir = "C:/other/proj"');
+    await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
     ensureOpen();
     await tick(); await tick();
     assert_(calls.listIgnored.length > before,
       '切项目后重新拉取忽略清单（缓存作废）: ' + before + ' → ' + calls.listIgnored.length);
     await g(dom, 'GitPanel.rootDir = ' + JSON.stringify(P));
+    await g(dom, 'GitPanel.refresh()');
     await tick(); await tick();
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
@@ -8415,6 +8417,15 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   const openHunk=async d=>{await d.window.GitPanel.refresh();await d.window.GitPanel.openCommit();const row=[...d.window.document.querySelectorAll('#cd-files .git-file')].find(r=>r.textContent.includes('README.md'));click(row);await tick();await tick();return [...d.window.document.querySelectorAll('.hunk-act')];};
+  await saveCase('Git状态失败保留列表/选择/草稿，提交回滚搁置暂停，恢复沿用选择',async d=>{
+    const w=d.window,doc=w.document;await w.GitPanel.refresh();await w.GitPanel.openCommit();const checks=[...doc.querySelectorAll('#cd-files .cf-check')];assert(checks.length>1);checks[0].checked=false;checks[0].dispatchEvent(new w.Event('change',{bubbles:true}));const selected=[...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),rows=[...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort();doc.querySelector('#commit-msg').value='保留提交草稿';const api=w.myIDE.git,status=api.status;let writes=0;api.commit=api.discardFiles=api.shelveCreate=async()=>{writes++;return {ok:true};};api.status=async()=>({isRepo:true,root:P,completeness:'error',error:'读取权限被拒绝'});await w.GitPanel.refresh();assert.deepEqual([...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort(),rows);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');assert(doc.querySelector('.git-status-warning').textContent.includes('读取权限'));assert(doc.querySelector('#cm-ok').disabled);assert(!doc.querySelector('#cd-files .git-revert'));await w.GitPanel.doCommit(false);assert.equal(writes,0);api.status=status;await w.GitPanel.refresh();assert(!doc.querySelector('.git-status-warning'));assert.deepEqual([...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),selected);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');
+  });
+  await saveCase('Git首次异常不显示clean/初始化，切项目不带旧列表，手动刷新传force',async d=>{
+    const w=d.window,doc=w.document,api=w.myIDE.git,status=api.status;w.GitPanel.rootDir='C:/unknown';api.status=async()=>{throw Error('状态通道失联');};await w.GitPanel.refresh();await w.GitPanel.openCommit();assert(doc.querySelector('.git-status-warning').textContent.includes('通道失联'));assert(!doc.querySelector('#cd-files').textContent.includes('没有未提交'));assert(!doc.querySelector('#cd-files').textContent.includes('初始化仓库'));assert.equal(doc.querySelectorAll('#cd-files .git-file').length,0);let options;api.status=async(root,opts)=>{options=opts;return status(root);};w.GitPanel.rootDir=P;await w.GitPanel.refresh();await w.App.refreshAll();assert.equal(options.force,true);
+  });
+  await saveCase('Git补充冲突请求迟到后不覆盖新项目结果',async d=>{
+    const w=d.window,gate=deferred(),api=w.myIDE.git;w.GitPanel.rootDir=P;api.status=async root=>({isRepo:true,root,completeness:'complete',branch:root===P?'OLD':'NEW',tracked:['only.txt'],changed:[{file:root===P?'old.txt':'new.txt',status:'modified',label:'已修改'}]});let entered=false;api.opState=async root=>{if(root===P){entered=true;await gate.promise;}return {state:'NORMAL'};};const pending=w.GitPanel.refresh();for(let i=0;i<20&&!entered;i++)await tick();assert(entered);w.GitPanel.rootDir='C:/newproject';await w.GitPanel.refresh();gate.resolve();await pending;await w.GitPanel.openCommit();const text=w.document.querySelector('#cd-files').textContent;assert(text.includes('new.txt')&&!text.includes('old.txt'));
+  });
   await saveCase('Git回退确认后切项目不发IPC，旧按钮不能授权新项目',async d=>{const w=d.window,gate=deferred();let count=0;w.Modal.confirm=()=>gate.promise;w.myIDE.git.revertHunk=async()=>{count++;return {ok:true};};const b=(await openHunk(d)).find(b=>/回退此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});await tick();w.GitPanel.rootDir='C:/proj2';gate.resolve(true);await pending;assert_(count===0,'迟到确认无IPC');});
   await saveCase('Git确认后关闭差异视图旧动作失效',async d=>{const w=d.window,gate=deferred();let count=0;w.Modal.confirm=()=>gate.promise;w.myIDE.git.revertHunk=async()=>{count++;return {ok:true};};const b=(await openHunk(d)).find(b=>/回退此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});w.GitPanel.closeDiffView();gate.resolve(true);await pending;assert_(count===0,'已关闭视图不提交');});
   await saveCase('Git块双击仅一次IPC，绑定原身份，迟到成功不打开新项目差异',async d=>{const w=d.window,gate=deferred(),seen=[];w.myIDE.git.stageHunk=async(...args)=>{seen.push(args);return gate.promise;};const b=(await openHunk(d)).find(b=>/暂存此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});await b.onclick({stopPropagation(){}});assert_(seen.length===1&&seen[0][0]===P&&seen[0][2].hunkId==='unstaged-0'&&b.disabled,'原版本且防重复');w.GitPanel.rootDir='C:/proj2';w.GitPanel.closeDiffView();gate.resolve({ok:true});await pending;assert_(!w.document.querySelector('.diff-wrap'),'旧结果不重开');});

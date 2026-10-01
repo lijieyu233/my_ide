@@ -442,6 +442,7 @@ fs.mkdirSync(repo);
     const repo3 = path.join(tmp, 'repo3');
     fs.mkdirSync(repo3);
     await G.initRepo(repo3);
+    await require('../git-native').run(['config','core.autocrlf','true'],{cwd:repo3});
     // 用 LF 内容提交（模拟真实 git 归一化后的仓库）
     fs.writeFileSync(path.join(repo3, 'a.txt'), 'line1\nline2\n', 'utf8');
     fs.mkdirSync(path.join(repo3, 'sub'));
@@ -1359,7 +1360,7 @@ fs.mkdirSync(repo);
   // 真实现场：工作区正被改写（自检里挪夹具目录 / 自动刷新 0 延迟）时矩阵走查会偶发抛
   // InternalError，表现是 changed=[] + tracked=[] —— 提交窗口空列表、文件树状态色全丢、
   // 「只看 Git 文件」把整棵树清空。status 只读幂等 → 必须重试，不能把"读失败"当成"没有变更"。
-  // （用 {legacy:true} 走 statusMatrix 原实现来打桩 —— 重试逻辑是两条矩阵路径共用的）
+  // 注入原生状态命令失败；旧 statusMatrix stat 缓存不能作为可信回落。
   await okAsync('status：矩阵走查偶发抛错时重试一次（不把读失败当成没有变更）', async () => {
     const repo = path.join(tmp, 'repo-status-retry');
     fs.mkdirSync(repo);
@@ -1367,29 +1368,28 @@ fs.mkdirSync(repo);
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
     await G.commit(repo, { message: 'init', files: ['a.txt'] });
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a changed\n');
-    const orig = git.statusMatrix;
+    const NATIVE=require('../git-native'),orig = NATIVE.run;
     let calls = 0;
-    git.statusMatrix = async (args) => {
-      calls++;
-      if (calls === 1) throw new Error('An internal error caused this command to fail.');
-      return orig(args);
+    NATIVE.run = async (args,options) => {
+      if(options.cwd===repo&&args.includes('--porcelain=v2')){calls++;if(calls===1)return {ok:false,error:'fixture EIO',stdout:'',stderr:''};}
+      return orig(args,options);
     };
     try {
-      const st = await G.status(repo, { legacy: true });
+      const st = await G.status(repo, { force:true });
       assert.strictEqual(calls, 2, '应该恰好重试一次，实际调用 ' + calls + ' 次');
       assert.ok(!st.error, '重试成功后不该报错: ' + st.error);
       assert.ok((st.tracked || []).includes('a.txt'), '重试后 tracked 清单应包含 a.txt（被 git 管理的文件）');
       assert.ok((st.changed || []).some((c) => c.file === 'a.txt'), '重试后变更列表应有 a.txt');
     } finally {
-      git.statusMatrix = orig;
+      NATIVE.run = orig;
     }
   });
 
-  // ---------- status：快速矩阵 vs statusMatrix 原实现逐项对拍 ----------
-  // matrixFast（index stat 捷径 + 忽略目录剪枝）必须与原实现在同一夹具上给出完全一致的结果。
+  // ---------- status：普通扫描 vs 独立索引完整核验逐项对拍 ----------
+  // legacy 参数仅兼容旧调用，现等价 force；不再进入会漏同秒修改的旧 statusMatrix。
   // 夹具覆盖：干净 / 未暂存修改 / 已暂存修改 / 暂存后又改 / 工作区删除 / git rm / 已暂存新增 /
   // 未跟踪 / 忽略文件 / 忽略目录里的未跟踪文件 / 被忽略目录里的已跟踪文件（照常进列表）
-  await okAsync('status：快速矩阵与 statusMatrix 原实现逐项对拍（状态/tracked/忽略语义）', async () => {
+  await okAsync('status：普通扫描与完整核验逐项对拍（状态/tracked/忽略语义）', async () => {
     const repo = path.join(tmp, 'repo-status-parity');
     fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
     fs.mkdirSync(path.join(repo, 'ignored-dir'), { recursive: true });

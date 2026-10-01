@@ -14,7 +14,8 @@ const native = (p) => String(p).split('/').join(path.sep);
 async function findRoot(dir) {
   let p = path.resolve(dir);
   for (;;) {
-    if (fs.existsSync(path.join(p, '.git'))) return p;
+    try { fs.lstatSync(path.join(p, '.git')); return p; }
+    catch(e) { if(e.code!=='ENOENT'&&e.code!=='ENOTDIR') throw e; }
     const parent = path.dirname(p);
     if (parent === p) return null;
     p = parent;
@@ -24,7 +25,6 @@ async function isRepo(dir) {
   const root = await findRoot(dir);
   return root ? { root, yes: true } : { root: null, yes: false };
 }
-const CRLF_BUF = Buffer.from('\r\n'); // CRLF 误报校验用（见 status）
 
 async function currentBranch(root) {
   try {
@@ -46,9 +46,9 @@ function matrixToStatus(m) {
   if (H && W && S && h === w && w === s) return null;    // 未修改
   if (!H && W && !S) return { status: 'added', label: '新增', inIndexOnly };                    // 未跟踪
   if (!H && W && S) return { status: s === w ? 'added' : '*added', label: '新增', inIndexOnly }; // 已暂存新增（或暂存后又改）
-  if (H && !W && !S) return { status: 'deleted', label: '已删除', inIndexOnly };                  // 工作区删除
-  if (H && !W && S) return { status: '*deleted', label: '已删除（已暂存）', inIndexOnly };
-  if (H && W && !S) return { status: 'modified', label: '已修改', inIndexOnly };
+  if (H && !W && !S) return { status: '*deleted', label: '已删除（已暂存）', inIndexOnly:true };
+  if (H && !W && S) return { status: h===s?'deleted':'*deleted', label:h===s?'已删除':'已删除（暂存+未暂存）', inIndexOnly:false };
+  if (H && W && !S) return { status: '*deleted', label: '已删除（暂存+未暂存）', inIndexOnly:false };
   // H && W && S：有修改
   if (h === s) return { status: 'modified', label: '已修改', inIndexOnly };        // [1,2,1] 未暂存
   if (w === s) return { status: '*modified', label: '已修改（已暂存）', inIndexOnly }; // [1,2,2]
@@ -102,8 +102,10 @@ function isIgnoredPath(relPath, rules) {
     const isDir = i < segs.length - 1;
     for (const r of rules) {
       if (r.dirOnly && !isDir) continue;
-      if (r.regex.test(sub)) ignored = !r.negate;
+      const candidate=r.base?(sub.startsWith(r.base+'/')?sub.slice(r.base.length+1):null):sub;
+      if (candidate!==null&&r.regex.test(candidate)) ignored = !r.negate;
     }
+    if(isDir&&ignored)return true;
   }
   return ignored;
 }
@@ -118,7 +120,7 @@ function rulesForDir(dir) {
     try {
       const text = fs.readFileSync(path.join(d, '.gitignore'), 'utf8');
       rules = parseIgnoreText(text);
-    } catch {}
+    } catch(e) {if(e.code!=='ENOENT')throw e;}
     ignoreCache.set(d, rules);
     return rules;
   }
@@ -129,7 +131,7 @@ function allRulesFor(rootDir, relPosix) {
   const out = [];
   for (let i = 0; i <= segs.length - 1; i++) { // 各级父目录（不含文件自身所在层的文件名）
     const dirAbs = path.join(rootDir, ...segs.slice(0, i));
-    out.push(...rulesForDir(dirAbs));
+    out.push(...rulesForDir(dirAbs).map(r=>({...r,base:segs.slice(0,i).join('/')})));
   }
   return out;
 }
@@ -143,28 +145,31 @@ function allRulesFor(rootDir, relPosix) {
 //   * 只有 stat 对不上的文件才真正 read+sha1（通常就是刚保存的那一个）
 // 行编码与 statusMatrix 完全一致（[path, head, workdir, stage]，值 = oid 在
 // [undefined, headOid, workdirOid, stageOid] 里的下标），matrixToStatus 无需任何改动。
-// 任何异常（index v4 / 解析失败 / 权限）都向上抛，由 status() 回落 statusMatrix —— 宁慢勿错。
+// 解析或读取异常必须上报；旧 statusMatrix 的 stat 缓存也会漏修改，不能作为可信回落。
 
 // HEAD 树缓存（按 root，HEAD 一变就整体重建）：CRLF 校验要对每个"已修改"文件读一次
 // HEAD blob，本机 readBlob 30~40ms/次，12 个文件就是 0.5s；HEAD 不变时树与 blob 全部可复用
 const headTreeCache = new Map(); // root -> { headOid, tree: Map<path, oid>, blobs: Map<path, string> }
 async function headInfo(root) {
-  const headOid = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
+  let headOid;
+  try { headOid=await git.resolveRef({fs,dir:root,ref:'HEAD'}); }
+  catch(e) { if(e.code==='NotFoundError')return null; throw e; }
   if (!headOid) return null;
   const hit = headTreeCache.get(root);
   if (hit && hit.headOid === headOid) return hit;
-  const tree = new Map();
+  const tree = new Map(), modes=new Map();
   const walkTree = async (oid, prefix) => {
     const { tree: entries } = await git.readTree({ fs, dir: root, oid });
     for (const e of entries) {
       const p = prefix ? prefix + '/' + e.path : e.path;
       if (e.type === 'tree') await walkTree(e.oid, p);
-      else if (e.type === 'blob') tree.set(p, e.oid);
+      else if (e.type === 'blob') {tree.set(p, e.oid);modes.set(p,parseInt(e.mode,8));}
+      else throw Object.assign(Error('纯JS状态尚不支持子模块'),{code:'STATUS_CAPABILITY_LIMITED'});
     }
   };
   const commit = await git.readCommit({ fs, dir: root, oid: headOid });
   await walkTree(commit.commit.tree, '');
-  const info = { headOid, tree, blobs: new Map() };
+  const info = { headOid, tree, modes, blobs: new Map() };
   if (headTreeCache.size > 8) headTreeCache.clear(); // 多项目轮换时的简单上限
   headTreeCache.set(root, info);
   return info;
@@ -173,75 +178,36 @@ async function headInfo(root) {
 function gitdirOf(root) {
   const dot = path.join(root, '.git');
   let st;
-  try { st = fs.statSync(dot); } catch { return null; }
+  st = fs.statSync(dot);
   if (st.isDirectory()) return dot;
   try {
     const m = fs.readFileSync(dot, 'utf8').match(/^gitdir:\s*(.+)\r?$/m); // worktree/submodule 的 .git 是文件
     const p = m && m[1].trim();
     return p ? (path.isAbsolute(p) ? p : path.resolve(root, p)) : null;
-  } catch { return null; }
+  } catch(e) { throw e; }
 }
 
 // 解析 .git/index（v2/v3；v4 前缀压缩不解析 → 抛错走回落）。返回 Map<path, {oid, mtimeMs, size, ctimeSec}>
 // （⚠ 与下面提交事务用的 readIndexEntries 是两回事：那个走 isomorphic 的 STAGE walker，
 //   只有 oid/mode 没有 stat —— stat 捷径必须要磁盘 stat，所以这里直接读 index 原始字节）
 function readIndexStat(gitdir) {
-  let buf;
-  try { buf = fs.readFileSync(path.join(gitdir, 'index')); } catch (e) {
-    if (e && e.code === 'ENOENT') return new Map(); // 全新仓库还没有 index = 全部未跟踪
-    throw e;
-  }
-  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'DIRC') throw new Error('index 头不对');
-  const version = buf.readUInt32BE(4);
-  if (version !== 2 && version !== 3) throw new Error('index v' + version + ' 不支持');
-  const count = buf.readUInt32BE(8);
-  const out = new Map();
-  let o = 12;
-  for (let i = 0; i < count; i++) {
-    const start = o;
-    if (o + 62 > buf.length) throw new Error('index 被截断');
-    const ctimeSec = buf.readUInt32BE(o);
-    const mtimeSec = buf.readUInt32BE(o + 8);
-    const mtimeNs = buf.readUInt32BE(o + 12);
-    const size = buf.readUInt32BE(o + 36);
-    const oid = buf.toString('hex', o + 40, o + 60);
-    const flags = buf.readUInt16BE(o + 60);
-    const stage = (flags >> 12) & 0x3;
-    const extended = version >= 3 && (flags & 0x4000) !== 0;
-    const nameLen = flags & 0xfff;
-    o += 62 + (extended ? 2 : 0);
-    let name;
-    if (nameLen < 0xfff) {
-      name = buf.toString('utf8', o, o + nameLen);
-    } else {
-      const end = buf.indexOf(0, o);
-      if (end === -1) throw new Error('index 名字没有终止符');
-      name = buf.toString('utf8', o, end);
-    }
-    o += nameLen;
-    o = start + Math.ceil((o - start + 1) / 8) * 8; // 条目按 8 字节对齐（至少 1 个 NUL）
-    if (stage === 0) out.set(name.replace(/\\/g, '/'), {
-      oid,
-      size,
-      mtimeMs: mtimeSec * 1000 + Math.floor(mtimeNs / 1e6),
-      ctimeSec,
-    });
-  }
-  return out;
+ let bytes;try{bytes=fs.readFileSync(path.join(gitdir,'index'));}catch(e){if(e.code==='ENOENT')return new Map();throw e;}
+ const out=new Map();for(const r of require('./git-index').parseIndex(bytes)){if(r.stage||r.flags&0x8000||r.extendedFlags)throw Object.assign(Error('纯JS状态无法完整解释冲突或扩展索引标志'),{code:'INDEX_UNSUPPORTED'});if(![33188,33261,40960].includes(r.mode))throw Object.assign(Error('纯JS状态不支持该文件模式'),{code:'INDEX_UNSUPPORTED'});out.set(r.file,r);}return out;
 }
 
 const blobSha = (content) => crypto.createHash('sha1')
   .update(Buffer.concat([Buffer.from('blob ' + content.length + '\0'), content]))
   .digest('hex');
 
-async function matrixFast(root) {
-  const head = await headInfo(root);
-  if (!head) throw new Error('HEAD 不可用（空仓库）→ 回落 statusMatrix');
+async function matrixFast(root, opts = {}) {
+  const head = await headInfo(root)||{tree:new Map(),modes:new Map()};
   const gitdir = gitdirOf(root);
   if (!gitdir) throw new Error('找不到 .git → 回落');
   const idx = readIndexStat(gitdir);
+  const folded=new Map();for(const p of new Set([...idx.keys(),...head.tree.keys()])){const key=p.toLowerCase();if(folded.has(key)&&folded.get(key)!==p)throw Object.assign(Error('大小写冲突需要系统Git解释'),{code:'STATUS_CAPABILITY_LIMITED'});folded.set(key,p);}
   let indexMtimeMs = 0;
-  try { indexMtimeMs = fs.lstatSync(path.join(gitdir, 'index')).mtimeMs; } catch {}
+  try { indexMtimeMs = fs.lstatSync(path.join(gitdir, 'index')).mtimeMs; } catch(e) {if(e.code!=='ENOENT')throw e;}
+  for(const [file,entry] of idx){if(head.modes.has(file)&&entry.mode!==head.modes.get(file))throw Object.assign(Error('纯JS状态需要系统Git解释文件模式变化'),{code:'STATUS_CAPABILITY_LIMITED'});}
   // 含已跟踪文件的目录（index ∪ HEAD 的全部祖先）：剪枝时必须放行 —— 被忽略的目录里
   // 若有已跟踪文件，它们照常要进矩阵（与 git 行为一致，见 listIgnored 的注释）
   const trackedDirs = new Set();
@@ -256,11 +222,12 @@ async function matrixFast(root) {
   const seen = new Set();
   const walkDir = (abs, rel) => {
     let es;
-    try { es = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    es = fs.readdirSync(abs, { withFileTypes: true });
     for (const e of es) {
       if (e.name === '.git') continue;
       const childAbs = path.join(abs, e.name);
       const childRel = rel ? rel + '/' + e.name : e.name;
+      if(folded.has(childRel.toLowerCase())&&folded.get(childRel.toLowerCase())!==childRel)throw Object.assign(Error('大小写路径变化需要系统Git解释'),{code:'STATUS_CAPABILITY_LIMITED'});
       if (e.isDirectory()) {
         // 被忽略且没有已跟踪文件 → 整棵剪掉（node_modules 从此一次都不进）
         if (!trackedDirs.has(childRel)) {
@@ -276,13 +243,14 @@ async function matrixFast(root) {
       let wOid;
       if (entry) {
         let st = null;
-        try { st = fs.lstatSync(childAbs); } catch {}
-        const match = st
+        st = fs.lstatSync(childAbs);
+        if(st.isSymbolicLink()!==(entry.mode===40960))throw Object.assign(Error('纯JS状态需要系统Git解释文件类型变化'),{code:'STATUS_CAPABILITY_LIMITED'});
+        const match = !opts.force && st
           && Math.floor(st.mtimeMs) === entry.mtimeMs
           && Math.floor(st.ctimeMs / 1000) === entry.ctimeSec
           && st.size === entry.size
           && st.mtimeMs < indexMtimeMs; // racy-git：index 写入之后动过的文件不信任 stat，老实哈希
-        wOid = match ? entry.oid : blobSha(st && st.isSymbolicLink() ? fs.readlinkSync(childAbs) : fs.readFileSync(childAbs));
+        wOid = match ? entry.oid : blobSha(st && st.isSymbolicLink() ? Buffer.from(fs.readlinkSync(childAbs)) : fs.readFileSync(childAbs));
       } else {
         wOid = '\u0002workdir'; // 未跟踪：内容不参与状态判断（cell 恒为 2），不必哈希
       }
@@ -309,64 +277,27 @@ async function matrixFast(root) {
   return rows;
 }
 
-async function status(dir, opts = {}) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { isRepo: false, error: '不是 Git 仓库' };
-  const branch = await currentBranch(root);
-  // legacy：测试对照用 —— 强制走 isomorphic 的 statusMatrix 原实现（tests/git.test.js 对拍两条路径）
-  const buildMatrix = () => (opts.legacy
-    ? git.statusMatrix({ fs, dir: root })
-    : matrixFast(root).catch(() => git.statusMatrix({ fs, dir: root }))); // 任何异常回落原实现，宁慢勿错
-  let matrix;
-  try {
-    matrix = await buildMatrix();
-  } catch {
-    // 工作区正在被改写时（自检里"挪目录 / 建夹具"与 0 延迟的 git 刷新撞在一起）走查
-    // 会偶发抛 "An internal error caused this command to fail."，表现为 changed=[] + tracked=[]
-    // → 提交窗口空列表、文件树状态色全丢、"只看 Git 文件"把树清空（2026-09-29 实测复现）。
-    // status 是**只读且幂等**的 → 稍等再试一次；仍失败才如实报错（上层按"没拿到状态"处理）。
-    await new Promise((r) => setTimeout(r, 90));
-    try {
-      matrix = await buildMatrix();
-    } catch (e2) {
-      return { isRepo: true, root, branch, changed: [], tracked: [], error: String(e2.message || e2) };
-    }
-  }
-  ignoreCache.clear(); // .gitignore 内容可能已变，每次 status 重新读
-  const changed = [];
-  // tracked：**被 git 管理的文件**（存在于 HEAD 或 index）。与 `git ls-files` 等价 ——
-  // 2026-09-29 实测对拍：本仓 statusMatrix 的 h>0||s>0 共 181 条 = ls-files 181 条，
-  // 未跟踪的纯工作区文件（h=0,s=0）不算。文件树「只看 Git 文件」直接用它过滤，零额外遍历
-  // （statusMatrix 本来就已经走完整个工作区）。
-  const tracked = [];
-  for (const row of matrix) {
-    if (row[1] > 0 || row[3] > 0) tracked.push(posix(row[0]));
-    const st = matrixToStatus(row);
-    if (!st) continue;
-    // 纯未跟踪文件（未暂存）尊重 .gitignore；已跟踪 / 已暂存的照常显示（与 git 行为一致）
-    if (st.status === 'added' && row[2] === 2 && row[3] === 0) {
-      const relPosix = posix(row[0]);
-      const rules = allRulesFor(root, relPosix);
-      if (rules.length && isIgnoredPath(relPosix, rules)) continue;
-    }
-    // CRLF 误报校验：autocrlf 仓库（真实 git 提交时归一化为 LF，工作区是 CRLF），
-    // isomorphic-git 不做行尾过滤、按原始字节比对会把整仓 CRLF 文件全部误报为已修改。
-    // 归一化 \r\n 后与 HEAD 一致 → 视为未修改（与 git status 行为一致）
-    if (st.status === 'modified') {
-      let raw = null;
-      try { raw = fs.readFileSync(path.join(root, row[0])); } catch {}
-      if (raw && raw.includes(CRLF_BUF)) {
-        const headText = await blobAt(root, 'HEAD', row[0]);
-        if (headText !== null &&
-            headText.replace(/\r\n/g, '\n') === raw.toString('utf8').replace(/\r\n/g, '\n')) continue;
-      }
-    }
-    changed.push({ file: native(row[0]), status: st.status, label: st.label, inIndexOnly: !!st.inIndexOnly });
-  }
-  changed.sort((a, b) => a.file.localeCompare(b.file));
-  tracked.sort();
-  return { isRepo: true, root, branch, changed, tracked };
-}
+const StatusService=require('./git-status').createStatus({findRoot,resolveGitDir,jsStatus:async(root,opts)=>{
+ ignoreCache.clear();
+ const risk=text=>/^[ \t]*\[(?:filter|include)[^\]]*\]|^[ \t]*(?:attributesfile|excludesfile|eol|working-tree-encoding)[ \t]*=|^[ \t]*autocrlf[ \t]*=[ \t]*["']?(?:true|input)|^[ \t]*filemode[ \t]*=[ \t]*true/mi.test(text);
+ const readOptional=file=>{try{return fs.readFileSync(file,'utf8');}catch(e){if(e.code==='ENOENT')return '';throw e;}};
+ const gitdir=resolveGitDir(root),home=require('os').homedir(),xdg=process.env.XDG_CONFIG_HOME||path.join(home,'.config');
+ if(!fs.statSync(path.join(root,'.git')).isDirectory()||process.env.GIT_CONFIG_COUNT||process.env.GIT_ATTR_SOURCE)throw Object.assign(Error('当前工作树或配置注入需要系统Git'),{code:'STATUS_CAPABILITY_LIMITED'});
+ const configs=[path.join(gitdir,'config'),process.env.GIT_CONFIG_GLOBAL||path.join(home,'.gitconfig'),...(!process.env.GIT_CONFIG_GLOBAL?[path.join(xdg,'git','config')]:[])];
+ if(process.env.GIT_CONFIG_NOSYSTEM!=='1')configs.push(...(process.env.GIT_CONFIG_SYSTEM?[process.env.GIT_CONFIG_SYSTEM]:process.platform==='win32'?[path.join(process.env.PROGRAMDATA||'C:/ProgramData','Git','config'),'C:/Program Files/Git/etc/gitconfig']:['/etc/gitconfig']));
+ if(configs.some(file=>risk(readOptional(file))))throw Object.assign(Error('当前属性或过滤配置需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});
+ const hasRules=text=>text.split(/\r?\n/).some(line=>line.trim()&&!line.trim().startsWith('#'));
+ if([path.join(gitdir,'info','attributes'),path.join(gitdir,'info','exclude'),path.join(xdg,'git','attributes'),path.join(xdg,'git','ignore')].some(f=>hasRules(readOptional(f))))throw Object.assign(Error('当前Git属性或外部忽略来源需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});
+ const versionFile=path.join(gitdir,'index'),before=require('./file-write').readSnapshot(versionFile),headBefore=await headInfo(root);
+ const attrs=new Set();const verifyAttrs=file=>{for(let dir=path.dirname(path.join(root,file));;dir=path.dirname(dir)){if(!attrs.has(dir)){attrs.add(dir);if(hasRules(readOptional(path.join(dir,'.gitattributes'))))throw Object.assign(Error('当前Git属性需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});}if(dir===root)break;}};
+ const matrix=await matrixFast(root,opts),changed=[],tracked=[];for(const row of matrix){verifyAttrs(row[0]);if(row[1]>0||row[3]>0)tracked.push(posix(row[0]));const st=matrixToStatus(row);if(!st)continue;if(st.status==='added'&&row[2]===2&&row[3]===0&&isIgnoredPath(posix(row[0]),allRulesFor(root,posix(row[0]))))continue;changed.push({file:native(row[0]),...st});}
+ for(const dir of attrs){if(/^[^#\r\n]*[\\\[\]]/m.test(readOptional(path.join(dir,'.gitignore'))))throw Object.assign(Error('复杂忽略规则需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});}
+ if(JSON.stringify(before.version)!==JSON.stringify(require('./file-write').readSnapshot(versionFile).version)||headBefore?.headOid!==(await headInfo(root))?.headOid)throw Object.assign(Error('扫描期间index或HEAD变化'),{code:'STATUS_CHANGED'});
+ const branch=await git.currentBranch({fs,dir:root,fullname:false});
+ changed.sort((a,b)=>a.file.localeCompare(b.file));tracked.sort();return {branch:branch||'(无提交)',changed,tracked,backend:opts.force?'js-full':'js-fast'};
+}});
+const status=(dir,opts)=>StatusService.status(dir,opts);
+function requireCompleteStatus(st){if(!st?.isRepo||st.error||st.completeness!=='complete')throw Object.assign(Error('Git状态未完成，未执行写入：'+(st?.error||'请刷新重试')),{code:'STATUS_INCOMPLETE'});}
 
 // ---------- 被忽略的文件（PyCharm 提交窗口的「忽略的文件」节点）----------
 // 只列「未跟踪 + 命中 .gitignore」的项；命中规则的目录整棵跳过（否则 node_modules 会拖死遍历）。
@@ -513,8 +444,7 @@ function resolveGitDir(root) {
 // 而原生 git 是 `i/lf` —— 提交进仓库的行尾是错的，协作者会看到整文件重写。
 //
 // ⚠ 只在**确实有本机 git** 时走原生；探测失败（caps 全 false / 用户没装 git）时回落 isomorphic，
-//   并保留 084 的定位：这条回落路径在 autocrlf 仓库上仍然不完美，但"没有 git 可用"时
-//   它是唯一选择 —— 宁可行尾不归一化，也不能让提交直接失败（用户会丢工作）。
+//   125 的写前完整状态检查会拒绝纯JS不支持的属性/过滤仓库，避免原生失败后换后端悄悄写错字节。
 function nativeGitOrNull() {
   try { return require('./git-native'); } catch { return null; }
 }
@@ -534,11 +464,10 @@ async function stageFile(root, relPosix, { force = true } = {}) {
   if (N) {
     const r = await N.addPath(root, relPosix, force);
     if (r.ok) return { ok: true, via: 'native' };
-    // 原生失败了也别直接认输：可能是"路径不在仓库内"之类 isomorphic 反而能处理的情形
-    try { await git.add({ fs, dir: root, filepath: relPosix, force }); return { ok: true, via: 'iso-fallback' }; }
-    catch { return { ok: false, error: r.error || '暂存失败' }; }
+    // 原生已应用过滤语义；失败不能再改走不认识这些属性的写入后端。
+    return {ok:false,error:r.error||'暂存失败'};
   }
-  try { await git.add({ fs, dir: root, filepath: relPosix, force }); return { ok: true, via: 'iso' }; }
+  try { const file=path.join(root,native(relPosix)),stat=fs.lstatSync(file),previous=(await readIndexEntries(root)).get(relPosix),bytes=stat.isSymbolicLink()?Buffer.from(fs.readlinkSync(file)):fs.readFileSync(file),oid=await git.writeBlob({fs,dir:root,blob:bytes});await git.updateIndex({fs,dir:root,filepath:relPosix,oid,mode:stat.isSymbolicLink()?40960:previous?.mode||33188,add:true,cache:{}});return { ok: true, via: 'iso' }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 }
 
@@ -567,6 +496,7 @@ async function commit(dir, { message, files, amend = false, author: authorOverri
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const author = authorOverride || await getAuthor(root);
+  try{requireCompleteStatus(await status(root,{force:true}));}catch(e){return {ok:false,error:String(e.message||e),errorCode:e.code};}
   // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但**不许动用户的暂存区** ----------
   // 背景：`git.commit()` 提交的是"当前 index 那一棵树"，而 index 是全仓库一份（.git/index）。
   // 所以"只提交勾选的文件"必然要先临时把 index 改成"只有勾选内容"的样子 —— 老实现只做了这一步，
@@ -836,7 +766,7 @@ async function branches(dir) {
 //   `op` 与 `native` 两个字段，main.js 按"原生可用就用原生"注册）。本函数只在**本机没找到 git 可执行文件**
 //   时被调用 —— 因为它有个已知缺陷：isomorphic-git 不实现 core.autocrlf 归一化，autocrlf 仓库里工作区的
 //   CRLF 文件会被算成"已修改"，于是切分支抛 CheckoutConflictError 报一串没动过的文件（2026-09-28 实测，13 个）。
-//   `status()` 里有针对同一缺陷的「CRLF 误报校验」补丁（见上方），但**不给这里加**：这里没法区分
+//   `status()` 已改用原生属性语义，纯JS遇到复杂属性会明确受限；**不给这里猜测补丁**：这里没法区分
 //   "真改动" 与 "只差行尾"，而 checkout 一旦误判放行就是**覆盖用户没提交的内容**，不能赌。
 async function checkout(dir, ref) {
   const { yes, root } = await isRepo(dir);
@@ -1893,7 +1823,7 @@ async function revertCommit(dir, oid) {
       else if (oldTree[f] !== newTree[f]) changed.push({ file: f, status: 'modified' });
     }
     // 涉及文件必须工作区干净（git revert 同样要求）
-    const st = await status(dir);
+    const st = await status(dir,{force:true});requireCompleteStatus(st);
     if (st.changed && st.changed.length) {
       const conflict = st.changed.filter((x) => changed.some((y) => posix(y.file) === posix(x.file)));
       if (conflict.length) return { ok: false, error: '以下文件有未提交的本地修改，请先提交或回滚：\n' + conflict.map((x) => x.file).join('\n') };
@@ -1940,7 +1870,7 @@ async function cherryPick(dir, oid) {
     }
     if (!changed.length) return { ok: false, error: '该提交没有变更可摘取' };
     // 涉及文件必须工作区干净（避免摘取内容与本地改动混淆丢失）
-    const st = await status(dir);
+    const st = await status(dir,{force:true});requireCompleteStatus(st);
     if (st.changed && st.changed.length) {
       const conflict = st.changed.filter((x) => changed.some((y) => posix(y.file) === posix(x.file)));
       if (conflict.length) return { ok: false, error: '以下文件有未提交的本地修改，请先提交或回滚：\n' + conflict.map((x) => x.file).join('\n') };
@@ -1978,7 +1908,7 @@ async function shelveCreate(dir, { name, files } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   try {
-    const st = await status(dir);
+    const st = await status(dir,{force:true});requireCompleteStatus(st);
     let targets = st.changed;
     if (files && files.length) {
       const set = new Set(files.map((f) => posix(f)));
@@ -2059,9 +1989,9 @@ async function shelveApply(dir, id, { force } = {}) {
     const m = JSON.parse(fs.readFileSync(file, 'utf8'));
     const items = m.files || [];
     if (!items.length) return { ok: false, error: '该搁置没有文件' };
+    const st = await status(dir,{force:true});requireCompleteStatus(st);
     // 目标文件当前有未提交改动 → 拒绝（force 覆盖）
     if (!force) {
-      const st = await status(dir);
       const dirty = new Set(st.changed.map((c) => posix(c.file)));
       const conflict = items.filter((x) => dirty.has(x.path)).map((x) => x.path);
       if (conflict.length) {

@@ -397,10 +397,10 @@ const App = (() => {
         nm.className = 'sb-br-nm';
         nm.textContent = sbState.branch;
         brEl.appendChild(nm);
-        if (sbState.changed) {
+        if (sbState.changed||sbState.gitStatusError) {
           const ch = document.createElement('span');
           ch.className = 'sb-chg';
-          ch.textContent = sbState.changed + ' 处修改';
+          ch.textContent = sbState.gitStatusError?'状态未完成':sbState.changed + ' 处修改';
           brEl.appendChild(ch);
         }
       } else if (sbState.noRepo) {
@@ -870,7 +870,7 @@ const App = (() => {
     Tree.refresh();
     QuickOpen.invalidate();
     if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
-    await GitPanel.refresh();
+    await GitPanel.refresh({force:true});
     if (activeTool === 'outline') Outline.refresh(Viewer.activeTab);
     if (window.Tasks) Tasks.reload(); // 任务存在 localStorage：外部改动后靠刷新重新载入
     MI.toast('已刷新', 'ok');

@@ -199,6 +199,8 @@ const Tree = (() => {
         : '只显示 Git 跟踪的文件\n（隐藏未跟踪 / 被 .gitignore 忽略的文件）';
   }
   function setGitStatus(map, info) {
+    // 失败结果不能替代同一项目已有的可信跟踪清单，否则过滤会突然藏掉整棵树。
+    if(info?.completeness&& !['complete','not-repo'].includes(info.completeness))return;
     gitStatus = {};
     for (const k in (map || {})) gitStatus[norm(k)] = map[k];
     const st = info || {};

@@ -16,20 +16,28 @@ const GitPanel = (() => {
 
   // ---------- 刷新 ----------
   let refreshSeq = 0; // 并发保护：仅最后一次调用的结果生效（旧响应晚到时丢弃，防状态闪回）
-  async function refresh() {
+  const statusComplete=()=>!!state?.isRepo&&!state.error&&(!state.completeness||state.completeness==='complete');
+  const allowMutation=()=>{if(statusComplete())return true;MI.toast('Git状态未完成，请刷新后再操作','err');return false;};
+  async function refresh(options={}) {
     if (!root) return;
+    const operationRoot=root;
     const seq = ++refreshSeq;
-    const st = await window.myIDE.git.status(root);
-    if (seq !== refreshSeq) return; // 期间又发起了新刷新：本响应已过期
-    state = { ...(st.isRepo ? st : { isRepo: false, error: st.error }) };
+    let st;try{st=await window.myIDE.git.status(operationRoot,options);}catch(e){st={error:String(e.message||e),completeness:'error'};}
+    if (seq !== refreshSeq||root!==operationRoot) return; // 期间又发起了新刷新：本响应已过期
+    st=st||{error:'状态服务未返回结果',completeness:'error'};
+    const incomplete=st.completeness&& !['complete','not-repo'].includes(st.completeness)||st.error&&st.isRepo!==false;
+    if(incomplete){state={...(state||{}),...st,isRepo:true,branch:st.branch||state?.branch||'Git',changed:st.changed||state?.changed||[],tracked:st.tracked||state?.tracked,error:st.error||'Git状态未完成',completeness:st.completeness||'error'};}
+    else state={...st,...(!st.isRepo?{isRepo:false}:{}),completeness:st.completeness||'complete'};
     // M4：进行中的 Git 操作 + 冲突清单（并行取；失败/不支持就当没有 —— 软依赖，不阻塞主流程）
     const [opR, cfR] = await Promise.all([gitSafe('opState', root), gitSafe('conflicts', root)]);
+    if(seq!==refreshSeq||root!==operationRoot)return;
     op = opR && opR.state ? opR : null;
     conflictFiles = cfR && Array.isArray(cfR.files) ? cfR.files : [];
-    syncChecked();
+    if(statusComplete())syncChecked();
     render();
+    if(!statusComplete())document.querySelectorAll('.hunk-act').forEach(b=>{b.disabled=true;});
     updateAheadBehind();
-    App.updateStatusbar({ branch: state.branch, changed: state.changed ? state.changed.length : 0, noRepo: !state.isRepo });
+    App.updateStatusbar({ branch: state.branch, changed: statusComplete()?state.changed?.length:0, noRepo: !state.isRepo,gitStatusError:incomplete });
     // 文件树 Git 状态着色（PyCharm 式）
     // ⚠ 路径基准是**仓库根**（statusMatrix 返回的就是 repo 相对路径），不是项目根 ——
     //   把子目录当项目打开时，用项目根拼键会全部对不上（老写法就是这个毛病）。
@@ -53,7 +61,8 @@ const GitPanel = (() => {
     if (window.Tree) Tree.setGitStatus(statusMap, {
       isRepo: !!state.isRepo,
       root: repoRoot,
-      tracked: state.tracked || [],
+      tracked: state.tracked,
+      completeness:state.completeness,
     });
   }
 
@@ -517,6 +526,8 @@ const GitPanel = (() => {
       br.title = '当前分支 ' + state.branch + ' —— 点击切换分支 / 检出标签';
     }
 
+    if(!statusComplete()){const warning=document.createElement('div');warning.className='git-empty git-status-warning';warning.setAttribute('role','status');warning.style.cssText='text-align:left;color:var(--warn,#c98c3f)';warning.textContent='Git状态未完成，请刷新重试。'+(state.tracked?'上次可信结果仍保留。':'')+' '+state.error;filesEl.appendChild(warning);}
+
     // M4：「操作进行中」条（有 merge/rebase/cherry-pick/revert 未完成时才出现）——放在最上面，
     // 它是当前最该处理的事，比工具行更优先
     const opBar = buildOpBar();
@@ -529,7 +540,7 @@ const GitPanel = (() => {
     const list = document.createElement('div');
     list.id = 'commit-list';
     filesEl.appendChild(list);
-    if (!state.changed.length) {
+    if (!state.changed.length && statusComplete()) {
       const d = document.createElement('div');
       d.className = 'git-empty';
       // 文案朴素、靠上：原来的「没有更改 ✨」占着 30px 上下留白还居中，看起来像页面坏了
@@ -1252,7 +1263,7 @@ const GitPanel = (() => {
     //   两个入口做同一件事只会让人犹豫按哪个（用户指出过"这个提交按钮多余了 下面就有"）。
     // ⚠ 也**没有「内嵌预览」**：340px 侧栏里 unified diff 每行都要折行、读不出结构，
     //   用户判定"一点用没有"；差异统一在编辑区看（点文件行 / 「差异」按钮）。
-    mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh());
+    mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh({force:true}));
     const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
     const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
     const sep = document.createElement('span');
@@ -1707,6 +1718,9 @@ const GitPanel = (() => {
   //   以前文件行少一个 caret 占位、又没有徽章占位，结果**子文件的复选框和父目录的复选框在同一列**，
   //   层级完全看不出来（用户截图："文件和文件夹缩进一样"）。
   function fileRow(c, depth = 0, flat = false, ro = false) {
+    ro=ro||!statusComplete();
+    const operationRoot=root,epoch=rootGeneration;
+    const valid=()=>root===operationRoot&&rootGeneration===epoch&&f.isConnected&&allowMutation();
     const f = document.createElement('div');
     f.className = 'git-file' + (ro ? ' ro' : '');
     f.dataset.file = c.file;
@@ -1792,8 +1806,8 @@ const GitPanel = (() => {
       if (!isIgnoredRow && !ro) mk(isUntracked ? '🗑 删除文件' : '↺ 回滚（放弃修改）', async () => {
         const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
         const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
-        if (!yes) return;
-        const r = await window.myIDE.git.discard(root, c.file);
+        if (!yes||!valid()) return;
+        const r = await window.myIDE.git.discard(operationRoot, c.file);
         if (r.ok) { MI.toast(isUntracked ? '已删除 ' + c.file : '已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
         else MI.toast('操作失败: ' + r.error, 'err');
       }, true);
@@ -1830,8 +1844,8 @@ const GitPanel = (() => {
       e.stopPropagation();
       const tip = isUntracked ? `确定删除未版本控制文件「${c.file}」吗？` : `确定放弃「${c.file}」的所有修改吗？此操作不可恢复。`;
       const yes = await Modal.confirm(isUntracked ? '删除文件' : '放弃修改', tip);
-      if (!yes) return;
-      const r = await window.myIDE.git.discard(root, c.file);
+      if (!yes||!valid()) return;
+      const r = await window.myIDE.git.discard(operationRoot, c.file);
       if (r.ok) { MI.toast(isUntracked ? '已删除 ' + c.file : '已放弃 ' + c.file + ' 的修改', 'ok'); refresh(); }
       else MI.toast('操作失败: ' + r.error, 'err');
     };
@@ -1840,7 +1854,8 @@ const GitPanel = (() => {
 
   // ---------- 提交 ----------
   async function doCommit(pushAfter, pushOpts, opts) {
-    if (!root || !state || !state.isRepo) return;
+    if (!root || !allowMutation()) return;
+    const operationRoot=root,epoch=rootGeneration;
     const files = [...checked];
     if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
     const msgEl = document.getElementById('commit-msg');
@@ -1858,12 +1873,14 @@ const GitPanel = (() => {
     }
     // Sign-off 在这里追加、**不写进输入框**（PyCharm 同语义：避免重复追加、也不污染草稿/历史）
     const finalMsg = signoff ? await appendSignoff(text) : text;
+    if(root!==operationRoot||rootGeneration!==epoch||!allowMutation())return;
     const btn = document.getElementById('cm-ok');
     if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
-    const r = await window.myIDE.git.commit(root, {
+    const r = await window.myIDE.git.commit(operationRoot, {
       message: finalMsg, files, amend, author: authorOverride || undefined,
     });
-    if (btn) { btn.disabled = !checked.size; btn.textContent = '提交 (I)'; }
+    if(root!==operationRoot||rootGeneration!==epoch)return;
+    if (btn) { btn.disabled = !checked.size||!statusComplete(); btn.textContent = '提交 (I)'; }
     if (r.ok) {
       pushMsgHistory(text);            // 提交消息进历史（🕘 下拉）
       commitMsg = '';
@@ -1901,14 +1918,14 @@ const GitPanel = (() => {
     }
     const has = checked.size > 0;
     const btn = document.getElementById('cm-ok');
-    if (btn) btn.disabled = !has;
+    if (btn) btn.disabled = !has||!statusComplete();
     const btnp = document.getElementById('cm-ok-push');
-    if (btnp) btnp.disabled = !has;
+    if (btnp) btnp.disabled = !has||!statusComplete();
     const btnm = document.getElementById('cm-ok-push-menu');
-    if (btnm) btnm.disabled = !has;
+    if (btnm) btnm.disabled = !has||!statusComplete();
     if (barBtns) {
       // ⚠ 工具行里已经没有「提交」了（与底部 footer 重复，已删）——别再引用 barBtns.com
-      barBtns.roll.disabled = !has;
+      barBtns.roll.disabled = !has||!statusComplete();
       barBtns.dif.disabled = !has;
     }
     const count = document.getElementById('commit-count');
@@ -1922,6 +1939,8 @@ const GitPanel = (() => {
 
   // ---------- 回滚选中 ----------
   async function rollbackChecked() {
+    if(!allowMutation())return;
+    const operationRoot=root,epoch=rootGeneration;
     if (!checked.size) { MI.toast('没有勾选的文件', 'err'); return; }
     const files = [...checked].filter((f) => !ignoredAll.has(f)); // 忽略的文件不参与回滚（回滚=删除）
     if (!files.length) { MI.toast('勾选的只有被忽略的文件，它们不参与回滚', 'err'); return; }
@@ -1933,7 +1952,8 @@ const GitPanel = (() => {
     const tip = untracked.length ? `\n（其中 ${untracked.length} 个未版本控制文件将被删除）` : '';
     const yes = await Modal.confirm('回滚选中', `确定放弃以下 ${files.length} 个文件的修改吗？此操作不可恢复。\n\n${shown}${tip}`);
     if (!yes) return;
-    const r = await window.myIDE.git.discardFiles(root, files);
+    if(root!==operationRoot||rootGeneration!==epoch||!allowMutation())return;
+    const r = await window.myIDE.git.discardFiles(operationRoot, files);
     if (r.failed.length) MI.toast(`${r.ok} 个已回滚，${r.failed.length} 个失败：${r.failed[0].error}`, 'err');
     else MI.toast(`已回滚 ${r.ok} 个文件`, 'ok');
     refresh();
@@ -1963,10 +1983,16 @@ const GitPanel = (() => {
   // ---------- 搁置（Shelve）弹窗：上=搁置当前更改（名称+文件勾选），下=已搁置列表（恢复/删除） ----------
   async function openShelveDialog(preselect) {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    if(!allowMutation())return;
+    const operationRoot=root,epoch=rootGeneration;
+    const valid=()=>root===operationRoot&&rootGeneration===epoch&&allowMutation();
     // 需要当前改动列表（搁置区）
-    const st = await window.myIDE.git.status(root);
+    const st = await window.myIDE.git.status(operationRoot,{force:true});
+    if(!valid())return;
+    if(!st||st.error||st.completeness&&st.completeness!=='complete'){MI.toast('Git状态未完成，请刷新后再搁置','err');return;}
     const changed = (st && st.changed) || [];
-    const listR = await window.myIDE.git.shelveList(root);
+    const listR = await window.myIDE.git.shelveList(operationRoot);
+    if(!valid())return;
     const shelves = (listR && listR.shelves) || [];
 
     const box = document.createElement('div');
@@ -2001,10 +2027,12 @@ const GitPanel = (() => {
         filesEl.appendChild(row);
       }
       box.querySelector('#sv-create').onclick = async () => {
+        if(!valid())return;
         const files = [...filesEl.querySelectorAll('input:checked')].map((x) => x.dataset.file);
         if (!files.length) { MI.toast('请至少勾选一个文件', 'err'); return; }
         const name = box.querySelector('#sv-name').value.trim();
-        const r = await window.myIDE.git.shelveCreate(root, { name, files });
+        const r = await window.myIDE.git.shelveCreate(operationRoot, { name, files });
+        if(!valid())return;
         if (r.ok) {
           MI.toast('✅ 已搁置 ' + r.files + ' 个文件（工作区已回滚）', 'ok');
           Modal.hide();
@@ -2041,20 +2069,24 @@ const GitPanel = (() => {
       };
       const [applyBtn, delBtn] = row.querySelectorAll('button');
       applyBtn.onclick = async () => {
-        let r = await window.myIDE.git.shelveApply(root, s.id);
+        if(!valid())return;
+        let r = await window.myIDE.git.shelveApply(operationRoot, s.id);
+        if(!valid())return;
         if (r.conflict) {
           // 目标文件有未提交改动 → 询问强制覆盖
           const yes = await Modal.confirm('恢复搁置', r.error + '\n\n强制覆盖这些文件并继续恢复吗？');
-          if (!yes) return;
-          r = await window.myIDE.git.shelveApply(root, s.id, { force: true });
+          if (!yes||!valid()) return;
+          r = await window.myIDE.git.shelveApply(operationRoot, s.id, { force: true });
+          if(!valid())return;
         }
         if (r.ok) { MI.toast('✅ 已恢复 ' + r.files + ' 个文件到工作区', 'ok'); Modal.hide(); refresh(); }
         else MI.toast('恢复失败: ' + r.error, 'err');
       };
       delBtn.onclick = async () => {
         const yes = await Modal.confirm('删除搁置', `确定删除搁置「${s.name}」吗？其中的改动将无法恢复。`);
-        if (!yes) return;
-        const r = await window.myIDE.git.shelveDelete(root, s.id);
+        if (!yes||!valid()) return;
+        const r = await window.myIDE.git.shelveDelete(operationRoot, s.id);
+        if(!valid())return;
         if (r.ok) { MI.toast('已删除搁置', 'ok'); row.remove(); }
         else MI.toast('删除失败: ' + r.error, 'err');
       };
@@ -2356,7 +2388,7 @@ const GitPanel = (() => {
   const SIDE_LABEL = { unstaged: '未暂存（工作区 vs 暂存区）', staged: '已暂存（暂存区 vs HEAD）' };
 
   async function hunkAction(file, kind, selection,scope) {
-    const valid=()=>root===scope.projectRoot&&rootGeneration===scope.generation&&diffSeq===scope.seq&&scope.table.isConnected;
+    const valid=()=>statusComplete()&&root===scope.projectRoot&&rootGeneration===scope.generation&&diffSeq===scope.seq&&scope.table.isConnected;
     if (!valid()) {MI.toast('差异视图已切换，请刷新后选择','err');return;}
     const operationRoot=scope.projectRoot;
     if (kind === 'revert') {
@@ -2451,6 +2483,7 @@ const GitPanel = (() => {
   function buildDiffTable(r, act, opts) {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
+    if(r.readOnlyReason){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=r.readOnlyReason;fileBox.appendChild(msg);}
     if (!(opts && opts.hideTitle)) {
       const title = document.createElement('div');
       title.className = 'diff-file-title';
@@ -2493,7 +2526,7 @@ const GitPanel = (() => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
       sep.innerHTML = `<td colspan="4">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
-      if (act && act.onHunk) {
+      if (act && act.onHunk && !r.readOnlyReason) {
         // 多文件视图里每个文件的侧可能不同（有的已暂存、有的没有）→ 先用结果自带的 side，
         // 没有再按文件解析（同一个文件「已暂存 + 未暂存」两块并排时，只能靠 r.side 区分）
         const side = r.side || (act.sideOf ? act.sideOf(r.file) : act.side);
@@ -2854,6 +2887,7 @@ const GitPanel = (() => {
     get rootDir() { return root; },
     set rootDir(v) {
       if (v !== root) {
+        state=null;checked.clear();knownFiles.clear();op=null;conflictFiles=[];
         // 切项目：输入框里若还是上一个项目的草稿（用户没改过），换成新项目的草稿
         const msgEl = document.getElementById('commit-msg');
         if (msgEl && msgEl.value === lastDraft) {
