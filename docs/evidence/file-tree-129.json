@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-02",
+  "mode": "完整tree.js与实际HTML，JSDOM独立存储，目录/列表/Viewer内存桥，0网络/0用户磁盘操作；非产品验收",
+  "sha256": "63507ca65f339675c6136a735fa5323ab9ffb418bc578b6a0a757ac5f1c739ee",
+  "observations": [
+    {
+      "id": "C1",
+      "name": "已有搜索键盘正常打开",
+      "detail": "名称alpha命中，Enter打开当前结果"
+    },
+    {
+      "id": "C2",
+      "name": "已有Ctrl多选且不打开文件",
+      "detail": "Ctrl点击a/b选中2项，openFile=0"
+    },
+    {
+      "id": "R1",
+      "name": "搜索不能按已有相对路径查找",
+      "detail": "候选src/config.json存在，按src/config搜索无结果；只匹配basename"
+    },
+    {
+      "id": "R2",
+      "name": "应用内隐藏的文件仍出现在常规搜索",
+      "detail": "常规树隐藏secret.txt，常规搜索仍显示secret.txt"
+    },
+    {
+      "id": "R3",
+      "name": "前200项截断没有总数/截断提示",
+      "detail": "候选201个匹配，画面200行，foo200不可达，无总数/截断反馈"
+    },
+    {
+      "id": "R4",
+      "name": "旧查询迟到覆盖新查询",
+      "detail": "输入beta，beta先到后alpha迟到，画面回到alpha"
+    },
+    {
+      "id": "R5",
+      "name": "退出搜索后迟到请求抛未处理异常",
+      "detail": "endSearch后返回，searchState=null，异常=Cannot set properties of null (setting 'files')"
+    },
+    {
+      "id": "R6",
+      "name": "组合输入Enter打开旧结果",
+      "detail": "isComposing=true时Enter仍打开alpha.txt"
+    },
+    {
+      "id": "R7",
+      "name": "查询读取错误显示为无匹配",
+      "detail": "listAll返回error，无files时当空列表，显示没有匹配而非加载失败"
+    },
+    {
+      "id": "R8",
+      "name": "搜索中的切项目沿用旧查询并被旧项目覆盖",
+      "detail": "新root=C:/next，最后画面仍出现旧root=C:/repo的alpha-old结果"
+    }
+  ]
+}
