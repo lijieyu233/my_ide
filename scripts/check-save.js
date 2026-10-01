@@ -151,6 +151,62 @@ app.whenReady().then(async () => {
     try { deniedBinary = await run(`myIDE.fs.writeBinary(${JSON.stringify(binary)},"AQID")`); }
     finally { writer.atomicWrite = normalWrite; }
     add('真实二进制IPC替换失败仍保留原字节', deniedBinary.errorCode === 'EIO' && fs.readFileSync(binary).equals(bytes));
+    const iconv = require('iconv-lite');
+    const body = '中文 ABC\r\n第二行\n第三行\r结尾';
+    const formats = [['utf8',false],['utf8',true],['utf16le',false],['utf16le',true],['utf16be',false],['utf16be',true],['gbk',false]];
+    for (const [encoding,bom] of formats) {
+      let bytes = encoding === 'gbk' ? iconv.encode(body,'gbk') : Buffer.from(body, encoding==='utf8'?'utf8':'utf16le');
+      if (encoding==='utf16be') bytes.swap16();
+      if (bom) bytes=Buffer.concat([Buffer.from(encoding==='utf8'?[239,187,191]:encoding==='utf16le'?[255,254]:[254,255]),bytes]);
+      const target=path.join(projectA,encoding+(bom?'-bom':'')+'.txt');fs.writeFileSync(target,bytes);
+      await run(`Viewer.openFile(${JSON.stringify(target)})`);
+      const unedited=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+      add('真实IPC '+encoding+'/'+bom+'无改动字节完全不变', unedited.ok && fs.readFileSync(target).equals(bytes));
+      await run('Viewer.cm.view.dispatch({changes:{from:0,to:2,insert:"修改"}})');
+      const edited=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+      let expected=encoding==='gbk'?iconv.encode(body.replace('中文','修改'),'gbk'):Buffer.from(body.replace('中文','修改'),encoding==='utf8'?'utf8':'utf16le');
+      if(encoding==='utf16be')expected.swap16();
+      if(bom)expected=Buffer.concat([Buffer.from(encoding==='utf8'?[239,187,191]:encoding==='utf16le'?[255,254]:[254,255]),expected]);
+      add('真实CM6 '+encoding+'/'+bom+'字符编辑保留BOM字节序和混合换行',edited.ok&&fs.readFileSync(target).equals(expected));
+    }
+    const gbk=path.join(projectA,'gbk.txt'),oldGbk=fs.readFileSync(gbk);
+    await run('Viewer.cm.setValue("中文 😀")');
+    const loss=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+    add('真实GBK emoji保存拒绝且不写盘、不清dirty',!loss.ok&&loss.errorCode==='ENCODING_LOSS'&&fs.readFileSync(gbk).equals(oldGbk)&&await run('Viewer.activeTab.dirty&&Viewer.activeTab.content==="中文 😀"'));
+    await run('document.querySelector(".sb-encoding").click();document.querySelector(".encoding-choice").value="utf8";document.querySelector(".encoding-bom input").checked=false;document.querySelector(".encoding-save").click();true');
+    for(let i=0;i<100 && await run('Viewer.activeTab.dirty');i++)await sleep(20);
+    add('真实编码面板显式UTF8保存emoji可重读',fs.readFileSync(gbk,'utf8')==='中文 😀'&&!await run('Viewer.activeTab.dirty'));
+    const pure=path.join(projectA,'pure-u16.txt');fs.writeFileSync(pure,Buffer.from('纯中文文本','utf16le'));
+    await run(`Viewer.openFile(${JSON.stringify(pure)})`);
+    const reread=await run('Viewer.reopenWithEncoding("utf16le")');
+    add('无BOM全中文UTF16显式重新打开恢复正文且不改盘',reread.ok&&await run('Viewer.activeTab.content==="纯中文文本"')&&fs.readFileSync(pure).equals(Buffer.from('纯中文文本','utf16le')));
+    await run('Viewer.cm.setValue("读取后的未保存正文")');
+    const deniedReopen=await run('Viewer.reopenWithEncoding("utf8")');
+    add('真实重新打开拒绝丢弃dirty正文',deniedReopen.errorCode==='UNSAVED_CHANGES'&&await run('Viewer.activeTab.content==="读取后的未保存正文"&&Viewer.activeTab.dirty'));
+    const pureSaved=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+    await sleep(850);
+    add('显式UTF16保存后watcher重载仍用选定编码',pureSaved.ok&&await run('Viewer.activeTab.content==="读取后的未保存正文"&&Viewer.activeTab.encoding==="utf16le"&&!Viewer.activeTab.dirty'));
+    for (const [encoding,bom] of [['utf8',true],['utf16be',true],['utf16le',false]]) {
+      const legacy=path.join(projectA,'legacy-'+encoding+'.txt');
+      let original=Buffer.from('中文 ABC\r\n',encoding==='utf8'?'utf8':'utf16le');
+      if(encoding==='utf16be')original.swap16();
+      if(bom)original=Buffer.concat([Buffer.from(encoding==='utf8'?[239,187,191]:[254,255]),original]);
+      fs.writeFileSync(legacy,original);
+      const reread=await run(`myIDE.fs.readFile(${JSON.stringify(legacy)})`);
+      const kept=await run(`myIDE.fs.writeFile(${JSON.stringify(legacy)},${JSON.stringify(reread.content)})`);
+      add('旧无格式IPC '+encoding+'保留目标原格式',kept.ok&&fs.readFileSync(legacy).equals(original));
+    }
+    const unknown=await run(`myIDE.fs.writeFile(${JSON.stringify(pure)},"不能落盘",{encoding:"shift-jis",bom:false})`);
+    add('未知编码通过真实IPC稳定拒绝而不写盘',unknown.errorCode==='UNSUPPORTED_ENCODING'&&fs.readFileSync(pure).equals(Buffer.from('读取后的未保存正文','utf16le')));
+    await run('Viewer.showEncoding()');
+    win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');
+    for(const theme of ['dark','light']){
+      await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(250);
+      const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});
+      fs.writeFileSync(path.join(ROOT,'.ui-check-trash','encoding-check-'+theme+'.png'),Buffer.from(shot.data,'base64'));
+    }
+    win.webContents.debugger.detach();
+    await run('document.querySelector(".encoding-dialog .m-cancel").click()');
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
   } finally {

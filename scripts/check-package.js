@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const asar = require('@electron/asar');
 
-const runtimeFiles = ['main.js', 'file-write.js', 'file-replace-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
+const runtimeFiles = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
   'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
 const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',

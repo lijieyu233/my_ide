@@ -93,7 +93,7 @@ app.whenReady().then(async () => {
       #viewer { display:flex; height:440px } #host { width:100% }
       #viewer .cm-cursorLayer, #viewer .cm-cursor { display:block !important; animation:none !important }</style>
       <div id="viewer"><div id="host" class="editor-cm-wrap"></div></div>
-      <script>${read('renderer/vendor/cm6-bundle.min.js')}</script><script>${read('renderer/md-editor.js')}</script>`;
+      <script>${read('renderer/vendor/cm6-bundle.min.js')}</script><script>${read('renderer/text-lines.js')}</script><script>${read('renderer/md-editor.js')}</script>`;
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     const R = await win.webContents.executeJavaScript('(' + checkGeometry.toString() + ')()');
     const failed = R.filter(r => !r.ok);

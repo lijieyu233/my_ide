@@ -23,6 +23,112 @@ const Viewer = (() => {
   let saveTimer = null;
 
   function extOf(name) { return (name.split('.').pop() || '').toLowerCase(); }
+  function formatLabel(tab) {
+    const format = tab.textFormat || { encoding: tab.encoding || 'utf8' };
+    const names = { utf8: 'UTF-8', utf16le: 'UTF-16LE', utf16be: 'UTF-16BE', gbk: 'GBK' };
+    return (names[format.encoding] || format.encoding) + (format.bom ? ' BOM' : '')
+      + (format.detection === 'fallback' ? '（推测）' : format.detection === 'heuristic' ? '（启发式）' : '');
+  }
+  function canChooseEncoding(tab) {
+    const ext = extOf(tab.name);
+    return !tab.tooLarge && tab.mode != null && !IMG_EXTS.has(ext) && !MEDIA_EXTS.has(ext) && !OFFICE_EXTS.has(ext) && !OFFICE_OLD_EXTS.has(ext);
+  }
+  function updateFormatStatus(tab) {
+    if (tab === tabs[active] && window.App) App.updateStatusbar({
+      encoding: formatLabel(tab), encodingEnabled: canChooseEncoding(tab),
+      eol: tab.eol, lines: tab.content ? tab.content.split('\n').length : 0,
+    });
+  }
+  function validFormatTarget(tab, path, revision) {
+    return tabs.includes(tab) && tab.path === path && tab.editRevision === revision;
+  }
+  async function saveWithEncoding(encoding, bom, tab = tabs[active]) {
+    if (!tab || tab.content == null || tab.binary || tab.tooLarge) return { ok: false, errorCode: 'NO_CONTENT' };
+    if (!['utf8', 'utf16le', 'utf16be', 'gbk'].includes(encoding) || encoding === 'gbk' && bom) return { ok: false, errorCode: 'INVALID_FORMAT' };
+    tab.textFormat = { encoding, bom: !!bom, detection: 'selected', eol: tab.eol };
+    tab.encoding = encoding;
+    markEdited(tab);
+    updateFormatStatus(tab);
+    return saveSnapshot(tab, false);
+  }
+  async function reopenWithEncoding(encoding, tab = tabs[active]) {
+    if (!tab || tab.tooLarge || tab.mode == null) return { ok: false, errorCode: 'NO_CONTENT' };
+    const path = tab.path, revision = tab.editRevision;
+    if (tab.dirty || saveQueues.has(path.replace(/\\/g, '/').toLowerCase())) {
+      MI.toast('当前文件仍有未保存修改或保存正在进行，请先保存；重新打开未执行', 'err');
+      return { ok: false, errorCode: 'UNSAVED_CHANGES' };
+    }
+    const sequence = tab.formatRead = (tab.formatRead || 0) + 1;
+    tab.formatBusy = true;
+    try {
+      const r = await window.myIDE.fs.readFile(path, encoding);
+      if (!validFormatTarget(tab, path, revision) || tab.dirty || sequence !== tab.formatRead) return { ok: false, errorCode: 'STALE_READ' };
+      if (r.error || r.binary || r.content == null) {
+        MI.toast('重新打开失败: ' + (r.error || '无法解码为文本') + '；当前内容已保留', 'err');
+        return { ok: false, errorCode: r.errorCode || 'READ_FAILED' };
+      }
+      tab.content = r.content; tab.encoding = r.encoding || encoding;
+      tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: false };
+      tab.eol = r.textFormat && r.textFormat.eol;
+      tab.error = null; tab.binary = false; tab.saveError = null;
+      tab.editRevision++; tab.savedRevision = tab.editRevision;
+      tab.cmState = null; tab.ta = null;
+      if (tab.mode === 'error') tab.mode = MD_EXTS.has(extOf(tab.name)) ? 'source' : 'edit';
+      if (tab === tabs[active]) {
+        // renderView会保存旧state；重新解码必须丢弃绑定旧正文的历史，再重建。
+        if (cmApi && cmApi.__tab === tab) { cmApi.destroy(); cmApi = null; }
+        renderView();
+      }
+      renderTabs(); updateFormatStatus(tab);
+      return { ok: true };
+    } catch (e) {
+      MI.toast('重新打开失败: ' + String(e.message || e) + '；当前内容已保留', 'err');
+      return { ok: false, errorCode: 'READ_FAILED' };
+    } finally { if (sequence === tab.formatRead) tab.formatBusy = false; }
+  }
+  function showEncoding() {
+    const tab = tabs[active];
+    if (!tab || tab.tooLarge || tab.mode == null || IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) return;
+    const path = tab.path, revision = tab.editRevision, box = document.createElement('div');
+    box.className = 'encoding-dialog'; box.dataset.selfEsc = '1';
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', '文件编码');
+    box.innerHTML = '<div class="m-head">文件编码<button class="encoding-close" aria-label="关闭">×</button></div>'
+      + '<div class="m-body"><div class="encoding-file"></div><p class="encoding-current"></p>'
+      + '<label>编码 <select class="encoding-choice"><option value="utf8">UTF-8</option><option value="utf16le">UTF-16LE</option><option value="utf16be">UTF-16BE</option><option value="gbk">GBK</option></select></label>'
+      + '<label class="encoding-bom"><input type="checkbox">保留 BOM</label>'
+      + '<p class="encoding-note">以指定编码保存会转换当前内存正文。重新打开只读取磁盘，需先保存未保存修改。GBK无法表示的字符会拒绝写入。</p></div>'
+      + '<div class="m-foot"><button class="tb-btn m-cancel">取消</button><button class="tb-btn encoding-reopen">按此编码重新打开</button><button class="tb-btn m-ok encoding-save">以此编码保存</button></div>';
+    box.querySelector('.encoding-file').textContent = path;
+    box.querySelector('.encoding-current').textContent = '当前：' + formatLabel(tab);
+    const choice = box.querySelector('select'), checkbox = box.querySelector('input');
+    choice.value = tab.encoding || 'utf8'; checkbox.checked = !!tab.textFormat?.bom;
+    const sync = () => { checkbox.disabled = choice.value === 'gbk'; if (checkbox.disabled) checkbox.checked = false; };
+    choice.onchange = sync; sync();
+    box.querySelector('.encoding-save').disabled = tab.content == null || tab.binary;
+    const origin = document.activeElement;
+    Modal.show(box);
+    const finish = () => { if (Modal.stack[Modal.stack.length - 1] === box) Modal.hide(); if (origin && origin.isConnected) origin.focus(); };
+    const action = (run) => {
+      if (!validFormatTarget(tab, path, revision)) { finish(); MI.toast('文档已变化，请重新打开文件编码面板', 'err'); return; }
+      const encoding = choice.value, bom = checkbox.checked;
+      finish(); run(encoding, bom);
+    };
+    box.querySelector('.m-cancel').onclick = finish; box.querySelector('.encoding-close').onclick = finish;
+    box.querySelector('.encoding-save').onclick = () => action((encoding, bom) => saveWithEncoding(encoding, bom, tab));
+    box.querySelector('.encoding-reopen').onclick = () => action((encoding) => reopenWithEncoding(encoding, tab));
+    box.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); }
+      if (e.key === 'Tab') {
+        const controls = [...box.querySelectorAll('button,select,input')].filter((el) => !el.disabled);
+        const index = controls.indexOf(document.activeElement);
+        if (e.shiftKey && index <= 0 || !e.shiftKey && index === controls.length - 1) {
+          e.preventDefault(); controls[e.shiftKey ? controls.length - 1 : 0].focus();
+        }
+      }
+    });
+    box.querySelector('.m-cancel').focus();
+  }
 
   const TEXT_EXTS = new Set(['txt', 'log', 'ini', 'cfg', 'conf', 'env', 'gitignore', 'yml', 'yaml', 'toml', 'xml', 'bat', 'cmd', 'sh', 'ps1', 'sql', 'csv', 'tsv', 'properties', 'lock']);
   const CODE_EXTS = new Set(['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'json', 'css', 'scss', 'less', 'html', 'htm', 'py', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs', 'rb', 'php', 'swift', 'kt', 'scala', 'vue', 'svelte']);
@@ -96,7 +202,8 @@ const Viewer = (() => {
     else {
       tab.content = r.content;
       tab.encoding = r.encoding || 'utf8';
-      tab.eol = r.content && r.content.includes('\r\n') ? 'CRLF' : null;
+      tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') };
+      tab.eol = r.textFormat ? r.textFormat.eol : r.content && r.content.includes('\r\n') ? 'CRLF' : null;
       // Markdown 默认「实时预览」（Obsidian 式块编辑）；其他可预览格式走纯预览
       if (MD_EXTS.has(extOf(tab.name))) {
         // 模式全局统一：记住上次使用的 md 模式，切换标签/新开文件不再重置
@@ -467,7 +574,8 @@ const Viewer = (() => {
     if (window.App) App.updateStatusbar({
       file: tab.path,
       lines: tab.content ? tab.content.split('\n').length : 0,
-      encoding: tab.encoding && tab.encoding !== 'utf8' ? tab.encoding.toUpperCase() : null,
+      encoding: formatLabel(tab),
+      encodingEnabled: canChooseEncoding(tab),
       eol: tab.eol,
     });
     // 刷新大纲（md 文件）
@@ -566,8 +674,8 @@ const Viewer = (() => {
       let previewScrolling = false;
       let previewScrollTimer = null;
       ta.addEventListener('input', () => {
-        tab.content = ta.value;
         if (tab.__extLoading) return;
+        tab.content = TextLines.reconcile(tab.content || '', ta.value);
         markEdited(tab);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
@@ -760,8 +868,8 @@ const Viewer = (() => {
       state: tab.cmState || null,
       live,
       onChange: (val) => {
-        tab.content = val;
         if (tab.__extLoading) return; // 外部重载写入：不标 dirty、不触发自动保存（防写回抖动）
+        tab.content = val;
         markEdited(tab);
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
@@ -797,8 +905,8 @@ const Viewer = (() => {
       state: tab.cmState || null,
       ext: extOf(tab.name),
       onChange: (val) => {
-        tab.content = val;
         if (tab.__extLoading) return;
+        tab.content = val;
         markEdited(tab);
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
@@ -1046,6 +1154,10 @@ const Viewer = (() => {
 
   function markEdited(tab) {
     tab.editRevision++;
+    const endings = TextLines.endings(tab.content || '').map((run) => run[0]);
+    tab.eol = endings.length > 1 ? 'MIXED' : endings[0] === '\r\n' ? 'CRLF' : endings[0] === '\r' ? 'CR' : endings.length ? 'LF' : null;
+    if (tab.textFormat) tab.textFormat.eol = tab.eol;
+    updateFormatStatus(tab);
     if (!tab.dirty) { tab.dirty = true; renderTabs(); }
   }
 
@@ -1055,8 +1167,8 @@ const Viewer = (() => {
 
   function saveSnapshot(tab, quiet) {
     if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
-    const snapshot = { tabId: tab.id, path: tab.path, content: tab.ta ? tab.ta.value : tab.content,
-      encoding: tab.encoding, revision: tab.editRevision };
+    const snapshot = { tabId: tab.id, path: tab.path, content: tab.content,
+      encoding: { ...(tab.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') }) }, revision: tab.editRevision };
     const key = snapshot.path.replace(/\\/g, '/').toLowerCase();
     const previous = saveQueues.get(key) || Promise.resolve();
     // 在调用时固定正文，不能等前一次写完再读取新正文，否则 Ctrl+S 等待的版本会漂移。
@@ -1079,6 +1191,10 @@ const Viewer = (() => {
           tab.savedRevision = snapshot.revision;
           tab.dirty = tab.editRevision !== snapshot.revision;
           tab.saveError = null;
+          if (tab.editRevision === snapshot.revision && r.textFormat) {
+            tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
+          }
+          updateFormatStatus(tab);
           renderTabs();
           if (!quiet) MI.toast(tab.dirty ? '已保存先前版本，仍有未保存的修改' : '💾 已保存 ' + tab.name, 'ok');
           if (window.App) App.refreshGit();
@@ -1139,17 +1255,23 @@ const Viewer = (() => {
   }
   async function reloadExternal() {
     for (const t of tabs) {
-      if (t.dirty || t.error || t.binary || t.tooLarge) continue;
+      if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy) continue;
       if (t.content == null) continue;
       if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
         const path = t.path, revision = t.editRevision;
-        const r = await window.myIDE.fs.readFile(path);
-        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision) continue;
+        // 用户明确选过编码后，watcher不能再用启发式把无BOM纯中文UTF-16误读为GBK。
+        const r = await window.myIDE.fs.readFile(path, t.textFormat?.detection === 'selected' ? t.encoding : undefined);
+        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision || t.formatBusy) continue;
         if (r.error || r.tooLarge || r.binary || r.content == null) continue;
-        if (r.content === t.content) continue; // 内容未变（mtime 变了但内容相同）
+        const sameContent = r.content === t.content;
+        const sameFormat = JSON.stringify(t.textFormat) === JSON.stringify(r.textFormat);
+        if (sameContent && sameFormat) continue;
         t.content = r.content;
+        if (t !== tabs[active]) t.cmState = null;
         t.encoding = r.encoding || t.encoding;
+        t.textFormat = r.textFormat || { encoding: t.encoding, bom: t.encoding.startsWith('utf16') };
+        t.eol = r.textFormat && r.textFormat.eol;
         if (t === tabs[active]) {
           if (cmApi && cmApi.__tab === t) {
             t.__extLoading = true;
@@ -1163,7 +1285,7 @@ const Viewer = (() => {
           } else {
             renderView();
           }
-          if (window.App) App.updateStatusbar({ file: t.path, lines: r.content.split('\n').length });
+          updateFormatStatus(t);
           if (window.App) App.refreshOutline(t);
         }
       } catch {}
@@ -1181,7 +1303,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

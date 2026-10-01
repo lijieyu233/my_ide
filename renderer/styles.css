@@ -1708,6 +1708,16 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 #sb-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #sb-info b { color: var(--text); font-weight: 600; }
+.sb-encoding { border: 0; background: transparent; color: inherit; font: inherit; padding: 0 3px; cursor: pointer; }
+.sb-encoding:hover, .sb-encoding:focus-visible { color: var(--text-bright); outline: 1px solid var(--accent); }
+.sb-encoding:disabled { cursor: default; }
+.encoding-dialog { max-width: min(560px, 92vw); }
+.encoding-dialog .m-head { display: flex; justify-content: space-between; align-items: center; }
+.encoding-close { border: 0; background: transparent; color: var(--text); font-size: 1.2em; cursor: pointer; }
+.encoding-file { overflow-wrap: anywhere; color: var(--text-dim); }
+.encoding-dialog select { font: inherit; color: var(--text); background: var(--bg-input); border: 1px solid var(--border-mid); padding: .35em .6em; }
+.encoding-bom { margin-left: 1.2em; }
+.encoding-note { color: var(--text-dim); line-height: 1.6; }
 #sb-branch { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; margin-left: 2px; }
 #sb-branch .ic { width: 12px; height: 12px; opacity: .8; }
 #sb-branch .sb-br-nm { color: var(--text); }

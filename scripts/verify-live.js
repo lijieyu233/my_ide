@@ -13,6 +13,7 @@ if (w.Range && !w.Range.prototype.getClientRects) {
 }
 const R = (f) => w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', f), 'utf8'));
 R('vendor/cm6-bundle.min.js');
+R('text-lines.js');
 R('md-editor.js');
 
 const DOC = '# 标题\n\n这是 **加粗** 和 *斜体* 文本\n\n`行内代码`\n\n[链接](https://example.com)\n';

@@ -233,6 +233,7 @@ window.CodeEditor = (() => {
     const state = opts.state || EditorState.create({
       doc: opts.doc || '',
       extensions: [
+        ...TextLines.extension(CM, opts.doc || ''),
         View.lineNumbers(),
         View.highlightActiveLineGutter(),
         View.highlightActiveLine(),
@@ -274,7 +275,7 @@ window.CodeEditor = (() => {
             if (curGhost && curGhost.view === view) ghostClear(view);
           }
           if (u.docChanged && ghostEnabled()) ghostSchedule(view);
-          if (u.docChanged && opts.onChange) opts.onChange(u.state.doc.toString());
+          if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state));
           if ((u.docChanged || u.selectionSet) && opts.onCursor) {
             const head = u.state.selection.main.head;
             const before = u.state.doc.sliceString(0, head);
@@ -299,6 +300,7 @@ window.CodeEditor = (() => {
       getState() { return view.state; },
       setValue(text) {
         view.dispatch({
+          effects: TextLines.reset(String(text == null ? '' : text)),
           changes: { from: 0, to: view.state.doc.length, insert: String(text == null ? '' : text) },
         });
       },

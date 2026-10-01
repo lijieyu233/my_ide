@@ -1896,7 +1896,7 @@ window.MdEditor = (() => {
       Language.codeFolding(), // foldState（折叠命令依赖）
       Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
       EditorView.updateListener.of((u) => {
-        if (u.docChanged && opts.onChange) opts.onChange(u.state.doc.toString());
+        if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state));
         if ((u.docChanged || u.selectionSet) && opts.onCursor) {
           const head = u.state.selection.main.head;
           const before = u.state.doc.sliceString(0, head);
@@ -1918,6 +1918,7 @@ window.MdEditor = (() => {
     const state = opts.state || EditorState.create({
       doc: opts.doc || '',
       extensions: [
+        ...TextLines.extension(CM, opts.doc || ''),
         ...baseExtensions(opts),
         liveComp.of(liveOn ? liveExts : []),
       ],
@@ -1943,6 +1944,7 @@ window.MdEditor = (() => {
       setValue(text) {
         view.dispatch({
           changes: { from: 0, to: view.state.doc.length, insert: String(text == null ? '' : text) },
+          effects: TextLines.reset(String(text == null ? '' : text)),
         });
       },
       setLive(on) {

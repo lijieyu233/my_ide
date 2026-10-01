@@ -10,7 +10,8 @@
     "test:dom": "node tests/dom.test.js",
     "test:package": "node tests/package.test.js",
     "test:files": "node tests/file-write.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files",
+    "test:text": "node tests/text-format.test.js",
+    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package && npm run test:files && npm run test:text",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -63,6 +64,7 @@
     "files": [
       "main.js",
       "file-write.js",
+      "text-format.js",
       "file-replace-win.js",
       "preload.js",
       "git-service.js",

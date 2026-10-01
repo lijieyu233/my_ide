@@ -88,8 +88,10 @@ tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 
 ## 🧪 测试与基准
 
+点击状态栏的文件编码，可按 UTF-8、UTF-16LE/BE 或 GBK 重新打开，或以指定编码保存当前正文并选择 BOM。重新打开需先保存未保存修改；GBK 无法表示的字符会拒绝写入，原文件与输入保留，可改选 UTF-8 保存。无 BOM 的编码推测并不覆盖所有字符集，显示异常时请明确选择编码。
+
 ```bash
-npm test       # 语法检查 + Git逻辑 + 渲染层DOM + 打包产物夹具测试
+npm test       # 语法 + Git + 渲染层DOM + 产物 + 文件保全 + 文本格式测试
 npm run bench  # 性能基准（5000 文件 git 扫描 < 1s 实测达成）
 npm run check:package -- dist/win-unpacked/resources/app.asar
 npm run check:packaged -- dist/MyIDE-0.8.5.exe

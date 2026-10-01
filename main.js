@@ -7,6 +7,7 @@ const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
 const FileWrite = require('./file-write');
+const TextFormat = require('./text-format');
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
@@ -430,63 +431,13 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
   return items;
 });
 
-// 编码检测：BOM → UTF-16 无 BOM 启发式 → UTF-8 严格 → GBK 兜底 → null（二进制）
-function detectEncoding(buf) {
-  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'utf8';
-  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return 'utf16le';
-  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return 'utf16be';
-  // UTF-16 无 BOM：ASCII 字符的高字节为 0（LE 落在奇数位 / BE 落在偶数位）
-  // ★ 零字节只集中在一种奇偶位即认定（中文占比高时零字节 < 50%，
-  //   旧的比例阈值会把 UTF-16 的 py/json 误判成二进制文件）
-  const n = Math.min(buf.length, 2048);
-  let even0 = 0, odd0 = 0, pairs = 0;
-  for (let i = 0; i + 1 < n; i += 2) {
-    pairs++;
-    if (buf[i] === 0) even0++;
-    if (buf[i + 1] === 0) odd0++;
-  }
-  if (pairs >= 4) {
-    if (odd0 >= 2 && even0 === 0) return 'utf16le';
-    if (even0 >= 2 && odd0 === 0) return 'utf16be';
-  }
-  const head = buf.subarray(0, 8192);
-  if (head.includes(0)) return null; // 含 0x00 且不像 UTF-16 → 二进制
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(buf);
-    return 'utf8';
-  } catch {
-    return 'gbk'; // 中文 Windows 老文件兜底
-  }
-}
-
-ipcMain.handle('fs:readFile', (_e, p) => {
+ipcMain.handle('fs:readFile', (_e, p, encoding) => {
   try {
     const st = fs.statSync(p);
     if (!st.isFile()) return { error: '不是文件' };
     if (st.size > 8 * 1024 * 1024) return { tooLarge: true, size: st.size };
-    const buf = fs.readFileSync(p);
-    const encoding = detectEncoding(buf);
-    if (!encoding) return { binary: true, size: st.size };
-    let content;
-    if (encoding === 'utf8') {
-      // ★ 只有真的带 BOM 才去掉，否则会吃掉正文前 3 个字节（历史 bug：开头字符消失）
-      const hasBom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
-      content = (hasBom ? buf.slice(3) : buf).toString('utf8');
-    } else if (encoding === 'utf16le') {
-      const hasBom = buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe;
-      content = (hasBom ? buf.slice(2) : buf).toString('utf16le');
-    } else if (encoding === 'utf16be') {
-      const hasBom = buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff;
-      const swapped = Buffer.from(hasBom ? buf.slice(2) : buf);
-      for (let i = 0; i + 1 < swapped.length; i += 2) {
-        const t = swapped[i]; swapped[i] = swapped[i + 1]; swapped[i + 1] = t;
-      }
-      content = swapped.toString('utf16le');
-    } else {
-      content = new TextDecoder('gbk').decode(buf);
-    }
-    return { content, encoding: encoding === 'utf16be' ? 'utf16be' : encoding };
-  } catch (e) { return { error: String(e.message || e) }; }
+    return TextFormat.decodeText(fs.readFileSync(p), encoding);
+  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED' }; }
 });
 
 // 写二进制文件（粘贴图片等）：base64 → Buffer 写盘，父目录自动创建
@@ -577,19 +528,21 @@ ipcMain.handle('fs:mkdir', (_e, p) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-ipcMain.handle('fs:writeFile', (_e, p, content, encoding) => {
+ipcMain.handle('fs:writeFile', (_e, p, content, format) => {
   try {
-    const enc = encoding || 'utf8';
-    let bytes;
-    if (enc === 'gbk') {
-      const iconv = require('iconv-lite');
-      bytes = iconv.encode(content, 'gbk');
-    } else if (enc === 'utf16le') {
-      bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(content, 'utf16le')]);
-    } else {
-      bytes = Buffer.from(content, 'utf8');
+    if (!format || typeof format === 'string') {
+      const selected = format && String(format).toLowerCase().replace(/[-_]/g, '');
+      let original;
+      try { original = TextFormat.decodeText(fs.readFileSync(p)); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; }
+      if (original && original.textFormat && (!selected || selected === original.encoding)) format = original.textFormat;
+      else if (!selected && original && original.binary) throw Object.assign(Error('二进制文件不能用无格式文本覆盖'), { code: 'INVALID_FORMAT' });
+      else format = selected || { encoding: 'utf8', bom: false };
     }
-    return FileWrite.atomicWrite(p, bytes);
+    const bytes = TextFormat.encodeText(content, format);
+    const saved = TextFormat.decodeText(bytes, typeof format === 'string' ? format : format.encoding);
+    const result = FileWrite.atomicWrite(p, bytes);
+    return { ...result, textFormat: saved.textFormat };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError }; }
 });
 

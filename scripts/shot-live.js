@@ -40,6 +40,7 @@ app.whenReady().then(async () => {
     .cm-cursor { border-left: 2px solid #4a7fd6; }
   </style></head><body><div id="host"></div>
   <script>${fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'cm6-bundle.min.js'), 'utf8')}</script>
+  <script>${fs.readFileSync(path.join(__dirname, '..', 'renderer', 'text-lines.js'), 'utf8')}</script>
   <script>${fs.readFileSync(path.join(__dirname, '..', 'renderer', 'md-editor.js'), 'utf8')}</script>
   <script>
     // 光标放文末（远离标题/加粗行）—— 用户场景：光标不在这些行上

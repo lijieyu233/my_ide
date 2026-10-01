@@ -132,7 +132,7 @@ function makeDom() {
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
-      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8' } : { error: 'not found' }),
+      readFile: async (p) => (FAKE_FS[p] ? { content: FAKE_FS[p].content, encoding: FAKE_FS[p].encoding || 'utf8', textFormat: FAKE_FS[p].textFormat } : { error: 'not found' }),
       readBuffer: async (p) => (FAKE_FS[p] ? { buffer: new ArrayBuffer(8) } : { error: 'not found' }),
       onChanged: (cb) => { fakeFsCbs.push(cb); },
       writeFile: async (p, content) => {
@@ -413,6 +413,7 @@ async function loadApp(dom) {
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'theme.js'), 'utf8'));
   try {
     w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'cm6-bundle.min.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'text-lines.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'md-editor.js'), 'utf8'));
     evalFile('code-editor.js');
   } catch (e) { /* CM6 加载失败：viewer 内部有降级 */ }
@@ -8316,6 +8317,8 @@ assert_(panel, 'CM6 搜索面板出现');
       await isolated.window.Viewer.openFile(P + '/notes.txt');
       await fn(isolated, isolated.window.Viewer, isolated.window.myIDE.fs, fakeFsCbs.slice(cbStart));
     } finally {
+      // activate还会异步刷新AI上下文；等已派发的内存桥回调完成再销毁jsdom宿主。
+      await tick();
       isolated.window.close();
       FAKE_FS[P + '/notes.txt'] = before;
       FAKE_FS[P + '/README.md'] = beforeMd;
@@ -8543,6 +8546,96 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(tab.dirty && tab.content === tab.ta.value && tab.content.includes('新正文'), '旧保存回调保留修改');
   });
 
+  await saveCase('BOM/字节序格式快照经过实际Viewer保存，混合行尾字符编辑不变', async (_d, viewer, bridge) => {
+    viewer.closeAll();
+    FAKE_FS[P + '/notes.txt'].content = 'A\r\nB\nC\rD';
+    FAKE_FS[P + '/notes.txt'].encoding = 'utf16be';
+    FAKE_FS[P + '/notes.txt'].textFormat = { encoding: 'utf16be', bom: true, eol: 'MIXED', detection: 'bom' };
+    await viewer.openFile(P + '/notes.txt');
+    viewer.cm.view.dispatch({ changes: { from: 0, to: 1, insert: 'AA' } });
+    assert_(viewer.activeTab.content === 'AA\r\nB\nC\rD', '未触及混合行尾原样');
+    let snapshot; bridge.writeFile = async (_p, c, format) => { snapshot = { c, format }; return { ok: true }; };
+    await viewer.saveTab(0);
+    assert_(snapshot.format.encoding === 'utf16be' && snapshot.format.bom && snapshot.c === 'AA\r\nB\nC\rD', '格式和原行尾到达写端');
+  });
+  await saveCase('CM6与textarea模式切换保持CRLF，撤销恢复混合行尾', async (_d, viewer) => {
+    await viewer.openFile(P + '/README.md'); const tab = viewer.activeTab;
+    viewer.cm.setValue('A\r\nB\nC\rD');
+    viewer.cm.view.dispatch({ changes: { from: 0, to: 4, insert: '新\n' }, annotations: _d.window.CM6.State.Transaction.userEvent.of('input') });
+    _d.window.CM6.Commands.undo(viewer.cm.view);
+    assert_(tab.content === 'A\r\nB\nC\rD', '真实编辑器撤销原换行');
+    tab.mode = 'split'; viewer.renderActive();
+    tab.ta.value = 'AA\nB\nC\nD'; tab.ta.dispatchEvent(new _d.window.Event('input', { bubbles: true }));
+    assert_(tab.content === 'AA\r\nB\nC\rD', 'textarea替换不规范化');
+    tab.mode = 'source'; tab.cmState = null; viewer.renderActive();
+    assert_(tab.content === 'AA\r\nB\nC\rD', '切回保留原字节正文');
+  });
+  await saveCase('转换失败仍dirty并保留正文，UTF8后续重试可保存', async (_d, viewer, bridge) => {
+    viewer.cm.setValue('正文😀'); bridge.writeFile = async () => ({ error: 'GBK无法无损保存', errorCode: 'ENCODING_LOSS' });
+    const failed = await viewer.saveWithEncoding('gbk', false);
+    assert_(!failed.ok && viewer.activeTab.dirty && viewer.activeTab.content === '正文😀', '失败没有丢字或清dirty');
+    let sent; bridge.writeFile = async (_p,c,f) => { sent = {c,f}; return {ok:true,textFormat:{encoding:'utf8',bom:true,eol:null}}; };
+    await viewer.saveWithEncoding('utf8', true);
+    assert_(!viewer.activeTab.dirty && sent.c === '正文😀' && sent.f.bom && viewer.activeTab.textFormat.bom, '显式UTF8可恢复');
+  });
+  await saveCase('在途转换快照与继续输入/第二次转换互不覆盖', async (_d, viewer, bridge) => {
+    const wait=deferred(), writes=[]; let count=0;
+    bridge.writeFile=async (_p,c,f)=>{ writes.push({c,f}); if(++count===1)await wait.promise; return {ok:true,textFormat:f}; };
+    viewer.cm.setValue('版本一'); const first=viewer.saveWithEncoding('utf16be',true);
+    await tick(); viewer.cm.setValue('版本二'); const second=viewer.saveWithEncoding('utf8',false);
+    wait.resolve(); await first;
+    assert_(viewer.activeTab.content==='版本二' && viewer.activeTab.encoding==='utf8', '旧转换不能回写新正文/格式');
+    await second;
+    assert_(writes.length===2 && writes[0].f.encoding==='utf16be' && writes[0].f.bom && writes[1].f.encoding==='utf8' && !writes[1].f.bom, '队列格式各自固定');
+  });
+  await saveCase('重新打开拒绝dirty；迟到读取不能覆盖新输入', async (_d, viewer, bridge) => {
+    viewer.cm.setValue('新正文'); let reads=0;
+    bridge.readFile=async()=>{reads++;return{content:'重新读取',encoding:'gbk',textFormat:{encoding:'gbk',bom:false}};};
+    assert_((await viewer.reopenWithEncoding('gbk')).errorCode==='UNSAVED_CHANGES' && reads===0, 'dirty不读盘');
+    await viewer.saveTab(0); const wait=deferred(); bridge.readFile=()=>wait.promise;
+    const pending=viewer.reopenWithEncoding('gbk'); viewer.cm.setValue('读取期间编辑');
+    wait.resolve({content:'旧重新读取',encoding:'gbk'});
+    assert_((await pending).errorCode==='STALE_READ' && viewer.activeTab.content==='读取期间编辑', '迟到读取失效');
+  });
+  await saveCase('重新打开读取失败保留原内容，成功丢弃旧编辑器状态', async (_d, viewer, bridge) => {
+    bridge.readFile=async()=>({error:'坏编码',errorCode:'INVALID_ENCODING'});
+    const before=viewer.activeTab.content;
+    assert_(!(await viewer.reopenWithEncoding('utf16be')).ok && viewer.activeTab.content===before, '失败内容未变');
+    bridge.readFile=async()=>({content:'重新解码\r\n正文',encoding:'utf16be',textFormat:{encoding:'utf16be',bom:false,eol:'CRLF',detection:'selected'}});
+    const r=await viewer.reopenWithEncoding('utf16be');
+    assert_(r.ok && !viewer.activeTab.dirty && viewer.activeTab.content==='重新解码\r\n正文' && viewer.cm.getValue()==='重新解码\n正文', '新解码与编辑器一致');
+    viewer.cm.view.dispatch({changes:{from:0,to:0,insert:'前缀'}});
+    assert_(viewer.activeTab.content==='前缀重新解码\r\n正文', '新state保换行');
+  });
+  await saveCase('同正文外部编码/BOM变化也更新元数据', async (_d, viewer, bridge, callbacks) => {
+    const tab=viewer.activeTab; bridge.readFile=async()=>({content:tab.content,encoding:'utf16be',textFormat:{encoding:'utf16be',bom:true,eol:null}});
+    callbacks.forEach(cb=>cb()); await new Promise(r=>setTimeout(r,720));
+    assert_(tab.encoding==='utf16be' && tab.textFormat.bom && !tab.dirty, '格式变化无需正文变化');
+  });
+  await saveCase('用户选定编码在外部重载时保持，后台CM状态随正文失效', async (_d,viewer,bridge,callbacks)=>{
+    const original=viewer.activeTab;let selected;
+    bridge.readFile=async(p,encoding)=>{selected=encoding;return{content:'显式解码后内容',encoding:'utf16le',textFormat:{encoding:'utf16le',bom:false,detection:'selected'}};};
+    await viewer.reopenWithEncoding('utf16le');
+    await viewer.openFile(P+'/README.md');
+    bridge.readFile=async(p,encoding)=>p===original.path?{content:'后台更新',encoding:'utf16le',textFormat:{encoding:'utf16le',bom:false,detection:'selected'}}:{content:viewer.activeTab.content,encoding:'utf8'};
+    const read=bridge.readFile;bridge.readFile=async(p,encoding)=>{if(p===original.path)selected=encoding;return read(p,encoding);};
+    callbacks.forEach(cb=>cb());await new Promise(r=>setTimeout(r,720));
+    viewer.activate(viewer.openTabs.indexOf(original));
+    assert_(selected==='utf16le' && original.content==='后台更新' && viewer.cm.getValue()==='后台更新','显式编码重载与后台state一致');
+  });
+  await saveCase('编码弹窗绑定原标签，取消/IME和GBK BOM行为可操作', async (d,viewer,bridge)=>{
+    const button=$(d,'.sb-encoding'); button.focus(); button.click();
+    let box=$(d,'.encoding-dialog'); const choice=box.querySelector('select'),bom=box.querySelector('input');
+    choice.value='gbk'; choice.dispatchEvent(new d.window.Event('change'));
+    assert_(bom.disabled && !bom.checked, 'GBK不能选BOM');
+    box.dispatchEvent(new d.window.KeyboardEvent('keydown',{key:'Escape',isComposing:true,bubbles:true}));
+    assert_($(d,'.encoding-dialog'), 'IME Escape不提交或关闭');
+    box.querySelector('.m-cancel').click(); assert_(!$(d,'.encoding-dialog') && d.window.document.activeElement===button,'取消还原焦点');
+    viewer.showEncoding(); box=$(d,'.encoding-dialog'); box.querySelector('select').value='utf16be';box.querySelector('input').checked=true;
+    let path; bridge.writeFile=async(p)=>{path=p;return{ok:true};};
+    const original=viewer.activeTab;await viewer.openFile(P+'/README.md');box.querySelector('.encoding-save').click();await tick();
+    assert_(path===original.path && original.encoding==='utf16be' && viewer.activeTab!==original,'切标签不转换错误文件');
+  });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

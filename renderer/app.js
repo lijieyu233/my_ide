@@ -422,7 +422,13 @@ const App = (() => {
     };
     if (sbState.pos) pushI(sbState.pos, true, '光标位置（行:列）');
     if (sbState.lines) pushI(sbState.lines + ' 行', false, '当前文件总行数');
-    if (sbState.encoding) pushI(sbState.encoding, false, '文件编码');
+    if (sbState.encoding) {
+      if (el.childNodes.length) el.insertAdjacentHTML('beforeend', '<i class="sb-d"></i>');
+      const button = document.createElement('button');
+      button.className = 'sb-encoding'; button.textContent = sbState.encoding;
+      button.title = '文件编码：重新打开或以指定编码保存'; button.disabled = !sbState.encodingEnabled;
+      button.onclick = () => Viewer.showEncoding(); el.appendChild(button);
+    }
     if (sbState.eol) pushI(sbState.eol, false, '换行符');
   }
 
