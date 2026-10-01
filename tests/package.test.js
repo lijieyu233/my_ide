@@ -27,7 +27,7 @@ async function test(name, fn) {
 (async () => {
   try {
     // 来自实际生产入口的文件与HTML；不从package.json.build.files构造“必需文件”。
-    const production = ['main.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
+    const production = ['main.js', 'file-write.js', 'file-replace-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
       'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -43,15 +43,26 @@ async function test(name, fn) {
       put('node_modules/' + name + '/package.json', '{"main":"index.js"}');
       put('node_modules/' + name + '/index.js');
     }
+    const nativeBase = 'node_modules/@koromix/koffi-win32-x64/';
+    put(nativeBase + 'package.json', '{"main":"index.js"}');
+    put(nativeBase + 'index.js'); put(nativeBase + 'win32_x64/koffi.node');
     put('node_modules/sql.js/dist/sql-wasm.wasm');
     const positive = await pack('complete');
     await test('完整生产资源夹具通过', () => assert(checkPackage(positive).checked > 40));
+    await test('原生依赖架构不符被拒绝', () => assert.throws(() => checkPackage(positive, 'arm64'), /koffi-win32-arm64/));
+    await test('asar.unpacked原生载荷丢失被拒绝', async () => {
+      const archive = path.join(temp, 'unpacked.asar');
+      await asar.createPackageWithOptions(source, archive, { unpack: '**/*.node' });
+      assert(checkPackage(archive).checked > 40);
+      fs.unlinkSync(path.join(archive + '.unpacked', nativeBase, 'win32_x64/koffi.node'));
+      assert.throws(() => checkPackage(archive), /koffi\.node/);
+    });
 
     // 实际删除归档输入文件，确保遗漏不是仅在配置清单里查名字。
     const required = [...production, 'build/icon.png', 'renderer/index.html',
       'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
       'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
-      'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js'];
+      'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js', nativeBase + 'index.js', nativeBase + 'win32_x64/koffi.node'];
     for (let i = 0; i < required.length; i++) {
       const file = required[i], bytes = fs.readFileSync(path.join(source, file));
       fs.unlinkSync(path.join(source, file));

@@ -6,6 +6,7 @@ const os = require('os');
 const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
+const FileWrite = require('./file-write');
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
@@ -492,9 +493,8 @@ ipcMain.handle('fs:readFile', (_e, p) => {
 ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, Buffer.from(String(base64 || ''), 'base64'));
-    return { ok: true };
-  } catch (e) { return { error: String(e.message || e) }; }
+    return FileWrite.atomicWrite(p, Buffer.from(String(base64 || ''), 'base64'));
+  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError }; }
 });
 
 // 读二进制文件（Office 预览等）：返回 ArrayBuffer（结构化克隆直传渲染进程）
@@ -580,16 +580,17 @@ ipcMain.handle('fs:mkdir', (_e, p) => {
 ipcMain.handle('fs:writeFile', (_e, p, content, encoding) => {
   try {
     const enc = encoding || 'utf8';
+    let bytes;
     if (enc === 'gbk') {
       const iconv = require('iconv-lite');
-      fs.writeFileSync(p, iconv.encode(content, 'gbk'));
+      bytes = iconv.encode(content, 'gbk');
     } else if (enc === 'utf16le') {
-      fs.writeFileSync(p, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(content, 'utf16le')]));
+      bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(content, 'utf16le')]);
     } else {
-      fs.writeFileSync(p, content, 'utf8');
+      bytes = Buffer.from(content, 'utf8');
     }
-    return { ok: true };
-  } catch (e) { return { error: String(e.message || e) }; }
+    return FileWrite.atomicWrite(p, bytes);
+  } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError }; }
 });
 
 ipcMain.handle('fs:rename', (_e, p, newName) => {

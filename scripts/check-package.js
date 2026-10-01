@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const asar = require('@electron/asar');
 
-const runtimeFiles = ['main.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
+const runtimeFiles = ['main.js', 'file-write.js', 'file-replace-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
   'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
 const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
@@ -12,14 +12,17 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
 const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js']);
 
-function checkPackage(archive) {
+function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);
   const entries = asar.listPackage(archive).map((name) => name.replace(/\\/g, '/').replace(/^\//, ''));
   const present = new Set(entries);
   const checked = new Set(), errors = [];
   const hasFile = (name) => {
     if (!present.has(name)) return false;
-    try { return !asar.statFile(archive, name.split('/').join(path.sep)).files; } catch { return false; }
+    try {
+      const stat = asar.statFile(archive, name.split('/').join(path.sep));
+      return !stat.files && (!stat.unpacked || fs.existsSync(path.join(archive + '.unpacked', ...name.split('/'))));
+    } catch { return false; }
   };
   const requireFile = (name) => {
     if (checked.has(name)) return hasFile(name);
@@ -29,6 +32,11 @@ function checkPackage(archive) {
   };
   const read = (name) => asar.extractFile(archive, name.split('/').join(path.sep)).toString('utf8');
   for (const file of [...runtimeFiles, ...resources]) requireFile(file);
+  // Windows替换接口依赖真实的N-API载荷；仅有koffi的JS入口仍会在第一次保存时失败。
+  if (hasFile('package.json') && JSON.parse(read('package.json')).dependencies?.koffi) {
+    const base = 'node_modules/@koromix/koffi-win32-' + arch;
+    requireFile(base + '/package.json'); requireFile(base + '/index.js'); requireFile(base + '/win32_' + arch + '/koffi.node');
+  }
 
   const queue = runtimeFiles.slice(), visited = new Set();
   while (queue.length) {
@@ -97,7 +105,8 @@ function checkPackage(archive) {
 
 async function afterPack(context) {
   const archive = path.join(context.appOutDir, 'resources', 'app.asar');
-  const result = checkPackage(archive);
+  const arch = ['ia32', 'x64', 'armv7l', 'arm64'][context.arch] || process.arch;
+  const result = checkPackage(archive, arch);
   console.log('[package-check] ' + result.checked + ' 个运行时文件/资源通过，归档条目 ' + result.entries);
 }
 module.exports = afterPack;

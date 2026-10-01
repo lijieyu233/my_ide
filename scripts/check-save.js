@@ -116,6 +116,41 @@ app.whenReady().then(async () => {
     add('在途旧版本真实写入不覆盖新输入或清 dirty', saved.ok && current.content === '版本二' && current.editor === '版本二' && current.dirty && fs.readFileSync(file, 'utf8') === '版本一');
     const latest = await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     add('后续显式保存新版本落盘并清 dirty', latest.ok && !await run('Viewer.activeTab.dirty') && fs.readFileSync(file, 'utf8') === '版本二');
+    const writer = require(path.join(ROOT, 'file-write.js'));
+    const normalWrite = writer.atomicWrite;
+    for (const stage of ['writeSync', 'fsyncSync', 'closeSync', 'renameSync']) {
+      await run(`Viewer.cm.setValue(${JSON.stringify('故障待保存正文-' + stage)})`);
+      const before = fs.readFileSync(file);
+      const faulty = Object.create(fs);
+      let injected = false;
+      faulty[stage] = (...args) => {
+        if (!injected) {
+          injected = true;
+          if (stage === 'writeSync') fs.writeSync(args[0], args[1], args[2], Math.min(3, args[3]), args[4]);
+          throw Object.assign(Error('fixture-' + stage), { code: 'EIO' });
+        }
+        return fs[stage](...args);
+      };
+      writer.atomicWrite = writer.createWriter(faulty, stage === 'renameSync' ? faulty.renameSync : undefined).atomicWrite;
+      let result;
+      try { result = await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))'); }
+      finally { writer.atomicWrite = normalWrite; }
+      add('真实保存IPC ' + stage + '故障不损坏原文件且输入仍dirty', !result.ok && result.errorCode === 'EIO' && injected && fs.readFileSync(file).equals(before)
+        && await run(`Viewer.activeTab.dirty && Viewer.cm.getValue()===${JSON.stringify('故障待保存正文-' + stage)}`)
+        && !fs.readdirSync(projectA).some((n) => n.startsWith('.myide-write-')));
+      const recovery = await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+      add('真实保存IPC ' + stage + '失败后显式重试成功', recovery.ok && !await run('Viewer.activeTab.dirty')
+        && fs.readFileSync(file, 'utf8') === '故障待保存正文-' + stage);
+    }
+    const binary = path.join(projectA, 'nested', 'binary.bin');
+    const bytes = Buffer.from([0, 1, 255, 0, 254, 42]);
+    const wroteBinary = await run(`myIDE.fs.writeBinary(${JSON.stringify(binary)},${JSON.stringify(bytes.toString('base64'))})`);
+    add('真实二进制IPC自动建父目录且字节完整', wroteBinary.ok && fs.readFileSync(binary).equals(bytes));
+    writer.atomicWrite = writer.createWriter(fs, () => { throw Object.assign(Error('fixture-binary-rename'), { code: 'EIO' }); }).atomicWrite;
+    let deniedBinary;
+    try { deniedBinary = await run(`myIDE.fs.writeBinary(${JSON.stringify(binary)},"AQID")`); }
+    finally { writer.atomicWrite = normalWrite; }
+    add('真实二进制IPC替换失败仍保留原字节', deniedBinary.errorCode === 'EIO' && fs.readFileSync(binary).equals(bytes));
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
   } finally {
