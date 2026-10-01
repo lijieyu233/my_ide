@@ -17,6 +17,8 @@ const Viewer = (() => {
   const viewer = document.getElementById('viewer');
   const empty = document.getElementById('empty-state');
   const tabs = []; // {path, name, dirty, content, mode}
+  let nextTabId = 0;
+  const saveQueues = new Map();
   let active = -1;
   let saveTimer = null;
 
@@ -61,7 +63,7 @@ const Viewer = (() => {
       if (window.Tree) Tree.reveal(path);
       return;
     }
-    const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
+    const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
     tabs.push(tab);
     renderTabs();
     activate(tabs.length - 1);
@@ -132,7 +134,7 @@ const Viewer = (() => {
   function addLazyTab(path, opts) {
     if (tabs.some((t) => t.path === path)) return;
     const name = path.split(/[\\/]/).pop();
-    const tab = { path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
+    const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
     if (opts && opts.scrollTop) tab.scrollTop = opts.scrollTop;
     if (opts && opts.line) tab.restoreLine = opts.line;
     tabs.push(tab);
@@ -150,7 +152,7 @@ const Viewer = (() => {
     const t = tabs[i];
     if (t && t.dirty) {
       Modal.confirm('未保存的更改', `「${t.name}」有未保存的修改，确定关闭吗？`).then((yes) => {
-        if (yes) doClose(i);
+        if (yes && tabs.includes(t)) doClose(tabs.indexOf(t));
       });
       return;
     }
@@ -158,6 +160,7 @@ const Viewer = (() => {
   }
   // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
   function closeAll() {
+    clearTimeout(autosaveTimer);
     tabs.length = 0;
     active = -1;
     empty.classList.add('visible');
@@ -564,7 +567,8 @@ const Viewer = (() => {
       let previewScrollTimer = null;
       ta.addEventListener('input', () => {
         tab.content = ta.value;
-        if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        if (tab.__extLoading) return;
+        markEdited(tab);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
         renderGutter();
@@ -583,6 +587,7 @@ const Viewer = (() => {
           e.preventDefault();
           const s = ta.selectionStart, en = ta.selectionEnd;
           ta.setRangeText('    ', s, en, 'end');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
         }
       });
       wrap.appendChild(ta);
@@ -757,7 +762,7 @@ const Viewer = (() => {
       onChange: (val) => {
         tab.content = val;
         if (tab.__extLoading) return; // 外部重载写入：不标 dirty、不触发自动保存（防写回抖动）
-        if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        markEdited(tab);
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
         cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
@@ -793,7 +798,8 @@ const Viewer = (() => {
       ext: extOf(tab.name),
       onChange: (val) => {
         tab.content = val;
-        if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+        if (tab.__extLoading) return;
+        markEdited(tab);
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
@@ -998,7 +1004,7 @@ const Viewer = (() => {
       if (!q || findState.idx < 0) return;
       const [s, e] = findState.matches[findState.idx];
       ta.setRangeText(repInput.value, s, e, 'select');
-      tab.content = ta.value;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
       refresh(findState.idx); // 重新收集，保持当前位置附近
     };
     const replaceAll = () => {
@@ -1006,7 +1012,7 @@ const Viewer = (() => {
       const q = input.value;
       if (!q) return;
       ta.value = ta.value.split(q).join(repInput.value);
-      tab.content = ta.value;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
       refresh(-1);
     };
     input.addEventListener('input', () => refresh());
@@ -1038,28 +1044,68 @@ const Viewer = (() => {
     }, 3000);
   }
 
-  async function saveTab(i, quiet) {
-    const tab = tabs[i];
-    if (!tab || tab.content == null) return;
-    const val = tab.ta ? tab.ta.value : tab.content; // live 模式无 textarea，直接写 content
-    const r = await window.myIDE.fs.writeFile(tab.path, val, tab.encoding);
-    if (r.ok) {
-      tab.content = val;
-      tab.dirty = false;
-      renderTabs();
-      if (!quiet) MI.toast('💾 已保存 ' + tab.name, 'ok');
-      App.refreshGit();
-    } else {
-      if (!quiet) MI.toast('保存失败: ' + r.error, 'err');
-      MI.log('ERROR', 'viewer.save', '写入失败 ' + tab.path + ' → ' + (r.error || '?'));
-    }
+  function markEdited(tab) {
+    tab.editRevision++;
+    if (!tab.dirty) { tab.dirty = true; renderTabs(); }
   }
 
-  // 静默保存全部未保存标签（切换项目用，替代确认弹窗）
+  function saveTab(i, quiet) {
+    return saveSnapshot(tabs[i], quiet);
+  }
+
+  function saveSnapshot(tab, quiet) {
+    if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
+    const snapshot = { tabId: tab.id, path: tab.path, content: tab.ta ? tab.ta.value : tab.content,
+      encoding: tab.encoding, revision: tab.editRevision };
+    const key = snapshot.path.replace(/\\/g, '/').toLowerCase();
+    const previous = saveQueues.get(key) || Promise.resolve();
+    // 在调用时固定正文，不能等前一次写完再读取新正文，否则 Ctrl+S 等待的版本会漂移。
+    const pending = previous.then(async () => {
+      let r;
+      try {
+        if (!tabs.includes(tab)) r = { errorCode: 'TAB_CLOSED', error: '标签已关闭' };
+        else if (tab.path !== snapshot.path) r = { errorCode: 'PATH_CHANGED', error: '文件路径已变化，请重新保存' };
+        else r = await window.myIDE.fs.writeFile(snapshot.path, snapshot.content, snapshot.encoding);
+      } catch (e) {
+        r = { errorCode: (e && e.code) || 'WRITE_FAILED', error: String((e && e.message) || e) };
+      }
+      if (r && r.ok && tab.path !== snapshot.path) r = { errorCode: 'PATH_CHANGED', error: '保存期间文件路径已变化，请重新保存' };
+      const result = { ok: !!(r && r.ok), tabId: snapshot.tabId, path: snapshot.path,
+        savedRevision: r && r.ok ? snapshot.revision : tab.savedRevision,
+        errorCode: r && r.ok ? null : (r && r.errorCode) || 'WRITE_FAILED',
+        error: r && r.ok ? null : (r && r.error) || '写入未返回成功结果' };
+      if (tabs.includes(tab)) {
+        if (result.ok) {
+          tab.savedRevision = snapshot.revision;
+          tab.dirty = tab.editRevision !== snapshot.revision;
+          tab.saveError = null;
+          renderTabs();
+          if (!quiet) MI.toast(tab.dirty ? '已保存先前版本，仍有未保存的修改' : '💾 已保存 ' + tab.name, 'ok');
+          if (window.App) App.refreshGit();
+        } else {
+          // 自动保存失败也必须可见；同一错误不每三秒重复提示，正文始终留在内存中。
+          if (!quiet || tab.saveError !== result.error) MI.toast('保存失败: ' + result.error + '；修改仍未保存，可按 Ctrl+S 重试', 'err');
+          tab.saveError = result.error;
+          MI.log('ERROR', 'viewer.save', '写入失败 ' + snapshot.path + ' → ' + result.error);
+        }
+      }
+      return result;
+    });
+    // UI 刷新异常也不能毒化队列，后一次显式重试仍可派发。
+    const tail = pending.catch(() => {});
+    saveQueues.set(key, tail);
+    tail.then(() => { if (saveQueues.get(key) === tail) saveQueues.delete(key); });
+    return pending;
+  }
+
+  // 只保存本次快照；等待中出现新输入时保留当前项目，让下一次 Ctrl+S 明确保存新版本。
   async function saveAllDirty() {
-    for (let i = 0; i < tabs.length; i++) {
-      if (tabs[i].dirty) await saveTab(i, true);
-    }
+    const selected = tabs.filter((t) => t.dirty);
+    const results = await Promise.all(selected.map((t) => saveSnapshot(t, true)));
+    const saved = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok);
+    const stillDirty = tabs.filter((t) => t.dirty).map((t) => ({ tabId: t.id, path: t.path }));
+    return { ok: failed.length === 0 && stillDirty.length === 0, saved, failed, stillDirty };
   }
 
   // ---------- 重命名/移动同步：树里改名后标签路径跟着变 ----------
@@ -1097,7 +1143,9 @@ const Viewer = (() => {
       if (t.content == null) continue;
       if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
-        const r = await window.myIDE.fs.readFile(t.path);
+        const path = t.path, revision = t.editRevision;
+        const r = await window.myIDE.fs.readFile(path);
+        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision) continue;
         if (r.error || r.tooLarge || r.binary || r.content == null) continue;
         if (r.content === t.content) continue; // 内容未变（mtime 变了但内容相同）
         t.content = r.content;
@@ -1107,8 +1155,11 @@ const Viewer = (() => {
             t.__extLoading = true;
             try { cmApi.setValue(r.content); } finally { t.__extLoading = false; }
           } else if (t.ta) {
-            t.ta.value = r.content;
-            t.ta.dispatchEvent(new Event('input', { bubbles: true })); // 触发 gutter/预览刷新（不标 dirty：内容已同步）
+            t.__extLoading = true;
+            try {
+              t.ta.value = r.content;
+              t.ta.dispatchEvent(new Event('input', { bubbles: true }));
+            } finally { t.__extLoading = false; }
           } else {
             renderView();
           }

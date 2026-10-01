@@ -8298,6 +8298,251 @@ assert_(panel, 'CM6 搜索面板出现');
     });
   }
 
+  // 保存等待与离开项目共用真实 Viewer/App，控制桥的完成时机来检查内容保全。
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  const saveCase = async (name, fn) => okAsync('保存保全：' + name, async () => {
+    const isolated = makeDom();
+    const before = { ...FAKE_FS[P + '/notes.txt'] };
+    const beforeMd = { ...FAKE_FS[P + '/README.md'] };
+    const cbStart = fakeFsCbs.length;
+    try {
+      await loadApp(isolated);
+      isolated.window.Session.restore = async () => {};
+      await isolated.window.App.setRoot(P);
+      await isolated.window.Viewer.openFile(P + '/notes.txt');
+      await fn(isolated, isolated.window.Viewer, isolated.window.myIDE.fs, fakeFsCbs.slice(cbStart));
+    } finally {
+      isolated.window.close();
+      FAKE_FS[P + '/notes.txt'] = before;
+      FAKE_FS[P + '/README.md'] = beforeMd;
+      fakeFsCbs.splice(cbStart);
+    }
+  });
+
+  await saveCase('旧保存回调不覆盖新输入或清 dirty', async (_d, viewer, bridge) => {
+    const wait = deferred();
+    const write = bridge.writeFile;
+    bridge.writeFile = async (p, c) => { await wait.promise; return write(p, c); };
+    viewer.cm.setValue('版本一');
+    const tab = viewer.activeTab, revision = tab.editRevision;
+    const pending = viewer.saveTab(0);
+    await tick();
+    viewer.cm.setValue('版本二');
+    wait.resolve();
+    const result = await pending;
+    assert_(result.ok && result.tabId === tab.id && result.savedRevision === revision, '返回对应快照版本');
+    assert_(tab.content === '版本二' && viewer.cm.getValue() === '版本二' && tab.dirty, '新内存内容仍未保存');
+    assert_(FAKE_FS[tab.path].content === '版本一', '磁盘为已确认快照');
+    await viewer.saveTab(0);
+    assert_(!tab.dirty && FAKE_FS[tab.path].content === '版本二', '重试落盘最新版本');
+  });
+
+  for (const mode of ['returned', 'rejected', 'null', 'empty']) {
+    const label = { returned: '返回失败', rejected: '拒绝 Promise', null: '拒绝 null', empty: '未返回结果' }[mode];
+    await saveCase('写入' + label + '阻止切换并可重试', async (d, viewer, bridge) => {
+      const write = bridge.writeFile;
+      bridge.writeFile = async () => {
+        if (mode === 'rejected') throw Object.assign(new Error('fixture-EACCES'), { code: 'EACCES' });
+        if (mode === 'null') throw null;
+        if (mode === 'empty') return undefined;
+        return { error: 'fixture-EACCES', errorCode: 'EACCES' };
+      };
+      viewer.cm.setValue('不能丢的正文');
+      const tab = viewer.activeTab;
+      const switched = await d.window.App.openProject('C:/proj2');
+      assert_(switched === false && d.window.App.root === P, '保存失败保留当前项目');
+      assert_(viewer.openTabs.includes(tab) && tab.dirty && tab.content === '不能丢的正文', '标签与输入保留');
+      bridge.writeFile = write;
+      assert_(await d.window.App.openProject('C:/proj2'), '修复错误后可切换');
+      assert_(FAKE_FS[tab.path].content === '不能丢的正文' && d.window.App.root === 'C:/proj2', '保存后才离开');
+    });
+  }
+
+  await saveCase('保存汇总报告部分失败并保留失败标签', async (_d, viewer, bridge) => {
+    viewer.cm.setValue('成功正文');
+    const good = viewer.activeTab;
+    await viewer.openFile(P + '/README.md');
+    viewer.cm.setValue('# 失败正文');
+    const bad = viewer.activeTab, write = bridge.writeFile;
+    bridge.writeFile = async (p, c) => p === bad.path ? { error: 'EIO' } : write(p, c);
+    const result = await viewer.saveAllDirty();
+    assert_(!result.ok && result.saved.length === 1 && result.failed.length === 1 && result.stillDirty.length === 1, '汇总成功/失败/剩余脏标签');
+    assert_(!good.dirty && bad.dirty && bad.content === '# 失败正文', '仅成功的快照清 dirty');
+  });
+
+  await saveCase('同文件写入串行，显式保存等待各自版本', async (_d, viewer, bridge) => {
+    const wait = deferred(), writes = [], write = bridge.writeFile;
+    bridge.writeFile = async (p, c) => {
+      writes.push(c);
+      if (writes.length === 1) await wait.promise;
+      return write(p, c);
+    };
+    viewer.cm.setValue('一');
+    const first = viewer.saveTab(0, true);
+    viewer.cm.setValue('二');
+    const second = viewer.saveTab(0);
+    await tick();
+    assert_(writes.join(',') === '一', '第二次尚未派发');
+    wait.resolve();
+    const results = await Promise.all([first, second]);
+    assert_(results.every((r) => r.ok) && writes.join(',') === '一,二', '按快照顺序完成');
+    assert_(!viewer.activeTab.dirty && FAKE_FS[viewer.activeTab.path].content === '二', '磁盘最终是最新版本');
+  });
+
+  await saveCase('保存期间新输入阻止离开，避免循环保存', async (d, viewer, bridge) => {
+    const wait = deferred(), write = bridge.writeFile;
+    bridge.writeFile = async (p, c) => { await wait.promise; return write(p, c); };
+    viewer.cm.setValue('快照');
+    const pending = d.window.App.openProject('C:/proj2');
+    await tick();
+    viewer.cm.setValue('继续输入');
+    wait.resolve();
+    assert_(await pending === false && d.window.App.root === P, '拒绝离开');
+    assert_(viewer.activeTab.dirty && viewer.activeTab.content === '继续输入', '保留新版本');
+  });
+
+  await saveCase('当前项目移除失败保留项目列表（含最后一个项目）', async (d, viewer, bridge) => {
+    viewer.cm.setValue('保留我');
+    bridge.writeFile = async () => ({ error: 'EIO' });
+    const before = JSON.stringify(d.window.App.getProjects());
+    const x = $(d, '.proj-btn[data-path="C:/proj"] .proj-close');
+    assert_(x, '移除入口存在');
+    click(x);
+    await tick(); await tick();
+    assert_(d.window.App.root === P && JSON.stringify(d.window.App.getProjects()) === before, '项目未提前删除');
+    assert_(viewer.activeTab.content === '保留我' && viewer.activeTab.dirty, '标签保留');
+    await d.window.App.setRoot('C:/proj2');
+    await d.window.App.setRoot(P);
+    click($(d, '.proj-btn[data-path="C:/proj"] .proj-close'));
+    await tick(); await tick();
+    assert_(d.window.App.root === P && d.window.App.getProjects().some((p) => p.path === P), '有候选项目时也不提前移除');
+  });
+
+  await saveCase('连续切换等待前一项目恢复', async (d, viewer, bridge) => {
+    const wait = deferred(), roots = [];
+    d.window.Session.restore = async () => {
+      roots.push(d.window.App.root);
+      if (roots.length === 1) await wait.promise;
+    };
+    const first = d.window.App.openProject('C:/proj2');
+    const second = d.window.App.openProject(P);
+    await tick();
+    assert_(roots.join(',') === 'C:/proj2', '第二请求等待恢复');
+    wait.resolve();
+    await Promise.all([first, second]);
+    assert_(roots.join(',') === 'C:/proj2,C:/proj' && d.window.App.root === P, '项目按请求顺序完成');
+  });
+
+  await saveCase('关闭确认绑定标签，索引变化不误关其他文件', async (d, viewer) => {
+    await viewer.openFile(P + '/README.md');
+    viewer.cm.setValue('# 待关闭');
+    const target = viewer.activeTab, wait = deferred();
+    d.window.Modal.confirm = () => wait.promise;
+    viewer.closeTab(1);
+    viewer.closeTab(0);
+    await viewer.openFile(P + '/src/app.js');
+    const other = viewer.activeTab;
+    wait.resolve(true);
+    await tick();
+    assert_(!viewer.openTabs.includes(target) && viewer.openTabs.includes(other), '只关闭已确认对象');
+  });
+
+  await saveCase('已关闭标签的排队保存不再写盘或影响重开标签', async (_d, viewer, bridge) => {
+    const wait = deferred(), write = bridge.writeFile, writes = [];
+    bridge.writeFile = async (p, c) => { writes.push(c); await wait.promise; return write(p, c); };
+    viewer.cm.setValue('在途');
+    const old = viewer.activeTab, first = viewer.saveTab(0);
+    await tick();
+    viewer.cm.setValue('待取消');
+    const second = viewer.saveTab(0);
+    viewer.closeAll();
+    await viewer.openFile(old.path);
+    viewer.cm.setValue('重开后的新输入');
+    const current = viewer.activeTab;
+    wait.resolve();
+    const [, result] = await Promise.all([first, second]);
+    assert_(!result.ok && result.errorCode === 'TAB_CLOSED' && writes.length === 1, '未派发排队写入');
+    assert_(current.id !== old.id && current.dirty && current.content === '重开后的新输入', '迟到回调不改重开标签');
+  });
+
+  await saveCase('路径变化不派发旧路径的排队写入或误清 dirty', async (_d, viewer, bridge) => {
+    const wait = deferred(), writes = [];
+    bridge.writeFile = async (p) => { writes.push(p); await wait.promise; return { ok: true }; };
+    viewer.cm.setValue('内容');
+    const tab = viewer.activeTab, first = viewer.saveTab(0);
+    await tick();
+    const second = viewer.saveTab(0);
+    viewer.renamed(tab.path, P + '/renamed-notes.txt');
+    wait.resolve();
+    const results = await Promise.all([first, second]);
+    assert_(results.every((r) => !r.ok && r.errorCode === 'PATH_CHANGED') && writes.length === 1, '拒绝排队旧路径');
+    assert_(tab.dirty && tab.content === '内容', '新路径保持未保存');
+  });
+
+  await saveCase('迟到外部读取不覆盖用户新输入', async (_d, viewer, bridge, callbacks) => {
+    const wait = deferred(), read = bridge.readFile;
+    const path = viewer.activeTab.path;
+    bridge.readFile = async (p) => p === path ? wait.promise : read(p);
+    callbacks.forEach((cb) => cb());
+    await new Promise((r) => setTimeout(r, 650));
+    viewer.cm.setValue('读取期间的输入');
+    wait.resolve({ content: '旧磁盘内容', encoding: 'utf8' });
+    await tick();
+    assert_(viewer.activeTab.dirty && viewer.activeTab.content === '读取期间的输入', '外部读取结果失效');
+  });
+
+  await saveCase('Markdown textarea 与 CM6 外部重载不制造 dirty', async (d, viewer, bridge, callbacks) => {
+    await viewer.openFile(P + '/README.md');
+    viewer.activeTab.mode = 'split';
+    viewer.renderActive();
+    const tab = viewer.activeTab, revision = tab.editRevision;
+    FAKE_FS[tab.path].content = '# 外部更新';
+    callbacks.forEach((cb) => cb());
+    await new Promise((r) => setTimeout(r, 650));
+    assert_(tab.content === '# 外部更新' && tab.ta.value === '# 外部更新' && !tab.dirty && tab.editRevision === revision, 'textarea重载不触发编辑版本');
+    tab.ta.value = '# 用户更新';
+    tab.ta.dispatchEvent(new d.window.Event('input', { bubbles: true }));
+    assert_(tab.dirty && tab.editRevision === revision + 1, 'textarea用户编辑递增版本');
+    await viewer.saveTab(viewer.openTabs.indexOf(tab));
+    tab.mode = 'source'; viewer.renderActive();
+    FAKE_FS[tab.path].content = '# CM外部更新';
+    callbacks.forEach((cb) => cb());
+    await new Promise((r) => setTimeout(r, 650));
+    assert_(!tab.dirty && viewer.cm.getValue() === '# CM外部更新', 'CM6重载保持干净');
+  });
+
+  await saveCase('textarea 缩进和替换也参与编辑版本，旧保存不能清 dirty', async (d, viewer, bridge) => {
+    await viewer.openFile(P + '/README.md');
+    const tab = viewer.activeTab;
+    tab.mode = 'split'; viewer.renderActive();
+    tab.ta.value = 'alpha alpha beta';
+    tab.ta.dispatchEvent(new d.window.Event('input', { bubbles: true }));
+    await viewer.saveTab(viewer.openTabs.indexOf(tab));
+    const wait = deferred(), write = bridge.writeFile;
+    bridge.writeFile = async (p, c) => { await wait.promise; return write(p, c); };
+    const revision = tab.editRevision;
+    const pending = viewer.saveTab(viewer.openTabs.indexOf(tab));
+    tab.ta.selectionStart = tab.ta.selectionEnd = 0;
+    tab.ta.dispatchEvent(new d.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    assert_(tab.dirty && tab.editRevision === revision + 1 && tab.content.startsWith('    '), '缩进同步正文与版本');
+    viewer.openFind(true);
+    $(d, '#find-input').value = 'alpha';
+    $(d, '#find-input').dispatchEvent(new d.window.Event('input', { bubbles: true }));
+    $(d, '#find-replace-input').value = '新正文';
+    click($(d, '#find-rep-one'));
+    assert_(tab.editRevision === revision + 2 && tab.content.includes('新正文'), '单次替换递增版本');
+    $(d, '#find-input').value = 'beta';
+    $(d, '#find-input').dispatchEvent(new d.window.Event('input', { bubbles: true }));
+    click($(d, '#find-rep-all'));
+    assert_(tab.editRevision === revision + 3 && !tab.content.includes('beta'), '全部替换递增版本');
+    wait.resolve(); await pending;
+    assert_(tab.dirty && tab.content === tab.ta.value && tab.content.includes('新正文'), '旧保存回调保留修改');
+  });
+
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

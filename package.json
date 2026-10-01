@@ -16,6 +16,7 @@
     "check:md-geometry": "electron scripts/check-md-geometry.js --disable-gpu --no-sandbox",
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
     "check:launch": "electron scripts/check-launch.js --disable-gpu --no-sandbox",
+    "check:save": "node scripts/check-save.js",
     "git:doctor": "node scripts/git-doctor.js"
   },
   "dependencies": {
