@@ -939,21 +939,23 @@ function gitCall(op, ...args) {
     }
     const id = ++gitSeq;
     gitPending.set(id, resolve);
-    gitWorker.postMessage({ id, op, args });
+    try{gitWorker.postMessage({ id, op, args });}catch(e){gitPending.delete(id);resolve({ok:false,errorCode:'GIT_WORKER_UNAVAILABLE',error:String(e.message||e)});}
   });
 }
 function startGitWorker() {
   try {
     gitWorker = new Worker(path.join(__dirname, 'git-worker.js'));
+    const worker=gitWorker;
+    const unavailable=()=>{if(gitWorker!==worker)return;gitWorker=null;gitPending.forEach(r=>r({ok:false,errorCode:'GIT_WORKER_UNAVAILABLE',error:'Git执行进程退出，操作结果需刷新核对'}));gitPending.clear();};
+    // 正常exit未必触发error；必须释放队列等待者，不能在可能已写入后自动重放操作。
+    worker.on('exit',unavailable);
     gitWorker.on('message', (msg) => {
       const r = gitPending.get(msg.id);
       if (r) { gitPending.delete(msg.id); r(msg.error ? { error: msg.error } : msg.result); }
     });
     gitWorker.on('error', (e) => {
       console.error('git worker error, fallback to main:', e);
-      gitWorker = null;
-      gitPending.forEach((r) => r({ error: 'git worker 不可用' }));
-      gitPending.clear();
+      unavailable();
     });
   } catch (e) {
     console.error('git worker start failed:', e);
@@ -967,23 +969,19 @@ function startGitWorker() {
 //   但自检 `gitBackend` 步骤会拿这张表和 window.myIDE.git 的键做漂移检查。
 const GIT_OPS = require('./git-ops');
 const nativeGit = require('./git-native');
+const serializeGitIPC=require('./git-queue').createQueue();
 for (const spec of GIT_OPS) {
-  if (spec.native && spec.op) {
-    // 双实现通道（目前只有 checkout）：**原生优先**，本机没有 git 时回落到 JS 实现（worker）。
-    // 为什么不能只用 isomorphic：它不实现 core.autocrlf 归一化，会把工作区的 CRLF 文件当成
-    // "已修改" → 切换分支报 CheckoutConflictError（详细原因见 git-native.js 里 checkout 的注释）。
-    const fn = nativeGit[spec.native];
-    ipcMain.handle('git:' + spec.ch, async (_e, ...args) => {
-      const i = await nativeGit.info(false);
-      if (i && i.git && i.git.available) return fn(...args);
-      return gitCall(spec.op, ...args);
-    });
-  } else if (spec.native) {
-    const fn = nativeGit[spec.native];
-    ipcMain.handle('git:' + spec.ch, (_e, ...args) => fn(...args));
-  } else {
-    ipcMain.handle('git:' + spec.ch, (_e, ...args) => gitCall(spec.op, ...args));
-  }
+  const invoke=async(args)=>{
+    if(spec.ch==='revertHunk'){
+      const repo=await G.findRoot(args[0]);if(!repo)return {ok:false,error:'不是Git仓库'};
+      const target=path.isAbsolute(args[1])?args[1]:path.join(repo,args[1]);
+      return copySerial(()=>PathJobs.withRanges([target],()=>gitCall(spec.op,...args.slice(0,3),path.join(app.getPath('userData'),'file-operations'))));
+    }
+    if(spec.native&&spec.op){const info=await nativeGit.info(false);if(info.git?.available)return nativeGit[spec.native](...args);}
+    if(spec.native&&!spec.op)return nativeGit[spec.native](...args);
+    return gitCall(spec.op,...args);
+  };
+  ipcMain.handle('git:'+spec.ch,(_e,...args)=>spec.writes?serializeGitIPC(args[0],()=>invoke(args)):invoke(args));
 }
 // ---------- 启动面板 IPC（由 launch-ops.js 的清单统一注册）----------
 // 与 git 同一套路：通道 → 服务函数的映射只写在 launch-ops.js 一处。

@@ -92,9 +92,9 @@ contextBridge.exposeInMainWorld('myIDE', {
     // M3：双区差异 + hunk 级暂存（idx = 该 diff 里第几块）
     diffUnstaged: (d, f) => ipcRenderer.invoke('git:diffUnstaged', d, f),
     diffStaged: (d, f) => ipcRenderer.invoke('git:diffStaged', d, f),
-    stageHunk: (d, f, i) => ipcRenderer.invoke('git:stageHunk', d, f, i),
-    unstageHunk: (d, f, i) => ipcRenderer.invoke('git:unstageHunk', d, f, i),
-    revertHunk: (d, f, i) => ipcRenderer.invoke('git:revertHunk', d, f, i),
+    stageHunk: (d, f, selection) => ipcRenderer.invoke('git:stageHunk', d, f, selection),
+    unstageHunk: (d, f, selection) => ipcRenderer.invoke('git:unstageHunk', d, f, selection),
+    revertHunk: (d, f, selection) => ipcRenderer.invoke('git:revertHunk', d, f, selection),
     diffCommit: (d, oid, f) => ipcRenderer.invoke('git:diffCommit', d, oid, f),
     compareRefs: (d, a, b) => ipcRenderer.invoke('git:compareRefs', d, a, b),
     diffRefs: (d, a, b, f) => ipcRenderer.invoke('git:diffRefs', d, a, b, f),

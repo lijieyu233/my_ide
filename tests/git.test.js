@@ -845,7 +845,8 @@ fs.mkdirSync(repo);
     let du = await G.diffUnstaged(rp, 'h.txt');
     assert.strictEqual(du.hunks.length, 2, '未暂存差异分成 2 块，got ' + (du.hunks || []).length);
 
-    const r1 = await G.stageHunk(rp, 'h.txt', 0);           // 只暂存第 1 块
+    const selection=(d)=>({snapshotId:d.snapshot.snapshotId,hunkId:d.hunks[0].hunkId,operationId:require('crypto').randomUUID()});
+    const r1 = await G.stageHunk(rp, 'h.txt', selection(du));           // 只暂存第 1 块
     assert.ok(r1.ok, 'stageHunk 失败: ' + (r1.error || ''));
     let c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
     assert.strictEqual(c && c.status, '*modified', '暂存一块后应是「暂存+未暂存」，got ' + (c && c.status));
@@ -858,14 +859,14 @@ fs.mkdirSync(repo);
     assert.strictEqual(du.hunks.length, 1, '未暂存差异只剩 1 块，got ' + du.hunks.length);
     assert.ok(du.oldText.includes('line 2 CHANGED'), '未暂存差异的基线是 index（已含第 1 块）');
 
-    const rv = await G.revertHunk(rp, 'h.txt', 0);          // 回退第 2 块（只动工作区）
+    const rv = await G.revertHunk(rp, 'h.txt', selection(du));          // 回退第 2 块（只动工作区）
     assert.ok(rv.ok, 'revertHunk 失败: ' + (rv.error || ''));
     const wt = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
     assert.ok(wt.includes('line 18') && !wt.includes('line 18 CHANGED'), '工作区第 2 块已回退');
     assert.ok(wt.includes('line 2 CHANGED'), '工作区第 1 块保持（与 index 一致）');
 
     const wtBefore = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
-    const ru = await G.unstageHunk(rp, 'h.txt', 0);         // 取消暂存第 1 块
+    const ru = await G.unstageHunk(rp, 'h.txt', selection(await G.diffStaged(rp,'h.txt')));         // 取消暂存第 1 块
     assert.ok(ru.ok, 'unstageHunk 失败: ' + (ru.error || ''));
     c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
     assert.ok(!c || c.status === 'modified', '取消暂存后回到「未暂存」，got ' + (c && c.status));

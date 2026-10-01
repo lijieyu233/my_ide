@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const net = require('net');
-const { spawn } = require('child_process');
+const { spawn,execFileSync } = require('child_process');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function connect(address) {
@@ -62,6 +62,7 @@ async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) 
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_PATH; delete env.NODE_OPTIONS;
   env.MYIDE_PACKAGED_CHECK_ID = temp;
+  env.GIT_CONFIG_GLOBAL=path.join(temp,'git-global');fs.writeFileSync(env.GIT_CONFIG_GLOBAL,'');env.GIT_CONFIG_NOSYSTEM='1';env.GIT_OPTIONAL_LOCKS='0';env.GIT_TERMINAL_PROMPT='0';
   if (noGit) env.PATH = path.dirname(executable);
   const listener = net.createServer();
   await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
@@ -103,7 +104,7 @@ async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) 
     await client.call('Runtime.runIfWaitingForDebugger');
     const frame = (await paused).callFrames[0];
     const isolation = await client.call('Debugger.evaluateOnCallFrame', { callFrameId: frame.callFrameId, returnByValue: true,
-      expression: `(() => { if(process.env.MYIDE_PACKAGED_CHECK_ID!==${JSON.stringify(temp)})throw Error('检查请求归属不匹配'); const api=require('electron'); api.app.setPath('userData',${JSON.stringify(profile)}); require('os').homedir=()=>${JSON.stringify(home)}; process.execArgv=process.execArgv.filter(arg=>!arg.startsWith('--inspect')); return {entry:process.mainModule.filename, packaged:api.app.isPackaged}; })()` });
+      expression: `(() => { if(process.env.MYIDE_PACKAGED_CHECK_ID!==${JSON.stringify(temp)})throw Error('检查请求归属不匹配'); const workers=require('worker_threads'),OriginalWorker=workers.Worker;workers.Worker=class extends OriginalWorker{constructor(...args){super(...args);if(String(args[0]).endsWith('git-worker.js'))global.__gitCheckWorker=this;}postMessage(msg,...args){if(global.__gitCheckHold&&msg.op==='diffUnstaged'){global.__gitCheckHeld=msg;return;}return super.postMessage(msg,...args);}}; const api=require('electron'); api.app.setPath('userData',${JSON.stringify(profile)}); require('os').homedir=()=>${JSON.stringify(home)}; process.execArgv=process.execArgv.filter(arg=>!arg.startsWith('--inspect')); return {entry:process.mainModule.filename, packaged:api.app.isPackaged}; })()` });
     if (isolation.exceptionDetails) throw Error(isolation.exceptionDetails.text);
     add('真正打包exe进入包内主入口', isolation.result.value.packaged && isolation.result.value.entry.includes('app.asar'), isolation.result.value);
     // inspector会让继承启动参数的Worker等待客户端；只释放本次子进程里的Worker。
@@ -183,6 +184,48 @@ async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) 
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);
     add(noGit ? '无系统Git时明确降级' : '系统Git能力可解释', noGit ? !git.backend.git.available : !!git.backend.git.available, git.backend);
+    let exitRepo,exitRel;
+    if(!noGit){
+      const repo=path.join(temp,'git-project');fs.mkdirSync(repo);const rel='中文 空格.txt',target=path.join(repo,rel),base=Array.from({length:20},(_,i)=>'LINE'+(i+1)),shown=[...base];
+      exitRepo=repo;exitRel=rel;
+      const cli=args=>execFileSync(git.backend.git.exe,['-C',repo,...args],{encoding:'utf8',env,windowsHide:true});
+      cli(['init','-q']);cli(['config','user.name','Fixture']);cli(['config','user.email','fixture@example.invalid']);cli(['config','core.autocrlf','false']);fs.writeFileSync(target,base.join('\n')+'\n');cli(['add','.']);cli(['commit','-qm','base']);shown[17]='DISPLAYED-LAST';fs.writeFileSync(target,shown.join('\n')+'\n');
+      const open=async()=>{await renderer(`App.openProject(${JSON.stringify(repo)})`);await renderer('GitPanel.refresh()');await renderer('GitPanel.openCommit()');await renderer('GitPanel.closeDiffView();true');await renderer(`(()=>{const row=[...document.querySelectorAll('#cd-files .git-file')].find(r=>r.dataset.file===${JSON.stringify(rel)});if(!row)throw Error('Missing Git fixture row');row.click();return true;})()`);for(let i=0;i<100&&!await renderer('!!document.querySelector(".hunk-act")');i++)await sleep(50);};
+      const button=kind=>`[...document.querySelectorAll('.hunk-act')].filter(b=>b.textContent.includes(${JSON.stringify(kind)}))`;
+      await open();const index=fs.readFileSync(path.join(repo,'.git','index'));shown[1]='UNSEEN-FIRST';fs.writeFileSync(target,shown.join('\n')+'\n');const work=fs.readFileSync(target);
+      await renderer(`${button('暂存此块')}[0].onclick({stopPropagation(){}})`);
+      add('包内原展示块点击后新增前块：拒绝且index/工作区字节不变',fs.readFileSync(path.join(repo,'.git','index')).equals(index)&&fs.readFileSync(target).equals(work));
+      await evaluate("(()=>{const w=process.mainModule.require('electron').BrowserWindow.getAllWindows()[0];w.setContentSize(1200,800);return true;})()");
+      const shots=process.argv.includes('--screenshots')?path.resolve(process.argv[process.argv.indexOf('--screenshots')+1]):null;
+      const capture=async label=>{if(!shots)return;fs.mkdirSync(shots,{recursive:true});for(const theme of ['dark','light']){await renderer(`Theme.set(${JSON.stringify(theme)})`);await sleep(250);const data=await evaluate("(async()=>{const wc=process.mainModule.require('electron').BrowserWindow.getAllWindows()[0].webContents;if(!wc.debugger.isAttached())wc.debugger.attach('1.3');await wc.debugger.sendCommand('Page.enable');return (await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true})).data;})()");fs.writeFileSync(path.join(shots,'git123-'+label+'-'+theme+'.png'),Buffer.from(data,'base64'));}};
+      await capture('stale');await renderer('document.querySelector(".diff-refresh").onclick()');
+      add('包内刷新后展示原来的两块且每块都可操作',await renderer('document.querySelectorAll(".diff-hunk-gap").length===2&&[...document.querySelectorAll(".hunk-act")].every(b=>!b.disabled)'));
+      await capture('fresh');await renderer(`${button('暂存此块')}.at(-1).onclick({stopPropagation(){}})`);const staged=cli(['show',':'+rel]);
+      add('包内原生锁/worker只暂存所选第18行，其他块留工作区',staged.includes('DISPLAYED-LAST')&&!staged.includes('UNSEEN-FIRST')&&fs.readFileSync(target).equals(work));cli(['commit','-qm','selected']);
+      add('包内选块真实提交HEAD只含第18行',cli(['show','HEAD:'+rel])===staged);
+      await open();await renderer(`(()=>{window.__confirm=Modal.confirm;window.__wait=null;Modal.confirm=()=>new Promise(r=>window.__wait=r);window.__pending=${button('回退此块')}[0].onclick({stopPropagation(){}});return true;})()`);await renderer(`App.openProject(${JSON.stringify(project)})`);await renderer('__wait(true);true');await renderer('__pending.then(()=>true)');await renderer('Modal.confirm=__confirm;true');
+      add('包内真实确认等待切项目：旧回退零写入',fs.readFileSync(target).equals(work));
+      await open();await renderer(`(async()=>{await Viewer.openFile(${JSON.stringify(target)});Viewer.cm.setValue('Git回退等待中的未保存输入');})()`);await open();fs.writeFileSync(target+':private','Git原数据流');
+      // ADS也属于展示版本；流后来变化先刷新，不能复用原按钮。
+      await renderer('document.querySelector(".diff-refresh").onclick()');await renderer('Modal.confirm=async()=>true;true');await renderer(`${button('回退此块')}[0].onclick({stopPropagation(){}})`);await renderer('Modal.confirm=__confirm;true');
+      add('包内Git回退保留dirty输入，正文与ADS恢复来源持久化',fs.readFileSync(target,'utf8')===staged&&fs.readFileSync(target+':private','utf8')==='Git原数据流'&&await renderer('Viewer.openTabs.some(t=>t.dirty&&t.content==="Git回退等待中的未保存输入")'),{work:fs.readFileSync(target,'utf8'),expected:staged,tabs:await renderer('Viewer.openTabs.map(t=>({path:t.path,dirty:t.dirty,content:t.content,error:t.saveError}))'),records:await renderer(`myIDE.fs.copyList(${JSON.stringify(repo)})`),toasts:await renderer('document.body.innerText.slice(-700)')});
+      await renderer('Tree.showCopyRecovery()');await capture('recovery');const records=await renderer(`myIDE.fs.copyList(${JSON.stringify(repo)})`),record=records.records.find(r=>r.hasChanges);
+      add('包内Git恢复入口可发现项目持久记录',!!record&&fs.existsSync(path.join(profile,'file-operations',record.operationId,'manifest.json')));
+      await renderer('Modal.hide();true');const recovered=await renderer(`myIDE.fs.copyUndo(${JSON.stringify(repo)},${JSON.stringify(record.operationId)})`);
+      add('包内Git回退原字节与ADS可恢复',recovered.ok&&fs.readFileSync(target).equals(work)&&fs.readFileSync(target+':private','utf8')==='Git原数据流',recovered);
+    }else{
+      const repo=path.join(temp,'git-fallback');fs.mkdirSync(repo);const file=path.join(repo,'hunk.txt');fs.writeFileSync(file,'base\nsecond\n');exitRepo=repo;exitRel='hunk.txt';
+      const initialized=await renderer(`(async()=>{const root=${JSON.stringify(repo)};await myIDE.git.init(root);return myIDE.git.commit(root,{message:'base',files:['hunk.txt'],author:{name:'Fixture',email:'fixture@example.invalid'}});})()`);add('无系统Git时包内纯JS仓库可真实提交',initialized.ok,initialized);
+      fs.writeFileSync(file,'changed\nsecond\n');const shown=await renderer(`myIDE.git.diffUnstaged(${JSON.stringify(repo)},'hunk.txt')`);const selected=d=>({snapshotId:d.snapshot.snapshotId,hunkId:d.hunks[0].hunkId,operationId:require('crypto').randomUUID()});
+      fs.writeFileSync(file,'later\nsecond\n');const before=fs.readFileSync(path.join(repo,'.git','index')),stale=await renderer(`myIDE.git.stageHunk(${JSON.stringify(repo)},'hunk.txt',${JSON.stringify(selected(shown))})`);add('无系统Git时包内旧快照明确拒绝且index不变',stale.errorCode==='STALE_DIFF'&&fs.readFileSync(path.join(repo,'.git','index')).equals(before),stale);
+      const fresh=await renderer(`myIDE.git.diffUnstaged(${JSON.stringify(repo)},'hunk.txt')`),stage=await renderer(`myIDE.git.stageHunk(${JSON.stringify(repo)},'hunk.txt',${JSON.stringify(selected(fresh))})`),staged=await renderer(`myIDE.git.diffStaged(${JSON.stringify(repo)},'hunk.txt')`),unstage=await renderer(`myIDE.git.unstageHunk(${JSON.stringify(repo)},'hunk.txt',${JSON.stringify(selected(staged))})`);
+      add('无系统Git时包内原生锁及纯JS选块/取消暂存可加载',stage.ok&&unstage.ok&&fs.readFileSync(file,'utf8')==='later\nsecond\n',{stage,unstage});
+    }
+    await evaluate('global.__gitCheckHold=true;true');await renderer(`window.__workerWait=myIDE.git.diffUnstaged(${JSON.stringify(exitRepo)},${JSON.stringify(exitRel)});true`);
+    for(let i=0;i<100&&!await evaluate('!!global.__gitCheckHeld');i++)await sleep(20);await evaluate('global.__gitCheckWorker.terminate()');const exitedWorker=await renderer('__workerWait');
+    add('包内受控派发等待中真实worker退出释放等待者，不自动重放',exitedWorker.errorCode==='GIT_WORKER_UNAVAILABLE',exitedWorker);
+    const latest=await renderer(`myIDE.git.diffUnstaged(${JSON.stringify(exitRepo)},${JSON.stringify(exitRel)})`),selection={snapshotId:latest.snapshot.snapshotId,hunkId:latest.hunks[0].hunkId,operationId:require('crypto').randomUUID()},beforeFallback=fs.readFileSync(path.join(exitRepo,exitRel)),fallback=await renderer(`myIDE.git.stageHunk(${JSON.stringify(exitRepo)},${JSON.stringify(exitRel)},${JSON.stringify(selection)})`);
+    add('包内worker退出后主进程回落刷新选块，写队列仍可推进',fallback.ok&&fs.readFileSync(path.join(exitRepo,exitRel)).equals(beforeFallback),fallback);
     const db = await renderer(`(async()=>{const cfg={type:'sqlite',file:${JSON.stringify(database)}};const c=await myIDE.db.connect(cfg);if(!c.ok)return c;const create=await myIDE.db.query(c.data.id,'CREATE TABLE fixture (id INTEGER PRIMARY KEY, value TEXT)');const insert=await myIDE.db.query(c.data.id,"INSERT INTO fixture VALUES (1,'sqlite packaged')");await myIDE.db.close(c.data.id);const again=await myIDE.db.connect(cfg);if(!again.ok)return again;const select=await myIDE.db.query(again.data.id,'SELECT value FROM fixture');await myIDE.db.close(again.data.id);return {create,insert,select};})()`);
     add('包内SQLite WASM写入并重开读取', db.create && db.create.ok && db.insert.ok && db.select.ok && db.select.data.rows[0].value === 'sqlite packaged', db);
     const launch = await renderer(`(async()=>{const config=await myIDE.launch.config();await App.showTool('launch');return {config,panel:!!document.querySelector('#panel-launch')};})()`);

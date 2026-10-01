@@ -1442,7 +1442,8 @@ module.exports = {
       'hunks=' + (du.hunks || []).length + ' :: ' + marks(du).slice(0, 90));
     add('双区差异自带 side 标记（unstaged = 工作区 vs 暂存区）', du.side === 'unstaged', 'side=' + du.side);
 
-    const rs = await G.stageHunk(repo, 'h.txt', 0);
+    const selectHunk=d=>({snapshotId:d.snapshot.snapshotId,hunkId:d.hunks[0].hunkId,operationId:crypto.randomUUID()});
+    const rs = await G.stageHunk(repo, 'h.txt', selectHunk(du));
     add('stageHunk 只把第 1 块写进 index', !!(rs && rs.ok), JSON.stringify(rs).slice(0, 70));
     let ds = await G.diffStaged(repo, 'h.txt');
     add('已暂存区只剩被暂存的那块（line 2）', (ds.hunks || []).length === 1 && /line 2 CHANGED/.test(marks(ds)),
@@ -1454,7 +1455,7 @@ module.exports = {
     add('状态变成「部分暂存」*modified（既不是整份已暂存，也不是纯未暂存）',
       c && c.status === '*modified' && !c.inIndexOnly, 'status=' + (c && c.status) + ' inIndexOnly=' + (c && c.inIndexOnly));
 
-    const ru = await G.unstageHunk(repo, 'h.txt', 0);
+    const ru = await G.unstageHunk(repo, 'h.txt', selectHunk(ds));
     add('unstageHunk 把那一块撤出来（改动仍留在工作区）', !!(ru && ru.ok), JSON.stringify(ru).slice(0, 70));
     c = await statusOf();
     add('取消暂存后回到纯未暂存 modified', c && c.status === 'modified', 'status=' + (c && c.status));
@@ -1510,7 +1511,7 @@ module.exports = {
       try {
         const st = await window.myIDE.git.status(repo);
         const c = (st.changed || []).find((x) => x.file === 'h.txt');
-        if (c && String(c.status).charAt(0) === '*') await window.myIDE.git.unstageHunk(repo, 'h.txt', 0);
+        if (c && String(c.status).charAt(0) === '*'){const d=await window.myIDE.git.diffStaged(repo,'h.txt');await window.myIDE.git.unstageHunk(repo,'h.txt',{snapshotId:d.snapshot.snapshotId,hunkId:d.hunks[0].hunkId,operationId:crypto.randomUUID()});}
       } catch {}
     }
     window.GitPanel.closeDialog();

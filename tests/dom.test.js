@@ -349,13 +349,13 @@ function makeDom() {
         calls.diffUnstaged.push(f);
         // M3 起：点文件行走「index → 工作区」这一侧。内容沿用原 diffWorkdir 的 fixture，
         // 那几个 diff 视图用例（分栏 / 行号 / hunk 导航）才能继续按原样验。
-        return { file: f, side: 'unstaged', oldText: 'old line\n', newText: 'new line\n', hunks: [
-          { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
-          { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
+        return { file: f, side: 'unstaged', snapshot:{snapshotId:'mock-unstaged',root:d},oldText: 'old line\n', newText: 'new line\n', hunks: [
+          { hunkId:'unstaged-0',oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, rows: [{ type: 'del', aText: 'old line', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'new line', aNum: 0, bNum: 1 }] },
+          { hunkId:'unstaged-1',oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, rows: [{ type: 'ctx', aText: 'ctx line', bText: 'ctx line', aNum: 10, bNum: 10 }] },
         ] };
       },
-      diffStaged: async (d, f) => { calls.diffStaged.push(f); return { file: f, side: 'staged', oldText: 'x\n', newText: 'y\n', hunks: [
-        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'del', aText: 'x', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'y', aNum: 0, bNum: 1 }] },
+      diffStaged: async (d, f) => { calls.diffStaged.push(f); return { file: f, side: 'staged', snapshot:{snapshotId:'mock-staged',root:d},oldText: 'x\n', newText: 'y\n', hunks: [
+        { hunkId:'staged-0',oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, rows: [{ type: 'del', aText: 'x', bText: '', aNum: 1, bNum: 0 }, { type: 'add', aText: '', bText: 'y', aNum: 0, bNum: 1 }] },
       ] }; },
       stageHunk: async (d, f, i) => { calls.stageHunk.push([f, i]); return { ok: true, oid: 'ssssssssssssssssssssssssssssssssssssssss' }; },
       unstageHunk: async (d, f, i) => { calls.unstageHunk.push([f, i]); return { ok: true, oid: 'uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu' }; },
@@ -3374,12 +3374,12 @@ assert_(panel, 'CM6 搜索面板出现');
     const acts = $allIn($(dom, '#viewer .diff-table'), '.hunk-act');
     assert_(acts.length >= 2, 'hunk 头有块级操作按钮: ' + acts.length);
     assert_(acts.some((b) => /暂存此块/.test(b.textContent)) && acts.some((b) => /回退此块/.test(b.textContent)), '含「暂存此块」「回退此块」');
-    // 点「暂存此块」→ 走 stageHunk(file, 块序号)
+    // 点「暂存此块」固定原展示版本和块身份，操作ID防重发。
     const stageBtn = acts.find((b) => /暂存此块/.test(b.textContent));
     click(stageBtn);
     await tick(); await tick();
     assert_(calls.stageHunk.length === 1, '调用了 stageHunk');
-    assert_(calls.stageHunk[0][0] === row.dataset.file && calls.stageHunk[0][1] === 0, '参数是 [文件, 块序号]: ' + JSON.stringify(calls.stageHunk[0]));
+    assert_(calls.stageHunk[0][0] === row.dataset.file && calls.stageHunk[0][1].hunkId==='unstaged-0'&&calls.stageHunk[0][1].snapshotId==='mock-unstaged'&&!!calls.stageHunk[0][1].operationId,'参数绑定展示块身份: '+JSON.stringify(calls.stageHunk[0]));
     await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
     await tick();
@@ -8413,6 +8413,14 @@ assert_(panel, 'CM6 搜索面板出现');
       fakeFsCbs.splice(cbStart);
     }
   });
+
+  const openHunk=async d=>{await d.window.GitPanel.refresh();await d.window.GitPanel.openCommit();const row=[...d.window.document.querySelectorAll('#cd-files .git-file')].find(r=>r.textContent.includes('README.md'));click(row);await tick();await tick();return [...d.window.document.querySelectorAll('.hunk-act')];};
+  await saveCase('Git回退确认后切项目不发IPC，旧按钮不能授权新项目',async d=>{const w=d.window,gate=deferred();let count=0;w.Modal.confirm=()=>gate.promise;w.myIDE.git.revertHunk=async()=>{count++;return {ok:true};};const b=(await openHunk(d)).find(b=>/回退此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});await tick();w.GitPanel.rootDir='C:/proj2';gate.resolve(true);await pending;assert_(count===0,'迟到确认无IPC');});
+  await saveCase('Git确认后关闭差异视图旧动作失效',async d=>{const w=d.window,gate=deferred();let count=0;w.Modal.confirm=()=>gate.promise;w.myIDE.git.revertHunk=async()=>{count++;return {ok:true};};const b=(await openHunk(d)).find(b=>/回退此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});w.GitPanel.closeDiffView();gate.resolve(true);await pending;assert_(count===0,'已关闭视图不提交');});
+  await saveCase('Git块双击仅一次IPC，绑定原身份，迟到成功不打开新项目差异',async d=>{const w=d.window,gate=deferred(),seen=[];w.myIDE.git.stageHunk=async(...args)=>{seen.push(args);return gate.promise;};const b=(await openHunk(d)).find(b=>/暂存此块/.test(b.textContent)),pending=b.onclick({stopPropagation(){}});await b.onclick({stopPropagation(){}});assert_(seen.length===1&&seen[0][0]===P&&seen[0][2].hunkId==='unstaged-0'&&b.disabled,'原版本且防重复');w.GitPanel.rootDir='C:/proj2';w.GitPanel.closeDiffView();gate.resolve({ok:true});await pending;assert_(!w.document.querySelector('.diff-wrap'),'旧结果不重开');});
+  await saveCase('Git拒绝过期版本后刷新使用新展示身份',async d=>{const w=d.window,original=w.myIDE.git.diffUnstaged,seen=[];let revision=0;w.myIDE.git.diffUnstaged=async(...args)=>{const r=await original(...args);return {...r,snapshot:{...r.snapshot,snapshotId:'revision-'+(++revision)}};};w.myIDE.git.stageHunk=async(...args)=>{seen.push(args);return {ok:false,errorCode:'STALE_DIFF',error:'请刷新差异'};};let b=(await openHunk(d)).find(b=>/暂存此块/.test(b.textContent));await b.onclick({stopPropagation(){}});await w.document.querySelector('.diff-refresh').onclick();b=[...w.document.querySelectorAll('.hunk-act')].find(b=>/暂存此块/.test(b.textContent));await b.onclick({stopPropagation(){}});assert_(seen.length===2&&seen[0][2].snapshotId!==seen[1][2].snapshotId,'刷新获得新身份');});
+  await saveCase('Git回退协调保留dirty正文和原磁盘基线',async(d,viewer)=>{const w=d.window;await viewer.openFile(P+'/README.md');viewer.cm.setValue('用户未保存输入');const version=JSON.stringify(viewer.activeTab.diskVersion);w.Modal.confirm=async()=>true;w.myIDE.git.revertHunk=async()=>{FAKE_FS[P+'/README.md'].content='磁盘回退结果';return {ok:true,changedPaths:[P+'/README.md']};};const b=(await openHunk(d)).find(b=>/回退此块/.test(b.textContent));await b.onclick({stopPropagation(){}});assert_(viewer.activeTab.dirty&&viewer.activeTab.content==='用户未保存输入'&&JSON.stringify(viewer.activeTab.diskVersion)===version,'输入与旧基线保留');});
+  await saveCase('Git桥拒绝会恢复操作按钮，不留下未处理rejection',async d=>{const w=d.window;w.myIDE.git.stageHunk=async()=>{throw Error('fixture IPC exited');};const b=(await openHunk(d)).find(b=>/暂存此块/.test(b.textContent));await b.onclick({stopPropagation(){}});assert_(!b.disabled,'允许刷新/重试');});
 
   await saveCase('覆盖粘贴重载干净标签，undo恢复原正文与磁盘基线',async(d,viewer,bridge)=>{
     const w=d.window;w.Modal.confirm=async()=>true;const old=viewer.activeTab.content;

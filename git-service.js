@@ -1107,47 +1107,9 @@ function hunkify(aText, bText) {
   return { oldText: a, newText: b, hunks: buildHunks(a, b) };
 }
 
-// 读 index 里该文件的文本（拿不到 = 文件还没进过 index）
-async function indexTextOf(root, rel) {
-  const entries = await readIndexEntries(root);
-  const e = entries.get(posix(rel));
-  if (!e) return { text: null, mode: 33188 };
-  try {
-    const { blob } = await git.readBlob({ fs, dir: root, oid: e.oid });
-    return { text: Buffer.from(blob).toString('utf8'), mode: e.mode || 33188 };
-  } catch { return { text: null, mode: e.mode || 33188 }; }
-}
-
-async function diffUnstaged(dir, file) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { error: '不是 Git 仓库' };
-  const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  const rel = path.relative(root, abs);
-  const idx = await indexTextOf(root, rel);
-  let newText = null;
-  try {
-    const st = fs.statSync(abs);
-    if (st.size > 20 * 1024 * 1024) return { file: rel, tooLarge: true, size: st.size };
-    newText = fs.readFileSync(abs, 'utf8');
-  } catch {}
-  if (idx.text === null && newText === null) return { file: rel, unchanged: true };
-  if (isBinaryText(idx.text) || isBinaryText(newText)) return { file: rel, binary: true };
-  const h = hunkify(idx.text ?? '', newText ?? '');
-  return { file: rel, base: 'index', side: 'unstaged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
-}
-
-async function diffStaged(dir, file) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { error: '不是 Git 仓库' };
-  const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  const rel = path.relative(root, abs);
-  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
-  const idx = await indexTextOf(root, rel);
-  if (idx.text === null) return { file: rel, unchanged: true };   // index 里没有它 = 没有已暂存内容
-  if (isBinaryText(headText) || isBinaryText(idx.text)) return { file: rel, binary: true };
-  const h = hunkify(headText ?? '', idx.text);
-  return { file: rel, base: 'head', side: 'staged', oldText: h.oldText, newText: h.newText, hunks: h.hunks, unchanged: h.hunks.length === 0 };
-}
+const HunkService=require('./git-hunks').createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText});
+const diffUnstaged=(dir,file)=>HunkService.diff(dir,file,'unstaged');
+const diffStaged=(dir,file)=>HunkService.diff(dir,file,'staged');
 
 // 把 hunk 应用到一段文本（forward: a→b / reverse: b→a）。
 // ⚠ **带前置校验**：目标位置的现有内容必须与 hunk 对应侧逐行相符，否则拒绝并让上层提示刷新。
@@ -1169,74 +1131,9 @@ function applyHunkToText(text, hunk, reverse) {
   return { ok: true, text: out.map(stripCR).join(eol) + (had ? eol : '') };
 }
 
-// 暂存一个 hunk：把「index → 工作区」的第 idx 块写进 index（= git add -p 的那一步）
-async function stageHunk(dir, file, idx) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  const rel = path.relative(root, abs);
-  const d = await diffUnstaged(root, rel);
-  if (d.error) return { ok: false, error: d.error };
-  if (d.binary) return { ok: false, error: '二进制文件不能按块暂存' };
-  const h = (d.hunks || [])[idx];
-  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
-  const idxText = await indexTextOf(root, rel);
-  const r = applyHunkToText(idxText.text ?? '', h, false);
-  if (!r.ok) return r;
-  // ⚠ writeBlob 返回的是 **oid 字符串**（不是 {oid}）；传 undefined 给 updateIndex 会让它
-  //    退回"拿工作区内容算哈希"——表现为"暂存整块变成暂存整个文件"（踩过，见 M3 文档）
-  const oid = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
-  if (!oid) return { ok: false, error: '写入 blob 失败' };
-  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid, mode: idxText.mode });
-  return { ok: true, oid };
-}
-
-// 取消暂存一个 hunk：把「HEAD → index」的第 idx 块从 index 里撤掉（= git reset -p 的那一步）
-async function unstageHunk(dir, file, idx) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  const rel = path.relative(root, abs);
-  const d = await diffStaged(root, rel);
-  if (d.error) return { ok: false, error: d.error };
-  if (d.binary) return { ok: false, error: '二进制文件不能按块取消暂存' };
-  const h = (d.hunks || [])[idx];
-  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
-  const idxText = await indexTextOf(root, rel);
-  const r = applyHunkToText(idxText.text ?? '', h, true);
-  if (!r.ok) return r;
-  const headText = await blobAt(root, 'HEAD', rel).catch(() => null);
-  // 还原到与 HEAD 完全一致时，直接 resetIndex（index 条目回到 HEAD，状态最干净）
-  if ((headText ?? '') === r.text) {
-    await git.resetIndex({ fs, dir: root, filepath: posix(rel) });
-    return { ok: true, reset: true };
-  }
-  const w = await git.writeBlob({ fs, dir: root, blob: Buffer.from(r.text, 'utf8') });
-  if (!w) return { ok: false, error: '写入 blob 失败' };
-  await git.updateIndex({ fs, dir: root, filepath: posix(rel), oid: w, mode: idxText.mode });
-  return { ok: true, oid: w };
-}
-
-// 回退一个 hunk：把工作区那一块改回 index 里的样子（**只动工作区，不碰 index**）
-async function revertHunk(dir, file, idx) {
-  const { yes, root } = await isRepo(dir);
-  if (!yes) return { ok: false, error: '不是 Git 仓库' };
-  const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  const rel = path.relative(root, abs);
-  const d = await diffUnstaged(root, rel);
-  if (d.error) return { ok: false, error: d.error };
-  if (d.binary) return { ok: false, error: '二进制文件不能按块回退' };
-  const h = (d.hunks || [])[idx];
-  if (!h) return { ok: false, error: '找不到该差异块（差异可能已刷新）' };
-  let raw = null;
-  try { raw = fs.readFileSync(abs, 'utf8'); } catch {}
-  if (raw === null) return { ok: false, error: '读不到工作区文件' };
-  const r = applyHunkToText(raw, h, true);
-  if (!r.ok) return r;
-  try { fs.writeFileSync(abs, r.text); } catch (e) { return { ok: false, error: '写回失败：' + String(e.message || e) }; }
-  return { ok: true };
-}
-
+const stageHunk=(dir,file,selection)=>HunkService.action(dir,file,selection,'stage');
+const unstageHunk=(dir,file,selection)=>HunkService.action(dir,file,selection,'unstage');
+const revertHunk=(dir,file,selection,recoveryRoot)=>HunkService.action(dir,file,selection,'revert',recoveryRoot);
 
 // ---------- 某提交涉及的文件列表 ----------
 async function treeFiles(root, oid) {
@@ -2317,3 +2214,6 @@ module.exports = {
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,
   addToGitignore, removeFromGitignore, listIgnored,
 };
+// 导出的写操作共用仓库队列；内部调用保留原流程，不递归获取同一把队列锁。
+const serializeGit=require('./git-queue').createQueue();
+for(const name of ['commit','checkout','createBranch','discard','discardFiles','stageHunk','unstageHunk','revertHunk','pullRemote','shelveCreate','shelveApply','revertCommit','cherryPick']){const original=module.exports[name];module.exports[name]=(dir,...args)=>serializeGit(dir,()=>original(dir,...args));}

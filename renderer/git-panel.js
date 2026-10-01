@@ -2,6 +2,7 @@
 // 布局：侧栏上半变更文件树 · 下半提交信息；选中文件 diff 显示在右侧主编辑区；日志窗口见 git-log.js
 const GitPanel = (() => {
   let root = null;
+  let rootGeneration=0;
   let state = null; // {isRepo, branch, changed, unborn}
   const checked = new Set(); // 勾选的待提交文件（跨刷新保留）
   let knownFiles = new Set(); // 上次刷新见过的文件（新出现的默认勾选）
@@ -1939,17 +1940,19 @@ const GitPanel = (() => {
   }
 
   // ---------- 显示选中差异（编辑区堆叠多文件） ----------
-  async function diffChecked() {
-    if (!checked.size) { MI.toast('没有勾选的文件', 'err'); return; }
-    const files = [...checked].filter((f) => !ignoredAll.has(f)); // 忽略的文件没有 HEAD 版本可比
+  async function diffChecked(selectedFiles) {
+    const operationRoot=root,seq=++diffSeq;
+    if (!(selectedFiles||checked).size) { MI.toast('没有勾选的文件', 'err'); return; }
+    const files = [...(selectedFiles||checked)].filter((f) => !ignoredAll.has(f)); // 忽略的文件没有 HEAD 版本可比
     if (!files.length) { MI.toast('勾选的只有被忽略的文件', 'err'); return; }
     const results = [];
     for (const f of files) {
       const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
       // M3：按双区取差异（「已暂存」的文件看暂存区那一侧，其余看未暂存那一侧）
       const r = c && c.inIndexOnly
-        ? await window.myIDE.git.diffStaged(root, f)
-        : await window.myIDE.git.diffUnstaged(root, f);
+        ? await window.myIDE.git.diffStaged(operationRoot, f)
+        : await window.myIDE.git.diffUnstaged(operationRoot, f);
+      if(root!==operationRoot||seq!==diffSeq)return;
       if (r && !r.error && !r.unchanged) results.push(r);
     }
     if (!results.length) { MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
@@ -2352,38 +2355,44 @@ const GitPanel = (() => {
   const diffSideOf = (c) => (c && c.inIndexOnly ? 'staged' : 'unstaged');
   const SIDE_LABEL = { unstaged: '未暂存（工作区 vs 暂存区）', staged: '已暂存（暂存区 vs HEAD）' };
 
-  async function hunkAction(file, kind, idx) {
-    if (!root) return;
+  async function hunkAction(file, kind, selection,scope) {
+    const valid=()=>root===scope.projectRoot&&rootGeneration===scope.generation&&diffSeq===scope.seq&&scope.table.isConnected;
+    if (!valid()) {MI.toast('差异视图已切换，请刷新后选择','err');return;}
+    const operationRoot=scope.projectRoot;
     if (kind === 'revert') {
-      const yes = await Modal.confirm('回退这一块', '会把工作区的这一处改动丢弃（其它块不受影响）。不可恢复，确定吗？');
+      const yes = await Modal.confirm('回退这一块', '会把磁盘上的这一处改回暂存区版本，其它块不受影响。原字节会保留，可从「恢复文件操作」恢复；未保存输入仍留编辑器。确定吗？');
       if (!yes) return;
     }
+    if(!valid()){MI.toast('项目或差异视图已切换，未执行旧块操作','err');return;}
     const api = window.myIDE.git;
-    const r = kind === 'stage' ? await api.stageHunk(root, file, idx)
-      : kind === 'unstage' ? await api.unstageHunk(root, file, idx)
-        : await api.revertHunk(root, file, idx);
+    const perform=()=>valid()?(kind==='stage'?api.stageHunk(operationRoot,file,selection):kind==='unstage'?api.unstageHunk(operationRoot,file,selection):api.revertHunk(operationRoot,file,selection)):{ok:false,error:'旧差异操作已失效',errorCode:'STALE_DIFF'};
+    const target=(scope.repoRoot+'/' +file).replace(/\\/g,'/');
+    const r=kind==='revert'&&window.Viewer?.withCopyChange?await Viewer.withCopyChange([],[target],perform,'回退'):await perform();
     if (!r || !r.ok) { MI.toast((r && r.error) || '操作失败', 'err'); return; }
-    MI.toast(kind === 'stage' ? '已暂存这一块' : kind === 'unstage' ? '已取消暂存这一块' : '已回退这一块', 'ok');
+    MI.toast(kind === 'stage' ? '已暂存这一块' : kind === 'unstage' ? '已取消暂存这一块' : '已回退这一块（恢复文件操作可找回）', 'ok');
+    if(!valid())return;
     await refresh();                                   // 列表状态变了（可能进出「已暂存」）
+    if(!valid())return;
     const c = state && state.changed ? state.changed.find((x) => x.file === file) : null;
     if (c) await showFileDiff(c);                      // 重新打开：那块已从当前视图消失
   }
 
   async function showFileDiff(c) {
     if (!root) return;
-    const seq = ++diffSeq;
+    const seq = ++diffSeq,operationRoot=root;
     const both = !c.inIndexOnly && String(c.status || '').charAt(0) === '*';  // 同一个文件既有暂存又有未暂存
     let r;
-    if (c.inIndexOnly) r = await window.myIDE.git.diffStaged(root, c.file);
+    if (c.inIndexOnly) r = await window.myIDE.git.diffStaged(operationRoot, c.file);
     else if (both) {
       // 双区并排：先「已暂存（HEAD→index）」再「未暂存（index→工作区）」，
       // 两块各挂各的按钮（暂存 / 取消暂存 / 回退），这就是 PyCharm 那套「一个文件里挑着提交」的入口
-      const a = await window.myIDE.git.diffStaged(root, c.file);
-      const b = await window.myIDE.git.diffUnstaged(root, c.file);
+      const a = await window.myIDE.git.diffStaged(operationRoot, c.file);
+      if(root!==operationRoot||seq!==diffSeq)return;
+      const b = await window.myIDE.git.diffUnstaged(operationRoot, c.file);
       r = [a, b].filter((x) => x && !x.error && !x.unchanged && x.hunks && x.hunks.length);
       if (!r.length) r = b;
-    } else r = await window.myIDE.git.diffUnstaged(root, c.file);
-    if (seq !== diffSeq) return;
+    } else r = await window.myIDE.git.diffUnstaged(operationRoot, c.file);
+    if (seq !== diffSeq||root!==operationRoot) return;
     if (Array.isArray(r)) {
       renderDiffView(r, '已暂存 + 未暂存（同一个文件挑着提交）', { sideOf: () => 'both', onHunk: hunkAction });
       return;
@@ -2474,6 +2483,7 @@ const GitPanel = (() => {
     }
     const table = document.createElement('table');
     table.className = 'diff-table';
+    const scope={projectRoot:root,repoRoot:r.snapshot?.root||root,generation:rootGeneration,seq:diffSeq,table};let hunkBusy=false;
     // table-layout:fixed 的列宽只看第一行/colgroup；首行是 colspan=4 的 hunk 行，
     // 不加 colgroup 会四列均分 → 行号列撑成 1/4 窗口宽（大片空白根因）
     const cg = document.createElement('colgroup');
@@ -2495,7 +2505,9 @@ const GitPanel = (() => {
           b.className = 'vt-btn hunk-act' + (danger ? ' danger' : '');
           b.textContent = label;
           b.title = title;
-          b.onclick = (e) => { e.stopPropagation(); act.onHunk(r.file, kind, hIdx); };
+          b.disabled=!r.snapshot?.snapshotId||!h.hunkId;
+          if(b.disabled)b.title='缺少原展示版本，请刷新差异';
+            b.onclick = async(e) => { e.stopPropagation();if(hunkBusy)return;hunkBusy=true;const buttons=[...table.querySelectorAll('.hunk-act')];buttons.forEach(button=>button.disabled=true);try{await act.onHunk(r.file,kind,{snapshotId:r.snapshot.snapshotId,hunkId:h.hunkId,operationId:crypto.randomUUID()},scope);}catch(error){MI.toast(String(error.message||error),'err');}finally{hunkBusy=false;if(table.isConnected)buttons.forEach(button=>button.disabled=false);} };
           box.appendChild(b);
         };
         if (side === 'unstaged') {
@@ -2555,6 +2567,7 @@ const GitPanel = (() => {
     head.innerHTML = `<span class="df-path">${esc(list.length === 1 ? list[0].file : list.length + ' 个文件')}</span>` +
       `<span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>`;
     head.appendChild(makeHunkNav());
+    if(act?.onHunk){const operationRoot=root,epoch=rootGeneration,seq=diffSeq;const reload=document.createElement('button');reload.className='vt-btn diff-refresh';reload.textContent='刷新差异';reload.onclick=async()=>{if(root!==operationRoot||rootGeneration!==epoch||diffSeq!==seq)return;reload.disabled=true;await refresh();if(root!==operationRoot||rootGeneration!==epoch||diffSeq!==seq)return;if(new Set(list.map(r=>r.file)).size>1){await diffChecked(new Set(list.map(r=>r.file)));return;}const c=state?.changed?.find(c=>c.file===list[0].file);if(c)await showFileDiff(c);else{closeDiffView();MI.toast('文件已无差异','ok');}};head.appendChild(reload);}
     // 关闭对比视图：回到编辑器（PyCharm 式 ✕，不再用「返回」）
     const close = document.createElement('button');
     close.className = 'vt-btn';
@@ -2859,7 +2872,7 @@ const GitPanel = (() => {
         const hist = document.getElementById('commit-history');
         if (hist) hist.classList.remove('active');
       }
-      root = v;
+      root = v;rootGeneration++;refreshSeq++;cancelDiff();
       // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
       //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
       invalidateIgnored();
