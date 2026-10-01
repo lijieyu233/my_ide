@@ -16,6 +16,8 @@ function canonicalMissing(requested, io) {
   }
 }
 function versionOf(target, stat, hash) { return { schema: 1, target, stamp: stamp(stat), hash }; }
+// 异步只读服务也用同一版本口径，不能把搜索读取另造的时间戳当成保存基线。
+const snapshotVersion = (target, stat, bytes) => versionOf(target, stat, digest(bytes));
 const targetKey = (target) => typeof target === 'string' && (process.platform === 'win32' ? target.toLowerCase() : target);
 function sameVersion(a, b) {
   // Windows realpath保留调用方部分大小写；对象身份和摘要仍必须一致，不能只按路径放行。
@@ -140,4 +142,4 @@ function createWriter(io = fs, replaceTarget, createTarget) {
   return { atomicWrite };
 }
 
-module.exports = { createWriter, readSnapshot, sameVersion, ...createWriter() };
+module.exports = { createWriter, readSnapshot, sameVersion, snapshotVersion, snapshotStamp: stamp, ...createWriter() };

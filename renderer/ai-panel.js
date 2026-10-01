@@ -421,7 +421,8 @@ const AiPanel = (() => {
       const r = await window.myIDE.fs.grep(root, q);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '搜索失败') };
       const rows = (r.results || []).slice(0, 50).map((x) => x.file + ':' + x.line + ' ' + x.text);
-      return { ok: true, text: '搜索 "' + q + '" 的结果（' + (r.results || []).length + ' 处，最多显示 50）：\n' + (rows.join('\n') || '（无结果）') };
+      const state = r.doneReason === 'resultLimit' ? '达到结果上限，未完整搜索' : r.doneReason === 'timeLimit' ? '搜索超时，未完整搜索' : r.doneReason === 'cancelled' ? '搜索已取消' : '搜索完成';
+      return { ok: true, text: '搜索 "' + q + '" 的结果（' + (r.results || []).length + ' 行，最多显示 50；' + state + '）：\n' + (rows.join('\n') || '（无结果）') };
     }
     if (call.name === 'replace_edit') {
       const loc = resolveInRoot(a.path);

@@ -9,6 +9,7 @@ const AI = require('./ai-service');
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
+const searchService = require('./search-service').createSearchService();
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
@@ -369,42 +370,30 @@ ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
     ...(failure ? { error: failure + (failedDirectories > 1 ? '；共 ' + failedDirectories + ' 个目录读取失败' : '') } : {}) };
 });
 
-ipcMain.handle('fs:grep', async (_e, root, query) => {
-  // 内容搜索：异步遍历 + 每文件让出事件循环，结果上限 200，跳过二进制/大文件
-  const q = String(query || '').toLowerCase();
-  if (!q) return { results: [], truncated: false, elapsed: 0 };
-  const MAX_RESULTS = 200;
-  const MAX_FILE = 1024 * 1024;
-  const TIMEOUT = 10000;
-  const out = [];
-  const skip = new Set(['.git', 'node_modules']);
-  const start = Date.now();
-  async function walk(dir) {
-    if (out.length >= MAX_RESULTS || Date.now() - start > TIMEOUT) return;
-    let entries;
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      if (out.length >= MAX_RESULTS || Date.now() - start > TIMEOUT) return;
-      if (skip.has(e.name) || e.name.startsWith('.')) continue;
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) { await walk(full); continue; }
-      let st;
-      try { st = await fs.promises.stat(full); } catch { continue; }
-      if (st.size > MAX_FILE || st.size === 0) continue;
-      let content;
-      try { content = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
-      if (content.includes('\u0000')) continue; // 二进制
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length && out.length < MAX_RESULTS; i++) {
-        if (lines[i].toLowerCase().includes(q)) {
-          out.push({ file: path.relative(root, full), line: i + 1, text: lines[i].trim().slice(0, 200) });
-        }
-      }
-      await new Promise((r) => setImmediate(r));
-    }
-  }
-  await walk(root);
-  return { results: out, truncated: out.length >= MAX_RESULTS, elapsed: Date.now() - start };
+const searchOwners = new WeakSet();
+function bindSearchOwner(sender) {
+  if (searchOwners.has(sender)) return;
+  searchOwners.add(sender);
+  sender.once('destroyed', () => searchService.cancelOwner(sender.id));
+  sender.on('render-process-gone', () => searchService.cancelOwner(sender.id));
+  sender.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) searchService.cancelOwner(sender.id);
+  });
+}
+ipcMain.handle('fs:search', (event, request) => {
+  bindSearchOwner(event.sender);
+  return searchService.start(event.sender.id, request, batch => {
+    if (!event.sender.isDestroyed()) event.sender.send('fs:search-batch', batch);
+  });
+});
+ipcMain.handle('fs:search-cancel', (event, requestId) => searchService.cancel(event.sender.id, requestId));
+ipcMain.handle('fs:grep', async (event, root, query) => {
+  bindSearchOwner(event.sender);
+  const result = await searchService.start(event.sender.id, { requestId: 'grep-' + require('crypto').randomUUID(),
+    root, projectGeneration: 0, query: String(query || '') }, null, false);
+  // AI的旧接口仍以行展示；上限/超时/失败信息保留，不能冒充完整空结果。
+  const lines = new Set();
+  return { ...result, results: result.results.filter(hit => { const id = hit.file + ':' + hit.line; if (lines.has(id)) return false; lines.add(id); return true; }) };
 });
 
 ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {

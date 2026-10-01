@@ -849,6 +849,7 @@ const App = (() => {
     if (window.GitLog) GitLog.setRoot(p);
     if (window.Tasks) Tasks.setRoot(p); // 任务数据按项目隔离，随项目切换换库
     QuickOpen.invalidate(true);
+    Search.setRoot();
     window.Shortcuts?.invalidateContext();
     if (window.MdEditor && MdEditor.invalidateWikiIndex) MdEditor.invalidateWikiIndex();
     // 大项目打开后延迟再触发 Git 全量扫描，避免与首屏文件树抢占

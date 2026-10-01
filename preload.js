@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('myIDE', {
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
     listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),
+    search: (request) => ipcRenderer.invoke('fs:search', request),
+    cancelSearch: (requestId) => ipcRenderer.invoke('fs:search-cancel', requestId),
+    onSearchBatch: (cb) => { const listener = (_e, batch) => cb(batch); ipcRenderer.on('fs:search-batch', listener); return () => ipcRenderer.removeListener('fs:search-batch', listener); },
     readFile: (p, enc) => ipcRenderer.invoke('fs:readFile', p, enc),
     readBuffer: (p) => ipcRenderer.invoke('fs:readBuffer', p),
     // 拖进来的文件取真实路径：Electron 32+ 移除了 File.path，只能走 webUtils.getPathForFile

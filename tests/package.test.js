@@ -29,6 +29,7 @@ async function test(name, fn) {
     // 来自实际生产入口的文件与HTML；不从package.json.build.files构造“必需文件”。
     const production = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-status.js','git-index.js','git-hunks.js','git-queue.js','git-native.js',
       'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
+    production.push('search-service.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));
