@@ -1,7 +1,8 @@
 # My IDE —— 私人定制轻量编辑器
 
 > 📐 **开发大纲（必读）：** [开发大纲.md](./开发大纲.md) —— 项目愿景、性能基线、功能边界、扩展机制，所有改动的最高依据。
-> 🗺 **路线图：** [ROADMAP.md](./ROADMAP.md) —— 功能清单与完成记录（当前全部完成）。
+> **改进进度入口：** [哪些已实施、哪些还只是方案、下一步做什么](./docs/改进进度总览.md) —— 持续更新，明确区分产品实施和设计交付。
+> 🗺 **路线图：** [ROADMAP.md](./ROADMAP.md) —— 长期路线与历史功能记录；当前进度看上面的总览。
 
 一个 PyCharm 风格的极简编辑器（Electron + 原生 JS，零构建），专为个人使用设计。**核心目标：PyCharm 的核心体验，PyCharm 十分之一的内存。**
 
@@ -81,7 +82,7 @@ renderer/             渲染进程（原生 JS，无构建）
   tree.js / viewer.js / outline.js / git-panel.js / quickopen.js /
   search.js / settings.js / help.js / session.js / shortcuts.js / theme.js / app.js
 plugins/              用户插件目录（csv.js 是示例，见 plugins/README.md）
-docs/                 开发文档（42 份，每项功能一文档）
+docs/                 改进进度总览、专项方案与实施验收记录
 scripts/              bench（性能基准）/ make-demo / git-commit / vendor
 tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 ```
@@ -106,7 +107,8 @@ npm run check:packaged -- dist/win-unpacked/MyIDE.exe --no-git
 
 ## 📄 文档索引
 
+- [改进进度总览](./docs/改进进度总览.md) —— 已实施子包 / 方案待实施 / 开发中 / 下一步（进度统一入口）
 - [开发大纲.md](./开发大纲.md) —— 愿景 / 性能基线 / 功能边界（宪法）
 - [ROADMAP.md](./ROADMAP.md) —— 功能清单与完成记录
-- [docs/](./docs/) —— 27 份开发文档（每项功能：需求/设计/测试/验收）
+- [docs/](./docs/) —— 专项开发文档（需求/设计/测试/验收，数量持续增加）
 - [plugins/README.md](./plugins/README.md) —— 插件开发指南
