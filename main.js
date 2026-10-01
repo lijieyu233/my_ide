@@ -584,6 +584,20 @@ const copyChange=(op,project,id,...args)=>copySerial(async()=>{const ranges=awai
 ipcMain.handle('fs:copyPrepare',(_e,project,sources,dest)=>pathResult(()=>copyPrepare(project,sources,dest)));
 ipcMain.handle('fs:copyCommit',(_e,project,id,overwrite)=>pathResult(()=>copyChange('commit',project,id,overwrite)));
 ipcMain.handle('fs:copyUndo',(_e,project,id)=>pathResult(()=>copyChange('undo',project,id)));
+ipcMain.handle('fs:deletePrepare',(_e,project,sources)=>pathResult(()=>copySerial(()=>PathJobs.withRanges([project,...sources],()=>copyRun('prepareDelete',project,sources)))));
+ipcMain.handle('fs:deleteCommit',(_e,project,id)=>pathResult(()=>copyChange('commitDelete',project,id)));
+ipcMain.handle('fs:deleteUndo',(_e,project,id)=>pathResult(()=>copyChange('undoDelete',project,id)));
+ipcMain.handle('fs:trashPlan',(_e,project,sources)=>pathResult(()=>PathJobs.withRanges([project,...sources],()=>copyRun('trashPlan',project,sources))));
+ipcMain.handle('fs:trashCommit',(_e,project,plan)=>pathResult(()=>PathJobs.withRanges([project,...(plan?.targets||[])],async()=>{
+  const checked=await copyRun('validateTrash',project,plan),changedPaths=[],uncertainPaths=[];let failure;
+  for(const p of checked.targets)try{
+    const entry=checked.versions.find(v=>v.path===p),current=await copyRun('trashPlan',project,[p]);
+    if(JSON.stringify(current.versions[0])!==JSON.stringify(entry)||JSON.stringify(current.projectIdentity)!==JSON.stringify(checked.projectIdentity))throw Object.assign(Error('回收站提交前对象已变化'),{code:'STALE_OPERATION'});
+    // 系统可能移动部分后代后才拒绝；提交一旦开始，编辑器按整个目录核对，不能把拒绝等同零副作用。
+    uncertainPaths.push(p);await shell.trashItem(path.resolve(p));changedPaths.push(p);uncertainPaths.pop();
+  }catch(e){failure=e;break;}
+  return {ok:!failure,partial:!!failure,changedPaths:[...changedPaths,...uncertainPaths],completedPaths:changedPaths,uncertainPaths,targets:checked.targets,error:failure&&String(failure.message||failure),errorCode:failure?.code|| (failure?'TRASH_FAILED':undefined)};
+})));
 ipcMain.handle('fs:copyList',(_e,project)=>pathResult(()=>copySerial(async()=>({ok:true,records:await copyRun('list',project)}))));
 ipcMain.handle('fs:copyClear',(_e,project,id)=>pathResult(()=>copySerial(()=>copyRun('clear',project,id))));
 ipcMain.handle('fs:copyExport',async(_e,project,id)=>pathResult(async()=>{

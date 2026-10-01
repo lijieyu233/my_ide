@@ -1393,7 +1393,7 @@ const Viewer = (() => {
     finally {pathChanges.delete(change);}
   }
 
-  async function withCopyChange(readRanges, writeRanges, perform) {
+  async function withCopyChange(readRanges, writeRanges, perform, action='复制或恢复') {
     const ranges=[...readRanges,...writeRanges];
     const contains=(p,list=ranges)=>list.some(range=>DocumentPaths.contains(range,p));
     if([...pathChanges].some(change=>change.ranges.some(a=>ranges.some(b=>DocumentPaths.contains(a,b)||DocumentPaths.contains(b,a)))))
@@ -1408,7 +1408,7 @@ const Viewer = (() => {
       const changed=result?.changedPaths||[];
       for(const t of affected.filter(t=>tabs.includes(t)&&contains(t.path,changed))) {
         t.pathGeneration=(t.pathGeneration||0)+1;
-        const keepInput=()=>{t.saveError='磁盘文件已复制或恢复，输入仍保留，请比较磁盘或另存副本';t.saveErrorCode='VERSION_CONFLICT';};
+        const keepInput=()=>{t.saveError=(result.ok?'磁盘文件已'+action:'磁盘操作未完成')+'，输入仍保留，请比较磁盘或另存副本';t.saveErrorCode='VERSION_CONFLICT';};
         if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
         const originalPath=t.path,generation=t.pathGeneration;
         const r=await window.myIDE.fs.readFile(originalPath,t.textFormat?.detection==='selected'?t.encoding:undefined);

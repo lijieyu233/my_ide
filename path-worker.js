@@ -5,7 +5,7 @@ try {
   const {op,args}=workerData;
   if(op.startsWith('copy:')){
     const method=op.slice(5);
-    if(!['prepare','commit','undo','list','exportRecovery','clear','ranges','location'].includes(method))throw Error('未知恢复操作');
+    if(!['prepare','commit','undo','prepareDelete','commitDelete','undoDelete','trashPlan','validateTrash','list','exportRecovery','clear','ranges','location'].includes(method))throw Error('未知恢复操作');
     const service=require('./copy-journal').createService(args[0]);
     parentPort.postMessage({result:service[method](...args.slice(1))});
   }else{

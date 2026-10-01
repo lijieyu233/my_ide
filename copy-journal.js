@@ -15,11 +15,11 @@ function createService(root,native=Native){
   function append(id,event){const fd=fs.openSync(path.join(home(id),'events.jsonl'),'a');try{const b=Buffer.from(JSON.stringify({event,checksum:digest(event)})+'\n');for(let off=0;off<b.length;){const n=fs.writeSync(fd,b,off,b.length-off,null);if(!n)throw fail('EIO','恢复日志写入未推进');off+=n;}fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
   function load(id){const folder=home(id),file=path.join(folder,'manifest.json');if(fs.statSync(file).size>32*1024*1024)throw fail('RECOVERY_CORRUPT','恢复记录超限');const m=JSON.parse(fs.readFileSync(file,'utf8'));
     const {checksum,...body}=m;if(digest(body)!==checksum)throw fail('RECOVERY_CORRUPT','恢复清单校验不一致');
-    if(m.schema!==1||m.id!==id||m.kind!=='copy'||!Array.isArray(m.items)||m.items.length>10000||!Number.isFinite(m.reservedBytes)||m.reservedBytes<0||m.reservedBytes>maxBytes||!path.isAbsolute(m.project)||!inside(m.project,m.destDir))throw fail('RECOVERY_CORRUPT','恢复记录不可用');
+    if(m.schema!==1||m.id!==id||!['copy','delete'].includes(m.kind)||!Array.isArray(m.items)||m.items.length>10000||!Number.isFinite(m.reservedBytes)||m.reservedBytes<0||m.reservedBytes>maxBytes||!path.isAbsolute(m.project)||!inside(m.project,m.destDir))throw fail('RECOVERY_CORRUPT','恢复记录不可用');
     m.items.forEach((r,i)=>{if(r.index!==i||!inside(m.destDir,r.target)||key(m.destDir)===key(r.target)||!path.isAbsolute(r.source)||!['file','dir'].includes(r.sourceVersion?.kind)||!['ready','merge'].includes(r.state))throw fail('RECOVERY_CORRUPT','恢复项归属无效');});
     const eventsFile=path.join(folder,'events.jsonl');let text='';try{if(fs.statSync(eventsFile).size>64*1024*1024)throw fail('RECOVERY_CORRUPT','阶段日志超限');text=fs.readFileSync(eventsFile,'utf8');}catch(e){if(e.code!=='ENOENT')throw e;}
     const lines=text.split('\n');if(lines.at(-1)!==''){m.truncated=true;lines.pop();}else lines.pop();
-    for(const line of lines){const record=JSON.parse(line),e=record.event;if(!e||record.checksum!==digest(e))throw fail('RECOVERY_CORRUPT','阶段日志校验不一致');if(e.row!==undefined){const r=m.items[e.row];if(!r||!['ready','publishing','published','undoing','undone','merge'].includes(e.state))throw fail('RECOVERY_CORRUPT','阶段项无效');for(const field of ['state','after','pending','undoPending','storedBefore','storedPayload'])if(Object.hasOwn(e,field))r[field]=e[field];}
+    for(const line of lines){const record=JSON.parse(line),e=record.event;if(!e||record.checksum!==digest(e))throw fail('RECOVERY_CORRUPT','阶段日志校验不一致');if(e.row!==undefined){const r=m.items[e.row];if(!r||!['ready','publishing','published','undoing','undone','merge','deleting','deleted','restoring','restored'].includes(e.state))throw fail('RECOVERY_CORRUPT','阶段项无效');for(const field of ['state','after','pending','undoPending','storedBefore','storedPayload'])if(Object.hasOwn(e,field))r[field]=e[field];}
       else if(e.phase)m.phase=e.phase;
     }return m;
   }
@@ -27,10 +27,17 @@ function createService(root,native=Native){
   function stored(id,r,kind){const file=ref(id,r.index,kind),expected=kind==='before'?r.storedBefore:r.storedPayload;const now=native.snapshot(real(file));if(!native.same(expected,now))throw fail('RECOVERY_CORRUPT','恢复副本已改变，未写入目标');return {file,version:now};}
   function event(m,r,data){append(m.id,{row:r.index,state:r.state,...data});Object.assign(r,data);}
   function validateProject(m,project){if(key(project)!==key(m.project))throw fail('PROJECT_CHANGED','恢复记录属于另一项目');real(project,true);real(m.destDir,true);}
-  function summary(m){const published=m.items.filter(r=>r.state==='published'||r.state==='undoing'||r.state==='publishing').length,remaining=m.items.filter(r=>r.state!=='undone'&&r.state!=='merge').length;
-    const temporaryPaths=m.items.flatMap(r=>['.tmp','-undo.tmp'].map(suffix=>path.join(path.dirname(r.target),'.myide-copy-'+m.id+'-'+r.index+suffix))).filter(p=>fs.existsSync(p));
-    return {operationId:m.id,projectRoot:m.project,targets:m.targets,createdAt:m.createdAt,phase:m.truncated?'uncertain':m.phase,bytes:m.reservedBytes,published,remaining,temporaryPaths,label:m.targets.map(p=>path.basename(p)).slice(0,3).join('、'),hasChanges:published>0||temporaryPaths.length>0||['copying','partial','undo-partial'].includes(m.phase)};}
+  function summary(m){const pendingStates=m.kind==='delete'?['deleting','deleted','restoring']:['published','undoing','publishing'];const published=m.items.filter(r=>pendingStates.includes(r.state)).length,remaining=m.items.filter(r=>!['undone','merge','restored'].includes(r.state)).length;
+    const temporaryPaths=m.items.flatMap(r=>(m.kind==='delete'?['-restore.tmp']:['.tmp','-undo.tmp']).map(suffix=>path.join(path.dirname(r.target),'.myide-copy-'+m.id+'-'+r.index+suffix))).filter(p=>fs.existsSync(p));
+    return {operationId:m.id,kind:m.kind,projectRoot:m.project,targets:m.targets,createdAt:m.createdAt,phase:m.truncated?'uncertain':m.phase,bytes:m.reservedBytes,published,remaining,temporaryPaths,label:(m.kind==='delete'?'删除 ':'')+m.targets.map(p=>path.basename(p)).slice(0,3).join('、'),hasChanges:published>0||temporaryPaths.length>0||['copying','deleting','partial','undo-partial'].includes(m.phase)};}
   function list(project){if(!fs.existsSync(root))return [];real(root,true);const entries=[];for(const id of fs.readdirSync(root).filter(n=>uuid.test(n))){try{const m=load(id);if(key(m.project)===key(project))entries.push(summary(m));}catch(e){entries.push({operationId:id,phase:'corrupt',label:'不可读取的恢复记录',error:String(e.message||e),projectRoot:project,remaining:1});}}return entries.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));}
+  function begin(m){
+    fs.mkdirSync(root,{recursive:true});real(root,true);
+    const old=fs.readdirSync(root).filter(n=>uuid.test(n));let used=0;for(const id of old){try{used+=load(id).reservedBytes;}catch{throw fail('RECOVERY_CORRUPT','已有恢复记录不可读取，请先导出或处理');}}
+    if(old.length>=50||used+m.reservedBytes>maxBytes)throw fail('RECOVERY_LIMIT','恢复记录达到50条/256MiB预算，请先导出并明确清理旧记录');
+    const serialized=JSON.stringify({...m,checksum:digest(m)});if(Buffer.byteLength(serialized)>32*1024*1024)throw fail('COPY_LIMIT','操作清单超过32MiB预算');
+    const folder=path.join(root,m.id);fs.mkdirSync(folder);const fd=fs.openSync(path.join(folder,'manifest.json'),'wx',0o600);try{fs.writeFileSync(fd,serialized);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  }
   function prepare(project,sources,destDir){
     project=real(project,true);destDir=real(destDir,true);if(!inside(project,destDir))throw fail('OUTSIDE_PROJECT','粘贴目标不属于该项目');
     if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','复制来源为空或超过10000项');
@@ -50,13 +57,9 @@ function createService(root,native=Native){
       if(children)for(const name of children)walk(path.join(source,name),path.join(target,name));
     }
     for(let i=0;i<srcs.length;i++)walk(srcs[i],targets[i]);
-    fs.mkdirSync(root,{recursive:true});real(root,true);
-    const old=fs.readdirSync(root).filter(n=>uuid.test(n));let used=0;for(const id of old){try{used+=load(id).reservedBytes;}catch{throw fail('RECOVERY_CORRUPT','已有恢复记录不可读取，请先导出或处理');}}
-    if(old.length>=50||used+reservedBytes>maxBytes)throw fail('RECOVERY_LIMIT','恢复记录达到50条/256MiB预算，请先导出并明确清理旧记录');
-    const id=randomUUID(),folder=path.join(root,id);fs.mkdirSync(folder);
+    const id=randomUUID();
     const m={schema:1,kind:'copy',id,project,destDir,targets,sources:srcs,createdAt:Date.now(),reservedBytes,items,phase:'preparing'};
-    const serialized=JSON.stringify({...m,checksum:digest(m)});if(Buffer.byteLength(serialized)>32*1024*1024){fs.rmdirSync(folder);throw fail('COPY_LIMIT','复制清单超过32MiB预算');}
-    const fd=fs.openSync(path.join(folder,'manifest.json'),'wx',0o600);try{fs.writeFileSync(fd,serialized);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+    begin(m);
     try{
       for(const r of items){
         if(r.state==='merge')continue;
@@ -91,7 +94,7 @@ function createService(root,native=Native){
       }
     }
   }
-  function commit(project,id,overwrite){const m=load(id);validateProject(m,project);recover(m);
+  function commit(project,id,overwrite){const m=load(id);if(m.kind!=='copy')throw fail('INVALID_OPERATION','此记录不是复制操作');validateProject(m,project);recover(m);
     if(m.uncertain.length)throw fail('RECOVERY_UNCERTAIN','发布结果无法核对，请撤销已完成部分或导出原副本');
     if(['complete','undone'].includes(m.phase))return {...summary(m),ok:m.phase==='complete',noop:true};
     if(m.phase!=='prepared')throw fail('INVALID_OPERATION','此记录不能继续复制，请撤销已完成部分或导出');
@@ -114,7 +117,7 @@ function createService(root,native=Native){
     append(id,{phase:failure?'partial':'complete'});m.phase=failure?'partial':'complete';
     return {...summary(m),ok:!failure,partial:!!failure,changedPaths:m.items.filter(r=>['published','publishing'].includes(r.state)).map(r=>r.target),error:failure&&String(failure.message||failure),errorCode:failure?.code,target:m.targets.length===1?m.targets[0]:undefined};
   }
-  function undo(project,id){const m=load(id);validateProject(m,project);recover(m);const errors=m.uncertain.map(p=>'结果无法核对，已保留：'+p),changedPaths=[];
+  function undo(project,id){const m=load(id);if(m.kind!=='copy')throw fail('INVALID_OPERATION','此记录不是复制操作');validateProject(m,project);recover(m);const errors=m.uncertain.map(p=>'结果无法核对，已保留：'+p),changedPaths=[];
     for(const r of [...m.items].reverse()){if(r.state==='undone'||r.state==='merge'||r.state==='ready')continue;if(r.state!=='published'){errors.push(r.target);continue;}
       const temporary=path.join(path.dirname(r.target),'.myide-copy-'+id+'-'+r.index+'-undo.tmp');
       try{
@@ -134,6 +137,93 @@ function createService(root,native=Native){
     const remaining=m.items.some(r=>['published','publishing','undoing'].includes(r.state))||residual.length>0||m.uncertain.length>0;append(id,{phase:remaining?'undo-partial':'undone'});m.phase=remaining?'undo-partial':'undone';
     return {...summary(m),ok:!remaining,partial:remaining,changedPaths,error:errors.join('；'),errorCode:remaining?'STALE_OPERATION':undefined};
   }
+  function prepareDelete(project,sources){
+    project=real(project,true);
+    if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','删除选择为空或超过10000项');
+    const selected=[...new Map(sources.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
+    if(selected.some(p=>!inside(project,p)||key(project)===key(p)||inside(p,root)||inside(root,p)))throw fail('OUTSIDE_PROJECT','只能删除项目子项，不能删除项目根或恢复存储');
+    const items=[],parents={},projectVersion=native.snapshot(project);let reservedBytes=0;
+    for(const p of selected)for(let parent=path.dirname(p);key(parent)!==key(project);parent=path.dirname(parent))if(!parents[parent])parents[parent]=native.snapshot(real(parent,true));
+    function walk(source){validateName(path.basename(source));if(items.length>=10000)throw fail('COPY_LIMIT','删除超过10000项，可选择系统回收站');
+      const before=native.snapshot(source);if(before.kind==='file'&&fs.statSync(source).nlink>1)throw fail('MULTIPLE_LINKS','硬链接暂不能保全链接关系，可选择系统回收站');reservedBytes+=before.bytes;
+      if(reservedBytes>maxBytes)throw fail('COPY_LIMIT','原字节恢复超过256MiB预算，尚未删除；可选择系统回收站');
+      const children=before.kind==='dir'?fs.readdirSync(source).sort():null;
+      items.push({index:items.length,source,target:source,sourceVersion:before,before,children,state:'ready'});
+      if(children)for(const child of children)walk(path.join(source,child));
+    }
+    selected.forEach(walk);
+    const m={schema:1,kind:'delete',id:randomUUID(),project,projectVersion,parents,destDir:project,targets:selected,sources:selected,createdAt:Date.now(),reservedBytes,items,phase:'preparing'};begin(m);
+    try{for(const r of items){check(r.source,r.before,r.before.kind==='dir');const storedBefore=native.clone(r.source,ref(m.id,r.index,'before'),r.before);check(r.source,r.before,r.before.kind==='dir');event(m,r,{storedBefore});}
+      append(m.id,{phase:'prepared'});m.phase='prepared';return {...summary(m),ok:true,items:items.length};
+    }catch(e){append(m.id,{phase:'prepare-failed'});m.phase='prepare-failed';return {...summary(m),error:String(e.message||e),errorCode:e.code||'DELETE_FAILED'};}
+  }
+  function deletion(project,id){const m=load(id);if(m.kind!=='delete')throw fail('INVALID_OPERATION','此记录不是删除操作');validateProject(m,project);
+    if(!m.projectVersion||!m.parents||m.items.some(r=>key(r.source)!==key(r.target)||!r.before))throw fail('RECOVERY_CORRUPT','删除记录归属不完整');
+    check(m.project,m.projectVersion,true);return m;
+  }
+  function trashPlan(project,sources){
+    project=real(project,true);if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','回收站选择为空或超过10000项');
+    const targets=[...new Map(sources.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
+    if(targets.some(p=>!inside(project,p)||key(project)===key(p)||inside(p,root)||inside(root,p)))throw fail('OUTSIDE_PROJECT','只能移走项目子项，不能移走项目根或恢复存储');
+    const identity=p=>{const st=fs.lstatSync(p,{bigint:true});return [st.dev.toString(),st.ino.toString()];};
+    const versions=targets.map(source=>{validateName(path.basename(source));const hash=createHash('sha256');let count=0;
+      function walk(p,rel){if(++count>1000000)throw fail('COPY_LIMIT','系统回收站版本检查超过百万项，未执行');const s=fs.lstatSync(p,{bigint:true});if(s.isSymbolicLink()||!s.isFile()&&!s.isDirectory())throw fail('LINK_PATH','链接和特殊对象尚未验证回收站范围，未执行');
+        hash.update(JSON.stringify([rel,s.dev.toString(),s.ino.toString(),s.mode.toString(),s.size.toString(),s.mtimeNs.toString(),s.ctimeNs.toString(),s.nlink.toString()]));if(s.isDirectory())for(const name of fs.readdirSync(p).sort())walk(path.join(p,name),rel+'/'+name);
+      }walk(source,'');return {path:source,hash:hash.digest('hex'),count};
+    });
+    return {ok:true,projectRoot:project,targets,projectIdentity:identity(project),versions};
+  }
+  function validateTrash(project,plan){if(!plan||key(project)!==key(plan.projectRoot)||!Array.isArray(plan.versions))throw fail('PROJECT_CHANGED','回收站操作归属无效');const now=trashPlan(project,plan.targets);
+    if(JSON.stringify(now.projectIdentity)!==JSON.stringify(plan.projectIdentity)||JSON.stringify(now.versions)!==JSON.stringify(plan.versions))throw fail('STALE_OPERATION','确认等待中删除对象已变化，未移到回收站');return now;
+  }
+  function parentGuard(m,r){
+    for(let parent=path.dirname(r.target);key(parent)!==key(m.project);parent=path.dirname(parent)){
+      real(parent,true);const item=m.items.find(it=>key(it.target)===key(parent));
+      if(item){if(!['ready','deleting','restored'].includes(item.state))throw fail('DEST_CONFLICT','原父目录尚未恢复，未写入同名新目录');check(parent,item.state==='restored'?item.after:item.before,true);}
+      else{if(!m.parents[parent])throw fail('RECOVERY_CORRUPT','父目录归属缺失');check(parent,m.parents[parent],true);}
+    }
+  }
+  function removeVerified(file,version){native.remove(file,attrs=>{const now=native.snapshot(file),expected=attrs==null?version:{...version,attributes:attrs};if(!native.same(expected,now,version.kind==='dir'||attrs!=null))throw fail('STALE_OPERATION','删除对象已变化，已保留');if(now.kind==='dir'&&fs.readdirSync(file).length)throw fail('STALE_OPERATION','目录有后来内容，已保留');});}
+  function recoverDelete(m){
+    if(m.truncated)throw fail('RECOVERY_UNCERTAIN','阶段日志尾部截断，请先导出核对');m.uncertain=[];
+    for(const r of m.items)try{
+      if(r.state==='deleting'){
+        const now=observed(r.target);if(!now)event(m,r,{state:'deleted'});
+        else if(native.same(now,r.before,r.before.kind==='dir'))event(m,r,{state:'ready'});
+        else m.uncertain.push(r.target);
+      }else if(r.state==='restoring'){
+        const now=observed(r.target);
+        if(now&&r.pending&&now.identity===r.pending.identity&&native.contentSame(now,r.before)&&now.security===r.before.security&&now.attributes===r.before.attributes&&(now.kind==='dir'||Math.abs(now.birth-r.before.birth)<1&&Math.abs(now.mtime-r.before.mtime)<1))event(m,r,{state:'restored',after:now});
+        else{const tmp=path.join(path.dirname(r.target),'.myide-copy-'+m.id+'-'+r.index+'-restore.tmp'),version=observed(tmp);
+          if(version&&native.same(version,r.pending)){removeVerified(tmp,version);event(m,r,{state:'deleted'});}else m.uncertain.push(r.target);
+        }
+      }
+    }catch(e){m.uncertain.push(r.target+'：'+String(e.message||e));}
+  }
+  function commitDelete(project,id){const m=deletion(project,id);if(m.phase!=='prepared')throw fail('INVALID_OPERATION','此记录不能继续删除，请恢复已完成部分或导出');
+    for(const r of m.items){parentGuard(m,r);check(r.target,r.before,r.before.kind==='dir');if(r.children&&JSON.stringify(fs.readdirSync(r.target).sort())!==JSON.stringify(r.children))throw fail('STALE_OPERATION','确认等待中目录后代已变化，未删除');stored(id,r,'before');}
+    append(id,{phase:'deleting'});m.phase='deleting';let failure;
+    for(const r of [...m.items].reverse())try{parentGuard(m,r);check(r.target,r.before,r.before.kind==='dir');if(r.before.kind==='dir'&&fs.readdirSync(r.target).length)throw fail('STALE_OPERATION','目录有后来内容，未删除');event(m,r,{state:'deleting'});removeVerified(r.target,r.before);event(m,r,{state:'deleted'});}catch(e){failure=e;
+      // 回执失败不等于没有副作用；只有原对象仍为准备版本，才能把该项确认为未删除。
+      if(r.state==='deleting')try{const now=observed(r.target);if(native.same(now,r.before,r.before.kind==='dir'))event(m,r,{state:'ready'});}catch{}
+      break;
+    }
+    // 完成阶段刷盘失败也必须带回可能已删范围，让编辑器与持久恢复入口继续保住输入。
+    try{append(id,{phase:failure?'partial':'complete'});}catch(e){failure=failure||e;}m.phase=failure?'partial':'complete';
+    return {...summary(m),ok:!failure,partial:!!failure,changedPaths:m.items.filter(r=>['deleted','deleting'].includes(r.state)).map(r=>r.target),error:failure&&String(failure.message||failure),errorCode:failure?.code};
+  }
+  function undoDelete(project,id){const m=deletion(project,id);recoverDelete(m);const errors=m.uncertain.map(p=>'结果无法核对，已保留：'+p),changedPaths=[];
+    for(const r of m.items){if(['ready','restored'].includes(r.state))continue;if(r.state!=='deleted'){errors.push(r.target);continue;}
+      const tmp=path.join(path.dirname(r.target),'.myide-copy-'+id+'-'+r.index+'-restore.tmp');
+      try{parentGuard(m,r);check(r.target,null);const backup=stored(id,r,'before');native.clone(backup.file,tmp,backup.version,r.before);native.setMetadata(tmp,r.before);const pending=native.snapshot(tmp);check(r.target,null);event(m,r,{state:'restoring',pending});native.publish(tmp,r.target,false);
+        const after=native.snapshot(r.target);if(!native.contentSame(after,r.before)||after.security!==r.before.security||after.attributes!==r.before.attributes)throw fail('RECOVERY_UNCERTAIN','原内容已恢复但元数据无法核对');event(m,r,{state:'restored',after});changedPaths.push(r.target);
+      }catch(e){if(r.state==='restoring')changedPaths.push(r.target);errors.push(path.basename(r.target)+'：'+String(e.message||e));}
+    }
+    const residual=summary(m).temporaryPaths;if(residual.length)errors.push('暂存项已保留：'+residual.join('、'));
+    let remaining=m.items.some(r=>['deleted','deleting','restoring'].includes(r.state))||m.uncertain.length>0||residual.length>0;
+    try{append(id,{phase:remaining?'undo-partial':'undone'});}catch(e){remaining=true;errors.push('恢复阶段日志未确认：'+String(e.message||e));}
+    m.phase=remaining?'undo-partial':'undone';return {...summary(m),ok:!remaining,partial:remaining,changedPaths,error:errors.join('；'),errorCode:remaining?'STALE_OPERATION':undefined};
+  }
   function exportRecovery(project,id,destDir){const m=load(id);if(key(project)!==key(m.project))throw fail('PROJECT_CHANGED','导出归属不匹配');destDir=real(destDir,true);const folder=path.join(destDir,'MyIDE恢复-'+id.slice(0,8));fs.mkdirSync(folder);
     const outputs=[],dirs=[];try{for(const r of m.items){if(!r.storedBefore&&!r.storedPayload)continue;const kind=r.storedBefore?'before':'payload',source=stored(id,r,kind),target=path.join(folder,path.relative(m.destDir,r.target));fs.mkdirSync(path.dirname(target),{recursive:true});if(source.version.kind==='dir'){native.clone(source.file,target,source.version,r.sourceVersion);dirs.push({target,meta:r.sourceVersion});}else{native.clone(source.file,target,source.version,r.before||r.sourceVersion);outputs.push(target);}}
       for(const d of dirs.reverse())native.setMetadata(d.target,d.meta,true);
@@ -146,6 +236,6 @@ function createService(root,native=Native){
     validate(folder);fs.rmSync(folder,{recursive:true,force:true});return {ok:true};
   }
   function ranges(project,id){const m=load(id);validateProject(m,project);return [m.destDir,...m.sources];}
-  return {prepare,commit,undo,list,exportRecovery,clear,ranges,location:home};
+  return {prepare,commit,undo,prepareDelete,commitDelete,undoDelete,trashPlan,validateTrash,list,exportRecovery,clear,ranges,location:home};
 }
 module.exports={createService};

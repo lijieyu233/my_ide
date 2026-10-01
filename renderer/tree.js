@@ -783,9 +783,9 @@ const Tree = (() => {
     const perform=async(dirty=[])=>{
       if(dirty.length&&!await Modal.confirm('恢复与未保存的输入','恢复只改变磁盘文件；当前输入仍保留，之后需比较磁盘或另存副本。是否继续？'))return {cancelled:true};
       if(rootPath!==operationRoot)return {error:'项目已切换，恢复未执行',errorCode:'PROJECT_CHANGED'};
-      return window.myIDE.fs.copyUndo(operationRoot,record.operationId);
+      return record.kind==='delete'?window.myIDE.fs.deleteUndo(operationRoot,record.operationId):window.myIDE.fs.copyUndo(operationRoot,record.operationId);
     };
-    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],record.targets||[],perform):await perform();
+    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],record.targets||[],perform,'恢复'):await perform();
     if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
     if(r?.ok){for(let i=undoStack.length-1;i>=0;i--)if(undoStack[i].operationId===record.operationId)undoStack.splice(i,1);MI.toast('↩ 已恢复 '+record.label,'ok');}
     else if(!r?.cancelled)MI.toast('恢复未完成: '+(r?.error||'未返回成功')+'；记录已保留，可重试或导出','err');
@@ -799,9 +799,9 @@ const Tree = (() => {
     const close=document.createElement('span');close.className='x';close.textContent='✕';close.onclick=()=>{const i=Modal.stack.indexOf(box);if(i>=0)Modal.stack.splice(i,1);box.remove();if(!Modal.stack.length)document.getElementById('modal-mask').classList.add('hidden');};head.appendChild(close);
     const body=document.createElement('div');body.className='m-body';box.append(head,body);Modal.show(box);
     let busy=false;
-    const phases={preparing:'准备中断',prepared:'已准备，未发布','prepare-failed':'准备失败',copying:'复制中断',complete:'已复制',partial:'部分复制','undo-partial':'部分恢复',undone:'已恢复',uncertain:'结果待核对',corrupt:'记录不可读取'};
+    const phases={preparing:'准备中断',prepared:'已准备，未提交','prepare-failed':'准备失败',copying:'复制中断',deleting:'删除中断',complete:'已完成',partial:'部分完成','undo-partial':'部分恢复',undone:'已恢复',uncertain:'结果待核对',corrupt:'记录不可读取'};
     async function refresh(){const r=await window.myIDE.fs.copyList(operationRoot);if(!box.isConnected)return;body.replaceChildren();
-      const note=document.createElement('p');note.textContent='覆盖前的原字节与实际新增项按项目持久保留。恢复会核对当前版本；后来编辑的文件不会被旧记录删除或覆盖。';body.appendChild(note);
+      const note=document.createElement('p');note.textContent='覆盖或删除前的原字节与实际新增项按项目持久保留。恢复会核对当前版本；后来编辑的文件不会被旧记录删除或覆盖。';body.appendChild(note);
       if(!r?.ok){note.textContent=r?.error||'无法读取恢复记录';return;}
       if(!r.records.length){const empty=document.createElement('p');empty.textContent='当前项目没有恢复记录';body.appendChild(empty);}
       for(const record of r.records){
@@ -925,7 +925,7 @@ const Tree = (() => {
   async function undo() {
     if(undoBusy)return;
     const latest=undoStack[undoStack.length-1];
-    if(latest?.type==='copy'){
+    if(latest?.operationId&&['copy','delete'].includes(latest.type)){
       if(DocumentPaths.key(rootPath)!==DocumentPaths.key(latest.projectRoot)){MI.toast('此撤销属于另一项目，请先切回；记录已保留','err');return;}
       undoBusy=true;try{await restoreCopy(latest.projectRoot,latest);}finally{undoBusy=false;}return;
     }
@@ -960,10 +960,6 @@ const Tree = (() => {
     if (!a) { MI.toast('没有可撤销的文件操作', 'err'); return; }
     try {
       if (a.type === 'rename') await window.myIDE.fs.rename(a.newPath, a.oldName);
-      else if (a.type === 'delete') {
-        const r = await window.myIDE.fs.writeFile(a.path, a.content, a.encoding, { expectedAbsent: true });
-        if (!r || !r.ok) { undoStack.push(a); throw Error(r?.error || '恢复失败'); }
-      }
       else if (a.type === 'move') await window.myIDE.fs.move(a.newPath, a.oldDir);
       invalidateAll();
       render();
@@ -1023,6 +1019,7 @@ const Tree = (() => {
     mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
     mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
     mk('↩ 恢复文件操作', () => showCopyRecovery());
+    mk('♻ 移到系统回收站', () => trashItems(multi?getSelection():[item.path]));
     if (!multi) mk('🔤 重命名', () => renameItem(item));
     mk('📋 复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) copyPath(getSelection().join('\n'));
@@ -1110,48 +1107,45 @@ const Tree = (() => {
   }
 
   async function removeItem(item) {
-    const yes = await Modal.confirm('删除', `确定删除「${item.name}」吗？（Ctrl+Z 可撤销删除）`);
-    if (!yes) return;
-    // 文本文件先备份内容，供 Ctrl+Z 恢复（二进制/超大文件不备份）
-    let backup = null;
-    if (item.type === 'file') {
-      const rr = await window.myIDE.fs.readFile(item.path);
-      if (rr && rr.content != null && !rr.binary && !rr.tooLarge) backup = { content: rr.content, encoding: rr.encoding };
-    }
-    const r = await window.myIDE.fs.remove(item.path);
-    if (r.ok) {
-      if (backup) pushUndo({ type: 'delete', path: item.path, content: backup.content, encoding: backup.encoding, label: '删除 ' + item.name });
-      invalidateAll(); MI.toast('已删除 ' + item.name + (backup ? '（Ctrl+Z 可撤销）' : ''), 'ok'); render(); App.refreshGit();
-    }
-    else MI.toast('删除失败: ' + r.error, 'err');
+    return removeItems([item.path]);
   }
 
-  // 多选删除：逐个删除（文本文件备份内容供撤销）
-  async function removeItems(paths) {
-    const yes = await Modal.confirm('删除', `确定删除选中的 ${paths.length} 个文件/文件夹吗？（文本文件的删除可用 Ctrl+Z 撤销）`);
-    if (!yes) return;
-    let ok = 0;
-    for (const p of paths) {
-      const name = p.split(/[\\/]/).pop();
-      let backup = null;
-      const rr = await window.myIDE.fs.readFile(p).catch(() => null);
-      if (rr && rr.content != null && !rr.binary && !rr.tooLarge) backup = { content: rr.content, encoding: rr.encoding };
-      const r = await window.myIDE.fs.remove(p);
-      if (r.ok) {
-        if (backup) pushUndo({ type: 'delete', path: p, content: backup.content, encoding: backup.encoding, label: '删除 ' + name });
-        ok++;
-      } else {
-        MI.toast('删除失败: ' + (r.error || name), 'err');
+  // 父子选择归并为一条持久记录，撤销来源必须在首个公共对象删除之前全部保全。
+  async function removeItems(paths,systemTrash=false) {
+    if(!rootPath||!paths.length)return;
+    const operationRoot=rootPath;
+    const perform=async(dirty=[])=>{
+      const stillHere=()=>rootPath===operationRoot;
+      if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
+      let prepared;
+      if(!systemTrash){prepared=await window.myIDE.fs.deletePrepare(operationRoot,paths);
+        if(!stillHere())return {error:'项目已切换，删除未执行；恢复记录已保留',errorCode:'PROJECT_CHANGED'};
+        if(!prepared?.ok){
+          if(!await Modal.confirm('删除未执行',(prepared?.error||'原字节备份未成功')+'\n\n当前内容仍保留。可以改用系统回收站，之后从系统回收站恢复，本应用Ctrl+Z不能撤销该方式。是否改用？'))return prepared;
+          systemTrash=true;
+        }
       }
-    }
-    if (ok) {
-      invalidateAll();
-      MI.toast('已删除 ' + ok + ' 项', 'ok');
-      render();
-      App.refreshGit();
-      MI.log('INFO', 'tree', 'remove ' + ok + ' item(s)');
-    }
+      if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
+      if(systemTrash)prepared=await window.myIDE.fs.trashPlan(operationRoot,paths);
+      if(!prepared?.ok)return prepared;
+      if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
+      const show=prepared.targets.slice(0,5).map(p=>p.split(/[\\/]/).pop()).join('、');
+      const recovery=systemTrash?'之后从系统回收站恢复，本应用Ctrl+Z不能撤销此方式。':'原字节已保全。Ctrl+Z或「恢复文件操作」可恢复目录、二进制及文本。';
+      const hasDirty=dirty.length||window.Viewer?.openTabs?.some(t=>t.dirty&&paths.some(p=>DocumentPaths.contains(p,t.path)));
+      const input=hasDirty?'\n\n有未保存的输入：只删除磁盘内容，输入仍留在编辑器，请另存副本；恢复后需比较磁盘再保存。':'';
+      if(!await Modal.confirm(systemTrash?'移到系统回收站':'删除',`确定${systemTrash?'移走':'删除'}「${show}」等 ${prepared.targets.length} 项吗？\n\n${recovery}${input}`))return {cancelled:true};
+      if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
+      const result=systemTrash?await window.myIDE.fs.trashCommit(operationRoot,prepared):await window.myIDE.fs.deleteCommit(operationRoot,prepared.operationId);
+      return {...result,kind:systemTrash?'trash':'delete',operationId:systemTrash?undefined:prepared.operationId,targets:prepared.targets};
+    };
+    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],paths,perform,'删除'):await perform();
+    if(r?.operationId&&r.published)pushUndo({type:'delete',kind:'delete',operationId:r.operationId,targets:r.targets,projectRoot:operationRoot,label:'删除 '+r.targets.length+' 项'});
+    if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
+    if(r?.cancelled)return r;
+    if(!r?.ok){MI.toast('删除未完成: '+(r?.error||'未返回成功')+(r?.kind==='trash'?'；请核对系统回收站与原路径':'；恢复记录已保留，可从「恢复文件操作」核对'),'err');return r;}
+    MI.toast('已'+(r.kind==='trash'?'移到系统回收站':'删除')+' '+r.targets.length+' 项'+(r.kind==='trash'?'（从系统回收站恢复）':'（Ctrl+Z 可恢复）')+(rootPath!==operationRoot?'（原项目）':''),'ok');return r;
   }
+  const trashItems=paths=>removeItems(paths,true);
 
   function fileIcon(name) {
     const ext = name.split('.').pop().toLowerCase();
@@ -1339,7 +1333,7 @@ const Tree = (() => {
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
     renameItem,
-    createItem, copyInto, showCopyRecovery,
+    createItem, copyInto, showCopyRecovery, removeItem, removeItems, trashItems,
     // 快捷键入口：对当前选中项重命名（无选中时提示）
     renameSelected() {
       if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }

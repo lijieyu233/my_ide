@@ -171,6 +171,14 @@ async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) 
     for(let i=0;i<100&&fs.readFileSync(file,'utf8')!=='迁移保留的包内输入';i++)await sleep(50);
     add('包内持久记录恢复原正文及ADS，不依赖内存栈',fs.readFileSync(file,'utf8')==='迁移保留的包内输入'&&fs.readFileSync(file+':private','utf8')==='包内原数据流');
     await renderer('Modal.hide();true');
+    const deleteDir=path.join(project,'packaged-delete'),deleteFile=path.join(deleteDir,'original.bin');fs.mkdirSync(deleteDir);fs.mkdirSync(path.join(deleteDir,'empty'));const deletedBytes=Buffer.from([255,254,45,78,13,0,10,0]);fs.writeFileSync(deleteFile,deletedBytes);fs.writeFileSync(deleteFile+':private','包内删除原流');
+    await renderer(`(async()=>{const confirm=Modal.confirm;try{Modal.confirm=async()=>true;await Tree.removeItems([${JSON.stringify(deleteDir)},${JSON.stringify(deleteFile)}]);}finally{Modal.confirm=confirm;}})()`);
+    add('包内Tree目录父子选择普通删除且持久原字节来源存在',!fs.existsSync(deleteDir)&&(await renderer(`myIDE.fs.copyList(${JSON.stringify(project)})`)).records.some(r=>r.kind==='delete'&&r.hasChanges));
+    await evaluate("new Promise(resolve=>{const wc=process.mainModule.require('electron').BrowserWindow.getAllWindows()[0].webContents;wc.once('did-finish-load',()=>resolve(true));wc.reload();})");await sleep(300);await renderer(`App.openProject(${JSON.stringify(project)})`);await renderer('Tree.undo()');
+    add('包内重载丢失undo栈，已删除对象仍未被自动恢复',!fs.existsSync(deleteDir));await renderer('Tree.showCopyRecovery()');
+    add('包内重载后的恢复入口识别删除记录',await renderer('document.querySelector(".copy-recovery").textContent.includes("删除 packaged-delete")'));await renderer('[...document.querySelectorAll(".copy-recovery button")].find(b=>b.textContent==="恢复"&&!b.disabled).click();true');
+    for(let i=0;i<100&&!fs.existsSync(deleteFile);i++)await sleep(50);await sleep(100);
+    add('包内持久删除恢复目录/空目录/BOM原字节及ADS',fs.existsSync(deleteFile)&&fs.readFileSync(deleteFile).equals(deletedBytes)&&fs.readFileSync(deleteFile+':private','utf8')==='包内删除原流'&&fs.statSync(path.join(deleteDir,'empty')).isDirectory());await renderer('Modal.hide();true');
     console.log('CHECK Git init/status');
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);

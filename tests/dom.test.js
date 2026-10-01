@@ -171,6 +171,28 @@ function makeDom() {
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
+      deletePrepare: async(project,paths)=>{
+        paths=paths.map(normMove);const targets=[...new Set(paths)].filter(p=>!paths.some(other=>other!==p&&p.startsWith(other+'/')));
+        const rows=Object.keys(FAKE_FS).filter(p=>targets.some(t=>p===t||p.startsWith(t+'/'))).sort((a,b)=>a.split('/').length-b.split('/').length||a.localeCompare(b)).map(p=>({target:p,before:entryClone(FAKE_FS[p]),hash:fakeSnapshot(p).hash,deleted:false}));
+        if(!rows.length)return {error:'not found',errorCode:'ENOENT'};
+        const operationId='fake-delete-'+(++copySeq);copyRecords.set(operationId,{operationId,kind:'delete',projectRoot:project,targets,rows,phase:'prepared',label:'删除 '+targets.map(p=>p.split('/').pop()).join('、')});
+        return {ok:true,operationId,targets,items:rows.length};
+      },
+      deleteCommit: async(project,id)=>{
+        const record=copyRecords.get(id);if(record.projectRoot!==project)return {error:'wrong project',errorCode:'PROJECT_CHANGED'};
+        if(record.rows.some(r=>fakeSnapshot(r.target).hash!==r.hash))return {error:'changed before deletion',errorCode:'STALE_OPERATION'};
+        for(const r of [...record.rows].reverse()){await w.myIDE.fs.remove(r.target);r.deleted=true;}record.phase='complete';return {ok:true,operationId:id,targets:record.targets,published:record.rows.length,changedPaths:record.rows.map(r=>r.target)};
+      },
+      deleteUndo: async(project,id)=>{
+        const record=copyRecords.get(id),changedPaths=[];let failed=false;if(record.projectRoot!==project)return {error:'wrong project'};
+        for(const r of record.rows){if(!r.deleted)continue;const parent=r.target.slice(0,r.target.lastIndexOf('/')),parentRow=record.rows.find(item=>item.target===parent);
+          if(FAKE_FS[r.target]||parentRow?.deleted){failed=true;continue;}FAKE_FS[r.target]=entryClone(r.before);if(r.before.children)FAKE_FS[r.target].children=[];
+          if(FAKE_FS[parent]?.children&&!FAKE_FS[parent].children.includes(r.target))FAKE_FS[parent].children.push(r.target);r.deleted=false;changedPaths.push(r.target);
+        }
+        record.phase=failed?'undo-partial':'undone';return {ok:!failed,changedPaths,error:failed?'destination exists':undefined};
+      },
+      trashPlan: async(project,paths)=>{const targets=[...new Set(paths.map(normMove))].filter(p=>!paths.map(normMove).some(other=>other!==p&&p.startsWith(other+'/')));return {ok:true,projectRoot:project,targets,versions:targets.map(p=>fakeSnapshot(p))};},
+      trashCommit: async(project,plan)=>{if(project!==plan.projectRoot||plan.targets.some((p,i)=>fakeSnapshot(p).hash!==plan.versions[i].hash))return {error:'changed',errorCode:'STALE_OPERATION'};for(const p of Object.keys(FAKE_FS).filter(p=>plan.targets.some(t=>p===t||p.startsWith(t+'/'))).reverse())await w.myIDE.fs.remove(p);return {ok:true,changedPaths:plan.targets,targets:plan.targets};},
       copyPrepare: async(project,sources,dest)=>{
         sources=sources.map(normMove);dest=normMove(dest);const targets=sources.map(s=>dest+'/'+s.split('/').pop()),rows=[];
         for(let i=0;i<sources.length;i++){
@@ -195,7 +217,7 @@ function makeDom() {
         for(const r of [...record.rows].reverse()){if(!r.published)continue;if(entryHash(r.target)!==r.afterHash){failed=true;continue;}if(r.before)FAKE_FS[r.target]=entryClone(r.before);else await w.myIDE.fs.remove(r.target);r.published=false;changedPaths.push(r.target);}
         record.phase=failed?'undo-partial':'undone';return {ok:!failed,error:failed?'later changes':undefined,changedPaths};
       },
-      copyList: async(project)=>({ok:true,records:[...copyRecords.values()].filter(r=>r.projectRoot===project).map(r=>({...r,hasChanges:r.rows.some(item=>item.published),remaining:r.rows.filter(item=>item.published).length}))}),
+      copyList: async(project)=>({ok:true,records:[...copyRecords.values()].filter(r=>r.projectRoot===project).map(r=>({...r,hasChanges:r.rows.some(item=>item.published||item.deleted),remaining:r.rows.filter(item=>item.published||item.deleted).length}))}),
       copyClear: async(_project,id)=>{copyRecords.delete(id);return {ok:true};},
       copyExport: async()=>({ok:true,path:'C:/recovery'}),
       copyOpen: async()=>({ok:true}),
@@ -8427,6 +8449,39 @@ assert_(panel, 'CM6 搜索面板出现');
     await w.Tree.showCopyRecovery();assert(d.window.document.querySelector('.copy-recovery').textContent.includes('new.txt'));
     assert([...d.window.document.querySelectorAll('.copy-recovery button')].some(b=>b.textContent==='导出副本'&&!b.disabled));
     w.Modal.confirm=async()=>true;const clear=[...d.window.document.querySelectorAll('.copy-recovery button')].find(b=>b.textContent==='清理记录');clear.click();await tick();assert.equal((await bridge.copyList(P)).records.length,0);assert.equal(FAKE_FS[P+'/new.txt'].content,'后来');
+  });
+
+  await saveCase('普通删除关闭干净标签，批量目录一次撤销且不用文本写入恢复',async(d,viewer,bridge)=>{
+    const w=d.window;w.Modal.confirm=async()=>true;const p=P+'/notes.txt',old=FAKE_FS[p].content;let writes=0;
+    bridge.writeFile=async()=>{writes++;throw Error('恢复不能重编码');};
+    await w.Tree.removeItems([p,P+'/src',P+'/src/app.js']);assert(!FAKE_FS[p]&&!FAKE_FS[P+'/src']);assert(!viewer.openTabs.some(t=>t.path===p));
+    assert.equal((await bridge.copyList(P)).records.filter(r=>r.kind==='delete').length,1);await w.Tree.undo();assert.equal(FAKE_FS[p].content,old);assert(FAKE_FS[P+'/src/app.js']);assert.equal(writes,0);
+  });
+  await saveCase('删除取消和dirty保留旧磁盘版本，恢复后仍需比较',async(d,viewer,bridge)=>{
+    const write=bridge.writeFile;bridge.writeFile=async(p,...args)=>!FAKE_FS[p]?{error:'磁盘路径缺席',errorCode:'VERSION_CONFLICT'}:write(p,...args);
+    const w=d.window,p=P+'/notes.txt',old=FAKE_FS[p].content,version=viewer.activeTab.diskVersion;viewer.cm.setValue('删除前未保存输入');w.Modal.confirm=async()=>false;
+    await w.Tree.removeItems([p]);assert.equal(FAKE_FS[p].content,old);w.Modal.confirm=async()=>true;await w.Tree.removeItems([p]);assert(!FAKE_FS[p]);assert.equal(viewer.cm.getValue(),'删除前未保存输入');assert(viewer.activeTab.dirty);assert.equal(viewer.activeTab.diskVersion,version);
+    assert.equal((await viewer.saveTab(0)).errorCode,'VERSION_CONFLICT');assert(!FAKE_FS[p]);await w.Tree.undo();assert.equal(FAKE_FS[p].content,old);assert.equal(viewer.cm.getValue(),'删除前未保存输入');assert.equal(viewer.activeTab.diskVersion,version);
+  });
+  await saveCase('删除等待旧保存，提交中新输入保持且新保存不复活路径',async(d,viewer,bridge)=>{
+    const w=d.window,p=P+'/notes.txt',write=bridge.writeFile,commit=bridge.deleteCommit,saveGate=deferred(),deleteGate=deferred();let started=false;
+    w.Modal.confirm=async()=>true;bridge.writeFile=async(...args)=>{await saveGate.promise;return !FAKE_FS[args[0]]?{error:'磁盘路径缺席',errorCode:'VERSION_CONFLICT'}:write(...args);};bridge.deleteCommit=async(...args)=>{started=true;await deleteGate.promise;return commit(...args);};
+    viewer.cm.setValue('待完成保存');const saved=viewer.saveTab(0);await tick();const removing=w.Tree.removeItems([p]);await tick();assert(!started);saveGate.resolve();await saved;for(let i=0;i<20&&!started;i++)await tick();assert(started);
+    viewer.cm.setValue('删除提交期间输入');assert.equal((await viewer.saveTab(0)).errorCode,'PATH_BUSY');deleteGate.resolve();await removing;assert(!FAKE_FS[p]);assert.equal(viewer.cm.getValue(),'删除提交期间输入');assert.equal((await viewer.saveTab(0)).errorCode,'VERSION_CONFLICT');await w.Tree.undo();assert.equal(FAKE_FS[p].content,'待完成保存');
+  });
+  await saveCase('删除恢复冲突保留记录，列表可以恢复且不覆盖后来文件',async(d,_viewer,bridge)=>{
+    const w=d.window,p=P+'/notes.txt',old=FAKE_FS[p].content;w.Modal.confirm=async()=>true;await w.Tree.removeItems([p]);FAKE_FS[p]={type:'file',content:'外部后来'};await w.Tree.undo();assert.equal(FAKE_FS[p].content,'外部后来');assert((await bridge.copyList(P)).records[0].hasChanges);
+    delete FAKE_FS[p];await w.Tree.showCopyRecovery();const box=w.document.querySelector('.copy-recovery');assert(box.textContent.includes('删除'));[...box.querySelectorAll('button')].find(b=>b.textContent==='恢复'&&!b.disabled).click();await tick();await tick();assert.equal(FAKE_FS[p].content,old);
+  });
+  await saveCase('删除确认绑定原项目，迟到确认不提交',async(d,_viewer,bridge)=>{
+    const w=d.window,gate=deferred(),p=P+'/notes.txt';let commits=0;w.Modal.confirm=()=>gate.promise;bridge.deleteCommit=async()=>{commits++;return {ok:true};};const removing=w.Tree.removeItems([p]);await tick();await w.App.setRoot(P+'/src');gate.resolve(true);await removing;assert.equal(commits,0);assert(FAKE_FS[p]);
+  });
+  await saveCase('系统回收站取消/失败不调用永久删除且不新增应用undo',async(d,_viewer,bridge)=>{
+    const w=d.window,p=P+'/notes.txt';let calls=0;bridge.trashCommit=async()=>{calls++;return {error:'系统拒绝',errorCode:'TRASH_FAILED'};};bridge.remove=async()=>{throw Error('不能回落永久删除');};w.Modal.confirm=async()=>false;await w.Tree.trashItems([p]);assert.equal(calls,0);w.Modal.confirm=async()=>true;await w.Tree.trashItems([p]);assert.equal(calls,1);assert(FAKE_FS[p]);await w.Tree.undo();assert(FAKE_FS[p]);assert.equal((await bridge.copyList(P)).records.length,0);
+  });
+  await saveCase('恢复预算拒绝只有明确两次确认才能改用系统回收站',async(d,_viewer,bridge)=>{
+    const w=d.window,p=P+'/notes.txt';let calls=0,confirms=0;bridge.deletePrepare=async()=>({error:'恢复预算已满',errorCode:'RECOVERY_LIMIT'});bridge.trashCommit=async()=>{calls++;return {ok:true,changedPaths:[]};};w.Modal.confirm=async()=>false;await w.Tree.removeItems([p]);assert.equal(calls,0);
+    w.Modal.confirm=async()=>++confirms===1;await w.Tree.removeItems([p]);assert.equal(calls,0);w.Modal.confirm=async()=>true;await w.Tree.removeItems([p]);assert.equal(calls,1);assert(FAKE_FS[p]);
   });
 
   await saveCase('旧保存回调不覆盖新输入或清 dirty', async (_d, viewer, bridge) => {

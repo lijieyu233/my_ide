@@ -49,14 +49,16 @@ os.homedir = () => path.join(temp, 'home');
 if (!process.argv.includes('--headless')) process.argv.push('--headless');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lines = [];
-let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false, releaseCopy = null, copyStarted = false;
+let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false, releaseCopy = null, copyStarted = false, releaseDelete=null, deleteStarted=false;
 const add = (name, ok) => {
   if (ok) passed++; else failed++;
   lines.push((ok ? 'PASS ' : 'FAIL ') + name);
   console.log(lines[lines.length - 1]);
 };
 const register = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:copyCommit' ? async(...args)=>{
+ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:deleteCommit' ? async(...args)=>{
+  if(releaseDelete){deleteStarted=true;await releaseDelete.promise;releaseDelete=null;}return handler(...args);
+} : channel === 'fs:copyCommit' ? async(...args)=>{
   if(releaseCopy){copyStarted=true;await releaseCopy.promise;releaseCopy=null;}
   return handler(...args);
 } : channel === 'fs:undoCreate' ? async(...args)=>{
@@ -71,7 +73,7 @@ ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:copyCom
   }
   return handler(...args);
 } : handler);
-const watchdog = setTimeout(() => { console.error('TIMEOUT'); app.exit(3); }, 90000);
+const watchdog = setTimeout(() => { console.error('TIMEOUT'); app.exit(3); }, 120000);
 
 app.whenReady().then(async () => {
   try {
@@ -391,6 +393,37 @@ app.whenReady().then(async () => {
     win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');
     for(const theme of ['dark','light']){await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(100);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(ROOT,'.ui-check-trash','copy115-recovery-'+theme+'.png'),Buffer.from(shot.data,'base64'));}
     win.webContents.debugger.detach();await run('Modal.hide();Modal.confirm=__copyConfirm;true');
+    }
+    {
+    const dir=path.join(projectA,'删除恢复目录'),binary=path.join(dir,'binary.bin'),bom=path.join(dir,'bom.txt');fs.mkdirSync(dir);fs.mkdirSync(path.join(dir,'empty'));
+    const raw=Buffer.from([0,255,128]),utf16=Buffer.from([255,254,45,78,13,0,10,0]);fs.writeFileSync(binary,raw);fs.writeFileSync(binary+':private','二进制流');fs.writeFileSync(bom,utf16);fs.writeFileSync(dir+':private','目录流');
+    await run(`(async()=>{window.__deleteConfirm=Modal.confirm;Modal.confirm=async()=>true;await Viewer.openFile(${JSON.stringify(bom)});await Tree.removeItems([${JSON.stringify(dir)},${JSON.stringify(binary)}]);})()`);
+    add('真实Tree目录父子批量删除关闭干净后代标签',!fs.existsSync(dir)&&await run(`!Viewer.openTabs.some(t=>DocumentPaths.contains(${JSON.stringify(dir)},t.path))`));
+    const deleteRecords=await run(`myIDE.fs.copyList(${JSON.stringify(projectA)})`);add('真实批量删除一条持久记录包含目录恢复',deleteRecords.records.filter(r=>r.kind==='delete').length===1&&deleteRecords.records.find(r=>r.kind==='delete').targets.length===1);
+    await run('Tree.undo()');add('真实Tree一次undo恢复目录/空目录/二进制/BOM和两类ADS',fs.statSync(path.join(dir,'empty')).isDirectory()&&fs.readFileSync(binary).equals(raw)&&fs.readFileSync(bom).equals(utf16)&&fs.readFileSync(binary+':private','utf8')==='二进制流'&&fs.readFileSync(dir+':private','utf8')==='目录流');
+    const dirtyFile=path.join(projectA,'删除dirty.txt');fs.writeFileSync(dirtyFile,'删除前原正文');await run(`(async()=>{await Viewer.openFile(${JSON.stringify(dirtyFile)});Viewer.cm.setValue("删除时保留的未保存输入");})()`);const originalVersion=await run('Viewer.activeTab.diskVersion.hash');await run(`Tree.removeItems([${JSON.stringify(dirtyFile)}])`);
+    add('真实dirty删除只改磁盘，标签输入和旧版本保留',!fs.existsSync(dirtyFile)&&await run(`Viewer.activeTab.dirty&&Viewer.cm.getValue()==="删除时保留的未保存输入"&&Viewer.activeTab.diskVersion.hash===${JSON.stringify(originalVersion)}`));
+    const revive=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('真实旧基线保存不能复活普通删除路径',revive.errorCode==='VERSION_CONFLICT'&&!fs.existsSync(dirtyFile));await run('Tree.undo()');
+    add('真实dirty删除undo恢复磁盘仍保留编辑输入',fs.readFileSync(dirtyFile,'utf8')==='删除前原正文'&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="删除时保留的未保存输入"'));
+    const waitingFile=path.join(projectA,'删除等待.txt');fs.writeFileSync(waitingFile,'旧保存前');await run(`(async()=>{await Viewer.openFile(${JSON.stringify(waitingFile)});Viewer.cm.setValue("已排队保存正文");})()`);
+    let releaseSaveGate;writeStarted=false;releaseWrite={promise:new Promise(resolve=>{releaseSaveGate=resolve;})};await run('window.__deleteSave=Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab));true');for(let i=0;i<100&&!writeStarted;i++)await sleep(20);
+    let releaseDeleteGate;deleteStarted=false;releaseDelete={promise:new Promise(resolve=>{releaseDeleteGate=resolve;})};await run(`window.__deletePending=Tree.removeItems([${JSON.stringify(waitingFile)}]);true`);await sleep(100);add('真实删除提交等待既有保存完成',writeStarted&&!deleteStarted&&fs.existsSync(waitingFile));releaseSaveGate();await run('__deleteSave');for(let i=0;i<100&&!deleteStarted;i++)await sleep(20);if(!deleteStarted)throw Error('删除未进入受控真实IPC');
+    await run('Viewer.cm.setValue("删除等待期间新输入")');const busy=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');add('真实删除提交期间新保存被路径闸门拒绝',busy.errorCode==='PATH_BUSY');releaseDeleteGate();await run('__deletePending');
+    add('真实删除提交中新输入保留且旧保存不复活路径',!fs.existsSync(waitingFile)&&await run('Viewer.activeTab.dirty&&Viewer.cm.getValue()==="删除等待期间新输入"'));await run('Tree.undo()');add('真实删除恢复采用最后完成保存的原字节',fs.readFileSync(waitingFile,'utf8')==='已排队保存正文');
+    const conflictFile=path.join(projectA,'删除恢复冲突.txt');fs.writeFileSync(conflictFile,'原冲突正文');await run(`Tree.removeItems([${JSON.stringify(conflictFile)}])`);fs.writeFileSync(conflictFile,'外部后来内容');await run('Tree.undo()');
+    add('真实删除恢复不覆盖后来同名文件且记录可重试',fs.readFileSync(conflictFile,'utf8')==='外部后来内容'&&(await run(`myIDE.fs.copyList(${JSON.stringify(projectA)})`)).records.some(r=>r.kind==='delete'&&r.hasChanges&&r.phase==='undo-partial'));fs.renameSync(conflictFile,conflictFile+'.later');await run('Tree.undo()');add('真实删除恢复冲突移走后可再次undo',fs.readFileSync(conflictFile,'utf8')==='原冲突正文'&&fs.readFileSync(conflictFile+'.later','utf8')==='外部后来内容');
+    const shell=require('electron').shell,trashItem=shell.trashItem;let trashCalls=0;shell.trashItem=async()=>{trashCalls++;throw Error('自检系统回收站拒绝');};
+    try{await run(`Tree.trashItems([${JSON.stringify(conflictFile)}])`);add('真实回收站API失败不会回落永久删除',trashCalls===1&&fs.readFileSync(conflictFile,'utf8')==='原冲突正文');}finally{shell.trashItem=trashItem;}
+    const recycleFile=path.join(projectA,'myide-recycle-'+require('crypto').randomUUID()+'.bin'),recycleBytes=Buffer.from([0,255,128,65]);fs.writeFileSync(recycleFile,recycleBytes);fs.writeFileSync(recycleFile+':private','回收站原流');await run(`Tree.trashItems([${JSON.stringify(recycleFile)}])`);
+    // 只匹配本次GUID夹具的完整原路径；不调用EmptyRecycleBin，也不修改别人的$I/$R。
+    const bin=path.join(path.parse(recycleFile).root,'$Recycle.Bin'),matched=[];
+    for(const sid of fs.readdirSync(bin)){const folder=path.join(bin,sid);let names;try{names=fs.readdirSync(folder);}catch{continue;}for(const name of names.filter(n=>n.startsWith('$I'))){const meta=path.join(folder,name);let bytes;try{bytes=fs.readFileSync(meta);}catch{continue;}const version=bytes.length>=24?Number(bytes.readBigUInt64LE(0)):0,original=bytes.subarray(version===2?28:24).toString('utf16le').split('\0')[0];if(path.resolve(original).toLowerCase()===recycleFile.toLowerCase())matched.push({meta,data:path.join(folder,'$R'+name.slice(2)),folder});}}
+    add('真实系统回收站成功保留GUID夹具原字节及ADS',!fs.existsSync(recycleFile)&&matched.length===1&&fs.readFileSync(matched[0].data).equals(recycleBytes)&&fs.readFileSync(matched[0].data+':private','utf8')==='回收站原流');
+    if(matched.length!==1)throw Error('本次回收站夹具无法唯一核对：'+recycleFile);
+    const own=matched[0];if(path.dirname(own.meta)!==own.folder||path.dirname(own.data)!==own.folder||path.dirname(own.folder)!==bin||fs.existsSync(recycleFile))throw Error('Unsafe recycle fixture cleanup');fs.renameSync(own.data,recycleFile);fs.unlinkSync(own.meta);
+    add('本次回收站夹具单独取回清理，未清用户回收站',fs.readFileSync(recycleFile).equals(recycleBytes)&&!fs.existsSync(own.meta)&&!fs.existsSync(own.data));
+    await run('Tree.showCopyRecovery()');add('真实删除恢复列表显示操作归属与原字节入口',await run('document.querySelector(".copy-recovery").textContent.includes("删除")'));
+    win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Page.enable');for(const theme of ['dark','light']){await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(100);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(ROOT,'.ui-check-trash','delete117-recovery-'+theme+'.png'),Buffer.from(shot.data,'base64'));}win.webContents.debugger.detach();await run('Modal.hide();Modal.confirm=__deleteConfirm;true');
     }
   } catch (e) {
     failed++; lines.push('FAIL ' + (e.stack || e)); console.error(e);
