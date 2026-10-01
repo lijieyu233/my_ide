@@ -8,7 +8,8 @@
     "start": "electron .",
     "test:git": "node tests/git.test.js",
     "test:dom": "node tests/dom.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:dom",
+    "test:package": "node tests/package.test.js",
+    "test": "npm run check:js && npm run test:git && npm run test:dom && npm run test:package",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -17,6 +18,8 @@
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
     "check:launch": "electron scripts/check-launch.js --disable-gpu --no-sandbox",
     "check:save": "node scripts/check-save.js",
+    "check:package": "node scripts/check-package.js",
+    "check:packaged": "node scripts/check-packaged.js",
     "git:doctor": "node scripts/git-doctor.js"
   },
   "dependencies": {
@@ -54,14 +57,20 @@
   "build": {
     "appId": "local.myide.app",
     "productName": "MyIDE",
+    "afterPack": "./scripts/check-package.js",
     "files": [
       "main.js",
       "preload.js",
       "git-service.js",
       "git-worker.js",
+      "git-native.js",
+      "git-ops.js",
+      "launch-ops.js",
+      "launch-service.js",
       "db-service.js",
       "ai-service.js",
       "package.json",
+      "build/icon.png",
       "renderer/**",
       "plugins/**"
     ],

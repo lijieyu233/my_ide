@@ -66,7 +66,7 @@ npm install     # 首次
 npm start       # 启动应用
 ```
 
-**方式三（打包版，无需 Node 环境）：** 双击 `dist/MyIDE-0.3.0.exe`（便携版单文件，拷贝即用）。重新打包：`npm run build`。
+**方式三（打包版，无需 Node 环境）：** 双击 `dist/MyIDE-0.8.5.exe`（便携版单文件，拷贝即用）。重新打包：`npm run build`。构建会检查实际归档中的运行时模块、静态资源、插件与SQLite WASM，缺失或混入指定私人/开发产物时失败。
 
 首次打开后点「📂 打开文件夹」选择项目目录；想体验 Git 功能可 `npm run demo` 生成演示项目。
 
@@ -89,9 +89,14 @@ tests/                自动化测试：git 逻辑 + 渲染层（jsdom）
 ## 🧪 测试与基准
 
 ```bash
-npm test       # 96 项：语法检查 + git 逻辑 + 渲染层 DOM 测试
+npm test       # 语法检查 + Git逻辑 + 渲染层DOM + 打包产物夹具测试
 npm run bench  # 性能基准（5000 文件 git 扫描 < 1s 实测达成）
+npm run check:package -- dist/win-unpacked/resources/app.asar
+npm run check:packaged -- dist/MyIDE-0.8.5.exe
+npm run check:packaged -- dist/win-unpacked/MyIDE.exe --no-git
 ```
+
+`check:packaged` 的检查客户端需要Node.js 22或更高版本；发行程序本身仍无需Node。检查会隐藏窗口并隔离设置/临时项目，验证文本、Git、SQLite、启动面板和Office资源；`--no-git`隔离PATH并要求实际能力检测确认为无系统Git。它不会启动项目服务或连接外部数据库。
 
 ## 📄 文档索引
 
