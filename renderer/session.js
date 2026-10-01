@@ -75,6 +75,20 @@ const Session = (() => {
     } catch {}
   }
 
-  return { save, saveNow, restore };
+  function pathsMoved(from,to) {
+    // 未激活项目也有已存标签，不能只更新当前Session后等下一次打开旧路径失败。
+    for(let i=0;i<localStorage.length;i++) {
+      const key=localStorage.key(i);if(!key?.startsWith('myide-session:'))continue;
+      try {
+        const state=JSON.parse(localStorage.getItem(key));if(!state||typeof state!=='object')continue;
+        if(Array.isArray(state.tabs))state.tabs=state.tabs.map(t=>typeof t==='string'?DocumentPaths.map(t,from,to):{...t,p:DocumentPaths.map(t.p,from,to)});
+        if(state.active)state.active=DocumentPaths.map(state.active,from,to);
+        if(Array.isArray(state.expanded))state.expanded=state.expanded.map(p=>DocumentPaths.map(p,from,to));
+        localStorage.setItem(key,JSON.stringify(state));
+      }catch{}
+    }
+    save();
+  }
+  return { save, saveNow, restore, pathsMoved };
 })();
 window.Session = Session;

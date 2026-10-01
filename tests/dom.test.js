@@ -112,6 +112,26 @@ function makeDom() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
   const w = dom.window;
+  Object.defineProperty(w.navigator,'platform',{value:'Win32'});
+  const normMove=p=>String(p).replace(/\\/g,'/');
+  const fakeSnapshot=p=>({schema:1,path:normMove(p),hash:JSON.stringify(Object.entries(FAKE_FS).filter(([f])=>f===normMove(p)||f.startsWith(normMove(p)+'/')).sort()),count:1});
+  const relocateFake=async(src,dest,condition={})=>{
+    src=normMove(src);dest=normMove(dest);
+    if(!FAKE_FS[src])return {error:'not found',errorCode:'ENOENT'};
+    if(condition.expectedSource&&condition.expectedSource.hash!==fakeSnapshot(src).hash)return {error:'source changed',errorCode:'STALE_OPERATION'};
+    if(FAKE_FS[dest])return {error:'target exists',errorCode:'DEST_CONFLICT'};
+    for(const doc of condition.documents||[]) {
+      const r=await w.myIDE.fs.fileVersion(doc.path);
+      if(JSON.stringify(r.version)!==JSON.stringify(doc.version))return {error:'document changed',errorCode:'VERSION_CONFLICT'};
+    }
+    const sourceEntries=Object.entries(FAKE_FS).filter(([f])=>f===src||f.startsWith(src+'/'));
+    for(const [f,entry] of sourceEntries){const next=dest+f.slice(src.length);delete FAKE_FS[f];FAKE_FS[next]={...entry,children:entry.children?.map(c=>dest+c.slice(src.length))};}
+    const parent=src.slice(0,src.lastIndexOf('/')),destParent=dest.slice(0,dest.lastIndexOf('/'));
+    if(FAKE_FS[parent]?.children)FAKE_FS[parent].children=FAKE_FS[parent].children.filter(c=>c!==src);
+    if(FAKE_FS[destParent]?.children&&!FAKE_FS[destParent].children.includes(dest))FAKE_FS[destParent].children.push(dest);
+    const documents=[];for(const doc of condition.documents||[]){const next=dest+normMove(doc.path).slice(src.length),r=await w.myIDE.fs.fileVersion(next);documents.push({oldPath:doc.path,newPath:next,version:r.version});}
+    return {ok:true,path:dest,target:dest,oldPath:src,newPath:dest,after:fakeSnapshot(dest),documents};
+  };
   // jsdom 无布局：给 Range 补 getClientRects stub，防 CM6 measure 崩溃噪音
   if (w.Range && !w.Range.prototype.getClientRects) {
     const rect = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
@@ -146,7 +166,9 @@ function makeDom() {
         FAKE_FS[p].revision = (FAKE_FS[p].revision || 0) + 1;
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
-      rename: async () => ({ ok: true }),
+      pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
+      relocate: relocateFake,
+      rename: async(p,name,condition)=>relocateFake(p,normMove(p).replace(/\/[^/]+$/,'')+'/'+name,condition),
       mkdir: async (p) => {
         const parts = p.split('/');
         FAKE_FS[p] = { type: 'dir', children: [] };
@@ -160,21 +182,15 @@ function makeDom() {
         if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir') FAKE_FS[parent].children = FAKE_FS[parent].children.filter((c) => c !== p);
         return { ok: true };
       },
-      move: async (src, destDir) => {
+      move: async (src, destDir, condition) => {
+        src=normMove(src);destDir=normMove(destDir);
         const name = src.split('/').pop();
         const extIdx = name.lastIndexOf('.');
         const ext = extIdx > 0 ? name.slice(extIdx) : '';
         const base = extIdx > 0 ? name.slice(0, extIdx) : name;
         let target = destDir + '/' + name;
         for (let i = 1; FAKE_FS[target]; i++) target = destDir + '/' + base + ' (' + i + ')' + ext;
-        const entry = FAKE_FS[src];
-        if (!entry) return { error: 'not found' };
-        delete FAKE_FS[src];
-        const srcParent = src.split('/').slice(0, -1).join('/');
-        if (FAKE_FS[srcParent]) FAKE_FS[srcParent].children = FAKE_FS[srcParent].children.filter((c) => c !== src);
-        FAKE_FS[target] = entry;
-        if (FAKE_FS[destDir] && FAKE_FS[destDir].type === 'dir') FAKE_FS[destDir].children.push(target);
-        return { ok: true, target };
+        return relocateFake(src,target,condition);
       },
     },
     shell: { showInFolder: async () => {}, openExternal: async (url) => { (calls.openExternal = calls.openExternal || []).push(url); return true; }, openTerminal: async (dir) => { (calls.openTerminal = calls.openTerminal || []).push(dir); return { ok: true }; }, runFile: async (p) => { (calls.runFile = calls.runFile || []).push(p); return { ok: true, how: 'exe' }; } },
@@ -423,6 +439,7 @@ async function loadApp(dom) {
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'renderer', 'vendor', 'highlight.min.js'), 'utf8'));
   evalFile('plugin-loader.js');
   evalFile('pet.js');
+  evalFile('document-paths.js');
   evalFile('tree.js');
   evalFile('viewer.js');
   evalFile('outline.js');
@@ -8309,6 +8326,7 @@ assert_(panel, 'CM6 搜索面板出现');
   };
   const saveCase = async (name, fn) => okAsync('保存保全：' + name, async () => {
     const isolated = makeDom();
+    const beforeFiles=structuredClone(FAKE_FS);
     const before = { ...FAKE_FS[P + '/notes.txt'] };
     const beforeMd = { ...FAKE_FS[P + '/README.md'] };
     const cbStart = fakeFsCbs.length;
@@ -8324,6 +8342,7 @@ assert_(panel, 'CM6 搜索面板出现');
       isolated.window.close();
       FAKE_FS[P + '/notes.txt'] = before;
       FAKE_FS[P + '/README.md'] = beforeMd;
+      Object.keys(FAKE_FS).forEach(p=>delete FAKE_FS[p]);Object.assign(FAKE_FS,beforeFiles);
       fakeFsCbs.splice(cbStart);
     }
   });
@@ -8749,6 +8768,69 @@ assert_(panel, 'CM6 搜索面板出现');
       if(beforeTask)FAKE_FS[taskFile]=beforeTask;else delete FAKE_FS[taskFile];
       if(beforeConfig)FAKE_FS[configFile]=beforeConfig;else delete FAKE_FS[configFile];
     }
+  });
+  await saveCase('旧保存等待期间改名等待完成，新输入只写新路径',async(d,viewer,bridge)=>{
+    conditionalWrites(bridge);const tab=viewer.activeTab,old=tab.path,wait=deferred(),write=bridge.writeFile,writes=[];
+    bridge.writeFile=async(...args)=>{writes.push(args[0]);if(writes.length===1)await wait.promise;return write(...args);};
+    viewer.cm.setValue('已派发版本');const pending=viewer.saveTab(0,true);await tick();
+    d.window.Modal.prompt=async()=> 'new-notes.txt';const moved=d.window.Tree.renameItem({path:old,name:'notes.txt',type:'file'});await tick();
+    const count=viewer.openTabs.length;await viewer.openFile(old);viewer.addLazyTab(P+'/new-notes.txt');assert_(viewer.openTabs.length===count,'迁移期间不能增加相关路径标签');
+    let nested=false;const overlapping=await viewer.withPathChange(old,P+'/nested-target',async()=>{nested=true;return {ok:true};});assert_(overlapping.errorCode==='PATH_BUSY'&&!nested,'重叠迁移只拒绝后来的操作');
+    viewer.cm.setValue('迁移期间新输入');assert_((await viewer.saveTab(0,true)).errorCode==='PATH_BUSY'&&FAKE_FS[old],'迁移前不派发新旧路径写入');
+    wait.resolve();assert_((await pending).ok,'旧保存先完成');await moved;
+    assert_(tab.path===P+'/new-notes.txt'&&tab.dirty&&tab.content==='迁移期间新输入'&&!FAKE_FS[old],'稳定标签与新输入迁移');
+    assert_((await viewer.saveTab(0,true)).ok&&writes.join(',')===old+','+tab.path&&FAKE_FS[tab.path].content==='迁移期间新输入','后续只有新路径写入');
+  });
+  await saveCase('目录后代多标签与边界邻居、会话/最近/树选择一起迁移',async(d,viewer)=>{
+    const from=P+'/folder',to=P+'/renamed-folder',a=from+'/a.txt',b=from+'/sub/b.txt',neighbor=P+'/folder-other/c.txt';
+    FAKE_FS[from]={type:'dir',children:[a,from+'/sub']};FAKE_FS[from+'/sub']={type:'dir',children:[b]};
+    for(const file of [a,b,neighbor])FAKE_FS[file]={type:'file',content:file};
+    await viewer.openFile(a);viewer.cm.setValue('A未保存');const ta=viewer.activeTab;await d.window.AiPanel.fromEditor('doc');
+    await viewer.openFile(b);viewer.cm.setValue('B未保存');const tb=viewer.activeTab;await viewer.openFile(neighbor);const tn=viewer.activeTab;
+    d.window.Tree.select(a,'file');d.window.Tree.setExpandedPaths([from,from+'/sub']);
+    d.window.localStorage.setItem('myide-session:other',JSON.stringify({tabs:[a,{p:b,l:2}],active:a,expanded:[from+'/sub']}));
+    viewer.activate(viewer.openTabs.indexOf(ta));await d.window.AiPanel.followActive();
+    d.window.Modal.prompt=async()=> 'renamed-folder';await d.window.Tree.renameItem({path:from,name:'folder',type:'dir'});
+    const stored=JSON.parse(d.window.localStorage.getItem('myide-session:other'));
+    assert_(ta.path===to+'/a.txt'&&tb.path===to+'/sub/b.txt'&&tn.path===neighbor&&ta.dirty&&tb.dirty,'映射后代但不匹配名字前缀邻居');
+    assert_(stored.tabs[0]===ta.path&&stored.tabs[1].p===tb.path&&stored.active===ta.path&&viewer.recentFiles().some(item=>item.path===tb.path&&Number.isFinite(item.ts)),'持久路径同步并保留最近文件时间');
+    assert_(d.window.Tree.selectedPath===ta.path&&d.window.Tree.getExpandedPaths().includes(to+'/sub'),'树选择和展开同步');
+    assert_([...d.window.document.querySelectorAll('.ai-ctx-chip')].some(chip=>chip.title.includes(to+'/a.txt')),'AI上下文路径同步');
+    viewer.activate(viewer.openTabs.indexOf(tb));assert_(viewer.cm.getValue()==='B未保存'&&(await viewer.saveTab(viewer.openTabs.indexOf(tb),true)).ok,'dirty后台状态保留且新基线可保存');
+  });
+  await saveCase('改名undo同步原路径和编辑器，目标冲突保留记录可重试',async(d,viewer)=>{
+    const tab=viewer.activeTab,old=tab.path;viewer.cm.setValue('未保存正文');d.window.Modal.prompt=async()=> 'renamed.txt';
+    await d.window.Tree.renameItem({path:old,name:'notes.txt',type:'file'});const moved=tab.path;
+    FAKE_FS[old]={type:'file',content:'后来出现'};await d.window.Tree.undo();
+    assert_(tab.path===moved&&FAKE_FS[old].content==='后来出现'&&FAKE_FS[moved],'冲突保留源和目标');
+    delete FAKE_FS[old];await d.window.Tree.undo();
+    assert_(tab.path===old&&tab.dirty&&viewer.cm.getValue()==='未保存正文'&&!FAKE_FS[moved],'重试恢复原路径与正文');
+    assert_((await viewer.saveTab(0,true)).ok&&FAKE_FS[old].content==='未保存正文','后续保存回原路径');
+  });
+  await saveCase('源版本变化与操作后编辑均拒绝迁移/undo',async(d,viewer)=>{
+    const tab=viewer.activeTab,old=tab.path;FAKE_FS[old].content='外部新内容';d.window.Modal.prompt=async()=> 'renamed.txt';
+    await d.window.Tree.renameItem({path:old,name:'notes.txt',type:'file'});assert_(tab.path===old&&!FAKE_FS[P+'/renamed.txt'],'原文档版本变化不迁移');
+    tab.diskVersion=(await d.window.myIDE.fs.fileVersion(old)).version;await d.window.Tree.renameItem({path:old,name:'notes.txt',type:'file'});
+    FAKE_FS[tab.path].content='操作后的外部输入';await d.window.Tree.undo();
+    assert_(tab.path===P+'/renamed.txt'&&FAKE_FS[tab.path].content==='操作后的外部输入'&&!FAKE_FS[old],'旧undo不覆盖后来输入');
+  });
+  await saveCase('重命名失败不丢文档基线，跨项目确认失效',async(d,viewer,bridge)=>{
+    const tab=viewer.activeTab,base=tab.diskVersion;bridge.rename=async()=>({error:'fixture-denied',errorCode:'EACCES'});d.window.Modal.prompt=async()=> 'new.txt';
+    await d.window.Tree.renameItem({path:tab.path,name:tab.name,type:'file'});assert_(tab.path===P+'/notes.txt'&&tab.diskVersion===base,'失败保留身份');
+    let snapshots=0;const snapshot=bridge.pathSnapshot;bridge.pathSnapshot=async(...args)=>{snapshots++;return snapshot(...args);};await d.window.Tree.renameItem({path:P,name:'demo',type:'dir'});assert_(snapshots===0&&tab.path===P+'/notes.txt','项目根迁移需从父项目操作，不能留下旧配置根');
+    const wait=deferred();d.window.Modal.prompt=()=>wait.promise;let calls=0;bridge.rename=async()=>{calls++;return{ok:true};};
+    const pending=d.window.Tree.renameItem({path:tab.path,name:tab.name,type:'file'});d.window.Tree.setRoot('C:/other');wait.resolve('new.txt');await pending;
+    assert_(calls===0,'旧项目确认不在新项目执行');
+  });
+  await saveCase('迟到重新打开与路径迁移锁不能覆盖新路径',async(d,viewer,bridge)=>{
+    const tab=viewer.activeTab,read=bridge.readFile,wait=deferred();bridge.readFile=async(p,...args)=>p===tab.path?wait.promise:read(p,...args);
+    const pending=viewer.reopenWithEncoding('utf8');await tick();bridge.readFile=read;d.window.Modal.prompt=async()=> 'new.txt';
+    await d.window.Tree.renameItem({path:tab.path,name:tab.name,type:'file'});wait.resolve({content:'旧路径迟到正文',encoding:'utf8',version:{schema:1,target:P+'/notes.txt',stamp:'old',hash:'old'}});
+    assert_((await pending).errorCode==='STALE_READ'&&tab.path===P+'/new.txt'&&tab.content!=='旧路径迟到正文','旧重新打开失效');
+  });
+  await saveCase('目录大小写与反斜线映射保留身份，重开不消费旧确认',async(d,viewer)=>{
+    const tab=viewer.activeTab,old=tab.path;viewer.cm.setValue('保留输入');viewer.renamed(P.toLowerCase().replace(/\//g,'\\'),P+'/Case',[{oldPath:old,version:{...tab.diskVersion,target:P+'/Case/notes.txt'}}]);
+    assert_(tab.path===P+'/Case/notes.txt'&&tab.dirty&&tab.content==='保留输入','Windows大小写和分隔符规则');
   });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');

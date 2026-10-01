@@ -19,6 +19,8 @@ const Viewer = (() => {
   const tabs = []; // {path, name, dirty, content, mode}
   let nextTabId = 0;
   const saveQueues = new Map();
+  const pathChanges = new Set();
+  const pathBusy = (p) => [...pathChanges].some(change => change.ranges.some(range => DocumentPaths.contains(range,p)));
   let active = -1;
   let saveTimer = null;
 
@@ -40,7 +42,7 @@ const Viewer = (() => {
     });
   }
   function validFormatTarget(tab, path, revision) {
-    return tabs.includes(tab) && tab.path === path && tab.editRevision === revision;
+    return tabs.includes(tab) && tab.path === path && tab.editRevision === revision && !pathBusy(path);
   }
   async function saveWithEncoding(encoding, bom, tab = tabs[active]) {
     if (!tab || tab.content == null || tab.binary || tab.tooLarge) return { ok: false, errorCode: 'NO_CONTENT' };
@@ -54,7 +56,7 @@ const Viewer = (() => {
   async function reopenWithEncoding(encoding, tab = tabs[active]) {
     if (!tab || tab.tooLarge || tab.mode == null) return { ok: false, errorCode: 'NO_CONTENT' };
     const path = tab.path, revision = tab.editRevision;
-    if (tab.dirty || saveQueues.has(path.replace(/\\/g, '/').toLowerCase())) {
+    if (tab.dirty || saveQueues.has(DocumentPaths.key(path))) {
       MI.toast('当前文件仍有未保存修改或保存正在进行，请先保存；重新打开未执行', 'err');
       return { ok: false, errorCode: 'UNSAVED_CHANGES' };
     }
@@ -227,6 +229,7 @@ const Viewer = (() => {
   }
 
   async function openFile(path) {
+    if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
     // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
     if (window.App) {
@@ -248,7 +251,8 @@ const Viewer = (() => {
     activate(tabs.length - 1);
     // 树定位（打开文件后展开目录链并高亮）
     if (window.Tree) Tree.reveal(path);
-    await MI.perf('viewer.openFile ' + name, () => loadTab(tab), 500);
+    tab.loadPromise = MI.perf('viewer.openFile ' + name, () => loadTab(tab), 500);
+    await tab.loadPromise;
   }
 
   async function loadTab(tab) {
@@ -268,7 +272,10 @@ const Viewer = (() => {
       renderView();
       return;
     }
-    const r = await window.myIDE.fs.readFile(tab.path);
+    const readPath = tab.path, generation = tab.pathGeneration || 0;
+    const r = await window.myIDE.fs.readFile(readPath);
+    if (!tabs.includes(tab)) return;
+    if (tab.path !== readPath || (tab.pathGeneration || 0) !== generation) return tab.mode == null ? loadTab(tab) : undefined;
     if (r.error) { tab.error = r.error; tab.mode = 'error'; }
     else if (r.tooLarge) { tab.tooLarge = true; tab.mode = 'error'; }
     else if (r.binary) { tab.binary = true; tab.mode = 'error'; }
@@ -302,8 +309,8 @@ const Viewer = (() => {
     if (t && t.lazy) {
       // 懒恢复标签首次切入才读盘（会话恢复只登记，切换项目不再逐个打开全部文件）
       t.lazy = false;
-      loadTab(t).then(() => {
-        if (t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; } // 编辑器就绪后再跳行
+      t.loadPromise = loadTab(t).then(() => {
+        if (t === tabs[active] && t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; } // 编辑器就绪后再跳行
       });
       return; // 内容未载入（renderView 对 mode=null 直接返回）→ 常规跳行等加载完成
     }
@@ -313,6 +320,7 @@ const Viewer = (() => {
   // 会话懒恢复：只登记标签条（不读盘不建编辑器），激活时才真正加载。
   // 切换项目恢复会话用：旧实现逐个 openFile（读盘+建编辑器），标签多时切换卡数秒
   function addLazyTab(path, opts) {
+    if(pathBusy(path))return;
     if (tabs.some((t) => t.path === path)) return;
     const name = path.split(/[\\/]/).pop();
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
@@ -1247,9 +1255,13 @@ const Viewer = (() => {
 
   function saveSnapshot(tab, quiet, overwriteVersion) {
     if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
+    if (pathBusy(tab.path)) {
+      if (!quiet) MI.toast('路径迁移正在进行，输入已保留；完成后请保存', 'err');
+      return Promise.resolve({ok:false,errorCode:'PATH_BUSY',error:'路径迁移正在进行',path:tab.path,tabId:tab.id});
+    }
     const snapshot = { tabId: tab.id, path: tab.path, content: tab.content,
       encoding: { ...(tab.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') }) }, revision: tab.editRevision };
-    const key = snapshot.path.replace(/\\/g, '/').toLowerCase();
+    const key = DocumentPaths.key(snapshot.path);
     const previous = saveQueues.get(key) || Promise.resolve();
     // 在调用时固定正文，不能等前一次写完再读取新正文，否则 Ctrl+S 等待的版本会漂移。
     const pending = previous.then(async () => {
@@ -1313,20 +1325,44 @@ const Viewer = (() => {
   // ---------- 重命名/移动同步：树里改名后标签路径跟着变 ----------
   // 不同步的后果：① 标签仍指向旧路径，自动保存把旧文件"复活"（改名后原文件还在的根因）
   //             ② 标签标题与磁盘文件脱节
-  function renamed(oldPath, newPath) {
+  function renamed(oldPath, newPath, documents = []) {
     if (!oldPath || !newPath || oldPath === newPath) return;
     let touched = false;
     for (const t of tabs) {
-      if (t.path === oldPath) {
-        t.path = newPath;
-        t.name = newPath.split(/[\\/]/).pop();
+      if (DocumentPaths.contains(oldPath,t.path)) {
+        const before=t.path, known=documents.find(doc=>DocumentPaths.key(doc.oldPath)===DocumentPaths.key(before));
+        t.path = DocumentPaths.map(before,oldPath,newPath);
+        t.name = t.path.split(/[\\/]/).pop();
+        t.pathGeneration = (t.pathGeneration || 0) + 1;
+        t.editRevision++; t.savedRevision++;
+        t.diskVersion = known?.version || null;
         touched = true;
       }
     }
+    try { localStorage.setItem(RECENT_KEY,JSON.stringify(recentFiles().map(item=>({...item,path:DocumentPaths.map(item.path,oldPath,newPath)})))); } catch {}
+    if(window.Session?.pathsMoved)Session.pathsMoved(oldPath,newPath);
+    if(window.AiPanel?.pathsMoved)AiPanel.pathsMoved(oldPath,newPath);
     if (!touched) return;
     renderTabs();
     const at = tabs[active];
-    if (at && at.path === newPath) renderView(); // 激活的是改名文件 → 重渲染（工具栏路径等）
+    if (at && DocumentPaths.contains(newPath,at.path)) renderView();
+  }
+  async function withPathChange(oldPath, targetRange, perform) {
+    const ranges=[oldPath,targetRange].filter(Boolean);
+    if([...pathChanges].some(change=>change.ranges.some(a=>ranges.some(b=>DocumentPaths.contains(a,b)||DocumentPaths.contains(b,a)))))
+      return {error:'相关路径已有迁移操作，请等待完成',errorCode:'PATH_BUSY'};
+    const change={ranges};pathChanges.add(change);
+    try {
+      const affected=tabs.filter(t=>DocumentPaths.contains(oldPath,t.path));
+      const pending=[...saveQueues].filter(([p])=>DocumentPaths.contains(oldPath,p)).map(([,tail])=>tail);
+      await Promise.all([...pending,...affected.map(t=>t.loadPromise).filter(Boolean)]);
+      const documents=affected.filter(t=>tabs.includes(t)&&t.content!=null&&canChooseEncoding(t)&&!t.binary).map(t=>({path:t.path,version:t.diskVersion}));
+      if(documents.some(doc=>!doc.version))return {error:'打开文档缺少可靠磁盘基线，请先处理保存恢复',errorCode:'VERSION_REQUIRED'};
+      const result=await perform(documents,tabs.filter(t=>!DocumentPaths.contains(oldPath,t.path)).map(t=>t.path));
+      if(result?.ok&&!result.noop)renamed(oldPath,result.newPath||result.path||result.target,result.documents||[]);
+      return result;
+    } catch(e) {return {error:String(e.message||e),errorCode:e.code||'MOVE_FAILED'};}
+    finally {pathChanges.delete(change);}
   }
 
   // ---------- 外部修改同步：文件在磁盘上被外部程序改动 → 未保存的标签自动重载 ----------
@@ -1341,14 +1377,14 @@ const Viewer = (() => {
   }
   async function reloadExternal() {
     for (const t of tabs) {
-      if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy || saveQueues.has(t.path.replace(/\\/g, '/').toLowerCase())) continue;
+      if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy || pathBusy(t.path) || saveQueues.has(DocumentPaths.key(t.path))) continue;
       if (t.content == null) continue;
       if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
-        const path = t.path, revision = t.editRevision;
+        const path = t.path, revision = t.editRevision, generation = t.pathGeneration || 0;
         // 用户明确选过编码后，watcher不能再用启发式把无BOM纯中文UTF-16误读为GBK。
         const r = await window.myIDE.fs.readFile(path, t.textFormat?.detection === 'selected' ? t.encoding : undefined);
-        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision || t.formatBusy || saveQueues.has(path.replace(/\\/g, '/').toLowerCase())) continue;
+        if (!tabs.includes(t) || t.path !== path || t.dirty || t.editRevision !== revision || t.formatBusy || pathBusy(path) || (t.pathGeneration || 0)!==generation || saveQueues.has(DocumentPaths.key(path))) continue;
         if (r.error || r.tooLarge || r.binary || r.content == null) continue;
         if (r.version) t.diskVersion = r.version;
         const sameContent = r.content === t.content;
@@ -1390,7 +1426,7 @@ const Viewer = (() => {
 
   return {
     openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return tabs[active] || null; },

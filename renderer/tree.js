@@ -827,10 +827,11 @@ const Tree = (() => {
     for (const src of srcs) {
       if (!src || norm(src) === norm(destDir) || isInside(src, destDir)) continue;
       const oldDir = src.replace(/[\\/][^\\/]+$/, '');
-      const r = await window.myIDE.fs.move(src, destDir);
+      // 自动另名的最终路径由main选择；锁目标目录才能覆盖准备期间未知的后缀名。
+      const targetRange=destDir;
+      const r = await performPathChange(src,targetRange,(condition)=>window.myIDE.fs.move(src,destDir,condition));
       if (r.ok) {
-        pushUndo({ type: 'move', newPath: r.target, oldDir, label: src.split(/[\\/]/).pop() + ' 的移动' });
-        if (window.Viewer && Viewer.renamed) Viewer.renamed(src, r.target); // 同步已打开标签路径（防旧路径自动保存复活旧文件）
+        if(!r.noop)pushUndo({ type: 'move', oldPath: src, newPath: r.target, oldDir, after: r.after, label: src.split(/[\\/]/).pop() + ' 的移动' });
         ok++;
       } else {
         MI.toast('移动失败: ' + (r.error || src), 'err');
@@ -847,8 +848,50 @@ const Tree = (() => {
 
   // Ctrl+Z 撤销栈（文件操作：粘贴/新建/重命名/删除/移动）
   const undoStack = [];
+  let undoBusy = false;
+  function remapTree(from,to) {
+    const map=p=>DocumentPaths.map(p,from,to);
+    selectedPath=selectedPath?map(selectedPath):selectedPath;anchorPath=anchorPath?map(anchorPath):anchorPath;
+    for(const set of [selectedPaths,hiddenSet]) {const list=[...set].map(map);set.clear();list.forEach(p=>set.add(norm(p)));}
+    const dirs=[...expanded].map(map);expanded.clear();dirs.forEach(p=>expanded.add(p));
+    copiedPaths=copiedPaths.map(map);saveHidden();invalidateAll();
+  }
+  async function performPathChange(source,targetRange,operation,expectedSource) {
+    const operationRoot=rootPath;
+    if(DocumentPaths.key(source)===DocumentPaths.key(operationRoot))return {error:'请先打开父目录，再移动或重命名此项目文件夹',errorCode:'PROJECT_ROOT'};
+    const perform=async(documents=[],openTargets=[])=>{
+      if(rootPath!==operationRoot)return {error:'项目已切换，路径操作未执行',errorCode:'PROJECT_CHANGED'};
+      let snapshot=expectedSource;
+      if(!snapshot) {
+        const r=await window.myIDE.fs.pathSnapshot(source);
+        if(!r?.snapshot)return r||{error:'源版本读取失败'};
+        snapshot=r.snapshot;
+      }
+      if(rootPath!==operationRoot)return {error:'项目已切换，路径操作未执行',errorCode:'PROJECT_CHANGED'};
+      const r=await operation({expectedSource:snapshot,documents,openTargets});
+      if(r?.ok&&!r.noop&&rootPath===operationRoot)remapTree(source,r.newPath||r.path||r.target);
+      if(r?.warning)MI.toast(r.warning+'；输入仍保留，请通过保存恢复继续', 'err');
+      return r;
+    };
+    try {
+      return window.Viewer?.withPathChange?await Viewer.withPathChange(source,targetRange,perform):await perform();
+    }catch(e){return {error:String(e.message||e),errorCode:e.code||'MOVE_FAILED'};}
+  }
   function pushUndo(a) { undoStack.push(a); if (undoStack.length > 50) undoStack.shift(); }
   async function undo() {
+    if(undoBusy)return;
+    const latest=undoStack[undoStack.length-1];
+    if(latest && ['rename','move'].includes(latest.type)) {
+      if(!latest.oldPath||!latest.after){MI.toast('迁移后的版本未能核对，撤销记录已保留，请先核对磁盘', 'err');return;}
+      undoBusy=true;
+      try {
+        const r=await performPathChange(latest.newPath,latest.oldPath,(condition)=>window.myIDE.fs.relocate(latest.newPath,latest.oldPath,condition),latest.after);
+        if(!r?.ok){MI.toast('撤销失败: '+(r?.error||'未返回成功')+'；记录已保留，可重试', 'err');return;}
+        const i=undoStack.indexOf(latest);if(i>=0)undoStack.splice(i,1);
+        invalidateAll();render();App.refreshGit();MI.toast('↩ 已撤销 '+latest.label, 'ok');
+      }finally{undoBusy=false;}
+      return;
+    }
     const a = undoStack.pop();
     if (!a) { MI.toast('没有可撤销的文件操作', 'err'); return; }
     try {
@@ -988,13 +1031,14 @@ const Tree = (() => {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
 
   async function renameItem(item) {
+    const operationRoot=rootPath;
     const name = await Modal.prompt('重命名', '新名称：', item.name);
     if (!name || name === item.name) return;
-    const r = await window.myIDE.fs.rename(item.path, name);
+    if(rootPath!==operationRoot){MI.toast('项目已切换，重命名未执行', 'err');return;}
+    const targetRange=item.path.replace(/[\\/][^\\/]+$/, '')+'/'+name;
+    const r = await performPathChange(item.path,targetRange,(condition)=>window.myIDE.fs.rename(item.path,name,condition));
     if (r.ok) {
-      pushUndo({ type: 'rename', newPath: r.path, oldName: item.name, label: item.name + ' 的重命名' });
-      // 先同步已打开标签（旧路径 → 新路径）：否则 dirty 标签的自动保存会用旧路径把旧文件"复活"
-      if (window.Viewer && Viewer.renamed) Viewer.renamed(item.path, r.path);
+      if(!r.noop)pushUndo({ type: 'rename', oldPath: item.path, newPath: r.path, after:r.after, oldName: item.name, label: item.name + ' 的重命名' });
       invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit();
     }
     else MI.toast('重命名失败: ' + r.error, 'err');

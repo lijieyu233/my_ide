@@ -138,6 +138,12 @@ async function checkPackaged(executable, noGit = false) {
     await renderer('Viewer.showSaveRecovery()');await renderer('document.querySelector(".save-overwrite").click()');
     for(let i=0;i<50 && await renderer('Viewer.activeTab.dirty');i++)await sleep(50);
     add('包内比较后的明确覆盖返回新版本',fs.readFileSync(file,'utf8')==='包内未保存输入' && await renderer('!Viewer.activeTab.dirty && !!Viewer.activeTab.diskVersion.hash'));
+    const movedFile=path.join(project,'packaged-renamed.txt');
+    await renderer(`(async()=>{const prompt=Modal.prompt;try{Modal.prompt=async()=>"packaged-renamed.txt";Viewer.cm.setValue("迁移保留的包内输入");await Tree.renameItem({path:${JSON.stringify(file)},name:${JSON.stringify(path.basename(file))},type:"file"});}finally{Modal.prompt=prompt;}})()`);
+    add('包内原生排他改名同步文档并保留dirty',!fs.existsSync(file)&&fs.existsSync(movedFile)&&await renderer(`DocumentPaths.key(Viewer.activeTab.path)===DocumentPaths.key(${JSON.stringify(movedFile)})&&Viewer.activeTab.dirty&&Viewer.cm.getValue()==="迁移保留的包内输入"`));
+    await renderer('Tree.undo()');
+    const savedUndo=await renderer('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+    add('包内undo原路径与新基线可保存',savedUndo.ok&&fs.readFileSync(file,'utf8')==='迁移保留的包内输入'&&!fs.existsSync(movedFile));
     console.log('CHECK Git init/status');
     const git = await renderer(`(async()=>{ const root=${JSON.stringify(project)}; const init=await myIDE.git.init(root); const status=await myIDE.git.status(root); const backend=await myIDE.git.backendInfo(true); await App.showTool('git'); return {init,status,backend,panel:!document.getElementById('panel-git').classList.contains('hidden')};})()`);
     add('真实Git IPC/Worker及面板加载', git.init.ok && git.status.isRepo && git.panel, git);

@@ -27,7 +27,7 @@ async function test(name, fn) {
 (async () => {
   try {
     // 来自实际生产入口的文件与HTML；不从package.json.build.files构造“必需文件”。
-    const production = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
+    const production = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-native.js',
       'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));

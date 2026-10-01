@@ -7,6 +7,7 @@ const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
 const FileWrite = require('./file-write');
+const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
 AI.init(net);
 
@@ -451,6 +452,7 @@ ipcMain.handle('fs:fileVersion', (_e, p) => {
 // 写二进制文件（粘贴图片等）：base64 → Buffer 写盘，父目录自动创建
 ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
   try {
+    PathJobs.assertWritable(p);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     return FileWrite.atomicWrite(p, Buffer.from(String(base64 || ''), 'base64'));
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError }; }
@@ -531,13 +533,15 @@ ipcMain.handle('ai:abort', () => { AI.abortChat(); return { ok: true }; });
 
 ipcMain.handle('fs:mkdir', (_e, p) => {
   try {
+    PathJobs.assertWritable(p);
     fs.mkdirSync(p, { recursive: true });
     return { ok: true };
-  } catch (e) { return { error: String(e.message || e) }; }
+  } catch (e) { return { error: String(e.message || e), errorCode:e.code||'MKDIR_FAILED' }; }
 });
 
 ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
   try {
+    PathJobs.assertWritable(p);
     if (!format || typeof format === 'string') {
       const selected = format && String(format).toLowerCase().replace(/[-_]/g, '');
       let original;
@@ -557,35 +561,20 @@ ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 });
 
-ipcMain.handle('fs:rename', (_e, p, newName) => {
-  try {
-    const np = path.join(path.dirname(p), newName);
-    fs.renameSync(p, np);
-    return { ok: true, path: np };
-  } catch (e) { return { error: String(e.message || e) }; }
-});
+const pathResult = async (fn) => { try { return await fn(); } catch(e) { return { error: String(e.message || e), errorCode: e.code || 'MOVE_FAILED' }; } };
+ipcMain.handle('fs:pathSnapshot', (_e, p) => pathResult(async () => ({ snapshot: await PathJobs.run('snapshot',[p]) })));
+ipcMain.handle('fs:relocate', (_e, p, target, condition) => pathResult(() => PathJobs.withMove(p,target,()=>PathJobs.run('relocate',[p,target,condition]))));
+ipcMain.handle('fs:rename', (_e, p, newName, condition) => pathResult(() => PathJobs.withMove(p,path.join(path.dirname(p),String(newName)),()=>PathJobs.run('rename',[p,newName,condition]))));
 
 // 移动文件/目录到目标目录（树内拖拽移动；重名自动改名 name (1).ext）
-ipcMain.handle('fs:move', (_e, src, destDir) => {
-  try {
-    if (!fs.existsSync(src)) return { error: '源文件不存在' };
-    const name = path.basename(src);
-    const ext = path.extname(name);
-    const base = path.basename(name, ext);
-    let target = path.join(destDir, name);
-    for (let i = 1; fs.existsSync(target); i++) {
-      target = path.join(destDir, base + ' (' + i + ')' + ext);
-    }
-    fs.renameSync(src, target);
-    return { ok: true, target };
-  } catch (e) { return { error: String(e.message || e) }; }
-});
+ipcMain.handle('fs:move', (_e, src, destDir, condition) => pathResult(() => PathJobs.withMove(src,destDir,()=>PathJobs.run('moveTo',[src,destDir,condition]))));
 
 ipcMain.handle('fs:remove', (_e, p) => {
   try {
+    PathJobs.assertWritable(p);
     fs.rmSync(p, { recursive: true, force: true });
     return { ok: true };
-  } catch (e) { return { error: String(e.message || e) }; }
+  } catch (e) { return { error: String(e.message || e), errorCode:e.code||'REMOVE_FAILED' }; }
 });
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
@@ -895,6 +884,7 @@ ipcMain.handle('fs:checkExists', (_e, srcPaths, destDir) => {
 // 复制文件/目录到目标目录（同名：默认返回 conflict 由前端确认；overwrite=true 直接覆盖）
 ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => {
   try {
+    PathJobs.assertWritable(src);PathJobs.assertWritable(destDir);
     const name = path.basename(src);
     const target = path.join(destDir, name);
     if (!overwrite && fs.existsSync(target)) return { conflict: true, target };
@@ -902,7 +892,7 @@ ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => {
     if (st.isDirectory()) fs.cpSync(src, target, { recursive: true });
     else fs.copyFileSync(src, target);
     return { ok: true, target };
-  } catch (e) { return { error: String(e.message || e) }; }
+  } catch (e) { return { error: String(e.message || e), errorCode:e.code||'COPY_FAILED' }; }
 });
 
 // ---------- IPC：Git（worker 线程执行，主进程不阻塞）----------

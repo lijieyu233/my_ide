@@ -1465,6 +1465,7 @@ const AiPanel = (() => {
     ctxFiles = ctxFiles.filter((x) => !x.auto);
     if (path && !followMuted.has(path)) {
       const r = await window.myIDE.fs.readFile(path);
+      if(followPath!==path || Viewer.activeTab!==tab || tab.path!==path)return;
       if (r && !r.error) {
         let content = r.content || '';
         if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
@@ -2219,6 +2220,12 @@ const AiPanel = (() => {
     return true;
   }
 
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, onProjectChange };
+  function pathsMoved(from,to) {
+    ctxFiles=ctxFiles.map(f=>({...f,path:DocumentPaths.map(f.path,from,to)}));
+    const muted=[...followMuted].map(p=>DocumentPaths.map(p,from,to));followMuted.clear();muted.forEach(p=>followMuted.add(p));
+    if(followPath)followPath=DocumentPaths.map(followPath,from,to);
+    mentionCache=null;rulesRoot=null;renderChips();renderFollow();
+  }
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, onProjectChange };
 })();
 window.AiPanel = AiPanel;
