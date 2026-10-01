@@ -2432,6 +2432,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     // mock 每个标签的矩形（jsdom getBoundingClientRect 全 0）
     const tabs = $allIn($(dom, '#tabbar'), '.tab');
+    $(dom, '#tab-scroll').getBoundingClientRect=()=>({left:0,right:600,top:0,bottom:24,width:600,height:24});
     tabs.forEach((t, j) => { t.getBoundingClientRect = () => ({ left: j * 100, width: 100, top: 0, height: 24, right: j * 100 + 100, bottom: 24 }); });
     // 拖 tab0 到 tab1 之后：mousedown(50) → mousemove(160) → mouseup
     tabs[0].dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 50 }));
@@ -8664,15 +8665,86 @@ assert_(panel, 'CM6 搜索面板出现');
   await saveCase('关闭确认绑定标签，索引变化不误关其他文件', async (d, viewer) => {
     await viewer.openFile(P + '/README.md');
     viewer.cm.setValue('# 待关闭');
-    const target = viewer.activeTab, wait = deferred();
-    d.window.Modal.confirm = () => wait.promise;
-    viewer.closeTab(1);
+    const target = viewer.activeTab;
+    const pending = viewer.closeTab(1);
     viewer.closeTab(0);
     await viewer.openFile(P + '/src/app.js');
     const other = viewer.activeTab;
-    wait.resolve(true);
-    await tick();
+    d.window.document.querySelector('.close-tabs-discard').click();
+    await pending;
     assert_(!viewer.openTabs.includes(target) && viewer.openTabs.includes(other), '只关闭已确认对象');
+  });
+
+  const tabMenuAction=(d,viewer,tab,label)=>{
+    const el=[...d.window.document.querySelectorAll('#tab-scroll .tab')].find(el=>el.dataset.tabId===String(tab.id));
+    el.dispatchEvent(new d.window.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
+    return [...d.window.document.querySelectorAll('#ctx-menu .ctx-item')].find(el=>el.textContent===label).onclick();
+  };
+  const beginTabDrag=(d,viewer,tab)=>{
+    const doc=d.window.document,bar=doc.querySelector('#tab-scroll');
+    bar.getBoundingClientRect=()=>({left:0,right:1000,top:0,bottom:40,width:1000,height:40});
+    [...bar.querySelectorAll('.tab')].forEach(el=>{el.getBoundingClientRect=()=>{const i=[...bar.querySelectorAll('.tab')].indexOf(el);return {left:i*100,right:i*100+100,top:0,bottom:40,width:100,height:40};};});
+    const el=[...bar.querySelectorAll('.tab')].find(el=>el.dataset.tabId===String(tab.id));
+    el.dispatchEvent(new d.window.MouseEvent('mousedown',{bubbles:true,button:0,clientX:el.getBoundingClientRect().left+10,clientY:20}));
+    doc.dispatchEvent(new d.window.MouseEvent('mousemove',{bubbles:true,clientX:800,clientY:20}));return el;
+  };
+  await saveCase('关闭左右后台标签保持同一CM实例/选区，关闭当前选右侧后继',async(d,viewer)=>{
+    const a=viewer.activeTab;await viewer.openFile(P+'/README.md');const b=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const c=viewer.activeTab;
+    viewer.activate(1);const cm=viewer.cm;cm.view.dispatch({selection:{anchor:2}});await viewer.closeTab(0);assert.equal(viewer.activeTab,b);assert.equal(viewer.cm,cm);assert.equal(cm.view.state.selection.main.head,2);
+    await viewer.openFile(a.path);viewer.activate(viewer.openTabs.indexOf(b));const same=viewer.cm;await viewer.closeTab(viewer.openTabs.indexOf(c));assert.equal(viewer.activeTab,b);assert.equal(viewer.cm,same);
+    await viewer.openFile(c.path);const successor=viewer.activeTab;viewer.activate(viewer.openTabs.indexOf(b));await viewer.closeTab(viewer.openTabs.indexOf(b));assert.equal(viewer.activeTab,viewer.openTabs.find(t=>t.path===a.path));await viewer.closeTab(viewer.openTabs.indexOf(successor));assert.equal(viewer.activeTab.path,a.path);
+  });
+  await saveCase('拖动活动标签只改顺序，最终click不切对象且输入保存仍写原文件',async(d,viewer)=>{
+    const a=viewer.activeTab;await viewer.openFile(P+'/README.md');await viewer.openFile(P+'/src/app.js');viewer.activate(0);const cm=viewer.cm;
+    const el=beginTabDrag(d,viewer,a);d.window.document.dispatchEvent(new d.window.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:20}));
+    d.window.document.querySelector('#tab-scroll .tab').dispatchEvent(new d.window.MouseEvent('click',{bubbles:true,cancelable:true,detail:1}));assert.equal(viewer.activeTab,a);assert.equal(viewer.cm,cm);assert.equal(viewer.openTabs.at(-1),a);assert(!el.isConnected);
+    cm.setValue('排序后只保存A');assert(a.dirty);assert(viewer.openTabs.filter(t=>t!==a).every(t=>!t.dirty));await viewer.saveTab(viewer.openTabs.indexOf(a));assert.equal(FAKE_FS[a.path].content,'排序后只保存A');assert.equal(viewer.cm,cm);
+    d.window.Session.saveNow();const saved=JSON.parse(d.window.localStorage.getItem('myide-session:'+P));assert.equal(saved.active,a.path);assert.equal(saved.tabs.at(-1).p,a.path);
+  });
+  await saveCase('拖动后台标签、取消/失焦/窗口外释放与dirty重绘均不改变活动身份',async(d,viewer)=>{
+    const a=viewer.activeTab;await viewer.openFile(P+'/README.md');await viewer.openFile(P+'/src/app.js');const active=viewer.activeTab,cm=viewer.cm;
+    for(const mode of ['esc','blur','pointercancel','outside','dirty']){
+      const order=viewer.openTabs.map(t=>t.id);beginTabDrag(d,viewer,a);
+      if(mode==='esc')d.window.document.dispatchEvent(new d.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+      if(mode==='blur')d.window.dispatchEvent(new d.window.Event('blur'));
+      if(mode==='pointercancel')d.window.document.dispatchEvent(new d.window.Event('pointercancel'));
+      if(mode==='dirty')cm.setValue('重绘中仍编辑当前'+mode);
+      d.window.document.dispatchEvent(new d.window.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:mode==='outside'?80:20}));
+      assert.deepEqual(viewer.openTabs.map(t=>t.id),order);assert.equal(viewer.activeTab,active);assert.equal(viewer.cm,cm);assert(!d.window.document.querySelector('.dragging'));
+    }
+    beginTabDrag(d,viewer,a);d.window.document.dispatchEvent(new d.window.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:20}));assert.equal(viewer.openTabs.at(-1),a);assert.equal(viewer.activeTab,active);assert.equal(viewer.cm,cm);
+  });
+  await saveCase('关闭全部只有一个决策，取消不提前关闭干净标签',async(d,viewer)=>{
+    viewer.cm.setValue('A未保存');await viewer.openFile(P+'/README.md');viewer.cm.setValue('B未保存');await viewer.openFile(P+'/src/app.js');const order=[...viewer.openTabs],active=viewer.activeTab,cm=viewer.cm;
+    const pending=tabMenuAction(d,viewer,active,'🗑 关闭全部');assert.equal(d.window.document.querySelectorAll('.close-tabs-dialog').length,1);assert.equal(viewer.openTabs.length,3);assert.equal(d.window.document.querySelectorAll('.close-tabs-list li').length,2);
+    const duplicate=tabMenuAction(d,viewer,active,'🗑 关闭全部');assert.equal(await duplicate,false);assert.equal(d.window.document.querySelectorAll('.close-tabs-dialog').length,1);d.window.document.querySelector('.m-cancel').click();assert.equal(await pending,false);assert.deepEqual([...viewer.openTabs],order);assert.equal(viewer.activeTab,active);assert.equal(viewer.cm,cm);
+  });
+  await saveCase('单标签放弃确认期间新输入保留，空工作区焦点回打开入口',async(d,viewer)=>{
+    const tab=viewer.activeTab;viewer.cm.setValue('原确认正文');const pending=viewer.closeTab(0);viewer.cm.setValue('确认期间新输入');d.window.document.querySelector('.close-tabs-discard').click();assert.equal(await pending,false);assert.equal(viewer.activeTab,tab);assert.equal(tab.content,'确认期间新输入');
+    const retry=viewer.closeTab(0);d.window.document.querySelector('.close-tabs-discard').click();assert.equal(await retry,true);assert.equal(viewer.openTabs.length,0);assert.equal(d.window.document.activeElement.id,'btn-open');
+  });
+  await saveCase('批量保存一项失败保留整个集合，成功项不回滚且重试可以关闭',async(d,viewer,bridge)=>{
+    const a=viewer.activeTab;viewer.cm.setValue('A要保存');await viewer.openFile(P+'/README.md');const b=viewer.activeTab;viewer.cm.setValue('B要保存');await viewer.openFile(P+'/src/app.js');const c=viewer.activeTab,write=bridge.writeFile;
+    bridge.writeFile=async(p,...args)=>p===b.path?{ok:false,error:'fixture EACCES'}:write(p,...args);
+    const first=tabMenuAction(d,viewer,c,'🗑 关闭全部');d.window.document.querySelector('.close-tabs-save').click();assert.equal(await first,false);assert.equal(viewer.openTabs.length,3);assert.equal(FAKE_FS[a.path].content,'A要保存');assert(!a.dirty&&b.dirty);assert.equal(viewer.activeTab,c);
+    bridge.writeFile=write;const second=tabMenuAction(d,viewer,c,'🗑 关闭全部');d.window.document.querySelector('.close-tabs-save').click();assert.equal(await second,true);assert.equal(viewer.openTabs.length,0);assert.equal(FAKE_FS[b.path].content,'B要保存');
+  });
+  await saveCase('批量关闭保存等待期间干净文件新输入/路径变化不会被关闭',async(d,viewer,bridge)=>{
+    const a=viewer.activeTab;viewer.cm.setValue('A待保存');await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab,gate=deferred(),write=bridge.writeFile;let entered=false;
+    bridge.writeFile=async(...args)=>{entered=true;await gate.promise;return write(...args);};const pending=tabMenuAction(d,viewer,b,'🗑 关闭全部');d.window.document.querySelector('.close-tabs-save').click();for(let i=0;i<10&&!entered;i++)await tick();assert(entered);viewer.cm.setValue('保存等待中B新输入');gate.resolve();assert.equal(await pending,false);assert(viewer.openTabs.includes(a)&&viewer.openTabs.includes(b));assert.equal(b.content,'保存等待中B新输入');
+    const move=tabMenuAction(d,viewer,b,'🗑 关闭全部');viewer.renamed(b.path,P+'/src/moved.js');d.window.document.querySelector('.close-tabs-discard').click();assert.equal(await move,false);assert(viewer.openTabs.includes(b));
+  });
+  await saveCase('关闭其他和旧菜单回调按标签对象解析，强制项目离开取消旧关闭决策',async(d,viewer)=>{
+    const a=viewer.activeTab;await viewer.openFile(P+'/README.md');const b=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const c=viewer.activeTab;
+    const el=[...d.window.document.querySelectorAll('.tab')].find(el=>el.dataset.tabId===String(b.id));el.dispatchEvent(new d.window.MouseEvent('contextmenu',{bubbles:true,cancelable:true}));const close=[...d.window.document.querySelectorAll('#ctx-menu .ctx-item')].find(el=>el.textContent==='✕ 关闭').onclick;
+    await viewer.closeTab(0);await close();assert(!viewer.openTabs.includes(b));assert.equal(viewer.activeTab,c);
+    viewer.cm.setValue('C未保存');const pending=tabMenuAction(d,viewer,c,'🗑 关闭全部');viewer.closeAll();assert.equal(await pending,false);assert(!d.window.document.querySelector('.close-tabs-dialog'));await viewer.openFile(a.path);const current=viewer.activeTab;await close();assert.equal(viewer.activeTab,current);
+  });
+  await saveCase('迟到后台读取不重建当前CM，关闭读取中标签拒绝迟到正文',async(d,viewer,bridge)=>{
+    const a=viewer.activeTab,read=bridge.readFile,gate=deferred();bridge.readFile=async(p,...args)=>{if(p===P+'/src/app.js')await gate.promise;return read(p,...args);};const pending=viewer.openFile(P+'/src/app.js'),b=viewer.activeTab;viewer.activate(viewer.openTabs.indexOf(a));const cm=viewer.cm;await viewer.closeTab(viewer.openTabs.indexOf(b));gate.resolve();await pending;assert.equal(viewer.activeTab,a);assert.equal(viewer.cm,cm);assert(!viewer.openTabs.includes(b));
+  });
+  await saveCase('同一Windows路径不同斜杠/大小写复用文档身份，懒恢复不重复登记',async(d,viewer)=>{
+    const tab=viewer.activeTab;await viewer.openFile(tab.path.replaceAll('/','\\').toUpperCase());assert.equal(viewer.openTabs.length,1);assert.equal(viewer.activeTab,tab);viewer.addLazyTab(tab.path.replaceAll('/','\\'));assert.equal(viewer.openTabs.length,1);
   });
 
   await saveCase('已关闭标签的排队保存不再写盘或影响重开标签', async (_d, viewer, bridge) => {
