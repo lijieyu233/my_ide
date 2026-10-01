@@ -50,13 +50,17 @@ if (!process.argv.includes('--headless')) process.argv.push('--headless');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lines = [];
 let passed = 0, failed = 0, releaseWrite = null, writeStarted = false, saveChoice = null, releaseCreateUndo = null, createUndoStarted = false, releaseCopy = null, copyStarted = false, releaseDelete=null, deleteStarted=false;
+let readGate=null;
 const add = (name, ok) => {
   if (ok) passed++; else failed++;
   lines.push((ok ? 'PASS ' : 'FAIL ') + name);
   console.log(lines[lines.length - 1]);
 };
 const register = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:deleteCommit' ? async(...args)=>{
+ipcMain.handle = (channel, handler) => register(channel, channel === 'fs:readFile' ? async(...args)=>{
+  if(readGate && args[1]===readGate.path)await readGate.promise;
+  return handler(...args);
+} : channel === 'fs:deleteCommit' ? async(...args)=>{
   if(releaseDelete){deleteStarted=true;await releaseDelete.promise;releaseDelete=null;}return handler(...args);
 } : channel === 'fs:copyCommit' ? async(...args)=>{
   if(releaseCopy){copyStarted=true;await releaseCopy.promise;releaseCopy=null;}
@@ -95,7 +99,45 @@ app.whenReady().then(async () => {
     add('自检窗口始终隐藏', !win.isVisible());
     await run(`App.openProject(${JSON.stringify(projectA)})`);
     await run(`Viewer.openFile(${JSON.stringify(file)})`);
-    await run('Viewer.cm.setValue("失败后必须保留的正文")');
+    {
+      const captureFind=async label=>{for(const theme of ['dark','light']){await run(`Theme.set(${JSON.stringify(theme)})`);await sleep(100);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(ROOT,'.ui-check-trash','find124-'+label+'-'+theme+'.png'),Buffer.from(shot.data,'base64'));}};
+      const target=path.join(projectA,'find-loading.js');fs.writeFileSync(target,'NEW DOCUMENT\n');
+      await run('Viewer.cm.find();window.__findOld=Viewer.cm;window.__findTab=Viewer.activeTab;CM6.Search.replaceAll(__findOld.view);true');
+      const original=fs.readFileSync(file);let release;readGate={path:target,promise:new Promise(r=>release=r)};
+      await run(`window.__findPending=Viewer.openFile(${JSON.stringify(target)});true`);await sleep(50);
+      await run('Viewer.openFind(true);__findOld.view.dispatch({effects:CM6.Search.setSearchQuery.of(new CM6.Search.SearchQuery({search:"original",replace:"WRONG"}))});CM6.Search.replaceAll(__findOld.view);__findOld.setValue("WRONG");true');
+      add('真实加载期间旧CM只读，原生搜索事务与Viewer入口都不能修改旧正文',await run('__findOld.view.state.readOnly&&__findTab.content==="original"&&!__findTab.dirty&&!!document.querySelector(".viewer-loading")')&&fs.readFileSync(file).equals(original));
+      await captureFind('loading');
+      add('真实加载提示可见且不与旧CM搜索面板重叠',await run('(()=>{const s=document.querySelector(".viewer-loading"),r=s.getBoundingClientRect(),cm=__findOld.view.dom.getBoundingClientRect(),v=document.querySelector("#viewer").getBoundingClientRect();return r.height>0&&r.top>=v.top&&r.bottom<=cm.top&&!s.inert&&s.textContent.includes("notes.txt");})()'));
+      await run('Viewer.activate(Viewer.openTabs.indexOf(__findTab));true');
+      add('真实返回原标签编辑器恢复可编辑',await run('!Viewer.cm.view.state.readOnly&&Viewer.cm.getValue()==="original"'));
+      release();readGate=null;await run('__findPending');
+      add('迟到新文件读取不切换当前原文档',await run('Viewer.activeTab===__findTab&&Viewer.cm.getValue()==="original"'));
+      const md=path.join(projectA,'find-format.md'),raw=Buffer.concat([Buffer.from([239,187,191]),Buffer.from('# 标题\r\nalpha\r\nalpha\n终行\r','utf8')]);fs.writeFileSync(md,raw);
+      for(const mode of ['live','source']){
+        fs.writeFileSync(md,raw);await run('Viewer.closeAll();true');await run(`Viewer.openFile(${JSON.stringify(md)})`);
+        await run(`Viewer.activeTab.mode=${JSON.stringify(mode)};Viewer.renderActive();Viewer.cm.find();Viewer.cm.view.dispatch({effects:CM6.Search.setSearchQuery.of(new CM6.Search.SearchQuery({search:'alpha',replace:'OMEGA'}))});CM6.Search.replaceAll(Viewer.cm.view);true`);
+        const saved=await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+        add('真实'+mode+'搜索替换保存保留BOM与混合行尾',saved.ok&&fs.readFileSync(md).equals(Buffer.concat([raw.subarray(0,3),Buffer.from('# 标题\r\nOMEGA\r\nOMEGA\n终行\r','utf8')])));
+        await run('CM6.Commands.undo(Viewer.cm.view);true');await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+        add('真实'+mode+'搜索撤销后原字节恢复',fs.readFileSync(md).equals(raw));
+      }
+      await run('Viewer.activeTab.mode="split";Viewer.renderActive();Viewer.openFind(true);document.querySelector("#find-input").value="alpha";document.querySelector("#find-input").dispatchEvent(new Event("input"));document.querySelector("#find-replace-input").value="OMEGA";window.__findOne=document.querySelector("#find-rep-one");Viewer.activeTab.ta.value="前缀\\n"+Viewer.activeTab.ta.value;Viewer.activeTab.ta.setSelectionRange(0,0);Viewer.activeTab.ta.dispatchEvent(new Event("input"));__findOne.click();true');
+      add('真实split输入后只替换新位置的匹配，不改标题',await run('Viewer.activeTab.ta.value.startsWith("前缀\\n# 标题\\nOMEGA\\nalpha")&&document.querySelector("#find-count").textContent==="1/1"'));
+      await captureFind('split');
+      await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');const splitSaved=Buffer.concat([raw.subarray(0,3),Buffer.from('前缀\r\n# 标题\r\nOMEGA\r\nalpha\n终行\r','utf8')]);
+      add('真实split替换经IPC保存保留未触及行尾/BOM',fs.readFileSync(md).equals(splitSaved));
+      await run('Viewer.activeTab.ta.setSelectionRange(0,0);true');
+      fs.writeFileSync(md,Buffer.concat([raw.subarray(0,3),Buffer.from('前缀 alpha alpha\r\n','utf8')]));
+      win.webContents.send('fs:changed');await sleep(1000);
+      add('真实外部文件经IPC重载后保留查询并从原位置更新完整计数',await run('!Viewer.activeTab.dirty&&Viewer.activeTab.ta.value==="前缀 alpha alpha\\n"&&document.querySelector("#find-input").value==="alpha"&&document.querySelector("#find-count").textContent==="1/2"'));
+      await run('__findOne.click();Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
+      add('真实外部重载后替换并保存只改新位置且保留BOM/CRLF',fs.readFileSync(md).equals(Buffer.concat([raw.subarray(0,3),Buffer.from('前缀 OMEGA alpha\r\n','utf8')])));
+      await run('window.__findContent=Viewer.activeTab.content;Viewer.activeTab.mode="preview";Viewer.renderActive();Viewer.openFind(true);__findOne.onclick();true');
+      add('真实split切preview旧替换按钮无效且textarea注销',await run('Viewer.activeTab.content===__findContent&&Viewer.activeTab.ta===null&&!document.querySelector(".find-bar")'));
+      await run('Viewer.closeAll();true');await run(`Viewer.openFile(${JSON.stringify(file)})`);
+    }
+    await run('document.getElementById("toast-wrap").innerHTML="";Viewer.cm.setValue("失败后必须保留的正文")');
     fs.unlinkSync(file); fs.mkdirSync(file);
     const leave = await run(`App.openProject(${JSON.stringify(projectB)})`);
     const failure = await run('({root:App.root, content:Viewer.activeTab.content, dirty:Viewer.activeTab.dirty, tabs:Viewer.openTabs.length, notice:document.getElementById("toast-wrap").textContent})');

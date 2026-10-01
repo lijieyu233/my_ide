@@ -9,6 +9,7 @@ window.CodeEditor = (() => {
   const { State, View, Language, Commands, Search, Autocomplete, Highlight, CodeLangs } = CM;
   const { EditorView, keymap } = View;
   const { EditorState } = State;
+  const readOnlyComp = new State.Compartment();
 
   // ---------- 语法高亮配色（One Dark，与 md-editor.js / 预览 atom-one-dark 同源） ----------
   const T = Highlight.tags;
@@ -286,7 +287,13 @@ window.CodeEditor = (() => {
         }),
       ],
     });
-    const view = new EditorView({ state, parent });
+    const view = new EditorView({ state, parent, dispatchTransactions(trs, current) {
+      // 搜索按钮、快捷键和迟到补全都可能直接派发事务；DOM禁用不能代替正文归属检查。
+      if (opts.canEdit && !opts.canEdit() && trs.some(tr => tr.docChanged || TextLines.raw(tr.startState) !== TextLines.raw(tr.state))) return;
+      current.update(trs);
+    } });
+    view.dispatch({ effects: readOnlyComp.get(view.state) === undefined
+      ? State.StateEffect.appendConfig.of(readOnlyComp.of([])) : readOnlyComp.reconfigure([]) });
     view._ghostConf = ghostConf; // ghost 补全 dispatch 用（模块级函数取）
     // 关闭 Chromium 拼写检查（代码文件不需要下划线拼写提示）
     view.contentDOM.spellcheck = false;
@@ -295,6 +302,7 @@ window.CodeEditor = (() => {
 
     return {
       view,
+      setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); },
       getValue() { return view.state.doc.toString(); },
       getState() { return view.state; },

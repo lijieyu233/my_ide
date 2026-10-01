@@ -1464,7 +1464,8 @@ const AiPanel = (() => {
     followPath = path;
     ctxFiles = ctxFiles.filter((x) => !x.auto);
     if (path && !followMuted.has(path)) {
-      const r = await window.myIDE.fs.readFile(path);
+      // 标签读取失败时，自动跟随同样可能失败；不能留下未处理的拒绝或沿用旧文件上下文。
+      const r = await window.myIDE.fs.readFile(path).catch(() => null);
       if(followPath!==path || Viewer.activeTab!==tab || tab.path!==path)return;
       if (r && !r.error) {
         let content = r.content || '';

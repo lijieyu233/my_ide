@@ -1909,6 +1909,7 @@ window.MdEditor = (() => {
     return ext;
   }
 
+  const readOnlyComp = new State.Compartment();
   function create(opts) {
     const parent = opts.parent;
     const liveOn = opts.live !== false;
@@ -1923,7 +1924,12 @@ window.MdEditor = (() => {
         liveComp.of(liveOn ? liveExts : []),
       ],
     });
-    const view = new EditorView({ state, parent });
+    const view = new EditorView({ state, parent, dispatchTransactions(trs, current) {
+      if (opts.canEdit && !opts.canEdit() && trs.some(tr => tr.docChanged || TextLines.raw(tr.startState) !== TextLines.raw(tr.state))) return;
+      current.update(trs);
+    } });
+    view.dispatch({ effects: readOnlyComp.get(view.state) === undefined
+      ? State.StateEffect.appendConfig.of(readOnlyComp.of([])) : readOnlyComp.reconfigure([]) });
     // widget（mermaid/图片）异步把高度撑大后，必须让 CM6 立刻重测 —— 否则它对
     // viewport 外的行仍用估算高度，下方内容的选区/点击坐标整体错位
     liveView = view;
@@ -1938,6 +1944,7 @@ window.MdEditor = (() => {
 
     return {
       view,
+      setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); },
       getValue() { return view.state.doc.toString(); },
       getState() { return view.state; },

@@ -260,6 +260,7 @@ const Viewer = (() => {
     if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) {
       tab.content = '';
       tab.mode = 'preview';
+      renderTabs();
       renderView();
       return;
     }
@@ -269,11 +270,14 @@ const Viewer = (() => {
       tab.binary = true;
       tab.officeOld = true;
       tab.mode = 'error';
+      renderTabs();
       renderView();
       return;
     }
     const readPath = tab.path, generation = tab.pathGeneration || 0;
-    const r = await window.myIDE.fs.readFile(readPath);
+    let r;
+    try { r = await window.myIDE.fs.readFile(readPath); }
+    catch(e) { r={error:String(e?.message||e||'读取文件失败')}; }
     if (!tabs.includes(tab)) return;
     if (tab.path !== readPath || (tab.pathGeneration || 0) !== generation) return tab.mode == null ? loadTab(tab) : undefined;
     if (r.error) { tab.error = r.error; tab.mode = 'error'; }
@@ -295,6 +299,7 @@ const Viewer = (() => {
         tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
       }
     }
+    renderTabs();
     renderView();
   }
 
@@ -515,7 +520,7 @@ const Viewer = (() => {
       const nm = document.createElement('span');
       nm.className = 'tname';
       // 中段省略：保住编号前缀与扩展名（末尾省略会让一排 tab 全长得一样）
-      nm.textContent = (t.dirty ? '● ' : '') + (window.App && App.fitName ? App.fitName(t.name, 17) : t.name);
+      nm.textContent = (t.mode==null ? '加载中 · ' : t.dirty ? '● ' : '') + (window.App && App.fitName ? App.fitName(t.name, 17) : t.name);
       el.appendChild(nm);
       const x = document.createElement('span');
       x.className = 'tclose';
@@ -633,7 +638,15 @@ const Viewer = (() => {
   }
 
   // ---------- 视图渲染 ----------
+  let viewGeneration = 0;
+  function editorScope(tab, parent) {
+    const epoch=viewGeneration, project=MI.activeRoot, path=tab.path, generation=tab.pathGeneration||0, mode=tab.mode;
+    return () => epoch===viewGeneration && MI.activeRoot===project && tabs[active]===tab && tabs.includes(tab)
+      && tab.path===path && (tab.pathGeneration||0)===generation && tab.mode===mode && parent.isConnected;
+  }
   function renderView() {
+    viewGeneration++;
+    closeFind();
     blameOn = false; // 切换标签/视图后 gutter 已重建，注解需重新开启
     // ⚠ 先判断「这一帧有没有内容可画」，再销毁旧编辑器 / 清空容器。
     //   新标签是「先 activate 再 loadTab」，而 loadTab 要 await 读盘 —— 旧写法上来就
@@ -641,13 +654,22 @@ const Viewer = (() => {
     //   切成一个还没打开过的文件时看到的那一帧闪，就是它。
     //   现在内容没就绪就保留旧画面（编辑器也不销毁），loadTab 完成后会再调一次
     //   renderView 把新内容画上 —— 体验与 VS Code / Cursor 一致。
-    if (active >= 0 && tabs[active] && tabs[active].mode == null) return;
+    if (active >= 0 && tabs[active] && tabs[active].mode == null) {
+      cmApi?.setReadOnly?.(true);
+      for (const ta of viewer.querySelectorAll('textarea.editor')) ta.readOnly=true;
+      for(const child of viewer.children)child.inert=true;
+      viewer.querySelector('.viewer-loading')?.remove();
+      const loading=document.createElement('div');loading.className='viewer-loading';loading.setAttribute('role','status');
+      loading.textContent='正在加载「'+tabs[active].name+'」'+(cmApi?.__tab?'；「'+cmApi.__tab.name+'」画面只读':'；原画面只读');
+      viewer.prepend(loading);return;
+    }
     // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
     if (cmApi) {
       if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
       cmApi.destroy();
       cmApi = null;
     }
+    for (const tab of tabs) tab.ta=null;
     viewer.innerHTML = '';
     if (active < 0 || !tabs[active]) { empty.classList.add('visible'); return; }
     empty.classList.remove('visible');
@@ -686,7 +708,13 @@ const Viewer = (() => {
         msg.appendChild(btnOld);
       } else {
         msg.innerHTML = `<div class="big-ic">${tab.binary ? '🧱' : '📦'}</div>` +
-          (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 预览限制` : '读取失败: ' + tab.error);
+          (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 预览限制` : '');
+        if(!tab.binary&&!tab.tooLarge){
+          msg.appendChild(document.createTextNode('读取失败: '+tab.error));
+          const retry=document.createElement('button');retry.className='vt-btn';retry.textContent='重试读取';
+          retry.onclick=()=>{if(tabs[active]!==tab||!msg.isConnected)return;tab.error=null;tab.mode=null;renderTabs();renderView();tab.loadPromise=loadTab(tab);};
+          msg.appendChild(retry);
+        }
       }
       viewer.appendChild(msg);
       return;
@@ -715,6 +743,7 @@ const Viewer = (() => {
       gutter.className = 'editor-gutter';
       wrap.appendChild(gutter);
       const ta = document.createElement('textarea');
+      const ownsEditor=editorScope(tab,wrap);
       ta.className = 'editor';
       ta.value = tab.content ?? '';
       ta.spellcheck = false;
@@ -763,6 +792,7 @@ const Viewer = (() => {
       let previewScrollTimer = null;
       ta.addEventListener('input', () => {
         if (tab.__extLoading) return;
+        if(!ownsEditor()||tab.ta!==ta){ta.value=tab.content||'';return;}
         tab.content = TextLines.reconcile(tab.content || '', ta.value);
         markEdited(tab);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
@@ -952,6 +982,7 @@ const Viewer = (() => {
     };
     cmApi = MdEditor.create({
       parent: wrap,
+      canEdit: editorScope(tab,wrap),
       doc: tab.content || '',
       state: tab.cmState || null,
       live,
@@ -989,6 +1020,7 @@ const Viewer = (() => {
     }
     cmApi = CodeEditor.create({
       parent: wrap,
+      canEdit: editorScope(tab,wrap),
       doc: tab.content || '',
       state: tab.cmState || null,
       ext: extOf(tab.name),
@@ -1109,124 +1141,73 @@ const Viewer = (() => {
   }
 
   // ---------- 查找 / 替换（Ctrl+F / Ctrl+H）----------
-  let findState = null; // {ta, matches, idx}
-
+  let findState = null;
   function collectMatches(ta, q) {
-    const matches = [];
-    const text = ta.value;
-    let from = 0;
-    while (true) {
-      const i = text.indexOf(q, from);
-      if (i < 0) break;
-      matches.push([i, i + q.length]);
-      from = i + q.length;
-      if (matches.length > 10000) break;
-    }
+    const matches=[];if(!q)return matches;
+    for(let from=0;;){const at=ta.value.indexOf(q,from);if(at<0)break;matches.push([at,at+q.length]);from=at+q.length;}
     return matches;
   }
-
   function closeFind() {
-    const bar = document.querySelector('.find-bar');
-    if (bar) bar.remove();
-    findState = null;
+    const state=findState;findState=null;
+    if(state){state.tab.findQuery={query:state.input.value,replacement:state.replacement.value};state.dispose();state.bar.remove();}
   }
-
   function openFind(showReplace) {
-    const tab = tabs[active];
-    if (!tab) { MI.toast('没有打开的文件', 'err'); return; }
-    // Markdown live/source 模式：用 CM6 内建搜索面板
-    if (cmApi && !tab.ta) {
-      cmApi.find();
-      return;
-    }
-    if (!tab.ta) { MI.toast('请在编辑视图中查找', 'err'); return; }
-    const ta = tab.ta;
-    // 已有条：切换替换行显示
-    if (findState && findState.ta === ta) {
-      const rep = document.getElementById('find-replace-row');
-      if (rep) rep.style.display = showReplace ? '' : 'none';
-      document.getElementById('find-input').focus();
-      document.getElementById('find-input').select();
-      return;
-    }
-    const bar = document.createElement('div');
-    bar.className = 'find-bar';
-    bar.innerHTML = `<input id="find-input" type="text" placeholder="查找…" spellcheck="false">
-      <span class="find-count" id="find-count">0/0</span>
-      <button class="vt-btn" id="find-prev" title="上一个 (Shift+Enter)">⬆</button>
-      <button class="vt-btn" id="find-next" title="下一个 (Enter)">⬇</button>
-      <span id="find-replace-row" style="display:${showReplace ? '' : 'none'}">
-        <input id="find-replace-input" type="text" placeholder="替换为…" spellcheck="false">
-        <button class="vt-btn" id="find-rep-one" title="替换当前">替换</button>
-        <button class="vt-btn" id="find-rep-all" title="全部替换">全部</button>
-      </span>
-      <button class="vt-btn" id="find-close" title="关闭 (Esc)">✕</button>`;
-    // 编辑器工具条已并入标签栏 → 查找条直接放在内容区最上方
-    viewer.insertBefore(bar, viewer.firstChild);
-    findState = { ta, matches: [], idx: -1 };
-
-    const input = document.getElementById('find-input');
-    const countEl = document.getElementById('find-count');
-    const updateCount = () => {
-      countEl.textContent = findState.matches.length
-        ? (findState.idx + 1) + '/' + findState.matches.length
-        : '0/0';
+    const tab=tabs[active];
+    if(!tab){MI.toast('没有打开的文件','err');return;}
+    if(tab.mode==null){MI.toast('文档正在加载，请稍后查找','err');return;}
+    if(cmApi && cmApi.__tab===tab && cmApi.view.dom.isConnected && !tab.ta){cmApi.find();return;}
+    const ta=tab.ta;
+    if(!ta || !ta.isConnected || ta.readOnly || !['split','edit'].includes(tab.mode)){MI.toast('请在编辑视图中查找','err');return;}
+    if(findState?.ta===ta && findState.bar.isConnected){findState.bar.querySelector('#find-replace-row').style.display=showReplace?'':'none';findState.input.focus();findState.input.select();return;}
+    closeFind();
+    const bar=document.createElement('div');bar.className='find-bar';
+    bar.innerHTML='<input id="find-input" type="text" placeholder="查找…" spellcheck="false"><span class="find-count" id="find-count">0/0</span>'
+      +'<button class="vt-btn" id="find-prev" title="上一个 (Shift+Enter)">⬆</button><button class="vt-btn" id="find-next" title="下一个 (Enter)">⬇</button>'
+      +'<span id="find-replace-row"><input id="find-replace-input" type="text" placeholder="替换为…" spellcheck="false"><button class="vt-btn" id="find-rep-one" title="替换当前">替换</button><button class="vt-btn" id="find-rep-all" title="全部替换">全部</button></span>'
+      +'<button class="vt-btn" id="find-close" title="关闭 (Esc)">✕</button>';
+    viewer.insertBefore(bar,viewer.firstChild);
+    bar.querySelector('#find-replace-row').style.display=showReplace?'':'none';
+    const input=bar.querySelector('#find-input'),replacement=bar.querySelector('#find-replace-input'),count=bar.querySelector('#find-count');
+    input.value=tab.findQuery?.query||'';replacement.value=tab.findQuery?.replacement||'';
+    const owns=editorScope(tab,ta);
+    const state={tab,ta,bar,input,replacement,matches:[],idx:-1,text:null,query:null,revision:-1,dispose:()=>ta.removeEventListener('input',changed)};
+    findState=state;
+    const valid=()=>findState===state && owns() && tab.ta===ta && bar.isConnected && !ta.readOnly;
+    const updateCount=()=>{count.textContent=state.matches.length?(state.idx+1)+'/'+state.matches.length:'0/0';for(const id of ['find-prev','find-next','find-rep-one','find-rep-all'])bar.querySelector('#'+id).disabled=!state.matches.length;};
+    const refresh=(position=ta.selectionStart,select=false)=>{
+      if(!valid())return false;
+      state.matches=collectMatches(ta,input.value);state.text=ta.value;state.query=input.value;state.revision=tab.editRevision;
+      state.idx=state.matches.findIndex(([from])=>from>=position);if(state.idx<0)state.idx=state.matches.length-1;
+      if(select && state.idx>=0){const [from,to]=state.matches[state.idx];ta.setSelectionRange(from,to);}
+      updateCount();return true;
     };
-    const refresh = (keepIdx) => {
-      const q = input.value;
-      findState.matches = q ? collectMatches(ta, q) : [];
-      findState.idx = keepIdx != null
-        ? Math.min(keepIdx, findState.matches.length - 1)
-        : (findState.matches.length ? 0 : -1);
-      if (findState.idx >= 0) {
-        const [s, e] = findState.matches[findState.idx];
-        ta.selectionStart = s;
-        ta.selectionEnd = e;
-      }
-      updateCount();
+    const fresh=()=>valid() && ((state.text===ta.value && state.query===input.value && state.revision===tab.editRevision)||refresh());
+    state.refresh=refresh;
+    const go=dir=>{if(!fresh()||!state.matches.length)return;state.idx=(state.idx+dir+state.matches.length)%state.matches.length;ta.setSelectionRange(...state.matches[state.idx]);updateCount();};
+    const replaceOne=()=>{
+      if(!fresh()||state.idx<0||!input.value)return;
+      const [from,to]=state.matches[state.idx];
+      if(ta.value.slice(from,to)!==input.value){refresh();return;}
+      if(replacement.value===input.value)return;
+      ta.setRangeText(replacement.value,from,to,'select');ta.dispatchEvent(new Event('input',{bubbles:true}));refresh(from,true);
     };
-    const go = (dir) => {
-      if (!findState.matches.length) return;
-      const n = findState.matches.length;
-      findState.idx = (findState.idx + dir + n) % n;
-      const [s, e] = findState.matches[findState.idx];
-      ta.selectionStart = s;
-      ta.selectionEnd = e;
-      updateCount();
+    const replaceAll=()=>{
+      if(!fresh()||!state.matches.length)return;
+      // 同一完整集合构造一次变更；替换文本含查询词时也不会重新匹配自己插入的内容。
+      const original=ta.value,replace=replacement.value,matches=state.matches;let next='',end=0;
+      for(const [from,to] of matches){next+=original.slice(end,from)+replace;end=to;}next+=original.slice(end);
+      if(next===original)return;
+      ta.value=next;ta.dispatchEvent(new Event('input',{bubbles:true}));refresh(0,false);
     };
-    const replaceOne = () => {
-      const repInput = document.getElementById('find-replace-input');
-      const q = input.value;
-      if (!q || findState.idx < 0) return;
-      const [s, e] = findState.matches[findState.idx];
-      ta.setRangeText(repInput.value, s, e, 'select');
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      refresh(findState.idx); // 重新收集，保持当前位置附近
-    };
-    const replaceAll = () => {
-      const repInput = document.getElementById('find-replace-input');
-      const q = input.value;
-      if (!q) return;
-      ta.value = ta.value.split(q).join(repInput.value);
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      refresh(-1);
-    };
-    input.addEventListener('input', () => refresh());
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
-      else if (e.key === 'Escape') { e.preventDefault(); closeFind(); ta.focus(); }
-    });
-    document.getElementById('find-next').onclick = () => go(1);
-    document.getElementById('find-prev').onclick = () => go(-1);
-    document.getElementById('find-rep-one').onclick = replaceOne;
-    document.getElementById('find-rep-all').onclick = replaceAll;
-    document.getElementById('find-close').onclick = () => { closeFind(); ta.focus(); };
-    document.getElementById('find-replace-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); replaceOne(); }
-      else if (e.key === 'Escape') { e.preventDefault(); closeFind(); ta.focus(); }
-    });
-    input.focus();
-    refresh();
+    function changed(){refresh(ta.selectionStart,false);}
+    ta.addEventListener('input',changed);
+    input.addEventListener('input',()=>refresh(0,true));
+    const close=()=>{if(!valid())return;closeFind();ta.focus();};
+    input.addEventListener('keydown',e=>{if(e.isComposing)return;if(e.key==='Enter'){e.preventDefault();go(e.shiftKey?-1:1);}else if(e.key==='Escape'){e.preventDefault();close();}});
+    replacement.addEventListener('keydown',e=>{if(e.isComposing)return;if(e.key==='Enter'){e.preventDefault();replaceOne();}else if(e.key==='Escape'){e.preventDefault();close();}});
+    bar.querySelector('#find-next').onclick=()=>go(1);bar.querySelector('#find-prev').onclick=()=>go(-1);
+    bar.querySelector('#find-rep-one').onclick=replaceOne;bar.querySelector('#find-rep-all').onclick=replaceAll;bar.querySelector('#find-close').onclick=close;
+    input.focus();refresh(0,true);
   }
 
   // ---------- 自动保存（停止输入 3 秒后写盘）----------
@@ -1383,6 +1364,7 @@ const Viewer = (() => {
           else {
             // 删除等待中仍允许输入；保留正文和旧磁盘版本，旧保存不能据此创建原路径。
             t.saveError='磁盘上的新建项已撤销，输入仍保留，请另存副本';t.saveErrorCode='VERSION_CONFLICT';
+            if(t===tabs[active])renderView();
             MI.toast(t.saveError,'err');
           }
         }
@@ -1408,6 +1390,8 @@ const Viewer = (() => {
       const changed=result?.changedPaths||[];
       for(const t of affected.filter(t=>tabs.includes(t)&&contains(t.path,changed))) {
         t.pathGeneration=(t.pathGeneration||0)+1;
+        // 磁盘发布改变了版本身份；重新绑定当前编辑器，保留dirty输入仍能继续编辑。
+        if(t===tabs[active])renderView();
         const keepInput=()=>{t.saveError=(result.ok?'磁盘文件已'+action:'磁盘操作未完成')+'，输入仍保留，请比较磁盘或另存副本';t.saveErrorCode='VERSION_CONFLICT';};
         if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
         const originalPath=t.path,generation=t.pathGeneration;
@@ -1421,7 +1405,7 @@ const Viewer = (() => {
         t.saveError=null;t.saveErrorCode=null;t.cmState=null;
         if(t===tabs[active]) {
           if(cmApi?.__tab===t){t.__extLoading=true;try{cmApi.setValue(r.content);}finally{t.__extLoading=false;}}
-          else if(t.ta)t.ta.value=r.content;else renderView();
+          else if(t.ta){t.ta.value=r.content;if(findState?.tab===t)findState.refresh();}else renderView();
           updateFormatStatus(t);window.App?.refreshOutline(t);
         }
       }
@@ -1467,7 +1451,11 @@ const Viewer = (() => {
           } else if (t.ta) {
             t.__extLoading = true;
             try {
+              const start=t.ta.selectionStart,end=t.ta.selectionEnd;
               t.ta.value = r.content;
+              // 赋值会把 textarea 光标移到末尾，先保留原位置再选附近匹配，避免重载后跳到最后一项。
+              t.ta.setSelectionRange(start,end);
+              if(findState?.tab===t)findState.refresh();
               t.ta.dispatchEvent(new Event('input', { bubbles: true }));
             } finally { t.__extLoading = false; }
           } else {

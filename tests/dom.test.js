@@ -8416,6 +8416,50 @@ assert_(panel, 'CM6 搜索面板出现');
     }
   });
 
+
+  await saveCase('查找加载期间旧CM只读，旧搜索按钮/事务零修改；返回原标签仍可编辑',async(d,viewer,bridge)=>{
+    const w=d.window,old=viewer.cm,tab=viewer.activeTab,base=tab.content,read=bridge.readFile,gate=deferred();
+    old.find();old.view.dispatch({effects:w.CM6.Search.setSearchQuery.of(new w.CM6.Search.SearchQuery({search:'hello',replace:'WRONG'}))});
+    bridge.readFile=(p,...args)=>p===P+'/src/app.js'?gate.promise:read(p,...args);
+    const pending=viewer.openFile(P+'/src/app.js');await tick();assert.equal(viewer.activeTab.mode,null);viewer.openFind(true);
+    assert(old.view.state.readOnly);assert(w.document.querySelector('.viewer-loading').textContent.includes('notes.txt'));
+    w.CM6.Search.replaceAll(old.view);old.setValue('WRONG');assert.equal(old.getValue(),base);assert.equal(tab.content,base);assert(!tab.dirty);
+    viewer.activate(0);assert(!viewer.cm.view.state.readOnly);viewer.cm.setValue('返回后的输入');assert.equal(tab.content,'返回后的输入');
+    gate.resolve(await read(P+'/src/app.js'));await pending;assert.equal(viewer.activeTab,tab);assert.equal(viewer.cm.getValue(),'返回后的输入');
+  });
+  await saveCase('分屏查找正文编辑后匹配重算，替换正确目标，旧按钮切模式后零修改',async(d,viewer)=>{
+    const w=d.window;FAKE_FS[P+'/README.md'].content='# 标题\r\nalpha\r\nalpha\n';await viewer.openFile(P+'/README.md');const tab=viewer.activeTab;tab.mode='split';viewer.renderActive();const ta=tab.ta;
+    viewer.openFind(true);const query=w.document.querySelector('#find-input'),rep=w.document.querySelector('#find-replace-input');query.value='alpha';query.dispatchEvent(new w.Event('input'));rep.value='OMEGA';
+    ta.value='前缀\n'+ta.value;ta.setSelectionRange(0,0);ta.dispatchEvent(new w.Event('input'));const button=w.document.querySelector('#find-rep-one');button.click();
+    assert(ta.value.startsWith('前缀\n# 标题\nOMEGA'));assert(ta.value.endsWith('alpha\n'));assert.equal(w.document.querySelector('#find-count').textContent,'1/1');
+    const content=tab.content;tab.mode='preview';viewer.renderActive();viewer.openFind(true);button.onclick();assert.equal(tab.content,content);assert.equal(tab.ta,null);assert(!w.document.querySelector('.find-bar'));
+    tab.mode='split';viewer.renderActive();viewer.openFind(true);assert.equal(w.document.querySelector('#find-input').value,'alpha');
+  });
+  await saveCase('分屏全部匹配11000处与实际替换范围一致，空查询/同文替换不制造dirty',async(d,viewer)=>{
+    const w=d.window;FAKE_FS[P+'/README.md'].content='alpha '.repeat(11000);await viewer.openFile(P+'/README.md');const tab=viewer.activeTab;tab.mode='split';viewer.renderActive();viewer.openFind(true);
+    const query=w.document.querySelector('#find-input'),rep=w.document.querySelector('#find-replace-input'),all=w.document.querySelector('#find-rep-all');query.value='alpha';query.dispatchEvent(new w.Event('input'));assert.equal(w.document.querySelector('#find-count').textContent,'1/11000');
+    rep.value='alpha';all.onclick();assert(!tab.dirty);rep.value='y';all.click();assert.equal(tab.ta.value,'y '.repeat(11000));assert.equal(w.document.querySelector('#find-count').textContent,'0/0');const revision=tab.editRevision;all.onclick();assert.equal(tab.editRevision,revision);
+  });
+  await saveCase('分屏替换先核验未派发input的正文，切项目旧条不写其他文档',async(d,viewer)=>{
+    const w=d.window;FAKE_FS[P+'/README.md'].content='alpha alpha';await viewer.openFile(P+'/README.md');const tab=viewer.activeTab;tab.mode='split';viewer.renderActive();viewer.openFind(true);
+    const query=w.document.querySelector('#find-input'),rep=w.document.querySelector('#find-replace-input'),one=w.document.querySelector('#find-rep-one');query.value='alpha';query.dispatchEvent(new w.Event('input'));rep.value='Ω';tab.ta.value='😀 é alpha alpha';tab.ta.setSelectionRange(0,0);one.click();assert.equal(tab.ta.value,'😀 é Ω alpha');
+    const content=tab.content;assert.equal(await w.App.openProject(P+'/src'),true);one.onclick();assert.equal(tab.content,content);assert(!w.document.querySelector('.find-bar'));
+  });
+
+
+  await saveCase('读取拒绝显示原因为纯文本，可重试且旧编辑器不能修改',async(d,viewer,bridge)=>{
+    const w=d.window,read=bridge.readFile,old=viewer.cm,base=viewer.activeTab.content;bridge.readFile=(p,...args)=>p===P+'/src/app.js'?Promise.reject(Error('<img src=x>fixture EACCES')):read(p,...args);
+    await viewer.openFile(P+'/src/app.js');assert.equal(viewer.activeTab.mode,'error');assert(w.document.querySelector('.viewer-msg').textContent.includes('fixture EACCES'));assert(!w.document.querySelector('.viewer-msg img'));old.setValue('WRONG');assert.equal(viewer.openTabs[0].content,base);
+    bridge.readFile=read;[...w.document.querySelectorAll('.viewer-msg button')].find(b=>b.textContent==='重试读取').click();await viewer.activeTab.loadPromise;assert.equal(viewer.activeTab.mode,'edit');viewer.cm.setValue('新文档输入');assert.equal(viewer.activeTab.content,'新文档输入');
+  });
+  await saveCase('CM6零长正则与emoji组合字符替换/撤销保留原模型',async(d,viewer)=>{
+    const w=d.window,raw='😀 é\r\nalpha\n';viewer.cm.setValue(raw);const tab=viewer.activeTab,view=viewer.cm.view;
+    view.dispatch({effects:w.CM6.Search.setSearchQuery.of(new w.CM6.Search.SearchQuery({search:'(?=alpha)',replace:'X',regexp:true}))});w.CM6.Search.replaceAll(view);assert.equal(tab.content,'😀 é\r\nXalpha\n');w.CM6.Commands.undo(view);assert.equal(tab.content,raw);
+    view.dispatch({effects:w.CM6.Search.setSearchQuery.of(new w.CM6.Search.SearchQuery({search:'😀 é',replace:'Ω'}))});w.CM6.Search.replaceAll(view);assert.equal(tab.content,'Ω\r\nalpha\n');w.CM6.Commands.undo(view);assert.equal(tab.content,raw);
+  });
+  await saveCase('外部重载split正文同步计数，查询保留且替换新版本',async(d,viewer,bridge,callbacks)=>{
+    const w=d.window,p=P+'/README.md';FAKE_FS[p].content='alpha';await viewer.openFile(p);viewer.activeTab.mode='split';viewer.renderActive();viewer.openFind(true);const query=w.document.querySelector('#find-input');query.value='alpha';query.dispatchEvent(new w.Event('input'));FAKE_FS[p].content='前缀 alpha alpha';callbacks.forEach(cb=>cb());await new Promise(r=>setTimeout(r,700));assert.equal(w.document.querySelector('#find-count').textContent,'1/2');w.document.querySelector('#find-replace-input').value='Ω';w.document.querySelector('#find-rep-one').click();assert.equal(viewer.activeTab.ta.value,'前缀 Ω alpha');
+  });
   const openHunk=async d=>{await d.window.GitPanel.refresh();await d.window.GitPanel.openCommit();const row=[...d.window.document.querySelectorAll('#cd-files .git-file')].find(r=>r.textContent.includes('README.md'));click(row);await tick();await tick();return [...d.window.document.querySelectorAll('.hunk-act')];};
   await saveCase('Git状态失败保留列表/选择/草稿，提交回滚搁置暂停，恢复沿用选择',async d=>{
     const w=d.window,doc=w.document;await w.GitPanel.refresh();await w.GitPanel.openCommit();const checks=[...doc.querySelectorAll('#cd-files .cf-check')];assert(checks.length>1);checks[0].checked=false;checks[0].dispatchEvent(new w.Event('change',{bubbles:true}));const selected=[...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),rows=[...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort();doc.querySelector('#commit-msg').value='保留提交草稿';const api=w.myIDE.git,status=api.status;let writes=0;api.commit=api.discardFiles=api.shelveCreate=async()=>{writes++;return {ok:true};};api.status=async()=>({isRepo:true,root:P,completeness:'error',error:'读取权限被拒绝'});await w.GitPanel.refresh();assert.deepEqual([...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort(),rows);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');assert(doc.querySelector('.git-status-warning').textContent.includes('读取权限'));assert(doc.querySelector('#cm-ok').disabled);assert(!doc.querySelector('#cd-files .git-revert'));await w.GitPanel.doCommit(false);assert.equal(writes,0);api.status=status;await w.GitPanel.refresh();assert(!doc.querySelector('.git-status-warning'));assert.deepEqual([...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),selected);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');

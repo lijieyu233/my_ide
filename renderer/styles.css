@@ -416,6 +416,8 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
 #viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
+/* 独占一行，避免被旧 CM6 搜索面板的层级盖住只读身份提示。 */
+.viewer-loading { flex-shrink: 0; padding: 8px 12px; background: var(--panel-strong); color: var(--text); border-bottom: 1px solid var(--border); }
 /* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
    所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
 #viewer > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */
