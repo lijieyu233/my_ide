@@ -99,7 +99,22 @@ const Tasks = (() => {
   let storeMode = 'file';  // 'file' | 'ls'
   const okDirs = new Set(); // 已确认存在的 .myide 目录（按路径记账：切项目后旧路径的记账不失效）
   let saveChain = Promise.resolve(); // 串行写：快速连续操作不乱序
-  const diskVersions = new Map();
+  let generation = 0, requestId = 0, context = null;
+  let loadState = 'ready', loadError = '';
+  let loadPromise = Promise.resolve({ ok: true, source: 'empty' });
+  const pendingWrites = new Map();
+  // 两处都写失败也不能在切项目后丢掉内存；跨重启恢复版本仍由后续恢复包负责。
+  const recovery = new Map();
+  const isCurrent = (c) => !!c && c === context && c.root === root && c.generation === generation;
+  function canEdit() {
+    if (root && loadState === 'ready') return true;
+    if (window.MI) MI.toast(loadState === 'loading' ? '任务正在载入，请稍后再操作' : (loadError || '请先打开项目'), 'err');
+    return false;
+  }
+  function ownsEdit(c, original) {
+    if (!isCurrent(c) || (original && byId(original.id) !== original)) return false;
+    return canEdit();
+  }
   // ---------- 统一撤销/重做（048-5.2）----------
   // 快照式命令栈：每个写操作在 save 前把「操作后」的全量深拷贝压栈（数据量小，最简单可靠）。
   // hist[0] = 载入时的初始态；undo = histIdx-- 恢复上一快照，redo = histIdx++。
@@ -123,6 +138,7 @@ const Tasks = (() => {
     save(); render();
   }
   function undoHist() {
+    if (!canEdit()) return null;
     if (histIdx <= 0) return null;
     const undone = hist[histIdx].label; // 正在撤销的操作
     histIdx--;
@@ -130,6 +146,7 @@ const Tasks = (() => {
     return undone;
   }
   function redoHist() {
+    if (!canEdit()) return null;
     if (histIdx >= hist.length - 1) return null;
     histIdx++;
     restoreSnap(hist[histIdx].tasks);
@@ -209,82 +226,194 @@ const Tasks = (() => {
   const touch = (t) => { t.updatedAt = Date.now(); };
 
   // ---------- 存储 ----------
-  function readLs() {
-    if (!root) return [];
-    let d = null;
-    try { d = JSON.parse(localStorage.getItem(LS_KEY(root)) || 'null'); } catch {}
-    return validate(d && Array.isArray(d.tasks) ? d.tasks : []);
+  function parseStore(raw) {
+    let d;
+    try { d = JSON.parse(raw); } catch { return { ok: false, errorCode: 'INVALID_JSON' }; }
+    if (!d || !Array.isArray(d.tasks)) return { ok: false, errorCode: 'INVALID_TASKS' };
+    if (d.version != null && d.version !== 1) return { ok: false, errorCode: 'UNKNOWN_VERSION' };
+    if (d.tasks.some(t => !t || typeof t !== 'object' || Array.isArray(t))) return { ok: false, errorCode: 'INVALID_TASKS' };
+    return { ok: true, data: validate(d.tasks) };
   }
-
-  async function load() {
-    cvsInit = false; // 重载数据/切项目：画布按新内容包围盒重新起算（旧项目的扩展区域不带入）
-    const f = FILE(root);
-    if (!root || !f || !window.myIDE || !myIDE.fs) {
-      storeMode = 'ls';
-      tasks = readLs();
-      resetHist(); pushHist('载入');
-      render();
-      return;
-    }
-    let r = null;
-    try { r = await myIDE.fs.readFile(f); } catch { r = null; }
-    diskVersions.set(f, r && r.version && r.version.absent ? r.version : null);
-    if (r && r.content != null) {
-      storeMode = 'file';
-      okDirs.add(DIR_OF(f));
-      let d = null;
-      try { d = JSON.parse(r.content); } catch {}
-      // 坏JSON不能成为覆盖授权；保留磁盘取证，后续写入走已有本地降级。
-      if (d && Array.isArray(d.tasks)) diskVersions.set(f, r.version);
-      tasks = validate(d && Array.isArray(d.tasks) ? d.tasks : []);
-      resetHist(); pushHist('载入');
-      render();
-      return;
-    }
-    // 文件不存在 / 读失败：看旧 localStorage 是否有数据 → 一次性迁移到文件
-    const legacy = readLs();
-    storeMode = 'file';
-    tasks = legacy;
-    resetHist(); pushHist('载入');
-    if (legacy.length) await save();
-    if (storeMode === 'file') { try { localStorage.removeItem(LS_KEY(root)); } catch {} }
+  function readLs(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw == null ? { ok: true, raw: null, data: [] } : { ...parseStore(raw), raw };
+    } catch { return { ok: false, errorCode: 'LOCAL_READ_FAILED' }; }
+  }
+  function failLoad(c, errorCode) {
+    if (!isCurrent(c)) return { ok: false, obsolete: true };
+    loadState = 'error';
+    loadError = errorCode === 'UNKNOWN_VERSION' ? '任务文件版本暂不支持，已暂停修改并保留原文件'
+      : errorCode === 'SOURCE_CHANGED' ? '迁移期间本地任务数据已变化，已暂停修改并保留来源' : '任务载入失败，已暂停修改并保留原数据';
+    c.errorCode = errorCode;
     render();
+    return { ok: false, errorCode };
   }
-
+  function finishLoad(c, data, source) {
+    if (!isCurrent(c)) return { ok: false, obsolete: true };
+    tasks = data;
+    storeMode = c.store.mode;
+    loadState = 'ready'; loadError = '';
+    resetHist(); pushHist('载入');
+    render();
+    return { ok: true, source, data, fileVersion: c.store.version };
+  }
+  async function load(c) {
+    const f = c.store.f;
+    // 同路径已入队的写先结束；否则重载可能读到旧正文，随后拿新版本覆盖刚保存的数据。
+    const pending = pendingWrites.get(f);
+    if (pending) {
+      await pending;
+      if (!isCurrent(c)) return { ok: false, obsolete: true };
+    }
+    let r;
+    if (f && window.myIDE && myIDE.fs) {
+      try { r = await myIDE.fs.readFile(f); } catch { r = { errorCode: 'READ_FAILED' }; }
+      if (!isCurrent(c)) return { ok: false, obsolete: true };
+      if (r && r.content != null && !r.error) {
+        const parsed = parseStore(r.content);
+        if (!parsed.ok) return failLoad(c, parsed.errorCode);
+        c.store.version = r.version;
+        okDirs.add(DIR_OF(f));
+        const kept = recovery.get(c.root);
+        if (kept) {
+          c.store.mode = kept.result.destination === 'fallback' ? 'ls' : 'file';
+          c.store.result = kept.result;
+          return finishLoad(c, parseStore(kept.raw).data, 'memory');
+        }
+        return finishLoad(c, parsed.data, 'file');
+      }
+      if (!r || !(r.errorCode === 'ENOENT' || r.version && r.version.absent)) return failLoad(c, r && r.errorCode || 'READ_FAILED');
+      c.store.version = r.version;
+    } else c.store.mode = 'ls';
+    const kept = recovery.get(c.root);
+    if (kept) {
+      c.store.mode = kept.result.destination === 'fallback' ? 'ls' : c.store.mode;
+      c.store.result = kept.result;
+      return finishLoad(c, parseStore(kept.raw).data, 'memory');
+    }
+    const legacy = readLs(c.store.key);
+    if (!legacy.ok) return failLoad(c, legacy.errorCode);
+    if (f && c.store.mode === 'file' && legacy.raw != null) {
+      const data = JSON.stringify({ version: 1, tasks: legacy.data });
+      const result = await enqueueSave(data, c, legacy.raw);
+      if (!isCurrent(c)) return { ok: false, obsolete: true, saveResult: result };
+      if (result.errorCode === 'SOURCE_CHANGED') {
+        tasks = legacy.data;
+        return { ...failLoad(c, 'SOURCE_CHANGED'), saveResult: result };
+      }
+      // 不能用一次可变的 storeMode 当迁移凭证，更不能在 await 后重新找当前项目键。
+      if (result.ok && result.destination === 'file') {
+        try { if (localStorage.getItem(c.store.key) === legacy.raw) localStorage.removeItem(c.store.key); } catch {}
+      }
+      return { ...finishLoad(c, legacy.data, result.destination === 'file' ? 'file' : 'fallback'), saveResult: result };
+    }
+    return finishLoad(c, legacy.data, legacy.raw == null ? 'empty' : 'fallback');
+  }
   function save() {
-    // ★ 目标快照：saveChain 是异步串行的，排队中的写操作真正执行时 root 可能已经
-    // 切到别的项目（用户改完立刻切项目）。必须在入队那一刻锁定写入目标，
-    // 否则旧项目的数据会写进新项目的文件——旧项目改动丢失（连线消失的根因）、新项目被串档。
-    const snap = { f: FILE(root), mode: storeMode, key: LS_KEY(root) };
-    const data = JSON.stringify({ version: 1, tasks });
-    saveChain = saveChain.then(() => writeStore(data, snap)).catch(() => {});
+    if (!canEdit()) return Promise.resolve({ ok: false, destination: null, errorCode: 'TASKS_NOT_READY' });
+    return enqueueSave(JSON.stringify({ version: 1, tasks }), context);
+  }
+  function enqueueSave(data, c, sourceRaw) {
+    const store = c.store;
+    const revision = ++store.revision;
+    store.result = { ok: false, destination: null, pending: true, revision };
+    saveChain = saveChain.then(() => writeStore(data, store, revision, sourceRaw)).then((result) => {
+      if (revision === store.revision) store.result = result;
+      // 来源已更新时保留新来源；旧候选只用于本次只读导出。
+      if (result.errorCode !== 'SOURCE_CHANGED') {
+        if (result.destination !== 'file') recovery.set(c.root, { raw: data, result });
+        else recovery.delete(c.root);
+      }
+      if (isCurrent(c) && revision === store.revision) {
+        storeMode = store.mode;
+        renderStoreState();
+        if (!result.ok && window.MI) MI.toast('任务保存失败，修改仍在内存中，请重试或复制导出', 'err');
+      }
+      return result;
+    });
+    pendingWrites.set(store.f, saveChain);
+    const pending = saveChain;
+    pending.then(() => { if (pendingWrites.get(store.f) === pending) pendingWrites.delete(store.f); });
+    if (isCurrent(c)) renderStoreState();
     return saveChain;
   }
-  async function writeStore(data, snap) {
-    const f = snap.f;
-    if (!f) return;
-    if (snap.mode !== 'ls' && f && window.myIDE && myIDE.fs) {
+  async function writeStore(data, store, revision, sourceRaw) {
+    const f = store.f;
+    let errorCode = 'FILE_UNAVAILABLE';
+    if (store.mode !== 'ls' && f && window.myIDE && myIDE.fs) {
       try {
         const dir = DIR_OF(f);
-        if (!okDirs.has(dir)) { await myIDE.fs.mkdir(dir); okDirs.add(dir); }
-        let r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: diskVersions.get(f) });
-        if (!r || !r.ok) {
-          // 目录可能被外部删了：重建一次再试
-          await myIDE.fs.mkdir(dir);
+        if (!okDirs.has(dir)) {
+          const made = await myIDE.fs.mkdir(dir);
+          if (!made || !made.ok) throw Object.assign(new Error('mkdir failed'), { code: made && made.errorCode });
           okDirs.add(dir);
-          r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: diskVersions.get(f) });
         }
-        if (r && r.ok) { diskVersions.set(f, r.version); return; }
-      } catch {}
-      // 只读盘 / 权限 / 网络盘：降级 localStorage，数据不能丢。
-      // 仅当失败的是「当前项目」的写入才全局降级（旧项目的失败不该改变新项目的存储模式）
-      if (snap.f === FILE(root)) {
-        storeMode = 'ls';
-        if (window.MI) MI.toast('任务文件写入失败，已改存本地（不随项目目录）', 'err');
-      }
+        let r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: store.version });
+        if (r && r.errorCode === 'ENOENT') {
+          const made = await myIDE.fs.mkdir(dir);
+          if (made && made.ok) r = await myIDE.fs.writeFile(f, data, undefined, { expectedVersion: store.version });
+        }
+        if (r && r.ok) {
+          store.version = r.version;
+          return { ok: true, destination: 'file', pathOrKey: f, revision };
+        }
+        errorCode = r && r.errorCode || 'FILE_WRITE_FAILED';
+      } catch (e) { errorCode = e.code || 'FILE_WRITE_FAILED'; }
     }
-    try { localStorage.setItem(snap.key, data); } catch {
-      if (window.MI) MI.toast('任务保存失败（本地存储已满？）', 'err');
+    try {
+      // 迁移失败时也不能用旧快照覆盖另一个窗口刚更新的来源。
+      if (sourceRaw !== undefined && localStorage.getItem(store.key) !== sourceRaw) {
+        return { ok: false, destination: null, revision, errorCode: 'SOURCE_CHANGED', fileErrorCode: errorCode };
+      }
+      localStorage.setItem(store.key, data);
+      store.mode = 'ls';
+      return { ok: true, destination: 'fallback', pathOrKey: store.key, revision, fileErrorCode: errorCode };
+    } catch {
+      return { ok: false, destination: null, revision, errorCode: 'LOCAL_WRITE_FAILED', fileErrorCode: errorCode };
+    }
+  }
+  function exportData() {
+    return JSON.stringify({ version: 1, tasks }, null, 2);
+  }
+  async function copyExport() {
+    try {
+      await MI.copyText(exportData());
+      MI.toast('已复制任务数据，请粘贴到文件保存', 'ok');
+    } catch {
+      if (window.MI) MI.toast('复制失败，任务数据仍保留，请重试', 'err');
+    }
+  }
+  function renderStoreState() {
+    const owner = context;
+    const result = context && context.store.result;
+    const text = loadState === 'loading' ? '正在载入任务…' : loadState === 'error' ? loadError
+      : result && result.pending ? '正在保存任务…' : result && !result.ok ? '任务未保存，修改仍在内存中'
+        : storeMode === 'ls' && root ? '任务已存本地，不随项目目录' : '';
+    for (const host of [bodyEl, dagBodyEl]) {
+      if (!host) continue;
+      for (const old of host.querySelectorAll(':scope > .tk-store-state')) old.remove();
+      if (!text) continue;
+      const box = document.createElement('div');
+      box.className = 'tk-store-state';
+      box.setAttribute('role', 'status');
+      const label = document.createElement('span'); label.textContent = text;
+      box.appendChild(label);
+      if (loadState !== 'loading') {
+        const retry = document.createElement('button'); retry.className = 'tb-btn'; retry.textContent = '重试';
+        retry.onclick = () => {
+          if (!isCurrent(owner)) return;
+          if (loadState === 'error') return reload();
+          if (context && context.store.mode === 'ls') context.store.mode = 'file';
+          return save();
+        };
+        box.appendChild(retry);
+        if (tasks.length) {
+          const exp = document.createElement('button'); exp.className = 'tb-btn'; exp.textContent = '复制导出';
+          exp.onclick = () => { if (isCurrent(owner)) return copyExport(); }; box.appendChild(exp);
+        }
+      }
+      host.prepend(box);
     }
   }
 
@@ -712,6 +841,7 @@ const Tasks = (() => {
   // opts.x/y（可选）：图上双击/快捷创建的鼠标落点 —— 无依赖的新任务就地创建，
   // 不再被自动布局丢到别的位置（「创建的任务无依赖就靠近鼠标位置」）
   function add(title, opts) {
+    if (!canEdit()) return null;
     const t = {
       id: newId(), title: String(title || '').trim() || '未命名任务',
       note: '', status: 'todo', priority: 'normal', deps: [],
@@ -736,6 +866,7 @@ const Tasks = (() => {
     return t;
   }
   function rename(id, title) {
+    if (!canEdit()) return undefined;
     const t = byId(id);
     if (!t) return;
     const v = String(title || '').trim();
@@ -744,12 +875,14 @@ const Tasks = (() => {
     touch(t); pushHist('重命名'); save(); render();
   }
   function setNote(id, note) {
+    if (!canEdit()) return undefined;
     const t = byId(id);
     if (!t) return;
     t.note = String(note || '');
     touch(t); pushHist('改备注'); save(); render();
   }
   function setStatus(id, st) {
+    if (!canEdit()) return undefined;
     const t = byId(id);
     if (!t || !STATUSES.includes(st)) return;
     // 完成的前置约束：前置任务全部完成才允许标记完成（热区/右键/勾选统一走这里）
@@ -771,6 +904,7 @@ const Tasks = (() => {
     setStatus(id, t.status === 'done' ? 'todo' : 'done');
   }
   function setPriority(id, pr) {
+    if (!canEdit()) return undefined;
     const t = byId(id);
     if (!t || !PRIOS.includes(pr)) return;
     t.priority = pr;
@@ -778,6 +912,7 @@ const Tasks = (() => {
   }
   // 批量改状态：整个选中集一个撤销条目。「完成」仍受前置约束——未满足的跳过并计数
   function setStatusMany(ids, st) {
+    if (!canEdit()) return { n: 0, blocked: 0 };
     if (!STATUSES.includes(st)) return { n: 0, blocked: 0 };
     const list = (ids || []).map(byId).filter(Boolean);
     let n = 0, blocked = 0;
@@ -794,6 +929,7 @@ const Tasks = (() => {
   }
   // 批量改优先级：一个撤销条目
   function setPriorityMany(ids, pr) {
+    if (!canEdit()) return 0;
     if (!PRIOS.includes(pr)) return 0;
     const list = (ids || []).map(byId).filter(Boolean);
     let n = 0;
@@ -808,6 +944,7 @@ const Tasks = (() => {
   }
   // 预计耗时（分钟）：甘特图排期依据；0/null/负数 = 清除（回落默认 30 分钟占位）
   function setEstimate(id, min) {
+    if (!canEdit()) return false;
     const t = byId(id);
     if (!t) return false;
     const v = Number(min);
@@ -818,6 +955,7 @@ const Tasks = (() => {
   // ---------- 子任务分组（048-P2）----------
   // 把 child 挂到 parent 下（parent = null = 提升为顶层）。防线：自引用 / parent 是自己后代（成环）/ parent 不存在
   function setParent(childId, parentId) {
+    if (!canEdit()) return { ok: false, why: '任务尚未载入或已暂停修改' };
     const c = byId(childId);
     if (!c) return { ok: false, why: '任务不存在' };
     if (!parentId) {
@@ -840,6 +978,7 @@ const Tasks = (() => {
   }
   // 多选合并为组：主选中（selId）为父，其余为子（入口：右键菜单「创建子任务组」）
   function groupFromSelection() {
+    if (!canEdit()) return { ok: false, why: '任务尚未载入或已暂停修改' };
     const ids = selectionIds();
     if (ids.length < 2) return { ok: false, why: '至少选中 2 个任务（Ctrl+点击 / 框选）' };
     const parent = ids[0];
@@ -858,6 +997,7 @@ const Tasks = (() => {
   }
   // 组解散：父的直接子任务提升为顶层（孙任务随父走——parent 还在，只是 parentId 变 null）
   function ungroup(pid) {
+    if (!canEdit()) return { ok: false, why: '任务尚未载入或已暂停修改' };
     const p = byId(pid);
     if (!p || !childrenOf(pid).length) return { ok: false, why: '不是任务组' };
     for (const c of childrenOf(pid)) { c.parentId = null; touch(c); }
@@ -873,6 +1013,7 @@ const Tasks = (() => {
     return true;
   }
   function setDeps(id, deps) {
+    if (!canEdit()) return 0;
     const t = byId(id);
     if (!t) return 0;
     const saved = t.deps.slice();
@@ -893,6 +1034,7 @@ const Tasks = (() => {
   }
   // 图上拖拽连线的原子操作：给 taskId 单独加一条 depId 依赖（返回 ok 供调用方提示）
   function addDep(taskId, depId) {
+    if (!canEdit()) return { ok: false, why: '任务尚未载入或已暂停修改' };
     const t = byId(taskId), d = byId(depId);
     if (!t || !d) return { ok: false, why: '任务不存在' };
     if (depId === taskId) return { ok: false, why: '不能依赖自己' };
@@ -907,6 +1049,7 @@ const Tasks = (() => {
   }
   // 图上右键删边的原子操作：移除一条依赖
   function removeDep(taskId, depId) {
+    if (!canEdit()) return false;
     const t = byId(taskId);
     if (!t) return false;
     const i = t.deps.indexOf(depId);
@@ -917,6 +1060,7 @@ const Tasks = (() => {
   }
   // 图上拖动节点落盘自由位置（有 x/y 的节点不再跟随自动布局；坐标可为负 = 无极画布）
   function moveNode(id, x, y) {
+    if (!canEdit()) return false;
     const t = byId(id);
     if (!t || !Number.isFinite(x) || !Number.isFinite(y)) return false;
     t.x = Math.round(x);
@@ -926,6 +1070,7 @@ const Tasks = (() => {
   }
   // 清除自由位置：节点回到自动布局
   function resetNodePos(id) {
+    if (!canEdit()) return false;
     const t = byId(id);
     if (!t) return false;
     t.x = null; t.y = null;
@@ -934,6 +1079,7 @@ const Tasks = (() => {
   }
   // 多选整体拖动落盘：整组位移共用一个撤销栈条目（⟲ 一次撤回整组）
   function moveManyNodes(entries) {
+    if (!canEdit()) return 0;
     let n = 0;
     for (const en of entries || []) {
       const t = byId(en.id);
@@ -949,6 +1095,7 @@ const Tasks = (() => {
   // 一键整理：清掉手动位置回自动布局。
   // 传 ids = 只整理选中的（选中的回自动布局、未选中的手动位置保留）；不传 = 整图
   function tidyLayout(ids) {
+    if (!canEdit()) return 0;
     const only = Array.isArray(ids) && ids.length ? new Set(ids) : null;
     let n = 0;
     for (const t of tasks) {
@@ -966,6 +1113,7 @@ const Tasks = (() => {
 
   // 删除（单个 / 批量共用）：级联清洗引用；撤销走统一历史栈（快照整体恢复，依赖引用随之回来）
   function deleteMany(ids) {
+    if (!canEdit()) return null;
     const idSet = new Set(ids);
     const removed = tasks.filter((t) => idSet.has(t.id));
     if (!removed.length) return null;
@@ -1006,6 +1154,7 @@ const Tasks = (() => {
     bodyEl.scrollTop = st;
     if (view === 'dag') renderDag();
     else if (dagBodyEl) dagBodyEl.innerHTML = '';
+    renderStoreState();
   }
   function refresh() { render(); }
 
@@ -1016,6 +1165,10 @@ const Tasks = (() => {
     countEl.title = '已完成 ' + done + ' / 共 ' + tasks.length + ' 个任务';
   }
   function renderChrome() {
+    const locked = !root || loadState !== 'ready';
+    for (const el of [inputEl, dagNewBtn, tidyBtn, undoBtn, clearBtn]) if (el) el.disabled = locked;
+    if (bodyEl) bodyEl.setAttribute('aria-busy', String(loadState === 'loading'));
+    if (dagBodyEl) dagBodyEl.setAttribute('aria-busy', String(loadState === 'loading'));
     if (viewBtn) { // 已退役：元素不存在则跳过（兼容旧 DOM）
       viewBtn.textContent = '⇄ 图';
     }
@@ -1125,7 +1278,10 @@ const Tasks = (() => {
       empty('没有匹配「' + (kw || PRIO_NAME[listPrio] || '') + '」的任务');
       return;
     }
-    if (!tasks.length) { empty('暂无任务，在下方输入框添加'); return; }
+    if (!tasks.length) {
+      if (loadState === 'ready') empty(root ? '暂无任务，在下方输入框添加' : '打开项目后可添加任务');
+      return;
+    }
     // 聚焦优先于完结链路隐藏（用户点名要看的链路，即使全部完成也给看）
     const focusSet = focusId ? relatedOf(focusId) : null;
     let pool = focusSet
@@ -1616,6 +1772,10 @@ const Tasks = (() => {
       dagBodyEl.scrollTop = (vpAnchor.ly - vbNow.y) * zoom;
     };
     dagBodyEl.innerHTML = '';
+    if (!tasks.length && loadState !== 'ready') {
+      if (dagCountEl) dagCountEl.textContent = loadState === 'loading' ? '正在载入' : '载入失败';
+      return;
+    }
     // 可见度过滤（菜单四态）：全部 / 只看可执行 / 不显示已完成 / 隐藏完结链路。
     // 左侧清单的分组收起（groupFold）只管清单展示，不影响右侧依赖图 —— 图的显示只由可见度菜单决定。
     // 聚焦模式优先：只看焦点任务及上下传导的关联链。阻塞判定仍按全量数据算（byId 全局查），语义不失真
@@ -1998,6 +2158,8 @@ const Tasks = (() => {
     };
     svg.addEventListener('mousedown', (ev) => {
       if (ev.button !== 0) return;
+      if (!canEdit()) return;
+      const owner = context;
       if (spaceDown) return; // 空格按住 = 平移模式：节点拖拽让位（见常驻容器上的平移监听）
       const gEl = ev.target.closest ? ev.target.closest('g.tk-node') : null;
       if (!gEl) return;
@@ -2088,7 +2250,7 @@ const Tasks = (() => {
         const src = drag && drag.src, tgt = drag && drag.target;
         const moved = drag && drag.moved, mode = drag && drag.mode;
         cleanup();
-        if (!src) return;
+        if (!src || !ownsEdit(owner) || !svg.isConnected) return;
         if (!moved) { selectOne(src.id, ctrl); upClickAt = Date.now(); return; } // 普通点击=选中（Ctrl 加多选）；记时间戳让紧随的合成 click 让位
         if (mode === 'move') {
           // 整组落盘：一个历史条目（⟲ 一次撤回整组位移）；组外/单选拖动走原单节点路径
@@ -2328,6 +2490,8 @@ const Tasks = (() => {
   // 双击图空白处 → 原地弹出输入框新建任务（位置即所见；自动布局不承诺节点停在该点）
   // depOnId（048-6.3 内联＋）：新建后自动依赖该任务（建后继）
   function openDagNewInput(cx, cy, depOnId) {
+    if (!canEdit()) return undefined;
+    const owner = context;
     if (!dagBodyEl || dagBodyEl.querySelector('.tk-dag-new')) return;
     const input = document.createElement('input');
     input.className = 'tk-dag-new';
@@ -2359,7 +2523,7 @@ const Tasks = (() => {
       if (settled) return;
       const v = input.value.trim();
       close();
-      if (v) {
+      if (v && ownsEdit(owner)) {
         // depOnId（创建后继）：noPos → 位置交给自动布局就近排在源任务方向；
         // 普通新建：双击点即落点；换算失败（无布局）也走 noPos
         add(v, (depOnId || lx == null || ly == null) ? { noPos: true } : { x: lx, y: ly }); // add 内部已选中并渲染
@@ -2408,15 +2572,17 @@ const Tasks = (() => {
 
   async function editTitle(id) {
     const t = byId(id);
-    if (!t) return;
+    const owner = context;
+    if (!t || !canEdit()) return;
     const v = await Modal.prompt('重命名任务', '任务标题', t.title);
-    if (v != null) rename(id, v);
+    if (v != null && ownsEdit(owner, t)) rename(id, v);
   }
 
   // 依赖选择弹窗：列出其余全部任务，复选；保存时逐条防环；支持搜索过滤
   function openDepsDialog(id) {
     const t = byId(id);
-    if (!t) return;
+    const owner = context;
+    if (!t || !canEdit()) return;
     const box = document.createElement('div');
     const others = tasks.filter((x) => x.id !== id);
     const rows = others.map((o) => {
@@ -2450,13 +2616,14 @@ const Tasks = (() => {
     box.querySelector('#tk-dy').onclick = () => {
       const pick = [...box.querySelectorAll('#tk-dl input[type=checkbox]')]
         .filter((c) => c.checked).map((c) => c.value);
-      setDeps(id, pick);
+      if (ownsEdit(owner, t)) setDeps(id, pick);
       close();
     };
   }
 
   // ---------- 右键菜单（复用 #ctx-menu，节点/边/空白共用骨架）----------
   function openCtxMenu(e, build) {
+    const owner = context;
     const menu = document.getElementById('ctx-menu');
     if (!menu) return;
     menu.innerHTML = '';
@@ -2464,7 +2631,7 @@ const Tasks = (() => {
       const d = document.createElement('div');
       d.className = 'ctx-item' + (danger ? ' danger' : '');
       d.textContent = label;
-      d.onclick = () => { menu.classList.add('hidden'); fn(); };
+      d.onclick = () => { menu.classList.add('hidden'); if (ownsEdit(owner)) fn(); };
       menu.appendChild(d);
     };
     const mkTitle = (label) => {
@@ -2481,6 +2648,8 @@ const Tasks = (() => {
   }
 
   function showCtx(e, t) {
+    if (!canEdit()) return;
+    const owner = context;
     // 右键时右键目标必在选中集内（contextmenu 已保证：组外右键会先重置为单选）
     // 注意：本函数内不再声明局部 selIds —— 旧实现 const selIds 遮蔽了模块级变量，
     // 「选中整条链」回调里 selIds = new Set(rel) 对 const 赋值直接抛 TypeError（点击无效果）
@@ -2526,11 +2695,11 @@ const Tasks = (() => {
       mk('✎ 重命名', () => editTitle(t.id));
       mk('📝 编辑备注', async () => {
         const v = await promptArea('任务备注', '备注（多行）', t.note);
-        if (v != null) setNote(t.id, v);
+        if (v != null && ownsEdit(owner, t)) setNote(t.id, v);
       });
       mk('⏱ 预计耗时…（分钟，甘特图排期用）', async () => {
         const v = await Modal.prompt('预计耗时', '分钟（留空 = 清除，默认按 30 分钟占位）', t.estimateMin || '');
-        if (v == null) return;
+        if (v == null || !ownsEdit(owner, t)) return;
         setEstimate(t.id, v);
       });
       if (!multi) {
@@ -2550,7 +2719,7 @@ const Tasks = (() => {
       // 创建 + 连线一步到位（省去「先建任务再拖线」两步）；新任务落位在源任务上/下方（就近可见）
       mk('➕ 新建后继任务（依赖本任务）', async () => {
         const v = await Modal.prompt('新建后继任务', '标题（新任务将依赖「' + clip(t.title, 16) + '」）', '');
-        if (!v) return;
+        if (!v || !ownsEdit(owner, t)) return;
         const nb = add(v);
         const sp = spotNear(t.id, 1);
         if (sp) moveNode(nb.id, sp.x, sp.y);
@@ -2559,7 +2728,7 @@ const Tasks = (() => {
       if (t.status !== 'done') {
         mk('➕ 新建前置任务（本任务依赖它）', async () => {
           const v = await Modal.prompt('新建前置任务', '标题（「' + clip(t.title, 16) + '」将依赖新任务）', '');
-          if (!v) return;
+          if (!v || !ownsEdit(owner, t)) return;
           const nx = add(v);
           const sp = spotNear(t.id, -1);
           if (sp) moveNode(nx.id, sp.x, sp.y);
@@ -2605,7 +2774,7 @@ const Tasks = (() => {
           mk('🧹 删除已完成链条（整链 ' + chain.length + ' 个）', async () => {
             const yes = await Modal.confirm('删除已完成链条',
               '「' + clip(t.title, 16) + '」所在链整链完成，共 ' + chain.length + ' 个任务，整链删除？\n（可点标题栏 ⟲ 撤销）');
-            if (yes) {
+            if (yes && ownsEdit(owner, t)) {
               deleteMany(chain);
               if (window.MI) MI.toast('已删除链条 ' + chain.length + ' 个，点 ⟲ 可撤销', 'ok');
             }
@@ -2616,7 +2785,7 @@ const Tasks = (() => {
       if (multi) {
         mk('🗑 删除选中 ' + selN + ' 个任务', async () => {
           const yes = await Modal.confirm('批量删除', '删除选中的 ' + selN + ' 个任务？\n（可点标题栏 ⟲ 撤销）');
-          if (yes) {
+          if (yes && ownsEdit(owner, t)) {
             deleteMany(curSel);
             if (window.MI) MI.toast('已删除 ' + curSel.length + ' 个，点 ⟲ 可撤销', 'ok');
           }
@@ -2624,7 +2793,7 @@ const Tasks = (() => {
       } else {
         mk('🗑 删除', async () => {
           const yes = await Modal.confirm('删除任务', t.title + '\n（可点标题栏 ⟲ 撤销）');
-          if (yes) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
+          if (yes && ownsEdit(owner, t)) { remove(t.id); if (window.MI) MI.toast('已删除，点 ⟲ 可撤销', 'ok'); }
         }, true);
       }
     });
@@ -2634,6 +2803,7 @@ const Tasks = (() => {
   if (inputEl) {
     inputEl.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
+      if (e.isComposing || !canEdit()) return;
       const v = inputEl.value.trim();
       if (!v) return;
       add(v);
@@ -2670,8 +2840,10 @@ const Tasks = (() => {
   }
   if (dagNewBtn) {
     dagNewBtn.onclick = async () => {
+      if (!canEdit()) return;
+      const owner = context;
       const v = await Modal.prompt('新建任务', '任务标题', '');
-      if (v) add(v); // 新节点进 level 0，可立即拖线/右键设置
+      if (v && ownsEdit(owner)) add(v); // 新节点进 level 0，可立即拖线/右键设置
     };
   }
   // 一键整理：清掉全部手动位置，整图回到自动布局（依赖关系不动）
@@ -2916,6 +3088,7 @@ const Tasks = (() => {
   });
   // Ctrl+Enter 快捷创建（任务工具打开时）：侧栏输入框可见 → 聚焦直接打字；否则图中央弹原地输入框
   function quickNew() {
+    if (!canEdit()) return undefined;
     const pt = document.getElementById('panel-tasks');
     const visList = pt && !pt.classList.contains('hidden');
     if (visList && inputEl) {
@@ -2957,6 +3130,8 @@ const Tasks = (() => {
   }
   if (clearBtn) {
     clearBtn.onclick = async () => {
+      if (!canEdit()) return;
+      const owner = context, revision = context.store.revision;
       // 一键识别删除：只收「整链完成」的任务；部分完成链上的已完成保留
       const ids = doneChainIds();
       if (!ids.length) {
@@ -2965,21 +3140,37 @@ const Tasks = (() => {
       }
       const yes = await Modal.confirm('清理已完成链条',
         '一键删除 ' + ids.length + ' 个已完成任务（整链完成的链条）？\n（链上有未完成任务时，链上已完成任务会保留）\n（可点标题栏 ⟲ 撤销）');
-      if (yes) { clearDone(); if (window.MI) MI.toast('已清理 ' + ids.length + ' 个，点 ⟲ 可撤销', 'ok'); }
+      if (yes && ownsEdit(owner) && revision === owner.store.revision) {
+        deleteMany(ids); if (window.MI) MI.toast('已清理 ' + ids.length + ' 个，点 ⟲ 可撤销', 'ok');
+      }
     };
   }
 
   // ---------- 对外 ----------
   function setRoot(p) {
-    root = p || null;
+    root = p ? String(p).replace(/[\\/]+$/, '') : null;
+    generation++;
+    const kept = recovery.get(root);
+    tasks = kept ? parseStore(kept.raw).data : [];
+    inputEl && (inputEl.value = '');
+    return startLoad();
+  }
+  function startLoad() {
+    const c = { root, generation, requestId: ++requestId,
+      store: { f: FILE(root), key: LS_KEY(root), version: null, mode: 'file', revision: 0, result: null } };
+    context = c;
+    loadState = 'loading'; loadError = '';
+    cvsInit = false;
     selId = null;
     selIds = new Set();
     focusId = null;
     resetHist();
     storeMode = 'file';
-    load(); // 异步：完成后自行 render
+    render();
+    loadPromise = load(c).catch(() => failLoad(c, 'READ_FAILED'));
+    return loadPromise;
   }
-  async function reload() { await load(); }
+  function reload() { return startLoad(); }
   function setView() {
     // 图视图常开（任务工具激活即显示依赖图，侧栏清单常驻对照）。
     // 保留函数签名兼容历史调用：忽略参数，恒为 dag
@@ -2997,7 +3188,11 @@ const Tasks = (() => {
   }
 
   return {
-    setRoot, reload, refresh, render, setView,
+    setRoot, reload, refresh, render, setView, save, exportData,
+    get ready() { return loadPromise; },
+    get loadState() { return loadState; },
+    get saveResult() { return context && context.store.result; },
+    get whenSaved() { return saveChain; },
     add, rename, setNote, setStatus, cycleCheck, setPriority, setDeps, setEstimate, setStatusMany, setPriorityMany,
     addDep, removeDep, moveNode, moveManyNodes, resetNodePos, tidyLayout, doneChainOf, doneChainIds,
     fitView, zoomBy, applyZoom,

@@ -3013,6 +3013,8 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-group-name { font-weight: 600; }
 .tk-group-n { color: var(--text-dim); opacity: .8; }
 .tk-none { padding: 6px 12px 8px 26px; font-size: .85em; color: var(--text-dim); opacity: .65; }
+.tk-store-state { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; padding: .6em .8em; font-size: .85em; color: var(--text-dim); }
+.tk-store-state span { flex: 1 1 12em; overflow-wrap: anywhere; }
 /* 任务行 */
 .tk-row {
   display: flex; align-items: flex-start; gap: 7px;

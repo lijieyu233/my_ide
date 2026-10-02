@@ -9833,6 +9833,183 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!FAKE_FS[tab.path]&&viewer.openTabs.includes(tab)&&tab.dirty&&viewer.cm.getValue()==='删除等待中新输入','保留迟到输入与标签');
     bridge.writeFile=async()=>({error:'original object missing',errorCode:'VERSION_CONFLICT'});const r=await viewer.saveTab(viewer.openTabs.indexOf(tab));assert_(!r.ok&&!FAKE_FS[tab.path]&&tab.dirty,'旧保存失败不会创建原路径');
   });
+  // 091-A：加载完整任务模块，只控制 IPC 的完成顺序；不替换被测读写/历史函数。
+  const taskCase = async (name, fn) => okAsync('任务数据保护：' + name, async () => {
+    const d = makeDom(), w = d.window, files = new Map(), writes = [], reads = [], toasts = [];
+    const A = 'C:/task-a', B = 'C:/task-b', file = p => p + '/.myide/tasks.json', key = p => 'myide-tasks:' + p;
+    let stamp = 0;
+    const put = (p, title, id = 'shared') => files.set(file(p), { content: JSON.stringify({ version: 1, tasks: [{ id, title }] }), version: { target: file(p), stamp: ++stamp } });
+    const read = async p => {
+      reads.push(p);
+      return files.has(p) ? { ...files.get(p) } : { error: 'not found', errorCode: 'ENOENT', version: { target: p, absent: true } };
+    };
+    const write = async (p, content, encoding, opts) => {
+      writes.push({ p, content, opts });
+      const before = files.get(p);
+      const expected = before ? before.version : { target: p, absent: true };
+      if (JSON.stringify(expected) !== JSON.stringify(opts.expectedVersion)) return { errorCode: 'VERSION_CONFLICT' };
+      const version = { target: p, stamp: ++stamp }; files.set(p, { content, version }); return { ok: true, version };
+    };
+    w.myIDE.fs = { readFile: read, writeFile: write, mkdir: async () => ({ ok: true }) };
+    w.MI = { toast: (...a) => toasts.push(a), copyText: async text => { w.copiedTasks = text; } };
+    w.Modal = { prompt: async () => null, confirm: async () => false, stack: [], hide() {}, show() {} };
+    w.eval(fs.readFileSync(path.join(__dirname, '../renderer/tasks.js'), 'utf8'));
+    try { await fn({ d, w, T: w.Tasks, bridge: w.myIDE.fs, A, B, file, key, put, read, write, files, writes, reads, toasts }); }
+    finally { d.window.close(); }
+  });
+  await taskCase('TA1：A→B→A 迟到读不能串库', async ({ T, bridge, A, B, put, read }) => {
+    put(A, 'A旧'); put(B, 'B旧'); const waits = [];
+    bridge.readFile = p => { const gate = deferred(); waits.push({ gate, p }); return gate.promise; };
+    const a1 = T.setRoot(A), b = T.setRoot(B), a2 = T.setRoot(A);
+    put(A, 'A新'); waits[2].gate.resolve(await read(waits[2].p)); await a2;
+    T.selectOne('shared'); const selection = T.selectionIds().join();
+    waits[1].gate.resolve(await read(waits[1].p)); assert_((await b).obsolete, 'B旧结果必须失效');
+    waits[0].gate.resolve({ content: JSON.stringify({ version: 1, tasks: [{ id: 'old', title: 'A旧' }] }) });
+    assert_((await a1).obsolete && T.tasks[0].title === 'A新' && T.selectionIds().join() === selection, '不能只比较相同根路径');
+  });
+  await taskCase('TA2：同项目重载最后请求获胜，迟到读不重置撤销', async ({ T, bridge, A, put, read }) => {
+    put(A, '初始'); await T.setRoot(A); const waits = [];
+    bridge.readFile = p => { const gate = deferred(); waits.push({ gate, p }); return gate.promise; };
+    const old = T.reload(), fresh = T.reload(); put(A, '新读取'); waits[1].gate.resolve(await read(waits[1].p)); await fresh;
+    T.rename('shared', '新编辑'); await T.whenSaved; T.selectOne('shared');
+    waits[0].gate.resolve({ content: JSON.stringify({ version: 1, tasks: [{ id: 'old', title: '迟到' }] }) }); await old;
+    assert_(T.tasks[0].title === '新编辑' && T.canUndo && T.selectionIds()[0] === 'shared', '迟到读不得复位当前编辑与历史');
+  });
+  await taskCase('TA3：载入期间所有数据入口零修改、零写入', async ({ T, w, bridge, A, put, read, writes }) => {
+    put(A, '原任务'); await T.setRoot(A); T.add('第二项'); await T.whenSaved;
+    const first = T.tasks[0].id, second = T.tasks[1].id; T.selectOne(first); T.selectOne(second, true);
+    const before = T.exportData(), n = writes.length, wait = deferred(); bridge.readFile = () => wait.promise;
+    const loading = T.reload();
+    T.add('禁止'); T.rename(first, '禁止'); T.setNote(first, '禁止'); T.setStatus(first, 'done'); T.setPriority(first, 'high');
+    T.setStatusMany([first], 'done'); T.setPriorityMany([first], 'high'); T.setEstimate(first, 10);
+    T.setParent(second, first); T.groupFromSelection(); T.ungroup(first); T.setDeps(second, [first]); T.addDep(second, first); T.removeDep(second, first);
+    T.moveNode(first, 100, 100); T.moveManyNodes([{ id: first, x: 100, y: 100 }]); T.resetNodePos(first); T.tidyLayout(); T.remove(first); T.clearDone(); T.undo(); T.redo(); T.quickNew();
+    const input = w.document.getElementById('tasks-new-input'); input.value = '禁止';
+    input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await w.document.getElementById('tasks-dag-new').onclick(); const blocked = await T.save(); await tick();
+    assert_(T.exportData() === before && writes.length === n && !blocked.ok, '必须在修改前阻断');
+    assert_(input.disabled && w.document.querySelector('.tk-store-state').textContent.includes('正在载入'), '载入状态可见');
+    wait.resolve(await read(A + '/.myide/tasks.json')); await loading;
+    assert_(!input.disabled && T.tasks.length === 2, '载入完成恢复入口');
+  });
+  await taskCase('TA4：迁移文件失败、本地成功须保留来源', async ({ T, w, bridge, A, key }) => {
+    const raw = JSON.stringify({ version: 1, tasks: [{ id: 'old', title: '旧本地任务' }] }); w.localStorage.setItem(key(A), raw);
+    bridge.writeFile = async () => ({ errorCode: 'EACCES' }); const loaded = await T.setRoot(A);
+    assert_(loaded.saveResult.ok && loaded.saveResult.destination === 'fallback' && T.storeMode === 'ls', '明确返回本地成功');
+    assert_(w.localStorage.getItem(key(A)).includes('旧本地任务'), '不能清掉降级目标'); await T.reload();
+    assert_(T.tasks[0].title === '旧本地任务', '降级任务可重载');
+  });
+  await taskCase('TA4：文件已有旧正文时，本次会话降级修改重载不丢', async ({ T, w, bridge, A, key, put }) => {
+    put(A, '磁盘旧任务'); await T.setRoot(A); bridge.writeFile = async () => ({ errorCode: 'EACCES' });
+    T.rename('shared', '降级新任务'); const saved = await T.whenSaved;
+    assert_(saved.ok && saved.destination === 'fallback' && w.localStorage.getItem(key(A)).includes('降级新任务'), '本地有新正文');
+    await T.reload(); assert_(T.tasks[0].title === '降级新任务' && T.storeMode === 'ls', '旧磁盘不能覆盖会话恢复候选');
+  });
+  await taskCase('TA5：两处都失败仍可复制导出、切回及重试', async ({ T, w, bridge, A, B, put, write, toasts }) => {
+    put(A, '原任务'); put(B, 'B任务'); await T.setRoot(A); bridge.writeFile = async () => ({ errorCode: 'EACCES' });
+    const proto = Object.getPrototypeOf(w.localStorage), original = proto.setItem;
+    proto.setItem = () => { throw new Error('quota'); };
+    try {
+      T.rename('shared', '未落盘任务'); const r = await T.whenSaved;
+      assert_(!r.ok && r.destination === null && T.tasks[0].title === '未落盘任务' && T.canUndo, '失败保全内存和撤销');
+      assert_(!toasts.some(a => a[0].includes('已改存本地')), '不能假报本地成功');
+      const exp = [...w.document.querySelectorAll('.tk-store-state button')].find(b => b.textContent === '复制导出');
+      await exp.onclick(); assert_(JSON.parse(w.copiedTasks).tasks[0].title === '未落盘任务', '实际复制的是当前内存');
+      await T.setRoot(B); await T.setRoot(A); assert_(T.tasks[0].title === '未落盘任务', '切回仍保留失败内存');
+    } finally { proto.setItem = original; }
+    bridge.writeFile = write; assert_((await T.save()).destination === 'file', '可显式重试');
+    await T.reload(); assert_(T.tasks[0].title === '未落盘任务' && T.saveResult == null, '成功后不残留假失败');
+  });
+  await taskCase('TA6：迁移中切项目，不删除另一项目或失效来源', async ({ T, w, bridge, A, B, key, file, put, write }) => {
+    const raw = JSON.stringify({ version: 1, tasks: [{ id: 'old', title: 'A来源' }] }); w.localStorage.setItem(key(A), raw);
+    w.localStorage.setItem(key(B), 'B来源必须保留'); put(B, 'B磁盘'); const gate = deferred();
+    bridge.writeFile = async (...a) => { await gate.promise; return write(...a); };
+    const migration = T.setRoot(A); await tick(); await T.setRoot(B); gate.resolve(); const result = await migration;
+    assert_(result.obsolete && w.localStorage.getItem(key(A)) === raw && w.localStorage.getItem(key(B)) === 'B来源必须保留', '失效迁移不得清源');
+    assert_(T.tasks[0].title === 'B磁盘' && T.storeMode === 'file', '迁移回调不能改变B');
+  });
+  await taskCase('TA6：迁移中来源更新，成功也不得删新版本', async ({ T, w, bridge, A, key, write }) => {
+    const raw = JSON.stringify({ version: 1, tasks: [{ id: 'old', title: '旧来源' }] }); w.localStorage.setItem(key(A), raw);
+    const gate = deferred(); bridge.writeFile = async (...a) => { await gate.promise; return write(...a); };
+    const loading = T.setRoot(A); await tick(); const updated = JSON.stringify({ version: 1, tasks: [{ id: 'new', title: '新来源' }] });
+    w.localStorage.setItem(key(A), updated); gate.resolve(); await loading;
+    assert_(w.localStorage.getItem(key(A)) === updated, '原文字节不一致时保留新来源');
+  });
+  await taskCase('TA6：迁移失败不得降级覆盖更新后的来源', async ({ T, w, bridge, A, key }) => {
+    w.localStorage.setItem(key(A), JSON.stringify({ version: 1, tasks: [{ id: 'old', title: '旧来源' }] }));
+    const gate = deferred(); bridge.writeFile = () => gate.promise; const loading = T.setRoot(A); await tick();
+    const updated = JSON.stringify({ version: 1, tasks: [{ id: 'new', title: '新来源' }] }); w.localStorage.setItem(key(A), updated);
+    gate.resolve({ errorCode: 'EACCES' }); const result = await loading;
+    assert_(!result.saveResult.ok && result.saveResult.errorCode === 'SOURCE_CHANGED' && w.localStorage.getItem(key(A)) === updated, '更新来源也不能被降级覆盖');
+  });
+  await taskCase('迁移成功才删除原文一致的捕获来源，包括空任务库', async ({ T, w, A, key, files, file }) => {
+    w.localStorage.setItem(key(A), JSON.stringify({ version: 1, tasks: [] })); const result = await T.setRoot(A);
+    assert_(result.saveResult.destination === 'file' && w.localStorage.getItem(key(A)) == null && files.has(file(A)), '空库也须先完成持久化');
+  });
+  await taskCase('TA7：旧写失败不改变新项目保存状态和历史', async ({ T, bridge, A, B, put }) => {
+    put(A, 'A原任务'); put(B, 'B任务'); await T.setRoot(A); const gate = deferred(); bridge.writeFile = () => gate.promise;
+    T.rename('shared', 'A修改'); await tick(); await T.setRoot(B); T.selectOne('shared');
+    gate.resolve({ errorCode: 'EACCES' }); assert_((await T.whenSaved).destination === 'fallback', '旧写仍完成降级');
+    assert_(T.root === B && T.storeMode === 'file' && !T.canUndo && T.saveResult == null && T.tasks[0].title === 'B任务' && T.selectionIds()[0] === 'shared', '旧失败不得污染B');
+  });
+  await taskCase('同路径重载等待旧写，快速连续写沿用同一版本链', async ({ T, bridge, A, put, write, reads, files, file }) => {
+    put(A, '原任务'); await T.setRoot(A); const gate = deferred(); bridge.writeFile = async (...a) => { await gate.promise; return write(...a); };
+    T.rename('shared', '第一修改'); T.rename('shared', '第二修改'); await tick(); const count = reads.length;
+    const loading = T.reload(); await tick(); assert_(reads.length === count && T.loadState === 'loading', '不能提前读旧磁盘');
+    gate.resolve(); await loading; assert_(T.tasks[0].title === '第二修改' && JSON.parse(files.get(file(A)).content).tasks[0].title === '第二修改', '串行版本和重载正文一致');
+  });
+  for (const [name, response] of [
+    ['权限错误', { error: 'denied', errorCode: 'EACCES' }], ['IPC拒绝', null],
+    ['坏JSON', { content: '{broken' }], ['未知版本', { content: JSON.stringify({ version: 2, tasks: [] }) }],
+    ['错误结构', { content: JSON.stringify({ version: 1, tasks: {} }) }],
+    ['错误任务成员', { content: JSON.stringify({ version: 1, tasks: [null] }) }],
+  ]) await taskCase(name + '不能冒充空库或写入迁移', async ({ T, w, bridge, A, key, writes }) => {
+    const raw = JSON.stringify({ version: 1, tasks: [{ id: 'old', title: '保留来源' }] }); w.localStorage.setItem(key(A), raw);
+    bridge.readFile = async () => { if (response == null) throw new Error('IPC'); return response; };
+    const r = await T.setRoot(A); T.add('禁止'); await T.save(); await tick();
+    assert_(!r.ok && T.loadState === 'error' && writes.length === 0 && w.localStorage.getItem(key(A)) === raw, '只读失败保护原始数据');
+    assert_(w.document.querySelector('.tk-store-state').textContent.includes('保留') && w.document.getElementById('tasks-new-input').disabled, '错误原因和入口状态可见');
+  });
+  await taskCase('读取重试失败保留已知内存，成功才替换', async ({ T, bridge, A, put, read }) => {
+    put(A, '可信任务'); await T.setRoot(A); bridge.readFile = async () => ({ errorCode: 'EACCES' }); await T.reload();
+    assert_(JSON.parse(T.exportData()).tasks[0].title === '可信任务', '重载失败保留可信快照');
+    bridge.readFile = read; put(A, '重试成功'); await T.reload(); assert_(T.tasks[0].title === '重试成功' && T.loadState === 'ready', '显式重试恢复入口');
+  });
+  await taskCase('新建/重命名/清理确认迟到不修改新项目同ID任务', async ({ T, w, A, B, put }) => {
+    put(A, 'A任务'); put(B, 'B任务'); await T.setRoot(A); const prompt = deferred(); w.Modal.prompt = () => prompt.promise;
+    const create = w.document.getElementById('tasks-dag-new').onclick(); await T.setRoot(B); prompt.resolve('A新建'); await create;
+    assert_(T.tasks.length === 1 && T.tasks[0].title === 'B任务', '迟到新建失效');
+    await T.setRoot(A); const renamed = deferred(); w.Modal.prompt = () => renamed.promise;
+    w.document.querySelector('.tk-title').dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true })); await tick();
+    await T.setRoot(B); renamed.resolve('A重命名'); await tick(); assert_(T.tasks[0].title === 'B任务', '同ID不代表同对象');
+    await T.setRoot(A); T.setStatus('shared', 'done'); await T.whenSaved; const confirm = deferred(); w.Modal.confirm = () => confirm.promise;
+    const clearing = w.document.getElementById('tasks-clear').onclick(); await T.setRoot(B); T.setStatus('shared', 'done'); await T.whenSaved;
+    confirm.resolve(true); await clearing; assert_(T.tasks.length === 1 && T.tasks[0].title === 'B任务', '迟到清理不能重新计算B待删对象');
+  });
+  await taskCase('旧节点拖动的mouseup不能改变新项目同ID节点', async ({ T, w, A, B, put, writes }) => {
+    put(A, 'A节点'); put(B, 'B节点'); await T.setRoot(A);
+    const node = w.document.querySelector('g.tk-node');
+    node.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+    w.dispatchEvent(new w.MouseEvent('mousemove', { bubbles: true, clientX: 70, clientY: 80 }));
+    await T.setRoot(B); const count = writes.length;
+    w.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true, clientX: 70, clientY: 80 })); await tick();
+    assert_(T.tasks[0].title === 'B节点' && T.tasks[0].x === null && writes.length === count && !T.canUndo, '旧mouseup不能写入B节点位置');
+  });
+  await taskCase('降级后保存不同正文成功，重载不能复活旧候选', async ({ T, w, bridge, A, put, write }) => {
+    put(A, '原任务'); await T.setRoot(A); bridge.writeFile = async () => ({ errorCode: 'EACCES' });
+    T.rename('shared', '旧恢复候选'); await T.whenSaved; bridge.writeFile = write;
+    T.rename('shared', '真正要保存的新正文'); await T.whenSaved;
+    const retry = [...w.document.querySelectorAll('.tk-store-state button')].find(b => b.textContent === '重试');
+    await retry.onclick(); assert_(T.saveResult.destination === 'file', '明确重试到文件'); await T.reload();
+    assert_(T.tasks[0].title === '真正要保存的新正文' && T.storeMode === 'file', '成功清除旧会话候选');
+  });
+  await taskCase('旧重试和导出按钮在切项目后失效', async ({ T, w, bridge, A, B, put, writes }) => {
+    put(A, 'A任务'); put(B, 'B任务'); await T.setRoot(A); bridge.writeFile = async () => ({ errorCode: 'EACCES' });
+    T.rename('shared', 'A候选'); await T.whenSaved;
+    const buttons = [...w.document.querySelectorAll('.tk-store-state button')]; await T.setRoot(B); const count = writes.length;
+    for (const button of buttons) await button.onclick(); await tick();
+    assert_(T.storeMode === 'file' && T.saveResult === null && writes.length === count && !w.copiedTasks, '旧操作不能保存或复制新项目');
+  });
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
 })();
