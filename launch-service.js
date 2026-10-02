@@ -229,13 +229,16 @@ async function startUnlocked(entry) {
     cwd: entry.cwd && fs.existsSync(entry.cwd) ? entry.cwd : undefined,
     env: envFor(entry, cfg),
     windowsHide: true,       // 静默：不弹 cmd 窗口
+    // 配置本来就是cmd命令；Node的argv引号转义会把路径的双引号变成\"，cmd不认该转义。
+    windowsVerbatimArguments: true,
     // ⚠ 不能加 detached —— Windows 上 detached+cmd 会开新控制台（windowsHide 被覆盖），
     //   用户看到的就是启动时弹黑框。后台保留不需要 detached：Windows 子进程本来就不随
     //   父进程退出而死，关 my_ide 后照样活着（mh 原版也是这么静默的）。
   };
   let child;
   try {
-    child = spawn('cmd', ['/c', entry.command], opts);
+    // /s只去掉这一对外层引号，保留命令自己的路径/参数引号；/d避免AutoRun注入额外命令。
+    child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"' + entry.command + '"'], opts);
   } catch (e) {
     pushLog(entry.id, '启动失败: ' + (e && e.message || e));
     return { ok: false, error: String(e && e.message || e) };

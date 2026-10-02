@@ -8,12 +8,13 @@ let passed = 0;
 // 执行完整服务，只有系统进程/端口受控；失败保全必须核对真正落盘的状态。
 function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(temp, 'case-'));
-  const children = [], kills = [], sockets = [], bridges = [], live = new Set(), identities = new Map();
+  const children = [], kills = [], sockets = [], bridges = [], spawned = [], live = new Set(), identities = new Map();
   const identity = pid => ({ pid, createdAt: 'fixture-birth-' + pid, image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
   let nextPid = 500;
   const childProcess = {
-    spawn() {
+    spawn(file, args, settings) {
       if (options.spawnThrow) throw Error('fixture spawn failed');
+      spawned.push({ file, args, settings });
       const child = new EventEmitter();
       child.pid = ++nextPid; child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.unref = () => {};
       children.push(child); live.add(child.pid); identities.set(child.pid, identity(child.pid)); return child;
@@ -68,7 +69,7 @@ function fixture(options = {}) {
   };
   const entry = { id: 'entry-a', command: 'fixture-command', cwd: dir };
   const script = path.join(dir, 'bridge.py'); fs.writeFileSync(script, '# fixture');
-  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, live, identities, state, record };
+  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, spawned, live, identities, state, record };
 }
 async function test(name, run) { await run(); passed++; console.log('  ok ' + name); }
 
@@ -181,6 +182,13 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
     await test('spawn 同步失败后允许重试', async () => {
       const f = fixture({ spawnThrow: true }); assert.equal((await f.service.startEntry(f.entry)).ok, false);
       f.options.spawnThrow = false; assert.equal((await f.service.startEntry(f.entry)).ok, true);
+    });
+    await test('完整cmd命令保留自己的引号/控制符，Node不再二次转义且窗口隐藏', async () => {
+      const f = fixture(); const command = '"C:\\tools 中文\\node.exe" "script file.js" "A&B" && echo next | more';
+      assert.equal((await f.service.startEntry({ ...f.entry, command })).ok, true);
+      assert.equal(f.spawned[0].file, 'cmd.exe'); assert.deepEqual(f.spawned[0].args, ['/d', '/s', '/c', '"' + command + '"']);
+      assert.equal(f.spawned[0].settings.windowsVerbatimArguments, true); assert.equal(f.spawned[0].settings.windowsHide, true);
+      assert.equal(f.spawned[0].settings.detached, undefined); assert.equal(f.state()[f.entry.id].command, command);
     });
     await test('spawn 异步 error 清理失败句柄，旧 exit/error 不污染新运行', async () => {
       const f = fixture(); await f.service.startEntry(f.entry); const old = f.children[0]; old.emit('error', Error('spawn ENOENT'));
@@ -326,6 +334,38 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
         }
         await service.stopEntry(entry); await service.shutdown();
       }
+    });
+    if (process.platform === 'win32') await test('真实Windows带空格/中文exe与脚本路径、引号参数和复合cmd操作原样执行', async () => {
+      const service = require('../launch-service');
+      const dir = fs.mkdtempSync(path.join(temp, 'quoted path 中文 & ')); service.setConfigDir(dir);
+      const executable = path.join(dir, 'node tool 中文.exe'); fs.copyFileSync(process.execPath, executable);
+      const script = path.join(dir, 'args script 中文.js'), marker = path.join(dir, 'result file.json');
+      fs.writeFileSync(script, "require('fs').writeFileSync(process.argv[2],JSON.stringify({args:process.argv.slice(3),cwd:process.cwd(),origin:process.env.MH_API_ORIGIN}));setInterval(()=>{},1000);", 'utf8');
+      const entry = { id: 'quoted-' + process.pid, cwd: dir, apiOrigin: 'http://127.0.0.1:18000',
+        // 目标程序的Windows argv解析会把反斜杠+结尾引号视为转义，路径末尾斜杠要加倍。
+        command: '"' + executable + '" "' + script + '" "' + marker + '" "hello world" "中文参数" "A&B | <C>" "C:\\folder with spaces\\\\"' };
+      const waitFile = async file => {
+        const deadline = Date.now() + 8000;
+        while (!fs.existsSync(file)) { if (Date.now() > deadline) throw Error('引用命令未执行：' + service.getLogs(entry.id).lines.join('\n')); await new Promise(resolve => setTimeout(resolve, 40)); }
+      };
+      try {
+        const started = await service.startEntry(entry); assert.equal(started.ok, true); await waitFile(marker);
+        const result = JSON.parse(fs.readFileSync(marker, 'utf8'));
+        assert.deepEqual(result.args, ['hello world', '中文参数', 'A&B | <C>', 'C:\\folder with spaces\\']);
+        assert.equal(result.cwd, dir); assert.equal(result.origin, entry.apiOrigin); assert.equal(started.ownership, 'owned');
+        assert.equal((await service.stopEntry(entry)).ok, true); assert.equal((await service.aliveEntry(entry)).alive, false);
+        const out = path.join(dir, 'redirect file.txt');
+        const compound = { ...entry, id: entry.id + '-compound', command: '(echo FIRST)> "' + out + '" && (echo SECOND)>> "' + out + '" && type "' + out + '" | find "SECOND"' };
+        assert.equal((await service.startEntry(compound)).ok, true); await waitFile(out);
+        const deadline = Date.now() + 8000;
+        while (!service.getLogs(compound.id).lines.some(line => line.includes('[进程退出]'))) {
+          if (Date.now() > deadline) throw Error('复合命令未结束'); await new Promise(resolve => setTimeout(resolve, 40));
+        }
+        assert.equal(fs.readFileSync(out, 'utf8').trim().replace(/\r\n/g, '\n'), 'FIRST\nSECOND');
+        assert(service.getLogs(compound.id).lines.includes('SECOND'));
+        assert.equal(JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8'))[compound.id].exitCode, 0);
+        assert.equal((await service.stopEntry(compound)).ok, true);
+      } finally { await service.stopEntry(entry); await service.shutdown(); }
     });
     if (process.platform === 'win32') await test('真实Python异步等待不堵事件循环，UTF8/非零退出/超量输出均按实际结果结算', async () => {
       const service = require('../launch-service');
