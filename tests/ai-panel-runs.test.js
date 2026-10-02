@@ -1,6 +1,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { JSDOM } = require('jsdom'), { createRegistry } = require('../ai-runs'), FileWrite = require('../file-write'), TextFormat = require('../text-format');
 const AI = require('../ai-service');
+const ToolContract = require('../ai-tool-contract');
 const source = fs.readFileSync(path.join(__dirname, '../renderer/ai-panel.js'), 'utf8'), html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(r => setImmediate(r));
@@ -37,14 +38,18 @@ function fixture() {
     },
     abort: async context => { aborts.push(context); return f.abortResult || registry.finish(1, context, 'cancelled'); },
     finish: async context => registry.finish(1, context),
-    writeFile: async (context, p, content, format, condition) => {
+    validateTool: async (context, call) => {
+      try { registry.assert(1, context); return { ok: true, call: ToolContract.validate(JSON.parse(JSON.stringify(call))) }; }
+      catch(e) { return { ok: false, error: e.message, errorCode: e.code }; }
+    },
+    writeFile: async (context, p, content, format, condition, call) => {
       p = path.resolve(p); const action = () => {
-        try { registry.assert(1, context, p); const r = FileWrite.atomicWrite(p, TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), { ...condition, beforePublish: () => registry.assert(1, context, p) }); writes.push({ p, content, context }); created.add(p); return r; }
+        try { registry.assert(1, context, p); ToolContract.assertWrite(context.rootId,p,content,call,call.name==='replace_edit'?TextFormat.decodeText(FileWrite.readSnapshot(p).bytes).content:undefined); const r = FileWrite.atomicWrite(p, TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), { ...condition, beforePublish: () => registry.assert(1, context, p) }); writes.push({ p, content, context }); created.add(p); return r; }
         catch (e) { return { error: e.message, errorCode: e.code }; }
       };
       return f.onWrite ? await f.onWrite(action, context) : action();
     },
-    run: async (cmd, cwd, context) => { registry.assert(1, context, cwd); commands.push(cmd); return { ok: true, text: 'fixture' }; },
+    run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
   w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture', permWrite: 'auto' });
@@ -188,6 +193,20 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert(f.text().includes('失败前的部分正文')); assert.equal(f.writes.length, 0);
     f.send('下一次'); await until(() => f.calls.length === 2 && f.element('#ai-send').textContent === '➤');
     const partial = f.calls[1].messages.find(m => m.role === 'assistant' && m.content?.includes('失败前的部分正文')); assert(partial); assert(partial.content.includes('部分回复，未执行工具')); assert.equal(partial.tool_calls, undefined);
+  });
+  await test('原生与文本非法字段均拒绝且不读目标、不弹清空确认、不写入', async () => {
+    for (const native of [true,false]) for (const args of [{path:'one.md',content:7},{path:'one.md'},{path:'one.md',content:null},{path:'one.md',content:'x',extra:true}]) {
+      const f=fixture(); f.put('one.md'); let reads=0; f.onRead=p=>{if(p===f.file('one.md'))reads++;return null;};
+      const call={id:'invalid',name:'write_file',args}; f.script.push(native?reply(call):{...reply(),text:'```tool_call\n'+JSON.stringify({name:call.name,args})+'\n```'});
+      f.send(); await until(()=>f.element('#ai-send').textContent==='➤');
+      assert.equal(reads,0); assert.equal(f.writes.length,0); assert.equal(f.commands.length,0); assert.equal(f.element('.ai-confirm'),null); assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');
+      assert(f.calls[1].messages.some(m=>m.content?.includes('必须是字符串')||m.content?.includes('必填字段')||m.content?.includes('未知字段')));
+    }
+  });
+  await test('replace缺字段/错误布尔值和伪命令不进入读取或命令确认', async()=>{
+    for(const call of [{id:'bad',name:'replace_edit',args:{path:'one.md',search:'ORIGINAL'}},{id:'bad',name:'replace_edit',args:{path:'one.md',search:'ORIGINAL',replace:'x',replace_all:'true'}},{id:'bad',name:'run_command',args:{command:123}}]){
+      const f=fixture();f.put('one.md');f.script.push(reply(call));f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,0);assert.equal(f.commands.length,0);assert.equal(f.element('.ai-confirm'),null);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');
+    }
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

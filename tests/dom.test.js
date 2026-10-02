@@ -500,7 +500,11 @@ function makeDom() {
       },
       abort: async () => ({ ok: true }),
       finish: async () => ({ ok: true }),
-      writeFile: async (_context, ...args) => w.myIDE.fs.writeFile(...args),
+      validateTool: async (_context, call) => {
+        try { return { ok: true, call: require('../ai-tool-contract').validate(JSON.parse(JSON.stringify(call))) }; }
+        catch (e) { return { ok: false, error: e.message, errorCode: e.code }; }
+      },
+      writeFile: async (_context, p, content, format, condition) => w.myIDE.fs.writeFile(p, content, format, condition),
       run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},
       onDone: () => {},

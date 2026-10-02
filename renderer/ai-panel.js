@@ -462,7 +462,11 @@ const AiPanel = (() => {
 
   async function executeTool(call, run) {
     if (!runIsLive(run)) return cancelledTool();
-    const a = call.args || {};
+    const checked = await window.myIDE.ai.validateTool(run.stream.context, call);
+    if (!runIsLive(run)) return cancelledTool();
+    if (!checked?.ok) return { ok: false, errorCode: checked?.errorCode, text: '错误：' + (checked?.error || '工具校验失败，未执行') };
+    call = checked.call;
+    const a = call.args;
     if (call.name === 'list_files') {
       const loc = resolveInRoot(a.path || '.', run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
@@ -524,11 +528,11 @@ const AiPanel = (() => {
     if (call.name === 'write_file') {
       const loc = resolveInRoot(a.path, run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
-      const content = typeof a.content === 'string' ? a.content : '';
+      const content = a.content;
       return await applyWrite(loc, content, null, run, call);
     }
     if (call.name === 'run_command') {
-      const cmd = String(a.command || '').trim();
+      const cmd = a.command;
       if (!cmd) return { ok: false, text: '错误：command 为空' };
       const root = run.identity.rootId.replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
@@ -543,7 +547,7 @@ const AiPanel = (() => {
         if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
       }
       if (!runIsLive(run)) return cancelledTool();
-      const r = await window.myIDE.ai.run(cmd, root, run.stream.context);
+      const r = await window.myIDE.ai.run(cmd, root, run.stream.context, call);
       return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
     }
     return { ok: false, text: '错误：未知工具 ' + call.name };
@@ -574,7 +578,7 @@ const AiPanel = (() => {
       if (ans === 'always') grantPerm('write', 'project');
     }
     if (!runIsLive(run)) return cancelledTool();
-    const w = await window.myIDE.ai.writeFile(run.stream.context, full, content, old.textFormat, { expectedVersion: old.version });
+    const w = await window.myIDE.ai.writeFile(run.stream.context, full, content, old.textFormat, { expectedVersion: old.version }, call);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
     // 刚写完的就是规则文件 → 让缓存失效，下次提问立即按新规则（否则要切项目才生效）

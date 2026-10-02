@@ -7,6 +7,7 @@ const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
 const aiRuns = require('./ai-runs').createRegistry();
+const AiToolContract = require('./ai-tool-contract');
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
@@ -536,13 +537,17 @@ ipcMain.handle('ai:finish', (e, context) => {
   try { return aiRuns.finish(aiSender(e), context); }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
+ipcMain.handle('ai:validateTool', (e, context, call) => {
+  try { aiRuns.assert(aiSender(e), context); return { ok: true, call: AiToolContract.validate(call) }; }
+  catch (error) { return { ok: false, error: error.message, errorCode: error.code }; }
+});
         // AI Agent 工具：run_command（项目目录内执行，15s 超时，输出截断回喂模型）
-        ipcMain.handle('ai:run', async (e, cmd, cwd, context) => {
-          try { aiRuns.assert(aiSender(e), context, cwd); }
+        ipcMain.handle('ai:run', async (e, cmd, cwd, context, call) => {
+          try { aiRuns.assert(aiSender(e), context, cwd); AiToolContract.assertCommand(cmd, cwd, context, call); }
           catch (error) { return { ok: false, text: error.message, errorCode: error.code }; }
           const { exec } = require('child_process');
           return new Promise((resolve) => {
-            exec(String(cmd || ''), {
+            exec(cmd, {
               cwd: String(cwd || undefined),
               timeout: 15000,
               maxBuffer: 512 * 1024,
@@ -587,9 +592,24 @@ function writeTextFile(p, content, format, condition, beforePublish) {
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 }
 ipcMain.handle('fs:writeFile', (_e, ...args) => writeTextFile(...args));
-ipcMain.handle('ai:writeFile', (e, context, p, content, format, condition) => {
+ipcMain.handle('ai:writeFile', (e, context, p, content, format, condition, call) => {
   const verify = () => aiRuns.assert(aiSender(e), context, p);
-  try { verify(); return { ...writeTextFile(p, content, format, condition, verify), context }; }
+  try {
+    verify();
+    const normalized = AiToolContract.validate(call);
+    let original;
+    if (normalized.name === 'replace_edit') {
+      const snapshot = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+      if (snapshot.tooLarge) throw Object.assign(Error('替换目标超过8MiB文本预算'), { code: 'TOOL_TARGET_TOO_LARGE' });
+      if (snapshot.absent || !FileWrite.sameVersion(snapshot.version, condition?.expectedVersion))
+        throw Object.assign(Error('原文件已变化，未替换'), { code: 'STALE_DOCUMENT' });
+      const decoded = TextFormat.decodeText(snapshot.bytes, format?.encoding);
+      if (decoded.binary || decoded.tooLarge) throw Object.assign(Error('原文件不是可靠文本'), { code: 'INVALID_TOOL_ARGS' });
+      original = decoded.content;
+    }
+    AiToolContract.assertWrite(context.rootId, p, content, normalized, original);
+    return { ...writeTextFile(p, content, format, condition, verify), context };
+  }
   catch (error) { return { error: error.message, errorCode: error.code, context }; }
 });
 

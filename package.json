@@ -31,7 +31,7 @@
     "test:status": "node tests/git-status.test.js",
     "test:search": "node tests/search.test.js",
     "test:tasks": "node tests/task-recovery.test.js && node tests/task-recovery-dom.test.js",
-    "test:ai": "node tests/ai-runs.test.js && node tests/ai-panel-runs.test.js",
+    "test:ai": "node tests/ai-runs.test.js && node tests/ai-tool-contract.test.js && node tests/ai-panel-runs.test.js",
     "test:quick-launch": "node tests/quick-launch.test.js && node tests/quick-launch-dom.test.js",
     "check:quick-launch": "electron scripts/check-quick-launch.js --disable-gpu --no-sandbox"
   },
@@ -101,6 +101,7 @@
       "db-service.js",
       "ai-service.js",
       "ai-runs.js",
+      "ai-tool-contract.js",
       "package.json",
       "build/icon.png",
       "renderer/**",
