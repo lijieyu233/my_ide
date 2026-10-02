@@ -6,6 +6,7 @@ const os = require('os');
 const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
+const aiRuns = require('./ai-runs').createRegistry();
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
@@ -161,6 +162,11 @@ function createWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const aiHost = mainWindow.webContents;
+  const aiHostId = aiHost.id;
+  const resetAi = () => { const context = aiRuns.reset(aiHostId); if (context) AI.abortChat(context.requestId); };
+  aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) resetAi(); });
+  aiHost.on('destroyed', resetAi);
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
   return mainWindow;
 }
@@ -502,15 +508,38 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
 });
 
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
-ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
+const aiSender = e => {
+  if (!mainWindow || e.sender !== mainWindow.webContents || !e.senderFrame
+    || e.senderFrame.processId !== e.sender.mainFrame.processId || e.senderFrame.routingId !== e.sender.mainFrame.routingId)
+    throw Object.assign(Error('AI请求来源无效'), { code: 'INVALID_AI_SENDER' });
+  return e.sender.id;
+};
+ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
-  const r = await AI.chatStream(cfg, messages, (delta) => send('ai:chunk', delta), tools);
+  let record;
+  try {
+    const start = aiRuns.begin(aiSender(e), context); record = start.record; context = record.context;
+    if (start.previous) AI.abortChat(start.previous.context.requestId);
+  } catch (error) { return { error: error.message, errorCode: error.code, context }; }
+  let r = await AI.chatStream(cfg, messages, delta => {
+    if (record.status === 'active') send('ai:chunk', { delta, context });
+  }, tools, context);
+  if (record.status !== 'active') r = { ...r, aborted: true, cancelled: true, toolCalls: [] };
   send('ai:done', r);
   return r;
 });
-ipcMain.handle('ai:abort', () => { AI.abortChat(); return { ok: true }; });
+ipcMain.handle('ai:abort', (e, context) => {
+  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) AI.abortChat(context.requestId); return result; }
+  catch (error) { return { error: error.message, errorCode: error.code }; }
+});
+ipcMain.handle('ai:finish', (e, context) => {
+  try { return aiRuns.finish(aiSender(e), context); }
+  catch (error) { return { error: error.message, errorCode: error.code }; }
+});
         // AI Agent 工具：run_command（项目目录内执行，15s 超时，输出截断回喂模型）
-        ipcMain.handle('ai:run', async (_e, cmd, cwd) => {
+        ipcMain.handle('ai:run', async (e, cmd, cwd, context) => {
+          try { aiRuns.assert(aiSender(e), context, cwd); }
+          catch (error) { return { ok: false, text: error.message, errorCode: error.code }; }
           const { exec } = require('child_process');
           return new Promise((resolve) => {
             exec(String(cmd || ''), {
@@ -535,7 +564,7 @@ ipcMain.handle('fs:mkdir', (_e, p) => {
   } catch (e) { return { error: String(e.message || e), errorCode:e.code||'MKDIR_FAILED' }; }
 });
 
-ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
+function writeTextFile(p, content, format, condition, beforePublish) {
   try {
     PathJobs.assertWritable(p);
     if (!format || typeof format === 'string') {
@@ -552,9 +581,16 @@ ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
     // 缺条件的旧插件只准排他创建；已有目标必须带原读取版本，不能绕过编辑器保护。
     const guard = condition && (condition.expectedVersion || condition.expectedAbsent)
       ? { ...condition, requireVersion: true } : { expectedAbsent: true };
+    guard.beforePublish = beforePublish;
     const result = FileWrite.atomicWrite(p, bytes, guard);
     return { ...result, textFormat: saved.textFormat };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
+}
+ipcMain.handle('fs:writeFile', (_e, ...args) => writeTextFile(...args));
+ipcMain.handle('ai:writeFile', (e, context, p, content, format, condition) => {
+  const verify = () => aiRuns.assert(aiSender(e), context, p);
+  try { verify(); return { ...writeTextFile(p, content, format, condition, verify), context }; }
+  catch (error) { return { error: error.message, errorCode: error.code, context }; }
 });
 
 const pathResult = async (fn) => { try { return await fn(); } catch(e) { return { error: String(e.message || e), errorCode: e.code || 'MOVE_FAILED', committed:e.committed, pendingPath:e.pendingPath, cleanupError:e.cleanupError }; } };
@@ -1269,8 +1305,9 @@ app.whenReady().then(() => {
         return { text: '译:' + String(last.content || '') };
       });
       ipcMain.removeHandler('ai:chat');
-      ipcMain.handle('ai:chat', async (e, cfg, messages, tools) => {
-        const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
+      ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
+        aiRuns.begin(aiSender(e), context);
+        const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, ch === 'ai:chunk' ? { delta: d, context } : { ...d, context }); } catch {} };
         // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
         const msgs = Array.isArray(messages) ? messages : [];
         const last = msgs[msgs.length - 1] || {};
@@ -1299,7 +1336,7 @@ app.whenReady().then(() => {
           }
         }
         send('ai:done', r);
-        return r;
+        return { ...r, context };
       });
       bootLog('2 ai:chat 已打桩');
 

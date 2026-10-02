@@ -2776,9 +2776,13 @@ module.exports = {
       !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
       title ? JSON.stringify(title.textContent) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏 6 个按钮全为 SVG 且无文字（含访问权限）',
-      tb.length === 6 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('顶栏 7 个按钮全为 SVG 且无文字（含访问权限与停止）',
+      tb.length === 7 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
+    const stop = q('#ai-stop');
+    add('停止入口名称可访问，空闲时隐藏且保留原6个入口',
+      !!stop && stop.getAttribute('aria-label') === '停止本次任务' && stop.classList.contains('hidden')
+      && tb.filter(b => !b.classList.contains('hidden')).length === 6);
 
     const ph = q('#ai-input').placeholder;
     add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);

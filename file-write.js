@@ -94,6 +94,7 @@ function createWriter(io = fs, replaceTarget, createTarget) {
       io.fsyncSync(fd);
       // close失败也不能进入替换。保留fd以便finally再次尝试关闭并报告恢复来源。
       io.closeSync(fd); fd = null;
+      if (condition.beforePublish) condition.beforePublish();
       if (original) {
         let current;
         try {

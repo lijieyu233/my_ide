@@ -193,9 +193,11 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   ai: {
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling
-    chat: (cfg, messages, tools) => ipcRenderer.invoke('ai:chat', cfg, messages, tools),
-    abort: () => ipcRenderer.invoke('ai:abort'),
-          run: (cmd, cwd) => ipcRenderer.invoke('ai:run', cmd, cwd),
+    chat: (cfg, messages, tools, context) => ipcRenderer.invoke('ai:chat', cfg, messages, tools, context),
+    abort: (context) => ipcRenderer.invoke('ai:abort', context),
+    finish: (context) => ipcRenderer.invoke('ai:finish', context),
+    writeFile: (context, p, content, format, condition) => ipcRenderer.invoke('ai:writeFile', context, p, content, format, condition),
+    run: (cmd, cwd, context) => ipcRenderer.invoke('ai:run', cmd, cwd, context),
     onChunk: (cb) => ipcRenderer.on('ai:chunk', (_e, delta) => cb(delta)),
     onDone: (cb) => ipcRenderer.on('ai:done', (_e, r) => cb(r)),
   },

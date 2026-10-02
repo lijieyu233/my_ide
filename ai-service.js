@@ -2,7 +2,7 @@
 // 流式 SSE → 事件推送到渲染层（event.sender.send）；AbortController 支持中断
 // API Key 只在主进程内存中经过，配置由渲染层 localStorage 持有（与翻译插件一致）
 
-let activeAbort = null; // 当前会话的 AbortController（单会话：一次只跑一个请求）
+const requests = new Map();
 
 // fetcher 注入 Electron net.fetch（走系统代理；llm:chat 同款）
 let fetcher = null;
@@ -28,7 +28,13 @@ function sanitizeForNoTools(messages) {
   return out;
 }
 
-async function chatStream(cfg, messages, onDelta, tools) {
+async function chatStream(cfg, messages, onDelta, tools, context = {}) {
+  const controller = new AbortController(), token = Symbol();
+  requests.set(token, { controller, context });
+  try { return { ...await stream(cfg, messages, onDelta, tools, controller), context }; }
+  finally { requests.delete(token); }
+}
+async function stream(cfg, messages, onDelta, tools, controller) {
   const base = String((cfg && cfg.baseUrl) || '').replace(/\/+$/, '');
   if (!base) return { error: '未配置 AI 服务地址（设置 → AI 助手）' };
   const model = String((cfg && cfg.model) || '').trim();
@@ -37,7 +43,6 @@ async function chatStream(cfg, messages, onDelta, tools) {
   const key = String((cfg && cfg.apiKey) || '').trim();
   if (key) headers['Authorization'] = 'Bearer ' + key;
 
-  activeAbort = new AbortController();
   let full = '';
   const tc = {}; // index → {id, name, args} 流式拼装中的工具调用
   let usageInfo = null; // SSE 末尾 usage 块（DeepSeek 含 prompt_cache_hit/miss_tokens）
@@ -45,6 +50,7 @@ async function chatStream(cfg, messages, onDelta, tools) {
   // 渐进降级：完整请求 → 400/422 时去掉 stream_options 重试 → 仍 400/422 时去掉 tools（文本协议回退）再试。
   // 覆盖两类常见 400：不支持 stream_options（部分兼容服务）、不支持 function calling（deepseek-reasoner / 部分本地模型）
   const doFetch = async (withUsage, noTools) => {
+    if (controller.signal.aborted) throw Object.assign(Error('请求已停止'), { name: 'AbortError' });
     const body = { model, messages: noTools ? sanitizeForNoTools(messages) : (Array.isArray(messages) ? messages : []), stream: true };
     if (!noTools && hasTools) {
       body.tools = tools;
@@ -54,10 +60,11 @@ async function chatStream(cfg, messages, onDelta, tools) {
     return fetcher(base + '/chat/completions', {
       method: 'POST',
       headers,
-      signal: activeAbort.signal,
+      signal: controller.signal,
       body: JSON.stringify(body),
     });
   };
+  let reader;
   try {
     let res = await doFetch(true, false);
     if (!res.ok && (res.status === 400 || res.status === 422)) {
@@ -71,7 +78,7 @@ async function chatStream(cfg, messages, onDelta, tools) {
       return { error: 'HTTP ' + res.status + (t ? '：' + t.slice(0, 300) : '') };
     }
     // 手工解析 SSE：data: {...} 行，[DONE] 结束
-    const reader = res.body.getReader();
+    reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
     const collect = (j) => {
@@ -103,6 +110,7 @@ async function chatStream(cfg, messages, onDelta, tools) {
     };
     for (;;) {
       const { done, value } = await reader.read();
+      if (controller.signal.aborted) throw Object.assign(Error('请求已停止'), { name: 'AbortError' });
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let idx;
@@ -117,10 +125,11 @@ async function chatStream(cfg, messages, onDelta, tools) {
     }
     return { ok: true, text: full, toolCalls: packToolCalls(tc), usage: usageInfo };
   } catch (e) {
-    if (e && e.name === 'AbortError') return { ok: true, text: full, aborted: true, toolCalls: packToolCalls(tc), usage: usageInfo };
+    if (e && e.name === 'AbortError') return { ok: false, text: full, aborted: true, toolCalls: [], usage: usageInfo };
     return { error: String(e.message || e) };
   } finally {
-    activeAbort = null;
+    try { if (reader) await reader.cancel(); } catch {}
+    try { reader?.releaseLock(); } catch {}
   }
 }
 
@@ -137,8 +146,8 @@ function packToolCalls(tc) {
   return out;
 }
 
-function abortChat() {
-  if (activeAbort) activeAbort.abort();
+function abortChat(requestId) {
+  for (const r of requests.values()) if (requestId == null || r.context.requestId === requestId) r.controller.abort();
 }
 
 module.exports = { init, chatStream, abortChat };

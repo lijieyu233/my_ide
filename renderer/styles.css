@@ -2912,6 +2912,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 /* ---------- AI Agent：工具活动行 + diff 确认弹窗 ---------- */
+.ai-run-state { padding: 4px 8px; color: var(--text-dim); font-size: 12px; }
 .ai-tool {
   display: flex; align-items: center; gap: 8px;
   margin: 4px 8px; padding: 4px 10px;

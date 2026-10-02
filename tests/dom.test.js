@@ -493,11 +493,13 @@ function makeDom() {
     ai: {
       // 应答脚本：每次调用弹出 aiScript 队首；空则回退固定 'OK'（Agent 用例往 aiScript 里塞 tool_call 回合）
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
-      chat: async (_cfg, _msgs, tools) => {
+      chat: async (_cfg, _msgs, tools, context) => {
         aiCalls++; aiLastTools = tools || null; aiLastMsgs = _msgs;
-        return aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' };
+        return { ...(aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }), context };
       },
       abort: async () => ({ ok: true }),
+      finish: async () => ({ ok: true }),
+      writeFile: async (_context, ...args) => w.myIDE.fs.writeFile(...args),
       run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},
       onDone: () => {},
@@ -9566,9 +9568,11 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('重新打开拒绝dirty；迟到读取不能覆盖新输入', async (_d, viewer, bridge) => {
     viewer.cm.setValue('新正文'); let reads=0;
-    bridge.readFile=async()=>{reads++;return{content:'重新读取',encoding:'gbk',textFormat:{encoding:'gbk',bom:false}};};
+    const target=viewer.activeTab.path, originalRead=bridge.readFile;
+    // AI规则读取与重新打开正文是不同来源；这里只统计被保护的正文，避免后台读取污染断言。
+    bridge.readFile=async p=>{if(p!==target)return originalRead(p);reads++;return{content:'重新读取',encoding:'gbk',textFormat:{encoding:'gbk',bom:false}};};
     assert_((await viewer.reopenWithEncoding('gbk')).errorCode==='UNSAVED_CHANGES' && reads===0, 'dirty不读盘');
-    await viewer.saveTab(0); const wait=deferred(); bridge.readFile=()=>wait.promise;
+    await viewer.saveTab(0); const wait=deferred(); bridge.readFile=p=>p===target?wait.promise:originalRead(p);
     const pending=viewer.reopenWithEncoding('gbk'); viewer.cm.setValue('读取期间编辑');
     wait.resolve({content:'旧重新读取',encoding:'gbk'});
     assert_((await pending).errorCode==='STALE_READ' && viewer.activeTab.content==='读取期间编辑', '迟到读取失效');

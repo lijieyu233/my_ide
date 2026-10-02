@@ -43,7 +43,76 @@ const AiPanel = (() => {
   let curStream = null;     // 流式中的气泡元素
   let curText = '';
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
-  let agentStopped = false; // 用户中断（⏹）：停止后续自动续流
+  let generation = 0, currentRun = null, pendingConfirmation = null;
+  const identityMatches = (a, b) => !!a && !!b && ['requestId', 'sessionId', 'rootId', 'generation', 'round'].every(k => a[k] === b[k]);
+  const runIsCurrent = run => !!run && currentRun === run && generation === run.identity.generation
+    && ((window.App && App.root) || '') === run.identity.rootId && curSessionId === run.identity.sessionId;
+  const runIsLive = run => runIsCurrent(run) && run.status === 'active';
+  const cancelledTool = () => ({ ok: false, cancelled: true, text: '本次AI请求已停止或归属失效，未继续操作' });
+  function beginRun() {
+    const unique = () => window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
+    if (!curSessionId) curSessionId = 's-' + unique();
+    const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
+      rootId: (window.App && App.root) || '', generation: ++generation }), status: 'active', round: -1, controller: new AbortController() };
+    currentRun = run;
+    const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
+    run.notice = document.createElement('div'); run.notice.className = 'ai-run-state'; run.notice.setAttribute('role', 'status');
+    run.notice.textContent = '正在生成'; msgsEl.appendChild(run.notice);
+    return run;
+  }
+  function endRun(run, status = 'completed') {
+    if (!runIsCurrent(run)) return;
+    run.status = status; run.notice.textContent = status === 'cancelled' ? '已停止' : status === 'failed' ? '生成失败' : '已完成';
+    if (curStream === run.stream?.element) { curStream = null; curText = ''; }
+    busy = false; setBusyUI(false); persistSession(); markRegen();
+    document.getElementById('ai-stop')?.classList.add('hidden');
+    if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
+  }
+  function stopRun(invalidate = false) {
+    const run = currentRun;
+    if (run?.status === 'active') {
+      run.status = 'stopping'; run.controller.abort(); run.notice.textContent = '正在停止';
+      if (run.identity.rootId === ((window.App && App.root) || '') && curSessionId === run.identity.sessionId) {
+        for (const call of run.nativePending || []) if (!run.results?.has(call.id)) msgs.push({ role: 'tool', tool_call_id: call.id, name: call.name,
+          content: '运行已停止，未继续派发。已提交的操作仍保留，结果请回看活动记录。' });
+      }
+      if (run.stream && !run.stream.finished) {
+        run.stream.finished = true;
+        const text = run.stream.text;
+        run.stream.element.querySelector('.ai-md').innerHTML = renderMd(text) + '<p class="ai-err">已停止生成</p>';
+        if (run.identity.rootId === ((window.App && App.root) || '') && text) msgs.push({ role: 'assistant', content: text });
+      }
+      if (sendBtn) { sendBtn.disabled = true; sendBtn.title = '正在停止'; }
+      const context = run.stream?.context || { ...run.identity, round: 0 };
+      Promise.resolve(window.myIDE.ai.abort(context)).catch(() => ({ ok: false })).then(result => {
+        if (!runIsCurrent(run)) return;
+        endRun(run, 'cancelled');
+        if (!result?.ok) run.notice.textContent = '已停止本地派发；主进程停止未确认';
+      });
+    }
+    if (invalidate) { generation++; currentRun = null; busy = false; curStream = null; curText = ''; setBusyUI(false); document.getElementById('ai-stop')?.classList.add('hidden'); }
+  }
+  function bindConfirmation(box, run, descriptor, resolve) {
+    pendingConfirmation?.finish(false);
+    let settled = false;
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+    const onCancel = () => finish(false);
+    const finish = value => {
+      if (settled) return; settled = true;
+      document.removeEventListener('keydown', onKey); run.controller.signal.removeEventListener('abort', onCancel);
+      if (pendingConfirmation?.box === box) pendingConfirmation = null;
+      box.remove(); resolve(runIsLive(run) ? value : false);
+    };
+    pendingConfirmation = { box, run, descriptor: Object.freeze(descriptor), finish };
+    // 确认浮层遮住输入区；停止入口必须在浮层本身可点击，不能只留在被盖住的发送按钮。
+    const stop = document.createElement('button'); stop.className = 'tb-btn m-cancel'; stop.textContent = '停止本次任务';
+    stop.dataset.aiStop = '1'; stop.onclick = () => stopRun(); box.querySelector('.ai-cf-foot').prepend(stop);
+    box.dataset.requestId = run.identity.requestId; box.dataset.toolCallId = descriptor.toolCallId;
+    document.addEventListener('keydown', onKey); run.controller.signal.addEventListener('abort', onCancel, { once: true });
+    panel.appendChild(box);
+    if (!runIsLive(run)) finish(false);
+    return finish;
+  }
   let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
   let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
   let followPath = null;     // 正在跟随的编辑器文件（自动作为上下文，用户不用手动点 📎）
@@ -208,8 +277,7 @@ const AiPanel = (() => {
   }
 
   // 项目内路径解析：拒绝对路径和 .. 逃逸（写操作安全闸的第一道）；'.' 与 '' = 项目根
-  function resolveInRoot(p) {
-    const root = window.App && App.root;
+  function resolveInRoot(p, root = window.App && App.root) {
     if (!root) return null;
     const clean = String(p == null ? '' : p).replace(/\\/g, '/').replace(/^\.?\//, '');
     if (clean === '' || clean === '.') return { root: root.replace(/[\\/]+$/, ''), rel: '' };
@@ -392,10 +460,11 @@ const AiPanel = (() => {
     });
   }
 
-  async function executeTool(call) {
+  async function executeTool(call, run) {
+    if (!runIsLive(run)) return cancelledTool();
     const a = call.args || {};
     if (call.name === 'list_files') {
-      const loc = resolveInRoot(a.path || '.');
+      const loc = resolveInRoot(a.path || '.', run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
       const r = await window.myIDE.fs.readDir(loc.rel ? loc.root + '/' + loc.rel : loc.root);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '目录不存在') };
@@ -405,7 +474,7 @@ const AiPanel = (() => {
       return { ok: true, text: '目录 ' + loc.rel + ' 的内容：\n' + (items.join('\n') || '（空）') };
     }
     if (call.name === 'read_file') {
-      const loc = resolveInRoot(a.path);
+      const loc = resolveInRoot(a.path, run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
       const r = await window.myIDE.fs.readFile(loc.root + '/' + loc.rel);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '文件不存在') };
@@ -414,7 +483,7 @@ const AiPanel = (() => {
       return { ok: true, text: '文件 ' + loc.rel + ' 的内容：\n```\n' + c + '\n```' };
     }
     if (call.name === 'search_files') {
-      const root = window.App && App.root;
+      const root = run.identity.rootId;
       if (!root) return { ok: false, text: '错误：未打开项目' };
       const q = String(a.query || '').trim();
       if (!q) return { ok: false, text: '错误：query 为空' };
@@ -425,13 +494,14 @@ const AiPanel = (() => {
       return { ok: true, text: '搜索 "' + q + '" 的结果（' + (r.results || []).length + ' 行，最多显示 50；' + state + '）：\n' + (rows.join('\n') || '（无结果）') };
     }
     if (call.name === 'replace_edit') {
-      const loc = resolveInRoot(a.path);
+      const loc = resolveInRoot(a.path, run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
       const search = typeof a.search === 'string' ? a.search : '';
       const replace = typeof a.replace === 'string' ? a.replace : '';
       if (!search) return { ok: false, text: '错误：search 不能为空（替换内容请用 write_file）' };
       const full = loc.root + '/' + loc.rel;
       const old = await window.myIDE.fs.readFile(full);
+      if (!runIsLive(run)) return cancelledTool();
       if (!old || old.error) return { ok: false, text: '错误：文件不存在 ' + loc.rel + '（新文件请用 write_file）' };
       const oldText = old.content || '';
       // 计数全部出现位置（多重匹配时报行号，帮模型精确化）
@@ -449,42 +519,46 @@ const AiPanel = (() => {
         ? oldText.split(search).join(replace)
         : oldText.slice(0, hits[0]) + replace + oldText.slice(hits[0] + search.length);
       if (newText === oldText) return { ok: true, text: '无变化：replace 与 search 相同' };
-      return await applyWrite(loc, newText, old);
+      return await applyWrite(loc, newText, old, run, call);
     }
     if (call.name === 'write_file') {
-      const loc = resolveInRoot(a.path);
+      const loc = resolveInRoot(a.path, run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
       const content = typeof a.content === 'string' ? a.content : '';
-      return await applyWrite(loc, content);
+      return await applyWrite(loc, content, null, run, call);
     }
     if (call.name === 'run_command') {
       const cmd = String(a.command || '').trim();
       if (!cmd) return { ok: false, text: '错误：command 为空' };
-      const root = (window.App && App.root || '').replace(/[\\/]+$/, '');
+      const root = run.identity.rootId.replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
       const needR = runNeedsConfirm(cmd);
       if (needR === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
       if (needR === 'yes' || needR === 'danger') {
         // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口。
         // danger（rm / git reset --hard / 用户黑名单）不给「总是允许」，只能逐次点。
-        const ans = await confirmRun(cmd, needR === 'danger' ? '' : cmdPrefixOf(cmd), needR === 'danger');
+        const ans = await confirmRun(cmd, needR === 'danger' ? '' : cmdPrefixOf(cmd), needR === 'danger', run, call);
+        if (!runIsLive(run)) return cancelledTool();
         if (!ans) return { ok: false, text: '用户拒绝了执行该命令' };
         if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
       }
-      const r = await window.myIDE.ai.run(cmd, root);
+      if (!runIsLive(run)) return cancelledTool();
+      const r = await window.myIDE.ai.run(cmd, root, run.stream.context);
       return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
     }
     return { ok: false, text: '错误：未知工具 ' + call.name };
   }
 
   // 写入安全闸：权限档位裁决 →（confirm 时）diff 预览 → 写盘
-  async function applyWrite(loc, content, source) {
+  async function applyWrite(loc, content, source, run, call) {
+    if (!runIsLive(run)) return cancelledTool();
     const full = loc.root + '/' + loc.rel;
     let needW = writeNeedsConfirm(loc.rel);
     if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
     const old = source || await window.myIDE.fs.readFile(full);
+    if (!runIsLive(run)) return cancelledTool();
     if (!old || old.binary || old.tooLarge || old.error && old.errorCode !== 'ENOENT')
       return { ok: false, text: '错误：不能读取可靠的原文本，未写入 ' + loc.rel };
     const oldText = old && !old.error ? (old.content || '') : '';
@@ -494,27 +568,32 @@ const AiPanel = (() => {
     const isWipe = existed && String(oldText).trim() !== '' && String(content).trim() === '';
     if (needW === 'no' && isWipe) needW = 'danger';
     if (needW === 'yes' || needW === 'danger') {
-      const ans = await confirmDiff(loc.rel, oldText, content, needW === 'danger'); // 'once' | 'always' | false
+      const ans = await confirmDiff(loc.rel, oldText, content, needW === 'danger', run, call, old.version);
+      if (!runIsLive(run)) return cancelledTool();
       if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
       if (ans === 'always') grantPerm('write', 'project');
     }
-    const w = await window.myIDE.fs.writeFile(full, content, old.textFormat, { expectedVersion: old.version });
+    if (!runIsLive(run)) return cancelledTool();
+    const w = await window.myIDE.ai.writeFile(run.stream.context, full, content, old.textFormat, { expectedVersion: old.version });
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
     // 刚写完的就是规则文件 → 让缓存失效，下次提问立即按新规则（否则要切项目才生效）
-    if (RULE_FILES.includes(String(loc.rel).replace(/^\.\//, ''))) rulesRoot = null;
-    const cp = { path: full, rel: loc.rel, oldText, existed, format: old.textFormat, version: w.version, done: false, card: null };
+    const cp = { path: full, rel: loc.rel, oldText, existed, root: run.identity.rootId, requestId: run.identity.requestId,
+      toolCallId: call.id, format: old.textFormat, version: w.version, done: false, card: null };
     checkpoints.push(cp);
-    cp.card = addEditCard(cp, content);
-    try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
-    return { ok: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
+    if (runIsLive(run)) {
+      if (RULE_FILES.includes(String(loc.rel).replace(/^\.\//, ''))) rulesRoot = null;
+      cp.card = addEditCard(cp, content);
+      try { if (window.App && App.refreshAll) App.refreshAll(); } catch {}
+    }
+    return { ok: true, committed: true, text: '已写入 ' + loc.rel + '（新内容 ' + content.split('\n').length + ' 行）' };
   }
 
   // 撤销最近一次 AI 写入（栈式，可连续点）
   async function undoCheckpoint() {
     let cp = null;
     for (let i = checkpoints.length - 1; i >= 0; i--) {
-      if (!checkpoints[i].done) { cp = checkpoints[i]; break; }
+      if (!checkpoints[i].done && checkpoints[i].root === ((window.App && App.root) || '')) { cp = checkpoints[i]; break; }
     }
     if (!cp) { MI.toast('没有可回滚的 AI 修改', 'err'); return; }
     await undoEditCp(cp);
@@ -556,7 +635,7 @@ const AiPanel = (() => {
   // Cursor（编辑器内 inline diff + Keep/Undo）、Cline（对话流里的 diff 卡片）、
   // VS Code（Working Set 里开 diff 视图）都是「就地给 diff、决策按钮贴着 diff」，这里取同样的路子：
   // 不抢焦点、不遮编辑器，diff 默认展开、可收起。
-  function confirmDiff(rel, oldText, newText, danger) {
+  function confirmDiff(rel, oldText, newText, danger, run, call, baseVersion) {
     return new Promise((resolve) => {
       const rows = lineDiff(oldText, newText);
       const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
@@ -578,19 +657,8 @@ const AiPanel = (() => {
           '<button class="tb-btn m-cancel" id="dw-no">拒绝</button>' +
           '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="dw-yes">' + (danger ? '确认清空' : '应用修改') + '</button>' +
         '</div>';
-      const prev = panel.querySelector('.ai-confirm');
-      if (prev) prev.parentNode.removeChild(prev); // 上一处没处理完的确认先作废（它指向的文件可能已经变了）
-      panel.appendChild(box);
-      let settled = false;
-      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
-      const finish = (v) => {
-        if (settled) return;
-        settled = true;
-        document.removeEventListener('keydown', onKey);
-        if (box.parentNode) box.parentNode.removeChild(box);
-        resolve(v);
-      };
-      document.addEventListener('keydown', onKey);
+      const finish = bindConfirmation(box, run, { context: run.stream.context, toolCallId: call.id,
+        target: run.identity.rootId + '/' + rel, baseVersion, parameters: JSON.stringify(call.args) }, resolve);
       box.querySelector('#dw-yes').onclick = () => finish('once');
       const al = box.querySelector('#dw-always');
       if (al) al.onclick = () => finish('always');
@@ -624,30 +692,35 @@ const AiPanel = (() => {
 
   // 一轮工具执行完毕：结果喂回模型，然后自动续流
   // native=true 走 role:tool 消息（原生 function calling），否则走伪 user 消息（文本协议回退）
-  async function agentStep(calls, native) {
-    if (!calls || !calls.length || agentStopped) return;
+  async function agentStep(calls, native, run) {
+    if (!calls || !calls.length || !runIsLive(run)) return;
+    const ownedCalls = JSON.parse(JSON.stringify(calls));
     if (agentRounds >= MAX_ROUNDS) {
       msgs.push({ role: 'user', content: '（已达工具调用轮次上限，请基于现有信息总结收尾，不要再调用工具）' });
     } else {
-      for (const c of calls) {
+      for (const c of ownedCalls) {
+        if (!runIsLive(run)) return;
         const row = renderToolRow(c);
         let r;
-        try { r = await executeTool(c); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
+        try { r = await executeTool(c, run); } catch (e) { r = { ok: false, text: '错误：' + ((e && e.message) || e) }; }
+        if (!runIsLive(run)) { setToolState(row, !!r.committed, r.committed ? '停止前已提交' : '已停止'); return; }
         setToolState(row, r.ok, (c.name === 'write_file' || c.name === 'replace_edit') ? (r.ok ? '已应用' : '已拒绝') : '');
         // 工具返回的原文挂到 title 上：显示"已拒绝"时，鼠标悬停就能看到到底是权限拒绝、
         // 还是 search 没匹配上（否则用户只能看到一个笼统的"已拒绝"）
         if (row) row.title = String((r && r.text) || '');
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
+        run.results?.add(c.id);
       }
       agentRounds++;
     }
-    if (agentStopped) return;
-    await continueStream();
+    if (!runIsLive(run)) return;
+    await continueStream(run);
   }
 
   // 自动续流（Agent 循环的下一轮回复；用户消息已在 msgs 里）
-  async function continueStream() {
+  async function continueStream(run) {
+    if (!runIsLive(run)) return;
     const cfg = getConfig();
     curStream = addMsg('assistant', '');
     curStream.dataset.mid = 'a' + (++uiSeq);
@@ -655,11 +728,14 @@ const AiPanel = (() => {
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
-    const r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS);
-    if (curStream) {
-      if (r && r.error) finishStream(r.error, true, r);
-      else finishStream((r && r.text) || curText, false, r);
-    }
+    const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false };
+    run.stream = stream;
+    let r;
+    try { r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS, stream.context); }
+    catch (error) { r = { error: String(error), context: stream.context }; }
+    if (!runIsLive(run) || run.stream !== stream || stream.finished) return;
+    if (!identityMatches(r?.context, stream.context)) r = { error: 'AI响应归属无效，未执行工具', context: stream.context };
+    finishStream(r?.error || r?.text || stream.text, !!r?.error, r, run, stream);
   }
 
   const esc = (s) => String(s == null ? '' : s)
@@ -860,10 +936,9 @@ const AiPanel = (() => {
     for (let i = rows.length - 1; i > at; i--) rows[i].remove(); // 改动卡片留着（文件确实改了，撤销入口不能丢）
     removeRegen();
     agentRounds = 0;
-    agentStopped = false;
     busy = true;
     setBusyUI(true);
-    await continueStream();
+    await continueStream(beginRun());
   }
   function editUserMsg(mid) {
     if (!mid) { MI.toast('找不到这条消息', 'err'); return; }
@@ -1152,7 +1227,6 @@ const AiPanel = (() => {
   }
 
   async function send() {
-    await followActive(); // 发送前对齐一次：用户可能刚切了文件就说话
     if (busy) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
@@ -1164,8 +1238,10 @@ const AiPanel = (() => {
     }
     busy = true;
     setBusyUI(true);
+    const run = beginRun();
+    await followActive();
+    if (!runIsLive(run)) return;
     agentRounds = 0;   // 新任务重置 Agent 循环计数
-    agentStopped = false;
     closeSlash();
     compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
     renderUsage();
@@ -1193,25 +1269,14 @@ const AiPanel = (() => {
     lastUserAt = msgs.length;                  // 重新生成时回退到这里（保留这条用户消息）
     msgs.push({ role: 'user', content, _ui: mid, _text: text, _imgs: imgs });
 
-    curStream = addMsg('assistant', '');
-    curStream.dataset.mid = 'a' + (++uiSeq);
-    curText = '';
-    const dot = document.createElement('span');
-    dot.className = 'ai-cursor';
-    curStream.querySelector('.ai-md').appendChild(dot);
-
-    const r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS);
-    // 兜底：onDone 事件已处理时 curStream 为 null；否则用 invoke 返回值收尾（两者内容一致）
-    if (curStream) {
-      if (r && r.error) finishStream(r.error, true, r);
-      else finishStream((r && r.text) || curText, false, r);
-    }
+    await continueStream(run);
   }
 
   // 收尾一轮回复：渲染 + 入历史 + 若有工具调用则续跑 Agent 循环（保持 busy）
   // r：完整返回 {ok, text, toolCalls}（原生 function calling 的工具调用在 r.toolCalls）
-  function finishStream(text, isErr, r) {
-    if (!curStream) return;
+  function finishStream(text, isErr, r, run = currentRun, stream = run?.stream) {
+    if (!runIsLive(run) || !stream || stream.finished || run.stream !== stream || !identityMatches(r?.context, stream.context)) return;
+    stream.finished = true;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     const md = curStream.querySelector('.ai-md');
     // 空气泡不留：模型这一轮只调工具、没说话时，聊天里挂个空白框只会让人莫名其妙
@@ -1229,8 +1294,8 @@ const AiPanel = (() => {
       md.innerHTML = renderMd(text);
       decorateCodeBlocks(curStream);
     }
-    const nativeCalls = (!isErr && r && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
-    const textCalls = (!isErr && text) ? parseToolCalls(text) : [];
+    const nativeCalls = (!isErr && !r?.aborted && r && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
+    const textCalls = (!isErr && !r?.aborted && text) ? parseToolCalls(text) : [];
     if (!isErr) {
       // 原生通道：assistant 消息要带 tool_calls（role:tool 结果的引用锚点）
       if (nativeCalls.length) {
@@ -1250,22 +1315,22 @@ const AiPanel = (() => {
     curText = '';
     scrollBottom();
     // Agent 循环：原生 tool_calls 优先，文本协议块回退
-    if (!agentStopped && (nativeCalls.length || textCalls.length)) {
-      agentStep(nativeCalls.length ? nativeCalls : textCalls, !!nativeCalls.length).catch(() => {});
+    if (runIsLive(run) && (nativeCalls.length || textCalls.length)) {
+      run.nativePending = nativeCalls; run.results = new Set();
+      agentStep(nativeCalls.length ? nativeCalls : textCalls, !!nativeCalls.length, run).catch(() => endRun(run, 'failed'));
       return;
     }
-    busy = false;
-    setBusyUI(false);
     lastUserAt = msgs.map((m) => m.role).lastIndexOf('user');
-    persistSession();   // 每轮结束存一次：关掉面板也翻得回来
-    markRegen();
+    endRun(run, r?.aborted ? 'cancelled' : isErr ? 'failed' : 'completed');
   }
 
   function setBusyUI(b) {
     if (sendBtn) {
+      sendBtn.disabled = false;
       sendBtn.textContent = b ? '⏹' : '➤';
       sendBtn.title = b ? '停止生成' : '发送（Enter）';
     }
+    const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.onclick = () => stopRun();
   }
 
   // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
@@ -1353,7 +1418,7 @@ const AiPanel = (() => {
       if (!se) return;
       if (act === 'del') {
         saveSessions(all2.filter((x) => x.id !== id));
-        if (id === curSessionId) curSessionId = null;
+        if (id === curSessionId) { stopRun(true); curSessionId = null; }
         renderHist();
         MI.toast('已删除该会话', 'ok');
         return;
@@ -1379,7 +1444,7 @@ const AiPanel = (() => {
   function openSession(id) {
     const se = loadSessions().find((x) => x.id === id);
     if (!se) { MI.toast('找不到该会话', 'err'); return; }
-    if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+    stopRun(true);
     closeHist();
     msgs = (se.msgs || []).slice();
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
@@ -1393,10 +1458,8 @@ const AiPanel = (() => {
   // 会话跟着项目走：对话历史、上下文、本次对话的临时授权、项目规则缓存，
   // 换项目一律重来（否则 AI 会把上一个项目的文件当成本项目的上下文）。
   function onProjectChange() {
-    if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+    stopRun(true);
     closeMention(); closeHist(); closeSlash(); closePermPop();
-    const cf = panel.querySelector('.ai-confirm');
-    if (cf) cf.parentNode.removeChild(cf);   // 没处理完的确认直接作废：它指的是上一个项目的文件
     msgs = [];
     curSessionId = null;
     lastUserAt = null;
@@ -1433,22 +1496,24 @@ const AiPanel = (() => {
   const RULE_FILES = ['.myide/ai-rules.md', 'AGENTS.md', 'CLAUDE.md', '.cursorrules'];
   let rulesText = '';
   let rulesFile = '';
-  let rulesRoot = null;
+  let rulesRoot = null, rulesRequest = 0;
   async function loadProjectRules(force) {
     const root = (window.App && App.root) || '';
     if (!root) { rulesText = ''; rulesFile = ''; rulesRoot = null; return ''; }
     if (rulesRoot === root && !force) return rulesText;
-    rulesRoot = root;
+    const request = ++rulesRequest;
     rulesText = '';
     rulesFile = '';
     for (const f of RULE_FILES) {
       const r = await window.myIDE.fs.readFile(root + '/' + f).catch(() => null);
+      if (request !== rulesRequest || root !== ((window.App && App.root) || '')) return '';
       if (r && !r.error && r.content && String(r.content).trim()) {
         rulesText = String(r.content).trim().slice(0, 8000);
         rulesFile = f;
         break;
       }
     }
+    rulesRoot = root;
     return rulesText;
   }
 
@@ -1458,7 +1523,9 @@ const AiPanel = (() => {
   // 「正在看」已并入 chips（class = follow），保留这个入口名，调用点不用改
   function renderFollow() { renderChips(); }
   async function followActive() {
+    const scope = generation, root = (window.App && App.root) || '';
     await loadProjectRules();   // 项目规则只在换项目时真正读一次
+    if (scope !== generation || root !== ((window.App && App.root) || '')) return;
     const tab = window.Viewer && Viewer.activeTab;
     const path = (tab && !tab.dir) ? tab.path : null;
     if (path === followPath) { renderFollow(); return; }
@@ -1467,7 +1534,7 @@ const AiPanel = (() => {
     if (path && !followMuted.has(path)) {
       // 标签读取失败时，自动跟随同样可能失败；不能留下未处理的拒绝或沿用旧文件上下文。
       const r = await window.myIDE.fs.readFile(path).catch(() => null);
-      if(followPath!==path || Viewer.activeTab!==tab || tab.path!==path)return;
+      if(scope!==generation || root!==((window.App && App.root)||'') || followPath!==path || Viewer.activeTab!==tab || tab.path!==path)return;
       if (r && !r.error) {
         let content = r.content || '';
         if (content.length > MAX_CTX) content = content.slice(0, MAX_CTX) + '\n…（已截断）';
@@ -1572,7 +1639,7 @@ const AiPanel = (() => {
   // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
   // 命令确认：多给一个「记住这类命令」的出口
   // （Cursor 是 allowlist，VS Code 是 scoped approval —— 都在解决"点十几次确认"）
-  function confirmRun(cmd, pre, danger) {
+  function confirmRun(cmd, pre, danger, run, call) {
     return new Promise((resolve) => {
       const box = document.createElement('div');
       box.className = 'ai-confirm';
@@ -1596,19 +1663,8 @@ const AiPanel = (() => {
           '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
           '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="cr-yes">' + (danger ? '仍然执行' : '运行一次') + '</button>' +
         '</div>';
-      const prev = panel.querySelector('.ai-confirm');
-      if (prev) prev.parentNode.removeChild(prev);
-      panel.appendChild(box);
-      let settled = false;
-      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
-      const finish = (v) => {
-        if (settled) return;
-        settled = true;
-        document.removeEventListener('keydown', onKey);
-        if (box.parentNode) box.parentNode.removeChild(box);
-        resolve(v);
-      };
-      document.addEventListener('keydown', onKey);
+      const finish = bindConfirmation(box, run, { context: run.stream.context, toolCallId: call.id,
+        target: run.identity.rootId, parameters: cmd }, resolve);
       box.querySelector('#cr-no').onclick = () => finish(false);
       box.querySelector('#cr-yes').onclick = () => finish('once');
       const al = box.querySelector('#cr-always');
@@ -2095,7 +2151,7 @@ const AiPanel = (() => {
     };
     if (sendBtn) {
       sendBtn.onclick = () => {
-        if (busy) { agentStopped = true; window.myIDE.ai.abort(); return; }
+        if (busy) { stopRun(); return; }
         send();
       };
     }
@@ -2125,7 +2181,7 @@ const AiPanel = (() => {
     renderImages();
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
-      if (busy) { agentStopped = true; window.myIDE.ai.abort(); busy = false; setBusyUI(false); }
+      stopRun(true);
       persistSession();          // 先把当前这轮存进历史，再开新的
       curSessionId = null;
       lastUserAt = null;
@@ -2161,9 +2217,11 @@ const AiPanel = (() => {
     initResize();
 
     // 主进程事件流
-    window.myIDE.ai.onChunk((delta) => {
-      if (!curStream) return;
-      curText += delta;
+    window.myIDE.ai.onChunk((event) => {
+      const run = currentRun, stream = run?.stream;
+      if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
+      stream.text += event.delta;
+      curText = stream.text;
       const md = curStream.querySelector('.ai-md');
       md.innerHTML = renderMd(curText);
       const d = document.createElement('span');
@@ -2172,8 +2230,9 @@ const AiPanel = (() => {
       scrollBottom();
     });
     window.myIDE.ai.onDone((r) => {
-      if (!curStream) return;
-      finishStream(r && r.error ? r.error : (r && r.text) || curText, !!(r && r.error), r);
+      const run = currentRun, stream = run?.stream;
+      if (!runIsLive(run) || !identityMatches(r?.context, stream?.context)) return;
+      finishStream(r?.error || r?.text || stream.text, !!r?.error, r, run, stream);
     });
   }
 
