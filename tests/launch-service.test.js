@@ -197,6 +197,130 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       old.emit('exit', 1); old.emit('error', Error('late error')); assert.equal(f.state()[f.entry.id].pid, fresh.pid);
       assert.deepEqual(f.service.getLogs(f.entry.id).lines, logs); assert.equal((await f.service.startEntry(f.entry)).error, '已在运行');
     });
+    await test('UTF8逐字节到达仍保留中文emoji，未换行输出原位增量显示', async () => {
+      const f = fixture(); const started = await f.service.startEntry(f.entry), child = f.children[0];
+      for (const byte of Buffer.from('正在启动🙂')) child.stdout.emit('data', Buffer.from([byte]));
+      const before = f.service.getLogs(f.entry.id);
+      assert.equal(before.runId, started.launchId); assert.equal(before.lines.at(-1), '正在启动🙂');
+      assert.equal(before.records.at(-1).complete, false); const seq = before.records.at(-1).seq;
+      child.stdout.emit('data', Buffer.from('，请稍候\n'));
+      const after = f.service.getLogs(f.entry.id);
+      assert.equal(after.lines.at(-1), '正在启动🙂，请稍候'); assert.equal(after.records.at(-1).seq, seq);
+      assert.equal(after.records.at(-1).complete, true); assert(after.version > before.version);
+    });
+    await test('跨chunk CRLF只换行一次，空行和独立CR保留，尾残行在end完成', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const stream = f.children[0].stdout;
+      stream.emit('data', Buffer.from('A\r')); stream.emit('data', Buffer.from('\n\r'));
+      stream.emit('data', Buffer.from('\nB\rC\n\nTAIL')); stream.emit('end');
+      const log = f.service.getLogs(f.entry.id);
+      assert.deepEqual(log.records.filter(r => r.stream === 'stdout').map(r => r.text), ['A', '', 'B', 'C', '', 'TAIL']);
+      assert(log.records.every(r => r.complete));
+    });
+    await test('stdout/stderr残行互不拼接，seq与首次观察时间可信且稳定', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('OUT')); child.stderr.emit('data', Buffer.from('ERR'));
+      child.stdout.emit('data', Buffer.from('-A\n')); child.stderr.emit('data', Buffer.from('-B\n'));
+      const records = f.service.getLogs(f.entry.id).records.filter(r => r.stream !== 'system');
+      assert.deepEqual(records.map(r => [r.stream, r.text]), [['stdout', 'OUT-A'], ['stderr', 'ERR-B']]);
+      assert(records[0].seq < records[1].seq); assert(records.every(r => Number.isFinite(r.timestamp) && r.timestamp <= Date.now()));
+    });
+    await test('exit后仍接收原运行管道尾部，close才完成残行并追加结束标记', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('LAST-')); child.emit('exit', 7, null);
+      assert.equal(f.state()[f.entry.id].exitCode, 7);
+      child.stdout.emit('data', Buffer.from('尾部')); child.emit('close', 7, null);
+      const log = f.service.getLogs(f.entry.id);
+      assert.deepEqual(log.lines.slice(-2), ['LAST-尾部', '[进程退出] code=7']);
+      assert.equal(log.records.at(-2).complete, true);
+      child.stdout.emit('data', Buffer.from('迟到内容')); child.stderr.emit('data', Buffer.from('迟到错误'));
+      child.emit('close', 7, null);
+      assert.deepEqual(f.service.getLogs(f.entry.id), log);
+    });
+    await test('重启后旧stdout/stderr/end/exit/close不能混入新运行或清除新记录', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const old = f.children[0];
+      old.stdout.emit('data', Buffer.from('OLD-')); const previous = f.service.getLogs(f.entry.id);
+      const restarted = await f.service.restartEntry(f.entry); assert.equal(restarted.ok, true);
+      const fresh = f.service.getLogs(f.entry.id); assert.notEqual(fresh.runId, previous.runId);
+      for (const stream of [old.stdout, old.stderr]) { stream.emit('data', Buffer.from('迟到\n')); stream.emit('end'); }
+      old.emit('exit', 9); old.emit('close', 9); old.emit('error', Error('late'));
+      assert.deepEqual(f.service.getLogs(f.entry.id), fresh); assert.equal(f.state()[f.entry.id].launchId, restarted.launchId);
+    });
+    await test('清空更换generation但不停止进程，丢弃旧残行/UTF8残字节后继续收新输出', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('旧残行')); child.stderr.emit('data', Buffer.from('中').subarray(0, 2));
+      const before = f.service.getLogs(f.entry.id), state = f.state();
+      const cleared = f.service.clearLogs(f.entry.id);
+      assert.notEqual(cleared.generation, before.generation); assert.equal(cleared.runId, before.runId);
+      assert.deepEqual(f.service.getLogs(f.entry.id).lines, []); assert.deepEqual(f.state(), state); assert.equal(f.kills.length, 0);
+      child.stdout.emit('data', Buffer.from('新正文\n')); child.stderr.emit('data', Buffer.from('新错误\n'));
+      assert.deepEqual(f.service.getLogs(f.entry.id).lines, ['新正文', '新错误']);
+      assert.equal(before.lines.at(-1), '旧残行');
+    });
+    await test('清空重置CRLF合并状态，旧CR不能吞掉新代次的首个空行', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const stream = f.children[0].stdout;
+      stream.emit('data', Buffer.from('旧行\r')); f.service.clearLogs(f.entry.id);
+      stream.emit('data', Buffer.from('\n新行\n'));
+      assert.deepEqual(f.service.getLogs(f.entry.id).lines, ['', '新行']);
+    });
+    await test('日志读取返回独立快照，外部修改和后续追加均不污染已有版本', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('FIRST')); const snapshot = f.service.getLogs(f.entry.id);
+      snapshot.lines[0] = '篡改'; snapshot.records.at(-1).text = '篡改'; snapshot.records.push({ text: '插入' });
+      assert.equal(f.service.getLogs(f.entry.id).lines.at(-1), 'FIRST');
+      const original = f.service.getLogs(f.entry.id); child.stdout.emit('data', Buffer.from('-SECOND\n'));
+      assert.equal(original.lines.at(-1), 'FIRST'); assert.equal(original.records.at(-1).complete, false);
+      assert.equal(f.service.getLogs(f.entry.id).lines.at(-1), 'FIRST-SECOND');
+    });
+    await test('800行预算含空行，丢弃计数明确，保留seq不重新编号', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry);
+      f.children[0].stdout.emit('data', Buffer.from(Array.from({ length: 801 }, (_, i) => 'L' + i).join('\n') + '\n'));
+      const log = f.service.getLogs(f.entry.id);
+      assert.equal(log.lines.length, 800); assert.equal(log.droppedLines, 2); assert.equal(log.truncated, true);
+      assert.equal(log.lines[0], 'L1'); assert.equal(log.lines.at(-1), 'L800'); assert.equal(log.records[0].seq, 3);
+    });
+    await test('长行分片持续增长仍限16KiB，截断不切坏emoji且下一行恢复', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const stream = f.children[0].stdout;
+      for (let i = 0; i < 100; i++) stream.emit('data', Buffer.from('🙂'.repeat(2000)));
+      stream.emit('data', Buffer.from('\nNEXT\n'));
+      const log = f.service.getLogs(f.entry.id), long = log.records.find(r => r.truncated);
+      assert(long); assert(Buffer.byteLength(long.text) <= 16 * 1024); assert(!long.text.includes('\uFFFD'));
+      assert(long.text.endsWith('…[该行已截断]')); assert.equal(log.truncatedLines, 1); assert.equal(log.lines.at(-1), 'NEXT');
+    });
+    await test('总字节预算1MiB比800行先触发，快照字节与实际文本一致', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry);
+      f.children[0].stdout.emit('data', Buffer.from(('中'.repeat(4000) + '\n').repeat(100)));
+      const log = f.service.getLogs(f.entry.id);
+      assert(log.bytes <= 1024 * 1024); assert(log.lines.length < 100); assert(log.droppedLines > 0);
+      assert.equal(log.bytes, log.lines.reduce((sum, text) => sum + Buffer.byteLength(text), 0)); assert.equal(log.truncatedLines, 0);
+    });
+    await test('被环形缓冲移除的未结束行不从中间复活，下个换行后才能加入新行', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('OUT-PENDING'));
+      child.stderr.emit('data', Buffer.from('ERR\n'.repeat(801)));
+      child.stdout.emit('data', Buffer.from('-DONT-REVIVE\nNEW\n'));
+      const log = f.service.getLogs(f.entry.id);
+      assert(!log.lines.some(line => line.includes('OUT-PENDING') || line.includes('DONT-REVIVE')));
+      assert.equal(log.lines.at(-1), 'NEW'); assert(log.droppedLines > 0);
+    });
+    await test('USB清空时不复活已缓冲的旧输出，新的停止输出仍分stdout/stderr', async () => {
+      const f = fixture({ holdBridge: true }); const starting = f.service.startEntry(f.bridge);
+      f.service.clearLogs(f.entry.id); f.options.releaseBridge(); assert.equal((await starting).ok, true);
+      assert.deepEqual(f.service.getLogs(f.entry.id).lines, []);
+      f.options.holdBridge = false; f.options.bridge = { status: 0, stdout: 'OUT', stderr: 'ERR' };
+      assert.equal((await f.service.stopEntry(f.bridge)).ok, true);
+      assert.deepEqual(f.service.getLogs(f.entry.id).records.map(r => [r.stream, r.text]), [['stdout', 'OUT'], ['stderr', 'ERR']]);
+    });
+    await test('spawn error结算当前残行与不完整UTF8字节，随后旧流不能继续写入', async () => {
+      const f = fixture(); await f.service.startEntry(f.entry); const child = f.children[0];
+      child.stdout.emit('data', Buffer.from('部分输出')); child.stderr.emit('data', Buffer.from('中').subarray(0, 2));
+      child.emit('error', Error('pipe fixture error'));
+      const log = f.service.getLogs(f.entry.id);
+      assert.deepEqual(log.lines.slice(-3), ['部分输出', '\uFFFD', '错误: pipe fixture error']);
+      assert(log.records.every(r => r.complete)); assert.equal(f.state()[f.entry.id], undefined);
+      child.stdout.emit('data', Buffer.from('迟到\n')); child.stderr.emit('end'); child.emit('close');
+      assert.deepEqual(f.service.getLogs(f.entry.id), log);
+      assert.equal((await f.service.startEntry(f.entry)).ok, true);
+    });
     await test('后台保留不丢 command/cwd，也不停止进程', async () => {
       const f = fixture(); await f.service.startEntry(f.entry); const before = f.state(); f.service.setKeepOnExit(true);
       await f.service.shutdown(); assert.deepEqual(f.state(), before); assert.equal(f.kills.length, 0);
@@ -365,6 +489,26 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
         assert(service.getLogs(compound.id).lines.includes('SECOND'));
         assert.equal(JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8'))[compound.id].exitCode, 0);
         assert.equal((await service.stopEntry(compound)).ok, true);
+      } finally { await service.stopEntry(entry); await service.shutdown(); }
+    });
+    if (process.platform === 'win32') await test('真实Windows子进程分片UTF8/CRLF/空行与未换行尾部完整入日志', async () => {
+      const service = require('../launch-service');
+      const dir = fs.mkdtempSync(path.join(temp, 'real-log-')); service.setConfigDir(dir);
+      const script = path.join(dir, 'log-fixture.js');
+      fs.writeFileSync(script, "(async()=>{const b=Buffer.from('真实中文🙂\\r\\n\\r\\n尾部');for(const byte of b){process.stdout.write(Buffer.from([byte]));await new Promise(r=>setTimeout(r,15));}process.stderr.write('独立错误');})().catch(()=>{process.exitCode=1;});", 'utf8');
+      const entry = { id: 'real-log-' + process.pid, cwd: dir, command: '"' + process.execPath + '" "' + script + '"' };
+      try {
+        const started = await service.startEntry(entry); assert.equal(started.ok, true);
+        const deadline = Date.now() + 10000;
+        while (!service.getLogs(entry.id).lines.some(line => line === '[进程退出] code=0')) {
+          if (Date.now() > deadline) throw Error('真实日志未结算：' + JSON.stringify(service.getLogs(entry.id)));
+          await new Promise(resolve => setTimeout(resolve, 40));
+        }
+        const log = service.getLogs(entry.id);
+        assert.equal(log.runId, started.launchId); assert.deepEqual(log.records.filter(r => r.stream === 'stdout').map(r => r.text), ['真实中文🙂', '', '尾部']);
+        assert.deepEqual(log.records.filter(r => r.stream === 'stderr').map(r => r.text), ['独立错误']);
+        assert(log.records.every(r => r.complete)); assert.equal(log.lines.at(-1), '[进程退出] code=0');
+        assert.equal((await service.aliveEntry(entry)).alive, false); assert.equal(log.truncated, false);
       } finally { await service.stopEntry(entry); await service.shutdown(); }
     });
     if (process.platform === 'win32') await test('真实Python异步等待不堵事件循环，UTF8/非零退出/超量输出均按实际结果结算', async () => {

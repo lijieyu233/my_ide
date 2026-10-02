@@ -10,8 +10,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const net = require('net');
+const { StringDecoder } = require('string_decoder');
 
 const LOG_MAX = 800;
+// 行数挡不住单行洪流：文本总预算1MiB、单行16KiB，残行也计入而不是另开无界缓冲。
+const LOG_BYTES = 1024 * 1024;
+const LOG_LINE_BYTES = 16 * 1024;
+const LOG_CUT = '…[该行已截断]';
 const DEFAULT_API_ORIGIN = 'http://127.0.0.1:18000';
 
 let configDir = path.join(os.homedir(), '.myide');
@@ -27,7 +32,7 @@ function setConfigDir(dir) {
 function paths() { return { configDir, configFile, stateFile }; }
 
 const procs = new Map();   // id -> { proc, pid, startedAt }
-const logs = new Map();    // id -> string[]
+const logs = new Map();    // id -> 当前运行的有界日志与清空代次
 const pending = new Map();
 let closing = false;
 let shutdownPromise = null;
@@ -66,13 +71,79 @@ function runBridge(python, script, operation) {
   });
 }
 
-function pushLog(id, text) {
-  if (!logs.has(id)) logs.set(id, []);
-  const arr = logs.get(id);
-  for (const l of String(text || '').split(/\r?\n/)) {
-    if (l !== '') arr.push(l);
+function logBook(id, runId = null) {
+  const previous = logs.get(id);
+  if (previous) {
+    // 根进程已退出时旧管道可能被子进程占着；重启不能让它继续持有整份旧日志。
+    previous.streams.forEach(collector => collector.end());
+    previous.records = []; previous.bytes = 0;
   }
-  if (arr.length > LOG_MAX) arr.splice(0, arr.length - LOG_MAX);
+  const book = { runId, generation: randomUUID(), version: 0, nextSeq: 1,
+    records: [], bytes: 0, droppedLines: 0, truncatedLines: 0, streams: new Set() };
+  logs.set(id, book);
+  return book;
+}
+function currentLog(id) { return logs.get(id) || logBook(id); }
+function trimLog(book) {
+  while (book.records.length > LOG_MAX || book.bytes > LOG_BYTES) {
+    const old = book.records.shift(); old.retained = false;
+    book.bytes -= old.bytes; book.droppedLines++;
+  }
+}
+function newLogLine(book, stream) {
+  const line = { seq: book.nextSeq++, timestamp: Date.now(), stream, text: '',
+    complete: false, truncated: false, bytes: 0, retained: true };
+  book.records.push(line); book.version++;
+  trimLog(book);
+  return line;
+}
+function appendLogLine(book, line, text) {
+  // 被环形缓冲移除的残行不能被后续chunk重新塞回，否则阅读锚会指向另一段正文。
+  if (!line.retained || line.truncated || !text) return;
+  const before = line.bytes, joined = line.text + text;
+  if (Buffer.byteLength(joined, 'utf8') > LOG_LINE_BYTES) {
+    const decoder = new StringDecoder('utf8');
+    line.text = decoder.write(Buffer.from(joined).subarray(0, LOG_LINE_BYTES - Buffer.byteLength(LOG_CUT))) + LOG_CUT;
+    line.truncated = true; book.truncatedLines++;
+  } else line.text = joined;
+  line.bytes = Buffer.byteLength(line.text, 'utf8'); book.bytes += line.bytes - before;
+  book.version++; trimLog(book);
+}
+function logStream(id, book, stream) {
+  const state = { decoder: new StringDecoder('utf8'), line: null, skipLF: false, ended: false };
+  const active = () => logs.get(id) === book && !state.ended;
+  const consume = text => {
+    if (!active()) return;
+    // stdout/stderr各自保留残行，CRLF即使被分在两次读取也只产生一次换行。
+    const pieces = text.split(/([\r\n])/);
+    for (const piece of pieces) {
+      if (!piece) continue;
+      if (piece === '\n' && state.skipLF) { state.skipLF = false; continue; }
+      state.skipLF = false;
+      if (!state.line) state.line = newLogLine(book, stream);
+      if (piece === '\r' || piece === '\n') {
+        if (state.line.retained) { state.line.complete = true; book.version++; }
+        state.line = null; state.skipLF = piece === '\r';
+      } else appendLogLine(book, state.line, piece);
+    }
+  };
+  const collector = {
+    write: chunk => { if (active()) consume(state.decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'))); },
+    end: () => {
+      if (!active()) return;
+      consume(state.decoder.end());
+      if (state.line && state.line.retained) { state.line.complete = true; book.version++; }
+      state.line = null; state.ended = true; book.streams.delete(collector);
+    },
+    reset: () => { state.decoder = new StringDecoder('utf8'); state.line = null; state.skipLF = false; },
+  };
+  book.streams.add(collector);
+  return collector;
+}
+function pushLog(id, text, stream = 'system', book = currentLog(id)) {
+  if (logs.get(id) !== book || !text) return;
+  const collector = logStream(id, book, stream);
+  collector.write(text); collector.end();
 }
 
 // ---------- 配置 ----------
@@ -206,7 +277,7 @@ async function startUnlocked(entry) {
   if (entry.port && await checkPort(entry.port)) {
     return { ok: false, error: '端口 ' + entry.port + ' 已被占用（可能已在别处启动）' };
   }
-  logs.set(entry.id, []);
+  const book = logBook(entry.id, randomUUID());
   pushLog(entry.id, '$ ' + entry.command);
 
   // usb-tunnel：走 python 桥（脚本路径由条目自己带，不写死在代码里）
@@ -217,8 +288,11 @@ async function startUnlocked(entry) {
       pushLog(entry.id, '未配置/找不到桥接脚本：' + (script || '(空)'));
       return { ok: false, error: '桥接脚本未配置或不存在' };
     }
+    const generation = book.generation;
     const r = await runBridge(py, script, 'start');
-    pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
+    if (book.generation === generation) {
+      pushLog(entry.id, r.stdout, 'stdout', book); pushLog(entry.id, r.stderr, 'stderr', book);
+    }
     const result = bridgeResult(r, '启动');
     if (result.ok) setState(entry.id, { pid: 0, startedAt: Date.now(), kind: 'usb-tunnel' });
     else pushLog(entry.id, result.error);
@@ -245,27 +319,37 @@ async function startUnlocked(entry) {
   }
   child.unref();   // 不阻塞 my_ide 退出（进程本身不受影响，继续跑）
   const info = { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '',
-    launchId: randomUUID(), identityVersion: 1, port: Number(entry.port) || 0 };
+    launchId: book.runId, identityVersion: 1, port: Number(entry.port) || 0 };
   const live = { proc: child, ...info };
   procs.set(entry.id, live);
   setState(entry.id, info);
 
-  const wire = (stream) => {
+  const collectors = [];
+  const wire = (stream, name) => {
     if (!stream) return;
-    stream.on('data', (buf) => pushLog(entry.id, buf.toString('utf8')));
+    const collector = logStream(entry.id, book, name); collectors.push(collector);
+    stream.on('data', collector.write); stream.on('end', collector.end);
   };
-  wire(child.stdout); wire(child.stderr);
-  child.on('exit', (code) => {
+  wire(child.stdout, 'stdout'); wire(child.stderr, 'stderr');
+  let exited = null;
+  child.on('exit', (code, signal) => {
     if ((procs.get(entry.id) || {}).proc !== child) return;
-    pushLog(entry.id, '[进程退出] code=' + code);
+    exited = { code, signal };
     procs.delete(entry.id);
     const st = loadState();
     if (st[entry.id] && st[entry.id].launchId === info.launchId) {
       setState(entry.id, { ...st[entry.id], endedAt: Date.now(), exitCode: code });
     }
   });
+  // exit只说明根进程结束，管道还有尾部数据；close后才放结束标记，残行仍归原runId。
+  child.on('close', () => {
+    collectors.forEach(collector => collector.end());
+    const ended = exited; exited = null;
+    if (ended) pushLog(entry.id, '[进程退出] code=' + ended.code + (ended.signal ? ' signal=' + ended.signal : ''), 'system', book);
+  });
   child.on('error', (e) => {
     if ((procs.get(entry.id) || {}).proc !== child) return;
+    collectors.forEach(collector => collector.end());
     pushLog(entry.id, '错误: ' + (e && e.message || e));
     // spawn error 不保证随后触发 exit；否则失败句柄会一直阻止下一次启动。
     if ((procs.get(entry.id) || {}).proc === child) {
@@ -325,8 +409,11 @@ async function stopUnlocked(entry) {
     if (!script || !fs.existsSync(script)) {
       return { ok: false, error: '桥接脚本未配置或不存在，无法确认停止' };
     }
+    const book = currentLog(entry.id), generation = book.generation;
     const r = await runBridge(py, script, 'stop');
-    pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
+    if (book.generation === generation) {
+      pushLog(entry.id, r.stdout, 'stdout', book); pushLog(entry.id, r.stderr, 'stderr', book);
+    }
     const result = bridgeResult(r, '停止');
     if (!result.ok) { pushLog(entry.id, result.error); return result; }
     setState(entry.id, null);
@@ -408,8 +495,23 @@ function statusOf(entries) {
     return { id: e.id, alive: a.alive, by: a.by, pid: (procs.get(e.id) || {}).pid || 0 };
   }));
 }
-function getLogs(id) { return { lines: logs.get(id) || [] }; }
-function clearLogs(id) { logs.set(id, []); return { ok: true }; }
+function getLogs(id) {
+  const book = logs.get(id);
+  if (!book) return { lines: [], records: [], runId: null, generation: null, version: 0,
+    droppedLines: 0, truncatedLines: 0, truncated: false, bytes: 0 };
+  const records = book.records.map(({ retained, bytes, ...record }) => ({ ...record }));
+  return { lines: records.map(record => record.text), records, runId: book.runId, generation: book.generation,
+    version: book.version, droppedLines: book.droppedLines, truncatedLines: book.truncatedLines,
+    truncated: book.droppedLines > 0 || book.truncatedLines > 0, bytes: book.bytes };
+}
+function clearLogs(id) {
+  const book = currentLog(id);
+  book.records.forEach(line => { line.retained = false; });
+  book.records = []; book.bytes = 0; book.droppedLines = 0; book.truncatedLines = 0;
+  book.generation = randomUUID(); book.version = 0; book.nextSeq = 1;
+  book.streams.forEach(collector => collector.reset());
+  return { ok: true, runId: book.runId, generation: book.generation };
+}
 
 // 导入 mh_launch_panel 的 panel-config.json（字段原样，缺的补足）
 function importFrom(srcPath) {
