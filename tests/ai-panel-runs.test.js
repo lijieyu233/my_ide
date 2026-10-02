@@ -2,6 +2,7 @@ const fs = require('fs'), path = require('path'), os = require('os'), assert = r
 const { JSDOM } = require('jsdom'), { createRegistry } = require('../ai-runs'), FileWrite = require('../file-write'), TextFormat = require('../text-format');
 const AI = require('../ai-service');
 const ToolContract = require('../ai-tool-contract');
+const ToolExecution = require('../ai-tool-execution');
 const source = fs.readFileSync(path.join(__dirname, '../renderer/ai-panel.js'), 'utf8'), html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(r => setImmediate(r));
@@ -16,6 +17,7 @@ function fixture() {
   const put = (name, value = 'ORIGINAL', root = A) => { const p = file(name, root); fs.writeFileSync(p, value); created.add(p); };
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost' }), w = dom.window;
   const registry = createRegistry(), calls = [], writes = [], commands = [], aborts = [], pending = [];
+  const toolService=ToolExecution.createService(registry);
   let onChunk, onDone;
   const f = { dir, A, B, w, calls, writes, commands, aborts, file, put, script: [], onRead: null, onWrite: null, registry };
   const read = async p => {
@@ -29,7 +31,7 @@ function fixture() {
     try { return FileWrite.atomicWrite(path.resolve(p), TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), condition); } catch (e) { return { error: e.message }; }
   }, remove: async p => { fs.unlinkSync(p); return { ok: true }; } }, ai: {
     chat: async (_cfg, messages, _tools, context) => {
-      registry.begin(1, context); const d = defer(), item = { context, messages, d }; calls.push(item); pending.push(d);
+      registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, d }; calls.push(item); pending.push(d);
       if (f.script.length) d.resolve(f.script.shift());
       else if (!f.hold) d.resolve({ ok: true, text: '总结' });
       const result = await d.promise;
@@ -39,15 +41,22 @@ function fixture() {
     abort: async context => { aborts.push(context); return f.abortResult || registry.finish(1, context, 'cancelled'); },
     finish: async context => registry.finish(1, context),
     validateTool: async (context, call) => {
-      try { registry.assert(1, context); return { ok: true, call: ToolContract.validate(JSON.parse(JSON.stringify(call))) }; }
+      try { return { ok: true, call: toolService.prepare(1,context,JSON.parse(JSON.stringify(call))).call }; }
       catch(e) { return { ok: false, error: e.message, errorCode: e.code }; }
     },
+    readFile: async(context,call)=>{
+      const p=path.resolve(context.rootId,call.args.path),injected=f.onRead?.(p);
+      if(injected)return await injected;
+      return toolService.read(1,context,JSON.parse(JSON.stringify(call)));
+    },
+    readDir: async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'list',()=>({files:[]})),
+    search: async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'search',()=>({results:[],doneReason:'complete'})),
     writeFile: async (context, p, content, format, condition, call) => {
       p = path.resolve(p); const action = () => {
         try { registry.assert(1, context, p); ToolContract.assertWrite(context.rootId,p,content,call,call.name==='replace_edit'?TextFormat.decodeText(FileWrite.readSnapshot(p).bytes).content:undefined); const r = FileWrite.atomicWrite(p, TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), { ...condition, beforePublish: () => registry.assert(1, context, p) }); writes.push({ p, content, context }); created.add(p); return r; }
         catch (e) { return { error: e.message, errorCode: e.code }; }
       };
-      return f.onWrite ? await f.onWrite(action, context) : action();
+      return toolService.once(1,context,JSON.parse(JSON.stringify(call)),'write',()=>f.onWrite?f.onWrite(action,context):action());
     },
     run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
@@ -207,6 +216,11 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     for(const call of [{id:'bad',name:'replace_edit',args:{path:'one.md',search:'ORIGINAL'}},{id:'bad',name:'replace_edit',args:{path:'one.md',search:'ORIGINAL',replace:'x',replace_all:'true'}},{id:'bad',name:'run_command',args:{command:123}}]){
       const f=fixture();f.put('one.md');f.script.push(reply(call));f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,0);assert.equal(f.commands.length,0);assert.equal(f.element('.ai-confirm'),null);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');
     }
+  });
+  await test('跨轮同一调用只写一次且只有一张恢复卡，同id换正文被拒绝',async()=>{
+    const f=fixture();f.put('one.md');const c=writeCall();f.script.push(reply(c),reply(c),reply({...c,args:{...c.args,content:'OTHER'}}),{ok:true,text:'总结'});
+    f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,1);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'MODEL');assert.equal(f.w.document.querySelectorAll('.ai-edit').length,1);
+    assert(f.calls[3].messages.some(m=>m.content?.includes('参数已变化')));
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

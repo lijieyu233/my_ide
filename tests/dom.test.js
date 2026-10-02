@@ -504,6 +504,9 @@ function makeDom() {
         try { return { ok: true, call: require('../ai-tool-contract').validate(JSON.parse(JSON.stringify(call))) }; }
         catch (e) { return { ok: false, error: e.message, errorCode: e.code }; }
       },
+      readFile: async(context,call)=>w.myIDE.fs.readFile(context.rootId+'/'+call.args.path),
+      readDir: async(context,call)=>w.myIDE.fs.readDir(context.rootId+'/'+(call.args.path||'.')),
+      search: async(context,call)=>w.myIDE.fs.grep(context.rootId,call.args.query),
       writeFile: async (_context, p, content, format, condition) => w.myIDE.fs.writeFile(p, content, format, condition),
       run: async () => ({ ok: true, text: '命令输出' }),
       onChunk: () => {},

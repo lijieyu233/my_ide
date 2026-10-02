@@ -466,22 +466,31 @@ const AiPanel = (() => {
     if (!runIsLive(run)) return cancelledTool();
     if (!checked?.ok) return { ok: false, errorCode: checked?.errorCode, text: '错误：' + (checked?.error || '工具校验失败，未执行') };
     call = checked.call;
+    // 主进程账本保护磁盘/命令，面板同样复用逻辑结果，避免重复确认和重复恢复卡片。
+    run.toolExecutions ||= new Map();
+    if(run.toolExecutions.has(call.id))return run.toolExecutions.get(call.id);
+    const execution=Promise.resolve().then(()=>executeValidatedTool(call,run));
+    run.toolExecutions.set(call.id,execution);return execution;
+  }
+  async function executeValidatedTool(call,run){
+    if(!runIsLive(run))return cancelledTool();
     const a = call.args;
     if (call.name === 'list_files') {
       const loc = resolveInRoot(a.path || '.', run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
-      const r = await window.myIDE.fs.readDir(loc.rel ? loc.root + '/' + loc.rel : loc.root);
+      const r = await window.myIDE.ai.readDir(run.stream.context,call);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '目录不存在') };
       // 后端返回条目数组（注意 Array.prototype.entries 是内置方法，不能直接 r.entries 判断）
       const list = Array.isArray(r) ? r : (r.files || r.children || []);
-      const items = list.map((e) => (((e.type === 'dir') || e.isDir || e.isDirectory) ? '[目录] ' : '') + e.name);
+      const items = list.map((e) => (e.isLink ? '[链接] ' : ((e.type === 'dir') || e.isDir || e.isDirectory) ? '[目录] ' : '') + e.name);
       return { ok: true, text: '目录 ' + loc.rel + ' 的内容：\n' + (items.join('\n') || '（空）') };
     }
     if (call.name === 'read_file') {
       const loc = resolveInRoot(a.path, run.identity.rootId);
       if (!loc) return { ok: false, text: '错误：路径不合法（只能是项目内相对路径）' };
-      const r = await window.myIDE.fs.readFile(loc.root + '/' + loc.rel);
+      const r = await window.myIDE.ai.readFile(run.stream.context,call);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '文件不存在') };
+      if(r.binary||r.tooLarge)return {ok:false,text:r.binary?'错误：目标是二进制文件，未作为文本读取':'错误：目标超过文本读取预算，未读取'};
       let c = r.content || '';
       if (c.length > 30000) c = c.slice(0, 30000) + '\n…（内容过长已截断）';
       return { ok: true, text: '文件 ' + loc.rel + ' 的内容：\n```\n' + c + '\n```' };
@@ -491,7 +500,7 @@ const AiPanel = (() => {
       if (!root) return { ok: false, text: '错误：未打开项目' };
       const q = String(a.query || '').trim();
       if (!q) return { ok: false, text: '错误：query 为空' };
-      const r = await window.myIDE.fs.grep(root, q);
+      const r = await window.myIDE.ai.search(run.stream.context,call);
       if (!r || r.error) return { ok: false, text: '错误：' + ((r && r.error) || '搜索失败') };
       const rows = (r.results || []).slice(0, 50).map((x) => x.file + ':' + x.line + ' ' + x.text);
       const state = r.doneReason === 'resultLimit' ? '达到结果上限，未完整搜索' : r.doneReason === 'timeLimit' ? '搜索超时，未完整搜索' : r.doneReason === 'cancelled' ? '搜索已取消' : '搜索完成';
@@ -504,7 +513,7 @@ const AiPanel = (() => {
       const replace = typeof a.replace === 'string' ? a.replace : '';
       if (!search) return { ok: false, text: '错误：search 不能为空（替换内容请用 write_file）' };
       const full = loc.root + '/' + loc.rel;
-      const old = await window.myIDE.fs.readFile(full);
+      const old = await window.myIDE.ai.readFile(run.stream.context,call);
       if (!runIsLive(run)) return cancelledTool();
       if (!old || old.error) return { ok: false, text: '错误：文件不存在 ' + loc.rel + '（新文件请用 write_file）' };
       const oldText = old.content || '';
@@ -561,7 +570,7 @@ const AiPanel = (() => {
     if (needW === 'deny') {
       return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
     }
-    const old = source || await window.myIDE.fs.readFile(full);
+    const old = source || await window.myIDE.ai.readFile(run.stream.context,call);
     if (!runIsLive(run)) return cancelledTool();
     if (!old || old.binary || old.tooLarge || old.error && old.errorCode !== 'ENOENT')
       return { ok: false, text: '错误：不能读取可靠的原文本，未写入 ' + loc.rel };

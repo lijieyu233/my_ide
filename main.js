@@ -8,10 +8,13 @@ const DB = require('./db-service');
 const AI = require('./ai-service');
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
+const aiTools = require('./ai-tool-execution').createService(aiRuns);
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
 const searchService = require('./search-service').createSearchService();
+const aiSearchJobs=new Map();
+function cancelAiSearch(requestId){for(const [id,job]of aiSearchJobs)if(job.context.requestId===requestId)searchService.cancel(job.owner,id).catch(()=>{});}
 AI.init(net);
 
 const SMOKE = process.argv.includes('--smoke');
@@ -165,7 +168,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { const context = aiRuns.reset(aiHostId); if (context) AI.abortChat(context.requestId); };
+  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) resetAi(); });
   aiHost.on('destroyed', resetAi);
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
@@ -520,7 +523,8 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   let record;
   try {
     const start = aiRuns.begin(aiSender(e), context); record = start.record; context = record.context;
-    if (start.previous) AI.abortChat(start.previous.context.requestId);
+    aiTools.bind(aiSender(e), context);
+    if (start.previous) { AI.abortChat(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { return { error: error.message, errorCode: error.code, context }; }
   let r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
@@ -530,25 +534,54 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   return r;
 });
 ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) AI.abortChat(context.requestId); return result; }
+  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
-  try { return aiRuns.finish(aiSender(e), context); }
+  try { const result=aiRuns.finish(aiSender(e),context);if(result.ok)cancelAiSearch(context.requestId);return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:validateTool', (e, context, call) => {
-  try { aiRuns.assert(aiSender(e), context); return { ok: true, call: AiToolContract.validate(call) }; }
+  try { return { ok: true, call: aiTools.prepare(aiSender(e), context, call).call }; }
   catch (error) { return { ok: false, error: error.message, errorCode: error.code }; }
+});
+ipcMain.handle('ai:readFile', async(e, context, call) => {
+  try {
+    const normalized=AiToolContract.validate(call);
+    if(!['read_file','write_file','replace_edit'].includes(normalized.name))throw Object.assign(Error('不是文件读取调用'),{code:'INVALID_TOOL_ARGS'});
+    return await aiTools.read(aiSender(e),context,normalized);
+  }catch(error){return {error:error.message,errorCode:error.code};}
+});
+ipcMain.handle('ai:readDir', async(e,context,call)=>{
+  try{
+    if(AiToolContract.validate(call).name!=='list_files')throw Object.assign(Error('不是目录读取调用'),{code:'INVALID_TOOL_ARGS'});
+    return await aiTools.once(aiSender(e),context,call,'list',async({proof,verify})=>{
+      const entries=[],directory=await fs.promises.opendir(proof.real,{bufferSize:32});
+      for await(const entry of directory){if(entries.length>=10000)throw Object.assign(Error('目录超过10000项预算'),{code:'AI_DIRECTORY_LIMIT'});entries.push(entry);if(entries.length%64===0)verify();}verify();
+      return {files:entries.filter(e=>!['.git','node_modules'].includes(e.name)&&(!e.name.startsWith('.')||/^\.env($|\.)/.test(e.name))).map(e=>({name:e.name,type:e.isDirectory()?'dir':'file',isLink:e.isSymbolicLink()}))};
+    });
+  }catch(error){return {error:error.message,errorCode:error.code};}
+});
+ipcMain.handle('ai:search',async(e,context,call)=>{
+  try{
+    const normalized=AiToolContract.validate(call);if(normalized.name!=='search_files')throw Object.assign(Error('不是搜索调用'),{code:'INVALID_TOOL_ARGS'});
+    return await aiTools.once(aiSender(e),context,normalized,'search',async({proof,verify})=>{
+      const id='ai-search-'+require('crypto').randomUUID();aiSearchJobs.set(id,{owner:e.sender.id,context});
+      let result;try{result=await searchService.start(e.sender.id,{requestId:id,root:proof.real,projectGeneration:context.generation,query:normalized.args.query.trim()},null,false);}finally{aiSearchJobs.delete(id);}
+      verify();
+      for(const hit of result.results){if(!aiTools.inside(proof.real,hit.version?.target||''))throw Object.assign(Error('搜索结果实际路径越界'),{code:'OUTSIDE_AI_ROOT'});}
+      return result;
+    });
+  }catch(error){return {error:error.message,errorCode:error.code,results:[]};}
 });
         // AI Agent 工具：run_command（项目目录内执行，15s 超时，输出截断回喂模型）
         ipcMain.handle('ai:run', async (e, cmd, cwd, context, call) => {
           try { aiRuns.assert(aiSender(e), context, cwd); AiToolContract.assertCommand(cmd, cwd, context, call); }
           catch (error) { return { ok: false, text: error.message, errorCode: error.code }; }
           const { exec } = require('child_process');
-          return new Promise((resolve) => {
+          try { const result=await aiTools.once(aiSender(e),context,call,'run',({proof})=>new Promise((resolve) => {
             exec(cmd, {
-              cwd: String(cwd || undefined),
+              cwd: proof.real,
               timeout: 15000,
               maxBuffer: 512 * 1024,
               windowsHide: true,
@@ -558,7 +591,9 @@ ipcMain.handle('ai:validateTool', (e, context, call) => {
               const out = String(stdout || '').slice(0, 8000) + (stderr ? '\n[stderr]\n' + String(stderr).slice(0, 4000) : '');
               resolve({ ok: !err, text: (err ? '退出码 ' + (err.code || 1) + '\n' : '') + (out || '（无输出）') });
             });
-          });
+          }));
+          return result.error?{...result,ok:false,text:result.error}:result;
+          } catch(error) { return {ok:false,text:error.message,errorCode:error.code}; }
         });
 
 ipcMain.handle('fs:mkdir', (_e, p) => {
@@ -569,7 +604,7 @@ ipcMain.handle('fs:mkdir', (_e, p) => {
   } catch (e) { return { error: String(e.message || e), errorCode:e.code||'MKDIR_FAILED' }; }
 });
 
-function writeTextFile(p, content, format, condition, beforePublish) {
+function writeTextFile(p, content, format, condition, beforePublish, writer = FileWrite.atomicWrite) {
   try {
     PathJobs.assertWritable(p);
     if (!format || typeof format === 'string') {
@@ -587,28 +622,28 @@ function writeTextFile(p, content, format, condition, beforePublish) {
     const guard = condition && (condition.expectedVersion || condition.expectedAbsent)
       ? { ...condition, requireVersion: true } : { expectedAbsent: true };
     guard.beforePublish = beforePublish;
-    const result = FileWrite.atomicWrite(p, bytes, guard);
+    const result = writer(p, bytes, guard);
     return { ...result, textFormat: saved.textFormat };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 }
 ipcMain.handle('fs:writeFile', (_e, ...args) => writeTextFile(...args));
-ipcMain.handle('ai:writeFile', (e, context, p, content, format, condition, call) => {
-  const verify = () => aiRuns.assert(aiSender(e), context, p);
+ipcMain.handle('ai:writeFile', async(e, context, p, content, format, condition, call) => {
   try {
-    verify();
+    aiRuns.assert(aiSender(e),context,p);
     const normalized = AiToolContract.validate(call);
     let original;
     if (normalized.name === 'replace_edit') {
-      const snapshot = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+      const snapshot = await aiTools.read(aiSender(e),context,normalized);
       if (snapshot.tooLarge) throw Object.assign(Error('替换目标超过8MiB文本预算'), { code: 'TOOL_TARGET_TOO_LARGE' });
-      if (snapshot.absent || !FileWrite.sameVersion(snapshot.version, condition?.expectedVersion))
+      if (snapshot.error || !FileWrite.sameVersion(snapshot.version, condition?.expectedVersion))
         throw Object.assign(Error('原文件已变化，未替换'), { code: 'STALE_DOCUMENT' });
-      const decoded = TextFormat.decodeText(snapshot.bytes, format?.encoding);
-      if (decoded.binary || decoded.tooLarge) throw Object.assign(Error('原文件不是可靠文本'), { code: 'INVALID_TOOL_ARGS' });
-      original = decoded.content;
+      if (snapshot.binary) throw Object.assign(Error('原文件不是可靠文本'), { code: 'INVALID_TOOL_ARGS' });
+      original = snapshot.content;
     }
     AiToolContract.assertWrite(context.rootId, p, content, normalized, original);
-    return { ...writeTextFile(p, content, format, condition, verify), context };
+    return await aiTools.once(aiSender(e),context,normalized,'write',({proof,verify})=>({
+      ...writeTextFile(proof.real,content,format,condition,verify,aiTools.writer(aiSender(e),context,proof)),context,
+    }));
   }
   catch (error) { return { error: error.message, errorCode: error.code, context }; }
 });
@@ -1369,6 +1404,7 @@ app.whenReady().then(() => {
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         aiRuns.begin(aiSender(e), context);
+        aiTools.bind(aiSender(e),context);
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, ch === 'ai:chunk' ? { delta: d, context } : { ...d, context }); } catch {} };
         // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
         const msgs = Array.isArray(messages) ? messages : [];

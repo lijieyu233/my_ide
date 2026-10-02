@@ -5,12 +5,16 @@ const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(
 const home=path.join(temp,'home'),project=path.join(temp,'project');fs.mkdirSync(home);fs.mkdirSync(project);
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;
 app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
+const Search=require('../search-service'),createSearch=Search.createSearchService;let productionSearch;
+Search.createSearchService=(...args)=>(productionSearch=createSearch(...args));
 require(path.join(repo,'main.js'));
+Search.createSearchService=createSearch;
 require(path.join(repo,'ai-service')).init({fetch:async()=>new Response('data: '+JSON.stringify({choices:[{index:0,delta:{content:'完整结束'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n')});
 const rows=[];let win;
-const call=(name,args,id='native-call')=>({id,name,args});
+let callSequence=0;
+const call=(name,args,id='native-call-'+(++callSequence))=>({id,name,args});
 const invoke=(operation,args)=>win.webContents.executeJavaScript('window.myIDE.ai['+JSON.stringify(operation)+'](...'+JSON.stringify(args)+')');
-const c={requestId:'ipc-tools',sessionId:'ipc-session',rootId:project,generation:10,round:0};
+let c={requestId:'ipc-tools',sessionId:'ipc-session',rootId:project,generation:10,round:0};
 async function test(name,fn){await fn();rows.push({name,ok:true});console.log('PASS '+name);}
 (async()=>{
   await app.whenReady();
@@ -45,7 +49,8 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
   await test('正常replace由main原版本再次验证，旧版本拒绝',async()=>{
     const tool=call('replace_edit',{path:'one.md',search:'正常',replace:'替换'});
     const r=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},tool]);assert(r.ok);assert.equal(fs.readFileSync(target,'utf8'),'替换中文');
-    const stale=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},tool]);assert.equal(stale.errorCode,'STALE_DOCUMENT');
+    const duplicate=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},tool]);assert.deepEqual(duplicate,r);
+    const stale=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},{...tool,id:'replace-new-attempt'}]);assert.equal(stale.errorCode,'STALE_DOCUMENT');
   });
   await test('实际main替换读取有8MiB上限，不读取超限原文',async()=>{
     const p=path.join(project,'large.md');fs.writeFileSync(p,'x');fs.truncateSync(p,8*1024*1024+1);
@@ -64,6 +69,42 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
   });
   await test('正常命令原样执行（真实Node版本）',async()=>{
     const r=await invoke('run',['node --version',project,c,call('run_command',{command:'node --version'})]);assert(r.ok);assert(/v\d+\./.test(r.text));
+  });
+  await test('实际junction越界读取/列目录/写入拒绝，搜索不返回外部正文',async()=>{
+    const outside=path.join(temp,'outside'),inner=path.join(project,'inner');fs.mkdirSync(outside);fs.mkdirSync(inner);
+    fs.writeFileSync(path.join(outside,'data.md'),'OUTSIDE_ONLY');fs.writeFileSync(path.join(inner,'data.md'),'INSIDE_ONLY');
+    const external=path.join(project,'external'),alias=path.join(project,'alias');fs.symlinkSync(outside,external,'junction');fs.symlinkSync(inner,alias,'junction');
+    try{
+      for(const [op,tool]of [['readFile',call('read_file',{path:'external/data.md'})],['readDir',call('list_files',{path:'external'})]]){const r=await invoke(op,[c,tool]);assert.equal(r.errorCode,'OUTSIDE_AI_ROOT');}
+      const w=await invoke('writeFile',[c,path.join(external,'new.md'),'MODEL',undefined,{expectedAbsent:true},call('write_file',{path:'external/new.md',content:'MODEL'})]);assert.equal(w.errorCode,'OUTSIDE_AI_ROOT');assert(!fs.existsSync(path.join(outside,'new.md')));
+      assert.equal((await invoke('readFile',[c,call('read_file',{path:'alias/data.md'})])).content,'INSIDE_ONLY');
+      const result=await invoke('search',[c,call('search_files',{query:'OUTSIDE_ONLY'})]);assert.equal(result.results.length,0);assert.equal(fs.readFileSync(path.join(outside,'data.md'),'utf8'),'OUTSIDE_ONLY');
+    }finally{fs.rmdirSync(external);fs.rmdirSync(alias);fs.unlinkSync(path.join(outside,'data.md'));fs.unlinkSync(path.join(inner,'data.md'));fs.rmdirSync(outside);fs.rmdirSync(inner);}
+  });
+  await test('实际并发写入重发只发布一次，同id换参数拒绝',async()=>{
+    const p=path.join(project,'once.md'),tool=call('write_file',{path:'once.md',content:'ONE'}),args=[c,p,'ONE',undefined,{expectedAbsent:true},tool];
+    const [a,b]=await Promise.all([invoke('writeFile',args),invoke('writeFile',args)]);assert(a.ok,JSON.stringify(a));assert.deepEqual(a,b);assert.deepEqual(await invoke('writeFile',args),a);
+    const conflict=await invoke('writeFile',[c,p,'TWO',undefined,{expectedVersion:a.version},{...tool,args:{...tool.args,content:'TWO'}}]);assert.equal(conflict.errorCode,'TOOL_ID_CONFLICT');assert.equal(fs.readFileSync(p,'utf8'),'ONE');fs.unlinkSync(p);
+  });
+  await test('实际命令并发重发仅追加一个字节',async()=>{
+    const command="node -e \"require('fs').appendFileSync('command-count.txt','x')\"",tool=call('run_command',{command}),args=[command,project,c,tool];
+    const [a,b]=await Promise.all([invoke('run',args),invoke('run',args)]);assert(a.ok,JSON.stringify(a));assert.deepEqual(a,b);assert.equal(fs.readFileSync(path.join(project,'command-count.txt'),'utf8'),'x');fs.unlinkSync(path.join(project,'command-count.txt'));
+  });
+  await test('实际预检后目录换成外部junction，旧执行拒绝',async()=>{
+    const original=path.join(project,'changing'),outside=path.join(temp,'swapped-outside');fs.mkdirSync(original);fs.mkdirSync(outside);
+    const tool=call('write_file',{path:'changing/new.md',content:'MODEL'});assert((await invoke('validateTool',[c,tool])).ok);
+    fs.renameSync(original,original+'-old');fs.symlinkSync(outside,original,'junction');
+    try{const r=await invoke('writeFile',[c,path.join(original,'new.md'),'MODEL',undefined,{expectedAbsent:true},tool]);assert.equal(r.errorCode,'AI_SCOPE_CHANGED');assert(!fs.existsSync(path.join(outside,'new.md')));}finally{fs.rmdirSync(original);fs.rmdirSync(original+'-old');fs.rmdirSync(outside);}
+  });
+  await test('实际停止取消本次AI搜索，不返回迟到正文且释放资源',async()=>{
+    const folder=path.join(project,'search-stop');fs.mkdirSync(folder);
+    for(let i=0;i<1000;i++)fs.writeFileSync(path.join(folder,i+'.md'),'fixture text');
+    try{
+      const pending=invoke('search',[c,call('search_files',{query:'not-found'})]);
+      for(let n=0;n<100&&productionSearch.metrics.pending===0;n++)await new Promise(r=>setTimeout(r,5));assert(productionSearch.metrics.pending>0);
+      await invoke('abort',[c]);const result=await pending;assert.equal(result.errorCode,'CANCELLED_AI_REQUEST');assert(!result.results?.length);assert.equal(productionSearch.metrics.pending,0);
+      c={...c,requestId:'ipc-after-stop',generation:c.generation+1};await invoke('chat',[{baseUrl:'http://fixture.invalid',model:'fixture'},[],[],c]);
+    }finally{for(let i=0;i<1000;i++)fs.unlinkSync(path.join(folder,i+'.md'));fs.rmdirSync(folder);}
   });
   await test('其他宿主/旧请求不能取得工具校验结果',async()=>{
     const other=new BrowserWindow({show:false,skipTaskbar:true,webPreferences:{preload:path.join(repo,'preload.js'),contextIsolation:true,nodeIntegration:false}});
