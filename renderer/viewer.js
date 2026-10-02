@@ -23,6 +23,7 @@ const Viewer = (() => {
   const pathChanges = new Set();
   const pathBusy = (p) => [...pathChanges].some(change => change.ranges.some(range => DocumentPaths.contains(range,p)));
   let activeTabId = null;
+  let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
   let saveTimer = null;
 
@@ -342,8 +343,10 @@ const Viewer = (() => {
     const target = tabs[i];
     if (!target) return;
     activeTabId = target.id;
+    focusedTabId=target.id;
     renderTabs();
     renderView();
+    revealTab(target.id);
     // 通知 AI 面板「当前在看哪个文件」：面板据此自动把这份文档带进上下文
     try { if (window.AiPanel && AiPanel.followActive) AiPanel.followActive(); } catch {}
     // 会话恢复的浏览位置：编辑器渲染完成后跳到上次光标行
@@ -573,6 +576,7 @@ const Viewer = (() => {
   }
   // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
   function closeAll() {
+    window.TabPicker?.invalidate();
     clearTimeout(autosaveTimer);
     for(const cancel of [...closeDecisions])cancel();
     tabs.length = 0;
@@ -587,13 +591,15 @@ const Viewer = (() => {
   function commitClose(selected) {
     const before=[...tabs], current=currentTab(), at=before.indexOf(current), removed=new Set(selected);
     const origin=document.activeElement;
+    const fromTabs=!!origin?.closest?.('#tab-scroll');
     const successor=removed.has(current) ? before.slice(at+1).find(t=>!removed.has(t)) || before.slice(0,at).reverse().find(t=>!removed.has(t)) : current;
     for(let i=tabs.length-1;i>=0;i--)if(removed.has(tabs[i]))tabs.splice(i,1);
     activeTabId=successor?.id ?? null;
     renderTabs();
     if(current!==currentTab()){
       if(successor)activate(tabs.indexOf(successor),{history:false});else{renderView();document.getElementById('btn-open')?.focus();}
-    }else if(origin&&!origin.isConnected){cmApi?.focus?.();currentTab()?.ta?.focus();}
+    }else if(origin&&!origin.isConnected&&!fromTabs){cmApi?.focus?.();currentTab()?.ta?.focus();}
+    if(fromTabs&&tabs.length)focusTab(successor?.id);
   }
 
   // 标签页上的文件类型图标（小尺寸用线条 SVG，比 emoji 尺寸稳定）
@@ -733,24 +739,74 @@ const Viewer = (() => {
     tabActions.appendChild(loc);
   }
 
+  function focusEditor(){
+    if(cmApi?.__tab===currentTab()&&cmApi.view?.dom.isConnected)cmApi.focus();
+    else if(currentTab()?.ta?.isConnected)currentTab().ta.focus({preventScroll:true});
+    else viewer.focus({preventScroll:true});
+  }
+  function tabButton(id){return tabScroll.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
+  function revealTab(id){
+    const row=tabButton(id)?.closest('.tab');if(!row)return;
+    const viewport=tabScroll.getBoundingClientRect(),rect=row.getBoundingClientRect(),all=tabScroll.querySelector('.tab-all')?.getBoundingClientRect();if(!viewport.width)return;
+    // sticky“全部标签”会盖住滚动区右缘；DOM的nearest并不知道那一块不能展示名字。
+    const right=viewport.right-(all?.width||0);
+    if(rect.left<viewport.left)tabScroll.scrollLeft+=rect.left-viewport.left;else if(rect.right>right)tabScroll.scrollLeft+=rect.right-right;
+  }
+  function focusTab(id=activeTabId){
+    const target=tabs.find(tab=>tab.id===Number(id))||currentTab()||tabs[0];if(!target)return document.getElementById('btn-open')?.focus();
+    focusedTabId=target.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=Number(button.dataset.tabId)===target.id?0:-1;
+    const button=tabButton(target.id);button?.focus({preventScroll:true});revealTab(target.id);
+  }
+  function fitTabLabels(){
+    if(!tabScroll.isConnected)return;
+    const entries=TabDescriptions.describe(tabs,window.App?.root),label=tabScroll.querySelector('.tab-label'),width=label?.getBoundingClientRect().width||108;
+    let context=null;if(!/jsdom/i.test(navigator.userAgent)){try{context=document.createElement('canvas').getContext('2d');}catch{}}
+    const measure=(value,font)=>{if(context){context.font=font;return context.measureText(value).width;}return Array.from(value).reduce((sum,char)=>sum+(/[\u0000-\u00ff]/.test(char)?6:12),0);};
+    const nameFont=getComputedStyle(tabScroll.querySelector('.tname')||tabScroll).font||'12px sans-serif',pathFont=getComputedStyle(tabScroll.querySelector('.tpath')||tabScroll).font||'10px sans-serif';
+    const names=TabDescriptions.compact(entries.map(entry=>entry.name),width,value=>measure(value,nameFont));
+    const hints=TabDescriptions.compact(entries.map(entry=>entry.pathHint),width,value=>measure(value,pathFont));
+    entries.forEach((entry,i)=>{const row=tabScroll.querySelector('.tab[data-tab-id="'+entry.id+'"]');if(!row)return;
+      row.querySelector('.tname').textContent=names[i];const path=row.querySelector('.tpath');if(path)path.textContent=hints[i];});
+  }
+  if(window.ResizeObserver)new ResizeObserver(fitTabLabels).observe(tabScroll);
+  window.addEventListener('resize',fitTabLabels);
+  tabScroll.addEventListener('keydown',e=>{
+    if(e.isComposing||e.keyCode===229||window.Modal?.stack.length||window.Shortcuts?.isCapturing())return;
+    if(e.target.closest('.tclose')&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();e.target.closest('.tclose').click();return;}
+    const button=e.target.closest('[role="tab"]');if(!button)return;const tab=tabs.find(tab=>tab.id===Number(button.dataset.tabId));if(!tab)return;
+    if(e.shiftKey&&e.key==='F10'){e.preventDefault();e.stopImmediatePropagation();const rect=button.getBoundingClientRect();ctxTabMenu(rect.left,rect.bottom,tab,true);return;}
+    if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey)return;
+    if(['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();activate(tabs.indexOf(tab));}
+    else if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const at=tabs.indexOf(tab);focusTab(e.key==='Home'?tabs[0].id:e.key==='End'?tabs.at(-1).id:tabs[(at+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length].id);}
+    else if(e.key==='Tab'){if(!e.shiftKey){e.preventDefault();e.stopImmediatePropagation();focusEditor();}}
+    else if(e.key==='Delete'){e.preventDefault();e.stopImmediatePropagation();requestClose([tab]);}
+  });
   function renderTabs() {
     cancelDrag(false);
+    const oldFocus=document.activeElement,oldTab=oldFocus?.closest?.('.tab'),focusId=Number(oldTab?.dataset.tabId),wasTabFocus=!!oldTab,wasAll=oldFocus?.classList.contains('tab-all');
+    const descriptors=TabDescriptions.describe(tabs,window.App?.root);
+    tabbar.classList.toggle('disambiguated',descriptors.some(entry=>entry.pathHint));
+    if(!tabs.some(tab=>tab.id===focusedTabId))focusedTabId=activeTabId||tabs[0]?.id;
     tabScroll.innerHTML = '';
     tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
       el.className = 'tab' + (t.id === activeTabId ? ' active' : '');
+      const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===activeTabId));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===focusedTabId?0:-1;
+      select.onfocus=()=>{focusedTabId=t.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
       const ti = document.createElement('span');
       ti.className = 'tic';
       // 与侧栏树共用同一套类型图标（App.ftIcon），两处观感一致
       ti.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(t.name) : ftIcon(t.name);
-      el.appendChild(ti);
+      ti.setAttribute('aria-hidden','true');select.appendChild(ti);
+      const state=document.createElement('span');state.className='tab-state';state.setAttribute('aria-hidden','true');state.textContent=t.mode==null?'…':t.error||t.mode==='error'?'!':t.dirty?'●':'';state.title=t.mode==null?'加载中':t.error||t.mode==='error'?'读取失败':t.dirty?'未保存':'';select.appendChild(state);
+      const label=document.createElement('span');label.className='tab-label';
       const nm = document.createElement('span');
       nm.className = 'tname';
       // 中段省略：保住编号前缀与扩展名（末尾省略会让一排 tab 全长得一样）
-      nm.textContent = (t.mode==null ? '加载中 · ' : t.dirty ? '● ' : '') + (window.App && App.fitName ? App.fitName(t.name, 17) : t.name);
-      el.appendChild(nm);
-      const x = document.createElement('span');
+      nm.textContent = t.name;label.appendChild(nm);
+      if(description.pathHint){const hint=document.createElement('span');hint.className='tpath';hint.textContent=description.pathHint;label.appendChild(hint);}select.appendChild(label);el.appendChild(select);
+      const x = document.createElement('button');x.type='button';x.tabIndex=-1;x.setAttribute('aria-label','关闭 '+description.name+'，'+description.path);
       x.className = 'tclose';
       x.textContent = '✕';
       x.onclick = (e) => { e.stopPropagation(); requestClose([t]); };
@@ -768,30 +824,21 @@ const Viewer = (() => {
     });
     // 打开文件过多时合并：右侧「▾ 全部标签」下拉
     if (tabs.length > 1) {
-      const all = document.createElement('div');
+      const all = document.createElement('button');all.type='button';all.setAttribute('aria-label','全部打开的标签，'+tabs.length+' 个');all.setAttribute('aria-haspopup','dialog');
       all.className = 'tab-all';
       all.textContent = '▾ ' + tabs.length;
       all.title = '全部打开的标签';
       all.onclick = (e) => {
         e.stopPropagation();
-        const menu = document.getElementById('ctx-menu');
-        menu.innerHTML = '';
-        tabs.forEach((t, i) => {
-          const d = document.createElement('div');
-          d.className = 'ctx-item';
-          d.textContent = (t.dirty ? '● ' : '') + t.name;
-          d.title = t.path;
-          d.onclick = () => { menu.classList.add('hidden'); if(tabs.includes(t))activate(tabs.indexOf(t)); };
-          menu.appendChild(d);
-        });
-        menu.classList.remove('hidden');
-        const r = all.getBoundingClientRect();
-        menu.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
-        menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 300) + 'px';
+        window.TabPicker.open(all);
       };
       tabScroll.appendChild(all);
     }
     renderTabActions();
+    if(activeTabId!=null)viewer.setAttribute('aria-labelledby','file-tab-'+activeTabId);else viewer.removeAttribute('aria-labelledby');
+    fitTabLabels();window.TabPicker?.refresh();
+    if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
+    else if(wasAll)tabScroll.querySelector('.tab-all')?.focus({preventScroll:true});
     empty.classList.toggle('visible', tabs.length === 0);
     if (window.Session) Session.save();
   }
@@ -856,7 +903,9 @@ const Viewer = (() => {
     renderTabs();
   }
 
-  function ctxTabMenu(x, y, tab) {
+  let tabMenuCleanup=null;
+  function ctxTabMenu(x, y, tab, keyboard=false) {
+    tabMenuCleanup?.();
     if(!tabs.includes(tab))return;
     const menu = document.getElementById('ctx-menu');
     menu.innerHTML = '';
@@ -864,10 +913,12 @@ const Viewer = (() => {
       const d = document.createElement('div');
       d.className = 'ctx-item';
       d.textContent = label;
-      d.onclick = () => { menu.classList.add('hidden'); if(tabs.includes(tab))return fn(); };
+      d.tabIndex=-1;d.setAttribute('role','menuitem');
+      d.onclick = async() => { menu.classList.add('hidden');tabMenuCleanup?.(); if(tabs.includes(tab)){const result=await fn();if(keyboard&&!window.Modal?.stack.length&&(document.activeElement===document.body||menu.contains(document.activeElement)))focusTab(tab.id);return result;} };
       menu.appendChild(d);
     };
     mk('📋 复制完整路径', () => { MI.copyText(tab.path); MI.toast('已复制路径', 'ok'); });
+    mk('📄 查看完整路径', () => window.TabPicker.open(tabButton(tab.id),tab.id));
     if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
     if (tab.mode === 'edit') mk('⑂ Blame 注解', () => { if (tab !== currentTab()) activate(tabs.indexOf(tab)); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
@@ -879,6 +930,14 @@ const Viewer = (() => {
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 80) + 'px';
+    if(keyboard){menu.setAttribute('role','menu');menu.setAttribute('aria-label','标签操作');const rows=[...menu.children];rows[0]?.focus();
+      const onKey=e=>{if(menu.classList.contains('hidden')||!tabs.includes(tab)){tabMenuCleanup?.();return;}if(e.isComposing||e.keyCode===229||window.Modal?.stack.length)return;
+        if(['ArrowDown','ArrowUp','Home','End','Enter',' ','Escape','Tab'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const at=rows.indexOf(document.activeElement);
+          if(e.key==='Escape'||e.key==='Tab'){menu.classList.add('hidden');tabMenuCleanup?.();if(e.key==='Tab')focusEditor();else focusTab(tab.id);}
+          else if(e.key==='Enter'||e.key===' ')rows[Math.max(0,at)]?.click();
+          else rows[e.key==='Home'?0:e.key==='End'?rows.length-1:(at+(e.key==='ArrowUp'?-1:1)+rows.length)%rows.length]?.focus();}
+      };tabMenuCleanup=()=>{document.removeEventListener('keydown',onKey,true);menu.removeAttribute('role');menu.removeAttribute('aria-label');tabMenuCleanup=null;};document.addEventListener('keydown',onKey,true);
+    }
   }
 
   // ---------- 视图渲染 ----------
@@ -1728,7 +1787,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation,
+    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

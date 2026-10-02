@@ -530,7 +530,9 @@ async function loadApp(dom) {
   evalFile('document-paths.js');
   evalFile('tree.js');
   evalFile('navigation-history.js');
+  evalFile('tab-descriptions.js');
   evalFile('viewer.js');
+  evalFile('tab-picker.js');
   evalFile('outline.js');
   evalFile('git-panel.js');
   evalFile('git-log.js');
@@ -9126,6 +9128,58 @@ assert_(panel, 'CM6 搜索面板出现');
     el.dispatchEvent(new d.window.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
     return [...d.window.document.querySelectorAll('#ctx-menu .ctx-item')].find(el=>el.textContent===label).onclick();
   };
+  const tabEl=(d,tab)=>d.window.document.querySelector('[role="tab"][data-tab-id="'+tab.id+'"]');
+  const setTabFile=path=>{FAKE_FS[path]={type:'file',content:'plain '+path+'\r\n'};};
+  await saveCase('标签B：同名最短父路径/不同磁盘根/大小写别名可见辨识且不改变身份',async(d,viewer)=>{
+    const w=d.window,files=[P+'/src/readme.txt',P+'/docs/readme.txt','C:/a/shared/main.js','D:/a/shared/main.js'];for(const file of files){setTabFile(file);await viewer.openFile(file);}
+    const descriptions=w.TabDescriptions.describe(viewer.openTabs,P),hint=path=>descriptions.find(entry=>entry.path===path).pathHint;
+    assert.equal(hint(files[0]),'src');assert.equal(hint(files[1]),'docs');assert.equal(hint(files[2]),'C:/a/shared');assert.equal(hint(files[3]),'D:/a/shared');
+    const count=viewer.openTabs.length,id=viewer.activeTab.id;await viewer.openFile(files[3].toLowerCase().replaceAll('/','\\'));assert.equal(viewer.openTabs.length,count);assert.equal(viewer.activeTab.id,id);
+    for(const tab of viewer.openTabs){assert(tabEl(d,tab).getAttribute('aria-label').includes(w.DocumentPaths.normalize(tab.path)));assert.equal(tabEl(d,tab).getAttribute('aria-selected'),String(tab===viewer.activeTab));}
+  });
+  await saveCase('标签B：长中文/emoji/省略后中段差异仍唯一，窄尺寸回落也可区分',async(d,viewer)=>{
+    const w=d.window,prefix='相同开头'.repeat(6),suffix='共同后缀'.repeat(6),files=['甲','乙','丙'].map(value=>P+'/'+prefix+value+suffix+'/readme.txt');for(const file of files){setTabFile(file);await viewer.openFile(file);}
+    const labels=files.map(file=>[...w.document.querySelectorAll('.tab')].find(row=>row.dataset.path===file).querySelector('.tpath').textContent);assert.equal(new Set(labels).size,3);assert(labels.every(label=>label.includes('…')));assert(labels.some(label=>label.includes('甲')));
+    const compact=w.TabDescriptions.compact(['👨‍👩‍👧‍👦相同前缀甲末尾','👨‍👩‍👧‍👦相同前缀乙末尾'],6,value=>Array.from(value).length);assert.equal(new Set(compact).size,2);assert(compact.every(text=>!/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(text)));
+  });
+  await saveCase('标签B：关闭/改名/排序后路径重新辨识，保存仍绑定原对象',async(d,viewer,bridge)=>{
+    const w=d.window,a=P+'/a/readme.txt',b=P+'/b/readme.txt';setTabFile(a);setTabFile(b);await viewer.openFile(a);const ta=viewer.activeTab;await viewer.openFile(b);const tb=viewer.activeTab;
+    await viewer.closeTab(viewer.openTabs.indexOf(ta));assert(!tabEl(d,tb).querySelector('.tpath'));await viewer.openFile(a);const reopen=viewer.activeTab;
+    const moved=await viewer.withPathChange(a,P+'/c/readme.txt',async(documents,openTargets)=>bridge.relocate(a,P+'/c/readme.txt',{expectedSource:(await bridge.pathSnapshot(a)).snapshot,documents,openTargets}));assert(moved.ok);assert(tabEl(d,reopen).querySelector('.tpath').textContent==='c');assert.equal(reopen.id,viewer.activeTab.id);const active=viewer.activeTab,cm=viewer.cm;viewer.openTabs.reverse();viewer.cm.setValue('正文身份');assert(viewer.activeTab===active&&viewer.cm===cm);assert.equal(tabEl(d,active).getAttribute('aria-selected'),'true');
+    const write=bridge.writeFile,seen=[];bridge.writeFile=(path,...args)=>{seen.push(path);return write(path,...args);};await viewer.saveTab(viewer.openTabs.indexOf(active));assert.deepEqual(seen,[active.path]);
+  });
+  await saveCase('标签B：单一焦点入口/手动激活，不因左右浏览触发读取，Tab回正文',async(d,viewer,bridge)=>{
+    const w=d.window,file=P+'/lazy-tab.txt';setTabFile(file);viewer.addLazyTab(file);const a=viewer.activeTab,b=viewer.openTabs.at(-1),cm=viewer.cm,read=bridge.readFile;let reads=0;bridge.readFile=(...args)=>{reads++;return read(...args);};viewer.focusTab(a.id);
+    assert.equal(w.document.querySelectorAll('[role="tab"][tabindex="0"]').length,1);qoKey(w,tabEl(d,a),'ArrowRight');assert(w.document.activeElement===tabEl(d,b),'ArrowRight焦点');assert(viewer.activeTab===a&&viewer.cm===cm,'正文身份');assert.equal(reads,0);
+    qoKey(w,tabEl(d,b),'Home');assert(w.document.activeElement===tabEl(d,a),'Home焦点');qoKey(w,tabEl(d,a),'End');assert(w.document.activeElement===tabEl(d,b),'End焦点');qoKey(w,tabEl(d,b),'Tab');assert(viewer.cm.view.dom.contains(w.document.activeElement),'Tab正文焦点');
+    viewer.focusTab(b.id);tabEl(d,b).click();await tick();await tick();assert(viewer.activeTab===b&&reads>0&&viewer.cm.getValue().includes(file),'手动激活后读目标正文');assert.equal(w.document.querySelector('#viewer').getAttribute('aria-labelledby'),'file-tab-'+b.id);
+  });
+  await saveCase('标签B：键盘关闭后台/当前/最后页后焦点落存活标签或打开入口',async(d,viewer)=>{
+    const w=d.window,file=P+'/b-key.txt';setTabFile(file);const a=viewer.activeTab;await viewer.openFile(file);const b=viewer.activeTab,cm=viewer.cm;viewer.focusTab(a.id);qoKey(w,tabEl(d,a),'Delete');await tick();assert(viewer.activeTab===b&&viewer.cm===cm);assert(w.document.activeElement===tabEl(d,b));
+    qoKey(w,tabEl(d,b),'Delete');await tick();assert(!viewer.openTabs.length);assert.equal(w.document.activeElement.id,'btn-open');
+  });
+  await saveCase('标签B：dirty重绘保持标签焦点/独立关闭控件，菜单键查看和复制完整路径',async(d,viewer)=>{
+    const w=d.window,tab=viewer.activeTab;viewer.focusTab(tab.id);viewer.cm.setValue('dirty');assert(w.document.activeElement===tabEl(d,tab));assert(tabEl(d,tab).getAttribute('aria-label').includes('未保存'));assert.equal(tabEl(d,tab).querySelectorAll('button').length,0);const close=tabEl(d,tab).parentElement.querySelector('.tclose');assert.equal(close.tagName,'BUTTON');assert(close.getAttribute('aria-label').includes(tab.path));
+    qoKey(w,tabEl(d,tab),'F10',{shiftKey:true});assert.equal(w.document.activeElement.getAttribute('role'),'menuitem');qoKey(w,w.document.activeElement,'ArrowDown');assert(w.document.activeElement.textContent.includes('查看完整路径'));qoKey(w,w.document.activeElement,'Enter');await tick();assert(w.document.querySelector('#tab-picker'));assert.equal(w.document.querySelector('#tab-picker-path').value,tab.path);let copied;w.MI.copyText=text=>{copied=text;};w.document.querySelector('.tp-copy').click();assert.equal(copied,tab.path);qoKey(w,w.document.querySelector('#tab-picker-input'),'Escape');assert(w.document.activeElement===tabEl(d,tab));
+  });
+  await saveCase('标签B：全部标签复用单一列表，路径过滤/当前标记/选区不自动切文档',async(d,viewer)=>{
+    const w=d.window,files=[P+'/a/index.js',P+'/b/index.js'];for(const file of files){setTabFile(file);await viewer.openFile(file);}const active=viewer.activeTab;w.TabPicker.open(tabEl(d,active));w.TabPicker.open();assert.equal(w.document.querySelectorAll('#tab-picker').length,1);assert.equal(w.document.querySelectorAll('#tab-picker-list .tp-item').length,3);assert(w.document.querySelector('#tab-picker-list .sel').textContent.includes('当前文件'));
+    const input=w.document.querySelector('#tab-picker-input');input.value='a/index';input.dispatchEvent(new w.Event('input',{bubbles:true}));assert.equal(w.document.querySelectorAll('#tab-picker-list .tp-item').length,1);assert.equal(w.document.querySelector('#tab-picker-path').value,files[0]);assert(viewer.activeTab===active);qoKey(w,input,'Enter');await tick();assert.equal(viewer.activeTab.path,files[0]);assert(!w.document.querySelector('#tab-picker'));assert(!w.document.querySelector('#tabbar').hasAttribute('inert'));
+  });
+  await saveCase('标签B：过滤无结果清选中/禁用操作，IME期间不导航，Esc释放背景/焦点',async(d,viewer)=>{
+    const w=d.window,tab=viewer.activeTab;viewer.focusTab();w.TabPicker.open(tabEl(d,tab));const input=w.document.querySelector('#tab-picker-input');input.value='absent';input.dispatchEvent(new w.Event('input',{bubbles:true}));assert(!input.hasAttribute('aria-activedescendant'));assert.equal(w.document.querySelector('#tab-picker-path').value,'');assert(w.document.querySelector('.tp-copy').disabled&&w.document.querySelector('.tp-close-file').disabled);
+    input.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));qoKey(w,input,'Escape');assert(w.document.querySelector('#tab-picker'));input.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));qoKey(w,input,'Escape');assert(!w.document.querySelector('#tab-picker'));assert(w.document.activeElement===tabEl(d,tab));assert(!w.document.querySelector('#toolbar').hasAttribute('inert'));
+  });
+  await saveCase('标签B：列表关闭dirty走原统一决策，取消/保存失败保留并可重试',async(d,viewer,bridge)=>{
+    const w=d.window,tab=viewer.activeTab;viewer.cm.setValue('dirty正文');w.TabPicker.open();w.document.querySelector('.tp-close-file').click();await tick();assert(w.document.querySelector('.close-tabs-dialog'));assert(w.document.querySelector('#tab-picker'));w.document.querySelector('.m-cancel').click();await tick();assert(viewer.openTabs.includes(tab));assert(w.document.activeElement===w.document.querySelector('#tab-picker-input'));
+    const write=bridge.writeFile;bridge.writeFile=async()=>({ok:false,error:'无权限'});w.document.querySelector('.tp-close-file').click();await tick();w.document.querySelector('.close-tabs-save').click();await tick();await tick();assert(viewer.openTabs.includes(tab)&&tab.dirty);bridge.writeFile=write;w.document.querySelector('.tp-close-file').click();await tick();w.document.querySelector('.close-tabs-save').click();await tick();await tick();assert(!viewer.openTabs.length);assert(w.document.querySelector('.tp-close-file').disabled);qoKey(w,w.document.querySelector('#tab-picker-input'),'Escape');
+  });
+  await saveCase('标签B：列表期间新开/改名/后台关闭更新身份，旧点击不激活重开文件',async(d,viewer)=>{
+    const w=d.window,file=P+'/new-tab.txt';setTabFile(file);const a=viewer.activeTab;w.TabPicker.open();const stale=w.document.querySelector('.tp-item');await viewer.openFile(file);const b=viewer.activeTab;assert.equal(w.document.querySelectorAll('.tp-item').length,2);viewer.renamed(file,P+'/renamed-tab.txt');assert([...w.document.querySelectorAll('.tp-item')].some(row=>row.textContent.includes('renamed-tab.txt')));await viewer.closeTab(viewer.openTabs.indexOf(a));stale.click();await tick();assert(viewer.activeTab===b);assert.equal(w.document.querySelectorAll('.tp-item').length,1);viewer.closeAll();assert(!w.document.querySelector('#tab-picker'));assert(!w.document.querySelector('#toolbar').hasAttribute('inert'));
+  });
+  await saveCase('标签B：上层弹窗隔离列表，改键/命令入口与项目切换沿共享生命周期',async(d,viewer)=>{
+    const w=d.window;await w.Shortcuts.execute('all-tabs');const input=w.document.querySelector('#tab-picker-input'),upper=w.document.createElement('div');upper.tabIndex=-1;w.Modal.show(upper);upper.focus();qoKey(w,upper,'Enter');w.document.querySelector('.tp-item').click();await tick();assert.equal(w.Modal.stack.length,2);w.Modal.hide();input.focus();qoKey(w,input,'Escape');w.Shortcuts.setBinding('focus-tabs','ctrl+alt+t');await w.Shortcuts.execute('focus-tabs');assert(w.document.activeElement===tabEl(d,viewer.activeTab));assert(w.Shortcuts.commands().some(command=>command.id==='focus-tabs'&&command.combos.includes('ctrl+alt+t')));w.TabPicker.open();await w.App.openProject('C:/proj2');assert(!w.document.querySelector('#tab-picker'));assert(!w.document.querySelector('#toolbar').hasAttribute('inert'));
+  });
   const beginTabDrag=(d,viewer,tab)=>{
     const doc=d.window.document,bar=doc.querySelector('#tab-scroll');
     bar.getBoundingClientRect=()=>({left:0,right:1000,top:0,bottom:40,width:1000,height:40});
