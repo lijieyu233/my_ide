@@ -8,7 +8,7 @@ let passed = 0;
 // 执行完整服务，只有系统进程/端口受控；失败保全必须核对真正落盘的状态。
 function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(temp, 'case-'));
-  const children = [], kills = [], sockets = [], live = new Set(), identities = new Map();
+  const children = [], kills = [], sockets = [], bridges = [], live = new Set(), identities = new Map();
   const identity = pid => ({ pid, createdAt: 'fixture-birth-' + pid, image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
   let nextPid = 500;
   const childProcess = {
@@ -28,6 +28,18 @@ function fixture(options = {}) {
       }
       if (file === 'netstat.exe') return queueMicrotask(() => callback(options.netstatError ? Error('fixture netstat denied') : null,
         options.listener ? 'TCP 127.0.0.1:18089 0.0.0.0:0 LISTENING ' + options.listener : ''));
+      if (file !== 'taskkill.exe') {
+        if (options.bridgeThrows) throw Error('fixture bridge exception');
+        bridges.push({ file, args, settings });
+        const complete = () => {
+          const r = options.bridge || { status: 0, stdout: 'bridge done', stderr: '' };
+          const error = r.error || (r.status !== 0 || r.signal ? Object.assign(Error('fixture bridge failed'), { code: r.status, signal: r.signal }) : null);
+          callback(error, r.stdout || '', r.stderr || '');
+        };
+        if (options.holdBridge) options.releaseBridge = complete;
+        else queueMicrotask(complete);
+        return;
+      }
       assert.equal(file, 'taskkill.exe');
       const pid = Number(args.at(-1)); kills.push(pid);
       const finish = () => {
@@ -36,11 +48,6 @@ function fixture(options = {}) {
       };
       if (options.holdKill) options.releaseKill = finish;
       else queueMicrotask(finish);
-    },
-    spawnSync(command) {
-      if (command === 'cmd') return { stdout: options.listener ? 'TCP 127.0.0.1:18089 0.0.0.0:0 LISTENING ' + options.listener : '', status: 0 };
-      if (options.bridgeThrows) throw Error('fixture bridge exception');
-      return options.bridge || { status: 0, stdout: 'bridge done', stderr: '' };
     },
   };
   class Socket extends EventEmitter {
@@ -61,7 +68,7 @@ function fixture(options = {}) {
   };
   const entry = { id: 'entry-a', command: 'fixture-command', cwd: dir };
   const script = path.join(dir, 'bridge.py'); fs.writeFileSync(script, '# fixture');
-  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, live, identities, state, record };
+  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, live, identities, state, record };
 }
 async function test(name, run) { await run(); passed++; console.log('  ok ' + name); }
 
@@ -135,6 +142,41 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
     await test('异常抛出也释放操作锁，随后能再次执行', async () => {
       const f = fixture({ bridgeThrows: true }); await assert.rejects(f.service.startEntry(f.bridge), /bridge exception/);
       f.options.bridgeThrows = false; assert.equal((await f.service.startEntry(f.bridge)).ok, true);
+    });
+    await test('USB启动未决时持有同终端锁，其他终端与事件循环可继续', async () => {
+      const f = fixture({ holdBridge: true }); const starting = f.service.startEntry(f.bridge);
+      assert.equal(f.bridges.length, 1); assert.equal(f.state()[f.entry.id], undefined);
+      for (const operation of ['startEntry', 'stopEntry', 'restartEntry']) assert.equal((await f.service[operation](f.bridge)).errorCode, 'LAUNCH_BUSY');
+      assert.equal((await f.service.startEntry({ ...f.entry, id: 'entry-b' })).ok, true);
+      let ticked = false; await new Promise(resolve => setImmediate(() => { ticked = true; resolve(); })); assert(ticked);
+      assert.deepEqual(f.bridges[0].args, [f.bridge.script, 'start']);
+      assert.equal(f.bridges[0].settings.windowsHide, true); assert.equal(f.bridges[0].settings.timeout, 60000);
+      assert.equal(f.bridges[0].settings.maxBuffer, 1024 * 1024);
+      assert.equal(f.bridges[0].settings.env.PYTHONIOENCODING, 'utf-8');
+      f.options.releaseBridge(); assert.equal((await starting).ok, true); assert.equal(f.state()[f.entry.id].kind, 'usb-tunnel');
+    });
+    await test('USB停止未决期间记录原样保留，失败结算后可重试', async () => {
+      const f = fixture(); await f.service.startEntry(f.bridge); const before = f.state();
+      f.options.holdBridge = true; f.options.bridge = { status: 7, stderr: 'device busy' };
+      const stopping = f.service.stopEntry(f.bridge); assert.deepEqual(f.state(), before);
+      assert.equal((await f.service.restartEntry(f.bridge)).errorCode, 'LAUNCH_BUSY');
+      f.options.releaseBridge(); assert.equal((await stopping).exitCode, 7); assert.deepEqual(f.state(), before);
+      assert(f.service.getLogs(f.entry.id).lines.includes('device busy'));
+      f.options.holdBridge = false; f.options.bridge = { status: 0 };
+      assert.equal((await f.service.stopEntry(f.bridge)).ok, true); assert.equal(f.state()[f.entry.id], undefined);
+    });
+    await test('输出预算超限回调明确失败且桥接停止记录不丢', async () => {
+      const f = fixture(); await f.service.startEntry(f.bridge); const before = f.state();
+      f.options.bridge = { error: Object.assign(Error('stdout maxBuffer length exceeded'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }), stdout: 'partial output' };
+      const stopped = await f.service.stopEntry(f.bridge); assert.equal(stopped.ok, false); assert(stopped.error.includes('maxBuffer'));
+      assert.deepEqual(f.state(), before); assert(f.service.getLogs(f.entry.id).lines.includes('partial output'));
+    });
+    await test('退出等待USB请求结算，未决期间拒绝新操作且不提前写成功', async () => {
+      const f = fixture({ holdBridge: true }); const starting = f.service.startEntry(f.bridge); const closing = f.service.shutdown();
+      let ended = false; closing.then(() => { ended = true; }); await new Promise(resolve => setImmediate(resolve)); assert.equal(ended, false);
+      assert.equal((await f.service.startEntry(f.entry)).errorCode, 'LAUNCH_SHUTTING_DOWN');
+      f.options.bridge = { status: 7 }; f.options.releaseBridge(); assert.equal((await starting).ok, false);
+      assert.equal((await closing).stopped, 0); assert.equal(f.state()[f.entry.id], undefined);
     });
     await test('spawn 同步失败后允许重试', async () => {
       const f = fixture({ spawnThrow: true }); assert.equal((await f.service.startEntry(f.entry)).ok, false);
@@ -284,6 +326,48 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
         }
         await service.stopEntry(entry); await service.shutdown();
       }
+    });
+    if (process.platform === 'win32') await test('真实Python异步等待不堵事件循环，UTF8/非零退出/超量输出均按实际结果结算', async () => {
+      const service = require('../launch-service');
+      const dir = fs.mkdtempSync(path.join(temp, 'python-')); service.setConfigDir(dir);
+      const script = path.join(dir, 'bridge test 中文.py');
+      const entry = { id: 'python-bridge-' + process.pid, kind: 'usb-tunnel', python: 'python', script };
+      fs.writeFileSync(script, "import sys,time\ntime.sleep(0.35)\nprint('桥接完成',flush=True)\nif sys.argv[1]=='stop':\n print('设备仍占用',file=sys.stderr,flush=True)\n sys.exit(7)\n", 'utf8');
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 20);
+      try {
+        const starting = service.startEntry(entry);
+        assert.equal((await service.stopEntry(entry)).errorCode, 'LAUNCH_BUSY');
+        assert.equal((await starting).ok, true); assert(ticks >= 5, '脚本等待期间主线程计时器应持续执行');
+        assert(service.getLogs(entry.id).lines.includes('桥接完成'));
+        const before = JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8'));
+        const stopped = await service.stopEntry(entry); assert.equal(stopped.ok, false); assert.equal(stopped.exitCode, 7);
+        assert(service.getLogs(entry.id).lines.includes('设备仍占用'));
+        assert.deepEqual(JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8')), before);
+        fs.writeFileSync(script, "import sys\nsys.stdout.write('x'*(2*1024*1024))\nsys.stdout.flush()\n", 'utf8');
+        const overflow = await service.stopEntry(entry); assert.equal(overflow.ok, false); assert(overflow.error.includes('maxBuffer'));
+        assert.deepEqual(JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8')), before);
+      } finally {
+        clearInterval(timer);
+        fs.writeFileSync(script, "print('closed')\n", 'utf8'); await service.stopEntry(entry);
+      }
+    });
+    if (process.platform === 'win32') await test('真实Python超过60秒被终止，部分输出保留、不写启动成功且可重试', async () => {
+      const service = require('../launch-service');
+      const dir = fs.mkdtempSync(path.join(temp, 'python-timeout-')); service.setConfigDir(dir);
+      const script = path.join(dir, 'bridge-timeout.py');
+      const entry = { id: 'python-timeout-' + process.pid, kind: 'usb-tunnel', python: 'python', script };
+      fs.writeFileSync(script, "import time\nprint('waiting-device',flush=True)\ntime.sleep(120)\n", 'utf8');
+      const began = Date.now(); let ticks = 0; const timer = setInterval(() => { ticks++; }, 100);
+      try {
+        const result = await service.startEntry(entry);
+        assert.equal(result.ok, false); assert(Date.now() - began >= 55000); assert(Date.now() - began < 85000); assert(ticks > 300);
+        assert.equal(result.signal, 'SIGTERM'); assert.equal(result.exitCode, null);
+        assert(service.getLogs(entry.id).lines.includes('waiting-device'));
+        assert.equal(fs.existsSync(service.paths().stateFile), false);
+        assert.equal((await service.aliveEntry(entry)).alive, false);
+        fs.writeFileSync(script, "print('retried')\n", 'utf8'); assert.equal((await service.startEntry(entry)).ok, true);
+      } finally { clearInterval(timer); await service.stopEntry(entry); }
     });
     console.log(`结果: ${passed} 通过, 0 失败`);
   } finally {

@@ -4,7 +4,7 @@
 //     所以运行状态必须**落盘**（~/.myide/launch-state.json），重启 my_ide 后仍能停止。
 //   · 停止要整树杀：npm run dev 会派生子进程，只杀外壳会留孤儿占端口 → taskkill /T /F。
 //   · 日志环形缓冲：dev server 输出会无限增长 → 每条目上限 800 行。
-const { spawn, execFile, spawnSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -49,6 +49,21 @@ function bridgeResult(result, operation) {
   const reason = result.error ? String(result.error.message || result.error)
     : result.signal ? '被信号 ' + result.signal + ' 终止' : '退出码 ' + result.status;
   return { ok, error: ok ? '' : '桥接' + operation + '失败：' + reason, exitCode: result.status, signal: result.signal || null, kind: 'usb-tunnel' };
+}
+
+// USB脚本可能等待设备几十秒；同步调用会冻结整个主进程，超量输出也不能无界保存在内存。
+function runBridge(python, script, operation) {
+  return new Promise(resolve => {
+    execFile(python, [script, operation], {
+      encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true,
+      // Windows重定向的Python默认可能写GBK；解码端是UTF8，必须与解释器的输出约定一致。
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    }, (error, stdout, stderr) => {
+      resolve({ stdout: stdout || '', stderr: stderr || '',
+        status: error ? (typeof error.code === 'number' ? error.code : null) : 0,
+        signal: error && error.signal || null, error });
+    });
+  });
 }
 
 function pushLog(id, text) {
@@ -202,7 +217,7 @@ async function startUnlocked(entry) {
       pushLog(entry.id, '未配置/找不到桥接脚本：' + (script || '(空)'));
       return { ok: false, error: '桥接脚本未配置或不存在' };
     }
-    const r = spawnSync(py, [script, 'start'], { encoding: 'utf8', timeout: 60000 });
+    const r = await runBridge(py, script, 'start');
     pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
     const result = bridgeResult(r, '启动');
     if (result.ok) setState(entry.id, { pid: 0, startedAt: Date.now(), kind: 'usb-tunnel' });
@@ -307,7 +322,7 @@ async function stopUnlocked(entry) {
     if (!script || !fs.existsSync(script)) {
       return { ok: false, error: '桥接脚本未配置或不存在，无法确认停止' };
     }
-    const r = spawnSync(py, [script, 'stop'], { encoding: 'utf8', timeout: 60000 });
+    const r = await runBridge(py, script, 'stop');
     pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
     const result = bridgeResult(r, '停止');
     if (!result.ok) { pushLog(entry.id, result.error); return result; }
