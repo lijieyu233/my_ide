@@ -13,7 +13,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:search && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai",
+    "test": "npm run check:js && npm run test:git && npm run test:search && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai && npm run test:quick-launch",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -31,7 +31,9 @@
     "test:status": "node tests/git-status.test.js",
     "test:search": "node tests/search.test.js",
     "test:tasks": "node tests/task-recovery.test.js && node tests/task-recovery-dom.test.js",
-    "test:ai": "node tests/ai-runs.test.js && node tests/ai-panel-runs.test.js"
+    "test:ai": "node tests/ai-runs.test.js && node tests/ai-panel-runs.test.js",
+    "test:quick-launch": "node tests/quick-launch.test.js && node tests/quick-launch-dom.test.js",
+    "check:quick-launch": "electron scripts/check-quick-launch.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -95,6 +97,7 @@
       "git-ops.js",
       "launch-ops.js",
       "launch-service.js",
+      "quick-launch-service.js",
       "db-service.js",
       "ai-service.js",
       "ai-runs.js",

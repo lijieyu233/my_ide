@@ -285,7 +285,7 @@ const Viewer = (() => {
     // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
     if (window.App) {
       const tool = App.getTool();
-      if (tool === 'browser' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
+      if (tool === 'browser' || tool === 'quick-launch' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
     }
     recordRecent(path);
     const name = path.split(/[\\/]/).pop();
@@ -365,7 +365,7 @@ const Viewer = (() => {
         if(replace)tabs.splice(tabs.indexOf(old),1,candidate);else tabs.push(candidate);
         if(options.focusRequest)navigationFocus.set(candidate.id,options.focusRequest);
         prepared=null;stage?.remove();stage=null;previewFeedback='';
-        const tool=App.getTool();if(tool==='browser'||tool==='tasks'&&window.Tasks?.view==='dag')App.backToEditor();
+        const tool=App.getTool();if(tool==='browser'||tool==='quick-launch'||tool==='tasks'&&window.Tasks?.view==='dag')App.backToEditor();
         activate(tabs.indexOf(candidate),{history:false});recordRecent(path);if(options.reveal!==false)window.Tree?.reveal(path);return {ok:true};
       }catch(e){return fail(String(e.message||e));}
       finally{request.settled=true;if(previewSequence===request.sequence&&!stable())note('预览已取消：'+path+'；当前文档或弹窗已变化，原标签已保留');if(prepared){for(const media of prepared.querySelectorAll('video,audio')){media.pause();media.removeAttribute('src');media.load();}prepared.previewDispose?.();}stage?.remove();if(pendingPreview===request)pendingPreview=null;}
@@ -429,6 +429,7 @@ const Viewer = (() => {
   function activateRaw(i) {
     const target = tabs[i];
     if (!target) return;
+    if (window.App?.getTool() === 'quick-launch') App.backToEditor();
     previewSequence++;previewFeedback='';
     activeTabId = target.id;
     focusedTabId=target.id;

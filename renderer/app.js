@@ -100,7 +100,7 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser', 'log'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser', 'log', 'quick-launch'];
   const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -109,6 +109,8 @@ const App = (() => {
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
+    if (prev === 'quick-launch') window.QuickLaunch?.hide();
+    if (next === 'quick-launch') window.QuickLaunch?.show();
     if (prev === 'browser' && window.BrowserPanel) BrowserPanel.hide();
     if (prev === 'log' && window.GitLog && GitLog.isOpen()) GitLog.hide();
     if (next === 'browser' && window.BrowserPanel) BrowserPanel.show();
@@ -168,7 +170,7 @@ const App = (() => {
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
-    if (activeTool === 'browser' || activeTool === 'log') {
+    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
@@ -1002,6 +1004,7 @@ const App = (() => {
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }
     if (window.LaunchPanel) { LaunchPanel.init(); document.getElementById('tool-launch').onclick = () => switchTool('launch'); }
+    if (window.QuickLaunch) { QuickLaunch.init(); document.getElementById('tool-quick-launch').onclick = () => switchTool('quick-launch'); }
     if (window.AiPanel) {
       AiPanel.init();
       document.getElementById('tool-ai').onclick = () => toggleAi();

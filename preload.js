@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('myIDE', {
       try { return ipcRenderer.sendSync('settings:mirror-read-sync'); } catch { return { ok: false, data: null }; }
     },
   },
+  quickLaunch: {
+    load: () => ipcRenderer.invoke('quick-launch:load'),
+    save: (config, version) => ipcRenderer.invoke('quick-launch:save', config, version),
+    open: (id) => ipcRenderer.invoke('quick-launch:open', id),
+    icon: (id, target) => ipcRenderer.invoke('quick-launch:icon', id, target),
+    pick: (type) => ipcRenderer.invoke('quick-launch:pick', type),
+  },
   tasks: {
     inspect: (project) => ipcRenderer.invoke('tasks:inspect', project),
     list: (project) => ipcRenderer.invoke('tasks:list', project),

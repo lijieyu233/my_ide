@@ -1028,6 +1028,28 @@ for (const spec of GIT_OPS) {
   };
   ipcMain.handle('git:'+spec.ch,(_e,...args)=>spec.writes?serializeGitIPC(args[0],()=>invoke(args)):invoke(args));
 }
+// 快速启动独立于终端执行器；只把已保存目标交给系统，不将路径拼成shell命令。
+const quickLaunch = require('./quick-launch-service').createService(
+  path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'quick-launch.json'), {
+    openPath: target => shell.openPath(target),
+    openExternal: target => shell.openExternal(target),
+    getIcon: async target => (await app.getFileIcon(target, { size: 'normal' })).toDataURL(),
+  });
+for (const operation of ['load', 'save', 'open', 'icon']) {
+  ipcMain.handle('quick-launch:' + operation, (_event, ...args) => quickLaunch[operation](...args));
+}
+ipcMain.handle('quick-launch:pick', async (_event, type) => {
+  if (!['app', 'file', 'folder'].includes(type)) return { ok: false, error: '请选择本地目标类型' };
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择快速启动目标', properties: [type === 'folder' ? 'openDirectory' : 'openFile'],
+      ...(type === 'app' ? { filters: [{ name: '应用与快捷方式', extensions: ['exe', 'com', 'lnk', 'bat', 'cmd'] }] } : {}),
+    });
+    const target = result.canceled ? '' : result.filePaths[0];
+    return { ok: true, target, name: target ? path.basename(target, type === 'folder' ? '' : path.extname(target)) : '' };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ---------- 启动面板 IPC（由 launch-ops.js 的清单统一注册）----------
 // 与 git 同一套路：通道 → 服务函数的映射只写在 launch-ops.js 一处。
 // ⚠ 后台保留（用户拍板）：子进程 detached，关闭 my_ide **不杀**；退出时只把 PID 落盘，

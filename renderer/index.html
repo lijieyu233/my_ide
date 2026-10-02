@@ -5,6 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; img-src 'self' data: blob: file: https: http:; frame-src 'self' data: about: file: http: https:;">
 <title>My IDE</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="quick-launch.css">
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
 </head>
 <body>
@@ -44,6 +45,7 @@
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
     <button id="tool-launch" class="tool-btn" title="启动面板（终端 / 脚本）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 3.2l7 4.8-7 4.8z"/></svg></button>
+    <button id="tool-quick-launch" class="tool-btn" title="快速启动：应用、文件夹与网页" aria-label="快速启动"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="2" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="2" width="2.4" height="2.4" rx=".4"/><rect x="2" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="2" y="11.6" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="11.6" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="11.6" width="2.4" height="2.4" rx=".4"/></svg></button>
     <!-- Git 日志放活动栏**底部**：「提交」和「日志」是两个不同的 git 入口、图标又都带分支/圆点，
          挨在一起容易点错；日志是低频入口，不该占上半区的好位置
          （用户：「这个按钮移动到左侧栏下面 且不和左侧栏上面的冲突了」） -->
@@ -436,6 +438,7 @@
 <script src="ai-panel.js"></script>
 <script src="tasks.js"></script>
 <script src="launch-panel.js"></script>
+<script src="quick-launch.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
