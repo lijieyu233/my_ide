@@ -10,7 +10,7 @@ const Session = (() => {
       const rootPrefix = App.root || '';
       // 每个标签带浏览位置（滚动 + 光标行），切换项目回来不丢
       const tabs = Viewer.openTabs
-        .filter((t) => !t.dirty && (!rootPrefix || t.path.startsWith(rootPrefix)))
+        .filter((t) => !t.dirty && t.retention!=='preview' && (!rootPrefix || t.path.startsWith(rootPrefix)))
         .map((t) => {
           let line = null;
           try {
@@ -23,7 +23,7 @@ const Session = (() => {
       const active = Viewer.activeTab;
       const state = {
         tabs,
-        active: active && !active.dirty && (!rootPrefix || active.path.startsWith(rootPrefix)) ? active.path : null,
+        active: active && !active.dirty && active.retention!=='preview' && (!rootPrefix || active.path.startsWith(rootPrefix)) ? active.path : null,
         tool: App.getTool(),
         expanded: window.Tree ? Tree.getExpandedPaths() : [],
       };

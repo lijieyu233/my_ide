@@ -12,6 +12,7 @@ const Settings = (() => {
         <div class="set-side">
           <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
           <div class="set-cat" data-cat="font">🔤 外观</div>
+          <div class="set-cat" data-cat="editor"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/></svg> 编辑器</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
           <div class="set-cat" data-cat="translate">🌐 翻译</div>
           <div class="set-cat" data-cat="ai">🤖 AI 助手</div>
@@ -41,6 +42,7 @@ const Settings = (() => {
       cat.classList.add('active');
       if (cat.dataset.cat === 'keys') renderKeys();
       else if (cat.dataset.cat === 'font') renderFont();
+      else if (cat.dataset.cat === 'editor') renderEditor();
       else if (cat.dataset.cat === 'git') renderGit();
       else if (cat.dataset.cat === 'translate') renderTranslate();
       else if (cat.dataset.cat === 'ai') renderAi();
@@ -96,6 +98,12 @@ const Settings = (() => {
   }
 
   // ---------- 外观视图（字体大小） ----------
+  function renderEditor(){
+    document.getElementById('set-keys-filter')?.remove();document.getElementById('set-title').textContent='编辑器';document.getElementById('set-reset-all').classList.add('hidden');
+    document.getElementById('set-hint').textContent='默认保持普通标签；关闭预览标签会保留已经打开的文件';
+    const list=document.getElementById('set-list');list.innerHTML='<div class="set-form"><label class="m-label"><input id="preview-tabs-setting" type="checkbox"> 预览标签</label><p>开启后，文件树单击和快速打开 Enter 会临时浏览，只保留一个临时页。双击文件或标签、快速打开 Shift+Enter 会保留文件；开始编辑、保存或固定也会自动保留。</p></div>';
+    const input=list.querySelector('input');input.checked=Viewer.previewEnabled();input.onchange=()=>{Viewer.setPreviewEnabled(input.checked);input.checked=Viewer.previewEnabled();};
+  }
   function renderFont() {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove(); // 快捷键过滤框不属于本视图

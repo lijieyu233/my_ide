@@ -25,6 +25,16 @@ const Viewer = (() => {
   let activeTabId = null;
   let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
+  let previewSequence=0,pendingPreview=null,previewFeedback='';
+  const previewEnabled=()=>{try{return localStorage.getItem('myide-preview-tabs')==='true';}catch{return false;}};
+  function keepTab(tab=currentTab()){
+    if(!tab||!tabs.includes(tab))return false;
+    if(tab.retention==='preview'){tab.retention='regular';renderTabs();}return true;
+  }
+  function setPreviewEnabled(enabled){
+    try{localStorage.setItem('myide-preview-tabs',String(!!enabled));}catch(e){MI.toast('预览标签设置未保存：'+String(e.message||e),'err');return false;}
+    previewSequence++;previewFeedback='';if(!enabled)for(const tab of tabs)tab.retention='regular';renderTabs();return true;
+  }
   function orderPinned(){tabs.sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned));}
   function setPinned(tab=currentTab(),pinned=true){
     if(!tab||!tabs.includes(tab)||closePending.has(tab.id)||pathBusy(tab.path)){MI.toast('标签正在关闭或迁移，请完成后再固定', 'err');return false;}
@@ -246,7 +256,7 @@ const Viewer = (() => {
     if(options.history===false)return openFileRaw(path,options);
     const ticket=NavigationHistory.begin();
     if(location.line!=null&&(currentTab()?.id!==location.documentId||currentTab()?.editRevision!==location.revision))return {ok:false,error:'章节所属文档已变化，请重新打开大纲'};
-    await openFileRaw(path,options);
+    const opened=await openFileRaw(path,options);if(opened?.ok===false||opened?.stale)return opened;
     const tab=currentTab();if(tab?.mode==null&&tab.loadPromise)await tab.loadPromise;
     if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(path))return {ok:false,error:'目标文档已变化'};
     if(location.line!=null){
@@ -264,6 +274,12 @@ const Viewer = (() => {
     NavigationHistory.finish(ticket,captureLocation());return tab?.error?{ok:false,error:tab.error}:{ok:true};
   }
   async function openFileRaw(path, options = {}) {
+    const existing=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(path));
+    if(!existing&&pendingPreview?.isCurrent()&&!pendingPreview.settled&&DocumentPaths.key(pendingPreview.path)===DocumentPaths.key(path)){
+      if(options.intent!=='browse')pendingPreview.keep=true;return pendingPreview.promise;
+    }
+    if(options.intent==='browse'&&previewEnabled()&&!existing)return openPreviewFile(path,options);
+    previewSequence++;previewFeedback='';
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
     // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
@@ -275,13 +291,14 @@ const Viewer = (() => {
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => DocumentPaths.key(t.path) === DocumentPaths.key(path));
     if (i >= 0) {
+      if(options.intent!=='browse')keepTab(tabs[i]);
       if(options.focusRequest)navigationFocus.set(tabs[i].id,options.focusRequest);
-      activate(i,{history:false});
+      if(tabs[i]!==currentTab())activate(i,{history:false});else renderTabActions();
       // 已打开的标签也要同步树高亮（否则高亮不切换）
-      if (window.Tree) Tree.reveal(path);
+      if (window.Tree&&options.reveal!==false) Tree.reveal(path);
       return;
     }
-    const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
+    const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, retention:'regular', dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
     if(options.focusRequest)navigationFocus.set(tab.id,options.focusRequest);
     tabs.push(tab);
     renderTabs();
@@ -290,6 +307,69 @@ const Viewer = (() => {
     if (window.Tree) Tree.reveal(path);
     tab.loadPromise = MI.perf('viewer.openFile ' + name, () => loadTab(tab), 500);
     await tab.loadPromise;
+  }
+
+  function openPreviewFile(path,options){
+    const request={path,keep:false,sequence:++previewSequence},root=App.root,source=currentTab();
+    const snapshot=source&&{id:source.id,path:source.path,generation:source.pathGeneration||0,revision:source.editRevision,content:source.content,mode:source.mode};
+    const stable=()=>previewSequence===request.sequence&&DocumentPaths.key(App.root)===DocumentPaths.key(root)&&currentTab()===source&&!Modal.stack.length&&!pathBusy(path)
+      &&(!source||source.id===snapshot.id&&source.path===snapshot.path&&(source.pathGeneration||0)===snapshot.generation&&source.editRevision===snapshot.revision&&source.content===snapshot.content&&source.mode===snapshot.mode);
+    request.isCurrent=stable;
+    const note=message=>{if(previewSequence===request.sequence&&DocumentPaths.key(App.root)===DocumentPaths.key(root)){previewFeedback=message;renderTabActions();}};
+    const fail=error=>{note('预览未打开：'+path+'；'+error+'。原标签已保留，可重试');return {ok:false,error};};
+    let stage=null,prepared=null;
+    request.promise=(async()=>{
+      try{
+        note('正在读取预览：'+path+'；原标签保持可用');
+        if(!stable())return {stale:true};
+        const observed=await window.myIDE.fs.fileVersion(path);if(!stable())return {stale:true};
+        if(observed.error||!observed.version||observed.absent||observed.version.absent)return fail(observed.error||'文件不存在');
+        const candidate={id:++nextTabId,editRevision:0,savedRevision:0,path,name:path.split(/[\\/]/).pop(),dirty:false,content:null,mode:null,error:null,tooLarge:false,binary:false,encoding:'utf8',retention:'preview'};
+        await loadTab(candidate,true);if(!stable())return {stale:true};
+        if(candidate.error||candidate.mode==='error'||candidate.mode==null)return fail(candidate.error||'文件格式或大小不支持预览');
+        const binaryPreview=IMG_EXTS.has(extOf(candidate.name))||MEDIA_EXTS.has(extOf(candidate.name))||OFFICE_EXTS.has(extOf(candidate.name));
+        if(binaryPreview){
+          const read=await window.myIDE.fs.readBuffer(path);if(!stable())return {stale:true};
+          if(read.error||read.tooLarge||!read.buffer)return fail(read.error||'二进制预览超过50MB或无法读取');
+          // XLSX解析库会把任意字节当成CSV；扩展名为新Office格式时先要求真实ZIP容器。
+          const bytes=new Uint8Array(read.buffer);
+          if(OFFICE_EXTS.has(extOf(candidate.name))&&(bytes[0]!==0x50||bytes[1]!==0x4b||bytes[2]!==3||bytes[3]!==4))return fail('Office文件容器无效');
+          const fn=MI.renderFor(candidate);if(!fn)return fail('没有可用的预览器');
+          if(extOf(candidate.name)==='pdf'&&String.fromCharCode(...new Uint8Array(read.buffer).slice(0,5))!=='%PDF-')return fail('PDF文件头无效');
+          prepared=fn({...candidate,buffer:read.buffer});if(!(prepared instanceof HTMLElement))return fail('预览器没有返回有效视图');
+          // Office布局依赖真实宽度；候选放在不可交互的离屏容器，成功后搬同一个节点。
+          stage=document.createElement('div');stage.className='preview-staging';stage.setAttribute('inert','');stage.setAttribute('aria-hidden','true');stage.style.width=Math.max(320,viewer.clientWidth)+'px';stage.appendChild(prepared);document.body.appendChild(stage);
+          let ready=prepared.previewReady;
+          const media=prepared.querySelector('video,audio'),img=prepared.querySelector('img');
+          if(!ready&&(media||img))ready=new Promise(resolve=>{
+            const target=media||img,done=()=>resolve({ok:true}),bad=()=>resolve({ok:false,error:'图片或媒体无法解码'});
+            if(img?.complete&&img.naturalWidth>0||media?.readyState>=1)return done();
+            target.addEventListener(media?'loadedmetadata':'load',done,{once:true});target.addEventListener('error',bad,{once:true});
+            if(img?.complete&&img.naturalWidth===0)return bad();if(media){media.preload='metadata';media.load();}
+          });
+          if(ready){let timer;const result=await Promise.race([ready,new Promise(resolve=>{timer=setTimeout(()=>resolve({ok:false,error:'预览加载超时'}),30000);})]);clearTimeout(timer);if(!stable())return {stale:true};if(!result?.ok)return fail(result?.error||'预览解析失败');}
+          candidate.diskVersion=observed.version;candidate.preparedPreview=prepared;
+        }else if(!SearchModel.sameVersion(candidate.diskVersion,observed.version))return fail('读取期间文件已变化');
+        const latest=await window.myIDE.fs.fileVersion(path);if(!stable())return {stale:true};
+        if(latest.error||!SearchModel.sameVersion(observed.version,latest.version))return fail(latest.error||'预览加载期间文件已变化');
+        if(tabs.some(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(path)))return {stale:true};
+        const old=tabs.find(tab=>tab.retention==='preview');let replace=false;
+        const replaceable=()=>old&&tabs.includes(old)&&old.retention==='preview'&&!request.keep&&!old.dirty&&!old.pinned&&!old.error&&old.mode!=null&&!old.formatBusy&&!old.saveError&&!closePending.has(old.id)&&!pathBusy(old.path)&&!saveQueues.has(DocumentPaths.key(old.path));
+        if(old&&!request.keep){
+          replace=replaceable();
+          if(replace){const disk=await window.myIDE.fs.fileVersion(old.path);if(!stable())return {stale:true};replace=replaceable()&&!disk.error&&SearchModel.sameVersion(disk.version,old.diskVersion);}
+        }
+        if(!stable())return {stale:true};
+        if(request.keep)candidate.retention='regular';
+        else if(old&&!replace)old.retention='regular';
+        if(replace)tabs.splice(tabs.indexOf(old),1,candidate);else tabs.push(candidate);
+        if(options.focusRequest)navigationFocus.set(candidate.id,options.focusRequest);
+        prepared=null;stage?.remove();stage=null;previewFeedback='';
+        const tool=App.getTool();if(tool==='browser'||tool==='tasks'&&window.Tasks?.view==='dag')App.backToEditor();
+        activate(tabs.indexOf(candidate),{history:false});recordRecent(path);if(options.reveal!==false)window.Tree?.reveal(path);return {ok:true};
+      }catch(e){return fail(String(e.message||e));}
+      finally{request.settled=true;if(previewSequence===request.sequence&&!stable())note('预览已取消：'+path+'；当前文档或弹窗已变化，原标签已保留');if(prepared){for(const media of prepared.querySelectorAll('video,audio')){media.pause();media.removeAttribute('src');media.load();}prepared.previewDispose?.();}stage?.remove();if(pendingPreview===request)pendingPreview=null;}
+    })();pendingPreview=request;return request.promise;
   }
 
   async function loadTab(tab, detached=false) {
@@ -349,6 +429,7 @@ const Viewer = (() => {
   function activateRaw(i) {
     const target = tabs[i];
     if (!target) return;
+    previewSequence++;previewFeedback='';
     activeTabId = target.id;
     focusedTabId=target.id;
     renderTabs();
@@ -486,6 +567,7 @@ const Viewer = (() => {
     const markdown=/\.(md|markdown)$/i.test(tab.name),needsCm=['live','source'].includes(location.mode)||['edit','split'].includes(location.mode)&&!markdown;
     if(ranges&&(!['live','source','edit','split'].includes(location.mode)||needsCm&&(!window.CM6||!(markdown?window.MdEditor:window.CodeEditor))))return fail('当前视图无法恢复文本选区');
     const focusRequest={isCurrent,focusTarget:origin?.closest?.('#panel-search')?origin:null};navigationFocus.set(tab.id,focusRequest);
+    keepTab(tab);
     try{
       if(['live','source','split','edit','preview'].includes(location.mode))tab.mode=location.mode;
       activate(tabs.indexOf(tab),{history:false});
@@ -585,6 +667,7 @@ const Viewer = (() => {
   }
   // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
   function closeAll() {
+    previewSequence++;previewFeedback='';
     window.ClosedTabs?.reset();
     window.TabPicker?.invalidate();
     clearTimeout(autosaveTimer);
@@ -629,6 +712,7 @@ const Viewer = (() => {
     const existing=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(record.path));
     if(existing?.loadPromise){await existing.loadPromise;if(!stable())return fail('当前文档或项目已变化，重开未执行');}
     if(existing?.mode!=null&&!existing.error&&existing.mode!=='error'){
+      keepTab(existing);
       if(existing!==currentTab())activate(tabs.indexOf(existing),{history:false});NavigationHistory.finish(history,captureLocation());
       return {ok:true,note:'文件已打开，已保留当前输入和位置',focus:()=>{if(isCurrent()&&currentTab()===existing&&!Modal.stack.length)focusEditor();}};
     }
@@ -698,10 +782,12 @@ const Viewer = (() => {
   //   （症状：右端按钮"有时有一个有时没有"，之前踩过）。
   function renderTabActions() {
     tabActions.innerHTML = '';
+    if(previewFeedback){const status=document.createElement('span');status.id='preview-tab-status';status.setAttribute('role','status');status.textContent=previewFeedback;status.title=previewFeedback;tabActions.appendChild(status);}
     const tab = currentTab();
     if (!tab) return;
     const acts = document.createElement('div');
     acts.className = 'ed-actions';
+    if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));acts.appendChild(keep);}
     if (tab.saveError) {
       const recover = document.createElement('button'); recover.className = 'tb-btn save-recovery-button';
       recover.textContent = tab.saveErrorCode === 'VERSION_CONFLICT' ? '保存冲突' : '保存失败';
@@ -848,7 +934,7 @@ const Viewer = (() => {
     tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
-      el.className = 'tab' + (t.id === activeTabId ? ' active' : '')+(t.pinned?' pinned':'');
+      el.className = 'tab' + (t.id === activeTabId ? ' active' : '')+(t.pinned?' pinned':'')+(t.retention==='preview'?' preview-tab':'');
       const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===activeTabId));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===focusedTabId?0:-1;
       select.onfocus=()=>{focusedTabId=t.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
       const ti = document.createElement('span');
@@ -858,6 +944,7 @@ const Viewer = (() => {
       ti.setAttribute('aria-hidden','true');select.appendChild(ti);
       if(t.pinned){const pin=document.createElement('span');pin.className='tab-pin';pin.title='固定标签';pin.setAttribute('aria-hidden','true');pin.innerHTML='<svg class="ic" viewBox="0 0 16 16"><path d="M5 2.5h6M6 2.5v4L3.8 9h8.4L10 6.5v-4M8 9v4.5"/></svg>';select.appendChild(pin);}
       const state=document.createElement('span');state.className='tab-state';state.setAttribute('aria-hidden','true');state.textContent=t.mode==null?'…':t.error||t.mode==='error'?'!':t.dirty?'●':'';state.title=t.mode==null?'加载中':t.error||t.mode==='error'?'读取失败':t.dirty?'未保存':'';select.appendChild(state);
+      if(t.retention==='preview'){const note=document.createElement('span');note.className='tab-retention';note.textContent='临时预览';note.setAttribute('aria-hidden','true');select.appendChild(note);}
       const label=document.createElement('span');label.className='tab-label';
       const nm = document.createElement('span');
       nm.className = 'tname';
@@ -869,7 +956,8 @@ const Viewer = (() => {
       x.textContent = '✕';
       x.onclick = (e) => { e.stopPropagation(); requestClose([t]); };
       el.appendChild(x);
-      el.onclick = () => { if(tabs.includes(t))activate(tabs.indexOf(t)); };
+      el.onclick = e => { if(!tabs.includes(t))return;if(e.detail>=2)keepTab(t);if(t!==currentTab())activate(tabs.indexOf(t)); };
+      el.ondblclick=e=>{if(!e.target.closest('.tclose'))keepTab(t);};
       // 拖拽排序（手动实现：mousedown → mousemove → mouseup）
       el.dataset.path = t.path;
       el.dataset.tabId = String(t.id);
@@ -980,6 +1068,7 @@ const Viewer = (() => {
     mk('📋 复制完整路径', () => { MI.copyText(tab.path); MI.toast('已复制路径', 'ok'); });
     mk('📄 查看完整路径', () => window.TabPicker.open(tabButton(tab.id),tab.id));
     mk(tab.pinned?'📌 取消固定标签':'📌 固定标签',()=>Shortcuts.execute(tab.pinned?'unpin-tab':'pin-tab',Shortcuts.context(tab)));
+    if(tab.retention==='preview')mk('📄 保留标签',()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab)));
     if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
     if (tab.mode === 'edit') mk('⑂ Blame 注解', () => { if (tab !== currentTab()) activate(tabs.indexOf(tab)); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
@@ -1242,7 +1331,8 @@ const Viewer = (() => {
 
     // 预览模式：交给插件渲染
     const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
-    const node = fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content }) : null;
+    const node = tab.preparedPreview || (fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content }) : null);
+    tab.preparedPreview=null;
     if (node instanceof HTMLElement) {
       viewer.appendChild(node);
       // 滚动位置：恢复上次 + 实时记录（切回文件不回开头）
@@ -1592,6 +1682,7 @@ const Viewer = (() => {
   }
 
   function markEdited(tab,map) {
+    keepTab(tab);
     NavigationHistory.edited(tab,map);
     tab.editRevision++;
     const endings = TextLines.endings(tab.content || '').map((run) => run[0]);
@@ -1606,6 +1697,12 @@ const Viewer = (() => {
   }
 
   function saveSnapshot(tab, quiet, overwriteVersion) {
+    if(!quiet&&tab)keepTab(tab);
+    if(tab&&(tab.binary||IMG_EXTS.has(extOf(tab.name))||MEDIA_EXTS.has(extOf(tab.name))||OFFICE_EXTS.has(extOf(tab.name))||OFFICE_OLD_EXTS.has(extOf(tab.name)))){
+      // 预览正文是占位空串；读取版本只用于核验身份，不能授权把二进制文件写成文本。
+      const error='这是只读预览，文件已保留，保存不会修改原文件';if(!quiet)MI.toast(error,'err');
+      return Promise.resolve({ok:false,errorCode:'READ_ONLY',error,path:tab.path,tabId:tab.id});
+    }
     if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
     if (pathBusy(tab.path)) {
       if (!quiet) MI.toast('路径迁移正在进行，输入已保留；完成后请保存', 'err');
@@ -1852,7 +1949,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers,
+    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

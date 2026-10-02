@@ -419,7 +419,12 @@ const Tree = (() => {
       rel.textContent = f.rel;
       rowEl.appendChild(rel);
       rowEl.dataset.path = f.path;
-      rowEl.onclick = () => { endSearch(); Viewer.openFile(f.path); };
+      rowEl.onclick = e => {
+        const browsing=Viewer.previewEnabled()&&e.detail<2;
+        // 浏览时保留搜索行，第二次点击才能落在同一对象上并形成双击。
+        if(!browsing)endSearch();Viewer.openFile(f.path,{intent:browsing?'browse':'regular',reveal:!browsing});
+      };
+      rowEl.ondblclick=()=>{endSearch();Viewer.openFile(f.path,{intent:'regular'});};
       rowEl.oncontextmenu = (e) => { e.preventDefault(); };
       el.appendChild(rowEl);
     });
@@ -497,9 +502,11 @@ const Tree = (() => {
       select(item.path, item.type);
       if (item.type === 'dir') { toggleDir(item); return; }
       // 单击文件 = 打开（复制路径改为显式入口：悬停「复制路径」或 Ctrl+Shift+C）
-      Viewer.openFile(item.path).then(() => setTimeout(() => { const r = rowElOf(item.path); if (r) r.focus(); }, 0)); // openFile 聚焦编辑器后拿回焦点（后注册的同延迟定时器后执行）
+      const openedRoot=rootPath;
+      Viewer.openFile(item.path,{intent:e.detail>=2?'regular':'browse'}).then(()=>setTimeout(()=>{if(norm(rootPath)!==norm(openedRoot)||norm(Viewer.activeTab?.path)!==norm(item.path)||Modal.stack.length)return;rowElOf(item.path)?.focus();},0));
       select(item.path, item.type);
     });
+    rowEl.addEventListener('dblclick',e=>{if(item.type==='file'&&e.target!==cp&&!e.ctrlKey&&!e.metaKey&&!e.shiftKey)Viewer.openFile(item.path,{intent:'regular'});});
 
     rowEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();

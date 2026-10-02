@@ -69,7 +69,7 @@ const QuickOpen = (() => {
       row.append(name, rel);
       row.onmouseenter = () => { if (current(state) && top(state.box)) setSelection(state, i); };
       // 点击的身份来自这一行，不能依赖鼠标是否先经过另一行。
-      row.onclick = () => pick(state, i); state.list.appendChild(row);
+      row.onclick = event => pick(state,i,event.shiftKey?'regular':'browse'); state.list.appendChild(row);
     });
     if (!state.results.length) {
       const empty = document.createElement('div'); empty.className = 'qo-empty';
@@ -102,11 +102,11 @@ const QuickOpen = (() => {
     if (!current(state) || !top(state.box)) return;
     state.restore = restore; Modal.hide();
   }
-  async function pick(state, index = state.selected) {
+  async function pick(state, index = state.selected, intent='browse') {
     if (!current(state) || !top(state.box)) return;
     const file = state.results[index]; if (!file) return;
     close(state, false);
-    try { await Viewer.openFile(file.path); }
+    try { await Viewer.openFile(file.path,{intent}); }
     catch (error) { MI.toast('打开文件失败：' + String(error?.message || error), 'err'); }
     // 等待读取期间用户可能切项目、再开弹窗或选另一份文档；迟到完成不能抢走焦点。
     if (generation !== state.generation || paths.key(App.root) !== paths.key(state.root) || Modal.stack.length
@@ -145,7 +145,7 @@ const QuickOpen = (() => {
       <input id="qo-input" type="text" placeholder="输入文件名，支持模糊匹配…" autocomplete="off" spellcheck="false" aria-label="查找文件" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="qo-list">
       <div id="qo-list" role="listbox" aria-label="文件结果"></div>
       <div id="qo-status" role="status"></div><button id="qo-retry" class="tb-btn" hidden>重试读取文件列表</button>
-      <div class="qo-foot">↑↓ 选择 · Enter 打开 · Esc 关闭</div>`;
+      <div class="qo-foot">${Viewer.previewEnabled()?'Enter 临时预览 · Shift+Enter 保留':'↑↓ 选择 · Enter 打开'} · Esc 关闭</div>`;
     const state = { box, root: App.root, generation, origin: document.activeElement, tabId: Viewer.activeTab?.id,
       input: box.querySelector('#qo-input'), list: box.querySelector('#qo-list'), status: box.querySelector('#qo-status'),
       retry: box.querySelector('#qo-retry'), index: cache, results: [], selected: -1, loading: false, error: '', composing: false, restore: true };
@@ -168,7 +168,7 @@ const QuickOpen = (() => {
         controls[(i + step + controls.length) % controls.length].focus();
       } else if (event.target === state.input && ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) {
         event.preventDefault(); event.stopImmediatePropagation();
-        if (event.key === 'Enter') pick(state);
+        if (event.key === 'Enter') pick(state,state.selected,event.shiftKey?'regular':'browse');
         else setSelection(state, state.selected + (event.key === 'ArrowDown' ? 1 : -1));
       } else if (event.ctrlKey || event.metaKey || event.altKey) event.stopImmediatePropagation();
     };
