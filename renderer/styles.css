@@ -3598,6 +3598,29 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 }
 .launch-main-foot label { display: flex; align-items: center; gap: 6px; font-size: 0.88em; color: var(--text-dim); cursor: pointer; }
 
+/* 日志工具栏按字号换行；输出单独滚动，查找和失败原因不能被推到缓冲区外。 */
+.lm-log-tools { flex: 0 0 auto; padding: .45em .8em; border-bottom: 1px solid var(--border); font-size: .88em; }
+.lm-log-bar, .lm-log-find { display: flex; flex-wrap: wrap; align-items: center; gap: .45em; }
+.lm-log-tools button, .lm-log-more summary { border: 1px solid var(--border); border-radius: .35em; padding: .25em .55em; background: var(--bg-panel); color: var(--text); font: inherit; cursor: pointer; }
+.lm-log-tools button { display: inline-flex; align-items: center; gap: .35em; }
+.lm-log-tools button[hidden] { display: none; }
+.lm-log-tools button:disabled { opacity: .55; cursor: default; }
+.lm-log-tools button:focus-visible, .lm-log-more summary:focus-visible, #lm-log:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lm-log-find { margin-top: .45em; }
+.lm-log-find[hidden], .lm-log-notice[hidden] { display: none; }
+.lm-log-find input[type="search"] { flex: 1 1 15em; min-width: 6em; max-width: 100%; box-sizing: border-box; font: inherit; padding: .3em .5em; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: .35em; }
+.lm-log-find label { display: flex; align-items: center; gap: .25em; white-space: nowrap; }
+.lm-log-find output { color: var(--text-dim); }
+.lm-log-notice { margin-top: .45em; display: flex; flex-wrap: wrap; align-items: center; gap: .45em; color: var(--text-dim); overflow-wrap: anywhere; }
+.lm-log-more { position: relative; }
+.lm-log-more summary { list-style: none; }
+.lm-log-more summary::-webkit-details-marker { display: none; }
+.lm-log-more[open] #lm-clear { position: absolute; right: 0; top: 100%; z-index: 2; white-space: nowrap; box-shadow: 0 .3em 1em #0004; }
+#lm-log { overflow-anchor: none; }
+#lm-log mark { color: var(--text); background: color-mix(in srgb, var(--accent) 35%, var(--code-bg)); outline: 1px solid var(--accent); }
+#launch-main .launch-main-head { flex-wrap: wrap; }
+#launch-main { font-size: var(--tool-font, 13px); }
+
 /* ===== 添加/编辑终端对话框 ===== */
 #launch-dialog {
   position: fixed; inset: 0; margin: auto; height: fit-content;   /* 显式居中 */
