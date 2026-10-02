@@ -7,7 +7,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 // 搜索服务是主进程生产依赖，不能只靠渲染层语法检查覆盖。
 const files = ['main.js', 'preload.js', 'git-service.js', 'git-worker.js', 'git-ops.js', 'git-status.js','git-index.js','git-hunks.js', 'git-queue.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js'];
-files.push('search-service.js');
+files.push('search-service.js', 'task-recovery.js');
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (f.endsWith('.js')) files.push('renderer/' + f);
 }

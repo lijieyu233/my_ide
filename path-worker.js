@@ -3,7 +3,12 @@ const {parentPort,workerData}=require('worker_threads');
 const mover=require('./path-move');
 try {
   const {op,args}=workerData;
-  if(op.startsWith('copy:')){
+  if(op.startsWith('tasks:')){
+    const method=op.slice(6);
+    if(!['inspect','list','read','save','restore','exportCopy'].includes(method))throw Error('未知任务恢复操作');
+    const service=require('./task-recovery').createService(args[0]);
+    parentPort.postMessage({result:service[method](...args.slice(1))});
+  }else if(op.startsWith('copy:')){
     const method=op.slice(5);
     if(!['prepare','commit','undo','prepareDelete','commitDelete','undoDelete','trashPlan','validateTrash','list','exportRecovery','clear','ranges','location'].includes(method))throw Error('未知恢复操作');
     const service=require('./copy-journal').createService(args[0]);

@@ -13,7 +13,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:git && npm run test:search && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status",
+    "test": "npm run check:js && npm run test:git && npm run test:search && npm run test:dom && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -29,7 +29,8 @@
     "test:delete": "node tests/delete-journal.test.js",
     "test:hunks": "node tests/git-hunks.test.js",
     "test:status": "node tests/git-status.test.js",
-    "test:search": "node tests/search.test.js"
+    "test:search": "node tests/search.test.js",
+    "test:tasks": "node tests/task-recovery.test.js && node tests/task-recovery-dom.test.js"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -71,6 +72,7 @@
     "files": [
       "main.js",
       "file-write.js",
+      "task-recovery.js",
       "text-format.js",
       "search-service.js",
       "path-move.js",

@@ -229,16 +229,235 @@ const Tasks = (() => {
   function parseStore(raw) {
     let d;
     try { d = JSON.parse(raw); } catch { return { ok: false, errorCode: 'INVALID_JSON' }; }
+    if (d?.version != null && d.version !== 1 && d.version !== 2) return { ok: false, errorCode: 'UNKNOWN_VERSION' };
     if (!d || !Array.isArray(d.tasks)) return { ok: false, errorCode: 'INVALID_TASKS' };
-    if (d.version != null && d.version !== 1) return { ok: false, errorCode: 'UNKNOWN_VERSION' };
+    if (d.version === 2 && (typeof d.datasetId !== 'string' || !d.datasetId || !Number.isSafeInteger(d.revision) || d.revision < 0 || typeof d.pendingFileWrite !== 'boolean')) return { ok: false, errorCode: 'INVALID_TASKS' };
     if (d.tasks.some(t => !t || typeof t !== 'object' || Array.isArray(t))) return { ok: false, errorCode: 'INVALID_TASKS' };
-    return { ok: true, data: validate(d.tasks) };
+    const data = validate(d.tasks);
+    const changed = d.tasks.filter((t, i) => t.id !== data[i]?.id || JSON.stringify(t.deps || []) !== JSON.stringify(data[i]?.deps || []) || (t.parentId || null) !== data[i]?.parentId).length;
+    return { ok: true, data, envelope: d, report: changed ? '已修正 ' + changed + ' 项重复标识、无效引用或循环关系；写回前会先备份原文' : '' };
   }
   function readLs(key) {
     try {
       const raw = localStorage.getItem(key);
       return raw == null ? { ok: true, raw: null, data: [] } : { ...parseStore(raw), raw };
     } catch { return { ok: false, errorCode: 'LOCAL_READ_FAILED' }; }
+  }
+  const newDatasetId = () => window.crypto?.randomUUID?.() || 'tasks-' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  function adoptEnvelope(c, parsed) {
+    c.store.datasetId = parsed.envelope.datasetId || c.store.datasetId;
+    c.store.logicalRevision = parsed.envelope.revision || 0;
+    c.report = parsed.report || (parsed.envelope.version !== 2 ? '旧版任务已载入；首次保存会先备份原文再升级' : '');
+  }
+  function recoveryChoice(c, disk, candidate, reason, listed) {
+    c.choice = { disk, candidate, listed, reason };
+    loadState = 'recovery'; loadError = reason;
+    tasks = disk?.parsed?.data || candidate?.parsed?.data || [];
+    resetHist(); render();
+    return { ok: false, errorCode: 'RECOVERY_CHOICE', recoveryState: reason };
+  }
+  async function loadDurable(c) {
+    let r, listed;
+    try { r = await myIDE.fs.readFile(c.store.f); } catch { r = { errorCode: 'READ_FAILED' }; }
+    if (!isCurrent(c)) return { ok: false, obsolete: true };
+    try { listed = await myIDE.tasks.inspect(c.root); } catch { listed = { errorCode: 'RECOVERY_READ_FAILED' }; }
+    if (!isCurrent(c)) return { ok: false, obsolete: true };
+    const disk = r?.content != null && !r.error ? { raw: r.content, parsed: parseStore(r.content), version: r.version } : null;
+    const absent = r?.errorCode === 'ENOENT' || r?.version?.absent;
+    c.store.version = disk?.version || (absent ? r.version : null);
+    c.disk = disk;
+    const legacy = readLs(c.store.key);
+    const memory = recovery.get(c.root);
+    const candidates = [];
+    for (const source of [memory && { raw: memory.raw, kind: 'memory' }, legacy.raw != null && { raw: legacy.raw, kind: 'legacy' }, listed?.latest]) {
+      if (!source) continue;
+      const parsed = parseStore(source.raw);
+      if (parsed.ok) candidates.push({ ...source, parsed });
+    }
+    // 同一个数据集可按应用 revision 排序；无来源版本的v1和不同数据集不按时间猜测。
+    const pending = candidates.filter(v => v.kind !== 'confirmed' || !disk?.parsed?.ok);
+    let candidate = pending[0] || null;
+    for (const p of pending.slice(1)) {
+      if (p.parsed.envelope.datasetId && p.parsed.envelope.datasetId === candidate?.parsed.envelope.datasetId
+        && p.parsed.envelope.revision > candidate.parsed.envelope.revision) candidate = p;
+      else if (JSON.stringify(p.parsed.data) !== JSON.stringify(candidate?.parsed.data) && p.parsed.envelope.datasetId !== candidate?.parsed.envelope.datasetId) {
+        return recoveryChoice(c, disk, candidate, '发现多份来源不同的本机任务，请查看后选择；全部来源仍保留', listed);
+      }
+    }
+    if (!disk?.parsed.ok && disk) return recoveryChoice(c, disk, candidate, '任务文件损坏或版本暂不支持，原文件已保留；可查看备份与恢复副本', listed);
+    if (!listed?.ok || listed.errors?.length || !legacy.ok) return recoveryChoice(c, disk, candidate, '恢复来源读取或校验失败，已暂停修改；请查看数据后重试', listed);
+    if (disk?.parsed.ok) {
+      adoptEnvelope(c, disk.parsed);
+      if (candidate) {
+        const d = disk.parsed.envelope, p = candidate.parsed.envelope;
+        const sameData = JSON.stringify(d.tasks) === JSON.stringify(p.tasks);
+        if (!sameData && (!p.datasetId || d.datasetId && p.datasetId !== d.datasetId || !candidate.baseFileVersion && !p.baseFileVersion
+          || (candidate.baseFileVersion || p.baseFileVersion)?.hash !== disk.version?.hash)) {
+          return recoveryChoice(c, disk, candidate, '项目文件与本机副本不同，两份均保留；请查看后选择继续使用哪份', listed);
+        }
+        if (!sameData) {
+          adoptEnvelope(c, candidate.parsed);
+          if (candidate.localOnly) {
+            c.store.mode = 'ls';
+            return finishLoad(c, candidate.parsed.data, 'fallback');
+          }
+          const result = await enqueueSave(JSON.stringify({ version: 1, tasks: candidate.parsed.data }), c);
+          if (!isCurrent(c)) return { ok: false, obsolete: true };
+          return { ...finishLoad(c, candidate.parsed.data, result.destination === 'file' ? 'file' : 'fallback'), saveResult: result };
+        }
+      }
+      return finishLoad(c, disk.parsed.data, 'file');
+    }
+    if (!absent && !candidate) return failLoad(c, r?.errorCode || 'READ_FAILED');
+    if (candidate) {
+      adoptEnvelope(c, candidate.parsed);
+      if (!absent) c.store.mode = 'ls';
+      const result = await enqueueSave(JSON.stringify({ version: 1, tasks: candidate.parsed.data }), c, candidate.kind === 'legacy' ? candidate.raw : undefined);
+      if (!isCurrent(c)) return { ok: false, obsolete: true };
+      return { ...finishLoad(c, candidate.parsed.data, result.destination === 'file' ? 'file' : 'fallback'), saveResult: result };
+    }
+    return finishLoad(c, [], 'empty');
+  }
+  async function chooseRecovery(source, owner = context) {
+    if (!isCurrent(owner) || !owner.choice) return { ok: false, obsolete: true };
+    const choice = owner.choice, selected = source === 'file' ? choice.disk : choice.candidate;
+    if (!selected?.parsed?.ok) return { ok: false, errorCode: 'INVALID_TASKS' };
+    const legacy = readLs(owner.store.key);
+    if (legacy.ok && legacy.raw != null && source === 'file') {
+      const kept = await myIDE.tasks.save(owner.root, legacy.raw, null, true);
+      if (!isCurrent(owner)) return { ok: false, obsolete: true };
+      if (!kept?.ok) return { ok: false, errorCode: kept?.errorCode || 'RECOVERY_WRITE_FAILED' };
+    }
+    adoptEnvelope(owner, selected.parsed);
+    // 明确选择仍保持两份备份。选择本机副本先本地继续，写回项目另有确认按钮。
+    if (source === 'local') owner.store.mode = 'ls';
+    owner.store.logicalRevision = Math.max(owner.store.logicalRevision, choice.candidate?.parsed?.envelope.revision || 0, choice.disk?.parsed?.envelope.revision || 0);
+    loadState = 'loading'; render();
+    const result = await enqueueSave(JSON.stringify({ version: 1, tasks: selected.parsed.data }), owner);
+    if (!isCurrent(owner)) return { ok: false, obsolete: true, saveResult: result };
+    if (result.destination === 'file' && legacy.raw != null) {
+      try { if (localStorage.getItem(owner.store.key) === legacy.raw) localStorage.removeItem(owner.store.key); } catch {}
+    }
+    owner.choice = null;
+    return { ...finishLoad(owner, selected.parsed.data, result.destination === 'file' ? 'file' : 'fallback'), saveResult: result };
+  }
+  async function openRecovery() {
+    const owner = context;
+    if (!owner?.root || !window.myIDE?.tasks) return;
+    let listed;
+    try { listed = await myIDE.tasks.list(owner.root); } catch { listed = { errorCode: 'RECOVERY_READ_FAILED' }; }
+    if (!isCurrent(owner)) return;
+    const box = document.createElement('div'); box.className = 'tk-recovery'; box.dataset.selfEsc = '1';
+    const heading = document.createElement('div'); heading.className = 'm-head'; heading.textContent = '任务恢复';
+    const body = document.createElement('div'); body.className = 'm-body';
+    const project = document.createElement('div'); project.className = 'tk-recovery-project'; project.textContent = owner.root;
+    const notice = document.createElement('p'); notice.textContent = owner.choice?.reason || '查看保留的任务原文。恢复到项目会先备份当前文件，再检查版本；备份失败时不会替换。';
+    const sources = document.createElement('div'); sources.className = 'tk-recovery-sources';
+    const columns = document.createElement('div'); columns.className = 'tk-recovery-columns';
+    const taskColumns = document.createElement('div'); taskColumns.className = 'tk-recovery-columns';
+    const diskSummary = document.createElement('div'), localSummary = document.createElement('div'); taskColumns.append(diskSummary, localSummary);
+    const describe = (host, label, raw) => {
+      host.replaceChildren(); const heading = document.createElement('strong'); heading.textContent = label; host.appendChild(heading);
+      const parsed = raw && parseStore(raw), p = document.createElement('p');
+      p.textContent = parsed?.ok ? parsed.data.length + ' 个任务' : '当前没有可直接使用的任务数据，原文仍保留'; host.appendChild(p);
+      if (parsed?.ok) {
+        const list = document.createElement('ul'); list.className = 'tk-recovery-task-list';
+        for (const task of parsed.data.slice(0, 100)) {
+          const li = document.createElement('li'); li.textContent = task.title + ' · ' + ({ todo: '待办', doing: '进行中', done: '已完成' })[task.status];
+          if (task.note) li.title = task.note; list.appendChild(li);
+        }
+        if (parsed.data.length > 100) { const li = document.createElement('li'); li.textContent = '其余 ' + (parsed.data.length - 100) + ' 个任务可在原文中查看'; list.appendChild(li); }
+        host.appendChild(list);
+      }
+    };
+    const makeText = (label, raw) => {
+      const wrap = document.createElement('label'); wrap.textContent = label;
+      const text = document.createElement('textarea'); text.readOnly = true; text.spellcheck = false; text.value = raw || '当前无法读取';
+      text.setAttribute('aria-label', label); wrap.appendChild(text); columns.appendChild(wrap); return text;
+    };
+    const diskText = makeText('项目文件原文', owner.choice?.disk?.raw || owner.disk?.raw);
+    const localText = makeText('本机副本原文', owner.choice?.candidate?.raw);
+    describe(diskSummary, '项目文件', owner.choice?.disk?.raw || owner.disk?.raw);
+    describe(localSummary, '本机副本', owner.choice?.candidate?.raw);
+    const rawDetails = document.createElement('details'), rawTitle = document.createElement('summary'); rawTitle.textContent = '查看 JSON 原文'; rawDetails.append(rawTitle, columns);
+    const status = document.createElement('div'); status.setAttribute('role', 'status'); status.className = 'tk-recovery-status';
+    const foot = document.createElement('div'); foot.className = 'm-foot';
+    const close = () => {
+      if (Modal.stack?.includes(box)) {
+        const i = Modal.stack.indexOf(box); Modal.stack.splice(i, 1); box.remove();
+        if (!Modal.stack.length) document.getElementById('modal-mask')?.classList.add('hidden');
+      } else box.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = e => { if (Modal.stack?.at(-1) === box && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+    box.onModalHide = () => document.removeEventListener('keydown', onKey);
+    const button = (label, fn, host = foot) => {
+      const b = document.createElement('button'); b.className = 'tb-btn'; b.textContent = label;
+      b.onclick = async () => {
+        if (!isCurrent(owner) || !box.isConnected || Modal.stack?.at(-1) !== box) return;
+        b.disabled = true;
+        try {
+          await fn();
+          if (host === sources && box.isConnected) {
+            for (const other of sources.querySelectorAll('button')) other.setAttribute('aria-pressed', String(other === b));
+          }
+        } catch (e) { status.textContent = '操作失败，数据仍保留：' + String(e.message || e); }
+        finally { if (b.isConnected) b.disabled = false; }
+      };
+      host.appendChild(b); return b;
+    };
+    if (owner.choice?.disk?.parsed?.ok) button('继续使用项目文件', async () => {
+      const r = await chooseRecovery('file', owner); if (r.ok) close(); else status.textContent = '选择未完成：' + (r.errorCode || '请重试');
+    });
+    let selected = owner.choice?.candidate || null;
+    button('使用本机副本', async () => {
+      const parsed = selected?.raw && parseStore(selected.raw);
+      if (!parsed?.ok) { status.textContent = '先选择有效的任务副本'; return; }
+      owner.choice = { disk: owner.disk, candidate: { ...selected, parsed } };
+      const r = await chooseRecovery('local', owner); if (r.ok) close(); else status.textContent = '选择未完成：' + (r.errorCode || '请重试');
+    });
+    button('复制项目原文', () => MI.copyText(diskText.value));
+    button('复制本机原文', () => MI.copyText(localText.value));
+    button('恢复到项目', async () => {
+      if (!selected?.id || !parseStore(localText.value).ok) { status.textContent = '先选择有效的恢复记录'; return; }
+      if (owner.disk?.parsed?.errorCode === 'UNKNOWN_VERSION' || owner.choice?.disk?.parsed?.errorCode === 'UNKNOWN_VERSION') { status.textContent = '未来版本文件保持只读，请另存副本'; return; }
+      const revision = owner.store.revision;
+      const yes = await Modal.confirm('恢复任务到项目', '将选中的恢复数据写回项目任务文件？当前文件会先保留原字节备份。');
+      if (!yes || !isCurrent(owner) || revision !== owner.store.revision || !box.isConnected) return;
+      loadState = 'loading'; render();
+      const r = await myIDE.tasks.restore(owner.root, selected.id, owner.store.version);
+      if (!isCurrent(owner)) return;
+      if (r?.ok && r.destination === 'file') { recovery.delete(owner.root); close(); await reload(); }
+      else {
+        loadState = owner.choice ? 'recovery' : 'ready'; render();
+        status.textContent = '恢复未写入项目，原文件和副本均保留：' + (r?.fileErrorCode || r?.errorCode || '请重试');
+      }
+    });
+    button('另存副本', async () => {
+      if (!selected?.id) { status.textContent = '先选择恢复记录'; return; }
+      const target = await myIDE.fs.pickSave('另存任务恢复副本', 'tasks-recovery.json', [{ name: 'JSON', extensions: ['json'] }]);
+      if (!target || !isCurrent(owner) || !box.isConnected) return;
+      const r = await myIDE.tasks.exportCopy(owner.root, selected.id, target);
+      if (isCurrent(owner)) status.textContent = r?.ok ? '副本已保存：' + target : '另存失败，来源仍保留：' + (r?.errorCode || '请重试');
+    });
+    button('关闭', close);
+    if (owner.choice?.candidate) button('当前本机副本', () => { selected = owner.choice.candidate; localText.value = selected.raw; describe(localSummary, '本机副本', selected.raw); }, sources);
+    const legacy = readLs(owner.store.key);
+    if (legacy.raw != null) button('旧本地数据', () => { selected = { raw: legacy.raw }; localText.value = legacy.raw; describe(localSummary, '旧本地数据', legacy.raw); }, sources);
+    for (const row of listed?.records || []) {
+      button((row.kind === 'original' ? '原文件备份' : row.kind === 'pending' ? '未落盘副本' : '已保存快照') + ' · ' + new Date(row.createdAt).toLocaleString(), async () => {
+        const r = await myIDE.tasks.read(owner.root, row.id);
+        if (!isCurrent(owner) || !box.isConnected) return;
+        if (!r?.ok) { status.textContent = '记录读取失败：' + (r?.errorCode || '请重试'); return; }
+        selected = r; localText.value = r.readErrorCode ? '原文件含非文本字节，请用“另存副本”保留完整原字节' : r.raw;
+        describe(localSummary, row.kind === 'original' ? '原文件备份' : '本机副本', r.raw);
+        const parsed = parseStore(r.raw); status.textContent = parsed.ok ? (parsed.report || '记录校验通过，' + parsed.data.length + ' 个任务') : '原字节备份可另存，当前内容不能直接作为任务恢复';
+      }, sources);
+    }
+    if (!listed?.ok || listed.errors?.length) status.textContent = '部分恢复记录读取或校验失败，已保留文件，请另存取证后检查';
+    body.append(project, notice, sources, taskColumns, rawDetails, status); box.append(heading, body, foot);
+    Modal.show(box); document.addEventListener('keydown', onKey);
+    foot.querySelector('button')?.focus();
   }
   function failLoad(c, errorCode) {
     if (!isCurrent(c)) return { ok: false, obsolete: true };
@@ -266,6 +485,7 @@ const Tasks = (() => {
       await pending;
       if (!isCurrent(c)) return { ok: false, obsolete: true };
     }
+    if (c.root && window.myIDE?.tasks) return loadDurable(c);
     let r;
     if (f && window.myIDE && myIDE.fs) {
       try { r = await myIDE.fs.readFile(f); } catch { r = { errorCode: 'READ_FAILED' }; }
@@ -317,6 +537,11 @@ const Tasks = (() => {
   function enqueueSave(data, c, sourceRaw) {
     const store = c.store;
     const revision = ++store.revision;
+    if (window.myIDE?.tasks) {
+      const d = JSON.parse(data);
+      data = JSON.stringify({ version: 2, datasetId: store.datasetId, revision: ++store.logicalRevision,
+        baseFileVersion: store.version, pendingFileWrite: true, tasks: d.tasks });
+    }
     store.result = { ok: false, destination: null, pending: true, revision };
     saveChain = saveChain.then(() => writeStore(data, store, revision, sourceRaw)).then((result) => {
       if (revision === store.revision) store.result = result;
@@ -327,6 +552,7 @@ const Tasks = (() => {
       }
       if (isCurrent(c) && revision === store.revision) {
         storeMode = store.mode;
+        if (result.destination === 'file') c.report = '';
         renderStoreState();
         if (!result.ok && window.MI) MI.toast('任务保存失败，修改仍在内存中，请重试或复制导出', 'err');
       }
@@ -341,6 +567,30 @@ const Tasks = (() => {
   async function writeStore(data, store, revision, sourceRaw) {
     const f = store.f;
     let errorCode = 'FILE_UNAVAILABLE';
+    if (window.myIDE?.tasks) {
+      let r;
+      try {
+        if (sourceRaw !== undefined && localStorage.getItem(store.key) !== sourceRaw) return { ok: false, destination: null, revision, errorCode: 'SOURCE_CHANGED' };
+        r = await myIDE.tasks.save(store.root, data, store.version, store.mode === 'ls');
+      } catch { r = { errorCode: 'RECOVERY_WRITE_FAILED' }; }
+      if (r?.ok) {
+        if (r.destination === 'file') {
+          store.version = r.version; store.mode = 'file';
+          try {
+            const local = localStorage.getItem(store.key), d = local && parseStore(local);
+            if (local === sourceRaw || d?.ok && d.envelope.datasetId === store.datasetId && d.envelope.revision <= JSON.parse(data).revision) localStorage.removeItem(store.key);
+          } catch {}
+        } else store.mode = 'ls';
+        store.recoveryWarning = r.recoveryWarning;
+        return { ...r, revision };
+      }
+      errorCode = r?.errorCode || 'RECOVERY_WRITE_FAILED';
+      // 恢复目录失效时仍尝试本地保全，但不能冒充独立恢复备份已成功。
+      try {
+        localStorage.setItem(store.key, data); store.mode = 'ls';
+        return { ok: true, destination: 'fallback', pathOrKey: store.key, revision, recoveryWarning: errorCode };
+      } catch { return { ok: false, destination: null, revision, errorCode: 'LOCAL_WRITE_FAILED', recoveryWarning: errorCode }; }
+    }
     if (store.mode !== 'ls' && f && window.myIDE && myIDE.fs) {
       try {
         const dir = DIR_OF(f);
@@ -387,9 +637,10 @@ const Tasks = (() => {
   function renderStoreState() {
     const owner = context;
     const result = context && context.store.result;
-    const text = loadState === 'loading' ? '正在载入任务…' : loadState === 'error' ? loadError
+    const text = loadState === 'loading' ? '正在载入任务…' : loadState === 'recovery' ? loadError : loadState === 'error' ? loadError
       : result && result.pending ? '正在保存任务…' : result && !result.ok ? '任务未保存，修改仍在内存中'
-        : storeMode === 'ls' && root ? '任务已存本地，不随项目目录' : '';
+        : result?.recoveryWarning ? '独立恢复备份失败，请复制导出；' + (storeMode === 'ls' ? '任务只存本地' : '项目文件已保存')
+          : storeMode === 'ls' && root ? '任务已存本地，不随项目目录' : owner?.report || '';
     for (const host of [bodyEl, dagBodyEl]) {
       if (!host) continue;
       for (const old of host.querySelectorAll(':scope > .tk-store-state')) old.remove();
@@ -400,10 +651,14 @@ const Tasks = (() => {
       const label = document.createElement('span'); label.textContent = text;
       box.appendChild(label);
       if (loadState !== 'loading') {
+        if (owner?.choice) {
+          const compare = document.createElement('button'); compare.className = 'tb-btn'; compare.textContent = '查看恢复数据';
+          compare.onclick = () => { if (isCurrent(owner)) openRecovery(); }; box.appendChild(compare);
+        }
         const retry = document.createElement('button'); retry.className = 'tb-btn'; retry.textContent = '重试';
         retry.onclick = () => {
           if (!isCurrent(owner)) return;
-          if (loadState === 'error') return reload();
+          if (loadState === 'error' || loadState === 'recovery') return reload();
           if (context && context.store.mode === 'ls') context.store.mode = 'file';
           return save();
         };
@@ -3147,6 +3402,8 @@ const Tasks = (() => {
   }
 
   // ---------- 对外 ----------
+  const recoveryBtn = document.getElementById('tasks-recovery');
+  if (recoveryBtn) recoveryBtn.onclick = openRecovery;
   function setRoot(p) {
     root = p ? String(p).replace(/[\\/]+$/, '') : null;
     generation++;
@@ -3157,7 +3414,8 @@ const Tasks = (() => {
   }
   function startLoad() {
     const c = { root, generation, requestId: ++requestId,
-      store: { f: FILE(root), key: LS_KEY(root), version: null, mode: 'file', revision: 0, result: null } };
+      store: { root, f: FILE(root), key: LS_KEY(root), version: null, mode: 'file', revision: 0, result: null,
+        datasetId: newDatasetId(), logicalRevision: 0 } };
     context = c;
     loadState = 'loading'; loadError = '';
     cvsInit = false;
@@ -3188,7 +3446,7 @@ const Tasks = (() => {
   }
 
   return {
-    setRoot, reload, refresh, render, setView, save, exportData,
+    setRoot, reload, refresh, render, setView, save, exportData, openRecovery, chooseRecovery,
     get ready() { return loadPromise; },
     get loadState() { return loadState; },
     get saveResult() { return context && context.store.result; },

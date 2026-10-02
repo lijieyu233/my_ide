@@ -3015,6 +3015,18 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 .tk-none { padding: 6px 12px 8px 26px; font-size: .85em; color: var(--text-dim); opacity: .65; }
 .tk-store-state { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; padding: .6em .8em; font-size: .85em; color: var(--text-dim); }
 .tk-store-state span { flex: 1 1 12em; overflow-wrap: anywhere; }
+.tk-recovery { width: min(65em, 94vw); max-width: 94vw; }
+.tk-recovery .m-body { max-height: 70vh; overflow: auto; }
+.tk-recovery-project { overflow-wrap: anywhere; color: var(--text-dim); }
+.tk-recovery-sources { display: flex; flex-wrap: wrap; gap: .4em; margin: .6em 0; max-height: 8em; overflow: auto; }
+.tk-recovery-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8em; }
+.tk-recovery-columns textarea { display: block; width: 100%; height: 20em; resize: vertical; margin-top: .4em; padding: .5em; background: var(--bg-input); color: var(--text); border: 1px solid var(--btn-border); font-family: var(--font-mono, monospace); font-size: .9em; }
+.tk-recovery-status { margin-top: .6em; overflow-wrap: anywhere; color: var(--text-dim); }
+.tk-recovery-task-list { max-height: 14em; overflow: auto; padding-left: 1.4em; overflow-wrap: anywhere; }
+.tk-recovery details { margin-top: .8em; }
+.tk-recovery summary { cursor: pointer; color: var(--text-dim); }
+.tk-recovery .m-foot { flex-wrap: wrap; gap: .4em; }
+@media (max-width: 650px) { .tk-recovery-columns { grid-template-columns: minmax(0, 1fr); } }
 /* 任务行 */
 .tk-row {
   display: flex; align-items: flex-start; gap: 7px;

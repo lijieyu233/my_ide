@@ -558,6 +558,19 @@ ipcMain.handle('fs:writeFile', (_e, p, content, format, condition) => {
 });
 
 const pathResult = async (fn) => { try { return await fn(); } catch(e) { return { error: String(e.message || e), errorCode: e.code || 'MOVE_FAILED', committed:e.committed, pendingPath:e.pendingPath, cleanupError:e.cleanupError }; } };
+// 恢复配额和版本链共用串行队列；实际原字节备份留在worker，避免任务较多时卡窗口。
+let taskRecoveryTail = Promise.resolve();
+for (const op of ['inspect', 'list', 'read', 'save', 'restore', 'exportCopy']) {
+  ipcMain.handle('tasks:' + op, (_e, project, ...args) => {
+    const run = () => pathResult(() => {
+      const perform = () => PathJobs.run('tasks:' + op, [path.join(app.getPath('userData'), 'task-recovery'), project, ...args]);
+      return ['save', 'restore', 'exportCopy'].includes(op) ? PathJobs.withRanges([op === 'exportCopy' ? args[1] : path.join(project, '.myide', 'tasks.json')], perform) : perform();
+    });
+    const next = taskRecoveryTail.catch(() => {}).then(run);
+    taskRecoveryTail = next;
+    return next;
+  });
+}
 ipcMain.handle('fs:createItem', (_e, project, parent, name, type) => pathResult(() => {
   require('./path-create').validateName(name);
   const target=path.join(parent,name);

@@ -16,6 +16,14 @@ contextBridge.exposeInMainWorld('myIDE', {
       try { return ipcRenderer.sendSync('settings:mirror-read-sync'); } catch { return { ok: false, data: null }; }
     },
   },
+  tasks: {
+    inspect: (project) => ipcRenderer.invoke('tasks:inspect', project),
+    list: (project) => ipcRenderer.invoke('tasks:list', project),
+    read: (project, id) => ipcRenderer.invoke('tasks:read', project, id),
+    save: (project, raw, expectedVersion, onlyLocal) => ipcRenderer.invoke('tasks:save', project, raw, expectedVersion, onlyLocal),
+    restore: (project, id, expectedVersion) => ipcRenderer.invoke('tasks:restore', project, id, expectedVersion),
+    exportCopy: (project, id, target) => ipcRenderer.invoke('tasks:exportCopy', project, id, target),
+  },
   fs: {
     openFolder: () => ipcRenderer.invoke('fs:openFolder'),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),
