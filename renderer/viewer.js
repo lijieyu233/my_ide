@@ -285,12 +285,12 @@ const Viewer = (() => {
     await tab.loadPromise;
   }
 
-  async function loadTab(tab) {
+  async function loadTab(tab, detached=false) {
     // 图片 / 音视频 / Office 新格式：二进制无需读取文本，直接走预览渲染器
     if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) {
       tab.content = '';
       tab.mode = 'preview';
-      renderTabs();
+      if(!detached)renderTabs();
       if(tab===currentTab())renderView();
       return;
     }
@@ -300,7 +300,7 @@ const Viewer = (() => {
       tab.binary = true;
       tab.officeOld = true;
       tab.mode = 'error';
-      renderTabs();
+      if(!detached)renderTabs();
       if(tab===currentTab())renderView();
       return;
     }
@@ -308,7 +308,7 @@ const Viewer = (() => {
     let r;
     try { r = await window.myIDE.fs.readFile(readPath); }
     catch(e) { r={error:String(e?.message||e||'读取文件失败')}; }
-    if (!tabs.includes(tab)) return;
+    if (!detached&&!tabs.includes(tab)) return;
     if (tab.path !== readPath || (tab.pathGeneration || 0) !== generation) return tab.mode == null ? loadTab(tab) : undefined;
     if (r.error) { tab.error = r.error; tab.mode = 'error'; }
     else if (r.tooLarge) { tab.tooLarge = true; tab.mode = 'error'; }
@@ -329,7 +329,7 @@ const Viewer = (() => {
         tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
       }
     }
-    renderTabs();
+    if(!detached)renderTabs();
     if(tab===currentTab())renderView();
   }
 
@@ -543,7 +543,7 @@ const Viewer = (() => {
       const pending=selected.map(t => saveQueues.get(DocumentPaths.key(t.path))).filter(Boolean);
       if(pending.length)await Promise.all(pending);
       if (!valid()) { MI.toast('关闭等待期间文档已变化，所有标签已保留', 'err'); return false; }
-      commitClose(selected);
+      commitClose(selected,true);
       return true;
     } catch (e) {
       MI.toast('关闭未完成，标签已保留：' + String(e?.message || e), 'err'); return false;
@@ -576,6 +576,7 @@ const Viewer = (() => {
   }
   // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
   function closeAll() {
+    window.ClosedTabs?.reset();
     window.TabPicker?.invalidate();
     clearTimeout(autosaveTimer);
     for(const cancel of [...closeDecisions])cancel();
@@ -588,10 +589,11 @@ const Viewer = (() => {
   function doClose(i) {
     if(tabs[i])commitClose([tabs[i]]);
   }
-  function commitClose(selected) {
+  function commitClose(selected,remember=false) {
     const before=[...tabs], current=currentTab(), at=before.indexOf(current), removed=new Set(selected);
     const origin=document.activeElement;
     const fromTabs=!!origin?.closest?.('#tab-scroll');
+    if(remember)ClosedTabs.remember(before.filter(tab=>removed.has(tab)).map(closedLocation));
     const successor=removed.has(current) ? before.slice(at+1).find(t=>!removed.has(t)) || before.slice(0,at).reverse().find(t=>!removed.has(t)) : current;
     for(let i=tabs.length-1;i>=0;i--)if(removed.has(tabs[i]))tabs.splice(i,1);
     activeTabId=successor?.id ?? null;
@@ -600,6 +602,52 @@ const Viewer = (() => {
       if(successor)activate(tabs.indexOf(successor),{history:false});else{renderView();document.getElementById('btn-open')?.focus();}
     }else if(origin&&!origin.isConnected&&!fromTabs){cmApi?.focus?.();currentTab()?.ta?.focus();}
     if(fromTabs&&tabs.length)focusTab(successor?.id);
+  }
+
+  function closedLocation(tab){
+    const location=tab===currentTab()?captureLocation():null;
+    const state=cmApi?.__tab===tab?cmApi.view.state:tab.cmState;
+    const selection=state?.selection?.ranges.length<=64?{ranges:state.selection.ranges.map(range=>({anchor:range.anchor,head:range.head})),mainIndex:state.selection.mainIndex}:null;
+    return {root:App.root,path:tab.path,mode:tab.mode,pinned:!!tab.pinned,discarded:!!tab.dirty,version:tab.diskVersion||null,
+      selection:tab.dirty?null:location?.selection||selection,scroll:tab.dirty?{top:0,left:0}:location?.scroll||{top:tab.scrollTop||0,left:tab.scrollLeft||0}};
+  }
+  async function reopenClosed(record,isCurrent){
+    const fail=error=>({ok:false,error});if(DocumentPaths.key(record.root)!==DocumentPaths.key(App.root))return fail('关闭记录不属于当前项目');
+    if(pathBusy(record.path))return fail('路径迁移正在进行，请完成后重试');
+    const source=currentTab(),revision=source?.editRevision,generation=source?.pathGeneration,mode=source?.mode,position=JSON.stringify(captureLocation()?.selection);
+    const stable=()=>isCurrent()&&currentTab()===source&&source?.editRevision===revision&&source?.pathGeneration===generation&&source?.mode===mode&&JSON.stringify(captureLocation()?.selection)===position&&!Modal.stack.length;
+    const history=NavigationHistory.begin();
+    const existing=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(record.path));
+    if(existing?.loadPromise){await existing.loadPromise;if(!stable())return fail('当前文档或项目已变化，重开未执行');}
+    if(existing?.mode!=null&&!existing.error&&existing.mode!=='error'){
+      if(existing!==currentTab())activate(tabs.indexOf(existing),{history:false});NavigationHistory.finish(history,captureLocation());
+      return {ok:true,note:'文件已打开，已保留当前输入和位置',focus:()=>{if(isCurrent()&&currentTab()===existing&&!Modal.stack.length)focusEditor();}};
+    }
+    if(existing&&(existing.dirty||existing.formatBusy||saveQueues.has(DocumentPaths.key(existing.path))))return fail('已打开的同名文档仍有输入或操作，请先完成后重试');
+    const observed=await window.myIDE.fs.fileVersion(record.path);
+    if(!stable())return fail('当前文档或项目已变化，重开未执行');
+    if(observed?.error||observed?.absent||observed?.version?.absent||!observed?.version)return fail(observed?.error||'原文件已删除或改名，请恢复文件后重试');
+    const candidate={id:++nextTabId,editRevision:0,savedRevision:0,path:record.path,name:record.path.split(/[\\/]/).pop(),dirty:false,content:null,mode:null,error:null,tooLarge:false,binary:false,encoding:'utf8'};
+    await loadTab(candidate,true);
+    if(!stable()||pathBusy(record.path))return fail('当前文档或路径已变化，重开未执行');
+    if(candidate.error||candidate.mode==='error'||candidate.mode==null)return fail(candidate.error||'当前文件格式无法打开');
+    if(candidate.diskVersion&&!SearchModel.sameVersion(candidate.diskVersion,observed.version))return fail('读取期间文件已变化，请重试');
+    const same=record.version&&SearchModel.sameVersion(record.version,candidate.diskVersion),markdown=MD_EXTS.has(extOf(candidate.name));
+    if((markdown?['live','source','split','preview']:['edit','split','preview']).includes(record.mode)&&!IMG_EXTS.has(extOf(candidate.name))&&!MEDIA_EXTS.has(extOf(candidate.name))&&!OFFICE_EXTS.has(extOf(candidate.name)))candidate.mode=record.mode;
+    const ranges=same&&!record.discarded?record.selection?.ranges:null,text=String(candidate.content||'').replace(/\r\n?|\n/g,'\n');
+    const validRanges=ranges?.every(range=>Number.isSafeInteger(range.anchor)&&Number.isSafeInteger(range.head)&&range.anchor>=0&&range.head>=0&&range.anchor<=text.length&&range.head<=text.length);
+    let target=candidate;
+    if(existing){Object.assign(existing,candidate,{id:existing.id,lazy:false,loadPromise:null,cmState:null,ta:null,restoreLine:null});target=existing;}else tabs.push(candidate);
+    activate(tabs.indexOf(target),{history:false});recordRecent(target.path);window.Tree?.reveal(target.path);
+    const targetRevision=target.editRevision,stillTarget=()=>isCurrent()&&currentTab()===target&&target.editRevision===targetRevision&&!Modal.stack.length;
+    if(validRanges&&cmApi?.__tab===target&&cmApi.view?.dom.isConnected)cmApi.view.dispatch({selection:CM6.State.EditorSelection.create(ranges.map(range=>CM6.State.EditorSelection.range(range.anchor,range.head)),record.selection.mainIndex)});
+    else if(validRanges&&target.ta?.isConnected){const range=ranges[0];target.ta.setSelectionRange(Math.min(range.anchor,range.head),Math.max(range.anchor,range.head),range.anchor>range.head?'backward':'forward');}
+    const applyScroll=()=>{if(!stillTarget()||!same||record.discarded)return;const {primary,preview}=locationScrollers(target),scroll=record.scroll||{};
+      let top=scroll.top||0;if(scroll.anchor&&cmApi?.__tab===target){try{top=cmApi.view.lineBlockAt(scroll.anchor.offset).top+scroll.anchor.delta;}catch{}}
+      if(primary){primary.scrollTop=top;primary.scrollLeft=scroll.left||0;}if(preview){preview.scrollTop=scroll.previewTop||0;preview.scrollLeft=scroll.previewLeft||0;}target.scrollTop=top;};
+    applyScroll();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{applyScroll();resolve();})));
+    NavigationHistory.finish(history,captureLocation());
+    return {ok:true,note:record.discarded?'已打开磁盘当前内容；之前放弃的未保存输入不会恢复':!same?(record.version?'已打开磁盘当前内容；文件版本已变化，旧位置未恢复':'已打开磁盘当前内容；无法核验原位置，已回到开头'):'',focus:()=>{if(stillTarget())focusEditor();}};
   }
 
   // 标签页上的文件类型图标（小尺寸用线条 SVG，比 emoji 尺寸稳定）
@@ -927,6 +975,7 @@ const Viewer = (() => {
     mk('✕ 关闭', () => requestClose([tab]));
     mk('🗂 关闭其他', () => requestClose(tabs.filter(t=>t!==tab)));
     mk('🗑 关闭全部', () => requestClose([...tabs]));
+    if(ClosedTabs.state().count)mk('↶ 重新打开关闭的文件', () => Shortcuts.execute('reopen-closed-file'));
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 80) + 'px';
@@ -1631,6 +1680,7 @@ const Viewer = (() => {
     try { localStorage.setItem(RECENT_KEY,JSON.stringify(recentFiles().map(item=>({...item,path:DocumentPaths.map(item.path,oldPath,newPath)})))); } catch {}
     if(window.Session?.pathsMoved)Session.pathsMoved(oldPath,newPath);
     NavigationHistory.pathsMoved(oldPath,newPath,documents);
+    ClosedTabs.pathsMoved(oldPath,newPath);
     if(window.AiPanel?.pathsMoved)AiPanel.pathsMoved(oldPath,newPath);
     if (!touched) return;
     renderTabs();
@@ -1787,7 +1837,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor,
+    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

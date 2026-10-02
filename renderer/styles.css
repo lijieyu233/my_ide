@@ -1821,6 +1821,8 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 .sr-stat { padding: 6px 14px 2px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
 #navigation-status[hidden] { display: none; }
 #navigation-status { color: var(--text-dim); }
+#closed-tab-status[hidden] { display: none; }
+#closed-tab-status { color: var(--text-dim); }
 #sr-list { max-height: 380px; overflow: auto; }
 .sr-file { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .sr-hit { color: var(--text-bright); background: var(--bg-selected); border-radius: 2px; padding: 0 1px; }

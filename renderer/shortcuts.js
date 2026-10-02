@@ -352,6 +352,8 @@ Shortcuts.register('theme-settings', { desc: '主题设置', keys: [], palette: 
 Shortcuts.register('search-panel', { desc: '在侧栏搜索内容', keys: [], palette: true, category: '项目', aliases: ['search panel', '常驻搜索'], requiresProject: true, run: () => Search.showDock() });
 Shortcuts.register('all-tabs', { desc: '全部打开的标签', keys: [], palette: true, category: '文件', aliases: ['open tabs', '标签列表'], requiresDocument: true, run:ctx=>TabPicker.open(ctx.invoker) });
 Shortcuts.register('focus-tabs', { desc: '聚焦文件标签', keys: [], palette: true, category: '文件', aliases: ['focus tabs', '标签栏'], requiresDocument: true, run:()=>Viewer.focusTab() });
+Shortcuts.register('reopen-closed-file',{desc:'重新打开关闭的文件',keys:[],palette:true,category:'文件',aliases:['reopen closed','误关','重开文件'],requiresProject:true,
+  isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':ClosedTabs.state().busy?'关闭的文件正在重新打开':ClosedTabs.state().count>0||'没有可重新打开的关闭文件',run:()=>ClosedTabs.reopen()});
 for(const [id,direction,label,combo] of [['navigation-back','back','返回','alt+arrowleft'],['navigation-forward','forward','前进','alt+arrowright']]){
   Shortcuts.register(id,{desc:label,keys:[combo],palette:true,category:'文件',aliases:[direction,'位置导航'],requiresProject:true,
     isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':App.getTool()==='browser'?'请先回到编辑区':NavigationHistory.state().busy?'位置导航正在进行':NavigationHistory.state()[direction]>0||'没有可'+label+'的位置',

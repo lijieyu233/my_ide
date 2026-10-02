@@ -531,6 +531,7 @@ async function loadApp(dom) {
   evalFile('tree.js');
   evalFile('navigation-history.js');
   evalFile('tab-descriptions.js');
+  evalFile('closed-tabs.js');
   evalFile('viewer.js');
   evalFile('tab-picker.js');
   evalFile('outline.js');
@@ -9179,6 +9180,58 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('标签B：上层弹窗隔离列表，改键/命令入口与项目切换沿共享生命周期',async(d,viewer)=>{
     const w=d.window;await w.Shortcuts.execute('all-tabs');const input=w.document.querySelector('#tab-picker-input'),upper=w.document.createElement('div');upper.tabIndex=-1;w.Modal.show(upper);upper.focus();qoKey(w,upper,'Enter');w.document.querySelector('.tp-item').click();await tick();assert.equal(w.Modal.stack.length,2);w.Modal.hide();input.focus();qoKey(w,input,'Escape');w.Shortcuts.setBinding('focus-tabs','ctrl+alt+t');await w.Shortcuts.execute('focus-tabs');assert(w.document.activeElement===tabEl(d,viewer.activeTab));assert(w.Shortcuts.commands().some(command=>command.id==='focus-tabs'&&command.combos.includes('ctrl+alt+t')));w.TabPicker.open();await w.App.openProject('C:/proj2');assert(!w.document.querySelector('#tab-picker'));assert(!w.document.querySelector('#toolbar').hasAttribute('inert'));
+  });
+  await saveCase('标签D：成功关闭当前文件后重开磁盘正文/选区/滚动，最后页也可从命令打开',async(d,viewer)=>{
+    const w=d.window,path=viewer.activeTab.path,original=FAKE_FS[path].content;viewer.cm.view.dispatch({selection:{anchor:3,head:1}});viewer.cm.view.scrollDOM.scrollTop=64;
+    await viewer.closeTab(0);assert.equal(viewer.openTabs.length,0);assert.equal(w.ClosedTabs.state().count,1);assert(w.Shortcuts.commands().find(x=>x.id==='reopen-closed-file').enabled);
+    assert((await w.Shortcuts.execute('reopen-closed-file')).ok);assert.equal(viewer.activeTab.path,path);assert.equal(viewer.cm.getValue(),original);assert.equal(viewer.cm.view.state.selection.main.anchor,3);assert.equal(viewer.cm.view.state.selection.main.head,1);assert.equal(viewer.cm.view.scrollDOM.scrollTop,64);assert(!viewer.activeTab.dirty);assert.equal(w.ClosedTabs.state().count,0);assert(viewer.cm.view.dom.contains(w.document.activeElement));assert.equal(FAKE_FS[path].content,original);
+  });
+  await saveCase('标签D：后台关闭保留当前CM，重开恢复后台缓存选区与Markdown模式',async(d,viewer)=>{
+    const w=d.window;w.localStorage.setItem('myide-md-mode','source');await viewer.openFile(P+'/README.md');const target=viewer.activeTab;viewer.cm.view.dispatch({selection:{anchor:2,head:4}});await viewer.openFile(P+'/notes.txt');const current=viewer.activeTab,cm=viewer.cm;await viewer.closeTab(viewer.openTabs.indexOf(target));assert(viewer.cm===cm&&viewer.activeTab===current);assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab.mode,'source');assert.equal(viewer.cm.view.state.selection.main.from,2);assert.equal(viewer.cm.view.state.selection.main.to,4);
+  });
+  await saveCase('标签D：批量关闭完整决定后按物理顺序逆序重开，不重放关闭期间正文',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;await viewer.openFile(P+'/README.md');await viewer.openFile(P+'/src/app.js');const paths=viewer.openTabs.map(t=>t.path);await tabMenuAction(d,viewer,a,'🗑 关闭全部');assert.equal(w.ClosedTabs.state().count,3);
+    for(const path of paths.reverse()){assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab.path,path);}assert.equal(new Set(viewer.openTabs.map(t=>t.path)).size,3);assert.equal(w.ClosedTabs.state().count,0);
+  });
+  await saveCase('标签D：取消/保存失败不记关闭，明确放弃后只打开磁盘版本且不恢复旧输入',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path,disk=FAKE_FS[path].content;viewer.cm.setValue('明确放弃的私有输入');let pending=viewer.closeTab(0);w.document.querySelector('.m-cancel').click();assert.equal(await pending,false);assert.equal(w.ClosedTabs.state().count,0);
+    const write=bridge.writeFile;bridge.writeFile=async()=>({ok:false,error:'write denied'});pending=viewer.closeTab(0);w.document.querySelector('.close-tabs-save').click();assert.equal(await pending,false);assert.equal(w.ClosedTabs.state().count,0);bridge.writeFile=write;
+    pending=viewer.closeTab(0);w.document.querySelector('.close-tabs-discard').click();assert(await pending);assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.cm.getValue(),disk);assert(!viewer.activeTab.dirty);assert(w.ClosedTabs.state().message.includes('放弃'));assert.equal(viewer.cm.view.state.selection.main.head,0);
+  });
+  await saveCase('标签D：保存并关闭后重开实际保存正文与已确认选区',async(d,viewer)=>{
+    const w=d.window,path=viewer.activeTab.path;viewer.cm.setValue('saved current document');viewer.cm.view.dispatch({selection:{anchor:6}});const pending=viewer.closeTab(0);w.document.querySelector('.close-tabs-save').click();assert(await pending);assert.equal(FAKE_FS[path].content,'saved current document');assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.cm.getValue(),'saved current document');assert.equal(viewer.cm.view.state.selection.main.head,6);
+  });
+  await saveCase('标签D：关闭后磁盘变化读取新版本，旧位置明确回落，不写旧正文',async(d,viewer)=>{
+    const w=d.window,path=viewer.activeTab.path;viewer.cm.view.dispatch({selection:{anchor:3}});await viewer.closeTab(0);FAKE_FS[path].content='changed';FAKE_FS[path].revision=41;assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.cm.getValue(),'changed');assert.equal(viewer.cm.view.state.selection.main.head,0);assert(w.ClosedTabs.state().message.includes('版本已变化'));assert(!w.document.querySelector('#closed-tab-status').hidden);
+  });
+  await saveCase('标签D：删除/读取拒绝保留当前CM与记录，失败详情可回看，恢复后可重试',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path,entry={...FAKE_FS[path]};await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');const active=viewer.activeTab,cm=viewer.cm;delete FAKE_FS[path];assert(!(await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab===active&&viewer.cm===cm);assert.equal(w.ClosedTabs.state().count,1);assert(w.document.querySelector('#closed-tab-status').title.includes('删除或改名'));
+    FAKE_FS[path]=entry;const read=bridge.readFile;bridge.readFile=async p=>p===path?{error:'permission denied'}:read(p);assert(!(await w.ClosedTabs.reopen()).ok);assert.equal(viewer.openTabs.length,1);assert(viewer.cm===cm);assert(w.ClosedTabs.state().message.includes('permission denied'));bridge.readFile=read;assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab.path,path);
+  });
+  await saveCase('标签D：已重新打开的dirty同名文档复用身份/输入/选区，不重复读取或覆盖',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path;await viewer.closeTab(0);await viewer.openFile(path);await tick();const target=viewer.activeTab;viewer.cm.setValue('新的未保存正文');viewer.cm.view.dispatch({selection:{anchor:4}});const cm=viewer.cm,read=bridge.readFile;let calls=0;bridge.readFile=(...args)=>{calls++;return read(...args);};assert((await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab===target&&viewer.cm===cm);assert.equal(viewer.openTabs.length,1);assert.equal(viewer.cm.getValue(),'新的未保存正文');assert.equal(viewer.cm.view.state.selection.main.head,4);assert(viewer.activeTab.dirty);assert.equal(calls,0);assert(w.ClosedTabs.state().message.includes('文件已打开'));
+  });
+  await saveCase('标签D：懒恢复或读取失败的同名标签复用原身份，完成后不会重复加载覆盖选区',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path;await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');viewer.addLazyTab(path);const lazy=viewer.openTabs.at(-1);assert((await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab===lazy);assert.equal(viewer.openTabs.filter(t=>t.path===path).length,1);assert(!viewer.activeTab.lazy);await tick();assert.equal(viewer.activeTab.path,path);
+  });
+  await saveCase('标签D：迟到读取不替换新输入/另一次导航，重复重开不并发且记录可重试',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path;await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');const read=bridge.readFile,wait=deferred();bridge.readFile=p=>p===path?wait.promise:read(p);const pending=w.ClosedTabs.reopen();await tick();assert(w.ClosedTabs.state().busy);assert(!(await w.ClosedTabs.reopen()).ok);viewer.cm.setValue('阅读等待中的新输入');wait.resolve(await read(path));assert(!(await pending).ok);assert.equal(viewer.cm.getValue(),'阅读等待中的新输入');assert.equal(viewer.openTabs.length,1);assert.equal(w.ClosedTabs.state().count,1);bridge.readFile=read;assert((await w.ClosedTabs.reopen()).ok);
+  });
+  await saveCase('标签D：读取期间成功切项目注销旧重开，保存失败阻止切项目时记录保留',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path;await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');const read=bridge.readFile,wait=deferred();bridge.readFile=p=>p===path?wait.promise:read(p);const pending=w.ClosedTabs.reopen();await tick();await w.App.openProject('C:/proj2');wait.resolve(await read(path));assert((await pending).stale);assert.equal(viewer.openTabs.length,0);assert.equal(w.ClosedTabs.state().count,0);assert(!w.ClosedTabs.state().busy);
+    bridge.readFile=read;await w.App.openProject(P);await viewer.openFile(path);await viewer.closeTab(viewer.openTabs.findIndex(t=>t.path===path));await viewer.openFile(P+'/src/app.js');viewer.cm.setValue('dirty');bridge.writeFile=async()=>({ok:false,error:'write fail'});await w.App.openProject('C:/proj2');assert.equal(w.App.root,P);assert.equal(w.ClosedTabs.state().count,1);
+  });
+  await saveCase('标签D：已核验目录迁移更新关闭路径，外部改名失败不自动猜测其他文件',async(d,viewer,bridge)=>{
+    const w=d.window,path=P+'/dir/reopen.txt',to=P+'/moved/reopen.txt';FAKE_FS[P+'/dir']={type:'dir'};setTabFile(path);await viewer.openFile(path);await viewer.closeTab(viewer.openTabs.findIndex(t=>t.path===path));const result=await viewer.withPathChange(P+'/dir',P+'/moved',async(documents,openTargets)=>bridge.relocate(P+'/dir',P+'/moved',{expectedSource:(await bridge.pathSnapshot(P+'/dir')).snapshot,documents,openTargets}));assert(result.ok);assert.equal(w.ClosedTabs.state().next,to);assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab.path,to);
+  });
+  await saveCase('标签D：关闭记录50条有界/不写会话，系统路径移除不当成用户关闭',async(d,viewer)=>{
+    const w=d.window;await viewer.closeTab(0);for(let i=0;i<52;i++){const path=P+'/bounded-'+i+'.txt';setTabFile(path);await viewer.openFile(path);await viewer.closeTab(0);}assert.equal(w.ClosedTabs.state().count,50);assert((await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab.path.endsWith('bounded-51.txt'));w.Session.saveNow();assert(!JSON.stringify(JSON.parse(w.localStorage.getItem('myide-session:'+P))).includes('bounded-50'));viewer.closeAll();assert.equal(w.ClosedTabs.state().count,0);
+  });
+  await saveCase('标签D：命令/原菜单共用入口，可自定义键，原主题键不冲突且弹窗不会重开',async(d,viewer)=>{
+    const w=d.window;await viewer.openFile(P+'/README.md');await viewer.closeTab(1);assert((await tabMenuAction(d,viewer,viewer.activeTab,'↶ 重新打开关闭的文件')).ok);assert.equal(viewer.activeTab.path,P+'/README.md');await viewer.closeTab(1);assert(w.Shortcuts.bindings().find(b=>b.id==='theme').effectiveCombos.includes('ctrl+shift+t'));w.Shortcuts.setBinding('reopen-closed-file','ctrl+alt+r');assert(w.Shortcuts.commands().find(c=>c.id==='reopen-closed-file').combos.includes('ctrl+alt+r'));const box=w.document.createElement('div');w.Modal.show(box);assert(!(await w.Shortcuts.execute('reopen-closed-file')).ok);w.Modal.hide();assert((await w.Shortcuts.execute('reopen-closed-file')).ok);
+  });
+  await saveCase('标签D：实际命令面板能按误关别名找到并执行，面板自身不错误禁用重开',async(d,viewer)=>{
+    const w=d.window,path=viewer.activeTab.path;await viewer.closeTab(0);w.CommandPalette.open();const input=w.document.querySelector('#command-input');input.value='误关';input.dispatchEvent(new w.Event('input',{bubbles:true}));const row=w.document.querySelector('[data-action="reopen-closed-file"]');assert(row&&row.getAttribute('aria-disabled')==='false');qoKey(w,input,'Enter');for(let i=0;i<80&&(!viewer.activeTab||w.ClosedTabs.state().busy);i++)await tick();assert.equal(viewer.activeTab.path,path);assert.equal(w.ClosedTabs.state().count,0);assert(!w.document.querySelector('#command-box'));assert(viewer.cm.view.dom.contains(w.document.activeElement));
   });
   const beginTabDrag=(d,viewer,tab)=>{
     const doc=d.window.document,bar=doc.querySelector('#tab-scroll');
