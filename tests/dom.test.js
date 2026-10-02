@@ -8431,10 +8431,11 @@ assert_(panel, 'CM6 搜索面板出现');
     const cbStart = fakeFsCbs.length;
     try {
       await loadApp(isolated);
+      const restoreSession=isolated.window.Session.restore;
       isolated.window.Session.restore = async () => {};
       await isolated.window.App.setRoot(P);
       await isolated.window.Viewer.openFile(P + '/notes.txt');
-      await fn(isolated, isolated.window.Viewer, isolated.window.myIDE.fs, fakeFsCbs.slice(cbStart));
+      await fn(isolated, isolated.window.Viewer, isolated.window.myIDE.fs, fakeFsCbs.slice(cbStart), restoreSession);
     } finally {
       // activate还会异步刷新AI上下文；等已派发的内存桥回调完成再销毁jsdom宿主。
       await tick();
@@ -9241,6 +9242,62 @@ assert_(panel, 'CM6 搜索面板出现');
     el.dispatchEvent(new d.window.MouseEvent('mousedown',{bubbles:true,button:0,clientX:el.getBoundingClientRect().left+10,clientY:20}));
     doc.dispatchEvent(new d.window.MouseEvent('mousemove',{bubbles:true,clientX:800,clientY:20}));return el;
   };
+  await saveCase('标签C固定：活动/后台固定只改顺序，保留CM选区/撤销与实际保存目标',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab,cm=viewer.cm;
+    cm.view.dispatch({changes:{from:0,insert:'new '},selection:{anchor:3},annotations:w.CM6.State.Transaction.userEvent.of('input')});const content=b.content;
+    assert(viewer.setPinned(b,true));assert(viewer.activeTab===b&&viewer.cm===cm);assert.equal(cm.view.state.selection.main.head,3);assert.equal(b.content,content);assert(b.dirty);assert.equal(viewer.openTabs[0],b);
+    assert((await tabMenuAction(d,viewer,a,'📌 固定标签')).ok);assert.deepEqual([...viewer.openTabs].map(t=>t.id),[b.id,a.id]);assert(viewer.cm===cm);assert.equal(viewer.activeTab,b);
+    assert(viewer.setPinned(b,false));assert.equal(b.retention,'regular');assert.deepEqual([...viewer.openTabs].map(t=>t.id),[a.id,b.id]);w.CM6.Commands.undo(cm.view);assert(!b.content.startsWith('new '));await viewer.saveTab(viewer.openTabs.indexOf(b));assert.equal(FAKE_FS[b.path].content,b.content);assert.equal(viewer.cm,cm);
+  });
+  await saveCase('标签C固定：独立SVG/可读固定状态与dirty/错误共存，列表共享真实身份',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;viewer.setPinned(a);viewer.cm.setValue('fixed dirty');const row=tabEl(d,a);assert(row.querySelector('.tab-pin svg.ic'));assert(row.getAttribute('aria-label').includes('已固定'));assert(row.getAttribute('aria-label').includes('未保存'));w.TabPicker.open();assert(w.document.querySelector('#tab-picker').textContent.includes('已固定'));w.document.querySelector('.tp-dismiss').click();
+    await viewer.openFile(P+'/missing-pinned.txt');const failed=viewer.activeTab;assert(failed.error);assert(viewer.setPinned(failed));const description=w.TabDescriptions.describe(viewer.openTabs,P).find(entry=>entry.id===failed.id);assert(description.status.includes('已固定')&&description.status.includes('读取失败'));assert.equal(viewer.activeTab,failed);
+  });
+  await saveCase('标签C固定：关闭其他/未固定保留固定dirty与当前CM，单独关闭仍沿统一决定',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;viewer.setPinned(a);viewer.cm.setValue('keep pinned');await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab;await viewer.openFile(P+'/README.md');const c=viewer.activeTab;viewer.activate(viewer.openTabs.indexOf(a));const cm=viewer.cm;
+    assert(await viewer.closeOthers(b));assert(!viewer.openTabs.includes(c));assert(viewer.openTabs.includes(a)&&viewer.openTabs.includes(b));assert.equal(viewer.cm,cm);assert(!w.document.querySelector('.close-tabs-dialog'));
+    assert((await w.Shortcuts.execute('close-unpinned-tabs')).ok);assert.deepEqual([...viewer.openTabs],[a]);assert.equal(viewer.cm,cm);assert(a.dirty&&a.content==='keep pinned');assert(!w.Shortcuts.commands().find(c=>c.id==='close-unpinned-tabs').enabled);
+    const pending=viewer.closeTab(0);assert(w.document.querySelector('.close-tabs-dialog'));w.document.querySelector('.m-cancel').click();assert.equal(await pending,false);assert(viewer.activeTab===a&&a.pinned);
+  });
+  await saveCase('标签C固定：明确关闭全部包含固定，取消/保存失败不部分关闭，重试实际写原文件',async(d,viewer,bridge)=>{
+    const w=d.window,a=viewer.activeTab;viewer.setPinned(a);viewer.cm.setValue('fixed saved');await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab,order=[...viewer.openTabs],write=bridge.writeFile;
+    let pending=tabMenuAction(d,viewer,b,'🗑 关闭全部（含固定）');assert.equal(w.document.querySelectorAll('.close-tabs-list li').length,1);w.document.querySelector('.m-cancel').click();assert.equal(await pending,false);assert.deepEqual([...viewer.openTabs],order);
+    bridge.writeFile=async()=>({ok:false,error:'pin write denied'});pending=tabMenuAction(d,viewer,b,'🗑 关闭全部（含固定）');w.document.querySelector('.close-tabs-save').click();assert.equal(await pending,false);assert.deepEqual([...viewer.openTabs],order);assert(a.pinned&&a.dirty);bridge.writeFile=write;
+    pending=tabMenuAction(d,viewer,b,'🗑 关闭全部（含固定）');w.document.querySelector('.close-tabs-save').click();assert(await pending);assert.equal(viewer.openTabs.length,0);assert.equal(FAKE_FS[a.path].content,'fixed saved');assert.equal(w.ClosedTabs.state().count,2);
+  });
+  await saveCase('标签C固定：关闭决定期间拒绝改变目标固定状态，新输入仍保留全部标签',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;viewer.cm.setValue('old input');const pending=viewer.closeUnpinned();assert.equal(viewer.setPinned(a,true),false);assert(!a.pinned);viewer.cm.setValue('new input');w.document.querySelector('.close-tabs-discard').click();assert.equal(await pending,false);assert.equal(viewer.activeTab,a);assert.equal(a.content,'new input');assert(viewer.setPinned(a,true));
+  });
+  await saveCase('标签C固定：跨区拖动限制在原分区，区内排序/取消保留身份与保存路径',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab;await viewer.openFile(P+'/README.md');const c=viewer.activeTab;viewer.setPinned(a);viewer.setPinned(b);viewer.activate(viewer.openTabs.indexOf(b));const cm=viewer.cm;
+    beginTabDrag(d,viewer,a);w.document.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:20}));assert.deepEqual([...viewer.openTabs].map(t=>t.id),[b.id,a.id,c.id]);assert(viewer.cm===cm&&viewer.activeTab===b);assert(a.pinned&&b.pinned&&!c.pinned);
+    beginTabDrag(d,viewer,c);w.document.dispatchEvent(new w.MouseEvent('mousemove',{bubbles:true,clientX:0,clientY:20}));w.document.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true,clientX:0,clientY:20}));assert.deepEqual([...viewer.openTabs].map(t=>t.id),[b.id,a.id,c.id]);
+    beginTabDrag(d,viewer,b);qoKey(w,w.document,'Escape');w.document.dispatchEvent(new w.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:20}));assert.deepEqual([...viewer.openTabs].map(t=>t.id),[b.id,a.id,c.id]);cm.setValue('pin sort save');await viewer.saveTab(viewer.openTabs.indexOf(b));assert.equal(FAKE_FS[b.path].content,'pin sort save');assert.equal(viewer.cm,cm);
+  });
+  await saveCase('标签C固定：会话元数据恢复固定顺序/活动页/位置，后台懒标签不逐个读取',async(d,viewer,bridge,_callbacks,restoreSession)=>{
+    const w=d.window,a=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const b=viewer.activeTab;await viewer.openFile(P+'/README.md');const c=viewer.activeTab;viewer.setPinned(a);viewer.setPinned(b);viewer.activate(0);viewer.cm.view.dispatch({selection:{anchor:4}});w.Session.saveNow();const state=JSON.parse(w.localStorage.getItem('myide-session:'+P));assert.deepEqual(state.tabs.map(it=>[it.p,!!it.f]),[[a.path,true],[b.path,true],[c.path,false]]);assert.equal(state.active,a.path);assert(!('f' in state.tabs[2]));
+    viewer.closeAll();const read=bridge.readFile,calls=[];bridge.readFile=(path,...args)=>{calls.push(path);return read(path,...args);};await restoreSession();assert.deepEqual([...viewer.openTabs].map(t=>t.path),[a.path,b.path,c.path]);assert(viewer.openTabs[0].pinned&&viewer.openTabs[1].pinned);assert.equal(viewer.activeTab.path,a.path);assert(viewer.openTabs[1].lazy&&viewer.openTabs[2].lazy);assert(!calls.includes(b.path)&&!calls.includes(c.path));assert.equal(viewer.cm.getValue(),FAKE_FS[a.path].content);
+  });
+  await saveCase('标签C固定：旧会话/非布尔固定值仍普通，路径别名复用，dirty不写会话',async(d,viewer,_bridge,_callbacks,restoreSession)=>{
+    const w=d.window,path=viewer.activeTab.path;viewer.closeAll();w.localStorage.setItem('myide-session:'+P,JSON.stringify({tabs:[path,{p:P+'/src/app.js',f:'true'},{p:P+'/README.md',f:1}],active:path}));await restoreSession();assert.equal(viewer.openTabs.length,3);assert(viewer.openTabs.every(t=>!t.pinned));const a=viewer.activeTab;viewer.addLazyTab(path.replaceAll('/','\\').toUpperCase(),{pinned:true});assert.equal(viewer.openTabs.length,3);assert.equal(viewer.openTabs[0],a);assert(a.pinned);viewer.cm.setValue('draft');w.Session.saveNow();const state=JSON.parse(w.localStorage.getItem('myide-session:'+P));assert(!state.tabs.some(it=>it.p===path));assert.equal(state.active,null);
+  });
+  await saveCase('标签C固定：命令面板与背景菜单共用动作，自定义键/弹窗保护有效',async(d,viewer)=>{
+    const w=d.window,a=viewer.activeTab;w.CommandPalette.open();const input=cpQuery(w,'pin tab'),row=w.document.querySelector('[data-action="pin-tab"]');assert(row&&row.getAttribute('aria-disabled')==='false');qoKey(w,input,'Enter');await tick();assert(a.pinned);assert(!w.document.querySelector('#command-box'));assert.equal(w.Shortcuts.bindings().find(b=>b.id==='pin-tab').combos.length,0);
+    const box=w.document.createElement('div');w.Modal.show(box);assert(!(await w.Shortcuts.execute('unpin-tab')).ok);assert(a.pinned);w.Modal.hide();w.Shortcuts.setBinding('unpin-tab','ctrl+alt+i');qoKey(w,viewer.cm.view.contentDOM,'i',{ctrlKey:true,altKey:true});await tick();assert(!a.pinned);assert(w.Shortcuts.bindings().find(b=>b.id==='theme').effectiveCombos.includes('ctrl+shift+t'));
+  });
+  await saveCase('标签C固定：路径迁移/实际保存/关闭重开保持固定，新路径不重建旧文件',async(d,viewer,bridge)=>{
+    const w=d.window,a=viewer.activeTab,from=a.path,to=P+'/pinned-moved.txt';viewer.setPinned(a);const result=await viewer.withPathChange(from,to,async(documents,openTargets)=>bridge.relocate(from,to,{expectedSource:(await bridge.pathSnapshot(from)).snapshot,documents,openTargets}));assert(result.ok);assert(a.pinned&&a.path===to);viewer.cm.setValue('moved pinned body');await viewer.saveTab(0);assert.equal(FAKE_FS[to].content,'moved pinned body');assert(!FAKE_FS[from]);await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');assert((await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab.pinned);assert.equal(viewer.activeTab.path,to);assert.equal(viewer.openTabs[0],viewer.activeTab);assert.equal(viewer.cm.getValue(),'moved pinned body');
+  });
+  await saveCase('标签C固定：已重新打开的文档尊重现在的固定选择，成功/失败换项目分开保全',async(d,viewer,bridge,_callbacks,restoreSession)=>{
+    const w=d.window,path=viewer.activeTab.path;w.Session.restore=restoreSession;viewer.setPinned(viewer.activeTab);await viewer.closeTab(0);await viewer.openFile(path);const reopened=viewer.activeTab;assert(!reopened.pinned);assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab,reopened);assert(!reopened.pinned);viewer.setPinned(reopened);viewer.cm.setValue('keep project');const write=bridge.writeFile;bridge.writeFile=async()=>({ok:false,error:'save failed'});await w.App.openProject('C:/proj2');assert.equal(w.App.root,P);assert(viewer.activeTab===reopened&&reopened.pinned&&reopened.dirty);bridge.writeFile=write;await w.App.openProject('C:/proj2');assert.equal(viewer.openTabs.length,0);assert.equal(w.ClosedTabs.state().count,0);await w.App.openProject(P);assert(viewer.activeTab.pinned);assert.equal(viewer.activeTab.path,path);assert.equal(viewer.cm.getValue(),'keep project');
+  });
+  await saveCase('标签C固定：加载中固定不增加读取，完成后状态与身份保持',async(d,viewer,bridge)=>{
+    const read=bridge.readFile,gate=deferred(),a=viewer.activeTab,path=P+'/src/app.js';bridge.readFile=async(p,...args)=>{if(p===path)await gate.promise;return read(p,...args);};const pending=viewer.openFile(path),loading=viewer.activeTab;assert(viewer.setPinned(loading));viewer.activate(viewer.openTabs.indexOf(a));const cm=viewer.cm;gate.resolve();await pending;assert(loading.pinned);assert.equal(viewer.openTabs[0],loading);assert(viewer.activeTab===a&&viewer.cm===cm);viewer.activate(0);assert.equal(viewer.cm.getValue(),FAKE_FS[path].content);
+  });
+  await saveCase('标签C固定：重开懒标签尊重现在的固定选择，读取期间更新不被旧记录覆盖',async(d,viewer,bridge)=>{
+    const w=d.window,path=viewer.activeTab.path;viewer.setPinned(viewer.activeTab);await viewer.closeTab(0);await viewer.openFile(P+'/src/app.js');viewer.addLazyTab(path);const lazy=viewer.openTabs.at(-1);assert(!lazy.pinned);assert((await w.ClosedTabs.reopen()).ok);assert.equal(viewer.activeTab,lazy);assert(!lazy.pinned);
+    await viewer.closeTab(viewer.openTabs.indexOf(lazy));viewer.addLazyTab(path);const current=viewer.openTabs.at(-1),read=bridge.readFile,gate=deferred();bridge.readFile=p=>p===path?gate.promise:read(p);const pending=w.ClosedTabs.reopen();await tick();assert(viewer.setPinned(current,true));gate.resolve(await read(path));assert((await pending).ok);assert(viewer.activeTab===current&&current.pinned);assert.equal(viewer.openTabs[0],current);
+  });
   await saveCase('关闭左右后台标签保持同一CM实例/选区，关闭当前选右侧后继',async(d,viewer)=>{
     const a=viewer.activeTab;await viewer.openFile(P+'/README.md');const b=viewer.activeTab;await viewer.openFile(P+'/src/app.js');const c=viewer.activeTab;
     viewer.activate(1);const cm=viewer.cm;cm.view.dispatch({selection:{anchor:2}});await viewer.closeTab(0);assert.equal(viewer.activeTab,b);assert.equal(viewer.cm,cm);assert.equal(cm.view.state.selection.main.head,2);

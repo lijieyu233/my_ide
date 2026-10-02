@@ -25,6 +25,13 @@ const Viewer = (() => {
   let activeTabId = null;
   let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
+  function orderPinned(){tabs.sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned));}
+  function setPinned(tab=currentTab(),pinned=true){
+    if(!tab||!tabs.includes(tab)||closePending.has(tab.id)||pathBusy(tab.path)){MI.toast('标签正在关闭或迁移，请完成后再固定', 'err');return false;}
+    tab.pinned=!!pinned;if(pinned)tab.retention='regular';orderPinned();renderTabs();return true;
+  }
+  function closeUnpinned(){return requestClose(tabs.filter(tab=>!tab.pinned));}
+  function closeOthers(tab=currentTab()){return requestClose(tabs.filter(other=>other!==tab&&!other.pinned));}
   let saveTimer = null;
 
   function extOf(name) { return (name.split('.').pop() || '').toLowerCase(); }
@@ -366,12 +373,14 @@ const Viewer = (() => {
   // 切换项目恢复会话用：旧实现逐个 openFile（读盘+建编辑器），标签多时切换卡数秒
   function addLazyTab(path, opts) {
     if(pathBusy(path))return;
-    if (tabs.some((t) => DocumentPaths.key(t.path) === DocumentPaths.key(path))) return;
+    const existing=tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path));if(existing){if(opts?.pinned===true)setPinned(existing,true);return;}
     const name = path.split(/[\\/]/).pop();
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
     if (opts && opts.scrollTop) tab.scrollTop = opts.scrollTop;
     if (opts && opts.line) tab.restoreLine = opts.line;
+    tab.pinned=opts?.pinned===true;
     tabs.push(tab);
+    orderPinned();
     renderTabs();
   }
 
@@ -520,9 +529,9 @@ const Viewer = (() => {
     const selected = [...new Set(candidates)].filter(t => tabs.includes(t));
     if (!selected.length || selected.some(t => closePending.has(t.id))) return false;
     const root = MI.activeRoot;
-    const snapshots = selected.map(t => ({ t, path: t.path, generation: t.pathGeneration || 0, revision: t.editRevision, content: t.content }));
+    const snapshots = selected.map(t => ({ t, path: t.path, generation: t.pathGeneration || 0, revision: t.editRevision, content: t.content, pinned:!!t.pinned }));
     const valid = () => MI.activeRoot === root && snapshots.every(s => tabs.includes(s.t) && s.t.path === s.path
-      && (s.t.pathGeneration || 0) === s.generation && s.t.editRevision === s.revision && s.t.content === s.content);
+      && (s.t.pathGeneration || 0) === s.generation && s.t.editRevision === s.revision && s.t.content === s.content && !!s.t.pinned===s.pinned);
     selected.forEach(t => closePending.add(t.id));
     try {
       const dirty = selected.filter(t => t.dirty);
@@ -627,7 +636,7 @@ const Viewer = (() => {
     const observed=await window.myIDE.fs.fileVersion(record.path);
     if(!stable())return fail('当前文档或项目已变化，重开未执行');
     if(observed?.error||observed?.absent||observed?.version?.absent||!observed?.version)return fail(observed?.error||'原文件已删除或改名，请恢复文件后重试');
-    const candidate={id:++nextTabId,editRevision:0,savedRevision:0,path:record.path,name:record.path.split(/[\\/]/).pop(),dirty:false,content:null,mode:null,error:null,tooLarge:false,binary:false,encoding:'utf8'};
+    const candidate={id:++nextTabId,editRevision:0,savedRevision:0,path:record.path,name:record.path.split(/[\\/]/).pop(),dirty:false,content:null,mode:null,error:null,tooLarge:false,binary:false,encoding:'utf8',pinned:!!record.pinned};
     await loadTab(candidate,true);
     if(!stable()||pathBusy(record.path))return fail('当前文档或路径已变化，重开未执行');
     if(candidate.error||candidate.mode==='error'||candidate.mode==null)return fail(candidate.error||'当前文件格式无法打开');
@@ -637,8 +646,8 @@ const Viewer = (() => {
     const ranges=same&&!record.discarded?record.selection?.ranges:null,text=String(candidate.content||'').replace(/\r\n?|\n/g,'\n');
     const validRanges=ranges?.every(range=>Number.isSafeInteger(range.anchor)&&Number.isSafeInteger(range.head)&&range.anchor>=0&&range.head>=0&&range.anchor<=text.length&&range.head<=text.length);
     let target=candidate;
-    if(existing){Object.assign(existing,candidate,{id:existing.id,lazy:false,loadPromise:null,cmState:null,ta:null,restoreLine:null});target=existing;}else tabs.push(candidate);
-    activate(tabs.indexOf(target),{history:false});recordRecent(target.path);window.Tree?.reveal(target.path);
+    if(existing){Object.assign(existing,candidate,{id:existing.id,pinned:!!existing.pinned,lazy:false,loadPromise:null,cmState:null,ta:null,restoreLine:null});target=existing;}else tabs.push(candidate);
+    orderPinned();activate(tabs.indexOf(target),{history:false});recordRecent(target.path);window.Tree?.reveal(target.path);
     const targetRevision=target.editRevision,stillTarget=()=>isCurrent()&&currentTab()===target&&target.editRevision===targetRevision&&!Modal.stack.length;
     if(validRanges&&cmApi?.__tab===target&&cmApi.view?.dom.isConnected)cmApi.view.dispatch({selection:CM6.State.EditorSelection.create(ranges.map(range=>CM6.State.EditorSelection.range(range.anchor,range.head)),record.selection.mainIndex)});
     else if(validRanges&&target.ta?.isConnected){const range=ranges[0];target.ta.setSelectionRange(Math.min(range.anchor,range.head),Math.max(range.anchor,range.head),range.anchor>range.head?'backward':'forward');}
@@ -839,7 +848,7 @@ const Viewer = (() => {
     tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
-      el.className = 'tab' + (t.id === activeTabId ? ' active' : '');
+      el.className = 'tab' + (t.id === activeTabId ? ' active' : '')+(t.pinned?' pinned':'');
       const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===activeTabId));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===focusedTabId?0:-1;
       select.onfocus=()=>{focusedTabId=t.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
       const ti = document.createElement('span');
@@ -847,6 +856,7 @@ const Viewer = (() => {
       // 与侧栏树共用同一套类型图标（App.ftIcon），两处观感一致
       ti.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(t.name) : ftIcon(t.name);
       ti.setAttribute('aria-hidden','true');select.appendChild(ti);
+      if(t.pinned){const pin=document.createElement('span');pin.className='tab-pin';pin.title='固定标签';pin.setAttribute('aria-hidden','true');pin.innerHTML='<svg class="ic" viewBox="0 0 16 16"><path d="M5 2.5h6M6 2.5v4L3.8 9h8.4L10 6.5v-4M8 9v4.5"/></svg>';select.appendChild(pin);}
       const state=document.createElement('span');state.className='tab-state';state.setAttribute('aria-hidden','true');state.textContent=t.mode==null?'…':t.error||t.mode==='error'?'!':t.dirty?'●':'';state.title=t.mode==null?'加载中':t.error||t.mode==='error'?'读取失败':t.dirty?'未保存':'';select.appendChild(state);
       const label=document.createElement('span');label.className='tab-label';
       const nm = document.createElement('span');
@@ -918,7 +928,8 @@ const Viewer = (() => {
       }
       if (!state.moved) return;
       // 按鼠标位置与各标签中心找到插入点，实时移动 DOM（只考虑 .tab，忽略右侧「▾ 全部」按钮）
-      const tabsEl = [...tabScroll.querySelectorAll('.tab')].filter(t=>t!==el);
+      // 跨区拖动不隐式取消固定；只能在当前固定/普通区域内部排序。
+      const tabsEl = [...tabScroll.querySelectorAll('.tab')].filter(t=>t!==el&&t.classList.contains('pinned')===!!tab.pinned);
       let insertAfter = -1;
       tabsEl.forEach((t, j) => {
         const r = t.getBoundingClientRect();
@@ -926,7 +937,7 @@ const Viewer = (() => {
       });
       const ref = tabsEl[insertAfter + 1];
       if (ref) tabScroll.insertBefore(el, ref);
-      else tabScroll.insertBefore(el,tabScroll.querySelector('.tab-all'));
+      else tabScroll.insertBefore(el,tab.pinned?tabScroll.querySelector('.tab:not(.pinned)')||tabScroll.querySelector('.tab-all'):tabScroll.querySelector('.tab-all'));
     };
     const onUp = ev => {
       if(dragState!==state)return;
@@ -948,6 +959,7 @@ const Viewer = (() => {
     const order = [...tabScroll.querySelectorAll('.tab')].map((t) => Number(t.dataset.tabId));
     if(order.length!==tabs.length||new Set(order).size!==tabs.length||tabs.some(t=>!order.includes(t.id))){renderTabs();return;}
     tabs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    orderPinned();
     renderTabs();
   }
 
@@ -967,14 +979,17 @@ const Viewer = (() => {
     };
     mk('📋 复制完整路径', () => { MI.copyText(tab.path); MI.toast('已复制路径', 'ok'); });
     mk('📄 查看完整路径', () => window.TabPicker.open(tabButton(tab.id),tab.id));
+    mk(tab.pinned?'📌 取消固定标签':'📌 固定标签',()=>Shortcuts.execute(tab.pinned?'unpin-tab':'pin-tab',Shortcuts.context(tab)));
     if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
     if (tab.mode === 'edit') mk('⑂ Blame 注解', () => { if (tab !== currentTab()) activate(tabs.indexOf(tab)); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     const pdir = (tab.path || '').replace(/[\\/][^\\/]+$/, '');
     if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(tab.path.replace(/[\\/][^\\/]+$/, '')); });
     mk('✕ 关闭', () => requestClose([tab]));
-    mk('🗂 关闭其他', () => requestClose(tabs.filter(t=>t!==tab)));
-    mk('🗑 关闭全部', () => requestClose([...tabs]));
+    const hasPinned=tabs.some(t=>t.pinned);
+    mk(hasPinned?'🗂 关闭其他（保留固定）':'🗂 关闭其他', () => closeOthers(tab));
+    mk(hasPinned?'🗑 关闭未固定标签':'🗑 关闭全部', () => closeUnpinned());
+    if(hasPinned)mk('🗑 关闭全部（含固定）', () => requestClose([...tabs]));
     if(ClosedTabs.state().count)mk('↶ 重新打开关闭的文件', () => Shortcuts.execute('reopen-closed-file'));
     menu.classList.remove('hidden');
     menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
@@ -1837,7 +1852,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed,
+    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

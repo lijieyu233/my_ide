@@ -5,7 +5,7 @@ const TabDescriptions=(()=>{
   function describe(tabs,root){
     const entries=tabs.map(tab=>{const path=DocumentPaths.normalize(tab.path),parts=path.split('/').filter(Boolean);parts.pop();
       return {tab,id:tab.id,name:tab.name,path,parent:parts,pathHint:'',relative:DocumentPaths.contains(root,path)?path.slice(DocumentPaths.normalize(root).length+1):path,
-        status:[tab.id===window.Viewer?.activeTab?.id?'当前文件':'',tab.mode==null?'加载中':tab.error||tab.mode==='error'?'读取失败':'',tab.dirty?'未保存':'',tab.saveError?'保存失败':''].filter(Boolean).join('，')};});
+        status:[tab.id===window.Viewer?.activeTab?.id?'当前文件':'',tab.pinned?'已固定':'',tab.mode==null?'加载中':tab.error||tab.mode==='error'?'读取失败':'',tab.dirty?'未保存':'',tab.saveError?'保存失败':''].filter(Boolean).join('，')};});
     for(const entry of entries){const peers=entries.filter(other=>key(other.name)===key(entry.name));if(peers.length<2)continue;
       for(let depth=1;depth<=entry.parent.length;depth++){const hint=entry.parent.slice(-depth).join('/');entry.pathHint=hint;
         if(peers.every(other=>other===entry||key(other.parent.slice(-depth).join('/'))!==key(hint)))break;}

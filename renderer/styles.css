@@ -389,6 +389,8 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab-label { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .tab .tpath { font-size: 10px; color: var(--text-dim); line-height: 1.3; white-space: nowrap; }
 .tab-state { flex: 0 0 .7em; font-size: .8em; color: var(--accent); }
+.tab-pin { flex-shrink: 0; color: var(--text-dim); display: flex; align-items: center; }
+.tab.pinned { border-right-color: var(--accent); }
 .tab-select:focus-visible, .tab .tclose:focus-visible, .tab-all:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .tab .tclose { appearance: none; background: none; border: none; flex-shrink: 0; font-family: inherit; cursor: pointer; }
 .tab-all { border-top: none; border-bottom: none; border-right: none; font-family: inherit; }

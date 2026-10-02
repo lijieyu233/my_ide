@@ -18,7 +18,7 @@ const Session = (() => {
               line = t.cmState.doc.lineAt(t.cmState.selection.main.head).number;
             }
           } catch {}
-          return { p: t.path, s: t.scrollTop || 0, l: line };
+          return { p: t.path, s: t.scrollTop || 0, l: line, ...(t.pinned?{f:true}:{}) };
         });
       const active = Viewer.activeTab;
       const state = {
@@ -55,8 +55,7 @@ const Session = (() => {
         // 重新打开全部文件（读盘+高亮），表现为「切项目卡住，自动点开一堆页面」
         for (const it of list) {
           const item = typeof it === 'string' ? { p: it, s: 0, l: null } : (it || {});
-          if (item.p === s.active) continue;
-          Viewer.addLazyTab(item.p, { scrollTop: item.s || 0, line: item.l || null });
+          Viewer.addLazyTab(item.p, { scrollTop: item.s || 0, line: item.l || null, pinned:item.f===true });
         }
         if (s.active) {
           const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
@@ -65,8 +64,9 @@ const Session = (() => {
         } else if (Viewer.openTabs.length) {
           Viewer.activate(0,{history:false}); // 无 active 记录：切入第一个（触发懒加载）
         }
-        // 活动标签光标行恢复（编辑器已渲染，直接跳）
+        // 活动页也先登记，避免最后补入时改变固定区的会话顺序；加载后才能恢复位置。
         const at = Viewer.activeTab;
+        if(at?.loadPromise)await at.loadPromise;
         if (at && at.restoreLine) { Viewer.revealLine(at.restoreLine); delete at.restoreLine; }
       }
       // 恢复目录展开结构（即使没有标签也恢复）

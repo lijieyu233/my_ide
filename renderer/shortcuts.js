@@ -354,6 +354,9 @@ Shortcuts.register('all-tabs', { desc: '全部打开的标签', keys: [], palett
 Shortcuts.register('focus-tabs', { desc: '聚焦文件标签', keys: [], palette: true, category: '文件', aliases: ['focus tabs', '标签栏'], requiresDocument: true, run:()=>Viewer.focusTab() });
 Shortcuts.register('reopen-closed-file',{desc:'重新打开关闭的文件',keys:[],palette:true,category:'文件',aliases:['reopen closed','误关','重开文件'],requiresProject:true,
   isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':ClosedTabs.state().busy?'关闭的文件正在重新打开':ClosedTabs.state().count>0||'没有可重新打开的关闭文件',run:()=>ClosedTabs.reopen()});
+for(const [id,pinned,label] of [['pin-tab',true,'固定标签'],['unpin-tab',false,'取消固定标签']])Shortcuts.register(id,{desc:label,keys:[],palette:true,category:'文件',aliases:[pinned?'pin tab':'unpin tab'],requiresDocument:true,allowBackgroundDocument:true,
+  isEnabled:ctx=>{if(ctx.modalDepth)return '请先关闭弹窗';const tab=Viewer.openTabs.find(tab=>tab.id===ctx.documentId);return !!tab?.pinned!==pinned|| (pinned?'标签已固定':'标签未固定');},run:ctx=>Viewer.setPinned(Viewer.openTabs.find(tab=>tab.id===ctx.documentId),pinned)});
+Shortcuts.register('close-unpinned-tabs',{desc:'关闭未固定标签',keys:[],palette:true,category:'文件',aliases:['close unpinned'],requiresProject:true,isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':Viewer.openTabs.some(tab=>!tab.pinned)||'没有未固定的标签',run:()=>Viewer.closeUnpinned()});
 for(const [id,direction,label,combo] of [['navigation-back','back','返回','alt+arrowleft'],['navigation-forward','forward','前进','alt+arrowright']]){
   Shortcuts.register(id,{desc:label,keys:[combo],palette:true,category:'文件',aliases:[direction,'位置导航'],requiresProject:true,
     isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':App.getTool()==='browser'?'请先回到编辑区':NavigationHistory.state().busy?'位置导航正在进行':NavigationHistory.state()[direction]>0||'没有可'+label+'的位置',
