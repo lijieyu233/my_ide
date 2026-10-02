@@ -27,6 +27,23 @@ function paths() { return { configDir, configFile, stateFile }; }
 
 const procs = new Map();   // id -> { proc, pid, startedAt }
 const logs = new Map();    // id -> string[]
+const pending = new Map();
+
+// 端口探测会让出执行权；锁必须早于探测，且 restart 的 stop/start 共用一份锁。
+async function operate(entry, operation, action) {
+  if (!entry || !entry.id) return { ok: false, error: '条目无效' };
+  if (pending.has(entry.id)) return { ok: false, errorCode: 'LAUNCH_BUSY', error: '终端正在' + pending.get(entry.id) + '，请稍后重试' };
+  pending.set(entry.id, operation);
+  try { return await action(entry); }
+  finally { pending.delete(entry.id); }
+}
+
+function bridgeResult(result, operation) {
+  const ok = !result.error && result.status === 0 && !result.signal;
+  const reason = result.error ? String(result.error.message || result.error)
+    : result.signal ? '被信号 ' + result.signal + ' 终止' : '退出码 ' + result.status;
+  return { ok, error: ok ? '' : '桥接' + operation + '失败：' + reason, exitCode: result.status, signal: result.signal || null, kind: 'usb-tunnel' };
+}
 
 function pushLog(id, text) {
   if (!logs.has(id)) logs.set(id, []);
@@ -124,7 +141,7 @@ function envFor(entry, cfg) {
   return env;
 }
 
-async function startEntry(entry) {
+async function startUnlocked(entry) {
   const cfg = loadConfig();
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
   if (procs.has(entry.id)) return { ok: false, error: '已在运行' };
@@ -144,8 +161,10 @@ async function startEntry(entry) {
     }
     const r = spawnSync(py, [script, 'start'], { encoding: 'utf8', timeout: 60000 });
     pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
-    setState(entry.id, { pid: 0, startedAt: Date.now(), kind: 'usb-tunnel' });
-    return { ok: !r.error, error: r.error ? String(r.error.message) : '', kind: 'usb-tunnel' };
+    const result = bridgeResult(r, '启动');
+    if (result.ok) setState(entry.id, { pid: 0, startedAt: Date.now(), kind: 'usb-tunnel' });
+    else pushLog(entry.id, result.error);
+    return result;
   }
 
   const opts = {
@@ -164,8 +183,9 @@ async function startEntry(entry) {
     return { ok: false, error: String(e && e.message || e) };
   }
   child.unref();   // 不阻塞 my_ide 退出（进程本身不受影响，继续跑）
-  procs.set(entry.id, { proc: child, pid: child.pid, startedAt: Date.now() });
-  setState(entry.id, { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '' });
+  const info = { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '' };
+  procs.set(entry.id, { proc: child, ...info });
+  setState(entry.id, info);
 
   const wire = (stream) => {
     if (!stream) return;
@@ -173,12 +193,22 @@ async function startEntry(entry) {
   };
   wire(child.stdout); wire(child.stderr);
   child.on('exit', (code) => {
+    if ((procs.get(entry.id) || {}).proc !== child) return;
     pushLog(entry.id, '[进程退出] code=' + code);
     procs.delete(entry.id);
     const st = loadState();
     if (st[entry.id] && st[entry.id].pid === child.pid) setState(entry.id, null);
   });
-  child.on('error', (e) => { pushLog(entry.id, '错误: ' + (e && e.message || e)); });
+  child.on('error', (e) => {
+    if ((procs.get(entry.id) || {}).proc !== child) return;
+    pushLog(entry.id, '错误: ' + (e && e.message || e));
+    // spawn error 不保证随后触发 exit；否则失败句柄会一直阻止下一次启动。
+    if ((procs.get(entry.id) || {}).proc === child) {
+      procs.delete(entry.id);
+      const st = loadState();
+      if (st[entry.id] && st[entry.id].pid === child.pid) setState(entry.id, null);
+    }
+  });
   return { ok: true, pid: child.pid };
 }
 
@@ -212,7 +242,7 @@ function pidsListeningOnPort(port) {
   } catch { return []; }
 }
 
-async function stopEntry(entry) {
+async function stopUnlocked(entry) {
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
   const live = procs.get(entry.id);
   const st = loadState();
@@ -220,28 +250,30 @@ async function stopEntry(entry) {
   if (entry.kind === 'usb-tunnel') {
     const py = entry.python || 'python';
     const script = entry.script || '';
-    if (script && fs.existsSync(script)) {
-      const r = spawnSync(py, [script, 'stop'], { encoding: 'utf8', timeout: 60000 });
-      pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
+    if (!script || !fs.existsSync(script)) {
+      return { ok: false, error: '桥接脚本未配置或不存在，无法确认停止' };
     }
+    const r = spawnSync(py, [script, 'stop'], { encoding: 'utf8', timeout: 60000 });
+    pushLog(entry.id, (r.stdout || '') + (r.stderr || ''));
+    const result = bridgeResult(r, '停止');
+    if (!result.ok) { pushLog(entry.id, result.error); return result; }
     setState(entry.id, null);
     procs.delete(entry.id);
     return { ok: true, killed: 0 };
   }
   // ① 先杀记忆中的树（内存句柄 / 落盘 PID）
   const killed = [];
-  if (pid && await killTree(pid)) killed.push(pid);
+  if (pid) {
+    if (await killTree(pid)) killed.push(pid);
+    else if (pidAlive(pid)) return { ok: false, error: '停止失败：pid ' + pid + ' 仍在运行', killed };
+  }
   // ② 兜底：外壳已死/树断链时，按端口反查真实监听进程补杀
   if (entry.port) {
     for (const p of pidsListeningOnPort(entry.port)) {
       if (killed.includes(p)) continue;
-      await killTree(p);
-      killed.push(p);
+      if (await killTree(p)) killed.push(p);
     }
   }
-  procs.delete(entry.id);
-  setState(entry.id, null);
-  pushLog(entry.id, '[已停止] 杀掉 pid=' + (killed.join(',') || '-'));
   // ③ 验证：端口条目必须确认端口真释放，否则如实报失败（不让 UI 假成功）
   if (entry.port) {
     await new Promise((r) => setTimeout(r, 300));
@@ -251,13 +283,22 @@ async function stopEntry(entry) {
       return { ok: false, error: '端口 ' + entry.port + ' 仍被 pid ' + left.join(',') + ' 占用（可能权限不足或已被其他程序接管）' };
     }
   }
+  if (pid && pidAlive(pid)) return { ok: false, error: '停止失败：pid ' + pid + ' 仍在运行', killed };
+  procs.delete(entry.id);
+  setState(entry.id, null);
+  pushLog(entry.id, '[已停止] 杀掉 pid=' + (killed.join(',') || '-'));
   return { ok: true, killed };
 }
 
-async function restartEntry(entry) {
-  await stopEntry(entry);
-  await new Promise((r) => setTimeout(r, 400));
-  return startEntry(entry);
+function startEntry(entry) { return operate(entry, '启动', startUnlocked); }
+function stopEntry(entry) { return operate(entry, '停止', stopUnlocked); }
+function restartEntry(entry) {
+  return operate(entry, '重启', async (target) => {
+    const stopped = await stopUnlocked(target);
+    if (!stopped || stopped.ok !== true) return stopped || { ok: false, error: '无法确认停止，已取消重启' };
+    await new Promise((r) => setTimeout(r, 400));
+    return startUnlocked(target);
+  });
 }
 
 async function aliveEntry(entry) {
@@ -315,7 +356,7 @@ function importFrom(srcPath) {
 async function shutdown() {
   const keep = loadConfig().keepOnExit === true;
   for (const [id, info] of procs) {
-    setState(id, { pid: info.pid, startedAt: info.startedAt, command: (info.command || '') });
+    setState(id, { pid: info.pid, startedAt: info.startedAt, command: info.command || '', cwd: info.cwd || '' });
     if (!keep) await killTree(info.pid);
   }
   procs.clear();
