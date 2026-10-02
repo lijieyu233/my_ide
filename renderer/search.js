@@ -83,7 +83,7 @@ const Search = (() => {
     const token=++s.nav,request=s.request,valid=()=>usable(view)&&s.nav===token&&s.request===request;
     view.navigating=token;
     m.navigation();
-    try{const result=await Viewer.navigateToHit(hit,{isCurrent:valid,focusTarget:view.kind==='dock'?view.input:null,allowSource});if(!valid()||result?.stale)return;
+    try{const result=await Viewer.navigateTo({hit},{isCurrent:valid,focusTarget:view.kind==='dock'?view.input:null,allowSource});if(!valid()||result?.stale)return;
       if(!result?.ok)throw Object.assign(Error(result?.error||'目标位置没有成功打开'),{code:result?.errorCode});
       if(view.kind==='modal'){close(view,false);if(!Modal.stack.length&&DocumentPaths.key(App.root)===DocumentPaths.key(s.root))result.focus?.();}
       else{view.input.focus({preventScroll:true});m.navigation('');}
@@ -107,7 +107,7 @@ const Search = (() => {
       else if(event.key==='Tab'&&kind==='modal'){event.preventDefault();event.stopImmediatePropagation();const controls=[box.querySelector('#'+prefix+'-move'),box.querySelector('#'+prefix+'-close'),view.input,view.caseSensitive,view.stop,view.retry,view.source].filter(el=>!el.disabled&&!el.hidden);const i=controls.indexOf(document.activeElement);controls[(i+(event.shiftKey?-1:1)+controls.length)%controls.length].focus();}
       else if(['ArrowDown','ArrowUp','Enter'].includes(event.key)&&event.target===view.input){event.preventDefault();event.stopImmediatePropagation();if(event.key==='Enter')pick(view);else{const hits=visibleHits(view);if(!hits.length)return;const i=hits.findIndex(hit=>hit.hitId===m.state.selectedHitId),next=Math.max(0,Math.min(hits.length-1,i+(event.key==='ArrowDown'?1:-1)));select(view,hits[next].hitId,true);}}
       else if(event.target.dataset.group&&['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();const collapsed=m.state.collapsed.has(event.target.dataset.group);if(event.key==='ArrowLeft'&&!collapsed||event.key==='ArrowRight'&&collapsed)m.collapse(event.target.dataset.group);}
-      else if((event.ctrlKey||event.metaKey||event.altKey)&&!(kind==='dock'&&Shortcuts.bindings().find(binding=>binding.id==='search')?.effectiveCombos.includes(Shortcuts.comboOf(event))))event.stopImmediatePropagation();};
+      else if((event.ctrlKey||event.metaKey||event.altKey)&&!(kind==='dock'&&Shortcuts.bindings().some(binding=>['search','navigation-back','navigation-forward'].includes(binding.id)&&binding.effectiveCombos.includes(Shortcuts.comboOf(event)))))event.stopImmediatePropagation();};
     document.addEventListener('keydown',view.onKey,true);
     if(kind==='dock'){view.onFocus=event=>{if(view.navigating&&!box.contains(event.target)){m.state.nav++;view.navigating=null;}};document.addEventListener('focusin',view.onFocus,true);}
     view.unsubscribe=m.subscribe(()=>render(view));return view;

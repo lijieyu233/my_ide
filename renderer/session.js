@@ -60,10 +60,10 @@ const Session = (() => {
         }
         if (s.active) {
           const i = Viewer.openTabs.findIndex((t) => t.path === s.active);
-          if (i >= 0) Viewer.activate(i);
-          else await Viewer.openFile(s.active);
+          if (i >= 0) Viewer.activate(i,{history:false});
+          else await Viewer.openFile(s.active,{history:false});
         } else if (Viewer.openTabs.length) {
-          Viewer.activate(0); // 无 active 记录：切入第一个（触发懒加载）
+          Viewer.activate(0,{history:false}); // 无 active 记录：切入第一个（触发懒加载）
         }
         // 活动标签光标行恢复（编辑器已渲染，直接跳）
         const at = Viewer.activeTab;

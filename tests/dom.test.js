@@ -529,6 +529,7 @@ async function loadApp(dom) {
   evalFile('pet.js');
   evalFile('document-paths.js');
   evalFile('tree.js');
+  evalFile('navigation-history.js');
   evalFile('viewer.js');
   evalFile('outline.js');
   evalFile('git-panel.js');
@@ -8516,6 +8517,64 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('常驻搜索B2：上层弹窗隔离命中动作，Esc仅收起当前搜索并回编辑器',async(d,viewer)=>{
     const w=d.window;FAKE_FS[P+'/modal-dock.txt']={type:'file',content:'needle'};viewer.cm.focus();w.Search.showDock();const input=await dockQuery(w,'needle'),before=viewer.activeTab.path,upper=w.document.createElement('div');upper.tabIndex=-1;w.Modal.show(upper);upper.focus();w.document.querySelector('#search-list .qo-item').click();await tick();assert.equal(viewer.activeTab.path,before);qoKey(w,upper,'Escape');assert.equal(w.Modal.stack.length,0);input.focus();qoKey(w,input,'Escape');assert(w.document.querySelector('#panel-search').classList.contains('hidden'));assert(viewer.cm.view.dom.contains(w.document.activeElement));w.Search.showDock();assert.equal(w.document.querySelector('#search-input').value,'needle');
+  });
+  const travel=async(w,direction)=>{await tick();return w.NavigationHistory.travel(direction,w.document.activeElement);};
+  const navFiles=()=>{for(const [name,text] of [['b.txt','beta second\n'],['c.txt','gamma third\n'],['d.txt','delta fourth\n']])FAKE_FS[P+'/'+name]={type:'file',content:text};};
+  await saveCase('位置历史C：A→B→C返回/前进恢复选区，新D清空前进，复用文档身份',async(d,viewer)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab,expected=a.content.slice(6,11);viewer.cm.view.dispatch({selection:{anchor:6,head:11}});await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;viewer.cm.view.dispatch({selection:{anchor:3,head:8}});await viewer.openFile(P+'/c.txt');const c=viewer.activeTab;
+    assert.equal(w.NavigationHistory.state().back,2);assert((await travel(w,'back')).ok);assert(viewer.activeTab===b);assert.equal(selectedText(viewer),'a sec');assert((await travel(w,'forward')).ok);assert(viewer.activeTab===c);
+    assert((await travel(w,'back')).ok);assert((await travel(w,'back')).ok);assert(viewer.activeTab===a);assert.equal(selectedText(viewer),expected);assert.equal(viewer.openTabs.length,3);
+    await viewer.openFile(P+'/d.txt');assert.equal(w.NavigationHistory.state().forward,0);assert.equal(viewer.openTabs.length,4);
+  });
+  await saveCase('位置历史C：重复打开同一位置合并，输入/滚动不逐帧入栈',async(d,viewer)=>{
+    const w=d.window;await viewer.openFile(P+'/notes.txt');await viewer.openFile(P+'/notes.txt');assert.equal(w.NavigationHistory.state().back,0);viewer.cm.view.dispatch({selection:{anchor:2}});viewer.cm.view.scrollDOM.scrollTop=120;viewer.cm.view.dispatch({changes:{from:0,insert:'new '}});assert.equal(w.NavigationHistory.state().back,0);assert.equal(w.NavigationHistory.state().forward,0);
+  });
+  await saveCase('位置历史C：已关闭干净文档可重开，删除失败保留当前位置/栈并能重试',async(d,viewer)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab,old={...FAKE_FS[a.path]};viewer.cm.view.dispatch({selection:{anchor:6,head:11}});await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;await viewer.closeTab(viewer.openTabs.indexOf(a));delete FAKE_FS[a.path];const before=w.NavigationHistory.state();assert(!(await travel(w,'back')).ok);assert(viewer.activeTab===b);assert.equal(w.NavigationHistory.state().back,before.back);assert.equal(w.NavigationHistory.state().forward,0);assert(!w.document.querySelector('#navigation-status').hidden);
+    FAKE_FS[a.path]=old;assert((await travel(w,'back')).ok);assert.equal(viewer.activeTab.path,a.path);assert.notEqual(viewer.activeTab.id,a.id);assert.equal(selectedText(viewer),old.content.slice(6,11));assert(w.document.querySelector('#navigation-status').hidden);
+  });
+  await saveCase('位置历史C：闭页读取失败保持当前CM与历史，恢复权限后实际重读',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab;await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;await viewer.closeTab(viewer.openTabs.indexOf(a));const read=bridge.readFile,cm=viewer.cm;bridge.readFile=async p=>p===a.path?{error:'无权限'}:read(p);assert(!(await travel(w,'back')).ok);assert(viewer.activeTab===b&&viewer.cm===cm);assert.equal(w.NavigationHistory.state().back,1);bridge.readFile=read;assert((await travel(w,'back')).ok);assert.equal(viewer.activeTab.path,a.path);
+  });
+  await saveCase('位置历史C：外部版本变化不猜位置、不覆写正文、不移动历史',async(d,viewer)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab;await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;FAKE_FS[a.path].content='external different';const before=viewer.cm.getValue();assert(!(await travel(w,'back')).ok);assert(viewer.activeTab===b);assert.equal(viewer.cm.getValue(),before);assert.equal(FAKE_FS[a.path].content,'external different');assert.equal(w.NavigationHistory.state().back,1);assert(w.NavigationHistory.state().error.includes('已变化'));
+  });
+  await saveCase('位置历史C：编辑视图缺失在切页前拒绝，失败按钮归还焦点',async(d,viewer)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab;await viewer.openFile(P+'/b.txt');const b=viewer.activeTab,cm=viewer.cm,api=w.CodeEditor;w.CodeEditor=null;
+    const button=w.document.querySelector('#navigation-back');button.focus();const pending=w.NavigationHistory.travel('back',button);button.blur();assert(!(await pending).ok);assert(viewer.activeTab===b&&viewer.cm===cm);assert.equal(w.NavigationHistory.state().back,1);assert(w.document.activeElement===button);w.CodeEditor=api;
+  });
+  await saveCase('位置历史C：恢复布局期间新输入/滚动不被迟到帧或focus覆盖',async(d,viewer)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab;viewer.cm.view.dispatch({selection:{anchor:2}});await viewer.openFile(P+'/b.txt');await tick();viewer.cm.focus();const frame=w.requestAnimationFrame;let edited=false;const input=w.document.createElement('input');w.document.body.appendChild(input);
+    w.requestAnimationFrame=callback=>frame(time=>{if(!edited&&w.NavigationHistory.state().busy&&viewer.activeTab===a){edited=true;viewer.cm.view.dispatch({changes:{from:0,insert:'new '}});viewer.cm.view.scrollDOM.scrollTop=777;input.focus();}callback(time);});
+    assert((await w.NavigationHistory.travel('back',w.document.activeElement)).ok);assert(edited&&a.dirty&&a.content.startsWith('new '));assert.equal(viewer.cm.view.scrollDOM.scrollTop,777);assert(w.document.activeElement===input);w.requestAnimationFrame=frame;
+  });
+  await saveCase('位置历史C：CM本地编辑映射历史选区，dirty文档复用且不触发写入',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab,original=a.content,expected=original.slice(6,11);viewer.cm.view.dispatch({selection:{anchor:6,head:11}});await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;viewer.activate(viewer.openTabs.indexOf(a));let writes=0;const write=bridge.writeFile;bridge.writeFile=(...args)=>{writes++;return write(...args);};const size=w.NavigationHistory.state().back;viewer.cm.view.dispatch({changes:{from:0,insert:'新\n'}});assert.equal(w.NavigationHistory.state().back,size);assert(a.dirty);assert((await travel(w,'back')).ok);assert(viewer.activeTab===b);assert((await travel(w,'back')).ok);assert(viewer.activeTab===a);assert.equal(selectedText(viewer),expected);assert.equal(viewer.cm.view.state.selection.main.from,8);assert.equal(writes,0);assert.equal(FAKE_FS[a.path].content,original);
+  });
+  await saveCase('位置历史C：分屏CRLF/emoji反向选区、模式和滚动恢复，正文不变',async(d,viewer)=>{
+    const w=d.window;navFiles();const p=P+'/nav-split.md',raw='# top\r\n\t😀alpha alpha\r\n';FAKE_FS[p]={type:'file',content:raw};await viewer.openFile(p);const a=viewer.activeTab;a.mode='split';viewer.renderActive();const ta=a.ta,from=ta.value.indexOf('alpha',ta.value.indexOf('alpha')+1);ta.setSelectionRange(from,from+5,'backward');ta.scrollTop=120;await viewer.openFile(P+'/b.txt');assert((await travel(w,'back')).ok);assert(viewer.activeTab===a);assert.equal(a.mode,'split');assert.equal(a.ta.selectionDirection,'backward');assert.equal(a.ta.value.slice(a.ta.selectionStart,a.ta.selectionEnd),'alpha');assert.equal(a.content,raw);assert.equal(a.dirty,false);
+  });
+  await saveCase('位置历史C：重命名迁移打开/已关闭位置，返回新路径不重建旧路径',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();const a=viewer.activeTab,old=a.path,next=P+'/renamed-notes.txt',expected=a.content.slice(6,11);viewer.cm.view.dispatch({selection:{anchor:6,head:11}});await viewer.openFile(P+'/b.txt');await viewer.closeTab(viewer.openTabs.indexOf(a));FAKE_FS[next]=FAKE_FS[old];delete FAKE_FS[old];const version=(await bridge.fileVersion(next)).version;viewer.renamed(old,next,[{oldPath:old,version}]);assert((await travel(w,'back')).ok);assert.equal(viewer.activeTab.path,next);assert.equal(selectedText(viewer),expected);assert(!viewer.openTabs.some(tab=>tab.path===old));
+  });
+  await saveCase('位置历史C：保存失败阻止切项目时当前位置/历史不变，成功离开后清空',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;viewer.cm.setValue('未保存输入');const write=bridge.writeFile;bridge.writeFile=async()=>({ok:false,error:'拒绝保存'});const before=w.NavigationHistory.state();assert.equal(await w.App.openProject('C:/proj2'),false);assert.equal(w.App.root,P);assert(viewer.activeTab===b&&b.dirty);assert.equal(w.NavigationHistory.state().back,before.back);assert.equal(w.NavigationHistory.state().forward,before.forward);bridge.writeFile=write;assert.equal(await w.App.openProject('C:/proj2'),true);assert.equal(w.NavigationHistory.state().back,0);assert.equal(w.NavigationHistory.state().forward,0);assert(w.document.querySelector('#navigation-back').disabled);
+  });
+  await saveCase('位置历史C：迟到返回不覆盖新导航或新输入，等待期间不移动指针',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();await viewer.openFile(P+'/b.txt');const b=viewer.activeTab;await viewer.openFile(P+'/c.txt');const version=bridge.fileVersion,gate=deferred();bridge.fileVersion=()=>gate.promise;const pending=travel(w,'back');await tick();assert(w.NavigationHistory.state().busy);await viewer.openFile(P+'/d.txt');gate.resolve(await version(b.path));await pending;assert.equal(viewer.activeTab.path,P+'/d.txt');assert.equal(w.NavigationHistory.state().forward,0);
+    bridge.fileVersion=version;const pause=deferred();bridge.fileVersion=()=>pause.promise;const again=travel(w,'back');await tick();const before=w.NavigationHistory.state().back;viewer.cm.setValue('后来输入');pause.resolve(await version(P+'/c.txt'));assert(!(await again).ok);assert.equal(viewer.activeTab.path,P+'/d.txt');assert.equal(viewer.cm.getValue(),'后来输入');assert.equal(w.NavigationHistory.state().back,before);
+  });
+  await saveCase('位置历史C：返回过程外部控件获得焦点时不抢输入，上层弹窗不能执行',async(d,viewer,bridge)=>{
+    const w=d.window;navFiles();await viewer.openFile(P+'/b.txt');const b=viewer.activeTab,version=bridge.fileVersion,gate=deferred();bridge.fileVersion=()=>gate.promise;const pending=travel(w,'back');await tick();const input=w.document.createElement('input');w.document.body.appendChild(input);input.focus();gate.resolve(await version(P+'/notes.txt'));assert(!(await pending).ok);assert(viewer.activeTab===b);assert(w.document.activeElement===input);bridge.fileVersion=version;const upper=w.document.createElement('div');w.Modal.show(upper);const before=w.NavigationHistory.state().back;assert(!(await w.Shortcuts.execute('navigation-back')).ok);assert.equal(w.NavigationHistory.state().back,before);w.Modal.hide();
+  });
+  await saveCase('位置历史C：真实注册键优先CM，改键/IME不执行旧绑定，侧栏结果保留',async(d,viewer)=>{
+    const w=d.window;navFiles();await viewer.openFile(P+'/b.txt');await tick();viewer.cm.focus();w.Shortcuts.setBinding('navigation-back','ctrl+alt+b');qoKey(w,viewer.cm.view.contentDOM,'ArrowLeft',{altKey:true});await tick();assert.equal(viewer.activeTab.path,P+'/b.txt');const editor=viewer.cm.view.contentDOM;editor.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));qoKey(w,editor,'b',{ctrlKey:true,altKey:true});await tick();assert.equal(viewer.activeTab.path,P+'/b.txt');editor.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));qoKey(w,editor,'b',{ctrlKey:true,altKey:true});await new Promise(resolve=>setTimeout(resolve,70));assert.equal(viewer.activeTab.path,P+'/notes.txt');assert(w.document.querySelector('#navigation-back').title.includes('ctrl+alt+b'));
+  });
+  await saveCase('位置历史C：章节统一定位能返回原CM位置，过期大纲不导航到新文档',async(d,viewer)=>{
+    const w=d.window;navFiles();FAKE_FS[P+'/nav-heading.md']={type:'file',content:'# first\ntext\n## second\nend\n'};await viewer.openFile(P+'/nav-heading.md');const a=viewer.activeTab;viewer.cm.view.dispatch({selection:{anchor:10}});await w.Outline.refresh(a);w.document.querySelectorAll('.outline-item')[1].click();await tick();assert.equal(viewer.cm.view.state.selection.main.head,13);assert((await travel(w,'back')).ok);assert.equal(viewer.cm.view.state.selection.main.head,10);const row=w.document.querySelectorAll('.outline-item')[1];await viewer.openFile(P+'/b.txt');const before=viewer.activeTab.path;row.click();await tick();assert.equal(viewer.activeTab.path,before);
+  });
+  await saveCase('位置历史C：120次实际行导航只保留100处，位置元数据无正文缓存',async(d,viewer)=>{
+    const w=d.window,p=P+'/nav-bounded.txt';FAKE_FS[p]={type:'file',content:Array.from({length:140},(_,i)=>'row '+i).join('\n')};await viewer.openFile(p);w.NavigationHistory.reset(P);const tab=viewer.activeTab;for(let i=2;i<=121;i++)await viewer.navigateTo({path:p,line:i,documentId:tab.id,revision:tab.editRevision});assert.equal(w.NavigationHistory.state().back,100);assert.equal(w.NavigationHistory.state().forward,0);assert(!JSON.stringify(w.NavigationHistory.state()).includes('row 100'));
   });
   await saveCase('常驻搜索B2：组合输入期间不搜索/导航，面板Tab可离开、命令入口沿共享注册',async(d,_viewer,bridge)=>{
     const w=d.window,driver=srDriver(bridge);await w.Shortcuts.execute('search-panel');const input=w.document.querySelector('#search-input');input.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));input.value='中文';input.dispatchEvent(new w.Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,0);qoKey(w,input,'Escape',{isComposing:true});assert(!w.document.querySelector('#panel-search').classList.contains('hidden'));input.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,1);const event=new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});input.dispatchEvent(event);assert(!event.defaultPrevented);driver.finish(driver.jobs[0]);

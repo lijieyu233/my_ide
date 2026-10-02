@@ -1896,7 +1896,7 @@ window.MdEditor = (() => {
       Language.codeFolding(), // foldState（折叠命令依赖）
       Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
       EditorView.updateListener.of((u) => {
-        if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state));
+        if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state),u.changes);
         if ((u.docChanged || u.selectionSet) && opts.onCursor) {
           const head = u.state.selection.main.head;
           const before = u.state.doc.sliceString(0, head);

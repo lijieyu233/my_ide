@@ -277,7 +277,7 @@ window.CodeEditor = (() => {
             if (curGhost && curGhost.view === view) ghostClear(view);
           }
           if (u.docChanged && ghostEnabled()) ghostSchedule(view);
-          if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state));
+          if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state),u.changes);
           if ((u.docChanged || u.selectionSet) && opts.onCursor) {
             const head = u.state.selection.main.head;
             const before = u.state.doc.sliceString(0, head);

@@ -230,7 +230,32 @@ const Viewer = (() => {
     try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
   }
 
-  async function openFile(path, options = {}) {
+  function openFile(path, options = {}) {return navigateTo({path},options);}
+  async function navigateTo(location,options={}) {
+    if(location.hit)return navigateToHit(location.hit,options);
+    if(location.saved)return restoreLocation(location.saved,options.isCurrent,options.origin,options.source);
+    const path=location.path;
+    if(options.history===false)return openFileRaw(path,options);
+    const ticket=NavigationHistory.begin();
+    if(location.line!=null&&(currentTab()?.id!==location.documentId||currentTab()?.editRevision!==location.revision))return {ok:false,error:'章节所属文档已变化，请重新打开大纲'};
+    await openFileRaw(path,options);
+    const tab=currentTab();if(tab?.mode==null&&tab.loadPromise)await tab.loadPromise;
+    if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(path))return {ok:false,error:'目标文档已变化'};
+    if(location.line!=null){
+      const fail=error=>{NavigationHistory.failed(ticket,error);MI.toast(error,'err');return {ok:false,error};};
+      if(tab.id!==location.documentId||tab.editRevision!==location.revision)return fail('章节所属文档已变化，请重新打开大纲');
+      if(cmApi?.__tab===tab&&cmApi.view?.dom.isConnected){
+        if(!Number.isSafeInteger(location.line)||location.line<1||location.line>cmApi.view.state.doc.lines)return fail('原章节位置已过期');
+        const from=cmApi.view.state.doc.line(location.line).from;cmApi.view.dispatch({selection:{anchor:from},scrollIntoView:true});cmApi.focus();
+      }else{
+        const md=tab.mode==='split'?viewer.querySelector('.md-split-preview .md-view'):viewer.querySelector('.md-view'),target=md?.querySelectorAll('h1,h2,h3,h4,h5,h6')[location.headingIndex];
+        if(!target)return fail('当前视图无法定位原章节');
+        target.scrollIntoView?.({block:'center'});target.style.outline='2px solid var(--accent)';setTimeout(()=>{target.style.outline='';},1500);
+      }
+    }
+    NavigationHistory.finish(ticket,captureLocation());return tab?.error?{ok:false,error:tab.error}:{ok:true};
+  }
+  async function openFileRaw(path, options = {}) {
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
     // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
@@ -243,7 +268,7 @@ const Viewer = (() => {
     const i = tabs.findIndex((t) => DocumentPaths.key(t.path) === DocumentPaths.key(path));
     if (i >= 0) {
       if(options.focusRequest)navigationFocus.set(tabs[i].id,options.focusRequest);
-      activate(i);
+      activate(i,{history:false});
       // 已打开的标签也要同步树高亮（否则高亮不切换）
       if (window.Tree) Tree.reveal(path);
       return;
@@ -252,7 +277,7 @@ const Viewer = (() => {
     if(options.focusRequest)navigationFocus.set(tab.id,options.focusRequest);
     tabs.push(tab);
     renderTabs();
-    activate(tabs.length - 1);
+    activate(tabs.length - 1,{history:false});
     // 树定位（打开文件后展开目录链并高亮）
     if (window.Tree) Tree.reveal(path);
     tab.loadPromise = MI.perf('viewer.openFile ' + name, () => loadTab(tab), 500);
@@ -307,7 +332,13 @@ const Viewer = (() => {
     if(tab===currentTab())renderView();
   }
 
-  function activate(i) {
+  function activate(i,options={}) {
+    if(options.history===false)return activateRaw(i);
+    const ticket=NavigationHistory.begin(),target=tabs[i];activateRaw(i);
+    if(target?.mode==null&&target.loadPromise)return target.loadPromise.then(()=>{if(currentTab()===target)NavigationHistory.finish(ticket,captureLocation());});
+    NavigationHistory.finish(ticket,captureLocation());
+  }
+  function activateRaw(i) {
     const target = tabs[i];
     if (!target) return;
     activeTabId = target.id;
@@ -350,6 +381,7 @@ const Viewer = (() => {
 
   // 搜索定位不猜预览DOM列，也不借旧CM操作新标签；调用方取消/换项目会使整个导航失效。
   async function navigateToHit(hit, options = {}) {
+    const history=NavigationHistory.begin();
     const root=window.App?.root,focusRequest={isCurrent:options.isCurrent||(()=>true),focusTarget:options.focusTarget};
     const valid=()=>focusRequest.isCurrent()&&DocumentPaths.key(root)===DocumentPaths.key(window.App?.root);
     const reject=(error,errorCode)=>({ok:false,error,errorCode});
@@ -360,7 +392,7 @@ const Viewer = (() => {
       if(version.error||!SearchModel.sameVersion(version.version,hit.version))return reject(version.error||'文件已改变，请重新搜索','VERSION_CONFLICT');
       const prior=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(hit.path));
       if(prior?.dirty)return reject('目标文件有未保存的输入，磁盘搜索位置已过期','DIRTY_DOCUMENT');
-      await openFile(hit.path,{focusRequest});if(!valid())return {stale:true};
+      await openFile(hit.path,{focusRequest,history:false});if(!valid())return {stale:true};
       const tab=currentTab();if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(hit.path))return reject('目标文件没有成功打开','NO_DOCUMENT');
       if(tab.loadPromise&&tab.mode==null)await tab.loadPromise;if(!valid()||currentTab()!==tab)return {stale:true};
       if(tab.error||tab.mode==null||tab.content==null)return reject(tab.error||'目标文件没有成功打开','READ_FAILED');
@@ -375,6 +407,7 @@ const Viewer = (() => {
         const line=cm.view.state.doc.line(hit.line),from=line.from+hit.startColumn-1,to=line.from+hit.endColumn-1;
         if(to>line.to||cm.view.state.doc.sliceString(from,to)!==hit.match)return reject('文本位置已变化，请重新搜索','POSITION_CHANGED');
         cm.view.dispatch({selection:{anchor:from,head:to},scrollIntoView:true});
+        NavigationHistory.finish(history,captureLocation());
         return {ok:true,focus:()=>{if(currentTab()===tab&&cmApi===cm&&cm.view.dom.isConnected)cm.focus();}};
       }
       const ta=tab.ta;
@@ -383,6 +416,7 @@ const Viewer = (() => {
         if(line==null||hit.endColumn-1>line.length||ta.value.slice(from,to)!==hit.match)return reject('文本位置已变化，请重新搜索','POSITION_CHANGED');
         ta.setSelectionRange(from,to);const height=parseFloat(getComputedStyle(ta).lineHeight)||parseFloat(getComputedStyle(ta).fontSize)*1.5;
         ta.scrollTop=Math.max(0,(hit.line-1)*height-ta.clientHeight/2);
+        NavigationHistory.finish(history,captureLocation());
         return {ok:true,focus:()=>{if(currentTab()===tab&&tab.ta===ta&&ta.isConnected)ta.focus();}};
       }
       return reject('当前视图不支持精确文本定位，可选择以源码定位','UNSUPPORTED_VIEW');
@@ -390,6 +424,82 @@ const Viewer = (() => {
     finally{for(const [id,request] of navigationFocus)if(request===focusRequest)navigationFocus.delete(id);}
   }
 
+  function locationScrollers(tab=currentTab()) {
+    if(!tab||tab!==currentTab())return {};
+    const primary=cmApi?.__tab===tab?cmApi.view.scrollDOM:tab.ta?.isConnected?tab.ta:viewer.querySelector('.md-view')||viewer.firstElementChild;
+    const preview=tab.mode==='split'?viewer.querySelector('.md-split-preview'):null;
+    return {primary,preview};
+  }
+  function captureLocation() {
+    const tab=currentTab(),root=window.App?.root;
+    if(!tab||!root||!DocumentPaths.contains(root,tab.path)||tab.mode==null||tab.mode==='error'||tab.error)return null;
+    let selection=null;
+    if(cmApi?.__tab===tab&&cmApi.view?.dom.isConnected){
+      const current=cmApi.view.state.selection;if(current.ranges.length>64)return null;
+      selection={ranges:current.ranges.map(range=>({anchor:range.anchor,head:range.head})),mainIndex:current.mainIndex};
+    }else if(tab.ta?.isConnected)selection={ranges:[{anchor:tab.ta.selectionDirection==='backward'?tab.ta.selectionEnd:tab.ta.selectionStart,head:tab.ta.selectionDirection==='backward'?tab.ta.selectionStart:tab.ta.selectionEnd}],mainIndex:0};
+    const {primary,preview}=locationScrollers(tab);let anchor=null;
+    if(cmApi?.__tab===tab&&cmApi.view.dom.isConnected){try{const block=cmApi.view.lineBlockAtHeight(primary.scrollTop);anchor={offset:block.from,delta:primary.scrollTop-block.top};}catch{}}
+    return {root,documentId:tab.id,path:tab.path,pathGeneration:tab.pathGeneration||0,revision:tab.editRevision,version:tab.diskVersion||null,dirty:tab.dirty,mode:tab.mode,selection,
+      scroll:{top:primary?.scrollTop||0,left:primary?.scrollLeft||0,anchor,previewTop:preview?.scrollTop||0,previewLeft:preview?.scrollLeft||0}};
+  }
+  async function restoreLocation(location,isCurrent,origin,source) {
+    const fail=error=>({ok:false,error}),same=SearchModel.sameVersion;
+    if(location.invalid)return fail(location.invalid);
+    if(!DocumentPaths.contains(App.root,location.path)||DocumentPaths.key(App.root)!==DocumentPaths.key(location.root))return fail('原位置不属于当前项目');
+    if(pathBusy(location.path))return fail('路径迁移正在进行，请完成后再返回或前进');
+    const sourceValid=()=>{const current=captureLocation();return isCurrent()&&!!current&&!!source&&current.documentId===source.documentId&&current.revision===source.revision
+      &&current.pathGeneration===source.pathGeneration&&current.mode===source.mode&&JSON.stringify(current.selection)===JSON.stringify(source.selection)
+      &&(document.activeElement===origin||document.activeElement===document.body);};
+    const version=await window.myIDE.fs.fileVersion(location.path);
+    if(!sourceValid())return fail('当前位置已变化，导航未执行');
+    if(version.error||version.absent||version.version?.absent)return fail(version.error||'原文件已删除，请重新选择文件');
+    if(location.version&&!same(version.version,location.version))return fail('原文件已变化，位置已过期；请重新搜索或选择位置');
+    let tab=tabs.find(tab=>tab.id===location.documentId);
+    if(tab&&DocumentPaths.key(tab.path)!==DocumentPaths.key(location.path))return fail('原文档路径已变化，请重新选择位置');
+    tab ||= tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(location.path));
+    if(location.dirty&&(!tab||tab.id!==location.documentId))return fail('原位置含未保存的输入，原标签已经关闭');
+    if(tab&&tab.id===location.documentId&&tab.editRevision!==location.revision)return fail('原文档内容已变化，位置已过期');
+    if(!tab){addLazyTab(location.path);tab=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(location.path));}
+    if(!tab)return fail('原文件没有成功打开');
+    if(tab.mode==='error'&&!tab.dirty&&!tab.binary&&!tab.tooLarge){tab.error=null;tab.mode=null;tab.loadPromise=null;}
+    if(tab.mode==null){tab.lazy=false;tab.loadPromise ||= loadTab(tab);await tab.loadPromise;}
+    if(!sourceValid())return fail('当前位置已变化，导航未执行');
+    if(tab.error||tab.mode==null||tab.mode==='error')return fail(tab.error||'原文件没有成功打开');
+    if(location.version&&!same(tab.diskVersion,location.version)||tab.id===location.documentId&&tab.editRevision!==location.revision)
+      return fail('原文档与位置记录不一致，请重新选择位置');
+    if(tab.dirty&&tab.id!==location.documentId)return fail('当前同名标签有未保存的输入，原位置已过期');
+    const text=String(tab.content||'').replace(/\r\n?|\n/g,'\n'),ranges=location.selection?.ranges;
+    if(ranges?.some(range=>!Number.isSafeInteger(range.anchor)||!Number.isSafeInteger(range.head)||range.anchor<0||range.head<0||range.anchor>text.length||range.head>text.length))return fail('原文本位置已过期');
+    const markdown=/\.(md|markdown)$/i.test(tab.name),needsCm=['live','source'].includes(location.mode)||['edit','split'].includes(location.mode)&&!markdown;
+    if(ranges&&(!['live','source','edit','split'].includes(location.mode)||needsCm&&(!window.CM6||!(markdown?window.MdEditor:window.CodeEditor))))return fail('当前视图无法恢复文本选区');
+    const focusRequest={isCurrent,focusTarget:origin?.closest?.('#panel-search')?origin:null};navigationFocus.set(tab.id,focusRequest);
+    try{
+      if(['live','source','split','edit','preview'].includes(location.mode))tab.mode=location.mode;
+      activate(tabs.indexOf(tab),{history:false});
+      const cm=cmApi?.__tab===tab?cmApi:null,ta=tab.ta;
+      if(ranges){
+        if(cm?.view?.dom.isConnected)cm.view.dispatch({selection:CM6.State.EditorSelection.create(ranges.map(range=>CM6.State.EditorSelection.range(range.anchor,range.head)),location.selection.mainIndex)});
+        else if(ta?.isConnected){const range=ranges[0];ta.setSelectionRange(Math.min(range.anchor,range.head),Math.max(range.anchor,range.head),range.anchor>range.head?'backward':'forward');}
+        else return fail('当前视图无法恢复文本选区');
+      }
+      const restoredRevision=tab.editRevision;
+      const applyScroll=()=>{if(!isCurrent()||currentTab()!==tab||tab.editRevision!==restoredRevision)return;const {primary,preview}=locationScrollers(tab);
+        let top=location.scroll.top;if(location.scroll.anchor&&cm?.view.dom.isConnected){try{top=cm.view.lineBlockAt(location.scroll.anchor.offset).top+location.scroll.anchor.delta;}catch{}}
+        if(primary){primary.scrollTop=top;primary.scrollLeft=location.scroll.left;}if(preview){preview.scrollTop=location.scroll.previewTop;preview.scrollLeft=location.scroll.previewLeft;}tab.scrollTop=top;};
+      applyScroll();
+      // CM挂载后的测量会重新约束滚动范围；等实际布局再恢复，而不是只写一个尚无高度的DOM。
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{applyScroll();resolve();})));
+      if(!isCurrent()||currentTab()!==tab)return {stale:true};
+      return {ok:true,focus:()=>{if(!isCurrent()||currentTab()!==tab||tab.editRevision!==restoredRevision||document.activeElement!==origin&&document.activeElement!==document.body)return;if(focusRequest.focusTarget?.isConnected)focusRequest.focusTarget.focus({preventScroll:true});else if(cm===cmApi&&cm?.view.dom.isConnected)cm.focus();else if(ta?.isConnected)ta.focus({preventScroll:true});else{viewer.tabIndex=-1;viewer.focus({preventScroll:true});}}};
+    }finally{if(navigationFocus.get(tab.id)===focusRequest)navigationFocus.delete(tab.id);}
+  }
+  function mapTextChange(before,after) {
+    before=String(before||'').replace(/\r\n?|\n/g,'\n');after=String(after||'').replace(/\r\n?|\n/g,'\n');
+    let from=0,oldTo=before.length,newTo=after.length;while(from<oldTo&&from<newTo&&before[from]===after[from])from++;
+    while(oldTo>from&&newTo>from&&before[oldTo-1]===after[newTo-1]){oldTo--;newTo--;}
+    return (position,assoc)=>position<from?position:position>oldTo?position+newTo-oldTo:position===from&&assoc<0?from:newTo;
+  }
   function scheduleEditorFocus(api,tab) {
     const request=navigationFocus.get(tab.id),origin=document.activeElement;
     setTimeout(()=>{
@@ -482,7 +592,7 @@ const Viewer = (() => {
     activeTabId=successor?.id ?? null;
     renderTabs();
     if(current!==currentTab()){
-      if(successor)activate(tabs.indexOf(successor));else{renderView();document.getElementById('btn-open')?.focus();}
+      if(successor)activate(tabs.indexOf(successor),{history:false});else{renderView();document.getElementById('btn-open')?.focus();}
     }else if(origin&&!origin.isConnected){cmApi?.focus?.();currentTab()?.ta?.focus();}
   }
 
@@ -927,8 +1037,8 @@ const Viewer = (() => {
       ta.addEventListener('input', () => {
         if (tab.__extLoading) return;
         if(!ownsEditor()||tab.ta!==ta){ta.value=tab.content||'';return;}
-        tab.content = TextLines.reconcile(tab.content || '', ta.value);
-        markEdited(tab);
+        const change=mapTextChange(tab.content,ta.value);tab.content = TextLines.reconcile(tab.content || '', ta.value);
+        markEdited(tab,change);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
         renderGutter();
@@ -1120,10 +1230,10 @@ const Viewer = (() => {
       doc: tab.content || '',
       state: tab.cmState || null,
       live,
-      onChange: (val) => {
+      onChange: (val,changes) => {
         if (tab.__extLoading) return; // 外部重载写入：不标 dirty、不触发自动保存（防写回抖动）
         tab.content = val;
-        markEdited(tab);
+        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
         cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
@@ -1158,10 +1268,10 @@ const Viewer = (() => {
       doc: tab.content || '',
       state: tab.cmState || null,
       ext: extOf(tab.name),
-      onChange: (val) => {
+      onChange: (val,changes) => {
         if (tab.__extLoading) return;
         tab.content = val;
-        markEdited(tab);
+        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
@@ -1174,6 +1284,9 @@ const Viewer = (() => {
     tab.ta = null;
     // 编辑器右键菜单：Blame 注解 / 文件历史（PyCharm Annotate with Git Blame 入口）
     wrap.oncontextmenu = (e) => { e.preventDefault(); showEditorMenu(e.clientX, e.clientY); };
+    const scroller=cmApi.view.scrollDOM;
+    scroller.addEventListener('scroll',()=>{tab.scrollTop=scroller.scrollTop;tab.scrollLeft=scroller.scrollLeft;},{passive:true});
+    if(tab.scrollTop)scroller.scrollTop=tab.scrollTop;if(tab.scrollLeft)scroller.scrollLeft=tab.scrollLeft;
     scheduleEditorFocus(cmApi,tab);
   }
 
@@ -1355,7 +1468,8 @@ const Viewer = (() => {
     }, 3000);
   }
 
-  function markEdited(tab) {
+  function markEdited(tab,map) {
+    NavigationHistory.edited(tab,map);
     tab.editRevision++;
     const endings = TextLines.endings(tab.content || '').map((run) => run[0]);
     tab.eol = endings.length > 1 ? 'MIXED' : endings[0] === '\r\n' ? 'CRLF' : endings[0] === '\r' ? 'CR' : endings.length ? 'LF' : null;
@@ -1401,6 +1515,7 @@ const Viewer = (() => {
           tab.saveError = null;
           tab.saveErrorCode = null;
           tab.diskVersion = r.version || tab.diskVersion;
+          NavigationHistory.saved(tab);
           if (tab.editRevision === snapshot.revision && r.textFormat) {
             tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
           }
@@ -1456,6 +1571,7 @@ const Viewer = (() => {
     }
     try { localStorage.setItem(RECENT_KEY,JSON.stringify(recentFiles().map(item=>({...item,path:DocumentPaths.map(item.path,oldPath,newPath)})))); } catch {}
     if(window.Session?.pathsMoved)Session.pathsMoved(oldPath,newPath);
+    NavigationHistory.pathsMoved(oldPath,newPath,documents);
     if(window.AiPanel?.pathsMoved)AiPanel.pathsMoved(oldPath,newPath);
     if (!touched) return;
     renderTabs();
@@ -1612,7 +1728,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit,
+    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

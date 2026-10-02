@@ -138,8 +138,20 @@ const Shortcuts = (() => {
   function describe(id, metadata) { if (registry[id]) { Object.assign(registry[id], metadata, { palette: true }); changed(); } }
   function invalidateContext() { projectEpoch++; window.CommandPalette?.invalidate(); changed(); }
 
+  let navigationComposing=null;
+  const composing=e=>e.isComposing||e.keyCode===229||navigationComposing?.isConnected&&navigationComposing.contains(e.target);
+  document.addEventListener('compositionstart',e=>{navigationComposing=e.target;},true);
+  document.addEventListener('compositionend',()=>{navigationComposing=null;},true);
+  window.addEventListener('blur',()=>{navigationComposing=null;});
+  // 只让有效位置导航键先于CM的文本移动键处理；同一注册表决定改键与禁用，不硬编码Alt方向。
+  document.addEventListener('keydown',e=>{
+    if(composing(e)||captureCb||e.defaultPrevented)return;
+    const id=keyMap[comboOf(e)];if(!['navigation-back','navigation-forward'].includes(id)||window.Modal?.stack.length||window.App?.getTool()==='browser')return;
+    e.preventDefault();e.stopImmediatePropagation();if(availability(id).enabled)execute(id);
+  },true);
+
   document.addEventListener('keydown', (e) => {
-    if (e.isComposing || e.keyCode === 229) return;
+    if (composing(e)) return;
     const combo = comboOf(e);
     // 捕获模式（改快捷键）
     if (captureCb) {
@@ -338,6 +350,11 @@ for (const binding of Shortcuts.bindings()) {
 }
 Shortcuts.register('theme-settings', { desc: '主题设置', keys: [], palette: true, category: '工作台', aliases: ['theme', '颜色', '主题配置'], run: () => Settings.open('theme') });
 Shortcuts.register('search-panel', { desc: '在侧栏搜索内容', keys: [], palette: true, category: '项目', aliases: ['search panel', '常驻搜索'], requiresProject: true, run: () => Search.showDock() });
+for(const [id,direction,label,combo] of [['navigation-back','back','返回','alt+arrowleft'],['navigation-forward','forward','前进','alt+arrowright']]){
+  Shortcuts.register(id,{desc:label,keys:[combo],palette:true,category:'文件',aliases:[direction,'位置导航'],requiresProject:true,
+    isEnabled:ctx=>ctx.modalDepth?'请先关闭弹窗':App.getTool()==='browser'?'请先回到编辑区':NavigationHistory.state().busy?'位置导航正在进行':NavigationHistory.state()[direction]>0||'没有可'+label+'的位置',
+    run:ctx=>NavigationHistory.travel(direction,ctx.invoker)});
+}
 Shortcuts.register('file-history', { desc: '显示文件历史', keys: [], palette: true, category: '文件', aliases: ['file history', 'history', '文件版本'],
   requiresProject: true, requiresDocument: true, allowBackgroundDocument: true,
   isEnabled: ctx => DocumentPaths.contains(ctx.root, ctx.path) || '当前文件不在此项目内', run: ctx => GitLog.showFileHistory(ctx.path) });

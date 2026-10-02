@@ -17,6 +17,9 @@
   </div>
   <span class="spacer"></span>
   <span class="tb-sep" aria-hidden="true"></span>
+  <button id="navigation-back" class="tb-btn tb-ic" title="返回" aria-label="返回" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg></button>
+  <button id="navigation-forward" class="tb-btn tb-ic" title="前进" aria-label="前进" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5"/></svg></button>
+  <button id="navigation-status" class="tb-btn" hidden>位置导航失败</button>
   <button id="btn-commands" class="tb-btn" title="查找命令"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.2"/><path d="M4.1 6l2.1 2-2.1 2M8.1 10h3.6"/></svg><span>查找命令</span></button>
   <button id="btn-search" class="tb-btn tb-ic" title="搜索内容 (Ctrl+Shift+F)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg></button>
   <button id="btn-theme" class="tb-btn tb-ic" title="切换主题 (Ctrl+Shift+T)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4"/><path class="fill" d="M8 2.6a5.4 5.4 0 0 1 0 10.8z"/></svg></button>
@@ -408,6 +411,7 @@
 <script src="plugin-loader.js"></script>
 <script src="pet.js"></script>
 <script src="tree.js"></script>
+<script src="navigation-history.js"></script>
 <script src="viewer.js"></script>
 <script src="outline.js"></script>
 <script src="git-panel.js"></script>

@@ -14,6 +14,7 @@ const Outline = (() => {
   let collapsed = new Set();  // 被收起的标题 key（行号+文本）
   let selIdx = -1;            // 当前选中项（键盘导航 / 点击）
   let selKey = '';            // 选中项 key，刷新后尽量保持在同一条目上
+  let owner=null;
 
   const LS_KEY = 'myide-outline-collapsed';
   const hKey = (h) => h.line + '|' + h.text;
@@ -193,6 +194,7 @@ const Outline = (() => {
   async function refresh(tab) {
     el.innerHTML = '';
     headings = [];
+    owner=tab?{documentId:tab.id,revision:tab.editRevision,path:tab.path}:null;
     loadCollapsed();
     mountHeaderActions();
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || '');
@@ -280,25 +282,8 @@ const Outline = (() => {
   function jump(i) {
     const tab = Viewer.activeTab;
     const h = headings[i];
-    if (!tab || !h) return;
-    if ((tab.mode === 'live' || tab.mode === 'source') && Viewer.cm && Viewer.cm.gotoLine) {
-      Viewer.cm.gotoLine(h.line);
-      return;
-    }
-    const md = tab.mode === 'split'
-      ? document.querySelector('.md-split-preview .md-view')
-      : document.querySelector('#viewer .md-view');
-    if (!md) {
-      if (Viewer.cm && Viewer.cm.gotoLine) Viewer.cm.gotoLine(h.line);
-      return;
-    }
-    const hs = md.querySelectorAll('h1, h2, h3, h4, h5, h6');
-    const target = hs[Math.min(i, hs.length - 1)];
-    if (target) {
-      try { target.scrollIntoView({ block: 'center' }); } catch {} // jsdom 无此实现
-      target.style.outline = '2px solid var(--accent)';
-      setTimeout(() => { target.style.outline = ''; }, 1500);
-    }
+    if (!tab || !h || !owner) return;
+    Viewer.navigateTo({...owner,line:h.line,headingIndex:i});
   }
 
   // ---------- 键盘导航（↑↓ 选择 · Enter 跳转 · ←→ 折叠展开）----------
