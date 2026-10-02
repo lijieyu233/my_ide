@@ -1055,7 +1055,7 @@ const quickLaunch = require('./quick-launch-service').createService(
     openExternal: target => shell.openExternal(target),
     getIcon: async target => (await app.getFileIcon(target, { size: 'normal' })).toDataURL(),
   });
-for (const operation of ['load', 'save', 'open', 'icon']) {
+for (const operation of ['load', 'save', 'open', 'icon', 'applyImport', 'cancelImport']) {
   ipcMain.handle('quick-launch:' + operation, (_event, ...args) => quickLaunch[operation](...args));
 }
 ipcMain.handle('quick-launch:pick', async (_event, type) => {
@@ -1068,6 +1068,26 @@ ipcMain.handle('quick-launch:pick', async (_event, type) => {
     const target = result.canceled ? '' : result.filePaths[0];
     return { ok: true, target, name: target ? path.basename(target, type === 'folder' ? '' : path.extname(target)) : '' };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('quick-launch:import', async (_event, kind, groupId) => {
+  if (!['config', 'apps'].includes(kind)) return { ok: false, error: '导入类型无效' };
+  try {
+    const chosen = await dialog.showOpenDialog(mainWindow, {
+      title: kind === 'config' ? '选择快速启动配置' : '选择应用或快捷方式（可多选）',
+      properties: kind === 'config' ? ['openFile'] : ['openFile', 'multiSelections'],
+      ...(kind === 'apps' ? { defaultPath: app.getPath('desktop') } : {}),
+      filters: kind === 'config' ? [{ name: '快速启动配置', extensions: ['json'] }] : [{ name: '应用与快捷方式', extensions: ['lnk', 'exe', 'com', 'bat', 'cmd'] }],
+    });
+    if (chosen.canceled || !chosen.filePaths.length) return { ok: true, canceled: true };
+    return await quickLaunch.previewImport(kind === 'config' ? { kind, file: chosen.filePaths[0] } : { kind, targets: chosen.filePaths, groupId });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('quick-launch:export', async () => {
+  try {
+    const chosen = await dialog.showSaveDialog(mainWindow, { title: '导出快速启动配置', defaultPath: 'quick-launch.json', filters: [{ name: '快速启动配置', extensions: ['json'] }] });
+    if (chosen.canceled || !chosen.filePath) return { ok: true, canceled: true };
+    return await quickLaunch.exportTo(chosen.filePath);
+  } catch (err) { return { ok: false, error: err.message }; }
 });
 
 // ---------- 启动面板 IPC（由 launch-ops.js 的清单统一注册）----------

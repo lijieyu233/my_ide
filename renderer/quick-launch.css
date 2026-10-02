@@ -44,3 +44,15 @@
 .ql-dialog input, .ql-dialog select { box-sizing: border-box; width: 100%; padding: .6em; color: var(--text); background: var(--bg-input, var(--bg)); border: 1px solid var(--btn-border); border-radius: .4em; font: inherit; }
 .ql-dialog-hint, .ql-dialog-error { font-size: .9em; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
 .ql-dialog-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .6em; margin-top: 1em; }
+.ql-import-dialog { width: min(48em, calc(100vw - 3em)); }
+.ql-import-dialog form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; height: min(38em, calc(100vh - 6em)); }
+.ql-import-dialog fieldset { min-height: 0; overflow: auto; }
+.ql-import-dialog h2, .ql-import-dialog .ql-dialog-foot { flex: none; }
+.ql-import-dialog .ql-dialog-error { max-height: 6em; overflow: auto; flex: none; }
+.ql-import-list { max-height: 23em; overflow: auto; margin: .8em 0; border-block: 1px solid var(--btn-border); }
+.ql-import-dialog .ql-import-list { max-height: none; overflow: visible; }
+.ql-dialog .ql-import-row { display: flex; flex-direction: row; align-items: flex-start; gap: .8em; padding: .8em 0; margin: 0; border-bottom: 1px solid var(--btn-border); }
+.ql-dialog .ql-import-row input { flex: none; width: 1.2em; height: 1.2em; margin-top: .2em; }
+.ql-import-row > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: .3em; overflow-wrap: anywhere; }
+.ql-import-row span span { color: var(--text-dim); font-size: .9em; }
+.ql-import-row input:disabled + span { opacity: .7; }

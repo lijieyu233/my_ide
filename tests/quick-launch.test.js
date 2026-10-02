@@ -102,6 +102,69 @@ async function saveEntries(f, entries) { const r = await f.service.load(); const
       assert.equal((await f.service.icon('entry', 'different')).data, '');
       const bad = createService(f.file, { getIcon: async () => 'https://untrusted.example/icon' }); assert.equal((await bad.icon('entry', f.local)).data, '');
     });
+    await test('配置导入先预览去重，不写盘不启动；同名分组沿用，稳定ID不冲突', async () => {
+      let opens = 0; const f = fixture({ openPath: async () => { opens++; return ''; } });
+      assert((await saveEntries(f, [item('file', f.local)])).ok); const before = fs.readFileSync(f.file);
+      const input = path.join(f.dir, '导入.json'); fs.writeFileSync(input, JSON.stringify({ format: 1, groups: [{ id: 'group-0', name: '工作' }, { id: 'group-1', name: '新分组' }, { id: 'empty', name: '空分组' }], entries: [item('file', f.local), { ...item('web', 'https://example.com/new', 'web'), groupId: 'group-1' }, { ...item('web', 'https://example.com/new', 'duplicate'), groupId: 'group-1' }] }));
+      const p = await f.service.previewImport({ kind: 'config', file: input }); assert(p.ok, p.error); assert.deepEqual(p.entries.map(e => e.status), ['duplicate', 'ready', 'duplicate']);
+      assert.deepEqual(fs.readFileSync(f.file), before); assert.equal(opens, 0);
+      const ready = p.entries[1].id; p.entries[1].target = 'https://tampered.example/';
+      const saved = await f.service.applyImport(p.token, [ready]); assert(saved.ok, saved.error); assert.equal(saved.imported, 1); assert.equal(saved.addedGroups, 2);
+      assert.equal(saved.config.entries[0].id, 'entry'); assert.equal(saved.config.entries[1].target, 'https://example.com/new'); assert.equal(new Set(saved.config.entries.map(e => e.id)).size, 2);
+      assert.equal(saved.config.groups.filter(g => g.name === '工作').length, 1); assert.equal((await f.service.applyImport(p.token, [ready])).errorCode, 'IMPORT_EXPIRED');
+    });
+    await test('用户主动多选应用：中文建议名称、失效/类型错误及重复目标逐项反馈，取消不保存', async () => {
+      const f = fixture(); const p = await f.service.previewImport({ kind: 'apps', groupId: 'group-2', targets: [f.app, f.app, f.local, path.join(f.dir, '不存在.lnk')] });
+      assert(p.ok); assert.deepEqual(p.entries.map(e => e.status), ['ready', 'duplicate', 'error', 'error']); assert.equal(p.entries[0].name, '应用 空格'); assert.equal(p.entries[0].groupName, '工具');
+      assert(!fs.existsSync(f.file)); assert.equal((await f.service.applyImport(p.token, [p.entries[2].id])).errorCode, 'INVALID_CONFIG');
+      f.service.cancelImport(p.token); assert.equal((await f.service.applyImport(p.token, [p.entries[0].id])).errorCode, 'IMPORT_EXPIRED'); assert(!fs.existsSync(f.file));
+    });
+    await test('只导入勾选入口及所需分组，未选入口/分组不混入', async () => {
+      const f = fixture(), input = path.join(f.dir, '选择.json'); fs.writeFileSync(input, JSON.stringify({ format: 1, groups: [{ id: 'a', name: '甲' }, { id: 'b', name: '乙' }], entries: [{ ...item('web', 'https://example.com/a', 'a'), groupId: 'a' }, { ...item('web', 'https://example.com/b', 'b'), groupId: 'b' }] }));
+      const p = await f.service.previewImport({ kind: 'config', file: input }); const saved = await f.service.applyImport(p.token, [p.entries[1].id]); assert(saved.ok);
+      assert.deepEqual(saved.config.entries.map(e => e.target), ['https://example.com/b']); assert(!saved.config.groups.some(g => g.name === '甲')); assert(saved.config.groups.some(g => g.name === '乙'));
+    });
+    await test('导入坏JSON/非法协议/未知版本/超大文件拒绝，保留两侧原件', async () => {
+      const f = fixture(); assert((await saveEntries(f, [item('file', f.local)])).ok); const before = fs.readFileSync(f.file), input = path.join(f.dir, '坏.json');
+      for (const bytes of [Buffer.from('{bad'), Buffer.from([0xff]), Buffer.alloc(1024 * 1024 + 1), Buffer.from(JSON.stringify({ ...defaults(), format: 9 })), Buffer.from(JSON.stringify({ ...defaults(), entries: [item('web', 'javascript:alert(1)')] }))]) {
+        fs.writeFileSync(input, bytes); assert(!(await f.service.previewImport({ kind: 'config', file: input })).ok); assert.deepEqual(fs.readFileSync(input), bytes); assert.deepEqual(fs.readFileSync(f.file), before);
+      }
+    });
+    await test('预览后另一窗口修改/目标消失拒绝导入，旧计划不覆盖；写失败同计划可重试', async () => {
+      let reject = false; const f = fixture({ writer: { atomicWrite: (...args) => { if (reject) throw Object.assign(Error('只读'), { code: 'EACCES' }); return FileWrite.atomicWrite(...args); } } });
+      let p = await f.service.previewImport({ kind: 'apps', groupId: 'group-0', targets: [f.app] }); reject = true;
+      assert.equal((await f.service.applyImport(p.token, [p.entries[0].id])).errorCode, 'EACCES'); assert(!fs.existsSync(f.file)); reject = false;
+      assert((await f.service.applyImport(p.token, [p.entries[0].id])).ok);
+      const other = path.join(f.dir, '第二.lnk'); fs.writeFileSync(other, 'fixture'); p = await f.service.previewImport({ kind: 'apps', groupId: 'group-0', targets: [other] });
+      const current = await f.service.load(); current.config.groups[0].name = '外部工作'; assert((await createService(f.file).save(current.config, current.version)).ok);
+      assert.equal((await f.service.applyImport(p.token, [p.entries[0].id])).errorCode, 'VERSION_CONFLICT'); assert.equal((await f.service.load()).config.groups[0].name, '外部工作');
+      p = await f.service.previewImport({ kind: 'apps', groupId: 'group-0', targets: [other] }); fs.unlinkSync(other); assert.equal((await f.service.applyImport(p.token, [p.entries[0].id])).errorCode, 'ENOENT'); assert.equal((await f.service.load()).config.entries.length, 1);
+    });
+    await test('预览预算/过期/伪造选择及上限拒绝不写盘', async () => {
+      const f = fixture(); let first;
+      for (let n = 0; n < 9; n++) { const p = await f.service.previewImport({ kind: 'apps', groupId: 'group-0', targets: [f.app] }); if (!first) first = p; }
+      assert.equal((await f.service.applyImport(first.token, [first.entries[0].id])).errorCode, 'IMPORT_EXPIRED');
+      const p = await f.service.previewImport({ kind: 'apps', groupId: 'group-0', targets: [f.app] });
+      assert.equal((await f.service.applyImport(p.token, ['fake'])).errorCode, 'INVALID_CONFIG'); assert.equal((await f.service.applyImport(p.token, [])).errorCode, 'EMPTY_IMPORT'); assert(!fs.existsSync(f.file));
+      const clock = Date.now; Date.now = () => clock() + 11 * 60 * 1000;
+      try { assert.equal((await f.service.applyImport(p.token, [p.entries[0].id])).errorCode, 'IMPORT_EXPIRED'); } finally { Date.now = clock; }
+      const input = path.join(f.dir, '满组.json'); fs.writeFileSync(input, JSON.stringify({ format: 1, groups: Array.from({ length: 64 }, (_, i) => ({ id: 'g' + i, name: '新' + i })), entries: [] }));
+      const full = await f.service.previewImport({ kind: 'config', file: input }); assert(full.ok); assert.equal((await f.service.applyImport(full.token, [])).errorCode, 'INVALID_CONFIG'); assert(!fs.existsSync(f.file));
+    });
+    await test('导出可重新导入，顺序/类型/名称完整且原配置不改；拒绝导出覆盖活动配置', async () => {
+      const f = fixture(); assert((await saveEntries(f, [item('file', f.local), item('app', f.app, 'app'), item('folder', f.dir, 'folder'), item('web', 'https://example.com', 'web')])).ok);
+      const before = fs.readFileSync(f.file), output = path.join(f.dir, '导出.json'); const exported = await f.service.exportTo(output); assert(exported.ok, exported.error); assert.equal(exported.exported, 4); assert.deepEqual(fs.readFileSync(f.file), before);
+      assert.equal((await f.service.exportTo(f.file)).errorCode, 'EXPORT_TARGET');
+      const alias = path.join(f.dir, '配置链接'); fs.symlinkSync(path.dirname(f.file), alias, process.platform === 'win32' ? 'junction' : 'dir');
+      assert.equal((await f.service.exportTo(path.join(alias, 'quick-launch.json'))).errorCode, 'EXPORT_TARGET'); assert.deepEqual(fs.readFileSync(f.file), before);
+      const fresh = createService(path.join(f.dir, '新.json')), p = await fresh.previewImport({ kind: 'config', file: output }); const saved = await fresh.applyImport(p.token, p.entries.map(e => e.id)); assert(saved.ok);
+      assert.deepEqual(saved.config.entries.map(e => [e.name, e.type, e.target]), (await f.service.load()).config.entries.map(e => [e.name, e.type, e.target]));
+    });
+    await test('导出写失败/目标在发布前被改保留目标与原配置，不误报成功', async () => {
+      const f = fixture(); assert((await saveEntries(f, [item('file', f.local)])).ok); const output = path.join(f.dir, '旧导出.json'); fs.writeFileSync(output, 'old');
+      const broken = createService(f.file, { writer: { atomicWrite: () => { throw Object.assign(Error('拒绝'), { code: 'EACCES' }); } } }); assert.equal((await broken.exportTo(output)).errorCode, 'EACCES'); assert.equal(fs.readFileSync(output, 'utf8'), 'old');
+      const racing = createService(f.file, { writer: { atomicWrite(file, bytes, condition) { fs.writeFileSync(file, 'external'); return FileWrite.atomicWrite(file, bytes, condition); } } }); assert.equal((await racing.exportTo(output)).errorCode, 'VERSION_CONFLICT'); assert.equal(fs.readFileSync(output, 'utf8'), 'external'); assert.equal((await f.service.load()).config.entries.length, 1);
+    });
     console.log('\n快速启动服务：' + passed + ' 通过 / 0 失败');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

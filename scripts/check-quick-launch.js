@@ -1,5 +1,5 @@
 // 隐藏真实窗口和生产IPC，但系统打开替换成可控接收器，避免测试启动用户应用。
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, dialog } = require('electron');
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const actualHome = os.homedir();
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-quick-launch-check-'));
@@ -9,6 +9,10 @@ os.homedir = () => home;
 app.setPath('userData', path.join(home, 'profile'));
 process.argv.push('--headless');
 const opened = [];
+let chosenFiles = [], chosenExport = '', cancelChoice = false;
+const pickOptions = [];
+dialog.showOpenDialog = async (_window, options) => { pickOptions.push(options); return { canceled: cancelChoice, filePaths: chosenFiles }; };
+dialog.showSaveDialog = async () => ({ canceled: cancelChoice, filePath: chosenExport });
 shell.openPath = async target => { opened.push(['path', target]); return ''; };
 shell.openExternal = async target => { opened.push(['web', target]); };
 const local = path.join(home, '中文 文件.txt'); fs.writeFileSync(local, '原文');
@@ -105,6 +109,40 @@ app.whenReady().then(async () => {
     await wait('document.getElementById("ql-search").value===""'); check('真实Escape清空搜索', true);
     await key('Tab', 9);
     check('Tab按视觉顺序到添加入口', await probe('document.activeElement.id==="ql-add"'));
+    const importedFile = path.join(home, '导入 配置.json');
+    fs.writeFileSync(importedFile, JSON.stringify({ format: 1, groups: [{ id: 'g', name: '导入分组' }], entries: [
+      { id: 'existing', name: '已有文件', type: 'file', target: local, groupId: 'g' },
+      { id: 'new', name: '新网页', type: 'web', target: 'https://example.com/imported', groupId: 'g' },
+      { id: 'repeat', name: '新网页重复', type: 'web', target: 'https://example.com/imported', groupId: 'g' },
+      { id: 'missing', name: '缺失文件', type: 'file', target: path.join(home, 'missing.txt'), groupId: 'g' },
+    ] }));
+    const beforeImport = fs.readFileSync(configuration);
+    chosenFiles = [importedFile];
+    await probe('document.getElementById("ql-import").click();document.querySelector(".ql-dialog [type=submit]").focus()');
+    await key('Enter', 13, '\r');
+    await wait('!!document.querySelector(".ql-import-list") && !document.querySelector(".ql-dialog [data-cancel]").disabled');
+    check('真实导入桥先预览重复和失效目标，不提前写入', fs.readFileSync(configuration).equals(beforeImport) && await probe('document.querySelectorAll("[data-import-entry]:disabled").length===3 && document.querySelectorAll("[data-import-entry]:checked").length===1'));
+    await snapshot('import-preview-dark');
+    check('导入预览弹窗无横向溢出且列表不遮挡固定操作栏', await probe('(()=>{const d=document.querySelector(".ql-dialog"),l=document.querySelector(".ql-import-list"),r=d.getBoundingClientRect(),b=d.querySelector("[type=submit]").getBoundingClientRect(),f=d.querySelector("fieldset").getBoundingClientRect(),bar=d.querySelector(".ql-dialog-foot").getBoundingClientRect();return d.scrollWidth<=d.clientWidth+1&&l.scrollWidth<=l.clientWidth+1&&r.x>=0&&r.right<=innerWidth&&r.bottom<=innerHeight&&b.bottom<=r.bottom&&b.bottom<=innerHeight&&f.bottom<=bar.top+1})()'));
+    await probe('document.querySelector(".ql-dialog [type=submit]").focus()'); await key('Enter', 13, '\r');
+    await wait('!document.querySelector(".ql-dialog")');
+    check('真实键盘确认导入仅添加可用入口和对应分组', (await service.load()).config.entries.filter(e => e.target === 'https://example.com/imported').length === 1 && (await service.load()).config.groups.some(g => g.name === '导入分组'));
+    chosenExport = path.join(home, '导出 配置.json');
+    await probe('document.getElementById("ql-export").click()'); await wait('!document.getElementById("ql-export").disabled');
+    check('真实导出桥写出可重载配置且保留活动配置', fs.readFileSync(chosenExport).equals(fs.readFileSync(configuration)) && await probe('document.getElementById("ql-status").textContent.includes("已导出")'));
+    const shortcut = path.join(home, '中文 程序.lnk'); fs.writeFileSync(shortcut, 'controlled shortcut fixture');
+    chosenFiles = [shortcut, shortcut];
+    await probe('(()=>{Theme.set("light");document.getElementById("ql-import").click();const f=document.querySelector(".ql-dialog form");f.elements.kind.value="apps";f.elements.kind.dispatchEvent(new Event("change"));f.elements.groupId.value="group-2";f.querySelector("[type=submit]").click()})()');
+    await wait('!!document.querySelector(".ql-import-list") && !document.querySelector(".ql-dialog [data-cancel]").disabled');
+    check('批量选择只处理主动文件，保留多选与桌面起点', pickOptions.at(-1).properties.includes('multiSelections') && pickOptions.at(-1).defaultPath === app.getPath('desktop') && await probe('document.querySelectorAll("[data-import-entry]:checked").length===1 && document.querySelector(".ql-import-list").textContent.includes("工具")'));
+    await snapshot('import-apps-light');
+    const beforeCancel = fs.readFileSync(configuration);
+    await probe('document.querySelector(".ql-dialog [data-cancel]").focus()'); await key('Escape', 27);
+    await wait('!document.querySelector(".ql-dialog")');
+    check('真实预览Escape取消不导入快捷方式', fs.readFileSync(configuration).equals(beforeCancel));
+    cancelChoice = true;
+    await probe('document.getElementById("ql-export").click()'); await wait('!document.getElementById("ql-export").disabled');
+    check('原生导出取消不写入活动配置', fs.readFileSync(configuration).equals(beforeCancel));
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ passed, failed: 0, output, configIsolated: configuration, opened }, null, 2));
     console.log('快速启动真实窗口：' + passed + ' 通过 / 0 失败；截图：' + output);
     if (process.argv.includes('--inspect')) {

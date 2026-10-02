@@ -34,6 +34,8 @@ const QuickLaunch = (() => {
     q('ql-add').disabled = loading || saving || confirming || !config || !!loadError;
     q('ql-group-add').disabled = q('ql-add').disabled;
     q('ql-manage').disabled = q('ql-add').disabled;
+    q('ql-import').disabled = q('ql-add').disabled;
+    q('ql-export').disabled = q('ql-add').disabled;
     q('ql-reload').disabled = loading || saving || confirming;
     q('ql-manage').textContent = managing ? '完成管理' : '管理';
     q('ql-manage').setAttribute('aria-pressed', String(managing));
@@ -110,17 +112,17 @@ const QuickLaunch = (() => {
       if (epoch === generation) { loading = false; render(); }
     }
   }
-  async function save(next, focusKey = '') {
+  async function commit(request, focusKey = '') {
     if (loading || saving || loadError || !config) return false;
     saving = true; render();
     try {
-      const r = await api().save(next, version);
+      const r = await request();
       if (!r?.ok) {
         if (r?.errorCode === 'VERSION_CONFLICT') loadError = r.error;
         const err = Error(r?.error || '服务未确认保存成功'); err.existingId = r?.existingId; throw err;
       }
       config = r.config; version = r.version; generation++; iconCache.clear();
-      message('已保存'); return true;
+      message(r.imported !== undefined ? '已导入 ' + r.imported + ' 个入口，新增 ' + r.addedGroups + ' 个分组' : '已保存'); return true;
     } catch (err) {
       message('保存失败：' + err.message + (loadError ? '；取消编辑并重新加载后再修改。' : '；原配置与草稿已保留。'), true);
       if (dialog) {
@@ -131,6 +133,7 @@ const QuickLaunch = (() => {
       return false;
     } finally { saving = false; render(); if (focusKey) focus(focusKey); }
   }
+  const save = (next, focusKey = '') => commit(() => api().save(next, version), focusKey);
   async function open(id) {
     if (opening.has(id)) return;
     opening.add(id); render();
@@ -144,6 +147,7 @@ const QuickLaunch = (() => {
   function closeDialog() {
     if (!dialog || saving) return;
     const restore = dialog.__restore;
+    dialog.__cleanup?.();
     dialog.close?.(); dialog.remove(); dialog = null;
     if (restore?.isConnected && restore.matches('button,input,select,textarea,[tabindex]')) restore.focus(); else q('ql-add').focus();
   }
@@ -166,10 +170,72 @@ const QuickLaunch = (() => {
       current.querySelector('[type="submit"]').disabled = true;
       current.querySelector('[data-cancel]').disabled = true;
       try { if (await submit(data)) closeDialog(); }
-      finally { if (current.isConnected) { current.querySelector('fieldset').disabled = false; current.querySelector('[type="submit"]').disabled = !!loadError; current.querySelector('[data-cancel]').disabled = false; } }
+      finally { if (current.isConnected) { current.querySelector('fieldset').disabled = false; current.querySelector('[type="submit"]').disabled = !!loadError || !!current.__submitDisabled?.(); current.querySelector('[data-cancel]').disabled = false; } }
     };
     if (dialog.showModal) dialog.showModal(); else dialog.setAttribute('open', '');
-    dialog.querySelector('input')?.focus();
+    dialog.querySelector('input, select')?.focus();
+  }
+  function importEntries() {
+    let plan = null;
+    const initial = '<label>导入来源<select name="kind"><option value="config">快速启动配置文件</option><option value="apps">多个应用 / 快捷方式</option></select></label>'
+      + '<label data-import-group hidden>添加到分组<select name="groupId">' + config.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select></label>'
+      + '<p class="ql-dialog-hint">主动选择文件；不会扫描桌面或开始菜单。配置按分组名称合并，重复目标跳过，原入口与顺序保留。</p>';
+    makeDialog('导入入口', initial, async data => {
+      if (plan) {
+        const selected = [...dialog.querySelectorAll('[data-import-entry]:checked')].map(el => el.value);
+        return commit(() => api().applyImport(plan.token, selected));
+      }
+      const current = dialog;
+      saving = true; render();
+      try {
+        const r = await api().previewImport(data.kind, data.groupId);
+        if (!r?.ok) throw Error(r?.error || '未能读取导入文件');
+        if (r.canceled) return false;
+        plan = r; current.classList.add('ql-import-dialog');
+        const ready = r.entries.filter(e => e.status === 'ready').length;
+        current.querySelector('fieldset').innerHTML = '<p class="ql-dialog-hint">' + ready + ' 个可导入，' + r.entries.filter(e => e.status === 'duplicate').length + ' 个重复，' + r.entries.filter(e => e.status === 'error').length + ' 个不可用；还可添加 ' + r.availableSlots + ' 个入口。</p>'
+          + '<p class="ql-dialog-hint">同名分组沿用已有分组。新分组按所选入口创建，源配置中的新空分组也会保留。</p>'
+          + (r.emptyGroups.length ? '<p class="ql-dialog-hint">新增空分组：' + r.emptyGroups.map(g => esc(g.name)).join('、') + '</p>' : '')
+          + '<div class="ql-import-list">' + r.entries.map(e => '<label class="ql-import-row"><input type="checkbox" data-import-entry value="' + esc(e.id) + '"' + (e.status === 'ready' ? ' checked' : ' disabled') + '><span><strong>' + esc(e.name) + '</strong><span>' + esc(typeNames[e.type] + ' · ' + e.groupName) + '</span><span class="ql-import-target">' + esc(e.target) + '</span><span>' + esc(e.error || '可导入') + '</span></span></label>').join('') + '</div>'
+          + '<p data-import-summary class="ql-dialog-hint"></p><button type="button" data-import-reset>重新选择</button>';
+        current.querySelector('[type="submit"]').textContent = '确认导入';
+        current.querySelector('.ql-dialog-error').textContent = '';
+        const summary = () => {
+          const count = current.querySelectorAll('[data-import-entry]:checked').length;
+          current.querySelector('[data-import-summary]').textContent = '将添加 ' + count + ' 个入口；未勾选、重复和不可用的入口不会导入。';
+          current.querySelector('[type="submit"]').disabled = count > r.availableSlots || !count && !r.emptyGroups.length;
+        };
+        current.__submitDisabled = () => {
+          const count = current.querySelectorAll('[data-import-entry]:checked').length;
+          return count > r.availableSlots || !count && !r.emptyGroups.length;
+        };
+        current.querySelector('.ql-import-list').onchange = summary; summary();
+        current.querySelector('[data-import-reset]').onclick = () => {
+          api().cancelImport(plan.token).catch(() => {}); plan = null;
+          current.__submitDisabled = null; current.classList.remove('ql-import-dialog');
+          current.querySelector('fieldset').innerHTML = initial; prepare();
+          current.querySelector('[type="submit"]').textContent = '选择并预览'; current.querySelector('[type="submit"]').disabled = !!loadError;
+          current.querySelector('.ql-dialog-error').textContent = ''; current.querySelector('select').focus();
+        };
+      } catch (err) { current.querySelector('.ql-dialog-error').textContent = err.message; }
+      finally { saving = false; render(); }
+      return false;
+    });
+    if (!dialog) return;
+    const current = dialog;
+    const prepare = () => { current.querySelector('[name="kind"]').onchange = ev => { current.querySelector('[data-import-group]').hidden = ev.target.value !== 'apps'; }; };
+    prepare(); current.querySelector('[type="submit"]').textContent = '选择并预览';
+    current.__cleanup = () => { if (plan) api().cancelImport(plan.token).catch(() => {}); };
+  }
+  async function exportEntries() {
+    if (loading || saving || confirming || dialog || loadError || !config) return;
+    saving = true; render();
+    try {
+      const r = await api().export();
+      if (!r?.ok) throw Error(r?.error || '未确认导出成功');
+      if (!r.canceled) message('已导出 ' + r.exported + ' 个入口：' + r.file);
+    } catch (err) { message('导出失败：' + err.message + '；当前配置未改变。', true); }
+    finally { saving = false; render(); q('ql-export').focus(); }
   }
   function edit(id, groupId) {
     if (!config) return;
@@ -276,11 +342,12 @@ const QuickLaunch = (() => {
     inited = true;
     const root = document.createElement('section'); root.id = 'quick-launch-main'; root.className = 'hidden'; root.setAttribute('aria-label', '快速启动');
     root.innerHTML = '<header class="ql-head"><div><h1>快速启动</h1><span id="ql-count"></span></div><button id="ql-back">返回编辑器</button></header>'
-      + '<div class="ql-toolbar"><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"><button id="ql-add" data-focus="add" class="ql-primary">添加入口</button><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><button id="ql-reload">重新加载</button></div>'
+      + '<div class="ql-toolbar"><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"><button id="ql-add" data-focus="add" class="ql-primary">添加入口</button><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><button id="ql-import">导入</button><button id="ql-export">导出</button><button id="ql-reload">重新加载</button></div>'
       + '<p id="ql-results" class="ql-results"></p><div id="ql-groups"></div><p id="ql-status" role="status" aria-live="polite"></p>';
     q('content').append(root);
     q('ql-back').onclick = () => { window.App.backToEditor(); q('tool-quick-launch')?.focus(); };
     q('ql-add').onclick = () => edit(); q('ql-group-add').onclick = () => editGroup(); q('ql-reload').onclick = load;
+    q('ql-import').onclick = importEntries; q('ql-export').onclick = exportEntries;
     q('ql-manage').onclick = () => { managing = !managing; render(); q('ql-manage').focus(); };
     q('ql-search').oninput = ev => { query = ev.target.value; render(); };
     q('ql-search').addEventListener('compositionstart', () => { composing = true; });

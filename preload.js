@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('myIDE', {
     open: (id) => ipcRenderer.invoke('quick-launch:open', id),
     icon: (id, target) => ipcRenderer.invoke('quick-launch:icon', id, target),
     pick: (type) => ipcRenderer.invoke('quick-launch:pick', type),
+    previewImport: (kind, groupId) => ipcRenderer.invoke('quick-launch:import', kind, groupId),
+    applyImport: (token, selection) => ipcRenderer.invoke('quick-launch:applyImport', token, selection),
+    cancelImport: (token) => ipcRenderer.invoke('quick-launch:cancelImport', token),
+    export: () => ipcRenderer.invoke('quick-launch:export'),
   },
   tasks: {
     inspect: (project) => ipcRenderer.invoke('tasks:inspect', project),

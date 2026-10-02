@@ -15,7 +15,7 @@ async function fixture(overrides = {}) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://myide.test' }), w = dom.window;
   w.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   w.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
-  w.myIDE = { quickLaunch: { ...service, pick: async () => ({ ok: true, target, name: '中文 文件' }), ...overrides } };
+  w.myIDE = { quickLaunch: { ...service, cancelImport: async token => service.cancelImport(token), pick: async () => ({ ok: true, target, name: '中文 文件' }), ...overrides } };
   w.Modal = { confirm: async () => true };
   w.App = { backToEditor: () => w.QuickLaunch.hide() };
   w.eval(source); w.QuickLaunch.show();
@@ -149,6 +149,50 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       assert(f.sel('[data-action="edit"]').disabled); f.click('edit', id); assert(!f.sel('.ql-dialog'));
       assert.equal(f.sel('.ql-card').getAttribute('draggable'), 'false'); gate.resolve(await f.service.load()); await loading;
       assert(!f.sel('[data-action="edit"]').disabled); f.click('edit', id); assert(f.sel('.ql-dialog'));
+    });
+    await test('导入先预览重复与失败条目；取消不保存并释放计划，文案安全显示', async () => {
+      const f = await fixture(); await f.add('已有'); const incoming = path.join(f.dir, '输入.json');
+      fs.writeFileSync(incoming, JSON.stringify({ format: 1, groups: [{ id: 'g', name: '工作' }], entries: [{ id: 'a', name: '重复', type: 'file', target: f.target, groupId: 'g' }, { id: 'b', name: '<img src=x onerror=alert(1)>', type: 'web', target: 'https://example.com/new', groupId: 'g' }, { id: 'c', name: '缺失', type: 'file', target: path.join(f.dir, 'missing.txt'), groupId: 'g' }] }));
+      let token; f.api.previewImport = async () => { const r = await f.service.previewImport({ kind: 'config', file: incoming }); token = r.token; return r; };
+      const before = fs.readFileSync(f.file); f.q('ql-import').focus(); f.q('ql-import').click(); await f.submit();
+      assert.equal(f.w.document.querySelectorAll('[data-import-entry]').length, 3); assert.equal(f.w.document.querySelectorAll('[data-import-entry]:disabled').length, 2); assert(f.sel('.ql-import-list').textContent.includes('<img')); assert(!f.sel('.ql-import-list img'));
+      assert.deepEqual(fs.readFileSync(f.file), before); assert.equal(f.calls.length, 0); f.sel('[data-cancel]').click(); assert.equal(f.w.document.activeElement.id, 'ql-import');
+      assert.equal((await f.service.applyImport(token, [])).errorCode, 'IMPORT_EXPIRED'); assert.deepEqual(fs.readFileSync(f.file), before);
+    });
+    await test('勾选导入只保存选择结果；失败保留预览，重试才更新主区', async () => {
+      const f = await fixture(), incoming = path.join(f.dir, '输入.json');
+      fs.writeFileSync(incoming, JSON.stringify({ format: 1, groups: [{ id: 'a', name: '甲' }, { id: 'b', name: '乙' }], entries: [{ id: 'a', name: '甲入口', type: 'web', target: 'https://example.com/a', groupId: 'a' }, { id: 'b', name: '乙入口', type: 'web', target: 'https://example.com/b', groupId: 'b' }] }));
+      f.api.previewImport = () => f.service.previewImport({ kind: 'config', file: incoming }); let fail = true;
+      f.api.applyImport = async (...args) => fail ? { ok: false, error: '权限拒绝' } : f.service.applyImport(...args);
+      f.q('ql-import').click(); await f.submit(); f.sel('[data-import-entry]').checked = false; f.sel('.ql-import-list').dispatchEvent(new f.w.Event('change'));
+      assert(f.sel('[data-import-summary]').textContent.includes('1 个')); await f.submit(); assert(f.sel('.ql-import-dialog')); assert(f.sel('.ql-dialog-error').textContent.includes('权限拒绝')); assert(!fs.existsSync(f.file));
+      fail = false; await f.submit(); assert(!f.sel('.ql-dialog')); assert.equal((await f.service.load()).config.entries[0].name, '乙入口'); assert(!f.q('ql-groups').textContent.includes('甲入口')); assert(f.q('ql-status').textContent.includes('已导入 1 个入口'));
+    });
+    await test('多选应用分组明确，重新选择释放计划；全部无效不能确认', async () => {
+      const f = await fixture(); let token;
+      f.api.previewImport = async (kind, groupId) => { assert.equal(kind, 'apps'); const r = await f.service.previewImport({ kind, groupId, targets: [path.join(f.dir, 'missing.lnk')] }); token = r.token; return r; };
+      f.q('ql-import').click(); f.field('kind').value = 'apps'; f.field('kind').dispatchEvent(new f.w.Event('change')); assert(!f.sel('[data-import-group]').hidden); f.field('groupId').value = 'group-2'; await f.submit();
+      assert(f.sel('[type="submit"]').disabled); assert(f.sel('.ql-import-list').textContent.includes('工具')); f.sel('[data-import-reset]').click(); assert(f.field('kind')); assert.equal((await f.service.applyImport(token, [])).errorCode, 'IMPORT_EXPIRED'); f.sel('[data-cancel]').click(); assert(!fs.existsSync(f.file));
+    });
+    await test('选择文件在途不能取消或开始另一修改；原生取消恢复选择页', async () => {
+      const f = await fixture(), gate = deferred(); f.api.previewImport = () => gate.promise;
+      f.q('ql-import').click(); const form = f.sel('.ql-dialog form'); form.dispatchEvent(new f.w.Event('submit', { cancelable: true }));
+      assert(f.sel('fieldset').disabled); assert(f.sel('[data-cancel]').disabled); assert(f.q('ql-add').disabled); f.sel('.ql-dialog').dispatchEvent(new f.w.Event('cancel', { cancelable: true })); assert(f.sel('.ql-dialog'));
+      gate.resolve({ ok: true, canceled: true }); await wait(() => !f.sel('[data-cancel]').disabled); assert(f.field('kind')); assert(!f.q('ql-add').disabled); f.sel('[data-cancel]').click();
+    });
+    await test('导入确认遇外部版本变化保留预览，取消重载后恢复编辑', async () => {
+      const f = await fixture(), incoming = path.join(f.dir, '输入.json'); fs.writeFileSync(incoming, JSON.stringify({ format: 1, groups: [{ id: 'g', name: '工作' }], entries: [{ id: 'e', name: '新', type: 'web', target: 'https://example.com/new', groupId: 'g' }] }));
+      f.api.previewImport = () => f.service.previewImport({ kind: 'config', file: incoming }); f.q('ql-import').click(); await f.submit();
+      const newer = await f.service.load(); newer.config.groups[0].name = '另一窗口'; assert((await f.service.save(newer.config, newer.version)).ok);
+      await f.submit(); assert(f.sel('.ql-dialog')); assert(f.sel('[type="submit"]').disabled); assert(f.q('ql-add').disabled); assert.equal((await f.service.load()).config.entries.length, 0);
+      f.sel('[data-cancel]').click(); await f.w.QuickLaunch.reload(); assert(!f.q('ql-add').disabled); assert(f.q('ql-groups').textContent.includes('另一窗口'));
+    });
+    await test('导出在途去重与取消/失败反馈，不改变配置；成功文件完整', async () => {
+      const f = await fixture(); await f.add('原入口'); const before = fs.readFileSync(f.file), gate = deferred(); let calls = 0;
+      f.api.export = () => { calls++; return gate.promise; }; f.q('ql-export').click(); f.q('ql-export').click(); assert.equal(calls, 1); assert(f.q('ql-import').disabled);
+      gate.resolve({ ok: true, canceled: true }); await wait(() => !f.q('ql-export').disabled); assert.deepEqual(fs.readFileSync(f.file), before); assert.equal(f.w.document.activeElement.id, 'ql-export');
+      f.api.export = async () => ({ ok: false, error: '磁盘拒绝' }); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert(f.q('ql-status').textContent.includes('磁盘拒绝'));
+      const output = path.join(f.dir, '导出.json'); f.api.export = () => f.service.exportTo(output); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert.equal(JSON.parse(fs.readFileSync(output)).entries[0].name, '原入口'); assert.deepEqual(fs.readFileSync(f.file), before);
     });
     console.log('\n快速启动DOM：' + passed + ' 通过 / 0 失败');
   } finally { for (const dom of fixtures) dom.window.close(); fs.rmSync(root, { recursive: true, force: true }); }
