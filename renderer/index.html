@@ -34,6 +34,7 @@
     <button id="tool-sidebar" class="tool-btn" title="收起 / 展开侧栏 (Ctrl+`)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg></button>
     <button id="tool-project" class="tool-btn active" title="项目文件 (Ctrl+1)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="7.8" height="9.8" rx="1.2"/><path d="M5.4 13.4h7.2a1 1 0 0 0 1-1V4.6"/></svg></button>
     <button id="tool-outline" class="tool-btn" title="大纲 (Ctrl+2)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.2h10.4M2.8 8h10.4M2.8 11.8h6.4"/></svg></button>
+    <button id="tool-search" class="tool-btn" title="搜索内容"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg></button>
     <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
@@ -67,6 +68,7 @@
       <div class="panel-title">大纲</div>
       <div id="outline"></div>
     </div>
+    <div id="panel-search" class="hidden" role="region" aria-label="搜索内容"></div>
     <!-- Git 提交工具窗口（PyCharm 式左侧停靠：上半变更文件树 · 下半提交信息；diff 显示在主编辑区） -->
     <div id="panel-git" class="hidden">
       <div class="panel-title">提交
@@ -411,6 +413,7 @@
 <script src="git-panel.js"></script>
 <script src="git-log.js"></script>
 <script src="quickopen.js"></script>
+<script src="search-model.js"></script>
 <script src="search.js"></script>
 <script src="session.js"></script>
 <script src="shortcuts.js"></script>

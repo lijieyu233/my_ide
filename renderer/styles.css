@@ -1802,6 +1802,27 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 .sr-file { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .sr-hit { color: var(--text-bright); background: var(--bg-selected); border-radius: 2px; padding: 0 1px; }
 .sr-text { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-title-actions { display: flex; gap: .4em; margin-left: auto; }
+.sr-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; padding: .5em .8em; }
+.sr-controls label { display: flex; align-items: center; gap: .4em; color: var(--text-dim); }
+.sr-controls [hidden] { display: none; }
+.sr-status { padding: .5em .8em; color: var(--text-dim); overflow-wrap: anywhere; flex-shrink: 0; }
+.sr-query { width: 100%; min-width: 0; padding: .6em .8em; background: var(--bg-input); color: var(--text-bright); border: none; border-bottom: 1px solid var(--border); }
+#panel-search { display: flex; flex-direction: column; min-height: 0; height: 100%; font-size: var(--tool-font); }
+#panel-search.hidden { display: none; }
+#panel-search .panel-title { gap: .4em; padding: .5em .8em; flex-wrap: wrap; flex-shrink: 0; }
+#panel-search .sr-query, #panel-search .sr-text, #panel-search .sr-file { font-size: inherit; }
+#search-list { flex: 1; min-height: 0; overflow: auto; }
+#panel-search .qo-foot { flex-shrink: 0; padding: .5em .8em; font-size: .85em; }
+.sr-group-head { display: flex; align-items: center; width: 100%; gap: .4em; padding: .5em .6em; background: var(--bg-panel); color: var(--text-bright); border: none; text-align: left; font: inherit; }
+.sr-group-head svg { flex-shrink: 0; transform: rotate(90deg); }
+.sr-group-head[aria-expanded="false"] svg { transform: none; }
+.sr-group-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-group-count { margin-left: auto; color: var(--text-dim); flex-shrink: 0; }
+.sr-group > [hidden] { display: none; }
+#panel-search .qo-item { padding: .5em .8em .5em 1.4em; gap: .6em; }
+#panel-search .qo-item.sel { box-shadow: inset 2px 0 var(--accent); }
+#panel-search .qo-item.sel .sr-text { color: var(--text-bright); }
 .qo-item.sel .sr-text { color: #ddd; }
 body.theme-light .qo-item.sel .sr-text { color: #444; }
 

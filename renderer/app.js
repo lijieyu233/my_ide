@@ -100,8 +100,8 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'git', 'tasks', 'launch', 'db', 'browser', 'log'];
-  const SIDE_TOOLS = ['project', 'outline', 'git', 'tasks', 'launch'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser', 'log'];
+  const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
@@ -148,7 +148,11 @@ const App = (() => {
   function showTool(name) {
     if (!ALL_TOOLS.includes(name)) return;
     if (document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
-    if (activeTool !== name) setToolState(name);
+    if (activeTool !== name || sideCollapsed) setToolState(name);
+  }
+  function hideSideTool(name) {
+    if(!SIDE_TOOLS.includes(name)||sideTool!==name)return;
+    sideCollapsed=true;if(activeTool===name)activeTool=null;renderToolStrip();saveToolState();
   }
 
   // ---------- AI 右侧面板（独立停靠，不参与左侧互斥） ----------
@@ -215,10 +219,11 @@ const App = (() => {
     if (activeTool === 'browser') sidePanel = 'browser';
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
-    for (const t of ['project', 'outline', 'git', 'tasks', 'launch', 'db', 'browser']) {
+    for (const t of ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
+    window.Search?.syncVisible(!sideCollapsed && sidePanel==='search' && !document.body.classList.contains('sidebar-collapsed'));
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
@@ -287,6 +292,7 @@ const App = (() => {
       btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS（不再切字符）
       btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+`)';
     }
+    renderToolStrip();
   }
 
   // ---------- 右侧栏整体收起 / 展开（AI 面板所在右栏，Alt+`） ----------
@@ -666,6 +672,7 @@ const App = (() => {
           root = null;
           MI.activeRoot = null;
           Tree.setRoot(null);
+          Search.setRoot();
           GitPanel.rootDir = null;
           if (window.GitLog) GitLog.setRoot(null);
           if (window.Tasks) Tasks.setRoot(null);
@@ -985,6 +992,7 @@ const App = (() => {
     applyToolFont(); // 侧栏字号：脚本在 body 末尾、DOM 已就绪，这里再同步一次数值显示
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
+    document.getElementById('tool-search').onclick = () => { switchTool('search'); if(getTool()==='search')Search.focusDock(); };
     document.getElementById('tool-git').onclick = () => switchTool('git');
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
@@ -1032,7 +1040,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
+    switchTool, showTool, hideSideTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

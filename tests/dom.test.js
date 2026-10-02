@@ -534,6 +534,7 @@ async function loadApp(dom) {
   evalFile('git-panel.js');
   evalFile('git-log.js');
   evalFile('quickopen.js');
+  evalFile('search-model.js');
   evalFile('search.js');
   evalFile('session.js');
   evalFile('shortcuts.js');
@@ -8458,6 +8459,67 @@ assert_(panel, 'CM6 搜索面板出现');
     const finish=(job,reason='complete',results=[],error)=>job.wait.resolve({...job.request,results,doneReason:reason,truncated:reason!=='complete',error,stats:{}});
     return {jobs,listeners,cancelled,finish,batch:(job,number,results)=>listeners.forEach(cb=>cb({...job.request,batchNo:number,results}))};
   };
+  const dockQuery = async(w,value) => {const input=w.document.querySelector('#search-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,340));return input;};
+  const selectedText = viewer => {const s=viewer.cm.view.state.selection.main;return viewer.cm.view.state.doc.sliceString(s.from,s.to);};
+  await saveCase('常驻搜索B2：弹窗移入侧栏和再弹出共用一次请求，保留查询与选择',async(d,_viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/dock.txt']={type:'file',content:'needle needle'};const search=bridge.search;let requests=0;bridge.search=async r=>{requests++;return search(r);};
+    w.Search.open();const input=await srQuery(w,'needle');qoKey(w,input,'ArrowDown');const selected=w.document.querySelector('#sr-list .sel').dataset.hitId;
+    w.document.querySelector('#sr-move').click();assert(!w.document.querySelector('#sr-box'));assert.equal(w.document.querySelector('#search-input').value,'needle');assert.equal(w.document.querySelector('#search-list .sel').dataset.hitId,selected);assert.equal(requests,1);assert.equal(w.App.getTool(),'search');assert(!w.document.querySelector('[inert]'));
+    w.document.querySelector('#search-move').click();assert.equal(w.document.querySelector('#sr-input').value,'needle');assert.equal(w.document.querySelector('#sr-list .sel').dataset.hitId,selected);assert.equal(requests,1);w.Modal.hide();assert.equal(w.document.querySelector('#search-list .qo-item').dataset.hitId.split(':')[0],selected.split(':')[0]);
+    w.Search.showDock();assert.equal(requests,1);assert(w.document.activeElement===w.document.querySelector('#search-input'));
+  });
+  await saveCase('常驻搜索B2：连续三处跨文件点击/Enter精确定位，列表/查询/焦点保留',async(d,viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/a-dock.txt']={type:'file',content:'x\r\n\t😀Needle needle'};FAKE_FS[P+'/b-dock.txt']={type:'file',content:'needle'};
+    const search=bridge.search;let calls=0;bridge.search=async r=>{calls++;return search(r);};w.Search.showDock();const input=await dockQuery(w,'needle');
+    assert.equal(w.document.querySelectorAll('#search-list .sr-group').length,2);assert(w.document.querySelector('#search-status').textContent.includes('3 处，2 个文件'));
+    const rows=[...w.document.querySelectorAll('#search-list .qo-item')];rows[0].click();await tick();await tick();assert.equal(selectedText(viewer),'Needle');assert(w.document.activeElement===input);
+    qoKey(w,input,'ArrowDown');qoKey(w,input,'Enter');await tick();await tick();assert.equal(selectedText(viewer),'needle');assert.equal(viewer.cm.view.state.selection.main.from,'x\n\t😀Needle '.length);assert(w.document.activeElement===input);
+    qoKey(w,input,'ArrowDown');qoKey(w,input,'Enter');await tick();await tick();assert.equal(viewer.activeTab.path,P+'/b-dock.txt');assert.equal(selectedText(viewer),'needle');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,3);assert.equal(input.value,'needle');assert.equal(calls,1);assert(w.document.activeElement===input);
+  });
+  await saveCase('常驻搜索B2：晚批次排序保留hitId、滚动锚和文件折叠，不抢输入焦点',async(d,_viewer,bridge)=>{
+    const w=d.window,search=bridge.search;FAKE_FS[P+'/z.txt']={type:'file',content:'needle'};FAKE_FS[P+'/a.txt']={type:'file',content:'needle'};const seed=await search({requestId:'seed',root:P,query:'needle'}),z=seed.results.find(h=>h.path===P+'/z.txt'),a=seed.results.find(h=>h.path===P+'/a.txt'),driver=srDriver(bridge);
+    w.Search.showDock();const input=await dockQuery(w,'needle'),job=driver.jobs[0];driver.batch(job,1,[z]);const list=w.document.querySelector('#search-list'),id=z.hitId;list.scrollTop=42;
+    driver.batch(job,2,[a]);assert.equal(list.querySelector('.sel').dataset.hitId,id);assert.equal(list.querySelector('.sr-group-path').textContent,'a.txt');assert.equal(list.scrollTop,42);assert(w.document.activeElement===input);
+    const group=[...list.querySelectorAll('.sr-group-head')].find(row=>row.dataset.group.endsWith('/z.txt'));group.focus();group.click();assert.equal(w.document.activeElement.dataset.group,group.dataset.group);assert.equal(w.document.activeElement.getAttribute('aria-expanded'),'false');assert(!input.hasAttribute('aria-activedescendant'));
+    driver.finish(job,'complete',[a,z]);await tick();assert.equal(list.querySelector('.sr-group-head[aria-expanded="false"]').dataset.group,group.dataset.group);input.focus();qoKey(w,input,'ArrowDown');assert.equal(list.querySelector('.sel').dataset.hitId,a.hitId);qoKey(w,input,'ArrowDown');assert.equal(list.querySelector('.sel').dataset.hitId,a.hitId);
+  });
+  await saveCase('常驻搜索B2：查询中转入侧栏不停止，不创建第二订阅，取消保留真实局部结果',async(d,_viewer,bridge)=>{
+    const w=d.window,search=bridge.search,hits=await srFixture({search},{requestId:'seed',query:'needle'}),driver=srDriver(bridge);w.Search.open();await srQuery(w,'needle');const job=driver.jobs[0];driver.batch(job,1,[hits[0]]);w.document.querySelector('#sr-move').click();assert.equal(driver.listeners.size,1);assert.equal(driver.jobs.length,1);assert(!driver.cancelled.includes(job.request.requestId));
+    driver.batch(job,2,[hits[1]]);const ack=deferred();bridge.cancelSearch=()=>ack.promise;w.document.querySelector('#search-stop').click();assert(w.document.querySelector('#search-status').textContent.includes('正在停止'));driver.finish(job,'cancelled',hits);ack.resolve({ok:true,stopped:true});await tick();assert(w.document.querySelector('#search-status').textContent.includes('已取消'));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,2);
+  });
+  await saveCase('常驻搜索B2：收起/切工具停止后台并保留结果，重开不重搜且新查询清旧选择',async(d,_viewer,bridge)=>{
+    const w=d.window,search=bridge.search,hits=await srFixture({search},{requestId:'seed',query:'needle'}),driver=srDriver(bridge);w.Search.showDock();await dockQuery(w,'needle');const job=driver.jobs[0];driver.batch(job,1,hits);w.App.showTool('project');assert(driver.cancelled.includes(job.request.requestId));driver.finish(job,'cancelled',hits);await tick();w.Search.showDock();assert.equal(driver.jobs.length,1);assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,2);
+    w.document.querySelector('#search-close').click();assert(w.document.querySelector('#panel-search').classList.contains('hidden'));w.Search.showDock();assert(!w.document.querySelector('#panel-search').classList.contains('hidden'));const input=w.document.querySelector('#search-input');input.value='new';input.dispatchEvent(new w.Event('input',{bubbles:true}));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,0);assert(!input.hasAttribute('aria-activedescendant'));
+    w.App.toggleSidebar(true);await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,1);w.Search.showDock();assert(!w.document.body.classList.contains('sidebar-collapsed'));assert(w.document.querySelector('#search-status').textContent.includes('已取消'));
+  });
+  await saveCase('常驻搜索B2：跨项目/A回切销毁旧模型与订阅，不恢复旧命中',async(d,_viewer,bridge)=>{
+    const w=d.window,driver=srDriver(bridge);w.Search.showDock();await dockQuery(w,'old');const old=driver.jobs[0];await w.App.setRoot('C:/proj2');assert.equal(driver.listeners.size,0);assert(driver.cancelled.includes(old.request.requestId));w.Search.showDock();assert.equal(w.document.querySelector('#search-input').value,'');assert.equal(driver.listeners.size,1);driver.finish(old,'error',[],'旧项目失败');await tick();assert(!w.document.querySelector('#search-status').textContent.includes('旧项目失败'));
+    await w.App.setRoot(P);w.Search.showDock();assert.equal(w.document.querySelector('#search-input').value,'');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,0);assert.equal(driver.listeners.size,1);
+  });
+  await saveCase('常驻搜索B2：版本变化/dirty/删除定位失败保留列表与查询，重搜新版本',async(d,viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/versions.txt']={type:'file',content:'needle'};w.Search.showDock();await dockQuery(w,'needle');FAKE_FS[P+'/versions.txt'].content='later needle';w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('文件已改变'));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
+    w.document.querySelector('#search-retry').click();await new Promise(r=>setTimeout(r,340));w.document.querySelector('#search-list .qo-item').click();await tick();await tick();assert.equal(selectedText(viewer),'needle');viewer.cm.setValue('后来输入');w.Search.focusDock();w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('未保存'));assert.equal(viewer.cm.getValue(),'后来输入');
+    delete FAKE_FS[P+'/versions.txt'];w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('文件已改变'));assert.equal(w.document.querySelector('#search-input').value,'needle');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
+  });
+  await saveCase('常驻搜索B2：分屏textarea按规范化CRLF精确选区，保留原模式与结果焦点',async(d,viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/split-search.md']={type:'file',content:'# title\r\n\t😀needle needle\r\n'};await viewer.openFile(P+'/split-search.md');viewer.activeTab.mode='split';viewer.renderActive();w.Search.showDock();const input=await dockQuery(w,'needle');qoKey(w,input,'ArrowDown');qoKey(w,input,'Enter');await tick();await tick();assert.equal(viewer.activeTab.mode,'split');const ta=viewer.activeTab.ta;assert.equal(ta.value.slice(ta.selectionStart,ta.selectionEnd),'needle');assert.equal(ta.selectionStart,'# title\n\t😀needle '.length);assert(w.document.activeElement===input);
+  });
+  await saveCase('常驻搜索B2：只读预览不静默改模式，显式源码定位可继续浏览',async(d,viewer)=>{
+    const w=d.window;FAKE_FS[P+'/preview-search.md']={type:'file',content:'# needle'};await viewer.openFile(P+'/preview-search.md');viewer.activeTab.mode='preview';viewer.renderActive();w.Search.showDock();await dockQuery(w,'needle');w.document.querySelector('#search-list .qo-item').click();await tick();assert.equal(viewer.activeTab.mode,'preview');assert(!w.document.querySelector('#search-source').hidden);w.document.querySelector('#search-source').click();await tick();await tick();assert.equal(viewer.activeTab.mode,'source');assert.equal(selectedText(viewer),'needle');assert(w.document.activeElement===w.document.querySelector('#search-input'));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
+  });
+  await saveCase('常驻搜索B2：懒恢复标签等待真正读取，失败不会跳旧CM位置',async(d,viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/lazy.txt']={type:'file',content:'needle'};viewer.addLazyTab(P+'/lazy.txt');const read=bridge.readFile,gate=deferred();bridge.readFile=async p=>p===P+'/lazy.txt'?gate.promise:read(p);w.Search.showDock();await dockQuery(w,'needle');w.document.querySelector('#search-list .qo-item').click();await tick();assert.equal(viewer.activeTab.mode,null);gate.resolve(await read(P+'/lazy.txt'));await tick();await tick();assert.equal(selectedText(viewer),'needle');assert(w.document.activeElement===w.document.querySelector('#search-input'));
+  });
+  await saveCase('常驻搜索B2：迟到定位不能抢新输入焦点/切工具/关闭弹窗后的编辑器',async(d,viewer,bridge)=>{
+    const w=d.window;FAKE_FS[P+'/late-nav.txt']={type:'file',content:'needle'};w.Search.showDock();await dockQuery(w,'needle');const version=bridge.fileVersion,pause=deferred();bridge.fileVersion=()=>pause.promise;w.document.querySelector('#search-list .qo-item').click();const external=w.document.createElement('input');w.document.body.appendChild(external);external.focus();pause.resolve(await version(P+'/late-nav.txt'));await tick();assert(w.document.activeElement===external);assert(!viewer.openTabs.some(t=>t.path===P+'/late-nav.txt'));
+    bridge.fileVersion=version;w.Search.focusDock();const pause2=deferred(),read=bridge.readFile;bridge.readFile=async p=>p===P+'/late-nav.txt'?pause2.promise:read(p);w.document.querySelector('#search-list .qo-item').click();await tick();w.App.showTool('project');external.focus();pause2.resolve(await read(P+'/late-nav.txt'));await tick();await tick();assert(w.document.activeElement===external);assert(!w.document.querySelector('#search-status').textContent.includes('定位失败'));external.remove();
+  });
+  await saveCase('常驻搜索B2：上层弹窗隔离命中动作，Esc仅收起当前搜索并回编辑器',async(d,viewer)=>{
+    const w=d.window;FAKE_FS[P+'/modal-dock.txt']={type:'file',content:'needle'};viewer.cm.focus();w.Search.showDock();const input=await dockQuery(w,'needle'),before=viewer.activeTab.path,upper=w.document.createElement('div');upper.tabIndex=-1;w.Modal.show(upper);upper.focus();w.document.querySelector('#search-list .qo-item').click();await tick();assert.equal(viewer.activeTab.path,before);qoKey(w,upper,'Escape');assert.equal(w.Modal.stack.length,0);input.focus();qoKey(w,input,'Escape');assert(w.document.querySelector('#panel-search').classList.contains('hidden'));assert(viewer.cm.view.dom.contains(w.document.activeElement));w.Search.showDock();assert.equal(w.document.querySelector('#search-input').value,'needle');
+  });
+  await saveCase('常驻搜索B2：组合输入期间不搜索/导航，面板Tab可离开、命令入口沿共享注册',async(d,_viewer,bridge)=>{
+    const w=d.window,driver=srDriver(bridge);await w.Shortcuts.execute('search-panel');const input=w.document.querySelector('#search-input');input.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));input.value='中文';input.dispatchEvent(new w.Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,0);qoKey(w,input,'Escape',{isComposing:true});assert(!w.document.querySelector('#panel-search').classList.contains('hidden'));input.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,1);const event=new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});input.dispatchEvent(event);assert(!event.defaultPrevented);driver.finish(driver.jobs[0]);
+  });
   await saveCase('搜索B1：同一行每处命中按UTF16/CRLF定位，方向键和点击不依赖悬停',async(d,viewer,bridge)=>{
     const w=d.window;FAKE_FS[P+'/exact.txt']={type:'file',content:'zero\r\n\t😀Needle needle\r\n'};
     w.Search.open();const input=await srQuery(w,'needle'),rows=[...w.document.querySelectorAll('#sr-list .qo-item')];

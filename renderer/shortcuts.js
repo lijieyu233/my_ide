@@ -337,6 +337,7 @@ for (const binding of Shortcuts.bindings()) {
   Shortcuts.describe(binding.id, metadata);
 }
 Shortcuts.register('theme-settings', { desc: '主题设置', keys: [], palette: true, category: '工作台', aliases: ['theme', '颜色', '主题配置'], run: () => Settings.open('theme') });
+Shortcuts.register('search-panel', { desc: '在侧栏搜索内容', keys: [], palette: true, category: '项目', aliases: ['search panel', '常驻搜索'], requiresProject: true, run: () => Search.showDock() });
 Shortcuts.register('file-history', { desc: '显示文件历史', keys: [], palette: true, category: '文件', aliases: ['file history', 'history', '文件版本'],
   requiresProject: true, requiresDocument: true, allowBackgroundDocument: true,
   isEnabled: ctx => DocumentPaths.contains(ctx.root, ctx.path) || '当前文件不在此项目内', run: ctx => GitLog.showFileHistory(ctx.path) });

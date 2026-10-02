@@ -19,6 +19,7 @@ const Viewer = (() => {
   const tabs = []; // {path, name, dirty, content, mode}
   let nextTabId = 0;
   const saveQueues = new Map();
+  const navigationFocus = new Map();
   const pathChanges = new Set();
   const pathBusy = (p) => [...pathChanges].some(change => change.ranges.some(range => DocumentPaths.contains(range,p)));
   let activeTabId = null;
@@ -229,7 +230,7 @@ const Viewer = (() => {
     try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
   }
 
-  async function openFile(path) {
+  async function openFile(path, options = {}) {
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
     // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
@@ -241,12 +242,14 @@ const Viewer = (() => {
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => DocumentPaths.key(t.path) === DocumentPaths.key(path));
     if (i >= 0) {
+      if(options.focusRequest)navigationFocus.set(tabs[i].id,options.focusRequest);
       activate(i);
       // 已打开的标签也要同步树高亮（否则高亮不切换）
       if (window.Tree) Tree.reveal(path);
       return;
     }
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
+    if(options.focusRequest)navigationFocus.set(tab.id,options.focusRequest);
     tabs.push(tab);
     renderTabs();
     activate(tabs.length - 1);
@@ -343,6 +346,58 @@ const Viewer = (() => {
     try {
       if (cmApi && cmApi.gotoLine) cmApi.gotoLine(n);
     } catch {}
+  }
+
+  // 搜索定位不猜预览DOM列，也不借旧CM操作新标签；调用方取消/换项目会使整个导航失效。
+  async function navigateToHit(hit, options = {}) {
+    const root=window.App?.root,focusRequest={isCurrent:options.isCurrent||(()=>true),focusTarget:options.focusTarget};
+    const valid=()=>focusRequest.isCurrent()&&DocumentPaths.key(root)===DocumentPaths.key(window.App?.root);
+    const reject=(error,errorCode)=>({ok:false,error,errorCode});
+    try {
+      if(!valid())return {stale:true};
+      if(!hit||!DocumentPaths.contains(root,hit.path)||!SearchModel.sameVersion(hit.version,hit.version))return reject('搜索位置不属于当前项目或没有有效版本','INVALID_LOCATION');
+      const version=await window.myIDE.fs.fileVersion(hit.path);if(!valid())return {stale:true};
+      if(version.error||!SearchModel.sameVersion(version.version,hit.version))return reject(version.error||'文件已改变，请重新搜索','VERSION_CONFLICT');
+      const prior=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(hit.path));
+      if(prior?.dirty)return reject('目标文件有未保存的输入，磁盘搜索位置已过期','DIRTY_DOCUMENT');
+      await openFile(hit.path,{focusRequest});if(!valid())return {stale:true};
+      const tab=currentTab();if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(hit.path))return reject('目标文件没有成功打开','NO_DOCUMENT');
+      if(tab.loadPromise&&tab.mode==null)await tab.loadPromise;if(!valid()||currentTab()!==tab)return {stale:true};
+      if(tab.error||tab.mode==null||tab.content==null)return reject(tab.error||'目标文件没有成功打开','READ_FAILED');
+      if(tab.dirty||!SearchModel.sameVersion(tab.diskVersion,hit.version)||tab.encoding!==hit.encoding||tab.content.slice(hit.startOffset,hit.endOffset)!==hit.match)
+        return reject('当前文档与搜索版本不一致，请重新搜索','VERSION_CONFLICT');
+      if(options.allowSource&&tab.mode==='preview'&&!tab.binary&&!tab.tooLarge){
+        tab.mode=MD_EXTS.has(extOf(tab.name))?'source':'edit';navigationFocus.set(tab.id,focusRequest);renderView();
+      }
+      const cm=cmApi;
+      if(cm?.__tab===tab&&cm.view?.dom.isConnected&&typeof cm.setCursor==='function'){
+        if(hit.line>cm.view.state.doc.lines)return reject('文本位置已变化，请重新搜索','POSITION_CHANGED');
+        const line=cm.view.state.doc.line(hit.line),from=line.from+hit.startColumn-1,to=line.from+hit.endColumn-1;
+        if(to>line.to||cm.view.state.doc.sliceString(from,to)!==hit.match)return reject('文本位置已变化，请重新搜索','POSITION_CHANGED');
+        cm.view.dispatch({selection:{anchor:from,head:to},scrollIntoView:true});
+        return {ok:true,focus:()=>{if(currentTab()===tab&&cmApi===cm&&cm.view.dom.isConnected)cm.focus();}};
+      }
+      const ta=tab.ta;
+      if(ta?.isConnected&&viewer.contains(ta)){
+        const lines=ta.value.split('\n'),line=lines[hit.line-1],from=lines.slice(0,hit.line-1).reduce((n,line)=>n+line.length+1,0)+hit.startColumn-1,to=from+hit.match.length;
+        if(line==null||hit.endColumn-1>line.length||ta.value.slice(from,to)!==hit.match)return reject('文本位置已变化，请重新搜索','POSITION_CHANGED');
+        ta.setSelectionRange(from,to);const height=parseFloat(getComputedStyle(ta).lineHeight)||parseFloat(getComputedStyle(ta).fontSize)*1.5;
+        ta.scrollTop=Math.max(0,(hit.line-1)*height-ta.clientHeight/2);
+        return {ok:true,focus:()=>{if(currentTab()===tab&&tab.ta===ta&&ta.isConnected)ta.focus();}};
+      }
+      return reject('当前视图不支持精确文本定位，可选择以源码定位','UNSUPPORTED_VIEW');
+    }catch(error){return valid()?reject(String(error?.message||error),'NAVIGATION_FAILED'):{stale:true};}
+    finally{for(const [id,request] of navigationFocus)if(request===focusRequest)navigationFocus.delete(id);}
+  }
+
+  function scheduleEditorFocus(api,tab) {
+    const request=navigationFocus.get(tab.id),origin=document.activeElement;
+    setTimeout(()=>{
+      if(cmApi!==api||currentTab()!==tab||!api.view?.dom.isConnected)return;
+      if(request){if(request.isCurrent()&&request.focusTarget?.isConnected&&(document.activeElement===origin||document.activeElement===document.body))request.focusTarget.focus({preventScroll:true});return;}
+      // 挂载后用户已经转到别处输入，迟到focus不得再抢回编辑器。
+      if(document.activeElement===origin||document.activeElement===document.body)api.focus();
+    },0);
   }
 
   const closePending = new Set();
@@ -1085,7 +1140,7 @@ const Viewer = (() => {
       sd.addEventListener('scroll', () => { tab.scrollTop = sd.scrollTop; }, { passive: true });
       if (tab.scrollTop) sd.scrollTop = tab.scrollTop;
     } catch {}
-    setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
+    scheduleEditorFocus(cmApi,tab);
   }
 
   // ---------- 代码文件编辑（CodeMirror 6 + 语法高亮） ----------
@@ -1119,7 +1174,7 @@ const Viewer = (() => {
     tab.ta = null;
     // 编辑器右键菜单：Blame 注解 / 文件历史（PyCharm Annotate with Git Blame 入口）
     wrap.oncontextmenu = (e) => { e.preventDefault(); showEditorMenu(e.clientX, e.clientY); };
-    setTimeout(() => { if (cmApi) cmApi.focus(); }, 0);
+    scheduleEditorFocus(cmApi,tab);
   }
 
   // 渲染态链接点击（Ctrl+点击）→ 外链浏览器 / 本地相对路径打开
@@ -1557,7 +1612,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine,
+    openFile, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
