@@ -1,11 +1,12 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { JSDOM } = require('jsdom'), { createRegistry } = require('../ai-runs'), FileWrite = require('../file-write'), TextFormat = require('../text-format');
+const AI = require('../ai-service');
 const source = fs.readFileSync(path.join(__dirname, '../renderer/ai-panel.js'), 'utf8'), html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(r => setImmediate(r));
 async function until(fn) { for (let n = 0; n < 200; n++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw Error('condition timeout'); }
 const writeCall = (path = 'one.md', content = 'MODEL', id = 'w1') => ({ id, name: 'write_file', args: { path, content } });
-const reply = (...calls) => ({ ok: true, text: '', toolCalls: calls });
+const reply = (...calls) => ({ ok: true, status: 'completed', complete: true, finishReason: calls.length ? 'tool_calls' : 'stop', text: '', toolCalls: calls });
 const fixtures = []; let passed = 0;
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-ai-panel-run-')), A = path.join(dir, 'A'), B = path.join(dir, 'B');
@@ -31,7 +32,8 @@ function fixture() {
       if (f.script.length) d.resolve(f.script.shift());
       else if (!f.hold) d.resolve({ ok: true, text: '总结' });
       const result = await d.promise;
-      return f.onResponse ? f.onResponse(result, context) : { ...result, context };
+      const terminal = { status: result.error ? 'failed' : 'completed', complete: !result.error, finishReason: result.toolCalls?.length ? 'tool_calls' : 'stop', ...result };
+      return f.onResponse ? f.onResponse(terminal, context) : { ...terminal, context };
     },
     abort: async context => { aborts.push(context); return f.abortResult || registry.finish(1, context, 'cancelled'); },
     finish: async context => registry.finish(1, context),
@@ -47,7 +49,7 @@ function fixture() {
   } };
   w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture', permWrite: 'auto' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
-  f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ ...r, context: calls[i].context });
+  f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
   f.switchRoot = root => { w.App.root = root; w.Viewer.activeTab = null; w.AiPanel.onProjectChange(); };
   f.element = selector => w.document.querySelector(selector); f.text = () => w.document.getElementById('ai-msgs').textContent;
@@ -139,6 +141,53 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('已记住项目授权继续适用，正常写入和续流无需重复确认', async () => {
     const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.w.AiPanel.sessionPerm.write = true;
     f.script.push(reply(writeCall())); f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert.equal(f.writes.length, 1); assert.equal(f.element('.ai-confirm'), null); assert.equal(f.calls.length, 2);
+  });
+  await test('真实服务截断/length/过滤/error流进入完整面板，原字节不变且命令零派发', async () => {
+    const frame = obj => 'data: ' + JSON.stringify(obj) + '\n\n';
+    const native = { content: '保留部分', tool_calls: [writeCall(), { id: 'cmd', name: 'run_command', args: { command: 'node --version' } }].map((c, index) => ({ index, id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } })) };
+    const block = '保留部分\n```tool_call\n' + JSON.stringify({ name: 'write_file', args: { path: 'one.md', content: 'MODEL' } }) + '\n```';
+    for (const delta of [native, { content: block }]) for (const reason of ['EOF', 'length', 'content_filter', null, 'error']) {
+      const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permRun: 'auto' });
+      let wire = frame({ choices: [{ delta, finish_reason: reason === 'EOF' || reason === 'error' ? null : reason }] });
+      wire += reason === 'error' ? 'data: {broken}\n\n' : reason === 'EOF' ? '' : 'data: [DONE]\n\n';
+      AI.init({ fetch: async () => new Response(wire) });
+      f.onResponse = (_result, context) => AI.chatStream({ baseUrl: 'http://fixture.invalid', model: 'fixture' }, [], null, [{}], context);
+      f.send(); await until(() => f.calls.length === 1 && f.element('#ai-send').textContent === '➤');
+      assert.equal(f.writes.length, 0); assert.equal(f.commands.length, 0); assert.equal(fs.readFileSync(f.file('one.md'), 'utf8'), 'ORIGINAL');
+      assert(f.text().includes('保留部分')); assert.equal(f.element('.ai-confirm'), null); assert.equal(f.element('.ai-tool'), null);
+      assert(!f.text().includes('已完成')); await tick(); assert.equal(f.calls.length, 1);
+    }
+  });
+  await test('完整文本响应中的损坏/未闭合工具块整轮拒绝，不先执行前一块', async () => {
+    const good = '```tool_call\n' + JSON.stringify({ name: 'write_file', args: { path: 'one.md', content: 'MODEL' } }) + '\n```';
+    for (const bad of ['```tool_call\n{bad}\n```', '```tool_call\n{}', '```tool_call\n{"name":"write_file","args":[]}\n```']) {
+      const f = fixture(); f.put('one.md'); f.script.push({ ok: true, text: good + '\n' + bad }); f.send(); await until(() => f.element('#ai-send').textContent === '➤');
+      assert.equal(f.writes.length, 0); assert(f.text().includes('文本工具块')); assert.equal(f.calls.length, 1);
+    }
+  });
+  await test('真实完成工具流和明确降级文本协议仍写入，显示兼容原因并只续流一次', async () => {
+    const frame = obj => 'data: ' + JSON.stringify(obj) + '\n\n';
+    for (const fallback of [false, true]) {
+      const f = fixture(); f.put('one.md'); let network = 0;
+      const text = '```tool_call\n' + JSON.stringify({ name: 'write_file', args: { path: 'one.md', content: 'MODEL' } }) + '\n```';
+      AI.init({ fetch: async () => { network++; if (fallback && network === 1) return new Response(JSON.stringify({ error: { param: 'tools', code: 'unsupported_parameter', message: 'Unsupported parameter: tools' } }), { status: 400 });
+        const delta = fallback ? { content: text } : { tool_calls: [{ index: 0, id: 'w1', type: 'function', function: { name: 'write_file', arguments: '{"path":"one.md","content":"MODEL"}' } }] };
+        return new Response(frame({ choices: [{ delta, finish_reason: fallback ? 'stop' : 'tool_calls' }] }) + 'data: [DONE]\n\n'); } });
+      f.onResponse = (r, context) => f.calls.length === 1 ? AI.chatStream({ baseUrl: 'http://fixture.invalid', model: 'fixture' }, [], null, [{}], context) : { ...r, context };
+      f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert.equal(f.writes.length, 1); assert.equal(f.calls.length, 2); assert.equal(fs.readFileSync(f.file('one.md'), 'utf8'), 'MODEL');
+      if (fallback) assert(f.text().includes('原生工具已停用') && f.text().includes('Unsupported parameter: tools'));
+    }
+  });
+  await test('面板独立拒绝缺失终态/完成原因与调用冲突，旧完成协议不放行', async () => {
+    for (const override of [{ status: undefined }, { complete: false }, { finishReason: 'stop' }, { finishReason: 'length' }]) {
+      const f = fixture(); f.put('one.md'); f.onResponse = (_r, context) => ({ ...reply(writeCall()), ...override, context }); f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert.equal(f.writes.length, 0); assert(f.text().includes('回复未完成'));
+    }
+  });
+  await test('失败的部分回复保留在会话和下一次上下文，不带可执行工具锚', async () => {
+    const f = fixture(); f.script.push({ ok: false, status: 'failed', complete: false, finishReason: null, text: '失败前的部分正文', error: '流JSON损坏', toolCalls: [] });
+    f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert(f.text().includes('失败前的部分正文')); assert.equal(f.writes.length, 0);
+    f.send('下一次'); await until(() => f.calls.length === 2 && f.element('#ai-send').textContent === '➤');
+    const partial = f.calls[1].messages.find(m => m.role === 'assistant' && m.content?.includes('失败前的部分正文')); assert(partial); assert(partial.content.includes('部分回复，未执行工具')); assert.equal(partial.tool_calls, undefined);
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

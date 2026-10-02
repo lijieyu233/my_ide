@@ -524,7 +524,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   let r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
   }, tools, context);
-  if (record.status !== 'active') r = { ...r, aborted: true, cancelled: true, toolCalls: [] };
+  if (record.status !== 'active') r = { ...r, ok: false, status: 'aborted', complete: false, aborted: true, cancelled: true, toolCalls: [] };
   send('ai:done', r);
   return r;
 });
@@ -1335,8 +1335,9 @@ app.whenReady().then(() => {
             r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
           }
         }
-        send('ai:done', r);
-        return { ...r, context };
+        const terminal = { ...r, status: 'completed', complete: true, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop' };
+        send('ai:done', terminal);
+        return { ...terminal, context };
       });
       bootLog('2 ai:chat 已打桩');
 

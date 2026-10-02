@@ -495,7 +495,8 @@ function makeDom() {
       // 第 3 参 tools 会被记录进 aiLastTools 供断言（原生 function calling）
       chat: async (_cfg, _msgs, tools, context) => {
         aiCalls++; aiLastTools = tools || null; aiLastMsgs = _msgs;
-        return { ...(aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' }), context };
+        const r = aiScript.length ? aiScript.shift() : { ok: true, text: 'OK' };
+        return { status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context };
       },
       abort: async () => ({ ok: true }),
       finish: async () => ({ ok: true }),

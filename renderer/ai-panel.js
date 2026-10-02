@@ -62,7 +62,7 @@ const AiPanel = (() => {
   }
   function endRun(run, status = 'completed') {
     if (!runIsCurrent(run)) return;
-    run.status = status; run.notice.textContent = status === 'cancelled' ? '已停止' : status === 'failed' ? '生成失败' : '已完成';
+    run.status = status; run.notice.textContent = status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成';
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     document.getElementById('ai-stop')?.classList.add('hidden');
@@ -268,11 +268,11 @@ const AiPanel = (() => {
     const re = /```tool_call\s*([\s\S]*?)```/g;
     let m;
     while ((m = re.exec(text || ''))) {
-      try {
-        const j = JSON.parse(m[1].trim());
-        if (j && typeof j.name === 'string' && j.args && typeof j.args === 'object') out.push({ name: j.name, args: j.args });
-      } catch {}
+      const j = JSON.parse(m[1].trim());
+      if (!j || typeof j.name !== 'string' || !j.name || !j.args || typeof j.args !== 'object' || Array.isArray(j.args)) throw Error('文本工具参数无效');
+      out.push({ name: j.name, args: j.args });
     }
+    if (out.length > 64 || out.length !== (String(text || '').match(/```tool_call\b/g) || []).length) throw Error('文本工具块未完整结束');
     return out;
   }
 
@@ -1279,8 +1279,17 @@ const AiPanel = (() => {
     stream.finished = true;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     const md = curStream.querySelector('.ai-md');
+    let complete = r?.status === 'completed' && r?.complete === true && r?.ok === true && !r?.aborted
+      && ['stop', 'tool_calls'].includes(r?.finishReason)
+      && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
+    let warning = r?.message || r?.error || (!complete && !r?.aborted ? '回复终态无效，未执行工具' : '');
+    let textCalls = [];
+    if (!isErr && complete && r.finishReason === 'stop' && text) {
+      try { textCalls = parseToolCalls(text).map((c, index) => ({ ...c, id: stream.context.requestId + ':' + stream.context.round + ':' + index })); }
+      catch { complete = false; warning = '文本工具块或参数未完整完成，未执行工具'; }
+    }
     // 空气泡不留：模型这一轮只调工具、没说话时，聊天里挂个空白框只会让人莫名其妙
-    const hasCalls = !!(r && Array.isArray(r.toolCalls) && r.toolCalls.length);
+    const hasCalls = !!(complete && r && Array.isArray(r.toolCalls) && r.toolCalls.length);
     if (!isErr && !String(text || '').trim()) {
       if (hasCalls) {
         try { curStream.remove(); } catch {}
@@ -1289,13 +1298,18 @@ const AiPanel = (() => {
       }
     }
     if (isErr) {
-      md.innerHTML = '<p class="ai-err">⚠ ' + esc(text || '请求失败') + '</p>';
+      md.innerHTML = (r?.text ? renderMd(r.text) : '') + '<p class="ai-err">⚠ ' + esc(r?.error || text || '请求失败') + '</p>';
     } else if (text) {
       md.innerHTML = renderMd(text);
       decorateCodeBlocks(curStream);
     }
-    const nativeCalls = (!isErr && !r?.aborted && r && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
-    const textCalls = (!isErr && !r?.aborted && text) ? parseToolCalls(text) : [];
+    if (!complete && !isErr && warning) { const note = document.createElement('p'); note.className = 'ai-err'; note.textContent = warning; md.appendChild(note); }
+    if (r?.capabilities?.downgrades?.length) {
+      const note = document.createElement('p'); note.className = 'ai-run-state';
+      note.textContent = '兼容模式：' + r.capabilities.downgrades.map(d => (d.feature === 'nativeTools' ? '原生工具已停用，使用文本协议' : '用量统计已停用') + '（' + d.reason + '）').join('；');
+      md.appendChild(note);
+    }
+    const nativeCalls = (!isErr && complete && r.finishReason === 'tool_calls' && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
     if (!isErr) {
       // 原生通道：assistant 消息要带 tool_calls（role:tool 结果的引用锚点）
       if (nativeCalls.length) {
@@ -1308,8 +1322,10 @@ const AiPanel = (() => {
           })),
         });
       } else if (text) {
-        msgs.push({ role: 'assistant', content: text });
+        msgs.push({ role: 'assistant', content: complete ? text : text + '\n（部分回复，未执行工具）' });
       }
+    } else if (r?.text) {
+      msgs.push({ role: 'assistant', content: r.text + '\n（部分回复，未执行工具）' });
     }
     curStream = null;
     curText = '';
@@ -1321,7 +1337,7 @@ const AiPanel = (() => {
       return;
     }
     lastUserAt = msgs.map((m) => m.role).lastIndexOf('user');
-    endRun(run, r?.aborted ? 'cancelled' : isErr ? 'failed' : 'completed');
+    endRun(run, r?.aborted ? 'cancelled' : isErr ? 'failed' : complete ? 'completed' : 'incomplete');
   }
 
   function setBusyUI(b) {
