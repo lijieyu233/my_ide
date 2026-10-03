@@ -106,10 +106,12 @@ function createService(file, adapters = {}) {
     queue = job.then(() => undefined, () => undefined);
     return job;
   }
-  function open(id) {
+  function open(id, expectedVersion) {
     if (opening.has(id)) return opening.get(id);
     const job = result(async () => {
-      const e = read().config.entries.find(x => x.id === id);
+      const current = read();
+      if (expectedVersion && !FileWrite.sameVersion(expectedVersion, current.version)) throw fail('VERSION_CONFLICT', '快速启动配置已改变，请重新加载后再打开');
+      const e = current.config.entries.find(x => x.id === id);
       if (!e) throw fail('ENTRY_MISSING', '入口已删除，请重新加载');
       await checkTarget(e);
       if (e.type === 'web') {

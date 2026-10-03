@@ -1,7 +1,9 @@
 // shortcuts.js —— 快捷键系统（动作注册表，支持自定义，PyCharm Keymap 简化版）
 const Shortcuts = (() => {
-  const registry = {}; // id -> {id, desc, keys[], run}
-  const savedKey = {}; // id -> 用户自定义 combo（未修改则无）
+  const registry = Object.create(null); // id -> {id, desc, keys[], run}
+  const savedKey = Object.create(null); // id -> 用户自定义 combo（未修改则无）
+  const custom = id => Object.prototype.hasOwnProperty.call(savedKey, id);
+  const keysOf = id => custom(id) ? (Array.isArray(savedKey[id]) ? savedKey[id] : [savedKey[id]]) : registry[id].keys;
   let keyMap = {};     // combo -> id
   let captureCb = null; // 正在等待按键（设置面板修改快捷键时）
   let projectEpoch = 0, lastFailure = null;
@@ -27,22 +29,31 @@ const Shortcuts = (() => {
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem('myide-keys') || '{}');
-      for (const k in s) savedKey[k] = s[k];
+      for (const k of Object.keys(savedKey)) delete savedKey[k];
+      if (s && typeof s === 'object' && !Array.isArray(s)) for (const k of Object.keys(s)) {
+        if (typeof s[k] === 'string' && s[k] || Array.isArray(s[k]) && s[k].every(v => typeof v === 'string' && v)) savedKey[k] = s[k];
+      }
     } catch {}
     rebuild();
   }
   function rebuild() {
     keyMap = {};
     // 新动作的默认键不能盖掉用户已有的绑定；用户之间的旧冲突仍按注册顺序决胜。
-    for (const id in registry) if (!savedKey[id]) {
-      for (const combo of registry[id].keys) keyMap[combo] = id;
+    for (const id in registry) if (!custom(id)) {
+      for (const combo of registry[id].keys) if (!registry[id].bindingGuard || registry[id].bindingGuard(combo)) keyMap[combo] = id;
     }
-    for (const id in registry) if (savedKey[id]) keyMap[savedKey[id]] = id;
+    for (const id in registry) if (custom(id)) for (const combo of keysOf(id)) if (!registry[id].bindingGuard || registry[id].bindingGuard(combo)) keyMap[combo] = id;
     changed();
   }
 
   function register(id, opts) {
     registry[id] = { ...opts, id, desc: opts.desc, label: opts.label || opts.desc, keys: opts.keys || [], aliases: opts.aliases || [], category: opts.category || '工作台' };
+    rebuild();
+  }
+  function syncActions(prefix, actions) {
+    if (!prefix || actions.some(action => !action.id.startsWith(prefix))) throw Error('动态动作范围无效');
+    for (const id of Object.keys(registry)) if (id.startsWith(prefix)) delete registry[id];
+    for (const opts of actions) registry[opts.id] = { ...opts, label: opts.label || opts.desc, keys: opts.keys || [], aliases: opts.aliases || [], category: opts.category || '工作台' };
     rebuild();
   }
 
@@ -51,36 +62,45 @@ const Shortcuts = (() => {
     return Object.keys(registry).map((id) => ({
       id,
       desc: registry[id].desc,
-      combos: savedKey[id] ? [savedKey[id]] : registry[id].keys,
-      effectiveCombos: (savedKey[id] ? [savedKey[id]] : registry[id].keys).filter(combo => keyMap[combo] === id),
-      custom: !!savedKey[id],
+      combos: [...keysOf(id)], category: registry[id].category, scope: registry[id].scope,
+      effectiveCombos: keysOf(id).filter(combo => keyMap[combo] === id),
+      custom: custom(id),
     }));
   }
 
   // 修改绑定；返回冲突的动作描述（若有）
+  function bindingConflicts(id, combos) {
+    return Object.keys(registry).filter(other => other !== id && keysOf(other).some(combo => combos.includes(combo))).map(other => ({ id: other, desc: registry[other].desc, scope: registry[other].scope, combos: keysOf(other).filter(combo => combos.includes(combo)) }));
+  }
+  function updateKeys(next) {
+    const bytes = JSON.stringify(next);
+    // 先确认本地设置接受新值，失败时不能留下“界面已改键、重启又恢复”的有效映射。
+    try { localStorage.setItem('myide-keys', bytes); if (localStorage.getItem('myide-keys') !== bytes) throw Error('未确认读回'); }
+    catch (error) { throw Error('快捷键保存失败，原键位保留：' + (error.message || error)); }
+    for (const id of Object.keys(savedKey)) delete savedKey[id];
+    Object.assign(savedKey, next); rebuild();
+  }
   function setBinding(id, combo) {
-    const conflict = keyMap[combo] && keyMap[combo] !== id ? registry[keyMap[combo]].desc : null;
-    savedKey[id] = combo;
-    rebuild();
-    save();
-    return conflict;
+    if (!registry[id]) throw Error('动作已移除');
+    if (combo && (combo === 'escape' || registry[id].bindingGuard && !registry[id].bindingGuard(combo))) throw Error('此动作请使用Ctrl/Alt组合键或F1～F12，Esc用于取消');
+    const combos = combo ? [combo] : [], conflicts = bindingConflicts(id, combos), next = { ...savedKey, [id]: combos };
+    // 被替换动作只移除冲突键，保留其他默认键；空数组明确表示不绑定，不能复活默认键。
+    for (const conflict of conflicts) next[conflict.id] = keysOf(conflict.id).filter(key => !combos.includes(key));
+    updateKeys(next); return conflicts.map(conflict => conflict.desc).join('、') || null;
   }
   function reset(id) {
-    delete savedKey[id];
-    rebuild();
-    save();
+    if (!registry[id]) throw Error('动作已移除');
+    const next = { ...savedKey }; delete next[id];
+    for (const conflict of bindingConflicts(id, registry[id].keys)) next[conflict.id] = keysOf(conflict.id).filter(key => !registry[id].keys.includes(key));
+    updateKeys(next);
   }
   function resetAll() {
-    for (const k in savedKey) delete savedKey[k];
-    rebuild();
-    save();
-  }
-  function save() {
-    try { localStorage.setItem('myide-keys', JSON.stringify(savedKey)); } catch {}
+    updateKeys({});
   }
 
   // 设置面板：捕获下一次按键
-  function captureNext(cb) { captureCb = cb; }
+  function captureNext(cb, options = {}) { captureCb = { cb, ...options }; }
+  function cancelCapture(owner) { if (!owner || captureCb?.owner === owner) captureCb = null; }
   function isCapturing() { return !!captureCb; }
 
   function context(tab = window.Viewer?.activeTab) {
@@ -155,14 +175,17 @@ const Shortcuts = (() => {
     const combo = comboOf(e);
     // 捕获模式（改快捷键）
     if (captureCb) {
+      if (captureCb.valid && !captureCb.valid()) { captureCb = null; }
+      else {
       if (combo) {
         e.preventDefault();
         e.stopPropagation();
-        const cb = captureCb;
+        const cb = captureCb.cb;
         captureCb = null;
-        cb(combo);
+        cb(combo === 'escape' ? null : combo);
       }
       return;
+      }
     }
     if (!combo) return;
     // 文本编辑豁免：仅当输入框可见时（隐藏的弹窗输入框不算正在编辑）
@@ -207,7 +230,7 @@ const Shortcuts = (() => {
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
 
-  return { register, bindings, setBinding, reset, resetAll, load, captureNext, isCapturing, comboOf,
+  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, reset, resetAll, load, captureNext, cancelCapture, isCapturing, comboOf,
     context, availability, commands, execute, onChanged, describe, invalidateContext,
     get lastFailure() { return lastFailure; }, clearFailure() { lastFailure = null; changed(); } };
 })();

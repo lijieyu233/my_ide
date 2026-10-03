@@ -25,10 +25,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let window;
 const check = (name, value) => { assert(value, name); passed++; console.log('ok ' + name); };
 const probe = source => window.webContents.executeJavaScript(source, true);
-const key = async (name, number, text = '') => {
+const key = async (name, number, text = '', modifiers = 0) => {
   // sendInputEvent要求原生窗口焦点，隐藏测试拿不到；CDP输入可验证Chromium默认提交行为。
-  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code: name, windowsVirtualKeyCode: number, text });
-  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name, windowsVirtualKeyCode: number });
+  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code: name, windowsVirtualKeyCode: number, text, modifiers });
+  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name, windowsVirtualKeyCode: number, modifiers });
 };
 const wait = async source => { for (let n = 0; n < 200; n++) { if (await probe(source)) return; await sleep(30); } throw Error('等待失败：' + source); };
 const snapshot = async name => {
@@ -158,6 +158,46 @@ app.whenReady().then(async () => {
     cancelChoice = true;
     await probe('document.getElementById("ql-export").click()'); await wait('!document.getElementById("ql-export").disabled');
     check('原生导出取消不写入活动配置', fs.readFileSync(configuration).equals(beforeCancel));
+    await probe('Shortcuts.register("ql-check-existing",{desc:"取证已有动作",keys:["ctrl+alt+j"],run:()=>window.__qlPreviousCalls=(window.__qlPreviousCalls||0)+1});document.getElementById("ql-keys").click()');
+    check('快速启动快捷键入口准确过滤且动态入口默认未绑定', await probe('document.getElementById("set-keys-filter").value==="快速启动"&&!!document.querySelector("[data-key-action=quick-launch-entry-web]")&&Shortcuts.bindings().find(b=>b.id==="quick-launch-entry-web").effectiveCombos.length===0'));
+    await probe('document.querySelector("[data-key-action=quick-launch-entry-web] .set-combo").click()'); await key('j',74,'',3);
+    await wait('Modal.stack.length===2');
+    check('真实捕获冲突先展示确认，尚未改键', await probe('!!document.querySelector(".m-cancel")&&Shortcuts.bindings().find(b=>b.id==="ql-check-existing").effectiveCombos.includes("ctrl+alt+j")'));
+    await probe('document.querySelector(".m-cancel").click()');
+    await probe('document.querySelector("[data-key-action=quick-launch-entry-web] .set-combo").click()'); await key('j',74,'',3); await wait('Modal.stack.length===2');
+    await snapshot('keys-conflict-light');
+    check('冲突确认覆盖设置且居中，无横向溢出', await probe('(()=>{const d=document.querySelector(".set-key-confirm"),r=d.getBoundingClientRect();return d.scrollWidth<=d.clientWidth+1&&r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight&&Math.abs(r.x+r.width/2-innerWidth/2)<2})()'));
+    await probe('document.querySelector(".m-ok").focus()'); await key('Enter',13,'\r');
+    await wait('Shortcuts.bindings().find(b=>b.id==="quick-launch-entry-web").effectiveCombos.includes("ctrl+alt+j")');
+    check('真实Enter确认后新键生效，旧动作明确未绑定', await probe('Shortcuts.bindings().find(b=>b.id==="ql-check-existing").effectiveCombos.length===0&&document.querySelector("[data-key-action=quick-launch-entry-web] .set-combo").textContent.includes("ctrl")'));
+    await snapshot('keys-settings-light');
+    check('键位设置窄窗口无横向溢出', await probe('(()=>{const d=document.getElementById("set-box"),l=document.getElementById("set-list");return d.scrollWidth<=d.clientWidth+1&&l.scrollWidth<=l.clientWidth+1})()'));
+    await probe('document.querySelector("[data-key-action=tool-quick-launch] .set-combo").click()'); await key('q',81,'',3);
+    await wait('Shortcuts.bindings().find(b=>b.id==="tool-quick-launch").effectiveCombos.includes("ctrl+alt+q")');
+    await probe('document.getElementById("set-x").click();App.backToEditor()'); await key('q',81,'',3); await wait('App.getTool()==="quick-launch"');
+    check('真实面板快捷键打开并更新工具按钮提示', await probe('document.getElementById("tool-quick-launch").title.includes("ctrl+alt+q")'));
+    const beforeKeyOpen = opened.length;
+    await probe('App.backToEditor();document.activeElement.blur()'); await key('j',74,'',3);
+    await wait('document.getElementById("ql-status").textContent.includes("已交给系统打开：项目文档")');
+    check('编辑区真实入口快捷键只执行新动作且系统分派目标准确', opened.length===beforeKeyOpen+1&&opened.at(-1)[1]==='https://example.com/docs'&&await probe('!window.__qlPreviousCalls'));
+    await probe('App.showTool("quick-launch");document.getElementById("ql-keys").click();document.querySelector("[data-key-action=tool-quick-launch] .set-combo").click();document.getElementById("set-x").click()'); await key('z',90,'',3);
+    check('设置X关闭立即释放捕获，迟到组合键不改绑定', await probe('!Shortcuts.isCapturing()&&Shortcuts.bindings().find(b=>b.id==="tool-quick-launch").effectiveCombos.includes("ctrl+alt+q")'));
+    const beforePalette = opened.length;
+    await probe('CommandPalette.open();(()=>{const i=document.getElementById("command-input");i.value="快速启动：项目文档";i.dispatchEvent(new Event("input"));i.focus()})()');
+    await key('Enter',13,'\r'); await wait('Modal.stack.length===0');
+    check('真实查找命令允许自己的弹窗执行快速启动入口', opened.length===beforePalette+1&&opened.at(-1)[1]==='https://example.com/docs');
+    await probe('Help.open()');
+    check('帮助页使用有效键位并明确未绑定', await probe('document.querySelector(".help-table").textContent.includes("ctrl + alt + j")&&document.querySelector(".help-table").textContent.includes("未绑定")'));
+    await probe('Modal.hide();window.__qlReloadMarker=true');
+    window.webContents.reloadIgnoringCache();
+    await wait('!window.__qlReloadMarker&&!!window.QuickLaunch&&!!document.getElementById("ql-reload")&&!document.getElementById("ql-reload").disabled');
+    const beforeReloadKey = opened.length;
+    await probe('App.backToEditor();document.activeElement.blur()'); await key('j',74,'',3);
+    await wait('document.getElementById("ql-status").textContent.includes("已交给系统打开：项目文档")');
+    check('真实渲染重建读取已保存入口与键位，无需先打开快速启动', opened.length===beforeReloadKey+1&&opened.at(-1)[1]==='https://example.com/docs');
+    const changed = await service.load(); changed.config.entries.find(e=>e.id==='web').target='https://example.com/changed'; check('外部窗口修改测试配置', (await service.save(changed.config,changed.version)).ok);
+    const beforeStale = opened.length; await probe('document.activeElement.blur()'); await key('j',74,'',3); await wait('document.getElementById("ql-status").textContent.includes("重新加载")');
+    check('真实快捷键带配置版本，拒绝启动外部修改后的旧入口', opened.length===beforeStale);
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ passed, failed: 0, output, configIsolated: configuration, opened }, null, 2));
     console.log('快速启动真实窗口：' + passed + ' 通过 / 0 失败；截图：' + output);
     if (process.argv.includes('--inspect')) {

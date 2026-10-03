@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   quickLaunch: {
     load: () => ipcRenderer.invoke('quick-launch:load'),
     save: (config, version) => ipcRenderer.invoke('quick-launch:save', config, version),
-    open: (id) => ipcRenderer.invoke('quick-launch:open', id),
+    open: (id, version) => ipcRenderer.invoke('quick-launch:open', id, version),
     icon: (id, target) => ipcRenderer.invoke('quick-launch:icon', id, target),
     pick: (type) => ipcRenderer.invoke('quick-launch:pick', type),
     previewImport: (kind, groupId) => ipcRenderer.invoke('quick-launch:import', kind, groupId),

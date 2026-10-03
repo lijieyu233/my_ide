@@ -1567,7 +1567,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('设置：冲突检测（绑定到已占用的 Ctrl+1）', async () => {
+  await okAsync('设置：冲突先确认，取消不改键，再明确替换已占用的 Ctrl+1', async () => {
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
     const qoRow = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
@@ -1575,14 +1575,20 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     key(dom, '1', { ctrl: true });
     await tick();
-    const toasts = $allIn(dom.window.document, '.toast');
-    assert_(toasts.some((t) => t.textContent.includes('冲突')), '冲突提示出现');
+    assert_($(dom, '.set-key-confirm'), '冲突确认出现');
+    click($(dom, '.set-key-confirm .m-cancel')); await tick();
+    assert_(g(dom, 'Shortcuts.bindings().find(b=>b.id==="quick-open").effectiveCombos.includes("ctrl+q")'), '取消保留原键位');
+    click($allIn($(dom, '#set-list'), '.set-row').find(r => r.textContent.includes('快速打开文件')).querySelector('.set-combo'));
+    key(dom, '1', { ctrl: true }); await tick(); click($(dom, '.set-key-confirm .m-ok')); await tick();
+    assert_(g(dom, 'Shortcuts.bindings().find(b=>b.id==="quick-open").effectiveCombos.includes("ctrl+1")'), '确认后新动作生效');
+    assert_(g(dom, 'Shortcuts.bindings().find(b=>b.id==="tool-project").effectiveCombos.length===0'), '被替换动作明确未绑定');
     assert_($(dom, '#set-list').textContent.includes('工具窗口'), '面板仍正常');
   });
 
   await okAsync('设置：恢复默认', async () => {
     click($(dom, '#set-reset-all'));
     await tick();
+    click($(dom, '.set-key-confirm .m-ok')); await tick();
     const qoRow2 = $allIn($(dom, '#set-list'), '.set-row').find((r) => r.textContent.includes('快速打开文件'));
     assert_(qoRow2.querySelector('.set-combo').textContent.includes('ctrl + p'), '恢复 Ctrl+P');
     // 验证 Ctrl+Q 不再触发
@@ -2550,6 +2556,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
     click($(dom, '#set-reset-all'));
     await tick();
+    click($(dom, '.set-key-confirm .m-ok')); await tick();
     click($(dom, '#set-x'));
     await tick();
   });

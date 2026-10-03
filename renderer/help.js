@@ -11,7 +11,7 @@ const Help = (() => {
     box.id = 'help-box';
     Modal.show(box);
     const rows = Shortcuts.bindings()
-      .map((b) => `<tr><td>${esc(b.desc)}</td><td class="help-keys">${esc(b.combos.join(' / ').replace(/\+/g, ' + '))}</td></tr>`)
+      .map((b) => `<tr><td>${esc(b.desc)}</td><td class="help-keys">${esc(b.effectiveCombos.join(' / ').replace(/\+/g, ' + ') || '未绑定')}</td></tr>`)
       .join('');
     box.innerHTML = `
       <div class="m-head">ℹ️ 帮助与快捷键 <span class="x" id="help-x">✕</span></div>

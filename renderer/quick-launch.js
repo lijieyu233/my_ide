@@ -15,6 +15,26 @@ const QuickLaunch = (() => {
   let loadError = '', query = '', composing = false, dragId = null, inited = false, dialog = null, confirming = false;
   let iconLoading = false, iconRefresh = false;
   const opening = new Set(), iconCache = new Map();
+  const actionPrefix = 'quick-launch-entry-';
+  const bindingGuard = combo => /^(ctrl|alt)\+/.test(combo) || /^f([1-9]|1[0-2])$/.test(combo);
+  const blockedByModal = ctx => {
+    const stack = window.Modal?.stack || [];
+    return document.querySelector('dialog[open]') || stack.length && !(ctx?.source === 'palette' && !ctx.modalDepth && stack.length === 1 && stack[0].id === 'command-box');
+  };
+  function canLaunch(id, ctx) {
+    if (dialog || blockedByModal(ctx)) return '请先关闭弹窗';
+    if (loading || saving || confirming) return '快速启动正在读取或保存';
+    if (loadError || !config) return '请先打开快速启动并重新加载配置';
+    return !opening.has(id) || '入口正在打开';
+  }
+  function syncActions() {
+    window.Shortcuts?.syncActions(actionPrefix, (config?.entries || []).map(e => ({
+      id: actionPrefix + e.id, desc: '快速启动：' + e.name, category: '快速启动', keys: [], palette: true,
+      scope: (config.groups.find(g => g.id === e.groupId)?.name || '') + ' · ' + typeNames[e.type] + ' · ' + describe(e).replace(/\n/g, ' · '),
+      aliases: [e.target, ...(e.args || []), e.cwd || '', config.groups.find(g => g.id === e.groupId)?.name || ''],
+      bindingGuard, isEnabled: ctx => canLaunch(e.id, ctx), run: () => open(e.id),
+    })));
+  }
   function message(text, error = false) {
     const state = q('ql-status');
     state.textContent = text;
@@ -38,12 +58,16 @@ const QuickLaunch = (() => {
     q('ql-manage').disabled = q('ql-add').disabled;
     q('ql-import').disabled = q('ql-add').disabled;
     q('ql-export').disabled = q('ql-add').disabled;
+    q('ql-keys').disabled = saving || confirming;
     q('ql-reload').disabled = loading || saving || confirming;
     q('ql-manage').textContent = managing ? '完成管理' : '管理';
     q('ql-manage').setAttribute('aria-pressed', String(managing));
     q('ql-count').textContent = config ? config.entries.length + ' 个入口' : '';
     q('ql-search').disabled = loading || !config;
     const visible = filtered();
+    const keys = new Map((window.Shortcuts?.bindings() || []).map(b => [b.id, b.effectiveCombos]));
+    const panelKeys = keys.get('tool-quick-launch') || [];
+    if (q('tool-quick-launch')) q('tool-quick-launch').title = '快速启动：应用、文件夹与网页' + (panelKeys.length ? '（' + panelKeys.join(' / ') + '）' : '（未设置快捷键）');
     q('ql-results').textContent = query ? visible.length + ' 个匹配；清空搜索后可排序' : managing ? '拖动卡片或使用前移 / 后移整理；删除只影响入口' : '点击卡片，交给系统打开';
     const disabled = loading || saving || confirming || !!loadError;
     q('ql-groups').innerHTML = config ? config.groups.map((g, gi) => {
@@ -57,8 +81,8 @@ const QuickLaunch = (() => {
           const peers = config.entries.filter(x => x.groupId === e.groupId), index = peers.findIndex(x => x.id === e.id);
           return '<article class="ql-card" data-entry="' + esc(e.id) + '" draggable="' + (managing && !query && !disabled) + '">'
             + (managing ? '<span class="ql-grip" title="' + (query ? '清空搜索后可拖动排序' : '拖动卡片到其他卡片前或分组末尾') + '"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h1M10 4h1M5 8h1M10 8h1M5 12h1M10 12h1"/></svg></span>' : '')
-            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" title="' + esc(e.name + '\n' + describe(e)) + '"' + (opening.has(e.id) ? ' disabled' : '') + '>'
-            + '<span class="ql-icon" data-icon="' + esc(e.id) + '">' + svg(e.type) + '</span><span class="ql-name">' + esc(e.name) + '</span><span class="ql-type">' + (opening.has(e.id) ? '正在打开…' : typeNames[e.type]) + '</span></button>'
+            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" title="' + esc(e.name + '\n' + describe(e) + '\n快捷键：' + ((keys.get(actionPrefix + e.id) || []).join(' / ') || '未绑定')) + '"' + (opening.has(e.id) ? ' disabled' : '') + '>'
+            + '<span class="ql-icon" data-icon="' + esc(e.id) + '">' + svg(e.type) + '</span><span class="ql-name">' + esc(e.name) + '</span><span class="ql-type">' + (opening.has(e.id) ? '正在打开…' : typeNames[e.type]) + '</span>' + ((keys.get(actionPrefix + e.id) || []).length ? '<span class="ql-key">' + esc(keys.get(actionPrefix + e.id).join(' / ')) + '</span>' : '') + '</button>'
             + (managing ? '<div class="ql-card-actions">' + button('edit', e.id, '编辑', disabled) + button('delete', e.id, '删除', disabled)
               + button('up', e.id, '前移', disabled || !!query || index === 0) + button('down', e.id, '后移', disabled || !!query || index === peers.length - 1) + '</div>' : '') + '</article>';
         }).join('') + (items.length ? '' : '<p class="ql-empty">添加常用应用、文件夹或网页</p>') + '</div>'
@@ -106,10 +130,12 @@ const QuickLaunch = (() => {
       if (epoch !== generation) return;
       if (!r?.ok) throw Error((r?.error || '读取失败') + (r?.file ? '\n配置位置：' + r.file : ''));
       config = r.config; version = r.version; loadError = ''; iconCache.clear();
+      syncActions();
       message('配置位置：' + r.file);
     } catch (err) {
       if (epoch !== generation) return;
       loadError = err.message; message('加载失败：' + loadError + '\n已保留原配置，请修复后重新加载。', true);
+      syncActions();
     } finally {
       if (epoch === generation) { loading = false; render(); }
     }
@@ -124,6 +150,7 @@ const QuickLaunch = (() => {
         const err = Error(r?.error || '服务未确认保存成功'); err.existingId = r?.existingId; throw err;
       }
       config = r.config; version = r.version; generation++; iconCache.clear();
+      syncActions();
       message(r.imported !== undefined ? '已导入 ' + r.imported + ' 个入口，新增 ' + r.addedGroups + ' 个分组' : '已保存'); return true;
     } catch (err) {
       message('保存失败：' + err.message + (loadError ? '；取消编辑并重新加载后再修改。' : '；原配置与草稿已保留。'), true);
@@ -137,13 +164,15 @@ const QuickLaunch = (() => {
   }
   const save = (next, focusKey = '') => commit(() => api().save(next, version), focusKey);
   async function open(id) {
-    if (opening.has(id)) return;
+    if (opening.has(id)) return { ok: false, cancelled: true };
     opening.add(id); render();
     try {
-      const r = await api().open(id);
+      const r = await api().open(id, version);
+      if (r?.errorCode === 'VERSION_CONFLICT') { loadError = r.error; syncActions(); }
       if (!r?.ok) throw Error(r?.error || '系统未确认打开请求');
       message('已交给系统打开：' + (config?.entries.find(e => e.id === id)?.name || '入口'));
-    } catch (err) { message('打开失败：' + err.message + '；可重试或在管理中编辑目标。', true); }
+      return r;
+    } catch (err) { message('打开失败：' + err.message + '；可重试或在管理中编辑目标。', true); return { ok: false, error: err.message }; }
     finally { opening.delete(id); render(); }
   }
   function closeDialog() {
@@ -377,12 +406,13 @@ const QuickLaunch = (() => {
     inited = true;
     const root = document.createElement('section'); root.id = 'quick-launch-main'; root.className = 'hidden'; root.setAttribute('aria-label', '快速启动');
     root.innerHTML = '<header class="ql-head"><div><h1>快速启动</h1><span id="ql-count"></span></div><button id="ql-back">返回编辑器</button></header>'
-      + '<div class="ql-toolbar"><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"><button id="ql-add" data-focus="add" class="ql-primary">添加入口</button><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><button id="ql-import">导入</button><button id="ql-export">导出</button><button id="ql-reload">重新加载</button></div>'
+      + '<div class="ql-toolbar"><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"><button id="ql-add" data-focus="add" class="ql-primary">添加入口</button><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><button id="ql-import">导入</button><button id="ql-export">导出</button><button id="ql-keys">快捷键</button><button id="ql-reload">重新加载</button></div>'
       + '<p id="ql-results" class="ql-results"></p><div id="ql-groups"></div><p id="ql-status" role="status" aria-live="polite"></p>';
     q('content').append(root);
     q('ql-back').onclick = () => { window.App.backToEditor(); q('tool-quick-launch')?.focus(); };
     q('ql-add').onclick = () => edit(); q('ql-group-add').onclick = () => editGroup(); q('ql-reload').onclick = load;
     q('ql-import').onclick = importEntries; q('ql-export').onclick = exportEntries;
+    q('ql-keys').onclick = () => { if (!dialog && !saving && !confirming) window.Settings?.open('keys', '快速启动'); };
     q('ql-manage').onclick = () => { managing = !managing; render(); q('ql-manage').focus(); };
     q('ql-search').oninput = ev => { query = ev.target.value; render(); };
     q('ql-search').addEventListener('compositionstart', () => { composing = true; });
@@ -408,9 +438,16 @@ const QuickLaunch = (() => {
       dragId = null; if (id && group && !query && !saving) move(id, group.dataset.group, card?.dataset.entry);
     });
     q('ql-groups').addEventListener('dragend', () => { dragId = null; clearDrop(); });
+    window.Shortcuts?.onChanged(render);
+    // 只读加载使已保存入口的应用内键位在重启后直接可用，不自动打开任何入口。
+    if (api()) load();
   }
   function show() { init(); q('quick-launch-main').classList.remove('hidden'); if (!config && !loading) load(); q('ql-search').focus(); }
   function hide() { q('quick-launch-main')?.classList.add('hidden'); }
-  return { init, show, hide, reload: load };
+  return { init, show, hide, reload: load, canShow: ctx => !blockedByModal(ctx) || '请先关闭弹窗' };
 })();
 window.QuickLaunch = QuickLaunch;
+window.Shortcuts?.register('tool-quick-launch', { desc: '打开快速启动', keys: [], palette: true, category: '快速启动',
+  aliases: ['quick launch', '应用', '常用入口'], bindingGuard: combo => /^(ctrl|alt)\+/.test(combo) || /^f([1-9]|1[0-2])$/.test(combo),
+  isEnabled: ctx => QuickLaunch.canShow(ctx),
+  run: () => window.App.showTool('quick-launch') });

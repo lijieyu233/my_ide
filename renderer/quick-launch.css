@@ -63,3 +63,9 @@
 .ql-arg-row input { flex: 1; min-width: 0; }
 .ql-arg-row button { flex: none; }
 .ql-import-target { white-space: pre-wrap; }
+.ql-key { font-size: .72em; color: var(--text-dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#set-box .set-row[data-key-action] { flex-wrap: wrap; }
+#set-box .set-row[data-key-action] .set-info { flex: 1 1 16em; }
+#set-box .set-row[data-key-action] .set-desc { overflow-wrap: anywhere; }
+.set-key-confirm { position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100vh - 3em); overflow: auto; box-sizing: border-box; width: min(40em, calc(100vw - 3em)); z-index: 1; font-size: var(--tool-font, 13px); }
+.set-key-confirm .m-body { overflow-wrap: anywhere; }

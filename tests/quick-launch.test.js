@@ -219,6 +219,13 @@ async function saveEntries(f, entries) { const r = await f.service.load(); const
       assert.deepEqual(JSON.parse(fs.readFileSync(output)), { args, cwd: f.dir });
       await assert.rejects(launch({ target: path.join(f.dir, '不存在.exe') }, { windowsHide: true }));
     });
+    await test('带读取版本的打开请求拒绝外部配置改目标，重载后再允许分派', async () => {
+      const calls = [], f = fixture({ openExternal: async target => calls.push(target) });
+      assert((await saveEntries(f, [item('web', 'https://example.com/old')])).ok); const old = await f.service.load();
+      const changed = structuredClone(old.config); changed.entries[0].target = 'https://example.com/new'; assert((await createService(f.file).save(changed, old.version)).ok);
+      assert.equal((await f.service.open('entry', old.version)).errorCode, 'VERSION_CONFLICT'); assert.equal(calls.length, 0);
+      assert((await f.service.open('entry', (await f.service.load()).version)).ok); assert.deepEqual(calls, ['https://example.com/new']);
+    });
     console.log('\n快速启动服务：' + passed + ' 通过 / 0 失败');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

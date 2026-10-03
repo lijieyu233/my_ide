@@ -2,9 +2,34 @@
 const Settings = (() => {
   let listening = null; // 正在修改的动作 id
   let keysFilter = '';  // 快捷键过滤词
+  let activeBox = null;
+  function cancelListening(box = activeBox) {
+    if (!box) return;
+    Shortcuts.cancelCapture(box); listening = null;
+    if (box.isConnected && box.dataset.category === 'keys') {
+      box.querySelectorAll('.listening').forEach(button => { button.classList.remove('listening'); button.textContent = '点击改键'; });
+    }
+  }
+  const keysCurrent = box => activeBox === box && box.isConnected && box.dataset.category === 'keys' && Modal.stack.at(-1) === box;
+  function keyStatus(text, error = false) {
+    const hint = activeBox?.querySelector('#set-hint');
+    if (!hint) return; hint.replaceChildren(document.createTextNode(text)); hint.setAttribute('role', 'status'); hint.style.color = error ? 'var(--del-text)' : '';
+  }
+  function confirmKeys(title, text) {
+    const pending = Modal.confirm(title, text), panel = Modal.stack.at(-1);
+    if (panel && panel !== activeBox) { panel.classList.add('set-key-confirm'); panel.querySelector('.m-cancel')?.focus(); }
+    return pending;
+  }
 
-  function open(initCat) {
+  function open(initCat, initialFilter) {
+    cancelListening();
+    if (activeBox?.isConnected) {
+      if (Modal.stack.at(-1) !== activeBox) { MI.toast('请先关闭上层弹窗', 'err'); return; }
+      Modal.hide();
+    }
+    if (initialFilter !== undefined) keysFilter = initialFilter;
     const box = document.createElement('div');
+    activeBox = box; box.dataset.category = 'keys';
     box.id = 'set-box';
     box.innerHTML = `
       <div class="m-head">⚙️ 设置 <span class="x" id="set-x">✕</span></div>
@@ -30,14 +55,18 @@ const Settings = (() => {
         </div>
       </div>`;
     Modal.show(box);
-    document.getElementById('set-x').onclick = () => Modal.hide();
-    document.getElementById('set-reset-all').onclick = () => {
-      Shortcuts.resetAll();
-      renderList();
-      MI.toast('已恢复全部默认快捷键', 'ok');
+    document.getElementById('set-x').onclick = () => { cancelListening(box); Modal.hide(); };
+    document.getElementById('set-reset-all').onclick = async () => {
+      cancelListening(box);
+      if (!keysCurrent(box)) return;
+      if (!await confirmKeys('恢复全部默认快捷键', '清除全部自定义键位并恢复应用默认键位？入口动作默认未绑定。')) return;
+      if (!keysCurrent(box)) return;
+      try { Shortcuts.resetAll(); renderList(); keyStatus('已恢复全部默认快捷键（本地设置）；磁盘镜像状态见「本地设置」。'); }
+      catch (error) { keyStatus(error.message, true); }
     };
     // 分类切换
     const switchCat = (cat) => {
+      cancelListening(box); box.dataset.category = cat.dataset.cat;
       $all('.set-cat').forEach((x) => x.classList.remove('active'));
       cat.classList.add('active');
       if (cat.dataset.cat === 'keys') renderKeys();
@@ -72,7 +101,14 @@ const Settings = (() => {
     };
     document.addEventListener('keydown', onKey);
     // 弹窗关闭时解绑（hide 后 box 移出 DOM）
-    const mo = new MutationObserver(() => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); mo.disconnect(); } });
+    const disposeActions = Shortcuts.onChanged(() => { if (keysCurrent(box)) renderList(); });
+    let disposed = false;
+    const clean = () => { if (disposed) return; disposed = true; cancelListening(box); box.ownerDocument.removeEventListener('keydown', onKey); disposeActions(); mo.disconnect(); if (activeBox === box) activeBox = null; };
+    box.onModalHide = clean;
+    const mo = new MutationObserver(() => {
+      if (!box.isConnected) clean();
+      else if (!keysCurrent(box) && listening) cancelListening(box);
+    });
     mo.observe(document.body, { childList: true, subtree: true });
     if (!initCat) renderKeys(); // 指定初始分类时 switchCat 已渲染，勿覆盖
   }
@@ -678,19 +714,23 @@ const Settings = (() => {
       if (q && !(b.desc + ' ' + b.id + ' ' + b.combos.join(' ')).toLowerCase().includes(q)) continue;
       const row = document.createElement('div');
       row.className = 'set-row';
+      row.dataset.keyAction = b.id;
       const info = document.createElement('div');
       info.className = 'set-info';
-      info.innerHTML = `<div class="set-name">${esc(b.id === 'settings' ? '⚙️ 设置' : b.id)}</div><div class="set-desc">${esc(b.desc)}</div>`;
+      info.innerHTML = `<div class="set-name">${esc(b.desc)}</div><div class="set-desc">${esc(b.scope || b.category || '工作台')}${b.combos.length !== b.effectiveCombos.length ? ' · 配置的键位未全部生效，请重新设置' : ''}</div>`;
       const comboBtn = document.createElement('button');
       comboBtn.className = 'set-combo' + (listening === b.id ? ' listening' : '');
-      comboBtn.textContent = listening === b.id ? '按下新组合键…' : b.combos.join(' / ').replace(/\+/g, ' + ');
+      comboBtn.textContent = listening === b.id ? '按下新组合键…' : b.effectiveCombos.join(' / ').replace(/\+/g, ' + ') || '未绑定';
       comboBtn.onclick = () => startListen(b.id, comboBtn);
       const resetBtn = document.createElement('button');
       resetBtn.className = 'set-reset' + (b.custom ? '' : ' hidden');
       resetBtn.textContent = '恢复默认';
-      resetBtn.onclick = () => { Shortcuts.reset(b.id); renderList(); };
+      resetBtn.onclick = () => changeKeys(b.id, Shortcuts.defaultsFor(b.id), () => Shortcuts.reset(b.id));
+      const clearBtn = document.createElement('button'); clearBtn.className = 'set-reset'; clearBtn.textContent = '取消绑定';
+      clearBtn.disabled = !b.combos.length; clearBtn.onclick = () => changeKeys(b.id, [], () => Shortcuts.setBinding(b.id, null));
       row.appendChild(info);
       row.appendChild(resetBtn);
+      row.appendChild(clearBtn);
       row.appendChild(comboBtn);
       list.appendChild(row);
     }
@@ -799,18 +839,32 @@ const Settings = (() => {
     };
   }
 
+  async function changeKeys(id, combos, apply) {
+    const box = activeBox; cancelListening(box);
+    if (!keysCurrent(box)) return;
+    const before = JSON.stringify(Shortcuts.bindings()), conflicts = Shortcuts.bindingConflicts(id, combos);
+    if (conflicts.length && !await confirmKeys('替换冲突快捷键', esc(combos.join(' / ')) + ' 当前由「' + conflicts.map(c => esc(c.desc + (c.scope ? '（' + c.scope + '）' : ''))).join('」、「') + '」使用。确认后只移除这些动作的冲突键，保留其余键；取消则不改键位。')) { if (keysCurrent(box)) renderList(); return; }
+    if (!keysCurrent(box)) return;
+    if (before !== JSON.stringify(Shortcuts.bindings())) { renderList(); keyStatus('动作或键位已改变，请重新选择后确认。', true); return; }
+    try { apply(); renderList(); keyStatus('已保存有效键位到本地设置；磁盘镜像状态见「本地设置」。'); }
+    catch (error) { renderList(); keyStatus(error.message, true); }
+  }
   function startListen(id, btn) {
+    const box = activeBox; cancelListening(box);
+    if (!keysCurrent(box)) return;
     listening = id;
     renderList();
+    const label = Shortcuts.bindings().find(b => b.id === id)?.desc;
+    keyStatus('正在修改「' + label + '」：按下新组合键，Esc或取消结束。');
+    const cancel = document.createElement('button'); cancel.className = 'tb-btn'; cancel.textContent = '取消';
+    cancel.onclick = () => { cancelListening(box); renderList(); keyStatus('已取消，键位未改变。'); };
+    box.querySelector('#set-hint').append(cancel);
     Shortcuts.captureNext((combo) => {
       listening = null;
-      if (!combo) { renderList(); return; } // Esc 取消
-      if (combo === 'escape') { renderList(); return; }
-      const conflict = Shortcuts.setBinding(id, combo);
-      renderList();
-      if (conflict) MI.toast('⚠️ 与「' + conflict + '」冲突，已覆盖', 'err');
-      else MI.toast('✅ 已设置为 ' + combo.replace(/\+/g, ' + '), 'ok');
-    });
+      if (!keysCurrent(box)) return;
+      if (!combo) { renderList(); keyStatus('已取消，键位未改变。'); return; }
+      changeKeys(id, [combo], () => Shortcuts.setBinding(id, combo));
+    }, { owner: box, valid: () => keysCurrent(box) });
   }
 
   function esc(s) {
