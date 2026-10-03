@@ -11,7 +11,7 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
 const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js']);
-runtimeFiles.push('search-service.js', 'task-recovery.js', 'ai-runs.js');
+runtimeFiles.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'launch-exit.js');
 
 function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);

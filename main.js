@@ -166,6 +166,7 @@ function createWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
   const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
@@ -1707,6 +1708,6 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('before-quit', () => { try { launchService.shutdown(); } catch {} });
-app.on('window-all-closed', () => { app.quit(); });
+const launchExit = require('./launch-exit').createExitCoordinator({ app, service: launchService, dialog,
+  getWindow: () => mainWindow, report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

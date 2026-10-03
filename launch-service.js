@@ -36,11 +36,13 @@ const logs = new Map();    // id -> 当前运行的有界日志与清空代次
 const pending = new Map();
 let closing = false;
 let shutdownPromise = null;
+let exitPending = false;
+function setExitPending(value) { exitPending = value === true; }
 
 // 端口探测会让出执行权；锁必须早于探测，且 restart 的 stop/start 共用一份锁。
 async function operate(entry, operation, action) {
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
-  if (closing && operation !== '退出停止') return { ok: false, errorCode: 'LAUNCH_SHUTTING_DOWN', error: '启动服务正在退出，请稍后重试' };
+  if ((closing || exitPending) && operation !== '退出停止') return { ok: false, errorCode: 'LAUNCH_SHUTTING_DOWN', error: '启动服务正在退出，请稍后重试' };
   if (pending.has(entry.id)) return { ok: false, errorCode: 'LAUNCH_BUSY', error: '终端正在' + pending.get(entry.id).operation + '，请稍后重试' };
   let settled;
   const ticket = { operation, done: new Promise(resolve => { settled = resolve; }) };
@@ -194,12 +196,13 @@ function saveState(st) {
   try {
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(stateFile, JSON.stringify(st, null, 2), 'utf8');
-  } catch {}
+    return { ok: true };
+  } catch (error) { return { ok: false, error: String(error && error.message || error) }; }
 }
 function setState(id, info) {
   const st = loadState();
   if (info) st[id] = info; else delete st[id];
-  saveState(st);
+  return saveState(st);
 }
 
 // ---------- 端口探测 ----------
@@ -249,6 +252,60 @@ function sameIdentity(a, b) {
     && a.commandLine === b.commandLine);
 }
 
+async function captureExitTree(record) {
+  if (!record.identity) return { ok: false, error: '运行记录缺少可核验身份，后台保留未确认' };
+  const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_EXIT_TREE\n"
+    + '$root=Get-CimInstance Win32_Process -Filter "ProcessId=' + record.pid + '"; $all=@(Get-CimInstance Win32_Process); '
+    + "$items=@($all|ForEach-Object {$birth=if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{''};@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;createdAt=$birth;image=$_.ExecutablePath;commandLine=$_.CommandLine}}); "
+    + "$r=$null;if($root){$r=@{pid=[int]$root.ProcessId;createdAt=$root.CreationDate.ToUniversalTime().ToString('o');image=$root.ExecutablePath;commandLine=$root.CommandLine}}; @{root=$r;processes=$items}|ConvertTo-Json -Depth 5 -Compress";
+  const response = await systemQuery('powershell.exe', ['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
+  if (!response.ok) return response;
+  try {
+    const snapshot = JSON.parse(response.stdout.replace(/^\uFEFF/, ''));
+    if (!sameIdentity(record.identity, snapshot.root) || !Array.isArray(snapshot.processes)) throw Error('根进程身份不匹配或已结束');
+    const queue = [snapshot.root], descendants = [];
+    for (let index = 0; index < queue.length; index++) {
+      const parent = queue[index];
+      for (const child of snapshot.processes.filter(item => item.parentPid === parent.pid && item.pid !== parent.pid)) {
+        if (queue.some(item => item.pid === child.pid)) throw Error('子树身份重复');
+        if (!Number.isSafeInteger(child.pid) || child.pid <= 0 || !child.image || !child.commandLine || !Number.isFinite(Date.parse(child.createdAt))
+          || !Number.isFinite(Date.parse(parent.createdAt)) || Date.parse(child.createdAt) < Date.parse(parent.createdAt)) throw Error('子树出生时间或身份不完整');
+        if (descendants.length >= 256) throw Error('子树超过256项预算');
+        const { parentPid, ...identity } = child; descendants.push({ identity, parentPid }); queue.push(identity);
+      }
+    }
+    const after = await processIdentity(record.pid);
+    if (!after.ok || !sameIdentity(record.identity, after.identity)) throw Error('采集期间根进程身份变化');
+    return { ok: true, descendants };
+  } catch (error) { return { ok: false, error: '后台子树身份采集失败：' + String(error.message || error) }; }
+}
+
+async function recordedChildren(record) {
+  const saved = record.descendants || [];
+  if (!Array.isArray(saved) || saved.length > 256 || saved.some(item => !item || !item.identity || !Number.isSafeInteger(item.identity.pid) || item.identity.pid <= 0
+    || !Number.isFinite(Date.parse(item.identity.createdAt)) || typeof item.identity.image !== 'string' || !item.identity.image
+    || typeof item.identity.commandLine !== 'string' || !item.identity.commandLine)
+    || new Set(saved.map(item => item.identity.pid)).size !== saved.length) return { ok: false, error: '后台子树记录结构无效' };
+  if (!saved.length) return { ok: true, alive: [] };
+  const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_EXIT_RECORDS\n"
+    + '$items=@(Get-CimInstance Win32_Process -Filter "' + saved.map(item => 'ProcessId='+item.identity.pid).join(' OR ') + '"); '
+    + "ConvertTo-Json -InputObject @($items|ForEach-Object {@{pid=[int]$_.ProcessId;createdAt=$_.CreationDate.ToUniversalTime().ToString('o');image=$_.ExecutablePath;commandLine=$_.CommandLine}}) -Compress";
+  const response = await systemQuery('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
+  if (!response.ok) return response;
+  try {
+    const values = JSON.parse(response.stdout.replace(/^\uFEFF/, '')); if (!Array.isArray(values) || values.some(value => !value || !saved.some(item => item.identity.pid === value.pid))
+      || new Set(values.map(value => value.pid)).size !== values.length) throw Error('系统返回子树身份结构无效');
+    const alive = [];
+    for (const item of saved) {
+      const current = values.find(value => value.pid === item.identity.pid);
+      if (!current) continue;
+      if (!sameIdentity(item.identity, current)) throw Error('后台子进程PID ' + item.identity.pid + ' 身份已变化，未停止');
+      alive.push(item.identity);
+    }
+    return { ok: true, alive };
+  } catch (error) { return { ok: false, error: String(error.message || error) }; }
+}
+
 function stopFailure(entry, errorCode, error, details = {}) {
   pushLog(entry.id, '[停止未确认] ' + error);
   return { ok: false, errorCode, error, ...details };
@@ -273,6 +330,8 @@ async function startUnlocked(entry) {
       return { ok: false, errorCode: 'OWNERSHIP_UNKNOWN', error: '已有运行记录的进程归属无法确认，请先核查，未重复启动' };
     }
     if (sameIdentity(previous.identity, current.identity)) return { ok: false, error: '已在运行（后台保留的进程）' };
+    const children = await recordedChildren(previous);
+    if (!children.ok || children.alive.length) return { ok: false, error: children.error || '后台保留的子进程仍在运行，未重复启动' };
   }
   if (entry.port && await checkPort(entry.port)) {
     return { ok: false, error: '端口 ' + entry.port + ' 已被占用（可能已在别处启动）' };
@@ -442,6 +501,19 @@ async function stopUnlocked(entry) {
     }
   }
   const port = record && record.port || entry.port;
+  if (record && record.descendants) {
+    const children = await recordedChildren(record);
+    if (!children.ok) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', children.error, details);
+    for (const identity of children.alive) {
+      const current = await processIdentity(identity.pid);
+      if (!current.ok || current.identity && !sameIdentity(identity, current.identity)) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', current.error || '后台子进程身份变化，未停止', details);
+      if (!current.identity) continue;
+      details.attempted.push(identity.pid); const requested = await killTree(identity.pid);
+      const after = await processIdentity(identity.pid);
+      if (!after.ok || sameIdentity(identity, after.identity)) { details.failed.push(identity.pid); details.remainingOwned.push(identity.pid); return stopFailure(entry, 'STOP_UNCONFIRMED', after.error || '后台子进程仍在运行', details); }
+      if (requested) details.killed.push(identity.pid); details.confirmedStopped.push(identity.pid);
+    }
+  }
   if (port) {
     await new Promise((r) => setTimeout(r, 300));
     const left = await pidsListeningOnPort(port);
@@ -451,8 +523,9 @@ async function stopUnlocked(entry) {
       return stopFailure(entry, 'PORT_OWNED_BY_OTHER', '端口 ' + port + ' 仍被 pid ' + left.pids.join(',') + ' 监听，归属未确认，未停止这些进程', details);
     }
   }
+  const written = setState(entry.id, null);
+  if (!written.ok) return stopFailure(entry, 'STATE_WRITE_FAILED', '停止已确认但运行记录落盘失败：' + written.error, details);
   procs.delete(entry.id);
-  setState(entry.id, null);
   pushLog(entry.id, '[已停止] 确认结束 pid=' + (details.confirmedStopped.join(',') || '-'));
   return { ok: true, ...details };
 }
@@ -481,6 +554,10 @@ async function aliveEntry(entry) {
   const rec = st[entry.id];
   if (rec && rec.pid) {
     const current = await processIdentity(rec.pid);
+    if (current.ok && !current.identity) {
+      const children = await recordedChildren(rec);
+      return { alive: children.ok && children.alive.length > 0, by: 'pid', ownership: children.ok ? children.alive.length ? 'owned' : 'none' : 'unknown' };
+    }
     return { alive: current.ok && sameIdentity(rec.identity, current.identity), by: 'pid',
       ownership: current.ok && sameIdentity(rec.identity, current.identity) ? 'owned' : 'unknown' };
   }
@@ -502,6 +579,11 @@ async function statusEvidence(entry) {
     else if (current.identity && !record.identity) { ownership = 'unknown'; evidenceError = '旧运行记录缺少进程身份'; }
     else if (current.identity && !sameIdentity(record.identity, current.identity)) { ownership = 'foreign'; evidenceError = 'PID已属于另一进程'; }
     else if (current.identity) { processAlive = true; ownership = 'owned'; }
+    else {
+      const children = await recordedChildren(record);
+      if (!children.ok) { ownership = 'unknown'; evidenceError = children.error; }
+      else if (children.alive.length) { processAlive = true; ownership = 'owned'; }
+    }
   } else if (record && record.kind === 'usb-tunnel') ownership = 'bridge';
   const bridge = ownership === 'bridge';
   // 保留alive/by兼容旧调用；面板只能用独立的归属证据授权停止，端口响应不是进程存活证明。
@@ -513,7 +595,7 @@ async function statusEvidence(entry) {
     phase: processAlive ? 'running' : bridge ? 'bridge' : record && record.endedAt ? 'exited' : 'stopped',
     runId: record && record.launchId || null, endedAt: record && record.endedAt || null,
     exitCode: record && record.endedAt ? record.exitCode : null, exitSignal: record && record.exitSignal || null,
-    operation: pending.has(entry.id) ? pending.get(entry.id).operation : null };
+    operation: pending.has(entry.id) ? pending.get(entry.id).operation : exitPending ? '退出' : null };
 }
 function statusOf(entries) { return Promise.all(entries.map(statusEvidence)); }
 function getLogs(id) {
@@ -559,21 +641,75 @@ function importFrom(srcPath) {
   return { ok: true, count: entries.length };
 }
 
-// 退出时：keepOnExit（后台保留）→ 只落盘不杀；否则整树杀光（不留孤儿）
+function exitSnapshot(file, fallback) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('根结构不是对象');
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    throw Error('退出前无法读取 ' + path.basename(file) + '：' + String(error.message || error));
+  }
+}
+
+// 恢复句柄和USB登记只在磁盘上；仅枚举procs会漏停。读取失败必须回到窗口，不能按空配置猜默认策略。
 function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   closing = true;
   shutdownPromise = (async () => {
     // 等待正在采集身份/停止的操作结算，避免退出把尚未确定的记录覆盖成另一份。
     await Promise.all([...pending.values()].map(ticket => ticket.done));
-    const keep = loadConfig().keepOnExit === true;
-    const results = [];
-    for (const [id, info] of [...procs]) {
-      const { proc, ...record } = info;
-      if (keep) { setState(id, record); procs.delete(id); }
-      else results.push({ id, ...await operate({ id, port: info.port }, '退出停止', stopUnlocked) });
+    let cfg, saved;
+    try {
+      cfg = exitSnapshot(configFile, emptyConfig()); saved = exitSnapshot(stateFile, {});
+      if (!Array.isArray(cfg.entries) || (cfg.keepOnExit != null && typeof cfg.keepOnExit !== 'boolean')) throw Error('退出配置结构无效');
+      if (Object.values(saved).some(record => !record || typeof record !== 'object' || Array.isArray(record))) throw Error('退出运行记录结构无效');
+    } catch (error) {
+      return { ok: false, kept: false, stopped: 0, failed: 1, results: [{ id: 'exit-storage', name: '退出配置与运行记录', ok: false, error: String(error.message || error) }] };
     }
-    return { kept: keep, stopped: results.filter(result => result.ok).length,
+    const keep = cfg.keepOnExit === true;
+    const results = [];
+    const targets = new Set([...procs.keys(), ...Object.keys(saved).filter(id => saved[id].pid || saved[id].kind === 'usb-tunnel')]);
+    for (const id of targets) {
+      const live = procs.get(id), record = live || saved[id], entry = cfg.entries.find(item => item && item.id === id);
+      const name = entry && entry.name || id;
+      try {
+        if (keep) {
+          if (record.pid) {
+            const current = await processIdentity(record.pid);
+            if (!current.ok || current.identity && !sameIdentity(record.identity, current.identity)) { results.push({ id, name, ok: false, error: current.error || '后台保留根进程身份未确认' }); continue; }
+            const { proc, ...persisted } = record;
+            if (current.identity) {
+              const tree = await captureExitTree(record);
+              if (!tree.ok) { results.push({ id, name, ok: false, error: tree.error }); continue; }
+              if (tree.descendants.length) persisted.descendants = tree.descendants;
+            } else {
+              const children = await recordedChildren(record);
+              if (!children.ok) { results.push({ id, name, ok: false, error: children.error }); continue; }
+            }
+            const result = setState(id, persisted);
+            if (!result.ok) { results.push({ id, name, ok: false, error: '后台保留落盘失败：' + result.error }); continue; }
+            procs.delete(id);
+          }
+          results.push({ id, name, ok: true, kept: true });
+        } else if (record.kind === 'usb-tunnel' || entry && entry.kind === 'usb-tunnel') {
+          const target = entry || { id, kind: 'usb-tunnel' };
+          const result = await operate(target, '退出停止', async () => {
+            if (!target.script || !fs.existsSync(target.script)) return { ok: false, error: '桥接脚本未配置或不存在，运行记录已保留' };
+            const response = await runBridge(target.python || 'python', target.script, 'stop');
+            pushLog(id, response.stdout, 'stdout'); pushLog(id, response.stderr, 'stderr');
+            const stopped = bridgeResult(response, '停止');
+            return stopped.ok ? { ok: false, errorCode: 'BRIDGE_STOP_UNCONFIRMED', error: '桥接停止脚本成功，但daemon身份与实际停止未核验，运行记录已保留' } : stopped;
+          });
+          results.push({ id, name, ...result });
+        } else {
+          const result = await operate({ id, port: record.port || entry && entry.port || 0 }, '退出停止', stopUnlocked);
+          results.push({ id, name, ...result });
+        }
+      } catch (error) { results.push({ id, name, ok: false, error: String(error && error.message || error) }); }
+    }
+    return { ok: results.every(result => result.ok === true), kept: keep, preserved: results.filter(result => result.kept && result.ok).length,
+      stopped: results.filter(result => result.ok && !result.kept).length,
       failed: results.filter(result => !result.ok).length, results };
   })().finally(() => { closing = false; shutdownPromise = null; });
   return shutdownPromise;
@@ -592,5 +728,5 @@ module.exports = {
   loadConfig, saveConfig, addOrigin, removeOrigin, importFrom,
   startEntry, stopEntry, restartEntry, aliveEntry, statusOf,
   getLogs, clearLogs, checkPort,
-  shutdown,
+  shutdown, setExitPending,
 };

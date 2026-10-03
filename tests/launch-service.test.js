@@ -9,7 +9,7 @@ let passed = 0;
 function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(temp, 'case-'));
   const children = [], kills = [], sockets = [], bridges = [], spawned = [], live = new Set(), identities = new Map();
-  const identity = pid => ({ pid, createdAt: 'fixture-birth-' + pid, image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
+  const identity = pid => ({ pid, createdAt: new Date(1700000000000 + pid * 10).toISOString(), image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
   let nextPid = 500;
   const childProcess = {
     spawn(file, args, settings) {
@@ -22,7 +22,12 @@ function fixture(options = {}) {
     execFile(file, args, settings, callback) {
       if (file === 'powershell.exe') {
         const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+        if (script.includes('LAUNCH_EXIT_RECORDS')) {
+          const values = [...script.matchAll(/ProcessId=(\d+)/g)].map(match => Number(match[1])).filter(pid => live.has(pid)).map(pid => identities.get(pid));
+          return queueMicrotask(() => callback(null, JSON.stringify(values)));
+        }
         const pid = Number(script.match(/ProcessId=(\d+)/)[1]);
+        if (script.includes('LAUNCH_EXIT_TREE')) return queueMicrotask(() => callback(null, JSON.stringify({root:identities.get(pid),processes:[...identities.values()].map(item=>({...item,parentPid: options.parents && options.parents[item.pid] || 0}))})));
         const result = options.queryIdentity ? options.queryIdentity(pid, identities.get(pid), kills) : identities.get(pid);
         return queueMicrotask(() => callback(options.identityError ? Error('fixture CIM denied') : null,
           options.malformedIdentity ? 'not JSON' : live.has(pid) && result ? JSON.stringify(result) : ''));
@@ -57,7 +62,8 @@ function fixture(options = {}) {
   }
   const m = { exports: {} };
   new Function('require', 'module', 'exports', 'process', 'setTimeout', source)(
-    name => name === 'child_process' ? childProcess : name === 'net' ? { Socket } : require(name),
+    name => name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
+      writeFileSync(file, ...args) { if (options.failStateWrites && path.basename(file) === 'launch-state.json') throw Error('fixture state write denied'); return fs.writeFileSync(file, ...args); } } : require(name),
     m, m.exports, { env: {}, kill: pid => { if (!live.has(pid)) throw Error('not alive'); } },
     callback => { queueMicrotask(callback); return 1; });
   const service = m.exports; service.setConfigDir(dir);
@@ -75,6 +81,74 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('保留采集父子身份，外壳结束后仍可识别、阻止重复启动并停止自有子进程', async () => {
+      const f = fixture({parents:{778:777}}); f.record(f.entry); f.live.add(778); f.identities.set(778,{...f.identities.get(777),pid:778,createdAt:new Date(1700000007780).toISOString()});
+      f.service.setKeepOnExit(true); assert.equal((await f.service.shutdown()).ok,true); assert.equal(f.state()[f.entry.id].descendants.length,1);
+      f.live.delete(777); assert.equal((await f.service.aliveEntry(f.entry)).ownership,'owned');
+      assert.equal((await f.service.startEntry(f.entry)).ok,false); assert.equal(f.children.length,0);
+      assert.equal((await f.service.stopEntry(f.entry)).ok,true); assert.deepEqual(f.kills,[778]); assert.equal(f.state()[f.entry.id],undefined);
+    });
+    await test('恢复子进程PID易主时不停止、不覆盖记录；停止后仍活着也不得清记录', async () => {
+      for(const changed of [true,false]){
+        const f=fixture({parents:{778:777}});f.record(f.entry);f.live.add(778);f.identities.set(778,{...f.identities.get(777),pid:778,createdAt:new Date(1700000007780).toISOString()});
+        f.service.setKeepOnExit(true);assert.equal((await f.service.shutdown()).ok,true);f.live.delete(777);const before=f.state();
+        if(changed)f.identities.set(778,{...f.identities.get(778),commandLine:'foreign'});else f.options.killReportsSuccessButAlive=true;
+        assert.equal((await f.service.stopEntry(f.entry)).ok,false);assert.deepEqual(f.state(),before);assert.deepEqual(f.kills,changed?[]:[778]);
+      }
+    });
+    await test('父PID复用形成的旧子进程出生时间与重复子树记录均拒绝认领', async () => {
+      const f=fixture({parents:{776:777}});f.record(f.entry);f.identities.set(776,{...f.identities.get(777),pid:776,createdAt:new Date(1700000007760).toISOString()});
+      f.service.setKeepOnExit(true);const before=f.state();assert.equal((await f.service.shutdown()).ok,false);assert.deepEqual(f.state(),before);assert.equal(f.kills.length,0);
+      const record=before[f.entry.id];record.descendants=[{identity:f.identities.get(776)},{identity:f.identities.get(776)}];fs.writeFileSync(f.service.paths().stateFile,JSON.stringify(before));f.live.delete(777);
+      assert.equal((await f.service.stopEntry(f.entry)).ok,false);assert.equal(f.kills.length,0);
+    });
+    await test('确认停止但清记录写入被拒绝时退出失败，重试落盘后才成功', async()=>{
+      const f=fixture();f.record(f.entry);const before=f.state();f.options.failStateWrites=true;
+      assert.equal((await f.service.shutdown()).ok,false);assert.deepEqual(f.state(),before);assert.deepEqual(f.kills,[777]);
+      f.options.failStateWrites=false;assert.equal((await f.service.shutdown()).ok,true);assert.deepEqual(f.state(),{});assert.deepEqual(f.kills,[777]);
+    });
+    await test('退出枚举仅在磁盘上的恢复PID，核对身份后停止且不会漏掉无内存句柄的运行', async () => {
+      const f = fixture(); f.record(f.entry); const result = await f.service.shutdown();
+      assert.equal(result.ok, true); assert.equal(result.stopped, 1); assert.equal(result.failed, 0); assert.deepEqual(f.kills, [777]); assert.equal(f.state()[f.entry.id], undefined);
+    });
+    await test('退出会调用已登记USB停止脚本，但成功也不冒充daemon实际停止，原记录保留', async () => {
+      const f = fixture(); f.service.saveConfig({ entries: [f.bridge], apiOrigins: [], keepOnExit: false }); await f.service.startEntry(f.bridge); const before = f.state();
+      const result = await f.service.shutdown(); assert.equal(result.ok, false); assert.equal(result.stopped, 0); assert.equal(result.failed, 1);
+      assert.equal(result.results[0].errorCode, 'BRIDGE_STOP_UNCONFIRMED'); assert.equal(f.bridges.at(-1).args.at(-1), 'stop'); assert.deepEqual(f.state(), before);
+    });
+    await test('USB脚本失败或配置不在时退出失败仍保全原记录与诊断', async () => {
+      const f = fixture(); f.service.saveConfig({ entries: [f.bridge], apiOrigins: [] }); await f.service.startEntry(f.bridge); const before = f.state();
+      f.options.bridge = { status: 7, stderr: 'device busy' }; let result = await f.service.shutdown(); assert.equal(result.failed, 1); assert.equal(result.results[0].exitCode, 7); assert.match(result.results[0].error, /桥接停止失败/); assert.deepEqual(f.state(), before);
+      f.service.saveConfig({ entries: [], apiOrigins: [] }); result = await f.service.shutdown(); assert.equal(result.failed, 1); assert.match(result.results[0].error, /脚本未配置/); assert.deepEqual(f.state(), before);
+    });
+    await test('后台保留覆盖恢复PID与USB登记，不执行停止，保留来源和完整身份', async () => {
+      const f = fixture(); f.record(f.entry); f.service.saveConfig({ entries: [f.entry, f.bridge], apiOrigins: [], keepOnExit: true }); await f.service.startEntry({ ...f.bridge, id: 'usb' }); const before = f.state();
+      const result = await f.service.shutdown(); assert.equal(result.ok, true); assert.equal(result.preserved, 2); assert.equal(result.stopped, 0); assert.deepEqual(f.state(), before); assert.equal(f.kills.length, 0); assert.equal(f.bridges.length, 1);
+    });
+    await test('后台保留写入拒绝不能默默丢掉内存句柄，重试完成后才允许退出确认', async () => {
+      const f = fixture(); f.service.setKeepOnExit(true); await f.service.startEntry(f.entry); const before = f.state(); f.options.failStateWrites = true;
+      let result = await f.service.shutdown(); assert.equal(result.ok, false); assert.equal(result.failed, 1); assert.match(result.results[0].error, /落盘失败/); assert.deepEqual(f.state(), before);
+      f.options.failStateWrites = false; result = await f.service.shutdown(); assert.equal(result.ok, true); assert.equal(result.preserved, 1); assert.equal((await f.service.aliveEntry(f.entry)).alive, true);
+    });
+    await test('退出配置或状态损坏/策略类型异常不能回落成空库或默认停止，原字节保留', async () => {
+      for (const type of ['config-json', 'state-json', 'config-policy', 'state-shape']) {
+        const f = fixture(); f.record(f.entry); f.service.saveConfig({ entries: [f.entry], apiOrigins: [], keepOnExit: true });
+        const file = type.startsWith('config') ? f.service.paths().configFile : f.service.paths().stateFile;
+        const content = type.endsWith('json') ? '{坏JSON' : type === 'config-policy' ? JSON.stringify({ entries: [], keepOnExit: 'true' }) : JSON.stringify({ bad: 7 });
+        fs.writeFileSync(file, content); const result = await f.service.shutdown(); assert.equal(result.ok, false); assert.equal(result.failed, 1); assert.equal(f.kills.length, 0); assert.equal(fs.readFileSync(file, 'utf8'), content);
+      }
+    });
+    await test('退出决定未完成时维持操作闸，失败取消后能重试；重复shutdown共用同一Promise', async () => {
+      const f = fixture({ holdKill: true }); await f.service.startEntry(f.entry); f.service.setExitPending(true);
+      const first = f.service.shutdown(); assert.equal(f.service.shutdown(), first); await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await f.service.startEntry({ ...f.entry, id: 'new' })).errorCode, 'LAUNCH_SHUTTING_DOWN'); f.options.releaseKill(); await first;
+      assert.equal((await f.service.startEntry(f.entry)).errorCode, 'LAUNCH_SHUTTING_DOWN'); f.service.setExitPending(false); assert.equal((await f.service.startEntry(f.entry)).ok, true);
+    });
+    await test('退出单项归属失败不阻塞其他自有进程，分别保留未停止记录和真实确认数', async () => {
+      const f = fixture(); f.record(f.entry); await f.service.startEntry({ ...f.entry, id: 'b' });
+      f.options.queryIdentity = (pid, identity) => pid === 777 ? { pid } : identity;
+      const result = await f.service.shutdown(); assert.equal(result.failed, 1); assert.equal(result.stopped, 1); assert(f.state()[f.entry.id]); assert(!f.state().b); assert.deepEqual(f.kills, [501]);
+    });
     await test('状态把端口响应与本次进程归属分开，自己的进程在端口未响应时仍能停止', async () => {
       const f = fixture({ portUp: true }), entry = { ...f.entry, port: 18089 };
       let [status] = await f.service.statusOf([entry]);
