@@ -648,8 +648,9 @@ const Settings = (() => {
       const p = provs.find((x) => x.id === provSel.value);
       if (p) fillProv(p, false);
     };
-    document.getElementById('ai-cfg-save').onclick = () => {
-      AiPanel.setConfig({
+    document.getElementById('ai-cfg-save').onclick = async (event) => {
+      const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
+      try { await AiPanel.setConfig({
         provider: provSel.value,
         baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),
@@ -662,6 +663,7 @@ const Settings = (() => {
         denyCmds: document.getElementById('ai-cfg-deny').value.split('\n').map((x) => x.trim()).filter(Boolean),
       });
       MI.toast('✅ AI 助手配置已保存', 'ok');
+      } catch (error) { MI.toast(error.message || 'AI配置未保存', 'err'); } finally { button.disabled = false; }
     };
     // 已记住的授权：看得见、清得掉（否则"怎么不问了"会变成新的困惑）
     const renderPerms = () => {
@@ -681,16 +683,19 @@ const Settings = (() => {
               '<button class="tb-btn" data-perm="' + esc(it.k) + '">清除</button></div>').join('')
           : '<div style="font-size:12px;color:var(--text-dim)">还没有记住任何授权 —— 在确认弹窗里选「本项目内都允许」或「总是允许」后会出现在这里</div>');
       box.querySelectorAll('[data-perm]').forEach((b) => {
-        b.onclick = () => {
+        b.onclick = async () => {
+          if (b.disabled) return; b.disabled = true;
+          try {
           const k = b.dataset.perm;
           const np = AiPanel.loadPerms() || {};
           if (k.indexOf('path:') === 0) { MI.toast('路径白名单请在上面「写入白名单」框里删除该行后保存', 'err'); return; }
           if (k === 'write') delete np.write;
           else if (k === 'run') delete np.run;
           else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
-          AiPanel.savePerms(np);
+          await AiPanel.savePerms(np);
           MI.toast('已清除该授权（下次会重新询问）', 'ok');
           renderPerms();
+          } catch (error) { MI.toast(error.message || '清除授权失败', 'err'); } finally { b.disabled = false; }
         };
       });
     };

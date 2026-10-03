@@ -10,8 +10,10 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
-const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js']);
+const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js']);
 runtimeFiles.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'launch-exit.js', 'launch-readiness.js');
+runtimeFiles.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
+resources.push('renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
 
 function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);
@@ -55,7 +57,7 @@ function checkPackage(archive, arch = process.arch) {
   }
 
   // HTML/CSS静态资源会随页面变化；显式资源另覆盖动态Worker/WASM/vendor加载。
-  const staticQueue = ['renderer/index.html'], staticSeen = new Set();
+  const staticQueue = ['renderer/index.html', 'renderer/ai-approval.html'], staticSeen = new Set();
   while (staticQueue.length) {
     const file = staticQueue.shift();
     if (staticSeen.has(file) || !requireFile(file)) continue;

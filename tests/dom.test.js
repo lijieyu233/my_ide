@@ -519,6 +519,7 @@ function makeDom() {
       ],
     },
   };
+  require('./helpers/ai-permission-fixture').install(w);
   return dom;
 }
 
@@ -566,7 +567,7 @@ async function loadApp(dom) {
   await tick();
 }
 
-const $ = (dom, sel) => dom.window.document.querySelector(sel);
+const $ = (dom, sel) => dom.window.document.querySelector(sel) || dom.window.__approvalUI?.query(sel);
 const $allIn = (el, sel) => [...el.querySelectorAll(sel)];
 const $$ = (dom, sel) => [...dom.window.document.querySelectorAll(sel)];
 
@@ -5381,7 +5382,7 @@ assert_(panel, 'CM6 搜索面板出现');
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
     // 命令确认弹窗：这次选「总是允许」—— 验的就是「以后同类命令别再问我」
     // （用户最烦的正是同一个命令点十几次确认）
-    const yesBtn = [...dom.window.document.querySelectorAll('button')].find((b) => b.id === 'cr-always');
+    const yesBtn = $(dom, '#cr-always');
     assert_(yesBtn, '命令确认弹窗出现，且带「总是允许」出口');
     assert_(!!$(dom, '#cr-yes'), '另有「运行一次」选项（不想记住时用）');
     click(yesBtn);

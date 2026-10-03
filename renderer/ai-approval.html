@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none'; frame-src 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="ai-approval.css"><title>AI 操作确认</title></head>
+<body><main class="ai-confirm" role="dialog" aria-modal="false" aria-labelledby="title">
+<header><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l5.5 2v4.1c0 3.1-3 5.6-5.5 6.9-2.5-1.3-5.5-3.8-5.5-6.9V3.5z"/><path d="M5.1 7.8l2 2 3.8-4"/></svg><h1 id="title">正在准备确认</h1><button id="close" aria-label="拒绝并关闭">×</button></header>
+<div id="target" class="target"></div><div id="summary" class="target" hidden></div><div id="note" role="status"></div><button id="fold" class="quiet" hidden>收起 diff</button><section id="preview" tabindex="0" aria-label="操作预览"></section>
+<footer><button id="stop" hidden>停止本次任务</button><button id="always" class="quiet" hidden></button><span class="spacer"></span><button id="reject">拒绝</button><button id="accept" class="primary">应用修改</button></footer>
+</main><script src="ai-approval.js"></script></body></html>

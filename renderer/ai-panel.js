@@ -43,7 +43,7 @@ const AiPanel = (() => {
   let curStream = null;     // 流式中的气泡元素
   let curText = '';
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
-  let generation = 0, currentRun = null, pendingConfirmation = null;
+  let generation = 0, currentRun = null;
   const identityMatches = (a, b) => !!a && !!b && ['requestId', 'sessionId', 'rootId', 'generation', 'round'].every(k => a[k] === b[k]);
   const runIsCurrent = run => !!run && currentRun === run && generation === run.identity.generation
     && ((window.App && App.root) || '') === run.identity.rootId && curSessionId === run.identity.sessionId;
@@ -91,27 +91,6 @@ const AiPanel = (() => {
       });
     }
     if (invalidate) { generation++; currentRun = null; busy = false; curStream = null; curText = ''; setBusyUI(false); document.getElementById('ai-stop')?.classList.add('hidden'); }
-  }
-  function bindConfirmation(box, run, descriptor, resolve) {
-    pendingConfirmation?.finish(false);
-    let settled = false;
-    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
-    const onCancel = () => finish(false);
-    const finish = value => {
-      if (settled) return; settled = true;
-      document.removeEventListener('keydown', onKey); run.controller.signal.removeEventListener('abort', onCancel);
-      if (pendingConfirmation?.box === box) pendingConfirmation = null;
-      box.remove(); resolve(runIsLive(run) ? value : false);
-    };
-    pendingConfirmation = { box, run, descriptor: Object.freeze(descriptor), finish };
-    // 确认浮层遮住输入区；停止入口必须在浮层本身可点击，不能只留在被盖住的发送按钮。
-    const stop = document.createElement('button'); stop.className = 'tb-btn m-cancel'; stop.textContent = '停止本次任务';
-    stop.dataset.aiStop = '1'; stop.onclick = () => stopRun(); box.querySelector('.ai-cf-foot').prepend(stop);
-    box.dataset.requestId = run.identity.requestId; box.dataset.toolCallId = descriptor.toolCallId;
-    document.addEventListener('keydown', onKey); run.controller.signal.addEventListener('abort', onCancel, { once: true });
-    panel.appendChild(box);
-    if (!runIsLive(run)) finish(false);
-    return finish;
   }
   let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
   let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
@@ -299,27 +278,36 @@ const AiPanel = (() => {
   }
 
   // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
-  // 范围：session = 本次对话（内存）；project = 本项目（localStorage，按项目分开存）
+  // 权威会话授权只在main内存；localStorage仅兼容旧界面缓存，不能放行工具。
   // 粒度：整类操作（写文件 / 执行命令）+ 单条命令前缀（如 git、npm test）
   let sessionPerm = { write: false, run: false };
+  function clearSessionPermissions() {
+    sessionPerm.write = false; sessionPerm.run = false;
+    Promise.resolve(window.myIDE.ai.clearSession()).catch(error=>MI.toast(error.message,'err'));
+  }
+  let authorityConfig = null;
+  const authorityProjects = new Map();
+  function receivePermissions(view) {
+    if (!view?.config || typeof view.root !== 'string') return;
+    authorityConfig = view.config; authorityProjects.set(view.root, view.permissions || {});
+    try { localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...view.config })); localStorage.setItem('myide-ai-perms:' + view.root, JSON.stringify(view.permissions || {})); } catch {}
+    syncPermBtn();
+  }
+  async function refreshPermissions() {
+    const root = (window.App && App.root) || '', result = await window.myIDE.ai.permissions(root);
+    if (!result?.ok) throw Error(result?.error || '无法读取AI权限'); receivePermissions(result); return result;
+  }
   const permKey = () => 'myide-ai-perms:' + ((window.App && App.root) || '');
   function loadPerms() {
+    if (authorityProjects.has((window.App && App.root) || '')) return JSON.parse(JSON.stringify(authorityProjects.get((window.App && App.root) || '')));
     try { return JSON.parse(localStorage.getItem(permKey()) || '{}') || {}; } catch { return {}; }
   }
-  function savePerms(p) {
-    try { localStorage.setItem(permKey(), JSON.stringify(p || {})); } catch {}
-  }
-  function grantPerm(kind, scope) {
-    if (scope === 'session') { sessionPerm[kind] = true; return; }
-    const p = loadPerms();
-    p[kind] = true;
-    savePerms(p);
-  }
-  function grantCmdPrefix(pre) {
-    if (!pre) return;
-    const p = loadPerms();
-    p.cmds = [...new Set([...(p.cmds || []), pre])];
-    savePerms(p);
+  async function savePerms(p) {
+    const old = loadPerms(), root = (window.App && App.root) || '';
+    if (p?.write && !old.write || p?.run && !old.run || (p?.cmds || []).some(c => !(old.cmds || []).includes(c))) throw Error('新增授权请通过操作确认或访问权限设置');
+    for (const key of [...(old.write && !p?.write ? ['write'] : []), ...(old.run && !p?.run ? ['run'] : []), ...(old.cmds || []).filter(c => !(p?.cmds || []).includes(c)).map(c => 'cmd:' + c)]) {
+      const result = await window.myIDE.ai.forgetPermission(root, key); if (!result?.ok) throw Error(result?.error || '清除授权失败'); receivePermissions(result);
+    }
   }
   function cmdPrefixOf(cmd) { return String(cmd || '').trim().split(/\s+/)[0] || ''; }
   // 危险命令永远要问一次：路径白名单 / 记住授权 / /yolo 都不豁免。
@@ -429,11 +417,14 @@ const AiPanel = (() => {
     pop.innerHTML = html;
     panel.appendChild(pop);
     permPop = pop;
-    pop.addEventListener('click', (e) => {
+    pop.addEventListener('click', async (e) => {
       const t = e.target;
+      if (t.disabled) return;
+      t.disabled = true;
+      try {
       if (t.dataset && t.dataset.set) {
         const i = t.dataset.set.indexOf(':');
-        setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
+        await setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
         renderPermPop(); syncPermBtn();
         const k = t.dataset.set.slice(0, i);
         MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
@@ -446,10 +437,11 @@ const AiPanel = (() => {
         if (k === 'write') delete np.write;
         else if (k === 'run') delete np.run;
         else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
-        savePerms(np);
+        await savePerms(np);
         renderPermPop(); syncPermBtn();
         MI.toast('已清除该授权（下次会重新询问）', 'ok');
       }
+      } catch (error) { MI.toast(error.message, 'err'); } finally { t.disabled = false; }
     });
     document.addEventListener('mousedown', function onOut(ev) {
       if (!permPop) { document.removeEventListener('mousedown', onOut); return; }
@@ -545,17 +537,10 @@ const AiPanel = (() => {
       if (!cmd) return { ok: false, text: '错误：command 为空' };
       const root = run.identity.rootId.replace(/[\\/]+$/, '');
       if (!root) return { ok: false, text: '错误：没有打开的项目' };
-      const needR = runNeedsConfirm(cmd);
-      if (needR === 'deny') return { ok: false, text: '用户已禁止 AI 执行命令（设置 → AI 助手 → 访问权限）' };
-      if (needR === 'yes' || needR === 'danger') {
-        // 确认闸：命令有副作用必须批准，但给「记住这类命令」的出口。
-        // danger（rm / git reset --hard / 用户黑名单）不给「总是允许」，只能逐次点。
-        const ans = await confirmRun(cmd, needR === 'danger' ? '' : cmdPrefixOf(cmd), needR === 'danger', run, call);
-        if (!runIsLive(run)) return cancelledTool();
-        if (!ans) return { ok: false, text: '用户拒绝了执行该命令' };
-        if (ans === 'always') grantCmdPrefix(cmdPrefixOf(cmd));
-      }
+      const approval = await window.myIDE.ai.authorize(run.stream.context,call);
       if (!runIsLive(run)) return cancelledTool();
+      if (!approval?.ok) return { ok:false,text:'错误：'+(approval?.error||'用户未批准该命令') };
+      receivePermissions(approval.permissions);
       const r = await window.myIDE.ai.run(cmd, root, run.stream.context, call);
       return { ok: !!(r && r.ok), text: (r && r.text) || '（无输出）' };
     }
@@ -566,27 +551,16 @@ const AiPanel = (() => {
   async function applyWrite(loc, content, source, run, call) {
     if (!runIsLive(run)) return cancelledTool();
     const full = loc.root + '/' + loc.rel;
-    let needW = writeNeedsConfirm(loc.rel);
-    if (needW === 'deny') {
-      return { ok: false, text: '用户已禁止 AI 写入文件（设置 → AI 助手 → 访问权限）' };
-    }
     const old = source || await window.myIDE.ai.readFile(run.stream.context,call);
     if (!runIsLive(run)) return cancelledTool();
     if (!old || old.binary || old.tooLarge || old.error && old.errorCode !== 'ENOENT')
       return { ok: false, text: '错误：不能读取可靠的原文本，未写入 ' + loc.rel };
     const oldText = old && !old.error ? (old.content || '') : '';
     const existed = old && !old.error;
-    // 删除保护：把已有内容清空 = 删内容。即便前面放行了写入（白名单 / 记住授权 / auto），
-    // 这一步也必须问一次 —— 这是最容易造成不可逆损失的操作（Cursor 也单独保护删除）。
-    const isWipe = existed && String(oldText).trim() !== '' && String(content).trim() === '';
-    if (needW === 'no' && isWipe) needW = 'danger';
-    if (needW === 'yes' || needW === 'danger') {
-      const ans = await confirmDiff(loc.rel, oldText, content, needW === 'danger', run, call, old.version);
-      if (!runIsLive(run)) return cancelledTool();
-      if (!ans) return { ok: false, text: '用户拒绝了本次写入 ' + loc.rel + '（未做任何修改）' };
-      if (ans === 'always') grantPerm('write', 'project');
-    }
+    const approval = await window.myIDE.ai.authorize(run.stream.context,call);
     if (!runIsLive(run)) return cancelledTool();
+    if (!approval?.ok) return { ok:false,text:'错误：'+(approval?.error||'用户未批准本次写入') };
+    receivePermissions(approval.permissions);
     const w = await window.myIDE.ai.writeFile(run.stream.context, full, content, old.textFormat, { expectedVersion: old.version }, call);
     if (!w || w.error) return { ok: false, text: '错误：写入失败 ' + ((w && w.error) || '') };
     // 检查点 + 改动卡片：写下前的旧内容留档（新文件记 existed:false，撤销时删除）
@@ -641,47 +615,6 @@ const AiPanel = (() => {
     }
     for (let k = e - 1; k >= 0; k--) rows.push({ t: ' ', s: A[A.length - 1 - k] });
     return rows;
-  }
-
-  // 改动确认：贴在面板底部的浮层（返回 'once' | 'always' | false）。
-  // 以前是居中大模态 —— 一跳出来编辑器被整个盖住，用户没法一边看真实文件一边决定改不改。
-  // Cursor（编辑器内 inline diff + Keep/Undo）、Cline（对话流里的 diff 卡片）、
-  // VS Code（Working Set 里开 diff 视图）都是「就地给 diff、决策按钮贴着 diff」，这里取同样的路子：
-  // 不抢焦点、不遮编辑器，diff 默认展开、可收起。
-  function confirmDiff(rel, oldText, newText, danger, run, call, baseVersion) {
-    return new Promise((resolve) => {
-      const rows = lineDiff(oldText, newText);
-      const addN = rows.filter((r) => r.t === '+').length, delN = rows.filter((r) => r.t === '-').length;
-      const box = document.createElement('div');
-      box.className = 'ai-confirm';
-      box.innerHTML =
-        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
-          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
-            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
-            : '<path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/>') + '</svg>' +
-          '<span class="ai-cf-nm" title="' + esc(rel) + '">' + esc(rel) + '</span>' +
-          '<span class="ai-cf-stat"><i class="e-add">+' + addN + '</i><i class="e-del">-' + delN + '</i></span>' +
-          '<button class="ai-cf-fold" id="dw-fold">收起</button>' +
-        '</div>' +
-        '<div class="ai-cf-body dw-diff" id="dw-diff">' + diffRowsHtml(rows) + '</div>' +
-        (danger ? '<div class="ai-cf-note warn">改完这个文件就空了 —— 等于把已有内容删掉。这一步不提供「以后都允许」。</div>' : '') +
-        '<div class="ai-cf-foot">' +
-          (danger ? '' : '<button class="ai-cf-quiet" id="dw-always" title="以后本项目里改文件都不再询问（权限按钮或设置里可清除）">本项目内都允许</button>') +
-          '<button class="tb-btn m-cancel" id="dw-no">拒绝</button>' +
-          '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="dw-yes">' + (danger ? '确认清空' : '应用修改') + '</button>' +
-        '</div>';
-      const finish = bindConfirmation(box, run, { context: run.stream.context, toolCallId: call.id,
-        target: run.identity.rootId + '/' + rel, baseVersion, parameters: JSON.stringify(call.args) }, resolve);
-      box.querySelector('#dw-yes').onclick = () => finish('once');
-      const al = box.querySelector('#dw-always');
-      if (al) al.onclick = () => finish('always');
-      box.querySelector('#dw-no').onclick = () => finish(false);
-      const fold = box.querySelector('#dw-fold');
-      fold.onclick = () => {
-        const hid = box.querySelector('#dw-diff').classList.toggle('hidden');
-        fold.textContent = hid ? '展开 diff' : '收起';
-      };
-    });
   }
 
   // 工具活动行（消息流里的紧凑状态条）
@@ -755,15 +688,21 @@ const AiPanel = (() => {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   function getConfig() {
-    try { return JSON.parse(localStorage.getItem(LS_CFG) || '{}'); } catch { return {}; }
+    try { return { ...JSON.parse(localStorage.getItem(LS_CFG) || '{}'), ...(authorityConfig || {}) }; } catch { return authorityConfig || {}; }
   }
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
-  function setConfig(c) {
-    try {
-      const cfg = { ...getConfig(), ...(c || {}) };
-      localStorage.setItem(LS_CFG, JSON.stringify(cfg));
-      refreshModelSel();
-    } catch {}
+  async function setConfig(c) {
+    const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
+    let result = { ok: true };
+    if (keys.some(key=>Object.hasOwn(c || {},key))) {
+      const permissions=Object.fromEntries(keys.map(key=>[key,(c || {})[key] ?? getConfig()[key] ?? (key==='permWrite'||key==='permRun'?'confirm':[])]));
+      result = await window.myIDE.ai.updatePermissions((window.App && App.root)||'',permissions);
+      if (result?.config) receivePermissions(result);
+      if (!result?.ok) throw Error(result?.error || 'AI权限保存失败');
+    }
+    // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
+    localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
+    refreshModelSel(); return result;
   }
 
   // 面板头部模型切换器：当前模型 + 服务商预设模型列表
@@ -784,6 +723,7 @@ const AiPanel = (() => {
 
   function syncVisible(v) {
     if (panel) panel.classList.toggle('hidden', !v);
+    if (!v) { stopRun(); clearSessionPermissions(); }
     if (v && inputEl) inputEl.focus();
   }
 
@@ -1174,9 +1114,15 @@ const AiPanel = (() => {
       return;
     }
     if (kind === 'yolo') {
-      sessionPerm.write = true;
-      sessionPerm.run = true;
-      MI.toast('本次对话内改文件 / 执行命令都不再询问（关掉面板或开新对话即恢复；永久授权请到设置页）', 'ok');
+      if (!curSessionId) curSessionId = 's-' + (window.crypto?.randomUUID?.() || Date.now().toString(36));
+      const context = { rootId: (window.App && App.root) || '', sessionId: curSessionId };
+      try {
+        const result = await window.myIDE.ai.grantSession(context);
+        if (!result?.ok) throw Error(result?.error || '本次对话授权未生效');
+        if (context.rootId !== ((window.App && App.root) || '') || context.sessionId !== curSessionId) return;
+        sessionPerm.write = true; sessionPerm.run = true;
+        MI.toast('本次对话已放行；危险操作仍会询问，关闭面板或开新对话时恢复', 'ok');
+      } catch (error) { MI.toast(error.message, 'err'); }
       return;
     }
     if (kind === 'commitmsg') { await genCommitMsg(); return; }
@@ -1447,7 +1393,7 @@ const AiPanel = (() => {
       if (!se) return;
       if (act === 'del') {
         saveSessions(all2.filter((x) => x.id !== id));
-        if (id === curSessionId) { stopRun(true); curSessionId = null; }
+        if (id === curSessionId) { stopRun(true); clearSessionPermissions(); curSessionId = null; }
         renderHist();
         MI.toast('已删除该会话', 'ok');
         return;
@@ -1474,6 +1420,7 @@ const AiPanel = (() => {
     const se = loadSessions().find((x) => x.id === id);
     if (!se) { MI.toast('找不到该会话', 'err'); return; }
     stopRun(true);
+    clearSessionPermissions();
     closeHist();
     msgs = (se.msgs || []).slice();
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
@@ -1488,6 +1435,8 @@ const AiPanel = (() => {
   // 换项目一律重来（否则 AI 会把上一个项目的文件当成本项目的上下文）。
   function onProjectChange() {
     stopRun(true);
+    clearSessionPermissions();
+    refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     closeMention(); closeHist(); closeSlash(); closePermPop();
     msgs = [];
     curSessionId = null;
@@ -1665,47 +1614,7 @@ const AiPanel = (() => {
   }
 
   // ---------- 改动卡片 ----------
-  // 逐行 diff 渲染（确认弹窗与改动卡片共用）：长未改动段折叠为「⋯ N 行未改动 ⋯」
-  // 命令确认：多给一个「记住这类命令」的出口
-  // （Cursor 是 allowlist，VS Code 是 scoped approval —— 都在解决"点十几次确认"）
-  function confirmRun(cmd, pre, danger, run, call) {
-    return new Promise((resolve) => {
-      const box = document.createElement('div');
-      box.className = 'ai-confirm';
-      box.innerHTML =
-        '<div class="ai-cf-head' + (danger ? ' warn' : '') + '">' +
-          '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (danger
-            ? '<path d="M8 2.8l5.2 9.2H2.8z"/><path d="M8 6.4v3.2M8 11.5v.1"/>'
-            : '<path d="M4.7 2.7l8 5.3-8 5.3z"/>') + '</svg>' +
-          '<span class="ai-cf-nm">' + (danger ? '危险命令，请确认' : 'AI 请求执行命令') + '</span>' +
-          (pre ? '<span class="ai-cf-stat">' + esc(pre) + '</span>' : '') +
-          '<button class="ai-cf-fold" id="cr-fold">收起</button>' +
-        '</div>' +
-        '<div class="ai-cf-body" id="cr-body"><div class="ai-cf-cmd">' + esc(cmd) + '</div></div>' +
-        '<div class="ai-cf-note' + (danger ? ' warn' : '') + '">' +
-          (danger
-            ? '这条命令可能是破坏性的（删除 / 重置 / 强制推送）。这一步不提供「总是允许」。'
-            : '在项目目录执行。' + (pre ? '选「总是允许」后，以 <b>' + esc(pre) + '</b> 开头的命令不再询问（权限按钮或设置里可清除）。' : '')) +
-        '</div>' +
-        '<div class="ai-cf-foot">' +
-          (pre ? '<button class="ai-cf-quiet" id="cr-always">总是允许「' + esc(pre) + '」</button>' : '') +
-          '<button class="tb-btn m-cancel" id="cr-no">拒绝</button>' +
-          '<button class="tb-btn ' + (danger ? 'm-cancel' : 'm-ok') + '" id="cr-yes">' + (danger ? '仍然执行' : '运行一次') + '</button>' +
-        '</div>';
-      const finish = bindConfirmation(box, run, { context: run.stream.context, toolCallId: call.id,
-        target: run.identity.rootId, parameters: cmd }, resolve);
-      box.querySelector('#cr-no').onclick = () => finish(false);
-      box.querySelector('#cr-yes').onclick = () => finish('once');
-      const al = box.querySelector('#cr-always');
-      if (al) al.onclick = () => finish('always');
-      const fold = box.querySelector('#cr-fold');
-      fold.onclick = () => {
-        const hid = box.querySelector('#cr-body').classList.toggle('hidden');
-        fold.textContent = hid ? '展开' : '收起';
-      };
-    });
-  }
-
+  // 改动卡片保留逐行diff；可信确认在独立页面渲染，不能复用宿主的按钮或答复。
   function diffRowsHtml(rows) {
     const parts = [];
     for (let i = 0; i < rows.length; i++) {
@@ -2168,15 +2077,18 @@ const AiPanel = (() => {
   }
 
   function init() {
+    window.myIDE.ai.onPermissionsChanged(receivePermissions);
+    window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});
+    refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     if (!panel) return;
     showWelcome();
     refreshModelSel();
     const modelSel = document.getElementById('ai-model');
-    if (modelSel) modelSel.onchange = () => {
+    if (modelSel) modelSel.onchange = async () => {
       const m = modelSel.value;
       if (!m) return;
-      setConfig({ model: m });
-      MI.toast('已切换模型：' + m, 'ok');
+      try { await setConfig({ model: m }); MI.toast('已切换模型：' + m, 'ok'); }
+      catch (error) { refreshModelSel(); MI.toast(error.message, 'err'); }
     };
     if (sendBtn) {
       sendBtn.onclick = () => {
@@ -2211,6 +2123,7 @@ const AiPanel = (() => {
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
       stopRun(true);
+      clearSessionPermissions();
       persistSession();          // 先把当前这轮存进历史，再开新的
       curSessionId = null;
       lastUserAt = null;

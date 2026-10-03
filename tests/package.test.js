@@ -30,12 +30,14 @@ async function test(name, fn) {
     const production = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-status.js','git-index.js','git-hunks.js','git-queue.js','git-native.js',
       'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js', 'launch-exit.js', 'launch-readiness.js'];
     production.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'quick-launch-service.js', 'quick-launch-app.js', 'ai-tool-contract.js', 'ai-tool-execution.js', 'ai-path-lease-win.js');
+    production.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));
     put('build/icon.png');
     const html = fs.readFileSync(path.join(root, 'renderer/index.html'), 'utf8');
     put('renderer/index.html', html);
+    for (const file of ['renderer/ai-approval.html','renderer/ai-approval.css','renderer/ai-approval.js']) put(file,fs.readFileSync(path.join(root,file)));
     for (const match of html.matchAll(/\b(?:src|href)=['"]([^'"]+)['"]/g)) {
       if (!/^[a-z]+:/.test(match[1])) put('renderer/' + match[1]);
     }
@@ -60,7 +62,7 @@ async function test(name, fn) {
     });
 
     // 实际删除归档输入文件，确保遗漏不是仅在配置清单里查名字。
-    const required = [...production, 'build/icon.png', 'renderer/index.html',
+    const required = [...production, 'build/icon.png', 'renderer/index.html', 'renderer/ai-approval.html', 'renderer/ai-approval.css', 'renderer/ai-approval.js',
       'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
       'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
       'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js', nativeBase + 'index.js', nativeBase + 'win32_x64/koffi.node'];

@@ -66,6 +66,11 @@ const OPEN_ARG = (() => {
 
 let mainWindow = null;
 let stateFile = null;
+const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
+  ownerOf: event => aiSender(event), windowFor: owner => mainWindow && mainWindow.webContents.id === owner ? mainWindow : null,
+  policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
+  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
+});
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
@@ -86,7 +91,8 @@ function saveState(s) {
 //     同一份字节放到可读路径就能正常读出 120 项 —— 详见 docs/开发文档-085。）
 //   镜像另存一份，避免只依赖 Chromium profile；但主进程的 node fs 同样受 MIC 约束，
 //   `~/.myide/` 也必须实际可写，不能把「启用镜像」当作「保存成功」。
-const SETTINGS_MIRROR = () => path.join(os.homedir(), '.myide', 'settings.json');
+// 独立Chromium profile仍会从HOME镜像自愈；自检必须连镜像一起隔离，不能回写用户设置。
+const SETTINGS_MIRROR = () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'settings.json');
 
 function readMirror() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_MIRROR(), 'utf8')) || null; } catch { return null; }
@@ -157,6 +163,7 @@ function createWindow() {
     show: !HIDDEN_WINDOW,
     skipTaskbar: HIDDEN_WINDOW,
     webPreferences: {
+      additionalArguments: UI_CHECK ? ['--ai-approval-test'] : [],
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
@@ -169,7 +176,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
+  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) resetAi(); });
   aiHost.on('destroyed', resetAi);
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
@@ -523,8 +530,11 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
+    aiSender(e); await aiPermissionsBridge.initialize(e.sender);
     const start = aiRuns.begin(aiSender(e), context); record = start.record; context = record.context;
     aiTools.bind(aiSender(e), context);
+    if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e));
+    aiPermissionsBridge.newSession(aiSender(e), context);
     if (start.previous) { AI.abortChat(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { return { error: error.message, errorCode: error.code, context }; }
   let r = await AI.chatStream(cfg, messages, delta => {
@@ -535,11 +545,11 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   return r;
 });
 ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } return result; }
+  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e)); AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
-  try { const result=aiRuns.finish(aiSender(e),context);if(result.ok)cancelAiSearch(context.requestId);return result; }
+  try { const result=aiRuns.finish(aiSender(e),context);if(result.ok){aiPermissionsBridge.authority.revoke(aiSender(e));cancelAiSearch(context.requestId);}return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:validateTool', (e, context, call) => {
@@ -581,6 +591,7 @@ ipcMain.handle('ai:search',async(e,context,call)=>{
           catch (error) { return { ok: false, text: error.message, errorCode: error.code }; }
           const { exec } = require('child_process');
           try { const result=await aiTools.once(aiSender(e),context,call,'run',({proof})=>new Promise((resolve) => {
+            aiPermissionsBridge.authority.assert(aiSender(e),context,call,{target:proof.real,command:cmd});
             exec(cmd, {
               cwd: proof.real,
               timeout: 15000,
@@ -642,9 +653,11 @@ ipcMain.handle('ai:writeFile', async(e, context, p, content, format, condition, 
       original = snapshot.content;
     }
     AiToolContract.assertWrite(context.rootId, p, content, normalized, original);
-    return await aiTools.once(aiSender(e),context,normalized,'write',({proof,verify})=>({
-      ...writeTextFile(proof.real,content,format,condition,verify,aiTools.writer(aiSender(e),context,proof)),context,
-    }));
+    return await aiTools.once(aiSender(e),context,normalized,'write',({proof,verify})=>{
+      const assertApproval=()=>{verify();aiPermissionsBridge.authority.assert(aiSender(e),context,normalized,{target:proof.real,content,expectedVersion:condition?.expectedVersion});};
+      assertApproval();aiPermissionsBridge.protect(proof.real);
+      return {...writeTextFile(proof.real,content,format,condition,assertApproval,aiTools.writer(aiSender(e),context,proof)),context};
+    });
   }
   catch (error) { return { error: error.message, errorCode: error.code, context }; }
 });
@@ -1395,6 +1408,9 @@ app.whenReady().then(() => {
       // 桩只替换「模型」这一段，页面侧（面板 → 工具调用 → 写文件 → 改动卡片 → 撤销）全部走真实代码。
       const bootLog = (m) => { try { fs.writeFileSync(path.join(__dirname, '.ui-check-boot.txt'), m + '\n'); } catch {} };
       bootLog('1 进入自检，准备给 ai:chat 打桩');
+      const approvalProbe = require('./scripts/ai-approval-test-probe');
+      approvalProbe.install({ ipcMain, webContents: require('electron').webContents, win: mainWindow });
+      await mainWindow.webContents.executeJavaScript('(' + approvalProbe.renderer.toString() + ')()');
       let stubRound = 0;
       // 翻译插件（llm:chat）同样打桩：自检要验「未选中文本也能弹窗 / 手动填文本能翻」，
       // 不能真去连 LLM（没配 key 会报错并弹设置页，步骤就跑偏了）
@@ -1405,8 +1421,10 @@ app.whenReady().then(() => {
       });
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
+        await aiPermissionsBridge.initialize(e.sender);
         aiRuns.begin(aiSender(e), context);
         aiTools.bind(aiSender(e),context);
+        aiPermissionsBridge.newSession(aiSender(e), context);
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, ch === 'ai:chunk' ? { delta: d, context } : { ...d, context }); } catch {} };
         // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
         const msgs = Array.isArray(messages) ? messages : [];
@@ -1561,6 +1579,7 @@ app.whenReady().then(() => {
         );
         await wc.reload(); // 让 loadProjects/renderProjectBar 按 14 个项目重新初始化
         await new Promise((r) => wc.once('did-finish-load', r));
+        await wc.executeJavaScript('(' + approvalProbe.renderer.toString() + ')()');
         await new Promise((r) => setTimeout(r, 1600));
         // 先进「无项目」的启动页（空状态）与外壳检查，再打开项目
         await run('启动页（空状态）', js(steps.emptyState), 'check-ui-0-empty-state.png');

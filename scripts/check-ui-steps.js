@@ -2898,7 +2898,7 @@ module.exports = {
     const dir = arg; // 模型已由主进程打桩，这里只需项目目录
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
-    const q = (s) => document.querySelector(s);
+    const q = (s) => document.querySelector(s) || window.__aiApprovalProbe.query(s);
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const waitFor = async (fn, ms) => {
@@ -2911,7 +2911,7 @@ module.exports = {
 
     // 自检环境没有真 API key → 指向本地假服务（这样验证的仍是真实链路，不是打桩的 DOM）
     // baseUrl 只用来让面板认为「已配置」，实际请求被主进程的桩接管
-    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
     await window.Viewer.openFile(dir + '\\' + FILE);
     await sleep(700);
     window.App.setAiOpen(true);
@@ -2965,7 +2965,7 @@ module.exports = {
     const dir = arg;
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
-    const q = (s) => document.querySelector(s);
+    const q = (s) => document.querySelector(s) || window.__aiApprovalProbe.query(s);
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const tidy = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
@@ -2990,7 +2990,7 @@ module.exports = {
   aiDropAndPerm: async (dir) => {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
-    const q = (s) => document.querySelector(s);
+    const q = (s) => document.querySelector(s) || window.__aiApprovalProbe.query(s);
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const waitFor = async (fn, ms) => {
@@ -3005,7 +3005,7 @@ module.exports = {
       return e;
     };
 
-    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
     window.App.setAiOpen(true);
     await sleep(400);
     if (q('#ai-new')) { q('#ai-new').click(); await sleep(300); }
@@ -3047,7 +3047,7 @@ module.exports = {
   aiParityUi: async (dir) => {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
-    const q = (s) => document.querySelector(s);
+    const q = (s) => document.querySelector(s) || window.__aiApprovalProbe.query(s);
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const chipTx = () => qa('#ai-chips .ai-ctx-chip').map((c) => c.textContent).join(',');
@@ -3057,7 +3057,7 @@ module.exports = {
       return rows.length ? String(rows[rows.length - 1].textContent).replace(/\s+/g, ' ').slice(0, 50) : '(无回复)';
     };
     // 本步骤自带配置（前面的步骤把 permRun 设成了 deny，会掩盖危险命令闸）
-    window.AiPanel.setConfig({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm', permRun: 'confirm', allowPaths: [], denyCmds: [] });
+    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm', permRun: 'confirm', allowPaths: [], denyCmds: [] });
     if (window.App && App.showAi) App.showAi();
     await sleep(400);
     await window.Viewer.openFile(dir + '\\_ui_outline.md');
@@ -3145,7 +3145,7 @@ module.exports = {
     type('/yolo');
     await sleep(400);
     const yolo = qa('.ai-at-pop .ai-at-item').find((x) => x.textContent.includes('yolo'));
-    if (yolo) { yolo.click(); await sleep(300); }
+    if (yolo) { yolo.click(); await window.__aiApprovalProbe.approve('放行本次 AI 对话'); await sleep(300); }
     add('/yolo 选完就把本次对话放行', !!(window.AiPanel && AiPanel.sessionPerm && AiPanel.sessionPerm.write),
       JSON.stringify(window.AiPanel ? AiPanel.sessionPerm : {}));
     // ⑥ 历史会话
@@ -3178,12 +3178,12 @@ module.exports = {
     const saveW = AiPanel.sessionPerm.write;
     const savePerms = AiPanel.loadPerms();
     AiPanel.sessionPerm.write = false;
-    AiPanel.savePerms({});                       // 前面的步骤可能点过「本项目内都允许」，先清掉
-    AiPanel.setConfig({ allowPaths: ['docs/**'] });
+    await AiPanel.savePerms({});                       // 前面的步骤可能点过「本项目内都允许」，先清掉
+    await window.__aiApprovalProbe.configure({ allowPaths: ['docs/**'] });
     add('写入白名单：docs/** 放行、其他路径仍要问',
       AiPanel.writeNeedsConfirm('docs/a.md') === 'no' && AiPanel.writeNeedsConfirm('src/a.js') === 'yes',
       'docs/a.md=' + AiPanel.writeNeedsConfirm('docs/a.md') + ' · src/a.js=' + AiPanel.writeNeedsConfirm('src/a.js'));
-    AiPanel.setConfig({ allowPaths: [] });
+    await window.__aiApprovalProbe.configure({ allowPaths: [] });
     AiPanel.sessionPerm.write = saveW;
     AiPanel.savePerms(savePerms || {});
     await ask('危险命令', 2400);
@@ -3218,10 +3218,10 @@ module.exports = {
     add('权限浮层写明危险命令不豁免', !!q('.ai-perm-pop .ai-perm-note'));
     if (pseg.length) {
       const seg0 = () => qa('.ai-perm-pop .ai-seg')[0];   // 每次重查：切档会重渲染浮层
-      seg0().querySelectorAll('button')[1].click();
+      seg0().querySelectorAll('button')[1].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
       await sleep(300);
       add('点「自动」档位真的切了', AiPanel.permWrite() === 'auto', 'permWrite=' + AiPanel.permWrite());
-      seg0().querySelectorAll('button')[0].click();
+      seg0().querySelectorAll('button')[0].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
       await sleep(300);
       add('能改回「每次确认」', AiPanel.permWrite() === 'confirm', 'permWrite=' + AiPanel.permWrite());
     }
@@ -3230,9 +3230,9 @@ module.exports = {
     // ⑫ 改动确认：贴在面板底部的浮层，不再用居中大模态把编辑器整个盖住
     q('#ai-new').click();
     await sleep(350);
-    AiPanel.savePerms({});
+    await AiPanel.savePerms({});
     AiPanel.sessionPerm.write = false;
-    AiPanel.setConfig({ permWrite: 'confirm', permRun: 'confirm', allowPaths: [] });
+    await window.__aiApprovalProbe.configure({ permWrite: 'confirm', permRun: 'confirm', allowPaths: [] });
     await ask('第一次改', 2800);
     const cf = q('.ai-confirm');
     add('改动确认是贴面板底部的浮层（不是居中大模态）', !!cf,

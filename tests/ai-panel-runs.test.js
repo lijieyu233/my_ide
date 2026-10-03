@@ -18,6 +18,10 @@ function fixture() {
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost' }), w = dom.window;
   const registry = createRegistry(), calls = [], writes = [], commands = [], aborts = [], pending = [];
   const toolService=ToolExecution.createService(registry);
+  const ui = require('./helpers/ai-approval-dom').createUI(() => f.stop());
+  const policyStore = require('../ai-permission-store').createStore(path.join(dir,'policy.json'));
+  policyStore.initialize({config:{permWrite:'auto'}}); created.add(path.join(dir,'policy.json'));
+  const authority = require('../ai-tool-authority').createAuthority({tools:toolService,readPolicy:(owner,context)=>policyStore.read(owner,context),confirm:ui.confirm,remember:(owner,data,signal)=>policyStore.remember(owner,data,signal,()=>toolService.active(owner,data.context))});
   let onChunk, onDone;
   const f = { dir, A, B, w, calls, writes, commands, aborts, file, put, script: [], onRead: null, onWrite: null, registry };
   const read = async p => {
@@ -30,6 +34,13 @@ function fixture() {
   w.myIDE = { fs: { readFile: read, readDir: async () => [], grep: async () => ({ results: [] }), writeFile: async (p, content, format, condition) => {
     try { return FileWrite.atomicWrite(path.resolve(p), TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), condition); } catch (e) { return { error: e.message }; }
   }, remove: async p => { fs.unlinkSync(p); return { ok: true }; } }, ai: {
+    permissions: async root => ({ok:true,root,...policyStore.view(root)}),
+    updatePermissions: async(root,config)=>{policyStore.updateConfig(config,policyStore.view(root).revision);authority.revoke(1);return {ok:true,root,...policyStore.view(root)};},
+    forgetPermission: async(root,key)=>{policyStore.forget(root,key);authority.revoke(1);return {ok:true,root,...policyStore.view(root)};},
+    authorize: async(context,call)=>{try{return {...await authority.authorize(1,context,JSON.parse(JSON.stringify(call))),permissions:{root:context.rootId,...policyStore.view(context.rootId)}};}catch(e){return {error:e.message,errorCode:e.code};}},
+    clearSession: async()=>{authority.revoke(1);ui.cancel();policyStore.clearSession(1);return {ok:true};},
+    grantSession: async context=>{policyStore.grantSession(1,context);return {ok:true};},
+    onPermissionsChanged:()=>{},onStopped:()=>{},
     chat: async (_cfg, messages, _tools, context) => {
       registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, d }; calls.push(item); pending.push(d);
       if (f.script.length) d.resolve(f.script.shift());
@@ -38,8 +49,8 @@ function fixture() {
       const terminal = { status: result.error ? 'failed' : 'completed', complete: !result.error, finishReason: result.toolCalls?.length ? 'tool_calls' : 'stop', ...result };
       return f.onResponse ? f.onResponse(terminal, context) : { ...terminal, context };
     },
-    abort: async context => { aborts.push(context); return f.abortResult || registry.finish(1, context, 'cancelled'); },
-    finish: async context => registry.finish(1, context),
+    abort: async context => { aborts.push(context); authority.revoke(1); return f.abortResult || registry.finish(1, context, 'cancelled'); },
+    finish: async context => {authority.revoke(1);return registry.finish(1, context);},
     validateTool: async (context, call) => {
       try { return { ok: true, call: toolService.prepare(1,context,JSON.parse(JSON.stringify(call))).call }; }
       catch(e) { return { ok: false, error: e.message, errorCode: e.code }; }
@@ -53,25 +64,41 @@ function fixture() {
     search: async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'search',()=>({results:[],doneReason:'complete'})),
     writeFile: async (context, p, content, format, condition, call) => {
       p = path.resolve(p); const action = () => {
-        try { registry.assert(1, context, p); ToolContract.assertWrite(context.rootId,p,content,call,call.name==='replace_edit'?TextFormat.decodeText(FileWrite.readSnapshot(p).bytes).content:undefined); const r = FileWrite.atomicWrite(p, TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), { ...condition, beforePublish: () => registry.assert(1, context, p) }); writes.push({ p, content, context }); created.add(p); return r; }
+        try { registry.assert(1, context, p); authority.assert(1,context,call,{target:p,content,expectedVersion:condition.expectedVersion}); ToolContract.assertWrite(context.rootId,p,content,call,call.name==='replace_edit'?TextFormat.decodeText(FileWrite.readSnapshot(p).bytes).content:undefined); const r = FileWrite.atomicWrite(p, TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), { ...condition, beforePublish: () => {registry.assert(1, context, p);authority.assert(1,context,call,{target:p,content,expectedVersion:condition.expectedVersion});} }); writes.push({ p, content, context }); created.add(p); return r; }
         catch (e) { return { error: e.message, errorCode: e.code }; }
       };
       return toolService.once(1,context,JSON.parse(JSON.stringify(call)),'write',()=>f.onWrite?f.onWrite(action,context):action());
     },
-    run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); commands.push(cmd); return { ok: true, text: 'fixture' }; },
+    run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); authority.assert(1,context,call,{target:path.resolve(cwd),command:cmd}); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
-  w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture', permWrite: 'auto' });
+  w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
   f.switchRoot = root => { w.App.root = root; w.Viewer.activeTab = null; w.AiPanel.onProjectChange(); };
-  f.element = selector => w.document.querySelector(selector); f.text = () => w.document.getElementById('ai-msgs').textContent;
-  f.close = () => { pending.forEach(d => d.resolve({ ok: true, text: '' })); dom.window.close(); for (const p of created) if (fs.existsSync(p)) fs.unlinkSync(p); [A, B, dir].forEach(p => { if (fs.existsSync(p) && fs.readdirSync(p).length === 0) fs.rmdirSync(p); }); };
+  f.element = selector => w.document.querySelector(selector) || ui.query(selector); f.text = () => w.document.getElementById('ai-msgs').textContent;
+  f.close = () => { authority.revoke(1); ui.close(); pending.forEach(d => d.resolve({ ok: true, text: '' })); dom.window.close(); for (const p of created) if (fs.existsSync(p)) fs.unlinkSync(p); [A, B, dir].forEach(p => { if (fs.existsSync(p) && fs.readdirSync(p).length === 0) fs.rmdirSync(p); }); };
+  f.rememberWrite = () => policyStore.remember(1,{context:{rootId:A,sessionId:'test'},call:{name:'write_file'},scope:'project'},new AbortController().signal,()=>{});
   fixtures.push(f); return f;
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('面板伪改会话开关/localStorage授权不能绕过主进程确认', async()=>{
+    const f=fixture();f.put('one.md');await f.w.AiPanel.setConfig({permWrite:'confirm'});
+    f.w.AiPanel.sessionPerm.write=true;f.w.localStorage.setItem('myide-ai-perms:'+f.A,JSON.stringify({write:true}));
+    f.script.push(reply(writeCall()));f.send();await until(()=>f.element('#dw-yes'));assert.equal(f.writes.length,0);f.element('#dw-no').click();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');
+  });
+  await test('权限确认取消时，同次配置的模型/地址草稿也不提前保存',async()=>{
+    const f=fixture();await tick();const before=f.w.AiPanel.getConfig();
+    f.w.myIDE.ai.updatePermissions=async()=>({ok:false,error:'cancelled'});
+    await assert.rejects(f.w.AiPanel.setConfig({baseUrl:'http://changed.invalid',model:'changed',permWrite:'deny'}),/cancelled/);
+    assert.equal(f.w.AiPanel.getConfig().baseUrl,before.baseUrl);assert.equal(f.w.AiPanel.getConfig().model,before.model);
+  });
+  await test('批准后、发布前权限文件外部变化，拒绝旧批准并保留原字节',async()=>{
+    const f=fixture();f.put('one.md');const ack=defer();f.onWrite=action=>ack.promise.then(action);f.script.push(reply(writeCall()));f.send();await until(()=>f.calls.length===1);await tick();await tick();
+    const file=path.join(f.dir,'policy.json'),policy=JSON.parse(fs.readFileSync(file,'utf8'));policy.revision++;policy.config.write='deny';fs.writeFileSync(file,JSON.stringify(policy));ack.resolve();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,0);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');
+  });
   await test('A2-auto：停止后释放旧读取，零写入且后续工具不派发', async () => {
     const f = fixture(); f.put('one.md'); f.put('two.md'); const read = defer(); let readCount = 0;
     f.onRead = p => p === f.file('one.md') ? (readCount++, read.promise) : null; f.script.push(reply(writeCall(), writeCall('two.md', 'SECOND', 'w2')));
@@ -80,7 +107,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.writes.length, 0); assert.equal(f.calls.length, 1); assert.equal(fs.readFileSync(f.file('two.md'), 'utf8'), 'ORIGINAL'); assert(f.text().includes('已停止'));
   });
   await test('A2-confirm：停止settle确认并移除旧按钮，旧onclick无法批准', async () => {
-    const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall(), writeCall('two.md', 'SECOND', 'w2')));
+    const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall(), writeCall('two.md', 'SECOND', 'w2')));
     f.send(); await until(() => f.element('#dw-yes')); const old = f.element('#dw-yes'); const callId = f.element('.ai-confirm').dataset.toolCallId;
     f.element('[data-ai-stop]').click(); await until(() => f.element('#ai-send').textContent === '➤'); old.onclick(); await tick();
     assert.equal(callId, 'w1'); assert.equal(f.element('.ai-confirm'), null); assert.equal(f.writes.length, 0); assert.equal(f.calls.length, 1);
@@ -94,7 +121,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.writes[0].p, f.file('b.md', f.B)); assert.equal(fs.readFileSync(f.file('b.md', f.B), 'utf8'), 'OWN_B');
   });
   await test('同项目新会话取消旧确认，新会话可继续发送', async () => {
-    const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall())); f.send(); await until(() => f.element('#dw-yes'));
+    const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall())); f.send(); await until(() => f.element('#dw-yes'));
     const old = f.element('#dw-yes'); f.element('#ai-new').click(); old.onclick(); f.send('新会话'); await until(() => f.calls.length === 2 && f.element('#ai-send').textContent === '➤');
     assert.equal(f.writes.length, 0); assert.notEqual(f.calls[0].context.sessionId, f.calls[1].context.sessionId);
   });
@@ -111,7 +138,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(f.text().includes('第二轮正常回复')); assert(!fs.existsSync(f.file('invoke.md'))); assert.equal(f.calls[1].context.round, 1);
   });
   await test('确认中的参数对象被外部改动，不改变已展示的操作', async () => {
-    const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); const call = writeCall(); f.script.push(reply(call));
+    const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permWrite: 'confirm' }); const call = writeCall(); f.script.push(reply(call));
     f.send(); await until(() => f.element('#dw-yes')); call.args.content = 'CHANGED'; call.args.path = 'other.md'; f.element('#dw-yes').click();
     await until(() => f.element('#ai-send').textContent === '➤'); assert.equal(fs.readFileSync(f.file('one.md'), 'utf8'), 'MODEL'); assert(!fs.existsSync(f.file('other.md')));
   });
@@ -142,7 +169,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(f.text().includes('响应归属无效')); assert.equal(f.writes.length, 0);
   });
   await test('停止确认后下一次对话携带完整取消工具结果，不残留未配对调用', async () => {
-    const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall(), writeCall('two.md', 'SECOND', 'w2')));
+    const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.script.push(reply(writeCall(), writeCall('two.md', 'SECOND', 'w2')));
     f.send(); await until(() => f.element('#dw-yes')); f.stop(); await until(() => f.element('#ai-send').textContent === '➤'); f.send('继续新任务'); await until(() => f.calls.length === 2);
     const messages = f.calls[1].messages; for (const id of ['w1', 'w2']) assert(messages.some(m => m.role === 'tool' && m.tool_call_id === id && m.content.includes('已停止')));
   });
@@ -153,7 +180,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     delayed.resolve({ content: '旧A规则' }); await tick(); await tick(); assert.equal(f.calls.length, 1); const system = f.calls[0].messages[0].content; assert(system.includes('B规则')); assert(!system.includes('旧A规则'));
   });
   await test('已记住项目授权继续适用，正常写入和续流无需重复确认', async () => {
-    const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.w.AiPanel.sessionPerm.write = true;
+    const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permWrite: 'confirm' }); f.rememberWrite();
     f.script.push(reply(writeCall())); f.send(); await until(() => f.element('#ai-send').textContent === '➤'); assert.equal(f.writes.length, 1); assert.equal(f.element('.ai-confirm'), null); assert.equal(f.calls.length, 2);
   });
   await test('真实服务截断/length/过滤/error流进入完整面板，原字节不变且命令零派发', async () => {
@@ -161,7 +188,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const native = { content: '保留部分', tool_calls: [writeCall(), { id: 'cmd', name: 'run_command', args: { command: 'node --version' } }].map((c, index) => ({ index, id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } })) };
     const block = '保留部分\n```tool_call\n' + JSON.stringify({ name: 'write_file', args: { path: 'one.md', content: 'MODEL' } }) + '\n```';
     for (const delta of [native, { content: block }]) for (const reason of ['EOF', 'length', 'content_filter', null, 'error']) {
-      const f = fixture(); f.put('one.md'); f.w.AiPanel.setConfig({ permRun: 'auto' });
+      const f = fixture(); f.put('one.md'); await f.w.AiPanel.setConfig({ permRun: 'auto' });
       let wire = frame({ choices: [{ delta, finish_reason: reason === 'EOF' || reason === 'error' ? null : reason }] });
       wire += reason === 'error' ? 'data: {broken}\n\n' : reason === 'EOF' ? '' : 'data: [DONE]\n\n';
       AI.init({ fetch: async () => new Response(wire) });

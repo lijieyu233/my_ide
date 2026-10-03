@@ -5,6 +5,7 @@ const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(
 const home=path.join(temp,'home'),project=path.join(temp,'project');fs.mkdirSync(home);fs.mkdirSync(project);
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;
 app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
+require('../ai-permission-store').createStore(path.join(home,'.myide','ai-permissions.json')).initialize({config:{permWrite:'auto',permRun:'auto'}});
 const Search=require('../search-service'),createSearch=Search.createSearchService;let productionSearch;
 Search.createSearchService=(...args)=>(productionSearch=createSearch(...args));
 require(path.join(repo,'main.js'));
@@ -24,6 +25,10 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
   const target=path.join(project,'one.md');fs.writeFileSync(target,'ORIGINAL');
   const read=()=>win.webContents.executeJavaScript('window.myIDE.fs.readFile('+JSON.stringify(target)+')');
   let original=await read();
+  await test('即使全局自动档，直接写入/运行未经主进程具体批准仍拒绝',async()=>{
+    const tool=call('write_file',{path:'one.md',content:'UNAPPROVED'}),r=await invoke('writeFile',[c,target,'UNAPPROVED',original.textFormat,{expectedVersion:original.version},tool]);assert.equal(r.errorCode,'AI_APPROVAL_REQUIRED');assert.equal(fs.readFileSync(target,'utf8'),'ORIGINAL');
+    const command='echo bad > unapproved.txt',result=await invoke('run',[command,project,c,call('run_command',{command})]);assert.equal(result.errorCode,'AI_APPROVAL_REQUIRED');assert(!fs.existsSync(path.join(project,'unapproved.txt')));
+  });
   for(const args of [{path:'one.md',content:7},{path:'one.md'},{path:'one.md',content:null},{path:'one.md',content:'MODEL',extra:true}]){
     await test('实际IPC非法字段拒绝且原字节不变：'+JSON.stringify(args),async()=>{
       const r=await invoke('validateTool',[c,call('write_file',args)]);assert.equal(r.errorCode,'INVALID_TOOL_ARGS');
@@ -38,7 +43,8 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
     assert.equal(fs.readFileSync(target,'utf8'),'ORIGINAL');assert(!fs.existsSync(path.join(project,'two.md')));
   });
   await test('正常中文正文写入保留格式并返回真实版本',async()=>{
-    const r=await invoke('writeFile',[c,target,'正常中文',original.textFormat,{expectedVersion:original.version},call('write_file',{path:'one.md',content:'正常中文'})]);assert(r.ok);assert(r.version);assert.equal(fs.readFileSync(target,'utf8'),'正常中文');
+    const tool=call('write_file',{path:'one.md',content:'正常中文'});assert((await invoke('authorize',[c,tool])).ok);
+    const r=await invoke('writeFile',[c,target,'正常中文',original.textFormat,{expectedVersion:original.version},tool]);assert(r.ok,JSON.stringify(r));assert(r.version);assert.equal(fs.readFileSync(target,'utf8'),'正常中文');
   });
   original=await read();
   await test('替换伪造全文/错误布尔值不落盘',async()=>{
@@ -48,6 +54,7 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
   });
   await test('正常replace由main原版本再次验证，旧版本拒绝',async()=>{
     const tool=call('replace_edit',{path:'one.md',search:'正常',replace:'替换'});
+    assert((await invoke('authorize',[c,tool])).ok);
     const r=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},tool]);assert(r.ok);assert.equal(fs.readFileSync(target,'utf8'),'替换中文');
     const duplicate=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},tool]);assert.deepEqual(duplicate,r);
     const stale=await invoke('writeFile',[c,target,'替换中文',original.textFormat,{expectedVersion:original.version},{...tool,id:'replace-new-attempt'}]);assert.equal(stale.errorCode,'STALE_DOCUMENT');
@@ -68,7 +75,8 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
     assert(!fs.existsSync(path.join(project,'command.txt')));
   });
   await test('正常命令原样执行（真实Node版本）',async()=>{
-    const r=await invoke('run',['node --version',project,c,call('run_command',{command:'node --version'})]);assert(r.ok);assert(/v\d+\./.test(r.text));
+    const tool=call('run_command',{command:'node --version'});assert((await invoke('authorize',[c,tool])).ok);
+    const r=await invoke('run',['node --version',project,c,tool]);assert(r.ok);assert(/v\d+\./.test(r.text));
   });
   await test('实际junction越界读取/列目录/写入拒绝，搜索不返回外部正文',async()=>{
     const outside=path.join(temp,'outside'),inner=path.join(project,'inner');fs.mkdirSync(outside);fs.mkdirSync(inner);
@@ -82,12 +90,14 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
     }finally{fs.rmdirSync(external);fs.rmdirSync(alias);fs.unlinkSync(path.join(outside,'data.md'));fs.unlinkSync(path.join(inner,'data.md'));fs.rmdirSync(outside);fs.rmdirSync(inner);}
   });
   await test('实际并发写入重发只发布一次，同id换参数拒绝',async()=>{
-    const p=path.join(project,'once.md'),tool=call('write_file',{path:'once.md',content:'ONE'}),args=[c,p,'ONE',undefined,{expectedAbsent:true},tool];
+    const p=path.join(project,'once.md'),tool=call('write_file',{path:'once.md',content:'ONE'}),args=[c,p,'ONE',undefined,{expectedVersion:require('../file-write').readSnapshot(p).version},tool];
+    assert((await invoke('authorize',[c,tool])).ok);
     const [a,b]=await Promise.all([invoke('writeFile',args),invoke('writeFile',args)]);assert(a.ok,JSON.stringify(a));assert.deepEqual(a,b);assert.deepEqual(await invoke('writeFile',args),a);
     const conflict=await invoke('writeFile',[c,p,'TWO',undefined,{expectedVersion:a.version},{...tool,args:{...tool.args,content:'TWO'}}]);assert.equal(conflict.errorCode,'TOOL_ID_CONFLICT');assert.equal(fs.readFileSync(p,'utf8'),'ONE');fs.unlinkSync(p);
   });
   await test('实际命令并发重发仅追加一个字节',async()=>{
     const command="node -e \"require('fs').appendFileSync('command-count.txt','x')\"",tool=call('run_command',{command}),args=[command,project,c,tool];
+    assert((await invoke('authorize',[c,tool])).ok);
     const [a,b]=await Promise.all([invoke('run',args),invoke('run',args)]);assert(a.ok,JSON.stringify(a));assert.deepEqual(a,b);assert.equal(fs.readFileSync(path.join(project,'command-count.txt'),'utf8'),'x');fs.unlinkSync(path.join(project,'command-count.txt'));
   });
   await test('实际预检后目录换成外部junction，旧执行拒绝',async()=>{
