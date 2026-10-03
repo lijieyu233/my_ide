@@ -98,6 +98,7 @@
       "launch-ops.js",
       "launch-service.js",
       "quick-launch-service.js",
+      "quick-launch-app.js",
       "db-service.js",
       "ai-service.js",
       "ai-runs.js",

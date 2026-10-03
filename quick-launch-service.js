@@ -21,9 +21,18 @@ function targetOf(type, value) {
   if (type === 'app' && !['.exe', '.com', '.lnk', '.bat', '.cmd'].includes(path.extname(value).toLowerCase())) throw fail('INVALID_TARGET', '应用请选择 exe、com、bat、cmd 或 lnk 快捷方式');
   return path.normalize(value);
 }
-const targetKey = e => e.type + ':' + (e.type === 'web' ? e.target : (process.platform === 'win32' ? e.target.toLowerCase() : e.target).replace(/[\\/]+$/, ''));
+const resourceKey = e => e.type + ':' + (e.type === 'web' ? e.target : (process.platform === 'win32' ? e.target.toLowerCase() : e.target).replace(/[\\/]+$/, ''));
+const directoryKey = value => value ? resourceKey({ type: 'folder', target: path.normalize(value) }) : '';
+const targetKey = e => resourceKey(e) + (e.type === 'app' ? ':' + JSON.stringify([e.args || [], directoryKey(e.cwd)]) : '');
+function optionsOf(e, format) {
+  if (e.args !== undefined && (!Array.isArray(e.args) || e.args.length > 256 || Array.from(e.args).some(arg => typeof arg !== 'string' || arg.length > 8192 || /[\x00-\x1f]/.test(arg)) || e.args.reduce((n, arg) => n + arg.length + 1, 0) > 8192)) throw fail('INVALID_CONFIG', '应用参数必须逐项填写，最多256项、合计8192字符，不能含控制字符');
+  if (e.cwd !== undefined && (typeof e.cwd !== 'string' || e.cwd.length > 8192 || /[\x00-\x1f]/.test(e.cwd) || e.cwd && !path.isAbsolute(e.cwd))) throw fail('INVALID_CONFIG', '工作目录必须是绝对路径');
+  const advanced = e.args?.length || e.cwd;
+  if (advanced && (format === 1 || e.type !== 'app' || !['.exe', '.com'].includes(path.extname(e.target).toLowerCase()))) throw fail('INVALID_CONFIG', format === 1 ? '带参数的配置需要格式版本2' : '参数与工作目录只支持 exe/com，快捷方式请在自身属性中设置');
+  return { ...(e.args?.length ? { args: [...e.args] } : {}), ...(e.cwd ? { cwd: path.normalize(e.cwd) } : {}) };
+}
 function validate(raw, { allowDuplicateTargets = false } = {}) {
-  if (!raw || raw.format !== 1 || !Array.isArray(raw.groups) || !Array.isArray(raw.entries)) throw fail('INVALID_CONFIG', '快速启动配置格式无法识别，请保留原件后修复');
+  if (!raw || ![1, 2].includes(raw.format) || !Array.isArray(raw.groups) || !Array.isArray(raw.entries)) throw fail('INVALID_CONFIG', '快速启动配置格式无法识别，请保留原件后修复');
   if (raw.groups.length < 1 || raw.groups.length > 64 || raw.entries.length > 1000) throw fail('INVALID_CONFIG', '需要1～64个分组，最多1000个入口');
   const ids = new Set(), names = new Set(), targets = new Map();
   const groups = raw.groups.map(g => {
@@ -36,6 +45,7 @@ function validate(raw, { allowDuplicateTargets = false } = {}) {
   const entries = raw.entries.map(e => {
     if (!e || typeof e.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(e.id) || entryIds.has(e.id) || !ids.has(e.groupId)) throw fail('INVALID_CONFIG', '入口标识重复、无效或分组不存在');
     const item = { id: e.id, name: text(e.name, 100, '入口名称'), type: e.type, target: targetOf(e.type, e.target), groupId: e.groupId };
+    Object.assign(item, optionsOf({ ...e, target: item.target }, raw.format));
     const key = targetKey(item);
     if (targets.has(key) && !allowDuplicateTargets) {
       const other = targets.get(key), group = groups.find(g => g.id === other.groupId);
@@ -43,9 +53,9 @@ function validate(raw, { allowDuplicateTargets = false } = {}) {
     }
     targets.set(key, item); entryIds.add(e.id); return item;
   });
-  return { format: 1, groups, entries };
+  return { format: 2, groups, entries };
 }
-const defaults = () => ({ format: 1, groups: ['工作', '浏览', '工具'].map((name, i) => ({ id: 'group-' + i, name })), entries: [] });
+const defaults = () => ({ format: 2, groups: ['工作', '浏览', '工具'].map((name, i) => ({ id: 'group-' + i, name })), entries: [] });
 
 function createService(file, adapters = {}) {
   const writer = adapters.writer || FileWrite;
@@ -69,6 +79,11 @@ function createService(file, adapters = {}) {
     let stat;
     try { stat = await fs.promises.stat(e.target); } catch (err) { throw fail(err.code || 'INVALID_TARGET', '目标无法访问：' + e.target + '（' + (err.code || err.message) + '）'); }
     if (e.type === 'folder' ? !stat.isDirectory() : !stat.isFile()) throw fail('INVALID_TARGET', '目标类型不匹配：' + e.target);
+    if (e.cwd) {
+      let directory;
+      try { directory = await fs.promises.stat(e.cwd); } catch (err) { throw fail('INVALID_TARGET', '工作目录无法访问：' + e.cwd + '（' + (err.code || err.message) + '）'); }
+      if (!directory.isDirectory()) throw fail('INVALID_TARGET', '工作目录不是文件夹：' + e.cwd);
+    }
   }
   function save(raw, expectedVersion) {
     const job = queue.then(() => result(async () => {
@@ -78,7 +93,7 @@ function createService(file, adapters = {}) {
       for (const e of next.entries) {
         const previous = current.config.entries.find(old => old.id === e.id);
         // 已移动的旧目标仍可整理或删除；只有新增/修改目标时才要求它当前可访问。
-        if (!previous || previous.type !== e.type || previous.target !== e.target) await checkTarget(e);
+        if (!previous || previous.type !== e.type || previous.target !== e.target || targetKey(previous) !== targetKey(e)) await checkTarget(e);
       }
       const bytes = Buffer.from(JSON.stringify(next, null, 2) + '\n');
       if (bytes.length > 1024 * 1024) throw fail('INVALID_CONFIG', '配置超过1MiB，请缩短目标或减少入口');
@@ -100,6 +115,10 @@ function createService(file, adapters = {}) {
       if (e.type === 'web') {
         if (!adapters.openExternal) throw fail('UNAVAILABLE', '系统浏览器不可用');
         await adapters.openExternal(e.target);
+      } else if (e.type === 'app' && (e.args?.length || e.cwd)) {
+        if (!adapters.launchApp) throw fail('UNAVAILABLE', '带参数的应用启动功能不可用');
+        const launched = await adapters.launchApp(e);
+        if (!launched?.ok) throw fail('OPEN_FAILED', '未确认应用进程创建成功');
       } else {
         if (!adapters.openPath) throw fail('UNAVAILABLE', '系统打开功能不可用');
         const error = await adapters.openPath(e.target);
@@ -113,7 +132,7 @@ function createService(file, adapters = {}) {
     return result(async () => {
       const e = read().config.entries.find(x => x.id === id);
       if (!e || e.target !== expectedTarget || e.type === 'web' || !adapters.getIcon) return { ok: true, data: '' };
-      const key = targetKey(e);
+      const key = resourceKey(e);
       if (!icons.has(key)) {
         if (icons.size >= 128) icons.delete(icons.keys().next().value);
         icons.set(key, Promise.resolve(adapters.getIcon(e.target)).catch(() => ''));
@@ -173,7 +192,7 @@ function createService(file, adapters = {}) {
       const selected = plan.entries.filter(e => selection.includes(e.id));
       const groups = plan.newGroups.filter(g => plan.emptyGroups.some(empty => empty.id === g.id) || selected.some(e => e.groupId === g.id));
       if (!selected.length && !groups.length) throw fail('EMPTY_IMPORT', '没有选择可导入的入口或新空分组');
-      const next = { format: 1, groups: [...plan.config.groups, ...groups], entries: [...plan.config.entries, ...selected] };
+      const next = { format: 2, groups: [...plan.config.groups, ...groups], entries: [...plan.config.entries, ...selected] };
       const saved = await save(next, plan.version);
       if (saved.ok) { imports.delete(token); return { ...saved, imported: selected.length, addedGroups: groups.length }; }
       return saved;

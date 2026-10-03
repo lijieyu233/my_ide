@@ -5,6 +5,8 @@ const QuickLaunch = (() => {
   const copy = value => JSON.parse(JSON.stringify(value));
   const uid = () => 'q' + crypto.randomUUID().replace(/-/g, '');
   const typeNames = { app: '应用 / 快捷方式', file: '文件', folder: '文件夹', web: '网页' };
+  const supportsOptions = (type, target) => type === 'app' && /\.(exe|com)$/i.test(target);
+  const describe = e => e.target + (e.args?.length ? '\n参数：' + e.args.map(arg => JSON.stringify(arg)).join(' · ') : '') + (e.cwd ? '\n工作目录：' + e.cwd : '');
   const paths = { app: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12M6 6v8"/>',
     file: '<path d="M4 2h5l3 3v9H4zM9 2v3h3M6 8h4M6 11h4"/>',
     folder: '<path d="M2 4h4l2 2h6v7H2z"/>', web: '<circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/>' };
@@ -25,7 +27,7 @@ const QuickLaunch = (() => {
   }
   function filtered() {
     const needle = query.toLocaleLowerCase();
-    return (config?.entries || []).filter(e => !needle || (e.name + '\n' + e.target).toLocaleLowerCase().includes(needle));
+    return (config?.entries || []).filter(e => !needle || (e.name + '\n' + describe(e)).toLocaleLowerCase().includes(needle));
   }
   function render() {
     const root = q('quick-launch-main');
@@ -55,7 +57,7 @@ const QuickLaunch = (() => {
           const peers = config.entries.filter(x => x.groupId === e.groupId), index = peers.findIndex(x => x.id === e.id);
           return '<article class="ql-card" data-entry="' + esc(e.id) + '" draggable="' + (managing && !query && !disabled) + '">'
             + (managing ? '<span class="ql-grip" title="' + (query ? '清空搜索后可拖动排序' : '拖动卡片到其他卡片前或分组末尾') + '"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h1M10 4h1M5 8h1M10 8h1M5 12h1M10 12h1"/></svg></span>' : '')
-            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" title="' + esc(e.name + '\n' + e.target) + '"' + (opening.has(e.id) ? ' disabled' : '') + '>'
+            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" title="' + esc(e.name + '\n' + describe(e)) + '"' + (opening.has(e.id) ? ' disabled' : '') + '>'
             + '<span class="ql-icon" data-icon="' + esc(e.id) + '">' + svg(e.type) + '</span><span class="ql-name">' + esc(e.name) + '</span><span class="ql-type">' + (opening.has(e.id) ? '正在打开…' : typeNames[e.type]) + '</span></button>'
             + (managing ? '<div class="ql-card-actions">' + button('edit', e.id, '编辑', disabled) + button('delete', e.id, '删除', disabled)
               + button('up', e.id, '前移', disabled || !!query || index === 0) + button('down', e.id, '后移', disabled || !!query || index === peers.length - 1) + '</div>' : '') + '</article>';
@@ -196,7 +198,7 @@ const QuickLaunch = (() => {
         current.querySelector('fieldset').innerHTML = '<p class="ql-dialog-hint">' + ready + ' 个可导入，' + r.entries.filter(e => e.status === 'duplicate').length + ' 个重复，' + r.entries.filter(e => e.status === 'error').length + ' 个不可用；还可添加 ' + r.availableSlots + ' 个入口。</p>'
           + '<p class="ql-dialog-hint">同名分组沿用已有分组。新分组按所选入口创建，源配置中的新空分组也会保留。</p>'
           + (r.emptyGroups.length ? '<p class="ql-dialog-hint">新增空分组：' + r.emptyGroups.map(g => esc(g.name)).join('、') + '</p>' : '')
-          + '<div class="ql-import-list">' + r.entries.map(e => '<label class="ql-import-row"><input type="checkbox" data-import-entry value="' + esc(e.id) + '"' + (e.status === 'ready' ? ' checked' : ' disabled') + '><span><strong>' + esc(e.name) + '</strong><span>' + esc(typeNames[e.type] + ' · ' + e.groupName) + '</span><span class="ql-import-target">' + esc(e.target) + '</span><span>' + esc(e.error || '可导入') + '</span></span></label>').join('') + '</div>'
+          + '<div class="ql-import-list">' + r.entries.map(e => '<label class="ql-import-row"><input type="checkbox" data-import-entry value="' + esc(e.id) + '"' + (e.status === 'ready' ? ' checked' : ' disabled') + '><span><strong>' + esc(e.name) + '</strong><span>' + esc(typeNames[e.type] + ' · ' + e.groupName) + '</span><span class="ql-import-target">' + esc(describe(e)) + '</span><span>' + esc(e.error || '可导入') + '</span></span></label>').join('') + '</div>'
           + '<p data-import-summary class="ql-dialog-hint"></p><button type="button" data-import-reset>重新选择</button>';
         current.querySelector('[type="submit"]').textContent = '确认导入';
         current.querySelector('.ql-dialog-error').textContent = '';
@@ -244,19 +246,42 @@ const QuickLaunch = (() => {
       '<label>名称<input name="name" required maxlength="100" value="' + esc(e?.name || '') + '"></label>'
       + '<label>类型<select name="type">' + Object.entries(typeNames).map(([type, name]) => '<option value="' + type + '"' + (type === e?.type ? ' selected' : '') + '>' + name + '</option>').join('') + '</select></label>'
       + '<label>目标<input name="target" required value="' + esc(e?.target || '') + '" placeholder="绝对路径或完整 HTTP(S) 地址"></label><button type="button" data-pick>选择目标</button>'
-      + '<p class="ql-dialog-hint">网页在系统默认浏览器打开。应用参数请放在已有快捷方式中。</p><p class="ql-dialog-hint" data-summary></p>'
+      + '<div data-app-options hidden><p>应用参数</p><div data-args></div><button type="button" data-arg-add>添加参数</button><p class="ql-dialog-hint">每行是一个参数；空格和引号原样传入，留空表示空参数。最多256项、合计8192字符。</p><label>工作目录（可选）<input name="cwd" value="' + esc(e?.cwd || '') + '" placeholder="带参数时默认应用所在文件夹"></label><button type="button" data-cwd-pick>选择工作目录</button></div>'
+      + '<p class="ql-dialog-hint">参数与工作目录支持 exe/com。快捷方式请在自身属性中设置；网页在系统默认浏览器打开。</p><p class="ql-dialog-hint" data-summary></p>'
       + '<label>分组<select name="groupId">' + config.groups.map(g => '<option value="' + esc(g.id) + '"' + (g.id === (e?.groupId || groupId) ? ' selected' : '') + '>' + esc(g.name) + '</option>').join('') + '</select></label>',
       async data => {
         const next = copy(config), item = { id: e?.id || uid(), ...data, name: data.name.trim() };
+        delete item.cwd;
+        if (supportsOptions(data.type, data.target)) {
+          const args = [...dialog.querySelectorAll('[data-app-arg]')].map(input => input.value);
+          if (args.length) item.args = args;
+          if (data.cwd) item.cwd = data.cwd;
+        }
         if (e) next.entries[next.entries.findIndex(x => x.id === id)] = item; else next.entries.push(item);
         return save(next, 'open:' + item.id);
       });
     if (!dialog) return;
     const current = dialog, form = current.querySelector('form'), pick = current.querySelector('[data-pick]');
+    current.classList.add('ql-entry-dialog');
+    const argsRoot = current.querySelector('[data-args]'), addArg = current.querySelector('[data-arg-add]');
+    const appendArg = value => {
+      const row = document.createElement('div'); row.className = 'ql-arg-row';
+      row.innerHTML = '<input data-app-arg aria-label="应用参数" value="' + esc(value) + '"><button type="button" aria-label="删除此参数">删除</button>';
+      row.querySelector('button').onclick = () => { row.remove(); addArg.disabled = false; syncType(); addArg.focus(); };
+      row.querySelector('input').oninput = () => syncType();
+      argsRoot.append(row); addArg.disabled = argsRoot.children.length >= 256;
+      return row.querySelector('input');
+    };
+    for (const arg of e?.args || []) appendArg(arg);
+    addArg.onclick = () => { if (argsRoot.children.length < 256) { appendArg('').focus(); syncType(); } };
     const syncType = () => {
       pick.hidden = form.elements.type.value === 'web';
-      current.querySelector('[data-summary]').textContent = '将打开：' + typeNames[form.elements.type.value] + ' · ' + (form.elements.target.value || '尚未选择目标');
+      const enabled = supportsOptions(form.elements.type.value, form.elements.target.value);
+      current.querySelector('[data-app-options]').hidden = !enabled;
+      form.elements.cwd.disabled = !enabled;
+      current.querySelector('[data-summary]').textContent = '将打开：' + typeNames[form.elements.type.value] + ' · ' + describe({ target: form.elements.target.value || '尚未选择目标', args: enabled ? [...argsRoot.querySelectorAll('input')].map(input => input.value) : [], cwd: enabled ? form.elements.cwd.value : '' });
     };
+    form.elements.cwd.oninput = syncType;
     form.elements.type.onchange = syncType; form.elements.target.oninput = syncType; syncType();
     pick.onclick = async () => {
       if (saving) return;
@@ -272,6 +297,16 @@ const QuickLaunch = (() => {
         }
       } catch (err) { if (dialog === current) current.querySelector('.ql-dialog-error').textContent = err.message; }
       finally { if (dialog === current) pick.disabled = false; }
+    };
+    current.querySelector('[data-cwd-pick]').onclick = async ev => {
+      const button = ev.currentTarget; button.disabled = true;
+      try {
+        const r = await api().pick('folder');
+        if (dialog !== current || !supportsOptions(form.elements.type.value, form.elements.target.value)) return;
+        if (r?.error) current.querySelector('.ql-dialog-error').textContent = r.error;
+        if (r?.target) { form.elements.cwd.value = r.target; syncType(); }
+      } catch (err) { if (dialog === current) current.querySelector('.ql-dialog-error').textContent = err.message; }
+      finally { if (dialog === current) button.disabled = false; }
     };
     current.querySelector('[data-locate]').onclick = () => {
       const existing = current.querySelector('[data-locate]').dataset.locate;

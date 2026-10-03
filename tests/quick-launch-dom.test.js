@@ -194,6 +194,29 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       f.api.export = async () => ({ ok: false, error: '磁盘拒绝' }); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert(f.q('ql-status').textContent.includes('磁盘拒绝'));
       const output = path.join(f.dir, '导出.json'); f.api.export = () => f.service.exportTo(output); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert.equal(JSON.parse(fs.readFileSync(output)).entries[0].name, '原入口'); assert.deepEqual(fs.readFileSync(f.file), before);
     });
+    await test('逐项参数保存、编辑、删除与工作目录选择；空格/引号/空参数完整回读', async () => {
+      const f = await fixture(); f.api.pick = async kind => { assert.equal(kind, 'folder'); return { ok: true, target: f.dir }; };
+      f.q('ql-add').click(); f.field('name').value = '带参数应用'; f.field('target').value = process.execPath; f.field('target').dispatchEvent(new f.w.Event('input'));
+      assert(!f.sel('[data-app-options]').hidden);
+      for (const arg of ['中文 空格', '"引用"', '']) { f.sel('[data-arg-add]').click(); [...f.w.document.querySelectorAll('[data-app-arg]')].at(-1).value = arg; }
+      f.sel('[data-cwd-pick]').click(); await wait(() => f.field('cwd').value === f.dir); await f.submit(); assert(!f.sel('.ql-dialog'));
+      const e = (await f.service.load()).config.entries[0]; assert.deepEqual(e.args, ['中文 空格', '"引用"', '']); assert.equal(e.cwd, f.dir); assert(f.sel('.ql-open').title.includes('工作目录'));
+      f.manage(); f.click('edit', e.id); assert.deepEqual([...f.w.document.querySelectorAll('[data-app-arg]')].map(i => i.value), e.args);
+      f.sel('.ql-arg-row button').click(); await f.submit(); assert.deepEqual((await f.service.load()).config.entries[0].args, ['"引用"', '']);
+    });
+    await test('切换网页/快捷方式隐藏参数，不把应用草稿写入其他类型', async () => {
+      const f = await fixture(); f.q('ql-add').click(); f.field('name').value = '网页'; f.field('target').value = process.execPath; f.field('target').dispatchEvent(new f.w.Event('input'));
+      f.sel('[data-arg-add]').click(); f.sel('[data-app-arg]').value = '保留的应用草稿'; f.field('cwd').value = f.dir;
+      f.field('type').value = 'web'; f.field('type').dispatchEvent(new f.w.Event('change')); f.field('target').value = 'https://example.com/';
+      assert(f.sel('[data-app-options]').hidden); assert(f.field('cwd').disabled); await f.submit();
+      const e = (await f.service.load()).config.entries[0]; assert(!('args' in e)); assert(!('cwd' in e));
+      f.manage(); f.click('edit', e.id); f.field('type').value = 'app'; f.field('target').value = path.join(f.dir, '快捷方式.lnk'); f.field('type').dispatchEvent(new f.w.Event('change')); assert(f.sel('[data-app-options]').hidden);
+    });
+    await test('参数保存失败保留草稿与可用控件，重试成功；参数可搜索', async () => {
+      const f = await fixture({ save: async () => ({ ok: false, error: '拒绝保存' }) }); f.q('ql-add').click(); f.field('name').value = '参数'; f.field('target').value = process.execPath; f.field('target').dispatchEvent(new f.w.Event('input'));
+      f.sel('[data-arg-add]').click(); f.sel('[data-app-arg]').value = '独特参数'; await f.submit(); assert.equal(f.sel('[data-app-arg]').value, '独特参数'); assert(!f.sel('fieldset').disabled);
+      f.api.save = f.service.save; await f.submit(); f.q('ql-search').value = '独特参数'; f.q('ql-search').dispatchEvent(new f.w.Event('input')); assert.equal(f.w.document.querySelectorAll('.ql-card').length, 1);
+    });
     console.log('\n快速启动DOM：' + passed + ' 通过 / 0 失败');
   } finally { for (const dom of fixtures) dom.window.close(); fs.rmSync(root, { recursive: true, force: true }); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

@@ -1087,6 +1087,7 @@ for (const spec of GIT_OPS) {
 const quickLaunch = require('./quick-launch-service').createService(
   path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'quick-launch.json'), {
     openPath: target => shell.openPath(target),
+    launchApp: entry => require('./quick-launch-app').launch(entry),
     openExternal: target => shell.openExternal(target),
     getIcon: async target => (await app.getFileIcon(target, { size: 'normal' })).toDataURL(),
   });

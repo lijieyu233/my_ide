@@ -15,6 +15,7 @@ dialog.showOpenDialog = async (_window, options) => { pickOptions.push(options);
 dialog.showSaveDialog = async () => ({ canceled: cancelChoice, filePath: chosenExport });
 shell.openPath = async target => { opened.push(['path', target]); return ''; };
 shell.openExternal = async target => { opened.push(['web', target]); };
+require('../quick-launch-app').launch = async entry => { opened.push(['app', entry]); return { ok: true }; };
 const local = path.join(home, '中文 文件.txt'); fs.writeFileSync(local, '原文');
 const { createService } = require('../quick-launch-service');
 const configuration = path.join(home, '.myide', 'quick-launch.json');
@@ -109,6 +110,20 @@ app.whenReady().then(async () => {
     await wait('document.getElementById("ql-search").value===""'); check('真实Escape清空搜索', true);
     await key('Tab', 9);
     check('Tab按视觉顺序到添加入口', await probe('document.activeElement.id==="ql-add"'));
+    await probe('if(document.getElementById("ql-manage").getAttribute("aria-pressed")!=="true")document.getElementById("ql-manage").click();document.querySelector("[data-action=edit][data-id=app]").click()');
+    chosenFiles = [home];
+    await probe(`(()=>{const d=document.querySelector('.ql-dialog'),f=d.querySelector('form');for(const value of ['中文 空格','"引用"','']){d.querySelector('[data-arg-add]').click();[...d.querySelectorAll('[data-app-arg]')].at(-1).value=value;}f.elements.cwd.value=${JSON.stringify(home)};f.elements.cwd.dispatchEvent(new Event('input'));})()`);
+    await snapshot('app-options-light');
+    check('参数弹窗固定保存栏，不被长字段遮挡', await probe('(()=>{const d=document.querySelector(".ql-dialog"),r=d.getBoundingClientRect(),f=d.querySelector("fieldset").getBoundingClientRect(),b=d.querySelector(".ql-dialog-foot").getBoundingClientRect();return d.scrollWidth<=d.clientWidth+1&&r.bottom<=innerHeight&&f.bottom<=b.top+1})()'));
+    await probe('document.querySelector("[data-cwd-pick]").click()'); await wait('!document.querySelector("[data-cwd-pick]").disabled');
+    check('工作目录通过原生目录选择桥选择', pickOptions.at(-1).properties.includes('openDirectory') && await probe(`document.querySelector('.ql-dialog [name=cwd]').value===${JSON.stringify(home)}`));
+    await probe('document.querySelector(".ql-dialog [type=submit]").focus()'); await key('Enter',13,'\r'); await wait('!document.querySelector(".ql-dialog")');
+    const advanced = (await service.load()).config.entries.find(e=>e.id==='app');
+    check('真实编辑保存参数与工作目录并升级版本2', (await service.load()).config.format===2&&JSON.stringify(advanced.args)===JSON.stringify(['中文 空格','"引用"',''])&&advanced.cwd===home);
+    check('真实IPC按参数适配器分派且字段原样传递', (await probe('window.myIDE.quickLaunch.open("app")')).ok && JSON.stringify(opened.at(-1)[1].args)===JSON.stringify(advanced.args)&&opened.at(-1)[1].cwd===home);
+    await probe('document.querySelector("[data-action=edit][data-id=app]").click()');
+    check('真实重开参数编辑完整回读空参数和引号', await probe('JSON.stringify([...document.querySelectorAll("[data-app-arg]")].map(i=>i.value))===JSON.stringify(["中文 空格",\'"引用"\',""])'));
+    await probe('document.querySelector("[data-cancel]").click()');
     const importedFile = path.join(home, '导入 配置.json');
     fs.writeFileSync(importedFile, JSON.stringify({ format: 1, groups: [{ id: 'g', name: '导入分组' }], entries: [
       { id: 'existing', name: '已有文件', type: 'file', target: local, groupId: 'g' },

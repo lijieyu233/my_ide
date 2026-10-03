@@ -49,7 +49,7 @@ async function saveEntries(f, entries) { const r = await f.service.load(); const
       }
     });
     await test('分组/入口标识、名称、上限及未知版本严格校验', async () => {
-      for (const mutate of [c => c.format = 2, c => c.groups = [], c => c.groups.push(c.groups[0]), c => c.groups[1].name = '工作', c => c.groups[0].name = 'x'.repeat(61),
+      for (const mutate of [c => c.format = 9, c => c.groups = [], c => c.groups.push(c.groups[0]), c => c.groups[1].name = '工作', c => c.groups[0].name = 'x'.repeat(61),
         c => c.entries.push(item('web', 'https://example.com'), item('web', 'https://example.org')), c => c.entries.push({ ...item('web', 'https://example.com'), groupId: 'missing' }),
         c => c.entries.push({ ...item('web', 'https://example.com'), name: '' }), c => c.groups = Array.from({ length: 65 }, (_, i) => ({ id: 'g' + i, name: '组' + i })),
         c => c.entries = Array.from({ length: 1001 }, (_, i) => item('web', 'https://example.com/' + i, 'e' + i))]) {
@@ -164,6 +164,60 @@ async function saveEntries(f, entries) { const r = await f.service.load(); const
       const f = fixture(); assert((await saveEntries(f, [item('file', f.local)])).ok); const output = path.join(f.dir, '旧导出.json'); fs.writeFileSync(output, 'old');
       const broken = createService(f.file, { writer: { atomicWrite: () => { throw Object.assign(Error('拒绝'), { code: 'EACCES' }); } } }); assert.equal((await broken.exportTo(output)).errorCode, 'EACCES'); assert.equal(fs.readFileSync(output, 'utf8'), 'old');
       const racing = createService(f.file, { writer: { atomicWrite(file, bytes, condition) { fs.writeFileSync(file, 'external'); return FileWrite.atomicWrite(file, bytes, condition); } } }); assert.equal((await racing.exportTo(output)).errorCode, 'VERSION_CONFLICT'); assert.equal(fs.readFileSync(output, 'utf8'), 'external'); assert.equal((await f.service.load()).config.entries.length, 1);
+    });
+    await test('版本1只读迁移不写原件，显式保存升级到2；旧格式不能偷带参数', async () => {
+      const f = fixture(); fs.mkdirSync(path.dirname(f.file));
+      const old = { ...defaults(), format: 1, entries: [item('file', f.local)] };
+      fs.writeFileSync(f.file, JSON.stringify(old)); const before = fs.readFileSync(f.file);
+      const r = await f.service.load(); assert(r.ok); assert.equal(r.config.format, 2); assert.deepEqual(fs.readFileSync(f.file), before);
+      assert((await f.service.save(r.config, r.version)).ok); assert.equal(JSON.parse(fs.readFileSync(f.file)).format, 2);
+      assert.throws(() => validate({ ...old, entries: [{ ...item('app', process.execPath), args: ['--flag'] }] }));
+    });
+    await test('逐项参数、空参数与工作目录直传；相同程序不同参数独立去重，图标共用', async () => {
+      const calls = []; let icons = 0;
+      const f = fixture({ launchApp: async e => { calls.push(e); return { ok: true }; }, getIcon: async () => { icons++; return 'data:image/png;base64,AA=='; } });
+      const args = ['', '中文 空格', '"引用"', '&echo $(test)', '尾部\\'];
+      const e = { ...item('app', process.execPath), args, cwd: f.dir };
+      assert((await saveEntries(f, [e, { ...e, id: 'second', args: ['different'] }])).ok);
+      assert((await f.service.open('entry')).ok); assert.deepEqual(calls[0].args, args); assert.equal(calls[0].cwd, f.dir);
+      await f.service.icon('entry', process.execPath); await f.service.icon('second', process.execPath); assert.equal(icons, 1);
+      assert.equal((await saveEntries(f, [e, { ...e, id: 'same' }])).errorCode, 'DUPLICATE_TARGET');
+    });
+    await test('参数形状与预算、快捷方式参数、相对/失效/文件工作目录拒绝，不覆盖原件', async () => {
+      const f = fixture(); assert((await saveEntries(f, [item('file', f.local)])).ok); const before = fs.readFileSync(f.file);
+      for (const options of [{ args: 'one' }, { args: [null] }, { args: Array(1) }, { args: ['a\n'] }, { args: Array(257).fill('') }, { args: ['x'.repeat(8193)] }, { cwd: 'relative' }, { cwd: f.local }, { cwd: path.join(f.dir, 'missing') }]) {
+        assert(!(await saveEntries(f, [{ ...item('app', process.execPath), ...options }])).ok); assert.deepEqual(fs.readFileSync(f.file), before);
+      }
+      for (const e of [{ ...item('app', f.app), args: ['x'] }, { ...item('file', f.local), cwd: f.dir }]) assert(!(await saveEntries(f, [e])).ok);
+    });
+    await test('参数配置导出再导入完整回读，预览显示不同参数；工作目录失效后拒绝打开', async () => {
+      const f = fixture({ launchApp: async () => { throw Error('应该先检查工作目录'); } });
+      const cwd = path.join(f.dir, '工作目录'); fs.mkdirSync(cwd);
+      const e = { ...item('app', process.execPath), args: ['', '中文 空格', '"quoted"'], cwd };
+      assert((await saveEntries(f, [e])).ok); const exported = path.join(f.dir, 'export.json'); assert((await f.service.exportTo(exported)).ok);
+      const fresh = createService(path.join(f.dir, 'fresh.json')); const p = await fresh.previewImport({ kind: 'config', file: exported }); assert(p.ok); assert.deepEqual(p.entries[0].args, e.args);
+      const saved = await fresh.applyImport(p.token, [p.entries[0].id]); assert(saved.ok); assert.deepEqual(saved.config.entries[0].args, e.args); assert.equal(saved.config.entries[0].cwd, cwd);
+      fs.rmdirSync(cwd); assert.equal((await f.service.open('entry')).errorCode, 'INVALID_TARGET');
+    });
+    await test('进程创建失败可重试，保存的参数保持完整', async () => {
+      let broken = true; const f = fixture({ launchApp: async () => { if (broken) throw Object.assign(Error('拒绝创建'), { code: 'EACCES' }); return { ok: true }; } });
+      const e = { ...item('app', process.execPath), args: [''] }; assert((await saveEntries(f, [e])).ok);
+      assert.equal((await f.service.open('entry')).errorCode, 'EACCES'); broken = false; assert((await f.service.open('entry')).ok); assert.deepEqual((await f.service.load()).config.entries[0].args, ['']);
+    });
+    await test('真实Windows子进程准确收到空格/引号/空参数和工作目录，无shell展开', async () => {
+      const { launch } = require('../quick-launch-app'), f = fixture();
+      const probe = path.join(f.dir, '参数 核对.js'), output = path.join(f.dir, '结果.json');
+      const executable = path.join(f.dir, '中文 程序.exe'); fs.copyFileSync(process.execPath, executable);
+      fs.writeFileSync(probe, 'require("fs").writeFileSync(process.argv[2],JSON.stringify({args:process.argv.slice(3),cwd:process.cwd()}));');
+      const args = ['', '中文 空格', '"引用"', '& echo SHOULD_NOT_RUN', '尾部\\'];
+      assert((await launch({ target: executable, args: [probe, output, ...args], cwd: f.dir }, { windowsHide: true })).ok);
+      for (let n = 0; n < 200 && !fs.existsSync(output); n++) await new Promise(r => setTimeout(r, 25));
+      assert.deepEqual(JSON.parse(fs.readFileSync(output)), { args, cwd: f.dir });
+      fs.unlinkSync(output);
+      assert((await launch({ target: executable, args: [probe, output, ...args] }, { windowsHide: true })).ok);
+      for (let n = 0; n < 200 && !fs.existsSync(output); n++) await new Promise(r => setTimeout(r, 25));
+      assert.deepEqual(JSON.parse(fs.readFileSync(output)), { args, cwd: f.dir });
+      await assert.rejects(launch({ target: path.join(f.dir, '不存在.exe') }, { windowsHide: true }));
     });
     console.log('\n快速启动服务：' + passed + ' 通过 / 0 失败');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
