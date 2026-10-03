@@ -3661,6 +3661,8 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 }
 #launch-dialog .field input:focus, #launch-dialog .field select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 #launch-dialog .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+#launch-readiness-fields .field[hidden] { display: none; }
+#launch-ready-help { color: var(--text-dim); font-size: .85em; line-height: 1.5; overflow-wrap: anywhere; }
 
 /* 侧栏卡片选中态 */
 .launch-card.sel { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel)); }

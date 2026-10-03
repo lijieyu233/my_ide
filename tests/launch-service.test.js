@@ -62,7 +62,7 @@ function fixture(options = {}) {
   }
   const m = { exports: {} };
   new Function('require', 'module', 'exports', 'process', 'setTimeout', source)(
-    name => name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
+    name => name === './launch-readiness' ? { ...require('../launch-readiness'), createObservation: (rule, runId) => require('../launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
       writeFileSync(file, ...args) { if (options.failStateWrites && path.basename(file) === 'launch-state.json') throw Error('fixture state write denied'); return fs.writeFileSync(file, ...args); } } : require(name),
     m, m.exports, { env: {}, kill: pid => { if (!live.has(pid)) throw Error('not alive'); } },
     callback => { queueMicrotask(callback); return 1; });
@@ -81,6 +81,32 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('就绪只认本次输出，分片UTF8/清空仍保留运行观察；重启和迟到旧流不复用证据',async()=>{
+      const f=fixture(),entry={...f.entry,command:'echo READY🙂',readiness:{mode:'output',text:'READY🙂',timeoutSeconds:30}};
+      await f.service.startEntry(entry);let [status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'waiting');
+      const first=f.children[0],bytes=Buffer.from('READY🙂');first.stdout.emit('data',bytes.subarray(0,6));f.service.clearLogs(entry.id);first.stdout.emit('data',bytes.subarray(6));[status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'ready');const run=status.runId;
+      await f.service.restartEntry(entry);first.stdout.emit('data',Buffer.from('READY🙂'));[status]=await f.service.statusOf([entry]);assert.notEqual(status.runId,run);assert.equal(status.readiness.state,'waiting');
+      f.children.at(-1).stderr.emit('data',Buffer.from('READY🙂'));[status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'ready');await f.service.stopEntry(entry);[status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'inactive');
+    });
+    await test('就绪超时不杀进程、不触发重启，迟到输出不冒充等待期成功',async()=>{
+      let clock=0;const f=fixture({clock:()=>clock}),entry={...f.entry,readiness:{mode:'output',text:'done',timeoutSeconds:1}};await f.service.startEntry(entry);clock=1000;
+      const [status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'timed-out');assert(status.processAlive&&status.canStop);assert.equal(f.kills.length,0);assert.equal(f.children.length,1);
+      f.children[0].stdout.emit('data',Buffer.from('done'));assert.equal((await f.service.statusOf([entry]))[0].readiness.state,'timed-out');
+    });
+    await test('端口就绪仅观察当前响应，失去响应明确不可用；当前配置编辑不偷换运行条件',async()=>{
+      const f=fixture(),entry={...f.entry,port:18089,readiness:{mode:'port',timeoutSeconds:30}};await f.service.startEntry(entry);assert.equal((await f.service.statusOf([entry]))[0].readiness.state,'waiting');
+      f.options.portUp=true;let [status]=await f.service.statusOf([{...entry,port:0,readiness:{mode:'none'}}]);assert.equal(status.readiness.state,'ready');assert.equal(status.readiness.mode,'port');
+      f.options.portUp=false;[status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'unavailable');assert(status.canStop);assert.equal(f.kills.length,0);
+    });
+    await test('无效就绪规则在命令/USB脚本执行前拒绝，不产生运行和日志',async()=>{
+      const f=fixture();for(const entry of [{...f.entry,readiness:{mode:'output',text:''}},{...f.bridge,readiness:{mode:'port'}},{...f.entry,readiness:{mode:'port'}},{...f.entry,readiness:{mode:'output',text:'ok',timeoutSeconds:3601}}])assert.equal((await f.service.startEntry(entry)).errorCode,'READINESS_INVALID');
+      assert.equal(f.children.length,0);assert.equal(f.bridges.length,0);assert.deepEqual(f.state(),{});assert.equal(f.service.getLogs(f.entry.id).runId,null);
+    });
+    await test('后台恢复缺观察证据及进程归属未知时不显示已就绪',async()=>{
+      const f=fixture();f.record(f.entry);const state=f.state();state[f.entry.id].readinessRule={mode:'output',text:'done',timeoutSeconds:30};fs.writeFileSync(f.service.paths().stateFile,JSON.stringify(state));
+      assert.equal((await f.service.statusOf([f.entry]))[0].readiness.state,'unknown');
+      const own=fixture({identityError:true});const entry={...own.entry,readiness:{mode:'output',text:'done',timeoutSeconds:30}};await own.service.startEntry(entry);own.children[0].stdout.emit('data',Buffer.from('done'));assert.equal((await own.service.statusOf([entry]))[0].readiness.state,'unknown');
+    });
     await test('保留采集父子身份，外壳结束后仍可识别、阻止重复启动并停止自有子进程', async () => {
       const f = fixture({parents:{778:777}}); f.record(f.entry); f.live.add(778); f.identities.set(778,{...f.identities.get(777),pid:778,createdAt:new Date(1700000007780).toISOString()});
       f.service.setKeepOnExit(true); assert.equal((await f.service.shutdown()).ok,true); assert.equal(f.state()[f.entry.id].descendants.length,1);

@@ -37,7 +37,11 @@ const LaunchPanel = (() => {
     if (pending) return (pending.queued ? '等待' : '正在') + labels[pending.kind];
     if (statusError || !status[e.id]) return '状态暂不可用' + (checkedAt ? ' · 上次确认 ' + new Date(checkedAt).toLocaleTimeString() : '');
     if (s.operation) return '正在' + s.operation;
-    if (s.processAlive || s.alive && s.by !== 'port' && s.by !== 'state') return '运行中 · 未验证就绪' + (s.ownership !== 'owned' ? ' · 归属未确认' : '');
+    if (s.processAlive || s.alive && s.by !== 'port' && s.by !== 'state') {
+      const ready = s.readiness || {}, states = { waiting: '等待就绪', ready: ready.mode === 'port' ? '已就绪 · 端口响应（来源未验证）' : '已就绪 · 本次输出已匹配',
+        'timed-out': '就绪超时 · 进程仍在运行', unavailable: '就绪端口不再响应 · 进程仍在运行', unknown: '就绪未确认' };
+      return '运行中 · ' + (states[ready.state] || '未验证就绪') + (s.ownership !== 'owned' ? ' · 归属未确认' : '');
+    }
     if (s.ownership === 'bridge' || s.by === 'state') return '桥接已登记 · 未验证 daemon 存活';
     if (s.ownership === 'unknown' || s.ownership === 'foreign') return '进程归属未确认';
     if (s.portResponding || s.alive && s.by === 'port') return '端口有响应 · 进程归属未确认';
@@ -64,6 +68,19 @@ const LaunchPanel = (() => {
     q('lm-operation-retry').onclick = () => { const e = byId(selectedId), value = e && outcomes.get(e.id); if (e && value && !value.ok) value.kind === 'delete' ? removeEntry(e.id) : act(e, value.kind); };
     q('launch-status-retry').onclick = () => configError ? load() : pollOnce();
     q('launch-batch-retry').onclick = () => { if (batchReport) runBatch(batchReport.kind, batchReport.items.filter(item => !item.ok)); };
+    const ready = document.createElement('div'); ready.id = 'launch-readiness-fields';
+    ready.innerHTML = '<div class="field"><label for="launch-ready-mode">就绪条件</label><select id="launch-ready-mode" name="readyMode"><option value="none">无需验证</option><option value="port">终端端口响应</option><option value="output">指定输出出现</option></select></div>'
+      + '<div class="field" id="launch-ready-text-field" hidden><label for="launch-ready-text">输出字面文本（区分大小写，单行，最多256字符）</label><input id="launch-ready-text" name="readyText" maxlength="256"></div>'
+      + '<div class="field" id="launch-ready-timeout-field" hidden><label for="launch-ready-timeout">等待秒数（1至3600）</label><input id="launch-ready-timeout" name="readyTimeout" type="number" min="1" max="3600" value="30"></div>'
+      + '<div id="launch-ready-help" role="status">只判断进程存活，不宣称已就绪；保存不会执行命令。</div>';
+    q('launch-form').querySelector('.dlg-actions').before(ready);
+    q('launch-ready-mode').onchange = readinessFields;
+  }
+  function readinessFields() {
+    const mode = q('launch-ready-mode').value, usb = q('launch-form').elements.kind.value === 'usb-tunnel';
+    q('launch-ready-text-field').hidden = mode !== 'output'; q('launch-ready-timeout-field').hidden = mode === 'none';
+    q('launch-ready-text').disabled = mode !== 'output'; q('launch-ready-timeout').disabled = mode === 'none';
+    q('launch-ready-help').textContent = (usb ? 'USB daemon身份尚未核验，暂只能选择无需验证。' : mode === 'port' ? '只验证127.0.0.1的终端端口响应，不能证明响应来自本次进程；超时不停止进程。' : mode === 'output' ? '只匹配本次运行的stdout或stderr，命令回显不算；超时不停止进程。' : '只判断进程存活，不宣称已就绪；保存不会执行命令。') + ' 条件修改仅在下次启动时生效。';
   }
   function refreshOperationUI() {
     const e = byId(selectedId), pending = e && (operations.get(e.id) || stOf(e.id).operation), caps = e && capabilities(e);
@@ -77,7 +94,7 @@ const LaunchPanel = (() => {
       q('lm-open').disabled = !resolvedOpenUrl(e);
       const s = stOf(e.id), value = outcomes.get(e.id);
       const details = [failureText(e.id), statusError && '状态读取失败：' + statusError,
-        s.evidenceError, value && value.ok && value.message].filter(Boolean);
+        s.evidenceError, s.readiness && (s.readiness.reason || (s.readiness.state === 'timed-out' ? '在' + s.readiness.timeoutSeconds + '秒内未确认就绪；可继续查看日志，或手动停止/重启。' : '')), value && value.ok && value.message].filter(Boolean);
       setText('lm-operation-text', details.join('；')); q('lm-operation').hidden = !details.length;
       q('lm-operation-retry').hidden = !(value && !value.ok); q('lm-operation-retry').disabled = !!pending || blockedConfig();
     } else q('lm-operation').hidden = true;
@@ -652,6 +669,10 @@ const LaunchPanel = (() => {
     set('kind', (entry && entry.kind) || '');
     set('python', (entry && entry.python) || 'python');
     set('script', (entry && entry.script) || '');
+    set('readyMode', entry && entry.readiness && entry.readiness.mode || 'none');
+    set('readyText', entry && entry.readiness && entry.readiness.text || '');
+    set('readyTimeout', entry && entry.readiness && entry.readiness.timeoutSeconds || 30);
+    readinessFields(); f.elements.kind.onchange = readinessFields;
     q('launch-dialog-title').textContent = entry ? '编辑终端' : '添加终端';
     dlg.__editing = entry ? entry.id : null;
     if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
@@ -668,8 +689,19 @@ const LaunchPanel = (() => {
       apiOrigin: v('apiOrigin'), openUrl: v('openUrl'),
       /* 保存后写入历史（addOrigin 去重，服务端处理） */
       kind: v('kind'), script: v('script'), python: v('python') || 'python',
+      readiness: { mode: v('readyMode') || 'none' },
     };
     if (!item.name || !item.command) { toast('名称与启动命令必填', 'err'); return; }
+    if (item.readiness.mode !== 'none') {
+      item.readiness.timeoutSeconds = Number(v('readyTimeout'));
+      if (item.kind === 'usb-tunnel') { toast('USB daemon身份尚未核验，暂不支持就绪验证', 'err'); return; }
+      if (!Number.isInteger(item.readiness.timeoutSeconds) || item.readiness.timeoutSeconds < 1 || item.readiness.timeoutSeconds > 3600) { toast('就绪等待时间须为1至3600秒的整数', 'err'); return; }
+      if (item.readiness.mode === 'port' && (!Number.isInteger(item.port) || item.port < 1 || item.port > 65535)) { toast('端口就绪需要1至65535的终端端口', 'err'); return; }
+      if (item.readiness.mode === 'output') {
+        item.readiness.text = String(f.elements.readyText.value);
+        if (!item.readiness.text.trim() || item.readiness.text.length > 256 || /[\r\n]/.test(item.readiness.text)) { toast('就绪输出须为非空单行文本，最多256字符', 'err'); return; }
+      }
+    }
     configBusy = true; configSerial++; refreshDots();
     try {
       const editing = dlg.__editing;

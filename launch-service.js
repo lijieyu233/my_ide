@@ -11,6 +11,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const { StringDecoder } = require('string_decoder');
+const Readiness = require('./launch-readiness');
 
 const LOG_MAX = 800;
 // 行数挡不住单行洪流：文本总预算1MiB、单行16KiB，残行也计入而不是另开无界缓冲。
@@ -112,7 +113,7 @@ function appendLogLine(book, line, text) {
   book.version++; trimLog(book);
 }
 function logStream(id, book, stream) {
-  const state = { decoder: new StringDecoder('utf8'), line: null, skipLF: false, ended: false };
+  const state = { decoder: new StringDecoder('utf8'), readinessDecoder: new StringDecoder('utf8'), line: null, skipLF: false, ended: false };
   const active = () => logs.get(id) === book && !state.ended;
   const consume = text => {
     if (!active()) return;
@@ -130,9 +131,15 @@ function logStream(id, book, stream) {
     }
   };
   const collector = {
-    write: chunk => { if (active()) consume(state.decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'))); },
+    write: chunk => {
+      if (!active()) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      if (book.readiness) book.readiness.observe(stream, state.readinessDecoder.write(bytes));
+      consume(state.decoder.write(bytes));
+    },
     end: () => {
       if (!active()) return;
+      if (book.readiness) book.readiness.observe(stream, state.readinessDecoder.end());
       consume(state.decoder.end());
       if (state.line && state.line.retained) { state.line.complete = true; book.version++; }
       state.line = null; state.ended = true; book.streams.delete(collector);
@@ -322,6 +329,9 @@ function envFor(entry, cfg) {
 async function startUnlocked(entry) {
   const cfg = loadConfig();
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
+  let readinessRule;
+  try { readinessRule = Readiness.normalizeRule(entry); }
+  catch (error) { return { ok: false, errorCode: 'READINESS_INVALID', error: error.message }; }
   if (procs.has(entry.id)) return { ok: false, error: '已在运行' };
   const previous = loadState()[entry.id];
   if (previous && previous.pid) {
@@ -377,8 +387,9 @@ async function startUnlocked(entry) {
     return { ok: false, error: String(e && e.message || e) };
   }
   child.unref();   // 不阻塞 my_ide 退出（进程本身不受影响，继续跑）
+  book.readiness = Readiness.createObservation(readinessRule, book.runId);
   const info = { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '',
-    launchId: book.runId, identityVersion: 1, port: Number(entry.port) || 0 };
+    launchId: book.runId, identityVersion: 1, port: Number(entry.port) || 0, readinessRule };
   const live = { proc: child, ...info };
   procs.set(entry.id, live);
   setState(entry.id, info);
@@ -586,10 +597,20 @@ async function statusEvidence(entry) {
     }
   } else if (record && record.kind === 'usb-tunnel') ownership = 'bridge';
   const bridge = ownership === 'bridge';
+  const observation = logs.get(entry.id)?.readiness;
+  let readiness = { state: processAlive ? 'none' : 'inactive', mode: 'none', runId: record && record.launchId || null };
+  if (bridge) readiness = { ...readiness, state: 'unsupported', reason: '未验证daemon存活' };
+  else if (processAlive && ownership !== 'owned') readiness = { ...readiness, state: 'unknown', reason: '进程归属未确认，不能验证就绪' };
+  else if (processAlive && observation && observation.runId === record.launchId) {
+    const responded = observation.rule.mode === 'port' ? (observation.rule.port === Number(entry.port) ? portResponding : await checkPort(observation.rule.port)) : null;
+    readiness = observation.snapshot(responded);
+  } else if (processAlive && record.readinessRule && record.readinessRule.mode !== 'none') {
+    readiness = { ...readiness, state: 'unknown', mode: record.readinessRule.mode, reason: '后台恢复缺少本次运行的就绪观察，请查看实际服务；不会用旧日志确认' };
+  }
   // 保留alive/by兼容旧调用；面板只能用独立的归属证据授权停止，端口响应不是进程存活证明。
   return { id: entry.id, alive: entry.port ? portResponding : processAlive || bridge,
     by: entry.port ? 'port' : live ? 'proc' : record && record.pid ? 'pid' : bridge ? 'state' : 'none',
-    pid: record && record.pid || 0, processAlive, portResponding, ownership, evidenceError,
+    pid: record && record.pid || 0, processAlive, portResponding, ownership, evidenceError, readiness,
     canStop: processAlive && ownership === 'owned' || bridge,
     canStart: !processAlive && !bridge && ownership !== 'unknown' && ownership !== 'foreign' && !portResponding,
     phase: processAlive ? 'running' : bridge ? 'bridge' : record && record.endedAt ? 'exited' : 'stopped',
