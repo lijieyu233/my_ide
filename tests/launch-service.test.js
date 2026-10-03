@@ -75,6 +75,30 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('状态把端口响应与本次进程归属分开，自己的进程在端口未响应时仍能停止', async () => {
+      const f = fixture({ portUp: true }), entry = { ...f.entry, port: 18089 };
+      let [status] = await f.service.statusOf([entry]);
+      assert.equal(status.alive, true); assert.equal(status.processAlive, false); assert.equal(status.ownership, 'none'); assert.equal(status.canStop, false);
+      await f.service.startEntry(f.entry); [status] = await f.service.statusOf([entry]);
+      assert.equal(status.processAlive, true); assert.equal(status.ownership, 'owned'); assert.equal(status.canStop, true); assert.equal(status.canStart, false);
+      f.options.portUp = false; [status] = await f.service.statusOf([entry]);
+      assert.equal(status.alive, false); assert.equal(status.processAlive, true); assert.equal(status.canStop, true); assert.equal(status.portResponding, false);
+    });
+    await test('状态返回后台身份失败和USB登记证据，不把登记当daemon存活', async () => {
+      const f = fixture(); f.record(f.entry); f.options.identityError = true;
+      let [status] = await f.service.statusOf([f.entry]); assert.equal(status.ownership, 'unknown'); assert.equal(status.canStop, false); assert(status.evidenceError);
+      const usb = fixture(); await usb.service.startEntry(usb.bridge); [status] = await usb.service.statusOf([usb.bridge]);
+      assert.equal(status.phase, 'bridge'); assert.equal(status.ownership, 'bridge'); assert.equal(status.processAlive, false); assert.equal(status.canStop, true);
+    });
+    await test('停止在途有操作证据，退出码/信号归同运行且不冒充仍运行', async () => {
+      const f = fixture({ holdKill: true }); await f.service.startEntry(f.entry);
+      const stopped = f.service.stopEntry(f.entry); await new Promise(resolve => setImmediate(resolve));
+      let [status] = await f.service.statusOf([f.entry]); assert.equal(status.operation, '停止');
+      f.options.releaseKill(); assert.equal((await stopped).ok, true);
+      await f.service.startEntry(f.entry); const child = f.children.at(-1); f.live.delete(child.pid); child.exitCode = 7; child.emit('exit', 7, 'SIGTERM');
+      [status] = await f.service.statusOf([f.entry]); assert.equal(status.phase, 'exited'); assert.equal(status.exitCode, 7); assert.equal(status.exitSignal, 'SIGTERM'); assert.equal(status.processAlive, false); assert.equal(status.canStart, true);
+      assert.equal(status.runId, f.state()[f.entry.id].launchId);
+    });
     await test('第一个端口探测未决时同终端 start/stop/restart 均 BUSY，其他终端可继续', async () => {
       const f = fixture({ holdPort: true }), entry = { ...f.entry, port: 18089 };
       const first = f.service.startEntry(entry);

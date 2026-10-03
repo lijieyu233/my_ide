@@ -3621,6 +3621,25 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 #launch-main .launch-main-head { flex-wrap: wrap; }
 #launch-main { font-size: var(--tool-font, 13px); }
 
+/* 状态文字与持续错误独立于日志滚动；端口响应不能只画成表示进程存活的绿点。 */
+.launch-state, .launch-entry-error { font-size: .85em; color: var(--text-dim); overflow-wrap: anywhere; margin-top: .35em; }
+.launch-entry-error { color: var(--del-text, #e06c75); }
+.launch-entry-error[hidden], .launch-operation[hidden], .launch-operation button[hidden], .launch-operation details[hidden] { display: none; }
+#lm-state { font-size: .85em; color: var(--text-dim); overflow-wrap: anywhere; }
+#launch-main .launch-main-title, #launch-main .launch-main-acts { flex-wrap: wrap; }
+#launch-main .launch-main-title { flex: 1 1 18em; }
+.launch-operation { display: flex; flex-wrap: wrap; align-items: center; gap: .4em; padding: .45em .8em; font-size: .88em; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+#launch-batch-items { white-space: pre-wrap; margin-top: .4em; max-height: 12em; overflow: auto; }
+#launch-main .lp-foot-btn:disabled, #launch-body .lp-btn:disabled { opacity: .5; cursor: default; }
+#launch-main .launch-meta { flex-wrap: wrap; overflow: visible; white-space: normal; gap: .7em; }
+#launch-main .launch-meta details { min-width: 0; max-width: 100%; }
+#launch-main .launch-meta details div { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 8em; overflow: auto; padding: .4em 0; user-select: text; }
+.launch-entry-more { position: relative; }
+.launch-entry-more summary { list-style: none; cursor: pointer; }
+.launch-entry-more summary::-webkit-details-marker { display: none; }
+.launch-entry-more[open] { display: flex; flex-wrap: wrap; align-items: center; gap: .3em; }
+.launch-entry-more:not([open]) > button { display: none; }
+
 /* ===== 添加/编辑终端对话框 ===== */
 #launch-dialog {
   position: fixed; inset: 0; margin: auto; height: fit-content;   /* 显式居中 */

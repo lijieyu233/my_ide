@@ -338,7 +338,7 @@ async function startUnlocked(entry) {
     procs.delete(entry.id);
     const st = loadState();
     if (st[entry.id] && st[entry.id].launchId === info.launchId) {
-      setState(entry.id, { ...st[entry.id], endedAt: Date.now(), exitCode: code });
+      setState(entry.id, { ...st[entry.id], endedAt: Date.now(), exitCode: code, exitSignal: signal || null });
     }
   });
   // exit只说明根进程结束，管道还有尾部数据；close后才放结束标记，残行仍归原runId。
@@ -489,12 +489,33 @@ async function aliveEntry(entry) {
 }
 
 // ---------- 状态 / 日志 ----------
-function statusOf(entries) {
-  return Promise.all(entries.map(async (e) => {
-    const a = await aliveEntry(e);
-    return { id: e.id, alive: a.alive, by: a.by, pid: (procs.get(e.id) || {}).pid || 0 };
-  }));
+async function statusEvidence(entry) {
+  const live = procs.get(entry.id), record = live || loadState()[entry.id];
+  const portResponding = entry.port ? await checkPort(entry.port) : null;
+  let processAlive = false, ownership = 'none', evidenceError = '';
+  if (live) {
+    processAlive = live.proc.exitCode == null && live.proc.signalCode == null;
+    ownership = processAlive ? live.ownership || 'unknown' : 'none';
+  } else if (record && record.pid) {
+    const current = await processIdentity(record.pid);
+    if (!current.ok) { ownership = 'unknown'; evidenceError = current.error; }
+    else if (current.identity && !record.identity) { ownership = 'unknown'; evidenceError = '旧运行记录缺少进程身份'; }
+    else if (current.identity && !sameIdentity(record.identity, current.identity)) { ownership = 'foreign'; evidenceError = 'PID已属于另一进程'; }
+    else if (current.identity) { processAlive = true; ownership = 'owned'; }
+  } else if (record && record.kind === 'usb-tunnel') ownership = 'bridge';
+  const bridge = ownership === 'bridge';
+  // 保留alive/by兼容旧调用；面板只能用独立的归属证据授权停止，端口响应不是进程存活证明。
+  return { id: entry.id, alive: entry.port ? portResponding : processAlive || bridge,
+    by: entry.port ? 'port' : live ? 'proc' : record && record.pid ? 'pid' : bridge ? 'state' : 'none',
+    pid: record && record.pid || 0, processAlive, portResponding, ownership, evidenceError,
+    canStop: processAlive && ownership === 'owned' || bridge,
+    canStart: !processAlive && !bridge && ownership !== 'unknown' && ownership !== 'foreign' && !portResponding,
+    phase: processAlive ? 'running' : bridge ? 'bridge' : record && record.endedAt ? 'exited' : 'stopped',
+    runId: record && record.launchId || null, endedAt: record && record.endedAt || null,
+    exitCode: record && record.endedAt ? record.exitCode : null, exitSignal: record && record.exitSignal || null,
+    operation: pending.has(entry.id) ? pending.get(entry.id).operation : null };
 }
+function statusOf(entries) { return Promise.all(entries.map(statusEvidence)); }
 function getLogs(id) {
   const book = logs.get(id);
   if (!book) return { lines: [], records: [], runId: null, generation: null, version: 0,
