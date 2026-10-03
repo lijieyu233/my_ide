@@ -9,11 +9,12 @@ os.homedir = () => home;
 app.setPath('userData', path.join(home, 'profile'));
 process.argv.push('--headless');
 const opened = [];
+let openGate = null;
 let chosenFiles = [], chosenExport = '', cancelChoice = false;
 const pickOptions = [];
 dialog.showOpenDialog = async (_window, options) => { pickOptions.push(options); return { canceled: cancelChoice, filePaths: chosenFiles }; };
 dialog.showSaveDialog = async () => ({ canceled: cancelChoice, filePath: chosenExport });
-shell.openPath = async target => { opened.push(['path', target]); return ''; };
+shell.openPath = async target => { if (openGate) await openGate; opened.push(['path', target]); return ''; };
 shell.openExternal = async target => { opened.push(['web', target]); };
 require('../quick-launch-app').launch = async entry => { opened.push(['app', entry]); return { ok: true }; };
 const local = path.join(home, '中文 文件.txt'); fs.writeFileSync(local, '原文');
@@ -27,8 +28,8 @@ const check = (name, value) => { assert(value, name); passed++; console.log('ok 
 const probe = source => window.webContents.executeJavaScript(source, true);
 const key = async (name, number, text = '', modifiers = 0) => {
   // sendInputEvent要求原生窗口焦点，隐藏测试拿不到；CDP输入可验证Chromium默认提交行为。
-  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code: name, windowsVirtualKeyCode: number, text, modifiers });
-  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name, windowsVirtualKeyCode: number, modifiers });
+  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code: name === ' ' ? 'Space' : name, windowsVirtualKeyCode: number, text, modifiers });
+  await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name === ' ' ? 'Space' : name, windowsVirtualKeyCode: number, modifiers });
 };
 const wait = async source => { for (let n = 0; n < 200; n++) { if (await probe(source)) return; await sleep(30); } throw Error('等待失败：' + source); };
 const snapshot = async name => {
@@ -71,13 +72,31 @@ app.whenReady().then(async () => {
     }
     check('分派仅交给系统适配器且原文不变', opened.length === 4 && fs.readFileSync(local, 'utf8') === '原文');
     await snapshot('wide-dark');
-    await probe('document.getElementById("ql-manage").click()');
     const first = (await service.load()).config.entries[0].id;
-    await probe(`document.querySelector('[data-action="edit"][data-id="${first}"]').click()`);
+    let releaseOpen; openGate = new Promise(resolve => { releaseOpen = resolve; }); const beforeCardOpen = opened.length;
+    await probe(`document.querySelector('[data-action="open"][data-id="${first}"]').focus()`); await key('Enter',13,'\r');
+    await wait(`document.querySelector('[data-action="open"][data-id="${first}"]').getAttribute('aria-disabled')==='true'`);
+    check('真实Enter打开在途卡片保留焦点与可读禁用状态', await probe(`document.activeElement.dataset.focus==='open:${first}'&&!document.activeElement.disabled`));
+    const busyTree = await window.webContents.debugger.sendCommand('Accessibility.getFullAXTree');
+    check('Chromium可访问性树报告当前入口名称与禁用状态', busyTree.nodes.some(n=>n.role?.value==='button'&&n.name?.value==='打开：中文 文件 · 文件'&&n.properties?.some(p=>p.name==='disabled'&&p.value.value===true)));
+    await snapshot('keyboard-opening'); await key('Enter',13,'\r'); await key(' ',32,' '); await sleep(80);
+    check('真实Enter/Space重复激活不重复打开在途入口', opened.length===beforeCardOpen);
+    await key('Tab',9); const focusAfterTab = await probe('document.activeElement.dataset.focus||document.activeElement.id');
+    check('在途卡片仍可Tab离开到后续视觉控件', !!focusAfterTab&&focusAfterTab!==`open:${first}`);
+    releaseOpen(); openGate=null; await wait(`document.querySelector('[data-action="open"][data-id="${first}"]').getAttribute('aria-disabled')==='false'`);
+    check('异步完成只分派一次且不抢Tab移走的焦点', opened.length===beforeCardOpen+1&&await probe(`(document.activeElement.dataset.focus||document.activeElement.id)===${JSON.stringify(focusAfterTab)}`));
+    await probe('document.getElementById("ql-manage").click()');
+    const managementTree = await window.webContents.debugger.sendCommand('Accessibility.getFullAXTree');
+    check('Chromium管理按钮名称包含对应入口及分组，可区分重复操作', ['编辑：中文 文件','删除：项目文档','改名：工作','添加入口到分组：浏览'].every(name=>managementTree.nodes.some(n=>n.role?.value==='button'&&n.name?.value===name)));
+    await probe(`(()=>{const b=document.querySelector('[data-action="edit"][data-id="${first}"]');b.focus();b.click()})()`);
     check('编辑弹窗显示真实目标摘要', await probe(`document.querySelector('.ql-dialog input[name="target"]').value===${JSON.stringify(local)}`));
     check('弹窗居中且不超出窗口', await probe(`(()=>{const r=document.querySelector('.ql-dialog').getBoundingClientRect();return Math.abs(r.x+r.width/2-innerWidth/2)<2&&Math.abs(r.y+r.height/2-innerHeight/2)<2&&r.x>=0&&r.y>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()`));
     await snapshot('edit-dialog');
     await probe('document.querySelector(".ql-dialog [data-cancel]").click()');
+    check('真实编辑取消回到原入口编辑按钮', await probe(`document.activeElement.dataset.focus==='edit:${first}'`));
+    await probe(`(()=>{const b=document.querySelector('[data-action="edit"][data-id="${first}"]');b.focus();b.click();document.querySelector('.ql-dialog [type=submit]').focus()})()`); await key('Enter',13,'\r');
+    await wait('!document.querySelector(".ql-dialog")');
+    check('真实编辑保存重绘后回到同一入口编辑按钮', await probe(`document.activeElement.dataset.focus==='edit:${first}'`));
     window.setContentSize(780, 720);
     await probe('Theme.set("light");document.documentElement.style.setProperty("--tool-font","18px")');
     await snapshot('narrow-light-management');

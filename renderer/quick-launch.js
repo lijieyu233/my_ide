@@ -32,7 +32,7 @@ const QuickLaunch = (() => {
       id: actionPrefix + e.id, desc: '快速启动：' + e.name, category: '快速启动', keys: [], palette: true,
       scope: (config.groups.find(g => g.id === e.groupId)?.name || '') + ' · ' + typeNames[e.type] + ' · ' + describe(e).replace(/\n/g, ' · '),
       aliases: [e.target, ...(e.args || []), e.cwd || '', config.groups.find(g => g.id === e.groupId)?.name || ''],
-      bindingGuard, isEnabled: ctx => canLaunch(e.id, ctx), run: () => open(e.id),
+      bindingGuard, isEnabled: ctx => canLaunch(e.id, ctx), run: ctx => open(e.id, ctx),
     })));
   }
   function message(text, error = false) {
@@ -70,6 +70,7 @@ const QuickLaunch = (() => {
     if (q('tool-quick-launch')) q('tool-quick-launch').title = '快速启动：应用、文件夹与网页' + (panelKeys.length ? '（' + panelKeys.join(' / ') + '）' : '（未设置快捷键）');
     q('ql-results').textContent = query ? visible.length + ' 个匹配；清空搜索后可排序' : managing ? '拖动卡片或使用前移 / 后移整理；删除只影响入口' : '点击卡片，交给系统打开';
     const disabled = loading || saving || confirming || !!loadError;
+    q('ql-groups').setAttribute('aria-busy', String(loading || saving));
     q('ql-groups').innerHTML = config ? config.groups.map((g, gi) => {
       const items = visible.filter(e => e.groupId === g.id);
       if (query && !items.length) return '';
@@ -81,19 +82,20 @@ const QuickLaunch = (() => {
           const peers = config.entries.filter(x => x.groupId === e.groupId), index = peers.findIndex(x => x.id === e.id);
           return '<article class="ql-card" data-entry="' + esc(e.id) + '" draggable="' + (managing && !query && !disabled) + '">'
             + (managing ? '<span class="ql-grip" title="' + (query ? '清空搜索后可拖动排序' : '拖动卡片到其他卡片前或分组末尾') + '"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4h1M10 4h1M5 8h1M10 8h1M5 12h1M10 12h1"/></svg></span>' : '')
-            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" title="' + esc(e.name + '\n' + describe(e) + '\n快捷键：' + ((keys.get(actionPrefix + e.id) || []).join(' / ') || '未绑定')) + '"' + (opening.has(e.id) ? ' disabled' : '') + '>'
+            + '<button class="ql-open" data-action="open" data-id="' + esc(e.id) + '" data-focus="open:' + esc(e.id) + '" aria-label="' + esc('打开：' + e.name + ' · ' + typeNames[e.type]) + '" aria-disabled="' + String(opening.has(e.id) || disabled) + '" title="' + esc(e.name + '\n' + describe(e) + '\n快捷键：' + ((keys.get(actionPrefix + e.id) || []).join(' / ') || '未绑定')) + '"' + (disabled ? ' disabled' : '') + '>'
             + '<span class="ql-icon" data-icon="' + esc(e.id) + '">' + svg(e.type) + '</span><span class="ql-name">' + esc(e.name) + '</span><span class="ql-type">' + (opening.has(e.id) ? '正在打开…' : typeNames[e.type]) + '</span>' + ((keys.get(actionPrefix + e.id) || []).length ? '<span class="ql-key">' + esc(keys.get(actionPrefix + e.id).join(' / ')) + '</span>' : '') + '</button>'
             + (managing ? '<div class="ql-card-actions">' + button('edit', e.id, '编辑', disabled) + button('delete', e.id, '删除', disabled)
               + button('up', e.id, '前移', disabled || !!query || index === 0) + button('down', e.id, '后移', disabled || !!query || index === peers.length - 1) + '</div>' : '') + '</article>';
         }).join('') + (items.length ? '' : '<p class="ql-empty">添加常用应用、文件夹或网页</p>') + '</div>'
-        + '<button class="ql-group-add" data-action="add" data-id="' + esc(g.id) + '"' + (disabled ? ' disabled' : '') + '>添加入口</button></section>';
+        + '<button class="ql-group-add" data-action="add" data-id="' + esc(g.id) + '" aria-label="' + esc('添加入口到分组：' + g.name) + '"' + (disabled ? ' disabled' : '') + '>添加入口</button></section>';
     }).join('') : '<p class="ql-empty">' + (loading ? '正在加载快速启动…' : '配置不可用，请重新加载。') + '</p>';
     if (config && query && !visible.length) q('ql-groups').innerHTML = '<div class="ql-empty"><p>没有匹配入口</p><button data-action="clear">清空搜索</button></div>';
     if (focused) focus(focused);
     loadIcons();
   }
   function button(action, id, label, disabled, title = '') {
-    return '<button data-action="' + action + '" data-id="' + esc(id) + '" data-focus="' + action + ':' + esc(id) + '"' + (disabled ? ' disabled' : '') + (title ? ' title="' + esc(title) + '"' : '') + '>' + label + '</button>';
+    const item = (action.startsWith('group-') ? config.groups : config.entries).find(item => item.id === id);
+    return '<button data-action="' + action + '" data-id="' + esc(id) + '" data-focus="' + action + ':' + esc(id) + '" aria-label="' + esc(label + (item ? '：' + item.name : '')) + '"' + (disabled ? ' disabled' : '') + (title ? ' title="' + esc(title) + '"' : '') + '>' + label + '</button>';
   }
   async function loadIcons() {
     if (!api()?.icon || !config) return;
@@ -163,8 +165,11 @@ const QuickLaunch = (() => {
     } finally { saving = false; render(); if (focusKey) focus(focusKey); }
   }
   const save = (next, focusKey = '') => commit(() => api().save(next, version), focusKey);
-  async function open(id) {
+  async function open(id, ctx) {
     if (opening.has(id)) return { ok: false, cancelled: true };
+    const allowed = canLaunch(id, ctx);
+    if (allowed !== true) return { ok: false, disabled: true, error: allowed };
+    // 原生disabled会把异步打开中的焦点退到body；保留可读卡片，用aria-disabled及同一打开闸防重复激活。
     opening.add(id); render();
     try {
       const r = await api().open(id, version);
@@ -180,7 +185,9 @@ const QuickLaunch = (() => {
     const restore = dialog.__restore;
     dialog.__cleanup?.();
     dialog.close?.(); dialog.remove(); dialog = null;
-    if (restore?.isConnected && restore.matches('button,input,select,textarea,[tabindex]')) restore.focus(); else q('ql-add').focus();
+    if (restore?.isConnected && restore.matches('button,input,select,textarea,[tabindex]')) restore.focus();
+    else if (restore?.dataset.focus) focus(restore.dataset.focus);
+    else q('ql-add').focus();
   }
   function makeDialog(title, content, submit) {
     if (dialog || loading || saving || confirming || loadError) return;
@@ -422,7 +429,7 @@ const QuickLaunch = (() => {
       if (ev.key === 'Enter') { ev.preventDefault(); const e = filtered()[0]; if (e) open(e.id); }
       if (ev.key === 'Escape') { ev.preventDefault(); action('clear'); }
     };
-    q('ql-groups').onclick = ev => { const b = ev.target.closest('[data-action]'); if (b && !b.disabled) action(b.dataset.action, b.dataset.id); };
+    q('ql-groups').onclick = ev => { const b = ev.target.closest('[data-action]'); if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') action(b.dataset.action, b.dataset.id); };
     q('ql-groups').addEventListener('dragstart', ev => {
       const card = ev.target.closest('[data-entry]');
       if (!card || !managing || query || loading || saving || confirming || loadError) { ev.preventDefault(); return; }

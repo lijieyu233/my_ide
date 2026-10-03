@@ -3,6 +3,7 @@
 #quick-launch-main button, .ql-dialog button { font: inherit; padding: .5em .85em; color: var(--text); background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: .5em; cursor: pointer; }
 #quick-launch-main button:hover, .ql-dialog button:hover { background: var(--bg-hover); }
 #quick-launch-main button:disabled, .ql-dialog button:disabled { opacity: .5; cursor: default; }
+#quick-launch-main .ql-open[aria-disabled="true"] { opacity: .5; cursor: default; }
 #quick-launch-main button:focus-visible, #quick-launch-main input:focus-visible, .ql-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #quick-launch-main .ql-primary, .ql-dialog .ql-primary { color: var(--text-bright, var(--text)); background: color-mix(in srgb, var(--accent) 18%, var(--bg-panel)); border-color: var(--accent); }
 .ql-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .8em; padding: 1.3em 1.5em .9em; }

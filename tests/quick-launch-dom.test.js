@@ -74,9 +74,50 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     });
     await test('打开在途去重/失败不删入口，结算后可重试', async () => {
       const f = await fixture(); await f.add('目标'); const id = (await f.service.load()).config.entries[0].id; const gate = deferred(); let opens = 0;
-      f.api.open = async () => { opens++; return gate.promise; }; f.click('open', id); f.click('open', id); assert.equal(opens, 1); assert(f.sel('[data-action="open"]').disabled);
-      gate.resolve({ ok: false, error: '无关联程序' }); await wait(() => !f.sel('[data-action="open"]').disabled); assert(f.q('ql-status').textContent.includes('无关联程序')); assert.equal((await f.service.load()).config.entries.length, 1);
+      f.api.open = async () => { opens++; return gate.promise; }; f.click('open', id); f.click('open', id); assert.equal(opens, 1); assert.equal(f.sel('[data-action="open"]').getAttribute('aria-disabled'), 'true');
+      gate.resolve({ ok: false, error: '无关联程序' }); await wait(() => f.sel('[data-action="open"]').getAttribute('aria-disabled') === 'false'); assert(f.q('ql-status').textContent.includes('无关联程序')); assert.equal((await f.service.load()).config.entries.length, 1);
       f.api.open = f.service.open; f.click('open', id); await wait(() => f.q('ql-status').textContent.includes('已交给系统打开'));
+    });
+    await test('卡片打开在途保持键盘位置，完成后不抢用户移走的焦点', async () => {
+      const f = await fixture(); await f.add('键盘入口'); const id = (await f.service.load()).config.entries[0].id;
+      const gate = deferred(); f.api.open = () => gate.promise;
+      f.sel('[data-action="open"]').focus(); f.click('open', id);
+      assert.equal(f.w.document.activeElement.dataset.focus, 'open:' + id, '在途仍能读到当前卡片而不是退回body');
+      f.q('ql-search').focus(); gate.resolve({ ok: true }); await wait(() => f.q('ql-status').textContent.includes('已交给系统打开'));
+      assert.equal(f.w.document.activeElement.id, 'ql-search', '完成不抢走搜索焦点');
+    });
+    await test('读取或配置失败时鼠标和搜索Enter不打开旧列表，重载成功后恢复', async () => {
+      const f = await fixture(); await f.add('旧入口'); const id = (await f.service.load()).config.entries[0].id;
+      let requests = 0; const actualOpen = f.api.open; f.api.open = (...args) => { requests++; return actualOpen(...args); };
+      const gate = deferred(); f.api.load = () => gate.promise; const pending = f.w.QuickLaunch.reload();
+      f.click('open', id); f.q('ql-search').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      assert.equal(requests, 0, '读取中不向系统桥发请求'); assert.equal(f.calls.length, 0, '读取中不打开旧列表'); gate.resolve({ ok: false, error: '配置损坏' }); await pending;
+      f.click('open', id); f.q('ql-search').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      assert.equal(requests, 0, '配置失败时不向系统桥发请求'); assert.equal(f.calls.length, 0, '错误中不打开旧列表'); f.api.load = f.service.load; await f.w.QuickLaunch.reload();
+      f.click('open', id); await wait(() => f.calls.length === 1);
+      assert.equal(requests, 1);
+    });
+    await test('编辑保存回到同一入口操作，重复管理按钮携带所属目标名称', async () => {
+      const f = await fixture(); await f.add('甲入口'); await f.add('乙入口', 'web', 'https://example.com/b'); f.manage();
+      const id = (await f.service.load()).config.entries[0].id;
+      const trigger = f.sel('[data-action="edit"][data-id="' + id + '"]'); trigger.focus(); trigger.click(); f.field('name').value = '甲改名'; await f.submit();
+      assert.equal(f.w.document.activeElement.dataset.focus, 'edit:' + id, '保存重绘后回到同一编辑按钮');
+      assert.equal(f.w.document.activeElement.getAttribute('aria-label'), '编辑：甲改名');
+      assert.equal(f.sel('[data-action="delete"][data-id="' + id + '"]').getAttribute('aria-label'), '删除：甲改名');
+      assert.equal(f.sel('[data-action="group-rename"]').getAttribute('aria-label'), '改名：工作');
+    });
+    await test('保存/删除确认/原生编辑期间，搜索Enter及旧卡片不能绕过打开闸', async () => {
+      const f = await fixture(); await f.add('保留入口'); const id = (await f.service.load()).config.entries[0].id;
+      let requests = 0; const actualOpen = f.api.open; f.api.open = (...args) => { requests++; return actualOpen(...args); };
+      const enter = () => f.q('ql-search').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      const gate = deferred(); f.api.save = async (c,v) => { await gate.promise; return f.service.save(c,v); };
+      f.q('ql-add').click(); f.field('name').value = '新入口'; f.field('type').value = 'web'; f.field('target').value = 'https://example.com/new';
+      f.sel('.ql-dialog form').dispatchEvent(new f.w.Event('submit', { cancelable: true })); enter(); f.click('open', id);
+      assert.equal(requests, 0); assert.equal(f.calls.length, 0); gate.resolve(); await wait(() => !f.sel('.ql-dialog'));
+      f.manage(); const confirm = deferred(); f.w.Modal.confirm = () => confirm.promise; f.click('delete', id); enter(); f.click('open', id);
+      assert.equal(requests, 0); assert.equal(f.calls.length, 0); confirm.resolve(false); await wait(() => !f.q('ql-add').disabled);
+      f.click('edit', id); enter(); f.click('open', id); assert.equal(requests, 0); assert.equal(f.calls.length, 0); f.sel('[data-cancel]').click();
+      enter(); await wait(() => f.calls.length === 1); assert.equal(requests, 1);
     });
     await test('添加/改名/移动分组，非空和最后一个分组不可删', async () => {
       const f = await fixture(); await f.add('文件'); f.q('ql-group-add').click(); f.field('name').value = '新组'; await f.submit();
