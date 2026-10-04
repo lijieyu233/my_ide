@@ -65,7 +65,7 @@ async function test(name, fn) {
     const required = [...production, 'build/icon.png', 'renderer/index.html', 'renderer/ai-approval.html', 'renderer/ai-approval.css', 'renderer/ai-approval.js',
       'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
       'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
-      'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js', 'renderer/session.js', 'renderer/session.css', nativeBase + 'index.js', nativeBase + 'win32_x64/koffi.node'];
+      'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js', 'renderer/session.js', 'renderer/session.css', 'renderer/preview-location.js', 'renderer/preview-location.css', nativeBase + 'index.js', nativeBase + 'win32_x64/koffi.node'];
     for (let i = 0; i < required.length; i++) {
       const file = required[i], bytes = fs.readFileSync(path.join(source, file));
       fs.unlinkSync(path.join(source, file));

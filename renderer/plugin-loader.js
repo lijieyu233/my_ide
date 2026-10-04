@@ -51,9 +51,10 @@ if (window.marked && typeof window.marked.use === 'function') {
 // ⚠ 序号必须在 parse **之前**就算好：引用在正文、定义在文末时，marked 是先渲染引用
 //   后渲染定义的（渲染期采集表还是空的，实测会退回显示标签文本）。
 let mdFootnoteDefs = new Map();   // label -> { no, text }
-function stripAndCollectFootnotes(src) {
+function stripAndCollectFootnotes(src, locations = null) {
   const lines = String(src).split('\n');
   const out = [];
+  const kept = [];
   const defs = new Map();
   let fence = null, no = 0;
   // ⚠ `\r?$`：文档多为 CRLF，按 `\n` 切分后行尾留着 `\r`，`(.*)$` 会把 `\r` 吃进脚注正文
@@ -66,6 +67,7 @@ function stripAndCollectFootnotes(src) {
       if (!fence) fence = mark;
       else if (fence === mark) fence = null;
       out.push(line);
+      kept.push(i);
       continue;
     }
     if (!fence) {
@@ -80,8 +82,10 @@ function stripAndCollectFootnotes(src) {
       }
     }
     out.push(line);
+    kept.push(i);
   }
   mdFootnoteDefs = defs;
+  if (locations) PreviewLocation.filterLines(locations, kept);
   return out.join('\n');
 }
 MI.footnoteCount = () => mdFootnoteDefs.size;
@@ -499,6 +503,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   wrap.className = 'md-view';
   let html = '';
   const embeds = [];   // 嵌入笔记占位（parse 之后替换成内嵌卡片）
+  let parsedLocation = null;
   // 以笔记所在目录为基准解析相对路径（与下面 img/a 的 resolveLocal 同一套规则；
   // 这里单独抽出来是因为嵌入块要在 resolveLocal 定义之前用到）
   const resolveRel = (rel) => {
@@ -515,11 +520,13 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   };
   try {
     if (window.marked && window.marked.parse) {
-      let src = content || '';
+      const locations = window.PreviewLocation?.start(content || '');
+      let src = locations ? locations.text : content || '';
       // 脚注：先摘掉定义行（顺便跳过代码围栏）再交给 marked，避免它把 `[^1]:` 当链接引用定义
-      src = stripAndCollectFootnotes(src);
+      src = stripAndCollectFootnotes(src, locations);
+      const replaceSource = (pattern, replacement) => locations ? PreviewLocation.replace(locations, pattern, replacement) : src.replace(pattern, replacement);
       // 去掉内嵌的 <!DOCTYPE html> 等声明，避免在预览顶部显示成乱文本
-      src = src.replace(/<!DOCTYPE[^>]*>/gi, '');
+      src = replaceSource(/<!DOCTYPE[^>]*>/gi, '');
       // Obsidian 风格 wiki 链接：[[笔记]] / [[笔记|别名]] / [[笔记#标题]] / ![[图片.png]] → 标准链接
       // ⚠ 显示文字与 live 侧必须一致：没写别名时只显示**笔记名**，`#标题` 不进 label
       //   （Obsidian 同款；早先直接把整串当 label，两种模式会显示得不一样）。
@@ -529,16 +536,19 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       //   → 整个嵌入占位替换会静默失效（实测：预览里一个嵌入卡片都没有）
       // ⚠ 占位符不能用 `\u0000`：`wrap.innerHTML = html` 时 HTML 解析器会把 NUL 直接丢掉，
       //   剩下 "EMBED0" 就再也匹配不上了（实测踩过）。用一个不可能出现在正文里的安全标记。
-      src = src.replace(/^[ \t]*!\[\[([^\]|#]+)(#[^\]|]*)?\]\][ \t]*\r?$/gm, (m, t, h) => {
+      src = replaceSource(/^[ \t]*!\[\[([^\]|#]+)(#[^\]|]*)?\]\][ \t]*\r?$/gm, (m, t, h) => {
         const key = 'MYIDEEMBEDPLACEHOLDER' + embeds.length + 'X';
         embeds.push({ target: t.trim(), heading: (h || '').replace(/^#/, '') });
         return key;
       });
-      src = src.replace(/!\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, _h, _p, alias) =>
+      src = replaceSource(/!\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, _h, _p, alias) =>
         `![${(alias || t).trim()}](${(t + (_h || '')).trim()})`);
-      src = src.replace(/\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, h, _p, alias) =>
-        `[${(alias || t).trim()}](${(t + (h || '')).trim()})`);
-      html = window.marked.parse(src, { breaks: true, gfm: true });
+      src = replaceSource(/\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, h, _p, alias, offset) => {
+        const next = `[${(alias || t).trim()}](${(t + (h || '')).trim()})`;
+        return locations ? PreviewLocation.wiki(locations, m, t, alias, offset, next) : next;
+      });
+      parsedLocation = locations ? PreviewLocation.parse(locations) : null;
+      html = parsedLocation ? parsedLocation.html : window.marked.parse(src, { breaks: true, gfm: true });
     } else {
       html = '<pre>' + (content || '') + '</pre>';
     }
@@ -773,6 +783,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       if (anchor) setTimeout(() => scrollToAnchor(document.querySelector('#viewer .md-view'), anchor), 300);
     });
   });
+  if (parsedLocation) PreviewLocation.bind(wrap, parsedLocation);
   return wrap;
 });
 

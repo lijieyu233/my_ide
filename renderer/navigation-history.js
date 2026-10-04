@@ -48,6 +48,8 @@ const NavigationHistory = (() => {
       if(location.revision!==tab.editRevision){location.invalid='文档位置已过期，请从当前文档重新导航';return;}
       if(map&&location.selection)location.selection.ranges=location.selection.ranges.map(range=>({anchor:map(range.anchor,range.anchor===range.head?1:-1),head:map(range.head,1)}));
       if(map&&location.scroll.anchor)location.scroll.anchor.offset=map(location.scroll.anchor.offset,1);
+      if(map&&location.scroll.previewAnchor){const anchor=location.scroll.previewAnchor;anchor.offset=map(anchor.offset,1);
+        if(anchor.highlight)anchor.highlight={from:map(anchor.highlight.from,-1),to:map(anchor.highlight.to,1)};}
       location.revision=tab.editRevision+1;location.dirty=true;
     });
   }

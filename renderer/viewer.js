@@ -476,17 +476,42 @@ const Viewer = (() => {
   // 搜索定位不猜预览DOM列，也不借旧CM操作新标签；调用方取消/换项目会使整个导航失效。
   async function navigateToHit(hit, options = {}) {
     const history=NavigationHistory.begin();
+    const source=currentTab(),sourceRevision=source?.editRevision,sourceMode=source?.mode,sourcePath=source?.path,sourceGeneration=source?.pathGeneration||0;
     const root=window.App?.root,focusRequest={isCurrent:options.isCurrent||(()=>true),focusTarget:options.focusTarget};
     const valid=()=>focusRequest.isCurrent()&&DocumentPaths.key(root)===DocumentPaths.key(window.App?.root);
     const reject=(error,errorCode)=>({ok:false,error,errorCode});
     try {
       if(!valid())return {stale:true};
       if(!hit||!DocumentPaths.contains(root,hit.path)||!SearchModel.sameVersion(hit.version,hit.version))return reject('搜索位置不属于当前项目或没有有效版本','INVALID_LOCATION');
+      if(pathBusy(hit.path))return reject('路径迁移正在进行，请完成后再定位','PATH_BUSY');
       const version=await window.myIDE.fs.fileVersion(hit.path);if(!valid())return {stale:true};
       if(version.error||!SearchModel.sameVersion(version.version,hit.version))return reject(version.error||'文件已改变，请重新搜索','VERSION_CONFLICT');
       const prior=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(hit.path));
       if(prior?.dirty)return reject('目标文件有未保存的输入，磁盘搜索位置已过期','DIRTY_DOCUMENT');
-      await openFile(hit.path,{focusRequest,history:false});if(!valid())return {stale:true};
+      // 先读取并验证候选，失败不先切走原页；已打开的标签仍按原身份复用。
+      let candidate=prior;
+      if(!candidate){candidate={id:++nextTabId,editRevision:0,savedRevision:0,path:hit.path,name:hit.path.split(/[\\/]/).pop(),retention:'regular',dirty:false,content:null,mode:null,error:null,encoding:'utf8'};await loadTab(candidate,true);}
+      else if(candidate.mode==null){candidate.loadPromise ||= loadTab(candidate,true);await candidate.loadPromise;}
+      if(!valid()||currentTab()!==source||source?.editRevision!==sourceRevision||source?.mode!==sourceMode||source?.path!==sourcePath||(source?.pathGeneration||0)!==sourceGeneration)return {stale:true};
+      if(pathBusy(hit.path))return reject('路径迁移正在进行，请完成后再定位','PATH_BUSY');
+      if(prior&&!tabs.includes(prior)||!prior&&tabs.some(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(hit.path)))return {stale:true};
+      if(candidate.error||candidate.mode==null||candidate.content==null)return reject(candidate.error||'目标文件没有成功打开','READ_FAILED');
+      if(candidate.dirty||!SearchModel.sameVersion(candidate.diskVersion,hit.version)||candidate.encoding!==hit.encoding||candidate.content.slice(hit.startOffset,hit.endOffset)!==hit.match)return reject('当前文档与搜索版本不一致，请重新搜索','VERSION_CONFLICT');
+      if(candidate.mode==='preview'&&!options.allowSource){
+        const markdown=MD_EXTS.has(extOf(candidate.name));
+        const preview=markdown&&(candidate===source?viewer.querySelector('.md-view'):MI.renderFor(candidate)?.(candidate));
+        if(!preview||!window.PreviewLocation?.locate(preview,hit.startOffset,hit.endOffset))return reject('命中位于不可见语法或不支持的预览中，可选择以源码定位','UNSUPPORTED_VIEW');
+        if(candidate!==source)candidate.preparedPreview=preview;
+      }
+      if(!prior){tabs.push(candidate);renderTabs();}
+      previewSequence++;previewFeedback='';
+      // 搜索已完成这次懒读取，激活时再读会覆盖选区并抢走搜索焦点。
+      candidate.lazy=false;delete candidate.restoreLine;
+      if(window.App&&(['browser','quick-launch'].includes(App.getTool())||App.getTool()==='tasks'&&window.Tasks?.view==='dag'))App.backToEditor();
+      recordRecent(candidate.path);navigationFocus.set(candidate.id,focusRequest);
+      if(currentTab()!==candidate)activate(tabs.indexOf(candidate),{history:false});
+      keepTab(candidate);if(window.Tree)Tree.reveal(candidate.path);
+      if(!valid())return {stale:true};
       const tab=currentTab();if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(hit.path))return reject('目标文件没有成功打开','NO_DOCUMENT');
       if(tab.loadPromise&&tab.mode==null)await tab.loadPromise;if(!valid()||currentTab()!==tab)return {stale:true};
       if(tab.error||tab.mode==null||tab.content==null)return reject(tab.error||'目标文件没有成功打开','READ_FAILED');
@@ -494,6 +519,12 @@ const Viewer = (() => {
         return reject('当前文档与搜索版本不一致，请重新搜索','VERSION_CONFLICT');
       if(options.allowSource&&tab.mode==='preview'&&!tab.binary&&!tab.tooLarge){
         tab.mode=MD_EXTS.has(extOf(tab.name))?'source':'edit';navigationFocus.set(tab.id,focusRequest);renderView();
+      }
+      if(tab.mode==='preview'&&MD_EXTS.has(extOf(tab.name))){
+        const preview=viewer.querySelector('.md-view');
+        if(preview&&window.PreviewLocation?.highlight(preview,hit.startOffset,hit.endOffset)){
+          NavigationHistory.finish(history,captureLocation());return {ok:true,focus:()=>{if(currentTab()===tab&&preview.isConnected){preview.tabIndex=-1;preview.focus({preventScroll:true});}}};
+        }
       }
       const cm=cmApi;
       if(cm?.__tab===tab&&cm.view?.dom.isConnected&&typeof cm.setCursor==='function'){
@@ -534,8 +565,9 @@ const Viewer = (() => {
     }else if(tab.ta?.isConnected)selection={ranges:[{anchor:tab.ta.selectionDirection==='backward'?tab.ta.selectionEnd:tab.ta.selectionStart,head:tab.ta.selectionDirection==='backward'?tab.ta.selectionStart:tab.ta.selectionEnd}],mainIndex:0};
     const {primary,preview}=locationScrollers(tab);let anchor=null;
     if(cmApi?.__tab===tab&&cmApi.view.dom.isConnected){try{const block=cmApi.view.lineBlockAtHeight(primary.scrollTop);anchor={offset:block.from,delta:primary.scrollTop-block.top};}catch{}}
+    const previewAnchor=tab.mode==='preview'&&primary?.matches('.md-view')?window.PreviewLocation?.capture(primary):null;
     return {root,documentId:tab.id,path:tab.path,pathGeneration:tab.pathGeneration||0,revision:tab.editRevision,version:tab.diskVersion||null,dirty:tab.dirty,mode:tab.mode,selection,
-      scroll:{top:primary?.scrollTop||0,left:primary?.scrollLeft||0,anchor,previewTop:preview?.scrollTop||0,previewLeft:preview?.scrollLeft||0}};
+      scroll:{top:primary?.scrollTop||0,left:primary?.scrollLeft||0,anchor,previewAnchor,previewTop:preview?.scrollTop||0,previewLeft:preview?.scrollLeft||0}};
   }
   async function restoreLocation(location,isCurrent,origin,source) {
     const fail=error=>({ok:false,error}),same=SearchModel.sameVersion;
@@ -581,7 +613,7 @@ const Viewer = (() => {
       const restoredRevision=tab.editRevision;
       const applyScroll=()=>{if(!isCurrent()||currentTab()!==tab||tab.editRevision!==restoredRevision)return;const {primary,preview}=locationScrollers(tab);
         let top=location.scroll.top;if(location.scroll.anchor&&cm?.view.dom.isConnected){try{top=cm.view.lineBlockAt(location.scroll.anchor.offset).top+location.scroll.anchor.delta;}catch{}}
-        if(primary){primary.scrollTop=top;primary.scrollLeft=location.scroll.left;}if(preview){preview.scrollTop=location.scroll.previewTop;preview.scrollLeft=location.scroll.previewLeft;}tab.scrollTop=top;};
+        if(primary){primary.scrollTop=top;primary.scrollLeft=location.scroll.left;if(location.scroll.previewAnchor)window.PreviewLocation?.restore(primary,location.scroll.previewAnchor);}if(preview){preview.scrollTop=location.scroll.previewTop;preview.scrollLeft=location.scroll.previewLeft;}tab.scrollTop=primary?.scrollTop||top;};
       applyScroll();
       // CM挂载后的测量会重新约束滚动范围；等实际布局再恢复，而不是只写一个尚无高度的DOM。
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{applyScroll();resolve();})));
@@ -1127,6 +1159,7 @@ const Viewer = (() => {
       cmApi = null;
     }
     for (const tab of tabs) tab.ta=null;
+    window.PreviewLocation?.clear();
     viewer.innerHTML = '';
     if (!currentTab()) { empty.classList.add('visible'); return; }
     empty.classList.remove('visible');
