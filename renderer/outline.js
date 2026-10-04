@@ -15,6 +15,15 @@ const Outline = (() => {
   let selIdx = -1;            // 当前选中项（键盘导航 / 点击）
   let selKey = '';            // 选中项 key，刷新后尽量保持在同一条目上
   let owner=null;
+  let composing = false;
+  // 焦点入口留在稳定容器上，折叠重绘不会移除用户正在操作的节点。
+  el.tabIndex = 0;
+  el.setAttribute('role', 'tree');
+  el.setAttribute('aria-label', '大纲章节');
+  el.addEventListener('compositionstart', () => { composing = true; });
+  el.addEventListener('compositionend', () => { composing = false; });
+  el.addEventListener('blur', () => { composing = false; });
+  el.addEventListener('focus', () => ensureVisibleSelection());
 
   const LS_KEY = 'myide-outline-collapsed';
   const hKey = (h) => h.line + '|' + h.text;
@@ -193,6 +202,7 @@ const Outline = (() => {
 
   async function refresh(tab) {
     el.innerHTML = '';
+    el.removeAttribute('aria-activedescendant');
     headings = [];
     owner=tab?{documentId:tab.id,revision:tab.editRevision,path:tab.path}:null;
     loadCollapsed();
@@ -227,6 +237,11 @@ const Outline = (() => {
       row.style.paddingLeft = ((h.level - 1) * 13 + 4) + 'px';
       row.title = h.text + '\n右键：复制本章节 / 折叠 · 双击：折叠展开';
       row.dataset.idx = String(i);
+      row.id = 'outline-heading-' + i;
+      row.setAttribute('role', 'treeitem');
+      row.setAttribute('aria-level', String(h.level));
+      row.setAttribute('aria-selected', 'false');
+      if (hasKids) row.setAttribute('aria-expanded', String(!isCol));
       if (isHidden(i)) row.classList.add('ol-hidden');
       if (selKey && hKey(h) === selKey) row.classList.add('key-nav-sel');
 
@@ -238,7 +253,7 @@ const Outline = (() => {
         // 折叠态由 CSS 的 `.closed svg` 旋转 -90° 表示（不做两套路径，旋转动画也更顺）。
         arrow.innerHTML = ICO_CHEV;
         arrow.title = isCol ? '展开子级' : '收起子级';
-        arrow.onclick = (ev) => { ev.stopPropagation(); toggleCollapse(i); };
+        arrow.onclick = (ev) => { ev.stopPropagation(); el.focus(); toggleCollapse(i); };
       }
       const txt = document.createElement('span');
       txt.className = 'ol-text';
@@ -246,8 +261,8 @@ const Outline = (() => {
 
       row.appendChild(arrow);
       row.appendChild(txt);
-      row.onclick = () => { select(i); jump(i); };
-      row.ondblclick = () => { if (hasKids) toggleCollapse(i); };   // 双击=折叠/展开（箭头太小，给个大目标）
+      row.onclick = () => { el.focus(); select(i); jump(i); };
+      row.ondblclick = () => { el.focus(); if (hasKids) toggleCollapse(i); };   // 双击=折叠/展开（箭头太小，给个大目标）
       row.oncontextmenu = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
@@ -259,13 +274,19 @@ const Outline = (() => {
     el.appendChild(wrap);
     // 选中项在刷新后尽量还原（否则键盘导航每次刷新都从 0 开始）
     const keep = selKey ? headings.findIndex((h) => hKey(h) === selKey) : -1;
-    selIdx = keep;
+    select(keep);
+    if (keep >= 0 || document.activeElement === el) ensureVisibleSelection();
   }
 
   function select(i) {
     selIdx = i;
     selKey = headings[i] ? hKey(headings[i]) : '';
-    itemRows().forEach((r, k) => r.classList.toggle('key-nav-sel', k === i));
+    itemRows().forEach((r, k) => {
+      r.classList.toggle('key-nav-sel', k === i);
+      r.setAttribute('aria-selected', String(k === i));
+    });
+    if (i >= 0 && headings[i]) el.setAttribute('aria-activedescendant', 'outline-heading-' + i);
+    else el.removeAttribute('aria-activedescendant');
   }
 
   // 收起/展开标题 i 的子层
@@ -289,6 +310,22 @@ const Outline = (() => {
   // ---------- 键盘导航（↑↓ 选择 · Enter 跳转 · ←→ 折叠展开）----------
   const itemRows = () => [...el.querySelectorAll('.outline-item')];
   const visibleRows = () => itemRows().filter((r) => !r.classList.contains('ol-hidden'));
+  function ensureVisibleSelection() {
+    const rows = visibleRows();
+    if (!rows.length) { select(-1); return; }
+    if (selIdx >= 0 && headings[selIdx] && !isHidden(selIdx)) return;
+    // 标题栏/箭头可以收起当前项的祖先，键盘下一步须从可见祖先出发。
+    if (selIdx >= 0 && headings[selIdx]) {
+      let level = headings[selIdx].level;
+      for (let i = selIdx - 1; i >= 0; i--) {
+        if (headings[i].level < level) {
+          if (!isHidden(i)) { select(i); return; }
+          level = headings[i].level;
+        }
+      }
+    }
+    select(Number(rows[0].dataset.idx));
+  }
   function moveSel(delta) {
     const rows = visibleRows();
     if (!rows.length) return;
@@ -299,17 +336,24 @@ const Outline = (() => {
     select(i);
     try { rows[next].scrollIntoView({ block: 'nearest' }); } catch {}
   }
-  document.addEventListener('keydown', (e) => {
+  el.addEventListener('keydown', (e) => {
+    // 面板可见不等于树获得焦点；工具栏、编辑器与输入确认保留自己的按键。
+    if (e.target !== el || document.activeElement !== el || composing || e.isComposing || e.keyCode === 229) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
-    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) return;
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    if (t && t.closest && t.closest('.cm-editor')) return;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(e.key)) return;
     if (!panel || panel.classList.contains('hidden')) return;
     if (!visibleRows().length) return;
+    ensureVisibleSelection();
     e.preventDefault();
     if (e.key === 'ArrowDown') return moveSel(1);
     if (e.key === 'ArrowUp') return moveSel(-1);
+    if (e.key === 'Home' || e.key === 'End') {
+      const rows = visibleRows();
+      const row = rows[e.key === 'Home' ? 0 : rows.length - 1];
+      select(Number(row.dataset.idx));
+      try { row.scrollIntoView({ block: 'nearest' }); } catch {}
+      return;
+    }
     if (e.key === 'ArrowRight') {           // 展开；已展开则进入第一个子项
       const i = selIdx;
       const [cs, ce] = childrenRange(i);
