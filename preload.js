@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     pickSave: (title, defaultName, filters) => ipcRenderer.invoke('fs:pickSave', title, defaultName, filters),
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
+    inspectDirectory: (p) => ipcRenderer.invoke('fs:inspectDirectory', p),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
     listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),

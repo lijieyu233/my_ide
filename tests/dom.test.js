@@ -153,7 +153,8 @@ function makeDom() {
       openFolder: async () => P,
       getRecent: async () => null,
       pathOfDroppedFile: () => P + '/osdrop.txt', // 模拟 Electron webUtils 取到的真实路径
-      setRecent: async () => {},
+      setRecent: async () => ({ ok: true }),
+      inspectDirectory: async () => ({ ok: true }),
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),

@@ -66,6 +66,7 @@ const OPEN_ARG = (() => {
 
 let mainWindow = null;
 let stateFile = null;
+let pendingOpenArg = OPEN_ARG;
 const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: event => aiSender(event), windowFor: owner => mainWindow && mainWindow.webContents.id === owner ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
@@ -74,9 +75,6 @@ const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipc
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
-}
-function saveState(s) {
-  try { fs.writeFileSync(stateFile, JSON.stringify(s)); } catch {}
 }
 
 // ---------- 本地设置镜像（容错：Chromium profile 写不进去时的兜底）----------
@@ -315,7 +313,6 @@ ipcMain.handle('fs:openFolder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { title: '打开文件夹', properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths.length) return null;
   const p = path.normalize(r.filePaths[0]);
-  const s = loadState(); s.lastFolder = p; saveState(s);
   return p;
 });
 
@@ -352,12 +349,30 @@ ipcMain.handle('fs:pickSave', async (_e, title, defaultName, filters) => {
   return r.filePath;
 });
 
-ipcMain.handle('fs:getRecent', () => {
+ipcMain.handle('fs:getRecent', async () => {
+  // 命令行是一次打开意图；未经渲染侧保存/激活不能先覆盖成功记录。
+  if (pendingOpenArg) { const requested = pendingOpenArg; pendingOpenArg = null; return requested; }
   const s = loadState();
-  return s.lastFolder && fs.existsSync(s.lastFolder) ? s.lastFolder : null;
+  return s.lastFolder && (await inspectProjectDirectory(s.lastFolder)).ok ? s.lastFolder : null;
 });
-ipcMain.handle('fs:setRecent', (_e, p) => {
-  const s = loadState(); s.lastFolder = p; saveState(s);
+// 读目录句柄而非枚举整棵树：不存在、文件和无权访问都要在离开旧项目前发现。
+async function inspectProjectDirectory(p) {
+  if (typeof p !== 'string' || !path.isAbsolute(p) || p.length > 4096) return { ok: false, errorCode: 'INVALID_PATH', error: '项目路径无效' };
+  try { const dir = await fs.promises.opendir(p); await dir.close(); return { ok: true }; }
+  catch (error) { return { ok: false, errorCode: error.code, error: error.code === 'ENOENT' ? '项目位置不存在或已离线' : error.code === 'ENOTDIR' ? '项目位置不是目录' : ['EACCES','EPERM'].includes(error.code) ? '没有权限读取项目目录' : '无法读取项目目录：' + error.message }; }
+}
+ipcMain.handle('fs:inspectDirectory', (_e, p) => inspectProjectDirectory(p));
+ipcMain.handle('fs:setRecent', async (_e, p) => {
+  if (p !== null) { const result = await inspectProjectDirectory(p); if (!result.ok) return result; }
+  try {
+    const snapshot = FileWrite.readSnapshot(stateFile, fs, 256 * 1024);
+    if (snapshot.tooLarge) throw Error('记录超过读取预算');
+    const s = snapshot.absent ? {} : JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(snapshot.bytes));
+    if (!s || typeof s !== 'object' || Array.isArray(s)) throw Error('原记录格式损坏，已保留原件');
+    s.lastFolder = p;
+    FileWrite.atomicWrite(stateFile, Buffer.from(JSON.stringify(s)), { expectedVersion: snapshot.version, requireVersion: true });
+    return { ok: true };
+  } catch (error) { return { ok: false, errorCode: error.code, error: '上次项目记录未保存：' + error.message }; }
 });
 
 ipcMain.handle('fs:listAll', async (_e, root, showHidden) => {
@@ -1200,7 +1215,6 @@ ipcMain.handle('plugins:loadAll', () => {
 // ---------- 启动 ----------
 app.whenReady().then(() => {
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
-  if (OPEN_ARG) { const s = loadState(); s.lastFolder = OPEN_ARG; saveState(s); }
   writeUsage(`===== 启动 version=${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '?'} electron=${process.versions.electron} node=${process.versions.node} =====\n`);
   watchPlugins();
   startGitWorker();

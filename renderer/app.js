@@ -701,13 +701,16 @@ const App = (() => {
 
   // 关闭项目（菜单里的 ✕ 共用一份实现）
   function removeProject(prPath) {
+    projectIntent++;
     return queueProjectChange(async () => {
       if (prPath === root) {
-        if (!await saveBeforeLeaving()) return false;
         const next = projects.find((p) => p.path !== prPath);
+        if (next && !await projectAvailable(next.path)) return false;
+        if (!await saveBeforeLeaving()) return false;
+        if (next && !await projectAvailable(next.path)) return false;
         Session.saveNow();
         Viewer.closeAll();
-        if (next) await setRoot(next.path);
+        if (next) await activateProject(next.path);
         else {
           root = null;
           MI.activeRoot = null;
@@ -718,6 +721,7 @@ const App = (() => {
           if (window.GitLog) GitLog.setRoot(null);
           if (window.Tasks) Tasks.setRoot(null);
           GitPanel.refresh();
+          await rememberActiveProject(null);
         }
       }
       projects = projects.filter((p) => p.path !== prPath);
@@ -855,6 +859,7 @@ const App = (() => {
     bar.classList.toggle('scroll-r', bar.scrollWidth > bar.clientWidth + 1 && hiddenRight);
   }
   let projectChangeQueue = Promise.resolve();
+  let projectIntent = 0;
   function queueProjectChange(fn) {
     // 双击不同项目时，后一请求必须等前一项目的保存与恢复完成，不能交错 closeAll。
     const pending = projectChangeQueue.then(fn);
@@ -871,13 +876,17 @@ const App = (() => {
     return false;
   }
 
-  function openProject(p) {
+  function openProject(p, refreshCurrent = false) {
+    projectIntent++;
     return queueProjectChange(async () => {
-      if (p === root) return true;
+      if (p === root && !refreshCurrent) return true;
+      if (!await projectAvailable(p)) return false;
       if (!await saveBeforeLeaving()) return false;
+      // 保存可能等待很久；目录在这期间失效时，仍不能先清空旧标签。
+      if (!await projectAvailable(p)) return false;
       Session.saveNow(); // 立即保存当前项目会话，防止被 closeAll 的空状态覆盖
-      Viewer.closeAll();
-      await setRoot(p);
+      if (p !== root) Viewer.closeAll();
+      await activateProject(p);
       return true;
     });
   }
@@ -888,11 +897,21 @@ const App = (() => {
     if (p) await openProject(p);
   }
 
-  async function setRoot(p) {
+  async function projectAvailable(p) {
+    try { const result = await window.myIDE.fs.inspectDirectory(p); if (result?.ok) return true; MI.toast('未打开项目：' + (result?.error || '项目位置不可用') + '；当前内容已保留', 'err'); }
+    catch (error) { MI.toast('未打开项目：' + error.message + '；当前内容已保留', 'err'); }
+    return false;
+  }
+  async function rememberActiveProject(p) {
+    try { const result = await window.myIDE.fs.setRecent(p); if (!result?.ok) throw Error(result?.error || '上次项目记录未保存'); }
+    catch (error) { MI.toast(error.message + '；下次启动的项目可能未更新', 'err'); }
+  }
+  // 内部显式setRoot也用于刷新当前项目；保留刷新语义，但仍先保护正文和检查目录。
+  function setRoot(p) { return openProject(p, true); }
+  async function activateProject(p) {
     const t0 = performance.now();
     root = p;
     MI.activeRoot = p;
-    pushRecent(p); // 记入最近打开历史（空状态可一键重开）
     MI.log('INFO', 'app', '打开项目: ' + p);
     Tree.setRoot(p);
     GitPanel.rootDir = p;
@@ -912,6 +931,10 @@ const App = (() => {
     await Session.restore();
     restoreToolState(); // 各项目记忆自己的工具窗口状态
     if (window.AiPanel && AiPanel.onProjectChange) AiPanel.onProjectChange(); // AI 会话跟着项目走
+    // 选择目录和预检都不算激活；原项目的保存/恢复流程结束后才更新成功记录。
+    pushRecent(p);
+    renderEmptyRecent();
+    await rememberActiveProject(p);
     // 打开耗时埋点（>800ms 记日志，定位大项目卡顿）
     setTimeout(() => {
       const ms = performance.now() - t0;
@@ -1078,9 +1101,10 @@ const App = (() => {
     renderEmptyRecent(); // 启动即无项目时，空状态的「最近项目」列表也要有内容
     // 首次启动（从未打开过项目）内容区必须显示启动页：空状态的可见性由 renderView 统一维护
     if (window.Viewer && Viewer.renderActive) Viewer.renderActive();
+    const startupIntent = projectIntent;
     MI.loadPlugins().then(async () => {
       const last = await window.myIDE.fs.getRecent();
-      if (last) await setRoot(last);
+      if (last && !root && projectIntent === startupIntent) await setRoot(last);
     });
   }
 
