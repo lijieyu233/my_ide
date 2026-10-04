@@ -476,11 +476,27 @@ const App = (() => {
   // 最近打开历史（独立于 projects：关掉全部项目后空状态仍可一键重开）
   // 注意：键不能叫 myide-recent —— viewer.js 已用它存最近文件（{path,ts} 对象数组）
   const RECENT_PROJ_KEY = 'myide-recent-projects';
+  function recentProjects() {
+    try { const saved = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); return Array.isArray(saved) ? [...new Set(saved.filter(p => typeof p === 'string' && p))] : []; }
+    catch { return []; }
+  }
+  function knownProjects() { return [...new Set([...recentProjects(), ...projects.map(p => p.path)])]; }
+  function projectLabel(p, paths = knownProjects()) {
+    const parts = value => value.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+    const name = parts(p).at(-1) || p;
+    const peers = paths.filter(other => (parts(other).at(-1) || other).toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (peers.length < 2) return name;
+    const parent = parts(p).slice(0, -1);
+    for (let depth = 1; depth <= parent.length; depth++) {
+      const suffix = parent.slice(-depth).join('/');
+      if (peers.every(other => other === p || parts(other).slice(0, -1).slice(-depth).join('/').toLocaleLowerCase() !== suffix.toLocaleLowerCase())) return name + ' · ' + suffix;
+    }
+    return name + ' · ' + p;
+  }
   function pushRecent(p) {
     if (!p) return;
     try {
-      let r = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]');
-      r = r.filter((x) => typeof x === 'string' && x !== p);
+      let r = recentProjects().filter(x => x !== p);
       r.unshift(p);
       localStorage.setItem(RECENT_PROJ_KEY, JSON.stringify(r.slice(0, 8)));
     } catch {}
@@ -493,13 +509,11 @@ const App = (() => {
     const box = document.getElementById('empty-recent');
     if (!box) return;
     box.innerHTML = '';
-    let recents = [];
-    try { recents = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); } catch {}
-    const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
-      .filter((x) => typeof x === 'string' && x);
+    // 项目栏的顺序由用户拖动决定；不能让这个顺序冒充最近访问的先后。
+    const shown = knownProjects();
     const openMenu = (anchorEl) => {
       const anchor = anchorEl || document.querySelector('#project-bar .proj-btn');
-      if (anchor) showProjMenu(anchor);
+      if (anchor) showProjMenu(anchor, true);
     };
     // 标题行 + 右侧「全部 N」
     const head = document.createElement('div');
@@ -511,11 +525,12 @@ const App = (() => {
     head.appendChild(t);
     head.appendChild(line);
     if (shown.length > EMPTY_RECENT_MAX) {
-      const all = document.createElement('span');
+      const all = document.createElement('button');
+      all.type = 'button';
       all.className = 'empty-list-all';
       all.textContent = '全部 ' + shown.length;
       all.title = '查看已打开 / 最近打开的全部项目';
-      all.onclick = () => openMenu(all);
+      all.onclick = event => { event.stopPropagation(); openMenu(all); };
       head.appendChild(all);
     }
     box.appendChild(head);
@@ -536,7 +551,7 @@ const App = (() => {
       row.innerHTML = EMPTY_FOLDER_IC; // 图标由常量控制，无用户输入拼接
       const nm = document.createElement('span');
       nm.className = 'empty-item-name';
-      nm.textContent = pr.split(/[\\/]/).pop() || pr;
+      nm.textContent = projectLabel(pr, shown);
       const dir = document.createElement('span');
       dir.className = 'empty-item-dir';
       dir.textContent = pr.replace(/[\\/][^\\/]*$/, '') || pr; // 父目录（超长自动省略）
@@ -551,113 +566,136 @@ const App = (() => {
       more.type = 'button';
       more.className = 'empty-more';
       more.textContent = '还有 ' + (shown.length - EMPTY_RECENT_MAX) + ' 个…';
-      more.onclick = () => openMenu(more);
+      more.onclick = event => { event.stopPropagation(); openMenu(more); };
       box.appendChild(more);
     }
   }
 
-  // 「全部项目」下拉：hover 自动弹出、移开/选择后消失（含历史打开项目）
-  let projMenuTimer = null;
-  let projMenuOn = false; // 菜单当前用作项目下拉（其他来源的 ctx-menu 不受影响）
-  function closeProjMenuNow() {
+  // 点击进入检索，移入只展示；悬停不能把正在编辑的焦点抢走。
+  let projMenuTimer = null, projMenuState = null;
+  const projectMenuCurrent = state => !!state && projMenuState === state && state.input.isConnected && state.menu.contains(state.input) && !state.menu.classList.contains('hidden');
+  function closeProjMenuNow(restore = false) {
     clearTimeout(projMenuTimer);
-    document.getElementById('ctx-menu').classList.add('hidden');
-    projMenuOn = false;
+    const state = projMenuState; projMenuState = null;
+    state?.cleanup?.();
+    if (!state?.input.isConnected) return;
+    state.menu.classList.add('hidden'); state.menu.classList.remove('project-picker');
+    if (restore) (state.anchor.isConnected ? state.anchor : document.querySelector('.proj-all') || document.getElementById('btn-open')).focus();
   }
-  function showProjMenu(anchor) {
+  function showProjMenu(anchor, focusInput = false) {
     clearTimeout(projMenuTimer);
-    const menu = document.getElementById('ctx-menu');
-    menu.innerHTML = '';
-    // 已开项目 + 历史项目（去重，历史点击即重开）
-    let recents = [];
-    try { recents = JSON.parse(localStorage.getItem(RECENT_PROJ_KEY) || '[]'); } catch {}
-    const shown = [...new Set([...projects.map((p) => p.path), ...recents])]
-      .filter((x) => typeof x === 'string' && x);
-    if (!shown.length) return;
-    const mkTitle = (label) => {
-      const d = document.createElement('div');
-      d.className = 'ctx-item ctx-title';
-      d.textContent = label;
-      menu.appendChild(d);
-    };
-    if (projects.length) {
-      mkTitle('已打开的项目');
-      projects.forEach((p) => {
-        const d = document.createElement('div');
-        d.className = 'ctx-item proj-item' + (p.path === root ? ' sel' : '');
-        d.title = p.path;
-        const nm = document.createElement('span');
-        nm.className = 'proj-item-nm';
-        nm.textContent = (p.path === root ? '● ' : '') + (p.path.split(/[\\/]/).pop() || p.path);
-        d.appendChild(nm);
-        // ✕ 关闭该项目（平时透明，hover 才显出来）—— 平铺胶囊撤掉后，"关项目"要有去处
-        const x = document.createElement('span');
-        x.className = 'proj-item-x';
-        x.textContent = '✕';
-        x.title = '关闭项目（从列表移除，不删磁盘文件）';
-        x.onclick = (ev) => { ev.stopPropagation(); closeProjMenuNow(); removeProject(p.path); };
-        d.appendChild(x);
-        d.onclick = () => { closeProjMenuNow(); openProject(p.path); };
-        menu.appendChild(d);
-      });
-    }
-    // 最近打开放宽到 8 条：这个菜单的主要用途就是「快速切回之前的项目」
-    const history = shown.filter((p) => !projects.some((x) => x.path === p)).slice(0, 8);
-    if (history.length) {
-      mkTitle('最近打开');
-      history.forEach((p) => {
-        const d = document.createElement('div');
-        d.className = 'ctx-item proj-recent';
-        const nm = document.createElement('span');
-        nm.className = 'proj-recent-name';
-        nm.textContent = p.split(/[\\/]/).pop() || p;
-        d.appendChild(nm);
-        d.title = p;
-        d.onclick = () => { closeProjMenuNow(); openProject(p); };
-        menu.appendChild(d);
-      });
-    }
-    // 底部：当前项目的常用动作。收起态下右键菜单没了，这些动作需要一个去处（PyCharm 的
-    // 项目下拉里同样有 Copy Path / Reveal in Explorer）。
+    if (projectMenuCurrent(projMenuState)) { if (focusInput) projMenuState.input.focus(); return; }
+    projMenuState?.cleanup?.(); projMenuState = null;
+    const menu = document.getElementById('ctx-menu'); menu.replaceChildren(); menu.classList.add('project-picker');
+    const input = document.createElement('input'); input.id = 'project-filter'; input.type = 'search'; input.placeholder = '搜索项目名称或路径…'; input.setAttribute('aria-label', '搜索全部项目');
+    const status = document.createElement('p'); status.className = 'project-picker-status'; status.setAttribute('role', 'status');
+    const list = document.createElement('div'); list.className = 'project-picker-list';
+    const state = { menu, input, anchor, status, list, selected: null, paths: [], composing: false, busy: false };
+    projMenuState = state; menu.append(input, status, list);
+    const actions = document.createElement('div'); actions.className = 'project-picker-actions'; menu.append(actions);
+    const action = (label, run) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item'; button.textContent = label; button.onclick = run; actions.append(button); };
+    action('打开项目…', () => { closeProjMenuNow(); openFolder(); });
     if (root) {
-      mkTitle('当前项目');
-      const mkAct = (label, fn) => {
-        const d = document.createElement('div');
-        d.className = 'ctx-item';
-        d.textContent = label;
-        d.onclick = () => { closeProjMenuNow(); fn(); };
-        menu.appendChild(d);
-      };
-      mkAct('📋 复制项目路径', () => {
-        navigator.clipboard.writeText(root).then(() => MI.toast('路径已复制', 'ok'));
-      });
-      mkAct('🗂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(root));
+      const currentPath = root;
+      action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) status.textContent = '复制失败；完整路径：' + currentPath; } });
+      action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(currentPath));
     }
-    menu.classList.remove('hidden');
-    projMenuOn = true;
-    const r = anchor.getBoundingClientRect();
-    menu.style.left = Math.min(r.left, window.innerWidth - 230) + 'px';
-    menu.style.top = Math.min(r.bottom + 2, window.innerHeight - 240) + 'px';
+    function markSelection() {
+      for (const button of list.querySelectorAll('[data-project-open]')) button.classList.toggle('sel', button.dataset.projectOpen === state.selected);
+    }
+    async function accept(p) {
+      if (!projectMenuCurrent(state) || state.busy || !state.paths.includes(p)) return;
+      const query = input.value;
+      state.busy = true; status.textContent = '正在打开：' + p;
+      // 项目按钮保留Tab与焦点；原生disabled会在失败时把当前键盘位置丢到body。
+      list.querySelectorAll('button').forEach(button => { if (button.dataset.projectOpen) button.setAttribute('aria-disabled', 'true'); else button.disabled = true; });
+      try {
+        const opened = await openProject(p);
+        if (!projectMenuCurrent(state)) return;
+        if (opened) { closeProjMenuNow(); document.querySelector('#project-bar .proj-btn.active')?.focus(); }
+        else status.textContent = '未切换项目，原项目和标签已保留；检查项目位置或保存后可重试。';
+      } catch (error) { if (projectMenuCurrent(state)) status.textContent = '打开失败：' + (error.message || error) + '；可重试。'; }
+      finally { state.busy = false; if (projectMenuCurrent(state)) { if (input.value !== query) render(); else list.querySelectorAll('button').forEach(button => { button.removeAttribute('aria-disabled'); button.disabled = false; }); } }
+    }
+    function render() {
+      if (state.busy) return;
+      list.replaceChildren(); const needle = input.value.trim().toLocaleLowerCase().replace(/\\/g, '/');
+      const all = knownProjects(), opened = projects.map(p => p.path);
+      const matched = all.filter(p => !needle || p.toLocaleLowerCase().replace(/\\/g, '/').includes(needle));
+      state.paths = [...opened.filter(p => matched.includes(p)), ...matched.filter(p => !opened.includes(p))];
+      if (!state.paths.includes(state.selected)) state.selected = state.paths[0] || null;
+      status.textContent = matched.length + ' 个匹配 · 已打开 / 最近项目；按名称或完整路径查找';
+      const section = (label, paths) => {
+        if (!paths.length) return;
+        const title = document.createElement('div'); title.className = 'ctx-item ctx-title'; title.textContent = label; list.append(title);
+        for (const p of paths) {
+          const row = document.createElement('div'); row.className = 'project-picker-row';
+          const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item proj-item'; button.title = p; button.dataset.projectOpen = p;
+          const name = document.createElement('span'); name.className = 'proj-item-nm'; name.textContent = projectLabel(p, all) + (p === root ? '（当前）' : opened.includes(p) ? '（已打开）' : '');
+          const directory = document.createElement('span'); directory.className = 'project-picker-path'; directory.textContent = p;
+          button.append(name, directory); button.onclick = () => accept(p); button.onfocus = () => { state.selected = p; markSelection(); }; row.append(button);
+          if (opened.includes(p)) {
+            const close = document.createElement('button'); close.type = 'button'; close.className = 'proj-item-x'; close.title = '关闭项目：' + p; close.setAttribute('aria-label', '关闭项目：' + projectLabel(p, all));
+            close.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+            close.onclick = () => { closeProjMenuNow(); removeProject(p); }; row.append(close);
+          }
+          list.append(row);
+        }
+      };
+      section('已打开的项目', state.paths.filter(p => opened.includes(p)));
+      section('最近项目', state.paths.filter(p => !opened.includes(p)));
+      if (!matched.length) {
+        const empty = document.createElement('p'); empty.className = 'project-picker-empty'; empty.textContent = needle ? '没有匹配项目；可清空搜索或打开其他文件夹。' : '暂无已打开或最近项目，可先打开文件夹。';
+        const clear = document.createElement('button'); clear.type = 'button'; clear.textContent = '清空搜索';
+        // 清空会移除当前按钮；树的共享菜单外部点击监听不能将这个旧目标误判为外部。
+        clear.onclick = event => { event.stopPropagation(); input.value = ''; render(); input.focus(); }; empty.append(clear); list.append(empty);
+      }
+      markSelection();
+    }
+    input.oninput = render;
+    input.addEventListener('compositionstart', () => { state.composing = true; });
+    input.addEventListener('compositionend', () => { state.composing = false; render(); });
+    // 在菜单内消费导航与取消；不能让全局Escape再关闭底层工作台面板。
+    const onKey = event => {
+      if (!projectMenuCurrent(state)) { menu.removeEventListener('keydown', onKey); return; }
+      if (state.composing || event.isComposing || event.keyCode === 229) { if (event.key === 'Enter' || event.key === 'Escape') event.stopPropagation(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeProjMenuNow(true); return; }
+      if ((event.target === input || event.target.matches('[data-project-open]')) && ['ArrowDown','ArrowUp','Enter'].includes(event.key)) {
+        event.preventDefault(); event.stopImmediatePropagation(); if (state.busy) return;
+        if (event.key === 'Enter') { if (state.selected) accept(state.selected); return; }
+        let index = state.paths.indexOf(state.selected);
+        index = Math.max(0, Math.min(state.paths.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+        state.selected = state.paths[index] || null; markSelection();
+        status.textContent = state.selected ? '已选择：' + state.selected + '；按 Enter 打开' : '没有匹配项目';
+        const selected = [...list.querySelectorAll('[data-project-open]')].find(button => button.dataset.projectOpen === state.selected);
+        if (event.target !== input) selected?.focus();
+        selected?.scrollIntoView?.({ block: 'nearest' });
+      }
+    };
+    menu.addEventListener('keydown', onKey);
+    const observer = new MutationObserver(() => { if (!input.isConnected) { if (projMenuState === state) { projMenuState = null; menu.classList.remove('project-picker'); } state.cleanup(); } });
+    state.cleanup = () => { menu.removeEventListener('keydown', onKey); observer.disconnect(); };
+    observer.observe(menu, { childList: true });
+    menu.classList.remove('hidden'); render();
+    const r = anchor.getBoundingClientRect(), box = menu.getBoundingClientRect();
+    menu.style.left = Math.max(6, Math.min(r.left, window.innerWidth - box.width - 6)) + 'px';
+    menu.style.top = Math.max(6, Math.min(r.bottom + 2, window.innerHeight - box.height - 6)) + 'px';
+    if (focusInput) input.focus();
   }
   function hideProjMenu() {
     clearTimeout(projMenuTimer);
-    projMenuTimer = setTimeout(() => {
-      document.getElementById('ctx-menu').classList.add('hidden');
-      projMenuOn = false;
-    }, 200);
+    const state = projMenuState;
+    projMenuTimer = setTimeout(() => { if (projectMenuCurrent(state) && !state.menu.contains(document.activeElement)) closeProjMenuNow(); }, 200);
   }
-  // 菜单内 hover 取消隐藏延时；移出菜单本身也关闭（一次性全局绑定：ctx-menu 是共享单例）
   {
     const menu = document.getElementById('ctx-menu');
     if (menu) {
       menu.addEventListener('mouseenter', () => clearTimeout(projMenuTimer));
-      menu.addEventListener('mouseleave', () => { if (projMenuOn) hideProjMenu(); });
+      menu.addEventListener('mouseleave', hideProjMenu);
     }
-    // 点击菜单外任意处立即关闭（hover 弹出的菜单不依附点击锚点，需要独立的全局关闭）
-    document.addEventListener('mousedown', (e) => {
-      if (!projMenuOn) return;
-      if (menu && menu.contains(e.target)) return;
-      closeProjMenuNow();
+    document.addEventListener('mousedown', e => {
+      const state = projMenuState;
+      if (projectMenuCurrent(state) && !state.menu.contains(e.target) && !state.anchor.contains(e.target)) closeProjMenuNow();
     });
   }
 
@@ -716,7 +754,8 @@ const App = (() => {
     // hover 自动弹出（不知道可以点也能发现），点一下也开
     all.onmouseenter = () => showProjMenu(all);
     all.onmouseleave = hideProjMenu;
-    all.onclick = (e) => { e.stopPropagation(); showProjMenu(all); };
+    all.setAttribute('aria-label', '全部项目：搜索与切换');
+    all.onclick = (e) => { e.stopPropagation(); showProjMenu(all, true); };
     wrap.insertBefore(all, bar);
 
     for (const pr of projects) {
@@ -726,7 +765,7 @@ const App = (() => {
       btn.draggable = true;
       btn.dataset.path = pr.path;
       const nm = document.createElement('span');
-      nm.textContent = pr.path.split(/[\\/]/).pop() || pr.path;
+      nm.textContent = projectLabel(pr.path);
       btn.appendChild(nm);
       // ✕ 关闭项目（右键菜单保留完整动作）
       const x = document.createElement('span');
@@ -741,6 +780,7 @@ const App = (() => {
       btn.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        closeProjMenuNow();
         const menu = document.getElementById('ctx-menu');
         menu.innerHTML = '';
         const mk = (label, fn, danger) => {
