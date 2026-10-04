@@ -1,0 +1,8 @@
+/* 独立恢复面板沿应用主题和相对尺寸，长路径不能撑出窄窗口。 */
+#session-recovery-status { color: var(--text-warn, var(--text)); font-size: 1em; }
+#session-recovery-status[hidden] { display: none; }
+.session-recovery { width: min(48em, calc(100vw - 2em)); min-width: 0; }
+.session-recovery .m-body { max-height: 60vh; overflow: auto; overflow-wrap: anywhere; }
+.session-recovery .m-body p { margin: 0 0 1em; }
+.session-recovery .m-body button { margin-left: 1em; }
+.session-recovery .m-foot { flex-wrap: wrap; }

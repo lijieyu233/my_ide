@@ -1,0 +1,65 @@
+// 使用隐藏生产窗口和独立profile，恢复/保存操作不会接触用户项目或正文。
+const {app,BrowserWindow}=require('electron'),fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
+const resume=process.argv.indexOf('--resume-home'),home=resume<0?fs.mkdtempSync(path.join(os.tmpdir(),'myide-session-check-')):path.resolve(process.argv[resume+1]);
+if(path.dirname(home)!==path.resolve(os.tmpdir())||!path.basename(home).startsWith('myide-session-check-'))throw Error('只允许本自检的临时profile');
+const P=path.join(home,'项目 中文'),other=path.join(home,'其他项目');
+if(resume<0){fs.mkdirSync(P);fs.mkdirSync(other);fs.mkdirSync(path.join(P,'展开目录'));}
+const text=Buffer.from('第一行\n第二行\n第三行\n第四行\n');if(resume<0)for(const file of ['active.txt','later.txt'])fs.writeFileSync(path.join(P,file),text);
+os.homedir=()=>home;app.setPath('userData',path.join(home,'profile'));process.argv.push('--headless');
+const output=path.join(__dirname,'..','.ui-check-trash','128c1-native-'+process.pid);fs.mkdirSync(output,{recursive:true});
+require('../main');let win,passed=0;
+const wait=async code=>{for(let i=0;i<200;i++){if(await win.webContents.executeJavaScript(code))return;await new Promise(r=>setTimeout(r,30));}throw Error('等待失败：'+code);};
+const run=code=>win.webContents.executeJavaScript(code,true),check=(name,value)=>{assert(value,name);passed++;console.log('ok '+name);};
+const capture=async name=>{await run('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');win.webContents.invalidate();await new Promise(r=>setTimeout(r,160));for(let i=0;i<5;i++){const image=await win.webContents.capturePage();if(!image.isEmpty()){fs.writeFileSync(path.join(output,name+'.png'),image.toPNG());return;}await new Promise(r=>setTimeout(r,120));}throw Error('截图为空');};
+const sessionKey='myide-session:'+P,A=path.join(P,'active.txt'),B=path.join(P,'later.txt'),missing=path.join(P,'已删除.txt');
+app.whenReady().then(async()=>{try{
+ for(let i=0;i<100&&!BrowserWindow.getAllWindows().length;i++)await new Promise(r=>setTimeout(r,40));win=BrowserWindow.getAllWindows()[0];await wait('!!window.Session&&!!window.App&&!!window.Viewer');
+ check('生产窗口隐藏',!win.isVisible());win.setContentSize(1280,850);
+ if(resume>=0){
+  check('新Electron进程重开项目后恢复备份入口',await run('App.openProject('+JSON.stringify(P)+').then(()=>!document.getElementById("session-recovery-status").hidden)'));
+  check('进程重启后原记录备份仍保持原字符串',await run('Object.keys(localStorage).some(k=>k.startsWith("myide-session-backup:")&&localStorage.getItem(k)==="{broken")'));
+  check('进程重启后可回看各份备份',await run('Session.showRestoreReport();[...document.querySelectorAll(".session-recovery button")].some(b=>b.textContent==="复制备份 1")'));
+  check('重启查看也未改原文件字节',['active.txt','later.txt'].every(file=>fs.readFileSync(path.join(P,file)).equals(text)));
+  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed,failed:0,home,output,resumed:true},null,2));console.log('进程重启专项：'+passed+' 通过 / 0 失败；截图目录：'+output);app.exit(0);return;
+ }
+ check('打开独立测试项目',await run('App.openProject('+JSON.stringify(P)+')'));
+ const source=JSON.stringify({tabs:[{}, {p:A,s:0,l:3},{p:B,s:14,l:2}],active:A,expanded:[path.join(P,'展开目录')],tool:'outline'});
+ await run('Viewer.closeAll();localStorage.setItem('+JSON.stringify(sessionKey)+','+JSON.stringify(source)+');Session.restore()');await wait('!!Viewer.cm');
+ const report=await run('Session.getRestoreReport()');
+ check('坏条目不阻断两个合法标签且结果分开记录',report.blocked&&report.entries.length===2&&report.entries[0].status==='loaded'&&report.entries[1].status==='pending');
+ check('只加载活动CM6，其余标签仍懒加载',await run('Viewer.activeTab.path==='+JSON.stringify(A)+'&&Viewer.cm.getValue()==='+JSON.stringify(text.toString())+'&&Viewer.openTabs[1].lazy'));
+ check('活动文件准确回到第三逻辑行',await run('Viewer.cm.view.state.doc.lineAt(Viewer.cm.view.state.selection.main.head).number===3'));
+ check('目录展开和工具均恢复',await run('Tree.getExpandedPaths().includes('+JSON.stringify(path.join(P,'展开目录'))+')&&App.getTool()==="outline"'));
+ await new Promise(r=>setTimeout(r,500));check('自动保存没有覆盖含失败项的原字符串',await run('localStorage.getItem('+JSON.stringify(sessionKey)+')==='+JSON.stringify(source)));
+ await run('document.getElementById("session-recovery-status").focus();document.getElementById("session-recovery-status").click()');
+ check('详情可读且明确后台待加载',await run('document.querySelector(".session-recovery").textContent.includes("待加载")&&document.querySelector(".session-recovery").textContent.includes("标签 1")'));
+ await capture('partial-details');
+ win.setContentSize(780,720);await run('document.documentElement.style.setProperty("--ui-font-size","18px")');
+ check('窄窗口详情与按钮均在窗口内',await run('(()=>{const box=document.querySelector(".session-recovery"),r=box.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.bottom<=innerHeight+1&&box.scrollWidth<=box.clientWidth+1})()'));
+ await capture('partial-narrow');
+ await run('document.querySelector(".session-recovery button").focus()');win.webContents.sendInputEvent({type:'keyDown',keyCode:'ESC'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'ESC'});await wait('!document.querySelector(".session-recovery")');
+ check('实际Chromium键盘Escape关闭并返回详情入口焦点',await run('document.activeElement.id==="session-recovery-status"'));
+ await run('Viewer.closeAll();localStorage.setItem('+JSON.stringify(sessionKey)+',JSON.stringify({tabs:['+JSON.stringify(missing)+','+JSON.stringify(B)+'],active:'+JSON.stringify(missing)+',expanded:[],tool:"project"}));Session.restore()');
+ check('缺失活动文件保留错误标签和其他待加载标签',await run('Viewer.activeTab.mode==="error"&&Viewer.openTabs.length===2&&Session.getRestoreReport().entries[0].status==="failed"&&Viewer.openTabs[1].lazy'));
+ check('错误页面已有重试读取入口',await run('[...document.querySelectorAll("#viewer button")].some(b=>b.textContent==="重试读取")'));
+ fs.writeFileSync(missing,text);await run('[...document.querySelectorAll("#viewer button")].find(b=>b.textContent==="重试读取").click()');await wait('!!Viewer.cm');
+ check('文件恢复后实际重试读取正确正文',await run('Viewer.cm.getValue()==='+JSON.stringify(text.toString())));
+ await run('Viewer.closeAll();localStorage.setItem('+JSON.stringify(sessionKey)+',"{broken");Session.restore()');
+ check('坏JSON保留并显示状态入口',await run('Session.getRestoreReport().blocked&&localStorage.getItem('+JSON.stringify(sessionKey)+')==="{broken"&&!document.getElementById("session-recovery-status").hidden'));
+ await run('Session.showRestoreReport();[...document.querySelectorAll(".session-recovery button")].find(b=>b.textContent==="备份原记录并保存当前会话").click()');await wait('!!document.getElementById("cf-yes")');
+ check('替换记录前使用真实确认面板',await run('Modal.stack.length===2'));
+ await run('document.getElementById("cf-no").click()');await new Promise(r=>setTimeout(r,40));
+ check('取消后原记录和保护状态保留',await run('localStorage.getItem('+JSON.stringify(sessionKey)+')==="{broken"&&Session.getRestoreReport().blocked'));
+ await run('[...document.querySelectorAll(".session-recovery button")].find(b=>b.textContent==="备份原记录并保存当前会话").click()');await wait('!!document.getElementById("cf-yes")');await run('document.getElementById("cf-yes").click()');await wait('!document.querySelector(".session-recovery")');
+ check('确认后原字符串先备份，当前空会话才可发布',await run('Object.keys(localStorage).some(k=>k.startsWith("myide-session-backup:")&&localStorage.getItem(k)==="{broken")&&!Session.getRestoreReport().blocked&&JSON.parse(localStorage.getItem('+JSON.stringify(sessionKey)+')).tabs.length===0'));
+ check('备份仍有可回看入口',await run('!document.getElementById("session-recovery-status").hidden&&document.getElementById("session-recovery-status").textContent==="会话记录备份"'));
+ await run('Session.restore()');
+ check('再次恢复后备份列表仍可见',await run('document.getElementById("session-recovery-status").click();[...document.querySelectorAll(".session-recovery button")].some(b=>b.textContent==="复制备份 1")'));
+ await run('Modal.hide()');
+ check('切项目后旧恢复反馈不留在新项目',await run('App.openProject('+JSON.stringify(other)+').then(()=>document.getElementById("session-recovery-status").hidden)'));
+ check('查看、恢复和记录保存均未改正文原字节',['active.txt','later.txt','已删除.txt'].every(file=>fs.readFileSync(path.join(P,file)).equals(text)));
+ check('独立设置镜像实际落盘包含原记录备份',(await run('SettingsStore.flushMirror()')).ok&&Object.entries(JSON.parse(fs.readFileSync(path.join(home,'.myide/settings.json'),'utf8'))).some(([k,v])=>k.startsWith('myide-session-backup:')&&v==='{broken'));
+ fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed,failed:0,home,output,profile:app.getPath('userData'),keyboard:'webContents.sendInputEvent Escape; no OS IME/screen reader'},null,2));
+ console.log('真实会话恢复：'+passed+' 通过 / 0 失败；截图：'+output);app.exit(0);
+}catch(error){console.error(error.stack);fs.writeFileSync(path.join(output,'failure.txt'),error.stack);app.exit(1);}});
+setTimeout(()=>app.exit(2),120000).unref();
