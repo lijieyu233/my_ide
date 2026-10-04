@@ -227,6 +227,10 @@ const Tree = (() => {
   }
 
   function setRoot(p) {
+    clearTimeout(searchDeb);
+    searchState = null; fileIndex = null; searchIdx = 0;
+    const input = document.getElementById('tree-search');
+    if (input) input.value = '';
     rootPath = p;
     selectedPath = null;
     selectedType = null;
@@ -291,6 +295,8 @@ const Tree = (() => {
   // 文件操作成功后失效所有目录缓存（重建时重新懒加载）
   function invalidateAll() {
     for (const k in nodeCache) delete nodeCache[k];
+    fileIndex = null;
+    if (searchState) { searchState.files = null; searchState.loading = false; searchState.request = null; searchState.error = ''; }
   }
 
   // 可见行（扁平）：根行 + DFS 展开目录。
@@ -320,6 +326,7 @@ const Tree = (() => {
   // 串行化：并发 render（展开/粘贴连续触发）按序执行，防止旧数据覆盖新数据
   let renderChain = Promise.resolve();
   function render() {
+    if (rootPath && searchState && searchState.q) return renderSearch();
     renderChain = renderChain.then(doRender).catch(() => {});
     return renderChain;
   }
@@ -330,10 +337,12 @@ const Tree = (() => {
     // ⚠ 先把数据取齐，最后才动 DOM。
     //   原来这里第一行就是 `el.innerHTML = ''`，然后 `await loadDir(...)` 一串异步 ——
     //   中间浏览器会把**空树**绘制一帧，看起来就是"切换文件时闪一下"。
-    await loadDir(rootPath);
+    const renderingRoot = rootPath;
+    await loadDir(renderingRoot);
+    if (rootPath !== renderingRoot || searchState) return;
     // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
     const expandedDirs = [...expanded];
-    for (const d of expandedDirs) await loadDir(d);
+    for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState) return; }
     const rows = buildRows();
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
     el.innerHTML = '';
@@ -379,27 +388,69 @@ const Tree = (() => {
   }
 
   // ---------- 目录树搜索（平铺匹配行，回车/点击打开）----------
-  let searchState = null; // { q, files: [{name, rel, path, type}] }
+  let searchState = null, fileIndex = null, searchDeb = null, searchComposing = false;
   let searchIdx = 0;
-  async function renderSearch() {
-    const q = searchState.q;
-    if (!searchState.files) {
-      const r = await window.myIDE.fs.listAll(rootPath, false);
-      searchState.files = (r.files || []).map((full) => {
-        const rel = norm(full).slice(norm(rootPath).length + 1);
-        const name = rel.split('/').pop();
-        return { name, rel, path: full, type: 'file' };
-      });
+  const searchCurrent = state => searchState === state && rootPath === state.root && !searchComposing
+    && document.getElementById('tree-search').value.trim() === state.q;
+  const searchUsable = state => searchCurrent(state) && !state.loading && !!state.files && !state.error;
+  function searchNotice(message, retryState = null) {
+    el.innerHTML = ''; el.onscroll = null; visibleRows = [];
+    const note = document.createElement('div'); note.className = 'tree-search-summary'; note.setAttribute('role', 'status');
+    note.textContent = message; el.append(note);
+    if (retryState) {
+      const button = document.createElement('button'); button.className = 'tree-search-action'; button.textContent = '重试读取文件';
+      button.onclick = () => { if (!searchCurrent(retryState)) return; fileIndex = null; retryState.files = null; retryState.error = ''; renderSearch(); };
+      el.append(button);
     }
-    const ql = q.toLowerCase();
+  }
+  async function renderSearch() {
+    const state = searchState;
+    if (!state || !searchCurrent(state)) return;
+    const includeDots = showHidden || hideMode === 'all', indexKey = state.root + '\u0000' + includeDots;
+    if (state.indexKey !== indexKey) { state.files = null; state.loading = false; state.error = ''; state.indexKey = indexKey; }
+    if (!state.files && !state.loading && !state.error) {
+      const request = {}; state.request = request; state.loading = true;
+      searchNotice('正在检索当前项目的文件名/相对路径，请等待：' + state.root);
+      // 查询改变可共享同一份项目索引，写回仍必须核对查询、根路径和请求；不让旧响应复活关闭的搜索。
+      if (!fileIndex || fileIndex.key !== indexKey) fileIndex = { key: indexKey,
+        promise: Promise.resolve().then(() => window.myIDE.fs.listAll(state.root, includeDots)) };
+      try {
+        const r = await fileIndex.promise;
+        if (!searchCurrent(state) || state.request !== request || state.indexKey !== indexKey) return;
+        if (!r || !Array.isArray(r.files) || r.files.some(full => typeof full !== 'string') || r.error) throw Error(r && r.error || '服务未返回有效文件列表');
+        const base = norm(state.root).replace(/\/+$/, ''), seen = new Set();
+        state.files = r.files.filter(full => {
+          const value = norm(full), key = value.toLowerCase();
+          if (!key.startsWith(base.toLowerCase() + '/') || seen.has(key)) return false;
+          const parts = value.slice(base.length + 1).split('/');
+          if (parts.some(part => !part || part === '.' || part === '..' || part === '.git' || part === 'node_modules') || !includeDots && parts.some(part => part.startsWith('.'))) return false;
+          seen.add(key); return true;
+        }).map(full => { const rel = norm(full).slice(base.length + 1); return { name: rel.split('/').pop(), rel, path: norm(full), type: 'file' }; });
+        state.truncated = r.truncated === true; state.loading = false;
+      } catch (error) {
+        if (!searchCurrent(state) || state.request !== request) return;
+        state.loading = false; state.error = String(error && error.message || error); fileIndex = null;
+      }
+    }
+    if (!searchCurrent(state) || state.loading) return;
+    if (state.error) { searchNotice('文件检索失败：' + state.error + '；当前文档仍保留。', state); return; }
+    const ql = state.q.replace(/\\/g, '/').toLowerCase();
     // 搜索结果同样尊重「只看 Git 文件」视图（否则搜出来的全是未跟踪文件，与左侧视图自相矛盾）
-    const pool = gitActive() ? searchState.files.filter((f) => gitTracked.has(norm(f.path))) : searchState.files;
-    const hits = pool.filter((f) => f.name.toLowerCase().includes(ql)).slice(0, 200);
-    visibleRows = hits.map((f) => ({ item: { name: f.name, path: f.path, type: 'file' }, depth: 0 }));
+    const pool = state.files.filter(f => (hideMode === 'all' || (hideMode === 'hidden' ? isHiddenTree(f.path) : !isHiddenTree(f.path)))
+      && (!gitActive() || gitTracked.has(norm(f.path))));
+    const rank = f => f.name.toLowerCase() === ql ? 0 : f.name.toLowerCase().startsWith(ql) ? 1 : f.name.toLowerCase().includes(ql) ? 2 : 3;
+    const matches = pool.filter(f => f.rel.toLowerCase().includes(ql)).sort((a, b) => rank(a) - rank(b) || a.rel.localeCompare(b.rel));
+    const hits = matches.slice(0, state.limit);
+    const remembered = hits.findIndex(f => f.path === state.selectedPath);
+    if (remembered >= 0) searchIdx = remembered;
     if (searchIdx >= hits.length) searchIdx = 0;
-    el.innerHTML = '';
+    state.selectedPath = hits[searchIdx] && hits[searchIdx].path;
+    searchNotice('当前项目：' + state.root + '\n文件名/相对路径 · ' + (hideMode === 'all' ? '包含隐藏项' : hideMode === 'hidden' ? '仅应用内隐藏项' : '排除应用内隐藏项') + (!includeDots ? ' · 排除点号项' : '')
+      + ' · 排除.git/node_modules' + (gitActive() ? ' · 仅Git跟踪文件' : gitOnly ? ' · Git过滤未生效（清单不可用或非仓库）' : '')
+      + '\n匹配 ' + matches.length + ' 项，显示 ' + hits.length + ' 项' + (state.truncated ? '；索引达到50000项上限，结果不完整，请缩小项目范围。' : ''));
+    visibleRows = hits.map(f => ({ item: { name: f.name, path: f.path, type: 'file' }, depth: 0 }));
     if (!hits.length) {
-      el.innerHTML = '<div class="tree-search-empty">没有匹配「' + q.replace(/</g, '&lt;') + '」的文件</div>';
+      const empty = document.createElement('div'); empty.className = 'tree-search-empty'; empty.textContent = '没有匹配「' + state.q + '」的文件' + (state.truncated ? '（仅已索引范围，不能认定项目中不存在）' : ''); el.append(empty);
       return;
     }
     hits.forEach((f, i) => {
@@ -420,21 +471,30 @@ const Tree = (() => {
       rowEl.appendChild(rel);
       rowEl.dataset.path = f.path;
       rowEl.onclick = e => {
+        if (!searchUsable(state)) return;
+        searchIdx = i; state.selectedPath = f.path;
+        el.querySelectorAll('.tree-search-row').forEach(row => row.classList.toggle('selected', row === rowEl));
         const browsing=Viewer.previewEnabled()&&e.detail<2;
         // 浏览时保留搜索行，第二次点击才能落在同一对象上并形成双击。
         if(!browsing)endSearch();Viewer.openFile(f.path,{intent:browsing?'browse':'regular',reveal:!browsing});
       };
-      rowEl.ondblclick=()=>{endSearch();Viewer.openFile(f.path,{intent:'regular'});};
+      rowEl.ondblclick=()=>{if(searchUsable(state)){endSearch();Viewer.openFile(f.path,{intent:'regular'});}};
       rowEl.oncontextmenu = (e) => { e.preventDefault(); };
       el.appendChild(rowEl);
     });
-    const selEl = el.children[searchIdx];
+    if (matches.length > hits.length) {
+      const more = document.createElement('button'); more.className = 'tree-search-action'; more.textContent = '显示更多结果（还有' + (matches.length - hits.length) + '项）';
+      more.onclick = async () => { if (!searchUsable(state)) return; state.limit += 200; await renderSearch(); if (searchCurrent(state)) document.getElementById('tree-search').focus(); }; el.append(more);
+    }
+    const selEl = el.querySelectorAll('.tree-search-row')[searchIdx];
     if (selEl && selEl.scrollIntoView) { try { selEl.scrollIntoView({ block: 'nearest' }); } catch {} }
   }
   function endSearch() {
+    clearTimeout(searchDeb);
     const input = document.getElementById('tree-search');
     if (input) input.value = '';
     searchState = null;
+    searchIdx = 0;
     render();
   }
 
@@ -1270,19 +1330,24 @@ const Tree = (() => {
   (function bindHead() {
     const searchInput = document.getElementById('tree-search');
     if (searchInput) {
-      let deb = null;
-      searchInput.addEventListener('input', () => {
+      searchInput.placeholder = '文件名或相对路径…'; searchInput.title = '检索当前项目的文件名或相对路径；查找正文请使用「搜索内容」';
+      const schedule = () => {
         const q = searchInput.value.trim();
-        clearTimeout(deb);
-        deb = setTimeout(() => {
-          if (q) { searchState = { q, files: null }; searchIdx = 0; render(); }
-          else if (searchState) { searchState = null; render(); }
-        }, 160);
-      });
+        clearTimeout(searchDeb); searchIdx = 0;
+        searchState = q && rootPath ? { q, root: rootPath, files: null, limit: 200, loading: false, error: '' } : null;
+        if (!searchState) { render(); return; }
+        searchNotice(searchComposing ? '正在输入，完成中文组合后检索文件名/相对路径。' : '等待检索当前项目：' + rootPath);
+        if (!searchComposing) searchDeb = setTimeout(() => renderSearch(), 160);
+      };
+      searchInput.addEventListener('input', schedule);
+      searchInput.addEventListener('compositionstart', () => { searchComposing = true; clearTimeout(searchDeb); });
+      searchInput.addEventListener('compositionend', () => { searchComposing = false; schedule(); });
       searchInput.addEventListener('keydown', (e) => {
+        if (searchComposing || e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Escape') { e.preventDefault(); endSearch(); searchInput.blur(); return; }
         if (e.key === 'Enter') {
           e.preventDefault();
+          if (!searchState || !searchUsable(searchState)) return;
           // 打开当前高亮的搜索结果
           const selEl = el.querySelector('.tree-search-row.selected');
           if (selEl && selEl.dataset.path) { endSearch(); Viewer.openFile(selEl.dataset.path); }
@@ -1290,6 +1355,7 @@ const Tree = (() => {
         }
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
+          if (!searchState || !searchUsable(searchState)) return;
           const rows = [...el.querySelectorAll('.tree-search-row')];
           if (!rows.length) return;
           const cur = rows.findIndex((r) => r.classList.contains('selected'));
@@ -1298,6 +1364,7 @@ const Tree = (() => {
           if (cur >= 0) rows[cur].classList.remove('selected');
           rows[next].classList.add('selected');
           searchIdx = next;
+          searchState.selectedPath = rows[next].dataset.path;
           try { rows[next].scrollIntoView({ block: 'nearest' }); } catch {}
         }
       });
@@ -1348,7 +1415,7 @@ const Tree = (() => {
       if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }
       renameItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType });
     },
-    set showHidden(v) { showHidden = v; if (rootPath) render(); },
+    set showHidden(v) { showHidden = v; invalidateAll(); if (rootPath) render(); },
     // 由 App.applyToolFont 统一下发（绝对值，px），不再自行持久化：单一数据源在 App 侧
     setFontPx: (px) => {
       const next = Math.min(18, Math.max(11, parseInt(px, 10) || 13));
