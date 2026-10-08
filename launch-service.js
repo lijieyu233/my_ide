@@ -238,6 +238,9 @@ function systemQuery(file, args) {
 // kill(pid, 0)只能证明数字存在；出生时间与实际映像才区分同一PID的两次运行。
 async function processIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { ok: false, error: '进程PID无效' };
+  // 已退出的历史PID无需拉起PowerShell；权限失败不等于退出，仍须查询完整身份。
+  try { process.kill(pid, 0); }
+  catch (error) { if (error.code === 'ESRCH') return { ok: true, identity: null }; }
   const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; "
     + '$p=Get-CimInstance Win32_Process -Filter "ProcessId=' + pid + '"; '
     + "if($p){ @{pid=[int]$p.ProcessId; createdAt=$p.CreationDate.ToUniversalTime().ToString('o'); image=$p.ExecutablePath; commandLine=$p.CommandLine} | ConvertTo-Json -Compress }";

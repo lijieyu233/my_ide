@@ -12,7 +12,7 @@ const LaunchPanel = (() => {
   let status = {};           // id -> { alive, by, pid }
   let selectedId = null;     // 主区当前展示的条目
   let collapsed = {};        // 分类折叠
-  let timer = null;
+  let timer = null, statusPoll = null;
   let inited = false;
   const operations = new Map(), outcomes = new Map();
   let statusSerial = 0, configSerial = 0, revision = 0, checkedAt = 0, statusError = '', configError = '';
@@ -565,10 +565,24 @@ const LaunchPanel = (() => {
     try { if (window.MI && MI.toast) { MI.toast(msg, type || 'info'); return; } } catch {}
   }
 
-  async function pollOnce() {
+  function pollOnce() {
+    // 慢查询跨过轮询间隔时共享请求，避免进程查询堆积和有效结果永久被下一轮作废。
+    if (statusPoll) {
+      const pending = statusPoll;
+      return pending.promise.then(() => {
+        if (pending.serial !== statusSerial || pending.version !== revision) return pollOnce();
+      });
+    }
+    const request = { serial: ++statusSerial, version: revision };
+    statusPoll = request;
+    request.promise = readStatus(request).finally(() => { if (statusPoll === request) statusPoll = null; });
+    return request.promise;
+  }
+
+  async function readStatus({ serial, version }) {
     const api = L();
     if (!api) return;
-    const serial = ++statusSerial, version = revision, entries = cfg.entries.slice();
+    const entries = cfg.entries.slice();
     try {
       const st = entries.length ? await api.status(entries) : [];
       if (serial !== statusSerial || version !== revision) return;

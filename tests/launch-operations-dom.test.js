@@ -70,6 +70,15 @@ const test = async (name, run) => { await run(); passed++; console.log('  ok ' +
       f.config().entries[0].openUrl = 'https://example.test/page'; await f.refresh(); await f.select('a'); f.q('lm-open').click(); await tick();
       assert.equal(f.calls.at(-1)[1], 'https://example.test/page');
     });
+    await test('慢状态查询跨多个轮询间隔只执行一次，结果仍更新并恢复启动按钮', async () => {
+      const f = await fixture(), hold = gate(); let calls = 0;
+      f.api.status = () => { calls++; return hold.promise; };
+      const pending = [f.timers[0](), f.timers[0](), f.timers[0]()];
+      assert.equal(calls, 1);
+      hold.resolve([running('a'), idle('b')]); await Promise.all(pending); await tick();
+      assert.match(f.q('lm-state').textContent, /运行中/); assert(!f.q('lm-stop').disabled);
+      f.api.status = async () => [idle('a'), idle('b')]; await f.poll(); assert(!f.q('lm-start').disabled);
+    });
     await test('状态查询乱序和操作前旧查询被丢弃；非零/信号退出不显示运行成功', async () => {
       const f = await fixture(), old = gate(); f.api.status = () => old.promise; const pending = f.timers[0]();
       f.api.status = async () => [running('a'), idle('b')]; f.q('lm-start').click(); await tick();

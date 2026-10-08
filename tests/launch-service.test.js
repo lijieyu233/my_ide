@@ -8,7 +8,7 @@ let passed = 0;
 // 执行完整服务，只有系统进程/端口受控；失败保全必须核对真正落盘的状态。
 function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(temp, 'case-'));
-  const children = [], kills = [], sockets = [], bridges = [], spawned = [], live = new Set(), identities = new Map();
+  const children = [], kills = [], sockets = [], bridges = [], spawned = [], queries = [], live = new Set(), identities = new Map();
   const identity = pid => ({ pid, createdAt: new Date(1700000000000 + pid * 10).toISOString(), image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
   let nextPid = 500;
   const childProcess = {
@@ -21,7 +21,7 @@ function fixture(options = {}) {
     },
     execFile(file, args, settings, callback) {
       if (file === 'powershell.exe') {
-        const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+        const script = Buffer.from(args.at(-1), 'base64').toString('utf16le'); queries.push(script);
         if (script.includes('LAUNCH_EXIT_RECORDS')) {
           const values = [...script.matchAll(/ProcessId=(\d+)/g)].map(match => Number(match[1])).filter(pid => live.has(pid)).map(pid => identities.get(pid));
           return queueMicrotask(() => callback(null, JSON.stringify(values)));
@@ -64,7 +64,7 @@ function fixture(options = {}) {
   new Function('require', 'module', 'exports', 'process', 'setTimeout', source)(
     name => name === './launch-readiness' ? { ...require('../launch-readiness'), createObservation: (rule, runId) => require('../launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
       writeFileSync(file, ...args) { if (options.failStateWrites && path.basename(file) === 'launch-state.json') throw Error('fixture state write denied'); return fs.writeFileSync(file, ...args); } } : require(name),
-    m, m.exports, { env: {}, kill: pid => { if (!live.has(pid)) throw Error('not alive'); } },
+    m, m.exports, { env: {}, kill: pid => { if (options.probeError) throw Object.assign(Error('probe denied'), { code: options.probeError }); if (!live.has(pid)) throw Object.assign(Error('not alive'), { code: 'ESRCH' }); } },
     callback => { queueMicrotask(callback); return 1; });
   const service = m.exports; service.setConfigDir(dir);
   const state = () => { try { return JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8')); } catch { return {}; } };
@@ -75,12 +75,28 @@ function fixture(options = {}) {
   };
   const entry = { id: 'entry-a', command: 'fixture-command', cwd: dir };
   const script = path.join(dir, 'bridge.py'); fs.writeFileSync(script, '# fixture');
-  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, spawned, live, identities, state, record };
+  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, spawned, queries, live, identities, state, record };
 }
 async function test(name, run) { await run(); passed++; console.log('  ok ' + name); }
 
 (async () => {
   try {
+    await test('历史PID已退出时不启动系统查询，状态及再次启动及时恢复', async () => {
+      const f = fixture({ identityError: true }); f.record(f.entry); f.live.delete(777);
+      const state = f.state(); delete state[f.entry.id].identity;
+      fs.writeFileSync(f.service.paths().stateFile, JSON.stringify(state));
+      const [status] = await f.service.statusOf([f.entry]);
+      assert.equal(status.ownership, 'none'); assert(status.canStart); assert.equal(f.queries.length, 0);
+      const started = await f.service.startEntry(f.entry); assert(started.ok); assert.equal(f.children.length, 1);
+    });
+    await test('PID探测被拒绝仍核对实际身份，复用PID不能认领或停止', async () => {
+      const f = fixture({ probeError: 'EPERM' }); f.record(f.entry);
+      f.identities.set(777, { ...f.identities.get(777), commandLine: 'foreign' });
+      const [status] = await f.service.statusOf([f.entry]);
+      assert.equal(status.ownership, 'foreign'); assert(!status.canStart); assert(!status.canStop);
+      assert.equal(f.queries.length, 1); assert.equal((await f.service.stopEntry(f.entry)).ok, false);
+      assert.equal(f.children.length, 0); assert.equal(f.kills.length, 0);
+    });
     await test('就绪只认本次输出，分片UTF8/清空仍保留运行观察；重启和迟到旧流不复用证据',async()=>{
       const f=fixture(),entry={...f.entry,command:'echo READY🙂',readiness:{mode:'output',text:'READY🙂',timeoutSeconds:30}};
       await f.service.startEntry(entry);let [status]=await f.service.statusOf([entry]);assert.equal(status.readiness.state,'waiting');
