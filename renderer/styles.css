@@ -1883,6 +1883,7 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   padding-top: 6px;
 }
 .set-cat { padding: 7px 14px; font-size: 12px; cursor: pointer; color: var(--text); }
+.set-cat[data-cat="markdown"] { display: flex; align-items: center; gap: 6px; }
 .set-cat.active { background: var(--bg-selected); color: #fff; }
 .set-cat.dim { color: var(--text-dim); cursor: default; }
 .set-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

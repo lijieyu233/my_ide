@@ -1973,6 +1973,30 @@ const Viewer = (() => {
     }
   }
 
+  function markdownInsertState(ctx) {
+    const tab = currentTab();
+    if (window.Modal?.stack.length || ctx?.modalDepth) return '请先关闭弹窗';
+    if (!tab || !/\.(md|markdown)$/i.test(tab.name)) return '请先打开Markdown文件';
+    if (ctx && (ctx.documentId !== tab.id || ctx.revision !== tab.editRevision)) return '文档已改变，请重新选择命令';
+    if (tab.content == null || tab.error || tab.binary || tab.tooLarge || tab.formatBusy || pathBusy(tab.path)) return '文档暂不可编辑';
+    if (['live', 'source'].includes(tab.mode) && cmApi?.__tab === tab && cmApi.view.dom.isConnected && !cmApi.view.state.readOnly) return true;
+    if (['split', 'edit'].includes(tab.mode) && tab.ta?.isConnected && !tab.ta.readOnly) return true;
+    return '请切换到Markdown编辑视图';
+  }
+  function insertMarkdown(kind, ctx) {
+    const allowed = markdownInsertState(ctx);
+    if (allowed !== true) throw Error(allowed);
+    const tab = currentTab();
+    if (cmApi?.__tab === tab && ['live', 'source'].includes(tab.mode)) return cmApi.insertMarkdown(kind);
+    const ta = tab.ta, plan = MdEditor.insertion(ta.value, ta.selectionStart, ta.selectionEnd, kind);
+    ta.focus(); ta.setSelectionRange(plan.from, plan.to);
+    // 浏览器编辑命令保留分屏的原生撤销；无此API的环境沿用textarea输入通知。
+    if (!document.execCommand?.('insertText', false, plan.insert)) {
+      ta.setRangeText(plan.insert, plan.from, plan.to, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    ta.setSelectionRange(plan.anchor, plan.head); return true;
+  }
+
   // Ctrl+E：Markdown live ↔ source 模式切换（对齐 Obsidian）
   function toggleMdMode() {
     const tab = currentTab();
@@ -1984,7 +2008,7 @@ const Viewer = (() => {
 
   return {
     openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return currentTab() || null; },

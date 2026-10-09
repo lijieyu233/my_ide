@@ -5111,10 +5111,13 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(box, '设置面板打开');
     const activeCat = () => $allIn(box, '.set-cat').find((c) => c.classList.contains('active'));
     assert_(activeCat() && activeCat().dataset.cat === 'keys', '默认快捷键分类');
-    // 按 ↓：应切到「外观」且目录树选中不被方向键滚动（树不接管）
+    // 按 ↓：先进入Markdown快捷键，目录树不接管弹窗方向键
     key(dom, 'ArrowDown');
     await tick();
-    assert_(activeCat() && activeCat().dataset.cat === 'font', '↓ 切到外观分类, got ' + (activeCat() && activeCat().dataset.cat));
+    assert_(activeCat() && activeCat().dataset.cat === 'markdown', '↓ 切到Markdown快捷键分类');
+    assert_(box.querySelector('[data-key-action=md-task]') && box.querySelector('[data-key-action=md-table]'), '专用页面包含待办和表格动作');
+    key(dom, 'ArrowDown'); await tick();
+    assert_(activeCat() && activeCat().dataset.cat === 'font', '↓ 再切到外观分类');
     key(dom, 'ArrowDown');
     await tick();
     assert_(activeCat() && activeCat().dataset.cat === 'editor', '↓ 再切到编辑器分类');

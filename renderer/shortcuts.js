@@ -166,7 +166,16 @@ const Shortcuts = (() => {
   // 只让有效位置导航键先于CM的文本移动键处理；同一注册表决定改键与禁用，不硬编码Alt方向。
   document.addEventListener('keydown',e=>{
     if(composing(e)||captureCb||e.defaultPrevented)return;
-    const id=keyMap[comboOf(e)];if(!['navigation-back','navigation-forward'].includes(id)||window.Modal?.stack.length||window.App?.getTool()==='browser')return;
+    const id=keyMap[comboOf(e)];
+    if (['md-task', 'md-table'].includes(id)) {
+      const tab = window.Viewer?.activeTab, cm = window.Viewer?.cm;
+      const editorTarget = cm?.__tab === tab && cm.view?.contentDOM.contains(e.target) || tab?.ta === e.target;
+      if (editorTarget && !window.Modal?.stack.length && availability(id).enabled) {
+        e.preventDefault(); e.stopImmediatePropagation(); execute(id);
+      }
+      return;
+    }
+    if(!['navigation-back','navigation-forward'].includes(id)||window.Modal?.stack.length||window.App?.getTool()==='browser')return;
     e.preventDefault();e.stopImmediatePropagation();if(availability(id).enabled)execute(id);
   },true);
 
@@ -226,6 +235,7 @@ const Shortcuts = (() => {
     if (e.defaultPrevented) return; // textarea 等已自行处理
     const id = keyMap[combo];
     if (!id) return;
+    if (['md-task', 'md-table'].includes(id)) return; // 仅编辑区捕获，不改动搜索框、其他工具或只读视图。
     e.preventDefault();
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
@@ -309,7 +319,7 @@ Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红�
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
 Shortcuts.register('help', { desc: '帮助与快捷键速查', keys: ['f1'], run: () => Help.open() });
 Shortcuts.register('find', { desc: '编辑器查找', keys: ['ctrl+f'], run: () => Viewer.openFind(false) });
-Shortcuts.register('md-mode', { desc: 'Markdown 实时预览 / 源码切换', keys: ['ctrl+e'], run: () => Viewer.toggleMdMode() });
+Shortcuts.register('md-mode', { desc: 'Markdown 实时预览 / 源码切换', keys: ['ctrl+e'], category: 'Markdown', run: () => Viewer.toggleMdMode() });
 Shortcuts.register('font-inc', { desc: '字号增大（文档编辑区）', keys: ['ctrl+shift++', 'ctrl+shift+='], run: () => Viewer.zoomFont(1) });
 Shortcuts.register('font-dec', { desc: '字号减小（文档编辑区）', keys: ['ctrl+shift+_', 'ctrl+shift+-'], run: () => Viewer.zoomFont(-1) });
 // 整窗缩放（原 Chromium 菜单加速键已在主进程移除，由此接管）。编辑器内不触发：
@@ -342,6 +352,11 @@ Shortcuts.register('undo-file', { desc: '撤销（任务工具激活时撤销任
 } });
 Shortcuts.register('rename-file', { desc: '重命名（目录树选中项）', keys: ['ctrl+shift+f6'], run: () => Tree.renameSelected() });
 
+for (const [id, kind, key, desc] of [['md-task', 'task', 'ctrl+l', '创建待办项 - [ ]'], ['md-table', 'table', 'ctrl+t', '创建表格']]) {
+  Shortcuts.register(id, { desc, keys: [key], category: 'Markdown', scope: 'Markdown 编辑区', palette: true,
+    requiresDocument: true, requiresText: true, bindingGuard: combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo),
+    isEnabled: ctx => Viewer.markdownInsertState(ctx), run: ctx => Viewer.insertMarkdown(kind, ctx) });
+}
 Shortcuts.load();
 
 // 首包接可核对的既有动作；复制/粘贴/外部执行等依赖其他选择身份的动作另按各自合同接入。

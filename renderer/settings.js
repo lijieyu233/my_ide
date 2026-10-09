@@ -1,16 +1,16 @@
 // settings.js —— 设置页面（PyCharm Settings 风格：左分类 + 右内容）
 const Settings = (() => {
   let listening = null; // 正在修改的动作 id
-  let keysFilter = '';  // 快捷键过滤词
+  let keysFilter = '', markdownFilter = '';  // 快捷键过滤词
   let activeBox = null;
   function cancelListening(box = activeBox) {
     if (!box) return;
     Shortcuts.cancelCapture(box); listening = null;
-    if (box.isConnected && box.dataset.category === 'keys') {
+    if (box.isConnected && ['keys', 'markdown'].includes(box.dataset.category)) {
       box.querySelectorAll('.listening').forEach(button => { button.classList.remove('listening'); button.textContent = '点击改键'; });
     }
   }
-  const keysCurrent = box => activeBox === box && box.isConnected && box.dataset.category === 'keys' && Modal.stack.at(-1) === box;
+  const keysCurrent = box => activeBox === box && box.isConnected && ['keys', 'markdown'].includes(box.dataset.category) && Modal.stack.at(-1) === box;
   function keyStatus(text, error = false) {
     const hint = activeBox?.querySelector('#set-hint');
     if (!hint) return; hint.replaceChildren(document.createTextNode(text)); hint.setAttribute('role', 'status'); hint.style.color = error ? 'var(--del-text)' : '';
@@ -36,6 +36,7 @@ const Settings = (() => {
       <div class="set-body">
         <div class="set-side">
           <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
+          <div class="set-cat" data-cat="markdown"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM4 10V6l2 2 2-2v4m2-2 1.5 2L13 8m-1.5-3v5"/></svg> Markdown</div>
           <div class="set-cat" data-cat="font">🔤 外观</div>
           <div class="set-cat" data-cat="editor"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/></svg> 编辑器</div>
           <div class="set-cat" data-cat="git">🔀 Git</div>
@@ -70,6 +71,7 @@ const Settings = (() => {
       $all('.set-cat').forEach((x) => x.classList.remove('active'));
       cat.classList.add('active');
       if (cat.dataset.cat === 'keys') renderKeys();
+      else if (cat.dataset.cat === 'markdown') renderKeys();
       else if (cat.dataset.cat === 'font') renderFont();
       else if (cat.dataset.cat === 'editor') renderEditor();
       else if (cat.dataset.cat === 'git') renderGit();
@@ -117,19 +119,21 @@ const Settings = (() => {
 
   // ---------- 快捷键视图 ----------
   function renderKeys() {
-    document.getElementById('set-title').textContent = '快捷键（点击按键可修改）';
+    const markdown = activeBox?.dataset.category === 'markdown';
+    document.getElementById('set-title').textContent = markdown ? 'Markdown 快捷键（点击按键可修改）' : '快捷键（点击按键可修改）';
     document.getElementById('set-hint').textContent = '点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消';
-    document.getElementById('set-reset-all').classList.remove('hidden');
+    document.getElementById('set-reset-all').classList.toggle('hidden', markdown);
     const list = document.getElementById('set-list');
     if (!document.getElementById('set-keys-filter')) {
       const filter = document.createElement('input');
       filter.id = 'set-keys-filter';
       filter.type = 'text';
       filter.placeholder = '🔍 过滤动作…';
-      filter.value = keysFilter;
-      filter.addEventListener('input', () => { keysFilter = filter.value; renderList(); });
+      filter.value = markdown ? markdownFilter : keysFilter;
+      filter.addEventListener('input', () => { if (activeBox?.dataset.category === 'markdown') markdownFilter = filter.value; else keysFilter = filter.value; renderList(); });
       list.parentElement.insertBefore(filter, list);
     }
+    document.getElementById('set-keys-filter').value = markdown ? markdownFilter : keysFilter;
     renderList();
   }
 
@@ -714,8 +718,9 @@ const Settings = (() => {
     const list = document.getElementById('set-list');
     if (!list) return;
     list.innerHTML = '';
-    const q = keysFilter.trim().toLowerCase();
+    const q = (activeBox?.dataset.category === 'markdown' ? markdownFilter : keysFilter).trim().toLowerCase();
     for (const b of Shortcuts.bindings()) {
+      if (activeBox?.dataset.category === 'markdown' && b.category !== 'Markdown') continue;
       if (q && !(b.desc + ' ' + b.id + ' ' + b.combos.join(' ')).toLowerCase().includes(q)) continue;
       const row = document.createElement('div');
       row.className = 'set-row';

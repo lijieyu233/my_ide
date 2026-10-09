@@ -1786,6 +1786,36 @@ window.MdEditor = (() => {
     { key: 'Shift-Tab', run: (v) => tableEdit(v, { dCol: -1, addIfLast: false }) },
   ]);
 
+  // 同一插入计划供CM与分屏使用，光标始终按源文本偏移计算，避免按渲染后坐标猜位置。
+  function insertion(text, from, to, kind) {
+    if (kind === 'task') {
+      const start = from ? text.lastIndexOf('\n', from - 1) + 1 : 0;
+      const last = to > from && text[to - 1] === '\n' ? to - 1 : to;
+      const end = text.indexOf('\n', last);
+      const finish = end < 0 ? text.length : end;
+      const lines = text.slice(start, finish).split('\n');
+      let cursor = from, delta = 0;
+      const insert = lines.map((line, index) => {
+        const match = /^([ \t]*)(?:[-*+] |\d+\. )?(?:\[[ xX]\] )?/.exec(line);
+        const prefix = match[0], next = match[1] + '- [ ] ';
+        const result = /^[ \t]*[-*+] \[[ xX]\] /.test(line) ? line : next + line.slice(prefix.length);
+        if (!index) cursor = start + Math.max(next.length, from - start + result.length - line.length);
+        delta += result.length - line.length;
+        return result;
+      }).join('\n');
+      return { from: start, to: finish, insert, anchor: from === to ? cursor : start, head: from === to ? cursor : finish + delta };
+    }
+    if (kind === 'table') {
+      // 表格作为独立块插在选区之后；保留已选正文，并给前后段落留出空行。
+      const before = text.slice(0, to), after = text.slice(to);
+      const prefix = before && !before.endsWith('\n\n') ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+      const suffix = after ? (after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n') : '\n';
+      const table = '| 列1 | 列2 |\n| --- | --- |\n|  |  |';
+      return { from: to, to, insert: prefix + table + suffix, anchor: to + prefix.length + 2, head: to + prefix.length + 4 };
+    }
+    throw Error('未知Markdown插入动作');
+  }
+
   // ---------- Live Preview 开关（Compartment） ----------
   const liveComp = new Compartment();
 
@@ -1946,6 +1976,14 @@ window.MdEditor = (() => {
       view,
       setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); },
+      insertMarkdown(kind) {
+        if (view.state.readOnly || opts.canEdit && !opts.canEdit()) return false;
+        const range = view.state.selection.main;
+        const plan = insertion(view.state.doc.toString(), range.from, range.to, kind);
+        view.dispatch({ changes: { from: plan.from, to: plan.to, insert: plan.insert },
+          selection: { anchor: plan.anchor, head: plan.head }, scrollIntoView: true, userEvent: 'input.markdown' });
+        view.focus(); return true;
+      },
       getValue() { return view.state.doc.toString(); },
       getState() { return view.state; },
       setValue(text) {
@@ -2031,5 +2069,5 @@ window.MdEditor = (() => {
     return meta ? { icon: meta[0], title: meta[1], cls: CALLOUT_CLS[t] || 'co-note' } : null;
   };
 
-  return { create, resolveImgSrc, invalidateWikiIndex, loadWikiFiles };
+  return { create, insertion, resolveImgSrc, invalidateWikiIndex, loadWikiFiles };
 })();
