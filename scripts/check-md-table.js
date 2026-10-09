@@ -85,6 +85,18 @@ app.whenReady().then(async () => { try {
   check('主编辑器搜索或键盘移入表格后焦点交给对应单元格',await probe(`${inner}.hasFocus&&${inner}.state.selection.main.head===2`));
   await win.webContents.debugger.sendCommand('Input.insertText',{text:'Y'});await sleep(100);
   check('焦点交接后的键入仍映射到当前格而不破坏表格源码',await probe(`${inner}.state.doc.toString()==='abYcdXefgh'&&document.querySelectorAll('.cm-md-table th').length===2`));
+  const emptyFixture=['|  | 列2 |','| --- | --- |','|  |  |','|   |   |','| 示例 | 内容 |','','尾部'].join('\n');
+  await probe('Viewer.cm.setValue('+JSON.stringify(emptyFixture)+');Viewer.cm.setCursor(Viewer.cm.getValue().length)');await sleep(150);
+  const normalRows=selector=>probe(`(()=>{const rows=[...document.querySelectorAll('${selector} tbody tr')],h=rows.map(r=>r.getBoundingClientRect().height);return h.length===3&&h[0]>20&&Math.abs(h[0]-h[2])<1&&Math.abs(h[1]-h[2])<1})()`);
+  check('空单元格与仅空格行保持正常行高，不收缩成细缝',await normalRows('.cm-md-table'));
+  await click(1,0);await probe('Viewer.cm.setCursor(Viewer.cm.getValue().length)');await sleep(120);
+  check('空格进入编辑再移出后行高保持不变',await normalRows('.cm-md-table'));
+  await probe("Viewer.activeTab.mode='preview';Viewer.renderActive()");await sleep(200);
+  check('独立预览中的空表格行也保持正常行高',await normalRows('.md-view'));
+  await probe("document.body.style.setProperty('--editor-font-size','20px');Viewer.activeTab.mode='live';Viewer.renderActive();Viewer.cm.setCursor(Viewer.cm.getValue().length)");await sleep(200);
+  check('调整字号后空行高度仍与有文字行一致',await normalRows('.cm-md-table'));
+  await probe('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+  fs.writeFileSync(path.join(home,'table-empty-rows.png'),(await win.webContents.capturePage()).toPNG());
   fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:0,home}));console.log(JSON.stringify({passed,failed:0,home}));app.exit(0);
 } catch(e) { fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:1,error:e.stack,home}));console.error(e);console.log('产物 '+home);app.exit(1); } });
 setTimeout(()=>{console.error('表格自检超时 '+home);app.exit(2);},90000).unref();

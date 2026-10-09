@@ -781,6 +781,9 @@ textarea.editor {
 /* 字号 0.96em 与 live 的 .cm-md-table table 同源（两边表格里的字都比正文略小） */
 .md-view table { display: block; max-width: 100%; overflow-x: auto; font-size: 0.96em; }
 .md-view th, .md-view td { border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); padding: 0.38em 0.85em; }
+/* 空格被表格解析器裁去后仍需一行文字的行盒，避免离开空单元格就压成细缝；不向Markdown写占位字符。 */
+.cm-md-table th:empty::after, .cm-md-table td:empty::after,
+.md-view th:empty::after, .md-view td:empty::after { content: "\00a0"; }
 /* 表头底色与 live 的表格 widget 同源（掺 accent tint + 标题色）：用户要的「起码标题颜色不同」 */
 .md-view th {
   background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
