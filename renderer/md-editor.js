@@ -196,9 +196,11 @@ window.MdEditor = (() => {
       background: 'var(--accent)', borderRadius: '2px',
     },
     '.cm-md-task.done::after': {
-      content: '""', position: 'absolute', left: '0.27em', top: '0px',
-      width: '0.31em', height: '0.62em', border: 'solid #fff', borderWidth: '0 2px 2px 0',
-      transform: 'rotate(45deg)',
+      // 旋转后宽度包含长边与描边；固定2px线宽在小字号下会伸出方框右边缘。
+      content: '""', position: 'absolute', left: '50%', top: '50%',
+      width: '0.23em', height: '0.46em', boxSizing: 'content-box',
+      border: 'solid #fff', borderWidth: '0 0.1em 0.1em 0',
+      transform: 'translate(-50%, -50%) rotate(45deg)',
     },
     // 引用块（对齐 .md-view blockquote：左竖线 + 弱化色 + 上下间距）
     '.cm-line.cm-md-quote-line': {
