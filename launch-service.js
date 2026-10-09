@@ -140,6 +140,7 @@ function runBridge(python, script, operation) {
 function logBook(id, runId = null) {
   const previous = logs.get(id);
   if (previous) {
+    if (previous.output) previous.output.finish();
     // 根进程已退出时旧管道可能被子进程占着；重启不能让它继续持有整份旧日志。
     previous.streams.forEach(collector => collector.end());
     previous.records = []; previous.bytes = 0;
@@ -216,6 +217,36 @@ function pushLog(id, text, stream = 'system', book = currentLog(id)) {
   if (logs.get(id) !== book || !text) return;
   const collector = logStream(id, book, stream);
   collector.write(text); collector.end();
+}
+
+// 子进程不能依赖IDE持有的管道：Vite把stdin的EOF当作退出信号，后台输出也会因断管而EPIPE。
+// 文件句柄由服务继承，IDE仅尾读日志；关闭窗口不会断开服务的输入/输出。
+function followOutput(id, book, files) {
+  const streams = files.map((file, index) => ({ file, offset: 0, collector: logStream(id, book, index ? 'stderr' : 'stdout') }));
+  let ended = false;
+  const drain = () => {
+    if (ended || logs.get(id) !== book) return;
+    for (const stream of streams) {
+      let fd;
+      try {
+        fd = fs.openSync(stream.file, 'r');
+        const remaining = Math.min(Math.max(0, fs.fstatSync(fd).size - stream.offset), LOG_BYTES);
+        const buffer = Buffer.alloc(Math.min(65536, remaining));
+        let read = 0;
+        while (read < remaining) {
+          const size = fs.readSync(fd, buffer, 0, Math.min(buffer.length, remaining - read), stream.offset);
+          if (!size) break;
+          stream.offset += size; read += size; stream.collector.write(buffer.subarray(0, size));
+        }
+      } catch (error) { pushLog(id, '日志读取失败：' + error.message, 'system', book); }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
+    }
+  };
+  const timer = timers.setInterval(drain, 200); timer.unref();
+  return { drain, discard() {
+    // 清空时跳过尚未尾读的旧字节，否则下一轮会把清空前的正文重新显示。
+    for (const stream of streams) { try { stream.offset = fs.statSync(stream.file).size; } catch {} }
+  }, finish() { if (ended) return; drain(); ended = true; timers.clearInterval(timer); streams.forEach(stream => stream.collector.end()); } };
 }
 
 // ---------- 配置 ----------
@@ -434,6 +465,9 @@ async function startUnlocked(entry) {
     return result;
   }
 
+  const outputDir = path.join(configDir, 'launch-output', book.runId);
+  const outputFiles = [path.join(outputDir, 'stdout.log'), path.join(outputDir, 'stderr.log')];
+  const outputHandles = [];
   const opts = {
     cwd: entry.cwd && fs.existsSync(entry.cwd) ? entry.cwd : undefined,
     env: envFor(entry, cfg),
@@ -446,12 +480,15 @@ async function startUnlocked(entry) {
   };
   let child;
   try {
+    fs.mkdirSync(outputDir, { recursive: true });
+    outputFiles.forEach(file => outputHandles.push(fs.openSync(file, 'a')));
+    opts.stdio = ['ignore', ...outputHandles];
     // /s只去掉这一对外层引号，保留命令自己的路径/参数引号；/d避免AutoRun注入额外命令。
     child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"' + entry.command + '"'], opts);
   } catch (e) {
     pushLog(entry.id, '启动失败: ' + (e && e.message || e));
     return { ok: false, error: String(e && e.message || e) };
-  }
+  } finally { outputHandles.forEach(fd => fs.closeSync(fd)); }
   child.unref();   // 不阻塞 my_ide 退出（进程本身不受影响，继续跑）
   book.readiness = Readiness.createObservation(readinessRule, book.runId);
   const info = { pid: child.pid, startedAt: Date.now(), command: entry.command, cwd: entry.cwd || '',
@@ -467,6 +504,7 @@ async function startUnlocked(entry) {
     stream.on('data', collector.write); stream.on('end', collector.end);
   };
   wire(child.stdout, 'stdout'); wire(child.stderr, 'stderr');
+  if (!child.stdout && !child.stderr) book.output = followOutput(entry.id, book, outputFiles);
   let exited = null;
   child.on('exit', (code, signal) => {
     if ((procs.get(entry.id) || {}).proc !== child) return;
@@ -479,6 +517,7 @@ async function startUnlocked(entry) {
   });
   // exit只说明根进程结束，管道还有尾部数据；close后才放结束标记，残行仍归原runId。
   child.on('close', () => {
+    if (book.output) book.output.finish();
     collectors.forEach(collector => collector.end());
     const ended = exited; exited = null;
     if (ended) pushLog(entry.id, '[进程退出] code=' + ended.code + (ended.signal ? ' signal=' + ended.signal : ''), 'system', book);
@@ -486,6 +525,7 @@ async function startUnlocked(entry) {
   child.on('error', (e) => {
     if ((procs.get(entry.id) || {}).proc !== child) return;
     collectors.forEach(collector => collector.end());
+    if (book.output) book.output.finish();
     pushLog(entry.id, '错误: ' + (e && e.message || e));
     // spawn error 不保证随后触发 exit；否则失败句柄会一直阻止下一次启动。
     if ((procs.get(entry.id) || {}).proc === child) {
@@ -698,6 +738,7 @@ function getLogs(id) {
 }
 function clearLogs(id) {
   const book = currentLog(id);
+  if (book.output) book.output.discard();
   book.records.forEach(line => { line.retained = false; });
   book.records = []; book.bytes = 0; book.droppedLines = 0; book.truncatedLines = 0;
   book.generation = randomUUID(); book.version = 0; book.nextSeq = 1;

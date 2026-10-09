@@ -17,6 +17,7 @@ function fixture(options = {}) {
       spawned.push({ file, args, settings });
       const child = new EventEmitter();
       child.pid = ++nextPid; child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.unref = () => {};
+      if (options.fileOutput) { child.stdout = null; child.stderr = null; }
       children.push(child); live.add(child.pid); identities.set(child.pid, identity(child.pid)); return child;
     },
     execFile(file, args, settings, callback) {
@@ -88,6 +89,20 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('文件输出尾读保留UTF8与独立流，清空不复活未读旧正文，退出结算尾行', async () => {
+      const f = fixture({ fileOutput: true }), started = await f.service.startEntry(f.entry);
+      const dir = path.join(f.service.paths().configDir, 'launch-output', started.launchId);
+      fs.appendFileSync(path.join(dir, 'stdout.log'), '后台中文🙂\r\n');
+      fs.appendFileSync(path.join(dir, 'stderr.log'), '诊断尾行');
+      f.intervals[0]();
+      assert.deepEqual(f.service.getLogs(f.entry.id).records.filter(r => r.stream !== 'system').map(r => [r.stream, r.text]), [['stdout', '后台中文🙂'], ['stderr', '诊断尾行']]);
+      fs.appendFileSync(path.join(dir, 'stdout.log'), '未读旧正文\n'); f.service.clearLogs(f.entry.id); f.intervals[0]();
+      assert.deepEqual(f.service.getLogs(f.entry.id).lines, []);
+      fs.appendFileSync(path.join(dir, 'stdout.log'), '清空后新正文');
+      f.children[0].emit('exit', 0, null); f.children[0].emit('close');
+      const log = f.service.getLogs(f.entry.id);
+      assert.deepEqual(log.lines, ['清空后新正文', '[进程退出] code=0']); assert(log.records.every(r => r.complete));
+    });
     await test('运行期间登记子树，外壳先退出后仍跟踪新后代并恢复停止能力', async () => {
       const f = fixture({ parents: { 502: 501, 503: 502 } }); await f.service.startEntry(f.entry);
       for (const pid of [502, 503]) { f.live.add(pid); f.identities.set(pid, { ...f.identities.get(501), pid, createdAt: new Date(1700000000000 + pid * 10).toISOString() }); }

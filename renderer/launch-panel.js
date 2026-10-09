@@ -100,6 +100,7 @@ const LaunchPanel = (() => {
     } else q('lm-operation').hidden = true;
     for (const id of ['launch-start-all', 'launch-stop-all']) if (q(id)) q(id).disabled = !!batch || blockedConfig() || !!operations.size || !!statusError;
     for (const id of ['launch-add', 'launch-import', 'launch-dialog-ok']) if (q(id)) q(id).disabled = blockedConfig() || !!operations.size;
+    document.querySelectorAll('.lp-keep').forEach(k => { k.disabled = blockedConfig(); });
     const parts = [configLoading && '正在读取配置，请等待', configError && '配置读取失败，保留上次列表：' + configError, statusError && '状态读取失败，保留上次状态：' + statusError];
     if (batch) parts.push('全部' + labels[batch.kind] + '：' + batch.done + '/' + batch.items.length + '，请等待');
     else if (batchReport) parts.push('全部' + labels[batchReport.kind] + '：目标 ' + batchReport.items.length + '，已确认 ' + batchReport.items.filter(item => item.ok).length + '，失败 ' + batchReport.items.filter(item => !item.ok && item.executed).length + '，未执行 ' + batchReport.items.filter(item => !item.executed).length);
@@ -616,6 +617,7 @@ const LaunchPanel = (() => {
       const value = await api.config(); if (serial !== configSerial) return;
       if (!value || !Array.isArray(value.entries) || !Array.isArray(value.apiOrigins)) throw Error('配置返回格式不完整');
       cfg = value; revision++; configError = '';
+      syncKeep(cfg.keepOnExit === true);
       logReader.prune(cfg.entries.map(entry => entry.id));
       if (selectedId && !byId(selectedId)) selectedId = null;
     } catch (error) { if (serial !== configSerial) return; configError = reason(error); }
@@ -831,16 +833,21 @@ const LaunchPanel = (() => {
       if (dlg && typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
     });
 
-    // 后台保留开关：侧栏底栏和主区底栏各有一个（原来两个都是 id="launch-keep"，
-    // getElementById 只拿到第一个 → 主区那个点了没反应也不回显）。现在按类全绑、互相同步。
+    // 保存开关必须同时更新cfg，否则下一次编辑/删除会把缓存中的旧退出策略写回磁盘。
     const keeps = [...document.querySelectorAll('.lp-keep')];
     if (keeps.length) {
       keeps.forEach((k) => k.addEventListener('change', async () => {
-        await L().setKeep(k.checked);
-        syncKeep(k.checked);
-        toast(k.checked ? '退出时保留后台进程' : '退出时停止全部终端', 'ok');
+        if (blockedConfig()) { syncKeep(cfg.keepOnExit === true); return; }
+        const value = k.checked;
+        configBusy = true; configSerial++; refreshDots();
+        try {
+          const saved = await L().setKeep(value);
+          if (typeof saved !== 'boolean' || saved !== value) throw Error('服务未确认后台保留设置');
+          cfg.keepOnExit = saved; syncKeep(saved);
+          toast(saved ? '退出时保留后台进程' : '退出时停止全部终端', 'ok');
+        } catch (error) { syncKeep(cfg.keepOnExit === true); toast('后台保留保存失败：' + reason(error), 'err'); }
+        finally { configBusy = false; configSerial++; refreshDots(); }
       }));
-      L().getKeep().then((v) => syncKeep(v === true)).catch(() => {});
     }
   }
   function syncKeep(v) { document.querySelectorAll('.lp-keep').forEach((k) => { k.checked = v; }); }
