@@ -1798,8 +1798,14 @@ window.MdEditor = (() => {
       const insert = lines.map((line, index) => {
         const match = /^([ \t]*)(?:[-*+] |\d+\. )?(?:\[[ xX]\] )?/.exec(line);
         const prefix = match[0], next = match[1] + '- [ ] ';
-        const result = /^[ \t]*[-*+] \[[ xX]\] /.test(line) ? line : next + line.slice(prefix.length);
-        if (!index) cursor = start + Math.max(next.length, from - start + result.length - line.length);
+        const task = /^([ \t]*(?:[-*+]|\d+\.)[ \t]+)\[([ xX]?)\](?=[ \t]|$)/.exec(line);
+        const result = task ? task[1] + '[' + (/x/i.test(task[2]) ? ' ' : 'x') + ']' + line.slice(task[0].length)
+          : next + line.slice(prefix.length);
+        if (!index) {
+          const offset = from - start, change = result.length - line.length;
+          cursor = start + Math.min(result.length, task ? offset + (offset >= task[0].length ? change : 0)
+            : Math.max(next.length, offset + change));
+        }
         delta += result.length - line.length;
         return result;
       }).join('\n');

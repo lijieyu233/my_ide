@@ -352,7 +352,7 @@ Shortcuts.register('undo-file', { desc: '撤销（任务工具激活时撤销任
 } });
 Shortcuts.register('rename-file', { desc: '重命名（目录树选中项）', keys: ['ctrl+shift+f6'], run: () => Tree.renameSelected() });
 
-for (const [id, kind, key, desc] of [['md-task', 'task', 'ctrl+l', '创建待办项 - [ ]'], ['md-table', 'table', 'ctrl+t', '创建表格']]) {
+for (const [id, kind, key, desc] of [['md-task', 'task', 'ctrl+l', '创建待办项 / 切换勾选状态'], ['md-table', 'table', 'ctrl+t', '创建表格']]) {
   Shortcuts.register(id, { desc, keys: [key], category: 'Markdown', scope: 'Markdown 编辑区', palette: true,
     requiresDocument: true, requiresText: true, bindingGuard: combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo),
     isEnabled: ctx => Viewer.markdownInsertState(ctx), run: ctx => Viewer.insertMarkdown(kind, ctx) });
