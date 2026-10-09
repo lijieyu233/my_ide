@@ -427,9 +427,19 @@ const LaunchPanel = (() => {
   // 图标一律内联 SVG（项目规矩：列表/工具条上不用 emoji 或文字字形，字号与基线不受控）。
   // 三角用 .ic 的 1.4px 描边，折叠态交给 CSS rotate(-90deg)，跟收藏侧栏/文件树一致。
   const ICO_CARET = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>';
-  const ICO_PLAY = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z" fill="currentColor"/></svg>';
-  const ICO_STOP = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.6" fill="currentColor"/></svg>';
-  const ICO_OPEN = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M5 7 10.2 1.8M6.2 1.8h4v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.8 7.2v2.6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  const ICO_PLAY = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L12.2 8z"/></svg>';
+  const ICO_STOP = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.2"/></svg>';
+  const ICO_OPEN = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M7 9l6-6M9 3h4v4M12 9v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>';
+
+  function cardStatus(e) {
+    const full = stateText(e), s = stOf(e.id);
+    const text = { '未启动 / 已停止': '已停止', '端口有响应 · 进程归属未确认': '端口有响应 · 待核验', '进程归属未确认': '归属待核验' }[full] || full;
+    const tone = failureText(e.id) || s.phase === 'exited' && (s.exitSignal || s.exitCode !== 0) ? 'error'
+      : operations.has(e.id) || s.operation ? 'pending'
+      : statusError || !status[e.id] || s.ownership === 'unknown' || s.ownership === 'foreign' || s.portResponding && !ownedRunning(s) ? 'unknown'
+      : ownedRunning(s) ? 'running' : 'stopped';
+    return { text, full, tone };
+  }
 
   function cardHtml(e) {
     const s = stOf(e.id);
@@ -437,16 +447,18 @@ const LaunchPanel = (() => {
     const run = ownedRunning(s) ? ' run' : '';
     const dot = ownedRunning(s) ? 'launch-dot on' : 'launch-dot';
     const url = resolvedOpenUrl(e), caps = capabilities(e), busy = operations.has(e.id) || configBusy;
+    const summary = cardStatus(e);
     return '<div class="launch-card' + run + sel + '" data-id="' + esc(e.id) + '" title="点击在右侧查看详情与日志">'
       + '<div class="launch-card-head">'
       + '<span class="' + dot + '"></span>'
-      + '<span class="launch-nm">' + esc(e.name) + '</span>'
-      + (e.port ? '<span class="launch-port">:' + e.port + '</span>' : '')
+      + '<span class="launch-nm" title="' + esc(e.name) + '">' + esc(e.name) + '</span>'
       + '<span class="launch-acts">'
       + '<button class="vt-btn lp-btn act-idle' + (s.alive ? ' hide' : '') + '" data-act="start" title="启动"' + (busy || !caps.start ? ' disabled' : '') + '>' + ICO_PLAY + '</button>'
       + '<button class="vt-btn lp-btn act-run' + (s.alive ? '' : ' hide') + '" data-act="stop" title="停止（须确认归属）"' + (busy || !caps.stop ? ' disabled' : '') + '>' + ICO_STOP + '</button>'
       + (url ? '<button class="vt-btn lp-btn act-open" data-act="open" title="打开页面 ' + esc(url) + '">' + ICO_OPEN + '</button>' : '')
-      + '</span></div><div class="launch-state">' + esc(stateText(e)) + '</div><div class="launch-entry-error"' + (failureText(e.id) ? '' : ' hidden') + '>' + esc(failureText(e.id)) + '</div></div>';
+      + '</span></div><div class="launch-card-meta"><span class="launch-state" data-tone="' + summary.tone + '" title="' + esc(summary.full) + '">' + esc(summary.text) + '</span>'
+      + (e.port ? '<span class="launch-port" title="端口 ' + Number(e.port) + '">:' + Number(e.port) + '</span>' : '')
+      + '</div><div class="launch-entry-error"' + (failureText(e.id) ? '' : ' hidden') + '>' + esc(failureText(e.id)) + '</div></div>';
   }
 
   // 轮询只更新状态点与主区（不全量重建，保住选中与滚动位置）
@@ -463,7 +475,8 @@ const LaunchPanel = (() => {
       const e = byId(id), caps = capabilities(e), busy = operations.has(id) || !!s.operation || configBusy;
       if (bStart) { bStart.classList.toggle('hide', !!s.alive && !caps.start); bStart.disabled = busy || !caps.start; }
       if (bStop) { bStop.classList.toggle('hide', !s.alive && !caps.stop); bStop.disabled = busy || !caps.stop; }
-      el.querySelector('.launch-state').textContent = stateText(e);
+      const summary = cardStatus(e), state = el.querySelector('.launch-state');
+      state.textContent = summary.text; state.title = summary.full; state.dataset.tone = summary.tone;
       const error = el.querySelector('.launch-entry-error'); error.textContent = failureText(id); error.hidden = !error.textContent;
     }
     refreshOperationUI();

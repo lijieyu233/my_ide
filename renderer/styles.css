@@ -3475,13 +3475,13 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
   /* 字号基准跟随 --tool-font（状态栏 A−/A+），内部层级一律 em 相对缩放 */
   font-size: var(--tool-font, 13px);
 }
-#launch-body { flex: 1; overflow: auto; padding: 2px 0 8px; }
+#launch-body { flex: 1; min-height: 0; overflow: auto; padding: .35em .55em .8em; }
 .launch-empty { padding: 14px 16px; color: var(--text-dim); font-size: 0.92em; line-height: 1.7; }
-.launch-group { margin-top: 2px; }
-.launch-group + .launch-group { border-top: 1px solid var(--border); }
+.launch-group { margin-top: .15em; }
+.launch-group + .launch-group { margin-top: .8em; }
 .launch-cat {
-  display: flex; align-items: center; gap: 4px; padding: 5px 10px;
-  color: var(--text); font-size: 0.92em; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: .4em; padding: .5em .4em;
+  color: var(--text-dim); font-size: .85em; font-weight: 600; cursor: pointer; user-select: none; border-radius: .4em;
 }
 .launch-cat:hover { color: var(--text-bright); background: var(--bg-hover); }
 /* 三角列宽固定，多个分类的名称起点才对齐（同 .bw-sb-gcaret / .tree-row .ic 的做法） */
@@ -3493,43 +3493,50 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .launch-cat.col .launch-caret svg.ic { transform: rotate(-90deg); }
 .launch-cat:hover .launch-caret { color: var(--text); }
 .launch-cat-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.launch-cat-n { flex-shrink: 0; margin-left: 2px; font-size: .85em; color: var(--text-dim); }
-.launch-cards { padding: 0 4px 2px; }
+.launch-cat-n { flex-shrink: 0; min-width: 1.5em; text-align: center; padding: .1em .3em; font-size: .9em; font-weight: 400; color: var(--text-dim); background: color-mix(in srgb, var(--text) 6%, transparent); border-radius: .4em; }
+.launch-cards { display: flex; flex-direction: column; gap: .3em; padding: .15em 0; }
 .launch-card {
-  padding: 4px 8px; border-radius: 4px; cursor: pointer;
-  border: 0; background: transparent;
+  padding: .45em .6em; border-radius: .5em; cursor: pointer;
+  border: 1px solid transparent; background: color-mix(in srgb, var(--text) 3%, transparent);
 }
 .launch-card:hover { background: var(--bg-hover); }
-.launch-card-head { display: flex; align-items: center; gap: 6px; }
+.launch-card-head { display: flex; align-items: center; gap: .55em; min-height: 1.65em; }
 .launch-dot {
   width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px;
   background: color-mix(in srgb, var(--text) 28%, transparent);
 }
-.launch-dot.on { background: var(--ok, #4caf50); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok, #4caf50) 22%, transparent); }
+.launch-dot.on { background: var(--ok, #4caf50); }
 .launch-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.96em; color: var(--text); }
-.launch-port { font-size: 0.81em; color: var(--text-dim); font-family: var(--font-mono); }
+.launch-card-meta { display: flex; align-items: baseline; gap: .6em; margin-top: .1em; padding-left: calc(7px + .55em); }
+.launch-card-meta .launch-state { flex: 1; min-width: 0; margin-top: 0; font-size: .8em; line-height: 1.5; }
+.launch-card-meta .launch-state[data-tone="running"] { color: color-mix(in srgb, var(--ok, #4caf50) 65%, var(--text-dim)); }
+.launch-card-meta .launch-state[data-tone="unknown"] { color: color-mix(in srgb, var(--text) 65%, var(--text-dim)); }
+.launch-card-meta .launch-state[data-tone="error"] { color: var(--del-text, #e06c75); }
+.launch-card-meta .launch-state[data-tone="pending"] { color: var(--accent); }
+.launch-port { font-size: .81em; color: var(--text-dim); font-family: var(--font-mono); }
+.launch-card-meta .launch-port { flex: 0 0 auto; font-size: .78em; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .launch-acts { display: flex; gap: 2px; flex: 0 0 auto; }
 /* 行内动作按钮：无描边、无底色，hover 才浮一层（同 .git-cp-bar .vt-btn） */
 .launch-acts .lp-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 18px; padding: 0;
+  width: 1.65em; height: 1.65em; padding: 0;
   border: 0; background: transparent; border-radius: 4px; color: var(--text-dim);
   transition: background .12s, color .12s;
 }
 .launch-acts .lp-btn:hover { background: var(--btn-hover); color: var(--text-bright); }
-.launch-acts .lp-btn svg { display: block; }
+.launch-acts .lp-btn svg.ic { display: block; width: 1em; height: 1em; }
 /* 运行中的停止键：红调；停止态的启动键：绿调 —— 颜色即状态，不用读字 */
 .launch-card.run .act-run { color: color-mix(in srgb, var(--red, #e5534b) 75%, var(--text)); }
 .launch-card.run .act-run:hover { background: color-mix(in srgb, var(--red, #e5534b) 16%, transparent); color: var(--red, #e5534b); }
 .launch-card:not(.run) .act-idle { color: color-mix(in srgb, var(--ok, #4caf50) 70%, var(--text)); }
 .launch-card:not(.run) .act-idle:hover { background: color-mix(in srgb, var(--ok, #4caf50) 14%, transparent); color: var(--ok, #4caf50); }
 .launch-acts .lp-btn.hide { display: none; }
-/* 运行态卡片：左侧细绿条 + 名字提亮 */
-.launch-card.run { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ok, #4caf50) 65%, transparent); }
+/* 左侧强调线只表示当前选择；运行状态由状态点与文字表达，避免同时出现多条焦点线。 */
+.launch-card.run { box-shadow: none; }
 .launch-card.run .launch-nm { color: var(--text-bright, var(--text)); }
-.launch-card:not(.run) .launch-nm { color: var(--text-dim); }
-/* 选中态：跟文件树选中同一套语言（弱底 + 2px 强调色左线），比"描边一圈"安静且不挤 */
-.launch-card.sel { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+.launch-card:not(.run) .launch-nm { color: var(--text); }
+/* 弱底和强调线让当前选择可见，浅描边在浅色主题下补足卡片边界。 */
+.launch-card.sel { background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel)); border-color: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
 .launch-card.sel .launch-nm { color: var(--text-bright); }
 .launch-cmd {
   font-family: var(--font-mono); font-size: 0.81em; color: var(--text-dim);
