@@ -833,7 +833,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
       await tick(); await tick();
       const input = $(dom, '.cm-md-cell-editor');
-      assert_(input !== null && input.value === '数据', '光标进表格 → 直接编辑对应单元格');
+      assert_(input !== null && input._cellView.state.doc.toString() === '数据', '光标进表格 → 直接编辑对应单元格');
     }
   });
 

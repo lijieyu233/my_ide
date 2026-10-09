@@ -301,9 +301,9 @@
       add('表格: 单元格边框', parseFloat(css(td0, 'border-top-width') || '0') > 0, css(td0, 'border-top-width'));
       add('表格: 内容完整(单元格A1..C3)', tbl.textContent.includes('单元格A1') && tbl.textContent.includes('C3'), tbl.textContent.slice(0, 30));
     }
-    // 光标进表格 → 回退源码（Obsidian 行为）
+    // 光标进表格 → 对应单元格保持网格编辑
     api.setCursor(DOC.indexOf('单元格A1') + 3); await sleep(150);
-    add('表格: 光标进表格保持网格编辑', q('.cm-md-cell-editor')?.value === '单元格A1' && q('.cm-md-table') !== null, '');
+    add('表格: 光标进表格保持网格编辑', q('.cm-md-cell-editor')?._cellView?.state.doc.toString() === '单元格A1' && q('.cm-md-table') !== null, '');
     api.setCursor(DOC.length); await sleep(150);
     add('表格: 光标移出恢复渲染', q('.cm-md-table') !== null, '');
     // 点击单元格 → 光标精确进入对应源码格（用户报告：表格没有直接操作功能）
@@ -420,7 +420,7 @@
       return sel;
     };
     for (const key of ['单元格A2', '内容较长的一格', '左对齐列', '单元格A1', '七、表格', '八、其他块级']) {
-      const el = [...document.querySelectorAll('.cm-md-table th,.cm-md-table td')].find(e => e.textContent.includes(key) || e.querySelector('textarea')?.value.includes(key)) || lineEl(key);
+      const el = [...document.querySelectorAll('.cm-md-table th,.cm-md-table td')].find(e => e.textContent.includes(key) || e.querySelector('.cm-md-cell-editor')?._cellView?.state.doc.toString().includes(key)) || lineEl(key);
       if (!el) { add('映射: ' + key, false, '行不在 DOM'); continue; }
       const sel = await clickLine(key, el);
       const i = DOC.indexOf(key);
@@ -606,7 +606,7 @@
   {
     const pressKey = (k, keyCode) => {
       const ev = new KeyboardEvent('keydown', { key: k, keyCode, which: keyCode, bubbles: true, cancelable: true });
-      (q('.cm-md-cell-editor') || document.querySelector('.cm-content')).dispatchEvent(ev);
+      (q('.cm-md-cell-editor')?._cellView.contentDOM || document.querySelector('.cm-content')).dispatchEvent(ev);
       return ev.defaultPrevented;
     };
     const tblOrig = api.getValue();

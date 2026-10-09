@@ -310,6 +310,10 @@ window.MdEditor = (() => {
       font: 'inherit', lineHeight: 'inherit', color: 'inherit', background: 'transparent',
       border: '0', padding: '0', margin: '0', outline: 'none', resize: 'none', overflow: 'hidden',
     },
+    '.cm-md-cell-editor .cm-editor': { height: 'auto', fontSize: 'inherit', color: 'inherit' },
+    '.cm-md-cell-editor .cm-scroller': { fontFamily: 'inherit', lineHeight: 'inherit', overflow: 'visible' },
+    '.cm-md-cell-editor .cm-content': { padding: '0', minHeight: '1em', color: 'inherit' },
+    '.cm-md-cell-editor .cm-line': { padding: '0', whiteSpace: 'pre-wrap' },
     '.cm-md-table .cm-md-cell-active': { outline: '1px solid var(--accent)', outlineOffset: '-1px' },
     '.cm-md-tablecopy': {
       position: 'absolute', right: '0.15em', top: '-1.31em', fontSize: '0.85em', padding: '0.08em 0.69em',
@@ -615,7 +619,8 @@ window.MdEditor = (() => {
     const frag = document.createDocumentFragment();
     const re = /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(`([^`]+)`)|(~~([^~]+)~~)|(\[([^\]]*)\]\([^)]*\))/g;
     let last = 0, m;
-    const push = (s) => { if (s) frag.appendChild(document.createTextNode(s)); };
+    const push = (s) => { if (s) s.split(/(<br>)/i).forEach(part => frag.appendChild(/^<br>$/i.test(part)
+      ? document.createElement('br') : document.createTextNode(part))); };
     while ((m = re.exec(text))) {
       push(text.slice(last, m.index));
       let el = null;
@@ -773,18 +778,97 @@ window.MdEditor = (() => {
       if (/\|\s*$/.test(line) && pipes.at(-1) === line.trimEnd().length - 1) right = pipes.pop();
       const bounds = [left, ...pipes.map(p => p + 1), right + 1];
       const cells = bounds.slice(0, -1).map((start, c) => {
-        let end = bounds[c + 1] - 1;
+        let end = bounds[c + 1] - 1; const padFrom = offset + start, padTo = offset + end;
         while (start < end && /[ \t]/.test(line[start])) start++;
         while (end > start && /[ \t\r]/.test(line[end - 1])) end--;
-        return { from: offset + start, to: offset + end, text: line.slice(start, end) };
+        return { from: offset + start, to: offset + end, padFrom, padTo, text: line.slice(start, end) };
       });
       const row = { index, cells }; offset += line.length + 1; return row;
     }).filter(row => row.index !== 1);
   }
   function focusTableEditor(view) {
     const input = view.dom.querySelector('.cm-md-cell-editor');
-    if (input) { input.focus({ preventScroll: true }); return true; }
+    if (input?._cellView) { input._cellView.focus(); return true; }
     return false;
+  }
+  // 用ChangeSet映射编辑文字与Markdown转义，不按渲染字宽或字符串长度猜光标。
+  function tableCellCodec(text, encode) {
+    const changes = [], codeSpans = encode ? [] : [...text.matchAll(/(`+)[^`]*?\1/g)].map(m => [m.index,m.index+m[0].length]);
+    for (let i=0;i<text.length;i++) {
+      if (encode && (text[i]==='\n' || text[i]==='\r' && text[i+1]==='\n')) {
+        const end=i+(text[i]==='\r'?2:1);changes.push({from:i,to:end,insert:'<br>'});i=end-1;
+      } else if (text[i]==='|') {
+        let start=i;while(start>0&&text[start-1]==='\\')start--;
+        const escaped=(i-start)%2===1;
+        if (encode && !escaped) changes.push({from:i,to:i+1,insert:'\\|'});
+        else if (!encode && escaped) changes.push({from:i-1,to:i+1,insert:'|'});
+      } else if (!encode && text.slice(i,i+4).toLowerCase()==='<br>' && !codeSpans.some(([a,b])=>i>=a&&i<b)) {
+        changes.push({from:i,to:i+4,insert:'\n'});i+=3;
+      }
+    }
+    const map=State.ChangeSet.of(changes,text.length);
+    return {text:map.apply(State.Text.of(text.split('\n'))).toString(),map};
+  }
+  function destroyTableCell(wrap) {
+    const session=wrap._cellSession;if(!session)return;
+    wrap._cellSession=null;session.view.destroy();session.host.remove();
+  }
+  function mountTableCell(view,wrap,td,row,col,cell,selection) {
+    const host=document.createElement('div');host.className='cm-md-cell-editor';td.replaceChildren(host);
+    const decoded=tableCellCodec(cell.text,false), session={row,col,from:cell.from,to:cell.to,tableFrom:wrap._tableWidget.from,host,view:null};
+    wrap._cellSession=session;
+    const sync = (transactions,inner) => {
+      inner.update(transactions);
+      if(wrap._syncingCell || !transactions.some(t=>t.docChanged||t.selection))return;
+      const widget=wrap._tableWidget;
+      if(!widget.canEdit||view.state.readOnly)return;
+      const value=tableCellCodec(inner.state.doc.toString(),true),range=inner.state.selection.main,
+        anchor=session.from+value.map.mapPos(range.anchor),head=session.from+value.map.mapPos(range.head),
+        changed=transactions.some(t=>t.docChanged),oldTo=session.to;
+      session.to=session.from+value.text.length;wrap._syncingCell=true;
+      try {view.dispatch({changes:changed?{from:session.from,to:oldTo,insert:value.text}:undefined,
+        selection:{anchor,head},userEvent:changed?'input.type':'select'});}
+      finally {wrap._syncingCell=false;}
+      // canEdit可能在异步保存/路径操作期间拒绝变更；此时也恢复单元格显示。
+      if(view.state.doc.sliceString(session.from,session.to)!==value.text)wrap._tableWidget.renderCells(wrap,view);
+      view.requestMeasure();
+    };
+    const move=(dc,dr,add=true,edge='select')=>{wrap._tableWidget.move(view,row,col,dc,dr,add,edge);return true;};
+    const boundary=(inner,dc,dr)=>{
+      if(!inner.state.selection.main.empty)return false;
+      const head=inner.state.selection.main.head,doc=inner.state.doc;
+      if(dc && head!==(dc<0?0:doc.length))return false;
+      if(dr){
+        const next=inner.moveVertically(inner.state.selection.main,dr>0);
+        if(next.head!==head)return false;
+      }
+      return move(dc,dr,false,dc<0||dr<0?'end':'start');
+    };
+    const undo=redo=>{(redo?Commands.redo:Commands.undo)(view);focusTableEditor(view);return true;};
+    const keys=keymap.of([
+      {key:'Tab',run:()=>move(1,0),shift:()=>move(-1,0)},
+      {key:'Enter',run:()=>move(0,1)},
+      {key:'Shift-Enter',run:inner=>{inner.dispatch(inner.state.replaceSelection('\n'));return true;}},
+      {key:'Escape',run:()=>{wrap._tableWidget.leave(view,'after');return true;}},
+      {key:'ArrowLeft',run:inner=>boundary(inner,-1,0)}, {key:'ArrowRight',run:inner=>boundary(inner,1,0)},
+      {key:'ArrowUp',run:inner=>boundary(inner,0,-1)}, {key:'ArrowDown',run:inner=>boundary(inner,0,1)},
+      {key:'Mod-z',run:()=>undo(false)}, {key:'Mod-Shift-z',run:()=>undo(true)}, {key:'Mod-y',run:()=>undo(true)},
+      ...Commands.defaultKeymap,
+    ]);
+    session.view=new EditorView({parent:host,state:EditorState.create({doc:decoded.text,selection:{
+      anchor:decoded.map.mapPos(Math.max(0,Math.min(cell.text.length,selection.anchor-cell.from))),
+      head:decoded.map.mapPos(Math.max(0,Math.min(cell.text.length,selection.head-cell.from)))},
+      extensions:[EditorView.lineWrapping,View.drawSelection(),keys,Md.markdown({base:Md.markdownLanguage}),Language.syntaxHighlighting(oneDarkHighlight),
+        EditorView.contentAttributes.of({'aria-label':`表格第${row+1}行第${col+1}列`,'spellcheck':'false'}),
+        EditorView.domEventHandlers({paste(e){
+          const text=e.clipboardData?.getData('text/plain');if(!text?.includes('\t'))return false;
+          e.preventDefault();e.stopPropagation();const widget=wrap._tableWidget,
+            matrix=tableCellRanges(widget.src,widget.from).map(r=>r.cells.map(c=>c.text)),aligns=parseTable(widget.src).aligns,
+            pasted=text.replace(/\r\n?/g,'\n').replace(/\n$/,'').split('\n').map(r=>r.split('\t'));
+          pasted.forEach((values,i)=>{while(matrix.length<=row+i)matrix.push([]);values.forEach((value,j)=>{matrix[row+i][col+j]=tableCellEncode(value);});});
+          widget.replace(view,matrix,aligns,row,col);return true;
+        }})]}),dispatchTransactions:sync});
+    host._cellView=session.view;return session;
   }
   class TableWidget extends WidgetType {
     constructor(src, from, selection, editable = true) {
@@ -809,91 +893,51 @@ window.MdEditor = (() => {
           }
         });
       }
-      let active = null;
-      rows.forEach((r, row) => r.cells.forEach((cell, col) => {
-        if (this.selection && this.selection.from >= cell.from && this.selection.to <= cell.to) active = { row, col, cell };
+      let active = null, session = wrap._cellSession;
+      if (session) {
+        const delta=this.from-session.tableFrom;session.from+=delta;session.to+=delta;session.tableFrom=this.from;
+        const value=tableCellCodec(session.view.state.doc.toString(),true).text;
+        if(this.selection && this.selection.from>=session.from && this.selection.to<=session.to &&
+          view.state.doc.sliceString(session.from,session.to)===value && this.canEdit)
+          active={row:session.row,col:session.col,cell:{from:session.from,to:session.to,text:value},keep:true};
+      }
+      if(!active)rows.forEach((r,row)=>r.cells.forEach((cell,col)=>{
+        if(this.selection && this.selection.from>=cell.padFrom && this.selection.to<=cell.padTo){
+          const from=Math.min(cell.from,this.selection.from),to=Math.max(cell.to,this.selection.to);
+          active={row,col,cell:{from,to,text:view.state.doc.sliceString(from,to)}};
+        }
       }));
-      for (let row = 0; row < matrix.length; row++) for (let col = 0; col < cols; col++) {
-        const td = table.rows[row].cells[col], cell = rows[row]?.cells[col];
-        td.dataset.row = row; td.dataset.col = col;
-        td.style.textAlign = parsed.aligns[col] || 'left';
-        const editing = this.canEdit && active?.row === row && active?.col === col;
-        td.classList.toggle('cm-md-cell-active', editing);
-        let input = td.querySelector('textarea');
-        if (editing) {
-          if (!input) {
-            input = document.createElement('textarea'); input.className = 'cm-md-cell-editor'; input.rows = 1;
-            input.setAttribute('aria-label', `表格第${row + 1}行第${col + 1}列`); td.replaceChildren(input);
-            input.addEventListener('input', () => {
-              const widget = wrap._tableWidget;
-              if (!widget.canEdit || view.state.readOnly) return;
-              const current = tableCellRanges(widget.src, widget.from)[row]?.cells[col];
-              if (!current) return;
-              const value = tableCellEncode(input.value), anchor = tableCellEncode(input.value.slice(0, input.selectionStart)).length,
-                head = tableCellEncode(input.value.slice(0, input.selectionEnd)).length;
-              wrap._typing = true;
-              try { view.dispatch({ changes: { from: current.from, to: current.to, insert: value },
-                selection: input.selectionDirection === 'backward' ? {anchor:current.from+head,head:current.from+anchor}
-                  : { anchor: current.from + anchor, head: current.from + head }, userEvent: 'input.type' }); }
-              finally { wrap._typing = false; }
-              if (view.state.doc.sliceString(current.from,current.from+value.length) !== value) wrap._tableWidget.renderCells(wrap,view);
-              input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; view.requestMeasure();
-            });
-            input.addEventListener('select', () => {
-              if (wrap._typing || wrap._syncing || !input.isConnected) return;
-              const widget = wrap._tableWidget, current = tableCellRanges(widget.src, widget.from)[row]?.cells[col];
-              if (!current) return;
-              const anchor = current.from + tableCellEncode(input.value.slice(0,input.selectionStart)).length,
-                head = current.from + tableCellEncode(input.value.slice(0,input.selectionEnd)).length;
-              if (view.state.selection.main.from !== anchor || view.state.selection.main.to !== head)
-                view.dispatch({ selection: input.selectionDirection === 'backward' ? {anchor:head,head:anchor} : { anchor, head }, userEvent: 'select' });
-            });
-            input.addEventListener('paste', e => {
-              const text = e.clipboardData?.getData('text/plain');
-              if (!text?.includes('\t')) return;
-              e.preventDefault(); e.stopPropagation();
-              const widget = wrap._tableWidget, matrix = tableCellRanges(widget.src, widget.from).map(r => r.cells.map(c => c.text)),
-                aligns = parseTable(widget.src).aligns, pasted = text.replace(/\r\n?/g,'\n').replace(/\n$/,'').split('\n').map(r => r.split('\t'));
-              pasted.forEach((values, i) => {
-                while (matrix.length <= row + i) matrix.push([]);
-                values.forEach((value,j) => { matrix[row+i][col+j]=tableCellEncode(value); });
-              });
-              widget.replace(view,matrix,aligns,row,col);
-            });
-            input.addEventListener('keydown', e => {
-              if (e.isComposing || e.keyCode === 229) return;
-              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-                e.preventDefault(); e.stopPropagation(); (e.shiftKey ? Commands.redo : Commands.undo)(view); focusTableEditor(view); return;
-              }
-              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); e.stopPropagation(); Commands.redo(view); focusTableEditor(view); return; }
-              if (e.key === 'Tab' || e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault(); e.stopPropagation(); wrap._tableWidget.move(view, row, col, e.key === 'Tab' ? (e.shiftKey ? -1 : 1) : 0, e.key === 'Enter' ? 1 : 0);
-              } else if (e.key === 'Escape') {
-                e.preventDefault(); e.stopPropagation(); const widget = wrap._tableWidget, pos = widget.from + widget.src.length;
-                view.dispatch(pos === view.state.doc.length ? { changes: {from:pos,insert:'\n\n'},selection:{anchor:pos+2},userEvent:'input.table' }
-                  : {selection:{anchor:pos+1}}); view.focus();
-              } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
-                (['ArrowUp','ArrowDown'].includes(e.key) || input.selectionStart === input.selectionEnd &&
-                  (e.key === 'ArrowLeft' && input.selectionStart === 0 || e.key === 'ArrowRight' && input.selectionEnd === input.value.length))) {
-                e.preventDefault(); e.stopPropagation();
-                wrap._tableWidget.move(view,row,col,e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0,e.key==='ArrowUp'?-1:e.key==='ArrowDown'?1:0,false);
-              } else if (e.key === 'Enter') {
-                e.preventDefault(); e.stopPropagation(); input.setRangeText('<br>',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new Event('input'));
-              }
-            });
+      if(wrap._syncingCell && session)active={row:session.row,col:session.col,keep:true};
+      if(session && (!this.canEdit||!active||session.row!==active.row||session.col!==active.col||!session.host.isConnected)){
+        destroyTableCell(wrap);session=null;
+      }
+      for(let row=0;row<matrix.length;row++)for(let col=0;col<cols;col++){
+        const td=table.rows[row].cells[col];td.dataset.row=row;td.dataset.col=col;td.style.textAlign=parsed.aligns[col]||'left';
+        const editing=this.canEdit&&active?.row===row&&active?.col===col;td.classList.toggle('cm-md-cell-active',editing);
+        if(editing){
+          if(!session)session=mountTableCell(view,wrap,td,row,col,active.cell,this.selection);
+          else if(!wrap._syncingCell){
+            const cell=active.cell,decoded=tableCellCodec(cell.text,false),range=this.selection;
+            session.from=cell.from;session.to=cell.to;
+            const anchor=decoded.map.mapPos(Math.max(0,Math.min(cell.text.length,range.anchor-cell.from))),
+              head=decoded.map.mapPos(Math.max(0,Math.min(cell.text.length,range.head-cell.from)));
+            wrap._syncingCell=true;
+            try{session.view.dispatch({changes:session.view.state.doc.toString()===decoded.text?undefined:{from:0,to:session.view.state.doc.length,insert:decoded.text},
+              selection:{anchor,head}});}finally{wrap._syncingCell=false;}
           }
-          if (!wrap._typing) {
-            wrap._syncing = true;
-            if (input.value !== cell.text) input.value = cell.text;
-            input.setSelectionRange(Math.max(0, this.selection.from - cell.from), Math.max(0, this.selection.to - cell.from),
-              this.selection.anchor > this.selection.head ? 'backward' : 'forward');
-            wrap._syncing = false;
-          }
-        } else {
-          const value = matrix[row][col] || '';
-          if (input || td._value !== value) { td.replaceChildren(cellInline(value)); td._value = value; }
+        }else{
+          const value=matrix[row][col]||'';
+          if(td.querySelector('.cm-md-cell-editor')||td._value!==value||!td.firstChild){td.replaceChildren(cellInline(value));td._value=value;}
         }
       }
+    }
+    destroy(wrap) { destroyTableCell(wrap); }
+    leave(view, side) {
+      const pos=side==='before'?this.from:this.from+this.src.length;
+      if(side==='before'&&pos===0)view.dispatch({changes:{from:0,insert:'\n\n'},selection:{anchor:0},userEvent:'input.table'});
+      else if(side==='after'&&pos===view.state.doc.length)view.dispatch({changes:{from:pos,insert:'\n\n'},selection:{anchor:pos+2},userEvent:'input.table'});
+      else view.dispatch({selection:{anchor:side==='before'?Math.max(0,pos-1):pos+1}});
+      view.focus();
     }
     replace(view, matrix, aligns, row, col) {
       if (!this.canEdit || view.state.readOnly || view.state.doc.sliceString(this.from, this.from + this.src.length) !== this.src) return;
@@ -905,18 +949,19 @@ window.MdEditor = (() => {
         selection: { anchor: target.from, head: target.to }, userEvent: 'input.table', scrollIntoView: true });
       focusTableEditor(view);
     }
-    move(view, row, col, dc, dr, add = true) {
+    move(view, row, col, dc, dr, add = true, edge = 'select') {
       const matrix = tableCellRanges(this.src, this.from).map(r => r.cells.map(c => c.text)), aligns = parseTable(this.src).aligns;
       const cols = Math.max(...matrix.map(r => r.length)); matrix.forEach(r => { while(r.length < cols) r.push(''); });
       row += dr; col += dc;
       if (col >= cols) { col = 0; row++; } if (col < 0) { col = cols - 1; row--; }
-      if (row < 0) { view.dispatch({ selection: { anchor: Math.max(0,this.from - 1) } }); view.focus(); return; }
+      if (row < 0) { this.leave(view,'before'); return; }
       const target = tableCellRanges(this.src, this.from)[row]?.cells[col];
       if (target) {
-        view.dispatch({ selection: { anchor: target.from, head: target.to }, userEvent: 'select', scrollIntoView: true });
+        const pos=edge==='end'?target.to:target.from;
+        view.dispatch({ selection: edge==='select'?{anchor:target.from,head:target.to}:{anchor:pos}, userEvent: 'select', scrollIntoView: true });
         focusTableEditor(view);
       } else {
-        if (!add && row >= matrix.length) { view.dispatch({selection:{anchor:Math.min(view.state.doc.length,this.from+this.src.length+1)}});view.focus();return; }
+        if (!add && row >= matrix.length) { this.leave(view,'after');return; }
         if (row >= matrix.length) matrix.push(new Array(cols).fill(''));
         this.replace(view, matrix, aligns, row, col);
       }
@@ -977,7 +1022,7 @@ window.MdEditor = (() => {
         wrap.addEventListener('mousedown', (e) => {
           const cell = e.target && e.target.closest ? e.target.closest('th,td') : null;
           if (!cell) return; // 复制按钮等：走默认行为
-          if (e.target.closest('textarea')) { e.stopPropagation(); return; }
+          if (e.target.closest('.cm-md-cell-editor')) return;
           const widget = wrap._tableWidget;
           if (!widget.canEdit) return;
           const target = tableCellRanges(widget.src, widget.from)[Number(cell.dataset.row)]?.cells[Number(cell.dataset.col)];
@@ -989,8 +1034,19 @@ window.MdEditor = (() => {
           }
           e.preventDefault();
           e.stopPropagation();
-          view.dispatch({ selection: { anchor: pos, head: target.to }, scrollIntoView: true });
-          focusTableEditor(view);
+          view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+          const inner=wrap._cellSession?.view;
+          if(!inner)return;
+          // 替换渲染文字后重新量坐标，沿用CM的字符定位，不能把点击变成整格选中。
+          const point={x:e.clientX,y:e.clientY},caret=inner.posAtCoords(point,false)??0;
+          inner.dispatch({selection:{anchor:caret}});inner.focus();
+          const select=event=>{
+            if(!wrap._cellSession||wrap._cellSession.view!==inner){finish();return;}
+            const head=inner.posAtCoords({x:event.clientX,y:event.clientY},false);
+            if(head!=null)inner.dispatch({selection:{anchor:caret,head}});
+          };
+          const finish=()=>{document.removeEventListener('mousemove',select);document.removeEventListener('mouseup',finish);};
+          document.addEventListener('mousemove',select);document.addEventListener('mouseup',finish,{once:true});
         }, true);
         wrap.addEventListener('contextmenu', e => {
           const cell = e.target.closest('th,td'); if (!cell) return;
@@ -2064,6 +2120,11 @@ window.MdEditor = (() => {
       Language.codeFolding(), // foldState（折叠命令依赖）
       Search.search({ top: true }), // Ctrl+F / Ctrl+H 搜索面板置顶
       EditorView.updateListener.of((u) => {
+        // 搜索或键盘把主选区移入单元格时也要交接焦点，避免后续输入改到隐藏源码。
+        if(u.selectionSet && u.view.hasFocus){
+          const state=u.state;
+          queueMicrotask(()=>{if(u.view.state===state && u.view.hasFocus)focusTableEditor(u.view);});
+        }
         if ((u.docChanged || TextLines.raw(u.startState) !== TextLines.raw(u.state)) && opts.onChange) opts.onChange(TextLines.raw(u.state),u.changes);
         if ((u.docChanged || u.selectionSet) && opts.onCursor) {
           const head = u.state.selection.main.head;

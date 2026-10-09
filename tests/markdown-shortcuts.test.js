@@ -13,6 +13,10 @@ const cm=w.MdEditor.create({parent,doc:'',live:true,onChange:text=>{tab.content=
 w.Viewer={activeTab:tab,openTabs:[tab],cm,markdownInsertState:ctx=>stack.length?'请先关闭弹窗':tab.name.endsWith('.md')&&ctx.revision===tab.editRevision||'非Markdown',insertMarkdown:kind=>cm.insertMarkdown(kind)};
 for(const f of ['shortcuts.js','settings.js'])w.eval(read(f));
 const key=(name,mods={},target=cm.view.contentDOM)=>{const e=new w.KeyboardEvent('keydown',{key:name,ctrlKey:true,bubbles:true,cancelable:true,...mods});target.dispatchEvent(e);return e;};
+const cellView=()=>cm.view.dom.querySelector('.cm-md-cell-editor')._cellView;
+const cellText=()=>cellView().state.doc.toString();
+const cellKey=(name,mods={})=>key(name,{ctrlKey:false,...mods},cellView().contentDOM);
+const cellSet=(text,head=text.length)=>{const v=cellView();v.dispatch({changes:{from:0,to:v.state.doc.length,insert:text},selection:{anchor:head},userEvent:'input.type'});};
 const reset=(text='',pos=0)=>{cm.setValue(text);cm.setCursor(pos);};
 let passed=0;const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{try{
@@ -24,18 +28,18 @@ let passed=0;const test=async(name,fn)=>{await fn();passed++;console.log('ok '+n
  await test('表格点击保持网格、直接中文输入保留其他单元格、Tab选择下格',()=>{
   reset('| 标题 | 二列 |\n| --- | ---: |\n| 原文 | 其他 |\n\n尾部',46);
   assert(cm.view.dom.querySelector('.cm-md-table'),cm.view.dom.innerHTML);const click=(row,col)=>{cm.view.dom.querySelectorAll('.cm-md-table tr')[row].children[col].dispatchEvent(new w.MouseEvent('mousedown',{bubbles:true,cancelable:true}));};
-  click(1,0);let input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');assert(input);assert.equal(input.value,'原文');
-  input.value='中文🙂';input.setSelectionRange(4,4);input.dispatchEvent(new w.Event('input',{bubbles:true}));
-  assert(cm.getValue().includes('| 中文🙂 | 其他 |'));assert.equal(cm.view.dom.querySelector('textarea.cm-md-cell-editor'),input);
-  input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
-  input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');assert.equal(input.value,'其他');assert.equal(input.selectionStart,0);assert.equal(input.selectionEnd,2);
+  click(1,0);let input=cm.view.dom.querySelector('.cm-md-cell-editor');assert(input);assert.equal(cellText(),'原文');
+  cellSet('中文🙂');
+  assert(cm.getValue().includes('| 中文🙂 | 其他 |'));assert.equal(cm.view.dom.querySelector('.cm-md-cell-editor'),input);
+  cellKey('Tab');
+  input=cm.view.dom.querySelector('.cm-md-cell-editor');assert.equal(cellText(),'其他');assert.equal(cellView().state.selection.main.from,0);assert.equal(cellView().state.selection.main.to,2);
  });
  await test('表格末格Tab增行、Enter下移、ShiftTab前移、撤销恢复原表格',()=>{
   reset('| A | B |\n| --- | --- |\n| C | D |\n\n尾部',35);
   const td=cm.view.dom.querySelectorAll('.cm-md-table tbody td')[1];td.dispatchEvent(new w.MouseEvent('mousedown',{bubbles:true,cancelable:true}));
-  const press=(key,mods={})=>cm.view.dom.querySelector('textarea.cm-md-cell-editor').dispatchEvent(new w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...mods}));
-  press('Tab');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,2);press('Tab',{shiftKey:true});assert.equal(cm.view.dom.querySelector('textarea.cm-md-cell-editor').value,'D');
-  press('Enter');assert.equal(cm.view.dom.querySelector('textarea.cm-md-cell-editor').closest('td').dataset.col,'1');
+  const press=cellKey;
+  press('Tab');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,2);press('Tab',{shiftKey:true});assert.equal(cellText(),'D');
+  press('Enter');assert.equal(cm.view.dom.querySelector('.cm-md-cell-editor').closest('td').dataset.col,'1');
   press('z',{ctrlKey:true});assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,1);
  });
  await test('表格右键增删行列和对齐、转义竖线不拆格、只读禁改且源码仍可编辑',()=>{
@@ -43,24 +47,38 @@ let passed=0;const test=async(name,fn)=>{await fn();passed++;console.log('ok '+n
   const menu=(name)=>{const td=cm.view.dom.querySelector('.cm-md-table tbody td');td.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:1,clientY:1}));[...doc.querySelectorAll('#ctx-menu .ctx-item')].find(x=>x.textContent.includes(name)).click();};
   menu('右侧插入列');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table th').length,3);menu('删除列');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table th').length,2);
   menu('右对齐');assert.equal(cm.view.dom.querySelector('.cm-md-table th').style.textAlign,'right');menu('下方插入行');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,2);menu('删除行');assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,1);
-  let input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');input.value='左|右';input.setSelectionRange(3,3);input.dispatchEvent(new w.Event('input',{bubbles:true}));assert(cm.getValue().includes('左\\|右'));assert.equal(cm.view.dom.querySelectorAll('.cm-md-table th').length,2);
-  const original=cm.getValue();cm.setReadOnly(true);assert(!cm.view.dom.querySelector('textarea.cm-md-cell-editor'));assert.equal(cm.getValue(),original);cm.setReadOnly(false);
+  let input=cm.view.dom.querySelector('.cm-md-cell-editor');cellSet('左|右');assert(cm.getValue().includes('左\\|右'));assert.equal(cm.view.dom.querySelectorAll('.cm-md-table th').length,2);
+  const original=cm.getValue();cm.setReadOnly(true);assert(!cm.view.dom.querySelector('.cm-md-cell-editor'));assert.equal(cm.getValue(),original);cm.setReadOnly(false);
   cm.setLive(false);assert(!cm.view.dom.querySelector('.cm-md-table'));cm.setLive(true);
  });
  await test('用户改键后旧键回到CM行为，新键执行插入，清空绑定不复活默认',()=>{w.Shortcuts.setBinding('md-task','ctrl+alt+l');reset('正文');key('l');assert.equal(cm.getValue(),'正文');key('l',{altKey:true});assert.equal(cm.getValue(),'- [ ] 正文');w.Shortcuts.setBinding('md-task',null);reset('正文');key('l',{altKey:true});assert.equal(cm.getValue(),'正文');w.Shortcuts.reset('md-task');});
  await test('表格粘贴TSV扩展网格、方向键导航不改正文、单元格换行和末尾Esc不破坏结构',()=>{
   reset('| A | B |\n| --- | --- |\n| C | D |',0);
   let td=cm.view.dom.querySelector('.cm-md-table tbody td');td.dispatchEvent(new w.MouseEvent('mousedown',{bubbles:true,cancelable:true}));
-  let input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');const paste=new w.Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(paste,'clipboardData',{value:{getData:()=> '甲\t乙\r\n丙\t丁'}});input.dispatchEvent(paste);
+  let input=cm.view.dom.querySelector('.cm-md-cell-editor');const paste=new w.Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(paste,'clipboardData',{value:{getData:()=> '甲\t乙\r\n丙\t丁'}});cellView().contentDOM.dispatchEvent(paste);
   assert.equal(cm.view.dom.querySelectorAll('.cm-md-table tbody tr').length,2);assert(cm.getValue().includes('丁'));
-  const before=cm.getValue();input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
-  assert.equal(cm.view.dom.querySelector('textarea.cm-md-cell-editor').value,'丙');assert.equal(cm.getValue(),before);
-  input=cm.view.dom.querySelector('textarea.cm-md-cell-editor');input.setSelectionRange(1,1);input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true}));assert(cm.getValue().includes('丙<br>'));
-  input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));assert(cm.getValue().endsWith('\n\n'));assert(!cm.view.dom.querySelector('textarea.cm-md-cell-editor'));
+  const before=cm.getValue();input=cm.view.dom.querySelector('.cm-md-cell-editor');cellView().dispatch({selection:{anchor:1}});cellKey('ArrowDown');
+  assert.equal(cellText(),'丙');assert.equal(cm.getValue(),before);
+  input=cm.view.dom.querySelector('.cm-md-cell-editor');cellView().dispatch({selection:{anchor:1}});cellKey('Enter',{shiftKey:true});assert(cm.getValue().includes('丙<br>'));
+  cellKey('Escape');assert(cm.getValue().endsWith('\n\n'));assert(!cm.view.dom.querySelector('.cm-md-cell-editor'));
  });
  await test('跨段选区经过表格不落进输入框，不改变原来的源文本范围',()=>{
   const text='正文\n\n| A | B |\n| --- | --- |\n| C | D |\n\n尾部';reset(text,0);const end=text.indexOf('C')+1;cm.setCursor(0,end);
-  assert(!cm.view.dom.querySelector('textarea.cm-md-cell-editor'));assert.equal(cm.getSelection().from,0);assert.equal(cm.getSelection().to,end);assert.equal(cm.getValue(),text);
+  assert(!cm.view.dom.querySelector('.cm-md-cell-editor'));assert.equal(cm.getSelection().from,0);assert.equal(cm.getSelection().to,end);assert.equal(cm.getValue(),text);
+ });
+ await test('单元格连续输入首尾空格与转义竖线，双向选区映射不漂移',()=>{
+  reset('| A | B |\n| --- | --- |\n| 文本 | D |\n\n尾部',0);cm.setCursor(cm.getValue().indexOf('文本'));const v=cellView();
+  cellSet(' 中文 | 🙂 ');assert.equal(cellView(),v);assert.equal(cellText(),' 中文 | 🙂 ');assert.equal(v.state.selection.main.head,9);
+  assert(cm.getValue().includes(' 中文 \\| 🙂 '));
+  v.dispatch({selection:{anchor:9,head:1}});const mapped=cm.getSelection();assert.equal(cm.getValue().slice(mapped.from,mapped.to),'中文 \\| 🙂 ');
+  cellKey('Tab');cellKey('Tab',{shiftKey:true});assert.equal(cellText(),'中文 | 🙂');
+ });
+ await test('多行编辑内容按br编码，方向键在文本内部移动而不是立即跳到邻格',()=>{
+  reset('| A | B |\n| --- | --- |\n| 内容 | D |\n\n尾部',0);cm.setCursor(cm.getValue().indexOf('内容'));
+  cellSet('第一行\n第二行',2);assert(cm.getValue().includes('第一行<br>第二行'));const v=cellView();
+  cellKey('ArrowRight');assert.equal(cellView(),v);assert.equal(v.state.selection.main.head,3);
+  v.dispatch({selection:{anchor:0}});cellKey('ArrowRight');assert.equal(cellView(),v);assert.equal(v.state.selection.main.head,1);
+  cellKey('Tab');cellKey('Tab',{shiftKey:true});assert.equal(cellText(),'第一行\n第二行');
  });
  await test('非Markdown、IME、外部输入与上层弹窗不被Markdown动作改写',()=>{reset('正文');tab.name='code.js';assert(!key('t').defaultPrevented);tab.name='中文.md';key('l',{isComposing:true});key('l',{keyCode:229});const input=doc.createElement('input');doc.body.append(input);assert(!key('t',{},input).defaultPrevented);const modal=doc.createElement('div');w.Modal.show(modal);key('l');w.Modal.hide();assert.equal(cm.getValue(),'正文');input.remove();});
  await test('用户已有CtrlL键位优先；默认Markdown键不会抢旧自定义',()=>{w.Shortcuts.setBinding('help','ctrl+l');w.Shortcuts.load();reset('正文');key('l');assert.equal(cm.getValue(),'正文');w.Shortcuts.reset('help');w.Shortcuts.reset('md-task');});
