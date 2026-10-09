@@ -12,6 +12,7 @@ const os = require('os');
 const net = require('net');
 const { StringDecoder } = require('string_decoder');
 const Readiness = require('./launch-readiness');
+const timers = require('timers');
 
 const LOG_MAX = 800;
 // 行数挡不住单行洪流：文本总预算1MiB、单行16KiB，残行也计入而不是另开无界缓冲。
@@ -26,6 +27,7 @@ let stateFile = path.join(configDir, 'launch-state.json');
 
 function setConfigDir(dir) {
   if (!dir) return;
+  if (treeTimer) { timers.clearInterval(treeTimer); treeTimer = null; }
   configDir = dir;
   configFile = path.join(configDir, 'launch.json');
   stateFile = path.join(configDir, 'launch-state.json');
@@ -38,7 +40,68 @@ const pending = new Map();
 let closing = false;
 let shutdownPromise = null;
 let exitPending = false;
+let treeTimer = null, treeRefresh = null;
 function setExitPending(value) { exitPending = value === true; }
+
+// 不能等正常退出才登记子树：强制重启会跳过shutdown，cmd外壳也可能先于服务退出。
+// 全部条目共用一次CIM快照，避免每个终端每两秒各拉起一组PowerShell。
+function trackOwnedTrees() {
+  if (treeTimer) return;
+  treeTimer = timers.setInterval(() => { if (!closing) refreshOwnedTrees(); }, 2000);
+  treeTimer.unref();
+}
+function refreshOwnedTrees() {
+  if (treeRefresh) return treeRefresh;
+  treeRefresh = collectOwnedTrees().catch(error => ({ ok: false, error: String(error.message || error) }))
+    .finally(() => { treeRefresh = null; });
+  return treeRefresh;
+}
+async function collectOwnedTrees() {
+  const targetsConfig = configDir;
+  const records = loadState();
+  const targets = Object.entries(records).filter(([, record]) => record && record.identity && record.launchId);
+  if (!targets.length) return { ok: true };
+  const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_RUNNING_TREE\n"
+    + "$items=@(Get-CimInstance Win32_Process -Filter 'ProcessId>0'); ConvertTo-Json -InputObject @($items|ForEach-Object {$birth=if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{''};@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;createdAt=$birth;image=$_.ExecutablePath;commandLine=$_.CommandLine}}) -Compress";
+  const response = await systemQuery('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+  if (!response.ok) return response;
+  let snapshot;
+  try { snapshot = JSON.parse(response.stdout.replace(/^\uFEFF/, '')); }
+  catch { return { ok: false, error: '运行子树快照无法解析' }; }
+  if (!Array.isArray(snapshot) || snapshot.some(item => !item || !Number.isSafeInteger(item.pid) || item.pid <= 0)
+    || new Set(snapshot.map(item => item.pid)).size !== snapshot.length) return { ok: false, error: '运行子树快照结构无效' };
+  const byPid = new Map(snapshot.map(item => [item.pid, item]));
+  for (const [id, record] of targets) {
+    const saved = record.descendants || [];
+    if (!Array.isArray(saved) || saved.length > 256 || saved.some(item => !item || !item.identity)) continue;
+    // 根PID已消失时只能从先前登记且身份完全一致的子进程延续；端口或路径相似不能认领进程。
+    const anchors = [record.identity, ...saved.map(item => item.identity)]
+      .filter(identity => sameIdentity(identity, byPid.get(identity.pid)));
+    if (!anchors.length) continue;
+    const queue = anchors.map(identity => byPid.get(identity.pid));
+    const seen = new Set(queue.map(item => item.pid));
+    let invalid = false;
+    for (let index = 0; index < queue.length; index++) {
+      const parent = queue[index];
+      for (const child of snapshot.filter(item => item.parentPid === parent.pid && !seen.has(item.pid))) {
+        if (!child.image || !child.commandLine || !Number.isFinite(Date.parse(child.createdAt))
+          || Date.parse(child.createdAt) < Date.parse(parent.createdAt) || queue.length >= 257) { invalid = true; break; }
+        seen.add(child.pid); queue.push(child);
+      }
+      if (invalid) break;
+    }
+    if (invalid) continue;
+    const descendants = queue.filter(item => item.pid !== record.pid).map(({ parentPid, ...identity }) => ({ identity, parentPid }));
+    if (JSON.stringify(descendants) === JSON.stringify(saved)) continue;
+    // CIM查询期间可能已经停止/重启或切换配置；迟到快照不能复活旧记录或覆盖新的一次运行。
+    if (targetsConfig !== configDir) return { ok: false, error: '采集期间配置目录变化' };
+    const current = loadState()[id];
+    if (!current || current.launchId !== record.launchId || !sameIdentity(current.identity, record.identity)) continue;
+    const written = setState(id, { ...current, descendants });
+    if (written.ok && procs.get(id)?.launchId === record.launchId) procs.get(id).descendants = descendants;
+  }
+  return { ok: true };
+}
 
 // 端口探测会让出执行权；锁必须早于探测，且 restart 的 stop/start 共用一份锁。
 async function operate(entry, operation, action) {
@@ -437,6 +500,7 @@ async function startUnlocked(entry) {
     live.ownership = captured.ok && captured.identity ? 'owned' : 'unknown';
     setState(entry.id, { ...info, identity: live.identity, ownership: live.ownership });
     if (live.ownership !== 'owned') pushLog(entry.id, '[归属未确认] ' + (captured.error || '进程已退出，无法采集身份'));
+    else { trackOwnedTrees(); await refreshOwnedTrees(); }
   }
   return { ok: true, pid: child.pid, launchId: info.launchId, ownership: live.ownership || 'exited' };
 }
@@ -472,6 +536,7 @@ async function pidsListeningOnPort(port) {
 
 async function stopUnlocked(entry) {
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
+  if (entry.kind !== 'usb-tunnel') await refreshOwnedTrees();
   const live = procs.get(entry.id);
   const st = loadState();
   const record = live || st[entry.id];
@@ -621,7 +686,7 @@ async function statusEvidence(entry) {
     exitCode: record && record.endedAt ? record.exitCode : null, exitSignal: record && record.exitSignal || null,
     operation: pending.has(entry.id) ? pending.get(entry.id).operation : exitPending ? '退出' : null };
 }
-function statusOf(entries) { return Promise.all(entries.map(statusEvidence)); }
+function statusOf(entries) { trackOwnedTrees(); return Promise.all(entries.map(statusEvidence)); }
 function getLogs(id) {
   const book = logs.get(id);
   if (!book) return { lines: [], records: [], runId: null, generation: null, version: 0,
@@ -683,6 +748,7 @@ function shutdown() {
   shutdownPromise = (async () => {
     // 等待正在采集身份/停止的操作结算，避免退出把尚未确定的记录覆盖成另一份。
     await Promise.all([...pending.values()].map(ticket => ticket.done));
+    await refreshOwnedTrees();
     let cfg, saved;
     try {
       cfg = exitSnapshot(configFile, emptyConfig()); saved = exitSnapshot(stateFile, {});

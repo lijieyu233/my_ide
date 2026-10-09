@@ -8,7 +8,7 @@ let passed = 0;
 // 执行完整服务，只有系统进程/端口受控；失败保全必须核对真正落盘的状态。
 function fixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(temp, 'case-'));
-  const children = [], kills = [], sockets = [], bridges = [], spawned = [], queries = [], live = new Set(), identities = new Map();
+  const children = [], kills = [], sockets = [], bridges = [], spawned = [], queries = [], intervals = [], live = new Set(), identities = new Map();
   const identity = pid => ({ pid, createdAt: new Date(1700000000000 + pid * 10).toISOString(), image: 'C:\\Windows\\System32\\cmd.exe', commandLine: 'fixture command ' + pid });
   let nextPid = 500;
   const childProcess = {
@@ -22,6 +22,12 @@ function fixture(options = {}) {
     execFile(file, args, settings, callback) {
       if (file === 'powershell.exe') {
         const script = Buffer.from(args.at(-1), 'base64').toString('utf16le'); queries.push(script);
+        if (script.includes('LAUNCH_RUNNING_TREE')) {
+          const values = [...identities.values()].filter(item => live.has(item.pid)).map(item => ({ ...item, parentPid: options.parents?.[item.pid] || 0 }));
+          const complete = () => callback(options.treeError ? Error('fixture snapshot denied') : null, options.treeMalformed ? '{}' : JSON.stringify(values));
+          if (options.holdTree) options.releaseTree = complete; else queueMicrotask(complete);
+          return;
+        }
         if (script.includes('LAUNCH_EXIT_RECORDS')) {
           const values = [...script.matchAll(/ProcessId=(\d+)/g)].map(match => Number(match[1])).filter(pid => live.has(pid)).map(pid => identities.get(pid));
           return queueMicrotask(() => callback(null, JSON.stringify(values)));
@@ -62,7 +68,7 @@ function fixture(options = {}) {
   }
   const m = { exports: {} };
   new Function('require', 'module', 'exports', 'process', 'setTimeout', source)(
-    name => name === './launch-readiness' ? { ...require('../launch-readiness'), createObservation: (rule, runId) => require('../launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
+    name => name === 'timers' ? { setInterval: callback => { intervals.push(callback); return { unref() {} }; }, clearInterval() {} } : name === './launch-readiness' ? { ...require('../launch-readiness'), createObservation: (rule, runId) => require('../launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
       writeFileSync(file, ...args) { if (options.failStateWrites && path.basename(file) === 'launch-state.json') throw Error('fixture state write denied'); return fs.writeFileSync(file, ...args); } } : require(name),
     m, m.exports, { env: {}, kill: pid => { if (options.probeError) throw Object.assign(Error('probe denied'), { code: options.probeError }); if (!live.has(pid)) throw Object.assign(Error('not alive'), { code: 'ESRCH' }); } },
     callback => { queueMicrotask(callback); return 1; });
@@ -75,12 +81,48 @@ function fixture(options = {}) {
   };
   const entry = { id: 'entry-a', command: 'fixture-command', cwd: dir };
   const script = path.join(dir, 'bridge.py'); fs.writeFileSync(script, '# fixture');
-  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, spawned, queries, live, identities, state, record };
+  const sample = async () => { intervals.at(-1)(); await new Promise(resolve => setImmediate(resolve)); };
+  return { service, entry, bridge: { ...entry, kind: 'usb-tunnel', script }, options, children, kills, sockets, bridges, spawned, queries, intervals, sample, live, identities, state, record };
 }
 async function test(name, run) { await run(); passed++; console.log('  ok ' + name); }
 
 (async () => {
   try {
+    await test('运行期间登记子树，外壳先退出后仍跟踪新后代并恢复停止能力', async () => {
+      const f = fixture({ parents: { 502: 501, 503: 502 } }); await f.service.startEntry(f.entry);
+      for (const pid of [502, 503]) { f.live.add(pid); f.identities.set(pid, { ...f.identities.get(501), pid, createdAt: new Date(1700000000000 + pid * 10).toISOString() }); }
+      await f.sample(); assert.deepEqual(f.state()[f.entry.id].descendants.map(item => item.identity.pid), [502, 503]);
+      f.live.delete(501); f.children[0].exitCode = 0; f.children[0].emit('exit', 0, null);
+      f.options.parents[504] = 503; f.live.add(504); f.identities.set(504, { ...f.identities.get(503), pid: 504, createdAt: new Date(1700000005040).toISOString() });
+      await f.sample(); const [status] = await f.service.statusOf([f.entry]); assert(status.canStop && status.processAlive); assert.equal(status.ownership, 'owned');
+      assert.equal(f.state()[f.entry.id].descendants.length, 3); assert.equal((await f.service.startEntry(f.entry)).ok, false);
+      assert.equal((await f.service.stopEntry(f.entry)).ok, true); assert.deepEqual(f.kills, [502, 503, 504]);
+    });
+    await test('已失去身份的外部监听者与父PID复用的旧后代不会被运行采集认领', async () => {
+      const f = fixture({ parents: { 500: 501, 502: 999 }, portUp: true }); await f.service.startEntry(f.entry);
+      for (const pid of [500, 502]) { f.live.add(pid); f.identities.set(pid, { ...f.identities.get(501), pid, createdAt: new Date(1700000000000 + pid * 10).toISOString() }); }
+      await f.sample(); assert(!f.state()[f.entry.id].descendants?.length);
+      f.live.delete(501); f.children[0].exitCode = 0; f.children[0].emit('exit', 0, null); await f.sample();
+      const [status] = await f.service.statusOf([{ ...f.entry, port: 18089 }]); assert(status.portResponding); assert(!status.canStop); assert.equal(f.kills.length, 0);
+    });
+    await test('运行采集查询/解析/写入失败保全原记录，重试后登记子进程', async () => {
+      const f = fixture({ parents: { 502: 501 } }); await f.service.startEntry(f.entry);
+      f.live.add(502); f.identities.set(502, { ...f.identities.get(501), pid: 502, createdAt: new Date(1700000005020).toISOString() });
+      const before = f.state();
+      for (const key of ['treeError', 'treeMalformed', 'failStateWrites']) { f.options[key] = true; await f.sample(); assert.deepEqual(f.state(), before); f.options[key] = false; }
+      await f.sample(); assert.equal(f.state()[f.entry.id].descendants[0].identity.pid, 502);
+    });
+    await test('采集在途合并请求，迟到结果不能覆盖新运行或复活已删除记录', async () => {
+      for (const removed of [false, true]) {
+        const f = fixture({ parents: { 502: 501 } }); await f.service.startEntry(f.entry);
+        f.live.add(502); f.identities.set(502, { ...f.identities.get(501), pid: 502, createdAt: new Date(1700000005020).toISOString() });
+        f.options.holdTree = true; await f.sample(); await f.sample();
+        assert.equal(f.queries.filter(script => script.includes('LAUNCH_RUNNING_TREE')).length, 2);
+        const next = removed ? {} : { [f.entry.id]: { ...f.state()[f.entry.id], launchId: 'new-run' } };
+        fs.writeFileSync(f.service.paths().stateFile, JSON.stringify(next)); f.options.releaseTree(); await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(f.state(), next);
+      }
+    });
     await test('历史PID已退出时不启动系统查询，状态及再次启动及时恢复', async () => {
       const f = fixture({ identityError: true }); f.record(f.entry); f.live.delete(777);
       const state = f.state(); delete state[f.entry.id].identity;
