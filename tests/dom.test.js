@@ -794,11 +794,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     para2 = lines2.find((l) => l.textContent.includes('删除线'));
     assert_(para2 && para2.textContent.includes('[') && para2.textContent.includes('https://'),
       '光标进入链接内部 → 显示完整 [链接](url) 源码');
-    // 15) 光标进表格单元格 → 行常渲染不退化源码（Obsidian 式逐行线框）；移出仍渲染
+    // 15) 光标进表格仍保留网格，当前单元格可直接输入。
     g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
     await tick(); await tick();
-    assert_($(dom, '.cm-md-tr-row') !== null && $(dom, '.cm-md-tpipe') !== null,
-      '光标进表格单元格行仍线框渲染（不退化源码）');
+    assert_($(dom, '.cm-md-table table') !== null && $(dom, '.cm-md-cell-editor') !== null,
+      '光标进表格单元格保持网格并挂载输入框');
     g(dom, 'Viewer.cm.setCursor(' + LIVE_DOC.length + ')');
     await tick(); await tick();
     assert_($(dom, '.cm-md-table table') !== null, '光标移出表格 → 渲染成真表格（不再是逐行线框）');
@@ -828,14 +828,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
         }
       }
     }
-    // 18) 表格编辑：光标进表格 → 退回逐行源码态，单元格仍能像普通文本一样直接编辑
-    //     （这一条是新表格的关键体验保证：不是"点了变成只读 widget 就编不动了"）
+    // 18) 表格编辑直接绑定CM文档，不能在渲染表格里保留另一份未同步的正文。
     {
       g(dom, 'Viewer.cm.setCursor(' + (LIVE_DOC.indexOf('| 数据') + 2) + ')');
       await tick(); await tick();
-      const rowLine = [...$$(dom, '.cm-content > div')].find((l) => l.textContent.includes('| 数据'));
-      assert_(rowLine !== null && String(rowLine.className).includes('cm-md-tr-row'),
-        '光标进表格 → 该行回到行级源码渲染（可直接编辑单元格）');
+      const input = $(dom, '.cm-md-cell-editor');
+      assert_(input !== null && input.value === '数据', '光标进表格 → 直接编辑对应单元格');
     }
   });
 

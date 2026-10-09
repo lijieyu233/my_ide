@@ -27,6 +27,7 @@
     "check:js": "node scripts/syntax-check.js",
     "check:md-geometry": "electron scripts/check-md-geometry.js --disable-gpu --no-sandbox",
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
+    "check:md-table": "electron scripts/check-md-table.js --disable-gpu --no-sandbox",
     "check:launch": "electron scripts/check-launch.js --disable-gpu --no-sandbox",
     "check:save": "node scripts/check-save.js",
     "check:package": "node scripts/check-package.js",

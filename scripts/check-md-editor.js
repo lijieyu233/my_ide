@@ -173,7 +173,7 @@ app.whenReady().then(async () => {
         return true;`), true);
       await sleep(900);
       const t = await tableState();
-      add('⑤ 光标点进表格 → 退回源码行（可直接编辑单元格）', t.srcRows >= 1,
+      add('⑤ 光标点进表格 → 网格内直接编辑单元格', t.widgetTable >= 1 && t.srcRows === 0,
         '源码表行=' + t.srcRows + ' <table>=' + t.widgetTable);
     }
 

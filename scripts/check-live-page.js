@@ -303,7 +303,7 @@
     }
     // 光标进表格 → 回退源码（Obsidian 行为）
     api.setCursor(DOC.indexOf('单元格A1') + 3); await sleep(150);
-    add('表格: 光标进表格回退源码', has('单元格A1') && q('.cm-md-table') === null, '');
+    add('表格: 光标进表格保持网格编辑', q('.cm-md-cell-editor')?.value === '单元格A1' && q('.cm-md-table') !== null, '');
     api.setCursor(DOC.length); await sleep(150);
     add('表格: 光标移出恢复渲染', q('.cm-md-table') !== null, '');
     // 点击单元格 → 光标精确进入对应源码格（用户报告：表格没有直接操作功能）
@@ -420,7 +420,7 @@
       return sel;
     };
     for (const key of ['单元格A2', '内容较长的一格', '左对齐列', '单元格A1', '七、表格', '八、其他块级']) {
-      const el = lineEl(key);
+      const el = [...document.querySelectorAll('.cm-md-table th,.cm-md-table td')].find(e => e.textContent.includes(key) || e.querySelector('textarea')?.value.includes(key)) || lineEl(key);
       if (!el) { add('映射: ' + key, false, '行不在 DOM'); continue; }
       const sel = await clickLine(key, el);
       const i = DOC.indexOf(key);
@@ -432,7 +432,7 @@
   }
   // 4. 表格源码行点击：光标命中 + 高度一致
   api.setCursor(DOC.indexOf('单元格A1') + 2); await sleep(150); // 保持源码态
-  const trEl = lineEl('单元格A1');
+  const trEl = q('.cm-md-cell-editor')?.closest('td');
   if (trEl) {
     await ensureVisible(trEl);
     api.focus(); await sleep(80);
@@ -442,12 +442,8 @@
     const i = DOC.indexOf('单元格A1');
     const lineEnd = DOC.indexOf('\n', i);
     add('行为: 点击表格单元格光标进入', sel && sel.head >= i - 1 && sel.head <= lineEnd, JSON.stringify(sel));
-    const cur = [...document.querySelectorAll('.cm-cursor')].find((c) => c.getBoundingClientRect().height > 0) || q('.cm-cursor');
-    const cr = cur && cur.getBoundingClientRect();
-    const lineR = trEl.getBoundingClientRect();
-    const fit = cursorFits(cr, lineR, '表格行');
-    if (fit.skip) skip('行为: 点击高度与光标高度一致(表格行)', fit.detail);
-    else add('行为: 点击高度与光标高度一致(表格行)', fit.ok, fit.detail);
+    const input = q('.cm-md-cell-editor'), rect = input?.getBoundingClientRect(), cellRect = trEl.getBoundingClientRect();
+    add('行为: 表格输入框位于对应单元格内', rect && rect.top >= cellRect.top && rect.bottom <= cellRect.bottom, '');
   } else add('行为: 点击表格单元格光标进入', false, '未找到表格行');
 
   // ---------- 一致性：同一份文档「实时预览」与「预览」的排版必须对得上 ----------
@@ -610,7 +606,7 @@
   {
     const pressKey = (k, keyCode) => {
       const ev = new KeyboardEvent('keydown', { key: k, keyCode, which: keyCode, bubbles: true, cancelable: true });
-      document.querySelector('.cm-content').dispatchEvent(ev);
+      (q('.cm-md-cell-editor') || document.querySelector('.cm-content')).dispatchEvent(ev);
       return ev.defaultPrevented;
     };
     const tblOrig = api.getValue();
@@ -635,7 +631,7 @@
     add('表格: Tab 被表格接管', handled, '');
     add('表格: Tab 换到下一格', cell2.col === 1 && cell2.lineNo === startCell.lineNo,
       'row ' + startCell.lineNo + '→' + cell2.lineNo + ' col ' + startCell.col + '→' + cell2.col);
-    add('表格: Tab 后整表竖线对齐（含分隔行）', gridAligned(), tableLines().map((l) => dw(l)).join('/'));
+    add('表格: Tab 换格不修改正文', api.getValue() === tblOrig, '');
     // 末行末格 Tab → 追加一行并对齐
     const lastRowText = tableLines().filter((l) => !/^\s*\|[\s:|-]*\|/.test(l)).pop();
     const lastIdx = api.getValue().lastIndexOf(lastRowText);

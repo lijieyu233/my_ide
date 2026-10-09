@@ -1,0 +1,55 @@
+// 隐藏的真实Electron窗口验证表格输入；配置、笔记与取证产物均放系统临时目录。
+const { app, BrowserWindow } = require('electron');
+const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-md-table-')), project = path.join(home, 'project');
+fs.mkdirSync(project); os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
+const file = path.join(project, '表格.md');
+fs.writeFileSync(file, '| 名称 | 内容 |\r\n| --- | ---: |\r\n| 原文 | 其他 |\r\n\r\n尾部\r\n');
+let win, passed = 0;
+const sleep = ms => new Promise(r => setTimeout(r, ms)), probe = s => win.webContents.executeJavaScript(s, true);
+const check = (name, ok) => { assert(ok, name); passed++; console.log('ok ' + name); };
+const wait = async s => { for (let i=0;i<180;i++) { if (await probe(s)) return; await sleep(40); } throw Error('等待超时 ' + s); };
+const key = async (key, code, modifiers=0) => {
+  for (const type of ['keyDown','keyUp']) await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {type,key,code:key.length===1?'Key'+key.toUpperCase():key,windowsVirtualKeyCode:code,modifiers});
+  await sleep(100);
+};
+const click = async (row,col) => {
+  const r = await probe(`(()=>{const r=Viewer.cm.view.dom.querySelectorAll('.cm-md-table tr')[${row}].children[${col}].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  for (const type of ['mousePressed','mouseReleased']) await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type,...r,button:'left',clickCount:1});
+  await sleep(100);
+};
+const field = 'document.querySelector(".cm-md-cell-editor")';
+require('../main');
+app.whenReady().then(async () => { try {
+  for(let i=0;i<100&&!BrowserWindow.getAllWindows().length;i++)await sleep(50);
+  win=BrowserWindow.getAllWindows()[0];win.setContentSize(1280,850);win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
+  await wait('!!window.Viewer&&!!window.Shortcuts');await probe('App.openProject('+JSON.stringify(project)+')');await probe('Viewer.openFile('+JSON.stringify(file)+')');await wait('!!Viewer.cm');
+  await probe("Viewer.activeTab.mode='live';Viewer.renderActive()");await wait('!!document.querySelector(".cm-md-table")');check('自检窗口隐藏',!win.isVisible());
+  await click(1,0);check('真实鼠标单击进入指定单元格且不暴露管道源码',await probe(`${field}?.value==='原文'&&!document.querySelector('.cm-md-tr-row')&&document.activeElement===${field}`));
+  await win.webContents.debugger.sendCommand('Input.insertText',{text:'中文🙂'});await sleep(100);
+  check('真实中文输入写入同一文档且保留CRLF和其他单元格',await probe("Viewer.activeTab.content.includes('| 中文🙂 | 其他 |\\r\\n')"));
+  await key('Tab',9);check('Tab选中下一单元格',await probe(`${field}.value==='其他'&&${field}.selectionStart===0&&${field}.selectionEnd===2`));
+  await key('Tab',9);check('末格Tab新增数据行并保持网格',await probe("document.querySelectorAll('.cm-md-table tbody tr').length===2"));
+  await key('Tab',9,8);check('ShiftTab回到上一格',await probe(`${field}.value==='其他'`));
+  await key('Enter',13);check('Enter下移同列',await probe(`${field}.closest('td').dataset.col==='1'&&${field}.closest('td').dataset.row==='2'`));
+  await key('z',90,2);check('CtrlZ撤销增行',await probe("document.querySelectorAll('.cm-md-table tbody tr').length===1"));
+  await key('z',90,2);check('CtrlZ撤销单元格输入',await probe("Viewer.activeTab.content.includes('| 原文 | 其他 |')"));
+  await key('z',90,10);check('CtrlShiftZ恢复单元格输入',await probe("Viewer.activeTab.content.includes('中文🙂')"));
+  await click(1,0);await key('s',83,2);await sleep(300);
+  check('输入框内CtrlS保存真实Markdown文件',fs.readFileSync(file,'utf8').includes('中文🙂'));
+  await probe(`(()=>{const td=${field}.closest('td');td.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:200,clientY:200}));[...document.querySelectorAll('#ctx-menu .ctx-item')].find(e=>e.textContent.includes('右侧插入列')).click()})()`);
+  check('右键插列保留已有单元格',await probe("document.querySelectorAll('.cm-md-table th').length===3&&Viewer.activeTab.content.includes('中文🙂')"));
+  await click(1,1);await win.webContents.debugger.sendCommand('Input.insertText',{text:'A|B'});await sleep(100);
+  check('单元格竖线自动转义而不拆列',await probe("Viewer.activeTab.content.includes('A\\\\|B')&&document.querySelectorAll('.cm-md-table th').length===3"));
+  await probe('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+  await win.webContents.capturePage(); await sleep(300);
+  fs.writeFileSync(path.join(home,'table.png'),(await win.webContents.capturePage()).toPNG());
+  await probe('Viewer.cm.setReadOnly(true)');check('只读表格禁用编辑框',await probe(`!${field}`));
+  await probe("Viewer.cm.setReadOnly(false);Viewer.cm.setValue('');Viewer.cm.setCursor(0);Viewer.cm.focus()");await key('t',84,2);
+  check('CtrlT新建表格直接选中网格内首表头',await probe(`${field}?.value==='列1'&&document.activeElement===${field}&&${field}.selectionEnd===2`));
+  await win.webContents.debugger.sendCommand('Input.insertText',{text:'新表头'});await key('Tab',9);
+  check('新建表格可连续填写表头并换格',await probe(`Viewer.activeTab.content.includes('新表头')&&${field}.value==='列2'`));
+  fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:0,home}));console.log(JSON.stringify({passed,failed:0,home}));app.exit(0);
+} catch(e) { fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:1,error:e.stack,home}));console.error(e);console.log('产物 '+home);app.exit(1); } });
+setTimeout(()=>{console.error('表格自检超时 '+home);app.exit(2);},90000).unref();

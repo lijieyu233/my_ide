@@ -305,6 +305,12 @@ window.MdEditor = (() => {
       background: 'var(--btn-bg)', color: 'var(--code-text)', borderRadius: '3px',
     },
     '.cm-md-tlink': { color: 'var(--accent)' },
+    '.cm-md-cell-editor': {
+      display: 'block', width: '100%', minWidth: '3em', boxSizing: 'border-box',
+      font: 'inherit', lineHeight: 'inherit', color: 'inherit', background: 'transparent',
+      border: '0', padding: '0', margin: '0', outline: 'none', resize: 'none', overflow: 'hidden',
+    },
+    '.cm-md-table .cm-md-cell-active': { outline: '1px solid var(--accent)', outlineOffset: '-1px' },
     '.cm-md-tablecopy': {
       position: 'absolute', right: '0.15em', top: '-1.31em', fontSize: '0.85em', padding: '0.08em 0.69em',
       background: 'var(--btn-bg)', color: 'var(--text)', border: '1px solid var(--btn-border)',
@@ -587,24 +593,12 @@ window.MdEditor = (() => {
     ignoreEvent() { return true; } // 点击由自身处理
   }
 
-  // ---------- 表格 widget：光标不在表内 → 渲染成真 <table>；光标进入 → 逐行源码态 ----------
-  // 2026-09-28 用户反馈："表格显示太奇怪 / 功能也不完善 / 一般 md 表格能当 excel 表格操作 /
-  // 起码标题颜色不同"。旧实现是"逐行线框渲染"（| 半透明可见、表头与正文几乎同色、列完全
-  // 不对齐）→ 改成 Obsidian 同款：光标不在表内时整块替换为真表格（列对齐、表头底色+强调色、
-  // 斑马纹、按 :---: 对齐、可一键复制成 TSV 粘进 Excel）；点一下表格 → CM6 把光标落到表内
-  // → 装饰器重算 → 自动切回逐行源码态，单元格仍能像普通文本一样直接编辑。
+  // 表格编辑保留网格；单元格输入仍写入同一CM文档，保存、撤销与行尾格式沿用文档模型。
   const TABLE_SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
   function splitRow(line) {
-    const s = String(line).trim().replace(/^\|/, '').replace(/\|$/, '');
-    const cells = []; let cur = '';
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] === '\\' && s[i + 1] === '|') { cur += '|'; i++; continue; }
-      if (s[i] === '|') { cells.push(cur); cur = ''; continue; }
-      cur += s[i];
-    }
-    cells.push(cur);
-    return cells.map((c) => c.trim());
+    return tableCellRanges(String(line), 0)[0].cells.map(c => c.text.replace(/\\\|/g, '|'));
   }
+
   function parseTable(src) {
     const lines = String(src).split('\n').filter((l) => l.trim() !== '');
     if (lines.length < 2 || !TABLE_SEP_RE.test(lines[1])) return null;
@@ -639,22 +633,7 @@ window.MdEditor = (() => {
   // 表格源码行里各单元格的起始偏移（用于「点哪个格，光标就落在哪个格」）
   // 规则与 splitRow 对齐：可省略首尾竖线、\| 是转义、单元格内容前的空格不计。
   function cellOffsets(line) {
-    const s = String(line);
-    const offs = [];
-    let end = s.length;
-    while (end > 0 && /\s/.test(s[end - 1])) end--;      // 尾部空白不算内容
-    let i = 0;
-    while (i < end && /\s/.test(s[i])) i++;              // 行首缩进
-    if (s[i] === '|') { i++; offs.push(i); }             // 首竖线后的第一格
-    else offs.push(i);
-    for (; i < end; i++) {
-      if (s[i] === '\\') { i++; continue; }
-      if (s[i] === '|') {
-        if (i >= end - 1) break;                         // 尾竖线：后面没有格了
-        offs.push(i + 1);
-      }
-    }
-    return offs.map((o) => { let k = o; while (k < s.length && s[k] === ' ') k++; return k; });
+    return tableCellRanges(String(line), 0)[0].cells.map(c => c.from);
   }
 
   // ================= 表格编辑（Excel 式：Tab 换格 / 末格增行 / Enter 下行 / 自动对齐） =================
@@ -705,7 +684,7 @@ window.MdEditor = (() => {
     return { from: node.from, to: node.to, lines, rows, sepAligns, row, col, nCols: Math.max(...rows.map((r) => r.cells.length)) };
   }
   // 用单元格矩阵重建整张表：返回文本 + 每行各格内容起点偏移（光标重定位用）
-  function buildTable(matrix, aligns) {
+  function buildTable(matrix, aligns, raw = false) {
     const nCols = Math.max(...matrix.map((r) => r.length));
     const widths = [];
     for (let c = 0; c < nCols; c++) widths[c] = Math.max(3, ...matrix.map((r) => dispWidth(r[c] || '')));
@@ -713,9 +692,10 @@ window.MdEditor = (() => {
     const mkRow = (cells) => {
       let s = '|'; const offs = [];
       for (let c = 0; c < nCols; c++) {
-        const cell = String(cells[c] == null ? '' : cells[c]).trim().split('|').join('\\|');
-        const pad = widths[c] - dispWidth(cell);
-        offs.push(s.length + 2);              // 「| 」之后就是内容起点
+        const value = String(cells[c] == null ? '' : cells[c]).trim();
+        const cell = raw ? tableCellEncode(value) : value.split('|').join('\\|');
+        const pad = Math.max(0, widths[c] - dispWidth(cell));
+        offs.push(s.length + 1);              // 当前s已包含竖线，后面只加一个空格。
         s += ' ' + cell + ' '.repeat(pad) + ' |';
       }
       outLines.push(s); offsets.push(offs);
@@ -745,7 +725,7 @@ window.MdEditor = (() => {
   // dCol：横向换格；dRow：纵向换行；addIfLast：越界时补一行（Excel 里 Tab/Enter 到末行会新建）
   function tableEdit(view, opts) {
     const state = view.state, sel = state.selection.main;
-    if (!sel.empty) return false;
+    if (state.readOnly || !state.facet(EditorView.editable)) return false;
     const t = tableContext(state, sel.head);
     if (!t) return false;
     const matrix = t.rows.filter((r) => !r.isSep).map((r) => r.cells.slice());
@@ -775,67 +755,206 @@ window.MdEditor = (() => {
     });
     return true;
   }
-  class TableWidget extends WidgetType {
-    constructor(src, from) { super(); this.src = src; this.from = from || 0; }
-    eq(other) { return other.src === this.src && other.from === this.from; }
-    // 点击的单元格 → 源码里的绝对位置。
-    // 🔴 为什么必须自己做映射：整块表格是 block widget，CM6 只把点击换算成**该块的起止位置**，
-    //   点第 3 行第 2 列也会把光标丢到表格首行 —— 用户原话「没法编辑」。
-    //   （自检里「点击单元格光标精确进入该格」长期是红的，就是这条。）
-    cellPos(cell) {
-      const row = cell.closest('tr');
-      if (!row) return null;
-      const cellsInRow = [...row.children];
-      const col = cellsInRow.indexOf(cell);
-      if (col < 0) return null;
-      let lineIdx = 0;                                   // 表头 = 源码第 0 行
-      if (!cell.closest('thead')) {
-        const tbody = cell.closest('tbody');
-        const rows = tbody ? [...tbody.children] : [];
-        // +2：源码里数据行前面还有「表头行 + |---| 分隔行」，index 0 是表头、
-        // index 1 是分隔行，第一行数据从 2 开始（踩过：写成 +1 会整体落到分隔行上）
-        lineIdx = rows.indexOf(row) + 2;
+  function tableCellEncode(value) {
+    return String(value).replace(/\r?\n/g, '<br>').replace(/(\\*)\|/g, (all, slashes) => slashes.length % 2 ? all : slashes + '\\|');
+  }
+  // 不能用渲染后的字宽定位：转义竖线、emoji和中文都必须按源文本UTF16偏移映射。
+  function tableCellRanges(src, from) {
+    let offset = from;
+    return src.split('\n').map((line, index) => {
+      const pipes = [];
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] !== '|') continue;
+        let slash = i; while (slash > 0 && line[slash - 1] === '\\') slash--;
+        if ((i - slash) % 2 === 0) pipes.push(i);
       }
-      const rawLines = this.src.split('\n');
-      const idxMap = [];
-      rawLines.forEach((l, i) => { if (l.trim() !== '') idxMap.push(i); });
-      const rawNo = idxMap[lineIdx];
-      if (rawNo == null) return null;
-      let off = 0;
-      for (let i = 0; i < rawNo; i++) off += rawLines[i].length + 1;
-      const line = rawLines[rawNo];
-      const offs = cellOffsets(line);
-      const inLine = offs[col] != null ? offs[col] : Math.max(0, line.length - 1);
-      return this.from + off + Math.min(inLine, line.length);
+      const left = /^\s*\|/.test(line) ? pipes.shift() + 1 : 0;
+      let right = line.length;
+      if (/\|\s*$/.test(line) && pipes.at(-1) === line.trimEnd().length - 1) right = pipes.pop();
+      const bounds = [left, ...pipes.map(p => p + 1), right + 1];
+      const cells = bounds.slice(0, -1).map((start, c) => {
+        let end = bounds[c + 1] - 1;
+        while (start < end && /[ \t]/.test(line[start])) start++;
+        while (end > start && /[ \t\r]/.test(line[end - 1])) end--;
+        return { from: offset + start, to: offset + end, text: line.slice(start, end) };
+      });
+      const row = { index, cells }; offset += line.length + 1; return row;
+    }).filter(row => row.index !== 1);
+  }
+  function focusTableEditor(view) {
+    const input = view.dom.querySelector('.cm-md-cell-editor');
+    if (input) { input.focus({ preventScroll: true }); return true; }
+    return false;
+  }
+  class TableWidget extends WidgetType {
+    constructor(src, from, selection, editable = true) {
+      super(); this.src = src; this.from = from || 0; this.selection = selection; this.canEdit = editable;
+    }
+    eq(other) { return other.src === this.src && other.from === this.from && other.canEdit === this.canEdit
+      && other.selection?.anchor === this.selection?.anchor && other.selection?.head === this.selection?.head; }
+    updateDOM(wrap, view) { this.renderCells(wrap, view); return true; }
+    renderCells(wrap, view) {
+      wrap._tableWidget = this;
+      const rows = tableCellRanges(this.src, this.from), parsed = parseTable(this.src);
+      if (!parsed) return;
+      const matrix = [parsed.head, ...parsed.rows], cols = Math.max(...matrix.map(r => r.length));
+      const table = wrap.querySelector('table');
+      if (table.rows.length !== matrix.length || table.rows[0]?.cells.length !== cols) {
+        table.replaceChildren();
+        const head = table.createTHead(), body = table.createTBody();
+        matrix.forEach((r, row) => {
+          const tr = (row ? body : head).insertRow();
+          for (let col = 0; col < cols; col++) {
+            const cell = document.createElement(row ? 'td' : 'th'); cell.dataset.row = row; cell.dataset.col = col; tr.append(cell);
+          }
+        });
+      }
+      let active = null;
+      rows.forEach((r, row) => r.cells.forEach((cell, col) => {
+        if (this.selection && this.selection.from >= cell.from && this.selection.to <= cell.to) active = { row, col, cell };
+      }));
+      for (let row = 0; row < matrix.length; row++) for (let col = 0; col < cols; col++) {
+        const td = table.rows[row].cells[col], cell = rows[row]?.cells[col];
+        td.dataset.row = row; td.dataset.col = col;
+        td.style.textAlign = parsed.aligns[col] || 'left';
+        const editing = this.canEdit && active?.row === row && active?.col === col;
+        td.classList.toggle('cm-md-cell-active', editing);
+        let input = td.querySelector('textarea');
+        if (editing) {
+          if (!input) {
+            input = document.createElement('textarea'); input.className = 'cm-md-cell-editor'; input.rows = 1;
+            input.setAttribute('aria-label', `表格第${row + 1}行第${col + 1}列`); td.replaceChildren(input);
+            input.addEventListener('input', () => {
+              const widget = wrap._tableWidget;
+              if (!widget.canEdit || view.state.readOnly) return;
+              const current = tableCellRanges(widget.src, widget.from)[row]?.cells[col];
+              if (!current) return;
+              const value = tableCellEncode(input.value), anchor = tableCellEncode(input.value.slice(0, input.selectionStart)).length,
+                head = tableCellEncode(input.value.slice(0, input.selectionEnd)).length;
+              wrap._typing = true;
+              try { view.dispatch({ changes: { from: current.from, to: current.to, insert: value },
+                selection: input.selectionDirection === 'backward' ? {anchor:current.from+head,head:current.from+anchor}
+                  : { anchor: current.from + anchor, head: current.from + head }, userEvent: 'input.type' }); }
+              finally { wrap._typing = false; }
+              if (view.state.doc.sliceString(current.from,current.from+value.length) !== value) wrap._tableWidget.renderCells(wrap,view);
+              input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; view.requestMeasure();
+            });
+            input.addEventListener('select', () => {
+              if (wrap._typing || wrap._syncing || !input.isConnected) return;
+              const widget = wrap._tableWidget, current = tableCellRanges(widget.src, widget.from)[row]?.cells[col];
+              if (!current) return;
+              const anchor = current.from + tableCellEncode(input.value.slice(0,input.selectionStart)).length,
+                head = current.from + tableCellEncode(input.value.slice(0,input.selectionEnd)).length;
+              if (view.state.selection.main.from !== anchor || view.state.selection.main.to !== head)
+                view.dispatch({ selection: input.selectionDirection === 'backward' ? {anchor:head,head:anchor} : { anchor, head }, userEvent: 'select' });
+            });
+            input.addEventListener('paste', e => {
+              const text = e.clipboardData?.getData('text/plain');
+              if (!text?.includes('\t')) return;
+              e.preventDefault(); e.stopPropagation();
+              const widget = wrap._tableWidget, matrix = tableCellRanges(widget.src, widget.from).map(r => r.cells.map(c => c.text)),
+                aligns = parseTable(widget.src).aligns, pasted = text.replace(/\r\n?/g,'\n').replace(/\n$/,'').split('\n').map(r => r.split('\t'));
+              pasted.forEach((values, i) => {
+                while (matrix.length <= row + i) matrix.push([]);
+                values.forEach((value,j) => { matrix[row+i][col+j]=tableCellEncode(value); });
+              });
+              widget.replace(view,matrix,aligns,row,col);
+            });
+            input.addEventListener('keydown', e => {
+              if (e.isComposing || e.keyCode === 229) return;
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                e.preventDefault(); e.stopPropagation(); (e.shiftKey ? Commands.redo : Commands.undo)(view); focusTableEditor(view); return;
+              }
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); e.stopPropagation(); Commands.redo(view); focusTableEditor(view); return; }
+              if (e.key === 'Tab' || e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault(); e.stopPropagation(); wrap._tableWidget.move(view, row, col, e.key === 'Tab' ? (e.shiftKey ? -1 : 1) : 0, e.key === 'Enter' ? 1 : 0);
+              } else if (e.key === 'Escape') {
+                e.preventDefault(); e.stopPropagation(); const widget = wrap._tableWidget, pos = widget.from + widget.src.length;
+                view.dispatch(pos === view.state.doc.length ? { changes: {from:pos,insert:'\n\n'},selection:{anchor:pos+2},userEvent:'input.table' }
+                  : {selection:{anchor:pos+1}}); view.focus();
+              } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
+                (['ArrowUp','ArrowDown'].includes(e.key) || input.selectionStart === input.selectionEnd &&
+                  (e.key === 'ArrowLeft' && input.selectionStart === 0 || e.key === 'ArrowRight' && input.selectionEnd === input.value.length))) {
+                e.preventDefault(); e.stopPropagation();
+                wrap._tableWidget.move(view,row,col,e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0,e.key==='ArrowUp'?-1:e.key==='ArrowDown'?1:0,false);
+              } else if (e.key === 'Enter') {
+                e.preventDefault(); e.stopPropagation(); input.setRangeText('<br>',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new Event('input'));
+              }
+            });
+          }
+          if (!wrap._typing) {
+            wrap._syncing = true;
+            if (input.value !== cell.text) input.value = cell.text;
+            input.setSelectionRange(Math.max(0, this.selection.from - cell.from), Math.max(0, this.selection.to - cell.from),
+              this.selection.anchor > this.selection.head ? 'backward' : 'forward');
+            wrap._syncing = false;
+          }
+        } else {
+          const value = matrix[row][col] || '';
+          if (input || td._value !== value) { td.replaceChildren(cellInline(value)); td._value = value; }
+        }
+      }
+    }
+    replace(view, matrix, aligns, row, col) {
+      if (!this.canEdit || view.state.readOnly || view.state.doc.sliceString(this.from, this.from + this.src.length) !== this.src) return;
+      const built = buildTable(matrix, aligns, true), line = view.state.doc.lineAt(this.from), indent = /^[ \t]*/.exec(line.text)[0];
+      if (indent) built.text = (line.from === this.from ? indent : '') + built.text.split('\n').join('\n' + indent);
+      const target = tableCellRanges(built.text, this.from)[row]?.cells[col];
+      if (!target) return;
+      view.dispatch({ changes: { from: this.from, to: this.from + this.src.length, insert: built.text },
+        selection: { anchor: target.from, head: target.to }, userEvent: 'input.table', scrollIntoView: true });
+      focusTableEditor(view);
+    }
+    move(view, row, col, dc, dr, add = true) {
+      const matrix = tableCellRanges(this.src, this.from).map(r => r.cells.map(c => c.text)), aligns = parseTable(this.src).aligns;
+      const cols = Math.max(...matrix.map(r => r.length)); matrix.forEach(r => { while(r.length < cols) r.push(''); });
+      row += dr; col += dc;
+      if (col >= cols) { col = 0; row++; } if (col < 0) { col = cols - 1; row--; }
+      if (row < 0) { view.dispatch({ selection: { anchor: Math.max(0,this.from - 1) } }); view.focus(); return; }
+      const target = tableCellRanges(this.src, this.from)[row]?.cells[col];
+      if (target) {
+        view.dispatch({ selection: { anchor: target.from, head: target.to }, userEvent: 'select', scrollIntoView: true });
+        focusTableEditor(view);
+      } else {
+        if (!add && row >= matrix.length) { view.dispatch({selection:{anchor:Math.min(view.state.doc.length,this.from+this.src.length+1)}});view.focus();return; }
+        if (row >= matrix.length) matrix.push(new Array(cols).fill(''));
+        this.replace(view, matrix, aligns, row, col);
+      }
+    }
+    menu(view, wrap, cell, event) {
+      const menu = document.getElementById('ctx-menu'); if (!menu || !this.canEdit) return;
+      const snapshot = this.src, start = this.from, row = Number(cell.dataset.row), col = Number(cell.dataset.col);
+      menu.replaceChildren();
+      const add = (label, fn) => {
+        const item = document.createElement('div'); item.className = 'ctx-item'; item.textContent = label;
+        item.onclick = () => {
+          menu.classList.add('hidden'); const widget = wrap._tableWidget;
+          if (!wrap.isConnected || widget.src !== snapshot || widget.from !== start) return;
+          const matrix = tableCellRanges(widget.src, widget.from).map(r => r.cells.map(c => c.text)), aligns = parseTable(widget.src).aligns;
+          const cols = Math.max(...matrix.map(r => r.length)); matrix.forEach(r => { while(r.length < cols) r.push(''); });
+          const target = fn(matrix, aligns, cols); if (target) widget.replace(view, matrix, aligns, ...target);
+        }; menu.append(item);
+      };
+      add('⬆️ 在上方插入行', (m,a,n) => { const at=Math.max(1,row);m.splice(at,0,new Array(n).fill(''));return [at,col]; });
+      add('⬇️ 在下方插入行', (m,a,n) => { m.splice(row+1,0,new Array(n).fill(''));return [row+1,col]; });
+      if (row > 0) add('🗑️ 删除行', m => {m.splice(row,1);return [Math.min(row,m.length-1),col];});
+      for (const [label,at] of [['⬅️ 在左侧插入列',col],['➡️ 在右侧插入列',col+1]])
+        add(label,(m,a)=>{m.forEach(r=>r.splice(at,0,''));a.splice(at,0,'');return [row,at];});
+      add('🗑️ 删除列',(m,a,n)=>{if(n<=1)return; m.forEach(r=>r.splice(col,1));a.splice(col,1);return [row,Math.min(col,n-2)];});
+      for(const [label,align] of [['左对齐','left'],['居中对齐','center'],['右对齐','right']])
+        add(label,(m,a)=>{a[col]=align;return [row,col];});
+      menu.classList.remove('hidden');
+      menu.style.left = Math.max(0,Math.min(event.clientX,window.innerWidth-220))+'px';
+      menu.style.top = Math.max(0,Math.min(event.clientY,window.innerHeight-menu.offsetHeight))+'px';
     }
     toDOM(view) {
       const parsed = parseTable(this.src);
       const wrap = document.createElement('div');
       wrap.className = 'cm-md-table';
+      wrap.contentEditable = 'false';
       if (!parsed) { wrap.textContent = this.src; return wrap; }
-      const cols = Math.max(parsed.head.length, ...parsed.rows.map((r) => r.length));
-      const table = document.createElement('table');
-      const thead = document.createElement('thead');
-      const htr = document.createElement('tr');
-      for (let i = 0; i < cols; i++) {
-        const th = document.createElement('th');
-        if (parsed.aligns[i]) th.style.textAlign = parsed.aligns[i];
-        th.appendChild(cellInline(parsed.head[i] != null ? parsed.head[i] : ''));
-        htr.appendChild(th);
-      }
-      thead.appendChild(htr); table.appendChild(thead);
-      const tbody = document.createElement('tbody');
-      for (const r of parsed.rows) {
-        const tr = document.createElement('tr');
-        for (let i = 0; i < cols; i++) {
-          const td = document.createElement('td');
-          if (parsed.aligns[i]) td.style.textAlign = parsed.aligns[i];
-          td.appendChild(cellInline(r[i] != null ? r[i] : ''));
-          tr.appendChild(td);
-        }
-        tbody.appendChild(tr);
-      }
-      table.appendChild(tbody); wrap.appendChild(table);
+      const table = document.createElement('table'); wrap.append(table);
+      this.renderCells(wrap, view);
       // 复制整表（TSV —— 能直接粘进 Excel / 表格软件）
       const btn = document.createElement('button');
       btn.className = 'cm-md-tablecopy';
@@ -844,7 +963,8 @@ window.MdEditor = (() => {
       btn.addEventListener('mousedown', (e) => e.preventDefault());
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const tsv = [parsed.head, ...parsed.rows].map((r) => r.join('\t')).join('\n');
+        const current = parseTable(wrap._tableWidget.src);
+        const tsv = [current.head, ...current.rows].map((r) => r.join('\t')).join('\n');
         let ok = false;
         try { await navigator.clipboard.writeText(tsv); ok = true; } catch {}
         btn.textContent = ok ? '已复制' : '失败';
@@ -857,19 +977,30 @@ window.MdEditor = (() => {
         wrap.addEventListener('mousedown', (e) => {
           const cell = e.target && e.target.closest ? e.target.closest('th,td') : null;
           if (!cell) return; // 复制按钮等：走默认行为
-          const pos = this.cellPos(cell);
-          if (pos == null) return;
+          if (e.target.closest('textarea')) { e.stopPropagation(); return; }
+          const widget = wrap._tableWidget;
+          if (!widget.canEdit) return;
+          const target = tableCellRanges(widget.src, widget.from)[Number(cell.dataset.row)]?.cells[Number(cell.dataset.col)];
+          const pos = target?.from;
+          if (pos == null) {
+            e.preventDefault();e.stopPropagation();
+            const matrix=tableCellRanges(widget.src,widget.from).map(r=>r.cells.map(c=>c.text));
+            widget.replace(view,matrix,parseTable(widget.src).aligns,Number(cell.dataset.row),Number(cell.dataset.col));return;
+          }
           e.preventDefault();
           e.stopPropagation();
-          view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
-          view.focus();
+          view.dispatch({ selection: { anchor: pos, head: target.to }, scrollIntoView: true });
+          focusTableEditor(view);
         }, true);
+        wrap.addEventListener('contextmenu', e => {
+          const cell = e.target.closest('th,td'); if (!cell) return;
+          e.preventDefault(); e.stopPropagation(); wrap._tableWidget.menu(view, wrap, cell, e);
+        });
       }
       return wrap;
     }
-    // false = 事件穿透：点表格 → CM6 把光标放进表内 → 装饰器重算 → 自动切成可编辑的源码态
-    // （精确到单元格的位置由上面的 mousedown 捕获处理）
-    ignoreEvent() { return false; }
+    // 单元格拥有原生选区，不能让外层CM再把同一次事件按整块边界处理。
+    ignoreEvent() { return true; }
   }
 
   // ---------- Mermaid 图 widget（```mermaid 围栏 → SVG 实时渲染） ----------
@@ -1016,7 +1147,7 @@ window.MdEditor = (() => {
   // 规则：光标行不装饰（显示源码）；其余行隐藏标记 + 内容加渲染样式。
   // 块级渲染方式（关键：CM6 高度模型必须与 DOM 一致，否则点击偏移）：
   //   围栏行/表格分隔行 → block replace（含换行符）真移除该行；
-  //   表格 → block widget 真表格（光标进入回退源码）；
+  //   表格 → block widget 网格编辑（当前单元格绑定源文本选区）；
   //   分隔线 → inline widget 画线（行高不变）；
   //   行间距一律用 padding 不用 margin（CM6 行高测量不含 margin）。
   // 禁止用 CSS line-height:0 压缩行高 —— 0 高行不进 heightmap，点击会系统性偏移。
@@ -1286,17 +1417,17 @@ window.MdEditor = (() => {
               }
               return;
             }
-            // 表格：逐行线框渲染（Obsidian 式行常渲染）—— 光标进单元格不整块退化源码。
+            // 表格保持网格；引用内无法安全重写的表格沿用逐行编辑。
             // 表头行/数据行保持行样式（背景/边框/圆角），| 常显弱化，分隔行压缩成细线。
             if (name === 'Table') {
               const first = doc.lineAt(node.from), last = doc.lineAt(node.to);
-              // 光标不在表内 → 整块渲染成真表格（TableWidget）；光标进入 → 落到下面的逐行源码态
-              // （所以"点一下表格就能编辑单元格"这条体验没丢，只是不再常显源码符号）
-              if (!(last.to < selHeadLine.from || first.from > selHeadLine.to)) { /* 光标在表内：源码态（只看 head，选区经过不算）*/ }
-              else {
+              // 引用内表格保留源码编辑，避免改写时丢掉引用前缀。
+              if (!/^\s*>/.test(first.text)) {
                 const tsrc = doc.sliceString(node.from, node.to);
                 if (parseTable(tsrc)) {
-                  decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc, node.from) }).range(node.from, node.to));
+                  const selection = state.selection.main.head >= node.from && state.selection.main.head <= node.to ? state.selection.main : null;
+                  decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc, node.from, selection,
+                    !state.readOnly && state.facet(EditorView.editable)) }).range(node.from, node.to));
                   return;
                 }
               }
@@ -1506,7 +1637,8 @@ window.MdEditor = (() => {
     update(value, tr) {
       // 折叠/展开也要重建：标题折叠箭头的 ▾/▸ 方向随折叠状态翻转
       const foldToggled = tr.effects.some((e) => e.is(Language.foldEffect) || e.is(Language.unfoldEffect));
-      if (tr.docChanged || tr.selection || foldToggled || tr.effects.some((e) => e.is(liveRefresh))) {
+      if (tr.docChanged || tr.selection || foldToggled || tr.state.readOnly !== tr.startState.readOnly
+        || tr.state.facet(EditorView.editable) !== tr.startState.facet(EditorView.editable) || tr.effects.some((e) => e.is(liveRefresh))) {
         return buildDecorations(tr.state);
       }
       return value;
@@ -1981,14 +2113,14 @@ window.MdEditor = (() => {
     return {
       view,
       setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
-      focus() { view.focus(); },
+      focus() { view.focus(); focusTableEditor(view); },
       insertMarkdown(kind) {
         if (view.state.readOnly || opts.canEdit && !opts.canEdit()) return false;
         const range = view.state.selection.main;
         const plan = insertion(view.state.doc.toString(), range.from, range.to, kind);
         view.dispatch({ changes: { from: plan.from, to: plan.to, insert: plan.insert },
           selection: { anchor: plan.anchor, head: plan.head }, scrollIntoView: true, userEvent: 'input.markdown' });
-        view.focus(); return true;
+        view.focus(); focusTableEditor(view); return true;
       },
       getValue() { return view.state.doc.toString(); },
       getState() { return view.state; },
