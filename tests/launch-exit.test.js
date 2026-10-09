@@ -17,6 +17,12 @@ function fixture(responses=[success()], decisions=[{response:1}]) {
 }
 async function test(name,run){await run();passed++;console.log('  ok '+name);}
 (async()=>{
+  await test('明确保留服务可关闭窗口，未确认结果仍如实保留且不重复停止',async()=>{
+    const bad=failure(),f=fixture([bad],[{response:2}]);const result=await f.coordinator.request();
+    assert(result.ok&&result.unresolved);assert.equal(result.result,bad);assert.equal(f.quits,1);assert.equal(f.calls,1);
+    assert(f.coordinator.isAllowed());assert(!f.emit(f.win,'close').prevented);
+    assert.deepEqual(f.dialogs[0][1].buttons,['重试','取消退出','保留服务并退出']);
+  });
   await test('close与before-quit同步取消默认退出，共享单个等待请求；未决不提前关窗',async()=>{
     const hold=gate(),f=fixture([hold.promise]);assert(f.emit(f.win,'close').prevented);assert(f.emit(f.app,'before-quit').prevented);f.emit(f.app,'window-all-closed');
     const pending=f.coordinator.request();assert.equal(f.coordinator.request(),pending);await tick();assert.equal(f.calls,1);assert.equal(f.quits,0);assert.deepEqual(f.holds,[true]);

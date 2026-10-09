@@ -10,8 +10,8 @@ function createExitCoordinator({ app, service, dialog, getWindow, report = () =>
     const items = result && Array.isArray(result.results) ? result.results.filter(item => !item || item.ok !== true) : [];
     const detail = items.length ? items.map(item => item ? String(item.name || item.id || '终端') + '：' + String(item.error || '停止未确认') : '服务返回无效条目').join('\n') : '启动服务没有返回完整的退出确认';
     const options = { type: 'warning', title: '终端停止尚未确认', message: 'MyIDE 仍保持打开，终端停止或后台保留尚未确认。',
-      detail: detail.slice(0, 8000) + '\n\n可重试，或取消退出后查看日志与后台保留设置。已确认停止的终端不会自动重新启动。',
-      buttons: ['重试', '取消退出'], defaultId: 1, cancelId: 1, noLink: true };
+      detail: detail.slice(0, 8000) + '\n\n可重试，或取消退出后查看日志。选择「保留服务并退出」会让未确认停止的服务继续运行，并保留现有运行记录。已确认停止的终端不会自动重新启动。',
+      buttons: ['重试', '取消退出', '保留服务并退出'], defaultId: 1, cancelId: 1, noLink: true };
     const window = getWindow();
     return window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options);
   }
@@ -31,6 +31,10 @@ function createExitCoordinator({ app, service, dialog, getWindow, report = () =>
         let response;
         try { response = await failure(result); }
         catch (error) { report({ ok: false, error: '退出失败提示无法显示：' + String(error && error.message || error) }); reset(); return { ok: false }; }
+        // 用户明确选择保留才放行；不能把停止失败写成成功，也不清理未确认的运行记录。
+        if (response && response.response === 2) {
+          allowed = true; app.quit(); return { ok: true, unresolved: true, result };
+        }
         if (!response || response.response !== 0) { reset(); return { ok: false, canceled: true, result }; }
       }
     }).catch(error => { reset(); report({ ok: false, error: String(error && error.message || error) }); return { ok: false }; })

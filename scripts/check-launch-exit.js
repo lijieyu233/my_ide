@@ -3,7 +3,7 @@ const { app, BrowserWindow, dialog } = require('electron');
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const option = name => process.argv.find(value => value.startsWith('--'+name+'='))?.slice(name.length+3);
 const home = option('fixture-home'), mode = option('fixture-mode');
-if (!home || !['stop','cancel','retry','keep'].includes(mode)) throw Error('fixture参数缺失');
+if (!home || !['stop','cancel','retry','keep','leave'].includes(mode)) throw Error('fixture参数缺失');
 os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
 const output = path.join(__dirname, '..', '.ui-check-trash', 'launch-exit-'+mode+'-'+process.pid); fs.mkdirSync(output, {recursive:true});
 const service = require('../launch-service'); service.setConfigDir(path.join(home, '.myide'));
@@ -19,7 +19,7 @@ service.shutdown = async () => {
   calls++;
   if(calls===1 && mode!=='keep'){
     await new Promise(resolve => {release=resolve;});
-    if(mode==='cancel'||mode==='retry')return {ok:false,failed:1,results:[{id:entry.id,name:entry.name,ok:false,error:'fixture停止未确认：保留窗口与运行记录'}]};
+    if(mode==='cancel'||mode==='retry'||mode==='leave')return {ok:false,failed:1,results:[{id:entry.id,name:entry.name,ok:false,error:'fixture停止未确认：保留窗口与运行记录'}]};
   }
   return actualShutdown();
 };
@@ -30,7 +30,7 @@ app.on('will-quit', event => {
   try {
     check('真实退出前窗口已关闭', !win || win.isDestroyed());
     const state=JSON.parse(fs.readFileSync(service.paths().stateFile,'utf8'));
-    if(mode==='keep'){
+    if(mode==='keep'||mode==='leave'){
       check('后台保留退出不停止自有进程', (()=>{try{process.kill(pid,0);return true;}catch{return false;}})());
       check('后台保留完整身份可供下次核验', !!state[entry.id]?.identity?.createdAt && !!state[entry.id]?.launchId);
     }else{
@@ -48,6 +48,7 @@ app.whenReady().then(async()=>{
     await wait(()=>win.webContents.executeJavaScript('!!window.App && !!window.myIDE.launch'));
     win.setContentSize(1100,760);check('生产窗口隐藏且用户目录隔离',!win.isVisible()&&app.getPath('userData').startsWith(home));
     const result=await service.startEntry(entry);assert(result.ok);pid=result.pid;
+    assert.equal(result.ownership,'owned','启动后须采集完整身份');
     await wait(()=>service.getLogs(entry.id).lines.some(line=>line.includes('退出验证自有运行')));
     await win.webContents.executeJavaScript('App.showTool("launch");LaunchPanel.refresh()');
     await win.webContents.executeJavaScript('document.querySelector(".launch-card[data-id=exit-owned]").click()');
@@ -61,6 +62,10 @@ app.whenReady().then(async()=>{
     if(mode==='stop')return;
     await wait(()=>dialogs.length===1);check('失败提示父窗口仍存活',dialogs[0][0]===win&&!win.isDestroyed());
     check('失败具体原因和默认取消按钮完整',dialogs[0].at(-1).detail.includes('fixture停止未确认')&&dialogs[0].at(-1).defaultId===1&&dialogs[0].at(-1).cancelId===1);
+    if(mode==='leave'){
+      check('失败后提供明确保留服务退出入口',dialogs[0].at(-1).buttons[2]==='保留服务并退出');
+      choose({response:2});return;
+    }
     win.close();app.quit();await sleep(40);check('提示未决时重复退出不叠加提示',dialogs.length===1&&calls===1);
     fs.writeFileSync(path.join(output,'failure-window.png'),(await win.webContents.capturePage()).toPNG());
     if(mode==='retry'){choose({response:0});return;}

@@ -13,7 +13,7 @@ const invoke=(mode,home)=>new Promise(resolve=>{
 });
 (async()=>{
   let total=0;
-  for(const mode of ['stop','cancel','retry','keep']){
+  for(const mode of (process.argv.includes('--leave-only') ? ['leave'] : ['stop','cancel','retry','keep','leave'])){
     const home=fs.mkdtempSync(path.join(os.tmpdir(),'myide-launch-exit-'+mode+'-'));let safe=false;
     try{
       const result=await invoke(mode,home);console.log(result.stdout);if(result.error)throw Error(mode+': '+result.error.message+'\n'+result.stderr);
@@ -23,7 +23,7 @@ const invoke=(mode,home)=>new Promise(resolve=>{
       });
       assert(output,'退出报告缺失');const report=JSON.parse(fs.readFileSync(path.join(output,'report.json'),'utf8'));assert.equal(report.failed,0);total+=report.passed;
       service.setConfigDir(path.join(home,'.myide'));service.setExitPending(false);
-      if(mode==='keep'){
+      if(mode==='keep'||mode==='leave'){
         const state=JSON.parse(fs.readFileSync(service.paths().stateFile,'utf8'));assert.equal(state[report.entry.id].pid,report.pid);
         const descendants=state[report.entry.id].descendants;assert(descendants?.length,'Node子进程身份未落盘');
         assert.equal((await service.aliveEntry(report.entry)).ownership,'owned');assert.equal((await service.stopEntry(report.entry)).ok,true);
@@ -33,7 +33,7 @@ const invoke=(mode,home)=>new Promise(resolve=>{
       safe=true;
     }finally{
       if(!safe){try{service.setConfigDir(path.join(home,'.myide'));service.setExitPending(false);const cfg=service.loadConfig();safe=(await service.stopEntry(cfg.entries[0])).ok===true;}catch{}}
-      if(safe){const resolved=fs.realpathSync(home);assert.equal(path.dirname(resolved),fs.realpathSync(os.tmpdir()));assert(path.basename(resolved).startsWith('myide-launch-exit-'));fs.rmSync(resolved,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+      if(safe){const resolved=fs.realpathSync(home);assert.equal(path.dirname(resolved),fs.realpathSync(os.tmpdir()));assert(path.basename(resolved).startsWith('myide-launch-exit-'));fs.rmSync(resolved,{recursive:true,force:true,maxRetries:30,retryDelay:200});}
     }
   }
   console.log('退出生产生命周期：'+total+' 通过 / 0 失败');
