@@ -4,7 +4,7 @@ const { Server, utils } = require('ssh2');
 const { STATUS_CODE: S, flagsToString } = utils.sftp;
 async function start(root, options = {}) {
   const key = options.key || generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
-  const clients = new Set(), shells = [], control = { failWrite: false, delayWrite: 0 };
+  const clients = new Set(), shells = [], control = { failWrite: false, delayWrite: 0, directoryEntries: new Map(), readDirBatchSize: 0, delayReadDir: 0, failReadDir: false, activeReads: 0, maxActiveReads: 0, readDirCalls: 0, closedDirs: 0 };
   const resolve = p => { const dest = path.resolve(root, '.' + path.posix.resolve('/', p)); if (dest !== root && !dest.startsWith(root + path.sep)) throw Error('越界'); return dest; };
   const attrs = p => { const s = typeof p === 'number' ? fs.fstatSync(p) : fs.lstatSync(p); return { mode: s.mode, uid: 0, gid: 0, size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000) }; };
   const server = new Server({ hostKeys: [key] }, client => {
@@ -27,8 +27,13 @@ async function start(root, options = {}) {
         const get = b => { const h = handles.get(b.toString('hex')); if (!h) throw Error('句柄无效'); return h; };
         wrap('REALPATH', (id, p) => sftp.name(id, [{ filename: path.posix.resolve('/', p), longname: p, attrs: attrs(resolve(p)) }]));
         for (const op of ['STAT', 'LSTAT']) wrap(op, (id, p) => sftp.attrs(id, attrs(resolve(p))));
-        wrap('OPENDIR', (id, p) => handle(id, { dir: resolve(p), sent: false }));
-        wrap('READDIR', (id, h) => { const entry = get(h); if (entry.sent) return sftp.status(id, S.EOF); entry.sent = true; const files = fs.readdirSync(entry.dir).map(n => ({ filename: n, longname: n, attrs: attrs(path.join(entry.dir, n)) })); if (files.length) sftp.name(id, files); else sftp.status(id, S.EOF); });
+        wrap('OPENDIR', (id, p) => handle(id, { dir: resolve(p), offset: 0, entries: control.directoryEntries.get(path.posix.resolve('/', p)) }));
+        wrap('READDIR', (id, h) => {
+          const entry = get(h); entry.entries ||= fs.readdirSync(entry.dir).map(n => ({ filename: n, longname: n, attrs: attrs(path.join(entry.dir, n)) }));
+          const files = entry.entries.slice(entry.offset, entry.offset + (control.readDirBatchSize || entry.entries.length)); entry.offset += files.length;
+          control.readDirCalls++; control.activeReads++; control.maxActiveReads = Math.max(control.maxActiveReads, control.activeReads);
+          setTimeout(() => { control.activeReads--; if (sftp.destroyed) return; if (control.failReadDir) sftp.status(id, S.FAILURE, '模拟目录读取失败'); else if (files.length) sftp.name(id, files); else sftp.status(id, S.EOF); }, typeof control.delayReadDir === 'function' ? control.delayReadDir(files, entry.offset) : control.delayReadDir);
+        });
         wrap('OPEN', (id, p, flags, a) => handle(id, { fd: fs.openSync(resolve(p), flagsToString(flags), a.mode || 0o600) }));
         wrap('FSTAT', (id, h) => sftp.attrs(id, attrs(get(h).fd)));
         wrap('FSETSTAT', (id, h, a) => { if (a.size !== undefined) fs.ftruncateSync(get(h).fd, a.size); sftp.status(id, S.OK); });
@@ -38,7 +43,7 @@ async function start(root, options = {}) {
           const fd = get(h).fd; fs.writeSync(fd, data, 0, data.length, offset);
           setTimeout(() => { if (!sftp.destroyed) sftp.status(id, S.OK); }, control.delayWrite);
         });
-        wrap('CLOSE', (id, h) => { const entry = get(h); if (entry.fd !== undefined) fs.closeSync(entry.fd); handles.delete(h.toString('hex')); sftp.status(id, S.OK); });
+        wrap('CLOSE', (id, h) => { const entry = get(h); if (entry.fd !== undefined) fs.closeSync(entry.fd); else control.closedDirs++; handles.delete(h.toString('hex')); sftp.status(id, S.OK); });
         wrap('MKDIR', (id, p) => { fs.mkdirSync(resolve(p)); sftp.status(id, S.OK); });
         wrap('RMDIR', (id, p) => { fs.rmdirSync(resolve(p)); sftp.status(id, S.OK); });
         wrap('REMOVE', (id, p) => { fs.unlinkSync(resolve(p)); sftp.status(id, S.OK); });

@@ -46,11 +46,12 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   const sessionView = s => ({ id: s.id, profileId: s.profile.id, name: s.profile.name, state: s.state, error: s.error || '', home: s.home || '/' });
   const reportSession = s => emit({ type: 'session', session: sessionView(s) });
   const session = id => { const s = sessions.get(id); if (!s || s.state !== 'connected') throw Error('SSH连接已断开，请重新连接'); return s; };
-  const request = (s, operation, ...args) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(Error('SFTP操作超时')), 30000);
+  const requestFor = (s, operation, args, timeout = 30000) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Error('SFTP操作超时')), timeout);
     try { s.sftp[operation](...args, (error, result) => { clearTimeout(timer); error ? reject(error) : resolve(result); }); }
     catch (error) { clearTimeout(timer); reject(error); }
   });
+  const request = (s, operation, ...args) => requestFor(s, operation, args);
   async function connect(profileId, credentials = {}) {
     if (disposed) throw Error('远程服务已关闭');
     const profile = read().profiles.find(p => p.id === profileId); if (!profile) throw Error('服务器配置不存在');
@@ -66,6 +67,7 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
       for (const terminal of s.terminals.values()) { terminal.channel.destroy(); emit({ type: 'terminal-close', sessionId: s.id, terminalId: terminal.id }); }
       for (const job of jobs.values()) if (job.sessionId === s.id && ['running', 'queued'].includes(job.state)) cancel(job.id);
     };
+    client.on('connect', () => client.setNoDelay?.(true));
     client.on('error', error => { end(error); client.destroy(); }); client.on('close', () => end());
     try {
       await new Promise((resolve, reject) => {
@@ -121,7 +123,29 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   function resize(id, tid, cols, rows) { if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 1000 || rows > 500) throw Error('终端尺寸无效'); terminal(id, tid).channel.setWindow(rows, cols, 0, 0); }
   function ack(id, tid, seq) { const t = sessions.get(id)?.terminals.get(tid); if (!t) return; const bytes = t.pending.get(seq); if (bytes === undefined) return; t.pending.delete(seq); t.inflight -= bytes; if (t.inflight < 65536) { t.channel.resume(); t.channel.stderr?.resume(); } }
   function closeTerminal(id, tid) { sessions.get(id)?.terminals.get(tid)?.channel.close(); }
-  async function list(id, target) { const s = session(id), directory = remotePath(target); const entries = await request(s, 'readdir', directory); if (entries.length > 10000) throw Error('目录超过10000项，请选择更小的目录'); return { path: directory, entries: entries.filter(e => e.filename !== '.' && e.filename !== '..').map(e => ({ name: e.filename, path: posix.join(directory, e.filename), directory: e.attrs.isDirectory(), link: e.attrs.isSymbolicLink(), size: e.attrs.size, mtime: e.attrs.mtime, mode: e.attrs.mode })) }; }
+  async function readDirectory(s, directory) {
+    const deadline = Date.now() + 30000, send = (op, ...args) => requestFor(s, op, args, Math.max(1, deadline - Date.now()));
+    const handle = await send('opendir', directory), entries = [];
+    let stopped = false, failure = null;
+    // ssh2 的路径版 readdir 逐批等待一趟网络往返；8 个在途请求降低大目录延迟，EOF 后先收齐在途批次再关句柄。
+    const worker = async () => {
+      while (!stopped) {
+        let batch;
+        try { batch = await send('readdir', handle); }
+        catch (error) { stopped = true; if (error.code !== 1) failure ||= error; return; }
+        entries.push(...batch.filter(e => e.filename !== '.' && e.filename !== '..'));
+        if (entries.length > 10000) { stopped = true; failure ||= Error('目录超过10000项，请选择更小的目录'); }
+      }
+    };
+    await Promise.all(Array.from({ length: 8 }, () => worker().catch(error => { stopped = true; failure ||= error; })));
+    try { await send('close', handle); } catch (error) { failure ||= error; }
+    if (failure) throw failure;
+    return entries;
+  }
+  async function list(id, target) {
+    const s = session(id), directory = remotePath(target), entries = await readDirectory(s, directory);
+    return { path: directory, entries: entries.map(e => ({ name: e.filename, path: posix.join(directory, e.filename), directory: e.attrs.isDirectory(), link: e.attrs.isSymbolicLink(), size: e.attrs.size, mtime: e.attrs.mtime, mode: e.attrs.mode })) };
+  }
   async function mkdir(id, target) { await request(session(id), 'mkdir', remotePath(target)); }
   async function rename(id, target, name) { target = remotePath(target); if (target === '/') throw Error('不能重命名根目录'); const s = session(id), dest = posix.join(posix.dirname(target), nameOf(name)); if (await statMaybe(s, dest)) throw Error('目标已存在'); await request(s, 'rename', target, dest); }
   async function removeFile(id, target) { const s = session(id); target = remotePath(target); if (target === '/') throw Error('不能删除根目录'); const stat = await request(s, 'lstat', target); await request(s, stat.isDirectory() ? 'rmdir' : 'unlink', target); }

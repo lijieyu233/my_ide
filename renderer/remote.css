@@ -68,3 +68,7 @@
 /* 按工作区实际宽度切换，右侧 AI 或加宽侧栏同样可能挤小文件区。 */
 @container (max-width:42em) { #remote-files { grid-template-columns:minmax(0,1fr); }.remote-workspace-bar { gap:.3em; }.remote-session-picker { width:100%; padding-bottom:.5em; }#remote-sessions { flex:1; max-width:none; }.remote-toolbar { padding:.7em 1em; }#remote-files { padding-inline:1em; }#remote-transfers { max-height:7em; }#remote-notice.error { flex-basis:calc(100% - 12em); } }
 @container (max-width:30em) { .remote-terminal-footer span:last-child { display:none; }.remote-session-picker>span { display:none; }#remote-transfers summary { gap:.4em; }#remote-transfer-summary { flex-basis:6em; }#remote-clear-transfers { margin-left:auto; } }
+
+/* 虚拟文件行保持现有 2.6em 行高，随工具字号变化；滚动占位不参与子行布局。 */
+.remote-file-window { position:relative; width:100%; }
+.remote-file-window>.remote-file { position:absolute; left:0; height:2.6em; min-height:0; }

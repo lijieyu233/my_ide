@@ -161,11 +161,35 @@ window.RemotePanel = (() => {
   function selectTerminal(id) { activeTerm = id; const t = terminals.get(id); if (t) { const changed = sid !== t.sid; sid = t.sid; selected = sessions.get(sid)?.profileId || selected; renderSessions(); if (changed) { panes.remote.serial++; panes.remote.entries = []; panes.remote.selected.clear(); panes.remote.path = current()?.home || ''; renderPane('remote'); if (connected()) void browse('remote', panes.remote.path).catch(error => notify(error.message, true)); } } mode = 'terminal'; renderMode(); renderTerminals(); if (t) requestFit(); }
   function renderMode() { q('remote-files').classList.toggle('hidden', mode !== 'files'); q('remote-terminal-area').classList.toggle('hidden', mode !== 'terminal'); for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).classList.toggle('active', mode === tab); }
   function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
+  const fileNames = new Intl.Collator(undefined, { numeric: true });
+  function fileRow(pane, e, top) {
+    return `<button class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"${top === undefined ? '' : ' style="top:' + top + 'px"'}><span>${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span><small>${e.directory ? '目录' : displaySize(e.size)}</small></button>`;
+  }
+  function paintFiles(side) {
+    const pane = panes[side], root = q('remote-' + side + '-pane'), list = root.querySelector('.remote-file-list');
+    if (!pane.virtual || !pane.window) return;
+    const rowHeight = (parseFloat(getComputedStyle(list).fontSize) || 13) * 2.6;
+    const start = Math.max(0, Math.floor(list.scrollTop / rowHeight) - 5), end = Math.min(pane.ordered.length, Math.ceil((list.scrollTop + list.clientHeight) / rowHeight) + 5);
+    const key = start + ':' + end + ':' + rowHeight; if (pane.paintKey === key) return;
+    pane.paintKey = key; pane.rowHeight = rowHeight;
+    const focused = list.contains(document.activeElement) && document.activeElement.closest('[data-path]')?.dataset.path;
+    pane.window.style.height = pane.ordered.length * rowHeight + 'px';
+    // 大目录只创建视口及前后5行，保留全部路径和选择状态；滚动到末尾仍能访问每个文件。
+    pane.window.innerHTML = pane.ordered.slice(start, end).map((e, i) => fileRow(pane, e, (start + i) * rowHeight)).join('');
+    if (focused) ([...list.querySelectorAll('[data-path]')].find(row => row.dataset.path === focused) || list).focus({ preventScroll: true });
+  }
+  function requestFilePaint(side) {
+    const pane = panes[side]; if (pane.frame) return;
+    pane.frame = requestAnimationFrame(() => { pane.frame = 0; paintFiles(side); });
+  }
   function renderPane(side) {
     const pane = panes[side], root = q('remote-' + side + '-pane'); if (!root) return;
     root.querySelector('input').value = pane.path;
-    const entries = [...pane.entries].sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
-    root.querySelector('.remote-file-list').innerHTML = entries.length ? entries.map(e => `<button class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"><span>${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span><small>${e.directory ? '目录' : displaySize(e.size)}</small></button>`).join('') : '<div class="remote-empty">' + (side === 'remote' && !connected() ? '连接服务器后浏览远程文件。' : '此目录没有文件。') + '</div>';
+    pane.ordered = [...pane.entries].sort((a, b) => Number(b.directory) - Number(a.directory) || fileNames.compare(a.name, b.name));
+    pane.byPath = new Map(pane.entries.map(e => [e.path, e])); pane.virtual = pane.entries.length > 200; pane.paintKey = null;
+    const list = root.querySelector('.remote-file-list'); list.scrollTop = 0; list.tabIndex = pane.virtual ? 0 : -1;
+    if (pane.virtual) { list.innerHTML = '<div class="remote-file-window"></div>'; pane.window = list.firstElementChild; paintFiles(side); }
+    else { pane.window = null; list.innerHTML = pane.ordered.length ? pane.ordered.map(e => fileRow(pane, e)).join('') : '<div class="remote-empty">' + (side === 'remote' && !connected() ? '连接服务器后浏览远程文件。' : '此目录没有文件。') + '</div>'; }
     root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项'; controls();
   }
   async function browse(side, target) {
@@ -193,6 +217,18 @@ window.RemotePanel = (() => {
     q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
     for (const side of ['local', 'remote']) {
       const root = q('remote-' + side + '-pane'), pane = panes[side];
+      const list = root.querySelector('.remote-file-list'); list.onscroll = () => requestFilePaint(side);
+      if (window.ResizeObserver) new ResizeObserver(() => requestFilePaint(side)).observe(list);
+      root.onkeydown = attempt(async event => {
+        if (event.target !== list && !event.target.closest('[data-path]')) return;
+        const path = event.target.closest('[data-path]')?.dataset.path || [...pane.selected].at(-1), index = pane.ordered.findIndex(e => e.path === path);
+        if (event.key === 'Enter') { const entry = pane.byPath.get(path); if (entry?.directory && !entry.link) { event.preventDefault(); event.stopPropagation(); await browse(side, entry.path); } return; }
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? pane.ordered.length - 1 : event.key === 'ArrowDown' ? index + 1 : event.key === 'ArrowUp' ? index - 1 : -1;
+        if (next < 0 || next >= pane.ordered.length || !['Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault(); event.stopPropagation(); const entry = pane.ordered[next];
+        if (pane.virtual) { const offset = next * pane.rowHeight; if (offset < list.scrollTop) list.scrollTop = offset; else if (offset + pane.rowHeight > list.scrollTop + list.clientHeight) list.scrollTop = offset + pane.rowHeight - list.clientHeight; paintFiles(side); }
+        const row = [...list.querySelectorAll('[data-path]')].find(r => r.dataset.path === entry.path); row?.focus({ preventScroll: pane.virtual }); row?.click();
+      });
       root.querySelector('form').onsubmit = attempt(async event => { event.preventDefault(); await browse(side, root.querySelector('input').value); });
       root.onclick = attempt(async event => {
         const row = event.target.closest('[data-path]');
@@ -201,11 +237,11 @@ window.RemotePanel = (() => {
         if (action === 'up' || action === 'refresh') return browse(side, action === 'up' ? parent(side, pane.path) : pane.path);
         if (action === 'upload' || action === 'download') return enqueue(action, [...pane.selected]);
         if (action === 'mkdir') { const name = await Modal.prompt('新建目录', '目录名称', ''); if (!name) return; if (/[\\/\0\r\n]/.test(name) || name === '.' || name === '..') throw Error('请输入目录名称，不能包含路径分隔符'); if (side === 'local') await call('localMkdir', joined(side, pane.path, name)); else await call('mkdir', sid, joined(side, pane.path, name)); }
-        if (action === 'rename') { if (pane.selected.size !== 1) throw Error('请选择一个项目'); const target = [...pane.selected][0], name = await Modal.prompt('重命名', '新名称', pane.entries.find(e => e.path === target)?.name); if (!name) return; if (side === 'local') await call('localRename', target, name); else await call('rename', sid, target, name); }
+        if (action === 'rename') { if (pane.selected.size !== 1) throw Error('请选择一个项目'); const target = [...pane.selected][0], name = await Modal.prompt('重命名', '新名称', pane.byPath.get(target)?.name); if (!name) return; if (side === 'local') await call('localRename', target, name); else await call('rename', sid, target, name); }
         if (action === 'remove') { if (!pane.selected.size) throw Error('请选择要删除的项目'); const paths = [...pane.selected]; if (!await Modal.confirm('删除文件', esc(paths.join('\n')) + '\n\n删除不可撤销；目录仅允许删除空目录。')) return; for (const target of paths) { if (side === 'local') await call('localRemove', target); else await call('removeFile', sid, target); } }
         await browse(side, pane.path);
       });
-      root.ondblclick = attempt(async event => { const row = event.target.closest('[data-path]'), entry = row && pane.entries.find(e => e.path === row.dataset.path); if (entry?.directory && !entry.link) await browse(side, entry.path); });
+      root.ondblclick = attempt(async event => { const row = event.target.closest('[data-path]'), entry = row && pane.byPath.get(row.dataset.path); if (entry?.directory && !entry.link) await browse(side, entry.path); });
       root.ondragstart = event => { const row = event.target.closest('[data-path]'); if (!row) return; const paths = pane.selected.has(row.dataset.path) ? [...pane.selected] : [row.dataset.path]; event.dataTransfer.setData('application/x-myide-' + side, JSON.stringify({ paths, sid })); event.dataTransfer.effectAllowed = 'copy'; };
       root.ondragover = event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; };
       root.ondrop = attempt(async event => {
