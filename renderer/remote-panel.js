@@ -299,5 +299,11 @@ window.RemotePanel = (() => {
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
   }
   function syncVisible(value) { visible = value; if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); } }
-  return { init, syncVisible, refresh, showTerminal };
+  function getPageContext() {
+    const profile = profiles.find(p => p.id === selected);
+    // 白名单字段：页面定位不能把密码、私钥、终端输出或文件内容带入模型请求。
+    return { mode, server: profile ? { id:profile.id, name:profile.name, host:profile.host,
+      port:profile.port, username:profile.username } : null, sessionId:sid || null, terminalId:activeTerm || null };
+  }
+  return { init, syncVisible, refresh, showTerminal, getPageContext };
 })();

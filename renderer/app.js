@@ -256,6 +256,7 @@ const App = (() => {
       tasksDag.classList.toggle('hidden',
         !(activeTool === 'tasks' && window.Tasks && Tasks.view === 'dag'));
     }
+    window.AiPanel?.onPageChange?.();
   }
 
   // ---------- 工具窗口字号（侧栏面板 / 提交对话框 / Git 日志共用 --tool-font）----------
@@ -314,6 +315,23 @@ const App = (() => {
   }
 
   function getTool() { return activeTool; }
+  // 独立工具主区会遮住编辑器；侧栏搜索/大纲仍属于项目工作区。
+  function getPageContext() {
+    const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
+      launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动' };
+    const independent = ['tasks','launch','db','remote','browser','quick-launch'].includes(activeTool);
+    const projectContext = !!root && !independent;
+    const id = independent ? activeTool : projectContext ? 'project' : 'welcome';
+    const page = { id, name: independent ? names[activeTool] : projectContext ? '项目' : '欢迎页',
+      tool: activeTool || 'project', toolName: names[activeTool] || '项目', projectContext };
+    if (projectContext) {
+      page.projectRoot = root;
+      const tab = window.Viewer?.activeTab;
+      if (tab && !tab.dir) page.activeFile = tab.path;
+    }
+    if (id === 'remote') page.remote = window.RemotePanel?.getPageContext?.() || null;
+    return page;
+  }
   // 非切换语义：直接设置（会话恢复用）
   function setTool(name) {
     if (!ALL_TOOLS.includes(name)) return;
@@ -1116,7 +1134,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, getTool, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
+    switchTool, showTool, hideSideTool, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

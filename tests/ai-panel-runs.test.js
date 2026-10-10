@@ -36,7 +36,10 @@ function fixture() {
     try { const s = FileWrite.readSnapshot(p); if (s.absent) return { error: 'not found', errorCode: 'ENOENT', version: s.version }; return { ...TextFormat.decodeText(s.bytes), version: s.version }; }
     catch (e) { return { error: e.message, errorCode: e.code }; }
   };
-  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {},showTool(tool){f.shownTool=tool;},getTool(){return f.shownTool;} };w.LaunchPanel={isOpen:()=>f.shownTool==='launch',selectEntry:async id=>selected.push(id)};
+  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {},showTool(tool){f.shownTool=tool;w.AiPanel?.onPageChange();},getTool(){return f.shownTool;},
+    getPageContext(){const tool=f.shownTool || 'project',names={remote:'远程服务器',launch:'启动面板',db:'数据库',browser:'内置浏览器',tasks:'任务','quick-launch':'快捷启动'};
+      const independent=!!names[tool],projectContext=!!this.root&&!independent;
+      return {id:independent?tool:projectContext?'project':'welcome',name:names[tool]||(projectContext?'项目':'欢迎页'),projectContext};} };w.LaunchPanel={isOpen:()=>f.shownTool==='launch',selectEntry:async id=>selected.push(id)};
   w.Viewer = { activeTab: null }; w.MI = { toast() {}, log() {} }; w.Settings = { open() {} }; w.Modal = { show() {}, hide() {} };
   w.myIDE = { fs: { readFile: read, readDir: async () => [], grep: async () => ({ results: [] }), writeFile: async (p, content, format, condition) => {
     try { return FileWrite.atomicWrite(path.resolve(p), TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), condition); } catch (e) { return { error: e.message }; }
@@ -92,6 +95,81 @@ function fixture() {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('当前页面随请求更新：离开项目排除文件和规则，回到项目恢复原文',async()=>{
+    const f=fixture();f.put('one.md','FILE_CONTEXT_SECRET');f.put('AGENTS.md','RULE_CONTEXT_SECRET');
+    f.w.Viewer.activeTab={path:f.file('one.md')};await f.w.AiPanel.followActive();
+    assert(f.element('.ai-ctx-chip.follow'));f.send('解释当前页面');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls[0].messages).includes('FILE_CONTEXT_SECRET'));assert(f.calls[0].messages[0].content.includes('RULE_CONTEXT_SECRET'));
+    for(const page of ['remote','launch','db','browser','tasks','quick-launch']){
+      f.w.App.showTool(page);assert(!f.element('.ai-ctx-chip'));assert(f.element('#ai-usage').textContent.includes('未附带项目文件'));
+      const n=f.calls.length;f.send('我现在在哪个页面');await until(()=>f.calls.length>n&&f.element('#ai-send').textContent==='➤');
+      const body=f.calls.at(-1);assert(body.messages[0].content.includes('"id":"'+page+'"'));const wire=JSON.stringify(body.messages);
+      assert(!wire.includes('FILE_CONTEXT_SECRET'));assert(!wire.includes('RULE_CONTEXT_SECRET'));assert(wire.includes('解释当前页面'));
+      assert(!body.tools.some(t=>t.function.name==='read_file'));assert(body.tools.some(t=>t.function.name==='launch_list'));
+    }
+    f.w.App.showTool('project');await f.w.AiPanel.followActive();assert(f.element('.ai-ctx-chip.follow'));
+    f.send('返回项目');await until(()=>f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls.at(-1).messages).includes('FILE_CONTEXT_SECRET'));assert(f.calls.at(-1).messages[0].content.includes('RULE_CONTEXT_SECRET'));
+    assert(f.calls.at(-1).tools.some(t=>t.function.name==='read_file'));
+  });
+  await test('固定引用离开时隐藏、回来恢复；主动剪贴板在独立页面保留',async()=>{
+    const f=fixture();f.put('one.md','PINNED_FILE_SECRET');f.w.Viewer.activeTab={path:f.file('one.md')};
+    f.w.Viewer.cm={view:{state:{selection:{main:{empty:false,from:0,to:23}},sliceDoc:()=> 'PINNED_SELECTION_SECRET'}}};await f.w.AiPanel.fromEditor('explain');await until(()=>f.element('.ai-ctx-chip.special'));
+    f.element('.ai-ctx-chip.special .ai-ctx-pin').click();
+    f.w.App.showTool('remote');assert(!f.element('.ai-ctx-chip'));
+    f.w.myIDE.clip={readText:async()=>({text:'EXPLICIT_CLIPBOARD'})};
+    const input=f.element('#ai-input');input.value='@剪贴板';input.setSelectionRange(input.value.length,input.value.length);
+    input.dispatchEvent(new f.w.Event('input',{bubbles:true}));await until(()=>f.element('.ai-at-item'));
+    assert.equal(f.w.document.querySelectorAll('.ai-at-item').length,1);f.element('.ai-at-item').click();await until(()=>f.element('.ai-ctx-chip.special'));
+    f.send('处理剪贴板');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');
+    f.send('再看看');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls[1].messages).includes('EXPLICIT_CLIPBOARD'));assert(!JSON.stringify(f.calls[1].messages).includes('PINNED_SELECTION_SECRET'));
+    f.w.App.showTool('project');await f.w.AiPanel.followActive();
+    assert(f.element('.ai-ctx-chip.pinned'));f.send('回到文档');await until(()=>f.calls.length===3&&f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls[2].messages).includes('PINNED_SELECTION_SECRET'));
+  });
+  await test('页面切换拦住迟到的文件读取：返回后新读取才能恢复跟随',async()=>{
+    const f=fixture();f.put('late.md','REAL_FILE');f.w.Viewer.activeTab={path:f.file('late.md')};
+    const gate=defer();let entered=false;f.onRead=p=>p===f.file('late.md')?(entered=true,gate.promise):null;
+    const pending=f.w.AiPanel.followActive();await until(()=>entered);
+    f.w.App.showTool('remote');f.w.App.showTool('project');f.onRead=null;
+    await f.w.AiPanel.followActive();gate.resolve({content:'STALE_READ_SECRET'});await pending;
+    f.send('当前文档');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls[0].messages).includes('REAL_FILE'));assert(!JSON.stringify(f.calls[0].messages).includes('STALE_READ_SECRET'));
+  });
+  await test('原生历史工具结果和参数排除文件原文，保留工具配对和启动结果',async()=>{
+    const f=fixture();f.script.push(reply(writeCall('one.md','WRITE_PAYLOAD_SECRET','private-write')));
+    f.send('创建文件');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    f.w.App.showTool('remote');f.script.push(reply({id:'launch-list',name:'launch_list',args:{}}));f.send('有哪些程序');
+    await until(()=>f.calls.length===4&&f.element('#ai-send').textContent==='➤');
+    for(const req of f.calls.slice(2)){
+      assert(!JSON.stringify(req.messages).includes('WRITE_PAYLOAD_SECRET'));
+      const anchor=req.messages.find(m=>m.tool_calls?.some(c=>c.id==='private-write'));
+      assert.equal(anchor.tool_calls[0].function.arguments,'{}');assert(req.messages.some(m=>m.role==='tool'&&m.tool_call_id==='private-write'));
+    }
+    assert(f.calls[3].messages.some(m=>m.role==='tool'&&m.tool_call_id==='launch-list'&&m.content.includes('测试服务')));
+    f.w.App.showTool('project');f.send('回项目');await until(()=>f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls.at(-1).messages).includes('WRITE_PAYLOAD_SECRET'));
+  });
+  await test('文本协议历史文件参数和结果排除，当前页拒绝项目工具派发',async()=>{
+    const f=fixture();f.put('one.md','TOOL_RESULT_SECRET');
+    const fence=String.fromCharCode(96).repeat(3);f.script.push({ok:true,text:fence+'tool_call\n'+JSON.stringify({name:'read_file',args:{path:'one.md'}})+'\n'+fence});
+    f.send('读文件');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    assert(JSON.stringify(f.calls[1].messages).includes('TOOL_RESULT_SECRET'));
+    f.w.App.showTool('remote');f.script.push(reply(writeCall('forbidden.md','DO_NOT_WRITE')));
+    f.send('继续');await until(()=>f.calls.length===4&&f.element('#ai-send').textContent==='➤');
+    assert(!fs.existsSync(f.file('forbidden.md')));
+    assert(!JSON.stringify(f.calls[3].messages).includes('TOOL_RESULT_SECRET'));
+    assert(!JSON.stringify(f.calls[3].messages).includes('DO_NOT_WRITE'));
+  });
+  await test('工具切到启动页后下一轮立即停用项目上下文',async()=>{
+    const f=fixture();f.put('one.md','BACKGROUND_FILE_SECRET');f.w.Viewer.activeTab={path:f.file('one.md')};
+    f.script.push(reply({id:'open-launch',name:'launch_open',args:{}}));f.send('打开启动面板');
+    await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    assert(f.calls[0].messages[0].content.includes('"id":"project"'));assert(f.calls[1].messages[0].content.includes('"id":"launch"'));
+    assert(!JSON.stringify(f.calls[1].messages).includes('BACKGROUND_FILE_SECRET'));
+    assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.tool_call_id==='open-launch'));
+  });
   await test('无项目时真实面板工具链打开并添加程序，配置保留且不会自动启动',async()=>{
     const f=fixture();f.switchRoot('');f.script.push(reply({id:'open',name:'launch_open',args:{}},{id:'add',name:'launch_add',args:{name:'新增服务',cwd:f.A,command:'node added.js'}}));
     f.send('打开启动面板，添加一个程序');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
