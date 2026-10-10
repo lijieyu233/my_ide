@@ -50,7 +50,7 @@
     "check:projects": "electron scripts/check-project-open.js --disable-gpu --no-sandbox",
     "test:session": "node tests/session-recovery.test.js",
     "check:session": "electron scripts/check-session-recovery.js --disable-gpu --no-sandbox",
-    "test:remote": "node tests/remote.test.js && node tests/remote-list.test.js",
+    "test:remote": "node tests/remote.test.js && node tests/remote-list.test.js && node tests/remote-local.test.js",
     "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
