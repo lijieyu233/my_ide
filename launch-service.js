@@ -808,15 +808,17 @@ function shutdown() {
         if (keep) {
           if (record.pid) {
             const current = await processIdentity(record.pid);
+            // 恢复记录已经落盘；旧PID复用/查询失败只会撤销停止权限，不应阻止保留退出。
+            // 不认领当前PID、不改写历史身份；仍存活的同身份根才采集新增子进程。
+            if (!live && (!current.ok || !sameIdentity(record.identity, current.identity))) {
+              results.push({ id, name, ok: true, kept: true }); continue;
+            }
             if (!current.ok || current.identity && !sameIdentity(record.identity, current.identity)) { results.push({ id, name, ok: false, error: current.error || '后台保留根进程身份未确认' }); continue; }
             const { proc, ...persisted } = record;
             if (current.identity) {
               const tree = await captureExitTree(record);
               if (!tree.ok) { results.push({ id, name, ok: false, error: tree.error }); continue; }
               if (tree.descendants.length) persisted.descendants = tree.descendants;
-            } else {
-              const children = await recordedChildren(record);
-              if (!children.ok) { results.push({ id, name, ok: false, error: children.error }); continue; }
             }
             const result = setState(id, persisted);
             if (!result.ok) { results.push({ id, name, ok: false, error: '后台保留落盘失败：' + result.error }); continue; }

@@ -229,6 +229,31 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       let result = await f.service.shutdown(); assert.equal(result.ok, false); assert.equal(result.failed, 1); assert.match(result.results[0].error, /落盘失败/); assert.deepEqual(f.state(), before);
       f.options.failStateWrites = false; result = await f.service.shutdown(); assert.equal(result.ok, true); assert.equal(result.preserved, 1); assert.equal((await f.service.aliveEntry(f.entry)).alive, true);
     });
+    await test('外壳已结束且历史子PID复用不拦后台保留退出，原记录保全且仍拒绝停止', async () => {
+      const f = fixture({ parents: { 778: 777 } }); f.record(f.entry);
+      f.live.add(778); f.identities.set(778, { ...f.identities.get(777), pid: 778, createdAt: new Date(1700000007780).toISOString() });
+      f.service.setKeepOnExit(true); assert.equal((await f.service.shutdown()).ok, true);
+      f.live.delete(777); f.identities.set(778, { ...f.identities.get(778), image: 'foreign.exe', commandLine: 'foreign service' });
+      const before = fs.readFileSync(f.service.paths().stateFile, 'utf8');
+      for (let n = 0; n < 2; n++) {
+        const result = await f.service.shutdown(); assert.equal(result.ok, true); assert.equal(result.preserved, 1); assert.equal(result.stopped, 0);
+        assert.equal(fs.readFileSync(f.service.paths().stateFile, 'utf8'), before);
+      }
+      assert.equal((await f.service.stopEntry(f.entry)).ok, false); assert.deepEqual(f.kills, []);
+      assert.equal(fs.readFileSync(f.service.paths().stateFile, 'utf8'), before);
+    });
+    await test('恢复根PID复用或CIM查询失败只保留旧记录，不认领或停止当前进程', async () => {
+      for (const queryFailed of [false, true]) {
+        const f = fixture(); f.record(f.entry); f.service.setKeepOnExit(true);
+        if (queryFailed) f.options.identityError = true;
+        else f.identities.set(777, { ...f.identities.get(777), commandLine: 'foreign service' });
+        const before = fs.readFileSync(f.service.paths().stateFile, 'utf8');
+        const result = await f.service.shutdown(); assert.equal(result.ok, true); assert.equal(result.preserved, 1); assert.equal(result.stopped, 0);
+        assert.equal(fs.readFileSync(f.service.paths().stateFile, 'utf8'), before);
+        const [status] = await f.service.statusOf([f.entry]); assert.equal(status.canStop, false);
+        assert.equal((await f.service.stopEntry(f.entry)).ok, false); assert.deepEqual(f.kills, []);
+      }
+    });
     await test('退出配置或状态损坏/策略类型异常不能回落成空库或默认停止，原字节保留', async () => {
       for (const type of ['config-json', 'state-json', 'config-policy', 'state-shape']) {
         const f = fixture(); f.record(f.entry); f.service.saveConfig({ entries: [f.entry], apiOrigins: [], keepOnExit: true });
