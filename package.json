@@ -55,7 +55,8 @@
     "check:startup": "electron scripts/check-startup.js --disable-gpu --no-sandbox",
     "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox",
     "check:instance": "electron scripts/check-instance.js --disable-gpu --no-sandbox",
-    "check:ai-launch": "electron scripts/check-ai-launch.js --disable-gpu --no-sandbox"
+    "check:ai-launch": "electron scripts/check-ai-launch.js --disable-gpu --no-sandbox",
+    "check:ai-history": "electron scripts/check-ai-history.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

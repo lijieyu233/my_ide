@@ -49,7 +49,7 @@ function fixture() {
     grantSession: async context=>{policyStore.grantSession(1,context);return {ok:true};},
     onPermissionsChanged:()=>{},onStopped:()=>{},
     chat: async (_cfg, messages, _tools, context) => {
-      registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, d }; calls.push(item); pending.push(d);
+      registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, tools:_tools, d }; calls.push(item); pending.push(d);
       if (f.script.length) d.resolve(f.script.shift());
       else if (!f.hold) d.resolve({ ok: true, text: '总结' });
       const result = await d.promise;
@@ -271,6 +271,42 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture();f.put('one.md');const c=writeCall();f.script.push(reply(c),reply(c),reply({...c,args:{...c.args,content:'OTHER'}}),{ok:true,text:'总结'});
     f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,1);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'MODEL');assert.equal(f.w.document.querySelectorAll('.ai-edit').length,1);
     assert(f.calls[3].messages.some(m=>m.content?.includes('参数已变化')));
+  });
+  await test('第九轮多个原生调用全部配齐未执行结果，仅发一次无工具收尾，续聊仍可用',async()=>{
+    const f=fixture();for(let i=0;i<8;i++)f.script.push(reply({id:'round-'+i,name:'list_files',args:{path:'.'}}));
+    f.script.push(reply(writeCall('blocked.md','不得写入','limited-write'),{id:'limited-launch',name:'launch_start',args:{program:'program'}}),{ok:true,text:'已检查目录，尚未修改文件。'});
+    f.send();await until(()=>f.calls.length===10&&f.element('#ai-send').textContent==='➤');
+    assert.equal(f.writes.length,0);assert.equal(f.actions.length,0);assert.equal(f.element('.ai-confirm'),null);assert.equal(f.calls[9].tools.length,0);
+    const history=f.calls[9].messages;for(const id of ['limited-write','limited-launch'])assert(history.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('此调用未执行')));
+    assert(!history.some(m=>m.role==='user'&&m.content.includes('已达工具调用')));assert(history[0].content.includes('本轮只收尾'));assert(f.text().includes('剩余任务'));
+    f.send('继续');await until(()=>f.calls.length===11&&f.element('#ai-send').textContent==='➤');assert(f.calls[10].tools.length>0);assert(!fs.existsSync(f.file('blocked.md')));
+  });
+  await test('收尾模型继续返回原生或文本工具时有界停止，不运行也不无限续流',async()=>{
+    for(const native of [true,false]){
+      const f=fixture();for(let i=0;i<9;i++)f.script.push(reply({id:'limit-'+i,name:'list_files',args:{path:'.'}}));
+      const c=writeCall('never.md');const fence=String.fromCharCode(96).repeat(3);
+      f.script.push(native?reply(c):{ok:true,text:fence+'tool_call\n'+JSON.stringify({name:c.name,args:c.args})+'\n'+fence});f.send();
+      await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.calls.length,10);assert.equal(f.writes.length,0);assert(f.text().includes('任务可能尚未完成'));
+      f.send('继续');await until(()=>f.calls.length===11&&f.element('#ai-send').textContent==='➤');const messages=f.calls[10].messages;
+      for(const m of messages.filter(m=>m.tool_calls))for(const c of m.tool_calls)assert(messages.some(result=>result.role==='tool'&&result.tool_call_id===c.id));
+    }
+  });
+  await test('载入旧损坏会话补齐缺失结果并保留已有结果，孤立结果不作为原生工具消息发送',async()=>{
+    const f=fixture();const calls=[writeCall('one.md','OLD','old-missing'),writeCall('two.md','REAL','old-done')];f.put('one.md');f.put('two.md','REAL');
+    const history=[{role:'user',content:'旧任务'},{role:'assistant',content:'',tool_calls:calls.map(c=>({id:c.id,type:'function',function:{name:c.name,arguments:JSON.stringify(c.args)}}))},{role:'tool',tool_call_id:'old-done',content:'已应用 REAL'},{role:'user',content:'没完成啊'},{role:'tool',tool_call_id:'orphan',content:'孤立结果'}];
+    f.w.localStorage.setItem('myide-ai-sessions:'+f.A,JSON.stringify([{id:'broken',title:'损坏会话',msgs:history,ts:Date.now()}]));
+    f.element('#ai-history').click();f.element('[data-id="broken"]').click();f.send('继续');
+    await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');const sent=f.calls[0].messages;
+    assert(sent.some(m=>m.role==='tool'&&m.tool_call_id==='old-missing'&&m.content.includes('实际执行状态未确认')));
+    assert(sent.some(m=>m.role==='tool'&&m.tool_call_id==='old-done'&&m.content==='已应用 REAL'));assert(!sent.some(m=>m.role==='tool'&&m.tool_call_id==='orphan'));
+    assert(sent.some(m=>m.content?.includes('孤立结果')));assert.equal(f.writes.length,0);assert.equal(fs.readFileSync(f.file('one.md'),'utf8'),'ORIGINAL');assert.equal(fs.readFileSync(f.file('two.md'),'utf8'),'REAL');
+  });
+  await test('工具行异常收尾仍配齐全部结果，下一条请求不会携带悬空调用',async()=>{
+    const f=fixture(),container=f.element('#ai-msgs'),append=container.appendChild.bind(container);let injected=false;
+    container.appendChild=node=>{if(!injected&&node.className==='ai-tool'){injected=true;throw Error('fixture render failed');}return append(node);};
+    f.script.push(reply(writeCall('not-written.md'),{id:'pending-two',name:'list_files',args:{path:'.'}}));f.send();await until(()=>f.element('#ai-send').textContent==='➤');
+    assert.equal(f.writes.length,0);f.send('继续');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    for(const id of ['w1','pending-two'])assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('实际执行状态未确认')));
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

@@ -60,9 +60,16 @@ const AiPanel = (() => {
     run.notice.textContent = '正在生成'; msgsEl.appendChild(run.notice);
     return run;
   }
+  function settlePendingTools(run, text) {
+    run.results ||= new Set();
+    for(const call of run.nativePending || [])if(!run.results.has(call.id)){
+      msgs.push({role:'tool',tool_call_id:call.id,name:call.name,content:text});run.results.add(call.id);
+    }
+  }
   function endRun(run, status = 'completed') {
     if (!runIsCurrent(run)) return;
-    run.status = status; run.notice.textContent = status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成';
+    settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
+    run.status = status; run.notice.textContent = status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成';
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     document.getElementById('ai-stop')?.classList.add('hidden');
@@ -73,8 +80,7 @@ const AiPanel = (() => {
     if (run?.status === 'active') {
       run.status = 'stopping'; run.controller.abort(); run.notice.textContent = '正在停止';
       if (run.identity.rootId === ((window.App && App.root) || '') && curSessionId === run.identity.sessionId) {
-        for (const call of run.nativePending || []) if (!run.results?.has(call.id)) msgs.push({ role: 'tool', tool_call_id: call.id, name: call.name,
-          content: '运行已停止，未继续派发。已提交的操作仍保留，结果请回看活动记录。' });
+        settlePendingTools(run,'运行已停止，未继续派发。已提交的操作仍保留，结果请回看活动记录。');
       }
       if (run.stream && !run.stream.finished) {
         run.stream.finished = true;
@@ -664,8 +670,13 @@ const AiPanel = (() => {
   async function agentStep(calls, native, run) {
     if (!calls || !calls.length || !runIsLive(run)) return;
     const ownedCalls = JSON.parse(JSON.stringify(calls));
-    if (agentRounds >= MAX_ROUNDS) {
-      msgs.push({ role: 'user', content: '（已达工具调用轮次上限，请基于现有信息总结收尾，不要再调用工具）' });
+    if (agentRounds >= MAX_ROUNDS || run.summaryOnly) {
+      if(native)settlePendingTools(run,'已达本次工具操作上限，此调用未执行。');
+      if(run.summaryOnly){
+        const text='模型在收尾时仍请求工具，本次未执行。任务可能尚未完成，可继续处理剩余事项。';
+        addMsg('assistant',text);msgs.push({role:'assistant',content:text});endRun(run,'limited');return;
+      }
+      run.summaryOnly=true;run.notice.textContent='已达本次工具操作上限，正在整理进展与剩余事项';
     } else {
       for (const c of ownedCalls) {
         if (!runIsLive(run)) return;
@@ -700,7 +711,7 @@ const AiPanel = (() => {
     const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false };
     run.stream = stream;
     let r;
-    try { r = await window.myIDE.ai.chat(cfg, buildMessages(), TOOLS, stream.context); }
+    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS, stream.context); }
     catch (error) { r = { error: String(error), context: stream.context }; }
     if (!runIsLive(run) || run.stream !== stream || stream.finished) return;
     if (!identityMatches(r?.context, stream.context)) r = { error: 'AI响应归属无效，未执行工具', context: stream.context };
@@ -1190,7 +1201,27 @@ const AiPanel = (() => {
 
   // ---------- 发送 ----------
   // 消息透传（保留原生 function calling 的 tool_calls / tool_call_id 字段）
-  function buildMessages() {
+  // 旧版上限/异常收尾曾留下缺结果的调用；只修复消息协议，不重跑工具，也不假定旧调用成功。
+  function repairToolHistory(list) {
+    const repaired=[];const unknown='历史记录缺少此工具调用的结果，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。';
+    const observation=m=>({role:'assistant',content:'（无法对应工具调用的历史结果，仅作参考）\n'+String(m.content||'')});
+    for(let i=0;i<list.length;i++){
+      const m=list[i];if(!m)continue;
+      if(m.role==='assistant'&&Array.isArray(m.tool_calls)&&m.tool_calls.length){
+        const calls=m.tool_calls,ids=calls.map(c=>c?.id),results=new Map(),orphans=[];
+        if(ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length){
+          const {tool_calls,...plain}=m;repaired.push({...plain,content:String(m.content||'')+'\n（历史工具调用身份无效，实际状态未确认）'});continue;
+        }
+        while(list[i+1]?.role==='tool'){const result=list[++i];if(ids.includes(result.tool_call_id)&&!results.has(result.tool_call_id))results.set(result.tool_call_id,result);else orphans.push(result);}
+        repaired.push(m,...calls.map(c=>results.get(c.id)||{role:'tool',tool_call_id:c.id,name:c.function?.name,content:unknown}),...orphans.map(observation));
+      }else if(m.role==='tool')repaired.push(observation(m));
+      else if(m.tool_calls){const {tool_calls,...plain}=m;repaired.push(plain);}
+      else repaired.push(m);
+    }
+    return repaired;
+  }
+  function buildMessages(summaryOnly=false) {
+    msgs=repairToolHistory(msgs);
     const cfg = getConfig();
     const out = [];
     // Agent 工具系统提示在前，项目规则居中，用户自定义系统提示在最后（优先级从低到高）
@@ -1198,7 +1229,8 @@ const AiPanel = (() => {
       role: 'system',
       content: AGENT_SYS
         + (rulesText ? '\n\n# 项目规则（读取自 ' + rulesFile + '，请遵守）\n' + rulesText : '')
-        + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : ''),
+        + (cfg.systemPrompt && cfg.systemPrompt.trim() ? '\n\n# 用户补充设定\n' + cfg.systemPrompt.trim() : '')
+        + (summaryOnly ? '\n\n# 本轮只收尾\n本次工具操作已达上限，后续调用未执行。不要调用工具；只根据已有结果说明已做内容和剩余事项，不能把未执行的操作说成完成。' : ''),
     });
     for (const m of msgs) {
       if (m.role === 'tool') out.push({ role: 'tool', tool_call_id: m.tool_call_id, content: m.content || '' });
@@ -1319,7 +1351,7 @@ const AiPanel = (() => {
       return;
     }
     lastUserAt = msgs.map((m) => m.role).lastIndexOf('user');
-    endRun(run, r?.aborted ? 'cancelled' : isErr ? 'failed' : complete ? 'completed' : 'incomplete');
+    endRun(run, r?.aborted ? 'cancelled' : isErr ? 'failed' : complete ? run.summaryOnly ? 'limited' : 'completed' : 'incomplete');
   }
 
   function setBusyUI(b) {
@@ -1445,7 +1477,7 @@ const AiPanel = (() => {
     stopRun(true);
     clearSessionPermissions();
     closeHist();
-    msgs = (se.msgs || []).slice();
+    msgs = repairToolHistory((se.msgs || []).slice());
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
     curSessionId = se.id;
     renderUsage();
