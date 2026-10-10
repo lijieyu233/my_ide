@@ -277,7 +277,9 @@ function loadConfig() {
     return emptyConfig();
   }
 }
-function saveConfig(cfg) {
+function saveConfig(cfg, expected) {
+  // AI与手工表单共享机器配置；旧表单不能把刚新增的程序整表覆盖掉。
+  if(expected && JSON.stringify(loadConfig())!==JSON.stringify(expected))throw Object.assign(Error('启动配置已变化，请刷新后再保存'),{code:'LAUNCH_CONFIG_CHANGED'});
   const next = {
     apiOrigins: Array.isArray(cfg && cfg.apiOrigins) ? cfg.apiOrigins : [DEFAULT_API_ORIGIN],
     entries: Array.isArray(cfg && cfg.entries) ? cfg.entries : [],
@@ -454,7 +456,7 @@ function envFor(entry, cfg) {
   return env;
 }
 
-async function startUnlocked(entry) {
+async function startUnlocked(entry, beforeEffect = () => {}) {
   const cfg = loadConfig();
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
   let readinessRule;
@@ -475,6 +477,8 @@ async function startUnlocked(entry) {
   if (entry.port && await checkPort(entry.port)) {
     return { ok: false, error: '端口 ' + entry.port + ' 已被占用（可能已在别处启动）' };
   }
+  // AI确认可能在端口/身份查询期间取消；实际发起进程前重新核对本次批准。
+  beforeEffect('start');
   const book = logBook(entry.id, randomUUID());
   pushLog(entry.id, '$ ' + entry.command);
 
@@ -606,7 +610,7 @@ async function pidsListeningOnPort(port) {
   return { ok: true, pids: [...pids] };
 }
 
-async function stopUnlocked(entry) {
+async function stopUnlocked(entry, beforeEffect = () => {}) {
   if (!entry || !entry.id) return { ok: false, error: '条目无效' };
   if (entry.kind !== 'usb-tunnel') await refreshOwnedTrees();
   const live = procs.get(entry.id);
@@ -620,6 +624,7 @@ async function stopUnlocked(entry) {
       return { ok: false, error: '桥接脚本未配置或不存在，无法确认停止' };
     }
     const book = currentLog(entry.id), generation = book.generation;
+    beforeEffect('stop');
     const r = await runBridge(py, script, 'stop');
     if (book.generation === generation) {
       pushLog(entry.id, r.stdout, 'stdout', book); pushLog(entry.id, r.stderr, 'stderr', book);
@@ -639,6 +644,7 @@ async function stopUnlocked(entry) {
       return stopFailure(entry, 'PROCESS_IDENTITY_CHANGED', 'pid ' + pid + ' 已属于另一进程，未执行停止', details);
     }
     if (sameIdentity(record.identity, current.identity)) {
+      beforeEffect('stop');
       details.attempted.push(pid);
       const requested = await killTree(pid);
       const after = await processIdentity(pid);
@@ -659,6 +665,7 @@ async function stopUnlocked(entry) {
       const current = await processIdentity(identity.pid);
       if (!current.ok || current.identity && !sameIdentity(identity, current.identity) && !reusedIdentity(identity, current.identity)) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', current.error || '后台子进程身份变化，未停止', details);
       if (!current.identity || reusedIdentity(identity, current.identity)) continue;
+      beforeEffect('stop');
       details.attempted.push(identity.pid); const requested = await killTree(identity.pid);
       const after = await processIdentity(identity.pid);
       if (!after.ok || sameIdentity(identity, after.identity)) { details.failed.push(identity.pid); details.remainingOwned.push(identity.pid); return stopFailure(entry, 'STOP_UNCONFIRMED', after.error || '后台子进程仍在运行', details); }
@@ -674,6 +681,7 @@ async function stopUnlocked(entry) {
       return stopFailure(entry, 'PORT_OWNED_BY_OTHER', '端口 ' + port + ' 仍被 pid ' + left.pids.join(',') + ' 监听，归属未确认，未停止这些进程', details);
     }
   }
+  beforeEffect('record');
   const written = setState(entry.id, null);
   if (!written.ok) return stopFailure(entry, 'STATE_WRITE_FAILED', '停止已确认但运行记录落盘失败：' + written.error, details);
   procs.delete(entry.id);
@@ -681,14 +689,15 @@ async function stopUnlocked(entry) {
   return { ok: true, ...details };
 }
 
-function startEntry(entry) { return operate(entry, '启动', startUnlocked); }
-function stopEntry(entry) { return operate(entry, '停止', stopUnlocked); }
-function restartEntry(entry) {
+const effectGuard = callback => typeof callback === 'function' ? callback : () => {};
+function startEntry(entry, beforeEffect) { return operate(entry, '启动', target => startUnlocked(target,effectGuard(beforeEffect))); }
+function stopEntry(entry, beforeEffect) { return operate(entry, '停止', target => stopUnlocked(target,effectGuard(beforeEffect))); }
+function restartEntry(entry, beforeEffect) {
   return operate(entry, '重启', async (target) => {
-    const stopped = await stopUnlocked(target);
+    const stopped = await stopUnlocked(target,effectGuard(beforeEffect));
     if (!stopped || stopped.ok !== true) return stopped || { ok: false, error: '无法确认停止，已取消重启' };
     await new Promise((r) => setTimeout(r, 400));
-    return startUnlocked(target);
+    return startUnlocked(target,effectGuard(beforeEffect));
   });
 }
 

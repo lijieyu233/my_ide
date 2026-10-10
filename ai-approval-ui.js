@@ -6,7 +6,7 @@ function createUI({ ipcMain, WebContentsView, getWindow, getAppearance = async (
     const record = pending.get(id);
     if (!record || event.sender !== record.view.webContents || event.senderFrame !== event.sender.mainFrame || event.sender.getURL() !== allowedURL) return { ok: false, errorCode: 'INVALID_AI_APPROVAL_SENDER' };
     if (!answer || typeof answer.approved !== 'boolean' || !['once', 'project', 'session', 'command'].includes(answer.scope)
-      || record.data.type === 'operation' && record.data.danger && answer.scope !== 'once' || record.data.type !== 'operation' && answer.scope !== 'once') return { ok: false, errorCode: 'INVALID_AI_APPROVAL' };
+      || record.data.type === 'operation' && (record.data.danger || record.data.effect?.application) && answer.scope !== 'once' || record.data.type !== 'operation' && answer.scope !== 'once') return { ok: false, errorCode: 'INVALID_AI_APPROVAL' };
     record.finish(null, { approved: answer.approved, scope: answer.scope }); return { ok: true };
   });
   ipcMain.handle('ai-approval:stop', (event, id) => {

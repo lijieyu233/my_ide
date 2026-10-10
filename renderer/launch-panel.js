@@ -716,7 +716,7 @@ const LaunchPanel = (() => {
       name: v('name'), category: v('category') || '未分类', cwd: v('cwd'),
       command: v('command'), port: Number(v('port')) || 0,
       apiOrigin: v('apiOrigin'), openUrl: v('openUrl'),
-      /* 保存后写入历史（addOrigin 去重，服务端处理） */
+      /* API历史随配置一起保存，避免分两次写入扩大并发覆盖窗口。 */
       kind: v('kind'), script: v('script'), python: v('python') || 'python',
       readiness: { mode: v('readyMode') || 'none' },
     };
@@ -742,8 +742,8 @@ const LaunchPanel = (() => {
         item.id = 'e' + Date.now().toString(36);
         list.push(item);
       }
-      if (item.apiOrigin) await L().addOrigin(item.apiOrigin);
-      const saved = await L().save({ apiOrigins: cfg.apiOrigins, entries: list, keepOnExit: cfg.keepOnExit });
+      const apiOrigins=item.apiOrigin?[...new Set([...cfg.apiOrigins,item.apiOrigin])]:cfg.apiOrigins;
+      const saved = await L().save({ apiOrigins, entries: list, keepOnExit: cfg.keepOnExit },cfg);
       if (!saved || !Array.isArray(saved.entries) || !Array.isArray(saved.apiOrigins)) throw Error('服务未确认配置保存');
       cfg = saved; revision++;
       if (item.apiOrigin) cfg = await L().config();
@@ -767,7 +767,7 @@ const LaunchPanel = (() => {
       if (!confirmed(stopped, 'stop') || stopped.ok !== true) throw Error(stopped && stopped.error || '停止未确认，终端配置与日志已保留');
       if (e.kind === 'usb-tunnel' || stopped.kind === 'usb-tunnel') throw Error('桥接脚本成功不证明daemon已停止，配置与日志已保留；需先补齐daemon停止核验');
       const entries = cfg.entries.filter(x => x.id !== id);
-      const saved = await L().save({ apiOrigins: cfg.apiOrigins, entries, keepOnExit: cfg.keepOnExit });
+      const saved = await L().save({ apiOrigins: cfg.apiOrigins, entries, keepOnExit: cfg.keepOnExit },cfg);
       if (!saved || !Array.isArray(saved.entries) || !Array.isArray(saved.apiOrigins) || saved.entries.some(x => x.id === id) || saved.entries.length !== entries.length || entries.some(x => !saved.entries.some(y => y.id === x.id))) throw Error('服务未确认删除配置，保留原列表');
       cfg = saved; revision++; outcomes.delete(id);
       if (selectedId === id) selectedId = null;
@@ -859,6 +859,7 @@ const LaunchPanel = (() => {
     installOperationUI();
     logReader.install();
     bind();
+    L()?.onChanged?.(change => { if(isOpen())selectEntry(change?.id); });
     load();
     if (timer) clearInterval(timer);
     // 未显示的面板无需不断起CIM查询，操作后及重新显示时仍主动核验状态。
@@ -867,6 +868,10 @@ const LaunchPanel = (() => {
 
   function isOpen() { return !!(q('panel-launch') && !q('panel-launch').classList.contains('hidden')); }
 
-  return { init, refresh: load, isOpen };
+  async function selectEntry(id, {refresh=true} = {}) {
+    if(refresh)await load();
+    if(id&&byId(id)){selectedId=id;renderList();renderMain();}
+  }
+  return { init, refresh: load, isOpen, selectEntry };
 })();
 window.LaunchPanel = LaunchPanel;

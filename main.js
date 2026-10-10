@@ -8,7 +8,7 @@ const DB = require('./db-service');
 const AI = require('./ai-service');
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
-const aiTools = require('./ai-tool-execution').createService(aiRuns);
+const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => aiLaunchTools.prepare(call) });
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
@@ -1172,6 +1172,16 @@ ipcMain.handle('quick-launch:export', async () => {
 //   下次打开靠端口探测 / 落盘 PID 找回运行状态，仍然可以停止。
 const LAUNCH_OPS = require('./launch-ops');
 const launchService = require('./launch-service');
+const aiLaunchTools = require('./ai-launch-tools').createService({ service:launchService, canOperate:()=>!launchExit.isPending(),
+  notify:change=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('launch:changed',change);} });
+ipcMain.handle('ai:launch',async(e,context,call)=>{
+  try {
+    const owner=aiSender(e),normalized=AiToolContract.validate(call);
+    if(!AiToolContract.isApplication(normalized.name))throw Object.assign(Error('不是启动面板工具'),{code:'INVALID_TOOL_ARGS'});
+    return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>
+      aiLaunchTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code,committed:error.committed};}
+});
 for (const spec of LAUNCH_OPS) {
   ipcMain.handle('launch:' + spec.ch, (_e, ...args) => launchService[spec.op](...args));
 }

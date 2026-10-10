@@ -49,6 +49,12 @@ async function cancellable(fn, signal) {
   finally { signal.removeEventListener('abort', rejectCancel); }
 }
 function decision(p, call, effect) {
+  if (effect.application) {
+    if (p[effect.kind] === 'deny') return 'deny';
+    if (effect.kind === 'run' && (dangerous(effect.command) || p.denyCommands.some(s => effect.command.trim().toLowerCase().startsWith(s.trim().toLowerCase())))) return 'danger';
+    // 启动配置属于整台机器；项目文件白名单和项目授权不能自动放行机器级程序操作。
+    return p[effect.kind] === 'auto' ? 'auto' : 'confirm';
+  }
   if (effect.kind === 'write') {
     if (p.write === 'deny') return 'deny';
     if (effect.wipe) return 'danger';
@@ -68,7 +74,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
     s.policy = { revision: p.revision, hash }; return p;
   }
   function state(owner, context) {
-    const run = tools.active(owner, context), old = states.get(owner);
+    const run = tools.active(owner, context, true), old = states.get(owner);
     if (old?.run === run) return old;
     if (old) revoke(owner);
     const next = { run, approvals: new Map(), pending: 0 }; states.set(owner, next); return next;
@@ -78,6 +84,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
     item.proof.verify();
   }
   async function effectOf(owner, context, call, item) {
+    if (Contract.isApplication(call.name)) { if (!item.proof.effect) throw fail('INVALID_TOOL_ARGS','只读启动工具无需批准'); return item.proof.effect; }
     if (call.name === 'run_command') return { kind: 'run', target: item.proof.real, command: call.args.command };
     if (!['write_file', 'replace_edit'].includes(call.name)) throw fail('INVALID_TOOL_ARGS', '不是需要副作用批准的工具');
     const source = await tools.read(owner, context, call);
@@ -113,6 +120,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
         check(owner, context, record, item);
         if (digest(JSON.stringify(currentPolicy(owner, context))) !== policyHash) throw fail('AI_POLICY_CHANGED', '确认期间权限已改变，请重新申请');
         if (!answer || answer.approved !== true || !['once', 'project', 'session', 'command'].includes(answer.scope)) throw fail('AI_PERMISSION_DENIED', '用户未批准本次操作');
+        if (effect.application && answer.scope !== 'once') throw fail('INVALID_AI_APPROVAL','启动面板操作批准只对应当前具体操作');
         if (need === 'danger' && answer.scope !== 'once') throw fail('AI_PERMISSION_DENIED', '危险操作必须逐次批准');
         if (answer.scope === 'command' && effect.kind !== 'run') throw fail('INVALID_AI_APPROVAL', '批准范围与操作不一致');
         if (answer.scope !== 'once') await cancellable(() => remember(owner, freeze(clone({ context, call, scope: answer.scope })), entry.controller.signal), entry.controller.signal);
@@ -134,8 +142,9 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
     if (digest(JSON.stringify(p)) !== entry.policyHash || decision(p, call, entry.effect) === 'deny') throw fail('AI_POLICY_CHANGED', 'AI权限已改变，旧批准失效');
     if (actual) {
       if (typeof actual.target !== 'string' || path.relative(entry.effect.target, path.resolve(actual.target)) !== '') throw fail('INVALID_AI_APPROVAL', '实际目标与批准不同');
-      if (entry.effect.kind === 'write' && (typeof actual.content !== 'string' || digest(actual.content) !== entry.effect.contentHash || !Files.sameVersion(actual.expectedVersion, entry.effect.version))) throw fail('INVALID_AI_APPROVAL', '实际正文或基础版本与批准不同');
-      if (entry.effect.kind === 'run' && actual.command !== entry.effect.command) throw fail('INVALID_AI_APPROVAL', '实际命令与批准不同');
+      if (entry.effect.application) { if (actual.binding !== entry.effect.binding) throw fail('INVALID_AI_APPROVAL','启动面板实际操作与批准不同'); }
+      else if (entry.effect.kind === 'write' && (typeof actual.content !== 'string' || digest(actual.content) !== entry.effect.contentHash || !Files.sameVersion(actual.expectedVersion, entry.effect.version))) throw fail('INVALID_AI_APPROVAL', '实际正文或基础版本与批准不同');
+      if (!entry.effect.application && entry.effect.kind === 'run' && actual.command !== entry.effect.command) throw fail('INVALID_AI_APPROVAL', '实际命令与批准不同');
     }
     return entry.effect;
   }

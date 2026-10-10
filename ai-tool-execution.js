@@ -15,8 +15,9 @@ function createService(registry,options={}){
     catch(e){error=e;}
     const run={context:{...context},root,rootIdentity,error,calls:new Map(),retained:0,argumentBytes:0};owners.set(owner,run);return run;
   }
-  function active(owner,context){registry.assert(owner,context);const run=owners.get(owner);
+  function active(owner,context,application=false){registry.assert(owner,context);const run=owners.get(owner);
     if(!run||!sameRun(run.context,context))throw fail('STALE_AI_REQUEST','AI工具运行未登记');
+    if(application)return run;
     if(run.error)throw run.error;if(!run.root)throw fail('INVALID_AI_ROOT','未打开AI项目');
     if(key(io.realpathSync(context.rootId))!==key(run.root)||identity(io.statSync(run.root,{bigint:true}))!==run.rootIdentity)throw fail('AI_SCOPE_CHANGED','AI项目实际目录已变化');return run;
   }
@@ -42,20 +43,21 @@ function createService(registry,options={}){
     return {requested,real,absent,targetIdentity,directories:unique,verify};
   }
   function prepare(owner,context,input){
-    const run=active(owner,context),call=Contract.validate(input),hash=crypto.createHash('sha256').update(JSON.stringify({name:call.name,args:call.args})).digest('hex');
+    const call=Contract.validate(input),application=Contract.isApplication(call.name),run=active(owner,context,application),hash=crypto.createHash('sha256').update(JSON.stringify({name:call.name,args:call.args})).digest('hex');
     let item=run.calls.get(call.id);
     if(item){if(item.hash!==hash)throw fail('TOOL_ID_CONFLICT','同一工具调用身份的参数已变化');return {run,item,call:item.call};}
     if(run.calls.size>=512)throw fail('AI_TOOL_LIMIT','本次任务工具调用达到512上限');
     const argumentBytes=Buffer.byteLength(JSON.stringify(call));
     if(run.argumentBytes+argumentBytes>16*1024*1024)throw fail('AI_TOOL_LIMIT','本次任务参数超过16MiB预算');
-    const proof=scope(run,call.args.path||'.',call.name==='write_file');
+    if(application&&typeof options.application!=='function')throw fail('AI_APPLICATION_UNAVAILABLE','MyIDE操作工具尚未接入');
+    const proof=application?options.application(call):scope(run,call.args.path||'.',call.name==='write_file');
     item={hash,call,proof,phases:new Map()};run.calls.set(call.id,item);run.argumentBytes+=argumentBytes;return {run,item,call};
   }
   async function guarded(owner,context,proof,fn,phase){
-    active(owner,context);proof.verify();
+    active(owner,context,proof.application);proof.verify();
     const writeParents=phase==='write'?[path.dirname(proof.real)]:phase==='run'?[proof.real]:[];
-    const release=process.platform==='win32'&&!options.noLease?require('./ai-path-lease-win').acquire(proof.directories,writeParents):()=>{};
-    try{active(owner,context);proof.verify();const result=await fn(()=>{active(owner,context);proof.verify();});
+    const release=process.platform==='win32'&&!options.noLease&&!proof.application?require('./ai-path-lease-win').acquire(proof.directories,writeParents):()=>{};
+    try{active(owner,context,proof.application);proof.verify();const result=await fn(()=>{active(owner,context,proof.application);proof.verify();});
       if(['read','list','search'].includes(phase)){active(owner,context);proof.verify();}return result;}
     finally{release();}
   }

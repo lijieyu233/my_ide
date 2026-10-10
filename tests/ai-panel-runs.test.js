@@ -17,19 +17,26 @@ function fixture() {
   const put = (name, value = 'ORIGINAL', root = A) => { const p = file(name, root); fs.writeFileSync(p, value); created.add(p); };
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost' }), w = dom.window;
   const registry = createRegistry(), calls = [], writes = [], commands = [], aborts = [], pending = [];
-  const toolService=ToolExecution.createService(registry);
+  const launchFile=path.join(dir,'launch.json');fs.writeFileSync(launchFile,JSON.stringify({entries:[{id:'program',name:'测试服务',category:'自定义',cwd:A,command:'node service.js',port:0}],apiOrigins:[],keepOnExit:true}));created.add(launchFile);
+  const actions=[],selected=[];
+  const launchAdapter=require('../ai-launch-tools').createService({service:{paths:()=>({configFile:launchFile}),statusOf:async entries=>entries.map(e=>({id:e.id,running:actions.at(-1)?.operation==='start',ownership:'owned'})),getLogs:()=>({lines:['READY'],runId:'fixture'}),
+    startEntry:async(e,guard)=>{if(f.beforeLaunch)await f.beforeLaunch();guard('start');actions.push({operation:'start',id:e.id});return {ok:true};},
+    stopEntry:async(e,guard)=>{guard('stop');actions.push({operation:'stop',id:e.id});return {ok:true};},
+    restartEntry:async(e,guard)=>{guard('start');actions.push({operation:'restart',id:e.id});return {ok:true};}
+  }});
+  const toolService=ToolExecution.createService(registry,{application:call=>launchAdapter.prepare(call)});
   const ui = require('./helpers/ai-approval-dom').createUI(() => f.stop());
   const policyStore = require('../ai-permission-store').createStore(path.join(dir,'policy.json'));
   policyStore.initialize({config:{permWrite:'auto'}}); created.add(path.join(dir,'policy.json'));
   const authority = require('../ai-tool-authority').createAuthority({tools:toolService,readPolicy:(owner,context)=>policyStore.read(owner,context),confirm:ui.confirm,remember:(owner,data,signal)=>policyStore.remember(owner,data,signal,()=>toolService.active(owner,data.context))});
   let onChunk, onDone;
-  const f = { dir, A, B, w, calls, writes, commands, aborts, file, put, script: [], onRead: null, onWrite: null, registry };
+  const f = { dir, A, B, w, calls, writes, commands, aborts, launchFile, actions, selected, file, put, script: [], onRead: null, onWrite: null, registry };
   const read = async p => {
     p = path.resolve(p); const injected = f.onRead?.(p); if (injected) return await injected;
     try { const s = FileWrite.readSnapshot(p); if (s.absent) return { error: 'not found', errorCode: 'ENOENT', version: s.version }; return { ...TextFormat.decodeText(s.bytes), version: s.version }; }
     catch (e) { return { error: e.message, errorCode: e.code }; }
   };
-  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {} };
+  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {},showTool(tool){f.shownTool=tool;},getTool(){return f.shownTool;} };w.LaunchPanel={isOpen:()=>f.shownTool==='launch',selectEntry:async id=>selected.push(id)};
   w.Viewer = { activeTab: null }; w.MI = { toast() {}, log() {} }; w.Settings = { open() {} }; w.Modal = { show() {}, hide() {} };
   w.myIDE = { fs: { readFile: read, readDir: async () => [], grep: async () => ({ results: [] }), writeFile: async (p, content, format, condition) => {
     try { return FileWrite.atomicWrite(path.resolve(p), TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), condition); } catch (e) { return { error: e.message }; }
@@ -55,6 +62,7 @@ function fixture() {
       try { return { ok: true, call: toolService.prepare(1,context,JSON.parse(JSON.stringify(call))).call }; }
       catch(e) { return { ok: false, error: e.message, errorCode: e.code }; }
     },
+    launch:async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'application',({proof,verify})=>launchAdapter.execute(proof,verify,()=>authority.assert(1,context,call,proof.effect))),
     readFile: async(context,call)=>{
       const p=path.resolve(context.rootId,call.args.path),injected=f.onRead?.(p);
       if(injected)return await injected;
@@ -72,7 +80,7 @@ function fixture() {
     run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); authority.assert(1,context,call,{target:path.resolve(cwd),command:cmd}); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
-  w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
+  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -84,6 +92,21 @@ function fixture() {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('无项目时真实面板工具链打开并添加程序，配置保留且不会自动启动',async()=>{
+    const f=fixture();f.switchRoot('');f.script.push(reply({id:'open',name:'launch_open',args:{}},{id:'add',name:'launch_add',args:{name:'新增服务',cwd:f.A,command:'node added.js'}}));
+    f.send('打开启动面板，添加一个程序');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
+    const cfg=JSON.parse(fs.readFileSync(f.launchFile,'utf8'));assert.equal(f.shownTool,'launch');assert.equal(cfg.entries.length,2);assert(cfg.keepOnExit);assert.equal(f.actions.length,0);assert.equal(f.commands.length,0);assert(f.selected.includes(cfg.entries[1].id));assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.content.includes('新增服务')));
+  });
+  await test('程序启动要可信确认：拒绝无副作用，批准后一次启动并回传状态',async()=>{
+    const f=fixture();f.switchRoot('');await f.w.AiPanel.setConfig({permRun:'confirm'});
+    f.script.push(reply({id:'reject-start',name:'launch_start',args:{program:'program'}}));f.send();await until(()=>f.element('#cr-no'));assert.equal(f.actions.length,0);f.element('#cr-no').click();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.actions.length,0);
+    f.script.push(reply({id:'accept-start',name:'launch_start',args:{program:'program'}}));f.send();await until(()=>f.element('#cr-yes'));f.element('#cr-yes').click();await until(()=>f.actions.length===1&&f.element('#ai-send').textContent==='➤');
+    assert.equal(f.actions[0].operation,'start');assert.equal(f.commands.length,0);assert(f.calls.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('"running":true')));
+  });
+  await test('文本工具协议停止后释放异步启动检查，不再启动或继续模型轮次',async()=>{
+    const f=fixture();f.switchRoot('');await f.w.AiPanel.setConfig({permRun:'auto'});const gate=defer();let entered=false;f.beforeLaunch=()=>{entered=true;return gate.promise;};
+    const fence=String.fromCharCode(96).repeat(3);f.script.push({ok:true,text:fence+'tool_call\n'+JSON.stringify({name:'launch_start',args:{program:'program'}})+'\n'+fence});f.send();await until(()=>entered);f.element('#ai-stop').click();await until(()=>f.element('#ai-send').textContent==='➤');gate.resolve();await tick();await tick();assert.equal(f.actions.length,0);assert.equal(f.calls.length,1);
+  });
   await test('面板伪改会话开关/localStorage授权不能绕过主进程确认', async()=>{
     const f=fixture();f.put('one.md');await f.w.AiPanel.setConfig({permWrite:'confirm'});
     f.w.AiPanel.sessionPerm.write=true;f.w.localStorage.setItem('myide-ai-perms:'+f.A,JSON.stringify({write:true}));

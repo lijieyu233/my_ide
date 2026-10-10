@@ -23,6 +23,13 @@
       const names = { confirm: '每次确认', auto: '自动', deny: '禁止' };
       for (const [key, label] of [['permWrite', '改文件'], ['permRun', '执行命令']]) line(label + '：' + names[data.before[key]] + ' → ' + names[data.after[key]]);
       line('写入路径白名单：\n' + (data.after.allowPaths.join('\n') || '无')); line('始终确认的命令前缀：\n' + (data.after.denyCmds.join('\n') || '无'));
+    } else if (data.effect.application) {
+      $('title').textContent=data.effect.label; $('accept').textContent=data.danger?'仍然执行':'确认'+({add:'添加',update:'保存',start:'启动',stop:'停止',restart:'重启'}[data.effect.operation]||'操作');
+      $('target').textContent=(data.effect.after?.name||'程序')+' · '+data.effect.entryId;
+      $('note').textContent=data.danger?'启动命令可能有破坏性，必须逐次批准。':'批准仅对应当前程序和配置；改动期间配置变化将取消本次操作。';
+      const fields=[['name','名称'],['category','分类'],['cwd','工作目录'],['command','启动命令'],['port','端口'],['openUrl','页面地址'],['script','桥接脚本'],['python','Python解释器']];
+      for(const [key,label]of fields){if(!Object.hasOwn(data.effect.after||{},key))continue;const before=data.effect.before?.[key],after=data.effect.after?.[key];if(data.effect.operation==='update'&&before===after)continue;line(label+'：'+(data.effect.operation==='update'?String(before??'')+' → ':'')+String(after??''));}
+      if(['add','update'].includes(data.effect.operation))line('保存配置后不会自动启动或重启。','muted');
     } else if (data.effect.kind === 'run') {
       $('title').textContent = data.danger ? '危险命令，请确认' : 'AI 请求执行命令'; $('accept').textContent = data.danger ? '仍然执行' : '运行一次';
       $('note').textContent = data.danger ? '这条命令可能是破坏性的，必须逐次批准。' : '在上方项目目录执行。';

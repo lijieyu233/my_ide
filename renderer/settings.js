@@ -628,6 +628,7 @@ const Settings = (() => {
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
         <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
           这些档位在 AI 面板顶部的「访问权限」按钮里也能直接切换，不必每次进设置页。<br>
+          启动面板的程序配置跟随文件写入权限，启动、停止和重启跟随执行命令权限；项目授权不放行程序操作。<br>
           破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单、「自动」档与「记住授权」影响；
           把已有文件内容清空也单独保护，必须点一次确认。
         </div>

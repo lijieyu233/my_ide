@@ -89,6 +89,18 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+
+    await test('AI取消异步端口检查后不启动服务，撤销停止批准后不杀进程',async()=>{
+      const f=fixture({holdPort:true}),entry={...f.entry,port:18089};let cancelled=false;
+      const start=f.service.startEntry(entry,()=>{if(cancelled)throw Object.assign(Error('cancelled'),{code:'CANCELLED_AI_REQUEST'});});
+      await new Promise(r=>setImmediate(r));cancelled=true;f.sockets[0].emit('error');await assert.rejects(start,{code:'CANCELLED_AI_REQUEST'});assert.equal(f.spawned.length,0);
+      const g=fixture();g.record(g.entry);await assert.rejects(g.service.stopEntry(g.entry,()=>{throw Object.assign(Error('revoked'),{code:'AI_APPROVAL_REQUIRED'});}),{code:'AI_APPROVAL_REQUIRED'});assert.equal(g.kills.length,0);assert(g.state()[g.entry.id]);
+    });
+    await test('手动编辑旧配置不能覆盖期间AI新增的程序',async()=>{
+      const f=fixture(),before={apiOrigins:[],entries:[],keepOnExit:true};f.service.saveConfig(before);
+      const after={...before,entries:[{...f.entry,name:'AI程序'}]};f.service.saveConfig(after,before);
+      assert.throws(()=>f.service.saveConfig({...before,keepOnExit:false},before),{code:'LAUNCH_CONFIG_CHANGED'});assert.deepEqual(f.service.loadConfig(),after);
+    });
     await test('快照中旧服务身份缺失不阻断新服务保留退出，也不授权未知进程操作', async () => {
       for (const missing of [{image:null}, {image:42}, {commandLine:null}]) {
         const f = fixture(); const restored={...f.entry,id:'restored'}; f.record(restored,777);
