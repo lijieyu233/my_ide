@@ -873,14 +873,19 @@ window.MdEditor = (() => {
     host._cellView=session.view;return session;
   }
   class TableWidget extends WidgetType {
-    constructor(src, from, selection, editable = true) {
+    constructor(src, from, selection, editable = true, previous) {
       super(); this.src = src; this.from = from || 0; this.selection = selection; this.canEdit = editable;
+      // 换格会重建装饰；沿用实测高度，避免CM先把长表格估成一行，再按整表高度补偿滚动。
+      this.height = previous?.height ?? -1;
     }
+    get estimatedHeight() { return this.height; }
     eq(other) { return other.src === this.src && other.from === this.from && other.canEdit === this.canEdit
       && other.selection?.anchor === this.selection?.anchor && other.selection?.head === this.selection?.head; }
     updateDOM(wrap, view) { this.renderCells(wrap, view); return true; }
     renderCells(wrap, view) {
       wrap._tableWidget = this;
+      view.requestMeasure({ key: wrap, read: () => wrap.isConnected ? wrap.getBoundingClientRect().height / view.scaleY : -1,
+        write: height => { if (height >= 0) wrap._tableWidget.height = height; } });
       const rows = tableCellRanges(this.src, this.from), parsed = parseTable(this.src);
       if (!parsed) return;
       const matrix = [parsed.head, ...parsed.rows], cols = Math.max(...matrix.map(r => r.length));
@@ -1036,7 +1041,8 @@ window.MdEditor = (() => {
           }
           e.preventDefault();
           e.stopPropagation();
-          view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+          // 鼠标已点到可见单元格；外层选区对应整块表格边界，滚动它会把正在看的行移出窗口。
+          view.dispatch({ selection: { anchor: pos } });
           const inner=wrap._cellSession?.view;
           if(!inner)return;
           // 替换渲染文字后重新量坐标，沿用CM的字符定位，不能把点击变成整格选中。
@@ -1216,7 +1222,7 @@ window.MdEditor = (() => {
   // Obsidian 核心行为：光标行保留渲染样式、只显示源码标记；
   // 非光标行隐藏标记。因此「样式 mark / 行类」对所有行生效，
   // 「标记隐藏 / URL 隐藏 / 图片 widget / task checkbox / 空行压缩」仅非光标行。
-  function buildDecorations(state) {
+  function buildDecorations(state, previousTables = new Map()) {
     // 先序遍历会先 add 父节点内部范围、再 add 子节点标记 → 直接用 RangeSetBuilder
     // 会因乱序抛 "Ranges must be added sorted"（异常被吞 → 装饰丢失，live 预览退化为源码）。
     // 改为数组收集 + Decoration.set(…, true) 统一排序。
@@ -1486,7 +1492,7 @@ window.MdEditor = (() => {
                 if (parseTable(tsrc)) {
                   const selection = state.selection.main.head >= node.from && state.selection.main.head <= node.to ? state.selection.main : null;
                   decos.push(Decoration.replace({ block: true, widget: new TableWidget(tsrc, node.from, selection,
-                    !state.readOnly && state.facet(EditorView.editable)) }).range(node.from, node.to));
+                    !state.readOnly && state.facet(EditorView.editable), previousTables.get(node.from)) }).range(node.from, node.to));
                   return;
                 }
               }
@@ -1698,7 +1704,11 @@ window.MdEditor = (() => {
       const foldToggled = tr.effects.some((e) => e.is(Language.foldEffect) || e.is(Language.unfoldEffect));
       if (tr.docChanged || tr.selection || foldToggled || tr.state.readOnly !== tr.startState.readOnly
         || tr.state.facet(EditorView.editable) !== tr.startState.facet(EditorView.editable) || tr.effects.some((e) => e.is(liveRefresh))) {
-        return buildDecorations(tr.state);
+        const tables = new Map();
+        value.between(0, tr.startState.doc.length, (from, _to, deco) => {
+          if (deco.spec.widget instanceof TableWidget) tables.set(tr.changes.mapPos(from), deco.spec.widget);
+        });
+        return buildDecorations(tr.state, tables);
       }
       return value;
     },

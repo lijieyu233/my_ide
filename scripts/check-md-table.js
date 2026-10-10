@@ -20,6 +20,8 @@ const click = async (row,col) => {
 };
 const field = 'document.querySelector(".cm-md-cell-editor")', inner = field+'._cellView';
 require('../main');
+app.on('web-contents-created',(_e,contents)=>contents.on('console-message',(_e,level,message)=>{if(level===3)console.error('renderer: '+message);}));
+
 app.whenReady().then(async () => { try {
   for(let i=0;i<100&&!BrowserWindow.getAllWindows().length;i++)await sleep(50);
   win=BrowserWindow.getAllWindows()[0];win.setContentSize(1280,850);win.webContents.debugger.attach('1.3');
@@ -97,6 +99,23 @@ app.whenReady().then(async () => { try {
   check('调整字号后空行高度仍与有文字行一致',await normalRows('.cm-md-table'));
   await probe('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
   fs.writeFileSync(path.join(home,'table-empty-rows.png'),(await win.webContents.capturePage()).toPNG());
+  // 短文档没有滚动空间，必须在超过窗口高度的长表格里用真实鼠标验证阅读位置。
+  const scrollFixture=[...Array.from({length:45},(_,i)=>'表格前正文 '+i+'\n'), '| 名称 | 内容 |', '| --- | --- |', ...Array.from({length:40},(_,i)=>'| 行'+i+' | 单元格文字 |'), '', ...Array.from({length:45},(_,i)=>'表格后正文 '+i+'\n')].join('\n');
+  await probe('Viewer.cm.setValue('+JSON.stringify(scrollFixture)+');Viewer.cm.setCursor(Viewer.cm.getValue().length)');await sleep(200);
+  await probe("Viewer.cm.view.dispatch({selection:{anchor:Viewer.cm.getValue().indexOf('| 名称')},scrollIntoView:true})");await sleep(200);
+  await probe("Viewer.cm.setCursor(0)");await sleep(800);
+  await probe("Viewer.cm.view.scrollDOM.scrollTop=Viewer.cm.view.lineBlockAt(Viewer.cm.getValue().indexOf('| 名称')).top+220");await sleep(800);
+  const scrollBefore=await probe("(()=>{const v=Viewer.cm.view,r=v.scrollDOM.getBoundingClientRect(),td=[...v.dom.querySelectorAll('.cm-md-table td')].find(td=>{const b=td.getBoundingClientRect();return b.top>r.top+60&&b.bottom<r.bottom-60});if(!td)throw Error('长表格没有可点击的可见单元格');window.scrollTestCell=td;return {top:v.scrollDOM.scrollTop,cellY:td.getBoundingClientRect().top,text:Viewer.cm.getValue(),row:Number(td.dataset.row),col:Number(td.dataset.col)}})()");
+  await click(scrollBefore.row,scrollBefore.col);await sleep(500);
+  const scrollAfter=await probe("({top:Viewer.cm.view.scrollDOM.scrollTop,cellY:scrollTestCell.getBoundingClientRect().top,text:Viewer.cm.getValue()})");
+  console.log('table scroll '+JSON.stringify({before:scrollBefore.top,after:scrollAfter.top,beforeY:scrollBefore.cellY,afterY:scrollAfter.cellY}));
+  check('长表格真实点击进入单元格后正文滚动位置与单元格坐标保持不变',Math.abs(scrollBefore.top-scrollAfter.top)<2&&Math.abs(scrollBefore.cellY-scrollAfter.cellY)<2);
+  check('长表格点击后焦点仍在所点单元格',await probe(`${inner}.hasFocus&&Number(${field}.closest('td').dataset.row)===${scrollBefore.row}`));
+  for(const [row,col] of [[scrollBefore.row+1,1],[scrollBefore.row+2,0],[scrollBefore.row,0]])await click(row,col);
+  await sleep(500);
+  check('连续切换长表格不同单元格不触发文档滚动',await probe('Math.abs(Viewer.cm.view.scrollDOM.scrollTop-'+scrollAfter.top+')<2&&Math.abs(scrollTestCell.getBoundingClientRect().top-'+scrollAfter.cellY+')<2'));
+  check('表格点击和焦点切换不修改长文档正文',await probe('Viewer.cm.getValue()')===scrollBefore.text);
+  fs.writeFileSync(path.join(home,'table-scroll.png'),(await win.webContents.capturePage()).toPNG());
   fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:0,home}));console.log(JSON.stringify({passed,failed:0,home}));app.exit(0);
 } catch(e) { fs.writeFileSync(path.join(home,'report.json'),JSON.stringify({passed,failed:1,error:e.stack,home}));console.error(e);console.log('产物 '+home);app.exit(1); } });
-setTimeout(()=>{console.error('表格自检超时 '+home);app.exit(2);},90000).unref();
+setTimeout(()=>{console.error('表格自检超时 '+home);app.exit(2);},150000).unref();
