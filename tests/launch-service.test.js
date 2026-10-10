@@ -24,8 +24,8 @@ function fixture(options = {}) {
       if (file === 'powershell.exe') {
         const script = Buffer.from(args.at(-1), 'base64').toString('utf16le'); queries.push(script);
         if (script.includes('LAUNCH_RUNNING_TREE')) {
-          const values = [...identities.values()].filter(item => live.has(item.pid)).map(item => ({ ...item, parentPid: options.parents?.[item.pid] || 0 }));
-          const complete = () => callback(options.treeError ? Error('fixture snapshot denied') : null, options.treeMalformed ? '{}' : JSON.stringify(values));
+          const values = [...identities.values()].filter(item => live.has(item.pid)).map(item => ({ ...(options.queryIdentity ? options.queryIdentity(item.pid, item, kills) : item), parentPid: options.parents?.[item.pid] || 0 }));
+          const complete = () => callback(options.treeError || options.identityError ? Error('fixture snapshot denied') : null, options.treeMalformed || options.malformedIdentity ? '{}' : JSON.stringify(values));
           if (options.holdTree) options.releaseTree = complete; else queueMicrotask(complete);
           return;
         }
@@ -89,6 +89,38 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('多组恢复服务状态与运行采集合并在途快照，保留退出不再查询或停止服务', async () => {
+      const f = fixture(), entries = [], state = {};
+      for (let i = 0; i < 5; i++) {
+        const entry = { ...f.entry, id: 'recovered-' + i }, pid = 800 + i;
+        f.record(entry, pid); entries.push(entry); Object.assign(state, f.state());
+      }
+      fs.writeFileSync(f.service.paths().stateFile, JSON.stringify(state));
+      f.options.holdTree = true;
+      const first = f.service.statusOf(entries), second = f.service.statusOf(entries);
+      await f.sample(); assert.equal(f.queries.length, 1);
+      f.options.releaseTree(); const results = await Promise.all([first, second]);
+      assert(results.every(list => list.length === 5 && list.every(item => item.canStop && item.ownership === 'owned')));
+      f.options.holdTree = false; f.service.setKeepOnExit(true);
+      const before = f.queries.length, exit = await f.service.shutdown();
+      assert(exit.ok && exit.preserved === 5); assert.equal(f.queries.length - before, 0);
+      assert.deepEqual(f.kills, []); assert.deepEqual(f.state(), state);
+    });
+    await test('批量状态查询失败不授权启动或停止，停止仍重新核对身份', async () => {
+      const f = fixture(); f.record(f.entry); f.options.treeError = true;
+      const [unknown] = await f.service.statusOf([f.entry]); assert.equal(unknown.ownership, 'unknown'); assert(!unknown.canStart && !unknown.canStop);
+      f.options.treeError = false; const [owned] = await f.service.statusOf([f.entry]); assert(owned.canStop);
+      f.identities.set(777, { ...f.identities.get(777), commandLine: 'foreign process' });
+      assert(!(await f.service.stopEntry(f.entry)).ok); assert.deepEqual(f.kills, []);
+    });
+    await test('本轮新启动多组服务保留退出仍采集最终子树，仅起一次系统查询', async () => {
+      const f = fixture({ parents: { 900: 501 } });
+      for (let i = 0; i < 3; i++) assert((await f.service.startEntry({ ...f.entry, id: 'new-' + i })).ok);
+      f.live.add(900); f.identities.set(900, { ...f.identities.get(501), pid: 900, createdAt: new Date(1700000009000).toISOString() });
+      f.service.setKeepOnExit(true); const before = f.queries.length, result = await f.service.shutdown();
+      assert(result.ok && result.preserved === 3); assert.equal(f.queries.length - before, 1); assert.deepEqual(f.kills, []);
+      assert.equal(f.state()['new-0'].descendants[0].identity.pid, 900);
+    });
     await test('文件输出尾读保留UTF8与独立流，清空不复活未读旧正文，退出结算尾行', async () => {
       const f = fixture({ fileOutput: true }), started = await f.service.startEntry(f.entry);
       const dir = path.join(f.service.paths().configDir, 'launch-output', started.launchId);
@@ -182,6 +214,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
     });
     await test('保留采集父子身份，外壳结束后仍可识别、阻止重复启动并停止自有子进程', async () => {
       const f = fixture({parents:{778:777}}); f.record(f.entry); f.live.add(778); f.identities.set(778,{...f.identities.get(777),pid:778,createdAt:new Date(1700000007780).toISOString()});
+      await f.service.statusOf([f.entry]); await f.sample();
       f.service.setKeepOnExit(true); assert.equal((await f.service.shutdown()).ok,true); assert.equal(f.state()[f.entry.id].descendants.length,1);
       f.live.delete(777); assert.equal((await f.service.aliveEntry(f.entry)).ownership,'owned');
       assert.equal((await f.service.startEntry(f.entry)).ok,false); assert.equal(f.children.length,0);
@@ -190,16 +223,18 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
     await test('恢复子进程PID易主时不停止、不覆盖记录；停止后仍活着也不得清记录', async () => {
       for(const changed of [true,false]){
         const f=fixture({parents:{778:777}});f.record(f.entry);f.live.add(778);f.identities.set(778,{...f.identities.get(777),pid:778,createdAt:new Date(1700000007780).toISOString()});
+        await f.service.statusOf([f.entry]); await f.sample();
         f.service.setKeepOnExit(true);assert.equal((await f.service.shutdown()).ok,true);f.live.delete(777);const before=f.state();
         if(changed)f.identities.set(778,{...f.identities.get(778),commandLine:'foreign'});else f.options.killReportsSuccessButAlive=true;
         assert.equal((await f.service.stopEntry(f.entry)).ok,false);assert.deepEqual(f.state(),before);assert.deepEqual(f.kills,changed?[]:[778]);
       }
     });
     await test('父PID复用形成的旧子进程出生时间与重复子树记录均拒绝认领', async () => {
-      const f=fixture({parents:{776:777}});f.record(f.entry);f.identities.set(776,{...f.identities.get(777),pid:776,createdAt:new Date(1700000007760).toISOString()});
+      const f=fixture({parents:{776:501}});await f.service.startEntry(f.entry);f.live.add(776);f.identities.set(776,{...f.identities.get(501),pid:776,createdAt:new Date(1700000005000).toISOString()});
       f.service.setKeepOnExit(true);const before=f.state();assert.equal((await f.service.shutdown()).ok,false);assert.deepEqual(f.state(),before);assert.equal(f.kills.length,0);
-      const record=before[f.entry.id];record.descendants=[{identity:f.identities.get(776)},{identity:f.identities.get(776)}];fs.writeFileSync(f.service.paths().stateFile,JSON.stringify(before));f.live.delete(777);
-      assert.equal((await f.service.stopEntry(f.entry)).ok,false);assert.equal(f.kills.length,0);
+      const restored=fixture();before[f.entry.id].pid=777;before[f.entry.id].identity={...before[f.entry.id].identity,pid:777};
+      const record=before[f.entry.id];record.descendants=[{identity:f.identities.get(776)},{identity:f.identities.get(776)}];fs.writeFileSync(restored.service.paths().stateFile,JSON.stringify(before));
+      assert.equal((await restored.service.stopEntry(restored.entry)).ok,false);assert.equal(restored.kills.length,0);
     });
     await test('确认停止但清记录写入被拒绝时退出失败，重试落盘后才成功', async()=>{
       const f=fixture();f.record(f.entry);const before=f.state();f.options.failStateWrites=true;
@@ -232,6 +267,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
     await test('外壳已结束且历史子PID复用不拦后台保留退出，原记录保全且仍拒绝停止', async () => {
       const f = fixture({ parents: { 778: 777 } }); f.record(f.entry);
       f.live.add(778); f.identities.set(778, { ...f.identities.get(777), pid: 778, createdAt: new Date(1700000007780).toISOString() });
+      await f.service.statusOf([f.entry]); await f.sample();
       f.service.setKeepOnExit(true); assert.equal((await f.service.shutdown()).ok, true);
       f.live.delete(777); f.identities.set(778, { ...f.identities.get(778), image: 'foreign.exe', commandLine: 'foreign service' });
       const before = fs.readFileSync(f.service.paths().stateFile, 'utf8');

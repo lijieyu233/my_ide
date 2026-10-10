@@ -623,7 +623,7 @@ const LaunchPanel = (() => {
     } catch (error) { if (serial !== configSerial) return; configError = reason(error); }
     finally { if (serial === configSerial) configLoading = false; }
     if (serial !== configSerial) return;
-    renderList(); await pollOnce(); if (!cfg.entries.length) renderMain();
+    renderList(); if (isOpen()) await pollOnce(); if (!cfg.entries.length) renderMain();
   }
 
   // ---------- 对话框 ----------
@@ -861,9 +861,12 @@ const LaunchPanel = (() => {
     bind();
     load();
     if (timer) clearInterval(timer);
-    timer = setInterval(pollOnce, 1500);
+    // 未显示的面板无需不断起CIM查询，操作后及重新显示时仍主动核验状态。
+    timer = setInterval(() => { if (isOpen()) pollOnce(); }, 1500);
   }
 
-  return { init, refresh: load, isOpen: () => !!(q('panel-launch') && !q('panel-launch').classList.contains('hidden')) };
+  function isOpen() { return !!(q('panel-launch') && !q('panel-launch').classList.contains('hidden')); }
+
+  return { init, refresh: load, isOpen };
 })();
 window.LaunchPanel = LaunchPanel;

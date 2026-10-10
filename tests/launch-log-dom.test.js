@@ -21,7 +21,7 @@ async function fixture(initial = snapshot(['初始输出']), overrides = {}) {
     clearLogs: async id => { calls.push(['clear', id]); const old = values[id]; values[id] = snapshot([], 0, old.generation + '-clear', old.runId); return { ok: true, runId: old.runId, generation: values[id].generation }; },
     ...overrides };
   w.myIDE = { launch: api, clip: { copy: async text => { copied.push(text); return true; } } }; w.Modal = { stack: [] };
-  q('launch-main').classList.remove('hidden');
+  q('panel-launch').classList.remove('hidden'); q('launch-main').classList.remove('hidden');
   const el = q('lm-log'); let scroll = 0;
   Object.defineProperties(el, { clientHeight: { get: () => 100 }, scrollHeight: { get: () => Math.max(100, el.children.length * 20) },
     scrollTop: { get: () => scroll, set: value => { scroll = Math.max(0, Math.min(value, el.scrollHeight - 100)); } } });

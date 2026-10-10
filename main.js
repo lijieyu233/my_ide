@@ -371,6 +371,8 @@ ipcMain.handle('fs:setRecent', async (_e, p) => {
     if (snapshot.tooLarge) throw Error('记录超过读取预算');
     const s = snapshot.absent ? {} : JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(snapshot.bytes));
     if (!s || typeof s !== 'object' || Array.isArray(s)) throw Error('原记录格式损坏，已保留原件');
+    // 自动恢复同一项目无需重写成功记录；首次原子写会初始化Windows原生桥并阻塞主窗口。
+    if (s.lastFolder === p) return { ok: true };
     s.lastFolder = p;
     FileWrite.atomicWrite(stateFile, Buffer.from(JSON.stringify(s)), { expectedVersion: snapshot.version, requireVersion: true });
     return { ok: true };

@@ -109,6 +109,7 @@ const App = (() => {
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
+    if (prev !== 'launch' && next === 'launch') window.LaunchPanel?.refresh();
     if (prev === 'quick-launch') window.QuickLaunch?.hide();
     if (next === 'quick-launch') window.QuickLaunch?.show();
     if (prev === 'browser' && window.BrowserPanel) BrowserPanel.hide();

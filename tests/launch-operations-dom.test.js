@@ -8,7 +8,7 @@ const idle = id => ({ id, alive: false, by: 'none', processAlive: false, ownersh
 const running = id => ({ id, alive: true, by: 'proc', processAlive: true, ownership: 'owned', canStart: false, canStop: true, phase: 'running' });
 let passed = 0;
 const fixtures = [];
-async function fixture(overrides = {}) {
+async function fixture(overrides = {}, hidden = false) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   fixtures.push(dom); const timers = []; w.setInterval = fn => { timers.push(fn); return 1; }; w.clearInterval = () => {}; w.confirm = () => true;
   const q = id => w.document.getElementById(id), calls = [], toasts = [];
@@ -22,7 +22,7 @@ async function fixture(overrides = {}) {
     save: async value => { calls.push(['save', value.entries.map(e => e.id)]); config = value; return value; },
     openUrl: async url => { calls.push(['open', url]); }, ...overrides };
   w.myIDE = { launch: api }; w.MI = { toast: (message, kind) => toasts.push([message, kind]) };
-  q('launch-main').classList.remove('hidden'); w.eval(source); w.LaunchPanel.init(); await tick();
+  if (!hidden) q('panel-launch').classList.remove('hidden'); q('launch-main').classList.remove('hidden'); w.eval(source); w.LaunchPanel.init(); await tick();
   const select = async id => { q('launch-body').querySelector('[data-id="' + id + '"]').click(); await tick(); };
   await select('a');
   return { dom, w, q, api, calls, toasts, statuses, select, timers, config: () => config,
@@ -31,6 +31,15 @@ async function fixture(overrides = {}) {
 const test = async (name, run) => { await run(); passed++; console.log('  ok ' + name); };
 (async () => {
   try {
+    await test('隐藏启动面板不轮询，显示后刷新读取当前状态，收起后再次停止轮询', async () => {
+      let reads = 0;
+      const f = await fixture({ status: async entries => { reads++; return entries.map(e => idle(e.id)); } }, true);
+      assert.equal(reads, 0);
+      f.q('panel-launch').classList.add('hidden');
+      const before = reads; await f.w.LaunchPanel.refresh(); await f.poll(); assert.equal(reads, before);
+      f.q('panel-launch').classList.remove('hidden'); await f.w.LaunchPanel.refresh(); assert.equal(reads, before + 1);
+      f.q('panel-launch').classList.add('hidden'); await f.poll(); assert.equal(reads, before + 1);
+    });
     await test('单项pending早于await；主区与侧栏重复入口不再提交，其他终端可独立启动', async () => {
       const hold = gate(), f = await fixture(); let received = 0;
       f.api.start = async e => { received++; return e.id === 'a' ? hold.promise : { ok: true }; };

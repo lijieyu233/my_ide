@@ -18,6 +18,10 @@ app.whenReady().then(async () => { try {
   check('启动未加载本地文件栏目录', await probe('document.querySelector("#remote-local-pane input").value===""'));
   check('启动注册数据库IPC时没有加载数据库驱动', !Object.keys(require.cache).some(p => /node_modules[\\/](mysql2|pg|sql\.js)[\\/]/.test(p)));
   await probe(`App.setRoot(${JSON.stringify(home)})`);
+  const stateFile = path.join(app.getPath('userData'), 'my-ide-state.json'), Files = require('../file-write');
+  const recentBefore = Files.readSnapshot(stateFile).version;
+  const recent = await probe(`myIDE.fs.setRecent(${JSON.stringify(home)})`);
+  check('重复恢复当前项目不重写持久记录', recent.ok && Files.sameVersion(recentBefore, Files.readSnapshot(stateFile).version));
   await probe('Theme.set("crimson")');
   await probe('window.startupEditorHost=document.createElement("div");document.getElementById("viewer").appendChild(startupEditorHost);window.startupEditor=MdEditor.create({parent:startupEditorHost,doc:"# live\\n\\n```mermaid\\ngraph TD; C-->D\\n```\\n",onChange:()=>{}});undefined;');
   await wait('!!startupEditorHost.querySelector(".cm-md-mermaid svg")'); check('首次实时预览按需加载流程图', true);

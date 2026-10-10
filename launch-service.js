@@ -40,7 +40,7 @@ const pending = new Map();
 let closing = false;
 let shutdownPromise = null;
 let exitPending = false;
-let treeTimer = null, treeRefresh = null;
+let treeTimer = null, treeRefresh = null, snapshotQuery = null;
 function setExitPending(value) { exitPending = value === true; }
 
 // 不能等正常退出才登记子树：强制重启会跳过shutdown，cmd外壳也可能先于服务退出。
@@ -56,11 +56,13 @@ function refreshOwnedTrees() {
     .finally(() => { treeRefresh = null; });
   return treeRefresh;
 }
-async function collectOwnedTrees() {
-  const targetsConfig = configDir;
-  const records = loadState();
-  const targets = Object.entries(records).filter(([, record]) => record && record.identity && record.launchId);
-  if (!targets.length) return { ok: true };
+function queryProcessSnapshot() {
+  // 轮询和运行子树登记常在同一时刻触发，共享在途查询；停止前的单PID核验不使用这份证据。
+  if (snapshotQuery) return snapshotQuery;
+  snapshotQuery = readProcessSnapshot().finally(() => { snapshotQuery = null; });
+  return snapshotQuery;
+}
+async function readProcessSnapshot() {
   const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_RUNNING_TREE\n"
     + "$items=@(Get-CimInstance Win32_Process -Filter 'ProcessId>0'); ConvertTo-Json -InputObject @($items|ForEach-Object {$birth=if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{''};@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;createdAt=$birth;image=$_.ExecutablePath;commandLine=$_.CommandLine}}) -Compress";
   const response = await systemQuery('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
@@ -70,6 +72,16 @@ async function collectOwnedTrees() {
   catch { return { ok: false, error: '运行子树快照无法解析' }; }
   if (!Array.isArray(snapshot) || snapshot.some(item => !item || !Number.isSafeInteger(item.pid) || item.pid <= 0)
     || new Set(snapshot.map(item => item.pid)).size !== snapshot.length) return { ok: false, error: '运行子树快照结构无效' };
+  return { ok: true, processes: snapshot };
+}
+async function collectOwnedTrees() {
+  const targetsConfig = configDir;
+  const records = loadState();
+  const targets = Object.entries(records).filter(([, record]) => record && record.identity && record.launchId);
+  if (!targets.length) return { ok: true };
+  const evidence = await queryProcessSnapshot();
+  if (!evidence.ok) return evidence;
+  const snapshot = evidence.processes;
   const byPid = new Map(snapshot.map(item => [item.pid, item]));
   for (const [id, record] of targets) {
     const saved = record.descendants || [];
@@ -100,7 +112,7 @@ async function collectOwnedTrees() {
     const written = setState(id, { ...current, descendants });
     if (written.ok && procs.get(id)?.launchId === record.launchId) procs.get(id).descendants = descendants;
   }
-  return { ok: true };
+  return evidence;
 }
 
 // 端口探测会让出执行权；锁必须早于探测，且 restart 的 stop/start 共用一份锁。
@@ -330,8 +342,14 @@ function systemQuery(file, args) {
 }
 
 // kill(pid, 0)只能证明数字存在；出生时间与实际映像才区分同一PID的两次运行。
-async function processIdentity(pid) {
+async function processIdentity(pid, evidence) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { ok: false, error: '进程PID无效' };
+  if (evidence) {
+    if (!evidence.ok) return evidence;
+    const identity = evidence.processes.find(item => item.pid === pid) || null;
+    if (identity && (!identity.createdAt || !Number.isFinite(Date.parse(identity.createdAt)) || !identity.image || !identity.commandLine)) return { ok: false, error: '操作系统未返回完整进程身份' };
+    return { ok: true, identity };
+  }
   // 已退出的历史PID无需拉起PowerShell；权限失败不等于退出，仍须查询完整身份。
   try { process.kill(pid, 0); }
   catch (error) { if (error.code === 'ESRCH') return { ok: true, identity: null }; }
@@ -365,16 +383,17 @@ function reusedIdentity(a, b) {
   return !!(complete(a) && complete(b) && a.pid === b.pid && Date.parse(b.createdAt) > Date.parse(a.createdAt));
 }
 
-async function captureExitTree(record) {
+async function captureExitTree(record, evidence) {
   if (!record.identity) return { ok: false, error: '运行记录缺少可核验身份，后台保留未确认' };
+  if (evidence && !evidence.ok) return evidence;
   const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_EXIT_TREE\n"
     + '$root=Get-CimInstance Win32_Process -Filter "ProcessId=' + record.pid + '"; $all=@(Get-CimInstance Win32_Process); '
     + "$items=@($all|ForEach-Object {$birth=if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{''};@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;createdAt=$birth;image=$_.ExecutablePath;commandLine=$_.CommandLine}}); "
     + "$r=$null;if($root){$r=@{pid=[int]$root.ProcessId;createdAt=$root.CreationDate.ToUniversalTime().ToString('o');image=$root.ExecutablePath;commandLine=$root.CommandLine}}; @{root=$r;processes=$items}|ConvertTo-Json -Depth 5 -Compress";
-  const response = await systemQuery('powershell.exe', ['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
+  const response = evidence ? { ok: true } : await systemQuery('powershell.exe', ['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
   if (!response.ok) return response;
   try {
-    const snapshot = JSON.parse(response.stdout.replace(/^\uFEFF/, ''));
+    const snapshot = evidence ? { root: evidence.processes.find(item => item.pid === record.pid), processes: evidence.processes } : JSON.parse(response.stdout.replace(/^\uFEFF/, ''));
     if (!sameIdentity(record.identity, snapshot.root) || !Array.isArray(snapshot.processes)) throw Error('根进程身份不匹配或已结束');
     const queue = [snapshot.root], descendants = [];
     for (let index = 0; index < queue.length; index++) {
@@ -387,13 +406,14 @@ async function captureExitTree(record) {
         const { parentPid, ...identity } = child; descendants.push({ identity, parentPid }); queue.push(identity);
       }
     }
-    const after = await processIdentity(record.pid);
+    // 后台保留只登记身份，不停止进程；同一批CIM证据足够，退出无需每个根再起两次PowerShell。
+    const after = await processIdentity(record.pid, evidence);
     if (!after.ok || !sameIdentity(record.identity, after.identity)) throw Error('采集期间根进程身份变化');
     return { ok: true, descendants };
   } catch (error) { return { ok: false, error: '后台子树身份采集失败：' + String(error.message || error) }; }
 }
 
-async function recordedChildren(record) {
+async function recordedChildren(record, evidence) {
   const saved = record.descendants || [];
   if (!Array.isArray(saved) || saved.length > 256 || saved.some(item => !item || !item.identity || !Number.isSafeInteger(item.identity.pid) || item.identity.pid <= 0
     || !Number.isFinite(Date.parse(item.identity.createdAt)) || typeof item.identity.image !== 'string' || !item.identity.image
@@ -403,10 +423,11 @@ async function recordedChildren(record) {
   const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding; # LAUNCH_EXIT_RECORDS\n"
     + '$items=@(Get-CimInstance Win32_Process -Filter "' + saved.map(item => 'ProcessId='+item.identity.pid).join(' OR ') + '"); '
     + "ConvertTo-Json -InputObject @($items|ForEach-Object {@{pid=[int]$_.ProcessId;createdAt=$_.CreationDate.ToUniversalTime().ToString('o');image=$_.ExecutablePath;commandLine=$_.CommandLine}}) -Compress";
-  const response = await systemQuery('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
+  if (evidence && !evidence.ok) return evidence;
+  const response = evidence ? { ok: true } : await systemQuery('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);
   if (!response.ok) return response;
   try {
-    const values = JSON.parse(response.stdout.replace(/^\uFEFF/, '')); if (!Array.isArray(values) || values.some(value => !value || !saved.some(item => item.identity.pid === value.pid))
+    const values = evidence ? evidence.processes.filter(value => saved.some(item => item.identity.pid === value.pid)) : JSON.parse(response.stdout.replace(/^\uFEFF/, '')); if (!Array.isArray(values) || values.some(value => !value || !saved.some(item => item.identity.pid === value.pid))
       || new Set(values.map(value => value.pid)).size !== values.length) throw Error('系统返回子树身份结构无效');
     const alive = [];
     for (const item of saved) {
@@ -696,21 +717,21 @@ async function aliveEntry(entry) {
 }
 
 // ---------- 状态 / 日志 ----------
-async function statusEvidence(entry) {
-  const live = procs.get(entry.id), record = live || loadState()[entry.id];
+async function statusEvidence(entry, records, evidence) {
+  const live = procs.get(entry.id), record = live || records[entry.id];
   const portResponding = entry.port ? await checkPort(entry.port) : null;
   let processAlive = false, ownership = 'none', evidenceError = '';
   if (live) {
     processAlive = live.proc.exitCode == null && live.proc.signalCode == null;
     ownership = processAlive ? live.ownership || 'unknown' : 'none';
   } else if (record && record.pid) {
-    const current = await processIdentity(record.pid);
+    const current = await processIdentity(record.pid, evidence);
     if (!current.ok) { ownership = 'unknown'; evidenceError = current.error; }
     else if (current.identity && !record.identity) { ownership = 'unknown'; evidenceError = '旧运行记录缺少进程身份'; }
     else if (current.identity && !sameIdentity(record.identity, current.identity) && !reusedIdentity(record.identity, current.identity)) { ownership = 'foreign'; evidenceError = 'PID已属于另一进程，历史进程结束尚未确认'; }
     else if (sameIdentity(record.identity, current.identity)) { processAlive = true; ownership = 'owned'; }
     else {
-      const children = await recordedChildren(record);
+      const children = await recordedChildren(record, evidence);
       if (!children.ok) { ownership = 'unknown'; evidenceError = children.error; }
       else if (children.alive.length) { processAlive = true; ownership = 'owned'; }
     }
@@ -737,7 +758,17 @@ async function statusEvidence(entry) {
     exitCode: record && record.endedAt ? record.exitCode : null, exitSignal: record && record.exitSignal || null,
     operation: pending.has(entry.id) ? pending.get(entry.id).operation : exitPending ? '退出' : null };
 }
-function statusOf(entries) { trackOwnedTrees(); return Promise.all(entries.map(statusEvidence)); }
+async function statusOf(entries) {
+  trackOwnedTrees();
+  const records = loadState();
+  const pids = entries.flatMap(entry => {
+    const record = records[entry.id];
+    return !procs.has(entry.id) && record ? [record.pid, ...(Array.isArray(record.descendants) ? record.descendants : []).map(item => item?.identity?.pid)] : [];
+  }).filter(pid => Number.isSafeInteger(pid) && pid > 0);
+  const present = pids.some(pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } });
+  const evidence = present ? await queryProcessSnapshot() : { ok: true, processes: [] };
+  return Promise.all(entries.map(entry => statusEvidence(entry, records, evidence)));
+}
 function getLogs(id) {
   const book = logs.get(id);
   if (!book) return { lines: [], records: [], runId: null, generation: null, version: 0,
@@ -800,7 +831,6 @@ function shutdown() {
   shutdownPromise = (async () => {
     // 等待正在采集身份/停止的操作结算，避免退出把尚未确定的记录覆盖成另一份。
     await Promise.all([...pending.values()].map(ticket => ticket.done));
-    await refreshOwnedTrees();
     let cfg, saved;
     try {
       cfg = exitSnapshot(configFile, emptyConfig()); saved = exitSnapshot(stateFile, {});
@@ -810,6 +840,9 @@ function shutdown() {
       return { ok: false, kept: false, stopped: 0, failed: 1, results: [{ id: 'exit-storage', name: '退出配置与运行记录', ok: false, error: String(error.message || error) }] };
     }
     const keep = cfg.keepOnExit === true;
+    // 恢复记录已经持久保存，保留退出既不认领也不停止它们；不要为这些记录再等待CIM。
+    // 本轮新启动的句柄仍先登记最终子树，停止模式仍走即时身份核验。
+    const treeEvidence = !keep || procs.size ? await refreshOwnedTrees() : undefined;
     const results = [];
     const targets = new Set([...procs.keys(), ...Object.keys(saved).filter(id => saved[id].pid || saved[id].kind === 'usb-tunnel')]);
     for (const id of targets) {
@@ -817,17 +850,14 @@ function shutdown() {
       const name = entry && entry.name || id;
       try {
         if (keep) {
+          if (!live) { results.push({ id, name, ok: true, kept: true }); continue; }
           if (record.pid) {
-            const current = await processIdentity(record.pid);
-            // 恢复记录已经落盘；旧PID复用/查询失败只会撤销停止权限，不应阻止保留退出。
-            // 不认领当前PID、不改写历史身份；仍存活的同身份根才采集新增子进程。
-            if (!live && (!current.ok || !sameIdentity(record.identity, current.identity))) {
-              results.push({ id, name, ok: true, kept: true }); continue;
-            }
+            const evidence = treeEvidence && (treeEvidence.processes || !treeEvidence.ok) ? treeEvidence : undefined;
+            const current = await processIdentity(record.pid, evidence);
             if (!current.ok || current.identity && !sameIdentity(record.identity, current.identity)) { results.push({ id, name, ok: false, error: current.error || '后台保留根进程身份未确认' }); continue; }
             const { proc, ...persisted } = record;
             if (current.identity) {
-              const tree = await captureExitTree(record);
+              const tree = await captureExitTree(record, evidence);
               if (!tree.ok) { results.push({ id, name, ok: false, error: tree.error }); continue; }
               if (tree.descendants.length) persisted.descendants = tree.descendants;
             }

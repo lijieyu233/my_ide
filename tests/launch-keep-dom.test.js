@@ -19,7 +19,7 @@ async function fixture() {
     stop: async () => ({ ok: true }),
   };
   w.myIDE = { launch: api }; w.MI = { toast: (text, type) => toasts.push([text, type]) };
-  w.eval(source); w.LaunchPanel.init(); await tick();
+  w.document.getElementById('panel-launch').classList.remove('hidden'); w.eval(source); w.LaunchPanel.init(); await tick();
   const q = id => w.document.getElementById(id), keeps = [...w.document.querySelectorAll('.lp-keep')];
   const change = value => { keeps[0].checked = value; keeps[0].dispatchEvent(new w.Event('change')); };
   return { dom, w, api, q, keeps, change, calls, toasts, config: () => config };
