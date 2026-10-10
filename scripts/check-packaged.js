@@ -247,6 +247,7 @@ async function checkPackaged(executable, noGit = false, tempBase = os.tmpdir()) 
     add('包内SQLite WASM写入并重开读取', db.create && db.create.ok && db.insert.ok && db.select.ok && db.select.data.rows[0].value === 'sqlite packaged', db);
     const launch = await renderer(`(async()=>{const config=await myIDE.launch.config();await App.showTool('launch');return {config,panel:!!document.querySelector('#panel-launch')};})()`);
     add('启动服务IPC与面板可加载', Array.isArray(launch.config.entries) && launch.panel, launch);
+    await renderer('Promise.all(["docx","xlsx","pptx"].map(name=>VendorLoader.load(name))).then(()=>true)');
     const vendors = await renderer('({docx:typeof window.docxPreview.renderAsync,xlsx:typeof window.XLSX.read,pptx:typeof window.pptxPreview.init})');
     add('Office vendor在打包页面实际加载', Object.values(vendors).every((v) => v === 'function'), vendors);
     await renderer(`(async()=>{const book=XLSX.utils.book_new();XLSX.utils.book_append_sheet(book,XLSX.utils.aoa_to_sheet([['打包Excel单元格']]),'Sheet1');const target=${JSON.stringify(path.join(project, 'fixture.xlsx'))};const write=await myIDE.fs.writeBinary(target,XLSX.write(book,{bookType:'xlsx',type:'base64'}));if(!write.ok)throw Error(write.error);await Viewer.openFile(target);})()`);

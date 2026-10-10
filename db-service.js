@@ -10,14 +10,11 @@ const fs = require('fs');
 const path = require('path');
 const { ipcMain } = require('electron');
 
-let mysql = null; // 懒加载（无 mysql 依赖的环境不至于启动崩溃）
-try { mysql = require('mysql2/promise'); } catch { mysql = null; }
-
-let pg = null; // PostgreSQL（懒加载，同上）
-try { pg = require('pg'); } catch { pg = null; }
-
-let initSqlJs = null;
-try { initSqlJs = require('sql.js'); } catch { initSqlJs = null; }
+let mysql, pg, initSqlJs;
+// 注册 IPC 不需要解析数据库驱动；只在连接对应数据库时加载，避免拖延主窗口创建。
+function driver(name, load) {
+  try { return load(); } catch { throw new Error(name + ' 未安装（npm install ' + name + '）'); }
+}
 
 const conns = new Map(); // id -> { type, config, mysql: conn, sqlite: SQL.Database, file }
 let nextId = 1;
@@ -25,7 +22,7 @@ let SQL = null; // sql.js WASM 实例（全局单例，加载一次）
 
 async function getSQL() {
   if (!SQL) {
-    if (!initSqlJs) throw new Error('sql.js 未安装（npm install sql.js）');
+    initSqlJs ||= driver('sql.js', () => require('sql.js'));
     SQL = await initSqlJs();
   }
   return SQL;
@@ -47,7 +44,7 @@ function typeOf(id) {
 async function connect(cfg) {
   const id = 'db' + (nextId++);
   if (cfg.type === 'mysql') {
-    if (!mysql) throw new Error('mysql2 未安装（npm install mysql2）');
+    mysql ||= driver('mysql2', () => require('mysql2/promise'));
     const conn = await mysql.createConnection({
       host: cfg.host || '127.0.0.1',
       port: Number(cfg.port) || 3306,
@@ -70,7 +67,7 @@ async function connect(cfg) {
     return { id, serverInfo: 'SQLite' };
   }
   if (cfg.type === 'postgres') {
-    if (!pg) throw new Error('pg 未安装（npm install pg）');
+    pg ||= driver('pg', () => require('pg'));
     const client = new pg.Client({
       host: cfg.host || '127.0.0.1',
       port: Number(cfg.port) || 5432,

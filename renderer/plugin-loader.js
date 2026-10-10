@@ -688,10 +688,9 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
     }
   });
   // mermaid 图（```mermaid 围栏）：mermaid.render 转 SVG 替换代码块
-  if (window.mermaid) {
+  if (window.mermaid || window.VendorLoader) {
     const blocks = [...wrap.querySelectorAll('pre code.language-mermaid, pre code.lang-mermaid')];
     if (blocks.length) {
-      try { mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: document.body.classList.contains('theme-light') ? 'default' : 'dark' }); } catch {}
       blocks.forEach(async (el) => {
         const code = el.textContent;
         const pre = el.parentElement;
@@ -699,6 +698,8 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
         div.className = 'mermaid-box';
         pre.replaceWith(div);
         try {
+          if (window.VendorLoader) await VendorLoader.load('mermaid');
+          mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: document.body.classList.contains('theme-light') ? 'default' : 'dark' });
           const id = 'mmd-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, code);
           div.innerHTML = svg;
@@ -896,6 +897,7 @@ MI.registerRenderer(['docx'], ({ path, name, buffer }) => {
     status.textContent = '正在解析文档…';
     try {
       const buf = buffer || await officeLoad(path);
+      if (window.VendorLoader) await VendorLoader.load('docx');
       if (!window.docxPreview) throw new Error('docx 渲染库未加载');
       const stale = wrap.querySelector('.docx-body');
       if (stale) stale.remove(); // 重试时清掉旧内容
@@ -930,6 +932,7 @@ MI.registerRenderer(['xlsx'], ({ path, name, buffer }) => {
     status.textContent = '正在解析表格…（大文件可能需要数秒）';
     try {
       const buf = buffer || await officeLoad(path);
+      if (window.VendorLoader) await VendorLoader.load('xlsx');
       if (!window.XLSX) throw new Error('xlsx 渲染库未加载');
       const book = await MI.perf('office.xlsx.parse ' + name,
         () => window.XLSX.read(buf, { type: 'array' }), 500);
@@ -980,6 +983,7 @@ MI.registerRenderer(['pptx'], ({ path, name, buffer }) => {
     status.textContent = '正在解析幻灯片…（大文件可能需要数秒）';
     try {
       const buf = buffer || await officeLoad(path);
+      if (window.VendorLoader) await VendorLoader.load('pptx');
       if (!window.pptxPreview) throw new Error('pptx 渲染库未加载');
       const stale = wrap.querySelector('.pptx-body');
       if (stale) stale.remove();

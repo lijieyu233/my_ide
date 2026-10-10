@@ -1096,6 +1096,7 @@ window.MdEditor = (() => {
       wrap.textContent = '渲染中…';
       (async () => {
         try {
+          if (window.VendorLoader) await VendorLoader.load('mermaid');
           if (!window.mermaid || !mermaid.render) throw new Error('mermaid 未加载');
           ensureMermaidTheme();                 // 按当前主题初始化（首次 / 换主题后）
           const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
@@ -1421,7 +1422,7 @@ window.MdEditor = (() => {
               // mermaid 块（```mermaid）：光标不在 → 整块 block replace 渲染 SVG；
               // 光标进入 → 走下方普通围栏源码模式（可编辑）。库缺失（测试环境）→ 源码模式
               const langM0 = /^\s*(```|~~~)\s*(\S+)/.exec(first.text);
-              const isMermaid = langM0 && langM0[2].toLowerCase() === 'mermaid' && window.mermaid;
+              const isMermaid = langM0 && langM0[2].toLowerCase() === 'mermaid' && (window.mermaid || window.VendorLoader);
               if (isMermaid && !cursorIn) {
                 // 去掉首尾围栏行，只传图源码给 mermaid.render
                 let code = doc.sliceString(node.from, node.to);

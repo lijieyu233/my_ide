@@ -276,7 +276,7 @@ window.RemotePanel = (() => {
     q('remote-profiles').onclick = attempt(async event => { const id = event.target.closest('[data-profile]')?.dataset.profile; if (!id) return; selected = id; const found = [...sessions.values()].find(s => s.profileId === id && s.state === 'connected'); await activateSession(found?.id || null); });
     q('remote-sessions').onchange = attempt(event => activateSession(event.target.value));
     q('remote-terminal-tabs').onclick = attempt(async event => { const close = event.target.closest('[data-close-term]')?.dataset.closeTerm; if (close) { const t = terminals.get(close); if (!t) return; if (!t.closed && !await Modal.confirm('关闭终端', '关闭会结束这个SSH终端；终端前台任务可能随之结束。')) return; await call('closeTerminal', t.sid, t.id); t.term.dispose(); t.container.remove(); terminals.delete(close); if (activeTerm === close) { activeTerm = [...terminals.keys()].at(-1) || null; if (activeTerm) selectTerminal(activeTerm); } renderTerminals(); } else { const id = event.target.closest('[data-term]')?.dataset.term; if (id) selectTerminal(id); } });
-    for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).onclick = () => { mode = tab; renderMode(); requestFit(); };
+    for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).onclick = () => { mode = tab; renderMode(); requestFit(); if (tab === 'files' && !panes.local.path) void browse('local', '').catch(error => notify(error.message, true)); };
     q('remote-transfer-jobs').onclick = attempt(async event => { const cancel = event.target.closest('[data-cancel-job]')?.dataset.cancelJob, retry = event.target.closest('[data-retry-job]')?.dataset.retryJob; const button = event.target.closest('button'); if (button) button.disabled = true; try { if (cancel) { const result = await call('cancel', cancel); if (result?.reason) notify(result.reason); } if (retry) await call('retry', retry, sid); } finally { if (button?.isConnected) button.disabled = false; } });
     q('remote-clear-transfers').onclick = attempt(async event => { event.preventDefault(); const result = await call('clearFinished'); jobs.clear(); result.forEach(j => jobs.set(j.id, j)); renderJobs(); });
     // 主题和自定义调色都更新 body；xterm 的 Canvas 配色也必须同步。
@@ -284,7 +284,7 @@ window.RemotePanel = (() => {
     appearance.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
     if (window.ResizeObserver) new ResizeObserver(requestFit).observe(q('remote-terminal-panes'));
-    void refresh().catch(error => notify(error.message, true)); void browse('local', '').catch(error => notify(error.message, true));
+    void refresh().catch(error => notify(error.message, true));
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
   }
   function syncVisible(value) { visible = value; if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); } }

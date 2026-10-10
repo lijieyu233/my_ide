@@ -20,7 +20,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:remote && npm run test:md-shortcuts && npm run test:git && npm run test:search && npm run test:dom && npm run test:outline-keyboard && npm run test:preview && npm run test:tree-search && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai && npm run test:projects && npm run test:session && npm run test:quick-launch && npm run test:launch && npm run test:project-discovery",
+    "test": "npm run check:js && npm run test:startup && npm run test:remote && npm run test:md-shortcuts && npm run test:git && npm run test:search && npm run test:dom && npm run test:outline-keyboard && npm run test:preview && npm run test:tree-search && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai && npm run test:projects && npm run test:session && npm run test:quick-launch && npm run test:launch && npm run test:project-discovery",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -51,6 +51,8 @@
     "test:session": "node tests/session-recovery.test.js",
     "check:session": "electron scripts/check-session-recovery.js --disable-gpu --no-sandbox",
     "test:remote": "node tests/remote.test.js && node tests/remote-list.test.js && node tests/remote-local.test.js",
+    "test:startup": "node tests/startup.test.js",
+    "check:startup": "electron scripts/check-startup.js --disable-gpu --no-sandbox",
     "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox"
   },
   "dependencies": {

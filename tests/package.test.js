@@ -42,6 +42,8 @@ async function test(name, fn) {
     for (const match of html.matchAll(/\b(?:src|href)=['"]([^'"]+)['"]/g)) {
       if (!/^[a-z]+:/.test(match[1])) put('renderer/' + match[1]);
     }
+    // 按需预览库不再出现在 HTML 的静态 script 中，发行包仍必须包含真实资源。
+    for (const name of ['mermaid', 'docx-preview', 'xlsx', 'pptx-preview']) put('renderer/vendor/' + name + '.min.js', fs.readFileSync(path.join(root, 'renderer/vendor/' + name + '.min.js')));
     put('plugins/example.js', 'api.registerRenderer(["test"], () => "");');
     for (const name of Object.keys(pkg.dependencies)) {
       put('node_modules/' + name + '/package.json', '{"main":"index.js"}');
@@ -64,7 +66,7 @@ async function test(name, fn) {
 
     // 实际删除归档输入文件，确保遗漏不是仅在配置清单里查名字。
     const required = [...production, 'build/icon.png', 'renderer/index.html', 'renderer/ai-approval.html', 'renderer/ai-approval.css', 'renderer/ai-approval.js',
-      'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
+      'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/mermaid.min.js', 'renderer/vendor/docx-preview.min.js',
       'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
       'node_modules/sql.js/dist/sql-wasm.wasm', 'renderer/app.js', 'renderer/session.js', 'renderer/session.css', 'renderer/preview-location.js', 'renderer/preview-location.css', nativeBase + 'index.js', nativeBase + 'win32_x64/koffi.node'];
     for (let i = 0; i < required.length; i++) {

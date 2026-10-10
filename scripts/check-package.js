@@ -6,7 +6,7 @@ const asar = require('@electron/asar');
 const runtimeFiles = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-status.js','git-index.js','git-hunks.js', 'git-queue.js', 'git-native.js',
   'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
 const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
-  'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/docx-preview.min.js',
+  'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/mermaid.min.js', 'renderer/vendor/docx-preview.min.js',
   'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
