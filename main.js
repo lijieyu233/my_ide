@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -65,6 +65,8 @@ const OPEN_ARG = (() => {
 })();
 
 let mainWindow = null;
+require('./remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow: () => mainWindow,
+  configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
 let stateFile = null;
 let pendingOpenArg = OPEN_ARG;
 const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,

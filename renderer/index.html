@@ -9,7 +9,9 @@
 <link rel="stylesheet" href="tree-search.css">
 <link rel="stylesheet" href="preview-location.css">
 <link rel="stylesheet" href="quick-launch.css">
+<link rel="stylesheet" href="remote.css">
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
 </head>
 <body>
 <header id="toolbar">
@@ -45,6 +47,7 @@
     <button id="tool-search" class="tool-btn" title="搜索内容"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg></button>
     <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
+    <button id="tool-remote" class="tool-btn" title="远程服务器：SSH终端与SFTP文件" aria-label="远程服务器"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="9" rx="1.2"/><path d="M4 4.5l2 2-2 2M8 8.5h3M5 14h6M8 11v3"/></svg></button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
     <button id="tool-launch" class="tool-btn" title="启动面板（终端 / 脚本）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 3.2l7 4.8-7 4.8z"/></svg></button>
@@ -112,6 +115,11 @@
           </span>
         </div>
       </div>
+    </div>
+    <div id="panel-remote" class="hidden">
+      <div class="panel-title">远程服务器<span class="panel-title-actions"><button id="remote-add" class="vt-btn" title="新建服务器" aria-label="新建服务器"><svg class="ic" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button></span></div>
+      <div id="remote-profiles"></div>
+      <div class="remote-side-actions"><button id="remote-edit" class="vt-btn" disabled>编辑</button><button id="remote-delete" class="vt-btn" disabled>删除配置</button><button id="remote-refresh" class="vt-btn">刷新</button></div>
     </div>
     <div id="panel-db" class="hidden">
       <div class="panel-title">数据库</div>
@@ -298,6 +306,14 @@
       </div>
     </div>
     <!-- 数据库工具：数据表格 + SQL（右侧主区；连接与表列表在左侧 #panel-db）-->
+    <div id="remote-main" class="hidden">
+      <div class="remote-toolbar"><strong id="remote-title">远程服务器</strong><select id="remote-sessions" aria-label="连接会话"><option value="">尚未连接</option></select><span class="spacer"></span><button id="remote-connect" class="tb-btn" disabled>连接</button><button id="remote-disconnect" class="tb-btn" disabled>断开</button><button id="remote-new-terminal" class="tb-btn" disabled>新终端</button></div>
+      <div id="remote-notice" role="status">选择或新建服务器，连接后可使用终端和文件传输。</div>
+      <div class="remote-tabs"><button id="remote-tab-terminal" class="tb-btn active">终端</button><button id="remote-tab-files" class="tb-btn">文件</button></div>
+      <div id="remote-terminal-area"><div id="remote-terminal-tabs"></div><div id="remote-terminal-panes"><div id="remote-terminal-empty" class="remote-empty">连接服务器后打开终端。需要在断线后继续运行的任务，可使用 tmux 或 systemd。</div></div></div>
+      <div id="remote-files" class="hidden"></div>
+      <details id="remote-transfers" open><summary>传输队列 <span id="remote-transfer-count">0</span><button id="remote-clear-transfers" class="vt-btn">清理已完成项</button></summary><div id="remote-transfer-jobs"><div class="remote-empty">上传或下载后在此查看进度。</div></div></details>
+    </div>
     <div id="db-panel" class="hidden">
       <div class="db-tabs">
         <button id="db-tab-data" class="db-tab active">数据</button>
@@ -438,6 +454,9 @@
 <script src="settings.js"></script>
 <script src="help.js"></script>
 <script src="browser.js"></script>
+<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="remote-panel.js"></script>
 <script src="db-panel.js"></script>
 <script src="ai-panel.js"></script>
 <script src="tasks.js"></script>

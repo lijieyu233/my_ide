@@ -165,6 +165,7 @@ const Shortcuts = (() => {
   window.addEventListener('blur',()=>{navigationComposing=null;});
   // 只让有效位置导航键先于CM的文本移动键处理；同一注册表决定改键与禁用，不硬编码Alt方向。
   document.addEventListener('keydown',e=>{
+    if(e.target.closest?.('#remote-terminal-panes'))return;
     if(composing(e)||captureCb||e.defaultPrevented)return;
     const id=keyMap[comboOf(e)];
     if (['md-task', 'md-table'].includes(id)) {

@@ -10,6 +10,7 @@ const files = ['main.js', 'preload.js', 'git-service.js', 'git-worker.js', 'git-
 files.push('search-service.js', 'task-recovery.js', 'ai-service.js', 'ai-runs.js', 'quick-launch-service.js', 'quick-launch-app.js', 'ai-tool-contract.js', 'ai-tool-execution.js', 'ai-path-lease-win.js', 'ai-tool-authority.js');
 files.push('launch-service.js', 'launch-exit.js', 'launch-readiness.js');
 files.push('ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
+files.push("remote-service.js", "remote-ipc.js", "remote-local.js");
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (f.endsWith('.js')) files.push('renderer/' + f);
 }

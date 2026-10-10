@@ -2,6 +2,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('myIDE', {
+  remote: {
+    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
+    onEvent: callback => { const listener = (_event, value) => callback(value); ipcRenderer.on('remote:event', listener); return () => ipcRenderer.removeListener('remote:event', listener); },
+  },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },

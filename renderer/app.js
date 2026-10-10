@@ -100,7 +100,7 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser', 'log', 'quick-launch'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'log', 'quick-launch'];
   const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -170,7 +170,7 @@ const App = (() => {
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
-    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch') {
+    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'remote') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
@@ -218,10 +218,11 @@ const App = (() => {
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
+    if (activeTool === 'remote') sidePanel = 'remote';
     if (activeTool === 'browser') sidePanel = 'browser';
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
-    for (const t of ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'browser']) {
+    for (const t of ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
@@ -229,6 +230,8 @@ const App = (() => {
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
+    document.getElementById('remote-main')?.classList.toggle('hidden', activeTool !== 'remote');
+    window.RemotePanel?.syncVisible(activeTool === 'remote');
     // 启动面板同款双区联动：侧栏选条目，右侧主区看详情/日志
     const launchMain = document.getElementById('launch-main');
     if (launchMain) launchMain.classList.toggle('hidden', activeTool !== 'launch');
@@ -1065,6 +1068,7 @@ const App = (() => {
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
+    if (window.RemotePanel) { RemotePanel.init(); document.getElementById('tool-remote').onclick = () => switchTool('remote'); }
     if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }
     if (window.LaunchPanel) { LaunchPanel.init(); document.getElementById('tool-launch').onclick = () => switchTool('launch'); }
     if (window.QuickLaunch) { QuickLaunch.init(); document.getElementById('tool-quick-launch').onclick = () => switchTool('quick-launch'); }
