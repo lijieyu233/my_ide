@@ -30,7 +30,10 @@ app.whenReady().then(async () => {
     await probe(`(()=>{const f=document.querySelector('.remote-form form');const values=${JSON.stringify({ name: '本地验证服务器', host: '127.0.0.1', port: server.port, username: 'fixture', password: 'fixture-secret' })};for(const [key,value] of Object.entries(values))f.elements[key].value=value;f.elements.remember.checked=true;f.requestSubmit()})()`);
     await wait('!document.querySelector(".remote-form")&&document.querySelectorAll(".remote-profile").length===1');
     check('真实safeStorage保存密码无明文', !fs.readFileSync(path.join(home, '.myide', 'remote.json'), 'utf8').includes('fixture-secret'));
-    await probe('document.getElementById("remote-connect").click()');
+    check('已保存服务器展示真实配置且主要操作为连接', await probe('document.getElementById("remote-welcome-title").textContent.includes("本地验证服务器")&&!document.getElementById("remote-welcome-connect").hidden&&document.getElementById("remote-connection-details").textContent.includes("127.0.0.1")&&document.getElementById("remote-connection-command").textContent.includes("fixture@127.0.0.1")'));
+    win.setContentSize(1820, 1000); await probe('Theme.set("crimson");for(let n=0;n<2;n++)document.getElementById("sb-tf-inc").click()'); await snapshot('saved-server-crimson');
+    win.setContentSize(1280, 850); await probe('Theme.set("dark");for(let n=0;n<2;n++)document.getElementById("sb-tf-dec").click()');
+    await probe('document.getElementById("remote-welcome-connect").click()');
     await wait('document.querySelectorAll(".remote-terminal .xterm").length===1&&!document.getElementById("remote-new-terminal").disabled&&remoteEvents.some(e=>e.type==="terminal-data")');
     check('真实主进程IPC首次指纹核对且xterm已加载', prompts === 1 && await probe('!!window.Terminal&&!!window.FitAddon'));
     await probe('document.getElementById("remote-new-terminal").click()'); await wait('document.querySelectorAll(".remote-terminal .xterm").length===2&&new Set(remoteEvents.filter(e=>e.type==="terminal-data").map(e=>e.terminalId)).size===2');

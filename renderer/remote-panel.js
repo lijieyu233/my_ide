@@ -12,7 +12,7 @@ window.RemotePanel = (() => {
   const closeModal = box => { if (Modal.stack.at(-1) === box) Modal.hide(); };
   const current = () => sessions.get(sid), connected = () => current()?.state === 'connected';
   function controls() {
-    q('remote-connect').disabled = !selected || connecting;
+    q('remote-connect').disabled = !selected || connecting; q('remote-welcome-connect').disabled = !selected || connecting;
     q('remote-disconnect').disabled = !sid || current()?.state === 'disconnected';
     q('remote-new-terminal').disabled = !connected(); q('remote-edit').disabled = !selected; q('remote-delete').disabled = !selected;
     for (const button of q('remote-files').querySelectorAll('[data-side="remote"] button, [data-action="download"], [data-action="upload"]')) button.disabled = !connected();
@@ -30,7 +30,18 @@ window.RemotePanel = (() => {
     const profile = profiles.find(p => p.id === selected), state = current()?.state || 'disconnected';
     q('remote-sessions').value = sid || ''; q('remote-title').textContent = profile?.name || '远程服务器';
     q('remote-endpoint').textContent = profile ? `${profile.username}@${profile.host}:${profile.port}` : 'SSH 终端与 SFTP 文件传输';
-    q('remote-state').textContent = current() ? labels[state] : '未连接'; q('remote-state').dataset.state = state; renderProfiles();
+    q('remote-state').textContent = current() ? labels[state] : '未连接'; q('remote-state').dataset.state = state; renderWelcome(profile); renderProfiles();
+  }
+  function renderWelcome(profile) {
+    const ready = connected();
+    q('remote-welcome-title').textContent = profile ? (ready ? '已连接 ' : '连接 ') + profile.name : '连接远程服务器';
+    q('remote-welcome-description').textContent = profile ? (ready ? '打开一个新终端，开始操作这台服务器。' : '配置已就绪。连接后即可运行命令和传输文件。') : '保存一台服务器，即可在这里使用终端和文件传输。';
+    q('remote-welcome-connect').hidden = !profile; q('remote-welcome-edit').hidden = !profile;
+    q('remote-welcome-connect').innerHTML = (ready ? '打开终端' : '连接服务器') + '<svg class="ic" viewBox="0 0 16 16"><path d="M3 8h10M9 4l4 4-4 4"/></svg>';
+    q('remote-welcome-add').classList.toggle('remote-primary', !profile);
+    const fields = [['主机', profile?.host || '尚未设置'], ['用户名', profile?.username || '尚未设置'], ['端口', profile?.port || '22'], ['认证方式', profile ? (profile.auth === 'key' ? 'SSH 私钥' : '密码') : '密码 / SSH 私钥']];
+    q('remote-connection-details').innerHTML = fields.map(([label, value]) => '<div><dt>' + label + '</dt><dd title="' + esc(value) + '">' + esc(value) + '</dd></div>').join('');
+    q('remote-connection-command').textContent = profile ? 'ssh ' + profile.username + '@' + profile.host + ' -p ' + profile.port : 'ssh <用户名>@<主机> -p 22';
   }
   async function refresh() {
     const serial = ++loading, value = await call('load'); if (serial !== loading) return;
@@ -192,6 +203,8 @@ window.RemotePanel = (() => {
     if (initialized || !q('remote-main') || !window.myIDE?.remote) return; initialized = true; installFiles(); api().onEvent(onEvent);
     q('remote-add').onclick = () => form(); q('remote-edit').onclick = () => form(profiles.find(p => p.id === selected));
     q('remote-welcome-add').onclick = () => form();
+    q('remote-welcome-connect').onclick = attempt(() => connected() ? newTerminal() : connect());
+    q('remote-welcome-edit').onclick = () => form(profiles.find(p => p.id === selected));
     q('remote-delete').onclick = attempt(async () => { const p = profiles.find(p => p.id === selected); if (p && await Modal.confirm('删除服务器配置', '删除「' + esc(p.name) + '」的保存配置？')) { const result = await call('remove', p.id, version); profiles = result.profiles; version = result.version; selected = profiles[0]?.id; renderSessions(); } });
     q('remote-refresh').onclick = attempt(refresh); q('remote-connect').onclick = attempt(connect);
     q('remote-disconnect').onclick = attempt(async () => { await call('disconnect', sid); notify('已断开SSH连接。'); controls(); });
