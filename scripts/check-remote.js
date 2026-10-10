@@ -23,17 +23,21 @@ app.whenReady().then(async () => {
     await wait('!!window.App&&!!window.RemotePanel&&!!window.myIDE?.remote'); win.setContentSize(1280, 850);
     await probe('document.getElementById("tool-remote").click(); window.remoteEvents=[]; myIDE.remote.onEvent(e=>remoteEvents.push(e)); undefined;');
     check('真实实例隐藏且工具可进入', !win.isVisible() && await probe('App.getTool()==="remote"&&!document.getElementById("remote-main").classList.contains("hidden")'));
-    await snapshot('welcome-dark');
-    await probe('document.getElementById("remote-welcome-add").click()');
+    await snapshot('empty-dark');
+    await probe('document.getElementById("remote-add").click()');
     check('密码输入遮罩且密码认证隐藏私钥字段', await probe('(()=>{const f=document.querySelector(".remote-form form");return f.elements.password.type==="password"&&getComputedStyle(f.elements.privateKey.closest("label")).display==="none"})()'));
     await snapshot('connection-form-dark');
     await probe(`(()=>{const f=document.querySelector('.remote-form form');const values=${JSON.stringify({ name: '本地验证服务器', host: '127.0.0.1', port: server.port, username: 'fixture', password: 'fixture-secret' })};for(const [key,value] of Object.entries(values))f.elements[key].value=value;f.elements.remember.checked=true;f.requestSubmit()})()`);
     await wait('!document.querySelector(".remote-form")&&document.querySelectorAll(".remote-profile").length===1');
     check('真实safeStorage保存密码无明文', !fs.readFileSync(path.join(home, '.myide', 'remote.json'), 'utf8').includes('fixture-secret'));
-    check('已保存服务器展示真实配置且主要操作为连接', await probe('document.getElementById("remote-welcome-title").textContent.includes("本地验证服务器")&&!document.getElementById("remote-welcome-connect").hidden&&document.getElementById("remote-connection-details").textContent.includes("127.0.0.1")&&document.getElementById("remote-connection-command").textContent.includes("fixture@127.0.0.1")'));
+    check('选中服务器后工作区留空且顶部连接可用', await probe('document.getElementById("remote-terminal-empty").textContent.trim()===""&&document.getElementById("remote-title").textContent.includes("本地验证服务器")&&!document.getElementById("remote-connect").disabled&&!document.querySelector(".remote-start")'));
+    for (const theme of ['dark', 'light', 'pink', 'crimson', 'graphite']) {
+      await probe('Theme.set(' + JSON.stringify(theme) + ')');
+      check(theme + '主题工作区继承全局配色', await probe('(()=>{const body=getComputedStyle(document.body),main=getComputedStyle(document.getElementById("remote-main")),pane=getComputedStyle(document.getElementById("remote-terminal-panes")),side=getComputedStyle(document.getElementById("panel-remote"));return ["--bg","--text","--text-dim","--bg-panel"].every(key=>main.getPropertyValue(key)===body.getPropertyValue(key)&&side.getPropertyValue(key)===body.getPropertyValue(key))&&main.backgroundColor===pane.backgroundColor})()'));
+    }
     win.setContentSize(1820, 1000); await probe('Theme.set("crimson");for(let n=0;n<2;n++)document.getElementById("sb-tf-inc").click()'); await snapshot('saved-server-crimson');
     win.setContentSize(1280, 850); await probe('Theme.set("dark");for(let n=0;n<2;n++)document.getElementById("sb-tf-dec").click()');
-    await probe('document.getElementById("remote-welcome-connect").click()');
+    await probe('document.getElementById("remote-connect").click()');
     await wait('document.querySelectorAll(".remote-terminal .xterm").length===1&&!document.getElementById("remote-new-terminal").disabled&&remoteEvents.some(e=>e.type==="terminal-data")');
     check('真实主进程IPC首次指纹核对且xterm已加载', prompts === 1 && await probe('!!window.Terminal&&!!window.FitAddon'));
     await probe('document.getElementById("remote-new-terminal").click()'); await wait('document.querySelectorAll(".remote-terminal .xterm").length===2&&new Set(remoteEvents.filter(e=>e.type==="terminal-data").map(e=>e.terminalId)).size===2');
@@ -41,6 +45,8 @@ app.whenReady().then(async () => {
     await probe('document.querySelector(".remote-terminal:not(.hidden) .xterm-helper-textarea").dispatchEvent(new KeyboardEvent("keydown",{key:"c",code:"KeyC",keyCode:67,which:67,ctrlKey:true,bubbles:true}))');
     await sleep(80); check('终端Ctrl+C通过xterm送往服务器', server.shells[1].input.includes('\x03'));
     await snapshot('terminal-dark');
+    await probe('Theme.set("light")'); await snapshot('terminal-light');
+    await probe('Theme.set("crimson")'); await snapshot('terminal-crimson'); await probe('Theme.set("dark")');
     await probe('document.getElementById("remote-tab-files").click()'); await wait('document.querySelectorAll("#remote-remote-pane [data-path]").length===2');
     const setPath = async (side, target) => { await probe(`(()=>{const f=document.querySelector('#remote-${side}-pane form');f.querySelector('input').value=${JSON.stringify(target)};f.requestSubmit()})()`); await wait(`document.querySelector('#remote-${side}-pane input').value===${JSON.stringify(target)}&&document.querySelector('#remote-${side}-pane .remote-file-status').textContent.includes('项')`); };
     await setPath('local', local);
