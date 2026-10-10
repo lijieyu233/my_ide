@@ -89,6 +89,18 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
 
 (async () => {
   try {
+    await test('快照中旧服务身份缺失不阻断新服务保留退出，也不授权未知进程操作', async () => {
+      for (const missing of [{image:null}, {image:42}, {commandLine:null}]) {
+        const f = fixture(); const restored={...f.entry,id:'restored'}; f.record(restored,777);
+        const before=f.state().restored;
+        assert((await f.service.startEntry(f.entry)).ok);
+        f.options.queryIdentity=(pid,item)=>pid===777?{...item,...missing}:item;
+        await f.sample(); assert.deepEqual(f.state().restored,before);
+        const [status]=await f.service.statusOf([restored]); assert.equal(status.ownership,'unknown'); assert(!status.canStop&&!status.canStart);
+        f.service.setKeepOnExit(true); const result=await f.service.shutdown();
+        assert(result.ok&&result.preserved===2); assert.deepEqual(f.kills,[]); assert.deepEqual(f.state().restored,before);
+      }
+    });
     await test('多组恢复服务状态与运行采集合并在途快照，保留退出不再查询或停止服务', async () => {
       const f = fixture(), entries = [], state = {};
       for (let i = 0; i < 5; i++) {

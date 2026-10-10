@@ -347,7 +347,7 @@ async function processIdentity(pid, evidence) {
   if (evidence) {
     if (!evidence.ok) return evidence;
     const identity = evidence.processes.find(item => item.pid === pid) || null;
-    if (identity && (!identity.createdAt || !Number.isFinite(Date.parse(identity.createdAt)) || !identity.image || !identity.commandLine)) return { ok: false, error: '操作系统未返回完整进程身份' };
+    if (identity && (!identity.createdAt || !Number.isFinite(Date.parse(identity.createdAt)) || typeof identity.image !== 'string' || !identity.image || typeof identity.commandLine !== 'string' || !identity.commandLine)) return { ok: false, error: '操作系统未返回完整进程身份' };
     return { ok: true, identity };
   }
   // 已退出的历史PID无需拉起PowerShell；权限失败不等于退出，仍须查询完整身份。
@@ -370,8 +370,8 @@ async function processIdentity(pid, evidence) {
 
 function sameIdentity(a, b) {
   return !!(a && b && a.pid === b.pid && a.createdAt === b.createdAt
-    && typeof a.image === 'string' && a.image.toLowerCase() === b.image.toLowerCase()
-    && a.commandLine === b.commandLine);
+    && typeof a.image === 'string' && a.image && typeof b.image === 'string' && b.image && a.image.toLowerCase() === b.image.toLowerCase()
+    && typeof a.commandLine === 'string' && a.commandLine && a.commandLine === b.commandLine);
 }
 
 // 完整身份且出生时间晚于历史记录，证明旧进程已结束；新进程既不能认领也不能停止。
