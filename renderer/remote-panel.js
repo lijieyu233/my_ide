@@ -6,15 +6,16 @@ window.RemotePanel = (() => {
   let profiles = [], version = '', selected = null, sid = null, activeTerm = null, visible = false, initialized = false, mode = 'terminal', connecting = false, loading = 0;
   const sessions = new Map(), terminals = new Map(), jobs = new Map();
   const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0 }, remote: { path: '', entries: [], selected: new Set(), serial: 0 } };
-  const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').classList.toggle('error', error); };
+  const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').title = text; q('remote-notice').classList.toggle('error', error); };
   async function call(op, ...args) { const result = await api()[op](...args); if (!result?.ok) throw Error(result?.error || '远程操作未确认'); return result.data; }
   const attempt = fn => async event => { try { await fn(event); } catch (error) { notify(error.message, true); } };
   const closeModal = box => { if (Modal.stack.at(-1) === box) Modal.hide(); };
   const current = () => sessions.get(sid), connected = () => current()?.state === 'connected';
   function controls() {
-    q('remote-connect').disabled = !selected || connecting;
+    q('remote-connect').disabled = !selected || connecting; q('remote-connect').classList.toggle('remote-muted', connected()); q('remote-connect').setAttribute('aria-busy', String(connecting));
     q('remote-disconnect').disabled = !sid || current()?.state === 'disconnected';
-    q('remote-new-terminal').disabled = !connected(); q('remote-edit').disabled = !selected; q('remote-delete').disabled = !selected;
+    q('remote-new-terminal').disabled = !connected();
+    if (connecting) { q('remote-state').textContent = '连接中'; q('remote-state').dataset.state = 'connecting'; } q('remote-edit').disabled = !selected; q('remote-delete').disabled = !selected;
     for (const button of q('remote-files').querySelectorAll('[data-side="remote"] button, [data-action="download"], [data-action="upload"]')) button.disabled = !connected();
   }
   function renderProfiles() {
@@ -26,9 +27,9 @@ window.RemotePanel = (() => {
     controls();
   }
   function renderSessions() {
-    q('remote-sessions').innerHTML = '<option value="">选择连接会话</option>' + [...sessions.values()].filter(s => s.state !== 'disconnected').map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${labels[s.state]}</option>`).join('');
+    q('remote-sessions').innerHTML = '<option value="">选择连接会话</option>' + [...sessions.values()].filter(s => s.state !== 'disconnected').map(s => `<option value="${esc(s.id)}">${s.state === 'connected' ? '●' : '◌'} ${esc(s.name)}${[...sessions.values()].filter(other => other.profileId === s.profileId && other.state !== 'disconnected').length > 1 ? ' · ' + ([...sessions.values()].filter(other => other.profileId === s.profileId && other.state !== 'disconnected').indexOf(s) + 1) : ''}</option>`).join('');
     const profile = profiles.find(p => p.id === selected), state = current()?.state || 'disconnected';
-    q('remote-sessions').value = sid || ''; q('remote-title').textContent = profile?.name || '远程服务器';
+    q('remote-sessions').value = sid || ''; q('remote-sessions').title = current() ? current().name + ' · ' + labels[current().state] : '选择连接会话'; q('remote-title').textContent = profile?.name || '远程服务器';
     q('remote-endpoint').textContent = profile ? `${profile.username}@${profile.host}:${profile.port}` : 'SSH 终端与 SFTP 文件传输';
     q('remote-state').textContent = current() ? labels[state] : '未连接'; q('remote-state').dataset.state = state; renderProfiles();
   }
@@ -82,7 +83,7 @@ window.RemotePanel = (() => {
     if (connecting) return; const profile = profiles.find(p => p.id === selected); if (!profile) return;
     connecting = true; controls();
     try { const supplied = await credentials(profile); if (supplied === null) return; notify('正在连接 ' + profile.name + '…'); const result = await call('connect', profile.id, supplied); sessions.set(result.id, result); await activateSession(result.id); notify('已连接 ' + profile.name); await newTerminal(); }
-    finally { connecting = false; controls(); }
+    finally { connecting = false; renderSessions(); }
   }
   async function activateSession(id) {
     sid = id || null; const s = current(); if (s) selected = s.profileId; renderSessions();
@@ -93,12 +94,23 @@ window.RemotePanel = (() => {
   function fit(t) { if (!visible || mode !== 'terminal' || activeTerm !== t.id || !t.container.clientWidth) return; try { t.fit.fit(); if (!t.closed) void call('resize', t.sid, t.id, t.term.cols, t.term.rows).catch(() => {}); } catch {} }
   function terminalTheme() {
     const css = getComputedStyle(q('remote-main'));
-    return { background: css.backgroundColor, foreground: css.color, cursor: css.getPropertyValue('--accent').trim() };
+    // ANSI 颜色保持终端语义；普通字色按背景亮度选择，避免随粉色 UI 文字一起染色。
+    const rgb = css.backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [0, 0, 0];
+    const light = rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722 > 150;
+    return { background: css.backgroundColor, foreground: light ? '#30343b' : '#eee9ec', cursor: css.getPropertyValue('--accent').trim(),
+      black: light ? '#30343b' : '#50434b', red: light ? '#ad2639' : '#e87989', green: light ? '#297341' : '#92c992', yellow: light ? '#8b6019' : '#dfc07f',
+      blue: light ? '#285fa8' : '#8caee2', magenta: light ? '#9b3985' : '#cf9dca', cyan: light ? '#15717b' : '#89c5cc', white: light ? '#626975' : '#d6ced3',
+      brightBlack: light ? '#737984' : '#aa96a2', brightRed: light ? '#c23443' : '#ffa2ac', brightGreen: light ? '#287f39' : '#b5e2a3', brightYellow: light ? '#957013' : '#f5db9d',
+      brightBlue: light ? '#326fd0' : '#b1c9f4', brightMagenta: light ? '#ab428f' : '#e5b8de', brightCyan: light ? '#137986' : '#b2e1e5', brightWhite: light ? '#30343b' : '#fff4f8' };
+  }
+  function terminalFontSize() { return parseFloat(getComputedStyle(q('remote-main')).fontSize) || 13; }
+  function syncTerminalAppearance() {
+    for (const t of terminals.values()) { t.term.options.theme = terminalTheme(); t.term.options.fontSize = terminalFontSize(); fit(t); }
   }
   async function newTerminal() {
     if (!connected()) return; if (!window.Terminal || !window.FitAddon) throw Error('终端组件未加载，请检查依赖');
     const id = crypto.randomUUID(), container = document.createElement('div'); container.className = 'remote-terminal'; q('remote-terminal-panes').append(container);
-    const term = new Terminal({ fontSize: 14, fontFamily: 'Consolas, monospace', scrollback: 3000, cursorBlink: true, allowProposedApi: false, theme: terminalTheme() });
+    const term = new Terminal({ fontSize: terminalFontSize(), fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace', lineHeight: 1.45, fontWeight: '400', scrollback: 3000, cursorBlink: true, allowProposedApi: false, theme: terminalTheme() });
     const fitter = new FitAddon.FitAddon(); term.loadAddon(fitter); term.open(container);
     const t = { id, sid, term, fit: fitter, container, name: current().name, closed: false, opened: false }; terminals.set(id, t); selectTerminal(id); fit(t);
     let inputChain = Promise.resolve();
@@ -206,7 +218,9 @@ window.RemotePanel = (() => {
     q('remote-transfer-jobs').onclick = attempt(async event => { const cancel = event.target.closest('[data-cancel-job]')?.dataset.cancelJob, retry = event.target.closest('[data-retry-job]')?.dataset.retryJob; const button = event.target.closest('button'); if (button) button.disabled = true; try { if (cancel) { const result = await call('cancel', cancel); if (result?.reason) notify(result.reason); } if (retry) await call('retry', retry, sid); } finally { if (button?.isConnected) button.disabled = false; } });
     q('remote-clear-transfers').onclick = attempt(async event => { event.preventDefault(); const result = await call('clearFinished'); jobs.clear(); result.forEach(j => jobs.set(j.id, j)); renderJobs(); });
     // 主题和自定义调色都更新 body；xterm 的 Canvas 配色也必须同步。
-    new MutationObserver(() => { for (const t of terminals.values()) t.term.options.theme = terminalTheme(); }).observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+    const appearance = new MutationObserver(syncTerminalAppearance);
+    appearance.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+    appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
     if (window.ResizeObserver) new ResizeObserver(() => { const t = terminals.get(activeTerm); if (t) fit(t); }).observe(q('remote-terminal-panes'));
     void refresh().catch(error => notify(error.message, true)); void browse('local', '').catch(error => notify(error.message, true));
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
