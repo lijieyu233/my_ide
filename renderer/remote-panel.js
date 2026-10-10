@@ -133,12 +133,13 @@ window.RemotePanel = (() => {
     appearanceDirty = true;
     if (visible) syncTerminalAppearance();
   }
-  async function newTerminal() {
-    if (!connected()) return; if (!window.Terminal || !window.FitAddon) throw Error('终端组件未加载，请检查依赖');
-    const id = crypto.randomUUID(), container = document.createElement('div'); container.className = 'remote-terminal'; q('remote-terminal-panes').append(container);
+  function mountTerminal(id,sessionId,opened=false){
+    if(terminals.has(id))return terminals.get(id);
+    if(!window.Terminal||!window.FitAddon)throw Error('终端组件未加载，请检查依赖');
+    const container = document.createElement('div'); container.className = 'remote-terminal'; q('remote-terminal-panes').append(container);
     const term = new Terminal({ fontSize: terminalFontSize(), fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace', lineHeight: 1.45, fontWeight: '400', scrollback: 3000, cursorBlink: true, allowProposedApi: false, theme: terminalTheme() });
     const fitter = new FitAddon.FitAddon(); term.loadAddon(fitter); term.open(container);
-    const t = { id, sid, term, fit: fitter, container, name: current().name, closed: false, opened: false }; terminals.set(id, t); selectTerminal(id); fit(t);
+    const t = { id, sid:sessionId, term, fit: fitter, container, name: sessions.get(sessionId)?.name||'SSH', closed: false, opened }; terminals.set(id,t);renderTerminals();
     let inputChain = Promise.resolve();
     term.onData(data => {
       if (t.closed || !t.opened) return; if (data.length > 1024 * 1024) { notify('粘贴内容超过1MiB，请使用文件上传。', true); return; }
@@ -151,8 +152,17 @@ window.RemotePanel = (() => {
     });
     // 编辑器的全局快捷键不能消费终端里的Ctrl+C、Tab和方向键。
     for (const type of ['keydown', 'keyup']) container.addEventListener(type, event => event.stopPropagation());
+    return t;
+  }
+  async function newTerminal(){
+    if(!connected())return;
+    const id=crypto.randomUUID(),t=mountTerminal(id,sid),term=t.term;selectTerminal(id);fit(t);
     try { const cols = term.cols, rows = term.rows; await call('openTerminal', t.sid, id, cols, rows); t.remoteSize = cols + ':' + rows; t.opened = true; fit(t); if (visible && mode === 'terminal' && activeTerm === id && !Modal.stack.length) term.focus(); }
     catch (error) { t.closed = true; term.writeln('\r\n连接终端失败：' + error.message); renderTerminals(); throw error; }
+  }
+
+  function showTerminal(sessionId,id){
+    const t=terminals.get(id);if(!t||t.sid!==sessionId)throw Error('终端尚未显示，请在远程服务器页面查看');selectTerminal(id);
   }
   function renderTerminals() {
     q('remote-terminal-tabs').innerHTML = [...terminals.values()].map((t, i) => `<span class="remote-terminal-tab${activeTerm === t.id ? ' active' : ''}"><button data-term="${esc(t.id)}">${esc(t.name)} · ${i + 1}${t.closed ? '（已关闭）' : ''}</button><button data-close-term="${esc(t.id)}" title="关闭终端" aria-label="关闭终端">×</button></span>`).join('');
@@ -261,6 +271,7 @@ window.RemotePanel = (() => {
   }
   function onEvent(event) {
     if (event.type === 'session') { sessions.set(event.session.id, event.session); renderSessions(); if (event.session.id === sid && event.session.state === 'disconnected') { panes.remote.serial++; notify('连接已断开' + (event.session.error ? '：' + event.session.error : ''), !!event.session.error); } }
+    if(event.type==='terminal-open'){try{const t=mountTerminal(event.terminalId,event.sessionId,true);t.opened=true;}catch(error){notify(error.message,true);}}
     if (event.type === 'terminal-data') { const t = terminals.get(event.terminalId); if (t) t.term.write(event.data, () => { void call('ack', event.sessionId, event.terminalId, event.seq).catch(() => {}); }); else void call('ack', event.sessionId, event.terminalId, event.seq).catch(() => {}); }
     if (event.type === 'terminal-close') { const t = terminals.get(event.terminalId); if (t) { t.closed = true; t.term.writeln('\r\n[终端已关闭]'); renderTerminals(); } }
     if (event.type === 'terminal-error') notify(event.error, true);
@@ -288,5 +299,5 @@ window.RemotePanel = (() => {
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
   }
   function syncVisible(value) { visible = value; if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); } }
-  return { init, syncVisible, refresh };
+  return { init, syncVisible, refresh, showTerminal };
 })();

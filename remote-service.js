@@ -11,7 +11,7 @@ const remotePath = value => { if (typeof value !== 'string' || !value.startsWith
 const localPath = value => { if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) throw Error('本地路径必须是绝对路径'); return path.resolve(value); };
 const nameOf = value => { if (!value || typeof value !== 'string' || /[\\/\0\r\n]/.test(value) || value === '.' || value === '..') throw Error('名称不能包含路径分隔符'); return value; };
 function createService({ file, crypto, verifyHost, emit = () => {}, clientFactory = () => new Client(), local = Local } = {}) {
-  const sessions = new Map(), jobs = new Map(); let working = false, disposed = false;
+  const sessions = new Map(), jobs = new Map(), terminalHistory = new Map(); let working = false, disposed = false;
   const read = () => {
     try { const value = JSON.parse(fs.readFileSync(file, 'utf8')); if (!Array.isArray(value.profiles) || !value.hosts || typeof value.hosts !== 'object') throw Error('结构无效'); return value; }
     catch (error) { if (error.code === 'ENOENT') return { profiles: [], hosts: {} }; throw Error('远程配置读取失败：' + message(error)); }
@@ -43,7 +43,7 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     if ([...sessions.values()].some(s => s.profile.id === id && s.state !== 'disconnected')) throw Error('请先断开该服务器');
     config.profiles = config.profiles.filter(p => p.id !== id); write(config); return load();
   }
-  const sessionView = s => ({ id: s.id, profileId: s.profile.id, name: s.profile.name, state: s.state, error: s.error || '', home: s.home || '/' });
+  const sessionView = s => ({ id: s.id, profileId: s.profile.id, name: s.profile.name, host:s.profile.host, port:s.profile.port, username:s.profile.username, state: s.state, error: s.error || '', home: s.home || '/' });
   const reportSession = s => emit({ type: 'session', session: sessionView(s) });
   const session = id => { const s = sessions.get(id); if (!s || s.state !== 'connected') throw Error('SSH连接已断开，请重新连接'); return s; };
   const requestFor = (s, operation, args, timeout = 30000) => new Promise((resolve, reject) => {
@@ -97,32 +97,48 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   }
   function disconnect(id) { const s = sessions.get(id); if (s) { for (const t of s.terminals.values()) t.channel.close(); s.client.end(); s.state = 'disconnected'; reportSession(s); for (const job of jobs.values()) if (job.sessionId === id) cancel(job.id); } }
   async function forgetHost(profileId) { const config = read(), profile = config.profiles.find(p => p.id === profileId); if (!profile) throw Error('配置不存在'); delete config.hosts[profile.host.toLowerCase() + ':' + profile.port]; write(config); }
-  async function openTerminal(id, terminalId = randomUUID(), cols = 80, rows = 24) {
+  async function openTerminal(id, terminalId = randomUUID(), cols = 80, rows = 24, beforePublish = () => {}) {
     const s = session(id); if (s.terminals.size + s.opening.size >= 16) throw Error('每个会话最多16个终端');
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 1000 || rows > 500) throw Error('终端尺寸无效');
     if (typeof terminalId !== 'string' || !terminalId || terminalId.length > 80 || s.terminals.has(terminalId) || s.opening.has(terminalId)) throw Error('终端标识无效或已存在');
-    s.opening.add(terminalId); let channel;
+    beforePublish(); s.opening.add(terminalId); let channel;
     try { channel = await new Promise((resolve, reject) => s.client.shell({ term: 'xterm-256color', cols, rows }, (error, channel) => error ? reject(error) : resolve(channel))); }
     finally { s.opening.delete(terminalId); }
     if (s.state !== 'connected') { channel.close(); throw Error('SSH连接已断开'); }
-    const terminal = { id: terminalId, channel, inflight: 0, seq: 0, pending: new Map() }; s.terminals.set(terminalId, terminal);
+    try{beforePublish();}catch(error){channel.close();error.committed=true;throw error;}
+    const terminal = { id: terminalId, sessionId:id, channel, inflight: 0, seq: 0, pending: new Map(), incarnation:randomUUID(), inputRevision:0, output:'', cursor:0, closed:false, error:'', readers:new Set() }; s.terminals.set(terminalId, terminal);
+    emit({type:'terminal-open',sessionId:id,terminalId,terminal:terminalView(terminal)});
+    // 终端持续输出不随AI对话无限增长；保留最近32Ki字符，游标让增量读取明确发现截断。
+    const retain=data=>{terminal.output=(terminal.output+data).slice(-32768);terminal.cursor+=data.length;for(const wake of terminal.readers)wake();};
     for (const stream of [channel, channel.stderr].filter(Boolean)) {
       const decoder = new StringDecoder('utf8');
       stream.on('data', chunk => {
-        const data = decoder.write(chunk); if (!data) return;
+        const data = decoder.write(chunk); if (!data) return; retain(data);
         const seq = ++terminal.seq, bytes = Buffer.byteLength(data); terminal.pending.set(seq, bytes); terminal.inflight += bytes;
         emit({ type: 'terminal-data', sessionId: id, terminalId, seq, data }); if (terminal.inflight > 128 * 1024) { channel.pause(); channel.stderr?.pause(); }
       });
     }
-    channel.on('error', error => emit({ type: 'terminal-error', sessionId: id, terminalId, error: message(error) }));
-    channel.on('close', () => { s.terminals.delete(terminalId); emit({ type: 'terminal-close', sessionId: id, terminalId }); });
+    channel.on('error', error => { terminal.error=message(error);emit({ type: 'terminal-error', sessionId: id, terminalId, error: message(error) }); });
+    channel.on('close', () => { terminal.closed=true;terminal.pending.clear();terminal.inflight=0;for(const wake of terminal.readers)wake();s.terminals.delete(terminalId);terminalHistory.set(terminalId,terminal);while(terminalHistory.size>32)terminalHistory.delete(terminalHistory.keys().next().value);emit({ type: 'terminal-close', sessionId: id, terminalId }); });
     return { id: terminalId };
   }
+  const terminalView=t=>({id:t.id,sessionId:t.sessionId,closed:t.closed,closing:!!t.closing,incarnation:t.incarnation,inputRevision:t.inputRevision,cursor:t.cursor,error:t.error});
+  function terminalInfo(id,tid){const t=sessions.get(id)?.terminals.get(tid)||terminalHistory.get(tid);if(!t||t.sessionId!==id)throw Error('SSH终端不存在，请查看真实终端ID');return terminalView(t);}
+  async function readTerminal(id,tid,cursor,wait=0){
+    terminalInfo(id,tid);const t=sessions.get(id)?.terminals.get(tid)||terminalHistory.get(tid);
+    if(cursor!==undefined&&(!Number.isSafeInteger(cursor)||cursor<0||cursor>t.cursor))throw Error('输出游标无效，请省略cursor重新读取最近输出');
+    if(!Number.isSafeInteger(wait)||wait<0||wait>2000)throw Error('等待时间必须是0..2000毫秒');
+    if(wait&&!t.closed&&(cursor===undefined||cursor===t.cursor))await new Promise(resolve=>{const done=()=>{clearTimeout(timer);t.readers.delete(done);resolve();};const timer=setTimeout(done,wait);t.readers.add(done);});
+    const base=t.cursor-t.output.length,start=cursor===undefined?Math.max(base,t.cursor-16384):Math.max(cursor,base),end=Math.min(t.cursor,start+16384);
+    const raw=t.output.slice(start-base,end-base),text=raw.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'');
+    return {text,nextCursor:end,latestCursor:t.cursor,truncated:cursor===undefined?start>0:cursor<base,hasMore:end<t.cursor,closed:t.closed,closing:!!t.closing,error:t.error};
+  }
+  function sshSnapshot(){return {sessions:[...sessions.values()].map(sessionView),terminals:[...sessions.values()].flatMap(s=>[...s.terminals.values()].map(terminalView)).concat([...terminalHistory.values()].map(terminalView)),note:'终端命令属于远程服务器；不得使用本地项目命令授权替代远程批准。'};}
   const terminal = (id, tid) => { const t = session(id).terminals.get(tid); if (!t) throw Error('终端已关闭'); return t; };
-  function input(id, tid, data) { const t = terminal(id, tid); if (typeof data !== 'string' || Buffer.byteLength(data) > 16384 || t.channel.writableLength > 256 * 1024) throw Error('终端输入过长或仍在发送，请稍后重试'); t.channel.write(data); }
+  function input(id, tid, data) { const t = terminal(id, tid); if(t.closing)throw Error('SSH终端正在关闭');if (typeof data !== 'string' || Buffer.byteLength(data) > 16384 || t.channel.writableLength > 256 * 1024) throw Error('终端输入过长或仍在发送，请稍后重试'); t.inputRevision++; t.channel.write(data); }
   function resize(id, tid, cols, rows) { if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 1000 || rows > 500) throw Error('终端尺寸无效'); terminal(id, tid).channel.setWindow(rows, cols, 0, 0); }
   function ack(id, tid, seq) { const t = sessions.get(id)?.terminals.get(tid); if (!t) return; const bytes = t.pending.get(seq); if (bytes === undefined) return; t.pending.delete(seq); t.inflight -= bytes; if (t.inflight < 65536) { t.channel.resume(); t.channel.stderr?.resume(); } }
-  function closeTerminal(id, tid) { sessions.get(id)?.terminals.get(tid)?.channel.close(); }
+  function closeTerminal(id, tid) { const t=sessions.get(id)?.terminals.get(tid);if(t&&!t.closing){t.closing=true;t.inputRevision++;t.channel.close();} }
   async function readDirectory(s, directory) {
     const deadline = Date.now() + 30000, send = (op, ...args) => requestFor(s, op, args, Math.max(1, deadline - Date.now()));
     const handle = await send('opendir', directory), entries = [];
@@ -209,7 +225,7 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   async function retry(id, sid) { const job = jobs.get(id), s = session(sid); if (!job || job.stream || job.retrying || job.retried || !['failed', 'cancelled'].includes(job.state) || job.profileId !== s.profile.id) throw Error('请等待清理完成，并选择原服务器连接后重试失败项'); job.retrying = true; try { const result = await enqueue(sid, job.direction, [job.from], job.direction === 'upload' ? posix.dirname(job.to) : path.dirname(job.to), !!job.existing); if (result.jobs.length) { job.retried = true; reportJob(job); } return result; } finally { delete job.retrying; } }
   function clearFinished() { for (const [id, job] of jobs) if (!job.stream && !job.retrying && !['queued', 'running'].includes(job.state)) jobs.delete(id); return [...jobs.values()].map(jobView); }
   function dispose() { disposed = true; for (const job of jobs.values()) cancel(job.id); for (const s of sessions.values()) { s.client.destroy(); } }
-  return { load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, removeFile, enqueue, cancel, retry, clearFinished, dispose,
+  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, removeFile, enqueue, cancel, retry, clearFinished, dispose,
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),

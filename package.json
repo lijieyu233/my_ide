@@ -40,7 +40,7 @@
     "test:status": "node tests/git-status.test.js",
     "test:search": "node tests/search.test.js",
     "test:tasks": "node tests/task-recovery.test.js && node tests/task-recovery-dom.test.js",
-    "test:ai": "node tests/ai-runs.test.js && node tests/ai-tool-contract.test.js && node tests/ai-tool-execution.test.js && node tests/ai-tool-authority.test.js && node tests/ai-permission-store.test.js && node tests/ai-approval-ui.test.js && node tests/ai-panel-runs.test.js && node tests/ai-launch-tools.test.js",
+    "test:ai": "node tests/ai-runs.test.js && node tests/ai-tool-contract.test.js && node tests/ai-tool-execution.test.js && node tests/ai-tool-authority.test.js && node tests/ai-permission-store.test.js && node tests/ai-approval-ui.test.js && node tests/ai-panel-runs.test.js && node tests/ai-launch-tools.test.js && node tests/ai-ssh-tools.test.js",
     "test:quick-launch": "node tests/quick-launch.test.js && node tests/quick-launch-dom.test.js && node tests/quick-launch-keys.test.js",
     "check:quick-launch": "electron scripts/check-quick-launch.js --disable-gpu --no-sandbox",
     "test:launch": "node tests/launch-exit.test.js && node tests/launch-keep-dom.test.js && node tests/launch-readiness.test.js && node tests/launch-readiness-dom.test.js && node tests/launch-service.test.js && node tests/launch-operations-dom.test.js && node tests/launch-log-dom.test.js",
@@ -56,7 +56,8 @@
     "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox",
     "check:instance": "electron scripts/check-instance.js --disable-gpu --no-sandbox",
     "check:ai-launch": "electron scripts/check-ai-launch.js --disable-gpu --no-sandbox",
-    "check:ai-history": "electron scripts/check-ai-history.js --disable-gpu --no-sandbox"
+    "check:ai-history": "electron scripts/check-ai-history.js --disable-gpu --no-sandbox",
+    "check:ai-ssh": "electron scripts/check-ai-ssh.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -146,7 +147,8 @@
       "remote-service.js",
       "remote-ipc.js",
       "remote-local.js",
-      "ai-launch-tools.js"
+      "ai-launch-tools.js",
+      "ai-ssh-tools.js"
     ],
     "win": {
       "target": [

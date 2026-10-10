@@ -84,7 +84,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
     item.proof.verify();
   }
   async function effectOf(owner, context, call, item) {
-    if (Contract.isApplication(call.name)) { if (!item.proof.effect) throw fail('INVALID_TOOL_ARGS','只读启动工具无需批准'); return item.proof.effect; }
+    if (Contract.isApplication(call.name)) { if (!item.proof.effect) throw fail('INVALID_TOOL_ARGS','只读应用工具无需批准'); return item.proof.effect; }
     if (call.name === 'run_command') return { kind: 'run', target: item.proof.real, command: call.args.command };
     if (!['write_file', 'replace_edit'].includes(call.name)) throw fail('INVALID_TOOL_ARGS', '不是需要副作用批准的工具');
     const source = await tools.read(owner, context, call);
@@ -120,7 +120,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
         check(owner, context, record, item);
         if (digest(JSON.stringify(currentPolicy(owner, context))) !== policyHash) throw fail('AI_POLICY_CHANGED', '确认期间权限已改变，请重新申请');
         if (!answer || answer.approved !== true || !['once', 'project', 'session', 'command'].includes(answer.scope)) throw fail('AI_PERMISSION_DENIED', '用户未批准本次操作');
-        if (effect.application && answer.scope !== 'once') throw fail('INVALID_AI_APPROVAL','启动面板操作批准只对应当前具体操作');
+        if (effect.application && answer.scope !== 'once') throw fail('INVALID_AI_APPROVAL','应用操作批准只对应当前具体操作');
         if (need === 'danger' && answer.scope !== 'once') throw fail('AI_PERMISSION_DENIED', '危险操作必须逐次批准');
         if (answer.scope === 'command' && effect.kind !== 'run') throw fail('INVALID_AI_APPROVAL', '批准范围与操作不一致');
         if (answer.scope !== 'once') await cancellable(() => remember(owner, freeze(clone({ context, call, scope: answer.scope })), entry.controller.signal), entry.controller.signal);

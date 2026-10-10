@@ -23,6 +23,13 @@
       const names = { confirm: '每次确认', auto: '自动', deny: '禁止' };
       for (const [key, label] of [['permWrite', '改文件'], ['permRun', '执行命令']]) line(label + '：' + names[data.before[key]] + ' → ' + names[data.after[key]]);
       line('写入路径白名单：\n' + (data.after.allowPaths.join('\n') || '无')); line('始终确认的命令前缀：\n' + (data.after.denyCmds.join('\n') || '无'));
+    } else if(data.effect.remote){
+      $('title').textContent=data.effect.label;$('accept').textContent=data.danger?'仍然执行':'确认操作';
+      const s=data.effect.session;$('target').textContent=s.name+' · '+s.username+'@'+s.host+':'+s.port;
+      $('note').textContent=data.danger?'此远程命令可能有破坏性，必须逐次批准。':'仅批准本次SSH会话和终端操作；终端收到其它输入后批准会失效。';
+      line('连接会话：'+s.id);if(data.effect.terminal)line('终端：'+data.effect.terminal);if(data.effect.command)line(data.effect.command);
+      if(data.effect.operation==='open')line('新建独立终端，不复用正在操作的终端。');
+      if(['interrupt','close'].includes(data.effect.operation))line('中断或关闭终端不保证远程后台进程停止。','muted');
     } else if (data.effect.application) {
       $('title').textContent=data.effect.label; $('accept').textContent=data.danger?'仍然执行':'确认'+({add:'添加',update:'保存',start:'启动',stop:'停止',restart:'重启'}[data.effect.operation]||'操作');
       $('target').textContent=(data.effect.after?.name||'程序')+' · '+data.effect.entryId;
