@@ -28,7 +28,19 @@ if (process.versions.electron) {
       await wait(() => probe('!!document.querySelector(".launch-card[data-id=keep-fixture]")'), '加载测试配置');
       await probe('App.showTool("launch");document.querySelector(".launch-card[data-id=keep-fixture]").click()');
       assert(!win.isVisible());
-      if (phase === 'recover') {
+      if (phase === 'stale') {
+        const entry = service.loadConfig().entries[0];
+        await wait(async () => (await service.statusOf([entry]))[0].canStart && await probe('!document.getElementById("lm-start").disabled'), '历史PID复用后启动按钮可用');
+        await probe('document.getElementById("lm-start").click()');
+        await wait(async () => await connect(entry.port) && (await service.statusOf([entry]))[0].canStop, '点击启动后服务实际响应');
+        await wait(() => probe('!document.getElementById("lm-stop").disabled && document.getElementById("lm-start").disabled && !document.getElementById("lm-state").textContent.includes("正在启动")'), '面板显示自有运行与可停止状态');
+        assert.notEqual(JSON.parse(fs.readFileSync(service.paths().stateFile, 'utf8'))[entry.id].launchId, 'stale-fixture');
+        if (process.env.MYIDE_KEEP_SCREENSHOT) {
+          // 隐藏窗口的截图可能落后于DOM；等一次绘制再保存，避免取到启动中的上一帧。
+          await sleep(250);
+          fs.writeFileSync(process.env.MYIDE_KEEP_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
+        }
+      } else if (phase === 'recover') {
         await wait(async () => (await service.statusOf(service.loadConfig().entries))[0].canStop, '恢复后台身份');
         const result = await service.stopEntry(service.loadConfig().entries[0]); assert.equal(result.ok, true, JSON.stringify(result));
         fs.writeFileSync(path.join(home, 'recovered.json'), JSON.stringify(result));
@@ -69,14 +81,27 @@ if (process.versions.electron) {
     });
     const service = require('../launch-service'); service.setConfigDir(configDir);
     try {
-      await run('keep');
-      for (let n = 0; n < 5; n++) { await sleep(250); assert(await connect(port), 'IDE退出后带输出的服务仍响应'); }
-      console.log('ok 勾选、编辑后真实IDE关闭，后台服务持续响应且stdout/stderr不断管');
-      await run('recover'); assert.equal(await connect(port), false); assert(fs.existsSync(path.join(home, 'recovered.json')));
-      console.log('ok 重开IDE恢复后台身份，明确停止后端口释放');
-      await run('stop'); assert.equal(await connect(port), false);
-      console.log('ok 取消后台保留，真实IDE关闭后服务停止');
-      console.log('后台保留真实关窗：3 通过 / 0 失败（全程隐藏窗口）');
+      if (!process.argv.includes('--stale-only')) {
+        await run('keep');
+        for (let n = 0; n < 5; n++) { await sleep(250); assert(await connect(port), 'IDE退出后带输出的服务仍响应'); }
+        console.log('ok 勾选、编辑后真实IDE关闭，后台服务持续响应且stdout/stderr不断管');
+        await run('recover'); assert.equal(await connect(port), false); assert(fs.existsSync(path.join(home, 'recovered.json')));
+        console.log('ok 重开IDE恢复后台身份，明确停止后端口释放');
+        await run('stop'); assert.equal(await connect(port), false);
+        console.log('ok 取消后台保留，真实IDE关闭后服务停止');
+      }
+      // 用仍活着的控制器PID模拟后来进程，创建时间早一天的历史记录可确定已结束。
+      // 真实OS查询+真实按钮点击，覆盖截图中的归属待核验锁死，而不是只调用服务API。
+      const oldIdentity = { pid: process.pid, createdAt: new Date(Date.now() - 86400000).toISOString(), image: process.execPath, commandLine: 'old fixture service' };
+      fs.writeFileSync(path.join(configDir, 'launch-state.json'), JSON.stringify({ [entry.id]: {
+        pid: process.pid, identity: oldIdentity, launchId: 'stale-fixture', port,
+        descendants: [{ identity: oldIdentity, parentPid: process.pid }], command, cwd: home,
+      } }));
+      service.setKeepOnExit(true); await run('stale'); assert(await connect(port));
+      console.log('ok 历史根/子PID复用后启动按钮可用，真实点击启动并保留服务退出');
+      await run('recover'); assert.equal(await connect(port), false);
+      console.log('ok 新运行重开恢复、停止成功，复用PID的控制器持续存活');
+      console.log('后台保留真实关窗：' + (process.argv.includes('--stale-only') ? 2 : 5) + ' 通过 / 0 失败（全程隐藏窗口）');
     } finally {
       try { await service.stopEntry(entry); } finally {
         // 只删除本次创建的临时配置；失败时先停止自己的服务，不触碰用户终端。

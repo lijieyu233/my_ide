@@ -564,6 +564,48 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       assert.equal(result.errorCode, 'PROCESS_IDENTITY_CHANGED'); assert.equal(f.kills.length, 0); assert.deepEqual(f.state(), before);
       assert.equal((await f.service.aliveEntry(f.entry)).alive, false);
     });
+    await test('历史根与子PID被后来进程复用，状态可启动并建立新运行，不杀复用者', async () => {
+      for (const rootReused of [false, true]) {
+        const f = fixture(); f.record(f.entry);
+        const saved = f.state(); saved[f.entry.id].descendants = [{ identity: { ...f.identities.get(777), pid: 778 }, parentPid: 777 }];
+        fs.writeFileSync(f.service.paths().stateFile, JSON.stringify(saved));
+        f.live.add(778); f.identities.set(778, { ...saved[f.entry.id].descendants[0].identity, createdAt: new Date(1700001000000).toISOString(), image: 'foreign.exe', commandLine: 'OA service' });
+        if (rootReused) f.identities.set(777, { ...f.identities.get(777), createdAt: new Date(1700001000000).toISOString(), commandLine: 'another service' });
+        else f.live.delete(777);
+        const [status] = await f.service.statusOf([f.entry]); assert.equal(status.ownership, 'none'); assert(status.canStart); assert(!status.canStop);
+        assert.equal((await f.service.aliveEntry(f.entry)).alive, false);
+        assert.deepEqual(f.state(), saved);
+        assert.equal((await f.service.startEntry(f.entry)).ok, true); assert.notEqual(f.state()[f.entry.id].launchId, saved[f.entry.id].launchId);
+        assert(f.live.has(778)); assert.equal(f.live.has(777), rootReused); assert.deepEqual(f.kills, []);
+      }
+    });
+    await test('根与部分子PID复用时仍恢复存活的自有子进程，停止只针对同身份进程', async () => {
+      const f = fixture(); f.record(f.entry); const saved = f.state();
+      saved[f.entry.id].descendants = [778, 779].map(pid => ({ identity: { ...f.identities.get(777), pid }, parentPid: 777 }));
+      fs.writeFileSync(f.service.paths().stateFile, JSON.stringify(saved));
+      for (const item of saved[f.entry.id].descendants) { f.live.add(item.identity.pid); f.identities.set(item.identity.pid, item.identity); }
+      for (const pid of [777, 778]) f.identities.set(pid, { ...f.identities.get(pid), createdAt: new Date(1700001000000).toISOString(), commandLine: 'foreign service' });
+      const [status] = await f.service.statusOf([f.entry]); assert(status.processAlive && status.canStop); assert(!status.canStart); assert.equal(status.ownership, 'owned');
+      assert.equal((await f.service.aliveEntry(f.entry)).ownership, 'owned'); assert.equal((await f.service.startEntry(f.entry)).ok, false);
+      assert.equal((await f.service.stopEntry(f.entry)).ok, true); assert.deepEqual(f.kills, [779]); assert(f.live.has(777) && f.live.has(778)); assert.equal(f.state()[f.entry.id], undefined);
+    });
+    await test('旧PID已结束但端口被外部占用，仍拒绝启动与停止外部进程', async () => {
+      const f = fixture({ portUp: true, listener: 999 }); f.record(f.entry);
+      f.identities.set(777, { ...f.identities.get(777), createdAt: new Date(1700001000000).toISOString(), commandLine: 'foreign service' });
+      const entry = { ...f.entry, port: 18089 }, before = f.state();
+      const [status] = await f.service.statusOf([entry]); assert(!status.canStart && !status.canStop); assert(status.portResponding);
+      assert.equal((await f.service.startEntry(entry)).ok, false); assert.equal((await f.service.stopEntry(entry)).errorCode, 'PORT_OWNED_BY_OTHER');
+      assert.deepEqual(f.kills, []); assert.deepEqual(f.state(), before);
+    });
+    await test('根身份同出生时间变化、出生时间无效或查询失败不开放再次启动', async () => {
+      for (const change of ['commandLine', 'createdAt', 'query']) {
+        const f = fixture(); f.record(f.entry); const before = f.state();
+        if (change === 'query') f.options.identityError = true;
+        else f.identities.set(777, { ...f.identities.get(777), [change]: 'unknown identity' });
+        const [status] = await f.service.statusOf([f.entry]); assert(!status.canStart && !status.canStop);
+        assert.equal((await f.service.startEntry(f.entry)).errorCode, 'OWNERSHIP_UNKNOWN'); assert.deepEqual(f.state(), before); assert.deepEqual(f.kills, []);
+      }
+    });
     await test('出生时间相同但映像或命令不同仍不停止', async () => {
       for (const field of ['image', 'commandLine']) {
         const f = fixture(); f.record(f.entry); f.identities.set(777, { ...f.identities.get(777), [field]: 'foreign process' });
