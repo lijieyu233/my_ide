@@ -51,9 +51,10 @@
     "test:session": "node tests/session-recovery.test.js",
     "check:session": "electron scripts/check-session-recovery.js --disable-gpu --no-sandbox",
     "test:remote": "node tests/remote.test.js && node tests/remote-list.test.js && node tests/remote-local.test.js",
-    "test:startup": "node tests/startup.test.js",
+    "test:startup": "node tests/startup.test.js && node tests/app-instance.test.js",
     "check:startup": "electron scripts/check-startup.js --disable-gpu --no-sandbox",
-    "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox"
+    "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox",
+    "check:instance": "electron scripts/check-instance.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
@@ -97,6 +98,7 @@
     "afterPack": "./scripts/check-package.js",
     "files": [
       "main.js",
+      "app-instance.js",
       "file-write.js",
       "task-recovery.js",
       "text-format.js",

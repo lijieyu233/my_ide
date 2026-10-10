@@ -69,6 +69,13 @@ require('./remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow:
   configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
 let stateFile = null;
 let pendingOpenArg = OPEN_ARG;
+// 隐藏自检用独立profile；用户窗口必须先拿锁，不能重复加载同一份设置和后台查询。
+if (!HIDDEN_WINDOW) require('./app-instance').claim({ app, getWindow: () => mainWindow, openProject: requested => {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) { pendingOpenArg = requested; return; }
+  const send = () => { if (!win.isDestroyed()) win.webContents.send('app:open-project', requested); };
+  if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', send); else send();
+} });
 const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: event => aiSender(event), windowFor: owner => mainWindow && mainWindow.webContents.id === owner ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),

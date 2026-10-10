@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    onOpenProject: callback => { const listener = (_event, project) => callback(project); ipcRenderer.on('app:open-project', listener); return () => ipcRenderer.removeListener('app:open-project', listener); },
   },
   // 本地设置镜像（容错）：localStorage 落盘失败时的兜底 —— 详见 main.js 里 SETTINGS_MIRROR 的注释
   settings: {

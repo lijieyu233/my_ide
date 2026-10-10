@@ -1024,6 +1024,7 @@ const App = (() => {
   function init() {
     if (inited) return; // 幂等：DOMContentLoaded 与手动调用只生效一次
     inited = true;
+    window.myIDE.app?.onOpenProject?.(project => openProject(project));
     NavigationHistory.init({capture:Viewer.captureLocation,restore:(saved,isCurrent,origin,source)=>Viewer.navigateTo({saved},{isCurrent,origin,source})});
     document.getElementById('btn-open').onclick = openFolder;
     document.getElementById('btn-open2').onclick = openFolder;
