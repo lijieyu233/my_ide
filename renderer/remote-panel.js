@@ -1,7 +1,7 @@
 window.RemotePanel = (() => {
   const q = id => document.getElementById(id), api = () => window.myIDE.remote;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const icons = { folder: '<svg class="ic" viewBox="0 0 16 16"><path d="M2 4h4l1.5 2H14v7H2z"/></svg>', file: '<svg class="ic" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v3h3"/></svg>' };
+  const icons = { folder: '<svg class="ic" viewBox="0 0 16 16"><path d="M2 4h4l1.5 2H14v7H2z"/></svg>', file: '<svg class="ic" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v3h3"/></svg>', server: '<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="5" rx="1"/><rect x="2" y="9" width="12" height="5" rx="1"/><path d="M4.5 4.5h.5M4.5 11.5h.5M8 4.5h3M8 11.5h3"/></svg>', up: '<svg class="ic" viewBox="0 0 16 16"><path d="M8 13V3M4 7l4-4 4 4"/></svg>', upload: '<svg class="ic" viewBox="0 0 16 16"><path d="M8 11V2M4 6l4-4 4 4M3 10v4h10v-4"/></svg>', download: '<svg class="ic" viewBox="0 0 16 16"><path d="M8 2v9M4 7l4 4 4-4M3 10v4h10v-4"/></svg>', computer: '<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="9" rx="1"/><path d="M5 14h6M8 11v3"/></svg>' };
   const labels = { connecting: '连接中', connected: '已连接', disconnected: '已断开', queued: '等待传输', running: '传输中', completed: '已完成', cancelled: '已取消', failed: '失败' };
   let profiles = [], version = '', selected = null, sid = null, activeTerm = null, visible = false, initialized = false, mode = 'terminal', connecting = false, loading = 0;
   const sessions = new Map(), terminals = new Map(), jobs = new Map();
@@ -18,15 +18,19 @@ window.RemotePanel = (() => {
     for (const button of q('remote-files').querySelectorAll('[data-side="remote"] button, [data-action="download"], [data-action="upload"]')) button.disabled = !connected();
   }
   function renderProfiles() {
+    q('remote-profile-count').textContent = profiles.length;
     q('remote-profiles').innerHTML = profiles.length ? profiles.map(p => {
       const live = [...sessions.values()].filter(s => s.profileId === p.id && s.state !== 'disconnected');
-      return `<button class="remote-profile${p.id === selected ? ' selected' : ''}" data-profile="${esc(p.id)}"><strong>${esc(p.name)}</strong><span>${esc(p.username)}@${esc(p.host)}:${p.port}</span><small>${live.length ? labels[live.at(-1).state] + (live.length > 1 ? ' · ' + live.length + '个会话' : '') : '未连接'}</small></button>`;
-    }).join('') : '<div class="remote-empty">尚无服务器。点击上方＋新建连接。</div>';
+      return `<button class="remote-profile${p.id === selected ? ' selected' : ''}" data-profile="${esc(p.id)}"><span class="remote-profile-icon">${icons.server}</span><span class="remote-profile-info"><strong>${esc(p.name)}</strong><span class="remote-profile-endpoint">${esc(p.username)}@${esc(p.host)}:${p.port}</span><small data-state="${live.at(-1)?.state || 'disconnected'}">${live.length ? labels[live.at(-1).state] + (live.length > 1 ? ' · ' + live.length + '个会话' : '') : '未连接'}</small></span></button>`;
+    }).join('') : '<div class="remote-side-empty">' + icons.server + '<strong>还没有保存的连接</strong><span>点击＋添加第一台服务器</span></div>';
     controls();
   }
   function renderSessions() {
     q('remote-sessions').innerHTML = '<option value="">选择连接会话</option>' + [...sessions.values()].filter(s => s.state !== 'disconnected').map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${labels[s.state]}</option>`).join('');
-    q('remote-sessions').value = sid || ''; q('remote-title').textContent = profiles.find(p => p.id === selected)?.name || '远程服务器'; renderProfiles();
+    const profile = profiles.find(p => p.id === selected), state = current()?.state || 'disconnected';
+    q('remote-sessions').value = sid || ''; q('remote-title').textContent = profile?.name || '远程服务器';
+    q('remote-endpoint').textContent = profile ? `${profile.username}@${profile.host}:${profile.port}` : 'SSH 终端与 SFTP 文件传输';
+    q('remote-state').textContent = current() ? labels[state] : '未连接'; q('remote-state').dataset.state = state; renderProfiles();
   }
   async function refresh() {
     const serial = ++loading, value = await call('load'); if (serial !== loading) return;
@@ -144,7 +148,7 @@ window.RemotePanel = (() => {
     for (const job of result.jobs) jobs.set(job.id, job); renderJobs(); q('remote-transfers').open = true;
   }
   function installFiles() {
-    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><span class="spacer"></span><button class="vt-btn" data-action="${side === 'local' ? 'upload' : 'download'}">${side === 'local' ? '上传 →' : '← 下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">↑</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
+    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
     for (const side of ['local', 'remote']) {
       const root = q('remote-' + side + '-pane'), pane = panes[side];
       root.querySelector('form').onsubmit = attempt(async event => { event.preventDefault(); await browse(side, root.querySelector('input').value); });
@@ -172,7 +176,10 @@ window.RemotePanel = (() => {
   }
   function renderJobs() {
     q('remote-transfer-count').textContent = jobs.size;
-    q('remote-transfer-jobs').innerHTML = jobs.size ? [...jobs.values()].map(job => `<div class="remote-transfer"><div class="remote-transfer-label"><strong>${job.direction === 'upload' ? '上传' : '下载'} · ${esc(job.from.split(/[\\/]/).pop())}</strong><span>${labels[job.state]} ${displaySize(job.bytes)} / ${displaySize(job.total || 0)}</span></div><progress max="${Math.max(job.total || job.bytes, 1)}" value="${job.bytes}"></progress><div class="remote-transfer-dest" title="${esc(job.to)}">${esc(job.to)}</div>${job.error ? '<div class="remote-form-error">' + esc(job.error) + '</div>' : ''}${['running', 'queued'].includes(job.state) ? '<button class="vt-btn" data-cancel-job="' + esc(job.id) + '">取消</button>' : ['failed', 'cancelled'].includes(job.state) && !job.retried ? '<button class="vt-btn" data-retry-job="' + esc(job.id) + '">重试</button>' : ''}</div>`).join('') : '<div class="remote-empty">尚无传输。</div>';
+    const active = [...jobs.values()].filter(j => ['running', 'queued'].includes(j.state)).length, completed = [...jobs.values()].filter(j => j.state === 'completed').length, failed = [...jobs.values()].filter(j => j.state === 'failed').length;
+    q('remote-transfer-summary').textContent = active ? `${active} 项正在传输` : jobs.size ? `${completed} 项已完成` + (failed ? ` · ${failed} 项失败` : '') : '尚无传输';
+    if (!jobs.size) q('remote-transfers').open = false;
+    q('remote-transfer-jobs').innerHTML = jobs.size ? [...jobs.values()].map(job => `<div class="remote-transfer" data-state="${esc(job.state)}"><span class="remote-transfer-icon">${icons[job.direction]}</span><div class="remote-transfer-body"><div class="remote-transfer-label"><strong>${job.direction === 'upload' ? '上传' : '下载'} · ${esc(job.from.split(/[\\/]/).pop())}</strong><span class="remote-job-state">${labels[job.state]}</span></div><div class="remote-transfer-dest" title="${esc(job.to)}">${esc(job.to)}</div><div class="remote-progress-row"><progress max="${Math.max(job.total || job.bytes, 1)}" value="${job.bytes}"></progress><span>${displaySize(job.bytes)} / ${displaySize(job.total || 0)}</span></div>${job.error ? '<div class="remote-form-error">' + esc(job.error) + '</div>' : ''}</div>${['running', 'queued'].includes(job.state) ? '<button class="vt-btn" data-cancel-job="' + esc(job.id) + '">取消</button>' : ['failed', 'cancelled'].includes(job.state) && !job.retried ? '<button class="vt-btn" data-retry-job="' + esc(job.id) + '">重试</button>' : ''}</div>`).join('') : '<div class="remote-empty">尚无传输。</div>';
   }
   function onEvent(event) {
     if (event.type === 'session') { sessions.set(event.session.id, event.session); renderSessions(); if (event.session.id === sid && event.session.state === 'disconnected') { panes.remote.serial++; notify('连接已断开' + (event.session.error ? '：' + event.session.error : ''), !!event.session.error); } }
@@ -184,6 +191,7 @@ window.RemotePanel = (() => {
   function init() {
     if (initialized || !q('remote-main') || !window.myIDE?.remote) return; initialized = true; installFiles(); api().onEvent(onEvent);
     q('remote-add').onclick = () => form(); q('remote-edit').onclick = () => form(profiles.find(p => p.id === selected));
+    q('remote-welcome-add').onclick = () => form();
     q('remote-delete').onclick = attempt(async () => { const p = profiles.find(p => p.id === selected); if (p && await Modal.confirm('删除服务器配置', '删除「' + esc(p.name) + '」的保存配置？')) { const result = await call('remove', p.id, version); profiles = result.profiles; version = result.version; selected = profiles[0]?.id; renderSessions(); } });
     q('remote-refresh').onclick = attempt(refresh); q('remote-connect').onclick = attempt(connect);
     q('remote-disconnect').onclick = attempt(async () => { await call('disconnect', sid); notify('已断开SSH连接。'); controls(); });

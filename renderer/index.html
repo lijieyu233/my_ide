@@ -118,6 +118,7 @@
     </div>
     <div id="panel-remote" class="hidden">
       <div class="panel-title">远程服务器<span class="panel-title-actions"><button id="remote-add" class="vt-btn" title="新建服务器" aria-label="新建服务器"><svg class="ic" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button></span></div>
+      <div class="remote-side-heading"><span>已保存的连接</span><span id="remote-profile-count">0</span></div>
       <div id="remote-profiles"></div>
       <div class="remote-side-actions"><button id="remote-edit" class="vt-btn" disabled>编辑</button><button id="remote-delete" class="vt-btn" disabled>删除配置</button><button id="remote-refresh" class="vt-btn">刷新</button></div>
     </div>
@@ -307,12 +308,15 @@
     </div>
     <!-- 数据库工具：数据表格 + SQL（右侧主区；连接与表列表在左侧 #panel-db）-->
     <div id="remote-main" class="hidden">
-      <div class="remote-toolbar"><strong id="remote-title">远程服务器</strong><select id="remote-sessions" aria-label="连接会话"><option value="">尚未连接</option></select><span class="spacer"></span><button id="remote-connect" class="tb-btn" disabled>连接</button><button id="remote-disconnect" class="tb-btn" disabled>断开</button><button id="remote-new-terminal" class="tb-btn" disabled>新终端</button></div>
+      <div class="remote-toolbar">
+        <div class="remote-identity"><span class="remote-identity-icon"><svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="5" rx="1"/><rect x="2" y="9" width="12" height="5" rx="1"/><path d="M4.5 4.5h.5M4.5 11.5h.5M8 4.5h3M8 11.5h3"/></svg></span><div><div class="remote-title-line"><strong id="remote-title">远程服务器</strong><span id="remote-state" class="remote-state">未连接</span></div><span id="remote-endpoint">SSH 终端与 SFTP 文件传输</span></div></div>
+        <div class="remote-toolbar-actions"><button id="remote-connect" class="tb-btn remote-primary" disabled><svg class="ic" viewBox="0 0 16 16"><path d="M3 8h10M9 4l4 4-4 4"/></svg>连接</button><button id="remote-disconnect" class="tb-btn" disabled>断开</button><button id="remote-new-terminal" class="tb-btn" disabled><svg class="ic" viewBox="0 0 16 16"><path d="M3 4l4 4-4 4M9 12h4"/></svg>新终端</button></div>
+      </div>
       <div id="remote-notice" role="status">选择或新建服务器，连接后可使用终端和文件传输。</div>
-      <div class="remote-tabs"><button id="remote-tab-terminal" class="tb-btn active">终端</button><button id="remote-tab-files" class="tb-btn">文件</button></div>
-      <div id="remote-terminal-area"><div id="remote-terminal-tabs"></div><div id="remote-terminal-panes"><div id="remote-terminal-empty" class="remote-empty">连接服务器后打开终端。需要在断线后继续运行的任务，可使用 tmux 或 systemd。</div></div></div>
+      <div class="remote-workspace-bar"><div class="remote-tabs"><button id="remote-tab-terminal" class="tb-btn active"><svg class="ic" viewBox="0 0 16 16"><path d="M3 4l4 4-4 4M9 12h4"/></svg>终端</button><button id="remote-tab-files" class="tb-btn"><svg class="ic" viewBox="0 0 16 16"><path d="M2 4h4l1.5 2H14v7H2z"/></svg>文件</button></div><label class="remote-session-picker"><span>连接会话</span><select id="remote-sessions" aria-label="连接会话"><option value="">尚未连接</option></select></label></div>
+      <div id="remote-terminal-area"><div id="remote-terminal-tabs"></div><div id="remote-terminal-panes"><div id="remote-terminal-empty" class="remote-welcome"><div class="remote-welcome-icon"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="9" y="12" width="46" height="34" rx="5"/><path d="M18 23l8 7-8 7M33 37h12M23 54h18M32 46v8"/></svg></div><h2>连接你的远程工作空间</h2><p>在这里运行命令、浏览服务器文件，<br>让终端与文件传输保持在同一处。</p><button id="remote-welcome-add" class="tb-btn remote-primary"><svg class="ic" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>新建服务器</button><div class="remote-welcome-features"><span>SSH 多终端</span><span>SFTP 双栏传输</span><span>主机指纹核验</span></div><small>远程任务需要断线后继续运行时，可使用 tmux 或 systemd。</small></div></div><div class="remote-terminal-footer"><span>SSH · xterm-256color</span><span>复制 <kbd>Ctrl Shift C</kbd> &nbsp; 粘贴 <kbd>Ctrl Shift V</kbd></span></div></div>
       <div id="remote-files" class="hidden"></div>
-      <details id="remote-transfers" open><summary>传输队列 <span id="remote-transfer-count">0</span><button id="remote-clear-transfers" class="vt-btn">清理已完成项</button></summary><div id="remote-transfer-jobs"><div class="remote-empty">上传或下载后在此查看进度。</div></div></details>
+      <details id="remote-transfers"><summary><span class="remote-queue-title">传输队列 <span id="remote-transfer-count">0</span></span><span id="remote-transfer-summary">尚无传输</span><button id="remote-clear-transfers" class="vt-btn">清理已完成项</button></summary><div id="remote-transfer-jobs"><div class="remote-empty">上传或下载后在此查看进度。</div></div></details>
     </div>
     <div id="db-panel" class="hidden">
       <div class="db-tabs">

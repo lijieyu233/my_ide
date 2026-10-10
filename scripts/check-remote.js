@@ -23,8 +23,10 @@ app.whenReady().then(async () => {
     await wait('!!window.App&&!!window.RemotePanel&&!!window.myIDE?.remote'); win.setContentSize(1280, 850);
     await probe('document.getElementById("tool-remote").click(); window.remoteEvents=[]; myIDE.remote.onEvent(e=>remoteEvents.push(e)); undefined;');
     check('真实实例隐藏且工具可进入', !win.isVisible() && await probe('App.getTool()==="remote"&&!document.getElementById("remote-main").classList.contains("hidden")'));
-    await probe('document.getElementById("remote-add").click()');
+    await snapshot('welcome-dark');
+    await probe('document.getElementById("remote-welcome-add").click()');
     check('密码输入遮罩且密码认证隐藏私钥字段', await probe('(()=>{const f=document.querySelector(".remote-form form");return f.elements.password.type==="password"&&getComputedStyle(f.elements.privateKey.closest("label")).display==="none"})()'));
+    await snapshot('connection-form-dark');
     await probe(`(()=>{const f=document.querySelector('.remote-form form');const values=${JSON.stringify({ name: '本地验证服务器', host: '127.0.0.1', port: server.port, username: 'fixture', password: 'fixture-secret' })};for(const [key,value] of Object.entries(values))f.elements[key].value=value;f.elements.remember.checked=true;f.requestSubmit()})()`);
     await wait('!document.querySelector(".remote-form")&&document.querySelectorAll(".remote-profile").length===1');
     check('真实safeStorage保存密码无明文', !fs.readFileSync(path.join(home, '.myide', 'remote.json'), 'utf8').includes('fixture-secret'));
@@ -51,6 +53,7 @@ app.whenReady().then(async () => {
     await snapshot('files-dark');
     win.setMinimumSize(640, 480); win.setContentSize(900, 720); await probe('Theme.set("light");for(let n=0;n<4;n++)document.getElementById("sb-tf-inc").click()');
     await sleep(200); check('窄窗大字号文件面板不横向溢出', await probe('(()=>{const e=document.getElementById("remote-main");return e.scrollWidth<=e.clientWidth+1&&[...document.querySelectorAll(".remote-file-pane")].every(p=>p.scrollWidth<=p.clientWidth+1)})()')); await snapshot('files-narrow-light');
+    win.setContentSize(1280, 850); await probe('Theme.set("crimson");for(let n=0;n<4;n++)document.getElementById("sb-tf-dec").click()'); await snapshot('files-crimson');
     await probe('document.getElementById("remote-disconnect").click()'); await wait('document.getElementById("remote-new-terminal").disabled');
     check('断开连接禁用远程文件和终端操作', await probe('[...document.querySelectorAll("#remote-remote-pane button")].every(b=>b.disabled)'));
     await probe('document.getElementById("remote-connect").click()'); await wait('!document.getElementById("remote-new-terminal").disabled'); check('再次连接使用已记住指纹', prompts === 1);
