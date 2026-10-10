@@ -5,6 +5,7 @@ window.RemotePanel = (() => {
   const labels = { connecting: '连接中', connected: '已连接', disconnected: '已断开', queued: '等待传输', running: '传输中', completed: '已完成', cancelled: '已取消', failed: '失败' };
   let profiles = [], version = '', selected = null, sid = null, activeTerm = null, visible = false, initialized = false, mode = 'terminal', connecting = false, loading = 0;
   const sessions = new Map(), terminals = new Map(), jobs = new Map();
+  let fitFrame = 0, appearanceDirty = false;
   const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0 }, remote: { path: '', entries: [], selected: new Set(), serial: 0 } };
   const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').title = text; q('remote-notice').classList.toggle('error', error); };
   async function call(op, ...args) { const result = await api()[op](...args); if (!result?.ok) throw Error(result?.error || '远程操作未确认'); return result.data; }
@@ -91,9 +92,23 @@ window.RemotePanel = (() => {
     renderPane('remote'); if (connected()) await browse('remote', panes.remote.path);
     const existing = [...terminals.values()].find(t => t.sid === sid && !t.closed); activeTerm = existing?.id || null; renderTerminals(); if (existing) selectTerminal(existing.id);
   }
-  function fit(t) { if (!visible || mode !== 'terminal' || activeTerm !== t.id || !t.container.clientWidth) return; try { t.fit.fit(); if (!t.closed) void call('resize', t.sid, t.id, t.term.cols, t.term.rows).catch(() => {}); } catch {} }
-  function terminalTheme() {
-    const css = getComputedStyle(q('remote-main'));
+  function fit(t) {
+    if (!t || !visible || mode !== 'terminal' || activeTerm !== t.id || !t.container.clientWidth) return;
+    try {
+      t.fit.fit(); const size = t.term.cols + ':' + t.term.rows;
+      // 重复 window-change 会让远端 Shell 重画提示符，缩放和切标签只发送真正改变的行列数。
+      if (t.opened && !t.closed && t.remoteSize !== size) {
+        t.remoteSize = size;
+        void call('resize', t.sid, t.id, t.term.cols, t.term.rows).catch(() => { if (t.remoteSize === size) t.remoteSize = null; });
+      }
+    } catch {}
+  }
+  function requestFit() {
+    // 拖动窗口和切换标签的多次通知合并到一帧，避免连续强制读取布局。
+    if (fitFrame || !visible || mode !== 'terminal') return;
+    fitFrame = requestAnimationFrame(() => { fitFrame = 0; fit(terminals.get(activeTerm)); });
+  }
+  function terminalTheme(css = getComputedStyle(q('remote-main'))) {
     // ANSI 颜色保持终端语义；普通字色按背景亮度选择，避免随粉色 UI 文字一起染色。
     const rgb = css.backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [0, 0, 0];
     const light = rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722 > 150;
@@ -105,7 +120,18 @@ window.RemotePanel = (() => {
   }
   function terminalFontSize() { return parseFloat(getComputedStyle(q('remote-main')).fontSize) || 13; }
   function syncTerminalAppearance() {
-    for (const t of terminals.values()) { t.term.options.theme = terminalTheme(); t.term.options.fontSize = terminalFontSize(); fit(t); }
+    if (!visible) return;
+    appearanceDirty = false;
+    const css = getComputedStyle(q('remote-main')), theme = terminalTheme(css), fontSize = parseFloat(css.fontSize) || 13;
+    for (const t of terminals.values()) {
+      // xterm 用对象引用判断 theme 变化；无关 body/root 样式变化不能反复触发整屏重绘。
+      if (Object.keys(theme).some(key => t.term.options.theme[key] !== theme[key])) t.term.options.theme = theme;
+      if (t.term.options.fontSize !== fontSize) { t.term.options.fontSize = fontSize; fit(t); }
+    }
+  }
+  function requestAppearance() {
+    appearanceDirty = true;
+    if (visible) syncTerminalAppearance();
   }
   async function newTerminal() {
     if (!connected()) return; if (!window.Terminal || !window.FitAddon) throw Error('终端组件未加载，请检查依赖');
@@ -125,14 +151,14 @@ window.RemotePanel = (() => {
     });
     // 编辑器的全局快捷键不能消费终端里的Ctrl+C、Tab和方向键。
     for (const type of ['keydown', 'keyup']) container.addEventListener(type, event => event.stopPropagation());
-    try { await call('openTerminal', t.sid, id, term.cols, term.rows); t.opened = true; fit(t); if (visible && mode === 'terminal' && activeTerm === id && !Modal.stack.length) term.focus(); }
+    try { const cols = term.cols, rows = term.rows; await call('openTerminal', t.sid, id, cols, rows); t.remoteSize = cols + ':' + rows; t.opened = true; fit(t); if (visible && mode === 'terminal' && activeTerm === id && !Modal.stack.length) term.focus(); }
     catch (error) { t.closed = true; term.writeln('\r\n连接终端失败：' + error.message); renderTerminals(); throw error; }
   }
   function renderTerminals() {
     q('remote-terminal-tabs').innerHTML = [...terminals.values()].map((t, i) => `<span class="remote-terminal-tab${activeTerm === t.id ? ' active' : ''}"><button data-term="${esc(t.id)}">${esc(t.name)} · ${i + 1}${t.closed ? '（已关闭）' : ''}</button><button data-close-term="${esc(t.id)}" title="关闭终端" aria-label="关闭终端">×</button></span>`).join('');
     q('remote-terminal-empty').hidden = !!activeTerm; for (const t of terminals.values()) t.container.classList.toggle('hidden', t.id !== activeTerm);
   }
-  function selectTerminal(id) { activeTerm = id; const t = terminals.get(id); if (t) { const changed = sid !== t.sid; sid = t.sid; selected = sessions.get(sid)?.profileId || selected; renderSessions(); if (changed) { panes.remote.serial++; panes.remote.entries = []; panes.remote.selected.clear(); panes.remote.path = current()?.home || ''; renderPane('remote'); if (connected()) void browse('remote', panes.remote.path).catch(error => notify(error.message, true)); } } mode = 'terminal'; renderMode(); renderTerminals(); if (t) requestAnimationFrame(() => fit(t)); }
+  function selectTerminal(id) { activeTerm = id; const t = terminals.get(id); if (t) { const changed = sid !== t.sid; sid = t.sid; selected = sessions.get(sid)?.profileId || selected; renderSessions(); if (changed) { panes.remote.serial++; panes.remote.entries = []; panes.remote.selected.clear(); panes.remote.path = current()?.home || ''; renderPane('remote'); if (connected()) void browse('remote', panes.remote.path).catch(error => notify(error.message, true)); } } mode = 'terminal'; renderMode(); renderTerminals(); if (t) requestFit(); }
   function renderMode() { q('remote-files').classList.toggle('hidden', mode !== 'files'); q('remote-terminal-area').classList.toggle('hidden', mode !== 'terminal'); for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).classList.toggle('active', mode === tab); }
   function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
   function renderPane(side) {
@@ -214,17 +240,17 @@ window.RemotePanel = (() => {
     q('remote-profiles').onclick = attempt(async event => { const id = event.target.closest('[data-profile]')?.dataset.profile; if (!id) return; selected = id; const found = [...sessions.values()].find(s => s.profileId === id && s.state === 'connected'); await activateSession(found?.id || null); });
     q('remote-sessions').onchange = attempt(event => activateSession(event.target.value));
     q('remote-terminal-tabs').onclick = attempt(async event => { const close = event.target.closest('[data-close-term]')?.dataset.closeTerm; if (close) { const t = terminals.get(close); if (!t) return; if (!t.closed && !await Modal.confirm('关闭终端', '关闭会结束这个SSH终端；终端前台任务可能随之结束。')) return; await call('closeTerminal', t.sid, t.id); t.term.dispose(); t.container.remove(); terminals.delete(close); if (activeTerm === close) { activeTerm = [...terminals.keys()].at(-1) || null; if (activeTerm) selectTerminal(activeTerm); } renderTerminals(); } else { const id = event.target.closest('[data-term]')?.dataset.term; if (id) selectTerminal(id); } });
-    for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).onclick = () => { mode = tab; renderMode(); if (terminals.get(activeTerm)) fit(terminals.get(activeTerm)); };
+    for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).onclick = () => { mode = tab; renderMode(); requestFit(); };
     q('remote-transfer-jobs').onclick = attempt(async event => { const cancel = event.target.closest('[data-cancel-job]')?.dataset.cancelJob, retry = event.target.closest('[data-retry-job]')?.dataset.retryJob; const button = event.target.closest('button'); if (button) button.disabled = true; try { if (cancel) { const result = await call('cancel', cancel); if (result?.reason) notify(result.reason); } if (retry) await call('retry', retry, sid); } finally { if (button?.isConnected) button.disabled = false; } });
     q('remote-clear-transfers').onclick = attempt(async event => { event.preventDefault(); const result = await call('clearFinished'); jobs.clear(); result.forEach(j => jobs.set(j.id, j)); renderJobs(); });
     // 主题和自定义调色都更新 body；xterm 的 Canvas 配色也必须同步。
-    const appearance = new MutationObserver(syncTerminalAppearance);
+    const appearance = new MutationObserver(requestAppearance);
     appearance.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
     appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
-    if (window.ResizeObserver) new ResizeObserver(() => { const t = terminals.get(activeTerm); if (t) fit(t); }).observe(q('remote-terminal-panes'));
+    if (window.ResizeObserver) new ResizeObserver(requestFit).observe(q('remote-terminal-panes'));
     void refresh().catch(error => notify(error.message, true)); void browse('local', '').catch(error => notify(error.message, true));
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
   }
-  function syncVisible(value) { visible = value; if (value) { const t = terminals.get(activeTerm); if (t) requestAnimationFrame(() => fit(t)); } }
+  function syncVisible(value) { visible = value; if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); } }
   return { init, syncVisible, refresh };
 })();

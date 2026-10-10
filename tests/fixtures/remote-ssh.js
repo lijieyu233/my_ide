@@ -11,11 +11,11 @@ async function start(root, options = {}) {
     clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
     client.on('authentication', ctx => { const publicKey = options.publicKey && utils.parseKey(options.publicKey); if (ctx.username === 'fixture' && (ctx.method === 'password' && ctx.password === 'fixture-secret' || ctx.method === 'publickey' && publicKey && ctx.key.data.equals(publicKey.getPublicSSH()) && (!ctx.signature || publicKey.verify(ctx.blob, ctx.signature, ctx.hashAlgo)))) ctx.accept(); else ctx.reject(); });
     client.on('ready', () => client.on('session', accept => {
-      const session = accept(); let pty;
+      const session = accept(); let pty; const windowChanges = [];
       session.on('pty', (accept, _reject, info) => { pty = info; accept(); });
-      session.on('window-change', (accept, _reject, info) => { if (pty) Object.assign(pty, info); accept?.(); });
+      session.on('window-change', (accept, _reject, info) => { windowChanges.push(info); if (pty) Object.assign(pty, info); accept?.(); });
       session.on('shell', accept => {
-        const stream = accept(), record = { stream, pty, input: '' }; shells.push(record);
+        const stream = accept(), record = { stream, pty, input: '', windowChanges }; shells.push(record);
         const text = Buffer.from('\x1b[32m远程终端就绪\x1b[0m\r\n$ ');
         stream.write(text.subarray(0, 8)); setTimeout(() => { if (!stream.destroyed) stream.write(text.subarray(8)); }, 20);
         stream.on('data', data => { record.input += data.toString(); stream.write(data); }); stream.on('error', () => {});
