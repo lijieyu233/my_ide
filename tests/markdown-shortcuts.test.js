@@ -20,6 +20,25 @@ const cellSet=(text,head=text.length)=>{const v=cellView();v.dispatch({changes:{
 const reset=(text='',pos=0)=>{cm.setValue(text);cm.setCursor(pos);};
 let passed=0;const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{try{
+ await test('ShiftEnter在嵌套待办/普通/有序列表中硬换行，保留同一列表项和正文缩进',()=>{
+  for(const before of ['- [ ] 父项\n  - [x] 子项','- 父项\n  * 子项','12. 有序项']){
+   reset(before,before.length);const e=key('Enter',{ctrlKey:false,shiftKey:true});assert(e.defaultPrevented);
+   const first=before.split('\n').at(-1),m=/^([ \t]*)([-*+]|\d+[.)])([ \t]+)/.exec(first);
+   const prefix=m[1]+' '.repeat(m[2].length+m[3].length);
+   assert.equal(cm.getValue(),before+'  \n'+prefix);assert(cm.view.dom.querySelector('.cm-md-continuation'));assert(!cm.view.contentDOM.lastElementChild.classList.contains('cm-md-blank'));const cursor=cm.getSelection().head;assert.equal(cursor,cm.getValue().length);
+   cm.view.dispatch(cm.view.state.replaceSelection('续行'));
+   assert(cm.view.dom.querySelector('.cm-md-continuation'));const tree=w.CM6.Language.syntaxTree(cm.view.state);
+   let items=0;tree.iterate({enter:n=>{if(n.name==='ListItem')items++;}});assert.equal(items,before.includes('\n')?2:1);
+   key('Enter',{ctrlKey:false,shiftKey:true});assert(cm.getValue().endsWith('续行  \n'+prefix));
+   assert(w.CM6.Commands.undo(cm.view));assert(!cm.getValue().endsWith('续行  \n'+prefix));
+  }
+ });
+ await test('ShiftEnter在列表正文中间替换选区，普通正文和围栏代码不补列表前缀',()=>{
+  reset('  - [ ] 第一第二',11);cm.setCursor(10,11);key('Enter',{ctrlKey:false,shiftKey:true});assert.equal(cm.getValue(),'  - [ ] 第一  \n    二');
+  reset('正文',2);key('Enter',{ctrlKey:false,shiftKey:true});assert.equal(cm.getValue(),'正文\n');
+  const fence=String.fromCharCode(96).repeat(3),code=fence+'text\n- 示例\n'+fence;reset(code,code.indexOf('示例')+2);
+  key('Enter',{ctrlKey:false,shiftKey:true});assert(!cm.getValue().includes('示例  \n'));
+ });
  await test('默认CtrlL在真实CM中插入待办并正确置光标，撤销回到原正文',()=>{reset('');assert(key('l').defaultPrevented);assert.equal(cm.getValue(),'- [ ] ');assert.equal(cm.getSelection().head,6);assert(w.CM6.Commands.undo(cm.view));assert.equal(cm.getValue(),'');});
  await test('选中多行转换任务保留缩进/emoji，已有勾选项切换状态且不重复加前缀',()=>{reset('  - 中文🙂\n1. 第二项\n- [x] 保留\n尾部');cm.setCursor(0,25);key('l');assert.equal(cm.getValue(),'  - [ ] 中文🙂\n- [ ] 第二项\n- [ ] 保留\n尾部');});
  await test('已有任务反复CtrlL切换，正文和光标不漂移，单次撤销恢复状态',()=>{reset('- [ ] 中文🙂',10);key('l');assert.equal(cm.getValue(),'- [x] 中文🙂');assert.equal(cm.getSelection().head,10);key('l');assert.equal(cm.getValue(),'- [ ] 中文🙂');assert.equal(cm.getSelection().head,10);assert(w.CM6.Commands.undo(cm.view));assert.equal(cm.getValue(),'- [x] 中文🙂');});

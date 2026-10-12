@@ -556,6 +556,40 @@ window.MdEditor = (() => {
     ignoreEvent() { return false; }
   }
 
+  class ListContinuationWidget extends WidgetType {
+    constructor(level, marker, task, indent) { super(); this.level=level; this.marker=marker; this.task=task; this.indent=indent; }
+    eq(other) { return this.level===other.level && this.marker===other.marker && this.task===other.task && this.indent===other.indent; }
+    toDOM() {
+      const span=document.createElement('span');
+      span.className='cm-md-indent cm-md-continuation';
+      span.style.paddingLeft=(1.85*this.level)+'em';
+      if(!this.level && this.indent) { span.style.whiteSpace='pre'; span.appendChild(document.createTextNode(this.indent)); }
+      // 隐形标记复用首行的比例字体和尺寸，避免把源码空格数误当成像素缩进。
+      const marker=document.createElement('span');
+      if(this.task) { marker.className='cm-md-task'; marker.style.visibility='hidden'; }
+      else if(/^[-*+]$/.test(this.marker)) { marker.className='cm-md-bullet'; marker.textContent='\u2022'; marker.style.visibility='hidden'; }
+      else { marker.className='cm-md-listmark'; marker.style.whiteSpace='pre'; marker.textContent=this.marker+' '; marker.style.visibility='hidden'; }
+      span.appendChild(marker);
+      return span;
+    }
+    ignoreEvent() { return false; }
+  }
+
+  function listItemContext(state, pos) {
+    let node=Language.syntaxTree(state).resolveInner(pos,-1);
+    for(;node;node=node.parent) {
+      if(['FencedCode','CodeBlock'].includes(node.name)) return null;
+      if(node.name!=='ListItem') continue;
+      const line=state.doc.lineAt(node.from);
+      const match=/^([ \t]*)([-*+]|\d+[.)])([ \t]+)(?:\[([ xX])\][ \t]+)?/.exec(line.text);
+      if(!match) return null;
+      let depth=0;
+      for(let parent=node.parent;parent;parent=parent.parent) if(['BulletList','OrderedList'].includes(parent.name))depth++;
+      return {node,line,match,depth};
+    }
+    return null;
+  }
+
   // ---------- 分隔线 widget：--- → 1px 水平线（行高不变，防止高度模型错位） ----------
   class HrWidget extends WidgetType {
     constructor(h) { super(); this.h = h || 1; }
@@ -1290,7 +1324,10 @@ window.MdEditor = (() => {
           const hm = /^(#{1,6})\s/.exec(l.text);
           if (hm) headingLines.push({ l, level: hm[1].length });
           if (!l.text.trim()) {
-            decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
+            const previous=l.number>1 ? doc.line(l.number-1) : null;
+            const pendingListBreak=/^[ \t]+$/.test(l.text) && previous && / {2}$/.test(previous.text) && listItemContext(state,previous.to);
+            // 尚未输入的列表续行仍是正文行；空段的半字号会把缩进和光标一起缩小。
+            if(!pendingListBreak) decos.push(Decoration.line({ class: 'cm-md-blank' }).range(l.from));
           } else {
             const m = /^(\s*)([-*+]|\d+\.)( +)(?:(\[( |x|X)\])( |$))?/.exec(l.text);
             if (m) {
@@ -1410,6 +1447,21 @@ window.MdEditor = (() => {
           const parentName = parent ? parent.name : '';
           try {
             if (name === 'BulletList' || name === 'OrderedList') { listDepth++; return; }
+            if ((name === 'Paragraph' || name === 'Task') && parentName === 'ListItem') {
+              const context=listItemContext(state,node.from);
+              if(context) for(let n=doc.lineAt(node.from).number;n<=doc.lineAt(node.to).number;n++) {
+                const line=doc.line(n);
+                if(line.number===context.line.number) continue;
+                const prefix=/^[ \t]+/.exec(line.text)?.[0];
+                if(prefix) decos.push(Decoration.replace({widget:new ListContinuationWidget(context.depth-1,context.match[2],context.match[4]!==undefined,context.match[1])}).range(line.from,line.from+prefix.length));
+              }
+              // 解析器尚未把末尾空白行纳入段落；先画续行缩进，否则光标要等输入后才跳到正确位置。
+              const last=doc.lineAt(node.to);
+              if(context && last.number<doc.lines && / {2}$/.test(last.text)) {
+                const next=doc.line(last.number+1);
+                if(/^[ \t]+$/.test(next.text)) decos.push(Decoration.replace({widget:new ListContinuationWidget(context.depth-1,context.match[2],context.match[4]!==undefined,context.match[1])}).range(next.from,next.to));
+              }
+            }
             // 嵌套列表项：前导空白替换成与预览同宽的缩进（见 IndentWidget 注释）
             if (name === 'ListItem' && listDepth > 1) {
               const l = doc.lineAt(node.from);
@@ -1947,6 +1999,17 @@ window.MdEditor = (() => {
   }
 
   // ---------- 列表/引用续行（Enter） ----------
+  function listLineBreak(view) {
+    const {state}=view,range=state.selection.main;
+    if(state.readOnly || state.selection.ranges.length!==1) return false;
+    const context=listItemContext(state,range.from);
+    if(!context || range.from<context.line.from+context.match[0].length || range.to>context.node.to) return false;
+    // 两个行尾空格是 Markdown 硬换行；结构缩进只含列表标记，不重复勾选框或编号。
+    const prefix=context.match[1]+' '.repeat(context.match[2].length+context.match[3].length);
+    const insert='  \n'+prefix;
+    view.dispatch({changes:{from:range.from,to:range.to,insert},selection:{anchor:range.from+insert.length},scrollIntoView:true,userEvent:'input'});
+    return true;
+  }
   function listContinue(view) {
     const { state } = view;
     const range = state.selection.main;
@@ -1973,6 +2036,7 @@ window.MdEditor = (() => {
 
   // Markdown 专用 keymap（优先于默认 keymap）
   const mdKeymap = keymap.of([
+    { key: 'Shift-Enter', run: listLineBreak },
     { key: 'Mod-b', run: (v) => wrapSelection(v, '**', '**') },
     { key: 'Mod-i', run: (v) => wrapSelection(v, '*', '*') },
     { key: 'Mod-h', run: (v) => wrapSelection(v, '==', '==') },
