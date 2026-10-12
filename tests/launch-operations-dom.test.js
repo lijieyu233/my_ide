@@ -77,7 +77,7 @@ const test = async (name, run) => { await run(); passed++; console.log('  ok ' +
       const f = await fixture(); f.statuses.a = { ...idle('a'), alive: true, by: 'port', portResponding: true, canStart: false };
       await f.poll(); assert.match(f.q('lm-state').textContent, /端口有响应/); assert(f.q('lm-stop').disabled); assert(!f.q('lm-dot').classList.contains('on'));
       f.statuses.a = { ...running('a'), alive: false, by: 'port', portResponding: false }; await f.poll();
-      assert(!f.q('lm-stop').disabled); assert.match(f.q('lm-state').textContent, /未验证就绪/);
+      assert(!f.q('lm-stop').disabled); assert.equal(f.q('lm-state').textContent, '运行中');
       f.statuses.a = { ...idle('a'), alive: true, by: 'state', ownership: 'bridge', canStart: false, canStop: true }; await f.poll();
       assert.match(f.q('lm-state').textContent, /未验证 daemon 存活/); assert.equal(f.q('launch-count').textContent, '0/2');
     });

@@ -788,7 +788,7 @@ async function statusEvidence(entry, records, evidence, portResponding, listener
   const bridge = ownership === 'bridge';
   const observation = logs.get(entry.id)?.readiness;
   let readiness = { state: processAlive ? 'none' : 'inactive', mode: 'none', runId: record && record.launchId || null };
-  if (external) readiness = { state:'unknown',mode:'none',runId:null,reason:'已识别为其他启动器启动的程序；就绪规则未在MyIDE中验证，停止或重启请使用原启动器。' };
+  if (external) readiness = { state:'unknown',mode:'none',runId:null,reason:'已识别为其他启动器启动的程序；停止或重启请使用原启动器。' };
   else if (bridge) readiness = { ...readiness, state: 'unsupported', reason: '未验证daemon存活' };
   else if (processAlive && ownership !== 'owned') readiness = { ...readiness, state: 'unknown', reason: '进程归属未确认，不能验证就绪' };
   else if (processAlive && observation && observation.runId === record.launchId) {

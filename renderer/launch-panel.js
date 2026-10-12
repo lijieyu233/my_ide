@@ -42,7 +42,9 @@ const LaunchPanel = (() => {
     if (s.processAlive || s.alive && s.by !== 'port' && s.by !== 'state') {
       const ready = s.readiness || {}, states = { waiting: '等待就绪', ready: ready.mode === 'port' ? '已就绪 · 端口响应（来源未验证）' : '已就绪 · 本次输出已匹配',
         'timed-out': '就绪超时 · 进程仍在运行', unavailable: '就绪端口不再响应 · 进程仍在运行', unknown: '就绪未确认' };
-      return '运行中 · ' + (states[ready.state] || '未验证就绪') + (s.ownership !== 'owned' ? ' · 归属未确认' : '');
+      const mode=ready.mode || e.readiness?.mode || 'none';
+      const readinessText=['port','output'].includes(mode) ? states[ready.state] || '就绪未确认' : '';
+      return ['运行中',readinessText,s.ownership !== 'owned' ? '归属未确认' : ''].filter(Boolean).join(' · ');
     }
     if (s.ownership === 'bridge' || s.by === 'state') return '桥接已登记 · 未验证 daemon 存活';
     if (s.ownership === 'unknown' || s.ownership === 'foreign') return '进程归属未确认';
