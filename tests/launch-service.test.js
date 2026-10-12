@@ -40,7 +40,7 @@ function fixture(options = {}) {
           options.malformedIdentity ? 'not JSON' : live.has(pid) && result ? JSON.stringify(result) : ''));
       }
       if (file === 'netstat.exe') return queueMicrotask(() => callback(options.netstatError ? Error('fixture netstat denied') : null,
-        options.listener ? 'TCP 127.0.0.1:18089 0.0.0.0:0 LISTENING ' + options.listener : ''));
+        options.listenerOutput || (options.listener ? 'TCP 127.0.0.1:18089 0.0.0.0:0 LISTENING ' + options.listener : '')));
       if (file !== 'taskkill.exe') {
         if (options.bridgeThrows) throw Error('fixture bridge exception');
         bridges.push({ file, args, settings });
@@ -341,6 +341,31 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       assert.equal(status.processAlive, true); assert.equal(status.ownership, 'owned'); assert.equal(status.canStop, true); assert.equal(status.canStart, false);
       f.options.portUp = false; [status] = await f.service.statusOf([entry]);
       assert.equal(status.alive, false); assert.equal(status.processAlive, true); assert.equal(status.canStop, true); assert.equal(status.portResponding, false);
+    });
+    await test('匹配真实监听PID、项目路径和祖先命令识别外部启动，保持旧记录且不允许停止',async()=>{
+      const f=fixture({portUp:true,listener:901,parents:{901:900}}),entry={...f.entry,port:18089,command:'pnpm dev:platform'};
+      f.record(entry);f.live.delete(777);
+      f.identities.set(900,{pid:900,createdAt:new Date(1700000000000).toISOString(),image:'cmd.exe',commandLine:'cmd /c "pnpm dev:platform"'});
+      f.identities.set(901,{pid:901,createdAt:new Date(1700000001000).toISOString(),image:'node.exe',commandLine:'node "'+path.join(f.entry.cwd,'apps','platform','vite.js')+'"'});
+      f.live.add(900);f.live.add(901);const before=f.state();
+      const [status]=await f.service.statusOf([entry]);assert(status.processAlive);assert.equal(status.ownership,'external');assert.equal(status.pid,901);
+      assert.equal(status.runId,null);assert(!status.canStart&&!status.canStop);assert.equal(status.readiness.state,'unknown');
+      assert.deepEqual(f.state(),before);assert.deepEqual(f.kills,[]);
+      const result=await f.service.stopEntry(entry);assert.equal(result.errorCode,'PORT_OWNED_BY_OTHER');assert.deepEqual(f.kills,[]);
+    });
+    await test('路径相似、命令不同、父PID复用、缺身份、查询失败或混合监听者均不误报外部程序',async()=>{
+      for(const mode of ['path','command','parent-reused','identity','query','listeners']){
+        const f=fixture({portUp:true,listener:901,parents:{901:900}}),entry={...f.entry,port:18089,command:'pnpm dev:platform'};
+        f.identities.set(900,{pid:900,createdAt:new Date(1700000000000).toISOString(),image:'cmd.exe',commandLine:'cmd /c "pnpm dev:platform"'});
+        f.identities.set(901,{pid:901,createdAt:new Date(1700000001000).toISOString(),image:'node.exe',commandLine:'node "'+path.join(f.entry.cwd,'apps','platform','vite.js')+'"'});f.live.add(900);f.live.add(901);
+        if(mode==='path')f.identities.get(901).commandLine='node "'+f.entry.cwd+'-other/vite.js"';
+        if(mode==='command')f.identities.get(900).commandLine='cmd /c "pnpm dev:other"';
+        if(mode==='parent-reused')f.identities.get(900).createdAt=new Date(1700000002000).toISOString();
+        if(mode==='identity')f.identities.get(901).image='';
+        if(mode==='query')f.options.treeError=true;
+        if(mode==='listeners')f.options.listenerOutput='TCP 127.0.0.1:18089 0.0.0.0:0 LISTENING 901\nTCP [::]:18089 [::]:0 LISTENING 999';
+        const [status]=await f.service.statusOf([entry]);assert(!status.processAlive,mode);assert.notEqual(status.ownership,'external',mode);assert(!status.canStop);assert(!status.canStart);
+      }
     });
     await test('状态返回后台身份失败和USB登记证据，不把登记当daemon存活', async () => {
       const f = fixture(); f.record(f.entry); f.options.identityError = true;

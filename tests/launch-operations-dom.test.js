@@ -40,6 +40,15 @@ const test = async (name, run) => { await run(); passed++; console.log('  ok ' +
       f.q('panel-launch').classList.remove('hidden'); await f.w.LaunchPanel.refresh(); assert.equal(reads, before + 1);
       f.q('panel-launch').classList.add('hidden'); await f.poll(); assert.equal(reads, before + 1);
     });
+    await test('外部启动程序显示运行中与绿色状态，不能重复启动或停止且断线后恢复待核验',async()=>{
+      const f=await fixture();f.statuses.a={...running('a'),by:'port',ownership:'external',canStop:false,pid:901,portResponding:true};
+      await f.poll();assert.match(f.q('lm-state').textContent,/运行中 · 外部启动/);
+      let card=f.q('launch-body').querySelector('[data-id=a]');assert(card.querySelector('.launch-dot.on'));assert.equal(card.querySelector('.launch-state').dataset.tone,'running');
+      assert(f.q('lm-start').disabled);assert(f.q('lm-stop').disabled);assert(f.q('lm-restart').disabled);
+      f.q('lm-stop').click();assert.equal(f.calls.length,0);
+      f.statuses.a={...idle('a'),alive:true,by:'port',portResponding:true,canStart:false};await f.poll();
+      assert(!card.querySelector('.launch-dot.on'));assert.equal(card.querySelector('.launch-state').dataset.tone,'unknown');
+    });
     await test('单项pending早于await；主区与侧栏重复入口不再提交，其他终端可独立启动', async () => {
       const hold = gate(), f = await fixture(); let received = 0;
       f.api.start = async e => { received++; return e.id === 'a' ? hold.promise : { ok: true }; };

@@ -598,16 +598,55 @@ async function pidsListeningOnPort(port) {
   if (!Number.isInteger(p) || p < 1 || p > 65535) return { ok: false, error: '端口无效' };
   const r = await systemQuery('netstat.exe', ['-ano', '-p', 'tcp']);
   if (!r.ok) return r;
-  const pids = new Set();
-  for (const line of String(r.stdout || '').split(/\r?\n/)) {
+  return { ok: true, pids: parseListeners(r.stdout).get(p) || [] };
+}
+
+function parseListeners(stdout) {
+  const listeners = new Map();
+  for (const line of String(stdout || '').split(/\r?\n/)) {
     if (!/LISTENING/i.test(line)) continue;
     const cols = line.trim().split(/\s+/);
     if (cols.length < 4) continue;
     const m = String(cols[1]).match(/:(\d+)$/);
     const pid = Number(cols[cols.length - 1]);
-    if (m && Number(m[1]) === p && Number.isSafeInteger(pid) && pid > 0) pids.add(pid);
+    if (m && Number.isSafeInteger(pid) && pid > 0) {
+      const port=Number(m[1]), values=listeners.get(port) || [];
+      if(!values.includes(pid)) values.push(pid);
+      listeners.set(port,values);
+    }
   }
-  return { ok: true, pids: [...pids] };
+  return listeners;
+}
+
+function externalListener(entry, evidence, listeners) {
+  if(!evidence?.ok || !listeners?.ok || !entry.cwd || !entry.command) return null;
+  const normalize=value=>String(value || '').replace(/\\+/g,'/').toLowerCase();
+  const cwd=normalize(path.resolve(entry.cwd)).replace(/\/+$/,'');
+  const byPid=new Map(evidence.processes.map(item=>[item.pid,item]));
+  const complete=p=>p && Number.isFinite(Date.parse(p.createdAt)) && p.image && p.commandLine;
+  const commandOf=p=>{
+    const shell=/^("[^"]+"|\S+)\s+([\s\S]+)$/.exec(p.commandLine || '');
+    if(!shell || !/(?:^|[/\\])cmd(?:\.exe)?$/i.test(shell[1].replace(/^"|"$/g,''))) return null;
+    const command=/(?:^|\s)\/c\s+([\s\S]+)$/i.exec(shell[2])?.[1].trim();
+    return command?.startsWith('"') && command.endsWith('"') ? command.slice(1,-1) : command;
+  };
+  const pids=listeners.ports.get(Number(entry.port)) || [];
+  // 端口响应本身不足以识别程序；要求监听者的项目路径和祖先的启动命令同时匹配。
+  // 这是只读识别，绝不补写为 MyIDE 自有记录或借此获得停止权限。
+  const matches=pids.map(pid=>{
+    const listener=byPid.get(pid);
+    if(!complete(listener) || !normalize(listener.commandLine).includes(cwd+'/')) return null;
+    const seen=new Set();let child=listener;
+    while(complete(child) && !seen.has(child.pid) && seen.size<32) {
+      seen.add(child.pid);
+      if(commandOf(child)===entry.command.trim()) return {pid:listener.pid,createdAt:listener.createdAt,image:listener.image};
+      const parent=byPid.get(child.parentPid);
+      if(!complete(parent) || Date.parse(parent.createdAt)>Date.parse(child.createdAt)) break;
+      child=parent;
+    }
+    return null;
+  });
+  return matches.length && matches.every(Boolean) ? matches[0] : null;
 }
 
 async function stopUnlocked(entry, beforeEffect = () => {}) {
@@ -726,9 +765,8 @@ async function aliveEntry(entry) {
 }
 
 // ---------- 状态 / 日志 ----------
-async function statusEvidence(entry, records, evidence) {
+async function statusEvidence(entry, records, evidence, portResponding, listeners) {
   const live = procs.get(entry.id), record = live || records[entry.id];
-  const portResponding = entry.port ? await checkPort(entry.port) : null;
   let processAlive = false, ownership = 'none', evidenceError = '';
   if (live) {
     processAlive = live.proc.exitCode == null && live.proc.signalCode == null;
@@ -745,10 +783,13 @@ async function statusEvidence(entry, records, evidence) {
       else if (children.alive.length) { processAlive = true; ownership = 'owned'; }
     }
   } else if (record && record.kind === 'usb-tunnel') ownership = 'bridge';
+  const external=portResponding && !processAlive && entry.kind!=='usb-tunnel' ? externalListener(entry,evidence,listeners) : null;
+  if(external) { processAlive=true; ownership='external'; evidenceError=''; }
   const bridge = ownership === 'bridge';
   const observation = logs.get(entry.id)?.readiness;
   let readiness = { state: processAlive ? 'none' : 'inactive', mode: 'none', runId: record && record.launchId || null };
-  if (bridge) readiness = { ...readiness, state: 'unsupported', reason: '未验证daemon存活' };
+  if (external) readiness = { state:'unknown',mode:'none',runId:null,reason:'已识别为其他启动器启动的程序；就绪规则未在MyIDE中验证，停止或重启请使用原启动器。' };
+  else if (bridge) readiness = { ...readiness, state: 'unsupported', reason: '未验证daemon存活' };
   else if (processAlive && ownership !== 'owned') readiness = { ...readiness, state: 'unknown', reason: '进程归属未确认，不能验证就绪' };
   else if (processAlive && observation && observation.runId === record.launchId) {
     const responded = observation.rule.mode === 'port' ? (observation.rule.port === Number(entry.port) ? portResponding : await checkPort(observation.rule.port)) : null;
@@ -759,11 +800,12 @@ async function statusEvidence(entry, records, evidence) {
   // 保留alive/by兼容旧调用；面板只能用独立的归属证据授权停止，端口响应不是进程存活证明。
   return { id: entry.id, alive: entry.port ? portResponding : processAlive || bridge,
     by: entry.port ? 'port' : live ? 'proc' : record && record.pid ? 'pid' : bridge ? 'state' : 'none',
-    pid: record && record.pid || 0, processAlive, portResponding, ownership, evidenceError, readiness,
+    pid: external?.pid || record && record.pid || 0, processAlive, portResponding, ownership, evidenceError, readiness,
+    externalProcess:external,
     canStop: processAlive && ownership === 'owned' || bridge,
     canStart: !processAlive && !bridge && ownership !== 'unknown' && ownership !== 'foreign' && !portResponding,
     phase: processAlive ? 'running' : bridge ? 'bridge' : record && record.endedAt ? 'exited' : 'stopped',
-    runId: record && record.launchId || null, endedAt: record && record.endedAt || null,
+    runId: external ? null : record && record.launchId || null, endedAt: external ? null : record && record.endedAt || null,
     exitCode: record && record.endedAt ? record.exitCode : null, exitSignal: record && record.exitSignal || null,
     operation: pending.has(entry.id) ? pending.get(entry.id).operation : exitPending ? '退出' : null };
 }
@@ -774,9 +816,14 @@ async function statusOf(entries) {
     const record = records[entry.id];
     return !procs.has(entry.id) && record ? [record.pid, ...(Array.isArray(record.descendants) ? record.descendants : []).map(item => item?.identity?.pid)] : [];
   }).filter(pid => Number.isSafeInteger(pid) && pid > 0);
+  const ports=await Promise.all(entries.map(entry=>entry.port ? checkPort(entry.port) : null));
+  const inspectExternal=entries.some((entry,index)=>ports[index] && !procs.has(entry.id) && entry.kind!=='usb-tunnel');
   const present = pids.some(pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } });
-  const evidence = present ? await queryProcessSnapshot() : { ok: true, processes: [] };
-  return Promise.all(entries.map(entry => statusEvidence(entry, records, evidence)));
+  const [evidence,listeners]=await Promise.all([
+    present || inspectExternal ? queryProcessSnapshot() : {ok:true,processes:[]},
+    inspectExternal ? systemQuery('netstat.exe',['-ano','-p','tcp']).then(r=>({...r,ports:r.ok ? parseListeners(r.stdout) : new Map()})) : null,
+  ]);
+  return Promise.all(entries.map((entry,index) => statusEvidence(entry, records, evidence, ports[index], listeners)));
 }
 function getLogs(id) {
   const book = logs.get(id);

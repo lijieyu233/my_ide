@@ -23,6 +23,7 @@ const LaunchPanel = (() => {
   const reason = error => String(error && error.message || error || '操作未确认');
   const fingerprint = e => JSON.stringify(e);
   const ownedRunning = s => s.ownership === 'owned' && (s.processAlive || s.alive && (s.by === 'proc' || s.by === 'pid'));
+  const detectedRunning = s => ownedRunning(s) || s.ownership === 'external' && s.processAlive;
   function confirmed(result, kind) {
     if (!result || typeof result !== 'object' || result.ok === false || result.accepted === false || result.error || (result.failed && result.failed.length) || (result.remainingOwned && result.remainingOwned.length)) return false;
     return result.ok === true || kind === 'start' && result.accepted === true;
@@ -37,6 +38,7 @@ const LaunchPanel = (() => {
     if (pending) return (pending.queued ? '等待' : '正在') + labels[pending.kind];
     if (statusError || !status[e.id]) return '状态暂不可用' + (checkedAt ? ' · 上次确认 ' + new Date(checkedAt).toLocaleTimeString() : '');
     if (s.operation) return '正在' + s.operation;
+    if (s.ownership === 'external' && s.processAlive) return '运行中 · 外部启动';
     if (s.processAlive || s.alive && s.by !== 'port' && s.by !== 'state') {
       const ready = s.readiness || {}, states = { waiting: '等待就绪', ready: ready.mode === 'port' ? '已就绪 · 端口响应（来源未验证）' : '已就绪 · 本次输出已匹配',
         'timed-out': '就绪超时 · 进程仍在运行', unavailable: '就绪端口不再响应 · 进程仍在运行', unknown: '就绪未确认' };
@@ -437,16 +439,16 @@ const LaunchPanel = (() => {
     const text = { '未启动 / 已停止': '已停止', '端口有响应 · 进程归属未确认': '端口有响应 · 待核验', '进程归属未确认': '归属待核验' }[full] || full;
     const tone = failureText(e.id) || s.phase === 'exited' && (s.exitSignal || s.exitCode !== 0) ? 'error'
       : operations.has(e.id) || s.operation ? 'pending'
-      : statusError || !status[e.id] || s.ownership === 'unknown' || s.ownership === 'foreign' || s.portResponding && !ownedRunning(s) ? 'unknown'
-      : ownedRunning(s) ? 'running' : 'stopped';
+      : statusError || !status[e.id] || s.ownership === 'unknown' || s.ownership === 'foreign' || s.portResponding && !detectedRunning(s) ? 'unknown'
+      : detectedRunning(s) ? 'running' : 'stopped';
     return { text, full, tone };
   }
 
   function cardHtml(e) {
     const s = stOf(e.id);
     const sel = e.id === selectedId ? ' sel' : '';
-    const run = ownedRunning(s) ? ' run' : '';
-    const dot = ownedRunning(s) ? 'launch-dot on' : 'launch-dot';
+    const run = detectedRunning(s) ? ' run' : '';
+    const dot = detectedRunning(s) ? 'launch-dot on' : 'launch-dot';
     const url = resolvedOpenUrl(e), caps = capabilities(e), busy = operations.has(e.id) || configBusy;
     const summary = cardStatus(e);
     return '<div class="launch-card' + run + sel + '" data-id="' + esc(e.id) + '" title="点击在右侧查看详情与日志">'
@@ -470,8 +472,8 @@ const LaunchPanel = (() => {
       const id = el.getAttribute('data-id');
       const s = stOf(id);
       const dot = el.querySelector('.launch-dot');
-      if (dot) { dot.className = !statusError && ownedRunning(s) ? 'launch-dot on' : 'launch-dot'; dot.title = stateText(byId(id)); }
-      el.classList.toggle('run', ownedRunning(s));
+      if (dot) { dot.className = !statusError && detectedRunning(s) ? 'launch-dot on' : 'launch-dot'; dot.title = stateText(byId(id)); }
+      el.classList.toggle('run', detectedRunning(s));
       const bStart = el.querySelector('.act-idle'), bStop = el.querySelector('.act-run');
       const e = byId(id), caps = capabilities(e), busy = operations.has(id) || !!s.operation || configBusy;
       if (bStart) { bStart.classList.toggle('hide', !!s.alive && !caps.start); bStart.disabled = busy || !caps.start; }
@@ -505,7 +507,7 @@ const LaunchPanel = (() => {
     const s = stOf(e.id);
     name.textContent = e.name;
     port.textContent = e.port ? ':' + e.port : '';
-    dot.className = !statusError && ownedRunning(s) ? 'launch-dot on' : 'launch-dot';
+    dot.className = !statusError && detectedRunning(s) ? 'launch-dot on' : 'launch-dot';
     name.title = e.name;
     dot.title = stateText(e);
     q('lm-open').style.display = '';
