@@ -331,6 +331,7 @@ const App = (() => {
       if (tab && !tab.dir) page.activeFile = tab.path;
     }
     if (id === 'remote') page.remote = window.RemotePanel?.getPageContext?.() || null;
+    if (id === 'browser') page.browser = {url:window.BrowserPanel?.url||'',title:window.BrowserPanel?.title||''};
     return page;
   }
   // 非切换语义：直接设置（会话恢复用）

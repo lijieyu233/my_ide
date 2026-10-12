@@ -1,8 +1,8 @@
 const path = require('path');
 const error = message => Object.assign(Error(message), { code: 'INVALID_TOOL_ARGS' });
-const Launch = require('./renderer/ai-launch-tools'), Ssh = require('./renderer/ai-ssh-tools');
+const Launch = require('./renderer/ai-launch-tools'), Ssh = require('./renderer/ai-ssh-tools'), Browser = require('./renderer/ai-browser-tools');
 const schemas = {
-  ...Launch.schemas, ...Ssh.schemas,
+  ...Launch.schemas, ...Ssh.schemas, ...Browser.schemas,
   list_files: { path: ['path', false] }, read_file: { path: ['path', true] },
   search_files: { query: ['query', true] },
   write_file: { path: ['path', true], content: ['text', true] },
@@ -35,11 +35,15 @@ function validate(call) {
     if (['port','lines'].includes(kind)) { if (!Number.isSafeInteger(value) || value < (kind === 'port' ? 0 : 1) || value > (kind === 'port' ? 65535 : 200)) throw error(key+'超出整数范围'); args[key]=value; continue; }
     if (kind === 'boolean') { if (typeof value !== 'boolean') throw error(key + '必须是布尔值'); args[key] = value; continue; }
     if (typeof value !== 'string') throw error(key + '必须是字符串');
+    if(kind==='web_url'){let url;try{url=new URL(value);}catch{throw error('网页地址必须是完整HTTP/HTTPS地址');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/[\x00-\x20\x7f]/.test(value))throw error('网页地址只支持不含账号密码的HTTP/HTTPS地址');}
+    if(kind==='scroll_direction'&&!['up','down','top','bottom'].includes(value))throw error('滚动方向无效');
+    if(kind==='folder'&&(value.length>30||/[\x00-\x1f\x7f]/.test(value)))throw error('收藏文件夹名称最多30个字符');
+    if(kind==='browser_text'&&/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value))throw error('填写文本含无效控制字符');
     if(kind==='shell_line'&&(!value.trim()||/[\x00-\x1f\x7f]/.test(value)))throw error('SSH命令必须是非空单行文本，不能包含终端控制字符');
     if (['selector','label','directory'].includes(kind) && (!value.trim() || /[\x00-\x1f\x7f]/.test(value))) throw error(key+'必须是非空单行文本');
     if (kind === 'directory' && !path.isAbsolute(value)) throw error('工作目录必须是绝对路径');
     if (kind === 'url' && value) { let url; try { url=new URL(value); } catch { throw error('页面地址无效'); } if (!['http:','https:'].includes(url.protocol)) throw error('页面地址必须使用HTTP/HTTPS'); }
-    const max = ['selector','label'].includes(kind) ? 200 : kind === 'directory' || kind === 'url' ? 4096 : ['command','shell_line'].includes(kind) ? 8192 : kind === 'query' ? 4096 : kind === 'path' ? 4096 : 256 * 1024;
+    const max = ['selector','label'].includes(kind) ? 200 : ['directory','url','web_url'].includes(kind) ? 4096 : ['command','shell_line','browser_text'].includes(kind) ? 8192 : kind === 'query' ? 4096 : kind === 'path' ? 4096 : 256 * 1024;
     if (Buffer.byteLength(value, 'utf8') > max || value.includes('\0')) throw error(key + '超过预算或含无效字符');
     if (['command', 'query'].includes(kind) && !value.trim() || kind === 'search' && !value) throw error(key + '不能为空');
     args[key] = kind === 'path' ? relativePath(value, call.name === 'list_files') : value;
@@ -69,4 +73,4 @@ function assertCommand(cmd, cwd, context, call) {
     || path.relative(path.resolve(context.rootId), path.resolve(cwd)) !== '') throw error('命令或工作目录与工具调用不一致');
   return normalized;
 }
-module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name) };
+module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name)||Browser.has(name) };

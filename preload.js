@@ -216,6 +216,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     abort: (context) => ipcRenderer.invoke('ai:abort', context),
     finish: (context) => ipcRenderer.invoke('ai:finish', context),
     ssh: (context,call) => ipcRenderer.invoke('ai:ssh',context,call),
+    browser: (context,call) => ipcRenderer.invoke('ai:browser',context,call),
     launch: (context, call) => ipcRenderer.invoke('ai:launch',context,call),
     validateTool: (context, call) => ipcRenderer.invoke('ai:validateTool', context, call),
     permissions: root => ipcRenderer.invoke('ai:permissions', root),

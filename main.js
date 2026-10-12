@@ -8,7 +8,7 @@ const DB = require('./db-service');
 const AI = require('./ai-service');
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
-const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
+const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
@@ -301,6 +301,16 @@ ipcMain.handle('browser:color-scheme', (_e, mode) => {
     nativeTheme.themeSource = (mode === 'light' || mode === 'system') ? mode : 'dark';
     return { ok: true, source: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors };
   } catch (e) { return { error: String(e.message || e) }; }
+});
+
+const aiBrowserTools=require('./ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,panel:async(operation,args={})=>{
+  if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
+  return mainWindow.webContents.executeJavaScript('BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')');
+}});
+ipcMain.handle('ai:browser',async(e,context,call)=>{
+  try{const owner=aiSender(e),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-browser-tools').has(normalized.name))throw Object.assign(Error('不是浏览器工具'),{code:'INVALID_TOOL_ARGS'});
+    return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiBrowserTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code,committed:!!error.committed};}
 });
 
 // ---------- IPC：窗口控制（自绘标题栏）----------

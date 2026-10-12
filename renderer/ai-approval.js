@@ -23,6 +23,14 @@
       const names = { confirm: '每次确认', auto: '自动', deny: '禁止' };
       for (const [key, label] of [['permWrite', '改文件'], ['permRun', '执行命令']]) line(label + '：' + names[data.before[key]] + ' → ' + names[data.after[key]]);
       line('写入路径白名单：\n' + (data.after.allowPaths.join('\n') || '无')); line('始终确认的命令前缀：\n' + (data.after.denyCmds.join('\n') || '无'));
+    } else if(data.effect.browser){
+      $('title').textContent=data.effect.label;$('accept').textContent='确认操作';$('target').textContent=data.effect.url||'内置浏览器';
+      $('note').textContent='仅批准本次浏览器操作；网页跳转或目标元素变化后请重新读取。点击可能提交表单或发送数据。';
+      if(data.effect.element)line('目标：'+(data.effect.element.label||data.effect.element.tag)+'（'+data.effect.element.id+'）');
+      if(data.effect.element?.href)line('链接地址：'+data.effect.element.href);if(data.effect.element?.formAction)line('表单地址：'+data.effect.element.formAction);
+      if(data.effect.text!==null)line('填写内容：\n'+data.effect.text);
+      if(data.effect.title)line('收藏名称：'+data.effect.title);if(data.effect.folder)line('收藏文件夹：'+data.effect.folder);
+      if(data.effect.direction)line('滚动方向：'+data.effect.direction);
     } else if(data.effect.remote){
       $('title').textContent=data.effect.label;$('accept').textContent=data.danger?'仍然执行':'确认操作';
       const s=data.effect.session;$('target').textContent=s.name+' · '+s.username+'@'+s.host+':'+s.port;

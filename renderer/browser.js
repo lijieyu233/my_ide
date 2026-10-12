@@ -879,7 +879,25 @@ const BrowserPanel = (() => {
     }
   }
 
+  function aiOperation(operation,args={}) {
+    if(operation==='state')return {visible,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
+    if(operation==='reveal'){
+      hasPage=true;currentUrl=args.url;urlInput.value=args.url;
+      document.getElementById('browser-empty').classList.add('hidden');
+      document.getElementById('browser-error').classList.add('hidden');viewEl.classList.remove('hidden');
+      App.showTool('browser');if(!overlayOpen())mountView(null);
+      // show() 会延迟聚焦地址栏；AI导航后解除焦点，状态回推才能显示真实的新地址。
+      setTimeout(()=>{urlInput.blur();urlInput.value=currentUrl;},0);return {ok:true};
+    }
+    let changed=false;
+    if(operation==='favorite_add')changed=addFav(args.url,args.title,args.folder||'');
+    else if(operation==='favorite_remove'){changed=isFav(args.url);if(changed)removeFav(args.url);}
+    else throw Error('不支持的浏览器面板操作');
+    renderFavBtn();renderSidebar();renderEmpty();return {ok:true,changed,favorite:favs().find(f=>f.url===args.url)||null};
+  }
+
   return {
+    aiOperation,
     init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
