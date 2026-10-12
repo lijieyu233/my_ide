@@ -25,6 +25,37 @@ const Viewer = (() => {
   let activeTabId = null;
   let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
+  function characterCount(text) {
+    // 不将 emoji 的 UTF-16 代理对算作两个字符，也不为大选区创建逐字符数组。
+    let count=0;for(const character of text)count++;return count;
+  }
+  function refreshSelectionStatus(state) {
+    if(!window.App)return;
+    const tab=currentTab(),tool=App.getTool?.();
+    if(!tab || !tab.mode || ['remote','launch','db','browser','quick-launch','tasks'].includes(tool)) {
+      App.updateStatusbar({selectedChars:0});return;
+    }
+    if(cmApi?.__tab===tab && cmApi.view.dom.isConnected) {
+      if(state && state!==cmApi.view.state)return;
+      state=state || cmApi.view.state;
+      let selectedChars=0;
+      for(const range of state.selection.ranges)if(!range.empty)selectedChars+=characterCount(state.sliceDoc(range.from,range.to));
+      const head=state.selection.main.head,line=state.doc.lineAt(head);
+      App.updateStatusbar({pos:line.number+':'+(head-line.from+1),selectedChars});return;
+    }
+    if(tab.ta?.isConnected) {
+      const ta=tab.ta,pos=ta.selectionDirection==='backward'?ta.selectionStart:ta.selectionEnd,before=ta.value.slice(0,pos);
+      App.updateStatusbar({pos:before.split('\n').length+':'+(pos-before.lastIndexOf('\n')),
+        selectedChars:characterCount(ta.value.slice(ta.selectionStart,ta.selectionEnd))});return;
+    }
+    const selection=window.getSelection();
+    App.updateStatusbar({selectedChars:selection && viewer.contains(selection.anchorNode) && viewer.contains(selection.focusNode)
+      ? characterCount(selection.toString()) : 0});
+  }
+  document.addEventListener('selectionchange',()=>{
+    // CM 的选区以文档模型为准；原生 DOM 选择用于只读预览，textarea 自己监听 select。
+    if(!cmApi && !currentTab()?.ta)refreshSelectionStatus();
+  });
   let previewSequence=0,pendingPreview=null,previewFeedback='';
   const previewEnabled=()=>{try{return localStorage.getItem('myide-preview-tabs')==='true';}catch{return false;}};
   function keepTab(tab=currentTab()){
@@ -1144,6 +1175,7 @@ const Viewer = (() => {
     //   现在内容没就绪就保留旧画面（编辑器也不销毁），loadTab 完成后会再调一次
     //   renderView 把新内容画上 —— 体验与 VS Code / Cursor 一致。
     if (currentTab() && currentTab().mode == null) {
+      window.App?.updateStatusbar({selectedChars:0});
       cmApi?.setReadOnly?.(true);
       for (const ta of viewer.querySelectorAll('textarea.editor')) ta.readOnly=true;
       for(const child of viewer.children)child.inert=true;
@@ -1161,7 +1193,7 @@ const Viewer = (() => {
     for (const tab of tabs) tab.ta=null;
     window.PreviewLocation?.clear();
     viewer.innerHTML = '';
-    if (!currentTab()) { empty.classList.add('visible'); return; }
+    if (!currentTab()) { empty.classList.add('visible'); window.App?.updateStatusbar({selectedChars:0}); return; }
     empty.classList.remove('visible');
     const tab = currentTab();
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
@@ -1173,6 +1205,7 @@ const Viewer = (() => {
     // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）
     if (window.App) App.updateStatusbar({
       file: tab.path,
+      selectedChars: 0,
       lines: tab.content ? tab.content.split('\n').length : 0,
       encoding: formatLabel(tab),
       encodingEnabled: canChooseEncoding(tab),
@@ -1238,12 +1271,7 @@ const Viewer = (() => {
       ta.value = tab.content ?? '';
       ta.spellcheck = false;
       const reportPos = () => {
-        if (!window.App) return;
-        const pos = ta.selectionStart;
-        const before = ta.value.slice(0, pos);
-        const line = before.split('\n').length;
-        const col = pos - before.lastIndexOf('\n');
-        App.updateStatusbar({ pos: line + ':' + col });
+        if(ownsEditor() && tab.ta===ta)refreshSelectionStatus();
       };
       const lineCount = () => ta.value.split('\n').length;
       let lastLines = -1; // 强制首次渲染
@@ -1295,6 +1323,7 @@ const Viewer = (() => {
       });
       ta.addEventListener('keyup', reportPos);
       ta.addEventListener('click', reportPos);
+      ta.addEventListener('select', reportPos);
       ta.addEventListener('keydown', (e) => {
         handlePairing(e, ta);
         if (e.defaultPrevented) return;
@@ -1360,6 +1389,7 @@ const Viewer = (() => {
         viewer.appendChild(wrap);
       }
       tab.ta = ta;
+      refreshSelectionStatus();
       return;
     }
 
@@ -1485,11 +1515,10 @@ const Viewer = (() => {
         clearTimeout(cmOutlineTimer);
         cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
       },
-      onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
-      },
+      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
     });
     cmApi.__tab = tab;
+    refreshSelectionStatus();
     tab.ta = null;
     // 滚动位置实时记录 + 切回恢复（用户报告：每次点击文件都回到开头）
     try {
@@ -1522,12 +1551,11 @@ const Viewer = (() => {
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
       },
-      onCursor: (line, col) => {
-        if (window.App) App.updateStatusbar({ pos: line + ':' + col });
-      },
+      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
       saveKeysInShortcuts: true,
     });
     cmApi.__tab = tab;
+    refreshSelectionStatus();
     tab.ta = null;
     // 编辑器右键菜单：Blame 注解 / 文件历史（PyCharm Annotate with Git Blame 入口）
     wrap.oncontextmenu = (e) => { e.preventDefault(); showEditorMenu(e.clientX, e.clientY); };
@@ -2008,7 +2036,7 @@ const Viewer = (() => {
 
   return {
     openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     get activeTab() { return currentTab() || null; },

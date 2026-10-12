@@ -2208,7 +2208,7 @@ window.MdEditor = (() => {
           const before = u.state.doc.sliceString(0, head);
           const line = before.split('\n').length;
           const col = head - before.lastIndexOf('\n');
-          opts.onCursor(line, col, head);
+          opts.onCursor(line, col, head, u.state);
         }
       }),
     ];

@@ -1440,6 +1440,22 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(sb.includes('1:4'), '行列号更新（紧凑写法 行:列）, got: ' + sb);
   });
 
+  await okAsync('状态栏选区计数：Unicode、反向/多选区、取消与切页恢复',async()=>{
+    const w=dom.window;FAKE_FS[P+'/selected-count.md']={type:'file',content:'中A😀 B\n尾'};
+    await w.Viewer.openFile(P+'/selected-count.md');await tick();
+    const cm=w.Viewer.cm,info=()=>$(dom,'#sb-info').textContent;
+    cm.setCursor(0,7);assert_(info().includes('选中 6 个字符'),'空格、换行及emoji正确计数: '+info());
+    cm.setCursor(4,0);assert_(info().includes('选中 3 个字符'),'反向选择计数');
+    cm.view.dispatch({selection:w.CM6.State.EditorSelection.create([w.CM6.State.EditorSelection.range(0,1),w.CM6.State.EditorSelection.range(2,4)])});
+    assert_(info().includes('选中 2 个字符'),'多选区合计');
+    w.App.showTool('remote');assert_(!info().includes('选中'),'独立页面隐藏后台文件选区');
+    w.App.showTool('project');assert_(info().includes('选中 2 个字符'),'返回项目恢复选区计数');
+    cm.setCursor(0);assert_(!info().includes('选中'),'取消选择隐藏计数');
+    cm.setCursor(0,1);await w.Viewer.openFile(P+'/notes.txt');assert_(!info().includes('选中'),'换文件不残留计数');
+    await w.Viewer.openFile(P+'/selected-count.md');assert_(info().includes('选中 1 个字符'),'切回恢复已保存的选区');
+    await w.Viewer.closeTab(w.Viewer.openTabs.findIndex(t=>t.path===P+'/selected-count.md'));delete FAKE_FS[P+'/selected-count.md'];
+  });
+
   await okAsync('图片预览：img 渲染 + 无源码按钮', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
     await tick(); await tick();

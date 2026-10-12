@@ -257,6 +257,7 @@ const App = (() => {
         !(activeTool === 'tasks' && window.Tasks && Tasks.view === 'dag'));
     }
     window.AiPanel?.onPageChange?.();
+    window.Viewer?.refreshSelectionStatus?.();
   }
 
   // ---------- 工具窗口字号（侧栏面板 / 提交对话框 / Git 日志共用 --tool-font）----------
@@ -413,7 +414,7 @@ const App = (() => {
 
   function updateStatusbar(info = {}) {
     // 切换文件时清除旧的光标位置
-    if (info.file !== undefined && info.file !== sbState.file) sbState.pos = undefined;
+    if (info.file !== undefined && info.file !== sbState.file) { sbState.pos = undefined; sbState.selectedChars = 0; }
     sbState = Object.assign(sbState, info);
     const el = document.getElementById('sb-info');
     if (!el) return;
@@ -453,6 +454,7 @@ const App = (() => {
       el.appendChild(sp);
     };
     if (sbState.pos) pushI(sbState.pos, true, '光标位置（行:列）');
+    if (sbState.selectedChars > 0) pushI('选中 ' + sbState.selectedChars + ' 个字符', false, '包含空格和换行；编辑模式按选中的源文本统计');
     if (sbState.lines) pushI(sbState.lines + ' 行', false, '当前文件总行数');
     if (sbState.encoding) {
       if (el.childNodes.length) el.insertAdjacentHTML('beforeend', '<i class="sb-d"></i>');
