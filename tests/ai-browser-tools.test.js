@@ -73,5 +73,30 @@ const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
     const f=fixture(true,30),r=await f.read(),c=call('browser_click',{snapshot:r.snapshot,element:r.elements.find(e=>e.tag==='button').id});await f.approve(c);let sent=0;f.wc.executeJavaScriptInIsolatedWorld=()=>{sent++;return new Promise(()=>{});};const result=await f.execute(c);assert.equal(result.errorCode,'BROWSER_TIMEOUT');assert(result.committed);assert.deepEqual(await f.execute(c),result);assert.equal(sent,1);assert.throws(()=>f.tools.prepare(1,f.context,call('browser_click',{snapshot:r.snapshot,element:'e1'})),e=>e.code==='BROWSER_SNAPSHOT_CHANGED');
     const g=fixture(true,30);g.wc.executeJavaScriptInIsolatedWorld=()=>new Promise(()=>{});assert.equal((await g.read()).errorCode,'BROWSER_TIMEOUT');
   });
+  await test('长正文按快照续读无重叠遗漏，滚动不改变位置，emoji跨段不损坏',async()=>{
+    const f=fixture(),text='中'.repeat(19999)+'😀'+'后'.repeat(23000);f.w.document.body.innerHTML='<pre>'+text+'</pre>';const first=await f.read();assert(first.hasMore&&!first.complete&&first.nextCursor===19999);let all=first.text,r=first;
+    while(r.hasMore){r=await f.execute(call('browser_read',{snapshot:first.snapshot,cursor:r.nextCursor}));assert(r.ok);all+=r.text;}assert.equal(all,text);assert(r.complete&&!r.truncated);assert.equal(r.nextCursor,r.totalChars);assert.equal(r.elements.length,0);
+    for(const args of [{snapshot:first.snapshot},{cursor:20000},{snapshot:first.snapshot,cursor:-1},{snapshot:first.snapshot,cursor:'1'},{snapshot:first.snapshot,cursor:1.2}])assert.throws(()=>Contract.validate(call('browser_read',args)));
+    assert.equal((await f.execute(call('browser_read',{snapshot:first.snapshot,cursor:text.length+1}))).errorCode,'BROWSER_CURSOR_INVALID');
+    f.w.scrollY=999;const same=await f.execute(call('browser_read',{snapshot:first.snapshot,cursor:first.nextCursor}));assert.equal(same.text,text.slice(first.nextCursor,same.nextCursor));
+    const fresh=await f.read();assert.equal((await f.execute(call('browser_read',{snapshot:fresh.snapshot,cursor:fresh.totalChars}))).errorCode,'BROWSER_CURSOR_INVALID');
+  });
+  await test('刷新、新读取、点击和手动跳转使旧续读快照失效',async()=>{
+    for(const change of ['navigate','read','click']){const f=fixture(),r=await f.read();if(change==='navigate')f.navigate('https://example.test/next');if(change==='read')await f.read();if(change==='click')await f.perform(call('browser_click',{snapshot:r.snapshot,element:r.elements.find(e=>e.tag==='button').id}));assert.throws(()=>f.tools.prepare(1,f.context,call('browser_read',{snapshot:r.snapshot,cursor:r.nextCursor})),e=>e.code==='BROWSER_SNAPSHOT_CHANGED');}
+  });
+  await test('字幕JSON去掉格式冗余并读到末尾，时间轴和数量可靠；普通JSON不误识别',async()=>{
+    const f=fixture(),body=Array.from({length:600},(_,i)=>({from:i,to:i+.9,content:'第'+i+'段字幕中文',font:'无关'.repeat(30)}));f.w.document.body.innerHTML='<pre></pre>';f.w.document.querySelector('pre').textContent=JSON.stringify({lang:'zh',body});const r=await f.read();assert(r.ok);assert.equal(r.format,'subtitle-json');assert.equal(r.subtitle.totalCues,600);assert.equal(r.subtitle.end,599.9);assert(r.complete&&!r.hasMore);assert(r.text.includes('[599 → 599.9] 第599段字幕中文'));assert(!r.text.includes('font'));
+    f.w.document.querySelector('pre').textContent=JSON.stringify({body:[{from:1,to:0,content:'不合法'}]});const bad=await f.read();assert.equal(bad.format,'json');assert(!bad.subtitle);
+    f.w.document.body.innerHTML='<h1>普通文章</h1><pre>'+JSON.stringify({body:[{from:0,to:1,content:'代码示例'}]})+'</pre>';assert.equal((await f.read()).format,'text');
+  });
+  await test('较长字幕续读到全部时间轴，超预算源不能声称完整',async()=>{
+    const f=fixture(),body=Array.from({length:1500},(_,i)=>({from:i,to:i+1,content:'长字幕'+i+'内容'.repeat(8)}));f.w.document.body.innerHTML='<pre></pre>';f.w.document.querySelector('pre').textContent=JSON.stringify({lang:'zh',body});let r=await f.read(),text=r.text;const snapshot=r.snapshot;assert(r.hasMore&&!r.complete);while(r.hasMore){r=await f.execute(call('browser_read',{snapshot,cursor:r.nextCursor}));text+=r.text;}assert(r.complete);assert(text.endsWith('[1499 → 1500] '+body.at(-1).content));assert.equal(text.split('\n').length,1500);
+    f.w.document.querySelector('pre').textContent='x'.repeat(2*1024*1024+100);const limited=await f.read();assert(limited.sourceLimited&&!limited.complete&&limited.truncated);const next=await f.execute(call('browser_read',{snapshot:limited.snapshot,cursor:limited.nextCursor}));assert(!next.complete&&next.sourceLimited);
+  });
+  await test('状态可等待加载完成，非法等待拒绝且取消运行打断等待',async()=>{
+    const f=fixture();f.wc.loading=true;setTimeout(()=>{f.wc.loading=false;},30);const r=await f.execute(call('browser_state',{wait_ms:200}));assert(r.ok&&!r.loading);
+    for(const wait_ms of [-1,2001,'20',1.5])assert.throws(()=>Contract.validate(call('browser_state',{wait_ms})));
+    f.wc.loading=true;const pending=f.execute(call('browser_state',{wait_ms:2000}));setTimeout(()=>f.registry.finish(1,f.context,'cancelled'),20);const cancelled=await pending;assert(['STALE_AI_REQUEST','CANCELLED_AI_REQUEST'].includes(cancelled.errorCode));
+  });
   console.log('AI浏览器：'+passed+' 通过 / 0 失败');
 })().catch(e=>{console.error(e.stack);process.exitCode=1;}).finally(()=>fixtures.forEach(d=>d.window.close()));

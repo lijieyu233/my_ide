@@ -24,13 +24,15 @@ function fixture() {
     stopEntry:async(e,guard)=>{guard('stop');actions.push({operation:'stop',id:e.id});return {ok:true};},
     restartEntry:async(e,guard)=>{guard('start');actions.push({operation:'restart',id:e.id});return {ok:true};}
   }});
-  const toolService=ToolExecution.createService(registry,{application:call=>launchAdapter.prepare(call)});
+  const browserActions=[];
+  const browserAdapter={prepare:call=>({application:true,real:dir,directories:[],verify:()=>{},effect:null,data:{call}}),execute:proof=>{browserActions.push(proof.data.call);return {ok:true,url:'https://example.test',loading:false};}};
+  const toolService=ToolExecution.createService(registry,{application:call=>require('../renderer/ai-browser-tools').has(call.name)?browserAdapter.prepare(call):launchAdapter.prepare(call)});
   const ui = require('./helpers/ai-approval-dom').createUI(() => f.stop());
   const policyStore = require('../ai-permission-store').createStore(path.join(dir,'policy.json'));
   policyStore.initialize({config:{permWrite:'auto'}}); created.add(path.join(dir,'policy.json'));
   const authority = require('../ai-tool-authority').createAuthority({tools:toolService,readPolicy:(owner,context)=>policyStore.read(owner,context),confirm:ui.confirm,remember:(owner,data,signal)=>policyStore.remember(owner,data,signal,()=>toolService.active(owner,data.context))});
   let onChunk, onDone;
-  const f = { dir, A, B, w, calls, writes, commands, aborts, launchFile, actions, selected, file, put, script: [], onRead: null, onWrite: null, registry };
+  const f = { dir, A, B, w, calls, writes, commands, aborts, launchFile, actions, browserActions, selected, file, put, script: [], onRead: null, onWrite: null, registry };
   const read = async p => {
     p = path.resolve(p); const injected = f.onRead?.(p); if (injected) return await injected;
     try { const s = FileWrite.readSnapshot(p); if (s.absent) return { error: 'not found', errorCode: 'ENOENT', version: s.version }; return { ...TextFormat.decodeText(s.bytes), version: s.version }; }
@@ -66,6 +68,7 @@ function fixture() {
       catch(e) { return { ok: false, error: e.message, errorCode: e.code }; }
     },
     launch:async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'application',({proof,verify})=>launchAdapter.execute(proof,verify,()=>authority.assert(1,context,call,proof.effect))),
+    browser:async(context,call)=>toolService.once(1,context,JSON.parse(JSON.stringify(call)),'application',({proof})=>browserAdapter.execute(proof)),
     readFile: async(context,call)=>{
       const p=path.resolve(context.rootId,call.args.path),injected=f.onRead?.(p);
       if(injected)return await injected;
@@ -83,7 +86,7 @@ function fixture() {
     run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); authority.assert(1,context,call,{target:path.resolve(cwd),command:cmd}); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
-  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
+  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -368,6 +371,12 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       f.send('继续');await until(()=>f.calls.length===11&&f.element('#ai-send').textContent==='➤');const messages=f.calls[10].messages;
       for(const m of messages.filter(m=>m.tool_calls))for(const c of m.tool_calls)assert(messages.some(result=>result.role==='tool'&&result.tool_call_id===c.id));
     }
+  });
+  await test('浏览器超过8轮可继续到24轮，第25轮配齐未执行结果并收尾',async()=>{
+    const f=fixture();f.switchRoot('');f.shownTool='browser';for(let i=0;i<25;i++)f.script.push(reply({id:'browser-round-'+i,name:'browser_state',args:{}}));f.script.push({ok:true,text:'仍有未完成步骤'});f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.browserActions.length,24);assert.equal(f.calls.length,26);assert.equal(f.calls.at(-1).tools.length,0);const messages=f.calls.at(-1).messages;assert(messages.some(m=>m.role==='tool'&&m.tool_call_id==='browser-round-24'&&m.content.includes('未执行')));assert(messages.some(m=>m.role==='system'&&m.content.includes('nextCursor')));
+  });
+  await test('浏览器扩展额度不能执行第9轮普通工具或混合Shell调用',async()=>{
+    const f=fixture();for(let i=0;i<8;i++)f.script.push(reply({id:'browser-before-'+i,name:'browser_state',args:{}}));f.script.push(reply({id:'mixed-browser',name:'browser_state',args:{}},{id:'mixed-command',name:'run_command',args:{command:'echo 不得执行'}}),{ok:true,text:'停止'});f.send();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.browserActions.length,8);assert.equal(f.commands.length,0);assert.equal(f.calls.at(-1).tools.length,0);for(const id of ['mixed-browser','mixed-command'])assert(f.calls.at(-1).messages.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('未执行')));
   });
   await test('载入旧损坏会话补齐缺失结果并保留已有结果，孤立结果不作为原生工具消息发送',async()=>{
     const f=fixture();const calls=[writeCall('one.md','OLD','old-missing'),writeCall('two.md','REAL','old-done')];f.put('one.md');f.put('two.md','REAL');

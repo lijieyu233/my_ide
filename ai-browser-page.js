@@ -1,14 +1,23 @@
 // 固定程序运行在独立JS world：网页无法伪造元素账本，模型也不能注入任意脚本。
 function pageOperation(operation,args){
-  const key='__myideBrowserObservation',limit=20000;
+  const key='__myideBrowserObservation',limit=20000,sourceLimit=2*1024*1024;
   const visible=el=>!!el?.isConnected&&!!el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden'&&!el.closest('[hidden],[inert],[aria-hidden="true"]');
   const labelText=el=>{const label=el.labels?.[0];if(!label)return '';const clone=label.cloneNode(true);clone.querySelectorAll('input,textarea,select,script,style,[hidden]').forEach(node=>node.remove());return clone.textContent;};
   const describe=el=>({tag:el.tagName.toLowerCase(),type:(el.getAttribute('type')||'').toLowerCase(),name:(el.getAttribute('name')||'').slice(0,160),label:(el.getAttribute('aria-label')||labelText(el)||(!['INPUT','TEXTAREA'].includes(el.tagName)?el.innerText:'')||el.getAttribute('placeholder')||el.getAttribute('title')||'').trim().slice(0,240),href:el.tagName==='A'?el.href:'',formAction:el.form&&el.type==='submit'?(el.hasAttribute('formaction')?el.formAction:el.form.action):''});
   const allowedInput=el=>el.tagName==='TEXTAREA'||el.tagName==='INPUT'&&['','text','search','email','url','tel','number'].includes((el.getAttribute('type')||'').toLowerCase());
   const supported=el=>allowedInput(el)||['A','BUTTON','SELECT'].includes(el.tagName)||el.tagName==='INPUT'&&['button','submit','reset','checkbox','radio'].includes((el.getAttribute('type')||'').toLowerCase())||el.matches('[role="button"]');
   const signature=el=>JSON.stringify({...describe(el),onclick:el.getAttribute('onclick')||'',formMethod:el.form?.method||'',disabled:!!el.disabled,readOnly:!!el.readOnly,value:el.value||'',checked:!!el.checked});
+  function chunk(state,cursor){
+    if(!Number.isSafeInteger(cursor)||cursor<0||cursor>state.text.length||cursor>state.readThrough)return {ok:false,error:'续读位置无效，请使用已返回的nextCursor，不能跳过未读内容',errorCode:'BROWSER_CURSOR_INVALID'};
+    let end=Math.min(state.text.length,cursor+limit);
+    if(end<state.text.length&&/[\uD800-\uDBFF]/.test(state.text[end-1]))end--;
+    const hasMore=end<state.text.length;
+    state.readThrough=Math.max(state.readThrough,end);
+    return {ok:true,url:state.url,title:state.title,snapshot:state.snapshot,text:state.text.slice(cursor,end),elements:cursor===0?state.elements:[],cursor,nextCursor:end,totalChars:state.text.length,hasMore,sourceLimited:state.sourceLimited,complete:!hasMore&&!state.sourceLimited,truncated:hasMore||state.sourceLimited,...state.metadata,scroll:{x:scrollX,y:scrollY,height:document.documentElement.scrollHeight,viewport:innerHeight}};
+  }
   if(operation==='read'){
-    const nodes=new Map(),elements=[];let truncated=false,scanned=0,text='';const start=performance.now();
+    if(args.snapshot){const cached=globalThis[key];if(!cached||cached.snapshot!==args.snapshot||cached.url!==location.href)return {ok:false,error:'续读快照已失效，请重新读取网页',errorCode:'BROWSER_SNAPSHOT_CHANGED'};return chunk(cached,args.cursor);}
+    const nodes=new Map(),elements=[];let sourceLimited=false,elementsTruncated=false,scanned=0,text='',metadata={format:'text'};const start=performance.now();
     const walker=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,{acceptNode(node){
       // 空元素也消耗扫描预算，否则一次nextNode可遍历大量没有文本的节点。
       if(++scanned>10000||performance.now()-start>250)return NodeFilter.FILTER_ACCEPT;
@@ -16,18 +25,31 @@ function pageOperation(operation,args){
       return NodeFilter.FILTER_ACCEPT;
     }});
     while(walker.nextNode()){
-      if(scanned>10000||performance.now()-start>250){truncated=true;break;}
+      if(scanned>10000||performance.now()-start>250){sourceLimited=true;break;}
       const part=walker.currentNode.textContent.replace(/\s+/g,' ').trim();if(!part)continue;
-      text+=(text?'\n':'')+part;if(text.length>limit){text=text.slice(0,limit);truncated=true;break;}
+      text+=(text?'\n':'')+part;if(text.length>sourceLimit){text=text.slice(0,sourceLimit);sourceLimited=true;break;}
+    }
+    // JSON文档通常只有一个pre；不解析普通网页里的示例代码，以免把正文误当字幕。
+    const pre=document.body?.querySelector(':scope > pre');
+    if(pre&&visible(pre)&&(document.body.children.length===1||/^(application\/(?:[\w.+-]*\+)?json|text\/json)$/i.test(document.contentType))&&!sourceLimited){
+      const raw=pre.textContent;
+      if(raw.length<=sourceLimit){try{
+        const parsed=JSON.parse(raw);metadata={format:'json'};
+        if(parsed&&Array.isArray(parsed.body)&&parsed.body.every(cue=>cue&&typeof cue.content==='string'&&Number.isFinite(cue.from)&&Number.isFinite(cue.to)&&cue.from>=0&&cue.to>=cue.from)){
+          text=parsed.body.map(cue=>'['+cue.from+' → '+cue.to+'] '+cue.content).join('\n');
+          metadata={format:'subtitle-json',subtitle:{language:typeof parsed.lang==='string'?parsed.lang.slice(0,80):'',totalCues:parsed.body.length,start:parsed.body.length?parsed.body.reduce((start,c)=>Math.min(start,c.from),Infinity):null,end:parsed.body.reduce((end,c)=>Math.max(end,c.to),0)}};
+          if(text.length>sourceLimit){text=text.slice(0,sourceLimit);sourceLimited=true;}
+        }
+      }catch{} }
     }
     scanned=0;for(const el of document.querySelectorAll('a[href],button,input,textarea,select,[role="button"]')){
-      if(++scanned>10000||elements.length>=100){truncated=true;break;}
+      if(++scanned>10000||elements.length>=100){elementsTruncated=true;break;}
       if(!visible(el)||el.disabled||!supported(el)||el.tagName==='INPUT'&&['password','file','hidden'].includes((el.getAttribute('type')||'').toLowerCase()))continue;
       const data=describe(el);if(data.href&&!/^https?:/i.test(data.href))continue;
       const id='e'+(elements.length+1);nodes.set(id,{el,signature:signature(el)});elements.push({id,...data,fillable:allowedInput(el)&&!el.readOnly});
     }
-    globalThis[key]={snapshot:args.snapshot,url:location.href,nodes};
-    return {ok:true,url:location.href,title:document.title,snapshot:args.snapshot,text,elements,truncated,scroll:{x:scrollX,y:scrollY,height:document.documentElement.scrollHeight,viewport:innerHeight}};
+    const state={snapshot:args.newSnapshot,url:location.href,title:document.title,nodes,text,elements,sourceLimited,readThrough:0,metadata:{...metadata,elementsTruncated}};
+    globalThis[key]=state;return chunk(state,0);
   }
   if(args.url!==location.href)return {ok:false,error:'网页已跳转，请重新读取',errorCode:'BROWSER_PAGE_CHANGED'};
   if(operation==='scroll'){const y=args.direction==='top'?0:args.direction==='bottom'?document.documentElement.scrollHeight:scrollY+(args.direction==='up'?-1:1)*innerHeight*.8;scrollTo({top:y,behavior:'instant'});return {ok:true,committed:true};}
