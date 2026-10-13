@@ -2,17 +2,18 @@ const os=require('os'),path=require('path'),{randomUUID,createHash}=require('cry
 const Names=require('./renderer/ai-browser-tools'),{pageOperation}=require('./ai-browser-page');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 function createService({getView,ensureView,panel,timeoutMs=5000}){
+  const subtitles=require('./browser-subtitles').createService();
   let observation=null;const revisions=new WeakMap(),loads=new WeakMap();
   function state(){const wc=getView()?.webContents;if(!wc||wc.isDestroyed())return {available:false,url:'',title:'',loading:false,canBack:false,canForward:false};
-    if(!revisions.has(wc)){revisions.set(wc,0);loads.set(wc,{});const change=()=>{revisions.set(wc,revisions.get(wc)+1);observation=null;};wc.on('did-start-navigation',(_e,url,_inPlace,mainFrame)=>{if(mainFrame){change();loads.set(wc,{requestedUrl:url,loadError:''});}});wc.on('did-fail-load',(_e,code,description,url,mainFrame)=>{if(mainFrame&&code!==-3)loads.set(wc,{requestedUrl:url,loadError:description||String(code)});});wc.on('render-process-gone',change);wc.on('destroyed',change);}
+    if(!revisions.has(wc)){revisions.set(wc,0);loads.set(wc,{});const change=()=>{revisions.set(wc,revisions.get(wc)+1);observation=null;subtitles.clear();};wc.on('did-start-navigation',(_e,url,_inPlace,mainFrame)=>{if(mainFrame){change();loads.set(wc,{requestedUrl:url,loadError:''});}});wc.on('did-fail-load',(_e,code,description,url,mainFrame)=>{if(mainFrame&&code!==-3)loads.set(wc,{requestedUrl:url,loadError:description||String(code)});});wc.on('render-process-gone',change);wc.on('destroyed',change);}
     return {available:true,url:wc.getURL(),title:wc.getTitle(),loading:wc.isLoading(),canBack:wc.navigationHistory.canGoBack(),canForward:wc.navigationHistory.canGoForward(),revision:revisions.get(wc),...loads.get(wc)};
   }
   function prepare(call){
     if(!Names.has(call.name))throw fail('INVALID_TOOL_ARGS','不是内置浏览器工具');
     const before=state(),wc=getView()?.webContents,a=call.args,operation=call.name.slice(8),real=path.resolve(os.homedir());
     const requiresPage=!['state','open','favorite_add','favorite_remove'].includes(operation);
-    if(['read','click','fill'].includes(operation)&&before.loading)throw fail('BROWSER_LOADING','网页仍在加载，请稍后查看状态再读取');
-    if(['read','click','fill'].includes(operation)&&before.loadError)throw fail('BROWSER_LOAD_FAILED','网页加载失败：'+before.loadError+'；请先检查地址或重试导航');
+    if(['read','subtitles','click','fill'].includes(operation)&&before.loading)throw fail('BROWSER_LOADING','网页仍在加载，请稍后查看状态再读取');
+    if(['read','subtitles','click','fill'].includes(operation)&&before.loadError)throw fail('BROWSER_LOAD_FAILED','网页加载失败：'+before.loadError+'；请先检查地址或重试导航');
     if(requiresPage&&(!before.available||operation!=='stop'&&!/^https?:/i.test(before.url)))throw fail('BROWSER_UNAVAILABLE','请先打开HTTP/HTTPS网页');
     if(operation==='back'&&!before.canBack||operation==='forward'&&!before.canForward)throw fail('BROWSER_NO_HISTORY','没有可用的导航历史');
     const node=a.element?observation?.elements.find(e=>e.id===a.element):null;
@@ -40,6 +41,7 @@ function createService({getView,ensureView,panel,timeoutMs=5000}){
       try{return await Promise.race([wc.executeJavaScriptInIsolatedWorld(999,[{code:'('+pageOperation.toString()+')('+JSON.stringify(op)+','+JSON.stringify(args)+')'}],op!=='read'),new Promise((_,reject)=>{timer=setTimeout(()=>{observation=null;reject(Object.assign(fail('BROWSER_TIMEOUT','网页响应超时；操作结果未确认，请查看页面状态，不要重复派发'),{committed:op!=='read'}));},timeoutMs);})]);}
       finally{clearTimeout(timer);}
     };
+    if(operation==='subtitles')return await subtitles.read(wc,a,verify);
     if(operation==='read'){
       const r=await script('read',a.snapshot?{snapshot:a.snapshot,cursor:a.cursor}:{newSnapshot:randomUUID()});verify();
       if(!r.ok)return r;

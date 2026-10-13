@@ -6,7 +6,7 @@ function fixture(initial=true,timeoutMs=5000){
   const dom=new JSDOM('<title>测试网页</title><body><h1>中文正文</h1><p hidden>隐藏机密</p><input type="password" value="SECRET_PASSWORD"><textarea>SECRET_FIELD_VALUE</textarea><input aria-label="搜索" value="SECRET_INPUT_VALUE"><button>确认</button><a href="https://example.test/next">下一页</a><a href="javascript:alert(1)">禁止脚本</a><input type="file"><iframe srcdoc="机密"></iframe><div contenteditable>SECRET_EDIT_VALUE</div></body>',{url:'https://example.test/',runScripts:'outside-only'}),w=dom.window;
   w.HTMLElement.prototype.getClientRects=function(){return this.hidden?[]:[{width:100,height:20}];};w.scrollTo=()=>{};
   Object.defineProperty(w.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
-  const wc=new EventEmitter();Object.assign(wc,{id:1,destroyed:false,url:'https://example.test/',loading:false,getURL(){return this.url;},getTitle:()=>w.document.title,isLoading(){return this.loading;},isDestroyed(){return this.destroyed;},navigationHistory:{canGoBack:()=>true,canGoForward:()=>true,goBack:()=>f.navigate('https://example.test/back'),goForward:()=>f.navigate('https://example.test/forward')},loadURL:async url=>f.navigate(url),reload:()=>f.navigate(wc.url),stop:()=>{wc.loading=false;},executeJavaScriptInIsolatedWorld:async(_id,scripts)=>JSON.parse(JSON.stringify(w.eval(scripts[0].code)))});
+  const wc=new EventEmitter();Object.assign(wc,{id:1,destroyed:false,url:'https://example.test/',loading:false,getURL(){return this.url;},getUserAgent:()=> 'fixture-agent',getTitle:()=>w.document.title,isLoading(){return this.loading;},isDestroyed(){return this.destroyed;},navigationHistory:{canGoBack:()=>true,canGoForward:()=>true,goBack:()=>f.navigate('https://example.test/back'),goForward:()=>f.navigate('https://example.test/forward')},loadURL:async url=>f.navigate(url),reload:()=>f.navigate(wc.url),stop:()=>{wc.loading=false;},executeJavaScriptInIsolatedWorld:async(_id,scripts)=>JSON.parse(JSON.stringify(w.eval(scripts[0].code)))});
   let view=initial?{webContents:wc}:null;const actions=[],prompts=[],f={w,wc,actions,prompts,policy:{revision:0,run:'confirm'},answer:{approved:true,scope:'once'},beforeConfirm:null};
   const adapter=Adapter.createService({timeoutMs,getView:()=>view,ensureView:()=>view||=( {webContents:wc}),panel:async(operation,args)=>{actions.push({operation,args});return {ok:true,changed:true,favorites:[]};}});
   f.navigate=url=>{wc.emit('did-start-navigation',{},url,false,true);wc.url=url;dom.reconfigure({url});};
@@ -18,8 +18,8 @@ function fixture(initial=true,timeoutMs=5000){
 }
 const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{
-  await test('12个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
-    assert.equal(Names.tools.length,12);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
+  await test('13个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
+    assert.equal(Names.tools.length,13);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
     for(const url of ['file:///x','javascript:alert(1)','https://user:secret@example.test','example.test','https://example.test/a\nb',''])assert.throws(()=>Contract.validate(call('browser_open',{url})));
     for(const args of [{url:'https://example.test',script:'alert(1)'},{url:'https://example.test',selector:'input'}])assert.throws(()=>Contract.validate(call('browser_open',args)));
     assert.throws(()=>Contract.validate(call('browser_scroll',{direction:'left'})));
@@ -97,6 +97,12 @@ const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
     const f=fixture();f.wc.loading=true;setTimeout(()=>{f.wc.loading=false;},30);const r=await f.execute(call('browser_state',{wait_ms:200}));assert(r.ok&&!r.loading);
     for(const wait_ms of [-1,2001,'20',1.5])assert.throws(()=>Contract.validate(call('browser_state',{wait_ms})));
     f.wc.loading=true;const pending=f.execute(call('browser_state',{wait_ms:2000}));setTimeout(()=>f.registry.finish(1,f.context,'cancelled'),20);const cancelled=await pending;assert(['STALE_AI_REQUEST','CANCELLED_AI_REQUEST'].includes(cancelled.errorCode));
+  });
+  await test('字幕工具经真实执行账本只读运行，旧页面快照与停止中的网络拒绝',async()=>{
+    const f=fixture();f.navigate('https://www.bilibili.com/video/BV1d1pR6zEBM/');
+    f.wc.session={fetch:async url=>new Response(JSON.stringify(url.includes('/view?')?{code:0,data:{bvid:'BV1d1pR6zEBM',title:'目标',pages:[{page:1,cid:22,duration:120}]}}:url.includes('/nav')?{data:{wbi_img:{img_url:'https://i0.hdslb.com/bfs/wbi/'+('a'.repeat(32))+'.png',sub_url:'https://i0.hdslb.com/bfs/wbi/'+('b'.repeat(32))+'.png'}}}:url.includes('/wbi/v2')?{code:0,data:{bvid:'BV1d1pR6zEBM',cid:22,login_mid:1,subtitle:{subtitles:[{lan:'ai-zh',subtitle_url:'https://i0.hdslb.com/bfs/subtitle/fixture.json'}]}}}:{body:Array.from({length:2000},(_,i)=>({from:i/20,to:(i+1)/20,content:'完整字幕'.repeat(8)}))}),{headers:{'Content-Type':'application/json'}})};
+    const result=await f.execute(call('browser_subtitles'));assert(result.ok&&result.hasMore);assert.equal(f.prompts.length,0);assert.equal(f.wc.url,'https://www.bilibili.com/video/BV1d1pR6zEBM/');f.navigate(f.wc.url);const old=await f.execute(call('browser_subtitles',{snapshot:result.snapshot,cursor:result.nextCursor}));assert.equal(old.errorCode,'SUBTITLE_SNAPSHOT_CHANGED');
+    f.wc.session.fetch=async(_url,init)=>{f.registry.finish(1,f.context,'cancelled');return await new Promise((resolve,reject)=>init.signal.addEventListener('abort',()=>reject(init.signal.reason),{once:true}));};const stopped=await f.execute(call('browser_subtitles'));assert.equal(stopped.errorCode,'CANCELLED_AI_REQUEST');
   });
   console.log('AI浏览器：'+passed+' 通过 / 0 失败');
 })().catch(e=>{console.error(e.stack);process.exitCode=1;}).finally(()=>fixtures.forEach(d=>d.window.close()));

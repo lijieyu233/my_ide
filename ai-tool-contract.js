@@ -49,7 +49,8 @@ function validate(call) {
     args[key] = kind === 'path' ? relativePath(value, call.name === 'list_files') : value;
   }
   if (call.name === 'list_files' && !Object.hasOwn(args, 'path')) args.path = '.';
-  if(call.name==='browser_read'&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
+  if(['browser_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
+  if(call.name==='browser_subtitles'&&args.snapshot&&(Object.hasOwn(args,'url')||Object.hasOwn(args,'language')))throw error('字幕续读不能更换视频或语言；重新提取请省略snapshot和cursor');
   return Object.freeze({ id: call.id, name: call.name, args: Object.freeze(args) });
 }
 // 主进程核对实际目标/正文，防止旧桥把未校验的值变成空文件。
