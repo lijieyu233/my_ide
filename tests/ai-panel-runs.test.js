@@ -52,6 +52,8 @@ function fixture() {
     authorize: async(context,call)=>{try{return {...await authority.authorize(1,context,JSON.parse(JSON.stringify(call))),permissions:{root:context.rootId,...policyStore.view(context.rootId)}};}catch(e){return {error:e.message,errorCode:e.code};}},
     clearSession: async()=>{authority.revoke(1);ui.cancel();policyStore.clearSession(1);return {ok:true};},
     grantSession: async context=>{policyStore.grantSession(1,context);return {ok:true};},
+    onDshEvent:fn=>{f.dshEvent=fn;},dshToolResult:async(context,id,result)=>{(f.dshResults||=[]).push({context,id,result});return {ok:true};},
+    dshPermissionResult:async(context,id,optionId)=>{(f.dshPermissions||=[]).push({context,id,optionId});return {ok:true};},
     onPermissionsChanged:()=>{},onStopped:()=>{},
     chat: async (_cfg, messages, _tools, context) => {
       registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, tools:_tools, d }; calls.push(item); pending.push(d);
@@ -394,6 +396,30 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.script.push(reply(writeCall('not-written.md'),{id:'pending-two',name:'list_files',args:{path:'.'}}));f.send();await until(()=>f.element('#ai-send').textContent==='➤');
     assert.equal(f.writes.length,0);f.send('继续');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
     for(const id of ['w1','pending-two'])assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('实际执行状态未确认')));
+  });
+  await test('DSH结果不再次解析文本工具块；切换模式停止旧运行并拒绝迟到工具',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});
+    f.script.push({ok:true,text:'```tool\n'+JSON.stringify(writeCall('must-not-write.md'))+'\n```',engine:'dsh'});
+    f.send('DSH回复含示例');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');assert.equal(f.writes.length,0);assert.equal(f.calls.length,1);
+    f.hold=true;f.send('开始等待');await until(()=>f.calls.length===2);const context=f.calls[1].context;
+    await f.w.AiPanel.setConfig({engine:'standard'});await f.dshEvent({type:'tool',context,call:writeCall('late.md')});assert.equal(f.writes.length,0);assert(f.aborts.length);assert.equal(f.w.AiPanel.getConfig().engine,'standard');
+  });
+  await test('DSH页面状态只在项目页返回文件；项目执行中离开页面会停止',async()=>{
+    const f=fixture();f.put('one.md','DSH_EDITOR_SECRET');f.w.Viewer.activeTab={path:f.file('one.md'),content:'DSH_EDITOR_SECRET',dirty:true};await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('读取编辑器');await until(()=>f.calls.length===1);
+    await f.dshEvent({type:'tool',context:f.calls[0].context,call:{id:'state',name:'ide_state',args:{}}});assert(f.dshResults[0].result.text.includes('DSH_EDITOR_SECRET'));
+    f.w.App.showTool('launch');await until(()=>f.element('#ai-send').textContent==='➤');assert(f.aborts.length);
+    f.send('读取启动页面');await until(()=>f.calls.length===2);await f.dshEvent({type:'tool',context:f.calls[1].context,call:{id:'state2',name:'ide_state',args:{}}});assert(!f.dshResults.at(-1).result.text.includes('DSH_EDITOR_SECRET'));assert(f.dshResults.at(-1).result.text.includes('启动面板'));f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
+  await test('Harness原生工具状态与确认显示在侧栏，停止后按钮失效且不二次派发文本工具',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh',baseUrl:'',model:''});f.hold=true;f.send('原生任务');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'native-one',title:'native_shell',rawInput:{command:'fixture'},status:'in_progress'}});
+    await f.dshEvent({type:'permission',context,id:'approval-one',toolCall:{toolCallId:'native-one'},options:[{optionId:'yes',kind:'allow_once'},{optionId:'no',kind:'reject_once'}]});const box=f.element('.ai-dsh-permission');assert(box.textContent.includes('native_shell'));box.querySelector('button').click();await tick();assert.equal(f.dshPermissions[0].optionId,'yes');assert(!f.element('.ai-dsh-permission'));
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call_update',toolCallId:'native-one',status:'completed',content:[{type:'content',content:{type:'text',text:'原生工具输出'}}]}});assert(f.text().includes('原生工具输出'));
+    await f.dshEvent({type:'permission',context,id:'approval-two',toolCall:{toolCallId:'native-one'},options:[{optionId:'yes',kind:'allow_once'}]});const late=f.element('.ai-dsh-permission button');f.stop();await until(()=>f.element('#ai-send').textContent==='➤');late.click();assert.equal(f.dshPermissions.length,1);assert(!f.element('.ai-dsh-permission'));
+  });
+  await test('Harness历史按执行模式隔离，复制继续不伪造原生历史回退',async()=>{
+    const f=fixture();f.send('普通会话');await until(()=>f.element('#ai-send').textContent==='➤');await f.w.AiPanel.setConfig({engine:'dsh'});assert(!f.text().includes('普通会话'));f.send('Harness会话');await until(()=>f.element('#ai-send').textContent==='➤');assert(!f.element('.ai-regen'));const before=f.text(),button=[...f.w.document.querySelectorAll('.ai-act-btn')].find(button=>button.textContent==='复制并继续');button.click();assert.equal(f.text(),before);assert.equal(f.element('#ai-input').value,'Harness会话');assert.equal(f.calls.length,2);
+    assert(f.w.localStorage.getItem('myide-ai-sessions:'+f.A));assert(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'));
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

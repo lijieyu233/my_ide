@@ -2682,11 +2682,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 #ai-model:hover { color: var(--text); border-color: var(--accent); }
 .ai-engine-row { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: .85em; }
-#harness-main { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; background: var(--bg); }
-.harness-toolbar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 10px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 12px; }
-#harness-status { color: var(--text-dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-#harness-view { flex: 1; min-height: 0; }
-body.harness-active #sidebar, body.harness-active #sidebar-resizer { display: none; }
 #ai-engine { min-width: 0; flex: 1; background: var(--bg-input); color: var(--text); border: 1px solid var(--border-mid); border-radius: 4px; padding: 2px 4px; font: inherit; }
 /* token 用量状态条（头部下方，DeepSeek 缓存命中也在此显示） */
 #ai-usage.ai-usage, .ai-usage {
@@ -3747,3 +3742,6 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .copy-recovery .m-body { max-height:65vh; overflow:auto; }
 .copy-recovery-row { border-top:1px solid var(--border); padding:12px 0; overflow-wrap:anywhere; }
 .copy-recovery-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+
+#ai-dsh-options{display:flex;gap:6px;align-items:center;padding:4px 10px;color:var(--text-dim);font-size:11px}#ai-dsh-options select{background:var(--bg-input);color:var(--text);border:1px solid var(--btn-border);border-radius:4px;max-width:100px}#ai-dsh-info{margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-dsh-thought,.ai-dsh-permission,.ai-dsh-output{margin:6px 0;padding:8px;border:1px solid var(--btn-border);border-radius:6px;font-size:12px}.ai-dsh-permission{background:var(--bg-input)}.ai-dsh-permission button{margin-right:8px}.ai-dsh-thought pre,.ai-dsh-output pre,.ai-dsh-permission pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto;font:inherit;color:var(--text-dim)}

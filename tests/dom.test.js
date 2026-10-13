@@ -147,7 +147,6 @@ function makeDom() {
   st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
   w.document.head.appendChild(st);
   w.myIDE = {
-    harness:{start:async()=>{calls.harnessStarts=(calls.harnessStarts||0)+1;return {ok:true};},mount:async()=>({ok:true}),hide:async()=>{calls.harnessHides=(calls.harnessHides||0)+1;return {ok:true};},bounds:async()=>({ok:true}),reload:async()=>({ok:true}),onState:()=>{}},
     htmlPreview:{open:async request=>{const id="preview"+((calls.htmlPreviews||=[]).push(request));return {ok:true,id,url:"myide-preview://"+id+"/page.html"};},close:async id=>{(calls.htmlPreviewClosed||=[]).push(id);}},
     // 翻译插件走 llm:chat：桩直接回 "译:<最后一条 user 内容>"，断言可以精确比对
     llm: { chat: async (cfg, msgs) => ({ text: '译:' + String((msgs[msgs.length - 1] || {}).content || '') }) },
@@ -563,7 +562,6 @@ async function loadApp(dom) {
   evalFile('settings.js');
   evalFile('help.js');
   evalFile('browser.js');
-  evalFile('harness.js');
   evalFile('db-panel.js');
   evalFile('ai-panel.js');
   evalFile('tasks.js');
@@ -5008,11 +5006,8 @@ assert_(panel, 'CM6 搜索面板出现');
     } catch {}
   });
 
-  await okAsync('完整Harness：模式入口打开原生工作区，切文件让位，收起不重启会话',async()=>{
-    const w=dom.window,cfg=w.AiPanel.getConfig();await w.AiPanel.setConfig({engine:'dsh'});
-    w.App.showAi();await tick();assert_(w.App.getTool()==='harness'&&w.HarnessPanel.visible,'AI入口进入完整工作区');assert_(!w.App.getPageContext().projectContext,'Harness不自动附带后台项目文件');
-    const starts=calls.harnessStarts;await w.Viewer.openFile(P+'/notes.txt');await tick();assert_(!w.HarnessPanel.visible,'打开文件摘掉原生工作区');w.HarnessPanel.open();await tick();assert_(calls.harnessStarts===starts,'再开复用已就绪运行');
-    w.document.getElementById('harness-standard').click();await tick();assert_(w.AiPanel.getConfig().engine==='standard'&&w.App.getTool()!=='harness','切回普通助手入口有效');await w.AiPanel.setConfig({engine:cfg.engine||'standard'});w.App.setAiOpen(false);w.App.showTool('project');w.App.switchTool('project');
+  await okAsync('Harness侧栏模式保留当前页面与编辑区，已有文件标签仍可操作',async()=>{
+    const w=dom.window,cfg=w.AiPanel.getConfig();await w.AiPanel.setConfig({engine:'dsh'});w.App.showTool('project');const page=w.App.getTool();w.App.showAi();await tick();assert_(w.App.getTool()===page,'AI入口不切换当前页面');assert_(!w.document.getElementById('ai-panel').classList.contains('hidden'),'右侧对话框打开');assert_(!w.document.getElementById('harness-main'),'主区没有原生页面覆盖');await w.Viewer.openFile(P+'/notes.txt');await tick();assert_(w.Viewer.activeTab.path===P+'/notes.txt','侧栏打开仍可切文件');await w.AiPanel.setConfig({engine:cfg.engine||'standard'});w.App.setAiOpen(false);w.App.showTool('project');w.App.switchTool('project');
   });
 
   await okAsync('内置浏览器：HTML入口同步页面，文件切换让位，关闭恢复来源页面',async()=>{

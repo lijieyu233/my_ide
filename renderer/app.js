@@ -100,7 +100,7 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'harness', 'log', 'quick-launch'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'log', 'quick-launch'];
   const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -110,8 +110,6 @@ const App = (() => {
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
-    if(prev==='harness')window.HarnessPanel?.hide();
-    if(next==='harness')window.HarnessPanel?.show();
     if (prev !== 'launch' && next === 'launch') window.LaunchPanel?.refresh();
     if (prev === 'quick-launch') window.QuickLaunch?.hide();
     if (next === 'quick-launch') window.QuickLaunch?.show();
@@ -180,13 +178,13 @@ const App = (() => {
     renderToolStrip();
   }
   // 按钮点击：再点收起（与左侧工具按钮同款交互）
-  function toggleAi() { if(window.AiPanel?.getConfig().engine==='dsh'){window.HarnessPanel?.open();return;}setAiOpen(!aiOpen); }
+  function toggleAi() { setAiOpen(!aiOpen); }
   // 快捷键 Ctrl+8：始终打开（不因已开而收起）
-  function showAi() { if(window.AiPanel?.getConfig().engine==='dsh'){window.HarnessPanel?.open();return;}if (!aiOpen) setAiOpen(true); }
+  function showAi() { if (!aiOpen) setAiOpen(true); }
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
-    if (activeTool === 'harness' || activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'remote') {
+    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'remote') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
@@ -225,7 +223,6 @@ const App = (() => {
   }
 
   function renderToolStrip() {
-    document.body.classList.toggle('harness-active',activeTool==='harness');
     // 按钮互斥高亮（AI 独立，单独判 aiOpen）
     for (const t of ALL_TOOLS) {
       const b = document.getElementById('tool-' + t);
@@ -238,7 +235,6 @@ const App = (() => {
     if (activeTool === 'db') sidePanel = 'db';
     if (activeTool === 'remote') sidePanel = 'remote';
     if (activeTool === 'browser') sidePanel = 'browser';
-    if(activeTool==='harness')sidePanel=null;
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
     for (const t of ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser']) {
@@ -336,9 +332,9 @@ const App = (() => {
   function getTool() { return activeTool; }
   // 独立工具主区会遮住编辑器；侧栏搜索/大纲仍属于项目工作区。
   function getPageContext() {
-    const names = { harness:'DeepSeek Harness', project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
+    const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
       launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动' };
-    const independent = ['harness','tasks','launch','db','remote','browser','quick-launch'].includes(activeTool);
+    const independent = ['tasks','launch','db','remote','browser','quick-launch'].includes(activeTool);
     const projectContext = !!root && !independent;
     const id = independent ? activeTool : projectContext ? 'project' : 'welcome';
     const page = { id, name: independent ? names[activeTool] : projectContext ? '项目' : '欢迎页',
@@ -1109,7 +1105,6 @@ const App = (() => {
     document.getElementById('tool-git').onclick = () => switchTool('git');
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
-    window.HarnessPanel?.init();
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     if (window.RemotePanel) { RemotePanel.init(); document.getElementById('tool-remote').onclick = () => switchTool('remote'); }
     if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }

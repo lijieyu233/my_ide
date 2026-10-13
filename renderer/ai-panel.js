@@ -38,6 +38,7 @@ const AiPanel = (() => {
     return null;
   }
 
+  let dshConfigOptions=[],dshOptionsTicket=0;
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
   let ctxFiles = [];        // 附带上下文列表 [{path, content, isDir}]（📎 按钮 / @引用 均入此列）
@@ -54,7 +55,7 @@ const AiPanel = (() => {
     const unique = () => window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
     if (!curSessionId) curSessionId = 's-' + unique();
     const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
-      rootId: (window.App && App.root) || '', generation: ++generation }), status: 'active', round: -1, controller: new AbortController() };
+      rootId: (window.App && App.root) || '', generation: ++generation }), engine:getConfig().engine==='dsh'?'dsh':'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
     currentRun = run;
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
     run.notice = document.createElement('div'); run.notice.className = 'ai-run-state'; run.notice.setAttribute('role', 'status');
@@ -124,11 +125,13 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
+    if(currentRun?.engine==='dsh'&&currentRun.pageId!==page.id)stopRun();
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
     renderChips(); renderUsage();
     if (page.projectContext) followActive();
+    refreshDshOptions();
   }
   function plainUserContent(m) {
     if (m._contextFreeContent !== undefined) return m._contextFreeContent;
@@ -818,7 +821,8 @@ const AiPanel = (() => {
   }
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
   async function setConfig(c) {
-    if(c?.engine&&c.engine!==getConfig().engine)stopRun(true);
+    const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
+    if(switching){persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];}
     const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     let result = { ok: true };
     if (keys.some(key=>Object.hasOwn(c || {},key))) {
@@ -829,7 +833,19 @@ const AiPanel = (() => {
     }
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
-    refreshModelSel(); return result;
+    if(switching)onProjectChange();
+    refreshModelSel();if(other.engine==='dsh')refreshDshOptions();return result;
+  }
+
+  async function refreshDshOptions(){
+    if(getConfig().engine!=='dsh'||!window.myIDE.ai.dshOptions||panel?.classList.contains('hidden'))return;
+    const own=++dshOptionsTicket,page=currentPage(),root=window.App?.root||'';
+    if(!curSessionId)curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));
+    const sessionId=curSessionId;let result;
+    try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)));}catch(error){result={ok:false,error:error.message};}
+    if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
+    if(result?.ok){dshConfigOptions=result.configOptions||[];refreshModelSel();}
+    else{const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
   }
 
   // 面板头部模型切换器：当前模型 + 服务商预设模型列表
@@ -838,6 +854,15 @@ const AiPanel = (() => {
     if (!sel) return;
     const cfg = getConfig();
     const engine=document.getElementById('ai-engine');if(engine)engine.value=cfg.engine==='dsh'?'dsh':'standard';
+    document.getElementById('ai-dsh-options')?.classList.toggle('hidden',cfg.engine!=='dsh');
+    if(cfg.engine==='dsh'){
+      const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
+      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join(''):'<option value="">Harness 原生默认模型</option>';
+      sel.value=cfg.dshModel||model?.currentValue||'';sel.title='模型由本机 Harness 提供，与普通助手配置独立';
+      const reasoning=dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
+      if(select){select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('')||'<option value="">原生默认</option>';select.value=cfg.dshReasoning||reasoning?.currentValue||'';}
+      return;
+    }
     const prov = providerOf(cfg);
     const models = [];
     if (cfg.model && !models.includes(cfg.model)) models.push(cfg.model);
@@ -852,7 +877,7 @@ const AiPanel = (() => {
   function syncVisible(v) {
     if (panel) panel.classList.toggle('hidden', !v);
     if (!v) { stopRun(); clearSessionPermissions(); }
-    if (v && inputEl) inputEl.focus();
+    if (v && inputEl) {inputEl.focus();refreshDshOptions();}
   }
 
   // ---------- 消息渲染 ----------
@@ -919,8 +944,8 @@ const AiPanel = (() => {
       acts.className = 'ai-msg-acts';
       const eb = document.createElement('button');
       eb.className = 'ai-act-btn';
-      eb.textContent = '\u270E 编辑并重发';
-      eb.title = '把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
+      eb.textContent = getConfig().engine==='dsh'?'复制并继续':'\u270E 编辑并重发';
+      eb.title = getConfig().engine==='dsh'?'复制到输入框；修改后追加为新消息，原生历史保留':'把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
       eb.onclick = () => editUserMsg(row.dataset.mid);
       acts.appendChild(eb);
       row.appendChild(acts);
@@ -996,7 +1021,7 @@ const AiPanel = (() => {
   // 只在「最后一条助手回复」上挂 ⟳：中间那些重新生成没有意义，到处挂只会误点
   function markRegen() {
     removeRegen();
-    if (busy || lastUserAt == null || lastUserAt >= msgs.length) return;
+    if (getConfig().engine==='dsh'||busy || lastUserAt == null || lastUserAt >= msgs.length) return;
     const rows = [...msgsEl.querySelectorAll('.ai-msg.ai-assistant')];
     const last = rows[rows.length - 1];
     if (!last) return;
@@ -1012,6 +1037,7 @@ const AiPanel = (() => {
     if (lastUserAt == null || lastUserAt >= msgs.length) { MI.toast('没有可重新生成的回复', 'err'); return; }
     msgs.length = lastUserAt + 1;             // 保留那条用户消息，丢掉之后的
     const keep = msgs[lastUserAt] && msgs[lastUserAt]._ui;
+    if(getConfig().engine==='dsh'){inputEl.value=text;pendingImages=(msgs[idx]._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     const rows = [...msgsEl.querySelectorAll('.ai-msg, .ai-tool')];
     const at = rows.findIndex((r) => r.dataset.mid === keep);
     for (let i = rows.length - 1; i > at; i--) rows[i].remove(); // 改动卡片留着（文件确实改了，撤销入口不能丢）
@@ -1028,6 +1054,8 @@ const AiPanel = (() => {
     if (idx < 0) { MI.toast('找不到这条消息', 'err'); return; }
     const text = msgs[idx]._text || (typeof msgs[idx].content === 'string' ? msgs[idx].content : '');
     const rows = [...msgsEl.querySelectorAll('.ai-msg, .ai-tool')];
+    // ACP 不提供历史回退；本地删气泡不能伪装成原生会话已经回滚。
+    if(getConfig().engine==='dsh'){inputEl.value=text;pendingImages=(msgs[idx]._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     const at = rows.findIndex((r) => r.dataset.mid === mid);
     msgs.length = idx;                        // 这条及其之后全部丢弃（重发会重新生成）
     for (let i = rows.length - 1; i >= at && at >= 0; i--) rows[i].remove();
@@ -1344,8 +1372,7 @@ const AiPanel = (() => {
     const text = (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
-    if(cfg.engine==='dsh'){window.HarnessPanel?.open();return;}
-    if (!cfg.baseUrl || !cfg.model) {
+    if (cfg.engine!=='dsh'&&(!cfg.baseUrl || !cfg.model)) {
       MI.toast('请先配置服务地址与模型', 'err');
       Settings.open('ai');
       return;
@@ -1404,7 +1431,7 @@ const AiPanel = (() => {
       && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
     let warning = r?.message || r?.error || (!complete && !r?.aborted ? '回复终态无效，未执行工具' : '');
     let textCalls = [];
-    if (!isErr && complete && r.finishReason === 'stop' && text) {
+    if (run.engine!=='dsh' && !isErr && complete && r.finishReason === 'stop' && text) {
       try { textCalls = parseToolCalls(text).map((c, index) => ({ ...c, id: stream.context.requestId + ':' + stream.context.round + ':' + index })); }
       catch { complete = false; warning = '文本工具块或参数未完整完成，未执行工具'; }
     }
@@ -1476,7 +1503,7 @@ const AiPanel = (() => {
   const SESS_LIMIT = 30;
   // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
   // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
-  function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || ''); }
+  function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
   function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   function sessTitle(list) {
@@ -1586,6 +1613,7 @@ const AiPanel = (() => {
     msgs = repairToolHistory((se.msgs || []).slice());
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
     curSessionId = se.id;
+    refreshDshOptions();
     renderUsage();
     replayMsgs();
     MI.toast('已载入会话：' + se.title, 'ok');
@@ -1625,7 +1653,7 @@ const AiPanel = (() => {
     syncPermBtn();
     loadProjectRules();
     followActive();
-    showWelcome();
+    showWelcome();refreshDshOptions();
   }
 
   // ---------- 项目规则文件 ----------
@@ -2256,19 +2284,60 @@ const AiPanel = (() => {
     } catch {}
   }
 
+  async function handleDshEvent(event){
+    const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
+    if(event.type==='status'){run.notice.textContent=event.text;return;}
+    if(event.type==='config'){dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
+    if(event.type==='native'){
+      const update=event.update;
+      if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
+        run.thought ||= document.createElement('details');if(!run.thought.isConnected){run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.insertBefore(run.thought,run.stream.element);}
+        run.thought.querySelector('pre').textContent+=update.content.text;run.notice.textContent='Harness 正在思考';
+      }
+      if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
+        run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
+        if(!entry){const call={name:update.title||'DSH 原生工具',args:update.rawInput||{}};const row=call.name.startsWith('mcp__myide__')?null:renderToolRow(call);if(row)row.querySelector('.ai-tool-ic').innerHTML='<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>';entry={row,call};run.dshRows.set(update.toolCallId,entry);}
+        if(update.status==='completed'||update.status==='failed')setToolState(entry.row,update.status==='completed',update.status==='completed'?'已完成':'失败');
+        const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
+        if(output&&entry.row){entry.row.title=output;const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=output;detail.append(summary,body);entry.row.appendChild(detail);}
+        run.notice.textContent='Harness：'+(entry.call.name||'正在执行工具');
+      }
+      if(update.sessionUpdate==='usage_update')document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
+      return;
+    }
+    if(event.type==='permission'){
+      const box=document.createElement('div');box.className='ai-dsh-permission';const call=run.dshRows?.get(event.toolCall?.toolCallId)?.call;
+      const title=document.createElement('strong');title.textContent='DSH 原生工具请求授权';const body=document.createElement('pre');body.textContent=(call?.name||event.toolCall?.title||'工具')+'\n'+JSON.stringify(call?.args||event.toolCall?.rawInput||{},null,2);box.append(title,body);msgsEl.appendChild(box);
+      const close=()=>{for(const button of box.querySelectorAll('button'))button.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
+      for(const option of event.options||[]){const button=document.createElement('button');button.className='tb-btn';button.textContent=option.kind==='allow_once'?'本次允许':'拒绝';button.onclick=async()=>{if(!runIsLive(run))return close();const result=await window.myIDE.ai.dshPermissionResult(event.context,event.id,option.optionId);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}};box.appendChild(button);}scrollBottom();return;
+    }
+    if(event.type!=='tool')return;
+    const call=event.call;let row,result;
+    try{
+      row=renderToolRow(call);
+      if(call.name==='ide_state'){const page=currentPage(),tab=window.Viewer?.activeTab;result={ok:true,text:JSON.stringify({page,...(page.projectContext&&tab?{editor:{path:tab.path,dirty:!!tab.dirty,content:String(tab.content||'').slice(0,30000),truncated:String(tab.content||'').length>30000}}:{})})};}
+      else result=await executeTool(call,run);
+    }catch(error){result={ok:false,text:error.message||String(error)};}
+    setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row)row.title=String(result.text||'');
+    if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
+    try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);}catch{if(runIsLive(run))stopRun();}
+  }
+
   function init() {
-    const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});if(engine.value==='dsh')window.HarnessPanel?.open();};
+    const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
+    document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({dshReasoning:event.target.value});});
+    window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
     window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     if (!panel) return;
     showWelcome();
-    refreshModelSel();
+    refreshModelSel();refreshDshOptions();
     const modelSel = document.getElementById('ai-model');
     if (modelSel) modelSel.onchange = async () => {
       const m = modelSel.value;
       if (!m) return;
-      try { await setConfig({ model: m }); MI.toast('已切换模型：' + m, 'ok'); }
+      try { await setConfig(getConfig().engine==='dsh'?{dshModel:m,dshReasoning:''}:{model:m}); MI.toast('已切换模型：' + m, 'ok'); }
       catch (error) { refreshModelSel(); MI.toast(error.message, 'err'); }
     };
     if (sendBtn) {
