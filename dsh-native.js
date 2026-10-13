@@ -20,11 +20,25 @@ async function install({home,runtime}){
     await fs.writeFile(patch+'.myide-tmp',text);await fs.rename(patch+'.myide-tmp',patch);
   }
 }
+function modelInfo(catalog,selection){return catalog.groups.flatMap(group=>group.models.map(item=>({...item,provider:group.id}))).find(item=>item.provider===selection.provider&&item.id===selection.model);}
+function selectionWithReasoning(catalog,selection,previous){
+  const next={...selection},reasoning=modelInfo(catalog,next)?.reasoning,efforts=reasoning?.efforts||[];
+  if(next.reasoningEffort){if(!efforts.some(effort=>effort.id===next.reasoningEffort))throw Error('当前模型不支持推理强度 '+next.reasoningEffort+'，请重新选择');return next;}
+  // WorkBuddy 的目录可能只声明允许值，没有 defaultEffort；省略强度会让适配器发出被上游拒绝的默认请求。
+  // 模型切换优先保留仍可用的明确选择，否则使用目录默认，再从已公布值选择；不合成新的强度。
+  if(efforts.length){next.reasoningEffort=[previous?.reasoningEffort,reasoning.defaultEffort,'high',...efforts.map(effort=>effort.id)].find(value=>efforts.some(effort=>effort.id===value));}
+  return next;
+}
 function configOptions(catalog,selected){
-  const selection=selected||catalog.default,model=catalog.groups.flatMap(group=>group.models.map(item=>({...item,provider:group.id}))).find(item=>item.provider===selection.provider&&item.id===selection.model);
+  const selection=selectionWithReasoning(catalog,selected||catalog.default),model=modelInfo(catalog,selection);
   const options=[{id:'model',name:'模型',type:'select',currentValue:JSON.stringify([selection.provider,selection.model]),options:catalog.groups.map(group=>({group:group.id,name:group.name,options:group.models.map(item=>({value:JSON.stringify([group.id,item.id]),name:item.name}))}))}];
-  if(model?.reasoning)options.push({id:'reasoning_effort',name:'推理',type:'select',currentValue:selection.reasoningEffort||'',options:[...(!model.reasoning.defaultEffort?[{value:'',name:'原生默认'}]:[]),...model.reasoning.efforts.map(effort=>({value:effort.id,name:effort.name}))]});
+  if(model?.reasoning?.efforts.length)options.push({id:'reasoning_effort',name:'推理',type:'select',currentValue:selection.reasoningEffort,options:model.reasoning.efforts.map(effort=>({value:effort.id,name:effort.name}))});
   return options;
+}
+function turnFailure(reason,lastError){
+  const message=reason?.error?.message||reason?.reason?.message||reason?.message||lastError?.message;
+  const code=reason?.error?.code||lastError?.code;
+  return '原生 DSH 未完成：'+(reason?.kind||'unknown')+(code?' ['+String(code).slice(0,100)+']':'')+(message?' · '+String(message).slice(0,3000):'');
 }
 class NativeRpc extends EventEmitter {
   constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;}
@@ -48,13 +62,15 @@ class NativeRpc extends EventEmitter {
       await this.call('session/create',{request:{sessionId:id,workspaceId:workspace.workspaceId}});
       const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
       const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
-      this.sessions.set(id,{catalog,selected});return {sessionId:id,configOptions:configOptions(catalog,selected)};
+      const normalized=selectionWithReasoning(catalog,selected);
+      if(normalized.reasoningEffort!==selected.reasoningEffort)await this.call('session/selectModel',{request:{sessionId:id,...normalized}});
+      this.sessions.set(id,{catalog,selected:normalized});return {sessionId:id,configOptions:configOptions(catalog,normalized)};
     }
     const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
     if(method==='session/set_config_option'){
       let selected={...state.selected};
-      if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);if(!state.catalog.groups.some(group=>group.id===provider&&group.models.some(item=>item.id===model)))throw Error('该模型不在原生 DSH 目录中');selected={provider,model};}
-      else if(params.configId==='reasoning_effort'){delete selected.reasoningEffort;if(params.value)selected.reasoningEffort=params.value;}
+      if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);if(!state.catalog.groups.some(group=>group.id===provider&&group.models.some(item=>item.id===model)))throw Error('该模型不在原生 DSH 目录中');selected=selectionWithReasoning(state.catalog,{provider,model},state.selected);}
+      else if(params.configId==='reasoning_effort'){delete selected.reasoningEffort;if(params.value)selected.reasoningEffort=params.value;selected=selectionWithReasoning(state.catalog,selected,state.selected);}
       else throw Error('不支持的原生会话选项');
       const result=await this.call('session/selectModel',{request:{sessionId:params.sessionId,...selected}});state.selected=result.selected;return {configOptions:configOptions(state.catalog,state.selected)};
     }
@@ -63,7 +79,7 @@ class NativeRpc extends EventEmitter {
   }
   async prompt(params,state){
     const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
-    const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',started=false,accepted=false,activeTurn=null,lastSeq=-1;
+    const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',started=false,accepted=false,activeTurn=null,lastSeq=-1,lastError=null;
     try{
       while(true){const {done,value}=await reader.read();if(done)throw Error('原生 DSH 消息流已断开；未确认任务完成');buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
         let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
@@ -82,12 +98,13 @@ class NativeRpc extends EventEmitter {
           if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
           if(event.type==='turn/start'){started=true;activeTurn=data.turn;}
           if(!started)continue;
+          if(event.type==='agent/error'||event.type==='request/error')lastError=data.error||data;
           if(event.type==='assistant/message')for(const block of data.message.content||[]){if(block.type==='text')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_message_chunk',messageId:data.message.id,content:block});else if(block.type==='thinking')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:block.thinking||block.text||''}});}
           if(event.type==='tool/call')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call',toolCallId:data.callId,title:data.name,rawInput:data.arguments,status:'in_progress'});
           if(event.type==='tool/result')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call_update',toolCallId:data.message.toolCallId,status:data.error||data.message.isError?'failed':'completed',content:(data.message.content||[]).map(content=>({type:'content',content}))});
           if(/^(todo|plan)\//.test(event.type))this.notifyUpdate(params.sessionId,{sessionUpdate:'myide_projection',event});
           if(event.type==='request/context')this.notifyUpdate(params.sessionId,{sessionUpdate:'usage_update',used:data.inputTokens||0,size:data.contextWindow||0});
-          if(event.type==='turn/end'&&data.turn===activeTurn){if(data.reason.kind==='interrupted')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error('原生 DSH 未完成：'+data.reason.kind+(data.reason.message?' · '+data.reason.message:''));return {stopReason:'end_turn'};}
+          if(event.type==='turn/end'&&data.turn===activeTurn){if(data.reason.kind==='interrupted'||data.reason.kind==='aborted'&&data.reason.reason?.kind==='user')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error(turnFailure(data.reason,lastError));return {stopReason:'end_turn'};}
         }
       }
     }catch(error){if(!controller.signal.aborted&&error instanceof TypeError)this.close();throw error;}
@@ -105,4 +122,4 @@ async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetch
   const url=nativeUrl(info.url),response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(5000)}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
   if(response.status!==303||!cookie)throw Error('无法与原生 DSH 建立本机授权连接');return new NativeRpc(url.origin,cookie,fetcher);
 }
-module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions};
+module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure};

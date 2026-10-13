@@ -2358,7 +2358,7 @@ const AiPanel = (() => {
     if (modelSel) modelSel.onchange = async () => {
       const m = modelSel.value;
       if (!m) return;
-      try { await setConfig(getConfig().engine==='dsh'?{dshModel:m,dshReasoning:''}:{model:m}); MI.toast('已切换模型：' + m, 'ok'); }
+      try { await setConfig(getConfig().engine==='dsh'?{dshModel:m}:{model:m}); MI.toast('已切换模型：' + m, 'ok'); }
       catch (error) { refreshModelSel(); MI.toast(error.message, 'err'); }
     };
     if (sendBtn) {
