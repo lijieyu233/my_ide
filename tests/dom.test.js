@@ -290,6 +290,7 @@ function makeDom() {
       viewNav: async (cmd) => { (calls.viewNav = calls.viewNav || []).push(cmd); },
       setColorScheme: async (mode) => { (calls.colorScheme = calls.colorScheme || []).push(mode); return { ok: true, source: mode }; },
       onCmd: () => {},
+      fullscreen: async enabled => { (calls.browserFullscreen=calls.browserFullscreen||[]).push(enabled);return {ok:true,fullscreen:enabled}; },
       onState: (cb) => { stateCb.browser = cb; },
     },
     db: {
@@ -4561,9 +4562,11 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
   });
-
   await okAsync('内置浏览器：打开和聚焦不展开建议，输入才展开，清空与Esc收起',async()=>{
     g(dom,'App.showTool("browser")');await tick();const input=$(dom,'#bw-url'),dropdown=$(dom,'#bw-dd');input.blur();input.focus();await tick();assert_(dropdown.classList.contains('hidden'),'单纯聚焦不展开');input.value='github';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(!dropdown.classList.contains('hidden'),'主动输入匹配项时展开');input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));await tick();assert_(dropdown.classList.contains('hidden'),'Esc关闭建议');input.focus();input.value='';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(dropdown.classList.contains('hidden'),'空输入不显示整份历史');g(dom,'App.showTool("project")');
+  });
+  await okAsync('内置浏览器：全屏按钮、F11、Esc与切页恢复，不改侧栏和AI开关',async()=>{
+    g(dom,'App.showTool("browser")');await tick();const before=g(dom,'JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})'),btn=$(dom,'#bw-fullscreen');click(btn);await tick();assert_(dom.window.document.body.classList.contains('browser-fullscreen'),'按钮进入全屏');assert_(btn.getAttribute('aria-pressed')==='true','可读全屏状态');key(dom,'F11');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'F11退出');key(dom,'F11');await tick();key(dom,'Escape');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'Esc退出');click(btn);await tick();g(dom,'App.showTool("project")');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'切页自动退出');assert_((calls.browserFullscreen||[]).at(-1)===false,'请求恢复窗口');assert_(g(dom,'JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})')===before,'无额外持久布局改变');click($(dom,'#tool-project'));await tick();
   });
 
   // 回归：sideCollapsed 残留（先收起项目面板，再切浏览器 → 收藏面板必须显示）

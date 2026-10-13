@@ -14,6 +14,7 @@ const BrowserPanel = (() => {
   let hasPage = false;      // 是否已打开过页面（决定 show 恢复网页 or 空状态）
   let currentUrl = '';
   let currentTitle = '';
+  let fullscreen=false,fullscreenWanted=false;
   const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
   let dragFavUrl = null; // 拖拽源（dragover 里 dataTransfer.getData 恒为空，只能靠它判断，见 renderSidebar）
 
@@ -209,6 +210,7 @@ const BrowserPanel = (() => {
   // ---------- 主进程状态回推 ----------
   function onState(s) {
     if (!s) return;
+    if(s.fullscreen!=null){if(!s.fullscreen){fullscreenWanted=false;applyFullscreen(false);}else if(visible&&fullscreenWanted)applyFullscreen(true);}
     if (s.err) { showError(s.err); return; }
     if (s.navigated && s.url) {
       currentUrl = s.url;
@@ -337,6 +339,7 @@ const BrowserPanel = (() => {
   function hide() {
     if (!visible) return;
     visible = false;
+    if(fullscreen||fullscreenWanted)setFullscreen(false);
     overlayHid = false; // 面板隐藏本身就摘了 view，状态复位
     panel.classList.add('hidden');
     syncToolBtn();
@@ -346,6 +349,18 @@ const BrowserPanel = (() => {
   }
   function toggle() { visible ? hide() : show(); }
   function open(url) { show(); go(url); }
+
+  function applyFullscreen(enabled){
+    fullscreen=!!enabled;document.body.classList.toggle('browser-fullscreen',fullscreen);
+    const button=document.getElementById('bw-fullscreen');if(button){button.classList.toggle('active',fullscreen);button.setAttribute('aria-pressed',String(fullscreen));button.title=fullscreen?'退出浏览器全屏 (F11 / Esc)':'浏览器全屏 (F11)';button.setAttribute('aria-label',fullscreen?'退出浏览器全屏':'浏览器全屏');}
+    requestAnimationFrame(()=>requestAnimationFrame(syncBounds));
+  }
+  async function setFullscreen(enabled){
+    if(enabled&&!visible)return {error:'浏览器未打开'};fullscreenWanted=!!enabled;closeDd();
+    if(!enabled)applyFullscreen(false);
+    try{const b=B();if(!b?.fullscreen)throw Error('浏览器全屏接口不可用');const result=await b.fullscreen(!!enabled);if(result?.error)throw Error(result.error);if(fullscreenWanted===!!enabled&&(!enabled||visible))applyFullscreen(!!result.fullscreen);return result;}
+    catch(error){if(fullscreenWanted===!!enabled){fullscreenWanted=false;applyFullscreen(false);MI.toast(error.message,'err');}return {error:error.message};}
+  }
 
   // ---------- 空状态（收藏 + 最近访问） ----------
   function renderEmpty() {
@@ -808,6 +823,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-fwd').onclick = forward;
     document.getElementById('bw-reload').onclick = reload;
     document.getElementById('bw-home').onclick = home;
+    document.getElementById('bw-fullscreen').onclick = () => setFullscreen(!fullscreenWanted);
     document.getElementById('bw-close').onclick = () => App.switchTool('browser'); // 已激活 → 收起
     document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
     favBtn.onclick = (e) => {
@@ -860,6 +876,11 @@ const BrowserPanel = (() => {
     if (maskEl) overlayMo.observe(maskEl, { attributes: true, attributeFilter: ['class'] });
     if (menuEl) overlayMo.observe(menuEl, { attributes: true, attributeFilter: ['class'] });
     if (ddEl) overlayMo.observe(ddEl, { attributes: true, attributeFilter: ['class'] });
+    document.addEventListener('keydown',event=>{
+      if(!visible||event.isComposing||[document.getElementById('modal-mask'),document.getElementById('ctx-menu')].some(el=>el&&!el.classList.contains('hidden')))return;
+      if(event.key==='F11'&&!event.ctrlKey&&!event.altKey&&!event.shiftKey){event.preventDefault();event.stopImmediatePropagation();setFullscreen(!fullscreenWanted);}
+      else if(event.key==='Escape'&&fullscreenWanted&&ddEl.classList.contains('hidden')){event.preventDefault();event.stopImmediatePropagation();setFullscreen(false);}
+    },true);
     // 整窗缩放变化 → CSS↔DIP 映射改变，主进程换算 bounds 需重新上报
     if (window.myIDE && myIDE.win && myIDE.win.onZoom) {
       myIDE.win.onZoom(() => { setTimeout(syncBounds, 30); setTimeout(syncBounds, 200); });
@@ -875,6 +896,8 @@ const BrowserPanel = (() => {
         else if (cmd === 'forward') forward();
         else if (cmd === 'reload') reload();
         else if (cmd === 'focus-url') { urlInput.focus(); urlInput.select(); }
+        else if (cmd === 'fullscreen') setFullscreen(!fullscreenWanted);
+        else if (cmd === 'exit-fullscreen') setFullscreen(false);
       });
       // 主进程页面状态回推（url/title/loading/canBack/canFwd/progress/err）
       if (b.onState) b.onState((s) => onState(s));
@@ -882,7 +905,7 @@ const BrowserPanel = (() => {
   }
 
   function aiOperation(operation,args={}) {
-    if(operation==='state')return {visible,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
+    if(operation==='state')return {visible,fullscreen,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
     if(operation==='reveal'){
       hasPage=true;currentUrl=args.url;urlInput.value=args.url;
       document.getElementById('browser-empty').classList.add('hidden');
@@ -904,6 +927,7 @@ const BrowserPanel = (() => {
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
     cycleDarkMode, get darkMode() { return darkMode; },
+    setFullscreen,get fullscreen(){return fullscreen;},
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

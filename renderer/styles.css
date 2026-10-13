@@ -2321,6 +2321,12 @@ body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff
   display: flex; flex-direction: column;
   background: var(--bg);
 }
+/* 固定到整窗，而非编辑区；临时隐藏IDE控件，不改用户侧栏/AI面板的保存状态。 */
+body.browser-fullscreen #content { z-index: 80; }
+body.browser-fullscreen #browser-panel { position: fixed; inset: 0; }
+body.browser-fullscreen #toolbar, body.browser-fullscreen #statusbar,
+body.browser-fullscreen #tool-strip, body.browser-fullscreen #sidebar,
+body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hidden; }
 .browser-toolbar {
   position: relative; flex-shrink: 0;
   display: flex; align-items: center; gap: 5px;

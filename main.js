@@ -191,7 +191,7 @@ function createWindow() {
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
   const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
-  aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) resetAi(); });
+  aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', resetAi);
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
   return mainWindow;
@@ -202,6 +202,10 @@ function createWindow() {
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+const browserFullscreen=require('./browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
+ipcMain.handle('browser:fullscreen', (e,enabled)=>{
+  try{if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口操作浏览器全屏');return browserFullscreen.set(enabled);}catch(error){return {error:error.message};}
+});
 function ensureBwView() {
   if (bwView) return bwView;
   bwView = new WebContentsView({
@@ -228,6 +232,8 @@ function ensureBwView() {
     else if (input.alt && !input.control && k === 'arrowright') cmd = 'forward';
     else if (k === 'f5' || (input.control && !input.alt && k === 'r')) cmd = 'reload';
     else if (input.control && !input.alt && k === 'l') cmd = 'focus-url';
+    else if (k === 'f11' && !input.control && !input.alt && !input.shift) cmd = 'fullscreen';
+    else if (k === 'escape' && browserFullscreen.active) cmd = 'exit-fullscreen';
     if (cmd) {
       ev.preventDefault();
       if (mainWindow) mainWindow.webContents.send('browser:cmd', cmd);
