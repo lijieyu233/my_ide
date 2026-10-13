@@ -32,6 +32,7 @@ async function test(name, fn) {
     production.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'quick-launch-service.js', 'quick-launch-app.js', 'ai-tool-contract.js', 'ai-tool-execution.js', 'ai-path-lease-win.js');
     production.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js', 'html-preview.js', 'dsh-runtime.js', 'ai-dsh.js', 'ai-dsh-rpc.js');
     production.push("remote-service.js", "remote-ipc.js", "remote-local.js");
+    production.push('ai-project-tools.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));

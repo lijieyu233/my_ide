@@ -373,6 +373,9 @@ const Outline = (() => {
 
   return {
     refresh, parse, copySection, sectionText, setAllCollapsed,
+    controlState:()=>({items:headings.map((h,i)=>({...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:childrenRange(i)[1]>i+1}))}),
+    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
+    async controlJump(index){const h=headings[index];if(!h||!owner)return {ok:false,error:'章节已失效'};for(let k=index-1,lv=h.level;k>=0;k--)if(headings[k].level<lv){collapsed.delete(hKey(headings[k]));lv=headings[k].level;}saveCollapsed();await refresh(Viewer.activeTab);select(index);return await Viewer.navigateTo({...owner,line:h.line,headingIndex:index});},
     get headings() { return headings; },
   };
 })();

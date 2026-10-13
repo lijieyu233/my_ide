@@ -1,8 +1,8 @@
 const path = require('path');
 const error = message => Object.assign(Error(message), { code: 'INVALID_TOOL_ARGS' });
-const Launch = require('./renderer/ai-launch-tools'), Ssh = require('./renderer/ai-ssh-tools'), Browser = require('./renderer/ai-browser-tools');
+const Launch = require('./renderer/ai-launch-tools'), Ssh = require('./renderer/ai-ssh-tools'), Browser = require('./renderer/ai-browser-tools'), Project=require('./renderer/ai-project-tools');
 const schemas = {
-  ...Launch.schemas, ...Ssh.schemas, ...Browser.schemas,
+  ...Launch.schemas, ...Ssh.schemas, ...Browser.schemas, ...Project.schemas,
   list_files: { path: ['path', false] }, read_file: { path: ['path', true] },
   search_files: { query: ['query', true] },
   write_file: { path: ['path', true], content: ['text', true] },
@@ -46,7 +46,7 @@ function validate(call) {
     const max = ['selector','label'].includes(kind) ? 200 : ['directory','url','web_url'].includes(kind) ? 4096 : ['command','shell_line','browser_text'].includes(kind) ? 8192 : kind === 'query' ? 4096 : kind === 'path' ? 4096 : 256 * 1024;
     if (Buffer.byteLength(value, 'utf8') > max || value.includes('\0')) throw error(key + '超过预算或含无效字符');
     if (['command', 'query'].includes(kind) && !value.trim() || kind === 'search' && !value) throw error(key + '不能为空');
-    args[key] = kind === 'path' ? relativePath(value, call.name === 'list_files') : value;
+    args[key] = kind === 'path' ? relativePath(value, ['list_files','project_tree','project_directory','project_reveal'].includes(call.name)) : value;
   }
   if (call.name === 'list_files' && !Object.hasOwn(args, 'path')) args.path = '.';
   if(['browser_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
@@ -75,4 +75,4 @@ function assertCommand(cmd, cwd, context, call) {
     || path.relative(path.resolve(context.rootId), path.resolve(cwd)) !== '') throw error('命令或工作目录与工具调用不一致');
   return normalized;
 }
-module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name)||Browser.has(name) };
+module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name)||Browser.has(name)||Project.has(name) };

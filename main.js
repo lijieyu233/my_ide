@@ -17,7 +17,7 @@ const AI = require('./ai-service');
 const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
-const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
+const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./file-write');
 const PathJobs = require('./path-jobs');
 const TextFormat = require('./text-format');
@@ -332,6 +332,15 @@ const aiBrowserTools=require('./ai-browser-tools').createService({getView:()=>bw
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
   return mainWindow.webContents.executeJavaScript('BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')');
 }});
+const aiProjectTools=require('./ai-project-tools').createService({panel:async(call,context,target)=>{
+  if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
+  return mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+')');
+}});
+ipcMain.handle('ai:project',async(e,context,input)=>{
+  try{const owner=aiSender(e),call=AiToolContract.validate(input);if(!require('./renderer/ai-project-tools').has(call.name))throw Error('不是项目或大纲工具');
+    return await aiTools.once(owner,context,call,'application',({proof,verify})=>aiProjectTools.execute(proof,verify));
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
 ipcMain.handle('ai:browser',async(e,context,call)=>{
   try{const owner=aiSender(e),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-browser-tools').has(normalized.name))throw Object.assign(Error('不是浏览器工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiBrowserTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
@@ -629,7 +638,7 @@ ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Harness 会话身份无效');
     const state=await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||""})');
-    const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command'].includes(tool.function.name)||state.page.projectContext));
+    const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
     return await DSH.inspect(cfg,{sessionId,...state},allowed);
   }catch(error){return {ok:false,error:error.message};}
 });

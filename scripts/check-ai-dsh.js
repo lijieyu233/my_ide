@@ -16,6 +16,8 @@ const llm=http.createServer(async(req,res)=>{
   else if(text.includes('通用恢复'))call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'不存在.txt')})};
   else if(text.includes('原生修改'))call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};
   else if(text.includes('字幕测试'))call={name:names.find(name=>name.endsWith('__browser_subtitles')),arguments:'{}'};
+  else if(text.includes('项目树控制验证'))call={name:names.find(name=>name.endsWith('__project_tree')),arguments:'{}'};
+  else if(text.includes('项目大纲控制验证'))call={name:names.find(name=>name.endsWith('__outline_read')),arguments:'{}'};
   else if(text.includes('原生读文件')){const tool=(data.tools||[]).find(tool=>!tool.function.name.startsWith('mcp__')&&tool.function.name==='read');if(!tool)throw Error('原生文件工具未加载：'+names.join(','));console.log('原生读取工具',tool.function.name,JSON.stringify(tool.function.parameters));call={name:tool.function.name,arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};}
   else if(text.includes('读取启动页'))call={name:names.find(name=>name.endsWith('__ide_state')),arguments:'{}'};
   else if(text.includes('读取启动列表'))call={name:names.find(name=>name.endsWith('__launch_list')),arguments:'{}'};
@@ -30,6 +32,8 @@ const llm=http.createServer(async(req,res)=>{
   else if(text.includes('原生读文件')){nativeRead=observation.includes('DISK_FIXTURE');reply=nativeRead?'NATIVE_FILE_READ_OK':'NATIVE_FILE_READ_FAILED '+observation;}
   else if(text.includes('读取启动列表'))reply='MYIDE_LAUNCH_LIST_OK '+observation;
   else if(text.includes('读取启动页'))reply='MYIDE_LAUNCH_STATE_OK '+observation;
+  else if(text.includes('项目树控制验证')){const value=JSON.parse(observation);assert(value.ok&&value.items.some(item=>item.name==='fixture.md'));reply='NATIVE_PROJECT_TREE_OK';}
+  else if(text.includes('项目大纲控制验证')){const value=JSON.parse(observation);assert(value.ok&&value.snapshot&&value.dirty);reply='NATIVE_OUTLINE_OK';}
   else reply='MYIDE_EDITOR_STATE_OK '+observation;
  }
  console.log('FIXTURE ANSWER',String(reply||call?.name).slice(0,160),'INPUT',text.slice(-160));
@@ -67,6 +71,7 @@ async function test(name,fn){console.log("CHECK",name);await fn();passed++;conso
  });
  await test('续聊由原生会话保留；第二次模型请求不重新拼接对话与旧工具',async()=>{const before=requests.length;await task('第二轮继续','CONTINUED_NATIVE_SESSION');assert(requests[before].messages.some(message=>message.role==='tool'));assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('读取当前编辑器')).length,1);assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('第二轮继续')).length,1);});
  await test('原生文件工具可用，未被 MyIDE 限制列表移除',async()=>{await task('原生读文件','NATIVE_FILE_READ_OK');assert(nativeRead);});
+ await test('项目与大纲工具通过原生DSH MCP调用真实界面接口',async()=>{await task('项目树控制验证','NATIVE_PROJECT_TREE_OK');await task('项目大纲控制验证','NATIVE_OUTLINE_OK');});
  await test('切换启动页后不附带后台文件；MCP 可读取当前页面与真实启动配置',async()=>{
   await js('App.showTool("launch");return true;');const before=requests.length;await task('读取启动页','MYIDE_LAUNCH_STATE_OK');const latest=requests[before].messages.findLast(message=>message.role==='user');assert(!JSON.stringify(latest).includes('UNSAVED_FIXTURE'));assert(!JSON.stringify(latest).includes('DISK_FIXTURE'));assert(requests[before].messages.some(message=>JSON.stringify(message).includes('UNSAVED_FIXTURE')),'同一会话仍保留以前已经发送的历史');await task('读取启动列表','MYIDE_LAUNCH_LIST_OK');assert((await js('return document.getElementById("ai-msgs").innerText;')).includes('自检服务'));assert.equal(await js('return App.getTool();'),'launch');
  });

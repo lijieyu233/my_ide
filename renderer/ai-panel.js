@@ -109,7 +109,7 @@ const AiPanel = (() => {
   let lastUserAt = null;     // 上一条用户消息在 msgs 里的下标（重新生成时回退到这里）
   let curSessionId = null;   // 当前会话 id（历史会话列表用）
 
-  const PROJECT_TOOLS = new Set(['list_files','read_file','search_files','write_file','replace_edit','run_command']);
+  const PROJECT_TOOLS = new Set(['list_files','read_file','search_files','write_file','replace_edit','run_command',...(window.AiProjectTools?.projectOnly||[])]);
   let pageKey = null, pageEpoch = 0, followTask = null;
   function currentPage() {
     // 测试/早期初始化没有 App 时，不将隐藏编辑器误判为项目页。
@@ -277,6 +277,7 @@ const AiPanel = (() => {
     ...(window.AiLaunchTools?.tools || []),
     ...(window.AiSshTools?.tools || []),
     ...(window.AiBrowserTools?.tools || []),
+    ...(window.AiProjectTools?.tools || []),
     { type: 'function', function: { name: 'list_files', description: '列出目录内容（文件和子目录）。需要了解项目结构时先用这个', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的目录路径，"." 表示根目录' } }, required: [] } } },
     { type: 'function', function: { name: 'read_file', description: '读取项目内一个文本文件的完整内容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' } }, required: ['path'] } } },
     { type: 'function', function: { name: 'search_files', description: '在整个项目里搜索文本内容（支持正则）', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词或正则表达式' } }, required: ['query'] } } },
@@ -557,6 +558,10 @@ const AiPanel = (() => {
     if(!runIsLive(run))return cancelledTool();
     if (!usesProjectContext() && PROJECT_TOOLS.has(call.name)) return {ok:false,text:'页面已切换，未继续操作项目文件'};
     const a = call.args;
+    if(window.AiProjectTools?.has(call.name)){
+      const result=await window.myIDE.ai.project(run.stream.context,call);if(!runIsLive(run))return cancelledTool();
+      return {ok:result?.ok===true,text:result?.error?'错误：'+result.error:JSON.stringify(result)};
+    }
     if(window.AiBrowserTools?.has(call.name)){
       if(window.AiBrowserTools.mutations.includes(call.name)){
         const approval=await window.myIDE.ai.authorize(run.stream.context,call);if(!runIsLive(run))return cancelledTool();
@@ -743,8 +748,8 @@ const AiPanel = (() => {
     const row = document.createElement('div');
     row.className = 'ai-tool';
     const arg = (call.args && (call.args.path || call.args.query || call.args.program || call.args.name || call.args.command || call.args.terminal || call.args.session || call.args.url || call.args.element || call.args.direction)) || '';
-    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||call.name;
-    const icon=(call.name==='ide_state'||window.AiLaunchTools?.has(call.name)||window.AiSshTools?.has(call.name)||window.AiBrowserTools?.has(call.name))?'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>':(icons[call.name]||'·');
+    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||call.name;
+    const icon=(call.name==='ide_state'||window.AiProjectTools?.has(call.name)||window.AiLaunchTools?.has(call.name)||window.AiSshTools?.has(call.name)||window.AiBrowserTools?.has(call.name))?'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>':(icons[call.name]||'·');
     row.innerHTML = '<span class="ai-tool-ic">' + icon + '</span>' +
       '<span class="ai-tool-tx">' + esc(toolLabel + ' ' + arg) + '</span>' +
       '<span class="ai-tool-st">…</span>';

@@ -50,7 +50,7 @@ function createService(registry,options={}){
     const argumentBytes=Buffer.byteLength(JSON.stringify(call));
     if(run.argumentBytes+argumentBytes>16*1024*1024)throw fail('AI_TOOL_LIMIT','本次任务参数超过16MiB预算');
     if(application&&typeof options.application!=='function')throw fail('AI_APPLICATION_UNAVAILABLE','MyIDE操作工具尚未接入');
-    const proof=application?options.application(call):scope(run,call.args.path||'.',call.name==='write_file');
+    const proof=application?options.application(call,context):scope(run,call.args.path||'.',call.name==='write_file');
     item={hash,call,proof,phases:new Map()};run.calls.set(call.id,item);run.argumentBytes+=argumentBytes;return {run,item,call};
   }
   async function guarded(owner,context,proof,fn,phase){

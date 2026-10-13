@@ -1403,6 +1403,16 @@ const Tree = (() => {
 
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus,
+    async refreshDirectories(){invalidateAll();await render();},
+    async controlDirectory(target,value,verify){verify();if(value){await loadDir(target);verify();expanded.add(target);}else if(target!==rootPath)expanded.delete(target);await render();verify();persistExpanded();},
+    async revealTarget(target,verify){
+      const norm=p=>String(p).replace(/\\/g,'/'),base=norm(rootPath),relative=norm(target).slice(base.length+1),parts=relative.split('/');
+      if(norm(target)!==base&&!norm(target).startsWith(base+'/'))throw Error('目标不在当前项目');
+      let at=rootPath;await loadDir(at);verify();
+      for(const part of parts.slice(0,-1)){const dir=(nodeCache[at]||[]).find(item=>item.type==='dir'&&item.name===part);if(!dir)throw Error('父目录不在当前文件树');at=dir.path;await loadDir(at);verify();expanded.add(at);}
+      const item=(nodeCache[at]||[]).find(item=>norm(item.path)===norm(target));if(norm(target)!==base&&!item)throw Error('目标被当前文件树过滤，未能定位');
+      select(target,item?.type||'dir');await render();verify();scrollRowIntoView(target);persistExpanded();
+    },
     getExpandedPaths, setExpandedPaths, undo,
     get selectedPath() { return selectedPath; },
     get selectedType() { return selectedType; },
