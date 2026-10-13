@@ -38,7 +38,7 @@ const AiPanel = (() => {
     return null;
   }
 
-  let dshConfigOptions=[],dshOptionsTicket=0;
+  let dshConfigOptions=[],dshOptionsTicket=0,dshOptionsState='idle';
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
   let ctxFiles = [];        // 附带上下文列表 [{path, content, isDir}]（📎 按钮 / @引用 均入此列）
@@ -827,7 +827,7 @@ const AiPanel = (() => {
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
   async function setConfig(c) {
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
-    if(switching){persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];}
+    if(switching){persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
     const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
     let result = { ok: true };
@@ -846,12 +846,15 @@ const AiPanel = (() => {
   async function refreshDshOptions(){
     if(getConfig().engine!=='dsh'||!window.myIDE.ai.dshOptions||panel?.classList.contains('hidden'))return;
     const own=++dshOptionsTicket,page=currentPage(),root=window.App?.root||'';
+    dshOptionsState='loading';refreshModelSel();
+    const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 DSH…';info.title='读取桌面 DSH 的实际模型与推理选项';}
     if(!curSessionId)curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));
     const sessionId=curSessionId;let result;
     try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)));}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
-    if(result?.ok){dshConfigOptions=result.configOptions||[];refreshModelSel();const info=document.getElementById('ai-dsh-info');if(info){info.textContent='原生 DSH · 桌面宿主';info.title='会话、模型和插件由独立的 DeepSeek Harness 程序提供';}}
-    else{const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
+    if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供'));if(info){info.textContent='DSH 已连接';info.title='会话、模型和插件由独立的 DeepSeek Harness 程序提供';}}
+    else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
+    refreshModelSel();
   }
 
   // 面板头部模型切换器：当前模型 + 服务商预设模型列表
@@ -863,13 +866,15 @@ const AiPanel = (() => {
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',cfg.engine!=='dsh');
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
-      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join(''):'<option value="">Harness 原生默认模型</option>';
+      const ready=dshOptionsState==='ready';sel.disabled=!ready;
+      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
       sel.value=choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
       const reasoning=dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
-      if(select){select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('')||'<option value="">原生默认</option>';select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
+      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
+      const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;
       return;
     }
-    const prov = providerOf(cfg);
+    sel.disabled=false;const prov = providerOf(cfg);
     const models = [];
     if (cfg.model && !models.includes(cfg.model)) models.push(cfg.model);
     for (const m of (prov ? prov.models : [])) if (!models.includes(m)) models.push(m);
@@ -1161,7 +1166,11 @@ const AiPanel = (() => {
     w.className = 'ai-welcome';
     const card = document.createElement('div');
     card.className = 'ai-card';
-    if (!cfg.baseUrl) {
+    if (cfg.engine === 'dsh') {
+      card.innerHTML = '<div class="ai-card-ic">' + AI_IC + '</div>' +
+        '<div class="ai-card-title">DeepSeek Harness</div>' +
+        '<div class="ai-card-sub">发送消息开始处理。</div>';
+    } else if (!cfg.baseUrl) {
       card.innerHTML =
         '<div class="ai-card-ic">' + AI_IC + '</div>' +
         '<div class="ai-card-title">AI 助手</div>' +
@@ -1494,6 +1503,7 @@ const AiPanel = (() => {
   }
 
   function setBusyUI(b) {
+    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
     if (sendBtn) {
       sendBtn.disabled = false;
       sendBtn.textContent = b ? '⏹' : '➤';
@@ -2293,7 +2303,7 @@ const AiPanel = (() => {
   async function handleDshEvent(event){
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){run.notice.textContent=event.text;return;}
-    if(event.type==='config'){dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
+    if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
     if(event.type==='question'){
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
       for(const question of event.questions||[]){
@@ -2347,6 +2357,7 @@ const AiPanel = (() => {
   function init() {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({dshReasoning:event.target.value});});
+    document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions();});
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
     window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});

@@ -44,7 +44,7 @@ class NativeRpc extends EventEmitter {
   constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;}
   async http(url,init){
     try{const response=await this.fetch(url,init);if([401,403].includes(response.status))this.close();return response;}
-    catch(error){if(!init.signal?.aborted)this.close();throw error;}
+    catch(error){if(!init.signal?.aborted||init.signal.reason?.name==='TimeoutError')this.close();throw error;}
   }
   async call(endpoint,args={},signal){
     const rpcId=crypto.randomUUID(),response=await this.http(this.url+'/api/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}}),signal:signal||AbortSignal.timeout(15000)});
@@ -54,6 +54,12 @@ class NativeRpc extends EventEmitter {
   }
   async raw(endpoint,data,signal){const response=await this.http(this.url+'/api/myide/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(15000)});if(!response.ok)throw Error('原生 DSH 连接器请求失败：HTTP '+response.status);return response;}
   notifyUpdate(id,update){this.emit('notification',{method:'session/update',params:{sessionId:id,update}});}
+  async refreshOptions(id){
+    const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
+    const normalized=selectionWithReasoning(catalog,selected);
+    if(normalized.reasoningEffort!==selected.reasoningEffort)await this.call('session/selectModel',{request:{sessionId:id,...normalized}});
+    const previous=this.sessions.get(id);this.sessions.set(id,{...previous,catalog,selected:normalized});return {configOptions:configOptions(catalog,normalized)};
+  }
   async request(method,params){
     if(this.closed)throw Error('原生 DSH 连接已断开');
     if(method==='session/new'||method==='session/resume'){
@@ -61,12 +67,10 @@ class NativeRpc extends EventEmitter {
       const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});
       await this.call('session/create',{request:{sessionId:id,workspaceId:workspace.workspaceId}});
       const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
-      const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
-      const normalized=selectionWithReasoning(catalog,selected);
-      if(normalized.reasoningEffort!==selected.reasoningEffort)await this.call('session/selectModel',{request:{sessionId:id,...normalized}});
-      this.sessions.set(id,{catalog,selected:normalized});return {sessionId:id,configOptions:configOptions(catalog,normalized)};
+      return {sessionId:id,...await this.refreshOptions(id)};
     }
     const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
+    if(method==='session/config_options')return this.refreshOptions(params.sessionId);
     if(method==='session/set_config_option'){
       let selected={...state.selected};
       if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);if(!state.catalog.groups.some(group=>group.id===provider&&group.models.some(item=>item.id===model)))throw Error('该模型不在原生 DSH 目录中');selected=selectionWithReasoning(state.catalog,{provider,model},state.selected);}
@@ -81,7 +85,7 @@ class NativeRpc extends EventEmitter {
     const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
     const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',started=false,accepted=false,activeTurn=null,lastSeq=-1,lastError=null;
     try{
-      while(true){const {done,value}=await reader.read();if(done)throw Error('原生 DSH 消息流已断开；未确认任务完成');buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
+      while(true){const {done,value}=await reader.read();if(done){this.close();throw Error('DSH 连接已断开；下次发送会重新连接，本次任务未确认完成');}buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
         let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
           if(frame.type==='failure')throw Error(frame.error);
           if(frame.type==='permission'||frame.type==='question'){
@@ -116,10 +120,18 @@ class NativeRpc extends EventEmitter {
 }
 async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetcher=fetch,waitMs=15000}){
   if(!skipInstall)await install({home,runtime});
-  const deadline=Date.now()+waitMs;let info;
-  do{try{info=JSON.parse(await fs.readFile(discoveryFile||path.join(home,'myide-native.json'),'utf8'));if(info.version!==1||info.profile!=='desktop'&&!skipInstall)throw Error('连接器不是桌面 DSH');process.kill(info.pid,0);nativeUrl(info.url);break;}catch{info=null;if(Date.now()>=deadline)break;await pause(200);}}while(true);
-  if(!info)throw Error('原生 DSH 连接器已安装，请打开或正常重启一次 DeepSeek Harness 桌面程序；MyIDE 不会退回另一套 ACP 配置');
-  const url=nativeUrl(info.url),response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(5000)}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
-  if(response.status!==303||!cookie)throw Error('无法与原生 DSH 建立本机授权连接');return new NativeRpc(url.origin,cookie,fetcher);
+  const deadline=Date.now()+waitMs;let issue='未找到 DSH 的连接信息';
+  do{
+    try{
+      const info=JSON.parse(await fs.readFile(discoveryFile||path.join(home,'myide-native.json'),'utf8'));
+      if(info.version!==1||info.profile!=='desktop'&&!skipInstall||!Number.isSafeInteger(info.pid)||info.pid<=0){issue='DSH 的连接信息无效';throw Error(issue);}
+      try{process.kill(info.pid,0);}catch(error){if(error.code!=='EPERM'){issue='DSH 尚未运行或正在重新启动';throw error;}}
+      const url=nativeUrl(info.url);issue='DSH 本机服务尚未响应';
+      const response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(Math.max(1,Math.min(5000,deadline-Date.now())))}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
+      if(response.status!==303||!cookie){issue='DSH 本机授权未成功（HTTP '+response.status+'）';throw Error(issue);}
+      return new NativeRpc(url.origin,cookie,fetcher);
+    }catch(error){if(error.code==='ENOENT')issue='未找到 DSH 的连接信息';if(Date.now()>=deadline)break;await pause(200);}
+  }while(true);
+  throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }
 module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure};

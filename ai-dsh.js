@@ -112,7 +112,14 @@ function createService(options={}){
   function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||permission.kind==='question'||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
   function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
-  async function inspect(cfg,context,tools){const {session}=await attach(cfg,context,tools);return {ok:true,configOptions:session.configOptions};}
+  async function inspect(cfg,context,tools){
+    // 读取选项也检验宿主，不能把缓存目录当作仍然连接；只重试读取，不重发任务。
+    for(let attempt=0;attempt<2;attempt++){
+      const {session,conn}=await attach(cfg,context,tools);
+      try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/config_options',{sessionId:session.id});session.configOptions=result.configOptions;}return {ok:true,configOptions:session.configOptions};}
+      catch(error){if(attempt||!conn.rpc.closed)throw error;}
+    }
+  }
   function dispose(){
     if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;
     server?.closeAllConnections();server?.close(()=>{});
