@@ -192,7 +192,7 @@ const BrowserPanel = (() => {
   function overlayOpen() {
     const mask = document.getElementById('modal-mask');
     const menu = document.getElementById('ctx-menu');
-    return !!(mask && !mask.classList.contains('hidden')) || !!(menu && !menu.classList.contains('hidden'));
+    return !!(mask && !mask.classList.contains('hidden')) || !!(menu && !menu.classList.contains('hidden')) || !!(ddEl && !ddEl.classList.contains('hidden'));
   }
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
   function syncOverlay() {
@@ -332,7 +332,7 @@ const BrowserPanel = (() => {
       renderEmpty();
     }
     startHeal();
-    setTimeout(() => urlInput.focus(), 0);
+    closeDd();
   }
   function hide() {
     if (!visible) return;
@@ -387,6 +387,7 @@ const BrowserPanel = (() => {
   function closeDd() { ddEl.classList.add('hidden'); ddEl.innerHTML = ''; }
   function renderDd(q) {
     const s = String(q || '').trim().toLowerCase();
+    if(!s){closeDd();return;}
     const src = [
       ...favs().map((f) => ({ url: f.url, title: f.title, fav: true })),
       ...history().map((h) => ({ url: h.url, title: h.title, fav: false })),
@@ -843,7 +844,7 @@ const BrowserPanel = (() => {
       if (e.key === 'Enter') { e.preventDefault(); go(urlInput.value); urlInput.blur(); }
       else if (e.key === 'Escape') { e.preventDefault(); urlInput.value = currentUrl; closeDd(); urlInput.blur(); }
     });
-    urlInput.addEventListener('focus', () => { urlInput.select(); renderDd(urlInput.value); });
+    urlInput.addEventListener('focus', () => { urlInput.select(); closeDd(); });
     urlInput.addEventListener('input', () => renderDd(urlInput.value));
     urlInput.addEventListener('blur', () => setTimeout(closeDd, 150));
 
@@ -858,6 +859,7 @@ const BrowserPanel = (() => {
     const menuEl = document.getElementById('ctx-menu');
     if (maskEl) overlayMo.observe(maskEl, { attributes: true, attributeFilter: ['class'] });
     if (menuEl) overlayMo.observe(menuEl, { attributes: true, attributeFilter: ['class'] });
+    if (ddEl) overlayMo.observe(ddEl, { attributes: true, attributeFilter: ['class'] });
     // 整窗缩放变化 → CSS↔DIP 映射改变，主进程换算 bounds 需重新上报
     if (window.myIDE && myIDE.win && myIDE.win.onZoom) {
       myIDE.win.onZoom(() => { setTimeout(syncBounds, 30); setTimeout(syncBounds, 200); });
@@ -886,7 +888,7 @@ const BrowserPanel = (() => {
       document.getElementById('browser-empty').classList.add('hidden');
       document.getElementById('browser-error').classList.add('hidden');viewEl.classList.remove('hidden');
       App.showTool('browser');if(!overlayOpen())mountView(null);
-      // show() 会延迟聚焦地址栏；AI导航后解除焦点，状态回推才能显示真实的新地址。
+      // AI导航后解除地址栏焦点，让状态回推能够显示真实的新地址。
       setTimeout(()=>{urlInput.blur();urlInput.value=currentUrl;},0);return {ok:true};
     }
     let changed=false;

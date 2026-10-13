@@ -4562,6 +4562,10 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
   });
 
+  await okAsync('内置浏览器：打开和聚焦不展开建议，输入才展开，清空与Esc收起',async()=>{
+    g(dom,'App.showTool("browser")');await tick();const input=$(dom,'#bw-url'),dropdown=$(dom,'#bw-dd');input.blur();input.focus();await tick();assert_(dropdown.classList.contains('hidden'),'单纯聚焦不展开');input.value='github';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(!dropdown.classList.contains('hidden'),'主动输入匹配项时展开');input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));await tick();assert_(dropdown.classList.contains('hidden'),'Esc关闭建议');input.focus();input.value='';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(dropdown.classList.contains('hidden'),'空输入不显示整份历史');g(dom,'App.showTool("project")');
+  });
+
   // 回归：sideCollapsed 残留（先收起项目面板，再切浏览器 → 收藏面板必须显示）
   await okAsync('内置浏览器：收起侧栏后再切浏览器 → 收藏面板显示（sideCollapsed 残留回归）', async () => {
     // 1. 激活 project 再点一次 → 收起（sideCollapsed = true, activeTool = null）
