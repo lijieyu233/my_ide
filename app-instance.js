@@ -14,4 +14,9 @@ function claim({ app, getWindow, openProject, argv = process.argv }) {
   });
   return true;
 }
-module.exports = { claim };
+// Windows 隐藏启动可能压过初始 show:true；首帧后显式显示，避免不可见实例持续占锁。
+function showOnReady(window, hidden) {
+  if (hidden) return;
+  window.once('ready-to-show', () => { if (!window.isDestroyed()) window.show(); });
+}
+module.exports = { claim, showOnReady };

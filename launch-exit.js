@@ -1,5 +1,5 @@
 // Electron不会等待事件监听器的Promise；必须同步取消close/before-quit，再在服务结算后发起一次退出。
-function createExitCoordinator({ app, service, dialog, getWindow, report = () => {} }) {
+function createExitCoordinator({ app, service, dialog, getWindow, beforeQuit = () => {}, report = () => {} }) {
   let pending = null, allowed = false;
   const reset = () => { allowed = false; service.setExitPending(false); };
   function successful(result) {
@@ -25,6 +25,8 @@ function createExitCoordinator({ app, service, dialog, getWindow, report = () =>
         try { result = await service.shutdown(); }
         catch (error) { result = { ok: false, failed: 1, results: [{ id: 'exit-service', name: '启动服务', ok: false, error: String(error && error.message || error) }] }; }
         if (successful(result)) {
+          // will-quit 时窗口已销毁；把异步宿主清理放在放行之前，避免无窗口主进程继续占单实例锁。
+          await beforeQuit();
           allowed = true; app.quit(); return { ok: true, result };
         }
         report(result);
@@ -33,6 +35,7 @@ function createExitCoordinator({ app, service, dialog, getWindow, report = () =>
         catch (error) { report({ ok: false, error: '退出失败提示无法显示：' + String(error && error.message || error) }); reset(); return { ok: false }; }
         // 用户明确选择保留才放行；不能把停止失败写成成功，也不清理未确认的运行记录。
         if (response && response.response === 2) {
+          await beforeQuit();
           allowed = true; app.quit(); return { ok: true, unresolved: true, result };
         }
         if (!response || response.response !== 0) { reset(); return { ok: false, canceled: true, result }; }

@@ -5,13 +5,13 @@ const gate = () => { let resolve, reject; const promise = new Promise((a,b) => {
 const success = () => ({ ok: true, stopped: 1, failed: 0, results: [{ id: 'a', ok: true }] });
 const failure = () => ({ ok: false, stopped: 0, failed: 1, results: [{ id: 'a', name: '终端A', ok: false, error: '仍在运行' }] });
 let passed=0;
-function fixture(responses=[success()], decisions=[{response:1}]) {
+function fixture(responses=[success()], decisions=[{response:1}], beforeQuit) {
   const app=new EventEmitter(), win=new EventEmitter();win.webContents=new EventEmitter();win.isDestroyed=()=>false;
   const holds=[],dialogs=[],reports=[];let calls=0,quits=0;
   const service={setExitPending:value=>holds.push(value),shutdown:async()=>{calls++;const result=responses.shift();if(result instanceof Error)throw result;return result;}};
   const dialog={showMessageBox:async(...args)=>{dialogs.push(args);const response=decisions.shift();if(response instanceof Error)throw response;return response;}};
   app.quit=()=>{quits++;const event={prevented:false,preventDefault(){this.prevented=true;}};app.emit('before-quit',event);if(!event.prevented)win.emit('close',event);};
-  const coordinator=createExitCoordinator({app,service,dialog,getWindow:()=>win,report:value=>reports.push(value)});coordinator.bindWindow(win);
+  const coordinator=createExitCoordinator({app,service,dialog,getWindow:()=>win,beforeQuit,report:value=>reports.push(value)});coordinator.bindWindow(win);
   const emit=(host,event)=>{const value={prevented:false,preventDefault(){this.prevented=true;}};host.emit(event,value);return value;};
   return {app,win,holds,dialogs,reports,coordinator,emit,service,get calls(){return calls;},get quits(){return quits;}};
 }
@@ -53,5 +53,9 @@ async function test(name,run){await run();passed++;console.log('  ok '+name);}
     const bad=failure();bad.results[0].error='<svg onload=x>'+ '长'.repeat(15000);const f=fixture([bad]);await f.coordinator.request();assert(f.dialogs[0][1].detail.length<8200);assert(f.dialogs[0][1].detail.includes('<svg'));
     const kept=fixture([{ok:true,kept:true,preserved:1,stopped:0,failed:0,results:[{id:'a',ok:true,kept:true}]}]);await kept.coordinator.request();assert.equal(kept.quits,1);
   });
+  await test('异步宿主清理完成前保持窗口并共享退出请求，保留服务分支也只清理一次',async()=>{
+    for(const keep of [false,true]){const hold=gate();let cleaned=0;const f=fixture([keep?failure():success()],[{response:2}],()=>{cleaned++;return hold.promise;});const pending=f.coordinator.request();await tick();assert.equal(cleaned,1);assert.equal(f.quits,0);assert(!f.coordinator.isAllowed());assert(f.emit(f.win,'close').prevented);assert.equal(f.coordinator.request(),pending);hold.resolve();await pending;assert.equal(cleaned,1);assert.equal(f.quits,1);}
+  });
+  await test('宿主清理失败保留窗口并释放退出闸门，允许再次退出',async()=>{let calls=0;const f=fixture([success(),success()],[],()=>{if(++calls===1)throw Error('清理失败');});assert(!(await f.coordinator.request()).ok);assert.equal(f.quits,0);assert(!f.coordinator.isAllowed());assert(f.reports[0].error.includes('清理失败'));await f.coordinator.request();assert.equal(f.quits,1);});
   console.log('退出协调：'+passed+' 通过 / 0 失败');
 })().catch(error=>{console.error(error);process.exitCode=1;});

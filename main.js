@@ -15,8 +15,6 @@ const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
 const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
-let dshExitReady=false;
-app.on('will-quit',event=>{if(!event){DSH.dispose();return;}if(dshExitReady)return;event.preventDefault();DSH.dispose().finally(()=>{dshExitReady=true;app.quit();});});
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
 const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
@@ -197,6 +195,7 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  require('./app-instance').showOnReady(mainWindow, HIDDEN_WINDOW);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
@@ -1831,5 +1830,5 @@ app.whenReady().then(() => {
 });
 
 const launchExit = require('./launch-exit').createExitCoordinator({ app, service: launchService, dialog,
-  getWindow: () => mainWindow, report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
+  getWindow: () => mainWindow, beforeQuit: () => DSH.dispose(), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });
