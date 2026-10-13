@@ -587,6 +587,16 @@ const Settings = (() => {
     const curProv = (window.AiPanel && AiPanel.providerOf(cfg)) || provs[provs.length - 1];
     list.innerHTML = `
       <div class="set-form">
+        <label class="m-label">执行模式</label>
+        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select>
+        <div id="ai-cfg-dsh-wrap" class="hidden">
+          <label class="m-label" style="margin-top:8px">DSH 启动器（桌面版 dsh.cmd，留空自动使用本机安装）</label>
+          <input id="ai-cfg-dsh" type="text" value="${esc(cfg.dshPath||'')}" placeholder="DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" spellcheck="false">
+          <label class="m-label" style="margin-top:8px">上下文容量（按模型实际容量填写，默认 65536）</label>
+          <input id="ai-cfg-dsh-context" type="number" min="16384" max="2000000" value="${esc(String(cfg.dshContextWindow||65536))}">
+          <button id="ai-dsh-pick" class="tb-btn">选择启动器</button><button id="ai-dsh-detect" class="tb-btn">检查安装</button><span id="ai-dsh-status" role="status"></span>
+          <div style="margin-top:4px;color:var(--text-dim)">使用下方模型配置；独立运行，不打开 Harness 桌面窗口。文件与程序操作沿用 MyIDE 权限。</div>
+        </div>
         <label class="m-label">服务商</label>
         <select id="ai-cfg-prov">
           ${provs.map((p) => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('')}
@@ -639,11 +649,16 @@ const Settings = (() => {
         </div>
       </div>`;
     const provSel = document.getElementById('ai-cfg-prov');
+    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=cfg.engine==='dsh'?'dsh':'standard';
+    const syncEngine=()=>document.getElementById('ai-cfg-dsh-wrap').classList.toggle('hidden',engineSel.value!=='dsh');engineSel.onchange=syncEngine;syncEngine();
+    document.getElementById('ai-dsh-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 DSH 启动器',[{name:'DSH 启动器',extensions:['cmd']}]);if(file)document.getElementById('ai-cfg-dsh').value=file;};
+    document.getElementById('ai-dsh-detect').onclick=async()=>{const status=document.getElementById('ai-dsh-status');status.textContent='正在检查';try{const result=await window.myIDE.ai.dshStatus(document.getElementById('ai-cfg-dsh').value.trim());status.textContent=result.ok?'已找到本机 DSH':result.error;}catch(error){status.textContent=error.message;}};
     const urlInput = document.getElementById('ai-cfg-url');
     const modelInput = document.getElementById('ai-cfg-model');
     const dl = document.getElementById('ai-model-list');
     const fillProv = (p, keepModel) => {
-      urlInput.value = p.baseUrl || '';
+      // 打开设置或只切执行模式时必须保留已有网关地址，不能被“自定义”的空预设清掉。
+      if(!keepModel||!urlInput.value)urlInput.value = p.baseUrl || '';
       dl.innerHTML = (p.models || []).map((m) => '<option value="' + esc(m) + '">').join('');
       if (!keepModel && p.models && p.models.length && !p.models.includes(modelInput.value)) modelInput.value = p.models[0];
     };
@@ -656,6 +671,9 @@ const Settings = (() => {
     document.getElementById('ai-cfg-save').onclick = async (event) => {
       const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
       try { await AiPanel.setConfig({
+        engine:engineSel.value,
+        dshPath:document.getElementById('ai-cfg-dsh').value.trim(),
+        dshContextWindow:Number(document.getElementById('ai-cfg-dsh-context').value),
         provider: provSel.value,
         baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),

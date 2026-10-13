@@ -2681,6 +2681,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   max-width: 150px; overflow: hidden; text-overflow: ellipsis;
 }
 #ai-model:hover { color: var(--text); border-color: var(--accent); }
+.ai-engine-row { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: .85em; }
+#ai-engine { min-width: 0; flex: 1; background: var(--bg-input); color: var(--text); border: 1px solid var(--border-mid); border-radius: 4px; padding: 2px 4px; font: inherit; }
 /* token 用量状态条（头部下方，DeepSeek 缓存命中也在此显示） */
 #ai-usage.ai-usage, .ai-usage {
   flex: none; padding: 2px 10px; font-size: .81em; color: var(--text-dim, #888);
