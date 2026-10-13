@@ -62,6 +62,7 @@ class NativeRpc extends EventEmitter {
   }
   async request(method,params){
     if(this.closed)throw Error('原生 DSH 连接已断开');
+    if(method==='session/catalog')return {configOptions:configOptions(await this.call('session/modelCatalog'))};
     if(method==='session/new'||method==='session/resume'){
       const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;if(!/^myide-[a-f0-9-]{36}$/.test(id))throw Error('这是旧 ACP 会话；请在侧栏新建原生会话');
       const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});

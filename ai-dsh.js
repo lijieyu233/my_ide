@@ -14,7 +14,8 @@ function promptContent(messages,page){
       if(!match)throw Error('Harness 图片需为 PNG/JPEG/WebP/GIF 的本地贴图');blocks.push({type:'image',mimeType:match[1],data:match[2]});
     }else throw Error('不支持的 Harness 输入类型');
   }
-  return blocks;
+  // 原生标题取首个用户文本；界面观察放在用户请求后，避免每段对话都叫“MyIDE 界面状态”。
+  return [...blocks.slice(1),blocks[0]];
 }
 function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map();
@@ -23,8 +24,12 @@ function createService(options={}){
   const live=run=>{if(disposed||run.controller.signal.aborted)throw Error('Harness 请求已停止');};
   const home=()=>path.resolve(options.home||options.homeDir?.()||process.env.DSH_HOME||path.join(os.homedir(),'.dsh'));
   const mapping=()=>options.mappingFile?.();
-  const keyOf=context=>JSON.stringify([context.sessionId,context.rootId,context.page.id,context.page.projectContext]);
-  async function load(){if(loaded)return;const file=mapping();if(file)try{for(const [key,value] of Object.entries(JSON.parse(await fs.readFile(file,'utf8'))))if(typeof value==='string')saved.set(key,value);}catch(error){if(error.code!=='ENOENT')throw Error('Harness 会话映射读取失败');}loaded=true;}
+  // 页面只是本轮上下文，不能改变对话身份；项目仍隔离，防止把另一项目历史带进来。
+  const keyOf=context=>JSON.stringify([context.sessionId,context.rootId]);
+  async function load(){if(loaded)return;const file=mapping();if(file)try{
+    const entries=Object.entries(JSON.parse(await fs.readFile(file,'utf8')));
+    for(const [key,value] of entries){const parts=JSON.parse(key);if(!Array.isArray(parts))continue;const canonical=JSON.stringify(parts.slice(0,2));const record=typeof value==='string'?{id:value,cwd:parts[3]?parts[1]:path.join(home(),'myide-detached-workspace')}:value;if(typeof record?.id!=='string')continue;if(!saved.has(canonical)||parts.length===2||parts[2]==='project')saved.set(canonical,record);}
+  }catch(error){if(error.code!=='ENOENT')throw Error('Harness 会话映射读取失败');}loaded=true;}
   let saving=Promise.resolve();
   async function persist(){const file=mapping();if(!file)return;const data=JSON.stringify(Object.fromEntries(saved));saving=saving.catch(()=>{}).then(async()=>{await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file+'.tmp',data);await fs.rename(file+'.tmp',file);});await saving;}
   async function mcp(req,res){
@@ -86,11 +91,11 @@ function createService(options={}){
   }
   async function attach(cfg,context,tools){
     const conn=await connect(cfg),key=keyOf(context);let session=sessions.get(key);
-    if(!session){session={key,id:saved.get(key),token:crypto.randomBytes(24).toString('hex'),tools:new Map(),attached:false,run:null};sessions.set(key,session);}
+    if(!session){const record=saved.get(key);session={key,id:record?.id,cwd:record?.cwd,token:crypto.randomBytes(24).toString('hex'),tools:new Map(),attached:false,run:null};sessions.set(key,session);}
     session.tools=new Map([...tools,IDE_STATE].map(tool=>[tool.function.name,tool.function]));
-    const cwd=context.page.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace');await fs.mkdir(cwd,{recursive:true});
+    const cwd=session.cwd||(context.page.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace'));await fs.mkdir(cwd,{recursive:true});
     const mcpServers=[{type:'http',name:'myide',url:'http://127.0.0.1:'+server.address().port+'/mcp',headers:[{name:'Authorization',value:'Bearer '+token},{name:'X-MyIDE-Session',value:session.token}]}];
-    if(!session.attached){session.attaching ||= (async()=>{const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);session.id=response.sessionId||session.id;session.configOptions=response.configOptions||[];session.attached=true;saved.set(key,session.id);await persist();})().finally(()=>{session.attaching=null;});await session.attaching;}
+    if(!session.attached){session.attaching ||= (async()=>{const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);session.id=response.sessionId||session.id;session.cwd=cwd;session.configOptions=response.configOptions||[];session.attached=true;saved.set(key,{id:session.id,cwd});await persist();})().finally(()=>{session.attaching=null;});await session.attaching;}
     return {session,conn};
   }
   async function chat(cfg,messages,tools,context,onEvent,onTool){
@@ -113,10 +118,13 @@ function createService(options={}){
   function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
   async function inspect(cfg,context,tools){
+    const connection=await connect(cfg),key=keyOf(context);
+    // 打开面板和页面切换只读取目录，第一次真正发送时才创建原生对话。
+    if(connection.capabilities?.native&&!sessions.has(key)&&!saved.has(key))return {ok:true,...await connection.rpc.request('session/catalog',{})};
     // 读取选项也检验宿主，不能把缓存目录当作仍然连接；只重试读取，不重发任务。
     for(let attempt=0;attempt<2;attempt++){
       const {session,conn}=await attach(cfg,context,tools);
-      try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/config_options',{sessionId:session.id});session.configOptions=result.configOptions;}return {ok:true,configOptions:session.configOptions};}
+      try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/config_options',{sessionId:session.id});session.configOptions=result.configOptions;}return {ok:true,sessionId:session.id,configOptions:session.configOptions};}
       catch(error){if(attempt||!conn.rpc.closed)throw error;}
     }
   }

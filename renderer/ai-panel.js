@@ -845,14 +845,16 @@ const AiPanel = (() => {
 
   async function refreshDshOptions(){
     if(getConfig().engine!=='dsh'||!window.myIDE.ai.dshOptions||panel?.classList.contains('hidden'))return;
+    // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
+    if(loadedSessionKey!==sessKey()){onProjectChange();return;}
     const own=++dshOptionsTicket,page=currentPage(),root=window.App?.root||'';
     dshOptionsState='loading';refreshModelSel();
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 DSH…';info.title='读取桌面 DSH 的实际模型与推理选项';}
-    if(!curSessionId)curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));
+    if(!curSessionId){curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));rememberSession();}
     const sessionId=curSessionId;let result;
     try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)));}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
-    if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供'));if(info){info.textContent='DSH 已连接';info.title='会话、模型和插件由独立的 DeepSeek Harness 程序提供';}}
+    if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));if(info){info.textContent='DSH 已连接';info.title=result.sessionId?'当前 DSH 会话：'+result.sessionId:'首次发送消息时创建 DSH 会话';}}
     else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
     refreshModelSel();
   }
@@ -1522,6 +1524,8 @@ const AiPanel = (() => {
   function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
   function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
+  let loadedSessionKey=null;
+  function rememberSession(){if(getConfig().engine==='dsh'&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
     const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
@@ -1543,6 +1547,8 @@ const AiPanel = (() => {
     const rest = loadSessions().filter((x) => x.id !== curSessionId);
     rest.unshift({ id: curSessionId, ts: Date.now(), title: sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
+    rememberSession();
+    if(getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
   }
   function replayMsgs() {
     msgsEl.innerHTML = '';
@@ -1597,7 +1603,7 @@ const AiPanel = (() => {
       if (!se) return;
       if (act === 'del') {
         saveSessions(all2.filter((x) => x.id !== id));
-        if (id === curSessionId) { stopRun(true); clearSessionPermissions(); curSessionId = null; }
+        if (id === curSessionId) { stopRun(true); clearSessionPermissions(); curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
         renderHist();
         MI.toast('已删除该会话', 'ok');
         return;
@@ -1629,6 +1635,8 @@ const AiPanel = (() => {
     msgs = repairToolHistory((se.msgs || []).slice());
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
     curSessionId = se.id;
+    rememberSession();
+    localStorage.removeItem(sessKey()+':draft');
     refreshDshOptions();
     renderUsage();
     replayMsgs();
@@ -1636,9 +1644,12 @@ const AiPanel = (() => {
   }
 
   // ---------- 切换项目 ----------
-  // 会话跟着项目走：对话历史、上下文、本次对话的临时授权、项目规则缓存，
-  // 换项目一律重来（否则 AI 会把上一个项目的文件当成本项目的上下文）。
+  // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
   function onProjectChange() {
+    const nextKey=sessKey(),harness=getConfig().engine==='dsh';
+    // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
+    if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
+    loadedSessionKey=nextKey;
     stopRun(true);
     clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
@@ -1669,7 +1680,14 @@ const AiPanel = (() => {
     syncPermBtn();
     loadProjectRules();
     followActive();
-    showWelcome();refreshDshOptions();
+    if(harness){
+      const all=loadSessions(),active=localStorage.getItem(nextKey+':active'),draft=localStorage.getItem(nextKey+':draft'),saved=all.find(item=>item.id===active)||(draft!==active||!active?all[0]:null);
+      curSessionId=saved?.id||active||null;
+      rememberSession();
+      if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});replayMsgs();renderUsage();}
+      else showWelcome();
+    }else showWelcome();
+    refreshDshOptions();
   }
 
   // ---------- 项目规则文件 ----------
@@ -2407,7 +2425,9 @@ const AiPanel = (() => {
       stopRun(true);
       clearSessionPermissions();
       persistSession();          // 先把当前这轮存进历史，再开新的
-      curSessionId = null;
+      curSessionId = getConfig().engine==='dsh'?'s-'+window.crypto.randomUUID():null;
+      rememberSession();
+      if(getConfig().engine==='dsh')localStorage.setItem(sessKey()+':draft',curSessionId);
       lastUserAt = null;
       pendingImages = [];
       renderImages();
