@@ -3,7 +3,7 @@ const {EventEmitter}=require('events'),{PassThrough}=require('stream'),{createSe
 const wait=()=>new Promise(resolve=>setTimeout(resolve,10));
 const page={id:'project',name:'项目',projectContext:true},context=(n=1,p=page)=>({requestId:'r-'+n,sessionId:'local-conversation',rootId:temp,generation:n,round:0,page:p});
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-dsh-side-test-'));
-const configOptions=[{id:'model',type:'select',currentValue:'native-model',options:[{value:'native-model',name:'原生模型'}]}];
+const configOptions=[{id:'model',type:'select',currentValue:'native-model',options:[{value:'native-model',name:'原生模型'},{value:'native-other',name:'其他原生模型'}]}];
 function httpCall(server,method,params){return new Promise((resolve,reject)=>{const data=JSON.stringify({jsonrpc:'2.0',id:1,method,params}),headers=Object.fromEntries(server.headers.map(h=>[h.name,h.value]));const req=http.request(server.url,{method:'POST',headers:{...headers,'Content-Type':'application/json'}},res=>{let body='';res.on('data',data=>body+=data);res.on('end',()=>resolve(JSON.parse(body)));});req.on('error',reject);req.end(data);});}
 function fixture({hold=false,permission=false,mcp=false,mapping=false}={}){
  let starts=0,id=0,child,invocation,permissionOutcome;const requests=[],servers=new Map(),pending=new Map();

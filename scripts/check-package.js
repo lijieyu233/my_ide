@@ -13,7 +13,7 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
 const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js']);
 runtimeFiles.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'launch-exit.js', 'launch-readiness.js');
 runtimeFiles.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
-resources.push('renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
+resources.push('dsh-native-plugin.cjs', 'renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
 
 function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);

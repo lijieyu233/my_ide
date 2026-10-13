@@ -14,7 +14,7 @@ ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.w
 const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
-const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-sessions.json')});
+const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
 let dshExitReady=false;
 app.on('will-quit',event=>{if(!event){DSH.dispose();return;}if(dshExitReady)return;event.preventDefault();DSH.dispose().finally(()=>{dshExitReady=true;app.quit();});});
 const aiRuns = require('./ai-runs').createRegistry();
@@ -625,6 +625,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
 });
 ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
+ipcMain.handle('ai:dsh-question-result',(event,context,id,answers)=>{try{aiRuns.assert(aiSender(event),context);return DSH.questionResult(context,id,answers);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Harness 会话身份无效');

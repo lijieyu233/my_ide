@@ -1,0 +1,108 @@
+const fs=require('fs/promises'),path=require('path'),os=require('os'),crypto=require('crypto'),{EventEmitter}=require('events');
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function nativeUrl(value){const url=new URL(value);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.pathname!=='/'||!url.port)throw Error('原生 DSH 连接地址无效');return url;}
+async function install({home,runtime}){
+  const profile=path.join(home,'profiles','desktop'),manifest=JSON.parse(await fs.readFile(path.join(profile,'package.json'),'utf8'));
+  if(!manifest.dsh?.profile?.bundles?.includes('@deepseek-ai/dsh-web-app'))throw Error('桌面 DSH profile 不提供原生会话服务');
+  const directory=path.join(home,'myide'),source=await fs.readFile(path.join(__dirname,'dsh-native-plugin.cjs'),'utf8');
+  const revision=crypto.createHash('sha256').update(source).digest('hex').slice(0,12),plugin=path.join(directory,'native-bridge-'+revision+'.cjs');
+  await fs.mkdir(directory,{recursive:true});let previous='';try{previous=await fs.readFile(plugin,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(previous!==source)await fs.writeFile(plugin,source);
+  const patch=path.join(profile,'cordis.patch.yml');let text='';try{text=await fs.readFile(patch,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
+  const exists=/^\s*-\s+id:\s*myide-native-bridge\s*$/m.test(text)||/"id"\s*:\s*"myide-native-bridge"/.test(text);
+  if(!exists||!text.includes('native-bridge-'+revision+'.cjs')){
+    // 追加独立配置项，保留用户原有 YAML 标签、模型、权限和插件；首次写入保留可恢复副本。
+    if(text)await fs.copyFile(patch,path.join(directory,'desktop-patch-before-myide.yml'),require('fs').constants.COPYFILE_EXCL).catch(error=>{if(error.code!=='EEXIST')throw error;});
+    const root=path.join(path.dirname(runtime.executable),'resources','app.asar','dsh');
+    if(text.trim().startsWith('[')){
+      let rows;try{rows=JSON.parse(text);}catch{throw Error('桌面 DSH 使用非 JSON 流式 YAML，请先将 profile 配置改为普通列表；原配置未覆盖');}if(!Array.isArray(rows))throw Error('桌面 DSH 配置不是列表');const row={id:'myide-native-bridge',name:plugin,config:{runtimeRoot:root,discoveryFile:path.join(home,'myide-native.json')}};rows.push(exists?row:{insert:[row]});text=JSON.stringify(rows,null,2)+'\n';
+    }else{const row='- id: myide-native-bridge\n  name: '+JSON.stringify(plugin)+'\n  config:\n    runtimeRoot: '+JSON.stringify(root)+'\n    discoveryFile: '+JSON.stringify(path.join(home,'myide-native.json'))+'\n';text+='\n'+(exists?row:'- insert:\n'+row.split('\n').filter(Boolean).map(line=>'    '+line).join('\n')+'\n');}
+    await fs.writeFile(patch+'.myide-tmp',text);await fs.rename(patch+'.myide-tmp',patch);
+  }
+}
+function configOptions(catalog,selected){
+  const selection=selected||catalog.default,model=catalog.groups.flatMap(group=>group.models.map(item=>({...item,provider:group.id}))).find(item=>item.provider===selection.provider&&item.id===selection.model);
+  const options=[{id:'model',name:'模型',type:'select',currentValue:JSON.stringify([selection.provider,selection.model]),options:catalog.groups.map(group=>({group:group.id,name:group.name,options:group.models.map(item=>({value:JSON.stringify([group.id,item.id]),name:item.name}))}))}];
+  if(model?.reasoning)options.push({id:'reasoning_effort',name:'推理',type:'select',currentValue:selection.reasoningEffort||'',options:[...(!model.reasoning.defaultEffort?[{value:'',name:'原生默认'}]:[]),...model.reasoning.efforts.map(effort=>({value:effort.id,name:effort.name}))]});
+  return options;
+}
+class NativeRpc extends EventEmitter {
+  constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;}
+  async http(url,init){
+    try{const response=await this.fetch(url,init);if([401,403].includes(response.status))this.close();return response;}
+    catch(error){if(!init.signal?.aborted)this.close();throw error;}
+  }
+  async call(endpoint,args={},signal){
+    const rpcId=crypto.randomUUID(),response=await this.http(this.url+'/api/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}}),signal:signal||AbortSignal.timeout(15000)});
+    if(!response.ok)throw Error('原生 DSH 请求失败：HTTP '+response.status);
+    const envelope=await response.json();if(envelope.rpcId!==rpcId||envelope.type!=='server-response')throw Error('原生 DSH 协议不匹配');
+    if(!envelope.result?.ok)throw Error(envelope.result?.error?.message||'原生 DSH 操作失败');return envelope.result.value;
+  }
+  async raw(endpoint,data,signal){const response=await this.http(this.url+'/api/myide/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(15000)});if(!response.ok)throw Error('原生 DSH 连接器请求失败：HTTP '+response.status);return response;}
+  notifyUpdate(id,update){this.emit('notification',{method:'session/update',params:{sessionId:id,update}});}
+  async request(method,params){
+    if(this.closed)throw Error('原生 DSH 连接已断开');
+    if(method==='session/new'||method==='session/resume'){
+      const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;if(!/^myide-[a-f0-9-]{36}$/.test(id))throw Error('这是旧 ACP 会话；请在侧栏新建原生会话');
+      const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});
+      await this.call('session/create',{request:{sessionId:id,workspaceId:workspace.workspaceId}});
+      const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
+      const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
+      this.sessions.set(id,{catalog,selected});return {sessionId:id,configOptions:configOptions(catalog,selected)};
+    }
+    const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
+    if(method==='session/set_config_option'){
+      let selected={...state.selected};
+      if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);if(!state.catalog.groups.some(group=>group.id===provider&&group.models.some(item=>item.id===model)))throw Error('该模型不在原生 DSH 目录中');selected={provider,model};}
+      else if(params.configId==='reasoning_effort'){delete selected.reasoningEffort;if(params.value)selected.reasoningEffort=params.value;}
+      else throw Error('不支持的原生会话选项');
+      const result=await this.call('session/selectModel',{request:{sessionId:params.sessionId,...selected}});state.selected=result.selected;return {configOptions:configOptions(state.catalog,state.selected)};
+    }
+    if(method==='session/prompt')return this.prompt(params,state);
+    throw Error('不支持的原生 DSH 操作：'+method);
+  }
+  async prompt(params,state){
+    const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
+    const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',started=false,accepted=false,activeTurn=null,lastSeq=-1;
+    try{
+      while(true){const {done,value}=await reader.read();if(done)throw Error('原生 DSH 消息流已断开；未确认任务完成');buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
+        let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
+          if(frame.type==='failure')throw Error(frame.error);
+          if(frame.type==='permission'||frame.type==='question'){
+            const id=++this.sequence;this.answers.set(id,{sessionId:params.sessionId,id:frame.id,kind:frame.type});
+            if(frame.type==='permission')this.emit('request',{id,method:'session/request_permission',params:{sessionId:params.sessionId,toolCall:{title:frame.request.kind||'原生操作',rawInput:frame.request},options:[{optionId:'allow',kind:'allow_once',name:'本次允许'},{optionId:'reject',kind:'reject_once',name:'拒绝'}]}});
+            else this.emit('notification',{method:'myide/question',params:{sessionId:params.sessionId,id,questions:frame.request.questions}});continue;
+          }
+          const item=frame.value;if(frame.type!=='session'||!item)continue;
+          if(item.type==='snapshot'&&!accepted){
+            lastSeq=item.cursor;accepted=true;
+            const content=params.prompt.map(block=>block.type==='image'?{type:'image',mediaType:block.mimeType,data:block.data}:block);
+            await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId:crypto.randomUUID(),mode:'queue',content}},controller.signal);continue;
+          }
+          if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
+          if(event.type==='turn/start'){started=true;activeTurn=data.turn;}
+          if(!started)continue;
+          if(event.type==='assistant/message')for(const block of data.message.content||[]){if(block.type==='text')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_message_chunk',messageId:data.message.id,content:block});else if(block.type==='thinking')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:block.thinking||block.text||''}});}
+          if(event.type==='tool/call')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call',toolCallId:data.callId,title:data.name,rawInput:data.arguments,status:'in_progress'});
+          if(event.type==='tool/result')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call_update',toolCallId:data.message.toolCallId,status:data.error||data.message.isError?'failed':'completed',content:(data.message.content||[]).map(content=>({type:'content',content}))});
+          if(/^(todo|plan)\//.test(event.type))this.notifyUpdate(params.sessionId,{sessionUpdate:'myide_projection',event});
+          if(event.type==='request/context')this.notifyUpdate(params.sessionId,{sessionUpdate:'usage_update',used:data.inputTokens||0,size:data.contextWindow||0});
+          if(event.type==='turn/end'&&data.turn===activeTurn){if(data.reason.kind==='interrupted')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error('原生 DSH 未完成：'+data.reason.kind+(data.reason.message?' · '+data.reason.message:''));return {stopReason:'end_turn'};}
+        }
+      }
+    }catch(error){if(!controller.signal.aborted&&error instanceof TypeError)this.close();throw error;}
+    finally{controller.abort();await reader.cancel().catch(()=>{});state.controller=null;for(const [id,item] of this.answers)if(item.sessionId===params.sessionId)this.answers.delete(id);}
+  }
+  notify(method,params){if(method==='session/cancel')this.call('session/cancel',{request:{sessionId:params.sessionId}}).catch(error=>this.sessions.get(params.sessionId)?.controller?.abort(error));}
+  reply(id,result){const item=this.answers.get(id);if(!item)return;this.answers.delete(id);const value=item.kind==='question'?result:item.kind==='permission'&&result.outcome?.outcome==='selected'&&result.outcome.optionId==='allow'?'allowed-once':'rejected';void this.raw('answer',{sessionId:item.sessionId,id:item.id,value}).then(response=>response.body?.cancel()).catch(error=>this.sessions.get(item.sessionId)?.controller?.abort(error));}
+  close(){if(this.closed)return;this.closed=true;for(const state of this.sessions.values())state.controller?.abort();this.answers.clear();this.emit('closed');}
+}
+async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetcher=fetch,waitMs=15000}){
+  if(!skipInstall)await install({home,runtime});
+  const deadline=Date.now()+waitMs;let info;
+  do{try{info=JSON.parse(await fs.readFile(discoveryFile||path.join(home,'myide-native.json'),'utf8'));if(info.version!==1||info.profile!=='desktop'&&!skipInstall)throw Error('连接器不是桌面 DSH');process.kill(info.pid,0);nativeUrl(info.url);break;}catch{info=null;if(Date.now()>=deadline)break;await pause(200);}}while(true);
+  if(!info)throw Error('原生 DSH 连接器已安装，请打开或正常重启一次 DeepSeek Harness 桌面程序；MyIDE 不会退回另一套 ACP 配置');
+  const url=nativeUrl(info.url),response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(5000)}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
+  if(response.status!==303||!cookie)throw Error('无法与原生 DSH 建立本机授权连接');return new NativeRpc(url.origin,cookie,fetcher);
+}
+module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions};

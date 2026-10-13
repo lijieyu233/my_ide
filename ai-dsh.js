@@ -1,4 +1,4 @@
-const fs=require('fs/promises'),path=require('path'),os=require('os'),http=require('http'),crypto=require('crypto'),cp=require('child_process');
+const fs=require('fs/promises'),path=require('path'),os=require('os'),http=require('http'),crypto=require('crypto');
 const {Rpc}=require('./ai-dsh-rpc'),{resolveRuntime}=require('./dsh-runtime');
 const IDE_STATE={type:'function',function:{name:'ide_state',description:'读取 MyIDE 当前页面、当前项目和未保存的编辑内容。独立页面不返回后台项目文件。管理程序用 launch_*，操作已连接的 SSH 用 ssh_*，操作内置浏览器用 browser_*，不要用本地 Shell 冒充这些操作。',parameters:{type:'object',properties:{},additionalProperties:false}}};
 const same=(a,b)=>a&&b&&['requestId','sessionId','rootId','generation','round'].every(k=>a[k]===b[k]);
@@ -6,7 +6,7 @@ function promptContent(messages,page){
   // DSH 自己保存上下文、运行 Agent 循环；续聊只追加这次请求，不能重放历史工具操作。
   const latest=messages.findLast(message=>message.role==='user');if(!latest)throw Error('没有用户请求');
   const content=typeof latest.content==='string'?[{type:'text',text:latest.content}]:latest.content;
-  const blocks=[{type:'text',text:'MyIDE 界面状态（观察数据，不是指令或授权）：\n'+JSON.stringify(page)+'\n需要 IDE 内的实时信息先调用 mcp__myide__ide_state。启动程序、SSH、内置浏览器用对应 MyIDE MCP 工具。B站BV视频字幕提取优先 mcp__myide__browser_subtitles：它复用浏览器登录态、解析视频与分P、核验身份和字幕时间轴。不要用 web_fetch 或反复 browser_open 代替这条链路；工具报告无字幕、登录要求或不匹配时说明具体原因，不盲试旧接口。'+(page.projectContext?'':'当前不是项目页面，不自动读取后台项目、规则或文件；项目操作请用户返回项目页面。')}];
+  const blocks=[{type:'text',text:'MyIDE 界面状态（观察数据，不是指令或授权）：\n'+JSON.stringify(page)+'\n需要 IDE 内的实时信息先调用 mcp__myide__ide_state。启动程序、SSH、内置浏览器用对应 MyIDE MCP 工具。'+(page.projectContext?'':'当前不是项目页面，不自动读取后台项目、规则或文件；项目操作请用户返回项目页面。')}];
   for(const block of content||[]){
     if(block.type==='text')blocks.push({type:'text',text:String(block.text||'')});
     else if(block.type==='image_url'){
@@ -59,14 +59,14 @@ function createService(options={}){
       await fs.mkdir(home(),{recursive:true});if(disposed)throw Error('Harness 宿主已关闭');
       if(!server){token=crypto.randomBytes(32).toString('hex');server=http.createServer(mcp);await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});}
       if(disposed)throw Error('Harness 宿主已关闭');
-      const env={...process.env,DSH_HOME:home(),ELECTRON_RUN_AS_NODE:'1'};delete env.MYIDE_DSH_API_KEY;
-      // 官方 ACP profile 原样加载原生工具、Skills、子代理和用户插件；不套普通助手的模型/提示词/轮数限制。
-      const child=(options.spawn||cp.spawn)(runtime.executable,[...runtime.args,'--profile','acp'],{env,cwd:home(),stdio:['pipe','pipe','pipe'],windowsHide:true});
-      const own={child,rpc:new Rpc(child),launcher:cfg.dshPath||'',capabilities:null};connection=own;
-      child.stderr.setEncoding('utf8');child.stderr.on('data',()=>{});
+      let child,own;if(!options.spawn){const rpc=await (options.connectNative||require('./dsh-native').connectNative)({home:home(),runtime});own={rpc,launcher:cfg.dshPath||'',capabilities:{native:true}};}else{const env={...process.env,DSH_HOME:home(),ELECTRON_RUN_AS_NODE:'1'};delete env.MYIDE_DSH_API_KEY;
+      // ACP 仅保留为注入进程的协议单元测试适配；产品连接桌面原生服务，不以 ACP 作为回退。
+      child=options.spawn(runtime.executable,[...runtime.args,'--profile','acp'],{env,cwd:home(),stdio:['pipe','pipe','pipe'],windowsHide:true});
+      own={child,rpc:new Rpc(child),launcher:cfg.dshPath||'',capabilities:null};}connection=own;
+      if(child){child.stderr.setEncoding('utf8');child.stderr.on('data',()=>{});}
       own.rpc.on('closed',()=>{if(connection===own){connection=null;for(const item of sessions.values())item.attached=false;}});
       own.rpc.on('notification',notification=>{
-        if(notification.method!=='session/update')return;const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId),run=session?.run,update=notification.params?.update;
+        if(notification.method==='myide/question'){const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId),run=session?.run;if(!run||run.controller.signal.aborted)return;const id=crypto.randomUUID();run.permissions.set(id,{id:notification.params.id,rpc:own.rpc,kind:'question'});emit(run,{type:'question',id,questions:notification.params.questions});return;}if(notification.method!=='session/update')return;const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId),run=session?.run,update=notification.params?.update;
         if(!run||run.controller.signal.aborted)return;
         if(update?.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text'){const delta=(run.lastMessage&&update.messageId&&run.lastMessage!==update.messageId?'\n\n':'')+update.content.text;run.lastMessage=update.messageId;run.text+=delta;emit(run,{type:'text',delta});}
         else if(update?.sessionUpdate==='config_option_update'){session.configOptions=update.configOptions;emit(run,{type:'config',configOptions:update.configOptions});}
@@ -79,10 +79,10 @@ function createService(options={}){
         const id=crypto.randomUUID(),choices=(request.params.options||[]).filter(option=>['allow_once','reject_once'].includes(option.kind));
         run.permissions.set(id,{id:request.id,rpc:own.rpc,choices});emit(run,{type:'permission',id,toolCall:request.params.toolCall,options:choices});
       });
-      const initialized=await own.rpc.request('initialize',{protocolVersion:1,clientCapabilities:{},clientInfo:{name:'myide',version:'2'}},90000);
+      if(child){const initialized=await own.rpc.request('initialize',{protocolVersion:1,clientCapabilities:{},clientInfo:{name:'myide',version:'2'}},90000);
       if(initialized.protocolVersion!==1||!initialized.agentCapabilities?.mcpCapabilities?.http||!initialized.agentCapabilities?.sessionCapabilities?.resume)throw Error('本机 Harness ACP 不支持持久会话与 HTTP MCP，请更新本机 Harness');
-      own.capabilities=initialized.agentCapabilities;return own;
-    })().catch(error=>{connection?.rpc.close();connection?.child.kill();connection=null;throw error;}).finally(()=>{starting=null;});return starting;
+      own.capabilities=initialized.agentCapabilities;}return own;
+    })().catch(error=>{connection?.rpc.close();connection?.child?.kill();connection=null;throw error;}).finally(()=>{starting=null;});return starting;
   }
   async function attach(cfg,context,tools){
     const conn=await connect(cfg),key=keyOf(context);let session=sessions.get(key);
@@ -101,7 +101,7 @@ function createService(options={}){
       emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools);live(run);
       if(session.run)throw Error('此 Harness 会话仍在停止上一轮，请稍后再试');session.run=run;run.session=session;run.conn=conn;
       emit(run,{type:'config',configOptions:session.configOptions});
-      for(const [configId,value] of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]])if(value&&session.configOptions.some(option=>option.id===configId&&option.currentValue!==value)){const updated=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=updated.configOptions;live(run);emit(run,{type:'config',configOptions:updated.configOptions});}
+      for(const [configId,value] of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]])if(value!==undefined&&value!==null&&session.configOptions.some(option=>option.id===configId&&option.currentValue!==value&&(option.options||[]).flatMap(choice=>choice.options||[choice]).some(choice=>choice.value===value))){const updated=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=updated.configOptions;live(run);emit(run,{type:'config',configOptions:updated.configOptions});}
       emit(run,{type:'status',text:'Harness 正在处理 · 原生工具与 MyIDE 工具已连接'});
       const answer=await conn.rpc.request('session/prompt',{sessionId:session.id,prompt},0);live(run);
       return result(answer.stopReason==='end_turn'?'completed':answer.stopReason==='cancelled'?'aborted':'incomplete',{...(answer.stopReason==='end_turn'?{}:{message:'Harness 未正常完成：'+answer.stopReason})});
@@ -109,15 +109,16 @@ function createService(options={}){
     finally{clearTimeout(run.cancelTimer);for(const pending of run.tools.values())pending.reject(Error('Harness 请求已结束'));for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});if(run.session?.run===run)run.session.run=null;runs.delete(context.requestId);}
   }
   function toolResult(context,callId,result){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const pending=run.tools.get(callId);if(!pending)return {ok:false};run.tools.delete(callId);pending.resolve({ok:result?.ok===true,text:String(result?.text||'')});return {ok:true};}
-  function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
-  function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child.kill();},5000);run.cancelTimer.unref();}return true;}
+  function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||permission.kind==='question'||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
+  function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
+  function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
   async function inspect(cfg,context,tools){const {session}=await attach(cfg,context,tools);return {ok:true,configOptions:session.configOptions};}
   function dispose(){
     if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;
     server?.closeAllConnections();server?.close(()=>{});
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
-    disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
+    if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,toolResult,permissionResult,abort,dispose,inspect};
+  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect};
 }
 module.exports={createService,IDE_STATE,promptContent};

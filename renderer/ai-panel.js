@@ -817,13 +817,19 @@ const AiPanel = (() => {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   function getConfig() {
-    try { return { ...JSON.parse(localStorage.getItem(LS_CFG) || '{}'), ...(authorityConfig || {}) }; } catch { return authorityConfig || {}; }
+    try {
+      const config={ ...JSON.parse(localStorage.getItem(LS_CFG) || '{}'), ...(authorityConfig || {}) };
+      // ACP 的旧模型即使在桌面目录里仍然可用，也不能自动覆盖用户原生 DSH 的选择。
+      if(config.dshConnection!=='desktop-native-v1'){delete config.dshModel;delete config.dshReasoning;}
+      return config;
+    } catch { return authorityConfig || {}; }
   }
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
   async function setConfig(c) {
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
     if(switching){persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];}
     const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
+    if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
     let result = { ok: true };
     if (keys.some(key=>Object.hasOwn(c || {},key))) {
       const permissions=Object.fromEntries(keys.map(key=>[key,(c || {})[key] ?? getConfig()[key] ?? (key==='permWrite'||key==='permRun'?'confirm':[])]));
@@ -844,7 +850,7 @@ const AiPanel = (() => {
     const sessionId=curSessionId;let result;
     try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)));}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
-    if(result?.ok){dshConfigOptions=result.configOptions||[];refreshModelSel();}
+    if(result?.ok){dshConfigOptions=result.configOptions||[];refreshModelSel();const info=document.getElementById('ai-dsh-info');if(info){info.textContent='原生 DSH · 桌面宿主';info.title='会话、模型和插件由独立的 DeepSeek Harness 程序提供';}}
     else{const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
   }
 
@@ -858,9 +864,9 @@ const AiPanel = (() => {
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join(''):'<option value="">Harness 原生默认模型</option>';
-      sel.value=cfg.dshModel||model?.currentValue||'';sel.title='模型由本机 Harness 提供，与普通助手配置独立';
+      sel.value=choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
       const reasoning=dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
-      if(select){select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('')||'<option value="">原生默认</option>';select.value=cfg.dshReasoning||reasoning?.currentValue||'';}
+      if(select){select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('')||'<option value="">原生默认</option>';select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
       return;
     }
     const prov = providerOf(cfg);
@@ -2288,6 +2294,18 @@ const AiPanel = (() => {
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){run.notice.textContent=event.text;return;}
     if(event.type==='config'){dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
+    if(event.type==='question'){
+      const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
+      for(const question of event.questions||[]){
+        const group=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=question.question;group.appendChild(title);
+        if(question.detail){const detail=document.createElement('pre');detail.textContent=question.detail;group.appendChild(detail);}
+        const choices=[];for(const option of question.options||[]){const label=document.createElement('label'),input=document.createElement('input');input.type=question.multiSelect?'checkbox':'radio';input.name=event.id+':'+question.id;input.value=option.label;label.append(input,document.createTextNode(option.label));if(option.description)label.title=option.description;group.appendChild(label);choices.push(input);}
+        const custom=document.createElement('textarea');custom.placeholder='填写补充回答';custom.rows=2;group.appendChild(custom);box.appendChild(group);fields.push({question,choices,custom});
+      }
+      const button=document.createElement('button');button.type='submit';button.className='tb-btn';button.textContent='提交回答';box.appendChild(button);msgsEl.appendChild(box);
+      const close=()=>{for(const control of box.querySelectorAll('button,input,textarea'))control.disabled=true;};run.controller.signal.addEventListener('abort',close,{once:true});
+      box.onsubmit=async eventSubmit=>{eventSubmit.preventDefault();if(!runIsLive(run))return close();const answers=fields.map(field=>({id:field.question.id,selected:field.choices.filter(input=>input.checked).map(input=>input.value),...(field.custom.value.trim()?{custom:field.custom.value.trim()}:{})}));if(answers.some(answer=>!answer.selected.length&&!answer.custom)){MI.toast('请回答每个问题','err');return;}button.disabled=true;const result=await window.myIDE.ai.dshQuestionResult(event.context,event.id,answers);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}else{button.disabled=false;MI.toast('问题已结束或回答未被接受','err');}};scrollBottom();return;
+    }
     if(event.type==='native'){
       const update=event.update;
       if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
@@ -2303,6 +2321,9 @@ const AiPanel = (() => {
         run.notice.textContent='Harness：'+(entry.call.name||'正在执行工具');
       }
       if(update.sessionUpdate==='usage_update')document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
+      if(update.sessionUpdate==='myide_projection'){
+        run.projection ||= document.createElement('details');if(!run.projection.isConnected){run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.insertBefore(run.projection,run.stream.element);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
+      }
       return;
     }
     if(event.type==='permission'){

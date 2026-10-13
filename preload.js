@@ -219,6 +219,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     chat: (cfg, messages, tools, context) => ipcRenderer.invoke('ai:chat', cfg, messages, tools, context),
     dshToolResult:(context,id,result)=>ipcRenderer.invoke('ai:dsh-tool-result',context,id,result),
     dshPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:dsh-permission-result',context,id,optionId),
+    dshQuestionResult: (context,id,answers) => ipcRenderer.invoke('ai:dsh-question-result',context,id,answers),
     onDshEvent:callback=>ipcRenderer.on('ai:dsh-event',(_event,value)=>callback(value)),
     dshOptions:(cfg,sessionId,tools)=>ipcRenderer.invoke('ai:dsh-options',cfg,sessionId,tools),
     dshStatus: launcher => ipcRenderer.invoke('ai:dsh-status',launcher),
