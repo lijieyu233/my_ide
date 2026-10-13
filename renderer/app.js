@@ -1071,6 +1071,7 @@ const App = (() => {
     window.addEventListener('message', (e) => {
       const d = e.data;
       if (!d || d.__myideKey !== 1) return;
+      if (![...document.querySelectorAll('#viewer iframe.html-frame')].some(frame=>frame.contentWindow===e.source)) return;
       document.dispatchEvent(new KeyboardEvent('keydown', {
         key: d.key, ctrlKey: !!d.ctrlKey, shiftKey: !!d.shiftKey, altKey: !!d.altKey, metaKey: !!d.metaKey,
         bubbles: true, cancelable: true,

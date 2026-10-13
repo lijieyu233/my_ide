@@ -788,31 +788,23 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   return wrap;
 });
 
-// HTML → 沙箱 iframe 预览
+// HTML 独立源预览：srcdoc 会继承宿主 CSP，内联脚本与交互无法正常执行。
 MI.registerRenderer(['html', 'htm'], ({ path, content }) => {
   const frame = document.createElement('iframe');
-  frame.className = 'html-frame';
-  // allow-same-origin：继承主窗口 file:// 源，页面内相对路径的 CSS/图片才能加载（否则样式全丢）
-  // allow-popups(+escape)：window.open / target=_blank 可用（原只能在浏览器实现的弹窗能力）
-  // allow-downloads：页面内 a[download] / blob 下载可用
+  frame.className = 'html-frame';frame.title='HTML 预览';
   frame.sandbox = 'allow-scripts allow-modals allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock';
-  // 规范化开头（BOM / 前导空白 / "< !DOCTYPE" 写法），避免 DOCTYPE 被当成正文文本显示
-  let src = String(content || '').replace(/^\uFEFF/, '');
-  src = src.replace(/^\s*< ?!DOCTYPE/i, '<!DOCTYPE');
-  // 注入 <base>：srcdoc 文档的默认基准是主窗口路径（renderer/），相对路径资源会指错地方
-  // 以该 HTML 文件所在目录为基准后，link/script/img 的相对引用即可正确解析
-  const dir = String(path || '').split(/[\\/]/).slice(0, -1).join('/');
-  if (dir) {
-    const baseTag = '<base href="file:///' + dir + '/">';
-    if (/<head[^>]*>/i.test(src)) src = src.replace(/<head[^>]*>/i, (m) => m + baseTag);
-    else if (/<!DOCTYPE[^>]*>/i.test(src)) src = src.replace(/(<!DOCTYPE[^>]*>)/i, '$1' + baseTag);
-    else src = baseTag + src;
-  }
-  // 注入按键转发：沙箱 iframe 抢走焦点后 Ctrl+1/2/3 等快捷键仍能触发
-  // ★ 必须追加到文档末尾：放在开头会把 DOCTYPE 挤到非首个 token 位置，
-  //   浏览器按正文解析它 → 预览顶部显示「OCTYPE html>」碎片
-  const forward = '<scr' + 'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr' + 'ipt>';
-  frame.srcdoc = src + forward;
+  frame.allow = 'fullscreen';
+  let disposed=false,lease=null;
+  frame.previewDispose=()=>{disposed=true;if(lease)window.myIDE.htmlPreview.close(lease);};
+  let src=String(content||'').replace(/^\uFEFF/,'').replace(/^\s*< ?!DOCTYPE/i,'<!DOCTYPE');
+  // 放在末尾，保留 DOCTYPE 的首 token 位置和页面原有的相对资源基准。
+  src+='<scr'+'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr'+'ipt>';
+  frame.previewReady=window.myIDE.htmlPreview.open({path,content:src,root:window.App?.root||''}).then(result=>{
+    if(!result?.ok)throw Error(result?.error||'HTML 预览加载失败');
+    lease=result.id;
+    if(disposed){window.myIDE.htmlPreview.close(lease);return;}
+    frame.src=result.url;
+  }).catch(error=>{if(!disposed)MI.toast(error.message,'err');});
   return frame;
 });
 

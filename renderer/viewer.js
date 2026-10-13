@@ -1192,6 +1192,7 @@ const Viewer = (() => {
     }
     for (const tab of tabs) tab.ta=null;
     window.PreviewLocation?.clear();
+    for(const child of viewer.children)child.previewDispose?.();
     viewer.innerHTML = '';
     if (!currentTab()) { empty.classList.add('visible'); window.App?.updateStatusbar({selectedChars:0}); return; }
     empty.classList.remove('visible');

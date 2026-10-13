@@ -1,8 +1,16 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme, safeStorage, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const HtmlPreview = require('./html-preview');
+const htmlPreview = HtmlPreview.createService();
+protocol.registerSchemesAsPrivileged([{scheme:HtmlPreview.SCHEME,privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
+ipcMain.handle('html-preview:open',async(event,request)=>{
+  try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的预览来源');return {ok:true,...await htmlPreview.open(event.sender.id,request)};}
+  catch(error){return {ok:false,error:error.message};}
+});
+ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
 const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
@@ -191,8 +199,8 @@ function createWindow() {
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
   const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
-  aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();if(browserFullscreen.active)browserFullscreen.set(false); } });
-  aiHost.on('destroyed', resetAi);
+  aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
+  aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
   return mainWindow;
 }
@@ -1267,6 +1275,7 @@ ipcMain.handle('plugins:loadAll', () => {
 
 // ---------- 启动 ----------
 app.whenReady().then(() => {
+  protocol.handle(HtmlPreview.SCHEME,request=>htmlPreview.handle(request));
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
   writeUsage(`===== 启动 version=${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '?'} electron=${process.versions.electron} node=${process.versions.node} =====\n`);
   watchPlugins();

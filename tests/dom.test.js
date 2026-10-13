@@ -147,6 +147,7 @@ function makeDom() {
   st.textContent = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
   w.document.head.appendChild(st);
   w.myIDE = {
+    htmlPreview:{open:async request=>{const id="preview"+((calls.htmlPreviews||=[]).push(request));return {ok:true,id,url:"myide-preview://"+id+"/page.html"};},close:async id=>{(calls.htmlPreviewClosed||=[]).push(id);}},
     // 翻译插件走 llm:chat：桩直接回 "译:<最后一条 user 内容>"，断言可以精确比对
     llm: { chat: async (cfg, msgs) => ({ text: '译:' + String((msgs[msgs.length - 1] || {}).content || '') }) },
     fs: {
@@ -1007,7 +1008,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     const frame = $(dom, '.html-frame');
     assert_(frame, 'iframe 出现');
-    assert_(frame.srcdoc.includes('<h1>Hi HTML</h1>'), 'srcdoc 包含内容');
+    await frame.previewReady;assert_(frame.src.startsWith('myide-preview://'),'独立源加载');
+    assert_(calls.htmlPreviews.at(-1).content.includes('<h1>Hi HTML</h1>'),'预览使用当前文档内容');
+    assert_(!frame.hasAttribute('srcdoc'),'不继承宿主CSP');
   });
 
   await okAsync('工具窗口切换：Ctrl+2 大纲 / Ctrl+1 项目（快捷键始终显示，不再收起）', async () => {
@@ -1237,13 +1240,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(Number(w1) >= 500, 'H1 有更重字重以突出顶层: ' + w1);
   });
 
-  await okAsync('HTML 预览：base 注入相对路径解析 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
+  await okAsync('HTML 预览：独立文档保留资源基准 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();
     const frame = $(dom, 'iframe.html-frame');
     assert_(frame, 'iframe 存在');
-    const doc = frame.getAttribute('srcdoc') || '';
-    assert_(doc.includes('<base href="file:///'), '注入 base href（相对路径 CSS 可解析）');
+    await frame.previewReady;const doc=calls.htmlPreviews.at(-1).content;
+    assert_(frame.src.startsWith('myide-preview://'),'独立文档地址解析相对资源');
+    assert_(!doc.includes('<base href="file:///'),'不将相对资源指回受宿主策略限制的file源');
     const dIdx = doc.toLowerCase().indexOf('<!doctype');
     const fIdx = doc.indexOf('__myideKey');
     // 转发脚本必须在 DOCTYPE 之后（开头会挤掉 DOCTYPE 显示「OCTYPE html>」）
