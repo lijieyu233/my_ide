@@ -47,6 +47,7 @@
     <button id="tool-search" class="tool-btn" title="搜索内容"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg></button>
     <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
+    <button id="tool-harness" class="tool-btn" title="DeepSeek Harness（完整原生工作区）" aria-label="DeepSeek Harness"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 5l3 3-3 3m4 0h2"/></svg></button>
     <button id="tool-remote" class="tool-btn" title="远程服务器：SSH终端与SFTP文件" aria-label="远程服务器"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="9" rx="1.2"/><path d="M4 4.5l2 2-2 2M8 8.5h3M5 14h6M8 11v3"/></svg></button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
@@ -269,6 +270,10 @@
         <div id="empty-recent"></div>
       </div>
     </div>
+    <div id="harness-main" class="hidden">
+      <div class="harness-toolbar"><strong>DeepSeek Harness</strong><span id="harness-status" role="status">完整原生工作区</span><span class="spacer"></span><button id="harness-standard" class="vt-btn">普通助手</button><button id="harness-reload" class="vt-btn" title="刷新页面，会话继续保留">刷新</button><button id="harness-external" class="vt-btn" title="在默认浏览器中打开同一个 Harness">浏览器打开</button><button id="harness-desktop" class="vt-btn" title="打开本机完整 Harness 桌面版">桌面版</button><button id="harness-close" class="vt-btn" title="收起工作区，任务继续运行">✕</button></div>
+      <div id="harness-view"></div>
+    </div>
     <div id="browser-panel" class="hidden">
       <div class="browser-toolbar">
         <button id="bw-back" class="vt-btn" title="后退 (Alt+←)">←</button>
@@ -394,7 +399,7 @@
         <button id="ai-close" class="vt-btn" title="收起 AI 助手 (Ctrl+Shift+A)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </span>
     </div>
-    <div class="ai-engine-row"><label for="ai-engine">执行模式</label><select id="ai-engine" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
+    <div class="ai-engine-row"><label for="ai-engine">执行模式</label><select id="ai-engine" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（完整）</option></select></div>
     <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
@@ -457,6 +462,7 @@
 <script src="settings.js"></script>
 <script src="help.js"></script>
 <script src="browser.js"></script>
+<script src="harness.js"></script>
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="remote-panel.js"></script>

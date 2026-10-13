@@ -124,7 +124,6 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
-    if(currentRun?.engine==='dsh'&&currentRun.projectContext&&!page.projectContext)stopRun();
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
@@ -1345,6 +1344,7 @@ const AiPanel = (() => {
     const text = (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
+    if(cfg.engine==='dsh'){window.HarnessPanel?.open();return;}
     if (!cfg.baseUrl || !cfg.model) {
       MI.toast('请先配置服务地址与模型', 'err');
       Settings.open('ai');
@@ -1353,7 +1353,6 @@ const AiPanel = (() => {
     busy = true;
     setBusyUI(true);
     const run = beginRun();
-    run.engine=cfg.engine==='dsh'?'dsh':'standard';run.projectContext=usesProjectContext();
     await followActive();
     if (!runIsLive(run)) return;
     agentRounds = 0;   // 新任务重置 Agent 循环计数
@@ -1405,7 +1404,7 @@ const AiPanel = (() => {
       && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
     let warning = r?.message || r?.error || (!complete && !r?.aborted ? '回复终态无效，未执行工具' : '');
     let textCalls = [];
-    if (run.engine!=='dsh' && !isErr && complete && r.finishReason === 'stop' && text) {
+    if (!isErr && complete && r.finishReason === 'stop' && text) {
       try { textCalls = parseToolCalls(text).map((c, index) => ({ ...c, id: stream.context.requestId + ':' + stream.context.round + ':' + index })); }
       catch { complete = false; warning = '文本工具块或参数未完整完成，未执行工具'; }
     }
@@ -2258,24 +2257,7 @@ const AiPanel = (() => {
   }
 
   function init() {
-    window.myIDE.ai.onDshEvent?.(async event=>{
-      const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
-      if(event.type==='status'){run.notice.textContent=event.text;return;}
-      if(event.type==='tool-status'){if(event.update?.title)run.notice.textContent='DSH：'+event.update.title;return;}
-      if(event.type!=='tool')return;
-      const call=event.call;let row,result;
-      try{
-        row=renderToolRow(call);
-        if(call.name==='ide_state'){
-          const page=currentPage(),tab=window.Viewer?.activeTab;
-          result={ok:true,text:JSON.stringify({page,...(page.projectContext&&tab?{editor:{path:tab.path,dirty:!!tab.dirty,content:String(tab.content||'').slice(0,30000),truncated:String(tab.content||'').length>30000}}:{})})};
-        }else result=await executeTool(call,run);
-      }catch(error){result={ok:false,text:error.message||String(error)};}
-      setToolState(row,result.ok,result.ok?'已完成':'已拒绝');
-      if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（DSH 已执行工具的历史记录，不得自动重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
-      try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);}catch{if(runIsLive(run))stopRun();}
-    });
-    const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});MI.toast(engine.value==='dsh'?'已切换 DeepSeek Harness':'已切换普通助手','ok');};
+    const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});if(engine.value==='dsh')window.HarnessPanel?.open();};
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
     window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));

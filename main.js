@@ -14,8 +14,9 @@ ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.w
 const G = require('./git-service');
 const DB = require('./db-service');
 const AI = require('./ai-service');
-const DSH = require('./ai-dsh').createService({homeDir:()=>path.join(app.getPath('userData'),'dsh-myide')});
-app.on('will-quit',()=>DSH.dispose());
+const harnessHost=require('./dsh-web').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,onState:value=>mainWindow?.webContents.send('harness:state',value)});
+const harnessView=require('./dsh-view').install({ipcMain,getWindow:()=>mainWindow,WebContentsView,BrowserWindow,shell,supervisor:harnessHost});
+app.on('will-quit',()=>harnessView.dispose());
 const aiRuns = require('./ai-runs').createRegistry();
 const AiToolContract = require('./ai-tool-contract');
 const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: call => require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
@@ -96,7 +97,7 @@ if (!HIDDEN_WINDOW) require('./app-instance').claim({ app, getWindow: () => main
 const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: event => aiSender(event), windowFor: owner => mainWindow && mainWindow.webContents.id === owner ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
-  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
+  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
 });
 
 function loadState() {
@@ -200,7 +201,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } };
+  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
@@ -598,40 +599,27 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
-    aiSender(e); await aiPermissionsBridge.initialize(e.sender);
+    aiSender(e);
+    if(cfg?.engine==='dsh')return {ok:false,status:'failed',complete:false,error:'请在完整 Harness 工作区使用原生对话',context};
+    await aiPermissionsBridge.initialize(e.sender);
     const start = aiRuns.begin(aiSender(e), context); record = start.record; context = record.context;
     aiTools.bind(aiSender(e), context);
     if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e));
     aiPermissionsBridge.newSession(aiSender(e), context);
-    if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
+    if (start.previous) { AI.abortChat(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { return { error: error.message, errorCode: error.code, context }; }
-  let r;
-  if(cfg?.engine==='dsh'){
-    try{
-      const page=await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e),context);
-      r=await DSH.chat(cfg,messages,tools||[],{...context,projectContext:page.projectContext===true},event=>{
-        if(record.status!=='active')return;
-        if(event.type==='text')send('ai:chunk',{delta:event.delta,context});else send('ai:dsh-event',event);
-      },event=>{
-        try{aiRuns.assert(aiSender(e),context);send('ai:dsh-event',{type:'tool',...event});}
-        catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}
-      });
-    }catch(error){r={ok:false,status:'failed',complete:false,engine:'dsh',error:error.message,context};}
-  }else r = await AI.chatStream(cfg, messages, delta => {
+  let r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
   }, tools, context);
   if (record.status !== 'active') r = { ...r, ok: false, status: 'aborted', complete: false, aborted: true, cancelled: true, toolCalls: [] };
   send('ai:done', r);
   return r;
 });
-ipcMain.handle('ai:dsh-tool-result',(event,context,callId,result)=>{
-  try{aiRuns.assert(aiSender(event),context);return DSH.toolResult(context,callId,result);}catch{return {ok:false};}
-});
 ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
-  try{aiSender(event);await require('./ai-dsh').resolveRuntime(launcher||undefined);return {ok:true,launcher:launcher||require('./ai-dsh').DEFAULT_LAUNCHER};}catch(error){return {ok:false,error:error.message};}
+  try{aiSender(event);await require('./dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:launcher||require('./dsh-runtime').DEFAULT_LAUNCHER};}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
+  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e)); AI.abortChat(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {

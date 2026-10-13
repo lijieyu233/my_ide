@@ -588,14 +588,12 @@ const Settings = (() => {
     list.innerHTML = `
       <div class="set-form">
         <label class="m-label">执行模式</label>
-        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select>
+        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（完整原生界面）</option></select>
         <div id="ai-cfg-dsh-wrap" class="hidden">
           <label class="m-label" style="margin-top:8px">DSH 启动器（桌面版 dsh.cmd，留空自动使用本机安装）</label>
           <input id="ai-cfg-dsh" type="text" value="${esc(cfg.dshPath||'')}" placeholder="DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" spellcheck="false">
-          <label class="m-label" style="margin-top:8px">上下文容量（按模型实际容量填写，默认 65536）</label>
-          <input id="ai-cfg-dsh-context" type="number" min="16384" max="2000000" value="${esc(String(cfg.dshContextWindow||65536))}">
           <button id="ai-dsh-pick" class="tb-btn">选择启动器</button><button id="ai-dsh-detect" class="tb-btn">检查安装</button><span id="ai-dsh-status" role="status"></span>
-          <div style="margin-top:4px;color:var(--text-dim)">使用下方模型配置；独立运行，不打开 Harness 桌面窗口。文件与程序操作沿用 MyIDE 权限。</div>
+          <div style="margin-top:4px;color:var(--text-dim)">使用 Harness 自己的模型、权限、会话、Skills 和插件设置。下方配置仅用于普通助手。</div>
         </div>
         <label class="m-label">服务商</label>
         <select id="ai-cfg-prov">
@@ -673,7 +671,6 @@ const Settings = (() => {
       try { await AiPanel.setConfig({
         engine:engineSel.value,
         dshPath:document.getElementById('ai-cfg-dsh').value.trim(),
-        dshContextWindow:Number(document.getElementById('ai-cfg-dsh-context').value),
         provider: provSel.value,
         baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),

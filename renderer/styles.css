@@ -2682,6 +2682,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 #ai-model:hover { color: var(--text); border-color: var(--accent); }
 .ai-engine-row { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: .85em; }
+#harness-main { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; background: var(--bg); }
+.harness-toolbar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 10px; border-bottom: 1px solid var(--border); color: var(--text); font-size: 12px; }
+#harness-status { color: var(--text-dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#harness-view { flex: 1; min-height: 0; }
+body.harness-active #sidebar, body.harness-active #sidebar-resizer { display: none; }
 #ai-engine { min-width: 0; flex: 1; background: var(--bg-input); color: var(--text); border: 1px solid var(--border-mid); border-radius: 4px; padding: 2px 4px; font: inherit; }
 /* token 用量状态条（头部下方，DeepSeek 缓存命中也在此显示） */
 #ai-usage.ai-usage, .ai-usage {

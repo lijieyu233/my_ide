@@ -213,13 +213,15 @@ contextBridge.exposeInMainWorld('myIDE', {
     getKeep: () => ipcRenderer.invoke('launch:get-keep'),
     setKeep: (v) => ipcRenderer.invoke('launch:set-keep', v),
   },
+  harness: {
+    ...Object.fromEntries(['start','mount','hide','bounds','reload','state','restart','desktop','external'].map(operation=>[operation,(...args)=>ipcRenderer.invoke('harness:'+operation,...args)])),
+    onState:callback=>{const listener=(_event,value)=>callback(value);ipcRenderer.on('harness:state',listener);return ()=>ipcRenderer.removeListener('harness:state',listener);},
+  },
   ai: {
     ...(process.argv.includes('--ai-approval-test') ? { testing: { snapshot: () => ipcRenderer.invoke('ai:testApprovalSnapshot'), click: (id,selector) => ipcRenderer.invoke('ai:testApprovalClick',id,selector) } } : {}),
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling
     chat: (cfg, messages, tools, context) => ipcRenderer.invoke('ai:chat', cfg, messages, tools, context),
     dshStatus: launcher => ipcRenderer.invoke('ai:dsh-status',launcher),
-    dshToolResult: (context,callId,result) => ipcRenderer.invoke('ai:dsh-tool-result',context,callId,result),
-    onDshEvent: callback => {const listener=(_event,value)=>callback(value);ipcRenderer.on('ai:dsh-event',listener);return ()=>ipcRenderer.removeListener('ai:dsh-event',listener);},
     abort: (context) => ipcRenderer.invoke('ai:abort', context),
     finish: (context) => ipcRenderer.invoke('ai:finish', context),
     ssh: (context,call) => ipcRenderer.invoke('ai:ssh',context,call),
