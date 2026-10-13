@@ -5002,6 +5002,22 @@ assert_(panel, 'CM6 搜索面板出现');
     } catch {}
   });
 
+  await okAsync('内置浏览器：HTML入口同步页面，文件切换让位，关闭恢复来源页面',async()=>{
+    const w=dom.window;
+    // 用真实 open 入口，避免只测 App.showTool 而漏掉 HTML 按钮的状态分叉。
+    const history=w.localStorage.getItem('myide-browser-history');
+    await w.Viewer.openFile(P+'/page.html');w.App.showTool('project');
+    const inner=[...w.document.querySelectorAll('#tab-actions button')].find(b=>b.textContent==='内置浏览器');
+    inner.click();assert_(w.App.getTool()==='browser'&&w.BrowserPanel.visible,'HTML入口与App页面一致');
+    await w.Viewer.openFile(P+'/README.md');assert_(!w.BrowserPanel.visible,'打开文件摘掉网页');
+    w.BrowserPanel.open('https://fixture.invalid');w.Viewer.activate(w.Viewer.openTabs.findIndex(t=>t.path===P+'/page.html'));
+    assert_(!w.BrowserPanel.visible,'点击已有标签也让位');
+    for(const source of ['launch','remote','project']){w.App.showTool(source);w.BrowserPanel.open('https://fixture.invalid');w.document.getElementById('bw-close').click();assert_(w.App.getTool()===source&&!w.BrowserPanel.visible,'关闭恢复'+source);}
+    w.App.showTool('project');w.App.switchTool('project');w.BrowserPanel.toggle();w.BrowserPanel.toggle();assert_(w.App.getTool()===null,'收起状态也原样恢复');
+    if(history===null)w.localStorage.removeItem('myide-browser-history');else w.localStorage.setItem('myide-browser-history',history);
+    calls.viewOpen=[];w.App.showTool('project');w.App.switchTool('project');
+  });
+
   await okAsync('翻译弹窗：未选中文本也能打开 / 原文可自己填 / 遮罩里没有遗留空容器', async () => {
     dom.window.localStorage.setItem('myide-translate-cfg', JSON.stringify({ baseUrl: 'http://stub', model: 'stub', target: '中文' }));
     await g(dom, 'Translate.run("")');

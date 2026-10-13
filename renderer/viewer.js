@@ -460,7 +460,7 @@ const Viewer = (() => {
   function activateRaw(i) {
     const target = tabs[i];
     if (!target) return;
-    if (window.App?.getTool() === 'quick-launch') App.backToEditor();
+    if (['browser','quick-launch'].includes(window.App?.getTool())) App.backToEditor();
     previewSequence++;previewFeedback='';
     activeTabId = target.id;
     focusedTabId=target.id;

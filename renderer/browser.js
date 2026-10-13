@@ -356,8 +356,9 @@ const BrowserPanel = (() => {
     stopHeal();
     const b = B(); if (b) b.viewHide(); // 只摘掉显示，WebContentsView 保留
   }
-  function toggle() { visible ? hide() : show(); }
-  function open(url) { show(); go(url); }
+  // 所有用户入口都经过 App；只显示原生视图会让 activeTool 留在旧页，之后文件切换无法摘掉它。
+  function toggle() { App.switchTool('browser'); }
+  function open(url) { App.showTool('browser'); if(!visible)show(); go(url); }
 
   function applyFullscreen(enabled){
     fullscreen=!!enabled;document.body.classList.toggle('browser-fullscreen',fullscreen);
@@ -834,7 +835,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-home').onclick = home;
     document.getElementById('bw-fullscreen').onclick = () => setFullscreen(!fullscreenWanted);
     document.getElementById('bw-open-default').onclick = openDefault;
-    document.getElementById('bw-close').onclick = () => App.switchTool('browser'); // 已激活 → 收起
+    document.getElementById('bw-close').onclick = () => App.closeBrowser();
     document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
     favBtn.onclick = (e) => {
       e.stopPropagation(); // tree.js 全局 click 会关掉刚弹出的菜单（共享单例 ctx-menu）

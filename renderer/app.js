@@ -106,6 +106,7 @@ const App = (() => {
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
   let aiOpen = false;        // AI 右侧面板是否展开（全局记忆，不按项目）
+  let browserReturn = null;
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
@@ -120,6 +121,7 @@ const App = (() => {
 
   function setToolState(next) {
     const prev = activeTool;
+    if (next === 'browser' && prev !== 'browser') browserReturn = {tool:prev,sideTool,sideCollapsed};
     activeTool = next;
     if (SIDE_TOOLS.includes(next)) sideTool = next;
     // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
@@ -137,6 +139,7 @@ const App = (() => {
     const wasCollapsed = document.body.classList.contains('sidebar-collapsed');
     if (wasCollapsed) toggleSidebar(false);
     if (activeTool === name && !wasCollapsed) { // 再点一次收起（PyCharm 行为）
+      if (name === 'browser') { closeBrowser(); return; }
       if (SIDE_TOOLS.includes(name)) sideCollapsed = true;
       else sideCollapsed = false;
       activeTool = null;
@@ -156,6 +159,16 @@ const App = (() => {
   function hideSideTool(name) {
     if(!SIDE_TOOLS.includes(name)||sideTool!==name)return;
     sideCollapsed=true;if(activeTool===name)activeTool=null;renderToolStrip();saveToolState();
+  }
+
+  function closeBrowser() {
+    if (activeTool !== 'browser') return;
+    const previous = browserReturn || {tool:null,sideTool,sideCollapsed:false};
+    browserReturn = null;
+    setToolState(previous.tool);
+    sideTool = previous.sideTool;
+    sideCollapsed = previous.sideCollapsed;
+    renderToolStrip();saveToolState();
   }
 
   // ---------- AI 右侧面板（独立停靠，不参与左侧互斥） ----------
@@ -193,6 +206,7 @@ const App = (() => {
     try { localStorage.setItem(TOOL_STATE_PREFIX + root, JSON.stringify({ activeTool, sideTool })); } catch {}
   }
   function restoreToolState() {
+    browserReturn = null; // 跨项目恢复不能携带上一项目的来源页面。
     if (!root) return;
     let st = null;
     try { st = JSON.parse(localStorage.getItem(TOOL_STATE_PREFIX + root) || 'null'); } catch {}
@@ -1137,7 +1151,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
+    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

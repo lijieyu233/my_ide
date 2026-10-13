@@ -42,5 +42,16 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('document.getElementById("bw-url").focus();document.getElementById("bw-url").value="https://draft.invalid";document.getElementById("bw-open-default").click();true');await until(()=>opened.length===1);assert.equal(opened[0],url+'/landing');assert.equal(page.getURL(),url+'/landing');
     externalFailure=true;const failed=await js('myIDE.browser.openDefault()');assert.equal(failed.ok,false);assert(failed.error.includes('默认浏览器启动失败'));externalFailure=false;await js('document.getElementById("bw-url").blur();true');await capture('browser-ui-default.png');assert(!win.isVisible());
   });
+  await test('HTML入口打开后点击文件摘掉原生网页，关闭回到来源工具',async()=>{
+    const file=path.join(temp,'navigation.txt');fs.writeFileSync(file,'文件切换验证');
+    await js('App.showTool("launch");BrowserPanel.open('+JSON.stringify(url)+');true');
+    assert.equal(await js('App.getTool()'),'browser');await until(()=>win.contentView.children.length===1);
+    await js('document.getElementById("bw-close").click();true');assert.equal(await js('App.getTool()'),'launch');await until(()=>win.contentView.children.length===0);
+    await js('BrowserPanel.open('+JSON.stringify(url)+');Viewer.openFile('+JSON.stringify(file)+')');
+    assert(await js('!BrowserPanel.visible'));await until(()=>win.contentView.children.length===0);
+    assert.equal(await js('Viewer.activeTab.content'),'文件切换验证');
+    await js('BrowserPanel.open('+JSON.stringify(url)+');Viewer.activate(Viewer.openTabs.length-1);true');
+    assert(await js('!BrowserPanel.visible'));await until(()=>win.contentView.children.length===0);await capture('browser-ui-file-switch.png');
+  });
   console.log('浏览器UI真实窗口：'+passed+' 通过 / 0 失败');cleanup(0);
 })().catch(error=>{console.error(error.stack);cleanup(1);});
