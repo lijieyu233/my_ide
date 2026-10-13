@@ -643,7 +643,7 @@ ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools)=>{
   }catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
-  try{aiSender(event);await require('./dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:launcher||require('./dsh-runtime').DEFAULT_LAUNCHER};}catch(error){return {ok:false,error:error.message};}
+  try{aiSender(event);const runtime=await require('./dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:runtime.launcher};}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
