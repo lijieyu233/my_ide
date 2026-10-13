@@ -291,6 +291,7 @@ function makeDom() {
       setColorScheme: async (mode) => { (calls.colorScheme = calls.colorScheme || []).push(mode); return { ok: true, source: mode }; },
       onCmd: () => {},
       fullscreen: async enabled => { (calls.browserFullscreen=calls.browserFullscreen||[]).push(enabled);return {ok:true,fullscreen:enabled}; },
+      openDefault: async () => { (calls.browserOpenDefault=calls.browserOpenDefault||0);calls.browserOpenDefault++;return {ok:true,url:'https://actual.example'}; },
       onState: (cb) => { stateCb.browser = cb; },
     },
     db: {
@@ -4594,6 +4595,9 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('内置浏览器：默认浏览器按钮随实际导航启用，不使用地址栏草稿',async()=>{
+    g(dom,'App.showTool("browser")');await tick();const oldHistory=dom.window.localStorage.getItem('myide-browser-history'),button=$(dom,'#bw-open-default');assert_(button.disabled,'未打开网页禁用');stateCb.browser({navigated:true,url:'https://actual.example/page'});await tick();assert_(!button.disabled,'实际网页导航后启用');const input=$(dom,'#bw-url');input.focus();input.value='还没有访问的草稿';const before=calls.browserOpenDefault||0;click(button);await tick();assert_((calls.browserOpenDefault||0)===before+1,'通过专用IPC打开实际页面');assert_(input.value==='还没有访问的草稿','不导航地址栏草稿');stateCb.browser({navigated:true,url:'about:blank'});await tick();assert_(button.disabled,'非网页地址禁用');if(oldHistory===null)dom.window.localStorage.removeItem('myide-browser-history');else dom.window.localStorage.setItem('myide-browser-history',oldHistory);g(dom,'App.showTool("project")');click($(dom,'#tool-project'));await tick();
+  });
   await okAsync('内置浏览器：open 导航（WebContentsView IPC）+ 历史', async () => {
     await g(dom, 'BrowserPanel.open("baidu.com")');
     await tick(); await tick();

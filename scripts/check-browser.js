@@ -1,6 +1,7 @@
 // 隐藏生产窗口与真实网页视图；独立配置，避免写入用户历史/收藏/窗口状态。
 const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'),assert=require('assert/strict');
-const {app,BrowserWindow,webContents}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const {app,BrowserWindow,webContents,shell}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
 let win,page,server,url,passed=0,closing=false;require('../main');require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(30);}throw Error('浏览器UI验证超时');}const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+')}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};
 const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
@@ -13,9 +14,10 @@ async function capture(name){
 const watchdog=setTimeout(()=>cleanup(2),120000);
 function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);server?.close();if(path.dirname(temp)!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-browser-ui-check-'))throw Error('清理越界');const node=require('child_process').execFileSync('node',['-p','process.execPath'],{encoding:'utf8'}).trim();require('child_process').spawn(node,['-e','const fs=require("fs");setTimeout(()=>fs.rmSync(process.argv[1],{recursive:true,force:true,maxRetries:8,retryDelay:300}),1200)',temp],{detached:true,stdio:'ignore',windowsHide:true}).unref();app.exit(code);}
 (async()=>{
-  server=http.createServer((_req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
+  server=http.createServer((_req,res)=>{if(_req.url==='/redirect'){res.writeHead(302,{Location:'/landing'});res.end();return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
   await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().includes('renderer/index.html')&&!w.webContents.isLoading());return win;});assert(!win.isVisible());win.setContentSize(1440,900);
   await js('Theme.set("crimson");BrowserPanel.addFav('+JSON.stringify(url)+',"fixture 收藏");App.showTool("browser");true');
+  assert(await js('document.getElementById("bw-open-default").disabled'));assert.equal((await js('myIDE.browser.openDefault()')).ok,false);assert.equal(opened.length,0);
   await test('打开、恢复和地址栏聚焦都不展开，关键词建议与清空保持正确',async()=>{
     await sleep(150);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));await js('document.getElementById("bw-url").focus();true');assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
     await js('BrowserPanel.go('+JSON.stringify(url)+');true');await until(()=>{page=webContents.getAllWebContents().find(w=>w.getURL()===url+'/');return page&&!page.isLoading();});
@@ -34,6 +36,11 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     // 隐藏窗口没有OS键盘焦点，直接送入真实WebContents上的输入事件回调，核对跨进程转发。
     let prevented=false;page.emit('before-input-event',{preventDefault:()=>{prevented=true;}},{type:'keyDown',key:'Escape'});await until(()=>js('!BrowserPanel.fullscreen'));assert(prevented);
     page.emit('before-input-event',{preventDefault:()=>{}},{type:'keyDown',key:'F11',control:false,alt:false,shift:false});await until(()=>js('BrowserPanel.fullscreen'));await js('App.showTool("project");true');await until(()=>js('!BrowserPanel.fullscreen&&!document.body.classList.contains("browser-fullscreen")'));assert(!win.isVisible());await js('App.showTool("browser");true');assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
+  });
+  await test('默认浏览器按钮打开重定向后的真实网址，不打开草稿，启动失败能反馈',async()=>{
+    await js('BrowserPanel.go('+JSON.stringify(url+'/redirect')+');true');await until(()=>page.getURL()===url+'/landing'&&!page.isLoading());await until(()=>js('!document.getElementById("bw-open-default").disabled'));
+    await js('document.getElementById("bw-url").focus();document.getElementById("bw-url").value="https://draft.invalid";document.getElementById("bw-open-default").click();true');await until(()=>opened.length===1);assert.equal(opened[0],url+'/landing');assert.equal(page.getURL(),url+'/landing');
+    externalFailure=true;const failed=await js('myIDE.browser.openDefault()');assert.equal(failed.ok,false);assert(failed.error.includes('默认浏览器启动失败'));externalFailure=false;await js('document.getElementById("bw-url").blur();true');await capture('browser-ui-default.png');assert(!win.isVisible());
   });
   console.log('浏览器UI真实窗口：'+passed+' 通过 / 0 失败');cleanup(0);
 })().catch(error=>{console.error(error.stack);cleanup(1);});

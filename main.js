@@ -206,6 +206,15 @@ const browserFullscreen=require('./browser-fullscreen').createService({getWindow
 ipcMain.handle('browser:fullscreen', (e,enabled)=>{
   try{if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口操作浏览器全屏');return browserFullscreen.set(enabled);}catch(error){return {error:error.message};}
 });
+ipcMain.handle('browser:open-default', async e=>{
+  try{
+    if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口打开当前网页');
+    const wc=bwView?.webContents,url=wc&&!wc.isDestroyed()?wc.getURL():'';
+    if(!url||!['http:','https:'].includes(new URL(url).protocol))throw Error('当前没有可用的网页地址');
+    // 地址栏可能正在编辑，也可能还未收到重定向回推；以实际网页视图为准。
+    await shell.openExternal(url);return {ok:true,url};
+  }catch(error){return {ok:false,error:error.message};}
+});
 function ensureBwView() {
   if (bwView) return bwView;
   bwView = new WebContentsView({

@@ -15,6 +15,7 @@ const BrowserPanel = (() => {
   let currentUrl = '';
   let currentTitle = '';
   let fullscreen=false,fullscreenWanted=false;
+  let defaultOpening=false;
   const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
   let dragFavUrl = null; // 拖拽源（dragover 里 dataTransfer.getData 恒为空，只能靠它判断，见 renderSidebar）
 
@@ -214,6 +215,7 @@ const BrowserPanel = (() => {
     if (s.err) { showError(s.err); return; }
     if (s.navigated && s.url) {
       currentUrl = s.url;
+      renderDefaultButton();
       if (document.activeElement !== urlInput) urlInput.value = currentUrl;
       document.getElementById('browser-error').classList.add('hidden');
       if (!s.inPage) addHistory(currentUrl, currentTitle);
@@ -249,6 +251,13 @@ const BrowserPanel = (() => {
     favBtn.textContent = faved ? '★' : '☆';
     favBtn.classList.toggle('faved', !!faved);
     favBtn.title = faved ? '取消收藏：' + (currentTitle || currentUrl) : '收藏当前页';
+  }
+  function renderDefaultButton(){const button=document.getElementById('bw-open-default');if(button)button.disabled=defaultOpening||!/^https?:\/\//i.test(currentUrl);}
+  async function openDefault(){
+    if(defaultOpening)return;defaultOpening=true;renderDefaultButton();
+    try{const b=B();if(!b?.openDefault)throw Error('默认浏览器接口不可用');const result=await b.openDefault();if(!result?.ok)throw Error(result?.error||'打开默认浏览器失败');return result;}
+    catch(error){MI.toast(error.message,'err');return {ok:false,error:error.message};}
+    finally{defaultOpening=false;renderDefaultButton();}
   }
 
   // ---------- 网页深色（工具栏按钮三态循环：深色 → 浅色 → 跟随系统） ----------
@@ -824,6 +833,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-reload').onclick = reload;
     document.getElementById('bw-home').onclick = home;
     document.getElementById('bw-fullscreen').onclick = () => setFullscreen(!fullscreenWanted);
+    document.getElementById('bw-open-default').onclick = openDefault;
     document.getElementById('bw-close').onclick = () => App.switchTool('browser'); // 已激活 → 收起
     document.getElementById('bw-err-retry').onclick = () => { document.getElementById('browser-error').classList.add('hidden'); reload(); };
     favBtn.onclick = (e) => {
@@ -908,6 +918,7 @@ const BrowserPanel = (() => {
     if(operation==='state')return {visible,fullscreen,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
     if(operation==='reveal'){
       hasPage=true;currentUrl=args.url;urlInput.value=args.url;
+      renderDefaultButton();
       document.getElementById('browser-empty').classList.add('hidden');
       document.getElementById('browser-error').classList.add('hidden');viewEl.classList.remove('hidden');
       App.showTool('browser');if(!overlayOpen())mountView(null);
