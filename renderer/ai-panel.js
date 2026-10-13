@@ -87,8 +87,11 @@ const AiPanel = (() => {
       if (run.stream && !run.stream.finished) {
         run.stream.finished = true;
         const text = run.stream.text;
-        run.stream.element.querySelector('.ai-md').innerHTML = renderMd(text) + '<p class="ai-err">已停止生成</p>';
-        if (run.identity.rootId === ((window.App && App.root) || '') && text) msgs.push({ role: 'assistant', content: text });
+        if(run.engine==='dsh'){
+          sealDshSegment(run);addMsg('assistant','已停止生成');run.stream.timeline.push({kind:'text',text:'已停止生成'});
+        }else run.stream.element.querySelector('.ai-md').innerHTML = renderMd(text) + '<p class="ai-err">已停止生成</p>';
+        if (run.identity.rootId === ((window.App && App.root) || '') && (text||run.stream.timeline?.length)) msgs.push({ role: 'assistant', content: text,
+          ...(run.engine==='dsh'?{_dshTimeline:run.stream.timeline}: {}) });
       }
       if (sendBtn) { sendBtn.disabled = true; sendBtn.title = '正在停止'; }
       const context = run.stream?.context || { ...run.identity, round: 0 };
@@ -808,7 +811,8 @@ const AiPanel = (() => {
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
-    const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false };
+    const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false,
+      ...(run.engine==='dsh'?{timeline:[],segment:null,afterActivity:false}: {}) };
     run.stream = stream;
     let r;
     try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !PROJECT_TOOLS.has(t.function?.name)), stream.context); }
@@ -1366,6 +1370,13 @@ const AiPanel = (() => {
     return repaired;
   }
   function buildMessages(summaryOnly=false) {
+    if(getConfig().engine==='dsh'){
+      const latest=msgs.findLast(m=>m.role==='user');
+      // 原生会话已有历史；这里只发送本次原话和明确选中的资料，不拼接自动跟随文件、系统提示或旧工具。
+      return latest?[{role:'user',content:latest._text!==undefined
+        ? (latest._imgs?.length?[{type:'text',text:latest._text},...latest._imgs.map(url=>({type:'image_url',image_url:{url}}))]:latest._text)
+        : latest.content,_dshAttachments:latest._dshAttachments||[]}]:[];
+    }
     msgs=repairToolHistory(msgs);
     const cfg = getConfig();
     const page = currentPage();
@@ -1415,8 +1426,8 @@ const AiPanel = (() => {
     if (w) w.remove();
     // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
     let content = text;
-    const files = effectiveCtxFiles();
-    if (files.length) {
+    const files = effectiveCtxFiles().filter(f=>cfg.engine!=='dsh'||!f.auto);
+    if (files.length && cfg.engine!=='dsh') {
       const blocks = files.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
       content = blocks.join('\n\n') + '\n\n' + text;
     }
@@ -1435,10 +1446,52 @@ const AiPanel = (() => {
     const contextFreeText = clips.concat(text).join('\n\n');
     const hasProjectContext = files.some(f=>f.special !== 'clip');
     msgs.push({ role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
+      ...(cfg.engine==='dsh'?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
       _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:imgs.length
         ? [{type:'text',text:contextFreeText}].concat(imgs.map(url=>({type:'image_url',image_url:{url}}))) : contextFreeText} : {}) });
 
     await continueStream(run);
+  }
+
+  function sealDshSegment(run){
+    const stream=run.stream;if(!stream)return;
+    stream.element.querySelector('.ai-cursor')?.remove();
+    if(!stream.segment?.text)stream.element.remove();
+    stream.afterActivity=true;
+  }
+  function appendDshText(run,delta,messageId){
+    const stream=run.stream;
+    if(stream.afterActivity || stream.segment && messageId && stream.messageId && stream.messageId!==messageId){
+      stream.element.querySelector('.ai-cursor')?.remove();
+      stream.element=addMsg('assistant','');curStream=stream.element;stream.segment=null;stream.afterActivity=false;
+    }
+    if(!stream.segment){stream.segment={kind:'text',text:''};stream.timeline.push(stream.segment);}
+    stream.messageId=messageId||stream.messageId;stream.segment.text+=delta;stream.text+=delta;curText=stream.text;
+    stream.element.querySelector('.ai-md').innerHTML=renderMd(stream.segment.text);
+    const segment=stream.segment;stream.element.querySelector('.ai-copy').onclick=()=>MI.copyText(segment.text);
+    return stream.element.querySelector('.ai-md');
+  }
+  function renderDshActivity(part){
+    const row=renderToolRow(part.call);
+    row.querySelector('.ai-tool-ic').innerHTML='<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>';
+    if(part.status)setToolState(row,part.status==='completed',part.status==='completed'?'已完成':part.status==='failed'?'失败':'未确认完成');
+    if(part.output){const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=part.output;detail.append(summary,body);row.appendChild(detail);}
+    return row;
+  }
+  function finishDshReply(text,isErr,r,run,stream,complete,warning){
+    if(!stream.text && r?.text)appendDshText(run,r.text);
+    else if(!stream.text && !isErr && text)appendDshText(run,text);
+    stream.element.querySelector('.ai-cursor')?.remove();
+    if(!stream.segment?.text)stream.element.remove();
+    if(isErr || !complete){
+      const note=r?.error||warning||(r?.aborted?'已停止生成':'回复未完成');
+      const row=addMsg('assistant',note);row.querySelector('.ai-md').classList.add('ai-err');
+      stream.timeline.push({kind:'text',text:note});
+    }
+    for(const row of msgsEl.querySelectorAll('.ai-msg.ai-assistant'))decorateCodeBlocks(row);
+    if(stream.timeline.length)msgs.push({role:'assistant',content:stream.text,_dshTimeline:stream.timeline});
+    curStream=null;curText='';scrollBottom();
+    endRun(run,isErr?'failed':r?.aborted?'cancelled':complete?'completed':'incomplete');
   }
 
   // 收尾一轮回复：渲染 + 入历史 + 若有工具调用则续跑 Agent 循环（保持 busy）
@@ -1452,6 +1505,8 @@ const AiPanel = (() => {
       && ['stop', 'tool_calls'].includes(r?.finishReason)
       && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
     let warning = r?.message || r?.error || (!complete && !r?.aborted ? '回复终态无效，未执行工具' : '');
+    // DSH文本与工具交错到达，收尾不能把总文本重新塞回最初气泡，破坏实际发生顺序。
+    if(run.engine==='dsh')return finishDshReply(text,isErr,r,run,stream,complete,warning);
     let textCalls = [];
     if (run.engine!=='dsh' && !isErr && complete && r.finishReason === 'stop' && text) {
       try { textCalls = parseToolCalls(text).map((c, index) => ({ ...c, id: stream.context.requestId + ':' + stream.context.round + ':' + index })); }
@@ -1561,6 +1616,10 @@ const AiPanel = (() => {
     if (!msgs.length) { showWelcome(); return; }
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
+      if(Array.isArray(m._dshTimeline)){
+        for(const part of m._dshTimeline){if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));else if(part.kind==='tool'&&part.call)renderDshActivity(part);}
+        continue;
+      }
       if (m._dshTool || m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
       if (m.role === 'user') {
         const t = m._text || (typeof m.content === 'string' ? m.content : '（含图片的消息）');
@@ -1739,6 +1798,10 @@ const AiPanel = (() => {
     return task.promise;
   }
   async function refreshFollow() {
+    if(getConfig().engine==='dsh'){
+      // Harness通过ide_state读取当前文件；隐藏自动附件，避免显示已附带却没有发送的资料。
+      ctxFiles=ctxFiles.filter(f=>!f.auto);followPath=null;renderChips();return;
+    }
     const epoch = pageEpoch;
     const scope = generation, root = (window.App && App.root) || '';
     await loadProjectRules();   // 项目规则只在换项目时真正读一次
@@ -2328,6 +2391,7 @@ const AiPanel = (() => {
     if(event.type==='status'){run.notice.textContent=event.text;return;}
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
     if(event.type==='question'){
+      sealDshSegment(run);
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
       for(const question of event.questions||[]){
         const group=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=question.question;group.appendChild(title);
@@ -2342,24 +2406,26 @@ const AiPanel = (() => {
     if(event.type==='native'){
       const update=event.update;
       if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
-        run.thought ||= document.createElement('details');if(!run.thought.isConnected){run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.insertBefore(run.thought,run.stream.element);}
+        run.thought ||= document.createElement('details');if(!run.thought.isConnected){sealDshSegment(run);run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.appendChild(run.thought);}
         run.thought.querySelector('pre').textContent+=update.content.text;run.notice.textContent='Harness 正在思考';
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
-        if(!entry){const call={name:update.title||'DSH 原生工具',args:update.rawInput||{}};const row=call.name.startsWith('mcp__myide__')?null:renderToolRow(call);if(row)row.querySelector('.ai-tool-ic').innerHTML='<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>';entry={row,call};run.dshRows.set(update.toolCallId,entry);}
+        if(!entry){sealDshSegment(run);const call={name:update.title||'DSH 原生工具',args:update.rawInput||{}};const activity={kind:'tool',call};const row=call.name.startsWith('mcp__myide__')?null:renderDshActivity(activity);if(row)run.stream.timeline.push(activity);entry={row,call,activity};run.dshRows.set(update.toolCallId,entry);}
+        if(update.status)entry.activity.status=update.status;
         if(update.status==='completed'||update.status==='failed')setToolState(entry.row,update.status==='completed',update.status==='completed'?'已完成':'失败');
         const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
-        if(output&&entry.row){entry.row.title=output;const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=output;detail.append(summary,body);entry.row.appendChild(detail);}
+        if(output&&entry.row){entry.activity.output=output;entry.row.title=output;entry.row.querySelector('.ai-dsh-output')?.remove();const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=output;detail.append(summary,body);entry.row.appendChild(detail);}
         run.notice.textContent='Harness：'+(entry.call.name||'正在执行工具');
       }
       if(update.sessionUpdate==='usage_update')document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
       if(update.sessionUpdate==='myide_projection'){
-        run.projection ||= document.createElement('details');if(!run.projection.isConnected){run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.insertBefore(run.projection,run.stream.element);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
+        run.projection ||= document.createElement('details');if(!run.projection.isConnected){sealDshSegment(run);run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.appendChild(run.projection);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
       }
       return;
     }
     if(event.type==='permission'){
+      sealDshSegment(run);
       const box=document.createElement('div');box.className='ai-dsh-permission';const call=run.dshRows?.get(event.toolCall?.toolCallId)?.call;
       const title=document.createElement('strong');title.textContent='DSH 原生工具请求授权';const body=document.createElement('pre');body.textContent=(call?.name||event.toolCall?.title||'工具')+'\n'+JSON.stringify(call?.args||event.toolCall?.rawInput||{},null,2);box.append(title,body);msgsEl.appendChild(box);
       const close=()=>{for(const button of box.querySelectorAll('button'))button.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
@@ -2367,11 +2433,14 @@ const AiPanel = (() => {
     }
     if(event.type!=='tool')return;
     const call=event.call;let row,result;
+    sealDshSegment(run);
+    const activity={kind:'tool',call};run.stream.timeline.push(activity);
     try{
-      row=renderToolRow(call);
+      row=renderDshActivity(activity);
       if(call.name==='ide_state'){const page=currentPage(),tab=window.Viewer?.activeTab;result={ok:true,text:JSON.stringify({page,...(page.projectContext&&tab?{editor:{path:tab.path,dirty:!!tab.dirty,content:String(tab.content||'').slice(0,30000),truncated:String(tab.content||'').length>30000}}:{})})};}
       else result=await executeTool(call,run);
     }catch(error){result={ok:false,text:error.message||String(error)};}
+    activity.status=result.ok?'completed':'failed';activity.output=String(result.text||'').slice(0,30000);
     setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row)row.title=String(result.text||'');
     if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
     try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);}catch{if(runIsLive(run))stopRun();}
@@ -2469,10 +2538,9 @@ const AiPanel = (() => {
     window.myIDE.ai.onChunk((event) => {
       const run = currentRun, stream = run?.stream;
       if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
-      stream.text += event.delta;
-      curText = stream.text;
-      const md = curStream.querySelector('.ai-md');
-      md.innerHTML = renderMd(curText);
+      let md;
+      if(run.engine==='dsh')md=appendDshText(run,event.delta,event.messageId);
+      else{stream.text += event.delta;curText = stream.text;md = curStream.querySelector('.ai-md');md.innerHTML = renderMd(curText);}
       const d = document.createElement('span');
       d.className = 'ai-cursor';
       md.appendChild(d);

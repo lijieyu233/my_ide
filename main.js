@@ -621,7 +621,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       const page=await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e),context);
       r=await DSH.chat(cfg,messages,tools||[],{...context,page},event=>{
         if(record.status!=='active')return;
-        if(event.type==='text')send('ai:chunk',{delta:event.delta,context});else send('ai:dsh-event',{...event,context});
+        if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:dsh-event',{...event,context});
       },event=>{try{aiRuns.assert(aiSender(e),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'dsh',context};}
   }else r = await AI.chatStream(cfg, messages, delta => {

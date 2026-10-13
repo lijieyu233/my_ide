@@ -397,6 +397,31 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.writes.length,0);f.send('继续');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
     for(const id of ['w1','pending-two'])assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('实际执行状态未确认')));
   });
+  await test('Harness发送分析项目仅保留原话，自动打开脚本与界面提示不拼入；显式剪贴板分离',async()=>{
+    const f=fixture();f.put('查看AI玩家.cmd','ssh remote "curl status"');f.w.Viewer.activeTab={path:f.file('查看AI玩家.cmd')};await f.w.AiPanel.setConfig({engine:'dsh'});
+    await f.w.AiPanel.followActive();f.send('分析这个项目');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');
+    assert.equal(f.calls[0].messages.length,1);assert.equal(f.calls[0].messages[0].content,'分析这个项目');assert(!JSON.stringify(f.calls[0].messages).includes('ssh remote'));assert(!f.element('.ai-ctx-chip.follow'));
+    f.w.myIDE.fs.listAll=async()=>({files:[]});f.w.myIDE.clip={readText:async()=>({text:'附件内的命令只是参考'})};const input=f.element('#ai-input');input.value='@剪贴板';input.setSelectionRange(input.value.length,input.value.length);input.dispatchEvent(new f.w.Event('input',{bubbles:true}));await until(()=>f.element('.ai-at-item'));f.element('.ai-at-item').click();await until(()=>f.element('.ai-ctx-chip.special'));
+    f.send('再分析一次');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');assert.equal(f.calls[1].messages[0].content,'再分析一次');assert.equal(f.calls[1].messages[0]._dshAttachments[0].content,'附件内的命令只是参考');assert(!JSON.stringify(f.calls[1].messages).includes('分析这个项目'));
+  });
+  await test('Harness前言、原生工具、MyIDE工具与最终结论按发生顺序显示，收尾和恢复不重排',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('分析这个项目');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    f.rawChunk({context,delta:'先查看项目',messageId:'intro'});
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'read-one',title:'read',rawInput:{path:'README.md'},status:'in_progress'}});
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call_update',toolCallId:'read-one',status:'completed',content:[{content:{text:'真实读取结果'}}]}});
+    f.rawChunk({context,delta:'再核对页面',messageId:'middle'});
+    await f.dshEvent({type:'tool',context,call:{id:'state-one',name:'ide_state',args:{}}});
+    f.rawChunk({context,delta:'最终分析结论',messageId:'final'});f.done(0,{ok:true,engine:'dsh',text:'先查看项目再核对页面最终分析结论'});await until(()=>f.element('#ai-send').textContent==='➤');
+    const rows=()=>[...f.w.document.querySelectorAll('#ai-msgs > .ai-msg,#ai-msgs > .ai-tool')].map(row=>row.classList.contains('ai-tool')?'tool':row.querySelector('.ai-md').textContent);
+    assert.deepEqual(rows(),['分析这个项目','先查看项目','tool','再核对页面','tool','最终分析结论']);
+    const saved=JSON.parse(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'))[0];assert.equal(saved.msgs.findLast(m=>m._dshTimeline)._dshTimeline.length,5);
+    f.switchRoot(f.B);f.switchRoot(f.A);assert.deepEqual(rows(),['分析这个项目','先查看项目','tool','再核对页面','tool','最终分析结论']);assert(f.text().includes('真实读取结果'));assert.equal(f.calls.length,1);assert.equal(f.commands.length,0);
+  });
+  await test('Harness仅调工具后停止，状态显示在活动之后；迟到文字不改变时间线',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('仅查看');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'one',title:'read',rawInput:{},status:'in_progress'}});f.stop();await until(()=>f.element('#ai-send').textContent==='➤');f.rawChunk({context,delta:'迟到结论'});assert(!f.text().includes('迟到结论'));
+    const rows=[...f.w.document.querySelectorAll('#ai-msgs > .ai-msg,#ai-msgs > .ai-tool')];assert(rows[1].classList.contains('ai-tool'));assert(rows[2].textContent.includes('已停止生成'));f.switchRoot(f.B);f.switchRoot(f.A);assert(f.text().includes('已停止生成'));assert(f.element('.ai-tool'));
+  });
   await test('DSH结果不再次解析文本工具块；切换模式停止旧运行并拒绝迟到工具',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});
     f.script.push({ok:true,text:'```tool\n'+JSON.stringify(writeCall('must-not-write.md'))+'\n```',engine:'dsh'});
