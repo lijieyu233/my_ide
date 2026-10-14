@@ -68,7 +68,7 @@ const QuickLaunch = (() => {
     const keys = new Map((window.Shortcuts?.bindings() || []).map(b => [b.id, b.effectiveCombos]));
     const panelKeys = keys.get('tool-quick-launch') || [];
     if (q('tool-quick-launch')) q('tool-quick-launch').title = '快速启动：应用、文件夹与网页' + (panelKeys.length ? '（' + panelKeys.join(' / ') + '）' : '（未设置快捷键）');
-    q('ql-results').textContent = query ? visible.length + ' 个匹配；清空搜索后可排序' : managing ? '拖动卡片或使用前移 / 后移整理；删除只影响入口' : '点击卡片，交给系统打开';
+    q('ql-results').textContent = query ? visible.length + ' 个匹配；清空搜索后可排序' : managing ? '拖动卡片或使用前移 / 后移整理；删除只影响入口' : '点击入口打开应用、文件夹、文件或网页';
     const disabled = loading || saving || confirming || !!loadError;
     q('ql-groups').setAttribute('aria-busy', String(loading || saving));
     q('ql-groups').innerHTML = config ? config.groups.map((g, gi) => {
@@ -86,8 +86,8 @@ const QuickLaunch = (() => {
             + '<span class="ql-icon" data-icon="' + esc(e.id) + '">' + svg(e.type) + '</span><span class="ql-name">' + esc(e.name) + '</span><span class="ql-type">' + (opening.has(e.id) ? '正在打开…' : typeNames[e.type]) + '</span>' + ((keys.get(actionPrefix + e.id) || []).length ? '<span class="ql-key">' + esc(keys.get(actionPrefix + e.id).join(' / ')) + '</span>' : '') + '</button>'
             + (managing ? '<div class="ql-card-actions">' + button('edit', e.id, '编辑', disabled) + button('delete', e.id, '删除', disabled)
               + button('up', e.id, '前移', disabled || !!query || index === 0) + button('down', e.id, '后移', disabled || !!query || index === peers.length - 1) + '</div>' : '') + '</article>';
-        }).join('') + (items.length ? '' : '<p class="ql-empty">添加常用应用、文件夹或网页</p>') + '</div>'
-        + '<button class="ql-group-add" data-action="add" data-id="' + esc(g.id) + '" aria-label="' + esc('添加入口到分组：' + g.name) + '"' + (disabled ? ' disabled' : '') + '>添加入口</button></section>';
+        }).join('') + (items.length ? '' : '<div class="ql-empty">' + svg('folder') + '<strong>还没有入口</strong><span>把常用应用、文件夹或网页放在这里</span></div>') + '</div>'
+        + '<button class="ql-group-add" data-action="add" data-id="' + esc(g.id) + '" aria-label="' + esc('添加入口到分组：' + g.name) + '"' + (disabled ? ' disabled' : '') + '><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span>添加入口</span></button></section>';
     }).join('') : '<p class="ql-empty">' + (loading ? '正在加载快速启动…' : '配置不可用，请重新加载。') + '</p>';
     if (config && query && !visible.length) q('ql-groups').innerHTML = '<div class="ql-empty"><p>没有匹配入口</p><button data-action="clear">清空搜索</button></div>';
     if (focused) focus(focused);
@@ -412,8 +412,9 @@ const QuickLaunch = (() => {
     if (inited) return;
     inited = true;
     const root = document.createElement('section'); root.id = 'quick-launch-main'; root.className = 'hidden'; root.setAttribute('aria-label', '快速启动');
-    root.innerHTML = '<header class="ql-head"><div><h1>快速启动</h1><span id="ql-count"></span></div><button id="ql-back">返回编辑器</button></header>'
-      + '<div class="ql-toolbar"><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"><button id="ql-add" data-focus="add" class="ql-primary">添加入口</button><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><button id="ql-import">导入</button><button id="ql-export">导出</button><button id="ql-keys">快捷键</button><button id="ql-reload">重新加载</button></div>'
+    root.innerHTML = '<header class="ql-head"><div><h1>快速启动</h1><span id="ql-count"></span></div><button id="ql-back"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8H3m4-4L3 8l4 4"/></svg><span>返回编辑器</span></button></header>'
+      + '<div class="ql-controls"><div class="ql-search-wrap"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg><input id="ql-search" type="search" placeholder="搜索名称、路径或网页…" aria-label="搜索快速启动入口"></div><button id="ql-add" data-focus="add" class="ql-primary" title="添加入口" aria-label="添加入口"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span>添加入口</span></button></div>'
+      + '<div class="ql-toolbar"><button id="ql-group-add">添加分组</button><button id="ql-manage" aria-pressed="false">管理</button><span class="ql-toolbar-sep" aria-hidden="true"></span><button id="ql-import">导入</button><button id="ql-export">导出</button><button id="ql-keys">快捷键</button><button id="ql-reload">重新加载</button></div>'
       + '<p id="ql-results" class="ql-results"></p><div id="ql-groups"></div><p id="ql-status" role="status" aria-live="polite"></p>';
     q('content').append(root);
     q('ql-back').onclick = () => { window.App.backToEditor(); q('tool-quick-launch')?.focus(); };

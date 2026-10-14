@@ -44,10 +44,12 @@ app.whenReady().then(async () => {
     window = BrowserWindow.getAllWindows()[0];
     window.webContents.debugger.attach('1.3');
     await wait('!!window.App && !!document.getElementById("quick-launch-main")');
-    window.setContentSize(1280, 850);
+    window.setMinimumSize(0, 0); window.setContentSize(1280, 850);
     await probe('App.showTool("quick-launch")');
     await wait('!document.getElementById("ql-add").disabled');
     check('无项目发现独立入口，三个默认分组', await probe('!App.root && document.querySelectorAll(".ql-group").length===3 && !document.getElementById("quick-launch-main").classList.contains("hidden")'));
+    await probe('Theme.set("crimson")'); await snapshot('empty-crimson');
+    check('主操作与辅助操作分层，空分组引导与图标完整', await probe('!!document.querySelector(".ql-controls #ql-search")&&!!document.querySelector(".ql-controls #ql-add")&&!document.querySelector(".ql-toolbar #ql-search")&&document.querySelectorAll(".ql-empty strong").length===3&&!!document.querySelector(".ql-empty svg")'));
     // 单独探针核对当前Electron令牌实际可写；只创建独占随机文件，不读取/改动用户配置。
     const FileWrite = require('../file-write');
     const probeFile = path.join(actualHome, '.myide', '.quick-launch-probe-' + require('crypto').randomUUID());
