@@ -23,6 +23,11 @@ async function fixture() {
 }
 async function test(name, fn) { const f = await fixture(); try { await fn(f); passed++; console.log('  ok ' + name); } finally { f.close(); } }
 (async () => {
+  await test('会话记录保存失败不切项目、不关闭标签；旁存快照成功允许切换',async f=>{
+    f.w.Session.saveNow=()=>({ok:false,error:'quota'});const before=f.history();
+    assert.equal(await f.w.App.openProject('C:/目标'),false);assert.equal(f.w.App.root,'C:/原项目');assert.equal(f.history(),before);assert(!f.calls.some(x=>x[0]==='close'));assert(f.notices.at(-1).includes('项目状态未保存'));
+    f.w.Session.saveNow=()=>({ok:true,protected:true,currentSaved:true});assert.equal(await f.w.App.openProject('C:/目标'),true);
+  });
   await test('不存在、非目录和无权访问在保存/清标签前拒绝，不改原项目/历史', async f => {
     for (const errorCode of ['ENOENT', 'ENOTDIR', 'EACCES']) {
       const before = f.history(); f.w.myIDE.fs.inspectDirectory = async () => ({ ok: false, errorCode, error: errorCode });

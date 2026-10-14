@@ -2,6 +2,7 @@
 const Session = (() => {
   // 会话按项目隔离：每个项目记住自己的标签
   const KEY = (root = App.root) => 'myide-session:' + (root || '');
+  const CURRENT_KEY = root => 'myide-session-current:' + root;
   const reports = new Map();
   let timer = null, sequence = 0, restoring = null;
   const tools = new Set(['project','outline','search','git','tasks','launch','db','browser','log','quick-launch']);
@@ -20,7 +21,7 @@ const Session = (() => {
       const rootPrefix = root;
       // 每个标签带浏览位置（滚动 + 光标行），切换项目回来不丢
       const tabs = Viewer.openTabs
-        .filter((t) => !t.dirty && t.retention!=='preview' && validPath(t.path, rootPrefix))
+        .filter((t) => !t.dirty && validPath(t.path, rootPrefix))
         .map((t) => {
           let line = null;
           try {
@@ -29,7 +30,7 @@ const Session = (() => {
               line = cmState.doc.lineAt(cmState.selection.main.head).number;
             }
           } catch {}
-          return { p: t.path, s: Number.isFinite(t.scrollTop) && t.scrollTop >= 0 ? t.scrollTop : 0, l: line, ...(t.pinned?{f:true}:{}) };
+          return { p: t.path, s: Number.isFinite(t.scrollTop) && t.scrollTop >= 0 ? t.scrollTop : 0, l: line, ...(t.pinned?{f:true}:{}),...(t.retention==='preview'?{preview:true}:{}) };
         });
       const active = Viewer.activeTab;
       const state = {
@@ -41,13 +42,23 @@ const Session = (() => {
       return state;
     } catch (error) { throw error; }
   }
-  function publish(root, state, expected) {
+  function publish(root, state, expected, expectedCurrent) {
     if (!root || App.root !== root) return { ok: false, stale: true };
-    if (restoring?.root === root || reports.get(root)?.blocked) return { ok: false, protected: true };
+    if (restoring?.root === root) return { ok: false, protected: true };
     try {
       if (localStorage.getItem(KEY(root)) !== expected) throw Error('会话记录已变化，请重新读取；未覆盖原记录');
+      if (localStorage.getItem(CURRENT_KEY(root)) !== expectedCurrent) throw Error('当前会话记录已变化，请重新读取；未覆盖原记录');
+      const report=reports.get(root);
+      if(report?.blocked){
+        // 坏记录继续保留取证，但不能冻结用户之后的正常操作。旁存快照绑定原字符串，外部替换后不会误恢复旧状态。
+        if(report.raw!==expected)throw Error('原记录已变化，请重新读取；未覆盖原记录');
+        const raw=JSON.stringify({base:expected,state});localStorage.setItem(CURRENT_KEY(root),raw);
+        if(localStorage.getItem(CURRENT_KEY(root))!==raw)throw Error('当前会话保存核对失败');
+        report.currentRaw=raw;report.supplemental=true;
+        return {ok:true,protected:true,currentSaved:true};
+      }
       if (expected) { const old = JSON.parse(expected); if (!old || typeof old !== 'object' || Array.isArray(old)) throw Error('原会话格式损坏，已保留'); }
-      localStorage.setItem(KEY(root), JSON.stringify(state)); return { ok: true };
+      localStorage.setItem(KEY(root), JSON.stringify(state));localStorage.removeItem(CURRENT_KEY(root)); return { ok: true };
     } catch (error) { note('会话未保存：' + error.message); return { ok: false, error: error.message }; }
   }
   // 保存（viewer.renderTabs 每次标签变化都会调用，400ms 防抖）
@@ -56,15 +67,15 @@ const Session = (() => {
     // closeAll会先触发保存通知，再由App清空root；结算后同步隐藏旧项目的提示。
     queueMicrotask(updateButton);
     const root = App.root;
-    if (!root || restoring?.root === root || reports.get(root)?.blocked) return;
-    try { const state = capture(root), expected = localStorage.getItem(KEY(root)); timer = setTimeout(() => publish(root, state, expected), 400); }
+    if (!root || restoring?.root === root) return;
+    try { const state = capture(root), expected = localStorage.getItem(KEY(root)),expectedCurrent=localStorage.getItem(CURRENT_KEY(root)); timer = setTimeout(() => publish(root, state, expected,expectedCurrent), 400); }
     catch (error) { note('会话未保存：' + error.message); }
   }
   // 立即保存（切换项目前调用，防止旧项目会话丢失）
   function saveNow() {
     clearTimeout(timer);
     if (!App.root) return { ok: true };
-    try { return publish(App.root, capture(App.root), localStorage.getItem(KEY())); }
+    try { return publish(App.root, capture(App.root), localStorage.getItem(KEY()),localStorage.getItem(CURRENT_KEY(App.root))); }
     catch (error) { note('会话未保存：' + error.message); return { ok: false, error: error.message }; }
   }
 
@@ -76,10 +87,11 @@ const Session = (() => {
     try { await restoreInto(run, report, fail); } catch (error) { fail('读取会话', error); }
     finally {
       if (current(run)) {
-        report.blocked = report.errors.length > 0 || report.entries.some(e => e.status === 'failed');
+        const failed=report.errors.length > 0 || report.entries.some(e => e.status === 'failed');
+        report.blocked = failed || !!report.supplemental;
         report.status = report.blocked ? 'partial' : report.status === 'empty' ? 'empty' : 'ready';
         restoring = null; updateButton();
-        if (report.blocked) note('部分会话未恢复，原记录已保留；点击状态栏「部分恢复」查看详情');
+        if (failed) note('部分会话未恢复，原记录已保留；当前操作会另行保存，点击状态栏「部分恢复」查看详情');
       } else { report.status = 'stale'; if (restoring === run) restoring = null; }
     }
     return JSON.parse(JSON.stringify({ root: run.root, entries: report.entries, errors: report.errors, blocked: report.blocked, status: report.status }));
@@ -91,8 +103,14 @@ const Session = (() => {
     for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i); if (key?.startsWith(prefix)) report.backups.push(key); }
     report.backupKey = report.backups.at(-1);
     report.raw = localStorage.getItem(KEY(root));
+    report.currentRaw=localStorage.getItem(CURRENT_KEY(root));
     if (!report.raw) { report.status = 'empty'; return; }
-    const state = JSON.parse(report.raw);
+    let source=report.raw;
+    if(report.currentRaw){
+      try {const saved=JSON.parse(report.currentRaw);if(saved.base===report.raw&&saved.state&&typeof saved.state==='object'&&!Array.isArray(saved.state)){source=JSON.stringify(saved.state);report.supplemental=true;}}
+      catch(error){fail('当前会话快照',error);}
+    }
+    const state = JSON.parse(source);
     if (!state || typeof state !== 'object' || Array.isArray(state)) throw Error('会话格式无效');
     const list = state.tabs === undefined ? [] : state.tabs, seen = new Set();
     if (!Array.isArray(list)) fail('标签列表', '标签列表格式无效');
@@ -108,7 +126,7 @@ const Session = (() => {
       try {
         const existing = Viewer.openTabs.find(t => pathKey(t.path) === pathKey(item.p));
         if (existing?.dirty) { entry.status = 'loaded'; entry.error = '保留当前未保存正文与位置'; return; }
-        Viewer.addLazyTab(item.p, { scrollTop: scroll, line, pinned: item.f === true });
+        Viewer.addLazyTab(item.p, { scrollTop: scroll, line, pinned: item.f === true,preview:item.preview===true });
         const tab = Viewer.openTabs.find(t => pathKey(t.path) === pathKey(item.p));
         if (!tab) throw Error('标签正被关闭或迁移，可稍后重试');
         updateEntry(entry, tab);
@@ -127,7 +145,7 @@ const Session = (() => {
       try { Viewer.activate(Viewer.openTabs.indexOf(target), { history: false }); if (target.loadPromise) await target.loadPromise; }
       catch (error) { fail('活动标签', error); }
       // 读盘结算后只操作同一项目、原记录版本和同一活动对象。
-      if (!current(run) || localStorage.getItem(KEY(root)) !== report.raw) { if (current(run)) fail('记录版本', '恢复期间记录已变化，请重新读取'); return; }
+      if (!current(run) || localStorage.getItem(KEY(root)) !== report.raw ||localStorage.getItem(CURRENT_KEY(root))!==report.currentRaw) { if (current(run)) fail('记录版本', '恢复期间记录已变化，请重新读取'); return; }
       const entry = report.entries.find(e => pathKey(e.path) === pathKey(target.path)); if (entry) updateEntry(entry, target);
       if (Viewer.activeTab === target && !target.dirty && !target.error && target.restoreLine) { Viewer.revealLine(target.restoreLine); delete target.restoreLine; }
     }
@@ -140,6 +158,7 @@ const Session = (() => {
         try { if (window.Tree) Tree.setExpandedPaths(expanded); } catch (error) { fail('目录展开', error); }
       }
     }
+    if(target&&Viewer.activeTab===target)window.Tree?.select?.(target.path,'file');
     if (state.tool != null) { if (!tools.has(state.tool)) fail('工具窗口', '工具名称无效'); else try { App.setTool(state.tool); } catch (error) { fail('工具窗口', error); } }
   }
   function updateEntry(entry, tab) {
@@ -164,7 +183,7 @@ const Session = (() => {
     const head = document.createElement('div'); head.className = 'm-head'; head.textContent = '会话恢复详情';
     const close = document.createElement('button'); close.className = 'x'; close.type = 'button'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭会话恢复详情'); head.append(close);
     const body = document.createElement('div'); body.className = 'm-body';
-    const message = document.createElement('p'); message.textContent = '项目：' + root + (report.blocked ? '。失败或坏记录未覆盖。' : report.backupKey ? '。当前会话可用，原记录备份可复制保留。' : '。当前会话已恢复。') + '后台标签仅登记，点击时才读取，不表示已经验证可读。'; body.append(message);
+    const message = document.createElement('p'); message.textContent = '项目：' + root + (report.blocked ? '。失败或坏记录未覆盖，最新标签与位置另行保存，切回时优先恢复最新状态。' : report.backupKey ? '。当前会话可用，原记录备份可复制保留。' : '。当前会话已恢复。') + '后台标签仅登记，点击时才读取，不表示已经验证可读。'; body.append(message);
     for (const entry of report.entries) {
       const row = document.createElement('p'); row.textContent = ({ loaded: '已载入', pending: '待加载', failed: '无法恢复' })[entry.status] + '：' + entry.path + (entry.error ? ' — ' + entry.error : '');
       const tab = Viewer.openTabs.find(t => pathKey(t.path) === pathKey(entry.path));
@@ -193,6 +212,7 @@ const Session = (() => {
         localStorage.setItem(backupKey, report.raw);
         if (localStorage.getItem(backupKey) !== report.raw) throw Error('备份核对失败，未替换原记录');
         localStorage.setItem(KEY(root), JSON.stringify(capture(root)));
+        localStorage.removeItem(CURRENT_KEY(root));report.currentRaw=null;report.supplemental=false;
         report.backups.push(backupKey); report.backupKey = backupKey; report.blocked = false; report.status = 'ready'; updateButton(); hide(); MI.toast('原记录已备份，当前会话已保存；状态栏可查看备份', 'ok');
       } catch (error) { note('会话未替换：' + error.message); }
     };
@@ -215,6 +235,15 @@ const Session = (() => {
         if(state.active)state.active=DocumentPaths.map(state.active,from,to);
         if(Array.isArray(state.expanded))state.expanded=state.expanded.map(p=>DocumentPaths.map(p,from,to));
         localStorage.setItem(key,JSON.stringify(state));
+      }catch{}
+    }
+    for(let i=0;i<localStorage.length;i++){
+      const key=localStorage.key(i);if(!key?.startsWith('myide-session-current:'))continue;
+      try {const saved=JSON.parse(localStorage.getItem(key)),state=saved.state;if(!state)continue;
+        if(Array.isArray(state.tabs))state.tabs=state.tabs.map(t=>typeof t==='string'?DocumentPaths.map(t,from,to):{...t,p:DocumentPaths.map(t.p,from,to)});
+        if(state.active)state.active=DocumentPaths.map(state.active,from,to);
+        if(Array.isArray(state.expanded))state.expanded=state.expanded.map(p=>DocumentPaths.map(p,from,to));
+        localStorage.setItem(key,JSON.stringify(saved));
       }catch{}
     }
     save();

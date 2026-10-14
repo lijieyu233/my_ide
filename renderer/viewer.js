@@ -474,12 +474,24 @@ const Viewer = (() => {
     if (t && t.lazy) {
       // 懒恢复标签首次切入才读盘（会话恢复只登记，切换项目不再逐个打开全部文件）
       t.lazy = false;
-      t.loadPromise = loadTab(t).then(() => {
-        if (t === currentTab() && t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; } // 编辑器就绪后再跳行
+      t.loadPromise = loadTab(t).then(async () => {
+        if (t === currentTab()) await restoreSessionPosition(t);
       });
       return; // 内容未载入（renderView 对 mode=null 直接返回）→ 常规跳行等加载完成
     }
-    if (t && t.restoreLine) { revealLine(t.restoreLine); delete t.restoreLine; }
+    if (t)restoreSessionPosition(t);
+  }
+  async function restoreSessionPosition(tab) {
+    if(!tab.restoreLine&&tab.restoreScrollTop==null)return;
+    const top=tab.restoreScrollTop,root=window.App?.root,revision=tab.editRevision;
+    if(tab.restoreLine)revealLine(tab.restoreLine);
+    delete tab.restoreLine;delete tab.restoreScrollTop;
+    if(top==null)return;
+    const valid=()=>tab===currentTab()&&window.App?.root===root&&tab.editRevision===revision;
+    const apply=()=>{if(!valid())return;const {primary}=locationScrollers(tab);if(primary){primary.scrollTop=top;tab.scrollTop=primary.scrollTop;}};
+    apply();
+    // 光标恢复和CM挂载测量都可能滚动视口；布局结算后还原用户离开时的位置。
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>{apply();resolve();})));
   }
 
   // 会话懒恢复：只登记标签条（不读盘不建编辑器），激活时才真正加载。
@@ -490,8 +502,10 @@ const Viewer = (() => {
     const name = path.split(/[\\/]/).pop();
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
     if (opts && opts.scrollTop) tab.scrollTop = opts.scrollTop;
+    if(Number.isFinite(opts?.scrollTop)&&opts.scrollTop>=0)tab.restoreScrollTop=opts.scrollTop;
     if (opts && opts.line) tab.restoreLine = opts.line;
     tab.pinned=opts?.pinned===true;
+    tab.retention=opts?.preview===true&&!tab.pinned?'preview':'regular';
     tabs.push(tab);
     orderPinned();
     renderTabs();

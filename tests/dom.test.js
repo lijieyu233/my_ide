@@ -16,6 +16,14 @@ async function okAsync(name, fn) {
 }
 const tick = () => new Promise((r) => setTimeout(r, 10));
 const g = (dom, expr) => dom.window.eval(expr);
+async function waitProject(dom,root) {
+  // 恢复滚动要等待CM完成布局；不能用两次10ms定时器当成项目切换已经结束。
+  for(let i=0;i<100;i++){
+    if(g(dom,'App.root')===root&&g(dom,'Session.getRestoreReport()?.status')!=='restoring'){await tick();return;}
+    await tick();
+  }
+  throw Error('项目恢复未完成：'+root);
+}
 
 // ---------- 假文件系统与假 Git（统一正斜杠路径）----------
 const P = 'C:/proj';
@@ -1951,13 +1959,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_((await g(dom, 'App.root')) === 'C:/proj2', '当前是项目二');
     // 点击切换到项目一
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.textContent.includes('proj') && b.title === P));
-    await tick(); await tick();
+    await waitProject(dom,P);
     assert_((await g(dom, 'App.root')) === P, '切换回项目一');
     const active = $allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.classList.contains('active'));
     assert_(active && active.title === P, '高亮跟随切换');
     // 切回项目二，验证树内容不同
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === 'C:/proj2'));
-    await tick(); await tick();
+    await waitProject(dom,'C:/proj2');
     const names = $allIn($(dom, '#tree'), '.tree-row .nm').map((n) => n.textContent);
     assert_(names.includes('other.md'), '树切换到项目二内容: ' + JSON.stringify(names));
   });
@@ -1969,14 +1977,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await new Promise((r) => setTimeout(r, 500)); // 防抖保存
     // 切到项目一，打开 README.md
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === P));
-    await tick(); await tick();
+    await waitProject(dom,P);
     assert_((await g(dom, 'App.root')) === P, '已切到项目一');
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick();
     await new Promise((r) => setTimeout(r, 500)); // 防抖保存
     // 切回项目二 → 应恢复 other.md（项目二自己的会话）
     click($allIn($(dom, '#project-bar'), '.proj-btn').find((b) => b.title === 'C:/proj2'));
-    await tick(); await tick();
+    await waitProject(dom,'C:/proj2');
     const tabs = g(dom, 'Viewer.openTabs.map(t => t.name)');
     assert_(tabs.includes('other.md'), '项目二恢复自己的标签: ' + JSON.stringify(tabs));
   });
@@ -1992,7 +2000,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const close = $allIn(menu, '.ctx-item').find((x) => x.textContent.includes('关闭项目'));
     assert_(close, '菜单含「关闭项目」项');
     click(close);
-    await tick(); await tick(); await tick();
+    await waitProject(dom,P);
     // 关掉的是当前项目 → 自动切到剩余项目一；关闭一个其余不消失
     assert_((await g(dom, 'App.root')) === P, '自动切换到剩余项目一');
     assert_($allIn($(dom, '#project-bar'), '.proj-btn').some((b) => b.title === P), '剩余项目按钮保留（不全消失）');
@@ -9386,8 +9394,8 @@ assert_(panel, 'CM6 搜索面板出现');
   await saveCase('预览C：默认普通/实际设置与命令开关，关闭选项只保留不关页',async(d,viewer)=>{
     const w=d.window;assert(!viewer.previewEnabled());await browse(viewer,P+'/src/app.js');assert.equal(viewer.openTabs.length,2);assert(viewer.openTabs.every(t=>t.retention!=='preview'));w.Settings.open('editor');const input=w.document.querySelector('#preview-tabs-setting');assert(input&&!input.checked);input.checked=true;input.dispatchEvent(new w.Event('change'));assert(viewer.previewEnabled());w.Modal.hide();await browse(viewer,P+'/README.md');const tab=viewer.activeTab;assert.equal(tab.retention,'preview');assert((await w.Shortcuts.execute('toggle-preview-tabs')).ok);assert(!viewer.previewEnabled());assert.equal(tab.retention,'regular');assert(viewer.openTabs.includes(tab));
   });
-  await saveCase('预览C：A到B同槽，自动替换不记误关/会话，标签与列表可辨临时状态',async(d,viewer)=>{
-    const w=d.window;viewer.setPreviewEnabled(true);await browse(viewer,P+'/src/app.js');const a=viewer.activeTab;assert.equal(a.retention,'preview');assert(tabEl(d,a).querySelector('.tab-retention').textContent==='临时预览');assert(tabEl(d,a).getAttribute('aria-label').includes('临时预览'));w.Session.saveNow();let session=JSON.parse(w.localStorage.getItem('myide-session:'+P));assert(!session.tabs.some(it=>it.p===a.path));assert.equal(session.active,null);
+  await saveCase('预览C：A到B同槽，替换不记误关，当前预览进入项目会话',async(d,viewer)=>{
+    const w=d.window;viewer.setPreviewEnabled(true);await browse(viewer,P+'/src/app.js');const a=viewer.activeTab;assert.equal(a.retention,'preview');assert(tabEl(d,a).querySelector('.tab-retention').textContent==='临时预览');assert(tabEl(d,a).getAttribute('aria-label').includes('临时预览'));w.Session.saveNow();let session=JSON.parse(w.localStorage.getItem('myide-session:'+P));assert(session.tabs.some(it=>it.p===a.path&&it.preview===true));assert.equal(session.active,a.path);
     await browse(viewer,P+'/README.md');assert.equal(viewer.openTabs.length,2);assert(!viewer.openTabs.includes(a));assert.equal(viewer.activeTab.retention,'preview');assert.equal(w.ClosedTabs.state().count,0);assert.equal(viewer.openTabs.filter(t=>t.retention==='preview').length,1);
   });
   await saveCase('预览C：新文件读取失败保留原CM/正文/选区，持续目标反馈与原入口重试',async(d,viewer,bridge)=>{
@@ -9425,8 +9433,8 @@ assert_(panel, 'CM6 搜索面板出现');
     const gate=deferred();bridge.fileVersion=p=>p===old.path?gate.promise:version(p);const pending=browse(viewer,P+'/README.md');for(let i=0;i<8;i++)await tick();viewer.keepTab(old);gate.resolve(await version(old.path));assert((await pending).ok);assert(viewer.openTabs.includes(old));assert.equal(old.retention,'regular');
     old=viewer.activeTab;const next=P+'/final-keep.txt';setTabFile(next);const gate2=deferred();bridge.fileVersion=p=>p===old.path?gate2.promise:version(p);const second=browse(viewer,next);for(let i=0;i<8;i++)await tick();const double=viewer.openFile(next,{intent:'regular'});gate2.resolve(await version(old.path));assert((await second).ok);assert((await double).ok);assert(viewer.openTabs.includes(old));assert.equal(old.retention,'preview');assert.equal(viewer.activeTab.retention,'regular');
   });
-  await saveCase('预览C：项目切换/开关关闭让旧读取失效，回原项目不恢复临时页',async(d,viewer,bridge,_callbacks,restoreSession)=>{
-    const w=d.window;w.Session.restore=restoreSession;viewer.setPreviewEnabled(true);const read=bridge.readFile,gate=deferred();bridge.readFile=p=>p===P+'/README.md'?gate.promise:read(p);const pending=browse(viewer,P+'/README.md');await tick();await w.App.openProject('C:/proj2');gate.resolve(await read(P+'/README.md'));assert((await pending).stale);assert.equal(viewer.openTabs.length,0);bridge.readFile=read;await w.App.openProject(P);await browse(viewer,P+'/src/app.js');const path=viewer.activeTab.path;await w.App.openProject('C:/proj2');await w.App.openProject(P);assert(!viewer.openTabs.some(t=>t.path===path));
+  await saveCase('预览C：项目切换让旧读取失效，回原项目恢复当前预览和活动文件',async(d,viewer,bridge,_callbacks,restoreSession)=>{
+    const w=d.window;w.Session.restore=restoreSession;viewer.setPreviewEnabled(true);const read=bridge.readFile,gate=deferred();bridge.readFile=p=>p===P+'/README.md'?gate.promise:read(p);const pending=browse(viewer,P+'/README.md');await tick();await w.App.openProject('C:/proj2');gate.resolve(await read(P+'/README.md'));assert((await pending).stale);assert.equal(viewer.openTabs.length,0);bridge.readFile=read;await w.App.openProject(P);await browse(viewer,P+'/src/app.js');const path=viewer.activeTab.path;await w.App.openProject('C:/proj2');await w.App.openProject(P);assert(viewer.openTabs.some(t=>t.path===path&&t.retention==='preview'));assert.equal(viewer.activeTab.path,path);
   });
   await saveCase('预览C：用户关闭临时页记误关，重开与位置返回转保留，自动替换不记',async(d,viewer)=>{
     const w=d.window;viewer.setPreviewEnabled(true);await browse(viewer,P+'/src/app.js');const path=viewer.activeTab.path;await viewer.closeTab(viewer.openTabs.findIndex(t=>t.path===path));assert.equal(w.ClosedTabs.state().count,1);assert((await w.ClosedTabs.reopen()).ok);assert(viewer.activeTab.retention!=='preview');await browse(viewer,P+'/README.md');const old=viewer.activeTab;await viewer.openFile(path);await w.NavigationHistory.travel('back',w.document.activeElement);assert.equal(viewer.activeTab,old);assert.equal(old.retention,'regular');

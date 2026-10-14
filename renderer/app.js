@@ -747,7 +747,7 @@ const App = (() => {
         if (next && !await projectAvailable(next.path)) return false;
         if (!await saveBeforeLeaving()) return false;
         if (next && !await projectAvailable(next.path)) return false;
-        Session.saveNow();
+        if(!saveProjectState())return false;
         Viewer.closeAll();
         if (next) await activateProject(next.path);
         else {
@@ -914,6 +914,11 @@ const App = (() => {
     MI.toast('当前项目仍有未保存的修改，已保留标签；请按 Ctrl+S 保存成功后重试', 'err');
     return false;
   }
+  function saveProjectState() {
+    const result=Session.saveNow();
+    if(result?.ok===false){MI.toast('项目状态未保存，已保留当前标签和页面；请重试后再切换','err');return false;}
+    return true;
+  }
 
   function openProject(p, refreshCurrent = false) {
     projectIntent++;
@@ -923,7 +928,7 @@ const App = (() => {
       if (!await saveBeforeLeaving()) return false;
       // 保存可能等待很久；目录在这期间失效时，仍不能先清空旧标签。
       if (!await projectAvailable(p)) return false;
-      Session.saveNow(); // 立即保存当前项目会话，防止被 closeAll 的空状态覆盖
+      if(!saveProjectState())return false; // 保存失败时保留当前视图，不能先关标签再离开。
       if (p !== root) Viewer.closeAll();
       await activateProject(p);
       return true;
