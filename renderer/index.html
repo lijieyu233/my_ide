@@ -391,6 +391,10 @@
         <button id="ai-close" class="vt-btn" title="收起 AI 助手 (Ctrl+Shift+A)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </span>
     </div>
+    <div class="ai-session-controls">
+      <div class="ai-engine-row"><label for="ai-engine" class="ai-control-label">模式</label><select id="ai-engine" title="执行模式" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
+      <div class="ai-dsh-status hidden"><span id="ai-dsh-info">DSH 未连接</span><button id="ai-dsh-reconnect" class="vt-btn" title="重新连接 DSH，保留会话，不重发任务">重新连接</button></div>
+    </div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
       <div id="ai-usage" class="ai-usage" title="点击查看上下文明细；字符数为估算值，模型返回 usage 后显示精确统计"></div>
@@ -416,11 +420,6 @@
           </div>
         </div>
       </div>
-      <details class="ai-session-settings"><summary title="执行模式与连接设置" aria-label="执行模式与连接设置"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h10"/><circle cx="6" cy="4" r="1.5"/><circle cx="10" cy="8" r="1.5"/><circle cx="6" cy="12" r="1.5"/></svg></summary><div class="ai-session-controls">
-        <div class="ai-engine-row"><label for="ai-engine" class="ai-control-label">模式</label><select id="ai-engine" title="执行模式" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
-        <div class="ai-dsh-status hidden"><span id="ai-dsh-info">DSH 未连接</span><button id="ai-dsh-reconnect" class="vt-btn" title="重新连接 DSH，保留会话，不重发任务">重新连接</button></div>
-      </div>
-      </details>
     </div>
   </div>
   <!-- 右侧工具窗口条（PyCharm 式：AI 助手等右侧停靠工具；Alt+` 收起/展开右侧栏） -->

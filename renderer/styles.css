@@ -3906,7 +3906,7 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 #ai-model:focus-visible, #ai-engine:focus-visible, #ai-dsh-reasoning:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 #ai-dsh-options { padding: 0; gap: 0; flex: none; font-size: .9em; }
 #ai-dsh-options select { max-width: 100px; height: 28px; padding: 4px 5px; border: 1px solid transparent; border-radius: 5px; color: var(--text); background: transparent; font: inherit; cursor: pointer; }
-.ai-session-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; width: 100%; min-width: 0; }
+.ai-session-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; width: 100%; min-width: 0; flex-shrink: 0; padding: 4px 12px; border-bottom: 1px solid var(--border-pane); }
 .ai-session-controls .ai-engine-row { flex: 0 1 auto; max-width: 100%; }
 #ai-engine { height: auto; min-height: 28px; color: var(--text-dim); padding: 3px 5px 3px 0; }
 .ai-dsh-status { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; font-size: .8em; }
@@ -3953,10 +3953,6 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .ai-config { justify-content: flex-end; gap: 0; }
 .ai-model-row { flex: 0 1 320px; }
 #ai-model, #ai-dsh-options select { font-size: .92em; padding: 4px 2px; }
-.ai-session-settings { position: relative; margin-left: auto; }
-.ai-session-settings > summary { list-style: none; display: flex; cursor: pointer; color: var(--text-dim); padding: 2px 4px; }
-.ai-session-settings > summary::-webkit-details-marker { display: none; }
-.ai-session-settings[open] > .ai-session-controls { position: absolute; bottom: 26px; right: 0; z-index: 65; width: min(280px, calc(100vw - 50px)); padding: 10px; border: 1px solid var(--ui-line); border-radius: 10px; background: var(--bg-panel); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 .ai-perm-pop { max-width: calc(100% - 16px); max-height: 65%; overflow: auto; }
 .ai-compose-hint { font-size: .78em; color: var(--text-dim); padding: 0 4px; }
 #ai-send { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; color: var(--text-bright); background: color-mix(in srgb, var(--accent) 45%, var(--bg)); border: 0; }
