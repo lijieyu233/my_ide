@@ -751,12 +751,14 @@ const AiPanel = (() => {
 
   // 工具活动行（消息流里的紧凑状态条）
   function renderToolRow(call) {
-    const icons = { list_files: '📂', read_file: '📄', search_files: '🔍', write_file: '✏️', replace_edit: '🔧', run_command: '▶' };
+    const icons = { list_files: 'M2 5V3h4l2 2h6v8H2z', read_file: 'M4 2h5l3 3v9H4zM9 2v3h3M6 8h4M6 11h4', search_files: 'M10 10l4 4M7 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10', write_file: 'M11 2l3 3-8 8-3 1 1-3zM9 4l3 3', replace_edit: 'M3 4h9l-2-2m2 2-2 2M13 12H4l2-2m-2 2 2 2', run_command: 'M2 3h12v10H2zM4 6l2 2-2 2M8 10h3' };
+    const labels = { list_files: '列出文件', read_file: '读取文件', search_files: '搜索文件', write_file: '写入文件', replace_edit: '替换内容', run_command: '执行命令' };
     const row = document.createElement('div');
     row.className = 'ai-tool';
+    row.dataset.toolName = call.name;
     const arg = (call.args && (call.args.path || call.args.query || call.args.program || call.args.name || call.args.command || call.args.terminal || call.args.session || call.args.url || call.args.element || call.args.direction)) || '';
-    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||call.name;
-    const icon=(call.name==='ide_state'||window.AiProjectTools?.has(call.name)||window.AiLaunchTools?.has(call.name)||window.AiSshTools?.has(call.name)||window.AiBrowserTools?.has(call.name))?'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>':(icons[call.name]||'·');
+    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||labels[call.name]||call.name;
+    const icon='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(icons[call.name]||icons.run_command)+'"/></svg>';
     row.innerHTML = '<span class="ai-tool-ic">' + icon + '</span>' +
       '<span class="ai-tool-tx">' + esc(toolLabel + ' ' + arg) + '</span>' +
       '<span class="ai-tool-st">…</span>';
@@ -857,7 +859,10 @@ const AiPanel = (() => {
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
     if(switching)onProjectChange();
-    refreshModelSel();if(other.engine==='dsh')refreshDshOptions();return result;
+    refreshModelSel();
+    // 空会话的引导也应跟着配置刷新，避免模型已选好却仍提示“还没配置”。
+    if (!msgs.length && !busy && msgsEl?.querySelector('.ai-welcome')) { msgsEl.querySelector('.ai-welcome').remove(); showWelcome(); }
+    if(other.engine==='dsh')refreshDshOptions();return result;
   }
 
   async function refreshDshOptions(){
@@ -1142,19 +1147,20 @@ const AiPanel = (() => {
     fr.readAsDataURL(f);
   }
 
-  // 输入框随内容增高：从 1 行（28px）长到 160px 上限。
+  // 最小高度从主题样式读取，清空时才能回到当前布局的两行高度；内容最多长到 160px。
   // 踩过两个坑：① 复位不能用 'auto'（空框会按内在高度算，偏高）；
   //   ② **超长的 placeholder 会被折行算进 scrollHeight**（实测空框 47 而非 28）→ 测量时临时摘掉再量。
   // ⚠ 凡是「代码给输入框填值」的地方（场景入口 / 斜杠命令 / 右键动作 / 编辑重发）都要调它 ——
-  //   直接赋 value 不会触发 input 事件，不调的话长指令会在 1 行的框里被裁掉。
+  //   直接赋 value 不会触发 input 事件，不调的话长指令会在初始高度里被裁掉。
   function autoGrowInput() {
     if (!inputEl) return;
     const ph = inputEl.placeholder;
     inputEl.placeholder = '';
-    inputEl.style.height = '28px';
+    const base = parseFloat(getComputedStyle(inputEl).minHeight) || 28;
+    inputEl.style.height = base + 'px';
     const need = inputEl.scrollHeight;
     inputEl.placeholder = ph;
-    inputEl.style.height = (need > 28 ? Math.min(need, 160) : 28) + 'px';
+    inputEl.style.height = Math.min(Math.max(need, base), 160) + 'px';
   }
 
   // 空状态：卡片 + 场景入口 —— 点一下把指令填进输入框（用户不用自己想该怎么问）
@@ -1189,7 +1195,7 @@ const AiPanel = (() => {
     if (cfg.engine === 'dsh') {
       card.innerHTML = '<div class="ai-card-ic">' + AI_IC + '</div>' +
         '<div class="ai-card-title">DeepSeek Harness</div>' +
-        '<div class="ai-card-sub">发送消息开始处理。</div>';
+        '<div class="ai-card-sub">描述目标，或拖入文件与截图，开始一个任务。</div>';
     } else if (!cfg.baseUrl) {
       card.innerHTML =
         '<div class="ai-card-ic">' + AI_IC + '</div>' +
@@ -1578,8 +1584,9 @@ const AiPanel = (() => {
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
     if (sendBtn) {
       sendBtn.disabled = false;
-      sendBtn.textContent = b ? '⏹' : '➤';
+      sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b ? '⏹' : '➤') + '</span>';
       sendBtn.title = b ? '停止生成' : '发送（Enter）';
+      sendBtn.setAttribute('aria-label', b ? '停止生成' : '发送消息');
     }
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.onclick = () => stopRun();
   }

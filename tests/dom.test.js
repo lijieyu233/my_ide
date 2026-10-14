@@ -5363,8 +5363,8 @@ assert_(panel, 'CM6 搜索面板出现');
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 15)); // 3 轮异步链
     const tools = $allIn($(dom, '#ai-msgs'), '.ai-tool');
     assert_(tools.length === 2, '两轮工具调用各有活动行, got ' + tools.length);
-    assert_(tools[0].textContent.includes('list_files'), '第一轮 list_files');
-    assert_(tools[1].textContent.includes('read_file'), '第二轮 read_file');
+    assert_(tools[0].dataset.toolName === 'list_files', '第一轮 list_files');
+    assert_(tools[1].dataset.toolName === 'read_file', '第二轮 read_file');
     assert_(tools.every((t) => t.textContent.includes('✓')), '工具行全部成功');
     const msgs = $allIn($(dom, '#ai-msgs'), '.ai-msg');
     assert_(msgs.length === 4, 'user + 3 轮 assistant, got ' + msgs.length);
@@ -5407,7 +5407,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(FAKE_FS[P + '/rp.txt'].content === 'hi w0rld\nf00\nhell0 again\n', 'replace_all 写入');
     const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
     assert_(rows.some((r) => r.textContent.includes('✗')), '多重匹配那轮标失败');
-    assert_(rows.some((r) => r.textContent.includes('replace_edit') && r.textContent.includes('已应用')), 'replace_edit 应用状态行');
+    assert_(rows.some((r) => r.dataset.toolName === 'replace_edit' && r.textContent.includes('已应用')), 'replace_edit 应用状态行');
     aiScript = [];
   });
 
@@ -5458,7 +5458,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click(yesBtn);
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 15));
     const rows = $allIn($(dom, '#ai-msgs'), '.ai-tool');
-    assert_(rows.some((r) => r.textContent.includes('run_command') && r.textContent.includes('✓')), 'run_command 执行成功状态');
+    assert_(rows.some((r) => r.dataset.toolName === 'run_command' && r.textContent.includes('✓')), 'run_command 执行成功状态');
     // 第二条同类命令（同前缀 node）：应当不再弹确认
     aiScript = [
       { ok: true, text: '', toolCalls: [{ id: 'c2', name: 'run_command', args: { command: 'node tests/dom.test.js --again' } }] },
@@ -5468,7 +5468,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#ai-send'));
     for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 15));
     assert_(!$(dom, '#cr-yes'), '记住「node」之后，同类命令不再弹确认');
-    assert_($allIn($(dom, '#ai-msgs'), '.ai-tool').filter((r) => r.textContent.includes('run_command')).length === 2,
+    assert_($allIn($(dom, '#ai-msgs'), '.ai-tool').filter((r) => r.dataset.toolName === 'run_command').length === 2,
       '第二条命令直接执行了（没被拦下）');
     await g(dom, 'AiPanel.savePerms({})'); // 授权按项目存，清掉别影响后面的用例
     aiScript = [];

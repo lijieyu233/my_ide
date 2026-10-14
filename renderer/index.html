@@ -382,7 +382,6 @@
     <div id="ai-resize" title="拖动调整宽度"></div>
     <div class="ai-head">
       <span class="ai-title"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>AI 助手</span>
-      <select id="ai-model" title="切换模型"></select>
       <span class="panel-title-actions">
         <button id="ai-perm" class="vt-btn" title="访问权限：写文件 / 执行命令放行到什么程度（可一次性预设，不必每次确认）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.1l4.3 1.6v3.5c0 2.7-1.8 4.6-4.3 5.7-2.5-1.1-4.3-3-4.3-5.7V3.7z"/><path d="M6.2 7.9l1.3 1.3 2.5-2.6"/></svg></button>
         <button id="ai-stop" class="vt-btn hidden" title="停止本次任务" aria-label="停止本次任务"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
@@ -393,7 +392,10 @@
         <button id="ai-close" class="vt-btn" title="收起 AI 助手 (Ctrl+Shift+A)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </span>
     </div>
-    <div class="ai-engine-row"><label for="ai-engine">执行模式</label><select id="ai-engine" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
+    <div class="ai-config">
+      <div class="ai-engine-row"><label for="ai-engine">模式</label><select id="ai-engine" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
+      <div class="ai-model-row"><label for="ai-model">模型</label><select id="ai-model" title="切换模型" aria-label="AI 模型"></select></div>
+    </div>
     <div id="ai-dsh-options" class="hidden"><label for="ai-dsh-reasoning" class="hidden">推理</label><select id="ai-dsh-reasoning" class="hidden" disabled></select><span id="ai-dsh-info">DSH 未连接</span><button id="ai-dsh-reconnect" class="vt-btn" title="重新连接 DSH，保留会话，不重发任务">重新连接</button></div>
     <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
@@ -406,10 +408,11 @@
         <!-- 输入框与发送按钮是同一个卡片：按钮在框内右下角。
              以前是「两个并排的框」，多行输入时输入框长高、按钮留在 38px，高度看着就不齐。 -->
         <div class="ai-input-box">
-          <textarea id="ai-input" rows="1" placeholder="描述你想怎么整理…（Enter 发送 / @ 引用文件 / / 命令 / 可直接贴图）" spellcheck="false"></textarea>
-          <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）">➤</button>
+          <textarea id="ai-input" rows="2" placeholder="描述任务，或拖入文件与截图…" aria-label="发送给 AI 助手的消息" spellcheck="false"></textarea>
+          <div class="ai-compose-actions"><span class="ai-compose-hint">@ 文件 · / 命令</span><button id="ai-send" class="tb-btn m-ok" title="发送（Enter）" aria-label="发送消息"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg><span class="hidden" aria-hidden="true">➤</span></button></div>
         </div>
       </div>
+      <div class="ai-input-help">Enter 发送 <span>Shift + Enter 换行</span></div>
     </div>
   </div>
   <!-- 右侧工具窗口条（PyCharm 式：AI 助手等右侧停靠工具；Alt+` 收起/展开右侧栏） -->

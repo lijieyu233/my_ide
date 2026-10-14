@@ -2785,7 +2785,7 @@ module.exports = {
       && tb.filter(b => !b.classList.contains('hidden')).length === 6);
 
     const ph = q('#ai-input').placeholder;
-    add('placeholder 已中文化', !/Ask anything/.test(ph) && /整理/.test(ph), ph);
+    add('placeholder 简短且说明任务与附件入口', /任务/.test(ph) && /文件/.test(ph) && ph.length < 40, ph);
     // 回形针按钮已移除：它的作用（附当前文件）与「跟随当前文件」+ @ 引用完全重叠
     add('输入区不再有功能重复的回形针按钮', !q('#ai-file-chip'));
     // 底部尺寸一致性。核心是：**输入框和发送按钮不再是两个并排的框**，
@@ -2800,9 +2800,10 @@ module.exports = {
     await sleep(300);
     add('输入框与发送按钮在同一个卡片里（不再是两个框比高度）',
       !!q('.ai-input-box') && !!q('.ai-input-box #ai-send') && !!q('.ai-input-box #ai-input'));
-    add('空输入时输入卡片高 40px（= 1 行文字 + 上下内边距）', hv('.ai-input-box') === 40,
+    const emptyInputHeight = hv('.ai-input-box');
+    add('空输入保留两行文字和独立发送操作区', hv('#ai-input') >= 45 && emptyInputHeight >= 80 && !!q('.ai-compose-actions'),
       '卡片=' + hv('.ai-input-box') + ' 输入框=' + hv('#ai-input') + ' 按钮=' + hv('#ai-send'));
-    add('卡片与发送按钮圆角统一 8px', radiusOf('.ai-input-box') === '8px' && radiusOf('#ai-send') === '8px',
+    add('发送按钮的圆角不超过外层输入卡片', parseFloat(radiusOf('#ai-send')) > 0 && parseFloat(radiusOf('#ai-send')) <= parseFloat(radiusOf('.ai-input-box')),
       '卡片=' + radiusOf('.ai-input-box') + ' 按钮=' + radiusOf('#ai-send'));
     const bb = q('.ai-input-box').getBoundingClientRect();
     const sb2 = q('#ai-send').getBoundingClientRect();
@@ -2821,7 +2822,7 @@ module.exports = {
     const btnIn = q('.ai-input-box #ai-send').getBoundingClientRect();
     const boxR = q('.ai-input-box').getBoundingClientRect();
     add('多行输入时卡片长高、按钮仍在卡片内（不会掉到框外）',
-      boxH > 40 && btnIn.bottom <= boxR.bottom + 0.5 && btnIn.top >= boxR.top - 0.5,
+      boxH > emptyInputHeight && btnIn.bottom <= boxR.bottom + 0.5 && btnIn.top >= boxR.top - 0.5,
       '卡片=' + boxH + ' 按钮 ' + Math.round(btnIn.top - boxR.top) + '~' + Math.round(btnIn.bottom - boxR.top) + 'px');
     setVal('');
     await sleep(200);
