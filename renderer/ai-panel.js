@@ -980,19 +980,21 @@ const AiPanel = (() => {
         MI.toast('📋 已复制' + (role === 'user' ? '该消息' : '回复全文'), 'ok');
       } catch (e) { MI.toast('复制失败: ' + String(e), 'err'); }
     };
-    row.appendChild(cp);
     if (role === 'user') {
       // 编辑并重发（Cursor / Copilot 都有）：说错一句话不用重开一轮
       const acts = document.createElement('div');
       acts.className = 'ai-msg-acts';
+      acts.appendChild(cp);
       const eb = document.createElement('button');
       eb.className = 'ai-act-btn';
-      eb.textContent = getConfig().engine==='dsh'?'复制并继续':'\u270E 编辑并重发';
+      eb.setAttribute('aria-label',getConfig().engine==='dsh'?'复制并继续':'编辑并重发');
+      eb.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3.5l3 3M3 10l7.5-7.5a1.4 1.4 0 012 2L5 12l-3 1z"/></svg>';
       eb.title = getConfig().engine==='dsh'?'复制到输入框；修改后追加为新消息，原生历史保留':'把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
       eb.onclick = () => editUserMsg(row.dataset.mid);
       acts.appendChild(eb);
       row.appendChild(acts);
     } else {
+      row.appendChild(cp);
       decorateCodeBlocks(row);
     }
     msgsEl.appendChild(row);

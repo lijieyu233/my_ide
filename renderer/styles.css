@@ -3929,6 +3929,12 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .ai-msg:hover .ai-msg-acts, .ai-msg:focus-within .ai-msg-acts { max-height: 30px; opacity: 1; }
 .ai-copy { display: flex; align-items: center; justify-content: center; border: 0; background: transparent; }
 .ai-msg:focus-within .ai-copy { opacity: 1; }
+/* 短消息没有容纳浮动按钮的空隙；操作放在气泡下方并预留行高，悬停不会推挤对话。 */
+.ai-user .ai-msg-acts { height: 28px; max-height: none; padding-top: 4px; gap: 4px; overflow: visible; pointer-events: none; }
+.ai-user:hover .ai-msg-acts, .ai-user:focus-within .ai-msg-acts { pointer-events: auto; }
+.ai-user .ai-msg-acts > button { position: static; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; color: var(--text-dim); background: transparent; }
+.ai-user .ai-msg-acts > button:hover { color: var(--text); background: var(--bg-hover); }
+.ai-user .ai-msg-acts > button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .ai-msg.ai-assistant .ai-md { background: transparent; border-color: transparent; padding: 4px 2px; }
 .ai-tool { padding: 9px 10px; margin: 7px 0; border-color: var(--ui-line); border-radius: 6px; background: color-mix(in srgb, var(--bg-input) 65%, var(--bg-panel)); }
 .ai-tool-tx { font-size: 1em; }

@@ -50,6 +50,24 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     assert(await js('!!document.querySelector("#ai-send svg")&&document.getElementById("ai-send").getAttribute("aria-label")==="发送消息"'));
     await capture('ai-ui-conversation.png');
   });
+  await test('短消息操作位于气泡下方，悬停不改变消息高度，窄栏也不遮字',async()=>{
+    const original=await js('document.querySelector(".ai-user .ai-md p").innerHTML');
+    await js('document.querySelector(".ai-user .ai-md p").textContent="继续";true');
+    for(const width of [620,320]){
+      await js(`document.getElementById('ai-panel').style.width='${width}px';true`);
+      await sleep(100);
+      const height=await js('document.querySelector(".ai-user").getBoundingClientRect().height');
+      assert(await js('getComputedStyle(document.querySelector(".ai-user .ai-msg-acts")).opacity==="0"'));
+      const hover=await js('(()=>{const r=document.querySelector(".ai-user .ai-md").getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()');
+      await until(async()=>{win.webContents.sendInputEvent({type:'mouseMove',...hover});await sleep(150);return js('getComputedStyle(document.querySelector(".ai-user .ai-msg-acts")).opacity==="1"')});
+      assert.equal(await js('document.querySelector(".ai-user").getBoundingClientRect().height'),height);
+      const geometry=await js('(()=>{const b=document.querySelector(".ai-user .ai-md").getBoundingClientRect(),c=document.querySelector(".ai-user .ai-copy").getBoundingClientRect(),e=document.querySelector(".ai-user .ai-act-btn").getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect();return {bubble:b.toJSON(),copy:c.toJSON(),edit:e.toJSON(),panel:p.toJSON(),opacity:getComputedStyle(document.querySelector(".ai-user .ai-msg-acts")).opacity}})()');
+      await capture(`ai-ui-short-message-${width}.png`);
+      assert(geometry.copy.top>=geometry.bubble.bottom&&geometry.edit.top>=geometry.bubble.bottom&&geometry.copy.right<=geometry.edit.left&&geometry.edit.right<=geometry.panel.right&&geometry.opacity==="1",JSON.stringify(geometry));
+      win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await sleep(250);
+    }
+    await js(`document.querySelector('.ai-user .ai-md p').innerHTML=${JSON.stringify(original)};true`);
+  });
   await test('Harness 模型、推理、重连入口完整，窄侧栏与大字号无覆盖',async()=>{
     await js('(async()=>{await AiPanel.setConfig({engine:"dsh"});App.setAiOpen(true);return true})()');await until(()=>js('document.getElementById("ai-dsh-info").textContent.includes("已连接")'));
     assert(await js('!!document.querySelector(".ai-input-box #ai-dsh-reasoning")&&!!document.querySelector(".ai-session-controls #ai-engine")&&!document.querySelector(".ai-dsh-status").classList.contains("hidden")'));
