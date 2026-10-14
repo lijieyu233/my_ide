@@ -2483,6 +2483,7 @@ const GitPanel = (() => {
   function buildDiffTable(r, act, opts) {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
+    if(r.loading||r.message){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=r.loading?'正在加载差异…':r.message;fileBox.appendChild(msg);return fileBox;}
     if(r.readOnlyReason){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=r.readOnlyReason;fileBox.appendChild(msg);}
     if (!(opts && opts.hideTitle)) {
       const title = document.createElement('div');

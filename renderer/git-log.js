@@ -30,6 +30,11 @@ const GitLog = (() => {
   let pathFilter = null;     // 文件历史模式：仅显示改动该文件的提交（树右键「显示历史」）
   let cmp = null;            // 分支对比模式：{ a, b, data }（⇄ 按钮）
   let cmpSeq = 0;            // 对比请求竞态防护
+  let selectTimer=null,selectWake=null,diffRequest=0;
+  function cancelSelection(){clearTimeout(selectTimer);selectWake?.();selectWake=null;}
+  const detailCache=new Map(),diffCache=new Map();let diffBytes=0;
+  function memoDetail(project,oid){const key=project+'\0'+oid;let pending=detailCache.get(key);if(!pending){pending=window.myIDE.git.commitFiles(project,oid);detailCache.set(key,pending);while(detailCache.size>32)detailCache.delete(detailCache.keys().next().value);pending.then(result=>{if(result?.error&&detailCache.get(key)===pending)detailCache.delete(key);},()=>detailCache.delete(key));}return pending;}
+  async function memoDiff(project,oid,file){const key=project+'\0'+oid+'\0'+file;const hit=diffCache.get(key);if(hit){diffCache.delete(key);diffCache.set(key,hit);return hit.result;}const result=await window.myIDE.git.diffCommit(project,oid,file);if(project===root&&result&&!result.error){const bytes=JSON.stringify(result).length*2;if(bytes<=4*1024*1024){diffBytes-=diffCache.get(key)?.bytes||0;diffCache.set(key,{result,bytes});diffBytes+=bytes;while(diffCache.size>16||diffBytes>8*1024*1024){const first=diffCache.keys().next().value;diffBytes-=diffCache.get(first).bytes;diffCache.delete(first);}}}return result;}
 
   const esc = (s) => GitPanel.esc(s);
   const fmtDate = (ts) => GitPanel.fmtDate(ts);
@@ -215,7 +220,7 @@ const GitLog = (() => {
           + (bc ? ` style="--bc:${bc}"` : '') + `>${esc(b)}</span>`;
       }).join('');
       const headBadge = c.oid === headOid ? '<span class="gl-head">HEAD</span>' : '';
-      el.innerHTML = `<div class="gl-l1"><span class="gl-msg" title="${esc(c.fullMessage)}">${esc(c.message)}</span>${badges}${headBadge}</div>` +
+      el.innerHTML = `<div class="gl-l1"><span class="gl-msg">${esc(c.message)}</span>${badges}${headBadge}</div>` +
         `<div class="gl-l2"><span class="gl-hash">${c.short}</span><span class="gl-author">${esc(c.author)}</span><span class="gl-date">${fmtDate(c.timestamp)}</span></div>`;
       el.style.top = '0';
       el.onclick = () => select(c.oid);
@@ -306,13 +311,19 @@ const GitLog = (() => {
     if (!c) return;
     selOid = oid;
     const seq = ++selSeq;
+    const project=root;diffRequest++;cancelSelection();
     listEl.querySelectorAll('.gl-row').forEach((el) => el.classList.toggle('sel', el.dataset.oid === oid));
     renderDetailHead(c, null);
-    const r = await window.myIDE.git.commitFiles(root, oid);
-    if (seq !== selSeq) return; // 期间又切了别的提交
+    GitPanel.renderDiffView({file:c.short,loading:true},'正在加载提交差异…');
+    // 连续键盘/鼠标选择只派发最后一项，不能让过期提交阻塞当前选择。
+    await new Promise(resolve=>{selectWake=resolve;selectTimer=setTimeout(()=>{selectWake=null;resolve();},70);});
+    if(seq!==selSeq||project!==root||!opened)return;
+    let r;try{r=await memoDetail(project,oid);}catch(error){r={error:String(error.message||error)};}
+    if (seq !== selSeq||project!==root||!opened) return;
+    if(r?.error){renderDetailHead(c,[]);GitPanel.renderDiffView({file:c.short,message:r.error},'提交读取失败');return;}
     const files = (r && r.files) || [];
     renderDetailHead(c, files);
-    if (!files.length) return;
+    if (!files.length){GitPanel.renderDiffView({file:c.short,message:'没有文件变更'},'提交 '+c.short);return;}
     // 默认在主区预览第一个文件的 diff（PyCharm 式：选中提交即看变更）
     loadDetailDiff(oid, files[0].file, c);
   }
@@ -356,12 +367,13 @@ const GitLog = (() => {
 
   // 文件 diff 渲染到右侧主窗口（编辑区，PyCharm 式），不放底部小区域
   async function loadDetailDiff(oid, file, commit) {
-    const seq = selSeq;
+    const seq = selSeq,ticket=++diffRequest,project=root;
     const label = commit && commit.short ? `提交 ${commit.short} · 与父提交比较` : '与父提交比较';
-    const r = await window.myIDE.git.diffCommit(root, oid, file);
-    if (seq !== selSeq) return;
-    if (r.error) { MI.toast(r.error, 'err'); return; }
-    if (r.unchanged) { MI.toast('文件无差异', 'ok'); return; }
+    GitPanel.renderDiffView({file,loading:true},label);
+    let r;try{r=await memoDiff(project,oid,file);}catch(error){r={error:String(error.message||error)};}
+    if (seq !== selSeq||ticket!==diffRequest||project!==root||!opened) return;
+    if (r.error) { GitPanel.renderDiffView({file,message:r.error},label);return; }
+    if (r.unchanged) { GitPanel.renderDiffView({file,message:'文件无差异'},label);return; }
     GitPanel.renderDiffView(r, label);
   }
 
@@ -443,6 +455,7 @@ const GitLog = (() => {
   // 入口：点击 ⇄ → 列表顶部出现 A vs B 选择条 → 对比 → 展示双方独有提交 + 差异文件
   async function startCompare() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
+    selSeq++;diffRequest++;cancelSelection();
     const br = await window.myIDE.git.branches(root);
     const names = (br && br.branches) || [];
     if (!names.length) { MI.toast('仓库中没有分支，无法对比', 'err'); return; }
@@ -589,6 +602,7 @@ const GitLog = (() => {
   // 文件历史入口（树/标签页右键「显示历史」）：打开日志窗口并过滤到该文件
   function showFileHistory(file) {
     if (!root || !file) return;
+    selSeq++;diffRequest++;cancelSelection();
     pathFilter = String(file).replace(/\\/g, '/');
     // 相对化（树传相对路径，其它入口可能传绝对路径）
     if (pathFilter.toLowerCase().startsWith(String(root).toLowerCase().replace(/\\/g, '/') + '/')) {
@@ -609,6 +623,7 @@ const GitLog = (() => {
     if (!commits.length) refresh();
   }
   function hide() {
+    selSeq++;diffRequest++;cancelSelection();
     opened = false;
     panel.classList.add('hidden');
     document.getElementById('tool-log').classList.remove('active');
@@ -616,6 +631,7 @@ const GitLog = (() => {
   function toggle() { opened ? hide() : open(); }
   function isOpen() { return opened; }
   function setRoot(p) {
+    selSeq++;diffRequest++;cancelSelection();detailCache.clear();diffCache.clear();diffBytes=0;
     root = p;
     commits = [];
     graph = null;

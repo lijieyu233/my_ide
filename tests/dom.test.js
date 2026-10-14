@@ -977,7 +977,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('点击提交 → 右侧详情（文件列表 + diff，无弹窗）', async () => {
     click($allIn($(dom, '#gl-list'), '.gl-row').find((x) => x.textContent.includes('第二次提交')));
-    await tick(); await tick();
+    // 提交选择有短暂合并窗口；等待当前提交的文件与差异，不用固定两个微任务假定已完成。
+    for(let n=0;n<100;n++){if($allIn($(dom,'#gl-right'),'.gl-dfile').length===2&&$(dom,'#viewer .diff-wrap .diff-table'))break;await new Promise(resolve=>setTimeout(resolve,10));}
     assert_(calls.commitFiles.length >= 1, '调用了 commitFiles');
     assert_($(dom, '#gl-right .gl-dhead'), '详情头部出现');
     assert_($(dom, '#gl-right .gl-dmsg').textContent.includes('第二次提交'), '详情显示提交信息');

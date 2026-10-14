@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test:git": "node tests/git.test.js",
+    "test:git": "node tests/git-log-selection.test.js && node tests/git-commit-tree.test.js && node tests/git.test.js",
     "test:dom": "node tests/dom.test.js",
     "test:outline-keyboard": "node tests/outline-keyboard.test.js",
     "check:outline-keyboard": "electron scripts/check-outline-keyboard.js --disable-gpu --no-sandbox",
@@ -63,7 +63,8 @@
     "test:browser": "node tests/browser-fullscreen.test.js",
     "check:browser": "electron scripts/check-browser.js --disable-gpu --no-sandbox",
     "check:ai-dsh": "electron scripts/check-ai-dsh.js --disable-gpu --no-sandbox",
-    "check:ai-project": "electron scripts/check-ai-project.js --disable-gpu --no-sandbox"
+    "check:ai-project": "electron scripts/check-ai-project.js --disable-gpu --no-sandbox",
+    "check:git-log-selection": "electron scripts/check-git-log-selection.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

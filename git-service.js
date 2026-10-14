@@ -1081,22 +1081,31 @@ async function treeFiles(root, oid) {
   return out;
 }
 
+const commitFileCache=new Map();
 async function commitFiles(dir, oid) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { error: '不是 Git 仓库' };
   try {
-    const c = await git.readCommit({ fs, dir: root, oid });
-    const parent = c.commit.parent[0] || null;
-    const [oldTree, newTree] = [await treeFiles(root, parent), await treeFiles(root, oid)];
-    const files = new Set([...Object.keys(oldTree), ...Object.keys(newTree)]);
-    const changed = [];
-    for (const f of files) {
-      if (!(f in oldTree)) changed.push({ file: native(f), status: 'added' });
-      else if (!(f in newTree)) changed.push({ file: native(f), status: 'deleted' });
-      else if (oldTree[f] !== newTree[f]) changed.push({ file: native(f), status: 'modified' });
+    const resolved=await git.resolveRef({fs,dir:root,ref:oid}),cacheKey=root+'\0'+resolved;
+    if(commitFileCache.has(cacheKey)){const hit=commitFileCache.get(cacheKey);commitFileCache.delete(cacheKey);commitFileCache.set(cacheKey,hit);return JSON.parse(hit);}
+    const c = await git.readCommit({ fs, dir: root, oid:resolved });
+    const parent=c.commit.parent[0]?await git.readCommit({fs,dir:root,oid:c.commit.parent[0]}):null,changed=[];
+    // 提交树不可变；相同子树的OID已证明没有变更，不应重复遍历仓库里所有文件。
+    async function compare(before,after,prefix=''){
+      if(before===after)return;
+      const [a,b]=await Promise.all([before?git.readTree({fs,dir:root,oid:before}):{tree:[]},after?git.readTree({fs,dir:root,oid:after}):{tree:[]}]);
+      const old=new Map(a.tree.map(entry=>[entry.path,entry])),next=new Map(b.tree.map(entry=>[entry.path,entry]));
+      for(const name of new Set([...old.keys(),...next.keys()])){const x=old.get(name),y=next.get(name),file=prefix+name;
+        if(x?.oid===y?.oid&&x?.type===y?.type)continue;
+        if(x?.type==='tree'||y?.type==='tree')await compare(x?.type==='tree'?x.oid:null,y?.type==='tree'?y.oid:null,file+'/');
+        if(x?.type==='blob'||y?.type==='blob')changed.push({file:native(file),status:x?.type!=='blob'?'added':y?.type!=='blob'?'deleted':'modified'});
+      }
     }
+    await compare(parent?.commit.tree||null,c.commit.tree);
     changed.sort((a, b) => a.file.localeCompare(b.file));
-    return { files: changed, isMerge: (c.commit.parent || []).length > 1 };
+    const result={files:changed,isMerge:c.commit.parent.length>1},encoded=JSON.stringify(result);
+    if(Buffer.byteLength(encoded)<512*1024){commitFileCache.set(cacheKey,encoded);while(commitFileCache.size>32)commitFileCache.delete(commitFileCache.keys().next().value);}
+    return result;
   } catch (e) {
     return { error: String(e.message || e) };
   }
@@ -1109,7 +1118,7 @@ async function diffCommit(dir, oid, file) {
   try {
     const c = await git.readCommit({ fs, dir: root, oid });
     const parent = c.commit.parent[0] || null;
-    const [oldText, newText] = [await blobAt(root, parent, file), await blobAt(root, oid, file)];
+    const [oldText, newText] = await Promise.all([blobAt(root, parent, file),blobAt(root,oid,file)]);
     if (oldText === null && newText === null) return { error: '文件中不存在于该提交' };
     if (oldText === newText) return { file, unchanged: true };
     if (isBinaryText(oldText) || isBinaryText(newText)) return { file, binary: true };
