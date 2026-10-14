@@ -86,9 +86,9 @@ module.exports = {
       cssW('#sidebar') + ' vs ' + LO.sidebar.def + 'px');
     add('AI 面板默认宽度 = App.LAYOUT.ai.def', cssW('#ai-panel') === LO.ai.def + 'px',
       cssW('#ai-panel') + ' vs ' + LO.ai.def + 'px');
-    add('侧栏钳制范围写进 CSS（min / max 与 LAYOUT 一致）',
-      getComputedStyle(q('#sidebar')).minWidth === LO.sidebar.min + 'px'
-      && getComputedStyle(q('#sidebar')).maxWidth === LO.sidebar.max + 'px',
+    add('两侧没有固定最小/最大宽度限制',
+      ['#sidebar','#ai-panel'].every(selector => getComputedStyle(q(selector)).minWidth === '0px'
+      && getComputedStyle(q(selector)).maxWidth === 'none'),
       getComputedStyle(q('#sidebar')).minWidth + ' ~ ' + getComputedStyle(q('#sidebar')).maxWidth);
     add('右侧栏比左侧栏略宽（AI 要能读长文档片段）', LO.ai.def > LO.sidebar.def, LO.sidebar.def + ' / ' + LO.ai.def);
 
@@ -2876,8 +2876,8 @@ module.exports = {
     add('编辑区 ≥ 两侧各自 1.3 倍（不再"三块平分存在感"）',
       edW >= sbW * 1.3 && edW >= aiW * 1.3,
       '编辑/侧栏=' + (edW / sbW).toFixed(2) + ' 编辑/AI=' + (edW / aiW).toFixed(2));
-    add('两侧都在钳制范围内', sbW >= LO.sidebar.min && sbW <= LO.sidebar.max && aiW >= LO.ai.min && aiW <= LO.ai.max,
-      '侧栏=' + sbW + '(' + LO.sidebar.min + '~' + LO.sidebar.max + ') AI=' + aiW + '(' + LO.ai.min + '~' + LO.ai.max + ')');
+    add('两侧宽度有效且主区分配没有超出窗口', sbW >= 0 && aiW >= 0 && sbW + aiW <= window.innerWidth,
+      '侧栏=' + sbW + ' AI=' + aiW + ' 窗口=' + window.innerWidth);
 
     // 三处面板标题行等高（侧栏 / 标签栏 / AI 助手）—— 交界处的横向底线必须对齐
     const hh = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
