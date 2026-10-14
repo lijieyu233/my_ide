@@ -232,8 +232,8 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
    原来左右各有一条 accent 竖线 —— 同一个按钮两个选中指示，是噪音。 */
 
 #sidebar {
-  /* 默认宽度与钳制范围必须与 app.js 的 App.LAYOUT.sidebar 一致（自检有断言） */
-  width: 340px; min-width: 260px; max-width: 480px;
+  /* 默认宽度与 App.LAYOUT 同源；flex 只在窗口空间不足时收缩，不设置阅读宽度下限。 */
+  width: 340px; min-width: 0; max-width: none; flex-shrink: 1;
   background: var(--bg-panel);
   display: flex; flex-direction: column;
   overflow: hidden;
@@ -2764,8 +2764,8 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
 .qh-item.qh-err .qh-sql { color: var(--danger, #e06c75); }
 /* ---------- AI 助手对话面板（ai-panel.js，右侧停靠） ---------- */
 #ai-panel {
-  /* 默认宽度与钳制范围必须与 app.js 的 App.LAYOUT.ai 一致（自检有断言） */
-  flex-shrink: 0; width: 380px; min-width: 320px; max-width: 520px;
+  /* 窗口缩小或恢复超宽偏好时自然收缩，编辑区可以缩到零，不预留固定宽度。 */
+  flex-shrink: 1; width: 380px; min-width: 0; max-width: none;
   display: flex; flex-direction: column; position: relative;
   background: var(--bg-panel, var(--bg));
   border-left: var(--seam) solid var(--seam-color);
@@ -2775,7 +2775,7 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
 #ai-panel.hidden { display: none; }
 body.col-resizing { cursor: col-resize; user-select: none; }
 #ai-resize {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+  position: absolute; left: calc(-1 * var(--seam)); top: 0; bottom: 0; width: 5px;
   cursor: col-resize; z-index: 5;
 }
 #ai-resize:hover { background: var(--accent); }
@@ -3944,4 +3944,8 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
   .ai-head .vt-btn { width: 22px; }
   .ai-quick { grid-template-columns: 1fr; }
   #ai-dsh-info { flex: 1 1 0; }
+}
+@container (max-width: 160px) {
+  /* 用户可主动压到零宽；控件裁在本栏内，不能盖住编辑区或右侧工具入口。 */
+  #ai-panel > :not(#ai-resize):not(#ai-msgs) { overflow: hidden; }
 }

@@ -2487,7 +2487,8 @@ module.exports = {
       !!br && !!br.querySelector('svg') && !/\u2387/.test(br.textContent),
       br ? '文本=' + JSON.stringify(br.textContent) + ' svg=' + !!br.querySelector('svg') : '无 #cd-branch');
 
-    sb.style.width = window.App.LAYOUT.sidebar.min + 'px';
+    // 已取消固定最小宽度；这里仍走查 260px 的可读工作布局，零宽拖动另有独立检查。
+    sb.style.width = '260px';
     await sleep(450);
     const t2 = titleText();
     add('拉到最窄时「提交」仍横排（宁可整行换行，也不把标题压成竖排）',

@@ -7,12 +7,12 @@ const AiPanel = (() => {
   const sendBtn = document.getElementById('ai-send');
 
   const LS_CFG = 'myide-ai-cfg';
-  // 宽度键带 :v2（默认 400 → 380、范围收到 320~520），沿用旧键会停在旧宽度上
+  // 沿用用户已保存的宽度；不再拒绝旧范围之外的值或把 0px 当成缺失。
   const LS_W = 'myide-ai-width:v2';
   // 与 App.LAYOUT.ai 同源；ai-panel.js 在 app.js 之前加载，init 时才读得到，
   // 因此这里给一份兜底值（数字必须与 app.js 一致）
   const AIL = (typeof window !== 'undefined' && window.App && window.App.LAYOUT && window.App.LAYOUT.ai)
-    || { def: 380, min: 320, max: 520 };
+    || { def: 380 };
   const MAX_CTX = 24000; // 附带文件内容上限（字符），防 token 爆炸
   const MAX_ROUNDS = 8;  // Agent 工具循环上限（防失控烧 token）
   const MAX_BROWSER_ROUNDS = 24; // 长页续读需要多轮，扩展只开放给浏览器，不放宽Shell/文件操作。
@@ -2420,15 +2420,16 @@ const AiPanel = (() => {
   function initResize() {
     const grip = document.getElementById('ai-resize');
     if (!grip || !panel) return;
-    let dragging = false;
-    // 上限同时受「AIL.max」和「给编辑器留 360px」约束；窗口很窄时保底 AIL.min，
-    // 否则 max 可能小于 min（宽度会抖到 0）
-    const maxW = () => Math.max(AIL.min, Math.min(AIL.max, window.innerWidth - 360));
-    const clampW = (x) => Math.min(maxW(), Math.max(AIL.min, x));
+    let dragging = false, overlay = null, right = 0;
     grip.addEventListener('mousedown', (e) => {
       dragging = true;
       e.preventDefault();
       document.body.classList.add('col-resizing');
+      right = panel.getBoundingClientRect().right;
+      // iframe 会截走鼠标移动与释放事件，覆盖层保证穿过预览区后仍能拖动和收尾。
+      overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;cursor:col-resize;';
+      document.body.appendChild(overlay);
     });
     // 双击复位（拖歪了有个确定性的退路）
     grip.addEventListener('dblclick', () => {
@@ -2437,17 +2438,18 @@ const AiPanel = (() => {
     });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      panel.style.width = clampW(window.innerWidth - e.clientX) + 'px';
+      window.App.resizeColumn('ai-panel', right - e.clientX);
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
       dragging = false;
+      overlay?.remove(); overlay = null;
       document.body.classList.remove('col-resizing');
-      try { localStorage.setItem(LS_W, String(parseInt(panel.style.width, 10) || AIL.def)); } catch {}
+      window.App.saveColumnWidths();
     });
     try {
-      const w = parseInt(localStorage.getItem(LS_W) || '', 10);
-      if (w >= AIL.min && w <= AIL.max) panel.style.width = w + 'px';
+      const w = parseFloat(localStorage.getItem(LS_W) ?? '');
+      if (Number.isFinite(w) && w >= 0) panel.style.width = w + 'px';
     } catch {}
   }
 

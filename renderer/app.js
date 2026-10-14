@@ -1027,27 +1027,40 @@ const App = (() => {
   async function refreshOutline(tab) { if (activeTool === 'outline') await Outline.refresh(tab); }
 
   // ---------- 布局尺寸的唯一来源 ----------
-  // 默认宽度同时写在 styles.css（#sidebar / #ai-panel 的 width）；这里是钳制范围与
-  // 「双击分隔线复位」的目标值。**两处必须一致**（自检里有一条断言在比对）。
-  // 这一轮把左右都收窄（340 / 380），把空间还给编辑器：原来左 440 + 右 460 时
-  // 中央只剩 52%，视觉上像「三块平分存在感」而不是「编辑区是主角」。
+  // 这里只定义初始/双击恢复宽度；用户拖动不受固定上下限或编辑区保留宽度约束。
   const LAYOUT = {
-    sidebar: { def: 340, min: 260, max: 480 },
-    ai: { def: 380, min: 320, max: 520 },
+    sidebar: { def: 340 },
+    ai: { def: 380 },
   };
-  const clampSidebar = (px) => Math.min(LAYOUT.sidebar.max, Math.max(LAYOUT.sidebar.min, px));
+  function resizeColumn(id, requested) {
+    if (!Number.isFinite(requested)) return;
+    const target = document.getElementById(id), other = document.getElementById(id === 'sidebar' ? 'ai-panel' : 'sidebar');
+    if (!target) return;
+    // 窗口缩小后 flex 会按比例收缩。开始拖动时以当前实际宽度为准，避免旧的宽度偏好让分隔线偏离鼠标。
+    if (other && getComputedStyle(other).display !== 'none') other.style.width = other.getBoundingClientRect().width + 'px';
+    const fixed = ['tool-strip', 'tool-strip-right', 'sidebar-resizer'].reduce((sum, key) => sum + (document.getElementById(key)?.getBoundingClientRect().width || 0), 0);
+    const available = (document.getElementById('main')?.clientWidth || window.innerWidth) - fixed - (other?.getBoundingClientRect().width || 0);
+    target.style.width = Math.max(0, Math.min(requested, available)) + 'px';
+  }
+  function saveColumnWidths() {
+    for (const [id, key] of [['sidebar', 'myide-sidebar-width:v2'], ['ai-panel', 'myide-ai-width:v2']]) {
+      const el = document.getElementById(id), width = parseFloat(el?.style.width);
+      if (el && getComputedStyle(el).display !== 'none' && Number.isFinite(width)) {
+        try { localStorage.setItem(key, String(width)); } catch {}
+      }
+    }
+  }
 
   // ---------- 目录区宽度拖拽调整（持久化；覆盖层捕获事件保证跨 iframe/视频流畅）----------
-  // 键名带 :v2 —— 这一轮默认宽度变了（280 → 340、且范围收到 260~480），
-  // 沿用旧键会让老用户永远停在旧宽度上，看不到新默认值。
+  // 沿用已有键，保留用户已选的宽度，包括新允许的 0px 和超出旧范围的宽度。
   const SIDEBAR_KEY = 'myide-sidebar-width:v2';
   function initSidebarResizer() {
     const sidebar = document.getElementById('sidebar');
     const resizer = document.getElementById('sidebar-resizer');
     if (!sidebar || !resizer) return;
     try {
-      const saved = parseInt(localStorage.getItem(SIDEBAR_KEY) || '', 10);
-      if (saved >= LAYOUT.sidebar.min && saved <= LAYOUT.sidebar.max) sidebar.style.width = saved + 'px';
+      const saved = parseFloat(localStorage.getItem(SIDEBAR_KEY) ?? '');
+      if (Number.isFinite(saved) && saved >= 0) sidebar.style.width = saved + 'px';
     } catch {}
     // 双击分隔线恢复默认宽度（VS Code / PyCharm 同款习惯：拖歪了有个确定性的退路）
     resizer.addEventListener('dblclick', () => {
@@ -1062,14 +1075,14 @@ const App = (() => {
       document.body.appendChild(overlay);
       const left = sidebar.getBoundingClientRect().left || 0;
       // 拖动过程只改样式；localStorage 是同步磁盘 IO，放 mousemove 里会掉帧卡顿
-      const apply = (x) => { sidebar.style.width = clampSidebar(x - left) + 'px'; };
+      const apply = (x) => resizeColumn('sidebar', x - left);
       const onMove = (ev) => apply(ev.clientX);
       const onUp = () => {
         overlay.remove();
         resizer.classList.remove('dragging');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
-        try { localStorage.setItem(SIDEBAR_KEY, String(parseInt(sidebar.style.width, 10) || LAYOUT.sidebar.def)); } catch {}
+        saveColumnWidths();
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -1174,7 +1187,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT,
+    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT, resizeColumn, saveColumnWidths,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },
