@@ -1826,19 +1826,43 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 .ctx-item.proj-recent:hover .proj-recent-name { color: #fff; }
 
 /* 项目列表同时服务鼠标与键盘；只影响此实例，不能把共享右键菜单改成全局表单。 */
-#ctx-menu.project-picker { width: min(40em, calc(100vw - 1em)); box-sizing: border-box; max-height: min(80vh, 42em); overflow: auto; font-size: var(--tool-font, 13px); padding: .6em; }
-.project-picker input { box-sizing: border-box; width: 100%; padding: .65em; font: inherit; background: var(--bg-input); color: var(--text); border: 1px solid var(--btn-border); border-radius: .4em; }
-.project-picker-status, .project-picker-empty { margin: .6em 0; color: var(--text-dim); font-size: .9em; overflow-wrap: anywhere; }
-.project-picker-row { display: flex; gap: .35em; align-items: stretch; }
-#ctx-menu.project-picker .proj-item { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: .25em; text-align: left; border: none; border-radius: .3em; font: inherit; background: transparent; color: var(--text); padding: .6em; }
-.project-picker .proj-item.sel { background: var(--bg-hover); outline: 1px solid var(--btn-border); }
-.project-picker-path { display: block; width: 100%; color: var(--text-dim); font-size: .85em; overflow-wrap: anywhere; white-space: normal; }
-#ctx-menu.project-picker .proj-item-nm { flex: none; width: 100%; overflow-wrap: anywhere; white-space: normal; }
-.project-picker .proj-item-x { position: static; opacity: 1; flex: none; border: none; background: transparent; color: var(--text-dim); cursor: pointer; padding: .5em; }
-.project-picker .proj-item-x:hover { background: var(--bg-hover); color: var(--text); }
-.project-picker-actions { display: flex; flex-wrap: wrap; border-top: 1px solid var(--btn-border); margin-top: .6em; padding-top: .3em; gap: .35em; }
-.project-picker-actions button, .project-picker-empty button { font: inherit; color: var(--text); background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: .3em; padding: .4em .6em; }
-.project-picker :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 只滚动结果区，搜索与底部动作始终可见；共享菜单的普通右键实例仍沿用原来的滚动规则。 */
+#ctx-menu.project-picker { width: min(460px, calc(100vw - 16px)); box-sizing: border-box; max-height: min(78vh, 600px); overflow: hidden; font-size: var(--tool-font, 13px); padding: 0; background: var(--bg-panel); border-color: var(--ui-line); border-radius: 9px; }
+#ctx-menu.project-picker:not(.hidden) { display: flex; flex-direction: column; }
+.project-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 9px; flex-shrink: 0; }
+.project-picker-title { font-weight: 600; color: var(--text-bright); }
+.project-picker-cancel { color: var(--text-dim); font-size: .8em; }
+.project-picker-search { display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 0 10px; flex-shrink: 0; border: 1px solid var(--ui-line); border-radius: 6px; background: var(--bg-input); color: var(--text-dim); }
+.project-picker-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ui-focus); }
+.project-picker-search .ic { flex-shrink: 0; }
+.project-picker input { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 0; font: inherit; background: transparent; color: var(--text); border: none; outline: none; }
+.project-picker input::placeholder { color: var(--text-dim); }
+.project-picker-status { margin: 0; padding: 8px 14px; flex-shrink: 0; color: var(--text-dim); font-size: .82em; overflow-wrap: anywhere; }
+.project-picker-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 8px; scrollbar-gutter: stable; }
+.project-picker-list .ctx-title { display: flex; justify-content: space-between; gap: 8px; padding: 8px 9px 5px; margin-top: 3px; border: none; font-size: .82em; letter-spacing: 0; }
+.project-picker-count { font-variant-numeric: tabular-nums; }
+.project-picker-row { display: flex; gap: 2px; align-items: center; margin: 3px 0; border: 1px solid transparent; border-radius: 6px; }
+.project-picker-row:hover { background: var(--bg-hover); }
+.project-picker-row:has(.sel) { background: var(--ui-focus); border-color: var(--ui-line); }
+#ctx-menu.project-picker .proj-item { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 9px; text-align: left; border: none; border-radius: 5px; font: inherit; background: transparent; color: var(--text); padding: 9px 8px; }
+.project-picker-icon { display: flex; align-items: center; flex-shrink: 0; height: 1.5em; color: var(--text-dim); }
+.project-picker-content { flex: 1; min-width: 0; }
+.project-picker-headline { display: flex; align-items: baseline; gap: 8px; }
+#ctx-menu.project-picker .proj-item-nm { flex: 1; min-width: 0; color: var(--text-bright); overflow-wrap: anywhere; white-space: normal; }
+.project-picker-badge { flex-shrink: 0; font-size: .76em; color: var(--text-dim); }
+.project-picker-badge.current { color: var(--accent); background: var(--ui-focus); border-radius: 3px; padding: 1px 5px; }
+.project-picker-path { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin-top: 4px; width: 100%; color: var(--text-dim); font-size: .82em; line-height: 1.5; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
+.project-picker .proj-item-x { position: static; opacity: .65; flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-right: 5px; border: none; border-radius: 4px; background: transparent; color: var(--text-dim); cursor: pointer; padding: 0; }
+.project-picker .proj-item-x:hover, .project-picker .proj-item-x:focus-visible { opacity: 1; background: var(--btn-hover); color: var(--text-bright); }
+.project-picker-footer { padding: 10px 12px 8px; border-top: 1px solid var(--border-pane); flex-shrink: 0; }
+.project-picker-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.project-picker-actions button, .project-picker-empty button { font: inherit; font-size: .85em; color: var(--text); background: var(--bg-input); border: 1px solid var(--ui-line); border-radius: 5px; padding: 6px 8px; }
+.project-picker-actions button:first-child { color: var(--text-bright); background: var(--ui-focus); border-color: color-mix(in srgb, var(--accent) 35%, var(--ui-line)); }
+.project-picker-key-hint { margin-top: 8px; color: var(--text-dim); font-size: .78em; }
+.project-picker-empty { margin: 0; padding: 16px 10px; color: var(--text-dim); font-size: .9em; line-height: 1.8; overflow-wrap: anywhere; }
+.project-picker-empty button { display: block; margin-top: 10px; }
+.project-picker :focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.project-picker input:focus-visible { outline: none; }
 .empty-list-all { background: transparent; border: none; font: inherit; cursor: pointer; }
 
 /* ---------- 搜索面板 ---------- */

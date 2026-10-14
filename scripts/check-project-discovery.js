@@ -23,7 +23,8 @@ app.whenReady().then(async () => {
     for (let n = 0; n < 100 && !BrowserWindow.getAllWindows().length; n++) await sleep(50);
     win = BrowserWindow.getAllWindows()[0]; win.webContents.debugger.attach('1.3');
     win.webContents.on('console-message', (_event, level, message) => { if (level >= 2) console.log('renderer: ' + message); });
-    await wait('!!window.App && !!window.Viewer'); win.setContentSize(1280, 850);
+    // 自检要实际覆盖窄/矮视口，不能被生产窗口的最小尺寸钳回去后假报通过。
+    await wait('!!window.App && !!window.Viewer'); win.setMinimumSize(0, 0); win.setContentSize(1280, 850);
     const opened = JSON.stringify(JSON.stringify(paths.slice(0, 3).map(path => ({ path }))));
     const recent = JSON.stringify(JSON.stringify([...paths.slice(3), ...paths.slice(0, 3).reverse()]));
     await probe(`localStorage.setItem('myide-projects',${opened});localStorage.setItem('myide-recent-projects',${recent});location.reload()`);
@@ -36,9 +37,14 @@ app.whenReady().then(async () => {
     await probe(`App.openProject(${JSON.stringify(paths[0])})`); await probe(`Viewer.openFile(${JSON.stringify(path.join(paths[0], '原正文.txt'))})`);
     await probe('document.getElementById("btn-open").focus();document.querySelector(".proj-all").onmouseenter()');
     check('真实hover不抢原焦点', await probe('document.activeElement.id==="btn-open"'));
-    await probe('document.querySelector(".proj-all").click()');
+    await probe('Theme.set("crimson");document.querySelector(".proj-all").click()');
     check('点击进入搜索且项目完整路径可见', await probe('document.activeElement.id==="project-filter"&&document.querySelectorAll(".project-picker-path").length===7'));
     await snapshot('wide-dark');
+    check('名称与当前状态分开，分组数量和键盘提示可见', await probe('document.querySelector(".project-picker-title").textContent==="切换项目"&&!!document.querySelector(".project-picker-badge.current")&&document.querySelectorAll(".project-picker-count").length===2&&document.querySelector(".project-picker-key-hint").textContent.includes("Enter")'));
+    const menuPositions = await probe('(()=>{const q=document.getElementById("project-filter").getBoundingClientRect(),f=document.querySelector(".project-picker-footer").getBoundingClientRect();return {search:q.top,footer:f.top}})()');
+    await probe('document.querySelector(".project-picker-list").scrollTop=99999');
+    check('滚动列表时搜索框和操作区保持可见', await probe(`(()=>{const m=document.getElementById('ctx-menu').getBoundingClientRect(),q=document.getElementById('project-filter').getBoundingClientRect(),f=document.querySelector('.project-picker-footer').getBoundingClientRect();return q.top===${menuPositions.search}&&f.top===${menuPositions.footer}&&f.bottom<=m.bottom&&q.top>=m.top})()`));
+    await snapshot('scrolled'); await probe('document.querySelector(".project-picker-list").scrollTop=0');
     const ax = await win.webContents.debugger.sendCommand('Accessibility.getFullAXTree');
     check('Chromium可访问性树包含搜索与同名项目路径', ax.nodes.some(n => n.name?.value === '搜索全部项目') && ax.nodes.some(n => n.role?.value === 'button' && n.name?.value?.includes(paths[1])));
     await probe('document.getElementById("project-filter").value="同名项目";document.getElementById("project-filter").dispatchEvent(new Event("input"))');
@@ -65,7 +71,10 @@ app.whenReady().then(async () => {
     await probe('releaseSave({ok:false})'); await wait('document.querySelector(".project-picker-status").textContent.includes("原项目和标签已保留")');
     check('失败后原结果重新可操作', await probe('!document.querySelector("[data-project-open]").hasAttribute("aria-disabled")'));
     await probe('Viewer.saveAllDirty=originalSave;document.getElementById("project-filter").value="";document.getElementById("project-filter").dispatchEvent(new Event("input"))');
-    win.setContentSize(780, 720); await probe('Theme.set("light");document.documentElement.style.setProperty("--tool-font","18px")');
+    win.setContentSize(640, 420); await probe('document.documentElement.style.setProperty("--tool-font","18px")');
+    await key('Escape', 27); await probe('document.querySelector(".proj-all").click()'); await snapshot('short-crimson');
+    check('矮窗口大字号下项目列表独立滚动，底部动作没有掉出面板', await probe(`(()=>{const m=document.getElementById('ctx-menu'),r=m.getBoundingClientRect(),l=document.querySelector('.project-picker-list'),f=document.querySelector('.project-picker-footer').getBoundingClientRect();return innerWidth===640&&innerHeight===420&&r.y>=0&&r.bottom<=innerHeight&&l.scrollHeight>l.clientHeight&&l.clientHeight>0&&f.bottom<=r.bottom&&m.scrollHeight<=m.clientHeight+1})()`));
+    win.setContentSize(780, 720); await probe('Theme.set("light")');
     await key('Escape', 27); await probe('document.querySelector(".proj-all").click()'); await snapshot('narrow-light');
     check('窄窗口大字号菜单与长路径无横向溢出', await probe(`(()=>{const m=document.getElementById('ctx-menu'),r=m.getBoundingClientRect();return r.x>=0&&r.right<=innerWidth&&r.y>=0&&r.bottom<=innerHeight&&m.scrollWidth<=m.clientWidth+1&&[...m.querySelectorAll('.project-picker-path')].every(p=>p.scrollWidth<=p.clientWidth+1&&getComputedStyle(p).whiteSpace==='normal')})()`));
     await probe('Theme.set("graphite");Theme.pick("accent","#8f67da");Theme.pick("bgPanel","#20202a")'); await snapshot('custom-theme');

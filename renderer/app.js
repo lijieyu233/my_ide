@@ -627,11 +627,18 @@ const App = (() => {
     projMenuState?.cleanup?.(); projMenuState = null;
     const menu = document.getElementById('ctx-menu'); menu.replaceChildren(); menu.classList.add('project-picker');
     const input = document.createElement('input'); input.id = 'project-filter'; input.type = 'search'; input.placeholder = '搜索项目名称或路径…'; input.setAttribute('aria-label', '搜索全部项目');
+    const head = document.createElement('div'); head.className = 'project-picker-head';
+    const title = document.createElement('div'); title.className = 'project-picker-title'; title.textContent = '切换项目';
+    const cancelHint = document.createElement('span'); cancelHint.className = 'project-picker-cancel'; cancelHint.textContent = 'Esc 关闭'; head.append(title, cancelHint);
+    const search = document.createElement('div'); search.className = 'project-picker-search';
+    search.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>'; search.append(input);
     const status = document.createElement('p'); status.className = 'project-picker-status'; status.setAttribute('role', 'status');
     const list = document.createElement('div'); list.className = 'project-picker-list';
     const state = { menu, input, anchor, status, list, selected: null, paths: [], composing: false, busy: false };
-    projMenuState = state; menu.append(input, status, list);
-    const actions = document.createElement('div'); actions.className = 'project-picker-actions'; menu.append(actions);
+    projMenuState = state; menu.append(head, search, status, list);
+    const footer = document.createElement('div'); footer.className = 'project-picker-footer'; menu.append(footer);
+    const actions = document.createElement('div'); actions.className = 'project-picker-actions'; footer.append(actions);
+    const keyHint = document.createElement('div'); keyHint.className = 'project-picker-key-hint'; keyHint.textContent = '↑ ↓ 选择　Enter 打开'; footer.append(keyHint);
     const action = (label, run) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item'; button.textContent = label; button.onclick = run; actions.append(button); };
     action('打开项目…', () => { closeProjMenuNow(); openFolder(); });
     if (root) {
@@ -663,16 +670,22 @@ const App = (() => {
       const matched = all.filter(p => !needle || p.toLocaleLowerCase().replace(/\\/g, '/').includes(needle));
       state.paths = [...opened.filter(p => matched.includes(p)), ...matched.filter(p => !opened.includes(p))];
       if (!state.paths.includes(state.selected)) state.selected = state.paths[0] || null;
-      status.textContent = matched.length + ' 个匹配 · 已打开 / 最近项目；按名称或完整路径查找';
+      status.textContent = needle ? matched.length + ' 个匹配项目' : matched.length + ' 个项目 · 按名称或路径搜索';
       const section = (label, paths) => {
         if (!paths.length) return;
-        const title = document.createElement('div'); title.className = 'ctx-item ctx-title'; title.textContent = label; list.append(title);
+        const title = document.createElement('div'); title.className = 'ctx-item ctx-title'; title.textContent = label;
+        const count = document.createElement('span'); count.className = 'project-picker-count'; count.textContent = paths.length; title.append(count); list.append(title);
         for (const p of paths) {
           const row = document.createElement('div'); row.className = 'project-picker-row';
           const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item proj-item'; button.title = p; button.dataset.projectOpen = p;
-          const name = document.createElement('span'); name.className = 'proj-item-nm'; name.textContent = projectLabel(p, all) + (p === root ? '（当前）' : opened.includes(p) ? '（已打开）' : '');
+          const icon = document.createElement('span'); icon.className = 'project-picker-icon'; icon.setAttribute('aria-hidden', 'true');
+          icon.innerHTML = opened.includes(p) ? '<svg class="ic" viewBox="0 0 16 16"><path d="M2 5V3h4l2 2h6v8H2z"/></svg>' : '<svg class="ic" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>';
+          const content = document.createElement('span'); content.className = 'project-picker-content';
+          const headline = document.createElement('span'); headline.className = 'project-picker-headline';
+          const name = document.createElement('span'); name.className = 'proj-item-nm'; name.textContent = projectLabel(p, all); headline.append(name);
+          if (opened.includes(p)) { const badge = document.createElement('span'); badge.className = 'project-picker-badge' + (p === root ? ' current' : ''); badge.textContent = p === root ? '当前' : '已打开'; headline.append(badge); }
           const directory = document.createElement('span'); directory.className = 'project-picker-path'; directory.textContent = p;
-          button.append(name, directory); button.onclick = () => accept(p); button.onfocus = () => { state.selected = p; markSelection(); }; row.append(button);
+          content.append(headline, directory); button.append(icon, content); button.onclick = () => accept(p); button.onfocus = () => { state.selected = p; markSelection(); }; row.append(button);
           if (opened.includes(p)) {
             const close = document.createElement('button'); close.type = 'button'; close.className = 'proj-item-x'; close.title = '关闭项目：' + p; close.setAttribute('aria-label', '关闭项目：' + projectLabel(p, all));
             close.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
