@@ -25,9 +25,9 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
   await test('模型位于底部输入卡片，对话紧接标题，输入提示与发送图标完整',async()=>{
     assert(await js('!!document.querySelector(".ai-input-box .ai-model-row #ai-model")&&!document.querySelector(".ai-head #ai-model")'));
     assert(await js('document.getElementById("ai-msgs").previousElementSibling.classList.contains("ai-head")&&document.getElementById("ai-usage").closest(".ai-input-bar")'));
-    assert(await js('document.getElementById("ai-model").getBoundingClientRect().width>240'));
+    assert(await js('document.getElementById("ai-model").getBoundingClientRect().width>120'));
     assert(await js('document.getElementById("ai-input").getBoundingClientRect().height>=50&&!!document.querySelector("#ai-send svg")'));
-    assert(await js('document.querySelector(".ai-input-help").textContent.includes("Shift")'));
+    assert(await js('document.getElementById("ai-input").title.includes("Shift")&&!document.querySelector(".ai-session-settings").open&&!!document.querySelector(".ai-input-box #ai-perm")'));
     assert(await js('document.querySelector(".ai-welcome").textContent.includes("整理你的文档")&&!document.querySelector(".ai-welcome").textContent.includes("还没配置")'));
     await capture('ai-ui-standard.png');
   });
@@ -38,6 +38,8 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     assert(await js('document.getElementById("ai-send").getBoundingClientRect().bottom<=document.querySelector(".ai-input-box").getBoundingClientRect().bottom'));
     await capture('ai-ui-compose.png');await js('document.getElementById("ai-input").value="";document.getElementById("ai-input").dispatchEvent(new Event("input"));true');
     assert.equal(await js('document.querySelector(".ai-input-box").getBoundingClientRect().height'),height);
+    await js('document.getElementById("ai-perm").click()');assert(await js('(()=>{const p=document.querySelector(".ai-perm-pop").getBoundingClientRect(),b=document.getElementById("ai-perm").getBoundingClientRect();return p.bottom<=b.top&&p.top>=document.getElementById("ai-panel").getBoundingClientRect().top})()'));await capture('ai-ui-permissions.png');await js('document.getElementById("ai-perm").click()');
+    await js('(async()=>{const canvas=document.createElement("canvas");canvas.width=120;canvas.height=80;const ctx=canvas.getContext("2d");ctx.fillStyle="#703b52";ctx.fillRect(0,0,120,80);ctx.fillStyle="#ffffff";ctx.font="16px sans-serif";ctx.fillText("图片检查",24,44);const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png")),picker=document.getElementById("ai-image-picker"),data=new DataTransfer();data.items.add(new File([blob],"截图.png",{type:"image/png"}));picker.files=data.files;picker.dispatchEvent(new Event("change"))})()');await until(()=>js('!!document.querySelector(".ai-input-box .ai-img-thumb img")?.naturalWidth'));await capture('ai-ui-attachment.png');await js('document.querySelector(".ai-img-x").click()');assert(await js('document.getElementById("ai-images").classList.contains("hidden")'));
   });
   await test('真实对话与工具读取成功，发送/停止图标状态不破坏任务链路',async()=>{
     await js('AiPanel.ask("读取项目说明并检查界面");true');await until(()=>calls>=2);
@@ -63,8 +65,9 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
       assert(await js('(()=>{const m=document.getElementById("ai-model").getBoundingClientRect(),r=document.getElementById("ai-dsh-reasoning").getBoundingClientRect(),s=document.getElementById("ai-send").getBoundingClientRect(),i=document.getElementById("ai-input").getBoundingClientRect();return m.top>=i.bottom&&m.right<=r.left&&r.right<=s.left&&s.right<=document.querySelector(".ai-input-box").getBoundingClientRect().right})()'));
       assert(await js('(()=>{const e=document.getElementById("ai-engine"),c=getComputedStyle(e);return e.clientHeight-parseFloat(c.paddingTop)-parseFloat(c.paddingBottom)>=parseFloat(c.fontSize)})()'));
     }
-    await capture('ai-ui-harness-wide.png');await js('document.getElementById("ai-panel").style.width="320px";true');await capture('ai-ui-harness-narrow.png');
+    await js('document.getElementById("ai-panel").style.width="620px";true');await capture('ai-ui-harness-wide.png');await js('document.getElementById("ai-panel").style.width="320px";true');await capture('ai-ui-harness-narrow.png');
     await js('Theme.set("light");true');await capture('ai-ui-light.png');assert(!win.isVisible());
+    await js('document.querySelector(".ai-session-settings summary").click()');assert(await js('(()=>{const d=document.querySelector(".ai-session-settings"),r=d.querySelector(".ai-session-controls").getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect();return d.open&&r.width>0&&r.left>=p.left&&r.right<=p.right&&r.bottom<=d.getBoundingClientRect().top})()'));await capture('ai-ui-connection-settings.png');await js('document.querySelector(".ai-session-settings summary").click()');
     await js('AiPanel.setConfig({engine:"standard"})');assert(await js('document.querySelector(".ai-dsh-status").classList.contains("hidden")&&document.getElementById("ai-dsh-options").classList.contains("hidden")'));
   });
   console.log('AI UI 真实窗口：'+passed+' 通过 / 0 失败');cleanup(0);

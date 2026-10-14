@@ -2777,16 +2777,16 @@ module.exports = {
       !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
       title ? JSON.stringify(title.textContent) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏 7 个按钮全为 SVG 且无文字（含访问权限与停止）',
-      tb.length === 7 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('顶栏 6 个会话按钮全为 SVG 且无文字（权限移入输入卡片）',
+      tb.length === 6 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
     const stop = q('#ai-stop');
-    add('停止入口名称可访问，空闲时隐藏且保留原6个入口',
+    add('停止入口名称可访问，空闲时隐藏且保留5个会话入口',
       !!stop && stop.getAttribute('aria-label') === '停止本次任务' && stop.classList.contains('hidden')
-      && tb.filter(b => !b.classList.contains('hidden')).length === 6);
+      && tb.filter(b => !b.classList.contains('hidden')).length === 5);
 
     const ph = q('#ai-input').placeholder;
-    add('placeholder 简短且说明任务与附件入口', /任务/.test(ph) && /文件/.test(ph) && ph.length < 40, ph);
+    add('placeholder 简短且说明消息与文件引用', /消息/.test(ph) && /文件/.test(ph) && ph.length < 40, ph);
     // 回形针按钮已移除：它的作用（附当前文件）与「跟随当前文件」+ @ 引用完全重叠
     add('输入区不再有功能重复的回形针按钮', !q('#ai-file-chip'));
     // 底部尺寸一致性。核心是：**输入框和发送按钮不再是两个并排的框**，
@@ -2804,7 +2804,7 @@ module.exports = {
     const emptyInputHeight = hv('.ai-input-box');
     add('空输入保留两行文字和独立发送操作区', hv('#ai-input') >= 45 && emptyInputHeight >= 80 && !!q('.ai-compose-actions'),
       '卡片=' + hv('.ai-input-box') + ' 输入框=' + hv('#ai-input') + ' 按钮=' + hv('#ai-send'));
-    add('发送按钮的圆角不超过外层输入卡片', parseFloat(radiusOf('#ai-send')) > 0 && parseFloat(radiusOf('#ai-send')) <= parseFloat(radiusOf('.ai-input-box')),
+    add('发送按钮使用圆形外观，外层输入卡片有圆角', radiusOf('#ai-send') === '50%' && parseFloat(radiusOf('.ai-input-box')) > 0,
       '卡片=' + radiusOf('.ai-input-box') + ' 按钮=' + radiusOf('#ai-send'));
     const bb = q('.ai-input-box').getBoundingClientRect();
     const sb2 = q('#ai-send').getBoundingClientRect();
@@ -3211,7 +3211,7 @@ module.exports = {
     add('点 chip 本体不会误删（只有 ✕ 才移除）', qa('#ai-chips .ai-ctx-chip').length === nChip,
       '点击前 ' + nChip + ' → 点击后 ' + qa('#ai-chips .ai-ctx-chip').length);
     // ⑪ 预设权限：头部盾牌按钮（不用每次改文件都点确认）
-    add('头部有「访问权限」入口（不用钻设置页改下拉）', !!q('#ai-perm'));
+    add('输入卡片有「访问权限」入口（不用钻设置页改下拉）', !!q('.ai-input-box #ai-perm'));
     if (q('#ai-perm')) { q('#ai-perm').click(); await sleep(400); }
     const pseg = qa('.ai-perm-pop .ai-seg');
     add('权限浮层：两个维度 × 三档（每次确认 / 自动 / 禁止）',

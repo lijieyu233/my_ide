@@ -478,6 +478,8 @@ const AiPanel = (() => {
     b.title = '访问权限：改文件 ' + ({ confirm: '每次确认', auto: '自动应用', deny: '禁止' }[permWrite()] || '')
       + ' · 命令 ' + ({ confirm: '每次确认', auto: '自动执行', deny: '禁止' }[permRun()] || '')
       + (auto ? '（已开启自动应用）' : '');
+    const label=b.querySelector('.ai-perm-text');
+    if(label)label.textContent=permWrite()==='auto'&&permRun()==='auto'?'自动执行':permWrite()==='deny'&&permRun()==='deny'?'只读':permWrite()==='confirm'&&permRun()==='confirm'?'每次确认':'自定义权限';
   }
   function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
   function renderPermPop() {
@@ -512,6 +514,10 @@ const AiPanel = (() => {
     }
     pop.innerHTML = html;
     panel.appendChild(pop);
+    // 权限入口位于输入卡片，浮层应从按钮上方展开，而不是仍锚在旧标题栏。
+    const anchor=document.getElementById('ai-perm').getBoundingClientRect(),bounds=panel.getBoundingClientRect();
+    pop.style.top='auto';pop.style.bottom=Math.max(8,bounds.bottom-anchor.top+8)+'px';
+    pop.style.left=Math.max(8,Math.min(anchor.left-bounds.left,bounds.width-pop.offsetWidth-8))+'px';pop.style.right='auto';
     permPop = pop;
     pop.addEventListener('click', async (e) => {
       const t = e.target;
@@ -966,7 +972,8 @@ const AiPanel = (() => {
     const cp = document.createElement('button');
     cp.className = 'ai-copy';
     cp.title = '复制全文';
-    cp.textContent = '⧉';
+    cp.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M10 5V3H3v7h2"/></svg>';
+    cp.setAttribute('aria-label','复制全文');
     cp.onclick = async () => {
       try {
         await MI.copyText(String(text == null ? '' : text));
@@ -2597,6 +2604,11 @@ const AiPanel = (() => {
     const undoBtn = document.getElementById('ai-undo');
     if (undoBtn) undoBtn.onclick = undoCheckpoint;
     const permBtn = document.getElementById('ai-perm');
+    document.getElementById('ai-attach')?.addEventListener('click',()=>document.getElementById('ai-image-picker').click());
+    document.getElementById('ai-image-picker')?.addEventListener('change',event=>{
+      for(const file of event.target.files||[])onPasteImage({clipboardData:{items:[{kind:'file',type:file.type,getAsFile:()=>file}]},preventDefault(){}});
+      event.target.value='';
+    });
     if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); togglePermPop(); };
     syncPermBtn();
     const usageEl = document.getElementById('ai-usage');
