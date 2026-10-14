@@ -1,9 +1,10 @@
 // 使用生产App与IPC；隐藏窗口、临时项目和独立profile保护使用者的会话与项目历史。
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, shell } = require('electron');
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-project-discovery-'));
 os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
 dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
+const revealed = []; shell.showItemInFolder = target => revealed.push(target);
 const output = path.join(__dirname, '..', '.ui-check-trash', 'project-discovery-' + process.pid); fs.mkdirSync(output, { recursive: true });
 const paths = ['工作/同名项目', '资料/同名项目', '其他/beta', '历史/已关闭项目', '中文 路径/长目录'.repeat(5) + '/额外项目', '历史/项目六', '历史/项目七'].map(p => path.join(home, p));
 paths.forEach(p => fs.mkdirSync(p, { recursive: true })); fs.writeFileSync(path.join(paths[0], '原正文.txt'), '正文保持不变\n');
@@ -40,6 +41,10 @@ app.whenReady().then(async () => {
     check('项目内关闭所有文件保持空白编辑区', await probe('!!App.root&&!Viewer.openTabs.length&&!document.getElementById("empty-state").classList.contains("visible")'));
     await snapshot('project-empty-editor');
     await probe(`Viewer.openFile(${JSON.stringify(path.join(paths[0], '原正文.txt'))})`);
+    check('文件夹跳转按钮有明确可访问名称', await probe('document.querySelector(".tab-locate").getAttribute("aria-label")==="在资源管理器中显示当前文件"'));
+    await probe('document.querySelector(".tab-locate").click()'); await sleep(80);
+    check('跳转按钮分派当前文件到资源管理器，编辑区未进入全屏', revealed.at(-1) === path.join(paths[0], '原正文.txt') && !win.isFullScreen());
+    await snapshot('folder-navigation');
     await probe('document.getElementById("btn-open").focus();document.querySelector(".proj-all").onmouseenter()');
     check('真实hover不抢原焦点', await probe('document.activeElement.id==="btn-open"'));
     await probe('Theme.set("crimson");document.querySelector(".proj-all").click()');

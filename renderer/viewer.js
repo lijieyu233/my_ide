@@ -862,7 +862,7 @@ const Viewer = (() => {
     split: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.2"/><path d="M8 3.2v9.6"/></svg>',
     globe: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M2.6 8h10.8"/><path d="M8 2.4c1.5 1.6 2.3 3.5 2.3 5.6S9.5 12 8 13.6C6.5 12 5.7 10.1 5.7 8s.8-4 2.3-5.6z"/></svg>',
     external: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.6h4v4"/><path d="M13.4 2.6L7.6 8.4"/><path d="M12.2 9.6v3.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1h3.2"/></svg>',
-    locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.4V3.8a1.4 1.4 0 0 1 1.4-1.4h1.6M13.6 5.4V3.8a1.4 1.4 0 0 0-1.4-1.4h-1.6M2.4 10.6v1.6a1.4 1.4 0 0 0 1.4 1.4h1.6M13.6 10.6v1.6a1.4 1.4 0 0 1-1.4 1.4h-1.6"/><circle cx="8" cy="8" r="1.7"/></svg>',
+    locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M7 4H6L4.5 2.5H2v11h12V9M8 8l5.5-5.5M9.5 2.5h4v4"/></svg>',
   };
 
   // 编辑器操作区（Markdown 模式切换 / 查看源码 / 内置浏览器）+「定位」—— 统一挂在标签栏右端。
@@ -970,6 +970,7 @@ const Viewer = (() => {
     loc.className = 'tab-locate';
     loc.innerHTML = ACT_IC.locate;
     loc.title = '在资源管理器中显示：' + tab.path;
+    loc.setAttribute('aria-label', '在资源管理器中显示当前文件');
     loc.onclick = (e) => { e.stopPropagation(); window.myIDE.shell.showInFolder(tab.path); };
     tabActions.appendChild(loc);
   }
