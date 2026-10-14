@@ -3,6 +3,7 @@ const Settings = (() => {
   let listening = null; // 正在修改的动作 id
   let keysFilter = '', markdownFilter = '';  // 快捷键过滤词
   let activeBox = null;
+  const icon = path => `<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="${path}"/></svg>`;
   function cancelListening(box = activeBox) {
     if (!box) return;
     Shortcuts.cancelCapture(box); listening = null;
@@ -32,19 +33,21 @@ const Settings = (() => {
     activeBox = box; box.dataset.category = 'keys';
     box.id = 'set-box';
     box.innerHTML = `
-      <div class="m-head">⚙️ 设置 <span class="x" id="set-x">✕</span></div>
+      <div class="m-head">${icon('M6 2h4l.5 2 1.5 1.5 2 .5v4l-2 .5-1.5 1.5-.5 2H6l-.5-2L4 10.5 2 10V6l2-.5L5.5 4z M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5')}
+        <span id="set-heading">设置</span><button type="button" class="x" id="set-x" aria-label="关闭设置">${icon('M4 4l8 8M12 4l-8 8')}</button></div>
       <div class="set-body">
-        <div class="set-side">
-          <div class="set-cat active" data-cat="keys">⌨️ 快捷键</div>
-          <div class="set-cat" data-cat="markdown"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM4 10V6l2 2 2-2v4m2-2 1.5 2L13 8m-1.5-3v5"/></svg> Markdown</div>
-          <div class="set-cat" data-cat="font">🔤 外观</div>
-          <div class="set-cat" data-cat="editor"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z"/></svg> 编辑器</div>
-          <div class="set-cat" data-cat="git">🔀 Git</div>
-          <div class="set-cat" data-cat="translate">🌐 翻译</div>
-          <div class="set-cat" data-cat="ai">🤖 AI 助手</div>
-          <div class="set-cat" data-cat="theme">🎨 主题</div>
-          <div class="set-cat" data-cat="storage">💾 本地设置</div>
-        </div>
+        <nav class="set-side" aria-label="设置分类">
+          <div class="set-side-label">偏好设置</div>
+          <button type="button" class="set-cat active" data-cat="keys">${icon('M2 4h12v8H2zM4 6h.1M6.5 6h.1M9 6h.1M11.5 6h.1M4 8h.1M6.5 8h.1M9 8h.1M11.5 8h.1M5 10h6')} 快捷键</button>
+          <button type="button" class="set-cat" data-cat="markdown">${icon('M2 3h12v10H2zM4 10V6l2 2 2-2v4m2-2 1.5 2L13 8m-1.5-3v5')} Markdown</button>
+          <button type="button" class="set-cat" data-cat="font">${icon('M2 3h8M6 3v10M3.5 13h5M10 7h4m-2-2v8')} 外观</button>
+          <button type="button" class="set-cat" data-cat="editor">${icon('M11.2 2.6l2.2 2.2-7 7-2.6.4.4-2.6z')} 编辑器</button>
+          <button type="button" class="set-cat" data-cat="git">${icon('M5 4v8m6-8v3c0 2-6 1-6 3M5 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2m0 10a1 1 0 1 0 0 2 1 1 0 0 0 0-2m6-10a1 1 0 1 0 0 2 1 1 0 0 0 0-2')} Git</button>
+          <button type="button" class="set-cat" data-cat="translate">${icon('M2 3h8M6 2v1M4 3c0 4 2 5 5 6M8 3c0 4-2 5-6 6m7 4 2.5-7L14 13m-4-2h3')} 翻译</button>
+          <button type="button" class="set-cat" data-cat="ai">${icon('M8 2l1.7 4.3L14 8l-4.3 1.7L8 14l-1.7-4.3L2 8l4.3-1.7z')} AI 助手</button>
+          <button type="button" class="set-cat" data-cat="theme">${icon('M8 2a6 6 0 1 0 0 12c2 0 0-3 2-3h2a3 3 0 0 0 2-3 6 6 0 0 0-6-6M5 5h.1M8 4.5h.1M11 6h.1M4 8h.1')} 主题</button>
+          <button type="button" class="set-cat" data-cat="storage">${icon('M3 2h8l2 2v10H3zM5 2v4h5V2M5 14v-4h6v4')} 本地设置</button>
+        </nav>
         <div class="set-main" id="set-main">
           <div class="set-toolbar">
             <span class="set-title" id="set-title">快捷键（点击按键可修改）</span>
@@ -56,6 +59,9 @@ const Settings = (() => {
         </div>
       </div>`;
     Modal.show(box);
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-labelledby', 'set-heading');
     document.getElementById('set-x').onclick = () => { cancelListening(box); Modal.hide(); };
     document.getElementById('set-reset-all').onclick = async () => {
       cancelListening(box);
@@ -68,8 +74,9 @@ const Settings = (() => {
     // 分类切换
     const switchCat = (cat) => {
       cancelListening(box); box.dataset.category = cat.dataset.cat;
-      $all('.set-cat').forEach((x) => x.classList.remove('active'));
+      $all('.set-cat').forEach((x) => { x.classList.remove('active'); x.removeAttribute('aria-current'); });
       cat.classList.add('active');
+      cat.setAttribute('aria-current', 'page');
       if (cat.dataset.cat === 'keys') renderKeys();
       else if (cat.dataset.cat === 'markdown') renderKeys();
       else if (cat.dataset.cat === 'font') renderFont();
@@ -99,7 +106,10 @@ const Settings = (() => {
       const next = e.key === 'ArrowDown'
         ? Math.min(cats.length - 1, cur + 1)
         : Math.max(0, cur - 1);
-      if (next !== cur) switchCat(cats[next]);
+      if (next !== cur) {
+        switchCat(cats[next]);
+        if (t?.closest?.('.set-side')) cats[next].focus({ preventScroll: true });
+      }
     };
     document.addEventListener('keydown', onKey);
     // 弹窗关闭时解绑（hide 后 box 移出 DOM）
@@ -113,6 +123,7 @@ const Settings = (() => {
     });
     mo.observe(document.body, { childList: true, subtree: true });
     if (!initCat) renderKeys(); // 指定初始分类时 switchCat 已渲染，勿覆盖
+    box.querySelector('.set-cat.active')?.setAttribute('aria-current', 'page');
   }
 
   function $all(sel) { return [...document.querySelectorAll(sel)]; }
@@ -120,7 +131,7 @@ const Settings = (() => {
   // ---------- 快捷键视图 ----------
   function renderKeys() {
     const markdown = activeBox?.dataset.category === 'markdown';
-    document.getElementById('set-title').textContent = markdown ? 'Markdown 快捷键（点击按键可修改）' : '快捷键（点击按键可修改）';
+    document.getElementById('set-title').textContent = markdown ? 'Markdown 快捷键' : '快捷键';
     document.getElementById('set-hint').textContent = '点击动作右侧的按键 → 按下新组合键完成修改 · Esc 取消';
     document.getElementById('set-reset-all').classList.toggle('hidden', markdown);
     const list = document.getElementById('set-list');
@@ -128,7 +139,8 @@ const Settings = (() => {
       const filter = document.createElement('input');
       filter.id = 'set-keys-filter';
       filter.type = 'text';
-      filter.placeholder = '🔍 过滤动作…';
+      filter.placeholder = '搜索动作名称或快捷键…';
+      filter.setAttribute('aria-label', '搜索快捷键');
       filter.value = markdown ? markdownFilter : keysFilter;
       filter.addEventListener('input', () => { if (activeBox?.dataset.category === 'markdown') markdownFilter = filter.value; else keysFilter = filter.value; renderList(); });
       list.parentElement.insertBefore(filter, list);
@@ -746,7 +758,14 @@ const Settings = (() => {
       info.innerHTML = `<div class="set-name">${esc(b.desc)}</div><div class="set-desc">${esc(b.scope || b.category || '工作台')}${b.combos.length !== b.effectiveCombos.length ? ' · 配置的键位未全部生效，请重新设置' : ''}</div>`;
       const comboBtn = document.createElement('button');
       comboBtn.className = 'set-combo' + (listening === b.id ? ' listening' : '');
-      comboBtn.textContent = listening === b.id ? '按下新组合键…' : b.effectiveCombos.join(' / ').replace(/\+/g, ' + ') || '未绑定';
+      comboBtn.setAttribute('aria-label', `修改「${b.desc}」的快捷键，当前${b.effectiveCombos.join(' 或 ') || '未绑定'}`);
+      // 每套组合键作为完整单元换行，避免 Ctrl 与修饰键被窄窗口拆开。
+      if (listening === b.id) comboBtn.textContent = '按下新组合键…';
+      else if (!b.effectiveCombos.length) { comboBtn.textContent = '未绑定'; comboBtn.classList.add('unbound'); }
+      else for (const combo of b.effectiveCombos) {
+        const option = document.createElement('span'); option.className = 'set-key-option';
+        option.textContent = combo.replace(/\+/g, ' + '); comboBtn.append(option);
+      }
       comboBtn.onclick = () => startListen(b.id, comboBtn);
       const resetBtn = document.createElement('button');
       resetBtn.className = 'set-reset' + (b.custom ? '' : ' hidden');
@@ -754,12 +773,12 @@ const Settings = (() => {
       resetBtn.onclick = () => changeKeys(b.id, Shortcuts.defaultsFor(b.id), () => Shortcuts.reset(b.id));
       const clearBtn = document.createElement('button'); clearBtn.className = 'set-reset'; clearBtn.textContent = '取消绑定';
       clearBtn.disabled = !b.combos.length; clearBtn.onclick = () => changeKeys(b.id, [], () => Shortcuts.setBinding(b.id, null));
-      row.appendChild(info);
-      row.appendChild(resetBtn);
-      row.appendChild(clearBtn);
-      row.appendChild(comboBtn);
+      const actions = document.createElement('div'); actions.className = 'set-actions';
+      actions.append(resetBtn, clearBtn);
+      row.append(info, comboBtn, actions);
       list.appendChild(row);
     }
+    if (!list.children.length) list.innerHTML = '<div class="set-empty"><strong>没有匹配的快捷键</strong><span>试试动作名称，或缩短搜索词。</span></div>';
   }
 
   // ---------- 本地设置视图（容错：镜像 / 自愈 / 导出导入）----------
