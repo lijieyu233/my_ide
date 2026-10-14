@@ -888,6 +888,7 @@ const AiPanel = (() => {
     const cfg = getConfig();
     const engine=document.getElementById('ai-engine');if(engine)engine.value=cfg.engine==='dsh'?'dsh':'standard';
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',cfg.engine!=='dsh');
+    document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',cfg.engine!=='dsh');
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready';sel.disabled=!ready;

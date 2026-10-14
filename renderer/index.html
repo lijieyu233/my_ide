@@ -392,14 +392,9 @@
         <button id="ai-close" class="vt-btn" title="收起 AI 助手 (Ctrl+Shift+A)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </span>
     </div>
-    <div class="ai-config">
-      <div class="ai-engine-row"><label for="ai-engine">模式</label><select id="ai-engine" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
-      <div class="ai-model-row"><label for="ai-model">模型</label><select id="ai-model" title="切换模型" aria-label="AI 模型"></select></div>
-    </div>
-    <div id="ai-dsh-options" class="hidden"><label for="ai-dsh-reasoning" class="hidden">推理</label><select id="ai-dsh-reasoning" class="hidden" disabled></select><span id="ai-dsh-info">DSH 未连接</span><button id="ai-dsh-reconnect" class="vt-btn" title="重新连接 DSH，保留会话，不重发任务">重新连接</button></div>
-    <div id="ai-usage" class="ai-usage" title="上下文为字符数估算值；接入模型返回 usage 后显示精确统计"></div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
+      <div id="ai-usage" class="ai-usage" title="点击查看上下文明细；字符数为估算值，模型返回 usage 后显示精确统计"></div>
       <div id="ai-images" class="hidden"></div>
       <!-- 上下文就一条线：跟随的当前文件 / 固定项 / @ 引用都在这一行里横向滚动，
            不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
@@ -409,8 +404,19 @@
              以前是「两个并排的框」，多行输入时输入框长高、按钮留在 38px，高度看着就不齐。 -->
         <div class="ai-input-box">
           <textarea id="ai-input" rows="2" placeholder="描述任务，或拖入文件与截图…" aria-label="发送给 AI 助手的消息" spellcheck="false"></textarea>
-          <div class="ai-compose-actions"><span class="ai-compose-hint">@ 文件 · / 命令</span><button id="ai-send" class="tb-btn m-ok" title="发送（Enter）" aria-label="发送消息"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg><span class="hidden" aria-hidden="true">➤</span></button></div>
+          <div class="ai-compose-hint">@ 文件 · / 命令</div>
+          <div class="ai-compose-actions">
+            <div class="ai-config">
+              <div class="ai-model-row"><label for="ai-model" class="ai-control-label">模型</label><select id="ai-model" title="切换模型" aria-label="AI 模型"></select></div>
+              <div id="ai-dsh-options" class="hidden"><label for="ai-dsh-reasoning" class="ai-control-label hidden">推理</label><select id="ai-dsh-reasoning" class="hidden" title="推理强度" aria-label="推理强度" disabled></select></div>
+            </div>
+            <button id="ai-send" class="tb-btn m-ok" title="发送（Enter）" aria-label="发送消息"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg><span class="hidden" aria-hidden="true">➤</span></button>
+          </div>
         </div>
+      </div>
+      <div class="ai-session-controls">
+        <div class="ai-engine-row"><label for="ai-engine" class="ai-control-label">模式</label><select id="ai-engine" title="执行模式" aria-label="AI 执行模式"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness</option></select></div>
+        <div class="ai-dsh-status hidden"><span id="ai-dsh-info">DSH 未连接</span><button id="ai-dsh-reconnect" class="vt-btn" title="重新连接 DSH，保留会话，不重发任务">重新连接</button></div>
       </div>
       <div class="ai-input-help">Enter 发送 <span>Shift + Enter 换行</span></div>
     </div>
