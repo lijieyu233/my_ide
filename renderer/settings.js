@@ -153,7 +153,7 @@ const Settings = (() => {
   function renderEditor(){
     document.getElementById('set-keys-filter')?.remove();document.getElementById('set-title').textContent='编辑器';document.getElementById('set-reset-all').classList.add('hidden');
     document.getElementById('set-hint').textContent='默认保持普通标签；关闭预览标签会保留已经打开的文件';
-    const list=document.getElementById('set-list');list.innerHTML='<div class="set-form"><label class="m-label"><input id="preview-tabs-setting" type="checkbox"> 预览标签</label><p>开启后，文件树单击和快速打开 Enter 会临时浏览，只保留一个临时页。双击文件或标签、快速打开 Shift+Enter 会保留文件；开始编辑、保存或固定也会自动保留。</p></div>';
+    const list=document.getElementById('set-list');list.innerHTML='<section class="set-form"><h3 class="set-section-title">标签页行为</h3><label class="set-toggle"><input id="preview-tabs-setting" type="checkbox"><span class="set-toggle-copy"><span class="set-toggle-title">预览标签</span><span class="set-toggle-note">单击文件或按 Enter 快速打开时，使用一个临时标签页。</span></span></label><p class="set-note">双击文件或标签、快速打开时按 Shift+Enter，可以保留文件。开始编辑、保存或固定标签时也会自动保留。</p></section>';
     const input=list.querySelector('input');input.checked=Viewer.previewEnabled();input.onchange=()=>{Viewer.setPreviewEnabled(input.checked);input.checked=Viewer.previewEnabled();};
   }
   function renderFont() {
@@ -171,23 +171,24 @@ const Settings = (() => {
     const GRAD_NAMES = { dusk: '暮色', ocean: '深海', forest: '墨绿', ember: '暖霞', galaxy: '星空', blossom: '粉黛' };
     list.innerHTML = `
       <div class="set-form">
-        <label class="m-label">字体大小：<span id="font-size-val">${size}</span> px</label>
+        <h3 class="set-section-title">编辑区字号</h3>
+        <label class="m-label" for="font-size-range">字体大小 <span class="set-value"><span id="font-size-val">${size}</span> px</span></label>
         <input id="font-size-range" type="range" min="10" max="20" step="1" value="${size}" style="width:100%">
         <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:11px;margin-top:2px">
           <span>10px 小</span><span>13px 默认</span><span>20px 大</span>
         </div>
         <div style="margin-top:14px">
-          <button class="tb-btn m-ok" id="font-reset">恢复默认 (13px)</button>
+          <button class="tb-btn" id="font-reset">恢复默认 (13px)</button>
         </div>
       </div>
-      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
-        <label class="m-label">背景图片</label>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
-          <button class="tb-btn m-ok" id="bg-pick">🖼 选择图片…</button>
+      <div class="set-form">
+        <h3 class="set-section-title">背景图片</h3>
+        <div class="set-button-row">
+          <button class="tb-btn m-ok" id="bg-pick">${icon('M2 3h12v10H2zM2 10l3-3 3 3 2-2 4 4M10 5h.1')} 选择图片…</button>
           <button class="tb-btn" id="bg-clear">清除</button>
         </div>
         <div class="set-hint-path" style="color:var(--text-dim);font-size:11px;margin-bottom:4px">${bg.path && bg.path.indexOf('grad:') !== 0 ? esc(bg.path) : (bg.path ? '内置渐变：' + (GRAD_NAMES[bg.path.slice(5)] || bg.path.slice(5)) : '未设置背景图')}</div>
-        <label class="m-label" style="margin-top:4px">内置渐变背景（无需选择图片）</label>
+        <label class="m-label" style="margin-top:12px">内置渐变</label>
         <div class="grad-opts">
           <button class="grad-opt ${bg.path === 'grad:dusk' ? 'sel' : ''}" data-grad="dusk" title="暮色">暮色</button>
           <button class="grad-opt ${bg.path === 'grad:ocean' ? 'sel' : ''}" data-grad="ocean" title="深海">深海</button>
@@ -217,12 +218,12 @@ const Settings = (() => {
           <option value="bottom right" ${bg.pos === 'bottom right' ? 'selected' : ''}>右下</option>
         </select>
       </div>
-      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
-        <label class="m-label">桌面玩偶</label>
-        <div style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="pet-enable" ${window.Pet && Pet.isOn() ? 'checked' : ''} style="accent-color:var(--accent)">
-          <label for="pet-enable" style="cursor:pointer">显示右下角玩偶（点击玩偶可切换形象）</label>
-        </div>
+      <div class="set-form">
+        <h3 class="set-section-title">桌面玩偶</h3>
+        <label class="set-toggle" for="pet-enable">
+          <input type="checkbox" id="pet-enable" ${window.Pet && Pet.isOn() ? 'checked' : ''}>
+          <span class="set-toggle-copy"><span class="set-toggle-title">显示右下角玩偶</span><span class="set-toggle-note">点击玩偶可以切换形象。</span></span>
+        </label>
       </div>`;
     const range = document.getElementById('font-size-range');
     range.addEventListener('input', () => {
@@ -319,7 +320,7 @@ const Settings = (() => {
     // 用户自定义主题卡片（可应用 / 可删除）
     const userThemes = Theme.getUserThemes ? Theme.getUserThemes() : [];
     const utBtns = userThemes.map((ut) => `
-      <button class="theme-opt ut ${cur === 'user:' + ut.id ? 'sel' : ''}" data-ut="${esc(ut.id)}" title="点击应用 · × 删除">🎨 ${esc(ut.name)}<span class="ut-del" title="删除该主题">×</span></button>`).join('');
+      <button class="theme-opt ut ${cur === 'user:' + ut.id ? 'sel' : ''}" data-ut="${esc(ut.id)}" title="点击应用 · × 删除">${esc(ut.name)}<span class="ut-del" title="删除该主题">×</span></button>`).join('');
     // 动态自定义：在当前主题上逐项调整核心颜色（按分组渲染）
     const custom = Theme.getCustom ? Theme.getCustom() : { accent: Theme.getAccent ? Theme.getAccent() : '' };
     const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色', group: '' } };
@@ -328,6 +329,19 @@ const Settings = (() => {
       bg: '#1e1e1e', bgPanel: '#191919', bgHover: '#2a2a2a', bgSelected: '#2d4f6b', bgInput: '#232323', panelStrong: '#202020',
       text: '#b8b8b8', textBright: '#e4e4e4', textDim: '#808080', editorText: '#c8c8c8', codeText: '#e8c98a',
       border: '#101010', borderMid: '#3a3a3a', btnBorder: '#333333',
+    };
+    // 色块应显示当前主题实际颜色；固定深色预设会把深红/浅色的回填显示错。
+    const currentColor = key => {
+      if (!fields[key]?.css) return custom[key] || FALLBACKS[key] || '#888888';
+      const probe = document.createElement('span'); probe.hidden = true;
+      probe.style.color = `var(${fields[key].css})`; document.body.append(probe);
+      const resolved = getComputedStyle(probe).color; probe.remove();
+      // 主题预设/覆盖层是 hex，派生色是 srgb 混合；浏览器会解析为这两种颜色序列。
+      const rgb = resolved.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+      const srgb = resolved.match(/^color\(srgb\s+([\d.e+-]+)\s+([\d.e+-]+)\s+([\d.e+-]+)/);
+      const channels = rgb ? rgb.slice(1, 4).map(Number) : srgb ? srgb.slice(1, 4).map(v => Number(v) * 255) : null;
+      if (!channels) return custom[key] || FALLBACKS[key] || '#888888';
+      return '#' + channels.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
     };
     const groups = [];
     for (const k in fields) {
@@ -342,27 +356,29 @@ const Settings = (() => {
         <div class="custom-theme-row" data-field="${k}">
           <span class="custom-theme-label">${fields[k].label}</span>
           <span class="custom-theme-ctrl">
-            <input class="ct-color" type="color" value="${custom[k] || FALLBACKS[k] || '#888888'}" title="调整${fields[k].label}">
+            <input class="ct-color" type="color" value="${currentColor(k)}" aria-label="调整${fields[k].label}" title="调整${fields[k].label}">
             <button class="tb-btn ct-reset" title="此项恢复主题默认">×</button>
           </span>
         </div>`).join('')}
       </div>`).join('');
     list.innerHTML = `
       <div class="set-form">
+        <h3 class="set-section-title">界面主题</h3>
         <div class="theme-options">
-          <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark">🌙 深色</button>
-          <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light">☀️ 浅色</button>
-          <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink">🌸 粉红</button>
-          <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson">🌹 深红</button>
-          <button class="theme-opt ${cur === 'graphite' ? 'sel' : ''}" data-th="graphite">🪨 石墨</button>
+          <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark"><span class="set-theme-swatch" aria-hidden="true"></span>深色</button>
+          <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light"><span class="set-theme-swatch" aria-hidden="true"></span>浅色</button>
+          <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink"><span class="set-theme-swatch" aria-hidden="true"></span>粉红</button>
+          <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson"><span class="set-theme-swatch" aria-hidden="true"></span>深红</button>
+          <button class="theme-opt ${cur === 'graphite' ? 'sel' : ''}" data-th="graphite"><span class="set-theme-swatch" aria-hidden="true"></span>石墨</button>
         </div>
         ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
       </div>
-      <div class="set-form" style="border-top:1px solid var(--border);margin-top:10px">
-        <label class="m-label">动态自定义（当前主题上直接调色，改哪项哪项生效）</label>
+      <div class="set-form">
+        <h3 class="set-section-title">自定义配色</h3>
+        <p class="set-note">在当前主题上调色，立即生效并保存。</p>
         ${colorRows}
-        <div style="display:flex;gap:8px;margin-top:12px">
-          <button class="tb-btn m-ok" id="ut-save">💾 保存为自定义主题</button>
+        <div class="set-button-row">
+          <button class="tb-btn m-ok" id="ut-save">${icon('M3 2h8l2 2v10H3zM5 2v4h5V2M5 14v-4h6v4')} 保存为自定义主题</button>
           <button class="tb-btn" id="custom-theme-reset-all">全部恢复主题默认</button>
         </div>
         <div style="color:var(--text-dim);font-size:11px;margin-top:6px">调色立即生效并保存；「保存为自定义主题」后可在上方卡片中应用或删除</div>
@@ -413,7 +429,7 @@ const Settings = (() => {
       input.addEventListener('input', () => Theme.pick(key, input.value));
       reset.onclick = () => {
         Theme.pick(key, '');
-        input.value = FALLBACKS[key] || '#888888';
+        input.value = currentColor(key);
         MI.toast(fields[key].label + ' 已恢复主题默认', 'ok');
       };
     });
@@ -424,7 +440,7 @@ const Settings = (() => {
         // 表单回填预设默认色
         $all('.custom-theme-row').forEach((row) => {
           const k = row.dataset.field;
-          row.querySelector('.ct-color').value = FALLBACKS[k] || '#888888';
+          row.querySelector('.ct-color').value = currentColor(k);
         });
         MI.toast('已恢复主题默认配色', 'ok');
       };
@@ -445,7 +461,7 @@ const Settings = (() => {
   function backendSectionHtml() {
     return `
       <div class="set-sec">
-        <div class="set-sec-t">原生 Git 后端</div>
+        <h3 class="set-section-title">原生 Git 后端</h3>
         <div class="git-native-row">
           <input id="git-exe" type="text" placeholder="git 可执行文件路径（留空 = 用 PATH 里的 git）" spellcheck="false">
           <button class="tb-btn" id="git-exe-detect">自动检测</button>
@@ -497,6 +513,7 @@ const Settings = (() => {
     const cfg = await window.myIDE.git.getUserConfig(App.root);
     list.innerHTML = (cfg.isRepo ? `
       <div class="set-form">
+        <h3 class="set-section-title">提交作者</h3>
         <label class="m-label">用户名</label>
         <input id="git-cfg-name" type="text" placeholder="如：zhangsan" value="${esc(cfg.name)}">
         <label class="m-label">邮箱</label>
@@ -550,6 +567,7 @@ const Settings = (() => {
     const cfg = window.Translate ? Translate.getConfig() : {};
     list.innerHTML = `
       <div class="set-form">
+        <h3 class="set-section-title">翻译服务</h3>
         <label class="m-label">服务地址（Base URL，如 https://api.openai.com/v1）</label>
         <input id="tr-cfg-url" type="text" placeholder="https://api.openai.com/v1" value="${esc(cfg.baseUrl || '')}" spellcheck="false">
         <label class="m-label" style="margin-top:8px">API Key（兼容服务可留空）</label>
@@ -558,7 +576,7 @@ const Settings = (() => {
         <input id="tr-cfg-model" type="text" placeholder="gpt-4o-mini / deepseek-chat / qwen-plus …" value="${esc(cfg.model || '')}" spellcheck="false">
         <label class="m-label" style="margin-top:8px">目标语言</label>
         <input id="tr-cfg-target" type="text" placeholder="中文" value="${esc(cfg.target || '中文')}" spellcheck="false">
-        <div style="margin-top:14px;display:flex;gap:8px">
+        <div class="set-button-row">
           <button class="tb-btn m-ok" id="tr-cfg-save">保存</button>
           <button class="tb-btn" id="tr-cfg-test">测试连接</button>
         </div>
@@ -599,14 +617,18 @@ const Settings = (() => {
     const curProv = (window.AiPanel && AiPanel.providerOf(cfg)) || provs[provs.length - 1];
     list.innerHTML = `
       <div class="set-form">
+        <h3 class="set-section-title">运行方式</h3>
         <label class="m-label">执行模式</label>
         <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option></select>
         <div id="ai-cfg-dsh-wrap" class="hidden">
           <label class="m-label" style="margin-top:8px">DSH 启动器（桌面版 dsh.cmd，留空自动使用本机安装）</label>
           <input id="ai-cfg-dsh" type="text" value="${esc(cfg.dshPath||'')}" placeholder="DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" spellcheck="false">
-          <button id="ai-dsh-pick" class="tb-btn">选择启动器</button><button id="ai-dsh-detect" class="tb-btn">检查安装</button><span id="ai-dsh-status" role="status"></span>
-          <div style="margin-top:4px;color:var(--text-dim)">侧栏连接本机 Harness，使用原生会话、工具、Skills 和插件；通过 MCP 操作 MyIDE。模型与推理选项由 Harness 返回。原生操作遵循 Harness 权限，MyIDE 操作仍遵循本应用权限；下方模型配置仅用于普通助手。</div>
+          <div class="set-button-row"><button id="ai-dsh-pick" class="tb-btn">选择启动器</button><button id="ai-dsh-detect" class="tb-btn">检查安装</button></div><span id="ai-dsh-status" class="set-note" role="status"></span>
+          <div class="set-note">侧栏连接本机 Harness，使用原生会话、工具、Skills 和插件；通过 MCP 操作 MyIDE。模型与推理选项由 Harness 返回。原生操作遵循 Harness 权限，MyIDE 操作仍遵循本应用权限；下方模型配置仅用于普通助手。</div>
         </div>
+      </div>
+      <div class="set-form">
+        <h3 class="set-section-title">模型与服务</h3>
         <label class="m-label">服务商</label>
         <select id="ai-cfg-prov">
           ${provs.map((p) => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('')}
@@ -623,18 +645,20 @@ const Settings = (() => {
         <label class="m-label" style="margin-top:8px">系统提示词（System Prompt，可留空）</label>
         <textarea id="ai-cfg-sys" rows="3" placeholder="你是一个编程助手…"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc(cfg.systemPrompt || '')}</textarea>
-        <label class="m-label" style="margin-top:10px">行内补全（编辑器中灰色 ghost text，Tab 接受）</label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <label class="set-toggle" style="margin-top:16px">
           <input id="ai-cfg-inline" type="checkbox" ${cfg.inlineComplete ? 'checked' : ''}>
-          <span>输入停顿后自动生成代码补全建议</span>
+          <span class="set-toggle-copy"><span class="set-toggle-title">行内补全</span><span class="set-toggle-note">输入停顿后自动生成代码补全建议，以灰色文字显示，按 Tab 接受。</span></span>
         </label>
-        <label class="m-label" style="margin-top:10px">访问权限 —— 文件写入</label>
+      </div>
+      <div class="set-form">
+        <h3 class="set-section-title">操作权限</h3>
+        <label class="m-label">文件写入</label>
         <select id="ai-cfg-permw">
           <option value="confirm" ${(!cfg.permWrite || cfg.permWrite === 'confirm') ? 'selected' : ''}>每次确认（弹 diff 预览，默认）</option>
           <option value="auto" ${cfg.permWrite === 'auto' ? 'selected' : ''}>自动应用（不弹窗，⚠ 慎选）</option>
           <option value="deny" ${cfg.permWrite === 'deny' ? 'selected' : ''}>禁止写入（只读模式）</option>
         </select>
-        <label class="m-label" style="margin-top:8px">访问权限 —— 执行命令</label>
+        <label class="m-label" style="margin-top:8px">执行命令</label>
         <select id="ai-cfg-permr">
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
           <option value="auto" ${cfg.permRun === 'auto' ? 'selected' : ''}>自动执行（普通命令不问，⚠ 慎选）</option>
@@ -646,18 +670,18 @@ const Settings = (() => {
         <label class="m-label" style="margin-top:8px">命令黑名单 —— 这些命令永远要确认（每行一条前缀）</label>
         <textarea id="ai-cfg-deny" rows="2" placeholder="npm publish&#10;docker" spellcheck="false"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
-        <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
+        <div class="set-note set-callout">
           这些档位在 AI 面板顶部的「访问权限」按钮里也能直接切换，不必每次进设置页。<br>
           启动面板的程序配置跟随文件写入权限，启动、停止和重启跟随执行命令权限；项目授权不放行程序操作。<br>
           破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单、「自动」档与「记住授权」影响；
           把已有文件内容清空也单独保护，必须点一次确认。
         </div>
         <div id="ai-cfg-perms"></div>
-        <div style="margin-top:14px;display:flex;gap:8px">
+      </div>
+        <div class="set-form-actions">
           <button class="tb-btn m-ok" id="ai-cfg-save">保存</button>
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
-        </div>
-      </div>`;
+        </div>`;
     const provSel = document.getElementById('ai-cfg-prov');
     const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=cfg.engine==='dsh'?'dsh':'standard';
     const syncEngine=()=>document.getElementById('ai-cfg-dsh-wrap').classList.toggle('hidden',engineSel.value!=='dsh');engineSel.onchange=syncEngine;syncEngine();
@@ -820,19 +844,19 @@ const Settings = (() => {
 
     list.innerHTML = `
       <div class="set-form st-wide">
-        <label class="m-label">存储状态</label>
+        <h3 class="set-section-title">存储状态</h3>
         <div class="st-line" style="margin-bottom:8px">${healthLine}</div>
         <div class="st-line">${healLine}</div>
         <div class="st-dim" style="margin-top:8px">当前本地设置 <b>${n}</b> 项
           ${h && h.mirror ? '· 兜底镜像：<code>' + esc(h.mirror) + '</code>' : ''}</div>
       </div>
-      <div class="set-form st-wide" style="border-top:1px solid var(--border)">
-        <label class="m-label">备份与恢复</label>
+      <div class="set-form st-wide">
+        <h3 class="set-section-title">备份与恢复</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="tb-btn m-ok" id="st-export">📤 导出设置…</button>
-          <button class="tb-btn" id="st-import">📥 导入设置…</button>
-          <button class="tb-btn" id="st-mirror-now">💾 立刻写入镜像</button>
-          <button class="tb-btn" id="st-heal">♻️ 从镜像恢复</button>
+          <button class="tb-btn m-ok" id="st-export">${icon('M8 10V2m-3 3 3-3 3 3M3 9v5h10V9')} 导出设置…</button>
+          <button class="tb-btn" id="st-import">${icon('M8 2v8m-3-3 3 3 3-3M3 10v4h10v-4')} 导入设置…</button>
+          <button class="tb-btn" id="st-mirror-now">${icon('M3 2h8l2 2v10H3zM5 2v4h5V2M5 14v-4h6v4')} 立刻写入镜像</button>
+          <button class="tb-btn" id="st-heal">${icon('M3 6a5 5 0 1 1 0 5M3 2v4h4')} 从镜像恢复</button>
         </div>
         <div class="st-dim" style="margin-top:8px">导出为一份 JSON（含全部 ${n} 项设置），可用于备份或换机迁移。
           导入只认设置项，不会动你的文件。</div>

@@ -2076,9 +2076,9 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 .git-native-status .dim, .git-native-tip.dim { color: var(--text-dim); }
 .git-native-status .warn { color: var(--red); }
 
-.set-form { padding: 18px 8px; max-width: 580px; line-height: 1.7; }
+.set-form { padding: 18px; max-width: 100%; margin: 12px 0; line-height: 1.7; border: 1px solid var(--ui-line); border-radius: 8px; background: color-mix(in srgb, var(--bg-input) 30%, var(--bg-panel)); }
 /* 本地设置（容错）视图：内容比其它分类宽，且要放状态行与按钮组 */
-#set-list .st-wide { max-width: 640px; }
+#set-list .st-wide { max-width: 100%; }
 .st-line { font-size: 12.5px; line-height: 1.8; }
 .st-line .ok { color: var(--green); }
 .st-line .warn { color: var(--red); }
@@ -2087,7 +2087,8 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   font-family: Consolas, monospace; font-size: 11.5px;
   background: var(--bg-input); padding: 1px 4px; border-radius: 3px;
 }
-.set-form input {
+/* 文本框样式只用于文本输入；复选框、滑杆、色块需要自己的尺寸。 */
+.set-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
   width: 100%; background: var(--bg-input); color: var(--text-bright);
   border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 12px;
@@ -2099,10 +2100,59 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 12px;
   cursor: pointer;
 }
-.set-form input:not([type="checkbox"]):not([type="radio"]), .set-form select, .git-native-row input { padding: 9px 10px; border-radius: var(--ui-radius); border-color: var(--ui-line); }
+.set-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), .set-form select, .git-native-row input { padding: 9px 10px; border-radius: var(--ui-radius); border-color: var(--ui-line); }
 .set-form input:focus, .set-form select:focus, .git-native-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ui-focus); }
-.set-form .m-label { line-height: 1.6; margin-bottom: 8px; }
-.set-sec { padding: 18px 8px; border-top-color: var(--ui-line); }
+.set-form .m-label { line-height: 1.6; margin-bottom: 6px; color: var(--text); }
+.set-sec { padding: 18px; max-width: 100%; margin: 12px 0; border: 1px solid var(--ui-line); border-radius: 8px; background: color-mix(in srgb, var(--bg-input) 30%, var(--bg-panel)); }
+.set-section-title { margin: 0 0 14px; font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }
+.set-note { font-size: 11px; color: var(--text-dim); line-height: 1.8; overflow-wrap: anywhere; margin-top: 10px; }
+.set-callout { padding: 12px; border-left: 2px solid var(--accent); border-radius: 0 4px 4px 0; background: var(--bg-input); }
+#set-box { color-scheme: dark; }
+body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
+.set-toggle { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); cursor: pointer; background: var(--bg-input); }
+.set-toggle:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--ui-line)); }
+.set-toggle:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.set-form input[type="checkbox"], .set-form input[type="radio"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 2px 0 0; padding: 0; cursor: pointer; }
+.set-toggle-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.set-toggle-title { color: var(--text-bright); font-size: 12px; line-height: 1.6; }
+.set-toggle-note { color: var(--text-dim); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.set-form input[type="range"] { display: block; width: 100%; height: 20px; margin: 8px 0; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.set-form input[type="range"]:disabled { cursor: default; opacity: .45; }
+.set-value { float: right; padding: 0 6px; border-radius: 4px; background: var(--bg-input); color: var(--text-bright); font-family: var(--font-mono); }
+.set-form textarea { display: block; line-height: 1.6; min-height: 80px; }
+.set-form :is(input, select, textarea)::placeholder { color: var(--text-dim); opacity: .85; }
+.set-form .tb-btn, .set-sec .tb-btn, .set-form-actions .tb-btn { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+.set-form .m-ok, .set-sec .m-ok, .set-form-actions .m-ok { color: var(--text-bright); background: var(--ui-focus); border-color: color-mix(in srgb, var(--accent) 60%, var(--btn-border)); }
+.set-form .m-ok:hover, .set-sec .m-ok:hover, .set-form-actions .m-ok:hover { background: var(--bg-selected); }
+.set-form-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 12px; }
+.set-button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.set-button-row:last-child { margin-bottom: 0; }
+.set-hint-path, .st-line, .st-dim, .git-native-line, .git-native-tip, #ai-dsh-status { overflow-wrap: anywhere; }
+.set-form .theme-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+.set-form .theme-opt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px 8px; font-size: 12px; border-width: 1px; color: var(--text-bright); }
+.set-theme-swatch { width: 100%; height: 26px; border: 1px solid var(--ui-line); border-radius: 4px; background: var(--swatch-bg); box-shadow: inset 0 -3px var(--swatch-accent); }
+.theme-opt[data-th="dark"] { --swatch-bg: #212121; --swatch-accent: #4f9cd6; }
+.theme-opt[data-th="light"] { --swatch-bg: #f5f5f5; --swatch-accent: #007acc; }
+.theme-opt[data-th="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
+.theme-opt[data-th="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
+.theme-opt[data-th="graphite"] { --swatch-bg: #212121; --swatch-accent: #d9687d; }
+.set-form .ct-group { margin-top: 18px; }
+.set-form .ct-group-title { font-size: 12px; padding-bottom: 8px; border-color: var(--ui-line); color: var(--text-bright); }
+.set-form .custom-theme-row { min-height: 42px; border-bottom: 1px solid var(--border-pane); gap: 12px; }
+.set-form .custom-theme-label { flex: 1; min-width: 0; line-height: 1.5; }
+.set-form .custom-theme-ctrl { flex-shrink: 0; }
+.set-form input.ct-color { display: block; width: 42px; height: 26px; margin: 0; padding: 2px; border: 1px solid var(--ui-line); border-radius: 4px; background: var(--bg-input); cursor: pointer; }
+.set-form input.ct-color::-webkit-color-swatch-wrapper { padding: 0; }
+.set-form input.ct-color::-webkit-color-swatch { border: 0; border-radius: 2px; }
+.set-form .ct-reset { min-height: 26px; padding: 0 8px; }
+.git-native-row input { flex-basis: 100%; min-width: 0; }
+.git-native-status { padding: 10px; border: 1px solid var(--border-pane); border-radius: var(--ui-radius); background: var(--bg-input); }
+.git-native-caps .cap { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+@media (max-width: 560px) {
+  .set-form, .set-sec { padding: 12px; }
+  .set-form .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .set-toggle { padding: 9px; gap: 8px; }
+}
 
 /* ---------- 快速打开面板 ---------- */
 /* 命令结果跟随主题；不可用原因仍可选择阅读，键位列保持独立。 */

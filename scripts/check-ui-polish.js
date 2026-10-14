@@ -34,10 +34,30 @@ const watchdog = setTimeout(() => cleanup(2), 120000);
   await until(() => { win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('renderer/index.html') && !w.webContents.isLoading()); return win; });
   assert(!win.isVisible()); win.setContentSize(1440, 900);
   const project = path.join(temp, '界面示例'); fs.mkdirSync(project);
+  require('child_process').execFileSync('git', ['init', project], { windowsHide: true, stdio: 'ignore' });
   fs.writeFileSync(path.join(project, 'README.md'), '# 项目说明\n\n统一界面控件，保留当前主题。\n');
   await js(`Theme.set('crimson');App.openProject(${JSON.stringify(project)})`);
   await js(`Viewer.openFile(${JSON.stringify(path.join(project, 'README.md'))})`);
   await capture('ui-polish-workspace.png');
+  if (process.argv.includes('--audit-settings')) {
+    const prefix = process.argv.includes('--before') ? 'before' : 'after';
+    await js('Settings.open();true');
+    const categories = process.argv.includes('--audit-forms') ? ['font', 'editor', 'git', 'translate', 'ai', 'theme', 'storage'] : ['keys', 'markdown', 'font', 'editor', 'git', 'translate', 'ai', 'theme', 'storage'];
+    for (const cat of categories) {
+      await js(`document.querySelector('.set-cat[data-cat="${cat}"]').click();true`); await sleep(350);
+      const sizes = await js('(()=>{const el=document.getElementById("set-list");el.scrollTop=0;return {height:el.scrollHeight,view:el.clientHeight}})()');
+      for (let top = 0, i = 0; top < sizes.height; top += sizes.view, i++) {
+        await js(`document.getElementById('set-list').scrollTop=${top};true`); await sleep(60);
+        await capture(`ui-settings-${prefix}-${cat}-${i}.png`);
+      }
+      console.log('AUDIT ' + cat + ' ' + sizes.height + 'px');
+      if (cat === 'ai') {
+        await js('const el=document.getElementById("ai-cfg-engine");el.value="dsh";el.dispatchEvent(new Event("change"));document.getElementById("set-list").scrollTop=0;true');
+        await capture(`ui-settings-${prefix}-ai-dsh.png`);
+      }
+    }
+    cleanup(0); return;
+  }
   await test('所有设置分类图标同宽，编辑器文字不再挤到下一行', async () => {
     await js('Settings.open();true'); await sleep(120);
     assert(await js(`[...document.querySelectorAll('.set-cat')].every(el=>el.tagName==='BUTTON'&&el.querySelector('svg.ic')&&el.getBoundingClientRect().height<48)`));
@@ -83,6 +103,45 @@ const watchdog = setTimeout(() => cleanup(2), 120000);
     await js('Theme.set("crimson");document.querySelector(".set-cat[data-cat=font]").click();true');
     await capture('ui-polish-settings-form.png');
     await js('document.getElementById("set-x").click();true'); assert(await js('!document.getElementById("set-box")'));
+    assert(!win.isVisible());
+  });
+  await test('复选框紧邻标题，点击说明可切换，不再占整行或挤压文本', async () => {
+    await js('Settings.open("ai");true');
+    const metrics = await js(`(()=>{const el=document.getElementById('ai-cfg-inline'),title=el.closest('label').querySelector('.set-toggle-title');const a=el.getBoundingClientRect(),b=title.getBoundingClientRect();return {width:a.width,height:a.height,gap:b.left-a.right,offset:Math.abs(b.top-a.top),before:el.checked}})()`);
+    assert.equal(metrics.width, 16); assert.equal(metrics.height, 16); assert(metrics.gap >= 6 && metrics.gap <= 12); assert(metrics.offset < 5);
+    await js('document.getElementById("ai-cfg-inline").closest("label").querySelector(".set-toggle-note").click();true');
+    assert.equal(await js('document.getElementById("ai-cfg-inline").checked'), !metrics.before);
+    await js('document.getElementById("ai-cfg-inline").closest("label").querySelector(".set-toggle-note").click();true');
+    assert.equal(await js('document.getElementById("ai-cfg-inline").checked'), metrics.before);
+    assert.equal(await js('document.querySelectorAll("#set-list .set-section-title").length'), 3);
+    for (const cat of ['editor', 'font']) {
+      await js(`document.querySelector('.set-cat[data-cat="${cat}"]').click();true`);
+      assert(await js('[...document.querySelectorAll("#set-list input[type=checkbox]")].every(el=>el.getBoundingClientRect().width===16&&!!el.closest(".set-toggle"))'));
+    }
+    assert(await js('getComputedStyle(document.getElementById("font-size-range")).paddingTop==="0px"'));
+    await capture('ui-polish-settings-controls.png');
+  });
+  await test('主题色块有真实可见面积，所有设置页在窄屏与大字号下不溢出', async () => {
+    await js('document.querySelector(".set-cat[data-cat=theme]").click();true');
+    assert(await js('[...document.querySelectorAll(".ct-color")].every(el=>el.getBoundingClientRect().height===26&&getComputedStyle(el).paddingTop==="2px"&&getComputedStyle(el).marginBottom==="0px")'));
+    assert.equal(await js('document.querySelector(".custom-theme-row[data-field=accent] .ct-color").value'), '#f06292');
+    await js('const row=document.querySelector(".custom-theme-row[data-field=accent]"),input=row.querySelector(".ct-color");input.value="#123456";input.dispatchEvent(new Event("input"));true');
+    assert.equal(await js('Theme.getCustom().accent'), '#123456');
+    await js('document.querySelector(".custom-theme-row[data-field=accent] .ct-reset").click();true');
+    assert.equal(await js('document.querySelector(".custom-theme-row[data-field=accent] .ct-color").value'), '#f06292');
+    await capture('ui-polish-settings-colors.png');
+    await js('document.body.style.setProperty("--ui-font-size","20px");true');
+    for (const width of [780, 480]) {
+      win.setContentSize(width, 660); await sleep(100);
+      for (const cat of ['keys', 'markdown', 'font', 'editor', 'git', 'translate', 'ai', 'theme', 'storage']) {
+      await js(`document.querySelector('.set-cat[data-cat="${cat}"]').click();true`); await sleep(150);
+      assert(await js('document.getElementById("set-list").scrollWidth<=document.getElementById("set-list").clientWidth'), '窄屏溢出：' + width + ' ' + cat);
+      if (cat === 'ai') {
+        await js('const el=document.getElementById("ai-cfg-engine");el.value="dsh";el.dispatchEvent(new Event("change"));true');
+        assert(await js('document.getElementById("set-list").scrollWidth<=document.getElementById("set-list").clientWidth'));
+      }
+      }
+    }
     assert(!win.isVisible());
   });
   console.log('界面优化真实窗口：' + passed + ' 通过 / 0 失败'); cleanup(0);
