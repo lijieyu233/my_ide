@@ -35,6 +35,11 @@ app.whenReady().then(async () => {
     await key('Escape', 27);
     check('同名项目栏显示区分路径', await probe(`(()=>{const labels=[...document.querySelectorAll('.proj-btn')].map(b=>b.firstChild.textContent);return labels[0]==='同名项目 · 工作'&&labels[1]==='同名项目 · 资料'})()`));
     await probe(`App.openProject(${JSON.stringify(paths[0])})`); await probe(`Viewer.openFile(${JSON.stringify(path.join(paths[0], '原正文.txt'))})`);
+    check('打开项目后欢迎卡片隐藏', await probe('!document.getElementById("empty-state").classList.contains("visible")'));
+    await probe('Viewer.closeAll()');
+    check('项目内关闭所有文件保持空白编辑区', await probe('!!App.root&&!Viewer.openTabs.length&&!document.getElementById("empty-state").classList.contains("visible")'));
+    await snapshot('project-empty-editor');
+    await probe(`Viewer.openFile(${JSON.stringify(path.join(paths[0], '原正文.txt'))})`);
     await probe('document.getElementById("btn-open").focus();document.querySelector(".proj-all").onmouseenter()');
     check('真实hover不抢原焦点', await probe('document.activeElement.id==="btn-open"'));
     await probe('Theme.set("crimson");document.querySelector(".proj-all").click()');

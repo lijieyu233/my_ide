@@ -765,6 +765,7 @@ const App = (() => {
         if (next) await activateProject(next.path);
         else {
           root = null;
+          Viewer.syncEmptyState?.();
           MI.activeRoot = null;
           Tree.setRoot(null);
           Search.setRoot();
@@ -970,6 +971,7 @@ const App = (() => {
     // 恢复标签和工具面板可能异步等待；先托管原项目任务，避免恢复期间的隐藏面板通知取消它。
     window.AiPanel?.beforeProjectChange?.(p);
     root = p;
+    Viewer.syncEmptyState?.();
     MI.activeRoot = p;
     MI.log('INFO', 'app', '打开项目: ' + p);
     Tree.setRoot(p);

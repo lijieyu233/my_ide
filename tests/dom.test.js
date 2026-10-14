@@ -4072,7 +4072,7 @@ assert_(panel, 'CM6 搜索面板出现');
     }
     while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
     await tick();
-    assert_($(dom, '#empty-state').classList.contains('visible'), '空状态可见');
+    assert_(!$(dom, '#empty-state').classList.contains('visible'), '项目内关完文件保持空白，不显示欢迎卡片');
     assert_($(dom, '#tool-project') && !$(dom, '#tool-project').classList.contains('hidden'), '工具条仍可用');
   });
 

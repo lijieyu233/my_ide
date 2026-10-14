@@ -750,6 +750,10 @@ const Viewer = (() => {
       closeDecisions.add(cancel);Modal.show(box);box.querySelector('.m-cancel').focus();
     });
   }
+  // 欢迎卡片属于未打开项目的工作台；项目内关完文件应留出空白编辑区。
+  function syncEmptyState() {
+    empty.classList.toggle('visible', tabs.length === 0 && !window.App?.root);
+  }
   // 强制关闭全部标签（切换项目用，调用方负责 dirty 确认）
   function closeAll() {
     previewSequence++;previewFeedback='';
@@ -759,7 +763,7 @@ const Viewer = (() => {
     for(const cancel of [...closeDecisions])cancel();
     tabs.length = 0;
     activeTabId = null;
-    empty.classList.add('visible');
+    syncEmptyState();
     renderTabs();
     renderView();
   }
@@ -1073,7 +1077,7 @@ const Viewer = (() => {
     fitTabLabels();window.TabPicker?.refresh();
     if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
     else if(wasAll)tabScroll.querySelector('.tab-all')?.focus({preventScroll:true});
-    empty.classList.toggle('visible', tabs.length === 0);
+    syncEmptyState();
     if (window.Session) Session.save();
   }
 
@@ -1218,8 +1222,8 @@ const Viewer = (() => {
     window.PreviewLocation?.clear();
     for(const child of viewer.children)child.previewDispose?.();
     viewer.innerHTML = '';
-    if (!currentTab()) { empty.classList.add('visible'); window.App?.updateStatusbar({selectedChars:0}); return; }
-    empty.classList.remove('visible');
+    syncEmptyState();
+    if (!currentTab()) { window.App?.updateStatusbar({selectedChars:0}); return; }
     const tab = currentTab();
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
@@ -2064,6 +2068,7 @@ const Viewer = (() => {
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
+    syncEmptyState,
     get activeTab() { return currentTab() || null; },
     get openTabs() { return tabs; },
   };
