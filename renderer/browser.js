@@ -32,10 +32,7 @@ const BrowserPanel = (() => {
   const IC_SYSTEM = IC('<rect x="2.3" y="3" width="11.4" height="7.6" rx="1.3"/><path d="M6.2 13.4h3.6M8 10.6v2.8"/>');
 
   // ---------- 网页深色模式 ----------
-  // 走主进程 nativeTheme.themeSource（进程级）：网页里的 prefers-color-scheme 跟着变，
-  // GitHub / MDN / npm 这类自带深色的站点会直接切过去 —— 比 CSS 反色滤镜干净（图片不会发神经）。
-  // 代价：只有声明了 prefers-color-scheme 的站点会变，死写白底的页面仍然白。Chromium 那个
-  // 「强制深色」开关用不了：只能启动前设，而且会连本 IDE 自己的界面一起反色。
+  // 主进程只对原生网页视图应用偏好与强制深色，网站不支持深色时也能切换。
   const DARK_KEY = 'myide-browser-darkmode'; // 'dark' | 'light' | 'system'
   const DARK_ORDER = ['dark', 'light', 'system'];
   const DARK_META = {
@@ -211,6 +208,7 @@ const BrowserPanel = (() => {
   // ---------- 主进程状态回推 ----------
   function onState(s) {
     if (!s) return;
+    if(s.colorSchemeError)MI.toast('网页深色未生效：'+s.colorSchemeError,'err');
     if(s.fullscreen!=null){if(!s.fullscreen){fullscreenWanted=false;applyFullscreen(false);}else if(visible&&fullscreenWanted)applyFullscreen(true);}
     if (s.err) { showError(s.err); return; }
     if (s.navigated && s.url) {
@@ -273,7 +271,7 @@ const BrowserPanel = (() => {
     darkMode = DARK_ORDER.includes(mode) ? mode : 'dark';
     if (persist) { try { localStorage.setItem(DARK_KEY, darkMode); } catch {} }
     const b = B();
-    if (b && b.setColorScheme) b.setColorScheme(darkMode);
+    if (b && b.setColorScheme) Promise.resolve(b.setColorScheme(darkMode)).then(result=>{if(result?.error)MI.toast('网页深色未生效：'+result.error,'err');}).catch(error=>MI.toast('网页深色未生效：'+error.message,'err'));
     renderDarkBtn();
   }
   function cycleDarkMode() {
@@ -444,34 +442,6 @@ const BrowserPanel = (() => {
   }
 
   // ---------- 收藏列表菜单 ----------
-  function openFavMenu(x, y) {
-    const menu = document.getElementById('ctx-menu');
-    menu.innerHTML = '';
-    const list = favs();
-    if (!list.length) {
-      const d = document.createElement('div');
-      d.className = 'ctx-item';
-      d.textContent = '暂无收藏';
-      menu.appendChild(d);
-    }
-    list.forEach((f) => {
-      const d = document.createElement('div');
-      d.className = 'ctx-item';
-      d.textContent = (f.folder ? '📁 ' : '★ ') + (f.folder ? f.folder + ' / ' : '') + (f.title || f.url);
-      d.title = f.url;
-      d.onclick = () => { menu.classList.add('hidden'); go(f.url); };
-      menu.appendChild(d);
-    });
-    const del = document.createElement('div');
-    del.className = 'ctx-item';
-    del.textContent = '🗑 清空浏览历史';
-    del.onclick = () => { menu.classList.add('hidden'); clearHistory(); renderEmpty(); MI.toast('已清空浏览历史', 'ok'); };
-    menu.appendChild(del);
-    menu.classList.remove('hidden');
-    menu.style.left = Math.min(x, window.innerWidth - 260) + 'px';
-    menu.style.top = Math.min(y, window.innerHeight - 240) + 'px';
-  }
-
   // ---------- 收藏列表（左侧主侧栏 panel-browser，App.renderToolStrip 控制显隐） ----------
   // 拖拽落点标记清理：条目上的插入线 + 文件夹标题高亮
   function clearDropMarks() {
@@ -850,11 +820,6 @@ const BrowserPanel = (() => {
       renderFavBtn();
       renderSidebar();
       renderEmpty();
-    };
-    document.getElementById('bw-favs').onclick = (e) => {
-      e.stopPropagation(); // 同上：全局 click 关菜单
-      const r = e.target.getBoundingClientRect();
-      openFavMenu(r.left, r.bottom + 4);
     };
     // 收藏列表新建文件夹（真正落盘：空文件夹也常驻显示，右键收藏可移动进去）
     const sbAdd = document.getElementById('bw-sb-add-folder');

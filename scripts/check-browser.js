@@ -25,6 +25,26 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('const input=document.getElementById("bw-url");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===1);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
   });
   let baseline;
+  await test('收藏夹重复按钮移除，写死白底网页真实变暗并可恢复，刷新后仍生效',async()=>{
+    assert(!await js('!!document.getElementById("bw-favs")'));assert(await js('!!document.getElementById("bw-fav")&&!!document.getElementById("panel-browser")'));
+    // 隐藏宿主的原生子视图不提供独立截图；同一生产控制器绑定隐藏顶层网页，核对真实绘制像素。
+    const paintWindow=new BrowserWindow({show:false,skipTaskbar:true,width:600,height:400,webPreferences:{sandbox:true,nodeIntegration:false}}),wc=paintWindow.webContents;
+    const colors=require('../browser-color-scheme').createService({nativeTheme:require('electron').nativeTheme});colors.bind(wc);
+    try{
+      await wc.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent('<body style="background:white;color:black"><h1>固定白底页面</h1>'));
+      const pixel=async()=>[...(await wc.capturePage()).toBitmap().slice(0,3)].reduce((sum,value)=>sum+value,0);
+      await colors.set('light');await sleep(120);assert(await pixel()>700);
+      await colors.set('dark');await sleep(120);assert(await pixel()<150);
+      assert.equal(await wc.executeJavaScript('getComputedStyle(document.body).backgroundColor'),'rgb(255, 255, 255)');
+      fs.writeFileSync(path.join(repo,'.ui-check-trash/browser-ui-dark-page.png'),(await wc.capturePage()).toPNG());
+      await colors.set('light');await sleep(120);assert(await pixel()>700);
+      fs.writeFileSync(path.join(repo,'.ui-check-trash/browser-ui-light-page.png'),(await wc.capturePage()).toPNG());
+      await colors.set('dark');wc.reload();await until(()=>!wc.isLoading());await sleep(200);assert(await pixel()<150);
+    }finally{colors.dispose();paintWindow.destroy();}
+    assert((await js('myIDE.browser.setColorScheme("light")')).ok);assert(await page.executeJavaScript('matchMedia("(prefers-color-scheme: light)").matches'));
+    assert((await js('myIDE.browser.setColorScheme("system")')).ok);assert((await js('myIDE.browser.setColorScheme("dark")')).ok);
+    assert(await page.executeJavaScript('matchMedia("(prefers-color-scheme: dark)").matches'));assert.equal(await js('document.body.classList.contains("theme-crimson")'),true);
+  });
   await test('真实IPC全屏布局覆盖整窗且原生网页尺寸跟随，退出恢复原尺寸',async()=>{
     baseline=await js('JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})');
     const original=await js('(()=>{const r=document.getElementById("browser-view").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};})()');await js('document.getElementById("bw-fullscreen").click();true');await until(()=>js('BrowserPanel.fullscreen'));

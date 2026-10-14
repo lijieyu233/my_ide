@@ -213,6 +213,8 @@ function createWindow() {
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+const browserColorScheme=require('./browser-color-scheme').createService({nativeTheme,onError:error=>mainWindow?.webContents.send('browser:state',{colorSchemeError:String(error.message||error)})});
+app.on('will-quit',()=>browserColorScheme.dispose());
 const browserFullscreen=require('./browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
 ipcMain.handle('browser:fullscreen', (e,enabled)=>{
   try{if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口操作浏览器全屏');return browserFullscreen.set(enabled);}catch(error){return {error:error.message};}
@@ -232,6 +234,7 @@ function ensureBwView() {
     webPreferences: { partition: 'persist:myide-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const wc = bwView.webContents;
+  browserColorScheme.bind(wc);
   // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
   // mailto:/tel: 等非网页协议才交系统处理
   wc.setWindowOpenHandler(({ url }) => {
@@ -319,13 +322,11 @@ ipcMain.handle('browser:view-nav', (_e, cmd) => {
     else if (cmd === 'focus') wc.focus();
   } catch {}
 });
-// 网页深色模式：nativeTheme 是进程级的，改的是「网页看到的 prefers-color-scheme」，
-// 而本 IDE 自己的界面不吃这个（无 prefers-color-scheme 规则，主题由 body.theme-* 决定），
-// 所以拉起网页深色不会把 IDE 一起刷白/刷黑。
-ipcMain.handle('browser:color-scheme', (_e, mode) => {
+// 同时设置网站原生偏好与网页专属强制深色，写死白底的站点也能响应。
+ipcMain.handle('browser:color-scheme', async(e, mode) => {
   try {
-    nativeTheme.themeSource = (mode === 'light' || mode === 'system') ? mode : 'dark';
-    return { ok: true, source: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors };
+    if(e.sender!==mainWindow?.webContents)throw Error('只能由MyIDE窗口设置网页深色');
+    return await browserColorScheme.set(mode);
   } catch (e) { return { error: String(e.message || e) }; }
 });
 

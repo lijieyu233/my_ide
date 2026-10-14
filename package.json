@@ -62,7 +62,7 @@
     "check:ai-ssh": "electron scripts/check-ai-ssh.js --disable-gpu --no-sandbox",
     "check:ai-page": "electron scripts/check-ai-page.js --disable-gpu --no-sandbox",
     "check:ai-browser": "electron scripts/check-ai-browser.js --disable-gpu --no-sandbox",
-    "test:browser": "node tests/browser-fullscreen.test.js",
+    "test:browser": "node tests/browser-color-scheme.test.js && node tests/browser-fullscreen.test.js",
     "check:browser": "electron scripts/check-browser.js --disable-gpu --no-sandbox",
     "check:ai-dsh": "electron scripts/check-ai-dsh.js --disable-gpu --no-sandbox",
     "check:ai-project": "electron scripts/check-ai-project.js --disable-gpu --no-sandbox",
@@ -169,7 +169,8 @@
       "ai-dsh-rpc.js",
       "dsh-native.js",
       "dsh-native-plugin.cjs",
-      "ai-owner-router.js"
+      "ai-owner-router.js",
+      "browser-color-scheme.js"
     ],
     "win": {
       "target": [

@@ -4870,6 +4870,8 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     const btn = $(dom, '#bw-dark');
     assert_(btn, '工具栏有网页深色按钮');
+    assert_(!$(dom,'#bw-favs'),'工具栏没有重复收藏夹按钮');
+    assert_($(dom,'#bw-fav')&&$(dom,'#panel-browser'),'收藏星号与左侧收藏列表保留');
     assert_(!!btn.querySelector('svg.ic'), '按钮是内联 SVG（不是 emoji）');
     const mode = () => g(dom, 'BrowserPanel.darkMode');
     const icons = [];
