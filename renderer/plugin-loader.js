@@ -789,7 +789,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
 });
 
 // HTML 独立源预览：srcdoc 会继承宿主 CSP，内联脚本与交互无法正常执行。
-MI.registerRenderer(['html', 'htm'], ({ path, content }) => {
+MI.registerRenderer(['html', 'htm'], ({ path, content,htmlDiskPreview }) => {
   const frame = document.createElement('iframe');
   frame.className = 'html-frame';frame.title='HTML 预览';
   frame.sandbox = 'allow-scripts allow-modals allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock';
@@ -799,12 +799,12 @@ MI.registerRenderer(['html', 'htm'], ({ path, content }) => {
   let src=String(content||'').replace(/^\uFEFF/,'').replace(/^\s*< ?!DOCTYPE/i,'<!DOCTYPE');
   // 放在末尾，保留 DOCTYPE 的首 token 位置和页面原有的相对资源基准。
   src+='<scr'+'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr'+'ipt>';
-  frame.previewReady=window.myIDE.htmlPreview.open({path,content:src,root:window.App?.root||''}).then(result=>{
+  frame.previewReady=window.myIDE.htmlPreview.open({path,...(htmlDiskPreview?{disk:true}:{content:src}),root:window.App?.root||''}).then(result=>{
     if(!result?.ok)throw Error(result?.error||'HTML 预览加载失败');
     lease=result.id;
     if(disposed){window.myIDE.htmlPreview.close(lease);return;}
     frame.src=result.url;
-  }).catch(error=>{if(!disposed)MI.toast(error.message,'err');});
+  }).catch(error=>{if(!disposed){MI.toast(error.message,'err');const message=document.createElement('div');message.className='viewer-msg';message.textContent='HTML 预览加载失败：'+error.message;frame.replaceWith(message);}return {ok:false,error:error.message};});
   return frame;
 });
 

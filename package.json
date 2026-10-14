@@ -13,6 +13,7 @@
     "test:md-shortcuts": "node tests/markdown-shortcuts.test.js",
     "test:preview": "node tests/html-preview.test.js && node tests/preview-location.test.js && node tests/preview-navigation.test.js",
     "check:preview": "electron scripts/check-preview-location.js --disable-gpu --no-sandbox",
+    "check:html-large": "electron scripts/check-html-large.js --disable-gpu --no-sandbox",
     "test:tree-search": "node tests/tree-search.test.js",
     "check:tree-search": "electron scripts/check-tree-search.js --disable-gpu --no-sandbox",
     "test:package": "node tests/package.test.js",

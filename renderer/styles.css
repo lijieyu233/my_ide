@@ -375,6 +375,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 #tab-actions:empty { display: none; }
+.vt-note { color: var(--text-dim); font-size: 12px; padding: 0 6px; white-space: nowrap; }
 #tab-actions .md-mode-seg, #tab-actions .ed-actions { display: flex; align-items: center; gap: 4px; }
 .tab {
   display: flex; align-items: center; gap: 6px;

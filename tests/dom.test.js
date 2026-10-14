@@ -8541,6 +8541,22 @@ assert_(panel, 'CM6 搜索面板出现');
 
 
   const qoKey = (w, target, key, options = {}) => target.dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
+  await saveCase('大型HTML直接磁盘预览，大小真实且不提供空白源码或写入',async(d,viewer,bridge)=>{
+    const w=d.window,file=P+'/large.html',read=bridge.readFile;FAKE_FS[file]={type:'file',content:'<h1>大型页面</h1>'};
+    bridge.readFile=async p=>p===file?{tooLarge:true,size:12304260}:read(p);
+    const requests=[];w.myIDE.htmlPreview.open=async request=>{requests.push(request);return {ok:true,id:'disk',url:'myide-preview://disk/large.html'};};
+    await viewer.openFile(file);await w.document.querySelector('#viewer iframe').previewReady;
+    assert(viewer.activeTab.htmlDiskPreview);assert.equal(viewer.activeTab.content,null);assert.equal(viewer.activeTab.size,12304260);
+    assert(requests.at(-1).disk);assert(!('content' in requests.at(-1)));assert(w.document.querySelector('#tab-actions').textContent.includes('11.7 MB'));
+    assert(!w.document.querySelector('#tab-actions').textContent.includes('查看源码'));assert(!viewer.cm);assert(!(await viewer.saveTab(viewer.openTabs.indexOf(viewer.activeTab))).ok);
+  });
+  await saveCase('浏览临时槽打开超大HTML不拒绝、不替换原文档；普通大文本不显示NaN',async(d,viewer,bridge)=>{
+    const w=d.window,file=P+'/large.htm',read=bridge.readFile,version=bridge.fileVersion;FAKE_FS[file]={type:'file',content:'<h1>页面</h1>'};
+    bridge.readFile=async p=>p===file?{tooLarge:true,size:12304260}:p===P+'/big.txt'?{tooLarge:true,size:12*1024*1024}:read(p);
+    bridge.fileVersion=async p=>p===file?{error:'超过8MB',errorCode:'TOO_LARGE'}:version(p);
+    const old=viewer.activeTab;viewer.setPreviewEnabled(true);assert((await viewer.openFile(file,{intent:'browse'})).ok);assert(viewer.openTabs.includes(old));assert(viewer.activeTab.htmlDiskPreview);assert.equal(viewer.activeTab.retention,'regular');
+    await viewer.openFile(P+'/big.txt');assert(w.document.querySelector('#viewer').textContent.includes('12.0 MB'));assert(!w.document.querySelector('#viewer').textContent.includes('NaN'));
+  });
   const qoQuery = (w, value) => { const input=w.document.querySelector('#qo-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input; };
   const cpQuery = (w, value) => { const input=w.document.querySelector('#command-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));return input; };
   const srQuery = async(w,value) => {const input=w.document.querySelector('#sr-input');input.value=value;input.dispatchEvent(new w.Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,340));return input;};

@@ -84,7 +84,7 @@ const Viewer = (() => {
   }
   function canChooseEncoding(tab) {
     const ext = extOf(tab.name);
-    return !tab.tooLarge && tab.mode != null && !IMG_EXTS.has(ext) && !MEDIA_EXTS.has(ext) && !OFFICE_EXTS.has(ext) && !OFFICE_OLD_EXTS.has(ext);
+    return !tab.tooLarge && !tab.htmlDiskPreview && tab.mode != null && !IMG_EXTS.has(ext) && !MEDIA_EXTS.has(ext) && !OFFICE_EXTS.has(ext) && !OFFICE_OLD_EXTS.has(ext);
   }
   function updateFormatStatus(tab) {
     if (tab === currentTab() && window.App) App.updateStatusbar({
@@ -354,6 +354,11 @@ const Viewer = (() => {
         note('正在读取预览：'+path+'；原标签保持可用');
         if(!stable())return {stale:true};
         const observed=await window.myIDE.fs.fileVersion(path);if(!stable())return {stale:true};
+        if(observed.errorCode==='TOO_LARGE'&&/\.html?$/i.test(path)){
+          // 超大HTML没有可编辑文本快照，不能借临时槽替换旧文档；保留为独立只读页面。
+          request.settled=true;if(pendingPreview===request)pendingPreview=null;
+          await openFileRaw(path,{...options,intent:'regular'});return {ok:true};
+        }
         if(observed.error||!observed.version||observed.absent||observed.version.absent)return fail(observed.error||'文件不存在');
         const candidate={id:++nextTabId,editRevision:0,savedRevision:0,path,name:path.split(/[\\/]/).pop(),dirty:false,content:null,mode:null,error:null,tooLarge:false,binary:false,encoding:'utf8',retention:'preview'};
         await loadTab(candidate,true);if(!stable())return {stale:true};
@@ -428,7 +433,9 @@ const Viewer = (() => {
     catch(e) { r={error:String(e?.message||e||'读取文件失败')}; }
     if (!detached&&!tabs.includes(tab)) return;
     if (tab.path !== readPath || (tab.pathGeneration || 0) !== generation) return tab.mode == null ? loadTab(tab) : undefined;
+    tab.size=r.size;tab.htmlDiskPreview=false;tab.tooLarge=false;tab.binary=false;
     if (r.error) { tab.error = r.error; tab.mode = 'error'; }
+    else if (r.tooLarge && /\.html?$/i.test(tab.name)) { tab.htmlDiskPreview=true;tab.content=null;tab.mode='preview';tab.error=null;tab.diskVersion=null; }
     else if (r.tooLarge) { tab.tooLarge = true; tab.mode = 'error'; }
     else if (r.binary) { tab.binary = true; tab.mode = 'error'; }
     else {
@@ -904,6 +911,9 @@ const Viewer = (() => {
         seg.appendChild(b);
       }
       acts.appendChild(seg);
+    } else if (tab.htmlDiskPreview) {
+      const label=document.createElement('span');label.className='vt-note';label.textContent='只读预览 · '+fmtSize(tab.size);acts.appendChild(label);
+      const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);
     } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'preview') {
       const btnToggle = document.createElement('button');
       btnToggle.className = 'vt-btn';
@@ -1246,7 +1256,7 @@ const Viewer = (() => {
         msg.appendChild(btnOld);
       } else {
         msg.innerHTML = `<div class="big-ic">${tab.binary ? '🧱' : '📦'}</div>` +
-          (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 预览限制` : '');
+          (tab.binary ? `二进制文件（${fmtSize(tab.size)}），不支持预览` : tab.tooLarge ? `文件过大（${fmtSize(tab.size)}），超出 8MB 文本编辑限制` : '');
         if(!tab.binary&&!tab.tooLarge){
           msg.appendChild(document.createTextNode('读取失败: '+tab.error));
           const retry=document.createElement('button');retry.className='vt-btn';retry.textContent='重试读取';
@@ -1410,7 +1420,7 @@ const Viewer = (() => {
 
     // 预览模式：交给插件渲染
     const fn = MI.renderFor({ path: tab.path, name: tab.name, ext: extOf(tab.name) });
-    const node = tab.preparedPreview || (fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content }) : null);
+    const node = tab.preparedPreview || (fn ? fn({ path: tab.path, name: tab.name, ext: extOf(tab.name), content: tab.content,htmlDiskPreview:!!tab.htmlDiskPreview }) : null);
     tab.preparedPreview=null;
     if (node instanceof HTMLElement) {
       viewer.appendChild(node);
@@ -1429,7 +1439,7 @@ const Viewer = (() => {
     }
   }
 
-  function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
+  function fmtSize(n) { return !Number.isFinite(n)||n<0?'大小未知':n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
 
   // ---------- Markdown 编辑（CodeMirror 6） ----------
   // live：Obsidian 式 Live Preview（光标行源码 / 其余行渲染）
