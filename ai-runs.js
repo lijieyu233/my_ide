@@ -41,4 +41,4 @@ function createRegistry() {
   function reset(sender) { const r = latest.get(sender); if (r) r.status = 'cancelled'; latest.delete(sender); return r?.context; }
   return { begin, assert, finish, reset };
 }
-module.exports = { createRegistry, same };
+module.exports = { createRegistry, same, validate };

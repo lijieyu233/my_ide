@@ -3,7 +3,7 @@ const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'
 const {app,BrowserWindow,session}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-dsh-sidebar-check-')),home=path.join(temp,'home'),workspace=path.join(temp,'workspace');
 fs.mkdirSync(home);fs.mkdirSync(workspace);fs.writeFileSync(path.join(workspace,'fixture.md'),'DISK_FIXTURE');process.env.HOME=home;process.env.USERPROFILE=home;process.env.DSH_HOME=path.join(home,'.dsh');process.env.MYIDE_TEST_KEY='fixture-only';os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 const nativeService=require('../ai-dsh'),nativeCreate=nativeService.createService;nativeService.createService=options=>nativeCreate({...options,connectNative:args=>require('../dsh-native').connectNative({...args,skipInstall:true})});require('../main');
-let nativeChild;let win,requests=[],active=0,closed=false,passed=0,nativeRead=false,subtitleMismatch=false,subtitleRequests=[];
+let nativeChild;let win,requests=[],active=0,closed=false,passed=0,nativeRead=false,subtitleMismatch=false,subtitleRequests=[],backgroundRelease,backgroundResponse;
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn,timeout=60000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await sleep(50);}throw Error('Harness侧栏自检超时');}
 const llm=http.createServer(async(req,res)=>{
  if(req.url==='/cookie-probe'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({authenticated:(req.headers.cookie||'').includes('native-session-fixture')}));return;}
@@ -11,8 +11,10 @@ const llm=http.createServer(async(req,res)=>{
  const latest=data.messages.findLast(message=>message.role==='user'),text=typeof latest?.content==='string'?latest.content:JSON.stringify(latest?.content||'');
  const toolResults=data.messages.filter(message=>message.role==='tool'),names=(data.tools||[]).map(tool=>tool.function.name);let call,reply;
  const after=data.messages.at(-1)?.role==='tool';if(text.includes('原生取消测试')&&!after){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': waiting\n\n');res.on('close',()=>console.log('CANCELLED_NATIVE_REQUEST'));return;}
+ if(text.includes('项目后台运行验证')&&!after){backgroundResponse=res;await new Promise(resolve=>backgroundRelease=resolve);assert(!res.destroyed,'切换项目不能关闭A的模型连接');}
  if(!after){
   if(text.includes('原生提问'))call={name:'ask_user_question',arguments:JSON.stringify({questions:[{id:'choice',question:'选择本次测试的处理方式',options:[{label:'继续原生执行'},{label:'取消'}]}]})};
+  else if(text.includes('项目后台运行验证'))call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};
   else if(text.includes('通用恢复'))call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'不存在.txt')})};
   else if(text.includes('原生修改'))call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};
   else if(text.includes('字幕测试'))call={name:names.find(name=>name.endsWith('__browser_subtitles')),arguments:'{}'};
@@ -27,6 +29,7 @@ const llm=http.createServer(async(req,res)=>{
  }else{
   const observation=String(toolResults.at(-1)?.content||'');
   if(text.includes('原生提问'))reply=observation.includes('继续原生执行')?'NATIVE_QUESTION_OK':'NATIVE_QUESTION_FAILED '+observation;
+  else if(text.includes('项目后台运行验证')){assert(observation.includes('EDITED_NATIVE'));reply='NATIVE_BACKGROUND_READ_OK';}
   else if(text.includes('通用恢复')){if(observation.includes('DISK_FIXTURE'))reply='NATIVE_RECOVERY_OK';else call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};}
   else if(text.includes('原生修改')){if(observation.includes('EDITED_NATIVE'))reply='NATIVE_EDIT_VERIFIED';else if(observation.includes('DISK_FIXTURE'))call={name:'edit',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md'),old_string:'DISK_FIXTURE',new_string:'EDITED_NATIVE'})};else call={name:'read',arguments:JSON.stringify({file_path:path.join(workspace,'fixture.md')})};}
   else if(text.includes('字幕测试')){let result;try{result=JSON.parse(observation.replace(/^Error:\s*/,''));}catch{throw Error('字幕工具没有结构化结果：'+observation.slice(0,200));}if(result.hasMore)call={name:names.find(name=>name.endsWith('__browser_subtitles')),arguments:JSON.stringify({snapshot:result.snapshot,cursor:result.nextCursor})};else reply=result.ok?'MYIDE_SUBTITLE_OK '+result.subtitle.totalCues:'MYIDE_SUBTITLE_ERROR '+result.errorCode;}
@@ -94,6 +97,26 @@ async function test(name,fn){console.log("CHECK",name);await fn();passed++;conso
   const rows=await js('return [...document.getElementById("ai-msgs").children].slice('+start+').map(row=>({text:row.innerText,tool:row.classList.contains("ai-tool")}));');
   const intro=rows.findIndex(row=>row.text.includes('先查看项目文件')),tool=rows.findIndex(row=>row.tool),final=rows.findIndex(row=>row.text.includes('FINAL_PROJECT_ANALYSIS'));assert(intro>=0&&tool>intro&&final>tool,JSON.stringify(rows));
   const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(repo,'.ui-check-trash','dsh-message-order.png'),Buffer.from(shot.data,'base64'));
+ });
+ await test('A原生任务跨项目保留连接，B独立运行，A继续原生文件工具并后台完成',async()=>{
+  const original=Object.values(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'dsh-native-sessions.json'),'utf8')))[0].id;
+  // 前面用人工 dirty 标记模拟未保存正文，原生 edit 已改变磁盘；本组不测试冲突保存，先去掉模拟标记。
+  await js('for(const tab of Viewer.openTabs)tab.dirty=false;return true;');
+  await js('AiPanel.ask("项目后台运行验证");return true;');await until(()=>backgroundRelease);
+  const other=path.join(temp,'other-project');fs.mkdirSync(other);
+  await js('await App.setRoot('+JSON.stringify(other)+');App.showTool("project");App.showAi();return true;');
+  assert.equal(await js('return App.root;'),other,'必须实际切到B项目');
+  assert(!backgroundResponse.destroyed);await task('读取当前编辑器','MYIDE_EDITOR_STATE_OK');assert(!backgroundResponse.destroyed);
+  if(!win.webContents.debugger.isAttached())win.webContents.debugger.attach('1.3');
+  const runningShot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(repo,'.ui-check-trash','dsh-background-running.png'),Buffer.from(runningShot.data,'base64'));
+  backgroundRelease();const historyKey='myide-ai-sessions:'+workspace+':dsh';
+  await until(async()=>await js('return JSON.parse(localStorage.getItem('+JSON.stringify(historyKey)+')||"[]").some(session=>session.msgs.some(message=>message.content?.includes("NATIVE_BACKGROUND_READ_OK")));'));
+  assert(!await js('return document.getElementById("ai-msgs").innerText.includes("NATIVE_BACKGROUND_READ_OK");'));
+  assert(await js('return document.getElementById("ai-background-status").innerText.includes("后台已完成");'));
+  const records=Object.values(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'dsh-native-sessions.json'),'utf8')));assert.equal(records.length,2);assert.equal(records.find(record=>record.cwd===workspace).id,original);
+  await js('await App.setRoot('+JSON.stringify(workspace)+');App.showAi();return true;');
+  assert(await js('return document.getElementById("ai-msgs").innerText.includes("NATIVE_BACKGROUND_READ_OK");'));assert.equal(nativeChild.exitCode,null);
+  const doneShot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(repo,'.ui-check-trash','dsh-background-restored.png'),Buffer.from(doneShot.data,'base64'));
  });
  await js('App.showTool("project");return true;');if(!win.webContents.debugger.isAttached())win.webContents.debugger.attach('1.3');const screenshot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});fs.writeFileSync(path.join(repo,'.ui-check-trash','dsh-sidebar.png'),Buffer.from(screenshot.data,'base64'));
  console.log('Harness真实侧栏：'+passed+' 通过 / 0 失败');cleanup(0);

@@ -1,0 +1,17 @@
+const assert=require('assert/strict'),path=require('path');
+const {createRouter}=require('../ai-owner-router'),{createRegistry}=require('../ai-runs');
+const router=createRouter(),registry=createRegistry();
+const a={requestId:'a',rootId:path.resolve('A'),sessionId:'a-chat',generation:1,round:0};
+const b={...a,requestId:'b',rootId:path.resolve('B'),sessionId:'b-chat',generation:3};
+const oa=router.register(1,a,'dsh'),ob=router.register(1,b,'dsh');
+assert.notEqual(oa,ob);assert.equal(router.host(oa),1);assert.equal(router.owner(1,a),oa);
+registry.begin(oa,a);registry.begin(ob,b);registry.assert(oa,a);registry.assert(ob,b);
+registry.finish(ob,b,'cancelled');registry.assert(oa,a);
+assert.throws(()=>registry.assert(ob,b),{code:'CANCELLED_AI_REQUEST'});
+assert.throws(()=>registry.assert(oa,{...a,rootId:b.rootId}),{code:'CANCELLED_AI_REQUEST'});
+assert.throws(()=>router.register(1,{...a,rootId:b.rootId},'dsh'));
+assert.throws(()=>router.register(1,{...a,requestId:'invalid',rootId:'relative-root'},'dsh'),{code:'INVALID_AI_REQUEST'});
+const preapproval=router.owner(1,{engine:'dsh',rootId:a.rootId,sessionId:a.sessionId});assert.equal(preapproval,oa);
+assert.equal(router.register(2,a,'dsh'),JSON.stringify([2,'dsh',a.rootId,a.sessionId]));
+assert(router.reset(1).includes(oa));assert.equal(router.owner(1,a),1);assert.notEqual(router.owner(2,a),2);
+console.log('AI项目运行归属：并发、停止隔离、身份防篡改与宿主清理通过');

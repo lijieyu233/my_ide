@@ -16,6 +16,7 @@ const DB = require('./db-service');
 const AI = require('./ai-service');
 const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
 const aiRuns = require('./ai-runs').createRegistry();
+const aiOwners=require('./ai-owner-router').createRouter();
 const AiToolContract = require('./ai-tool-contract');
 const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./file-write');
@@ -78,7 +79,7 @@ const remoteService=require('./remote-ipc').register({ app, ipcMain, dialog, saf
   configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
 const aiSshTools=require('./ai-ssh-tools').createService({service:remoteService});
 ipcMain.handle('ai:ssh',async(e,context,call)=>{
-  try{const owner=aiSender(e),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-ssh-tools').has(normalized.name))throw Object.assign(Error('不是SSH终端工具'),{code:'INVALID_TOOL_ARGS'});
+  try{const owner=aiSender(e,context),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-ssh-tools').has(normalized.name))throw Object.assign(Error('不是SSH终端工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiSshTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
   }catch(error){return {ok:false,error:error.message,errorCode:error.code,committed:!!error.committed};}
 });
@@ -93,7 +94,7 @@ if (!HIDDEN_WINDOW) require('./app-instance').claim({ app, getWindow: () => main
   if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', send); else send();
 } });
 const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
-  ownerOf: event => aiSender(event), windowFor: owner => mainWindow && mainWindow.webContents.id === owner ? mainWindow : null,
+  ownerOf: (event,context) => aiSender(event,context), windowFor: owner => mainWindow && mainWindow.webContents.id === aiOwners.host(owner) ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
   stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
 });
@@ -200,7 +201,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { const context = aiRuns.reset(aiHostId); aiTools.reset(aiHostId); aiPermissionsBridge.reset(aiHostId); if (context) { AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } };
+  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);}} };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
   mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
@@ -337,12 +338,12 @@ const aiProjectTools=require('./ai-project-tools').createService({panel:async(ca
   return mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+')');
 }});
 ipcMain.handle('ai:project',async(e,context,input)=>{
-  try{const owner=aiSender(e),call=AiToolContract.validate(input);if(!require('./renderer/ai-project-tools').has(call.name))throw Error('不是项目或大纲工具');
+  try{const owner=aiSender(e,context),call=AiToolContract.validate(input);if(!require('./renderer/ai-project-tools').has(call.name))throw Error('不是项目或大纲工具');
     return await aiTools.once(owner,context,call,'application',({proof,verify})=>aiProjectTools.execute(proof,verify));
   }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 ipcMain.handle('ai:browser',async(e,context,call)=>{
-  try{const owner=aiSender(e),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-browser-tools').has(normalized.name))throw Object.assign(Error('不是浏览器工具'),{code:'INVALID_TOOL_ARGS'});
+  try{const owner=aiSender(e,context),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-browser-tools').has(normalized.name))throw Object.assign(Error('不是浏览器工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiBrowserTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
   }catch(error){return {ok:false,error:error.message,errorCode:error.code,committed:!!error.committed};}
 });
@@ -597,11 +598,11 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
 });
 
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
-const aiSender = e => {
+const aiSender = (e,context) => {
   if (!mainWindow || e.sender !== mainWindow.webContents || !e.senderFrame
     || e.senderFrame.processId !== e.sender.mainFrame.processId || e.senderFrame.routingId !== e.sender.mainFrame.routingId)
     throw Object.assign(Error('AI请求来源无效'), { code: 'INVALID_AI_SENDER' });
-  return e.sender.id;
+  return aiOwners.owner(e.sender.id,context);
 };
 ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
@@ -609,20 +610,21 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   try {
     aiSender(e);
     await aiPermissionsBridge.initialize(e.sender);
-    const start = aiRuns.begin(aiSender(e), context); record = start.record; context = record.context;
-    aiTools.bind(aiSender(e), context);
-    if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e));
-    aiPermissionsBridge.newSession(aiSender(e), context);
+    aiOwners.register(e.sender.id,context,cfg?.engine);
+    const start = aiRuns.begin(aiSender(e,context), context); record = start.record; context = record.context;
+    aiTools.bind(aiSender(e,context), context);
+    if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e,context));
+    aiPermissionsBridge.newSession(aiSender(e,context), context);
     if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { return { error: error.message, errorCode: error.code, context }; }
   let r;
   if(cfg?.engine==='dsh'){
     try{
-      const page=await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e),context);
+      const page=await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e,context),context);
       r=await DSH.chat(cfg,messages,tools||[],{...context,page},event=>{
         if(record.status!=='active')return;
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:dsh-event',{...event,context});
-      },event=>{try{aiRuns.assert(aiSender(e),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
+      },event=>{try{aiRuns.assert(aiSender(e,context),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'dsh',context};}
   }else r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
@@ -631,9 +633,9 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   send('ai:done', r);
   return r;
 });
-ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
-ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
-ipcMain.handle('ai:dsh-question-result',(event,context,id,answers)=>{try{aiRuns.assert(aiSender(event),context);return DSH.questionResult(context,id,answers);}catch{return {ok:false};}});
+ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
+ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
+ipcMain.handle('ai:dsh-question-result',(event,context,id,answers)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.questionResult(context,id,answers);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Harness 会话身份无效');
@@ -646,28 +648,28 @@ ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
   try{aiSender(event);const runtime=await require('./dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:runtime.launcher};}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
+  try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
-  try { const result=aiRuns.finish(aiSender(e),context);if(result.ok){aiPermissionsBridge.authority.revoke(aiSender(e));cancelAiSearch(context.requestId);}return result; }
+  try { const result=aiRuns.finish(aiSender(e,context),context);if(result.ok){aiPermissionsBridge.authority.revoke(aiSender(e,context));cancelAiSearch(context.requestId);}return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:validateTool', (e, context, call) => {
-  try { return { ok: true, call: aiTools.prepare(aiSender(e), context, call).call }; }
+  try { return { ok: true, call: aiTools.prepare(aiSender(e,context), context, call).call }; }
   catch (error) { return { ok: false, error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:readFile', async(e, context, call) => {
   try {
     const normalized=AiToolContract.validate(call);
     if(!['read_file','write_file','replace_edit'].includes(normalized.name))throw Object.assign(Error('不是文件读取调用'),{code:'INVALID_TOOL_ARGS'});
-    return await aiTools.read(aiSender(e),context,normalized);
+    return await aiTools.read(aiSender(e,context),context,normalized);
   }catch(error){return {error:error.message,errorCode:error.code};}
 });
 ipcMain.handle('ai:readDir', async(e,context,call)=>{
   try{
     if(AiToolContract.validate(call).name!=='list_files')throw Object.assign(Error('不是目录读取调用'),{code:'INVALID_TOOL_ARGS'});
-    return await aiTools.once(aiSender(e),context,call,'list',async({proof,verify})=>{
+    return await aiTools.once(aiSender(e,context),context,call,'list',async({proof,verify})=>{
       const entries=[],directory=await fs.promises.opendir(proof.real,{bufferSize:32});
       for await(const entry of directory){if(entries.length>=10000)throw Object.assign(Error('目录超过10000项预算'),{code:'AI_DIRECTORY_LIMIT'});entries.push(entry);if(entries.length%64===0)verify();}verify();
       return {files:entries.filter(e=>!['.git','node_modules'].includes(e.name)&&(!e.name.startsWith('.')||/^\.env($|\.)/.test(e.name))).map(e=>({name:e.name,type:e.isDirectory()?'dir':'file',isLink:e.isSymbolicLink()}))};
@@ -677,7 +679,7 @@ ipcMain.handle('ai:readDir', async(e,context,call)=>{
 ipcMain.handle('ai:search',async(e,context,call)=>{
   try{
     const normalized=AiToolContract.validate(call);if(normalized.name!=='search_files')throw Object.assign(Error('不是搜索调用'),{code:'INVALID_TOOL_ARGS'});
-    return await aiTools.once(aiSender(e),context,normalized,'search',async({proof,verify})=>{
+    return await aiTools.once(aiSender(e,context),context,normalized,'search',async({proof,verify})=>{
       const id='ai-search-'+require('crypto').randomUUID();aiSearchJobs.set(id,{owner:e.sender.id,context});
       let result;try{result=await searchService.start(e.sender.id,{requestId:id,root:proof.real,projectGeneration:context.generation,query:normalized.args.query.trim()},null,false);}finally{aiSearchJobs.delete(id);}
       verify();
@@ -688,11 +690,11 @@ ipcMain.handle('ai:search',async(e,context,call)=>{
 });
         // AI Agent 工具：run_command（项目目录内执行，15s 超时，输出截断回喂模型）
         ipcMain.handle('ai:run', async (e, cmd, cwd, context, call) => {
-          try { aiRuns.assert(aiSender(e), context, cwd); AiToolContract.assertCommand(cmd, cwd, context, call); }
+          try { aiRuns.assert(aiSender(e,context), context, cwd); AiToolContract.assertCommand(cmd, cwd, context, call); }
           catch (error) { return { ok: false, text: error.message, errorCode: error.code }; }
           const { exec } = require('child_process');
-          try { const result=await aiTools.once(aiSender(e),context,call,'run',({proof})=>new Promise((resolve) => {
-            aiPermissionsBridge.authority.assert(aiSender(e),context,call,{target:proof.real,command:cmd});
+          try { const result=await aiTools.once(aiSender(e,context),context,call,'run',({proof})=>new Promise((resolve) => {
+            aiPermissionsBridge.authority.assert(aiSender(e,context),context,call,{target:proof.real,command:cmd});
             exec(cmd, {
               cwd: proof.real,
               timeout: 15000,
@@ -742,11 +744,11 @@ function writeTextFile(p, content, format, condition, beforePublish, writer = Fi
 ipcMain.handle('fs:writeFile', (_e, ...args) => writeTextFile(...args));
 ipcMain.handle('ai:writeFile', async(e, context, p, content, format, condition, call) => {
   try {
-    aiRuns.assert(aiSender(e),context,p);
+    aiRuns.assert(aiSender(e,context),context,p);
     const normalized = AiToolContract.validate(call);
     let original;
     if (normalized.name === 'replace_edit') {
-      const snapshot = await aiTools.read(aiSender(e),context,normalized);
+      const snapshot = await aiTools.read(aiSender(e,context),context,normalized);
       if (snapshot.tooLarge) throw Object.assign(Error('替换目标超过8MiB文本预算'), { code: 'TOOL_TARGET_TOO_LARGE' });
       if (snapshot.error || !FileWrite.sameVersion(snapshot.version, condition?.expectedVersion))
         throw Object.assign(Error('原文件已变化，未替换'), { code: 'STALE_DOCUMENT' });
@@ -754,10 +756,10 @@ ipcMain.handle('ai:writeFile', async(e, context, p, content, format, condition, 
       original = snapshot.content;
     }
     AiToolContract.assertWrite(context.rootId, p, content, normalized, original);
-    return await aiTools.once(aiSender(e),context,normalized,'write',({proof,verify})=>{
-      const assertApproval=()=>{verify();aiPermissionsBridge.authority.assert(aiSender(e),context,normalized,{target:proof.real,content,expectedVersion:condition?.expectedVersion});};
+    return await aiTools.once(aiSender(e,context),context,normalized,'write',({proof,verify})=>{
+      const assertApproval=()=>{verify();aiPermissionsBridge.authority.assert(aiSender(e,context),context,normalized,{target:proof.real,content,expectedVersion:condition?.expectedVersion});};
       assertApproval();aiPermissionsBridge.protect(proof.real);
-      return {...writeTextFile(proof.real,content,format,condition,assertApproval,aiTools.writer(aiSender(e),context,proof)),context};
+      return {...writeTextFile(proof.real,content,format,condition,assertApproval,aiTools.writer(aiSender(e,context),context,proof)),context};
     });
   }
   catch (error) { return { error: error.message, errorCode: error.code, context }; }
@@ -1251,7 +1253,7 @@ const aiLaunchTools = require('./ai-launch-tools').createService({ service:launc
   notify:change=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('launch:changed',change);} });
 ipcMain.handle('ai:launch',async(e,context,call)=>{
   try {
-    const owner=aiSender(e),normalized=AiToolContract.validate(call);
+    const owner=aiSender(e,context),normalized=AiToolContract.validate(call);
     if(!require('./renderer/ai-launch-tools').has(normalized.name))throw Object.assign(Error('不是启动面板工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>
       aiLaunchTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
@@ -1533,9 +1535,9 @@ app.whenReady().then(() => {
       ipcMain.removeHandler('ai:chat');
       ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         await aiPermissionsBridge.initialize(e.sender);
-        aiRuns.begin(aiSender(e), context);
-        aiTools.bind(aiSender(e),context);
-        aiPermissionsBridge.newSession(aiSender(e), context);
+        aiRuns.begin(aiSender(e,context), context);
+        aiTools.bind(aiSender(e,context),context);
+        aiPermissionsBridge.newSession(aiSender(e,context), context);
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, ch === 'ai:chunk' ? { delta: d, context } : { ...d, context }); } catch {} };
         // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
         const msgs = Array.isArray(messages) ? messages : [];

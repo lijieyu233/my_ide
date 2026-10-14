@@ -2,7 +2,7 @@
 // 流式对话：主进程 ai-service SSE → ai:chunk/ai:done 事件；配置存 localStorage（与翻译插件同模式）
 const AiPanel = (() => {
   const panel = document.getElementById('ai-panel');
-  const msgsEl = document.getElementById('ai-msgs');
+  let msgsEl = document.getElementById('ai-msgs');
   const inputEl = document.getElementById('ai-input');
   const sendBtn = document.getElementById('ai-send');
 
@@ -46,9 +46,11 @@ const AiPanel = (() => {
   let curText = '';
   let agentRounds = 0;      // 本轮任务已用的工具循环次数
   let generation = 0, currentRun = null;
+  const backgroundRuns = new Map();
+  let backgroundView = null;
   const identityMatches = (a, b) => !!a && !!b && ['requestId', 'sessionId', 'rootId', 'generation', 'round'].every(k => a[k] === b[k]);
-  const runIsCurrent = run => !!run && currentRun === run && generation === run.identity.generation
-    && ((window.App && App.root) || '') === run.identity.rootId && curSessionId === run.identity.sessionId;
+  const runIsCurrent = run => !!run && currentRun === run && curSessionId === run.identity.sessionId
+    && (backgroundView?.run === run || ((window.App && App.root) || '') === run.identity.rootId);
   const runIsLive = run => runIsCurrent(run) && run.status === 'active';
   const cancelledTool = () => ({ ok: false, cancelled: true, text: '本次AI请求已停止或归属失效，未继续操作' });
   function beginRun() {
@@ -74,7 +76,7 @@ const AiPanel = (() => {
     run.status = status; run.notice.textContent = status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成';
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
-    document.getElementById('ai-stop')?.classList.add('hidden');
+    if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
   }
   function stopRun(invalidate = false) {
@@ -128,7 +130,7 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
-    if(currentRun?.engine==='dsh'&&currentRun.pageId!==page.id)stopRun();
+    if(currentRun?.engine==='dsh'&&currentRun.identity.rootId===App.root&&currentRun.pageId!==page.id)stopRun();
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
@@ -178,6 +180,7 @@ const AiPanel = (() => {
   }
   function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
   function renderUsage() {
+    if (backgroundView) return;
     const el = document.getElementById('ai-usage');
     if (!el) return;
     const page = currentPage();
@@ -374,7 +377,8 @@ const AiPanel = (() => {
   let sessionPerm = { write: false, run: false };
   function clearSessionPermissions() {
     sessionPerm.write = false; sessionPerm.run = false;
-    Promise.resolve(window.myIDE.ai.clearSession()).catch(error=>MI.toast(error.message,'err'));
+    const context={engine:getConfig().engine,rootId:currentRun?.identity.rootId||App.root||'',sessionId:curSessionId};
+    Promise.resolve(window.myIDE.ai.clearSession(context)).catch(error=>MI.toast(error.message,'err'));
   }
   let authorityConfig = null;
   const authorityProjects = new Map();
@@ -817,6 +821,10 @@ const AiPanel = (() => {
     let r;
     try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !PROJECT_TOOLS.has(t.function?.name)), stream.context); }
     catch (error) { r = { error: String(error), context: stream.context }; }
+    if (run.background) {
+      withBackgroundView(run.background,()=>finishStream(r?.error || r?.text || stream.text,!!r?.error,r,run,stream));
+      renderBackgroundStatus();return;
+    }
     if (!runIsLive(run) || run.stream !== stream || stream.finished) return;
     if (!identityMatches(r?.context, stream.context)) r = { error: 'AI响应归属无效，未执行工具', context: stream.context };
     finishStream(r?.error || r?.text || stream.text, !!r?.error, r, run, stream);
@@ -1042,6 +1050,7 @@ const AiPanel = (() => {
   }
   // 只在「最后一条助手回复」上挂 ⟳：中间那些重新生成没有意义，到处挂只会误点
   function markRegen() {
+    if (backgroundView) return;
     removeRegen();
     if (getConfig().engine==='dsh'||busy || lastUserAt == null || lastUserAt >= msgs.length) return;
     const rows = [...msgsEl.querySelectorAll('.ai-msg.ai-assistant')];
@@ -1298,7 +1307,7 @@ const AiPanel = (() => {
     }
     if (kind === 'yolo') {
       if (!curSessionId) curSessionId = 's-' + (window.crypto?.randomUUID?.() || Date.now().toString(36));
-      const context = { rootId: (window.App && App.root) || '', sessionId: curSessionId };
+      const context = { engine:getConfig().engine,rootId: (window.App && App.root) || '', sessionId: curSessionId };
       try {
         const result = await window.myIDE.ai.grantSession(context);
         if (!result?.ok) throw Error(result?.error || '本次对话授权未生效');
@@ -1565,6 +1574,7 @@ const AiPanel = (() => {
   }
 
   function setBusyUI(b) {
+    if (backgroundView) return;
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
     if (sendBtn) {
       sendBtn.disabled = false;
@@ -1581,11 +1591,11 @@ const AiPanel = (() => {
   const SESS_LIMIT = 30;
   // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
   // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
-  function sessKey() { return LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
+  function sessKey() { return backgroundView?.scope || LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
   function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   let loadedSessionKey=null;
-  function rememberSession(){if(getConfig().engine==='dsh'&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
+  function rememberSession(){if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
     const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
@@ -1608,7 +1618,7 @@ const AiPanel = (() => {
     rest.unshift({ id: curSessionId, ts: Date.now(), title: sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
     rememberSession();
-    if(getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
+    if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
   }
   function replayMsgs() {
     msgsEl.innerHTML = '';
@@ -1704,18 +1714,65 @@ const AiPanel = (() => {
     refreshDshOptions();
     renderUsage();
     replayMsgs();
+    restoreBackgroundRun();
     MI.toast('已载入会话：' + se.title, 'ok');
   }
 
   // ---------- 切换项目 ----------
+  // 输出在原会话的离屏容器里继续累计；只切换视图，不取消原生任务，也不把原项目的工具派给新项目。
+  function captureRunView() { return {msgsEl,msgs,busy,currentRun,curSessionId,lastUserAt,uiSeq,usageSum,curStream,curText}; }
+  function applyRunView(view) { ({msgsEl,msgs,busy,currentRun,curSessionId,lastUserAt,uiSeq,usageSum,curStream,curText}=view); }
+  function withBackgroundView(record,fn) {
+    const foreground=captureRunView(),previous=backgroundView;
+    backgroundView=record;applyRunView(record.view);
+    try { return fn(); }
+    finally { record.view=captureRunView();backgroundView=previous;applyRunView(foreground); }
+  }
+  function parkDshRun() {
+    const run=currentRun;
+    if(run?.engine!=='dsh'||run.status!=='active'||!run.stream)return false;
+    const container=document.createElement('div');
+    while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
+    const record={run,scope:loadedSessionKey||LS_SESS+':'+run.identity.rootId+':dsh',view:{...captureRunView(),msgsEl:container},pending:[]};
+    backgroundRuns.set(JSON.stringify([record.scope,curSessionId]),record);run.background=record;
+    withBackgroundView(record,persistSession);
+    currentRun=null;busy=false;curStream=null;curText='';setBusyUI(false);
+    document.getElementById('ai-stop')?.classList.add('hidden');
+    renderBackgroundStatus();return true;
+  }
+  function parkedFor(context) { return [...backgroundRuns.values()].find(record=>identityMatches(context,record.run.stream?.context)); }
+  function restoreBackgroundRun() {
+    const key=JSON.stringify([sessKey(),curSessionId]),record=backgroundRuns.get(key);
+    if(!record)return;
+    const container=msgsEl;container.replaceChildren(...record.view.msgsEl.childNodes);
+    applyRunView({...record.view,msgsEl:container});record.run.background=null;backgroundRuns.delete(key);
+    setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
+    for(const event of record.pending)handleDshEvent(event);
+    renderUsage();renderBackgroundStatus();scrollBottom();
+  }
+  function renderBackgroundStatus() {
+    let status=document.getElementById('ai-background-status');
+    if(!status){status=document.createElement('div');status.id='ai-background-status';status.className='ai-run-state';document.getElementById('ai-usage')?.after(status);}
+    status.replaceChildren();status.classList.toggle('hidden',!backgroundRuns.size);
+    for(const record of backgroundRuns.values()){
+      const button=document.createElement('button');button.className='tb-btn';
+      const name=record.run.identity.rootId.split(/[\\/]/).filter(Boolean).at(-1)||'独立会话';
+      const waiting=record.pending.some(event=>event.type==='tool')||record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled)');
+      button.textContent=name+' · '+(record.run.status==='active'?(waiting?'等待返回处理':'后台运行'):record.run.status==='completed'?'后台已完成':'后台已结束');
+      button.onclick=async()=>{await App.setRoot(record.run.identity.rootId);if(curSessionId!==record.run.identity.sessionId)openSession(record.run.identity.sessionId);};
+      status.appendChild(button);
+    }
+  }
+  function beforeProjectChange(nextRoot) { if(currentRun?.identity.rootId!==nextRoot)parkDshRun(); }
   // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
   function onProjectChange() {
     const nextKey=sessKey(),harness=getConfig().engine==='dsh';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
+    const retained=parkDshRun()||[...backgroundRuns.values()].some(record=>record.scope===loadedSessionKey&&record.view.curSessionId===curSessionId);
+    if(!retained)stopRun(true);
     loadedSessionKey=nextKey;
-    stopRun(true);
-    clearSessionPermissions();
+    if(!retained)clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     closeMention(); closeHist(); closeSlash(); closePermPop();
     msgs = [];
@@ -1751,7 +1808,8 @@ const AiPanel = (() => {
       if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});replayMsgs();renderUsage();}
       else showWelcome();
     }else showWelcome();
-    refreshDshOptions();
+    if(harness)restoreBackgroundRun();
+    renderBackgroundStatus();refreshDshOptions();
   }
 
   // ---------- 项目规则文件 ----------
@@ -2387,6 +2445,14 @@ const AiPanel = (() => {
   }
 
   async function handleDshEvent(event){
+    const parked=parkedFor(event.context);
+    if(parked){
+      if(event.type==='tool'||event.type==='config'){parked.pending.push(event);renderBackgroundStatus();return;}
+      const result=withBackgroundView(parked,()=>handleDshEventCurrent(event));renderBackgroundStatus();return result;
+    }
+    return handleDshEventCurrent(event);
+  }
+  async function handleDshEventCurrent(event){
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){run.notice.textContent=event.text;return;}
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
@@ -2406,7 +2472,7 @@ const AiPanel = (() => {
     if(event.type==='native'){
       const update=event.update;
       if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
-        run.thought ||= document.createElement('details');if(!run.thought.isConnected){sealDshSegment(run);run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.appendChild(run.thought);}
+        run.thought ||= document.createElement('details');if(!msgsEl.contains(run.thought)){sealDshSegment(run);run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.appendChild(run.thought);}
         run.thought.querySelector('pre').textContent+=update.content.text;run.notice.textContent='Harness 正在思考';
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
@@ -2418,9 +2484,9 @@ const AiPanel = (() => {
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;entry.row.querySelector('.ai-dsh-output')?.remove();const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=output;detail.append(summary,body);entry.row.appendChild(detail);}
         run.notice.textContent='Harness：'+(entry.call.name||'正在执行工具');
       }
-      if(update.sessionUpdate==='usage_update')document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
+      if(update.sessionUpdate==='usage_update'&&!backgroundView)document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
       if(update.sessionUpdate==='myide_projection'){
-        run.projection ||= document.createElement('details');if(!run.projection.isConnected){sealDshSegment(run);run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.appendChild(run.projection);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
+        run.projection ||= document.createElement('details');if(!msgsEl.contains(run.projection)){sealDshSegment(run);run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.appendChild(run.projection);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
       }
       return;
     }
@@ -2535,7 +2601,12 @@ const AiPanel = (() => {
     initResize();
 
     // 主进程事件流
-    window.myIDE.ai.onChunk((event) => {
+    const receiveChunk=(event) => {
+      const parked=parkedFor(event?.context);
+      if(parked)return withBackgroundView(parked,()=>receiveChunkCurrent(event));
+      receiveChunkCurrent(event);
+    };
+    function receiveChunkCurrent(event) {
       const run = currentRun, stream = run?.stream;
       if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
       let md;
@@ -2545,8 +2616,11 @@ const AiPanel = (() => {
       d.className = 'ai-cursor';
       md.appendChild(d);
       scrollBottom();
-    });
+    }
+    window.myIDE.ai.onChunk(receiveChunk);
     window.myIDE.ai.onDone((r) => {
+      const parked=parkedFor(r?.context);
+      if(parked){withBackgroundView(parked,()=>finishStream(r?.error||r?.text||parked.run.stream.text,!!r?.error,r,parked.run,parked.run.stream));renderBackgroundStatus();return;}
       const run = currentRun, stream = run?.stream;
       if (!runIsLive(run) || !identityMatches(r?.context, stream?.context)) return;
       finishStream(r?.error || r?.text || stream.text, !!r?.error, r, run, stream);
@@ -2604,6 +2678,6 @@ const AiPanel = (() => {
     if(followPath)followPath=DocumentPaths.map(followPath,from,to);
     mentionCache=null;rulesRoot=null;renderChips();renderFollow();
   }
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, onProjectChange, onPageChange };
+  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
 })();
 window.AiPanel = AiPanel;

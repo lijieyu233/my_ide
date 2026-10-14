@@ -32,7 +32,7 @@ function createBridge({ ipcMain, WebContentsView, tools, ownerOf, windowFor, pol
   }
   function handle(name, fn) {
     ipcMain.handle('ai:' + name, async(event, ...args) => {
-      try { const owner = ownerOf(event); await initialize(event.sender); return await fn(owner, event, ...args); }
+      try { const owner = ownerOf(event,args[0]?.sessionId?args[0]:undefined); await initialize(event.sender); return await fn(owner, event, ...args); }
       catch (error) { return { ok: false, error: error.message, errorCode: error.code }; }
     });
   }

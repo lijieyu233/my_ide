@@ -100,6 +100,39 @@ function fixture() {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('Harness在项目恢复前进入后台，恢复期间隐藏面板也不取消且迟到输出保留',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('恢复期间继续');await until(()=>f.calls.length===1);
+    f.w.AiPanel.beforeProjectChange(f.B);f.w.App.root=f.B;f.w.AiPanel.syncVisible(false);f.w.AiPanel.onPageChange();
+    f.chunk(0,'恢复期间A正文');assert.equal(f.aborts.length,0);
+    f.w.AiPanel.onProjectChange();assert(!f.text().includes('恢复期间A正文'));f.switchRoot(f.A);
+    assert(f.text().includes('恢复期间A正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
+    f.done(0,{ok:true,text:'恢复期间A正文'});assert.equal(f.element('#ai-send').textContent,'➤');
+  });
+  await test('Harness切换项目继续后台输出，B项目另开任务不混入A历史，切回恢复并可停止',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
+    f.send('A项目长任务');await until(()=>f.calls.length===1);f.chunk(0,'A前言');
+    const aContext=f.calls[0].context;f.switchRoot(f.B);assert.equal(f.aborts.length,0);assert(!f.text().includes('A前言'));
+    f.send('B项目任务');await until(()=>f.calls.length===2);f.chunk(1,'B正文');
+    f.chunk(0,'A后台正文');await f.dshEvent({type:'native',context:aContext,update:{sessionUpdate:'tool_call',toolCallId:'background-read',title:'原生读取A',status:'completed',content:[{content:{text:'A文件输出'}}]}});
+    f.chunk(0,'A结论');f.done(0,{ok:true,text:'A前言A后台正文A结论'});
+    assert(f.text().includes('B正文'));assert(!f.text().includes('A后台正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
+    const key='myide-ai-sessions:'+f.A+':dsh',history=JSON.parse(f.w.localStorage.getItem(key));
+    assert(history[0].msgs.some(m=>m.content==='A前言A后台正文A结论'));assert(!JSON.stringify(history).includes('B正文'));
+    assert(f.element('#ai-background-status').textContent.includes('后台已完成'));
+    f.switchRoot(f.A);assert.equal(f.aborts.length,0);assert(f.text().includes('A后台正文'));assert(f.text().includes('A文件输出'));assert(f.text().includes('A结论'));assert(!f.text().includes('B正文'));
+    assert.equal(f.element('#ai-send').textContent,'➤');f.switchRoot(f.B);assert(f.text().includes('B正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
+    f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.aborts.length,1);assert.equal(f.aborts[0].requestId,f.calls[1].context.requestId);
+  });
+  await test('Harness后台MyIDE界面工具等返回原项目再派发，原生确认保留且无自动拒绝',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('A界面操作');await until(()=>f.calls.length===1);
+    f.switchRoot(f.B);const context=f.calls[0].context;
+    await f.dshEvent({type:'tool',context,call:{id:'background-state',name:'ide_state',args:{}}});
+    await f.dshEvent({type:'permission',context,id:'permit-background',toolCall:{title:'原生命令'},options:[{kind:'allow_once',optionId:'once'}]});
+    assert(!f.dshResults?.length);assert(!f.dshPermissions?.length);assert(!f.element('.ai-dsh-permission'));assert.equal(f.aborts.length,0);
+    f.switchRoot(f.A);await until(()=>f.dshResults?.length===1);assert(JSON.parse(f.dshResults[0].result.text).page.projectContext);
+    f.element('.ai-dsh-permission button').click();await until(()=>f.dshPermissions?.length===1);assert.equal(f.dshPermissions[0].context.rootId,f.A);
+    f.chunk(0,'返回后继续');assert(f.text().includes('返回后继续'));f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
   await test('当前页面随请求更新：离开项目排除文件和规则，回到项目恢复原文',async()=>{
     const f=fixture();f.put('one.md','FILE_CONTEXT_SECRET');f.put('AGENTS.md','RULE_CONTEXT_SECRET');
     f.w.Viewer.activeTab={path:f.file('one.md')};await f.w.AiPanel.followActive();

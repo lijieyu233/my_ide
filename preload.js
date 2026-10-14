@@ -235,7 +235,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     forgetPermission: (root, key) => ipcRenderer.invoke('ai:forgetPermission', root, key),
     authorize: (context, call) => ipcRenderer.invoke('ai:authorize', context, call),
     grantSession: context => ipcRenderer.invoke('ai:grantSession', context),
-    clearSession: () => ipcRenderer.invoke('ai:clearSession'),
+    clearSession: context => ipcRenderer.invoke('ai:clearSession',context),
     onPermissionsChanged: callback => ipcRenderer.on('ai:permissionsChanged', (_event, view) => callback(view)),
     onStopped: callback => ipcRenderer.on('ai:stopped', (_event, context) => callback(context)),
     readFile: (context, call) => ipcRenderer.invoke('ai:readFile', context, call),
