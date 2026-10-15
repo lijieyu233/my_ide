@@ -664,6 +664,30 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
         assert(f.live.has(778)); assert.equal(f.live.has(777), rootReused); assert.deepEqual(f.kills, []);
       }
     });
+    await test('系统服务复用旧根或子PID且命令不可读，仍能启动且绝不停止复用者', async () => {
+      for (const rootReused of [false,true]) for (const action of ['start','stop']) {
+        const f=fixture();f.record(f.entry);const saved=f.state();
+        saved[f.entry.id].descendants=[{identity:{...f.identities.get(777),pid:778},parentPid:777}];
+        fs.writeFileSync(f.service.paths().stateFile,JSON.stringify(saved));
+        const replacement=pid=>({pid,createdAt:new Date(1700001000000).toISOString(),image:null,commandLine:null});
+        f.live.add(778);f.identities.set(778,replacement(778));
+        if(rootReused)f.identities.set(777,replacement(777));else f.live.delete(777);
+        const [status]=await f.service.statusOf([f.entry]);assert(status.canStart&&!status.canStop);assert.equal(status.ownership,'none');
+        assert.equal((await f.service.aliveEntry(f.entry)).alive,false);assert.deepEqual(f.state(),saved);
+        assert((await f.service[action+'Entry'](f.entry)).ok);assert(f.live.has(778));assert.deepEqual(f.kills,[]);
+        assert.equal(f.children.length,action==='start'?1:0);
+      }
+    });
+    await test('缺少新进程命令时仅较晚且有效的出生时间可排除旧身份，端口占用仍拒绝启动', async () => {
+      for(const change of ['same','earlier','invalid','missing','port']) {
+        const f=fixture({portUp:change==='port',listener:change==='port'?999:null});f.record(f.entry);const old=f.identities.get(777),before=f.state();
+        const birth=change==='same'?old.createdAt:change==='earlier'?new Date(Date.parse(old.createdAt)-1000).toISOString():change==='invalid'?'invalid':change==='missing'?null:new Date(1700001000000).toISOString();
+        f.identities.set(777,{pid:777,createdAt:birth,image:null,commandLine:null});
+        const entry={...f.entry,port:18089};const [status]=await f.service.statusOf([entry]);assert(!status.canStart&&!status.canStop);
+        assert.equal((await f.service.startEntry(entry)).ok,false);assert.equal((await f.service.stopEntry(entry)).ok,false);
+        assert.deepEqual(f.state(),before);assert.deepEqual(f.kills,[]);assert.equal(f.children.length,0);
+      }
+    });
     await test('根与部分子PID复用时仍恢复存活的自有子进程，停止只针对同身份进程', async () => {
       const f = fixture(); f.record(f.entry); const saved = f.state();
       saved[f.entry.id].descendants = [778, 779].map(pid => ({ identity: { ...f.identities.get(777), pid }, parentPid: 777 }));

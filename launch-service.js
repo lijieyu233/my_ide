@@ -344,12 +344,12 @@ function systemQuery(file, args) {
 }
 
 // kill(pid, 0)只能证明数字存在；出生时间与实际映像才区分同一PID的两次运行。
-async function processIdentity(pid, evidence) {
+async function processIdentity(pid, evidence, previousIdentity) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { ok: false, error: '进程PID无效' };
   if (evidence) {
     if (!evidence.ok) return evidence;
     const identity = evidence.processes.find(item => item.pid === pid) || null;
-    if (identity && (!identity.createdAt || !Number.isFinite(Date.parse(identity.createdAt)) || typeof identity.image !== 'string' || !identity.image || typeof identity.commandLine !== 'string' || !identity.commandLine)) return { ok: false, error: '操作系统未返回完整进程身份' };
+    if (identity && !reusedIdentity(previousIdentity, identity) && (!identity.createdAt || !Number.isFinite(Date.parse(identity.createdAt)) || typeof identity.image !== 'string' || !identity.image || typeof identity.commandLine !== 'string' || !identity.commandLine)) return { ok: false, error: '操作系统未返回完整进程身份' };
     return { ok: true, identity };
   }
   // 已退出的历史PID无需拉起PowerShell；权限失败不等于退出，仍须查询完整身份。
@@ -362,7 +362,7 @@ async function processIdentity(pid, evidence) {
   if (!result.ok) return result;
   try {
     const identity = result.stdout.trim() ? JSON.parse(result.stdout.replace(/^\uFEFF/, '')) : null;
-    if (identity && (identity.pid !== pid || typeof identity.createdAt !== 'string' || !identity.createdAt
+    if (identity && !reusedIdentity(previousIdentity, identity) && (identity.pid !== pid || typeof identity.createdAt !== 'string' || !identity.createdAt
       || typeof identity.image !== 'string' || !identity.image || typeof identity.commandLine !== 'string' || !identity.commandLine)) {
       return { ok: false, error: '操作系统未返回完整进程身份' };
     }
@@ -376,13 +376,14 @@ function sameIdentity(a, b) {
     && typeof a.commandLine === 'string' && a.commandLine && a.commandLine === b.commandLine);
 }
 
-// 完整身份且出生时间晚于历史记录，证明旧进程已结束；新进程既不能认领也不能停止。
-// 同一出生时间下命令变化、缺字段或查询失败仍是未知，不能据此开放启动。
+// 系统服务复用旧PID后，非提权进程可能读不到映像和命令行；同PID较晚的出生时间已能证明旧进程结束。
+// 这只能排除历史进程，不能认领或停止复用者；同一出生时间、无效时间及查询失败仍须完整核验。
 function reusedIdentity(a, b) {
   const complete = value => value && Number.isSafeInteger(value.pid) && value.pid > 0
     && typeof value.image === 'string' && value.image && typeof value.commandLine === 'string' && value.commandLine
     && typeof value.createdAt === 'string' && Number.isFinite(Date.parse(value.createdAt));
-  return !!(complete(a) && complete(b) && a.pid === b.pid && Date.parse(b.createdAt) > Date.parse(a.createdAt));
+  return !!(complete(a) && b && a.pid === b.pid && typeof b.createdAt === 'string'
+    && Number.isFinite(Date.parse(b.createdAt)) && Date.parse(b.createdAt) > Date.parse(a.createdAt));
 }
 
 async function captureExitTree(record, evidence) {
@@ -465,7 +466,7 @@ async function startUnlocked(entry, beforeEffect = () => {}) {
   if (procs.has(entry.id)) return { ok: false, error: '已在运行' };
   const previous = loadState()[entry.id];
   if (previous && previous.pid) {
-    const current = await processIdentity(previous.pid);
+    const current = await processIdentity(previous.pid, null, previous.identity);
     if (!current.ok || (current.identity && !previous.identity)) {
       return { ok: false, errorCode: 'OWNERSHIP_UNKNOWN', error: '已有运行记录的进程归属无法确认，请先核查，未重复启动' };
     }
@@ -676,7 +677,7 @@ async function stopUnlocked(entry, beforeEffect = () => {}) {
   }
   const details = { killed: [], attempted: [], confirmedStopped: [], failed: [], remainingOwned: [], foreignListeners: [] };
   if (pid) {
-    const current = await processIdentity(pid);
+    const current = await processIdentity(pid, null, record.identity);
     if (!current.ok) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', current.error, details);
     if (current.identity && !record.identity) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', '旧运行记录缺少进程身份，未执行停止；请人工核查 pid ' + pid, details);
     if (current.identity && !sameIdentity(record.identity, current.identity) && !reusedIdentity(record.identity, current.identity)) {
@@ -686,7 +687,7 @@ async function stopUnlocked(entry, beforeEffect = () => {}) {
       beforeEffect('stop');
       details.attempted.push(pid);
       const requested = await killTree(pid);
-      const after = await processIdentity(pid);
+      const after = await processIdentity(pid, null, record.identity);
       if (!after.ok) { details.failed.push(pid); return stopFailure(entry, 'STOP_UNCONFIRMED', '无法复查停止结果：' + after.error, details); }
       if (sameIdentity(record.identity, after.identity)) {
         details.failed.push(pid); details.remainingOwned.push(pid);
@@ -701,12 +702,12 @@ async function stopUnlocked(entry, beforeEffect = () => {}) {
     const children = await recordedChildren(record);
     if (!children.ok) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', children.error, details);
     for (const identity of children.alive) {
-      const current = await processIdentity(identity.pid);
+      const current = await processIdentity(identity.pid, null, identity);
       if (!current.ok || current.identity && !sameIdentity(identity, current.identity) && !reusedIdentity(identity, current.identity)) return stopFailure(entry, 'OWNERSHIP_UNKNOWN', current.error || '后台子进程身份变化，未停止', details);
       if (!current.identity || reusedIdentity(identity, current.identity)) continue;
       beforeEffect('stop');
       details.attempted.push(identity.pid); const requested = await killTree(identity.pid);
-      const after = await processIdentity(identity.pid);
+      const after = await processIdentity(identity.pid, null, identity);
       if (!after.ok || sameIdentity(identity, after.identity)) { details.failed.push(identity.pid); details.remainingOwned.push(identity.pid); return stopFailure(entry, 'STOP_UNCONFIRMED', after.error || '后台子进程仍在运行', details); }
       if (requested) details.killed.push(identity.pid); details.confirmedStopped.push(identity.pid);
     }
@@ -752,7 +753,7 @@ async function aliveEntry(entry) {
   const st = loadState();
   const rec = st[entry.id];
   if (rec && rec.pid) {
-    const current = await processIdentity(rec.pid);
+    const current = await processIdentity(rec.pid, null, rec.identity);
     if (current.ok && (!current.identity || reusedIdentity(rec.identity, current.identity))) {
       const children = await recordedChildren(rec);
       return { alive: children.ok && children.alive.length > 0, by: 'pid', ownership: children.ok ? children.alive.length ? 'owned' : 'none' : 'unknown' };
@@ -772,7 +773,7 @@ async function statusEvidence(entry, records, evidence, portResponding, listener
     processAlive = live.proc.exitCode == null && live.proc.signalCode == null;
     ownership = processAlive ? live.ownership || 'unknown' : 'none';
   } else if (record && record.pid) {
-    const current = await processIdentity(record.pid, evidence);
+    const current = await processIdentity(record.pid, evidence, record.identity);
     if (!current.ok) { ownership = 'unknown'; evidenceError = current.error; }
     else if (current.identity && !record.identity) { ownership = 'unknown'; evidenceError = '旧运行记录缺少进程身份'; }
     else if (current.identity && !sameIdentity(record.identity, current.identity) && !reusedIdentity(record.identity, current.identity)) { ownership = 'foreign'; evidenceError = 'PID已属于另一进程，历史进程结束尚未确认'; }
