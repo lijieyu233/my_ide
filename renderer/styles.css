@@ -1664,6 +1664,15 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 /* ---------- 翻译弹窗 ---------- */
 .tr-box { width: 480px; max-width: 90vw; }
 .tr-body { padding: 12px 16px; max-height: 46vh; overflow: auto; }
+.tr-controls { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-bottom: 12px; }
+.tr-controls label { display: grid; gap: 6px; min-width: 0; font-size: .92em; color: var(--text-dim); }
+.tr-controls select,.tr-controls input,.tr-service-row select { min-width: 0; width: 100%; padding: 6px 8px; border: 1px solid var(--border-mid); border-radius: 5px; background: var(--bg-input); color: var(--text); font: inherit; }
+.tr-controls :is(select,input):focus-visible,.tr-service-row select:focus-visible { outline: 1px solid var(--accent); }
+.tr-service-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: .92em; color: var(--text-dim); }
+.tr-service-row label,.tr-service-row button { flex-shrink: 0; }
+.tr-service-row select { flex: 1; }
+.tr-profile-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.tr-profile-tools select { flex: 1; min-width: 120px; }
 /* 原文框 = 可编辑的 textarea（用户要求"可以自己填文本"）：未选中文本进来时是空的，
    直接写 / 粘贴都行。以前是个 div，只能看不能改。 */
 .tr-src {
@@ -2126,6 +2135,9 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
 }
 .set-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), .set-form select, .git-native-row input { padding: 9px 10px; border-radius: var(--ui-radius); border-color: var(--ui-line); }
 .set-form input:focus, .set-form select:focus, .git-native-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ui-focus); }
+.set-form .tr-profile-tools { align-items: center; }
+.set-form .tr-profile-tools select { width: auto; margin: 0; }
+.set-form .tr-profile-tools button { min-height: 36px; }
 .set-form .m-label { line-height: 1.6; margin-bottom: 6px; color: var(--text); }
 .set-sec { padding: 18px; max-width: 100%; margin: 12px 0; border: 1px solid var(--ui-line); border-radius: 8px; background: color-mix(in srgb, var(--bg-input) 30%, var(--bg-panel)); }
 .set-section-title { margin: 0 0 14px; font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }

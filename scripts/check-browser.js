@@ -42,6 +42,22 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('document.getElementById("tr-close").click();true');await until(()=>win.contentView.children.length===1);assert.equal(page.getURL(),url+'/');assert(!win.isVisible());
     await js('Translate.setConfig({});true');menu.items.find(item=>item.label==='翻译选中文本').click();await until(()=>js('!!document.querySelector("#set-box")'));await js('Modal.hide();true');await until(()=>win.contentView.children.length===1);
   });
+  await test('多厂商保存与切换、语言调整及网页焦点快捷键完整',async()=>{
+    const requests=[];ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg,messages)=>{requests.push({cfg,messages});return {ok:true,text:'译文：'+cfg.target+' / '+cfg.model};});
+    await js('Translate.setConfig({baseUrl:"http://legacy.invalid/v1",model:"legacy",apiKey:"fixture-old-key"});Settings.open("translate");true');
+    assert.equal(await js('document.getElementById("tr-cfg-key").type'),'password');
+    await js('document.getElementById("tr-cfg-preset").value="deepseek";document.getElementById("tr-cfg-add").click();document.getElementById("tr-cfg-name").value="DeepSeek 翻译";document.getElementById("tr-cfg-key").value="fixture-deepseek";document.getElementById("tr-cfg-preset").value="qwen";document.getElementById("tr-cfg-add").click();document.getElementById("tr-cfg-name").value="千问翻译";document.getElementById("tr-cfg-key").value="fixture-qwen";document.getElementById("tr-cfg-save").click();true');
+    assert.equal(await js('Translate.getProfiles().length'),3);assert.equal(await js('Translate.getProfiles().find(p=>p.provider==="deepseek").apiKey'),'fixture-deepseek');assert.equal(await js('Translate.getProfiles()[0].apiKey'),'fixture-old-key');
+    await capture('browser-ui-translation-settings.png');await js('Modal.hide();Translate.run("granite");true');await until(()=>requests.length===1);
+    await js('const target=document.getElementById("tr-target");target.value="日文";target.dispatchEvent(new Event("change"));true');await until(()=>requests.length===2);assert.equal(requests[1].cfg.target,'日文');
+    await js('const source=document.getElementById("tr-source");source.value="英文";source.dispatchEvent(new Event("change"));const p=document.getElementById("tr-provider");p.value=Translate.getProfiles().find(p=>p.provider==="deepseek").id;p.dispatchEvent(new Event("change"));true');await until(()=>requests.length===4);assert.equal(requests.at(-1).cfg.apiKey,'fixture-deepseek');assert(requests.at(-1).messages[0].content.includes('原文语言是英文'));
+    await until(()=>js('document.getElementById("tr-dst").textContent.includes("日文")'));await capture('browser-ui-translation-language.png');await js('Translate.closeBox();true');await until(()=>win.contentView.children.length===1);
+    const selectText=async()=>page.executeJavaScript('(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector("p"));const s=getSelection();s.removeAllRanges();s.addRange(r);return s.toString()})()');
+    const text=await selectText();let prevented=false;page.emit('before-input-event',{preventDefault:()=>{prevented=true;}},{type:'keyDown',key:'t',control:true,alt:true});await until(()=>js('!!document.getElementById("tr-src")'));assert(prevented);assert.equal(await js('document.getElementById("tr-src").value'),text);await js('Translate.closeBox();Shortcuts.setBinding("translate","ctrl+alt+y");true');await sleep(150);
+    await selectText();prevented=false;page.emit('before-input-event',{preventDefault:()=>{prevented=true;}},{type:'keyDown',key:'t',control:true,alt:true});assert(!prevented);
+    page.emit('before-input-event',{preventDefault:()=>{prevented=true;}},{type:'keyDown',key:'y',control:true,alt:true});await until(()=>js('!!document.getElementById("tr-src")'));assert(prevented);await js('Translate.closeBox();true');await until(()=>win.contentView.children.length===1);
+    await page.executeJavaScript('getSelection().removeAllRanges()');page.emit('before-input-event',{preventDefault(){}},{type:'keyDown',key:'y',control:true,alt:true});await until(()=>js('!!document.getElementById("tr-src")'));assert.equal(await js('document.getElementById("tr-src").value'),'');await js('Translate.closeBox();Shortcuts.reset("translate");true');await until(()=>win.contentView.children.length===1);
+  });
   let baseline;
   await test('收藏夹重复按钮移除，写死白底网页真实变暗并可恢复，刷新后仍生效',async()=>{
     assert(!await js('!!document.getElementById("bw-favs")'));assert(await js('!!document.getElementById("bw-fav")&&!!document.getElementById("panel-browser")'));

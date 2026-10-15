@@ -8,12 +8,24 @@
 //   ③ 未选中文本按快捷键也能弹 —— 原实现只弹个 toast 就 return，现在照常开框。
 const Translate = (() => {
   const CFG_KEY = 'myide-translate-cfg';
+  const LANGUAGES = ['中文','英文','日文','韩文','法文','德文','西班牙文','俄文','葡萄牙文','阿拉伯文'];
+  function store() {
+    let c;try { c=JSON.parse(localStorage.getItem(CFG_KEY)||'{}')||{}; } catch { c={}; }
+    const profiles=Array.isArray(c.profiles)?c.profiles.filter(p=>p&&typeof p.id==='string').map(p=>({...p})):c.baseUrl||c.model||c.apiKey?[{id:'legacy',name:'原有翻译服务',provider:'custom',baseUrl:c.baseUrl||'',apiKey:c.apiKey||'',model:c.model||''}]:[];
+    return {profiles,activeId:profiles.some(p=>p.id===c.activeId)?c.activeId:profiles[0]?.id||'',source:c.source||'自动检测',target:c.target||'中文'};
+  }
+  function saveStore(c){localStorage.setItem(CFG_KEY,JSON.stringify(c));}
+  function getProfiles(){return store().profiles;}
+  function saveProfiles(profiles,activeId,language={}){saveStore({...store(),...language,profiles,activeId});}
+  function selectProfile(id){const c=store();if(c.profiles.some(p=>p.id===id))saveStore({...c,activeId:id});}
+  function setLanguages(source,target){saveStore({...store(),source:source||'自动检测',target:target||'中文'});}
+  function presets(){return (window.AiPanel?.PROVIDERS||[]).map(p=>({...p,models:[...p.models]}));}
 
   function getConfig() {
-    try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}') || {}; } catch { return {}; }
+    const c=store();return {...c.profiles.find(p=>p.id===c.activeId),source:c.source,target:c.target};
   }
   function setConfig(c) {
-    try { localStorage.setItem(CFG_KEY, JSON.stringify(c || {})); } catch {}
+    saveStore(c||{});
   }
 
   // 获取当前选中文本：CM6 编辑器（md/code）→ 输入框 → 页面选区
@@ -50,14 +62,14 @@ const Translate = (() => {
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let box = null;
-  let busy = false;
+  let requestSerial=0;
   function closeBox() {
     if (!box) return;
     // 栈顶时用 Modal.hide 弹栈；被覆盖时直接移除（防错杀上层面板）
     if (window.Modal && Modal.stack[Modal.stack.length - 1] === box) Modal.hide();
     else box.remove();
     box = null;
-    busy = false;
+    requestSerial++;
   }
 
   function showBox(initialSrc) {
@@ -67,8 +79,13 @@ const Translate = (() => {
     // 自管 Esc：焦点在文本框里时也关掉（否则全局 Esc 的语义在这里就不一致了）
     box.dataset.selfEsc = '1';
     box.innerHTML = `
-      <div class="m-head">🌐 翻译成 ${esc(getConfig().target || '中文')} <span class="x" id="tr-x">✕</span></div>
+      <div class="m-head">翻译 <span class="x" id="tr-x">✕</span></div>
       <div class="tr-body">
+        <div class="tr-controls">
+          <label>原文语言<select id="tr-source">${['自动检测',...LANGUAGES,...(LANGUAGES.includes(getConfig().source)||getConfig().source==='自动检测'?[]:[getConfig().source])].map(x=>`<option value="${esc(x)}" ${x===getConfig().source?'selected':''}>${esc(x)}</option>`).join('')}</select></label>
+          <label>目标语言<input id="tr-target" list="tr-languages" value="${esc(getConfig().target)}" aria-label="目标语言"><datalist id="tr-languages">${LANGUAGES.map(x=>`<option value="${esc(x)}">`).join('')}</datalist></label>
+        </div>
+        <div class="tr-service-row"><label for="tr-provider">翻译服务</label><select id="tr-provider">${getProfiles().map(p=>`<option value="${esc(p.id)}" ${p.id===store().activeId?'selected':''}>${esc(p.name||p.model||'翻译服务')}</option>`).join('')}</select><button class="tb-btn" id="tr-settings" title="管理翻译服务">设置</button></div>
         <textarea class="tr-src" id="tr-src" spellcheck="false" rows="3"
           placeholder="输入或粘贴要翻译的文本（未选中文本时直接在这里写）"></textarea>
         <div class="tr-arrow">↓</div>
@@ -84,15 +101,17 @@ const Translate = (() => {
 
     const srcEl = box.querySelector('#tr-src');
     const dstEl = box.querySelector('#tr-dst');
+    const currentBox=box,button=box.querySelector('#tr-do');
+    let translated=false;
     srcEl.value = initialSrc || '';
 
     async function doTranslate() {
-      if (busy) return;
       const src = srcEl.value.trim();
       if (!src) { MI.toast('请输入要翻译的文本', 'err'); srcEl.focus(); return; }
       const cfg = getConfig();
+      if(!cfg.baseUrl||!cfg.model){MI.toast('请先配置翻译服务','err');return;}
       const target = cfg.target || '中文';
-      busy = true;
+      const ticket=++requestSerial;translated=false;button.disabled=true;
       dstEl.classList.add('tr-pending');
       dstEl.textContent = '⏳ 翻译中…';
       let r;
@@ -100,24 +119,30 @@ const Translate = (() => {
         r = await window.myIDE.llm.chat(cfg, [
           {
             role: 'system',
-            content: '你是翻译引擎。将用户文本翻译成' + target +
+            content: '你是翻译引擎。'+(cfg.source&&cfg.source!=='自动检测'?'原文语言是'+cfg.source+'。':'自动检测原文语言。')+'将用户文本翻译成' + target +
               '。只输出译文本身，不要任何解释、原文复读或额外标记。若原文已是' + target + '则原样返回。',
           },
           { role: 'user', content: src },
         ]);
       } catch (e) { r = { error: (e && e.message) || String(e) }; }
-      busy = false;
-      if (!box || !box.isConnected) return;   // 期间被关掉了
+      if(ticket!==requestSerial||box!==currentBox||!currentBox.isConnected)return;
+      button.disabled=false;
       dstEl.classList.remove('tr-pending');
       dstEl.textContent = (r && r.error) ? ('❌ ' + r.error) : ((r && r.text) || '(空响应)');
+      translated=!!(r&&!r.error&&r.text);
     }
 
     box.querySelector('#tr-x').onclick = closeBox;
     box.querySelector('#tr-close').onclick = closeBox;
     box.querySelector('#tr-do').onclick = () => doTranslate();
+    box.querySelector('#tr-settings').onclick=()=>{closeBox();Settings.open('translate');};
+    const changeLanguage=()=>{setLanguages(box.querySelector('#tr-source').value,box.querySelector('#tr-target').value.trim());if(srcEl.value.trim())doTranslate();};
+    box.querySelector('#tr-source').onchange=changeLanguage;box.querySelector('#tr-target').onchange=changeLanguage;
+    box.querySelector('#tr-provider').onchange=e=>{selectProfile(e.target.value);if(srcEl.value.trim())doTranslate();};
+    srcEl.addEventListener('input',()=>{requestSerial++;button.disabled=false;translated=false;dstEl.classList.remove('tr-pending');dstEl.textContent='';});
     box.querySelector('#tr-copy').onclick = () => {
       const txt = dstEl.textContent || '';
-      if (!txt.trim() || dstEl.classList.contains('tr-pending')) { MI.toast('还没有译文', 'err'); return; }
+      if (!translated || !txt.trim() || dstEl.classList.contains('tr-pending')) { MI.toast('还没有译文', 'err'); return; }
       MI.copyText(txt).then(() => MI.toast('已复制译文', 'ok'));
     };
     srcEl.addEventListener('keydown', (e) => {
@@ -129,7 +154,7 @@ const Translate = (() => {
     if (initialSrc) doTranslate();   // 带着选中文本进来的：直接翻，少一次点击
   }
 
-  return { run, getConfig, setConfig, showBox, closeBox };
+  return { run, getConfig, setConfig, getProfiles, saveProfiles, selectProfile, setLanguages, presets, LANGUAGES, showBox, closeBox };
 })();
 window.Translate = Translate;
 
@@ -140,4 +165,6 @@ if (window.Shortcuts) {
     keys: ['ctrl+alt+t'],
     run: () => Translate.run(),
   });
+  const syncBrowserKeys=()=>{const keys=Shortcuts.bindings().find(x=>x.id==='translate')?.effectiveCombos||[];window.myIDE?.browser?.setTranslationKeys?.(keys).catch(error=>console.error('[translate keys]',error));};
+  Shortcuts.onChanged(syncBrowserKeys);syncBrowserKeys();
 }

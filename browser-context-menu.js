@@ -30,3 +30,15 @@ function bind({webContents:wc,Menu,clipboard,getWindow,translate,openExternal}) 
   return ()=>wc.removeListener('context-menu',handler);
 }
 module.exports={bind};
+function bindTranslationShortcut(wc,{getKeys,translate}){
+  wc.on('before-input-event',(event,input)=>{
+    if(input.type!=='keyDown'||input.isAutoRepeat||input.isComposing)return;
+    const key=String(input.key||'').toLowerCase(),combo=[...(input.control||input.meta?['ctrl']:[]),...(input.alt?['alt']:[]),...(input.shift?['shift']:[]),key===' '?'space':key].join('+');
+    if(!getKeys().includes(combo))return;
+    event.preventDefault();
+    // 网页与宿主的选区独立，快捷键不能把仍在编辑器中的旧选区当成网页原文。
+    wc.executeJavaScript(`(()=>{const e=document.activeElement;if(e&&e.type==='password')return '';if(e&&/^(TEXTAREA|INPUT)$/.test(e.tagName)&&typeof e.selectionStart==='number')return e.value.slice(e.selectionStart,e.selectionEnd);return String(getSelection()||'');})()`)
+      .then(text=>{if(!wc.isDestroyed())translate(String(text||''));}).catch(()=>{});
+  });
+}
+module.exports.bindTranslationShortcut=bindTranslationShortcut;

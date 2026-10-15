@@ -261,6 +261,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     // 主进程转发的 view 内导航快捷键命令（toggle/back/forward/reload/focus-url）
     onCmd: (cb) => ipcRenderer.on('browser:cmd', (_e, cmd) => cb(cmd)),
     onTranslate: (cb) => ipcRenderer.on('browser:translate', (_e, text) => cb(text)),
+    setTranslationKeys: keys=>ipcRenderer.invoke('browser:translation-keys',keys),
     // 主进程推送的页面状态（url/title/loading/canBack/canFwd/progress/err）
     onState: (cb) => ipcRenderer.on('browser:state', (_e, s) => cb(s)),
   },

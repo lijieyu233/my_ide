@@ -213,6 +213,12 @@ function createWindow() {
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+let browserTranslationKeys=['ctrl+alt+t'];
+ipcMain.handle('browser:translation-keys',(event,keys)=>{
+  if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
+  if(!Array.isArray(keys)||keys.length>16||keys.some(k=>typeof k!=='string'||k.length>80))return {ok:false};
+  browserTranslationKeys=[...keys];return {ok:true};
+});
 const browserColorScheme=require('./browser-color-scheme').createService({nativeTheme,onError:error=>mainWindow?.webContents.send('browser:state',{colorSchemeError:String(error.message||error)})});
 app.on('will-quit',()=>browserColorScheme.dispose());
 const browserFullscreen=require('./browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
@@ -238,6 +244,8 @@ function ensureBwView() {
   require('./browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);},
     openExternal:url=>shell.openExternal(url).catch(error=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:state',{err:String(error.message||error)});})});
+  require('./browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>browserTranslationKeys,
+    translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);}});
   // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
   // mailto:/tel: 等非网页协议才交系统处理
   wc.setWindowOpenHandler(({ url }) => {
