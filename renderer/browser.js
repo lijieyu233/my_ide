@@ -194,13 +194,22 @@ const BrowserPanel = (() => {
     return !!(mask && !mask.classList.contains('hidden')) || !!(menu && !menu.classList.contains('hidden')) || !!(ddEl && !ddEl.classList.contains('hidden'));
   }
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
+  let overlayRevision=0,overlayImage=null;
+  function clearOverlayImage(){overlayRevision++;overlayImage?.remove();overlayImage=null;}
   function syncOverlay() {
     if (!visible || !hasPage) return;
     const b = B(); if (!b) return;
     if (overlayOpen()) {
-      if (!overlayHid) { overlayHid = true; b.viewHide(); }
+      if (!overlayHid) {
+        overlayHid=true;const revision=++overlayRevision;
+        Promise.resolve(b.viewHide({snapshot:true,focus:!ddEl||ddEl.classList.contains('hidden')})).then(result=>{
+          if(revision!==overlayRevision||!visible||!overlayHid||!overlayOpen()||!result?.image)return;
+          overlayImage?.remove();overlayImage=document.createElement('img');overlayImage.className='bw-overlay-snapshot';overlayImage.alt='';overlayImage.setAttribute('aria-hidden','true');overlayImage.src=result.image;viewEl.append(overlayImage);
+        }).catch(()=>{});
+      }
     } else if (overlayHid) {
       overlayHid = false;
+      clearOverlayImage();
       mountView(null); // viewOpen 幂等（addChildView 重复无害），rAF 内重报 bounds
     }
   }
@@ -348,6 +357,7 @@ const BrowserPanel = (() => {
     visible = false;
     if(fullscreen||fullscreenWanted)setFullscreen(false);
     overlayHid = false; // 面板隐藏本身就摘了 view，状态复位
+    clearOverlayImage();
     panel.classList.add('hidden');
     syncToolBtn();
     closeDd();

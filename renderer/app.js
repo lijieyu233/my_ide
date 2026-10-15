@@ -7,6 +7,7 @@ const App = (() => {
   const Modal = {
     stack: [],
     show(box) {
+      box.modalOrigin=document.activeElement;
       mask.classList.remove('hidden');
       box.classList.add('modal-panel');
       mask.appendChild(box);
@@ -95,6 +96,24 @@ const App = (() => {
     },
   };
   window.Modal = Modal;
+  let modalCompositionTarget=null;
+  document.addEventListener('compositionstart',event=>{modalCompositionTarget=event.target;},true);
+  document.addEventListener('compositionend',()=>{modalCompositionTarget=null;},true);
+  // 从输入框、下拉框和按钮出发都走同一个取消入口；捕获阶段消费一次，防止连带关闭下层。
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape'||event.isComposing||event.keyCode===229||event.defaultPrevented||event.target===modalCompositionTarget)return;
+    const top=Modal.stack.at(-1);if(!top||document.querySelector('dialog[open]')||window.Shortcuts?.isCapturing())return;
+    event.preventDefault();event.stopImmediatePropagation();if(event.repeat)return;
+    const menu=document.getElementById('ctx-menu');
+    if(menu&&!menu.classList.contains('hidden')){menu.classList.add('hidden');return;}
+    // 点击既有取消/关闭按钮才能结算confirm、prompt等Promise，单纯移除DOM会留下悬挂操作。
+    if(typeof top.onModalCancel==='function')top.onModalCancel();
+    else{
+      const cancel=top.querySelector('.m-cancel:not(:disabled), [data-cancel]:not(:disabled), .m-head .x, [id$="-cancel"]:not(:disabled), [aria-label="关闭"]:not(:disabled)');
+      if(cancel)cancel.click();else Modal.hide();
+    }
+    if(!top.isConnected&&!top.onModalHide&&top.modalOrigin?.isConnected&&!top.modalOrigin.closest('.hidden,[hidden]'))top.modalOrigin.focus();
+  },true);
 
   // ---------- 工具窗口（PyCharm 式：互斥单选 + AI 右侧独立停靠）----------
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）

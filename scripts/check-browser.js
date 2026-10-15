@@ -1,6 +1,6 @@
 // 隐藏生产窗口与真实网页视图；独立配置，避免写入用户历史/收藏/窗口状态。
 const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'),assert=require('assert/strict');
-const {app,BrowserWindow,webContents,shell,Menu,ipcMain}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const {app,BrowserWindow,webContents,shell,Menu,ipcMain,nativeImage}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
 // 保留真实菜单与点击回调，只有popup替换成接收器，避免测试抢占桌面。
 const menus=[];Menu.prototype.popup=function(){menus.push(this);};
 const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
@@ -34,6 +34,18 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await capture('browser-ui-translation-autosave.png');await js('document.getElementById("set-x").click();Translate.closeBox();true');
     await win.webContents.reload();await until(()=>js('!!window.Translate&&!!window.Settings'));assert.equal(await js('Translate.getConfig().model'),'second');assert.equal(await js('Translate.getConfig().apiKey'),'fixture-second');
   });
+  await test('Esc统一关闭输入框下拉框按钮和嵌套弹窗，取消Promise结算且一次只关最上层',async()=>{
+    for(const selector of ['#tr-src','#tr-target','#tr-source','#tr-do']){
+      await js('Translate.run("");const el=document.querySelector('+JSON.stringify(selector)+');el.focus();el.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');
+      assert.equal(await js('Modal.stack.length'),0,selector);
+    }
+    await js('Translate.run("");document.getElementById("tr-settings").click();window.escConfirm="pending";Modal.confirm("取消测试","Esc只能退出确认层").then(value=>window.escConfirm=value);document.getElementById("cf-yes").focus();document.getElementById("cf-yes").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');
+    await until(()=>js('window.escConfirm===false'));assert.equal(await js('Modal.stack.length'),2);
+    await js('const input=document.getElementById("tr-cfg-key");input.focus();input.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');assert.equal(await js('Modal.stack.length'),1);assert.equal(await js('document.querySelector(".tr-box").style.display'),'');
+    await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",repeat:true,bubbles:true,cancelable:true}));true');assert.equal(await js('Modal.stack.length'),1);
+    await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));window.escPrompt="pending";Modal.prompt("输入测试","名称","原值").then(value=>window.escPrompt=value);document.getElementById("pf-yes").focus();document.getElementById("pf-yes").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');await until(()=>js('window.escPrompt===null'));assert.equal(await js('Modal.stack.length'),0);
+    await js('Settings.open("keys");document.querySelector(".set-combo").click();document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');assert.equal(await js('Modal.stack.length'),1);assert.equal(await js('Shortcuts.isCapturing()'),false);await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');assert.equal(await js('Modal.stack.length'),0);
+  });
   await js('Theme.set("crimson");BrowserPanel.addFav('+JSON.stringify(url)+',"fixture 收藏");App.showTool("browser");true');
   assert(await js('document.getElementById("bw-open-default").disabled'));assert.equal((await js('myIDE.browser.openDefault()')).ok,false);assert.equal(opened.length,0);
   await test('打开、恢复和地址栏聚焦都不展开，关键词建议与清空保持正确',async()=>{
@@ -55,8 +67,28 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await until(()=>js('!!document.getElementById("tr-src")&&document.getElementById("tr-dst").textContent.includes("Keep the current page")'));
     assert.equal(await js('document.getElementById("tr-src").value'),point.text);assert.equal(request.cfg.target,'英文');assert.equal(request.messages[1].content,point.text);
     await until(()=>win.contentView.children.length===0);await capture('browser-ui-translate.png');
+    await until(()=>js('!!document.querySelector(".bw-overlay-snapshot")?.complete&&document.querySelector(".bw-overlay-snapshot").naturalWidth>0'));
+    const snapshot=await js('document.querySelector(".bw-overlay-snapshot").src');assert(nativeImage.createFromDataURL(snapshot).getSize().width>100);assert.equal(page.isDestroyed(),false);assert.equal(page.getURL(),url+'/');
     await js('document.getElementById("tr-close").click();true');await until(()=>win.contentView.children.length===1);assert.equal(page.getURL(),url+'/');assert(!win.isVisible());
     await js('Translate.setConfig({});true');menu.items.find(item=>item.label==='翻译选中文本').click();await until(()=>js('!!document.querySelector("#set-box")'));await js('Modal.hide();true');await until(()=>win.contentView.children.length===1);
+  });
+  await test('浏览器全屏弹窗保留网页画面，Esc恢复同一页面滚动与表单，快速开关不被迟到截图隐藏',async()=>{
+    await js('Translate.setConfig({baseUrl:"http://translation.invalid",model:"fixture",target:"中文"});true');
+    await page.executeJavaScript('document.querySelector("input").value="未提交内容";document.body.style.height="3000px";document.body.dataset.identity="same-page";const marker=document.createElement("h2");marker.textContent="弹窗下仍保留当前网页";marker.style.cssText="margin-top:180px;background:#24523a;color:white;padding:24px";document.body.append(marker);scrollTo(0,160);true');
+    await js('document.getElementById("bw-fullscreen").click();true');await until(()=>js('BrowserPanel.fullscreen'));
+    await js('Translate.run("");true');await until(()=>js('!!document.querySelector(".bw-overlay-snapshot")?.complete&&document.querySelector(".bw-overlay-snapshot").naturalWidth>0'));
+    await capture('browser-ui-modal-page-preserved.png');assert.equal(page.getURL(),url+'/');
+    await js('document.getElementById("tr-target").focus();document.getElementById("tr-target").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');await until(()=>win.contentView.children.length===1);
+    assert(await js('BrowserPanel.fullscreen'));assert.equal(await js('document.querySelector(".bw-overlay-snapshot")'),null);
+    assert.deepEqual(await page.executeJavaScript('({value:document.querySelector("input").value,identity:document.body.dataset.identity,y:scrollY})'),{value:'未提交内容',identity:'same-page',y:160});
+    const originalCapture=page.capturePage.bind(page);let release;
+    try{
+      page.capturePage=(...args)=>new Promise(resolve=>{release=()=>originalCapture(...args).then(resolve);});
+      await js('Translate.run("");true');await until(()=>!!release);
+      await js('Translate.closeBox();true');await sleep(100);release();await sleep(200);
+      assert.equal(win.contentView.children.length,1);assert.equal(await js('document.querySelector(".bw-overlay-snapshot")'),null);
+    }finally{page.capturePage=originalCapture;}
+    await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));true');await until(()=>js('!BrowserPanel.fullscreen'));await page.executeJavaScript('scrollTo(0,0);true');
   });
   await test('切换厂商分别记住Key地址模型，保存重开后仍恢复且请求只使用当前厂商',async()=>{
     const requests=[];ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg)=>{requests.push(cfg);return {ok:true,text:'OK'};});

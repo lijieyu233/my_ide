@@ -257,7 +257,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     // WebContentsView 内置浏览器（主进程管理，规避 <webview> guest 视口高度同步失效）
     viewOpen: (url) => ipcRenderer.invoke('browser:view-open', url),
     viewBounds: (rect) => ipcRenderer.invoke('browser:view-bounds', rect),
-    viewHide: () => ipcRenderer.invoke('browser:view-hide'),
+    viewHide: (options) => ipcRenderer.invoke('browser:view-hide', options),
     viewNav: (cmd) => ipcRenderer.invoke('browser:view-nav', cmd), // back/forward/reload/focus
     fullscreen: (enabled) => ipcRenderer.invoke('browser:fullscreen', enabled),
     openDefault: () => ipcRenderer.invoke('browser:open-default'),

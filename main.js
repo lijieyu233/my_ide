@@ -213,6 +213,7 @@ function createWindow() {
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+let bwVisibilityRevision = 0;
 let browserTranslationKeys=['ctrl+alt+t'];
 ipcMain.handle('browser:translation-keys',(event,keys)=>{
   if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
@@ -300,6 +301,7 @@ function ensureBwView() {
 ipcMain.handle('browser:view-open', (_e, url) => {
   try {
     if (!mainWindow) return { error: '窗口不存在' };
+    bwVisibilityRevision++;
     const v = ensureBwView();
     mainWindow.contentView.addChildView(v);
     if (url) {
@@ -320,8 +322,31 @@ ipcMain.handle('browser:view-bounds', (_e, rect) => {
     width: Math.max(0, Math.round(rect.width * z)), height: Math.max(0, Math.round(rect.height * z)),
   });
 });
-ipcMain.handle('browser:view-hide', () => {
-  if (bwView && mainWindow) { try { mainWindow.contentView.removeChildView(bwView); } catch {} }
+ipcMain.handle('browser:view-hide', async (event, options) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) return { ok: false };
+  const revision = ++bwVisibilityRevision, view = bwView;
+  let image = null, timer;
+  // 原生网页总在宿主HTML上方；弹窗期间以当前帧承接背景，实例和页面脚本继续保留。
+  if (options?.snapshot && view && !view.webContents.isDestroyed()) {
+    try {
+      const capture = async () => {
+        // 隐藏窗口首次请求会唤醒合成器，却可能拿到空帧；下一帧才有实际画面。
+        for (let n = 0; n < 3; n++) {
+          if (view.webContents.isDestroyed() || revision !== bwVisibilityRevision) return null;
+          const shot = await view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+          if (!shot.isEmpty()) return shot;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return null;
+      };
+      const shot = await Promise.race([capture(), new Promise(resolve => { timer = setTimeout(() => resolve(null), 1500); })]);
+      if (shot && !shot.isEmpty()) image = shot.toDataURL();
+    } catch {} finally { clearTimeout(timer); }
+  }
+  if (revision !== bwVisibilityRevision) return { ok: false, stale: true };
+  if (view && mainWindow) { try { mainWindow.contentView.removeChildView(view); } catch {} }
+  if (options?.snapshot && options.focus !== false && !mainWindow?.webContents.isFocused()) mainWindow?.webContents.focus();
+  return { ok: true, image };
 });
 ipcMain.handle('browser:view-nav', (_e, cmd) => {
   if (!bwView) return;
