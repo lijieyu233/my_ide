@@ -354,6 +354,7 @@ const aiWorkbenchTools=require('./src/main/ai/ai-workbench-tools').createService
   const result=await mainWindow.webContents.executeJavaScript('AiWorkbench.dispatch('+JSON.stringify(operation)+','+JSON.stringify(payload)+').catch(error=>({__workbenchError:true,error:error.message,errorCode:error.code}))');
   if(result?.__workbenchError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
 }});
+ipcMain.handle('ai:workbench-verify',(event,context,input)=>{try{const owner=aiSender(event,context),call=AiToolContract.validate(input);if(!require('./renderer/ai-workbench-tools').has(call.name))throw Error('未知工作台调用');const {item}=aiTools.prepare(owner,context,call);item.proof.verify();if(item.proof.effect)aiPermissionsBridge.authority.assert(owner,context,call,{target:item.proof.real,binding:item.proof.effect.binding});return {ok:true};}catch(error){return {ok:false,error:error.message,errorCode:error.code};}});
 ipcMain.handle('ai:workbench',async(event,context,input)=>{
   try{const owner=aiSender(event,context),call=AiToolContract.validate(input);if(!require('./renderer/ai-workbench-tools').has(call.name))throw Error('未知工作台操作');
     return await aiTools.once(owner,context,call,'application',({proof,verify})=>aiWorkbenchTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,call,actual)));
@@ -592,7 +593,11 @@ ipcMain.handle('fs:readBuffer', (_e, p) => {
 
 // LLM 对话（翻译插件等）：OpenAI 兼容 /chat/completions。
 // 走主进程 net.fetch：渲染层 CSP 不放行外部连接，且 API Key 不进页面上下文
-ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
+const translationRequests=new Map();
+ipcMain.handle('llm:cancel',(event,id)=>{const key=event.sender.id+':'+id,controller=translationRequests.get(key);controller?.abort();return {ok:true,cancelled:!!controller};});
+ipcMain.handle('llm:chat', async (_e, cfg, messages,requestId) => {
+  const requestKey=requestId?_e.sender.id+':'+String(requestId):null,controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),60000);
+  if(requestKey){if(translationRequests.has(requestKey))return {ok:false,error:'翻译任务ID重复'};translationRequests.set(requestKey,controller);}
   try {
     const base = String((cfg && cfg.baseUrl) || '').replace(/\/+$/, '');
     if (!base) return { error: '未配置 LLM 服务地址（设置 → 翻译）' };
@@ -602,6 +607,7 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
     const key = String((cfg && cfg.apiKey) || '').trim();
     if (key) headers['Authorization'] = 'Bearer ' + key;
     const res = await net.fetch(base + '/chat/completions', {
+      signal:controller.signal,
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -620,7 +626,8 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages) => {
       && data.choices[0].message.content;
     if (typeof text !== 'string') return { error: '响应格式异常（无 choices[0].message.content）' };
     return { ok: true, text: text.trim() };
-  } catch (e) { return { error: String(e.message || e) }; }
+  } catch (e) { return {ok:false,error:controller.signal.aborted?'翻译已取消或超时':String(e.message||e),errorCode:controller.signal.aborted?'CANCELLED':'TRANSLATION_FAILED'}; }
+  finally {clearTimeout(timeout);if(requestKey)translationRequests.delete(requestKey);}
 });
 
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
@@ -1261,6 +1268,7 @@ ipcMain.handle('quick-launch:import', async (_event, kind, groupId) => {
     return await quickLaunch.previewImport(kind === 'config' ? { kind, file: chosen.filePaths[0] } : { kind, targets: chosen.filePaths, groupId });
   } catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle('quick-launch:export-to',async(event,destination)=>{if(event.sender!==mainWindow?.webContents)return {ok:false,error:'请求来源无效'};try{return await quickLaunch.exportTo(destination);}catch(error){return {ok:false,error:error.message};}});
 ipcMain.handle('quick-launch:export', async () => {
   try {
     const chosen = await dialog.showSaveDialog(mainWindow, { title: '导出快速启动配置', defaultPath: 'quick-launch.json', filters: [{ name: '快速启动配置', extensions: ['json'] }] });

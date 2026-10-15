@@ -117,7 +117,7 @@ function createAuthority({ tools, readPolicy, confirm, remember }) {
       const p = currentPolicy(owner, context), policyHash = digest(JSON.stringify(p)), need = decision(p, call, effect);
       if (need === 'deny') throw fail('AI_PERMISSION_DENIED', '用户已禁止该类AI操作');
       if (need !== 'auto') {
-        const answer = await cancellable(() => confirm(freeze(clone({ owner, context, call, effect, danger: need === 'danger' })), entry.controller.signal), entry.controller.signal);
+        const answer = await cancellable(() => confirm(freeze(clone({ owner, context, call:require('./ai-workbench-tools').redact(call), effect, danger: need === 'danger' })), entry.controller.signal), entry.controller.signal);
         check(owner, context, record, item);
         if (digest(JSON.stringify(currentPolicy(owner, context))) !== policyHash) throw fail('AI_POLICY_CHANGED', '确认期间权限已改变，请重新申请');
         if (!answer || answer.approved !== true || !['once', 'project', 'session', 'command'].includes(answer.scope)) throw fail('AI_PERMISSION_DENIED', '用户未批准本次操作');

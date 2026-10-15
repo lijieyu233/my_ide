@@ -164,6 +164,7 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   }
   async function mkdir(id, target) { await request(session(id), 'mkdir', remotePath(target)); }
   async function rename(id, target, name) { target = remotePath(target); if (target === '/') throw Error('不能重命名根目录'); const s = session(id), dest = posix.join(posix.dirname(target), nameOf(name)); if (await statMaybe(s, dest)) throw Error('目标已存在'); await request(s, 'rename', target, dest); }
+  async function move(id,target,destination){const s=session(id);target=remotePath(target);destination=remotePath(destination);if(target==='/'||target===destination||destination.startsWith(target+'/'))throw Error('不能移动根目录或移入自身');if(await statMaybe(s,destination))throw Error('目标已存在');await request(s,'rename',target,destination);return {path:destination};}
   async function removeFile(id, target) { const s = session(id); target = remotePath(target); if (target === '/') throw Error('不能删除根目录'); const stat = await request(s, 'lstat', target); await request(s, stat.isDirectory() ? 'rmdir' : 'unlink', target); }
   const jobView = ({ stream, cancelSource, retrying, ...job }) => job;
   const reportJob = job => { emit({ type: 'transfer', job: jobView(job) }); };
@@ -225,11 +226,12 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   async function retry(id, sid) { const job = jobs.get(id), s = session(sid); if (!job || job.stream || job.retrying || job.retried || !['failed', 'cancelled'].includes(job.state) || job.profileId !== s.profile.id) throw Error('请等待清理完成，并选择原服务器连接后重试失败项'); job.retrying = true; try { const result = await enqueue(sid, job.direction, [job.from], job.direction === 'upload' ? posix.dirname(job.to) : path.dirname(job.to), !!job.existing); if (result.jobs.length) { job.retried = true; reportJob(job); } return result; } finally { delete job.retrying; } }
   function clearFinished() { for (const [id, job] of jobs) if (!job.stream && !job.retrying && !['queued', 'running'].includes(job.state)) jobs.delete(id); return [...jobs.values()].map(jobView); }
   function dispose() { disposed = true; for (const job of jobs.values()) cancel(job.id); for (const s of sessions.values()) { s.client.destroy(); } }
-  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, removeFile, enqueue, cancel, retry, clearFinished, dispose,
+  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose,
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),
     localRename: async (target, name) => { target = localPath(target); if (target === path.parse(target).root) throw Error('不能重命名根目录'); const dest = path.join(path.dirname(target), nameOf(name)); try { await fs.promises.lstat(dest); throw Error('目标已存在'); } catch (error) { if (error.code !== 'ENOENT') throw error; } await fs.promises.rename(target, dest); },
+    localMove:async(target,destination)=>{target=localPath(target);destination=localPath(destination);if(target===path.parse(target).root)throw Error('不能移动根目录');return require('../files/path-move').relocate(target,destination);},
     localRemove: async target => { target = localPath(target); if (target === path.parse(target).root) throw Error('不能删除根目录'); const st = await fs.promises.lstat(target); await (st.isDirectory() ? fs.promises.rmdir(target) : fs.promises.unlink(target)); },
   };
 }

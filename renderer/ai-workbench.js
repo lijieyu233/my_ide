@@ -6,6 +6,7 @@ window.AiWorkbench=(()=>{
   const key=value=>String(value||'').replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase();
   const root=()=>window.App?.root||'';
   const page=()=>window.App?.getPageContext?.()||{id:'welcome',projectContext:false};
+  async function checkpoint(call,context){const r=await myIDE.ai.workbenchVerify(context,call);if(!r?.ok)fail(r?.errorCode||'STALE_AI_REQUEST',r?.error||'任务已失效');if(key(root())!==key(context.rootId))fail('PROJECT_CHANGED','项目已切换');}
   function register(module,adapter){if(adapters.has(module))throw Error('重复工作台模块 '+module);adapters.set(module,adapter);}
   async function state(module){const adapter=adapters.get(module);if(!adapter)fail('MODULE_UNAVAILABLE','模块尚未接入：'+module);return adapter.state();}
   async function fingerprint(raw){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(raw))))).map(n=>n.toString(16).padStart(2,'0')).join('');}
@@ -44,7 +45,7 @@ window.AiWorkbench=(()=>{
   function job(id,module){const j=jobs.get(id);if(!j||j.module!==module)fail('JOB_NOT_FOUND','任务不属于此模块');return j;}
   async function cancelJob(id,module){const j=job(id,module);if(j.state!=='running')return {ok:true,job:publicJob(j)};await j.cancel?.(j);j.state='cancelled';return {ok:true,job:publicJob(j)};}
   const jobList=module=>[...jobs.values()].filter(j=>j.module===module).map(publicJob);
-  return {register,observe,dispatch,guard,state,fail,clone,key,root,page,startJob,job,publicJob,cancelJob,jobList};
+  return {register,observe,dispatch,guard,checkpoint,state,fail,clone,key,root,page,startJob,job,publicJob,cancelJob,jobList};
 })();
 
 (()=>{

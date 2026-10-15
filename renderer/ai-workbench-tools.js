@@ -9,7 +9,7 @@
     definitions[name]={name,module,description,kind,project,reads,parameters:{...object(fields),required}};
   }
   tool('ui_state','ui','读取当前页面、项目、标签、面板、焦点、弹窗与可用操作；结果含模块操作快照。');
-  tool('workbench_state','ui','读取指定模块实际状态与操作快照；用于project等无独立state工具的模块。',{'module!':choice('ui','project','editor','markdown')});
+  tool('workbench_state','ui','读取指定模块实际状态与操作快照；用于project等无独立state工具的模块。',{'module!':choice('ui','project','editor','markdown','translation','launch','remote','quick-launch')});
   tool('ui_selection','ui','读取当前编辑器、网页或终端选区；不读取密码输入。');
   tool('ui_dialogs','ui','读取当前应用弹窗与真实按钮ID，不读取秘密输入；AI权限审批页不能由此批准。');
   tool('ui_dialog_action','ui','使用最新弹窗快照点击确切按钮，或取消顶层弹窗；不允许批准AI自身权限。',{'operation!':choice('click','cancel'),'button':id},'write');
@@ -64,7 +64,7 @@
       for(const k of schema.required||[])if(!Object.hasOwn(value,k))throw Error(key+'缺少字段 '+k);
     }
   }
-  const enabledModules=new Set(['ui','project','editor','markdown']);
+  const enabledModules=new Set(['ui','project','editor','markdown','translation','launch','remote','quick-launch']);
   for(const [name,d] of Object.entries(definitions))if(!enabledModules.has(d.module))delete definitions[name];
   const has=name=>Object.hasOwn(definitions,name),effect=call=>definitions[call.name].reads.includes(call.args.operation)?null:definitions[call.name].kind;
   function validateCall(call){try{check(call.args,definitions[call.name].parameters);if(JSON.stringify(call.args).length>512*1024)throw Error('参数超过512KiB');return Object.freeze({id:call.id,name:call.name,args:JSON.parse(JSON.stringify(call.args))});}catch(error){error.code='INVALID_TOOL_ARGS';throw error;}}

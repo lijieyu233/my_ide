@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     close: id => ipcRenderer.invoke('html-preview:close',id),
   },
   remote: {
-    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
+    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
     onEvent: callback => { const listener = (_event, value) => callback(value); ipcRenderer.on('remote:event', listener); return () => ipcRenderer.removeListener('remote:event', listener); },
   },
   app: {
@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     applyImport: (token, selection) => ipcRenderer.invoke('quick-launch:applyImport', token, selection),
     cancelImport: (token) => ipcRenderer.invoke('quick-launch:cancelImport', token),
     export: () => ipcRenderer.invoke('quick-launch:export'),
+    exportTo: destination=>ipcRenderer.invoke('quick-launch:export-to',destination),
   },
   tasks: {
     inspect: (project) => ipcRenderer.invoke('tasks:inspect', project),
@@ -191,7 +192,8 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   llm: {
     // OpenAI 兼容对话（翻译插件用）：cfg={baseUrl, apiKey, model}
-    chat: (cfg, messages) => ipcRenderer.invoke('llm:chat', cfg, messages),
+    chat: (cfg, messages,id) => ipcRenderer.invoke('llm:chat', cfg, messages,id),
+    cancel: id=>ipcRenderer.invoke('llm:cancel',id),
   },
   launch: {
     config: () => ipcRenderer.invoke('launch:config'),
@@ -227,6 +229,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     finish: (context) => ipcRenderer.invoke('ai:finish', context),
     ssh: (context,call) => ipcRenderer.invoke('ai:ssh',context,call),
     browser: (context,call) => ipcRenderer.invoke('ai:browser',context,call),
+    workbenchVerify:(context,call)=>ipcRenderer.invoke('ai:workbench-verify',context,call),
     workbench: (context,call)=>ipcRenderer.invoke('ai:workbench',context,call),
     workbenchSelection:()=>ipcRenderer.invoke('ai:workbench-selection'),
     project: (context,call) => ipcRenderer.invoke('ai:project',context,call),
