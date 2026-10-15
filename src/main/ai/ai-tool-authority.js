@@ -51,6 +51,7 @@ async function cancellable(fn, signal) {
 function decision(p, call, effect) {
   if (effect.application) {
     if (p[effect.kind] === 'deny') return 'deny';
+    if(effect.forceConfirm)return 'danger';
     if (effect.kind === 'run' && (dangerous(effect.command) || p.denyCommands.some(s => effect.command.trim().toLowerCase().startsWith(s.trim().toLowerCase())))) return 'danger';
     // 启动配置属于整台机器；项目文件白名单和项目授权不能自动放行机器级程序操作。
     return p[effect.kind] === 'auto' ? 'auto' : 'confirm';

@@ -1,7 +1,9 @@
 const path = require('path');
 const error = message => Object.assign(Error(message), { code: 'INVALID_TOOL_ARGS' });
 const Launch = require('../../../renderer/ai-launch-tools'), Ssh = require('../../../renderer/ai-ssh-tools'), Browser = require('../../../renderer/ai-browser-tools'), Project=require('../../../renderer/ai-project-tools');
+const Workbench=require('../../../renderer/ai-workbench-tools');
 const schemas = {
+  ...Workbench.schemas,
   ...Launch.schemas, ...Ssh.schemas, ...Browser.schemas, ...Project.schemas,
   list_files: { path: ['path', false] }, read_file: { path: ['path', true] },
   search_files: { query: ['query', true] },
@@ -25,6 +27,7 @@ function validate(call) {
   if (!plain(call) || Object.keys(call).some(k => !['id', 'name', 'args'].includes(k))) throw error('工具调用形状无效');
   if (typeof call.id !== 'string' || !call.id.trim() || call.id.length > 200 || /[\x00-\x1f\x7f]/.test(call.id)) throw error('工具调用身份无效');
   if (typeof call.name !== 'string' || !Object.hasOwn(schemas, call.name)) throw error('未知工具名称');
+  if(Workbench.has(call.name))return Workbench.validateCall(call);
   const schema = schemas[call.name], input = call.args;
   if (!plain(input) || Object.keys(input).some(k => !Object.hasOwn(schema, k))) throw error('工具参数必须是对象且不能含未知字段');
   const args = {};
@@ -75,4 +78,4 @@ function assertCommand(cmd, cwd, context, call) {
     || path.relative(path.resolve(context.rootId), path.resolve(cwd)) !== '') throw error('命令或工作目录与工具调用不一致');
   return normalized;
 }
-module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name)||Browser.has(name)||Project.has(name) };
+module.exports = { validate, relativePath, assertWrite, assertCommand, isApplication: name => Launch.has(name)||Ssh.has(name)||Browser.has(name)||Project.has(name)||Workbench.has(name) };

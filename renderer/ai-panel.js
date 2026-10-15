@@ -284,6 +284,7 @@ const AiPanel = (() => {
     ...(window.AiSshTools?.tools || []),
     ...(window.AiBrowserTools?.tools || []),
     ...(window.AiProjectTools?.tools || []),
+    ...(window.AiWorkbenchTools?.tools || []),
     { type: 'function', function: { name: 'list_files', description: '列出目录内容（文件和子目录）。需要了解项目结构时先用这个', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的目录路径，"." 表示根目录' } }, required: [] } } },
     { type: 'function', function: { name: 'read_file', description: '读取项目内一个文本文件的完整内容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相对项目根的文件路径' } }, required: ['path'] } } },
     { type: 'function', function: { name: 'search_files', description: '在整个项目里搜索文本内容（支持正则）', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词或正则表达式' } }, required: ['query'] } } },
@@ -571,6 +572,10 @@ const AiPanel = (() => {
     if(!runIsLive(run))return cancelledTool();
     if (!usesProjectContext() && PROJECT_TOOLS.has(call.name)) return {ok:false,text:'页面已切换，未继续操作项目文件'};
     const a = call.args;
+    if(window.AiWorkbenchTools?.has(call.name)){
+      if(window.AiWorkbenchTools.effect(call)){const approval=await window.myIDE.ai.authorize(run.stream.context,call);if(!runIsLive(run))return cancelledTool();if(!approval?.ok)return {ok:false,errorCode:approval?.errorCode,text:'错误：'+(approval?.error||'未批准此操作')};receivePermissions(approval.permissions);}
+      const result=await window.myIDE.ai.workbench(run.stream.context,call);return {ok:result?.ok===true,committed:!!result?.committed,text:JSON.stringify(result)};
+    }
     if(window.AiProjectTools?.has(call.name)){
       const result=await window.myIDE.ai.project(run.stream.context,call);if(!runIsLive(run))return cancelledTool();
       return {ok:result?.ok===true,text:result?.error?'错误：'+result.error:JSON.stringify(result)};
@@ -763,7 +768,7 @@ const AiPanel = (() => {
     row.className = 'ai-tool';
     row.dataset.toolName = call.name;
     const arg = (call.args && (call.args.path || call.args.query || call.args.program || call.args.name || call.args.command || call.args.terminal || call.args.session || call.args.url || call.args.element || call.args.direction)) || '';
-    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||labels[call.name]||call.name;
+    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiWorkbenchTools?.labels[call.name]||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||labels[call.name]||call.name;
     const icon='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(icons[call.name]||icons.run_command)+'"/></svg>';
     row.innerHTML = '<span class="ai-tool-ic">' + icon + '</span>' +
       '<span class="ai-tool-tx">' + esc(toolLabel + ' ' + arg) + '</span>' +

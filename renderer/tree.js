@@ -1040,12 +1040,12 @@ const Tree = (() => {
   }
 
   // ---------- 新建文件/文件夹 ----------
-  async function createItem(anchor, type) {
+  async function createItem(anchor, type, suppliedName) {
     if (!rootPath) return;
     const operationRoot=rootPath;
     const baseDir = anchor.type === 'dir' ? anchor.path : anchor.path.replace(/[\\/][^\\/]+$/, '');
     const label = type === 'dir' ? '新建文件夹' : '新建文件';
-    const name = await Modal.prompt(label, '名称：', '');
+    const name = suppliedName ?? await Modal.prompt(label, '名称：', '');
     if (!name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，新建未执行','err');return;}
     const target=baseDir+'\\'+name;
@@ -1062,6 +1062,7 @@ const Tree = (() => {
       try{if(type==='file')await Viewer.openFile(r.path);}
       catch(e){MI.toast('文件已创建并保留，但无法打开：'+String(e.message||e),'err');}
     }
+    return r;
   }
 
   // ---------- 右键菜单 ----------
@@ -1161,9 +1162,9 @@ const Tree = (() => {
   document.addEventListener('click', (e) => { if (!menu.contains(e.target)) hideCtxMenu(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
 
-  async function renameItem(item) {
+  async function renameItem(item, suppliedName) {
     const operationRoot=rootPath;
-    const name = await Modal.prompt('重命名', '新名称：', item.name);
+    const name = suppliedName ?? await Modal.prompt('重命名', '新名称：', item.name);
     if (!name || name === item.name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，重命名未执行', 'err');return;}
     const targetRange=item.path.replace(/[\\/][^\\/]+$/, '')+'/'+name;
@@ -1173,6 +1174,7 @@ const Tree = (() => {
       invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit();
     }
     else MI.toast('重命名失败: ' + r.error, 'err');
+    return r;
   }
 
   async function removeItem(item) {
@@ -1180,7 +1182,7 @@ const Tree = (() => {
   }
 
   // 父子选择归并为一条持久记录，撤销来源必须在首个公共对象删除之前全部保全。
-  async function removeItems(paths,systemTrash=false) {
+  async function removeItems(paths,systemTrash=false,approved=false) {
     if(!rootPath||!paths.length)return;
     const operationRoot=rootPath;
     const perform=async(dirty=[])=>{
@@ -1202,7 +1204,7 @@ const Tree = (() => {
       const recovery=systemTrash?'之后从系统回收站恢复，本应用Ctrl+Z不能撤销此方式。':'原字节已保全。Ctrl+Z或「恢复文件操作」可恢复目录、二进制及文本。';
       const hasDirty=dirty.length||window.Viewer?.openTabs?.some(t=>t.dirty&&paths.some(p=>DocumentPaths.contains(p,t.path)));
       const input=hasDirty?'\n\n有未保存的输入：只删除磁盘内容，输入仍留在编辑器，请另存副本；恢复后需比较磁盘再保存。':'';
-      if(!await Modal.confirm(systemTrash?'移到系统回收站':'删除',`确定${systemTrash?'移走':'删除'}「${show}」等 ${prepared.targets.length} 项吗？\n\n${recovery}${input}`))return {cancelled:true};
+      if(!approved&&!await Modal.confirm(systemTrash?'移到系统回收站':'删除',`确定${systemTrash?'移走':'删除'}「${show}」等 ${prepared.targets.length} 项吗？\n\n${recovery}${input}`))return {cancelled:true};
       if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
       const result=systemTrash?await window.myIDE.fs.trashCommit(operationRoot,prepared):await window.myIDE.fs.deleteCommit(operationRoot,prepared.operationId);
       return {...result,kind:systemTrash?'trash':'delete',operationId:systemTrash?undefined:prepared.operationId,targets:prepared.targets};
@@ -1401,8 +1403,24 @@ const Tree = (() => {
     }
   })();
 
+  async function aiControl(args) {
+    const fail=(errorCode,error)=>({ok:false,errorCode,error});
+    const relative=value=>{if(typeof value!=='string'||!value||/^[\\/]|^[A-Za-z]:/.test(value)||value.replace(/\\/g,'/').split('/').some(p=>p==='..'||!p||p!=='.'&&/[. ]$/.test(p)))throw Error('需要项目内相对路径');return rootPath+'/'+value.replace(/\\/g,'/');};
+    if(!rootPath)return fail('PROJECT_REQUIRED','未打开项目');
+    const target=relative(args.path||'.');
+    if(args.operation==='create') {if(!args.name||!args.type)return fail('INVALID_TOOL_ARGS','缺少名称或类型');return await createItem({path:target,type:'dir'},args.type,args.name)||fail('CREATE_FAILED','创建未完成，原内容已保留');}
+    if(args.operation==='rename') {if(!args.name)return fail('INVALID_TOOL_ARGS','缺少新名称');return await renameItem({path:target,name:target.split('/').pop()},args.name)||fail('RENAME_FAILED','重命名未完成');}
+    if(args.operation==='move') {const directory=relative(args.destination),next=directory+'/'+target.split('/').pop();const r=await performPathChange(target,next,condition=>myIDE.fs.move(target,directory,condition));if(r?.ok){if(!r.noop)pushUndo({type:'move',oldPath:target,newPath:r.path,after:r.after,label:'AI移动'});invalidateAll();await render();App.refreshGit();}return r;}
+    if(args.operation==='delete')return removeItems([target],false,true);
+    if(args.operation==='copy') {const directory=relative(args.destination),operationRoot=rootPath,targets=[directory+'/'+target.split('/').pop()];
+      const perform=async dirty=>{if(dirty?.length)return fail('UNSAVED_CHANGES','相关标签有未保存内容，已保留');const prepared=await myIDE.fs.copyPrepare(operationRoot,[target],directory);if(!prepared?.ok)return prepared;if(prepared.conflicts?.length)return {...fail('COPY_CONFLICT','目标已存在，未覆盖'),conflicts:prepared.conflicts};if(rootPath!==operationRoot)return fail('PROJECT_CHANGED','项目已切换');return {...await myIDE.fs.copyCommit(operationRoot,prepared.operationId,false),operationId:prepared.operationId,targets:prepared.targets};};
+      const r=await Viewer.withCopyChange([target],targets,perform);if(r?.published)pushUndo({type:'copy',operationId:r.operationId,projectRoot:operationRoot,targets:r.targets,label:'AI复制'});if(r?.changedPaths?.length){invalidateAll();await render();App.refreshGit();}return r;
+    }
+    return fail('INVALID_TOOL_ARGS','未知文件树操作');
+  }
+
   return {
-    setRoot, render, select, collapseAll, expandAll, setGitStatus,
+    setRoot, render, select, collapseAll, expandAll, setGitStatus, aiControl,
     async refreshDirectories(){invalidateAll();await render();},
     async controlDirectory(target,value,verify){verify();if(value){await loadDir(target);verify();expanded.add(target);}else if(target!==rootPath)expanded.delete(target);await render();verify();persistExpanded();},
     async revealTarget(target,verify){

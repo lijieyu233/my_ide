@@ -641,7 +641,7 @@ textarea.editor {
   align-self: center; margin: 0 auto;
   /* 同上：两侧预留滚动条宽度，正文列在视觉上对称 */
   scrollbar-gutter: stable both-edges;
-  user-select: text; line-height: 1.7;
+  user-select: text; line-height: var(--md-line-height, 1.7);
   font-size: var(--editor-font-size, 13px);
   /* ⚠ 长行换行：中文能自由断行，但**长路径 / 长 URL / 长表格**是"一个词"，
      浏览器默认不在这些字符间断（`\` 不是断行机会点）→ 整段从列右边溢出被切掉
@@ -3992,3 +3992,6 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
   /* 用户可主动压到零宽；控件裁在本栏内，不能盖住编辑区或右侧工具入口。 */
   #ai-panel > :not(#ai-resize):not(#ai-msgs) { overflow: hidden; }
 }
+
+/* AI阅读设置与两种Markdown视图共用变量，默认不改变原有列宽。 */
+#viewer > .md-view, #viewer > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }

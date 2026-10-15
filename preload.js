@@ -227,6 +227,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     finish: (context) => ipcRenderer.invoke('ai:finish', context),
     ssh: (context,call) => ipcRenderer.invoke('ai:ssh',context,call),
     browser: (context,call) => ipcRenderer.invoke('ai:browser',context,call),
+    workbench: (context,call)=>ipcRenderer.invoke('ai:workbench',context,call),
+    workbenchSelection:()=>ipcRenderer.invoke('ai:workbench-selection'),
     project: (context,call) => ipcRenderer.invoke('ai:project',context,call),
     launch: (context, call) => ipcRenderer.invoke('ai:launch',context,call),
     validateTool: (context, call) => ipcRenderer.invoke('ai:validateTool', context, call),

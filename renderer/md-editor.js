@@ -64,7 +64,7 @@ window.MdEditor = (() => {
     '& .cm-content [class^="ͼ"]': { textDecorationLine: 'none' },
     '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--editor-text)', fontSize: 'var(--editor-font-size, 13px)' },
     // 正文用 UI 无衬线字体 —— 与 .md-view 预览同源（Obsidian 编辑态也是 UI 字体，非等宽）
-    '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: '1.7', overflow: 'auto' },
+    '.cm-scroller': { fontFamily: '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif', lineHeight: 'var(--md-line-height, 1.7)', overflow: 'auto' },
     // 正文列：可读宽度 + 居中（与 .md-view 同一套数字）→ 见 styles.css 的 scroller 规则。
     // 🔴 左右内边距只能是 0：CM6 画整行选区矩形（RectangleMarker.forRange）时，横向边界取
     //   `.cm-content` 的**边框盒** + 首个 .cm-line 的 padding，**不扣 content 自己的左右 padding**

@@ -18,7 +18,7 @@ const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?p
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
 const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');
-const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
+const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-workbench-tools').has(call.name)?aiWorkbenchTools.prepare(call,context):require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./src/main/files/file-write');
 const PathJobs = require('./src/main/files/path-jobs');
 const TextFormat = require('./src/main/files/text-format');
@@ -349,6 +349,20 @@ const aiProjectTools=require('./src/main/ai/ai-project-tools').createService({pa
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
   return mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+')');
 }});
+const aiWorkbenchTools=require('./src/main/ai/ai-workbench-tools').createService({rootDirectory:()=>app.getPath('userData'),panel:async(operation,payload)=>{
+  if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
+  const result=await mainWindow.webContents.executeJavaScript('AiWorkbench.dispatch('+JSON.stringify(operation)+','+JSON.stringify(payload)+').catch(error=>({__workbenchError:true,error:error.message,errorCode:error.code}))');
+  if(result?.__workbenchError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
+}});
+ipcMain.handle('ai:workbench',async(event,context,input)=>{
+  try{const owner=aiSender(event,context),call=AiToolContract.validate(input);if(!require('./renderer/ai-workbench-tools').has(call.name))throw Error('未知工作台操作');
+    return await aiTools.once(owner,context,call,'application',({proof,verify})=>aiWorkbenchTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,call,actual)));
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code,committed:!!error.committed};}
+});
+ipcMain.handle('ai:workbench-selection',async event=>{
+  if(event.sender!==mainWindow?.webContents||!bwView) return {ok:false,error:'内置网页未打开'};
+  return {ok:true,source:'browser',url:bwView.webContents.getURL(),text:await bwView.webContents.executeJavaScript('String(window.getSelection()||"").slice(0,30000)')};
+});
 ipcMain.handle('ai:project',async(e,context,input)=>{
   try{const owner=aiSender(e,context),call=AiToolContract.validate(input);if(!require('./renderer/ai-project-tools').has(call.name))throw Error('不是项目或大纲工具');
     return await aiTools.once(owner,context,call,'application',({proof,verify})=>aiProjectTools.execute(proof,verify));
