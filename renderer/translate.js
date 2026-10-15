@@ -135,7 +135,22 @@ const Translate = (() => {
     box.querySelector('#tr-x').onclick = closeBox;
     box.querySelector('#tr-close').onclick = closeBox;
     box.querySelector('#tr-do').onclick = () => doTranslate();
-    box.querySelector('#tr-settings').onclick=()=>{closeBox();Settings.open('translate');};
+    box.querySelector('#tr-settings').onclick=()=>{
+      const before=JSON.stringify(getConfig());
+      // 设置覆盖在翻译上方，返回时更新实际选用的服务，原文和已完成的译文仍留在原弹窗。
+      currentBox.style.display='none';
+      Settings.open('translate',undefined,()=>{
+        if(box!==currentBox||!currentBox.isConnected)return;
+        currentBox.style.display='';
+        const cfg=getConfig(),service=currentBox.querySelector('#tr-provider');
+        service.innerHTML=getProfiles().map(p=>`<option value="${esc(p.id)}">${esc(p.name||p.model||'翻译服务')}</option>`).join('');service.value=cfg.id||'';
+        currentBox.querySelector('#tr-target').value=cfg.target;
+        if(before!==JSON.stringify(cfg)){
+          requestSerial++;button.disabled=false;translated=false;dstEl.classList.remove('tr-pending');dstEl.textContent='';
+          if(srcEl.value.trim())doTranslate();
+        }
+      });
+    };
     const changeLanguage=()=>{setLanguages(box.querySelector('#tr-source').value,box.querySelector('#tr-target').value.trim());if(srcEl.value.trim())doTranslate();};
     box.querySelector('#tr-source').onchange=changeLanguage;box.querySelector('#tr-target').onchange=changeLanguage;
     box.querySelector('#tr-provider').onchange=e=>{selectProfile(e.target.value);if(srcEl.value.trim())doTranslate();};

@@ -4,6 +4,7 @@ const {app,BrowserWindow,webContents,shell,Menu,ipcMain}=require('electron'),rep
 // 保留真实菜单与点击回调，只有popup替换成接收器，避免测试抢占桌面。
 const menus=[];Menu.prototype.popup=function(){menus.push(this);};
 const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
+const translationCalls=[];
 let win,page,server,url,passed=0,closing=false;require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(30);}throw Error('浏览器UI验证超时');}const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+')}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};
 const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
@@ -16,8 +17,23 @@ async function capture(name){
 const watchdog=setTimeout(()=>cleanup(2),120000);
 function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);server?.close();if(path.dirname(temp)!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-browser-ui-check-'))throw Error('清理越界');const node=require('child_process').execFileSync('node',['-p','process.execPath'],{encoding:'utf8'}).trim();require('child_process').spawn(node,['-e','const fs=require("fs");setTimeout(()=>fs.rmSync(process.argv[1],{recursive:true,force:true,maxRetries:8,retryDelay:300}),1200)',temp],{detached:true,stdio:'ignore',windowsHide:true}).unref();app.exit(code);}
 (async()=>{
-  server=http.createServer((_req,res)=>{if(_req.url==='/redirect'){res.writeHead(302,{Location:'/landing'});res.end();return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
+  server=http.createServer((_req,res)=>{if(_req.url.endsWith('/chat/completions')){let body='';_req.on('data',chunk=>body+=chunk);_req.on('end',()=>{const data=JSON.parse(body);translationCalls.push({url:_req.url,key:_req.headers.authorization,...data});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:'实际HTTP译文：'+data.model}}]}));});return;}if(_req.url==='/redirect'){res.writeHead(302,{Location:'/landing'});res.end();return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
   await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().includes('renderer/index.html')&&!w.webContents.isLoading());return win;});assert(!win.isVisible());win.setContentSize(1440,900);
+  await test('设置即时保存后经生产IPC和真实HTTP使用当前地址模型Key，设置返回保留原文',async()=>{
+    await js('Translate.setConfig({baseUrl:'+JSON.stringify(url+'/first/v1')+',model:"first",apiKey:"fixture-first"});Translate.run("granite");true');
+    await until(()=>js('document.getElementById("tr-dst").textContent.includes("实际HTTP译文：first")'));
+    await js('document.getElementById("tr-settings").click();true');
+    const values={url:url+'/second/v1',model:'second',key:'fixture-second',target:'日文'};
+    await js('for(const [id,value] of Object.entries('+JSON.stringify(values)+')){const e=document.getElementById("tr-cfg-"+id);e.value=value;e.dispatchEvent(new Event("input",{bubbles:true}));}document.getElementById("set-x").click();true');
+    await until(()=>js('document.getElementById("tr-dst").textContent.includes("实际HTTP译文：second")'));
+    assert.equal(await js('document.getElementById("tr-src").value'),'granite');
+    assert.equal(translationCalls.at(-1).url,'/second/v1/chat/completions');assert.equal(translationCalls.at(-1).model,'second');assert.equal(translationCalls.at(-1).key,'Bearer fixture-second');assert(translationCalls.at(-1).messages[0].content.includes('日文'));
+    await js('document.getElementById("tr-settings").click();true');assert.equal(await js('document.getElementById("tr-cfg-key").value'),'fixture-second');
+    assert(await js('document.querySelector(".tr-box").style.display==="none"'));
+    assert(await js('(()=>{const r=document.getElementById("set-box").getBoundingClientRect();return Math.abs(r.left+r.width/2-innerWidth/2)<2;})()'));
+    await capture('browser-ui-translation-autosave.png');await js('document.getElementById("set-x").click();Translate.closeBox();true');
+    await win.webContents.reload();await until(()=>js('!!window.Translate&&!!window.Settings'));assert.equal(await js('Translate.getConfig().model'),'second');assert.equal(await js('Translate.getConfig().apiKey'),'fixture-second');
+  });
   await js('Theme.set("crimson");BrowserPanel.addFav('+JSON.stringify(url)+',"fixture 收藏");App.showTool("browser");true');
   assert(await js('document.getElementById("bw-open-default").disabled'));assert.equal((await js('myIDE.browser.openDefault()')).ok,false);assert.equal(opened.length,0);
   await test('打开、恢复和地址栏聚焦都不展开，关键词建议与清空保持正确',async()=>{
@@ -48,7 +64,7 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     assert.equal(await js('document.getElementById("tr-cfg-preset").value'),'deepseek');
     await js('const p=document.getElementById("tr-cfg-preset");p.value="openai";p.dispatchEvent(new Event("change"));true');
     assert.equal(await js('document.getElementById("tr-cfg-url").value'),'https://api.openai.com/v1');assert.equal(await js('document.getElementById("tr-cfg-model").value'),'gpt-4o-mini');assert.equal(await js('document.getElementById("tr-cfg-key").value'),'');
-    assert.equal(await js('Translate.getConfig().apiKey'),'fixture-old-key');assert.equal(await js('Translate.getProfiles().length'),1);
+    assert.equal(await js('Translate.getConfig().apiKey'),'');assert.equal(await js('Translate.getProfiles().length'),1);
     await js('document.getElementById("tr-cfg-key").value="fixture-openai";document.getElementById("tr-cfg-test").click();true');await until(()=>requests.length===1);assert.equal(requests[0].baseUrl,'https://api.openai.com/v1');assert.equal(requests[0].apiKey,'fixture-openai');assert.equal(requests[0].model,'gpt-4o-mini');
     await js('const p=document.getElementById("tr-cfg-preset");p.value="deepseek";p.dispatchEvent(new Event("change"));true');assert.equal(await js('document.getElementById("tr-cfg-key").value'),'fixture-old-key');
     await js('document.getElementById("tr-cfg-model").value="my-deepseek-model";document.getElementById("tr-cfg-url").value="https://deepseek-proxy.invalid/v1";const p=document.getElementById("tr-cfg-preset");p.value="openai";p.dispatchEvent(new Event("change"));true');assert.equal(await js('document.getElementById("tr-cfg-key").value'),'fixture-openai');assert.equal(await js('document.getElementById("tr-cfg-url").value'),'https://api.openai.com/v1');

@@ -2,14 +2,25 @@ const assert=require('assert/strict'),fs=require('fs'),path=require('path'),{JSD
 const source=fs.readFileSync(path.join(__dirname,'../renderer/translate.js'),'utf8');let passed=0;
 function fixture(){const dom=new JSDOM('<div id="mask"></div>',{url:'http://fixture.invalid',runScripts:'outside-only'}),w=dom.window,calls=[],pending=[],keys=[];
   w.MI={toast(){},copyText:async text=>calls.push({copied:text})};w.Settings={open(){}};
-  w.Modal={stack:[],show(box){this.stack.push(box);w.document.getElementById('mask').append(box);},hide(){this.stack.pop()?.remove();}};
-  w.Shortcuts={register(){},bindings:()=>[{id:'translate',effectiveCombos:['ctrl+alt+t']}],onChanged:fn=>{w.keysChanged=fn;}};
+  w.Modal={stack:[],show(box){this.stack.push(box);w.document.getElementById('mask').append(box);},hide(){const box=this.stack.pop();box?.remove();box?.onModalHide?.();}};
+  w.Shortcuts={register(){},cancelCapture(){},bindings:()=>[{id:'translate',effectiveCombos:['ctrl+alt+t']}],onChanged:fn=>{w.keysChanged=fn;return ()=>{};}};
   w.myIDE={browser:{setTranslationKeys:async k=>keys.push(k)},llm:{chat:(cfg,messages)=>{calls.push({cfg,messages});return new Promise(resolve=>pending.push(resolve));}}};
   w.AiPanel={PROVIDERS:[{id:'fixture',name:'厂商',baseUrl:'http://provider.invalid/v1',models:['model']}]};w.eval(source);
   return {dom,w,api:w.Translate,calls,pending,keys,q:s=>w.document.querySelector(s),change(s,value){const e=this.q(s);e.value=value;e.dispatchEvent(new w.Event('change'));},tick:()=>new Promise(r=>setImmediate(r))};
 }
 async function test(name,fn){await fn();passed++;console.log('ok '+name);}
 (async()=>{
+  await test('设置输入不按保存也生效，关窗重开和切换配置保留，返回翻译保留原文并用新配置重试',async()=>{const f=fixture();try{
+    f.w.eval(fs.readFileSync(path.join(__dirname,'../renderer/settings.js'),'utf8'));
+    f.api.setConfig({baseUrl:'http://old.invalid/v1',model:'old',apiKey:'old-key'});f.api.run('granite');f.q('#tr-settings').click();
+    const input=(id,value)=>{const el=f.q('#tr-cfg-'+id);el.value=value;el.dispatchEvent(new f.w.Event('input'));};
+    input('url','http://new.invalid/v1');input('model','new');input('key','new-key');input('target','日文');
+    assert.equal(f.api.getConfig().apiKey,'new-key');assert.equal(f.api.getConfig().model,'new');f.q('#set-x').click();
+    assert.equal(f.q('#tr-src').value,'granite');assert.equal(f.calls.at(-1).cfg.baseUrl,'http://new.invalid/v1');assert.equal(f.calls.at(-1).cfg.target,'日文');
+    f.pending[0]({text:'旧请求'});await f.tick();assert(!f.q('#tr-dst').textContent.includes('旧请求'));
+    f.q('#tr-settings').click();assert.equal(f.q('#tr-cfg-key').value,'new-key');const old=f.api.getConfig().id;f.q('#tr-cfg-add').click();input('name','第二服务');input('key','second-key');const second=f.api.getConfig().id;assert.notEqual(old,second);
+    f.change('#tr-cfg-profile',old);assert.equal(f.api.getConfig().apiKey,'new-key');f.q('#set-x').click();assert.equal(f.q('#tr-provider').value,old);assert.equal(f.q('#tr-provider').options.length,2);
+  }finally{f.dom.window.close();}});
   await test('旧单服务配置无损迁移，多配置切换分别保留Key和模型，重载仍生效',async()=>{const f=fixture();try{
     f.api.setConfig({baseUrl:'http://old.invalid/v1',apiKey:'test-only',model:'old',target:'法文'});
     const profiles=f.api.getProfiles();assert.equal(profiles[0].apiKey,'test-only');profiles.push({id:'new',name:'新服务',baseUrl:'http://new.invalid/v1',apiKey:'second',model:'new'});
