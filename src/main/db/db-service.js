@@ -509,4 +509,4 @@ function registerIpc() {
   ipcMain.handle('db:importCsv', wrap(importCsv));
 }
 
-module.exports = { registerIpc };
+module.exports={registerIpc,configuration:id=>({...typeOf(id).config}),configurationForProfile:profile=>{const c=[...conns.values()].filter(c=>c.config.id===profile).at(-1);if(!c)throw Error('请先重新连接指定数据库配置');return {...c.config};},async reload(id){const c=typeOf(id);if(c.type==='sqlite'){c.sqlite.close();c.sqlite=new (await getSQL()).Database(fs.readFileSync(c.file));}}};

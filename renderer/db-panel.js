@@ -166,6 +166,7 @@ window.DbPanel = (() => {
   // ---------- 连接 / 断开 ----------
   async function doConnect(cfg) {
     MI.toast('正在连接 ' + connLabel(cfg) + '…', 'ok');
+    if(!cfg.id){cfg.id=crypto.randomUUID();saveConns();}
     const r = await call('connect', cfg);
     if (!r) return;
     connId = r.id;
@@ -1052,6 +1053,24 @@ window.DbPanel = (() => {
     switchTab('data');
   }
 
-  return { init, toggle, syncVisible, isOpen: () => visible };
+  const aiId=(c,i)=>c.id||'legacy-'+i;
+  async function aiState(){return {connections:conns.map((c,i)=>{const {password,...publicConfig}=c;return {...publicConfig,id:aiId(c,i),passwordConfigured:!!password};}),active:connCfg?aiId(connCfg,conns.indexOf(connCfg)):null,handle:connId,table:curTable,configurationVersion:await AiWorkbench.stateHash(conns)};}
+  async function aiOperate(a){
+    const F=AiWorkbench.fail;let i=conns.findIndex((c,i)=>aiId(c,i)===(a.id||a.connection));
+    if(a.operation==='save'||a.operation==='delete'){
+      if(connCfg&&conns[i]===connCfg)F('DATABASE_CONNECTED','请先断开连接再修改此配置');
+      const previous=JSON.stringify(conns);
+      if(a.operation==='delete'){if(i<0)F('CONFIG_NOT_FOUND','连接配置不存在');conns.splice(i,1);}
+      else{const cfg={...(i<0?{}:conns[i]),...a.config,id:i<0?crypto.randomUUID():aiId(conns[i],i)};if(!cfg.name||!['sqlite','mysql','postgres'].includes(cfg.type))F('INVALID_TOOL_ARGS','连接需要名称和数据库类型');if(i<0)conns.push(cfg);else conns[i]=cfg;}
+      try{localStorage.setItem(LS_KEY,JSON.stringify(conns));if(localStorage.getItem(LS_KEY)!==JSON.stringify(conns))throw Error('配置回读不一致');}catch(e){conns=JSON.parse(previous);throw e;}renderConnBar();return {ok:true,committed:true,...await aiState()};
+    }
+    if(i<0)F('CONFIG_NOT_FOUND','连接配置不存在');
+    if(a.operation==='disconnect'){if(connCfg!==conns[i])F('DATABASE_CONNECTION','指定连接当前未激活');const r=await B().close(connId);if(!r.ok)F('DATABASE_CONNECTION',r.error);await doDisconnect();return {ok:true,committed:true,...await aiState()};}
+    if(a.operation==='connect'){if(connId&&connCfg===conns[i])return {ok:true,...await aiState()};if(connId)await doDisconnect();if(!conns[i].id){conns[i].id=aiId(conns[i],i);saveConns();}const r=await B().connect(conns[i]);if(!r.ok)F('DATABASE_CONNECTION',r.error);connId=r.data.id;connCfg=conns[i];schema={tables:[],cols:{}};curTable=null;renderConnBar();await renderTables();return {ok:true,committed:true,...await aiState()};}
+    if(connCfg!==conns[i]||!connId)F('DATABASE_CONNECTION','请先连接指定配置');
+    if(a.table){const r=await B().columns(connId,a.table);if(!r.ok)F('DATABASE_SCHEMA',r.error);return {columns:r.data};}
+    const r=await B().tables(connId);if(!r.ok)F('DATABASE_SCHEMA',r.error);return {tables:r.data};
+  }
+  return {init,toggle,syncVisible,isOpen:()=>visible,aiState,aiOperate};
 })();
 window.DbPanel = DbPanel;

@@ -9,9 +9,10 @@ function createService({panel,rootDirectory,backend}){
     if(definition.project&&!context.rootId&&!(call.name==='project_control'&&call.args.operation==='open'))throw fail('PROJECT_REQUIRED','此操作需要项目');
     let real,identity;
     if(context.rootId){real=fs.realpathSync(context.rootId);const s=fs.statSync(real,{bigint:true});if(!s.isDirectory())throw fail('PROJECT_REQUIRED','项目目录已失效');identity=[s.dev,s.ino].join(':');}
-    const verify=()=>{if(real){const s=fs.statSync(context.rootId,{bigint:true});if(fs.realpathSync(context.rootId)!==real||[s.dev,s.ino].join(':')!==identity)throw fail('PROJECT_CHANGED','原项目身份变化，旧操作失效');}};
-    const binding=crypto.createHash('sha256').update(JSON.stringify({call,context})).digest('hex');
-    return {application:true,real:target,directories:[],verify,effect:kind?{application:true,kind,target,binding,operation:call.args.operation||call.name,label:definition.description,before:null,after:redact(call.args),command:kind==='run'?call.args.sql||call.args.operation||call.name:'',forceConfirm:call.name==='database_query'&&call.args.write===true}:null,data:{call,context,definition}};
+    const database=call.name==='database_query'?require('../db/db-service').configurationForProfile(call.args.connection):null,databaseVersion=database?JSON.stringify(database):null;
+    const verify=()=>{if(database&&JSON.stringify(require('../db/db-service').configurationForProfile(call.args.connection))!==databaseVersion)throw fail('DATABASE_CHANGED','连接目标在确认后已变化');if(real){const s=fs.statSync(context.rootId,{bigint:true});if(fs.realpathSync(context.rootId)!==real||[s.dev,s.ino].join(':')!==identity)throw fail('PROJECT_CHANGED','原项目身份变化，旧操作失效');}};
+    const binding=crypto.createHash('sha256').update(JSON.stringify({call,context,...(database?{databaseVersion}:{})})).digest('hex');
+    return {application:true,real:target,directories:[],verify,effect:kind?{application:true,kind,target,binding,operation:call.args.operation||call.name,label:definition.description,before:database?redact(database):null,after:redact(call.args),command:kind==='run'?call.args.sql||call.args.operation||call.name:'',forceConfirm:call.name==='database_query'&&call.args.write===true}:null,data:{call,context,definition}};
   }
   async function execute(proof,verify,approve){
     const {call,context,definition}=proof.data;verify();

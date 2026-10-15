@@ -5,8 +5,10 @@
     if(!W.root())F('PROJECT_REQUIRED','未打开项目');const status=unwrap(await myIDE.git.status(W.root(),{force:true})),branches=unwrap(await myIDE.git.branches(W.root()));
     // 后端扫描编号每次变化，不能把它当成仓库内容版本。
     delete status.snapshotId;delete status.staleSnapshotId;
+    // 完整扫描可能附一次重试的临时路径；它不是最终仓库状态。
+    if(status.completeness==='complete')delete status.errors;
     const files=Array.isArray(status)?status:status.changed||status.files||[];
-    const versions=[];for(const f of files.slice(0,200)){const relative=typeof f==='string'?f:f.path||f.file||f.filepath;if(relative)versions.push([relative,await myIDE.fs.fileVersion(W.root()+'/'+relative)]);}
+    const versions=[];for(const f of files.slice(0,200)){const relative=typeof f==='string'?f:f.path||f.file||f.filepath;if(relative)versions.push([relative,await myIDE.fs.fileVersion((status.root||W.root())+'/'+relative)]);}
     return {root:W.root(),status,branches,versions,truncated:files.length>200};
   }
   W.register('git',{state:gitState,async operate(call,context){
@@ -37,3 +39,10 @@
     await W.checkpoint(call,context);return Tasks.aiControl(call.args);
   }});
 })();
+
+(()=>{const W=AiWorkbench;W.register('database',{state:()=>DbPanel.aiState(),async operate(call,context){const a=call.args;
+  if(call.name==='database_state'){const s=await DbPanel.aiState();let schema={};if(a.connection)schema=await DbPanel.aiOperate(a);const jobs=await myIDE.ai.workbenchDatabase(context,call,s.handle);if(!jobs.ok)W.fail(jobs.errorCode||'DATABASE_QUERY',jobs.error);return W.observe('database',{...s,...schema,...jobs});}
+  await W.checkpoint(call,context);if(call.name==='database_config'||call.name==='database_connect')return DbPanel.aiOperate(a);
+  const s=await DbPanel.aiState();if(call.name==='database_query'&&(!s.handle||s.active!==a.connection))W.fail('DATABASE_CONNECTION','请先连接指定配置');
+  const r=await myIDE.ai.workbenchDatabase(context,call,s.handle);if(!r.ok)W.fail(r.errorCode||'DATABASE_QUERY',r.error);return r;
+}});})();

@@ -11,7 +11,7 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
 const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js']);
-runtimeFiles.push('src/main/ai/ai-workbench-tools.js');
+runtimeFiles.push('src/main/ai/ai-workbench-tools.js','src/main/db/ai-query-jobs.js','src/main/db/ai-query-worker.js');
 runtimeFiles.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js');
 runtimeFiles.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js');
 resources.push('src/main/dsh/dsh-native-plugin.cjs', 'renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');

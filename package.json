@@ -70,7 +70,7 @@
     "check:ai-project": "electron scripts/check-ai-project.js --disable-gpu --no-sandbox",
     "check:git-log-selection": "electron scripts/check-git-log-selection.js --disable-gpu --no-sandbox",
     "test:layout": "node tests/runtime-layout.test.js",
-    "test:workbench": "node tests/ai-workbench.test.js && node tests/ai-workbench-services.test.js",
+    "test:workbench": "node tests/ai-workbench.test.js && node tests/ai-workbench-services.test.js && node tests/ai-database.test.js",
     "check:workbench": "electron scripts/check-ai-workbench.js --disable-gpu --no-sandbox"
   },
   "dependencies": {

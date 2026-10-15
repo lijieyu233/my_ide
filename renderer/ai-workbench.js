@@ -12,7 +12,8 @@ window.AiWorkbench=(()=>{
   async function fingerprint(raw){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(raw))))).map(n=>n.toString(16).padStart(2,'0')).join('');}
   async function observe(module,detail){
     const raw=await state(module),snapshot=crypto.randomUUID();
-    snapshots.set(snapshot,{module,root:root(),fingerprint:await fingerprint(raw),expires:Date.now()+300000});
+    const fields=Object.fromEntries(await Promise.all(Object.entries(raw).map(async([k,v])=>[k,await fingerprint(v)])));
+    snapshots.set(snapshot,{module,root:root(),fingerprint:await fingerprint(raw),fields,expires:Date.now()+300000});
     while(snapshots.size>128)snapshots.delete(snapshots.keys().next().value);
     return {ok:true,snapshot,...clone(detail||raw)};
   }
@@ -23,7 +24,7 @@ window.AiWorkbench=(()=>{
     if(definition.kind&&AiWorkbenchTools.effect(call)){
       const snapshot=snapshots.get(call.args.snapshot);
       if(!snapshot||snapshot.module!==definition.module||key(snapshot.root)!==key(root())||snapshot.expires<Date.now())fail('SNAPSHOT_EXPIRED','操作快照无效，请重新读取模块状态');
-      if(snapshot.fingerprint!==await fingerprint(await state(definition.module)))fail('STATE_CHANGED','确认期间模块状态已变化，请重新读取后操作');
+      const actual=await state(definition.module);if(snapshot.fingerprint!==await fingerprint(actual)){const changed=[];for(const k of new Set([...Object.keys(snapshot.fields),...Object.keys(actual)]))if(snapshot.fields[k]!==await fingerprint(actual[k]??null))changed.push(k);fail('STATE_CHANGED','确认期间模块状态已变化（'+changed.join('、')+'），请重新读取后操作');}
     }
     return {ok:true};
   }
@@ -45,7 +46,7 @@ window.AiWorkbench=(()=>{
   function job(id,module){const j=jobs.get(id);if(!j||j.module!==module)fail('JOB_NOT_FOUND','任务不属于此模块');return j;}
   async function cancelJob(id,module){const j=job(id,module);if(j.state!=='running')return {ok:true,job:publicJob(j)};await j.cancel?.(j);j.state='cancelled';return {ok:true,job:publicJob(j)};}
   const jobList=module=>[...jobs.values()].filter(j=>j.module===module).map(publicJob);
-  return {register,observe,dispatch,guard,checkpoint,state,fail,clone,key,root,page,startJob,job,publicJob,cancelJob,jobList};
+  return {stateHash:fingerprint,register,observe,dispatch,guard,checkpoint,state,fail,clone,key,root,page,startJob,job,publicJob,cancelJob,jobList};
 })();
 
 (()=>{
