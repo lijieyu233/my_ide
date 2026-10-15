@@ -22,7 +22,7 @@ const Translate = (() => {
   function presets(){return (window.AiPanel?.PROVIDERS||[]).map(p=>({...p,models:[...p.models]}));}
 
   function getConfig() {
-    const c=store();return {...c.profiles.find(p=>p.id===c.activeId),source:c.source,target:c.target};
+    const c=store(),{providerConfigs,...active}=c.profiles.find(p=>p.id===c.activeId)||{};return {...active,source:c.source,target:c.target};
   }
   function setConfig(c) {
     saveStore(c||{});

@@ -565,9 +565,9 @@ const Settings = (() => {
     const list=document.getElementById('set-list'),cfg=Translate.getConfig(),profiles=Translate.getProfiles(),presets=Translate.presets();
     let current=profiles.find(p=>p.id===cfg.id)||profiles[0],target=cfg.target||'中文';
     if(!current){current={id:'profile-'+Date.now(),name:'翻译服务',provider:'custom',baseUrl:'',model:'',apiKey:''};profiles.push(current);}
-    const providerOf=p=>p.customProvider?'custom':presets.find(x=>x.baseUrl&&x.baseUrl.replace(/\/+$/,'')===String(p.baseUrl||'').replace(/\/+$/,''))?.id||'custom';
+    const providerOf=p=>p.customProvider?'custom':presets.find(x=>x.id===p.provider&&x.id!=='custom')?.id||presets.find(x=>x.baseUrl&&x.baseUrl.replace(/\/+$/,'')===String(p.baseUrl||'').replace(/\/+$/,''))?.id||'custom';
     const option=(value,label)=>'<option value="'+esc(value)+'">'+esc(label)+'</option>';
-    function read(){for(const [key,id]of [['name','name'],['baseUrl','url'],['model','model'],['apiKey','key']])current[key]=document.getElementById('tr-cfg-'+id).value.trim();target=document.getElementById('tr-cfg-target').value.trim()||'中文';}
+    function read(){for(const [key,id]of [['name','name'],['baseUrl','url'],['model','model'],['apiKey','key']])current[key]=document.getElementById('tr-cfg-'+id).value.trim();target=document.getElementById('tr-cfg-target').value.trim()||'中文';current.providerConfigs={...current.providerConfigs,[providerOf(current)]:{name:current.name,baseUrl:current.baseUrl,model:current.model,apiKey:current.apiKey}};}
     function paint(){
       list.innerHTML='<div class="set-form"><h3 class="set-section-title">翻译服务</h3>'
         +'<label class="m-label" for="tr-cfg-profile">已保存的配置</label><select id="tr-cfg-profile">'+profiles.map(p=>option(p.id,p.name||'未命名服务')).join('')+'</select>'
@@ -583,19 +583,22 @@ const Settings = (() => {
       document.getElementById('tr-cfg-preset').onchange=e=>{
         const selected=presets.find(p=>p.id===e.target.value);if(!selected)return;
         read();const old=presets.find(p=>p.id===providerOf(current));
-        // 厂商选择作用于当前草稿；跨地址不能沿用旧Key，否则会把一个厂商的凭据发给另一个厂商。
-        if(selected.id==='custom'){current.provider='custom';current.customProvider=true;document.getElementById('tr-cfg-result').textContent='自定义模式：保留地址、模型和Key，可直接编辑，保存后生效。';return;}
-        const changedUrl=String(current.baseUrl||'').replace(/\/+$/,'')!==selected.baseUrl.replace(/\/+$/,'');
-        if(!current.name||current.name==='原有翻译服务'||current.name==='翻译服务'||current.name===old?.name)current.name=selected.name;
-        Object.assign(current,{provider:selected.id,customProvider:false,baseUrl:selected.baseUrl,model:selected.models[0]||'',apiKey:changedUrl?'':current.apiKey});paint();
-        document.getElementById('tr-cfg-result').textContent='已填入'+selected.name+'的地址和模型'+(changedUrl?'，请填写该厂商的API Key':'')+'；保存后生效。';
+        // 切换的是厂商自己的配置，旧Key和自定义模型留在原厂商下，来回切换及保存重开均可恢复。
+        const saved=Object.hasOwn(current.providerConfigs,selected.id)?current.providerConfigs[selected.id]:null;
+        if(saved)Object.assign(current,saved);
+        else if(selected.id!=='custom'){
+          if(!current.name||current.name==='原有翻译服务'||current.name==='翻译服务'||current.name===old?.name)current.name=selected.name;
+          Object.assign(current,{baseUrl:selected.baseUrl,model:selected.models[0]||'',apiKey:''});
+        }
+        Object.assign(current,{provider:selected.id,customProvider:selected.id==='custom'});paint();
+        document.getElementById('tr-cfg-result').textContent=saved?'已恢复'+selected.name+'的地址、模型和Key；保存后生效。':selected.id==='custom'?'自定义模式保留当前字段；各厂商配置均已保留，保存后生效。':'首次配置'+selected.name+'，请填写该厂商的API Key；其他厂商配置均已保留。';
       };
       document.getElementById('tr-cfg-profile').onchange=e=>{read();current=profiles.find(p=>p.id===e.target.value);paint();};
       document.getElementById('tr-cfg-add').onclick=()=>{read();const p=presets.find(p=>p.id===document.getElementById('tr-cfg-preset').value)||{id:'custom',name:'自定义',baseUrl:'',models:[]};current={id:'profile-'+Date.now()+'-'+Math.random().toString(16).slice(2,8),name:p.name,provider:p.id,baseUrl:p.baseUrl,model:p.models[0]||'',apiKey:''};profiles.push(current);paint();};
       document.getElementById('tr-cfg-remove').onclick=()=>{read();if(!window.confirm('删除当前翻译配置？保存后生效。'))return;profiles.splice(profiles.indexOf(current),1);if(!profiles.length)profiles.push({id:'profile-'+Date.now(),name:'自定义翻译服务',provider:'custom',baseUrl:'',model:'',apiKey:''});current=profiles[0];paint();};
       document.getElementById('tr-cfg-save').onclick=()=>{try{read();Translate.saveProfiles(profiles,current.id,{target});paint();document.getElementById('tr-cfg-result').textContent='已保存 '+profiles.length+' 个配置，当前使用：'+(current.name||'未命名服务');MI.toast('翻译配置已保存','ok');}catch(error){MI.toast('保存失败：'+error.message,'err');}};
       document.getElementById('tr-cfg-test').onclick=async()=>{
-        read();const testing={...current},result=document.getElementById('tr-cfg-result'),button=document.getElementById('tr-cfg-test');
+        read();const {providerConfigs,...testing}=current;const result=document.getElementById('tr-cfg-result'),button=document.getElementById('tr-cfg-test');
         if(!testing.baseUrl||!testing.model){result.textContent='请先填写服务地址和模型名称';return;}button.disabled=true;result.textContent='正在测试当前配置…';
         let r;try{r=await window.myIDE.llm.chat(testing,[{role:'user',content:'回复"OK"两个字母即可'}]);}catch(error){r={error:error.message};}
         if(!result.isConnected)return;button.disabled=false;result.textContent=r&&!r.error&&r.text?'连接成功：'+r.text.slice(0,80):'连接失败：'+(r?.error||'空响应');
