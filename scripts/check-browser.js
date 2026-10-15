@@ -1,6 +1,8 @@
 // 隐藏生产窗口与真实网页视图；独立配置，避免写入用户历史/收藏/窗口状态。
 const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'),assert=require('assert/strict');
-const {app,BrowserWindow,webContents,shell}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const {app,BrowserWindow,webContents,shell,Menu,ipcMain}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-browser-ui-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+// 保留真实菜单与点击回调，只有popup替换成接收器，避免测试抢占桌面。
+const menus=[];Menu.prototype.popup=function(){menus.push(this);};
 const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
 let win,page,server,url,passed=0,closing=false;require('../main');require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(30);}throw Error('浏览器UI验证超时');}const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+')}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};
@@ -23,6 +25,22 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('BrowserPanel.go('+JSON.stringify(url)+');true');await until(()=>{page=webContents.getAllWebContents().find(w=>w.getURL()===url+'/');return page&&!page.isLoading();});
     await js('const input=document.getElementById("bw-url");input.focus();input.value="fixture";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===0);assert(!(await js('document.getElementById("bw-dd").classList.contains("hidden")')));assert(await js('document.querySelector(".bw-dd-item").textContent.includes("fixture 收藏")'));await capture('browser-ui-suggestions.png');
     await js('const input=document.getElementById("bw-url");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===1);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
+  });
+  await test('网页选区经原生右键菜单翻译，复用设置，弹窗不被原生网页盖住',async()=>{
+    let request;
+    ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg,messages)=>{request={cfg,messages};return {text:'Keep the current page after exiting fullscreen.'};});
+    await js('Translate.setConfig({baseUrl:"http://translation.invalid",model:"fixture",target:"英文"});true');
+    const point=await page.executeJavaScript('(()=>{const p=document.querySelector("p"),r=document.createRange();r.selectNodeContents(p);const s=getSelection();s.removeAllRanges();s.addRange(r);const b=p.getBoundingClientRect();return {x:Math.round(b.left+12),y:Math.round(b.top+b.height/2),text:s.toString()}})()');
+    // 隐藏子视图没有OS鼠标焦点；选区取自真实网页，向原生事件入口送入对应的上下文参数。
+    page.emit('context-menu',{}, {selectionText:point.text,isEditable:false,editFlags:{canCopy:true}});
+    await until(()=>menus.some(menu=>menu.items.some(item=>item.label==='翻译选中文本')));
+    const menu=menus.find(menu=>menu.items.some(item=>item.label==='翻译选中文本'));assert(menu.items.some(item=>item.label==='复制'));
+    menu.items.find(item=>item.label==='翻译选中文本').click();
+    await until(()=>js('!!document.getElementById("tr-src")&&document.getElementById("tr-dst").textContent.includes("Keep the current page")'));
+    assert.equal(await js('document.getElementById("tr-src").value'),point.text);assert.equal(request.cfg.target,'英文');assert.equal(request.messages[1].content,point.text);
+    await until(()=>win.contentView.children.length===0);await capture('browser-ui-translate.png');
+    await js('document.getElementById("tr-close").click();true');await until(()=>win.contentView.children.length===1);assert.equal(page.getURL(),url+'/');assert(!win.isVisible());
+    await js('Translate.setConfig({});true');menu.items.find(item=>item.label==='翻译选中文本').click();await until(()=>js('!!document.querySelector("#set-box")'));await js('Modal.hide();true');await until(()=>win.contentView.children.length===1);
   });
   let baseline;
   await test('收藏夹重复按钮移除，写死白底网页真实变暗并可恢复，刷新后仍生效',async()=>{

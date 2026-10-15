@@ -34,7 +34,7 @@ const Translate = (() => {
     return sel ? String(sel) : '';
   }
 
-  // srcOverride：外部直接给原文（自检 / 以后的右键菜单「翻译这段」用）
+  // 网页位于独立视图，右键菜单直接传入选区，不能从宿主DOM重新读取选区。
   function run(srcOverride) {
     const cfg = getConfig();
     if (!cfg.baseUrl || !cfg.model) {

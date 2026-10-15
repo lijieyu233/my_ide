@@ -864,6 +864,7 @@ const BrowserPanel = (() => {
 
     const b = B();
     if (b) {
+      if(b.onTranslate)b.onTranslate(text=>{if(visible&&typeof text==='string'&&text.trim()&&window.Translate)Translate.run(text);});
       // 主进程转发的 view 内快捷键（Ctrl+4 / Alt+←→ / Ctrl+R、F5 / Ctrl+L）
       if (b.onCmd) b.onCmd((cmd) => {
         if (cmd === 'toggle') toggle();

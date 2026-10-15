@@ -235,6 +235,9 @@ function ensureBwView() {
   });
   const wc = bwView.webContents;
   browserColorScheme.bind(wc);
+  require('./browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
+    translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);},
+    openExternal:url=>shell.openExternal(url).catch(error=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:state',{err:String(error.message||error)});})});
   // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
   // mailto:/tel: 等非网页协议才交系统处理
   wc.setWindowOpenHandler(({ url }) => {
