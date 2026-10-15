@@ -75,9 +75,10 @@ body {
   --seam-color: color-mix(in srgb, var(--bg-title) 85%, #000); /* 区域之间那道缝的颜色 */
   --border-pane: color-mix(in srgb, var(--text) 11%, transparent); /* 主分界线（随主题走）——
      刻意压得很淡：区域之间靠「明度阶梯」分开，线只做提示，同屏出现多条时不会形成"框架感" */
-  /* Markdown 标题色：不要纯白 —— 掺一点主题强调色，标题才"有颜色"但不至于全是 accent。
-     用户原话："纯白的 md 样式很难看"。浅色主题里 --text-bright 本身是深色，混出来自动变深。 */
+  /* 表头与工具面板沿用原有主题混色；文档标题使用独立的 --md-title。 */
   --md-heading: color-mix(in srgb, var(--text-bright) 93%, var(--accent));
+  /* 文档标题单独配色，避免连带改变表头、设置页及工具面板标题。 */
+  --md-title: #c7db7b;
   --ui-line: color-mix(in srgb, var(--text) 16%, transparent);
   --ui-focus: color-mix(in srgb, var(--accent) 18%, transparent);
   --ui-radius: 6px;
@@ -649,17 +650,17 @@ textarea.editor {
      代码块（white-space: pre）不参与换行，仍按原样横向滚动。 */
   overflow-wrap: anywhere;
 }
-.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-heading); margin: 1.38em 0 0.62em; }
+.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 { color: var(--md-title); margin: 1.38em 0 0.62em; }
 /* Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom */
 /* 字号与 live 编辑态（md-editor.js liveTheme）逐项同源；数值 = 13px 时代的 px ÷ 13，
    h5/h6 刻意保底 1em —— 正文放大后标题不得比正文还小（历史 bug 的根因）。
    h1 1.62 = 21px / h2 1.38 = 18px / h3 1.15 = 15px / h4 1.08 = 14px */
 .md-view h1 { font-size: 1.62em; font-weight: 700; margin-top: 1.85em; }
 .md-view h2 { font-size: 1.38em; font-weight: 600; margin-top: 1.54em; }
-.md-view h3 { font-size: 1.15em; font-weight: 600; color: color-mix(in srgb, var(--accent) 34%, var(--md-heading)); }
+.md-view h3 { font-size: 1.15em; font-weight: 600; }
 .md-view h4 { font-size: 1.08em; font-weight: 600; }
 .md-view h5 { font-size: 1em; font-weight: 600; }
-.md-view h6 { font-size: 1em; font-weight: 500; color: var(--text-dim); }
+.md-view h6 { font-size: 1em; font-weight: 500; }
 .md-view p { margin: 0.69em 0; }
 .md-view ul, .md-view ol { margin: 0.46em 0; padding-left: 1.7em; }
 .md-view li { margin: 0.15em 0; }
@@ -2289,6 +2290,7 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
 body.theme-light {
+  --md-title: #61791e;
   --bg: #ffffff;
   --bg-panel: #ececec;
   --bg-tabbar: #e7e7e7;
@@ -2324,6 +2326,7 @@ body.theme-light {
 
 /* ---------- 粉红主题（真正粉红：浅粉底 + 玫红高亮） ---------- */
 body.theme-pink {
+  --md-title: #61791e;
   --bg: #fff5f8;
   --bg-panel: #ffe9f1;
   --bg-tabbar: #ffdfea;
@@ -2434,9 +2437,7 @@ body.theme-crimson {
   --badge-m-bg: #3a2a20; --badge-m-tx: #e8c97a;
   --badge-a-bg: #21301f; --badge-a-tx: #86c98f;
   --badge-d-bg: #3a2026; --badge-d-tx: #ff8a9b;
-  /* 正文标题用"偏白灰"：本主题的 --text-bright 是粉白 (#f2dce4)，
-     与 accent 混出来的标题是 #f2cfdb（R−G=34）—— 一屏标题全发粉。
-     这里直接给一个中性的暖白（R−G=5），粉红只留给 h3 / 竖线 / 链接这些"少量重点"。 */
+  /* 表头和工具面板保留中性暖白，文档标题由 --md-title 独立控制。 */
   --md-heading: #f2eef0;
 }
 body.theme-crimson .tb-btn:hover { color: var(--text-bright); }

@@ -34,7 +34,7 @@ window.MdEditor = (() => {
     // 踩过：heading 写死 #e06c75（One Dark 红）→ 所有主题下标题永远玫瑰红，
     // 既跟 .cm-md-* 的变量染色打架，换主题也不跟随（用户原话："标题不要全用强调色"）。
     // 代码 token（keyword/string/number…）继续用 One Dark：那是代码配色，本来就该独立于界面主题。
-    { tag: T.heading, color: 'var(--md-heading)', fontWeight: 'bold' },
+    { tag: T.heading, color: 'var(--md-title)', fontWeight: 'bold' },
     // 加粗**不另上色**：预览那边 <strong> 继承正文色，只有字重变化 —— 之前这里写
     // --text-bright，同一份文档在实时预览里"加粗的地方更白"，用户看到的就是"文字几乎全是白色"
     { tag: T.strong, fontWeight: 'bold' },
@@ -125,12 +125,12 @@ window.MdEditor = (() => {
     },
     // 标题内容样式（光标行也保留字号，只显示源码标记 —— Obsidian 行为）
     // 数值 = .md-view 的 em 值（21/18/15/14px ÷ 13，h5/h6 保底 1em 不得小于正文）
-    '.cm-md-h1': { fontSize: '1.62em', fontWeight: '700', color: 'var(--md-heading)', lineHeight: '1.3' },
-    '.cm-md-h2': { fontSize: '1.38em', fontWeight: '600', color: 'var(--md-heading)', lineHeight: '1.3' },
-    '.cm-md-h3': { fontSize: '1.15em', fontWeight: '600', color: 'color-mix(in srgb, var(--accent) 34%, var(--md-heading))', lineHeight: '1.35' },
-    '.cm-md-h4': { fontSize: '1.08em', fontWeight: '600', color: 'var(--md-heading)' },
-    '.cm-md-h5': { fontSize: '1em', fontWeight: '600', color: 'var(--md-heading)' },
-    '.cm-md-h6': { fontSize: '1em', fontWeight: '500', color: 'var(--text-dim)' },
+    '.cm-md-h1': { fontSize: '1.62em', fontWeight: '700', color: 'var(--md-title)', lineHeight: '1.3' },
+    '.cm-md-h2': { fontSize: '1.38em', fontWeight: '600', color: 'var(--md-title)', lineHeight: '1.3' },
+    '.cm-md-h3': { fontSize: '1.15em', fontWeight: '600', color: 'var(--md-title)', lineHeight: '1.35' },
+    '.cm-md-h4': { fontSize: '1.08em', fontWeight: '600', color: 'var(--md-title)' },
+    '.cm-md-h5': { fontSize: '1em', fontWeight: '600', color: 'var(--md-title)' },
+    '.cm-md-h6': { fontSize: '1em', fontWeight: '500', color: 'var(--md-title)' },
     // 标题行：行 padding 模拟 .md-view margin（18px 0 8px / h1 24px / h2 20px，÷13 得 em）
     // Obsidian 默认主题标题无下划线（GitHub 风格才有）—— 不加 border-bottom
     // ⚠ em 取的是 .cm-line 自身的字号（= 基准字号），不是标题 span 的：所以数值与 .md-view 同源
