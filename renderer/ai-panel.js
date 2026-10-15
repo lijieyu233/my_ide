@@ -877,7 +877,7 @@ const AiPanel = (() => {
     if(other.engine==='dsh')refreshDshOptions();return result;
   }
 
-  async function refreshDshOptions(){
+  async function refreshDshOptions(apply=false){
     if(getConfig().engine!=='dsh'||!window.myIDE.ai.dshOptions||panel?.classList.contains('hidden'))return;
     // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
@@ -886,7 +886,7 @@ const AiPanel = (() => {
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 DSH…';info.title='读取桌面 DSH 的实际模型与推理选项';}
     if(!curSessionId){curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));rememberSession();}
     const sessionId=curSessionId;let result;
-    try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)));}catch(error){result={ok:false,error:error.message};}
+    try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
     if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));if(info){info.textContent='DSH 已连接';info.title=result.sessionId?'当前 DSH 会话：'+result.sessionId:'首次发送消息时创建 DSH 会话';}}
     else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
@@ -1675,7 +1675,7 @@ const AiPanel = (() => {
   function toggleHist() { if (histPop) closeHist(); else renderHist(); }
   function renderHist() {
     closeHist();
-    const all = loadSessions();
+    const all = loadSessions().filter(s=>!s.archived);
     const pop = document.createElement('div');
     pop.className = 'ai-hist-pop';
     let html = '<div class="ai-hist-head">历史会话<span class="ai-hist-n">' + all.length + '</span></div>';
@@ -2534,7 +2534,7 @@ const AiPanel = (() => {
     activity.status=result.ok?'completed':'failed';activity.output=String(result.text||'').slice(0,30000);
     setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row)row.title=String(result.text||'');
     if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
-    try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);await aiDrainTransitions(run);}catch{if(runIsLive(run))stopRun();}
+    try{const receipt=await window.myIDE.ai.dshToolResult(event.context,call.id,result);if(!receipt?.ok)throw Error('DSH未接收工具结果');await aiDrainTransitions(run);}catch{for(const entry of run.aiTransitions?.splice(0)||[])entry.reject(Error('工具结果未确认回送，未执行会话切换'));if(runIsLive(run))stopRun();}
   }
 
   function init() {
@@ -2713,12 +2713,42 @@ const AiPanel = (() => {
     for(const entry of queued){try{await AiWorkbench.checkpoint(entry.call,entry.context);entry.resolve(await entry.perform());}catch(error){entry.reject(error);}}
     return queued.length>0;
   }
+  function aiState(){
+    const cfg=getConfig(),runs=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].filter((r,i,a)=>r&&a.indexOf(r)===i&&r.identity.rootId===((window.App&&App.root)||''));
+    const sessions=loadSessions().map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
+    return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg.dshModel,requestedReasoning:cfg.dshReasoning,reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
+      models:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
+      reasoningOptions:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,sessions,
+      tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
+      context:ctxFiles.map(f=>({id:f.path,path:f.path,characters:String(f.content||'').length,auto:!!f.auto,pinned:!!f.pin,directory:!!f.isDir})),attachments:pendingImages.map((_,i)=>({id:'image-'+i,kind:'image',ready:true})),budget:{characters:MAX_CTX,attached:ctxFiles.reduce((n,f)=>n+String(f.content||'').length,0)}};
+  }
+  async function aiInspect(a={}){const result=aiState();if(a.task){const run=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].find(r=>r?.identity.requestId===a.task&&r.identity.rootId===(App.root||''));if(!run)AiWorkbench.fail('TASK_NOT_FOUND','任务不属于当前项目');const text=run.stream?.text||'';result.output={task:a.task,offset:a.offset||0,total:text.length,text:text.slice(a.offset||0,(a.offset||0)+(a.limit||10000)),status:run.status};}result.controlJobs=AiWorkbench.jobList('ai').filter(j=>j.root===(App.root||''));return result;}
+  async function aiControl(call,context){
+    const a=call.args,F=AiWorkbench.fail;
+    if(a.operation==='context_pin'||a.operation==='context_remove'){const f=ctxFiles.find(f=>f.path===a.context);if(!f)F('CONTEXT_NOT_FOUND','引用不存在');if(a.operation==='context_pin')f.pin=a.pin!==false;else removeCtx(f.path);renderChips();return {ok:true,committed:true,...aiState()};}
+    if(a.operation==='stop'&&a.task!==currentRun?.identity.requestId){const record=[...backgroundRuns.values()].find(r=>r.run.identity.requestId===a.task&&r.run.identity.rootId===(App.root||''));if(!record)F('TASK_NOT_FOUND','任务不属于当前项目');const r=await myIDE.ai.abort(record.run.stream.context);if(!r?.ok)F('STOP_UNCONFIRMED',r?.error||'未确认停止');withBackgroundView(record,()=>{record.run.controller.abort();endRun(record.run,'cancelled');});return {ok:true,committed:true,task:a.task,status:record.run.status};}
+    if(a.operation==='stop'&&!a.task)F('INVALID_TOOL_ARGS','停止必须明确指定任务ID');
+    if(['switch','archive'].includes(a.operation)&&!loadSessions().some(s=>s.id===a.session))F('SESSION_NOT_FOUND','会话不属于当前项目');
+    if(a.operation==='model'){const st=aiState();if(a.model&&!st.models.some(m=>m.id===a.model))F('MODEL_UNAVAILABLE','模型不在当前后端实际选项中');if(a.reasoning&&!st.reasoningOptions.some(o=>o.id===a.reasoning))F('REASONING_UNAVAILABLE','推理强度不可用');}
+    const perform=async()=>{
+      const scope=sessKey();
+      if(a.operation==='new'){document.getElementById('ai-new').click();if(!curSessionId)curSessionId='s-'+crypto.randomUUID();saveSessions([{id:curSessionId,title:'新会话',ts:Date.now(),msgs:[],usage:{...usageSum}},...loadSessions()]);}
+      else if(a.operation==='switch'){persistSession();openSession(a.session);}
+      else if(a.operation==='archive'){persistSession();const all=loadSessions();if(curSessionId===a.session)document.getElementById('ai-new').click();const item=all.find(s=>s.id===a.session);item.archived=true;saveSessions(all);}
+      else if(a.operation==='stop'){stopRun();for(let n=0;n<200&&currentRun?.status==='stopping';n++)await new Promise(r=>setTimeout(r,25));if(currentRun?.status==='stopping')F('STOP_UNCONFIRMED','停止尚未结算');}
+      else if(a.operation==='reconnect'){if(getConfig().engine!=='dsh')F('ENGINE_MISMATCH','当前不是DSH模式');if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions();if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
+      else if(a.operation==='model'){await setConfig(getConfig().engine==='dsh'?{...(a.model?{dshModel:a.model}:{}),...(a.reasoning?{dshReasoning:a.reasoning}:{})}:{model:a.model||getConfig().model});if(getConfig().engine==='dsh'){App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
+      if(['new','switch','archive'].includes(a.operation)){if(sessKey()!==scope)F('PROJECT_CHANGED','会话范围已变化');const persisted=loadSessions();if(a.operation==='new'&&!persisted.some(s=>s.id===curSessionId)||a.operation==='archive'&&!persisted.some(s=>s.id===a.session&&s.archived)||a.operation==='switch'&&curSessionId!==a.session)F('SESSION_SAVE_FAILED','会话变更尚未确认持久化');}
+      return {ok:true,committed:true,...aiState()};
+    };
+    return aiAfterResult(call,context,perform);
+  }
   function pathsMoved(from,to) {
     ctxFiles=ctxFiles.map(f=>({...f,path:DocumentPaths.map(f.path,from,to)}));
     const muted=[...followMuted].map(p=>DocumentPaths.map(p,from,to));followMuted.clear();muted.forEach(p=>followMuted.add(p));
     if(followPath)followPath=DocumentPaths.map(followPath,from,to);
     mentionCache=null;rulesRoot=null;renderChips();renderFollow();
   }
-  return {aiAfterResult, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
+  return {aiAfterResult,aiState,aiInspect,aiControl, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
 })();
 window.AiPanel = AiPanel;

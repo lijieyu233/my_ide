@@ -49,7 +49,7 @@ function createUI({ ipcMain, WebContentsView, getWindow, getAppearance = async (
       }).catch(finish);
     });
   }
-  return { open, confirm: (data, signal) => open({ type: 'operation', ...data }, signal),
+  return {status:(win,root)=>[...pending.entries()].filter(([,r])=>r.win===win&&r.data.context?.rootId===root).map(([id,r])=>({id,task:r.data.context.requestId,session:r.data.context.sessionId,tool:r.data.call?.name,call:r.data.call?.id,state:'awaiting-user'})), open, confirm: (data, signal) => open({ type: 'operation', ...data }, signal),
     cancelOwner: owner => { for (const record of [...pending.values()]) if (record.data.owner === owner) record.finish(fail('CANCELLED_AI_REQUEST', '确认已取消')); } };
 }
 module.exports = { createUI };

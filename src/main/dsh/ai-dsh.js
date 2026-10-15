@@ -122,14 +122,14 @@ function createService(options={}){
   function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||permission.kind==='question'||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
   function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
-  async function inspect(cfg,context,tools){
+  async function inspect(cfg,context,tools,apply=false){
     const connection=await connect(cfg),key=keyOf(context);
     // 打开面板和页面切换只读取目录，第一次真正发送时才创建原生对话。
-    if(connection.capabilities?.native&&!sessions.has(key)&&!saved.has(key))return {ok:true,...await connection.rpc.request('session/catalog',{})};
+    if(!apply&&connection.capabilities?.native&&!sessions.has(key)&&!saved.has(key))return {ok:true,...await connection.rpc.request('session/catalog',{})};
     // 读取选项也检验宿主，不能把缓存目录当作仍然连接；只重试读取，不重发任务。
     for(let attempt=0;attempt<2;attempt++){
       const {session,conn}=await attach(cfg,context,tools);
-      try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/config_options',{sessionId:session.id});session.configOptions=result.configOptions;}return {ok:true,sessionId:session.id,configOptions:session.configOptions};}
+      try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/config_options',{sessionId:session.id});session.configOptions=result.configOptions;}if(apply)for(const [configId,value]of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]]){if(value===undefined||value===null)continue;const option=session.configOptions.find(o=>o.id===configId);if(!option||(option.options||[]).flatMap(o=>o.options||[o]).every(o=>o.value!==value))throw Error('当前模型不支持配置 '+configId+'='+value);if(option.currentValue!==value){const result=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=result.configOptions;}if(session.configOptions.find(o=>o.id===configId)?.currentValue!==value)throw Error('DSH配置未生效：'+configId);}return {ok:true,sessionId:session.id,configOptions:session.configOptions};}
       catch(error){if(attempt||!conn.rpc.closed)throw error;}
     }
   }

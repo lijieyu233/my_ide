@@ -475,6 +475,12 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call_update',toolCallId:'native-one',status:'completed',content:[{type:'content',content:{type:'text',text:'原生工具输出'}}]}});assert(f.text().includes('原生工具输出'));
     await f.dshEvent({type:'permission',context,id:'approval-two',toolCall:{toolCallId:'native-one'},options:[{optionId:'yes',kind:'allow_once'}]});const late=f.element('.ai-dsh-permission button');f.stop();await until(()=>f.element('#ai-send').textContent==='➤');late.click();assert.equal(f.dshPermissions.length,1);assert(!f.element('.ai-dsh-permission'));
   });
+  await test('DSH拒收工具结果时取消排队会话动作，不执行自我切换',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('测试结果回送');await until(()=>f.calls.length===1);let performed=0,job;
+    f.w.AiWorkbenchTools={definitions:{ai_session_control:{module:'ai'}}};f.w.AiWorkbench={startJob(_module,perform){job=perform().then(()=>({ok:true}),error=>({error:error.message}));return {ok:true,accepted:true};},checkpoint:async()=>{}};
+    const context=f.calls[0].context;await f.w.AiPanel.aiAfterResult({id:'new-after-result',name:'ai_session_control',args:{operation:'new'}},context,()=>{performed++;});
+    f.w.myIDE.ai.dshToolResult=async()=>({ok:false});await f.dshEvent({type:'tool',context,call:{id:'state-refused',name:'ide_state',args:{}}});assert((await job).error.includes('未确认回送'));assert.equal(performed,0);await until(()=>f.element('#ai-send').textContent==='➤');
+  });
   await test('Harness历史按执行模式隔离，复制继续不伪造原生历史回退',async()=>{
     const f=fixture();f.send('普通会话');await until(()=>f.element('#ai-send').textContent==='➤');await f.w.AiPanel.setConfig({engine:'dsh'});assert(!f.text().includes('普通会话'));f.send('Harness会话');await until(()=>f.element('#ai-send').textContent==='➤');assert(!f.element('.ai-regen'));const before=f.text(),button=[...f.w.document.querySelectorAll('.ai-act-btn')].find(button=>button.getAttribute('aria-label')==='复制并继续');button.click();assert.equal(f.text(),before);assert.equal(f.element('#ai-input').value,'Harness会话');assert.equal(f.calls.length,2);
     assert(f.w.localStorage.getItem('myide-ai-sessions:'+f.A));assert(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'));
