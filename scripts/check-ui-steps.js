@@ -636,7 +636,7 @@ module.exports = {
       add('侧栏有选中项可供检查', false, '没有 .tree-row.selected / .outline-item.key-nav-sel');
     }
 
-    // Markdown 排版收紧 + 标题不再是同一种强调色
+    // Markdown 排版收紧；各级文档标题统一黄绿色，层级继续由字号和字重区分。
     const box = document.createElement('div');
     box.className = 'md-view';
     box.style.cssText = 'position:absolute;left:-9999px;top:0;width:600px';
@@ -648,7 +648,7 @@ module.exports = {
     const bt = getComputedStyle(document.body).getPropertyValue('--text-bright').trim();
     box.remove();
     add('Markdown 标题字号收紧（h1 ≤ 22 / h2 ≤ 18 / h3 ≤ 16）', sz[0] <= 22 && sz[1] <= 18 && sz[2] <= 16, sz.join(' / '));
-    add('标题不再全用同一个颜色（h1 用正文亮色，h3 带强调色调）', c1 !== c3, 'h1=' + c1 + ' h3=' + c3);
+    add('各级 Markdown 标题使用统一配色', c1 === c3, 'h1=' + c1 + ' h3=' + c3);
 
     // ⚠ 上面是"造一个 .md-view 探针"测的，测不到编辑器真实渲染路径 ——
     //   实测过一次假通过：探针里的 h1 是中性色，而编辑器里的 h1 因为 heading token
@@ -659,11 +659,8 @@ module.exports = {
       add('量到编辑器里真实的 Markdown 标题（真实渲染路径）', false, '没找到 .cm-md-h1 / .md-view h1');
     } else {
       const rc = getComputedStyle(realH).color;
-      // 不再硬编码 One Dark 红，但也不能是"纯白"（用户原话：「纯白的 md 样式很难看」）：
-      // 期望是"偏亮的正文色 + 一点主题色调"，因此要求色相跨度既不太大（不是全红）也不为 0（不是纯灰白）
-      const sp = spreadOf(rc);
-      add('编辑器里的标题带主题色调（既不是硬编码红，也不是纯白/纯灰）', sp >= 3 && sp < 60,
-        'h1=' + rc + ' 跨度=' + Math.round(sp));
+      const c = parseColorRgb(rc);
+      add('编辑器里的 Markdown 标题呈黄绿色', c.length === 3 && c[1] > c[0] && c[0] > c[2], 'h1=' + rc);
     }
 
     await sleep(300);
@@ -720,15 +717,13 @@ module.exports = {
     add('深红也满足深色主题的单调阶梯（内容 > 标签栏 > 工具窗口 > 外框）',
       lv[0] > lv[1] && lv[1] > lv[2] && lv[2] > lv[3], lv.map((x) => Math.round(x)).join(' > '));
 
-    // Markdown 标题在深红下应当是暖色（不是纯白）
+    // 文档标题独立于暗红主题的界面强调色。
     const realH = q('.cm-md-h1') || q('#viewer .md-view h1');
     if (realH) {
       const rc = getComputedStyle(realH).color;
-      const sp = spreadOf(rc);
       const c = parseColorRgb(rc);
-      // 暖色 = 红分量高于绿分量（玫瑰/酒红系），既不是纯白也不是默认蓝
-      add('深红下的 Markdown 标题是暖色（不是纯白 / 不是默认蓝）',
-        sp >= 3 && c.length === 3 && c[0] - c[1] > 0, 'h1=' + rc + ' 跨度=' + Math.round(sp));
+      add('深红下的 Markdown 标题呈黄绿色',
+        c.length === 3 && c[1] > c[0] && c[0] > c[2], 'h1=' + rc);
     } else {
       add('深红下量到真实的 Markdown 标题', false, '没找到标题元素');
     }
