@@ -688,6 +688,9 @@ const Tasks = (() => {
         id,
         title: String(raw.title || '未命名任务').slice(0, 500),
         note: typeof raw.note === 'string' ? raw.note : '',
+        ...(typeof raw.owner==='string'?{owner:raw.owner.slice(0,200)}:{}),
+        ...(typeof raw.dueDate==='string'?{dueDate:raw.dueDate.slice(0,100)}:{}),
+        ...(Array.isArray(raw.files)?{files:raw.files.filter(p=>typeof p==='string').slice(0,200)}:{}),
         status: st,
         priority: PRIOS.includes(raw.priority) ? raw.priority : 'normal',
         deps: [], // 下一步统一清洗（此时部分 id 可能尚未登记）
@@ -3445,8 +3448,28 @@ const Tasks = (() => {
     fitView(); // 打开任务工具自动适应一次画布（面板此时已可见；jsdom 无布局时内部跳过）
   }
 
+  async function aiControl(args) {
+    await loadPromise;if(!canEdit())return {ok:false,errorCode:'TASKS_NOT_READY',error:'任务数据尚未就绪或需要恢复选择'};
+    const owner=context,old=byId(args.task);
+    if(args.operation==='focus'){if(!old)return {ok:false,errorCode:'TASK_NOT_FOUND',error:'任务不存在'};App.showTool('tasks');selId=old.id;focusId=old.id;render();fitView();return {ok:true,task:old.id};}
+    if(args.operation!=='add'&&!old)return {ok:false,errorCode:'TASK_NOT_FOUND',error:'任务不存在'};
+    if(args.operation==='delete'){deleteMany([old.id]);await saveChain;return {ok:context===owner&&owner.store.result?.ok===true,committed:true,saveResult:owner.store.result};}
+    const next=old?{...old,deps:old.deps.slice()}:{id:newId(),title:'',note:'',status:'todo',priority:'normal',deps:[],createdAt:Date.now(),updatedAt:Date.now(),doneAt:null,parentId:null,estimateMin:null,x:null,y:null};
+    for(const k of ['title','note','status','priority','owner','dueDate','files'])if(Object.hasOwn(args,k))next[k]=args[k];
+    if(!next.title.trim())return {ok:false,errorCode:'INVALID_TASK',error:'任务标题不能为空'};
+    if(args.deps)next.deps=[...new Set(args.deps)];if(Object.hasOwn(args,'parent'))next.parentId=args.parent||null;if(Object.hasOwn(args,'estimate'))next.estimateMin=args.estimate||null;
+    if(next.deps.some(id=>id===next.id||!byId(id)))return {ok:false,errorCode:'INVALID_DEPENDENCY',error:'依赖必须引用其它真实任务'};
+    const candidate=tasks.filter(t=>t.id!==next.id).concat(next),map=new Map(candidate.map(t=>[t.id,t]));
+    for(const kind of ['deps','parentId']){const seen=new Set(),visiting=new Set();const visit=id=>{if(visiting.has(id))throw Error('任务依赖或分组会形成循环');if(seen.has(id))return;visiting.add(id);const t=map.get(id);if(!t)throw Error('父任务不存在');for(const other of kind==='deps'?t.deps:t.parentId?[t.parentId]:[])visit(other);visiting.delete(id);seen.add(id);};try{candidate.forEach(t=>visit(t.id));}catch(error){return {ok:false,errorCode:'TASK_CYCLE',error:error.message};}}
+    if(args.status==='done'&&next.deps.some(id=>map.get(id)?.status!=='done'))return {ok:false,errorCode:'TASK_BLOCKED',error:'前置任务未完成'};
+    next.updatedAt=Date.now();next.doneAt=next.status==='done'?(old?.doneAt||Date.now()):null;
+    if(old)tasks.splice(tasks.indexOf(old),1,next);else tasks.push(next);
+    pushHist(args.operation==='add'?'AI新建任务':'AI编辑任务');save();render();await saveChain;
+    return {ok:context===owner&&owner.store.result?.ok===true,committed:true,task:next,saveResult:owner.store.result};
+  }
+
   return {
-    setRoot, reload, refresh, render, setView, save, exportData, openRecovery, chooseRecovery,
+    setRoot, reload, refresh, render, setView, save, exportData, aiControl, openRecovery, chooseRecovery,
     get ready() { return loadPromise; },
     get loadState() { return loadState; },
     get saveResult() { return context && context.store.result; },

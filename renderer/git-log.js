@@ -735,6 +735,6 @@ const GitLog = (() => {
     try { target.scrollIntoView({ block: 'nearest' }); } catch {}
   });
 
-  return { open, hide, toggle, isOpen, refresh, setRoot, buildGraph, showFileHistory };
+  return { open, hide, toggle, isOpen, refresh, setRoot, buildGraph, showFileHistory, selectCommit:select };
 })();
 window.GitLog = GitLog;

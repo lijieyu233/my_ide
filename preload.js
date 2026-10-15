@@ -229,6 +229,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     finish: (context) => ipcRenderer.invoke('ai:finish', context),
     ssh: (context,call) => ipcRenderer.invoke('ai:ssh',context,call),
     browser: (context,call) => ipcRenderer.invoke('ai:browser',context,call),
+    workbenchGitFiles:(context,call)=>ipcRenderer.invoke('ai:workbench-git-files',context,call),
     workbenchVerify:(context,call)=>ipcRenderer.invoke('ai:workbench-verify',context,call),
     workbench: (context,call)=>ipcRenderer.invoke('ai:workbench',context,call),
     workbenchSelection:()=>ipcRenderer.invoke('ai:workbench-selection'),
