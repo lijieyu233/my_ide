@@ -103,7 +103,7 @@ const AiPanel = (() => {
         if (!result?.ok) run.notice.textContent = '已停止本地派发；主进程停止未确认';
       });
     }
-    if (invalidate) { generation++; currentRun = null; busy = false; curStream = null; curText = ''; setBusyUI(false); document.getElementById('ai-stop')?.classList.add('hidden'); }
+    if (invalidate) {for(const entry of run?.aiTransitions?.splice(0)||[])entry.reject(Error('任务已停止，未执行排队动作')); generation++; currentRun = null; busy = false; curStream = null; curText = ''; setBusyUI(false); document.getElementById('ai-stop')?.classList.add('hidden'); }
   }
   let usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }; // 会话累计 token 用量（usage 有值时更新）
   let checkpoints = [];      // AI 写入检查点：[{path, rel, oldText, existed, done, card}]
@@ -811,6 +811,7 @@ const AiPanel = (() => {
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', _toolName:c.name, content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
         run.results?.add(c.id);
+        if(await aiDrainTransitions(run)){persistSession();if(!runIsLive(run))return;}
       }
       agentRounds++;
     }
@@ -2533,7 +2534,7 @@ const AiPanel = (() => {
     activity.status=result.ok?'completed':'failed';activity.output=String(result.text||'').slice(0,30000);
     setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row)row.title=String(result.text||'');
     if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
-    try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);}catch{if(runIsLive(run))stopRun();}
+    try{await window.myIDE.ai.dshToolResult(event.context,call.id,result);await aiDrainTransitions(run);}catch{if(runIsLive(run))stopRun();}
   }
 
   function init() {
@@ -2701,12 +2702,23 @@ const AiPanel = (() => {
     return true;
   }
 
+  // 自我切换必须等工具结果已记录/回送；否则主进程会撤销发起这次操作的任务。
+  async function aiAfterResult(call,context,perform){
+    const run=currentRun,own=run?.status==='active'&&run.identity.requestId===context.requestId;
+    if(!own){if(busy)AiWorkbench.fail('AI_BUSY','当前另一个任务仍在运行');return perform();}
+    return AiWorkbench.startJob(AiWorkbenchTools.definitions[call.name].module,()=>new Promise((resolve,reject)=>{(run.aiTransitions||=[]).push({id:call.id,call,context,perform,resolve,reject});}));
+  }
+  async function aiDrainTransitions(run){
+    const queued=run.aiTransitions?.splice(0)||[];
+    for(const entry of queued){try{await AiWorkbench.checkpoint(entry.call,entry.context);entry.resolve(await entry.perform());}catch(error){entry.reject(error);}}
+    return queued.length>0;
+  }
   function pathsMoved(from,to) {
     ctxFiles=ctxFiles.map(f=>({...f,path:DocumentPaths.map(f.path,from,to)}));
     const muted=[...followMuted].map(p=>DocumentPaths.map(p,from,to));followMuted.clear();muted.forEach(p=>followMuted.add(p));
     if(followPath)followPath=DocumentPaths.map(followPath,from,to);
     mentionCache=null;rulesRoot=null;renderChips();renderFollow();
   }
-  return { init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
+  return {aiAfterResult, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
 })();
 window.AiPanel = AiPanel;

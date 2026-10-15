@@ -38,11 +38,11 @@ window.AiWorkbench=(()=>{
   }
   function startJob(module,perform,cancel){
     while(jobs.size>=64){const done=[...jobs.values()].find(j=>j.state!=='running');if(!done)fail('JOB_LIMIT','后台任务达到64个上限');jobs.delete(done.id);}
-    const job={id:crypto.randomUUID(),module,state:'running',createdAt:Date.now(),cancel};jobs.set(job.id,job);
+    const job={id:crypto.randomUUID(),root:root(),module,state:'running',createdAt:Date.now(),cancel};jobs.set(job.id,job);
     job.promise=Promise.resolve().then(()=>perform(job)).then(result=>{if(job.state==='running'){job.result=result;job.state=result?.ok===false?'failed':'completed';job.error=result?.error;}},error=>{if(job.state==='running'){job.state='failed';job.error=error.message;job.errorCode=error.code;}});
     return {ok:true,accepted:true,job:publicJob(job)};
   }
-  const publicJob=j=>({id:j.id,module:j.module,state:j.state,createdAt:j.createdAt,error:j.error,errorCode:j.errorCode,...(j.result?{result:j.result}:{})});
+  const publicJob=j=>({id:j.id,root:j.root,module:j.module,state:j.state,createdAt:j.createdAt,error:j.error,errorCode:j.errorCode,...(j.result?{result:j.result}:{})});
   function job(id,module){const j=jobs.get(id);if(!j||j.module!==module)fail('JOB_NOT_FOUND','任务不属于此模块');return j;}
   async function cancelJob(id,module){const j=job(id,module);if(j.state!=='running')return {ok:true,job:publicJob(j)};await j.cancel?.(j);j.state='cancelled';return {ok:true,job:publicJob(j)};}
   const jobList=module=>[...jobs.values()].filter(j=>j.module===module).map(publicJob);

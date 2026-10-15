@@ -80,13 +80,14 @@ const Shortcuts = (() => {
     for (const id of Object.keys(savedKey)) delete savedKey[id];
     Object.assign(savedKey, next); rebuild();
   }
-  function setBinding(id, combo) {
-    if (!registry[id]) throw Error('动作已移除');
-    if (combo && (combo === 'escape' || registry[id].bindingGuard && !registry[id].bindingGuard(combo))) throw Error('此动作请使用Ctrl/Alt组合键或F1～F12，Esc用于取消');
-    const combos = combo ? [combo] : [], conflicts = bindingConflicts(id, combos), next = { ...savedKey, [id]: combos };
-    // 被替换动作只移除冲突键，保留其他默认键；空数组明确表示不绑定，不能复活默认键。
-    for (const conflict of conflicts) next[conflict.id] = keysOf(conflict.id).filter(key => !combos.includes(key));
-    updateKeys(next); return conflicts.map(conflict => conflict.desc).join('、') || null;
+  function setBinding(id,combo){return setBindings(id,combo?[combo]:[]);}
+  function setBindings(id,combos){
+    if(!registry[id])throw Error('动作已移除');
+    if(!Array.isArray(combos)||combos.length>10||new Set(combos).size!==combos.length)throw Error('快捷键列表无效');
+    for(const combo of combos){const parts=String(combo).split('+'),key=parts.pop(),normalized=comboOf({key,ctrlKey:parts.includes('ctrl'),altKey:parts.includes('alt'),shiftKey:parts.includes('shift')});if(normalized!==combo||combo==='escape'||registry[id].bindingGuard&&!registry[id].bindingGuard(combo))throw Error('此动作请使用有效组合键，Esc用于取消');}
+    const conflicts=bindingConflicts(id,combos),next={...savedKey,[id]:combos};
+    for(const conflict of conflicts)next[conflict.id]=keysOf(conflict.id).filter(key=>!combos.includes(key));
+    updateKeys(next);return conflicts.map(conflict=>conflict.desc).join('、')||null;
   }
   function reset(id) {
     if (!registry[id]) throw Error('动作已移除');
@@ -241,7 +242,7 @@ const Shortcuts = (() => {
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
 
-  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, reset, resetAll, load, captureNext, cancelCapture, isCapturing, comboOf,
+  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, comboOf,
     context, availability, commands, execute, onChanged, describe, invalidateContext,
     get lastFailure() { return lastFailure; }, clearFailure() { lastFailure = null; changed(); } };
 })();
