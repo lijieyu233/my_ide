@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const FileWrite = require('./file-write');
+const FileWrite = require('../files/file-write');
 
 const TYPES = new Set(['app', 'file', 'folder', 'web']);
 const fail = (code, message, extra = {}) => Object.assign(Error(message), { code, ...extra });

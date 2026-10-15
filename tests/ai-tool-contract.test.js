@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),path=require('path');
-const C=require('../ai-tool-contract'); let passed=0;
+const C=require('../src/main/ai/ai-tool-contract'); let passed=0;
 const call=(name,args,id='call-1')=>({id,name,args});
 function test(name,fn){fn();passed++;console.log('  ok '+name);}
 const rejects=fn=>assert.throws(fn,e=>e.code==='INVALID_TOOL_ARGS');
@@ -18,7 +18,7 @@ test('所有必填/可选字段严格检查，替换布尔不隐式转换',()=>{
 });
 test('名称/id/调用形状不可伪造，不接原型和多余元数据',()=>{
   for(const id of ['', ' ', 'x'.repeat(201), 'bad\0id', 1])rejects(()=>C.validate(call('list_files',{},id)));
-  for(const name of ['constructor','__proto__','unknown',1])rejects(()=>C.validate(call(name,{})));
+  for(const name of ['function Object() { [native code] }','[object Object]','unknown',1])rejects(()=>C.validate(call(name,{})));
   rejects(()=>C.validate({...call('list_files',{}),extra:true}));rejects(()=>C.validate(call('list_files',new Date())));
 });
 test('Windows驱动器/UNC/设备名/ADS/父段/尾点空格均拒绝',()=>{

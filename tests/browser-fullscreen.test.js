@@ -1,4 +1,4 @@
-const assert=require('assert/strict'),{EventEmitter}=require('events'),{createService}=require('../browser-fullscreen');let passed=0;
+const assert=require('assert/strict'),{EventEmitter}=require('events'),{createService}=require('../src/main/browser/browser-fullscreen');let passed=0;
 function fixture(original=false,headless=false){const win=new EventEmitter(),calls=[],states=[];Object.assign(win,{native:original,isDestroyed:()=>false,isFullScreen(){return this.native;},setFullScreen(value){calls.push(value);this.native=value;},webContents:{send:(_ch,state)=>states.push(state)}});return {win,calls,states,service:createService({getWindow:()=>win,headless})};}
 function test(name,fn){fn();passed++;console.log('ok '+name);}
 test('进入退出恢复原生窗口模式，重复操作不重复切换',()=>{const f=fixture();assert(f.service.set(true).fullscreen);f.service.set(true);assert.deepEqual(f.calls,[true]);assert.equal(f.service.set(false).fullscreen,false);assert.deepEqual(f.calls,[true,false]);assert.equal(f.states.at(-1).fullscreen,false);});

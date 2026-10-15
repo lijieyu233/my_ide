@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const Native=require('../file-copy-win'),{createService}=require('../copy-journal');
+const Native=require('../src/main/files/file-copy-win'),{createService}=require('../src/main/files/copy-journal');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-copy-test-'));let passed=0;
 function fixture(native=Native){const home=fs.mkdtempSync(path.join(temp,'case-')),project=path.join(home,'project'),source=path.join(home,'source'),cache=path.join(home,'recovery');fs.mkdirSync(project);fs.mkdirSync(source);return {project,source,cache,service:createService(cache,native)};}
 const write=(p,b)=>{fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,b);return p;};
@@ -47,7 +47,7 @@ try{
  });
  check('子进程在原生发布后直接退出，新的进程服务仍能恢复',()=>{
   const f=fixture(),src=write(path.join(f.source,'crash'),'新');write(path.join(f.project,'crash'),'原');const p=f.service.prepare(f.project,[src],f.project);
-  const child=require('child_process').spawnSync(process.execPath,['-e',`const N=require('./file-copy-win');const service=require('./copy-journal').createService(${JSON.stringify(f.cache)},{...N,publish(a,b,r){N.publish(a,b,r);process.exit(51);}});service.commit(${JSON.stringify(f.project)},${JSON.stringify(p.operationId)},true);`],{cwd:path.resolve(__dirname,'..'),windowsHide:true});assert.equal(child.status,51);assert.equal(fs.readFileSync(path.join(f.project,'crash'),'utf8'),'新');assert(createService(f.cache).undo(f.project,p.operationId).ok);assert.equal(fs.readFileSync(path.join(f.project,'crash'),'utf8'),'原');
+  const child=require('child_process').spawnSync(process.execPath,['-e',`const N=require('./src/main/files/file-copy-win');const service=require('./src/main/files/copy-journal').createService(${JSON.stringify(f.cache)},{...N,publish(a,b,r){N.publish(a,b,r);process.exit(51);}});service.commit(${JSON.stringify(f.project)},${JSON.stringify(p.operationId)},true);`],{cwd:path.resolve(__dirname,'..'),windowsHide:true});assert.equal(child.status,51);assert.equal(fs.readFileSync(path.join(f.project,'crash'),'utf8'),'新');assert(createService(f.cache).undo(f.project,p.operationId).ok);assert.equal(fs.readFileSync(path.join(f.project,'crash'),'utf8'),'原');
  });
  check('目录ADS新复制及导出保留，已有目录ADS合并明确拒绝',()=>{
   const f=fixture(),src=path.join(f.source,'dir');fs.mkdirSync(src);write(src+':private','目录流');const p=f.service.prepare(f.project,[src],f.project);assert(p.ok);assert(f.service.commit(f.project,p.operationId,false).ok);assert.equal(fs.readFileSync(path.join(f.project,'dir')+':private','utf8'),'目录流');

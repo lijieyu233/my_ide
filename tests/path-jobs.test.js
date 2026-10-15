@@ -1,5 +1,5 @@
 const fs=require('fs'),os=require('os'),path=require('path'),assert=require('assert/strict');
-const Jobs=require('../path-jobs'),FileWrite=require('../file-write');
+const Jobs=require('../src/main/files/path-jobs'),FileWrite=require('../src/main/files/file-write');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-path-jobs-test-'));let passed=0;
 const check=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
 (async()=>{try{

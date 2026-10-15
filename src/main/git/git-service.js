@@ -288,11 +288,11 @@ const StatusService=require('./git-status').createStatus({findRoot,resolveGitDir
  if(configs.some(file=>risk(readOptional(file))))throw Object.assign(Error('当前属性或过滤配置需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});
  const hasRules=text=>text.split(/\r?\n/).some(line=>line.trim()&&!line.trim().startsWith('#'));
  if([path.join(gitdir,'info','attributes'),path.join(gitdir,'info','exclude'),path.join(xdg,'git','attributes'),path.join(xdg,'git','ignore')].some(f=>hasRules(readOptional(f))))throw Object.assign(Error('当前Git属性或外部忽略来源需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});
- const versionFile=path.join(gitdir,'index'),before=require('./file-write').readSnapshot(versionFile),headBefore=await headInfo(root);
+ const versionFile=path.join(gitdir,'index'),before=require('../files/file-write').readSnapshot(versionFile),headBefore=await headInfo(root);
  const attrs=new Set();const verifyAttrs=file=>{for(let dir=path.dirname(path.join(root,file));;dir=path.dirname(dir)){if(!attrs.has(dir)){attrs.add(dir);if(hasRules(readOptional(path.join(dir,'.gitattributes'))))throw Object.assign(Error('当前Git属性需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});}if(dir===root)break;}};
  const matrix=await matrixFast(root,opts),changed=[],tracked=[];for(const row of matrix){verifyAttrs(row[0]);if(row[1]>0||row[3]>0)tracked.push(posix(row[0]));const st=matrixToStatus(row);if(!st)continue;if(st.status==='added'&&row[2]===2&&row[3]===0&&isIgnoredPath(posix(row[0]),allRulesFor(root,posix(row[0]))))continue;changed.push({file:native(row[0]),...st});}
  for(const dir of attrs){if(/^[^#\r\n]*[\\\[\]]/m.test(readOptional(path.join(dir,'.gitignore'))))throw Object.assign(Error('复杂忽略规则需要系统Git才能完整扫描'),{code:'STATUS_CAPABILITY_LIMITED'});}
- if(JSON.stringify(before.version)!==JSON.stringify(require('./file-write').readSnapshot(versionFile).version)||headBefore?.headOid!==(await headInfo(root))?.headOid)throw Object.assign(Error('扫描期间index或HEAD变化'),{code:'STATUS_CHANGED'});
+ if(JSON.stringify(before.version)!==JSON.stringify(require('../files/file-write').readSnapshot(versionFile).version)||headBefore?.headOid!==(await headInfo(root))?.headOid)throw Object.assign(Error('扫描期间index或HEAD变化'),{code:'STATUS_CHANGED'});
  const branch=await git.currentBranch({fs,dir:root,fullname:false});
  changed.sort((a,b)=>a.file.localeCompare(b.file));tracked.sort();return {branch:branch||'(无提交)',changed,tracked,backend:opts.force?'js-full':'js-fast'};
 }});

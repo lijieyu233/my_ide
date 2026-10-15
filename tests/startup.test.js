@@ -16,7 +16,7 @@ const check = (name, value) => { assert(value, name); passed++; console.log('ok 
     const retry = VendorLoader.load('docx'); dom.window.docxPreview = {}; dom.window.document.scripts[1].onload(); await retry;
     check('库加载失败可重试并清理旧脚本', dom.window.document.scripts.length === 2);
     const invalid = VendorLoader.load('pptx'); const missing = assert.rejects(invalid, /初始化失败/); dom.window.document.scripts[2].onload(); await missing;
-    await assert.rejects(VendorLoader.load('../other.js'), /未知/); await assert.rejects(VendorLoader.load('__proto__'), /未知/); check('初始化失败及白名单外脚本明确拒绝', true);
+    await assert.rejects(VendorLoader.load('../other.js'), /未知/); await assert.rejects(VendorLoader.load('[object Object]'), /未知/); check('初始化失败及白名单外脚本明确拒绝', true);
     const channels = new Map(), imports = [];
     const fakeRequire = name => {
       if (name === 'electron') return { ipcMain: { handle: (ch, fn) => channels.set(ch, fn) } };
@@ -28,7 +28,7 @@ const check = (name, value) => { assert(value, name); passed++; console.log('ok 
       throw Error('unexpected import');
     };
     const context = { require: fakeRequire, module: { exports: {} }, console, Buffer };
-    vm.runInNewContext(fs.readFileSync('db-service.js', 'utf8'), context); context.module.exports.registerIpc();
+    vm.runInNewContext(fs.readFileSync('src/main/db/db-service.js', 'utf8'), context); context.module.exports.registerIpc();
     check('主进程注册数据库功能时不加载驱动', imports.length === 0 && channels.has('db:connect'));
     const connect = cfg => channels.get('db:connect')({}, cfg);
     const mysql = await connect({ type: 'mysql' }); const mysql2 = await connect({ type: 'mysql' });

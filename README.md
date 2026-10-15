@@ -84,7 +84,15 @@ npm start       # 启动应用
 ```
 main.js               Electron 主进程（窗口 + IPC：文件系统 / Git / 剪贴板 / 编码 / 插件）
 preload.js            contextBridge 安全桥（window.myIDE）
-git-service.js        Git 封装（isomorphic-git）+ 自研 Myers 行级 diff
+src/main/             后台功能模块（根目录只保留两个 JS 入口）
+  ai/                 AI 请求、工具执行、权限与审批
+  dsh/                DSH 运行时、原生连接与插件
+  git/                Git 状态、提交、差异与 Worker
+  browser/            网页深色、右键、全屏、字幕与 HTML 预览
+  files/              文件读写、编码、路径迁移与 Worker
+  launch/             启动面板、进程管理与快速启动
+  remote/             SSH、远程文件与 IPC
+  db/ search/ tasks/ app/  数据库、搜索、任务恢复、应用实例
 renderer/             渲染进程（原生 JS，无构建）
   plugin-loader.js    渲染器注册 API + 内置 md/html/csv/图片/PDF 渲染
   tree.js / viewer.js / outline.js / git-panel.js / quickopen.js /
@@ -117,6 +125,7 @@ npm run check:packaged -- dist/win-unpacked/MyIDE.exe --no-git
 
 - [改进进度总览](./docs/改进进度总览.md) —— 已做内容、未做内容和完成日期（统一清单）
 - [AI 操作接口模块清单](./docs/开发文档-171-AI操作接口模块清单.md) —— 按模块分类，已接入接口打勾，未接入能力持续追踪
+- [后台源码模块目录整理](./docs/开发文档-172-后台源码模块目录整理.md) —— 目录职责、模块引用与打包验证
 - [开发大纲.md](./开发大纲.md) —— 愿景 / 性能基线 / 功能边界（宪法）
 - [ROADMAP.md](./ROADMAP.md) —— 功能清单与完成记录
 - [docs/](./docs/) —— 专项开发文档（需求/设计/测试/验收，数量持续增加）

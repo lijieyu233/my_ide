@@ -2,7 +2,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const {randomBytes} = require('crypto');
-const TextFormat=require('./text-format');
+const TextFormat=require('../files/text-format');
 const KEY_BRIDGE='<script>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});</script>';
 const SCHEME = 'myide-preview';
 const MIME = {html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',ico:'image/x-icon',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',mp4:'video/mp4',webm:'video/webm',wasm:'application/wasm',txt:'text/plain'};

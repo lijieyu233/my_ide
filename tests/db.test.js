@@ -36,7 +36,7 @@ function ok(cond, msg) {
     if (req === 'electron') return { ipcMain: fakeIpc };
     return orig.call(this, req, ...a);
   };
-  require('../db-service').registerIpc();
+  require('../src/main/db/db-service').registerIpc();
   console.log('registered:', Object.keys(handlers).length);
 
   const invoke = (k, ...args) => handlers[k](null, ...args);

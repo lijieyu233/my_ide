@@ -2,7 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const G = require('../git-service');
+const G = require('../src/main/git/git-service');
 
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-bench-'));

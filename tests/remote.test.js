@@ -1,5 +1,5 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict'), crypto = require('crypto');
-const { createService } = require('../remote-service'), { start } = require('./fixtures/remote-ssh');
+const { createService } = require('../src/main/remote/remote-service'), { start } = require('./fixtures/remote-ssh');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-remote-test-')), remote = path.join(root, 'server'), local = path.join(root, 'local');
 fs.mkdirSync(remote); fs.mkdirSync(local);
 const sleep = ms => new Promise(r => setTimeout(r, ms));

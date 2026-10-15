@@ -3,7 +3,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const HtmlPreview = require('./html-preview');
+const HtmlPreview = require('./src/main/browser/html-preview');
 const htmlPreview = HtmlPreview.createService();
 protocol.registerSchemesAsPrivileged([{scheme:HtmlPreview.SCHEME,privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
 ipcMain.handle('html-preview:open',async(event,request)=>{
@@ -11,18 +11,18 @@ ipcMain.handle('html-preview:open',async(event,request)=>{
   catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
-const G = require('./git-service');
-const DB = require('./db-service');
-const AI = require('./ai-service');
-const DSH=require('./ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
-const aiRuns = require('./ai-runs').createRegistry();
-const aiOwners=require('./ai-owner-router').createRouter();
-const AiToolContract = require('./ai-tool-contract');
-const aiTools = require('./ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
-const FileWrite = require('./file-write');
-const PathJobs = require('./path-jobs');
-const TextFormat = require('./text-format');
-const searchService = require('./search-service').createSearchService();
+const G = require('./src/main/git/git-service');
+const DB = require('./src/main/db/db-service');
+const AI = require('./src/main/ai/ai-service');
+const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
+const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
+const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
+const AiToolContract = require('./src/main/ai/ai-tool-contract');
+const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
+const FileWrite = require('./src/main/files/file-write');
+const PathJobs = require('./src/main/files/path-jobs');
+const TextFormat = require('./src/main/files/text-format');
+const searchService = require('./src/main/search/search-service').createSearchService();
 const aiSearchJobs=new Map();
 function cancelAiSearch(requestId){for(const [id,job]of aiSearchJobs)if(job.context.requestId===requestId)searchService.cancel(job.owner,id).catch(()=>{});}
 AI.init(net);
@@ -75,9 +75,9 @@ const OPEN_ARG = (() => {
 })();
 
 let mainWindow = null;
-const remoteService=require('./remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow: () => mainWindow,
+const remoteService=require('./src/main/remote/remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow: () => mainWindow,
   configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
-const aiSshTools=require('./ai-ssh-tools').createService({service:remoteService});
+const aiSshTools=require('./src/main/ai/ai-ssh-tools').createService({service:remoteService});
 ipcMain.handle('ai:ssh',async(e,context,call)=>{
   try{const owner=aiSender(e,context),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-ssh-tools').has(normalized.name))throw Object.assign(Error('不是SSH终端工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiSshTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
@@ -87,13 +87,13 @@ ipcMain.handle('ai:ssh',async(e,context,call)=>{
 let stateFile = null;
 let pendingOpenArg = OPEN_ARG;
 // 隐藏自检用独立profile；用户窗口必须先拿锁，不能重复加载同一份设置和后台查询。
-if (!HIDDEN_WINDOW) require('./app-instance').claim({ app, getWindow: () => mainWindow, openProject: requested => {
+if (!HIDDEN_WINDOW) require('./src/main/app/app-instance').claim({ app, getWindow: () => mainWindow, openProject: requested => {
   const win = mainWindow;
   if (!win || win.isDestroyed()) { pendingOpenArg = requested; return; }
   const send = () => { if (!win.isDestroyed()) win.webContents.send('app:open-project', requested); };
   if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', send); else send();
 } });
-const aiPermissionsBridge = require('./ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
+const aiPermissionsBridge = require('./src/main/ai/ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: (event,context) => aiSender(event,context), windowFor: owner => mainWindow && mainWindow.webContents.id === aiOwners.host(owner) ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
   stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
@@ -196,7 +196,7 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
-  require('./app-instance').showOnReady(mainWindow, HIDDEN_WINDOW);
+  require('./src/main/app/app-instance').showOnReady(mainWindow, HIDDEN_WINDOW);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
@@ -219,9 +219,9 @@ ipcMain.handle('browser:translation-keys',(event,keys)=>{
   if(!Array.isArray(keys)||keys.length>16||keys.some(k=>typeof k!=='string'||k.length>80))return {ok:false};
   browserTranslationKeys=[...keys];return {ok:true};
 });
-const browserColorScheme=require('./browser-color-scheme').createService({nativeTheme,onError:error=>mainWindow?.webContents.send('browser:state',{colorSchemeError:String(error.message||error)})});
+const browserColorScheme=require('./src/main/browser/browser-color-scheme').createService({nativeTheme,onError:error=>mainWindow?.webContents.send('browser:state',{colorSchemeError:String(error.message||error)})});
 app.on('will-quit',()=>browserColorScheme.dispose());
-const browserFullscreen=require('./browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
+const browserFullscreen=require('./src/main/browser/browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
 ipcMain.handle('browser:fullscreen', (e,enabled)=>{
   try{if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口操作浏览器全屏');return browserFullscreen.set(enabled);}catch(error){return {error:error.message};}
 });
@@ -241,10 +241,10 @@ function ensureBwView() {
   });
   const wc = bwView.webContents;
   browserColorScheme.bind(wc);
-  require('./browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
+  require('./src/main/browser/browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);},
     openExternal:url=>shell.openExternal(url).catch(error=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:state',{err:String(error.message||error)});})});
-  require('./browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>browserTranslationKeys,
+  require('./src/main/browser/browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>browserTranslationKeys,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);}});
   // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
   // mailto:/tel: 等非网页协议才交系统处理
@@ -341,11 +341,11 @@ ipcMain.handle('browser:color-scheme', async(e, mode) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-const aiBrowserTools=require('./ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,panel:async(operation,args={})=>{
+const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,panel:async(operation,args={})=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
   return mainWindow.webContents.executeJavaScript('BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')');
 }});
-const aiProjectTools=require('./ai-project-tools').createService({panel:async(call,context,target)=>{
+const aiProjectTools=require('./src/main/ai/ai-project-tools').createService({panel:async(call,context,target)=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
   return mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+')');
 }});
@@ -657,7 +657,7 @@ ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools)=>{
   }catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
-  try{aiSender(event);const runtime=await require('./dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:runtime.launcher};}catch(error){return {ok:false,error:error.message};}
+  try{aiSender(event);const runtime=await require('./src/main/dsh/dsh-runtime').resolveRuntime(launcher||undefined);return {ok:true,launcher:runtime.launcher};}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
@@ -792,7 +792,7 @@ for (const op of ['inspect', 'list', 'read', 'save', 'restore', 'exportCopy']) {
   });
 }
 ipcMain.handle('fs:createItem', (_e, project, parent, name, type) => pathResult(() => {
-  require('./path-create').validateName(name);
+  require('./src/main/files/path-create').validateName(name);
   const target=path.join(parent,name);
   return PathJobs.withMove(target,target,()=>PathJobs.run('create',[project,parent,name,type]));
 }));
@@ -1173,7 +1173,7 @@ function gitCall(op, ...args) {
 }
 function startGitWorker() {
   try {
-    gitWorker = new Worker(path.join(__dirname, 'git-worker.js'));
+    gitWorker = new Worker(path.join(__dirname, 'src/main/git/git-worker.js'));
     const worker=gitWorker;
     const unavailable=()=>{if(gitWorker!==worker)return;gitWorker=null;gitPending.forEach(r=>r({ok:false,errorCode:'GIT_WORKER_UNAVAILABLE',error:'Git执行进程退出，操作结果需刷新核对'}));gitPending.clear();};
     // 正常exit未必触发error；必须释放队列等待者，不能在可能已写入后自动重放操作。
@@ -1196,9 +1196,9 @@ function startGitWorker() {
 // 通道名 → 服务函数的映射只写在 git-ops.js 一处，这里按表生成 handler（参数原样透传）。
 // ⚠ preload / dom mock 仍是显式写（sandbox:true 的 preload 不能 require 本地模块），
 //   但自检 `gitBackend` 步骤会拿这张表和 window.myIDE.git 的键做漂移检查。
-const GIT_OPS = require('./git-ops');
-const nativeGit = require('./git-native');
-const serializeGitIPC=require('./git-queue').createQueue();
+const GIT_OPS = require('./src/main/git/git-ops');
+const nativeGit = require('./src/main/git/git-native');
+const serializeGitIPC=require('./src/main/git/git-queue').createQueue();
 for (const spec of GIT_OPS) {
   const invoke=async(args)=>{
     if(spec.ch==='revertHunk'){
@@ -1213,10 +1213,10 @@ for (const spec of GIT_OPS) {
   ipcMain.handle('git:'+spec.ch,(_e,...args)=>spec.writes?serializeGitIPC(args[0],()=>invoke(args)):invoke(args));
 }
 // 快速启动独立于终端执行器；只把已保存目标交给系统，不将路径拼成shell命令。
-const quickLaunch = require('./quick-launch-service').createService(
+const quickLaunch = require('./src/main/launch/quick-launch-service').createService(
   path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'quick-launch.json'), {
     openPath: target => shell.openPath(target),
-    launchApp: entry => require('./quick-launch-app').launch(entry),
+    launchApp: entry => require('./src/main/launch/quick-launch-app').launch(entry),
     openExternal: target => shell.openExternal(target),
     getIcon: async target => (await app.getFileIcon(target, { size: 'normal' })).toDataURL(),
   });
@@ -1259,9 +1259,9 @@ ipcMain.handle('quick-launch:export', async () => {
 // 与 git 同一套路：通道 → 服务函数的映射只写在 launch-ops.js 一处。
 // ⚠ 后台保留（用户拍板）：子进程 detached，关闭 my_ide **不杀**；退出时只把 PID 落盘，
 //   下次打开靠端口探测 / 落盘 PID 找回运行状态，仍然可以停止。
-const LAUNCH_OPS = require('./launch-ops');
-const launchService = require('./launch-service');
-const aiLaunchTools = require('./ai-launch-tools').createService({ service:launchService, canOperate:()=>!launchExit.isPending(),
+const LAUNCH_OPS = require('./src/main/launch/launch-ops');
+const launchService = require('./src/main/launch/launch-service');
+const aiLaunchTools = require('./src/main/ai/ai-launch-tools').createService({ service:launchService, canOperate:()=>!launchExit.isPending(),
   notify:change=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('launch:changed',change);} });
 ipcMain.handle('ai:launch',async(e,context,call)=>{
   try {
@@ -1852,6 +1852,6 @@ app.whenReady().then(() => {
   }
 });
 
-const launchExit = require('./launch-exit').createExitCoordinator({ app, service: launchService, dialog,
+const launchExit = require('./src/main/launch/launch-exit').createExitCoordinator({ app, service: launchService, dialog,
   getWindow: () => mainWindow, beforeQuit: () => DSH.dispose(), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

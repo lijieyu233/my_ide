@@ -1,7 +1,7 @@
 // 使用独立Node进程模拟MyIDE被强制结束，再单独结束cmd外壳；不触碰用户配置或桌面。
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert/strict');
 const { spawn } = require('child_process');
-const service = require('../launch-service');
+const service = require('../src/main/launch/launch-service');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-launch-orphan-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const wait = async predicate => { for (let i = 0; i < 200; i++) { if (await predicate()) return; await sleep(100); } throw Error('孤儿进程验证等待超时'); };
@@ -11,7 +11,7 @@ let supervisor, entry;
     const script = path.join(home, 'service.js'), worker = path.join(home, 'owner.js'), ready = path.join(home, 'ready.json');
     fs.writeFileSync(script, "require('net').createServer().listen(0,'127.0.0.1',function(){require('fs').writeFileSync(" + JSON.stringify(path.join(home, 'port.txt')) + ",String(this.address().port));});");
     entry = { id: 'orphan', cwd: home, command: '"' + process.execPath + '" "' + script + '"' };
-    fs.writeFileSync(worker, "const s=require(" + JSON.stringify(path.resolve(__dirname, '../launch-service')) + ");s.setConfigDir(" + JSON.stringify(home) + ");s.startEntry(" + JSON.stringify(entry) + ").then(r=>{require('fs').writeFileSync(" + JSON.stringify(ready) + ",JSON.stringify(r));setInterval(()=>{},1000);});");
+    fs.writeFileSync(worker, "const s=require(" + JSON.stringify(path.resolve(__dirname, '../src/main/launch/launch-service')) + ");s.setConfigDir(" + JSON.stringify(home) + ");s.startEntry(" + JSON.stringify(entry) + ").then(r=>{require('fs').writeFileSync(" + JSON.stringify(ready) + ",JSON.stringify(r));setInterval(()=>{},1000);});");
     supervisor = spawn(process.execPath, [worker], { stdio: 'ignore', windowsHide: true });
     await wait(() => fs.existsSync(ready) && fs.existsSync(path.join(home, 'port.txt')));
     const started = JSON.parse(fs.readFileSync(ready, 'utf8')); assert(started.ok);

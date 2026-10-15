@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),{EventEmitter}=require('events'),{JSDOM}=require('jsdom');
-const Contract=require('../ai-tool-contract'),Names=require('../renderer/ai-browser-tools'),Adapter=require('../ai-browser-tools'),Execution=require('../ai-tool-execution'),Authority=require('../ai-tool-authority'),{createRegistry}=require('../ai-runs');
+const Contract=require('../src/main/ai/ai-tool-contract'),Names=require('../renderer/ai-browser-tools'),Adapter=require('../src/main/ai/ai-browser-tools'),Execution=require('../src/main/ai/ai-tool-execution'),Authority=require('../src/main/ai/ai-tool-authority'),{createRegistry}=require('../src/main/ai/ai-runs');
 let sequence=0,passed=0;const fixtures=[];
 const call=(name,args={})=>({id:'browser-'+(++sequence),name,args});
 function fixture(initial=true,timeoutMs=5000){

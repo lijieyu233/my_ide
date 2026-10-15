@@ -1,5 +1,5 @@
 const os=require('os'),path=require('path'),{randomUUID,createHash}=require('crypto');
-const Names=require('./renderer/ai-ssh-tools');
+const Names=require('../../../renderer/ai-ssh-tools');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 function createService({service}){
   function prepare(call){

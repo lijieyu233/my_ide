@@ -1,7 +1,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { JSDOM } = require('jsdom');
-const { createService } = require('../task-recovery');
-const FileWrite = require('../file-write'), TextFormat = require('../text-format');
+const { createService } = require('../src/main/tasks/task-recovery');
+const FileWrite = require('../src/main/files/file-write'), TextFormat = require('../src/main/files/text-format');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-task-recovery-dom-'));
 const source = fs.readFileSync(path.join(__dirname, '../renderer/tasks.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');

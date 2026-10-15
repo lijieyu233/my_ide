@@ -1,8 +1,8 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
-const { JSDOM } = require('jsdom'), { createRegistry } = require('../ai-runs'), FileWrite = require('../file-write'), TextFormat = require('../text-format');
-const AI = require('../ai-service');
-const ToolContract = require('../ai-tool-contract');
-const ToolExecution = require('../ai-tool-execution');
+const { JSDOM } = require('jsdom'), { createRegistry } = require('../src/main/ai/ai-runs'), FileWrite = require('../src/main/files/file-write'), TextFormat = require('../src/main/files/text-format');
+const AI = require('../src/main/ai/ai-service');
+const ToolContract = require('../src/main/ai/ai-tool-contract');
+const ToolExecution = require('../src/main/ai/ai-tool-execution');
 const source = fs.readFileSync(path.join(__dirname, '../renderer/ai-panel.js'), 'utf8'), html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(r => setImmediate(r));
@@ -19,7 +19,7 @@ function fixture() {
   const registry = createRegistry(), calls = [], writes = [], commands = [], aborts = [], pending = [];
   const launchFile=path.join(dir,'launch.json');fs.writeFileSync(launchFile,JSON.stringify({entries:[{id:'program',name:'测试服务',category:'自定义',cwd:A,command:'node service.js',port:0}],apiOrigins:[],keepOnExit:true}));created.add(launchFile);
   const actions=[],selected=[];
-  const launchAdapter=require('../ai-launch-tools').createService({service:{paths:()=>({configFile:launchFile}),statusOf:async entries=>entries.map(e=>({id:e.id,running:actions.at(-1)?.operation==='start',ownership:'owned'})),getLogs:()=>({lines:['READY'],runId:'fixture'}),
+  const launchAdapter=require('../src/main/ai/ai-launch-tools').createService({service:{paths:()=>({configFile:launchFile}),statusOf:async entries=>entries.map(e=>({id:e.id,running:actions.at(-1)?.operation==='start',ownership:'owned'})),getLogs:()=>({lines:['READY'],runId:'fixture'}),
     startEntry:async(e,guard)=>{if(f.beforeLaunch)await f.beforeLaunch();guard('start');actions.push({operation:'start',id:e.id});return {ok:true};},
     stopEntry:async(e,guard)=>{guard('stop');actions.push({operation:'stop',id:e.id});return {ok:true};},
     restartEntry:async(e,guard)=>{guard('start');actions.push({operation:'restart',id:e.id});return {ok:true};}
@@ -28,9 +28,9 @@ function fixture() {
   const browserAdapter={prepare:call=>({application:true,real:dir,directories:[],verify:()=>{},effect:null,data:{call}}),execute:proof=>{browserActions.push(proof.data.call);return {ok:true,url:'https://example.test',loading:false};}};
   const toolService=ToolExecution.createService(registry,{application:call=>require('../renderer/ai-browser-tools').has(call.name)?browserAdapter.prepare(call):launchAdapter.prepare(call)});
   const ui = require('./helpers/ai-approval-dom').createUI(() => f.stop());
-  const policyStore = require('../ai-permission-store').createStore(path.join(dir,'policy.json'));
+  const policyStore = require('../src/main/ai/ai-permission-store').createStore(path.join(dir,'policy.json'));
   policyStore.initialize({config:{permWrite:'auto'}}); created.add(path.join(dir,'policy.json'));
-  const authority = require('../ai-tool-authority').createAuthority({tools:toolService,readPolicy:(owner,context)=>policyStore.read(owner,context),confirm:ui.confirm,remember:(owner,data,signal)=>policyStore.remember(owner,data,signal,()=>toolService.active(owner,data.context))});
+  const authority = require('../src/main/ai/ai-tool-authority').createAuthority({tools:toolService,readPolicy:(owner,context)=>policyStore.read(owner,context),confirm:ui.confirm,remember:(owner,data,signal)=>policyStore.remember(owner,data,signal,()=>toolService.active(owner,data.context))});
   let onChunk, onDone;
   const f = { dir, A, B, w, calls, writes, commands, aborts, launchFile, actions, browserActions, selected, file, put, script: [], onRead: null, onWrite: null, registry };
   const read = async p => {

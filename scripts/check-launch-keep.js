@@ -17,7 +17,7 @@ if (process.versions.electron) {
   const { app, BrowserWindow } = require('electron');
   const home = process.argv[2], phase = process.argv[3];
   os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
-  const service = require('../launch-service'); service.setConfigDir(path.join(home, '.myide'));
+  const service = require('../src/main/launch/launch-service'); service.setConfigDir(path.join(home, '.myide'));
   require('../main');
   app.whenReady().then(async () => {
     try {
@@ -79,7 +79,7 @@ if (process.versions.electron) {
       let output = ''; child.stdout.on('data', chunk => output += chunk); child.stderr.on('data', chunk => output += chunk);
       child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(Error(phase + '失败，退出码 ' + code + '\n' + output)));
     });
-    const service = require('../launch-service'); service.setConfigDir(configDir);
+    const service = require('../src/main/launch/launch-service'); service.setConfigDir(configDir);
     try {
       if (!process.argv.includes('--stale-only')) {
         await run('keep');

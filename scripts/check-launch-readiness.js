@@ -2,7 +2,7 @@
 const {app,BrowserWindow}=require('electron'),fs=require('fs'),os=require('os'),path=require('path'),net=require('net'),assert=require('assert/strict');
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'myide-readiness-check-')),output=path.join(__dirname,'..','.ui-check-trash','readiness-window-'+process.pid);fs.mkdirSync(output,{recursive:true});
 os.homedir=()=>home;app.setPath('userData',path.join(home,'profile'));process.argv.push('--headless');
-const service=require('../launch-service');service.setConfigDir(path.join(home,'.myide'));
+const service=require('../src/main/launch/launch-service');service.setConfigDir(path.join(home,'.myide'));
 const script=path.join(home,'真实就绪输出.js');fs.writeFileSync(script,"console.log('尚未就绪');setTimeout(()=>{const b=Buffer.from('READY🙂');let i=0;const t=setInterval(()=>{process.stdout.write(b.subarray(i,i+1));if(++i===b.length)clearInterval(t);},20);},600);setInterval(()=>{},500);",'utf8');
 const command='node "'+script+'"',entries=[{id:'output',name:'本次输出就绪',cwd:home,command,readiness:{mode:'output',text:'READY🙂',timeoutSeconds:30}},{id:'timeout',name:'超时但进程存活',cwd:home,command,readiness:{mode:'output',text:'NEVER',timeoutSeconds:1}},{id:'port',name:'端口响应来源待核验',cwd:home,command,port:0,readiness:{mode:'port',timeoutSeconds:30}}];
 let win,server,passed=0;const sleep=ms=>new Promise(r=>setTimeout(r,ms)),probe=code=>win.webContents.executeJavaScript(code,true);

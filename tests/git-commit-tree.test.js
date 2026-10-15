@@ -1,4 +1,4 @@
-const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict'),git=require('isomorphic-git'),G=require('../git-service');
+const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict'),git=require('isomorphic-git'),G=require('../src/main/git/git-service');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'myide-commit-tree-'));const author={name:'test',email:'test@example.com'};
 async function commit(message){await git.add({fs,dir:root,filepath:'.'});return git.commit({fs,dir:root,message,author});}
 (async()=>{try{await git.init({fs,dir:root,defaultBranch:'main'});fs.mkdirSync(path.join(root,'untouched'));fs.mkdirSync(path.join(root,'changed'));for(let i=0;i<80;i++)fs.writeFileSync(path.join(root,'untouched',i+'.txt'),'same');fs.writeFileSync(path.join(root,'changed','one.txt'),'one');const first=await commit('first');const initial=await G.commitFiles(root,first);assert.equal(initial.files.length,81);assert(initial.files.every(f=>f.status==='added'));

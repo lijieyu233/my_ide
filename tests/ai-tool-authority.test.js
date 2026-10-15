@@ -1,6 +1,6 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
-const { createRegistry } = require('../ai-runs'), { createService } = require('../ai-tool-execution');
-const { createAuthority, policy } = require('../ai-tool-authority');
+const { createRegistry } = require('../src/main/ai/ai-runs'), { createService } = require('../src/main/ai/ai-tool-execution');
+const { createAuthority, policy } = require('../src/main/ai/ai-tool-authority');
 let passed = 0; const fixtures = [];
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { resolve, promise }; };
 const tick = () => new Promise(r => setImmediate(r));

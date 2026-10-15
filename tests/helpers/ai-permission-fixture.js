@@ -1,4 +1,4 @@
-const path = require('path'), Authority = require('../../ai-tool-authority'), Contract = require('../../ai-tool-contract');
+const path = require('path'), Authority = require('../../src/main/ai/ai-tool-authority'), Contract = require('../../src/main/ai/ai-tool-contract');
 const { createUI } = require('./ai-approval-dom');
 function install(w) {
   const api = w.myIDE.ai, ui = createUI(() => w.document.getElementById('ai-stop').click());

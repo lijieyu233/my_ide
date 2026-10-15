@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {createStore}=require('../ai-permission-store');let passed=0;const roots=[];
+const {createStore}=require('../src/main/ai/ai-permission-store');let passed=0;const roots=[];
 const test=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
 function fixture(options){const root=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-policy-'));roots.push(root);const file=path.join(root,'policy.json'),context={rootId:root,sessionId:'session'};return {root,file,context,store:createStore(file,options)};}
 (async()=>{

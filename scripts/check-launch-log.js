@@ -5,7 +5,7 @@ const temporary = os.tmpdir(), home = fs.mkdtempSync(path.join(temporary, 'myide
 const output = path.join(__dirname, '..', '.ui-check-trash', 'launch-log-' + process.pid);
 fs.mkdirSync(output, { recursive: true });
 os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
-const service = require('../launch-service'); service.setConfigDir(path.join(home, '.myide'));
+const service = require('../src/main/launch/launch-service'); service.setConfigDir(path.join(home, '.myide'));
 const script = path.join(home, 'log source.js'), commandFile = path.join(home, 'commands.json');
 fs.writeFileSync(script, "const fs=require('fs');let last=0;for(let i=0;i<500;i++)console.log('LINE'+String(i).padStart(4,'0')+' 开发输出 中文🙂');setInterval(()=>{try{const c=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));if(c.id===last)return;last=c.id;for(const line of c.lines)console.log(line);}catch{}},30);", 'utf8');
 const entry = { id: 'log-a', name: '开发服务 · 日志阅读', command: 'node "' + script + '" "' + commandFile + '"', cwd: home };

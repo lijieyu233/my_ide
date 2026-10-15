@@ -4,7 +4,7 @@ const {app,BrowserWindow}=require('electron');
 const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-history-check-')),home=path.join(temp,'home');
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));
-require('../main');const launch=require('../launch-service');launch.saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+require('../main');const launch=require('../src/main/launch/launch-service');launch.saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 let win,requests=[],mode='limit',passed=0,cleaning=false;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){const deadline=Date.now()+30000;while(Date.now()<deadline){if(await fn())return;await sleep(20);}throw Error('native condition timeout');}
@@ -15,7 +15,7 @@ function paired(messages){
   }assert.equal(pending.size,0,'请求末尾有未回答工具调用');
 }
 const call=(id,name,args={})=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
-require('../ai-service').init({fetch:async(_url,options)=>{
+require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
   const body=JSON.parse(options.body);paired(body.messages);requests.push(body);const round=requests.length;let calls;
   if(mode==='limit'&&round<=8)calls=[call('round-'+round,'launch_list')];
   if(mode==='limit'&&round===9)calls=[call('blocked-add','launch_add',{name:'不得新增',cwd:temp,command:'node nonexistent.js'}),call('blocked-start','launch_start',{program:'不存在的程序'})];

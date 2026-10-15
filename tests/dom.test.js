@@ -513,7 +513,7 @@ function makeDom() {
       abort: async () => ({ ok: true }),
       finish: async () => ({ ok: true }),
       validateTool: async (_context, call) => {
-        try { return { ok: true, call: require('../ai-tool-contract').validate(JSON.parse(JSON.stringify(call))) }; }
+        try { return { ok: true, call: require('../src/main/ai/ai-tool-contract').validate(JSON.parse(JSON.stringify(call))) }; }
         catch (e) { return { ok: false, error: e.message, errorCode: e.code }; }
       },
       readFile: async(context,call)=>w.myIDE.fs.readFile(context.rootId+'/'+call.args.path),
@@ -2225,7 +2225,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   });
 
   await okAsync('Git IPC Registry：清单里的通道在 dom mock 里都有对应实现', async () => {
-    const OPS = require('../git-ops');   // 唯一清单（main.js 按它注册 handler）
+    const OPS = require('../src/main/git/git-ops');   // 唯一清单（main.js 按它注册 handler）
     const bridge = dom.window.myIDE.git || {};
     const miss = OPS.map((o) => o.ch).filter((ch) => typeof bridge[ch] !== 'function');
     assert_(OPS.length >= 40, '清单至少有 40 个通道: ' + OPS.length);

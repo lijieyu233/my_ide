@@ -1,7 +1,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { spawnSync } = require('child_process');
-const { createService } = require('../task-recovery');
-const FileWrite = require('../file-write');
+const { createService } = require('../src/main/tasks/task-recovery');
+const FileWrite = require('../src/main/files/file-write');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-task-recovery-test-'));
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('  ok ' + name); };
@@ -32,7 +32,7 @@ try {
   });
   test('实际新进程重启后仍读到失败候选', () => {
     const f = fixture(); const raw = f.envelope('重启找回'); f.service.save(f.root, raw, null, true);
-    const child = spawnSync(process.execPath, ['-e', "const s=require(process.argv[1]).createService(process.argv[2]); process.stdout.write(s.inspect(process.argv[3]).latest.raw)", path.resolve(__dirname, '../task-recovery.js'), f.storage, f.root], { encoding: 'utf8', windowsHide: true });
+    const child = spawnSync(process.execPath, ['-e', "const s=require(process.argv[1]).createService(process.argv[2]); process.stdout.write(s.inspect(process.argv[3]).latest.raw)", path.resolve(__dirname, '../src/main/tasks/task-recovery.js'), f.storage, f.root], { encoding: 'utf8', windowsHide: true });
     assert.equal(child.status, 0, child.stderr); assert.equal(child.stdout, raw);
   });
   test('坏JSON普通保存只保全候选，显式恢复先备份坏字节', () => {

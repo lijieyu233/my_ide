@@ -1,6 +1,6 @@
 const path = require('path');
 const crypto = require('crypto');
-const Files = require('./file-write');
+const Files = require('../files/file-write');
 const Contract = require('./ai-tool-contract');
 const fail = (code, message) => Object.assign(Error(message), { code });
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');

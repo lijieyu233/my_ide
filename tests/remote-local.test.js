@@ -1,6 +1,6 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { spawn } = require('child_process'), { once } = require('events');
-const { createClient } = require('../remote-local');
+const { createClient } = require('../src/main/remote/remote-local');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-remote-local-')), clients = [], children = [];
 const directory = path.join(root, '中文目录'), metrics = path.join(root, 'metrics.json'), preload = path.join(root, 'instrument.cjs');
 fs.mkdirSync(directory); for (let n = 0; n < 240; n++) fs.writeFileSync(path.join(directory, '文件-' + n + '.txt'), '中文内容');

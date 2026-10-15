@@ -6,7 +6,7 @@ const home = path.join(temp, 'home'); fs.mkdirSync(home);
 process.env.HOME = home; process.env.USERPROFILE = home; os.homedir = () => home;
 app.setPath('userData', path.join(temp, 'profile')); process.argv.push('--headless');
 app.on('web-contents-created', (_e, wc) => wc.setBackgroundThrottling(false));
-require('../main'); require('../launch-service').saveConfig({ apiOrigins: [], entries: [], keepOnExit: false });
+require('../main'); require('../src/main/launch/launch-service').saveConfig({ apiOrigins: [], entries: [], keepOnExit: false });
 let win, passed = 0, closing = false;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) { const end = Date.now() + 30000; while (Date.now() < end) { if (await fn()) return; await sleep(40); } throw Error('界面验证超时'); }

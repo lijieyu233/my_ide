@@ -18,7 +18,7 @@ app.whenReady().then(async () => { try {
   check('启动未加载本地文件栏目录', await probe('document.querySelector("#remote-local-pane input").value===""'));
   check('启动注册数据库IPC时没有加载数据库驱动', !Object.keys(require.cache).some(p => /node_modules[\\/](mysql2|pg|sql\.js)[\\/]/.test(p)));
   await probe(`App.setRoot(${JSON.stringify(home)})`);
-  const stateFile = path.join(app.getPath('userData'), 'my-ide-state.json'), Files = require('../file-write');
+  const stateFile = path.join(app.getPath('userData'), 'my-ide-state.json'), Files = require('../src/main/files/file-write');
   const recentBefore = Files.readSnapshot(stateFile).version;
   const recent = await probe(`myIDE.fs.setRecent(${JSON.stringify(home)})`);
   check('重复恢复当前项目不重写持久记录', recent.ok && Files.sameVersion(recentBefore, Files.readSnapshot(stateFile).version));

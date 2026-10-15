@@ -1,6 +1,6 @@
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const Files = require('./file-write'), Contract = require('./ai-tool-contract');
-const Names = require('./renderer/ai-launch-tools');
+const Files = require('../files/file-write'), Contract = require('./ai-tool-contract');
+const Names = require('../../../renderer/ai-launch-tools');
 const fail = (code, message) => Object.assign(Error(message), { code });
 const copy = value => JSON.parse(JSON.stringify(value));
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');

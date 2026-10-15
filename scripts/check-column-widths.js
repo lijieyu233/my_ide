@@ -3,7 +3,7 @@ const {app,BrowserWindow}=require('electron');
 const fs=require('fs'),os=require('os'),path=require('path'),assert=require('assert/strict');
 const repo=path.resolve(__dirname,'..'),home=fs.mkdtempSync(path.join(os.tmpdir(),'myide-column-check-')),output=path.join(repo,'.ui-check-trash','column-widths-'+process.pid);
 fs.mkdirSync(output);fs.writeFileSync(path.join(home,'README.md'),'# 三栏宽度检查\n');os.homedir=()=>home;app.setPath('userData',path.join(home,'profile'));process.argv.push('--headless');
-app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../launch-service').saveConfig({entries:[],apiOrigins:[],keepOnExit:false});
+app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../src/main/launch/launch-service').saveConfig({entries:[],apiOrigins:[],keepOnExit:false});
 let win,passed=0;const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const js=code=>win.webContents.executeJavaScript(code,true);
 async function until(code){for(let i=0;i<400;i++){if(await js(code))return;await sleep(30);}throw Error('等待失败：'+code);}

@@ -1,6 +1,6 @@
 const assert = require('assert/strict'), fs = require('fs'), path = require('path'), os = require('os');
-const { createSearchService, POLICY } = require('../search-service');
-const FileWrite = require('../file-write'), TextFormat = require('../text-format');
+const { createSearchService, POLICY } = require('../src/main/search/search-service');
+const FileWrite = require('../src/main/files/file-write'), TextFormat = require('../src/main/files/text-format');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-search-tests-'));
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };

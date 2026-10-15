@@ -11,7 +11,7 @@ cp.execFile=function(file,args,settings,callback){
     callback(error,stdout,stderr);
   });
 };
-require('../main');service=require('../launch-service');
+require('../main');service=require('../src/main/launch/launch-service');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){for(let i=0;i<250;i++){if(await fn())return;await sleep(80);}throw Error('启动PID复用验证超时');}
 const js=code=>win.webContents.executeJavaScript(code,true);

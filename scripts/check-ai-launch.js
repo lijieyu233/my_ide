@@ -3,10 +3,10 @@ const fs=require('fs'),os=require('os'),path=require('path'),net=require('net'),
 const {app,BrowserWindow}=require('electron');
 const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-launch-check-')),home=path.join(temp,'home');
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
-const UI=require('../ai-approval-ui'),originalUI=UI.createUI;let prompt;
+const UI=require('../src/main/ai/ai-approval-ui'),originalUI=UI.createUI;let prompt;
 UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(channel,data)=>{if(channel==='ai-approval:show')prompt={wc:this.webContents,data,view:this};return send(channel,data);};}}return originalUI({...options,WebContentsView:View});};
 require('../main');UI.createUI=originalUI;
-const service=require('../launch-service'),definitions=require('../renderer/ai-launch-tools');
+const service=require('../src/main/launch/launch-service'),definitions=require('../renderer/ai-launch-tools');
 let win,port,rounds=[],requests=[],sequence=0,mode='approve',passed=0,seen=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,timeout=30000){const deadline=Date.now()+timeout;while(Date.now()<deadline){const value=await fn();if(value)return value;await sleep(30);}throw Error('native condition timeout');}
@@ -15,7 +15,7 @@ const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
 const config=()=>JSON.parse(fs.readFileSync(service.paths().configFile,'utf8'));
 async function listening(){return await new Promise(resolve=>{const s=net.connect({port,host:'127.0.0.1'});s.setTimeout(400);s.once('connect',()=>{s.destroy();resolve(true);});s.once('error',()=>{s.destroy();resolve(false);});s.once('timeout',()=>{s.destroy();resolve(false);});});}
 const tool=(name,args)=>({id:'launch-native-'+(++sequence),type:'function',function:{name,arguments:JSON.stringify(args)}});
-require('../ai-service').init({fetch:async(_url,options)=>{
+require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
   const body=JSON.parse(options.body);requests.push(body);for(const d of definitions.tools)assert(body.tools.some(t=>t.function.name===d.function.name),'缺少模型工具 '+d.function.name);
   const last=body.messages.filter(m=>m.role==='tool').at(-1);if(last?.content.startsWith('{'))assert.doesNotThrow(()=>JSON.parse(last.content),'成功工具结果应为JSON');
   if(last&&/launch_(start|restart)/.test(body.messages.filter(m=>m.role==='assistant'&&m.tool_calls?.length).at(-1)?.tool_calls?.at(-1)?.function.name||''))await until(listening);
@@ -43,7 +43,7 @@ async function drive(text){
       assert((await current.wc.executeJavaScript('document.getElementById("target").textContent')).includes('取证服务'));
       if(current.data.effect.operation==='add'&&mode==='approve'){
         // 隐藏WebContentsView在Windows无可截取surface；验证实际按钮后，用相同页面和数据在离屏窗口取视觉证据。
-        const mirror=new BrowserWindow({show:false,skipTaskbar:true,width:380,height:620,webPreferences:{preload:path.join(repo,'ai-approval-preload.js'),contextIsolation:true,sandbox:true,offscreen:true,backgroundThrottling:false}});
+        const mirror=new BrowserWindow({show:false,skipTaskbar:true,width:380,height:620,webPreferences:{preload:path.join(repo,'src/main/ai/ai-approval-preload.js'),contextIsolation:true,sandbox:true,offscreen:true,backgroundThrottling:false}});
         try{await mirror.loadFile(path.join(repo,'renderer/ai-approval.html'));mirror.webContents.send('ai-approval:show',current.data);await sleep(160);fs.writeFileSync(path.join(repo,'.ui-check-trash','ai-launch-approval.png'),await capture(mirror.webContents));assert(!mirror.isVisible());}finally{mirror.destroy();}
       }
       await click(current.wc,mode==='cancel'?'#stop':mode==='reject'?'#reject':'#accept');

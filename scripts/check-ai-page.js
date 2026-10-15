@@ -7,11 +7,11 @@ fs.writeFileSync(path.join(project,'AGENTS.md'),'RULE_PAGE_SECRET');
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;
 app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));
-require('../main');require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 let win,requests=[],passed=0,cleaning=false;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){const deadline=Date.now()+30000;while(Date.now()<deadline){if(await fn())return;await sleep(20);}throw Error('native condition timeout');}
-require('../ai-service').init({fetch:async(_url,options)=>{
+require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
   const body=JSON.parse(options.body);let pending=new Set();
   for(const m of body.messages){if(m.role==='tool'){assert(pending.has(m.tool_call_id));pending.delete(m.tool_call_id);}
     else{assert.equal(pending.size,0);if(m.tool_calls)pending=new Set(m.tool_calls.map(c=>c.id));}}

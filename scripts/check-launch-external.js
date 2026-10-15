@@ -3,7 +3,7 @@ const fs=require('fs'),os=require('os'),path=require('path'),assert=require('ass
 const {app,BrowserWindow}=require('electron');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-launch-external-')),home=path.join(temp,'home');fs.mkdirSync(home);
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
-app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));require('../main');const service=require('../launch-service');
+app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));require('../main');const service=require('../src/main/launch/launch-service');
 let child,win,cleaning=false,passed=0;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(40);}throw Error('外部进程验证超时');}

@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),cp=require('child_process'),assert=require('assert/strict');
-const electron=require('electron'),service=require('../launch-service');
+const electron=require('electron'),service=require('../src/main/launch/launch-service');
 const environment={...process.env};delete environment.ELECTRON_RUN_AS_NODE;
 const invoke=(mode,home)=>new Promise(resolve=>{
   const child=cp.spawn(electron,[path.join(__dirname,'check-launch-exit.js'),'--fixture-mode='+mode,'--fixture-home='+home,'--disable-gpu','--no-sandbox'],

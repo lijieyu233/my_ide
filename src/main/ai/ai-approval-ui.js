@@ -1,7 +1,7 @@
 const path = require('path'), { pathToFileURL } = require('url'), { randomUUID } = require('crypto');
 const fail = (code, message) => Object.assign(Error(message), { code });
 function createUI({ ipcMain, WebContentsView, getWindow, getAppearance = async () => ({}), stopRequest }) {
-  const pending = new Map(), file = path.join(__dirname, 'renderer', 'ai-approval.html'), allowedURL = pathToFileURL(file).href;
+  const pending = new Map(), file = path.join(__dirname, '../../../renderer', 'ai-approval.html'), allowedURL = pathToFileURL(file).href;
   ipcMain.handle('ai-approval:answer', (event, id, answer) => {
     const record = pending.get(id);
     if (!record || event.sender !== record.view.webContents || event.senderFrame !== event.sender.mainFrame || event.sender.getURL() !== allowedURL) return { ok: false, errorCode: 'INVALID_AI_APPROVAL_SENDER' };

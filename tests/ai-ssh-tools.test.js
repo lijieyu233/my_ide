@@ -1,6 +1,6 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {createService:remote}=require('../remote-service'),{start}=require('./fixtures/remote-ssh'),Names=require('../renderer/ai-ssh-tools'),Contract=require('../ai-tool-contract');
-const {createRegistry}=require('../ai-runs'),{createService:toolsService}=require('../ai-tool-execution'),{createAuthority}=require('../ai-tool-authority'),Adapter=require('../ai-ssh-tools');
+const {createService:remote}=require('../src/main/remote/remote-service'),{start}=require('./fixtures/remote-ssh'),Names=require('../renderer/ai-ssh-tools'),Contract=require('../src/main/ai/ai-tool-contract');
+const {createRegistry}=require('../src/main/ai/ai-runs'),{createService:toolsService}=require('../src/main/ai/ai-tool-execution'),{createAuthority}=require('../src/main/ai/ai-tool-authority'),Adapter=require('../src/main/ai/ai-ssh-tools');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-ssh-tests-'));let server,passed=0,sequence=0;const instances=[];
 const call=(name,args={})=>({id:'ssh-'+(++sequence),name,args});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));async function until(fn){for(let i=0;i<200;i++){if(await fn())return;await sleep(10);}throw Error('SSH condition timeout');}

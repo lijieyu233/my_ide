@@ -1,5 +1,5 @@
 const fs=require('fs'), path=require('path'), os=require('os'), assert=require('assert/strict');
-const {createService}=require('../path-create'),Jobs=require('../path-jobs');
+const {createService}=require('../src/main/files/path-create'),Jobs=require('../src/main/files/path-jobs');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-create-test-'));
 let passed=0;
 const check=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
@@ -40,7 +40,7 @@ const fixture=()=>{const root=fs.mkdtempSync(path.join(temp,'case-'));return {ro
   });
   await check('原生句柄核对期间写入和路径替换均被拒绝',()=>{
     const {root,service}=fixture(),r=service.create(root,root,'new','file');let checked=false;
-    assert(require('../file-create-win').removeEmpty(r.path,()=>{checked=true;assert.throws(()=>fs.writeFileSync(r.path,'不能写'),e=>['EBUSY','EACCES','EPERM'].includes(e.code));assert.throws(()=>fs.renameSync(r.path,path.join(root,'other')),e=>['EBUSY','EACCES','EPERM'].includes(e.code));}).ok);assert(checked&&!fs.existsSync(r.path));
+    assert(require('../src/main/files/file-create-win').removeEmpty(r.path,()=>{checked=true;assert.throws(()=>fs.writeFileSync(r.path,'不能写'),e=>['EBUSY','EACCES','EPERM'].includes(e.code));assert.throws(()=>fs.renameSync(r.path,path.join(root,'other')),e=>['EBUSY','EACCES','EPERM'].includes(e.code));}).ok);assert(checked&&!fs.existsSync(r.path));
   });
   await check('真实占用失败后保留对象并可重试',()=>{
     const {root,service}=fixture(),r=service.create(root,root,'new','file'),dll=require('koffi').load('kernel32.dll');
@@ -54,12 +54,12 @@ const fixture=()=>{const root=fs.mkdtempSync(path.join(temp,'case-'));return {ro
   });
   await check('最终删除瞬间目录加入后代由系统拒绝且保留字节',()=>{
     const {root,service}=fixture(),r=service.create(root,root,'new','dir');let checks=0;
-    assert.throws(()=>require('../file-create-win').removeEmpty(r.path,()=>{if(++checks===2)fs.writeFileSync(path.join(r.path,'late'),'最后瞬间内容');}),{code:'STALE_OPERATION'});
+    assert.throws(()=>require('../src/main/files/file-create-win').removeEmpty(r.path,()=>{if(++checks===2)fs.writeFileSync(path.join(r.path,'late'),'最后瞬间内容');}),{code:'STALE_OPERATION'});
     assert.equal(fs.readFileSync(path.join(r.path,'late'),'utf8'),'最后瞬间内容');
   });
   await check('默认流共享锁不阻止新ADS，最后核对拒绝新增数据流',()=>{
     const {root,service}=fixture(),r=service.create(root,root,'new','file');let checks=0;
-    assert.throws(()=>require('../file-create-win').removeEmpty(r.path,()=>{if(++checks===2)fs.writeFileSync(r.path+':late','新增数据流');}),{code:'STALE_OPERATION'});
+    assert.throws(()=>require('../src/main/files/file-create-win').removeEmpty(r.path,()=>{if(++checks===2)fs.writeFileSync(r.path+':late','新增数据流');}),{code:'STALE_OPERATION'});
     assert.equal(fs.readFileSync(r.path+':late','utf8'),'新增数据流');
   });
   await check('临时同步失败不会公开半成品并清理自己的空临时文件',()=>{
@@ -72,7 +72,7 @@ const fixture=()=>{const root=fs.mkdtempSync(path.join(temp,'case-'));return {ro
     assert(failure.pendingPath);assert.equal(fs.readFileSync(failure.pendingPath,'utf8'),'临时外部正文');assert(!fs.existsSync(path.join(root,'new')));
   });
   await check('发布后外部替换返回创建事实但不给undo授权',()=>{
-    const {root}=fixture(),service=createService(fs,(source,target)=>{require('../file-replace-win').createFile(source,target);fs.renameSync(target,path.join(root,'original'));fs.writeFileSync(target,'');}),r=service.create(root,root,'new','file');assert(r.ok&&r.warning&&!r.after);assert(fs.existsSync(r.path));
+    const {root}=fixture(),service=createService(fs,(source,target)=>{require('../src/main/files/file-replace-win').createFile(source,target);fs.renameSync(target,path.join(root,'original'));fs.writeFileSync(target,'');}),r=service.create(root,root,'new','file');assert(r.ok&&r.warning&&!r.after);assert(fs.existsSync(r.path));
   });
   await check('worker创建/撤销与范围锁释放是真实路径操作',async()=>{
     const {root}=fixture(),r=await Jobs.withMove(path.join(root,'new'),path.join(root,'new'),()=>Jobs.run('create',[root,root,'new','dir']));

@@ -5,7 +5,7 @@ const temporary = os.tmpdir(), home = fs.mkdtempSync(path.join(temporary, 'myide
 const output = path.join(__dirname, '..', '.ui-check-trash', 'launch-operations-' + process.pid);
 fs.mkdirSync(output, { recursive: true }); os.homedir = () => home;
 app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
-const service = require('../launch-service'); service.setConfigDir(path.join(home, '.myide'));
+const service = require('../src/main/launch/launch-service'); service.setConfigDir(path.join(home, '.myide'));
 const script = path.join(home, 'owned source.js'); fs.writeFileSync(script, "console.log('自有运行输出🙂');setInterval(()=>{},500);", 'utf8');
 const entries = [
   { id: 'a', name: '开发服务 · 运行状态', command: 'node "' + script + '"', cwd: home },

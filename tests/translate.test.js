@@ -32,7 +32,7 @@ async function test(name,fn){await fn();passed++;console.log('ok '+name);}
   await test('网页快捷键匹配完整修饰键并跟随改键/解绑，IME与重复按键不触发',async()=>{
     const wc=new(require('events').EventEmitter)(),translated=[];let keys=['ctrl+alt+t'],prevented=0,script;
     wc.isDestroyed=()=>false;wc.executeJavaScript=async value=>{script=value;return '';};
-    require('../browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>keys,translate:value=>translated.push(value)});
+    require('../src/main/browser/browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>keys,translate:value=>translated.push(value)});
     const send=input=>wc.emit('before-input-event',{preventDefault:()=>prevented++},{type:'keyDown',key:'t',control:true,alt:true,...input});
     send({shift:true});send({isComposing:true});send({isAutoRepeat:true});assert.equal(prevented,0);send({});await new Promise(r=>setImmediate(r));assert.deepEqual(translated,['']);assert(script.includes("e.type==='password'"));
     keys=['ctrl+alt+y'];send({});assert.equal(prevented,1);send({key:'y'});await new Promise(r=>setImmediate(r));assert.equal(prevented,2);

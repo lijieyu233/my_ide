@@ -1,4 +1,4 @@
-const assert=require('assert/strict'),{EventEmitter}=require('events'),{createService}=require('../browser-color-scheme');
+const assert=require('assert/strict'),{EventEmitter}=require('events'),{createService}=require('../src/main/browser/browser-color-scheme');
 (async()=>{
  const theme=new EventEmitter();theme.shouldUseDarkColors=false;theme.themeSource='system';const errors=[],service=createService({nativeTheme:theme,onError:e=>errors.push(e)});
  assert((await service.set('dark')).pending);const wc=new EventEmitter(),commands=[];let attached=false;

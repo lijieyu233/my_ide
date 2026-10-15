@@ -5,8 +5,8 @@ const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(
 const home=path.join(temp,'home'),project=path.join(temp,'project');fs.mkdirSync(home);fs.mkdirSync(project);
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;
 app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
-require('../ai-permission-store').createStore(path.join(home,'.myide','ai-permissions.json')).initialize({config:{permWrite:'auto',permRun:'auto'}});
-const Search=require('../search-service'),createSearch=Search.createSearchService;let productionSearch;
+require('../src/main/ai/ai-permission-store').createStore(path.join(home,'.myide','ai-permissions.json')).initialize({config:{permWrite:'auto',permRun:'auto'}});
+const Search=require('../src/main/search/search-service'),createSearch=Search.createSearchService;let productionSearch;
 Search.createSearchService=(...args)=>(productionSearch=createSearch(...args));
 require(path.join(repo,'main.js'));
 Search.createSearchService=createSearch;
@@ -65,7 +65,7 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
   });
   await test('实际main二进制不能充作替换原文，原字节不变',async()=>{
     const p=path.join(project,'binary.dat'),bytes=Buffer.from([0,1,2,3,0,255]);fs.writeFileSync(p,bytes);
-    try{const version=require('../file-write').readSnapshot(p).version;const r=await invoke('writeFile',[c,p,'y',undefined,{expectedVersion:version},call('replace_edit',{path:'binary.dat',search:'x',replace:'y'})]);assert.equal(r.errorCode,'INVALID_TOOL_ARGS');assert.deepEqual(fs.readFileSync(p),bytes);}finally{fs.unlinkSync(p);}
+    try{const version=require('../src/main/files/file-write').readSnapshot(p).version;const r=await invoke('writeFile',[c,p,'y',undefined,{expectedVersion:version},call('replace_edit',{path:'binary.dat',search:'x',replace:'y'})]);assert.equal(r.errorCode,'INVALID_TOOL_ARGS');assert.deepEqual(fs.readFileSync(p),bytes);}finally{fs.unlinkSync(p);}
   });
   await test('命令桥字段/正文/cwd偷换拒绝，未产生命令文件',async()=>{
     const tool=call('run_command',{command:'node --version'});
@@ -90,7 +90,7 @@ async function test(name,fn){await fn();rows.push({name,ok:true});console.log('P
     }finally{fs.rmdirSync(external);fs.rmdirSync(alias);fs.unlinkSync(path.join(outside,'data.md'));fs.unlinkSync(path.join(inner,'data.md'));fs.rmdirSync(outside);fs.rmdirSync(inner);}
   });
   await test('实际并发写入重发只发布一次，同id换参数拒绝',async()=>{
-    const p=path.join(project,'once.md'),tool=call('write_file',{path:'once.md',content:'ONE'}),args=[c,p,'ONE',undefined,{expectedVersion:require('../file-write').readSnapshot(p).version},tool];
+    const p=path.join(project,'once.md'),tool=call('write_file',{path:'once.md',content:'ONE'}),args=[c,p,'ONE',undefined,{expectedVersion:require('../src/main/files/file-write').readSnapshot(p).version},tool];
     assert((await invoke('authorize',[c,tool])).ok);
     const [a,b]=await Promise.all([invoke('writeFile',args),invoke('writeFile',args)]);assert(a.ok,JSON.stringify(a));assert.deepEqual(a,b);assert.deepEqual(await invoke('writeFile',args),a);
     const conflict=await invoke('writeFile',[c,p,'TWO',undefined,{expectedVersion:a.version},{...tool,args:{...tool.args,content:'TWO'}}]);assert.equal(conflict.errorCode,'TOOL_ID_CONFLICT');assert.equal(fs.readFileSync(p,'utf8'),'ONE');fs.unlinkSync(p);

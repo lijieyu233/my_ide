@@ -1,7 +1,7 @@
 const assert = require('assert/strict');
 const fs = require('fs'), os = require('os'), path = require('path');
 const { EventEmitter } = require('events');
-const source = fs.readFileSync(path.join(__dirname, '..', 'launch-service.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/launch/launch-service.js'), 'utf8');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-launch-tests-'));
 let passed = 0;
 
@@ -69,7 +69,7 @@ function fixture(options = {}) {
   }
   const m = { exports: {} };
   new Function('require', 'module', 'exports', 'process', 'setTimeout', source)(
-    name => name === 'timers' ? { setInterval: callback => { intervals.push(callback); return { unref() {} }; }, clearInterval() {} } : name === './launch-readiness' ? { ...require('../launch-readiness'), createObservation: (rule, runId) => require('../launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
+    name => name === 'timers' ? { setInterval: callback => { intervals.push(callback); return { unref() {} }; }, clearInterval() {} } : name === './launch-readiness' ? { ...require('../src/main/launch/launch-readiness'), createObservation: (rule, runId) => require('../src/main/launch/launch-readiness').createObservation(rule, runId, options.clock || Date.now) } : name === 'child_process' ? childProcess : name === 'net' ? { Socket } : name === 'fs' ? { ...fs,
       writeFileSync(file, ...args) { if (options.failStateWrites && path.basename(file) === 'launch-state.json') throw Error('fixture state write denied'); return fs.writeFileSync(file, ...args); } } : require(name),
     m, m.exports, { env: {}, kill: pid => { if (options.probeError) throw Object.assign(Error('probe denied'), { code: options.probeError }); if (!live.has(pid)) throw Object.assign(Error('not alive'), { code: 'ESRCH' }); } },
     callback => { queueMicrotask(callback); return 1; });
@@ -768,7 +768,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       assert.equal((await f.service.shutdown()).stopped, 0);
     });
     if (process.platform === 'win32') await test('真实 Windows 自有进程启动、互斥、停止与重启，机器级配置不受影响', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'windows-')); service.setConfigDir(dir);
       const script = path.join(dir, 'owned-fixture.js');
       fs.writeFileSync(script, "console.log('owned-launch-fixture');setInterval(()=>{},1000);", 'utf8');
@@ -791,7 +791,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       } finally { await service.stopEntry(entry); await service.shutdown(); }
     });
     if (process.platform === 'win32') await test('真实 Windows 后台身份恢复及A结束/B接管端口，停止A不影响B', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'windows-owner-')); service.setConfigDir(dir);
       const script = path.join(dir, 'owned-tcp.js');
       // 探活连接建立后立即销毁socket，fixture不能把该连接的ECONNRESET误当成服务崩溃。
@@ -833,7 +833,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       }
     });
     if (process.platform === 'win32') await test('真实Windows带空格/中文exe与脚本路径、引号参数和复合cmd操作原样执行', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'quoted path 中文 & ')); service.setConfigDir(dir);
       const executable = path.join(dir, 'node tool 中文.exe'); fs.copyFileSync(process.execPath, executable);
       const script = path.join(dir, 'args script 中文.js'), marker = path.join(dir, 'result file.json');
@@ -865,7 +865,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       } finally { await service.stopEntry(entry); await service.shutdown(); }
     });
     if (process.platform === 'win32') await test('真实Windows子进程分片UTF8/CRLF/空行与未换行尾部完整入日志', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'real-log-')); service.setConfigDir(dir);
       const script = path.join(dir, 'log-fixture.js');
       fs.writeFileSync(script, "(async()=>{const b=Buffer.from('真实中文🙂\\r\\n\\r\\n尾部');for(const byte of b){process.stdout.write(Buffer.from([byte]));await new Promise(r=>setTimeout(r,15));}process.stderr.write('独立错误');})().catch(()=>{process.exitCode=1;});", 'utf8');
@@ -885,7 +885,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       } finally { await service.stopEntry(entry); await service.shutdown(); }
     });
     if (process.platform === 'win32') await test('真实Python异步等待不堵事件循环，UTF8/非零退出/超量输出均按实际结果结算', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'python-')); service.setConfigDir(dir);
       const script = path.join(dir, 'bridge test 中文.py');
       const entry = { id: 'python-bridge-' + process.pid, kind: 'usb-tunnel', python: 'python', script };
@@ -910,7 +910,7 @@ async function test(name, run) { await run(); passed++; console.log('  ok ' + na
       }
     });
     if (process.platform === 'win32') await test('真实Python超过60秒被终止，部分输出保留、不写启动成功且可重试', async () => {
-      const service = require('../launch-service');
+      const service = require('../src/main/launch/launch-service');
       const dir = fs.mkdtempSync(path.join(temp, 'python-timeout-')); service.setConfigDir(dir);
       const script = path.join(dir, 'bridge-timeout.py');
       const entry = { id: 'python-timeout-' + process.pid, kind: 'usb-tunnel', python: 'python', script };

@@ -3,14 +3,14 @@ const fs=require('fs'),os=require('os'),path=require('path'),assert=require('ass
 const {start}=require('../tests/fixtures/remote-ssh'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-ssh-check-')),home=path.join(temp,'home');fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));
 let service,prompt,server,win,queue=[],requests=[],seen=new Set(),mode='approve',passed=0,sequence=0,tid,sid,closing=false;
-const Remote=require('../remote-ipc'),register=Remote.register;Remote.register=options=>service=register(options);
-const UI=require('../ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...a){super(...a);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show')prompt={wc:this.webContents,data};return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
+const Remote=require('../src/main/remote/remote-ipc'),register=Remote.register;Remote.register=options=>service=register(options);
+const UI=require('../src/main/ai/ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...a){super(...a);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show')prompt={wc:this.webContents,data};return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
 const nativeDialog=dialog.showMessageBox.bind(dialog);dialog.showMessageBox=async(...args)=>{const data=args.at(-1);if(data.title==='确认服务器指纹'&&data.detail.startsWith('127.0.0.1:'+server?.port))return {response:1};return nativeDialog(...args);};
-require('../main');Remote.register=register;UI.createUI=createUI;require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+require('../main');Remote.register=register;UI.createUI=createUI;require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));async function until(fn,ms=30000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await sleep(20);}throw Error('native SSH condition timeout');}const js=code=>win.webContents.executeJavaScript(code);
 const call=(name,args={})=>({id:'native-ssh-'+(++sequence),type:'function',function:{name,arguments:JSON.stringify(args)}});
 function paired(messages){let pending=new Set();for(const m of messages){if(m.role==='tool'){assert(pending.has(m.tool_call_id));pending.delete(m.tool_call_id);}else{assert.equal(pending.size,0);if(m.tool_calls)pending=new Set(m.tool_calls.map(c=>c.id));}}assert.equal(pending.size,0);}
-require('../ai-service').init({fetch:async(_url,options)=>{
+require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
  const body=JSON.parse(options.body);paired(body.messages);requests.push(body);for(const tool of require('../renderer/ai-ssh-tools').tools)assert(body.tools.some(t=>t.function.name===tool.function.name));
  const action=queue.shift(),calls=action?[action(body)]:null;const delta=calls?{tool_calls:calls.map((c,index)=>({index,...c}))}:{content:'SSH操作请求已发送，已读取输出；远程命令是否完成仍需根据输出核对。'};
  return new Response('data: '+JSON.stringify({choices:[{delta,finish_reason:calls?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');

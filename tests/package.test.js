@@ -27,12 +27,12 @@ async function test(name, fn) {
 (async () => {
   try {
     // 来自实际生产入口的文件与HTML；不从package.json.build.files构造“必需文件”。
-    const production = ['main.js', 'app-instance.js', 'ai-launch-tools.js', 'ai-ssh-tools.js', 'ai-browser-tools.js', 'ai-browser-page.js', 'browser-subtitles.js','dsh-native.js','dsh-native-plugin.cjs', 'browser-fullscreen.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-status.js','git-index.js','git-hunks.js','git-queue.js','git-native.js',
-      'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js', 'launch-exit.js', 'launch-readiness.js'];
-    production.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'quick-launch-service.js', 'quick-launch-app.js', 'ai-tool-contract.js', 'ai-tool-execution.js', 'ai-path-lease-win.js');
-    production.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js', 'html-preview.js', 'dsh-runtime.js', 'ai-dsh.js', 'ai-dsh-rpc.js');
-    production.push("remote-service.js", "remote-ipc.js", "remote-local.js");
-    production.push('ai-project-tools.js','ai-owner-router.js','browser-color-scheme.js','browser-context-menu.js');
+    const production = ['main.js', 'src/main/app/app-instance.js', 'src/main/ai/ai-launch-tools.js', 'src/main/ai/ai-ssh-tools.js', 'src/main/ai/ai-browser-tools.js', 'src/main/ai/ai-browser-page.js', 'src/main/browser/browser-subtitles.js','src/main/dsh/dsh-native.js','src/main/dsh/dsh-native-plugin.cjs', 'src/main/browser/browser-fullscreen.js', 'src/main/files/file-write.js', 'src/main/files/file-replace-win.js', 'src/main/files/text-format.js', 'src/main/files/path-move.js', 'src/main/files/path-jobs.js', 'src/main/files/path-worker.js', 'src/main/files/path-create.js', 'src/main/files/file-create-win.js', 'src/main/files/copy-journal.js', 'src/main/files/file-copy-win.js', 'preload.js', 'src/main/git/git-worker.js', 'src/main/git/git-service.js', 'src/main/git/git-status.js','src/main/git/git-index.js','src/main/git/git-hunks.js','src/main/git/git-queue.js','src/main/git/git-native.js',
+      'src/main/git/git-ops.js', 'src/main/db/db-service.js', 'src/main/ai/ai-service.js', 'src/main/launch/launch-ops.js', 'src/main/launch/launch-service.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js'];
+    production.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/quick-launch-service.js', 'src/main/launch/quick-launch-app.js', 'src/main/ai/ai-tool-contract.js', 'src/main/ai/ai-tool-execution.js', 'src/main/ai/ai-path-lease-win.js');
+    production.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js', 'src/main/browser/html-preview.js', 'src/main/dsh/dsh-runtime.js', 'src/main/dsh/ai-dsh.js', 'src/main/dsh/ai-dsh-rpc.js');
+    production.push("src/main/remote/remote-service.js", "src/main/remote/remote-ipc.js", "src/main/remote/remote-local.js");
+    production.push('src/main/ai/ai-project-tools.js','src/main/ai/ai-owner-router.js','src/main/browser/browser-color-scheme.js','src/main/browser/browser-context-menu.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));
@@ -77,12 +77,12 @@ async function test(name, fn) {
       await test('删除必需资源被拒绝：' + file, () => assert.throws(() => checkPackage(archive), (e) => e.message.includes(file)));
       put(file, bytes);
     }
-    put('git-native.js', fs.readFileSync(path.join(root, 'git-native.js'), 'utf8') + '\nrequire("./future-service");');
+    put('src/main/git/git-native.js', fs.readFileSync(path.join(root, 'src/main/git/git-native.js'), 'utf8') + '\nrequire("./future-service");');
     await test('新增传递本地依赖自动成为门槛', async () => {
       const archive = await pack('future');
       assert.throws(() => checkPackage(archive), /future-service\.js/);
     });
-    put('git-native.js', fs.readFileSync(path.join(root, 'git-native.js')));
+    put('src/main/git/git-native.js', fs.readFileSync(path.join(root, 'src/main/git/git-native.js')));
     put('renderer/styles.css', '.icon { background: url("missing-icon.png"); }');
     await test('CSS引用的本地资源遗漏被拒绝', async () => {
       const archive = await pack('css');

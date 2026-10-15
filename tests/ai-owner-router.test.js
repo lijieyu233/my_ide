@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),path=require('path');
-const {createRouter}=require('../ai-owner-router'),{createRegistry}=require('../ai-runs');
+const {createRouter}=require('../src/main/ai/ai-owner-router'),{createRegistry}=require('../src/main/ai/ai-runs');
 const router=createRouter(),registry=createRegistry();
 const a={requestId:'a',rootId:path.resolve('A'),sessionId:'a-chat',generation:1,round:0};
 const b={...a,requestId:'b',rootId:path.resolve('B'),sessionId:'b-chat',generation:3};

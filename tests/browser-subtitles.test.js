@@ -1,4 +1,4 @@
-const assert=require('assert/strict'),{createService,videoUrl,sign,subtitleUrl,normalize}=require('../browser-subtitles');
+const assert=require('assert/strict'),{createService,videoUrl,sign,subtitleUrl,normalize}=require('../src/main/browser/browser-subtitles');
 const URL_VIDEO='https://www.bilibili.com/video/BV1d1pR6zEBM/?p=2';
 const images={img_url:'https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png',sub_url:'https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png'};
 const player={code:0,data:{bvid:'BV1d1pR6zEBM',cid:22,login_mid:1,subtitle:{subtitles:[{lan:'ai-zh',lan_doc:'中文',subtitle_url:'//aisubtitle.hdslb.com/bfs/ai_subtitle/prod/fixture?auth_key=private-signed-key'}]}}};

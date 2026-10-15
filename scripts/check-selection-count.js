@@ -2,7 +2,7 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict'),cp=require('child_process');
 const {app,BrowserWindow}=require('electron'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-selection-count-')),home=path.join(temp,'home');fs.mkdirSync(home);
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
-app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../launch-service').saveConfig({entries:[],apiOrigins:[],keepOnExit:false});
+app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../src/main/launch/launch-service').saveConfig({entries:[],apiOrigins:[],keepOnExit:false});
 let win,cleaning=false,passed=0;const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(20);}throw Error('选区计数验证超时');}
 const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+');}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};

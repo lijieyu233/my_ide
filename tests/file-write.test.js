@@ -3,8 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert/strict');
-const { createWriter, readSnapshot, sameVersion } = require('../file-write');
-const { createReplacer } = require('../file-replace-win');
+const { createWriter, readSnapshot, sameVersion } = require('../src/main/files/file-write');
+const { createReplacer } = require('../src/main/files/file-replace-win');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-file-write-test-'));
 const original = Buffer.from('原始正文\r\nORIGINAL FULL DATA\0\xff');
 const next = Buffer.from('新正文😀\r\nNEW FULL CONTENT\0\xfe');
@@ -195,9 +195,9 @@ try {
   for (const phase of ['before', 'after']) {
     check('子进程在提交' + (phase === 'before' ? '前' : '后响应前') + '退出仍有完整正文来源', () => {
       const { folder, file } = fixture(), root = path.resolve(__dirname, '..');
-      const code = `const fs=require('fs'),p=require('path');const [root,file,phase,body]=process.argv.slice(1);const w=require(p.join(root,'file-write.js'));const io=Object.create(fs);let replace;
+      const code = `const fs=require('fs'),p=require('path');const [root,file,phase,body]=process.argv.slice(1);const w=require(p.join(root,'src/main/files/file-write.js'));const io=Object.create(fs);let replace;
         if(phase==='before')io.fsyncSync=fd=>{fs.fsyncSync(fd);process.exit(41)};
-        else replace=(source,target)=>{if(process.platform==='win32')require(p.join(root,'file-replace-win.js')).replaceFile(source,target);else fs.renameSync(source,target);process.exit(42)};
+        else replace=(source,target)=>{if(process.platform==='win32')require(p.join(root,'src/main/files/file-replace-win.js')).replaceFile(source,target);else fs.renameSync(source,target);process.exit(42)};
         w.createWriter(io,replace).atomicWrite(file,Buffer.from(body,'base64'));`;
       const r = require('child_process').spawnSync(process.execPath, ['-e', code, root, file, phase, next.toString('base64')], { windowsHide: true });
       assert.equal(r.status, phase === 'before' ? 41 : 42, String(r.stderr));

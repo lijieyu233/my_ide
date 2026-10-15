@@ -1,7 +1,7 @@
 const assert = require('assert/strict');
 const fs = require('fs'), os = require('os'), path = require('path');
-const { createService, validate, defaults } = require('../quick-launch-service');
-const FileWrite = require('../file-write');
+const { createService, validate, defaults } = require('../src/main/launch/quick-launch-service');
+const FileWrite = require('../src/main/files/file-write');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-quick-launch-'));
 let passed = 0, counter = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
@@ -205,7 +205,7 @@ async function saveEntries(f, entries) { const r = await f.service.load(); const
       assert.equal((await f.service.open('entry')).errorCode, 'EACCES'); broken = false; assert((await f.service.open('entry')).ok); assert.deepEqual((await f.service.load()).config.entries[0].args, ['']);
     });
     await test('真实Windows子进程准确收到空格/引号/空参数和工作目录，无shell展开', async () => {
-      const { launch } = require('../quick-launch-app'), f = fixture();
+      const { launch } = require('../src/main/launch/quick-launch-app'), f = fixture();
       const probe = path.join(f.dir, '参数 核对.js'), output = path.join(f.dir, '结果.json');
       const executable = path.join(f.dir, '中文 程序.exe'); fs.copyFileSync(process.execPath, executable);
       fs.writeFileSync(probe, 'require("fs").writeFileSync(process.argv[2],JSON.stringify({args:process.argv.slice(3),cwd:process.cwd()}));');

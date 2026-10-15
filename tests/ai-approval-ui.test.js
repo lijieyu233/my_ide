@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),{EventEmitter}=require('events'),path=require('path'),{pathToFileURL}=require('url');
-const {createUI}=require('../ai-approval-ui');let passed=0;
+const {createUI}=require('../src/main/ai/ai-approval-ui');let passed=0;
 const test=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
 function fixture(){
   const handlers=new Map(),views=[];let stopped=0;

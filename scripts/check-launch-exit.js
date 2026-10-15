@@ -6,7 +6,7 @@ const home = option('fixture-home'), mode = option('fixture-mode');
 if (!home || !['stop','cancel','retry','keep','leave'].includes(mode)) throw Error('fixture参数缺失');
 os.homedir = () => home; app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
 const output = path.join(__dirname, '..', '.ui-check-trash', 'launch-exit-'+mode+'-'+process.pid); fs.mkdirSync(output, {recursive:true});
-const service = require('../launch-service'); service.setConfigDir(path.join(home, '.myide'));
+const service = require('../src/main/launch/launch-service'); service.setConfigDir(path.join(home, '.myide'));
 const script = path.join(home, '退出自有进程.js'); fs.writeFileSync(script, "console.log('退出验证自有运行🙂');setInterval(()=>{},500);", 'utf8');
 const entry = {id:'exit-owned', name:'退出验证终端', command:'node "'+script+'"', cwd:home};
 service.saveConfig({entries:[entry],apiOrigins:[],keepOnExit:mode==='keep'});

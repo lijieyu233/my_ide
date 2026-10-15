@@ -2,8 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
-const FileWrite = require('./file-write');
-const TextFormat = require('./text-format');
+const FileWrite = require('../files/file-write');
+const TextFormat = require('../files/text-format');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = (code, message) => Object.assign(Error(message), { code });
 const rootKey = root => {

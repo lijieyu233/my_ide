@@ -3,17 +3,17 @@ const fs = require('fs');
 const path = require('path');
 const asar = require('@electron/asar');
 
-const runtimeFiles = ['main.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js', 'preload.js', 'git-worker.js', 'git-service.js', 'git-status.js','git-index.js','git-hunks.js', 'git-queue.js', 'git-native.js',
-  'git-ops.js', 'db-service.js', 'ai-service.js', 'launch-ops.js', 'launch-service.js'];
+const runtimeFiles = ['main.js', 'src/main/files/file-write.js', 'src/main/files/file-replace-win.js', 'src/main/files/text-format.js', 'src/main/files/path-move.js', 'src/main/files/path-jobs.js', 'src/main/files/path-worker.js', 'src/main/files/path-create.js', 'src/main/files/file-create-win.js', 'src/main/files/copy-journal.js', 'src/main/files/file-copy-win.js', 'preload.js', 'src/main/git/git-worker.js', 'src/main/git/git-service.js', 'src/main/git/git-status.js','src/main/git/git-index.js','src/main/git/git-hunks.js', 'src/main/git/git-queue.js', 'src/main/git/git-native.js',
+  'src/main/git/git-ops.js', 'src/main/db/db-service.js', 'src/main/ai/ai-service.js', 'src/main/launch/launch-ops.js', 'src/main/launch/launch-service.js'];
 const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'renderer/vendor/cm6-bundle.min.js', 'renderer/vendor/mermaid.min.js', 'renderer/vendor/docx-preview.min.js',
   'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
 const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js']);
-runtimeFiles.push('search-service.js', 'task-recovery.js', 'ai-runs.js', 'launch-exit.js', 'launch-readiness.js');
-runtimeFiles.push('ai-tool-authority.js', 'ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
-resources.push('dsh-native-plugin.cjs', 'renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
+runtimeFiles.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js');
+runtimeFiles.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js');
+resources.push('src/main/dsh/dsh-native-plugin.cjs', 'renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
 
 function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);

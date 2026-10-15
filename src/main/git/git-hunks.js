@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),crypto=require('crypto');
-const FileWrite=require('./file-write'),NativeGit=require('./git-native');
+const FileWrite=require('../files/file-write'),NativeGit=require('./git-native');
 const hash=b=>crypto.createHash('sha256').update(b).digest('hex'),fingerprint=v=>hash(JSON.stringify(v));
 const key=p=>process.platform==='win32'?path.resolve(p).toLowerCase():path.resolve(p);
 const fail=(code,message)=>Object.assign(Error(message),{code});
@@ -15,7 +15,7 @@ function createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText}){
   for(const p of [process.env.GIT_CONFIG_GLOBAL||path.join(os.homedir(),'.gitconfig'),path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'git','config')])local.push(read(p).version);return fingerprint({local,backend:'iso'});
  }
  async function state(c){let headOid=null;try{headOid=await git.resolveRef({fs,dir:c.root,ref:'HEAD'});}catch(e){if(!['NotFoundError','ResolveRefError'].includes(e.code))throw e;}
-  const work=read(c.abs),index=read(path.join(c.gitdir,'index'),64*1024*1024),head=read(path.join(c.gitdir,'HEAD'));const metadata=()=>process.platform==='win32'&&!work.version.absent?require('./file-copy-win').snapshot(c.abs):null,workMetadata=metadata(),attributesVersion=await attributes(c);
+  const work=read(c.abs),index=read(path.join(c.gitdir,'index'),64*1024*1024),head=read(path.join(c.gitdir,'HEAD'));const metadata=()=>process.platform==='win32'&&!work.version.absent?require('../files/file-copy-win').snapshot(c.abs):null,workMetadata=metadata(),attributesVersion=await attributes(c);
   const again=[read(c.abs).version,read(path.join(c.gitdir,'index'),64*1024*1024).version,read(path.join(c.gitdir,'HEAD')).version];let currentHead=null;try{currentHead=await git.resolveRef({fs,dir:c.root,ref:'HEAD'});}catch(e){if(!['NotFoundError','ResolveRefError'].includes(e.code))throw e;}
   const stableMeta=m=>m&&{hash:m.hash,stamp:m.stamp,attributes:m.attributes,security:m.security};
   // 属性查询会等待子进程；其间发生的正文/HEAD/index/流变化不能混进一次写入前核对。
@@ -45,19 +45,19 @@ function createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText}){
  async function validate(r){if(fingerprint(serial(await state(r)))!==fingerprint(serial(r.state)))throw fail('STALE_DIFF','展示后的HEAD、暂存区、工作区或属性已变化，请刷新差异');}
  async function writeIndex(r,bytes,mode,remove){
   const index=path.join(r.gitdir,'index'),lock=index+'.lock';let fd,owned,published=false;
-  try{fd=fs.openSync(lock,'wx',0o600);owned=fs.fstatSync(fd);if(process.platform==='win32'&&r.state.indexBytes)require('./file-replace-win').prepareTemporary(lock,index);const empty=Buffer.alloc(12);empty.write('DIRC');empty.writeUInt32BE(2,4);const initial=r.state.indexBytes||Buffer.concat([empty,crypto.createHash('sha1').update(empty).digest()]);fs.writeFileSync(fd,initial);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;await validate(r);
+  try{fd=fs.openSync(lock,'wx',0o600);owned=fs.fstatSync(fd);if(process.platform==='win32'&&r.state.indexBytes)require('../files/file-replace-win').prepareTemporary(lock,index);const empty=Buffer.alloc(12);empty.write('DIRC');empty.writeUInt32BE(2,4);const initial=r.state.indexBytes||Buffer.concat([empty,crypto.createHash('sha1').update(empty).digest()]);fs.writeFileSync(fd,initial);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;await validate(r);
    // 库的index锁只在进程内生效；其所有index读写重定向到我们独占的锁文件，公开index仅最终发布一次。
    const redirect=p=>typeof p==='string'&&key(p)===key(index)?lock:p,adapter={promises:new Proxy(fs.promises,{get:(target,prop)=>typeof target[prop]==='function'?((p,...args)=>target[prop](redirect(p),...args)):target[prop]})};
    const oid=remove?null:await git.writeBlob({fs,dir:r.root,blob:bytes});await git.updateIndex({fs:adapter,dir:r.root,gitdir:r.gitdir,filepath:r.rel,oid,mode,add:true,remove,force:!!remove,cache:{}});
    const generated=fs.readFileSync(lock);await validate(r);const current=fs.lstatSync(lock);if(current.dev!==owned.dev||current.ino!==owned.ino)throw fail('INDEX_LOCK_CHANGED','本次index锁身份变化，未发布');const flush=fs.openSync(lock,'r+');try{fs.fsyncSync(flush);}finally{fs.closeSync(flush);}
-   if(process.platform==='win32')require('./file-copy-win').publish(lock,index,!!r.state.indexBytes);else fs.renameSync(lock,index);published=true;
+   if(process.platform==='win32')require('../files/file-copy-win').publish(lock,index,!!r.state.indexBytes);else fs.renameSync(lock,index);published=true;
    if(!fs.readFileSync(index).equals(generated))throw fail('INDEX_UNCERTAIN','index已经发布，后续版本无法核对，请检查暂存区');return {ok:true,oid,reset:!!remove};
   }catch(e){if(e.code==='EEXIST')throw fail('INDEX_LOCKED','其他Git操作持有index.lock，未写入暂存区');e.committed=published;throw e;}
   finally{if(fd!==undefined)fs.closeSync(fd);if(owned&&!published)try{const st=fs.lstatSync(lock);if(st.dev===owned.dev&&st.ino===owned.ino)fs.unlinkSync(lock);}catch(e){if(e.code!=='ENOENT')throw Object.assign(fail('INDEX_CLEANUP_FAILED','本次index锁未清理，请核对后处理：'+lock),{pendingIndexLock:lock});}}
  }
  async function revert(r,h,recoveryRoot){
   if(r.state.worktreeVersion.absent)throw fail('STALE_DIFF','工作区文件缺席，不能按块回退');const result=applyHunkToText(r.rawText,h,true);if(!result.ok)throw fail('STALE_DIFF',result.error);
-  const Copy=require('./copy-journal'),Native=require('./file-copy-win'),cacheRoot=path.resolve(recoveryRoot||path.join(r.gitdir,'myide-file-operations')),tempBase=path.dirname(cacheRoot);
+  const Copy=require('../files/copy-journal'),Native=require('../files/file-copy-win'),cacheRoot=path.resolve(recoveryRoot||path.join(r.gitdir,'myide-file-operations')),tempBase=path.dirname(cacheRoot);
   // 恢复存储的同盘私有暂存既避免跨卷发布，也不依赖可能不可写的系统Temp。
   fs.mkdirSync(tempBase,{recursive:true});const temp=fs.mkdtempSync(path.join(tempBase,'myide-git-hunk-')),source=path.join(temp,path.basename(r.abs)),service=Copy.createService(cacheRoot);let prepared;
   try{const meta=Native.snapshot(r.abs);Native.clone(r.abs,source,meta);Native.setMetadata(source,{...meta,attributes:(meta.attributes&~1)||128});

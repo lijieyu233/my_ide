@@ -6,7 +6,7 @@ try {
   if(op.startsWith('tasks:')){
     const method=op.slice(6);
     if(!['inspect','list','read','save','restore','exportCopy'].includes(method))throw Error('未知任务恢复操作');
-    const service=require('./task-recovery').createService(args[0]);
+    const service=require('../tasks/task-recovery').createService(args[0]);
     parentPort.postMessage({result:service[method](...args.slice(1))});
   }else if(op.startsWith('copy:')){
     const method=op.slice(5);

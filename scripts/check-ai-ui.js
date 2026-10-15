@@ -3,11 +3,11 @@ const fs=require('fs'),os=require('os'),path=require('path'),assert=require('ass
 const {app,BrowserWindow,ipcMain}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-ui-')),home=path.join(temp,'home'),project=path.join(temp,'项目示例');
 fs.mkdirSync(home);fs.mkdirSync(project);fs.writeFileSync(path.join(project,'README.md'),'# 界面验证\n\n保留当前主题。');
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
-app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 let optionReads=0;
 ipcMain.removeHandler('ai:dsh-options');ipcMain.handle('ai:dsh-options',async()=>{optionReads++;return {ok:true,sessionId:'fixture',configOptions:[{id:'model',currentValue:'deepseek-v4-flash',options:[{value:'deepseek-v4-flash',name:'DeepSeek-V4.1-Flash · 标准模型'},{value:'deepseek-v4-pro',name:'DeepSeek-V4.1-Pro'}]},{id:'reasoning_effort',currentValue:'high',options:[{value:'high',name:'High'},{value:'medium',name:'Medium'}]}]};});
 let calls=0,win,passed=0,closing=false,releaseReply;
-require('../ai-service').init({fetch:async()=>{
+require('../src/main/ai/ai-service').init({fetch:async()=>{
   const delta=++calls===1?{tool_calls:[{index:0,id:'read-fixture',type:'function',function:{name:'read_file',arguments:'{"path":"README.md"}'}}]}:{content:'已阅读项目说明。\n\n## 检查结果\n\n- 主题保持一致\n- 控件位置正常\n\n```js\nconst ready = true;\n```'};
   if(calls===2)await new Promise(resolve=>{releaseReply=resolve;});
   return new Response('data: '+JSON.stringify({choices:[{delta,finish_reason:calls===1?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');

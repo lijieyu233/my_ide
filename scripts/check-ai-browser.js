@@ -4,13 +4,13 @@ const {app,BrowserWindow,webContents}=require('electron'),repo=path.resolve(__di
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
 let prompt,win,server,url,page,queue=[],requests=[],seen=new Set(),mode='approve',passed=0,sequence=0,closing=false;
-const UI=require('../ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show')prompt={wc:this.webContents,data};return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
-require('../main');UI.createUI=createUI;require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+const UI=require('../src/main/ai/ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show')prompt={wc:this.webContents,data};return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
+require('../main');UI.createUI=createUI;require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));async function until(fn,ms=30000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await sleep(20);}throw Error('native browser condition timeout');}
 const js=code=>win.webContents.executeJavaScript(code),call=(name,args={})=>({id:'native-browser-'+(++sequence),type:'function',function:{name,arguments:JSON.stringify(args)}});
 const last=body=>JSON.parse(body.messages.filter(m=>m.role==='tool').at(-1).content);
 function paired(messages){let pending=new Set();for(const m of messages){if(m.role==='tool'){assert(pending.has(m.tool_call_id));pending.delete(m.tool_call_id);}else{assert.equal(pending.size,0);if(m.tool_calls)pending=new Set(m.tool_calls.map(c=>c.id));}}assert.equal(pending.size,0);}
-require('../ai-service').init({fetch:async(_url,options)=>{
+require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
  const body=JSON.parse(options.body);paired(body.messages);requests.push(body);for(const tool of require('../renderer/ai-browser-tools').tools)assert(body.tools.some(t=>t.function.name===tool.function.name));
  // 模拟模型等待导航后读取，避免将真实异步加载当成瞬间完成。
  const recent=body.messages.at(-1),recentName=body.messages.flatMap(m=>m.tool_calls||[]).find(c=>c.id===recent?.tool_call_id)?.function?.name;

@@ -4,7 +4,7 @@ const {app,BrowserWindow}=require('electron'),temp=fs.mkdtempSync(path.join(os.t
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;
 app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_event,wc)=>wc.setBackgroundThrottling(false));require('../main');
-require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 let win,cleaning=false,passed=0;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(20);}throw Error('等待真实编辑器超时');}

@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
     add('在途旧版本真实写入不覆盖新输入或清 dirty', saved.ok && current.content === '版本二' && current.editor === '版本二' && current.dirty && fs.readFileSync(file, 'utf8') === '版本一');
     const latest = await run('Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab))');
     add('后续显式保存新版本落盘并清 dirty', latest.ok && !await run('Viewer.activeTab.dirty') && fs.readFileSync(file, 'utf8') === '版本二');
-    const writer = require(path.join(ROOT, 'file-write.js'));
+    const writer = require(path.join(ROOT, 'src/main/files/file-write.js'));
     const normalWrite = writer.atomicWrite;
     for (const stage of ['writeSync', 'fsyncSync', 'closeSync', 'renameSync']) {
       await run(`Viewer.cm.setValue(${JSON.stringify('故障待保存正文-' + stage)})`);

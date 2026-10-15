@@ -5,14 +5,16 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-// 搜索服务是主进程生产依赖，不能只靠渲染层语法检查覆盖。
-const files = ['main.js', 'preload.js', 'git-service.js', 'git-worker.js', 'git-ops.js', 'git-status.js','git-index.js','git-hunks.js', 'git-queue.js', 'file-write.js', 'file-replace-win.js', 'text-format.js', 'path-move.js', 'path-jobs.js', 'path-worker.js', 'path-create.js', 'file-create-win.js', 'copy-journal.js', 'file-copy-win.js'];
-files.push('search-service.js', 'task-recovery.js', 'ai-service.js', 'ai-runs.js', 'quick-launch-service.js', 'quick-launch-app.js', 'ai-tool-contract.js', 'ai-tool-execution.js', 'ai-path-lease-win.js', 'ai-tool-authority.js', 'ai-launch-tools.js', 'ai-ssh-tools.js');
-files.push('ai-browser-tools.js','ai-browser-page.js','browser-subtitles.js', 'dsh-native.js', 'dsh-native-plugin.cjs','browser-fullscreen.js','html-preview.js','dsh-runtime.js','ai-dsh.js','ai-dsh-rpc.js');
-files.push('ai-project-tools.js','ai-owner-router.js','browser-color-scheme.js','browser-context-menu.js');
-files.push('launch-service.js', 'launch-exit.js', 'launch-readiness.js');
-files.push('ai-permission-store.js', 'ai-permission-bridge.js', 'ai-approval-ui.js', 'ai-approval-preload.js');
-files.push("remote-service.js", "remote-ipc.js", "remote-local.js");
+// 后台按模块递归发现，新增生产依赖不用再手工维护第二份文件清单。
+const files = ['main.js', 'preload.js'];
+function collect(directory) {
+  for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+    const file = directory + '/' + entry.name;
+    if (entry.isDirectory()) collect(file);
+    else if (/\.(js|cjs)$/.test(entry.name)) files.push(file);
+  }
+}
+collect('src/main');
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (f.endsWith('.js')) files.push('renderer/' + f);
 }

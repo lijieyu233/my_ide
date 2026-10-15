@@ -143,7 +143,7 @@ function writeFixtures(dir) {
 // ⚠ 不能用 demo 项目做这件事 —— demo 的仓库根就是 my_ide 本体，在那里暂存 hunk 等于改使用者的 index。
 //   这里建的仓库在 demo/_ui_hunkrepo（被 .gitignore 排除），每次跑自检重建一次，结束进回收站。
 async function writeHunkFixture(baseDir) {
-  const G = require('../git-service');
+  const G = require('../src/main/git/git-service');
   const rp = path.join(baseDir, '_ui_hunkrepo');
   if (fs.existsSync(rp)) {
     // ⚠ 不能用 fs.rmSync（本机 safe-delete 会接管批量/递归删除）→ 挪到同盘回收站
@@ -166,7 +166,7 @@ async function writeHunkFixture(baseDir) {
 // M4 夹具：一个**必然冲突**的小仓库（base → feat 改同一行 → main 也改同一行）。
 // 与 hunk 夹具同一套规矩：独立仓库、被 .gitignore 覆盖、跑完进回收站。
 async function writeConflictFixture(baseDir) {
-  const G = require('../git-service');
+  const G = require('../src/main/git/git-service');
   const rp = path.join(baseDir, '_ui_confrepo');
   if (fs.existsSync(rp)) {
     const trash = path.join(baseDir, '..', '.ui-check-trash');

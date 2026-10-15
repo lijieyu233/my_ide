@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Worker } = require('worker_threads');
-const G = require('../git-service');
+const G = require('../src/main/git/git-service');
 const git = require('isomorphic-git');
 
 let passed = 0, failed = 0;
@@ -389,7 +389,7 @@ fs.mkdirSync(repo);
   await okAsync('worker 调度链路：init/commit/status', async () => {
     const wdir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-worker-'));
     const call = (op, args) => new Promise((resolve, reject) => {
-      const w = new Worker(path.join(__dirname, '..', 'git-worker.js'));
+      const w = new Worker(path.join(__dirname, '..', 'src/main/git/git-worker.js'));
       w.on('message', (m) => { w.terminate(); resolve(m.error ? { error: m.error } : m.result); });
       w.on('error', reject);
       w.postMessage({ id: 1, op, args });
@@ -442,7 +442,7 @@ fs.mkdirSync(repo);
     const repo3 = path.join(tmp, 'repo3');
     fs.mkdirSync(repo3);
     await G.initRepo(repo3);
-    await require('../git-native').run(['config','core.autocrlf','true'],{cwd:repo3});
+    await require('../src/main/git/git-native').run(['config','core.autocrlf','true'],{cwd:repo3});
     // 用 LF 内容提交（模拟真实 git 归一化后的仓库）
     fs.writeFileSync(path.join(repo3, 'a.txt'), 'line1\nline2\n', 'utf8');
     fs.mkdirSync(path.join(repo3, 'sub'));
@@ -879,7 +879,7 @@ fs.mkdirSync(repo);
   // ---------- M4：分支工作流（merge / rebase / 操作状态机 / 冲突解决）----------
   // ⚠ 走**本机 git**（isomorphic-git 没有 merge/rebase）。没装 git 就跳过并说明，不算失败
   //   —— 本机 git 是软依赖，这条测试同理。
-  const NATIVE = require('../git-native');
+  const NATIVE = require('../src/main/git/git-native');
   const ninfo = await NATIVE.probe(true);
   if (!ninfo.available) {
     console.log('  SKIP M4 分支工作流（未检测到本机 git，合并/变基能力不可用）');
@@ -1160,7 +1160,7 @@ fs.mkdirSync(repo);
     // （实测本仓 13 个：git-service.js / main.js / renderer/* …），而 `git status` 干干净净。
     await okAsync('checkout：autocrlf 仓库（LF 提交 + CRLF 工作区）能正常切换，真有改动仍被拦', async () => {
       // ① 路由：这条通道必须注册原生实现，否则又退回 isomorphic 的误报路径
-      const spec = require('../git-ops').find((s) => s.ch === 'checkout');
+      const spec = require('../src/main/git/git-ops').find((s) => s.ch === 'checkout');
       assert.strictEqual(spec.native, 'checkout', 'checkout 必须走原生（isomorphic 认不出 autocrlf）');
 
       const rp = path.join(tmp, 'repo-checkout-crlf');
@@ -1368,7 +1368,7 @@ fs.mkdirSync(repo);
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
     await G.commit(repo, { message: 'init', files: ['a.txt'] });
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a changed\n');
-    const NATIVE=require('../git-native'),orig = NATIVE.run;
+    const NATIVE=require('../src/main/git/git-native'),orig = NATIVE.run;
     let calls = 0;
     NATIVE.run = async (args,options) => {
       if(options.cwd===repo&&args.includes('--porcelain=v2')){calls++;if(calls===1)return {ok:false,error:'fixture EIO',stdout:'',stderr:''};}
@@ -1411,7 +1411,7 @@ fs.mkdirSync(repo);
     // ⚠ mod.txt 的新内容故意用不同尺寸：同秒+同尺寸的修改会命中 isomorphic statusMatrix 的
     //   stat 缓存（racy-git 已知缺陷，MEMORY 有记）→ legacy 漏报；快速路径有 racy 规则会抓到。
     //   对拍夹具要避开这个"故意的差异"，其余状态两路径必须完全一致。
-    const NATIVE = require('../git-native');
+    const NATIVE = require('../src/main/git/git-native');
     const g = (args) => NATIVE.run(args, { cwd: repo, env: NATIVE.NO_EDIT });
     fs.writeFileSync(path.join(repo, 'mod.txt'), 'v2-不同长度\n');             // 未暂存修改
     fs.writeFileSync(path.join(repo, 'stage.txt'), 'v2\n');

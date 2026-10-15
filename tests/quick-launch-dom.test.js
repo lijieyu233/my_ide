@@ -1,6 +1,6 @@
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert/strict');
 const { JSDOM } = require('jsdom');
-const { createService } = require('../quick-launch-service');
+const { createService } = require('../src/main/launch/quick-launch-service');
 const html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, '../renderer/quick-launch.js'), 'utf8');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-quick-launch-dom-'));

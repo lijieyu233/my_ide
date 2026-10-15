@@ -1,6 +1,6 @@
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert/strict');
 const { JSDOM } = require('jsdom');
-const { createService } = require('../quick-launch-service');
+const { createService } = require('../src/main/launch/quick-launch-service');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-quick-launch-keys-'));
 const fixtures = [];
 let passed = 0;

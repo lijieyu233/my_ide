@@ -1,5 +1,5 @@
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const Files = require('./file-write'), Authority = require('./ai-tool-authority');
+const Files = require('../files/file-write'), Authority = require('./ai-tool-authority');
 const fail = (code, message) => Object.assign(Error(message), { code });
 const copy = value => JSON.parse(JSON.stringify(value));
 const rootKey = root => crypto.createHash('sha256').update(process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root)).digest('hex');

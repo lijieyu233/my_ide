@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),crypto=require('crypto');
-const Native=require('./git-native'),FileWrite=require('./file-write'),Index=require('./git-index');
+const Native=require('./git-native'),FileWrite=require('../files/file-write'),Index=require('./git-index');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const toNative=p=>p.split('/').join(path.sep);
 function nulRecords(output){const text=Buffer.isBuffer(output)?new TextDecoder('utf-8',{fatal:true}).decode(output):String(output);if(text&&!text.endsWith('\0'))throw fail('STATUS_INVALID','状态输出未完整终止');return text?text.slice(0,-1).split('\0'):[];}
@@ -27,7 +27,7 @@ function createStatus({findRoot,resolveGitDir,jsStatus}){
   const run=async(args,opts=options)=>{const r=await Native.run(args,opts);if(!r.ok)throw fail('STATUS_NATIVE_FAILED',r.error||String(r.stderr)||'Git状态读取失败');if(String(r.stderr).trim())throw fail('STATUS_PARTIAL',String(r.stderr).trim());return r.stdout;};
   try{
    // diff 也可能刷新 stat，即使 OPTIONAL_LOCKS=0；所有原生扫描都重定向到私有副本。
-   temporary=path.join(gitdir,'.myide-status-'+crypto.randomUUID());const fd=fs.openSync(temporary,'wx',0o600);try{if(before.bytes&&process.platform==='win32')require('./file-replace-win').prepareTemporary(temporary,index);const empty=Buffer.alloc(12);empty.write('DIRC');empty.writeUInt32BE(2,4);fs.writeFileSync(fd,before.bytes||Buffer.concat([empty,crypto.createHash('sha1').update(empty).digest()]));}finally{fs.closeSync(fd);}env.GIT_INDEX_FILE=temporary;
+   temporary=path.join(gitdir,'.myide-status-'+crypto.randomUUID());const fd=fs.openSync(temporary,'wx',0o600);try{if(before.bytes&&process.platform==='win32')require('../files/file-replace-win').prepareTemporary(temporary,index);const empty=Buffer.alloc(12);empty.write('DIRC');empty.writeUInt32BE(2,4);fs.writeFileSync(fd,before.bytes||Buffer.concat([empty,crypto.createHash('sha1').update(empty).digest()]));}finally{fs.closeSync(fd);}env.GIT_INDEX_FILE=temporary;
    if(force){
     await run(['-c','core.splitIndex=false','update-index','--index-version=2']);fs.writeFileSync(temporary,Index.invalidateStats(fs.readFileSync(temporary)));
    }

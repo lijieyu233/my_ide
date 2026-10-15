@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),cp=require('child_process'),assert=require('assert/strict'),crypto=require('crypto');
-const G=require('../git-service'),Native=require('../git-native'),Status=require('../git-status'),Index=require('../git-index');
+const G=require('../src/main/git/git-service'),Native=require('../src/main/git/git-native'),Status=require('../src/main/git/git-status'),Index=require('../src/main/git/git-index');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-status125-test-')),saved={};
 for(const key of ['GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM','XDG_CONFIG_HOME','GIT_OPTIONAL_LOCKS','GIT_TERMINAL_PROMPT'])saved[key]=process.env[key];
 Object.assign(process.env,{GIT_CONFIG_GLOBAL:path.join(temp,'global'),GIT_CONFIG_NOSYSTEM:'1',XDG_CONFIG_HOME:path.join(temp,'xdg'),GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'});fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL,'');

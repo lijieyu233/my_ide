@@ -1,5 +1,5 @@
 const assert = require('assert/strict'), { EventEmitter } = require('events');
-const { createExitCoordinator } = require('../launch-exit');
+const { createExitCoordinator } = require('../src/main/launch/launch-exit');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const gate = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {promise,resolve,reject}; };
 const success = () => ({ ok: true, stopped: 1, failed: 0, results: [{ id: 'a', ok: true }] });

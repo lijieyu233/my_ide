@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),fs=require('fs/promises'),os=require('os'),path=require('path');
-const {createService}=require('../html-preview');
+const {createService}=require('../src/main/browser/html-preview');
 (async()=>{
   const temp=await fs.mkdtemp(path.join(os.tmpdir(),'myide-html-test-')),root=path.join(temp,'project'),file=path.join(root,'pages','中文 #100%.html'),service=createService();let passed=0;
   const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};

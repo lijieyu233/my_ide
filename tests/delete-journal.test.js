@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const Native=require('../file-copy-win'),{createService}=require('../copy-journal');
+const Native=require('../src/main/files/file-copy-win'),{createService}=require('../src/main/files/copy-journal');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-delete-test-'));let passed=0;
 const write=(p,data)=>{fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data);return p;};
 function fixture(native=Native){const home=fs.mkdtempSync(path.join(temp,'case-')),project=path.join(home,'project'),cache=path.join(home,'cache');fs.mkdirSync(project);return {project,cache,service:createService(cache,native)};}
@@ -37,7 +37,7 @@ try{
  });
  for(const phase of ['delete','restore'])check('子进程'+phase+'提交后直接退出，新的服务按日志恢复',()=>{
   const f=fixture(),file=write(path.join(f.project,'crash'),'原字节'),p=f.service.prepareDelete(f.project,[file]);if(phase==='restore')assert(f.service.commitDelete(f.project,p.operationId).ok);
-  const child=require('child_process').spawnSync(process.execPath,['-e',`const N=require('./file-copy-win');const service=require('./copy-journal').createService(${JSON.stringify(f.cache)},{...N,${phase==='delete'?'remove(p,v){N.remove(p,v);process.exit(51);}':'publish(a,b,r){N.publish(a,b,r);process.exit(51);}'}});service.${phase==='delete'?'commitDelete':'undoDelete'}(${JSON.stringify(f.project)},${JSON.stringify(p.operationId)});`],{cwd:path.resolve(__dirname,'..'),windowsHide:true});assert.equal(child.status,51);assert(createService(f.cache).undoDelete(f.project,p.operationId).ok);assert.equal(fs.readFileSync(file,'utf8'),'原字节');
+  const child=require('child_process').spawnSync(process.execPath,['-e',`const N=require('./src/main/files/file-copy-win');const service=require('./src/main/files/copy-journal').createService(${JSON.stringify(f.cache)},{...N,${phase==='delete'?'remove(p,v){N.remove(p,v);process.exit(51);}':'publish(a,b,r){N.publish(a,b,r);process.exit(51);}'}});service.${phase==='delete'?'commitDelete':'undoDelete'}(${JSON.stringify(f.project)},${JSON.stringify(p.operationId)});`],{cwd:path.resolve(__dirname,'..'),windowsHide:true});assert.equal(child.status,51);assert(createService(f.cache).undoDelete(f.project,p.operationId).ok);assert.equal(fs.readFileSync(file,'utf8'),'原字节');
  });
  check('原副本损坏拒绝恢复，项目根/链接/错误操作类型拒绝',()=>{
   const f=fixture(),file=write(path.join(f.project,'a'),'原'),p=f.service.prepareDelete(f.project,[file]);assert.throws(()=>f.service.commit(f.project,p.operationId,true),{code:'INVALID_OPERATION'});assert(f.service.commitDelete(f.project,p.operationId).ok);write(path.join(f.cache,p.operationId,'0.before'),'损坏');assert(!f.service.undoDelete(f.project,p.operationId).ok);assert(!fs.existsSync(file));assert.throws(()=>f.service.prepareDelete(f.project,[f.project]),{code:'OUTSIDE_PROJECT'});const link=path.join(f.project,'alias');fs.symlinkSync(f.cache,link,'junction');assert.throws(()=>f.service.prepareDelete(f.project,[link]),{code:'LINK_PATH'});

@@ -16,9 +16,9 @@ dialog.showOpenDialog = async (_window, options) => { pickOptions.push(options);
 dialog.showSaveDialog = async () => ({ canceled: cancelChoice, filePath: chosenExport });
 shell.openPath = async target => { if (openGate) await openGate; opened.push(['path', target]); return ''; };
 shell.openExternal = async target => { opened.push(['web', target]); };
-require('../quick-launch-app').launch = async entry => { opened.push(['app', entry]); return { ok: true }; };
+require('../src/main/launch/quick-launch-app').launch = async entry => { opened.push(['app', entry]); return { ok: true }; };
 const local = path.join(home, '中文 文件.txt'); fs.writeFileSync(local, '原文');
-const { createService } = require('../quick-launch-service');
+const { createService } = require('../src/main/launch/quick-launch-service');
 const configuration = path.join(home, '.myide', 'quick-launch.json');
 const service = createService(configuration);
 let passed = 0;
@@ -51,7 +51,7 @@ app.whenReady().then(async () => {
     await probe('Theme.set("crimson")'); await snapshot('empty-crimson');
     check('主操作与辅助操作分层，空分组引导与图标完整', await probe('!!document.querySelector(".ql-controls #ql-search")&&!!document.querySelector(".ql-controls #ql-add")&&!document.querySelector(".ql-toolbar #ql-search")&&document.querySelectorAll(".ql-empty strong").length===3&&!!document.querySelector(".ql-empty svg")'));
     // 单独探针核对当前Electron令牌实际可写；只创建独占随机文件，不读取/改动用户配置。
-    const FileWrite = require('../file-write');
+    const FileWrite = require('../src/main/files/file-write');
     const probeFile = path.join(actualHome, '.myide', '.quick-launch-probe-' + require('crypto').randomUUID());
     fs.mkdirSync(path.dirname(probeFile), { recursive: true });
     const probeBytes = Buffer.from('quick-launch writable probe');

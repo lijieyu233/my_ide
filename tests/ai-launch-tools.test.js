@@ -1,7 +1,7 @@
 
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {createRegistry}=require('../ai-runs'),{createService}=require('../ai-tool-execution'),{createAuthority}=require('../ai-tool-authority');
-const Launch=require('../ai-launch-tools'),Names=require('../renderer/ai-launch-tools'),Contract=require('../ai-tool-contract');
+const {createRegistry}=require('../src/main/ai/ai-runs'),{createService}=require('../src/main/ai/ai-tool-execution'),{createAuthority}=require('../src/main/ai/ai-tool-authority');
+const Launch=require('../src/main/ai/ai-launch-tools'),Names=require('../renderer/ai-launch-tools'),Contract=require('../src/main/ai/ai-tool-contract');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-launch-tests-'));let passed=0,sequence=0;
 const call=(name,args={})=>({id:'tool-'+(++sequence),name,args});
 const tick=()=>new Promise(r=>setImmediate(r));

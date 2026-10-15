@@ -1,5 +1,5 @@
 const assert = require('assert/strict'), fs = require('fs'), os = require('os'), path = require('path');
-const AI = require('../ai-service'), { createRegistry } = require('../ai-runs'), FileWrite = require('../file-write');
+const AI = require('../src/main/ai/ai-service'), { createRegistry } = require('../src/main/ai/ai-runs'), FileWrite = require('../src/main/files/file-write');
 const cfg = { baseUrl: 'http://fixture.invalid', model: 'fixture' };
 const ctx = (requestId, generation = 1, round = 0) => ({ requestId, sessionId: 'session', rootId: path.resolve('fixture-root'), generation, round });
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };

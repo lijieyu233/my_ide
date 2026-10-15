@@ -4,7 +4,7 @@ const {app,BrowserWindow,webContents,shell,Menu,ipcMain}=require('electron'),rep
 // 保留真实菜单与点击回调，只有popup替换成接收器，避免测试抢占桌面。
 const menus=[];Menu.prototype.popup=function(){menus.push(this);};
 const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
-let win,page,server,url,passed=0,closing=false;require('../main');require('../launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
+let win,page,server,url,passed=0,closing=false;require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(30);}throw Error('浏览器UI验证超时');}const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+')}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};
 const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
 async function capture(name){
@@ -81,7 +81,7 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     assert(!await js('!!document.getElementById("bw-favs")'));assert(await js('!!document.getElementById("bw-fav")&&!!document.getElementById("panel-browser")'));
     // 隐藏宿主的原生子视图不提供独立截图；同一生产控制器绑定隐藏顶层网页，核对真实绘制像素。
     const paintWindow=new BrowserWindow({show:false,skipTaskbar:true,width:600,height:400,webPreferences:{sandbox:true,nodeIntegration:false}}),wc=paintWindow.webContents;
-    const colors=require('../browser-color-scheme').createService({nativeTheme:require('electron').nativeTheme});colors.bind(wc);
+    const colors=require('../src/main/browser/browser-color-scheme').createService({nativeTheme:require('electron').nativeTheme});colors.bind(wc);
     try{
       await wc.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent('<body style="background:white;color:black"><h1>固定白底页面</h1>'));
       const pixel=async()=>[...(await wc.capturePage()).toBitmap().slice(0,3)].reduce((sum,value)=>sum+value,0);

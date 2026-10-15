@@ -1,4 +1,4 @@
-const fs=require('fs'),path=require('path'),Names=require('./renderer/ai-project-tools');
+const fs=require('fs'),path=require('path'),Names=require('../../../renderer/ai-project-tools');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 function createService({panel}){
   function prepare(call,context){

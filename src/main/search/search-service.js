@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { performance } = require('perf_hooks');
-const TextFormat = require('./text-format');
-const { snapshotStamp, snapshotVersion } = require('./file-write');
+const TextFormat = require('../files/text-format');
+const { snapshotStamp, snapshotVersion } = require('../files/file-write');
 
 const POLICY = Object.freeze({ maxResults: 200, maxFileBytes: 1024 * 1024, deadlineMs: 10000,
   concurrency: 4, hidden: false, gitIgnore: false, links: false, match: 'literal', columns: 'UTF-16, one-based, end-exclusive' });

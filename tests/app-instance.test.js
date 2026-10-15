@@ -1,5 +1,5 @@
 const assert = require('assert/strict'), { EventEmitter } = require('events');
-const { claim, showOnReady } = require('../app-instance');
+const { claim, showOnReady } = require('../src/main/app/app-instance');
 let passed = 0;
 function fixture(owned = true) {
   const app = new EventEmitter(), actions = [], opened = [];

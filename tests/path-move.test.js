@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {createMover}=require('../path-move'),FileWrite=require('../file-write');
+const {createMover}=require('../src/main/files/path-move'),FileWrite=require('../src/main/files/file-write');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-path-move-test-'));let passed=0;
 const check=(name,fn)=>{fn();passed++;console.log('  ok '+name);};
 const fixture=()=>{const folder=fs.mkdtempSync(path.join(temp,'case-')),src=path.join(folder,'source');fs.mkdirSync(src);fs.mkdirSync(path.join(src,'sub'));fs.writeFileSync(path.join(src,'sub','a.txt'),'正文\r\n');fs.writeFileSync(path.join(src,'b.bin'),Buffer.from([0,255,1]));return {folder,src,file:path.join(src,'sub','a.txt'),dest:path.join(folder,'dest')};};
@@ -21,7 +21,7 @@ try {
   check('EXDEV错误保留源，不回落复制删除',()=>{const {src,dest}=fixture(),m=createMover(fs,()=>{throw Object.assign(Error('cross device'),{code:'EXDEV'});});assert.throws(()=>m.relocate(src,dest),{code:'EXDEV'});assert(fs.existsSync(src)&&!fs.existsSync(dest));});
   check('平台预算超限在破坏前拒绝',()=>{const {src,dest}=fixture();const io=Object.assign(Object.create(fs),{readdirSync(p){return p===src?Array.from({length:10001},()=> 'b.bin'):fs.readdirSync(p);}});assert.throws(()=>createMover(io).relocate(src,dest),{code:'MOVE_LIMIT'});assert(fs.existsSync(src)&&!fs.existsSync(dest));});
   check('摘要字节预算在打开大文件前拒绝',()=>{const {src,dest}=fixture();let opened=false;const io=Object.assign(Object.create(fs),{lstatSync(p){const s=fs.lstatSync(p);if(s.isFile())return Object.assign(Object.create(s),{size:257*1024*1024});return s;},openSync(){opened=true;throw Error('不得读取');}});assert.throws(()=>createMover(io).relocate(src,dest),{code:'MOVE_LIMIT'});assert(!opened&&fs.existsSync(src)&&!fs.existsSync(dest));});
-  check('提交后核对失败返回迁移事实，不假报源仍原位',()=>{const {src,dest}=fixture(),m=createMover(fs,(source,target)=>{require('../file-replace-win').createFile(source,target);fs.writeFileSync(path.join(target,'new-link-target'),'x');fs.symlinkSync(path.join(target,'sub'),path.join(target,'alias'),'junction');});const r=m.relocate(src,dest);assert(r.ok&&r.warning&&!r.after&&!fs.existsSync(src)&&fs.existsSync(dest));});
+  check('提交后核对失败返回迁移事实，不假报源仍原位',()=>{const {src,dest}=fixture(),m=createMover(fs,(source,target)=>{require('../src/main/files/file-replace-win').createFile(source,target);fs.writeFileSync(path.join(target,'new-link-target'),'x');fs.symlinkSync(path.join(target,'sub'),path.join(target,'alias'),'junction');});const r=m.relocate(src,dest);assert(r.ok&&r.warning&&!r.after&&!fs.existsSync(src)&&fs.existsSync(dest));});
 }catch(e){console.error(e);process.exitCode=1;}
 finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-path-move-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}
 console.log('结果: '+passed+' 通过, '+(process.exitCode?1:0)+' 失败');

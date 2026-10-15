@@ -1,4 +1,4 @@
-const assert=require('assert/strict'),{normalizeRule,createObservation}=require('../launch-readiness');let count=0;
+const assert=require('assert/strict'),{normalizeRule,createObservation}=require('../src/main/launch/launch-readiness');let count=0;
 const test=(name,run)=>{run();count++;console.log('ok '+name);};
 test('缺省/无需验证不伪造已就绪；规则类型、文本、端口、超时和USB边界在执行前拒绝',()=>{
   assert.deepEqual(normalizeRule({}),{mode:'none'});assert.equal(createObservation({mode:'none'},'r').snapshot().state,'none');

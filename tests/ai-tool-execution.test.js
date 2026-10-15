@@ -1,6 +1,6 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict'),cp=require('child_process');
-const {createService}=require('../ai-tool-execution'),{createRegistry}=require('../ai-runs');
-const Files=require('../file-write');let passed=0;
+const {createService}=require('../src/main/ai/ai-tool-execution'),{createRegistry}=require('../src/main/ai/ai-runs');
+const Files=require('../src/main/files/file-write');let passed=0;
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-execution-')),root=path.join(dir,'project'),outside=path.join(dir,'outside');
 fs.mkdirSync(root);fs.mkdirSync(outside);fs.mkdirSync(path.join(root,'inside'));
 const links=[],files=[];function put(p,s){fs.writeFileSync(p,s);files.push(p);}

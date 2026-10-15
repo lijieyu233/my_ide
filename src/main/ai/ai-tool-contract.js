@@ -1,6 +1,6 @@
 const path = require('path');
 const error = message => Object.assign(Error(message), { code: 'INVALID_TOOL_ARGS' });
-const Launch = require('./renderer/ai-launch-tools'), Ssh = require('./renderer/ai-ssh-tools'), Browser = require('./renderer/ai-browser-tools'), Project=require('./renderer/ai-project-tools');
+const Launch = require('../../../renderer/ai-launch-tools'), Ssh = require('../../../renderer/ai-ssh-tools'), Browser = require('../../../renderer/ai-browser-tools'), Project=require('../../../renderer/ai-project-tools');
 const schemas = {
   ...Launch.schemas, ...Ssh.schemas, ...Browser.schemas, ...Project.schemas,
   list_files: { path: ['path', false] }, read_file: { path: ['path', true] },

@@ -1,4 +1,4 @@
-const assert=require('assert/strict'),{EventEmitter}=require('events'),{bind}=require('../browser-context-menu');let passed=0;
+const assert=require('assert/strict'),{EventEmitter}=require('events'),{bind}=require('../src/main/browser/browser-context-menu');let passed=0;
 function fixture(){const wc=new EventEmitter(),calls=[],translated=[],copied=[],opened=[];let items;
   wc.isDestroyed=()=>false;wc.navigationHistory={canGoBack:()=>true,canGoForward:()=>false,goBack:()=>calls.push('back')};
   for(const name of ['cut','copy','paste','selectAll','reload'])wc[name]=()=>calls.push(name);

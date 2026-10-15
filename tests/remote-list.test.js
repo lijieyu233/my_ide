@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {createService}=require('../remote-service'),{start}=require('./fixtures/remote-ssh');
+const {createService}=require('../src/main/remote/remote-service'),{start}=require('./fixtures/remote-ssh');
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'myide-remote-list-'));let service,server,passed=0;
 const check=(name,value)=>{assert(value,name);passed++;console.log('ok '+name)};
 (async()=>{try{

@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),crypto=require('crypto');
-const Contract=require('./ai-tool-contract'),Files=require('./file-write'),Text=require('./text-format');
+const Contract=require('./ai-tool-contract'),Files=require('../files/file-write'),Text=require('../files/text-format');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const key=p=>process.platform==='win32'?p.toLowerCase():p;
 const inside=(root,p)=>{const r=path.relative(root,p);return !r||r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r);};

@@ -1,8 +1,8 @@
 const os=require('os'),path=require('path'),{randomUUID,createHash}=require('crypto');
-const Names=require('./renderer/ai-browser-tools'),{pageOperation}=require('./ai-browser-page');
+const Names=require('../../../renderer/ai-browser-tools'),{pageOperation}=require('./ai-browser-page');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 function createService({getView,ensureView,panel,timeoutMs=5000}){
-  const subtitles=require('./browser-subtitles').createService();
+  const subtitles=require('../browser/browser-subtitles').createService();
   let observation=null;const revisions=new WeakMap(),loads=new WeakMap();
   function state(){const wc=getView()?.webContents;if(!wc||wc.isDestroyed())return {available:false,url:'',title:'',loading:false,canBack:false,canForward:false};
     if(!revisions.has(wc)){revisions.set(wc,0);loads.set(wc,{});const change=()=>{revisions.set(wc,revisions.get(wc)+1);observation=null;subtitles.clear();};wc.on('did-start-navigation',(_e,url,_inPlace,mainFrame)=>{if(mainFrame){change();loads.set(wc,{requestedUrl:url,loadError:''});}});wc.on('did-fail-load',(_e,code,description,url,mainFrame)=>{if(mainFrame&&code!==-3)loads.set(wc,{requestedUrl:url,loadError:description||String(code)});});wc.on('render-process-gone',change);wc.on('destroyed',change);}
