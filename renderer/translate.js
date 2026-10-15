@@ -11,7 +11,7 @@ const Translate = (() => {
   const LANGUAGES = ['中文','英文','日文','韩文','法文','德文','西班牙文','俄文','葡萄牙文','阿拉伯文'];
   function store() {
     let c;try { c=JSON.parse(localStorage.getItem(CFG_KEY)||'{}')||{}; } catch { c={}; }
-    const profiles=Array.isArray(c.profiles)?c.profiles.filter(p=>p&&typeof p.id==='string').map(p=>({...p})):c.baseUrl||c.model||c.apiKey?[{id:'legacy',name:'原有翻译服务',provider:'custom',baseUrl:c.baseUrl||'',apiKey:c.apiKey||'',model:c.model||''}]:[];
+    const profiles=Array.isArray(c.profiles)?c.profiles.filter(p=>p&&typeof p.id==='string').map(p=>({...p})):c.baseUrl||c.model||c.apiKey?[{id:'legacy',name:'原有翻译服务',provider:presets().find(p=>p.baseUrl&&p.baseUrl.replace(/\/+$/,'')===String(c.baseUrl||'').replace(/\/+$/,''))?.id||'custom',baseUrl:c.baseUrl||'',apiKey:c.apiKey||'',model:c.model||''}]:[];
     return {profiles,activeId:profiles.some(p=>p.id===c.activeId)?c.activeId:profiles[0]?.id||'',source:c.source||'自动检测',target:c.target||'中文'};
   }
   function saveStore(c){localStorage.setItem(CFG_KEY,JSON.stringify(c));}

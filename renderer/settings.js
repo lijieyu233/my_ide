@@ -565,20 +565,31 @@ const Settings = (() => {
     const list=document.getElementById('set-list'),cfg=Translate.getConfig(),profiles=Translate.getProfiles(),presets=Translate.presets();
     let current=profiles.find(p=>p.id===cfg.id)||profiles[0],target=cfg.target||'中文';
     if(!current){current={id:'profile-'+Date.now(),name:'翻译服务',provider:'custom',baseUrl:'',model:'',apiKey:''};profiles.push(current);}
+    const providerOf=p=>p.customProvider?'custom':presets.find(x=>x.baseUrl&&x.baseUrl.replace(/\/+$/,'')===String(p.baseUrl||'').replace(/\/+$/,''))?.id||'custom';
     const option=(value,label)=>'<option value="'+esc(value)+'">'+esc(label)+'</option>';
     function read(){for(const [key,id]of [['name','name'],['baseUrl','url'],['model','model'],['apiKey','key']])current[key]=document.getElementById('tr-cfg-'+id).value.trim();target=document.getElementById('tr-cfg-target').value.trim()||'中文';}
     function paint(){
       list.innerHTML='<div class="set-form"><h3 class="set-section-title">翻译服务</h3>'
         +'<label class="m-label" for="tr-cfg-profile">已保存的配置</label><select id="tr-cfg-profile">'+profiles.map(p=>option(p.id,p.name||'未命名服务')).join('')+'</select>'
-        +'<div class="tr-profile-tools"><select id="tr-cfg-preset" aria-label="厂商预设">'+presets.map(p=>option(p.id,p.name)).join('')+'</select><button class="tb-btn" id="tr-cfg-add">添加厂商配置</button><button class="tb-btn" id="tr-cfg-remove">删除此配置</button></div>'
+        +'<label class="m-label" for="tr-cfg-preset">当前配置的厂商（选择后填入地址和模型）</label><div class="tr-profile-tools"><select id="tr-cfg-preset" aria-label="当前配置的厂商">'+presets.map(p=>option(p.id,p.name)).join('')+'</select><button class="tb-btn" id="tr-cfg-add">新增配置</button><button class="tb-btn" id="tr-cfg-remove">删除此配置</button></div>'
         +'<label class="m-label" for="tr-cfg-name">配置名称</label><input id="tr-cfg-name" value="'+esc(current.name||'')+'" placeholder="例如：DeepSeek 日常翻译">'
         +'<label class="m-label" for="tr-cfg-url">服务地址（OpenAI 兼容 Base URL）</label><input id="tr-cfg-url" value="'+esc(current.baseUrl||'')+'" spellcheck="false">'
         +'<label class="m-label" for="tr-cfg-key">API Key（本地服务可留空）</label><input id="tr-cfg-key" type="password" autocomplete="off" value="'+esc(current.apiKey||'')+'" spellcheck="false">'
-        +'<label class="m-label" for="tr-cfg-model">模型名称</label><input id="tr-cfg-model" list="tr-cfg-models" value="'+esc(current.model||'')+'" spellcheck="false"><datalist id="tr-cfg-models">'+(presets.find(p=>p.id===current.provider)?.models||[]).map(m=>option(m,m)).join('')+'</datalist>'
+        +'<label class="m-label" for="tr-cfg-model">模型名称</label><input id="tr-cfg-model" list="tr-cfg-models" value="'+esc(current.model||'')+'" spellcheck="false"><datalist id="tr-cfg-models">'+(presets.find(p=>p.id===providerOf(current))?.models||[]).map(m=>option(m,m)).join('')+'</datalist>'
         +'<label class="m-label" for="tr-cfg-target">默认目标语言</label><input id="tr-cfg-target" list="tr-cfg-languages" value="'+esc(target)+'"><datalist id="tr-cfg-languages">'+Translate.LANGUAGES.map(l=>option(l,l)).join('')+'</datalist>'
         +'<div class="set-button-row"><button class="tb-btn m-ok" id="tr-cfg-save">保存全部配置</button><button class="tb-btn" id="tr-cfg-test">测试当前配置</button></div><div class="set-note" id="tr-cfg-result" role="status">切换配置保留本页草稿，保存后生效。</div></div>';
       document.getElementById('tr-cfg-profile').value=current.id;
-      document.getElementById('tr-cfg-preset').value=current.provider||presets[0]?.id||'custom';
+      document.getElementById('tr-cfg-preset').value=providerOf(current);
+      document.getElementById('tr-cfg-preset').onchange=e=>{
+        const selected=presets.find(p=>p.id===e.target.value);if(!selected)return;
+        read();const old=presets.find(p=>p.id===providerOf(current));
+        // 厂商选择作用于当前草稿；跨地址不能沿用旧Key，否则会把一个厂商的凭据发给另一个厂商。
+        if(selected.id==='custom'){current.provider='custom';current.customProvider=true;document.getElementById('tr-cfg-result').textContent='自定义模式：保留地址、模型和Key，可直接编辑，保存后生效。';return;}
+        const changedUrl=String(current.baseUrl||'').replace(/\/+$/,'')!==selected.baseUrl.replace(/\/+$/,'');
+        if(!current.name||current.name==='原有翻译服务'||current.name==='翻译服务'||current.name===old?.name)current.name=selected.name;
+        Object.assign(current,{provider:selected.id,customProvider:false,baseUrl:selected.baseUrl,model:selected.models[0]||'',apiKey:changedUrl?'':current.apiKey});paint();
+        document.getElementById('tr-cfg-result').textContent='已填入'+selected.name+'的地址和模型'+(changedUrl?'，请填写该厂商的API Key':'')+'；保存后生效。';
+      };
       document.getElementById('tr-cfg-profile').onchange=e=>{read();current=profiles.find(p=>p.id===e.target.value);paint();};
       document.getElementById('tr-cfg-add').onclick=()=>{read();const p=presets.find(p=>p.id===document.getElementById('tr-cfg-preset').value)||{id:'custom',name:'自定义',baseUrl:'',models:[]};current={id:'profile-'+Date.now()+'-'+Math.random().toString(16).slice(2,8),name:p.name,provider:p.id,baseUrl:p.baseUrl,model:p.models[0]||'',apiKey:''};profiles.push(current);paint();};
       document.getElementById('tr-cfg-remove').onclick=()=>{read();if(!window.confirm('删除当前翻译配置？保存后生效。'))return;profiles.splice(profiles.indexOf(current),1);if(!profiles.length)profiles.push({id:'profile-'+Date.now(),name:'自定义翻译服务',provider:'custom',baseUrl:'',model:'',apiKey:''});current=profiles[0];paint();};

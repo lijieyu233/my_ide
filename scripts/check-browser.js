@@ -42,6 +42,18 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('document.getElementById("tr-close").click();true');await until(()=>win.contentView.children.length===1);assert.equal(page.getURL(),url+'/');assert(!win.isVisible());
     await js('Translate.setConfig({});true');menu.items.find(item=>item.label==='翻译选中文本').click();await until(()=>js('!!document.querySelector("#set-box")'));await js('Modal.hide();true');await until(()=>win.contentView.children.length===1);
   });
+  await test('选择厂商直接更新当前草稿的地址模型，跨厂商清空旧Key且保存后生效',async()=>{
+    const requests=[];ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg)=>{requests.push(cfg);return {ok:true,text:'OK'};});
+    await js('Translate.setConfig({baseUrl:"https://api.deepseek.com/v1",model:"deepseek-chat",apiKey:"fixture-old-key"});Settings.open("translate");true');
+    assert.equal(await js('document.getElementById("tr-cfg-preset").value'),'deepseek');
+    await js('const p=document.getElementById("tr-cfg-preset");p.value="openai";p.dispatchEvent(new Event("change"));true');
+    assert.equal(await js('document.getElementById("tr-cfg-url").value'),'https://api.openai.com/v1');assert.equal(await js('document.getElementById("tr-cfg-model").value'),'gpt-4o-mini');assert.equal(await js('document.getElementById("tr-cfg-key").value'),'');
+    assert.equal(await js('Translate.getConfig().apiKey'),'fixture-old-key');assert.equal(await js('Translate.getProfiles().length'),1);
+    await js('document.getElementById("tr-cfg-key").value="fixture-openai";document.getElementById("tr-cfg-test").click();true');await until(()=>requests.length===1);assert.equal(requests[0].baseUrl,'https://api.openai.com/v1');assert.equal(requests[0].apiKey,'fixture-openai');assert.equal(requests[0].model,'gpt-4o-mini');
+    await capture('browser-ui-provider-applied.png');
+    await js('document.getElementById("tr-cfg-save").click();Modal.hide();Settings.open("translate");true');assert.equal(await js('document.getElementById("tr-cfg-preset").value'),'openai');assert.equal(await js('Translate.getConfig().apiKey'),'fixture-openai');
+    await js('const p=document.getElementById("tr-cfg-preset");p.value="custom";p.dispatchEvent(new Event("change"));document.getElementById("tr-cfg-save").click();Modal.hide();Settings.open("translate");true');assert.equal(await js('document.getElementById("tr-cfg-preset").value'),'custom');assert.equal(await js('Translate.getConfig().apiKey'),'fixture-openai');await js('Modal.hide();true');
+  });
   await test('多厂商保存与切换、语言调整及网页焦点快捷键完整',async()=>{
     const requests=[];ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg,messages)=>{requests.push({cfg,messages});return {ok:true,text:'译文：'+cfg.target+' / '+cfg.model};});
     await js('Translate.setConfig({baseUrl:"http://legacy.invalid/v1",model:"legacy",apiKey:"fixture-old-key"});Settings.open("translate");true');
