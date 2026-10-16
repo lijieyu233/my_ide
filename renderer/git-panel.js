@@ -349,6 +349,25 @@ const GitPanel = (() => {
 
   // ---------- 拉取 / 推送 ----------
   let syncing = false;
+  const safeSyncText = value => String(value || '').replace(/(https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, '$1***@');
+  function showSyncNotice(notice) {
+    const box = document.getElementById('cd-sync-status');
+    for (const id of ['cd-pull','cd-push','cd-pull-options']) {
+      const b=document.getElementById(id);if(b)b.disabled=syncing;
+    }
+    document.getElementById('cd-pull')?.setAttribute('aria-busy',String(syncing));
+    if (!box) return;
+    box.replaceChildren();box.hidden=!notice;
+    if (!notice) return;
+    box.dataset.kind=notice.kind;
+    const summary=document.createElement('div');summary.textContent=notice.text;box.appendChild(summary);
+    if(notice.target){const target=document.createElement('div');target.className='git-sync-target';target.textContent='更新目标：'+safeSyncText(notice.target);box.appendChild(target);}
+    if(notice.kind==='error'){
+      const actions=document.createElement('div');actions.className='git-sync-actions';
+      for(const [text,fn] of [['重试拉取',()=>doPull(notice.strategy)],['远程设置',()=>openRemoteDialog()]]){const b=document.createElement('button');b.className='tb-btn';b.textContent=text;b.onclick=fn;actions.append(b);}box.append(actions);
+    }
+    if(notice.detail){const details=document.createElement('details'),label=document.createElement('summary'),pre=document.createElement('pre');label.textContent='查看详细信息';pre.textContent=safeSyncText(notice.detail);details.append(label,pre);box.append(details);}
+  }
   // 拉取策略（M4 收尾）：默认快进保持一键直达；分叉时的两种策略收进下拉，
   // 不给"悄悄合并改历史"的默认行为 —— 用户点了什么就该发生什么。
   const PULL_STRATEGIES = [
@@ -359,15 +378,25 @@ const GitPanel = (() => {
   ];
   async function doPull(strategy) {
     if (!root || syncing) return;
+    if (window.Viewer?.openTabs?.some(t=>t.dirty)) {
+      showSyncNotice({kind:'error',text:'有文件尚未保存，请先保存后再拉取，避免远程更新与编辑中的内容冲突。',strategy:strategy||'ff'});return;
+    }
+    const operationRoot=root,generation=rootGeneration;
     syncing = true;
-    MI.toast('拉取中…');
-    const r = await window.myIDE.git.pull(root, { auth: getGitAuthMap(), strategy });
-    syncing = false;
-    if (!r.ok) { MI.toast('拉取失败: ' + r.error, 'err'); await refresh(); return; }
+    showSyncNotice({kind:'busy',text:'正在拉取最新代码…'});
+    let r;
+    try { r=await window.myIDE.git.pull(operationRoot, { auth: getGitAuthMap(), strategy:strategy||'ff' }); }
+    catch(e) {r={ok:false,error:'拉取未完成，请重试。',detail:String(e.message||e)};}
+    finally {syncing=false;}
+    if(root!==operationRoot||rootGeneration!==generation){showSyncNotice(null);return;}
+    r=r||{ok:false,error:'Git未返回拉取结果，请重试。'};
+    if (!r.ok) { showSyncNotice({kind:'error',text:safeSyncText(r.error),detail:r.detail,target:r.target,strategy:strategy||'ff'}); await refresh(); return; }
     await refresh();
+    if(root!==operationRoot||rootGeneration!==generation)return;
+    showSyncNotice({kind:r.conflict?'error':'ok',text:r.conflict?'更新遇到冲突，请在下方「解决冲突」中处理。':r.upToDate?'已经是最新代码，无需更新。':'最新代码已拉取。',target:r.target,strategy:strategy||'ff'});
     if (window.GitLog && GitLog.isOpen()) GitLog.refresh();
     if (r.conflict) MI.toast('⚠ 拉取（' + (r.strategy || '') + '）出现冲突，请在上方「解决冲突」里处理', 'err');
-    else MI.toast('✅ 已拉取' + (r.strategy && r.strategy !== 'ff' ? '（' + r.strategy + '）' : '') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
+    else MI.toast(r.upToDate?'已经是最新代码':'最新代码已拉取', 'ok');
   }
   function openPullMenu(anchor) {
     openFloatMenu(anchor, PULL_STRATEGIES.map((s) => ({ label: s.label, title: s.title, run: () => doPull(s.key) })));
@@ -378,8 +407,10 @@ const GitPanel = (() => {
       // Push 预览（PyCharm 式）：推送前列出待推送提交，确认后才真正推送
       return openPushPreview();
     }
-    syncing = true;
+    const operationRoot=root,generation=rootGeneration;
+    syncing = true;showSyncNotice({kind:'busy',text:'正在推送已提交内容…'});
     let r;
+    try {
     if (opts && opts.lease) {
       // M4 收尾：安全强推 —— --force-with-lease 以「本地记录的远程跟踪引用」为租约，
       // 上次 fetch 之后远程又被别人推过 → 推送被拒绝。裸 --force 会悄悄覆盖别人的提交。
@@ -392,7 +423,11 @@ const GitPanel = (() => {
         force: !!(opts && opts.force),
       });
     }
-    syncing = false;
+    } catch(e) {r={ok:false,error:String(e.message||e)};}
+    finally {syncing=false;}
+    if(root!==operationRoot||rootGeneration!==generation){showSyncNotice(null);return false;}
+    r=r||{ok:false,error:'Git未返回推送结果'};
+    showSyncNotice({kind:r.ok?'ok':'push-error',text:r.ok?'已推送提交。':'推送失败：'+safeSyncText(r.error)});
     if (r.ok) {
       MI.toast('✅ 已' + (r.lease ? '安全强推（--force-with-lease）到 ' : r.force ? '强制推送到 ' : '推送到 ')
         + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
@@ -407,7 +442,9 @@ const GitPanel = (() => {
   async function openPushPreview() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return false; }
     if (syncing) return false;
-    const p = await window.myIDE.git.listPushCommits(root);
+    const operationRoot=root,generation=rootGeneration;
+    const p = await gitSafe('listPushCommits',operationRoot);
+    if(root!==operationRoot||rootGeneration!==generation)return false;
     if (!p.ok) { MI.toast(p.error || '当前无可推送的提交', 'err'); return false; }
     const box = document.createElement('div');
     box.id = 'pp-box';
@@ -439,12 +476,9 @@ const GitPanel = (() => {
     box.querySelector('#pp-cancel').onclick = () => Modal.hide();
     box.querySelector('#pp-ok').onclick = async () => {
       Modal.hide();
-      syncing = true;
-      MI.toast('推送中…');
-      const r = await window.myIDE.git.push(root, { auth: getGitAuthMap() });
-      syncing = false;
-      if (r.ok) { MI.toast('✅ 已推送 ' + p.count + ' 个提交到 ' + (r.remote || p.remote || 'origin') + '/' + p.branch + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok'); refresh(); if (window.GitLog && GitLog.isOpen()) GitLog.refresh(); }
-      else MI.toast('推送失败: ' + r.error, 'err');
+      if(root!==operationRoot||rootGeneration!==generation){MI.toast('项目已切换，请重新查看待推送提交。','err');return;}
+      const ok = await doPush(true,{remote:p.remote});
+      if(ok && window.GitLog && GitLog.isOpen())GitLog.refresh();
     };
     return true;
   }
@@ -454,24 +488,25 @@ const GitPanel = (() => {
   let lastFetchAt = 0;
   async function updateAheadBehind(forceFetch) {
     if (!root) return;
+    const operationRoot=root,generation=rootGeneration;
     const now = Date.now();
     const doFetch = forceFetch === true || now - lastFetchAt > 60000;
     if (doFetch) lastFetchAt = now;
     const r = await window.myIDE.git.aheadBehind(root, doFetch ? { fetch: true, auth: getGitAuthMap() } : {})
       .catch(() => null);
-    if (!r || !r.branch) return;
+    if (!r || !r.branch || operationRoot!==root || generation!==rootGeneration) return;
     const el = document.getElementById('cd-dirty');
     if (!el) return;
     const ab = [];
-    if (r.ahead) ab.push('↑' + r.ahead);
-    if (r.behind) ab.push('↓' + r.behind);
+    if (r.ahead) ab.push('待推送 ' + r.ahead);
+    if (r.behind) ab.push('待拉取 ' + r.behind);
     const changedN = state && state.changed ? state.changed.length : 0;
     el.textContent = [ab.join(' '), changedN ? changedN + ' 处修改' : ''].filter(Boolean).join(' · ');
     el.dataset.ahead = r.ahead == null ? '' : String(r.ahead);
     el.dataset.behind = r.behind == null ? '' : String(r.behind);
     // 远程信息提示（准确显示当前操作的远程仓库与数据来源）
     if (r.remote) {
-      const mark = r.fetched ? '已同步远程' : '基于本地缓存（60 秒内不重复联网）';
+      const mark = r.fetched ? '已检查远程提交（尚未更新本地文件）' : '基于本地缓存（60 秒内不重复联网）';
       el.title = (r.remoteUrl || r.remote) + '\n' + mark;
     } else {
       el.title = '未配置远程仓库';
@@ -1249,10 +1284,12 @@ const GitPanel = (() => {
   function buildToolbar() {
     const bar = document.createElement('div');
     bar.className = 'git-cp-bar';
-    const mk = (svg, title, fn, id) => {
+    const mk = (svg, title, fn, id, label) => {
       const b = document.createElement('button');
       b.className = 'vt-btn';
       b.innerHTML = svg;
+      const text=document.createElement('span');text.textContent=label || title.split(/[（(：]/)[0].trim();b.append(text);
+      b.setAttribute('aria-label',text.textContent);
       b.title = title;
       if (id) b.id = id;   // 从标题行挪过来的按钮保留原 id（dom 测试 / 快捷键按 id 找）
       b.onclick = fn;
@@ -1264,8 +1301,8 @@ const GitPanel = (() => {
     // ⚠ 也**没有「内嵌预览」**：340px 侧栏里 unified diff 每行都要折行、读不出结构，
     //   用户判定"一点用没有"；差异统一在编辑区看（点文件行 / 「差异」按钮）。
     mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh({force:true}));
-    const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked());
-    const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked());
+    const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked(),null,'放弃勾选改动');
+    const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked(),null,'查看差异');
     const sep = document.createElement('span');
     sep.className = 'tb-sep';
     sep.setAttribute('aria-hidden', 'true');
@@ -1282,8 +1319,8 @@ const GitPanel = (() => {
     sep2.className = 'tb-sep';
     sep2.setAttribute('aria-hidden', 'true');
     bar.appendChild(sep2);
-    mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve');
-    mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote');
+    mk(IC.shelve, '搁置更改（Shelve）：暂存未提交改动并可恢复', () => openShelveDialog(), 'cd-shelve','搁置改动');
+    mk(IC.remote, '远程仓库管理（remote / 认证）', () => openRemoteDialog(), 'cd-remote','远程设置');
     mk(IC.log, '提交历史（Alt+9 / Ctrl+5）', () => App.showTool('log'), 'cd-log');
     // M5 的「提交前检查 / 本次作者」都搬进了提交消息框那行的「⋯ 更多」菜单（见 openCommitMoreMenu）：
     // 一次性的设置不该和刷新/回滚这些高频操作抢位置。
@@ -2863,7 +2900,9 @@ const GitPanel = (() => {
     // ⚠ 「提交前 / 作者」两个按钮现在由 buildToolbar 每次重建时创建并绑定（见那里的说明），
     //   这里不能再按 id 绑一次 —— render() 之后拿到的是新节点，绑旧节点等于没绑。
     const pull = document.getElementById('cd-pull');
-    if (pull) pull.onclick = (e) => openPullMenu(e.currentTarget);
+    if (pull) pull.onclick = () => doPull('ff');
+    const pullOptions = document.getElementById('cd-pull-options');
+    if (pullOptions) pullOptions.onclick = (e) => openPullMenu(e.currentTarget);
     const push = document.getElementById('cd-push');
     if (push) push.onclick = () => doPush();
     // 搁置 / 远程 / 日志 已在 buildToolbar 里创建并直接绑好 handler（它们随 render 重建，
@@ -2907,7 +2946,7 @@ const GitPanel = (() => {
         const hist = document.getElementById('commit-history');
         if (hist) hist.classList.remove('active');
       }
-      root = v;rootGeneration++;refreshSeq++;cancelDiff();
+      root = v;rootGeneration++;refreshSeq++;cancelDiff();showSyncNotice(null);
       // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
       //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
       invalidateIgnored();

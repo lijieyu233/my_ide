@@ -87,12 +87,19 @@
         <span id="cd-branch" title="点击切换分支 / 检出标签"></span>
         <span id="cd-dirty"></span>
         <span class="panel-title-actions">
-          <button id="cd-pull" class="vt-btn" title="拉取（快进，默认）—— 点开可选：仅快进 / 拉取并合并 / 拉取并变基"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M8 9.6L5 6.6M8 9.6l3-3M3.2 12.6h9.6"/></svg>拉取</button>
-          <button id="cd-push" class="vt-btn" title="推送当前分支到 origin（先预览待推送提交）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.6V2.4M8 2.4L5 5.4M8 2.4l3 3M3.2 12.6h9.6"/></svg>推送</button>
         </span>
         <!-- ⚠ 搁置 / 远程 / 日志 / 刷新 原来也挤在这一行：340px 下标题行总宽 ~436px，
              浏览器只能把「提交」压成一字一行（竖排）或者整行换行（比标签栏高一截）。
              它们都是"仓库级操作"，已挪进下面的工具行（与刷新/回滚/差异同层）。 -->
+      </div>
+      <div class="git-sync">
+        <div class="git-sync-actions">
+          <button id="cd-pull" class="tb-btn" title="下载并更新当前分支；本地修改不会被强制覆盖"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M8 9.6L5 6.6M8 9.6l3-3M3.2 12.6h9.6"/></svg>拉取最新代码</button>
+          <button id="cd-push" class="tb-btn" title="把本地已提交的内容上传到远程，先预览再确认"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.6V2.4M8 2.4L5 5.4M8 2.4l3 3M3.2 12.6h9.6"/></svg>推送提交</button>
+          <button id="cd-pull-options" class="vt-btn" title="本地与远程都有新提交时，选择合并或变基">拉取方式…</button>
+        </div>
+        <div class="git-sync-help">拉取是下载更新，推送是上传已提交的内容。</div>
+        <div id="cd-sync-status" role="status" aria-live="polite" hidden></div>
       </div>
       <div class="cd-files" id="cd-files"></div>
       <div class="cd-msgbox">

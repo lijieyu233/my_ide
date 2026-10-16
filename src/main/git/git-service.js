@@ -1297,7 +1297,7 @@ async function httpFor(root, url) {
 
 // 系统 Git 凭证管理器查询 —— 已收编进原生后端（git-native.js）
 // （M2「按能力路由」：credential / proxy 走 native，其余继续走 isomorphic-git）
-function systemCredentialFill(url) { return nativeGit.credentialFill(url); }
+function systemCredentialFill(url, root) { return nativeGit.credentialFill(url, root); }
 
 // 候选凭证迭代制（onAuth 与 onAuthFailure 共用同一迭代器）：
 // isomorphic-git 语义：首次 401 调 onAuth 取凭证，之后每次 401 调 onAuthFailure 取下一个；
@@ -1305,7 +1305,7 @@ function systemCredentialFill(url) { return nativeGit.credentialFill(url); }
 // 候选优先级：host 匹配的渲染层凭证 > 远程 URL 内嵌凭证 > 系统 Git 凭证管理器 > '*' 兜底凭证。
 // 注意 '*' 兜底（早期全局单份凭证迁移而来）可能是为其他主机存的，排在系统凭证之后，
 // 避免它毒害本可用系统凭证成功的推送（GitHub/GitLab 多主机混用场景）。
-function onAuthOf(auth, remoteUrl) {
+function onAuthOf(auth, remoteUrl, root) {
   const host = hostOf(remoteUrl);
   const cands = [];
   if (auth) {
@@ -1327,7 +1327,7 @@ function onAuthOf(auth, remoteUrl) {
     }
     if (!sysTried) {
       sysTried = true;
-      const sys = await systemCredentialFill(remoteUrl); // 系统 Git 凭证（命令行存过的）
+      const sys = await systemCredentialFill(remoteUrl, root); // 系统 Git 凭证（命令行存过的）
       if (sys && sys.username) return sys;
     }
     if (!starTried && star) { starTried = true; return { username: star.username, password: star.password || '' }; }
@@ -1464,7 +1464,7 @@ async function fetchRemote(dir, { auth } = {}) {
   }
   try {
     return await withRemoteUrlFix(root, pr, async () => {
-      const onAuth = onAuthOf(auth, pr.url);
+      const onAuth = onAuthOf(auth, pr.url, root);
       const r = await git.fetch({
         fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name,
         onAuth, onAuthFailure: onAuth, // 共用迭代器：401 后自动换下一个候选凭证
@@ -1503,11 +1503,53 @@ async function pullRemote(dir, { auth, strategy } = {}) {
   const pr = await primaryRemote(root);
   if (!pr) return { ok: false, error: '未配置远程仓库' };
   const strat = ['ff', 'ff-only', 'merge', 'rebase'].includes(strategy) ? strategy : 'ff';
+  const info = await nativeGit.info(false).catch(() => null);
+  const host = hostOf(pr.url);
+  const explicitAuth = auth && ((auth[host] && auth[host].username) || auth.username || (auth['*'] && auth['*'].username));
+  // 默认复用命令行的网络栈；现场同仓库CLI成功而JS隧道在TLS握手前断开。
+  // 用户单独保存的令牌仍走原有认证链，不能因切换后端而丢失其凭证。
+  if (info?.git?.available && !explicitAuth && !/^https?:\/\/[^/]*@/i.test(pr.url)) {
+    let remote = pr.name, ref = 'refs/heads/' + branch;
+    const configuredRemote = await git.getConfig({fs, dir:root, path:'branch.'+branch+'.remote'});
+    const configuredRef = await git.getConfig({fs, dir:root, path:'branch.'+branch+'.merge'});
+    if (configuredRemote && configuredRef) {
+      remote = configuredRemote; ref = configuredRef;
+    }
+    const target = remote + '/' + ref.replace(/^refs\/heads\//, '');
+    const env = {...nativeGit.NO_EDIT, GCM_INTERACTIVE:'never', GIT_TERMINAL_PROMPT:'0'};
+    const fail = (result, phase) => {
+      const detail = String(result.stderr?.trim() || result.stdout?.trim() || result.error || 'Git未返回结果')
+        .replace(/(https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, '$1***@');
+      let code='GIT_FAILED', error='拉取未完成，请查看详细信息后重试';
+      if (/would be overwritten|local changes|Please commit.*stash/i.test(detail)) {code='LOCAL_CHANGES';error='本地修改挡住了更新。请先提交，或用「搁置改动」保留后再拉取；仅加入Git暂存区不能解决。';}
+      else if (/not possible to fast-forward|not a fast-forward|diverg/i.test(detail)) {code='DIVERGED';error='本地与远程提交已分叉，双方都有新提交，不能直接更新。请在「拉取方式」中选择合并或变基。';}
+      else if (/Authentication failed|could not read Username|could not read Password|401|403|Permission denied/i.test(detail)) {code='AUTH';error='远程登录失败。请打开「远程设置」检查账号或访问令牌。';}
+      else if (/resolve host|connect|TLS|SSL|timed out|timeout|network/i.test(detail)) {code='NETWORK';error='无法连接远程仓库。请检查网络或Git代理，然后重试。';}
+      else if (/MERGE_HEAD|unmerged|resolve your current index|rebase.*progress/i.test(detail)) {code='UNFINISHED';error='上一次合并或变基尚未完成，请先处理面板中的冲突。';}
+      return {ok:false, strategy:strat, code, error, detail, target, phase};
+    };
+    const before = await nativeGit.run(['rev-parse','HEAD'], {cwd:root,env});
+    // 明确只取当前分支的上游，不把抓取所有分支后的任意FETCH_HEAD当作更新目标。
+    const fetched = await nativeGit.run(['fetch','--no-tags','--',remote,ref], {cwd:root,timeout:120000,env});
+    if (!fetched.ok) return fail(fetched,'fetch');
+    const fetchedHead = await nativeGit.run(['rev-parse','--verify','FETCH_HEAD^{commit}'], {cwd:root,env});
+    if (!fetchedHead.ok) return fail(fetchedHead,'fetch');
+    const head = fetchedHead.stdout.trim();
+    if (!/^[a-f0-9]{40,64}$/i.test(head)) return {ok:false,error:'远程提交标识无效，未更新本地文件',target};
+    if (strat==='ff' || strat==='ff-only') {
+      const merged = await nativeGit.run(['merge','--ff-only',head], {cwd:root,timeout:30000,env});
+      if (!merged.ok) return fail(merged,'merge');
+      return {ok:true,strategy:strat,target,oid:head,upToDate:before.ok&&before.stdout.trim()===head};
+    }
+    const merged = strat==='rebase' ? await nativeGit.rebase(root,head) : await nativeGit.merge(root,head);
+    if (!merged.ok) return fail({error:merged.error},strat);
+    return {...merged,ok:true,strategy:strat,target};
+  }
   // SSH 远程 isomorphic 完全不支持 → 不进这个分支，直接落到下面的原生 git 流程（语义等价）
   if (strat === 'ff' && !needNativeRemote(pr.url)) {
     try {
       return await withRemoteUrlFix(root, pr, async () => {
-        const onAuth = onAuthOf(auth, pr.url);
+        const onAuth = onAuthOf(auth, pr.url, root);
         // ① fetch：isomorphic（凭证 / 代理兜底链在这条路上）。ref: branch 必须传 ——
         //    不传它会拉全部远程分支，fetchHead 可能落在别的分支上，下面的快进就并错分支了。
         const f = await git.fetch({
@@ -1520,12 +1562,7 @@ async function pullRemote(dir, { auth, strategy } = {}) {
         //    这类 autocrlf 仓库上会留下"refs 走了、工作区没走"的半吊子状态 —— 无本机 git 时无解）
         const info = await nativeGit.info(false).catch(() => null);
         if (!(info && info.git && info.git.available)) {
-          const r = await git.pull({
-            fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch, fastForwardOnly: true,
-            author: await getAuthor(root),
-            onAuth, onAuthFailure: onAuth,
-          });
-          return { ok: true, oid: r && r.oid, strategy: strat };
+          return {ok:false,strategy:strat,error:'需要安装本机Git才能安全更新文件。请在设置中配置Git路径后重试；远程提交已下载，本地文件未改变。'};
         }
         const m = await nativeGit.merge(root, head, { ffOnly: true });
         if (!m.ok) {
@@ -1602,7 +1639,7 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
   }
   try {
     return await withRemoteUrlFix(root, pr, async () => {
-      const onAuth = onAuthOf(auth, pr.url);
+      const onAuth = onAuthOf(auth, pr.url, root);
       await git.push({
         fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
         force: !!force, onAuth, onAuthFailure: onAuth,
@@ -1692,7 +1729,7 @@ async function aheadBehind(dir, opts = {}) {
   if (opts.fetch && pr.url) { // 无 url（纯本地 ref 回退场景）不联网
     try {
       // 公开仓库不触发 401 不会调 onAuth；私有仓库按候选迭代取凭证（host 匹配 > URL 内嵌 > 系统凭证 > '*' 兜底）
-      const onAuth = onAuthOf(opts.auth, pr.url);
+      const onAuth = onAuthOf(opts.auth, pr.url, root);
       await git.fetch({ fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, onAuth, onAuthFailure: onAuth });
       fetched = true;
     } catch {} // 网络不通/需认证：静默回退本地 refs（显示旧值总比报错好）

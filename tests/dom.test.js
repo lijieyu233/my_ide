@@ -2434,7 +2434,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await g(dom, 'GitPanel.refresh()');
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    click($(dom, '#cd-pull'));
+    click($(dom, '#cd-pull-options'));
     await tick();
     const menu = $(dom, '#git-float-menu');
     const labels = $allIn(menu, '.ctx-item').map((x) => x.textContent.trim());
@@ -3017,7 +3017,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($(dom, '#commit-more'), '提交消息那行有 ⋯ 更多入口');
     assert_(!$(dom, '#commit-preview'), '内嵌预览区已整体移除（差异统一在编辑区看）');
     assert_(btnsOf().every((b) => b.querySelector('svg')), '全部是内联 SVG 图标');
-    assert_(btnsOf().every((b) => !b.textContent.trim()), '按钮无文字（文字进 tooltip）');
+    assert_(btnsOf().every((b) => b.textContent.trim()), '每个操作都有可见中文名称');
     // 挪进来的三个保留原 id：dom 测试与快捷键都按 id 找它们
     assert_($(dom, '#cd-shelve') && $(dom, '#cd-remote') && $(dom, '#cd-log'), '搁置 / 远程 / 日志 三个按钮（原 id 保留）');
     assert_($(dom, '#cd-shelve').parentElement === bar(), '它们都在工具行里（不再挤标题行）');

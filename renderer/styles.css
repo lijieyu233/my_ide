@@ -1052,6 +1052,17 @@ textarea.editor {
 .git-cp-bar .vt-btn:disabled { opacity: .35; cursor: default; }
 .git-cp-bar .vt-btn:disabled:hover { background: transparent; color: var(--text-dim); }
 .git-cp-bar svg.ic { width: 15px; height: 15px; }
+.git-cp-bar .vt-btn { height: auto; min-height: 26px; gap: 4px; padding: 3px 6px; font: inherit; font-size: .9em; }
+.git-cp-bar .vt-btn svg { flex-shrink: 0; }
+.git-sync { flex-shrink: 0; padding: 8px 10px; border-bottom: 1px solid var(--border-pane); }
+.git-sync-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.git-sync-actions button { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: .92em; }
+.git-sync-help, .git-sync-target { color: var(--text-dim); font-size: .9em; margin-top: 5px; overflow-wrap: anywhere; }
+#cd-sync-status { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 4px; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
+#cd-sync-status[data-kind="error"] { border-color: var(--warn, #c98c3f); }
+#cd-sync-status pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; max-height: 120px; overflow: auto; margin: 6px 0; user-select: text; }
+#cd-sync-status details { margin-top: 5px; }
+#cd-sync-status .git-sync-actions { margin-top: 7px; }
 /* 提交面板标题栏按钮：无边框、hover 才浮底色（老版每个按钮都有描边，一排下来像表单） */
 .panel-title-actions { display: flex; align-items: center; gap: 2px; }
 .panel-title-actions .vt-btn {

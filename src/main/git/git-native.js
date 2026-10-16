@@ -160,10 +160,10 @@ async function setExe(p) {
 // ⚠ 必须带 GCM_INTERACTIVE=never + GIT_TERMINAL_PROMPT=0：查不到就直接失败，**绝不弹窗阻塞 UI**（踩过）。
 // 结果按 protocol//host 进程内缓存（**失败不写缓存**：一次抖动固化 null 会让后续推送全跳过系统凭证）。
 const credCache = new Map();
-function credentialFill(url) {
+function credentialFill(url, root) {
   let u; try { u = new URL(url); } catch { return Promise.resolve(null); }
   if (!/^https?:$/.test(u.protocol)) return Promise.resolve(null);   // 仅 http(s) 远程
-  const key = u.protocol + '//' + u.host;
+  const key = (root || '') + '\n' + u.href;
   if (credCache.has(key)) return Promise.resolve(credCache.get(key));
   return new Promise((resolve) => {
     let settled = false;
@@ -171,6 +171,7 @@ function credentialFill(url) {
     try {
       const bin = configuredExe() || 'git';
       const child = execFile(bin, ['credential', 'fill'], {
+        cwd: root || undefined,
         timeout: 5000, windowsHide: true, maxBuffer: 64 * 1024,
         env: Object.assign({}, process.env, { GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0' }),
       }, (err, stdout) => {
@@ -180,7 +181,7 @@ function credentialFill(url) {
         done(mu && mp ? { username: mu[1], password: mp[1] } : null, !!(mu && mp));
       });
       child.stdin.on('error', () => {});   // stdin 异常不致命（超时 kill 时可能触发）
-      child.stdin.write('protocol=' + u.protocol.replace(':', '') + '\nhost=' + u.host + '\n\n');
+      child.stdin.write('url=' + u.href + '\n\n');
       child.stdin.end();
     } catch { done(null); }
   });

@@ -1027,7 +1027,7 @@ fs.mkdirSync(repo);
       await G.commit(A, { message: 'A: a1', files: ['a1.txt'] });
       const ff = await G.pullRemote(A, { strategy: 'ff-only' });
       assert.strictEqual(ff.ok, false, '分叉时 ff-only 不该成功');
-      assert.ok(/不是快进/.test(ff.error || ''), '拒绝文案要说清原因: ' + ff.error);
+      assert.ok(ff.code === 'DIVERGED' && /双方都有新提交/.test(ff.error || ''), '拒绝文案和类型要说清原因: ' + ff.error);
 
       // ② rebase：本地提交重放上去，历史保持线性
       const rb = await G.pullRemote(A, { strategy: 'rebase' });
