@@ -1151,7 +1151,14 @@ const BrowserPanel = (() => {
 
   function aiOperation(operation,args={}) {
     if(operation==='tabs'||operation.startsWith('tab_'))return aiTabOperation(operation,args);
-    if(operation==='state')return {visible,fullscreen,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
+    if(operation==='state')return {visible,fullscreen,colorScheme:darkMode,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
+    if(operation==='fullscreen')return setFullscreen(args.enabled).then(result=>({...result,ok:!result.error,committed:!result.error}));
+    if(operation==='color_scheme')return (async()=>{
+      const result=await B().setColorScheme(args.scheme);if(!result?.ok)return {ok:false,error:result?.error||'网页显示设置未生效'};
+      darkMode=args.scheme;renderDarkBtn();
+      try{localStorage.setItem(DARK_KEY,darkMode);}catch{return {ok:false,committed:true,colorScheme:darkMode,errorCode:'BROWSER_SAVE_FAILED',error:'网页显示已生效，但偏好保存失败'};}
+      return {...result,committed:true,colorScheme:darkMode};
+    })();
     if(operation==='reveal'){
       if(tabStore){tabStore.update(tabStore.active.id,{url:args.url,title:args.url});mountedTabs.add(tabStore.active.id);renderTabs();renderGroups();storageStatus();}
       hasPage=true;currentUrl=args.url;urlInput.value=args.url;

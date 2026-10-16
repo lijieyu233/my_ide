@@ -31,6 +31,9 @@
       if(data.effect.text!==null)line('填写内容：\n'+data.effect.text);
       if(data.effect.title)line('收藏名称：'+data.effect.title);if(data.effect.folder)line('收藏文件夹：'+data.effect.folder);
       if(data.effect.direction)line('滚动方向：'+data.effect.direction);
+      if(data.effect.scheme)line('网页显示：'+data.effect.scheme);
+      if(typeof data.effect.enabled==='boolean')line(data.effect.enabled?'进入浏览器全屏':'退出浏览器全屏');
+      if(data.effect.capture)line(Object.keys(data.effect.capture).length?'截图区域：'+JSON.stringify(data.effect.capture):'截取当前网页视口，不包含IDE窗口。');
       if(data.effect.tabs){
         const effect=data.effect, index=effect.tabs.findIndex(tab=>tab.id===effect.tabId);
         $('note').textContent='仅批准本次标签操作；项目、标签或标签组变化后需要重新读取并确认。';

@@ -35,11 +35,13 @@ function validate(call) {
     if (!Object.hasOwn(input, key)) { if (required) throw error('工具缺少必填字段：' + key); continue; }
     const value = input[key];
     if (['cursor','wait'].includes(kind)) { if(!Number.isSafeInteger(value)||value<0||value>(kind==='wait'?2000:Number.MAX_SAFE_INTEGER))throw error(key+'超出整数范围');args[key]=value;continue; }
+    if(['pixel','extent'].includes(kind)){if(!Number.isSafeInteger(value)||value<(kind==='extent'?1:0)||value>16384)throw error('截图区域超出范围');args[key]=value;continue;}
     if(kind==='tab_index'){if(!Number.isSafeInteger(value)||value<0||value>9999)throw error('标签位置必须是0..9999的整数');args[key]=value;continue;}
     if (['port','lines'].includes(kind)) { if (!Number.isSafeInteger(value) || value < (kind === 'port' ? 0 : 1) || value > (kind === 'port' ? 65535 : 200)) throw error(key+'超出整数范围'); args[key]=value; continue; }
     if (kind === 'boolean') { if (typeof value !== 'boolean') throw error(key + '必须是布尔值'); args[key] = value; continue; }
     if (typeof value !== 'string') throw error(key + '必须是字符串');
     if(kind==='web_url'){let url;try{url=new URL(value);}catch{throw error('网页地址必须是完整HTTP/HTTPS地址');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/[\x00-\x20\x7f]/.test(value))throw error('网页地址只支持不含账号密码的HTTP/HTTPS地址');}
+    if(kind==='color_scheme'&&!['dark','light','system'].includes(value))throw error('网页显示模式无效');
     if(kind==='browser_id'&&!/^[a-zA-Z0-9_-]{1,100}$/.test(value))throw error('标签或标签组ID无效');
     if(kind==='browser_name'&&(!value.trim()||value.length>60||/[\x00-\x1f\x7f]/.test(value)))throw error('标签组名称必须是1..60字符的单行文本');
     if(kind==='tab_close_mode'&&!['current','others','right'].includes(value))throw error('标签关闭范围无效');
@@ -55,6 +57,7 @@ function validate(call) {
     if (['command', 'query'].includes(kind) && !value.trim() || kind === 'search' && !value) throw error(key + '不能为空');
     args[key] = kind === 'path' ? relativePath(value, ['list_files','project_tree','project_directory','project_reveal'].includes(call.name)) : value;
   }
+  if(call.name==='browser_capture'&&[0,4].every(n=>Object.keys(args).length!==n))throw error('截图区域必须同时提供x/y/width/height');
   if (call.name === 'list_files' && !Object.hasOwn(args, 'path')) args.path = '.';
   if(['browser_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
   if(call.name==='browser_subtitles'&&args.snapshot&&(Object.hasOwn(args,'url')||Object.hasOwn(args,'language')))throw error('字幕续读不能更换视频或语言；重新提取请省略snapshot和cursor');

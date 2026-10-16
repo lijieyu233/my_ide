@@ -18,8 +18,8 @@ function fixture(initial=true,timeoutMs=5000){
 }
 const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{
-  await test('23个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
-    assert.equal(Names.tools.length,23);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
+  await test('28个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
+    assert.equal(Names.tools.length,28);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
     for(const url of ['file:///x','javascript:alert(1)','https://user:secret@example.test','example.test','https://example.test/a\nb',''])assert.throws(()=>Contract.validate(call('browser_open',{url})));
     for(const args of [{url:'https://example.test',script:'alert(1)'},{url:'https://example.test',selector:'input'}])assert.throws(()=>Contract.validate(call('browser_open',args)));
     assert.throws(()=>Contract.validate(call('browser_scroll',{direction:'left'})));

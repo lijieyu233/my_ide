@@ -386,9 +386,9 @@ ipcMain.handle('browser:color-scheme', async(e, mode) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,panel:async(operation,args={})=>{
+const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,openExternal:url=>shell.openExternal(url),artifactDirectory:()=>path.join(app.getPath('userData'),'ai-browser-artifacts'),panel:async(operation,args={})=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
-  const result=await mainWindow.webContents.executeJavaScript('(()=>{try{return BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')}catch(error){return {__browserError:true,error:error.message,errorCode:error.code}}})()');
+  const result=await mainWindow.webContents.executeJavaScript('Promise.resolve().then(()=>BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')).catch(error=>({__browserError:true,error:error.message,errorCode:error.code}))');
   if(result?.__browserError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
 }});
 const aiProjectTools=require('./src/main/ai/ai-project-tools').createService({panel:async(call,context,target)=>{

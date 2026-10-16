@@ -3,6 +3,7 @@ const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'
 const {app,BrowserWindow,webContents}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-browser-check-')),home=path.join(temp,'home');
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const openedExternal=[];require('electron').shell.openExternal=async url=>{openedExternal.push(url);};
 const observedPrompts=[];const promptsObserved=()=>observedPrompts;
 let prompt,win,server,url,page,queue=[],requests=[],seen=new Set(),mode='approve',passed=0,sequence=0,closing=false;
 const UI=require('../src/main/ai/ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show'){prompt={wc:this.webContents,data};observedPrompts.push(data);}return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
@@ -64,6 +65,16 @@ async function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdo
  });
  await test('真实长页面快照逐段续读，不丢尾部且跳转后拒绝旧快照',async()=>{
   let text='',snapshot,cursor;const consume=body=>{const r=last(body);assert(r.ok);assert.equal(r.cursor,text.length);text+=r.text;snapshot=r.snapshot;cursor=r.nextCursor;if(r.hasMore){queue.unshift(consume);return call('browser_read',{snapshot,cursor});}assert(r.complete);return call('browser_state');};queue=[()=>call('browser_open',{url:url+'/long'}),()=>call('browser_read'),consume];await drive('读取完整长页面');assert.equal(text,'长页面中'.repeat(16000)+'最终内容');queue=[()=>call('browser_open',{url:url+'/one'}),()=>call('browser_read',{snapshot,cursor})];await drive('确认跳转后旧续读失效');assert(requests.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('续读快照已失效')));await capture(win.webContents,'ai-browser-panel.png');
+ });
+ await test('模型读取实际选区并持久设置网页显示、全屏及系统浏览器交接',async()=>{
+  await page.executeJavaScript('(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector("h1"));getSelection().removeAllRanges();getSelection().addRange(r);})()');
+  queue=[()=>call('browser_selection'),body=>{assert.equal(last(body).text,'中文网页验证');return call('browser_color_scheme',{scheme:'light'});},()=>call('browser_state'),body=>{assert.equal(last(body).colorScheme,'light');return call('browser_fullscreen',{enabled:true});},()=>call('browser_state'),body=>{assert(last(body).fullscreen);return call('browser_fullscreen',{enabled:false});},()=>call('browser_open_external')];await drive('读取选区，浅色显示，进入退出全屏，交给默认浏览器');assert.equal(openedExternal.at(-1),url+'/one');assert(!win.isVisible());
+ });
+ await test('真实离屏网页视口截图与区域截图生成有效PNG',async()=>{
+  const captureWin=new BrowserWindow({show:false,skipTaskbar:true,width:400,height:300,webPreferences:{offscreen:true}});
+  try{await captureWin.loadURL(url+'/one');await sleep(200);const capture=require('../src/main/browser/browser-capture').capture;
+   for(const rect of [{},{x:10,y:10,width:100,height:80}]){const r=await capture(captureWin.webContents,rect,{directory:path.join(temp,'shots'),verify:()=>{assert(!captureWin.isVisible());}});const image=require('electron').nativeImage.createFromPath(r.path);assert(!image.isEmpty());assert.equal(image.getSize().width,r.width);if(rect.width)assert.equal(r.width,100);}
+  }finally{captureWin.destroy();}
  });
  await test('模型通过真实审批与IPC新建切换排序关闭恢复标签，正文快照不能跨标签',async()=>{
   let opened,anchor;

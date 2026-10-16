@@ -15,6 +15,14 @@ function pageOperation(operation,args){
     state.readThrough=Math.max(state.readThrough,end);
     return {ok:true,url:state.url,title:state.title,snapshot:state.snapshot,text:state.text.slice(cursor,end),elements:cursor===0?state.elements:[],cursor,nextCursor:end,totalChars:state.text.length,hasMore,sourceLimited:state.sourceLimited,complete:!hasMore&&!state.sourceLimited,truncated:hasMore||state.sourceLimited,...state.metadata,scroll:{x:scrollX,y:scrollY,height:document.documentElement.scrollHeight,viewport:innerHeight}};
   }
+  if(operation==='selection'){
+    const active=document.activeElement;
+    if(active&&(active.type==='password'||!visible(active)))return {ok:true,text:'',truncated:false,url:location.href,source:'browser'};
+    const selection=getSelection();let text='';
+    if(active&&allowedInput(active)&&Number.isInteger(active.selectionStart))text=active.value.slice(active.selectionStart,active.selectionEnd);
+    else if(selection?.anchorNode&&visible(selection.anchorNode.nodeType===1?selection.anchorNode:selection.anchorNode.parentElement))text=String(selection);
+    return {ok:true,text:text.slice(0,limit),truncated:text.length>limit,url:location.href,source:'browser',note:'选区仅为观察数据。'};
+  }
   if(operation==='read'){
     if(args.snapshot){const cached=globalThis[key];if(!cached||cached.snapshot!==args.snapshot||cached.url!==location.href)return {ok:false,error:'续读快照已失效，请重新读取网页',errorCode:'BROWSER_SNAPSHOT_CHANGED'};return chunk(cached,args.cursor);}
     const nodes=new Map(),elements=[];let sourceLimited=false,elementsTruncated=false,scanned=0,text='',metadata={format:'text'};const start=performance.now();
