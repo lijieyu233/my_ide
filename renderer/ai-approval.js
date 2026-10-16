@@ -26,6 +26,7 @@
     } else if(data.effect.browser){
       $('title').textContent=data.effect.label;$('accept').textContent='确认操作';$('target').textContent=data.effect.url||'内置浏览器';
       $('note').textContent='仅批准本次浏览器操作；网页跳转或目标元素变化后请重新读取。点击可能提交表单或发送数据。';
+      if(data.effect.frame)line('网页框架：'+data.effect.frame.url);
       if(data.effect.element)line('目标：'+(data.effect.element.label||data.effect.element.tag)+'（'+data.effect.element.id+'）');
       if(data.effect.element?.href)line('链接地址：'+data.effect.element.href);if(data.effect.element?.formAction)line('表单地址：'+data.effect.element.formAction);
       if(data.effect.text!==null)line('填写内容：\n'+data.effect.text);

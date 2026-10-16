@@ -59,7 +59,7 @@ function validate(call) {
   }
   if(call.name==='browser_capture'&&[0,4].every(n=>Object.keys(args).length!==n))throw error('截图区域必须同时提供x/y/width/height');
   if (call.name === 'list_files' && !Object.hasOwn(args, 'path')) args.path = '.';
-  if(['browser_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
+  if(['browser_read','browser_frame_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
   if(call.name==='browser_subtitles'&&args.snapshot&&(Object.hasOwn(args,'url')||Object.hasOwn(args,'language')))throw error('字幕续读不能更换视频或语言；重新提取请省略snapshot和cursor');
   return Object.freeze({ id: call.id, name: call.name, args: Object.freeze(args) });
 }

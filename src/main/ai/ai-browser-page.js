@@ -1,7 +1,7 @@
 // 固定程序运行在独立JS world：网页无法伪造元素账本，模型也不能注入任意脚本。
 function pageOperation(operation,args){
   const key='__myideBrowserObservation',limit=20000,sourceLimit=2*1024*1024;
-  const visible=el=>!!el?.isConnected&&!!el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden'&&!el.closest('[hidden],[inert],[aria-hidden="true"]');
+  const visible=el=>{if(!el?.isConnected||!el.getClientRects().length)return false;for(let at=el;at;at=at.getRootNode()?.host){if(getComputedStyle(at).visibility==='hidden'||at.closest('[hidden],[inert],[aria-hidden="true"]'))return false;}return true;};
   const labelText=el=>{const label=el.labels?.[0];if(!label)return '';const clone=label.cloneNode(true);clone.querySelectorAll('input,textarea,select,script,style,[hidden]').forEach(node=>node.remove());return clone.textContent;};
   const describe=el=>({tag:el.tagName.toLowerCase(),type:(el.getAttribute('type')||'').toLowerCase(),name:(el.getAttribute('name')||'').slice(0,160),label:(el.getAttribute('aria-label')||labelText(el)||(!['INPUT','TEXTAREA'].includes(el.tagName)?el.innerText:'')||el.getAttribute('placeholder')||el.getAttribute('title')||'').trim().slice(0,240),href:el.tagName==='A'?el.href:'',formAction:el.form&&el.type==='submit'?(el.hasAttribute('formaction')?el.formAction:el.form.action):''});
   const allowedInput=el=>el.tagName==='TEXTAREA'||el.tagName==='INPUT'&&['','text','search','email','url','tel','number'].includes((el.getAttribute('type')||'').toLowerCase());
@@ -26,16 +26,15 @@ function pageOperation(operation,args){
   if(operation==='read'){
     if(args.snapshot){const cached=globalThis[key];if(!cached||cached.snapshot!==args.snapshot||cached.url!==location.href)return {ok:false,error:'续读快照已失效，请重新读取网页',errorCode:'BROWSER_SNAPSHOT_CHANGED'};return chunk(cached,args.cursor);}
     const nodes=new Map(),elements=[];let sourceLimited=false,elementsTruncated=false,scanned=0,text='',metadata={format:'text'};const start=performance.now();
-    const walker=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,{acceptNode(node){
-      // 空元素也消耗扫描预算，否则一次nextNode可遍历大量没有文本的节点。
-      if(++scanned>10000||performance.now()-start>250)return NodeFilter.FILTER_ACCEPT;
-      if(node.nodeType===1){if(node.matches('script,style,noscript,input,textarea,select,[contenteditable],[hidden],[inert],[aria-hidden="true"]')||!visible(node))return NodeFilter.FILTER_REJECT;return NodeFilter.FILTER_SKIP;}
-      return NodeFilter.FILTER_ACCEPT;
-    }});
-    while(walker.nextNode()){
-      if(scanned>10000||performance.now()-start>250){sourceLimited=true;break;}
-      const part=walker.currentNode.textContent.replace(/\s+/g,' ').trim();if(!part)continue;
-      text+=(text?'\n':'')+part;if(text.length>sourceLimit){text=text.slice(0,sourceLimit);sourceLimited=true;break;}
+    const candidates=[], stack=[document.body||document.documentElement];
+    while(stack.length){
+      const node=stack.pop();if(++scanned>10000||performance.now()-start>250){sourceLimited=true;break;}
+      if(node.nodeType===1){
+        if(!visible(node)||node.matches('script,style,noscript,[hidden],[inert],[aria-hidden="true"]'))continue;
+        if(node.matches('a[href],button,input,textarea,select,[role="button"]'))candidates.push(node);
+        if(node.matches('input,textarea,select,[contenteditable]'))continue;
+        const children=[...node.childNodes,...(node.shadowRoot?.childNodes||[])];for(let i=children.length-1;i>=0;i--)stack.push(children[i]);
+      }else if(node.nodeType===3){const part=node.textContent.replace(/\s+/g,' ').trim();if(!part)continue;text+=(text?'\n':'')+part;if(text.length>sourceLimit){text=text.slice(0,sourceLimit);sourceLimited=true;break;}}
     }
     // JSON文档通常只有一个pre；不解析普通网页里的示例代码，以免把正文误当字幕。
     const pre=document.body?.querySelector(':scope > pre');
@@ -50,13 +49,13 @@ function pageOperation(operation,args){
         }
       }catch{} }
     }
-    scanned=0;for(const el of document.querySelectorAll('a[href],button,input,textarea,select,[role="button"]')){
+    scanned=0;for(const el of candidates){
       if(++scanned>10000||elements.length>=100){elementsTruncated=true;break;}
       if(!visible(el)||el.disabled||!supported(el)||el.tagName==='INPUT'&&['password','file','hidden'].includes((el.getAttribute('type')||'').toLowerCase()))continue;
       const data=describe(el);if(data.href&&!/^https?:/i.test(data.href))continue;
       const id='e'+(elements.length+1);nodes.set(id,{el,signature:signature(el)});elements.push({id,...data,fillable:allowedInput(el)&&!el.readOnly});
     }
-    const state={snapshot:args.newSnapshot,url:location.href,title:document.title,nodes,text,elements,sourceLimited,readThrough:0,metadata:{...metadata,elementsTruncated}};
+    const state={snapshot:args.newSnapshot,url:location.href,title:document.title,nodes,text,elements,sourceLimited,readThrough:0,metadata:{...metadata,elementsTruncated,shadowDOM:'open'}};
     globalThis[key]=state;return chunk(state,0);
   }
   if(args.url!==location.href)return {ok:false,error:'网页已跳转，请重新读取',errorCode:'BROWSER_PAGE_CHANGED'};
