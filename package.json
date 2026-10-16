@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test:git": "node tests/git-pull.test.js && node tests/git-sync-dom.test.js && node tests/git-log-selection.test.js && node tests/git-commit-tree.test.js && node tests/git.test.js",
+    "test:git": "node tests/git-pull.test.js && node tests/git-sync-dom.test.js && node tests/git-controls-dom.test.js && node tests/git-log-selection.test.js && node tests/git-commit-tree.test.js && node tests/git.test.js",
     "test:dom": "node tests/dom.test.js",
     "test:outline-keyboard": "node tests/outline-keyboard.test.js",
     "check:outline-keyboard": "electron scripts/check-outline-keyboard.js --disable-gpu --no-sandbox",

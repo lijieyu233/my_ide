@@ -2466,7 +2466,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     // 重做后的三点：① 不再把整条 URL（可能带 user:pass）铺在列表里 ② 区块有说明 ③ 认证区有状态提示
     assert_(!/https?:\/\//.test($(dom, '#rm-list').textContent),
       '列表不铺完整 URL（凭证不落到界面）: ' + $(dom, '#rm-list').textContent.slice(0, 80));
-    assert_(/已打码/.test(rows[0].title), '完整地址在 tooltip 里且写明已打码: ' + rows[0].title);
+    assert_(/已打码/.test(rows[0].querySelector('.rm-item-url').title), '地址 tooltip 明确凭证已打码');
     assert_($allIn($(dom, '#br-box'), '.rm-cap').length >= 2, '两个区块都有说明文字（用户："这个怎么用"）');
     assert_($(dom, '#rm-auth-note') && $(dom, '#rm-auth-note').textContent.length > 0, '认证区有"本机保存了几台主机"的提示');
     // origin 的分支列表（本地跟踪 refs，无网络）

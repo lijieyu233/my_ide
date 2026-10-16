@@ -176,11 +176,9 @@ const GitPanel = (() => {
     return {};
   }
   function saveGitAuthMap(host, cred) {
-    try {
-      const m = getGitAuthMap();
-      if (cred && cred.username) m[host] = cred; else delete m[host];
-      localStorage.setItem('myide-git-auth-map', JSON.stringify(m));
-    } catch {}
+    const m = getGitAuthMap();
+    if (cred && cred.username) m[host] = cred; else delete m[host];
+    localStorage.setItem('myide-git-auth-map', JSON.stringify(m));
   }
   // 远程 URL → 主机（含端口），用于按主机读写凭证；解析失败返回 null
   function hostOfUrl(url) {
@@ -208,142 +206,141 @@ const GitPanel = (() => {
     return p.scheme + (p.cred ? p.cred.split(':')[0] + ':***@' : '') + p.host + (p.path ? '/' + p.path : '');
   }
 
-  // 远程仓库 / 认证（重做过一版：原来 origin 与 URL 挤在一行、URL 里明文带密码、
-  // 区块之间只有一条像"进度条"的横线 —— 用户反馈「这个怎么用 ui也不好看」）
   async function openRemoteDialog() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
-    const r = await window.myIDE.git.listRemotes(root);
-    if (r.error) { MI.toast(r.error, 'err'); return; }
+    const operationRoot = root, epoch = rootGeneration;
+    const valid = () => root === operationRoot && rootGeneration === epoch;
+    let r;
+    try { r = await window.myIDE.git.listRemotes(operationRoot); }
+    catch (error) { if (valid()) MI.toast('远程仓库读取失败: ' + safeSyncText(error.message), 'err'); return; }
+    if (!valid()) return;
+    if (r.error) { MI.toast(safeSyncText(r.error), 'err'); return; }
     const box = document.createElement('div');
-    box.id = 'br-box';
+    box.id = 'br-box'; box.className = 'git-remote-dialog';
     Modal.show(box);
-    const authMap = getGitAuthMap();
-    // 主远程（优先 origin）的 host：凭证区默认编辑该主机的凭证
-    const primary = (r.remotes || []).find((x) => x.name === 'origin') || (r.remotes || [])[0] || null;
-    const primaryHost = primary ? hostOfUrl(primary.url) : null;
-    const firstHost = primaryHost || Object.keys(authMap).find((h) => h !== '*') || '';
-    const savedHosts = Object.keys(authMap).filter((h) => h !== '*');
-    const firstCred = authMap[firstHost] || {};
+    const primary = (r.remotes || []).find(x => x.name === 'origin') || (r.remotes || [])[0];
+    let activeHost = (primary && hostOfUrl(primary.url)) || Object.keys(getGitAuthMap()).find(h => h !== '*') || '';
+    // 主机草稿与已保存配置分开，切换时保留尚未保存的输入。
+    const drafts = new Map();
+    const credential = h => drafts.get(h) || getGitAuthMap()[h] || {};
+    const first = credential(activeHost);
+    const attr = value => esc(value).replace(/"/g, '&quot;');
     box.innerHTML = `
-      <div class="m-head">远程仓库 <span class="x" id="rm-x">✕</span></div>
+      <div class="m-head">远程仓库 <button class="x" id="rm-x" aria-label="关闭远程仓库">×</button></div>
       <div class="m-body">
-        <div class="rm-cap">远程地址 —— <b>推送 / 拉取</b>的目标仓库（<b>origin</b> 是默认那个）。
-          想换个地址就删掉再加一条。</div>
-        <div id="rm-list"></div>
-        <div class="br-new rm-add-row">
-          <input id="rm-name" type="text" value="origin" spellcheck="false" title="远程名（习惯上就叫 origin）">
-          <input id="rm-url" type="text" spellcheck="false" placeholder="粘贴地址：https://github.com/用户/仓库.git 或本机路径">
-          <button class="tb-btn" id="rm-add">＋ 添加</button>
-        </div>
-        <div class="rm-sec">
-          <div class="rm-cap">推送 / 拉取认证 —— <b>按主机分开保存</b>，多台 Git 服务器互不覆盖。
-            命令行里已经记住的凭证会自动复用，所以这里留空通常也能拉取；只有遇到反复要密码时才需要填。</div>
-          <div class="br-new">
-            <input id="rm-host" type="text" spellcheck="false" value="${esc(firstHost)}"
-              placeholder="主机（域名:端口，如 gitlab.example.com:8080）" title="凭证按这个键保存：只填域名和端口，不要带 https:// 和路径">
-          </div>
-          <div class="br-new">
-            <input id="rm-user" type="text" spellcheck="false" placeholder="用户名" value="${esc(firstCred.username || '')}">
-            <input id="rm-pass" type="password" spellcheck="false" placeholder="密码 / 访问令牌（GitHub 要用 PAT，不能填登录密码）" value="${esc(firstCred.password || '')}">
-          </div>
-          <div class="rm-auth-foot">
-            <button class="tb-btn" id="rm-save-auth">保存该主机认证</button>
-            <span id="rm-auth-note" class="rm-note"></span>
-          </div>
-        </div>
+        <section class="rm-section">
+          <div class="rm-section-head"><div><h3>连接的仓库</h3><p class="rm-cap">拉取与推送使用这里的地址</p></div><button class="tb-btn" id="rm-toggle-add" aria-expanded="false">添加仓库</button></div>
+          <div id="rm-list"></div>
+          <form id="rm-add-form" class="rm-form" hidden>
+            <div class="rm-add-fields"><label>远程名称<input id="rm-name" value="origin" spellcheck="false" required></label><label>仓库地址<input id="rm-url" placeholder="https://git.example.com/用户/仓库.git" spellcheck="false" required></label></div>
+            <div class="rm-form-actions"><button type="button" class="tb-btn" id="rm-cancel-add">取消</button><button class="tb-btn primary" id="rm-add" type="submit">添加仓库</button></div>
+          </form>
+        </section>
+        <details class="rm-auth" id="rm-auth">
+          <summary><span><strong>连接认证</strong><span class="rm-auth-summary" id="rm-auth-summary"></span></span><span class="rm-chevron">⌄</span></summary>
+          <p class="rm-cap">仅在需要单独指定账号时填写；认证按主机保存。</p>
+          <form id="rm-auth-form" class="rm-form">
+            <label>主机<input id="rm-host" list="rm-hosts" spellcheck="false" placeholder="git.example.com:3000" value="${attr(activeHost)}" required></label><datalist id="rm-hosts"></datalist>
+            <div class="rm-credentials"><label>用户名<input id="rm-user" spellcheck="false" autocomplete="off" value="${attr(first.username || '')}" required></label><label>密码 / 访问令牌<input id="rm-pass" type="password" autocomplete="off" value="${attr(first.password || '')}"></label></div>
+            <div class="rm-auth-foot"><span id="rm-auth-note" class="rm-note" role="status"></span><button class="tb-btn primary" id="rm-save-auth" type="submit">保存认证</button></div>
+          </form>
+        </details>
       </div>`;
-    const showAuthNote = (h) => {
-      const note = document.getElementById('rm-auth-note');
-      if (!note) return;
-      const n = savedHosts.length;
-      note.textContent = h
-        ? (savedHosts.includes(h) ? '这台主机已保存过凭证（保存会覆盖）' : '这台主机还没有凭证')
-        : (n ? '本机已保存 ' + n + ' 台主机的凭证' : '本机还没有保存过任何凭证');
+    const q = selector => box.querySelector(selector);
+    const showAuthNote = h => {
+      const saved = getGitAuthMap();
+      q('#rm-auth-note').textContent = saved[h] ? '已保存本机配置，连接时验证' : '未单独配置，使用地址或系统认证';
+      q('#rm-auth-summary').textContent = saved[h] ? '已保存 · ' + h : '使用地址或系统认证';
+      q('#rm-hosts').replaceChildren(...[...new Set([...(r.remotes || []).map(x => hostOfUrl(x.url)), ...Object.keys(saved)])].filter(x => x && x !== '*').map(h => { const o = document.createElement('option'); o.value = h; return o; }));
     };
-    // 切换主机时预填该主机已存凭证
-    document.getElementById('rm-host').oninput = () => {
-      const h = document.getElementById('rm-host').value.trim();
-      const c = authMap[h] || {};
-      document.getElementById('rm-user').value = c.username || '';
-      document.getElementById('rm-pass').value = c.password || '';
+    const rememberDraft = () => drafts.set(activeHost, { username: q('#rm-user').value, password: q('#rm-pass').value });
+    const selectHost = h => {
+      rememberDraft(); activeHost = h;
+      q('#rm-host').value = h;
+      const c = credential(h);
+      q('#rm-user').value = c.username || ''; q('#rm-pass').value = c.password || '';
       showAuthNote(h);
     };
-    showAuthNote(firstHost);
-    document.getElementById('rm-x').onclick = () => Modal.hide();
-    const list = document.getElementById('rm-list');
-    const renderList = async () => {
-      const rr = await window.myIDE.git.listRemotes(root);
-      list.innerHTML = '';
-      if (!rr.remotes || !rr.remotes.length) {
-        const d = document.createElement('div');
-        d.className = 'rm-empty';
-        d.textContent = '还没有配远程仓库 —— 把地址粘到下面那行、点「＋ 添加」就行（常见的 GitHub 地址长得像 https://github.com/你自己/仓库.git）。';
-        list.appendChild(d);
-        return;
-      }
-      for (const rm of rr.remotes) {
-        const sp = splitRemote(rm.url);
-        const row = document.createElement('div');
-        row.className = 'rm-item';
-        row.innerHTML = '<div class="rm-item-head">'
-          + '<span class="rm-name"></span>'
-          + '<span class="rm-acts">'
-          + '<span class="rm-cred" title="这个地址里带了用户名/密码（这里已打码显示）">带凭证</span>'
-          + '<span class="rm-del">删除</span>'
-          + '</span></div>'
-          + '<div class="rm-item-url"><span class="rm-host"></span><span class="rm-path"></span></div>';
+    q('#rm-host').onchange = () => selectHost(q('#rm-host').value.trim());
+    showAuthNote(activeHost);
+    q('#rm-x').onclick = () => Modal.hide();
+    const toggleAdd = show => {
+      q('#rm-add-form').hidden = !show; q('#rm-toggle-add').setAttribute('aria-expanded', String(show));
+      if (show) { q('#rm-name').value = (r.remotes || []).some(x => x.name === 'origin') ? '' : 'origin'; q('#rm-url').focus(); }
+    };
+    q('#rm-toggle-add').onclick = () => toggleAdd(q('#rm-add-form').hidden);
+    q('#rm-cancel-add').onclick = () => toggleAdd(false);
+    const renderList = remotes => {
+      const list = q('#rm-list'); list.replaceChildren();
+      if (!remotes.length) { const empty = document.createElement('div'); empty.className = 'rm-empty'; empty.textContent = '尚未连接远程仓库'; list.append(empty); toggleAdd(true); }
+      for (const rm of remotes) {
+        const sp = splitRemote(rm.url), row = document.createElement('article'); row.className = 'rm-item';
+        row.innerHTML = '<div class="rm-item-head"><span class="rm-name"></span><span class="rm-cred">地址包含认证</span><span class="rm-acts"><button class="rm-config tb-btn">认证</button><button class="rm-del" title="移除本机的远程连接">移除</button></span></div><div class="rm-item-url"><span class="rm-host"></span><span class="rm-path"></span></div><div class="rm-branches"></div>';
         row.querySelector('.rm-name').textContent = rm.name;
         if (!sp.hasCred) row.querySelector('.rm-cred').remove();
-        const hostEl = row.querySelector('.rm-host');
-        hostEl.textContent = sp.host || (sp.path ? '' : '(空地址)');
-        const pathEl = row.querySelector('.rm-path');
-        pathEl.textContent = sp.path ? ' / ' + sp.path : '';
-        row.title = '完整地址（凭证已打码）：' + maskRemote(rm.url);
+        row.querySelector('.rm-host').textContent = sp.host || '';
+        row.querySelector('.rm-path').textContent = sp.path ? ' / ' + sp.path : '';
+        row.querySelector('.rm-item-url').title = '完整地址（凭证已打码）：' + maskRemote(rm.url);
+        row.querySelector('.rm-config').onclick = () => { selectHost(hostOfUrl(rm.url) || ''); q('#rm-auth').open = true; q('#rm-user').focus(); };
         row.querySelector('.rm-del').onclick = async () => {
-          const yes = await Modal.confirm('删除远程', '确定删除远程「' + rm.name + '」吗？（只删本机这份配置，不影响远端仓库）');
-          if (!yes) return;
-          const dr = await window.myIDE.git.removeRemote(root, rm.name);
-          if (dr.ok) { MI.toast('已删除 ' + rm.name, 'ok'); renderList(); refresh(); }
-          else MI.toast('删除失败: ' + dr.error, 'err');
+          const button = row.querySelector('.rm-del');
+          if (!valid() || button.disabled) return;
+          button.disabled = true;
+          try {
+            const yes = await Modal.confirm('移除远程连接', '移除「' + rm.name + '」？远端仓库和本地文件均保留。');
+            if (!yes || !valid()) return;
+            const dr = await window.myIDE.git.removeRemote(operationRoot, rm.name);
+            if (!valid() || !box.isConnected) return;
+            if (dr.ok) {
+              MI.toast('已移除 ' + rm.name, 'ok');
+              const rr = await window.myIDE.git.listRemotes(operationRoot);
+              if (valid() && box.isConnected) {
+                if (rr.error) MI.toast('远程仓库读取失败: ' + safeSyncText(rr.error), 'err');
+                else { r.remotes = rr.remotes || []; renderList(r.remotes); }
+                refresh();
+              }
+            } else MI.toast('移除失败: ' + safeSyncText(dr.error), 'err');
+          } catch (error) { if (valid() && box.isConnected) MI.toast('移除失败: ' + safeSyncText(error.message), 'err'); }
+          finally { button.disabled = false; }
         };
-        list.appendChild(row);
-        // 远程分支（本地跟踪 refs，无网络）：名称 + 短 oid，HEAD 标默认分支
-        const brs = rm.branches || [];
-        const brBox = document.createElement('div');
-        brBox.className = 'rm-branches';
-        if (!brs.length) {
-          brBox.innerHTML = '<div class="rm-br-empty">本机还没有它的分支信息（拉取一次后就有了）</div>';
-        } else {
-          for (const b of brs) {
-            const el = document.createElement('div');
-            el.className = 'rm-br' + (b.head ? ' rm-br-head' : '');
-            el.title = b.oid || '';
-            el.innerHTML = `<span class="rm-br-dot">${b.head ? '●' : '○'}</span><span class="rm-br-name">${esc(b.name)}</span><span class="rm-br-oid">${esc(b.oid || '')}</span>`;
-            brBox.appendChild(el);
-          }
+        const branches = row.querySelector('.rm-branches');
+        for (const branch of rm.branches || []) {
+          const el = document.createElement('div'); el.className = 'rm-br' + (branch.head ? ' rm-br-head' : '');
+          el.innerHTML = '<span class="rm-br-dot">' + (branch.head ? '●' : '○') + '</span><span class="rm-br-name"></span><span class="rm-br-oid"></span>';
+          el.querySelector('.rm-br-name').textContent = branch.name; el.querySelector('.rm-br-oid').textContent = branch.oid || ''; branches.append(el);
         }
-        list.appendChild(brBox);
+        if (!(rm.branches || []).length) branches.innerHTML = '<div class="rm-br-empty">拉取后显示远程分支</div>';
+        list.append(row);
       }
     };
-    renderList();
-    document.getElementById('rm-add').onclick = async () => {
-      const name = document.getElementById('rm-name').value.trim();
-      const url = document.getElementById('rm-url').value.trim();
-      if (!url) { MI.toast('请先粘贴远程地址', 'err'); return; }
-      const ar = await window.myIDE.git.addRemote(root, { name, url });
-      if (ar.ok) { MI.toast('已添加远程 ' + name, 'ok'); document.getElementById('rm-url').value = ''; renderList(); refresh(); }
-      else MI.toast('添加失败: ' + ar.error, 'err');
+    renderList(r.remotes || []);
+    q('#rm-add-form').onsubmit = async e => {
+      e.preventDefault(); if (!valid() || q('#rm-add').disabled) return;
+      const name = q('#rm-name').value.trim(), url = q('#rm-url').value.trim();
+      if (!name || !url) { MI.toast('请填写远程名称和仓库地址', 'err'); return; }
+      q('#rm-add').disabled = true;
+      try {
+        const ar = await window.myIDE.git.addRemote(operationRoot, { name, url });
+        if (!valid() || !box.isConnected) return;
+        if (ar.ok) {
+          MI.toast('已添加远程 ' + name, 'ok'); q('#rm-url').value = ''; toggleAdd(false);
+          const rr = await window.myIDE.git.listRemotes(operationRoot);
+          if (valid() && box.isConnected) {
+            if (rr.error) MI.toast('远程仓库读取失败: ' + safeSyncText(rr.error), 'err');
+            else { r.remotes = rr.remotes || []; renderList(r.remotes); }
+            refresh();
+          }
+        }
+        else MI.toast('添加失败: ' + safeSyncText(ar.error), 'err');
+      } catch (error) { if (valid() && box.isConnected) MI.toast('添加失败: ' + safeSyncText(error.message), 'err'); }
+      finally { q('#rm-add').disabled = false; }
     };
-    document.getElementById('rm-save-auth').onclick = () => {
-      const host = document.getElementById('rm-host').value.trim();
-      if (!host) { MI.toast('请填写主机（域名:端口）', 'err'); return; }
-      const username = document.getElementById('rm-user').value.trim();
-      const password = document.getElementById('rm-pass').value;
-      if (!username) { MI.toast('请填写用户名', 'err'); return; }
-      saveGitAuthMap(host, { username, password });
-      if (!savedHosts.includes(host)) savedHosts.push(host);
-      showAuthNote(host);
-      MI.toast('已保存 ' + host + ' 的认证', 'ok');
+    q('#rm-auth-form').onsubmit = e => {
+      e.preventDefault(); if (!valid()) return;
+      const host = q('#rm-host').value.trim(), username = q('#rm-user').value.trim(), password = q('#rm-pass').value;
+      if (!host || /[\/\s]/.test(host) || !username) { MI.toast('请填写有效主机和用户名', 'err'); return; }
+      try { saveGitAuthMap(host, { username, password }); drafts.set(host, { username, password }); activeHost = host; showAuthNote(host); MI.toast('已保存 ' + host + ' 的认证', 'ok'); }
+      catch { MI.toast('本机认证保存失败，请重试', 'err'); }
     };
   }
 
@@ -1326,7 +1323,22 @@ const GitPanel = (() => {
     // 一次性的设置不该和刷新/回滚这些高频操作抢位置。
     // 显示选项（PyCharm 提交窗口工具栏的 ⋯ Show Options Menu）：分组方式 / 忽略的文件。
     // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
-    mk(IC.viewOpts, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(e.currentTarget), 'cd-view-opts');
+    mk(IC.viewOpts, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(document.getElementById('cd-tools-more') || e.currentTarget), 'cd-view-opts');
+    // 只常驻刷新与差异；低频和破坏性操作放入带名称的菜单，避免一排无说明图标。
+    const tools = [...bar.querySelectorAll('.vt-btn')];
+    tools.forEach((button, index) => { if (index !== 0 && index !== 2) button.hidden = true; });
+    const more = document.createElement('button'); more.className = 'git-tools-more'; more.id = 'cd-tools-more';
+    more.innerHTML = '<svg class="ic" viewBox="0 0 16 16"><circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/></svg>';
+    more.title = '更多 Git 操作'; more.setAttribute('aria-label', more.title); more.setAttribute('aria-haspopup', 'menu');
+    more.onclick = () => {
+      const operationRoot = root, epoch = rootGeneration;
+      openFloatMenu(more, tools.filter(button => button.hidden).map(button => ({
+        label: button.textContent.trim(), title: button.title, disabled: button.disabled, danger: button === roll,
+        run: () => { if (root === operationRoot && rootGeneration === epoch && bar.isConnected) button.click(); }
+      })));
+    };
+    bar.append(more);
+    dif.id = 'cd-diff'; roll.id = 'cd-discard'; tools[0].id = 'cd-refresh';
     barBtns = { roll, dif };
     return bar;
   }
@@ -1998,23 +2010,35 @@ const GitPanel = (() => {
 
   // ---------- 显示选中差异（编辑区堆叠多文件） ----------
   async function diffChecked(selectedFiles) {
-    const operationRoot=root,seq=++diffSeq;
-    if (!(selectedFiles||checked).size) { MI.toast('没有勾选的文件', 'err'); return; }
-    const files = [...(selectedFiles||checked)].filter((f) => !ignoredAll.has(f)); // 忽略的文件没有 HEAD 版本可比
+    const operationRoot = root, seq = ++diffSeq;
+    if (!(selectedFiles || checked).size) { MI.toast('没有勾选的文件', 'err'); return; }
+    const files = [...(selectedFiles || checked)].filter(f => !ignoredAll.has(f));
     if (!files.length) { MI.toast('勾选的只有被忽略的文件', 'err'); return; }
-    const results = [];
-    for (const f of files) {
-      const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
-      // M3：按双区取差异（「已暂存」的文件看暂存区那一侧，其余看未暂存那一侧）
-      const r = c && c.inIndexOnly
-        ? await window.myIDE.git.diffStaged(operationRoot, f)
-        : await window.myIDE.git.diffUnstaged(operationRoot, f);
-      if(root!==operationRoot||seq!==diffSeq)return;
-      if (r && !r.error && !r.unchanged) results.push(r);
+    const button = document.getElementById('cd-diff');
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); button.querySelector('span').textContent = '读取差异…'; }
+    const results = [], errors = [];
+    try {
+      for (const f of files) {
+        const c = state && state.changed ? state.changed.find(x => x.file === f) : null;
+        try {
+          const r = c && c.inIndexOnly
+            ? await window.myIDE.git.diffStaged(operationRoot, f)
+            : await window.myIDE.git.diffUnstaged(operationRoot, f);
+          if (root !== operationRoot || seq !== diffSeq) return;
+          if (r && r.error) errors.push(f + '：' + safeSyncText(r.error));
+          else if (r && !r.unchanged) results.push(r);
+        } catch (error) { errors.push(f + '：' + safeSyncText(error.message)); }
+        if (root !== operationRoot || seq !== diffSeq) return;
+      }
+      if (errors.length) MI.toast('差异读取失败（' + errors.length + ' 个）：' + errors[0], 'err');
+      if (!results.length) { if (!errors.length) MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
+      renderDiffView(results, '选中 ' + results.length + ' 个文件 · 未暂存 / 已暂存',
+        { sideOf: f => diffSideOf(state && state.changed ? state.changed.find(x => x.file === f) : null), onHunk: hunkAction });
+    } finally {
+      if (button && button.isConnected && root === operationRoot && seq === diffSeq) {
+        button.removeAttribute('aria-busy'); button.querySelector('span').textContent = '查看差异'; button.disabled = !checked.size;
+      }
     }
-    if (!results.length) { MI.toast('勾选的文件没有可显示的差异', 'err'); return; }
-    renderDiffView(results, `选中 ${results.length} 个文件 · 未暂存 / 已暂存`,
-      { sideOf: (f) => diffSideOf(state && state.changed ? state.changed.find((x) => x.file === f) : null), onHunk: hunkAction });
   }
 
   // ---------- 搁置（Shelve）弹窗：上=搁置当前更改（名称+文件勾选），下=已搁置列表（恢复/删除） ----------
@@ -2746,7 +2770,8 @@ const GitPanel = (() => {
     closeFloatMenu();
     const menu = document.createElement('div');
     menu.id = 'git-float-menu';
-    menu.className = 'git-float-menu';
+    menu.className = 'git-float-menu'; menu.setAttribute('role', 'menu');
+    menu.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFloatMenu(); anchor.focus(); } };
     for (const it of items) {
       const d = document.createElement('div');
       // `checked` 不为 undefined 的条目 = **可勾选的状态项**（分组方式 / 显示开关）：
@@ -2768,10 +2793,13 @@ const GitPanel = (() => {
         d.textContent = it.label;
       }
       d.title = it.title || it.label;
-      if (!it.header) d.onclick = () => { closeFloatMenu(); it.run(); };
+      d.setAttribute('role', it.header ? 'presentation' : 'menuitem');
+      if (it.disabled) { d.classList.add('disabled'); d.setAttribute('aria-disabled', 'true'); }
+      if (!it.header && !it.disabled) { d.tabIndex = 0; d.onclick = () => { closeFloatMenu(); it.run(); }; d.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); d.click(); } }; }
       menu.appendChild(d);
     }
     document.body.appendChild(menu);
+    menu.querySelector('.ctx-item[tabindex]')?.focus();
     const r = anchor.getBoundingClientRect();
     const w = menu.offsetWidth, h = menu.offsetHeight;
     menu.style.left = Math.max(6, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
@@ -2946,7 +2974,7 @@ const GitPanel = (() => {
         const hist = document.getElementById('commit-history');
         if (hist) hist.classList.remove('active');
       }
-      root = v;rootGeneration++;refreshSeq++;cancelDiff();showSyncNotice(null);
+      root = v;rootGeneration++;refreshSeq++;cancelDiff();closeFloatMenu();showSyncNotice(null);
       // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
       //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
       invalidateIgnored();

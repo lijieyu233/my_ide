@@ -370,7 +370,7 @@ module.exports = {
     // 标题栏按钮：无边框 + SVG。原为 7 个（含搁置/远程/刷新/日志），一行 436px 塞进 340px
     // 会把「提交」压成竖排 —— 那 4 个已移入工具行，这里只剩拉取/推送两个主操作。
     const tb = qa('#panel-git .git-sync-actions > button').slice(0,3);
-    add('同步区明确显示拉取最新代码／推送提交／拉取方式', tb.length === 3 && tb.map(b=>b.textContent.trim()).join('|')==='拉取最新代码|推送提交|拉取方式…', tb.map((b) => b.textContent.trim()).join(' | '));
+    add('同步区明确显示拉取最新代码／推送提交／拉取方式', tb.length === 3 && tb.map(b=>b.getAttribute('aria-label') || b.textContent.trim()).join('|')==='拉取最新代码|推送提交|拉取方式', tb.map((b) => b.textContent.trim()).join(' | '));
     add('主操作有清楚的用途说明', !!q('.git-sync-help') && q('.git-sync-help').textContent.includes('下载更新'), tb.length + ' 个');
     add('标题栏按钮为 SVG 图标（不再用 emoji）',
       tb.every((b) => b.querySelector('svg') || /拉取|推送/.test(b.textContent)),
@@ -2133,7 +2133,7 @@ module.exports = {
     const btns = qa('#cd-files .git-cp-bar .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
     // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
-    add('工具行 9 个SVG按钮均有可见名称', btns.length === 9 && btns.every((b) => b.querySelector('svg') && b.textContent.trim()),
+    add('工具行 9 个SVG操作均有名称', btns.length === 9 && btns.every((b) => b.querySelector('svg') && b.textContent.trim()),
       btns.map((b) => String(b.title).split('（')[0]).join(' | '));
 
     // ---- 图标语义（用户报过"+ / − 怎么能代表缩进展开"）----
@@ -2459,7 +2459,7 @@ module.exports = {
     // （原来一行 436px 的内容塞进 340px，浏览器只能把标题压成竖排）
     const tActs = qa('#panel-git .panel-title .panel-title-actions .vt-btn');
     add('标题行显示分支与修改数，拉取/推送移入独立同步区',
-      tActs.length === 0 && !!q('.git-sync #cd-pull') && !!q('.git-sync #cd-push') && !q('#cd-refresh') && !q('#panel-git .panel-title #cd-shelve')
+      tActs.length === 0 && !!q('.git-sync #cd-pull') && !!q('.git-sync #cd-push') && !q('#panel-git .panel-title #cd-refresh') && !q('#panel-git .panel-title #cd-shelve')
       && !!q('#cd-files .git-cp-bar #cd-shelve'),
       '标题行按钮=' + tActs.length + '（' + tActs.map((b) => b.textContent.trim()).join('/') + '） 工具行按钮='
       + qa('#cd-files .git-cp-bar .vt-btn').length);
