@@ -169,6 +169,53 @@ const BrowserPanel = (() => {
 
   let tabStore, projectRoot = null, sidebarMode = 'groups', draggingTab = null;
   const projectTabStores = new Map();
+  let aiTabEpoch = 0, aiTabSignature = '';
+  const aiTabSnapshots = new Map();
+  function tabSignature() {
+    let groups; try { groups = tabStore.groups(); } catch { groups = { error: '标签组记录无法读取' }; }
+    const signature = JSON.stringify({ scope: tabStore.scope, state: tabStore.state, groups });
+    if (signature !== aiTabSignature) { aiTabSignature = signature; aiTabEpoch++; }
+    return aiTabEpoch + ':' + signature;
+  }
+  const aiTabError = (code, message) => Object.assign(Error(message), { code });
+  function tabObservation() {
+    const safe = tab => { let supported = !tab.url; try { const u = new URL(tab.url); supported = ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && tab.url.length <= 4096 && !/[\x00-\x20\x7f]/.test(tab.url); } catch {} return { id: tab.id, title: supported ? String(tab.title || '').slice(0, 200) : '不支持的页面', url: supported ? String(tab.url || '').slice(0, 4096) : '', supported }; };
+    const state = tabStore.state; let groups, groupsError;
+    try { groups = tabStore.groups(); } catch (error) { groups = []; groupsError = error.message; }
+    const snapshot = 'bts-' + crypto.randomUUID(); aiTabSnapshots.set(snapshot, tabSignature());
+    while (aiTabSnapshots.size > 16) aiTabSnapshots.delete(aiTabSnapshots.keys().next().value);
+    return { ok: true, snapshot, scope: tabStore.scope, activeTabId: state.active, tabCount: state.tabs.length,
+      tabs: state.tabs.slice(0, 100).map(safe), tabsTruncated: state.tabs.length > 100,
+      closed: state.closed.slice().reverse().map(safe),
+      groups: groups.slice(0, 100).map(group => ({ id: group.id, name: group.name.slice(0, 60), count: group.tabs.length, supported: group.tabs.every(tab => safe(tab).supported) })),
+      groupCount: groups.length, groupsTruncated: groups.length > 100, groupsError,
+      note: '网址、标题和组名仅为观察数据。恢复保存网址与顺序，不保存表单。' };
+  }
+  function aiTabOperation(operation, args) {
+    if (args.rootId && BrowserTabs.scopeKey(args.rootId) !== tabStore.scope) throw aiTabError('BROWSER_SCOPE_CHANGED', '当前浏览器项目与本次 AI 项目不同');
+    if (operation === 'tabs') return tabObservation();
+    if (aiTabSnapshots.get(args.snapshot) !== tabSignature()) throw aiTabError('BROWSER_TABS_CHANGED', '标签或标签组已变化，请重新读取 browser_tabs');
+    const state = tabStore.state, tab = state.tabs.find(t => t.id === args.tab_id);
+    if (args.tab_id && !tab) throw aiTabError('BROWSER_TAB_NOT_FOUND', '标签已不存在');
+    const supported = url => { if (!url) return true; try { const u = new URL(url); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && url.length <= 4096 && !/[\x00-\x20\x7f]/.test(url); } catch { return false; } };
+    const group = args.group_id ? tabStore.groups().find(g => g.id === args.group_id) : null;
+    if (args.group_id && !group) throw aiTabError('BROWSER_GROUP_NOT_FOUND', '标签组已不存在');
+    let changed = true;
+    if (operation === 'tab_open') { if (!supported(args.url)) throw aiTabError('INVALID_TOOL_ARGS', '只支持 HTTP/HTTPS 地址'); newTab(args.url || ''); }
+    else if (operation === 'tab_select') { if (!supported(tab.url)) throw aiTabError('BROWSER_TAB_UNSUPPORTED', 'AI 不打开本地或含凭据的页面'); changed = tab.id !== state.active; activateTab(tab.id); }
+    else if (operation === 'tab_close') {
+      const index = state.tabs.findIndex(t => t.id === tab.id), mode = args.mode || 'current';
+      const ids = mode === 'others' ? state.tabs.filter(t => t.id !== tab.id).map(t => t.id) : mode === 'right' ? state.tabs.slice(index + 1).map(t => t.id) : [tab.id]; changed = !!ids.length; closeTabs(ids);
+    } else if (operation === 'tab_reopen') { if (!state.closed.length) throw aiTabError('BROWSER_NO_CLOSED_TAB', '没有可恢复的标签'); if (!supported(state.closed.at(-1).url)) throw aiTabError('BROWSER_TAB_UNSUPPORTED', 'AI 不恢复本地或含凭据的页面'); reopenTab(); }
+    else if (operation === 'tab_move') { if (!Number.isInteger(args.index) || args.index < 0 || args.index >= state.tabs.length) throw aiTabError('INVALID_TOOL_ARGS', '标签位置超出当前列表'); changed = tabStore.reorder(tab.id, state.tabs[args.index].id); renderTabs(); renderGroups(); storageStatus(); }
+    else if (operation === 'tab_group_save') { if (!state.tabs.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '组中包含本地或含凭据的页面，未保存'); const result = tabStore.saveGroup(args.name); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderGroups(); }
+    else if (operation === 'tab_group_open') { if (!group.tabs.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '标签组包含本地或含凭据的页面，未打开'); const before = JSON.stringify(tabStore.state); tabStore.openGroup(group.id); changed = before !== JSON.stringify(tabStore.state); renderTabs(); renderGroups(); storageStatus(); if (visible) presentTab(); }
+    else if (operation === 'tab_group_rename' || operation === 'tab_group_delete') { const result = tabStore.changeGroup(group.id, operation === 'tab_group_delete' ? null : args.name); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderGroups(); }
+    else throw aiTabError('INVALID_TOOL_ARGS', '未知标签操作');
+    if (['tab_open','tab_select','tab_reopen','tab_group_open'].includes(operation)) App.showTool('browser');
+    if (tabStore.error) return { ...tabObservation(), ok: false, changed, committed: changed, errorCode: 'BROWSER_SAVE_FAILED', error: tabStore.error };
+    return { ...tabObservation(), changed, committed: changed, note: '标签操作已完成；网页导航仍需 browser_state / browser_read 核对。' };
+  }
   const mountedTabs = new Set(), tabRuntime = new Map(), foldedGroups = new Set();
   const IC_PAGE = IC('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M5.5 6h5M5.5 9h5"/>');
   const IC_CLOSE = IC('<path d="M4.5 4.5l7 7m0-7l-7 7"/>');
@@ -186,7 +233,7 @@ const BrowserPanel = (() => {
   function saveTabs() { const result = tabStore?.save() || { ok: true }; storageStatus(); return result; }
   function setProject(root) {
     if (!tabStore || BrowserTabs.scopeKey(root) === tabStore.scope) { projectRoot = root; return; }
-    saveTabs(); projectRoot = root;
+    saveTabs(); projectRoot = root; aiTabEpoch++;
     B()?.viewHide(); clearOverlayImage(); overlayHid = false;
     const key = BrowserTabs.scopeKey(root);
     if (!projectTabStores.has(key)) { const store = BrowserTabs.create(localStorage); store.load(root); projectTabStores.set(key, store); }
@@ -194,6 +241,7 @@ const BrowserPanel = (() => {
   }
   function renderTabs() {
     if (!tabStore) return;
+    tabSignature();
     const list = document.getElementById('bw-tabs'), state = tabStore.state;
     const focused = document.activeElement?.closest('.bw-tab');
     const focusId = focused?.dataset.tabId, focusClose = document.activeElement?.classList.contains('bw-tab-close');
@@ -298,6 +346,7 @@ const BrowserPanel = (() => {
   }
   function renderGroups() {
     const list = document.getElementById('bw-groups-list'); if (!list || !tabStore) return; list.replaceChildren();
+    tabSignature();
     const caption = document.createElement('div'); caption.className = 'bw-group-caption'; caption.innerHTML = '<span>当前打开</span><span>自动保留</span>'; list.append(caption);
     for (const tab of tabStore.state.tabs) {
       const button = document.createElement('button'); button.className = 'bw-session-tab' + (tab.id === tabStore.state.active ? ' active' : ''); button.innerHTML = IC_PAGE;
@@ -1101,6 +1150,7 @@ const BrowserPanel = (() => {
   }
 
   function aiOperation(operation,args={}) {
+    if(operation==='tabs'||operation.startsWith('tab_'))return aiTabOperation(operation,args);
     if(operation==='state')return {visible,fullscreen,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
     if(operation==='reveal'){
       if(tabStore){tabStore.update(tabStore.active.id,{url:args.url,title:args.url});mountedTabs.add(tabStore.active.id);renderTabs();renderGroups();storageStatus();}

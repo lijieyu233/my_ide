@@ -35,10 +35,14 @@ function validate(call) {
     if (!Object.hasOwn(input, key)) { if (required) throw error('工具缺少必填字段：' + key); continue; }
     const value = input[key];
     if (['cursor','wait'].includes(kind)) { if(!Number.isSafeInteger(value)||value<0||value>(kind==='wait'?2000:Number.MAX_SAFE_INTEGER))throw error(key+'超出整数范围');args[key]=value;continue; }
+    if(kind==='tab_index'){if(!Number.isSafeInteger(value)||value<0||value>9999)throw error('标签位置必须是0..9999的整数');args[key]=value;continue;}
     if (['port','lines'].includes(kind)) { if (!Number.isSafeInteger(value) || value < (kind === 'port' ? 0 : 1) || value > (kind === 'port' ? 65535 : 200)) throw error(key+'超出整数范围'); args[key]=value; continue; }
     if (kind === 'boolean') { if (typeof value !== 'boolean') throw error(key + '必须是布尔值'); args[key] = value; continue; }
     if (typeof value !== 'string') throw error(key + '必须是字符串');
     if(kind==='web_url'){let url;try{url=new URL(value);}catch{throw error('网页地址必须是完整HTTP/HTTPS地址');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/[\x00-\x20\x7f]/.test(value))throw error('网页地址只支持不含账号密码的HTTP/HTTPS地址');}
+    if(kind==='browser_id'&&!/^[a-zA-Z0-9_-]{1,100}$/.test(value))throw error('标签或标签组ID无效');
+    if(kind==='browser_name'&&(!value.trim()||value.length>60||/[\x00-\x1f\x7f]/.test(value)))throw error('标签组名称必须是1..60字符的单行文本');
+    if(kind==='tab_close_mode'&&!['current','others','right'].includes(value))throw error('标签关闭范围无效');
     if(kind==='scroll_direction'&&!['up','down','top','bottom'].includes(value))throw error('滚动方向无效');
     if(kind==='folder'&&(value.length>30||/[\x00-\x1f\x7f]/.test(value)))throw error('收藏文件夹名称最多30个字符');
     if(kind==='browser_text'&&/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value))throw error('填写文本含无效控制字符');

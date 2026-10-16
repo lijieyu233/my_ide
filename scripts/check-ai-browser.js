@@ -3,8 +3,9 @@ const fs=require('fs'),os=require('os'),path=require('path'),http=require('http'
 const {app,BrowserWindow,webContents}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-browser-check-')),home=path.join(temp,'home');
 fs.mkdirSync(home);process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));
+const observedPrompts=[];const promptsObserved=()=>observedPrompts;
 let prompt,win,server,url,page,queue=[],requests=[],seen=new Set(),mode='approve',passed=0,sequence=0,closing=false;
-const UI=require('../src/main/ai/ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show')prompt={wc:this.webContents,data};return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
+const UI=require('../src/main/ai/ai-approval-ui'),createUI=UI.createUI;UI.createUI=options=>{class View extends options.WebContentsView{constructor(...args){super(...args);const send=this.webContents.send.bind(this.webContents);this.webContents.send=(ch,data)=>{if(ch==='ai-approval:show'){prompt={wc:this.webContents,data};observedPrompts.push(data);}return send(ch,data);};}}return createUI({...options,WebContentsView:View});};
 require('../main');UI.createUI=createUI;require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));async function until(fn,ms=30000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await sleep(20);}throw Error('native browser condition timeout');}
 const js=code=>win.webContents.executeJavaScript(code),call=(name,args={})=>({id:'native-browser-'+(++sequence),type:'function',function:{name,arguments:JSON.stringify(args)}});
@@ -14,7 +15,7 @@ require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{
  const body=JSON.parse(options.body);paired(body.messages);requests.push(body);for(const tool of require('../renderer/ai-browser-tools').tools)assert(body.tools.some(t=>t.function.name===tool.function.name));
  // 模拟模型等待导航后读取，避免将真实异步加载当成瞬间完成。
  const recent=body.messages.at(-1),recentName=body.messages.flatMap(m=>m.tool_calls||[]).find(c=>c.id===recent?.tool_call_id)?.function?.name;
- if(recent?.role==='tool'&&recentName==='browser_open'&&last(body).ok)await until(()=>{page=webContents.getAllWebContents().find(w=>w.getURL()===last(body).url);return page&&!page.isLoading();});
+ if(recent?.role==='tool'&&['browser_open','browser_tab_open','browser_tab_select','browser_tab_reopen','browser_tab_group_open'].includes(recentName)&&last(body).ok){const result=last(body),target=result.url||result.tabs?.find(t=>t.id===result.activeTabId)?.url;if(target)await until(()=>{page=webContents.getAllWebContents().find(w=>w.getURL()===target);return page&&!page.isLoading();});}
  const action=queue.shift(),calls=action?[await action(body)]:null,delta=calls?{tool_calls:calls.map((c,index)=>({index,...c}))}:{content:'已根据网页实际结果完成操作。'};
  return new Response('data: '+JSON.stringify({choices:[{delta,finish_reason:calls?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');
 }});
@@ -22,12 +23,16 @@ async function drive(text){const before=requests.length;await js('AiPanel.ask('+
  await until(async()=>{
   if(prompt&&!seen.has(prompt.data.id)&&!prompt.wc.isDestroyed()&&!prompt.wc.isLoading()){
    seen.add(prompt.data.id);const current=prompt;assert(current.data.effect.browser);await until(()=>current.wc.executeJavaScript('!!document.getElementById("target").textContent'));assert(await current.wc.executeJavaScript('document.getElementById("always").hidden'));
+   if(current.data.effect.tabs){const preview=await current.wc.executeJavaScript('document.getElementById("preview").textContent');if(current.data.effect.name)assert(preview.includes(current.data.effect.name));if(current.data.effect.group)assert(preview.includes(current.data.effect.group.name));if(current.data.effect.operation==='tab_close')assert(preview.includes('关闭可能丢失未提交表单'));if(current.data.effect.operation==='tab_group_save')await captureApproval(current.wc);}
+   if(mode==='tabs-changed')await js('BrowserPanel.newTab();true');
    if(mode==='changed')await page.executeJavaScript('document.getElementById("send").textContent="删除全部";true');
    if(mode==='capture')assert((await current.wc.executeJavaScript('document.getElementById("preview").textContent')).includes('验证收藏'));
    await current.wc.executeJavaScript('document.getElementById('+JSON.stringify(mode==='cancel'?'stop':mode==='reject'?'reject':'accept')+').click();true');
   }
   return await js('document.getElementById("ai-send").textContent==="➤"');
  });}
+// 隐藏子视图没有可截图表面；把已断言的真实 DOM 放进同样式离屏窗口做视觉核验。
+async function captureApproval(wc){const body=await wc.executeJavaScript('document.body.outerHTML');const preview=new BrowserWindow({show:false,skipTaskbar:true,width:380,height:620,webPreferences:{offscreen:true,preload:path.join(repo,'src/main/ai/ai-approval-preload.js'),contextIsolation:true,sandbox:true}});try{await preview.loadFile(path.join(repo,'renderer/ai-approval.html'));await preview.webContents.executeJavaScript('document.body.outerHTML='+JSON.stringify(body)+';document.fonts.ready');await sleep(150);const shot=await preview.webContents.capturePage();assert(!shot.isEmpty());fs.writeFileSync(path.join(repo,'.ui-check-trash','ai-browser-tabs-approval.png'),shot.toPNG());assert(!preview.isVisible()&&!win.isVisible());}finally{preview.destroy();}}
 async function capture(wc,name){if(!wc.debugger.isAttached())wc.debugger.attach('1.3');const r=await Promise.race([wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true}),sleep(8000).then(()=>{throw Error('截图超时');})]);fs.writeFileSync(path.join(repo,'.ui-check-trash',name),Buffer.from(r.data,'base64'));}
 const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
 const watchdog=setTimeout(()=>{console.error('AI浏览器验证超时');cleanup(2);},180000);
@@ -59,6 +64,22 @@ async function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdo
  });
  await test('真实长页面快照逐段续读，不丢尾部且跳转后拒绝旧快照',async()=>{
   let text='',snapshot,cursor;const consume=body=>{const r=last(body);assert(r.ok);assert.equal(r.cursor,text.length);text+=r.text;snapshot=r.snapshot;cursor=r.nextCursor;if(r.hasMore){queue.unshift(consume);return call('browser_read',{snapshot,cursor});}assert(r.complete);return call('browser_state');};queue=[()=>call('browser_open',{url:url+'/long'}),()=>call('browser_read'),consume];await drive('读取完整长页面');assert.equal(text,'长页面中'.repeat(16000)+'最终内容');queue=[()=>call('browser_open',{url:url+'/one'}),()=>call('browser_read',{snapshot,cursor})];await drive('确认跳转后旧续读失效');assert(requests.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('续读快照已失效')));await capture(win.webContents,'ai-browser-panel.png');
+ });
+ await test('模型通过真实审批与IPC新建切换排序关闭恢复标签，正文快照不能跨标签',async()=>{
+  let opened,anchor;
+  queue=[()=>call('browser_tabs'),body=>call('browser_tab_open',{snapshot:last(body).snapshot,url:url+'/two'}),()=>call('browser_tabs'),body=>{const s=last(body);opened=s.activeTabId;anchor=s.tabs.find(t=>t.id!==opened).id;return call('browser_tab_move',{snapshot:s.snapshot,tab_id:opened,index:0});},()=>call('browser_tabs'),body=>call('browser_tab_select',{snapshot:last(body).snapshot,tab_id:anchor}),()=>call('browser_tabs'),body=>call('browser_tab_close',{snapshot:last(body).snapshot,tab_id:opened}),()=>call('browser_tabs'),body=>call('browser_tab_reopen',{snapshot:last(body).snapshot}),()=>call('browser_tabs')];
+  await drive('新建第二页标签，调整顺序、切换，关闭后恢复');const s=last(requests.at(-1));assert(s.ok);assert.equal(s.tabs.length,2);assert.equal(s.tabs.find(t=>t.id===s.activeTabId).url,url+'/two');assert(promptsObserved().some(p=>p.effect.operation==='tab_close'));
+ });
+ await test('模型通过真实IPC保存打开改名删除标签组，确认面板展示组名与影响范围',async()=>{
+  let groupId;
+  queue=[()=>call('browser_tabs'),body=>call('browser_tab_group_save',{snapshot:last(body).snapshot,name:'接口验证组'}),()=>call('browser_tabs'),body=>{const s=last(body);groupId=s.groups.find(g=>g.name==='接口验证组').id;return call('browser_tab_group_rename',{snapshot:s.snapshot,group_id:groupId,name:'接口验证组新名称'});},()=>call('browser_tabs'),body=>call('browser_tab_group_open',{snapshot:last(body).snapshot,group_id:groupId}),()=>call('browser_tabs'),body=>call('browser_tab_group_delete',{snapshot:last(body).snapshot,group_id:groupId}),()=>call('browser_tabs')];await drive('保存当前标签组，改名，追加打开后删除保存的组');const s=last(requests.at(-1));assert(s.ok);assert.equal(s.groups.length,0);assert.equal(s.tabs.length,2);await capture(win.webContents,'ai-browser-tabs-panel.png');
+ });
+ await test('标签切换后拒绝旧网页正文续读快照',async()=>{
+  let oldSnapshot;
+  queue=[()=>call('browser_read'),body=>{oldSnapshot=last(body).snapshot;return call('browser_tabs');},body=>{const s=last(body);return call('browser_tab_select',{snapshot:s.snapshot,tab_id:s.tabs.find(t=>t.id!==s.activeTabId&&t.supported&&t.url).id});},()=>call('browser_read',{snapshot:oldSnapshot,cursor:0})];await drive('核验跨标签正文快照隔离');assert(requests.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('BROWSER_SNAPSHOT_CHANGED')));
+ });
+ await test('确认期间手动改变标签，真实原生审批不能执行旧关闭操作',async()=>{
+  const count=await js('BrowserPanel.tabs.length');mode='tabs-changed';queue=[()=>call('browser_tabs'),body=>call('browser_tab_close',{snapshot:last(body).snapshot,tab_id:last(body).activeTabId}),()=>call('browser_tabs')];await drive('核验过期关闭请求');assert.equal(await js('BrowserPanel.tabs.length'),count+1);assert(requests.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('BROWSER_TABS_CHANGED')));mode='approve';
  });
  console.log('AI浏览器真实窗口与IPC：'+passed+' 通过 / 0 失败');await cleanup(0);
 })().catch(async error=>{console.error(error.stack);console.error(JSON.stringify(requests.at(-1)?.messages.filter(m=>m.role==='tool').slice(-5).map(m=>({...m,content:m.content.slice(0,1000)})),null,2));if(page&&!page.isDestroyed())console.error(await page.executeJavaScript('JSON.stringify({contentType:document.contentType,children:Array.from(document.body.children).map(e=>e.tagName),pre:document.querySelector("pre")?.textContent.slice(0,100)})'));await cleanup(1);});

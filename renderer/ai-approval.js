@@ -31,6 +31,18 @@
       if(data.effect.text!==null)line('填写内容：\n'+data.effect.text);
       if(data.effect.title)line('收藏名称：'+data.effect.title);if(data.effect.folder)line('收藏文件夹：'+data.effect.folder);
       if(data.effect.direction)line('滚动方向：'+data.effect.direction);
+      if(data.effect.tabs){
+        const effect=data.effect, index=effect.tabs.findIndex(tab=>tab.id===effect.tabId);
+        $('note').textContent='仅批准本次标签操作；项目、标签或标签组变化后需要重新读取并确认。';
+        if(effect.name)line((effect.operation==='tab_group_rename'?'新名称：':'标签组名称：')+effect.name);
+        if(effect.group)line('标签组：'+effect.group.name+'（'+effect.group.count+' 个网页）');
+        if(Number.isInteger(effect.index))line('移动到第 '+(effect.index+1)+' 个位置');
+        const targets=effect.operation==='tab_close'?(effect.mode==='others'?effect.tabs.filter(tab=>tab.id!==effect.tabId):effect.mode==='right'?effect.tabs.slice(index+1):effect.tabs.filter(tab=>tab.id===effect.tabId)):effect.operation==='tab_group_save'?effect.tabs.filter(tab=>tab.url):effect.tabs.filter(tab=>tab.id===effect.tabId);
+        if(targets.length){line('涉及 '+targets.length+' 个标签：');for(const tab of targets.slice(0,10))line((tab.title||'新标签页')+(tab.url?' — '+tab.url:''));if(targets.length>10)line('另有 '+(targets.length-10)+' 个标签');}
+        if(effect.closed)line('恢复：'+(effect.closed.title||'新标签页')+(effect.closed.url?' — '+effect.closed.url:''));
+        if(effect.operation==='tab_close')line('关闭可能丢失未提交表单；重新打开只保证恢复网址。','muted');
+        if(effect.operation==='tab_group_delete')line('只删除保存的标签组，已打开的网页保留。','muted');
+      }
     } else if(data.effect.remote){
       $('title').textContent=data.effect.label;$('accept').textContent=data.danger?'仍然执行':'确认操作';
       const s=data.effect.session;$('target').textContent=s.name+' · '+s.username+'@'+s.host+':'+s.port;

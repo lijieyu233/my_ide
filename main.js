@@ -18,7 +18,7 @@ const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?p
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
 const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');
-const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-workbench-tools').has(call.name)?aiWorkbenchTools.prepare(call,context):require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
+const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-workbench-tools').has(call.name)?aiWorkbenchTools.prepare(call,context):require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call,context):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./src/main/files/file-write');
 const PathJobs = require('./src/main/files/path-jobs');
 const TextFormat = require('./src/main/files/text-format');
@@ -388,7 +388,8 @@ ipcMain.handle('browser:color-scheme', async(e, mode) => {
 
 const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,panel:async(operation,args={})=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
-  return mainWindow.webContents.executeJavaScript('BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')');
+  const result=await mainWindow.webContents.executeJavaScript('(()=>{try{return BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')}catch(error){return {__browserError:true,error:error.message,errorCode:error.code}}})()');
+  if(result?.__browserError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
 }});
 const aiProjectTools=require('./src/main/ai/ai-project-tools').createService({panel:async(call,context,target)=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
