@@ -18,8 +18,8 @@ function fixture(initial=true,timeoutMs=5000){
 }
 const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{
-  await test('30个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
-    assert.equal(Names.tools.length,30);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
+  await test('36个模型工具同源，拒绝脚本、本地地址、凭据、未知字段和超限文本',()=>{
+    assert.equal(Names.tools.length,36);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
     for(const url of ['file:///x','javascript:alert(1)','https://user:secret@example.test','example.test','https://example.test/a\nb',''])assert.throws(()=>Contract.validate(call('browser_open',{url})));
     for(const args of [{url:'https://example.test',script:'alert(1)'},{url:'https://example.test',selector:'input'}])assert.throws(()=>Contract.validate(call('browser_open',args)));
     assert.throws(()=>Contract.validate(call('browser_scroll',{direction:'left'})));
@@ -29,7 +29,7 @@ const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
   await test('无项目读取真实状态、可见正文与目标，不泄露输入值或隐藏正文',async()=>{
     const f=fixture(),s=await f.execute(call('browser_state')),r=await f.read();assert(s.ok&&r.ok);assert.equal(s.url,'https://example.test/');assert(r.text.includes('中文正文'));assert(r.elements.some(e=>e.label==='搜索'&&e.fillable));
     for(const value of ['SECRET_PASSWORD','SECRET_FIELD_VALUE','SECRET_INPUT_VALUE','SECRET_EDIT_VALUE','隐藏机密','javascript:'])assert(!JSON.stringify(r).includes(value));
-    assert(!r.elements.some(e=>['password','file','hidden'].includes(e.type)));assert.equal(f.prompts.length,0);assert.throws(()=>f.tools.prepare(1,f.context,call('read_file',{path:'x'})),e=>e.code==='INVALID_AI_ROOT');
+    assert(!r.elements.some(e=>['password','hidden'].includes(e.type)));assert(r.elements.filter(e=>e.type==='file').every(e=>e.uploadable&&!e.fillable));assert.equal(f.prompts.length,0);assert.throws(()=>f.tools.prepare(1,f.context,call('read_file',{path:'x'})),e=>e.code==='INVALID_AI_ROOT');
   });
   await test('首个网页批准前不创建视图，批准后重复调用只导航一次',async()=>{
     const f=fixture(false),c=call('browser_open',{url:'https://example.test/new'});assert.equal((await f.execute(c)).errorCode,'AI_APPROVAL_REQUIRED');assert.equal(f.actions.length,0);

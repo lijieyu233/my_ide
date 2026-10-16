@@ -32,6 +32,9 @@
       if(data.effect.text!==null)line('填写内容：\n'+data.effect.text);
       if(data.effect.title)line('收藏名称：'+data.effect.title);if(data.effect.folder)line('收藏文件夹：'+data.effect.folder);
       if(data.effect.direction)line('滚动方向：'+data.effect.direction);
+      if(data.effect.dialog){line('网页弹窗：'+data.effect.dialog.type+' — '+data.effect.dialog.message);line(data.call.args.accept?'确认此弹窗':'取消此弹窗');if(data.call.args.prompt_text)line('填写：'+data.call.args.prompt_text);}
+      if(data.effect.download){line('下载地址：'+data.effect.download.url);if(data.effect.download.id)line('任务：'+data.effect.download.id+' · '+data.effect.download.action);else line('保存到独立下载目录，不覆盖或执行已有文件。');}
+      if(data.effect.upload){line('上传文件：'+data.effect.upload.path+'（'+data.effect.upload.bytes+' 字节）');line('SHA256：'+data.effect.upload.sha256);line('网页可能在选择后立即发送文件；不自动点击提交。','muted');}
       if(data.effect.scheme)line('网页显示：'+data.effect.scheme);
       if(typeof data.effect.enabled==='boolean')line(data.effect.enabled?'进入浏览器全屏':'退出浏览器全屏');
       if(data.effect.capture)line(Object.keys(data.effect.capture).length?'截图区域：'+JSON.stringify(data.effect.capture):'截取当前网页视口，不包含IDE窗口。');

@@ -41,6 +41,7 @@ function validate(call) {
     if (kind === 'boolean') { if (typeof value !== 'boolean') throw error(key + '必须是布尔值'); args[key] = value; continue; }
     if (typeof value !== 'string') throw error(key + '必须是字符串');
     if(kind==='web_url'){let url;try{url=new URL(value);}catch{throw error('网页地址必须是完整HTTP/HTTPS地址');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/[\x00-\x20\x7f]/.test(value))throw error('网页地址只支持不含账号密码的HTTP/HTTPS地址');}
+    if(kind==='download_action'&&!['pause','resume','cancel'].includes(value))throw error('下载任务操作无效');
     if(kind==='color_scheme'&&!['dark','light','system'].includes(value))throw error('网页显示模式无效');
     if(kind==='browser_id'&&!/^[a-zA-Z0-9_-]{1,100}$/.test(value))throw error('标签或标签组ID无效');
     if(kind==='browser_name'&&(!value.trim()||value.length>60||/[\x00-\x1f\x7f]/.test(value)))throw error('标签组名称必须是1..60字符的单行文本');

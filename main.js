@@ -222,6 +222,7 @@ ipcMain.handle('browser:translation-keys',(event,keys)=>{
   if(!Array.isArray(keys)||keys.length>16||keys.some(k=>typeof k!=='string'||k.length>80))return {ok:false};
   browserTranslationKeys=[...keys];return {ok:true};
 });
+const browserInteractions=require('./src/main/browser/browser-interactions').createService({directory:()=>path.join(app.getPath('userData'),'ai-browser-artifacts')});
 const browserColorScheme=require('./src/main/browser/browser-color-scheme').createService({nativeTheme,onError:error=>mainWindow?.webContents.send('browser:state',{colorSchemeError:String(error.message||error)})});
 app.on('will-quit',()=>browserColorScheme.dispose());
 const browserFullscreen=require('./src/main/browser/browser-fullscreen').createService({getWindow:()=>mainWindow,headless:HIDDEN_WINDOW});
@@ -244,6 +245,7 @@ function createBwView(tabId) {
   });
   const wc = view.webContents;
   browserColorScheme.bind(wc);
+  browserInteractions.bind(wc);
   require('./src/main/browser/browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);},
     openExternal:url=>shell.openExternal(url).catch(error=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:state',{err:String(error.message||error)});})});
@@ -386,7 +388,7 @@ ipcMain.handle('browser:color-scheme', async(e, mode) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,openExternal:url=>shell.openExternal(url),artifactDirectory:()=>path.join(app.getPath('userData'),'ai-browser-artifacts'),panel:async(operation,args={})=>{
+const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({getView:()=>bwView,ensureView:ensureBwView,interactions:browserInteractions,openExternal:url=>shell.openExternal(url),artifactDirectory:()=>path.join(app.getPath('userData'),'ai-browser-artifacts'),panel:async(operation,args={})=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
   const result=await mainWindow.webContents.executeJavaScript('Promise.resolve().then(()=>BrowserPanel.aiOperation('+JSON.stringify(operation)+','+JSON.stringify(args)+')).catch(error=>({__browserError:true,error:error.message,errorCode:error.code}))');
   if(result?.__browserError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
