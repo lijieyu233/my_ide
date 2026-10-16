@@ -569,6 +569,7 @@ async function loadApp(dom) {
   evalFile('command-palette.js');
   evalFile('settings.js');
   evalFile('help.js');
+  evalFile('browser-tabs.js');
   evalFile('browser.js');
   evalFile('db-panel.js');
   evalFile('ai-panel.js');
@@ -4677,6 +4678,7 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('内置浏览器：收藏文件夹（新建/移动/折叠/删除）', async () => {
+    g(dom, 'BrowserPanel.switchSidebar("favorites")');
     await g(dom, 'BrowserPanel.open("https://example.com/f1")');
     await tick();
     stateCb.browser({ navigated: true, url: 'https://example.com/f1', title: 'F1' });
@@ -4766,6 +4768,7 @@ assert_(panel, 'CM6 搜索面板出现');
 
   // 收藏侧栏：缩进（组内容凹进去）+ 拖动换位置（拖到条目 = 精确插入、拖到文件夹 = 放进该组、拖到提示行/空白 = 回根目录）
   await okAsync('内置浏览器：收藏侧栏缩进 + 拖动换位置', async () => {
+    g(dom, 'BrowserPanel.switchSidebar("favorites")');
     const seed = [
       { url: 'https://a.example', title: 'A', ts: 1, folder: '' },
       { url: 'https://b.example', title: 'B', ts: 2, folder: '文档' },
@@ -4906,6 +4909,7 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('内置浏览器：HTML 浮层弹出时 WebContentsView 让位（防原生层遮挡）', async () => {
+    g(dom, 'BrowserPanel.switchSidebar("favorites")');
     await g(dom, 'BrowserPanel.open("https://example.com/ov")');
     await tick(); await tick();
     const opens0 = (calls.viewOpen || []).length;

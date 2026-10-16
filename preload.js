@@ -256,7 +256,10 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   browser: {
     // WebContentsView 内置浏览器（主进程管理，规避 <webview> guest 视口高度同步失效）
-    viewOpen: (url) => ipcRenderer.invoke('browser:view-open', url),
+    viewOpen: (url, tabId) => ipcRenderer.invoke('browser:view-open', url, tabId),
+    closeTabs: ids => ipcRenderer.invoke('browser:tab-close', ids),
+    selectTab: id => ipcRenderer.invoke('browser:tab-select', id),
+    onNewTab: cb => ipcRenderer.on('browser:new-tab', (_e, info) => cb(info)),
     viewBounds: (rect) => ipcRenderer.invoke('browser:view-bounds', rect),
     viewHide: (options) => ipcRenderer.invoke('browser:view-hide', options),
     viewNav: (cmd) => ipcRenderer.invoke('browser:view-nav', cmd), // back/forward/reload/focus

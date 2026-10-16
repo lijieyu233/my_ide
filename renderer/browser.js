@@ -167,6 +167,166 @@ const BrowserPanel = (() => {
   // ---------- IPC 桥 ----------
   const B = () => (window.myIDE && window.myIDE.browser) || null;
 
+  let tabStore, projectRoot = null, sidebarMode = 'groups', draggingTab = null;
+  const projectTabStores = new Map();
+  const mountedTabs = new Set(), tabRuntime = new Map(), foldedGroups = new Set();
+  const IC_PAGE = IC('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M5.5 6h5M5.5 9h5"/>');
+  const IC_CLOSE = IC('<path d="M4.5 4.5l7 7m0-7l-7 7"/>');
+  const IC_OPEN = IC('<path d="M9 2h5v5m0-5L7 9M6 3H3v10h10v-3"/>');
+  function storageStatus() {
+    const el = document.getElementById('bw-save-status'); if (!el || !tabStore) return;
+    el.hidden = !tabStore.error; el.replaceChildren();
+    if (tabStore.error) {
+      const text = document.createElement('span'); text.textContent = tabStore.error;
+      const retry = document.createElement('button'); retry.className = 'tb-btn'; retry.textContent = '重试保存';
+      retry.onclick = () => { const r = tabStore.save(); storageStatus(); if (!r.ok) MI.toast(r.error, 'err'); };
+      el.append(text, retry);
+    }
+  }
+  function saveTabs() { const result = tabStore?.save() || { ok: true }; storageStatus(); return result; }
+  function setProject(root) {
+    if (!tabStore || BrowserTabs.scopeKey(root) === tabStore.scope) { projectRoot = root; return; }
+    saveTabs(); projectRoot = root;
+    B()?.viewHide(); clearOverlayImage(); overlayHid = false;
+    const key = BrowserTabs.scopeKey(root);
+    if (!projectTabStores.has(key)) { const store = BrowserTabs.create(localStorage); store.load(root); projectTabStores.set(key, store); }
+    tabStore = projectTabStores.get(key); renderTabs(); renderGroups(); storageStatus(); presentTab();
+  }
+  function renderTabs() {
+    if (!tabStore) return;
+    const list = document.getElementById('bw-tabs'), state = tabStore.state;
+    const focused = document.activeElement?.closest('.bw-tab');
+    const focusId = focused?.dataset.tabId, focusClose = document.activeElement?.classList.contains('bw-tab-close');
+    const scroll = list.scrollLeft; list.replaceChildren();
+    for (const tab of state.tabs) {
+      const item = document.createElement('div'); item.className = 'bw-tab' + (state.active === tab.id ? ' active' : ''); item.dataset.tabId = tab.id; item.draggable = true;
+      const select = document.createElement('button'); select.className = 'bw-tab-select'; select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(state.active === tab.id)); select.tabIndex = visible && state.active === tab.id ? 0 : -1;
+      select.title = (tab.title || '新标签页') + (tab.url ? '\n' + tab.url : ''); select.innerHTML = IC_PAGE;
+      const favicon = tabRuntime.get(tab.id)?.favicon;
+      if (favicon && /^https?:/i.test(favicon)) { const icon = document.createElement('img'); icon.className = 'bw-tab-favicon'; icon.alt = ''; icon.src = favicon; icon.onerror = () => { icon.remove(); select.classList.remove('has-favicon'); }; select.prepend(icon); select.classList.add('has-favicon'); }
+      const label = document.createElement('span'); label.className = 'bw-tab-label'; label.textContent = tab.title || '新标签页'; select.append(label);
+      select.onclick = () => activateTab(tab.id); select.onkeydown = event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); cycleTab(event.key === 'ArrowLeft' ? -1 : 1); document.querySelector('.bw-tab.active .bw-tab-select')?.focus(); } };
+      const close = document.createElement('button'); close.className = 'bw-tab-close'; close.innerHTML = IC_CLOSE; close.title = '关闭标签'; close.setAttribute('aria-label', '关闭 ' + (tab.title || '新标签页')); close.onclick = event => { event.stopPropagation(); closeTabs([tab.id]); };
+      item.append(select, close); item.onauxclick = event => { if (event.button === 1) { event.preventDefault(); closeTabs([tab.id]); } };
+      item.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openTabMenu(tab.id, event.clientX, event.clientY); };
+      item.ondragstart = event => { draggingTab = tab.id; event.dataTransfer?.setData('text/plain', tab.id); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; item.classList.add('dragging'); };
+      item.ondragover = event => { if (draggingTab) { event.preventDefault(); item.classList.add('drop-tab'); } };
+      item.ondragleave = () => item.classList.remove('drop-tab');
+      item.ondrop = event => { if (!draggingTab) return; event.preventDefault(); event.stopPropagation(); tabStore.reorder(draggingTab, tab.id); draggingTab = null; renderTabs(); renderGroups(); storageStatus(); };
+      item.ondragend = () => { draggingTab = null; document.querySelectorAll('.bw-tab.dragging,.bw-tab.drop-tab').forEach(el => el.classList.remove('dragging', 'drop-tab')); };
+      if (tabRuntime.get(tab.id)?.loading) item.classList.add('loading'); list.append(item);
+    }
+    list.scrollLeft = scroll;
+    if (focusId && visible) list.querySelector('[data-tab-id="' + focusId + '"] ' + (focusClose ? '.bw-tab-close' : '.bw-tab-select'))?.focus({ preventScroll: true });
+  }
+  function presentTab() {
+    const tab = tabStore.active, runtime = tabRuntime.get(tab.id) || {};
+    if (!tab.url || !visible) B()?.selectTab?.(tab.id);
+    currentUrl = tab.url; currentTitle = tab.title; hasPage = !!tab.url; urlInput.value = tab.url;
+    document.getElementById('browser-empty').classList.toggle('hidden', hasPage);
+    document.getElementById('browser-error').classList.toggle('hidden', !runtime.err);
+    viewEl.classList.toggle('hidden', !hasPage); renderFavBtn(); renderDefaultButton();
+    document.getElementById('bw-back').disabled = !runtime.canBack; document.getElementById('bw-fwd').disabled = !runtime.canFwd;
+    setProg(runtime.loading ? '35%' : '0');
+    if (!hasPage) { B()?.viewHide(); renderEmpty(); }
+    else if (visible && !overlayOpen()) mountView(mountedTabs.has(tab.id) ? null : tab.url);
+    if (runtime.err) document.getElementById('bw-err-msg').textContent = '加载失败：' + runtime.err;
+  }
+  function activateTab(tabId) {
+    if (!tabStore.activate(tabId)) return;
+    clearOverlayImage(); overlayHid = false; closeDd(); renderTabs(); renderGroups(); storageStatus(); presentTab();
+    document.querySelector('.bw-tab.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+  function newTab(url = '', title = '') {
+    const normalized = url ? normalizeInput(url) : '';
+    if (!BrowserTabs.validURL(normalized)) { MI.toast('不支持的网页地址', 'err'); return; }
+    const tab = tabStore.add(normalized, title); renderTabs(); renderGroups(); storageStatus(); presentTab();
+    if (!normalized) urlInput.focus(); return tab;
+  }
+  function closeTabs(ids) {
+    const state = tabStore.state, existing = ids.filter(id => state.tabs.some(t => t.id === id)); if (!existing.length) return;
+    const activeChanged = existing.includes(state.active); tabStore.close(existing);
+    existing.forEach(id => { mountedTabs.delete(id); tabRuntime.delete(id); });
+    Promise.resolve(B()?.closeTabs?.(existing)).catch(error => MI.toast('标签视图关闭失败：' + error.message, 'err'));
+    renderTabs(); renderGroups(); storageStatus(); if (activeChanged) presentTab();
+  }
+  function reopenTab() { const tab = tabStore.reopen(); if (tab) { renderTabs(); renderGroups(); storageStatus(); presentTab(); } }
+  function cycleTab(direction) { const state = tabStore.state, index = state.tabs.findIndex(t => t.id === state.active); activateTab(state.tabs[(index + direction + state.tabs.length) % state.tabs.length].id); }
+  function tabMenu(items, x, y) {
+    const menu = document.getElementById('ctx-menu'); menu.replaceChildren(); const scope = tabStore.scope;
+    for (const entry of items) {
+      const button = document.createElement('button'); button.className = 'ctx-item' + (entry.danger ? ' danger' : ''); button.textContent = entry.label; button.disabled = !!entry.disabled;
+      button.onclick = event => { event.stopPropagation(); menu.classList.add('hidden'); if (scope === tabStore.scope) entry.run(); }; menu.append(button);
+    }
+    menu.classList.remove('hidden'); menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px'; menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px'; syncOverlay();
+  }
+  function openTabMenu(tabId, x, y) {
+    const state = tabStore.state, tab = state.tabs.find(t => t.id === tabId) || tabStore.active, index = state.tabs.findIndex(t => t.id === tab.id);
+    tabMenu([
+      { label: '保存当前标签到收藏', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
+      { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: saveTabGroup },
+      { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
+      { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
+      { label: '关闭右侧标签', disabled: index === state.tabs.length - 1, run: () => closeTabs(state.tabs.slice(index + 1).map(t => t.id)) },
+      { label: '关闭标签', run: () => closeTabs([tab.id]) },
+    ], x, y);
+  }
+  function saveTabGroup() {
+    const scope = tabStore.scope, tabs = tabStore.state.tabs.filter(t => t.url); if (!tabs.length) { MI.toast('先打开网页再保存标签组', 'err'); return; }
+    const box = document.createElement('div'); box.className = 'bw-save-group modal-panel';
+    box.innerHTML = '<div class="m-head">保存标签组<button class="x" aria-label="关闭">×</button></div><form class="m-body"><label for="bw-group-name">名称</label><input id="bw-group-name" maxlength="60" placeholder="例如：项目后台联调" required><p class="bw-group-count"></p><div class="m-foot"><button class="tb-btn m-cancel" type="button">取消</button><button class="tb-btn primary" type="submit">保存</button></div></form>';
+    box.querySelector('.bw-group-count').textContent = tabs.length + ' 个标签 · 保留当前顺序';
+    const close = () => Modal.hide(); box.querySelector('.x').onclick = close; box.querySelector('.m-cancel').onclick = close;
+    box.querySelector('form').onsubmit = event => {
+      event.preventDefault(); if (scope !== tabStore.scope) { MI.toast('项目已切换，请重新保存标签组', 'err'); return; }
+      try { const result = tabStore.saveGroup(box.querySelector('input').value, tabs); if (!result.ok) throw Error(result.error); close(); switchSidebar('groups'); MI.toast('标签组已保存', 'ok'); }
+      catch (error) { MI.toast(error.message, 'err'); }
+    };
+    Modal.show(box); syncOverlay(); box.querySelector('input').focus();
+  }
+  function openTabGroup(id) {
+    try { if (tabStore.openGroup(id)) { renderTabs(); renderGroups(); storageStatus(); presentTab(); } }
+    catch (error) { MI.toast(error.message, 'err'); }
+  }
+  function switchSidebar(mode) {
+    sidebarMode = mode;
+    document.getElementById('bw-side-groups').setAttribute('aria-selected', String(mode === 'groups'));
+    document.getElementById('bw-side-favorites').setAttribute('aria-selected', String(mode === 'favorites'));
+    document.getElementById('bw-groups-list').classList.toggle('hidden', mode !== 'groups'); sbListEl.classList.toggle('hidden', mode !== 'favorites');
+    const add = document.getElementById('bw-sb-add-folder'); add.title = mode === 'groups' ? '保存当前标签组' : '新建收藏文件夹'; add.setAttribute('aria-label', add.title);
+    renderGroups(); renderSidebar();
+  }
+  function renderGroups() {
+    const list = document.getElementById('bw-groups-list'); if (!list || !tabStore) return; list.replaceChildren();
+    const caption = document.createElement('div'); caption.className = 'bw-group-caption'; caption.innerHTML = '<span>当前打开</span><span>自动保留</span>'; list.append(caption);
+    for (const tab of tabStore.state.tabs) {
+      const button = document.createElement('button'); button.className = 'bw-session-tab' + (tab.id === tabStore.state.active ? ' active' : ''); button.innerHTML = IC_PAGE;
+      const name = document.createElement('span'); name.textContent = tab.title || '新标签页'; button.append(name); button.title = tab.url || '新标签页'; button.onclick = () => activateTab(tab.id); list.append(button);
+    }
+    const saved = document.createElement('div'); saved.className = 'bw-group-caption'; saved.textContent = '已保存'; list.append(saved);
+    let groups;
+    try { groups = tabStore.groups(); } catch (error) { const note = document.createElement('p'); note.className = 'bw-sb-none'; note.textContent = error.message; list.append(note); return; }
+    if (!groups.length) { const empty = document.createElement('div'); empty.className = 'bw-groups-empty'; empty.textContent = '把常用网页保存成一组，下次一起打开。'; const button = document.createElement('button'); button.className = 'tb-btn'; button.textContent = '保存当前标签组'; button.onclick = saveTabGroup; empty.append(button); list.append(empty); }
+    for (const group of groups) {
+      const row = document.createElement('div'); row.className = 'bw-saved-group';
+      const header = document.createElement('div'); header.className = 'bw-saved-group-head';
+      const toggle = document.createElement('button'); toggle.className = 'bw-group-toggle'; toggle.innerHTML = IC_CARET_DOWN; toggle.classList.toggle('folded', !foldedGroups.has(group.id)); toggle.setAttribute('aria-expanded', String(foldedGroups.has(group.id)));
+      const name = document.createElement('span'); name.textContent = group.name; toggle.append(name); const count = document.createElement('span'); count.className = 'bw-group-size'; count.textContent = group.tabs.length; toggle.append(count);
+      toggle.onclick = () => { if (foldedGroups.has(group.id)) foldedGroups.delete(group.id); else foldedGroups.add(group.id); renderGroups(); };
+      const open = document.createElement('button'); open.className = 'bw-group-open'; open.innerHTML = IC_OPEN; open.title = '打开整组 · 跳过已打开的网址'; open.setAttribute('aria-label', '打开标签组 ' + group.name); open.onclick = () => openTabGroup(group.id);
+      header.append(toggle, open); row.append(header);
+      const menu = event => { event.preventDefault(); event.stopPropagation(); tabMenu([
+        { label: '打开整组', run: () => openTabGroup(group.id) },
+        { label: '重命名', run: async () => { const name = await Modal.prompt('重命名标签组', '名称', group.name); if (!name) return; try { const r = tabStore.changeGroup(group.id, name); if (!r.ok) throw Error(r.error); renderGroups(); } catch (error) { MI.toast(error.message, 'err'); } } },
+        { label: '删除标签组', danger: true, run: async () => { if (!await Modal.confirm('删除标签组', '删除「' + group.name + '」？已打开的网页会保留。')) return; try { const r = tabStore.changeGroup(group.id, null); if (!r.ok) throw Error(r.error); renderGroups(); } catch (error) { MI.toast(error.message, 'err'); } } },
+      ], event.clientX, event.clientY); };
+      header.oncontextmenu = menu;
+      const more = document.createElement('button'); more.className = 'bw-group-more'; more.innerHTML = IC('<circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/>'); more.title = '标签组操作'; more.setAttribute('aria-label', '标签组操作 ' + group.name); more.onclick = menu; header.append(more);
+      if (foldedGroups.has(group.id)) for (const tab of group.tabs) { const link = document.createElement('button'); link.className = 'bw-group-page'; link.textContent = tab.title || tab.url; link.title = tab.url; link.onclick = () => { const existing = tabStore.state.tabs.find(t => t.url === tab.url); if (existing) activateTab(existing.id); else newTab(tab.url, tab.title); }; row.append(link); }
+      list.append(row);
+    }
+  }
+
   // 上报占位区 rect → 主进程 setBounds（WebContentsView 是原生层，尺寸完全由它决定）
   function syncBounds() {
     if (!viewEl || viewEl.classList.contains('hidden')) return;
@@ -177,7 +337,9 @@ const BrowserPanel = (() => {
   // 容器刚从 display:none 恢复时 rect 要下一帧才有效
   function mountView(url) {
     const b = B(); if (!b) return;
-    b.viewOpen(url || null).then((r) => { if (r && r.error) MI.toast(r.error, 'err'); }).catch(() => {});
+    const tabId = tabStore?.active.id;
+    if (tabId) mountedTabs.add(tabId);
+    b.viewOpen(url || null, tabId).then(r => { if (r?.error) { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(r.error); } }).catch(error => { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(error.message); });
     requestAnimationFrame(() => requestAnimationFrame(() => {
       syncBounds();
       if (url) { const bb = B(); if (bb) bb.viewNav('focus'); } // 加载新页后聚焦网页（可立即滚轮/键盘）
@@ -210,16 +372,30 @@ const BrowserPanel = (() => {
     } else if (overlayHid) {
       overlayHid = false;
       clearOverlayImage();
-      mountView(null); // viewOpen 幂等（addChildView 重复无害），rAF 内重报 bounds
+      mountView(tabStore && !mountedTabs.has(tabStore.active.id) ? tabStore.active.url : null);
     }
   }
 
   // ---------- 主进程状态回推 ----------
   function onState(s) {
     if (!s) return;
+    if (s.tabId && tabStore) {
+      const owner = [...projectTabStores.values()].find(store => store.state.tabs.some(t => t.id === s.tabId));
+      if (!owner) return;
+      const runtime = {...tabRuntime.get(s.tabId), ...s}; if (s.navigated || s.loading === true) delete runtime.err; tabRuntime.set(s.tabId, runtime);
+      const patch = {};
+      if (s.navigated && s.url && BrowserTabs.validURL(s.url)) patch.url = s.url;
+      if (s.title) patch.title = s.title;
+      if (Object.keys(patch).length) owner.update(s.tabId, patch);
+      if (owner !== tabStore) return;
+      storageStatus();
+      renderTabs(); renderGroups();
+      if (s.tabId !== tabStore.active.id) return;
+    }
     if(s.colorSchemeError)MI.toast('网页深色未生效：'+s.colorSchemeError,'err');
     if(s.fullscreen!=null){if(!s.fullscreen){fullscreenWanted=false;applyFullscreen(false);}else if(visible&&fullscreenWanted)applyFullscreen(true);}
     if (s.err) { showError(s.err); return; }
+    if (tabStore && !s.tabId) { const patch = {}; if (s.navigated && s.url && BrowserTabs.validURL(s.url)) patch.url = s.url; if (s.title) patch.title = s.title; if (Object.keys(patch).length) { tabStore.update(tabStore.active.id, patch); renderTabs(); renderGroups(); storageStatus(); } }
     if (s.navigated && s.url) {
       currentUrl = s.url;
       renderDefaultButton();
@@ -301,11 +477,14 @@ const BrowserPanel = (() => {
   function go(url) {
     const u = normalizeInput(url);
     if (!u) return;
+    if (!BrowserTabs.validURL(u)) { MI.toast('不支持的网页地址', 'err'); return; }
+    if (tabStore) { tabStore.update(tabStore.active.id, {url:u, ...(u !== currentUrl ? {title:u} : {})}); tabRuntime.delete(tabStore.active.id); renderTabs(); renderGroups(); storageStatus(); }
     document.getElementById('browser-empty').classList.add('hidden');
     document.getElementById('browser-error').classList.add('hidden');
     viewEl.classList.remove('hidden');
     hasPage = true;
-    if (u === currentUrl && hasPage) { // 同址再回车 = 刷新
+    const previousUrl=currentUrl; currentUrl=u;
+    if (u === previousUrl && hasPage) { // 同址再回车 = 刷新
       const b = B(); if (b) b.viewNav('reload');
       syncBounds();
     } else {
@@ -339,6 +518,7 @@ const BrowserPanel = (() => {
     panel.classList.remove('hidden');
     syncToolBtn();
     renderSidebar(); // 收藏列表在左侧栏 panel-browser（App.renderToolStrip 控制显隐）
+    if (tabStore) { renderTabs(); renderGroups(); storageStatus(); presentTab(); startHeal(); closeDd(); return; }
     if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
       document.getElementById('browser-empty').classList.add('hidden');
       viewEl.classList.remove('hidden');
@@ -354,7 +534,9 @@ const BrowserPanel = (() => {
   }
   function hide() {
     if (!visible) return;
+    saveTabs();
     visible = false;
+    renderTabs();
     if(fullscreen||fullscreenWanted)setFullscreen(false);
     overlayHid = false; // 面板隐藏本身就摘了 view，状态复位
     clearOverlayImage();
@@ -366,7 +548,15 @@ const BrowserPanel = (() => {
   }
   // 所有用户入口都经过 App；只显示原生视图会让 activeTool 留在旧页，之后文件切换无法摘掉它。
   function toggle() { App.switchTool('browser'); }
-  function open(url) { App.showTool('browser'); if(!visible)show(); go(url); }
+  function open(url) {
+    const normalized=normalizeInput(url);
+    if(!normalized||!BrowserTabs.validURL(normalized)){if(normalized)MI.toast('不支持的网页地址','err');return;}
+    if(!visible&&tabStore){
+      tabStore.update(tabStore.active.id,{url:normalized,title:normalized});mountedTabs.delete(tabStore.active.id);tabRuntime.delete(tabStore.active.id);
+      App.showTool('browser');if(!visible)show();return;
+    }
+    App.showTool('browser');if(!visible)show();go(normalized);
+  }
 
   function applyFullscreen(enabled){
     fullscreen=!!enabled;document.body.classList.toggle('browser-fullscreen',fullscreen);
@@ -783,6 +973,14 @@ const BrowserPanel = (() => {
     darkBtnEl = document.getElementById('bw-dark');
     if (darkBtnEl) darkBtnEl.onclick = (e) => { e.stopPropagation(); cycleDarkMode(); };
     initDarkMode();
+    tabStore = BrowserTabs.create(localStorage); projectRoot=window.App?.root || null;
+    tabStore.load(projectRoot); projectTabStores.set(tabStore.scope, tabStore); B()?.selectTab?.(tabStore.active.id); renderTabs(); switchSidebar('groups'); storageStatus();
+    document.getElementById('bw-tab-new').onclick = () => newTab();
+    document.getElementById('bw-tab-menu').onclick = event => { event.stopPropagation(); const r=event.currentTarget.getBoundingClientRect(); openTabMenu(tabStore.active.id,r.right,r.bottom+4); };
+    document.getElementById('bw-side-groups').onclick = () => switchSidebar('groups');
+    document.getElementById('bw-side-favorites').onclick = () => switchSidebar('favorites');
+    document.getElementById('bw-tabs').oncontextmenu = event => { if (event.target.closest('.bw-tab')) return; event.preventDefault(); event.stopPropagation(); openTabMenu(tabStore.active.id,event.clientX,event.clientY); };
+    window.addEventListener('beforeunload',saveTabs);
     // 列表空白处 = 根目录落点（分组外的区域本来就是「根」；子元素都 stopPropagation，不会误判）
     if (sbListEl) {
       sbListEl.addEventListener('dragover', (e) => {
@@ -834,6 +1032,7 @@ const BrowserPanel = (() => {
     // 收藏列表新建文件夹（真正落盘：空文件夹也常驻显示，右键收藏可移动进去）
     const sbAdd = document.getElementById('bw-sb-add-folder');
     if (sbAdd) sbAdd.onclick = async () => {
+      if (sidebarMode === 'groups') { saveTabGroup(); return; }
       const name = await Modal.prompt('新建收藏文件夹', '文件夹名称', '');
       if (!name || !name.trim()) return;
       const v = name.trim().slice(0, 30);
@@ -864,6 +1063,10 @@ const BrowserPanel = (() => {
     if (ddEl) overlayMo.observe(ddEl, { attributes: true, attributeFilter: ['class'] });
     document.addEventListener('keydown',event=>{
       if(!visible||event.isComposing||[document.getElementById('modal-mask'),document.getElementById('ctx-menu')].some(el=>el&&!el.classList.contains('hidden')))return;
+      if(event.ctrlKey&&!event.altKey&&['t','w','tab'].includes(event.key.toLowerCase())) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const key=event.key.toLowerCase(); if(key==='t'){if(event.shiftKey)reopenTab();else newTab();}else if(key==='w')closeTabs([tabStore.active.id]);else cycleTab(event.shiftKey?-1:1);return;
+      }
       if(event.key==='F11'&&!event.ctrlKey&&!event.altKey&&!event.shiftKey){event.preventDefault();event.stopImmediatePropagation();setFullscreen(!fullscreenWanted);}
       else if(event.key==='Escape'&&fullscreenWanted&&ddEl.classList.contains('hidden')){event.preventDefault();event.stopImmediatePropagation();setFullscreen(false);}
     },true);
@@ -874,11 +1077,17 @@ const BrowserPanel = (() => {
 
     const b = B();
     if (b) {
+      if(b.onNewTab)b.onNewTab(info=>{if(!info||!tabStore.state.tabs.some(t=>t.id===info.sourceTabId))return;if(visible)newTab(info.url);else{tabStore.add(info.url,'',false);renderTabs();renderGroups();storageStatus();}});
       if(b.onTranslate)b.onTranslate(text=>{if(visible&&typeof text==='string'&&window.Translate)Translate.run(text);});
       // 主进程转发的 view 内快捷键（Ctrl+4 / Alt+←→ / Ctrl+R、F5 / Ctrl+L）
       if (b.onCmd) b.onCmd((cmd) => {
         if (cmd === 'toggle') toggle();
         else if (!visible) return;
+        else if (cmd === 'new-tab') newTab();
+        else if (cmd === 'close-tab') closeTabs([tabStore.active.id]);
+        else if (cmd === 'reopen-tab') reopenTab();
+        else if (cmd === 'next-tab') cycleTab(1);
+        else if (cmd === 'previous-tab') cycleTab(-1);
         else if (cmd === 'back') back();
         else if (cmd === 'forward') forward();
         else if (cmd === 'reload') reload();
@@ -894,6 +1103,7 @@ const BrowserPanel = (() => {
   function aiOperation(operation,args={}) {
     if(operation==='state')return {visible,fullscreen,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
     if(operation==='reveal'){
+      if(tabStore){tabStore.update(tabStore.active.id,{url:args.url,title:args.url});mountedTabs.add(tabStore.active.id);renderTabs();renderGroups();storageStatus();}
       hasPage=true;currentUrl=args.url;urlInput.value=args.url;
       renderDefaultButton();
       document.getElementById('browser-empty').classList.add('hidden');
@@ -910,7 +1120,8 @@ const BrowserPanel = (() => {
   }
 
   return {
-    aiOperation,
+    aiOperation, newTab, activateTab, closeTabs, reopenTab, saveTabGroup, openTabGroup, switchSidebar, setProject, saveTabs,
+    get tabs(){return tabStore?.state.tabs || [];}, get activeTabId(){return tabStore?.state.active;},
     init, show, hide, toggle, open, go, back, forward, reload, home, onState,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,

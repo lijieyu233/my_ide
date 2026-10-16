@@ -204,7 +204,7 @@ function createWindow() {
   const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);}} };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
-  mainWindow.on('closed', () => { mainWindow = null; bwView = null; });
+  mainWindow.on('closed', () => { browserTabViews.dispose(); mainWindow = null; bwView = null; });
   return mainWindow;
 }
 
@@ -213,7 +213,9 @@ function createWindow() {
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
+const browserTabViews = require('./src/main/browser/browser-tab-views').createService({createView:createBwView,getWindow:()=>mainWindow});
 let bwVisibilityRevision = 0;
+const bwNavigationRevision = new WeakMap();
 let browserTranslationKeys=['ctrl+alt+t'];
 ipcMain.handle('browser:translation-keys',(event,keys)=>{
   if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
@@ -235,23 +237,23 @@ ipcMain.handle('browser:open-default', async e=>{
     await shell.openExternal(url);return {ok:true,url};
   }catch(error){return {ok:false,error:error.message};}
 });
-function ensureBwView() {
-  if (bwView) return bwView;
-  bwView = new WebContentsView({
+function ensureBwView() { return bwView || (bwView = browserTabViews.activate(browserTabViews.activeId || 'legacy')); }
+function createBwView(tabId) {
+  const view = new WebContentsView({
     webPreferences: { partition: 'persist:myide-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  const wc = bwView.webContents;
+  const wc = view.webContents;
   browserColorScheme.bind(wc);
   require('./src/main/browser/browser-context-menu').bind({webContents:wc,Menu,clipboard,getWindow:()=>mainWindow,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);},
     openExternal:url=>shell.openExternal(url).catch(error=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:state',{err:String(error.message||error)});})});
   require('./src/main/browser/browser-context-menu').bindTranslationShortcut(wc,{getKeys:()=>browserTranslationKeys,
     translate:text=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('browser:translate',text);}});
-  // window.open / target=_blank → 面板内就地导航（内置浏览器不开外部窗口）；
+  // 新窗口链接交给宿主创建标签，保持网页实例与标签记录一一对应；
   // mailto:/tel: 等非网页协议才交系统处理
   wc.setWindowOpenHandler(({ url }) => {
     if (/^(https?|file):/i.test(url)) {
-      wc.loadURL(url).catch(() => {});
+      mainWindow?.webContents.send('browser:new-tab', {url, sourceTabId:tabId});
       return { action: 'deny' };
     }
     if (/^[a-z][a-z0-9+.-]*:/i.test(url)) shell.openExternal(url).catch(() => {});
@@ -267,6 +269,9 @@ function ensureBwView() {
     else if (input.alt && !input.control && k === 'arrowright') cmd = 'forward';
     else if (k === 'f5' || (input.control && !input.alt && k === 'r')) cmd = 'reload';
     else if (input.control && !input.alt && k === 'l') cmd = 'focus-url';
+    else if (input.control && !input.alt && k === 't') cmd = input.shift ? 'reopen-tab' : 'new-tab';
+    else if (input.control && !input.alt && k === 'w') cmd = 'close-tab';
+    else if (input.control && !input.alt && k === 'tab') cmd = input.shift ? 'previous-tab' : 'next-tab';
     else if (k === 'f11' && !input.control && !input.alt && !input.shift) cmd = 'fullscreen';
     else if (k === 'escape' && browserFullscreen.active) cmd = 'exit-fullscreen';
     if (cmd) {
@@ -279,7 +284,7 @@ function ensureBwView() {
     if (!mainWindow) return;
     try {
       mainWindow.webContents.send('browser:state', Object.assign({
-        url: wc.getURL(),
+        tabId, url: wc.getURL(),
         title: wc.getTitle(),
         loading: wc.isLoading(),
         canBack: wc.navigationHistory.canGoBack(),
@@ -290,27 +295,42 @@ function ensureBwView() {
   wc.on('did-navigate', (_e, url) => push({ navigated: true, url }));
   wc.on('did-navigate-in-page', (_e, url) => push({ navigated: true, inPage: true, url }));
   wc.on('page-title-updated', (_e, title) => push({ title }));
+  wc.on('page-favicon-updated', (_e, icons) => push({favicon:icons[0] || ''}));
   wc.on('did-start-loading', () => push({ loading: true }));
   wc.on('did-stop-loading', () => push({ loading: false }));
   wc.on('loadProgress', (_e, p) => push({ progress: p }));
   wc.on('did-fail-load', (_e, code, desc, _u, mainFrame) => {
     if (mainFrame && code !== -3) push({ err: desc || ('错误码 ' + code) }); // -3 = ERR_ABORTED
   });
-  return bwView;
+  return view;
 }
-ipcMain.handle('browser:view-open', (_e, url) => {
+ipcMain.handle('browser:view-open', (_e, url, tabId) => {
   try {
-    if (!mainWindow) return { error: '窗口不存在' };
+    if (!mainWindow || _e.sender !== mainWindow.webContents) return { error: '窗口不可用' };
     bwVisibilityRevision++;
-    const v = ensureBwView();
+    const v = tabId ? browserTabViews.activate(tabId) : ensureBwView();
+    bwView = v;
     mainWindow.contentView.addChildView(v);
     if (url) {
-      v.webContents.loadURL(url).catch((e) => {
-        if (mainWindow) mainWindow.webContents.send('browser:state', { err: String(e.message || e) });
+      const revision = (bwNavigationRevision.get(v) || 0) + 1;
+      bwNavigationRevision.set(v, revision);
+      v.webContents.loadURL(url).catch(e => {
+        if (e.code === 'ERR_ABORTED' || e.errno === -3 || bwNavigationRevision.get(v) !== revision || v.webContents.isDestroyed()) return;
+        if (mainWindow) mainWindow.webContents.send('browser:state', { tabId, err: String(e.message || e) });
       });
     }
+    const wc=v.webContents;
+    mainWindow.webContents.send('browser:state', {tabId:browserTabViews.activeId,navigated:!url&&!!wc.getURL(),url:wc.getURL(),title:wc.getTitle(),loading:wc.isLoading(),canBack:wc.navigationHistory.canGoBack(),canFwd:wc.navigationHistory.canGoForward()});
     return { ok: true };
   } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('browser:tab-select',(event,id)=>{
+  if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame||typeof id!=='string'||!/^[\w-]{1,100}$/.test(id))return {ok:false};
+  bwVisibilityRevision++;bwView=browserTabViews.select(id);return {ok:true};
+});
+ipcMain.handle('browser:tab-close', (event, ids) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame || !Array.isArray(ids) || ids.some(id=>typeof id!=='string')) return {ok:false};
+  bwVisibilityRevision++; browserTabViews.close(ids); bwView=browserTabViews.active; return {ok:true};
 });
 ipcMain.handle('browser:view-bounds', (_e, rect) => {
   if (!bwView || !rect) return;

@@ -784,6 +784,7 @@ const App = (() => {
         if (next) await activateProject(next.path);
         else {
           root = null;
+          window.BrowserPanel?.setProject?.(null);
           Viewer.syncEmptyState?.();
           MI.activeRoot = null;
           Tree.setRoot(null);
@@ -948,6 +949,8 @@ const App = (() => {
     return false;
   }
   function saveProjectState() {
+    const browserSaved=window.BrowserPanel?.saveTabs?.();
+    if(browserSaved?.ok===false){MI.toast(browserSaved.error || '浏览器标签未保存，请重试后再切换项目','err');return false;}
     const result=Session.saveNow();
     if(result?.ok===false){MI.toast('项目状态未保存，已保留当前标签和页面；请重试后再切换','err');return false;}
     return true;
@@ -990,6 +993,7 @@ const App = (() => {
     // 恢复标签和工具面板可能异步等待；先托管原项目任务，避免恢复期间的隐藏面板通知取消它。
     window.AiPanel?.beforeProjectChange?.(p);
     root = p;
+    window.BrowserPanel?.setProject?.(p);
     Viewer.syncEmptyState?.();
     MI.activeRoot = p;
     MI.log('INFO', 'app', '打开项目: ' + p);
