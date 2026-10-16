@@ -93,12 +93,12 @@
              它们都是"仓库级操作"，已挪进下面的工具行（与刷新/回滚/差异同层）。 -->
       </div>
       <div class="git-sync">
-        <div class="git-sync-actions">
-          <button id="cd-pull" class="tb-btn" title="下载并更新当前分支；本地修改不会被强制覆盖"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M8 9.6L5 6.6M8 9.6l3-3M3.2 12.6h9.6"/></svg>拉取最新代码</button>
-          <button id="cd-push" class="tb-btn" title="把本地已提交的内容上传到远程，先预览再确认"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.6V2.4M8 2.4L5 5.4M8 2.4l3 3M3.2 12.6h9.6"/></svg>推送提交</button>
-          <button id="cd-pull-options" class="vt-btn" title="本地与远程都有新提交时，选择合并或变基">拉取方式…</button>
+        <div class="git-sync-actions git-sync-primary">
+          <button id="cd-pull" class="tb-btn" aria-describedby="cd-sync-help" title="下载并更新当前分支；本地修改不会被强制覆盖"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M8 9.6L5 6.6M8 9.6l3-3M3.2 12.6h9.6"/></svg><span class="git-primary-label">拉取最新代码</span></button>
+          <button id="cd-push" class="tb-btn" aria-describedby="cd-sync-help" title="把本地已提交的内容上传到远程，先预览再确认"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.6V2.4M8 2.4L5 5.4M8 2.4l3 3M3.2 12.6h9.6"/></svg><span class="git-primary-label">推送提交</span></button>
+          <button id="cd-pull-options" class="vt-btn" title="拉取方式：选择合并或变基" aria-label="拉取方式"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6l3.5 3.5L11.5 6"/></svg><span class="git-action-label">拉取方式…</span></button>
         </div>
-        <div class="git-sync-help">拉取是下载更新，推送是上传已提交的内容。</div>
+        <div id="cd-sync-help" class="git-sync-help" hidden>拉取是下载更新，推送是上传已提交的内容。</div>
         <div id="cd-sync-status" role="status" aria-live="polite" hidden></div>
       </div>
       <div class="cd-files" id="cd-files"></div>

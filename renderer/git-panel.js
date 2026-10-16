@@ -1300,8 +1300,8 @@ const GitPanel = (() => {
     //   两个入口做同一件事只会让人犹豫按哪个（用户指出过"这个提交按钮多余了 下面就有"）。
     // ⚠ 也**没有「内嵌预览」**：340px 侧栏里 unified diff 每行都要折行、读不出结构，
     //   用户判定"一点用没有"；差异统一在编辑区看（点文件行 / 「差异」按钮）。
-    mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh({force:true}));
-    const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked(),null,'放弃勾选改动');
+    mk(IC.refresh, '刷新 Git 状态 (Ctrl+R)', () => refresh({force:true}),null,'刷新状态');
+    const roll = mk(IC.rollback, '回滚勾选的文件（放弃全部修改；未版本控制的文件会被删除）', () => rollbackChecked(),null,'放弃改动');
     const dif = mk(IC.diff, '显示勾选文件的差异（在编辑区打开）', () => diffChecked(),null,'查看差异');
     const sep = document.createElement('span');
     sep.className = 'tb-sep';
