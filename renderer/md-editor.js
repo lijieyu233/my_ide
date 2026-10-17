@@ -2094,6 +2094,7 @@ window.MdEditor = (() => {
   // 官方 foldCode 仅在折叠块「起始行」生效；自定义：光标在块内任意位置
   // 都能折叠包含它的最内层块（md 标题 section 等，VSCode 式体验）
   function foldCurrent(view) {
+    if(window.CodeEditor)return CodeEditor.setFold(view,{folded:true});
     const head = view.state.selection.main.head;
     const tree = Language.syntaxTree(view.state);
     if (tree) {
@@ -2114,6 +2115,7 @@ window.MdEditor = (() => {
   }
   // 展开包含光标（或紧邻）的折叠范围
   function unfoldCurrent(view) {
+    if(window.CodeEditor)return CodeEditor.setFold(view,{folded:false});
     const head = view.state.selection.main.head;
     const folded = Language.foldedRanges(view.state);
     let found = null;
@@ -2174,8 +2176,10 @@ window.MdEditor = (() => {
         // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
         { key: 'Mod--', preventDefault: true, run: foldCurrent },
         { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
-        { key: 'Mod-_', preventDefault: true, run: Language.foldAll },
-        { key: 'Mod-+', preventDefault: true, run: Language.unfoldAll },
+        { key: 'Mod-_', preventDefault: true, run: view=>window.CodeEditor?CodeEditor.setFold(view,{folded:true,all:true}):Language.foldAll(view) },
+        { key: 'Mod-+', preventDefault: true, run: view=>window.CodeEditor?CodeEditor.setFold(view,{folded:false,all:true}):Language.unfoldAll(view) },
+        { key: 'Mod-Shift--', preventDefault: true, run: view=>window.CodeEditor?CodeEditor.setFold(view,{folded:true,all:true}):Language.foldAll(view) },
+        { key: 'Mod-Shift-=', preventDefault: true, run: view=>window.CodeEditor?CodeEditor.setFold(view,{folded:false,all:true}):Language.unfoldAll(view) },
         { key: 'Mod-d', preventDefault: true, run: Commands.deleteLine }, // Ctrl+D 删除当前行
         ...Autocomplete.closeBracketsKeymap,
         ...Commands.defaultKeymap,
@@ -2250,6 +2254,7 @@ window.MdEditor = (() => {
 
     return {
       view,
+      fold(options) { return window.CodeEditor?CodeEditor.setFold(view,options):false; },
       setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); focusTableEditor(view); },
       insertMarkdown(kind) {
@@ -2282,7 +2287,7 @@ window.MdEditor = (() => {
         view.focus();
       },
       // 按层级收起标题节：n=0 全部展开；n>=1 折叠所有 level>=n 的标题节（外层优先，
-      // 嵌套节被外层折叠覆盖不再重复折叠 —— foldState 的 RangeSet 不允许重叠范围）
+      // 这是按显示层级收起，内部保持原样；递归折叠快捷键由共享setFold单独处理）
       foldToLevel(n) {
         const doc = view.state.doc;
         const hs = []; // [{l, level}]（跳过围栏内 #）

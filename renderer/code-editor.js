@@ -79,38 +79,61 @@ window.CodeEditor = (() => {
     },
   });
 
-  // ---------- 折叠（Ctrl+-/= 单个块，Ctrl+Shift+-/= 全部） ----------
-  // 官方 foldCode 仅在折叠块「起始行」生效；自定义：光标在块内任意位置
-  // 都能折叠包含它的最内层块（函数/if/类…，VSCode 式体验）
-  function foldCurrent(view) {
-    const head = view.state.selection.main.head;
-    const tree = Language.syntaxTree(view.state);
-    if (tree) {
-      let node = tree.resolveInner(head, head > 0 ? -1 : 1);
-      while (node) {
-        const fn = node.type.prop(Language.foldNodeProp);
-        if (fn) {
-          const r = typeof fn === 'function' ? fn(node) : Language.foldInside(node);
-          if (r && r.to > r.from) {
-            view.dispatch({ effects: Language.foldEffect.of(r) });
-            return true;
-          }
-        }
-        node = node.parent;
-      }
-    }
-    return Language.foldCode(view); // 兜底：光标在起始行（md 标题等）
+  // 原生foldAll按可见行跳过外层内部；递归折叠必须把隐藏子块也记入foldState。
+  function foldRanges(view) {
+    const state=view.state,doc=state.doc,out=new Map(),headings=[];
+    const add=r=>{if(r&&r.to>r.from&&r.from>=0&&r.to<=doc.length)out.set(r.from+':'+r.to,r);};
+    Language.ensureSyntaxTree(state,doc.length,100);
+    Language.syntaxTree(state).iterate({enter(ref){const node=ref.node,fn=node.type.prop(Language.foldNodeProp);if(fn)add(fn(node,state));
+      const heading=/^(?:ATX|Setext)Heading([1-6])$/.exec(node.name);if(heading)headings.push({level:Number(heading[1]),line:doc.lineAt(node.from)});}});
+    const headingRanges=new Map();
+    for(let i=0;i<headings.length;i++){const h=headings[i];let next=i+1;while(next<headings.length&&headings[next].level>h.level)next++;
+      const end=next<headings.length?doc.line(headings[next].line.number-1).to:doc.length;
+      if(end>h.line.to+1)headingRanges.set(h.line.number,{from:h.line.to+1,to:end,line:h.line.number});}
+    for(let n=1;n<=doc.lines;n++){const line=doc.line(n);add(headingRanges.get(n)||Language.foldable(state,line.from,line.to));}
+    return [...out.values()].sort((a,b)=>a.from-b.from||b.to-a.to);
   }
-  // 展开包含光标（或紧邻）的折叠范围
-  function unfoldCurrent(view) {
-    const head = view.state.selection.main.head;
-    const folded = Language.foldedRanges(view.state);
-    let found = null;
-    folded.between(0, view.state.doc.length, (from, to) => { if (from <= head && to >= head) found = { from, to }; });
-    if (!found) folded.between(Math.max(0, head - 1), Math.min(view.state.doc.length, head + 1), (from, to) => { found = { from, to }; });
-    if (!found) return Language.unfoldCode(view);
-    view.dispatch({ effects: Language.unfoldEffect.of(found) });
-    return true;
+  function setFold(view,{folded=true,recursive=false,all=false,range=null,line=null}={}) {
+    const state=view.state,doc=state.doc,existing=[];
+    Language.foldedRanges(state).between(0,doc.length,(from,to)=>existing.push({from,to}));
+    const ranges=folded||!range&&!all?foldRanges(view):[];
+    if(!all&&!range){
+      const current=line==null?doc.lineAt(state.selection.main.head):doc.line(Math.max(1,Math.min(line,doc.lines)));
+      // 单行JSON的键位于对象范围之前；仅找包含光标的范围会误折叠整个父对象。
+      const node=Language.syntaxTree(state).resolveInner(state.selection.main.head,1),property=node.name==='PropertyName'?node.parent:null;
+      const value=property?.name==='Property'?property.lastChild:null;
+      range=line==null&&value&&['Object','Array'].includes(value.name)?Language.foldInside(value):null;
+      range ||= ranges.find(r=>r.line===current.number)||Language.foldable(state,current.from,current.to);
+      if(!range){const head=line==null?state.selection.main.head:current.from;
+        range=[...existing,...ranges].filter(r=>r.from<=head&&r.to>=head).sort((a,b)=>(a.to-a.from)-(b.to-b.from))[0];}
+      if(!range)range=existing.find(r=>doc.lineAt(r.from).number===current.number);
+    }
+    if(!all&&(!range||range.from<0||range.to>doc.length||range.to<=range.from))return false;
+    const inside=r=>all||r.from===range.from&&r.to===range.to||recursive&&r.from>=range.from&&r.to<=range.to;
+    const targets=folded?(all?ranges:recursive?[range,...ranges.filter(inside)]:[range]):existing.filter(inside);
+    const effects=[...new Map(targets.map(r=>[r.from+':'+r.to,r])).values()].map(r=>(folded?Language.foldEffect:Language.unfoldEffect).of(r));
+    if(effects.length){if(!state.field(Language.foldState,false))effects.unshift(State.StateEffect.appendConfig.of(Language.codeFolding()));view.dispatch({effects});}
+    return effects.length>0;
+  }
+  const foldCurrent=view=>setFold(view,{folded:true}),unfoldCurrent=view=>setFold(view,{folded:false});
+  function parseJsonOutline(content) {
+    const text=String(content||'').replace(/\r\n?/g,'\n'),tree=CodeLangs.json().language.parser.parse(text),entries=[];
+    const starts=[0];for(let n=0;n<text.length;n++)if(text[n]==='\n')starts.push(n+1);
+    const lineAt=pos=>{let lo=0,hi=starts.length;while(lo+1<hi){const mid=(lo+hi)>>1;if(starts[mid]<=pos)lo=mid;else hi=mid;}return lo+1;};
+    const valueTypes=new Set(['Object','Array','String','Number','True','False','Null']);
+    const decode=n=>{const value=text.slice(n.from,n.to);try{return JSON.parse(value);}catch{return value;}};
+    const stack=[];for(let n=tree.topNode.lastChild;n;n=n.prevSibling)if(valueTypes.has(n.name))stack.push({node:n,level:1,label:n.name==='Array'?'根数组':n.name==='Object'?'根对象':'根值',from:n.from});
+    while(stack.length){const {node,level,label,from}=stack.pop(),container=node.name==='Object'||node.name==='Array';
+      const raw=text.slice(node.from,node.to),summary=container?(node.name==='Object'?' {…}':' […]'):': '+raw.slice(0,72)+(raw.length>72?'…':'');
+      entries.push({level,text:label+summary,line:lineAt(from),from,to:node.to,key:'json:'+from+':'+label,type:node.name,fold:container?Language.foldInside(node):null});
+      const children=[];let index=0;
+      for(let child=node.firstChild;child;child=child.nextSibling){
+        if(node.name==='Object'&&child.name==='Property'){const key=child.firstChild,value=child.lastChild;if(key?.name==='PropertyName'&&valueTypes.has(value?.name))children.push({node:value,level:level+1,label:String(decode(key)),from:key.from});}
+        else if(node.name==='Array'&&valueTypes.has(child.name))children.push({node:child,level:level+1,label:'['+(index++)+']',from:child.from});
+      }
+      for(let i=children.length-1;i>=0;i--)stack.push(children[i]);
+    }
+    return entries;
   }
 
   // ---------- Git Blame 注解 gutter（PyCharm Annotate 式，viewer 调 setBlame 开关） ----------
@@ -252,8 +275,10 @@ window.CodeEditor = (() => {
           // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
           { key: 'Mod--', preventDefault: true, run: foldCurrent },
           { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
-          { key: 'Mod-_', preventDefault: true, run: Language.foldAll },
-          { key: 'Mod-+', preventDefault: true, run: Language.unfoldAll },
+          { key: 'Mod-_', preventDefault: true, run: view=>setFold(view,{folded:true,all:true}) },
+          { key: 'Mod-+', preventDefault: true, run: view=>setFold(view,{folded:false,all:true}) },
+          { key: 'Mod-Shift--', preventDefault: true, run: view=>setFold(view,{folded:true,all:true}) },
+          { key: 'Mod-Shift-=', preventDefault: true, run: view=>setFold(view,{folded:false,all:true}) },
           { key: 'Mod-d', preventDefault: true, run: Commands.deleteLine }, // Ctrl+D 删除当前行
           ...Autocomplete.closeBracketsKeymap,
           ...Commands.defaultKeymap,
@@ -303,6 +328,7 @@ window.CodeEditor = (() => {
 
     return {
       view,
+      fold(options) { return setFold(view,options); },
       setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); },
       getValue() { return view.state.doc.toString(); },
@@ -341,5 +367,5 @@ window.CodeEditor = (() => {
     };
   }
 
-  return { create };
+  return { create, setFold, foldRanges, parseJsonOutline };
 })();

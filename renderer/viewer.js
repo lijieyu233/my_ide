@@ -295,7 +295,7 @@ const Viewer = (() => {
       if(tab.id!==location.documentId||tab.editRevision!==location.revision)return fail('章节所属文档已变化，请重新打开大纲');
       if(cmApi?.__tab===tab&&cmApi.view?.dom.isConnected){
         if(!Number.isSafeInteger(location.line)||location.line<1||location.line>cmApi.view.state.doc.lines)return fail('原章节位置已过期');
-        const from=cmApi.view.state.doc.line(location.line).from;cmApi.view.dispatch({selection:{anchor:from},scrollIntoView:true});cmApi.focus();
+        const from=location.offset??cmApi.view.state.doc.line(location.line).from;if(!Number.isSafeInteger(from)||from<0||from>cmApi.view.state.doc.length)return fail('原结构位置已过期');cmApi.view.dispatch({selection:{anchor:from},scrollIntoView:true});cmApi.focus();
       }else{
         const md=tab.mode==='split'?viewer.querySelector('.md-split-preview .md-view'):viewer.querySelector('.md-view'),target=md?.querySelectorAll('h1,h2,h3,h4,h5,h6')[location.headingIndex];
         if(!target)return fail('当前视图无法定位原章节');
@@ -451,7 +451,7 @@ const Viewer = (() => {
         try { pref = localStorage.getItem('myide-md-mode') || 'live'; } catch {}
         tab.mode = ['live', 'split', 'source', 'preview'].includes(pref) ? pref : 'live';
       } else {
-        tab.mode = PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
+        tab.mode = extOf(tab.name)==='json'?'edit':PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
       }
     }
     if(!detached)renderTabs();
@@ -1580,6 +1580,7 @@ const Viewer = (() => {
         markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
+        clearTimeout(cmOutlineTimer);cmOutlineTimer=setTimeout(()=>{if(currentTab()===tab&&window.App)App.refreshOutline(tab);},300);
       },
       onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
       saveKeysInShortcuts: true,

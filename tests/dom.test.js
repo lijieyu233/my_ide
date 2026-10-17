@@ -1545,7 +1545,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     while (g(dom, 'Viewer.openTabs.length') > 0) { g(dom, 'Viewer.closeTab(0)'); await tick(); }
     await g(dom, 'App.switchTool("outline")');
     await tick();
-    assert_($(dom, '#outline').textContent.includes('打开 Markdown 文件'), '无文件时提示, got: ' + $(dom, '#outline').textContent);
+    assert_($(dom, '#outline').textContent.includes('Markdown') && $(dom, '#outline').textContent.includes('JSON'), '无文件时提示支持的文档类型, got: ' + $(dom, '#outline').textContent);
     await g(dom, 'Viewer.openFile("' + P + '/README.md")');
     await tick(); await tick(); await tick();
     const items = $allIn($(dom, '#outline'), '.outline-item');
