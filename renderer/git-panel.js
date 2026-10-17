@@ -2614,27 +2614,32 @@ const GitPanel = (() => {
         td.appendChild(box);
       }
       table.appendChild(sep);
-      const rows = [];
-      for (const row of h.rows) {
-        const tr = document.createElement('tr');
-        // PyCharm 式左右分栏，行号列居中：[旧内容|旧行号 ‖ 新行号|新内容]
-        // 空白侧只留底色（empty），不上红绿：add 行左半、del 行右半不是变更内容
-        const oldCls = row.type === 'add' ? 'empty' : row.type;
-        const newCls = row.type === 'del' ? 'empty' : row.type;
-        tr.innerHTML = `<td class="old ${oldCls}">${esc(row.aText)}</td>` +
-          `<td class="ln">${row.aNum || ''}</td><td class="num">${row.bNum || ''}</td>` +
-          `<td class="new ${newCls}">${esc(row.bText)}</td>`;
-        rows.push(tr);
-      }
-      rows.forEach((tr) => table.appendChild(tr));
-      // 折叠开关：超过 30 行默认折叠
-      const setOpen = (open) => {
-        sep.dataset.open = open ? '1' : '';
-        sep.querySelector('.hint').textContent = open ? '' : '（点击展开 ' + rows.length + ' 行）';
-        rows.forEach((tr) => { tr.style.display = open ? '' : 'none'; });
+      const rows = [], batchSize = 200;
+      const anchor = document.createElement('tr');anchor.className='diff-hunk-more';anchor.hidden=true;
+      const moreCell=document.createElement('td');moreCell.colSpan=4;
+      const more=document.createElement('button');more.className='vt-btn';moreCell.appendChild(more);anchor.appendChild(moreCell);table.appendChild(anchor);
+      let rendered=0;
+      const appendBatch=()=>{
+        const fragment=document.createDocumentFragment(),end=Math.min(rendered+batchSize,h.rows.length);
+        for(;rendered<end;rendered++){
+          const row=h.rows[rendered],tr=document.createElement('tr');
+          const oldCls=row.type==='add'?'empty':row.type,newCls=row.type==='del'?'empty':row.type;
+          for(const [cls,text]of [['old '+oldCls,row.aText],['ln',row.aNum||''],['num',row.bNum||''],['new '+newCls,row.bText]]){const td=document.createElement('td');td.className=cls;td.textContent=text??'';tr.appendChild(td);}
+          rows.push(tr);fragment.appendChild(tr);
+        }
+        table.insertBefore(fragment,anchor);anchor.hidden=rendered>=h.rows.length;
+        more.textContent='继续显示 '+Math.min(batchSize,h.rows.length-rendered)+' 行（已显示 '+rendered+' / '+h.rows.length+'）';
       };
-      sep.onclick = () => setOpen(!sep.dataset.open);
-      setOpen(rows.length <= 30);
+      // 折叠必须避免创建隐藏DOM；即使展开整文件变更，一次也只绘制200行，保留完整行号与hunk身份。
+      const setOpen=open=>{
+        sep.dataset.open=open?'1':'';
+        sep.querySelector('.hint').textContent=open?'':'（点击展开 '+h.rows.length+' 行）';
+        if(open&&!rendered)appendBatch();
+        rows.forEach(tr=>{tr.style.display=open?'':'none';});anchor.hidden=!open||rendered>=h.rows.length;
+      };
+      more.onclick=event=>{event.stopPropagation();appendBatch();};
+      sep.onclick=()=>setOpen(!sep.dataset.open);
+      setOpen(h.rows.length <= 30);
     });
     fileBox.appendChild(table);
     return fileBox;

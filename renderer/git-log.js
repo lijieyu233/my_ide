@@ -14,6 +14,7 @@ const GitLog = (() => {
   const PALETTE = ['#e06c75', '#61afef', '#98c379', '#e5c07b', '#c678dd', '#56b6c2', '#d19a66', '#ff6b81', '#4fd6be', '#8ba3d8'];
 
   let root = null;
+  let refreshEpoch=0,refreshPending=null,renderedHistory=null;
   let opened = false;
   let commits = [];
   let branchHeads = {}; // oid -> [分支名]
@@ -295,8 +296,9 @@ const GitLog = (() => {
       listEl.querySelectorAll('.gl-row').forEach((el) => { el.style.display = ''; });
       return;
     }
+    const byOid=new Map(commits.map(c=>[c.oid,c]));
     listEl.querySelectorAll('.gl-row').forEach((el) => {
-      const c = commits.find((x) => x.oid === el.dataset.oid);
+      const c = byOid.get(el.dataset.oid);
       if (!c) return;
       const okA = !a || (c.author + ' ' + (c.email || '')).toLowerCase().includes(a);
       const okQ = !rawQ || (re ? re.test(c.message + ' ' + c.oid + ' ' + c.author)
@@ -396,8 +398,17 @@ const GitLog = (() => {
   }
 
   // ---------- 数据加载 ----------
-  async function refresh() {
+  // 保存/文件监视会同时触发刷新；同一查询共享在途请求，代次隔离项目往返后的迟到结果。
+  function refresh(){
+    if(!root)return Promise.resolve();
+    const key=JSON.stringify([root,refreshEpoch,pathFilter,refFilter,limit,cmp?.a,cmp?.b]);
+    if(refreshPending?.key===key)return refreshPending.promise;
+    const epoch=++refreshEpoch,request={key:JSON.stringify([root,epoch,pathFilter,refFilter,limit,cmp?.a,cmp?.b])};
+    request.promise=refreshHistory(epoch).finally(()=>{if(refreshPending===request)refreshPending=null;});refreshPending=request;return request.promise;
+  }
+  async function refreshHistory(epoch) {
     if (!root) return;
+    const project=root,valid=()=>epoch===refreshEpoch&&root===project;
     // 分支对比模式：刷新 = 重跑当前对比
     if (cmp) { await runCompare(cmp.a, cmp.b); return; }
     const box = listEl.querySelector('.gl-rows');
@@ -405,7 +416,8 @@ const GitLog = (() => {
     // 文件历史模式（树右键「显示历史」）：数据源换成 logFile
     const chip = document.getElementById('gl-path-chip');
     if (pathFilter) {
-      const lf = await window.myIDE.git.logFile(root, pathFilter, limit);
+      const lf = await window.myIDE.git.logFile(project, pathFilter, limit);
+      if(!valid())return;
       if (chip) {
         chip.classList.remove('hidden');
         chip.textContent = '📁 ' + pathFilter.split(/[\\/]/).pop() + ' ✕';
@@ -416,6 +428,7 @@ const GitLog = (() => {
         listEl.innerHTML = '<div class="git-empty">' + esc(lf.error || '不是 Git 仓库') + '</div>';
         return;
       }
+      const signature=JSON.stringify([pathFilter,lf]);if(signature===renderedHistory&&listEl.querySelector('.gl-rows'))return;renderedHistory=signature;
       commits = lf.commits || [];
       branchHeads = {};
       headOid = null;
@@ -431,13 +444,17 @@ const GitLog = (() => {
     if (chip) chip.classList.add('hidden');
     const refArg = refFilter === '__all__' || refFilter === null ? null : refFilter;
     const [lg, br] = await Promise.all([
-      window.myIDE.git.logGraph(root, limit, refArg),
-      window.myIDE.git.branches(root),
+      window.myIDE.git.logGraph(project, limit, refArg),
+      window.myIDE.git.branches(project),
     ]);
+    if(!valid())return;
     if (!lg.isRepo) {
       listEl.innerHTML = '<div class="git-empty">' + esc(lg.error || '不是 Git 仓库') + '</div>';
       return;
     }
+    // HEAD与分支没变化时不要清空列表/重新选首文件；对比页退出则必须重新建回列表。
+    const signature=JSON.stringify([refArg,lg,br?.branches]);
+    if(signature===renderedHistory&&listEl.querySelector('.gl-rows'))return;renderedHistory=signature;
     commits = lg.commits || [];
     branchHeads = lg.branchHeads || {};
     headOid = lg.headOid || null;
@@ -455,7 +472,7 @@ const GitLog = (() => {
   // 入口：点击 ⇄ → 列表顶部出现 A vs B 选择条 → 对比 → 展示双方独有提交 + 差异文件
   async function startCompare() {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
-    selSeq++;diffRequest++;cancelSelection();
+    refreshEpoch++;selSeq++;diffRequest++;cancelSelection();
     const br = await window.myIDE.git.branches(root);
     const names = (br && br.branches) || [];
     if (!names.length) { MI.toast('仓库中没有分支，无法对比', 'err'); return; }
@@ -621,9 +638,10 @@ const GitLog = (() => {
     panel.classList.remove('hidden');
     document.getElementById('tool-log').classList.add('active');
     if (!commits.length) refresh();
+    else if(selOid)select(selOid);
   }
   function hide() {
-    selSeq++;diffRequest++;cancelSelection();
+    refreshEpoch++;selSeq++;diffRequest++;cancelSelection();
     opened = false;
     panel.classList.add('hidden');
     document.getElementById('tool-log').classList.remove('active');
@@ -632,6 +650,7 @@ const GitLog = (() => {
   function isOpen() { return opened; }
   function setRoot(p) {
     selSeq++;diffRequest++;cancelSelection();detailCache.clear();diffCache.clear();diffBytes=0;
+    refreshEpoch++;renderedHistory=null;
     root = p;
     commits = [];
     graph = null;
