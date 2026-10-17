@@ -70,7 +70,6 @@ window.Reader=(()=>{
     }finally{await myIDE.reader.close(result.session);}
   }
   function workbenchState(){const page=window.App?.getPageContext?.().id;return {page,current:page==='reader'&&window.Viewer?.activeTab?.readerInfo?state():null,library:library(true)};}
-  document.getElementById('btn-reader')?.addEventListener('click',()=>App.switchTool('bookshelf'));
   function flush(){if(live)clearTimeout(live.timer);save();}
   window.addEventListener('beforeunload',()=>flush());
   return {archive,load,release,open,mount,renderOutline,state,read,goto,bookmark,setPreferences,library,libraryBook,setListed,addToLibrary,workbenchState,flush};

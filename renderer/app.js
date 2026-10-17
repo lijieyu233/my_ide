@@ -249,7 +249,7 @@ const App = (() => {
       const b = document.getElementById('tool-' + t);
       if (b) b.classList.toggle('active', activeTool === t);
     }
-    const shelfButton=document.getElementById('btn-reader');shelfButton?.classList.toggle('active',activeTool==='bookshelf');shelfButton?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
+    document.getElementById('tool-bookshelf')?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
     const aiBtn = document.getElementById('tool-ai');
     if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
@@ -1166,6 +1166,7 @@ const App = (() => {
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-search').onclick = () => { switchTool('search'); if(getTool()==='search')Search.focusDock(); };
     document.getElementById('tool-git').onclick = () => switchTool('git');
+    document.getElementById('tool-bookshelf').onclick = () => switchTool('bookshelf');
     if (window.GitLog) document.getElementById('tool-log').onclick = () => switchTool('log');
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }

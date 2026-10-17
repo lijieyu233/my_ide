@@ -1,7 +1,7 @@
 const assert=require('assert/strict'),fs=require('fs'),path=require('path'),{JSDOM}=require('jsdom'),{webcrypto}=require('crypto');
 const KEY='myide-reader-v1';
 function fixture(initial){
-  const dom=new JSDOM('<button id="btn-reader"></button><div id="content"></div>',{url:'https://myide.test',runScripts:'outside-only'}),w=dom.window;
+  const dom=new JSDOM('<button id="tool-bookshelf"></button><div id="content"></div>',{url:'https://myide.test',runScripts:'outside-only'}),w=dom.window;
   Object.defineProperty(w,'crypto',{value:webcrypto});let reads=0,closed=0;
   if(initial)w.localStorage.setItem(KEY,JSON.stringify(initial));
   w.MI={toast(){}};w.App={root:'C:/project',getPageContext:()=>({id:'bookshelf'}),switchTool(){}};
