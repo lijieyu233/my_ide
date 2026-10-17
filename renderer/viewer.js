@@ -288,7 +288,7 @@ const Viewer = (() => {
     const ticket=NavigationHistory.begin();
     if(location.line!=null&&(currentTab()?.id!==location.documentId||currentTab()?.editRevision!==location.revision))return {ok:false,error:'章节所属文档已变化，请重新打开大纲'};
     const opened=await openFileRaw(path,options);if(opened?.ok===false||opened?.stale)return opened;
-    const tab=currentTab();if(tab?.mode==null&&tab.loadPromise)await tab.loadPromise;
+    const tab=currentTab();if(tab&&tab.mode==null&&tab.loadPromise)await tab.loadPromise;
     if(DocumentPaths.key(tab?.path)!==DocumentPaths.key(path))return {ok:false,error:'目标文档已变化'};
     if(location.line!=null){
       const fail=error=>{NavigationHistory.failed(ticket,error);MI.toast(error,'err');return {ok:false,error};};
@@ -461,7 +461,7 @@ const Viewer = (() => {
   function activate(i,options={}) {
     if(options.history===false)return activateRaw(i);
     const ticket=NavigationHistory.begin(),target=tabs[i];activateRaw(i);
-    if(target?.mode==null&&target.loadPromise)return target.loadPromise.then(()=>{if(currentTab()===target)NavigationHistory.finish(ticket,captureLocation());});
+    if(target&&target.mode==null&&target.loadPromise)return target.loadPromise.then(()=>{if(currentTab()===target)NavigationHistory.finish(ticket,captureLocation());});
     NavigationHistory.finish(ticket,captureLocation());
   }
   function activateRaw(i) {

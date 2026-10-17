@@ -20,6 +20,7 @@ const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');
 const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns, { application: (call,context) => require('./renderer/ai-workbench-tools').has(call.name)?aiWorkbenchTools.prepare(call,context):require('./renderer/ai-project-tools').has(call.name)?aiProjectTools.prepare(call,context):require('./renderer/ai-browser-tools').has(call.name)?aiBrowserTools.prepare(call,context):require('./renderer/ai-ssh-tools').has(call.name)?aiSshTools.prepare(call):aiLaunchTools.prepare(call) });
 const FileWrite = require('./src/main/files/file-write');
+const FileRead = require('./src/main/files/file-read');
 const PathJobs = require('./src/main/files/path-jobs');
 const TextFormat = require('./src/main/files/text-format');
 const searchService = require('./src/main/search/search-service').createSearchService();
@@ -603,18 +604,18 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
   return items;
 });
 
-ipcMain.handle('fs:readFile', (_e, p, encoding) => {
+ipcMain.handle('fs:readFile', async (_e, p, encoding) => {
   let snapshot;
   try {
-    snapshot = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+    snapshot = await FileRead.readSnapshot(p, undefined, 8 * 1024 * 1024);
     if (snapshot.absent) return { error: '文件不存在', errorCode: 'ENOENT', version: snapshot.version };
     if (snapshot.tooLarge) return snapshot;
     return { ...TextFormat.decodeText(snapshot.bytes, encoding), version: snapshot.version };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED', version: snapshot && snapshot.version }; }
 });
-ipcMain.handle('fs:fileVersion', (_e, p) => {
+ipcMain.handle('fs:fileVersion', async (_e, p) => {
   try {
-    const r = FileWrite.readSnapshot(p, fs, 8 * 1024 * 1024);
+    const r = await FileRead.readSnapshot(p, undefined, 8 * 1024 * 1024);
     if (r.tooLarge) return { error: '目标超过8MB，不能在此安全覆盖', errorCode: 'TOO_LARGE' };
     return { version: r.version, absent: !!r.absent };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED' }; }
@@ -632,13 +633,13 @@ ipcMain.handle('fs:writeBinary', (_e, p, base64) => {
 // 读二进制文件（Office 预览等）：返回 ArrayBuffer（结构化克隆直传渲染进程）
 // 上限 50MB：docx/xlsx/pptx 常内嵌高清图片，8MB 文本上限不适用；
 // 超过 50MB 的多为内嵌视频的极端 pptx，前端解析无意义
-ipcMain.handle('fs:readBuffer', (_e, p) => {
+ipcMain.handle('fs:readBuffer', async (_e, p) => {
   try {
-    const st = fs.statSync(p);
+    const st = await fs.promises.stat(p);
     if (!st.isFile()) return { error: '不是文件' };
     if (st.size > 50 * 1024 * 1024) return { tooLarge: true, size: st.size };
-    const buf = fs.readFileSync(p);
-    // ★ 必须 slice：readFileSync 可能返回池化 Buffer 的视图（byteOffset ≠ 0），直接传 buf.buffer 会带出脏数据
+    const buf = await fs.promises.readFile(p);
+    // ★ 必须 slice：readFile 可能返回池化 Buffer 的视图（byteOffset ≠ 0），直接传 buf.buffer 会带出脏数据
     return { buffer: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
   } catch (e) { return { error: String(e.message || e) }; }
 });
