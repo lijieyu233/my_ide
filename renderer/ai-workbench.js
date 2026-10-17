@@ -21,7 +21,7 @@ window.AiWorkbench=(()=>{
     const definition=AiWorkbenchTools.definitions[call.name];if(!definition)fail('INVALID_TOOL_ARGS','未知操作');
     if(key(root())!==key(context.rootId))fail('PROJECT_CHANGED','当前项目与请求所属项目不同，请返回原项目');
     const projectModule=module=>['project','editor','markdown','git','tasks'].includes(module);
-    if(page().id==='reader'&&(definition.project||projectModule(definition.module)||(call.name==='workbench_state'&&projectModule(call.args.module))))fail('PROJECT_PAGE_REQUIRED','阅读页不附带后台项目，请返回项目标签再操作');
+    if(['reader','bookshelf'].includes(page().id)&&(definition.project||projectModule(definition.module)||(call.name==='workbench_state'&&projectModule(call.args.module))))fail('PROJECT_PAGE_REQUIRED','阅读页不附带后台项目，请返回项目标签再操作');
     if(definition.project&&!context.rootId&&!(call.name==='project_control'&&call.args.operation==='open'))fail('PROJECT_REQUIRED','请先打开项目');
     if(definition.kind&&AiWorkbenchTools.effect(call)){
       const snapshot=snapshots.get(call.args.snapshot);

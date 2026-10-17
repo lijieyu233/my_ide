@@ -5,7 +5,7 @@ const Session = (() => {
   const CURRENT_KEY = root => 'myide-session-current:' + root;
   const reports = new Map();
   let timer = null, sequence = 0, restoring = null;
-  const tools = new Set(['project','outline','search','git','tasks','launch','db','browser','log','quick-launch']);
+  const tools = new Set(['project','outline','search','git','tasks','launch','db','browser','log','quick-launch','bookshelf']);
   const pathKey = p => DocumentPaths.key(p);
   function validPath(p, root) {
     return !!root && typeof p === 'string' && p.length > 0 && p.length <= 4096 && !/[\0\r\n]/.test(p)

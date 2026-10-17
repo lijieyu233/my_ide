@@ -76,8 +76,9 @@
     "check:workbench": "electron scripts/check-ai-workbench.js --disable-gpu --no-sandbox",
     "check:file-responsiveness": "electron scripts/check-file-responsiveness.js --disable-gpu --no-sandbox",
     "check:json-outline": "electron scripts/check-json-outline.js --disable-gpu --no-sandbox",
-    "test:reader": "node tests/reader.test.js",
-    "check:reader": "electron scripts/check-reader.js --disable-gpu --no-sandbox"
+    "test:reader": "node tests/reader.test.js && node tests/bookshelf.test.js",
+    "check:reader": "electron scripts/check-reader.js --disable-gpu --no-sandbox",
+    "check:bookshelf": "electron scripts/check-bookshelf.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

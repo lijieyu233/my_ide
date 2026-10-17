@@ -17,7 +17,7 @@
 <body>
 <header id="toolbar">
   <button id="btn-open" class="tb-btn tb-ic" title="打开项目 (Ctrl+O)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/><path d="M8 8.2v3.4M6.3 9.9h3.4"/></svg></button>
-  <button id="btn-reader" class="tb-btn tb-ic" title="打开书籍（TXT / EPUB / CBZ）" aria-label="打开书籍"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5C5.8 2.1 3.5 2 1.5 2.8v10C3.6 12 5.8 12.2 8 13.5c2.2-1.3 4.4-1.5 6.5-.7v-10C12.5 2 10.2 2.1 8 3.5zM8 3.5v10"/></svg></button>
+  <button id="btn-reader" class="tb-btn tb-ic" title="书架：最近阅读与已添加书籍" aria-label="书架" aria-pressed="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5C5.8 2.1 3.5 2 1.5 2.8v10C3.6 12 5.8 12.2 8 13.5c2.2-1.3 4.4-1.5 6.5-.7v-10C12.5 2 10.2 2.1 8 3.5zM8 3.5v10"/></svg></button>
   <span class="tb-sep" aria-hidden="true"></span>
   <div id="project-bar-wrap">
     <!-- 「全部项目」入口由 app.js 注入到此层（在横向滚动容器之外 → 结构上不可能压住项目按钮） -->
@@ -465,6 +465,7 @@
 <script src="tab-descriptions.js"></script>
 <script src="closed-tabs.js"></script>
 <script src="reader.js"></script>
+<script src="bookshelf.js"></script>
 <script src="viewer.js"></script>
 <script src="tab-picker.js"></script>
 <script src="outline.js"></script>

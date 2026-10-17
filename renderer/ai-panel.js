@@ -115,7 +115,7 @@ const AiPanel = (() => {
   let curSessionId = null;   // 当前会话 id（历史会话列表用）
 
   const PROJECT_TOOLS = new Set(['list_files','read_file','search_files','write_file','replace_edit','run_command',...(window.AiProjectTools?.projectOnly||[])]);
-  function isProjectTool(name){const d=window.AiWorkbenchTools?.definitions[name];return PROJECT_TOOLS.has(name)||(currentPage().id==='reader'&&!!d&&(d.project||['project','editor','markdown','git','tasks'].includes(d.module)));}
+  function isProjectTool(name){const d=window.AiWorkbenchTools?.definitions[name];return PROJECT_TOOLS.has(name)||(['reader','bookshelf'].includes(currentPage().id)&&!!d&&(d.project||['project','editor','markdown','git','tasks'].includes(d.module)));}
   let pageKey = null, pageEpoch = 0, followTask = null;
   function currentPage() {
     // 测试/早期初始化没有 App 时，不将隐藏编辑器误判为项目页。
@@ -131,7 +131,7 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
-    if(currentRun?.engine==='dsh'&&currentRun.identity.rootId===App.root&&currentRun.pageId!==page.id)stopRun();
+    if(currentRun?.engine==='dsh'&&currentRun.identity.rootId===App.root&&currentRun.pageId!==page.id&&!(['reader','bookshelf'].includes(currentRun.pageId)&&['reader','bookshelf'].includes(page.id)))stopRun();
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();

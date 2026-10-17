@@ -31,7 +31,7 @@ function createService(options={}){
   const mapping=()=>options.mappingFile?.();
   // 页面只是本轮上下文，不能改变对话身份；项目仍隔离，防止把另一项目历史带进来。
   // 阅读页不能复用项目会话的历史与cwd，否则原生Harness会继续在后台项目中工作。
-  const keyOf=context=>JSON.stringify(context.page?.id==='reader'?[context.sessionId,context.rootId,'reader']:[context.sessionId,context.rootId]);
+  const keyOf=context=>JSON.stringify(['reader','bookshelf'].includes(context.page?.id)?[context.sessionId,context.rootId,'reader']:[context.sessionId,context.rootId]);
   async function load(){if(loaded)return;const file=mapping();if(file)try{
     const entries=Object.entries(JSON.parse(await fs.readFile(file,'utf8')));
     for(const [key,value] of entries){const parts=JSON.parse(key);if(!Array.isArray(parts))continue;const canonical=JSON.stringify(parts[2]==='reader'?parts.slice(0,3):parts.slice(0,2));const record=typeof value==='string'?{id:value,cwd:parts[3]?parts[1]:path.join(home(),'myide-detached-workspace')}:value;if(typeof record?.id!=='string')continue;if(!saved.has(canonical)||parts.length===2||parts[2]==='project')saved.set(canonical,record);}

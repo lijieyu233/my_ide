@@ -119,7 +119,7 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'log', 'quick-launch'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'log', 'quick-launch', 'bookshelf'];
   const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -130,6 +130,8 @@ const App = (() => {
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
     if (prev !== 'launch' && next === 'launch') window.LaunchPanel?.refresh();
+    if(prev==='bookshelf')window.Bookshelf?.hide();
+    if(next==='bookshelf')window.Bookshelf?.show();
     if (prev === 'quick-launch') window.QuickLaunch?.hide();
     if (next === 'quick-launch') window.QuickLaunch?.show();
     if (prev === 'browser' && window.BrowserPanel) BrowserPanel.hide();
@@ -146,7 +148,7 @@ const App = (() => {
     // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
     //   切到 browser 时残留 true → 收藏面板永不显示（sideCollapsed 与 body 的
     //   sidebar-collapsed 是两个独立状态，toggleSidebar 只动后者）
-    sideCollapsed = false;
+    if(next!=='bookshelf')sideCollapsed = false;
     applyToolChange(prev, next);
     renderToolStrip();
     saveToolState();
@@ -156,8 +158,8 @@ const App = (() => {
     if (!ALL_TOOLS.includes(name)) return;
     // 侧栏整体收起（⏴）时点击任何工具项：先展开侧栏，本次点击只做展开不做收起切换
     const wasCollapsed = document.body.classList.contains('sidebar-collapsed');
-    if (wasCollapsed) toggleSidebar(false);
-    if (activeTool === name && !wasCollapsed) { // 再点一次收起（PyCharm 行为）
+    if (wasCollapsed&&name!=='bookshelf') toggleSidebar(false);
+    if (activeTool === name && (!wasCollapsed||name==='bookshelf')) { // 再点一次收起（PyCharm 行为）
       if (name === 'browser') { closeBrowser(); return; }
       if (SIDE_TOOLS.includes(name)) sideCollapsed = true;
       else sideCollapsed = false;
@@ -172,7 +174,7 @@ const App = (() => {
   // 非切换语义：快捷键始终「显示」该工具窗口（PyCharm Alt+N 习惯，不因已激活而收起）
   function showTool(name) {
     if (!ALL_TOOLS.includes(name)) return;
-    if (document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
+    if (name!=='bookshelf'&&document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
     if (activeTool !== name || sideCollapsed) setToolState(name);
   }
   function hideSideTool(name) {
@@ -203,7 +205,7 @@ const App = (() => {
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
-    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'remote') {
+    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'bookshelf' || activeTool === 'remote') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
@@ -247,6 +249,7 @@ const App = (() => {
       const b = document.getElementById('tool-' + t);
       if (b) b.classList.toggle('active', activeTool === t);
     }
+    const shelfButton=document.getElementById('btn-reader');shelfButton?.classList.toggle('active',activeTool==='bookshelf');shelfButton?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
     const aiBtn = document.getElementById('tool-ai');
     if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
@@ -352,8 +355,8 @@ const App = (() => {
   // 独立工具主区会遮住编辑器；侧栏搜索/大纲仍属于项目工作区。
   function getPageContext() {
     const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
-      launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动' };
-    const independent = ['tasks','launch','db','remote','browser','quick-launch'].includes(activeTool);
+      launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动',bookshelf:'书架' };
+    const independent = ['tasks','launch','db','remote','browser','quick-launch','bookshelf'].includes(activeTool);
     const book=window.Viewer?.activeTab;
     if(!independent&&book?.reader)return {id:'reader',name:'阅读器',tool:activeTool||'project',toolName:'阅读目录',projectContext:false,reader:{title:book.readerInfo?.title||book.name,kind:book.readerInfo?.kind||null}};
     const projectContext = !!root && !independent;
