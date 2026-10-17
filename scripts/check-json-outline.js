@@ -5,7 +5,8 @@ os.homedir=()=>temp;process.env.HOME=temp;process.env.USERPROFILE=temp;app.setPa
 let win;const sleep=ms=>new Promise(r=>setTimeout(r,ms)),js=s=>win.webContents.executeJavaScript(s);
 const nativeFoldKey=async(folded,shift=false,alt=false,numpad=false)=>{
  if(!win.webContents.debugger.isAttached())win.webContents.debugger.attach('1.3');
- await js('Viewer.cm.view.contentDOM.focus();true');
+ // 原生输入前由 CM 同步 DOM 选区，避免直接聚焦 contentDOM 时沿用旧的 DOM 光标。
+ await js('Viewer.cm.focus();true');
  const key=folded?'-':numpad||shift?'+':'=',code=numpad?(folded?'NumpadSubtract':'NumpadAdd'):(folded?'Minus':'Equal');
  for(const type of ['keyDown','keyUp'])await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:numpad?(folded?109:107):(folded?189:187),modifiers:2|(shift?8:0)|(alt?1:0),isKeypad:numpad});
 };
@@ -78,11 +79,28 @@ const timeout=setTimeout(()=>{console.error('JSON大纲检查超时');app.exit(2
  assert(await js('__foldKey("+",false,false,true)'));assert.equal(await js('__folds().length'),1);
  assert(await js('__foldKey("+",true)'));assert.equal(await js('__folds().length'),0);
  console.log('PASS Markdown隐藏光标同样逐级/递归展开可见章节，编辑器无运行时异常');
- const fresh=path.join(temp,'另一个.json');fs.writeFileSync(fresh,JSON.stringify({fresh:{nested:{value:1}}},null,2));
+ const fresh=path.join(temp,'另一个.json');fs.writeFileSync(fresh,JSON.stringify({fresh:{emotion:{anger:0.4,happy:0.2,dominant_label:'sad'},scores:[1,2,3],emptyObject:{},emptyArray:[]}},null,2));
  await js('Viewer.openFile('+JSON.stringify(fresh)+')');await until(()=>js('Outline.headings.some(h=>h.text==="fresh")'));
  assert.equal(await js('document.getElementById("outline-sync").getAttribute("aria-pressed")'),'true');
  assert.equal(await js('__folds().length'),0);assert.equal(await js('Outline.syncFromEditor(window.__oldJsonView)'),false);
  assert(await js('Outline.controlState().items.every(h=>h.expanded&&h.visible)'));assert.equal(await js('window.__jsonErrors.length'),0);
  console.log('PASS 跨JSON/Markdown切换保留同步偏好，采用新文件折叠状态，旧编辑器通知不能污染当前大纲');
+ for(const enabled of [false,true]){
+  await js('Outline.setSync('+enabled+');true');
+  for(const name of ['emotion','scores']){
+   const item=await js('Outline.headings.findIndex(h=>h.text==='+JSON.stringify(name)+')');
+   assert(await js('!!document.querySelectorAll(".outline-item")['+item+'].querySelector(".ol-arrow:not(.ol-pad) svg.ic")'));
+   await js('document.querySelectorAll(".outline-item")['+item+'].querySelector(".ol-arrow").click();true');
+   assert.equal(await js('__folds().length'),1);assert.equal(await js('document.querySelectorAll(".outline-item")['+item+'].getAttribute("aria-expanded")'),'false');
+   await js('Viewer.cm.setCursor(Outline.headings['+item+'].from);true');await nativeFoldKey(false);
+   assert.equal(await js('__folds().length'),0,JSON.stringify({enabled,name,state:await js('({head:Viewer.cm.view.state.selection.main.head,folds:__folds(),target:Outline.headings['+item+'],active:document.activeElement?.className,modal:Modal.stack.length})')}));assert.equal(await js('document.querySelectorAll(".outline-item")['+item+'].getAttribute("aria-expanded")'),'true');
+  }
+ }
+ assert.equal(await js('Viewer.activeTab.dirty'),false);
+ assert(await js('["emptyObject","emptyArray"].every(name=>{const i=Outline.headings.findIndex(h=>h.text===name);return !!document.querySelectorAll(".outline-item")[i].querySelector(".ol-arrow.ol-pad");})'));
+ await js('document.querySelectorAll(".outline-item")[Outline.headings.findIndex(h=>h.text==="scores")].querySelector(".ol-arrow").click();true');
+ await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r(true))))');fs.writeFileSync(path.join(repo,'.ui-check-trash','json-outline-leaf.png'),(await win.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+ assert.equal(await js('window.__jsonErrors.length'),0);
+ console.log('PASS 无结构子项的对象/数组有真实折叠箭头，同步开关两态及编辑器原生展开均一致；空容器无无效箭头');
  clearTimeout(timeout);console.log('JSON大纲真实窗口检查通过');app.exit(0);
 })().catch(e=>{console.error(e.stack);clearTimeout(timeout);app.exit(1);});

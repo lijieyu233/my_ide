@@ -59,6 +59,10 @@ const Outline = (() => {
     while (j < headings.length && headings[j].level > headings[i].level) j++;
     return [i + 1, j];
   }
+  const hasChildren = i => childrenRange(i)[1]>i+1;
+  const hasJsonFold = i => !!headings[i]?.key?.startsWith('json:')&&headings[i].fold?.to>headings[i].fold?.from;
+  const leafFold = i => hasJsonFold(i)&&!hasChildren(i);
+  const canToggle = i => hasChildren(i)||hasJsonFold(i);
   // 标题 i 整节结束后、下一个「不浅于自身」的标题下标（headings.length 表示到文末）
   function sectionEnd(i) {
     const lv = headings[i].level;
@@ -181,16 +185,17 @@ const Outline = (() => {
   function readEditorFolds(view) {
     const folded=new Set();
     CM6.Language.foldedRanges(view.state).between(0,view.state.doc.length,(from,to)=>folded.add(from+':'+to));
-    collapsed=new Set(headings.filter(h=>h.fold&&folded.has(h.fold.from+':'+h.fold.to)).map(hKey));
+    if(syncEnabled)collapsed=new Set(headings.filter(h=>h.fold&&folded.has(h.fold.from+':'+h.fold.to)).map(hKey));
+    else headings.forEach((h,i)=>{if(leafFold(i)){if(folded.has(h.fold.from+':'+h.fold.to))collapsed.add(hKey(h));else collapsed.delete(hKey(h));}});
   }
   function syncFromEditor(view) {
-    if(!syncActive()||!ownsDocument()||Viewer.cm?.__tab!==Viewer.activeTab||Viewer.cm?.view!==view)return false;
+    if(!isJson()||!ownsDocument()||Viewer.cm?.__tab!==Viewer.activeTab||Viewer.cm?.view!==view)return false;
     readEditorFolds(view);saveCollapsed();
     // 折叠没有改正文：只更新已有树行，不能每次按键都重新解析整个 JSON 或重置滚动。
     itemRows().forEach((row,i)=>{
       const closed=collapsed.has(hKey(headings[i])),arrow=row.querySelector('.ol-arrow:not(.ol-pad)');
       row.classList.toggle('ol-hidden',isHidden(i));
-      if(arrow){row.setAttribute('aria-expanded',String(!closed));arrow.classList.toggle('closed',closed);arrow.title=closed?'展开子级':'收起子级';}
+      if(arrow){row.setAttribute('aria-expanded',String(!closed));arrow.classList.toggle('closed',closed);arrow.title=leafFold(i)?(closed?'展开本级':'折叠本级'):(closed?'展开子级':'收起子级');}
     });
     ensureVisibleSelection();return true;
   }
@@ -291,7 +296,7 @@ const Outline = (() => {
       return;
     }
     headings = isJson?(window.CodeEditor?.parseJsonOutline(tab.content)||[]):parse(tab.content);
-    if(syncActive()&&ownsDocument()&&Viewer.cm?.__tab===tab)readEditorFolds(Viewer.cm.view);
+    if(isJson&&ownsDocument()&&Viewer.cm?.__tab===tab)readEditorFolds(Viewer.cm.view);
     if (!headings.length) {
       selIdx = -1; selKey = '';
       renderEmpty(isJson?'未找到可识别的 JSON 结构':'未找到标题');
@@ -308,29 +313,31 @@ const Outline = (() => {
     headings.forEach((h, i) => {
       const [cs, ce] = childrenRange(i);
       const hasKids = ce > cs;
+      // JSON 大纲隐藏了普通字段；没有结构子项仍可能有正文可折叠，不能当作无操作的叶子。
+      const toggleable = hasKids||hasJsonFold(i);
       const isCol = collapsed.has(hKey(h));
       const row = document.createElement('div');
       row.className = 'outline-item' + (h.level > 1 ? ' lv' + h.level : '');
       // 缩进：箭头列固定宽度，文本起点按层级递进（PyCharm 同款）
       row.style.paddingLeft = ((h.level - 1) * 13 + 4) + 'px';
-      row.title = h.text + '\n右键：复制 / 折叠本级或本级及内部 · 双击：大纲列表折叠展开';
+      row.title = h.text + '\n右键：复制 / 折叠本级或本级及内部 · 双击：'+(leafFold(i)?'折叠/展开本级':'大纲列表折叠展开');
       row.dataset.idx = String(i);
       row.id = 'outline-heading-' + i;
       row.setAttribute('role', 'treeitem');
       row.setAttribute('aria-level', String(h.level));
       row.setAttribute('aria-selected', 'false');
-      if (hasKids) row.setAttribute('aria-expanded', String(!isCol));
+      if (toggleable) row.setAttribute('aria-expanded', String(!isCol));
       if (isHidden(i)) row.classList.add('ol-hidden');
       if (selKey && hKey(h) === selKey) row.classList.add('key-nav-sel');
 
       const arrow = document.createElement('span');
-      arrow.className = 'ol-arrow' + (hasKids ? (isCol ? ' closed' : '') : ' ol-pad');
-      if (hasKids) {
+      arrow.className = 'ol-arrow' + (toggleable ? (isCol ? ' closed' : '') : ' ol-pad');
+      if (toggleable) {
         // 三角用内联 SVG（同文件树 / 启动面板）：▾▸ 字符的字号与基线不受控，
         // 混在一列里会随字号变粗变笨重，宽度也对不齐 —— 实测 16px 下 13.6px 字形撑不满 1.15em 列。
         // 折叠态由 CSS 的 `.closed svg` 旋转 -90° 表示（不做两套路径，旋转动画也更顺）。
         arrow.innerHTML = ICO_CHEV;
-        arrow.title = isCol ? '展开子级' : '收起子级';
+        arrow.title = leafFold(i)?(isCol?'展开本级':'折叠本级'):(isCol?'展开子级':'收起子级');
         arrow.onclick = (ev) => { ev.stopPropagation(); el.focus(); toggleCollapse(i); };
       }
       const txt = document.createElement('span');
@@ -340,7 +347,7 @@ const Outline = (() => {
       row.appendChild(arrow);
       row.appendChild(txt);
       row.onclick = () => { el.focus(); select(i); jump(i); };
-      row.ondblclick = () => { el.focus(); if (hasKids) toggleCollapse(i); };   // 双击=折叠/展开（箭头太小，给个大目标）
+      row.ondblclick = () => { el.focus(); if (toggleable) toggleCollapse(i); };   // 双击=折叠/展开（箭头太小，给个大目标）
       row.oncontextmenu = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
@@ -369,7 +376,7 @@ const Outline = (() => {
 
   // 收起/展开标题 i 的子层
   function toggleCollapse(i) {
-    if(syncActive())return foldItem(i,!collapsed.has(hKey(headings[i])),false);
+    if(syncActive()||leafFold(i))return foldItem(i,!collapsed.has(hKey(headings[i])),false);
     const k = hKey(headings[i]);
     if (collapsed.has(k)) collapsed.delete(k);
     else collapsed.add(k);
@@ -443,14 +450,14 @@ const Outline = (() => {
     if (e.key === 'ArrowRight') {           // 展开；已展开则进入第一个子项
       const i = selIdx;
       const [cs, ce] = childrenRange(i);
-      if (ce <= cs) return;
+      if (!canToggle(i)) return;
       if (collapsed.has(hKey(headings[i]))) return toggleCollapse(i);
-      return select(cs);
+      if(ce>cs)return select(cs);
+      return;
     }
     if (e.key === 'ArrowLeft') {            // 收起；已收起则回到父级
       const i = selIdx;
-      const [cs, ce] = childrenRange(i);
-      if (ce > cs && !collapsed.has(hKey(headings[i]))) return toggleCollapse(i);
+      if (canToggle(i) && !collapsed.has(hKey(headings[i]))) return toggleCollapse(i);
       for (let k = i - 1; k >= 0; k--) if (headings[k].level < headings[i].level) return select(k);
       return;
     }
@@ -459,8 +466,8 @@ const Outline = (() => {
 
   return {
     refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor,
-    controlState:()=>({items:headings.map((h,i)=>({...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:childrenRange(i)[1]>i+1}))}),
-    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(syncActive()){foldItem(index,!value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
+    controlState:()=>({items:headings.map((h,i)=>({...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:hasChildren(i),foldable:canToggle(i)}))}),
+    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(syncActive()||leafFold(index)){foldItem(index,!value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
     async controlJump(index){const h=headings[index];if(!h||!owner)return {ok:false,error:'章节已失效'};for(let k=index-1,lv=h.level;k>=0;k--)if(headings[k].level<lv){collapsed.delete(hKey(headings[k]));lv=headings[k].level;}saveCollapsed();await refresh(Viewer.activeTab);select(index);return await Viewer.navigateTo({...owner,line:h.line,headingIndex:index,...(h.key?{offset:h.from}:{})});},
     get headings() { return headings; },
   };

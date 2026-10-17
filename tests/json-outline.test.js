@@ -63,4 +63,30 @@ test('同步读取原生折叠效果，拒绝旧文档通知，非JSON不出现�
  f.w.Viewer.activeTab=f.tab;f.tab.name='plain.txt';f.w.Outline.refresh(f.tab);assert.equal(f.w.document.getElementById('outline-sync'),null);
  f.tab.name='doc.md';f.tab.content='# 标题\n正文';f.w.Outline.refresh(f.tab);assert.equal(f.w.document.querySelectorAll('.panel-title-actions button').length,2);
 });
+test('没有结构子项的非空对象和数组也有箭头，关闭同步仍可折叠正文，空容器不显示无效箭头',f=>{
+ const text=JSON.stringify({emotion:{anger:0.4,happy:0.2},scores:[1,2,3],emptyObject:{},emptyArray:[],nested:{child:{x:1}}},null,2);
+ f.view.dispatch({changes:{from:0,to:f.view.state.doc.length,insert:text},selection:{anchor:0}});f.tab.content=text;f.tab.editRevision++;f.w.Outline.refresh(f.tab);
+ const original=f.view.state.doc.toString();
+ for(const name of ['emotion','scores']){
+  const i=f.index(name),range=f.w.Outline.headings[i].fold,info=f.w.Outline.controlState().items[i];
+  assert.equal(info.hasChildren,false);assert.equal(info.foldable,true);assert(f.rows()[i].querySelector('.ol-arrow:not(.ol-pad) svg.ic'));
+  f.rows()[i].querySelector('.ol-arrow').click();assert.equal(f.rows()[i].getAttribute('aria-expanded'),'false');assert(f.folds().some(r=>r.from===range.from&&r.to===range.to));
+  f.w.CodeEditor.setFold(f.view,{folded:false,range});assert.equal(f.rows()[i].getAttribute('aria-expanded'),'true');
+  f.rows()[i].dispatchEvent(new f.w.MouseEvent('dblclick',{bubbles:true}));assert.equal(f.rows()[i].getAttribute('aria-expanded'),'false');
+  f.rows()[i].querySelector('.ol-arrow').click();assert(!f.folds().some(r=>r.from===range.from));
+ }
+ for(const name of ['emptyObject','emptyArray']){const row=f.rows()[f.index(name)];assert(row.querySelector('.ol-arrow.ol-pad'));assert(!row.hasAttribute('aria-expanded'));}
+ const nested=f.index('nested');f.rows()[nested].querySelector('.ol-arrow').click();assert(!f.folds().some(r=>r.from===f.w.Outline.headings[nested].fold.from));
+ assert.equal(f.view.state.doc.toString(),original);assert.equal(f.view.state.selection.main.head,0);assert.equal(f.calls.length,0);
+});
+test('无结构子项的JSON块支持左右键与控制接口，开启同步后保持编辑器箭头一致',f=>{
+ const i=f.index('quality'),range=f.w.Outline.headings[i].fold,tree=f.w.document.getElementById('outline');
+ f.rows()[i].dispatchEvent(new f.w.MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+ const key=key=>tree.dispatchEvent(new f.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+ key('ArrowLeft');assert(f.folds().some(r=>r.from===range.from));assert.equal(f.rows()[i].getAttribute('aria-expanded'),'false');
+ key('ArrowRight');assert(!f.folds().some(r=>r.from===range.from));assert.equal(f.rows()[i].getAttribute('aria-expanded'),'true');
+ f.w.Outline.controlExpand(i,false);assert(f.folds().some(r=>r.from===range.from));
+ f.w.Outline.setSync(true);f.rows()[i].querySelector('.ol-arrow').click();assert(!f.folds().some(r=>r.from===range.from));
+ f.view.dispatch({effects:f.w.CM6.Language.foldEffect.of(range)});assert(f.rows()[i].querySelector('.ol-arrow.closed'));assert.equal(f.rows()[i].getAttribute('aria-expanded'),'false');
+});
 console.log('JSON大纲与层级折叠：'+passed+' 组通过');
