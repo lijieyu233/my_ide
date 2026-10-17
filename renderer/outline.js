@@ -3,7 +3,7 @@
 // 与 PyCharm Structure 的对应关系：
 //   · 行 = 固定宽度箭头列 + 文本，箭头独占点击区（点箭头只折叠，点文本只跳转）
 //   · 选中项整行铺满高亮（跟随键盘导航）
-//   · 顶部只留「展开全部 / 收起全部」两个图标按钮
+//   · 顶部「展开全部 / 收起全部」，JSON 可开启「同步折叠」双向联动
 //     —— 原来那排「全展 / H1 / H2 / H3 / H4」按钮语义是"折叠编辑器"，摆在树形大纲里
 //        很容易被理解成"按层级过滤大纲"，已移到右键菜单（右键某章节 → 在编辑器中折叠到此层级）
 //   · 右键章节名 → 复制本章节（标题 + 正文 + 子章节，另有「只复制正文」「只复制标题」）
@@ -26,6 +26,11 @@ const Outline = (() => {
   el.addEventListener('focus', () => ensureVisibleSelection());
 
   const LS_KEY = 'myide-outline-collapsed';
+  const SYNC_KEY = 'myide-outline-json-sync';
+  let syncEnabled=false;
+  try { syncEnabled=localStorage.getItem(SYNC_KEY)==='true'; } catch {}
+  const isJson = () => /\.json$/i.test(Viewer.activeTab?.name||'');
+  const syncActive = () => syncEnabled&&isJson();
   const hKey = (h) => h.key || h.line + '|' + h.text;
   // 折叠三角（内联 SVG，1.4px 描边，见 styles.css 的 svg.ic）—— 与文件树 dirIcon 同一套画法
   const ICO_CHEV = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 6.4L8 9.8l3.4-3.4"/></svg>';
@@ -168,7 +173,36 @@ const Outline = (() => {
   function foldAll(folded) {
     if(!ownsDocument())return false;
     const cm=Viewer.cm;if(!cm?.fold||cm.__tab!==Viewer.activeTab)return false;
-    cm.fold({folded,all:true});setAllCollapsed(folded);return true;
+    cm.fold({folded,all:true});
+    if(syncActive())syncFromEditor(cm.view);else setAllCollapsed(folded);
+    return true;
+  }
+
+  function readEditorFolds(view) {
+    const folded=new Set();
+    CM6.Language.foldedRanges(view.state).between(0,view.state.doc.length,(from,to)=>folded.add(from+':'+to));
+    collapsed=new Set(headings.filter(h=>h.fold&&folded.has(h.fold.from+':'+h.fold.to)).map(hKey));
+  }
+  function syncFromEditor(view) {
+    if(!syncActive()||!ownsDocument()||Viewer.cm?.__tab!==Viewer.activeTab||Viewer.cm?.view!==view)return false;
+    readEditorFolds(view);saveCollapsed();
+    // 折叠没有改正文：只更新已有树行，不能每次按键都重新解析整个 JSON 或重置滚动。
+    itemRows().forEach((row,i)=>{
+      const closed=collapsed.has(hKey(headings[i])),arrow=row.querySelector('.ol-arrow:not(.ol-pad)');
+      row.classList.toggle('ol-hidden',isHidden(i));
+      if(arrow){row.setAttribute('aria-expanded',String(!closed));arrow.classList.toggle('closed',closed);arrow.title=closed?'展开子级':'收起子级';}
+    });
+    ensureVisibleSelection();return true;
+  }
+  function setSync(enabled) {
+    if(!isJson())return false;
+    const cm=Viewer.cm;
+    if(enabled&&(!ownsDocument()||!cm?.fold||cm.__tab!==Viewer.activeTab)){MI.toast('请先切换到可折叠的编辑视图','err');return false;}
+    syncEnabled=!!enabled;
+    try { localStorage.setItem(SYNC_KEY,String(syncEnabled)); } catch {}
+    mountHeaderActions();
+    if(syncEnabled)syncFromEditor(cm.view);
+    return true;
   }
 
   // ---------- 编辑器折叠（按标题层级） ----------
@@ -185,10 +219,13 @@ const Outline = (() => {
   // ---------- 面板标题栏动作（展开全部 / 收起全部）----------
   const IC_EXPAND = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>';
   const IC_COLLAPSE = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>';
+  const IC_SYNC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h9M9 2l3 3-3 3M13 11H4m3-3-3 3 3 3"/></svg>';
   function mountHeaderActions() {
     const t = panel && panel.querySelector('.panel-title');
-    if (!t || t.querySelector('.panel-title-actions')) return;
-    const box = document.createElement('span');
+    if (!t) return;
+    let box=t.querySelector('.panel-title-actions');
+    if(box){updateSyncButton(box);return;}
+    box = document.createElement('span');
     box.className = 'panel-title-actions';
     const mk = (svg, title, fn) => {
       const b = document.createElement('button');
@@ -201,8 +238,18 @@ const Outline = (() => {
     mk(IC_EXPAND, '展开全部章节', () => setAllCollapsed(false));
     mk(IC_COLLAPSE, '收起全部章节', () => setAllCollapsed(true));
     t.appendChild(box);
+    updateSyncButton(box);
+  }
+  function updateSyncButton(box) {
+    let button=box.querySelector('#outline-sync');
+    if(!isJson()){button?.remove();return;}
+    if(!button){button=document.createElement('button');button.id='outline-sync';button.className='vt-btn';button.innerHTML=IC_SYNC;button.setAttribute('aria-label','同步折叠');button.onclick=e=>{e.stopPropagation();setSync(!syncEnabled);};box.prepend(button);}
+    button.classList.toggle('active',syncEnabled);
+    button.setAttribute('aria-pressed',String(syncEnabled));
+    button.title='同步折叠：'+(syncEnabled?'已开启（点击关闭）':'已关闭（点击与编辑区双向同步）');
   }
   function setAllCollapsed(v) {
+    if(syncActive())return foldAll(v);
     if (v) {
       for (let i=0;i<headings.length;i++) {
         const h=headings[i];
@@ -244,6 +291,7 @@ const Outline = (() => {
       return;
     }
     headings = isJson?(window.CodeEditor?.parseJsonOutline(tab.content)||[]):parse(tab.content);
+    if(syncActive()&&ownsDocument()&&Viewer.cm?.__tab===tab)readEditorFolds(Viewer.cm.view);
     if (!headings.length) {
       selIdx = -1; selKey = '';
       renderEmpty(isJson?'未找到可识别的 JSON 结构':'未找到标题');
@@ -321,6 +369,7 @@ const Outline = (() => {
 
   // 收起/展开标题 i 的子层
   function toggleCollapse(i) {
+    if(syncActive())return foldItem(i,!collapsed.has(hKey(headings[i])),false);
     const k = hKey(headings[i]);
     if (collapsed.has(k)) collapsed.delete(k);
     else collapsed.add(k);
@@ -409,9 +458,9 @@ const Outline = (() => {
   });
 
   return {
-    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll,
+    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor,
     controlState:()=>({items:headings.map((h,i)=>({...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:childrenRange(i)[1]>i+1}))}),
-    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
+    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(syncActive()){foldItem(index,!value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
     async controlJump(index){const h=headings[index];if(!h||!owner)return {ok:false,error:'章节已失效'};for(let k=index-1,lv=h.level;k>=0;k--)if(headings[k].level<lv){collapsed.delete(hKey(headings[k]));lv=headings[k].level;}saveCollapsed();await refresh(Viewer.activeTab);select(index);return await Viewer.navigateTo({...owner,line:h.line,headingIndex:index,...(h.key?{offset:h.from}:{})});},
     get headings() { return headings; },
   };

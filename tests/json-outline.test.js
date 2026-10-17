@@ -6,7 +6,7 @@ function fixture(text=sample,markdown=false){
  const dom=new JSDOM('<div id="panel-outline"><div class="panel-title">大纲</div><div id="outline"></div></div><div id="ctx-menu" class="hidden"></div><input id="outside">',{url:'https://outline.test',runScripts:'outside-only',pretendToBeVisual:true}),w=dom.window,calls=[],copied=[];
  for(const f of ['vendor/cm6-bundle.min.js','code-editor.js'])w.eval(fs.readFileSync(path.join(root,'renderer',f),'utf8'));
  const {State,Language,CodeLangs,Md}=w.CM6;
- const view={state:State.EditorState.create({doc:text.replace(/\r\n?/g,'\n'),extensions:[markdown?Md.markdown():CodeLangs.json(),Language.codeFolding()]}),dispatch(spec){this.state=this.state.update(spec).state;}};
+ const view={state:State.EditorState.create({doc:text.replace(/\r\n?/g,'\n'),extensions:[markdown?Md.markdown():CodeLangs.json(),Language.codeFolding()]}),dispatch(spec){this.state=this.state.update(spec).state;w.Outline?.syncFromEditor(this);}};
  const tab={id:1,path:'C:/project/'+(markdown?'note.md':'data.json'),name:markdown?'note.md':'data.json',content:text,editRevision:0};
  w.Viewer={activeTab:tab,cm:{__tab:tab,view,fold:options=>w.CodeEditor.setFold(view,options)},navigateTo:location=>{calls.push(location);return {ok:true};}};
  w.MI={toast(){},copyText:v=>copied.push(v)};w.Modal={stack:[]};w.eval(fs.readFileSync(path.join(root,'renderer/outline.js'),'utf8'));w.Outline.refresh(tab);
@@ -37,4 +37,30 @@ for(const markdown of [false,true])test((markdown?'Markdown':'JSON')+'全文折�
  for(const r of siblings)assert(f.folds().some(x=>x.from===r.from&&x.to===r.to));
  assert.equal(f.view.state.selection.main.head,anchor);assert.equal(f.view.state.doc.toString(),original);
 },markdown);
+test('同步按钮默认关闭，开启采用编辑区状态，关闭后恢复独立操作且保留偏好',f=>{
+ const b=f.w.document.getElementById('outline-sync'),audio=f.index('audio'),range=f.w.Outline.headings[audio].fold;
+ assert(b.querySelector('svg.ic'));assert.equal(b.getAttribute('aria-pressed'),'false');
+ f.w.CodeEditor.setFold(f.view,{folded:true,range});assert.equal(f.rows()[audio].getAttribute('aria-expanded'),'true');
+ const rootRow=f.rows()[0],tree=f.w.document.getElementById('outline');tree.scrollTop=50;b.click();
+ assert.equal(f.rows()[audio].getAttribute('aria-expanded'),'false');assert.equal(f.rows()[0],rootRow);assert.equal(tree.scrollTop,50);
+ assert(b.classList.contains('active'));assert.equal(b.getAttribute('aria-pressed'),'true');assert.equal(f.w.localStorage.getItem('myide-outline-json-sync'),'true');
+ b.click();f.w.CodeEditor.setFold(f.view,{folded:false,range});assert.equal(f.rows()[audio].getAttribute('aria-expanded'),'false');assert.equal(f.w.localStorage.getItem('myide-outline-json-sync'),'false');
+});
+test('同步开启后大纲箭头及顶栏双向联动，本级展开保留内部状态和正文',f=>{
+ const original=f.view.state.doc.toString(),audio=f.index('audio'),quality=f.w.Outline.headings[f.index('quality')].fold;
+ f.w.document.getElementById('outline-sync').click();f.w.CodeEditor.setFold(f.view,{folded:true,range:quality});
+ f.rows()[audio].querySelector('.ol-arrow').click();assert(f.folds().some(r=>r.from===f.w.Outline.headings[audio].fold.from));
+ f.rows()[audio].querySelector('.ol-arrow').click();assert.deepEqual(f.folds(),[{from:quality.from,to:quality.to}]);
+ const actions=f.w.document.querySelectorAll('.panel-title-actions button');actions[2].click();assert(f.folds().length>=7);assert.equal(f.rows().filter(r=>!r.classList.contains('ol-hidden')).length,1);
+ actions[1].click();assert.equal(f.folds().length,0);assert(f.rows().every(r=>!r.classList.contains('ol-hidden')));
+ f.w.Outline.controlExpand(audio,false);assert(f.folds().length===1);assert.equal(f.view.state.doc.toString(),original);
+});
+test('同步读取原生折叠效果，拒绝旧文档通知，非JSON不出现同步按钮',f=>{
+ const {Language}=f.w.CM6,range=f.w.Outline.headings[f.index('data')].fold;f.w.Outline.setSync(true);
+ f.view.dispatch({effects:Language.foldEffect.of(range)});assert.equal(f.rows()[f.index('data')].getAttribute('aria-expanded'),'false');
+ f.view.dispatch({effects:Language.unfoldEffect.of(range)});assert.equal(f.rows()[f.index('data')].getAttribute('aria-expanded'),'true');
+ const before=f.w.document.getElementById('outline').innerHTML;f.w.Viewer.activeTab={...f.tab,id:2};assert.equal(f.w.Outline.syncFromEditor(f.view),false);assert.equal(f.w.document.getElementById('outline').innerHTML,before);
+ f.w.Viewer.activeTab=f.tab;f.tab.name='plain.txt';f.w.Outline.refresh(f.tab);assert.equal(f.w.document.getElementById('outline-sync'),null);
+ f.tab.name='doc.md';f.tab.content='# 标题\n正文';f.w.Outline.refresh(f.tab);assert.equal(f.w.document.querySelectorAll('.panel-title-actions button').length,2);
+});
 console.log('JSON大纲与层级折叠：'+passed+' 组通过');

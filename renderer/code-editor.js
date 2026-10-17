@@ -316,6 +316,7 @@ window.CodeEditor = (() => {
         ghostConf.of(EditorView.decorations.of(View.Decoration.none)), // AI 行内补全 ghost text
         lang || [],
         EditorView.updateListener.of((u) => {
+          if(!u.docChanged&&Language.foldedRanges(u.startState)!==Language.foldedRanges(u.state))window.Outline?.syncFromEditor?.(u.view);
           // AI 行内补全：文档变化先清建议，防抖后重新请求；纯移动光标只清除
           if (u.docChanged || u.selectionSet) {
             if (curGhost && curGhost.view === view) ghostClear(view);
