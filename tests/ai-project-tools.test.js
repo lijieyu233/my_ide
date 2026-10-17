@@ -70,5 +70,11 @@ await test('新同步工具走执行账本，重复调用只设置一次，取�
  const c=call('outline_sync',{snapshot:read.snapshot,enabled:true}),execute=()=>tools.once(1,context,c,'application',({proof,verify})=>adapter.execute(proof,verify));
  await Promise.all([execute(),execute()]);assert.equal(count,1);assert(f.w.Outline.controlState().syncEnabled);registry.finish(1,context,'cancelled');await assert.rejects(execute());assert.equal(count,1);
 }finally{f.close();}});
+await test('JSON超长字段名按300字符预算返回，不从内部树key绕过截断',async()=>{const f=outlineFixture();try{
+ const label='长'.repeat(10000),content=JSON.stringify({[label]:{value:1}});
+ f.view.dispatch({changes:{from:0,to:f.view.state.doc.length,insert:content}});f.tab.content=content;f.tab.editRevision++;
+ const read=await f.run('outline_read');assert(read.truncated);assert.equal(read.items[1].text.length,300);assert(!Object.hasOwn(read.items[1],'key'));assert(JSON.stringify(read).length<5000);
+ assert((await f.run('outline_fold',{snapshot:read.snapshot,heading:read.items[1].id,expanded:false})).ok);
+}finally{f.close();}});
 console.log('AI项目与大纲：'+count+' 通过 / 0 失败');
 }finally{fs.rmSync(root,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});

@@ -12,7 +12,10 @@
     const key=value=>String(value||'').replace(/\\/g,'/').replace(/\/$/,'').toLowerCase();
     function guard(context){if(key(App.root)!==key(context.rootId))fail('PROJECT_CHANGED','项目已变化，请重新查看当前页面');if(!App.getPageContext().projectContext)fail('PROJECT_PAGE_REQUIRED','当前页面不附带项目，请先返回项目页面');}
     function current(){const tab=Viewer.activeTab;if(!tab||tab.error||tab.dir||!/\.(md|markdown|json)$/i.test(tab.name||''))fail('OUTLINE_UNAVAILABLE','请先打开可读取的Markdown或JSON文件');if(!key(tab.path).startsWith(key(App.root)+'/'))fail('OUTSIDE_AI_ROOT','当前文件不属于当前项目');return tab;}
-    function stateResult(tab){const state=Outline.controlState(),items=state.items;return {format:/\.json$/i.test(tab.name||'')?'json':'markdown',syncEnabled:state.syncEnabled??false,canFold:state.canFold??false,items:items.slice(0,500).map((h,i)=>({...h,id:'heading-'+i,text:h.text.slice(0,300)})),truncated:items.length>500||items.some(h=>h.text.length>300),total:items.length};}
+    function stateResult(tab){const state=Outline.controlState(),items=state.items;return {format:/\.json$/i.test(tab.name||'')?'json':'markdown',syncEnabled:state.syncEnabled??false,canFold:state.canFold??false,items:items.slice(0,500).map((h,i)=>{
+      // JSON内部key含完整字段名；不能绕过显示文本预算再次返回整条超长名称。
+      const item={...h};delete item.key;return {...item,id:'heading-'+i,text:h.text.slice(0,300)};
+    }),truncated:items.length>500||items.some(h=>h.text.length>300),total:items.length};}
     function observed(a){const tab=current();if(!observation||key(App.root)!==key(observation.root)||a.snapshot!==observation.snapshot||tab.id!==observation.id||tab.path!==observation.path||tab.editRevision!==observation.revision||tab.content!==observation.content)fail('OUTLINE_CHANGED','大纲所属项目、文件或正文已变化，请重新读取大纲');const index=a.heading==null?null:observation.items.findIndex(item=>item.id===a.heading);if(index===-1)fail('OUTLINE_HEADING_INVALID','章节不在当前大纲结果中');return {tab,index};}
     async function operate(call,context,target){
       if(call.name==='project_list')return {ok:true,current:App.root||'',projects:App.getProjects().slice(0,100),truncated:App.getProjects().length>100};
