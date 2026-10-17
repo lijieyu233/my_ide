@@ -93,7 +93,7 @@ window.CodeEditor = (() => {
     for(let n=1;n<=doc.lines;n++){const line=doc.line(n);add(headingRanges.get(n)||Language.foldable(state,line.from,line.to));}
     return [...out.values()].sort((a,b)=>a.from-b.from||b.to-a.to);
   }
-  function setFold(view,{folded=true,recursive=false,all=false,range=null,line=null}={}) {
+  function setFold(view,{folded=true,recursive=false,all=false,range=null,line=null,selection=false}={}) {
     const state=view.state,doc=state.doc,existing=[];
     Language.foldedRanges(state).between(0,doc.length,(from,to)=>existing.push({from,to}));
     const ranges=folded||!range&&!all?foldRanges(view):[];
@@ -109,27 +109,43 @@ window.CodeEditor = (() => {
       if(!range)range=existing.find(r=>doc.lineAt(r.from).number===current.number);
     }
     if(!all&&(!range||range.from<0||range.to>doc.length||range.to<=range.from))return false;
-    const inside=r=>all||r.from===range.from&&r.to===range.to||recursive&&r.from>=range.from&&r.to<=range.to;
-    const targets=folded?(all?ranges:recursive?[range,...ranges.filter(inside)]:[range]):existing.filter(inside);
+    const selected=selection&&all?state.selection.ranges.filter(r=>!r.empty):[];
+    const inside=r=>all?(!selected.length||selected.some(s=>r.from>=s.from&&r.to<=s.to)):r.from===range.from&&r.to===range.to||recursive&&r.from>=range.from&&r.to<=range.to;
+    const targets=folded?(all?ranges.filter(inside):recursive?[range,...ranges.filter(inside)]:[range]):existing.filter(inside);
     const effects=[...new Map(targets.map(r=>[r.from+':'+r.to,r])).values()].map(r=>(folded?Language.foldEffect:Language.unfoldEffect).of(r));
     if(effects.length){if(!state.field(Language.foldState,false))effects.unshift(State.StateEffect.appendConfig.of(Language.codeFolding()));view.dispatch({effects});}
     return effects.length>0;
   }
-  const foldCurrent=view=>setFold(view,{folded:true}),unfoldCurrent=view=>setFold(view,{folded:false});
+  // PyCharm Windows：Ctrl小键盘±本级，Shift为选区/全文，Alt为当前块递归。
+  // 用code识别小键盘，不能把没有Shift的NumpadAdd当成“展开全部”。
+  function foldingShortcut(event) {
+    if(event.defaultPrevented||event.isComposing||event.keyCode===229||!(event.ctrlKey||event.metaKey)||event.shiftKey&&event.altKey)return null;
+    const minus=event.code==='NumpadSubtract'||event.code==='Minus'||['-','_'].includes(event.key);
+    const plus=event.code==='NumpadAdd'||event.code==='Equal'||['+','='].includes(event.key);
+    if(!minus&&!plus)return null;
+    return {folded:minus,all:!!event.shiftKey,recursive:!!event.altKey,selection:!!event.shiftKey};
+  }
+  function foldingKeys() {
+    return EditorView.domEventHandlers({keydown(event,view){
+      if(window.Modal?.stack.length||window.Shortcuts?.isCapturing?.())return false;
+      const options=foldingShortcut(event);if(!options)return false;
+      event.preventDefault();event.stopPropagation();setFold(view,options);return true;
+    }});
+  }
   function parseJsonOutline(content) {
     const text=String(content||'').replace(/\r\n?/g,'\n'),tree=CodeLangs.json().language.parser.parse(text),entries=[];
     const starts=[0];for(let n=0;n<text.length;n++)if(text[n]==='\n')starts.push(n+1);
     const lineAt=pos=>{let lo=0,hi=starts.length;while(lo+1<hi){const mid=(lo+hi)>>1;if(starts[mid]<=pos)lo=mid;else hi=mid;}return lo+1;};
     const valueTypes=new Set(['Object','Array','String','Number','True','False','Null']);
     const decode=n=>{const value=text.slice(n.from,n.to);try{return JSON.parse(value);}catch{return value;}};
-    const stack=[];for(let n=tree.topNode.lastChild;n;n=n.prevSibling)if(valueTypes.has(n.name))stack.push({node:n,level:1,label:n.name==='Array'?'根数组':n.name==='Object'?'根对象':'根值',from:n.from});
-    while(stack.length){const {node,level,label,from}=stack.pop(),container=node.name==='Object'||node.name==='Array';
-      const raw=text.slice(node.from,node.to),summary=container?(node.name==='Object'?' {…}':' […]'):': '+raw.slice(0,72)+(raw.length>72?'…':'');
-      entries.push({level,text:label+summary,line:lineAt(from),from,to:node.to,key:'json:'+from+':'+label,type:node.name,fold:container?Language.foldInside(node):null});
+    const structure=node=>node&&(node.name==='Object'||node.name==='Array');
+    const stack=[];for(let n=tree.topNode.lastChild;n;n=n.prevSibling)if(structure(n))stack.push({node:n,level:1,label:n.name==='Array'?'根数组':'根对象',from:n.from});
+    while(stack.length){const {node,level,label,from}=stack.pop();
+      entries.push({level,text:label,line:lineAt(from),from,to:node.to,key:'json:'+from+':'+label,type:node.name,fold:Language.foldInside(node)});
       const children=[];let index=0;
       for(let child=node.firstChild;child;child=child.nextSibling){
-        if(node.name==='Object'&&child.name==='Property'){const key=child.firstChild,value=child.lastChild;if(key?.name==='PropertyName'&&valueTypes.has(value?.name))children.push({node:value,level:level+1,label:String(decode(key)),from:key.from});}
-        else if(node.name==='Array'&&valueTypes.has(child.name))children.push({node:child,level:level+1,label:'['+(index++)+']',from:child.from});
+        if(node.name==='Object'&&child.name==='Property'){const key=child.firstChild,value=child.lastChild;if(key?.name==='PropertyName'&&structure(value))children.push({node:value,level:level+1,label:String(decode(key)),from:key.from});}
+        else if(node.name==='Array'&&valueTypes.has(child.name)){const label='['+(index++)+']';if(structure(child))children.push({node:child,level:level+1,label,from:child.from});}
       }
       for(let i=children.length-1;i>=0;i--)stack.push(children[i]);
     }
@@ -268,17 +284,10 @@ window.CodeEditor = (() => {
         Language.syntaxHighlighting(oneDarkHighlight),
         View.rectangularSelection(),
         codeTheme,
+        foldingKeys(),
         keymap.of([
           // Tab 优先接受 AI 行内补全（ghost text），否则落到缩进 Tab
           { key: 'Tab', run: ghostAccept },
-          // Ctrl+-/= 折叠/展开当前块；Ctrl+Shift+-/= 全部折叠/展开
-          // （Shift 变体的事件 key 是 '+' / '_'，绑定写法须与之对应）
-          { key: 'Mod--', preventDefault: true, run: foldCurrent },
-          { key: 'Mod-=', preventDefault: true, run: unfoldCurrent },
-          { key: 'Mod-_', preventDefault: true, run: view=>setFold(view,{folded:true,all:true}) },
-          { key: 'Mod-+', preventDefault: true, run: view=>setFold(view,{folded:false,all:true}) },
-          { key: 'Mod-Shift--', preventDefault: true, run: view=>setFold(view,{folded:true,all:true}) },
-          { key: 'Mod-Shift-=', preventDefault: true, run: view=>setFold(view,{folded:false,all:true}) },
           { key: 'Mod-d', preventDefault: true, run: Commands.deleteLine }, // Ctrl+D 删除当前行
           ...Autocomplete.closeBracketsKeymap,
           ...Commands.defaultKeymap,
@@ -367,5 +376,5 @@ window.CodeEditor = (() => {
     };
   }
 
-  return { create, setFold, foldRanges, parseJsonOutline };
+  return { create, setFold, foldRanges, foldingShortcut, foldingKeys, parseJsonOutline };
 })();

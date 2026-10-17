@@ -134,10 +134,10 @@ const Outline = (() => {
     mk(json?'📋 复制字段文本':'📋 复制标题文本',()=>copySection(i,'title'));
     if(!json||h.fold&&h.fold.to>h.fold.from){
       sep();
-      mk('▾ 折叠本级（内部状态不变）',()=>foldItem(i,true,false));
-      mk('▸ 展开本级（内部状态不变）',()=>foldItem(i,false,false));
-      mk('▾ 折叠本级及内部',()=>foldItem(i,true,true));
-      mk('▸ 展开本级及内部',()=>foldItem(i,false,true));
+      mk('▾ 折叠本级（Ctrl+NumPad −）',()=>foldItem(i,true,false));
+      mk('▸ 展开本级（Ctrl+NumPad +）',()=>foldItem(i,false,false));
+      mk('▾ 折叠本级及内部（Ctrl+Alt+NumPad −）',()=>foldItem(i,true,true));
+      mk('▸ 展开本级及内部（Ctrl+Alt+NumPad +）',()=>foldItem(i,false,true));
     }
     if(hasKids||!json)sep();
     if(hasKids)mk(isCol?'▸ 大纲列表：展开子级':'▾ 大纲列表：折叠子级',()=>toggleCollapse(i));
@@ -370,10 +370,10 @@ const Outline = (() => {
     // 面板可见不等于树获得焦点；工具栏、编辑器与输入确认保留自己的按键。
     if (e.target !== el || document.activeElement !== el || composing || e.isComposing || e.keyCode === 229) return;
     if(window.Modal?.stack.length||window.Shortcuts?.isCapturing())return;
-    if((e.ctrlKey||e.metaKey)&&!e.altKey&&['-','_','=','+'].includes(e.key)&&panel&&!panel.classList.contains('hidden')&&headings.length){
+    const folding=window.CodeEditor?.foldingShortcut(e);
+    if(folding&&panel&&!panel.classList.contains('hidden')&&headings.length){
       e.preventDefault();e.stopImmediatePropagation();ensureVisibleSelection();
-      const folded=e.key==='-'||e.key==='_';
-      if(e.shiftKey||e.key==='_'||e.key==='+')foldAll(folded);else foldItem(selIdx,folded,false);
+      if(folding.all)foldAll(folding.folded);else foldItem(selIdx,folding.folded,folding.recursive);
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
