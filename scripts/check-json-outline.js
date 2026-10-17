@@ -3,6 +3,12 @@ const fs=require('fs'),path=require('path'),os=require('os'),assert=require('ass
 const repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-json-outline-'));
 os.homedir=()=>temp;process.env.HOME=temp;process.env.USERPROFILE=temp;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');require('../main');
 let win;const sleep=ms=>new Promise(r=>setTimeout(r,ms)),js=s=>win.webContents.executeJavaScript(s);
+const nativeFoldKey=async(folded,shift=false,alt=false,numpad=false)=>{
+ if(!win.webContents.debugger.isAttached())win.webContents.debugger.attach('1.3');
+ await js('Viewer.cm.view.contentDOM.focus();true');
+ const key=folded?'-':numpad||shift?'+':'=',code=numpad?(folded?'NumpadSubtract':'NumpadAdd'):(folded?'Minus':'Equal');
+ for(const type of ['keyDown','keyUp'])await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:numpad?(folded?109:107):(folded?189:187),modifiers:2|(shift?8:0)|(alt?1:0),isKeypad:numpad});
+};
 const until=async f=>{for(let i=0;i<1000;i++){if(await f())return;await sleep(20);}throw Error('JSON大纲等待超时');};
 const timeout=setTimeout(()=>{console.error('JSON大纲检查超时');app.exit(2);},90000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading());return win;});await until(()=>js('!!window.App&&!!document.getElementById("btn-open").onclick'));win.setContentSize(1380,880);win.webContents.setBackgroundThrottling(false);
@@ -19,6 +25,21 @@ const timeout=setTimeout(()=>{console.error('JSON大纲检查超时');app.exit(2
  const selected=await js('Outline.headings.find(h=>h.text==="audio").fold');await js('Viewer.cm.setCursor('+selected.from+','+selected.to+');true');assert(await js('__foldKey("-",true,false,false,true)'));assert(await js('__folds().every(r=>r.from>='+selected.from+'&&r.to<='+selected.to+')'));assert(await js('__foldKey("+",true,false,false,true)'));assert.equal(await js('__folds().length'),0);console.log('PASS Ctrl+Shift+小键盘加减只作用选区，选区外保持不变');
  const audio=await js('Outline.headings.find(h=>h.text==="audio").from');await js('Viewer.cm.setCursor('+audio+');true');assert(await js('__foldKey("-",false,false,true,true)'));assert(await js('__folds().length>=3'));assert(await js('__foldKey("+",false,false,true,true)'));assert.equal(await js('__folds().length'),0);console.log('PASS Ctrl+Alt+小键盘加减递归当前块');
  assert.equal(await js('Outline.headings.some(h=>/[{}…]|source|request_id|true/.test(h.text))'),false);
+ // 用户先在内部编辑，再折叠全文；不能先把光标挪到根部来掩盖目标解析错误。
+ for(const numpad of [false,true]){
+  await js('Viewer.cm.setCursor(Viewer.cm.getValue().indexOf("valid_for_analysis"));true');
+  const head=await js('Viewer.cm.view.state.selection.main.head');
+  await nativeFoldKey(true,true,false,numpad);assert.equal(await js('__folds().length'),count);
+  await nativeFoldKey(true,false,false,numpad);assert.equal(await js('__folds().length'),count);
+  await nativeFoldKey(false,false,false,numpad);assert.equal(await js('__folds().length'),count-1);
+  assert.equal(await js('__folds().some(r=>r.from===1)'),false);assert.equal(await js('Viewer.cm.view.state.selection.main.head'),head);
+  await nativeFoldKey(false,false,true,numpad);assert.equal(await js('__folds().length'),1);
+  await nativeFoldKey(false,true);assert.equal(await js('__folds().length'),0);
+ }
+ await js('Viewer.cm.setCursor(Viewer.cm.view.state.doc.length);true');assert(await js('__foldKey("-",true)'));
+ assert(await js('__foldKey("+")'));assert.equal(await js('__folds().length'),count-1);
+ assert.equal(await js('__folds().some(r=>r.from===1)'),false);assert(await js('__foldKey("+",true)'));
+ console.log('PASS Chromium原生按键路径：隐藏光标本级/递归快捷键操作可见外层，主键盘/小键盘均生效；闭括号后同样可展开');
  const index=await js('Outline.headings.findIndex(h=>h.text==="audio")');
  await js('document.querySelectorAll(".outline-item")['+index+'].dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:170,clientY:220}));[...document.querySelectorAll("#ctx-menu .ctx-item")].find(e=>e.textContent.includes("折叠本级及内部")).click();true');assert(await js('__folds().length>=3'));
  await js('Outline.foldItem('+index+',false,false);true');assert(await js('__folds().length>=2'));console.log('PASS 右键递归折叠后仅展开本级，内部块仍折叠');
@@ -28,5 +49,10 @@ const timeout=setTimeout(()=>{console.error('JSON大纲检查超时');app.exit(2
  // 用新的干净Markdown标签验证相同按键，避免切项目触发真实保存。
  await js('Viewer.openFile('+JSON.stringify(md)+')');await until(()=>js('!!Viewer.cm&&Outline.headings.some(h=>h.text==="根章节")'));
  await js('Viewer.cm.setCursor(0);true');assert(await js('__foldKey("_",true)'));assert(await js('__folds().length>=4'));assert(await js('__foldKey("=" )'));assert(await js('__folds().length>=3'));assert(await js('__foldKey("+",true)'));assert.equal(await js('__folds().length'),0);assert.equal(await js('window.__jsonErrors.length'),0);assert(!win.isVisible());
- console.log('PASS Markdown同样递归折叠，编辑器无运行时异常');clearTimeout(timeout);console.log('JSON大纲真实窗口检查通过');app.exit(0);
+ await js('Viewer.cm.setCursor(Viewer.cm.getValue().indexOf("内部正文"));true');assert(await js('__foldKey("-",true)'));
+ const mdCount=await js('__folds().length');assert(await js('__foldKey("+")'));assert.equal(await js('__folds().length'),mdCount-1);
+ assert.equal(await js('__folds().some(r=>r.from===Viewer.cm.view.state.doc.line(1).to+1)'),false);
+ assert(await js('__foldKey("+",false,false,true)'));assert.equal(await js('__folds().length'),1);
+ assert(await js('__foldKey("+",true)'));assert.equal(await js('__folds().length'),0);
+ console.log('PASS Markdown隐藏光标同样逐级/递归展开可见章节，编辑器无运行时异常');clearTimeout(timeout);console.log('JSON大纲真实窗口检查通过');app.exit(0);
 })().catch(e=>{console.error(e.stack);clearTimeout(timeout);app.exit(1);});

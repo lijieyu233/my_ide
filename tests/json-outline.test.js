@@ -24,4 +24,17 @@ test('Shift全局操作有选区时只影响选区内的块，选区外兄弟保
 test('同一行多个对象按光标所在键折叠，保留兄弟与内部状态',f=>{const text='{"left":{"a":1},"right":{"inner":{"b":2}}}',i=text.indexOf('"right"');f.tab.content=text;f.tab.editRevision++;f.view.dispatch({changes:{from:0,to:f.view.state.doc.length,insert:text},selection:{anchor:i}});f.w.Outline.refresh(f.tab);const range=f.w.Outline.headings[f.index('right')].fold;assert(f.w.CodeEditor.setFold(f.view,{folded:true}));assert.deepEqual(f.folds(),[{from:range.from,to:range.to}]);assert(f.w.CodeEditor.setFold(f.view,{folded:false}));assert.equal(f.folds().length,0);});
 test('刷新反映新增字段，坏JSON部分结构仍可显示且不执行内容',f=>{f.tab.content='{"new": {"x": 2}, "unfinished":';f.tab.editRevision++;f.w.Outline.refresh(f.tab);assert(f.w.Outline.headings.some(h=>h.text.startsWith('new')));assert(!f.w.Outline.headings.some(h=>h.text.startsWith('data')));const scalar=f.w.CodeEditor.parseJsonOutline('123');assert.equal(scalar.length,0);assert.equal(f.w.CodeEditor.parseJsonOutline('{').length,1);});
 test('Markdown同样记录内层，展开父节不清子节，全文/光标/正文不被更改',f=>{const original=f.view.state.doc.toString();f.w.Outline.foldAll(true);assert(f.folds().length>=4);f.w.Outline.foldItem(0,false,false);assert(f.folds().length>=3);assert(f.folds().every(r=>r.from!==f.view.state.doc.line(1).to+1));f.w.Outline.foldItem(1,false,true);assert.equal(f.folds().length,1);f.w.Outline.foldAll(false);assert.equal(f.folds().length,0);assert.equal(f.view.state.doc.toString(),original);},true);
+for(const markdown of [false,true])test((markdown?'Markdown':'JSON')+'全文折叠后光标仍在内部，逐级展开当前可见外层，递归展开清理整个可见子树',f=>{
+ const original=f.view.state.doc.toString(),head=markdown?original.indexOf('内部正文'):original.indexOf('"ok"');
+ // 折叠事务没有移动光标，复现用户在内部编辑后直接折叠全文的状态。
+ const anchor=head<0?original.indexOf('内容'):head;
+ f.view.dispatch({selection:{anchor}});f.w.CodeEditor.setFold(f.view,{folded:true,all:true});
+ const initial=f.folds(),outer=initial.filter(r=>r.from<anchor&&r.to>anchor).sort((a,b)=>(b.to-b.from)-(a.to-a.from))[0];assert(outer);
+ assert(f.w.CodeEditor.setFold(f.view,{folded:false}));assert(!f.folds().some(r=>r.from===outer.from&&r.to===outer.to));assert.equal(f.folds().length,initial.length-1);
+ const next=f.folds().filter(r=>r.from<anchor&&r.to>anchor).sort((a,b)=>(b.to-b.from)-(a.to-a.from))[0];assert(next);
+ const siblings=f.folds().filter(r=>r.to<next.from||r.from>next.to);
+ assert(f.w.CodeEditor.setFold(f.view,{folded:false,recursive:true}));assert(!f.folds().some(r=>r.from>=next.from&&r.to<=next.to));
+ for(const r of siblings)assert(f.folds().some(x=>x.from===r.from&&x.to===r.to));
+ assert.equal(f.view.state.selection.main.head,anchor);assert.equal(f.view.state.doc.toString(),original);
+},markdown);
 console.log('JSON大纲与层级折叠：'+passed+' 组通过');

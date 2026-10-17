@@ -96,6 +96,16 @@ window.CodeEditor = (() => {
   function setFold(view,{folded=true,recursive=false,all=false,range=null,line=null,selection=false}={}) {
     const state=view.state,doc=state.doc,existing=[];
     Language.foldedRanges(state).between(0,doc.length,(from,to)=>existing.push({from,to}));
+    if(!all&&!range&&line==null){
+      const head=state.selection.main.head;
+      // 全文折叠会保留隐藏区内的光标；先操作遮住光标的最外层，否则展开了内部也看不到变化。
+      range=existing.filter(r=>r.from<=head&&r.to>=head).sort((a,b)=>(b.to-b.from)-(a.to-a.from))[0]||null;
+      if(!range&&!folded&&view.lineBlockAt){
+        // 折叠后的闭括号与占位符在同一可见行，不能按闭括号原来的逻辑行寻找展开目标。
+        const block=view.lineBlockAt(head);
+        range=existing.filter(r=>r.from>=block.from&&r.to<=head&&r.to<=block.to).sort((a,b)=>b.to-a.to||a.from-b.from)[0]||null;
+      }
+    }
     const ranges=folded||!range&&!all?foldRanges(view):[];
     if(!all&&!range){
       const current=line==null?doc.lineAt(state.selection.main.head):doc.line(Math.max(1,Math.min(line,doc.lines)));
