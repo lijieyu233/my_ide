@@ -18,7 +18,7 @@ function createService({panel}){
       try{for await(const item of directory){verify();if(items.length===250){truncated=true;break;}items.push({name:item.name,type:item.isDirectory()?'dir':item.isFile()?'file':'link',path:path.relative(context.rootId,path.join(target,item.name)).replace(/\\/g,'/')});}}finally{if(directory.fd!==-1)await directory.close().catch(()=>{});}
       await panel({name:'project_guard',args:{}},context);verify();return {ok:true,path:call.args.path||'.',items,truncated};
     }
-    const result=await panel(call,context,target);if(call.name!=='project_list')verify();if(outlineFile&&fs.realpathSync(outlineFile)!==outlineReal)throw fail('PROJECT_TARGET_CHANGED','大纲文件实际位置已变化');return result;
+    const result=await panel(call,context,outlineFile||target);if(call.name!=='project_list')verify();if(outlineFile&&fs.realpathSync(outlineFile)!==outlineReal)throw fail('PROJECT_TARGET_CHANGED','大纲文件实际位置已变化');return result;
   }
   return {prepare,execute};
 }

@@ -3,6 +3,7 @@ const fs=require('fs'),path=require('path'),os=require('os'),assert=require('ass
 const {app}=require('electron'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-project-control-')),home=path.join(temp,'home'),root=path.join(temp,'project');fs.mkdirSync(home);fs.mkdirSync(root);fs.mkdirSync(path.join(root,'sub'));fs.writeFileSync(path.join(root,'sub','chapters.md'),'# 开始\n正文\n## 子章节\n子正文\n# 后续\n结尾');os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 let win;app.on('browser-window-created',(_e,w)=>win=w);require('../main');
 let next=null,result=null,requests=0,passed=0,id=0,lastTools=[];const sleep=ms=>new Promise(r=>setTimeout(r,ms)),js=s=>win.webContents.executeJavaScript(s);
+const jsonFile=path.join(root,'sub','analysis.json'),jsonDisk=JSON.stringify({audio:{emotion:{anger:0.4,happy:0.2},scores:[1,2,3]},other:{status:'live'},empty:{}},null,2);fs.writeFileSync(jsonFile,jsonDisk);
 async function until(fn){for(let i=0;i<600;i++){if(await fn())return;await sleep(25);}throw Error('UI工具等待超时');}
 require('../src/main/ai/ai-service').init({fetch:async(_url,options)=>{const body=JSON.parse(options.body);requests++;lastTools=(body.tools||[]).map(t=>t.function.name);if(next){const call=next;next=null;const delta={tool_calls:[{index:0,id:'project-check-'+(++id),type:'function',function:{name:call.name,arguments:JSON.stringify(call.args)}}]};return new Response('data: '+JSON.stringify({choices:[{delta,finish_reason:'tool_calls'}]})+'\n\ndata: [DONE]\n\n');}const last=body.messages.findLast(m=>m.role==='tool');result=last?(last.content.startsWith('{')?JSON.parse(last.content):{ok:false,error:last.content}):null;return new Response('data: '+JSON.stringify({choices:[{delta:{content:'已核对控制结果'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');}});
 async function tool(name,args={}){next={name,args};result=null;await js('AiPanel.ask('+JSON.stringify('执行界面操作 '+name)+')');await until(async()=>!next&&result&&await js('document.getElementById("ai-send").textContent==="➤"'));return result;}
@@ -15,7 +16,34 @@ await check('真实工具调用读取项目与文件树，不运行文件',async
 await check('展开目录、定位文件并在编辑区打开',async()=>{assert((await tool('project_directory',{path:'sub',expanded:true})).expanded);assert((await tool('project_reveal',{path:'sub/chapters.md'})).ok);assert((await tool('project_open_file',{path:'sub/chapters.md'})).ok);assert.equal(await js('Viewer.activeTab.name'),'chapters.md');});
 await check('读取未保存正文大纲，章节提取与跳转使用真实导航',async()=>{await js('Viewer.cm.view.dispatch({changes:{from:0,to:Viewer.cm.view.state.doc.length,insert:"# 未保存标题\\n正文\\n## 子章节\\n子正文\\n# 后续\\n结尾"}})');const outline=await tool('outline_read');assert(outline.dirty);assert.equal(outline.items[0].text,'未保存标题');const a={snapshot:outline.snapshot,heading:outline.items[1].id};assert((await tool('outline_section',a)).text.includes('子正文'));assert((await tool('outline_jump',a)).ok);assert.equal(await js('App.getTool()'),'outline');assert.equal(await js('Viewer.cm.view.state.doc.lineAt(Viewer.cm.view.state.selection.main.head).number'),3);});
 await check('大纲展开收起只改变面板，旧正文快照拒绝',async()=>{const outline=await tool('outline_read'),content=await js('Viewer.activeTab.content');assert((await tool('outline_expand',{snapshot:outline.snapshot,expanded:false})).ok);assert.equal(await js('Viewer.activeTab.content'),content);await js('Viewer.activeTab.editRevision++;');const r=await tool('outline_jump',{snapshot:outline.snapshot,heading:outline.items[0].id});assert(!r.ok);assert(/变化/.test(r.error));});
-await check('离开项目页面不开放项目文件与大纲，保留项目列表',async()=>{await js('App.showTool("launch")');next=null;const before=requests;await js('AiPanel.ask("检查当前工具清单")');await until(()=>requests>before);await until(async()=>await js('document.getElementById("ai-send").textContent==="➤"'));assert(!lastTools.includes('outline_read'));assert(!lastTools.includes('project_open_file'));assert(lastTools.includes('project_list'));assert((await tool('project_list')).ok);});
+await check('JSON工具读取未保存结构和片段，新工具进入模型清单',async()=>{
+ assert((await tool('project_open_file',{path:'sub/analysis.json'})).ok);
+ await js('Viewer.cm.setValue(Viewer.cm.getValue().replace("0.4","0.45"));true');
+ const outline=await tool('outline_read');assert(outline.ok&&outline.dirty&&outline.canFold);assert.equal(outline.format,'json');assert(lastTools.includes('outline_fold')&&lastTools.includes('outline_sync'));
+ const emotion=outline.items.find(h=>h.text==='emotion');assert(!emotion.hasChildren&&emotion.editorFoldable);const args={snapshot:outline.snapshot,heading:emotion.id};
+ assert((await tool('outline_section',args)).text.includes('0.45'));assert((await tool('outline_jump',args)).ok);
+});
+await check('真实模型→IPC→编辑器本级/递归/全文折叠，操作后返回真实状态',async()=>{
+ const outline=await tool('outline_read'),base={snapshot:outline.snapshot},audio=outline.items.find(h=>h.text==='audio'),other=outline.items.find(h=>h.text==='other');
+ assert((await tool('outline_fold',{...base,heading:other.id,expanded:false})).ok);
+ assert((await tool('outline_fold',{...base,heading:audio.id,scope:'recursive',expanded:false})).ok);
+ let r=await tool('outline_fold',{...base,heading:audio.id,expanded:true});assert(r.ok);assert(!r.items.find(h=>h.id===audio.id).editorFolded);assert(r.items.find(h=>h.text==='emotion').editorFolded);assert(r.items.find(h=>h.id===other.id).editorFolded);
+ r=await tool('outline_fold',{...base,heading:audio.id,scope:'recursive',expanded:true});assert(r.items.filter(h=>['audio','emotion','scores'].includes(h.text)).every(h=>!h.editorFolded));assert(r.items.find(h=>h.id===other.id).editorFolded);
+ r=await tool('outline_fold',{...base,scope:'all',expanded:false});assert(r.items.filter(h=>h.editorFoldable).every(h=>h.editorFolded));
+ r=await tool('outline_fold',{...base,scope:'all',expanded:true});assert(r.items.every(h=>!h.editorFolded));
+});
+await check('真实同步开关与JSON叶子展开联动，空块与编辑变化拒绝旧操作',async()=>{
+ const outline=await tool('outline_read'),base={snapshot:outline.snapshot},emotion=outline.items.find(h=>h.text==='emotion');
+ let r=await tool('outline_sync',{...base,enabled:true});assert(r.ok&&r.syncEnabled);assert.equal(await js('document.getElementById("outline-sync").getAttribute("aria-pressed")'),'true');
+ r=await tool('outline_expand',{...base,heading:emotion.id,expanded:false});assert(r.ok&&r.items.find(h=>h.id===emotion.id).editorFolded);
+ assert.equal(await js('document.querySelectorAll(".outline-item")[Outline.headings.findIndex(h=>h.text==="emotion")].getAttribute("aria-expanded")'),'false');
+ r=await tool('outline_sync',{...base,enabled:false});assert(r.ok&&!r.syncEnabled);
+ r=await tool('outline_expand',{...base,heading:emotion.id,expanded:true});assert(r.ok&&!r.items.find(h=>h.id===emotion.id).editorFolded);
+ r=await tool('outline_fold',{...base,heading:outline.items.find(h=>h.text==='empty').id,expanded:false});assert(!r.ok);
+ await js('Viewer.cm.setValue(Viewer.cm.getValue().replace("0.45","0.5"));true');r=await tool('outline_sync',{...base,enabled:true});assert(!r.ok&&/变化/.test(r.error));
+ assert.equal(fs.readFileSync(jsonFile,'utf8'),jsonDisk);assert(await js('Viewer.activeTab.content.includes("0.5")&&Viewer.activeTab.dirty'));
+});
+await check('离开项目页面不开放项目文件与大纲，保留项目列表',async()=>{await js('App.showTool("launch")');next=null;const before=requests;await js('AiPanel.ask("检查当前工具清单")');await until(()=>requests>before);await until(async()=>await js('document.getElementById("ai-send").textContent==="➤"'));assert(!lastTools.includes('outline_read'));assert(!lastTools.includes('outline_fold'));assert(!lastTools.includes('outline_sync'));assert(!lastTools.includes('project_open_file'));assert(lastTools.includes('project_list'));assert((await tool('project_list')).ok);});
 await js('App.showTool("outline");Theme.set("crimson")');win.setContentSize(1440,900);await win.webContents.capturePage();await sleep(200);fs.writeFileSync(path.join(__dirname,'../.ui-check-trash/ai-project-control.png'),(await win.webContents.capturePage()).toPNG());
 console.log('项目大纲真实控制：'+passed+' 通过 / 0 失败');clearTimeout(timer);app.exit(0);
 }catch(error){console.error(error.stack);clearTimeout(timer);app.exit(1);}});

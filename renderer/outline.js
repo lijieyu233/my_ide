@@ -161,13 +161,18 @@ const Outline = (() => {
     const tab=Viewer.activeTab;
     return !!tab&&!!owner&&tab.id===owner.documentId&&tab.path===owner.path&&tab.editRevision===owner.revision;
   }
+  function editorRange(i) {
+    const h=headings[i],cm=Viewer.cm;
+    if(!h||!cm?.view||cm.__tab!==Viewer.activeTab)return null;
+    if(h.key)return h.fold;
+    const doc=cm.view.state.doc,end=sectionEnd(i);
+    return {from:doc.line(h.line).to+1,to:end<headings.length?doc.line(headings[end].line-1).to:doc.length};
+  }
   function foldItem(i,folded,recursive=false) {
     if(!ownsDocument()||!headings[i])return false;
-    const cm=Viewer.cm,h=headings[i];
+    const cm=Viewer.cm;
     if(!cm?.fold||cm.__tab!==Viewer.activeTab){MI.toast('请先切换到可折叠的编辑视图','err');return false;}
-    let range=h.fold;
-    if(!h.key){const doc=cm.view.state.doc,end=sectionEnd(i),to=end<headings.length?doc.line(headings[end].line-1).to:doc.length;
-      range={from:doc.line(h.line).to+1,to};}
+    const range=editorRange(i);
     if(!range||range.to<=range.from)return false;
     cm.fold({folded,recursive,range});
     const end=recursive?sectionEnd(i):i+1;
@@ -180,6 +185,23 @@ const Outline = (() => {
     cm.fold({folded,all:true});
     if(syncActive())syncFromEditor(cm.view);else setAllCollapsed(folded);
     return true;
+  }
+  function controlFold(index,expanded,scope='current') {
+    const fail=(code,message)=>{throw Object.assign(Error(message),{code});};
+    if(!ownsDocument()||!Viewer.cm?.fold||Viewer.cm.__tab!==Viewer.activeTab)fail('OUTLINE_FOLD_UNAVAILABLE','请先打开当前文件的可折叠编辑视图');
+    if(typeof expanded!=='boolean'||!['current','recursive','all'].includes(scope)||(scope==='all'?index!=null:!Number.isInteger(index)||!headings[index]))fail('INVALID_TOOL_ARGS','折叠范围或目标无效');
+    if(scope==='all')return foldAll(!expanded);
+    const range=editorRange(index);
+    if(!range||range.to<=range.from)fail('OUTLINE_NOT_FOLDABLE','此项没有可折叠的内部内容');
+    return foldItem(index,!expanded,scope==='recursive');
+  }
+  function controlState() {
+    const canFold=!!(ownsDocument()&&Viewer.cm?.fold&&Viewer.cm.__tab===Viewer.activeTab),folded=new Set();
+    if(canFold)CM6.Language.foldedRanges(Viewer.cm.view.state).between(0,Viewer.cm.view.state.doc.length,(from,to)=>folded.add(from+':'+to));
+    return {syncEnabled:syncActive(),canFold,items:headings.map((h,i)=>{
+      const range=canFold?editorRange(i):null,editorFoldable=!!range&&range.to>range.from;
+      return {...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:hasChildren(i),foldable:canToggle(i),editorFoldable,editorFolded:editorFoldable?folded.has(range.from+':'+range.to):null};
+    })};
   }
 
   function readEditorFolds(view) {
@@ -465,9 +487,8 @@ const Outline = (() => {
   });
 
   return {
-    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor,
-    controlState:()=>({items:headings.map((h,i)=>({...h,expanded:!collapsed.has(hKey(h)),visible:!isHidden(i),selected:i===selIdx,hasChildren:hasChildren(i),foldable:canToggle(i)}))}),
-    async controlExpand(index,value){if(index==null){setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(syncActive()||leafFold(index)){foldItem(index,!value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
+    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor, controlFold, controlState,
+    async controlExpand(index,value){if(index==null){if(syncActive())controlFold(null,value,'all');else setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(isJson()&&!canToggle(index))throw Object.assign(Error('此项没有可折叠的内部内容'),{code:'OUTLINE_NOT_FOLDABLE'});if(syncActive()||leafFold(index)){controlFold(index,value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
     async controlJump(index){const h=headings[index];if(!h||!owner)return {ok:false,error:'章节已失效'};for(let k=index-1,lv=h.level;k>=0;k--)if(headings[k].level<lv){collapsed.delete(hKey(headings[k]));lv=headings[k].level;}saveCollapsed();await refresh(Viewer.activeTab);select(index);return await Viewer.navigateTo({...owner,line:h.line,headingIndex:index,...(h.key?{offset:h.from}:{})});},
     get headings() { return headings; },
   };

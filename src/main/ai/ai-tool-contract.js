@@ -43,6 +43,7 @@ function validate(call) {
     if(kind==='web_url'){let url;try{url=new URL(value);}catch{throw error('网页地址必须是完整HTTP/HTTPS地址');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/[\x00-\x20\x7f]/.test(value))throw error('网页地址只支持不含账号密码的HTTP/HTTPS地址');}
     if(kind==='download_action'&&!['pause','resume','cancel'].includes(value))throw error('下载任务操作无效');
     if(kind==='color_scheme'&&!['dark','light','system'].includes(value))throw error('网页显示模式无效');
+    if(kind==='fold_scope'&&!['current','recursive','all'].includes(value))throw error('折叠范围必须为current、recursive或all');
     if(kind==='browser_id'&&!/^[a-zA-Z0-9_-]{1,100}$/.test(value))throw error('标签或标签组ID无效');
     if(kind==='browser_name'&&(!value.trim()||value.length>60||/[\x00-\x1f\x7f]/.test(value)))throw error('标签组名称必须是1..60字符的单行文本');
     if(kind==='tab_close_mode'&&!['current','others','right'].includes(value))throw error('标签关闭范围无效');
@@ -59,6 +60,7 @@ function validate(call) {
     args[key] = kind === 'path' ? relativePath(value, ['list_files','project_tree','project_directory','project_reveal'].includes(call.name)) : value;
   }
   if(call.name==='browser_capture'&&[0,4].every(n=>Object.keys(args).length!==n))throw error('截图区域必须同时提供x/y/width/height');
+  if(call.name==='outline_fold'&&((args.scope==='all')===Object.hasOwn(args,'heading')))throw error('本级/递归折叠必须提供heading，全文折叠不能提供heading');
   if (call.name === 'list_files' && !Object.hasOwn(args, 'path')) args.path = '.';
   if(['browser_read','browser_frame_read','browser_subtitles'].includes(call.name)&&Object.hasOwn(args,'cursor')!==Object.hasOwn(args,'snapshot'))throw error('续读必须同时提供snapshot和cursor；首次读取省略二者');
   if(call.name==='browser_subtitles'&&args.snapshot&&(Object.hasOwn(args,'url')||Object.hasOwn(args,'language')))throw error('字幕续读不能更换视频或语言；重新提取请省略snapshot和cursor');

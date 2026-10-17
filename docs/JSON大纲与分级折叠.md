@@ -21,6 +21,10 @@ JSON默认以可编辑源码打开。大纲只显示对象和数组的结构名�
 
 同步保留内部折叠状态，不改正文或移动编辑光标；编辑区折叠仅更新现有树行的箭头、可见性和无障碍状态，不重新解析 JSON 或重建大纲。通知必须绑定当前编辑器、文件身份和编辑版本，切页后旧编辑器的通知不接管新大纲。普通标量没有代码块，不显示无效的折叠菜单。预览模式下需要切到源码编辑视图才能联动折叠。
 
+## AI 操作接口
+
+AI 操作见 [AI 项目与大纲控制接口](./开发文档-155-AI项目与大纲控制接口.md)：`outline_read` 读取 JSON 结构及实际状态，`outline_fold` 控制本级/递归/全文，`outline_sync` 设置同步开关，`outline_expand` 支持无结构子项的非空对象/数组；全部使用最新快照和返回的节点 ID。
+
 ## PyCharm Windows快捷键
 
 官方来源：[PyCharm Code folding](https://www.jetbrains.com/help/pycharm/working-with-source-code.html#code_folding)。NumPad指小键盘。

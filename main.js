@@ -396,7 +396,8 @@ const aiBrowserTools=require('./src/main/ai/ai-browser-tools').createService({ge
 }});
 const aiProjectTools=require('./src/main/ai/ai-project-tools').createService({panel:async(call,context,target)=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
-  return mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+')');
+  const result=await mainWindow.webContents.executeJavaScript('AiProjectTools.operate('+JSON.stringify(call)+','+JSON.stringify(context)+','+JSON.stringify(target||null)+').catch(error=>({__projectError:true,error:error.message,errorCode:error.code}))');
+  if(result?.__projectError)throw Object.assign(Error(result.error),{code:result.errorCode});return result;
 }});
 const aiWorkbenchTools=require('./src/main/ai/ai-workbench-tools').createService({rootDirectory:()=>app.getPath('userData'),panel:async(operation,payload)=>{
   if(!mainWindow||mainWindow.isDestroyed())throw Error('MyIDE窗口不可用');
