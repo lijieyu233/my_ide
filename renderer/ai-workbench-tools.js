@@ -9,7 +9,7 @@
     definitions[name]={name,module,description,kind,project,reads,parameters:{...object(fields),required}};
   }
   tool('ui_state','ui','读取当前页面、项目、标签、面板、焦点、弹窗与可用操作；结果含模块操作快照。');
-  tool('workbench_state','ui','读取指定模块实际状态与操作快照；用于project等无独立state工具的模块。',{'module!':choice('ui','project','editor','markdown','translation','launch','remote','quick-launch','git','tasks','database','settings','ai')});
+  tool('workbench_state','ui','读取指定模块实际状态与操作快照；用于project等无独立state工具的模块。',{'module!':choice('ui','project','editor','markdown','translation','launch','remote','quick-launch','git','tasks','database','settings','ai','reader')});
   tool('ui_selection','ui','读取当前编辑器、网页或终端选区；不读取密码输入。');
   tool('ui_dialogs','ui','读取当前应用弹窗与真实按钮ID，不读取秘密输入；AI权限审批页不能由此批准。');
   tool('ui_dialog_action','ui','使用最新弹窗快照点击确切按钮，或取消顶层弹窗；不允许批准AI自身权限。',{'operation!':choice('click','cancel'),'button':id},'write');
@@ -19,6 +19,9 @@
   tool('outline_change','editor','按editor_state返回的标题ID修改标题、层级或移动整章；保留未保存正文且可撤销。',{'operation!':choice('rename','level','move'),'heading!':id,'title':str(2000),'level':integer(1,6),'before':id},'write',true);
   tool('markdown_state','markdown','读取当前预览模式、文件与持久阅读样式。');
   tool('markdown_control','markdown','切换Markdown模式、刷新、跳转章节、调整阅读样式，或将HTML预览交给内置/系统浏览器。',{'operation!':choice('mode','refresh','heading','style','browser','external'),'mode':choice('live','source','split','preview'),'heading':id,'titleColor':{type:'string',pattern:'^#[0-9a-fA-F]{6}$'},'fontSize':integer(10,20),'lineHeight':{type:'number',minimum:1,maximum:3},'readingWidth':integer(20,200)},'write',true);
+  tool('reader_state','reader','读取当前只读书籍、章节/页码、阅读偏好和书签；不包含后台项目。');
+  tool('reader_read','reader','分页读取当前小说章节纯文本或章节目录；漫画返回图片数量，不执行书内脚本。',{query:choice('text','toc'),offset:integer(),limit:integer(1,12000)});
+  tool('reader_control','reader','使用reader_state快照翻页、跳转章节、设置阅读外观或增删书签；不会改写书籍。',{'operation!':choice('goto','next','previous','preferences','bookmark_add','bookmark_remove'),index:integer(0,9999),bookmark:id,fontSize:integer(12,36),lineHeight:{type:'number',minimum:1.2,maximum:2.6},width:integer(320,1400),theme:choice('paper','dark','system'),direction:choice('ltr','rtl')},'write');
   tool('translation_state','translation','读取独立翻译配置、厂商预设、语言与任务；只返回Key是否已配置。',{job:id});
   tool('translation_start','translation','翻译指定文本或当前选区，可指定语言、独立配置与模型；立即返回任务ID，通过translation_state查结果。',{text,source:str(100),target:str(100),profile:id,model:id,show:bool},'run');
   tool('translation_job','translation','取消、重试翻译任务、复制已完成译文，或打开翻译面板。',{'operation!':choice('cancel','retry','copy','open'),'job':id,'text':text},'write');
@@ -64,7 +67,7 @@
       for(const k of schema.required||[])if(!Object.hasOwn(value,k))throw Error(key+'缺少字段 '+k);
     }
   }
-  const enabledModules=new Set(['ui','project','editor','markdown','translation','launch','remote','quick-launch','git','tasks','database','settings','ai']);
+  const enabledModules=new Set(['ui','project','editor','markdown','translation','launch','remote','quick-launch','git','tasks','database','settings','ai','reader']);
   for(const [name,d] of Object.entries(definitions))if(!enabledModules.has(d.module))delete definitions[name];
   const has=name=>Object.hasOwn(definitions,name),effect=call=>definitions[call.name].reads.includes(call.args.operation)?null:definitions[call.name].kind;
   function validateCall(call){try{check(call.args,definitions[call.name].parameters);if(JSON.stringify(call.args).length>512*1024)throw Error('参数超过512KiB');return Object.freeze({id:call.id,name:call.name,args:JSON.parse(JSON.stringify(call.args))});}catch(error){error.code='INVALID_TOOL_ARGS';throw error;}}

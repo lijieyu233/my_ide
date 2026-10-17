@@ -115,6 +115,7 @@ const AiPanel = (() => {
   let curSessionId = null;   // 当前会话 id（历史会话列表用）
 
   const PROJECT_TOOLS = new Set(['list_files','read_file','search_files','write_file','replace_edit','run_command',...(window.AiProjectTools?.projectOnly||[])]);
+  function isProjectTool(name){const d=window.AiWorkbenchTools?.definitions[name];return PROJECT_TOOLS.has(name)||(currentPage().id==='reader'&&!!d&&(d.project||['project','editor','markdown','git','tasks'].includes(d.module)));}
   let pageKey = null, pageEpoch = 0, followTask = null;
   function currentPage() {
     // 测试/早期初始化没有 App 时，不将隐藏编辑器误判为项目页。
@@ -151,16 +152,16 @@ const AiPanel = (() => {
     return msgs.map(m => {
       const text = typeof m.content === 'string' ? m.content : m.content?.find?.(p=>p.type==='text')?.text || '';
       if (m._projectTool || (!Object.hasOwn(m,'_projectTool') && text.startsWith('（无法对应工具调用的历史结果，仅作参考）'))) return {...m,content:omitted};
-      if (m.role === 'tool' && PROJECT_TOOLS.has(m.name || names.get(m.tool_call_id))) return {...m,content:omitted};
+      if (m.role === 'tool' && isProjectTool(m.name || names.get(m.tool_call_id))) return {...m,content:omitted};
       if (m.role === 'user' && (m._hasProjectContext || (!Object.hasOwn(m,'_hasProjectContext') && m._text !== undefined && /^（(?:文件|目录) /.test(text))))
         return {...m,content:plainUserContent(m)};
       if (m.role === 'user' && text.startsWith('<tool_results>') &&
-          PROJECT_TOOLS.has(m._toolName || text.match(/<result tool="([^"]+)"/)?.[1])) return {...m,content:omitted};
+          isProjectTool(m._toolName || text.match(/<result tool="([^"]+)"/)?.[1])) return {...m,content:omitted};
       let content = m.content;
       if (m.role === 'assistant' && typeof content === 'string') content = content.replace(/\x60\x60\x60tool_call[\s\S]*?\x60\x60\x60/g, block => {
-        try { return PROJECT_TOOLS.has(JSON.parse(block.slice(12,-3).trim()).name) ? omitted : block; } catch { return block; }
+        try { return isProjectTool(JSON.parse(block.slice(12,-3).trim()).name) ? omitted : block; } catch { return block; }
       });
-      return {...m,content,...(m.tool_calls ? {tool_calls:m.tool_calls.map(c=>PROJECT_TOOLS.has(c.function?.name)
+      return {...m,content,...(m.tool_calls ? {tool_calls:m.tool_calls.map(c=>isProjectTool(c.function?.name)
         ? {...c,function:{...c.function,arguments:'{}'}} : c)} : {})};
     });
   }
@@ -558,7 +559,7 @@ const AiPanel = (() => {
 
   async function executeTool(call, run) {
     if (!runIsLive(run)) return cancelledTool();
-    if (!usesProjectContext() && PROJECT_TOOLS.has(call.name)) return {ok:false,text:'当前页面不使用项目文件工具，请回到项目页面再操作'};
+    if (!usesProjectContext() && isProjectTool(call.name)) return {ok:false,text:'当前页面不使用项目文件工具，请回到项目页面再操作'};
     const checked = await window.myIDE.ai.validateTool(run.stream.context, call);
     if (!runIsLive(run)) return cancelledTool();
     if (!checked?.ok) return { ok: false, errorCode: checked?.errorCode, text: window.AiBrowserTools?.has(call.name) ? JSON.stringify(checked) : '错误：' + (checked?.error || '工具校验失败，未执行') };
@@ -571,7 +572,7 @@ const AiPanel = (() => {
   }
   async function executeValidatedTool(call,run){
     if(!runIsLive(run))return cancelledTool();
-    if (!usesProjectContext() && PROJECT_TOOLS.has(call.name)) return {ok:false,text:'页面已切换，未继续操作项目文件'};
+    if (!usesProjectContext() && isProjectTool(call.name)) return {ok:false,text:'页面已切换，未继续操作项目文件'};
     const a = call.args;
     if(window.AiWorkbenchTools?.has(call.name)){
       if(window.AiWorkbenchTools.effect(call)){const approval=await window.myIDE.ai.authorize(run.stream.context,call);if(!runIsLive(run))return cancelledTool();if(!approval?.ok)return {ok:false,errorCode:approval?.errorCode,text:'错误：'+(approval?.error||'未批准此操作')};receivePermissions(approval.permissions);}
@@ -834,7 +835,7 @@ const AiPanel = (() => {
       ...(run.engine==='dsh'?{timeline:[],segment:null,afterActivity:false}: {}) };
     run.stream = stream;
     let r;
-    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !PROJECT_TOOLS.has(t.function?.name)), stream.context); }
+    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), stream.context); }
     catch (error) { r = { error: String(error), context: stream.context }; }
     if (run.background) {
       withBackgroundView(run.background,()=>finishStream(r?.error || r?.text || stream.text,!!r?.error,r,run,stream));
@@ -887,7 +888,7 @@ const AiPanel = (() => {
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 DSH…';info.title='读取桌面 DSH 的实际模型与推理选项';}
     if(!curSessionId){curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));rememberSession();}
     const sessionId=curSessionId;let result;
-    try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!PROJECT_TOOLS.has(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
+    try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!isProjectTool(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
     if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));if(info){info.textContent='DSH 已连接';info.title=result.sessionId?'当前 DSH 会话：'+result.sessionId:'首次发送消息时创建 DSH 会话';}}
     else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
@@ -1385,7 +1386,7 @@ const AiPanel = (() => {
   // 旧版上限/异常收尾曾留下缺结果的调用；只修复消息协议，不重跑工具，也不假定旧调用成功。
   function repairToolHistory(list) {
     const repaired=[];const unknown='历史记录缺少此工具调用的结果，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。';
-    const observation=m=>({role:'assistant',_projectTool:!m.name || PROJECT_TOOLS.has(m.name),content:'（无法对应工具调用的历史结果，仅作参考）\n'+String(m.content||'')});
+    const observation=m=>({role:'assistant',_projectTool:!m.name || isProjectTool(m.name),content:'（无法对应工具调用的历史结果，仅作参考）\n'+String(m.content||'')});
     for(let i=0;i<list.length;i++){
       const m=list[i];if(!m)continue;
       if(m.role==='assistant'&&Array.isArray(m.tool_calls)&&m.tool_calls.length){
@@ -2534,7 +2535,7 @@ const AiPanel = (() => {
     }catch(error){result={ok:false,text:error.message||String(error)};}
     activity.status=result.ok?'completed':'failed';activity.output=String(result.text||'').slice(0,30000);
     setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row)row.title=String(result.text||'');
-    if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:PROJECT_TOOLS.has(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
+    if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:isProjectTool(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
     try{const receipt=await window.myIDE.ai.dshToolResult(event.context,call.id,result);if(!receipt?.ok)throw Error('DSH未接收工具结果');await aiDrainTransitions(run);}catch{for(const entry of run.aiTransitions?.splice(0)||[])entry.reject(Error('工具结果未确认回送，未执行会话切换'));if(runIsLive(run))stopRun();}
   }
 

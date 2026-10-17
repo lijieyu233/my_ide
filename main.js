@@ -11,6 +11,14 @@ ipcMain.handle('html-preview:open',async(event,request)=>{
   catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
+const readerService=require('./src/main/reader/reader-service').createService();
+const readerOwners=new Set();
+for(const op of ['open','page','resource','close'])ipcMain.handle('reader:'+op,async(event,...args)=>{
+ try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的阅读来源');
+ const owner=event.sender.id;if(!readerOwners.has(owner)){readerOwners.add(owner);event.sender.once('destroyed',()=>{readerService.closeOwner(owner);readerOwners.delete(owner);});}
+ return {ok:true,...await readerService[op](owner,...args)};
+ }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
 const G = require('./src/main/git/git-service');
 const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');

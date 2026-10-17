@@ -1,0 +1,10 @@
+const {Worker}=require('worker_threads'),path=require('path'),crypto=require('crypto');
+function createService(){const sessions=new Map();let seq=0;
+ function close(owner,id){const s=sessions.get(id);if(!s||s.owner!==owner)return; sessions.delete(id);s.worker.terminate();for(const pending of s.pending.values()){clearTimeout(pending.timer);pending.reject(Error('阅读会话已关闭'));}s.pending.clear();}
+ function request(s,op,args={}){return new Promise((resolve,reject)=>{const id=++seq,timer=setTimeout(()=>{close(s.owner,s.id);reject(Error('书籍读取超时，已释放后台任务'));},20000);s.pending.set(id,{resolve,reject,timer});s.worker.postMessage({id,op,args});});}
+ async function open(owner,file){if(typeof file!=='string'||!path.isAbsolute(file)||file.length>4096)throw Error('书籍路径无效');if([...sessions.values()].filter(s=>s.owner===owner).length>=16)throw Error('最多同时打开16本书籍');const id=crypto.randomUUID(),worker=new Worker(path.join(__dirname,'reader-worker.js'),{workerData:{path:file},resourceLimits:{maxOldGenerationSizeMb:192}}),s={id,owner,worker,pending:new Map()};sessions.set(id,s);
+  worker.on('message',m=>{const pending=s.pending.get(m.id);if(!pending)return;s.pending.delete(m.id);clearTimeout(pending.timer);m.ok?pending.resolve(m.result):pending.reject(Object.assign(Error(m.error),{code:m.code}));});worker.on('error',e=>{for(const p of s.pending.values()){clearTimeout(p.timer);p.reject(e);}s.pending.clear();close(owner,id);});worker.on('exit',()=>close(owner,id));
+  try{return {session:id,...await request(s,'open')};}catch(e){close(owner,id);throw e;}}
+ function get(owner,id){const s=sessions.get(id);if(!s||s.owner!==owner)throw Error('阅读会话已关闭或不属于此窗口');return s;}
+ return {open,page:(owner,id,index)=>request(get(owner,id),'page',{index}),resource:(owner,id,name)=>{if(typeof name!=='string'||name.length>4096)throw Error('书籍资源路径无效');return request(get(owner,id),'resource',{name});},close,closeOwner(owner){for(const s of sessions.values())if(s.owner===owner)close(owner,s.id);}};
+}module.exports={createService};

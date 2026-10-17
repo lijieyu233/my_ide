@@ -354,6 +354,8 @@ const App = (() => {
     const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
       launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动' };
     const independent = ['tasks','launch','db','remote','browser','quick-launch'].includes(activeTool);
+    const book=window.Viewer?.activeTab;
+    if(!independent&&book?.reader)return {id:'reader',name:'阅读器',tool:activeTool||'project',toolName:'阅读目录',projectContext:false,reader:{title:book.readerInfo?.title||book.name,kind:book.readerInfo?.kind||null}};
     const projectContext = !!root && !independent;
     const id = independent ? activeTool : projectContext ? 'project' : 'welcome';
     const page = { id, name: independent ? names[activeTool] : projectContext ? '项目' : '欢迎页',

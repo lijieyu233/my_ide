@@ -30,7 +30,7 @@ const Session = (() => {
               line = cmState.doc.lineAt(cmState.selection.main.head).number;
             }
           } catch {}
-          return { p: t.path, s: Number.isFinite(t.scrollTop) && t.scrollTop >= 0 ? t.scrollTop : 0, l: line, ...(t.pinned?{f:true}:{}),...(t.retention==='preview'?{preview:true}:{}) };
+          return { p: t.path, s: Number.isFinite(t.scrollTop) && t.scrollTop >= 0 ? t.scrollTop : 0, l: line, ...(t.reader?{reader:true}:{}),...(t.pinned?{f:true}:{}),...(t.retention==='preview'?{preview:true}:{}) };
         });
       const active = Viewer.activeTab;
       const state = {
@@ -126,7 +126,7 @@ const Session = (() => {
       try {
         const existing = Viewer.openTabs.find(t => pathKey(t.path) === pathKey(item.p));
         if (existing?.dirty) { entry.status = 'loaded'; entry.error = '保留当前未保存正文与位置'; return; }
-        Viewer.addLazyTab(item.p, { scrollTop: scroll, line, pinned: item.f === true,preview:item.preview===true });
+        Viewer.addLazyTab(item.p, { scrollTop: scroll, line, pinned: item.f === true,preview:item.preview===true,reader:item.reader===true });
         const tab = Viewer.openTabs.find(t => pathKey(t.path) === pathKey(item.p));
         if (!tab) throw Error('标签正被关闭或迁移，可稍后重试');
         updateEntry(entry, tab);

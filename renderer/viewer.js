@@ -84,7 +84,7 @@ const Viewer = (() => {
   }
   function canChooseEncoding(tab) {
     const ext = extOf(tab.name);
-    return !tab.tooLarge && !tab.htmlDiskPreview && tab.mode != null && !IMG_EXTS.has(ext) && !MEDIA_EXTS.has(ext) && !OFFICE_EXTS.has(ext) && !OFFICE_OLD_EXTS.has(ext);
+    return !tab.reader && !tab.tooLarge && !tab.htmlDiskPreview && tab.mode != null && !IMG_EXTS.has(ext) && !MEDIA_EXTS.has(ext) && !OFFICE_EXTS.has(ext) && !OFFICE_OLD_EXTS.has(ext);
   }
   function updateFormatStatus(tab) {
     if (tab === currentTab() && window.App) App.updateStatusbar({
@@ -309,7 +309,7 @@ const Viewer = (() => {
     if(!existing&&pendingPreview?.isCurrent()&&!pendingPreview.settled&&DocumentPaths.key(pendingPreview.path)===DocumentPaths.key(path)){
       if(options.intent!=='browse')pendingPreview.keep=true;return pendingPreview.promise;
     }
-    if(options.intent==='browse'&&previewEnabled()&&!existing)return openPreviewFile(path,options);
+    if(options.intent==='browse'&&previewEnabled()&&!existing&&!options.reader&&!window.Reader?.archive(path))return openPreviewFile(path,options);
     previewSequence++;previewFeedback='';
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
@@ -322,14 +322,22 @@ const Viewer = (() => {
     const name = path.split(/[\\/]/).pop();
     const i = tabs.findIndex((t) => DocumentPaths.key(t.path) === DocumentPaths.key(path));
     if (i >= 0) {
-      if(options.intent!=='browse')keepTab(tabs[i]);
-      if(options.focusRequest)navigationFocus.set(tabs[i].id,options.focusRequest);
-      if(tabs[i]!==currentTab())activate(i,{history:false});else renderTabActions();
+      const target=tabs[i],rootAtOpen=window.App?.root;
+      if(options.reader&&!target.reader){
+        if(target.dirty||target.formatBusy||saveQueues.has(DocumentPaths.key(target.path))){MI.toast('请先保存 TXT，再切换阅读模式','err');return;}
+        target.reader=true;target.binary=true;target.mode=null;target.content=null;target.cmState=null;if(target===currentTab())renderView();
+        target.loadPromise=loadTab(target);await target.loadPromise;
+        if(!tabs.includes(target)||window.App?.root!==rootAtOpen)return;
+      }
+      if(options.intent!=='browse')keepTab(target);
+      if(options.focusRequest)navigationFocus.set(target.id,options.focusRequest);
+      if(target!==currentTab())activate(tabs.indexOf(target),{history:false});else renderTabActions();
       // 已打开的标签也要同步树高亮（否则高亮不切换）
       if (window.Tree&&options.reveal!==false) Tree.reveal(path);
       return;
     }
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, retention:'regular', dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8' };
+    tab.reader=options.reader===true||!!window.Reader?.archive(path);
     if(options.focusRequest)navigationFocus.set(tab.id,options.focusRequest);
     tabs.push(tab);
     renderTabs();
@@ -409,6 +417,11 @@ const Viewer = (() => {
   }
 
   async function loadTab(tab, detached=false) {
+    if(tab.reader||window.Reader?.archive(tab.path)){
+      tab.reader=true;tab.binary=true;tab.content='';tab.mode='reader';
+      try{await Reader.load(tab);}catch(e){tab.error=e.message;}
+      if(!detached)renderTabs();if(tab===currentTab())renderView();return;
+    }
     // 图片 / 音视频 / Office 新格式：二进制无需读取文本，直接走预览渲染器
     if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) {
       tab.content = '';
@@ -508,6 +521,7 @@ const Viewer = (() => {
     const existing=tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path));if(existing){if(opts?.pinned===true)setPinned(existing,true);return;}
     const name = path.split(/[\\/]/).pop();
     const tab = { id: ++nextTabId, editRevision: 0, savedRevision: 0, path, name, dirty: false, content: null, mode: null, error: null, tooLarge: false, binary: false, encoding: 'utf8', lazy: true };
+    tab.reader=opts?.reader===true||!!window.Reader?.archive(path);
     if (opts && opts.scrollTop) tab.scrollTop = opts.scrollTop;
     if(Number.isFinite(opts?.scrollTop)&&opts.scrollTop>=0)tab.restoreScrollTop=opts.scrollTop;
     if (opts && opts.line) tab.restoreLine = opts.line;
@@ -761,6 +775,7 @@ const Viewer = (() => {
     window.TabPicker?.invalidate();
     clearTimeout(autosaveTimer);
     for(const cancel of [...closeDecisions])cancel();
+    for(const tab of tabs)window.Reader?.release(tab);
     tabs.length = 0;
     activeTabId = null;
     syncEmptyState();
@@ -776,6 +791,7 @@ const Viewer = (() => {
     const fromTabs=!!origin?.closest?.('#tab-scroll');
     if(remember)ClosedTabs.remember(before.filter(tab=>removed.has(tab)).map(closedLocation));
     const successor=removed.has(current) ? before.slice(at+1).find(t=>!removed.has(t)) || before.slice(0,at).reverse().find(t=>!removed.has(t)) : current;
+    for(const tab of selected)window.Reader?.release(tab);
     for(let i=tabs.length-1;i>=0;i--)if(removed.has(tabs[i]))tabs.splice(i,1);
     activeTabId=successor?.id ?? null;
     renderTabs();
@@ -806,6 +822,14 @@ const Viewer = (() => {
       return {ok:true,note:'文件已打开，已保留当前输入和位置',focus:()=>{if(isCurrent()&&currentTab()===existing&&!Modal.stack.length)focusEditor();}};
     }
     if(existing&&(existing.dirty||existing.formatBusy||saveQueues.has(DocumentPaths.key(existing.path))))return fail('已打开的同名文档仍有输入或操作，请先完成后重试');
+    if(record.mode==='reader'||window.Reader?.archive(record.path)){
+      const candidate={id:++nextTabId,path:record.path,name:record.path.split(/[\\/]/).pop(),reader:true,editRevision:0,savedRevision:0,dirty:false,binary:true,content:'',mode:'reader',pinned:!!record.pinned};
+      await loadTab(candidate,true);
+      if(!stable()||candidate.error){Reader.release(candidate);return fail(candidate.error||'当前文档或项目已变化，重开未执行');}
+      if(existing){Reader.release(existing);Object.assign(existing,candidate,{id:existing.id});}else tabs.push(candidate);
+      const target=existing||candidate;orderPinned();activate(tabs.indexOf(target),{history:false});NavigationHistory.finish(history,captureLocation());
+      return {ok:true,focus:()=>document.querySelector('.reader-scroll')?.focus()};
+    }
     const observed=await window.myIDE.fs.fileVersion(record.path);
     if(!stable())return fail('当前文档或项目已变化，重开未执行');
     if(observed?.error||observed?.absent||observed?.version?.absent||!observed?.version)return fail(observed?.error||'原文件已删除或改名，请恢复文件后重试');
@@ -884,6 +908,12 @@ const Viewer = (() => {
       acts.appendChild(recover);
     }
 
+    if(tab.reader){
+      const label=document.createElement('span');label.className='reader-tab-label';label.textContent='只读阅读';acts.append(label);
+      if(/\.txt$/i.test(tab.name)){const back=document.createElement('button');back.className='vt-btn';back.textContent='返回编辑';back.onclick=()=>leaveReader(tab);acts.append(back);}
+      tabActions.append(acts);return;
+    }
+    if(/\.txt$/i.test(tab.name)){const read=document.createElement('button');read.className='vt-btn';read.textContent='阅读';read.onclick=()=>Reader.open(tab.path);acts.append(read);}
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     const ext = extOf(tab.name);
 
@@ -1244,6 +1274,7 @@ const Viewer = (() => {
     // 刷新大纲（md 文件）
     if (window.App) App.refreshOutline(tab);
 
+    if(tab.reader){Reader.mount(tab,viewer);return;}
     if (tab.mode === 'error') {
       const msg = document.createElement('div');
       msg.className = 'viewer-msg';
@@ -1992,6 +2023,7 @@ const Viewer = (() => {
     for (const t of tabs) {
       if (t.dirty || t.error || t.binary || t.tooLarge || t.formatBusy || pathBusy(t.path) || saveQueues.has(DocumentPaths.key(t.path))) continue;
       if (t.content == null) continue;
+      if(t.reader)continue;
       if (IMG_EXTS.has(extOf(t.name)) || MEDIA_EXTS.has(extOf(t.name)) || OFFICE_EXTS.has(extOf(t.name)) || OFFICE_OLD_EXTS.has(extOf(t.name))) continue;
       try {
         const path = t.path, revision = t.editRevision, generation = t.pathGeneration || 0;
@@ -2056,6 +2088,11 @@ const Viewer = (() => {
     ta.setSelectionRange(plan.anchor, plan.head); return true;
   }
 
+  async function leaveReader(tab=currentTab()){
+    if(!tab?.reader||!/\.txt$/i.test(tab.name))return;
+    Reader.release(tab);tab.reader=false;tab.binary=false;tab.error=null;tab.mode=null;tab.content=null;tab.cmState=null;
+    renderView();tab.loadPromise=loadTab(tab);await tab.loadPromise;window.AiPanel?.followActive?.();
+  }
   // Ctrl+E：Markdown live ↔ source 模式切换（对齐 Obsidian）
   function toggleMdMode() {
     const tab = currentTab();
@@ -2066,7 +2103,7 @@ const Viewer = (() => {
   }
 
   return {
-    openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
+    leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

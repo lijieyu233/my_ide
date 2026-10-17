@@ -21,7 +21,7 @@
     "test:text": "node tests/text-format.test.js",
     "test:paths": "node tests/path-move.test.js && node tests/path-jobs.test.js",
     "test:create": "node tests/path-create.test.js",
-    "test": "npm run check:js && npm run test:layout && npm run test:browser && npm run test:startup && npm run test:remote && npm run test:md-shortcuts && npm run test:git && npm run test:search && npm run test:dom && npm run test:outline-keyboard && npm run test:preview && npm run test:tree-search && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai && npm run test:projects && npm run test:session && npm run test:quick-launch && npm run test:launch && npm run test:project-discovery",
+    "test": "npm run check:js && npm run test:reader && npm run test:layout && npm run test:browser && npm run test:startup && npm run test:remote && npm run test:md-shortcuts && npm run test:git && npm run test:search && npm run test:dom && npm run test:outline-keyboard && npm run test:preview && npm run test:tree-search && npm run test:package && npm run test:files && npm run test:text && npm run test:paths && npm run test:create && npm run test:copy && npm run test:delete && npm run test:hunks && npm run test:status && npm run test:tasks && npm run test:ai && npm run test:projects && npm run test:session && npm run test:quick-launch && npm run test:launch && npm run test:project-discovery",
     "demo": "node scripts/make-demo.js",
     "build": "electron-builder --win portable",
     "bench": "node scripts/bench.js",
@@ -75,13 +75,16 @@
     "test:workbench": "node tests/ai-workbench.test.js && node tests/ai-workbench-services.test.js && node tests/ai-database.test.js",
     "check:workbench": "electron scripts/check-ai-workbench.js --disable-gpu --no-sandbox",
     "check:file-responsiveness": "electron scripts/check-file-responsiveness.js --disable-gpu --no-sandbox",
-    "check:json-outline": "electron scripts/check-json-outline.js --disable-gpu --no-sandbox"
+    "check:json-outline": "electron scripts/check-json-outline.js --disable-gpu --no-sandbox",
+    "test:reader": "node tests/reader.test.js",
+    "check:reader": "electron scripts/check-reader.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-python": "^6.2.1",
+    "@xmldom/xmldom": "0.8.14",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "docx-preview": "^0.4.0",
@@ -96,7 +99,8 @@
     "pptx-preview": "^1.0.5",
     "sql.js": "^1.14.2",
     "ssh2": "^1.17.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "yauzl": "2.10.0"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",

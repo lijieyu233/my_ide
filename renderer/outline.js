@@ -309,6 +309,9 @@ const Outline = (() => {
     el.removeAttribute('aria-activedescendant');
     headings = [];
     owner=tab?{documentId:tab.id,revision:tab.editRevision,path:tab.path}:null;
+    if(tab?.reader){owner=null;const title=document.querySelector('#panel-outline .panel-title');if(title?.firstChild?.nodeType===3)title.firstChild.textContent='阅读目录';document.querySelector('#panel-outline .panel-title-actions')?.setAttribute('hidden','');window.Reader?.renderOutline(el,tab);return;}
+    const readerTitle=document.querySelector('#panel-outline .panel-title');if(readerTitle?.firstChild?.nodeType===3)readerTitle.firstChild.textContent='大纲';
+    document.querySelector('#panel-outline .panel-title-actions')?.removeAttribute('hidden');
     loadCollapsed();
     mountHeaderActions();
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || ''),isJson=tab&&/\.json$/i.test(tab.name||'');
