@@ -799,7 +799,14 @@ textarea.editor {
 .md-view tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-panel) 85%, transparent); }
 .md-view tbody tr:hover { background: var(--btn-hover); }
 .md-view hr { border: none; border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent); margin: 1.38em 0; }
-.md-view img { max-width: 100%; }
+.md-view img { max-width: 100%; height: auto; }
+/* 图片只在悬停/聚焦时露出角点；布局尺寸本身改变，后面的文字跟随重排。 */
+.md-image-frame{position:relative;display:inline-block;max-width:100%;vertical-align:middle;line-height:0}
+.md-image-frame img{display:block;height:auto;max-width:100%}
+.md-image-resize{position:absolute;right:0;bottom:0;width:1.25em;height:1.25em;padding:0;border:1px solid var(--accent);border-radius:.15em;background:var(--bg-panel);color:var(--accent);cursor:nwse-resize;opacity:0;touch-action:none;display:flex;align-items:center;justify-content:center}
+.md-image-frame:hover>.md-image-resize,.md-image-resize:focus-visible,.md-image-dragging>.md-image-resize{opacity:1}
+.md-image-dragging{outline:1px solid var(--accent);user-select:none}
+.ctx-item[aria-disabled=true]{opacity:.45;cursor:default}
 /* 图片加载失败占位：与 live 的 .cm-md-img-broken 同款（不用裂图，给出图名） */
 .md-view .md-img-broken {
   display: inline-block; padding: 0.31em 0.77em; border: 1px dashed var(--border-mid);

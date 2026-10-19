@@ -1061,6 +1061,15 @@ ipcMain.handle('log:write', (_e, level, tag, msg) => {
   writeUsage(`${new Date().toISOString()} [${level}] [${tag}] ${String(msg).slice(0, 2000)}\n`);
   return true;
 });
+// 让Chromium复制已显示的原图：远程图不受Canvas跨域限制，也不额外请求URL或读取任意路径。
+ipcMain.handle('clip:copyImageAt', (event, x, y) => {
+  try {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw Error('无效的图片来源');
+    const [width,height]=mainWindow.getContentSize(), zoom=event.sender.getZoomFactor();
+    if(!Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||x>=width/zoom||y>=height/zoom) throw Error('图片位置无效');
+    event.sender.copyImageAt(x,y); return {ok:true};
+  } catch(error) { return {ok:false,error:error.message}; }
+});
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
 
 // 读剪贴板文本（AI 助手的「@剪贴板」上下文来源；渲染进程没有直接读的能力）

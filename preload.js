@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     onZoom: (cb) => ipcRenderer.on('ui:zoom', (_e, z) => cb(z)), // 整窗缩放变化（浏览器等原生视图需重算 bounds）
   },
   clip: {
+    copyImageAt: (x, y) => ipcRenderer.invoke('clip:copyImageAt', x, y),
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
     copyFiles: (paths, move) => ipcRenderer.invoke('clip:copyFiles', paths, move),
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),

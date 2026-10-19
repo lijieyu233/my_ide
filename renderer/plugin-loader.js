@@ -537,12 +537,13 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
       // ⚠ 占位符不能用 `\u0000`：`wrap.innerHTML = html` 时 HTML 解析器会把 NUL 直接丢掉，
       //   剩下 "EMBED0" 就再也匹配不上了（实测踩过）。用一个不可能出现在正文里的安全标记。
       src = replaceSource(/^[ \t]*!\[\[([^\]|#]+)(#[^\]|]*)?\]\][ \t]*\r?$/gm, (m, t, h) => {
+        if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(t.trim())) return m;
         const key = 'MYIDEEMBEDPLACEHOLDER' + embeds.length + 'X';
         embeds.push({ target: t.trim(), heading: (h || '').replace(/^#/, '') });
         return key;
       });
       src = replaceSource(/!\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, _h, _p, alias) =>
-        `![${(alias || t).trim()}](${(t + (_h || '')).trim()})`);
+        `![${/^\d+(?:x\d+)?$/.test(alias||'')?t+'|'+alias:(alias || t).trim()}](${(t + (_h || '')).trim()})`);
       src = replaceSource(/\[\[([^\]|#]+)(#[^\]|]*)?(\|([^\]]*))?\]\]/g, (m, t, h, _p, alias, offset) => {
         const next = `[${(alias || t).trim()}](${(t + (h || '')).trim()})`;
         return locations ? PreviewLocation.wiki(locations, m, t, alias, offset, next) : next;
@@ -744,6 +745,7 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
   });
   // 图片点击 → 全屏查看（lightbox：滚轮缩放/拖动平移/Esc 关闭）
   wrap.querySelectorAll('img').forEach((img) => {
+    window.MarkdownImages?.bind(img);
     img.title = '点击全屏查看';
     img.addEventListener('click', (e) => {
       e.preventDefault();

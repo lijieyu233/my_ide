@@ -345,10 +345,11 @@ window.MdEditor = (() => {
   });
 
   // ---------- 图片 widget：![alt](src) → 内联 <img> ----------
+  const imageViews = new WeakMap();
   class ImgWidget extends WidgetType {
-    constructor(src, alt) { super(); this.src = src; this.alt = alt; }
-    eq(other) { return other.src === this.src && other.alt === this.alt; }
-    toDOM() {
+    constructor(src, alt, raw, from, editable) { super(); Object.assign(this,{src,alt,raw,from,canResize:editable}); }
+    eq(other) { return other.raw === this.raw && other.from === this.from && other.canResize === this.canResize; }
+    toDOM(view) {
       const wrap = document.createElement('span');
       wrap.className = 'cm-md-img';
       const img = document.createElement('img');
@@ -360,6 +361,7 @@ window.MdEditor = (() => {
       // 加载失败（路径错/网络图不存在）：隐藏裂图 → 虚线占位框显示 alt/文件名
       img.addEventListener('error', () => {
         img.style.display = 'none';
+        wrap.querySelector('.md-image-resize')?.remove();
         if (wrap.querySelector('.cm-md-img-broken')) return;
         const ph = document.createElement('span');
         ph.className = 'cm-md-img-broken';
@@ -372,9 +374,20 @@ window.MdEditor = (() => {
         if (window.MI && MI.showImgLightbox) MI.showImgLightbox(img.src, this.alt);
       });
       wrap.appendChild(img);
+      const model=window.MarkdownImages?.parse(this.raw);
+      const valid=()=>view.dom.isConnected && this.canResize && !view.state.readOnly && view.state.facet(EditorView.editable)
+        && imageViews.get(view)?.() !== false && view.state.doc.sliceString(this.from,this.from+this.raw.length)===this.raw;
+      wrap._imageDispose=window.MarkdownImages?.bind(img,{host:wrap,model,valid:()=>view.dom.isConnected,
+        editable:valid,measure:()=>view.requestMeasure(),resize:this.canResize&&model?width=>{
+          if(!valid()||!model)return false;
+          const before=view.state.doc.toString();
+          view.dispatch({changes:{from:this.from,to:this.from+this.raw.length,insert:model.resize(width)},userEvent:'input.image',annotations:Commands.isolateHistory.of('full')});
+          return view.state.doc.toString()!==before || model.width===width;
+        }:undefined});
       return wrap;
     }
-    ignoreEvent() { return false; }
+    destroy(wrap) { wrap._imageDispose?.(); }
+    ignoreEvent() { return true; }
   }
 
   // ---------- 无序 bullet 圆点 widget：-/+/* + 空格 → • ----------
@@ -1366,7 +1379,14 @@ window.MdEditor = (() => {
                 const label = alias || wm2[2].trim();
                 const isEmbed = wm2[1] === '!';
                 // 嵌入图片 ![[x.png]] 交给图片渲染；这里只处理链接
-                if (isEmbed && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(target)) continue;
+                if (isEmbed && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(target)) {
+                  let context=Language.syntaxTree(state).resolveInner(wFrom+2,1),literal=false;
+                  for(;context;context=context.parent)if(context.name==='InlineCode'||context.name==='FencedCode')literal=true;
+                  if(literal)continue;
+                  const model=window.MarkdownImages?.parse(wm2[0]);
+                  decos.push(Decoration.replace({widget:new ImgWidget(target,model?.alt||target,wm2[0],wFrom,!state.readOnly&&state.facet(EditorView.editable))}).range(wFrom,wTo));
+                  continue;
+                }
                 // 嵌入笔记 ![[笔记]] / ![[笔记#标题]]：整行就是它 → 块级 widget 内嵌渲染
                 // （不做的话会走图片分支变裂图，比不做还糟 —— 文档 046 §2.4）
                 if (isEmbed && !alias) {
@@ -1613,10 +1633,11 @@ window.MdEditor = (() => {
             // 图片：整块替换为 img widget（构造粒度 —— 光标不在构造内部时）
             if (name === 'Image' && !revealsConstruct(node.from, node.to)) {
               const src = doc.sliceString(node.from, node.to);
+              const model=window.MarkdownImages?.parse(src);
               const m = /^!\[([^\]]*)\]\(([^)]*)\)/.exec(src);
-              if (m) {
+              if (model || m) {
                 decos.push(Decoration.replace({
-                  widget: new ImgWidget(m[2], m[1]),
+                  widget: new ImgWidget(model?.src||m[2],model?.alt||m?.[1]||'',src,node.from,!state.readOnly&&state.facet(EditorView.editable)),
                 }).range(node.from, node.to));
                 return;
               }
@@ -2204,6 +2225,7 @@ window.MdEditor = (() => {
     // widget（mermaid/图片）异步把高度撑大后，必须让 CM6 立刻重测 —— 否则它对
     // viewport 外的行仍用估算高度，下方内容的选区/点击坐标整体错位
     liveView = view;
+    imageViews.set(view, opts.canEdit || (()=>true));
     // 关闭 Chromium 拼写检查（否则英文/代码下标红波浪"下划线"—— Obsidian 同款关闭）
     view.contentDOM.spellcheck = false;
     view.contentDOM.setAttribute('autocorrect', 'off');
