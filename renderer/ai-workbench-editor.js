@@ -10,8 +10,8 @@
     if(!t.ta||t.ta.readOnly)F('EDITOR_READ_ONLY','请先切换到编辑模式');t.ta.focus();t.ta.setSelectionRange(from,to);if(!document.execCommand?.('insertText',false,text)){t.ta.setRangeText(text,from,to,'end');t.ta.dispatchEvent(new Event('input',{bubbles:true}));}}
   W.register('editor',{state:editorState,async operate(call){
     const a=call.args;
-    if(call.name==='editor_control'&&['split_horizontal','split_vertical','unsplit','focus_group'].includes(a.operation)){
-      let ok;if(a.operation==='unsplit')ok=Viewer.collapsePanes();else if(a.operation==='focus_group')ok=Viewer.focusPaneByIndex(a.group);else ok=Viewer.splitEditor(a.operation==='split_horizontal'?'horizontal':'vertical');
+    if(call.name==='editor_control'&&['split_horizontal','split_vertical','unsplit','focus_group','move_to_group'].includes(a.operation)){
+      let ok;if(a.operation==='unsplit')ok=Viewer.collapsePanes();else if(a.operation==='move_to_group')ok=Viewer.moveTabToPane(a.tab?Number(a.tab):Viewer.activeTab,a.group);else if(a.operation==='focus_group')ok=Viewer.focusPaneByIndex(a.group);else ok=Viewer.splitEditor(a.operation==='split_horizontal'?'horizontal':'vertical');
       return {ok:!!ok,layout:Viewer.paneState(),...(ok?{}:{error:'当前没有可操作的编辑组或文档'})};
     }
     if(call.name==='editor_state'&&!a.tab&&!Viewer.activeTab)return W.observe('editor',{tabs:tabs(),active:null,layout:Viewer.paneState?.()||null,text:'',total:0,complete:true});

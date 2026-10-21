@@ -33,7 +33,14 @@ const Viewer = (() => {
     activeTabId=group.tabId;cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
     const ctx=cmApi?.__mdContext;if(ctx)Object.assign(MdEditor,{__baseDir:ctx.baseDir,__openLink:ctx.openLink,__onPasteImage:ctx.onPasteImage});
   }
-  function refreshPanes(){paneLayout?.refresh(activePane,tabs);}
+  function paneFor(tab){return paneLayout?.groups.find(group=>group.tabIds.includes(tab?.id));}
+  function assignPaneTabs(){
+    if(!paneLayout?.visible)return;
+    const assigned=new Set();
+    for(const group of paneLayout.groups)group.tabIds=group.tabIds.filter(id=>tabs.some(t=>t.id===id)&&!assigned.has(id)&&assigned.add(id));
+    for(const tab of tabs)if(!assigned.has(tab.id))activePane.tabIds.push(tab.id);
+  }
+  function refreshPanes(){paneLayout?.refresh(activePane);const head=paneLayout?.visible?activePane.head:tabbar;if(head&&tabActions.parentElement!==head){if(paneLayout?.visible)head.insertBefore(tabActions,head.lastElementChild);else head.append(tabActions);}}
   function focusPane(group){
     if(group===activePane)return;
     if(!paneLayout?.groups.includes(group)||Modal.stack.length)return;
@@ -60,17 +67,31 @@ const Viewer = (() => {
     else renderPane(group,tab);
   }
   function splitEditor(orientation='horizontal'){
-    if(!['horizontal','vertical'].includes(orientation))return false;
-    if(Modal.stack.length)return false;
-    const tab=currentTab();if(!tab||tab.reader){MI.toast('请先打开需要分屏的文档','err');return false;}
+    if(!['horizontal','vertical'].includes(orientation)||Modal.stack.length)return false;
+    const tab=currentTab();if(!tab||tab.reader){MI.toast('请先打开需要拆分的文档','err');return false;}
     App.backToEditor();keepTab(tab);
     if(!paneLayout?.visible){
-      storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes,select:(group,id)=>{focusPane(group);if(id)activate(tabs.findIndex(t=>t.id===id));else{activeTabId=null;renderView();renderTabs();}focusEditor();}});
-      const groups=paneLayout.ensure();Object.assign(groups[0],{tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});activePane=groups[0];
-      const second=tabs.findLast(t=>t!==tab&&!t.reader&&t.mode!=null&&!t.error);
-      renderPane(groups[1],second||null);
-    }
-    paneLayout.setOrientation(orientation);refreshPanes();window.Session?.save();return true;
+      storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes});
+      const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});activePane=groups[0];
+      paneLayout.setOrientation(orientation);renderPane(groups[1],null);
+      moveTabToPane(tab,1,true);
+    }else paneLayout.setOrientation(orientation);
+    renderTabs();window.Session?.save();return true;
+  }
+  function moveTabToPane(tab,index,keepEmpty=false){
+    if(typeof tab==='number')tab=tabs.find(t=>t.id===tab);
+    const target=paneLayout?.groups[index];if(!target||!tabs.includes(tab)||tab.reader||Modal.stack.length)return false;
+    assignPaneTabs();const source=paneFor(tab);if(source===target){focusPane(target);activate(tabs.indexOf(tab));return true;}
+    keepTab(tab);
+    // 先卸下旧视图再建新视图，复用同一份正文及CM状态，避免产生双份保存身份。
+    if(source?.tabId===tab.id)renderPane(source,null);
+    if(source)source.tabIds=source.tabIds.filter(id=>id!==tab.id);
+    target.tabIds.push(tab.id);
+    if(source&&!source.tabId&&source.tabIds.length){focusPane(source);activate(tabs.findIndex(t=>t.id===source.tabIds.at(-1)));}
+    focusPane(target);activate(tabs.indexOf(tab));focusEditor();
+    if(source&&!source.tabIds.length&&!keepEmpty)collapsePanes(target);
+    else renderTabs();
+    return true;
   }
   function collapsePanes(keep=activePane,quiet=false){
     if(!paneLayout?.visible)return false;
@@ -83,12 +104,12 @@ const Viewer = (() => {
       if(tab?.ta&&group.view.contains(tab.ta))tab.ta=null;
       group.generation++;
     }
-    paneLayout.destroy(keep);paneLayout=null;storePane();
+    paneLayout.destroy(keep);paneLayout=null;tabbar.classList.remove('split-layout');storePane();
     if(!quiet){renderTabs();refreshSelectionStatus();App.refreshOutline(currentTab());focusEditor();}
     return true;
   }
   function paneState(){return {orientation:paneLayout?.visible?paneLayout.orientation:null,active:paneLayout?.groups.indexOf(activePane)||0,
-    panes:(paneLayout?.visible?paneLayout.groups:[activePane]).map(group=>({path:tabs.find(t=>t.id===(group===activePane?activeTabId:group.tabId))?.path||null}))};}
+    panes:(paneLayout?.visible?paneLayout.groups:[activePane]).map(group=>({path:tabs.find(t=>t.id===(group===activePane?activeTabId:group.tabId))?.path||null,...(paneLayout?.visible?{tabs:group.tabIds.map(id=>tabs.find(t=>t.id===id)?.path).filter(Boolean)}:{})}))};}
   async function restorePanes(state){
     if(!state||!['horizontal','vertical'].includes(state.orientation))return;
     if(!Array.isArray(state.panes)||state.panes.length!==2||![0,1].includes(state.active))throw Error('编辑分屏记录无效');
@@ -103,17 +124,22 @@ const Viewer = (() => {
     }
     const first=ids.find(Boolean);if(!first)return;
     activate(tabs.indexOf(first),{history:false});splitEditor(state.orientation);
+    const seen=new Set();for(let i=0;i<2;i++){
+      const paths=state.panes[i].tabs||[state.panes[i].path].filter(Boolean);
+      paneLayout.groups[i].tabIds=paths.map(path=>tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path))?.id).filter(id=>id&&!ids.some((tab,j)=>j!==i&&tab?.id===id)&&!seen.has(id)&&seen.add(id));
+      if(ids[i]&&!paneLayout.groups[i].tabIds.includes(ids[i].id)){paneLayout.groups[i].tabIds.push(ids[i].id);seen.add(ids[i].id);}
+    }
     for(let i=0;i<2;i++)renderPane(paneLayout.groups[i],ids[i]||null);
     focusPane(paneLayout.groups[state.active]);renderTabs();
   }
   function renderPaneActions(){
     if(!window.EditorPanes)return;
     const controls=document.createElement('div');controls.className='editor-pane-actions';
-    for(const [direction,title]of [['horizontal','左右分屏'],['vertical','上下分屏']]){
+    for(const [direction,title]of [['horizontal',paneLayout?.visible?'左右排列':'向右拆分并移动'],['vertical',paneLayout?.visible?'上下排列':'向下拆分并移动']]){
       const button=document.createElement('button');button.className='vt-btn';button.title=title;button.setAttribute('aria-label',title);button.setAttribute('aria-pressed',String(paneLayout?.visible&&paneLayout.orientation===direction));button.innerHTML=EditorPanes.icon(direction);
       button.onclick=()=>Shortcuts.execute('editor-split-'+direction);controls.append(button);
     }
-    if(paneLayout?.visible){const button=document.createElement('button');button.className='vt-btn';button.title='合并编辑区';button.setAttribute('aria-label','合并编辑区');button.innerHTML=EditorPanes.icon('close');button.onclick=()=>Shortcuts.execute('editor-unsplit');controls.append(button);}
+    if(paneLayout?.visible){const button=document.createElement('button');button.className='vt-btn';button.title='合并编辑区';button.setAttribute('aria-label','合并编辑区');button.innerHTML=EditorPanes.icon('merge');button.onclick=()=>Shortcuts.execute('editor-unsplit');controls.append(button);}
     tabActions.append(controls);
   }
   function characterCount(text) {
@@ -576,8 +602,8 @@ const Viewer = (() => {
     if (['browser','quick-launch','bookshelf'].includes(window.App?.getTool())) App.backToEditor();
     previewSequence++;previewFeedback='';
     storePane();
-    const visible=paneLayout?.groups.find(group=>group!==activePane&&group.tabId===target.id);
-    if(visible){focusPane(visible);revealTab(target.id);return;}
+    const owner=paneFor(target);
+    if(owner&&owner!==activePane){focusPane(owner);if(currentTab()===target){revealTab(target.id);return;}}
     activeTabId = target.id;
     focusedTabId=target.id;
     renderTabs();
@@ -885,9 +911,11 @@ const Viewer = (() => {
   function commitClose(selected,remember=false) {
     const before=[...tabs], current=currentTab(), at=before.indexOf(current), removed=new Set(selected);
     const origin=document.activeElement;
-    const fromTabs=!!origin?.closest?.('#tab-scroll');
+    const fromTabs=!!origin?.closest?.('#tab-scroll,.editor-pane-tabs');
     if(remember)ClosedTabs.remember(before.filter(tab=>removed.has(tab)).map(closedLocation));
-    const successor=removed.has(current) ? before.slice(at+1).find(t=>!removed.has(t)) || before.slice(0,at).reverse().find(t=>!removed.has(t)) : current;
+    const sameGroup=paneLayout?.visible?before.filter(t=>activePane.tabIds.includes(t.id)):before;
+    const groupAt=sameGroup.indexOf(current);
+    const successor=removed.has(current) ? sameGroup.slice(groupAt+1).find(t=>!removed.has(t)) || sameGroup.slice(0,groupAt).reverse().find(t=>!removed.has(t)) : current;
     for(const tab of selected)window.Reader?.release(tab);
     for(let i=tabs.length-1;i>=0;i--)if(removed.has(tabs[i]))tabs.splice(i,1);
     if(paneLayout?.visible&&removed.has(current)){activeTabId=null;renderView();}
@@ -896,7 +924,11 @@ const Viewer = (() => {
     if(current!==currentTab()){
       if(successor)activate(tabs.indexOf(successor),{history:false});else{renderView();document.getElementById('btn-open')?.focus();}
     }else if(origin&&!origin.isConnected&&!fromTabs){cmApi?.focus?.();currentTab()?.ta?.focus();}
-    for(const group of paneLayout?.groups||[])if(group!==activePane&&!tabs.some(t=>t.id===group.tabId))renderPane(group,null);
+    for(const group of paneLayout?.groups||[])if(group!==activePane&&!tabs.some(t=>t.id===group.tabId)){renderPane(group,null);const next=tabs.find(t=>group.tabIds.includes(t.id));if(next){const original=activePane;focusPane(group);activate(tabs.indexOf(next));focusPane(original);}}
+    if(paneLayout?.visible){
+      assignPaneTabs();const emptyGroup=paneLayout.groups.find(g=>!g.tabIds.length);
+      if(emptyGroup)collapsePanes(paneLayout.groups.find(g=>g!==emptyGroup));
+    }
     if(fromTabs&&tabs.length)focusTab(successor?.id);
   }
 
@@ -1044,7 +1076,10 @@ const Viewer = (() => {
         };
         seg.appendChild(b);
       }
-      acts.appendChild(seg);
+      if(paneLayout?.visible){
+        const choice=document.createElement('button');choice.className='vt-btn active';choice.setAttribute('aria-label','Markdown显示模式');choice.setAttribute('aria-haspopup','menu');choice.textContent=MODES.find(item=>item[0]===cur)[2]+' ▾';
+        choice.onclick=e=>{e.stopPropagation();const menu=document.getElementById('ctx-menu');menu.replaceChildren();for(const button of seg.children){const row=document.createElement('div');row.className='ctx-item';row.textContent=button.textContent;row.onclick=()=>{menu.classList.add('hidden');if(currentTab()===tab)button.click();};menu.append(row);}const r=choice.getBoundingClientRect();menu.style.left=Math.min(r.left,window.innerWidth-190)+'px';menu.style.top=r.bottom+'px';menu.classList.remove('hidden');};acts.append(choice);
+      }else acts.appendChild(seg);
     } else if (tab.htmlDiskPreview) {
       const label=document.createElement('span');label.className='vt-note';label.textContent='只读预览 · '+fmtSize(tab.size);acts.appendChild(label);
       const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);
@@ -1110,56 +1145,60 @@ const Viewer = (() => {
     else if(currentTab()?.ta?.isConnected)currentTab().ta.focus({preventScroll:true});
     else viewer.focus({preventScroll:true});
   }
-  function tabButton(id){return tabScroll.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
+  function tabButton(id){return document.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
   function revealTab(id){
     const row=tabButton(id)?.closest('.tab');if(!row)return;
-    const viewport=tabScroll.getBoundingClientRect(),rect=row.getBoundingClientRect(),all=tabScroll.querySelector('.tab-all')?.getBoundingClientRect();if(!viewport.width)return;
+    const strip=row.parentElement,viewport=strip.getBoundingClientRect(),rect=row.getBoundingClientRect(),all=strip.querySelector('.tab-all')?.getBoundingClientRect();if(!viewport.width)return;
     // sticky“全部标签”会盖住滚动区右缘；DOM的nearest并不知道那一块不能展示名字。
     const right=viewport.right-(all?.width||0);
-    if(rect.left<viewport.left)tabScroll.scrollLeft+=rect.left-viewport.left;else if(rect.right>right)tabScroll.scrollLeft+=rect.right-right;
+    if(rect.left<viewport.left)strip.scrollLeft+=rect.left-viewport.left;else if(rect.right>right)strip.scrollLeft+=rect.right-right;
   }
   function focusTab(id=activeTabId){
     const target=tabs.find(tab=>tab.id===Number(id))||currentTab()||tabs[0];if(!target)return document.getElementById('btn-open')?.focus();
-    focusedTabId=target.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=Number(button.dataset.tabId)===target.id?0:-1;
+    focusedTabId=target.id;for(const button of (paneFor(target)?.strip||tabScroll).querySelectorAll('[role="tab"]'))button.tabIndex=Number(button.dataset.tabId)===target.id?0:-1;
     const button=tabButton(target.id);button?.focus({preventScroll:true});revealTab(target.id);
   }
   function fitTabLabels(){
     if(!tabScroll.isConnected)return;
-    const entries=TabDescriptions.describe(tabs,window.App?.root),label=tabScroll.querySelector('.tab-label'),width=label?.getBoundingClientRect().width||108;
+    const scope=paneLayout?.visible?document.getElementById('editor-panes'):tabScroll;
+    const entries=TabDescriptions.describe(tabs,window.App?.root),label=scope.querySelector('.tab-label'),width=label?.getBoundingClientRect().width||108;
     let context=null;if(!/jsdom/i.test(navigator.userAgent)){try{context=document.createElement('canvas').getContext('2d');}catch{}}
     const measure=(value,font)=>{if(context){context.font=font;return context.measureText(value).width;}return Array.from(value).reduce((sum,char)=>sum+(/[\u0000-\u00ff]/.test(char)?6:12),0);};
-    const nameFont=getComputedStyle(tabScroll.querySelector('.tname')||tabScroll).font||'12px sans-serif',pathFont=getComputedStyle(tabScroll.querySelector('.tpath')||tabScroll).font||'10px sans-serif';
+    const nameFont=getComputedStyle(scope.querySelector('.tname')||scope).font||'12px sans-serif',pathFont=getComputedStyle(scope.querySelector('.tpath')||scope).font||'10px sans-serif';
     const names=TabDescriptions.compact(entries.map(entry=>entry.name),width,value=>measure(value,nameFont));
     const hints=TabDescriptions.compact(entries.map(entry=>entry.pathHint),width,value=>measure(value,pathFont));
-    entries.forEach((entry,i)=>{const row=tabScroll.querySelector('.tab[data-tab-id="'+entry.id+'"]');if(!row)return;
+    entries.forEach((entry,i)=>{const row=scope.querySelector('.tab[data-tab-id="'+entry.id+'"]');if(!row)return;
       row.querySelector('.tname').textContent=names[i];const path=row.querySelector('.tpath');if(path)path.textContent=hints[i];});
   }
   if(window.ResizeObserver)new ResizeObserver(fitTabLabels).observe(tabScroll);
   window.addEventListener('resize',fitTabLabels);
-  tabScroll.addEventListener('keydown',e=>{
-    if(e.isComposing||e.keyCode===229||window.Modal?.stack.length||window.Shortcuts?.isCapturing())return;
+  document.addEventListener('keydown',e=>{
+    if(!e.target.closest?.('#tab-scroll,.editor-pane-tabs')||e.isComposing||e.keyCode===229||window.Modal?.stack.length||window.Shortcuts?.isCapturing())return;
     if(e.target.closest('.tclose')&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();e.target.closest('.tclose').click();return;}
     const button=e.target.closest('[role="tab"]');if(!button)return;const tab=tabs.find(tab=>tab.id===Number(button.dataset.tabId));if(!tab)return;
     if(e.shiftKey&&e.key==='F10'){e.preventDefault();e.stopImmediatePropagation();const rect=button.getBoundingClientRect();ctxTabMenu(rect.left,rect.bottom,tab,true);return;}
     if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey)return;
     if(['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();activate(tabs.indexOf(tab));}
-    else if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const at=tabs.indexOf(tab);focusTab(e.key==='Home'?tabs[0].id:e.key==='End'?tabs.at(-1).id:tabs[(at+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length].id);}
-    else if(e.key==='Tab'){if(!e.shiftKey){e.preventDefault();e.stopImmediatePropagation();focusEditor();}}
+    else if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const list=paneFor(tab)?.tabIds.map(id=>tabs.find(t=>t.id===id))||tabs,at=list.indexOf(tab);focusTab(e.key==='Home'?list[0].id:e.key==='End'?list.at(-1).id:list[(at+(e.key==='ArrowRight'?1:-1)+list.length)%list.length].id);}
+    else if(e.key==='Tab'){if(!e.shiftKey){e.preventDefault();e.stopImmediatePropagation();const owner=paneFor(tab);if(owner)focusPane(owner);focusEditor();}}
     else if(e.key==='Delete'){e.preventDefault();e.stopImmediatePropagation();requestClose([tab]);}
-  });
+  },true);
   function renderTabs() {
     cancelDrag(false);
     const oldFocus=document.activeElement,oldTab=oldFocus?.closest?.('.tab'),focusId=Number(oldTab?.dataset.tabId),wasTabFocus=!!oldTab,wasAll=oldFocus?.classList.contains('tab-all');
     const descriptors=TabDescriptions.describe(tabs,window.App?.root);
     tabbar.classList.toggle('disambiguated',descriptors.some(entry=>entry.pathHint));
     if(!tabs.some(tab=>tab.id===focusedTabId))focusedTabId=activeTabId||tabs[0]?.id;
+    assignPaneTabs();tabbar.classList.toggle('split-layout',!!paneLayout?.visible);
+    for(const group of paneLayout?.groups||[])group.strip.replaceChildren();
     tabScroll.innerHTML = '';
     tabActions.innerHTML = '';
     tabs.forEach((t, i) => {
       const el = document.createElement('div');
-      el.className = 'tab' + (t.id === activeTabId ? ' active' : '')+(t.pinned?' pinned':'')+(t.retention==='preview'?' preview-tab':'');
-      const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===activeTabId));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===focusedTabId?0:-1;
-      select.onfocus=()=>{focusedTabId=t.id;for(const button of tabScroll.querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
+      const owner=paneFor(t);
+      el.className = 'tab' + (t.id === (owner?owner.tabId:activeTabId) ? ' active' : '')+(t.pinned?' pinned':'')+(t.retention==='preview'?' preview-tab':'');
+      const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===(owner?owner.tabId:activeTabId)));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===(owner?(owner.tabIds.includes(focusedTabId)?focusedTabId:owner.tabId):focusedTabId)?0:-1;
+      select.onfocus=()=>{focusedTabId=t.id;for(const button of (owner?.strip||tabScroll).querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
       const ti = document.createElement('span');
       ti.className = 'tic';
       // 与侧栏树共用同一套类型图标（App.ftIcon），两处观感一致
@@ -1179,7 +1218,7 @@ const Viewer = (() => {
       x.textContent = '✕';
       x.onclick = (e) => { e.stopPropagation(); requestClose([t]); };
       el.appendChild(x);
-      el.onclick = e => { if(!tabs.includes(t))return;if(e.detail>=2)keepTab(t);if(t!==currentTab())activate(tabs.indexOf(t)); };
+      el.onclick = e => { if(!tabs.includes(t))return;if(e.detail>=2)keepTab(t);if(owner&&owner!==activePane)focusPane(owner);if(t!==currentTab())activate(tabs.indexOf(t)); };
       el.ondblclick=e=>{if(!e.target.closest('.tclose'))keepTab(t);};
       // 拖拽排序（手动实现：mousedown → mousemove → mouseup）
       el.dataset.path = t.path;
@@ -1189,7 +1228,7 @@ const Viewer = (() => {
       el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); requestClose([t]); } };
       el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, t); };
       el.title = t.path;
-      tabScroll.appendChild(el);
+      if(owner){const following=owner.tabIds.slice(owner.tabIds.indexOf(t.id)+1).map(id=>owner.strip.querySelector('.tab[data-tab-id="'+id+'"]')).find(Boolean);owner.strip.insertBefore(el,following||null);}else tabScroll.appendChild(el);
     });
     // 打开文件过多时合并：右侧「▾ 全部标签」下拉
     if (tabs.length > 1) {
@@ -1201,14 +1240,14 @@ const Viewer = (() => {
         e.stopPropagation();
         window.TabPicker.open(all);
       };
-      tabScroll.appendChild(all);
+      (paneLayout?.visible?activePane.strip:tabScroll).appendChild(all);
     }
     renderTabActions();
     storePane();refreshPanes();
-    if(activeTabId!=null)viewer.setAttribute('aria-labelledby','file-tab-'+activeTabId);else viewer.removeAttribute('aria-labelledby');
-    fitTabLabels();window.TabPicker?.refresh();
+    for(const group of paneLayout?.groups||[activePane]){if(group.tabId!=null)group.view.setAttribute('aria-labelledby','file-tab-'+group.tabId);else group.view.removeAttribute('aria-labelledby');}
+    fitTabLabels();for(const group of paneLayout?.groups||[])revealTab(group.tabId);window.TabPicker?.refresh();
     if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
-    else if(wasAll)tabScroll.querySelector('.tab-all')?.focus({preventScroll:true});
+    else if(wasAll)document.querySelector('#tab-scroll .tab-all,.editor-pane-tabs .tab-all')?.focus({preventScroll:true});
     syncEmptyState();
     if (window.Session) Session.save();
   }
@@ -1221,58 +1260,58 @@ const Viewer = (() => {
     const state=dragState;dragState=null;state.cleanup();state.el.classList.remove('dragging');
     if(restore&&state.moved)renderTabs();
   }
-  function suppressReleaseClick() {
+  function suppressReleaseClick(release) {
     clickRelease?.();
-    const onClick=e=>{if(e.detail===0||!tabScroll.contains(e.target))return;e.preventDefault();e.stopImmediatePropagation();clear();};
+    const onClick=e=>{if(e.detail===0)return;const same=release&&Math.abs(e.clientX-release.clientX)<4&&Math.abs(e.clientY-release.clientY)<4;clear();if(same){e.preventDefault();e.stopImmediatePropagation();}};
     const clear=()=>{clearTimeout(timer);document.removeEventListener('click',onClick,true);if(clickRelease===clear)clickRelease=null;};
     const timer=setTimeout(clear,400);clickRelease=clear;document.addEventListener('click',onClick,true);
   }
   function startDrag(e, el, tab) {
     clickRelease?.();cancelDrag();
-    if (e.button !== 0 || e.target.closest('.tclose') || !tabs.includes(tab)) return;
-    const state={el,tab,startX:e.clientX,moved:false,root:MI.activeRoot,cleanup:null};dragState=state;
-    const onMove = (ev) => {
-      if (dragState!==state) return;
-      if(!el.isConnected||!tabs.includes(tab)||MI.activeRoot!==state.root){cancelDrag();return;}
-      if (!state.moved && Math.abs(ev.clientX - state.startX) > 5) {
-        state.moved = true;
-        el.classList.add('dragging');
-      }
-      if (!state.moved) return;
-      // 按鼠标位置与各标签中心找到插入点，实时移动 DOM（只考虑 .tab，忽略右侧「▾ 全部」按钮）
-      // 跨区拖动不隐式取消固定；只能在当前固定/普通区域内部排序。
-      const tabsEl = [...tabScroll.querySelectorAll('.tab')].filter(t=>t!==el&&t.classList.contains('pinned')===!!tab.pinned);
-      let insertAfter = -1;
-      tabsEl.forEach((t, j) => {
-        const r = t.getBoundingClientRect();
-        if (ev.clientX > r.left + r.width / 2) insertAfter = j;
-      });
-      const ref = tabsEl[insertAfter + 1];
-      if (ref) tabScroll.insertBefore(el, ref);
-      else tabScroll.insertBefore(el,tab.pinned?tabScroll.querySelector('.tab:not(.pinned)')||tabScroll.querySelector('.tab-all'):tabScroll.querySelector('.tab-all'));
+    if(e.button!==0||e.target.closest('.tclose')||!tabs.includes(tab))return;
+    const strip=el.parentElement,state={el,tab,strip,startX:e.clientX,startY:e.clientY,moved:false,root:MI.activeRoot,cleanup:null,target:null};dragState=state;
+    const hint=document.createElement('div');hint.className='editor-tab-drop';hint.setAttribute('aria-hidden','true');
+    const inside=(r,p)=>p.clientX>=r.left&&p.clientX<=r.right&&p.clientY>=r.top&&p.clientY<=r.bottom;
+    const targetAt=p=>{
+      if(tab.reader)return null;
+      if(paneLayout?.visible){for(const group of paneLayout.groups)if(inside(group.section.getBoundingClientRect(),p)&&group!==paneFor(tab))return {group,rect:group.section.getBoundingClientRect()};}
+      else{const r=viewer.getBoundingClientRect();if(inside(r,p)){
+        if(p.clientX>r.left+r.width*.65)return {direction:'horizontal',rect:{left:r.left+r.width/2,top:r.top,width:r.width/2,height:r.height}};
+        if(p.clientY>r.top+r.height*.65)return {direction:'vertical',rect:{left:r.left,top:r.top+r.height/2,width:r.width,height:r.height/2}};
+      }}return null;
     };
-    const onUp = ev => {
+    const onMove=ev=>{
       if(dragState!==state)return;
-      const r=tabScroll.getBoundingClientRect(),inside=ev.clientX>=r.left&&ev.clientX<=r.right&&ev.clientY>=r.top&&ev.clientY<=r.bottom;
-      const moved=state.moved;cancelDrag(false);
-      if(moved){suppressReleaseClick();if(inside&&tabs.includes(tab)&&MI.activeRoot===state.root)finishDrag();else renderTabs();}
+      if(!el.isConnected||!tabs.includes(tab)||MI.activeRoot!==state.root){cancelDrag();return;}
+      if(!state.moved&&Math.hypot(ev.clientX-state.startX,ev.clientY-state.startY)>5){state.moved=true;el.classList.add('dragging');}
+      if(!state.moved)return;
+      state.last=ev;state.target=targetAt(ev);
+      if(state.target){const r=state.target.rect;Object.assign(hint.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});if(!hint.isConnected)document.body.append(hint);return;}
+      hint.remove();if(!inside(strip.getBoundingClientRect(),ev))return;
+      const rows=[...strip.querySelectorAll('.tab')].filter(row=>row!==el&&row.classList.contains('pinned')===!!tab.pinned);
+      const ref=rows.find(row=>{const r=row.getBoundingClientRect();return ev.clientX<r.left+r.width/2;});
+      strip.insertBefore(el,ref||(tab.pinned?strip.querySelector('.tab:not(.pinned)')||strip.querySelector('.tab-all'):strip.querySelector('.tab-all')));
+    };
+    const onUp=ev=>{
+      if(dragState!==state)return;
+      const target=targetAt(ev),moved=state.moved,reorder=inside(strip.getBoundingClientRect(),ev);cancelDrag(false);
+      if(!moved)return;suppressReleaseClick(ev);
+      if(!tabs.includes(tab)||MI.activeRoot!==state.root){renderTabs();return;}
+      if(target?.direction){activate(tabs.indexOf(tab));splitEditor(target.direction);}
+      else if(target?.group)moveTabToPane(tab,target.group.index);
+      else if(reorder)finishDrag(strip);else renderTabs();
     };
     const onCancel=()=>cancelDrag();
-    const onKey=ev=>{if(ev.key==='Escape'&&!ev.isComposing&&dragState===state){ev.preventDefault();ev.stopImmediatePropagation();cancelDrag();suppressReleaseClick();}};
-    state.cleanup=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey,true);window.removeEventListener('blur',onCancel);};
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.addEventListener('pointercancel',onCancel);
-    document.addEventListener('keydown',onKey,true);
-    window.addEventListener('blur',onCancel);
+    const onKey=ev=>{if(ev.key==='Escape'&&!ev.isComposing&&dragState===state){ev.preventDefault();ev.stopImmediatePropagation();cancelDrag();suppressReleaseClick(state.last||e);}};
+    state.cleanup=()=>{hint.remove();document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey,true);window.removeEventListener('blur',onCancel);};
+    document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);document.addEventListener('pointercancel',onCancel);document.addEventListener('keydown',onKey,true);window.addEventListener('blur',onCancel);
   }
-  // 按 DOM 顺序重建 tabs（触发重渲染与会话保存）
-  function finishDrag() {
-    const order = [...tabScroll.querySelectorAll('.tab')].map((t) => Number(t.dataset.tabId));
-    if(order.length!==tabs.length||new Set(order).size!==tabs.length||tabs.some(t=>!order.includes(t.id))){renderTabs();return;}
-    tabs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-    orderPinned();
-    renderTabs();
+  function finishDrag(strip=tabScroll) {
+    const order=[...strip.querySelectorAll('.tab')].map(row=>Number(row.dataset.tabId));
+    if(paneLayout?.visible){const group=paneLayout.groups.find(g=>g.strip===strip);if(!group||order.length!==group.tabIds.length)return renderTabs();group.tabIds=order;
+      const all=paneLayout.groups.flatMap(g=>g.tabIds);tabs.sort((a,b)=>all.indexOf(a.id)-all.indexOf(b.id));
+    }else{if(order.length!==tabs.length||new Set(order).size!==tabs.length||tabs.some(t=>!order.includes(t.id)))return renderTabs();tabs.sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));}
+    orderPinned();renderTabs();
   }
 
   let tabMenuCleanup=null;
@@ -1293,6 +1332,11 @@ const Viewer = (() => {
     mk('📄 查看完整路径', () => window.TabPicker.open(tabButton(tab.id),tab.id));
     mk(tab.pinned?'📌 取消固定标签':'📌 固定标签',()=>Shortcuts.execute(tab.pinned?'unpin-tab':'pin-tab',Shortcuts.context(tab)));
     if(tab.retention==='preview')mk('📄 保留标签',()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab)));
+    if(!tab.reader){
+      mk('◫ 向右拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('horizontal'),moveTabToPane(tab,1)):splitEditor('horizontal');});
+      mk('⬒ 向下拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('vertical'),moveTabToPane(tab,1)):splitEditor('vertical');});
+      if(paneLayout?.visible){mk('↔ 移动到另一编辑组',()=>moveTabToPane(tab,paneFor(tab)?.index===0?1:0));mk('◻ 合并编辑区',()=>collapsePanes());}
+    }
     if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
     if (tab.mode === 'edit') mk('⑂ Blame 注解', () => { if (tab !== currentTab()) activate(tabs.indexOf(tab)); toggleBlame(); });
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
@@ -1358,7 +1402,7 @@ const Viewer = (() => {
     for(const child of viewer.children)child.previewDispose?.();
     viewer.innerHTML = '';
     syncEmptyState();
-    if (!currentTab()) { if(paneLayout?.visible){const message=document.createElement('div');message.className='editor-pane-empty';message.textContent='点击此编辑组，再从文件树或快速打开选择文件';viewer.append(message);}window.App?.updateStatusbar({selectedChars:0}); return; }
+    if (!currentTab()) { if(paneLayout?.visible){const message=document.createElement('div');message.className='editor-pane-empty';message.textContent='将文件标签拖到这里，或打开文件';viewer.append(message);}window.App?.updateStatusbar({selectedChars:0}); return; }
     const tab = currentTab();
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
@@ -2212,7 +2256,7 @@ const Viewer = (() => {
 
   return {
     editorFor:tab=>cmApi?.__tab===tab?cmApi:paneLayout?.groups.find(group=>group.cm?.__tab===tab)?.cm,
-    splitEditor, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
+    splitEditor, moveTabToPane, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

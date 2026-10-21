@@ -9488,9 +9488,10 @@ assert_(panel, 'CM6 搜索面板出现');
   await saveCase('拖动活动标签只改顺序，最终click不切对象且输入保存仍写原文件',async(d,viewer)=>{
     const a=viewer.activeTab;await viewer.openFile(P+'/README.md');await viewer.openFile(P+'/src/app.js');viewer.activate(0);const cm=viewer.cm;
     const el=beginTabDrag(d,viewer,a);d.window.document.dispatchEvent(new d.window.MouseEvent('mouseup',{bubbles:true,clientX:800,clientY:20}));
-    d.window.document.querySelector('#tab-scroll .tab').dispatchEvent(new d.window.MouseEvent('click',{bubbles:true,cancelable:true,detail:1}));assert.equal(viewer.activeTab,a);assert.equal(viewer.cm,cm);assert.equal(viewer.openTabs.at(-1),a);assert(!el.isConnected);
+    d.window.document.querySelector('#tab-scroll .tab').dispatchEvent(new d.window.MouseEvent('click',{bubbles:true,cancelable:true,detail:1,clientX:800,clientY:20}));assert.equal(viewer.activeTab,a);assert.equal(viewer.cm,cm);assert.equal(viewer.openTabs.at(-1),a);assert(!el.isConnected);
     cm.setValue('排序后只保存A');assert(a.dirty);assert(viewer.openTabs.filter(t=>t!==a).every(t=>!t.dirty));await viewer.saveTab(viewer.openTabs.indexOf(a));assert.equal(FAKE_FS[a.path].content,'排序后只保存A');assert.equal(viewer.cm,cm);
     d.window.Session.saveNow();const saved=JSON.parse(d.window.localStorage.getItem('myide-session:'+P));assert.equal(saved.active,a.path);assert.equal(saved.tabs.at(-1).p,a.path);
+    const other=viewer.openTabs[0];tabEl(d,other).dispatchEvent(new d.window.MouseEvent('click',{bubbles:true,cancelable:true,detail:1,clientX:100,clientY:20}));assert(viewer.activeTab===other,'拖动后的下一次正常点击不应被吞掉');
   });
   await saveCase('拖动后台标签、取消/失焦/窗口外释放与dirty重绘均不改变活动身份',async(d,viewer)=>{
     const a=viewer.activeTab;await viewer.openFile(P+'/README.md');await viewer.openFile(P+'/src/app.js');const active=viewer.activeTab,cm=viewer.cm;

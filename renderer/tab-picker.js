@@ -24,7 +24,7 @@ const TabPicker=(()=>{
     if(DocumentPaths.key(state.root)!==DocumentPaths.key(App.root))return;
     const other=Modal.stack.at(-1);if(other){other.querySelector('input,button,[tabindex="0"]')?.focus();return;}
     if(state.origin?.isConnected&&state.origin!==document.body)state.origin.focus({preventScroll:true});
-    else if(state.origin?.closest?.('#tab-scroll'))Viewer.focusTab(state.origin.dataset.tabId);
+    else if(state.origin?.closest?.('#tab-scroll,.editor-pane-tabs'))Viewer.focusTab(state.origin.dataset.tabId);
     else Viewer.focusEditor();
   }
   function cleanup(state){

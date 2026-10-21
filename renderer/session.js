@@ -37,7 +37,7 @@ const Session = (() => {
         tabs,
         active: active && tabs.some(t => pathKey(t.p) === pathKey(active.path)) ? active.path : null,
         tool: App.getTool(),
-        editorLayout: Viewer.paneState?.() ? {...Viewer.paneState(),panes:Viewer.paneState().panes.map(pane=>({path:tabs.some(t=>pathKey(t.p)===pathKey(pane.path))?pane.path:null}))} : undefined,
+        editorLayout: Viewer.paneState?.() ? {...Viewer.paneState(),panes:Viewer.paneState().panes.map(pane=>({path:tabs.some(t=>pathKey(t.p)===pathKey(pane.path))?pane.path:null,tabs:(pane.tabs||[]).filter(p=>tabs.some(t=>pathKey(t.p)===pathKey(p)))}))} : undefined,
         expanded: window.Tree ? Tree.getExpandedPaths().filter(p => validPath(p, root)) : [],
       };
       return state;

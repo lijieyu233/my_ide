@@ -1,19 +1,19 @@
-// 布局不拥有文档：每个文件仍只有一个编辑实例，跨组切换不会复制正文或制造两份保存状态。
+// 编辑组拥有标签归属，文档仍由Viewer管理；移动标签保留正文和撤销状态。
 window.EditorPanes = (() => {
-  const icons={horizontal:'<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M8 2.5v11"/>',vertical:'<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M2 8h12"/>',close:'<path d="M4 4l8 8M12 4l-8 8"/>'};
+  const icons={horizontal:'<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M8 2.5v11"/>',vertical:'<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M2 8h12"/>',merge:'<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M3.5 8h3m-1.5-1.5L6.5 8 5 9.5M12.5 8h-3M11 6.5 9.5 8l1.5 1.5"/>',close:'<path d="M4 4l8 8M12 4l-8 8"/>'};
   const icon=name=>'<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">'+icons[name]+'</svg>';
   function create(primary,adapter){
     let host,divider,groups=[],orientation='horizontal',ratio=.5,controller;
     const label=g=>g.index===0?'第一编辑组':'第二编辑组';
     function add(view){
-      const group={index:groups.length,view,tabId:null,cm:null,generation:0,blame:false};
+      const group={index:groups.length,view,tabIds:[],tabId:null,cm:null,generation:0,blame:false};
       const section=document.createElement('section');section.className='editor-pane';section.setAttribute('aria-label',label(group));group.section=section;
-      const head=document.createElement('div');head.className='editor-pane-head';
-      const select=document.createElement('select');select.setAttribute('aria-label',label(group)+'的文件');group.select=select;
-      select.onchange=()=>adapter.select(group,Number(select.value));
+      const head=document.createElement('div');head.className='editor-pane-head';group.head=head;
+      const strip=document.createElement('div');strip.className='editor-pane-tabs';strip.setAttribute('role','tablist');strip.setAttribute('aria-label',label(group)+'的标签');group.strip=strip;
+      strip.addEventListener('wheel',e=>{if(strip.scrollWidth>strip.clientWidth){e.preventDefault();strip.scrollLeft+=Math.abs(e.deltaY)>Math.abs(e.deltaX)?e.deltaY:e.deltaX;}},{passive:false});
       const close=document.createElement('button');close.className='vt-btn';close.title='关闭此编辑组（保留全部标签和未保存内容）';close.setAttribute('aria-label','关闭此编辑组');close.innerHTML=icon('close');close.onclick=()=>adapter.collapse(groups.find(g=>g!==group));
-      head.append(select,close);section.append(head,view);view.classList.add('editor-pane-view');groups.push(group);
-      const activate=e=>{if(!window.Modal?.stack?.length&&!host.inert)adapter.focus(group,e);};
+      head.append(strip,close);section.append(head,view);view.classList.add('editor-pane-view');groups.push(group);
+      const activate=e=>{if(!e.target.closest('.editor-pane-head')&&!window.Modal?.stack?.length&&!host.inert)adapter.focus(group,e);};
       section.addEventListener('pointerdown',activate,true);section.addEventListener('focusin',activate,true);
       return group;
     }
@@ -43,13 +43,7 @@ window.EditorPanes = (() => {
       resize();return groups;
     }
     function setOrientation(next){orientation=next;resize();}
-    function refresh(active,tabs){
-      for(const g of groups){g.section.classList.toggle('active',g===active);g.select.replaceChildren();
-        const empty=document.createElement('option');empty.value='0';empty.textContent='选择已打开的文件…';g.select.append(empty);
-        for(const tab of tabs){const item=document.createElement('option');item.value=tab.id;item.textContent=(tab.dirty?'● ':'')+tab.name;item.title=tab.path;g.select.append(item);}
-        g.select.value=String(g.tabId||0);const tab=tabs.find(t=>t.id===g.tabId);g.select.title=tab?.path||'点击此组后，从文件树或快速打开选择文件';
-      }
-    }
+    function refresh(active){for(const g of groups)g.section.classList.toggle('active',g===active);}
     function destroy(keep){
       if(!host)return;controller?.abort();host.replaceWith(keep.view);keep.view.classList.remove('editor-pane-view');groups=[];host=null;divider=null;
     }

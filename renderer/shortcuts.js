@@ -280,8 +280,8 @@ Shortcuts.register('commit-group-by-dir', { desc: '提交面板：切换分组�
   App.showTool('git');
   GitPanel.toggleGroupByDir();
 } });
-Shortcuts.register('editor-split-horizontal', {desc:'编辑区：左右分屏',category:'编辑器',aliases:['split right','分组'],keys:[],requiresDocument:true,run:()=>Viewer.splitEditor('horizontal')});
-Shortcuts.register('editor-split-vertical', {desc:'编辑区：上下分屏',category:'编辑器',aliases:['split down'],keys:[],requiresDocument:true,run:()=>Viewer.splitEditor('vertical')});
+Shortcuts.register('editor-split-horizontal', {desc:'编辑区：向右拆分并移动',category:'编辑器',aliases:['split right','分组'],keys:[],requiresDocument:true,run:()=>Viewer.splitEditor('horizontal')});
+Shortcuts.register('editor-split-vertical', {desc:'编辑区：向下拆分并移动',category:'编辑器',aliases:['split down'],keys:[],requiresDocument:true,run:()=>Viewer.splitEditor('vertical')});
 Shortcuts.register('editor-unsplit', {desc:'编辑区：合并分屏',category:'编辑器',keys:[],run:()=>Viewer.collapsePanes()});
 Shortcuts.register('editor-next-pane', {desc:'编辑区：切换编辑组',category:'编辑器',keys:[],run:()=>Viewer.focusPaneByIndex(Viewer.paneState().active===0?1:0)});
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab)) });

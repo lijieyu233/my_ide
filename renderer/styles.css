@@ -4074,9 +4074,16 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .editor-pane{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .editor-pane-head{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 6px;background:var(--bg-tabbar);border-bottom:1px solid var(--border)}
 .editor-pane.active>.editor-pane-head{box-shadow:inset 0 -1px var(--accent)}
-.editor-pane-head select{flex:1;min-width:0;background:transparent;color:var(--text-dim);border:0;font:inherit;outline:none;max-width:100%}
-.editor-pane-head select:focus-visible{outline:1px solid var(--accent)}
-.editor-pane-head select option{background:var(--bg-panel);color:var(--text)}
+.editor-pane-tabs{flex:1;min-width:0;display:flex;align-self:stretch;overflow-x:auto;scrollbar-width:none}
+.editor-pane-tabs::-webkit-scrollbar{display:none}
+.editor-pane-head{padding:0;gap:0;min-height:var(--head-h)}
+.editor-pane-tabs .tab{min-width:90px;max-width:210px}
+#tabbar.split-layout{display:none}
+#tabbar.split-layout>#tab-scroll{display:none}
+.editor-pane-head>#tab-actions{min-width:0;max-width:65%;flex-shrink:1;overflow-x:auto;scrollbar-width:none;padding:0 4px;gap:3px}
+.editor-pane-head>.vt-btn{flex-shrink:0}
+.editor-pane-head .ed-actions{flex-shrink:0}
+.editor-tab-drop{position:fixed;pointer-events:none;z-index:99990;border:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);box-sizing:border-box}
 .editor-pane-view{min-width:0}
 .editor-pane-divider{width:6px;flex:0 0 6px;background:var(--bg-title);cursor:col-resize;touch-action:none}
 #editor-panes[data-orientation=vertical]>.editor-pane-divider{width:auto;height:6px;cursor:row-resize}
