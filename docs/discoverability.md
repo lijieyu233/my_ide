@@ -9,16 +9,25 @@
 - [x] 增加文档导航、快速开始、功能说明、AI 工具指南与发布流程。
 - [x] 删除首页旧 v0.3.0 功能标题与未经本轮复核的固定内存倍数宣传。
 - [x] 区分应用内 AI 工具与公共 HTTP/MCP 服务。
-- [ ] 更新 About、Topics、主页和默认展示分支，并回读确认。
-- [ ] 验证新增文档链接、工具示例及图片在默认分支可访问。
+- [x] 更新 About、Topics、主页和默认展示分支，并回读确认。
+- [x] 验证新增文档链接、工具示例及图片在默认分支可访问。
 - [ ] 正式许可证：等待维护者确定，不自行授予许可。
 - [ ] 正式发行版：产物验收后再发布，不上传未经验证的旧安装包。
+
+## GitHub 配置结果
+
+- 默认分支：dev；main 保留在 fa044b96029c943299ef5e125dd987a158bd5ea2，未强推或合并历史分叉。
+- About：AI-assisted Markdown and code workspace for Windows. Markdown live preview, Git, embedded browser and AI workbench tools. Windows AI 文档与代码工作台。
+- 主页：[公开文档导航](https://github.com/lijieyu233/my_ide/blob/dev/docs/README.md)。
+- Topics：markdown-editor、ai-assistant、code-editor、electron、windows、codemirror、git-client、desktop-app、epub-reader。
+- 已回读 GitHub 配置；默认分支中本轮 10 个文档、图片与元数据文件的 Git blob SHA 与本地提交 d1f9166 一致。
 
 ## 本轮验证记录
 
 - 8 份公开 Markdown 文档的 86 个本地链接均存在，Markdown 渲染与表格列数检查通过。
 - AI 指南中的 3 个 JSON 工具调用示例通过现有参数校验。
 - check:js：125 个文件通过；test:package：106 通过 / 0 失败。
+- test:dom：525 通过 / 0 失败。
 - TSD 运行期扫描：无密文。
 - npm test 未完成全套验收：Git 集成日志出现 worker 临时目录 EPERM 与 blame 归属断言失败，日志在 Git 后续用例处结束；不能作为全套通过依据。本轮未修改 Git 实现。
 
