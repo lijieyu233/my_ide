@@ -1,7 +1,7 @@
 {
   "name": "my-ide",
   "version": "0.8.5",
-  "description": "私人定制轻量编辑器：PyCharm 核心体验（文件树/大纲/Git），低内存可扩展（插件渲染）",
+  "description": "AI-assisted Markdown and code workspace for Windows：文档编辑、Git、内置浏览器与 AI 工作台操作",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -148,5 +148,21 @@
       "output": "dist"
     }
   },
-  "author": "My IDE"
+  "author": "My IDE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lijieyu233/my_ide.git"
+  },
+  "homepage": "https://github.com/lijieyu233/my_ide/blob/dev/docs/README.md",
+  "keywords": [
+    "markdown-editor",
+    "ai-assistant",
+    "code-editor",
+    "electron",
+    "windows",
+    "codemirror",
+    "git-client",
+    "desktop-app",
+    "epub-reader"
+  ]
 }
