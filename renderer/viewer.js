@@ -2,7 +2,8 @@
 const Viewer = (() => {
   const tabbar = document.getElementById('tabbar');
   const tabScroll = document.getElementById('tab-scroll');
-  const tabActions = document.getElementById('tab-actions');
+  const mainTabActions = document.getElementById('tab-actions');
+  let tabActions=mainTabActions;
   // 标签栏隐藏了原生滚动条（CSS），滚动交给滚轮：鼠标在标签上上下滚 = 左右滚。
   // IDE 惯例；一条灰滚动条比它下面的几个标签还抢眼（用户截图反馈）。
   if (tabScroll) {
@@ -25,33 +26,47 @@ const Viewer = (() => {
   let activeTabId = null;
   let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
-  let activePane={view:viewer,tabId:null,cm:null,generation:0,blame:false},paneLayout=null;
-  function storePane(){Object.assign(activePane,{view:viewer,tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});if(cmApi?.__tab)cmApi.__tab.cmState=cmApi.getState();}
+  let activePane={view:viewer,states:new Map(),modes:new Map(),tabId:null,cm:null,generation:0,blame:false},paneLayout=null;
+  function rememberPaneEditor(group=activePane,api=cmApi){
+    const tab=api?.__tab;if(!tab)return;
+    const scroll=api.view.scrollDOM;group.states.set(tab.id,{state:api.getState(),top:scroll.scrollTop,left:scroll.scrollLeft});
+    tab.cmState=api.getState();
+  }
+  function storePane(){Object.assign(activePane,{view:viewer,tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});rememberPaneEditor();if(currentTab()?.mode!=null&&currentTab().mode!=='error')activePane.modes.set(activeTabId,currentTab().mode);}
   function usePane(group){
     if(group===activePane)return;
     storePane();viewer.removeAttribute('id');activePane=group;viewer=group.view;viewer.id='viewer';
-    activeTabId=group.tabId;cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
+    activeTabId=group.tabId;tabActions=group.actions||mainTabActions;if(group.modes.has(activeTabId)&&currentTab()?.mode!=null&&currentTab().mode!=='error')currentTab().mode=group.modes.get(activeTabId);cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
+    if(currentTab())currentTab().ta=viewer.querySelector('textarea.editor');
     const ctx=cmApi?.__mdContext;if(ctx)Object.assign(MdEditor,{__baseDir:ctx.baseDir,__openLink:ctx.openLink,__onPasteImage:ctx.onPasteImage});
   }
-  function paneFor(tab){return paneLayout?.groups.find(group=>group.tabIds.includes(tab?.id));}
+  function paneFor(tab){return paneLayout?.groups.find(group=>group===activePane&&group.tabIds.includes(tab?.id))||paneLayout?.groups.find(group=>group.tabIds.includes(tab?.id));}
   function assignPaneTabs(){
     if(!paneLayout?.visible)return;
     const assigned=new Set();
-    for(const group of paneLayout.groups)group.tabIds=group.tabIds.filter(id=>tabs.some(t=>t.id===id)&&!assigned.has(id)&&assigned.add(id));
+    for(const group of paneLayout.groups)group.tabIds=[...new Set(group.tabIds)].filter(id=>tabs.some(t=>t.id===id)&&assigned.add(id));
     for(const tab of tabs)if(!assigned.has(tab.id))activePane.tabIds.push(tab.id);
   }
-  function refreshPanes(){paneLayout?.refresh(activePane);const head=paneLayout?.visible?activePane.head:tabbar;if(head&&tabActions.parentElement!==head){if(paneLayout?.visible)head.insertBefore(tabActions,head.lastElementChild);else head.append(tabActions);}}
+  function refreshPanes(){paneLayout?.refresh(activePane);if(!paneLayout?.visible&&tabActions!==mainTabActions)tabActions=mainTabActions;}
+  function closePaneTab(group,tab){
+    if(!paneLayout?.visible||!group)return requestClose([tab]);
+    const other=paneLayout.groups.find(g=>g!==group&&g.tabIds.includes(tab.id));
+    if(!other){focusPane(group);return requestClose([tab]);}
+    const original=activePane;focusPane(group);group.tabIds=group.tabIds.filter(id=>id!==tab.id);
+    if(currentTab()===tab){activeTabId=null;renderView();const next=tabs.find(t=>group.tabIds.includes(t.id));if(next)activate(tabs.indexOf(next));}
+    if(!group.tabIds.length)collapsePanes(other);else{if(original!==group)focusPane(original);renderTabs();}
+  }
   function focusPane(group){
     if(group===activePane)return;
     if(!paneLayout?.groups.includes(group)||Modal.stack.length)return;
     closeFind();usePane(group);previewSequence++;previewFeedback='';focusedTabId=activeTabId;
-    renderTabs();const tab=currentTab();refreshSelectionStatus();
+    refreshPanes();window.Session?.save();const tab=currentTab();refreshSelectionStatus();
     App.updateStatusbar({file:tab?.path||'',lines:tab?.content?.split('\n').length||0,encoding:tab?formatLabel(tab):'',encodingEnabled:!!tab&&canChooseEncoding(tab),eol:tab?.eol||null});
     App.refreshOutline(tab);try{window.AiPanel?.followActive();}catch{}
   }
   function focusPaneByIndex(index){const group=paneLayout?.groups[index];if(group){focusPane(group);focusEditor();return true;}return false;}
   function renderPane(group,tab){
-    const original=activePane;usePane(group);activeTabId=tab?.id||null;
+    const original=activePane;usePane(group);activeTabId=tab?.id||null;if(tab&&tab.mode!=null&&tab.mode!=='error'&&group.modes.has(tab.id))tab.mode=group.modes.get(tab.id);
     renderView();
     if(tab&&cmApi?.__tab===tab){
       if(tab.restoreLine){cmApi.gotoLine?.(tab.restoreLine);delete tab.restoreLine;}
@@ -60,21 +75,21 @@ const Viewer = (() => {
     usePane(original);renderTabs();
   }
   function renderVisibleTab(tab,external=false){
+    if(external){syncPaneDocument(tab);return;}
     const group=paneLayout?.groups.find(g=>g!==activePane&&g.tabId===tab.id);if(!group)return;
-    if(external==='reset'){const original=activePane;usePane(group);cmApi?.destroy();cmApi=null;tab.cmState=null;renderView();usePane(original);}
-    else if(external&&group.cm){const original=activePane;usePane(group);tab.__extLoading=true;try{group.cm.setValue(tab.content);}finally{tab.__extLoading=false;usePane(original);}}
-    else if(external&&tab.ta?.isConnected){const start=tab.ta.selectionStart,end=tab.ta.selectionEnd;tab.ta.value=tab.content;tab.ta.setSelectionRange(start,end);}
-    else renderPane(group,tab);
+    renderPane(group,tab);
   }
-  function splitEditor(orientation='horizontal'){
+  function splitEditor(orientation='horizontal',move=false){
     if(!['horizontal','vertical'].includes(orientation)||Modal.stack.length)return false;
     const tab=currentTab();if(!tab||tab.reader){MI.toast('请先打开需要拆分的文档','err');return false;}
     App.backToEditor();keepTab(tab);
     if(!paneLayout?.visible){
       storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes});
-      const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});activePane=groups[0];
-      paneLayout.setOrientation(orientation);renderPane(groups[1],null);
-      moveTabToPane(tab,1,true);
+      const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn,states:activePane.states,modes:activePane.modes});activePane=groups[0];tabActions=activePane.actions;
+      paneLayout.setOrientation(orientation);groups[1].tabIds=[tab.id];groups[1].modes.set(tab.id,tab.mode);
+      const initial=groups[0].states.get(tab.id);if(initial)groups[1].states.set(tab.id,{...initial});
+      if(move){groups[1].tabIds=[];renderPane(groups[1],null);moveTabToPane(tab,1,true);}
+      else{renderPane(groups[1],tab);focusPane(groups[1]);focusEditor();}
     }else paneLayout.setOrientation(orientation);
     renderTabs();window.Session?.save();return true;
   }
@@ -86,7 +101,7 @@ const Viewer = (() => {
     // 先卸下旧视图再建新视图，复用同一份正文及CM状态，避免产生双份保存身份。
     if(source?.tabId===tab.id)renderPane(source,null);
     if(source)source.tabIds=source.tabIds.filter(id=>id!==tab.id);
-    target.tabIds.push(tab.id);
+    if(!target.tabIds.includes(tab.id))target.tabIds.push(tab.id);
     if(source&&!source.tabId&&source.tabIds.length){focusPane(source);activate(tabs.findIndex(t=>t.id===source.tabIds.at(-1)));}
     focusPane(target);activate(tabs.indexOf(tab));focusEditor();
     if(source&&!source.tabIds.length&&!keepEmpty)collapsePanes(target);
@@ -99,12 +114,12 @@ const Viewer = (() => {
     const dropping=paneLayout.groups.filter(g=>g!==keep);usePane(keep);closeFind();
     for(const group of dropping){
       const tab=tabs.find(t=>t.id===group.tabId);
-      if(group.cm){if(tab)tab.cmState=group.cm.getState();group.cm.destroy();group.cm=null;}
+      if(group.cm){rememberPaneEditor(group,group.cm);group.cm.destroy();group.cm=null;}
       for(const child of group.view.children)child.previewDispose?.();
       if(tab?.ta&&group.view.contains(tab.ta))tab.ta=null;
       group.generation++;
     }
-    paneLayout.destroy(keep);paneLayout=null;tabbar.classList.remove('split-layout');storePane();
+    paneLayout.destroy(keep);paneLayout=null;tabActions=mainTabActions;tabbar.classList.remove('split-layout');storePane();
     if(!quiet){renderTabs();refreshSelectionStatus();App.refreshOutline(currentTab());focusEditor();}
     return true;
   }
@@ -115,7 +130,7 @@ const Viewer = (() => {
     if(!Array.isArray(state.panes)||state.panes.length!==2||![0,1].includes(state.active))throw Error('编辑分屏记录无效');
     const root=App.root,initial=currentTab(),revision=initial?.editRevision;
     const ids=state.panes.map(item=>item.path==null?null:tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(item.path)));
-    if(ids.some(tab=>tab===undefined)||ids[0]&&ids[0]===ids[1])throw Error('分屏文件已关闭或记录重复');
+    if(ids.some(tab=>tab===undefined))throw Error('分屏文件已关闭或记录重复');
     for(const tab of ids.filter(Boolean)){
       if(tab.reader)return;
       if(tab.lazy){tab.lazy=false;tab.loadPromise=loadTab(tab,true);}
@@ -124,10 +139,10 @@ const Viewer = (() => {
     }
     const first=ids.find(Boolean);if(!first)return;
     activate(tabs.indexOf(first),{history:false});splitEditor(state.orientation);
-    const seen=new Set();for(let i=0;i<2;i++){
-      const paths=state.panes[i].tabs||[state.panes[i].path].filter(Boolean);
-      paneLayout.groups[i].tabIds=paths.map(path=>tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path))?.id).filter(id=>id&&!ids.some((tab,j)=>j!==i&&tab?.id===id)&&!seen.has(id)&&seen.add(id));
-      if(ids[i]&&!paneLayout.groups[i].tabIds.includes(ids[i].id)){paneLayout.groups[i].tabIds.push(ids[i].id);seen.add(ids[i].id);}
+    for(let i=0;i<2;i++){
+      const paths=Array.isArray(state.panes[i].tabs)?state.panes[i].tabs:[state.panes[i].path].filter(Boolean);
+      paneLayout.groups[i].tabIds=paths.map(path=>tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path))?.id).filter(Boolean);
+      if(ids[i]&&!paneLayout.groups[i].tabIds.includes(ids[i].id))paneLayout.groups[i].tabIds.push(ids[i].id);
     }
     for(let i=0;i<2;i++)renderPane(paneLayout.groups[i],ids[i]||null);
     focusPane(paneLayout.groups[state.active]);renderTabs();
@@ -135,7 +150,7 @@ const Viewer = (() => {
   function renderPaneActions(){
     if(!window.EditorPanes)return;
     const controls=document.createElement('div');controls.className='editor-pane-actions';
-    for(const [direction,title]of [['horizontal',paneLayout?.visible?'左右排列':'向右拆分并移动'],['vertical',paneLayout?.visible?'上下排列':'向下拆分并移动']]){
+    for(const [direction,title]of [['horizontal',paneLayout?.visible?'左右排列':'向右拆分'],['vertical',paneLayout?.visible?'上下排列':'向下拆分']]){
       const button=document.createElement('button');button.className='vt-btn';button.title=title;button.setAttribute('aria-label',title);button.setAttribute('aria-pressed',String(paneLayout?.visible&&paneLayout.orientation===direction));button.innerHTML=EditorPanes.icon(direction);
       button.onclick=()=>Shortcuts.execute('editor-split-'+direction);controls.append(button);
     }
@@ -249,7 +264,7 @@ const Viewer = (() => {
         if (cmApi && cmApi.__tab === tab) { cmApi.destroy(); cmApi = null; }
         renderView();
       }else renderVisibleTab(tab,'reset');
-      renderTabs(); updateFormatStatus(tab);
+      syncPaneDocument(tab);renderTabs(); updateFormatStatus(tab);
       return { ok: true };
     } catch (e) {
       MI.toast('重新打开失败: ' + String(e.message || e) + '；当前内容已保留', 'err');
@@ -603,7 +618,8 @@ const Viewer = (() => {
     previewSequence++;previewFeedback='';
     storePane();
     const owner=paneFor(target);
-    if(owner&&owner!==activePane){focusPane(owner);if(currentTab()===target){revealTab(target.id);return;}}
+    if(paneLayout?.visible&&!activePane.tabIds.includes(target.id))activePane.tabIds.push(target.id);
+    if(activePane.modes.has(target.id)&&target.mode!=null&&target.mode!=='error')target.mode=activePane.modes.get(target.id);
     activeTabId = target.id;
     focusedTabId=target.id;
     renderTabs();
@@ -827,7 +843,7 @@ const Viewer = (() => {
 
   const closePending = new Set();
   const closeDecisions = new Set();
-  function closeTab(i) { return requestClose(tabs[i] ? [tabs[i]] : []); }
+  function closeTab(i) { const tab=tabs[i];return tab?closePaneTab(paneFor(tab),tab):requestClose([]); }
   async function requestClose(candidates) {
     const selected = [...new Set(candidates)].filter(t => tabs.includes(t));
     if (!selected.length || selected.some(t => closePending.has(t.id))) return false;
@@ -899,6 +915,7 @@ const Viewer = (() => {
     for(const cancel of [...closeDecisions])cancel();
     for(const tab of tabs)window.Reader?.release(tab);
     collapsePanes(activePane,true);
+    activePane.states.clear();activePane.modes.clear();
     tabs.length = 0;
     activeTabId = null;
     syncEmptyState();
@@ -1145,7 +1162,7 @@ const Viewer = (() => {
     else if(currentTab()?.ta?.isConnected)currentTab().ta.focus({preventScroll:true});
     else viewer.focus({preventScroll:true});
   }
-  function tabButton(id){return document.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
+  function tabButton(id){return (paneLayout?.visible?activePane.strip:tabScroll).querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]')||document.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
   function revealTab(id){
     const row=tabButton(id)?.closest('.tab');if(!row)return;
     const strip=row.parentElement,viewport=strip.getBoundingClientRect(),rect=row.getBoundingClientRect(),all=strip.querySelector('.tab-all')?.getBoundingClientRect();if(!viewport.width)return;
@@ -1181,7 +1198,7 @@ const Viewer = (() => {
     if(['Enter',' '].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();activate(tabs.indexOf(tab));}
     else if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();const list=paneFor(tab)?.tabIds.map(id=>tabs.find(t=>t.id===id))||tabs,at=list.indexOf(tab);focusTab(e.key==='Home'?list[0].id:e.key==='End'?list.at(-1).id:list[(at+(e.key==='ArrowRight'?1:-1)+list.length)%list.length].id);}
     else if(e.key==='Tab'){if(!e.shiftKey){e.preventDefault();e.stopImmediatePropagation();const owner=paneFor(tab);if(owner)focusPane(owner);focusEditor();}}
-    else if(e.key==='Delete'){e.preventDefault();e.stopImmediatePropagation();requestClose([tab]);}
+    else if(e.key==='Delete'){e.preventDefault();e.stopImmediatePropagation();closePaneTab(paneFor(tab),tab);}
   },true);
   function renderTabs() {
     cancelDrag(false);
@@ -1193,11 +1210,10 @@ const Viewer = (() => {
     for(const group of paneLayout?.groups||[])group.strip.replaceChildren();
     tabScroll.innerHTML = '';
     tabActions.innerHTML = '';
-    tabs.forEach((t, i) => {
+    const renderTab=(t,i,owner)=>{
       const el = document.createElement('div');
-      const owner=paneFor(t);
       el.className = 'tab' + (t.id === (owner?owner.tabId:activeTabId) ? ' active' : '')+(t.pinned?' pinned':'')+(t.retention==='preview'?' preview-tab':'');
-      const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id;select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===(owner?owner.tabId:activeTabId)));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===(owner?(owner.tabIds.includes(focusedTabId)?focusedTabId:owner.tabId):focusedTabId)?0:-1;
+      const description=descriptors[i],select=document.createElement('button');select.type='button';select.className='tab-select';select.id='file-tab-'+t.id+(owner?'-'+owner.index:'');select.dataset.tabId=String(t.id);select.setAttribute('role','tab');select.setAttribute('aria-controls','viewer');select.setAttribute('aria-selected',String(t.id===(owner?owner.tabId:activeTabId)));select.setAttribute('aria-label',description.name+'，'+description.path+(description.status?'，'+description.status:''));select.tabIndex=t.id===(owner?(owner.tabIds.includes(focusedTabId)?focusedTabId:owner.tabId):focusedTabId)?0:-1;
       select.onfocus=()=>{focusedTabId=t.id;for(const button of (owner?.strip||tabScroll).querySelectorAll('[role="tab"]'))button.tabIndex=button===select?0:-1;};
       const ti = document.createElement('span');
       ti.className = 'tic';
@@ -1216,7 +1232,7 @@ const Viewer = (() => {
       const x = document.createElement('button');x.type='button';x.tabIndex=-1;x.setAttribute('aria-label','关闭 '+description.name+'，'+description.path);
       x.className = 'tclose';
       x.textContent = '✕';
-      x.onclick = (e) => { e.stopPropagation(); requestClose([t]); };
+      x.onclick = (e) => { e.stopPropagation(); closePaneTab(owner,t); };
       el.appendChild(x);
       el.onclick = e => { if(!tabs.includes(t))return;if(e.detail>=2)keepTab(t);if(owner&&owner!==activePane)focusPane(owner);if(t!==currentTab())activate(tabs.indexOf(t)); };
       el.ondblclick=e=>{if(!e.target.closest('.tclose'))keepTab(t);};
@@ -1225,11 +1241,12 @@ const Viewer = (() => {
       el.dataset.tabId = String(t.id);
       el.onmousedown = (e) => startDrag(e, el, t);
       // 中键关闭（浏览器/PyCharm 习惯）
-      el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); requestClose([t]); } };
-      el.oncontextmenu = (e) => { e.preventDefault(); ctxTabMenu(e.clientX, e.clientY, t); };
+      el.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closePaneTab(owner,t); } };
+      el.oncontextmenu = (e) => { e.preventDefault(); if(owner)focusPane(owner);ctxTabMenu(e.clientX, e.clientY, t); };
       el.title = t.path;
       if(owner){const following=owner.tabIds.slice(owner.tabIds.indexOf(t.id)+1).map(id=>owner.strip.querySelector('.tab[data-tab-id="'+id+'"]')).find(Boolean);owner.strip.insertBefore(el,following||null);}else tabScroll.appendChild(el);
-    });
+    };
+    if(paneLayout?.visible){for(const group of paneLayout.groups)for(const id of group.tabIds){const tab=tabs.find(t=>t.id===id);if(tab)renderTab(tab,tabs.indexOf(tab),group);}}else tabs.forEach((tab,i)=>renderTab(tab,i,null));
     // 打开文件过多时合并：右侧「▾ 全部标签」下拉
     if (tabs.length > 1) {
       const all = document.createElement('button');all.type='button';all.setAttribute('aria-label','全部打开的标签，'+tabs.length+' 个');all.setAttribute('aria-haspopup','dialog');
@@ -1244,7 +1261,8 @@ const Viewer = (() => {
     }
     renderTabActions();
     storePane();refreshPanes();
-    for(const group of paneLayout?.groups||[activePane]){if(group.tabId!=null)group.view.setAttribute('aria-labelledby','file-tab-'+group.tabId);else group.view.removeAttribute('aria-labelledby');}
+    if(paneLayout?.visible){const original=activePane;for(const group of paneLayout.groups){usePane(group);renderTabActions();}usePane(original);}
+    for(const group of paneLayout?.groups||[activePane]){if(group.tabId!=null)group.view.setAttribute('aria-labelledby','file-tab-'+group.tabId+(paneLayout?.visible?'-'+group.index:''));else group.view.removeAttribute('aria-labelledby');}
     fitTabLabels();for(const group of paneLayout?.groups||[])revealTab(group.tabId);window.TabPicker?.refresh();
     if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
     else if(wasAll)document.querySelector('#tab-scroll .tab-all,.editor-pane-tabs .tab-all')?.focus({preventScroll:true});
@@ -1297,7 +1315,7 @@ const Viewer = (() => {
       const target=targetAt(ev),moved=state.moved,reorder=inside(strip.getBoundingClientRect(),ev);cancelDrag(false);
       if(!moved)return;suppressReleaseClick(ev);
       if(!tabs.includes(tab)||MI.activeRoot!==state.root){renderTabs();return;}
-      if(target?.direction){activate(tabs.indexOf(tab));splitEditor(target.direction);}
+      if(target?.direction){activate(tabs.indexOf(tab));splitEditor(target.direction,true);}
       else if(target?.group)moveTabToPane(tab,target.group.index);
       else if(reorder)finishDrag(strip);else renderTabs();
     };
@@ -1333,8 +1351,10 @@ const Viewer = (() => {
     mk(tab.pinned?'📌 取消固定标签':'📌 固定标签',()=>Shortcuts.execute(tab.pinned?'unpin-tab':'pin-tab',Shortcuts.context(tab)));
     if(tab.retention==='preview')mk('📄 保留标签',()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab)));
     if(!tab.reader){
-      mk('◫ 向右拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('horizontal'),moveTabToPane(tab,1)):splitEditor('horizontal');});
-      mk('⬒ 向下拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('vertical'),moveTabToPane(tab,1)):splitEditor('vertical');});
+      mk('◫ 向右拆分',()=>{activate(tabs.indexOf(tab));return splitEditor('horizontal');});
+      mk('⬒ 向下拆分',()=>{activate(tabs.indexOf(tab));return splitEditor('vertical');});
+      mk('◫ 向右拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('horizontal'),moveTabToPane(tab,1)):splitEditor('horizontal',true);});
+      mk('⬒ 向下拆分并移动',()=>{activate(tabs.indexOf(tab));return paneLayout?.visible?(paneLayout.setOrientation('vertical'),moveTabToPane(tab,1)):splitEditor('vertical',true);});
       if(paneLayout?.visible){mk('↔ 移动到另一编辑组',()=>moveTabToPane(tab,paneFor(tab)?.index===0?1:0));mk('◻ 合并编辑区',()=>collapsePanes());}
     }
     if (window.GitLog && GitLog.showFileHistory) mk('🕘 显示文件历史', () => Shortcuts.execute('file-history', Shortcuts.context(tab)));
@@ -1342,7 +1362,7 @@ const Viewer = (() => {
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     const pdir = (tab.path || '').replace(/[\\/][^\\/]+$/, '');
     if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(tab.path.replace(/[\\/][^\\/]+$/, '')); });
-    mk('✕ 关闭', () => requestClose([tab]));
+    mk('✕ 关闭', () => closePaneTab(paneFor(tab),tab));
     const hasPinned=tabs.some(t=>t.pinned);
     mk(hasPinned?'🗂 关闭其他（保留固定）':'🗂 关闭其他', () => closeOthers(tab));
     mk(hasPinned?'🗑 关闭未固定标签':'🗑 关闭全部', () => closeUnpinned());
@@ -1365,8 +1385,8 @@ const Viewer = (() => {
   let viewGeneration = 0;
   function editorScope(tab, parent) {
     const group=activePane, epoch=viewGeneration, project=MI.activeRoot, path=tab.path, generation=tab.pathGeneration||0, mode=tab.mode;
-    return () => epoch===(group===activePane?viewGeneration:group.generation) && MI.activeRoot===project && currentTab()===tab && tabs.includes(tab) && group===activePane
-      && tab.path===path && (tab.pathGeneration||0)===generation && tab.mode===mode && parent.isConnected;
+    return () => {const owner=viewer.contains(parent)?activePane:paneLayout?.groups.find(g=>g.view.contains(parent))||group;return epoch===(owner===activePane?viewGeneration:owner.generation) && MI.activeRoot===project && currentTab()===tab && tabs.includes(tab) && owner===activePane
+      && tab.path===path && (tab.pathGeneration||0)===generation && tab.mode===mode && parent.isConnected;};
   }
   function renderView() {
     try{return renderViewBody();}finally{storePane();refreshPanes();}
@@ -1393,7 +1413,7 @@ const Viewer = (() => {
     }
     // 切换视图前保存 CM 编辑器状态（撤销历史/光标）
     if (cmApi) {
-      if (cmApi.__tab) cmApi.__tab.cmState = cmApi.getState();
+      rememberPaneEditor();
       cmApi.destroy();
       cmApi = null;
     }
@@ -1404,6 +1424,8 @@ const Viewer = (() => {
     syncEmptyState();
     if (!currentTab()) { if(paneLayout?.visible){const message=document.createElement('div');message.className='editor-pane-empty';message.textContent='将文件标签拖到这里，或打开文件';viewer.append(message);}window.App?.updateStatusbar({selectedChars:0}); return; }
     const tab = currentTab();
+    const local=activePane.states.get(tab.id);
+    if(local){if(TextLines.raw(local.state)===tab.content)tab.cmState=local.state;else tab.cmState=null;tab.scrollTop=local.top;tab.scrollLeft=local.left;}
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
     // 跟「定位」一起挂在标签栏右端。原来那一行左边 500px 全空，只为右侧摆 4 个小按钮。
@@ -1518,10 +1540,10 @@ const Viewer = (() => {
       let previewScrolling = false;
       let previewScrollTimer = null;
       ta.addEventListener('input', () => {
-        if (tab.__extLoading) return;
+        if (tab.__extLoading||tab.__syncing) return;
         if(!ownsEditor()||tab.ta!==ta){ta.value=tab.content||'';return;}
         const change=mapTextChange(tab.content,ta.value);tab.content = TextLines.reconcile(tab.content || '', ta.value);
-        markEdited(tab,change);
+        markEdited(tab,change);syncPaneDocument(tab);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
         renderGutter();
@@ -1544,6 +1566,7 @@ const Viewer = (() => {
           ta.dispatchEvent(new Event('input', { bubbles: true }));
         }
       });
+      ta.__refreshDocument=()=>{renderGutter();refreshPreview();};
       wrap.appendChild(ta);
       // 恢复上次滚动位置（用户报告：每次点击文件都回到开头）
       if (tab.scrollTop) { try { ta.scrollTop = tab.scrollTop; } catch {} }
@@ -1720,7 +1743,7 @@ const Viewer = (() => {
       onChange: (val,changes) => {
         if (tab.__extLoading) return; // 外部重载写入：不标 dirty、不触发自动保存（防写回抖动）
         tab.content = val;
-        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
+        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);syncPaneDocument(tab,changes);
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
         cmOutlineTimer = setTimeout(() => { if (currentTab()===tab&&window.App) App.refreshOutline(tab); }, 300);
@@ -1758,7 +1781,7 @@ const Viewer = (() => {
       onChange: (val,changes) => {
         if (tab.__extLoading) return;
         tab.content = val;
-        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
+        markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);syncPaneDocument(tab,changes);
         if (blameOn) closeBlame(); // 编辑后行号错位，自动关闭 Blame 注解
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         clearTimeout(cmOutlineTimer);cmOutlineTimer=setTimeout(()=>{if(currentTab()===tab&&window.App)App.refreshOutline(tab);},300);
@@ -1955,6 +1978,21 @@ const Viewer = (() => {
     }, 3000);
   }
 
+// 后台同步不是第二次输入：保留变化映射以维护选区/撤销，直接更新视图绕过焦点保护，并抑制重复dirty与保存。
+  function syncPaneDocument(tab,changes){
+    if(!paneLayout?.visible||tab.__syncing)return;
+    tab.__syncing=true;
+    try{for(const group of paneLayout.groups){
+      const source=group===activePane?(cmApi?.__tab===tab?cmApi.getValue():group.view.querySelector('textarea.editor')?.value):null;
+      if(source!=null&&source.replace(/\r\n|\r/g,'\n')===tab.content.replace(/\r\n|\r/g,'\n'))continue;
+      const api=group.cm?.__tab===tab?group.cm:null,stored=group.states.get(tab.id);
+      if(api){
+        const state=api.view.state,spec={changes:changes&&changes.length===state.doc.length?changes:{from:0,to:state.doc.length,insert:tab.content},effects:TextLines.reset(tab.content)};
+        api.view.update([state.update(spec)]);rememberPaneEditor(group,api);
+      }else if(stored){const state=stored.state;stored.state=state.update({changes:changes&&changes.length===state.doc.length?changes:{from:0,to:state.doc.length,insert:tab.content},effects:TextLines.reset(tab.content)}).state;}
+      if(group.tabId===tab.id&&!api){const ta=group.view.querySelector('textarea.editor');if(ta){const start=ta.selectionStart,end=ta.selectionEnd;ta.value=tab.content;ta.setSelectionRange(Math.min(start,ta.value.length),Math.min(end,ta.value.length));ta.__refreshDocument?.();}else if(group.modes.get(tab.id)==='preview')renderPane(group,tab);}
+    }}finally{tab.__syncing=false;}
+  }
   function markEdited(tab,map) {
     keepTab(tab);
     NavigationHistory.edited(tab,map);
@@ -2155,6 +2193,8 @@ const Viewer = (() => {
           else if(t.ta){t.ta.value=r.content;if(findState?.tab===t)findState.refresh();}else renderView();
           updateFormatStatus(t);window.App?.refreshOutline(t);
         }else renderVisibleTab(t,true);
+        syncPaneDocument(t);
+        syncPaneDocument(t);
       }
       renderTabs();return result;
     }catch(e){return {error:String(e.message||e),errorCode:e.code||'COPY_FAILED'};}
@@ -2212,6 +2252,7 @@ const Viewer = (() => {
           updateFormatStatus(t);
           if (window.App) App.refreshOutline(t);
         }else renderVisibleTab(t,true);
+        syncPaneDocument(t);
       } catch {}
     }
   }

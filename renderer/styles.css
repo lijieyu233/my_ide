@@ -465,7 +465,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   white-space: pre;
 }
 .editor-wrap textarea.editor { flex: 1; min-width: 0; }
-#viewer > .html-frame { flex: 1; }
+:is(#viewer,.editor-pane-view) > .html-frame { flex: 1; }
 
 /* Markdown 分屏：左侧编辑 + 可拖分割条 + 右侧实时预览（预览下修改） */
 .md-split { flex: 1; display: flex; min-height: 0; }
@@ -487,14 +487,14 @@ body.rsb-collapsed #ai-panel { display: none !important; }
    888 的由来（⚠ 别写成"正文列 820 + 68"）：`.md-view` 的盒子是 820、内边距 34×2 →
    它里面的**正文列是 752**；实时预览这边要让正文列也 = 752，于是盒子上限 = 752 + 34×2 = 820。
    两端同宽时，正文列左边界两边实测一致（两种模式同一列位置）。 */
-#viewer > .editor-cm-wrap > .cm-editor > .cm-scroller {
+:is(#viewer,.editor-pane-view) > .editor-cm-wrap > .cm-editor > .cm-scroller {
   width: 100%; max-width: 820px; align-self: center; padding: 0 34px 0 44px;
   /* CM6 图层以 scroller 的外边界换算坐标，但 absolute 图层的原点在左 gutter 内侧。
      stable both-edges 会让光标/选区统一右移 10px。只在右侧预留滚动条，左侧以普通
      padding 补齐全局 10px 滚动条宽度，保留原来的正文列宽与居中位置。 */
   scrollbar-gutter: stable;
 }
-#viewer > .md-live { flex: 1; overflow: auto; width: 100%; }
+:is(#viewer,.editor-pane-view) > .md-live { flex: 1; overflow: auto; width: 100%; }
 .md-live .md-block,
 .md-live .md-block-edit {
   max-width: 860px; margin-left: auto; margin-right: auto;
@@ -4066,7 +4066,7 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 }
 
 /* AI阅读设置与两种Markdown视图共用变量，默认不改变原有列宽。 */
-:is(#viewer,.editor-pane-view) > .md-view, #viewer > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }
+:is(#viewer,.editor-pane-view) > .md-view, :is(#viewer,.editor-pane-view) > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }
 
 /* 编辑组是文档布局，与Markdown源码/预览对照相互独立。 */
 #editor-panes{flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;position:relative}
@@ -4080,7 +4080,7 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .editor-pane-tabs .tab{min-width:90px;max-width:210px}
 #tabbar.split-layout{display:none}
 #tabbar.split-layout>#tab-scroll{display:none}
-.editor-pane-head>#tab-actions{min-width:0;max-width:65%;flex-shrink:1;overflow-x:auto;scrollbar-width:none;padding:0 4px;gap:3px}
+.editor-pane-head>.pane-tab-actions{min-width:0;max-width:65%;flex-shrink:1;overflow-x:auto;scrollbar-width:none;padding:0 4px;gap:3px}
 .editor-pane-head>.vt-btn{flex-shrink:0}
 .editor-pane-head .ed-actions{flex-shrink:0}
 .editor-tab-drop{position:fixed;pointer-events:none;z-index:99990;border:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);box-sizing:border-box}
@@ -4093,3 +4093,5 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .editor-pane-actions{display:flex;flex-shrink:0;align-items:center;gap:2px;border-left:1px solid var(--border);padding-left:4px;margin-left:4px}
 .editor-pane-actions .vt-btn{padding:2px 4px}
 .editor-pane-actions [aria-pressed=true]{color:var(--accent);background:var(--bg-hover)}
+
+.pane-tab-actions{display:flex;align-items:center;gap:3px;border-left:1px solid var(--border)}

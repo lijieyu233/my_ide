@@ -6,14 +6,14 @@ window.EditorPanes = (() => {
     let host,divider,groups=[],orientation='horizontal',ratio=.5,controller;
     const label=g=>g.index===0?'第一编辑组':'第二编辑组';
     function add(view){
-      const group={index:groups.length,view,tabIds:[],tabId:null,cm:null,generation:0,blame:false};
+      const group={index:groups.length,view,tabIds:[],states:new Map(),modes:new Map(),tabId:null,cm:null,generation:0,blame:false};
       const section=document.createElement('section');section.className='editor-pane';section.setAttribute('aria-label',label(group));group.section=section;
       const head=document.createElement('div');head.className='editor-pane-head';group.head=head;
       const strip=document.createElement('div');strip.className='editor-pane-tabs';strip.setAttribute('role','tablist');strip.setAttribute('aria-label',label(group)+'的标签');group.strip=strip;
       strip.addEventListener('wheel',e=>{if(strip.scrollWidth>strip.clientWidth){e.preventDefault();strip.scrollLeft+=Math.abs(e.deltaY)>Math.abs(e.deltaX)?e.deltaY:e.deltaX;}},{passive:false});
       const close=document.createElement('button');close.className='vt-btn';close.title='关闭此编辑组（保留全部标签和未保存内容）';close.setAttribute('aria-label','关闭此编辑组');close.innerHTML=icon('close');close.onclick=()=>adapter.collapse(groups.find(g=>g!==group));
-      head.append(strip,close);section.append(head,view);view.classList.add('editor-pane-view');groups.push(group);
-      const activate=e=>{if(!e.target.closest('.editor-pane-head')&&!window.Modal?.stack?.length&&!host.inert)adapter.focus(group,e);};
+      const actions=document.createElement('div');actions.className='pane-tab-actions';group.actions=actions;head.append(strip,actions,close);section.append(head,view);view.classList.add('editor-pane-view');groups.push(group);
+      const activate=e=>{if((!e.target.closest('.editor-pane-head')||e.target.closest('.pane-tab-actions'))&&!window.Modal?.stack?.length&&!host.inert)adapter.focus(group,e);};
       section.addEventListener('pointerdown',activate,true);section.addEventListener('focusin',activate,true);
       return group;
     }

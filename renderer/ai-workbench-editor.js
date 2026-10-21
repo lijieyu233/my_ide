@@ -25,7 +25,7 @@
     }
     const index=Viewer.openTabs.indexOf(t);
     if(a.operation==='activate'){await Viewer.activate(index);if(t.loadPromise)await t.loadPromise;return {ok:Viewer.activeTab===t,active:String(Viewer.activeTab?.id)};}
-    if(a.operation==='close'){if(t.dirty){if(!a.save)return {ok:false,errorCode:'UNSAVED_CHANGES',error:'标签有未保存内容，已保留；可先save或指定save=true',choices:['save','keep']};const saved=await Viewer.saveTab(index,true);if(!saved?.ok)return saved;}await Viewer.closeTab(index);return {ok:!Viewer.openTabs.includes(t),closed:String(t.id)};}
+    if(a.operation==='close'){const layout=Viewer.paneState?.(),shared=layout?.panes.filter(p=>p.tabs?.includes(t.path)).length>1;if(t.dirty&&!shared){if(!a.save)return {ok:false,errorCode:'UNSAVED_CHANGES',error:'标签有未保存内容，已保留；可先save或指定save=true',choices:['save','keep']};const saved=await Viewer.saveTab(index,true);if(!saved?.ok)return saved;}await Viewer.closeTab(index);return {ok:shared||!Viewer.openTabs.includes(t),closed:String(t.id),documentOpen:Viewer.openTabs.includes(t),layout:Viewer.paneState?.()};}
     if(a.operation==='save_all')return Viewer.saveAllDirty();
     if(a.operation==='save')return Viewer.saveTab(index,true);
     if(t!==Viewer.activeTab)F('TAB_NOT_ACTIVE','请先激活目标标签，再读取新的快照');
