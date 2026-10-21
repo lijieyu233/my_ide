@@ -132,7 +132,8 @@
       "package.json",
       "build/icon.png",
       "renderer/**",
-      "plugins/**"
+      "plugins/**",
+      "LICENSE"
     ],
     "win": {
       "target": [
@@ -164,5 +165,6 @@
     "git-client",
     "desktop-app",
     "epub-reader"
-  ]
+  ],
+  "license": "MIT"
 }
