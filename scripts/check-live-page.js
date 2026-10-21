@@ -827,6 +827,7 @@
         // live：当前编辑器基准目录要指向 wikiproj（嵌入按 baseDir 相对解析）
         const prevBase = MdEditor.__baseDir;
         MdEditor.__baseDir = embDir;
+        api.setDocumentContext({baseDir:embDir,openLink:MdEditor.__openLink,onPasteImage:MdEditor.__onPasteImage});
         setDoc(embContent);
         api.setCursor(api.view.state.doc.length);
         for (let i = 0; i < 20; i++) {
@@ -846,6 +847,7 @@
           document.querySelectorAll('.cm-md-embed-err').length >= 1, 'errs=' + document.querySelectorAll('.cm-md-embed-err').length);
         add('嵌入(live): 渲染态不残留 ![[]] 源码', !document.querySelector('.cm-content').textContent.includes('![['), '');
         MdEditor.__baseDir = prevBase;
+        api.setDocumentContext({baseDir:prevBase,openLink:MdEditor.__openLink,onPasteImage:MdEditor.__onPasteImage});
         // 预览侧同一份文档
         const holder = document.createElement('div');
         holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:900px;';

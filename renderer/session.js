@@ -25,7 +25,7 @@ const Session = (() => {
         .map((t) => {
           let line = null;
           try {
-            const cmState = t === Viewer.activeTab && Viewer.cm?.view?.state || t.cmState;
+            const cmState = Viewer.editorFor?.(t)?.view.state || t === Viewer.activeTab && Viewer.cm?.view?.state || t.cmState;
             if (cmState && cmState.selection) {
               line = cmState.doc.lineAt(cmState.selection.main.head).number;
             }
@@ -37,6 +37,7 @@ const Session = (() => {
         tabs,
         active: active && tabs.some(t => pathKey(t.p) === pathKey(active.path)) ? active.path : null,
         tool: App.getTool(),
+        editorLayout: Viewer.paneState?.() ? {...Viewer.paneState(),panes:Viewer.paneState().panes.map(pane=>({path:tabs.some(t=>pathKey(t.p)===pathKey(pane.path))?pane.path:null}))} : undefined,
         expanded: window.Tree ? Tree.getExpandedPaths().filter(p => validPath(p, root)) : [],
       };
       return state;
@@ -150,6 +151,9 @@ const Session = (() => {
       if (Viewer.activeTab === target && !target.dirty && !target.error && target.restoreLine) { Viewer.revealLine(target.restoreLine); delete target.restoreLine; }
     }
     if (!current(run)) return;
+    if(state.editorLayout?.orientation&&Viewer.restorePanes){
+      try{await Viewer.restorePanes(state.editorLayout);}catch(error){fail('编辑分屏',error);}
+    }
     if (state.expanded !== undefined) {
       if (!Array.isArray(state.expanded)) fail('目录展开', '目录展开记录格式无效');
       else {

@@ -71,7 +71,7 @@ window.Bookshelf=(()=>{
     search.onkeydown=e=>{if(e.isComposing||e.keyCode===229||e.ctrlKey||e.metaKey||e.altKey||e.shiftKey)return;if(e.key==='Escape'&&query){e.preventDefault();e.stopPropagation();search.value=query='';refresh();}};
     host.querySelector('.shelf-sort select').onchange=e=>{sort=e.target.value;refresh();};document.getElementById('content').append(host);
   }
-  function show(){Reader.flush();init();origin=document.activeElement;for(const id of ['viewer','tabbar','empty-state']){const el=document.getElementById(id);if(el){inert.set(el,el.inert);el.inert=true;}}host.classList.remove('hidden');refresh();search.focus();}
+  function show(){Reader.flush();init();origin=document.activeElement;for(const id of ['editor-panes','viewer','tabbar','empty-state']){const el=document.getElementById(id);if(el){inert.set(el,el.inert);el.inert=true;}}host.classList.remove('hidden');refresh();search.focus();}
   function hide(){host?.classList.add('hidden');for(const [el,value]of inert)el.inert=value;inert.clear();}
   return {show,hide,refresh,openBook,removeBook,get visible(){return visible();}};
 })();

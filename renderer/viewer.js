@@ -14,7 +14,7 @@ const Viewer = (() => {
       tabScroll.scrollLeft += d;
     }, { passive: false });
   }
-  const viewer = document.getElementById('viewer');
+  let viewer = document.getElementById('viewer');
   const empty = document.getElementById('empty-state');
   const tabs = []; // {path, name, dirty, content, mode}
   let nextTabId = 0;
@@ -25,6 +25,97 @@ const Viewer = (() => {
   let activeTabId = null;
   let focusedTabId=null;
   const currentTab = () => tabs.find(t => t.id === activeTabId) || null;
+  let activePane={view:viewer,tabId:null,cm:null,generation:0,blame:false},paneLayout=null;
+  function storePane(){Object.assign(activePane,{view:viewer,tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});if(cmApi?.__tab)cmApi.__tab.cmState=cmApi.getState();}
+  function usePane(group){
+    if(group===activePane)return;
+    storePane();viewer.removeAttribute('id');activePane=group;viewer=group.view;viewer.id='viewer';
+    activeTabId=group.tabId;cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
+    const ctx=cmApi?.__mdContext;if(ctx)Object.assign(MdEditor,{__baseDir:ctx.baseDir,__openLink:ctx.openLink,__onPasteImage:ctx.onPasteImage});
+  }
+  function refreshPanes(){paneLayout?.refresh(activePane,tabs);}
+  function focusPane(group){
+    if(group===activePane)return;
+    if(!paneLayout?.groups.includes(group)||Modal.stack.length)return;
+    closeFind();usePane(group);previewSequence++;previewFeedback='';focusedTabId=activeTabId;
+    renderTabs();const tab=currentTab();refreshSelectionStatus();
+    App.updateStatusbar({file:tab?.path||'',lines:tab?.content?.split('\n').length||0,encoding:tab?formatLabel(tab):'',encodingEnabled:!!tab&&canChooseEncoding(tab),eol:tab?.eol||null});
+    App.refreshOutline(tab);try{window.AiPanel?.followActive();}catch{}
+  }
+  function focusPaneByIndex(index){const group=paneLayout?.groups[index];if(group){focusPane(group);focusEditor();return true;}return false;}
+  function renderPane(group,tab){
+    const original=activePane;usePane(group);activeTabId=tab?.id||null;
+    renderView();
+    if(tab&&cmApi?.__tab===tab){
+      if(tab.restoreLine){cmApi.gotoLine?.(tab.restoreLine);delete tab.restoreLine;}
+      if(tab.restoreScrollTop!=null){const top=tab.restoreScrollTop,api=cmApi;delete tab.restoreScrollTop;const apply=()=>{if(api.view.dom.isConnected&&api.__tab===tab){api.view.scrollDOM.scrollTop=top;tab.scrollTop=top;}};apply();requestAnimationFrame(apply);}
+    }
+    usePane(original);renderTabs();
+  }
+  function renderVisibleTab(tab,external=false){
+    const group=paneLayout?.groups.find(g=>g!==activePane&&g.tabId===tab.id);if(!group)return;
+    if(external==='reset'){const original=activePane;usePane(group);cmApi?.destroy();cmApi=null;tab.cmState=null;renderView();usePane(original);}
+    else if(external&&group.cm){const original=activePane;usePane(group);tab.__extLoading=true;try{group.cm.setValue(tab.content);}finally{tab.__extLoading=false;usePane(original);}}
+    else if(external&&tab.ta?.isConnected){const start=tab.ta.selectionStart,end=tab.ta.selectionEnd;tab.ta.value=tab.content;tab.ta.setSelectionRange(start,end);}
+    else renderPane(group,tab);
+  }
+  function splitEditor(orientation='horizontal'){
+    if(!['horizontal','vertical'].includes(orientation))return false;
+    if(Modal.stack.length)return false;
+    const tab=currentTab();if(!tab||tab.reader){MI.toast('请先打开需要分屏的文档','err');return false;}
+    App.backToEditor();keepTab(tab);
+    if(!paneLayout?.visible){
+      storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes,select:(group,id)=>{focusPane(group);if(id)activate(tabs.findIndex(t=>t.id===id));else{activeTabId=null;renderView();renderTabs();}focusEditor();}});
+      const groups=paneLayout.ensure();Object.assign(groups[0],{tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn});activePane=groups[0];
+      const second=tabs.findLast(t=>t!==tab&&!t.reader&&t.mode!=null&&!t.error);
+      renderPane(groups[1],second||null);
+    }
+    paneLayout.setOrientation(orientation);refreshPanes();window.Session?.save();return true;
+  }
+  function collapsePanes(keep=activePane,quiet=false){
+    if(!paneLayout?.visible)return false;
+    if(!paneLayout.groups.includes(keep))keep=activePane;
+    const dropping=paneLayout.groups.filter(g=>g!==keep);usePane(keep);closeFind();
+    for(const group of dropping){
+      const tab=tabs.find(t=>t.id===group.tabId);
+      if(group.cm){if(tab)tab.cmState=group.cm.getState();group.cm.destroy();group.cm=null;}
+      for(const child of group.view.children)child.previewDispose?.();
+      if(tab?.ta&&group.view.contains(tab.ta))tab.ta=null;
+      group.generation++;
+    }
+    paneLayout.destroy(keep);paneLayout=null;storePane();
+    if(!quiet){renderTabs();refreshSelectionStatus();App.refreshOutline(currentTab());focusEditor();}
+    return true;
+  }
+  function paneState(){return {orientation:paneLayout?.visible?paneLayout.orientation:null,active:paneLayout?.groups.indexOf(activePane)||0,
+    panes:(paneLayout?.visible?paneLayout.groups:[activePane]).map(group=>({path:tabs.find(t=>t.id===(group===activePane?activeTabId:group.tabId))?.path||null}))};}
+  async function restorePanes(state){
+    if(!state||!['horizontal','vertical'].includes(state.orientation))return;
+    if(!Array.isArray(state.panes)||state.panes.length!==2||![0,1].includes(state.active))throw Error('编辑分屏记录无效');
+    const root=App.root,initial=currentTab(),revision=initial?.editRevision;
+    const ids=state.panes.map(item=>item.path==null?null:tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(item.path)));
+    if(ids.some(tab=>tab===undefined)||ids[0]&&ids[0]===ids[1])throw Error('分屏文件已关闭或记录重复');
+    for(const tab of ids.filter(Boolean)){
+      if(tab.reader)return;
+      if(tab.lazy){tab.lazy=false;tab.loadPromise=loadTab(tab,true);}
+      if(tab.loadPromise)await tab.loadPromise;
+      if(App.root!==root||currentTab()!==initial||initial?.editRevision!==revision||ids.some(t=>t&&!tabs.includes(t)))return;
+    }
+    const first=ids.find(Boolean);if(!first)return;
+    activate(tabs.indexOf(first),{history:false});splitEditor(state.orientation);
+    for(let i=0;i<2;i++)renderPane(paneLayout.groups[i],ids[i]||null);
+    focusPane(paneLayout.groups[state.active]);renderTabs();
+  }
+  function renderPaneActions(){
+    if(!window.EditorPanes)return;
+    const controls=document.createElement('div');controls.className='editor-pane-actions';
+    for(const [direction,title]of [['horizontal','左右分屏'],['vertical','上下分屏']]){
+      const button=document.createElement('button');button.className='vt-btn';button.title=title;button.setAttribute('aria-label',title);button.setAttribute('aria-pressed',String(paneLayout?.visible&&paneLayout.orientation===direction));button.innerHTML=EditorPanes.icon(direction);
+      button.onclick=()=>Shortcuts.execute('editor-split-'+direction);controls.append(button);
+    }
+    if(paneLayout?.visible){const button=document.createElement('button');button.className='vt-btn';button.title='合并编辑区';button.setAttribute('aria-label','合并编辑区');button.innerHTML=EditorPanes.icon('close');button.onclick=()=>Shortcuts.execute('editor-unsplit');controls.append(button);}
+    tabActions.append(controls);
+  }
   function characterCount(text) {
     // 不将 emoji 的 UTF-16 代理对算作两个字符，也不为大选区创建逐字符数组。
     let count=0;for(const character of text)count++;return count;
@@ -131,7 +222,7 @@ const Viewer = (() => {
         // renderView会保存旧state；重新解码必须丢弃绑定旧正文的历史，再重建。
         if (cmApi && cmApi.__tab === tab) { cmApi.destroy(); cmApi = null; }
         renderView();
-      }
+      }else renderVisibleTab(tab,'reset');
       renderTabs(); updateFormatStatus(tab);
       return { ok: true };
     } catch (e) {
@@ -305,6 +396,7 @@ const Viewer = (() => {
     NavigationHistory.finish(ticket,captureLocation());return tab?.error?{ok:false,error:tab.error}:{ok:true};
   }
   async function openFileRaw(path, options = {}) {
+    if(paneLayout?.visible&&(options.reader||window.Reader?.archive(path)))collapsePanes(activePane,true);
     const existing=tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(path));
     if(!existing&&pendingPreview?.isCurrent()&&!pendingPreview.settled&&DocumentPaths.key(pendingPreview.path)===DocumentPaths.key(path)){
       if(options.intent!=='browse')pendingPreview.keep=true;return pendingPreview.promise;
@@ -420,14 +512,14 @@ const Viewer = (() => {
     if(tab.reader||window.Reader?.archive(tab.path)){
       tab.reader=true;tab.binary=true;tab.content='';tab.mode='reader';
       try{await Reader.load(tab);}catch(e){tab.error=e.message;}
-      if(!detached)renderTabs();if(tab===currentTab())renderView();return;
+      if(!detached)renderTabs();if(tab===currentTab())renderView();else renderVisibleTab(tab);return;
     }
     // 图片 / 音视频 / Office 新格式：二进制无需读取文本，直接走预览渲染器
     if (IMG_EXTS.has(extOf(tab.name)) || MEDIA_EXTS.has(extOf(tab.name)) || OFFICE_EXTS.has(extOf(tab.name))) {
       tab.content = '';
       tab.mode = 'preview';
       if(!detached)renderTabs();
-      if(tab===currentTab())renderView();
+      if(tab===currentTab())renderView();else renderVisibleTab(tab);
       return;
     }
     // 老版 Office（.doc/.xls/.ppt）：前端无法解析 → 错误视图 + 系统默认程序打开
@@ -437,7 +529,7 @@ const Viewer = (() => {
       tab.officeOld = true;
       tab.mode = 'error';
       if(!detached)renderTabs();
-      if(tab===currentTab())renderView();
+      if(tab===currentTab())renderView();else renderVisibleTab(tab);
       return;
     }
     const readPath = tab.path, generation = tab.pathGeneration || 0;
@@ -468,7 +560,7 @@ const Viewer = (() => {
       }
     }
     if(!detached)renderTabs();
-    if(tab===currentTab())renderView();
+    if(tab===currentTab())renderView();else renderVisibleTab(tab);
   }
 
   function activate(i,options={}) {
@@ -480,8 +572,12 @@ const Viewer = (() => {
   function activateRaw(i) {
     const target = tabs[i];
     if (!target) return;
+    if(target.reader&&paneLayout?.visible)collapsePanes(activePane,true);
     if (['browser','quick-launch','bookshelf'].includes(window.App?.getTool())) App.backToEditor();
     previewSequence++;previewFeedback='';
+    storePane();
+    const visible=paneLayout?.groups.find(group=>group!==activePane&&group.tabId===target.id);
+    if(visible){focusPane(visible);revealTab(target.id);return;}
     activeTabId = target.id;
     focusedTabId=target.id;
     renderTabs();
@@ -776,6 +872,7 @@ const Viewer = (() => {
     clearTimeout(autosaveTimer);
     for(const cancel of [...closeDecisions])cancel();
     for(const tab of tabs)window.Reader?.release(tab);
+    collapsePanes(activePane,true);
     tabs.length = 0;
     activeTabId = null;
     syncEmptyState();
@@ -793,11 +890,13 @@ const Viewer = (() => {
     const successor=removed.has(current) ? before.slice(at+1).find(t=>!removed.has(t)) || before.slice(0,at).reverse().find(t=>!removed.has(t)) : current;
     for(const tab of selected)window.Reader?.release(tab);
     for(let i=tabs.length-1;i>=0;i--)if(removed.has(tabs[i]))tabs.splice(i,1);
-    activeTabId=successor?.id ?? null;
+    if(paneLayout?.visible&&removed.has(current)){activeTabId=null;renderView();}
+    else activeTabId=successor?.id ?? null;
     renderTabs();
     if(current!==currentTab()){
       if(successor)activate(tabs.indexOf(successor),{history:false});else{renderView();document.getElementById('btn-open')?.focus();}
     }else if(origin&&!origin.isConnected&&!fromTabs){cmApi?.focus?.();currentTab()?.ta?.focus();}
+    for(const group of paneLayout?.groups||[])if(group!==activePane&&!tabs.some(t=>t.id===group.tabId))renderPane(group,null);
     if(fromTabs&&tabs.length)focusTab(successor?.id);
   }
 
@@ -895,6 +994,7 @@ const Viewer = (() => {
   //   （症状：右端按钮"有时有一个有时没有"，之前踩过）。
   function renderTabActions() {
     tabActions.innerHTML = '';
+    renderPaneActions();
     if(previewFeedback){const status=document.createElement('span');status.id='preview-tab-status';status.setAttribute('role','status');status.textContent=previewFeedback;status.title=previewFeedback;tabActions.appendChild(status);}
     const tab = currentTab();
     if (!tab) return;
@@ -923,7 +1023,7 @@ const Viewer = (() => {
       seg.className = 'md-mode-seg';
       const MODES = [
         ['live', ACT_IC.edit, '实时预览', 'Obsidian 式：点击文字直接编辑，其余实时渲染'],
-        ['split', ACT_IC.split, '分屏', '左侧源码 + 右侧实时预览'],
+        ['split', ACT_IC.split, '源码对照', '左侧源码 + 右侧实时预览'],
         ['source', ACT_IC.code, '源码', '纯 Markdown 源码编辑'],
         ['preview', ACT_IC.eye, '预览', '只读渲染视图'],
       ];
@@ -1104,6 +1204,7 @@ const Viewer = (() => {
       tabScroll.appendChild(all);
     }
     renderTabActions();
+    storePane();refreshPanes();
     if(activeTabId!=null)viewer.setAttribute('aria-labelledby','file-tab-'+activeTabId);else viewer.removeAttribute('aria-labelledby');
     fitTabLabels();window.TabPicker?.refresh();
     if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
@@ -1219,11 +1320,14 @@ const Viewer = (() => {
   // ---------- 视图渲染 ----------
   let viewGeneration = 0;
   function editorScope(tab, parent) {
-    const epoch=viewGeneration, project=MI.activeRoot, path=tab.path, generation=tab.pathGeneration||0, mode=tab.mode;
-    return () => epoch===viewGeneration && MI.activeRoot===project && currentTab()===tab && tabs.includes(tab)
+    const group=activePane, epoch=viewGeneration, project=MI.activeRoot, path=tab.path, generation=tab.pathGeneration||0, mode=tab.mode;
+    return () => epoch===(group===activePane?viewGeneration:group.generation) && MI.activeRoot===project && currentTab()===tab && tabs.includes(tab) && group===activePane
       && tab.path===path && (tab.pathGeneration||0)===generation && tab.mode===mode && parent.isConnected;
   }
   function renderView() {
+    try{return renderViewBody();}finally{storePane();refreshPanes();}
+  }
+  function renderViewBody() {
     viewGeneration++;
     closeFind();
     blameOn = false; // 切换标签/视图后 gutter 已重建，注解需重新开启
@@ -1249,12 +1353,12 @@ const Viewer = (() => {
       cmApi.destroy();
       cmApi = null;
     }
-    for (const tab of tabs) tab.ta=null;
+    for (const tab of tabs) if(tab.ta&&viewer.contains(tab.ta))tab.ta=null;
     window.PreviewLocation?.clear();
     for(const child of viewer.children)child.previewDispose?.();
     viewer.innerHTML = '';
     syncEmptyState();
-    if (!currentTab()) { window.App?.updateStatusbar({selectedChars:0}); return; }
+    if (!currentTab()) { if(paneLayout?.visible){const message=document.createElement('div');message.className='editor-pane-empty';message.textContent='点击此编辑组，再从文件树或快速打开选择文件';viewer.append(message);}window.App?.updateStatusbar({selectedChars:0}); return; }
     const tab = currentTab();
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
@@ -1538,6 +1642,7 @@ const Viewer = (() => {
     MdEditor.__baseDir = tab.path ? tab.path.split(/[\\/]/).slice(0, -1).join('/') : '';
     MdEditor.__openLink = (href) => openMdLink(tab, href);
     // 粘贴图片：写入笔记目录（存在 assets/ 子目录则放入）→ 返回相对路径插入 MD
+    const imageBaseDir=MdEditor.__baseDir;
     MdEditor.__onPasteImage = async (file) => {
       try {
         const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
@@ -1546,7 +1651,7 @@ const Viewer = (() => {
         const p2 = (n) => String(n).padStart(2, '0');
         const name = '粘贴图片-' + ts.getFullYear() + p2(ts.getMonth() + 1) + p2(ts.getDate())
           + '-' + p2(ts.getHours()) + p2(ts.getMinutes()) + p2(ts.getSeconds()) + '.' + ext;
-        const dir = String(MdEditor.__baseDir || '').replace(/\//g, '\\');
+        const dir = String(imageBaseDir || '').replace(/\//g, '\\');
         if (!dir || !window.myIDE.fs.writeBinary) return null;
         let targetDir = dir, inAssets = false;
         try {
@@ -1574,11 +1679,12 @@ const Viewer = (() => {
         markEdited(tab,changes?(position,assoc)=>changes.mapPos(position,assoc):null);
         scheduleAutosave();
         clearTimeout(cmOutlineTimer);
-        cmOutlineTimer = setTimeout(() => { if (window.App) App.refreshOutline(tab); }, 300);
+        cmOutlineTimer = setTimeout(() => { if (currentTab()===tab&&window.App) App.refreshOutline(tab); }, 300);
       },
       onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
     });
     cmApi.__tab = tab;
+    cmApi.__mdContext={baseDir:MdEditor.__baseDir,openLink:MdEditor.__openLink,onPasteImage:MdEditor.__onPasteImage};
     refreshSelectionStatus();
     tab.ta = null;
     // 滚动位置实时记录 + 切回恢复（用户报告：每次点击文件都回到开头）
@@ -1809,6 +1915,7 @@ const Viewer = (() => {
     keepTab(tab);
     NavigationHistory.edited(tab,map);
     tab.editRevision++;
+    if(cmApi?.__tab===tab)tab.cmState=cmApi.getState();
     const endings = TextLines.endings(tab.content || '').map((run) => run[0]);
     tab.eol = endings.length > 1 ? 'MIXED' : endings[0] === '\r\n' ? 'CRLF' : endings[0] === '\r' ? 'CR' : endings.length ? 'LF' : null;
     if (tab.textFormat) tab.textFormat.eol = tab.eol;
@@ -1922,6 +2029,7 @@ const Viewer = (() => {
     renderTabs();
     const at = currentTab();
     if (at && DocumentPaths.contains(newPath,at.path)) renderView();
+    for(const group of paneLayout?.groups||[]){const tab=tabs.find(t=>t.id===group.tabId);if(group!==activePane&&tab&&DocumentPaths.contains(newPath,tab.path))renderVisibleTab(tab);}
   }
   async function withPathChange(oldPath, targetRange, perform) {
     const ranges=[oldPath,targetRange].filter(Boolean);
@@ -2002,7 +2110,7 @@ const Viewer = (() => {
           if(cmApi?.__tab===t){t.__extLoading=true;try{cmApi.setValue(r.content);}finally{t.__extLoading=false;}}
           else if(t.ta){t.ta.value=r.content;if(findState?.tab===t)findState.refresh();}else renderView();
           updateFormatStatus(t);window.App?.refreshOutline(t);
-        }
+        }else renderVisibleTab(t,true);
       }
       renderTabs();return result;
     }catch(e){return {error:String(e.message||e),errorCode:e.code||'COPY_FAILED'};}
@@ -2059,7 +2167,7 @@ const Viewer = (() => {
           }
           updateFormatStatus(t);
           if (window.App) App.refreshOutline(t);
-        }
+        }else renderVisibleTab(t,true);
       } catch {}
     }
   }
@@ -2103,7 +2211,8 @@ const Viewer = (() => {
   }
 
   return {
-    leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
+    editorFor:tab=>cmApi?.__tab===tab?cmApi:paneLayout?.groups.find(group=>group.cm?.__tab===tab)?.cm,
+    splitEditor, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

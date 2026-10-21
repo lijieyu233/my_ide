@@ -449,12 +449,12 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); }
 .tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
-#viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
+:is(#viewer,.editor-pane-view) { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 /* 独占一行，避免被旧 CM6 搜索面板的层级盖住只读身份提示。 */
 .viewer-loading { flex-shrink: 0; padding: 8px 12px; background: var(--panel-strong); color: var(--text); border-bottom: 1px solid var(--border); }
 /* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
    所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
-#viewer > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */
+:is(#viewer,.editor-pane-view) > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */
 .editor-wrap { flex: 1; display: flex; min-height: 0; } /* 不限 #viewer 直接子级：分屏内同样生效 */
 .editor-wrap .editor-gutter {
   width: 46px; flex-shrink: 0; overflow: hidden;
@@ -1826,7 +1826,7 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, trans
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
-body.has-bg #viewer > .md-view,
+body.has-bg :is(#viewer,.editor-pane-view) > .md-view,
 body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
 body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transparent); }
@@ -4066,4 +4066,23 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 }
 
 /* AI阅读设置与两种Markdown视图共用变量，默认不改变原有列宽。 */
-#viewer > .md-view, #viewer > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }
+:is(#viewer,.editor-pane-view) > .md-view, #viewer > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }
+
+/* 编辑组是文档布局，与Markdown源码/预览对照相互独立。 */
+#editor-panes{flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;position:relative}
+#editor-panes[data-orientation=vertical]{flex-direction:column}
+.editor-pane{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.editor-pane-head{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 6px;background:var(--bg-tabbar);border-bottom:1px solid var(--border)}
+.editor-pane.active>.editor-pane-head{box-shadow:inset 0 -1px var(--accent)}
+.editor-pane-head select{flex:1;min-width:0;background:transparent;color:var(--text-dim);border:0;font:inherit;outline:none;max-width:100%}
+.editor-pane-head select:focus-visible{outline:1px solid var(--accent)}
+.editor-pane-head select option{background:var(--bg-panel);color:var(--text)}
+.editor-pane-view{min-width:0}
+.editor-pane-divider{width:6px;flex:0 0 6px;background:var(--bg-title);cursor:col-resize;touch-action:none}
+#editor-panes[data-orientation=vertical]>.editor-pane-divider{width:auto;height:6px;cursor:row-resize}
+.editor-pane-divider:hover,.editor-pane-divider:focus-visible{background:var(--accent)}
+.editor-pane-empty{margin:auto;padding:1.5em;text-align:center;color:var(--text-dim);line-height:1.7;font-size:13px}
+.editor-pane-drag-overlay{position:fixed;inset:0;z-index:99999;user-select:none;touch-action:none}
+.editor-pane-actions{display:flex;flex-shrink:0;align-items:center;gap:2px;border-left:1px solid var(--border);padding-left:4px;margin-left:4px}
+.editor-pane-actions .vt-btn{padding:2px 4px}
+.editor-pane-actions [aria-pressed=true]{color:var(--accent);background:var(--bg-hover)}

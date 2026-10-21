@@ -3,14 +3,20 @@
   const tabs=()=>Viewer.openTabs.map(t=>({id:String(t.id),path:t.path,name:t.name,dirty:!!t.dirty,revision:t.editRevision,mode:t.mode,error:t.error||null}));
   const find=id=>{const t=id?Viewer.openTabs.find(t=>String(t.id)===id):Viewer.activeTab;if(!t)F('TAB_NOT_FOUND','标签不存在，请先读取editor_state');return t;};
   function range(t){const cm=Viewer.cm;if(cm?.__tab===t){const s=cm.view.state.selection.main;return {from:s.from,to:s.to,head:s.head};}return {from:t.ta?.selectionStart||0,to:t.ta?.selectionEnd||0,head:t.ta?.selectionEnd||0};}
-  function editorState(){const t=Viewer.activeTab;return {project:W.root(),tabs:tabs(),active:t?String(t.id):null,selection:t?range(t):null,content:t?.content??null};}
+  function editorState(){const t=Viewer.activeTab;return {project:W.root(),tabs:tabs(),active:t?String(t.id):null,layout:Viewer.paneState?.()||null,selection:t?range(t):null,content:t?.content??null};}
   function headings(t){let at=0,fence=null;const out=[];for(const line of String(t.content||'').split('\n')){const marker=/^\s*(`{3,}|~{3,})/.exec(line);if(marker){if(!fence)fence=marker[1][0];else if(fence===marker[1][0])fence=null;}const m=!fence&&/^(#{1,6})\s+(.+?)\s*$/.exec(line);if(m)out.push({id:'heading-'+out.length,title:m[2],level:m[1].length,from:at,to:at+line.length});at+=line.length+1;}return out;}
   function select(t,from,to){if(from>to||to>String(t.content||'').length)F('INVALID_SELECTION','选区超出文档');const cm=Viewer.cm;if(cm?.__tab===t){cm.setCursor(from,to);return;}if(!t.ta)F('EDITOR_READ_ONLY','请先切换到源码或编辑模式');t.ta.setSelectionRange(from,to);}
   function replace(t,from,to,text){const cm=Viewer.cm;if(cm?.__tab===t){if(cm.view.state.readOnly)F('EDITOR_READ_ONLY','编辑器只读');cm.view.dispatch({changes:{from,to,insert:text},selection:{anchor:from+text.length},userEvent:'input.ai'});return;}
     if(!t.ta||t.ta.readOnly)F('EDITOR_READ_ONLY','请先切换到编辑模式');t.ta.focus();t.ta.setSelectionRange(from,to);if(!document.execCommand?.('insertText',false,text)){t.ta.setRangeText(text,from,to,'end');t.ta.dispatchEvent(new Event('input',{bubbles:true}));}}
   W.register('editor',{state:editorState,async operate(call){
-    const a=call.args,t=find(a.tab);
-    if(call.name==='editor_state'){const content=String(t.content??''),offset=a.offset||0,limit=a.limit||30000;return W.observe('editor',{tabs:tabs(),active:String(Viewer.activeTab?.id||''),tab:String(t.id),path:t.path,revision:t.editRevision,dirty:!!t.dirty,mode:t.mode,selection:range(t),offset,text:content.slice(offset,offset+limit),nextOffset:Math.min(offset+limit,content.length),total:content.length,complete:offset+limit>=content.length,headings:headings(t)});}
+    const a=call.args;
+    if(call.name==='editor_control'&&['split_horizontal','split_vertical','unsplit','focus_group'].includes(a.operation)){
+      let ok;if(a.operation==='unsplit')ok=Viewer.collapsePanes();else if(a.operation==='focus_group')ok=Viewer.focusPaneByIndex(a.group);else ok=Viewer.splitEditor(a.operation==='split_horizontal'?'horizontal':'vertical');
+      return {ok:!!ok,layout:Viewer.paneState(),...(ok?{}:{error:'当前没有可操作的编辑组或文档'})};
+    }
+    if(call.name==='editor_state'&&!a.tab&&!Viewer.activeTab)return W.observe('editor',{tabs:tabs(),active:null,layout:Viewer.paneState?.()||null,text:'',total:0,complete:true});
+    const t=find(a.tab);
+    if(call.name==='editor_state'){const content=String(t.content??''),offset=a.offset||0,limit=a.limit||30000;return W.observe('editor',{tabs:tabs(),layout:Viewer.paneState?.()||null,active:String(Viewer.activeTab?.id||''),tab:String(t.id),path:t.path,revision:t.editRevision,dirty:!!t.dirty,mode:t.mode,selection:range(t),offset,text:content.slice(offset,offset+limit),nextOffset:Math.min(offset+limit,content.length),total:content.length,complete:offset+limit>=content.length,headings:headings(t)});}
     if(call.name==='outline_change'){
       if(!/\.(md|markdown)$/i.test(t.name))F('NOT_MARKDOWN','当前文档不是Markdown');const list=headings(t),h=list.find(h=>h.id===a.heading);if(!h)F('HEADING_NOT_FOUND','标题不在当前文档');
       if(a.operation==='rename'||a.operation==='level'){const title=a.operation==='rename'?a.title:h.title,level=a.operation==='level'?a.level:h.level;if(!title?.trim()||/[\r\n]/.test(title)||!level)F('INVALID_HEADING','标题或层级无效');replace(t,h.from,h.to,'#'.repeat(level)+' '+title);}

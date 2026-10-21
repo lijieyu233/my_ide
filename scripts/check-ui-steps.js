@@ -1826,8 +1826,8 @@ module.exports = {
     add('放大后容器可滚动（可上下滑动看画面）', stageEl.scrollHeight > stageEl.clientHeight + 1 || stageEl.scrollWidth > stageEl.clientWidth + 1,
       'scroll=' + stageEl.scrollWidth + 'x' + stageEl.scrollHeight + ' client=' + stageEl.clientWidth + 'x' + stageEl.clientHeight);
     // 编辑器操作区挂在标签栏右端：图片这类文件只剩「定位」，不该有视图按钮
-    add('图片文件在标签栏右端没有多余视图按钮（只剩「定位」）', !q('#tab-actions .vt-btn'),
-      q('#tab-actions .vt-btn') ? '仍有视图按钮' : '无 ✓');
+    add('图片文件在标签栏右端没有多余视图按钮（只剩「定位」）', !q('#tab-actions .ed-actions .vt-btn'),
+      q('#tab-actions .ed-actions .vt-btn') ? '仍有视图按钮' : '无 ✓');
     add('标签页左侧有文件类型图标（SVG，不是 emoji）', !!q('.tab.active .tic svg'));
     add('标签栏右端「在资源管理器显示」只有 1 个', document.querySelectorAll('.tab-locate').length === 1,
       document.querySelectorAll('.tab-locate').length + ' 个');

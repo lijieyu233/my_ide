@@ -4291,7 +4291,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_($(dom, '.editor-cm-wrap'), '默认实时预览（CM6）');
     // 切到分屏
-    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '分屏'));
+    click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '源码对照'));
     await tick();
     assert_($(dom, '.md-split'), '切分屏后容器出现');
     assert_($(dom, '.md-split-preview .md-view'), '预览面板渲染 markdown');

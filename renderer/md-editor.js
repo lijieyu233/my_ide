@@ -11,6 +11,9 @@ window.MdEditor = (() => {
   const { State, View, Language, Commands, Md, Autocomplete, Search, Highlight, CodeLangs } = CM;
   const { Decoration, ViewPlugin, WidgetType, EditorView, keymap } = View;
   const { Compartment, EditorState } = State;
+  const documentContext=State.Facet.define({combine:values=>values.at(-1)||{}}),contextComp=new Compartment();
+  const contextOf=view=>view.state.facet(documentContext);
+  const measureView=view=>{if(view.dom.isConnected)try{view.requestMeasure();}catch{}};
 
   // ---------- 代码语法高亮（One Dark 配色，与预览的 atom-one-dark 同源） ----------
   // 覆盖 CM6 defaultHighlightStyle（它给 heading 注入 underline —— 已定位的下划线根因）
@@ -347,17 +350,17 @@ window.MdEditor = (() => {
   // ---------- 图片 widget：![alt](src) → 内联 <img> ----------
   const imageViews = new WeakMap();
   class ImgWidget extends WidgetType {
-    constructor(src, alt, raw, from, editable) { super(); Object.assign(this,{src,alt,raw,from,canResize:editable}); }
-    eq(other) { return other.raw === this.raw && other.from === this.from && other.canResize === this.canResize; }
+    constructor(src, alt, raw, from, editable, baseDir) { super(); Object.assign(this,{src,alt,raw,from,canResize:editable,baseDir}); }
+    eq(other) { return other.baseDir === this.baseDir && other.raw === this.raw && other.from === this.from && other.canResize === this.canResize; }
     toDOM(view) {
       const wrap = document.createElement('span');
       wrap.className = 'cm-md-img';
       const img = document.createElement('img');
-      img.src = resolveImgSrc(this.src);
+      img.src = resolveImgSrc(this.src,this.baseDir??contextOf(view).baseDir);
       img.alt = this.alt || '';
       img.draggable = false;
       // 图片异步加载完高度才确定 → 触发重测（否则下方内容的选区/点击坐标错位）
-      img.addEventListener('load', remeasureSoon);
+      img.addEventListener('load', ()=>measureView(view));
       // 加载失败（路径错/网络图不存在）：隐藏裂图 → 虚线占位框显示 alt/文件名
       img.addEventListener('error', () => {
         img.style.display = 'none';
@@ -483,8 +486,8 @@ window.MdEditor = (() => {
   // 文档 046 §2.4。不做的话 `![[笔记]]` 会走图片分支变成**裂图**（实测），比不做还糟。
   // 深度限 1 层防递归；被嵌入内容用同一套预览渲染（MI.renderFor），保证与预览模式同款排版。
   const embedCache = new Map();   // path|heading -> HTMLElement
-  function resolveEmbedPath(target) {
-    const base = String(MdEditor.__baseDir || '');
+  function resolveEmbedPath(target,baseDir=MdEditor.__baseDir) {
+    const base = String(baseDir || '');
     const t = String(target || '').trim().replace(/\\/g, '/');
     if (!t) return '';
     const sep = base.includes('\\') ? '\\' : '/';
@@ -509,7 +512,7 @@ window.MdEditor = (() => {
       box.textContent = '载入中…';
       (async () => {
         try {
-          const p = resolveEmbedPath(this.target);
+          const p = resolveEmbedPath(this.target,contextOf(view).baseDir);
           const r = await window.myIDE.fs.readFile(p);
           if (!r || typeof r.content !== 'string') throw new Error('读不到 ' + p);
           let content = r.content;
@@ -521,11 +524,11 @@ window.MdEditor = (() => {
           if (!node) body.textContent = content;
           body.classList.add('md-embed-body');
           embedCache.set(this.key, body);
-          if (box.isConnected) { box.innerHTML = ''; box.appendChild(body); remeasureSoon(); }
+          if (box.isConnected) { box.innerHTML = ''; box.appendChild(body); measureView(view); }
         } catch (e) {
           box.className = 'cm-md-embed cm-md-embed-err';
           box.textContent = '嵌入失败：' + this.target + '（' + ((e && e.message) || e) + '）';
-          remeasureSoon();
+          measureView(view);
         }
       })();
       return box;
@@ -1118,8 +1121,7 @@ window.MdEditor = (() => {
   // 光标不在块内：整块替换为渲染图；光标进入：回退源码编辑（Obsidian 同款交互）。
   // 渲染结果按 code 缓存（图不闪烁）；mermaid 库缺失（如测试环境）→ 不渲染，保持源码。
   // 当前活动的编辑器视图（create() 里赋值）：widget 异步改高度后用它触发重测量
-  let liveView = null;
-  const remeasureSoon = () => { if (liveView) { try { liveView.requestMeasure(); } catch {} } };
+
   const mermaidCache = new Map(); // code -> svg string（含失败标记 null）
   // ⚠ mermaid 的**全局主题**原先只在 md 预览那条路上按需 initialize（plugin-loader 只在
   //   页面里真有 mermaid 块时才调）→ Live Preview 这条路径**从来没初始化过**，于是暗色主题下
@@ -1141,7 +1143,7 @@ window.MdEditor = (() => {
   class MermaidWidget extends WidgetType {
     constructor(code) { super(); this.code = code; }
     eq(other) { return other.code === this.code; }
-    toDOM() {
+    toDOM(view) {
       const wrap = document.createElement('div');
       wrap.className = 'cm-md-mermaid';
       const cached = mermaidCache.get(this.code);
@@ -1155,7 +1157,7 @@ window.MdEditor = (() => {
           const id = 'mmd-lp-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, this.code);
           mermaidCache.set(this.code, svg);
-          if (wrap.isConnected) { wrap.innerHTML = svg; attachFs(wrap); remeasureSoon(); }
+          if (wrap.isConnected) { wrap.innerHTML = svg; attachFs(wrap); measureView(view); }
         } catch (e) {
           const msg = String((e && e.message) || e);
           mermaidCache.set(this.code, null);
@@ -1249,10 +1251,10 @@ window.MdEditor = (() => {
   }
 
   // 相对路径 → file:///（以笔记所在目录为基准）
-  function resolveImgSrc(src) {
+  function resolveImgSrc(src,baseDir=MdEditor.__baseDir) {
     const s = String(src || '').trim();
     if (!s || /^(https?:|data:|blob:|file:)/i.test(s)) return s;
-    return 'file:///' + (MdEditor.__baseDir ? String(MdEditor.__baseDir).replace(/\\/g, '/') + '/' : '') + s.split('\\').join('/');
+    return 'file:///' + (baseDir ? String(baseDir).replace(/\\/g, '/') + '/' : '') + s.split('\\').join('/');
   }
 
   // ---------- Live Preview decoration 构建 ----------
@@ -1384,7 +1386,7 @@ window.MdEditor = (() => {
                   for(;context;context=context.parent)if(context.name==='InlineCode'||context.name==='FencedCode')literal=true;
                   if(literal)continue;
                   const model=window.MarkdownImages?.parse(wm2[0]);
-                  decos.push(Decoration.replace({widget:new ImgWidget(target,model?.alt||target,wm2[0],wFrom,!state.readOnly&&state.facet(EditorView.editable))}).range(wFrom,wTo));
+                  decos.push(Decoration.replace({widget:new ImgWidget(target,model?.alt||target,wm2[0],wFrom,!state.readOnly&&state.facet(EditorView.editable),state.facet(documentContext).baseDir)}).range(wFrom,wTo));
                   continue;
                 }
                 // 嵌入笔记 ![[笔记]] / ![[笔记#标题]]：整行就是它 → 块级 widget 内嵌渲染
@@ -1394,7 +1396,7 @@ window.MdEditor = (() => {
                   if (only && !revealsConstruct(wFrom, wTo)) {
                     decos.push(Decoration.replace({
                       block: true,
-                      widget: new EmbedWidget(wm2[2].trim(), (wm2[3] || '').replace(/^#/, ''), target),
+                      widget: new EmbedWidget(wm2[2].trim(), (wm2[3] || '').replace(/^#/, ''), (state.facet(documentContext).baseDir||'')+'|'+target),
                     }).range(l.from, l.to));
                     continue;
                   }
@@ -1816,9 +1818,9 @@ window.MdEditor = (() => {
         // 裸网址（URL 节点，无 Link 构造）：直接以 URL 文本为目标
         if (!target && node && node.name === 'URL') {
           const raw = view.state.doc.sliceString(node.from, node.to);
-          if (/^https?:\/\//i.test(raw) && window.MdEditor.__openLink) {
+          if (/^https?:\/\//i.test(raw) && contextOf(view).openLink) {
             e.preventDefault();
-            MdEditor.__openLink(raw);
+            contextOf(view).openLink(raw);
             return true;
           }
           return false;
@@ -1827,9 +1829,9 @@ window.MdEditor = (() => {
         const raw = view.state.doc.sliceString(target.from, target.to);
         if (n_isWiki(raw)) return false;
         const href = extractHref(raw);
-        if (href && window.MdEditor.__openLink) {
+        if (href && contextOf(view).openLink) {
           e.preventDefault();
-          MdEditor.__openLink(href);
+          contextOf(view).openLink(href);
           return true;
         }
         return false;
@@ -2132,7 +2134,8 @@ window.MdEditor = (() => {
         paste(e, view) {
           const items = [...(e.clipboardData ? e.clipboardData.items : [])];
           const imgs = items.filter((it) => it.kind === 'file' && /^image\//.test(it.type));
-          if (!imgs.length || typeof MdEditor.__onPasteImage !== 'function') return false;
+          const pasteImage=contextOf(view).onPasteImage;
+          if (!imgs.length || typeof pasteImage !== 'function') return false;
           e.preventDefault();
           (async () => {
             const inserts = [];
@@ -2140,11 +2143,11 @@ window.MdEditor = (() => {
               const f = it.getAsFile();
               if (!f) continue;
               try {
-                const rel = await MdEditor.__onPasteImage(f);
+                const rel = await pasteImage(f);
                 if (rel) inserts.push('![](' + rel + ')\n');
               } catch {}
             }
-            if (inserts.length) {
+            if (inserts.length && view.dom.isConnected && !view.state.readOnly && (!opts.canEdit||opts.canEdit())) {
               const pos = view.state.selection.main.head;
               view.dispatch({
                 changes: { from: pos, insert: inserts.join('\n') },
@@ -2208,7 +2211,7 @@ window.MdEditor = (() => {
     // live 开启时的扩展集：StateField 提供全部装饰（含 block）+ ViewPlugin 事件兜底
     const liveExts = [liveField, livePlugin];
     // 支持复用旧 EditorState（标签/模式切换时保留撤销历史）
-    const state = opts.state || EditorState.create({
+    let state = opts.state || EditorState.create({
       doc: opts.doc || '',
       extensions: [
         ...TextLines.extension(CM, opts.doc || ''),
@@ -2216,6 +2219,8 @@ window.MdEditor = (() => {
         liveComp.of(liveOn ? liveExts : []),
       ],
     });
+    const context={baseDir:MdEditor.__baseDir,openLink:MdEditor.__openLink,onPasteImage:MdEditor.__onPasteImage};
+    state=state.update({effects:[contextComp.get(state)===undefined?State.StateEffect.appendConfig.of(contextComp.of(documentContext.of(context))):contextComp.reconfigure(documentContext.of(context)),liveRefresh.of(null)]}).state;
     const view = new EditorView({ state, parent, dispatchTransactions(trs, current) {
       if (opts.canEdit && !opts.canEdit() && trs.some(tr => tr.docChanged || TextLines.raw(tr.startState) !== TextLines.raw(tr.state))) return;
       current.update(trs);
@@ -2224,7 +2229,6 @@ window.MdEditor = (() => {
       ? State.StateEffect.appendConfig.of(readOnlyComp.of([])) : readOnlyComp.reconfigure([]) });
     // widget（mermaid/图片）异步把高度撑大后，必须让 CM6 立刻重测 —— 否则它对
     // viewport 外的行仍用估算高度，下方内容的选区/点击坐标整体错位
-    liveView = view;
     imageViews.set(view, opts.canEdit || (()=>true));
     // 关闭 Chromium 拼写检查（否则英文/代码下标红波浪"下划线"—— Obsidian 同款关闭）
     view.contentDOM.spellcheck = false;
@@ -2237,6 +2241,7 @@ window.MdEditor = (() => {
 
     return {
       view,
+      setDocumentContext(context){view.dispatch({effects:[contextComp.reconfigure(documentContext.of(context)),liveRefresh.of(null)]});},
       fold(options) { return window.CodeEditor?CodeEditor.setFold(view,options):false; },
       setReadOnly(on) { view.dispatch({ effects: readOnlyComp.reconfigure(on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) }); },
       focus() { view.focus(); focusTableEditor(view); },
