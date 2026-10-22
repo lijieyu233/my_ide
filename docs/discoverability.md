@@ -15,14 +15,14 @@
 - [ ] Windows x64 预发布包：实际产物验收后上传，明确已知问题，不伪装稳定版。
 - [x] 新增 AI 配置、工作流、架构、贡献、安全报告与问题模板。
 - [x] 从用户指南生成 13 页静态文档站，含 canonical、双语入口、结构化信息和 sitemap。
-- [ ] GitHub Pages 部署成功并核对线上页面，主页改为实际站点。
+- [x] GitHub Pages 部署成功并核对线上页面，主页改为实际站点。
 
 ## GitHub 配置结果
 
 - 默认分支：dev；main 保留在 fa044b96029c943299ef5e125dd987a158bd5ea2，未强推或合并历史分叉。
-- About：AI-assisted Markdown and code workspace for Windows. Markdown live preview, Git, embedded browser and AI workbench tools. Windows AI 文档与代码工作台。
-- 主页：[公开文档导航](https://github.com/lijieyu233/my_ide/blob/dev/docs/README.md)。
-- Topics：markdown-editor、ai-assistant、code-editor、electron、windows、codemirror、git-client、desktop-app、epub-reader。
+- About：AI-powered local workspace for Windows: AI assistants, Markdown and code, Git, browser, SSH/SFTP and databases. AI 驱动的本地工作台。
+- 主页：[公开文档站](https://lijieyu233.github.io/my_ide/)，中英文首页、文档导航、sitemap 和实机主图已通过 HTTP 200 核对。
+- Topics：markdown-editor、ai-assistant、code-editor、electron、windows、codemirror、git-client、desktop-app、epub-reader、ssh-client、database-client。
 - 已回读 GitHub 配置；默认分支中本轮 10 个文档、图片与元数据文件的 Git blob SHA 与本地提交 d1f9166 一致。
 
 ## 2026-10-22 内容重构
@@ -30,6 +30,8 @@
 首页按产品定位与核心工作流组织：AI 协作、本地文档和项目管理、开发与运行工具。SSH/SFTP、数据库、任务、启动与 Git 的用途放回核心介绍；同文档分屏、图片尺寸等归入编辑模块的操作细节，不再与核心方向并列。主图改为项目目录、编辑区与 AI 助手的整体工作台实机画面。
 
 文档站直接读取同一份 Markdown，只发布明确白名单的用户指南；历史开发资料链接到源码，避免公开另一套重复和过期文本。
+
+已启用 GitHub 私密漏洞报告，问题和贡献模板不要求上传秘密。文档站部署记录：[GitHub Actions](https://github.com/lijieyu233/my_ide/actions/workflows/docs.yml)。本轮产物验证与局限见[预发布记录](release-preview.md)。
 
 ## 先前验证记录（2026-10-21）
 

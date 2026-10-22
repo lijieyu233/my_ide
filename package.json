@@ -1,6 +1,6 @@
 {
   "name": "my-ide",
-  "version": "0.8.5",
+  "version": "0.8.5-preview.1",
   "description": "AI-powered local workspace for Windows: project documents, code, browser, Git, SSH and database tools",
   "main": "main.js",
   "private": true,

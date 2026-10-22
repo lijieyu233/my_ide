@@ -4,9 +4,9 @@ Choose a Windows portable preview or run from source. Local editing does not req
 
 ## 下载 Windows 便携版
 
-打开 [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)，选择明确标为 Windows x64 的 MyIDE EXE 附件。预发布版用于测试，先阅读已知问题和验收记录；不要把 Source code ZIP 当成应用。
+打开 [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)，选择明确标为 Windows x64 的 MyIDE ZIP 附件。预发布版用于测试，先阅读已知问题和验收记录；不要把 Source code ZIP 当成应用。
 
-便携版无需安装 Node.js 或 npm。下载后在 Windows 上运行；未签名的应用可能显示系统发布者提示，应核对发布来源和 SHA256，而不是关闭系统安全功能。项目依赖的 Git、语言运行时和远程服务仍需自行准备。
+便携版无需安装 Node.js 或 npm。下载后完整解压到普通可写目录，运行其中的 MyIDE.exe；保留同目录资源，勿直接在压缩包中双击；未签名的应用可能显示系统发布者提示，应核对发布来源和 SHA256，而不是关闭系统安全功能。项目依赖的 Git、语言运行时和远程服务仍需自行准备。
 
 [预发布验收与校验信息](release-preview.md) · [版本记录](../CHANGELOG.md)
 
@@ -61,7 +61,7 @@ npm run build
 
 **源码 ZIP 为什么没有 EXE？ / Where is the executable?**
 
-源码需要安装依赖运行或本地构建。只有 Release 中实际上传的二进制附件才是公开安装包。
+源码需要安装依赖运行或本地构建。只有 Release 中实际上传的二进制附件才是公开下载包。
 
 **某些 Git 功能不可用？ / Why are some Git actions unavailable?**
 
