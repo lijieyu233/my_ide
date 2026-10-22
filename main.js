@@ -12,6 +12,11 @@ ipcMain.handle('html-preview:open',async(event,request)=>{
 });
 ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
 const readerService=require('./src/main/reader/reader-service').createService();
+const readerWorkspace=require('./src/main/reader/reader-workspace');
+for(const [op,method]of [['workspace','scan'],['workspaceSave','save']])ipcMain.handle('reader:'+op,async(event,...args)=>{
+ try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的阅读来源');return {ok:true,...await readerWorkspace[method](...args)};}
+ catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
 const readerOwners=new Set();
 for(const op of ['open','page','resource','close'])ipcMain.handle('reader:'+op,async(event,...args)=>{
  try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的阅读来源');
@@ -213,6 +218,13 @@ function createWindow() {
   const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);}} };
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
+  // 异步工作区写入结束后再销毁渲染进程，关闭窗口不能丢掉最后一个书签。
+  let readerCloseReady=false,readerClosePending=false;
+  mainWindow.on('close',event=>{
+    if(readerCloseReady||!mainWindow||mainWindow.webContents.isDestroyed())return;
+    event.preventDefault();if(readerClosePending)return;readerClosePending=true;const win=mainWindow;
+    win.webContents.executeJavaScript('window.Reader?.prepareClose?.().then(()=>true).catch(()=>false) ?? true').then(saved=>{readerClosePending=false;if(saved&&!win.isDestroyed()){readerCloseReady=true;win.close();}}).catch(()=>{readerClosePending=false;});
+  });
   mainWindow.on('closed', () => { browserTabViews.dispose(); mainWindow = null; bwView = null; });
   return mainWindow;
 }

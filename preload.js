@@ -2,7 +2,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('myIDE', {
-  reader: Object.fromEntries(['open','page','resource','close'].map(op=>[op,(...args)=>ipcRenderer.invoke('reader:'+op,...args)])),
+  reader: Object.fromEntries(['open','page','resource','close','workspace','workspaceSave'].map(op=>[op,(...args)=>ipcRenderer.invoke('reader:'+op,...args)])),
   htmlPreview: {
     open: request => ipcRenderer.invoke('html-preview:open',request),
     close: id => ipcRenderer.invoke('html-preview:close',id),

@@ -789,6 +789,7 @@ const App = (() => {
         if (next) await activateProject(next.path);
         else {
           root = null;
+          if(window.Bookshelf?.visible)Bookshelf.refresh();
           window.BrowserPanel?.setProject?.(null);
           Viewer.syncEmptyState?.();
           MI.activeRoot = null;
@@ -948,6 +949,7 @@ const App = (() => {
   }
 
   async function saveBeforeLeaving() {
+    try{await window.Reader?.sync?.();}catch(error){MI.toast("阅读记录尚未保存："+error.message,"err");return false;}
     const result = await Viewer.saveAllDirty();
     if (result.ok) return true;
     MI.toast('当前项目仍有未保存的修改，已保留标签；请按 Ctrl+S 保存成功后重试', 'err');
@@ -998,6 +1000,7 @@ const App = (() => {
     // 恢复标签和工具面板可能异步等待；先托管原项目任务，避免恢复期间的隐藏面板通知取消它。
     window.AiPanel?.beforeProjectChange?.(p);
     root = p;
+    window.Bookshelf?.projectChanged?.();
     window.BrowserPanel?.setProject?.(p);
     Viewer.syncEmptyState?.();
     MI.activeRoot = p;

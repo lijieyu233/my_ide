@@ -57,3 +57,6 @@
 
 .shelf-actions,.shelf-filters{flex-wrap:wrap}.shelf-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,150px),1fr))}
 @container(max-width:380px){.shelf-continue .shelf-cover{display:none}.shelf-header .shelf-actions{margin-left:0}.shelf-heading h1{font-size:22px}.shelf-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,125px),1fr))}}
+
+/* 工作区路径与书架标题同组，窄面板自然换行。 */
+.shelf-heading{flex:1;flex-wrap:wrap;min-width:0;row-gap:4px}.shelf-workspace{flex-basis:100%;min-width:0;max-width:100%;margin:4px 0 0;font-size:12px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.shelf-header .shelf-actions{flex-shrink:1;max-width:100%}.shelf-feedback{overflow-wrap:anywhere}
