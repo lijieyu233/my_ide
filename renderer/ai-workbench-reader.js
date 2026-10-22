@@ -4,7 +4,7 @@
     const a=call.args;
     await Reader.ensureWorkspace();
     if(call.name==='reader_state')return W.observe('reader',Reader.state());
-    if(call.name==='reader_notes'){Reader.state();return W.observe('reader',await ReaderNotes.read(a.offset||0,a.limit||10));}
+    if(call.name==='reader_notes'){Reader.state();return W.observe('reader',await ReaderNotes.read(a.offset||0,a.limit||10,a.kind||'all',a.query||''));}
     if(call.name==='reader_note_write'){Reader.state();return ReaderNotes.write(a);}
     if(call.name==='reader_library'){
       const query=(a.query||'').toLowerCase(),all=Reader.library(a.includeRemoved===true).filter(b=>!query||(b.title+' '+b.path).toLowerCase().includes(query)),offset=a.offset||0,limit=a.limit||30;

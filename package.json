@@ -85,7 +85,8 @@
     "build:docs": "node scripts/build-docs.js",
     "test:docs": "node tests/docs-site.test.js",
     "check:reader-notes": "electron scripts/check-reader-notes.js --disable-gpu --no-sandbox",
-    "check:reader-interactions": "electron scripts/check-reader-interactions.js --disable-gpu --no-sandbox"
+    "check:reader-interactions": "electron scripts/check-reader-interactions.js --disable-gpu --no-sandbox",
+    "check:reader-experience": "electron scripts/check-reader-experience.js --disable-gpu --no-sandbox"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
