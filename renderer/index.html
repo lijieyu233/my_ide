@@ -54,7 +54,7 @@
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
     <button id="tool-launch" class="tool-btn" title="启动面板（终端 / 脚本）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 3.2l7 4.8-7 4.8z"/></svg></button>
     <button id="tool-quick-launch" class="tool-btn" title="快速启动：应用、文件夹与网页" aria-label="快速启动"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="2" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="2" width="2.4" height="2.4" rx=".4"/><rect x="2" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="6.8" width="2.4" height="2.4" rx=".4"/><rect x="2" y="11.6" width="2.4" height="2.4" rx=".4"/><rect x="6.8" y="11.6" width="2.4" height="2.4" rx=".4"/><rect x="11.6" y="11.6" width="2.4" height="2.4" rx=".4"/></svg></button>
-    <!-- Git 日志放活动栏**底部**：「提交」和「日志」是两个不同的 git 入口、图标又都带分支/圆点，
+    <!-- Git 日志默认放活动栏底部（可拖动自定义顺序）：「提交」和「日志」是两个不同的 git 入口、图标又都带分支/圆点，
          挨在一起容易点错；日志是低频入口，不该占上半区的好位置
          （用户：「这个按钮移动到左侧栏下面 且不和左侧栏上面的冲突了」） -->
     <span class="tool-strip-gap" aria-hidden="true"></span>
@@ -296,7 +296,7 @@
         <button id="bw-dark" class="vt-btn" title="网页深色模式"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 9.8A5.5 5.5 0 0 1 6.2 2.8a5.5 5.5 0 1 0 7 7z"/></svg></button>
         <button id="bw-fullscreen" class="vt-btn" title="浏览器全屏 (F11)" aria-label="浏览器全屏" aria-pressed="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2H2v4m8-4h4v4M2 10v4h4m8-4v4h-4"/></svg></button>
         <button id="bw-open-default" class="vt-btn" title="用默认浏览器打开" aria-label="用默认浏览器打开" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5m0-5L7 9M6 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3"/></svg></button>
-        <button id="bw-close" class="vt-btn" title="关闭内置浏览器 (Ctrl+4)">✕</button>
+        <button id="bw-close" class="vt-btn" title="关闭内置浏览器">✕</button>
         <div id="bw-dd" class="bw-dd hidden"></div>
       </div>
       <div class="browser-prog"><div id="bw-prog"></div></div>
@@ -507,6 +507,7 @@
 <script src="tasks.js"></script>
 <script src="launch-panel.js"></script>
 <script src="quick-launch.js"></script>
+<script src="tool-strip.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

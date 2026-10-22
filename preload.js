@@ -275,6 +275,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     onCmd: (cb) => ipcRenderer.on('browser:cmd', (_e, cmd) => cb(cmd)),
     onTranslate: (cb) => ipcRenderer.on('browser:translate', (_e, text) => cb(text)),
     setTranslationKeys: keys=>ipcRenderer.invoke('browser:translation-keys',keys),
+    setToolKeys: entries=>ipcRenderer.invoke('browser:tool-keys',entries),
+    onToolShortcut: cb=>ipcRenderer.on('browser:tool-shortcut',(_event,id)=>cb(id)),
     // 主进程推送的页面状态（url/title/loading/canBack/canFwd/progress/err）
     onState: (cb) => ipcRenderer.on('browser:state', (_e, s) => cb(s)),
   },

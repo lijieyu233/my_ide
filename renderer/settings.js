@@ -124,6 +124,13 @@ const Settings = (() => {
     mo.observe(document.body, { childList: true, subtree: true });
     if (!initCat) renderKeys(); // 指定初始分类时 switchCat 已渲染，勿覆盖
     box.querySelector('.set-cat.active')?.setAttribute('aria-current', 'page');
+    return box;
+  }
+  function editShortcut(id, invoker) {
+    const binding = Shortcuts.bindings().find(binding => binding.id === id);
+    if (!binding) return;
+    const box = open('keys', binding.desc, () => { if(invoker?.isConnected) invoker.focus({preventScroll:true}); });
+    if (box && keysCurrent(box)) { startListen(id); box.querySelector('.set-combo')?.focus(); }
   }
 
   function $all(sel) { return [...document.querySelectorAll(sel)]; }
@@ -948,6 +955,6 @@ const Settings = (() => {
     return d.innerHTML;
   }
 
-  return { open };
+  return { open, editShortcut };
 })();
 window.Settings = Settings;

@@ -1185,6 +1185,7 @@ const App = (() => {
     }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('tool-sidebar-r').onclick = () => toggleRightSidebar();
+    window.ToolStrip?.init();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();
     document.getElementById('tree-expand').onclick = () => Tree.expandAll();

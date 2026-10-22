@@ -103,6 +103,15 @@ const Shortcuts = (() => {
   function captureNext(cb, options = {}) { captureCb = { cb, ...options }; }
   function cancelCapture(owner) { if (!owner || captureCb?.owner === owner) captureCb = null; }
   function isCapturing() { return !!captureCb; }
+  const jumpCombo = combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo);
+  function markToolJumps(ids) {
+    for (const id of ids) if (registry[id]) {
+      const action = registry[id];
+      if (!action.toolJump) { const enabled = action.isEnabled; action.isEnabled = ctx => ctx.modalDepth ? '请先关闭弹窗' : (enabled?.(ctx) ?? true); }
+      action.toolJump = true; action.bindingGuard = jumpCombo;
+    }
+    rebuild();
+  }
 
   function context(tab = window.Viewer?.activeTab) {
     const cm = window.Viewer?.cm;
@@ -164,11 +173,15 @@ const Shortcuts = (() => {
   document.addEventListener('compositionstart',e=>{navigationComposing=e.target;},true);
   document.addEventListener('compositionend',()=>{navigationComposing=null;},true);
   window.addEventListener('blur',()=>{navigationComposing=null;});
-  // 只让有效位置导航键先于CM的文本移动键处理；同一注册表决定改键与禁用，不硬编码Alt方向。
+  // 工具跳转先于编辑器/终端处理，避免内部 stopPropagation 吞键；其余位置导航仍沿同一注册表判断。
   document.addEventListener('keydown',e=>{
-    if(e.target.closest?.('#remote-terminal-panes'))return;
     if(composing(e)||captureCb||e.defaultPrevented)return;
     const id=keyMap[comboOf(e)];
+    if (registry[id]?.toolJump) {
+      if (window.Modal?.stack.length) return;
+      e.preventDefault();e.stopImmediatePropagation();execute(id);return;
+    }
+    if(e.target.closest?.('#remote-terminal-panes'))return;
     if (['md-task', 'md-table'].includes(id)) {
       const tab = window.Viewer?.activeTab, cm = window.Viewer?.cm;
       const editorTarget = cm?.__tab === tab && cm.view?.contentDOM.contains(e.target) || tab?.ta === e.target;
@@ -242,7 +255,7 @@ const Shortcuts = (() => {
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
 
-  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, comboOf,
+  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, markToolJumps, comboOf,
     context, availability, commands, execute, onChanged, describe, invalidateContext,
     get lastFailure() { return lastFailure; }, clearFailure() { lastFailure = null; changed(); } };
 })();
@@ -287,11 +300,14 @@ Shortcuts.register('editor-next-pane', {desc:'编辑区：切换编辑组',categ
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab)) });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) return Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
+for (const [id, name, label] of [['tool-bookshelf','bookshelf','书架'],['tool-remote','remote','远程服务器'],['tool-launch','launch','启动面板']]) {
+  Shortcuts.register(id,{desc:'工具窗口：'+label,keys:[],palette:true,category:'工作台',run:()=>App.showTool(name)});
+}
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
 Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
-Shortcuts.register('git-log', { desc: 'Git 日志窗口', keys: ['alt+9', 'ctrl+5'], run: () => App.switchTool('log') });
+Shortcuts.register('git-log', { desc: 'Git 日志窗口', keys: ['alt+9', 'ctrl+5'], run: () => App.showTool('log') });
 Shortcuts.register('hide-log', { desc: '关闭 Git 日志窗口', keys: ['shift+escape'], run: () => { if (window.GitLog && GitLog.isOpen()) { if (App.getTool() === 'log') App.switchTool('log'); else GitLog.hide(); } } });
-Shortcuts.register('tool-browser', { desc: '内置浏览器（打开 / 关闭）', keys: ['ctrl+6'], run: () => App.switchTool('browser') });
+Shortcuts.register('tool-browser', { desc: '工具窗口：内置浏览器', keys: ['ctrl+6'], run: () => App.showTool('browser') });
 Shortcuts.register('tool-db', { desc: '工具窗口：数据库（侧栏连接/表 + 右侧数据/SQL）', keys: ['ctrl+7'], run: () => App.showTool('db') });
 Shortcuts.register('tool-ai', { desc: '工具窗口：AI 助手（右侧对话，独立停靠）', keys: ['alt+1', 'ctrl+8'], run: () => App.showAi() });
 // 收起 / 展开（与「打开」区分开：写代码时想一键腾出右边全部宽度）

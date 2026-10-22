@@ -215,6 +215,14 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 #tool-sidebar { border-bottom: 1px solid var(--border); }
 /* 弹性占位：它之后的按钮被推到底部（Git 日志）——「提交」与「日志」两个 git 入口挨着容易点错 */
 .tool-strip-gap { margin-top: auto; flex: 0 0 auto; }
+#tool-strip .tool-btn { flex-shrink: 0; }
+#tool-strip .tool-btn.tool-dragging { opacity: .35; }
+#tool-strip .tool-btn.tool-drop-before::before, #tool-strip .tool-btn.tool-drop-after::before { content: ''; position: absolute; left: 5px; right: 5px; height: 2px; background: var(--accent); pointer-events: none; }
+#tool-strip .tool-btn.tool-drop-before::before { top: 0; }
+#tool-strip .tool-btn.tool-drop-after::before { bottom: 0; }
+#tool-strip .tool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+#ctx-menu.tool-strip-menu .tool-menu-heading { padding: 7px 10px; color: var(--text-dim); font-size: 12px; }
+#ctx-menu.tool-strip-menu kbd { float: right; padding-left: 16px; font: inherit; color: var(--text-dim); }
 /* 侧栏整体收起（Ctrl+` / 按钮切换） */
 body.sidebar-collapsed #sidebar,
 body.sidebar-collapsed #sidebar-resizer { display: none; }

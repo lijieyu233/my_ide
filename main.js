@@ -238,6 +238,11 @@ let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partiti
 const browserTabViews = require('./src/main/browser/browser-tab-views').createService({createView:createBwView,getWindow:()=>mainWindow});
 let bwVisibilityRevision = 0;
 const bwNavigationRevision = new WeakMap();
+const browserToolKeys=require('./src/main/browser/tool-shortcuts').createService();
+ipcMain.handle('browser:tool-keys',(event,entries)=>{
+  if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
+  return browserToolKeys.set(entries);
+});
 let browserTranslationKeys=['ctrl+alt+t'];
 ipcMain.handle('browser:translation-keys',(event,keys)=>{
   if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
@@ -286,10 +291,11 @@ function createBwView(tabId) {
   // view 聚焦时宿主收不到 keydown → 导航类快捷键主进程拦截后转发宿主
   wc.on('before-input-event', (ev, input) => {
     if (input.type !== 'keyDown') return;
+    const tool=browserToolKeys.match(input);
+    if(tool){ev.preventDefault();mainWindow?.webContents.send('browser:tool-shortcut',tool);return;}
     const k = (input.key || '').toLowerCase();
     let cmd = null;
-    if (input.control && !input.alt && k === '4') cmd = 'toggle';
-    else if (input.alt && !input.control && k === 'arrowleft') cmd = 'back';
+    if (input.alt && !input.control && k === 'arrowleft') cmd = 'back';
     else if (input.alt && !input.control && k === 'arrowright') cmd = 'forward';
     else if (k === 'f5' || (input.control && !input.alt && k === 'r')) cmd = 'reload';
     else if (input.control && !input.alt && k === 'l') cmd = 'focus-url';

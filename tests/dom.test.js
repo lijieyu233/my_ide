@@ -575,6 +575,7 @@ async function loadApp(dom) {
   evalFile('ai-panel.js');
   evalFile('tasks.js');
   evalFile('translate.js');   // 翻译插件（Ctrl+Alt+T）：依赖 Modal/Shortcuts，需在 app.js 之前
+  evalFile('tool-strip.js');
   evalFile('app.js');
   await g(dom, 'App.init()'); // const 声明不在 window 上，用 eval 访问
   await g(dom, 'App.gitRefreshDelay = 0'); // 测试中禁用 Git 扫描延迟，保证断言即时可见
@@ -4571,13 +4572,16 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#tool-browser').classList.contains('active'), '按钮取消高亮');
   });
 
-  await okAsync('内置浏览器：Ctrl+6 快捷键切换', async () => {
+  await okAsync('内置浏览器：Ctrl+6 始终跳转打开，图标仍可点击关闭', async () => {
     key(dom, '6', { ctrl: true });
     await tick();
     assert_(!$(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 打开');
     key(dom, '6', { ctrl: true });
     await tick();
-    assert_($(dom, '#browser-panel').classList.contains('hidden'), 'Ctrl+6 关闭');
+    assert_(!$(dom, '#browser-panel').classList.contains('hidden'), '重复跳转保持打开');
+    click($(dom, '#tool-browser'));
+    await tick();
+    assert_($(dom, '#browser-panel').classList.contains('hidden'), '点击图标关闭');
   });
   await okAsync('内置浏览器：打开和聚焦不展开建议，输入才展开，清空与Esc收起',async()=>{
     g(dom,'App.showTool("browser")');await tick();const input=$(dom,'#bw-url'),dropdown=$(dom,'#bw-dd');input.blur();input.focus();await tick();assert_(dropdown.classList.contains('hidden'),'单纯聚焦不展开');input.value='github';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(!dropdown.classList.contains('hidden'),'主动输入匹配项时展开');input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));await tick();assert_(dropdown.classList.contains('hidden'),'Esc关闭建议');input.focus();input.value='';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(dropdown.classList.contains('hidden'),'空输入不显示整份历史');g(dom,'App.showTool("project")');
