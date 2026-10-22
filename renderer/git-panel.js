@@ -5,7 +5,7 @@ const GitPanel = (() => {
   let rootGeneration=0;
   let state = null; // {isRepo, branch, changed, unborn}
   const checked = new Set(); // 勾选的待提交文件（跨刷新保留）
-  let knownFiles = new Set(); // 上次刷新见过的文件（新出现的默认勾选）
+  let knownFiles = new Set(); // 只对首次出现的已跟踪改动使用默认选择，手动选择跨刷新保留
   let commitMsg = ''; // 刷新时保留未发出的提交信息
   // M4：进行中的 Git 操作与冲突清单（无本机 git 时后端返回 NORMAL / 空列表 → 天然隐藏）
   let op = null;            // { state, target, onto, step, total }
@@ -18,18 +18,42 @@ const GitPanel = (() => {
   let refreshSeq = 0; // 并发保护：仅最后一次调用的结果生效（旧响应晚到时丢弃，防状态闪回）
   const statusComplete=()=>!!state?.isRepo&&!state.error&&(!state.completeness||state.completeness==='complete');
   const allowMutation=()=>{if(statusComplete())return true;MI.toast('Git状态未完成，请刷新后再操作','err');return false;};
-  async function refresh(options={}) {
-    if (!root) return;
-    const operationRoot=root;
-    const seq = ++refreshSeq;
-    let st;try{st=await window.myIDE.git.status(operationRoot,options);}catch(e){st={error:String(e.message||e),completeness:'error'};}
+  let refreshActive = null;
+  function refresh(options={}) {
+    if (!root) return Promise.resolve();
+    const request={operationRoot:root,generation:rootGeneration,seq:++refreshSeq,options:{...options}};
+    // 保存和文件监听可能同时通知；合并为一次尾随扫描，仍读取最新磁盘，不能复用旧状态。
+    if(refreshActive?.operationRoot===root&&refreshActive.generation===rootGeneration){
+      const queued=refreshActive.queued;
+      if(queued){queued.seq=request.seq;queued.options={...queued.options,...options,force:!!queued.options.force||!!options.force};return queued.promise;}
+      request.promise=new Promise((resolve,reject)=>{request.resolve=resolve;request.reject=reject;});
+      refreshActive.queued=request;return request.promise;
+    }
+    return startRefresh(request);
+  }
+  function refreshBusy(on){
+    const button=document.getElementById('cd-refresh');
+    if(button){button.disabled=on;button.setAttribute('aria-busy',String(on));button.title=on?'正在读取 Git 状态…':'刷新 Git 状态 (Ctrl+R)';}
+  }
+  function startRefresh(request){
+    const job={...request,queued:null};refreshActive=job;refreshBusy(true);
+    const finish=()=>{
+      if(refreshActive===job){refreshActive=null;if(!job.queued)refreshBusy(false);}
+      const next=job.queued;if(!next)return;
+      if(next.operationRoot!==root||next.generation!==rootGeneration){next.resolve();return;}
+      const pending=startRefresh(next);pending.then(next.resolve,next.reject);return pending;
+    };
+    return refreshOnce(job).then(async value=>{await finish();return value;},async error=>{await finish();throw error;});
+  }
+  async function refreshOnce({operationRoot,seq,options}) {
+    const [statusResult,opR,cfR]=await Promise.all([Promise.resolve().then(()=>window.myIDE.git.status(operationRoot,options)).catch(e=>({error:String(e.message||e),completeness:'error'})),gitSafe('opState',operationRoot),gitSafe('conflicts',operationRoot)]);
+    let st=statusResult;
     if (seq !== refreshSeq||root!==operationRoot) return; // 期间又发起了新刷新：本响应已过期
     st=st||{error:'状态服务未返回结果',completeness:'error'};
     const incomplete=st.completeness&& !['complete','not-repo'].includes(st.completeness)||st.error&&st.isRepo!==false;
     if(incomplete){state={...(state||{}),...st,isRepo:true,branch:st.branch||state?.branch||'Git',changed:st.changed||state?.changed||[],tracked:st.tracked||state?.tracked,error:st.error||'Git状态未完成',completeness:st.completeness||'error'};}
     else state={...st,...(!st.isRepo?{isRepo:false}:{}),completeness:st.completeness||'complete'};
     // M4：进行中的 Git 操作 + 冲突清单（并行取；失败/不支持就当没有 —— 软依赖，不阻塞主流程）
-    const [opR, cfR] = await Promise.all([gitSafe('opState', root), gitSafe('conflicts', root)]);
     if(seq!==refreshSeq||root!==operationRoot)return;
     op = opR && opR.state ? opR : null;
     conflictFiles = cfR && Array.isArray(cfR.files) ? cfR.files : [];
@@ -66,16 +90,13 @@ const GitPanel = (() => {
     });
   }
 
-  // 勾选集合与最新状态同步：消失的移除，新出现的默认勾选
-  // （「忽略的文件」不参与自动勾选/移除 —— 它们是用户显式展开、显式勾的）
-  // ⚠ 「已在暂存区」的文件同样不参与自动勾选：它们在自己的只读分节里，
-  //    M1 不改动它们的暂存状态（用户终端 git add 过的东西不该被 IDE 顺手提交/清掉）。
+  // 新文件必须由用户主动选择；已选的新文件仍保留，消失/只读暂存项及时移除。
   function syncChecked() {
     if (!state || !state.changed) return;
-    const cur = new Set(state.changed.map((c) => c.file));
-    for (const f of [...checked]) if ((!cur.has(f) || isInIndexOnly(f)) && !ignoredAll.has(f)) checked.delete(f);
-    for (const f of cur) if (!knownFiles.has(f) && !isInIndexOnly(f)) checked.add(f);
-    knownFiles = cur;
+    const entries=new Map(state.changed.map(c=>[c.file,c]));
+    for(const file of checked){const c=entries.get(file);if((!c||c.inIndexOnly)&&!ignoredAll.has(file))checked.delete(file);}
+    for(const c of entries.values())if(!knownFiles.has(c.file)&&!c.inIndexOnly&&c.status!=='added'&&c.xy!=='??')checked.add(c.file);
+    knownFiles=new Set(entries.keys());
   }
   const isInIndexOnly = (f) => {
     const c = state && state.changed ? state.changed.find((x) => x.file === f) : null;
@@ -480,18 +501,18 @@ const GitPanel = (() => {
     return true;
   }
 
-  // ahead/behind 显示（标题栏 dirty 区域）+ 状态栏
-  // 带节流的静默 fetch（60s 一次）：反映远程真实状态；失败回退本地 refs
-  let lastFetchAt = 0;
+  // 日常刷新只读本地引用。拉取/推送才联网，避免后台认证超时拖慢日常编辑。
+  let aheadJob=null,aheadSeq=0;
   async function updateAheadBehind(forceFetch) {
     if (!root) return;
-    const operationRoot=root,generation=rootGeneration;
-    const now = Date.now();
-    const doFetch = forceFetch === true || now - lastFetchAt > 60000;
-    if (doFetch) lastFetchAt = now;
-    const r = await window.myIDE.git.aheadBehind(root, doFetch ? { fetch: true, auth: getGitAuthMap() } : {})
-      .catch(() => null);
-    if (!r || !r.branch || operationRoot!==root || generation!==rootGeneration) return;
+    const operationRoot=root,generation=rootGeneration,seq=++aheadSeq;
+    let job=aheadJob;
+    if(!job||job.root!==root||job.generation!==generation||forceFetch===true){
+      job={root,generation,promise:window.myIDE.git.aheadBehind(root,forceFetch===true?{fetch:true,auth:getGitAuthMap()}:{localOnly:true}).catch(()=>null)};
+      aheadJob=job;job.promise.finally(()=>{if(aheadJob===job)aheadJob=null;});
+    }
+    const r=await job.promise;
+    if(!r||!r.branch||operationRoot!==root||generation!==rootGeneration||seq!==aheadSeq)return;
     const el = document.getElementById('cd-dirty');
     if (!el) return;
     const ab = [];
@@ -503,7 +524,7 @@ const GitPanel = (() => {
     el.dataset.behind = r.behind == null ? '' : String(r.behind);
     // 远程信息提示（准确显示当前操作的远程仓库与数据来源）
     if (r.remote) {
-      const mark = r.fetched ? '已检查远程提交（尚未更新本地文件）' : '基于本地缓存（60 秒内不重复联网）';
+      const mark = r.fetched ? '已检查远程提交（尚未更新本地文件）' : '基于本地引用；拉取或推送时更新远程信息';
       el.title = (r.remoteUrl || r.remote) + '\n' + mark;
     } else {
       el.title = '未配置远程仓库';
@@ -532,8 +553,19 @@ const GitPanel = (() => {
   }
 
   // ---------- 渲染（面板内容） ----------
+  let renderedSignature=null;
   function render() {
     if (!filesEl) return;
+    // 快照ID每次扫描都变，但相同列表无需重建；保留行、展开状态、滚动与焦点。
+    const signature=JSON.stringify([root,rootGeneration,state?.isRepo,state?.root,state?.branch,state?.completeness,state?.error,state?.changed,op,conflictFiles,cls,groupByDir,showIgnored,secCollapsed,dirCollapsed,dirAllCollapsed]);
+    if(signature===renderedSignature&&filesEl.childElementCount){updateCheckUI();return;}
+    renderedSignature=signature;
+    const toolbarHost=document.getElementById('cd-toolbar-host');
+    if(toolbarHost&&!toolbarHost.querySelector('.git-cp-bar'))toolbarHost.replaceChildren(buildToolbar());
+    refreshBusy(!!refreshActive);
+    const oldList=document.getElementById('commit-list'),scroll=oldList?.scrollTop||0,selected=oldList?.querySelector('.git-file.sel')?.dataset.file;
+    // 旧目录复选框不能继续留在登记表，否则刷新次数越多，三态计算越慢且保留整棵旧DOM。
+    checkNodes=[];
     filesEl.innerHTML = '';
     if (!state || !state.isRepo) {
       const d = document.createElement('div');
@@ -566,7 +598,7 @@ const GitPanel = (() => {
     if (opBar) filesEl.appendChild(opBar);
 
     // 工具行（PyCharm 提交窗口 Changes 工具栏）：纯图标按钮 + 文字进 tooltip
-    filesEl.appendChild(buildToolbar());
+
     updateAuthorBtn();   // 工具行刚重建 → 作者按钮的"已覆盖"态要重新贴一次
 
     const list = document.createElement('div');
@@ -584,7 +616,9 @@ const GitPanel = (() => {
     // 显示选项关掉「忽略的文件」时**不挂这个节点**（真隐藏，不是折叠）——用户 2026-09-27 明确要求
     if (showIgnored) list.appendChild(renderIgnoredSection());
     updateCheckUI();
-    gitSelIdx = -1; // 重新渲染后重置键盘导航选中
+    list.scrollTop=scroll;
+    if(selected)for(const row of list.querySelectorAll('.git-file'))if(row.dataset.file===selected)row.classList.add('sel');
+    gitSelIdx = -1; // 结构改变后重新建立键盘位置
     // ⚠ 必须在**这里**量（列表已挂到 DOM，Range 才量得到文字宽度）：
     //   平铺名字列宽 = 这一列表里最长名字的宽度（不留"一大片空白"）。放在 buildFlatList 里量会拿到 0。
     applyFlatNameCol(filesEl);
@@ -1281,6 +1315,8 @@ const GitPanel = (() => {
   function buildToolbar() {
     const bar = document.createElement('div');
     bar.className = 'git-cp-bar';
+    const primary=document.querySelector('#panel-git .git-sync-primary');
+    if(primary)bar.append(primary);
     const mk = (svg, title, fn, id, label) => {
       const b = document.createElement('button');
       b.className = 'vt-btn';
@@ -1325,7 +1361,7 @@ const GitPanel = (() => {
     // ⚠ 追加在**最后**：自检按索引取前面的按钮（展开 [3] / 收起 [4] / 分组 [5]）。
     mk(IC.viewOpts, '显示选项：分组方式 / 忽略的文件', (e) => openViewOptionsMenu(document.getElementById('cd-tools-more') || e.currentTarget), 'cd-view-opts');
     // 只常驻刷新与差异；低频和破坏性操作放入带名称的菜单，避免一排无说明图标。
-    const tools = [...bar.querySelectorAll('.vt-btn')];
+    const tools = [...bar.querySelectorAll(':scope > .vt-btn')];
     tools.forEach((button, index) => { if (index !== 0 && index !== 2) button.hidden = true; });
     const more = document.createElement('button'); more.className = 'git-tools-more'; more.id = 'cd-tools-more';
     more.innerHTML = '<svg class="ic" viewBox="0 0 16 16"><circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/></svg>';
@@ -1958,6 +1994,7 @@ const GitPanel = (() => {
 
   // 节点三态 / 提交按钮 / 计数联动（旧的「全选」单选框已被节点三态复选框取代）
   function updateCheckUI() {
+    if(filesEl)for(const input of filesEl.querySelectorAll('.cf-check'))input.checked=checked.has(input.dataset.file);
     // 总数含「忽略的文件」（它们也能勾选 → 强制加入提交）
     const total = (state && state.changed ? state.changed.length : 0) + ignoredAll.size;
     for (const n of checkNodes) {
@@ -2979,7 +3016,7 @@ const GitPanel = (() => {
         const hist = document.getElementById('commit-history');
         if (hist) hist.classList.remove('active');
       }
-      root = v;rootGeneration++;refreshSeq++;cancelDiff();closeFloatMenu();showSyncNotice(null);
+      root = v;rootGeneration++;refreshSeq++;refreshActive=null;refreshBusy(false);cancelDiff();closeFloatMenu();showSyncNotice(null);
       // ⚠ 「忽略的文件」是**整个会话缓存**的（ignoredFiles/ignoredAll），不随 root 走：
       //   切项目不清会让新项目显示上一个项目的忽略清单（自检截图抓到过：新仓库里列出 48 个忽略文件）。
       invalidateIgnored();

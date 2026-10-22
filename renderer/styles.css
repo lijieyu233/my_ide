@@ -1051,22 +1051,27 @@ textarea.editor {
 .git-cp-bar button:focus-visible, .git-sync-primary button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .git-float-menu .ctx-item.disabled { opacity: .4; cursor: default; }
 .git-float-menu .ctx-item:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
-.git-sync { flex-shrink: 0; padding: 8px 10px 4px; }
-.git-sync-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.git-sync-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: .92em; }
-.git-sync-primary { display: grid; grid-template-columns: minmax(0,1fr) 24px minmax(0,1fr); gap: 0; }
-.git-sync-primary button { min-width: 0; height: 30px; padding: 0 6px; white-space: nowrap; overflow: hidden; border: 1px solid var(--border); border-radius: 5px; background: transparent; }
-.git-sync-primary #cd-pull { grid-column: 1; grid-row: 1; border-radius: 5px 0 0 5px; border-right: 0; }
-.git-sync-primary #cd-pull-options { grid-column: 2; grid-row: 1; padding: 0; border-radius: 0 5px 5px 0; color: var(--text-dim); }
-.git-sync-primary #cd-push { grid-column: 3; grid-row: 1; margin-left: 8px; }
-.git-sync-primary button:hover { background: var(--bg-hover); }
-.git-sync-primary svg { flex-shrink: 0; }
-#panel-git { container-type: inline-size; }
-.git-primary-short { display: none; }
-@container (max-width: 280px) { .git-primary-long { display: none; } .git-primary-short { display: inline; } }
-.git-primary-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-sync { flex-shrink: 0; padding: 0; border-bottom: 1px solid var(--border-pane); }
+#cd-toolbar-host .git-cp-bar { padding: 5px 8px; gap: 3px; border: 0; min-height: 36px; }
+.git-sync-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.git-sync-actions button { display:inline-flex; align-items:center; justify-content:center; gap:5px; font:inherit; }
+.git-sync-primary { display:flex; flex-wrap:nowrap; align-items:center; gap:0; margin-right:auto; }
+.git-sync-primary button { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-width:0; height:26px; padding:0 7px; border:0; border-radius:4px; background:transparent; color:var(--text); font:inherit; cursor:pointer; }
+.git-sync-primary #cd-pull { order:0; border-radius:4px 0 0 4px; padding-right:3px; }
+.git-sync-primary #cd-pull-options { order:1; width:18px; padding:0; margin-right:5px; color:var(--text-dim); }
+.git-sync-primary #cd-push { order:2; }
+.git-sync-primary button:hover { background:var(--bg-hover); color:var(--text-bright); }
+.git-sync-primary button:disabled { opacity:.4; cursor:default; }
+.git-sync-primary svg.ic { width:14px; height:14px; flex-shrink:0; }
+#panel-git { container-type:inline-size; }
+.git-primary-long { display:none; }
+.git-primary-short { display:inline; }
+.git-primary-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#cd-toolbar-host .git-tools-more { margin-left:0; }
+#cd-toolbar-host #cd-diff { padding:0 6px; }
+@container (max-width:320px) { #cd-toolbar-host #cd-diff span { display:none; } }
 .git-sync-target { color: var(--text-dim); font-size: .9em; margin-top: 5px; overflow-wrap: anywhere; }
-#cd-sync-status { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 4px; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
+#cd-sync-status { margin: 0 8px 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 4px; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
 #cd-sync-status[data-kind="error"] { border-color: var(--warn, #c98c3f); }
 #cd-sync-status pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; max-height: 120px; overflow: auto; margin: 6px 0; user-select: text; }
 #cd-sync-status details { margin-top: 5px; }
@@ -4095,3 +4100,7 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .editor-pane-actions [aria-pressed=true]{color:var(--accent);background:var(--bg-hover)}
 
 .pane-tab-actions{display:flex;align-items:center;gap:3px;border-left:1px solid var(--border)}
+
+#cd-refresh[aria-busy="true"] svg.ic { animation:git-status-spin 1s linear infinite; }
+@keyframes git-status-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { #cd-refresh[aria-busy="true"] svg.ic { animation:none; } }

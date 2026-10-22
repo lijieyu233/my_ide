@@ -939,12 +939,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($(dom, '#commit-msg'), '提交窗口打开（左侧面板）');
     assert_(!$(dom, '#panel-git').classList.contains('hidden'), '提交面板可见');
     assert_($allIn($(dom, '#commit-list'), '.cf-check').length === 4, '4 个文件复选框');
+    const selectedFiles=$allIn($(dom, '#commit-list'), '.cf-check:checked').map(c=>c.dataset.file).sort();
+    assert_(selectedFiles.length < 4, '未跟踪文件没有默认混入提交');
     $(dom, '#commit-msg').value = '测试提交信息';
     click($(dom, '#cm-ok'));
     await tick(); await tick();
     assert_(calls.commit.length >= 1, '调用了 git.commit');
     assert_(calls.commit[calls.commit.length - 1].message === '测试提交信息', '消息正确');
-    assert_(calls.commit[calls.commit.length - 1].files.length === 4, '四个文件被提交（新文件默认勾选）');
+    assert_(JSON.stringify(calls.commit[calls.commit.length - 1].files.slice().sort())===JSON.stringify(selectedFiles), '只提交明确选中的文件，未跟踪文件不自动加入');
     // 收尾：关闭 diff 视图并收起面板
     await g(dom, 'GitPanel.closeDiffView()');
     await g(dom, 'GitPanel.closeDialog()');
@@ -3002,8 +3004,8 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('提交窗口：工具行图标化 + 节点三态复选框 + 展开收起 + 平铺切换', async () => {
     await g(dom, 'GitPanel.openCommit()');
     await tick(); await tick();
-    const bar = () => $(dom, '#cd-files .git-cp-bar');
-    const btnsOf = () => $allIn(bar(), '.vt-btn');
+    const bar = () => $(dom, '#cd-toolbar-host .git-cp-bar');
+    const btnsOf = () => $allIn(bar(), ':scope > .vt-btn');
     assert_(bar(), '工具行存在');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来了（标题行 340px 放不下，多一个就整行换行）
     // 13 → 9 → 10：删掉「提交」（底部 footer 已有同一入口）与「内嵌预览」（340px 侧栏读不了），
@@ -3012,7 +3014,7 @@ assert_(panel, 'CM6 搜索面板出现');
     // 分组方式收进 ⋯ 显示选项菜单后，工具行里不该再有一个独立的按钮（同一功能两个入口 = 用户说的"重复功能未删除"）
     assert_(!btnsOf().some((b) => /^分组方式：/.test(b.title || '')),
       '工具行没有独立的「分组方式」按钮: ' + btnsOf().map((b) => b.title).join(' | '));
-    assert_($(dom, '#cd-files #cd-view-opts'), '工具行末尾有「显示选项」按钮');
+    assert_($(dom, '#cd-toolbar-host #cd-view-opts'), '工具行末尾有「显示选项」按钮');
     assert_(!$(dom, '#cd-files #commit-precheck') && !$(dom, '#cd-files #commit-author'),
       '提交前检查 / 本次作者不再占工具行图标位（收进 ⋯ 菜单）');
     assert_($(dom, '#commit-more'), '提交消息那行有 ⋯ 更多入口');

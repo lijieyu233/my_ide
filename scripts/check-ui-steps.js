@@ -376,7 +376,7 @@ module.exports = {
       tb.every((b) => b.querySelector('svg') || /拉取|推送/.test(b.textContent)),
       tb.map((b) => b.textContent.trim() || 'icon').join(' | '));
     // 操作行：PyCharm 式纯图标按钮（文字进 tooltip），无边框
-    const gb = qa('#cd-files .git-cp-bar .vt-btn');
+    const gb = qa('#cd-toolbar-host .git-cp-bar > .vt-btn');
     add('操作行按钮：SVG + 无边框 + 可见中文名称', gb.length >= 5 && gb.every((b) => getComputedStyle(b).borderTopStyle === 'none' && b.querySelector('svg') && b.textContent.trim()),
       gb.length + ' 个: ' + gb.slice(0, 3).map((b) => b.title.slice(0, 8)).join(' | '));
     const r = q('#cd-files').getBoundingClientRect();
@@ -2127,10 +2127,10 @@ module.exports = {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     window.App.showTool('git');
     for (let i = 0; i < 40 && !q('#cd-files .git-file'); i++) await sleep(200);
-    const bar = q('#cd-files .git-cp-bar');
+    const bar = q('#cd-toolbar-host .git-cp-bar');
     add('工具行存在', !!bar);
     if (!bar) return { R };
-    const btns = qa('#cd-files .git-cp-bar .vt-btn');
+    const btns = qa('#cd-toolbar-host .git-cp-bar > .vt-btn');
     // 8 → 11：搁置 / 远程 / 日志 从标题行挪进来（标题行 340px 塞不下，见 commitTitleLayout 步骤）
     // 11 → 13：M5 又补了「提交前检查」「本次作者」（同样是从提交输入框那行挪过来的）
     add('工具行 9 个SVG操作均有名称', btns.length === 9 && btns.every((b) => b.querySelector('svg') && b.textContent.trim()),
@@ -2164,7 +2164,7 @@ module.exports = {
       refD !== rbD && /a/i.test(refD) && !/a/i.test(rbD),
       'refresh=' + refD.slice(0, 50) + ' | rollback=' + rbD.slice(0, 50));
     // 全行图标两两不同：同一行里出现两个一样的图标 = 一定有谁画错了
-    const svgHtml = qa('#cd-files .git-cp-bar .vt-btn svg').map((x) => x.innerHTML);
+    const svgHtml = qa('#cd-toolbar-host .git-cp-bar > .vt-btn svg').map((x) => x.innerHTML);
     add('工具行图标两两不同', new Set(svgHtml).size === svgHtml.length,
       new Set(svgHtml).size + '/' + svgHtml.length + ' 种');
 
@@ -2460,9 +2460,9 @@ module.exports = {
     const tActs = qa('#panel-git .panel-title .panel-title-actions .vt-btn');
     add('标题行显示分支与修改数，拉取/推送移入独立同步区',
       tActs.length === 0 && !!q('.git-sync #cd-pull') && !!q('.git-sync #cd-push') && !q('#panel-git .panel-title #cd-refresh') && !q('#panel-git .panel-title #cd-shelve')
-      && !!q('#cd-files .git-cp-bar #cd-shelve'),
+      && !!q('#cd-toolbar-host .git-cp-bar #cd-shelve'),
       '标题行按钮=' + tActs.length + '（' + tActs.map((b) => b.textContent.trim()).join('/') + '） 工具行按钮='
-      + qa('#cd-files .git-cp-bar .vt-btn').length);
+      + qa('#cd-toolbar-host .git-cp-bar > .vt-btn').length);
     // amend 行塞了 Amend + Sign-off + 时钟 + ⋯ —— 340px 下最容易把第一个标签压成「修正上次提交 (Am...」
     {
       const rowEl = q('#panel-git .commit-amend-row');
@@ -2492,7 +2492,7 @@ module.exports = {
       '裁掉=' + clipped() + 'px 行高=' + rowH());
 
     // 工具行精简后的反向断言：不该再有「提交」（底部 footer 已有）与「内嵌预览」
-    const LBL = qa('#cd-files .git-cp-bar .vt-btn').map((b) => b.title || '');
+    const LBL = qa('#cd-toolbar-host .git-cp-bar > .vt-btn').map((b) => b.title || '');
     add('工具行没有「提交」按钮（底部 footer 的「提交 (I)」才是唯一入口）',
       !LBL.some((t) => /提交勾选的文件/.test(t)), LBL.length + ' 个按钮');
     add('工具行没有「内嵌预览」按钮', !LBL.some((t) => /内嵌预览/.test(t)), 'ok');
