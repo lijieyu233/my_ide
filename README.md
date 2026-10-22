@@ -51,7 +51,8 @@ npm ci
 npm start
 ~~~
 
-- [下载与首次使用](docs/getting-started.md)：Windows 便携包、源码运行、配置入口。
+- [下载 Windows x64 测试版 ZIP](https://github.com/lijieyu233/my_ide/releases/download/v0.8.5-preview.1/MyIDE-0.8.5-preview.1-win-x64.zip)：完整解压后运行 MyIDE.exe。[验收与已知问题](docs/release-preview.md)。
+- [下载与首次使用](docs/getting-started.md)：源码运行、配置入口与常见问题。
 - [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)：以附件和版本说明为准；预发布版会明确标识。
 - 本地编辑无需配置 AI。模型、翻译、SSH 和数据库连接按需配置。
 

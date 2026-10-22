@@ -12,7 +12,7 @@
 - [x] 更新 About、Topics、主页和默认展示分支，并回读确认。
 - [x] 验证新增文档链接、工具示例及图片在默认分支可访问。
 - [x] 维护者确定 MIT 许可，LICENSE、npm 元数据与发行包保留声明。
-- [ ] Windows x64 预发布包：实际产物验收后上传，明确已知问题，不伪装稳定版。
+- [x] Windows x64 预发布包已上传；v0.8.5-preview.1 标签对应 72df138，明确已知问题，不伪装稳定版。
 - [x] 新增 AI 配置、工作流、架构、贡献、安全报告与问题模板。
 - [x] 从用户指南生成 13 页静态文档站，含 canonical、双语入口、结构化信息和 sitemap。
 - [x] GitHub Pages 部署成功并核对线上页面，主页改为实际站点。
@@ -32,6 +32,8 @@
 文档站直接读取同一份 Markdown，只发布明确白名单的用户指南；历史开发资料链接到源码，避免公开另一套重复和过期文本。
 
 已启用 GitHub 私密漏洞报告，问题和贡献模板不要求上传秘密。文档站部署记录：[GitHub Actions](https://github.com/lijieyu233/my_ide/actions/workflows/docs.yml)。本轮产物验证与局限见[预发布记录](release-preview.md)。
+
+公开附件 MyIDE-0.8.5-preview.1-win-x64.zip 为 187737493 字节；GitHub 返回的 SHA256 与本地 527c4fd24fce2225b065d18ebc46e012e851b68d83ee76bc5a137b30c2d360a9 一致。SHA256SUMS.txt 同样完成远端大小与摘要核对。[实际 Release](https://github.com/lijieyu233/my_ide/releases/tag/v0.8.5-preview.1)已公开且标记 prerelease，未标记 Latest。稳定版仍以修复已知失败并验收为前提。
 
 ## 先前验证记录（2026-10-21）
 

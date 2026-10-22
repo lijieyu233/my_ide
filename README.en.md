@@ -51,7 +51,8 @@ npm ci
 npm start
 ~~~
 
-- [Download and first use](docs/getting-started.md): Windows portable builds, source setup, and configuration.
+- [Download the Windows x64 preview ZIP](https://github.com/lijieyu233/my_ide/releases/download/v0.8.5-preview.1/MyIDE-0.8.5-preview.1-win-x64.zip): extract the complete archive and run MyIDE.exe. [Verification and known issues](docs/release-preview.md).
+- [First use](docs/getting-started.md): source setup and configuration.
 - [GitHub Releases](https://github.com/lijieyu233/my_ide/releases): use the actual assets and notes; preview releases are explicitly labeled.
 - Local editing does not require AI. Configure model, translation, SSH, and database services when you need them.
 
