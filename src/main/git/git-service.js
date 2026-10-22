@@ -1690,7 +1690,7 @@ async function primaryRemote(root) {
 //             ② .git/FETCH_HEAD（fetch 的产物，2 段路径 → 本机也落得下来，形如
 //                "<oid>\t\tbranch 'main' of <url>"）
 //             ③ git ls-remote（最后手段，要走网络，只读不改工作区）
-async function remoteOid(root, remote, branch, remoteUrl) {
+async function remoteOid(root, remote, branch, remoteUrl, localOnly = false) {
   if (!remote || !branch) return null;
   try {
     const oid = await git.resolveRef({ fs, dir: root, ref: 'refs/remotes/' + remote + '/' + branch });
@@ -1707,6 +1707,7 @@ async function remoteOid(root, remote, branch, remoteUrl) {
       return m[1];
     }
   } catch {}
+  if(localOnly)return null;
   try {
     const N = require('./git-native');
     const r = await N.run(['ls-remote', remote, 'refs/heads/' + branch], { cwd: root, timeout: 15000, env: N.NO_EDIT });
@@ -1718,6 +1719,7 @@ async function remoteOid(root, remote, branch, remoteUrl) {
 
 // ahead/behind：本地分支 vs 远程跟踪分支
 // opts.fetch=true 时先静默 fetch（更新 refs/remotes 后再算，反映远程真实状态；失败回退本地 refs）
+const aheadCountCache = new Map();
 async function aheadBehind(dir, opts = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return {};
@@ -1736,9 +1738,11 @@ async function aheadBehind(dir, opts = {}) {
   }
   // ⚠ 走 remoteOid 的三级兜底（refs/remotes → FETCH_HEAD → ls-remote）：本机 git 写不进
   //   refs/remotes 时，只 resolveRef 会恒为 null → 面板上的 ↑/↓ 永远不显示。
-  const upstream = await remoteOid(root, pr.name, branch, pr.url);
+  const upstream = await remoteOid(root, pr.name, branch, pr.url, !!opts.localOnly);
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
-  let ahead = null, behind = null;
+  const countKey=root+'\0'+head+'\0'+upstream;
+  if(opts.localOnly&&head&&upstream&&aheadCountCache.has(countKey))return {branch,remote:pr.name,remoteUrl:pr.url,fetched,...aheadCountCache.get(countKey)};
+  let ahead = null, behind = null, countVerified = false;
   if (upstream && head) {
     // ⚠ 必须先找 merge-base 再各自计数：直接 `countNotReached(upstream, head)` 在**本地领先**时
     //   （远端是本地的祖先，沿父链永远到不了 head）会把整段历史都数成 behind —— 实测本地多提交
@@ -1748,10 +1752,13 @@ async function aheadBehind(dir, opts = {}) {
       const bs = await git.findMergeBase({ fs, dir: root, oids: [String(head), String(upstream)] });
       base = (bs && bs[0]) || null;
     } catch {}
+    countVerified = !!base;
     const stop = base || '0000000000000000000000000000000000000000';   // 无共同祖先 = 整段都算
     ahead = await countNotReached(root, head, stop);
     behind = await countNotReached(root, upstream, stop);
   }
+  // 引用没变时计数也不会变，不必因每次文件保存再次遍历提交历史。
+  if(opts.localOnly&&head&&upstream&&countVerified){aheadCountCache.set(countKey,{ahead,behind});while(aheadCountCache.size>32)aheadCountCache.delete(aheadCountCache.keys().next().value);}
   return { branch, remote: pr.name, remoteUrl: pr.url, fetched, ahead, behind };
 }
 
