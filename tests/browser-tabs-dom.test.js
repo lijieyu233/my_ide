@@ -52,5 +52,17 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.Storage.prototype.setItem = () => { throw Error('quota'); }; w.BrowserPanel.newTab('https://b.test'); assert(!q('#bw-save-status').hidden); assert.equal(w.BrowserPanel.saveTabs().ok, false);
     await tick();
   });
+  await test('标签滚轮兼容像素行页单位，缩放手势和未溢出时保留默认行为', async ({w,q,push})=>{
+    w.BrowserPanel.show();w.BrowserPanel.newTab();const list=q('#bw-tabs');
+    let width=300;Object.defineProperty(list,'clientWidth',{get:()=>width});Object.defineProperty(list,'scrollWidth',{get:()=>900});
+    const wheel=options=>{const e=new w.WheelEvent('wheel',{bubbles:true,cancelable:true,...options});list.dispatchEvent(e);return e.defaultPrevented;};
+    list.scrollLeft=0;assert(wheel({deltaY:60}));assert.equal(list.scrollLeft,60);
+    assert(wheel({deltaX:80,deltaY:5}));assert.equal(list.scrollLeft,140);
+    assert(wheel({deltaY:2,deltaMode:1}));assert.equal(list.scrollLeft,204);
+    assert(wheel({deltaY:1,deltaMode:2}));assert.equal(list.scrollLeft,504);
+    assert(!wheel({deltaY:60,ctrlKey:true}));assert(!wheel({deltaY:60,metaKey:true}));assert.equal(list.scrollLeft,504);
+    push({tabId:w.BrowserPanel.tabs[0].id,title:'后台标题刷新'});assert.equal(list.scrollLeft,504);
+    width=900;assert(!wheel({deltaY:60}));assert.equal(list.scrollLeft,504);
+  });
   console.log('浏览器标签交互 ' + passed + ' 通过 / 0 失败');
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });

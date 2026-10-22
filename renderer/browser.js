@@ -239,12 +239,49 @@ const BrowserPanel = (() => {
     if (!projectTabStores.has(key)) { const store = BrowserTabs.create(localStorage); store.load(root); projectTabStores.set(key, store); }
     tabStore = projectTabStores.get(key); renderTabs(); renderGroups(); storageStatus(); presentTab();
   }
+  function syncTabStrip(reveal = false) {
+    const list = document.getElementById('bw-tabs'), prev = document.getElementById('bw-tab-prev'), next = document.getElementById('bw-tab-next');
+    if (!list || !prev || !next || !list.clientWidth) return;
+    const gap = parseFloat(getComputedStyle(list.parentElement).gap) || 0;
+    // 把滚动按钮占用的宽度还原后再判断，避免刚好放得下时按钮反复显隐。
+    const available = list.clientWidth + (prev.hidden ? 0 : prev.offsetWidth + gap) + (next.hidden ? 0 : next.offsetWidth + gap);
+    const required = [...list.children].reduce((total, item) => total + item.offsetWidth, 0) + Math.max(0, list.children.length - 1) * (parseFloat(getComputedStyle(list).gap) || 0);
+    prev.hidden = next.hidden = required <= available + 1;
+    if (reveal) {
+      const active = list.querySelector('.bw-tab.active');
+      if (active) {
+        const edge = list.getBoundingClientRect(), tab = active.getBoundingClientRect();
+        if (tab.left < edge.left) list.scrollLeft -= edge.left - tab.left;
+        else if (tab.right > edge.right) list.scrollLeft += tab.right - edge.right;
+      }
+    }
+    prev.disabled = list.scrollLeft <= 1;
+    next.disabled = list.scrollLeft >= list.scrollWidth - list.clientWidth - 1;
+  }
+  function initTabStrip() {
+    const list = document.getElementById('bw-tabs');
+    const scroll = direction => { list.scrollLeft += direction * Math.max(176, list.clientWidth * .75); syncTabStrip(); };
+    document.getElementById('bw-tab-prev').onclick = () => scroll(-1);
+    document.getElementById('bw-tab-next').onclick = () => scroll(1);
+    list.addEventListener('scroll', () => syncTabStrip());
+    list.addEventListener('wheel', event => {
+      if (event.ctrlKey || event.metaKey || list.scrollWidth <= list.clientWidth) return;
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (!delta) return;
+      event.preventDefault();
+      list.scrollLeft += delta * (event.deltaMode === 1 ? 32 : event.deltaMode === 2 ? list.clientWidth : 1);
+      syncTabStrip();
+    }, { passive: false });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => syncTabStrip(true)).observe(list.parentElement);
+    window.addEventListener('resize', () => syncTabStrip(true));
+  }
   function renderTabs() {
     if (!tabStore) return;
     tabSignature();
     const list = document.getElementById('bw-tabs'), state = tabStore.state;
     const focused = document.activeElement?.closest('.bw-tab');
     const focusId = focused?.dataset.tabId, focusClose = document.activeElement?.classList.contains('bw-tab-close');
+    const previousActive = list.querySelector('.bw-tab.active')?.dataset.tabId;
     const scroll = list.scrollLeft; list.replaceChildren();
     for (const tab of state.tabs) {
       const item = document.createElement('div'); item.className = 'bw-tab' + (state.active === tab.id ? ' active' : ''); item.dataset.tabId = tab.id; item.draggable = true;
@@ -265,6 +302,7 @@ const BrowserPanel = (() => {
       if (tabRuntime.get(tab.id)?.loading) item.classList.add('loading'); list.append(item);
     }
     list.scrollLeft = scroll;
+    syncTabStrip(previousActive !== state.active);
     if (focusId && visible) list.querySelector('[data-tab-id="' + focusId + '"] ' + (focusClose ? '.bw-tab-close' : '.bw-tab-select'))?.focus({ preventScroll: true });
   }
   function presentTab() {
@@ -283,7 +321,7 @@ const BrowserPanel = (() => {
   function activateTab(tabId) {
     if (!tabStore.activate(tabId)) return;
     clearOverlayImage(); overlayHid = false; closeDd(); renderTabs(); renderGroups(); storageStatus(); presentTab();
-    document.querySelector('.bw-tab.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    syncTabStrip(true);
   }
   function newTab(url = '', title = '') {
     const normalized = url ? normalizeInput(url) : '';
@@ -567,7 +605,7 @@ const BrowserPanel = (() => {
     panel.classList.remove('hidden');
     syncToolBtn();
     renderSidebar(); // 收藏列表在左侧栏 panel-browser（App.renderToolStrip 控制显隐）
-    if (tabStore) { renderTabs(); renderGroups(); storageStatus(); presentTab(); startHeal(); closeDd(); return; }
+    if (tabStore) { renderTabs(); syncTabStrip(true); renderGroups(); storageStatus(); presentTab(); startHeal(); closeDd(); return; }
     if (hasPage) { // 恢复网页显示（view 实例保留在主进程，登录态不丢）
       document.getElementById('browser-empty').classList.add('hidden');
       viewEl.classList.remove('hidden');
@@ -1022,6 +1060,7 @@ const BrowserPanel = (() => {
     darkBtnEl = document.getElementById('bw-dark');
     if (darkBtnEl) darkBtnEl.onclick = (e) => { e.stopPropagation(); cycleDarkMode(); };
     initDarkMode();
+    initTabStrip();
     tabStore = BrowserTabs.create(localStorage); projectRoot=window.App?.root || null;
     tabStore.load(projectRoot); projectTabStores.set(tabStore.scope, tabStore); B()?.selectTab?.(tabStore.active.id); renderTabs(); switchSidebar('groups'); storageStatus();
     document.getElementById('bw-tab-new').onclick = () => newTab();

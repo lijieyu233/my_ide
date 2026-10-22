@@ -72,5 +72,25 @@ const timer = setTimeout(() => { console.error('浏览器标签验证超时'); a
     assert.deepEqual(await js('BrowserPanel.tabs.map(t=>t.url)'), before); assert.equal(requests.filter(url => url === '/lazy').length, lazyCount);
     await js('App.showTool("browser");true'); await capture('restored');
   });
+  await test('多标签无系统滚动条，滚轮和两端按钮可达，切换自动显示当前标签', async () => {
+    await js('for(let i=0;i<12;i++)BrowserPanel.newTab("", "测试标签 "+(i+1));true');
+    const metrics = () => js('(()=>{const list=document.getElementById("bw-tabs"),active=list.querySelector(".active").getBoundingClientRect(),r=list.getBoundingClientRect();return {scroll:list.scrollLeft,max:list.scrollWidth-list.clientWidth,height:list.offsetHeight,gutter:list.offsetHeight-list.clientHeight,visible:active.left>=r.left-1&&active.right<=r.right+1,prevHidden:document.getElementById("bw-tab-prev").hidden,nextHidden:document.getElementById("bw-tab-next").hidden,prevDisabled:document.getElementById("bw-tab-prev").disabled,nextDisabled:document.getElementById("bw-tab-next").disabled};})()');
+    await until(async()=> (await metrics()).scroll>0); let m=await metrics(); assert(m.visible); assert.equal(m.gutter,0); assert.equal(m.height,32); assert(!m.prevHidden&&!m.nextHidden); assert(m.nextDisabled);
+    await capture('overflow-wide');
+    await js('document.getElementById("bw-tab-prev").click();true'); assert((await metrics()).scroll<m.scroll);
+    await js('BrowserPanel.activateTab(BrowserPanel.tabs[0].id);true'); assert.equal((await metrics()).scroll,0); assert((await metrics()).prevDisabled);
+    await until(()=>win.contentView.children[0]?.webContents.getURL()===origin+'/a'); const currentPage=win.contentView.children[0].webContents;
+    const point=await js('(()=>{const r=document.getElementById("bw-tabs").getBoundingClientRect();return {x:Math.round(r.left+60),y:Math.round(r.top+15)};})()');
+    win.webContents.sendInputEvent({type:'mouseWheel',...point,deltaX:0,deltaY:-180,canScroll:true}); await until(async()=> (await metrics()).scroll>0);
+    await js('document.getElementById("bw-tab-next").click();true'); assert((await metrics()).scroll>0);
+    const manualScroll=(await metrics()).scroll; await currentPage.executeJavaScript('document.title="标题刷新";true'); await until(()=>js('BrowserPanel.tabs[0].title==="标题刷新"')); assert.equal((await metrics()).scroll,manualScroll);
+    await js('BrowserPanel.closeTabs([BrowserPanel.activeTabId]);BrowserPanel.reopenTab();true'); assert((await metrics()).visible);
+    await js('BrowserPanel.hide();BrowserPanel.show();true'); assert((await metrics()).visible);
+    await js('BrowserPanel.activateTab(BrowserPanel.tabs.at(-1).id);true'); win.setContentSize(850,700);
+    await until(async()=> (await metrics()).visible); m=await metrics(); assert.equal(m.height,32); assert.equal(m.gutter,0);
+    assert(await js('(()=>{const strip=document.querySelector(".bw-tab-strip").getBoundingClientRect();return ["bw-tab-prev","bw-tab-next","bw-tab-new","bw-tab-menu"].every(id=>{const r=document.getElementById(id).getBoundingClientRect();return r.left>=strip.left&&r.right<=strip.right&&r.width>0;});})()')); await capture('overflow-narrow');
+    await js('BrowserPanel.closeTabs(BrowserPanel.tabs.slice(1).map(t=>t.id));true'); await until(async()=> (await metrics()).prevHidden); assert((await metrics()).nextHidden);
+    win.setContentSize(1440,900); await capture('single-tab');
+  });
   console.log('浏览器标签真实窗口 ' + passed + ' 通过 / 0 失败'); clearTimeout(timer); server.close(); app.exit(0);
 })().catch(error => { console.error(error.stack); clearTimeout(timer); server?.close(); app.exit(1); });
