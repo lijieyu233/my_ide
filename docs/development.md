@@ -34,19 +34,23 @@ npm run check:editor-panes
 ## 公开版本发布清单 / Release checklist
 
 - [ ] 选择提交、版本和变更记录，标明已知问题。
-- [ ] 确认许可证与分发条件，不因仓库公开替维护者自行选择许可证。
+- [x] 项目采用维护者确认的 MIT 许可；每次分发仍需保留第三方组件许可。
 - [ ] 完成适用测试并保存结果，不把失败描述为通过。
 - [ ] npm run build 后核对 Windows portable 产物。
 - [ ] 对实际产物执行 check:package、check:packaged 等验收，验证首次启动与关键功能。
 - [ ] 为验收提交打标签并创建 Release，上传实际安装包与校验信息。
 - [ ] 更新中英文说明、截图、下载链接与 About。
 
-本清单不表示本轮已打包、上传安装包或授予开源许可。
+每次发布的构建、验证和实际附件见[预发布记录](release-preview.md)。不得用清单打勾替代真实产物验收。
 
 ## 文档与截图更新
 
 用户入口是 [README](../README.md)、[English README](../README.en.md) 和[文档导航](README.md)。新能力应写清操作、场景、限制并链接验证记录。
 
-[双视图演示截图](images/editor-split.png)来自隐藏真实应用中的隔离演示项目，本轮使用虚构 README、JSON 和笔记生成；它展示真实布局而非设计稿。check:editor-panes 可生成同类双视图验证截图，需检查后再替换文档资源。不要使用包含真实私有内容、密钥或服务器认证信息的截图。
+[工作台演示截图](images/workspace.png)来自隐藏真实应用中的隔离项目，使用虚构文档与代码，展示项目目录、编辑区和 AI 入口。分屏截图仅作为编辑能力的专项资料，不担任产品主图。不要使用包含真实私有内容、密钥或服务器认证信息的截图。
 
 [可发现性维护](discoverability.md) · [文档导航](README.md)
+
+## 公开文档站
+
+npm run test:docs 会生成 build/docs-site 并检查本地文档、生成链接、页面元数据与公开内容白名单。GitHub Pages 工作流仅发布这些用户指南，历史开发文档仍链接到 GitHub 源码。修改 README 或用户指南后自动部署；不要维护另一套复制文本。

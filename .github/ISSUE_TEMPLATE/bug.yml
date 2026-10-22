@@ -1,0 +1,28 @@
+name: 问题报告 / Bug report
+description: 提供可复现的错误与影响范围
+title: "[Bug] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本与系统 / Version and OS
+      placeholder: Windows 11 x64, 0.8.5-preview.1 或提交号
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 使用虚构数据；不要提交 Key、密码、私钥或私人文档。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期与实际结果 / Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏日志与截图 / Redacted evidence

@@ -1,6 +1,14 @@
 # MyIDE 快速开始 / Getting started
 
-Run the current development version on Windows with Git, Node.js 24, and npm. AI configuration is optional for local editing. See [English overview](../README.en.md).
+Choose a Windows portable preview or run from source. Local editing does not require AI. See [English overview](../README.en.md).
+
+## 下载 Windows 便携版
+
+打开 [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)，选择明确标为 Windows x64 的 MyIDE EXE 附件。预发布版用于测试，先阅读已知问题和验收记录；不要把 Source code ZIP 当成应用。
+
+便携版无需安装 Node.js 或 npm。下载后在 Windows 上运行；未签名的应用可能显示系统发布者提示，应核对发布来源和 SHA256，而不是关闭系统安全功能。项目依赖的 Git、语言运行时和远程服务仍需自行准备。
+
+[预发布验收与校验信息](release-preview.md) · [版本记录](../CHANGELOG.md)
 
 ## 从源码运行
 
@@ -22,7 +30,7 @@ npm start
 1. 打开本地项目目录或按 Ctrl+O。项目是目录，单个文档不需要单独变成项目。
 2. 从文件树打开文档，Ctrl+P 快速打开，Ctrl+Shift+F 搜索项目内容。
 3. Markdown 可在标签栏切换实时预览、源码、预览或源码对照。
-4. 点“向右拆分”或“向下拆分”，两栏先显示同一文档；点击目标组后打开另一文件，两组独立切换。
+4. 先按自己的工作选择入口：引用文件给 AI、查看 Git 改动、配置程序启动，或打开内置浏览器查阅资料。
 5. Ctrl+S 保存，Git 从提交面板与历史面板进入。
 
 状态栏提供文件编码入口。重新解码需先处理未保存内容；磁盘版本冲突时应用保留输入并提供比较、另存副本等入口。
@@ -37,13 +45,13 @@ npm start
 
 ## 安装包与构建
 
-已发布安装包查看 [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)。当前没有正式 Latest Release，不能将本机 dist/ 路径当作公开下载地址。
+已发布安装包查看 [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)。以 Release 页的实际附件和预发布标记为准，本机 dist/ 路径不是公开下载地址。
 
 ~~~powershell
 npm run build
 ~~~
 
-目标为 Windows portable，输出到 dist/。发布前仍需执行[产物检查和发布验收](development.md)，并确认分发条件和许可证。
+目标为 Windows portable，输出到 dist/。发布前仍需执行[产物检查和发布验收](development.md)，并保留 MIT 许可与第三方组件的许可证。
 
 ## 常见问题 / FAQ
 

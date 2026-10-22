@@ -1,31 +1,48 @@
-# MyIDE — AI-assisted Markdown and code workspace for Windows
+# MyIDE — An AI-powered local workspace
 
-MyIDE is a Windows desktop workspace for local documents and multiple projects. It combines a Markdown live-preview editor, code and JSON editing, Git tools, an embedded browser, and AI workbench actions. Built with Electron, vanilla JavaScript, and CodeMirror 6.
+**Work with project documents, code, web pages, and development tools in one desktop workspace, with an AI assistant that can use the tools.**
 
-[简体中文](README.md) · [Getting started](docs/getting-started.md) · [Features and limitations](docs/features.md) · [AI tools](docs/ai-api.md) · [Documentation](docs/README.md) · [Report an issue](https://github.com/lijieyu233/my_ide/issues)
+MyIDE is an open-source Windows application for technical documentation, code projects, research, and day-to-day development tasks. Start from your local files, bring relevant context to AI, and inspect the actual edits and execution results in the same application.
 
-![MyIDE editing one Markdown document in two panes with independent tabs, toolbars, and scroll positions](docs/images/editor-split.png)
+[简体中文](README.md) · [Download and setup](docs/getting-started.md) · [Workflows](docs/workflows.md) · [Capabilities](docs/features.md) · [Documentation](docs/README.md)
 
-*A real application screenshot from an isolated demo project. Both panes show different positions in the same document.*
+![MyIDE project workspace with a file tree, document editor, and AI assistant](docs/images/workspace.png)
 
-## What can I use it for?
+*A real application screenshot using an isolated project with fictional content. No AI execution results are fabricated.*
 
-| Task | Available functionality |
-| --- | --- |
-| Edit Markdown notes and documentation | Live preview, source and preview modes, source/preview comparison, heading outline, table editing, image copy and resizing |
-| Work in two editor panes | Split right or down; show the same document in both panes, synchronize edits, and navigate or scroll independently |
-| Inspect code and JSON | Syntax highlighting, find/replace, JSON structure outline and folding, encoding selection, project search |
-| Manage local projects | Project-specific sessions, file tree, Git status/diff/history/commit/sync, application launch panel |
-| Use AI within the workspace | Attach files or selections and use existing workbench tools for the editor, browser, Git, tasks, launch panel, and other modules |
-| Browse and read | Embedded browser tabs, favorites, saved tab groups and selection translation; a bookshelf for TXT, basic reflowable EPUB, and CBZ |
+## Why MyIDE?
 
-See [features and limitations](docs/features.md) for scope. AI requires a configured model service; DSH has additional runtime requirements. Local editing is available without AI configuration.
+A single task often spans notes, source files, browser tabs, terminals, Git, and a database. Moving between applications also means repeatedly explaining the project to an assistant and copying its results back.
 
-## Run from source
+MyIDE brings these tools together around ordinary local files. You can inspect material, edit documents or code, run configured tools, and verify the result without rebuilding the context for every step. Other editors and Git can continue to use the same files.
 
-The current source version is **0.8.5**. The **dev** branch is ongoing development, not a stable-release guarantee. Windows is the primary development and verification platform.
+## Core workflows
 
-Install Git, Node.js 24, and npm:
+### 1. Work with AI in project context
+
+Attach files or selections, inspect the current workspace, and ask the assistant to analyze code, organize documents, or investigate an issue. Use an OpenAI-compatible model service through the standard assistant, or connect a locally installed DeepSeek Harness (DSH).
+
+In-application tools cover project files, the editor, outlines, the browser, Git, tasks, launch management, SSH/SFTP, databases, and settings. State checks and existing permissions govern actions; actual results must be checked afterward. Background DSH work remains attached to its original project and session.
+
+[AI setup and workflow](docs/ai-guide.md) · [Tool interfaces and scope](docs/ai-api.md)
+
+### 2. Keep documents and project knowledge together
+
+Navigate multiple local projects, search and edit Markdown, code, and JSON, and preview HTML, images, PDF, and common Office files. Markdown live preview and outlines support writing; JSON structure navigation helps inspect data. Each project retains its working session.
+
+The embedded browser supports research, saved tab groups, and selection translation. The bookshelf tracks TXT, basic EPUB, and CBZ reading. Split editing, table editing, and image controls are supporting editor features described in the [capability guide](docs/features.md).
+
+### 3. Connect development work to real tools
+
+Inspect Git status, history, and diffs, then commit or synchronize changes. Manage configured processes, readiness checks, ports, and logs through the launch panel. Use SSH/SFTP for remote terminals and files, database tools for queries, and tasks for tracking work.
+
+These modules have direct UI controls as well as in-application AI tools. Remote connections, process execution, and data writes depend on your configuration and permissions.
+
+[Workflow examples](docs/workflows.md) · [Capabilities and limitations](docs/features.md)
+
+## Get started
+
+Source setup requires Windows, Git, and Node.js 24:
 
 ~~~powershell
 git clone --branch dev https://github.com/lijieyu233/my_ide.git
@@ -34,28 +51,16 @@ npm ci
 npm start
 ~~~
 
-Open a local project directory after startup. Network access is required to install dependencies and download Electron. See [setup and troubleshooting](docs/getting-started.md).
+- [Download and first use](docs/getting-started.md): Windows portable builds, source setup, and configuration.
+- [GitHub Releases](https://github.com/lijieyu233/my_ide/releases): use the actual assets and notes; preview releases are explicitly labeled.
+- Local editing does not require AI. Configure model, translation, SSH, and database services when you need them.
 
-[Releases](https://github.com/lijieyu233/my_ide/releases) is the place for published installers. There is currently no formal Latest Release; the source ZIP does not provide a ready-to-run EXE. Running npm run build creates a local Windows portable build in dist/.
+## Project status
 
-## AI workbench tools
+Built with Electron, JavaScript, and CodeMirror 6. Development happens on dev, with Windows as the primary verified platform. The focus is document and project workflows; a full IDE debugger, language services, and extension ecosystem are outside the current scope.
 
-Example requests include splitting the current document, inspecting a JSON outline, reading a configured application's launch status or logs, and explaining Git changes. Results depend on the model, current state, configuration, and permissions.
+AI tools are for the in-application assistant. There is no published standalone HTTP API or MCP server. Configured remote services receive relevant content when used. See [release notes and known issues](CHANGELOG.md) for verification scope.
 
-The tools use state snapshots, project/session ownership, and permission checks. They are intended for the in-application assistant: **they are not currently a standalone public HTTP API or MCP server**. See the [AI tools guide](docs/ai-api.md) and the [module checklist](docs/开发文档-171-AI操作接口模块清单.md).
+[Documentation](docs/README.md) · [Issues](https://github.com/lijieyu233/my_ide/issues) · [Contributing](CONTRIBUTING.md) · [Architecture](docs/architecture.md)
 
-## Status and boundaries
-
-- MyIDE is under active development. Passing a focused check does not imply a fully passing test suite; scope and failures are documented in development records.
-- Some Git operations require system Git. The JavaScript fallback does not implement every native capability.
-- Reader support covers TXT, basic reflowable EPUB, and CBZ, with no promise of PDF conversion, comic OCR, DRM support, or universal ebook compatibility.
-- Files are primarily local. Configured AI, translation, or SSH operations may send relevant content to their services; this is not a claim that every feature runs offline.
-- No open-source license is currently declared. Public availability alone does not grant unrestricted rights to use, modify, or redistribute the code.
-
-## Documentation and development
-
-- [Documentation index](docs/README.md): guides, interfaces, and implementation records.
-- [Development and publishing](docs/development.md): checks, branch roles, release requirements, and screenshots.
-- [Roadmap](ROADMAP.md), [progress tracker](docs/改进进度总览.md), and [plugin guide](plugins/README.md).
-
-Issues should include OS, version/commit, reproduction steps, expected/actual behavior, and redacted screenshots where useful. Repository contributions follow [AGENTS.md](AGENTS.md).
+Project code is licensed under [MIT](LICENSE). Third-party dependencies and bundled resources retain their respective licenses.

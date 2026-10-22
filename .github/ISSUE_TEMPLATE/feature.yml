@@ -1,0 +1,19 @@
+name: 使用场景与建议 / Feature request
+description: 描述要完成的工作及当前障碍
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: 你想完成什么工作？ / What task are you trying to complete?
+    validations:
+      required: true
+  - type: textarea
+    id: obstacle
+    attributes:
+      label: 当前操作及遇到的问题 / Current workflow and obstacle
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议与验收方式 / Proposal and expected outcome

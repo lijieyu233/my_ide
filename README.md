@@ -1,33 +1,48 @@
-# MyIDE — AI 文档与代码工作台
+# MyIDE — AI 驱动的本地工作台
 
-**AI-assisted Markdown and code workspace for Windows.**
+**把项目文档、代码、网页和开发工具放在同一个工作现场，让 AI 带着上下文协助完成工作。**
 
-MyIDE 是面向本地文件与多项目工作的 Windows 桌面应用，集成 Markdown 实时预览、代码编辑、Git、内置浏览器和 AI 工作台操作接口。基于 Electron、原生 JavaScript 和 CodeMirror 6。
+MyIDE 是面向 Windows 的开源桌面应用。你可以用它整理技术资料、维护代码项目、检查服务和处理日常开发任务。AI 助手能读取当前工作状态，在授权范围内操作应用中的工具；你也可以直接使用每个模块。
 
-[English](README.en.md) · [快速开始](docs/getting-started.md) · [功能与限制](docs/features.md) · [AI 接口](docs/ai-api.md) · [文档导航](docs/README.md) · [问题反馈](https://github.com/lijieyu233/my_ide/issues)
+[English](README.en.md) · [下载与启动](docs/getting-started.md) · [使用场景](docs/workflows.md) · [完整能力](docs/features.md) · [文档](docs/README.md)
 
-![MyIDE 同一 Markdown 文档的双视图：独立标签、工具栏和滚动位置](docs/images/editor-split.png)
+![MyIDE 项目工作台：项目目录、文档编辑与 AI 助手在同一窗口协作](docs/images/workspace.png)
 
-*真实应用的隔离演示项目，两栏显示同一文档的不同位置，不包含用户文档。*
+*真实应用的隔离演示项目，使用虚构资料；不展示伪造的 AI 执行结果。*
 
-## 适合用来做什么？
+## 为什么做 MyIDE
 
-| 用途 | 已实现能力 |
-| --- | --- |
-| 编辑 Markdown 笔记与项目文档 | 实时预览、源码、只读预览、源码对照、章节大纲、表格编辑、图片复制与尺寸调整 |
-| 同时阅读或编辑两份内容 | 左右或上下分屏；同一文档双视图共享正文，各自切换文档、定位与滚动 |
-| 浏览代码与 JSON | 语法高亮、查找替换、JSON 结构大纲与折叠、文件编码选择、项目内容搜索 |
-| 管理本地项目 | 多项目会话、文件树、Git 状态/差异/历史/提交与同步、程序启动面板 |
-| 在工作台内使用 AI | 引用文档与选区，通过已有工具操作编辑器、浏览器、Git、任务、启动面板等模块 |
-| 查看网页与阅读资料 | 内置浏览器标签/收藏/标签组、选区翻译；TXT、基础重排 EPUB、CBZ 阅读与书架 |
+一项工作常常要同时打开笔记、代码、浏览器、终端、Git 和数据库。文件散在不同窗口，交给 AI 时又需要重新解释项目、粘贴内容、转述执行结果。
 
-完整范围与限制见[功能说明](docs/features.md)。AI 功能需要配置模型服务；DSH 模式另有运行环境要求。本地文件编辑不要求配置 AI。
+MyIDE 把这些工作入口与 AI 连接起来：从本地项目出发，查资料、编辑内容、执行工具，再回到实际文件和运行结果核对。文件保留在原有目录中，可以继续由其他编辑器和 Git 管理。
 
-## 快速开始
+## 三条核心工作流
 
-当前公开源码版本标识为 **0.8.5**，**dev** 是持续开发分支，尚不代表稳定发行版。项目主要在 Windows 上开发和验证。
+### 1. 带着项目上下文使用 AI
 
-准备 Git、Node.js 24 与 npm，然后运行：
+引用文件、当前选区和工作台状态，让助手阅读资料、整理文档、分析代码或排查问题。普通助手对接 OpenAI 兼容模型服务，也可连接本机 DeepSeek Harness（DSH）。
+
+已接入的 AI 工具覆盖项目文件、编辑器、大纲、浏览器、Git、任务、启动面板、SSH/SFTP、数据库和设置。操作前读取状态，涉及修改或执行时沿用权限检查，操作后核对实际结果。跨项目后台运行的 DSH 任务仍归属原项目与会话。
+
+[AI 使用指南](docs/ai-guide.md) · [工具接口与范围](docs/ai-api.md)
+
+### 2. 管理本地文档与项目知识
+
+以文件目录组织项目，搜索和编辑 Markdown、代码与 JSON，在同一工作台查看 HTML、图片、PDF 和常见 Office 文件。Markdown 提供实时预览和章节大纲，JSON 提供结构导航；多项目会话保存各自的工作现场。
+
+浏览器用于查阅网页、保存标签组和选区翻译；书架管理 TXT、基础 EPUB 和 CBZ 的阅读进度。编辑器分屏、表格和图片操作属于日常编辑工具，具体步骤放在[功能指南](docs/features.md)。
+
+### 3. 把开发与排查接到实际工具
+
+查看 Git 状态、历史与差异，提交和同步代码；从启动面板管理项目程序、端口、就绪检查与日志；通过 SSH/SFTP 管理远程文件和终端，使用数据库面板查询数据，用任务面板跟踪工作。
+
+这些模块有直接操作入口，也向应用内 AI 提供相应工具。连接远端、启动程序或写入数据时，需要自己的环境配置和授权。
+
+[从需求到验证的完整示例](docs/workflows.md) · [能力与边界](docs/features.md)
+
+## 开始使用
+
+源码运行需要 Windows、Git 和 Node.js 24：
 
 ~~~powershell
 git clone --branch dev https://github.com/lijieyu233/my_ide.git
@@ -36,51 +51,18 @@ npm ci
 npm start
 ~~~
 
-首次启动后打开本地项目目录。未配置 AI 时也能编辑本地文件。依赖安装和 Electron 二进制下载需要网络。
+- [下载与首次使用](docs/getting-started.md)：Windows 便携包、源码运行、配置入口。
+- [GitHub Releases](https://github.com/lijieyu233/my_ide/releases)：以附件和版本说明为准；预发布版会明确标识。
+- 本地编辑无需配置 AI。模型、翻译、SSH 和数据库连接按需配置。
 
-- [安装、首次使用与常见问题](docs/getting-started.md)
-- [Releases](https://github.com/lijieyu233/my_ide/releases)：正式安装包以已发布的 Release 附件为准。当前未提供正式 Latest Release；源码包不等于可直接运行的 EXE。
-- 本地打包：运行 npm run build，便携版输出到 dist/。本地构建产物不自动成为公开发布版本。
+## 当前定位
 
-## AI 可以操作哪些功能？
+MyIDE 基于 Electron、JavaScript 和 CodeMirror 6，当前持续在 dev 分支开发，主要验证 Windows。它侧重文档与项目工作流，尚未提供完整 IDE 的语言服务、调试器和扩展生态。
 
-MyIDE 的 AI 助手可以读取工作台状态，并在授权范围内调用模块工具。例如：
+AI 工具供应用内助手调用，目前未发布独立公共 HTTP API 或 MCP 服务。远程模型、翻译与服务器操作会按请求发送相关内容；本地文件存储不代表所有功能离线。版本的验证范围和已知问题见 [发布说明](CHANGELOG.md)。
 
-- “把当前文档向右拆分，在另一栏打开项目说明。”
-- “读取当前 JSON 的结构大纲，定位到 audio。”
-- “打开启动面板，查看这个程序的状态和日志。”
-- “查看当前 Git 差异，说明哪些文件发生了变化。”
+## 参与项目
 
-这些是自然语言使用示例，执行结果取决于模型、当前文档、配置和授权。工具沿用状态快照、项目/会话归属与权限检查，不能把请求受理当成操作成功。
+[用户文档](docs/README.md) · [反馈问题](https://github.com/lijieyu233/my_ide/issues) · [贡献指南](CONTRIBUTING.md) · [架构与扩展](docs/architecture.md)
 
-接口面向应用内助手，**目前不是独立的公共 HTTP API 或 MCP 服务**。工具名称、示例和边界见 [AI 工作台接口指南](docs/ai-api.md)，逐项接入状态见 [AI 操作接口模块清单](docs/开发文档-171-AI操作接口模块清单.md)。
-
-## 常用快捷键
-
-| 快捷键 | 操作 |
-| --- | --- |
-| Ctrl+O / Ctrl+P | 打开项目 / 快速打开文件 |
-| Ctrl+Shift+F | 项目内容搜索 |
-| Ctrl+F / Ctrl+H | 文档查找 / 替换 |
-| Ctrl+S / Ctrl+W | 保存 / 关闭当前标签 |
-| Ctrl+K / Alt+9 | Git 提交面板 / Git 历史 |
-| Ctrl+Alt+S | 设置与快捷键配置 |
-
-快捷键可在设置中修改；分屏还可以通过标签右键或标签栏按钮操作。
-
-## 项目状态与使用边界
-
-- 这是持续开发中的工作台。专项验证结果不等于所有测试或全部模块均通过；历史失败与验收范围保留在专项文档中。
-- Git 的部分能力依赖系统 Git；JS 回落能力与原生 Git 并不完全一致。
-- EPUB 支持基础重排内容，CBZ 用于图片页阅读。未承诺 PDF 转换、漫画 OCR、DRM 内容或所有电子书格式。
-- 文件主要保留在本地；配置远程 AI、翻译或 SSH 服务后，相关内容会按操作发送至对应服务，并不代表全部功能离线运行。
-- 仓库当前尚未声明开源许可证；公开可见不表示已授予任意使用、修改或再分发许可。许可证确定后会在此处更新。
-
-## 文档与贡献
-
-- [文档导航 / Documentation](docs/README.md)：用户指南、AI 接口、开发与验收记录。
-- [开发与发布流程](docs/development.md)：运行检查、分支职责、发布条件和截图更新方法。
-- [改进进度总览](docs/改进进度总览.md)、[路线图](ROADMAP.md)：已做、待做和历史记录。
-- [插件开发](plugins/README.md)：扩展文件格式渲染。
-
-反馈问题时请提供系统、版本/提交号、复现步骤、实际结果和必要的脱敏截图。开发协作遵循 [AGENTS.md](AGENTS.md)，产品设计历史见[开发大纲](开发大纲.md)。
+项目代码采用 [MIT License](LICENSE)。第三方依赖及随包资源遵循各自许可证。
