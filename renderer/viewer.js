@@ -1059,7 +1059,6 @@ const Viewer = (() => {
 
     if(tab.reader){
       const label=document.createElement('span');label.className='reader-tab-label';label.textContent='只读阅读';acts.append(label);
-      if(/\.txt$/i.test(tab.name)){const back=document.createElement('button');back.className='vt-btn';back.textContent='返回编辑';back.onclick=()=>leaveReader(tab);acts.append(back);}
       tabActions.append(acts);return;
     }
     if(/\.txt$/i.test(tab.name)){const read=document.createElement('button');read.className='vt-btn';read.textContent='阅读';read.onclick=()=>Reader.open(tab.path);acts.append(read);}

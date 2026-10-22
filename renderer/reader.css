@@ -92,3 +92,6 @@
 .reader-more{position:static}.reader-more-menu{right:auto;width:min(160px,calc(100% - 8px));min-width:0;box-sizing:border-box;max-height:calc(100% - 80px);overflow:auto}
 
 .reader-selection-actions{flex-wrap:wrap}.reader-selection-actions button{padding:6px 8px}
+
+/* 阅读菜单用窗口坐标，避免正文滚动或窄侧栏把操作项裁掉。 */
+.reader-context-menu{position:fixed;z-index:210;min-width:190px;overflow:auto;overscroll-behavior:contain;padding:5px;background:var(--btn-bg);border:1px solid var(--menu-border);border-radius:8px;box-shadow:0 8px 28px #0006;box-sizing:border-box;font-size:12px}.reader-context-menu .ctx-item{display:block;width:100%;text-align:left;border:0;border-radius:4px;background:transparent;color:var(--text);font:inherit;white-space:nowrap}.reader-context-menu .ctx-item:hover,.reader-context-menu .ctx-item:focus-visible{background:var(--bg-hover);outline:1px solid var(--accent);outline-offset:-1px}.reader-context-menu .ctx-item:disabled{opacity:.4;cursor:default}.reader-context-menu .ctx-item.danger{color:var(--red)}
