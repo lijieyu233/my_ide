@@ -3,7 +3,7 @@ const {parentPort,workerData}=require('worker_threads'),fs=require('fs'),path=re
 const yauzl=require('yauzl'),{DOMParser}=require('@xmldom/xmldom'),Text=require('../files/text-format');
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const MAX_ENTRY=20*1024*1024,MAX_TEXT=32*1024*1024;
-let zip,entries=new Map(),chapters=[],kind,title,stamp,source;
+let zip,entries=new Map(),chapters=[],kind,title,stamp,source,segmentation;
 const images=/\.(png|jpe?g|webp|gif|bmp)$/i;
 const statStamp=s=>[s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs].join(':');
 function safeName(name){if(!name||name.includes('\\')||name.startsWith('/')||/[\x00-\x1f:]/.test(name)||name.split('/').includes('..'))throw fail('READER_ARCHIVE_PATH','书籍中含无效资源路径');return name;}
@@ -12,14 +12,25 @@ function xml(bytes){const text=bytes.toString('utf8');if(/<!ENTITY|<!DOCTYPE[\s\
 const nodes=(doc,name)=>Array.from(doc.getElementsByTagName('*')).filter(n=>n.localName===name);
 function readEntry(name,max=MAX_ENTRY){const entry=entries.get(name);if(!entry)throw fail('READER_RESOURCE_MISSING','书籍资源不存在：'+name);if(entry.uncompressedSize>max)throw fail('READER_ENTRY_LIMIT','单个书籍资源超过读取上限');return new Promise((ok,no)=>zip.openReadStream(entry,(error,stream)=>{if(error)return no(error);const chunks=[];let size=0;stream.on('data',b=>{size+=b.length;if(size>max)stream.destroy(fail('READER_ENTRY_LIMIT','资源解压超出上限'));else chunks.push(b);});stream.on('error',no);stream.on('end',()=>ok(Buffer.concat(chunks)));}));}
 async function archive(file){zip=await new Promise((ok,no)=>yauzl.open(file,{lazyEntries:true,autoClose:false,validateEntrySizes:true},(e,z)=>e?no(e):ok(z)));await new Promise((ok,no)=>{let count=0,total=0;zip.on('error',no);zip.on('end',ok);zip.on('entry',entry=>{try{safeName(entry.fileName);if(++count>10000||(total+=entry.uncompressedSize)>1024*1024*1024)throw fail('READER_ARCHIVE_LIMIT','书籍条目或解压体积超过上限');if(entry.generalPurposeBitFlag&1)throw fail('READER_ENCRYPTED','暂不支持加密书籍');if(entries.has(entry.fileName))throw fail('READER_ARCHIVE_DUPLICATE','书籍中有重复资源路径');entries.set(entry.fileName,entry);zip.readEntry();}catch(e){no(e);}});zip.readEntry();});}
-function splitText(text){const lines=text.replace(/\r\n?/g,'\n').split('\n');let buffer=[],size=0,label='正文',part=1;
- const flush=()=>{if(!buffer.length)return;chapters.push({title:label+(part>1?' · '+part:''),text:buffer.join('\n')});buffer=[];size=0;};
- for(const line of lines){const heading=/^\s*(第[零一二三四五六七八九十百千万\d]+[章节回卷部篇].{0,60}|(?:序章|楔子|前言|后记|尾声|番外).{0,50}|chapter\s+\d+.{0,60})\s*$/i.test(line);
-  if(heading){flush();label=line.trim();part=1;}
+function textHeading(line){
+ const value=line.trim();if(!value||value.length>100)return null;
+ const markdown=/^#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?$/.exec(value);
+ if(markdown)return markdown[1].trim();
+ if(/[。！？!?；;]$/.test(value))return null;
+ return /^(第[ \t]*[零〇一二两三四五六七八九十百千万0-9０-９]+[ \t]*[章节回卷部篇].{0,60}|(?:序章|楔子|前言|后记|尾声|番外).{0,50}|chapter[ \t]+[0-9０-９]+.{0,60})$/i.test(value)?value:null;
+}
+function splitText(text){const lines=text.replace(/\r\n?/g,'\n').split('\n');let buffer=[],size=0,label='正文',part=1,headings=0,fence=null;
+ const flush=()=>{if(!buffer.length||!buffer.some(line=>line.trim())){buffer=[];size=0;return;}chapters.push({title:label+(part>1?' · '+part:''),text:buffer.join('\n')});buffer=[];size=0;};
+ for(const line of lines){
+  // TXT也可能带Markdown标题，但代码示例里的标题不能成为小说目录。
+  const marker=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if(marker){if(!fence)fence=marker[1];else if(marker[1][0]===fence[0]&&marker[1].length>=fence.length&&!marker[2].trim())fence=null;}
+  const heading=marker||fence?null:textHeading(line);
+  if(heading){flush();label=heading;part=1;headings++;}
   // 无章节的长文本也分块，不能为整本小说创建一个超大DOM。
   for(let from=0;from<Math.max(1,line.length);from+=20000){const piece=line.slice(from,from+20000);if(size+piece.length>24000||buffer.length>=1000){flush();part++;}buffer.push(piece);size+=piece.length+1;}
   if(chapters.length>10000)throw fail('READER_CHAPTER_LIMIT','章节数量超过10000');
- }flush();if(!chapters.length)chapters.push({title:'正文',text:''});}
+ }flush();if(!chapters.length)chapters.push({title:'正文',text:''});segmentation={mode:headings?'headings':chapters.length>1?'chunks':'single',headings};}
 async function open(){source=await fs.promises.realpath(workerData.path);const st=await fs.promises.stat(source);if(!st.isFile())throw fail('READER_NOT_FILE','请打开书籍文件');if(st.size>512*1024*1024)throw fail('READER_SIZE_LIMIT','首版支持512MB以内书籍');stamp=statStamp(st);title=path.basename(source);const ext=path.extname(source).toLowerCase();
  if(ext==='.txt'){kind='text';if(st.size>MAX_TEXT)throw fail('READER_SIZE_LIMIT','TXT首版支持32MB以内');const bytes=await fs.promises.readFile(source);if(bytes.subarray(0,16).toString().startsWith('%TSD-Header'))throw fail('TSD_ENCRYPTED','书籍尚未解密，请使用绿盾解密工具处理后重试');splitText(Text.decodeText(bytes).content);}
  else if(ext==='.cbz'||ext==='.epub'){await archive(source);
@@ -32,7 +43,7 @@ async function open(){source=await fs.promises.realpath(workerData.path);const s
   }
  }else throw fail('READER_FORMAT_UNSUPPORTED','首版支持TXT、EPUB、CBZ');
  if(!chapters.length)throw fail('READER_EMPTY','书籍没有可阅读的章节或图片');
- await verify();return {title:title.slice(0,300),kind,version:crypto.createHash('sha256').update(source+'|'+stamp).digest('hex'),chapters:chapters.map((c,i)=>({id:i,title:c.title.slice(0,300)}))};
+ await verify();return {title:title.slice(0,300),kind,segmentation,version:crypto.createHash('sha256').update(source+'|'+stamp).digest('hex'),chapters:chapters.map((c,i)=>({id:i,title:c.title.slice(0,300)}))};
 }
 async function verify(){if(await fs.promises.realpath(workerData.path)!==source||statStamp(await fs.promises.stat(source))!==stamp)throw fail('READER_SOURCE_CHANGED','书籍文件已变化，请关闭后重新打开');}
 async function page(index){await verify();if(!Number.isSafeInteger(index)||index<0||index>=chapters.length)throw fail('READER_PAGE_INVALID','章节或页码无效');const chapter=chapters[index];if(kind==='text')return {blocks:[{type:'text',text:chapter.text}]};if(kind==='comic')return {blocks:[{type:'image',resource:chapter.resource}]};

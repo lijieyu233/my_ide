@@ -25,6 +25,7 @@
     if(a.operation==='goto'){if(a.index==null)W.fail('INVALID_TOOL_ARGS','缺少章节或页码（从0开始）');await Reader.goto(a.index);}
     else if(a.operation==='next')await Reader.goto(state.index+1);
     else if(a.operation==='previous')await Reader.goto(state.index-1);
+    else if(a.operation==='reload')await Reader.reload();
     else if(a.operation==='preferences')Reader.setPreferences(a);
     else if(a.operation==='bookmark_add')Reader.bookmark();
     else if(a.operation==='bookmark_remove'){if(!state.bookmarks.some(b=>b.id===a.bookmark))W.fail('BOOKMARK_NOT_FOUND','书签不属于当前书籍');Reader.bookmark(true,a.bookmark);}
