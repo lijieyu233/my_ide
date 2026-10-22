@@ -37,21 +37,53 @@ window.Reader=(()=>{
   function button(label,action,cls=''){const b=document.createElement('button');b.type='button';b.className='reader-button '+cls;b.textContent=label;b.onclick=e=>Promise.resolve().then(()=>{if(b.isConnected)return action(e);}).catch(e=>MI.toast(e.message,'err'));return b;}
   function apply(){if(!live)return;const p=context(live.tab).preferences;live.host.dataset.theme=p.theme;live.host.style.setProperty('--reader-font',p.fontSize+'px');live.host.style.setProperty('--reader-leading',p.lineHeight);live.host.style.setProperty('--reader-width',p.width+'px');live.host.dataset.kind=live.tab.readerInfo?.kind||'text';}
   function setPreferences(value){const store=context(live?.tab);const a=anchor();store.preferences={...store.preferences,...sanitize(value)};persist(store);apply();restore(a);return {...store.preferences};}
-  function restore(a){if(!live?.scroll?.isConnected)return;const el=live.article.children[a?.block||0];if(el)live.scroll.scrollTop+=el.getBoundingClientRect().top-live.scroll.getBoundingClientRect().top+(a?.fraction||0)*el.getBoundingClientRect().height;}
+  function restore(a){if(!live?.scroll?.isConnected)return;if(a?.end){live.scroll.scrollTop=live.scroll.scrollHeight;return;}const el=live.article.children[a?.block||0];if(el)live.scroll.scrollTop+=el.getBoundingClientRect().top-live.scroll.getBoundingClientRect().top+(a?.fraction||0)*el.getBoundingClientRect().height;}
   function settings(parent,tab){const store=context(tab);const box=document.createElement('details');box.className='reader-settings';const summary=document.createElement('summary');summary.textContent='阅读设置';box.append(summary);const controls=document.createElement('div');controls.className='reader-setting-popover';
     for(const [field,label,values]of [['fontSize','字号',[16,18,20,22,24,28,32]],['lineHeight','行距',[1.5,1.7,1.9,2.1,2.4]],['width','内容宽度',[480,640,760,960,1200]],['theme','阅读背景',[['paper','纸张'],['dark','深色'],['system','跟随主题']]],['direction','漫画翻页',[['ltr','从左向右'],['rtl','从右向左']]]]){
       const row=document.createElement('label');row.textContent=label;const select=document.createElement('select');select.setAttribute('aria-label',label);const opts=values.map(v=>Array.isArray(v)?v:[v,v]);if(!opts.some(v=>String(v[0])===String(store.preferences[field])))opts.push([store.preferences[field],store.preferences[field]]);for(const [value,text]of opts){const o=document.createElement('option');o.value=value;o.textContent=text;select.append(o);}select.value=store.preferences[field];select.onchange=()=>setPreferences({[field]:typeof defaults[field]==='number'?Number(select.value):select.value});row.append(select);controls.append(row);
-    }box.append(controls);parent.append(box);
+    }box.append(controls);parent.append(box);return box;
   }
-  function dispose(view){if(view.disposed)return;window.ReaderNotes?.detach(view.notes);save(view.tab);view.disposed=true;clearTimeout(view.timer);view.observer?.disconnect();for(const url of view.urls)URL.revokeObjectURL(url);if(live===view)live=null;}
-  function mount(tab,parent){const host=document.createElement('section');host.className='reader-view';host.setAttribute('aria-label','书籍阅读器');const toolbar=document.createElement('div');toolbar.className='reader-toolbar';const title=document.createElement('strong');title.textContent=tab.readerInfo?.title||tab.name;title.title=title.textContent;toolbar.append(button('书架',()=>App.showTool('bookshelf')),button('目录',()=>App.showTool('outline')),title);settings(toolbar,tab);toolbar.append(button('书签',()=>bookmark()));host.append(toolbar);
-    const scroll=document.createElement('div');scroll.className='reader-scroll';scroll.tabIndex=0;const article=document.createElement('article');article.className='reader-article';scroll.append(article);const body=document.createElement('div');body.className='reader-body';body.append(scroll);host.append(body);const footer=document.createElement('div');footer.className='reader-footer';const previous=button('上一章',()=>goto((tab.readerIndex||0)-1)),next=button('下一章',()=>goto((tab.readerIndex||0)+1)),position=document.createElement('span');position.setAttribute('aria-live','polite');footer.append(previous,position,next);host.append(footer);parent.append(host);
-    const view={host,scroll,article,position,previous,next,tab,urls:[],disposed:false,loading:true,token:0};live=view;host.previewDispose=()=>dispose(view);apply();view.notes=window.ReaderNotes?.mount(tab,body,toolbar);
+  function dispose(view){if(view.disposed)return;window.ReaderNotes?.detach(view.notes);save(view.tab);view.disposed=true;view.events?.abort();clearTimeout(view.timer);view.observer?.disconnect();for(const url of view.urls)URL.revokeObjectURL(url);if(live===view)live=null;}
+  function mount(tab,parent){const host=document.createElement('section');host.className='reader-view';host.setAttribute('aria-label','书籍阅读器');const toolbar=document.createElement('div');toolbar.className='reader-toolbar';const title=document.createElement('strong');title.textContent=tab.readerInfo?.title||tab.name;title.title=title.textContent;toolbar.append(button('书架',()=>App.showTool('bookshelf')),button('目录',()=>App.showTool('outline')),title);const settingBox=settings(toolbar,tab);toolbar.append(button('书签',()=>bookmark()));if(/\.txt$/i.test(tab.path)&&window.Viewer?.leaveReader)toolbar.append(button('返回编辑',()=>Viewer.leaveReader(tab)));host.append(toolbar);
+    const scroll=document.createElement('div');scroll.className='reader-scroll';scroll.tabIndex=0;const article=document.createElement('article');article.className='reader-article';scroll.append(article);const body=document.createElement('div');body.className='reader-body';const viewport=document.createElement('div');viewport.className='reader-viewport';viewport.append(scroll);body.append(viewport);host.append(body);const footer=document.createElement('div');footer.className='reader-footer';const previous=button('上一章',()=>goto((tab.readerIndex||0)-1)),next=button('下一章',()=>goto((tab.readerIndex||0)+1)),position=document.createElement('span');position.setAttribute('aria-live','polite');footer.append(previous,position,next);host.append(footer);parent.append(host);
+    const view={host,scroll,viewport,article,settings:settingBox,events:new AbortController(),position,previous,next,tab,urls:[],disposed:false,loading:true,token:0};live=view;host.previewDispose=()=>dispose(view);apply();view.notes=window.ReaderNotes?.mount(tab,body,toolbar);wireNavigation(view);
     scroll.addEventListener('wheel',()=>{view.userScrolled=true;},{passive:true});scroll.addEventListener('touchmove',()=>{view.userScrolled=true;},{passive:true});
     scroll.addEventListener('scroll',()=>{clearTimeout(view.timer);view.timer=setTimeout(()=>save(tab),200);});
-    scroll.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey||e.isComposing||e.target!==scroll)return;let delta=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(tab.readerInfo?.kind==='comic'&&context(tab).preferences.direction==='rtl')delta=-delta;if(delta){e.preventDefault();goto((tab.readerIndex||0)+delta).catch(err=>MI.toast(err.message,'err'));}});
+    scroll.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey||e.isComposing||e.target!==scroll)return;const delta=['ArrowRight','PageDown'].includes(e.key)?1:['ArrowLeft','PageUp'].includes(e.key)?-1:0;if(delta){e.preventDefault();turnPage(delta,e.key.startsWith('Arrow')).catch(err=>MI.toast(err.message,'err'));}});
     if(tab.error||!tab.readerInfo){article.textContent=tab.error||'书籍读取失败';article.append(button('重新读取',async()=>{release(tab);await load(tab);if(Viewer.activeTab===tab)Viewer.renderActive();}));view.loading=false;return;}
     paint(view,record(tab)?.anchor).catch(e=>showError(view,e));
+  }
+  function wireNavigation(view){
+    const {settings,events,viewport,scroll,article}=view,signal=events.signal;
+    // 只保留当前阅读视图的监听器，切文档即释放，不让旧弹窗继续拦截按键。
+    document.addEventListener('pointerdown',e=>{if(settings.open&&!settings.contains(e.target))settings.open=false;},{capture:true,signal});
+    document.addEventListener('focusin',e=>{if(settings.open&&!settings.contains(e.target))settings.open=false;},{signal});
+    document.addEventListener('keydown',e=>{if(settings.open&&e.key==='Escape'&&!e.isComposing){e.preventDefault();e.stopImmediatePropagation();settings.open=false;settings.querySelector('summary').focus();}},{capture:true,signal});
+    for(const [side,delta]of [['left',-1],['right',1]]){
+      const edge=button('',()=>{if(view.edgeHadSelection){view.edgeHadSelection=false;return;}return turnPage(delta);},'reader-edge reader-edge-'+side);
+      edge.setAttribute('aria-label',side==='left'?'向左翻页':'向右翻页');edge.title=(side==='left'?'向左':'向右')+'翻页：先翻一屏，到边界切换章节';
+      edge.innerHTML='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(side==='left'?'m10 3-5 5 5 5':'m6 3 5 5-5 5')+'"/></svg>';
+      edge.addEventListener('pointerdown',e=>{view.edgeStart={x:e.clientX,y:e.clientY};const selection=window.getSelection();view.edgeHadSelection=!!selection&&!selection.isCollapsed&&article.contains(selection.anchorNode);},{signal});edge.addEventListener('pointerup',e=>{if(view.edgeStart&&Math.hypot(e.clientX-view.edgeStart.x,e.clientY-view.edgeStart.y)>5)view.edgeHadSelection=true;},{signal});viewport.append(edge);
+    }
+    scroll.addEventListener('pointerdown',e=>{view.pointerStart={x:e.clientX,y:e.clientY};},{signal});
+    scroll.addEventListener('click',e=>{
+      if(view.pointerStart&&Math.hypot(e.clientX-view.pointerStart.x,e.clientY-view.pointerStart.y)>5)return;
+      if(e.button||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.detail>1||e.target.closest('button,a,input,select,textarea'))return;
+      const selection=window.getSelection();if(selection&&!selection.isCollapsed)return;
+      const area=scroll.getBoundingClientRect(),text=article.getBoundingClientRect();
+      if(e.clientX>=area.right-scroll.offsetWidth+scroll.clientWidth)return; // 滚动条不能触发翻页。
+      if(e.clientX<text.left)turnPage(-1).catch(err=>MI.toast(err.message,'err'));
+      else if(e.clientX>text.right)turnPage(1).catch(err=>MI.toast(err.message,'err'));
+    },{signal});
+  }
+  async function turnPage(delta,physical=true){
+    const view=live;if(!view||view.disposed||view.loading||view.turning||window.Modal?.stack?.length)return {moved:false};
+    const tab=view.tab;if(window.Viewer?.activeTab!==tab||window.App?.getPageContext?.().id!=='reader')return {moved:false};
+    if(physical&&tab.readerInfo?.kind==='comic'&&context(tab).preferences.direction==='rtl')delta=-delta;
+    const scroll=view.scroll,max=Math.max(0,scroll.scrollHeight-scroll.clientHeight),top=scroll.scrollTop;
+    if(delta>0&&top<max-2||delta<0&&top>2){scroll.scrollTop=Math.max(0,Math.min(max,top+delta*Math.max(1,scroll.clientHeight*.9)));view.userScrolled=true;save(tab);return {moved:true,chapter:false};}
+    const index=(tab.readerIndex||0)+delta;if(index<0||index>=tab.readerInfo.chapters.length)return {moved:false};
+    view.turning=true;try{await goto(index,delta<0?{end:true}:null);if(live===view&&!view.disposed&&delta<0){scroll.scrollTop=scroll.scrollHeight;save(tab);}return {moved:true,chapter:true};}finally{view.turning=false;}
   }
   function showError(view,error){if(view.disposed)return;view.loading=false;view.article.replaceChildren();const text=document.createElement('p');text.textContent=error.message;view.article.append(text,button('重试',()=>paint(view,record(view.tab)?.anchor)));}
   async function paint(view,at){const token=++view.token,tab=view.tab;view.loading=true;view.userScrolled=false;tab.readerPage=null;view.observer?.disconnect();for(const url of view.urls)URL.revokeObjectURL(url);view.urls=[];view.article.textContent='正在读取…';const count=tab.readerInfo.chapters.length,index=tab.readerIndex||0,comic=tab.readerInfo.kind==='comic';view.position.textContent=(index+1)+' / '+count+' · '+tab.readerInfo.chapters[index].title;view.previous.textContent=comic?'上一页':'上一章';view.next.textContent=comic?'下一页':'下一章';view.previous.disabled=index===0;view.next.disabled=index===count-1;
@@ -91,5 +123,5 @@ window.Reader=(()=>{
   let closing=false;
   async function prepareClose(){await sync();for(const c of workspaces.values()){await drain(c);if(c.error)throw Error(c.error);}closing=true;}
   window.addEventListener('beforeunload',()=>{if(!closing)flush();});
-  return {archive,load,release,open,mount,renderOutline,state,read,goto,bookmark,setPreferences,library,libraryBook,setListed,addToLibrary,workbenchState,flush,ensureWorkspace,workspaceInfo,sync,syncProgress,notesContext,selectedText,retrySave,prepareClose};
+  return {archive,load,release,open,mount,renderOutline,state,read,goto,bookmark,turnPage,setPreferences,library,libraryBook,setListed,addToLibrary,workbenchState,flush,ensureWorkspace,workspaceInfo,sync,syncProgress,notesContext,selectedText,retrySave,prepareClose};
 })();
