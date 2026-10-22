@@ -2286,7 +2286,8 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 }
 
 /* ---------- Toast ---------- */
-#toast-wrap { position: fixed; right: 18px; bottom: 86px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+/* 提示只有文本，淡出期间也不能拦住下方的阅读和编辑按钮。 */
+#toast-wrap { pointer-events: none; position: fixed; right: 18px; bottom: 86px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
 
 /* ---------- 右下角玩宠（小橘猫，消息由它播报） ---------- */
 #pet {
