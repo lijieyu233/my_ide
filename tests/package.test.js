@@ -34,7 +34,7 @@ async function test(name, fn) {
     production.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js', 'src/main/browser/html-preview.js', 'src/main/dsh/dsh-runtime.js', 'src/main/dsh/ai-dsh.js', 'src/main/dsh/ai-dsh-rpc.js');
     production.push("src/main/remote/remote-service.js", "src/main/remote/remote-ipc.js", "src/main/remote/remote-local.js");
     production.push('src/main/ai/ai-project-tools.js','src/main/ai/ai-owner-router.js','src/main/browser/browser-tab-views.js','src/main/browser/browser-color-scheme.js','src/main/browser/browser-context-menu.js');
-    production.push('src/main/reader/reader-workspace.js','src/main/reader/reader-service.js','src/main/reader/reader-worker.js','src/main/files/file-read.js','src/main/browser/browser-interactions.js','src/main/browser/browser-frames.js','src/main/browser/browser-upload.js','src/main/browser/browser-capture.js');
+    production.push('src/main/reader/reader-notes.js','src/main/reader/reader-workspace.js','src/main/reader/reader-service.js','src/main/reader/reader-worker.js','src/main/files/file-read.js','src/main/browser/browser-interactions.js','src/main/browser/browser-frames.js','src/main/browser/browser-upload.js','src/main/browser/browser-capture.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));

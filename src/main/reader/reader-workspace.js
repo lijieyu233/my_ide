@@ -17,4 +17,16 @@ async function save(root,books,preferences,expectedVersion){const loc=await loca
  if(expectedVersion?.hash&&observed.version?.hash===expectedVersion.hash&&String(observed.version.target).toLowerCase()===String(expectedVersion.target).toLowerCase())baseline=observed.version;
  if(FileWrite.sameVersion(baseline,observed.version)&&observed.bytes?.equals(bytes))return {version:observed.version,directory:loc.dir};
  const result=FileWrite.atomicWrite(loc.file,bytes,{expectedVersion:baseline,requireVersion:true});return {version:result.version,directory:loc.dir};}
-module.exports={scan,save,supported};
+// 资料只能写入清单中已有书籍的固定目录，不接受来自书内或AI的任意路径。
+async function bookLocation(root,id,create=false){
+ if(typeof id!=='string'||!/^[a-zA-Z0-9-]{1,80}$/.test(id))throw Error('无效的书籍标识');
+ const loc=await location(root,create),book=read(loc).data.books.find(b=>b.id===id);
+ if(!book)throw Error('书籍不属于此工作区');
+ let dir=loc.dir;
+ for(const name of ['books',id]){
+  dir=path.join(dir,name);if(create)await p.mkdir(dir).catch(e=>{if(e.code!=='EEXIST')throw e;});
+  try{const stat=await p.lstat(dir);if(stat.isSymbolicLink()||!stat.isDirectory())throw Error('笔记资料目录不能是链接或普通文件');}catch(e){if(e.code!=='ENOENT')throw e;}
+ }
+ return {root:loc.root,dir,book};
+}
+module.exports={scan,save,supported,bookLocation};

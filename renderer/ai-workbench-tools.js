@@ -23,6 +23,8 @@
   tool('reader_library_control','reader','打开书架、续读已上架书籍、移出或恢复条目；不删除原文件，不接受任意文件路径。',{'operation!':choice('show','open','remove','restore'),book:id},'write');
   tool('reader_state','reader','读取当前只读书籍、章节/页码、阅读偏好和书签；不包含后台项目。');
   tool('reader_read','reader','分页读取当前小说章节纯文本或章节目录；漫画返回图片数量，不执行书内脚本。',{query:choice('text','toc'),offset:integer(),limit:integer(1,12000)});
+  tool('reader_notes','reader','分页读取当前工作区书籍的摘录、阅读笔记和章节总结；返回reader模块快照。',{offset:integer(),limit:integer(1,10)});
+  tool('reader_note_write','reader','按reader_notes快照保存或删除当前书籍的阅读笔记、摘录与章节总结；note为空新建，提供note只更新给定字段，保存到工作区且不改原书。',{'operation!':choice('save','remove'),note:id,kind:choice('note','summary'),title:str(120),body:str(10000),quote:str(4000)},'write');
   tool('reader_control','reader','使用reader_state快照翻页、跳转章节、设置阅读外观或增删书签；不会改写书籍。',{'operation!':choice('goto','next','previous','preferences','bookmark_add','bookmark_remove'),index:integer(0,9999),bookmark:id,fontSize:integer(12,36),lineHeight:{type:'number',minimum:1.2,maximum:2.6},width:integer(320,1400),theme:choice('paper','dark','system'),direction:choice('ltr','rtl')},'write');
   tool('translation_state','translation','读取独立翻译配置、厂商预设、语言与任务；只返回Key是否已配置。',{job:id});
   tool('translation_start','translation','翻译指定文本或当前选区，可指定语言、独立配置与模型；立即返回任务ID，通过translation_state查结果。',{text,source:str(100),target:str(100),profile:id,model:id,show:bool},'run');

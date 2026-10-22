@@ -13,8 +13,9 @@ ipcMain.handle('html-preview:open',async(event,request)=>{
 ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
 const readerService=require('./src/main/reader/reader-service').createService();
 const readerWorkspace=require('./src/main/reader/reader-workspace');
-for(const [op,method]of [['workspace','scan'],['workspaceSave','save']])ipcMain.handle('reader:'+op,async(event,...args)=>{
- try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的阅读来源');return {ok:true,...await readerWorkspace[method](...args)};}
+const readerNotes=require('./src/main/reader/reader-notes');
+for(const [op,method]of [['workspace',readerWorkspace.scan],['workspaceSave',readerWorkspace.save],['notesRead',readerNotes.read],['notesSave',readerNotes.save]])ipcMain.handle('reader:'+op,async(event,...args)=>{
+ try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的阅读来源');return {ok:true,...await method(...args)};}
  catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 const readerOwners=new Set();

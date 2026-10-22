@@ -4,6 +4,8 @@
     const a=call.args;
     await Reader.ensureWorkspace();
     if(call.name==='reader_state')return W.observe('reader',Reader.state());
+    if(call.name==='reader_notes'){Reader.state();return W.observe('reader',await ReaderNotes.read(a.offset||0,a.limit||10));}
+    if(call.name==='reader_note_write'){Reader.state();return ReaderNotes.write(a);}
     if(call.name==='reader_library'){
       const query=(a.query||'').toLowerCase(),all=Reader.library(a.includeRemoved===true).filter(b=>!query||(b.title+' '+b.path).toLowerCase().includes(query)),offset=a.offset||0,limit=a.limit||30;
       return W.observe('reader',{page:W.page().id,workspace:Reader.workspaceInfo(),total:all.length,books:all.slice(offset,offset+limit).map(b=>({...b,path:b.path.slice(0,512),pathTruncated:b.path.length>512})),offset,nextOffset:Math.min(all.length,offset+limit)});
