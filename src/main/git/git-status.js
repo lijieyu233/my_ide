@@ -22,6 +22,13 @@ function parsePorcelain(output){const rows=nulRecords(output),changed=[],tracked
 }
 function createStatus({findRoot,resolveGitDir,jsStatus}){
  const good=new Map();
+ // tracked 全集的缓存：它只由 index 内容决定（add / rm / commit / checkout 才会变），
+ // 而 status() 本来就要读 index 算版本号，拿这个版本做键等价于「index 没变就复用」。
+ // 实测 10k 文件仓库 ls-files 单次 ~200ms（Windows 上几乎全是 git.exe 启动开销），
+ // 而日常「改文件 → 切回来」index 完全不动，命中率很高。
+ const trackedCache=new Map();
+ const cacheKey=version=>JSON.stringify(version);
+ function rememberTracked(root,key,list){trackedCache.delete(root);trackedCache.set(root,{key,list});while(trackedCache.size>8)trackedCache.delete(trackedCache.keys().next().value);}
  const version=file=>{const r=FileWrite.readSnapshot(file,fs,64*1024*1024);if(r.tooLarge)throw fail('INDEX_LIMIT','状态版本读取超限');return r;};
  async function nativeScan(root,exe,force){const gitdir=resolveGitDir(root),index=path.join(gitdir,'index'),before=version(index),env={GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_DIR:gitdir,GIT_WORK_TREE:root,GIT_INDEX_FILE:index,GIT_COMMON_DIR:undefined},options={cwd:root,exe,env,raw:true};let temporary;
   const run=async(args,opts=options)=>{const r=await Native.run(args,opts);if(!r.ok)throw fail('STATUS_NATIVE_FAILED',r.error||String(r.stderr)||'Git状态读取失败');if(String(r.stderr).trim())throw fail('STATUS_PARTIAL',String(r.stderr).trim());return r.stdout;};
@@ -31,11 +38,25 @@ function createStatus({findRoot,resolveGitDir,jsStatus}){
    if(force){
     await run(['-c','core.splitIndex=false','update-index','--index-version=2']);fs.writeFileSync(temporary,Index.invalidateStats(fs.readFileSync(temporary)));
    }
-   const output=await run(['-c','core.splitIndex=false','-c','core.fsmonitor=false','-c','core.untrackedCache=false','status','--porcelain=v2','-z','--branch','--untracked-files=all','--ignore-submodules=none','--renames']);const parsed=parsePorcelain(output),files=nulRecords(await run(['ls-files','--cached','-z'])).map(checkPath);parsed.tracked=[...new Set([...files,...parsed.tracked])].sort();
+   // ⚡ tracked 全集走版本缓存：index 没变就不用再起一个 git 进程。
+   //   命中时只发 status(+并行 rev-parse)；未命中才补 ls-files，语义与原来完全一致。
+   const key=root+'\n'+cacheKey(before.version),cached=trackedCache.get(root);
+   const hit=!!cached&&cached.key===key;
+   const [output,lsOutput,actualHead]=await Promise.all([
+    run(['-c','core.splitIndex=false','-c','core.fsmonitor=false','-c','core.untrackedCache=false','status','--porcelain=v2','-z','--branch','--untracked-files=all','--ignore-submodules=none','--renames']),
+    hit?null:run(['ls-files','--cached','-z']),
+    Native.run(['rev-parse','--verify','HEAD'],{...options,raw:false}),
+   ]);
+   const parsed=parsePorcelain(output);parsed.tracked=[...new Set([...(hit?cached.list:nulRecords(lsOutput).map(checkPath)),...parsed.tracked])].sort();
+   if(!hit)rememberTracked(root,key,parsed.tracked);
    // status 的 stat 快径会把 LF→CRLF 的尺寸变化列为 M，即使 clean 后 blob 相同。
    // 用原生 diff 的属性语义核实这些候选；不能全局删 CR，也不能覆盖用户 index 来刷新 stat。
-   if(parsed.changed.some(c=>c.xy?.[1]==='M')){const actual=new Set(nulRecords(await run(['-c','core.splitIndex=false','-c','core.safecrlf=false','diff','--name-only','-z','--no-ext-diff','--no-textconv','--ignore-submodules=none'])).map(checkPath));parsed.changed=parsed.changed.flatMap(c=>{if(c.xy?.[1]!=='M'||c.originalFile||c.renameTarget||c.status==='conflict'||actual.has(c.file.split(path.sep).join('/')))return [c];const xy=c.xy[0]+'.';if(xy==='..'&&c.submodule==='N...')return [];return [{...c,...classify(xy,c.submodule),xy}];});}
-   const actualHead=await Native.run(['rev-parse','--verify','HEAD'],{...options,raw:false});if(actualHead.ok?actualHead.stdout.trim()!==parsed.headOid:parsed.headOid!==null||!/Needed a single revision|unknown revision/.test(actualHead.stderr))throw fail('STATUS_CHANGED','状态扫描期间HEAD变化或读取失败');
+   // ⚠ 这条 ~550ms（10k 文件仓库）的 diff 只能等 status 解析完才知道要不要跑，属串行尾巴；
+   //   试过 diff-files 替代，补上同样的 --ignore-submodules 后并不更快，还会丢
+   //   --no-textconv 与属性语义，不值得换。
+   const needsDiff=parsed.changed.some(c=>c.xy?.[1]==='M');
+   if(needsDiff){const actual=new Set(nulRecords(await run(['-c','core.splitIndex=false','-c','core.safecrlf=false','diff','--name-only','-z','--no-ext-diff','--no-textconv','--ignore-submodules=none'])).map(checkPath));parsed.changed=parsed.changed.flatMap(c=>{if(c.xy?.[1]!=='M'||c.originalFile||c.renameTarget||c.status==='conflict'||actual.has(c.file.split(path.sep).join('/')))return [c];const xy=c.xy[0]+'.';if(xy==='..'&&c.submodule==='N...')return [];return [{...c,...classify(xy,c.submodule),xy}];});}
+   if(actualHead.ok?actualHead.stdout.trim()!==parsed.headOid:parsed.headOid!==null||!/Needed a single revision|unknown revision/.test(actualHead.stderr))throw fail('STATUS_CHANGED','状态扫描期间HEAD变化或读取失败');
    if(JSON.stringify(before.version)!==JSON.stringify(version(index).version))throw fail('STATUS_CHANGED','状态扫描期间index已变化');return {...parsed,backend:force?'native-full':'native',completeness:'complete'};
   }finally{if(temporary){for(const file of [temporary,temporary+'.lock']){if(path.dirname(file)!==path.resolve(gitdir)||!path.basename(file).startsWith('.myide-status-'))throw Error('Unsafe status cleanup');try{fs.unlinkSync(file);}catch(e){if(e.code!=='ENOENT')throw Object.assign(fail('STATUS_CLEANUP_FAILED','状态暂存未清理：'+file),{temporaryPath:file});}}}}
  }
