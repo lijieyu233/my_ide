@@ -216,7 +216,7 @@ const Outline = (() => {
     // 折叠没有改正文：只更新已有树行，不能每次按键都重新解析整个 JSON 或重置滚动。
     itemRows().forEach((row,i)=>{
       const closed=collapsed.has(hKey(headings[i])),arrow=row.querySelector('.ol-arrow:not(.ol-pad)');
-      row.classList.toggle('ol-hidden',isHidden(i));
+      if(!filterText.trim())row.classList.toggle('ol-hidden',isHidden(i));  // 过滤态下显示由 applyFilter 说了算
       if(arrow){row.setAttribute('aria-expanded',String(!closed));arrow.classList.toggle('closed',closed);arrow.title=leafFold(i)?(closed?'展开本级':'折叠本级'):(closed?'展开子级':'收起子级');}
     });
     ensureVisibleSelection();return true;
@@ -244,8 +244,13 @@ const Outline = (() => {
   }
 
   // ---------- 面板标题栏动作（展开全部 / 收起全部）----------
-  const IC_EXPAND = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg>';
-  const IC_COLLAPSE = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8h9.2"/></svg>';
+  // 双折线（chevrons）而不是「+ / −」：这对按钮贴着标题文字，裸十字会被读成「新建」、
+  // 裸横线会被读成「删除 / 收起面板」（文件树那两个带方框的 ± 才是那个语义，别混）。
+  // 上下叠两条折线在 VS Code / GitHub 里就是「全部展开 / 全部收起」的固定画法。
+  // ⚠ 两条折线之间必须留 ≥ 1 个 viewBox 单位的空隙：早先 4.4/7.8/8.6/12 那一版两线首尾相接，
+  //   渲染成 14px 后糊成一个 "X"/单箭头（截图 8 倍放大实测），完全读不出是"两条折线"。
+  const IC_EXPAND = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 3.6L8 7l3.4-3.4M4.6 8.8L8 12.2l3.4-3.4"/></svg>';
+  const IC_COLLAPSE = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 7.4L8 4l3.4 3.4M4.6 12.6L8 9.2l3.4 3.4"/></svg>';
   const IC_SYNC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h9M9 2l3 3-3 3M13 11H4m3-3-3 3 3 3"/></svg>';
   function mountHeaderActions() {
     const t = panel && panel.querySelector('.panel-title');
@@ -259,6 +264,8 @@ const Outline = (() => {
       b.className = 'vt-btn';
       b.innerHTML = svg;
       b.title = title;
+      // 只有 title＝hover 才看得到；读屏 / 键盘用户拿不到，必须同时给 aria-label。
+      b.setAttribute('aria-label', title);
       b.onclick = (e) => { e.stopPropagation(); fn(); };
       box.appendChild(b);
     };
@@ -288,6 +295,106 @@ const Outline = (() => {
     refresh(Viewer.activeTab);
   }
 
+  // ---------- 过滤标题（长文档定位）----------
+  // 文件树早有搜索框，大纲一直没有：十几节的文档只能靠滚。这里复用文件树那套
+  // `.tree-search-wrap`（内嵌放大镜 + 静态无边框 + focus 才描主色），不另起一套控件语言。
+  const IC_SEARCH = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>';
+  let filterText = '';
+  function mountFilter() {
+    if (!panel) return null;
+    let wrap = panel.querySelector('#outline-filter');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'outline-filter';
+      wrap.className = 'tree-search-wrap';
+      wrap.innerHTML = IC_SEARCH +
+        '<input id="outline-search" type="text" placeholder="过滤标题…" autocomplete="off" spellcheck="false" aria-label="过滤大纲标题">';
+      panel.insertBefore(wrap, el);   // 标题栏之下、树之上
+      const input = wrap.querySelector('input');
+      input.value = filterText;
+      input.addEventListener('input', (ev) => {
+        if (ev.isComposing) return;   // 拼音组合中不按半成品字母过滤
+        filterText = input.value;
+        applyFilter();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setFilter(''); el.focus(); return; }
+        // ↓ / Enter 把操作交回树：过滤只是定位手段，跳转仍走大纲自己的键盘语义
+        if (e.key === 'ArrowDown' || e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          el.focus(); ensureVisibleSelection();
+          if (e.key === 'ArrowDown') moveSel(1); else if (selIdx >= 0) jump(selIdx);
+        }
+      });
+    }
+    return wrap;
+  }
+  function setFilter(v) {
+    filterText = v;
+    const input = panel && panel.querySelector('#outline-search');
+    if (input && input.value !== v) input.value = v;
+    applyFilter();
+  }
+  // 过滤命中 + 祖先链一起留下（否则命中项和它的父章节断开，看不出属于哪一节）。
+  // 命中路径无视折叠态：收起的父节点下面藏着命中项，等于什么都没过滤出来。
+  function applyFilter() {
+    const rows = itemRows();
+    const q = filterText.trim().toLowerCase();
+    const noMatch = panel && panel.querySelector('#outline-no-match');
+    if (!rows.length) { noMatch?.remove(); return; }
+    if (!q) {
+      rows.forEach((r, i) => { r.classList.remove('ol-filtered'); r.classList.toggle('ol-hidden', isHidden(i)); });
+      noMatch?.remove();
+      return;
+    }
+    const keep = new Set();
+    headings.forEach((h, i) => {
+      if (!h.text.toLowerCase().includes(q)) return;
+      keep.add(i);
+      let lv = h.level;
+      for (let k = i - 1; k >= 0 && lv > 1; k--) {
+        if (headings[k].level < lv) { keep.add(k); lv = headings[k].level; }
+      }
+    });
+    rows.forEach((r, i) => {
+      const hit = keep.has(i);
+      r.classList.toggle('ol-filtered', !hit);
+      r.classList.toggle('ol-hidden', !hit);
+    });
+    // 选中项被滤掉时落到第一条命中项：否则 ↑↓ / ←→ 会从一个看不见的行出发，像"按了没反应"。
+    if (selIdx >= 0 && rows[selIdx] && rows[selIdx].classList.contains('ol-filtered')) {
+      select(rows.findIndex((r) => !r.classList.contains('ol-filtered')));
+    }
+    if (!keep.size) {
+      if (!noMatch) {
+        const d = document.createElement('div');
+        d.id = 'outline-no-match';
+        d.className = 'tree-search-empty';
+        el.appendChild(d);
+      }
+      el.querySelector('#outline-no-match').textContent = '没有匹配「' + filterText.trim() + '」的标题';
+    } else noMatch?.remove();
+  }
+
+  // ---------- 跟随光标 ----------
+  // 反方向同步：编辑器滚到哪一节，大纲就把哪一行点亮（PyCharm Structure / VS Code Outline 的默认行为）。
+  // 只改高亮 + 滚动，不重建树、不动 selKey 以外的状态，所以每次光标移动都能调。
+  function followCursor(line) {
+    if (!headings.length || !panel || panel.classList.contains('hidden')) return false;
+    if (filterText.trim()) return false;                 // 过滤态下目标行可能被滤掉，别留个看不见的高亮
+    if (document.activeElement === el) return false;      // 用户正在大纲里按 ↑↓ 浏览，别被编辑器拽回去
+    let lo = 0, hi = headings.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (headings[mid].line <= line) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    if (idx < 0 || idx === selIdx) return false;
+    if (isHidden(idx)) return false;                      // 藏在收起节点里的项，点亮也看不见
+    select(idx);
+    try { itemRows()[idx]?.scrollIntoView({ block: 'nearest' }); } catch {}
+    return true;
+  }
+
   // ---------- 持久化 ----------
   function loadCollapsed() {
     try { collapsed = new Set(JSON.parse(localStorage.getItem(LS_KEY) || '[]')); } catch { collapsed = new Set(); }
@@ -305,11 +412,17 @@ const Outline = (() => {
   }
 
   async function refresh(tab) {
+    // 打字时每 300ms 重建一次整棵树（viewer.js 的 cmOutlineTimer）；不把 scrollTop 接住，
+    // 大纲就会被一次次弹回顶部 —— 正滚到下半段看结构的人等于被踹了一脚。
+    const prevDoc = owner && owner.documentId;
+    const prevScroll = el.scrollTop;
+    const sameDoc = !!tab && prevDoc === tab.id;
+    if (!sameDoc) setFilter('');           // 换文件时过滤条件跟着换，别残留到下一篇
     el.innerHTML = '';
     el.removeAttribute('aria-activedescendant');
     headings = [];
     owner=tab?{documentId:tab.id,revision:tab.editRevision,path:tab.path}:null;
-    if(tab?.reader){owner=null;const title=document.querySelector('#panel-outline .panel-title');if(title?.firstChild?.nodeType===3)title.firstChild.textContent='阅读目录';document.querySelector('#panel-outline .panel-title-actions')?.setAttribute('hidden','');window.Reader?.renderOutline(el,tab);return;}
+    if(tab?.reader){owner=null;const title=document.querySelector('#panel-outline .panel-title');if(title?.firstChild?.nodeType===3)title.firstChild.textContent='阅读目录';document.querySelector('#panel-outline .panel-title-actions')?.setAttribute('hidden','');document.querySelector('#outline-filter')?.setAttribute('hidden','');window.Reader?.renderOutline(el,tab);return;}
     const readerTitle=document.querySelector('#panel-outline .panel-title');if(readerTitle?.firstChild?.nodeType===3)readerTitle.firstChild.textContent='大纲';
     document.querySelector('#panel-outline .panel-title-actions')?.removeAttribute('hidden');
     loadCollapsed();
@@ -317,6 +430,7 @@ const Outline = (() => {
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || ''),isJson=tab&&/\.json$/i.test(tab.name||'');
     if (!isMd&&!isJson) {
       selIdx = -1; selKey = '';
+      document.querySelector('#outline-filter')?.setAttribute('hidden','');
       renderEmpty(tab ? '当前文件没有大纲' : '打开 Markdown 或 JSON 文件查看大纲');
       return;
     }
@@ -324,9 +438,12 @@ const Outline = (() => {
     if(isJson&&ownsDocument()&&Viewer.cm?.__tab===tab)readEditorFolds(Viewer.cm.view);
     if (!headings.length) {
       selIdx = -1; selKey = '';
+      setFilter('');
+      document.querySelector('#outline-filter')?.setAttribute('hidden','');
       renderEmpty(isJson?'未找到可识别的 JSON 结构':'未找到标题');
       return;
     }
+    mountFilter()?.removeAttribute('hidden');
     // 内容变化后行号/文本对不上 → 丢弃失效的收起 key
     const validKeys = new Set(headings.map(hKey));
     let pruned = false;
@@ -343,8 +460,11 @@ const Outline = (() => {
       const isCol = collapsed.has(hKey(h));
       const row = document.createElement('div');
       row.className = 'outline-item' + (h.level > 1 ? ' lv' + h.level : '');
-      // 缩进：箭头列固定宽度，文本起点按层级递进（PyCharm 同款）
-      row.style.paddingLeft = ((h.level - 1) * 13 + 4) + 'px';
+      // 缩进：箭头列固定宽度，文本起点按层级递进（PyCharm 同款）。
+      // ⚠ 必须用 em：面板字号是 --tool-font（状态栏 A−/A+ 改），行高与箭头列都是 em ——
+      //   原来这里写死 13px，字号调到 18px 时一级台阶只剩 0.72em，六个层级渐渐挤成一片。
+      //   0.5em 的基数是给箭头留出的左内边（原来 4px 让 ▾ 直接压在面板边缘 / 选中竖线上）。
+      row.style.paddingLeft = ((h.level - 1) + 0.5) + 'em';
       row.title = h.text + '\n右键：复制 / 折叠本级或本级及内部 · 双击：'+(leafFold(i)?'折叠/展开本级':'大纲列表折叠展开');
       row.dataset.idx = String(i);
       row.id = 'outline-heading-' + i;
@@ -386,6 +506,8 @@ const Outline = (() => {
     const keep = selKey ? headings.findIndex((h) => hKey(h) === selKey) : -1;
     select(keep);
     if (keep >= 0 || document.activeElement === el) ensureVisibleSelection();
+    applyFilter();   // 重建后按当前过滤词重裁一遍（编辑触发的 refresh 不该把过滤清掉）
+    if (sameDoc && prevScroll) el.scrollTop = prevScroll;
   }
 
   function select(i) {
@@ -420,7 +542,9 @@ const Outline = (() => {
 
   // ---------- 键盘导航（↑↓ 选择 · Enter 跳转 · ←→ 折叠展开）----------
   const itemRows = () => [...el.querySelectorAll('.outline-item')];
-  const visibleRows = () => itemRows().filter((r) => !r.classList.contains('ol-hidden'));
+  // 过滤掉的行走的是另一个类（ol-filtered）：ol-hidden 专表「被祖先收起」，
+  // 两个状态混用会被 syncFromEditor / applyFilter 互相覆盖。
+  const visibleRows = () => itemRows().filter((r) => !r.classList.contains('ol-hidden') && !r.classList.contains('ol-filtered'));
   function ensureVisibleSelection() {
     const rows = visibleRows();
     if (!rows.length) { select(-1); return; }
@@ -490,7 +614,7 @@ const Outline = (() => {
   });
 
   return {
-    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor, controlFold, controlState,
+    refresh, parse, copySection, sectionText, setAllCollapsed, foldItem, foldAll, setSync, syncFromEditor, controlFold, controlState, followCursor,
     async controlExpand(index,value){if(index==null){if(syncActive())controlFold(null,value,'all');else setAllCollapsed(!value);return;}if(!headings[index])throw Error('章节不存在');if(isJson()&&!canToggle(index))throw Object.assign(Error('此项没有可折叠的内部内容'),{code:'OUTLINE_NOT_FOLDABLE'});if(syncActive()||leafFold(index)){controlFold(index,value);return;}const k=hKey(headings[index]);if(value)collapsed.delete(k);else collapsed.add(k);saveCollapsed();await refresh(Viewer.activeTab);},
     async controlJump(index){const h=headings[index];if(!h||!owner)return {ok:false,error:'章节已失效'};for(let k=index-1,lv=h.level;k>=0;k--)if(headings[k].level<lv){collapsed.delete(hKey(headings[k]));lv=headings[k].level;}saveCollapsed();await refresh(Viewer.activeTab);select(index);return await Viewer.navigateTo({...owner,line:h.line,headingIndex:index,...(h.key?{offset:h.from}:{})});},
     get headings() { return headings; },

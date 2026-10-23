@@ -949,6 +949,11 @@ textarea.editor {
 
 /* ---------- 大纲面板（对齐 PyCharm Structure）---------- */
 #outline { flex: 1; overflow: auto; padding: 2px 0 10px; min-height: 0; }
+/* 过滤行：直接复用文件树那套 .tree-search-wrap（内嵌放大镜 / 静态无边框 / focus 才描主色），
+   这里只把它的 flex:1（在 #tree-head 里是"撑满剩余宽度"）改回不伸缩，并给一圈内边距。 */
+#outline-filter { flex: none; padding: 5px 8px 4px; }
+#outline-filter[hidden] { display: none; }
+#outline-filter input[type="text"] { font-size: .92em; padding-top: 4px; padding-bottom: 4px; }
 .outline-list { display: flex; flex-direction: column; }
 /* 行：固定箭头列 + 文本，整行可点；字号跟随面板 --tool-font（1em 继承） */
 .outline-item {
@@ -958,10 +963,10 @@ textarea.editor {
   cursor: pointer; white-space: nowrap; overflow: hidden;
 }
 .outline-item:hover { background: var(--bg-hover); }
-/* 选中项整行高亮（与 PyCharm 的选中带一致，键盘导航复用同一状态） */
-.outline-item.key-nav-sel { background: var(--bg-selected); color: #fff; }
-.outline-item.key-nav-sel .ol-arrow { color: #fff; }
-.outline-item.key-nav-sel .ol-arrow:hover { background: rgba(255,255,255,.18); }
+/* 选中态本体在文件末尾统一（.outline-item.key-nav-sel：弱底 + 2px 主色左线），
+   这里只补箭头：**不能写死 #fff** —— 浅色主题的选中底是浅蓝，白箭头直接消失（旧实现的老毛病）。 */
+.outline-item.key-nav-sel .ol-arrow { color: var(--text-bright); }
+.outline-item.key-nav-sel .ol-arrow:hover { background: color-mix(in srgb, var(--text) 16%, transparent); }
 /* 层级区分：**只降对比、不缩字号**（PyCharm 各层级字号一致）。
    ⚠ 实测（crimson 主题）旧规则下 H1/H2 同为 --text、H3/H4/H5/H6 四级同为 --text-dim
    → 六个层级压成两档，一屏看下去"哪层是哪层"完全分不出；而且 H3+ 与箭头同色，
@@ -978,6 +983,9 @@ textarea.editor {
    只加颜色不加粗体以外的装饰（避免又变成"一屏多个焦点"）。 */
 .outline-item:not([class*=' lv']) { color: var(--text-bright); font-weight: 500; }
 .outline-item.ol-hidden { display: none; }
+/* 被「过滤标题」筛掉的行走独立的类：ol-hidden 专表"被祖先收起"，
+   两者共用一个类的话，applyFilter 与 syncFromEditor 会互相把状态翻回去。 */
+.outline-item.ol-filtered { display: none; }
 .outline-item .ol-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 箭头列：独占点击区（点箭头只折叠、点文本只跳转）；叶子行留空占位、不画符号。
    ⚠ 三角改内联 SVG 后，宽度要给够 —— svg.ic 本身是 16px，这里用 1em 列宽 + 居中，

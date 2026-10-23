@@ -2675,16 +2675,32 @@ module.exports = {
     // 层级可区分：真 Chromium 会把 color-mix / var 解析成 rgb，这里按最终色值比
     const byLv = (lv) => rows.find((r) => (lv === 1 ? !/lv\d/.test(r.className) : r.classList.contains('lv' + lv)));
     const cols = [1, 2, 3, 4, 5].map((lv) => { const r = byLv(lv); return r ? getComputedStyle(r).color : null; });
-    const lumOf = (c) => { const m = String(c).match(/(\d+(?:\.\d+)?)/g) || []; return m.slice(0, 3).reduce((a, b) => a + parseFloat(b), 0); };
+    // ⚠ 亮度只能读计算后的 RGB 三段。H3 走的是 color-mix()，Chromium 对带百分比的混色
+    //   序列化成 `color(srgb 0.798 0.798 0.798)` —— 那是 0~1 的浮点，直接按数值累加会得到
+    //   1.9 这种"比谁都暗"的假象（实测：H2=552 H3=1.9 H4=384，断言假失败）。
+    const rgbOf = (c) => {
+      const s = String(c);
+      if (/^rgb/i.test(s)) return (s.match(/\d+(?:\.\d+)?/g) || []).slice(0, 3).map(Number);
+      // ⚠ 这里**不能** slice(1,4)：`srgb` 里的 s/r/g/b 不含数字，正则本来就只抓到三个分量，
+      //   多切一刀会把 B 通道吞掉 → 三段变两段，亮度算成 325 而不是 488（实测踩过）。
+      if (/^color\(/i.test(s)) return (s.match(/[\d.]+/g) || []).slice(0, 3).map((v) => parseFloat(v) * 255);
+      return (s.match(/\d+(?:\.\d+)?/g) || []).slice(0, 3).map(Number);
+    };
+    const lumOf = (c) => rgbOf(c).reduce((a, b) => a + b, 0);
     const uniq = new Set(cols).size;
     add('层级颜色至少分 3 档（旧实现只 2 档：H1/H2 同色、H3~H6 同色）',
       cols.every(Boolean) && uniq >= 3, uniq + ' 档 → ' + cols.join(' | '));
+    // color(srgb r g b) 与 rgb(r,g,b) 混排时逐段比较（a 比 b 亮 = 三段都不暗、至少一段更亮）
+    // ⚠ 顺带纠正断言描述：混合方向是 `var(--text) 62%, var(--text-dim)`，--text 是**亮**的那档，
+    //   所以 H3 在数值上比 H4 更亮（163 vs 128）。旧断言写的是"H3 落在 H2 与 H4 之间"（= 更暗），
+    //   实测一直因此假失败；真正要保的语义是"H3 既不同于 H2 也不同于 H4，且比 H4 亮、比 H2 暗"。
+    const brighter = (a, b) => rgbOf(a).every((v, i) => v >= rgbOf(b)[i]) && rgbOf(a).some((v, i) => v > rgbOf(b)[i]);
     add('逐级降对比（H1 > H2 > H4）',
-      lumOf(cols[0]) > lumOf(cols[1]) && lumOf(cols[1]) > lumOf(cols[3]),
-      [lumOf(cols[0]), lumOf(cols[1]), lumOf(cols[3])].join(' > '));
-    add('H3 是独立过渡档（亮度落在 H2 与 H4 之间）',
-      cols[2] !== cols[1] && cols[2] !== cols[3] && lumOf(cols[2]) <= lumOf(cols[1]) && lumOf(cols[2]) >= lumOf(cols[3]),
-      'H2=' + lumOf(cols[1]) + ' H3=' + lumOf(cols[2]) + ' H4=' + lumOf(cols[3]));
+      brighter(cols[0], cols[1]) && brighter(cols[1], cols[3]),
+      [cols[0], cols[1], cols[3]].map((c) => Math.round(lumOf(c))).join(' > '));
+    add('H3 是独立过渡档（比 H4 亮、比 H2 暗，不与任何档重合）',
+      cols[2] !== cols[1] && cols[2] !== cols[3] && brighter(cols[1], cols[2]) && brighter(cols[2], cols[3]),
+      'H2=' + Math.round(lumOf(cols[1])) + ' > H3=' + Math.round(lumOf(cols[2])) + ' > H4=' + Math.round(lumOf(cols[3])));
     const textLeft = (r) => Math.round(r.querySelector('.ol-text').getBoundingClientRect().left);
     add('文本起点按层级递进', textLeft(rows[1]) > textLeft(rows[0]) && textLeft(rows[2]) > textLeft(rows[1]),
       [textLeft(rows[0]), textLeft(rows[1]), textLeft(rows[2])].join(' < '));

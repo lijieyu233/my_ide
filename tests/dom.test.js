@@ -1253,6 +1253,73 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(Number(w1) >= 500, 'H1 有更重字重以突出顶层: ' + w1);
   });
 
+  await okAsync('大纲：过滤标题 + 跟随光标 + 缩进随字号缩放（em）', async () => {
+    // 三个真实缺口（用户截图反馈"大纲还有优化点吗"）：
+    //   ① 文件树早有搜索框，大纲没有 → 长文档只能滚；
+    //   ② 大纲→编辑器是单向的，编辑区滚到中段时看不出"我在哪一节"；
+    //   ③ 缩进写死 13px，而面板字号走 --tool-font（状态栏 A−/A+）→ 字号一变层级台阶比例就失真。
+    // 结构刻意让命中和未命中分属两条分支：「证据附录」在「依据与未纳入事项」下，
+    // 「时间统计」是另一条 H2 —— 祖先链补齐只能补命中项那一条，不能把旁支一起留下。
+    FAKE_FS[P + '/flt.md'] = { type: 'file', mtime: 9600, ctime: 9600, size: 120,
+      content: '# 总览\n\n## 时间统计\n\n### 统计口径\n\n## 依据与未纳入事项\n\n### 证据附录\n' };
+    await g(dom, 'Viewer.openFile("' + P + '/flt.md")');
+    await tick(); await tick();
+    key(dom, '2', { ctrl: true });
+    await tick(); await tick();
+    const ol = $(dom, '#outline');
+    const rows = () => $allIn(ol, '.outline-item');
+    const texts = (r) => r.querySelector('.ol-text').textContent;
+    const visTexts = () => rows()
+      .filter((r) => !r.classList.contains('ol-hidden') && !r.classList.contains('ol-filtered'))
+      .map(texts);
+    assert_(rows().length === 5, '解析出 5 个标题, got ' + rows().length);
+
+    // ③ 缩进必须是 em（随 --tool-font 缩放），且每级恰好 1em
+    const pad = rows().map((r) => r.style.paddingLeft);
+    assert_(pad.every((v) => /em$/.test(v)), '缩进用 em 而不是 px（字号调节后层级比例不变）: ' + pad.join(','));
+    assert_(Math.abs(parseFloat(pad[1]) - parseFloat(pad[0]) - 1) < 1e-6,
+      '相邻层级台阶 = 1em: ' + pad[0] + ' → ' + pad[1]);
+
+    // ② 跟随光标：编辑器行号 → 高亮对应章节（不重建树）
+    const sel = () => $allIn(ol, '.key-nav-sel').map(texts).join(',');
+    assert_(dom.window.Outline.followCursor(3) === true, '光标移到第 3 行 → 跟随成功');
+    assert_(sel() === '时间统计', '高亮落到「时间统计」, got: ' + sel());
+    assert_(dom.window.Outline.followCursor(6) === true, '光标移到第 6 行 → 跟随成功');
+    assert_(sel() === '统计口径', '第 6 行归到它前面最近的标题「统计口径」, got: ' + sel());
+    dom.window.Outline.followCursor(9);
+    assert_(sel() === '证据附录', '光标移到第 9 行 → 高亮「证据附录」, got: ' + sel());
+    assert_(dom.window.Outline.followCursor(9) === false, '同一节内重复调用是快路径（返回 false，不动 DOM）');
+
+    // ① 过滤：命中项 + 祖先链一起留下；被祖先收起也照样显示（否则等于没过滤出来）
+    click($allIn($(dom, '#panel-outline .panel-title-actions'), '.vt-btn')[1]);  // 收起全部
+    await tick(); await tick();
+    assert_(visTexts().length === 1, '收起全部后只剩 H1, got ' + visTexts().join(','));
+    assert_($(dom, '#outline-search'), '标题栏下方有过滤输入框');
+    const input = $(dom, '#outline-search');
+    input.value = '证据';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_(JSON.stringify(visTexts()) === JSON.stringify(['总览', '依据与未纳入事项', '证据附录']),
+      '过滤「证据」= 命中项 + 祖先链（且无视收起态）, got: ' + visTexts().join(','));
+    assert_(!visTexts().includes('时间统计'), '未命中的「时间统计」被滤掉');
+    // 过滤器里的 ↓ 把操作交回树
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    await tick();
+    assert_(sel().length > 0, '过滤框里按 ↓ 后树上有选中项, got: ' + sel());
+    // 空结果
+    input.value = 'zzzz';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await tick();
+    assert_($(dom, '#outline-no-match') && /没有匹配/.test($(dom, '#outline-no-match').textContent),
+      '无命中时给出空态文案');
+    // Esc 清空 → 过滤态撤掉，折叠态恢复（不是被过滤重置）
+    input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await tick();
+    assert_(input.value === '' && !$(dom, '#outline-no-match'), 'Esc 清空过滤词并撤掉空态');
+    assert_(visTexts().length === 1, '清空后回到"全部收起"的折叠状态, got: ' + visTexts().join(','));
+    dom.window.localStorage.removeItem('myide-outline-collapsed');
+  });
+
   await okAsync('HTML 预览：独立文档保留资源基准 + 按键转发脚本在末尾（不破坏 DOCTYPE）', async () => {
     await g(dom, 'Viewer.openFile("' + P + '/page.html")');
     await tick(); await tick();

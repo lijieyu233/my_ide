@@ -1747,7 +1747,8 @@ const Viewer = (() => {
         clearTimeout(cmOutlineTimer);
         cmOutlineTimer = setTimeout(() => { if (currentTab()===tab&&window.App) App.refreshOutline(tab); }, 300);
       },
-      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
+      // 大纲跟随光标：编辑器滚到哪一节，大纲就把那一行点亮（Outline 内部做二分 + 快路径）
+      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab){refreshSelectionStatus(state);window.Outline?.followCursor?.(_line);} },
     });
     cmApi.__tab = tab;
     cmApi.__mdContext={baseDir:MdEditor.__baseDir,openLink:MdEditor.__openLink,onPasteImage:MdEditor.__onPasteImage};
@@ -1785,7 +1786,8 @@ const Viewer = (() => {
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         clearTimeout(cmOutlineTimer);cmOutlineTimer=setTimeout(()=>{if(currentTab()===tab&&window.App)App.refreshOutline(tab);},300);
       },
-      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab)refreshSelectionStatus(state); },
+      // 大纲跟随光标：编辑器滚到哪一节，大纲就把那一行点亮（Outline 内部做二分 + 快路径）
+      onCursor: (_line, _col, _head, state) => { if(currentTab()===tab){refreshSelectionStatus(state);window.Outline?.followCursor?.(_line);} },
       saveKeysInShortcuts: true,
     });
     cmApi.__tab = tab;
