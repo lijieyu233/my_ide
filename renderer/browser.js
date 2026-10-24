@@ -349,8 +349,15 @@ const BrowserPanel = (() => {
   }
   function openTabMenu(tabId, x, y) {
     const state = tabStore.state, tab = state.tabs.find(t => t.id === tabId) || tabStore.active, index = state.tabs.findIndex(t => t.id === tab.id);
+    const faved = !!tab.url && isFav(tab.url);
     tabMenu([
-      { label: '保存当前标签到收藏', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
+      // 收藏做成一个开关：已收藏时同一位置能取消，不用绕去侧栏找那一行。
+      // 未收藏走 openFavPosMenu（可以顺便选文件夹），已收藏直接移除。
+      faved
+        ? { label: '🗑 取消收藏', run: () => { removeFav(tab.url); renderSidebar(); renderFavBtn(); renderEmpty(); MI.toast('已取消收藏', 'ok'); } }
+        : { label: '⭐ 收藏此页', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
+      { label: '📋 复制网址', disabled: !tab.url, run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
+      { label: '↻ 刷新此标签', disabled: !tab.url, run: () => { activateTab(tab.id); reload(); } },
       { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: saveTabGroup },
       { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
       { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
@@ -415,6 +422,13 @@ const BrowserPanel = (() => {
       close.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); };
       row.append(pageIcon, name, close);
       row.title = tab.url || '新标签页';
+      // 右键菜单与顶部标签栏共用 openTabMenu：收藏 / 保存整组 / 关闭其他 / 关闭右侧 /
+      // 重新打开关闭的标签，都在同一份定义里，避免两处菜单各写一套后行为分叉。
+      row.oncontextmenu = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openTabMenu(tab.id, event.clientX, event.clientY);
+      };
       // 拖动换顺序：与顶部标签栏、收藏列表同一套手法（dragover 里
       // dataTransfer.getData 恒为空是 Chromium 的安全限制，只能靠模块级变量记源）。
       row.draggable = true;
@@ -485,7 +499,23 @@ const BrowserPanel = (() => {
       ], event.clientX, event.clientY); };
       header.oncontextmenu = menu;
       const more = document.createElement('button'); more.className = 'bw-group-more'; more.innerHTML = IC('<circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/>'); more.title = '标签组操作'; more.setAttribute('aria-label', '标签组操作 ' + group.name); more.onclick = menu; header.append(more);
-      if (foldedGroups.has(group.id)) for (const tab of group.tabs) { const link = document.createElement('button'); link.className = 'bw-group-page'; link.textContent = tab.title || tab.url; link.title = tab.url; link.onclick = () => { const existing = tabStore.state.tabs.find(t => t.url === tab.url); if (existing) activateTab(existing.id); else newTab(tab.url, tab.title); }; row.append(link); }
+      if (foldedGroups.has(group.id)) for (const tab of group.tabs) {
+        const link = document.createElement('button'); link.className = 'bw-group-page'; link.textContent = tab.title || tab.url; link.title = tab.url;
+        link.onclick = () => { const existing = tabStore.state.tabs.find(t => t.url === tab.url); if (existing) activateTab(existing.id); else newTab(tab.url, tab.title); };
+        // 已保存组里的网页条目也给右键：它此刻可能没打开，但同样值得收藏 / 复制 / 新开。
+        link.oncontextmenu = event => {
+          event.preventDefault(); event.stopPropagation();
+          const alreadyFaved = isFav(tab.url);
+          tabMenu([
+            alreadyFaved
+              ? { label: '🗑 取消收藏', run: () => { removeFav(tab.url); renderSidebar(); renderFavBtn(); renderEmpty(); MI.toast('已取消收藏', 'ok'); } }
+              : { label: '⭐ 收藏此页', run: () => openFavPosMenu(tab.url, event.clientX, event.clientY, false) },
+            { label: '📋 复制网址', run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
+            { label: '在新标签打开', run: () => newTab(tab.url, tab.title) },
+          ], event.clientX, event.clientY);
+        };
+        row.append(link);
+      }
       list.append(row);
     }
   }

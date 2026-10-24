@@ -124,6 +124,44 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     await tick();
     assert([...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '已保存'), '有标签组时标题回来');
   });
+  await test('「当前打开」右键菜单可收藏，已收藏时变成取消收藏', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    w.BrowserPanel.newTab('https://fav.test/page');
+    w.BrowserPanel.newTab('https://other.test/');
+    const rows = () => [...w.document.querySelectorAll('#bw-groups-list .bw-session-tab')];
+    const row = rows().find(r => r.title === 'https://fav.test/page');
+    assert(row, '找到目标标签行');
+    const menu = q('#ctx-menu');
+    const items = () => [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent);
+    // 未收藏：菜单里有「收藏此页」
+    row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    assert(!menu.classList.contains('hidden'), '右键菜单弹出');
+    const labels = items();
+    assert(labels.some(t => t.includes('收藏此页')), '未收藏时提供「收藏此页」: ' + labels.join('|'));
+    assert(labels.some(t => t.includes('复制网址')), '提供「复制网址」');
+    assert(labels.some(t => t.includes('关闭其他标签')), '与顶部标签栏共用同一套菜单项');
+    // 点「收藏此页」→ 走 openFavPosMenu（会弹一个选文件夹的模态；这里只验证入口被接上）
+    const favItem = [...menu.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('收藏此页'));
+    favItem.click();
+    await tick();
+    // 收掉可能弹出的选择框，回到列表
+    while (w.Modal.stack.length) w.Modal.hide();
+    // 直接走「已收藏」分支：先写入一条收藏，再右键看菜单是否切成「取消收藏」
+    w.BrowserPanel.addFav ? w.BrowserPanel.addFav('https://fav.test/page', '已收藏页', '') : null;
+    if (!JSON.parse(w.localStorage.getItem('myide-browser-favs') || '[]').some(f => f.url === 'https://fav.test/page')) {
+      const list = JSON.parse(w.localStorage.getItem('myide-browser-favs') || '[]');
+      list.push({ url: 'https://fav.test/page', title: '已收藏页', folder: '' });
+      w.localStorage.setItem('myide-browser-favs', JSON.stringify(list));
+    }
+    row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const labels2 = items();
+    assert(labels2.some(t => t.includes('取消收藏')), '已收藏时提供「取消收藏」: ' + labels2.join('|'));
+    // 点取消 → 从收藏里移除
+    [...menu.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('取消收藏')).click();
+    await tick();
+    const favs2 = JSON.parse(w.localStorage.getItem('myide-browser-favs') || '[]');
+    assert(!favs2.some(f => f.url === 'https://fav.test/page'), '取消收藏已生效');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
