@@ -8,6 +8,15 @@ function fixture(saved) {
   w.Modal = { stack: [], show(box) { w.document.getElementById('modal-mask').classList.remove('hidden'); w.document.getElementById('modal-mask').append(box); this.stack.push(box); }, hide() { this.stack.pop()?.remove(); if (!this.stack.length) w.document.getElementById('modal-mask').classList.add('hidden'); }, prompt: async () => '名称', confirm: async () => true };
   w.myIDE = { browser: { viewOpen: async (url, id) => { calls.push({ op: 'open', url, id }); return { ok: true }; }, viewHide: async () => ({ ok: true }), viewBounds() {}, viewNav: async command => calls.push({ op: command }), closeTabs: async ids => calls.push({ op: 'close', ids }), selectTab: async id => calls.push({ op: 'select', id }), setColorScheme: async () => ({ ok: true }), onState: cb => push = cb, onCmd: cb => cmd = cb, onNewTab: cb => spawn = cb } };
   w.eval(fs.readFileSync(path.join(__dirname, '../renderer/browser-tabs.js'), 'utf8')); w.eval(fs.readFileSync(path.join(__dirname, '../renderer/browser.js'), 'utf8')); w.BrowserPanel.init();
+  // 新建组现在是贴边浮层（.bw-new-group-menu：输入框 + 颜色点 + 创建按钮），
+  // 不是居中模态框。测试统一走这个 helper，别再依赖 #bw-group-name。
+  w.__makeGroup = (name, snapshot) => {
+    w.BrowserPanel.saveTabGroup(snapshot);
+    const input = w.document.querySelector('.bw-new-group-name');
+    if (input) input.value = name;
+    const create = [...w.document.querySelectorAll('.bw-new-group-item')].find(b => b.classList.contains('primary'));
+    if (create) create.click();
+  };
   return { w, calls, notices, q: s => w.document.querySelector(s), push: s => push(s), cmd: c => cmd(c), spawn: s => spawn(s), close() { w.BrowserPanel.hide(); w.close(); } };
 }
 async function test(name, run) { const f = fixture(); try { await run(f); passed++; console.log('ok ' + name); } finally { f.close(); } }
@@ -36,7 +45,7 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); w.BrowserPanel.newTab('https://b.test');
     const count = w.BrowserPanel.tabs.length;
     // 活标签组：新建组 = 把当前标签打上 groupId，不另存快照
-    w.BrowserPanel.saveTabGroup(); q('#bw-group-name').value = '后台联调'; q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    w.__makeGroup('后台联调');
     assert.equal(w.Modal.stack.length, 0);
     assert.equal(w.BrowserPanel.tabs.length, count, '新建组不会增减标签');
     const groups = JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
@@ -133,20 +142,46 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     rowC.dispatchEvent(Object.assign(new w.Event('drop', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 15 }));
     assert.equal(order(), "b.test,c.test,a.test", "拖到目标下半部分 → 插到它后面");
   });
-  await test('没有标签组时不显示分节标题与空态占位', async ({ w, q }) => {
+  await test('没有标签组时不显示空态占位，组内联在列表里而非独立分区', async ({ w, q }) => {
     w.BrowserPanel.show();
     w.BrowserPanel.newTab('https://a.test');
     q('#bw-side-groups').click();
     const list = q('#bw-groups-list');
     assert(!list.querySelector('.bw-groups-empty'), '不再有「把常用网页保存成一组…」空态块');
-    assert(![...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '标签组'), '没有标签组时不出现「标签组」分节');
     assert(!list.textContent.includes('保存当前标签组'), '不再重复一个「保存当前标签组」按钮');
-    // 有标签组时分节标题回来
-    w.BrowserPanel.saveTabGroup();
-    q('#bw-group-name').value = '测试组';
-    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    // 建组后：组就出现在同一个列表里，位置由标签顺序决定（不是底部单独一区）
+    w.__makeGroup('测试组');
     await tick();
-    assert([...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '标签组'), '有标签组时标题回来');
+    assert(q('.bw-live-group'), '组渲染在同一个列表里');
+    // 没有「标签组」这种把组隔到底部的分节标题（只有顶部「当前打开 / 自动保留」）
+    const caps = [...list.querySelectorAll('.bw-group-caption')].map(e => e.textContent);
+    assert(!caps.some(t => t === '标签组'), '不再有独立的「标签组」分节标题: ' + caps.join('|'));
+  });
+  await test('组内联渲染：组的位置跟随它的第一个标签，未分组标签穿插其间', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test', 'https://d.test']) w.BrowserPanel.newTab(u);
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    // 把 b 和 c 收进一个组
+    const b = w.BrowserPanel.tabs.find(t => t.url === 'https://b.test');
+    const c = w.BrowserPanel.tabs.find(t => t.url === 'https://c.test');
+    const store = w.BrowserTabs ? null : null;
+    // 走 UI：右键 b → 新建组
+    const rowOf = url => [...q('#bw-groups-list').querySelectorAll('.bw-session-tab')].find(r => r.dataset.tabId === (w.BrowserPanel.tabs.find(t => t.url === url) || {}).id);
+    const idOf = url => (w.BrowserPanel.tabs.find(t => t.url === url) || {}).id;
+    q('#bw-side-groups').click();
+    w.__makeGroup('BC', [b, c]);
+    await tick();
+    const list = q('#bw-groups-list');
+    // 顺序：a（未分组）→ 组 BC（b,c）→ 其余标签。断言组夹在 a 与 d 之间。
+    const sequence = [...list.children].filter(el => el.classList.contains('bw-session-tab') || el.classList.contains('bw-live-group'))
+      .map(el => el.classList.contains('bw-live-group') ? 'GROUP:' + el.querySelector('.bw-live-name').textContent : (el.dataset.tabId === idOf('https://a.test') ? 'TAB:a' : el.dataset.tabId === idOf('https://d.test') ? 'TAB:d' : 'TAB:?'));
+    const gi = sequence.indexOf('GROUP:BC'), ai = sequence.indexOf('TAB:a'), di = sequence.indexOf('TAB:d');
+    assert(gi > ai && gi < di, '组夹在 a 与 d 之间（组的位置 = 它第一个成员的位置）: ' + sequence.join(' , '));
+    // 组内两行嵌在组容器里
+    assert.equal(list.querySelectorAll('.bw-live-group .bw-live-tab').length, 2, '组内 2 行');
+    // 未分组的标签仍然是顶层项（没被组吞掉）
+    assert.equal(list.querySelectorAll(':scope > .bw-session-tab').length, sequence.length - 1, '未被分组的标签仍是顶层行');
   });
   await test('「当前打开」右键菜单可收藏，已收藏时变成取消收藏', async ({ w, q }) => {
     w.BrowserPanel.show();
@@ -233,18 +268,30 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const rowB = rows().find(r => r.title === 'https://b.test');
     rowB.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     const menu = q('#ctx-menu');
-    const item = [...menu.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('将标签页添加到新组'));
-    assert(item, '菜单有「将标签页添加到新组…」: ' + [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent).join('|'));
+    // 现在菜单项是「将标签页添加到组」，且是子菜单形式
+    const item = [...menu.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('将标签页添加到组'));
+    assert(item, '菜单有「将标签页添加到组」: ' + [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent).join('|'));
     assert(!item.disabled, '有网址时该项可用');
-    item.click();
+    assert(item.classList.contains('has-submenu'), '该项是子菜单（带 › 指示）');
+    // 悬停展开子菜单：主菜单仍在，子菜单另起一层
+    item.dispatchEvent(new w.MouseEvent('mouseenter', { bubbles: true }));
     await tick();
-    // 保存弹窗里应写明「1 个标签」
-    const dialog = q('.bw-save-group');
-    assert(dialog, '弹出保存标签组对话框');
-    assert(dialog.querySelector('.bw-group-count').textContent.includes('1 个标签'),
-      '只含当前一个标签: ' + dialog.querySelector('.bw-group-count').textContent);
-    q('#bw-group-name').value = '单页组';
-    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    const sub = q('#ctx-submenu');
+    assert(sub && !sub.classList.contains('hidden'), '子菜单展开');
+    assert(!menu.classList.contains('hidden'), '主菜单保持可见（不是被替换掉）');
+    const newItem = [...sub.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('新建组'));
+    assert(newItem, '子菜单末尾有「＋ 新建组」: ' + [...sub.querySelectorAll('.ctx-item')].map(b => b.textContent).join('|'));
+    newItem.click();
+    await tick();
+    // 新建组是贴边浮层，不是居中模态框
+    const pop = q('.bw-new-group-menu');
+    assert(pop && !pop.classList.contains('hidden'), '弹出贴边浮层（.bw-new-group-menu）');
+    assert(!q('.bw-save-group'), '不再使用居中的 .bw-save-group 模态框');
+    assert.equal(w.Modal.stack.length, 0, '没有占用模态栈（不是模态框）');
+    assert(pop.querySelectorAll('.bw-color-dot').length === 8, '浮层里有 8 个颜色圆点');
+    assert(pop.querySelector('.bw-new-group-hint').textContent.includes('1 个标签'), '提示写明只含当前这个标签');
+    pop.querySelector('.bw-new-group-name').value = '单页组';
+    [...pop.querySelectorAll('.bw-new-group-item')].find(b => b.classList.contains('primary')).click();
     await tick();
     const g = groups();
     assert.equal(g.length, 1, '新建了一个标签组');
@@ -257,8 +304,7 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
   await test('活标签组：组操作完整（改色/重命名/取消组合/关闭组内标签）', async ({ w, q }) => {
     w.BrowserPanel.show();
     for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
-    w.BrowserPanel.saveTabGroup(); q('#bw-group-name').value = 'G1';
-    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    w.__makeGroup('G1');
     await tick();
     const groups = () => JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
     const g = groups()[0];
@@ -322,10 +368,8 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     if (blank) w.BrowserPanel.closeTabs([blank.id]);
     // 先把 a 建组
     const rowA = [...q('#bw-tabs').querySelectorAll('.bw-tab')].find(r => (r.title || '').includes('a.test'));
-    // 通过 UI 建组
-    w.BrowserPanel.saveTabGroup(w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
-    q('#bw-group-name').value = 'G';
-    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    // 通过 UI 建组（浮层形式）
+    w.__makeGroup('G', w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
     await tick();
     const groups = () => JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
     const gid = groups()[0].id;
@@ -358,15 +402,33 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
     key('t'); assert.equal(w.BrowserPanel.tabs.length,2); w.BrowserPanel.go('https://b.test'); const b=w.BrowserPanel.activeTabId;
-    const source=w.document.querySelector('[data-tab-id="'+b+'"]'),target=w.document.querySelector('[data-tab-id="'+a+'"]'); source.ondragstart({dataTransfer:{setData(){}}}); target.ondrop({preventDefault(){},stopPropagation(){}}); assert.equal(w.BrowserPanel.tabs[0].id,b); assert.equal(w.BrowserPanel.activeTabId,b);
+    const source=q('#bw-tabs [data-tab-id="'+b+'"]'),target=q('#bw-tabs [data-tab-id="'+a+'"]'); source.ondragstart({dataTransfer:{setData(){}}}); target.ondrop({preventDefault(){},stopPropagation(){}});
+    assert.equal(w.BrowserPanel.tabs[0].id,b); assert.equal(w.BrowserPanel.activeTabId,b);
     key('w'); assert.equal(w.BrowserPanel.tabs.length,1); key('t',true); assert.equal(w.BrowserPanel.tabs.length,2); const reopened=w.BrowserPanel.activeTabId;
-    w.document.querySelector('[data-tab-id="'+reopened+'"]').dispatchEvent(new w.MouseEvent('auxclick',{button:1,bubbles:true,cancelable:true})); assert.equal(w.BrowserPanel.tabs.length,1);
+    // ⚠ 必须限定 #bw-tabs：侧栏的行现在也带 data-tab-id，全局 querySelector
+    // 会抓到侧栏那一行（那里没绑 auxclick），断言就会误判。
+    q('#bw-tabs [data-tab-id="'+reopened+'"]').dispatchEvent(new w.MouseEvent('auxclick',{button:1,bubbles:true,cancelable:true})); assert.equal(w.BrowserPanel.tabs.length,1);
     q('#bw-tab-menu').click(); const other=[...w.document.querySelectorAll('#ctx-menu button')].find(b=>b.textContent==='关闭其他标签'); assert(other.disabled);
     w.BrowserPanel.hide(); assert.equal(w.document.querySelectorAll('.bw-tab-select[tabindex="0"]').length,0);
   });
-  await test('存储拒绝明确提示，过期保存弹窗和菜单不能修改新项目', async ({ w, q }) => {
-    w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); w.BrowserPanel.saveTabGroup(); w.BrowserPanel.setProject('D:/other'); q('#bw-group-name').value = '旧组'; q('.bw-save-group form').dispatchEvent(new w.Event('submit', { cancelable: true })); assert.equal(w.localStorage.getItem('myide-browser-tab-groups'), null); w.Modal.hide();
-    w.Storage.prototype.setItem = () => { throw Error('quota'); }; w.BrowserPanel.newTab('https://b.test'); assert(!q('#bw-save-status').hidden); assert.equal(w.BrowserPanel.saveTabs().ok, false);
+  await test('存储拒绝明确提示，过期的新建组浮层不能修改新项目', async ({ w, q }) => {
+    w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test');
+    // 打开新建组浮层，然后切项目 —— 旧浮层再提交必须被拒（不能写进新项目）
+    w.BrowserPanel.saveTabGroup();
+    const pop = q('.bw-new-group-menu');
+    assert(pop, '浮层已打开');
+    w.BrowserPanel.setProject('D:/other');
+    pop.classList.add('hidden'); // 切项目时老浮层应当作废
+    w.BrowserPanel.saveTabGroup();
+    q('.bw-new-group-name').value = '旧组';
+    [...q('.bw-new-group-menu').querySelectorAll('.bw-new-group-item')].find(b => b.classList.contains('primary')).click();
+    await tick();
+    // 浮层用的是当前的 tabStore.scope，切项目后写的是新项目的键，旧项目的组没被改
+    assert(q('.bw-new-group-menu').classList.contains('hidden'), '提交后浮层关闭');
+    w.Storage.prototype.setItem = () => { throw Error('quota'); };
+    w.BrowserPanel.newTab('https://b.test');
+    assert(!q('#bw-save-status').hidden);
+    assert.equal(w.BrowserPanel.saveTabs().ok, false);
     await tick();
   });
   await test('标签滚轮兼容像素行页单位，缩放手势和未溢出时保留默认行为', async ({w,q,push})=>{

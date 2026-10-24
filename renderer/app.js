@@ -105,7 +105,7 @@ const App = (() => {
     const top=Modal.stack.at(-1);if(!top||document.querySelector('dialog[open]')||window.Shortcuts?.isCapturing())return;
     event.preventDefault();event.stopImmediatePropagation();if(event.repeat)return;
     const menu=document.getElementById('ctx-menu');
-    if(menu&&!menu.classList.contains('hidden')){menu.classList.add('hidden');return;}
+    if(menu&&!menu.classList.contains('hidden')){menu.classList.add('hidden');document.getElementById('ctx-submenu')?.classList.add('hidden');return;}
     // 点击既有取消/关闭按钮才能结算confirm、prompt等Promise，单纯移除DOM会留下悬挂操作。
     if(typeof top.onModalCancel==='function')top.onModalCancel();
     else{

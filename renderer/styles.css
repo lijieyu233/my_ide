@@ -2657,6 +2657,61 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-add-group-dot[data-color="grey"]   { background: #8a8a8a; }
 .bw-add-group-menu .ctx-item { display: flex; align-items: center; }
 .bw-menu-sep { height: 1px; margin: 4px 6px; background: var(--border-pane); }
+/* ---------- 右键菜单的子菜单（「将标签页添加到组 ▸」） ----------
+   Edge 的形态：主菜单留在原地，子菜单从触发项右侧展开。这样用户能看到自己还在
+   哪一层（把整个菜单替换成组列表会丢失这个上下文）。 */
+.ctx-item.has-submenu { display: flex; align-items: center; justify-content: space-between; }
+.ctx-item.has-submenu > span:first-child { flex: 1; min-width: 0; }
+.ctx-sub-caret { margin-left: 12px; opacity: .6; font-size: 1.05em; }
+.ctx-item.has-submenu.open { background: var(--bg-hover); }
+#ctx-submenu {
+  position: fixed; z-index: 260; min-width: 132px; max-width: 260px;
+  padding: 4px; border-radius: 8px;
+  background: var(--bg-panel); border: 1px solid var(--menu-border, var(--border));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .42);
+  max-height: min(60vh, 420px); overflow: auto;
+}
+#ctx-submenu.hidden { display: none; }
+/* 按钮默认样式（白底黑字 + 边框）必须显式清掉：.ctx-item 只给了 padding/字号，
+   在 #ctx-menu 里靠父级继承看起来正常，但 #ctx-submenu 挂在 body 上，
+   按钮就退回浏览器默认外观（实测截图里那个白底方块）。 */
+#ctx-submenu .ctx-item {
+  display: flex; align-items: center; width: 100%;
+  border: 0; background: transparent; color: var(--text-bright);
+  font: inherit; text-align: left; border-radius: 5px;
+}
+#ctx-submenu .ctx-item:hover { background: var(--accent); color: #fff; }
+#ctx-submenu .ctx-item:last-child { margin-top: 4px; border-top: 1px solid var(--border-pane); border-radius: 0 0 5px 5px; padding-top: 7px; }
+/* ---------- 新建组浮层（贴边小面板，不是居中模态框） ---------- */
+.bw-new-group-menu {
+  position: fixed; z-index: 260; width: 232px; padding: 10px;
+  border-radius: 9px; background: var(--bg-panel);
+  border: 1px solid var(--menu-border, var(--border));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  display: flex; flex-direction: column; gap: 9px;
+}
+.bw-new-group-menu.hidden { display: none; }
+.bw-new-group-name {
+  width: 100%; box-sizing: border-box;
+  padding: 6px 8px; border-radius: 6px;
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--border-pane); outline: none; font: inherit;
+}
+.bw-new-group-name:focus { border-color: var(--accent); }
+.bw-new-group-name::placeholder { color: var(--text-dim); }
+.bw-new-group-menu .bw-color-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.bw-new-group-menu .bw-color-dot { width: 16px; height: 16px; }
+.bw-new-group-actions { display: flex; flex-direction: column; gap: 2px; }
+/* 同样要清掉按钮默认外观：这个浮层也挂在 body 上，不继承 #ctx-menu 的那套。 */
+.bw-new-group-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 8px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+.bw-new-group-item:hover { background: var(--bg-hover); color: var(--text-bright); }
+.bw-new-group-item.primary { color: var(--accent); }
+.bw-new-group-item.primary:hover { background: var(--accent); color: #fff; }
+.bw-new-group-hint { font-size: .82em; color: var(--text-dim); }
 .bw-tab { display: flex; align-items: center; flex: 0 0 176px; width: 176px; min-width: 100px; max-width: 220px; height: 32px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; color: var(--text-dim); }
 .bw-tab:hover { background: var(--bg-hover); }
 .bw-tab.active { background: var(--bg-input); color: var(--text-bright); border-color: var(--border); box-shadow: inset 0 2px var(--accent); }
