@@ -49,7 +49,25 @@ const Search = (() => {
     const ordered=view.kind==='modal'?s.results:[...groups].sort(([a],[b])=>a.localeCompare(b)).flatMap(([,hits])=>hits.slice().sort((a,b)=>a.line-b.line||a.startColumn-b.startColumn));
     const signature=JSON.stringify([ordered.map(hit=>hit.hitId),[...s.collapsed].sort(),s.phase==='empty']);
     if(view.signature!==signature){
-      const scrollTop=view.list.scrollTop,listTop=view.list.getBoundingClientRect().top,anchor=[...view.list.querySelectorAll('.qo-item')].find(row=>!row.parentElement.hidden&&row.getBoundingClientRect().bottom>listTop),anchorOffset=anchor?anchor.getBoundingClientRect().top-listTop:null;
+      // ── 重建前的锚点快照 ────────────────────────────────────────────────
+      // 锚点选「视口里第一个完整可见的分组头」，而不是视口顶那条命中行。
+      //
+      // 命中行做锚点有两个致命问题：
+      //   ① 它常常就属于用户刚折叠的那一组，折叠后整块 hidden → 找回来不可见、
+      //      量到的位置是 0，补偿量直接错到底（实测跳 318px）；
+      //   ② 命中行的上边缘可能已滚出视口，top 是负值，亚像素取整会把误差放大。
+      // 组头既稳定（折叠的是别的组，它必然还在）又天然对齐行首，是可靠的参照物。
+      //
+      // 踩过的坑：第一版只存了相对视口的 top 却在重建后才量，量到的是已经整体
+      // 上移过的新值；而当时的验证把 scrollTop 固定在 0，量不到任何位移，
+      // 属于无效验证。验证必须先在列表滚到中段再折叠上方的分组。
+      const listTop=view.list.getBoundingClientRect().top;
+      const groupHeads=[...view.list.querySelectorAll('.sr-group-head')];
+      // 第一个顶边不低于容器顶的组头；都没有就退回首组。
+      const anchorHead=groupHeads.find(h=>h.getBoundingClientRect().top>=listTop-0.5)||groupHeads[0]||null;
+      const anchorGroupKey=anchorHead?.dataset.group||null;
+      // 锚点相对视口顶的像素偏移，折叠后要让同一个组头回到同一高度。
+      const anchorOffset=anchorHead?anchorHead.getBoundingClientRect().top-listTop:0;
       const focused=document.activeElement,focusedInList=view.list.contains(focused),focusId=focused?.dataset.hitId,focusGroup=focused?.dataset.group;view.list.replaceChildren();view.signature=signature;
       // 空查询下不铺统计行：一打开就报「0 条结果」是在替用户宣布一个他还没提出的问题的答案。
       if(s.phase==='empty'){
@@ -80,20 +98,20 @@ const Search = (() => {
         const body=document.createElement('div');body.setAttribute('role','group');body.hidden=s.collapsed.has(key);hits.slice().sort((a,b)=>a.line-b.line||a.startColumn-b.startColumn).forEach(hit=>body.appendChild(rowFor(hit)));
         button.onclick=()=>{if(usable(view))view.model.collapse(hits[0].path);};section.append(button,body);view.list.appendChild(section);
       }
-      // 重建后要把视口稳住。老实现只认「同一条命中」当锚点，一旦那条命中随分组被折叠，
-      // nextAnchor 就是空的 → 落回旧 scrollTop；而折叠让内容高度骤减，浏览器会把它钳到
-      // 新的最大值，视觉上正是「折叠一组，其余全被往上推」。
-      // 锚点改为「分组头优先」：折叠动作的对象就是分组头，它必然还在。
-      const anchorGroupKey=anchor?.dataset.hitId?anchor.closest('.sr-group')?.querySelector('.sr-group-head')?.dataset.group:null;
-      const anchorHitId=anchor?.dataset.hitId||null;
-      const findAnchor=()=>{
-        if(anchorGroupKey){const head=[...view.list.querySelectorAll('[data-group]')].find(row=>row.dataset.group===anchorGroupKey);if(head)return head;}
-        if(anchorHitId){const row=[...view.list.querySelectorAll('.qo-item')].find(r=>r.dataset.hitId===anchorHitId);if(row)return row;}
-        return null;
-      };
+      // ── 重建后还原视口 ────────────────────────────────────────────────
+      // 把同一个组头放回它原来相对视口的那个高度（anchorOffset）。
+      const findAnchor=()=>anchorGroupKey?[...view.list.querySelectorAll('[data-group]')].find(r=>r.dataset.group===anchorGroupKey)||null:null;
       const nextAnchor=findAnchor();
-      // 用同一视口坐标把锚点钉回原位；找不到锚点才退回旧 scrollTop（此时被钳也无从补救）。
-      view.list.scrollTop=nextAnchor?Math.max(0,view.list.scrollTop+nextAnchor.getBoundingClientRect().top-view.list.getBoundingClientRect().top-anchorOffset):scrollTop;
+      if(nextAnchor){
+        // 用内容坐标换算，不能用「当前 scrollTop + 屏幕差值」。
+        // 折叠让内容变短后浏览器已经把 scrollTop 钳到新上限了（实测 1009 → 683，
+        // 新上限 701）；在被钳过的值上再加补偿，起点本身就错，结果照样跳。
+        //
+        // 目标：锚点顶边距容器顶 anchorOffset 像素。它在内容里的绝对位置 =
+        // (屏幕 top - 容器 top) + scrollTop，减掉 anchorOffset 即所需的 scrollTop。
+        const contentTop=nextAnchor.getBoundingClientRect().top-view.list.getBoundingClientRect().top+view.list.scrollTop;
+        view.list.scrollTop=Math.max(0,contentTop-anchorOffset);
+      }
       if(focusedInList){const replacement=[...view.list.querySelectorAll('[data-hit-id],[data-group]')].find(row=>focusId?row.dataset.hitId===focusId:row.dataset.group===focusGroup);(replacement||view.input).focus({preventScroll:true});}
     }
     const visible=visibleHits(view),selected=visible.find(hit=>hit.hitId===s.selectedHitId);

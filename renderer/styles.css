@@ -1998,7 +1998,11 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 #panel-search { display: flex; flex-direction: column; min-height: 0; height: 100%; font-size: var(--tool-font); color-scheme: dark; }
 #panel-search.hidden { display: none; }
 body.theme-light #panel-search, body.theme-pink #panel-search { color-scheme: light; }
-#panel-search .panel-title { gap: .4em; padding: .5em .8em; flex-wrap: wrap; flex-shrink: 0; }
+/* 标题行高度必须与 .panel-title 的 --head-h 一致：原来写 .5em 上下留白，
+   在 --tool-font 放大时会顶到 33px，与标签栏（30px）错开一条缝。
+   左右留白保留 .8em，垂直方向改用「撑满 + 居中」交给 .panel-title 自己的
+   min-height/align-items，别再用 padding 推高度。 */
+#panel-search .panel-title { gap: .4em; padding: 0 .8em; flex-wrap: wrap; flex-shrink: 0; }
 #panel-search .sr-query, #panel-search .sr-text, #panel-search .sr-file { font-size: inherit; }
 #search-list { flex: 1; min-height: 0; overflow: auto; }
 /* 还没输入关键字时的空态：整块居中，而不是在左上角堆两句几乎重复的灰字

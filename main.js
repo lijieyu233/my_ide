@@ -1880,6 +1880,9 @@ app.whenReady().then(() => {
         await run('M5 提交前检查（收尾：还原配置 / 签名 / 作者）', js(steps.m5PreCommitCleanup, { demo: demo }));
         await run('侧栏字号缩放', js(steps.toolFontScale), 'check-ui-1e-tool-font.png');
         await run('大纲（PyCharm Structure）', js(steps.outlineStructure, demo), 'check-ui-1f-outline.png');
+        // 搜索侧栏折叠锚点：这条只能在真实窗口里跑（jsdom 无布局，getBoundingClientRect 恒 0，
+        // 之前在 dom 测试里把 scrollTop 固定在 0 得出的「不动」是假通过）。
+        await run('搜索侧栏：折叠上方分组不推动视口', js(steps.searchFoldAnchor, demo), 'check-ui-1y-search-fold.png');
         await run('AI 助手（内容整理定位）', js(steps.aiAssistant, demo), 'check-ui-1g-ai-panel.png');
         // 底部输入区放大图：尺寸刻度（chip / 输入框 / 发送按钮）这类问题整窗截图根本看不清，
         // 用户自己也是放大截图才发现的。按元素实际位置裁剪，别硬编码坐标。

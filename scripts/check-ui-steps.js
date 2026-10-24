@@ -3262,4 +3262,80 @@ module.exports = {
     add('确认浮层可再次唤起（截图用）', !!q('.ai-confirm'));
     return { R };
   },
+  // 搜索侧栏：折叠一个「视口上方」的分组，下方内容不得整体上移。
+  // 这条只能在真实窗口里验：jsdom 不计算布局，getBoundingClientRect 恒为 0，
+  // 之前在 dom 测试里把 scrollTop 固定在 0 得出的「不动」是假通过。
+  searchFoldAnchor: async (dir) => {
+    const R = [];
+    const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
+    const q = (s) => document.querySelector(s);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 自备数据：3 个文件 × 每条都命中的长行，保证结果多到必须滚动。
+    const target = 'needleanchor';
+    const body = (n) => Array.from({ length: 26 }, (_, i) => 'viewport ' + target + ' line ' + i + ' ' + 'x'.repeat(40)).join('\n');
+    for (let f = 0; f < 3; f++) await window.myIDE.fs.writeFile(dir + '\\_ui_srfold' + f + '.txt', body(f));
+    await sleep(300);
+    window.App.showTool('search');
+    for (let i = 0; i < 40 && !q('#search-input'); i++) await sleep(150);
+    const input = q('#search-input');
+    add('搜索侧栏打开', !!input);
+    if (!input) return { R };
+    input.value = target;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    for (let i = 0; i < 80 && !q('#search-status').textContent.includes('搜索完成'); i++) await sleep(150);
+    const list = q('#search-list');
+    const heads = () => [...list.querySelectorAll('.sr-group-head')];
+    const rows = () => [...list.querySelectorAll('.qo-item')].filter((r) => !r.parentElement.hidden);
+    add('结果按文件分组，且有足够多分组可供滚动', heads().length >= 3, '分组 ' + heads().length + ' / 命中 ' + rows().length);
+    if (heads().length < 3) return { R };
+
+    // 滚到中段 —— 这是能暴露问题的前提。scrollTop=0 时什么都测不出来。
+    list.scrollTop = Math.round(list.scrollHeight / 2);
+    await sleep(250);
+    add('列表确实滚到了中段（前提成立）', list.scrollTop > 0, 'scrollTop=' + Math.round(list.scrollTop));
+
+    const lt = list.getBoundingClientRect().top;
+    // 测量点：视口内第一个「完整可见」的分组头。
+    // 用它而不是命中行：命中行的上边缘可能已经滚出视口（top 为负），负值与 0 一带的
+    // 亚像素取整会把误差放大（实测同一场景下命中行给出 3px 假位移，组头是 0px）。
+    const topGroup = () => heads().find((h) => h.getBoundingClientRect().top >= lt - 0.5) || null;
+    const before = topGroup();
+    const beforeKey = before ? before.dataset.group : null;
+    const beforeOffset = before ? Math.round(before.getBoundingClientRect().top - lt) : null;
+
+    // 折叠一个完全在视口上方的分组（用户看不到它，但列表上半部分会因此缩短）
+    const above = heads().filter((h) => h.getBoundingClientRect().bottom < lt);
+    add('存在可折叠的「视口上方」分组', above.length > 0, '上方分组 ' + above.length);
+    if (!above.length) return { R };
+    // 取「视口上方、离视口最近」的那一组：折叠它会让上方内容几乎等量变短，
+    // 是最容易暴露「下面整体上推」的用例。
+    const group = above[above.length - 1];
+    const groupKey = group.dataset.group;
+    const groupLabel = group.querySelector('.sr-group-path').textContent;
+    // 记下折叠目标之上（含自己）的分组头位置：折叠动作发生在视口上方，
+    // 视口里第一个可见组头的位置必须原封不动。
+    group.click();
+    await sleep(300);
+
+    add('该分组已折叠', !!heads().find((h) => h.dataset.group === groupKey && h.getAttribute('aria-expanded') === 'false'), groupLabel);
+    // 用「同一个组头」而不是「新的第一个组头」来比：如果它被折掉了（不可能，
+    // 折的是它自己 → 它仍在），或换组了，比较就失去意义。
+    const afterHead = beforeKey ? heads().find((h) => h.dataset.group === beforeKey) : null;
+    const afterOffset = afterHead && afterHead.getBoundingClientRect().height > 0
+      ? Math.round(afterHead.getBoundingClientRect().top - lt) : null;
+    // 判据：视口里那个组头在屏幕上的纵向位置必须保持（±2px 取整误差）。
+    // 之前用「scrollTop 不变」当判据是错的：折叠会改变内容高度，scrollTop 本来就
+    // 该变，该不变的是视觉位置。这条只能在真实窗口里验 —— jsdom 的
+    // getBoundingClientRect 恒为 0，之前在 dom 测试里得到的「不动」是假通过。
+    const drift = beforeOffset !== null && afterOffset !== null ? Math.abs(afterOffset - beforeOffset) : 999;
+    add('折叠后视口不整体上移（同一分组头位移 ≤ 2px）', drift <= 2,
+      'before=' + beforeOffset + 'px after=' + afterOffset + 'px drift=' + drift + 'px · '
+      + (beforeKey || '').split(/[\\/]/).pop());
+    // 还原侧栏到项目面板：后面的步骤会量「侧栏标题 / 标签栏 / AI 三行等高」，
+    // 那是拿侧栏里第一个可见 .panel-title 做基准的。留着搜索面板会让它量到搜索标题
+    // （.5em 上下留白 → 33px），把一条与本步骤无关的断言打红。
+    window.App.showTool('project');
+    await sleep(250);
+    return { R };
+  },
 };
