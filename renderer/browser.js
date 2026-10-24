@@ -387,8 +387,34 @@ const BrowserPanel = (() => {
     tabSignature();
     const caption = document.createElement('div'); caption.className = 'bw-group-caption'; caption.innerHTML = '<span>当前打开</span><span>自动保留</span>'; list.append(caption);
     for (const tab of tabStore.state.tabs) {
-      const button = document.createElement('button'); button.className = 'bw-session-tab' + (tab.id === tabStore.state.active ? ' active' : ''); button.innerHTML = IC_PAGE;
-      const name = document.createElement('span'); name.textContent = tab.title || '新标签页'; button.append(name); button.title = tab.url || '新标签页'; button.onclick = () => activateTab(tab.id); list.append(button);
+      // 外层用 div 而不是 button：里面要再放一个关闭按钮，button 套 button 是非法的
+      // （浏览器会把内层提升到外层之前，点击区域和事件都会错位）。
+      const row = document.createElement('div');
+      row.className = 'bw-session-tab' + (tab.id === tabStore.state.active ? ' active' : '');
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      const pick = () => activateTab(tab.id);
+      row.onclick = pick;
+      row.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); }
+      };
+      const pageIcon = document.createElement('span');
+      pageIcon.className = 'bw-session-ico';
+      pageIcon.innerHTML = IC_PAGE;
+      const name = document.createElement('span');
+      name.className = 'bw-session-name';
+      name.textContent = tab.title || '新标签页';
+      const close = document.createElement('button');
+      close.className = 'bw-session-close';
+      close.innerHTML = IC_CLOSE;
+      close.title = '关闭标签';
+      close.setAttribute('aria-label', '关闭 ' + (tab.title || '新标签页'));
+      // 不让点击/键盘事件冒到行上，否则关标签的同时又把「关闭前的 id」当切换目标。
+      close.onclick = event => { event.stopPropagation(); closeTabs([tab.id]); };
+      close.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); };
+      row.append(pageIcon, name, close);
+      row.title = tab.url || '新标签页';
+      list.append(row);
     }
     const saved = document.createElement('div'); saved.className = 'bw-group-caption'; saved.textContent = '已保存'; list.append(saved);
     let groups;

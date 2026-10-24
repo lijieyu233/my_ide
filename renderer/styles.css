@@ -2607,7 +2607,27 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-group-caption span:last-child { font-size: .92em; opacity: .8; }
 .bw-session-tab { display: flex; align-items: center; width: 100%; min-width: 0; gap: 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; padding: 8px; text-align: left; cursor: pointer; }
 .bw-session-tab svg { width: 14px; height: 14px; color: var(--text-dim); flex-shrink: 0; }
-.bw-session-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-session-ico { display: inline-flex; flex-shrink: 0; }
+.bw-session-ico svg { color: var(--text-dim); }
+/* 名称单独占一列并允许省略；关闭按钮是行内最后一个 flex 项，不再被 span 的
+   「撑满 + 省略」规则吃掉（老规则 .bw-session-tab span 会把按钮也当 span 处理）。 */
+.bw-session-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 关闭按钮常驻占位、靠 visibility 而非 opacity 显隐：
+   用 opacity 时按钮虽然透明却已经占宽，一旦改成「悬停才插入」或过渡期间宽度变化，
+   长标题会先撑满再回缩（实测截图里出现过标题不带省略号、把按钮挤出行的瞬间）。
+   visibility 同时保留键盘可聚焦性，且不触发重排。 */
+.bw-session-close {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+  visibility: hidden;
+}
+.bw-session-tab:hover .bw-session-close,
+.bw-session-tab.active .bw-session-close,
+.bw-session-tab:focus-within .bw-session-close { visibility: visible; }
+.bw-session-close:hover { background: var(--bg-selected); color: var(--text-bright); }
+.bw-session-close:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.bw-session-close svg { width: 12px; height: 12px; }
 .bw-session-tab:hover,.bw-session-tab.active { background: var(--bg-hover); }.bw-session-tab.active { color: var(--text-bright); }
 .bw-groups-empty { display: grid; gap: 12px; padding: 14px 8px; color: var(--text-dim); font-size: .92em; line-height: 1.7; }.bw-groups-empty button { justify-self: start; }
 .bw-saved-group { margin: 2px 0 5px; }.bw-saved-group-head { display: flex; align-items: center; border-radius: 5px; min-width: 0; }.bw-saved-group-head:hover { background: var(--bg-hover); }

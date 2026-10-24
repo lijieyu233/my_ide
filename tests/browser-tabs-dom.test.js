@@ -62,6 +62,33 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.document.querySelectorAll('#ctx-menu .ctx-item')[1].click();
     assert.equal(w.BrowserPanel.activeTabId, currentId, '在当前标签打开不改活动标签');
   });
+  await test('「当前打开」每行可单独关闭，点关闭不会顺带切换标签', async ({ w, calls }) => {
+    w.BrowserPanel.show();
+    w.BrowserPanel.go('https://a.test'); const a = w.BrowserPanel.activeTabId;
+    w.BrowserPanel.newTab('https://b.test'); const b = w.BrowserPanel.activeTabId;
+    w.BrowserPanel.newTab('https://c.test'); const c = w.BrowserPanel.activeTabId;
+    const rows = () => [...w.document.querySelectorAll('#bw-groups-list .bw-session-tab')];
+    assert.equal(rows().length, 3, '当前打开列出全部 3 个标签');
+    // 每行都有独立的关闭按钮，且不是 button 套 button
+    assert(rows().every(r => r.querySelector('.bw-session-close')), '每行都有关闭按钮');
+    assert.equal(w.document.querySelectorAll('#bw-groups-list button button').length, 0, '没有 button 嵌套');
+    // 关闭非活动标签：关掉 a，活动标签 c 不变
+    const rowA = rows().find(r => r.title === 'https://a.test');
+    rowA.querySelector('.bw-session-close').click();
+    assert.equal(w.BrowserPanel.tabs.length, 2, '关掉一个标签');
+    assert.equal(w.BrowserPanel.activeTabId, c, '关闭非活动标签不切换当前标签');
+    assert(!w.BrowserPanel.tabs.some(t => t.id === a), 'a 已移除');
+    // 关闭活动标签：收藏/保留行为沿用 closeTabs（会切到相邻标签）
+    const rowC = rows().find(r => r.title === 'https://c.test');
+    rowC.querySelector('.bw-session-close').click();
+    assert.equal(w.BrowserPanel.tabs.length, 1, '再关掉一个');
+    assert.equal(w.BrowserPanel.activeTabId, b, '关掉活动标签后切到剩余那个');
+    // 点行本身（非按钮处）仍然切标签
+    w.BrowserPanel.newTab('https://d.test');
+    const rowB = rows().find(r => r.title === 'https://b.test');
+    rowB.click();
+    assert.equal(w.BrowserPanel.activeTabId, b, '点行本身切回该标签');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
