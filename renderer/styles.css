@@ -2588,6 +2588,69 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 #bw-tabs::-webkit-scrollbar { display: none; }
 .bw-tab-scroll[hidden] { display: none; }
 .bw-tab-scroll:disabled { opacity: .3; cursor: default; }
+/* ---------- 活标签组（Edge 式） ----------
+   组在标签栏里是一个带色容器：组头（圆点+名字+计数）在前，组内标签跟其后。
+   折叠时组头留在原地、标签整体不渲染 —— 标签本身仍然存在（不会因此被关闭）。 */
+.bw-tab-group {
+  display: flex; align-items: stretch; flex-shrink: 0;
+  padding: 0 2px; border-radius: 9px;
+  background: color-mix(in srgb, var(--group-tint, #4f9cd6) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--group-tint, #4f9cd6) 34%, transparent);
+}
+.bw-tab-group[data-group-color="blue"]   { --group-tint: #4f9cd6; }
+.bw-tab-group[data-group-color="cyan"]   { --group-tint: #3fbfc4; }
+.bw-tab-group[data-group-color="purple"] { --group-tint: #9b7bd6; }
+.bw-tab-group[data-group-color="pink"]   { --group-tint: #d673a6; }
+.bw-tab-group[data-group-color="green"]  { --group-tint: #5fae6b; }
+.bw-tab-group[data-group-color="yellow"] { --group-tint: #c9a24a; }
+.bw-tab-group[data-group-color="orange"] { --group-tint: #d08a4a; }
+.bw-tab-group[data-group-color="grey"]   { --group-tint: #8a8a8a; }
+.bw-tab-group-head {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  max-width: 150px; padding: 0 8px; border: 0; background: transparent;
+  color: var(--text-bright); font: inherit; font-size: .9em; cursor: pointer;
+  border-radius: 7px;
+}
+.bw-tab-group-head:hover { background: color-mix(in srgb, var(--group-tint) 26%, transparent); }
+.bw-tg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--group-tint, #4f9cd6); }
+.bw-tg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-tg-count { color: var(--text-dim); font-size: .92em; flex-shrink: 0; }
+/* 折叠方向提示：只有圆点时看不出「点了是展开还是收起」。 */
+.bw-tg-caret { display: inline-flex; flex-shrink: 0; opacity: .65; }
+.bw-tg-caret svg.ic { width: 11px; height: 11px; }
+.bw-tab-group-head:hover .bw-tg-caret { opacity: 1; }
+/* 组内标签去掉自己的底/边框，融进组容器里，只保留选中态的上缘强调 */
+.bw-tab-group .bw-tab { border-color: transparent; background: transparent; box-shadow: none; }
+.bw-tab-group .bw-tab:hover { background: color-mix(in srgb, var(--group-tint) 22%, transparent); }
+.bw-tab-group .bw-tab.active { background: var(--bg-input); border-color: var(--border); box-shadow: inset 0 2px var(--group-tint); }
+/* 折叠态：只剩组头，宽度收紧成胶囊 */
+.bw-tab-group.folded { padding-right: 2px; }
+/* 颜色选择面板 */
+.bw-color-menu { padding: 8px; }
+.bw-color-row { display: flex; gap: 8px; }
+.bw-color-dot { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid var(--btn-border); cursor: pointer; }
+.bw-color-dot[data-color="blue"]   { background: #4f9cd6; }
+.bw-color-dot[data-color="cyan"]   { background: #3fbfc4; }
+.bw-color-dot[data-color="purple"] { background: #9b7bd6; }
+.bw-color-dot[data-color="pink"]   { background: #d673a6; }
+.bw-color-dot[data-color="green"]  { background: #5fae6b; }
+.bw-color-dot[data-color="yellow"] { background: #c9a24a; }
+.bw-color-dot[data-color="orange"] { background: #d08a4a; }
+.bw-color-dot[data-color="grey"]   { background: #8a8a8a; }
+.bw-color-dot.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bw-color-dot:hover { transform: scale(1.12); }
+/* 「添加到组」子菜单里的组色点 */
+.bw-add-group-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; flex-shrink: 0; }
+.bw-add-group-dot[data-color="blue"]   { background: #4f9cd6; }
+.bw-add-group-dot[data-color="cyan"]   { background: #3fbfc4; }
+.bw-add-group-dot[data-color="purple"] { background: #9b7bd6; }
+.bw-add-group-dot[data-color="pink"]   { background: #d673a6; }
+.bw-add-group-dot[data-color="green"]  { background: #5fae6b; }
+.bw-add-group-dot[data-color="yellow"] { background: #c9a24a; }
+.bw-add-group-dot[data-color="orange"] { background: #d08a4a; }
+.bw-add-group-dot[data-color="grey"]   { background: #8a8a8a; }
+.bw-add-group-menu .ctx-item { display: flex; align-items: center; }
+.bw-menu-sep { height: 1px; margin: 4px 6px; background: var(--border-pane); }
 .bw-tab { display: flex; align-items: center; flex: 0 0 176px; width: 176px; min-width: 100px; max-width: 220px; height: 32px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; color: var(--text-dim); }
 .bw-tab:hover { background: var(--bg-hover); }
 .bw-tab.active { background: var(--bg-input); color: var(--text-bright); border-color: var(--border); box-shadow: inset 0 2px var(--accent); }

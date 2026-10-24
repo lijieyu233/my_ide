@@ -209,9 +209,26 @@ const BrowserPanel = (() => {
       const ids = mode === 'others' ? state.tabs.filter(t => t.id !== tab.id).map(t => t.id) : mode === 'right' ? state.tabs.slice(index + 1).map(t => t.id) : [tab.id]; changed = !!ids.length; closeTabs(ids);
     } else if (operation === 'tab_reopen') { if (!state.closed.length) throw aiTabError('BROWSER_NO_CLOSED_TAB', '没有可恢复的标签'); if (!supported(state.closed.at(-1).url)) throw aiTabError('BROWSER_TAB_UNSUPPORTED', 'AI 不恢复本地或含凭据的页面'); reopenTab(); }
     else if (operation === 'tab_move') { if (!Number.isInteger(args.index) || args.index < 0 || args.index >= state.tabs.length) throw aiTabError('INVALID_TOOL_ARGS', '标签位置超出当前列表'); changed = tabStore.reorder(tab.id, state.tabs[args.index].id); renderTabs(); renderGroups(); storageStatus(); }
-    else if (operation === 'tab_group_save') { if (!state.tabs.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '组中包含本地或含凭据的页面，未保存'); const result = tabStore.saveGroup(args.name); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderGroups(); }
-    else if (operation === 'tab_group_open') { if (!group.tabs.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '标签组包含本地或含凭据的页面，未打开'); const before = JSON.stringify(tabStore.state); tabStore.openGroup(group.id); changed = before !== JSON.stringify(tabStore.state); renderTabs(); renderGroups(); storageStatus(); if (visible) presentTab(); }
-    else if (operation === 'tab_group_rename' || operation === 'tab_group_delete') { const result = tabStore.changeGroup(group.id, operation === 'tab_group_delete' ? null : args.name); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderGroups(); }
+    // 活标签组：组不再保存网址快照，所以「保存当前标签为组 / 打开整组」改成了
+    // 「把当前打开的标签收进一个新组」与「展开并切到组内第一个标签」。
+    // AI 侧沿用同样的语义，避免出现两套互相矛盾的组操作。
+    else if (operation === 'tab_group_save') {
+      if (!state.tabs.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '组中包含本地或含凭据的页面，未保存');
+      const ungrouped = state.tabs.filter(t => t.url && !t.groupId);
+      if (!ungrouped.length) throw aiTabError('INVALID_TOOL_ARGS', '没有未分组的标签可以收进新组');
+      const result = tabStore.createGroup(ungrouped.map(t => t.id), args.name);
+      if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error);
+      renderTabs(); renderGroups();
+    }
+    else if (operation === 'tab_group_open') {
+      const mates = state.tabs.filter(t => t.groupId === group.id);
+      if (!mates.length) throw aiTabError('BROWSER_GROUP_NOT_FOUND', '这个组里没有标签了');
+      if (!mates.every(t => supported(t.url))) throw aiTabError('BROWSER_TAB_UNSUPPORTED', '标签组包含本地或含凭据的页面，未打开');
+      if (group.folded) tabStore.setGroupFolded(group.id, false);
+      activateTab(mates[0].id); changed = true;
+    }
+    else if (operation === 'tab_group_rename') { const result = tabStore.renameGroup(group.id, args.name); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderTabs(); renderGroups(); }
+    else if (operation === 'tab_group_delete') { const result = tabStore.ungroup(group.id); if (!result.ok) throw aiTabError('BROWSER_SAVE_FAILED', result.error); renderTabs(); renderGroups(); }
     else throw aiTabError('INVALID_TOOL_ARGS', '未知标签操作');
     if (['tab_open','tab_select','tab_reopen','tab_group_open'].includes(operation)) App.showTool('browser');
     if (tabStore.error) return { ...tabObservation(), ok: false, changed, committed: changed, errorCode: 'BROWSER_SAVE_FAILED', error: tabStore.error };
@@ -284,10 +301,19 @@ const BrowserPanel = (() => {
     const focusId = focused?.dataset.tabId, focusClose = document.activeElement?.classList.contains('bw-tab-close');
     const previousActive = list.querySelector('.bw-tab.active')?.dataset.tabId;
     const scroll = list.scrollLeft; list.replaceChildren();
-    for (const tab of state.tabs) {
+    // 组按「首次出现的顺序」排，这样用户把标签拖进组或调顺序时，组不会乱跳。
+    // 标签在组里必须连续：渲染时按组归拢，组外的保持原序穿插 —— 与 Edge 一致，
+    // 标签栏上一眼就能看出「这几个是一伙的」。
+    const groups = tabStore.groups();
+    const groupById = new Map(groups.map(g => [g.id, g]));
+    const rendered = new Set();
+    const makeTab = (tab) => {
+      rendered.add(tab.id);
+      const group = tab.groupId ? groupById.get(tab.groupId) : null;
       const item = document.createElement('div'); item.className = 'bw-tab' + (state.active === tab.id ? ' active' : ''); item.dataset.tabId = tab.id; item.draggable = true;
+      if (group) { item.classList.add('grouped'); item.dataset.groupColor = group.color || 'blue'; }
       const select = document.createElement('button'); select.className = 'bw-tab-select'; select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(state.active === tab.id)); select.tabIndex = visible && state.active === tab.id ? 0 : -1;
-      select.title = (tab.title || '新标签页') + (tab.url ? '\n' + tab.url : ''); select.innerHTML = IC_PAGE;
+      select.title = (tab.title || '新标签页') + (tab.url ? '\n' + tab.url : '') + (group ? '\n组：' + group.name : ''); select.innerHTML = IC_PAGE;
       const favicon = tabRuntime.get(tab.id)?.favicon;
       if (favicon && /^https?:/i.test(favicon)) { const icon = document.createElement('img'); icon.className = 'bw-tab-favicon'; icon.alt = ''; icon.src = favicon; icon.onerror = () => { icon.remove(); select.classList.remove('has-favicon'); }; select.prepend(icon); select.classList.add('has-favicon'); }
       const label = document.createElement('span'); label.className = 'bw-tab-label'; label.textContent = tab.title || '新标签页'; select.append(label);
@@ -300,7 +326,39 @@ const BrowserPanel = (() => {
       item.ondragleave = () => item.classList.remove('drop-tab');
       item.ondrop = event => { if (!draggingTab) return; event.preventDefault(); event.stopPropagation(); tabStore.reorder(draggingTab, tab.id); draggingTab = null; renderTabs(); renderGroups(); storageStatus(); };
       item.ondragend = () => { draggingTab = null; document.querySelectorAll('.bw-tab.dragging,.bw-tab.drop-tab').forEach(el => el.classList.remove('dragging', 'drop-tab')); };
-      if (tabRuntime.get(tab.id)?.loading) item.classList.add('loading'); list.append(item);
+      if (tabRuntime.get(tab.id)?.loading) item.classList.add('loading');
+      return item;
+    };
+    for (const tab of state.tabs) {
+      if (rendered.has(tab.id)) continue;
+      const group = tab.groupId ? groupById.get(tab.groupId) : null;
+      if (!group) { list.append(makeTab(tab)); continue; }
+      // 组的容器：折叠时只画组头，组内标签完全不渲染（但不会被关闭）。
+      const box = document.createElement('div');
+      box.className = 'bw-tab-group' + (group.folded ? ' folded' : '');
+      box.dataset.groupId = group.id; box.dataset.groupColor = group.color || 'blue';
+      const head = document.createElement('button');
+      head.className = 'bw-tab-group-head'; head.type = 'button';
+      head.title = group.name + '（点击' + (group.folded ? '展开' : '折叠') + '，不会关闭组内标签）';
+      head.setAttribute('aria-expanded', String(!group.folded));
+      head.innerHTML = '<span class="bw-tg-dot"></span><span class="bw-tg-name"></span><span class="bw-tg-count"></span>';
+      head.querySelector('.bw-tg-name').textContent = group.name;
+      // 折叠态给一个方向提示：只有圆点时，用户看不出「点了会展开还是收起」。
+      const caret = document.createElement('span');
+      caret.className = 'bw-tg-caret';
+      caret.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + (group.folded ? 'M6 4l4 4-4 4' : 'M4 6l4 4 4-4') + '"/></svg>';
+      head.append(caret);
+      box.append(head);
+      // 折叠时只画组头：组内标签完全不进 DOM（但仍在 state.tabs 里，不会被关掉）。
+      // 内容仍在但用 CSS 隐藏会让 width/flex 计算把它们算进去，标签栏会留一条空的组带。
+      if (!group.folded) for (const mate of state.tabs) {
+        if (mate.groupId !== group.id) continue;
+        box.append(makeTab(mate));
+      }
+      head.querySelector('.bw-tg-count').textContent = String(state.tabs.filter(t => t.groupId === group.id).length);
+      head.onclick = event => { event.stopPropagation(); tabStore.setGroupFolded(group.id, !group.folded); renderTabs(); renderGroups(); };
+      head.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openGroupMenu(group.id, event.clientX, event.clientY); };
+      list.append(box);
     }
     list.scrollLeft = scroll;
     syncTabStrip(previousActive !== state.active);
@@ -324,10 +382,10 @@ const BrowserPanel = (() => {
     clearOverlayImage(); overlayHid = false; closeDd(); renderTabs(); renderGroups(); storageStatus(); presentTab();
     syncTabStrip(true);
   }
-  function newTab(url = '', title = '', afterTabId = null) {
+  function newTab(url = '', title = '', afterTabId = null, groupId = null) {
     const normalized = url ? normalizeInput(url) : '';
     if (!BrowserTabs.validURL(normalized)) { MI.toast('不支持的网页地址', 'err'); return; }
-    const tab = tabStore.add(normalized, title);
+    const tab = tabStore.add(normalized, title, true, groupId);
     // 插到指定标签之后：add() 只会追加到末尾，这里用 reorder 把它挪到目标的下一位。
     // reorder(from,to) 的语义是「插到 to 之前」，所以要把目标下一个兄弟当作 to；
     // 目标本来就是最后一个时无需移动。
@@ -362,6 +420,10 @@ const BrowserPanel = (() => {
   function openTabMenu(tabId, x, y) {
     const state = tabStore.state, tab = state.tabs.find(t => t.id === tabId) || tabStore.active, index = state.tabs.findIndex(t => t.id === tab.id);
     const faved = !!tab.url && isFav(tab.url);
+    const allGroups = tabStore.groups();
+    const groupOfThisTab = tab.groupId ? allGroups.find(g => g.id === tab.groupId) : null;
+    // 可以并入的组：除了它自己已经在的那个（活标签组里一个标签只属于一个组）。
+    const groupTargets = allGroups.filter(g => g.id !== tab.groupId);
     tabMenu([
       // 收藏做成一个开关：已收藏时同一位置能取消，不用绕去侧栏找那一行。
       // 未收藏走 openFavPosMenu（可以顺便选文件夹），已收藏直接移除。
@@ -375,10 +437,11 @@ const BrowserPanel = (() => {
       // 「复制标签页」= 克隆当前标签（同 url 同标题），插在它后面并切过去。
       { label: '在下方新建标签页', run: () => newTab('', '', tab.id) },
       { label: '复制标签页', disabled: !tab.url, run: () => newTab(tab.url, tab.title, tab.id) },
-      // 把「当前这一个标签」单独保存成一个新标签组（不是全部标签）：
-      // saveGroup 的第二个参数就是快照来源，传当前标签即可。收藏和标签组是两套
-      // 不同的东西 —— 组会连顺序一起记住，下次点「打开整组」一起开回来。
-      { label: '将标签页添加到新组…', disabled: !tab.url, run: () => saveTabGroup([tab]) },
+      // 活标签组：标签只能属于一个组，所以这里按 Edge 的两条路给出
+      // ——「添加到组」（并入已有组，没有组时自动建一个）与「从组中删除」。
+      groupOfThisTab
+        ? { label: '从组中删除', run: () => { const r = tabStore.removeFromGroup([tab.id]); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); MI.toast('已从组中移除', 'ok'); } }
+        : { label: groupTargets.length ? '将标签页添加到组…' : '将标签页添加到新组…', run: () => groupTargets.length ? openAddToGroupPicker(tab.id, x, y) : saveTabGroup([tab]) },
       { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: saveTabGroup },
       { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
       { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
@@ -388,23 +451,109 @@ const BrowserPanel = (() => {
   }
   // snapshot 省略 = 保存全部已打开标签（顶部 ＋ 按钮与「将所有标签保存为一组…」）；
   // 传入 [tab] = 只把这一个标签存成新组（右键「将标签页添加到新组…」）。
+  // 「把标签收进一个组」：Edge 的活标签组语义 —— 标签本身被打上 groupId，
+  // 不再另存一份快照。snapshot 省略 = 当前活动标签（右键单个标签 / 顶部 ＋），
+  // 传入数组 = 那一批标签（「将所有标签保存为一组…」）。
   function saveTabGroup(snapshot) {
-    const scope = tabStore.scope, source = snapshot || tabStore.state.tabs, tabs = source.filter(t => t.url);
-    if (!tabs.length) { MI.toast('先打开网页再保存标签组', 'err'); return; }
+    const scope = tabStore.scope;
+    const picked = (snapshot || [tabStore.active]).filter(t => t && t.url);
+    if (!picked.length) { MI.toast('先把网页打开再分组', 'err'); return; }
     const box = document.createElement('div'); box.className = 'bw-save-group modal-panel';
-    box.innerHTML = '<div class="m-head">保存标签组<button class="x" aria-label="关闭">×</button></div><form class="m-body"><label for="bw-group-name">名称</label><input id="bw-group-name" maxlength="60" placeholder="例如：项目后台联调" required><p class="bw-group-count"></p><div class="m-foot"><button class="tb-btn m-cancel" type="button">取消</button><button class="tb-btn primary" type="submit">保存</button></div></form>';
-    box.querySelector('.bw-group-count').textContent = tabs.length + ' 个标签 · 保留当前顺序';
+    box.innerHTML = '<div class="m-head">新建标签组<button class="x" aria-label="关闭">×</button></div><form class="m-body"><label for="bw-group-name">组名</label><input id="bw-group-name" maxlength="60" placeholder="例如：项目后台联调" required><p class="bw-group-count"></p><div class="m-foot"><button class="tb-btn m-cancel" type="button">取消</button><button class="tb-btn primary" type="submit">确定</button></div></form>';
+    box.querySelector('.bw-group-count').textContent = picked.length + ' 个标签 · 收进同一个组（可折叠）';
     const close = () => Modal.hide(); box.querySelector('.x').onclick = close; box.querySelector('.m-cancel').onclick = close;
     box.querySelector('form').onsubmit = event => {
-      event.preventDefault(); if (scope !== tabStore.scope) { MI.toast('项目已切换，请重新保存标签组', 'err'); return; }
-      try { const result = tabStore.saveGroup(box.querySelector('input').value, tabs); if (!result.ok) throw Error(result.error); close(); switchSidebar('groups'); MI.toast('标签组已保存', 'ok'); }
-      catch (error) { MI.toast(error.message, 'err'); }
+      event.preventDefault(); if (scope !== tabStore.scope) { MI.toast('项目已切换，请重新分组', 'err'); return; }
+      try {
+        const result = tabStore.createGroup(picked.map(t => t.id), box.querySelector('input').value);
+        if (!result.ok) throw Error(result.error);
+        close(); switchSidebar('groups'); renderTabs(); renderGroups(); MI.toast('已新建组「' + result.group.name + '」', 'ok');
+      } catch (error) { MI.toast(error.message, 'err'); }
     };
     Modal.show(box); syncOverlay(); box.querySelector('input').focus();
   }
+  // 点组头 = 折叠/展开，不涉及「打开」。保留这个名字给旧调用点（AI 工具 / 菜单）兜底：
+  // 活标签组里「打开整组」已经没有意义了 —— 组内标签本来就在标签栏里。
   function openTabGroup(id) {
-    try { if (tabStore.openGroup(id)) { renderTabs(); renderGroups(); storageStatus(); presentTab(); } }
-    catch (error) { MI.toast(error.message, 'err'); }
+    const group = tabStore.groups().find(g => g.id === id);
+    if (!group) return;
+    const mates = tabStore.state.tabs.filter(t => t.groupId === id);
+    if (!mates.length) { MI.toast('这个组里没有标签了', 'err'); return; }
+    // 折叠状态下点「打开整组」= 展开并切到第一个标签，行为可预期。
+    if (group.folded) tabStore.setGroupFolded(id, false);
+    activateTab(mates[0].id);
+  }
+  // 「将标签页添加到组…」：Edge 是个子菜单，列出所有已有组 + 「新建组」。
+  // 这里用同一份 ctx-menu 渲染二级列表，避免再引一套浮层机制。
+  function openAddToGroupPicker(tabId, x, y) {
+    const tab = tabStore.state.tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    const groups = tabStore.groups().filter(g => g.id !== tab.groupId);
+    const menu = document.getElementById('ctx-menu');
+    menu.replaceChildren();
+    menu.className = 'bw-add-group-menu';
+    delete menu.dataset.toolOwner;
+    const add = (label, fn, color) => {
+      const button = document.createElement('button');
+      button.className = 'ctx-item'; button.type = 'button';
+      if (color) { const dot = document.createElement('span'); dot.className = 'bw-add-group-dot'; dot.dataset.color = color; button.append(dot); }
+      const span = document.createElement('span'); span.textContent = label; button.append(span);
+      button.onclick = event => { event.stopPropagation(); menu.classList.add('hidden'); fn(); };
+      menu.append(button);
+    };
+    for (const group of groups) add(group.name, () => { const r = tabStore.addToGroup(group.id, [tab.id]); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); MI.toast('已加入「' + group.name + '」', 'ok'); }, group.color);
+    if (groups.length) {
+      const sep = document.createElement('div'); sep.className = 'bw-menu-sep'; menu.append(sep);
+    }
+    add('＋ 新建组…', () => saveTabGroup([tab]));
+    menu.classList.remove('hidden');
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+  }
+  // 组头右键：对齐 Edge 的组操作。与「标签右键」是两份菜单 —— 组有自己的生命周期
+  // （重命名 / 改色 / 取消组合 / 关闭组内标签），混进标签菜单会让人分不清作用对象。
+  function openGroupMenu(groupId, x, y) {
+    const group = tabStore.groups().find(g => g.id === groupId);
+    if (!group) return;
+    const mates = tabStore.state.tabs.filter(t => t.groupId === groupId);
+    tabMenu([
+      { label: '新标签加入此组', run: () => newTab('', '', mates[mates.length - 1]?.id || null, groupId) },
+      { label: '重命名组…', run: async () => { const name = await Modal.prompt('重命名标签组', '组名', group.name); if (!name) return; const r = tabStore.renameGroup(groupId, name); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); } },
+      { label: '更改颜色…', run: () => openColorPicker(groupId, x, y) },
+      { label: group.folded ? '展开组' : '折叠组（不关闭标签）', run: () => { tabStore.setGroupFolded(groupId, !group.folded); renderTabs(); renderGroups(); } },
+      { label: '取消组合', run: async () => { if (!await Modal.confirm('取消组合', '取消「' + group.name + '」的分组？标签会保留在标签栏里。')) return; const r = tabStore.ungroup(groupId); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); MI.toast('已取消组合', 'ok'); } },
+      { label: '关闭组内标签', danger: true, run: async () => { if (!await Modal.confirm('关闭组内标签', '关闭「' + group.name + '」里的 ' + mates.length + ' 个标签？此操作不可撤销。')) return; closeTabs(mates.map(t => t.id)); } },
+    ], x, y);
+  }
+  // 组色选择：Edge 是一排圆点。这里用小面板而不是 Modal.prompt —— 颜色是「看一眼就选」
+  // 的动作，弹一个带输入框的对话框反而更慢。
+  function openColorPicker(groupId, x, y) {
+    const group = tabStore.groups().find(g => g.id === groupId);
+    if (!group) return;
+    const menu = document.getElementById('ctx-menu');
+    menu.replaceChildren();
+    menu.className = 'bw-color-menu';
+    delete menu.dataset.toolOwner;
+    const row = document.createElement('div');
+    row.className = 'bw-color-row';
+    for (const color of (window.BrowserTabs?.GROUP_COLORS || ['blue', 'cyan', 'purple', 'pink', 'green', 'yellow', 'orange', 'grey'])) {
+      const dot = document.createElement('button');
+      dot.type = 'button'; dot.className = 'bw-color-dot'; dot.dataset.color = color;
+      dot.title = color; dot.setAttribute('aria-label', '颜色 ' + color);
+      dot.classList.toggle('sel', group.color === color);
+      dot.onclick = event => {
+        event.stopPropagation();
+        const r = tabStore.setGroupColor(groupId, color);
+        menu.classList.add('hidden');
+        if (!r.ok) { MI.toast(r.error, 'err'); return; }
+        renderTabs(); renderGroups();
+      };
+      row.append(dot);
+    }
+    menu.append(row);
+    menu.classList.remove('hidden');
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
   }
   function switchSidebar(mode) {
     sidebarMode = mode;
@@ -418,7 +567,10 @@ const BrowserPanel = (() => {
     const list = document.getElementById('bw-groups-list'); if (!list || !tabStore) return; list.replaceChildren();
     tabSignature();
     const caption = document.createElement('div'); caption.className = 'bw-group-caption'; caption.innerHTML = '<span>当前打开</span><span>自动保留</span>'; list.append(caption);
+    // 已分组的标签不在这里重复列 —— 它们在下方的「标签组」区块里出现。
+    // 否则同一个标签在侧栏出现两次（老截图里那两条「文件与笔记」就是这么来的）。
     for (const tab of tabStore.state.tabs) {
+      if (tab.groupId) continue;
       // 外层用 div 而不是 button：里面要再放一个关闭按钮，button 套 button 是非法的
       // （浏览器会把内层提升到外层之前，点击区域和事件都会错位）。
       const row = document.createElement('div');
@@ -500,51 +652,38 @@ const BrowserPanel = (() => {
       });
       list.append(row);
     }
+    // 活标签组：组不再是「另存一份快照」，而是标签自身的归属。
+    // 侧栏这里只画「哪些标签在哪个组」+ 组操作入口，标签本体在顶栏。
     let groups;
     try { groups = tabStore.groups(); } catch (error) { const note = document.createElement('p'); note.className = 'bw-sb-none'; note.textContent = error.message; list.append(note); return; }
-    // 「已保存」这一栏连同空态一起删了：没有标签组时不摆任何占位文字。
-    // 空态原来是一句说明 + 一个「保存当前标签组」按钮，和顶部 ＋ 按钮完全重复，
-    // 而那句说明又在每次打开面板时占掉半屏 —— 用户明确要求去掉。
-    // 有标签组时才需要这个分节标题，所以标题也跟着有内容才出现。
     if (!groups.length) return;
-    const saved = document.createElement('div'); saved.className = 'bw-group-caption'; saved.textContent = '已保存'; list.append(saved);
+    const gc = document.createElement('div'); gc.className = 'bw-group-caption'; gc.textContent = '标签组'; list.append(gc);
     for (const group of groups) {
-      const row = document.createElement('div'); row.className = 'bw-saved-group';
+      const mates = tabStore.state.tabs.filter(t => t.groupId === group.id);
+      const row = document.createElement('div'); row.className = 'bw-saved-group'; row.dataset.groupId = group.id;
       const header = document.createElement('div'); header.className = 'bw-saved-group-head';
-      const toggle = document.createElement('button'); toggle.className = 'bw-group-toggle'; toggle.innerHTML = IC_CARET_DOWN; toggle.classList.toggle('folded', !foldedGroups.has(group.id)); toggle.setAttribute('aria-expanded', String(foldedGroups.has(group.id)));
-      const name = document.createElement('span'); name.textContent = group.name; toggle.append(name); const count = document.createElement('span'); count.className = 'bw-group-size'; count.textContent = group.tabs.length; toggle.append(count);
-      toggle.onclick = () => { if (foldedGroups.has(group.id)) foldedGroups.delete(group.id); else foldedGroups.add(group.id); renderGroups(); };
-      const open = document.createElement('button'); open.className = 'bw-group-open'; open.innerHTML = IC_OPEN; open.title = '打开整组 · 跳过已打开的网址'; open.setAttribute('aria-label', '打开标签组 ' + group.name); open.onclick = () => openTabGroup(group.id);
-      header.append(toggle, open); row.append(header);
-      const menu = event => { event.preventDefault(); event.stopPropagation(); tabMenu([
-        { label: '打开整组', run: () => openTabGroup(group.id) },
-        { label: '重命名', run: async () => { const name = await Modal.prompt('重命名标签组', '名称', group.name); if (!name) return; try { const r = tabStore.changeGroup(group.id, name); if (!r.ok) throw Error(r.error); renderGroups(); } catch (error) { MI.toast(error.message, 'err'); } } },
-        { label: '删除标签组', danger: true, run: async () => { if (!await Modal.confirm('删除标签组', '删除「' + group.name + '」？已打开的网页会保留。')) return; try { const r = tabStore.changeGroup(group.id, null); if (!r.ok) throw Error(r.error); renderGroups(); } catch (error) { MI.toast(error.message, 'err'); } } },
-      ], event.clientX, event.clientY); };
-      header.oncontextmenu = menu;
-      const more = document.createElement('button'); more.className = 'bw-group-more'; more.innerHTML = IC('<circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/>'); more.title = '标签组操作'; more.setAttribute('aria-label', '标签组操作 ' + group.name); more.onclick = menu; header.append(more);
-      if (foldedGroups.has(group.id)) for (const tab of group.tabs) {
-        const link = document.createElement('button'); link.className = 'bw-group-page'; link.textContent = tab.title || tab.url; link.title = tab.url;
-        link.onclick = () => { const existing = tabStore.state.tabs.find(t => t.url === tab.url); if (existing) activateTab(existing.id); else newTab(tab.url, tab.title); };
-        // 已保存组里的网页条目也给右键：它此刻可能没打开，但同样值得收藏 / 复制 / 新开。
-        link.oncontextmenu = event => {
-          event.preventDefault(); event.stopPropagation();
-          const alreadyFaved = isFav(tab.url);
-          tabMenu([
-            alreadyFaved
-              ? { label: '🗑 取消收藏', run: () => { removeFav(tab.url); renderSidebar(); renderFavBtn(); renderEmpty(); MI.toast('已取消收藏', 'ok'); } }
-              : { label: '⭐ 收藏此页', run: () => openFavPosMenu(tab.url, event.clientX, event.clientY, false) },
-            { label: '📋 复制网址', run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
-            { label: '在新标签打开', run: () => newTab(tab.url, tab.title) },
-          ], event.clientX, event.clientY);
-        };
+      const dot = document.createElement('span'); dot.className = 'bw-tg-dot'; dot.dataset.color = group.color || 'blue';
+      const toggle = document.createElement('button'); toggle.className = 'bw-group-toggle'; toggle.innerHTML = IC_CARET_DOWN;
+      toggle.classList.toggle('folded', !!group.folded); toggle.setAttribute('aria-expanded', String(!group.folded));
+      const name = document.createElement('span'); name.textContent = group.name;
+      const count = document.createElement('span'); count.className = 'bw-group-size'; count.textContent = String(mates.length);
+      toggle.append(dot, name, count);
+      toggle.onclick = () => { const r = tabStore.setGroupFolded(group.id, !group.folded); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); };
+      const menu = event => { event.preventDefault(); event.stopPropagation(); openGroupMenu(group.id, event.clientX, event.clientY); };
+      const more = document.createElement('button'); more.className = 'bw-group-more';
+      more.innerHTML = IC('<circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/>');
+      more.title = '标签组操作'; more.setAttribute('aria-label', '标签组操作 ' + group.name); more.onclick = menu;
+      header.append(toggle, more); header.oncontextmenu = menu; row.append(header);
+      if (!group.folded) for (const tab of mates) {
+        const link = document.createElement('button'); link.className = 'bw-group-page';
+        link.textContent = tab.title || tab.url; link.title = tab.url;
+        link.onclick = () => activateTab(tab.id);
+        link.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openTabMenu(tab.id, event.clientX, event.clientY); };
         row.append(link);
       }
       list.append(row);
     }
   }
-
-  // 上报占位区 rect → 主进程 setBounds（WebContentsView 是原生层，尺寸完全由它决定）
   function syncBounds() {
     if (!viewEl || viewEl.classList.contains('hidden')) return;
     const r = viewEl.getBoundingClientRect();
@@ -1208,7 +1347,11 @@ const BrowserPanel = (() => {
     initDarkMode();
     initTabStrip();
     tabStore = BrowserTabs.create(localStorage); projectRoot=window.App?.root || null;
-    tabStore.load(projectRoot); projectTabStores.set(tabStore.scope, tabStore); B()?.selectTab?.(tabStore.active.id); renderTabs(); switchSidebar('groups'); storageStatus();
+    tabStore.load(projectRoot); projectTabStores.set(tabStore.scope, tabStore); B()?.selectTab?.(tabStore.active.id);
+    // 一次性把旧的「快照组」（带 tabs 数组的那种）迁移成活标签组：打开其中的网页
+    // 并归入同名组。失败不阻断启动 —— 旧的浏览器不该因为一组数据迁移失败就打不开。
+    try { const m = tabStore.migrateLegacyGroups(); if (m?.migrated) MI.toast('已把 ' + m.migrated + ' 个标签组迁移为可折叠的活标签组', 'ok'); } catch {}
+    renderTabs(); switchSidebar('groups'); storageStatus();
     document.getElementById('bw-tab-new').onclick = () => newTab();
     document.getElementById('bw-tab-menu').onclick = event => { event.stopPropagation(); const r=event.currentTarget.getBoundingClientRect(); openTabMenu(tabStore.active.id,r.right,r.bottom+4); };
     document.getElementById('bw-side-groups').onclick = () => switchSidebar('groups');

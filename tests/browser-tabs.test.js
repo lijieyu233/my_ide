@@ -14,17 +14,31 @@ test('关闭当前选择相邻项，最后一个关闭后仍能恢复，排序�
   model.reorder(c.id, a.id); assert.equal(model.active.id, c.id); model.close([c.id]); assert.equal(model.active.id, a.id);
   model.close(model.state.tabs.map(t => t.id)); assert.equal(model.state.tabs.length, 1); assert.equal(model.active.url, ''); assert(model.reopen().url); assert(!model.reorder('missing', b.id));
 });
-test('标签组保存快照，跨项目共享，打开追加且规范化网址去重', () => {
-  const disk = storage(), model = create(disk); model.add('https://a.test', 'A'); const snapshot = model.state.tabs; model.add('https://b.test', 'B');
-  assert(model.saveGroup('联调', snapshot).ok); const group = model.groups()[0]; assert.equal(group.tabs.length, 1);
-  model.load('D:/new'); model.add('https://a.test/', 'already'); const before = model.state.tabs.length; model.openGroup(group.id); assert.equal(model.state.tabs.length, before);
-  assert(model.changeGroup(group.id, '新名字').ok); assert.equal(create(disk).groups()[0].name, '新名字'); model.changeGroup(group.id, null); assert.equal(model.groups().length, 0);
+test('活标签组跨项目共享，组内标签归属由 groupId 表达', () => {
+  const disk = storage(), model = create(disk); model.add('https://a.test', 'A');
+  // 活标签组：组只存 { id, name, color, folded }，归属关系写在 tab.groupId 上
+  const target = model.state.tabs.find(t => t.url === 'https://a.test');
+  assert(model.createGroup([target.id], '联调').ok);
+  const group = model.groups()[0];
+  assert.equal(group.name, '联调'); assert.equal(group.color, 'blue'); assert.equal(group.folded, false);
+  assert.equal(group.tabs, undefined, '组里不存网址快照');
+  assert.equal(model.state.tabs.find(t => t.id === target.id).groupId, group.id, '标签带上 groupId');
+  // 组跨项目共享（存在 GROUPS 键里，不随 load 清空）
+  model.load('D:/new');
+  const shared = create(disk).groups()[0];
+  assert.equal(shared.name, '联调');
+  // 重命名 / 改色 / 折叠 / 取消组合
+  assert(model.renameGroup(group.id, '新名字').ok); assert.equal(create(disk).groups()[0].name, '新名字');
+  assert(model.setGroupColor(group.id, 'pink').ok); assert.equal(create(disk).groups()[0].color, 'pink');
+  assert(model.setGroupFolded(group.id, true).ok); assert.equal(create(disk).groups()[0].folded, true);
+  assert(model.ungroup(group.id).ok); assert.equal(model.groups().length, 0);
+  assert(model.state.tabs.every(t => !t.groupId), '取消组合后标签的 groupId 清空');
 });
 test('坏会话、未知版本与存储拒绝不能覆盖原记录或假报保存成功', () => {
   for (const raw of ['bad-json', '{"version":99}', '{"version":1,"tabs":[],"closed":[]}']) {
     const disk = storage(); disk.setItem('myide-browser-session:@global', raw); const model = create(disk); model.add('https://a.test'); assert(!model.save().ok); assert.equal(disk.getItem('myide-browser-session:@global'), raw);
   }
-  const disk = storage(), model = create(disk); disk.setItem = () => { throw Error('quota'); }; model.add('https://a.test'); assert(model.error); assert(!model.saveGroup('组').ok);
+  const disk = storage(), model = create(disk); disk.setItem = () => { throw Error('quota'); }; model.add('https://a.test'); assert(model.error); assert(!model.createGroup([], "组").ok);
   disk.getItem = () => '{bad'; assert.throws(() => model.groups());
 });
 test('页面协议与重复标签ID被拒绝，关闭恢复保留空白页', () => {

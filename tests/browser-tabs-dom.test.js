@@ -32,9 +32,30 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const saved = {}; for (let i = 0; i < w.localStorage.length; i++) { const k = w.localStorage.key(i); saved[k] = w.localStorage.getItem(k); }
     const again = fixture(saved); try { assert.equal(again.calls.filter(c => c.op === 'open').length, 0); again.w.BrowserPanel.show(); assert.equal(again.calls.filter(c => c.op === 'open').length, 1); assert.equal(again.w.BrowserPanel.url, 'https://a.test'); again.w.BrowserPanel.reopenTab(); assert.equal(again.w.BrowserPanel.url, 'https://c.test'); } finally { again.close(); }
   });
-  await test('保存标签组弹窗可操作，打开整组不重复，收藏分栏保留', async ({ w, q }) => {
-    w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); w.BrowserPanel.newTab('https://b.test'); w.BrowserPanel.saveTabGroup(); q('#bw-group-name').value = '后台联调'; q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
-    assert.equal(w.Modal.stack.length, 0); assert(q('.bw-saved-group').textContent.includes('后台联调')); const count = w.BrowserPanel.tabs.length; q('.bw-group-open').click(); assert.equal(w.BrowserPanel.tabs.length, count);
+  await test('新建标签组把当前标签收进组，折叠不关闭标签，收藏分栏保留', async ({ w, q }) => {
+    w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); w.BrowserPanel.newTab('https://b.test');
+    const count = w.BrowserPanel.tabs.length;
+    // 活标签组：新建组 = 把当前标签打上 groupId，不另存快照
+    w.BrowserPanel.saveTabGroup(); q('#bw-group-name').value = '后台联调'; q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    assert.equal(w.Modal.stack.length, 0);
+    assert.equal(w.BrowserPanel.tabs.length, count, '新建组不会增减标签');
+    const groups = JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
+    assert.equal(groups.length, 1, '有一个组');
+    assert.equal(groups[0].name, '后台联调');
+    assert(!('tabs' in groups[0]) || groups[0].tabs === undefined, '组里不再存网址快照');
+    const grouped = w.BrowserPanel.tabs.filter(t => t.groupId === groups[0].id);
+    assert.equal(grouped.length, 1, '当前标签被收进组');
+    assert(q('.bw-saved-group').textContent.includes('后台联调'), '侧栏显示组名');
+    // 折叠：标签仍在，只是标签栏里不渲染
+    const head = q('.bw-tab-group-head');
+    assert(head, '标签栏出现组头');
+    const foldedBefore = w.BrowserPanel.tabs.length;
+    head.click();
+    assert.equal(w.BrowserPanel.tabs.length, foldedBefore, '折叠不关闭任何标签');
+    assert(q('.bw-tab-group.folded'), '组进入折叠态');
+    assert.equal(w.document.querySelectorAll('.bw-tab-group .bw-tab').length, 0, '折叠后组内标签不渲染');
+    head.click();
+    assert.equal(w.document.querySelectorAll('.bw-tab-group .bw-tab').length, 1, '展开后标签回来');
     q('#bw-side-favorites').click(); assert(!q('#bw-sb-list').classList.contains('hidden')); assert(q('#bw-groups-list').classList.contains('hidden')); assert.equal(q('#bw-sb-add-folder').title, '新建收藏文件夹'); q('#bw-side-groups').click(); assert.equal(q('#bw-sb-add-folder').title, '保存当前标签组');
   });
   await test('点收藏卡片新开标签且不覆盖当前页，右键仍可在当前标签打开', async ({ w, calls, q }) => {
@@ -109,20 +130,20 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     rowC.dispatchEvent(Object.assign(new w.Event('drop', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 15 }));
     assert.equal(order(), "b.test,c.test,a.test", "拖到目标下半部分 → 插到它后面");
   });
-  await test('没有标签组时不显示「已保存」分节与空态占位', async ({ w, q }) => {
+  await test('没有标签组时不显示分节标题与空态占位', async ({ w, q }) => {
     w.BrowserPanel.show();
     w.BrowserPanel.newTab('https://a.test');
     q('#bw-side-groups').click();
     const list = q('#bw-groups-list');
     assert(!list.querySelector('.bw-groups-empty'), '不再有「把常用网页保存成一组…」空态块');
-    assert(![...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '已保存'), '没有标签组时不出现「已保存」标题');
+    assert(![...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '标签组'), '没有标签组时不出现「标签组」分节');
     assert(!list.textContent.includes('保存当前标签组'), '不再重复一个「保存当前标签组」按钮');
-    // 有标签组时「已保存」照常出现，分节仍然可用
+    // 有标签组时分节标题回来
     w.BrowserPanel.saveTabGroup();
     q('#bw-group-name').value = '测试组';
     q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
     await tick();
-    assert([...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '已保存'), '有标签组时标题回来');
+    assert([...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '标签组'), '有标签组时标题回来');
   });
   await test('「当前打开」右键菜单可收藏，已收藏时变成取消收藏', async ({ w, q }) => {
     w.BrowserPanel.show();
@@ -225,8 +246,71 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const g = groups();
     assert.equal(g.length, 1, '新建了一个标签组');
     assert.equal(g[0].name, '单页组', '组名正确');
-    assert.equal(g[0].tabs.length, 1, '组里只有一个标签');
-    assert.equal(g[0].tabs[0].url, 'https://b.test', '存的正是右键的那个标签，不是全部: ' + JSON.stringify(g[0].tabs));
+    // 活标签组：组本身不再存网址，归属关系在 tab.groupId 上
+    const members = w.BrowserPanel.tabs.filter(t => t.groupId === g[0].id);
+    assert.equal(members.length, 1, '组里只有一个标签');
+    assert.equal(members[0].url, 'https://b.test', '收进组的正是右键的那个标签: ' + JSON.stringify(members.map(t => t.url)));
+  });
+  await test('活标签组：组操作完整（改色/重命名/取消组合/关闭组内标签）', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    w.BrowserPanel.saveTabGroup(); q('#bw-group-name').value = 'G1';
+    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    const groups = () => JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
+    const g = groups()[0];
+    assert(g.id, '组有 id');
+    assert.equal(g.color, 'blue', '默认色 blue');
+    assert.equal(g.folded, false, '默认展开');
+
+    // 改色
+    const head = q('.bw-tab-group-head');
+    head.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const colorItem = [...q('#ctx-menu').querySelectorAll('.ctx-item')].find(b => b.textContent.includes('更改颜色'));
+    assert(colorItem, '组菜单有「更改颜色」: ' + [...q('#ctx-menu').querySelectorAll('.ctx-item')].map(b => b.textContent).join('|'));
+    colorItem.click();
+    await tick();
+    const dots = [...q('#ctx-menu').querySelectorAll('.bw-color-dot')];
+    assert(dots.length === 8, '八色可选: ' + dots.length);
+    dots.find(d => d.dataset.color === 'pink').click();
+    await tick();
+    assert.equal(groups()[0].color, 'pink', '颜色已改');
+    assert.equal(q('.bw-tab-group').dataset.groupColor, 'pink', '标签栏组容器跟随颜色');
+
+    // 重命名（走模态）
+    w.Modal.prompt = async () => 'G1-改';
+    head.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    [...q('#ctx-menu').querySelectorAll('.ctx-item')].find(b => b.textContent.includes('重命名')).click();
+    await tick(); await tick();
+    assert.equal(groups()[0].name, 'G1-改', '组名已改');
+
+    // 取消组合：标签保留
+    const before = w.BrowserPanel.tabs.length;
+    head.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    [...q('#ctx-menu').querySelectorAll('.ctx-item')].find(b => b.textContent.includes('取消组合')).click();
+    await tick(); await tick();
+    assert.equal(groups().length, 0, '组被移除');
+    assert.equal(w.BrowserPanel.tabs.length, before, '取消组合不关闭标签');
+    assert(w.BrowserPanel.tabs.every(t => !t.groupId), '标签上的 groupId 被清空');
+  });
+  await test('活标签组：旧快照组自动迁移成真正的组', async ({ w }) => {
+    // 造一份旧格式（带 tabs 数组）的组数据
+    w.localStorage.setItem('myide-browser-tab-groups', JSON.stringify({ version: 1, groups: [
+      { id: 'old-1', name: '老组一', tabs: [{ url: 'https://x.test/1', title: 'X1' }, { url: 'https://x.test/2', title: 'X2' }] },
+    ] }));
+    // 迁移在 store 初始化时跑一次；这里直接驱动同一个入口（BrowserPanel 内部用的是
+    // 同一个 create() 实例，通过公开的 saveTabs 之外的路径拿不到，所以单独起一个 store 验语义）
+    const store = w.BrowserTabs.create(w.localStorage);
+    const r = store.migrateLegacyGroups();
+    assert.equal(r.migrated, 1, '迁移了 1 个组');
+    const groups = JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
+    assert.equal(groups.length, 1, '迁移后仍有一个组');
+    assert.equal(groups[0].name, '老组一', '组名保留');
+    assert(!groups[0].tabs, '不再带快照数组');
+    assert.equal(groups[0].color, 'blue', '迁移后补上默认颜色');
+    const members = store.state.tabs.filter(t => t.groupId === groups[0].id);
+    assert.equal(members.length, 2, '两个网页被打开并归入组: ' + JSON.stringify(members.map(t => t.url)));
+    assert(members.every(t => t.url.startsWith('https://x.test/')), '网址正确');
   });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
