@@ -399,30 +399,24 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     await tick();
     assert(!groupIdOf('https://b.test'), 'b 已退出组');
   });
-  await test('组头可拖动：draggable 挂在容器而不是 head（按钮会吞掉拖拽）', async ({ w, q }) => {
+  await test('组容器不能设 draggable：原生 drag 会抢占 pointer 拖拽', async ({ w, q }) => {
     w.BrowserPanel.show();
     for (const u of ['https://a.test', 'https://b.test']) w.BrowserPanel.newTab(u);
     w.__makeGroup('G1', w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
     await tick();
     const box = q('.bw-live-group');
     assert(box, '组容器存在');
-    // ⚠ 关键回归点：draggable 必须在 box 上。放在 head 上时，head 里那些
-    // <button>（折叠箭头 / 组名 / ⋯）会吞掉 mousedown，浏览器根本不会启动拖拽
-    // —— 实测 headDraggable: true 但拖不动。
-    assert.equal(box.draggable, true, '组容器 draggable=true');
+    // ⚠ 这条是踩过两次的坑，别再改回去：
+    //   box.draggable = true 时，真实鼠标事件序列是
+    //     pointerdown → pointermove → dragstart → dragend@1111,745
+    //   原生 HTML5 drag 在 pointer 逻辑还没过 4px 阈值时抢先启动，并立刻把
+    //   dragend 发到屏幕外，于是「怎么拖都拖不动」。组头的移动只走 pointer。
+    assert.equal(box.draggable, false, '组容器 draggable 必须为 false');
     const head = box.querySelector('.bw-live-group-head');
-    assert.equal(head.getAttribute('draggable'), 'false', '组头显式 draggable=false（避免与容器争抢）');
-    // 组头里的按钮必须不可拖，否则点在按钮上时拖拽被按钮吃掉了
+    assert.equal(head.getAttribute('draggable'), 'false', '组头 draggable=false');
     const buttons = [...head.querySelectorAll('button')];
     assert(buttons.length >= 2, '组头里有按钮（折叠 + ⋯）');
     assert(buttons.every(b => b.draggable === false), '组头内按钮 draggable 全部为 false');
-    // 从组头空白处发起 dragstart → 应标记为「正在拖组」
-    const dt = { setData() {}, getData() { return ''; }, effectAllowed: '', dropEffect: '' };
-    const nameEl = head.querySelector('.bw-live-name');
-    nameEl.dispatchEvent(Object.assign(new w.Event('dragstart', { bubbles: true }), { dataTransfer: dt }));
-    assert(box.classList.contains('dragging-src'), '从组头发起拖拽 → 组被标记为拖动源');
-    box.dispatchEvent(new w.Event('dragend', { bubbles: true }));
-    assert(!box.classList.contains('dragging-src'), 'dragend 清除标记');
   });
   await test('组内成员缩进一级（与组头有明确层级差）', async ({ w, q }) => {
     w.BrowserPanel.show();
@@ -440,6 +434,41 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const boxRule = (css.match(/\.bw-live-group\s*\{[^}]*\}/) || [''])[0];
     const pv = (boxRule.match(/padding:\s*([^;]+);/) || ['', ''])[1].trim();
     assert(!/^0\s+0\s+[1-9]/.test(pv), '组容器不应有底部 padding（否则多出一截）: padding=' + pv);
+  });
+  await test('组头 pointer 拖拽：拖动中有落点标记，松手后整组换位', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    for (const [url, name] of [['https://a.test', 'G1'], ['https://b.test', 'G2']]) {
+      w.__makeGroup(name, w.BrowserPanel.tabs.filter(t => t.url === url));
+      await tick();
+    }
+    const seq = () => [...q('#bw-groups-list').children]
+      .filter(e => e.classList.contains('bw-live-group') || e.classList.contains('bw-session-tab'))
+      .map(e => e.classList.contains('bw-live-group') ? 'G:' + e.querySelector('.bw-live-name').textContent : 'T')
+      .join(',');
+    const before = seq();
+    const boxes = [...q('#bw-groups-list').querySelectorAll('.bw-live-group')];
+    assert.equal(boxes.length, 2, '两个组');
+    const head0 = boxes[0].querySelector('.bw-live-group-head');
+    // ⚠ draggable 必须是 false：原生 HTML5 drag 会在 pointerdown 之后抢先启动，
+    //   并立刻把 dragend 发到屏幕外，导致 pointer 拖拽永远走不完
+    //   （实测事件序列 pointerdown → pointermove → dragstart → dragend@1111,745）。
+    assert.equal(boxes[0].draggable, false, '组容器不能设 draggable（会抢占 pointer 拖拽）');
+    // 模拟 pointer 序列
+    const mk = (type, y) => Object.assign(new w.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 200, clientY: y }), { pointerId: 1 });
+    head0.dispatchEvent(mk('pointerdown', 120));
+    // jsdom 无布局，getBoundingClientRect 全 0 → 用显式坐标驱动
+    const targetRect = { top: 200, bottom: 260, height: 60, left: 0, right: 300 };
+    Object.defineProperty(boxes[1], 'getBoundingClientRect', { value: () => targetRect, configurable: true });
+    w.document.dispatchEvent(mk('pointermove', 240));
+    await tick();
+    const marks = q('#bw-groups-list').querySelectorAll('.drop-before, .drop-after').length;
+    assert(marks >= 1, '拖动中必须有落点标记（用户靠它判断会插到哪）: ' + marks);
+    w.document.dispatchEvent(mk('pointerup', 240));
+    await tick();
+    const after = seq();
+    assert.notEqual(after, before, '松手后顺序改变: ' + before + ' → ' + after);
+    assert.equal(q('#bw-groups-list').querySelectorAll('.drop-before,.drop-after').length, 0, '松手后清掉落点标记');
   });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;

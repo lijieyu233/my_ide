@@ -861,16 +861,34 @@ const BrowserPanel = (() => {
             document.body.classList.add('bw-group-dragging');
           }
           ev.preventDefault();
-          const el = document.elementFromPoint(ev.clientX, ev.clientY);
-          const targetBox = el?.closest('.bw-live-group');
+          // ⚠ 不用 elementFromPoint 找 .bw-live-group：纵向拖动时指针常常仍落在
+          // 被拖的那个组上，命中自己就被 `!== box` 滤掉，于是永远没有落点标记
+          // —— 用户看到的是「拖了但毫无反应」。改成按 Y 坐标找最近的「别的组」。
           clearSessionDropMarks();
-          if (targetBox && targetBox !== box) {
-            const r = targetBox.getBoundingClientRect();
-            targetBox.classList.add(ev.clientY - r.top > r.height / 2 ? 'drop-after' : 'drop-before');
+          const others = [...document.querySelectorAll('.bw-live-group')].filter(g => g !== box);
+          let best = null, bestDist = Infinity;
+          for (const g of others) {
+            const r = g.getBoundingClientRect();
+            const d = ev.clientY < r.top ? r.top - ev.clientY : ev.clientY > r.bottom ? ev.clientY - r.bottom : 0;
+            if (d < bestDist) { bestDist = d; best = g; }
+          }
+          if (best) {
+            const r = best.getBoundingClientRect();
+            best.classList.add(ev.clientY > r.top + r.height / 2 ? 'drop-after' : 'drop-before');
             return;
           }
-          const row = el?.closest('.bw-session-tab');
-          if (row && !box.contains(row)) row.classList.add(ev.clientY - row.getBoundingClientRect().top > row.getBoundingClientRect().height / 2 ? 'drop-after' : 'drop-before');
+          // 没有别的组：找组外标签行作为落点
+          const rows = [...document.querySelectorAll('#bw-groups-list .bw-session-tab')].filter(r => !box.contains(r));
+          let bestRow = null, bestRowDist = Infinity;
+          for (const r of rows) {
+            const b = r.getBoundingClientRect();
+            const d = ev.clientY < b.top ? b.top - ev.clientY : ev.clientY > b.bottom ? ev.clientY - b.bottom : 0;
+            if (d < bestRowDist) { bestRowDist = d; bestRow = r; }
+          }
+          if (bestRow) {
+            const b = bestRow.getBoundingClientRect();
+            bestRow.classList.add(ev.clientY > b.top + b.height / 2 ? 'drop-after' : 'drop-before');
+          }
         };
         const up = ev => {
           document.removeEventListener('pointermove', move, true);
@@ -879,23 +897,35 @@ const BrowserPanel = (() => {
           box.classList.remove('dragging-src');
           if (!active) { draggingGroup = null; return; }
           draggingGroup = null;
-          const el = document.elementFromPoint(ev.clientX, ev.clientY);
-          const targetBox = el?.closest('.bw-live-group');
           clearSessionDropMarks();
-          if (targetBox && targetBox !== box) {
-            const destId = targetBox.dataset.groupId;
-            const r = targetBox.getBoundingClientRect();
-            const after = ev.clientY - r.top > r.height / 2;
-            moveGroupTo(group.id, destId, after);
+          // 与 move 用同一套「按 Y 找最近组」的判定：不用 elementFromPoint ——
+          // 拖动时指针常常仍在被拖的组上，命中自己就找不到落点（jsdom 下更是全 0）。
+          const others = [...document.querySelectorAll('.bw-live-group')].filter(g => g !== box);
+          let best = null, bestDist = Infinity;
+          for (const g of others) {
+            const r = g.getBoundingClientRect();
+            const d = ev.clientY < r.top ? r.top - ev.clientY : ev.clientY > r.bottom ? ev.clientY - r.bottom : 0;
+            if (d < bestDist) { bestDist = d; best = g; }
+          }
+          if (best) {
+            const r = best.getBoundingClientRect();
+            const after = ev.clientY > r.top + r.height / 2;
+            moveGroupTo(group.id, best.dataset.groupId, after);
             renderTabs(); renderGroups(); storageStatus();
             MI.toast('已移动「' + group.name + '」', 'ok');
             return;
           }
-          // 落在组外标签行上：把整组挪到那一行的前/后（不改组籍）
-          const row = el?.closest('.bw-session-tab');
-          if (row && !box.contains(row)) {
-            const r = row.getBoundingClientRect();
-            moveGroupToTab(group.id, row.dataset.tabId, ev.clientY - r.top > r.height / 2);
+          // 没有别的组：找组外标签行作为落点
+          const rows = [...document.querySelectorAll('#bw-groups-list .bw-session-tab')].filter(r => !box.contains(r));
+          let bestRow = null, bestRowDist = Infinity;
+          for (const r of rows) {
+            const b = r.getBoundingClientRect();
+            const d = ev.clientY < b.top ? b.top - ev.clientY : ev.clientY > b.bottom ? ev.clientY - b.bottom : 0;
+            if (d < bestRowDist) { bestRowDist = d; bestRow = r; }
+          }
+          if (bestRow) {
+            const b = bestRow.getBoundingClientRect();
+            moveGroupToTab(group.id, bestRow.dataset.tabId, ev.clientY > b.top + b.height / 2);
             renderTabs(); renderGroups(); storageStatus();
             MI.toast('已移动「' + group.name + '」', 'ok');
           }
@@ -904,54 +934,41 @@ const BrowserPanel = (() => {
         document.addEventListener('pointerup', up, true);
       });
 
-      box.draggable = true;
+      // ⚠ 这里**绝不能**再设 box.draggable：原生 HTML5 drag 会在 pointerdown 之后
+      // 抢先启动，并在用户真正拖动前就把 dragend 发到屏幕外
+      // （实测事件序列：pointerdown → pointermove → dragstart → dragend@1111,745，
+      //  我的 pointer 逻辑还没过 4px 阈值就被打断，于是永远拖不动）。
+      // 组头的移动只走下面这套 pointer 实现。
+      box.draggable = false;
       head.setAttribute('draggable', 'false');
-      for (const el of head.querySelectorAll('button')) el.draggable = false;
-      box.addEventListener('dragstart', event => {
-        // 从组内标签行发起的拖拽由标签自己处理（它已经 stopPropagation 了），
-        // 这里只处理「从组头/组容器」发起的拖动 = 整组挪位置。
-        if (event.target.closest('.bw-session-tab')) return;
-        draggingSessionTab = null; draggingGroup = group.id;
-        try { event.dataTransfer.setData('text/plain', group.id); event.dataTransfer.effectAllowed = 'move'; } catch {}
-        box.classList.add('dragging-src');
-      });
-      box.addEventListener('dragend', () => { draggingGroup = null; box.classList.remove('dragging-src'); clearSessionDropMarks(); });
-      // 落点：拖标签进来 = 加入本组；拖别的组过来 = 按上下半区排序
+      for (const el of head.querySelectorAll('button,span')) el.draggable = false;
+      // 仍保留 dragover/drop 的接收能力：标签行拖进组头时要把标签并入本组。
+      // 这条路径由标签行的 HTML5 drag 触发，与组自身的拖动无关。
       const onOver = event => {
-        if (!draggingSessionTab && !draggingGroup) return;
-        if (draggingGroup === group.id) return;
+        if (!draggingSessionTab) return;
         event.preventDefault(); event.stopPropagation();
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
         clearSessionDropMarks();
-        if (draggingSessionTab) { box.classList.add('drop-into-group'); return; }
-        const r = box.getBoundingClientRect();
-        box.classList.add(event.clientY - r.top > r.height / 2 ? 'drop-after' : 'drop-before');
+        box.classList.add('drop-into-group');
+      };
+      const onDrop = event => {
+        if (!draggingSessionTab) return;
+        event.preventDefault(); event.stopPropagation();
+        box.classList.remove('drop-into-group');
+        const src = draggingSessionTab; draggingSessionTab = null; clearSessionDropMarks();
+        const movingTab = state.tabs.find(t => t.id === src);
+        if (movingTab && movingTab.groupId !== group.id) {
+          tabStore.addToGroup(group.id, [src]);
+          renderTabs(); renderGroups(); storageStatus();
+          MI.toast('已加入「' + group.name + '」', 'ok');
+        }
       };
       box.addEventListener('dragover', onOver);
       head.addEventListener('dragover', onOver);
       box.addEventListener('dragleave', event => {
-        // 只在真正离开整个 box 时清标记（内部子元素之间移动会连续触发 dragleave）
         if (event.relatedTarget && box.contains(event.relatedTarget)) return;
-        box.classList.remove('drop-into-group', 'drop-before', 'drop-after');
-      });
-      const onDrop = event => {
-        event.preventDefault(); event.stopPropagation();
         box.classList.remove('drop-into-group');
-        if (draggingSessionTab) {
-          const src = draggingSessionTab; draggingSessionTab = null; clearSessionDropMarks();
-          const movingTab = state.tabs.find(t => t.id === src);
-          if (movingTab && movingTab.groupId !== group.id) {
-            tabStore.addToGroup(group.id, [src]);
-            renderTabs(); renderGroups(); storageStatus();
-            MI.toast('已加入「' + group.name + '」', 'ok');
-          }
-          return;
-        }
-        const srcGroup = draggingGroup; draggingGroup = null; clearSessionDropMarks();
-        if (!srcGroup || srcGroup === group.id) return;
-        moveGroupBefore(srcGroup, group.id);
-        renderTabs(); renderGroups(); storageStatus();
-      };
+      });
       box.addEventListener('drop', onDrop);
       head.addEventListener('drop', onDrop);
       box.append(head);
