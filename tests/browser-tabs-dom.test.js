@@ -153,9 +153,10 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.__makeGroup('测试组');
     await tick();
     assert(q('.bw-live-group'), '组渲染在同一个列表里');
-    // 没有「标签组」这种把组隔到底部的分节标题（只有顶部「当前打开 / 自动保留」）
-    const caps = [...list.querySelectorAll('.bw-group-caption')].map(e => e.textContent);
-    assert(!caps.some(t => t === '标签组'), '不再有独立的「标签组」分节标题: ' + caps.join('|'));
+    // 任何分节标题都不再存在：「当前打开 / 自动保留」那行说明与「标签组」分节
+    // 都已移除 —— 列表里有什么一目了然，不需要一行字来复述。
+    assert.equal(list.querySelectorAll('.bw-group-caption').length, 0, '不再有任何分节标题行');
+    assert(!list.textContent.includes('自动保留'), '不再有「自动保留」字样');
   });
   await test('组内联渲染：组的位置跟随它的第一个标签，未分组标签穿插其间', async ({ w, q }) => {
     w.BrowserPanel.show();

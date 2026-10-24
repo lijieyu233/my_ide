@@ -738,9 +738,9 @@ const BrowserPanel = (() => {
     }
     const state = tabStore.state;
     const groupById = new Map(groups.map(g => [g.id, g]));
-    const captions = document.createElement('div'); captions.className = 'bw-group-caption';
-    captions.innerHTML = '<span>当前打开</span><span>自动保留</span>';
-    list.append(captions);
+    // 不再画「当前打开 / 自动保留」这行说明：它占一整行高度却只说了一句
+    // 用户早就知道的事（列表里当然是当前打开的标签）。组本身已经靠色条区分，
+    // 不需要再额外分节。用户明确要求删掉。
 
     const renderedTabs = new Set(), renderedGroups = new Set();
     // 单条标签行：组内和组外共用同一套骨架，只有内边距不同。

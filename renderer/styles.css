@@ -2734,8 +2734,11 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-sidebar-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-dim); font: inherit; padding: 0 2px; cursor: pointer; }
 .bw-sidebar-switch button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text-bright); }
 #bw-groups-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px 16px; }
-.bw-group-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 4px 8px; color: var(--text-dim); font-size: .88em; }
-.bw-group-caption span:last-child { font-size: .92em; opacity: .8; }
+/* 分节标题（「当前打开 / 自动保留」与「标签组」）已按用户要求移除，
+   .bw-group-caption 不再有渲染来源，规则一并删掉。
+   列表顶部留一点呼吸空间，避免第一行紧贴标题栏（原来由那行 caption 的
+   padding-top: 14px 顶着，删掉后会贴边）。 */
+#bw-groups-list { padding-top: 6px; }
 .bw-session-tab { display: flex; align-items: center; width: 100%; min-width: 0; gap: 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; padding: 8px; text-align: left; cursor: pointer; }
 .bw-session-tab svg { width: 14px; height: 14px; color: var(--text-dim); flex-shrink: 0; }
 .bw-session-ico { display: inline-flex; flex-shrink: 0; }
