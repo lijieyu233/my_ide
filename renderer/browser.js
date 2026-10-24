@@ -375,6 +375,10 @@ const BrowserPanel = (() => {
       // 「复制标签页」= 克隆当前标签（同 url 同标题），插在它后面并切过去。
       { label: '在下方新建标签页', run: () => newTab('', '', tab.id) },
       { label: '复制标签页', disabled: !tab.url, run: () => newTab(tab.url, tab.title, tab.id) },
+      // 把「当前这一个标签」单独保存成一个新标签组（不是全部标签）：
+      // saveGroup 的第二个参数就是快照来源，传当前标签即可。收藏和标签组是两套
+      // 不同的东西 —— 组会连顺序一起记住，下次点「打开整组」一起开回来。
+      { label: '将标签页添加到新组…', disabled: !tab.url, run: () => saveTabGroup([tab]) },
       { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: saveTabGroup },
       { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
       { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
@@ -382,8 +386,11 @@ const BrowserPanel = (() => {
       { label: '关闭标签', run: () => closeTabs([tab.id]) },
     ], x, y);
   }
-  function saveTabGroup() {
-    const scope = tabStore.scope, tabs = tabStore.state.tabs.filter(t => t.url); if (!tabs.length) { MI.toast('先打开网页再保存标签组', 'err'); return; }
+  // snapshot 省略 = 保存全部已打开标签（顶部 ＋ 按钮与「将所有标签保存为一组…」）；
+  // 传入 [tab] = 只把这一个标签存成新组（右键「将标签页添加到新组…」）。
+  function saveTabGroup(snapshot) {
+    const scope = tabStore.scope, source = snapshot || tabStore.state.tabs, tabs = source.filter(t => t.url);
+    if (!tabs.length) { MI.toast('先打开网页再保存标签组', 'err'); return; }
     const box = document.createElement('div'); box.className = 'bw-save-group modal-panel';
     box.innerHTML = '<div class="m-head">保存标签组<button class="x" aria-label="关闭">×</button></div><form class="m-body"><label for="bw-group-name">名称</label><input id="bw-group-name" maxlength="60" placeholder="例如：项目后台联调" required><p class="bw-group-count"></p><div class="m-foot"><button class="tb-btn m-cancel" type="button">取消</button><button class="tb-btn primary" type="submit">保存</button></div></form>';
     box.querySelector('.bw-group-count').textContent = tabs.length + ' 个标签 · 保留当前顺序';

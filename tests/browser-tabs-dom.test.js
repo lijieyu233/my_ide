@@ -197,6 +197,37 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const aIds = w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test').map(t => t.id);
     assert.equal(new Set(aIds).size, 2, '克隆是独立标签，不复用 id');
   });
+  await test('右键「将标签页添加到新组」只保存当前这一个标签', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    const groups = () => JSON.parse(w.localStorage.getItem('myide-browser-tab-groups') || '{"groups":[]}').groups;
+    assert.equal(groups().length, 0, '初始没有标签组');
+    // 在 b 上右键 →「将标签页添加到新组…」
+    const rows = () => [...w.document.querySelectorAll('#bw-groups-list .bw-session-tab')];
+    const rowB = rows().find(r => r.title === 'https://b.test');
+    rowB.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const menu = q('#ctx-menu');
+    const item = [...menu.querySelectorAll('.ctx-item')].find(b => b.textContent.includes('将标签页添加到新组'));
+    assert(item, '菜单有「将标签页添加到新组…」: ' + [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent).join('|'));
+    assert(!item.disabled, '有网址时该项可用');
+    item.click();
+    await tick();
+    // 保存弹窗里应写明「1 个标签」
+    const dialog = q('.bw-save-group');
+    assert(dialog, '弹出保存标签组对话框');
+    assert(dialog.querySelector('.bw-group-count').textContent.includes('1 个标签'),
+      '只含当前一个标签: ' + dialog.querySelector('.bw-group-count').textContent);
+    q('#bw-group-name').value = '单页组';
+    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    const g = groups();
+    assert.equal(g.length, 1, '新建了一个标签组');
+    assert.equal(g[0].name, '单页组', '组名正确');
+    assert.equal(g[0].tabs.length, 1, '组里只有一个标签');
+    assert.equal(g[0].tabs[0].url, 'https://b.test', '存的正是右键的那个标签，不是全部: ' + JSON.stringify(g[0].tabs));
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
