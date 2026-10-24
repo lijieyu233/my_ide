@@ -89,6 +89,41 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     rowB.click();
     assert.equal(w.BrowserPanel.activeTabId, b, '点行本身切回该标签');
   });
+  await test('「当前打开」可拖动换序，落点插到目标前后都正确', async ({ w }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    // show() 会留一个空白标签在最前，先关掉，让顺序断言只看三个真实网址。
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    const rows = () => [...w.document.querySelectorAll('#bw-groups-list .bw-session-tab')];
+    const order = () => w.BrowserPanel.tabs.map(t => { try { return new URL(t.url).hostname; } catch { return '(blank)'; } }).join(',');
+    assert.equal(order(), 'a.test,b.test,c.test', '初始顺序');
+    assert(rows().every(r => r.draggable), '每行都可拖动');
+    // 把 a 拖到 c 下方 → a 应落在最后
+    const dt = { setData() {}, getData() { return ''; }, effectAllowed: '' };
+    const rowA = rows().find(r => r.title === 'https://a.test');
+    const rowC = rows().find(r => r.title === 'https://c.test');
+    rowA.dispatchEvent(Object.assign(new w.Event('dragstart', { bubbles: true }), { dataTransfer: dt }));
+    // 未布局（jsdom 高度为 0）→ 一律当「插到前面」，所以显式给高度模拟拖到下半部分
+    Object.defineProperty(rowC, 'getBoundingClientRect', { value: () => ({ top: 0, height: 20, bottom: 20, left: 0, right: 100, width: 100 }) });
+    rowC.dispatchEvent(Object.assign(new w.Event('drop', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 15 }));
+    assert.equal(order(), "b.test,c.test,a.test", "拖到目标下半部分 → 插到它后面");
+  });
+  await test('没有标签组时不显示「已保存」分节与空态占位', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    w.BrowserPanel.newTab('https://a.test');
+    q('#bw-side-groups').click();
+    const list = q('#bw-groups-list');
+    assert(!list.querySelector('.bw-groups-empty'), '不再有「把常用网页保存成一组…」空态块');
+    assert(![...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '已保存'), '没有标签组时不出现「已保存」标题');
+    assert(!list.textContent.includes('保存当前标签组'), '不再重复一个「保存当前标签组」按钮');
+    // 有标签组时「已保存」照常出现，分节仍然可用
+    w.BrowserPanel.saveTabGroup();
+    q('#bw-group-name').value = '测试组';
+    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    assert([...list.querySelectorAll('.bw-group-caption')].some(e => e.textContent === '已保存'), '有标签组时标题回来');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));

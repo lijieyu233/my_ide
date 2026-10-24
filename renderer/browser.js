@@ -18,6 +18,7 @@ const BrowserPanel = (() => {
   let defaultOpening=false;
   const foldedFolders = new Set(); // 文件夹折叠状态（会话内记忆，renderSidebar 重建后恢复）
   let dragFavUrl = null; // 拖拽源（dragover 里 dataTransfer.getData 恒为空，只能靠它判断，见 renderSidebar）
+  let draggingSessionTab = null; // 「当前打开」列表的拖拽源（同上，靠它判断来源）
 
   // ---------- 侧栏图标：一律内联 SVG ----------
   // 为什么不用 📁/📂：跟文件树当初一样的教训（见 styles.css 里 .tree-row .ic 的注释）——
@@ -414,12 +415,61 @@ const BrowserPanel = (() => {
       close.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); };
       row.append(pageIcon, name, close);
       row.title = tab.url || '新标签页';
+      // 拖动换顺序：与顶部标签栏、收藏列表同一套手法（dragover 里
+      // dataTransfer.getData 恒为空是 Chromium 的安全限制，只能靠模块级变量记源）。
+      row.draggable = true;
+      row.addEventListener('dragstart', event => {
+        draggingSessionTab = tab.id;
+        try { event.dataTransfer.setData('text/plain', tab.id); event.dataTransfer.effectAllowed = 'move'; } catch {}
+        row.classList.add('dragging-src');
+      });
+      row.addEventListener('dragend', () => {
+        draggingSessionTab = null;
+        row.classList.remove('dragging-src');
+        clearSessionDropMarks();
+      });
+      row.addEventListener('dragover', event => {
+        if (!draggingSessionTab || draggingSessionTab === tab.id) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = 'move';
+        const r = row.getBoundingClientRect();
+        // 未布局时高度为 0 → 一律当「插到前面」，行为可预期（同收藏列表的约定）。
+        const after = !!r.height && event.clientY - r.top > r.height / 2;
+        clearSessionDropMarks();
+        row.classList.add(after ? 'drop-after' : 'drop-before');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+      row.addEventListener('drop', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const src = draggingSessionTab;
+        draggingSessionTab = null;
+        const r = row.getBoundingClientRect();
+        const after = !!r.height && event.clientY - r.top > r.height / 2;
+        clearSessionDropMarks();
+        if (!src || src === tab.id) return;
+        // reorder(from, to) 是「插到 to 之前」；要插到后面就换成它下一个兄弟。
+        const state = tabStore.state;
+        const fromIndex = state.tabs.findIndex(t => t.id === src);
+        let toIndex = state.tabs.findIndex(t => t.id === tab.id);
+        if (fromIndex < 0 || toIndex < 0) return;
+        if (after) toIndex += 1;
+        // 移除源之后，目标索引在源之后时要左移一位。
+        if (fromIndex < toIndex) toIndex -= 1;
+        if (!tabStore.reorder(src, state.tabs[Math.min(toIndex, state.tabs.length - 1)].id)) return;
+        renderTabs(); renderGroups(); storageStatus();
+      });
       list.append(row);
     }
-    const saved = document.createElement('div'); saved.className = 'bw-group-caption'; saved.textContent = '已保存'; list.append(saved);
     let groups;
     try { groups = tabStore.groups(); } catch (error) { const note = document.createElement('p'); note.className = 'bw-sb-none'; note.textContent = error.message; list.append(note); return; }
-    if (!groups.length) { const empty = document.createElement('div'); empty.className = 'bw-groups-empty'; empty.textContent = '把常用网页保存成一组，下次一起打开。'; const button = document.createElement('button'); button.className = 'tb-btn'; button.textContent = '保存当前标签组'; button.onclick = saveTabGroup; empty.append(button); list.append(empty); }
+    // 「已保存」这一栏连同空态一起删了：没有标签组时不摆任何占位文字。
+    // 空态原来是一句说明 + 一个「保存当前标签组」按钮，和顶部 ＋ 按钮完全重复，
+    // 而那句说明又在每次打开面板时占掉半屏 —— 用户明确要求去掉。
+    // 有标签组时才需要这个分节标题，所以标题也跟着有内容才出现。
+    if (!groups.length) return;
+    const saved = document.createElement('div'); saved.className = 'bw-group-caption'; saved.textContent = '已保存'; list.append(saved);
     for (const group of groups) {
       const row = document.createElement('div'); row.className = 'bw-saved-group';
       const header = document.createElement('div'); header.className = 'bw-saved-group-head';
@@ -761,6 +811,14 @@ const BrowserPanel = (() => {
     if (!sbListEl) return;
     sbListEl.querySelectorAll('.drop-before, .drop-after, .drop-target')
       .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
+  }
+  // 「当前打开」列表的落点标记（与收藏列表分开：两者在同一个侧栏里，但容器不同，
+  // 共用一个清理函数会把另一边的标记也抹掉）。
+  function clearSessionDropMarks() {
+    const l = document.getElementById('bw-groups-list');
+    if (!l) return;
+    l.querySelectorAll('.drop-before, .drop-after')
+      .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
   }
   // 「移回根目录」落点：平时不占位，拖起来才出现（不然用户不知道还能拖出文件夹）
   function showRootZone() {
