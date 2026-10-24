@@ -324,10 +324,22 @@ const BrowserPanel = (() => {
     clearOverlayImage(); overlayHid = false; closeDd(); renderTabs(); renderGroups(); storageStatus(); presentTab();
     syncTabStrip(true);
   }
-  function newTab(url = '', title = '') {
+  function newTab(url = '', title = '', afterTabId = null) {
     const normalized = url ? normalizeInput(url) : '';
     if (!BrowserTabs.validURL(normalized)) { MI.toast('不支持的网页地址', 'err'); return; }
-    const tab = tabStore.add(normalized, title); renderTabs(); renderGroups(); storageStatus(); presentTab();
+    const tab = tabStore.add(normalized, title);
+    // 插到指定标签之后：add() 只会追加到末尾，这里用 reorder 把它挪到目标的下一位。
+    // reorder(from,to) 的语义是「插到 to 之前」，所以要把目标下一个兄弟当作 to；
+    // 目标本来就是最后一个时无需移动。
+    if (afterTabId) {
+      const tabs = tabStore.state.tabs;
+      const target = tabs.findIndex(t => t.id === afterTabId);
+      if (target >= 0 && target < tabs.length - 1) {
+        const next = tabs[target + 1].id;
+        if (next !== tab.id) tabStore.reorder(tab.id, next);
+      }
+    }
+    renderTabs(); renderGroups(); storageStatus(); presentTab();
     if (!normalized) urlInput.focus(); return tab;
   }
   function closeTabs(ids) {
@@ -358,6 +370,11 @@ const BrowserPanel = (() => {
         : { label: '⭐ 收藏此页', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
       { label: '📋 复制网址', disabled: !tab.url, run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
       { label: '↻ 刷新此标签', disabled: !tab.url, run: () => { activateTab(tab.id); reload(); } },
+      // 以下两项对齐 Chrome 标签页右键的习惯位置：
+      // 「在下方新建标签页」= 新建一个空白页，插在当前标签之后（不是末尾）；
+      // 「复制标签页」= 克隆当前标签（同 url 同标题），插在它后面并切过去。
+      { label: '在下方新建标签页', run: () => newTab('', '', tab.id) },
+      { label: '复制标签页', disabled: !tab.url, run: () => newTab(tab.url, tab.title, tab.id) },
       { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: saveTabGroup },
       { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
       { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },

@@ -162,6 +162,41 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     const favs2 = JSON.parse(w.localStorage.getItem('myide-browser-favs') || '[]');
     assert(!favs2.some(f => f.url === 'https://fav.test/page'), '取消收藏已生效');
   });
+  await test('右键「在下方新建标签页 / 复制标签页」插到当前标签之后', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    const order = () => w.BrowserPanel.tabs.map(t => { try { return new URL(t.url).hostname; } catch { return '(blank)'; } }).join(',');
+    assert.equal(order(), 'a.test,b.test,c.test', '初始顺序');
+
+    // 在 b 上右键 →「在下方新建标签页」→ 空白页应插在 b 与 c 之间，并成为活动标签
+    const rows = () => [...w.document.querySelectorAll('#bw-groups-list .bw-session-tab')];
+    const rowB = rows().find(r => r.title === 'https://b.test');
+    rowB.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const menu = q('#ctx-menu');
+    const items = () => [...menu.querySelectorAll('.ctx-item')];
+    const newBelow = items().find(b => b.textContent.includes('在下方新建标签页'));
+    assert(newBelow, '菜单有「在下方新建标签页」: ' + items().map(b => b.textContent).join('|'));
+    newBelow.click();
+    await tick();
+    assert.equal(order(), 'a.test,b.test,(blank),c.test', '新空白页插在 b 之后、c 之前');
+    assert.equal(w.BrowserPanel.tabs.find(t => t.id === w.BrowserPanel.activeTabId).url, '', '新标签成为活动标签');
+
+    // 在 a 上右键 →「复制标签页」→ 克隆体插在 a 之后
+    const rowA = rows().find(r => r.title === 'https://a.test');
+    rowA.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const clone = items().find(b => b.textContent.includes('复制标签页'));
+    assert(clone, '菜单有「复制标签页」: ' + items().map(b => b.textContent).join('|'));
+    clone.click();
+    await tick();
+    assert.equal(order(), 'a.test,a.test,b.test,(blank),c.test', '克隆体插在 a 之后');
+    const active = w.BrowserPanel.tabs.find(t => t.id === w.BrowserPanel.activeTabId);
+    assert.equal(active.url, 'https://a.test', '克隆体成为活动标签且网址相同');
+    // 两个 a.test 必须是不同的标签（不是复用同一个 id）
+    const aIds = w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test').map(t => t.id);
+    assert.equal(new Set(aIds).size, 2, '克隆是独立标签，不复用 id');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
