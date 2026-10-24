@@ -1924,12 +1924,9 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 
 /* ---------- 搜索面板 ---------- */
 #sr-box { width: 720px; max-width: 92vw; }
-#sr-input {
-  width: 100%; border: none; outline: none;
-  background: var(--bg-input); color: var(--text-bright);
-  font-size: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border);
-}
-#sr-input:focus { box-shadow: inset 0 -2px 0 var(--accent); }
+/* 弹窗的输入框现在也包在 .sr-query-wrap 里（与侧栏同一套内嵌图标布局），
+   所以这里只保留「弹窗比侧栏大一号」的差异；边框/底色/内边距统一交给下面那条。 */
+#sr-input { width: 100%; font-size: 14px; }
 .sr-stat { padding: 6px 14px 2px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
 #navigation-status[hidden] { display: none; }
 #navigation-status { color: var(--text-dim); }
@@ -1939,17 +1936,65 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 .sr-file { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .sr-hit { color: var(--text-bright); background: var(--bg-selected); border-radius: 2px; padding: 0 1px; }
 .sr-text { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sr-title-actions { display: flex; gap: .4em; margin-left: auto; }
+/* 标题行按钮：与 #tree-head / .panel-title-actions 同一套「无边框、hover 才浮底色」。
+   老版用 .vt-btn 的默认样式（1px 描边 + 11px 文字），一排描边小按钮贴在面板标题旁，
+   跟下面一整列无边框图标按钮不是一套语言，看着像没上过样式的表单。 */
+.sr-title-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.sr-title-actions .vt-btn {
+  border: none; background: transparent; border-radius: 4px;
+  padding: 0 6px; height: 20px; min-width: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  /* 字号显式给 1em：.vt-btn 基类 11px，而 #sidebar .vt-btn 又是 0.85em（ID 选择器优先级更高），
+     不压回去按钮会比标题小一圈（实测只有 10.166px）。下面用 ID 前缀把这条提到同一优先级。 */
+  font-size: 1em; line-height: 1;
+  color: var(--text-dim);
+}
+.sr-title-actions .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+/* #sidebar .vt-btn 是 0.85em（ID 选择器，优先级高于上面那条 class 链），
+   侧栏形态下会把标题按钮压到 10.17px —— 这里用同样的 ID 前缀压回来。 */
+#panel-search .sr-title-actions .vt-btn { font-size: 1em; }
+.sr-title-actions svg.ic { width: 14px; height: 14px; opacity: .9; }
+.sr-title-actions .vt-btn:hover svg.ic { opacity: 1; }
 .sr-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; padding: .5em .8em; }
-.sr-controls label { display: flex; align-items: center; gap: .4em; color: var(--text-dim); }
+.sr-controls label { display: flex; align-items: center; gap: .45em; color: var(--text-dim); cursor: pointer; user-select: none; }
+.sr-controls label:hover { color: var(--text); }
+/* 原生复选框在深色面板里是一块纯白方块 —— 全屏最亮的东西，还是唯一没跟主题走的控件。
+   color-scheme 让 Chromium 按深色绘制原生控件（与 #set-box 同一手法），
+   再把尺寸压到行内文字的高度，不再比旁边的字大一圈。 */
+.sr-controls input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; }
 .sr-controls [hidden] { display: none; }
 .sr-status { padding: .5em .8em; color: var(--text-dim); overflow-wrap: anywhere; flex-shrink: 0; }
+.sr-status[hidden] { display: none; }
 .sr-query { width: 100%; min-width: 0; padding: .6em .8em; background: var(--bg-input); color: var(--text-bright); border: none; border-bottom: 1px solid var(--border); }
-#panel-search { display: flex; flex-direction: column; min-height: 0; height: 100%; font-size: var(--tool-font); }
+/* 查询框：图标内嵌 + 圆角 + 上下留白，与文件树的 .tree-search-wrap 同一套观感。
+   原来是「整条通栏 + 只有下边框」的色带，和标题、状态行挨在一起就是三条横线，很碎。 */
+.sr-query-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; padding: .5em .8em .1em; }
+#sr-box .sr-query-wrap { padding: 8px 14px 2px; }
+.sr-query-wrap svg.ic { position: absolute; left: 1.15em; width: 13px; height: 13px; color: var(--text-dim); pointer-events: none; }
+#sr-box .sr-query-wrap svg.ic { left: 1.5em; width: 14px; height: 14px; }
+.sr-query-wrap input {
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--border-pane); border-radius: 5px;
+  padding: .42em .6em .42em 2.1em; font-size: inherit; outline: none;
+}
+.sr-query-wrap input::placeholder { color: var(--text-dim); }
+.sr-query-wrap input:hover { border-color: var(--btn-border); }
+/* 聚焦提示用主题色，但压成 1px 内阴影而不是描边：描边会在暗色面板里
+   勾出一圈高对比的亮框，比正文还抢眼（第一版实测就是这样）。 */
+.sr-query-wrap input:focus { border-color: var(--btn-border); box-shadow: inset 0 0 0 1px var(--accent); }
+.sr-query-wrap:focus-within svg.ic { color: var(--accent); }
+#panel-search { display: flex; flex-direction: column; min-height: 0; height: 100%; font-size: var(--tool-font); color-scheme: dark; }
 #panel-search.hidden { display: none; }
+body.theme-light #panel-search, body.theme-pink #panel-search { color-scheme: light; }
 #panel-search .panel-title { gap: .4em; padding: .5em .8em; flex-wrap: wrap; flex-shrink: 0; }
 #panel-search .sr-query, #panel-search .sr-text, #panel-search .sr-file { font-size: inherit; }
 #search-list { flex: 1; min-height: 0; overflow: auto; }
+/* 还没输入关键字时的空态：整块居中，而不是在左上角堆两句几乎重复的灰字
+   （老版这里是「输入关键字开始搜索…」+「0 条结果 · 0 个文件」上下两行）。 */
+.sr-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .5em; height: 100%; min-height: 120px; padding: 2em 1em; text-align: center; color: var(--text-dim); }
+.sr-empty svg.ic { width: 26px; height: 26px; opacity: .45; }
+.sr-empty-title { font-size: 1em; color: var(--text); }
+.sr-empty-sub { font-size: .85em; opacity: .8; }
 #panel-search .qo-foot { flex-shrink: 0; padding: .5em .8em; font-size: .85em; }
 .sr-group-head { display: flex; align-items: center; width: 100%; gap: .4em; padding: .5em .6em; background: var(--bg-panel); color: var(--text-bright); border: none; text-align: left; font: inherit; }
 .sr-group-head svg { flex-shrink: 0; transform: rotate(90deg); }

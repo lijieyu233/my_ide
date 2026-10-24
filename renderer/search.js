@@ -22,6 +22,9 @@ const Search = (() => {
     const skipped=s.stats?.skipped,excluded=skipped?Object.entries(skipped).filter(([,n])=>n).map(([reason,n])=>
       ({hidden:'隐藏项',links:'链接',special:'特殊文件',large:'大文件',empty:'空文件',binary:'二进制'}[reason]||reason)+' '+n).join('、'):'';
     view.status.textContent=(phases[s.phase]||'搜索状态不可用')+(excluded?'；略过 '+excluded:'')+(s.error&&s.phase!=='error'?'；'+s.error:'')+(s.navigationError?'；定位失败：'+s.navigationError:'');
+    // 状态行与列表顶部的统计行说的是同一件事：没有查询时两者都该让位给空态，
+    // 否则一打开面板就是「输入关键字开始搜索…」+「0 条结果 · 0 个文件」两句重复的废话。
+    view.status.hidden=s.phase==='empty';
     view.stop.disabled=!['waiting','searching'].includes(s.phase);view.retry.hidden=!s.navigationError&&!['error','timeLimit','resultLimit','cancelled'].includes(s.phase);
     view.source.hidden=s.navigationCode!=='UNSUPPORTED_VIEW';
   }
@@ -30,11 +33,21 @@ const Search = (() => {
     if(view.input.value!==s.query)view.input.value=s.query;view.caseSensitive.checked=s.caseSensitive;
     const groups=new Map();for(const hit of s.results){const key=DocumentPaths.key(hit.path);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(hit);}
     const ordered=view.kind==='modal'?s.results:[...groups].sort(([a],[b])=>a.localeCompare(b)).flatMap(([,hits])=>hits.slice().sort((a,b)=>a.line-b.line||a.startColumn-b.startColumn));
-    const signature=JSON.stringify([ordered.map(hit=>hit.hitId),[...s.collapsed].sort()]);
+    const signature=JSON.stringify([ordered.map(hit=>hit.hitId),[...s.collapsed].sort(),s.phase==='empty']);
     if(view.signature!==signature){
       const scrollTop=view.list.scrollTop,listTop=view.list.getBoundingClientRect().top,anchor=[...view.list.querySelectorAll('.qo-item')].find(row=>!row.parentElement.hidden&&row.getBoundingClientRect().bottom>listTop),anchorOffset=anchor?anchor.getBoundingClientRect().top-listTop:null;
       const focused=document.activeElement,focusedInList=view.list.contains(focused),focusId=focused?.dataset.hitId,focusGroup=focused?.dataset.group;view.list.replaceChildren();view.signature=signature;
-      const head=document.createElement('div');head.className='sr-stat';head.textContent=s.results.length+' 条结果 · '+groups.size+' 个文件';view.list.appendChild(head);
+      // 空查询下不铺统计行：一打开就报「0 条结果」是在替用户宣布一个他还没提出的问题的答案。
+      if(s.phase==='empty'){
+        const empty=document.createElement('div');empty.className='sr-empty';
+        empty.innerHTML='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg>'
+          +'<div class="sr-empty-title">输入关键字开始搜索</div><div class="sr-empty-sub">在项目内检索文本内容</div>';
+        view.list.appendChild(empty);
+      }else if(view.kind==='modal'){
+        // 侧栏不铺这一行：状态行已经写了「搜索完成：N 处，M 个文件」，每个文件分组头又各带计数，
+        // 同一组数字在一屏里出现两次只会让人以为漏看了什么。
+        const head=document.createElement('div');head.className='sr-stat';head.textContent=s.results.length+' 条结果 · '+groups.size+' 个文件';view.list.appendChild(head);
+      }
       let index=0;
       const rowFor=hit=>{
         const row=document.createElement('div');row.className='qo-item';row.id=view.prefix+'-hit-'+index++;row.dataset.hitId=hit.hitId;row.setAttribute('role',view.kind==='modal'?'option':'treeitem');row.title=hit.path+':'+hit.line+':'+hit.startColumn;
@@ -92,8 +105,8 @@ const Search = (() => {
   }
   function build(box,kind){
     const prefix=kind==='modal'?'sr':'search',m=getModel();
-    box.innerHTML='<div class="'+(kind==='modal'?'qo-head':'panel-title')+'"><span id="'+prefix+'-title">搜索内容</span><span class="sr-title-actions"><button class="vt-btn" id="'+prefix+'-move">'+(kind==='modal'?'留在侧栏':'弹窗')+'</button><button class="vt-btn" id="'+prefix+'-close">'+(kind==='modal'?'关闭':'收起')+'</button></span></div>'
-      +'<input id="'+prefix+'-input" class="sr-query" placeholder="输入关键字…" aria-label="搜索内容" role="combobox" aria-autocomplete="list" aria-haspopup="'+(kind==='modal'?'listbox':'tree')+'" aria-expanded="true" aria-controls="'+prefix+'-list" aria-describedby="'+prefix+'-status" autocomplete="off" spellcheck="false">'
+    box.innerHTML='<div class="'+(kind==='modal'?'qo-head':'panel-title')+'"><span id="'+prefix+'-title">搜索内容</span><span class="sr-title-actions"><button class="vt-btn" id="'+prefix+'-move" title="'+(kind==='modal'?'移到侧栏并保留结果':'用弹窗打开')+'">'+(kind==='modal'?'留在侧栏':'弹窗')+'</button><button class="vt-btn" id="'+prefix+'-close" title="'+(kind==='modal'?'关闭':'收起面板')+'">'+(kind==='modal'?'关闭':'收起')+'</button></span></div>'
+      +'<div class="sr-query-wrap"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg><input id="'+prefix+'-input" class="sr-query" placeholder="输入关键字…" aria-label="搜索内容" role="combobox" aria-autocomplete="list" aria-haspopup="'+(kind==='modal'?'listbox':'tree')+'" aria-expanded="true" aria-controls="'+prefix+'-list" aria-describedby="'+prefix+'-status" autocomplete="off" spellcheck="false"></div>'
       +'<div class="sr-controls"><label><input id="'+prefix+'-case" type="checkbox">区分大小写</label><button id="'+prefix+'-stop" class="vt-btn" disabled>停止</button><button id="'+prefix+'-retry" class="vt-btn" hidden>重新搜索</button><button id="'+prefix+'-source" class="vt-btn" hidden>以源码定位</button></div>'
       +'<div id="'+prefix+'-status" class="sr-status" role="status"></div><div id="'+prefix+'-list" class="sr-list" role="'+(kind==='modal'?'listbox':'tree')+'" aria-label="搜索结果"></div><div class="qo-foot">↑↓ 选择 · Enter 定位 · Esc '+(kind==='modal'?'关闭':'返回编辑器')+'</div>';
     const view={box,kind,prefix,model:m,origin:document.activeElement,documentId:Viewer.activeTab?.id,input:box.querySelector('#'+prefix+'-input'),list:box.querySelector('#'+prefix+'-list'),
