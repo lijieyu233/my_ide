@@ -2764,21 +2764,23 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-session-close svg { width: 12px; height: 12px; }
 .bw-session-tab:hover,.bw-session-tab.active { background: var(--bg-hover); }.bw-session-tab.active { color: var(--text-bright); }
 /* ---------- 侧栏「标签组」区块（Edge 式活标签组） ----------
-   目标是「一眼看出这几个标签属于同一组」，所以用三层信息叠加：
-     ① 左侧 3px 组色实心竖条（不是 inset 阴影，那个太淡）
-     ② 组名那行整条组色底（12% 混色），像 Edge 组头那样有色块
-     ③ 组内标签行缩进并共用同一条竖条，形成「色条包住整组」的形状
-   折叠只影响画不画，标签不会被关闭 —— 所以折叠后计数仍然显示。 */
+   层级关系靠三样东西同时表达，缺一样就会「看不出上下级」：
+     ① 左侧 3px 组色实心竖条，纵贯整组（含组头与每一个成员）
+     ② 组头整条有色底 + 加粗组名，成员行是无底色的普通行
+     ③ 成员行相对组头缩进一级（组头文字 x=组头padding，成员文字再右移）
+   高度上不留多余空隙：容器不用 padding-bottom，成员行的上下留白由行自身控制。 */
 .bw-live-group {
   position: relative;
-  margin: 3px 0 7px;
-  border-radius: 8px;
-  padding: 0 0 3px;
-  background: color-mix(in srgb, var(--group-tint, #4f9cd6) 9%, transparent);
+  margin: 2px 0 6px;
+  border-radius: 7px;
+  /* 只留左右 0、上下 0 —— 之前写成 `0 0 3px` 会让组底多出一条 3px 的色带，
+     加上成员行自己的 margin，看起来就是「下面多出一截」。 */
+  padding: 0;
+  background: color-mix(in srgb, var(--group-tint, #4f9cd6) 8%, transparent);
 }
-/* 整组共享的左侧色条：绝对定位铺满卡片高度，比 inset 阴影粗、也更容易看见 */
+/* 整组共享的左侧色条：铺满卡片高度，比 inset 阴影粗、也更容易看见 */
 .bw-live-group::before {
-  content: ''; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px;
+  content: ''; position: absolute; left: 0; top: 2px; bottom: 2px; width: 3px;
   border-radius: 2px; background: var(--group-tint, #4f9cd6);
 }
 .bw-live-group[data-group-color="blue"]   { --group-tint: #4f9cd6; }
@@ -2825,8 +2827,19 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-live-group-head:focus-within .bw-live-more { visibility: visible; }
 .bw-live-more:hover { background: color-mix(in srgb, var(--group-tint) 40%, transparent); opacity: 1; }
 .bw-live-more svg { width: 13px; height: 13px; }
-/* 组内标签行：左侧让出 3px 色条 + 内边距，读起来是「嵌在色条里」 */
-.bw-live-tab { padding-left: 13px; margin: 0 3px 0 3px; border-radius: 5px; }
+/* pointer 拖拽期间：禁止选中文字、光标改成抓取态，否则拖过文字会变成选区拖蓝。 */
+body.bw-group-dragging { cursor: grabbing; user-select: none; }
+body.bw-group-dragging .bw-live-group-head { cursor: grabbing; }
+.bw-live-group.dragging-src { opacity: .5; }
+/* 组内成员行：整体右移一级，让「谁属于谁」在图标层就看得出来。
+   ⚠ 必须用 `.bw-session-tab.bw-live-tab`（两个类）：`.bw-session-tab` 用简写
+   `padding: 8px` 重置四边，单个类的选择器与它同特异性、靠书写顺序决胜，实测被覆盖。
+   实测：组名 x=91；成员行给 34px 时图标仍在 x=83（比组名还靠左）——
+   因为行的左边缘比组头的 padding 起点更靠左。加到 44px 后图标落到 ≈93、
+   文字 ≈115，与组名形成清晰的两级。 */
+.bw-session-tab.bw-live-tab { padding: 6px 8px 6px 44px; margin: 0 3px 2px; border-radius: 5px; }
+/* 成员行右侧的关闭按钮保持贴右，不跟随缩进 */
+.bw-live-tab .bw-session-close { margin-left: auto; }
 /* 侧栏里不该出现折叠态组内标签（折叠时压根不渲染），这里兜底一次 */
 .bw-live-group.folded .bw-live-tab { display: none; }
 .bw-saved-group { margin: 2px 0 5px; }.bw-saved-group-head { display: flex; align-items: center; border-radius: 5px; min-width: 0; }.bw-saved-group-head:hover { background: var(--bg-hover); }

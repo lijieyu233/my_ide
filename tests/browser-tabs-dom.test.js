@@ -399,6 +399,48 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     await tick();
     assert(!groupIdOf('https://b.test'), 'b 已退出组');
   });
+  await test('组头可拖动：draggable 挂在容器而不是 head（按钮会吞掉拖拽）', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test']) w.BrowserPanel.newTab(u);
+    w.__makeGroup('G1', w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
+    await tick();
+    const box = q('.bw-live-group');
+    assert(box, '组容器存在');
+    // ⚠ 关键回归点：draggable 必须在 box 上。放在 head 上时，head 里那些
+    // <button>（折叠箭头 / 组名 / ⋯）会吞掉 mousedown，浏览器根本不会启动拖拽
+    // —— 实测 headDraggable: true 但拖不动。
+    assert.equal(box.draggable, true, '组容器 draggable=true');
+    const head = box.querySelector('.bw-live-group-head');
+    assert.equal(head.getAttribute('draggable'), 'false', '组头显式 draggable=false（避免与容器争抢）');
+    // 组头里的按钮必须不可拖，否则点在按钮上时拖拽被按钮吃掉了
+    const buttons = [...head.querySelectorAll('button')];
+    assert(buttons.length >= 2, '组头里有按钮（折叠 + ⋯）');
+    assert(buttons.every(b => b.draggable === false), '组头内按钮 draggable 全部为 false');
+    // 从组头空白处发起 dragstart → 应标记为「正在拖组」
+    const dt = { setData() {}, getData() { return ''; }, effectAllowed: '', dropEffect: '' };
+    const nameEl = head.querySelector('.bw-live-name');
+    nameEl.dispatchEvent(Object.assign(new w.Event('dragstart', { bubbles: true }), { dataTransfer: dt }));
+    assert(box.classList.contains('dragging-src'), '从组头发起拖拽 → 组被标记为拖动源');
+    box.dispatchEvent(new w.Event('dragend', { bubbles: true }));
+    assert(!box.classList.contains('dragging-src'), 'dragend 清除标记');
+  });
+  await test('组内成员缩进一级（与组头有明确层级差）', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test']) w.BrowserPanel.newTab(u);
+    w.__makeGroup('G2', w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
+    await tick();
+    const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    // ⚠ 规则必须是双类选择器 `.bw-session-tab.bw-live-tab`：单类会被
+    //   `.bw-session-tab` 的 `padding: 8px` 简写覆盖，缩进完全不生效。
+    const rule = (css.match(/\.bw-session-tab\.bw-live-tab\s*\{[^}]*\}/) || [''])[0];
+    assert(rule, '成员行必须用双类选择器声明缩进（单类会被 .bw-session-tab 的 padding 简写覆盖）');
+    const pad = parseFloat((rule.match(/padding:\s*[\d.]+px\s+[\d.]+px\s+[\d.]+px\s+([\d.]+)px/) || ['', 0])[1]);
+    assert(pad >= 40, '成员行左侧缩进必须让图标越过组名起点（≥40px，实测 44px 时 memberIconX=93 > headNameX=91）: ' + rule.replace(/\s+/g, ' '));
+    // 组容器不能再有底部 padding（之前 `0 0 3px` 导致下方多一条色带）
+    const boxRule = (css.match(/\.bw-live-group\s*\{[^}]*\}/) || [''])[0];
+    const pv = (boxRule.match(/padding:\s*([^;]+);/) || ['', ''])[1].trim();
+    assert(!/^0\s+0\s+[1-9]/.test(pv), '组容器不应有底部 padding（否则多出一截）: padding=' + pv);
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));

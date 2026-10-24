@@ -497,9 +497,14 @@ const BrowserPanel = (() => {
       const span = document.createElement('span'); span.textContent = item.label; b.append(span);
       b.onclick = ev => {
         ev.stopPropagation();
+        // 把「这一项此刻在屏幕上的位置」交给 run：新建组浮层要贴着它出现。
+        // 若等 closeSubmenu 之后再量，菜单已经隐藏，rect 全是 0 —— 浮层就会跑到
+        // 左上角或右键原点（用户看到的是「莫名其妙弹在屏幕中间」）。
+        const br = b.getBoundingClientRect();
+        const anchor = { x: Math.round(br.left), y: Math.round(br.bottom) };
         closeSubmenu(menu);
         menu.classList.add('hidden');
-        item.run();
+        item.run(anchor);
       };
       sub.append(b);
     }
@@ -552,8 +557,9 @@ const BrowserPanel = (() => {
                   renderTabs(); renderGroups(); MI.toast('已加入「' + g.name + '」', 'ok');
                 },
               })),
-              // 「新建组」放在子菜单末尾，带分隔线视觉（CSS :last-child 处理）
-              { label: '＋ 新建组', run: () => { openNewGroupPopover([tab], x, y); } },
+              // 「新建组」放在子菜单末尾，带分隔线视觉（CSS :last-child 处理）。
+              // anchor 是子菜单项自己的屏幕位置（见 openSubmenu），浮层贴着它出现。
+              { label: '＋ 新建组', run: (anchor) => { openNewGroupPopover([tab], anchor?.x ?? x, anchor?.y ?? y); } },
             ],
           },
       { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: () => saveTabGroup() },
@@ -639,8 +645,10 @@ const BrowserPanel = (() => {
     document.addEventListener('pointerdown', onDown, true);
 
     menu.classList.remove('hidden');
-    menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
-    menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+    // 贴边约束：先把宽度量出来再夹，否则 offsetWidth 还是 0（元素刚显示）。
+    const pw = menu.offsetWidth || 232, ph = menu.offsetHeight || 180;
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - pw - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - ph - 8)) + 'px';
     syncOverlay();
     nameInput.focus();
   }
@@ -830,31 +838,103 @@ const BrowserPanel = (() => {
       label.onclick = () => { const r = tabStore.setGroupFolded(group.id, !group.folded); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); };
       head.append(caret, label, more);
       head.oncontextmenu = openMenu;
-      // 组头可拖动：整组挪位置（组内顺序不变）。与标签行共用一套落点标记。
-      head.draggable = true;
-      head.addEventListener('dragstart', event => {
+      // ── 组头拖动（pointer 实现） ────────────────────────────────────────
+      // 不用 HTML5 drag 的原因：实测在本项目的 Electron + 侧栏组合里，
+      // 组容器上只收到 dragstart，随后的 dragover / drop 一个都不来
+      // （页面内埋的监听只记到 ["armed","dragstart"]），组永远换不了位。
+      // pointer 拖拽不依赖 dataTransfer，也不受子元素是 <button> 的影响
+      // —— 原来把 draggable 放在 head 上时，点在按钮上连 dragstart 都不触发。
+      //
+      // 进入条件：按住后移动超过 4px（避免和单击折叠冲突）。
+      // 落点判定：elementFromPoint 找最近的 .bw-live-group / .bw-session-tab。
+      head.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || event.target.closest('.bw-live-more')) return;
+        const startX = event.clientX, startY = event.clientY;
+        let active = false;
+        const sameRow = el => el?.closest('.bw-session-tab');
+        const move = ev => {
+          if (!active) {
+            if (Math.abs(ev.clientY - startY) < 4 && Math.abs(ev.clientX - startX) < 4) return;
+            active = true;
+            draggingGroup = group.id; draggingSessionTab = null;
+            box.classList.add('dragging-src');
+            document.body.classList.add('bw-group-dragging');
+          }
+          ev.preventDefault();
+          const el = document.elementFromPoint(ev.clientX, ev.clientY);
+          const targetBox = el?.closest('.bw-live-group');
+          clearSessionDropMarks();
+          if (targetBox && targetBox !== box) {
+            const r = targetBox.getBoundingClientRect();
+            targetBox.classList.add(ev.clientY - r.top > r.height / 2 ? 'drop-after' : 'drop-before');
+            return;
+          }
+          const row = el?.closest('.bw-session-tab');
+          if (row && !box.contains(row)) row.classList.add(ev.clientY - row.getBoundingClientRect().top > row.getBoundingClientRect().height / 2 ? 'drop-after' : 'drop-before');
+        };
+        const up = ev => {
+          document.removeEventListener('pointermove', move, true);
+          document.removeEventListener('pointerup', up, true);
+          document.body.classList.remove('bw-group-dragging');
+          box.classList.remove('dragging-src');
+          if (!active) { draggingGroup = null; return; }
+          draggingGroup = null;
+          const el = document.elementFromPoint(ev.clientX, ev.clientY);
+          const targetBox = el?.closest('.bw-live-group');
+          clearSessionDropMarks();
+          if (targetBox && targetBox !== box) {
+            const destId = targetBox.dataset.groupId;
+            const r = targetBox.getBoundingClientRect();
+            const after = ev.clientY - r.top > r.height / 2;
+            moveGroupTo(group.id, destId, after);
+            renderTabs(); renderGroups(); storageStatus();
+            MI.toast('已移动「' + group.name + '」', 'ok');
+            return;
+          }
+          // 落在组外标签行上：把整组挪到那一行的前/后（不改组籍）
+          const row = el?.closest('.bw-session-tab');
+          if (row && !box.contains(row)) {
+            const r = row.getBoundingClientRect();
+            moveGroupToTab(group.id, row.dataset.tabId, ev.clientY - r.top > r.height / 2);
+            renderTabs(); renderGroups(); storageStatus();
+            MI.toast('已移动「' + group.name + '」', 'ok');
+          }
+        };
+        document.addEventListener('pointermove', move, true);
+        document.addEventListener('pointerup', up, true);
+      });
+
+      box.draggable = true;
+      head.setAttribute('draggable', 'false');
+      for (const el of head.querySelectorAll('button')) el.draggable = false;
+      box.addEventListener('dragstart', event => {
+        // 从组内标签行发起的拖拽由标签自己处理（它已经 stopPropagation 了），
+        // 这里只处理「从组头/组容器」发起的拖动 = 整组挪位置。
+        if (event.target.closest('.bw-session-tab')) return;
         draggingSessionTab = null; draggingGroup = group.id;
         try { event.dataTransfer.setData('text/plain', group.id); event.dataTransfer.effectAllowed = 'move'; } catch {}
         box.classList.add('dragging-src');
       });
-      head.addEventListener('dragend', () => { draggingGroup = null; box.classList.remove('dragging-src'); clearSessionDropMarks(); });
-      head.addEventListener('dragover', event => {
-        // 拖标签到组头上 = 加入该组；拖另一组过来 = 当作落点排序。
+      box.addEventListener('dragend', () => { draggingGroup = null; box.classList.remove('dragging-src'); clearSessionDropMarks(); });
+      // 落点：拖标签进来 = 加入本组；拖别的组过来 = 按上下半区排序
+      const onOver = event => {
         if (!draggingSessionTab && !draggingGroup) return;
-        if (draggingSessionTab) {
-          event.preventDefault(); event.stopPropagation();
-          clearSessionDropMarks();
-          box.classList.add('drop-into-group');
-          return;
-        }
         if (draggingGroup === group.id) return;
         event.preventDefault(); event.stopPropagation();
-        const r = box.getBoundingClientRect();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
         clearSessionDropMarks();
+        if (draggingSessionTab) { box.classList.add('drop-into-group'); return; }
+        const r = box.getBoundingClientRect();
         box.classList.add(event.clientY - r.top > r.height / 2 ? 'drop-after' : 'drop-before');
+      };
+      box.addEventListener('dragover', onOver);
+      head.addEventListener('dragover', onOver);
+      box.addEventListener('dragleave', event => {
+        // 只在真正离开整个 box 时清标记（内部子元素之间移动会连续触发 dragleave）
+        if (event.relatedTarget && box.contains(event.relatedTarget)) return;
+        box.classList.remove('drop-into-group', 'drop-before', 'drop-after');
       });
-      head.addEventListener('dragleave', () => { box.classList.remove('drop-into-group'); box.classList.remove('drop-before', 'drop-after'); });
-      head.addEventListener('drop', event => {
+      const onDrop = event => {
         event.preventDefault(); event.stopPropagation();
         box.classList.remove('drop-into-group');
         if (draggingSessionTab) {
@@ -871,7 +951,9 @@ const BrowserPanel = (() => {
         if (!srcGroup || srcGroup === group.id) return;
         moveGroupBefore(srcGroup, group.id);
         renderTabs(); renderGroups(); storageStatus();
-      });
+      };
+      box.addEventListener('drop', onDrop);
+      head.addEventListener('drop', onDrop);
       box.append(head);
       if (!group.folded) for (const tab of mates) box.append(tabRow(tab, true));
       return box;
@@ -1258,6 +1340,40 @@ const BrowserPanel = (() => {
     if (!members.length || !destFirst) return;
     // 逐个 reorder 到目标之前：先搬最后一个，保证相对顺序不被打乱。
     for (const tab of [...members].reverse()) tabStore.reorder(tab.id, destFirst.id);
+  }
+  // 把整组挪到目标组之后（目标组的最后一个成员之后）。
+  function moveGroupAfter(srcGroupId, destGroupId) {
+    if (srcGroupId === destGroupId) return;
+    const tabs = tabStore.state.tabs;
+    const members = tabs.filter(t => t.groupId === srcGroupId);
+    const destMembers = tabs.filter(t => t.groupId === destGroupId);
+    const destLast = destMembers[destMembers.length - 1];
+    if (!members.length || !destLast) return;
+    // 搬到目标最后一个成员之后：等价于「插到它的下一个兄弟之前」。
+    const next = tabs[tabs.findIndex(t => t.id === destLast.id) + 1];
+    for (const tab of [...members].reverse()) {
+      if (next) tabStore.reorder(tab.id, next.id);
+      else tabStore.reorder(tab.id, destLast.id); // 已在末尾时 reorder 到自身前也等于插到后面
+    }
+  }
+  // 按上下半区决定「插到目标前还是后」，给 pointer 拖拽一个入口。
+  function moveGroupTo(srcGroupId, destGroupId, after) {
+    if (after) moveGroupAfter(srcGroupId, destGroupId);
+    else moveGroupBefore(srcGroupId, destGroupId);
+  }
+  // 把整组挪到某个「未分组标签行」的前/后（组会落在该行旁边，不改变组籍）。
+  function moveGroupToTab(srcGroupId, anchorTabId, after) {
+    const tabs = tabStore.state.tabs;
+    const members = tabs.filter(t => t.groupId === srcGroupId);
+    const anchorIndex = tabs.findIndex(t => t.id === anchorTabId);
+    if (!members.length || anchorIndex < 0) return;
+    // 目标点：anchor 之后要跳过 anchor 本身；anchor 位于移动段内部时无法作为锚，直接放弃。
+    if (members.some(t => t.id === anchorTabId)) return;
+    const target = after ? tabs[anchorIndex + 1] : tabs[anchorIndex];
+    for (const tab of [...members].reverse()) {
+      if (target) tabStore.reorder(tab.id, target.id);
+      else tabStore.reorder(tab.id, anchorTabId);
+    }
   }
   // 「移回根目录」落点：平时不占位，拖起来才出现（不然用户不知道还能拖出文件夹）
   function showRootZone() {
