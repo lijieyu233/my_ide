@@ -45,7 +45,10 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert(!('tabs' in groups[0]) || groups[0].tabs === undefined, '组里不再存网址快照');
     const grouped = w.BrowserPanel.tabs.filter(t => t.groupId === groups[0].id);
     assert.equal(grouped.length, 1, '当前标签被收进组');
-    assert(q('.bw-saved-group').textContent.includes('后台联调'), '侧栏显示组名');
+    assert(q('.bw-live-group').textContent.includes('后台联调'), '侧栏显示组名');
+    assert(q('.bw-live-group .bw-live-name').textContent === '后台联调', '组名在独立元素里（不被挤压成数字）');
+    assert(q('.bw-live-group .bw-live-count').textContent === '1', '组头显示计数');
+    assert(!q('.bw-live-group .bw-live-tab').closest('[hidden]'), '展开时组内标签可见');
     // 折叠：标签仍在，只是标签栏里不渲染
     const head = q('.bw-tab-group-head');
     assert(head, '标签栏出现组头');

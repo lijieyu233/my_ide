@@ -657,31 +657,59 @@ const BrowserPanel = (() => {
     let groups;
     try { groups = tabStore.groups(); } catch (error) { const note = document.createElement('p'); note.className = 'bw-sb-none'; note.textContent = error.message; list.append(note); return; }
     if (!groups.length) return;
+    // ── 组区块（Edge 式）──────────────────────────────────────────────
+    // 每个组是一个带色卡片：组头（圆点 + 组名 + 计数 + 折叠箭头 + ⋯）+ 组内标签行。
+    // 组内标签行刻意画得和「当前打开」那几行同构（同样的图标/省略/关闭），
+    // 差别只在左侧多一条组色竖线 —— 这样「同一个标签换了归属」不需要重新认图标。
     const gc = document.createElement('div'); gc.className = 'bw-group-caption'; gc.textContent = '标签组'; list.append(gc);
     for (const group of groups) {
       const mates = tabStore.state.tabs.filter(t => t.groupId === group.id);
-      const row = document.createElement('div'); row.className = 'bw-saved-group'; row.dataset.groupId = group.id;
-      const header = document.createElement('div'); header.className = 'bw-saved-group-head';
-      const dot = document.createElement('span'); dot.className = 'bw-tg-dot'; dot.dataset.color = group.color || 'blue';
-      const toggle = document.createElement('button'); toggle.className = 'bw-group-toggle'; toggle.innerHTML = IC_CARET_DOWN;
-      toggle.classList.toggle('folded', !!group.folded); toggle.setAttribute('aria-expanded', String(!group.folded));
-      const name = document.createElement('span'); name.textContent = group.name;
-      const count = document.createElement('span'); count.className = 'bw-group-size'; count.textContent = String(mates.length);
-      toggle.append(dot, name, count);
-      toggle.onclick = () => { const r = tabStore.setGroupFolded(group.id, !group.folded); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); };
-      const menu = event => { event.preventDefault(); event.stopPropagation(); openGroupMenu(group.id, event.clientX, event.clientY); };
-      const more = document.createElement('button'); more.className = 'bw-group-more';
-      more.innerHTML = IC('<circle cx="3" cy="8" r=".7"/><circle cx="8" cy="8" r=".7"/><circle cx="13" cy="8" r=".7"/>');
-      more.title = '标签组操作'; more.setAttribute('aria-label', '标签组操作 ' + group.name); more.onclick = menu;
-      header.append(toggle, more); header.oncontextmenu = menu; row.append(header);
+      const card = document.createElement('div');
+      card.className = 'bw-live-group'; card.dataset.groupId = group.id; card.dataset.groupColor = group.color || 'blue';
+      if (group.folded) card.classList.add('folded');
+      const header = document.createElement('div'); header.className = 'bw-live-group-head';
+      const caret = document.createElement('button');
+      caret.className = 'bw-live-caret'; caret.type = 'button';
+      caret.setAttribute('aria-expanded', String(!group.folded));
+      caret.title = group.folded ? '展开组（不会关闭标签）' : '折叠组（不会关闭标签）';
+      caret.innerHTML = IC('<path d="' + (group.folded ? 'M6 4l4 4-4 4' : 'M4 6l4 4 4-4') + '"/>');
+      caret.onclick = event => { event.stopPropagation(); const r = tabStore.setGroupFolded(group.id, !group.folded); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); };
+      const dot = document.createElement('span'); dot.className = 'bw-live-dot';
+      const name = document.createElement('span'); name.className = 'bw-live-name'; name.textContent = group.name; name.title = group.name;
+      const count = document.createElement('span'); count.className = 'bw-live-count'; count.textContent = String(mates.length);
+      const more = document.createElement('button');
+      more.className = 'bw-live-more'; more.type = 'button'; more.title = '组操作';
+      more.setAttribute('aria-label', '标签组操作 ' + group.name);
+      more.innerHTML = IC('<circle cx="3" cy="8" r=".75"/><circle cx="8" cy="8" r=".75"/><circle cx="13" cy="8" r=".75"/>');
+      const openMenu = event => { event.preventDefault(); event.stopPropagation(); openGroupMenu(group.id, event.clientX, event.clientY); };
+      more.onclick = openMenu;
+      const label = document.createElement('button');
+      label.className = 'bw-live-label'; label.type = 'button';
+      label.append(dot, name, count);
+      label.title = group.name + '（' + mates.length + ' 个标签）';
+      label.onclick = () => { const r = tabStore.setGroupFolded(group.id, !group.folded); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); };
+      header.append(caret, label, more);
+      header.oncontextmenu = openMenu;
+      card.append(header);
       if (!group.folded) for (const tab of mates) {
-        const link = document.createElement('button'); link.className = 'bw-group-page';
-        link.textContent = tab.title || tab.url; link.title = tab.url;
-        link.onclick = () => activateTab(tab.id);
-        link.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openTabMenu(tab.id, event.clientX, event.clientY); };
-        row.append(link);
+        const row = document.createElement('div');
+        row.className = 'bw-session-tab bw-live-tab' + (tab.id === tabStore.state.active ? ' active' : '');
+        row.setAttribute('role', 'button'); row.tabIndex = 0;
+        const pick = () => activateTab(tab.id);
+        row.onclick = pick;
+        row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); } };
+        const ico = document.createElement('span'); ico.className = 'bw-session-ico'; ico.innerHTML = IC_PAGE;
+        const nm = document.createElement('span'); nm.className = 'bw-session-name'; nm.textContent = tab.title || tab.url;
+        const cls = document.createElement('button');
+        cls.className = 'bw-session-close'; cls.innerHTML = IC_CLOSE; cls.title = '关闭标签';
+        cls.setAttribute('aria-label', '关闭 ' + (tab.title || tab.url));
+        cls.onclick = event => { event.stopPropagation(); closeTabs([tab.id]); };
+        row.append(ico, nm, cls);
+        row.title = tab.url || '';
+        row.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openTabMenu(tab.id, event.clientX, event.clientY); };
+        card.append(row);
       }
-      list.append(row);
+      list.append(card);
     }
   }
   function syncBounds() {

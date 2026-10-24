@@ -72,8 +72,10 @@
           <button id="tree-hide-mode" class="vt-btn hide-mode-btn hm-normal" title="三态切换：全部显示 / 不显示隐藏项 / 只看隐藏项">常规</button>
           <button id="tree-git-only" class="vt-btn" aria-pressed="false" title="只显示 Git 跟踪的文件"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
           <button id="tree-sort" class="vt-btn" title="排序"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 12.6V3.4M2.6 5.8L5 3.4l2.4 2.4M11 3.4v9.2M8.6 10.2L11 12.6l2.4-2.4"/></svg></button>
-          <button id="tree-collapse" class="vt-btn" title="收起全部目录（PyCharm 式）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2"/><path d="M5.6 8h4.8"/></svg></button>
-          <button id="tree-expand" class="vt-btn" title="展开全部目录"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2"/><path d="M5.6 8h4.8M8 5.6v4.8"/></svg></button>
+          <!-- 展开/收起全部统一用 Icons 里那套双箭头（icons.js），不再用方框加减号：
+               方框加号既像「新建」又像「放大」，与这里「摊开整棵树」的语义对不上。 -->
+          <button id="tree-collapse" class="vt-btn" title="收起全部目录（PyCharm 式）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 3.7 8 6.1l2.4-2.4"/><path d="M5.6 12.3 8 9.9l2.4 2.4"/></svg></button>
+          <button id="tree-expand" class="vt-btn" title="展开全部目录"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 6.1 8 3.7l2.4 2.4"/><path d="M5.6 9.9 8 12.3l2.4-2.4"/></svg></button>
         </span>
       </div>
       <div id="tree"></div>
@@ -473,6 +475,7 @@
 <script src="editor-panes.js"></script>
 <script src="viewer.js"></script>
 <script src="tab-picker.js"></script>
+<script src="icons.js"></script>
 <script src="outline.js"></script>
 <script src="git-panel.js"></script>
 <script src="git-log.js"></script>

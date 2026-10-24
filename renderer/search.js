@@ -35,7 +35,9 @@ const Search = (() => {
       view.fold.hidden=!foldable;
       if(foldable){
         const allCollapsed=[...groupKeys].every(key=>s.collapsed.has(key));
-        view.fold.innerHTML='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(allCollapsed?'M4 6l4 4 4-4':'M4 10l4-4 4 4')+'"/></svg>';
+        // 折叠全部统一取 icons.js 的同一条路径：各面板不能各画一套「展开/收起」。
+        view.fold.innerHTML=(allCollapsed?(window.Icons||{}).expandAll:(window.Icons||{}).collapseAll)
+          ||'<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(allCollapsed?'M5.2 6.4 8 3.6l2.8 2.8M5.2 9.6 8 12.4l2.8-2.8':'M5.2 3.6 8 6.4l2.8-2.8M5.2 12.4 8 9.6l2.8 2.8')+'"/></svg>';
         const label=allCollapsed?'展开全部分组':'收起全部分组';
         view.fold.title=label;view.fold.setAttribute('aria-label',label);
         view.fold.classList.toggle('active',allCollapsed);

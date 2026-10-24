@@ -1612,10 +1612,10 @@ const GitPanel = (() => {
     // 展开 / 收起：**双箭头**朝外 / 朝内（VS Code、IntelliJ 的通用写法）。
     // ⚠ 原来用 + / − —— 那个形状在工具行里读起来是"新建 / 删除"或"放大 / 缩小"，
     //   完全不像"缩进层级展开"（用户直接问"+ - 怎么能代表缩进展开"）。
-    // ⚠ 每根 chevron 只占 2.6px 高、中间留 3.6px 空 —— 第一版画得太高（3.4px）且上下相接，
-    //   16px 下两根会连成一个菱形/叉（截图里就是那样）。平缓之后才是"往外 / 往里"的双箭头。
-    expandAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 6.2 8 3.6l2.8 2.6"/><path d="M5.2 9.8 8 12.4l2.8-2.6"/></svg>',
-    collapseAll: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6 8 6.2l2.8-2.6"/><path d="M5.2 12.4 8 9.8l2.8 2.6"/></svg>',
+    // 现在统一取 icons.js 里那一份：项目树 / 大纲 / 搜索面板 / 这里共用同一条路径，
+    // 避免再出现「四个面板四个画法」。改形状只改 icons.js。
+    expandAll: (window.Icons || {}).expandAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 6.1 8 3.7l2.4 2.4"/><path d="M5.6 9.9 8 12.3l2.4-2.4"/></svg>',
+    collapseAll: (window.Icons || {}).collapseAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 3.7 8 6.1l2.4-2.4"/><path d="M5.6 12.3 8 9.9l2.4 2.4"/></svg>',
     // 这三个原来在标题行右侧。标题行 340px 放不下（标题 + 分支 + ahead/behind + 修改数 + 拉取/推送
     // 已经 310px 左右），多一个就整行换行 → 标题行比标签栏高一截、底线对不齐。
     // 移到工具行：它们本来就是"仓库级操作"，和刷新/回滚/差异同层。

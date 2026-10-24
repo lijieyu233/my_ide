@@ -2699,6 +2699,72 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-session-close:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .bw-session-close svg { width: 12px; height: 12px; }
 .bw-session-tab:hover,.bw-session-tab.active { background: var(--bg-hover); }.bw-session-tab.active { color: var(--text-bright); }
+/* ---------- 侧栏「标签组」区块（Edge 式活标签组） ----------
+   目标是「一眼看出这几个标签属于同一组」，所以用三层信息叠加：
+     ① 左侧 3px 组色实心竖条（不是 inset 阴影，那个太淡）
+     ② 组名那行整条组色底（12% 混色），像 Edge 组头那样有色块
+     ③ 组内标签行缩进并共用同一条竖条，形成「色条包住整组」的形状
+   折叠只影响画不画，标签不会被关闭 —— 所以折叠后计数仍然显示。 */
+.bw-live-group {
+  position: relative;
+  margin: 3px 0 7px;
+  border-radius: 8px;
+  padding: 0 0 3px;
+  background: color-mix(in srgb, var(--group-tint, #4f9cd6) 9%, transparent);
+}
+/* 整组共享的左侧色条：绝对定位铺满卡片高度，比 inset 阴影粗、也更容易看见 */
+.bw-live-group::before {
+  content: ''; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px;
+  border-radius: 2px; background: var(--group-tint, #4f9cd6);
+}
+.bw-live-group[data-group-color="blue"]   { --group-tint: #4f9cd6; }
+.bw-live-group[data-group-color="cyan"]   { --group-tint: #3fbfc4; }
+.bw-live-group[data-group-color="purple"] { --group-tint: #9b7bd6; }
+.bw-live-group[data-group-color="pink"]   { --group-tint: #d673a6; }
+.bw-live-group[data-group-color="green"]  { --group-tint: #5fae6b; }
+.bw-live-group[data-group-color="yellow"] { --group-tint: #c9a24a; }
+.bw-live-group[data-group-color="orange"] { --group-tint: #d08a4a; }
+.bw-live-group[data-group-color="grey"]   { --group-tint: #8a8a8a; }
+/* 组头：整条组色底，与组内标签行明显分层 */
+.bw-live-group-head {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  padding: 4px 6px 4px 7px; border-radius: 8px 8px 4px 4px;
+  background: color-mix(in srgb, var(--group-tint) 20%, transparent);
+}
+.bw-live-group-head:hover { background: color-mix(in srgb, var(--group-tint) 30%, transparent); }
+.bw-live-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex-shrink: 0; padding: 0;
+  border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-bright); cursor: pointer; opacity: .8;
+}
+.bw-live-caret:hover { background: color-mix(in srgb, var(--group-tint) 40%, transparent); opacity: 1; }
+.bw-live-caret svg { width: 11px; height: 11px; }
+/* 色点：组的身份标识，与标签栏胶囊上的那个同色 */
+.bw-live-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--group-tint); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--group-tint) 35%, transparent); }
+.bw-live-label {
+  display: flex; align-items: center; gap: 7px;
+  flex: 1 1 auto; min-width: 0; padding: 0 2px;
+  border: 0; background: transparent; color: var(--text-bright);
+  font: inherit; font-size: .95em; font-weight: 600; cursor: pointer; text-align: left;
+}
+.bw-live-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bw-live-count { color: var(--text); font-size: .88em; font-weight: 400; flex-shrink: 0; opacity: .7; }
+.bw-live-more {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex-shrink: 0; padding: 0;
+  border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-bright); cursor: pointer; opacity: .7;
+  visibility: hidden;
+}
+.bw-live-group-head:hover .bw-live-more,
+.bw-live-group-head:focus-within .bw-live-more { visibility: visible; }
+.bw-live-more:hover { background: color-mix(in srgb, var(--group-tint) 40%, transparent); opacity: 1; }
+.bw-live-more svg { width: 13px; height: 13px; }
+/* 组内标签行：左侧让出 3px 色条 + 内边距，读起来是「嵌在色条里」 */
+.bw-live-tab { padding-left: 13px; margin: 0 3px 0 3px; border-radius: 5px; }
+/* 侧栏里不该出现折叠态组内标签（折叠时压根不渲染），这里兜底一次 */
+.bw-live-group.folded .bw-live-tab { display: none; }
 .bw-saved-group { margin: 2px 0 5px; }.bw-saved-group-head { display: flex; align-items: center; border-radius: 5px; min-width: 0; }.bw-saved-group-head:hover { background: var(--bg-hover); }
 .bw-group-toggle { flex: 1; display: flex; align-items: center; min-width: 0; gap: 7px; border: 0; color: var(--text); background: transparent; font: inherit; cursor: pointer; padding: 8px 4px; text-align: left; }
 .bw-group-toggle svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-dim); }.bw-group-toggle.folded svg { transform: rotate(-90deg); }

@@ -249,8 +249,10 @@ const Outline = (() => {
   // 上下叠两条折线在 VS Code / GitHub 里就是「全部展开 / 全部收起」的固定画法。
   // ⚠ 两条折线之间必须留 ≥ 1 个 viewBox 单位的空隙：早先 4.4/7.8/8.6/12 那一版两线首尾相接，
   //   渲染成 14px 后糊成一个 "X"/单箭头（截图 8 倍放大实测），完全读不出是"两条折线"。
-  const IC_EXPAND = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 3.6L8 7l3.4-3.4M4.6 8.8L8 12.2l3.4-3.4"/></svg>';
-  const IC_COLLAPSE = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 7.4L8 4l3.4 3.4M4.6 12.6L8 9.2l3.4 3.4"/></svg>';
+  // 展开 / 收起全部：统一取 icons.js 那一份（与项目树、Git 面板、搜索面板同图）。
+  // 原来这里画的是另一种双箭头（间距更窄、角度更陡），和 Git 面板并排看像两个不同功能。
+  const IC_EXPAND = (window.Icons || {}).expandAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 6.1 8 3.7l2.4 2.4"/><path d="M5.6 9.9 8 12.3l2.4-2.4"/></svg>';
+  const IC_COLLAPSE = (window.Icons || {}).collapseAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 3.7 8 6.1l2.4-2.4"/><path d="M5.6 12.3 8 9.9l2.4 2.4"/></svg>';
   const IC_SYNC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h9M9 2l3 3-3 3M13 11H4m3-3-3 3 3 3"/></svg>';
   function mountHeaderActions() {
     const t = panel && panel.querySelector('.panel-title');
