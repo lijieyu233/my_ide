@@ -46,5 +46,47 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
   await f.menu('remote');const stale=f.q('[data-tool-shortcut]');f.fire('body','pointerdown');stale.click();assert(!f.q('#set-box'));await f.menu('remote');const replaced=f.q('[data-tool-shortcut]');f.q('#ctx-menu').replaceChildren(f.d.createElement('button'));replaced.click();assert(!f.q('#set-box'));await f.menu('remote');f.key('Escape');assert(f.q('#ctx-menu').classList.contains('hidden'));assert.equal(f.d.activeElement,f.q('#tool-remote'));
   const service=require('../src/main/browser/tool-shortcuts').createService();assert(service.set([{id:'tool-remote',combos:['ctrl+alt+j']}]).ok);assert.equal(service.match({type:'keyDown',key:'J',control:true,alt:true}),'tool-remote');assert.equal(service.match({type:'keyUp',key:'j',control:true,alt:true}),null);assert(!service.set([{id:'unknown',combos:['ctrl+j']}]).ok);assert(!service.set([{id:'tool-remote',combos:['j']}]).ok);assert.equal(service.match({type:'keyDown',key:'j',control:true,alt:true}),'tool-remote');assert(service.set([]).ok);assert.equal(service.match({type:'keyDown',key:'j',control:true,alt:true}),null);
  });
+ await test('隐藏不用的工具图标：右键隐藏、空白处恢复、持久化且不改快捷键',async f=>{
+  const {w,q}=f;
+  await f.menu('db');
+  const hideItem=[...q('#ctx-menu').querySelectorAll('.ctx-item')].find(b=>b.textContent.includes('隐藏'));
+  assert(hideItem,'右键菜单应提供隐藏项: '+[...q('#ctx-menu').querySelectorAll('.ctx-item')].map(b=>b.textContent).join('|'));
+  hideItem.click();
+  assert(q('#tool-db').classList.contains('tool-hidden'),'图标被标记隐藏');
+  assert.equal(w.ToolStrip.hiddenTools().join(','),'db');
+  // 隐藏必须 display:none —— 留空位等于没隐藏
+  const css=read('styles.css');
+  assert(/#tool-strip \.tool-btn\.tool-hidden \{ display: none; \}/.test(css),'隐藏态样式必须 display:none');
+  const saved=w.localStorage.getItem('myide-tool-strip-hidden');
+  assert.equal(saved,'["db"]');
+  const again=fixture({'myide-tool-strip-hidden':saved});
+  try{assert(again.q('#tool-db').classList.contains('tool-hidden'),'重载后仍然隐藏');}finally{again.close();}
+  // 隐藏不改 ALL_TOOLS：快捷键 / 命令仍然能切到该工具
+  w.nativeAction('tool-db');await tick();
+  assert.equal(w.App.tool,'db','隐藏后快捷键仍然切得过去');
+  // 空白处右键 → 恢复列表
+  f.fire('#tool-strip','contextmenu',{clientX:10,clientY:400});
+  await tick();
+  const menu=q('#ctx-menu');
+  const show=[...menu.querySelectorAll('.ctx-item')].find(b=>b.textContent.includes('显示「数据库」'));
+  assert(show,'空白处菜单应列出被隐藏的工具: '+[...menu.querySelectorAll('.ctx-item')].map(b=>b.textContent).join('|'));
+  show.click();
+  assert(!q('#tool-db').classList.contains('tool-hidden'),'恢复后图标回来');
+  assert.equal(w.ToolStrip.hiddenTools().join(','),'');
+ });
+ await test('不能把图标全部藏光，侧栏开关不提供隐藏项',async f=>{
+  const {w,q}=f;
+  const names=['project','outline','browser','bookshelf','remote','git','search','tasks','launch','quick-launch','log'];
+  for(const name of names)w.ToolStrip.hide(name);
+  assert.equal(w.ToolStrip.hiddenTools().length,names.length);
+  w.ToolStrip.hide('db');
+  assert(!w.ToolStrip.hiddenTools().includes('db'),'至少保留一个可见工具');
+  assert(f.notices.some(n=>/至少保留一个/.test(n[0])),'给出可理解的提示');
+  f.fire('#tool-sidebar','contextmenu',{clientX:10,clientY:20});
+  await tick();
+  assert(![...q('#ctx-menu').querySelectorAll('.ctx-item')].some(b=>b.textContent.includes('隐藏')),'侧栏开关不提供隐藏');
+  w.ToolStrip.showAll();
+  assert.equal(w.ToolStrip.hiddenTools().length,0);
+ });
  console.log('功能栏排序与快捷键 '+passed+' 通过 / 0 失败');
 })().catch(error=>{console.error(error);process.exitCode=1;});

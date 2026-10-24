@@ -216,6 +216,9 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 /* 弹性占位：它之后的按钮被推到底部（Git 日志）——「提交」与「日志」两个 git 入口挨着容易点错 */
 .tool-strip-gap { margin-top: auto; flex: 0 0 auto; }
 #tool-strip .tool-btn { flex-shrink: 0; }
+/* 隐藏的工具：用 display:none 而不是 visibility —— 后者仍占位，工具栏会留下一排空洞，
+   用户要的是「只显示我在用的模块」，不是「图标没了但坑还在」。 */
+#tool-strip .tool-btn.tool-hidden { display: none; }
 #tool-strip .tool-btn.tool-dragging { opacity: .35; }
 #tool-strip .tool-btn.tool-drop-before::before, #tool-strip .tool-btn.tool-drop-after::before { content: ''; position: absolute; left: 5px; right: 5px; height: 2px; background: var(--accent); pointer-events: none; }
 #tool-strip .tool-btn.tool-drop-before::before { top: 0; }
