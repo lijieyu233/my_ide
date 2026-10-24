@@ -315,6 +315,45 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert.equal(members.length, 2, '两个网页被打开并归入组: ' + JSON.stringify(members.map(t => t.url)));
     assert(members.every(t => t.url.startsWith('https://x.test/')), '网址正确');
   });
+  await test('拖动改变组籍：拖到组头上加入该组，拖到组外标签上离开组', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test']) w.BrowserPanel.newTab(u);
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    // 先把 a 建组
+    const rowA = [...q('#bw-tabs').querySelectorAll('.bw-tab')].find(r => (r.title || '').includes('a.test'));
+    // 通过 UI 建组
+    w.BrowserPanel.saveTabGroup(w.BrowserPanel.tabs.filter(t => t.url === 'https://a.test'));
+    q('#bw-group-name').value = 'G';
+    q('.bw-save-group form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    const groups = () => JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
+    const gid = groups()[0].id;
+    const groupIdOf = url => (w.BrowserPanel.tabs.find(t => t.url === url) || {}).groupId;
+    assert.equal(groupIdOf('https://a.test'), gid, 'a 在组里');
+    assert(!groupIdOf('https://b.test'), 'b 不在组里');
+
+    // 把 b 拖到组头上 → 加入组
+    const dt = { setData() {}, getData() { return ''; }, effectAllowed: '', dropEffect: '' };
+    const idOf = url => (w.BrowserPanel.tabs.find(t => t.url === url) || {}).id;
+    const byId = id => [...q('#bw-tabs').querySelectorAll('.bw-tab')].find(el => el.dataset.tabId === id);
+    const tabOf = url => byId(idOf('https://' + url));
+    assert(tabOf('b.test'), '找到 b 标签的 DOM 节点');
+    const bTab = tabOf('b.test'), head = q('.bw-tab-group-head');
+    bTab.dispatchEvent(Object.assign(new w.Event('dragstart', { bubbles: true }), { dataTransfer: dt }));
+    head.dispatchEvent(Object.assign(new w.Event('dragover', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 1 }));
+    head.dispatchEvent(Object.assign(new w.Event('drop', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 1 }));
+    await tick();
+    assert.equal(groupIdOf('https://b.test'), gid, 'b 已加入组');
+    assert.equal(q('.bw-live-group .bw-live-count').textContent, '2', '组内计数变成 2');
+
+    // 把 b 拖到一个组外标签上 → 退出组
+    assert(!groupIdOf('https://c.test'), 'c 不在组里');
+    tabOf('b.test').dispatchEvent(Object.assign(new w.Event('dragstart', { bubbles: true }), { dataTransfer: dt }));
+    tabOf('c.test').dispatchEvent(Object.assign(new w.Event('drop', { bubbles: true, cancelable: true }), { dataTransfer: dt, clientY: 1 }));
+    await tick();
+    assert(!groupIdOf('https://b.test'), 'b 已退出组');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));

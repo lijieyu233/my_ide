@@ -2625,6 +2625,12 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-tab-group .bw-tab.active { background: var(--bg-input); border-color: var(--border); box-shadow: inset 0 2px var(--group-tint); }
 /* 折叠态：只剩组头，宽度收紧成胶囊 */
 .bw-tab-group.folded { padding-right: 2px; }
+/* 把标签拖到组头上时的接受态：整组亮一圈，明确告诉用户「松手就进这组」 */
+.bw-tab-group.drop-into-group {
+  box-shadow: inset 0 0 0 2px var(--group-tint, #4f9cd6),
+              0 0 0 3px color-mix(in srgb, var(--group-tint, #4f9cd6) 26%, transparent);
+}
+.bw-tab-group.drop-into-group .bw-tab-group-head { background: color-mix(in srgb, var(--group-tint) 34%, transparent); }
 /* 颜色选择面板 */
 .bw-color-menu { padding: 8px; }
 .bw-color-row { display: flex; gap: 8px; }

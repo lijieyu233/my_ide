@@ -324,7 +324,21 @@ const BrowserPanel = (() => {
       item.ondragstart = event => { draggingTab = tab.id; event.dataTransfer?.setData('text/plain', tab.id); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; item.classList.add('dragging'); };
       item.ondragover = event => { if (draggingTab) { event.preventDefault(); item.classList.add('drop-tab'); } };
       item.ondragleave = () => item.classList.remove('drop-tab');
-      item.ondrop = event => { if (!draggingTab) return; event.preventDefault(); event.stopPropagation(); tabStore.reorder(draggingTab, tab.id); draggingTab = null; renderTabs(); renderGroups(); storageStatus(); };
+      item.ondrop = event => {
+        if (!draggingTab) return;
+        event.preventDefault(); event.stopPropagation();
+        const moving = draggingTab; draggingTab = null;
+        // 拖到「属于不同组」的标签上时，连归属一起改 —— Edge 就是这样：位置走到哪、
+        // 组籍跟到哪。同一组内拖动只调顺序，不碰 groupId（否则一次拖动会把整组
+        // 的成员关系重算一遍，视觉上虽然一样但会多写一次存储）。
+        const movingTab = state.tabs.find(t => t.id === moving);
+        if (movingTab && moving !== tab.id && (movingTab.groupId || null) !== (tab.groupId || null)) {
+          if (tab.groupId) tabStore.addToGroup(tab.groupId, [moving]);
+          else tabStore.removeFromGroup([moving]);
+        }
+        tabStore.reorder(moving, tab.id);
+        renderTabs(); renderGroups(); storageStatus();
+      };
       item.ondragend = () => { draggingTab = null; document.querySelectorAll('.bw-tab.dragging,.bw-tab.drop-tab').forEach(el => el.classList.remove('dragging', 'drop-tab')); };
       if (tabRuntime.get(tab.id)?.loading) item.classList.add('loading');
       return item;
@@ -358,6 +372,21 @@ const BrowserPanel = (() => {
       head.querySelector('.bw-tg-count').textContent = String(state.tabs.filter(t => t.groupId === group.id).length);
       head.onclick = event => { event.stopPropagation(); tabStore.setGroupFolded(group.id, !group.folded); renderTabs(); renderGroups(); };
       head.oncontextmenu = event => { event.preventDefault(); event.stopPropagation(); openGroupMenu(group.id, event.clientX, event.clientY); };
+      // 把标签拖到组头上 = 加入这个组（不用先展开、也不用走菜单）。
+      // 拖的是组内标签时，等同于「留在这个组」—— 只在位置上有意义，所以不重复处理。
+      head.ondragover = event => { if (!draggingTab) return; event.preventDefault(); event.stopPropagation(); box.classList.add('drop-into-group'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; };
+      head.ondragleave = () => box.classList.remove('drop-into-group');
+      head.ondrop = event => {
+        if (!draggingTab) return;
+        event.preventDefault(); event.stopPropagation();
+        box.classList.remove('drop-into-group');
+        const moving = draggingTab; draggingTab = null;
+        const movingTab = state.tabs.find(t => t.id === moving);
+        if (!movingTab || movingTab.groupId === group.id) return;
+        tabStore.addToGroup(group.id, [moving]);
+        renderTabs(); renderGroups(); storageStatus();
+        MI.toast('已加入「' + group.name + '」', 'ok');
+      };
       list.append(box);
     }
     list.scrollLeft = scroll;
