@@ -27,6 +27,20 @@ const Search = (() => {
     view.status.hidden=s.phase==='empty';
     view.stop.disabled=!['waiting','searching'].includes(s.phase);view.retry.hidden=!s.navigationError&&!['error','timeLimit','resultLimit','cancelled'].includes(s.phase);
     view.source.hidden=s.navigationCode!=='UNSUPPORTED_VIEW';
+    // 只有侧栏有分组，才谈得上「全展开/全收起」。按钮图标随状态翻转：
+    // 当前全展开 → 显示「收起」箭头；否则显示「展开」箭头。
+    const groupKeys=new Set(s.results.map(hit=>DocumentPaths.key(hit.path)));
+    const foldable=view.kind==='dock'&&groupKeys.size>0;
+    if(view.fold){
+      view.fold.hidden=!foldable;
+      if(foldable){
+        const allCollapsed=[...groupKeys].every(key=>s.collapsed.has(key));
+        view.fold.innerHTML='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(allCollapsed?'M4 6l4 4 4-4':'M4 10l4-4 4 4')+'"/></svg>';
+        const label=allCollapsed?'展开全部分组':'收起全部分组';
+        view.fold.title=label;view.fold.setAttribute('aria-label',label);
+        view.fold.classList.toggle('active',allCollapsed);
+      }
+    }
   }
   function render(view){
     if(!live(view))return;const s=view.model.state;
@@ -66,8 +80,19 @@ const Search = (() => {
         const body=document.createElement('div');body.setAttribute('role','group');body.hidden=s.collapsed.has(key);hits.slice().sort((a,b)=>a.line-b.line||a.startColumn-b.startColumn).forEach(hit=>body.appendChild(rowFor(hit)));
         button.onclick=()=>{if(usable(view))view.model.collapse(hits[0].path);};section.append(button,body);view.list.appendChild(section);
       }
-      const nextAnchor=anchor&&[...view.list.querySelectorAll('.qo-item')].find(row=>row.dataset.hitId===anchor.dataset.hitId&&!row.parentElement.hidden);
-      // 分组后的offsetParent未必是滚动容器；用同一视口坐标保住正在读的那条命中。
+      // 重建后要把视口稳住。老实现只认「同一条命中」当锚点，一旦那条命中随分组被折叠，
+      // nextAnchor 就是空的 → 落回旧 scrollTop；而折叠让内容高度骤减，浏览器会把它钳到
+      // 新的最大值，视觉上正是「折叠一组，其余全被往上推」。
+      // 锚点改为「分组头优先」：折叠动作的对象就是分组头，它必然还在。
+      const anchorGroupKey=anchor?.dataset.hitId?anchor.closest('.sr-group')?.querySelector('.sr-group-head')?.dataset.group:null;
+      const anchorHitId=anchor?.dataset.hitId||null;
+      const findAnchor=()=>{
+        if(anchorGroupKey){const head=[...view.list.querySelectorAll('[data-group]')].find(row=>row.dataset.group===anchorGroupKey);if(head)return head;}
+        if(anchorHitId){const row=[...view.list.querySelectorAll('.qo-item')].find(r=>r.dataset.hitId===anchorHitId);if(row)return row;}
+        return null;
+      };
+      const nextAnchor=findAnchor();
+      // 用同一视口坐标把锚点钉回原位；找不到锚点才退回旧 scrollTop（此时被钳也无从补救）。
       view.list.scrollTop=nextAnchor?Math.max(0,view.list.scrollTop+nextAnchor.getBoundingClientRect().top-view.list.getBoundingClientRect().top-anchorOffset):scrollTop;
       if(focusedInList){const replacement=[...view.list.querySelectorAll('[data-hit-id],[data-group]')].find(row=>focusId?row.dataset.hitId===focusId:row.dataset.group===focusGroup);(replacement||view.input).focus({preventScroll:true});}
     }
@@ -105,12 +130,30 @@ const Search = (() => {
   }
   function build(box,kind){
     const prefix=kind==='modal'?'sr':'search',m=getModel();
-    box.innerHTML='<div class="'+(kind==='modal'?'qo-head':'panel-title')+'"><span id="'+prefix+'-title">搜索内容</span><span class="sr-title-actions"><button class="vt-btn" id="'+prefix+'-move" title="'+(kind==='modal'?'移到侧栏并保留结果':'用弹窗打开')+'">'+(kind==='modal'?'留在侧栏':'弹窗')+'</button><button class="vt-btn" id="'+prefix+'-close" title="'+(kind==='modal'?'关闭':'收起面板')+'">'+(kind==='modal'?'关闭':'收起')+'</button></span></div>'
+    // 标题行只留图标 + tooltip：「弹窗 / 收起」这类短词在 322px 侧栏里既占宽又说不清
+    // （「收起」到底收起列表还是整个面板？）。图标沿用仓库 svg.ic 线性规范。
+    box.innerHTML='<div class="'+(kind==='modal'?'qo-head':'panel-title')+'"><span id="'+prefix+'-title">搜索内容</span><span class="sr-title-actions">'
+      +'<button class="vt-btn" id="'+prefix+'-move" title="'+(kind==='modal'?'移到侧栏（保留结果）':'在弹窗中打开')+'" aria-label="'+(kind==='modal'?'移到侧栏':'在弹窗中打开')+'"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true">'+(kind==='modal'?'<rect x="2.5" y="3" width="6.5" height="10" rx="1"/><rect x="6.5" y="5.5" width="7" height="8" rx="1"/>':'<rect x="2.5" y="3.5" width="11" height="9" rx="1"/><path d="M2.5 6.5h11"/>')+'</svg></button>'
+      +'<button class="vt-btn" id="'+prefix+'-close" title="'+(kind==='modal'?'关闭搜索':'收起搜索面板')+'" aria-label="'+(kind==='modal'?'关闭搜索':'收起搜索面板')+'"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>'
+      +'</span></div>'
       +'<div class="sr-query-wrap"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.6 3.6"/></svg><input id="'+prefix+'-input" class="sr-query" placeholder="输入关键字…" aria-label="搜索内容" role="combobox" aria-autocomplete="list" aria-haspopup="'+(kind==='modal'?'listbox':'tree')+'" aria-expanded="true" aria-controls="'+prefix+'-list" aria-describedby="'+prefix+'-status" autocomplete="off" spellcheck="false"></div>'
-      +'<div class="sr-controls"><label><input id="'+prefix+'-case" type="checkbox">区分大小写</label><button id="'+prefix+'-stop" class="vt-btn" disabled>停止</button><button id="'+prefix+'-retry" class="vt-btn" hidden>重新搜索</button><button id="'+prefix+'-source" class="vt-btn" hidden>以源码定位</button></div>'
+      +'<div class="sr-controls"><label><input id="'+prefix+'-case" type="checkbox">区分大小写</label><button id="'+prefix+'-stop" class="vt-btn" disabled>停止</button><button id="'+prefix+'-retry" class="vt-btn" hidden>重新搜索</button><button id="'+prefix+'-source" class="vt-btn" hidden>以源码定位</button>'
+      +'<span class="sr-fold">'
+      +'<button id="'+prefix+'-fold" class="vt-btn" title="展开全部分组" aria-label="展开全部分组" hidden><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>'
+      +'</span></div>'
       +'<div id="'+prefix+'-status" class="sr-status" role="status"></div><div id="'+prefix+'-list" class="sr-list" role="'+(kind==='modal'?'listbox':'tree')+'" aria-label="搜索结果"></div><div class="qo-foot">↑↓ 选择 · Enter 定位 · Esc '+(kind==='modal'?'关闭':'返回编辑器')+'</div>';
     const view={box,kind,prefix,model:m,origin:document.activeElement,documentId:Viewer.activeTab?.id,input:box.querySelector('#'+prefix+'-input'),list:box.querySelector('#'+prefix+'-list'),
-      status:box.querySelector('#'+prefix+'-status'),caseSensitive:box.querySelector('#'+prefix+'-case'),stop:box.querySelector('#'+prefix+'-stop'),retry:box.querySelector('#'+prefix+'-retry'),source:box.querySelector('#'+prefix+'-source'),restore:true};
+      status:box.querySelector('#'+prefix+'-status'),caseSensitive:box.querySelector('#'+prefix+'-case'),stop:box.querySelector('#'+prefix+'-stop'),retry:box.querySelector('#'+prefix+'-retry'),source:box.querySelector('#'+prefix+'-source'),
+      fold:box.querySelector('#'+prefix+'-fold'),restore:true};
+    // 一个按钮切换「全展开 / 全收起」：两枚箭头并排既占宽又要读两次才懂，
+    // 单个切换钮 + 会变的图标才算「当前是什么状态、按了会怎样」。
+    const allGroupKeys=()=>[...new Set(view.model.state.results.map(hit=>DocumentPaths.key(hit.path)))];
+    view.fold.onclick=()=>{
+      if(!usable(view))return;
+      const keys=allGroupKeys(),s=view.model.state;
+      const allCollapsed=keys.length>0&&keys.every(key=>s.collapsed.has(key));
+      view.model.collapseAll(keys,!allCollapsed);
+    };
     const changed=()=>m.query(view.input.value,view.caseSensitive.checked,view.composing);
     view.input.addEventListener('input',changed);view.caseSensitive.onchange=changed;view.input.addEventListener('compositionstart',()=>{view.composing=true;changed();});view.input.addEventListener('compositionend',()=>{view.composing=false;changed();});
     box.querySelector('#'+prefix+'-close').onclick=()=>close(view);box.querySelector('#'+prefix+'-move').onclick=()=>kind==='modal'?showDock():open();view.stop.onclick=()=>m.stop();view.retry.onclick=changed;view.source.onclick=()=>pick(view,undefined,true);

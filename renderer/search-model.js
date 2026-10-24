@@ -53,6 +53,8 @@ const SearchModel = (() => {
     return {state,query,run,stop,valid,subscribe(fn){listeners.add(fn);fn(state);return()=>listeners.delete(fn);},
       select(id){if(valid()&&state.ids.has(id)){state.selectedHitId=id;emit();}},
       collapse(path){if(!valid())return;const key=DocumentPaths.key(path);state.collapsed.has(key)?state.collapsed.delete(key):state.collapsed.add(key);emit();},
+      // 全部展开/收起：只动折叠集合，命中、选择与滚动都不变（视图侧负责保住锚点）。
+      collapseAll(paths,collapsed){if(!valid())return;state.collapsed=collapsed?new Set(paths.map(DocumentPaths.key)):new Set();emit();},
       navigation(error='',code=''){state.navigationError=error;state.navigationCode=code;emit();},
       suspend(){state.nav++;clearTimeout(timer);stop();},
       reset(){query('');},

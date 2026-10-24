@@ -1963,6 +1963,18 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
    再把尺寸压到行内文字的高度，不再比旁边的字大一圈。 */
 .sr-controls input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; }
 .sr-controls [hidden] { display: none; }
+/* 「停止/重新搜索」是动词按钮，留在左侧与复选框同排；全部展开/收起是视图开关，推到右侧。 */
+.sr-controls .sr-fold { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.sr-controls .sr-fold .vt-btn {
+  border: none; background: transparent; border-radius: 4px;
+  padding: 0 5px; height: 20px; width: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim);
+}
+.sr-controls .sr-fold .vt-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.sr-controls .sr-fold .vt-btn.active { color: var(--accent); }
+.sr-controls .sr-fold .vt-btn:disabled { opacity: .35; cursor: default; background: transparent; }
+.sr-controls .sr-fold svg.ic { width: 13px; height: 13px; }
 .sr-status { padding: .5em .8em; color: var(--text-dim); overflow-wrap: anywhere; flex-shrink: 0; }
 .sr-status[hidden] { display: none; }
 .sr-query { width: 100%; min-width: 0; padding: .6em .8em; background: var(--bg-input); color: var(--text-bright); border: none; border-bottom: 1px solid var(--border); }
@@ -1996,13 +2008,29 @@ body.theme-light #panel-search, body.theme-pink #panel-search { color-scheme: li
 .sr-empty-title { font-size: 1em; color: var(--text); }
 .sr-empty-sub { font-size: .85em; opacity: .8; }
 #panel-search .qo-foot { flex-shrink: 0; padding: .5em .8em; font-size: .85em; }
-.sr-group-head { display: flex; align-items: center; width: 100%; gap: .4em; padding: .5em .6em; background: var(--bg-panel); color: var(--text-bright); border: none; text-align: left; font: inherit; }
+/* 分组头与结果行共用同一条左边线：头在 0，它的命中退一级到 1.3em，
+   折叠箭头占固定一列 —— 原来头是 7.8px、行是 1.4em，两套基准对不齐。 */
+.sr-group-head { display: flex; align-items: center; width: 100%; gap: .4em; padding: .42em .6em; background: var(--bg-panel); color: var(--text-bright); border: none; text-align: left; font: inherit; cursor: pointer; }
+.sr-group-head:hover { background: var(--bg-hover); }
+.sr-group-head svg.ic { width: 11px; height: 11px; opacity: .7; }
 .sr-group-head svg { flex-shrink: 0; transform: rotate(90deg); }
 .sr-group-head[aria-expanded="false"] svg { transform: none; }
 .sr-group-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sr-group-count { margin-left: auto; color: var(--text-dim); flex-shrink: 0; }
 .sr-group > [hidden] { display: none; }
-#panel-search .qo-item { padding: .5em .8em .5em 1.4em; gap: .6em; }
+/* 结果行：行号是本行的"第一列"，宽度必须固定（1:66 与 10:66 位数不同），
+   否则每行正文的起始 x 都在抖，看起来像两段文字挤在一起。 */
+#panel-search .qo-item { padding: .3em .6em .3em 1.15em; gap: .55em; align-items: center; border-radius: 3px; }
+#panel-search .qo-item:hover { background: var(--bg-hover); }
+#panel-search .qo-item .sr-file {
+  /* 固定一列而不是 min-width：min-width 只保证下限，超过下限的长行号（10:66）
+     仍会把正文往右顶，于是每行正文起点还在抖 —— 这正是「缩进不完全齐」的观感来源。 */
+  flex: 0 0 3.4em; width: 3.4em; text-align: right;
+  color: var(--text-dim); font-variant-numeric: tabular-nums; opacity: .85;
+}
+#panel-search .qo-item .sr-text { flex: 1 1 auto; min-width: 0; }
+/* 选中/悬停时才把行号提亮，平时让它退到背景里 —— 一列满是对的等宽数字很吵。 */
+#panel-search .qo-item.sel .sr-file, #panel-search .qo-item:hover .sr-file { color: var(--text); }
 #panel-search .qo-item.sel { box-shadow: inset 2px 0 var(--accent); }
 #panel-search .qo-item.sel .sr-text { color: var(--text-bright); }
 .qo-item.sel .sr-text { color: #ddd; }
