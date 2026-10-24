@@ -796,7 +796,12 @@ const BrowserPanel = (() => {
       h.textContent = host;
       it.appendChild(nm);
       it.appendChild(h);
-      it.onclick = () => go(f.url);
+      // 左键：新开一个标签页，不覆盖当前正在看的页面。
+      // 原来这里是 go(f.url)，会直接把当前标签导航走 —— 用户在手头页面里查资料时
+      // 点一下收藏，正在读的那页就没了。要在当前页打开用右键菜单的第一项。
+      it.onclick = () => newTab(f.url, f.title);
+      // 中键也走新标签（浏览器通行习惯），并阻止中键在页面上触发滚动/自动滚动。
+      it.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); newTab(f.url, f.title); } };
       // 右键：打开 / 移动到文件夹 / 删除
       it.oncontextmenu = (e) => {
         e.preventDefault();
@@ -810,7 +815,10 @@ const BrowserPanel = (() => {
           d.onclick = () => { m.classList.add('hidden'); fn(); };
           m.appendChild(d);
         };
-        mk('📂 打开', () => go(f.url));
+        // 左键已改成一律新开标签，所以这里把「在当前页打开」单独列出来，
+        // 否则一旦当前页被新标签挤到后面，用户就没有回到「用当前页导航」的路。
+        mk('🔗 在新标签打开', () => newTab(f.url, f.title));
+        mk('📂 在当前标签打开', () => go(f.url));
         mk('✏️ 重命名', async () => {
           const name = await Modal.prompt('重命名收藏', '名称', f.title || f.url);
           if (!name || !name.trim()) return;

@@ -37,6 +37,31 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert.equal(w.Modal.stack.length, 0); assert(q('.bw-saved-group').textContent.includes('后台联调')); const count = w.BrowserPanel.tabs.length; q('.bw-group-open').click(); assert.equal(w.BrowserPanel.tabs.length, count);
     q('#bw-side-favorites').click(); assert(!q('#bw-sb-list').classList.contains('hidden')); assert(q('#bw-groups-list').classList.contains('hidden')); assert.equal(q('#bw-sb-add-folder').title, '新建收藏文件夹'); q('#bw-side-groups').click(); assert.equal(q('#bw-sb-add-folder').title, '保存当前标签组');
   });
+  await test('点收藏卡片新开标签且不覆盖当前页，右键仍可在当前标签打开', async ({ w, calls, q }) => {
+    w.BrowserPanel.show();
+    w.BrowserPanel.go('https://current.test/reading');
+    const before = w.BrowserPanel.activeTabId, countBefore = w.BrowserPanel.tabs.length;
+    // 左键：新标签
+    const item = w.document.querySelectorAll('#bw-sb-list .bw-sb-item')[0];
+    assert(item, '收藏卡片存在');
+    item.click();
+    assert.equal(w.BrowserPanel.tabs.length, countBefore + 1, '点收藏应新开一个标签');
+    assert.notEqual(w.BrowserPanel.activeTabId, before, '新标签成为活动标签');
+    assert.equal(w.BrowserPanel.tabs.find(t => t.id === before).url, 'https://current.test/reading', '原标签的地址未被改写');
+    // 中键：同样新开
+    const countAfterLeft = w.BrowserPanel.tabs.length;
+    item.dispatchEvent(new w.MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }));
+    assert.equal(w.BrowserPanel.tabs.length, countAfterLeft + 1, '中键也应新开标签');
+    // 右键菜单第一项是新标签，第二项才是当前标签
+    item.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const items = [...w.document.querySelectorAll('#ctx-menu .ctx-item')].map(b => b.textContent);
+    assert(items.some(t => t.includes('在新标签打开')), '右键有「在新标签打开」: ' + items.join('|'));
+    assert(items.some(t => t.includes('在当前标签打开')), '右键保留「在当前标签打开」');
+    // 「在当前标签打开」仍走导航（覆盖当前页）
+    const currentId = w.BrowserPanel.activeTabId;
+    w.document.querySelectorAll('#ctx-menu .ctx-item')[1].click();
+    assert.equal(w.BrowserPanel.activeTabId, currentId, '在当前标签打开不改活动标签');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
