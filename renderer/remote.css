@@ -55,6 +55,24 @@
 .remote-path-bar { display:flex; align-items:center; gap:.35em; padding:.85em .75em .4em; }.remote-path-bar input { flex:1; width:0; min-width:3em!important; font-family:var(--font-mono)!important; font-size:.88em!important; }#remote-main .remote-path-bar button { font-size:.85em; padding:.45em .55em; }
 .remote-file-tools { display:flex; align-items:center; gap:.25em; padding:.2em .75em .65em; flex-wrap:wrap; }#remote-main .remote-file-tools button { border-color:transparent; background:transparent; color:var(--text-dim); font-size:.85em; padding:.3em .6em; }#remote-main .remote-file-tools button:hover:not(:disabled) { color:var(--text); background:var(--bg-hover); }
 .remote-file-columns { display:flex; justify-content:space-between; gap:1em; padding:.65em 1em .65em 2.9em; font-size:.78em; color:var(--text-dim); border-block:1px solid color-mix(in srgb,var(--text) 6%,transparent); background:color-mix(in srgb,var(--text) 2%,transparent); }
+/* 文件列表的右键菜单。复用全局 .ctx-item / .ctx-sep 的观感，但容器单独定位 ——
+   它挂在 body 上（列表有 overflow:auto，放在列表里会被裁掉）。 */
+.remote-file-menu {
+  position: fixed; z-index: 260; min-width: 176px; padding: 4px;
+  border-radius: 8px; background: var(--bg-panel);
+  border: 1px solid var(--ui-line, var(--border));
+  box-shadow: 0 8px 24px rgba(0,0,0,.42);
+  display: flex; flex-direction: column;
+}
+.remote-file-menu .ctx-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 6px 10px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--text-bright); font: inherit; font-size: .92em; text-align: left; cursor: pointer;
+}
+.remote-file-menu .ctx-item:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.remote-file-menu .ctx-item:disabled { opacity: .45; cursor: default; }
+.remote-file-menu .ctx-item.danger:hover:not(:disabled) { background: var(--red); }
+.remote-file-menu .ctx-sep { height: 1px; margin: 4px 2px; background: var(--border-pane); }
 .remote-file-list { flex:1; min-height:5em; overflow:auto; padding:.4em; }.remote-file { display:flex; align-items:center; gap:.6em; min-height:2.6em; padding:.6em; border:0; border-radius:.35em; background:none; color:var(--text); font:inherit; width:100%; text-align:left; cursor:pointer; }.remote-file:hover { background:var(--bg-hover); }.remote-file.selected { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--text-bright); }
 .remote-file>span:first-child { display:flex; color:var(--text-dim); }.remote-file.selected>span:first-child { color:var(--accent); }.remote-file-name { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:.92em; }.remote-file small { flex:0 0 auto; color:var(--text-dim); font-size:.78em; font-variant-numeric:tabular-nums; }
 .remote-file-status { font-size:.78em; padding:.75em 1em; color:var(--text-dim); background:var(--bg-tabbar); overflow-wrap:anywhere; }

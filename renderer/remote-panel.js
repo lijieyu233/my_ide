@@ -170,6 +170,107 @@ window.RemotePanel = (() => {
   }
   function selectTerminal(id) { activeTerm = id; const t = terminals.get(id); if (t) { const changed = sid !== t.sid; sid = t.sid; selected = sessions.get(sid)?.profileId || selected; renderSessions(); if (changed) { panes.remote.serial++; panes.remote.entries = []; panes.remote.selected.clear(); panes.remote.path = current()?.home || ''; renderPane('remote'); if (connected()) void browse('remote', panes.remote.path).catch(error => notify(error.message, true)); } } mode = 'terminal'; renderMode(); renderTerminals(); if (t) requestFit(); }
   function renderMode() { q('remote-files').classList.toggle('hidden', mode !== 'files'); q('remote-terminal-area').classList.toggle('hidden', mode !== 'terminal'); for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).classList.toggle('active', mode === tab); }
+  // ── 右键菜单 ──────────────────────────────────────────────────────────
+  // 远程/本地文件列表原来只有顶部那排「新建目录 / 重命名 / 删除」，用户在
+  // 具体某个文件上没有任何就地操作入口（尤其「编辑远程文件」根本不存在）。
+  //
+  // 关键设计：编辑走「下载到临时目录 → 用编辑器打开 → 保存时自动传回」。
+  // 不能只下载了事 —— 编辑器保存写的是本地文件，若不挂回程，用户改了半天空欢喜。
+  // 回程用 remote-edit 模块登记的映射（本地路径 → {sessionId, remotePath}）。
+  let ctxMenu = null;
+  function closeFileMenu() { ctxMenu?.remove(); ctxMenu = null; document.removeEventListener('pointerdown', onFileMenuDown, true); }
+  function onFileMenuDown(event) { if (!ctxMenu?.contains(event.target)) closeFileMenu(); }
+
+  const fileMenuIcons = {
+    edit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7.6 7.6-2.9.7.7-2.9z"/></svg>',
+    download: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.2M5 7l3 3 3-3M3 12.4h10"/></svg>',
+    upload: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.6V3.4M5 6.4l3-3 3 3M3 12.4h10"/></svg>',
+    rename: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 8h10.8M10.4 4.8L13.6 8l-3.2 3.2"/></svg>',
+    remove: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.4h9.2M6.2 4.4V2.8h3.6v1.6M4.6 4.4l.6 8.8h5.6l.6-8.8"/></svg>',
+    copyPath: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.4" y="2.6" width="8" height="9.4" rx="1.2"/><path d="M10.6 12.2v1.2H3.4a1 1 0 0 1-1-1V5.6h1.2"/></svg>',
+    refresh: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6a5 5 0 1 0 0 4M13 2v4H9"/></svg>',
+  };
+
+  function openFileMenu(side, event) {
+    const pane = panes[side], root = q('remote-' + side + '-pane');
+    const row = event.target.closest('[data-path]');
+    const path = row?.dataset.path || null;
+    const entry = path ? pane.byPath.get(path) : null;
+    closeFileMenu();
+    const menu = document.createElement('div');
+    menu.className = 'remote-file-menu';
+    menu.setAttribute('role', 'menu');
+    const add = (icon, label, fn, opts = {}) => {
+      if (opts.hidden) return;
+      const item = document.createElement('button');
+      item.type = 'button'; item.className = 'ctx-item with-icon' + (opts.danger ? ' danger' : '');
+      item.setAttribute('role', 'menuitem');
+      if (opts.disabled) item.disabled = true;
+      item.innerHTML = '<span class="ctx-item-ic">' + icon + '</span>';
+      const span = document.createElement('span'); span.textContent = label; item.append(span);
+      item.onclick = ev => { ev.stopPropagation(); closeFileMenu(); if (!opts.disabled) fn(); };
+      menu.append(item);
+    };
+    const sep = () => { const d = document.createElement('div'); d.className = 'ctx-sep'; menu.append(d); };
+    const isRemote = side === 'remote';
+    const isFile = entry && !entry.directory;
+
+    // ① 编辑 / 打开
+    if (isFile) {
+      add(fileMenuIcons.edit, isRemote ? '编辑远程文件' : '打开', () => editEntry(side, entry));
+    } else if (entry?.directory) {
+      add(fileMenuIcons.edit, '打开目录', () => { pane.selected.clear(); pane.selected.add(entry.path); void browse(side, entry.path); });
+    }
+    if (isFile) {
+      sep();
+      if (isRemote) {
+        add(fileMenuIcons.download, '下载到本地…', () => transferSelected(side, 'download'));
+      } else {
+        add(fileMenuIcons.upload, '上传到远程…', () => transferSelected(side, 'upload'));
+      }
+    }
+    if (path) {
+      add(fileMenuIcons.copyPath, '复制路径', () => {
+        try { navigator.clipboard.writeText(path); notify('已复制路径', false); } catch { notify('复制失败', true); }
+      });
+    }
+    sep();
+    add(fileMenuIcons.rename, '重命名…', () => root.querySelector('[data-action="rename"]').click(), { disabled: pane.selected.size !== 1 });
+    add(fileMenuIcons.remove, '删除', () => root.querySelector('[data-action="remove"]').click(), { danger: true, disabled: !pane.selected.size });
+    sep();
+    add(fileMenuIcons.refresh, '刷新', () => { void browse(side, pane.path).catch(() => {}); });
+
+    menu.style.left = '0px'; menu.style.top = '0px';
+    document.body.append(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - r.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - r.height - 8)) + 'px';
+    ctxMenu = menu;
+    document.addEventListener('pointerdown', onFileMenuDown, true);
+    menu.querySelector('.ctx-item:not(:disabled)')?.focus({ preventScroll: true });
+  }
+
+  // 右键菜单里的「下载 / 上传」：作用对象是当前选中的那一批文件。
+  // 复用顶部工具条那条 enqueue 链路（含冲突确认、进度队列），不另造一套传输。
+  async function transferSelected(side, action) {
+    const sources = [...panes[side].selected];
+    if (!sources.length) { notify('请先选择文件', true); return; }
+    try { await enqueue(action, sources); }
+    catch (error) { notify(error.message, true); }
+  }
+
+  // 编辑：远程文件先下载到「远程编辑暂存目录」，登记映射后交给编辑器打开。
+  async function editEntry(side, entry) {
+    if (!entry || entry.directory) return;
+    if (side === 'local') { await Viewer.openFile(entry.path); return; }
+    try {
+      const staged = await call('stageEdit', sid, entry.path);
+      if (!staged?.localPath) throw Error('暂存失败');
+      await Viewer.openFile(staged.localPath);
+      notify('已打开 ' + entry.name + '；保存后会自动传回服务器', false);
+    } catch (error) { notify('打开远程文件失败：' + error.message, true); }
+  }
+
   function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
   const fileNames = new Intl.Collator(undefined, { numeric: true });
   function fileRow(pane, e, top) {
@@ -240,6 +341,26 @@ window.RemotePanel = (() => {
         const row = [...list.querySelectorAll('[data-path]')].find(r => r.dataset.path === entry.path); row?.focus({ preventScroll: pane.virtual }); row?.click();
       });
       root.querySelector('form').onsubmit = attempt(async event => { event.preventDefault(); await browse(side, root.querySelector('input').value); });
+      // 右键：就地操作某个文件（编辑 / 上传下载 / 重命名 / 删除 / 复制路径）。
+      // 先把它选中再弹菜单 —— 否则会出现「右键 A、删掉 B」这种最糟糕的误操作。
+      root.addEventListener('contextmenu', event => {
+        const row = event.target.closest('[data-path]');
+        event.preventDefault(); event.stopPropagation();
+        if (row && !pane.selected.has(row.dataset.path)) {
+          pane.selected.clear(); pane.selected.add(row.dataset.path);
+          for (const r of root.querySelectorAll('[data-path]')) r.classList.toggle('selected', pane.selected.has(r.dataset.path));
+          root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项';
+        }
+        openFileMenu(side, event);
+      });
+      // 双击：目录进入，文件打开（远程先暂存到本地再交给编辑器）。
+      root.addEventListener('dblclick', attempt(async event => {
+        const row = event.target.closest('[data-path]'); if (!row) return;
+        const entry = pane.byPath.get(row.dataset.path); if (!entry) return;
+        event.preventDefault(); event.stopPropagation();
+        if (entry.directory) { if (!entry.link) await browse(side, entry.path); return; }
+        await editEntry(side, entry);
+      }));
       root.onclick = attempt(async event => {
         const row = event.target.closest('[data-path]');
         if (row) { if (!event.ctrlKey && !event.metaKey) pane.selected.clear(); if (pane.selected.has(row.dataset.path)) pane.selected.delete(row.dataset.path); else pane.selected.add(row.dataset.path); for (const r of root.querySelectorAll('[data-path]')) r.classList.toggle('selected', pane.selected.has(r.dataset.path)); root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项'; return; }

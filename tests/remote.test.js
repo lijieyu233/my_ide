@@ -57,6 +57,37 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     await service.forgetHost(p.id); const restored = await service.connect(p.id); check('明确清除旧指纹后可重新确认', restored.state === 'connected');
     service.disconnect(restored.id); await assert.rejects(() => service.list(restored.id, '/'), /断开/); check('断线拒绝文件操作', true);
     config = service.save({ ...p, remember: false }, service.load().version); check('取消记住凭据会删除已保存密文', !config.profiles[0].hasSecret);
+    // ── 远程文件就地编辑（stageEdit / saveEdit）──────────────────────────
+    // 语义：下载到暂存目录 → 编辑器当本地文件打开 → 保存时写回远程（原子 rename）。
+    // 注意：上面刚把 p 的 remember 设成 false（凭据已删），这里要带密码重连。
+    const editSession = await service.connect(p.id, { password: 'fixture-secret' });
+    fs.writeFileSync(path.join(remote, 'editable.txt'), '远程原始内容\n');
+    const staged = await service.stageEdit(editSession.id, '/editable.txt');
+    check('stageEdit 把远程文件下到暂存目录并返回本地路径',
+      !!staged.localPath && fs.existsSync(staged.localPath) && fs.readFileSync(staged.localPath, 'utf8') === '远程原始内容\n');
+    check('暂存路径带 hash，不同远程目录的同名文件互不覆盖',
+      staged.localPath.includes(path.sep + 'remote-edit' + path.sep) && /[0-9a-f]{12}-editable\.txt$/.test(staged.localPath));
+    check('editTarget 能认出暂存文件对应的远程路径',
+      service.editTarget(staged.localPath)?.remotePath === '/editable.txt');
+    check('普通本地文件没有远程映射', service.editTarget(path.join(local, 'not-staged.txt')) === null);
+    // 写回
+    const saved = await service.saveEdit(staged.localPath, '改过的内容\n');
+    check('saveEdit 写回远程且内容正确',
+      saved.staged === true && fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === '改过的内容\n');
+    check('写回后没有残留 .part 临时文件', !fs.readdirSync(remote).some(n => n.includes('.part')));
+    // 断线后必须明确失败，不能默默只写本地
+    service.disconnect(editSession.id);
+    await assert.rejects(() => service.saveEdit(staged.localPath, '断开后写入'), /连接已断开/);
+    check('断线后 saveEdit 明确拒绝（不假装成功）', fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === '改过的内容\n');
+    // 目录/超限/密文都要拒绝
+    const edit2 = await service.connect(p.id, { password: 'fixture-secret' });
+    await service.mkdir(edit2.id, '/连目录');
+    await assert.rejects(() => service.stageEdit(edit2.id, '/连目录'), /目录不能直接编辑/);
+    check('拒绝把目录当文件编辑', true);
+    fs.writeFileSync(path.join(remote, '密文.bin'), Buffer.from('%TSD-Header-###%garbage'));
+    await assert.rejects(() => service.stageEdit(edit2.id, '/密文.bin'), /绿盾密文/);
+    check('拒绝把绿盾密文送进编辑器', true);
+    service.disconnect(edit2.id);
     console.log('远程服务器：' + passed + ' 通过 / 0 失败');
   } finally {
     service?.dispose(); await server?.close();

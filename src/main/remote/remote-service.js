@@ -226,7 +226,104 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   async function retry(id, sid) { const job = jobs.get(id), s = session(sid); if (!job || job.stream || job.retrying || job.retried || !['failed', 'cancelled'].includes(job.state) || job.profileId !== s.profile.id) throw Error('请等待清理完成，并选择原服务器连接后重试失败项'); job.retrying = true; try { const result = await enqueue(sid, job.direction, [job.from], job.direction === 'upload' ? posix.dirname(job.to) : path.dirname(job.to), !!job.existing); if (result.jobs.length) { job.retried = true; reportJob(job); } return result; } finally { delete job.retrying; } }
   function clearFinished() { for (const [id, job] of jobs) if (!job.stream && !job.retrying && !['queued', 'running'].includes(job.state)) jobs.delete(id); return [...jobs.values()].map(jobView); }
   function dispose() { disposed = true; for (const job of jobs.values()) cancel(job.id); for (const s of sessions.values()) { s.client.destroy(); } }
-  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose,
+
+  // ── 远程文件就地编辑 ──────────────────────────────────────────────────
+  // 思路：把远程文件下载到「暂存目录」（userData/remote-edit/<sessionId>/<hash>-<name>），
+  // 让编辑器当普通本地文件打开；保存时由 saveEdit 把内容写回服务器。
+  //
+  // 为什么不做成「编辑器直接读写 sftp」：viewer 的保存链路（saveQueues、diskVersion、
+  // 原子写入、绿盾密文校验）全部建立在本地 fs 之上，绕开它等于把这些保障全部重写一遍。
+  // 暂存方案复用了全部现有机制，代价只是多一次本地落盘。
+  //
+  // 暂存文件名带 hash：同名文件在不同远程目录下不会互相覆盖；同一远程文件重复打开
+  // 拿到同一个本地路径，编辑器的「同一文件复用标签」也就自然成立。
+  const stagedEdits = new Map(); // localPath -> { sessionId, remotePath, profileId }
+  function editStagingRoot() {
+    // 用 Electron 的 userData；本文件也可能在纯 Node 测试里被 require，
+    // 拿不到 app 时退回系统临时目录（测试里 os.homedir 常被改指临时区）。
+    let base;
+    try { base = require('electron').app.getPath('userData'); } catch { base = path.join(os.tmpdir(), 'myide'); }
+    return path.join(base, 'remote-edit');
+  }
+  function stagingPathFor(sessionId, remoteTarget) {
+    const digest = createHash('sha256').update(remoteTarget).digest('hex').slice(0, 12);
+    const base = posix.basename(remoteTarget).replace(/[^\w.\-]+/g, '_') || 'file';
+    return path.join(editStagingRoot(), String(sessionId).replace(/[^\w\-]+/g, '_'), digest + '-' + base);
+  }
+  async function stageEdit(id, target) {
+    const s = session(id), remote = remotePath(target);
+    const stat = await request(s, 'lstat', remote);
+    if (stat.isDirectory()) throw Error('目录不能直接编辑');
+    if (stat.isSymbolicLink?.()) throw Error('不跟随符号链接，请编辑真实文件');
+    // 大小上限：编辑器要整块读进内存，20MiB 以上请用下载。
+    if (stat.size > 20 * 1024 * 1024) throw Error('文件超过 20MiB，请先下载到本地再编辑');
+    const localTarget = stagingPathFor(id, remote);
+    await fs.promises.mkdir(path.dirname(localTarget), { recursive: true });
+    // 每次打开都重新拉一次：用户可能在别处改过远程文件，拿旧内容编辑会覆盖新版本。
+    const buffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      const stream = s.sftp.createReadStream(remote);
+      stream.on('data', chunk => chunks.push(chunk));
+      stream.on('error', reject);
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    // 与本项目其它读路径同一条规矩：绿盾密文不能进编辑器（否则用户保存后写回密文）。
+    if (buffer.subarray(0, 16).toString().startsWith('%TSD-Header')) throw Error('远程文件是绿盾密文，无法编辑');
+    await fs.promises.writeFile(localTarget, buffer, { mode: 0o600 });
+    stagedEdits.set(localTarget.toLowerCase(), { sessionId: id, remotePath: remote, profileId: s.profile.id });
+    return { localPath: localTarget, remotePath: remote, size: buffer.length };
+  }
+  async function saveEdit(localTarget, content) {
+    const key = String(localTarget).toLowerCase();
+    const record = stagedEdits.get(key);
+    if (!record) return { staged: false };
+    // 会话可能已断开或换了服务器：这种时候必须明确失败，不能默默只写本地。
+    // disconnect() 只把 state 置为 'disconnected' 并结束 client，sessions 里的条目
+    // 还在（终端要到 close 才回收），所以必须同时看 state 与 client 是否可用。
+    const s = sessions.get(record.sessionId);
+    const alive = !!s && s.profile.id === record.profileId && s.state !== 'disconnected' && s.client && !s.client.destroyed;
+    if (!alive) throw Error('原服务器连接已断开，改动只保留在本地暂存文件里');
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content ?? ''), 'utf8');
+    if (buffer.subarray(0, 16).toString().startsWith('%TSD-Header')) throw Error('内容像绿盾密文，拒绝写回远程');
+    // 原子写：先传临时文件再 rename，避免中途失败留下半个文件。
+    const temp = record.remotePath + '.myide-' + process.pid + '-' + Date.now() + '.part';
+    await new Promise((resolve, reject) => {
+      const stream = s.sftp.createWriteStream(temp, { mode: 0o600 });
+      stream.on('error', reject);
+      stream.on('close', resolve);
+      stream.end(buffer);
+    });
+    try {
+      // ⚠ SFTP 的 rename 不能覆盖已存在的目标（服务端返回 code 4「目标已存在」）。
+      // 编辑保存的常态就是「目标文件本来就在」，所以必须先把原文件挪开：
+      // 先 rename 成 .bak，再把临时文件 rename 上去，最后删 .bak。这样中途失败
+      // 还能靠 .bak 找回原内容，比「先 unlink 再 rename」安全一档。
+      const backup = record.remotePath + '.myide-' + process.pid + '-' + Date.now() + '.bak';
+      let hadOriginal = false;
+      try { await request(s, 'lstat', record.remotePath); hadOriginal = true; } catch {}
+      if (hadOriginal) await request(s, 'rename', record.remotePath, backup);
+      try {
+        await request(s, 'rename', temp, record.remotePath);
+      } catch (error) {
+        // 传不上去就把原文件放回原位，绝不让用户「文件没了」。
+        if (hadOriginal) { try { await request(s, 'rename', backup, record.remotePath); } catch {} }
+        try { await request(s, 'unlink', temp); } catch {}
+        throw error;
+      }
+      if (hadOriginal) { try { await request(s, 'unlink', backup); } catch {} }
+    } catch (error) {
+      try { await request(s, 'unlink', temp); } catch {}
+      throw error;
+    }
+    return { staged: true, remotePath: record.remotePath, bytes: buffer.length };
+  }
+  /** 查询某个本地暂存文件是否对应远程文件（渲染进程用来决定保存后要不要回报）。 */
+  function editTarget(localTarget) {
+    const record = stagedEdits.get(String(localTarget).toLowerCase());
+    return record ? { remotePath: record.remotePath, sessionId: record.sessionId } : null;
+  }
+
+  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose, stageEdit, saveEdit, editTarget,
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),
