@@ -54,9 +54,11 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
   hideItem.click();
   assert(q('#tool-db').classList.contains('tool-hidden'),'图标被标记隐藏');
   assert.equal(w.ToolStrip.hiddenTools().join(','),'db');
-  // 隐藏必须 display:none —— 留空位等于没隐藏
+  // 隐藏必须 display:none —— 留空位等于没隐藏。
+  // 左右两条工具条都要覆盖：只写 #tool-strip 时右侧 AI 按钮隐藏后仍 display:flex。
   const css=read('styles.css');
-  assert(/#tool-strip \.tool-btn\.tool-hidden \{ display: none; \}/.test(css),'隐藏态样式必须 display:none');
+  assert(/#tool-strip \.tool-btn\.tool-hidden[\s\S]{0,80}?display: none/.test(css),'左侧隐藏态必须 display:none');
+  assert(/#tool-strip-right \.tool-btn\.tool-hidden/.test(css),'右侧工具条的隐藏态也必须 display:none（否则点了没反应）');
   const saved=w.localStorage.getItem('myide-tool-strip-hidden');
   assert.equal(saved,'["db"]');
   const again=fixture({'myide-tool-strip-hidden':saved});
@@ -110,6 +112,20 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
   assert(!ai.classList.contains('tool-hidden'),'恢复后按钮回来');
   q('#tool-sidebar-r').dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
   assert(!q('#ctx-menu').classList.contains('hidden'),'右侧栏开关右键可选');
+ });
+ await test('玩宠不能让开右侧工具条的点击区（否则右键落到宠物菜单）',async ()=>{
+  // 这是纯样式约束：玩宠是 fixed 定位的浮层，右侧工具条是 38px 宽的竖条贴在窗口最右。
+  // 原来 #pet 写 right:18px，52px 宽的猫正好压住工具条纵向最下面约 30px，
+  // 右键点在那里 elementFromPoint 返回 #pet，弹出来的是「橘猫/柴犬/退出玩偶」。
+  const css=read('styles.css');
+  const petRule=(css.match(/#pet\s*\{[^}]*\}/)||[''])[0];
+  assert(petRule,'#pet 规则存在');
+  const right=(petRule.match(/right:\s*(\d+)px/)||['',0])[1];
+  assert(Number(right)>=50,'玩宠 right 必须让开右侧工具条（38px 宽 + 4px seam + 间隙），实测需 ≥50px，当前 '+right+'px');
+  // 右侧工具条本身不该靠 padding 把按钮顶上去掩盖问题
+  const stripRule=(css.match(/#tool-strip-right\s*\{[^}]*\}/)||[''])[0];
+  const padB=(stripRule.match(/padding-bottom:\s*(\d+)px/)||['',0])[1];
+  assert(Number(padB)<=16,'右侧工具条不该用大 padding-bottom 掩盖遮挡（玩宠已让开），当前 '+padB+'px');
  });
  console.log('功能栏排序与快捷键 '+passed+' 通过 / 0 失败');
 })().catch(error=>{console.error(error);process.exitCode=1;});

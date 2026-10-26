@@ -217,8 +217,11 @@ svg.ic .fill { fill: currentColor; stroke: none; }
 .tool-strip-gap { margin-top: auto; flex: 0 0 auto; }
 #tool-strip .tool-btn { flex-shrink: 0; }
 /* 隐藏的工具：用 display:none 而不是 visibility —— 后者仍占位，工具栏会留下一排空洞，
-   用户要的是「只显示我在用的模块」，不是「图标没了但坑还在」。 */
-#tool-strip .tool-btn.tool-hidden { display: none; }
+   用户要的是「只显示我在用的模块」，不是「图标没了但坑还在」。
+   ⚠ 必须同时覆盖左右两条工具条：只写 #tool-strip 时右侧的 AI 按钮隐藏后
+   仍然 display:flex（实测 hasHidden:true 但 display:flex），点了没反应。 */
+#tool-strip .tool-btn.tool-hidden,
+#tool-strip-right .tool-btn.tool-hidden { display: none; }
 #tool-strip .tool-btn.tool-dragging { opacity: .35; }
 #tool-strip .tool-btn.tool-drop-before::before, #tool-strip .tool-btn.tool-drop-after::before { content: ''; position: absolute; left: 5px; right: 5px; height: 2px; background: var(--accent); pointer-events: none; }
 #tool-strip .tool-btn.tool-drop-before::before { top: 0; }
@@ -268,6 +271,10 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
   border-left: var(--seam) solid var(--seam-color);
   display: flex; flex-direction: column; align-items: stretch;
   padding-top: 4px;
+  /* 底部只留一点呼吸空间：玩宠已经让开（见 #pet 的 right 说明），
+     不需要再用 padding 把按钮往上顶 —— 那会让工具条下半截变成「空条」，
+     看着像坏了。 */
+  padding-bottom: 8px;
 }
 #tool-sidebar-r { border-bottom: 1px solid var(--border); }
 /* 右侧栏整体收起（Alt+` / 按钮切换）：AI 面板隐藏，工具条保留 */
@@ -2398,8 +2405,13 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 #toast-wrap { pointer-events: none; position: fixed; right: 18px; bottom: 86px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
 
 /* ---------- 右下角玩宠（小橘猫，消息由它播报） ---------- */
+/* 右下角玩宠（小橘猫）。
+   ⚠ 右边距必须让开右侧工具条（宽 38px + 4px seam）：原来写 right:18px，
+   52px 宽的玩宠正好压住工具条纵向最下面约 30px，右键点在那里会弹宠物菜单
+   而不是工具条菜单（实测 elementFromPoint 在工具条底部返回 #pet）。
+   现在 right = 工具条宽 + seam + 8px 间隙 = 50px，玩宠完全落在工具条左侧。 */
 #pet {
-  position: fixed; right: 18px; bottom: 14px; z-index: 299;
+  position: fixed; right: 52px; bottom: 14px; z-index: 299;
   width: 52px; height: 52px; cursor: pointer; user-select: none;
   animation: pet-breathe 3s ease-in-out infinite;
   filter: drop-shadow(0 3px 6px rgba(0,0,0,.28));
