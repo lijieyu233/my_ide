@@ -88,5 +88,28 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
   w.ToolStrip.showAll();
   assert.equal(w.ToolStrip.hiddenTools().length,0);
  });
+ await test('右侧工具条（AI）也有右键菜单与隐藏，与左侧同一套交互',async f=>{
+  const {w,q}=f;
+  const ai=q('#tool-ai');
+  assert(ai,'右侧 AI 按钮存在');
+  ai.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:200}));
+  const menu=q('#ctx-menu');
+  assert(!menu.classList.contains('hidden'),'右侧按钮右键应弹出菜单（之前完全没反应）');
+  const items=[...menu.querySelectorAll('.ctx-item')].map(b=>b.textContent);
+  assert(items.some(t=>t.includes('设置快捷键')),'菜单有「设置快捷键」: '+items.join('|'));
+  assert(items.some(t=>t.includes('隐藏')),'菜单有「隐藏」: '+items.join('|'));
+  [...menu.querySelectorAll('.ctx-item')].find(b=>b.textContent.includes('隐藏')).click();
+  assert(ai.classList.contains('tool-hidden'),'隐藏后按钮带 tool-hidden');
+  const strip=q('#tool-strip-right');
+  strip.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
+  const menu2=q('#ctx-menu');
+  assert(!menu2.classList.contains('hidden'),'右侧空白处右键也弹菜单');
+  const show=[...menu2.querySelectorAll('.ctx-item')].find(b=>b.textContent.includes('显示「AI 助手」'));
+  assert(show,'空白菜单应列出被隐藏的 AI 助手: '+[...menu2.querySelectorAll('.ctx-item')].map(b=>b.textContent).join('|'));
+  show.click();
+  assert(!ai.classList.contains('tool-hidden'),'恢复后按钮回来');
+  q('#tool-sidebar-r').dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:10,clientY:10}));
+  assert(!q('#ctx-menu').classList.contains('hidden'),'右侧栏开关右键可选');
+ });
  console.log('功能栏排序与快捷键 '+passed+' 通过 / 0 失败');
 })().catch(error=>{console.error(error);process.exitCode=1;});

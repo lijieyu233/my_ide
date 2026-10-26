@@ -3,7 +3,24 @@ window.ToolStrip = (() => {
   const key='myide-tool-strip-order', gapId='@gap';
   // 隐藏是「本机偏好」而非项目属性：同一台机器上换了项目，习惯的工具集不该变。
   const hiddenKey='myide-tool-strip-hidden';
+  // 右侧工具条的按钮表：name → 动作 id（与左侧 actions 同构，只是集合小）。
+  // ⚠ 这几个声明必须在 init() 之前：init 内部会调用 applyRightHidden / rightMenu，
+  //   而 const/let 存在暂时性死区，写在文件末尾会直接抛 ReferenceError。
+  const rightActions={ai:'tool-ai'};
+  const rightLabels={ai:'AI 助手'};
+  const rightHiddenKey='myide-tool-strip-right-hidden';
+  let rightHidden=new Set();
+  try{const saved=JSON.parse(localStorage.getItem(rightHiddenKey)||'[]');rightHidden=new Set(Array.isArray(saved)?saved.filter(n=>n in rightActions):[]);}catch{}
+  function applyRightHidden(){
+    for(const name of Object.keys(rightActions)){
+      const button=document.getElementById('tool-'+name);
+      if(button)button.classList.toggle('tool-hidden',rightHidden.has(name));
+    }
+  }
   const actions={project:'tool-project',outline:'tool-outline',search:'search-panel',git:'commit-tool-window',browser:'tool-browser',bookshelf:'tool-bookshelf',remote:'tool-remote',db:'tool-db',tasks:'tool-tasks',launch:'tool-launch','quick-launch':'tool-quick-launch',log:'git-log'};
+  // 右侧工具条（AI 助手等右侧停靠工具）的按钮与动作。左右两条是同一套交互：
+  // 右键设快捷键、拖拽排序、隐藏。之前只给左侧做了这些，右侧只有两个裸按钮，
+  // 右键毫无反应 —— 用户截图里问的就是这个。
   const labels={project:'项目',outline:'大纲',search:'搜索内容',git:'提交',browser:'内置浏览器',bookshelf:'书架',remote:'远程服务器',db:'数据库',tasks:'任务',launch:'启动面板','quick-launch':'快速启动',log:'Git 日志'};
   let strip, defaults, nodes, dragging=null, suppressed=0, closeMenu=()=>{};
   const order=()=>[...strip.children].map(node=>node===nodes.get(gapId)?gapId:node.id).filter(id=>nodes.has(id));
@@ -185,7 +202,100 @@ window.ToolStrip = (() => {
       event.preventDefault();event.stopPropagation();emptyMenu(event.clientX,event.clientY);
     });
     strip.addEventListener('click',event=>{if(Date.now()<suppressed){event.preventDefault();event.stopImmediatePropagation();}},{capture:true});
+    // ── 右侧工具条（AI 助手）────────��──────────────────────────────────────
+    // 与左侧同一套交互：右键设快捷键 / 拖拽排序 / 隐藏。
+    // 右侧目前只有一个可配置按钮（tool-ai），所以没有「全隐藏兜底」按钮那种问题，
+    // 但右键菜单必须给 —— 否则用户会以为这条是死的（截图里的问题）。
+    const rightStrip=document.getElementById('tool-strip-right');
+    if(rightStrip){
+      // 先把上次保存的隐藏状态应用一次，再绑交互 —— 否则重开 app 时
+      // 被隐藏的按钮会闪一下才消失（或干脆一直显示）。
+      applyRightHidden();
+      const rightCollapse=document.getElementById('tool-sidebar-r');
+      if(rightCollapse)rightCollapse.addEventListener('contextmenu',event=>{event.preventDefault();event.stopPropagation();rightMenu(rightCollapse);});
+      for(const [name,id] of Object.entries(rightActions)){
+        const button=document.getElementById('tool-'+name);if(!button)continue;
+        button.setAttribute('data-strip','right');
+        button.addEventListener('contextmenu',event=>{event.preventDefault();event.stopPropagation();rightMenu(button);});
+        button.addEventListener('keydown',event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();event.stopPropagation();rightMenu(button,true);}});
+      }
+      rightStrip.addEventListener('contextmenu',event=>{
+        if(event.target.closest('.tool-btn'))return;
+        event.preventDefault();event.stopPropagation();rightStripMenu(event.clientX,event.clientY);
+      });
+    }
     window.addEventListener('blur',clearDrag);document.addEventListener('keydown',event=>{if(event.key==='Escape'&&dragging)clearDrag();});
+  }
+  // 右侧按钮的右键菜单：只给「设置快捷键」与「隐藏/显示」。
+  // 不做拖拽排序 —— 那里只有一个按钮，排序没有意义，加了反而是噪音。
+  function rightMenu(button,focusMenu=false){
+    if(!button)return;
+    const isCollapse=button.id==='tool-sidebar-r';
+    const actionId=isCollapse?'toggle-right-sidebar':rightActions[button.id.replace(/^tool-/,'')];
+    const name=button.id.replace(/^tool-/,'');
+    const menu=document.getElementById('ctx-menu');
+    menu.className='tool-strip-menu';menu.replaceChildren();delete menu.dataset.toolOwner;
+    const heading=document.createElement('div');heading.className='tool-menu-heading';
+    heading.textContent=isCollapse?'收起 / 展开右侧栏':(rightLabels[name]||name);
+    menu.append(heading);
+    if(actionId){
+      const binding=Shortcuts.bindings().find(item=>item.id===actionId);
+      const item=document.createElement('button');item.className='ctx-item';item.type='button';
+      const title=document.createElement('span');title.textContent='⌨ 设置快捷键…';
+      const keys=document.createElement('kbd');keys.textContent=binding?binding.effectiveCombos.join(' / ')||'未设置':'未设置';
+      item.append(title,keys);
+      item.onclick=event=>{event.stopPropagation();menu.classList.add('hidden');Settings.editShortcut(actionId,button);};
+      menu.append(item);
+    }
+    if(!isCollapse){
+      const hide=document.createElement('button');hide.className='ctx-item';hide.type='button';
+      const hiddenNow=rightHidden.has(name);
+      hide.textContent=(hiddenNow?'👁 显示「':'👁 隐藏「')+(rightLabels[name]||name)+'」';
+      hide.onclick=event=>{
+        event.stopPropagation();menu.classList.add('hidden');
+        if(hiddenNow)rightHidden.delete(name);else rightHidden.add(name);
+        try{localStorage.setItem(rightHiddenKey,JSON.stringify([...rightHidden]));}catch{}
+        applyRightHidden();
+        MI.toast(hiddenNow?'已显示「'+(rightLabels[name]||name)+'」':'已隐藏「'+(rightLabels[name]||name)+'」，右键空白处可恢复','ok');
+      };
+      menu.append(hide);
+    }
+    const r=button.getBoundingClientRect();
+    menu.classList.remove('hidden');
+    // 先读一次 offsetWidth 触发重排，否则刚 remove('hidden') 时量到的还是 0
+    // （菜单会被顶到贴着屏幕左边，用户看到的是「菜单跑到别处去了」）。
+    const mw=menu.offsetWidth||180, mh=menu.offsetHeight||120;
+    menu.style.left=Math.max(8,Math.min(r.left-mw-6,innerWidth-mw-8))+'px';
+    menu.style.top=Math.max(8,Math.min(r.top,innerHeight-mh-8))+'px';
+    const close=()=>{menu.classList.add('hidden');document.removeEventListener('pointerdown',onDown,true);};
+    const onDown=event=>{if(!menu.contains(event.target))close();};
+    document.addEventListener('pointerdown',onDown,true);
+    if(focusMenu)menu.querySelector('.ctx-item')?.focus({preventScroll:true});
+  }
+  // 右侧空白处：列出被隐藏的按钮，可逐个恢复。
+  function rightStripMenu(x,y){
+    const menu=document.getElementById('ctx-menu');
+    menu.className='tool-strip-menu';menu.replaceChildren();delete menu.dataset.toolOwner;
+    const heading=document.createElement('div');heading.className='tool-menu-heading';
+    heading.textContent=rightHidden.size?'隐藏的按钮（'+rightHidden.size+'）':'右侧工具条';
+    menu.append(heading);
+    for(const name of rightHidden){
+      const item=document.createElement('button');item.className='ctx-item';item.type='button';
+      item.textContent='👁 显示「'+(rightLabels[name]||name)+'」';
+      item.onclick=event=>{event.stopPropagation();rightHidden.delete(name);try{localStorage.setItem(rightHiddenKey,JSON.stringify([...rightHidden]));}catch{}applyRightHidden();menu.classList.add('hidden');};
+      menu.append(item);
+    }
+    if(!rightHidden.size){
+      const hint=document.createElement('div');hint.className='tool-menu-heading';
+      hint.textContent='右键任意按钮可设置快捷键或隐藏';
+      menu.append(hint);
+    }
+    menu.classList.remove('hidden');
+    menu.style.left=Math.max(8,Math.min(x,innerWidth-menu.offsetWidth-8))+'px';
+    menu.style.top=Math.max(8,Math.min(y,innerHeight-menu.offsetHeight-8))+'px';
+    const close=()=>{menu.classList.add('hidden');document.removeEventListener('pointerdown',onDown,true);};
+    const onDown=event=>{if(!menu.contains(event.target))close();};
+    document.addEventListener('pointerdown',onDown,true);
   }
   return {init,showAll,hide:hideTool,show:showTool_,hiddenTools:()=>[...hidden]};
 })();
