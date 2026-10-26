@@ -348,6 +348,12 @@ const BrowserPanel = (() => {
       if (rendered.has(tab.id)) continue;
       const group = tab.groupId ? groupById.get(tab.groupId) : null;
       if (!group) { list.append(makeTab(tab)); continue; }
+      // ⚠ 先把这个组的「全部成员」一次性记进 rendered，再决定画不画它们。
+      // 只在展开分支里靠 makeTab 顺带记录是错的：折叠时一个都不执行，rendered
+      // 始终为空，循环继续走到同组的第二个成员，于是又新建一个组头 ——
+      // 实测一个 4 成员的折叠组会渲染出 4 个一模一样的胶囊（用户截图里那两对
+      // 「1 4」就是这个 bug，横向滚动后正好露出两对）。
+      for (const mate of state.tabs) if (mate.groupId === group.id) rendered.add(mate.id);
       // 组的容器：折叠时只画组头，组内标签完全不渲染（但不会被关闭）。
       const box = document.createElement('div');
       box.className = 'bw-tab-group' + (group.folded ? ' folded' : '');

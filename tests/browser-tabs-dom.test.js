@@ -470,6 +470,36 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert.notEqual(after, before, '松手后顺序改变: ' + before + ' → ' + after);
     assert.equal(q('#bw-groups-list').querySelectorAll('.drop-before,.drop-after').length, 0, '松手后清掉落点标记');
   });
+  await test('折叠组在标签栏只出现一个组头（成员不会被重复画成多个胶囊）', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test', 'https://c.test', 'https://d.test']) w.BrowserPanel.newTab(u);
+    const blank = w.BrowserPanel.tabs.find(t => !t.url);
+    if (blank) w.BrowserPanel.closeTabs([blank.id]);
+    // 把前三个收进一个组，留一个在组外
+    const picked = w.BrowserPanel.tabs.filter(t => t.url !== 'https://d.test');
+    w.__makeGroup('四个', picked);
+    await tick();
+    const groups = JSON.parse(w.localStorage.getItem('myide-browser-tab-groups')).groups;
+    const gid = groups[0].id;
+    const head = q('.bw-tab-group-head');
+    assert(head, '展开态有一个组头');
+    head.click();
+    await tick();
+    // ⚠ 关键回归点：折叠时不执行 makeTab，若不用「一次性标记全部成员」的方式去重，
+    //   state.tabs 里同组的每个成员都会各建一个组头 —— 4 成员组就渲染 4 个胶囊
+    //   （用户截图里那两对「1 4」）。
+    const heads = [...q('#bw-tabs').querySelectorAll('.bw-tab-group-head')];
+    assert.equal(heads.length, 1, '折叠后只能有一个组头，实际 ' + heads.length);
+    const boxes = [...q('#bw-tabs').querySelectorAll('.bw-tab-group')];
+    assert.equal(boxes.length, 1, '只能有一个组容器，实际 ' + boxes.length);
+    assert.equal(heads[0].querySelector('.bw-tg-count').textContent, '3', '折叠后计数仍是 3');
+    assert.equal(boxes[0].querySelectorAll('.bw-tab').length, 0, '折叠时组内标签不渲染');
+    assert.equal(w.BrowserPanel.tabs.filter(t => t.groupId === gid).length, 3, '三个成员仍在（没被关闭）');
+    heads[0].click();
+    await tick();
+    assert.equal(q('#bw-tabs').querySelectorAll('.bw-tab-group-head').length, 1, '展开后仍只有一个组头');
+    assert.equal(q('#bw-tabs').querySelectorAll('.bw-tab-group .bw-tab').length, 3, '展开后三个成员都回来');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));
