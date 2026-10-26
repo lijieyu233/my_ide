@@ -169,7 +169,15 @@ window.RemotePanel = (() => {
     q('remote-terminal-empty').hidden = !!activeTerm; for (const t of terminals.values()) t.container.classList.toggle('hidden', t.id !== activeTerm);
   }
   function selectTerminal(id) { activeTerm = id; const t = terminals.get(id); if (t) { const changed = sid !== t.sid; sid = t.sid; selected = sessions.get(sid)?.profileId || selected; renderSessions(); if (changed) { panes.remote.serial++; panes.remote.entries = []; panes.remote.selected.clear(); panes.remote.path = current()?.home || ''; renderPane('remote'); if (connected()) void browse('remote', panes.remote.path).catch(error => notify(error.message, true)); } } mode = 'terminal'; renderMode(); renderTerminals(); if (t) requestFit(); }
-  function renderMode() { q('remote-files').classList.toggle('hidden', mode !== 'files'); q('remote-terminal-area').classList.toggle('hidden', mode !== 'terminal'); for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).classList.toggle('active', mode === tab); }
+  function renderMode() {
+    q('remote-files').classList.toggle('hidden', mode !== 'files');
+    q('remote-terminal-area').classList.toggle('hidden', mode !== 'terminal');
+    q('remote-overview')?.classList.toggle('hidden', mode !== 'overview');
+    for (const tab of ['terminal', 'files', 'overview']) q('remote-tab-' + tab)?.classList.toggle('active', mode === tab);
+    // 概览的定时刷新只在概览页可见时跑：切走就停，避免白占 SSH 通道。
+    if (mode === 'overview' && visible && connected()) { void loadOverview(); startOverviewTimer(); }
+    else stopOverviewTimer();
+  }
   // ── 右键菜单 ──────────────────────────────────────────────────────────
   // 远程/本地文件列表原来只有顶部那排「新建目录 / 重命名 / 删除」，用户在
   // 具体某个文件上没有任何就地操作入口（尤其「编辑远程文件」根本不存在）。
@@ -269,6 +277,140 @@ window.RemotePanel = (() => {
       await Viewer.openFile(staged.localPath);
       notify('已打开 ' + entry.name + '；保存后会自动传回服务器', false);
     } catch (error) { notify('打开远程文件失败：' + error.message, true); }
+  }
+
+  // ── 概览页（仿 1Panel 的首屏）────────────────────────────────────────
+  // 数据全部来自主进程的固定只读采集脚本（见 remote-service 的 OVERVIEW_SCRIPT），
+  // 这里只负责画。每块单独判空：服务器没装 Docker / 不是 systemd，对应区块整块不画，
+  // 而不是留一张空卡片。
+  let overviewSerial = 0, overviewTimer = null, overviewCpuPrev = null;
+
+  const fmtBytes = value => {
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let n = value, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  };
+  const fmtDuration = seconds => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+    const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60);
+    if (d) return d + ' 天 ' + h + ' 小时';
+    if (h) return h + ' 小时 ' + m + ' 分';
+    return m + ' 分';
+  };
+  const pct = (used, total) => !total ? 0 : Math.min(100, Math.max(0, Math.round(used / total * 100)));
+
+  function overviewCard(title, body, extraClass = '') {
+    return '<section class="remote-ov-card ' + extraClass + '"><header>' + title + '</header>' + body + '</section>';
+  }
+  // 进度条：用同一套 meter 画 CPU / 内存 / 磁盘，颜色按阈值走（>90 红、>75 黄）。
+  function meter(label, percent, detail) {
+    const level = percent >= 90 ? 'critical' : percent >= 75 ? 'warn' : 'ok';
+    return '<div class="remote-ov-meter" data-level="' + level + '"><div class="remote-ov-meter-head"><span>' + label + '</span><strong>' + percent + '%</strong></div>'
+      + '<div class="remote-ov-bar"><i style="width:' + percent + '%"></i></div>'
+      + (detail ? '<div class="remote-ov-meter-foot">' + detail + '</div>' : '') + '</div>';
+  }
+
+  function renderOverview(ov) {
+    const host = q('remote-overview'); if (!host) return;
+    if (!ov) { host.innerHTML = '<div class="remote-empty">连接服务器后查看概览。</div>'; return; }
+    const { os = {}, kernel = {}, cpu = {}, memory = {}, uptime, disks = [], listen = [], services = [], docker = [], du = [] } = ov;
+    const parts = [];
+
+    // ① 资源：CPU / 内存 / 磁盘合并成一张卡 —— 这正是 1Panel 首屏最上面那四块的核心。
+    const cpuPercent = (() => {
+      if (!cpu.usage) return 0;
+      const prev = overviewCpuPrev;
+      overviewCpuPrev = cpu.usage;
+      if (!prev) return Math.max(0, Math.min(100, Math.round((1 - cpu.usage.idle / Math.max(1, cpu.usage.total)) * 100)));
+      const dTotal = cpu.usage.total - prev.total, dIdle = cpu.usage.idle - prev.idle;
+      if (dTotal <= 0) return 0;
+      return Math.max(0, Math.min(100, Math.round((1 - dIdle / dTotal) * 100)));
+    })();
+    const memPercent = pct(memory.used, memory.total);
+    const diskTotal = disks.reduce((sum, d) => sum + d.total, 0);
+    const diskUsed = disks.reduce((sum, d) => sum + d.used, 0);
+    const loadText = cpu.load?.length ? cpu.load.map(n => n.toFixed(2)).join('  ') : '—';
+    parts.push(overviewCard('资源监控',
+      '<div class="remote-ov-meters">'
+      + meter('CPU', cpuPercent, (cpu.cores || '?') + ' 核 · 负载 ' + loadText)
+      + meter('内存', memPercent, fmtBytes(memory.used) + ' / ' + fmtBytes(memory.total)
+        + (memory.swapTotal ? ' · 交换 ' + fmtBytes(memory.swapUsed || 0) + ' / ' + fmtBytes(memory.swapTotal) : ''))
+      + meter('磁盘', pct(diskUsed, diskTotal), fmtBytes(diskUsed) + ' / ' + fmtBytes(diskTotal) + ' · ' + disks.length + ' 个分区')
+      + '</div>'
+      + '<div class="remote-ov-facts"><span>运行 <strong>' + fmtDuration(uptime) + '</strong></span>'
+      + '<span>系统时间 <strong>' + (kernel.serverTime ? new Date(kernel.serverTime * 1000).toLocaleString() : '—') + '</strong></span></div>'));
+
+    // ② 系统信息
+    parts.push(overviewCard('系统信息',
+      '<dl class="remote-ov-kv">'
+      + '<div><dt>发行版</dt><dd>' + esc(os.name || '—') + '</dd></div>'
+      + '<div><dt>内核</dt><dd>' + esc(kernel.release || '—') + '</dd></div>'
+      + '<div><dt>架构</dt><dd>' + esc(kernel.arch || '—') + '</dd></div>'
+      + '<div><dt>主机名</dt><dd>' + esc(kernel.hostname || '—') + '</dd></div>'
+      + '</dl>'));
+
+    // ③ 磁盘分区（每个挂载点一条）
+    if (disks.length) parts.push(overviewCard('磁盘分区',
+      '<div class="remote-ov-list">' + disks.map(d =>
+        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(d.fs) + '">' + esc(d.mount) + '</span>'
+        + '<span class="remote-ov-row-size">' + fmtBytes(d.used) + ' / ' + fmtBytes(d.total) + '</span>'
+        + '<span class="remote-ov-row-pct" data-level="' + (d.percent >= 90 ? 'critical' : d.percent >= 75 ? 'warn' : 'ok') + '">' + d.percent + '%</span></div>').join('')
+      + '</div>'));
+
+    // ④ 服务（systemd）
+    if (services.length) parts.push(overviewCard('运行中的服务 <small>' + services.length + '</small>',
+      '<div class="remote-ov-list scroll">' + services.map(s =>
+        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(s.description) + '">' + esc(s.unit) + '</span>'
+        + '<span class="remote-ov-tag">' + esc(s.sub || s.active) + '</span></div>').join('')
+      + '</div>'));
+
+    // ⑤ Docker（没装就不画这块）
+    if (docker.length) parts.push(overviewCard('Docker 容器 <small>' + docker.length + '</small>',
+      '<div class="remote-ov-list scroll">' + docker.map(c =>
+        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(c.image) + '">' + esc(c.name) + '</span>'
+        + '<span class="remote-ov-row-sub">' + esc(c.status) + '</span></div>').join('')
+      + '</div>'));
+
+    // ⑥ 监听端口
+    if (listen.length) parts.push(overviewCard('监听端口 <small>' + listen.length + '</small>',
+      '<div class="remote-ov-list scroll">' + listen.map(p =>
+        '<div class="remote-ov-row"><span class="remote-ov-row-main"><b>' + p.port + '</b> <small>' + p.proto + '</small></span>'
+        + '<span class="remote-ov-row-sub" title="' + esc(p.address) + '">' + esc(p.process || p.address) + '</span></div>').join('')
+      + '</div>'));
+
+    // ⑦ 家目录占用
+    if (du.length) parts.push(overviewCard('主目录占用 <small>' + esc(du[0]?.path?.split('/').pop() || '') + '</small>',
+      '<div class="remote-ov-list">' + du.map(d =>
+        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(d.path) + '">' + esc(d.path) + '</span>'
+        + '<span class="remote-ov-row-size">' + fmtBytes(d.bytes) + '</span></div>').join('')
+      + '</div>'));
+
+    host.innerHTML = '<div class="remote-ov-grid">' + parts.join('') + '</div>';
+  }
+
+  async function loadOverview({ silent = false } = {}) {
+    if (!connected()) { renderOverview(null); return; }
+    const serial = ++overviewSerial;
+    const host = q('remote-overview');
+    if (!silent && host && !host.querySelector('.remote-ov-grid')) host.innerHTML = '<div class="remote-empty">正在采集…</div>';
+    try {
+      const result = await call('overview', sid);
+      if (serial !== overviewSerial) return;
+      renderOverview(result);
+    } catch (error) {
+      if (serial !== overviewSerial) return;
+      // 采集失败要留下可见原因：不能默默显示上一次的数字（那会让人以为服务器还活着）。
+      if (host) host.innerHTML = '<div class="remote-empty">概览采集失败：' + esc(error.message) + '</div>';
+    }
+  }
+
+  function stopOverviewTimer() { if (overviewTimer) { clearInterval(overviewTimer); overviewTimer = null; } }
+  function startOverviewTimer() {
+    stopOverviewTimer();
+    // 5 秒刷新：与 1Panel 的节奏接近；只在概览页可见时跑，切走就停（不白占 SSH 通道）。
+    overviewTimer = setInterval(() => { if (mode === 'overview' && visible && connected() && !Modal.stack.length) void loadOverview({ silent: true }); }, 5000);
   }
 
   function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
@@ -408,7 +550,10 @@ window.RemotePanel = (() => {
     q('remote-profiles').onclick = attempt(async event => { const id = event.target.closest('[data-profile]')?.dataset.profile; if (!id) return; selected = id; const found = [...sessions.values()].find(s => s.profileId === id && s.state === 'connected'); await activateSession(found?.id || null); });
     q('remote-sessions').onchange = attempt(event => activateSession(event.target.value));
     q('remote-terminal-tabs').onclick = attempt(async event => { const close = event.target.closest('[data-close-term]')?.dataset.closeTerm; if (close) { const t = terminals.get(close); if (!t) return; if (!t.closed && !await Modal.confirm('关闭终端', '关闭会结束这个SSH终端；终端前台任务可能随之结束。')) return; await call('closeTerminal', t.sid, t.id); t.term.dispose(); t.container.remove(); terminals.delete(close); if (activeTerm === close) { activeTerm = [...terminals.keys()].at(-1) || null; if (activeTerm) selectTerminal(activeTerm); } renderTerminals(); } else { const id = event.target.closest('[data-term]')?.dataset.term; if (id) selectTerminal(id); } });
-    for (const tab of ['terminal', 'files']) q('remote-tab-' + tab).onclick = () => { mode = tab; renderMode(); requestFit(); if (tab === 'files' && !panes.local.path) void browse('local', '').catch(error => notify(error.message, true)); };
+    for (const tab of ['terminal', 'files', 'overview']) q('remote-tab-' + tab).onclick = () => {
+      mode = tab; renderMode(); requestFit();
+      if (tab === 'files' && !panes.local.path) void browse('local', '').catch(error => notify(error.message, true));
+    };
     q('remote-transfer-jobs').onclick = attempt(async event => { const cancel = event.target.closest('[data-cancel-job]')?.dataset.cancelJob, retry = event.target.closest('[data-retry-job]')?.dataset.retryJob; const button = event.target.closest('button'); if (button) button.disabled = true; try { if (cancel) { const result = await call('cancel', cancel); if (result?.reason) notify(result.reason); } if (retry) await call('retry', retry, sid); } finally { if (button?.isConnected) button.disabled = false; } });
     q('remote-clear-transfers').onclick = attempt(async event => { event.preventDefault(); const result = await call('clearFinished'); jobs.clear(); result.forEach(j => jobs.set(j.id, j)); renderJobs(); });
     // 主题和自定义调色都更新 body；xterm 的 Canvas 配色也必须同步。
@@ -426,5 +571,7 @@ window.RemotePanel = (() => {
     return { mode, server: profile ? { id:profile.id, name:profile.name, host:profile.host,
       port:profile.port, username:profile.username } : null, sessionId:sid || null, terminalId:activeTerm || null };
   }
-  return { init, syncVisible, refresh, showTerminal, getPageContext };
+  // renderOverview 暴露出来是给自检用的：真实采集要连服务器，而概览的渲染骨架
+  // （卡片、进度条、阈值配色、空态）可以拿一份同构样本单独验证。
+  return { init, syncVisible, refresh, showTerminal, getPageContext, renderOverview, loadOverview };
 })();

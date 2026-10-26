@@ -90,3 +90,46 @@
 /* 虚拟文件行保持现有 2.6em 行高，随工具字号变化；滚动占位不参与子行布局。 */
 .remote-file-window { position:relative; width:100%; }
 .remote-file-window>.remote-file { position:absolute; left:0; height:2.6em; min-height:0; }
+
+/* ---------- 概览页（服务器仪表盘，仿 1Panel 首屏）----------
+   布局是「一列卡片网格」：窄时单列、宽时双列。每条信息都用同一套 meter/row 骨架，
+   这样 CPU / 内存 / 磁盘的彩色进度条能形成一致的视觉语言。 */
+#remote-overview { flex:1; min-height:0; overflow:auto; padding:.9em 1em 1.2em; }
+.remote-ov-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(20em,1fr)); gap:.9em; align-items:start; }
+.remote-ov-card { border:1px solid var(--ui-line, var(--border)); border-radius:.55em; background:color-mix(in srgb,var(--text) 3%,transparent); padding:.85em .95em; min-width:0; }
+.remote-ov-card>header { display:flex; align-items:baseline; gap:.5em; margin-bottom:.7em; font-size:.92em; color:var(--text-bright); font-weight:600; letter-spacing:.01em; }
+.remote-ov-card>header small { color:var(--text-dim); font-weight:400; font-size:.86em; }
+
+/* 进度条组：标签 + 百分比 + 条 + 说明 */
+.remote-ov-meters { display:flex; flex-direction:column; gap:.75em; }
+.remote-ov-meter-head { display:flex; justify-content:space-between; align-items:baseline; font-size:.85em; color:var(--text-dim); }
+.remote-ov-meter-head strong { color:var(--text-bright); font-size:1.05em; font-variant-numeric:tabular-nums; }
+.remote-ov-bar { height:6px; margin-top:.35em; border-radius:3px; background:color-mix(in srgb,var(--text) 9%,transparent); overflow:hidden; }
+.remote-ov-bar>i { display:block; height:100%; border-radius:3px; background:var(--accent); transition:width .35s ease; }
+.remote-ov-meter[data-level="warn"] .remote-ov-bar>i { background:#d0a24a; }
+.remote-ov-meter[data-level="critical"] .remote-ov-bar>i { background:#d05a5a; }
+.remote-ov-meter-foot { margin-top:.3em; font-size:.78em; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+
+.remote-ov-facts { display:flex; flex-wrap:wrap; gap:.4em 1.1em; margin-top:.85em; padding-top:.7em; border-top:1px solid color-mix(in srgb,var(--text) 7%,transparent); font-size:.8em; color:var(--text-dim); }
+.remote-ov-facts strong { color:var(--text); font-weight:500; }
+
+/* 键值对（系统信息） */
+.remote-ov-kv { display:grid; grid-template-columns:auto 1fr; gap:.45em .9em; margin:0; font-size:.85em; }
+.remote-ov-kv>div { display:contents; }
+.remote-ov-kv dt { color:var(--text-dim); }
+.remote-ov-kv dd { margin:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* 行列表（分区 / 服务 / 容器 / 端口 / 目录占用） */
+.remote-ov-list { display:flex; flex-direction:column; gap:.15em; font-size:.84em; }
+.remote-ov-list.scroll { max-height:13em; overflow:auto; }
+.remote-ov-row { display:flex; align-items:baseline; gap:.7em; padding:.35em .1em; border-radius:.3em; min-width:0; }
+.remote-ov-row:hover { background:var(--bg-hover); }
+.remote-ov-row-main { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.remote-ov-row-main b { color:var(--text-bright); font-weight:600; font-variant-numeric:tabular-nums; }
+.remote-ov-row-main small { color:var(--text-dim); }
+.remote-ov-row-size, .remote-ov-row-sub { flex:0 0 auto; color:var(--text-dim); font-size:.92em; font-variant-numeric:tabular-nums; }
+.remote-ov-row-sub { max-width:11em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.remote-ov-row-pct { flex:0 0 3.2em; text-align:right; font-variant-numeric:tabular-nums; color:var(--text-dim); }
+.remote-ov-row-pct[data-level="warn"] { color:#d0a24a; }
+.remote-ov-row-pct[data-level="critical"] { color:#d05a5a; }
+.remote-ov-tag { flex:0 0 auto; padding:.1em .5em; border-radius:1em; font-size:.86em; background:color-mix(in srgb,var(--accent) 14%,transparent); color:var(--text-dim); }

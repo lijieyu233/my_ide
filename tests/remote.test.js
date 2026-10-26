@@ -88,7 +88,27 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     await assert.rejects(() => service.stageEdit(edit2.id, '/密文.bin'), /绿盾密文/);
     check('拒绝把绿盾密文送进编辑器', true);
     service.disconnect(edit2.id);
+    // ── 服务器概览采集（fixed 只读脚本 + 解析）────────────────────────────
+    // 只验证「结构对不对、解析得准不准」，不依赖具体机器的数值。
+    const ovSession = await service.connect(p.id, { password: 'fixture-secret' });
+    const ov = await service.overview(ovSession.id);
+    check('概览：系统信息有内核与主机名字段',
+      typeof ov.kernel?.release === 'string' && typeof ov.kernel?.hostname === 'string');
+    check('概览：CPU 核心数为正整数', Number.isInteger(ov.cpu?.cores) && ov.cpu.cores > 0);
+    check('概览：内存总量大于 0 且 used+available 不超过 total',
+      ov.memory.total > 0 && ov.memory.used >= 0 && ov.memory.used <= ov.memory.total);
+    check('概览：磁盘分区是数组且每项带 mount/total/percent',
+      Array.isArray(ov.disks) && ov.disks.every(d => d.mount && d.total > 0 && d.percent >= 0 && d.percent <= 100));
+    check('概览：监听端口、服务、docker、家目录占用都是数组（缺失时为空数组，不抛错）',
+      Array.isArray(ov.listen) && Array.isArray(ov.services) && Array.isArray(ov.docker) && Array.isArray(ov.du));
+    check('概览：运行时长是有限数', Number.isFinite(ov.uptime) && ov.uptime >= 0);
+    // 安全边界：只有会话 id，不接受命令。无效 id 必须明确报错 ——
+    // 不能悄悄退回本地执行（那会把本机信息当成远程服务器的显示出去）。
+    await assert.rejects(() => service.overview('不存在的会话'), /会话|断开/);
+    check('概览：无效会话明确报错，不会退回本地执行', true);
+    service.disconnect(ovSession.id);
     console.log('远程服务器：' + passed + ' 通过 / 0 失败');
+
   } finally {
     service?.dispose(); await server?.close();
     if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('myide-remote-test-')) throw Error('清理路径无效');

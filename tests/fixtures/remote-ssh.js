@@ -14,6 +14,41 @@ async function start(root, options = {}) {
       const session = accept(); let pty; const windowChanges = [];
       session.on('pty', (accept, _reject, info) => { pty = info; accept(); });
       session.on('window-change', (accept, _reject, info) => { windowChanges.push(info); if (pty) Object.assign(pty, info); accept?.(); });
+      // exec：概览采集用（remote-service 的 OVERVIEW_SCRIPT）。
+      // fixture 不真的跑 shell，而是回一段与真实服务器同格式的输出 —— 目的是验证
+      // 「分段标记解析 + 各段解析逻辑」，不是验证 shell 本身。
+      session.on('exec', (accept, _reject, info) => {
+        const stream = accept();
+        const mark = '@@MYIDE-OVERVIEW:';
+        const out = [
+          mark + 'os', 'NAME="Ubuntu"', 'VERSION_ID="22.04"', 'PRETTY_NAME="Ubuntu 22.04.3 LTS"',
+          mark + 'kernel', '6.8.0-fixture', 'x86_64', 'fixture-host', '1700000000',
+          mark + 'cpu', '4', '0.12 0.20 0.31 1/234 5678',
+          mark + 'mem', 'MemTotal:        8000000 kB', 'MemFree:         2000000 kB',
+          'MemAvailable:    4000000 kB', 'Buffers:          100000 kB', 'Cached:          800000 kB',
+          mark + 'uptime', '3540.12',
+          // cpu 行的数值刻意给一组能算出 25% 使用率的数字：
+          // user=100 nice=0 system=50 idle=150 iowait=0 → idle/total=150/300=50%
+          mark + 'stat', 'cpu  100 0 50 150 0 0 0 0 0 0',
+          mark + 'disk', '/dev/sda1  10485760  5242880  5242880  50% /',
+          mark + 'listen',
+          'tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=1,fd=3))',
+          'tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=2,fd=6))',
+          mark + 'services',
+          'ssh.service    loaded active running OpenBSD Secure Shell server',
+          'nginx.service  loaded active running A high performance web server',
+          mark + 'docker',
+          'web\tnginx:1.25\tUp 3 days',
+          mark + 'du',
+          '1048576\t/home/fixture/projects',
+          '524288\t/home/fixture/downloads',
+          mark + 'end',
+        ].join('\n') + '\n';
+        // 分两片写，顺带覆盖「data 事件多次到达」的情况。
+        stream.write(out.slice(0, Math.floor(out.length / 2)));
+        setTimeout(() => { if (!stream.destroyed) { stream.write(out.slice(Math.floor(out.length / 2))); stream.exit(0); stream.end(); } }, 10);
+        stream.on('error', () => {});
+      });
       session.on('shell', accept => {
         const stream = accept(), record = { stream, pty, input: '', windowChanges }; shells.push(record);
         const text = Buffer.from('\x1b[32m远程终端就绪\x1b[0m\r\n$ ');

@@ -225,6 +225,174 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   async function pump() { if (working || disposed) return; working = true; try { for (let job; (job = [...jobs.values()].find(j => j.state === 'queued'));) { try { await transfer(job); } catch (error) { job.state = 'failed'; job.error = message(error); reportJob(job); } } } finally { working = false; } }
   async function retry(id, sid) { const job = jobs.get(id), s = session(sid); if (!job || job.stream || job.retrying || job.retried || !['failed', 'cancelled'].includes(job.state) || job.profileId !== s.profile.id) throw Error('请等待清理完成，并选择原服务器连接后重试失败项'); job.retrying = true; try { const result = await enqueue(sid, job.direction, [job.from], job.direction === 'upload' ? posix.dirname(job.to) : path.dirname(job.to), !!job.existing); if (result.jobs.length) { job.retried = true; reportJob(job); } return result; } finally { delete job.retrying; } }
   function clearFinished() { for (const [id, job] of jobs) if (!job.stream && !job.retrying && !['queued', 'running'].includes(job.state)) jobs.delete(id); return [...jobs.values()].map(jobView); }
+  // ── 服务器概览采集 ────────────────────────────────────────────────────
+  // 一次 SSH exec 跑一段**固定**的只读脚本，把结果解析成结构化数据。
+  //
+  // 安全边界（这是本文件里唯一执行命令的地方，必须收紧）：
+  //   · 不接受调用方传命令 —— 脚本是这里的常量，renderer 只能选「采哪些块」；
+  //   · 全部只读：读 /proc、/etc/os-release、df、free、systemctl status、docker ps…
+  //     不写任何文件、不改任何服务状态；
+  //   · 有超时（默认 8s）与输出上限（256KiB），避免慢命令或失控输出拖死界面；
+  //   · 每段用分隔符包起来，解析失败只影响那一段，不影响其余。
+  const OVERVIEW_MARK = '@@MYIDE-OVERVIEW:';
+  const OVERVIEW_TIMEOUT_MS = 8000;
+  const OVERVIEW_MAX_BYTES = 256 * 1024;
+
+  // 采集脚本：每段之间用固定标记分隔，前端按标记切分。
+  // 刻意写成「一段失败不影响其它」的形式（每段后面都有 echo 标记，命令本身带 || true）。
+  const OVERVIEW_SCRIPT = [
+    'echo "' + OVERVIEW_MARK + 'os"',
+    '(cat /etc/os-release 2>/dev/null || true)',
+    'echo "' + OVERVIEW_MARK + 'kernel"',
+    '(uname -r; uname -m; hostname; date +%s) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'cpu"',
+    '(grep -c ^processor /proc/cpuinfo; head -n 3 /proc/loadavg) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'mem"',
+    '(head -n 5 /proc/meminfo) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'uptime"',
+    '(cut -d\\  -f1 /proc/uptime) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'stat"',
+    '(head -n 1 /proc/stat) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'disk"',
+    '(df -kP -x tmpfs -x devtmpfs 2>/dev/null | tail -n +2) || true',
+    'echo "' + OVERVIEW_MARK + 'listen"',
+    '( (ss -tulpnH 2>/dev/null || netstat -tulpn 2>/dev/null) | head -n 80 ) || true',
+    'echo "' + OVERVIEW_MARK + 'services"',
+    '(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | head -n 60) || true',
+    'echo "' + OVERVIEW_MARK + 'docker"',
+    '(docker ps --format "{{.Names}}\\t{{.Image}}\\t{{.Status}}" 2>/dev/null | head -n 40) || true',
+    'echo "' + OVERVIEW_MARK + 'du"',
+    '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 12) || true',
+    'echo "' + OVERVIEW_MARK + 'end"',
+  ].join('\n');
+
+  /** 跑一次采集脚本，返回原始分段（内部用；对外只给解析后的对象）。 */
+  function runOverview(id) {
+    const s = session(id);
+    return new Promise((resolve, reject) => {
+      let settled = false, total = 0;
+      const chunks = [];
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { channel?.close(); } catch {}
+        reject(Error('采集超时（' + Math.round(OVERVIEW_TIMEOUT_MS / 1000) + 's）'));
+      }, OVERVIEW_TIMEOUT_MS);
+      timer.unref?.();
+      let channel;
+      s.client.exec(OVERVIEW_SCRIPT, { pty: false }, (error, stream) => {
+        if (error) { clearTimeout(timer); settled = true; return reject(error); }
+        channel = stream;
+        stream.on('data', chunk => {
+          total += chunk.length;
+          // 输出上限：超过就截断并停止接收，避免把整台机器的进程表拉回来。
+          if (total > OVERVIEW_MAX_BYTES) { try { stream.close(); } catch {} return; }
+          chunks.push(chunk);
+        });
+        stream.on('close', () => {
+          if (settled) return;
+          settled = true; clearTimeout(timer);
+          resolve(Buffer.concat(chunks).toString('utf8'));
+        });
+        stream.on('error', err => {
+          if (settled) return;
+          settled = true; clearTimeout(timer); reject(err);
+        });
+      });
+    });
+  }
+
+  /** 把分段文本切成 { 段名: 文本 }。 */
+  function splitOverview(raw) {
+    const out = {}; let current = null; const lines = String(raw).split(/\r?\n/);
+    for (const line of lines) {
+      if (line.startsWith(OVERVIEW_MARK)) { current = line.slice(OVERVIEW_MARK.length).trim(); out[current] = []; continue; }
+      if (current) out[current].push(line);
+    }
+    for (const key of Object.keys(out)) out[key] = out[key].join('\n');
+    return out;
+  }
+
+  /** /proc/meminfo 的 kB 值 → 字节。 */
+  function meminfo(text) {
+    const map = {};
+    for (const line of String(text).split('\n')) {
+      const m = /^(\w+):\s+(\d+)(?:\s+kB)?/.exec(line.trim());
+      if (m) map[m[1]] = Number(m[2]) * 1024;
+    }
+    return map;
+  }
+
+  /** 解析成前端直接能画的结构。任何一段缺失都只让对应卡片空着，不整体失败。 */
+  function parseOverview(parts) {
+    const os = {};
+    for (const line of String(parts.os || '').split('\n')) {
+      const m = /^([A-Z_]+)="?(.*?)"?$/.exec(line.trim());
+      if (m) os[m[1]] = m[2];
+    }
+    const kernelLines = String(parts.kernel || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const load = String(parts.cpu || '').trim().split('\n');
+    const mem = meminfo(parts.mem);
+    const memTotal = mem.MemTotal || 0, memAvailable = mem.MemAvailable ?? mem.MemFree ?? 0;
+    const memUsed = Math.max(0, memTotal - memAvailable);
+    const swapTotal = mem.SwapTotal || 0, swapFree = mem.SwapFree || 0;
+    // CPU 使用率：用 /proc/stat 的两次采样差值算才准；这里只给瞬时累计占比，
+    // 前端会在两次刷新之间自行做差（见 renderOverview 的 cpuSample 处理）。
+    let cpuTotal = null;
+    const stat = String(parts.stat || '').trim();
+    if (stat.startsWith('cpu ')) {
+      const nums = stat.split(/\s+/).slice(1).map(Number).filter(n => Number.isFinite(n));
+      if (nums.length >= 4) cpuTotal = { idle: nums[3] + (nums[4] || 0), total: nums.reduce((a, b) => a + b, 0) };
+    }
+    const disks = String(parts.disk || '').split('\n').map(line => {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 6) return null;
+      const [fs, blocks, used, avail, pct, mount] = cols;
+      const total = Number(blocks) * 1024, usedB = Number(used) * 1024;
+      if (!Number.isFinite(total) || total <= 0) return null;
+      return { fs, mount, total, used: usedB, percent: Number(String(pct).replace('%', '')) || Math.round(usedB / total * 100) };
+    }).filter(Boolean);
+    const listen = String(parts.listen || '').split('\n').map(line => {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 5) return null;
+      // ss -tulpnH 的列：Netid State Recv-Q Send-Q Local:Port Peer:Port Process
+      const proto = cols[0];
+      if (!['tcp', 'udp', 'tcp6', 'udp6'].includes(proto)) return null;
+      const local = cols[4] || '';
+      const addr = local.replace(/^\[|\]$/g, '');
+      const idx = addr.lastIndexOf(':');
+      const port = Number(addr.slice(idx + 1));
+      if (!Number.isFinite(port)) return null;
+      const process = (cols.find(c => c.startsWith('users:')) || '').replace(/^users:\(\(|\)\)$/g, '').split(',')[0] || '';
+      const nameMatch = /"([^"]+)"/.exec(process);
+      return { proto: proto.replace('6', ''), address: addr.slice(0, idx) || '*', port, process: nameMatch ? nameMatch[1] : '' };
+    }).filter(Boolean);
+    const services = String(parts.services || '').split('\n').map(line => {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 4 || !cols[0].endsWith('.service')) return null;
+      return { unit: cols[0], active: cols[2], sub: cols[3], description: cols.slice(4).join(' ') };
+    }).filter(Boolean);
+    const docker = String(parts.docker || '').split('\n').map(line => {
+      const cols = line.split('\t');
+      if (cols.length < 3) return null;
+      return { name: cols[0], image: cols[1], status: cols.slice(2).join('\t') };
+    }).filter(Boolean);
+    const du = String(parts.du || '').split('\n').map(line => {
+      const m = /^(\d+)\s+(.+)$/.exec(line.trim());
+      if (!m) return null;
+      return { bytes: Number(m[1]) * 1024, path: m[2] };
+    }).filter(Boolean);
+    return {
+      os: { name: os.PRETTY_NAME || os.NAME || '', id: os.ID || '', version: os.VERSION_ID || '' },
+      kernel: { release: kernelLines[0] || '', arch: kernelLines[1] || '', hostname: kernelLines[2] || '', serverTime: Number(kernelLines[3]) || null },
+      cpu: { cores: Number(load[0]) || 0, load: (load[1] || '').split(/\s+/).slice(0, 3).map(Number).filter(Number.isFinite), usage: cpuTotal },
+      memory: { total: memTotal, used: memUsed, available: memAvailable, swapTotal, swapUsed: Math.max(0, swapTotal - swapFree) },
+      uptime: Number(String(parts.uptime || '').trim()) || null,
+      disks, listen, services, docker, du,
+      dockerSupported: String(parts.docker || '').trim().length > 0,
+    };
+  }
+
   function dispose() { disposed = true; for (const job of jobs.values()) cancel(job.id); for (const s of sessions.values()) { s.client.destroy(); } }
 
   // ── 远程文件就地编辑 ──────────────────────────────────────────────────
@@ -324,6 +492,8 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   }
 
   return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose, stageEdit, saveEdit, editTarget,
+    // 概览：跑固定只读脚本并解析。调用方只传会话 id，不能传命令。
+    overview: async id => parseOverview(splitOverview(await runOverview(id))),
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),

@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     close: id => ipcRenderer.invoke('html-preview:close',id),
   },
   remote: {
-    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'stageEdit', 'saveEdit', 'editTarget'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
+    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'stageEdit', 'saveEdit', 'editTarget', 'overview'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
     onEvent: callback => { const listener = (_event, value) => callback(value); ipcRenderer.on('remote:event', listener); return () => ipcRenderer.removeListener('remote:event', listener); },
   },
   app: {
