@@ -527,6 +527,30 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert(order.indexOf('---') < order.indexOf('刷新此标签'), '刷新属于第二组');
     assert(order.indexOf('关闭标签') > order.lastIndexOf('---'), '「关闭标签」在最后一组');
   });
+  await test('标签栏组头胶囊：组名可压缩、计数与箭头不被挤、不再卡 150px 上限', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    for (const u of ['https://a.test', 'https://b.test']) w.BrowserPanel.newTab(u);
+    // 用长组名，复现用户截图里「PriceAI 价格监控」顶到计数与箭头的情况
+    w.__makeGroup('PriceAI 价格监控', w.BrowserPanel.tabs.filter(t => t.url === 'https://b.test'));
+    await tick();
+    const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    const rule = (css.match(/\.bw-tab-group-head\s*\{[^}]*\}/) || [''])[0];
+    const maxW = parseFloat((rule.match(/max-width:\s*(\d+)px/) || [0, 0])[1]);
+    assert(maxW >= 200, '组头 max-width 不能卡在 150px（长组名会顶满、右边圆角被裁）: ' + maxW);
+    assert(/box-sizing:\s*border-box/.test(rule), '组头需要 border-box（padding 不该把胶囊撑破）');
+    // 组名是唯一可压缩项：min-width:0 + 省略号；计数与箭头不可压缩
+    const nameRule = (css.match(/\.bw-tg-name\s*\{[^}]*\}/) || [''])[0];
+    assert(/min-width:\s*0/.test(nameRule), '.bw-tg-name 需要 min-width:0 才能用省略号: ' + nameRule);
+    assert(/text-overflow:\s*ellipsis/.test(nameRule), '.bw-tg-name 需要省略号');
+    const countRule = (css.match(/\.bw-tg-count\s*\{[^}]*\}/) || [''])[0];
+    assert(/flex:\s*0 0 auto|flex-shrink:\s*0/.test(countRule), '计数不可被压缩: ' + countRule);
+    // DOM 顺序：色点 → 组名 → 计数 → 箭头
+    const head = q('#bw-tabs .bw-tab-group-head');
+    const kinds = [...head.children].map(el => el.className);
+    assert.equal(kinds.join(','), 'bw-tg-dot,bw-tg-name,bw-tg-count,bw-tg-caret', '组头元素顺序: ' + kinds.join(','));
+    assert.equal(head.querySelector('.bw-tg-name').textContent, 'PriceAI 价格监控', '长组名完整写入（靠 CSS 省略，不靠截断字符串）');
+    assert.equal(head.querySelector('.bw-tg-count').textContent, '1', '计数正确');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));

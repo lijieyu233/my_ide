@@ -2605,7 +2605,9 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
    折叠时组头留在原地、标签整体不渲染 —— 标签本身仍然存在（不会因此被关闭）。 */
 .bw-tab-group {
   display: flex; align-items: stretch; flex-shrink: 0;
-  padding: 0 2px; border-radius: 9px;
+  /* 左右各留 3px：组头胶囊与组内标签行都是「填满这个盒子」的，
+     0 或 2px 会让胶囊圆角贴着容器描边，看起来像被切掉一角。 */
+  padding: 0 3px; border-radius: 9px;
   background: color-mix(in srgb, var(--group-tint, #4f9cd6) 16%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--group-tint, #4f9cd6) 34%, transparent);
 }
@@ -2617,18 +2619,26 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
 .bw-tab-group[data-group-color="yellow"] { --group-tint: #c9a24a; }
 .bw-tab-group[data-group-color="orange"] { --group-tint: #d08a4a; }
 .bw-tab-group[data-group-color="grey"]   { --group-tint: #8a8a8a; }
+/* 组头胶囊：内容超宽时不该把胶囊撑破，也不该让组名贴着计数。
+   实测 `max-width:150px` 时「PriceAI 价格监控 + 计数 + 箭头」需要 ~145px，
+   几乎顶满 → 组名与计数之间没有呼吸、右边圆角被裁。
+   现在：放宽上限、给组名单独的可压缩区间（min-width:0 + 省略号），
+   两边留出固定的内边距，并让 padding 与 gap 一起决定视觉节奏。 */
 .bw-tab-group-head {
-  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
-  max-width: 150px; padding: 0 8px; border: 0; background: transparent;
+  display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+  max-width: 220px; min-width: 0;
+  padding: 0 9px 0 8px; border: 0; background: transparent;
   color: var(--text-bright); font: inherit; font-size: .9em; cursor: pointer;
-  border-radius: 7px;
+  border-radius: 7px; box-sizing: border-box;
 }
 .bw-tab-group-head:hover { background: color-mix(in srgb, var(--group-tint) 26%, transparent); }
-.bw-tg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--group-tint, #4f9cd6); }
-.bw-tg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bw-tg-count { color: var(--text-dim); font-size: .92em; flex-shrink: 0; }
+.bw-tg-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--group-tint, #4f9cd6); }
+/* 组名是唯一允许被压缩的一项：min-width:0 让它能把省略号用起来，
+   计数与箭头 flex-shrink:0 保证永远完整可见。 */
+.bw-tg-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-tg-count { color: var(--text-dim); font-size: .92em; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 /* 折叠方向提示：只有圆点时看不出「点了是展开还是收起」。 */
-.bw-tg-caret { display: inline-flex; flex-shrink: 0; opacity: .65; }
+.bw-tg-caret { display: inline-flex; flex: 0 0 auto; opacity: .65; }
 .bw-tg-caret svg.ic { width: 11px; height: 11px; }
 .bw-tab-group-head:hover .bw-tg-caret { opacity: 1; }
 /* 组内标签去掉自己的底/边框，融进组容器里，只保留选中态的上缘强调 */
