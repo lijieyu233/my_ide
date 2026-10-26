@@ -1867,6 +1867,18 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 #ctx-menu.hidden { display: none; }
 .ctx-item { padding: 6px 14px; font-size: 12px; cursor: pointer; }
 .ctx-item:hover { background: var(--accent); color: #fff; }
+/* 带图标的菜单项：左图标 + 右文字。图标列固定 15px，所有项的文字才能对齐一条竖线。
+   用 flex + gap 而不是给每项写死 padding —— 有图标/没图标的项混在一列里时，
+   前者靠图标占位、后者直接文字起排，两种情况都能对齐。 */
+.ctx-item.with-icon { display: flex; align-items: center; gap: 9px; }
+.ctx-item-ic { display: inline-flex; flex: 0 0 15px; width: 15px; height: 15px; align-items: center; justify-content: center; opacity: .9; }
+.ctx-item-ic svg.ic { width: 15px; height: 15px; stroke-width: 1.35; }
+.ctx-item:hover .ctx-item-ic { opacity: 1; }
+.ctx-item.with-icon > span:not(.ctx-item-ic):not(.ctx-sub-caret) { flex: 1 1 auto; min-width: 0; }
+/* 禁用项：整项降到 45%，图标不再单独二次降透明 ——
+   原来 `.ctx-item:disabled{opacity:.4}` 与 `.ctx-item:disabled .ctx-item-ic{opacity:.35}`
+   会相乘（0.14），图标几乎看不见，用户误以为菜单坏了。 */
+.ctx-item:disabled .ctx-item-ic, .ctx-item[aria-disabled="true"] .ctx-item-ic { opacity: 1; }
 /* 右键菜单分隔线（大纲「复制本章节」等菜单分组用） */
 .ctx-sep { height: 1px; background: var(--border-mid); margin: 4px 0; }
 .ctx-item.danger:hover { background: var(--red); }
@@ -2676,9 +2688,12 @@ body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hi
    在 #ctx-menu 里靠父级继承看起来正常，但 #ctx-submenu 挂在 body 上，
    按钮就退回浏览器默认外观（实测截图里那个白底方块）。 */
 #ctx-submenu .ctx-item {
-  display: flex; align-items: center; width: 100%;
+  display: flex; align-items: center; gap: 8px; width: 100%;
   border: 0; background: transparent; color: var(--text-bright);
   font: inherit; text-align: left; border-radius: 5px;
+  /* 与主菜单的图标列对齐：主菜单是 14px 内边距 + 15px 图标 + 9px gap。
+     子菜单没有图标，靠 padding-left 补出同样的文字起点。 */
+  padding-left: 14px;
 }
 #ctx-submenu .ctx-item:hover { background: var(--accent); color: #fff; }
 #ctx-submenu .ctx-item:last-child { margin-top: 4px; border-top: 1px solid var(--border-pane); border-radius: 0 0 5px 5px; padding-top: 7px; }
@@ -2854,7 +2869,16 @@ body.bw-group-dragging .bw-live-group-head { cursor: grabbing; }
 .bw-save-group { width: 400px; max-width: 90vw; }.bw-save-group .m-body { display: grid; gap: 10px; padding: 20px; }.bw-save-group label { color: var(--text-dim); font-size: .92em; }
 .bw-save-group input { width: 100%; box-sizing: border-box; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-bright); background: var(--bg-input); font: inherit; outline: none; }.bw-save-group input:focus { border-color: var(--accent); }
 .bw-save-group .m-foot { padding: 12px 0 0; border: 0; }.bw-group-count { margin: 0; font-size: .92em; color: var(--text-dim); }.bw-save-group .x { border: 0; background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; }
-#ctx-menu button.ctx-item { display: block; width: 100%; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }#ctx-menu button.ctx-item:disabled { opacity: .4; cursor: default; }#ctx-menu button.ctx-item:not(:disabled):hover { background: var(--bg-hover); }
+#ctx-menu button.ctx-item { display: block; width: 100%; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }#ctx-menu button.ctx-item:disabled { opacity: .45; cursor: default; }#ctx-menu button.ctx-item:not(:disabled):hover { background: var(--bg-hover); }
+/* ⚠ 必须带 #ctx-menu 前缀：上面那条 `#ctx-menu button.ctx-item { display:block }`
+   的优先级（id + 元素 + 类）高于单类/双类的 `.ctx-item.with-icon`，会把 flex 覆盖回
+   block —— 于是 gap 不生效，图标和文字贴在一起像「☆收藏此页」连写（截图实测）。
+   这里用同等强度（#ctx-menu + button + 双类）把 display 抢回 flex。 */
+#ctx-menu button.ctx-item.with-icon {
+  display: flex; align-items: center; gap: 9px;
+}
+#ctx-menu button.ctx-item.with-icon > .ctx-item-ic { flex: 0 0 15px; }
+#ctx-menu button.ctx-item.with-icon > span:not(.ctx-item-ic):not(.ctx-sub-caret) { flex: 1 1 auto; min-width: 0; }
 .bw-tab-select:focus-visible,.bw-tab-close:focus-visible,.bw-tab-action:focus-visible,.bw-sidebar-switch button:focus-visible,.bw-group-toggle:focus-visible,.bw-group-open:focus-visible,.bw-group-more:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .browser-toolbar {
   position: relative; flex-shrink: 0;

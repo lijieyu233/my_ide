@@ -500,6 +500,33 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     assert.equal(q('#bw-tabs').querySelectorAll('.bw-tab-group-head').length, 1, '展开后仍只有一个组头');
     assert.equal(q('#bw-tabs').querySelectorAll('.bw-tab-group .bw-tab').length, 3, '展开后三个成员都回来');
   });
+  await test('标签右键菜单每项都有内联 SVG 图标，并用分隔线分成四组', async ({ w, q }) => {
+    w.BrowserPanel.show();
+    w.BrowserPanel.newTab('https://a.test');
+    w.BrowserPanel.newTab('https://b.test');
+    const row = q('#bw-tabs .bw-tab');
+    row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const menu = q('#ctx-menu');
+    const items = [...menu.querySelectorAll('.ctx-item')];
+    const seps = [...menu.querySelectorAll('.ctx-sep')];
+    assert(items.length >= 8, '菜单项数量: ' + items.length);
+    // 每一项都必须有图标，且图标是内联 SVG（不是 emoji 字符）
+    for (const it of items) {
+      const ic = it.querySelector('.ctx-item-ic');
+      assert(ic, '菜单项「' + it.textContent.trim() + '」缺少图标列');
+      assert(ic.querySelector('svg.ic'), '菜单项「' + it.textContent.trim() + '」的图标必须是内联 SVG');
+      // 反向断言：文字里不能再出现 emoji（之前用 ⭐📋↻ 这些字符，混排后高矮不齐）
+      assert(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(it.textContent),
+        '菜单项文字不应再含 emoji: ' + it.textContent.trim());
+    }
+    assert.equal(seps.length, 3, '应有三条分隔线把动作分成四组，实际 ' + seps.length);
+    // 分组边界：收藏/复制 | 刷新/新建/克隆 | 标签组 | 恢复/关闭
+    const order = [...menu.children].map(el => el.classList.contains('ctx-sep') ? '---' : (el.classList.contains('ctx-item') ? el.textContent.trim() : '?'));
+    assert.equal(order[0], '收藏此页', '第一组以「收藏此页」开头: ' + order.join(' | '));
+    assert(order.indexOf('---') < order.indexOf('刷新此标签'), '刷新属于第二组');
+    assert(order.indexOf('关闭标签') > order.lastIndexOf('---'), '「关闭标签」在最后一组');
+  });
   await test('宿主快捷键、中键关闭、拖动排序和菜单禁用确实生效', async ({ w, q }) => {
     w.BrowserPanel.show(); w.BrowserPanel.go('https://a.test'); const a=w.BrowserPanel.activeTabId;
     const key=(value,shift=false)=>w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,ctrlKey:true,shiftKey:shift,bubbles:true,cancelable:true}));

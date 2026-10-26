@@ -452,9 +452,26 @@ const BrowserPanel = (() => {
     const menu = document.getElementById('ctx-menu'); menu.replaceChildren(); const scope = tabStore.scope;
     closeSubmenu(menu);
     for (const entry of items) {
+      // 分隔线：entry 传 { separator: true } 即可。用来把「收藏/复制」「新建/复制」
+      // 「标签组」「关闭」这几类动作分开 —— 一列十来项全是同样的字色时，
+      // 用户很难快速定位到「关闭」在哪。
+      if (entry.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'ctx-sep';
+        menu.append(sep);
+        continue;
+      }
       const button = document.createElement('button');
-      button.className = 'ctx-item' + (entry.danger ? ' danger' : '') + (entry.submenu ? ' has-submenu' : '');
+      button.className = 'ctx-item' + (entry.danger ? ' danger' : '') + (entry.submenu ? ' has-submenu' : '') + (entry.icon ? ' with-icon' : '');
       button.disabled = !!entry.disabled;
+      // 图标：一律内联 SVG（仓库 AGENTS.md 第六节的约定），不用 emoji ——
+      // emoji 的字号与基线不受控，混在一列里高矮不齐，而且会随系统字体变样。
+      if (entry.icon) {
+        const ic = document.createElement('span');
+        ic.className = 'ctx-item-ic';
+        ic.innerHTML = entry.icon;
+        button.append(ic);
+      }
       const label = document.createElement('span'); label.textContent = entry.label; button.append(label);
       if (entry.submenu) {
         const caret = document.createElement('span'); caret.className = 'ctx-sub-caret'; caret.textContent = '›';
@@ -527,6 +544,9 @@ const BrowserPanel = (() => {
     sub.style.left = left + 'px'; sub.style.top = top + 'px';
     syncOverlay();
   }
+  // 标签右键菜单。图标一律内联 SVG（仓库约定：列表/工具条图标不用 emoji，
+  // emoji 的字号与基线不受控，一列排下来高矮不齐）。分组用分隔线，
+  // 把「收藏/复制」「新建/复制」「组」「关闭」四类动作分开。
   function openTabMenu(tabId, x, y) {
     const state = tabStore.state, tab = state.tabs.find(t => t.id === tabId) || tabStore.active, index = state.tabs.findIndex(t => t.id === tab.id);
     const faved = !!tab.url && isFav(tab.url);
@@ -534,25 +554,41 @@ const BrowserPanel = (() => {
     const groupOfThisTab = tab.groupId ? allGroups.find(g => g.id === tab.groupId) : null;
     // 可以并入的组：除了它自己已经在的那个（活标签组里一个标签只属于一个组）。
     const groupTargets = allGroups.filter(g => g.id !== tab.groupId);
+    const I = {
+      star: IC('<path d="M8 2.2l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.6l-3.6 1.9.7-4.1-3-2.9 4.1-.6z"/>'),
+      starOff: IC('<path d="M8 2.2l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.6l-3.6 1.9.7-4.1-3-2.9 4.1-.6z"/><path d="M2.5 2.5l11 11"/>'),
+      copy: IC('<rect x="5.4" y="2.6" width="8" height="9.4" rx="1.2"/><path d="M10.6 12.2v1.2H3.4a1 1 0 0 1-1-1V5.6h1.2"/>'),
+      // 刷新用「圆弧 + 箭头」，重新打开用「时钟」：两者语义本来就近，
+      // 若都画成环形箭头，同一列里根本分不出是「重载当前页」还是「恢复关掉的标签」。
+      // 「重新打开」用时钟最贴切 —— 用户要恢复的是「刚才那个时刻」的标签。
+      refresh: IC('<path d="M13 8a5 5 0 1 1-1.6-3.7M13 3.2v3.2H9.8"/>'),
+      newTab: IC('<rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.4"/><path d="M8 6.2v4.2M5.9 8.3h4.2"/>'),
+      duplicate: IC('<rect x="2.6" y="3.4" width="8" height="9.2" rx="1.2"/><path d="M5.6 3.4V2.2h7.8v9.2h-1.2"/>'),
+      group: IC('<circle cx="5" cy="5.4" r="1.7"/><circle cx="11" cy="5.4" r="1.7"/><path d="M2.4 12.6c0-1.7 1.2-2.9 2.6-2.9s2.6 1.2 2.6 2.9M8.4 12.6c0-1.7 1.2-2.9 2.6-2.9s2.6 1.2 2.6 2.9"/>'),
+      groupAdd: IC('<circle cx="5" cy="5.4" r="1.7"/><path d="M2.4 12.6c0-1.7 1.2-2.9 2.6-2.9s2.6 1.2 2.6 2.9"/><path d="M11.6 7v4.4M9.4 9.2h4.4"/>'),
+      groupRemove: IC('<circle cx="5" cy="5.4" r="1.7"/><path d="M2.4 12.6c0-1.7 1.2-2.9 2.6-2.9s2.6 1.2 2.6 2.9"/><path d="M9.4 9.2h4.4"/>'),
+      undo: IC('<circle cx="8" cy="8" r="5.2"/><path d="M8 5V8l2.3 1.5"/>'),
+      closeOthers: IC('<rect x="2.6" y="3.4" width="6.4" height="8.2" rx="1.2"/><path d="M6.4 6.2l6 6M12.4 6.2l-6 6"/>'),
+      closeRight: IC('<rect x="2.6" y="3.4" width="4.6" height="8.2" rx="1.2"/><path d="M10.4 6.2l2.8 2.8-2.8 2.8M7.2 3.4h1.4"/>'),
+      close: IC('<path d="M3.6 3.6l8.8 8.8M12.4 3.6l-8.8 8.8"/>'),
+    };
     tabMenu([
-      // 收藏做成一个开关：已收藏时同一位置能取消，不用绕去侧栏找那一行。
-      // 未收藏走 openFavPosMenu（可以顺便选文件夹），已收藏直接移除。
+      // ① 收藏 / 复制整页地址
       faved
-        ? { label: '🗑 取消收藏', run: () => { removeFav(tab.url); renderSidebar(); renderFavBtn(); renderEmpty(); MI.toast('已取消收藏', 'ok'); } }
-        : { label: '⭐ 收藏此页', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
-      { label: '📋 复制网址', disabled: !tab.url, run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
-      { label: '↻ 刷新此标签', disabled: !tab.url, run: () => { activateTab(tab.id); reload(); } },
-      // 以下两项对齐 Chrome 标签页右键的习惯位置：
-      // 「在下方新建标签页」= 新建一个空白页，插在当前标签之后（不是末尾）；
-      // 「复制标签页」= 克隆当前标签（同 url 同标题），插在它后面并切过去。
-      { label: '在下方新建标签页', run: () => newTab('', '', tab.id) },
-      { label: '复制标签页', disabled: !tab.url, run: () => newTab(tab.url, tab.title, tab.id) },
-      // 活标签组：标签只能属于一个组，所以这里按 Edge 的两条路给出。
-      // 未分组时是「将标签页添加到组 ▸」子菜单（列出已有组 + 新建组），
-      // 已分组时是「从组中删除」—— 与 Edge 标签右键的两项完全对应。
+        ? { icon: I.starOff, label: '取消收藏', run: () => { removeFav(tab.url); renderSidebar(); renderFavBtn(); renderEmpty(); MI.toast('已取消收藏', 'ok'); } }
+        : { icon: I.star, label: '收藏此页', disabled: !tab.url, run: () => openFavPosMenu(tab.url, x, y, false) },
+      { icon: I.copy, label: '复制网址', disabled: !tab.url, run: () => { try { navigator.clipboard.writeText(tab.url); MI.toast('已复制网址', 'ok'); } catch { MI.toast('复制失败', 'err'); } } },
+      { separator: true },
+      // ② 刷新 / 新建 / 克隆
+      { icon: I.refresh, label: '刷新此标签', disabled: !tab.url, run: () => { activateTab(tab.id); reload(); } },
+      { icon: I.newTab, label: '在下方新建标签页', run: () => newTab('', '', tab.id) },
+      { icon: I.duplicate, label: '复制标签页', disabled: !tab.url, run: () => newTab(tab.url, tab.title, tab.id) },
+      { separator: true },
+      // ③ 标签组（活标签组：一个标签只属于一个组，所以是互斥的两条路）
       groupOfThisTab
-        ? { label: '从组中删除', run: () => { const r = tabStore.removeFromGroup([tab.id]); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); MI.toast('已从组中移除', 'ok'); } }
+        ? { icon: I.groupRemove, label: '从组中删除', run: () => { const r = tabStore.removeFromGroup([tab.id]); if (!r.ok) { MI.toast(r.error, 'err'); return; } renderTabs(); renderGroups(); MI.toast('已从组中移除', 'ok'); } }
         : {
+            icon: I.groupAdd,
             label: '将标签页添加到组',
             submenu: [
               ...groupTargets.map(g => ({
@@ -563,16 +599,17 @@ const BrowserPanel = (() => {
                   renderTabs(); renderGroups(); MI.toast('已加入「' + g.name + '」', 'ok');
                 },
               })),
-              // 「新建组」放在子菜单末尾，带分隔线视觉（CSS :last-child 处理）。
               // anchor 是子菜单项自己的屏幕位置（见 openSubmenu），浮层贴着它出现。
               { label: '＋ 新建组', run: (anchor) => { openNewGroupPopover([tab], anchor?.x ?? x, anchor?.y ?? y); } },
             ],
           },
-      { label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: () => saveTabGroup() },
-      { label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
-      { label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
-      { label: '关闭右侧标签', disabled: index === state.tabs.length - 1, run: () => closeTabs(state.tabs.slice(index + 1).map(t => t.id)) },
-      { label: '关闭标签', run: () => closeTabs([tab.id]) },
+      { icon: I.group, label: '将所有标签保存为一组…', disabled: !state.tabs.some(t => t.url), run: () => saveTabGroup() },
+      { separator: true },
+      // ④ 恢复与关闭
+      { icon: I.undo, label: '重新打开关闭的标签', disabled: !state.closed.length, run: reopenTab },
+      { icon: I.closeOthers, label: '关闭其他标签', disabled: state.tabs.length < 2, run: () => closeTabs(state.tabs.filter(t => t.id !== tab.id).map(t => t.id)) },
+      { icon: I.closeRight, label: '关闭右侧标签', disabled: index === state.tabs.length - 1, run: () => closeTabs(state.tabs.slice(index + 1).map(t => t.id)) },
+      { icon: I.close, label: '关闭标签', danger: true, run: () => closeTabs([tab.id]) },
     ], x, y);
   }
   // snapshot 省略 = 保存全部已打开标签（顶部 ＋ 按钮与「将所有标签保存为一组…」）；
