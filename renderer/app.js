@@ -119,7 +119,7 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser', 'log', 'quick-launch', 'bookshelf'];
+  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'clipboard', 'browser', 'log', 'quick-launch', 'bookshelf'];
   const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
@@ -205,7 +205,7 @@ const App = (() => {
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
-    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'bookshelf' || activeTool === 'remote') {
+    if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'bookshelf' || activeTool === 'remote' || activeTool === 'clipboard') {
       applyToolChange(activeTool, null);
       activeTool = null;
       renderToolStrip();
@@ -268,6 +268,8 @@ const App = (() => {
     const dbContent = document.getElementById('db-panel');
     if (dbContent) dbContent.classList.toggle('hidden', activeTool !== 'db');
     document.getElementById('remote-main')?.classList.toggle('hidden', activeTool !== 'remote');
+    document.getElementById('clipboard-main')?.classList.toggle('hidden', activeTool !== 'clipboard');
+    window.ClipboardPanel?.syncVisible?.(activeTool === 'clipboard');
     window.RemotePanel?.syncVisible(activeTool === 'remote');
     // 启动面板同款双区联动：侧栏选条目，右侧主区看详情/日志
     const launchMain = document.getElementById('launch-main');
@@ -356,7 +358,7 @@ const App = (() => {
   function getPageContext() {
     const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
       launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动',bookshelf:'书架' };
-    const independent = ['tasks','launch','db','remote','browser','quick-launch','bookshelf'].includes(activeTool);
+    const independent = ['tasks','launch','db','remote','clipboard','browser','quick-launch','bookshelf'].includes(activeTool);
     const book=window.Viewer?.activeTab;
     if(!independent&&book?.reader)return {id:'reader',name:'阅读器',tool:activeTool||'project',toolName:'阅读目录',projectContext:false,reader:{title:book.readerInfo?.title||book.name,kind:book.readerInfo?.kind||null}};
     const projectContext = !!root && !independent;

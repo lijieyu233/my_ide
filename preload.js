@@ -118,6 +118,17 @@ contextBridge.exposeInMainWorld('myIDE', {
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),
     readText: () => ipcRenderer.invoke('clip:readText'),
   },
+  // 剪贴板历史：自动采集的文字与图片。所有操作走 clipboard-history:* 一组 IPC，
+  // 监听只在 MyIDE 进程存活期间进行（开关状态存在主进程的 settings.watch 里）。
+  clipboardHistory: {
+    ...Object.fromEntries(['list', 'addText', 'addImageBase64', 'readImage', 'update', 'remove', 'cleanup', 'settings', 'pause', 'state']
+      .map(op => [op, (...args) => ipcRenderer.invoke('clipboard-history:' + op, ...args)])),
+    onEvent: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('clipboard-history:event', listener);
+      return () => ipcRenderer.removeListener('clipboard-history:event', listener);
+    },
+  },
   fsCopy: (src, destDir, overwrite) => ipcRenderer.invoke('fs:copy', src, destDir, overwrite),
   checkConflict: (srcPaths, destDir) => ipcRenderer.invoke('fs:checkExists', srcPaths, destDir),
   git: {

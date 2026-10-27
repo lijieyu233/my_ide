@@ -1,0 +1,122 @@
+/* clipboard.css —— 剪贴板历史面板（左列表 + 右编辑区，支持增删改查） */
+
+#clipboard-main {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  min-width: 0; background: var(--bg);
+  font-size: var(--tool-font, 13px);
+}
+
+/* 顶部工具条 */
+.clip-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 1em;
+  flex-wrap: wrap; padding: .7em 1em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  background: var(--bg-panel);
+}
+.clip-identity { display: flex; align-items: center; gap: .7em; min-width: 0; }
+.clip-identity-icon { display: inline-flex; color: var(--text-dim); }
+.clip-identity-icon svg.ic { width: 1.5em; height: 1.5em; }
+.clip-title-line { display: flex; align-items: center; gap: .6em; }
+.clip-title-line strong { color: var(--text-bright); font-size: 1em; }
+.clip-sub { display: block; font-size: .8em; color: var(--text-dim); margin-top: .15em; }
+.clip-watch {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-bright); border-radius: 1em;
+  padding: .1em .7em; font: inherit; font-size: .8em; cursor: pointer;
+}
+.clip-watch[data-on="0"] {
+  border-color: color-mix(in srgb, var(--text) 20%, transparent);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text-dim);
+}
+.clip-toolbar-actions { display: flex; align-items: center; gap: .6em; flex-wrap: wrap; }
+.clip-search {
+  min-width: 16em; padding: .4em .7em; border-radius: .4em;
+  border: 1px solid color-mix(in srgb, var(--btn-border, var(--border)) 70%, transparent);
+  background: var(--bg-input, transparent); color: var(--text); font: inherit; font-size: .92em;
+}
+.clip-search:focus { outline: none; border-color: var(--accent); }
+
+/* 工作区：左列表 + 右编辑区 */
+.clip-workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(16em, 26em) minmax(0, 1fr); }
+.clip-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.clip-filters { display: flex; gap: .2em; padding: .55em .7em; border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
+.clip-filters button {
+  border: 0; background: transparent; color: var(--text-dim);
+  padding: .3em .7em; border-radius: .35em; font: inherit; font-size: .88em; cursor: pointer;
+}
+.clip-filters button:hover { background: var(--bg-hover); color: var(--text); }
+.clip-filters button.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text-bright); }
+.clip-list { flex: 1; min-height: 0; overflow: auto; padding: .3em; }
+.clip-row {
+  display: flex; align-items: flex-start; gap: .55em; width: 100%;
+  padding: .55em .6em; margin-bottom: .15em; border: 0; border-radius: .4em;
+  background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.clip-row:hover { background: var(--bg-hover); }
+.clip-row.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text-bright); }
+.clip-thumb {
+  flex: 0 0 2.4em; width: 2.4em; height: 2.4em; border-radius: .3em;
+  background-color: color-mix(in srgb, var(--text) 8%, transparent);
+  background-size: cover; background-position: center;
+  display: inline-flex; align-items: center; justify-content: center; font-size: .9em;
+}
+.clip-kind { flex: 0 0 2.4em; display: inline-flex; align-items: center; justify-content: center; height: 2.4em; }
+.clip-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .15em; }
+.clip-row-title {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: .9em; line-height: 1.35;
+}
+.clip-row-meta { font-size: .76em; color: var(--text-dim); }
+
+/* 右侧编辑区 */
+.clip-detail { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: .8em 1em; gap: .7em; overflow: auto; }
+.clip-detail-meta {
+  display: flex; align-items: center; gap: .8em; flex-wrap: wrap;
+  font-size: .8em; color: var(--text-dim);
+}
+.clip-text {
+  flex: 1; min-height: 12em; width: 100%; box-sizing: border-box;
+  padding: .7em .8em; border-radius: .45em; resize: vertical;
+  border: 1px solid color-mix(in srgb, var(--btn-border, var(--border)) 60%, transparent);
+  background: var(--bg-input, color-mix(in srgb, var(--text) 4%, transparent));
+  color: var(--text); font-family: var(--mono-font, ui-monospace, monospace);
+  font-size: .92em; line-height: 1.6;
+}
+.clip-text:focus { outline: none; border-color: var(--accent); }
+.clip-image-wrap { display: flex; justify-content: center; padding: .5em; background: color-mix(in srgb, var(--text) 3%, transparent); border-radius: .45em; }
+.clip-image-wrap img { max-width: 100%; max-height: 50vh; object-fit: contain; border-radius: .3em; }
+.clip-note-label { display: flex; flex-direction: column; gap: .3em; font-size: .82em; color: var(--text-dim); }
+.clip-note {
+  padding: .45em .7em; border-radius: .4em; font: inherit; font-size: 1.1em;
+  border: 1px solid color-mix(in srgb, var(--btn-border, var(--border)) 60%, transparent);
+  background: var(--bg-input, transparent); color: var(--text);
+}
+.clip-note:focus { outline: none; border-color: var(--accent); }
+.clip-detail-foot { display: flex; align-items: center; gap: .5em; padding-top: .2em; }
+.clip-state { font-size: .8em; color: var(--text-dim); }
+.clip-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent) !important; }
+.clip-danger:hover { background: color-mix(in srgb, var(--red) 18%, transparent) !important; }
+
+/* 底部：统计 + 清理参数 */
+.clip-foot {
+  display: flex; align-items: center; gap: .8em; flex-wrap: wrap;
+  padding: .55em 1em; border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  background: var(--bg-panel); font-size: .82em; color: var(--text-dim);
+}
+.clip-foot .spacer { flex: 1; }
+.clip-limit { display: inline-flex; align-items: center; gap: .35em; }
+.clip-limit input {
+  width: 4.5em; padding: .25em .45em; border-radius: .35em; font: inherit; text-align: right;
+  border: 1px solid color-mix(in srgb, var(--btn-border, var(--border)) 60%, transparent);
+  background: var(--bg-input, transparent); color: var(--text);
+}
+.clip-limit input:focus { outline: none; border-color: var(--accent); }
+.clip-empty { padding: 1.4em 1em; color: var(--text-dim); font-size: .9em; text-align: center; }
+
+@container (max-width: 52em) {
+  .clip-workspace { grid-template-columns: minmax(0, 1fr); }
+  .clip-side { max-height: 40%; border-right: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+}

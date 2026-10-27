@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="preview-location.css">
 <link rel="stylesheet" href="quick-launch.css">
 <link rel="stylesheet" href="remote.css">
+<link rel="stylesheet" href="clipboard.css">
 <link rel="stylesheet" href="vendor/atom-one-dark.min.css">
 <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
 <link rel="stylesheet" href="reader.css">
@@ -49,6 +50,7 @@
     <button id="tool-git" class="tool-btn" title="提交（Ctrl+K / Alt+0 / Ctrl+3 / Ctrl+4）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="12" r="1.7"/><circle cx="4.2" cy="4" r="1.7"/><circle cx="11.8" cy="7" r="1.7"/><path d="M4.2 5.7v4.6M5.9 12h2.5a3.4 3.4 0 0 0 3.4-3.4v-.1"/></svg></button>
     <button id="tool-browser" class="tool-btn" title="内置浏览器 (Ctrl+6)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c1.9 2.1 1.9 9.5 0 11.6M8 2.2c-1.9 2.1-1.9 9.5 0 11.6"/></svg></button>
     <button id="tool-bookshelf" class="tool-btn" title="书架：最近阅读与已添加书籍" aria-label="书架" aria-pressed="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5C5.8 2.1 3.5 2 1.5 2.8v10C3.6 12 5.8 12.2 8 13.5c2.2-1.3 4.4-1.5 6.5-.7v-10C12.5 2 10.2 2.1 8 3.5zM8 3.5v10"/></svg></button>
+    <button id="tool-clipboard" class="tool-btn" title="剪贴板历史：复制过的文字与图片" aria-label="剪贴板历史"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.6" y="2.6" width="8.8" height="11" rx="1.4"/><path d="M6.2 2.6V1.8h3.6v.8"/><path d="M6 6h4M6 8.6h4M6 11.2h2.4"/></svg></button>
     <button id="tool-remote" class="tool-btn" title="远程服务器：SSH终端与SFTP文件" aria-label="远程服务器"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="9" rx="1.2"/><path d="M4 4.5l2 2-2 2M8 8.5h3M5 14h6M8 11v3"/></svg></button>
     <button id="tool-db" class="tool-btn" title="数据库 (Ctrl+7)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.2" ry="2.1"/><path d="M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1"/></svg></button>
     <button id="tool-tasks" class="tool-btn" title="任务（清单 + 依赖图，Ctrl+9）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2"/><path d="M5.2 8.2l1.9 1.9 3.8-4.2"/></svg></button>
@@ -324,6 +326,41 @@
       </div>
     </div>
     <!-- 数据库工具：数据表格 + SQL（右侧主区；连接与表列表在左侧 #panel-db）-->
+    <!-- 剪贴板历史：左列表 + 右编辑区（支持增删改查） -->
+    <div id="clipboard-main" class="hidden">
+      <div class="clip-toolbar">
+        <div class="clip-identity">
+          <span class="clip-identity-icon"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.6" y="2.6" width="8.8" height="11" rx="1.4"/><path d="M6.2 2.6V1.8h3.6v.8"/><path d="M6 6h4M6 8.6h4M6 11.2h2.4"/></svg></span>
+          <div>
+            <div class="clip-title-line"><strong>剪贴板历史</strong><button id="clip-watch" class="clip-watch" data-on="1" title="点击暂停采集">监听中</button></div>
+            <span class="clip-sub">自动保存复制过的文字与图片；只在 MyIDE 运行时采集</span>
+          </div>
+        </div>
+        <div class="clip-toolbar-actions">
+          <input id="clip-search" class="clip-search" type="search" placeholder="搜索内容或备注…" autocomplete="off" spellcheck="false" />
+          <button id="clip-add" class="vt-btn" title="把当前剪贴板里的文字存一条">手动保存当前剪贴板</button>
+        </div>
+      </div>
+      <div class="clip-workspace">
+        <aside class="clip-side">
+          <div id="clip-filters" class="clip-filters">
+            <button data-clip-filter="all" class="active">全部</button>
+            <button data-clip-filter="text">文字</button>
+            <button data-clip-filter="image">图片</button>
+            <button data-clip-filter="pinned">固定</button>
+          </div>
+          <div id="clip-list" class="clip-list"></div>
+        </aside>
+        <section id="clip-detail" class="clip-detail"></section>
+      </div>
+      <footer class="clip-foot">
+        <span id="clip-stats" class="clip-stats"></span>
+        <span class="spacer"></span>
+        <label class="clip-limit">保留 <input id="clip-max-days" type="number" min="0" max="3650" step="1" /> 天</label>
+        <label class="clip-limit">图片上限 <input id="clip-max-bytes" type="number" min="0" step="16" /> MB</label>
+        <button id="clip-apply-limits" class="vt-btn" title="按上面的天数与大小立即清理一次">应用并清理</button>
+      </footer>
+    </div>
     <div id="remote-main" class="hidden">
       <div class="remote-toolbar">
         <div class="remote-identity"><span class="remote-identity-icon"><svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="5" rx="1"/><rect x="2" y="9" width="12" height="5" rx="1"/><path d="M4.5 4.5h.5M4.5 11.5h.5M8 4.5h3M8 11.5h3"/></svg></span><div><div class="remote-title-line"><strong id="remote-title">远程服务器</strong><span id="remote-state" class="remote-state">未连接</span></div><span id="remote-endpoint">SSH 终端与 SFTP 文件传输</span></div></div>
@@ -494,6 +531,7 @@
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="remote-panel.js"></script>
+<script src="clipboard-panel.js"></script>
 <script src="db-panel.js"></script>
 <script src="ai-launch-tools.js"></script>
 <script src="ai-ssh-tools.js"></script>

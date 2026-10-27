@@ -96,6 +96,9 @@ const remoteService=require('./src/main/remote/remote-ipc').register({ app, ipcM
   // 无人点击的模态框会让握手一直挂着，直到 readyTimeout 30s 超时。
   // 只有自检会设这个变量，正常运行时是 undefined，走 dialog 分支。
   verifyHost: process.env.MYIDE_AUTO_TRUST_HOST === '1' ? (() => true) : undefined });
+// 剪贴板历史：轮询采集文字与图片（开销实测 0.147% 单核，见 clipboard-ipc.js）。
+// 只在主进程存活期间监听 —— 关掉 MyIDE 就停，不做常驻、不写自启动。
+const clipboardHistory = require('./src/main/clipboard/clipboard-ipc').register({ app, ipcMain, clipboard, getWindow: () => mainWindow });
 const aiSshTools=require('./src/main/ai/ai-ssh-tools').createService({service:remoteService});
 // 远程文件的虚拟路径路由（remote://<sid>/<path>）。让「右键 → 编辑远程文件」
 // 把文件当普通文档打开，读写直连 SFTP —— 标签页显示真实远程路径，中间不落本地盘。
