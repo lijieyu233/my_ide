@@ -74,9 +74,14 @@
 /* 右侧编辑区 */
 .clip-detail { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: .8em 1em; gap: .7em; overflow: auto; }
 .clip-detail-meta {
-  display: flex; align-items: center; gap: .8em; flex-wrap: wrap;
+  display: flex; align-items: center; gap: .7em; flex-wrap: wrap;
   font-size: .8em; color: var(--text-dim);
+  padding-bottom: .6em; margin-bottom: .1em;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
 }
+/* meta 行里的按钮要像按钮，不能被 .8em 字号压成一条 */
+.clip-detail-meta .vt-btn { font-size: 1.15em; }
+.clip-pin-badge { padding: .08em .5em; border-radius: 1em; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); }
 .clip-text {
   flex: 1; min-height: 12em; width: 100%; box-sizing: border-box;
   padding: .7em .8em; border-radius: .45em; resize: vertical;
@@ -88,14 +93,6 @@
 .clip-text:focus { outline: none; border-color: var(--accent); }
 .clip-image-wrap { display: flex; justify-content: center; padding: .5em; background: color-mix(in srgb, var(--text) 3%, transparent); border-radius: .45em; }
 .clip-image-wrap img { max-width: 100%; max-height: 50vh; object-fit: contain; border-radius: .3em; }
-.clip-note-label { display: flex; flex-direction: column; gap: .3em; font-size: .82em; color: var(--text-dim); }
-.clip-note {
-  padding: .45em .7em; border-radius: .4em; font: inherit; font-size: 1.1em;
-  border: 1px solid color-mix(in srgb, var(--btn-border, var(--border)) 60%, transparent);
-  background: var(--bg-input, transparent); color: var(--text);
-}
-.clip-note:focus { outline: none; border-color: var(--accent); }
-.clip-detail-foot { display: flex; align-items: center; gap: .5em; padding-top: .2em; }
 .clip-state { font-size: .8em; color: var(--text-dim); }
 .clip-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent) !important; }
 .clip-danger:hover { background: color-mix(in srgb, var(--red) 18%, transparent) !important; }

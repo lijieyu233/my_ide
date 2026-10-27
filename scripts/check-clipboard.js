@@ -119,20 +119,34 @@ const wait = async (s, ms = 8000) => {
     const uiRows = await probe(`document.querySelectorAll('#clip-list .clip-row').length`);
     check('列表渲染出条目', uiRows >= 2, 'rows=' + uiRows);
 
-    // ⑥ 编辑保存（改备注 + 改正文）
+    // ⑥ 编辑保存（只改正文 —— 备注输入框已按用户要求移除）
     const edited = await probe(`(async()=>{
       const r = await window.myIDE.clipboardHistory.list('');
       const text = r.data.entries.find(e=>e.kind==='text' && e.text === ${JSON.stringify(marker)});
       if (!text) return { error: 'target not found' };
-      const up = await window.myIDE.clipboardHistory.update(text.id, { note: '端到端备注', text: ${JSON.stringify(marker)} + '（已改）' });
-      return { ok: up.ok, note: up.data?.note, text: up.data?.text };
+      const up = await window.myIDE.clipboardHistory.update(text.id, { text: ${JSON.stringify(marker)} + '（已改）' });
+      return { ok: up.ok, text: up.data?.text };
     })()`);
-    check('编辑能改备注', edited.ok === true && edited.note === '端到端备注', edited.error);
-    check('编辑能改正文', typeof edited.text === 'string' && edited.text.includes('（已改）'));
+    check('编辑能改正文', edited.ok === true && String(edited.text || '').includes('（已改）'), edited.error);
 
-    // ⑦ 搜索
-    const searched = await probe(`(async()=>{const r=await window.myIDE.clipboardHistory.list('端到端备注');return r.data.entries.length})()`);
-    check('能按备注搜索', searched >= 1, 'hits=' + searched);
+    // ⑦ 搜索（仍可按正文搜；备注字段保留在数据里但界面不再提供编辑）
+    const searched = await probe(`(async()=>{const r=await window.myIDE.clipboardHistory.list('（已改）');return r.data.entries.length})()`);
+    check('能按正文搜索', searched >= 1, 'hits=' + searched);
+
+    // ⑦b UI 上不应再有备注输入框，且操作按钮在顶部 meta 行里
+    const uiDetail = await probe(`(() => {
+      const detail = document.getElementById('clip-detail');
+      const meta = detail?.querySelector('.clip-detail-meta');
+      return {
+        hasNoteInput: !!detail?.querySelector('#clip-note, .clip-note'),
+        hasFoot: !!detail?.querySelector('.clip-detail-foot'),
+        buttonsInMeta: meta ? [...meta.querySelectorAll('[data-clip-act]')].map(b => b.dataset.clipAct) : [],
+        buttonsBelowText: !!detail?.querySelector('.clip-text + .clip-detail-foot'),
+      };
+    })()`);
+    check('界面上已没有备注输入框', uiDetail.hasNoteInput === false);
+    check('操作按钮在顶部 meta 行里', uiDetail.buttonsInMeta.length >= 3, uiDetail.buttonsInMeta.join(','));
+    check('不再有底部按钮条', uiDetail.hasFoot === false && uiDetail.buttonsBelowText === false);
 
     // ⑧ 固定
     const pinned = await probe(`(async()=>{

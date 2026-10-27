@@ -91,26 +91,27 @@ window.ClipboardPanel = (() => {
       return;
     }
     draftDirty = false;
+    // 操作按钮放在顶部：用户选中一条之后第一件事就是「复制 / 保存 / 删除」，
+    // 原来压在底部备注输入框下面，长文本时得滚到底才够得着。
+    // 备注输入框已按要求移除 —— 它占掉一整行高度，收益不如按钮上移明显。
     const meta = '<div class="clip-detail-meta">'
       + '<span>' + (entry.kind === 'image' ? '图片' : '文字') + '</span>'
       + '<span>' + new Date(entry.copiedAt).toLocaleString() + '</span>'
       + (entry.bytes ? '<span>' + fmtBytes(entry.bytes) + '</span>' : '')
+      + (entry.pinned ? '<span class="clip-pin-badge">已固定</span>' : '')
       + '<span class="spacer"></span>'
+      + '<span class="clip-state" id="clip-state"></span>'
+      + '<button class="vt-btn" data-clip-act="copy">复制</button>'
       + '<button class="vt-btn" data-clip-act="pin">' + (entry.pinned ? '取消固定' : '固定') + '</button>'
+      + '<button class="vt-btn" data-clip-act="save">保存修改</button>'
+      + '<button class="vt-btn clip-danger" data-clip-act="delete">删除</button>'
       + '</div>';
     const body = entry.kind === 'text'
       ? '<textarea class="clip-text" id="clip-text" spellcheck="false"></textarea>'
       : '<div class="clip-image-wrap"><img id="clip-image" alt="剪贴板图片" /></div>';
-    host.innerHTML = meta + body
-      + '<label class="clip-note-label">备注'
-      + '<input class="clip-note" id="clip-note" type="text" maxlength="2000" placeholder="给这条记录加个备注，方便以后搜索" />'
-      + '</label>'
-      + '<div class="clip-detail-foot"><span class="clip-state" id="clip-state"></span><span class="spacer"></span>'
-      + '<button class="vt-btn" data-clip-act="copy">复制</button>'
-      + '<button class="vt-btn" data-clip-act="save">保存修改</button>'
-      + '<button class="vt-btn clip-danger" data-clip-act="delete">删除</button></div>';
+    host.innerHTML = meta + body;
 
-    const textEl = q('clip-text'), noteEl = q('clip-note');
+    const textEl = q('clip-text');
     if (entry.kind === 'text') {
       textEl.value = entry.text || '';
       textEl.addEventListener('input', () => { draftDirty = true; setState('未保存'); });
@@ -123,8 +124,6 @@ window.ClipboardPanel = (() => {
         if (wrap) wrap.outerHTML = '<div class="clip-empty">图片读取失败：' + esc(error.message) + '</div>';
       });
     }
-    noteEl.value = entry.note || '';
-    noteEl.addEventListener('input', () => { draftDirty = true; setState('未保存'); });
   }
 
   function setState(text) { const el = q('clip-state'); if (el) el.textContent = text || ''; }
@@ -168,8 +167,12 @@ window.ClipboardPanel = (() => {
   async function saveDraft() {
     const entry = entries.find(e => e.id === selectedId);
     if (!entry) return;
-    const patch = { note: q('clip-note')?.value ?? '' };
+    // 备注输入框已移除，这里只保存正文。
+    // ⚠ 不能继续读 #clip-note 再 `?? ''` —— 元素不存在时那会把已有备注默默清空，
+    // 属于静默数据丢失。
+    const patch = {};
     if (entry.kind === 'text') patch.text = q('clip-text')?.value ?? '';
+    if (!Object.keys(patch).length) { setState('图片条目无需保存正文'); return; }
     try {
       const updated = await call('update', entry.id, patch);
       Object.assign(entry, updated);
