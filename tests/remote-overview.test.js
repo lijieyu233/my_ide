@@ -83,4 +83,13 @@ panel.syncVisible(false);
 check('syncVisible(false) 不抛错（会顺带停掉概览轮询）', true);
 panel.syncVisible(true);
 
+// ⑧ 回归：#remote-notice 不能只在 .error 时可见。
+// 原来 `#remote-notice{display:none}` + `.error{display:block}`，导致所有成功
+// 提示（如「已打开 xx；保存后会自动传回服务器」）永远不显示 —— 用户点「编辑
+// 远程文件」看不到任何反馈，以为功能没生效。
+const css = fs.readFileSync(path.join(rendererDir, 'remote.css'), 'utf8');
+const noticeRule = (css.match(/#remote-notice\s*\{[^}]*\}/) || [''])[0];
+check('#remote-notice 默认可见（不是 display:none）', /display:\s*block/.test(noticeRule) || !/display:\s*none/.test(noticeRule));
+check('#remote-notice 空内容时收起（:empty）', /#remote-notice:empty/.test(css));
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

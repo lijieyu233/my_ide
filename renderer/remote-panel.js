@@ -280,15 +280,33 @@ window.RemotePanel = (() => {
   }
 
   // 编辑：远程文件先下载到「远程编辑暂存目录」，登记映射后交给编辑器打开。
+  //
+  // ⚠ 失败必须用 MI.toast，不能只写 remote-notice：那个提示区在工具栏里，
+  //   实测（#remote-notice 曾经 display:none）失败原因完全不可见，用户看到的
+  //   就是「点了没反应」。toast 浮在窗口上，无论面板布局如何都能看到。
   async function editEntry(side, entry) {
     if (!entry || entry.directory) return;
-    if (side === 'local') { await Viewer.openFile(entry.path); return; }
+    if (side === 'local') {
+      const r = await Viewer.openFile(entry.path).catch(error => ({ ok: false, error: error.message }));
+      if (r?.ok === false) MI.toast('打开失败：' + (r.error || '未知原因'), 'err');
+      return;
+    }
+    if (!connected()) { MI.toast('请先连接服务器再编辑远程文件', 'err'); return; }
     try {
       const staged = await call('stageEdit', sid, entry.path);
       if (!staged?.localPath) throw Error('暂存失败');
-      await Viewer.openFile(staged.localPath);
+      const opened = await Viewer.openFile(staged.localPath);
+      // 编辑器可能拒绝打开（二进制/超大/只读预览），这种情况不能假装成功。
+      if (opened?.ok === false) {
+        throw Error(opened.error || '编辑器无法打开该文件（可能是二进制或过大）');
+      }
+      MI.toast('已打开 ' + entry.name + '；保存后会自动传回服务器', 'ok');
       notify('已打开 ' + entry.name + '；保存后会自动传回服务器', false);
-    } catch (error) { notify('打开远程文件失败：' + error.message, true); }
+    } catch (error) {
+      const message = (error && error.message) || String(error);
+      MI.toast('打开远程文件失败：' + message, 'err');
+      notify('打开远程文件失败：' + message, true);
+    }
   }
 
   // ── 概览页（仿 1Panel 的首屏）────────────────────────────────────────

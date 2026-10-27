@@ -33,7 +33,14 @@
 .remote-toolbar-actions { display:flex; align-items:center; flex-wrap:wrap; gap:.6em; font-size:.92em; }#remote-connect { min-width:5.5em; }#remote-main .remote-muted { color:var(--text-dim); border-color:transparent; }#remote-main #remote-disconnect:hover:not(:disabled) { color:var(--red); border-color:color-mix(in srgb,var(--red) 35%,var(--btn-border)); }
 #remote-main input,#remote-main select,.remote-form input,.remote-form select { color:var(--text); background:var(--bg-input); border:1px solid color-mix(in srgb,var(--btn-border) 75%,transparent); border-radius:.38em; padding:.4em .6em; font:inherit; min-width:0; }#remote-main input:focus,.remote-form input:focus { border-color:var(--accent); }
 /* 普通连接状态已有标题和状态点，不再占一整行；错误留在导航栏并可悬停读全文。 */
-#remote-notice { display:none; }#remote-notice.error { display:block; flex:1; min-width:0; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; color:var(--red); font-size:.85em; }.remote-form-error { color:var(--del-text); overflow-wrap:anywhere; }
+/* 提示区：成功和失败都要能看到。
+   原来只有 .error 才 display:block，非错误提示一律隐藏 —— 实测「编辑远程文件」
+   成功时那句「已打开 xx；保存后会自动传回服务器」根本不会出现，用户只看到界面
+   没变化，以为点了没反应。现在有文字就占位，`:empty` 时收起，不白占空间。 */
+#remote-notice { display:block; flex:1; min-width:0; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; color:var(--text-dim); font-size:.85em; }
+#remote-notice:empty { display:none; }
+#remote-notice.error { color:var(--red); }
+.remote-form-error { color:var(--del-text); overflow-wrap:anywhere; }
 .remote-workspace-bar { display:flex; align-items:center; justify-content:space-between; gap:1em; flex-wrap:wrap; min-height:3.08em; padding:0 1.23em; border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent); background:var(--bg-panel); }
 .remote-tabs { display:flex; align-self:stretch; gap:1.4em; }#remote-main .remote-tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:var(--text-dim); min-height:3em; padding:.4em .15em; font-size:1em; }#remote-main .remote-tabs button.active { color:var(--text-bright); border-bottom-color:var(--accent); }
 .remote-session-picker { display:flex; align-items:center; gap:.65em; min-width:0; margin-left:auto; color:var(--text-dim); font-size:.85em; }#remote-sessions { min-width:8em; max-width:16em; width:16em; height:2.62em; padding-block:.25em; }
