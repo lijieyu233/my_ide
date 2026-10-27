@@ -36,7 +36,7 @@ const sample = {
   memory: { total: 8 * 1024 ** 3, used: 3.2 * 1024 ** 3, available: 4.8 * 1024 ** 3, swapTotal: 2 * 1024 ** 3, swapUsed: 0.1 * 1024 ** 3 },
   uptime: 86400 * 3 + 3600 * 5,
   disks: [{ fs: '/dev/sda1', mount: '/', total: 100 * 1024 ** 3, used: 52 * 1024 ** 3, percent: 52 }],
-  listen: [{ proto: 'tcp', address: '0.0.0.0', port: 22, process: 'sshd' }],
+  listen: [{ proto: 'tcp', address: '0.0.0.0', port: 22, process: 'sshd', pid: 1234 }],
   services: [{ unit: 'ssh.service', active: 'active', sub: 'running', description: 'OpenBSD Secure Shell server' }],
   docker: [{ name: 'web', image: 'nginx:1.25', status: 'Up 3 days' }],
   du: [{ bytes: 1024 ** 3, path: '/home/u/projects' }],
@@ -45,28 +45,55 @@ const sample = {
 panel.renderOverview(sample);
 const cards = [...host.querySelectorAll('.remote-ov-card>header')].map(e => e.textContent.trim());
 check('七张卡片都画出来', host.querySelectorAll('.remote-ov-card').length === 7);
-check('卡片标题分别是资源/系统/分区/服务/Docker/端口/占用',
-  cards.length === 7 && cards[0] === '资源监控' && /系统信息/.test(cards[1]) && /磁盘分区/.test(cards[2])
-  && /服务/.test(cards[3]) && /Docker/.test(cards[4]) && /监听端口/.test(cards[5]) && /主目录占用/.test(cards[6]));
+// 顺序是「资源监控（跨行、左列）」+ 右列依次：系统信息 → 磁盘 → Docker → 端口 → 服务 → 占用
+check('资源监控排第一且跨行',
+  /资源监控/.test(cards[0]) && !!host.querySelector('.remote-ov-card.span-2'));
+check('系统信息排第二', /系统信息/.test(cards[1]));
+check('其余卡片：磁盘分区 / Docker / 监听端口 / 服务 / 主目录占用',
+  cards.length === 7 && /磁盘分区/.test(cards[2]) && /Docker/.test(cards[3])
+  && /监听端口/.test(cards[4]) && /服务/.test(cards[5]) && /主目录占用/.test(cards[6]));
 check('三条进度条（CPU/内存/磁盘）都有宽度',
   [...host.querySelectorAll('.remote-ov-bar>i')].map(e => e.style.width).join(',') === '50%,40%,52%');
-check('CPU 由 /proc/stat 算出 50% 使用率', /50%/.test(host.querySelector('.remote-ov-meter').textContent));
+check('CPU 由 /proc/stat 算出 50% 使用率', /50%/.test(host.querySelector('.remote-ov-big').textContent));
 check('内存显示 3.2/8 GB 与交换分区',
   /3\.2 GB/.test(host.textContent) && /交换/.test(host.textContent));
 check('运行时长格式化为「3 天 5 小时」', /3 天 5 小时/.test(host.textContent));
 check('系统信息含发行版/内核/架构/主机名',
   /Ubuntu 22\.04\.3 LTS/.test(host.textContent) && /6\.8\.0-45/.test(host.textContent)
   && /x86_64/.test(host.textContent) && /prod-01/.test(host.textContent));
-check('监听端口显示端口号与进程名', /22/.test(host.querySelectorAll('.remote-ov-card')[5].textContent));
+check('监听端口显示端口号与进程名',
+  /22/.test([...host.querySelectorAll('.remote-ov-card')].find(c => /监听端口/.test(c.textContent))?.textContent || ''));
 
 // ③ 阈值配色：95% 应该是 critical
 panel.renderOverview({ ...sample, memory: { ...sample.memory, used: 7.8 * 1024 ** 3 } });
-const levels = [...host.querySelectorAll('.remote-ov-meter')].map(e => e.dataset.level);
+const levels = [...host.querySelectorAll('.remote-ov-big')].map(e => e.dataset.level);
 check('内存 97% 触发 critical 配色', levels.includes('critical'));
 
 // ④ 没装 Docker：不画 Docker 卡片（而不是留空卡片）
 panel.renderOverview({ ...sample, docker: [], dockerSupported: false });
 check('没有容器时不画 Docker 卡片', !/Docker 容器/.test(host.textContent));
+
+// ⑫ 布局：资源监控占大头（跨两行），右侧一列堆其余卡片。
+const monitorCard = host.querySelector('.remote-ov-card.span-2');
+check('资源监控卡片标记为跨行（左大右小布局）', !!monitorCard && /资源监控/.test(monitorCard.textContent));
+check('三条大进度条都在', host.querySelectorAll('.remote-ov-big').length === 3);
+const cssNow = fs.readFileSync(path.join(rendererDir, 'remote.css'), 'utf8');
+check('网格是两列（1.15fr / .85fr）', /1\.15fr/.test(cssNow) && /[.\d]85fr/.test(cssNow));
+
+// ⑬ 交互：每一行都带得动后续操作所需的数据属性。
+// 前置：前面几条测试会用「无 Docker」「空字段」等变体重渲染同一个 host，
+// 所以这里必须先用完整样本再渲染一次，否则读到的是残局（Docker 行就没了）。
+panel.renderOverview(sample);
+check('磁盘分区行可点（跳到文件面板）', host.querySelectorAll('[data-ov-browse]').length >= 1);
+check('Docker 行可点（看日志）', host.querySelectorAll('[data-ov-docker]').length >= 1);
+check('端口行可点且带 pid', /data-ov-pid="\d+"/.test(host.innerHTML));
+check('服务行可点（systemctl status）', host.querySelectorAll('[data-ov-unit]').length >= 1);
+check('可点行有 is-clickable 类（有 hover 反馈与键盘可达）', host.querySelectorAll('.remote-ov-row.is-clickable').length >= 3);
+check('可点行带 title 提示', /data-ov-title=/.test(host.innerHTML));
+
+// ⑭ 网速：两次采样做差
+check('资源卡显示入站/出站速率', /入站/.test(host.textContent) && /出站/.test(host.textContent));
+
 
 // ⑤ 关键：缺字段不崩
 panel.renderOverview({ os: {}, kernel: {}, cpu: {}, memory: {}, disks: [], listen: [], services: [], docker: [], du: [] });
@@ -126,5 +153,6 @@ check('弹框没有把 canEdit 传成布尔值', !/canEdit:\s*true/.test(panelSr
 check('onSave 走 saveOnce（避免与 keydown 重复写入）', /onSave:\s*\(\)\s*=>\s*\{\s*void saveOnce\(\)/.test(panelSrc));
 check('保存按钮也走 saveOnce', /action === 'save'\) void saveOnce\(\)/.test(panelSrc));
 check('CodeMirror 不可用时有 textarea 兜底', /re-textarea/.test(panelSrc));
+
 
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

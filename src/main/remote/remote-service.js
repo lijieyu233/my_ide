@@ -272,9 +272,14 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     '(cut -d\\  -f1 /proc/uptime) 2>/dev/null || true',
     'echo "' + OVERVIEW_MARK + 'stat"',
     '(head -n 1 /proc/stat) 2>/dev/null || true',
+    'echo "' + OVERVIEW_MARK + 'net"',
+    // 累加非 lo 接口的收发字节，供概览算「当前速率」（两次采样做差）。
+    '(awk -F"[: ]+" \'$1!="lo" && $1!="Inter-|" { rx+=$3; tx+=$11 } END { print rx+0, tx+0 }\' /proc/net/dev 2>/dev/null || true)',
     'echo "' + OVERVIEW_MARK + 'disk"',
-    '(df -kP -x tmpfs -x devtmpfs 2>/dev/null | tail -n +2) || true',
+    // 只取真实文件系统（过滤 tmpfs/devtmpfs/overlay 等内存与容器层）。
+    '(df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2) || true',
     'echo "' + OVERVIEW_MARK + 'listen"',
+    // 带上 pid，点开时能查这个进程的完整信息。
     '( (ss -tulpnH 2>/dev/null || netstat -tulpn 2>/dev/null) | head -n 80 ) || true',
     'echo "' + OVERVIEW_MARK + 'services"',
     '(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | head -n 60) || true',
@@ -384,7 +389,10 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
       if (!Number.isFinite(port)) return null;
       const process = (cols.find(c => c.startsWith('users:')) || '').replace(/^users:\(\(|\)\)$/g, '').split(',')[0] || '';
       const nameMatch = /"([^"]+)"/.exec(process);
-      return { proto: proto.replace('6', ''), address: addr.slice(0, idx) || '*', port, process: nameMatch ? nameMatch[1] : '' };
+      // pid 也取出来：点「监听端口」那一行要能查这个进程的完整信息。
+      const pidMatch = /pid=(\d+)/.exec(process);
+      return { proto: proto.replace('6', ''), address: addr.slice(0, idx) || '*', port,
+        process: nameMatch ? nameMatch[1] : '', pid: pidMatch ? Number(pidMatch[1]) : null };
     }).filter(Boolean);
     const services = String(parts.services || '').split('\n').map(line => {
       const cols = line.trim().split(/\s+/);
@@ -407,6 +415,12 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
       cpu: { cores: Number(load[0]) || 0, load: (load[1] || '').split(/\s+/).slice(0, 3).map(Number).filter(Number.isFinite), usage: cpuTotal },
       memory: { total: memTotal, used: memUsed, available: memAvailable, swapTotal, swapUsed: Math.max(0, swapTotal - swapFree) },
       uptime: Number(String(parts.uptime || '').trim()) || null,
+      // 网卡累计字节（非 lo）。前端两次采样做差算实时速率 —— 服务端只给累计值，
+      // 这样 5 秒一次的轮询天然就是「增量采样」，不需要额外状态。
+      net: (() => {
+        const nums = String(parts.net || '').trim().split(/\s+/).map(Number).filter(Number.isFinite);
+        return nums.length >= 2 ? { rx: nums[0], tx: nums[1] } : null;
+      })(),
       disks, listen, services, docker, du,
       dockerSupported: String(parts.docker || '').trim().length > 0,
     };

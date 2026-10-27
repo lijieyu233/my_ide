@@ -497,11 +497,20 @@ window.RemotePanel = (() => {
     await openRemoteEditor(entry);
   }
 
-  // ── 概览页（仿 1Panel 的首屏）────────────────────────────────────────
+  // ── 概览页（服务器仪表盘）─────────────────────────────────────────────
   // 数据全部来自主进程的固定只读采集脚本（见 remote-service 的 OVERVIEW_SCRIPT），
-  // 这里只负责画。每块单独判空：服务器没装 Docker / 不是 systemd，对应区块整块不画，
-  // 而不是留一张空卡片。
-  let overviewSerial = 0, overviewTimer = null, overviewCpuPrev = null;
+  // 这里只负责画与交互。
+  //
+  // 布局：左侧「资源监控」占大头（三条大进度条 + 网速 + 负载），右侧一列其余卡片。
+  // 之前是等宽 auto-fit 网格，八张卡片大小一致、参差不齐地换行，CPU/内存这种
+  // 最该被看见的数据和「主目录占用」占同样面积，视线没有落点。
+  //
+  // 交互：点每一行都能做进一步操作（跳文件、开终端、看日志），
+  // 全部通过「在已有终端里投递命令」实现 —— 复用现成终端（能看输出、能 Ctrl+C），
+  // 不另开一条命令执行通道。
+  let overviewSerial = 0, overviewTimer = null;
+  let overviewCpuPrev = null, overviewNetPrev = null, overviewLastAt = 0;
+  let overviewLast = null; // 上一份数据，供点击时取行内上下文
 
   const fmtBytes = value => {
     if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -509,6 +518,10 @@ window.RemotePanel = (() => {
     let n = value, i = 0;
     while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
     return (n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  };
+  const fmtRate = bytesPerSec => {
+    if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '0 B/s';
+    return fmtBytes(bytesPerSec) + '/s';
   };
   const fmtDuration = seconds => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '—';
@@ -518,94 +531,204 @@ window.RemotePanel = (() => {
     return m + ' 分';
   };
   const pct = (used, total) => !total ? 0 : Math.min(100, Math.max(0, Math.round(used / total * 100)));
+  const level = p => p >= 90 ? 'critical' : p >= 75 ? 'warn' : 'ok';
 
-  function overviewCard(title, body, extraClass = '') {
-    return '<section class="remote-ov-card ' + extraClass + '"><header>' + title + '</header>' + body + '</section>';
-  }
-  // 进度条：用同一套 meter 画 CPU / 内存 / 磁盘，颜色按阈值走（>90 红、>75 黄）。
-  function meter(label, percent, detail) {
-    const level = percent >= 90 ? 'critical' : percent >= 75 ? 'warn' : 'ok';
-    return '<div class="remote-ov-meter" data-level="' + level + '"><div class="remote-ov-meter-head"><span>' + label + '</span><strong>' + percent + '%</strong></div>'
+  // 单条大进度条（左标签、右数值、下方细条 + 说明）。
+  function bigMeter(label, percent, figure, detail) {
+    return '<div class="remote-ov-big" data-level="' + level(percent) + '">'
+      + '<div class="remote-ov-big-head"><span>' + label + '</span><strong>' + figure + '</strong></div>'
       + '<div class="remote-ov-bar"><i style="width:' + percent + '%"></i></div>'
-      + (detail ? '<div class="remote-ov-meter-foot">' + detail + '</div>' : '') + '</div>';
+      + '<div class="remote-ov-big-foot">' + detail + '</div></div>';
   }
+  // 可点的行：data-ov-* 携带点击所需上下文。
+  function row(attrs, main, right, opts = {}) {
+    const cls = 'remote-ov-row' + (opts.clickable === false ? '' : ' is-clickable');
+    return '<div class="' + cls + '" ' + attrs + ' role="button" tabindex="0">'
+      + '<span class="remote-ov-row-main" title="' + esc(opts.title || main) + '">' + main + '</span>'
+      + '<span class="' + (opts.rightClass || 'remote-ov-row-sub') + '">' + right + '</span></div>';
+  }
+  const card = (title, body, cls = '') =>
+    '<section class="remote-ov-card ' + cls + '"><header>' + title + '</header>' + body + '</section>';
 
   function renderOverview(ov) {
     const host = q('remote-overview'); if (!host) return;
-    if (!ov) { host.innerHTML = '<div class="remote-empty">连接服务器后查看概览。</div>'; return; }
-    const { os = {}, kernel = {}, cpu = {}, memory = {}, uptime, disks = [], listen = [], services = [], docker = [], du = [] } = ov;
-    const parts = [];
+    if (!ov) { host.innerHTML = '<div class="remote-empty">连接服务器后查看概览。</div>'; overviewLast = null; return; }
+    overviewLast = ov;
+    const { os = {}, kernel = {}, cpu = {}, memory = {}, uptime, disks = [], listen = [], services = [], docker = [], du = [], net } = ov;
 
-    // ① 资源：CPU / 内存 / 磁盘合并成一张卡 —— 这正是 1Panel 首屏最上面那四块的核心。
-    const cpuPercent = (() => {
-      if (!cpu.usage) return 0;
+    // CPU：用两次 /proc/stat 采样做差才算得准；首次没历史值就退回累计占比。
+    const now = Date.now();
+    let cpuPercent = 0;
+    if (cpu.usage) {
       const prev = overviewCpuPrev;
       overviewCpuPrev = cpu.usage;
-      if (!prev) return Math.max(0, Math.min(100, Math.round((1 - cpu.usage.idle / Math.max(1, cpu.usage.total)) * 100)));
-      const dTotal = cpu.usage.total - prev.total, dIdle = cpu.usage.idle - prev.idle;
-      if (dTotal <= 0) return 0;
-      return Math.max(0, Math.min(100, Math.round((1 - dIdle / dTotal) * 100)));
-    })();
-    const memPercent = pct(memory.used, memory.total);
-    const diskTotal = disks.reduce((sum, d) => sum + d.total, 0);
-    const diskUsed = disks.reduce((sum, d) => sum + d.used, 0);
-    const loadText = cpu.load?.length ? cpu.load.map(n => n.toFixed(2)).join('  ') : '—';
-    parts.push(overviewCard('资源监控',
-      '<div class="remote-ov-meters">'
-      + meter('CPU', cpuPercent, (cpu.cores || '?') + ' 核 · 负载 ' + loadText)
-      + meter('内存', memPercent, fmtBytes(memory.used) + ' / ' + fmtBytes(memory.total)
-        + (memory.swapTotal ? ' · 交换 ' + fmtBytes(memory.swapUsed || 0) + ' / ' + fmtBytes(memory.swapTotal) : ''))
-      + meter('磁盘', pct(diskUsed, diskTotal), fmtBytes(diskUsed) + ' / ' + fmtBytes(diskTotal) + ' · ' + disks.length + ' 个分区')
-      + '</div>'
-      + '<div class="remote-ov-facts"><span>运行 <strong>' + fmtDuration(uptime) + '</strong></span>'
-      + '<span>系统时间 <strong>' + (kernel.serverTime ? new Date(kernel.serverTime * 1000).toLocaleString() : '—') + '</strong></span></div>'));
+      if (!prev) cpuPercent = Math.round((1 - cpu.usage.idle / Math.max(1, cpu.usage.total)) * 100);
+      else {
+        const dTotal = cpu.usage.total - prev.total, dIdle = cpu.usage.idle - prev.idle;
+        cpuPercent = dTotal > 0 ? Math.round((1 - dIdle / dTotal) * 100) : 0;
+      }
+      cpuPercent = Math.max(0, Math.min(100, cpuPercent));
+    }
+    // 网速：同样两次采样做差（服务端只给累计字节）。
+    let rxRate = 0, txRate = 0;
+    if (net && overviewNetPrev && overviewLastAt) {
+      const dt = Math.max(0.5, (now - overviewLastAt) / 1000);
+      rxRate = Math.max(0, (net.rx - overviewNetPrev.rx) / dt);
+      txRate = Math.max(0, (net.tx - overviewNetPrev.tx) / dt);
+    }
+    if (net) { overviewNetPrev = net; overviewLastAt = now; }
 
-    // ② 系统信息
-    parts.push(overviewCard('系统信息',
+    const memPercent = pct(memory.used, memory.total);
+    const diskTotal = disks.reduce((s, d) => s + d.total, 0);
+    const diskUsed = disks.reduce((s, d) => s + d.used, 0);
+    const diskPercent = pct(diskUsed, diskTotal);
+
+    // ── 左：资源监控（大头）──
+    const monitor = card('资源监控',
+      '<div class="remote-ov-bigs">'
+      + bigMeter('CPU', cpuPercent, cpuPercent + '%',
+        (cpu.cores || '?') + ' 核 · 负载 ' + (cpu.load?.length ? cpu.load.map(n => n.toFixed(2)).join('  ') : '—'))
+      + bigMeter('内存', memPercent, fmtBytes(memory.used) + ' / ' + fmtBytes(memory.total),
+        '可用 ' + fmtBytes(memory.available) + (memory.swapTotal
+          ? ' · 交换 ' + fmtBytes(memory.swapUsed || 0) + ' / ' + fmtBytes(memory.swapTotal) : ''))
+      + bigMeter('磁盘', diskPercent, fmtBytes(diskUsed) + ' / ' + fmtBytes(diskTotal), disks.length + ' 个分区')
+      + '</div>'
+      + '<div class="remote-ov-net"><span>入站 <strong>' + fmtRate(rxRate) + '</strong></span>'
+      + '<span>出站 <strong>' + fmtRate(txRate) + '</strong></span>'
+      + '<span>运行 <strong>' + fmtDuration(uptime) + '</strong></span>'
+      + '<span>' + esc(kernel.serverTime ? new Date(kernel.serverTime * 1000).toLocaleString() : '—') + '</span></div>',
+      'span-2');
+
+    // ── 右上：系统信息（不参与点击）──
+    const sys = card('系统信息',
       '<dl class="remote-ov-kv">'
       + '<div><dt>发行版</dt><dd>' + esc(os.name || '—') + '</dd></div>'
       + '<div><dt>内核</dt><dd>' + esc(kernel.release || '—') + '</dd></div>'
       + '<div><dt>架构</dt><dd>' + esc(kernel.arch || '—') + '</dd></div>'
       + '<div><dt>主机名</dt><dd>' + esc(kernel.hostname || '—') + '</dd></div>'
-      + '</dl>'));
+      + '</dl>');
 
-    // ③ 磁盘分区（每个挂载点一条）
-    if (disks.length) parts.push(overviewCard('磁盘分区',
+    // ── 右：磁盘分区（点 = 文件面板进入该挂载点）──
+    const diskCard = disks.length ? card('磁盘分区 <small>' + disks.length + '</small>',
       '<div class="remote-ov-list">' + disks.map(d =>
-        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(d.fs) + '">' + esc(d.mount) + '</span>'
-        + '<span class="remote-ov-row-size">' + fmtBytes(d.used) + ' / ' + fmtBytes(d.total) + '</span>'
-        + '<span class="remote-ov-row-pct" data-level="' + (d.percent >= 90 ? 'critical' : d.percent >= 75 ? 'warn' : 'ok') + '">' + d.percent + '%</span></div>').join('')
-      + '</div>'));
+        row('data-ov-browse="' + esc(d.mount) + '" data-ov-title="打开 ' + esc(d.mount) + '"',
+          esc(d.mount), fmtBytes(d.used) + ' / ' + fmtBytes(d.total) + ' <b data-level="' + level(d.percent) + '">' + d.percent + '%</b>',
+          { title: d.fs + ' → ' + d.mount })).join('')
+      + '</div>') : '';
 
-    // ④ 服务（systemd）
-    if (services.length) parts.push(overviewCard('运行中的服务 <small>' + services.length + '</small>',
-      '<div class="remote-ov-list scroll">' + services.map(s =>
-        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(s.description) + '">' + esc(s.unit) + '</span>'
-        + '<span class="remote-ov-tag">' + esc(s.sub || s.active) + '</span></div>').join('')
-      + '</div>'));
-
-    // ⑤ Docker（没装就不画这块）
-    if (docker.length) parts.push(overviewCard('Docker 容器 <small>' + docker.length + '</small>',
+    // ── 右：Docker（点 = 看日志；右键 = 更多）──
+    const dockerCard = docker.length ? card('Docker 容器 <small>' + docker.length + '</small>',
       '<div class="remote-ov-list scroll">' + docker.map(c =>
-        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(c.image) + '">' + esc(c.name) + '</span>'
-        + '<span class="remote-ov-row-sub">' + esc(c.status) + '</span></div>').join('')
-      + '</div>'));
+        row('data-ov-docker="' + esc(c.name) + '" data-ov-title="查看 ' + esc(c.name) + ' 的日志"',
+          esc(c.name), esc(c.status), { title: c.image + '\\n' + c.status })).join('')
+      + '</div>') : '';
 
-    // ⑥ 监听端口
-    if (listen.length) parts.push(overviewCard('监听端口 <small>' + listen.length + '</small>',
+    // ── 右：监听端口（点 = 查进程）──
+    const portCard = listen.length ? card('监听端口 <small>' + listen.length + '</small>',
       '<div class="remote-ov-list scroll">' + listen.map(p =>
-        '<div class="remote-ov-row"><span class="remote-ov-row-main"><b>' + p.port + '</b> <small>' + p.proto + '</small></span>'
-        + '<span class="remote-ov-row-sub" title="' + esc(p.address) + '">' + esc(p.process || p.address) + '</span></div>').join('')
-      + '</div>'));
+        row('data-ov-port="' + p.port + '" data-ov-pid="' + (p.pid || '') + '" data-ov-title="查看 ' + p.port + ' 端口的进程"',
+          '<b>' + p.port + '</b> <small>' + p.proto + '</small>',
+          esc(p.process || p.address), { title: p.address + ':' + p.port + (p.process ? ' · ' + p.process : '') })).join('')
+      + '</div>') : '';
 
-    // ⑦ 家目录占用
-    if (du.length) parts.push(overviewCard('主目录占用 <small>' + esc(du[0]?.path?.split('/').pop() || '') + '</small>',
-      '<div class="remote-ov-list">' + du.map(d =>
-        '<div class="remote-ov-row"><span class="remote-ov-row-main" title="' + esc(d.path) + '">' + esc(d.path) + '</span>'
-        + '<span class="remote-ov-row-size">' + fmtBytes(d.bytes) + '</span></div>').join('')
-      + '</div>'));
+    // ── 右：服务（点 = systemctl status）──
+    const serviceCard = services.length ? card('运行中的服务 <small>' + services.length + '</small>',
+      '<div class="remote-ov-list scroll">' + services.map(s =>
+        row('data-ov-unit="' + esc(s.unit) + '" data-ov-title="查看 ' + esc(s.unit) + ' 的状态"',
+          esc(s.unit), '<span class="remote-ov-tag">' + esc(s.sub || s.active) + '</span>',
+          { title: s.description || s.unit, rightClass: 'remote-ov-row-pct' })).join('')
+      + '</div>') : '';
 
-    host.innerHTML = '<div class="remote-ov-grid">' + parts.join('') + '</div>';
+    // ── 右：主目录占用（点 = 文件面板进入该目录）──
+    const duCard = du.length ? card('主目录占用', '<div class="remote-ov-list">' + du.map(d =>
+      row('data-ov-browse="' + esc(d.path) + '" data-ov-title="打开 ' + esc(d.path) + '"',
+        esc(d.path), fmtBytes(d.bytes), { title: d.path })).join('')
+      + '</div>') : '';
+
+    host.innerHTML = '<div class="remote-ov-grid">' + monitor + sys + diskCard
+      + dockerCard + portCard + serviceCard + duCard + '</div>';
+    bindOverviewClicks(host);
+  }
+
+  // 点击/右键绑定。用事件委托，重绘后不需要重新绑定。
+  function bindOverviewClicks(host) {
+    if (host.__ovBound) return;
+    host.__ovBound = true;
+    host.addEventListener('click', event => {
+      const row = event.target.closest('[data-ov-browse],[data-ov-docker],[data-ov-port],[data-ov-unit]');
+      if (!row) return;
+      if (row.hasAttribute('data-ov-browse')) {
+        // 跳文件面板并进入该目录（最实用的一条）。
+        const dir = row.dataset.ovBrowse;
+        mode = 'files'; renderMode();
+        void browse('remote', dir).catch(error => MI.toast('打开目录失败：' + error.message, 'err'));
+        return;
+      }
+      if (row.hasAttribute('data-ov-docker')) {
+        runInTerminal('docker logs -f --tail 200 ' + shellQuote(row.dataset.ovDocker), '查看容器日志 ' + row.dataset.ovDocker);
+        return;
+      }
+      if (row.hasAttribute('data-ov-port')) {
+        const pid = row.dataset.ovPid;
+        const cmd = pid ? 'ps -o pid,ppid,user,%cpu,%mem,etime,args -p ' + pid
+                        : 'ss -tulpn | grep -w ' + row.dataset.ovPort;
+        runInTerminal(cmd, '查看 ' + row.dataset.ovPort + ' 端口占用');
+        return;
+      }
+      if (row.hasAttribute('data-ov-unit')) {
+        runInTerminal('systemctl status ' + shellQuote(row.dataset.ovUnit) + ' --no-pager -l | head -n 40',
+          '查看服务 ' + row.dataset.ovUnit);
+      }
+    });
+    // 右键：给 Docker 容器更细的操作（重启/停止）。
+    host.addEventListener('contextmenu', event => {
+      const row = event.target.closest('[data-ov-docker]');
+      if (!row) return;
+      event.preventDefault(); event.stopPropagation();
+      const name = row.dataset.ovDocker;
+      const menu = document.getElementById('ctx-menu');
+      menu.className = 'tool-strip-menu'; menu.replaceChildren(); delete menu.dataset.toolOwner;
+      const add = (label, fn) => {
+        const b = document.createElement('button');
+        b.className = 'ctx-item'; b.type = 'button'; b.textContent = label;
+        b.onclick = ev => { ev.stopPropagation(); menu.classList.add('hidden'); fn(); };
+        menu.append(b);
+      };
+      const head = document.createElement('div');
+      head.className = 'tool-menu-heading'; head.textContent = name;
+      menu.append(head);
+      add('📜 查看日志（持续）', () => runInTerminal('docker logs -f --tail 200 ' + shellQuote(name), '日志 ' + name));
+      add('📄 最近 200 行日志', () => runInTerminal('docker logs --tail 200 ' + shellQuote(name), '日志 ' + name));
+      add('🔄 重启容器', () => runInTerminal('docker restart ' + shellQuote(name), '重启 ' + name));
+      add('⏹ 停止容器', () => runInTerminal('docker stop ' + shellQuote(name), '停止 ' + name));
+      add('ℹ 详细信息', () => runInTerminal('docker inspect --format "{{json .State}}" ' + shellQuote(name) + ' | head -c 2000', '容器信息 ' + name));
+      menu.classList.remove('hidden');
+      const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 160;
+      menu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - mw - 8)) + 'px';
+      menu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - mh - 8)) + 'px';
+      const close = ev => { if (!menu.contains(ev.target)) { menu.classList.add('hidden'); document.removeEventListener('pointerdown', close, true); } };
+      document.addEventListener('pointerdown', close, true);
+    });
+  }
+
+  // 在终端里投递一条命令。复用已有终端（用户能看输出、能 Ctrl+C 中断），
+  // 不另造命令执行通道 —— 这样也符合「远程操作必须可见」这个原则。
+  const shellQuote = value => "'" + String(value).replace(/'/g, "'\\''") + "'";
+  async function runInTerminal(command, label) {
+    if (!connected()) { MI.toast('请先连接服务器', 'err'); return; }
+    try {
+      mode = 'terminal'; renderMode();
+      // 复用当前活动终端；没有就新建一个。
+      if (!activeTerm || terminals.get(activeTerm)?.closed) await newTerminal();
+      const t = terminals.get(activeTerm);
+      if (!t) throw Error('没有可用终端');
+      // 新起一行再发，避免和用户正在输入的命令粘在一起。
+      await call('input', t.sid, t.id, '\r' + command + '\r');
+      MI.toast('已在终端执行：' + (label || command), 'ok');
+      t.term?.focus?.();
+    } catch (error) {
+      MI.toast('执行失败：' + ((error && error.message) || error), 'err');
+    }
   }
 
   async function loadOverview({ silent = false } = {}) {
