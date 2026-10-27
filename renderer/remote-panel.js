@@ -279,6 +279,141 @@ window.RemotePanel = (() => {
     catch (error) { notify(error.message, true); }
   }
 
+  // ── 远程文件编辑弹框 ──────────────────────────────────────────────────
+  // 用户要求：右键「编辑远程文件」应该是**独立弹出一个编辑框**，不要在标签页之间跳、
+  // 也不要把远程面板收起来。之前两版都不对 —— 一版是下载到临时目录再当本地文件打开，
+  // 一版是塞进主编辑器（会把当前正在看的文件和视图挤掉）。
+  //
+  // 这里用 Modal 弹一个自包含的浮层：CodeMirror 编辑 + 保存/关闭，直接读 remote://
+  // 虚拟路径（fs:* 层已转发到 SFTP），保存即写回服务器。
+  let remoteEditorBox = null;
+
+  function closeRemoteEditor() {
+    if (!remoteEditorBox) return;
+    const box = remoteEditorBox;
+    remoteEditorBox = null;
+    try { box.__editor?.destroy?.(); } catch {}
+    try { box.__cleanup?.(); } catch {}
+    while (Modal.stack.includes(box)) Modal.hide();
+  }
+
+  async function openRemoteEditor(entry) {
+    if (!entry || entry.directory) return;
+    if (!connected()) { MI.toast('请先连接服务器再编辑远程文件', 'err'); return; }
+    // 同一文件已经开着就直接聚焦，不重复弹（避免多个框改同一文件互相覆盖）。
+    if (remoteEditorBox?.__path === entry.path) {
+      remoteEditorBox.__editor?.focus?.();
+      return;
+    }
+    closeRemoteEditor();
+
+    const virtual = window.myIDE.remote.virtualPath(sid, entry.path);
+    const box = document.createElement('div');
+    box.className = 're-box';
+    box.dataset.selfEsc = '1';
+    box.innerHTML =
+      '<div class="m-head"><span class="re-title"></span><span class="x" data-re="close">✕</span></div>'
+      + '<div class="re-sub"></div>'
+      + '<div class="re-host"><div class="re-loading">正在读取…</div></div>'
+      + '<div class="m-foot"><span class="re-state"></span><span class="spacer"></span>'
+      + '<button class="tb-btn" data-re="close">关闭</button>'
+      + '<button class="tb-btn m-ok" data-re="save">保存 (Ctrl+S)</button></div>';
+    box.querySelector('.re-title').textContent = entry.name || entry.path.split('/').pop();
+    box.querySelector('.re-sub').textContent = entry.path;
+
+    const host = box.querySelector('.re-host');
+    const stateEl = box.querySelector('.re-state');
+    let dirty = false;
+    let savedVersion = null;
+    let editor = null;
+
+    const setState = text => { stateEl.textContent = text || ''; };
+
+    // 保存：拿磁盘当前版本做条件写，远程被别人改过就拒绝（与本地保存同一条规矩）。
+    const save = async () => {
+      if (!editor) return;
+      const content = editor.getValue();
+      setState('正在保存…');
+      try {
+        // 注意 fs:fileVersion 返回的是 {version} / {error} 形状（没有 ok 字段），
+        // 直接用 current.error 判断，别再写 !current.ok === false 这种无效表达式。
+        const current = await window.myIDE.fs.fileVersion(virtual);
+        if (current?.error) throw Error(current.error);
+        const result = await window.myIDE.fs.writeFile(virtual, content, null,
+          { expectedVersion: savedVersion });
+        if (!result?.ok) throw Error(result?.error || '写入失败');
+        savedVersion = result.version;
+        dirty = false;
+        setState('已写回服务器 ' + new Date().toLocaleTimeString());
+        MI.toast('已保存到服务器', 'ok');
+      } catch (error) {
+        setState('保存失败');
+        MI.toast('保存失败：' + ((error && error.message) || error), 'err');
+      }
+    };
+
+    box.addEventListener('click', event => {
+      const action = event.target.closest('[data-re]')?.dataset.re;
+      if (!action) return;
+      event.preventDefault(); event.stopPropagation();
+      if (action === 'close') {
+        if (dirty && !confirm('还有未保存的修改，确定关闭？')) return;
+        closeRemoteEditor();
+      } else if (action === 'save') void save();
+    });
+    box.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault(); event.stopPropagation(); void save();
+      }
+    });
+
+    box.__path = entry.path;
+    remoteEditorBox = box;
+    Modal.show(box);
+    // ⚠ 可选链不能出现在赋值左侧（`x?.y = 0` 是语法错误），必须分开判断。
+    const hostEl = box.querySelector('.re-host');
+    if (hostEl) hostEl.scrollTop = 0;
+
+    try {
+      const file = await window.myIDE.fs.readFile(virtual);
+      if (!remoteEditorBox) return; // 读取期间被关掉了
+      if (file?.error) throw Error(file.error);
+      if (file?.tooLarge) throw Error('文件过大（' + Math.round((file.size || 0) / 1024) + ' KiB），请下载到本地再编辑');
+      const text = file.text ?? '';
+      savedVersion = file.version || null;
+      host.innerHTML = '';
+      const target = document.createElement('div');
+      target.className = 're-editor';
+      host.append(target);
+      const ext = (entry.name.split('.').pop() || '').toLowerCase();
+      if (window.CodeEditor) {
+        editor = window.CodeEditor.create({
+          parent: target, ext, doc: text, canEdit: true,
+          onChange: () => { if (!dirty) { dirty = true; setState('未保存'); } },
+          // Ctrl+S 交给弹框自己的保存逻辑（CodeMirror 的 Mod-s 默认会被它拦下）
+          onSave: () => { void save(); },
+        });
+      }
+      if (!editor) {
+        // CodeMirror 不可用时退回 textarea：仍然能编辑保存，而不是打不开。
+        const ta = document.createElement('textarea');
+        ta.className = 're-textarea'; ta.value = text; ta.spellcheck = false;
+        ta.addEventListener('input', () => { if (!dirty) { dirty = true; setState('未保存'); } });
+        target.append(ta);
+        editor = { getValue: () => ta.value, focus: () => ta.focus(), destroy: () => ta.remove() };
+      }
+      box.__editor = editor;
+      editor.focus?.();
+      setState('已加载 ' + text.length + ' 字符');
+    } catch (error) {
+      if (!remoteEditorBox) return;
+      host.innerHTML = '<div class="re-error">读取失败：' + esc((error && error.message) || error) + '</div>';
+      setState('读取失败');
+    }
+
+    box.__cleanup = () => { host.innerHTML = ''; };
+  }
+
   // 编辑：把远程文件编码成 remote:// 虚拟路径直接交给编辑器打开。
   //
   // 之前是「下载到 userData 临时目录再当本地文件打开」，从用户视角完全说不通：
@@ -292,15 +427,8 @@ window.RemotePanel = (() => {
       if (r?.ok === false) MI.toast('打开失败：' + (r.error || '未知原因'), 'err');
       return;
     }
-    if (!connected()) { MI.toast('请先连接服务器再编辑远程文件', 'err'); return; }
-    try {
-      const virtual = window.myIDE.remote.virtualPath(sid, entry.path);
-      const opened = await Viewer.openFile(virtual);
-      if (opened?.ok === false) throw Error(opened.error || '编辑器无法打开该文件');
-      MI.toast('正在编辑 ' + entry.path + '；保存即写回服务器', 'ok');
-    } catch (error) {
-      MI.toast('打开远程文件失败：' + ((error && error.message) || error), 'err');
-    }
+    // 远程文件弹出独立的编辑框：不跳标签页、不收起远程面板。
+    await openRemoteEditor(entry);
   }
 
   // ── 概览页（仿 1Panel 的首屏）────────────────────────────────────────

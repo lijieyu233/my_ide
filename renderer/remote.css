@@ -140,3 +140,40 @@
 .remote-ov-row-pct[data-level="warn"] { color:#d0a24a; }
 .remote-ov-row-pct[data-level="critical"] { color:#d05a5a; }
 .remote-ov-tag { flex:0 0 auto; padding:.1em .5em; border-radius:1em; font-size:.86em; background:color-mix(in srgb,var(--accent) 14%,transparent); color:var(--text-dim); }
+
+/* ---------- 远程文件编辑弹框 ----------
+   Modal.show 会给元素加 .modal-panel，而 .modal-panel 写死了 width:560px /
+   max-height:84vh；styles.css 在 remote.css 之后加载，单类 .re-box 压不住它
+   （实测只有 560×135）。必须用 .modal-panel.re-box 双类提高特异性。 */
+.modal-panel.re-box {
+  display: flex; flex-direction: column;
+  width: min(72vw, 1040px); height: min(76vh, 760px);
+  max-width: 96vw; max-height: 88vh;
+  padding: 0; overflow: hidden;
+}
+.re-box .m-head { flex: 0 0 auto; padding: .75em 1em; border-bottom: 1px solid var(--border-pane); }
+.re-box .re-title { font-weight: 600; color: var(--text-bright); }
+.re-box .x { float: right; cursor: pointer; color: var(--text-dim); }
+.re-box .x:hover { color: var(--text-bright); }
+.re-sub {
+  flex: 0 0 auto; padding: .35em 1em .55em;
+  font-size: .82em; color: var(--text-dim);
+  font-family: var(--mono-font, ui-monospace, monospace);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.re-host { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bg); }
+.re-editor, .re-editor .cm-editor { height: 100%; }
+.re-textarea {
+  width: 100%; height: 100%; box-sizing: border-box;
+  padding: .8em; border: 0; outline: none; resize: none;
+  background: var(--bg); color: var(--text);
+  font-family: var(--mono-font, ui-monospace, monospace); font-size: .92em; line-height: 1.6;
+}
+.re-loading, .re-error { padding: 1.2em; color: var(--text-dim); font-size: .9em; }
+.re-error { color: var(--red); }
+.re-box .m-foot {
+  flex: 0 0 auto; display: flex; align-items: center; gap: .6em;
+  padding: .7em 1em; border-top: 1px solid var(--border-pane);
+}
+.re-state { font-size: .82em; color: var(--text-dim); }

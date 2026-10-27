@@ -103,4 +103,19 @@ check('让位名单包含 remote（|| 串联写法）', /tool === 'bookshelf' \|
 check('让位后仍能通过工具栏切回远程面板（backToEditor 只改 activeTool）',
   /activeTool === 'remote'/.test(fs.readFileSync(path.join(rendererDir, 'app.js'), 'utf8')));
 
+// ⑩ 回归：远程文件编辑必须是独立弹框（用户明确要求：不要跳标签页）。
+const panelSrc = fs.readFileSync(path.join(rendererDir, 'remote-panel.js'), 'utf8');
+check('存在 openRemoteEditor 弹框入口', /async function openRemoteEditor/.test(panelSrc));
+check('editEntry 对远程文件走弹框，不再 Viewer.openFile 跳标签页',
+  /await openRemoteEditor\(entry\)/.test(panelSrc));
+check('弹框用 Modal.show（独立浮层，不占主编辑区）', /Modal\.show\(box\)/.test(panelSrc));
+check('远程编辑不再依赖 remote:// 虚拟路径跳转',
+  !/Viewer\.openFile\(virtual\)/.test(panelSrc));
+// CSS：必须用 .modal-panel.re-box 双类，否则被 .modal-panel 的 560px 压回去
+const cssSrc = fs.readFileSync(path.join(rendererDir, 'remote.css'), 'utf8');
+check('弹框尺寸用双类选择器覆盖 .modal-panel', /\.modal-panel\.re-box\s*\{/.test(cssSrc));
+const boxRule = (cssSrc.match(/\.modal-panel\.re-box\s*\{[^}]*\}/) || [''])[0];
+check('弹框宽度不再是 560px', /width:\s*min\(72vw,\s*1040px\)/.test(boxRule));
+check('弹框高度用视口比例', /height:\s*min\(76vh,\s*760px\)/.test(boxRule));
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');
