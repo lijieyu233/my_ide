@@ -163,6 +163,25 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     return { path: directory, entries: entries.map(e => ({ name: e.filename, path: posix.join(directory, e.filename), directory: e.attrs.isDirectory(), link: e.attrs.isSymbolicLink(), size: e.attrs.size, mtime: e.attrs.mtime, mode: e.attrs.mode })) };
   }
   async function mkdir(id, target) { await request(session(id), 'mkdir', remotePath(target)); }
+  // 新建空文件。用 flags:'wx' 排他创建 —— 目标已存在时明确报错，
+  // 不能悄悄覆盖别人的文件（这是新建，不是保存）。
+  async function createFile(id, target) {
+    const s = session(id), remote = remotePath(target);
+    if (remote === '/') throw Error('不能创建根目录');
+    if (await statMaybe(s, remote)) throw Error('目标已存在');
+    // 父目录必须存在且确实是目录，否则 SFTP 只会回一个难懂的失败码。
+    const parentDir = posix.dirname(remote);
+    if (parentDir !== '/') {
+      const parent = await statMaybe(s, parentDir);
+      if (!parent || !parent.directory) throw Error('上级目录不存在');
+    }
+    await new Promise((resolve, reject) => {
+      const stream = s.sftp.createWriteStream(remote, { flags: 'wx', mode: 0o644 });
+      stream.on('error', reject); stream.on('close', resolve); stream.end(Buffer.alloc(0));
+    });
+    const stat = await request(s, 'lstat', remote);
+    return { path: remote, size: stat.size, mtime: stat.mtime * 1000 };
+  }
   async function rename(id, target, name) { target = remotePath(target); if (target === '/') throw Error('不能重命名根目录'); const s = session(id), dest = posix.join(posix.dirname(target), nameOf(name)); if (await statMaybe(s, dest)) throw Error('目标已存在'); await request(s, 'rename', target, dest); }
   async function move(id,target,destination){const s=session(id);target=remotePath(target);destination=remotePath(destination);if(target==='/'||target===destination||destination.startsWith(target+'/'))throw Error('不能移动根目录或移入自身');if(await statMaybe(s,destination))throw Error('目标已存在');await request(s,'rename',target,destination);return {path:destination};}
   async function removeFile(id, target) { const s = session(id); target = remotePath(target); if (target === '/') throw Error('不能删除根目录'); const stat = await request(s, 'lstat', target); await request(s, stat.isDirectory() ? 'rmdir' : 'unlink', target); }
@@ -473,12 +492,20 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     return { size: stat.size, mtime: stat.mtime * 1000 };
   }
 
-  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose, readTextFile, statTextFile, writeTextFile,
+  return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, createFile, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose, readTextFile, statTextFile, writeTextFile,
     // 概览：跑固定只读脚本并解析。调用方只传会话 id，不能传命令。
     overview: async id => parseOverview(splitOverview(await runOverview(id))),
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),
+    // 新建空文件：用 'wx' 排他创建，已存在就报错（新建不是覆盖）。
+    localCreateFile: async target => {
+      target = localPath(target);
+      const handle = await fs.promises.open(target, 'wx', 0o644);
+      await handle.close();
+      const st = await fs.promises.stat(target);
+      return { path: target, size: st.size, mtime: st.mtimeMs };
+    },
     localRename: async (target, name) => { target = localPath(target); if (target === path.parse(target).root) throw Error('不能重命名根目录'); const dest = path.join(path.dirname(target), nameOf(name)); try { await fs.promises.lstat(dest); throw Error('目标已存在'); } catch (error) { if (error.code !== 'ENOENT') throw error; } await fs.promises.rename(target, dest); },
     localMove:async(target,destination)=>{target=localPath(target);destination=localPath(destination);if(target===path.parse(target).root)throw Error('不能移动根目录');return require('../files/path-move').relocate(target,destination);},
     localRemove: async target => { target = localPath(target); if (target === path.parse(target).root) throw Error('不能删除根目录'); const st = await fs.promises.lstat(target); await (st.isDirectory() ? fs.promises.rmdir(target) : fs.promises.unlink(target)); },

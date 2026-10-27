@@ -208,6 +208,8 @@ window.RemotePanel = (() => {
     remove: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.4h9.2M6.2 4.4V2.8h3.6v1.6M4.6 4.4l.6 8.8h5.6l.6-8.8"/></svg>',
     copyPath: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.4" y="2.6" width="8" height="9.4" rx="1.2"/><path d="M10.6 12.2v1.2H3.4a1 1 0 0 1-1-1V5.6h1.2"/></svg>',
     refresh: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6a5 5 0 1 0 0 4M13 2v4H9"/></svg>',
+    newFile: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.2 1.8H4.2a1 1 0 0 0-1 1v10.4a1 1 0 0 0 1 1h7.6a1 1 0 0 0 1-1V5.4z"/><path d="M9.2 1.8v3.6h3.6M8 8.6v3.2M6.4 10.2h3.2"/></svg>',
+    newDir: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4.2h4l1.4 1.9h7v7.1H1.8z"/><path d="M8 8.4v3M6.5 9.9h3"/></svg>',
   };
 
   function openFileMenu(side, event) {
@@ -257,6 +259,13 @@ window.RemotePanel = (() => {
     add(fileMenuIcons.rename, '重命名…', () => root.querySelector('[data-action="rename"]').click(), { disabled: pane.selected.size !== 1 });
     add(fileMenuIcons.remove, '删除', () => root.querySelector('[data-action="remove"]').click(), { danger: true, disabled: !pane.selected.size });
     sep();
+    // 新建：右键空白处 = 建在当前目录；右键某个目录 = 建在那个目录里。
+    // （右键一个文件时，建在它所在目录 —— 与 Windows 资源管理器一致）
+    const targetDir = entry?.directory ? entry.path : pane.path;
+    sep();
+    add(fileMenuIcons.newFile, '新建文件…', () => void createEntry(side, targetDir, false));
+    add(fileMenuIcons.newDir, '新建目录…', () => void createEntry(side, targetDir, true));
+    sep();
     add(fileMenuIcons.refresh, '刷新', () => { void browse(side, pane.path).catch(() => {}); });
 
     menu.style.left = '0px'; menu.style.top = '0px';
@@ -268,6 +277,44 @@ window.RemotePanel = (() => {
     document.addEventListener('pointerdown', onFileMenuDown, true);
     document.addEventListener('keydown', onFileMenuKey, true);
     menu.querySelector('.ctx-item:not(:disabled)')?.focus({ preventScroll: true });
+  }
+
+  // 新建文件 / 新建目录。dir 是目标父目录，isDir 决定建哪种。
+  // 名称校验与顶部工具条的「新建目录」保持一致，避免两处规则不同。
+  const NAME_BAD = /[\\/\0\r\n]/;
+  async function createEntry(side, dir, isDir) {
+    const label = isDir ? '新建目录' : '新建文件';
+    const name = await Modal.prompt(label, isDir ? '目录名称' : '文件名称（可带扩展名，如 frps.toml）', '');
+    if (!name) return;
+    const trimmed = String(name).trim();
+    if (!trimmed || NAME_BAD.test(trimmed) || trimmed === '.' || trimmed === '..') {
+      MI.toast('名称不能为空，也不能包含路径分隔符', 'err');
+      return;
+    }
+    // 自己拼路径，不依赖后面的 joined：那个 const 在同一模块作用域末尾定义，
+    // 虽然运行时已初始化，但读代码时容易误以为有 TDZ 风险。
+    const sepChar = side === 'remote' ? '/' : '\\';
+    const baseDir = String(dir).replace(/[\\/]+$/, '');
+    const target = (baseDir || (side === 'remote' ? '' : sepChar)) + sepChar + trimmed;
+    try {
+      if (side === 'remote') {
+        await call(isDir ? 'mkdir' : 'createFile', sid, target);
+      } else {
+        await call(isDir ? 'localMkdir' : 'localCreateFile', target);
+      }
+      // 建完刷新该面板；新建文件后直接打开编辑（新建的目的就是写内容）。
+      await browse(side, dir).catch(() => {});
+      if (!isDir) {
+        const entry = panes[side].byPath.get(target);
+        if (entry) await editEntry(side, entry);
+        else notify('已创建 ' + trimmed + '（刷新后可见）', false);
+      } else {
+        notify('已创建目录 ' + trimmed, false);
+      }
+    } catch (error) {
+      MI.toast('新建失败：' + ((error && error.message) || error), 'err');
+      notify('新建失败：' + ((error && error.message) || error), true);
+    }
   }
 
   // 右键菜单里的「下载 / 上传」：作用对象是当前选中的那一批文件。

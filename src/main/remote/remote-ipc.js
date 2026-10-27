@@ -15,7 +15,7 @@ function register({ app, ipcMain, dialog, safeStorage, getWindow, configDir, ver
       return !changed && result.response === 1;
     }),
   });
-  const operations = ['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'overview'];
+  const operations = ['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'createFile', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localCreateFile', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'overview'];
   for (const op of operations) ipcMain.handle('remote:' + op, async (event, ...args) => {
     if (getWindow()?.webContents !== event.sender) return { ok: false, error: '远程操作来源无效' };
     try { return { ok: true, data: await service[op](...args) }; } catch (error) { return { ok: false, error: error.message }; }

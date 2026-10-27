@@ -151,6 +151,32 @@ const wait = async s => { for (let n = 0; n < 500; n++) { if (await probe(s)) re
     })()`);
     check('关闭按钮能关掉弹框', closed.stillOpen === false && closed.stack === 0, JSON.stringify(closed));
 
+    // ⑤b 右键新建文件：真实 IPC 建文件 → 服务器上真的有这个空文件 → 重名要报错
+    const created = await probe(`(async () => {
+      const api = window.myIDE.remote;
+      const sid = ${JSON.stringify(sid)};
+      const ok = await api.createFile(sid, '/new-by-menu.txt');
+      const dup = await api.createFile(sid, '/new-by-menu.txt');
+      const nested = await api.createFile(sid, '/不存在的目录/x.txt');
+      return { ok: ok.ok, path: ok.data?.path, size: ok.data?.size,
+               dupOk: dup.ok, dupErr: dup.error,
+               nestedOk: nested.ok, nestedErr: nested.error };
+    })()`);
+    check('新建文件成功并返回远程路径', created?.ok === true && created.path === '/new-by-menu.txt', created?.error);
+    check('新建出来的是 0 字节空文件', created.size === 0, created.size);
+    check('服务器上真的出现了这个文件', fs.existsSync(path.join(serverRoot, 'new-by-menu.txt')));
+    check('重名时明确拒绝（不悄悄覆盖）', created.dupOk === false && /已存在/.test(created.dupErr || ''), created.dupErr);
+    check('上级目录不存在时明确报错', created.nestedOk === false && /上级目录不存在/.test(created.nestedErr || ''), created.nestedErr);
+
+    // ⑤c 新建目录
+    const madeDir = await probe(`(async () => {
+      const api = window.myIDE.remote;
+      const ok = await api.mkdir(${JSON.stringify(sid)}, '/new-dir-by-menu');
+      return { ok: ok.ok, error: ok.error };
+    })()`);
+    check('新建目录成功', madeDir?.ok === true, madeDir?.error);
+    check('服务器上真的出现了这个目录', fs.existsSync(path.join(serverRoot, 'new-dir-by-menu')));
+
     // ⑥ 断线后再编辑必须明确报错（不能静默）
     await probe(`(async () => { await window.myIDE.remote.disconnect(${JSON.stringify(sid)}); })()`);
     await sleep(300);
