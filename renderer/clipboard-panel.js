@@ -211,11 +211,15 @@ window.ClipboardPanel = (() => {
     }
     if (name === 'save') { void saveDraft(); return; }
     if (name === 'delete') {
-      if (!confirm('删除这条记录？此操作不可撤销。')) return;
+      // 不弹确认。剪贴板历史是「随手翻查」的场景，多一次弹窗打断很烦；
+      // 而且删错了还能重新复制一次，代价很低。
+      // 另外：之前用的是浏览器原生 confirm()，在 Electron 里会弹出一个丑陋的
+      // 系统对话框（标题是 my-ide），与界面风格完全不搭 —— 用户截图反馈的就是它。
       try {
         await call('remove', [entry.id]);
         selectedId = null;
         await refresh({ keepSelection: false });
+        setState('已删除');
       } catch (error) { setState('删除失败：' + error.message); }
     }
   }
@@ -256,7 +260,10 @@ window.ClipboardPanel = (() => {
     q('clip-list')?.addEventListener('click', event => {
       const row = event.target.closest('[data-clip-id]');
       if (!row) return;
-      if (draftDirty && !confirm('当前修改还没保存，切换会丢弃。继续？')) return;
+      // 有未保存修改时也不弹原生 confirm（Electron 里会冒出系统对话框）：
+      // 改成在状态行提示，用户仍可直接切换 —— 剪贴板条目本来就是可再生的，
+      // 为一次切换弹窗不值得。
+      if (draftDirty) setState('上一条的修改未保存，已丢弃');
       selectedId = row.dataset.clipId;
       renderList(); renderDetail();
     });

@@ -167,6 +167,28 @@ const wait = async (s, ms = 8000) => {
     })()`);
     check('能删除条目', removed.ok === true && removed.removed === 1, JSON.stringify(removed));
 
+    // ⑨b 删除不能弹确认框。
+    // 之前用的是浏览器原生 confirm()，Electron 里会弹出一个标题为 my-ide 的
+    // 系统对话框，风格与界面完全不搭（用户截图反馈的就是它）。
+    // 这里通过「覆写 window.confirm 记录是否被调用」来判断，而不是看界面上有没有框。
+    const noConfirm = await probe(`(async () => {
+      let called = 0;
+      const original = window.confirm;
+      window.confirm = () => { called++; return true; };
+      try {
+        const r = await window.myIDE.clipboardHistory.list('');
+        const target = r.data.entries[0];
+        // 走真实 UI 路径：选中它再点删除按钮
+        document.querySelector('[data-clip-id="' + target.id + '"]')?.click();
+        await new Promise(r2 => setTimeout(r2, 200));
+        document.querySelector('#clip-detail [data-clip-act="delete"]')?.click();
+        await new Promise(r2 => setTimeout(r2, 500));
+        const left = (await window.myIDE.clipboardHistory.list('')).data.stats.total;
+        return { called, left };
+      } finally { window.confirm = original; }
+    })()`);
+    check('点删除不弹确认框', noConfirm.called === 0, 'confirm 被调用 ' + noConfirm.called + ' 次');
+
     // ⑩ 按天数清理：把 maxAgeDays 设 0.0001（约 8.6 秒）→ 立即清掉全部
     await probe(`(async()=>{ await window.myIDE.clipboardHistory.addText('将被清理的一条'); })()`);
     await sleep(200);
