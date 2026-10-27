@@ -1364,6 +1364,9 @@ const Viewer = (() => {
     // 以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     const pdir = (tab.path || '').replace(/[\\/][^\\/]+$/, '');
     if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(tab.path.replace(/[\\/][^\\/]+$/, '')); });
+    // 导出为 HTML：只在 Markdown 文件上出现（导出器复用预览的渲染管线，
+    // 保证导出的就是所见的东西）。注意正则要 `\.` —— 写成 `.` 会匹配任意字符。
+    if (/\.(md|markdown)$/i.test(tab.name) && window.MdExport) mk('⇩ 导出为 HTML', () => MdExport.exportTab(tab));
     mk('✕ 关闭', () => closePaneTab(paneFor(tab),tab));
     const hasPinned=tabs.some(t=>t.pinned);
     mk(hasPinned?'🗂 关闭其他（保留固定）':'🗂 关闭其他', () => closeOthers(tab));

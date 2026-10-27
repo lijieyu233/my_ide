@@ -297,6 +297,7 @@ Shortcuts.register('editor-split-horizontal', {desc:'编辑区：向右拆分',c
 Shortcuts.register('editor-split-vertical', {desc:'编辑区：向下拆分',category:'编辑器',aliases:['split down'],keys:[],requiresDocument:true,run:()=>Viewer.splitEditor('vertical')});
 Shortcuts.register('editor-unsplit', {desc:'编辑区：合并分屏',category:'编辑器',keys:[],run:()=>Viewer.collapsePanes()});
 Shortcuts.register('editor-next-pane', {desc:'编辑区：切换编辑组',category:'编辑器',keys:[],run:()=>Viewer.focusPaneByIndex(Viewer.paneState().active===0?1:0)});
+Shortcuts.register('export-md-html', { desc: '导出当前 Markdown 为 HTML', keys: ['ctrl+shift+e'], palette: true, category: '编辑器', run: () => window.MdExport?.exportTab(Viewer.activeTab) });
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab)) });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) return Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
