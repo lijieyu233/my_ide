@@ -162,6 +162,59 @@ const Settings = (() => {
     document.getElementById('set-hint').textContent='默认保持普通标签；关闭预览标签会保留已经打开的文件';
     const list=document.getElementById('set-list');list.innerHTML='<section class="set-form"><h3 class="set-section-title">标签页行为</h3><label class="set-toggle"><input id="preview-tabs-setting" type="checkbox"><span class="set-toggle-copy"><span class="set-toggle-title">预览标签</span><span class="set-toggle-note">单击文件或按 Enter 快速打开时，使用一个临时标签页。</span></span></label><p class="set-note">双击文件或标签、快速打开时按 Shift+Enter，可以保留文件。开始编辑、保存或固定标签时也会自动保留。</p></section>';
     const input=list.querySelector('input');input.checked=Viewer.previewEnabled();input.onchange=()=>{Viewer.setPreviewEnabled(input.checked);input.checked=Viewer.previewEnabled();};
+    renderPasteImage(list);
+  }
+
+  // 粘贴图片的保存位置（md-paste-image.js 读这里写进 localStorage 的配置）。
+  // 做成可配置的原因：不同人的图片归宿不一样 —— 有人想跟笔记走（assets/），
+  // 有人想统一丢到某个同步盘/云盘目录，还有人就想放笔记旁边。
+  function renderPasteImage(list) {
+    const current = window.MdPasteImage?.readSetting?.() || { mode: 'assets', dir: '' };
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const section = document.createElement('section');
+    section.className = 'set-form';
+    section.innerHTML = `
+      <h3 class="set-section-title">粘贴图片的保存位置</h3>
+      <p class="set-note">在 Markdown 里粘贴截图时，图片存到哪里。</p>
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="assets" ${current.mode === 'assets' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">笔记同目录的 assets/（默认）</span><span class="set-toggle-note">不存在会自动创建；插图与笔记分开，目录更干净。</span></span></label>
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="same" ${current.mode === 'same' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">笔记同目录</span><span class="set-toggle-note">图片和 md 放在一起。</span></span></label>
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="custom" ${current.mode === 'custom' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">固定目录（例如云盘 / 同步盘）</span><span class="set-toggle-note">所有笔记的图片都存到这里，按笔记名 + 时间戳命名，不会互相覆盖。</span></span></label>
+      <div class="set-button-row" style="margin-top:8px">
+        <input id="paste-img-dir" class="m-input" type="text" style="flex:1;min-width:12em" placeholder="选择固定目录…" value="${esc(current.dir || '')}">
+        <button class="tb-btn" id="paste-img-dir-pick">选择目录…</button>
+      </div>
+      <p class="set-note" id="paste-img-hint"></p>`;
+    list.appendChild(section);
+
+    const dirInput = section.querySelector('#paste-img-dir');
+    const hint = section.querySelector('#paste-img-hint');
+    const refreshHint = () => {
+      const mode = section.querySelector('input[name="paste-img-mode"]:checked')?.value || 'assets';
+      dirInput.disabled = mode !== 'custom';
+      section.querySelector('#paste-img-dir-pick').disabled = mode !== 'custom';
+      hint.textContent = mode === 'custom'
+        ? (dirInput.value ? '图片保存到：' + dirInput.value : '还没有选择目录；未选时按默认（assets/）处理。')
+        : '';
+    };
+    const persist = () => {
+      const mode = section.querySelector('input[name="paste-img-mode"]:checked')?.value || 'assets';
+      window.MdPasteImage?.writeSetting?.({ mode, dir: dirInput.value.trim() });
+      refreshHint();
+    };
+    for (const radio of section.querySelectorAll('input[name="paste-img-mode"]')) radio.addEventListener('change', persist);
+    dirInput.addEventListener('change', persist);
+    section.querySelector('#paste-img-dir-pick').onclick = async () => {
+      try {
+        // 复用已有的 fs:openFolder（同一个目录选择对话框，标题不同而已）
+        const dir = await window.myIDE.fs.openFolder?.();
+        if (!dir) return;
+        dirInput.value = dir;
+        persist();
+      } catch (error) {
+        hint.textContent = '选择目录失败：' + ((error && error.message) || error);
+      }
+    };
+    refreshHint();
   }
   function renderFont() {
     const f = document.getElementById('set-keys-filter');

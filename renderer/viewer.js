@@ -1723,32 +1723,14 @@ const Viewer = (() => {
     }
     MdEditor.__baseDir = tab.path ? tab.path.split(/[\\/]/).slice(0, -1).join('/') : '';
     MdEditor.__openLink = (href) => openMdLink(tab, href);
-    // 粘贴图片：写入笔记目录（存在 assets/ 子目录则放入）→ 返回相对路径插入 MD
-    const imageBaseDir=MdEditor.__baseDir;
+    // 粘贴图片：策略集中在 MdPasteImage 里（存储位置可配置、防撞名、大小上限）。
+    // 旧实现是这里的一段内联代码，问题见 md-paste-image.js 顶部注释。
     MdEditor.__onPasteImage = async (file) => {
-      try {
-        const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
-        const ext = extMap[file.type] || 'png';
-        const ts = new Date();
-        const p2 = (n) => String(n).padStart(2, '0');
-        const name = '粘贴图片-' + ts.getFullYear() + p2(ts.getMonth() + 1) + p2(ts.getDate())
-          + '-' + p2(ts.getHours()) + p2(ts.getMinutes()) + p2(ts.getSeconds()) + '.' + ext;
-        const dir = String(imageBaseDir || '').replace(/\//g, '\\');
-        if (!dir || !window.myIDE.fs.writeBinary) return null;
-        let targetDir = dir, inAssets = false;
-        try {
-          const items = await window.myIDE.fs.readDir(dir, true);
-          if (items.some((x) => x.type === 'dir' && x.name === 'assets')) { targetDir = dir + '\\assets'; inAssets = true; }
-        } catch {}
-        const buf = new Uint8Array(await file.arrayBuffer());
-        let b64 = '';
-        const CHUNK = 0x8000;
-        for (let i = 0; i < buf.length; i += CHUNK) b64 += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
-        const r = await window.myIDE.fs.writeBinary(targetDir + '\\' + name, btoa(b64));
-        if (!r || !r.ok) { MI.toast('图片保存失败: ' + ((r && r.error) || ''), 'err'); return null; }
-        return (inAssets ? 'assets/' : '') + name;
-      } catch { return null; }
+      const result = await window.MdPasteImage.save(file, tab.path);
+      if (result.error) { MI.toast('图片保存失败：' + result.error, 'err'); return null; }
+      return result.ref;
     };
+
     cmApi = MdEditor.create({
       parent: wrap,
       canEdit: editorScope(tab,wrap),
