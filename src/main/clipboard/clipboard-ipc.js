@@ -51,23 +51,35 @@ function register({ app, ipcMain, clipboard, getWindow }) {
       const formats = clipboard.availableFormats();
       const hasImage = formats.some(f => /^image\//.test(f));
       const hasText = formats.some(f => /^text\//.test(f));
+
+      // 图片与文字各自独立判断、独立入库。
+      //
+      // 以前的写法是 `if (hasImage) {...} else if (hasText) {...}` —— 同一次复制里
+      // 既有图片又有文字时（浏览器右键「复制图片」经常同时给 image + text/html、
+      // 截图工具也会附一段说明文字），文字那条会被整个丢掉。用户明确要求拆开存。
+      //
+      // 现在两条路互不影响：图片变了就存图片，文字变了就存文字。
+      // 只有「图片没变、文字只是跟着图片一起被重设」这种噪音才要防 ——
+      // 所以文字仍然用 lastText 判重，不会因为图片的重新写入而重复入库。
       if (hasImage) {
         const image = clipboard.readImage();
         const sig = imageSignature(image);
         if (sig && sig !== lastImageSig) {
           lastImageSig = sig;
-          // 截图工具常常同时放图片和文本：以图片为准，文本只更新基准值。
           await store.addImage(image.toPNG());
-          lastText = clipboard.readText() || lastText;
         }
-      } else if (hasText) {
+      }
+      if (hasText) {
         const text = clipboard.readText();
         if (text && text !== lastText) {
           lastText = text;
-          lastImageSig = null;
           await store.addText(text);
         }
       }
+      // 剪贴板里只剩一种类型时，把另一种的「上次值」清掉，
+      // 否则隔了很久再复制同一张图/同一段文字会被误判成「没变化」。
+      if (!hasImage) lastImageSig = null;
+      if (!hasText) lastText = null;
     } catch {
       // 剪贴板被别的程序短暂占住会失败：跳过这一轮，不打扰用户。
     } finally {

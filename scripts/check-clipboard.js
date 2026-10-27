@@ -115,6 +115,26 @@ const wait = async (s, ms = 8000) => {
     const afterImg = await probe(`(async()=>{const r=await window.myIDE.clipboardHistory.list('');const im=r.data.entries.find(e=>e.kind==='image');return {hasImage:!!im, bytes:im?.bytes, stats:r.data.stats}})()`);
     check('自动采集到图片', afterImg.hasImage === true, JSON.stringify(afterImg.stats));
 
+    // ④b 同一次复制里既有图片又有文字：两条都要单独入库。
+    // 以前 `if (hasImage) {...} else if (hasText) {...}` 会把文字整条丢掉。
+    const bothText = '同时复制的说明文字 ' + Date.now();
+    clipboard.clear();
+    clipboard.writeImage(nativeImage.createFromBuffer(makePng(10, 10)));
+    // Electron 的 writeImage 只写图片；要模拟「图片 + 文字」同时存在，
+    // 需要在图片之后追加文本格式（真实来源：浏览器右键复制图片会同时给两种格式）。
+    clipboard.write({ text: bothText, image: nativeImage.createFromBuffer(makePng(10, 10)) });
+    await sleep(2400);
+    const both = await probe(`(async () => {
+      const r = await window.myIDE.clipboardHistory.list('');
+      const texts = r.data.entries.filter(e => e.kind === 'text').map(e => e.text);
+      return {
+        total: r.data.stats.total, texts: r.data.stats.texts, images: r.data.stats.images,
+        hasText: texts.some(t => t === ${JSON.stringify(bothText)}),
+      };
+    })()`);
+    check('同时含图片与文字时，文字也入库了', both.hasText === true, JSON.stringify(both));
+    check('同时含图片与文字时，图片也入库了', both.images >= 1, JSON.stringify(both));
+
     // ⑤ UI 列表渲染
     const uiRows = await probe(`document.querySelectorAll('#clip-list .clip-row').length`);
     check('列表渲染出条目', uiRows >= 2, 'rows=' + uiRows);
