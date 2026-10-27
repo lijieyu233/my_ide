@@ -92,4 +92,15 @@ const noticeRule = (css.match(/#remote-notice\s*\{[^}]*\}/) || [''])[0];
 check('#remote-notice 默认可见（不是 display:none）', /display:\s*block/.test(noticeRule) || !/display:\s*none/.test(noticeRule));
 check('#remote-notice 空内容时收起（:empty）', /#remote-notice:empty/.test(css));
 
+// ⑨ 回归：打开文件时必须让远程面板让位。
+// #remote-main 是 position:absolute;inset:0;z-index:40，不让位就整块盖住编辑器 ——
+// 用户点「编辑远程文件」后只看得到远程面板，以为编辑没弹出（就是用户截图的现象）。
+const viewerSrc = fs.readFileSync(path.join(rendererDir, 'viewer.js'), 'utf8');
+const callSites = (viewerSrc.match(/App\.backToEditor\(\)/g) || []).length;
+check('viewer 里有多处「打开文件先让工具让位」的调用点', callSites >= 3);
+check('让位名单包含 remote（单条件多选一写法）', /'bookshelf',\s*'remote'/.test(viewerSrc));
+check('让位名单包含 remote（|| 串联写法）', /tool === 'bookshelf' \|\| tool === 'remote'/.test(viewerSrc));
+check('让位后仍能通过工具栏切回远程面板（backToEditor 只改 activeTool）',
+  /activeTool === 'remote'/.test(fs.readFileSync(path.join(rendererDir, 'app.js'), 'utf8')));
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

@@ -446,10 +446,13 @@ const Viewer = (() => {
     previewSequence++;previewFeedback='';
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
-    // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动
+    // 注意只限真正挡编辑区的工具：log 是底部停靠不挡，db 是既有行为不动。
+    // remote 必须在这个名单里：它是 position:absolute; inset:0; z-index:40，
+    // 不让位就会整块盖住编辑器 —— 用户点「编辑远程文件」后只看得到远程面板，
+    // 以为编辑没打开（实测截图就是这个现象）。
     if (window.App) {
       const tool = App.getTool();
-      if (tool === 'browser' || tool === 'quick-launch' || tool === 'bookshelf' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
+      if (tool === 'browser' || tool === 'quick-launch' || tool === 'bookshelf' || tool === 'remote' || (tool === 'tasks' && window.Tasks && Tasks.view === 'dag')) App.backToEditor();
     }
     recordRecent(path);
     const name = path.split(/[\\/]/).pop();
@@ -542,7 +545,7 @@ const Viewer = (() => {
         if(replace)tabs.splice(tabs.indexOf(old),1,candidate);else tabs.push(candidate);
         if(options.focusRequest)navigationFocus.set(candidate.id,options.focusRequest);
         prepared=null;stage?.remove();stage=null;previewFeedback='';
-        const tool=App.getTool();if(tool==='browser'||tool==='quick-launch'||tool==='bookshelf'||tool==='tasks'&&window.Tasks?.view==='dag')App.backToEditor();
+        const tool=App.getTool();if(tool==='browser'||tool==='quick-launch'||tool==='bookshelf'||tool==='remote'||tool==='tasks'&&window.Tasks?.view==='dag')App.backToEditor();
         activate(tabs.indexOf(candidate),{history:false});recordRecent(path);if(options.reveal!==false)window.Tree?.reveal(path);return {ok:true};
       }catch(e){return fail(String(e.message||e));}
       finally{request.settled=true;if(previewSequence===request.sequence&&!stable())note('预览已取消：'+path+'；当前文档或弹窗已变化，原标签已保留');if(prepared){for(const media of prepared.querySelectorAll('video,audio')){media.pause();media.removeAttribute('src');media.load();}prepared.previewDispose?.();}stage?.remove();if(pendingPreview===request)pendingPreview=null;}
@@ -614,7 +617,7 @@ const Viewer = (() => {
     const target = tabs[i];
     if (!target) return;
     if(target.reader&&paneLayout?.visible)collapsePanes(activePane,true);
-    if (['browser','quick-launch','bookshelf'].includes(window.App?.getTool())) App.backToEditor();
+    if (['browser','quick-launch','bookshelf','remote'].includes(window.App?.getTool())) App.backToEditor();
     previewSequence++;previewFeedback='';
     storePane();
     const owner=paneFor(target);
@@ -711,7 +714,7 @@ const Viewer = (() => {
       previewSequence++;previewFeedback='';
       // 搜索已完成这次懒读取，激活时再读会覆盖选区并抢走搜索焦点。
       candidate.lazy=false;delete candidate.restoreLine;
-      if(window.App&&(['browser','quick-launch','bookshelf'].includes(App.getTool())||App.getTool()==='tasks'&&window.Tasks?.view==='dag'))App.backToEditor();
+      if(window.App&&(['browser','quick-launch','bookshelf','remote'].includes(App.getTool())||App.getTool()==='tasks'&&window.Tasks?.view==='dag'))App.backToEditor();
       recordRecent(candidate.path);navigationFocus.set(candidate.id,focusRequest);
       if(currentTab()!==candidate)activate(tabs.indexOf(candidate),{history:false});
       keepTab(candidate);if(window.Tree)Tree.reveal(candidate.path);
