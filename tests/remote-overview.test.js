@@ -118,4 +118,13 @@ const boxRule = (cssSrc.match(/\.modal-panel\.re-box\s*\{[^}]*\}/) || [''])[0];
 check('弹框宽度不再是 560px', /width:\s*min\(72vw,\s*1040px\)/.test(boxRule));
 check('弹框高度用视口比例', /height:\s*min\(76vh,\s*760px\)/.test(boxRule));
 
+// ⑪ 回归：CodeEditor.create 的 canEdit 必须是函数，不是布尔值。
+// code-editor.js 里写的是 `opts.canEdit && !opts.canEdit()`；传 true 会抛
+// "opts.canEdit is not a function"，弹框打开即报错（实测就是这个错误）。
+check('弹框把 canEdit 传成函数（不是 true）', /canEdit:\s*\(\)\s*=>\s*true/.test(panelSrc));
+check('弹框没有把 canEdit 传成布尔值', !/canEdit:\s*true/.test(panelSrc));
+check('onSave 走 saveOnce（避免与 keydown 重复写入）', /onSave:\s*\(\)\s*=>\s*\{\s*void saveOnce\(\)/.test(panelSrc));
+check('保存按钮也走 saveOnce', /action === 'save'\) void saveOnce\(\)/.test(panelSrc));
+check('CodeMirror 不可用时有 textarea 兜底', /re-textarea/.test(panelSrc));
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

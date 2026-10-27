@@ -341,8 +341,12 @@ window.RemotePanel = (() => {
         if (current?.error) throw Error(current.error);
         const result = await window.myIDE.fs.writeFile(virtual, content, null,
           { expectedVersion: savedVersion });
-        if (!result?.ok) throw Error(result?.error || '写入失败');
-        savedVersion = result.version;
+        // ⚠ fs:writeFile 成功时返回 {textFormat, version}，**没有 ok 字段** ——
+        // 之前写 `if (!result?.ok) throw`，于是每次保存都报「写入失败」，
+        // 但服务器上的文件其实已经写好了（端到端测试抓到的就是这个：
+        // 磁盘内容变了、状态却是保存失败）。改成按 error 判断。
+        if (result?.error) throw Error(result.error);
+        savedVersion = result.version || savedVersion;
         dirty = false;
         setState('已写回服务器 ' + new Date().toLocaleTimeString());
         MI.toast('已保存到服务器', 'ok');
@@ -359,11 +363,19 @@ window.RemotePanel = (() => {
       if (action === 'close') {
         if (dirty && !confirm('还有未保存的修改，确定关闭？')) return;
         closeRemoteEditor();
-      } else if (action === 'save') void save();
+      } else if (action === 'save') void saveOnce();
     });
+    // Ctrl+S 有两条触发路径：编辑器内（CodeEditor 的 onSave）和这里（焦点在
+    // 按钮/别处时）。加一个短防抖，避免同一次按键触发两次写入。
+    let saving = false;
+    const saveOnce = async () => {
+      if (saving) return;
+      saving = true;
+      try { await save(); } finally { saving = false; }
+    };
     box.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-        event.preventDefault(); event.stopPropagation(); void save();
+        event.preventDefault(); event.stopPropagation(); void saveOnce();
       }
     });
 
@@ -379,7 +391,11 @@ window.RemotePanel = (() => {
       if (!remoteEditorBox) return; // 读取期间被关掉了
       if (file?.error) throw Error(file.error);
       if (file?.tooLarge) throw Error('文件过大（' + Math.round((file.size || 0) / 1024) + ' KiB），请下载到本地再编辑');
-      const text = file.text ?? '';
+      // ⚠ 字段是 content（TextFormat.decodeText 返回 {content, encoding, textFormat}），
+      // 不是 text。之前读 file.text 永远是 undefined，弹框只会显示空文档 ——
+      // 端到端测试（真实 SSH）才暴露出来，单测里我用了自己造的 {text} 假数据所以没发现。
+      const text = file.content ?? '';
+      if (file.binary) throw Error('这是二进制文件，无法以文本方式编辑');
       savedVersion = file.version || null;
       host.innerHTML = '';
       const target = document.createElement('div');
@@ -388,10 +404,13 @@ window.RemotePanel = (() => {
       const ext = (entry.name.split('.').pop() || '').toLowerCase();
       if (window.CodeEditor) {
         editor = window.CodeEditor.create({
-          parent: target, ext, doc: text, canEdit: true,
+          // ⚠ canEdit 是「函数」不是布尔值：code-editor 里写的是
+          // `opts.canEdit && !opts.canEdit()`，传 true 会直接抛
+          // "opts.canEdit is not a function"（实测弹框打开即报这个错）。
+          parent: target, ext, doc: text, canEdit: () => true,
           onChange: () => { if (!dirty) { dirty = true; setState('未保存'); } },
           // Ctrl+S 交给弹框自己的保存逻辑（CodeMirror 的 Mod-s 默认会被它拦下）
-          onSave: () => { void save(); },
+          onSave: () => { void saveOnce(); },
         });
       }
       if (!editor) {
@@ -737,5 +756,7 @@ window.RemotePanel = (() => {
   }
   // renderOverview 暴露出来是给自检用的：真实采集要连服务器，而概览的渲染骨架
   // （卡片、进度条、阈值配色、空态）可以拿一份同构样本单独验证。
-  return { init, syncVisible, refresh, showTerminal, getPageContext, renderOverview, loadOverview };
+  // openRemoteEditor / closeRemoteEditor 也暴露出来：弹框要能端到端驱动
+  // （真实 SSH → 真实 fs 路由 → 回读服务器文件校验），否则只能分段验证。
+  return { init, syncVisible, refresh, showTerminal, getPageContext, renderOverview, loadOverview, openRemoteEditor, closeRemoteEditor };
 })();

@@ -87,9 +87,15 @@ function installRemoteFs(service) {
         if (expected && current && expected !== current) {
           return { error: '远程文件已被他人修改，请重新打开后再保存', errorCode: 'STALE_VERSION' };
         }
-        const buffer = encode(content, format);
+        // ⚠ format 可能是空值：TextFormat.encodeText 内部会读 format.encoding，
+        // 传 null 会抛 "Cannot read properties of null (reading 'encoding')"。
+        // 编辑器没指定编码时按 UTF-8 无 BOM 处理（与本地默认一致）。
+        const effective = format && typeof format === 'object'
+          ? format
+          : { encoding: typeof format === 'string' ? format : 'utf8', bom: false };
+        const buffer = encode(content, effective);
         const written = await service.writeTextFile(parsed.sessionId, parsed.remotePath, buffer);
-        return { textFormat: format, version: versionOf(written) };
+        return { textFormat: effective, version: versionOf(written) };
       } catch (error) {
         return { error: String(error.message || error), errorCode: error.code || 'WRITE_FAILED' };
       }

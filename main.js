@@ -91,7 +91,11 @@ const OPEN_ARG = (() => {
 
 let mainWindow = null;
 const remoteService=require('./src/main/remote/remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow: () => mainWindow,
-  configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
+  configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'),
+  // 自检脚本（连本地 SSH fixture）通过环境变量关掉指纹确认弹窗：
+  // 无人点击的模态框会让握手一直挂着，直到 readyTimeout 30s 超时。
+  // 只有自检会设这个变量，正常运行时是 undefined，走 dialog 分支。
+  verifyHost: process.env.MYIDE_AUTO_TRUST_HOST === '1' ? (() => true) : undefined });
 const aiSshTools=require('./src/main/ai/ai-ssh-tools').createService({service:remoteService});
 // 远程文件的虚拟路径路由（remote://<sid>/<path>）。让「右键 → 编辑远程文件」
 // 把文件当普通文档打开，读写直连 SFTP —— 标签页显示真实远程路径，中间不落本地盘。
