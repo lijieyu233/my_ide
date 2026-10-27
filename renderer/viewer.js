@@ -2026,7 +2026,10 @@ const Viewer = (() => {
       const result = await bridge.saveEdit(tab.path, content);
       if (!result?.ok) throw Error(result?.error || '写回远程失败');
       MI.toast('已写回服务器 ' + target.remotePath, 'ok');
-      window.RemotePanel?.refreshActive?.();
+      // 写回后刷新当前可见的远程视图。
+      // ⚠ 之前写的是 RemotePanel.refreshActive —— 这个名字根本不存在（RemotePanel
+      //   导出的是 refresh / loadOverview），可选链把错误吞掉了，等于刷新从未发生。
+      window.RemotePanel?.refresh?.();
     } catch (error) {
       MI.toast('本地已保存，但写回服务器失败：' + ((error && error.message) || error), 'err');
     }

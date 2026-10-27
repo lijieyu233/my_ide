@@ -72,4 +72,15 @@ check('没有容器时不画 Docker 卡片', !/Docker 容器/.test(host.textCont
 panel.renderOverview({ os: {}, kernel: {}, cpu: {}, memory: {}, disks: [], listen: [], services: [], docker: [], du: [] });
 check('字段大量缺失时仍能渲染（服务端采集失败也不炸界面）', host.querySelectorAll('.remote-ov-card').length >= 2);
 
+// ⑥ 回归：viewer 写回远程后调用的刷新入口必须真实存在。
+// 之前写的是 RemotePanel.refreshActive（不存在），可选链把错误吞了，刷新从未发生。
+check('RemotePanel 导出 refresh（viewer 写回后靠它刷新，之前调了个不存在的名字）',
+  typeof panel.refresh === 'function');
+check('RemotePanel 导出 loadOverview', typeof panel.loadOverview === 'function');
+
+// ⑦ 回归：概览轮询在断开/隐藏时必须停 —— syncVisible(false) 不可抛错
+panel.syncVisible(false);
+check('syncVisible(false) 不抛错（会顺带停掉概览轮询）', true);
+panel.syncVisible(true);
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

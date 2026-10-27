@@ -186,8 +186,19 @@ window.RemotePanel = (() => {
   // 不能只下载了事 —— 编辑器保存写的是本地文件，若不挂回程，用户改了半天空欢喜。
   // 回程用 remote-edit 模块登记的映射（本地路径 → {sessionId, remotePath}）。
   let ctxMenu = null;
-  function closeFileMenu() { ctxMenu?.remove(); ctxMenu = null; document.removeEventListener('pointerdown', onFileMenuDown, true); }
+  function closeFileMenu() {
+    ctxMenu?.remove(); ctxMenu = null;
+    document.removeEventListener('pointerdown', onFileMenuDown, true);
+    document.removeEventListener('keydown', onFileMenuKey, true);
+  }
   function onFileMenuDown(event) { if (!ctxMenu?.contains(event.target)) closeFileMenu(); }
+  // Esc 关闭：仓库里其它右键菜单都支持（app.js 的 Esc 处理只覆盖 #ctx-menu，
+  // 这个菜单是独立元素，必须自己监听，否则用户按 Esc 没反应会觉得卡住了）。
+  function onFileMenuKey(event) {
+    if (event.key !== 'Escape' || !ctxMenu) return;
+    event.preventDefault(); event.stopPropagation();
+    closeFileMenu();
+  }
 
   const fileMenuIcons = {
     edit: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 2.6l2.2 2.2-7.6 7.6-2.9.7.7-2.9z"/></svg>',
@@ -255,6 +266,7 @@ window.RemotePanel = (() => {
     menu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - r.height - 8)) + 'px';
     ctxMenu = menu;
     document.addEventListener('pointerdown', onFileMenuDown, true);
+    document.addEventListener('keydown', onFileMenuKey, true);
     menu.querySelector('.ctx-item:not(:disabled)')?.focus({ preventScroll: true });
   }
 
@@ -545,7 +557,13 @@ window.RemotePanel = (() => {
     q('remote-add').onclick = () => form(); q('remote-edit').onclick = () => form(profiles.find(p => p.id === selected));
     q('remote-delete').onclick = attempt(async () => { const p = profiles.find(p => p.id === selected); if (p && await Modal.confirm('删除服务器配置', '删除「' + esc(p.name) + '」的保存配置？')) { const result = await call('remove', p.id, version); profiles = result.profiles; version = result.version; selected = profiles[0]?.id; renderSessions(); } });
     q('remote-refresh').onclick = attempt(refresh); q('remote-connect').onclick = attempt(connect);
-    q('remote-disconnect').onclick = attempt(async () => { await call('disconnect', sid); notify('已断开SSH连接。'); controls(); });
+    q('remote-disconnect').onclick = attempt(async () => {
+      await call('disconnect', sid);
+      notify('已断开SSH连接。'); controls();
+      // 断开后必须停掉概览轮询并清空：否则定时器还在拿旧 sid 调用，每隔 5 秒
+      // 报一次「连接已断开」，而且页面还留着上一次的数字（看着像服务器还活着）。
+      stopOverviewTimer(); renderOverview(null);
+    });
     q('remote-new-terminal').onclick = attempt(newTerminal);
     q('remote-profiles').onclick = attempt(async event => { const id = event.target.closest('[data-profile]')?.dataset.profile; if (!id) return; selected = id; const found = [...sessions.values()].find(s => s.profileId === id && s.state === 'connected'); await activateSession(found?.id || null); });
     q('remote-sessions').onchange = attempt(event => activateSession(event.target.value));
@@ -564,7 +582,13 @@ window.RemotePanel = (() => {
     void refresh().catch(error => notify(error.message, true));
     void call('snapshot').then(value => { value.sessions.forEach(s => sessions.set(s.id, s)); value.jobs.forEach(j => jobs.set(j.id, j)); renderSessions(); renderJobs(); }).catch(error => notify(error.message, true));
   }
-  function syncVisible(value) { visible = value; if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); } }
+  function syncVisible(value) {
+    visible = value;
+    if (value) { if (appearanceDirty) syncTerminalAppearance(); requestFit(); }
+    // 面板整个被切走时也要停概览轮询：用户看不见它，没必要每 5 秒跑一次 SSH 采集。
+    if (!value) stopOverviewTimer();
+    else if (mode === 'overview' && connected()) startOverviewTimer();
+  }
   function getPageContext() {
     const profile = profiles.find(p => p.id === selected);
     // 白名单字段：页面定位不能把密码、私钥、终端输出或文件内容带入模型请求。

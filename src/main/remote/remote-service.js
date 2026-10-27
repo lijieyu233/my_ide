@@ -413,6 +413,13 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     try { base = require('electron').app.getPath('userData'); } catch { base = path.join(os.tmpdir(), 'myide'); }
     return path.join(base, 'remote-edit');
   }
+  // 暂存目录会一直攒：每个编辑过的远程文件都留一份完整副本。
+  // 启动时清一次上次残留（本次进程的映射表是空的，那些文件也没人认领了），
+  // 让磁盘占用只反映「当前会话正在编辑的文件」。
+  async function pruneStagingRoot() {
+    try { await fs.promises.rm(editStagingRoot(), { recursive: true, force: true }); } catch {}
+  }
+  void pruneStagingRoot();
   function stagingPathFor(sessionId, remoteTarget) {
     const digest = createHash('sha256').update(remoteTarget).digest('hex').slice(0, 12);
     const base = posix.basename(remoteTarget).replace(/[^\w.\-]+/g, '_') || 'file';
