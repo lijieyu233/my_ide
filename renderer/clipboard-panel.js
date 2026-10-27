@@ -45,32 +45,191 @@ window.ClipboardPanel = (() => {
     return hay.includes(query.toLowerCase());
   });
 
-  function renderList() {
-    const host = q('clip-list'); if (!host) return;
-    const rows = visibleEntries();
-    if (!rows.length) {
-      host.innerHTML = '<div class="clip-empty">' + (entries.length ? '没有匹配的条目。' : '还没有记录。复制一段文字或一张图试试。') + '</div>';
+// ── 列表渲染与多选 ──────────────────────────────────────────────────────
+// 多选状态：selection 是 id 集合；lastIndex 记录锚点，Shift 连选用。
+// 单个选中（selectedId）仍然保留 —— 它决定右侧详情显示哪一条。
+let selection = new Set();
+let lastAnchorId = null;
+
+function rowIndexMap() {
+  const rows = visibleEntries();
+  return new Map(rows.map((e, i) => [e.id, i]));
+}
+
+function syncSelectionUi() {
+  const host = q('clip-list'); if (!host) return;
+  for (const node of host.querySelectorAll('[data-clip-id]')) {
+    const on = selection.has(node.dataset.clipId);
+    node.classList.toggle('selected', on);
+    node.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  const count = q('clip-selcount');
+  if (count) {
+    count.textContent = selection.size > 1 ? '已选 ' + selection.size + ' 条' : '';
+    count.hidden = selection.size <= 1;
+  }
+}
+
+function renderList() {
+  const host = q('clip-list'); if (!host) return;
+  const rows = visibleEntries();
+  if (!rows.length) {
+    host.innerHTML = '<div class="clip-empty">' + (entries.length ? '没有匹配的条目。' : '还没有记录。复制一段文字或一张图试试。') + '</div>';
+    return;
+  }
+  host.innerHTML = rows.map(entry => {
+    const active = entry.id === selectedId;
+    const picked = selection.has(entry.id);
+    const thumb = entry.kind === 'image' && !entry.missing
+      ? '<span class="clip-thumb" data-clip-thumb="' + esc(entry.id) + '"></span>'
+      : '<span class="clip-kind">' + (entry.kind === 'image' ? '🖼' : '📄') + '</span>';
+    const title = entry.kind === 'image' ? (entry.note || entry.preview) : (entry.text || '').replace(/\s+/g, ' ').trim();
+    return '<div class="clip-row' + (active ? ' active' : '') + (picked ? ' selected' : '')
+      + '" data-clip-id="' + esc(entry.id) + '" role="option" tabindex="0" aria-selected="' + (picked ? 'true' : 'false') + '">'
+      + thumb
+      + '<span class="clip-row-body"><span class="clip-row-title">' + esc(title.slice(0, 200) || '（空）') + '</span>'
+      + '<span class="clip-row-meta">' + fmtTime(entry.copiedAt)
+      + (entry.kind === 'image' ? ' · ' + fmtBytes(entry.bytes) : '')
+      + (entry.pinned ? ' · 已固定' : '') + (entry.note ? ' · 有备注' : '')
+      + (entry.missing ? ' · ⚠ 图片文件丢失' : '') + '</span></span>'
+      // 行内删除按钮：hover 或选中时才显形，避免一列按钮糊满列表。
+      + '<button class="clip-row-del" data-clip-del="' + esc(entry.id) + '" title="删除这条" aria-label="删除这条">'
+      + '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.4h9.2M6.2 4.4V2.8h3.6v1.6M4.6 4.4l.6 8.8h5.6l.6-8.8"/></svg>'
+      + '</button></div>';
+  }).join('');
+  syncSelectionUi();
+  for (const node of host.querySelectorAll('[data-clip-thumb]')) void loadThumb(node.dataset.clipThumb, node);
+}
+
+// 点击行：普通点击=单选并看详情；Ctrl/Cmd=切换选中；Shift=区间连选。
+function onRowClick(event) {
+  const delBtn = event.target.closest('[data-clip-del]');
+  if (delBtn) {
+    event.preventDefault(); event.stopPropagation();
+    void deleteEntries([delBtn.dataset.clipDel]);
+    return;
+  }
+  const row = event.target.closest('[data-clip-id]');
+  if (!row) return;
+  const id = row.dataset.clipId;
+  const withMod = event.ctrlKey || event.metaKey;
+
+  if (event.shiftKey && lastAnchorId) {
+    // 区间连选：从锚点到当前行全部加入选中。
+    const order = visibleEntries().map(e => e.id);
+    const a = order.indexOf(lastAnchorId), b = order.indexOf(id);
+    if (a >= 0 && b >= 0) {
+      const [from, to] = a <= b ? [a, b] : [b, a];
+      if (!withMod) selection.clear();
+      for (let i = from; i <= to; i++) selection.add(order[i]);
+      selectedId = id;
+      renderList(); renderDetail();
       return;
     }
-    host.innerHTML = rows.map(entry => {
-      const active = entry.id === selectedId;
-      const thumb = entry.kind === 'image' && !entry.missing
-        ? '<span class="clip-thumb" data-clip-thumb="' + esc(entry.id) + '"></span>'
-        : '<span class="clip-kind">' + (entry.kind === 'image' ? '🖼' : '📄') + '</span>';
-      const title = entry.kind === 'image' ? (entry.note || entry.preview) : (entry.text || '').replace(/\s+/g, ' ').trim();
-      return '<button class="clip-row' + (active ? ' active' : '') + '" data-clip-id="' + esc(entry.id) + '">'
-        + thumb
-        + '<span class="clip-row-body"><span class="clip-row-title">' + esc(title.slice(0, 200) || '（空）') + '</span>'
-        + '<span class="clip-row-meta">' + fmtTime(entry.copiedAt)
-        + (entry.kind === 'image' ? ' · ' + fmtBytes(entry.bytes) : '')
-        + (entry.pinned ? ' · 已固定' : '') + (entry.note ? ' · 有备注' : '')
-        + (entry.missing ? ' · ⚠ 图片文件丢失' : '') + '</span></span></button>';
-    }).join('');
-    // 缩略图异步取（避免一次性把几十张图读进内存）。
-    for (const node of host.querySelectorAll('[data-clip-thumb]')) {
-      void loadThumb(node.dataset.clipThumb, node);
-    }
   }
+
+  if (withMod) {
+    if (selection.has(id)) selection.delete(id); else selection.add(id);
+    lastAnchorId = id;
+    selectedId = selection.has(id) ? id : null;
+    renderList();
+    if (selectedId) renderDetail();
+    return;
+  }
+
+  // 普通点击
+  if (draftDirty) setState('上一条的修改未保存，已丢弃');
+  selection.clear(); selection.add(id);
+  lastAnchorId = id;
+  selectedId = id;
+  renderList(); renderDetail();
+}
+
+// 批量删除：不弹确认（与单条删除保持一致）。
+async function deleteEntries(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  if (!list.length) return;
+  try {
+    await call('remove', list);
+    for (const id of list) { selection.delete(id); if (selectedId === id) selectedId = null; }
+    await refresh({ keepSelection: false });
+    setState(list.length > 1 ? '已删除 ' + list.length + ' 条' : '已删除');
+  } catch (error) { setState('删除失败：' + error.message); }
+}
+
+// 列表右键菜单：批量删除 / 复制 / 固定 / 全选。
+function openListMenu(event) {
+  const row = event.target.closest('[data-clip-id]');
+  event.preventDefault(); event.stopPropagation();
+  // 右键未选中的行：先把它变成当前选中集合（与资源管理器一致）
+  if (row && !selection.has(row.dataset.clipId)) {
+    selection.clear(); selection.add(row.dataset.clipId);
+    selectedId = row.dataset.clipId;
+    lastAnchorId = row.dataset.clipId;
+    renderList(); renderDetail();
+  }
+  const menu = document.getElementById('ctx-menu');
+  menu.className = 'tool-strip-menu'; menu.replaceChildren(); delete menu.dataset.toolOwner;
+  const count = selection.size;
+  const add = (label, fn, disabled) => {
+    const b = document.createElement('button');
+    b.className = 'ctx-item'; b.type = 'button'; b.textContent = label;
+    if (disabled) b.disabled = true;
+    b.onclick = ev => { ev.stopPropagation(); menu.classList.add('hidden'); if (!disabled) fn(); };
+    menu.append(b);
+  };
+  const head = document.createElement('div');
+  head.className = 'tool-menu-heading';
+  head.textContent = count > 1 ? '已选 ' + count + ' 条' : (row ? '剪贴板条目' : '剪贴板历史');
+  menu.append(head);
+  if (count) {
+    add('🗑 删除选中的 ' + count + ' 条', () => void deleteEntries([...selection]));
+    add('📋 复制选中内容', () => void copySelection());
+    add('📌 固定 / 取消固定', () => void pinSelection());
+    const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.append(sep);
+  }
+  add('☑ 全选（当前筛选结果）', () => { selection = new Set(visibleEntries().map(e => e.id)); renderList(); });
+  add('✕ 取消选择', () => { selection.clear(); renderList(); }, !count);
+
+  menu.classList.remove('hidden');
+  const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 180;
+  menu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - mw - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - mh - 8)) + 'px';
+  const close = ev => { if (!menu.contains(ev.target)) { menu.classList.add('hidden'); document.removeEventListener('pointerdown', close, true); } };
+  document.addEventListener('pointerdown', close, true);
+}
+
+/** 复制选中内容：多条文字按空行拼接；单条图片走图片复制。 */
+async function copySelection() {
+  const picked = entries.filter(e => selection.has(e.id));
+  if (!picked.length) return;
+  try {
+    if (picked.length === 1 && picked[0].kind === 'image') {
+      const data = await call('readImage', picked[0].id);
+      await window.myIDE.clip.copyImageBase64?.(data.base64);
+      setState(window.myIDE.clip.copyImageBase64 ? '已复制图片' : '当前版本不支持复制图片');
+      return;
+    }
+    const text = picked.map(e => e.kind === 'text' ? (e.text || '') : '[' + (e.preview || '图片') + ']').join('\n\n');
+    await window.myIDE.clip.copy(text);
+    setState('已复制 ' + picked.length + ' 条');
+  } catch (error) { setState('复制失败：' + error.message); }
+}
+
+async function pinSelection() {
+  const picked = entries.filter(e => selection.has(e.id));
+  if (!picked.length) return;
+  // 以第一条的目标状态为准，整批统一（避免一半固定一半取消）
+  const target = !picked[0].pinned;
+  try {
+    for (const entry of picked) {
+      const updated = await call('update', entry.id, { pinned: target });
+      Object.assign(entry, updated);
+    }
+    renderList(); renderDetail();
+    setState(target ? '已固定 ' + picked.length + ' 条' : '已取消固定 ' + picked.length + ' 条');
+  } catch (error) { setState('操作失败：' + error.message); }
+}
 
   async function loadThumb(id, node) {
     try {
@@ -155,6 +314,11 @@ window.ClipboardPanel = (() => {
       settings = data.settings || {};
       stats = data.stats || {};
       watching = settings.watch !== false;
+      // 清掉已被删除的 id，并按当前筛选结果收敛选择集（筛选变了不该留着看不见的选中项）。
+      const alive = new Set(entries.map(e => e.id));
+      for (const id of [...selection]) if (!alive.has(id)) selection.delete(id);
+      const visibleIds = new Set(visibleEntries().map(e => e.id));
+      for (const id of [...selection]) if (!visibleIds.has(id)) selection.delete(id);
       if (!keepSelection || !entries.some(e => e.id === selectedId)) selectedId = entries[0]?.id || null;
       renderAll();
     } catch (error) {
@@ -211,16 +375,10 @@ window.ClipboardPanel = (() => {
     }
     if (name === 'save') { void saveDraft(); return; }
     if (name === 'delete') {
-      // 不弹确认。剪贴板历史是「随手翻查」的场景，多一次弹窗打断很烦；
-      // 而且删错了还能重新复制一次，代价很低。
-      // 另外：之前用的是浏览器原生 confirm()，在 Electron 里会弹出一个丑陋的
-      // 系统对话框（标题是 my-ide），与界面风格完全不搭 —— 用户截图反馈的就是它。
-      try {
-        await call('remove', [entry.id]);
-        selectedId = null;
-        await refresh({ keepSelection: false });
-        setState('已删除');
-      } catch (error) { setState('删除失败：' + error.message); }
+      // 不弹确认（与行内删除、右键批量删除保持一致）。
+      // 之前用的是浏览器原生 confirm()，在 Electron 里会弹出标题为 my-ide 的
+      // 系统对话框，与界面风格完全不搭 —— 用户截图反馈的就是它。
+      await deleteEntries([entry.id]);
     }
   }
 
@@ -257,15 +415,25 @@ window.ClipboardPanel = (() => {
       for (const b of q('clip-filters').querySelectorAll('[data-clip-filter]')) b.classList.toggle('active', b === button);
       renderList();
     });
-    q('clip-list')?.addEventListener('click', event => {
-      const row = event.target.closest('[data-clip-id]');
-      if (!row) return;
-      // 有未保存修改时也不弹原生 confirm（Electron 里会冒出系统对话框）：
-      // 改成在状态行提示，用户仍可直接切换 —— 剪贴板条目本来就是可再生的，
-      // 为一次切换弹窗不值得。
-      if (draftDirty) setState('上一条的修改未保存，已丢弃');
-      selectedId = row.dataset.clipId;
-      renderList(); renderDetail();
+    // 列表点击：普通=单选看详情，Ctrl/Cmd=切换选中，Shift=区间连选，
+    // 行内删除按钮走 deleteEntries（事件在 onRowClick 里先拦）。
+    q('clip-list')?.addEventListener('click', onRowClick);
+    // 右键：批量操作（删除选中 / 复制 / 固定 / 全选 / 取消选择）。
+    q('clip-list')?.addEventListener('contextmenu', openListMenu);
+    // 键盘：Ctrl+A 全选当前筛选结果，Esc 取消选择，Delete 删除选中。
+    q('clip-list')?.addEventListener('keydown', event => {
+      const inList = event.target.closest('#clip-list');
+      if (!inList) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        selection = new Set(visibleEntries().map(e => e.id));
+        renderList();
+      } else if (event.key === 'Escape') {
+        if (selection.size) { event.preventDefault(); selection.clear(); renderList(); }
+      } else if (event.key === 'Delete' && selection.size) {
+        event.preventDefault();
+        void deleteEntries([...selection]);
+      }
     });
     q('clip-detail')?.addEventListener('click', event => {
       const action = event.target.closest('[data-clip-act]')?.dataset.clipAct;

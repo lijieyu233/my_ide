@@ -209,6 +209,71 @@ const wait = async (s, ms = 8000) => {
     })()`);
     check('点删除不弹确认框', noConfirm.called === 0, 'confirm 被调用 ' + noConfirm.called + ' 次');
 
+    // ⑨c 行内删除按钮 + Ctrl/Shift 多选 + 右键批量删除
+    const multi = await probe(`(async () => {
+      // 先造 4 条，保证有足够行
+      for (const t of ['多选A','多选B','多选C','多选D']) await window.myIDE.clipboardHistory.addText(t + ' ' + Date.now());
+      await new Promise(r => setTimeout(r, 400));
+      window.ClipboardPanel.refresh();
+      await new Promise(r => setTimeout(r, 500));
+      const rows = () => [...document.querySelectorAll('#clip-list [data-clip-id]')];
+      const list = rows();
+      if (list.length < 4) return { error: 'rows=' + list.length };
+      const idOf = i => list[i].dataset.clipId;
+
+      // ① 行内删除按钮存在且 hover 才显形（opacity 计算值）
+      const delBtns = document.querySelectorAll('#clip-list .clip-row-del');
+      const delOpacity = getComputedStyle(delBtns[0]).opacity;
+
+      // ② Ctrl 点选：第 0 行 + 第 2 行
+      list[0].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      rows()[2].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      await new Promise(r => setTimeout(r, 200));
+      const ctrlCount = document.querySelectorAll('#clip-list .clip-row.selected').length;
+
+      // ③ Shift 连选：从第 0 行到第 3 行
+      rows()[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 120));
+      rows()[3].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      await new Promise(r => setTimeout(r, 200));
+      const shiftCount = document.querySelectorAll('#clip-list .clip-row.selected').length;
+
+      // ④ 右键弹出批量菜单
+      rows()[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
+      await new Promise(r => setTimeout(r, 200));
+      const menu = document.getElementById('ctx-menu');
+      const menuItems = [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent.trim());
+
+      // ⑤ 点「删除选中的 N 条」
+      const before = (await window.myIDE.clipboardHistory.list('')).data.stats.total;
+      const delItem = [...menu.querySelectorAll('.ctx-item')].find(b => /删除选中的/.test(b.textContent));
+      delItem?.click();
+      await new Promise(r => setTimeout(r, 900));
+      const after = (await window.myIDE.clipboardHistory.list('')).data.stats.total;
+      return { delButtons: delBtns.length, delOpacity, ctrlCount, shiftCount, menuItems, before, after,
+               deleted: before - after, selCountText: document.getElementById('clip-selcount')?.textContent };
+    })()`);
+    check('每行都有行内删除按钮', multi.delButtons >= 4, 'buttons=' + multi.delButtons);
+    check('删除按钮平时隐藏（hover 才显形）', multi.delOpacity === '0', 'opacity=' + multi.delOpacity);
+    check('Ctrl 点选能多选', multi.ctrlCount === 2, 'selected=' + multi.ctrlCount);
+    check('Shift 点能区间连选', multi.shiftCount >= 3, 'selected=' + multi.shiftCount);
+    check('右键菜单有批量删除项', multi.menuItems.some(t => /删除选中的/.test(t)), multi.menuItems.join(' | '));
+    check('右键批量删除真的删掉了多条', multi.deleted >= 2, 'before=' + multi.before + ' after=' + multi.after);
+
+    // ⑨d 行内删除按钮单条删除
+    const rowDel = await probe(`(async () => {
+      window.ClipboardPanel.refresh();
+      await new Promise(r => setTimeout(r, 500));
+      const before = (await window.myIDE.clipboardHistory.list('')).data.stats.total;
+      const btn = document.querySelector('#clip-list .clip-row-del');
+      if (!btn) return { error: 'no delete button' };
+      btn.click();
+      await new Promise(r => setTimeout(r, 700));
+      const after = (await window.myIDE.clipboardHistory.list('')).data.stats.total;
+      return { before, after };
+    })()`);
+    check('行内删除按钮能删掉单条', rowDel.after === rowDel.before - 1, JSON.stringify(rowDel));
+
     // ⑩ 按天数清理：把 maxAgeDays 设 0.0001（约 8.6 秒）→ 立即清掉全部
     await probe(`(async()=>{ await window.myIDE.clipboardHistory.addText('将被清理的一条'); })()`);
     await sleep(200);

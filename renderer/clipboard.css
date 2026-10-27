@@ -117,3 +117,32 @@
   .clip-workspace { grid-template-columns: minmax(0, 1fr); }
   .clip-side { max-height: 40%; border-right: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 }
+
+/* 行内删除按钮：平时隐藏，hover / 选中 / 键盘聚焦时才显形 ——
+   否则一列垃圾桶按钮会把列表糊满，反而更难扫读。 */
+.clip-row { position: relative; padding-right: 2.2em; }
+.clip-row-del {
+  position: absolute; right: .35em; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.7em; height: 1.7em; padding: 0;
+  border: 0; border-radius: .3em; background: transparent;
+  color: var(--text-dim); cursor: pointer; opacity: 0; transition: opacity .12s ease;
+}
+.clip-row:hover .clip-row-del,
+.clip-row.selected .clip-row-del,
+.clip-row.active .clip-row-del,
+.clip-row-del:focus-visible { opacity: 1; }
+.clip-row-del:hover { background: color-mix(in srgb, var(--red) 22%, transparent); color: var(--red); }
+.clip-row-del svg.ic { width: .95em; height: .95em; }
+
+/* 多选态：与「当前查看」(active) 区分开 —— 选中是蓝底描边，查看是实心浅底。 */
+.clip-row.selected { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.clip-row.selected.active { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+.clip-row.selected .clip-row-meta { color: var(--text); }
+
+.clip-selcount {
+  margin-left: auto; align-self: center;
+  padding: .1em .55em; border-radius: 1em; font-size: .82em;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-bright); white-space: nowrap;
+}
