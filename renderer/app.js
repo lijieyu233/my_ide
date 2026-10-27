@@ -1176,6 +1176,10 @@ const App = (() => {
     if (window.BrowserPanel) { BrowserPanel.init(); document.getElementById('tool-browser').onclick = () => switchTool('browser'); }
     if (window.DbPanel) { DbPanel.init(); document.getElementById('tool-db').onclick = () => switchTool('db'); }
     if (window.RemotePanel) { RemotePanel.init(); document.getElementById('tool-remote').onclick = () => switchTool('remote'); }
+    // 剪贴板历史：按钮的 onclick 都在这里逐个绑定，漏一行按钮就点不动。
+    // （我最初只加了 HTML + ALL_TOOLS，这里和 shortcuts/tool-strip 都漏了，
+    //   真实点击完全没反应 —— 端到端补上「真实鼠标点击」这一步才抓出来。）
+    if (window.ClipboardPanel) { document.getElementById('tool-clipboard').onclick = () => switchTool('clipboard'); }
     if (window.Tasks) { document.getElementById('tool-tasks').onclick = () => switchTool('tasks'); }
     if (window.LaunchPanel) { LaunchPanel.init(); document.getElementById('tool-launch').onclick = () => switchTool('launch'); }
     if (window.QuickLaunch) { QuickLaunch.init(); document.getElementById('tool-quick-launch').onclick = () => switchTool('quick-launch'); }

@@ -17,11 +17,15 @@ window.ToolStrip = (() => {
       if(button)button.classList.toggle('tool-hidden',rightHidden.has(name));
     }
   }
-  const actions={project:'tool-project',outline:'tool-outline',search:'search-panel',git:'commit-tool-window',browser:'tool-browser',bookshelf:'tool-bookshelf',remote:'tool-remote',db:'tool-db',tasks:'tool-tasks',launch:'tool-launch','quick-launch':'tool-quick-launch',log:'git-log'};
+  // actions / labels 必须包含工具条上的每一个带 id 的按钮：
+  // 这个循环是「绑定点击 → Shortcuts.execute」的唯一入口，漏一个就意味着
+  // 那个按钮点了完全没反应（剪贴板历史就是这样漏掉的 —— 我加按钮时只改了
+  // index.html 和 app.js 的 ALL_TOOLS，忘了这里，真实点击走不通）。
+  const actions={project:'tool-project',outline:'tool-outline',search:'search-panel',git:'commit-tool-window',browser:'tool-browser',bookshelf:'tool-bookshelf',remote:'tool-remote',clipboard:'tool-clipboard',db:'tool-db',tasks:'tool-tasks',launch:'tool-launch','quick-launch':'tool-quick-launch',log:'git-log'};
   // 右侧工具条（AI 助手等右侧停靠工具）的按钮与动作。左右两条是同一套交互：
   // 右键设快捷键、拖拽排序、隐藏。之前只给左侧做了这些，右侧只有两个裸按钮，
   // 右键毫无反应 —— 用户截图里问的就是这个。
-  const labels={project:'项目',outline:'大纲',search:'搜索内容',git:'提交',browser:'内置浏览器',bookshelf:'书架',remote:'远程服务器',db:'数据库',tasks:'任务',launch:'启动面板','quick-launch':'快速启动',log:'Git 日志'};
+  const labels={project:'项目',outline:'大纲',search:'搜索内容',git:'提交',browser:'内置浏览器',bookshelf:'书架',remote:'远程服务器',clipboard:'剪贴板历史',db:'数据库',tasks:'任务',launch:'启动面板','quick-launch':'快速启动',log:'Git 日志'};
   let strip, defaults, nodes, dragging=null, suppressed=0, closeMenu=()=>{};
   const order=()=>[...strip.children].map(node=>node===nodes.get(gapId)?gapId:node.id).filter(id=>nodes.has(id));
   function normalize(saved) {

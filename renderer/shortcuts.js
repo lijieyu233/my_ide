@@ -300,7 +300,10 @@ Shortcuts.register('editor-next-pane', {desc:'编辑区：切换编辑组',categ
 Shortcuts.register('save', { desc: '保存当前文件', keys: ['ctrl+s'], run: () => Viewer.saveTab(Viewer.openTabs.indexOf(Viewer.activeTab)) });
 Shortcuts.register('close-tab', { desc: '关闭当前标签', keys: ['ctrl+w'], run: () => { const t = Viewer.activeTab; if (t) return Viewer.closeTab(Viewer.openTabs.indexOf(t)); } });
 Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+tab'], run: () => { const n = Viewer.openTabs.length; if (n > 1) { const cur = Viewer.openTabs.indexOf(Viewer.activeTab); Viewer.activate((cur + 1) % n); } } });
-for (const [id, name, label] of [['tool-bookshelf','bookshelf','书架'],['tool-remote','remote','远程服务器'],['tool-launch','launch','启动面板']]) {
+// 工具条按钮要能「点」，靠这里注册 + tool-strip.js 的 actions 映射。
+// 两边少一处按钮就是死的（剪贴板历史最初只加了 HTML 与 ALL_TOOLS，
+// 这两处都漏了，真实点击完全没反应 —— 端到端直接调 showTool 才没暴露）。
+for (const [id, name, label] of [['tool-bookshelf','bookshelf','书架'],['tool-remote','remote','远程服务器'],['tool-clipboard','clipboard','剪贴板历史'],['tool-launch','launch','启动面板']]) {
   Shortcuts.register(id,{desc:'工具窗口：'+label,keys:[],palette:true,category:'工作台',run:()=>App.showTool(name)});
 }
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });

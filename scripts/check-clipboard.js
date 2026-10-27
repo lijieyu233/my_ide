@@ -65,10 +65,29 @@ const wait = async (s, ms = 8000) => {
     await probe(`Theme.set('crimson');App.openProject(${JSON.stringify(project.split(path.sep).join('/'))})`);
     await wait(`App.root===${JSON.stringify(project.split(path.sep).join('/'))}`);
 
-    // ① 打开面板
-    await probe("App.showTool('clipboard')"); await sleep(700);
-    check('剪贴板面板能打开', await probe("!document.getElementById('clipboard-main').classList.contains('hidden')"));
-    check('工具条按钮存在', await probe("!!document.getElementById('tool-clipboard')"));
+    // ① 用「真实鼠标点击工具条按钮」打开面板 —— 这是唯一能发现
+    //    「按钮没接 onClick」的验证方式。之前用 App.showTool 直接调 API，
+    //    跳过了 tool-strip.js 的 actions 映射与 shortcuts 注册，于是按钮点不动
+    //    而测试全绿。
+    const btnPos = await probe(`(() => {
+      const b = document.getElementById('tool-clipboard');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    check('工具条按钮存在', !!btnPos);
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: btnPos.x, y: btnPos.y });
+    await sleep(80);
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: btnPos.x, y: btnPos.y, button: 'left', clickCount: 1 });
+    await sleep(60);
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: btnPos.x, y: btnPos.y, button: 'left', clickCount: 1 });
+    await sleep(800);
+    const afterClick = await probe(`(() => ({
+      tool: App.getTool(),
+      hidden: document.getElementById('clipboard-main').classList.contains('hidden'),
+    }))()`);
+    check('真实点击工具条按钮能打开面板', afterClick.tool === 'clipboard' && afterClick.hidden === false,
+      JSON.stringify(afterClick));
 
     // ② 自动采集文字：写系统剪贴板，等轮询（1.2s）
     const marker = 'E2E 剪贴板文本 ' + Date.now();
