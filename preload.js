@@ -8,8 +8,11 @@ contextBridge.exposeInMainWorld('myIDE', {
     close: id => ipcRenderer.invoke('html-preview:close',id),
   },
   remote: {
-    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'stageEdit', 'saveEdit', 'editTarget', 'overview'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
+    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'overview'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
     onEvent: callback => { const listener = (_event, value) => callback(value); ipcRenderer.on('remote:event', listener); return () => ipcRenderer.removeListener('remote:event', listener); },
+    // 把远程文件编成 editor 能当普通 path 使用的虚拟路径。纯字符串拼接，不走 IPC。
+    // 与 src/main/remote/remote-fs.js 的 remotePathOf 必须保持一致（那边负责解析）。
+    virtualPath: (sessionId, remotePath) => 'remote://' + encodeURIComponent(String(sessionId)) + remotePath,
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),

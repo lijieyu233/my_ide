@@ -2010,31 +2010,6 @@ const Viewer = (() => {
     return saveSnapshot(tabs[i], quiet);
   }
 
-  // 远程编辑回传：本地文件写完后再推到服务器。
-  //
-  // 为什么放在「本地保存成功之后」而不是替换保存链路：
-  // saveSnapshot 那一套（saveQueues 串行、diskVersion 复核、原子写入、绿盾密文校验）
-  // 全是围绕本地 fs 建的，绕开它等于把这些保障重写一遍。这里只多一步回传：
-  // 本地先落盘（用户至少不会丢内容），再尽力写回远程，失败明确提示。
-  async function syncRemoteEdit(tab, content) {
-    const bridge = window.myIDE?.remote;
-    if (!bridge?.editTarget || !bridge.saveEdit || !tab?.path) return;
-    let target;
-    try { target = (await bridge.editTarget(tab.path))?.data; } catch { return; }
-    if (!target) return; // 普通本地文件，什么都不做
-    try {
-      const result = await bridge.saveEdit(tab.path, content);
-      if (!result?.ok) throw Error(result?.error || '写回远程失败');
-      MI.toast('已写回服务器 ' + target.remotePath, 'ok');
-      // 写回后刷新当前可见的远程视图。
-      // ⚠ 之前写的是 RemotePanel.refreshActive —— 这个名字根本不存在（RemotePanel
-      //   导出的是 refresh / loadOverview），可选链把错误吞掉了，等于刷新从未发生。
-      window.RemotePanel?.refresh?.();
-    } catch (error) {
-      MI.toast('本地已保存，但写回服务器失败：' + ((error && error.message) || error), 'err');
-    }
-  }
-
   function saveSnapshot(tab, quiet, overwriteVersion) {
     if(!quiet&&tab)keepTab(tab);
     if(tab&&(tab.binary||IMG_EXTS.has(extOf(tab.name))||MEDIA_EXTS.has(extOf(tab.name))||OFFICE_EXTS.has(extOf(tab.name))||OFFICE_OLD_EXTS.has(extOf(tab.name)))){
@@ -2081,10 +2056,6 @@ const Viewer = (() => {
           updateFormatStatus(tab);
           renderTabs();
           if (!quiet) MI.toast(tab.dirty ? '已保存先前版本，仍有未保存的修改' : '💾 已保存 ' + tab.name, 'ok');
-          // 远程编辑：如果这个本地文件是远程文件的暂存副本，保存后必须写回服务器。
-          // 放在本地写成功之后、且单独 try —— 回传失败不能把「本地已保存」说成失败，
-          // 但必须让用户知道服务器上的还是旧版本。
-          void syncRemoteEdit(tab, snapshot.content);
           if (window.App) App.refreshGit();
         } else {
           // 自动保存失败也必须可见；同一错误不每三秒重复提示，正文始终留在内存中。

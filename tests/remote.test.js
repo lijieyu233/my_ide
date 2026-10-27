@@ -57,36 +57,44 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     await service.forgetHost(p.id); const restored = await service.connect(p.id); check('明确清除旧指纹后可重新确认', restored.state === 'connected');
     service.disconnect(restored.id); await assert.rejects(() => service.list(restored.id, '/'), /断开/); check('断线拒绝文件操作', true);
     config = service.save({ ...p, remember: false }, service.load().version); check('取消记住凭据会删除已保存密文', !config.profiles[0].hasSecret);
-    // ── 远程文件就地编辑（stageEdit / saveEdit）──────────────────────────
-    // 语义：下载到暂存目录 → 编辑器当本地文件打开 → 保存时写回远程（原子 rename）。
+    // ── 远程文件直连读写（remote:// 路由的底座）──────────────────────────
+    // 语义：文件不落本地盘，编辑器通过 remote:// 虚拟路径直接读写 SFTP。
     // 注意：上面刚把 p 的 remember 设成 false（凭据已删），这里要带密码重连。
     const editSession = await service.connect(p.id, { password: 'fixture-secret' });
-    fs.writeFileSync(path.join(remote, 'editable.txt'), '远程原始内容\n');
-    const staged = await service.stageEdit(editSession.id, '/editable.txt');
-    check('stageEdit 把远程文件下到暂存目录并返回本地路径',
-      !!staged.localPath && fs.existsSync(staged.localPath) && fs.readFileSync(staged.localPath, 'utf8') === '远程原始内容\n');
-    check('暂存路径带 hash，不同远程目录的同名文件互不覆盖',
-      staged.localPath.includes(path.sep + 'remote-edit' + path.sep) && /[0-9a-f]{12}-editable\.txt$/.test(staged.localPath));
-    check('editTarget 能认出暂存文件对应的远程路径',
-      service.editTarget(staged.localPath)?.remotePath === '/editable.txt');
-    check('普通本地文件没有远程映射', service.editTarget(path.join(local, 'not-staged.txt')) === null);
-    // 写回
-    const saved = await service.saveEdit(staged.localPath, '改过的内容\n');
-    check('saveEdit 写回远程且内容正确',
-      saved.staged === true && fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === '改过的内容\n');
-    check('写回后没有残留 .part 临时文件', !fs.readdirSync(remote).some(n => n.includes('.part')));
-    // 断线后必须明确失败，不能默默只写本地
+    const ORIGINAL = '远程原始内容' + String.fromCharCode(10);
+    const CHANGED = '改过的内容' + String.fromCharCode(10);
+    fs.writeFileSync(path.join(remote, 'editable.txt'), ORIGINAL);
+    const read = await service.readTextFile(editSession.id, '/editable.txt');
+    check('readTextFile 直接读出远程内容（不经过本地暂存）',
+      Buffer.isBuffer(read.buffer) && read.buffer.toString('utf8') === ORIGINAL);
+    check('readTextFile 带 mtime 与大小（供版本复核）',
+      Number.isFinite(read.mtime) && read.size > 0);
+    const stat = await service.statTextFile(editSession.id, '/editable.txt');
+    check('statTextFile 返回可比较的版本信息', stat && Number.isFinite(stat.mtime) && stat.size > 0);
+    check('statTextFile 对不存在的文件返回 null（不是抛错）',
+      (await service.statTextFile(editSession.id, '/不存在.txt')) === null);
+    const written = await service.writeTextFile(editSession.id, '/editable.txt', Buffer.from(CHANGED));
+    check('writeTextFile 直连写回且内容正确',
+      fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === CHANGED);
+    check('写回后有新的 mtime（版本会变）', written && Number.isFinite(written.mtime));
+    check('写回后没有残留 .part / .bak 临时文件',
+      !fs.readdirSync(remote).some(n => n.includes('.part') || n.includes('.bak')));
+    // 断线后必须明确失败，不能静默成功
     service.disconnect(editSession.id);
-    await assert.rejects(() => service.saveEdit(staged.localPath, '断开后写入'), /连接已断开/);
-    check('断线后 saveEdit 明确拒绝（不假装成功）', fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === '改过的内容\n');
-    // 目录/超限/密文都要拒绝
+    await assert.rejects(() => service.writeTextFile(editSession.id, '/editable.txt', Buffer.from('断开后写入')),
+      error => error.code === 'DISCONNECTED');
+    check('断线后 writeTextFile 明确拒绝（不假装成功）',
+      fs.readFileSync(path.join(remote, 'editable.txt'), 'utf8') === CHANGED);
+    // 目录 / 密文都要拒绝
     const edit2 = await service.connect(p.id, { password: 'fixture-secret' });
     await service.mkdir(edit2.id, '/连目录');
-    await assert.rejects(() => service.stageEdit(edit2.id, '/连目录'), /目录不能直接编辑/);
-    check('拒绝把目录当文件编辑', true);
+    await assert.rejects(() => service.readTextFile(edit2.id, '/连目录'), /目录/);
+    check('拒绝把目录当文件读', true);
     fs.writeFileSync(path.join(remote, '密文.bin'), Buffer.from('%TSD-Header-###%garbage'));
-    await assert.rejects(() => service.stageEdit(edit2.id, '/密文.bin'), /绿盾密文/);
+    await assert.rejects(() => service.readTextFile(edit2.id, '/密文.bin'), /绿盾密文/);
     check('拒绝把绿盾密文送进编辑器', true);
+    await assert.rejects(() => service.writeTextFile(edit2.id, '/x.txt', Buffer.from('%TSD-Header-###%x')), /绿盾密文/);
+    check('拒绝把密文内容写回远程', true);
     service.disconnect(edit2.id);
     // ── 服务器概览采集（fixed 只读脚本 + 解析）────────────────────────────
     // 只验证「结构对不对、解析得准不准」，不依赖具体机器的数值。

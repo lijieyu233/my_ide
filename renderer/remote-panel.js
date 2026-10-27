@@ -279,11 +279,12 @@ window.RemotePanel = (() => {
     catch (error) { notify(error.message, true); }
   }
 
-  // 编辑：远程文件先下载到「远程编辑暂存目录」，登记映射后交给编辑器打开。
+  // 编辑：把远程文件编码成 remote:// 虚拟路径直接交给编辑器打开。
   //
-  // ⚠ 失败必须用 MI.toast，不能只写 remote-notice：那个提示区在工具栏里，
-  //   实测（#remote-notice 曾经 display:none）失败原因完全不可见，用户看到的
-  //   就是「点了没反应」。toast 浮在窗口上，无论面板布局如何都能看到。
+  // 之前是「下载到 userData 临时目录再当本地文件打开」，从用户视角完全说不通：
+  // 标签页显示的是一串哈希名和 %APPDATA% 路径，根本看不出自己在编辑哪台服务器上的
+  // 哪个文件，而且还得关心里存不存在。现在标签就是 /app/frp/frps.toml，
+  // 读写由 fs:* 的 remote:// 路由直连 SFTP，磁盘上什么都不留。
   async function editEntry(side, entry) {
     if (!entry || entry.directory) return;
     if (side === 'local') {
@@ -293,19 +294,12 @@ window.RemotePanel = (() => {
     }
     if (!connected()) { MI.toast('请先连接服务器再编辑远程文件', 'err'); return; }
     try {
-      const staged = await call('stageEdit', sid, entry.path);
-      if (!staged?.localPath) throw Error('暂存失败');
-      const opened = await Viewer.openFile(staged.localPath);
-      // 编辑器可能拒绝打开（二进制/超大/只读预览），这种情况不能假装成功。
-      if (opened?.ok === false) {
-        throw Error(opened.error || '编辑器无法打开该文件（可能是二进制或过大）');
-      }
-      MI.toast('已打开 ' + entry.name + '；保存后会自动传回服务器', 'ok');
-      notify('已打开 ' + entry.name + '；保存后会自动传回服务器', false);
+      const virtual = window.myIDE.remote.virtualPath(sid, entry.path);
+      const opened = await Viewer.openFile(virtual);
+      if (opened?.ok === false) throw Error(opened.error || '编辑器无法打开该文件');
+      MI.toast('正在编辑 ' + entry.path + '；保存即写回服务器', 'ok');
     } catch (error) {
-      const message = (error && error.message) || String(error);
-      MI.toast('打开远程文件失败：' + message, 'err');
-      notify('打开远程文件失败：' + message, true);
+      MI.toast('打开远程文件失败：' + ((error && error.message) || error), 'err');
     }
   }
 

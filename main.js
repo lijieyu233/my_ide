@@ -93,6 +93,10 @@ let mainWindow = null;
 const remoteService=require('./src/main/remote/remote-ipc').register({ app, ipcMain, dialog, safeStorage, getWindow: () => mainWindow,
   configDir: UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide') });
 const aiSshTools=require('./src/main/ai/ai-ssh-tools').createService({service:remoteService});
+// 远程文件的虚拟路径路由（remote://<sid>/<path>）。让「右键 → 编辑远程文件」
+// 把文件当普通文档打开，读写直连 SFTP —— 标签页显示真实远程路径，中间不落本地盘。
+// 三个 fs:* 处理器在本地实现之前先问它一次：返回 null 表示「不是远程路径」。
+const remoteFs = require('./src/main/remote/remote-fs').installRemoteFs(remoteService);
 ipcMain.handle('ai:ssh',async(e,context,call)=>{
   try{const owner=aiSender(e,context),normalized=AiToolContract.validate(call);if(!require('./renderer/ai-ssh-tools').has(normalized.name))throw Object.assign(Error('不是SSH终端工具'),{code:'INVALID_TOOL_ARGS'});
     return await aiTools.once(owner,context,normalized,'application',({proof,verify})=>aiSshTools.execute(proof,verify,actual=>aiPermissionsBridge.authority.assert(owner,context,normalized,actual)));
@@ -633,6 +637,9 @@ ipcMain.handle('fs:readDir', async (_e, dir, showHidden) => {
 });
 
 ipcMain.handle('fs:readFile', async (_e, p, encoding) => {
+  // 远程虚拟路径先交给路由；返回 null 表示不是远程文件，走原来的本地读。
+  const remote = await remoteFs.readFile(p, encoding, TextFormat.decodeText);
+  if (remote) return remote;
   let snapshot;
   try {
     snapshot = await FileRead.readSnapshot(p, undefined, 8 * 1024 * 1024);
@@ -642,6 +649,8 @@ ipcMain.handle('fs:readFile', async (_e, p, encoding) => {
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED', version: snapshot && snapshot.version }; }
 });
 ipcMain.handle('fs:fileVersion', async (_e, p) => {
+  const remote = await remoteFs.fileVersion(p);
+  if (remote) return remote;
   try {
     const r = await FileRead.readSnapshot(p, undefined, 8 * 1024 * 1024);
     if (r.tooLarge) return { error: '目标超过8MB，不能在此安全覆盖', errorCode: 'TOO_LARGE' };
@@ -855,7 +864,15 @@ function writeTextFile(p, content, format, condition, beforePublish, writer = Fi
     return { ...result, textFormat: saved.textFormat };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'WRITE_FAILED', recoveryPath: e.recoveryPath, pendingPath: e.pendingPath, cleanupError: e.cleanupError, committed: e.committed }; }
 }
-ipcMain.handle('fs:writeFile', (_e, ...args) => writeTextFile(...args));
+ipcMain.handle('fs:writeFile', async (_e, ...args) => {
+  // 远程虚拟路径走 SFTP 写回；返回 null 表示不是远程文件，走原来的本地写。
+  // 注意：writeTextFile 是同步的，而远程 IO 是异步的，所以拦截放在这一层，
+  // 不去改 writeTextFile 的签名（它的调用点还有插件与 AI 两条路径）。
+  const [p, content, format, condition] = args;
+  const remote = await remoteFs.writeFile(p, content, format, condition, TextFormat.encodeText);
+  if (remote) return remote;
+  return writeTextFile(...args);
+});
 ipcMain.handle('ai:writeFile', async(e, context, p, content, format, condition, call) => {
   try {
     aiRuns.assert(aiSender(e,context),context,p);
