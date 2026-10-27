@@ -1038,6 +1038,8 @@ const Viewer = (() => {
     globe: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M2.6 8h10.8"/><path d="M8 2.4c1.5 1.6 2.3 3.5 2.3 5.6S9.5 12 8 13.6C6.5 12 5.7 10.1 5.7 8s.8-4 2.3-5.6z"/></svg>',
     external: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.6h4v4"/><path d="M13.4 2.6L7.6 8.4"/><path d="M12.2 9.6v3.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1h3.2"/></svg>',
     locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M7 4H6L4.5 2.5H2v11h12V9M8 8l5.5-5.5M9.5 2.5h4v4"/></svg>',
+    // 导出：方框 + 向下的箭头（「落成一个文件」），与「外部打开」的斜向箭头区分开
+    export: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7.2M5.2 6.6L8 9.4l2.8-2.8"/><path d="M2.8 10.6v2.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-2.2"/></svg>',
   };
 
   // 编辑器操作区（Markdown 模式切换 / 查看源码 / 内置浏览器）+「定位」—— 统一挂在标签栏右端。
@@ -1099,6 +1101,14 @@ const Viewer = (() => {
         const choice=document.createElement('button');choice.className='vt-btn active';choice.setAttribute('aria-label','Markdown显示模式');choice.setAttribute('aria-haspopup','menu');choice.textContent=MODES.find(item=>item[0]===cur)[2]+' ▾';
         choice.onclick=e=>{e.stopPropagation();const menu=document.getElementById('ctx-menu');menu.replaceChildren();for(const button of seg.children){const row=document.createElement('div');row.className='ctx-item';row.textContent=button.textContent;row.onclick=()=>{menu.classList.add('hidden');if(currentTab()===tab)button.click();};menu.append(row);}const r=choice.getBoundingClientRect();menu.style.left=Math.min(r.left,window.innerWidth-190)+'px';menu.style.top=r.bottom+'px';menu.classList.remove('hidden');};acts.append(choice);
       }else acts.appendChild(seg);
+      // 导出为 HTML：放在模式切换按钮右边（用户明确要求的位置）。
+      // 默认导出到 md 文件所在目录、同名 .html —— 不再弹保存框。
+      const ex = document.createElement('button');
+      ex.className = 'vt-btn';
+      ex.innerHTML = ACT_IC.export + '导出 HTML';
+      ex.title = '导出为单文件 HTML，保存在当前 md 所在目录（同名 .html）';
+      ex.onclick = (e) => { e.stopPropagation(); if (window.MdExport) void MdExport.exportTab(tab, { nextToSource: true }); };
+      acts.appendChild(ex);
     } else if (tab.htmlDiskPreview) {
       const label=document.createElement('span');label.className='vt-note';label.textContent='只读预览 · '+fmtSize(tab.size);acts.appendChild(label);
       const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);

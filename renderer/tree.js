@@ -1108,6 +1108,24 @@ const Tree = (() => {
     if (item.type === 'file' && !multi && window.GitLog && GitLog.showFileHistory) {
       mk('🕘 显示历史', () => GitLog.showFileHistory(item.path));
     }
+    // 导出为 HTML：文件树右键是最自然的入口（用户就是在这里找的，之前只加在
+    // 标签页右键上，等于给了个他看不见的地方）。
+    // 不要求先打开文件 —— 直接读盘拿内容，「项目树里右键一个 md 就能导」才成立。
+    if (item.type === 'file' && !multi && /\.(md|markdown)$/i.test(item.name || item.path) && window.MdExport) {
+      mk('⇩ 导出为 HTML', async () => {
+        try {
+          const read = await window.myIDE.fs.readFile(item.path);
+          if (read?.error) throw Error(read.error);
+          await MdExport.exportTab({
+            path: item.path,
+            name: item.name || item.path.split(/[\\/]/).pop(),
+            content: read.content ?? '',
+          });
+        } catch (error) {
+          MI.toast('导出失败：' + ((error && error.message) || error), 'err');
+        }
+      });
+    }
     // 文件：以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     if (item.type === 'file' && !multi) {
       const pdir = item.path.replace(/[\\/][^\\/]+$/, '');

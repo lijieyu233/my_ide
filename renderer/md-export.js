@@ -188,15 +188,38 @@ li > input[type="checkbox"] { margin-right: .45em; }
   }
 
   /** 导出当前标签为 HTML。 */
-  async function exportTab(tab) {
+  /**
+   * 导出当前标签为 HTML。
+   *
+   * opts.nextToSource = true：直接导到 md 同目录、同名 .html，**不弹保存框**
+   * （工具栏按钮走这条路，用户明确要求「默认导出在 md 所在目录」）。
+   * 否则弹保存对话框（快捷键 / 右键菜单走这条路，给用户选位置的自由）。
+   */
+  async function exportTab(tab, opts = {}) {
     if (!tab) { MI.toast('先打开一个 Markdown 文件', 'err'); return; }
     if (!/\.(md|markdown)$/i.test(tab.name)) { MI.toast('只能导出 Markdown 文件（当前是 ' + tab.name + '）', 'err'); return; }
     try {
       const { html, imgStats } = await build(tab);
       const defaultName = tab.name.replace(/\.(md|markdown)$/i, '.html');
-      const picked = await window.myIDE.fs.pickSave('导出为 HTML', defaultName, [{ name: 'HTML', extensions: ['html', 'htm'] }]);
-      const target = picked?.filePath || picked?.path || picked;
-      if (!target) return; // 用户取消
+      let target;
+      if (opts.nextToSource) {
+        if (!tab.path) throw Error('这个文件还没有保存到磁盘，无法确定导出位置');
+        const dir = String(tab.path).replace(/[\\/][^\\/]+$/, '');
+        const sep = String(tab.path).includes('\\') ? '\\' : '/';
+        target = dir + sep + defaultName;
+        // 已经存在时问一次是否覆盖 —— 静默覆盖别人的文件不可接受。
+        const existing = await window.myIDE.fs.fileVersion?.(target);
+        if (existing && !existing.absent && !existing.error) {
+          const ok = window.Modal?.confirm
+            ? await window.Modal.confirm('覆盖已有文件', esc(target) + '\n\n同目录下已有同名 HTML，覆盖它吗？')
+            : confirm('同目录下已有同名 HTML，覆盖它吗？');
+          if (!ok) return;
+        }
+      } else {
+        const picked = await window.myIDE.fs.pickSave('导出为 HTML', defaultName, [{ name: 'HTML', extensions: ['html', 'htm'] }]);
+        target = picked?.filePath || picked?.path || picked;
+        if (!target) return; // 用户取消
+      }
       const written = await window.myIDE.fs.writeFile(target, html, null, null);
       if (written?.error) throw Error(written.error);
       const parts = ['已导出 ' + target.split(/[\\/]/).pop()];
