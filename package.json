@@ -55,6 +55,8 @@
     "check:session": "electron scripts/check-session-recovery.js --disable-gpu --no-sandbox",
     "check:session-switch": "electron scripts/check-session-switch.js --disable-gpu --no-sandbox",
     "check:tool-buttons": "node scripts/run-electron-check.js check-tool-buttons.js",
+    "check:cos-format": "node scripts/run-electron-check.js check-cos-format.js",
+    "check:cos-upload": "node scripts/run-electron-check.js check-cos-upload.js",
     "check:paste-image": "node scripts/run-electron-check.js check-paste-image.js",
     "check:md-export-button": "node scripts/run-electron-check.js check-md-export-button.js",
     "check:md-export": "node scripts/run-electron-check.js check-md-export.js",

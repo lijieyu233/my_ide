@@ -81,19 +81,23 @@ const wait = async (s, ms = 10000) => { const end = Date.now() + ms; while (Date
       path.basename(r1.absPath) + ' vs ' + path.basename(r2.absPath));
     check('第二张也确实落盘', fs.existsSync(r2.absPath));
 
-    // ④ 模式 same：存笔记同目录
+    // ④ 模式 project（默认）：存项目根目录的 assets/ 下
     const r3 = await probe(`(async () => {
-      window.MdPasteImage.writeSetting({ mode: 'same', dir: '' });
+      window.MdPasteImage.writeSetting({ mode: 'project', dir: '' });
       const bin = atob(window.__png.a); const arr = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
       return await window.MdPasteImage.save(new File([arr], 'z.png', { type: 'image/png' }), ${JSON.stringify(MD_NORM)});
     })()`);
-    check('same 模式：引用不带 assets/ 前缀', !/assets\//.test(r3.ref || '') && /\.png$/.test(r3.ref || ''), r3.ref);
+    check('project 模式：引用是 assets/ 前缀', /^assets\//.test(r3.ref || ''), r3.ref);
     // 比较前统一分隔符：absPath 里混了 / 与 \（渲染侧拼的路径 + 主进程返回的），
     // 直接比字符串会误判成「不在同目录」。
     const normPath = p => String(p).replace(/[\\/]+/g, path.sep);
-    check('same 模式：文件落在笔记同目录',
-      path.dirname(normPath(r3.absPath)) === normPath(project), normPath(r3.absPath));
+    check('project 模式：文件落在项目根目录的 assets/ 下',
+      path.dirname(normPath(r3.absPath)) === path.join(normPath(project), 'assets'), normPath(r3.absPath));
+
+    // ④b 默认模式就是 project（用户要求把默认位置改成项目根目录）
+    const defaultMode = await probe(`(() => { localStorage.removeItem('myide-paste-image-dir'); return window.MdPasteImage.readSetting().mode; })()`);
+    check('默认模式是 project（项目根目录）', defaultMode === 'project', defaultMode);
 
     // ⑤ 模式 custom：存到指定目录（模拟云盘）
     const r4 = await probe(`(async () => {

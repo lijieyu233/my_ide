@@ -120,6 +120,8 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   // 剪贴板历史：自动采集的文字与图片。所有操作走 clipboard-history:* 一组 IPC，
   // 监听只在 MyIDE 进程存活期间进行（开关状态存在主进程的 settings.watch 里）。
+  // 腾讯云 COS 直传。密钥不进渲染进程：这里只转发，签名在主进程完成。
+  cosUpload: options => ipcRenderer.invoke('cos:upload', options),
   clipboardHistory: {
     ...Object.fromEntries(['list', 'addText', 'addImageBase64', 'readImage', 'update', 'remove', 'cleanup', 'settings', 'pause', 'state']
       .map(op => [op, (...args) => ipcRenderer.invoke('clipboard-history:' + op, ...args)])),

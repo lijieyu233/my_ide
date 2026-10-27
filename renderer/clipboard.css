@@ -146,3 +146,12 @@
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--text-bright); white-space: nowrap;
 }
+
+/* ---------- 设置：腾讯云 COS 配置区 ---------- */
+.set-cos-box { margin: .4em 0 .2em 1.9em; padding: .7em .8em; border: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: .5em; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.set-cos-box[hidden] { display: none; }
+.set-cos-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: .55em .8em; }
+.set-cos-grid label { display: flex; flex-direction: column; gap: .2em; font-size: .82em; color: var(--text-dim); }
+.set-cos-grid .m-input { font-size: 1.08em; }
+.set-cos-box .set-note { margin: .5em 0 0; }
+.set-cos-box code { padding: .05em .3em; border-radius: .2em; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: .95em; }

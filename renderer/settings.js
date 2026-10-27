@@ -169,49 +169,98 @@ const Settings = (() => {
   // 做成可配置的原因：不同人的图片归宿不一样 —— 有人想跟笔记走（assets/），
   // 有人想统一丢到某个同步盘/云盘目录，还有人就想放笔记旁边。
   function renderPasteImage(list) {
-    const current = window.MdPasteImage?.readSetting?.() || { mode: 'assets', dir: '' };
+    const def = { secretId: '', secretKey: '', bucket: '', region: '', prefix: '', publicBase: '' };
+    const current = window.MdPasteImage?.readSetting?.() || { mode: 'project', dir: '', cos: def };
+    const cos = current.cos || def;
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const section = document.createElement('section');
     section.className = 'set-form';
     section.innerHTML = `
       <h3 class="set-section-title">粘贴图片的保存位置</h3>
       <p class="set-note">在 Markdown 里粘贴截图时，图片存到哪里。</p>
-      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="assets" ${current.mode === 'assets' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">笔记同目录的 assets/（默认）</span><span class="set-toggle-note">不存在会自动创建；插图与笔记分开，目录更干净。</span></span></label>
-      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="same" ${current.mode === 'same' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">笔记同目录</span><span class="set-toggle-note">图片和 md 放在一起。</span></span></label>
-      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="custom" ${current.mode === 'custom' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">固定目录（例如云盘 / 同步盘）</span><span class="set-toggle-note">所有笔记的图片都存到这里，按笔记名 + 时间戳命名，不会互相覆盖。</span></span></label>
-      <div class="set-button-row" style="margin-top:8px">
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="project" ${current.mode === 'project' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">项目根目录的 assets/（默认）</span><span class="set-toggle-note">整个项目共用一处插图目录，便于整体备份与迁移；没有打开项目时回落到笔记同目录。</span></span></label>
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="assets" ${current.mode === 'assets' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">笔记同目录的 assets/</span><span class="set-toggle-note">每篇笔记各有一个 assets/，不存在会自动创建。</span></span></label>
+      <label class="set-toggle"><input type="radio" name="paste-img-mode" value="custom" ${current.mode === 'custom' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">固定目录（例如同步盘挂载点）</span><span class="set-toggle-note">所有图片都存到这里，按笔记名 + 时间戳 + 哈希命名。</span></span></label>
+      <div class="set-button-row" id="paste-img-dir-row" style="margin-top:8px">
         <input id="paste-img-dir" class="m-input" type="text" style="flex:1;min-width:12em" placeholder="选择固定目录…" value="${esc(current.dir || '')}">
         <button class="tb-btn" id="paste-img-dir-pick">选择目录…</button>
+      </div>
+
+      <label class="set-toggle" style="margin-top:12px"><input type="radio" name="paste-img-mode" value="cos" ${current.mode === 'cos' ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">腾讯云对象存储 COS</span><span class="set-toggle-note">直传后 Markdown 里插入公网 HTTPS 链接，笔记与图片分离，换设备也能看。</span></span></label>
+      <div id="paste-img-cos" class="set-cos-box">
+        <div class="set-cos-grid">
+          <label>SecretId<input id="cos-secret-id" class="m-input" type="text" autocomplete="off" spellcheck="false" value="${esc(cos.secretId || '')}" placeholder="AKID..."></label>
+          <label>SecretKey<input id="cos-secret-key" class="m-input" type="password" autocomplete="off" value="${esc(cos.secretKey || '')}" placeholder="只保存在本机"></label>
+          <label>Bucket<input id="cos-bucket" class="m-input" type="text" autocomplete="off" spellcheck="false" value="${esc(cos.bucket || '')}" placeholder="my-bucket-1250000000"></label>
+          <label>Region<input id="cos-region" class="m-input" type="text" autocomplete="off" spellcheck="false" value="${esc(cos.region || '')}" placeholder="ap-guangzhou"></label>
+          <label>对象前缀（可选）<input id="cos-prefix" class="m-input" type="text" autocomplete="off" spellcheck="false" value="${esc(cos.prefix || '')}" placeholder="notes/images"></label>
+          <label>自定义域名（可选）<input id="cos-public-base" class="m-input" type="text" autocomplete="off" spellcheck="false" value="${esc(cos.publicBase || '')}" placeholder="https://img.example.com"></label>
+        </div>
+        <p class="set-note">Bucket 形如 <code>名称-APPID</code>，Region 形如 <code>ap-guangzhou</code>。填了自定义域名就用它拼链接，否则用 <code>bucket.cos.region.myqcloud.com</code>。</p>
+        <p class="set-note" style="color:var(--text-dim)">⚠ 密钥只保存在本机 localStorage，用于主进程签名上传；请给这对密钥最小权限（只允许该 Bucket 的 PUT）。</p>
+        <div class="set-button-row"><button class="tb-btn" id="cos-test">测试上传</button><span class="set-note" id="cos-test-result"></span></div>
       </div>
       <p class="set-note" id="paste-img-hint"></p>`;
     list.appendChild(section);
 
     const dirInput = section.querySelector('#paste-img-dir');
+    const dirRow = section.querySelector('#paste-img-dir-row');
+    const cosBox = section.querySelector('#paste-img-cos');
     const hint = section.querySelector('#paste-img-hint');
+    const cosFields = {
+      secretId: section.querySelector('#cos-secret-id'),
+      secretKey: section.querySelector('#cos-secret-key'),
+      bucket: section.querySelector('#cos-bucket'),
+      region: section.querySelector('#cos-region'),
+      prefix: section.querySelector('#cos-prefix'),
+      publicBase: section.querySelector('#cos-public-base'),
+    };
+    const modeOf = () => section.querySelector('input[name="paste-img-mode"]:checked')?.value || 'project';
+    const cosValue = () => Object.fromEntries(Object.entries(cosFields).map(([k, el]) => [k, el.value.trim()]));
+
     const refreshHint = () => {
-      const mode = section.querySelector('input[name="paste-img-mode"]:checked')?.value || 'assets';
-      dirInput.disabled = mode !== 'custom';
-      section.querySelector('#paste-img-dir-pick').disabled = mode !== 'custom';
-      hint.textContent = mode === 'custom'
-        ? (dirInput.value ? '图片保存到：' + dirInput.value : '还没有选择目录；未选时按默认（assets/）处理。')
-        : '';
+      const mode = modeOf();
+      dirRow.hidden = mode !== 'custom';
+      cosBox.hidden = mode !== 'cos';
+      if (mode === 'custom') {
+        hint.textContent = dirInput.value ? '图片保存到：' + dirInput.value : '还没有选择目录；未选时按默认处理。';
+      } else if (mode === 'cos') {
+        hint.textContent = '粘贴后会直接上传到 COS，插入 https 链接。';
+      } else if (mode === 'project') {
+        hint.textContent = '保存到项目根目录的 assets/（没有打开项目时回落到笔记同目录）。';
+      } else {
+        hint.textContent = '保存到每篇笔记自己的 assets/ 目录。';
+      }
     };
     const persist = () => {
-      const mode = section.querySelector('input[name="paste-img-mode"]:checked')?.value || 'assets';
-      window.MdPasteImage?.writeSetting?.({ mode, dir: dirInput.value.trim() });
+      window.MdPasteImage?.writeSetting?.({ mode: modeOf(), dir: dirInput.value.trim(), cos: cosValue() });
       refreshHint();
     };
     for (const radio of section.querySelectorAll('input[name="paste-img-mode"]')) radio.addEventListener('change', persist);
     dirInput.addEventListener('change', persist);
+    for (const el of Object.values(cosFields)) el.addEventListener('change', persist);
     section.querySelector('#paste-img-dir-pick').onclick = async () => {
       try {
-        // 复用已有的 fs:openFolder（同一个目录选择对话框，标题不同而已）
         const dir = await window.myIDE.fs.openFolder?.();
         if (!dir) return;
         dirInput.value = dir;
         persist();
+      } catch (error) { hint.textContent = '选择目录失败：' + ((error && error.message) || error); }
+    };
+    section.querySelector('#cos-test').onclick = async () => {
+      const result = section.querySelector('#cos-test-result');
+      const cfg = cosValue();
+      result.textContent = '正在测试…';
+      result.style.color = '';
+      // 1×1 透明 PNG，只为验证签名与权限
+      const probe = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      try {
+        const r = await window.myIDE.cosUpload?.({ ...cfg, key: (cfg.prefix ? cfg.prefix.replace(/^\/+|\/+$/g, '') + '/' : '') + 'myide-test.png', body: probe, contentType: 'image/png' });
+        if (r?.ok) { result.textContent = '上传成功：' + r.url; result.style.color = 'var(--ok-text, #4caf50)'; }
+        else { result.textContent = '失败：' + (r?.error || '未知错误'); result.style.color = 'var(--del-text)'; }
       } catch (error) {
-        hint.textContent = '选择目录失败：' + ((error && error.message) || error);
+        result.textContent = '失败：' + ((error && error.message) || error);
+        result.style.color = 'var(--del-text)';
       }
     };
     refreshHint();
