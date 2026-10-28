@@ -763,57 +763,61 @@ window.RemotePanel = (() => {
    */
   const tableColumns = cat => ({
     docker: [
-      { id: 'name', label: '名称', width: 'minmax(9em,1.6fr)', sortable: true },
-      { id: 'status', label: '状态', width: '7em', align: 'left' },
-      { id: 'cpu', label: 'CPU', width: '6em', align: 'right', sortable: true },
-      { id: 'mem', label: '内存', width: '6.5em', align: 'right', sortable: true },
-      { id: 'ports', label: '端口', width: '9.5em', align: 'left' },
-      { id: 'uptime', label: '运行时长', width: '8em', align: 'right' },
-      { id: 'restarts', label: '重启', width: '4em', align: 'right' },
-      { id: 'image', label: '镜像', width: 'minmax(7em,1.2fr)' },
+      { id: 'name', label: '名称', width: '12.88rem', grow: true, sortable: true },
+      { id: 'status', label: '状态', width: '5.98rem', align: 'left' },
+      { id: 'cpu', label: 'CPU', width: '5.06rem', align: 'right', sortable: true },
+      { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
+      { id: 'ports', label: '端口', width: '7.36rem' },
+      { id: 'uptime', label: '运行时长', width: '5.98rem', align: 'right' },
+      { id: 'restarts', label: '重启', width: '3.68rem', align: 'right' },
+      { id: 'image', label: '镜像', width: '11.04rem', grow: true, fade: true },
     ],
     svc: [
-      { id: 'name', label: '服务', width: 'minmax(10em,1.8fr)', sortable: true },
-      { id: 'status', label: '状态', width: '6em', align: 'left' },
-      { id: 'mem', label: '内存', width: '6.5em', align: 'right', sortable: true },
-      { id: 'uptime', label: '已运行', width: '8em', align: 'right' },
-      { id: 'enabled', label: '自启', width: '4.5em', align: 'center' },
-      { id: 'desc', label: '描述', width: 'minmax(8em,1.4fr)' },
+      { id: 'name', label: '服务', width: '14.72rem', grow: true, sortable: true },
+      { id: 'status', label: '状态', width: '5.52rem' },
+      { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
+      { id: 'uptime', label: '已运行', width: '6.44rem', align: 'right' },
+      { id: 'enabled', label: '自启', width: '3.68rem', align: 'center' },
+      { id: 'desc', label: '描述', width: '12.88rem', grow: true, fade: true },
     ],
     proc: [
-      { id: 'name', label: '进程', width: 'minmax(8em,1.3fr)', sortable: true },
-      { id: 'pid', label: 'PID', width: '5.5em', align: 'right' },
-      { id: 'cpu', label: 'CPU', width: '6em', align: 'right', sortable: true },
-      { id: 'mem', label: '内存', width: '5.5em', align: 'right', sortable: true },
-      { id: 'rss', label: '常驻', width: '6em', align: 'right', sortable: true },
-      { id: 'etime', label: '运行时长', width: '7.5em', align: 'right' },
-      { id: 'args', label: '命令行', width: 'minmax(10em,2fr)' },
+      { id: 'name', label: '进程', width: '11.04rem', grow: true, sortable: true },
+      { id: 'pid', label: 'PID', width: '5.06rem', align: 'right' },
+      { id: 'cpu', label: 'CPU', width: '5.06rem', align: 'right', sortable: true },
+      { id: 'mem', label: '内存', width: '5.06rem', align: 'right', sortable: true },
+      { id: 'rss', label: '常驻', width: '5.52rem', align: 'right', sortable: true },
+      { id: 'etime', label: '运行时长', width: '6.44rem', align: 'right' },
+      { id: 'args', label: '命令行', width: '14.72rem', grow: true, fade: true, mono: true },
     ],
     port: [
-      { id: 'port', label: '端口', width: '6em', align: 'right', sortable: true },
-      { id: 'proto', label: '协议', width: '4em', align: 'center' },
-      { id: 'address', label: '监听地址', width: 'minmax(7em,1fr)' },
-      { id: 'process', label: '进程', width: 'minmax(6em,1fr)' },
-      { id: 'pid', label: 'PID', width: '5.5em', align: 'right' },
-      { id: 'owner', label: '所属容器', width: 'minmax(8em,1.2fr)' },
+      { id: 'port', label: '端口', width: '5.52rem', align: 'right', sortable: true },
+      { id: 'proto', label: '协议', width: '4.14rem', align: 'center' },
+      { id: 'address', label: '监听地址', width: '9.20rem', grow: true },
+      { id: 'process', label: '进程', width: '7.36rem', grow: true },
+      { id: 'pid', label: 'PID', width: '5.06rem', align: 'right' },
+      { id: 'owner', label: '所属容器', width: '9.20rem', grow: true, fade: true },
     ],
     disk: [
-      { id: 'name', label: '挂载点 / 项目', width: 'minmax(10em,1.6fr)', sortable: true },
-      { id: 'used', label: '已用', width: '8em', align: 'right' },
-      { id: 'total', label: '总量', width: '7em', align: 'right' },
-      { id: 'percent', label: '占用', width: '5.5em', align: 'right', sortable: true },
-      { id: 'note', label: '说明', width: 'minmax(8em,1.4fr)' },
+      { id: 'name', label: '挂载点 / 项目', width: '12.88rem', grow: true, sortable: true },
+      { id: 'used', label: '已用', width: '6.44rem', align: 'right' },
+      { id: 'total', label: '总量', width: '6.44rem', align: 'right' },
+      { id: 'percent', label: '占用', width: '4.60rem', align: 'right', sortable: true },
+      { id: 'note', label: '说明', width: '11.04rem', grow: true, fade: true },
     ],
     du: [
-      { id: 'name', label: '目录', width: 'minmax(12em,2fr)', sortable: true },
-      { id: 'size', label: '大小', width: '7em', align: 'right', sortable: true },
-      { id: 'pct', label: '占比', width: '6em', align: 'right' },
+      { id: 'name', label: '目录', width: '18.40rem', grow: true, sortable: true },
+      { id: 'size', label: '大小', width: '6.44rem', align: 'right', sortable: true },
+      { id: 'pct', label: '占比', width: '5.52rem', align: 'right' },
     ],
     sys: [
-      { id: 'name', label: '值', width: 'minmax(12em,2fr)' },
-      { id: 'field', label: '项目', width: '8em' },
+      { id: 'name', label: '值', width: '18.40rem', grow: true },
+      { id: 'field', label: '项目', width: '9.20rem' },
     ],
   }[cat] || []);
+
+  /** 列的统一 flex 值：grow 列吃掉剩余宽度，其余固定宽度。
+   *  表头与单元格必须都走这个函数，否则会各算各的、彻底错位。 */
+  const colFlex = c => (c.grow ? '1 1 ' + c.width : '0 0 ' + c.width);
 
   /** 排序可选项（给下拉用） */
   const sortOptions = cat => ({
@@ -1235,7 +1239,7 @@ window.RemotePanel = (() => {
           return '<span class="remote-ops-th' + (c.sortable ? ' is-sortable' : '')
             + (active ? ' is-active' : '') + '"'
             + ' style="' + (c.align ? 'text-align:' + c.align + ';' : '')
-            + 'flex:' + (c.id === 'name' ? '1 1 auto' : '0 0 ' + c.width) + '"'
+            + 'flex:' + colFlex(c) + '"'
             + (sortable ? ' data-ops-sortcol="' + esc(opsCat) + ':' + esc(c.id) + '"' : '')
             + '>' + esc(c.label) + (active ? ' ▾' : '') + '</span>';
         }).join('')
@@ -1270,7 +1274,9 @@ window.RemotePanel = (() => {
       // 名称列带状态点和徽标；状态列单独着色
       // 名称列只放「状态点 + 名称」：徽标已经在独立的状态列里，
       // 两处都显示就是「健康 ... 健康」的重复（2026-10-28 截图发现）
-      const nameCell = '<span class="remote-ops-td remote-ops-td-name" style="flex:1 1 auto">'
+      const nameCol = cols.find(c => c.id === 'name');
+      const nameCell = '<span class="remote-ops-td remote-ops-td-name" style="flex:'
+        + (nameCol ? colFlex(nameCol) : '1 1 12em') + '">'
         + '<i class="remote-ops-dot ' + r.state + '"></i>'
         + '<span class="remote-ops-name" title="' + esc(r.name) + '">' + esc(r.name) + '</span>'
         + '</span>';
@@ -1279,11 +1285,12 @@ window.RemotePanel = (() => {
         const v = cellValue(r, c.id);
         const cls = 'remote-ops-td' + (c.align === 'right' ? ' is-num' : '')
           + (c.id === 'status' && r.badge ? ' is-status' : '')
-          + (c.id === 'args' ? ' is-mono' : '');
+          + (c.mono ? ' is-mono' : '')
+          + (c.fade ? ' is-fade' : '');
         const level = c.id === 'status' && r.badge ? ' data-level="' + (r.badge.level || 'off') + '"' : '';
         return '<span class="' + cls + '" style="'
           + (c.align ? 'text-align:' + c.align + ';' : '')
-          + 'flex:0 0 ' + c.width + '"' + level
+          + 'flex:' + colFlex(c) + '"' + level
           + ' title="' + esc(v) + '">' + esc(v) + '</span>';
       }).join('');
 

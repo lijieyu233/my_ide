@@ -348,7 +348,7 @@
 /* ---------- 三层行结构 + 工具行（2026-10-28）---------- */
 .remote-ops-line1 { display: flex; align-items: center; gap: .5em; min-width: 0; width: 100%; }
 .remote-ops-line2 { display: flex; align-items: baseline; gap: .6em; margin-top: .1em; min-width: 0; width: 100%; }
-.remote-ops-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-ops-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .remote-ops-key { margin-left: auto; padding-left: .8em; padding-right: 1.4em; font-size: .82em; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .remote-ops-meta { color: var(--text-dim); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .remote-ops-sub { color: color-mix(in srgb, var(--text-dim) 78%, transparent); font-size: .76em; white-space: nowrap; }
@@ -361,7 +361,7 @@
 .remote-ops-badge[data-level=off] { color: var(--text-dim); background: color-mix(in srgb, var(--text-dim) 14%, transparent); }
 
 /* 异常行：左侧红边 + 淡红底，一眼能扫到 */
-.remote-ops-row.is-bad { border-left: 3px solid var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); padding-left: calc(.9em - 3px); }
+.remote-ops-row.is-bad { box-shadow: inset 3px 0 0 var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .remote-ops-row.is-bad .remote-ops-name { color: #ffb3b1; }
 
 /* 工具行 */
@@ -397,25 +397,35 @@
 .remote-drawer-line[data-level=trace] .remote-drawer-txt { color: var(--text-dim); }
 
 /* ---------- 表格化列表（2026-10-28）---------- */
-.remote-ops-thead { display: flex; align-items: center; gap: .6em; padding: .42em .9em;
-  font-size: .76em; color: var(--text-dim); border-bottom: 1px solid var(--border);
+.remote-ops-thead { display: flex; align-items: center; gap: .6em; padding: .42em .9em .42em .9em;
+  font-size: .78rem; color: var(--text-dim); border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-card) 45%, transparent);
   position: sticky; top: 0; z-index: 2; }
-.remote-ops-th { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-ops-th { min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 .remote-ops-th.is-sortable { cursor: pointer; }
 .remote-ops-th.is-sortable:hover { color: var(--text-bright); }
 .remote-ops-th.is-active { color: var(--accent); font-weight: 600; }
-.remote-ops-th-acts { flex: 0 0 11em; text-align: right; }
+.remote-ops-th-acts { flex: 0 0 9.66rem; text-align: right; }
+.remote-ops-arrow { font-style: normal; opacity: .7; }
 
 .remote-ops-row { display: flex; align-items: center; gap: .6em; padding: .42em .9em;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
-.remote-ops-td { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: .84em; color: var(--text); }
-.remote-ops-td-name { display: flex; align-items: center; gap: .4em; }
+.remote-ops-td { min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; flex-shrink: 0; font-size: .86rem; color: var(--text); }
+.remote-ops-td-name { display: flex; align-items: center; gap: .4em; min-width: 0; overflow: hidden; }
 .remote-ops-td.is-num { font-variant-numeric: tabular-nums; color: var(--text-dim); }
 .remote-ops-td.is-mono { font-family: "Cascadia Code", Consolas, monospace; font-size: .78em; color: var(--text-dim); }
-.remote-ops-td-acts { flex: 0 0 11em; }
+.remote-ops-td-acts { flex: 0 0 9.66rem; box-sizing: border-box; }
 .remote-ops-td[data-level=ok] { color: #6fcf97; }
 .remote-ops-td[data-level=warn] { color: #e0a83f; }
 .remote-ops-td[data-level=bad] { color: #ff8a85; font-weight: 600; }
 .remote-ops-td[data-level=off] { color: var(--text-dim); }
+
+.remote-ops-td.is-fade { color: var(--text-dim); opacity: .82; }
+.remote-ops-th { font-variant-numeric: tabular-nums; }
+.remote-ops-row:hover .remote-ops-td.is-fade { opacity: 1; }
+
+/* 表格对齐（2026-10-28）：表头与单元格必须完全同盒模型，
+   否则 border/padding 的细微差异会让每列累积偏移。 */
+.remote-ops-thead, .remote-ops-row { box-sizing: border-box; }
+.remote-ops-th, .remote-ops-td { box-sizing: border-box; }
