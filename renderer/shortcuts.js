@@ -212,6 +212,31 @@ const Shortcuts = (() => {
       }
     }
     if (!combo) return;
+    // Ctrl+W 作用域修正（2026-10-28）：焦点在剪贴板历史列表时，它的语义是
+    // 「删除选中的剪贴板条目」，不是「关闭编辑器标签」。剪贴板面板的 keydown 挂在
+    // #clip-list 上（冒泡阶段），而本监听在 document 上——顺序上会先跑，所以必须在
+    // 这里主动让位，光靠面板自己 stopPropagation 是拦不住的。
+    if (combo === 'ctrl+w') {
+      // 焦点在剪贴板列表、或剪贴板面板**正在显示**且有选中行 → 语义是「删除选中的
+      // 剪贴板条目」，不是「关闭编辑器标签」。
+      //
+      // ⚠ 必须含「面板可见」这个前提（2026-10-28 回归）：面板关掉后 DOM 里的
+      //   .clip-row.selected 依然在（只是容器隐藏），只查这个选择器会让**任何地方**
+      //   按 Ctrl+W 都被当成删剪贴板条目，编辑器标签再也关不掉。
+      //   面板可见性以 ClipboardPanel 自己的 visible 标志为准，不看 DOM。
+      const panelVisible = !!(window.ClipboardPanel && window.ClipboardPanel.isVisible && window.ClipboardPanel.isVisible());
+      if (panelVisible) {
+        const ae0 = document.activeElement;
+        const inClipList = ae0 && ae0.closest && ae0.closest('#clip-list');
+        const clipHasSel = !!document.querySelector('#clip-list .clip-row.selected');
+        if (inClipList || clipHasSel) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (window.ClipboardPanel?.deleteSelection) window.ClipboardPanel.deleteSelection();
+          return;
+        }
+      }
+    }
     // 文本编辑豁免：仅当输入框可见时（隐藏的弹窗输入框不算正在编辑）
     // CM6 编辑器是 contenteditable 的 div（非 textarea），也要豁免，否则编辑时 Ctrl+C 会触发文件复制
     const ae = document.activeElement;
@@ -280,6 +305,17 @@ Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: 
 Shortcuts.register('commit', { desc: '提交（打开提交窗口并聚焦提交消息）', keys: ['ctrl+k', 'alt+i'], run: () => {
   App.showTool('git');
   if (window.GitPanel && GitPanel.focusMessage) setTimeout(() => GitPanel.focusMessage(), 0);
+} });
+// 新建文件 / 文件夹（2026-10-28 用户要求）：Alt+Enter 在文件树当前选中项下新建文件。
+// 语义与右键菜单的「新建文件」完全一致 —— 直接复用 Tree.createItemAt，不再写第二套创建逻辑。
+// 没有选中项时落到项目根，选中文件时落到它所在目录（与右键行为对齐）。
+Shortcuts.register('tree-new-file', { desc: '新建文件（文件树）', keys: ['alt+enter'], run: () => {
+  if (!window.Tree || !Tree.createItemAt) return;
+  return Tree.createItemAt('file');
+} });
+Shortcuts.register('tree-new-folder', { desc: '新建文件夹（文件树）', keys: ['alt+shift+enter'], run: () => {
+  if (!window.Tree || !Tree.createItemAt) return;
+  return Tree.createItemAt('dir');
 } });
 Shortcuts.register('commit-tool-window', { desc: '提交工具窗口（左侧停靠：上半变更文件树 · 下半提交信息）', keys: ['alt+0', 'ctrl+3', 'ctrl+4'], run: () => App.showTool('git') });
 // Ctrl+Shift+K / Alt+P = 提交并推送（PyCharm 默认键位）；Ctrl+Alt+K 保留为兼容别名（旧 tooltip 一直写的是它）
@@ -393,6 +429,8 @@ const paletteActions = {
   'git-log': { category: '项目', aliases: ['git log', '提交历史'], requiresProject: true },
   save: { category: '文件', aliases: ['save'], requiresDocument: true, requiresText: true },
   'close-tab': { category: '文件', aliases: ['close file'], requiresDocument: true },
+  'tree-new-file': { category: '项目', aliases: ['new file', '新建文件'], requiresProject: true },
+  'tree-new-folder': { category: '项目', aliases: ['new folder', '新建文件夹'], requiresProject: true },
   'next-tab': { category: '文件', aliases: ['next tab'], requiresDocument: true, isEnabled: () => Viewer.openTabs.length > 1 || '至少打开两个标签' },
   settings: { category: '工作台', aliases: ['settings', 'keymap', '快捷键设置'] },
   theme: { category: '工作台', aliases: ['toggle theme', '深色', '浅色'] },

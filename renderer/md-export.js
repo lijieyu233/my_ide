@@ -92,6 +92,73 @@ li > input[type="checkbox"] { margin-right: .45em; }
 
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // ---------- 图片点击放大 ----------
+  // 需求（2026-10-28）：导出的 HTML 里点图片应该能看大图。
+  // 刻意做成纯原生、零依赖、内联到单文件：导出物要能双击直接打开、发给别人也不丢功能。
+  // 只在 <img> 上生效，不拦截链接、不劫持键盘滚动，Esc / 点击任意处 / 滚轮 关闭。
+  const LIGHTBOX_CSS = `
+img.zoomable { cursor: zoom-in; transition: opacity .15s ease; }
+img.zoomable:hover { opacity: .88; }
+.lightbox {
+  position: fixed; inset: 0; z-index: 9999; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,.88); cursor: zoom-out;
+}
+.lightbox.open { display: flex; }
+.lightbox img {
+  max-width: 96vw; max-height: 96vh; width: auto; height: auto;
+  border-radius: 4px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+  cursor: default; background: #fff;
+}
+.lightbox .lb-cap {
+  position: absolute; bottom: 1rem; left: 0; right: 0;
+  text-align: center; color: #c9d1d9; font-size: .82em;
+  padding: 0 1rem; pointer-events: none;
+}
+.lightbox .lb-close {
+  position: absolute; top: .6rem; right: .9rem;
+  width: 2.2rem; height: 2.2rem; border: 0; border-radius: 50%;
+  background: rgba(255,255,255,.12); color: #fff;
+  font-size: 1.3rem; line-height: 1; cursor: pointer;
+}
+.lightbox .lb-close:hover { background: rgba(255,255,255,.24); }
+@media print { .lightbox { display: none !important; } }
+`;
+
+  const LIGHTBOX_JS = `<script>
+(function(){
+  var imgs = document.querySelectorAll('.md-view img');
+  if (!imgs.length) return;
+  var box = document.createElement('div');
+  box.className = 'lightbox';
+  box.innerHTML = '<button class="lb-close" title="关闭 (Esc)">×</button><img alt=""><div class="lb-cap"></div>';
+  document.body.appendChild(box);
+  var big = box.querySelector('img'), cap = box.querySelector('.lb-cap');
+  function close(){ box.classList.remove('open'); big.removeAttribute('src'); document.body.style.overflow = ''; }
+  function open(src, alt){
+    big.src = src; big.alt = alt || ''; cap.textContent = alt || '';
+    box.classList.add('open'); document.body.style.overflow = 'hidden';
+  }
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    img.classList.add('zoomable');
+    img.addEventListener('click', function(e){
+      // 图片被 <a> 包着时，先看大图而不是跳走
+      e.preventDefault();
+      open(this.currentSrc || this.src, this.alt);
+    });
+  }
+  box.addEventListener('click', function(e){ if (e.target !== big) close(); });
+  document.addEventListener('keydown', function(e){
+    if (!box.classList.contains('open')) return;
+    if (e.key === 'Escape' || e.key === 'Esc') { e.preventDefault(); close(); }
+  });
+  // 滚轮 / 双指缩放意图也关掉，避免在大图上误滚动
+  box.addEventListener('wheel', function(e){ e.preventDefault(); close(); }, { passive: false });
+})();
+</script>`;
+
+
   /**
    * 清掉只对应用内有意义的交互部件。
    *
@@ -116,17 +183,51 @@ li > input[type="checkbox"] { margin-right: .45em; }
     return removed;
   }
 
-  /** 把 data: / 相对 / 绝对 图片统一转成 base64 data URL；失败则保留原 src。 */
-  async function inlineImages(root, mdPath) {
+  /** Blob → data URL。 */
+  const blobToDataUrl = blob => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+  /**
+   * 把图片统一转成 base64 内嵌；失败则保留原 src 并计入 failed。
+   *
+   * 2026-10-28 改动：以前对 http(s) 图片是**直接跳过**的（只内嵌本地文件），
+   * 原因是「外链保持原样」。但配了 COS 图床之后，笔记里的图片几乎全是 https，
+   * 导出的 HTML 就变成一堆外链——断网、换设备、桶权限一变，图全没了，
+   * 跟「单文件自包含」的承诺相反。现在默认连远程图也下载内嵌。
+   *
+   * 远程下载失败（离线 / 防盗链 / 图已删）时不抛错，只保留原 src 并计数，
+   * 导出照常完成——不能因为一张图挂掉整个导出。
+   */
+  async function inlineImages(root, mdPath, options = {}) {
+    const inlineRemote = options.inlineRemote !== false;   // 默认内嵌远程图
     const dir = String(mdPath || '').replace(/[\\/][^\\/]+$/, '');
     const sep = String(mdPath || '').includes('\\') ? '\\' : '/';
     const images = [...root.querySelectorAll('img')];
-    let inlined = 0, failed = 0;
+    let inlined = 0, failed = 0, remote = 0, skipped = 0;
     for (const img of images) {
       const src = img.getAttribute('src') || '';
-      if (!src || /^data:/i.test(src)) continue;
-      // 外链保持原样（导出文件仍需联网才能显示，提示里会说明）
-      if (/^https?:/i.test(src) || /^(mailto|tel|javascript|blob):/i.test(src)) continue;
+      if (!src || /^data:/i.test(src)) { skipped++; continue; }
+      if (/^(mailto|tel|javascript|blob):/i.test(src)) { skipped++; continue; }
+
+      const isRemote = /^https?:/i.test(src);
+      if (isRemote) {
+        remote++;
+        if (!inlineRemote) { skipped++; continue; }
+        try {
+          // ⚠ 不能在这里直接 fetch(src)：CSP 没有 connect-src，渲染层取不到外部字节
+          //   （只有 img-src 放行，那只能显示、不能读）。改由主进程下载。
+          const r = await window.myIDE?.fetchImageBase64?.(src);
+          if (!r?.ok || !r.base64) { failed++; continue; }
+          img.setAttribute('src', 'data:' + (r.type || 'image/png') + ';base64,' + r.base64);
+          inlined++;
+        } catch { failed++; }
+        continue;
+      }
+
       // 解析绝对路径：相对路径以 md 所在目录为基准（与预览的 resolveLocal 同一规则）
       let abs = src.replace(/^file:\/\/\//i, '');
       if (!/^[A-Za-z]:[\\/]/.test(abs) && !abs.startsWith('/')) {
@@ -142,18 +243,11 @@ li > input[type="checkbox"] { margin-right: .45em; }
         // 所以不需要为此新增一条读二进制文件的 IPC。
         const response = await fetch('file:///' + abs.replace(/\\/g, '/'));
         if (!response.ok) { failed++; continue; }
-        const blob = await response.blob();
-        const dataUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(blob);
-        });
-        img.setAttribute('src', dataUrl);
+        img.setAttribute('src', await blobToDataUrl(await response.blob()));
         inlined++;
       } catch { failed++; }
     }
-    return { inlined, failed, total: images.length };
+    return { inlined, failed, total: images.length, remote, skipped };
   }
 
   /** 生成完整 HTML 文本。 */
@@ -181,9 +275,9 @@ li > input[type="checkbox"] { margin-right: .45em; }
       + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
       + '<title>' + esc(title) + '</title>\n'
       + '<meta name="generator" content="MyIDE Markdown 导出">\n'
-      + '<style>' + BASE_CSS + '</style>\n</head>\n<body>\n'
+      + '<style>' + BASE_CSS + LIGHTBOX_CSS + '</style>\n</head>\n<body>\n'
       + (root?.outerHTML || '<div class="md-view"><pre>' + esc(tab.content) + '</pre></div>')
-      + '\n</body>\n</html>\n';
+      + '\n' + LIGHTBOX_JS + '\n</body>\n</html>\n';
     return { html, title, imgStats, stripped };
   }
 
@@ -223,8 +317,9 @@ li > input[type="checkbox"] { margin-right: .45em; }
       const written = await window.myIDE.fs.writeFile(target, html, null, null);
       if (written?.error) throw Error(written.error);
       const parts = ['已导出 ' + target.split(/[\\/]/).pop()];
-      if (imgStats.inlined) parts.push('内嵌图片 ' + imgStats.inlined + ' 张');
-      if (imgStats.failed) parts.push(imgStats.failed + ' 张图片读取失败（保留原路径）');
+      if (imgStats.inlined) parts.push('内嵌 ' + imgStats.inlined + ' 张图');
+      // 失败的要明说到底哪几张没进文件，别让用户以为导出物完整
+      if (imgStats.failed) parts.push(imgStats.failed + ' 张图下载/读取失败，仍是外链');
       MI.toast(parts.join('，'), imgStats.failed ? 'err' : 'ok');
     } catch (error) {
       MI.toast('导出失败：' + ((error && error.message) || error), 'err');

@@ -453,9 +453,30 @@ const App = (() => {
   // 分支图标（内联 SVG，避免字符字形的平台差异）
   const BRANCH_IC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.6" cy="4" r="1.6"/><circle cx="4.6" cy="12" r="1.6"/><circle cx="11.4" cy="7.4" r="1.6"/><path d="M4.6 5.6v4.8M6.2 5.2h3.4a1.8 1.8 0 0 1 1.8 1.8v.4"/></svg>';
 
+  /**
+   * 字节数 → 人能一眼读的大小。
+   * 用 1024 进制（Windows 资源管理器同口径），小于 1KB 直接给 B。
+   * 保留 1 位小数，但整数时不带 .0（"2 KB" 比 "2.0 KB" 干净）。
+   */
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return bytes + ' B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = bytes / 1024, i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    const text = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
+    return text + ' ' + units[i];
+  }
+
   function updateStatusbar(info = {}) {
-    // 切换文件时清除旧的光标位置
-    if (info.file !== undefined && info.file !== sbState.file) { sbState.pos = undefined; sbState.selectedChars = 0; }
+    // 切换文件时只清光标与选区。**不清 bytes**：文件大小由 refreshFileSize 异步 stat 后
+    // 单独写入，若在这里一并清掉，renderView 的 file 更新会把刚拿到的大小抹掉。
+    if (info.file !== undefined && info.file !== sbState.file) {
+      sbState.pos = undefined; sbState.selectedChars = 0;
+    }
+    // 但新文件的 bytes 必须重置，否则会短暂沿用上一个文件的旧值；
+    // 传 null 表示「已知未知」，undefined 表示「本次不改」。
+    if (info.bytes === null) { sbState.bytes = undefined; sbState.sizeNote = ''; delete info.bytes; }
     sbState = Object.assign(sbState, info);
     const el = document.getElementById('sb-info');
     if (!el) return;
@@ -497,6 +518,11 @@ const App = (() => {
     if (sbState.pos) pushI(sbState.pos, true, '光标位置（行:列）');
     if (sbState.selectedChars > 0) pushI('选中 ' + sbState.selectedChars + ' 个字符', false, '包含空格和换行；编辑模式按选中的源文本统计');
     if (sbState.lines) pushI(sbState.lines + ' 行', false, '当前文件总行数');
+    // 文件大小（2026-10-28）：截图里用户圈的就是这块，原来只有行数/编码。
+    // bytes 未知时不显示（新文件未保存、远程虚拟路径读不到 stat）。
+    if (typeof sbState.bytes === 'number' && sbState.bytes >= 0) {
+      pushI(formatBytes(sbState.bytes), false, '文件在磁盘上的大小' + (sbState.sizeNote ? '（' + sbState.sizeNote + '）' : ''));
+    }
     if (sbState.encoding) {
       if (el.childNodes.length) el.insertAdjacentHTML('beforeend', '<i class="sb-d"></i>');
       const button = document.createElement('button');

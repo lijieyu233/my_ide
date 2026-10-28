@@ -1067,52 +1067,106 @@ const Tree = (() => {
 
   // ---------- 右键菜单 ----------
   const menu = document.getElementById('ctx-menu');
+
+  /**
+   * 右键菜单图标（2026-10-28）：统一改成内联 SVG 线条图标。
+   *
+   * 为什么不用 emoji：Windows 上这些 emoji 各有各的字体（彩色字形大小、基线都不一致），
+   * 与菜单里其它行（全 SVG）并排时明显不齐。这里用一个 16×16、stroke=currentColor
+   * 的线条风格，跟随主题色，也和应用内其它图标一致。
+   */
+  const CTX_ICONS = {
+    run: '<path d="M5 3.4l7 4.6-7 4.6z"/>',
+    hide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/>',
+    unhide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/><path d="M2.4 2.4l11.2 11.2"/>',
+    file: '<path d="M9 1.8H4.6a1 1 0 0 0-1 1v10.4a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V5.2z"/><path d="M9 1.8v3.4h3.4"/>',
+    folder: '<path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/>',
+    copy: '<rect x="5.4" y="5.4" width="8" height="8" rx="1"/><path d="M10.6 5.4V3.2a1 1 0 0 0-1-1H3.2a1 1 0 0 0-1 1v6.4a1 1 0 0 0 1 1h2.2"/>',
+    paste: '<path d="M6 2.6h4M5.2 4.2H3.6a1 1 0 0 0-1 1v8.2a1 1 0 0 0 1 1h8.8a1 1 0 0 0 1-1V5.2a1 1 0 0 0-1-1h-1.6"/><rect x="5.6" y="1.6" width="4.8" height="2.6" rx=".8"/>',
+    undo: '<path d="M6 4.2H3.2v-2.8"/><path d="M3.4 4.4a5 5 0 1 1-1.2 4.6"/>',
+    trash: '<path d="M2.6 4.6h10.8M5.6 4.6V2.8h4.8v1.8M4 4.6l.6 8.6h6.8l.6-8.6"/>',
+    rename: '<path d="M2.4 8h1.4M4.4 4.6V11.4M11 8h2.6"/><path d="M9.6 4.6H6.2a3.4 3.4 0 0 0 0 6.8h3.4"/>',
+    path: '<path d="M6.6 9.4a2.6 2.6 0 0 0 3.7 0l2.1-2.1a2.6 2.6 0 0 0-3.7-3.7l-1 1"/><path d="M9.4 6.6a2.6 2.6 0 0 0-3.7 0L3.6 8.7a2.6 2.6 0 0 0 3.7 3.7l1-1"/>',
+    reveal: '<path d="M2.2 4h4.2l1.2 1.6h6.2v6.6a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1z"/><path d="M8 7.4v3.4M6.6 8.8 8 7.4l1.4 1.4"/>',
+    terminal: '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.2"/><path d="M4.6 6.4 6.8 8.4l-2.2 2M8.4 10.6h3"/>',
+    project: '<path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/><path d="M8 6.6v3.2M6.4 8.2 8 9.8l1.6-1.6"/>',
+    history: '<circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.2 1.3"/>',
+    export: '<path d="M8 1.8v7.6M5.2 6.6 8 9.4l2.8-2.8"/><path d="M2.4 10.6v2.2a1 1 0 0 0 1 1h9.2a1 1 0 0 0 1-1v-2.2"/>',
+  };
+  const ctxIcon = name => '<span class="ctx-item-ic">' + (CTX_ICONS[name]
+    ? '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + CTX_ICONS[name] + '</svg>'
+    : '') + '</span>';
+
   function showCtxMenu(x, y, item) {
     menu.innerHTML = '';
     const multi = selectedPaths.size > 1;
-    const mk = (label, fn, danger) => {
+    const mk = (label, fn, danger, icon) => {
       const d = document.createElement('div');
-      d.className = 'ctx-item' + (danger ? ' danger' : '');
-      d.textContent = label;
+      // 复用全局 .ctx-item.with-icon + .ctx-item-ic 规范（styles.css 已定义），
+      // 不再自己造一套 class，否则两边对齐规则会打架。
+      d.className = 'ctx-item with-icon' + (danger ? ' danger' : '');
+      d.innerHTML = ctxIcon(icon) + '<span class="ctx-label"></span>';
+      d.querySelector('.ctx-label').textContent = label;
       d.onclick = () => { hideCtxMenu(); fn(); };
       menu.appendChild(d);
     };
+    // 分组（2026-10-28 用户要求）：原来 15 项平铺成一长条，扫读要一行行找。
+    // 按语义分成 5 组：执行类 → 新建 → 剪贴板/操作 → 定位/打开 → 破坏性操作。
+    // 分隔线只在「前后都有内容」时插入，避免条件性菜单项缺失时出现双线或首尾线。
+    let sepOpen = false;      // 自上一条分隔线以来是否已插入过菜单项
+    const sep = () => {
+      // 没有前置内容（开头）或刚插过线，都不再插，防止首线 / 双线
+      if (!sepOpen) return;
+      const d = document.createElement('div');
+      d.className = 'ctx-sep';
+      menu.appendChild(d);
+      sepOpen = false;
+    };
+
     // 顺序按使用频率：运行/隐藏 → 新建 → 复制粘贴 → 重命名 → 定位 → 删除
     // 「打开」已去掉（单击即打开，菜单项无意义）
-    if (item.type === 'file' && !multi && canRun(item.name)) mk('▶ 运行', () => runItem(item));
+    if (item.type === 'file' && !multi && canRun(item.name)) { mk('运行', () => runItem(item), false, 'run'); sepOpen = true; }
     if (!multi) {
-      if (hiddenSet.has(norm(item.path))) mk('👁 取消隐藏', () => unhideItem(item));
-      else mk('🙈 隐藏（仅本应用）', () => hideItem(item));
+      if (hiddenSet.has(norm(item.path))) { mk('取消隐藏', () => unhideItem(item), false, 'unhide'); sepOpen = true; }
+      else { mk('隐藏（仅本应用）', () => hideItem(item), false, 'hide'); sepOpen = true; }
     }
-    mk('✨ 新建文件', () => createItem(item, 'file'));
-    mk('📁 新建文件夹', () => createItem(item, 'dir'));
-    mk('📋 复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected());
-    mk('📌 粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')));
-    mk('↩ 恢复文件操作', () => showCopyRecovery());
-    mk('♻ 移到系统回收站', () => trashItems(multi?getSelection():[item.path]));
-    if (!multi) mk('🔤 重命名', () => renameItem(item));
-    mk('📋 复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+
+    sep();   // ① 执行/可见性 ｜ 新建
+    mk('新建文件', () => createItem(item, 'file'), false, 'file');
+    mk('新建文件夹', () => createItem(item, 'dir'), false, 'folder');
+    sepOpen = true;
+
+    sep();   // ② 新建 ｜ 剪贴板与文件操作
+    mk('复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected(), false, 'copy');
+    mk('粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')), false, 'paste');
+    mk('恢复文件操作', () => showCopyRecovery(), false, 'undo');
+    mk('移到系统回收站', () => trashItems(multi?getSelection():[item.path]), false, 'trash');
+    if (!multi) mk('重命名', () => renameItem(item), false, 'rename');
+    sepOpen = true;
+
+    sep();   // ③ 文件操作 ｜ 定位与打开
+    mk('复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) copyPath(getSelection().join('\n'));
       else copyPath(item.path);
-    });
-    mk('📂 在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path));
+    }, false, 'path');
+    mk('在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path), false, 'reveal');
     // 命令行打开：目录用自身，文件用所在目录（todo：添加右键命令行打开）
-    mk('⌨ 在命令行中打开', () => {
+    mk('在命令行中打开', () => {
       const dir = item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '');
       window.myIDE.shell.openTerminal(dir).then((r) => {
         if (r && r.error) MI.toast(r.error, 'err');
       });
-    });
-    if (item.type === 'dir' && !multi) mk('🗃 作为项目打开', () => { if (window.App) App.openProject(item.path); });
+    }, false, 'terminal');
+    if (item.type === 'dir' && !multi) mk('作为项目打开', () => { if (window.App) App.openProject(item.path); }, false, 'project');
     // Git 文件历史（PyCharm 式：日志窗口过滤到该文件）
     if (item.type === 'file' && !multi && window.GitLog && GitLog.showFileHistory) {
-      mk('🕘 显示历史', () => GitLog.showFileHistory(item.path));
+      mk('显示历史', () => GitLog.showFileHistory(item.path), false, 'history');
     }
     // 导出为 HTML：文件树右键是最自然的入口（用户就是在这里找的，之前只加在
     // 标签页右键上，等于给了个他看不见的地方）。
     // 不要求先打开文件 —— 直接读盘拿内容，「项目树里右键一个 md 就能导」才成立。
     if (item.type === 'file' && !multi && /\.(md|markdown)$/i.test(item.name || item.path) && window.MdExport) {
-      mk('⇩ 导出为 HTML', async () => {
+      mk('导出为 HTML', async () => {
         try {
           const read = await window.myIDE.fs.readFile(item.path);
           if (read?.error) throw Error(read.error);
@@ -1124,17 +1178,20 @@ const Tree = (() => {
         } catch (error) {
           MI.toast('导出失败：' + ((error && error.message) || error), 'err');
         }
-      });
+      }, false, 'export');
     }
     // 文件：以所在文件夹为项目根打开；文件就在当前项目根下时无意义，不显示
     if (item.type === 'file' && !multi) {
       const pdir = item.path.replace(/[\\/][^\\/]+$/, '');
-      if (pdir && pdir !== MI.activeRoot) mk('🗃 作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(pdir); });
+      if (pdir && pdir !== MI.activeRoot) mk('作为项目打开（所在文件夹）', () => { if (window.App) App.openProject(pdir); }, false, 'project');
     }
-    mk('🗑 删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+    sepOpen = true;
+
+    sep();   // ④ 定位与打开 ｜ 删除
+    mk('删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
       if (multi) removeItems(getSelection());
       else removeItem(item);
-    }, true);
+    }, true, 'trash');
     menu.classList.remove('hidden');
     const mw = menu.offsetWidth, mh = menu.offsetHeight;
     menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
@@ -1439,6 +1496,31 @@ const Tree = (() => {
 
   return {
     setRoot, render, select, collapseAll, expandAll, setGitStatus, aiControl,
+    /**
+     * 在当前选中项处新建文件/文件夹（供 Alt+Enter 调用，2026-10-28）。
+     * 目标位置规则与右键菜单一致：
+     *   · 选中目录 → 建在它里面；选中文件 → 建在它所在目录；未选/多选 → 建在项目根
+     * 复用 createItem，不复制创建逻辑（否则撤销栈与路径校验会不一致）。
+     */
+    createItemAt: type => {
+      if (!rootPath) { MI.toast('先打开一个项目', 'err'); return; }
+      const picked = getSelection();
+      let anchor;
+      if (picked.length === 1) {
+        const target = norm(picked[0]);
+        let found = null;
+        for (const dir of Object.keys(nodeCache)) {
+          found = (nodeCache[dir] || []).find(it => norm(it.path) === target);
+          if (found) break;
+        }
+        anchor = found || { type: 'dir', path: picked[0] };
+      } else {
+        anchor = { type: 'dir', path: rootPath };
+      }
+      return createItem(anchor, type === 'dir' ? 'dir' : 'file');
+    },
+    // 仅自检用：让右键菜单的图标/对齐可被稳定验证
+    __testCtx: (x, y, item) => showCtxMenu(x, y, item),
     async refreshDirectories(){invalidateAll();await render();},
     async controlDirectory(target,value,verify){verify();if(value){await loadDir(target);verify();expanded.add(target);}else if(target!==rootPath)expanded.delete(target);await render();verify();persistExpanded();},
     async revealTarget(target,verify){

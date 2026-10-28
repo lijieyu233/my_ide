@@ -350,6 +350,8 @@
             <button data-clip-filter="pinned">固定</button>
             <span id="clip-selcount" class="clip-selcount" hidden></span>
           </div>
+          <!-- 列表区状态反馈：多选时详情区不渲染，操作结果只能显示在这里 -->
+          <div id="clip-list-state" class="clip-list-state hidden"></div>
           <div id="clip-list" class="clip-list"></div>
         </aside>
         <section id="clip-detail" class="clip-detail"></section>
@@ -452,6 +454,11 @@
     </div>
     <div id="ai-msgs"></div>
     <div class="ai-input-bar">
+      <!-- 运行状态行：与 DSH 一致，固定在输入框上方（不在消息流里滚动） -->
+      <div id="ai-runstate" class="ai-run-state hidden" role="status" aria-live="polite">
+        <span class="ai-run-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 1.5 7 9"/><path d="M14.5 1.5 10 14.5l-3-5.5-5.5-3z"/></svg></span>
+        <span class="ai-run-text"></span>
+      </div>
       <div id="ai-usage" class="ai-usage" title="点击查看上下文明细；字符数为估算值，模型返回 usage 后显示精确统计"></div>
       <!-- 上下文就一条线：跟随的当前文件 / 固定项 / @ 引用都在这一行里横向滚动，
            不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
@@ -546,6 +553,7 @@
 <script src="ai-workbench-editor.js"></script>
 <script src="ai-workbench-services.js"></script>
 <script src="ai-workbench-data.js"></script>
+<script src="ai-settings-registry.js"></script>
 <script src="ai-workbench-settings.js"></script>
 <script src="ai-workbench-ai.js"></script>
   <script src="ai-panel.js"></script>

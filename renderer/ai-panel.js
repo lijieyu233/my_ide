@@ -60,9 +60,65 @@ const AiPanel = (() => {
       rootId: (window.App && App.root) || '', generation: ++generation }), engine:getConfig().engine==='dsh'?'dsh':'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
     currentRun = run;
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
-    run.notice = document.createElement('div'); run.notice.className = 'ai-run-state'; run.notice.setAttribute('role', 'status');
-    run.notice.textContent = '正在生成'; msgsEl.appendChild(run.notice);
+    run.notice = createRunState();
+    setRunState(run, '正在生成');
     return run;
+  }
+
+  /**
+   * 运行状态行（2026-10-28，第二版）。
+   *
+   * 第一版做成消息流里的紫色胶囊、靠右下，与 DSH 观感完全不同。用户指出两点：
+   *   ① 样子不对（DSH 是无背景无边框的一行淡色文字）
+   *   ② 位置不对（DSH 固定在输入框上方，不跟着消息滚）
+   * 因此改为复用 index.html 里的 #ai-runstate 单例节点，只更新文字与显隐。
+   */
+  function createRunState() {
+    const element = document.getElementById('ai-runstate');
+    return { element, textEl: element?.querySelector('.ai-run-text') || null, startedAt: 0, timer: null, label: '' };
+  }
+
+  /** 计时文案：不足 60 秒显示「N 秒」，超过显示「M 分 S 秒」。 */
+  function elapsedText(ms) {
+    const total = Math.max(0, Math.round(ms / 1000));
+    if (total < 60) return total + ' 秒';
+    const m = Math.floor(total / 60), s = total % 60;
+    return s ? m + ' 分 ' + s + ' 秒' : m + ' 分';
+  }
+
+  /**
+   * 更新状态文案并驱动计时。
+   * @param {object} run  当前运行
+   * @param {string} label 动作描述，如「深度求索」「正在生成」；含「用时」时不再自动追加
+   * @param {boolean} [stop] 停止计时（进入终态时由 endRun 调用）
+   */
+  function setRunState(run, label, stop) {
+    const notice = run?.notice;
+    if (!notice || !notice.element || !notice.textEl) return;
+    if (stop) {
+      if (notice.timer) { clearInterval(notice.timer); notice.timer = null; }
+      notice.textEl.textContent = label;
+      notice.element.classList.remove('running');
+      delete notice.startedAt;
+      // 终态留一小会儿再收起，避免刚完成就消失看不到结果
+      clearTimeout(notice.hideTimer);
+      notice.hideTimer = setTimeout(() => { notice.element.classList.add('hidden'); }, 2500);
+      return;
+    }
+    // 首次进入某个动作时重置起点；动作切换（如从思考切到执行工具）重新计时更直观
+    if (notice.label !== label || !notice.startedAt) {
+      notice.label = label;
+      notice.startedAt = Date.now();
+    }
+    clearTimeout(notice.hideTimer);
+    notice.element.classList.remove('hidden');
+    const paint = () => {
+      if (!notice.startedAt) return;
+      notice.textEl.textContent = label + '，用时 ' + elapsedText(Date.now() - notice.startedAt) + '…';
+    };
+    paint();
+    notice.element.classList.add('running');
+    if (!notice.timer) notice.timer = setInterval(paint, 1000);
   }
   function settlePendingTools(run, text) {
     run.results ||= new Set();
@@ -73,7 +129,7 @@ const AiPanel = (() => {
   function endRun(run, status = 'completed') {
     if (!runIsCurrent(run)) return;
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
-    run.status = status; run.notice.textContent = status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成';
+    run.status = status; setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
@@ -82,7 +138,7 @@ const AiPanel = (() => {
   function stopRun(invalidate = false) {
     const run = currentRun;
     if (run?.status === 'active') {
-      run.status = 'stopping'; run.controller.abort(); run.notice.textContent = '正在停止';
+      run.status = 'stopping'; run.controller.abort(); setRunState(run, '正在停止');
       if (run.identity.rootId === ((window.App && App.root) || '') && curSessionId === run.identity.sessionId) {
         settlePendingTools(run,'运行已停止，未继续派发。已提交的操作仍保留，结果请回看活动记录。');
       }
@@ -100,7 +156,7 @@ const AiPanel = (() => {
       Promise.resolve(window.myIDE.ai.abort(context)).catch(() => ({ ok: false })).then(result => {
         if (!runIsCurrent(run)) return;
         endRun(run, 'cancelled');
-        if (!result?.ok) run.notice.textContent = '已停止本地派发；主进程停止未确认';
+        if (!result?.ok) setRunState(run, '已停止本地派发；主进程停止未确认', true);
       });
     }
     if (invalidate) {for(const entry of run?.aiTransitions?.splice(0)||[])entry.reject(Error('任务已停止，未执行排队动作')); generation++; currentRun = null; busy = false; curStream = null; curText = ''; setBusyUI(false); document.getElementById('ai-stop')?.classList.add('hidden'); }
@@ -131,7 +187,17 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
-    if(currentRun?.engine==='dsh'&&currentRun.identity.rootId===App.root&&currentRun.pageId!==page.id&&!(['reader','bookshelf'].includes(currentRun.pageId)&&['reader','bookshelf'].includes(page.id)))stopRun();
+    // 2026-10-28：切到别的工具页（项目/浏览器/数据库…）**不再中断 DSH 会话**。
+    // 原来的 stopRun() 会把正在跑的 Harness 任务直接掐死——用户只想要「离开页面时
+    // 会话继续跑，回来还能接上」。这里改成和项目切换同一套「挂起」语义：
+    // 把当前运行的 DOM 与状态搬到后台记录里，AI 面板回来后 restoreBackgroundRun 接回。
+    // 只有用户按停止按钮、或切到别的工作区（onProjectChange）才会真正中断。
+    if (currentRun?.engine === 'dsh' && currentRun.identity.rootId === App.root
+      && currentRun.pageId !== page.id
+      && !(['reader', 'bookshelf'].includes(currentRun.pageId) && ['reader', 'bookshelf'].includes(page.id))) {
+      // 挂起失败（比如还没建 stream）才退回中断，避免状态悬空
+      if (!parkDshRun()) stopRun();
+    }
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
@@ -798,7 +864,7 @@ const AiPanel = (() => {
         const text='模型在收尾时仍请求工具，本次未执行。任务可能尚未完成，可继续处理剩余事项。';
         addMsg('assistant',text);msgs.push({role:'assistant',content:text});endRun(run,'limited');return;
       }
-      run.summaryOnly=true;run.notice.textContent='已达本次工具操作上限，正在整理进展与剩余事项';
+      run.summaryOnly=true;setRunState(run,'整理进展与剩余事项');
     } else {
       for (const c of ownedCalls) {
         if (!runIsLive(run)) return;
@@ -926,8 +992,14 @@ const AiPanel = (() => {
 
   function syncVisible(v) {
     if (panel) panel.classList.toggle('hidden', !v);
-    if (!v) { stopRun(); clearSessionPermissions(); }
-    if (v && inputEl) {inputEl.focus();refreshDshOptions();}
+    // 2026-10-28：收起 AI 面板不再中断 DSH 会话。
+    // 原来一律 stopRun()，等于「看一眼别处就没了」；DSH 本来就支持后台跑，
+    // 挂起后在别的页面继续推进，回来 restoreBackgroundRun 接上即可。
+    if (!v) {
+      if (!parkDshRun()) stopRun();
+      clearSessionPermissions();
+    }
+    if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();}
   }
 
   // ---------- 消息渲染 ----------
@@ -1728,7 +1800,9 @@ const AiPanel = (() => {
   function openSession(id) {
     const se = loadSessions().find((x) => x.id === id);
     if (!se) { MI.toast('找不到该会话', 'err'); return; }
-    stopRun(true);
+    // 2026-10-28：切到别的历史会话时，正在跑的 DSH 任务改为挂起而不是中断；
+    // 只有真的跑不起来（park 失败）才停，避免状态悬空。
+    if (!parkDshRun()) stopRun(true);
     clearSessionPermissions();
     closeHist();
     msgs = repairToolHistory((se.msgs || []).slice());
@@ -2481,7 +2555,7 @@ const AiPanel = (() => {
   }
   async function handleDshEventCurrent(event){
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
-    if(event.type==='status'){run.notice.textContent=event.text;return;}
+    if(event.type==='status'){setRunState(run,event.text);return;}
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
     if(event.type==='question'){
       sealDshSegment(run);
@@ -2500,7 +2574,7 @@ const AiPanel = (() => {
       const update=event.update;
       if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
         run.thought ||= document.createElement('details');if(!msgsEl.contains(run.thought)){sealDshSegment(run);run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.appendChild(run.thought);}
-        run.thought.querySelector('pre').textContent+=update.content.text;run.notice.textContent='Harness 正在思考';
+        run.thought.querySelector('pre').textContent+=update.content.text;setRunState(run,'深度求索');
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
@@ -2509,7 +2583,7 @@ const AiPanel = (() => {
         if(update.status==='completed'||update.status==='failed')setToolState(entry.row,update.status==='completed',update.status==='completed'?'已完成':'失败');
         const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;entry.row.querySelector('.ai-dsh-output')?.remove();const detail=document.createElement('details');detail.className='ai-dsh-output';const summary=document.createElement('summary');summary.textContent='工具输出';const body=document.createElement('pre');body.textContent=output;detail.append(summary,body);entry.row.appendChild(detail);}
-        run.notice.textContent='Harness：'+(entry.call.name||'正在执行工具');
+        setRunState(run,'执行 '+(entry.call.name||'工具'));
       }
       if(update.sessionUpdate==='usage_update'&&!backgroundView)document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
       if(update.sessionUpdate==='myide_projection'){
@@ -2751,6 +2825,23 @@ const AiPanel = (() => {
     if(followPath)followPath=DocumentPaths.map(followPath,from,to);
     mentionCache=null;rulesRoot=null;renderChips();renderFollow();
   }
-  return {aiAfterResult,aiState,aiInspect,aiControl, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange };
+  // 仅自检用：让「运行状态胶囊」的计时/终态可被稳定验证（不触发真实网络请求）
+  const __testBeginRun = () => beginRun();
+  const __testRun = () => currentRun;
+  const __testFinish = run => endRun(run, 'completed');
+  // 仅自检用：注入一个假 DSH run，验证「离开页面 = 挂起而非中断」
+  const __testInjectDshRun = () => {
+    const run = { identity: Object.freeze({ requestId: 'r-probe', sessionId: curSessionId || 's-probe',
+      rootId: (window.App && App.root) || '', generation: ++generation }),
+      engine: 'dsh', pageId: currentPage().id, status: 'active', round: -1,
+      controller: new AbortController(), stream: { element: null, timeline: [],
+        context: { requestId: 'r-probe', sessionId: curSessionId || 's-probe', rootId: (window.App && App.root) || '', generation } } };
+    currentRun = run; busy = true;
+    msgsEl.appendChild(Object.assign(document.createElement('div'), { className: 'probe-msg', textContent: 'DSH 进行中' }));
+    return run;
+  };
+  const __testParked = () => ({ backgroundRuns: backgroundRuns.size, currentRun: currentRun ? currentRun.status : null });
+
+  return {aiAfterResult,aiState,aiInspect,aiControl, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange, __testBeginRun, __testRun, __testFinish, __testInjectDshRun, __testParked };
 })();
 window.AiPanel = AiPanel;

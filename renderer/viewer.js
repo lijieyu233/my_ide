@@ -224,6 +224,32 @@ const Viewer = (() => {
       eol: tab.eol, lines: tab.content ? tab.content.split('\n').length : 0,
     });
   }
+
+  /**
+   * 状态栏文件大小（2026-10-28）。
+   *
+   * 为什么要单独查：打开文件时拿到的是内存里的 content，不代表磁盘大小
+   * （编码、BOM、二进制预览都会让两者不一致）。这里只 stat 磁盘，不读内容。
+   * 结果带 token 校验：快速连续切文件时，晚到的旧结果不能覆盖新文件的大小。
+   */
+  let sizeToken = 0;
+  async function refreshFileSize(tab) {
+    const token = ++sizeToken;
+    const current = tab || currentTab();
+    const path = current?.path || '';
+    // 先立刻清掉上一个文件的大小，避免新文件短暂显示旧值
+    App.updateStatusbar({ bytes: null });
+    if (!path) return;
+    let info = null;
+    try { info = await window.myIDE?.fs?.fileSize?.(path); } catch { info = null; }
+    // 期间又切了文件 / 同一文件被重新打开：这份结果作废
+    if (token !== sizeToken || (tab || currentTab()) !== current) return;
+    if (info?.ok) {
+      // 有未保存修改时明确标注，避免用户拿脏缓冲的大小当真
+      App.updateStatusbar({ bytes: info.size, sizeNote: current.dirty ? '磁盘上的值，未保存修改不含在内' : '' });
+    }
+    // stat 失败（新文件未落盘 / 远程路径）：保持「不显示」，不写 0 B 骗人
+  }
   function validFormatTarget(tab, path, revision) {
     return tabs.includes(tab) && tab.path === path && tab.editRevision === revision && !pathBusy(path);
   }
@@ -628,6 +654,8 @@ const Viewer = (() => {
     renderTabs();
     renderView();
     revealTab(target.id);
+    // 状态栏文件大小：切文件后重新 stat（异步，不阻塞切换）
+    refreshFileSize(target);
     // 通知 AI 面板「当前在看哪个文件」：面板据此自动把这份文档带进上下文
     try { if (window.AiPanel && AiPanel.followActive) AiPanel.followActive(); } catch {}
     // 会话恢复的浏览位置：编辑器渲染完成后跳到上次光标行
@@ -2052,6 +2080,8 @@ const Viewer = (() => {
             tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
           }
           updateFormatStatus(tab);
+          // 保存后磁盘大小会变（尤其压缩/编码转换），重新 stat 一次
+          if (tab === currentTab()) refreshFileSize(tab);
           renderTabs();
           if (!quiet) MI.toast(tab.dirty ? '已保存先前版本，仍有未保存的修改' : '💾 已保存 ' + tab.name, 'ok');
           if (window.App) App.refreshGit();

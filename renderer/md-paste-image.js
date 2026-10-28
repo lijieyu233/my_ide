@@ -15,7 +15,22 @@ window.MdPasteImage = (() => {
   const MAX_BYTES = 10 * 1024 * 1024;
   const MODES = ['project', 'assets', 'custom', 'cos'];
 
+  const empty = () => ({ mode: 'project', dir: '', cos: { secretId: '', secretKey: '', bucket: '', region: '', prefix: '', publicBase: '' } });
+
+  /**
+   * 读设置。除了 localStorage，还接受一个「进程内覆盖值」。
+   *
+   * 为什么要这条旁路（2026-10-27 实测）：本机 electron.exe 继承 Low 完整性标记，
+   * 主进程写不了 Medium 的 profile 目录，localStorage.setItem 在内存里成功但**落盘
+   * 静默失败**；于是「写配置 → 重启 → 又变空」反复出现，用户贴图一直报
+   * 「COS 未配置完整」。用 AI 接口/脚本写这个键都救不回来，因为它压根没落盘。
+   *
+   * 覆盖值由设置页写入时同步设置，并在启动时从镜像读取（见 preload/mirror），
+   * 使配置在 localStorage 失效的机器上依然可用。
+   */
+  let override = null;
   const readSetting = () => {
+    if (override) return JSON.parse(JSON.stringify(override));
     try {
       const raw = JSON.parse(localStorage.getItem(KEY) || 'null');
       if (raw && MODES.includes(raw.mode)) {
@@ -30,10 +45,18 @@ window.MdPasteImage = (() => {
         };
       }
     } catch {}
-    return { mode: 'project', dir: '', cos: { secretId: '', secretKey: '', bucket: '', region: '', prefix: '', publicBase: '' } };
+    return empty();
   };
   const writeSetting = value => {
+    // 覆盖值先落内存，保证本进程内立即生效（不依赖 localStorage 是否真能落盘）
+    try { override = value ? JSON.parse(JSON.stringify(value)) : null; } catch {}
     try { localStorage.setItem(KEY, JSON.stringify(value)); return true; } catch { return false; }
+  };
+  /** 主进程镜像里恢复出来的值，注入进来。 */
+  const hydrate = value => {
+    if (!value || !MODES.includes(value.mode)) return false;
+    override = JSON.parse(JSON.stringify(value));
+    return true;
   };
 
   /**
@@ -152,5 +175,22 @@ window.MdPasteImage = (() => {
     return { ref: refPrefix + name, absPath: target };
   }
 
-  return { save, readSetting, writeSetting, MAX_BYTES, KEY, MODES };
+  /**
+   * 启动时从兜底镜像恢复粘贴图片配置。
+   *
+   * 为什么必须做：localStorage 在某些机器上落盘静默失败（见上面 readSetting 的注释），
+   * 而 SettingsStore 的自愈只补「localStorage 里没有」的键；这个键往往存在但值是空壳，
+   * 于是永远补不回来，表现为「填好图床 → 重启又变空」。这里直接从镜像读，绕过该缺口。
+   */
+  function hydrateFromMirror() {
+    try {
+      const r = window.myIDE?.settings?.mirrorReadSync?.();
+      const raw = r && r.ok && r.data && r.data[KEY];
+      if (!raw) return false;
+      return hydrate(JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw)));
+    } catch { return false; }
+  }
+  hydrateFromMirror();
+
+  return { save, readSetting, writeSetting, hydrate, hydrateFromMirror, MAX_BYTES, KEY, MODES };
 })();

@@ -3520,7 +3520,34 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 /* ---------- AI Agent：工具活动行 + diff 确认弹窗 ---------- */
-.ai-run-state { padding: 4px 8px; color: var(--text-dim); font-size: 12px; }
+/* 运行状态行（2026-10-28）：对齐 DSH 那边的观感 —— 无背景、无边框、左对齐，
+   就是一行淡色文字 + 纸飞机图标。此前做成紫色胶囊且靠右，与 DSH 差异明显。 */
+.ai-run-state {
+  display: flex; align-items: center; gap: .4em;
+  align-self: flex-start;
+  margin: .5em 0 .6em .15em;
+  padding: 0;
+  background: none; border: 0;
+  color: color-mix(in srgb, var(--accent) 55%, var(--text-dim));
+  font-size: 12.5px; line-height: 1.5;
+  max-width: 100%;
+}
+.ai-run-state .ai-run-ico { display: inline-flex; flex: 0 0 auto; opacity: .8; }
+.ai-run-state .ai-run-ico svg { width: .92em; height: .92em; display: block; }
+.ai-run-state .ai-run-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 进行中：图标轻微呼吸，暗示仍在跑（不做整块变色，保持安静） */
+.ai-run-state.running .ai-run-ico { animation: ai-run-pulse 1.6s ease-in-out infinite; }
+@keyframes ai-run-pulse {
+  0%, 100% { opacity: .45; transform: translateY(0) }
+  50%      { opacity: .95; transform: translateY(-1px) }
+}
+/* 终态（已完成/已停止/失败）：再淡一档，读完即走开 */
+.ai-run-state:not(.running) { color: var(--text-dim); opacity: .8; }
+@media (prefers-reduced-motion: reduce) {
+  .ai-run-state.running .ai-run-ico { animation: none; }
+}
 .ai-tool {
   display: flex; align-items: center; gap: 8px;
   margin: 4px 8px; padding: 4px 10px;
