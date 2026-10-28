@@ -5,6 +5,7 @@ const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const { Client, utils } = require('ssh2');
 const Local = require('./remote-local');
+const Ops = require('./remote-ops');
 const posix = path.posix;
 const message = error => String(error?.message || error || '操作失败');
 const remotePath = value => { if (typeof value !== 'string' || !value.startsWith('/') || /[\0\r\n]/.test(value)) throw Error('远程路径必须是绝对路径'); return posix.normalize(value); };
@@ -284,7 +285,24 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     'echo "' + OVERVIEW_MARK + 'services"',
     '(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | head -n 60) || true',
     'echo "' + OVERVIEW_MARK + 'docker"',
-    '(docker ps --format "{{.Names}}\\t{{.Image}}\\t{{.Status}}" 2>/dev/null | head -n 40) || true',
+    // -a：已停止的容器也要能看到，否则「启动」这个动作永远没有入口（2026-10-28）。
+    // 端口映射与运行时长：列表里「这个容器对外是谁」比镜像名更有判断价值。
+    '(docker ps -a --format "{{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\\t{{.RunningFor}}" 2>/dev/null | head -n 40) || true',
+    'echo "' + OVERVIEW_MARK + 'stats"',
+    // 容器资源占用（2026-10-28）：docker ps 不给 CPU/内存，而这正是用户最先想知道的。
+    // --no-stream 一次取快照，实测 11 个容器约 2.7 秒，可接受。
+    '(docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" 2>/dev/null | head -n 20) || true',
+    'echo "' + OVERVIEW_MARK + 'health"',
+    // 健康状态与重启次数：docker ps 的 Status 只给 healthy/unhealthy，
+    // 重启次数只能从 inspect 拿。逐个查会慢，限制前 20 个（实测约 300ms）。
+    '(for c in $(docker ps -a --format "{{.Names}}" 2>/dev/null | head -n 20); do echo "$c|"$(docker inspect --format "{{.State.Health.Status}}|{{.RestartCount}}" "$c" 2>/dev/null); done) || true',
+    'echo "' + OVERVIEW_MARK + 'svcmeta"',
+    // 服务运行时长/内存/自启：list-units 不给这些，逐个 show 会变慢，只查前 30 个。
+    '(for u in $(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk "{print \$1}" | head -n 30); do echo "$u|"$(systemctl show "$u" -p ActiveEnterTimestamp -p MemoryCurrent -p UnitFileState --value 2>/dev/null | paste -sd"|"); done) || true',
+    'echo "' + OVERVIEW_MARK + 'procs"',
+    // 完整进程表：之前「进程」分类拿监听端口的进程顶替，用户看到的不是真进程表。
+    // 按 CPU 倒序取前 40 行，够定位问题进程；不拉全表以免输出过大。
+    '(ps -eo pid,pcpu,pmem,rss,etime,args --sort=-pcpu 2>/dev/null | head -n 41) || true',
     'echo "' + OVERVIEW_MARK + 'du"',
     '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 12) || true',
     'echo "' + OVERVIEW_MARK + 'end"',
@@ -394,21 +412,145 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
       return { proto: proto.replace('6', ''), address: addr.slice(0, idx) || '*', port,
         process: nameMatch ? nameMatch[1] : '', pid: pidMatch ? Number(pidMatch[1]) : null };
     }).filter(Boolean);
-    const services = String(parts.services || '').split('\n').map(line => {
-      const cols = line.trim().split(/\s+/);
-      if (cols.length < 4 || !cols[0].endsWith('.service')) return null;
-      return { unit: cols[0], active: cols[2], sub: cols[3], description: cols.slice(4).join(' ') };
-    }).filter(Boolean);
+    // 资源占用（2026-10-28）：来自 stats 段。
+    // docker stats 的格式：Name	CPU%	MemUsage	Mem%，
+    // 例如 priceai	0.01%	33.24MiB / 3.632GiB	0.89%
+    const statsMap = {};
+    for (const line of String(parts.stats || '').split('\n')) {
+      const seg = line.trim().split('\t');
+      if (seg.length < 3 || !seg[0]) continue;
+      const [name, cpuRaw, memUsage, memPctRaw] = seg;
+      const cpu = Number(String(cpuRaw || '').replace('%', ''));
+      const memPct = Number(String(memPctRaw || '').replace('%', ''));
+      // MemUsage 形如 "33.24MiB / 3.632GiB"：取斜杠前的已用量，并换算成字节
+      const usedText = String(memUsage || '').split('/')[0].trim();
+      const m = /^([\d.]+)\s*([KMGTP]?i?B)$/i.exec(usedText);
+      let memBytes = null;
+      if (m) {
+        const n = Number(m[1]);
+        const unit = m[2].toUpperCase();
+        const mul = unit.startsWith('G') ? 1024 ** 3 : unit.startsWith('M') ? 1024 ** 2
+          : unit.startsWith('K') ? 1024 : 1;
+        memBytes = Math.round(n * mul);
+      }
+      statsMap[name] = {
+        cpu: Number.isFinite(cpu) ? cpu : null,
+        cpuText: String(cpuRaw || '').trim(),
+        memBytes,
+        memText: usedText,
+        memPct: Number.isFinite(memPct) ? memPct : null,
+      };
+    }
+
+    // 健康状态与重启次数（2026-10-28）：来自 health 段，按容器名建索引。
+    const healthMap = {};
+    for (const line of String(parts.health || '').split('\n')) {
+      const seg = line.trim().split('|');
+      if (seg.length < 2 || !seg[0]) continue;
+      healthMap[seg[0]] = {
+        health: (seg[1] || '').trim(),           // healthy / unhealthy / starting / 空
+        restarts: Number(seg[2]) || 0,
+      };
+    }
+
+    // 服务元数据（2026-10-28）：启动时间、内存、自启状态。
+    // ⚠ systemctl show 的 --value 输出顺序**不按命令行参数顺序**，实测是
+    //   MemoryCurrent | UnitFileState | ActiveEnterTimestamp
+    //   （与 -p 的书写顺序无关）。所以不能按位置取，必须按值形态判断：
+    //   · 纯数字（或 [not set]）→ 内存
+    //   · enabled/disabled/static… → 自启状态
+    //   · 能被 Date.parse 解析 → 启动时间
+    const svcMeta = {};
+    for (const line of String(parts.svcmeta || '').split('\n')) {
+      const seg = line.trim().split('|');
+      if (seg.length < 2 || !seg[0].endsWith('.service')) continue;
+      const [unit, ...rest] = seg;
+      const meta = { startedAt: null, memory: null, enabled: null };
+      for (const value of rest) {
+        const v = String(value || '').trim();
+        if (!v || v === '[not set]') continue;
+        if (/^\d+$/.test(v)) { if (Number(v) < 1e15) meta.memory = Number(v); continue; }
+        if (/^(enabled|disabled|static|masked|indirect|generated)$/.test(v)) {
+          meta.enabled = v === 'enabled' ? true : v === 'disabled' ? false : null;
+          continue;
+        }
+        const ts = Date.parse(v);
+        if (Number.isFinite(ts)) meta.startedAt = ts;
+      }
+      svcMeta[unit] = meta;
+    }
+
+    // 容器：补端口映射、运行时长、健康、重启次数
     const docker = String(parts.docker || '').split('\n').map(line => {
       const cols = line.split('\t');
       if (cols.length < 3) return null;
-      return { name: cols[0], image: cols[1], status: cols.slice(2).join('\t') };
+      const [name, image, status, portsRaw, runningFor] = cols;
+      const h = healthMap[name] || {};
+      const st = statsMap[name] || {};
+      // 端口映射要**去重**：Docker 会把同一个映射报两遍（IPv4 的 0.0.0.0 和 IPv6 的 [::]），
+      // 之前不去重，界面上就是「:8092→8092　:8092→8092」这种重复噪声。
+      const seenPort = new Set();
+      const ports = String(portsRaw || '').split(',').map(x => x.trim()).filter(Boolean)
+        .map(x => {
+          const m = /:(\d+)->(\d+)\/(\w+)/.exec(x);
+          if (!m) return null;
+          const key = m[1] + '-' + m[2] + '-' + m[3];
+          if (seenPort.has(key)) return null;
+          seenPort.add(key);
+          return { host: Number(m[1]), container: Number(m[2]), proto: m[3] };
+        }).filter(Boolean);
+      return {
+        name, image, status, ports,
+        runningFor: String(runningFor || '').trim(),
+        health: h.health || '',
+        restarts: h.restarts || 0,
+        // 资源占用：真正有判断价值的那两个数
+        cpu: st.cpu ?? null,
+        cpuText: st.cpuText || '',
+        memBytes: st.memBytes ?? null,
+        memText: st.memText || '',
+        memPct: st.memPct ?? null,
+      };
+    }).filter(Boolean);
+
+    const services = String(parts.services || '').split('\n').map(line => {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 4 || !cols[0].endsWith('.service')) return null;
+      const meta = svcMeta[cols[0]] || {};
+      return {
+        unit: cols[0], active: cols[2], sub: cols[3], description: cols.slice(4).join(' '),
+        startedAt: meta.startedAt || null, memory: meta.memory ?? null, enabled: meta.enabled ?? null,
+      };
     }).filter(Boolean);
     const du = String(parts.du || '').split('\n').map(line => {
       const m = /^(\d+)\s+(.+)$/.exec(line.trim());
       if (!m) return null;
       return { bytes: Number(m[1]) * 1024, path: m[2] };
     }).filter(Boolean);
+    // 进程表（2026-10-28）：ps -eo pid,pcpu,pmem,rss,etime,args
+    // 用 args 而不是 comm，才能看到完整命令行（java 带 -Xmx 那种）。
+    // 内核线程的 args 形如 [kworker/1:1]，它们对用户没意义，标出来供前端过滤。
+    const procs = String(parts.procs || '').split('\n').slice(1).map(line => {
+      const cols = line.trim().split(/\s+/);
+      // 内核线程的 args 可能为空（如 ksoftirqd），此时只有 5 列 —— 不能因此丢掉这一行。
+      if (cols.length < 5) return null;
+      const [pid, pcpu, pmem, rss, etime] = cols;
+      if (!/^\d+$/.test(pid)) return null;
+      const args = cols.slice(5).join(' ');
+      // 没有 args 时无法判断它是什么，用 PID 占位，避免显示空名
+      const kernelThread = /^\[.*\]$/.test(args);
+      const basename = args ? (args.split(/\s+/)[0].split('/').pop() || args) : '未知进程';
+      return {
+        pid: Number(pid), cpu: Number(pcpu) || 0, mem: Number(pmem) || 0,
+        rss: Number(rss) || 0, etime,
+        comm: kernelThread ? args : basename,
+        args: args || '(无命令行)',
+        kernelThread,
+        // 没有 args 的多半是内核线程（ksoftirqd 等），前端默认过滤掉
+        unknown: !args,
+      };
+    }).filter(Boolean);
+
     return {
       os: { name: os.PRETTY_NAME || os.NAME || '', id: os.ID || '', version: os.VERSION_ID || '' },
       kernel: { release: kernelLines[0] || '', arch: kernelLines[1] || '', hostname: kernelLines[2] || '', serverTime: Number(kernelLines[3]) || null },
@@ -421,9 +563,95 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
         const nums = String(parts.net || '').trim().split(/\s+/).map(Number).filter(Number.isFinite);
         return nums.length >= 2 ? { rx: nums[0], tx: nums[1] } : null;
       })(),
-      disks, listen, services, docker, du,
+      disks, listen, services, docker, du, procs,
       dockerSupported: String(parts.docker || '').trim().length > 0,
     };
+  }
+
+  /**
+   * 一次性执行命令，返回结构化结果（2026-10-28，运维台核心通道）。
+   *
+   * 与终端的区别（这是这个函数存在的全部理由）：
+   *   · 不分配 PTY → 输出干净，没有提示符和 ANSI 控制序列
+   *   · 带**退出码** → 能判断成功失败，不用猜文本
+   *   · 有超时和输出上限 → 不会被 docker logs 拉爆内存
+   *   · 不占用用户正在用的终端 → 操作不会打断他手头的事
+   *
+   * 命令由 remote-ops 的白名单拼装，调用方传不进来自由命令。
+   */
+  function execOnce(id, command, { timeout = Ops.DEFAULT_TIMEOUT, maxOutput = Ops.MAX_OUTPUT } = {}) {
+    const s = session(id);
+    return new Promise((resolve) => {
+      let settled = false, total = 0, truncated = false;
+      const chunks = [];
+      let channel;
+      const finish = payload => { if (settled) return; settled = true; clearTimeout(timer); resolve(payload); };
+      const timer = setTimeout(() => {
+        try { channel?.close(); } catch {}
+        finish({ ok: false, code: null, stdout: Buffer.concat(chunks).toString('utf8'),
+          stderr: '执行超时（' + Math.round(timeout / 1000) + ' 秒）', timedOut: true, truncated });
+      }, timeout);
+      timer.unref?.();
+
+      s.client.exec(command, { pty: false }, (error, stream) => {
+        if (error) return finish({ ok: false, code: null, stdout: '', stderr: message(error) });
+        channel = stream;
+        stream.on('data', chunk => {
+          total += chunk.length;
+          if (total > maxOutput) {
+            // 超限只截断、不报错：日志刷屏不该让「看日志」这个操作失败
+            truncated = true;
+            try { stream.close(); } catch {}
+            return finish({
+              ok: true, code: 0, truncated,
+              stdout: Buffer.concat(chunks).toString('utf8').slice(0, maxOutput),
+              stderr: '输出超过 ' + Math.round(maxOutput / 1024) + 'KB，已截断',
+            });
+          }
+          chunks.push(chunk);
+        });
+        stream.stderr.on('data', chunk => { if (chunk) chunks.push(chunk); });
+        stream.on('close', (code) => {
+          finish({
+            ok: code === 0, code: typeof code === 'number' ? code : 0,
+            stdout: Buffer.concat(chunks).toString('utf8'), stderr: '', truncated,
+          });
+        });
+        stream.on('error', err => finish({ ok: false, code: null, stdout: '', stderr: message(err) }));
+      });
+    });
+  }
+
+  /**
+   * 执行一个运维动作：校验 → 拼命令 → 执行 → （写操作）回读状态。
+   *
+   * 回读是硬要求：命令退出 0 只代表「命令执行成功」，不代表「服务真的到位」
+   * （比如 restart 之后容器可能立刻崩）。所以写操作一律再查一次状态，
+   * 让界面能显示真实结果，也符合本项目「受理 ≠ 完成」的原则。
+   */
+  async function runOp(id, action, args) {
+    const plan = Ops.plan(action, args);   // 未知动作/非法参数在这里就被挡掉
+    const result = await execOnce(id, plan.command, { timeout: plan.timeout });
+    const out = { action, read: plan.read, danger: plan.danger, command: plan.command,
+      ok: result.ok, code: result.code, stdout: result.stdout, stderr: result.stderr,
+      truncated: result.truncated || false, timedOut: !!result.timedOut };
+    // 命令失败时更要回读：用户需要知道「操作没成功，那现在到底是什么状态」。
+    // 原来这里 !result.ok 就直接返回，失败场景下界面只有退出码，
+    // 看不出服务是否还活着（2026-10-28 端到端测试发现）。
+    if (!plan.verify) return out;
+    // 写操作：回读一次状态，附在结果里；回读失败不影响主结果
+    // 回读命令的退出码不能当失败判据：`systemctl is-active` 在服务停止时
+    // 返回 3（inactive），那正是我们要展示的「真实状态」，不是错误。
+    // 所以这里只取输出文本；只有完全没拿到输出时才标记回读失败。
+    const check = await execOnce(id, plan.verify, { timeout: 8000 });
+    const text = String(check.stdout || '').trim().slice(0, 500);
+    out.state = {
+      ok: !!text,
+      text,
+      error: text ? null : (check.stderr || '状态回读无输出'),
+      code: check.code,
+    };
+    return out;
   }
 
   function dispose() { disposed = true; for (const job of jobs.values()) cancel(job.id); for (const s of sessions.values()) { s.client.destroy(); } }
@@ -509,6 +737,10 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   return { terminalInfo, readTerminal, sshSnapshot, load, save, remove, connect, disconnect, forgetHost, openTerminal, input, resize, ack, closeTerminal, list, mkdir, createFile, rename, move, removeFile, enqueue, cancel, retry, clearFinished, dispose, readTextFile, statTextFile, writeTextFile,
     // 概览：跑固定只读脚本并解析。调用方只传会话 id，不能传命令。
     overview: async id => parseOverview(splitOverview(await runOverview(id))),
+    // 运维动作：白名单校验后执行。调用方只能传「动作名 + 参数」，传不进命令。
+    op: (id, action, args) => runOp(id, action, args),
+    opIsRead: action => Ops.isRead(action),
+    opActions: () => Object.keys(Ops.ACTIONS),
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
     localMkdir: target => fs.promises.mkdir(localPath(target)),

@@ -103,6 +103,8 @@
    右边一列堆叠其余卡片。之前是 auto-fit 等宽网格，八张卡一样大、换行参差，
    最该被看见的 CPU/内存和「主目录占用」占同样面积，视线没有落点。 */
 #remote-overview { flex: 1; min-height: 0; overflow: auto; padding: .9em 1em 1.2em; }
+/* 单列布局（2026-10-28）：右侧列已并入运维台分类，不再需要两栏 */
+.remote-ov-grid.single { grid-template-columns: minmax(0, 1fr); }
 .remote-ov-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
@@ -113,6 +115,27 @@
 @container (max-width: 64em) {
   .remote-ov-grid { grid-template-columns: minmax(0, 1fr); }
   .remote-ov-card.span-2 { grid-row: auto; }
+}
+/* 顶部摘要三格（2026-10-28）：CPU/内存/磁盘一行放下，把主区让给运维台 */
+.remote-ov-minis { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .8em; }
+@container (max-width: 46em) { .remote-ov-minis { grid-template-columns: 1fr; } }
+.remote-ov-mini { min-width: 0; }
+.remote-ov-mini-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5em; font-size: .85em; }
+.remote-ov-mini-head span { color: var(--text-dim); }
+.remote-ov-mini-head strong { font-weight: 600; color: var(--text-bright); }
+.remote-ov-mini-bar { height: 5px; border-radius: 3px; margin: .35em 0 .28em; background: color-mix(in srgb, var(--text) 10%, transparent); overflow: hidden; }
+.remote-ov-mini-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s; }
+.remote-ov-mini[data-level="warn"] .remote-ov-mini-bar i { background: #e0a83f; }
+.remote-ov-mini[data-level="critical"] .remote-ov-mini-bar i { background: var(--red); }
+.remote-ov-mini-foot { font-size: .76em; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 两列容器（2026-10-28）：左列放监控+运维台（主区），右列放其余信息卡。
+   原来是单层栅格靠 span-2 排，结果运维台被挤到最底部只露一条。 */
+.remote-ov-col { display: flex; flex-direction: column; gap: .9em; min-width: 0; }
+.remote-ov-col.main { grid-column: 1; }
+.remote-ov-col.side { grid-column: 2; }
+@media (max-width: 64em) {
+  .remote-ov-col.main, .remote-ov-col.side { grid-column: auto; }
 }
 .remote-ov-card {
   border: 1px solid var(--ui-line, var(--border)); border-radius: .6em;
@@ -208,3 +231,191 @@
   padding: .7em 1em; border-top: 1px solid var(--border-pane);
 }
 .re-state { font-size: .82em; color: var(--text-dim); }
+
+/* ---------- 运维台（2026-10-28）----------
+   分类列表 + 行内操作。与原型 docs/prototypes/remote-overview-ops-240.html 对齐。 */
+.remote-ops { display: flex; flex-direction: column; min-height: 0; }
+.remote-ops-segs {
+  display: flex; flex-wrap: wrap; gap: 2px; padding: .5em .7em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.remote-ops-seg {
+  border: 0; background: transparent; color: var(--text-dim);
+  font: inherit; font-size: .86em; padding: .34em .7em; border-radius: .35em;
+  cursor: pointer; white-space: nowrap;
+}
+.remote-ops-seg:hover { background: var(--bg-hover); color: var(--text); }
+.remote-ops-seg.active { background: var(--accent); color: #fff; font-weight: 600; }
+.remote-ops-seg em { font-style: normal; opacity: .72; font-size: .88em; margin-left: .28em; }
+
+.remote-ops-list { flex: 1; min-height: 0; overflow: auto; }
+.remote-ops-row {
+  display: flex; align-items: center; gap: .7em;
+  padding: .5em .9em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.remote-ops-row:last-child { border-bottom: 0; }
+.remote-ops-row:hover { background: color-mix(in srgb, var(--bg-hover) 60%, transparent); }
+.remote-ops-main { flex: 1; min-width: 0; }
+.remote-ops-name {
+  display: flex; align-items: center; gap: .4em;
+  font-weight: 600; color: var(--text-bright); font-size: 1.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.remote-ops-meta {
+  font-size: .78em; color: var(--text-dim); margin-top: .12em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.remote-ops-dot { width: .5em; height: .5em; border-radius: 50%; flex: 0 0 auto; }
+.remote-ops-dot.on { background: var(--ok-text, #4caf7d); }
+.remote-ops-dot.off { background: color-mix(in srgb, var(--text-dim) 60%, transparent); }
+.remote-ops-dot.warn { background: #e0a83f; }
+
+.remote-ops-acts { display: flex; gap: .28em; flex: 0 0 auto; }
+/* 「更多」下拉（2026-10-28）：把每行 5 个按钮压到 3 个以内，降低视觉噪音 */
+.remote-ops-acts { position: relative; }
+.remote-ops-more { min-width: 2em; letter-spacing: .1em; }
+.remote-ops-menu {
+  position: absolute; right: 0; top: calc(100% + .25em); z-index: 5;
+  display: flex; flex-direction: column; gap: .2em;
+  padding: .3em; min-width: 6.5em;
+  background: var(--bg-panel); border: 1px solid var(--border-mid);
+  border-radius: .4em; box-shadow: 0 8px 24px #0008;
+}
+.remote-ops-menu.hidden { display: none; }
+.remote-ops-menu .remote-ops-act { text-align: left; justify-content: flex-start; }
+
+/* 列表限高：32 个服务不该把整屏占满，超出滚动查看 */
+.remote-ops-list { max-height: 60vh; }
+
+.remote-ops-acts .remote-ops-act:only-child { min-width: 3.6em; }
+.remote-ops-act {
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  background: transparent; color: var(--text-dim);
+  font: inherit; font-size: .84em; padding: .4em .85em;
+  border-radius: .3em; cursor: pointer; white-space: nowrap;
+}
+.remote-ops-act:hover { background: var(--bg-hover); color: var(--text-bright); border-color: var(--accent); }
+.remote-ops-act:disabled { opacity: .5; cursor: default; }
+.remote-ops-act.danger {
+  color: color-mix(in srgb, var(--red) 82%, var(--text));
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+.remote-ops-act.danger:hover {
+  background: color-mix(in srgb, var(--red) 20%, transparent);
+  color: #ffb3b1; border-color: var(--red);
+}
+
+.remote-ops-foot {
+  padding: .45em .8em; font-size: .8em; color: var(--text-dim);
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  min-height: 2.1em;
+}
+.remote-ops-foot.ok { color: var(--ok-text, #4caf7d); }
+.remote-ops-foot.err { color: var(--red); }
+
+.remote-ops-dlg-mask {
+  position: fixed; inset: 0; z-index: 300;
+  background: #000a; display: flex; align-items: center; justify-content: center;
+  padding: 1.2em;
+}
+.remote-ops-dlg {
+  width: min(30em, 100%); background: var(--bg-panel);
+  border: 1px solid var(--border-mid); border-radius: .7em;
+  box-shadow: 0 1.2em 3em #000a; overflow: hidden;
+}
+.remote-ops-dlg.wide { width: min(56em, 100%); }
+.remote-ops-dlg h3 {
+  margin: 0; padding: .85em 1.1em; font-size: .95em;
+  border-bottom: 1px solid var(--border);
+}
+.remote-ops-dlg-body { padding: .85em 1.1em; font-size: .85em; line-height: 1.7; max-height: 60vh; overflow: auto; }
+.remote-ops-dlg-body p { margin: 0 0 .35em; }
+.remote-ops-dlg-body .impact { color: #f0b8b6; }
+.remote-ops-dlg-body .cur { color: var(--text-dim); }
+.remote-ops-pre {
+  margin: 0; font-family: "Cascadia Code", Consolas, monospace;
+  font-size: .92em; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  color: var(--text);
+}
+.remote-ops-dlg-foot {
+  display: flex; gap: .5em; justify-content: flex-end;
+  padding: .7em 1.1em; border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 55%, transparent);
+}
+.remote-ops-danger { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
+
+/* ---------- 三层行结构 + 工具行（2026-10-28）---------- */
+.remote-ops-line1 { display: flex; align-items: center; gap: .5em; min-width: 0; width: 100%; }
+.remote-ops-line2 { display: flex; align-items: baseline; gap: .6em; margin-top: .1em; min-width: 0; width: 100%; }
+.remote-ops-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-ops-key { margin-left: auto; padding-left: .8em; padding-right: 1.4em; font-size: .82em; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.remote-ops-meta { color: var(--text-dim); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-ops-sub { color: color-mix(in srgb, var(--text-dim) 78%, transparent); font-size: .76em; white-space: nowrap; }
+
+/* 状态徽标 */
+.remote-ops-badge { flex: 0 0 auto; font-size: .72em; padding: .1em .45em; border-radius: .25em; letter-spacing: .02em; }
+.remote-ops-badge[data-level=ok] { color: #6fcf97; background: color-mix(in srgb, #6fcf97 16%, transparent); }
+.remote-ops-badge[data-level=warn] { color: #e0a83f; background: color-mix(in srgb, #e0a83f 16%, transparent); }
+.remote-ops-badge[data-level=bad] { color: #ff8a85; background: color-mix(in srgb, var(--red) 20%, transparent); font-weight: 600; }
+.remote-ops-badge[data-level=off] { color: var(--text-dim); background: color-mix(in srgb, var(--text-dim) 14%, transparent); }
+
+/* 异常行：左侧红边 + 淡红底，一眼能扫到 */
+.remote-ops-row.is-bad { border-left: 3px solid var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); padding-left: calc(.9em - 3px); }
+.remote-ops-row.is-bad .remote-ops-name { color: #ffb3b1; }
+
+/* 工具行 */
+.remote-ops-tools { display: flex; align-items: center; gap: .5em; padding: .45em .7em; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); flex-wrap: wrap; }
+.remote-ops-search { flex: 1 1 12em; min-width: 8em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: .35em; padding: .28em .55em; font: inherit; font-size: .82em; }
+.remote-ops-search:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.remote-ops-onlybad { display: inline-flex; align-items: center; gap: .35em; font-size: .8em; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+.remote-ops-onlybad input { appearance: none; -webkit-appearance: none; width: .95em; height: .95em; margin: 0; border: 1px solid var(--border-mid); border-radius: .18em; background: var(--bg-input); cursor: pointer; position: relative; }
+.remote-ops-onlybad input:checked { background: var(--accent); border-color: var(--accent); }
+.remote-ops-onlybad input:checked::after { content: ""; position: absolute; left: .22em; top: .05em; width: .28em; height: .5em; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.remote-ops-sort { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: .35em; padding: .24em .4em; font: inherit; font-size: .8em; }
+.remote-ops-count { font-size: .78em; color: var(--text-dim); white-space: nowrap; margin-left: auto; }
+
+/* ---------- 日志抽屉（2026-10-28）---------- */
+.remote-drawer-mask { position: fixed; inset: 0; z-index: 300; background: #0007; display: flex; justify-content: flex-end; }
+.remote-drawer { width: min(60em, 92vw); height: 100%; display: flex; flex-direction: column; background: var(--bg-panel); border-left: 1px solid var(--border-mid); box-shadow: -8px 0 32px #0007; }
+.remote-drawer-head { display: flex; align-items: center; gap: .5em; padding: .6em .8em; border-bottom: 1px solid var(--border); flex-wrap: wrap; flex: 0 0 auto; }
+.remote-drawer-title { font-weight: 600; color: var(--text-bright); margin-right: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-drawer-follow { display: inline-flex; align-items: center; gap: .3em; font-size: .8em; color: var(--text-dim); cursor: pointer; }
+.remote-drawer-follow input { accent-color: var(--accent); margin: 0; }
+.remote-drawer-level, .remote-drawer-search { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: .35em; padding: .24em .45em; font: inherit; font-size: .8em; }
+.remote-drawer-search { width: 9em; }
+.remote-drawer-count { font-size: .78em; color: var(--text-dim); white-space: nowrap; }
+.remote-drawer-body { flex: 1; min-height: 0; overflow: auto; }
+.remote-drawer-lines { padding: .3em 0; }
+.remote-drawer-line { display: flex; gap: .6em; padding: .1em .8em; font-family: "Cascadia Code", Consolas, monospace; font-size: .82em; line-height: 1.55; }
+.remote-drawer-line:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.remote-drawer-no { flex: 0 0 3em; text-align: right; color: color-mix(in srgb, var(--text-dim) 60%, transparent); user-select: none; }
+.remote-drawer-txt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+.remote-drawer-line[data-level=error] .remote-drawer-txt { color: #ff8a85; }
+.remote-drawer-line[data-level=warn] .remote-drawer-txt { color: #e0a83f; }
+.remote-drawer-line[data-level=debug] .remote-drawer-txt,
+.remote-drawer-line[data-level=trace] .remote-drawer-txt { color: var(--text-dim); }
+
+/* ---------- 表格化列表（2026-10-28）---------- */
+.remote-ops-thead { display: flex; align-items: center; gap: .6em; padding: .42em .9em;
+  font-size: .76em; color: var(--text-dim); border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 45%, transparent);
+  position: sticky; top: 0; z-index: 2; }
+.remote-ops-th { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-ops-th.is-sortable { cursor: pointer; }
+.remote-ops-th.is-sortable:hover { color: var(--text-bright); }
+.remote-ops-th.is-active { color: var(--accent); font-weight: 600; }
+.remote-ops-th-acts { flex: 0 0 11em; text-align: right; }
+
+.remote-ops-row { display: flex; align-items: center; gap: .6em; padding: .42em .9em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
+.remote-ops-td { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: .84em; color: var(--text); }
+.remote-ops-td-name { display: flex; align-items: center; gap: .4em; }
+.remote-ops-td.is-num { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.remote-ops-td.is-mono { font-family: "Cascadia Code", Consolas, monospace; font-size: .78em; color: var(--text-dim); }
+.remote-ops-td-acts { flex: 0 0 11em; }
+.remote-ops-td[data-level=ok] { color: #6fcf97; }
+.remote-ops-td[data-level=warn] { color: #e0a83f; }
+.remote-ops-td[data-level=bad] { color: #ff8a85; font-weight: 600; }
+.remote-ops-td[data-level=off] { color: var(--text-dim); }

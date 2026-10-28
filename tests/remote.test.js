@@ -110,6 +110,28 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     check('概览：监听端口、服务、docker、家目录占用都是数组（缺失时为空数组，不抛错）',
       Array.isArray(ov.listen) && Array.isArray(ov.services) && Array.isArray(ov.docker) && Array.isArray(ov.du));
     check('概览：运行时长是有限数', Number.isFinite(ov.uptime) && ov.uptime >= 0);
+    // ── 扩展字段（2026-10-28）：端口映射 / 健康 / 重启次数 / 服务元数据 / 进程命令行 ──
+    const web = ov.docker.find(c => c.name === 'web');
+    check('概览：容器带端口映射', !!web && Array.isArray(web.ports)
+      && web.ports.some(p => p.host === 8080 && p.container === 80 && p.proto === 'tcp'));
+    check('概览：容器带运行时长文本', !!web && web.runningFor === '3 days ago');
+    check('概览：容器带健康状态与重启次数', !!web && web.health === 'healthy' && web.restarts === 2);
+    check('概览：容器带 CPU 与内存占用', !!web && web.cpu === 0.13
+      && Math.round(web.memBytes / 1048576) === 74 && web.memPct === 28.88);
+    check('概览：端口映射已去重（IPv4/IPv6 同一映射只留一条）',
+      !!web && web.ports.filter(p => p.host === 8080).length === 1);
+    const db = ov.docker.find(c => c.name === 'db');
+    check('概览：无健康检查的容器 health 为空', !!db && db.health === '' && db.restarts === 0);
+    const sshSvc = ov.services.find(s => s.unit === 'ssh.service');
+    check('概览：服务带内存（按值形态解析，不依赖字段顺序）',
+      !!sshSvc && sshSvc.memory === 184320);
+    check('概览：服务带自启状态', !!sshSvc && sshSvc.enabled === true);
+    check('概览：服务带启动时间', !!sshSvc && Number.isFinite(sshSvc.startedAt));
+    const nginxSvc = ov.services.find(s => s.unit === 'nginx.service');
+    check('概览：disabled 服务 enabled=false', !!nginxSvc && nginxSvc.enabled === false);
+    check('概览：进程带完整命令行', ov.procs.some(p => /java -Xmx2G/.test(p.args)));
+    check('概览：内核线程被标记', ov.procs.some(p => p.kernelThread === true && /kworker/.test(p.comm)));
+    check('概览：空 args 的进程不被丢弃', ov.procs.some(p => p.pid === 3036595));
     // 安全边界：只有会话 id，不接受命令。无效 id 必须明确报错 ——
     // 不能悄悄退回本地执行（那会把本机信息当成远程服务器的显示出去）。
     await assert.rejects(() => service.overview('不存在的会话'), /会话|断开/);

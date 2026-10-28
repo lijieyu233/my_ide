@@ -4,7 +4,7 @@ const { Server, utils } = require('ssh2');
 const { STATUS_CODE: S, flagsToString } = utils.sftp;
 async function start(root, options = {}) {
   const key = options.key || generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
-  const clients = new Set(), shells = [], control = { failWrite: false, delayWrite: 0, directoryEntries: new Map(), readDirBatchSize: 0, delayReadDir: 0, failReadDir: false, activeReads: 0, maxActiveReads: 0, readDirCalls: 0, closedDirs: 0 };
+  const clients = new Set(), shells = [], control = { execReply: [], execLog: [], failWrite: false, delayWrite: 0, directoryEntries: new Map(), readDirBatchSize: 0, delayReadDir: 0, failReadDir: false, activeReads: 0, maxActiveReads: 0, readDirCalls: 0, closedDirs: 0 };
   const resolve = p => { const dest = path.resolve(root, '.' + path.posix.resolve('/', p)); if (dest !== root && !dest.startsWith(root + path.sep)) throw Error('越界'); return dest; };
   const attrs = p => { const s = typeof p === 'number' ? fs.fstatSync(p) : fs.lstatSync(p); return { mode: s.mode, uid: 0, gid: 0, size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000) }; };
   const server = new Server({ hostKeys: [key] }, client => {
@@ -19,6 +19,25 @@ async function start(root, options = {}) {
       // 「分段标记解析 + 各段解析逻辑」，不是验证 shell 本身。
       session.on('exec', (accept, _reject, info) => {
         const stream = accept();
+        // 运维动作回放（2026-10-28）：control.execReply 里登记的规则优先命中。
+        // 用于验证「remote.op → execOnce → 解析结果」这条链路，
+        // 不需要真跑 docker/systemd，也不需要连真实服务器。
+        const cmd = String(info && info.command || '');
+        // 规则两种匹配方式：
+        //   match  —— 命令里包含该子串（用于单个动作）
+        //   whole  —— 整条命令完全等于该值（用于概览脚本这种多段拼装的大命令，
+        //             否则任意一段命中都会把整条命令的回放吃掉，其余段就没有输出了）
+        const rule = (control.execReply || []).find(r =>
+          (r.whole && cmd === r.whole) || (!r.whole && r.match && cmd.includes(r.match)));
+        if (rule) {
+          control.execLog.push({ command: cmd, matched: rule.match });
+          const body = typeof rule.out === 'function' ? rule.out(cmd) : String(rule.out ?? '');
+          const code = rule.code === undefined ? 0 : rule.code;
+          stream.write(body);
+          setTimeout(() => { if (!stream.destroyed) { stream.exit(code); stream.end(); } }, 5);
+          stream.on('error', () => {});
+          return;
+        }
         const mark = '@@MYIDE-OVERVIEW:';
         const out = [
           mark + 'os', 'NAME="Ubuntu"', 'VERSION_ID="22.04"', 'PRETTY_NAME="Ubuntu 22.04.3 LTS"',
@@ -38,7 +57,25 @@ async function start(root, options = {}) {
           'ssh.service    loaded active running OpenBSD Secure Shell server',
           'nginx.service  loaded active running A high performance web server',
           mark + 'docker',
-          'web\tnginx:1.25\tUp 3 days',
+          // 真实格式：name, image, status, ports, runningFor（2026-10-28 扩展）
+          ['web', 'nginx:1.25', 'Up 3 days (healthy)', '0.0.0.0:8080->80/tcp', '3 days ago'].join('\t'),
+          ['db', 'postgres:16', 'Exited (1) 2 hours ago', '', '2 hours ago'].join('\t'),
+          mark + 'stats',
+          // 真实格式：Name	CPU%	MemUsage	Mem%
+          'web	0.13%	73.93MiB / 256MiB	28.88%',
+          'db	0%	0B / 0B	0%',
+          mark + 'health',
+          'web|healthy|2',
+          'db||',
+          mark + 'svcmeta',
+          // 真实顺序：MemoryCurrent | UnitFileState | ActiveEnterTimestamp
+          'ssh.service|184320|enabled|Sat 2026-07-04 21:17:00 CST',
+          'nginx.service|52936704|disabled|Wed 2026-09-30 20:03:35 CST',
+          mark + 'procs',
+          '    PID %CPU %MEM   RSS     ELAPSED COMMAND',
+          '3036595  199  7.0 267036 3-14:11:40 ',
+          '2334016  3.6 27.2 1036768 13-19:32:23 /usr/bin/java -Xmx2G -jar server.jar nogui',
+          '2726004  2.7  0.0    44 27-20:10:20 [kworker/1:1]',
           mark + 'du',
           '1048576\t/home/fixture/projects',
           '524288\t/home/fixture/downloads',
