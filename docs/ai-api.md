@@ -14,7 +14,7 @@ MyIDE exposes application tools to its in-app AI assistant for inspecting and op
 | 启动 / Launch | launch_open, launch_list, launch_start, launch_stop, launch_logs；批量与配置见清单 |
 | Git 与任务 / Git and tasks | git_state, git_control, tasks_state, tasks_control |
 | 数据库 / Database | database_state, database_config, database_connect, database_query, database_job |
-| 设置 / Settings | settings_state, settings_control |
+| 设置 / Settings | settings_keys, settings_values, settings_write（统一键注册表，见下节） |
 | 阅读器 / Reader | reader_state, reader_library, reader_read, reader_control, reader_library_control |
 | 网页、远程与会话 / Browser, remote, sessions | 见[完整模块清单](开发文档-171-AI操作接口模块清单.md)与实际 schema |
 
@@ -44,6 +44,33 @@ MyIDE exposes application tools to its in-app AI assistant for inspecting and op
 ~~~
 
 布局和焦点变化后重新读取状态。layout 包含 orientation、活动组 active、各组 path 与 tabs。完整行为见[编辑区分屏](编辑区左右与上下分屏.md)。
+
+## 统一设置接口 / Unified settings registry
+
+设置不再为每个功能单独开口子：功能通过 `SettingKeys.register()` 声明自己的配置键，AI 只认 key/value。**新增带配置的功能只需 register 一次，工具清单不变。**
+
+| 工具 | 用途 |
+| --- | --- |
+| `settings_keys` | 列出所有可配置键（可按 module 过滤），含类型、枚举、范围、是否秘密 |
+| `settings_values` | 按 keys 读取；`secret` 键只回 `configured` 布尔，永不回明文 |
+| `settings_write` | 按 values 批量写入；`open` 打开设置页，`restore` 撤销上次变更 |
+
+~~~json
+{"name":"settings_keys","args":{"module":"editor"}}
+~~~
+
+~~~json
+{"name":"settings_write","args":{"operation":"write","values":{"pasteImage.mode":"cos","pasteImage.cos.bucket":"my-bucket-1250000000","pasteImage.cos.region":"ap-guangzhou"},"snapshot":"<settings_keys snapshot>"}}
+~~~
+
+约定：
+
+- 写入前**整体校验**（枚举/正则/范围），坏值一个都不落盘；逐组写入时任一组失败即回滚本次改动。
+- 结果以**回读真实值**为准（栏宽会被窗口可用空间夹回），`changed:false` 表示值没变。
+- 读取不带 snapshot、不要求审批；写入需要 snapshot 与审批，并经 AI 运行队列串行执行。
+- 当前已注册：外观（主题/字号）、布局（栏宽/可见性）、快捷键、粘贴图片与腾讯云 COS 图床（含 SecretId/SecretKey，均按秘密处理）。
+
+**新增功能时**：在 `renderer/ai-workbench-settings.js` 追加一次 `SettingKeys.register({module, group, keys, read, write})` 即可，`renderer/ai-settings-registry.js` 负责校验、脱敏与回滚。
 
 ## 边界 / Boundaries
 

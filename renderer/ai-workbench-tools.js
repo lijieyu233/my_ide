@@ -51,8 +51,16 @@
   tool('database_connect','database','连接或断开一个已保存的数据库配置。',{'operation!':choice('connect','disconnect'),'connection!':id},'run');
   tool('database_query','database','异步执行SQL；默认数据库级只读约束，写入必须write=true且逐次确认。结果按页读取，可取消。',{'connection!':id,'sql!':str(100000),'write':bool,'params':list({type:['string','number','boolean','null']},1000)},'run');
   tool('database_job','database','分页读取查询结果、取消查询，或导出结果到指定文件。',{'operation!':choice('read','cancel','export'),'job!':id,'offset':integer(),'limit':integer(1,500),'destination':str(4096)},'write',false,['read']);
-  tool('settings_state','settings','读取允许AI控制的设置、布局与快捷键，不返回其他配置或秘密。');
-  tool('settings_control','settings','调整主题、字号、栏宽、面板或快捷键，打开设置页；persistent=false仅临时生效，restore恢复上次变更。',{'operation!':choice('appearance','layout','shortcut','open','restore'),'theme':id,'fontSize':integer(10,20),'sidebarWidth':integer(0,10000),'aiWidth':integer(0,10000),'sidebarVisible':bool,'aiVisible':bool,'persistent':bool,'shortcut':id,'keys':list(str(100),10),'reset':bool,'page':choice('keys','markdown','appearance','editor','git','translate','ai','theme','local'),'filter':str(500)},'write');
+  // 统一设置接口（2026-10-27）：不再为每个功能加专用参数，改由 SettingKeys 注册表声明键。
+  // 新增功能只需在 renderer/ai-workbench-settings.js 里 register 一次，这几个工具不用改。
+  //
+  // 为什么读写拆成两个工具而不是靠 operation 分流：
+  //   effect() 是按「工具」判定写权限的（reads 列表按 operation 二次判断），读写混在
+  //   一个工具里会让「只是想读」也背上写快照与审批的负担，或者反过来让写入绕过审批。
+  //   拆开后：settings_keys / settings_values 纯读，settings_write 才要 snapshot 和审批。
+  tool('settings_keys','settings','列出可由AI配置的设置键及元数据（模块、类型、枚举、范围、是否秘密）；秘密值只回是否已填。',{module:id});
+  tool('settings_values','settings','按设置键读取配置值；秘密键只返回configured布尔，不回明文。',{'keys!':list(str(200),128),'action':id});
+  tool('settings_write','settings','按设置键批量写入配置值；先整体校验再落盘，任一项失败即回滚本次改动。open打开设置页，restore撤销上次变更。',{'operation!':choice('write','open','restore'),'values':{type:'object'},'action':id,'persistent':bool,'page':choice('keys','markdown','appearance','editor','git','translate','ai','theme','local'),'filter':str(500)},'write');
   tool('ai_session_state','ai','读取当前项目会话、运行任务、DSH状态、实际模型/推理选项及脱敏上下文来源。',{task:id,offset:integer(),limit:integer(1,30000)});
   tool('ai_session_control','ai','新建/切换/归档会话，停止明确任务、重连、选择模型推理强度或管理固定上下文；不得冒用别的项目身份。',{'operation!':choice('new','switch','archive','stop','reconnect','model','context_pin','context_remove'),'session':id,'task':id,'model':id,'reasoning':id,'context':id,'pin':bool},'write');
   tool('browser_selection','browser-extra','读取内置网页当前选区及页面身份。');
@@ -66,8 +74,11 @@
     if(typeof value==='number'&&(!Number.isFinite(value)||value<(schema.minimum??-Infinity)||value>(schema.maximum??Infinity)))throw Error(key+'数值超出范围');
     if(type==='array'){if(value.length>(schema.maxItems??200))throw Error(key+'数组超出预算');value.forEach((v,i)=>check(v,schema.items,key+'['+i+']'));}
     if(type==='object'){
+      // values 这类「任意键」对象没有 properties：schema.properties 缺省时按空表处理，
+      // 走 additionalProperties 分支（否则 Object.keys(undefined) 会抛 TypeError）。
+      const props=schema.properties||{},open=schema.additionalProperties!==false;
       if(![Object.prototype,null].includes(Object.getPrototypeOf(value)))throw Error(key+'必须是普通对象');
-      for(const k of Object.keys(value)){if(!Object.hasOwn(schema.properties,k))throw Error(key+'含未知字段 '+k);check(value[k],schema.properties[k],key+'.'+k);}
+      for(const k of Object.keys(value)){if(!Object.hasOwn(props,k)){if(!open)throw Error(key+'含未知字段 '+k);continue;}check(value[k],props[k],key+'.'+k);}
       for(const k of schema.required||[])if(!Object.hasOwn(value,k))throw Error(key+'缺少字段 '+k);
     }
   }
