@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     close: id => ipcRenderer.invoke('html-preview:close',id),
   },
   remote: {
-    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'createFile', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localCreateFile', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'overview'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
+    ...Object.fromEntries(['load', 'save', 'remove', 'connect', 'disconnect', 'openTerminal', 'input', 'resize', 'ack', 'closeTerminal', 'list', 'mkdir', 'createFile', 'rename', 'removeFile', 'enqueue', 'cancel', 'retry', 'clearFinished', 'snapshot', 'localList', 'localMkdir', 'localCreateFile', 'localRename', 'localRemove', 'forgetHost', 'move', 'localMove', 'overview', 'op', 'opIsRead', 'opActions'].map(op => [op, (...args) => ipcRenderer.invoke('remote:' + op, ...args)])),
     onEvent: callback => { const listener = (_event, value) => callback(value); ipcRenderer.on('remote:event', listener); return () => ipcRenderer.removeListener('remote:event', listener); },
     // 把远程文件编成 editor 能当普通 path 使用的虚拟路径。纯字符串拼接，不走 IPC。
     // 与 src/main/remote/remote-fs.js 的 remotePathOf 必须保持一致（那边负责解析）。
@@ -68,6 +68,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     // 拖进来的文件取真实路径：Electron 32+ 移除了 File.path，只能走 webUtils.getPathForFile
     pathOfDroppedFile: (file) => { try { return webUtils.getPathForFile(file) || ''; } catch { return ''; } },
     fileVersion: (p) => ipcRenderer.invoke('fs:fileVersion', p),
+    // 文件大小（状态栏）：只 stat 不读内容，大文件也无开销
+    fileSize: (p) => ipcRenderer.invoke('fs:fileSize', p),
     writeFile: (p, c, enc, condition) => ipcRenderer.invoke('fs:writeFile', p, c, enc, condition),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
@@ -114,7 +116,11 @@ contextBridge.exposeInMainWorld('myIDE', {
   clip: {
     copyImageAt: (x, y) => ipcRenderer.invoke('clip:copyImageAt', x, y),
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
+    // 把历史图片真正写回系统剪贴板（此前渲染层调的 copyImageBase64 并不存在）
+    copyImage: (id) => ipcRenderer.invoke('clipboard-history:copyImage', id),
     copyFiles: (paths, move) => ipcRenderer.invoke('clip:copyFiles', paths, move),
+    // 一次复制多条（多图 / 图文混排）：先落成真实文件，再按 CF_HDROP 放一批路径
+    copyImageFiles: (paths) => ipcRenderer.invoke('clip:copyFiles', paths, false),
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),
     readText: () => ipcRenderer.invoke('clip:readText'),
   },
@@ -122,8 +128,11 @@ contextBridge.exposeInMainWorld('myIDE', {
   // 监听只在 MyIDE 进程存活期间进行（开关状态存在主进程的 settings.watch 里）。
   // 腾讯云 COS 直传。密钥不进渲染进程：这里只转发，签名在主进程完成。
   cosUpload: options => ipcRenderer.invoke('cos:upload', options),
+  // 下载远程图片转 base64（供 Markdown 导出内嵌）。必须走主进程：
+  // 渲染层 CSP 无 connect-src，fetch 外部图片会直接被拒。
+  fetchImageBase64: url => ipcRenderer.invoke('image:fetch-base64', { url }),
   clipboardHistory: {
-    ...Object.fromEntries(['list', 'addText', 'addImageBase64', 'readImage', 'update', 'remove', 'cleanup', 'settings', 'pause', 'state']
+    ...Object.fromEntries(['list', 'addText', 'addImageBase64', 'readImage', 'copyImage', 'exportAsFiles', 'update', 'remove', 'cleanup', 'settings', 'pause', 'state']
       .map(op => [op, (...args) => ipcRenderer.invoke('clipboard-history:' + op, ...args)])),
     onEvent: callback => {
       const listener = (_event, value) => callback(value);

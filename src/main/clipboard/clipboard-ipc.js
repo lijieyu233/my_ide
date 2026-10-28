@@ -15,6 +15,9 @@
  *     不做后台常驻服务、不写自启动项。
  */
 const { createClipboardStore } = require('./clipboard-store');
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
 
 const POLL_MS = 1200;
 
@@ -111,6 +114,62 @@ function register({ app, ipcMain, clipboard, getWindow }) {
     addText: text => store.addText(text),
     addImageBase64: base64 => store.addImage(Buffer.from(String(base64 || ''), 'base64')),
     readImage: id => store.readImage(id),
+    /**
+     * 把选中的历史条目导出成真实文件，返回路径列表（2026-10-28）。
+     *
+     * 用途：Windows 剪贴板一次只能放一张位图，但可以放**一批文件**（CF_HDROP）。
+     * 所以「一次复制多张图 / 图文混排」的正解是把它们落成文件再走 copyFiles。
+     *   · 图片：直接用它自己那份 images/<id>.png（不复制字节，零开销）
+     *   · 文字：写成 .txt（内容原样，UTF-8）
+     * 全部落在 userData 下的 clip-export/ 里，按需覆盖，不污染历史目录。
+     */
+    exportAsFiles: async ids => {
+      const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+      if (!list.length) return { files: [] };
+      const dir = path.join(app.getPath('userData'), 'clip-export');
+      await fsp.mkdir(dir, { recursive: true });
+      const files = [];
+      for (const id of list) {
+        const entry = (await store.list()).entries.find(e => e.id === id);
+        if (!entry) continue;
+        if (entry.kind === 'image') {
+          const abs = path.join(store.root, entry.file);
+          if (fs.existsSync(abs)) files.push(abs);
+        } else {
+          // 文件名取首行的可读前缀，避免全是 text-1.txt 这种没法分辨的名字
+          const firstLine = String(entry.text || '').split('\n').find(l => l.trim()) || 'clipboard';
+          const safe = firstLine.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 40).replace(/[.\s]+$/, '') || 'clipboard';
+          const target = path.join(dir, safe + '-' + id.slice(0, 6) + '.txt');
+          await fsp.writeFile(target, String(entry.text || ''), 'utf8');
+          files.push(target);
+        }
+      }
+      return { files, dir };
+    },
+    /**
+     * 把历史里的图片写回系统剪贴板（2026-10-28）。
+     *
+     * 之前渲染层调用 clip.copyImageBase64 —— 这个 API 根本不存在，
+     * `?.()` 直接返回 undefined，代码再兜底「重新入库」并显示“已复制到剪贴板”，
+     * 实际什么都没复制。这里补上真实实现：主进程 clipboard.writeImage。
+     */
+    copyImage: async id => {
+      const data = await store.readImage(id);
+      if (!data?.base64) return { ok: false, error: '读不到这张图片' };
+      try {
+        const { nativeImage } = require('electron');
+        const image = nativeImage.createFromBuffer(Buffer.from(data.base64, 'base64'));
+        if (image.isEmpty()) return { ok: false, error: '图片内容无法解码' };
+        clipboard.writeImage(image);
+        // 回读确认：写完后系统剪贴板里应当有一张同尺寸的图
+        const readBack = clipboard.readImage();
+        if (readBack.isEmpty()) return { ok: false, error: '写入后剪贴板仍为空' };
+        const size = readBack.getSize();
+        return { ok: true, bytes: Buffer.from(data.base64, 'base64').length, width: size.width, height: size.height };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    },
     update: (id, patch) => store.update(id, patch),
     remove: ids => store.remove(ids),
     cleanup: opts => store.cleanup(opts),

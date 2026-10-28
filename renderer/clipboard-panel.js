@@ -14,6 +14,8 @@ window.ClipboardPanel = (() => {
   let entries = [], settings = {}, stats = {}, selectedId = null, filter = 'all', query = '', watching = true;
   let loading = false, visible = false, initialized = false, unsubscribe = null;
   let draftDirty = false;
+  // 已收起的分组日期键（纯视图状态，不落盘）
+  const collapsedDays = new Set();
 
   const fmtBytes = value => {
     if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -70,6 +72,26 @@ function syncSelectionUi() {
   }
 }
 
+// 分组头的日期标签：今天/昨天/具体日期，附条数。
+// 用本地时区判断，跨年才带年份 —— 列表里绝大多数是最近几天。
+function groupLabel(dayKey) {
+  const now = new Date();
+  const today = dayKeyOf(now.getTime());
+  const yesterday = dayKeyOf(now.getTime() - 86400000);
+  if (dayKey === today) return '今天';
+  if (dayKey === yesterday) return '昨天';
+  const [y, m, d] = dayKey.split('-').map(Number);
+  const sameYear = y === now.getFullYear();
+  return sameYear ? (m + '月' + d + '日') : (y + '年' + m + '月' + d + '日');
+}
+
+/** 本地日期键 YYYY-MM-DD（不能用 toISOString：那是 UTC，晚 8 小时后会跨天）。 */
+function dayKeyOf(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
 function renderList() {
   const host = q('clip-list'); if (!host) return;
   const rows = visibleEntries();
@@ -77,32 +99,74 @@ function renderList() {
     host.innerHTML = '<div class="clip-empty">' + (entries.length ? '没有匹配的条目。' : '还没有记录。复制一段文字或一张图试试。') + '</div>';
     return;
   }
-  host.innerHTML = rows.map(entry => {
-    const active = entry.id === selectedId;
-    const picked = selection.has(entry.id);
-    const thumb = entry.kind === 'image' && !entry.missing
-      ? '<span class="clip-thumb" data-clip-thumb="' + esc(entry.id) + '"></span>'
-      : '<span class="clip-kind">' + (entry.kind === 'image' ? '🖼' : '📄') + '</span>';
-    const title = entry.kind === 'image' ? (entry.note || entry.preview) : (entry.text || '').replace(/\s+/g, ' ').trim();
-    return '<div class="clip-row' + (active ? ' active' : '') + (picked ? ' selected' : '')
-      + '" data-clip-id="' + esc(entry.id) + '" role="option" tabindex="0" aria-selected="' + (picked ? 'true' : 'false') + '">'
-      + thumb
-      + '<span class="clip-row-body"><span class="clip-row-title">' + esc(title.slice(0, 200) || '（空）') + '</span>'
-      + '<span class="clip-row-meta">' + fmtTime(entry.copiedAt)
-      + (entry.kind === 'image' ? ' · ' + fmtBytes(entry.bytes) : '')
-      + (entry.pinned ? ' · 已固定' : '') + (entry.note ? ' · 有备注' : '')
-      + (entry.missing ? ' · ⚠ 图片文件丢失' : '') + '</span></span>'
-      // 行内删除按钮：hover 或选中时才显形，避免一列按钮糊满列表。
-      + '<button class="clip-row-del" data-clip-del="' + esc(entry.id) + '" title="删除这条" aria-label="删除这条">'
-      + '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.4h9.2M6.2 4.4V2.8h3.6v1.6M4.6 4.4l.6 8.8h5.6l.6-8.8"/></svg>'
-      + '</button></div>';
-  }).join('');
+
+  // 按日期分组（2026-10-28 用户要求，可收起）。
+  // 条目本身已按时间倒序，这里只做「相邻同日归组」，不重排 —— 重排会打乱
+  // 用户对列表顺序的预期，也会让 Shift 连选的锚点语义（按可见顺序）变复杂。
+  const groups = [];
+  for (const entry of rows) {
+    const key = dayKeyOf(entry.copiedAt);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push(entry);
+    else groups.push({ key, label: groupLabel(key), items: [entry] });
+  }
+
+  const html = [];
+  for (const group of groups) {
+    const collapsed = collapsedDays.has(group.key);
+    html.push('<div class="clip-group' + (collapsed ? ' collapsed' : '') + '" data-clip-group="' + esc(group.key) + '">'
+      + '<button class="clip-group-head" data-clip-group-toggle="' + esc(group.key) + '"'
+      + ' aria-expanded="' + (collapsed ? 'false' : 'true') + '" title="' + (collapsed ? '展开' : '收起') + '这一天的记录">'
+      + '<svg class="ic clip-group-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.4L8 10l3.6-3.6"/></svg>'
+      + '<span class="clip-group-label">' + esc(group.label) + '</span>'
+      + '<span class="clip-group-count">' + group.items.length + ' 条</span>'
+      + '</button>');
+    if (!collapsed) {
+      html.push(group.items.map(entry => renderRow(entry)).join(''));
+    }
+    html.push('</div>');
+  }
+  host.innerHTML = html.join('');
   syncSelectionUi();
   for (const node of host.querySelectorAll('[data-clip-thumb]')) void loadThumb(node.dataset.clipThumb, node);
 }
 
+function renderRow(entry) {
+  const active = entry.id === selectedId;
+  const picked = selection.has(entry.id);
+  const thumb = entry.kind === 'image' && !entry.missing
+    ? '<span class="clip-thumb" data-clip-thumb="' + esc(entry.id) + '"></span>'
+    : '<span class="clip-kind">' + (entry.kind === 'image' ? '🖼' : '📄') + '</span>';
+  const title = entry.kind === 'image' ? (entry.note || entry.preview) : (entry.text || '').replace(/\s+/g, ' ').trim();
+  return '<div class="clip-row' + (active ? ' active' : '') + (picked ? ' selected' : '')
+    + '" data-clip-id="' + esc(entry.id) + '" role="option" tabindex="0" aria-selected="' + (picked ? 'true' : 'false') + '">'
+    + thumb
+    + '<span class="clip-row-body"><span class="clip-row-title">' + esc(title.slice(0, 200) || '（空）') + '</span>'
+    + '<span class="clip-row-meta">' + fmtTime(entry.copiedAt)
+    + (entry.kind === 'image' ? ' · ' + fmtBytes(entry.bytes) : '')
+    + (entry.pinned ? ' · 已固定' : '') + (entry.note ? ' · 有备注' : '')
+    + (entry.missing ? ' · ⚠ 图片文件丢失' : '') + '</span></span>'
+    // 行内删除按钮：hover 或选中时才显形，避免一列按钮糊满列表。
+    + '<button class="clip-row-del" data-clip-del="' + esc(entry.id) + '" title="删除这条" aria-label="删除这条">'
+    + '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.4h9.2M6.2 4.4V2.8h3.6v1.6M4.6 4.4l.6 8.8h5.6l.6-8.8"/></svg>'
+    + '</button></div>';
+}
+
+/** 收起/展开某一天。状态只存内存：这是纯视图偏好，不值得落盘。 */
+function toggleGroup(dayKey) {
+  if (collapsedDays.has(dayKey)) collapsedDays.delete(dayKey); else collapsedDays.add(dayKey);
+  renderList();
+}
+
 // 点击行：普通点击=单选并看详情；Ctrl/Cmd=切换选中；Shift=区间连选。
 function onRowClick(event) {
+  // 分组头：先处理，否则会被下面的行点击逻辑吞掉
+  const groupHead = event.target.closest('[data-clip-group-toggle]');
+  if (groupHead) {
+    event.preventDefault(); event.stopPropagation();
+    toggleGroup(groupHead.dataset.clipGroupToggle);
+    return;
+  }
   const delBtn = event.target.closest('[data-clip-del]');
   if (delBtn) {
     event.preventDefault(); event.stopPropagation();
@@ -111,6 +175,10 @@ function onRowClick(event) {
   }
   const row = event.target.closest('[data-clip-id]');
   if (!row) return;
+  // 点击行时主动聚焦，否则 document.activeElement 停在 body 上，
+  // Ctrl+W / Ctrl+A 这类「按焦点判定作用域」的快捷键就认不出当前在剪贴板列表里，
+  // 会被全局快捷键当成「关闭编辑器标签」处理。
+  try { row.focus({ preventScroll: true }); } catch {}
   const id = row.dataset.clipId;
   const withMod = event.ctrlKey || event.metaKey;
 
@@ -150,9 +218,28 @@ async function deleteEntries(ids) {
   const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
   if (!list.length) return;
   try {
+    // 删之前先记下「被删条目的位置」，用来决定删完该选哪一条（2026-10-28）。
+    // 之前用 keepSelection:false → 删完一个都不选中，右侧详情空白，
+    // Ctrl+W 再也删不动，用户原话「删掉后就没有文件选中了」，等于删除链断掉。
+    const order = visibleEntries().map(e => e.id);
+    const firstIndex = Math.min(...list.map(id => order.indexOf(id)).filter(i => i >= 0));
+    const removed = new Set(list);
+
     await call('remove', list);
     for (const id of list) { selection.delete(id); if (selectedId === id) selectedId = null; }
-    await refresh({ keepSelection: false });
+
+    // 删完自动选中「原位置的下一条」；没有了就选上一条；都没有则清空。
+    // 这一步在 refresh 之前算好，refresh 只负责按新数据渲染。
+    const survivors = order.filter(id => !removed.has(id));
+    const nextId = survivors[Math.min(Math.max(firstIndex, 0), survivors.length - 1)] || null;
+
+    await refresh({ keepSelection: true });
+    if (nextId && entries.some(e => e.id === nextId)) {
+      selectedId = nextId;
+      selection = new Set([nextId]);
+      lastAnchorId = nextId;
+      renderList(); renderDetail();
+    }
     setState(list.length > 1 ? '已删除 ' + list.length + ' 条' : '已删除');
   } catch (error) { setState('删除失败：' + error.message); }
 }
@@ -183,13 +270,13 @@ function openListMenu(event) {
   head.textContent = count > 1 ? '已选 ' + count + ' 条' : (row ? '剪贴板条目' : '剪贴板历史');
   menu.append(head);
   if (count) {
-    add('🗑 删除选中的 ' + count + ' 条', () => void deleteEntries([...selection]));
-    add('📋 复制选中内容', () => void copySelection());
-    add('📌 固定 / 取消固定', () => void pinSelection());
+    add('删除选中的 ' + count + ' 条', () => void deleteEntries([...selection]));
+    add('复制选中内容', () => void copySelection());
+    add('固定 / 取消固定', () => void pinSelection());
     const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.append(sep);
   }
-  add('☑ 全选（当前筛选结果）', () => { selection = new Set(visibleEntries().map(e => e.id)); renderList(); });
-  add('✕ 取消选择', () => { selection.clear(); renderList(); }, !count);
+  add('全选（当前筛选结果）', () => { selection = new Set(visibleEntries().map(e => e.id)); renderList(); });
+  add('取消选择', () => { selection.clear(); renderList(); }, !count);
 
   menu.classList.remove('hidden');
   const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 180;
@@ -199,20 +286,52 @@ function openListMenu(event) {
   document.addEventListener('pointerdown', close, true);
 }
 
-/** 复制选中内容：多条文字按空行拼接；单条图片走图片复制。 */
+/**
+ * 复制选中内容。
+ *
+ * 历史：
+ *   · 最初只有单条图片会真正写图片，多选时每张图被降级成 `[图片 28 KB]` 文字占位符。
+ *   · 2026-10-28 第一版修法：纯图多选只复制第一张并提示「剪贴板只能放一张位图」——
+ *     用户明确说要「一次复制多张图，甚至文字加图」，所以那不算解决。
+ *
+ * 现在的策略是按系统能力分流：
+ *   · 纯文字        → CF_UNICODETEXT，多条按空行拼接
+ *   · 单张图        → CF_DIB 位图（能直接粘进微信/文档）
+ *   · 多张图 / 图文混选 → **落成真实文件再按 CF_HDROP 放一批路径**。
+ *     Windows 剪贴板的位图槽只有一张，但「文件列表」可以是任意多个 ——
+ *     粘到资源管理器得到 N 个文件，粘到支持文件的程序（微信、飞书）也能一次收下。
+ *     这是纯剪贴板位图无法做到的，但能真正满足「一次复制多张」。
+ */
 async function copySelection() {
   const picked = entries.filter(e => selection.has(e.id));
   if (!picked.length) return;
+  const images = picked.filter(e => e.kind === 'image');
+  const texts = picked.filter(e => e.kind === 'text');
   try {
-    if (picked.length === 1 && picked[0].kind === 'image') {
-      const data = await call('readImage', picked[0].id);
-      await window.myIDE.clip.copyImageBase64?.(data.base64);
-      setState(window.myIDE.clip.copyImageBase64 ? '已复制图片' : '当前版本不支持复制图片');
+    // ① 纯文字：保持原来的文本复制
+    if (!images.length) {
+      await window.myIDE.clip.copy(texts.map(e => e.text || '').join('\n\n'));
+      setState('已复制 ' + texts.length + ' 条文字');
       return;
     }
-    const text = picked.map(e => e.kind === 'text' ? (e.text || '') : '[' + (e.preview || '图片') + ']').join('\n\n');
-    await window.myIDE.clip.copy(text);
-    setState('已复制 ' + picked.length + ' 条');
+    // ② 单张图且无文字：直接写位图，粘贴体验最好
+    if (images.length === 1 && !texts.length) {
+      const r = await window.myIDE.clipboardHistory.copyImage(images[0].id);
+      if (!r?.ok) { setState('复制图片失败：' + (r?.error || '未知原因')); return; }
+      setState('已复制图片' + (r.data?.width ? '（' + r.data.width + '×' + r.data.height + '）' : ''));
+      return;
+    }
+    // ③ 多张图 / 图文混选：落成文件，按文件列表复制
+    const exported = await window.myIDE.clipboardHistory.exportAsFiles(picked.map(e => e.id));
+    if (!exported?.ok) { setState('导出为文件失败：' + (exported?.error || '未知原因')); return; }
+    const files = exported.data?.files || [];
+    if (!files.length) { setState('没有可复制的文件'); return; }
+    const done = await window.myIDE.clip.copyImageFiles(files);
+    if (!done) { setState('写入剪贴板失败'); return; }
+    const parts = [];
+    if (images.length) parts.push(images.length + ' 张图');
+    if (texts.length) parts.push(texts.length + ' 条文字');
+    setState('已按文件复制 ' + parts.join(' + ') + '（' + files.length + ' 个文件）');
   } catch (error) { setState('复制失败：' + error.message); }
 }
 
@@ -248,8 +367,7 @@ async function pinSelection() {
     if (!entry) {
       host.innerHTML = '<div class="clip-empty">选择左侧一条记录查看或编辑。</div>';
       return;
-    }
-    draftDirty = false;
+    }    draftDirty = false;
     // 操作按钮放在顶部：用户选中一条之后第一件事就是「复制 / 保存 / 删除」，
     // 原来压在底部备注输入框下面，长文本时得滚到底才够得着。
     // 备注输入框已按要求移除 —— 它占掉一整行高度，收益不如按钮上移明显。
@@ -285,7 +403,19 @@ async function pinSelection() {
     }
   }
 
-  function setState(text) { const el = q('clip-state'); if (el) el.textContent = text || ''; }
+  /**
+   * 显示操作反馈。
+   * 2026-10-28：原来只写详情区的 #clip-state，而多选时详情区不渲染（renderDetail 只在
+   * 选中单条时跑），所以「多选复制」成功或失败用户都看不到任何提示——这也是这次报障
+   * 里最容易被忽略的一半。现在详情区没有时回退到列表头的状态位。
+   */
+  function setState(text) {
+    const detail = q('clip-state');
+    if (detail) { detail.textContent = text || ''; }
+    const list = q('clip-list-state');
+    if (list) { list.textContent = text || ''; list.classList.toggle('hidden', !text); }
+    if (detail && !text) { /* 清空即可 */ }
+  }
 
   function renderStats() {
     const el = q('clip-stats'); if (!el) return;
@@ -319,7 +449,14 @@ async function pinSelection() {
       for (const id of [...selection]) if (!alive.has(id)) selection.delete(id);
       const visibleIds = new Set(visibleEntries().map(e => e.id));
       for (const id of [...selection]) if (!visibleIds.has(id)) selection.delete(id);
-      if (!keepSelection || !entries.some(e => e.id === selectedId)) selectedId = entries[0]?.id || null;
+      // 选中项失效时回落到第一条；注意这是「显示用」的 selectedId，
+      // 同时把 selection 也同步过去 —— 否则会出现「右侧显示某条、列表却一条都没高亮」
+      // 的半选中状态，Ctrl+W 就找不到目标（删除链断掉的直接原因）。
+      if (!keepSelection || !entries.some(e => e.id === selectedId)) {
+        selectedId = entries[0]?.id || null;
+        if (selectedId) { selection = new Set([selectedId]); lastAnchorId = selectedId; }
+        else selection = new Set();
+      }
       renderAll();
     } catch (error) {
       const host = q('clip-list');
@@ -351,17 +488,15 @@ async function pinSelection() {
     if (!entry) return;
     if (name === 'copy') {
       try {
-        if (entry.kind === 'text') await window.myIDE.clip.copy(entry.text || '');
-        else {
-          const data = await call('readImage', entry.id);
-          await window.myIDE.clip.copyImageBase64?.(data.base64);
-          if (!window.myIDE.clip.copyImageBase64) {
-            // 没有现成 API 时退回：把 PNG 写回系统剪贴板由主进程处理
-            await call('addImageBase64', data.base64); // 占位：至少不静默失败
-            setState('已重新入库（复制图片需主进程支持）');
-          }
+        if (entry.kind === 'text') {
+          await window.myIDE.clip.copy(entry.text || '');
+          setState('已复制到剪贴板');
+        } else {
+          // 图片：主进程 clipboard.writeImage 真正写回系统剪贴板（并回读校验）
+          const r = await window.myIDE.clipboardHistory.copyImage(entry.id);
+          if (!r?.ok) { setState('复制图片失败：' + (r?.error || '未知原因')); return; }
+          setState('已复制图片' + (r.data?.width ? '（' + r.data.width + '×' + r.data.height + '）' : ''));
         }
-        setState('已复制到剪贴板');
       } catch (error) { setState('复制失败：' + error.message); }
       return;
     }
@@ -421,9 +556,13 @@ async function pinSelection() {
     // 右键：批量操作（删除选中 / 复制 / 固定 / 全选 / 取消选择）。
     q('clip-list')?.addEventListener('contextmenu', openListMenu);
     // 键盘：Ctrl+A 全选当前筛选结果，Esc 取消选择，Delete 删除选中。
-    q('clip-list')?.addEventListener('keydown', event => {
-      const inList = event.target.closest('#clip-list');
-      if (!inList) return;
+    // ⚠ Ctrl+W 不在这里处理：真实按键从 body 冒泡到 document，不经过面板容器，
+    //   所以统一由 shortcuts.js 的全局监听判定后调用 ClipboardPanel.deleteSelection()
+    //   （2026-10-28：之前挂在 #clip-list / #clipboard-main 上都收不到事件）。
+    const keyHost = document.getElementById('clipboard-main') || document.body;
+    keyHost.addEventListener('keydown', event => {
+      const inPanel = event.target.closest && event.target.closest('#clipboard-main');
+      if (!inPanel) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
         event.preventDefault();
         selection = new Set(visibleEntries().map(e => e.id));
@@ -434,7 +573,7 @@ async function pinSelection() {
         event.preventDefault();
         void deleteEntries([...selection]);
       }
-    });
+    }, false);
     q('clip-detail')?.addEventListener('click', event => {
       const action = event.target.closest('[data-clip-act]')?.dataset.clipAct;
       if (action) void act(action);
@@ -475,5 +614,39 @@ async function pinSelection() {
     return { selected: entries.find(e => e.id === selectedId)?.kind || null, total: stats.total || 0, watching };
   }
 
-  return { show, hide, syncVisible, refresh, getPageContext };
+  // 仅自检用：注入固定数据，让「按日期分组」这类依赖时间的渲染可被稳定验证。
+  // 生产路径不会调用；不改存储，只替换内存里的 entries 再重绘。
+  function __seed(list) {
+    entries = (Array.isArray(list) ? list : []).map((e, i) => ({
+      id: e.id || ('seed-' + i),
+      kind: e.kind === 'image' ? 'image' : 'text',
+      hash: 'h' + i,
+      text: e.text || '', preview: e.preview || e.text || '', bytes: Buffer_byteLength(e.text || ''),
+      copiedAt: Number(e.copiedAt) || Date.now(), pinned: !!e.pinned, note: e.note || '',
+    }));
+    entries.sort((a, b) => b.copiedAt - a.copiedAt);
+    renderList();
+  }
+  function Buffer_byteLength(text) {
+    try { return new TextEncoder().encode(text).length; } catch { return text.length; }
+  }
+
+  return { show, hide, syncVisible, refresh, getPageContext, __seed,
+    /** 面板当前是否在显示。快捷键判定必须用它，不能查 DOM（隐藏面板的节点仍在）。 */
+    isVisible: () => !!visible,
+    /**
+     * 删除当前选中项。供全局快捷键（Ctrl+W）调用 —— 面板内的 keydown 收不到
+     * 从 body 冒泡的按键，这条路径才是真正生效的那条。
+     */
+    deleteSelection: () => {
+      if (selection.size) { void deleteEntries([...selection]); return true; }
+      setState('先在列表里选中要删除的条目');
+      return false;
+    },
+    // 仅自检用：多选复制的三种分支要靠真实 entry 验证
+    __testSelect: ids => { selection = new Set(ids); renderList(); },
+    __testCopy: () => copySelection(),
+    __debugPick: () => ({ entryKinds: entries.map(e => e.id + ':' + e.kind), selected: [...selection] }),
+    __testState: () => (document.getElementById('clip-state')?.textContent
+      || document.getElementById('clip-list-state')?.textContent || '').trim() };
 })();

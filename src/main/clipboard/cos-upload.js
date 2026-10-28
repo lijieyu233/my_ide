@@ -8,13 +8,20 @@
  * 签名算法（COS 官方「签名算法 v5」简化版，用于 PUT Object）：
  *   KeyTime        = start;end
  *   SignKey        = HMAC-SHA1(SecretKey, KeyTime)          → hex
- *   HttpString     = put\n/<key>\n\n<host>\n                 （小写方法 + 小写路径）
+ *   HttpString     = put\n/<key>\n\nhost=<host>\n            （小写方法 + 小写路径；header 段必须带 key）
  *   StringToSign   = sha1\n<KeyTime>\n<sha1(HttpString)>\n
  *   Signature      = HMAC-SHA1(SignKey, StringToSign)        → hex
  *   Authorization  = q-sign-algorithm=sha1&q-ak=<SecretId>&q-sign-time=<KeyTime>
  *                    &q-key-time=<KeyTime>&q-header-list=host&q-url-param-list=&q-signature=<Signature>
  *
- * 路径要做 URL 编码并用小写（COS 要求），但对象名本身保留原样传给 URL。
+ * ⚠ 曾经写成裸 host 值（没有 `host=` 前缀），COS 一律回 403
+ * SignatureDoesNotMatch，且错误体里的 FormatString 会原样显示正确形态
+ * （`host=mypictures-xxx.cos.ap-beijing.myqcloud.com`）—— 2026-10-27 用真实桶
+ * mypictures-1314100263 实测确认。header 段的格式是 `小写头名=小写值`，
+ * 未参与签名的查询串留空行。
+ *
+ * 路径必须用**原始未编码的 key**（仅小写化）参与签名，请求 URL 才做 URL 编码。
+ * 曾经把签名路径写成 encodePath(key)：ASCII 名恰好能过，中文名一律 403。
  */
 const { createHmac, createHash } = require('crypto');
 const { net } = require('electron');
@@ -31,8 +38,17 @@ function authorization({ secretId, secretKey, method, key, host, expiresIn = 600
   const now = Math.floor(Date.now() / 1000);
   const keyTime = now + ';' + (now + expiresIn);
   const signKey = hmacHex(secretKey, keyTime);
-  // HttpString: 小写方法 \n 小写路径 \n 查询串 \n 小写 host \n
-  const httpString = [method.toLowerCase(), '/' + encodePath(key).toLowerCase(), '', host.toLowerCase(), ''].join('\n');
+  // HttpString: 小写方法 \n 路径 \n 查询串 \n 头列表 \n
+  // 头列表必须是 `头名=值` 形式（q-header-list=host 就对应 host=<host>），
+  // 只写裸值会被 COS 判为签名不匹配。
+  //
+  // ⚠ 路径必须用**未编码的原始 key**，只做小写化。
+  //   曾经用 encodePath(key).toLowerCase()：纯 ASCII 名恰好能过（编码前后一致），
+  //   但中文/空格文件名会被编成 %XX，签名串与 COS 还原出的路径对不上，一律
+  //   403 SignatureDoesNotMatch。2026-10-28 用真实桶实测四组对照：中文 key
+  //   只有"原始路径"能返 200，编码过的两组全 403。请求 URL 仍然照常编码。
+  const headers = 'host=' + host.toLowerCase();
+  const httpString = [method.toLowerCase(), '/' + key.toLowerCase(), '', headers, ''].join('\n');
   const stringToSign = ['sha1', keyTime, sha1hex(httpString), ''].join('\n');
   const signature = hmacHex(signKey, stringToSign);
   return 'q-sign-algorithm=sha1'

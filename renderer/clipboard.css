@@ -50,6 +50,31 @@
 .clip-filters button:hover { background: var(--bg-hover); color: var(--text); }
 .clip-filters button.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text-bright); }
 .clip-list { flex: 1; min-height: 0; overflow: auto; padding: .3em; }
+/* 列表区操作反馈：多选时详情区为空，结果只能显示在这里 */
+.clip-list-state {
+  margin: 0 .7em .35em; padding: .4em .6em;
+  border-radius: .35em; font-size: .82em;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text); border-left: 2px solid var(--accent);
+}
+/* 按日期分组（2026-10-28）：组头可点收起，粘性吸顶让滚动时也知道在看哪天 */
+.clip-group { margin-bottom: .1em; }
+.clip-group-head {
+  display: flex; align-items: center; gap: .3em; width: 100%;
+  padding: .38em .5em; margin: .1em 0 .15em;
+  border: 0; border-radius: .35em; background: transparent;
+  color: var(--text-dim); font: inherit; font-size: .8em; font-weight: 600;
+  text-align: left; cursor: pointer; letter-spacing: .02em;
+  position: sticky; top: 0; z-index: 1;
+  backdrop-filter: blur(6px);
+  background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+}
+.clip-group-head:hover { color: var(--text-bright); background: var(--bg-hover); }
+.clip-group-caret { width: .85em; height: .85em; flex: 0 0 auto; transition: transform .15s ease; transform: rotate(0deg); }
+.clip-group.collapsed .clip-group-caret { transform: rotate(-90deg); }
+.clip-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip-group-count { flex: 0 0 auto; font-weight: 400; opacity: .7; font-size: .92em; }
+.clip-group.collapsed .clip-group-head { margin-bottom: .3em; }
 .clip-row {
   display: flex; align-items: flex-start; gap: .55em; width: 100%;
   padding: .55em .6em; margin-bottom: .15em; border: 0; border-radius: .4em;

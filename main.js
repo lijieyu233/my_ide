@@ -101,6 +101,9 @@ const remoteService=require('./src/main/remote/remote-ipc').register({ app, ipcM
 const clipboardHistory = require('./src/main/clipboard/clipboard-ipc').register({ app, ipcMain, clipboard, getWindow: () => mainWindow });
 // 腾讯云 COS 直传：签名在主进程算（SecretKey 不进渲染进程）
 require('./src/main/clipboard/cos-upload').register({ ipcMain, getWindow: () => mainWindow });
+// 导出内嵌远程图片：渲染层 CSP 没声明 connect-src，renderer 里 fetch 任意 https 图片
+// 一律 Failed to fetch（img-src 放行只代表能显示，不代表能读到字节）。
+require('./src/main/clipboard/image-fetch').register({ ipcMain, getWindow: () => mainWindow });
 const aiSshTools=require('./src/main/ai/ai-ssh-tools').createService({service:remoteService});
 // 远程文件的虚拟路径路由（remote://<sid>/<path>）。让「右键 → 编辑远程文件」
 // 把文件当普通文档打开，读写直连 SFTP —— 标签页显示真实远程路径，中间不落本地盘。
@@ -657,6 +660,17 @@ ipcMain.handle('fs:readFile', async (_e, p, encoding) => {
     return { ...TextFormat.decodeText(snapshot.bytes, encoding), version: snapshot.version };
   } catch (e) { return { error: String(e.message || e), errorCode: e.code || 'READ_FAILED', version: snapshot && snapshot.version }; }
 });
+// 文件大小（状态栏显示用）。只读 stat，不读内容 —— 大文件也不会有开销。
+ipcMain.handle('fs:fileSize', async (_e, p) => {
+  try {
+    const st = await fs.promises.stat(p);
+    return { ok: true, size: st.size, mtimeMs: st.mtimeMs };
+  } catch (error) {
+    // 未保存的新文件 / 远程虚拟路径走不到这里，按「未知」处理，不弹错
+    return { ok: false, error: String((error && error.message) || error), errorCode: (error && error.code) || 'STAT_FAILED' };
+  }
+});
+
 ipcMain.handle('fs:fileVersion', async (_e, p) => {
   const remote = await remoteFs.fileVersion(p);
   if (remote) return remote;
