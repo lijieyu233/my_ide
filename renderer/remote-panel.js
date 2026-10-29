@@ -989,9 +989,12 @@ window.RemotePanel = (() => {
       action: 'disk.vacuumJournal', args: { size: '200M' }, danger: true, probe: 'disk.journalSize' },
     { key: 'docker-images', name: 'Docker 悬空镜像', meta: 'docker image prune · 未被引用的层',
       action: 'docker.pruneImages', danger: true, probe: 'docker.df' },
-    { key: 'usage', name: '主目录占用排行', meta: 'du -xhd1 · 只读',
-      action: 'disk.usage', args: { path: '/home/ubuntu' }, kind: 'info' },
-    { key: 'bigfiles', name: '大于 100MB 的文件', meta: 'find · 只读',
+    // 「主目录占用排行」已删除（2026-10-29）：目录分类并进磁盘后，各目录的大小
+    // 已经逐行列出来了，再放一个「再点一次看排行」是重复入口 ——
+    // 用户正是觉得这类项「不知道意义在哪」。
+    // 保留「大文件」：它是唯一能回答「这些 GB 具体是哪个文件」的入口，
+    // 与目录（按目录聚合）不重复。
+    { key: 'bigfiles', name: '大于 100MB 的文件', meta: 'find · 找出具体是哪个文件占的',
       action: 'disk.bigFiles', args: { path: '/home/ubuntu' }, kind: 'info' },
   ];
 
@@ -1221,24 +1224,13 @@ window.RemotePanel = (() => {
     }
 
     // ── 目录 ──
+    // ── 目录 ──
+    // 2026-10-29：独立「目录」分类已并入「磁盘」（见 opsCat === 'disk' 分支）。
+    // 这个分支保留为兼容层 —— 老的书签式状态（listState / opsCat 缓存在内存里）
+    // 可能还是 'du'，直接返回磁盘分类的行，不至于打开一片空白。
     if (opsCat === 'du') {
-      const total = (ov.du || []).reduce((n, d) => n + d.bytes, 0);
-      return (ov.du || []).map(d => ({
-        key: 'du-' + d.path, name: d.path,
-        cpuNum: 0, memNum: d.bytes,
-        badge: { text: '', level: 'off' }, bad: false,
-        keyText: fmtBytes(d.bytes),
-        meta: total ? '占主目录 ' + Math.round(d.bytes / total * 100) + '%' : '',
-        cells: {
-          name: d.path,
-          size: fmtBytes(d.bytes),
-          pct: total ? Math.round(d.bytes / total * 100) + "%" : "—",
-        },
-        sub: '',
-        state: 'on',
-        args: { path: d.path },
-        actions: [{ label: '看排行', action: 'disk.usage', kind: 'info', primary: true }],
-      }));
+      opsCat = 'disk';
+      return opsRows(ov);
     }
 
     // ── 系统 ──
@@ -1279,7 +1271,46 @@ window.RemotePanel = (() => {
         state: d.percent >= 90 ? 'warn' : 'on',
         args: {}, actions: [],
       }));
-      return parts.concat(DISK_TARGETS.map(t => ({
+
+      // 目录占用（2026-10-29 用户要求「磁盘和目录合并成一个」+「不能显示所有目录吗」）。
+      // 原来「目录」是独立分类，只看 HOME 一级前 12 条；现在并进「磁盘」，
+      // 数据扩到 HOME 40 条 + 根分区 20 条，按大小倒序，一眼看出盘被谁占了。
+      // 「占比」以所在分区总量为分母（HOME 与根目录各按自己的分区算）。
+      const diskTotal = {};
+      for (const d of (ov.disks || [])) diskTotal[d.mount] = d.total;
+      const duTotal = (ov.du || []).reduce((s, d) => s + d.bytes, 0);
+      const dirs = (ov.du || []).map(d => {
+        const pctOfTotal = duTotal ? Math.round(d.bytes / duTotal * 100) : 0;
+        // 取「路径属于哪个挂载点」：最长前缀匹配（/home/ubuntu → /home 或 /）
+        let mount = '/';
+        for (const m of Object.keys(diskTotal)) {
+          if (m !== '/' && (d.path === m || d.path.startsWith(m + '/'))) {
+            if (m.length > mount.length) mount = m;
+          }
+        }
+        const total = diskTotal[mount] || 0;
+        const pctOfDisk = total ? Math.round(d.bytes / total * 100) : pctOfTotal;
+        return {
+          key: 'du-' + d.path, name: d.path,
+          badge: { text: fmtBytes(d.bytes), level: pctOfDisk >= 50 ? 'warn' : 'off' },
+          cells: {
+            name: d.path,
+            used: fmtBytes(d.bytes),
+            total: total ? fmtBytes(total) : '—',
+            percent: pctOfDisk + '%',
+            note: '目录 · ' + (total ? '占 ' + mount : '占已列目录'),
+          },
+          bad: false,
+          keyText: fmtBytes(d.bytes),
+          meta: 'du -x · ' + fmtBytes(d.bytes),
+          sub: '',
+          state: pctOfDisk >= 50 ? 'warn' : 'on',
+          args: { path: d.path },
+          actions: [{ label: '看排行', action: 'disk.usage', args: { path: d.path }, kind: 'info', primary: true }],
+        };
+      });
+
+      return parts.concat(dirs, DISK_TARGETS.map(t => ({
         key: t.key, name: t.name,
         cells: { name: t.name, used: "—", total: "—", percent: "—", note: t.meta },
         badge: { text: t.kind === 'info' ? '查看' : '可清理', level: 'off' },
@@ -1342,14 +1373,17 @@ window.RemotePanel = (() => {
       svc: (ov.services || []).length,
       proc: (ov.procs || []).length,
       port: (ov.listen || []).length,
-      disk: DISK_TARGETS.length,
-      du: (ov.du || []).length,
+      // 磁盘 = 分区数 + 目录数 + 清理项数（合并后的总量，与行数一致）
+      disk: (ov.disks || []).length + (ov.du || []).length + DISK_TARGETS.length,
       sys: 4,
     };
     // 分类（2026-10-28）：原来右侧那些「只能看」的卡片并进来，
     // 系统信息 / 监听端口 / 主目录都成了分类，一处看全、一处操作。
     const seg = [['docker', 'Docker'], ['svc', '服务'], ['proc', '进程'],
-      ['port', '端口'], ['disk', '磁盘'], ['du', '目录'], ['sys', '系统']].map(([id, label]) =>
+      // 「目录」已并入「磁盘」（2026-10-29）：磁盘里既有分区行，也有各目录占用行。
+      // 两处割裂时用户不知道「目录」页的意义 —— 它们本来就是同一个问题：
+      // 盘被谁占了。
+      ['port', '端口'], ['disk', '磁盘'], ['sys', '系统']].map(([id, label]) =>
       '<button class="remote-ops-seg' + (opsCat === id ? ' active' : '') + '" data-ops-cat="' + id + '">'
       + label + '<em>' + counts[id] + '</em></button>').join('');
 
@@ -1869,7 +1903,39 @@ window.RemotePanel = (() => {
         const menu = host.querySelector('[data-ops-menu="' + CSS.escape(key) + '"]');
         // 先关掉其它已展开的，保证同时只有一个菜单
         host.querySelectorAll('[data-ops-menu]').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
-        if (menu) menu.classList.toggle('hidden');
+        if (!menu) return;
+        const opening = menu.classList.contains('hidden');
+        menu.classList.toggle('hidden');
+        // 菜单改用 fixed 定位（2026-10-29 修「⋯ 点了没反应」）。
+        //
+        // 原来菜单是 position:absolute + right:0;top:100%，定位基准是**整份滚动内容**：
+        // 实测第 1 行菜单 top=499（可见），但第 15 行 top=1086、第 30 行 top=1673，
+        // 而列表容器底部只有 977 —— 靠下的行菜单全部渲染到列表下方看不见的地方，
+        // 用户看到的就是「点了什么都不出现」。
+        //
+        // 现在按按钮的视口坐标算位置，菜单脱离滚动内容的坐标系；同时做贴边修正，
+        // 保证不会超出窗口。
+        if (opening) {
+          const r = more.getBoundingClientRect();
+          menu.style.position = 'fixed';
+          menu.style.right = 'auto';
+          menu.style.top = '0px';
+          menu.style.left = '0px';
+          // 必须先在可见状态下量尺寸：hidden 时 offsetWidth 恒为 0，
+          // 拿 0 去算贴边会把菜单推到屏幕外（实测踩过）。
+          const mw = menu.offsetWidth || 120, mh = menu.offsetHeight || 100;
+          const vw = window.innerWidth, vh = window.innerHeight;
+          let left = r.right - mw;            // 右对齐按钮，像下拉一样贴着
+          let top = r.bottom + 4;
+          // 下方放不下就往上翻（贴着按钮上沿）
+          if (top + mh > vh - 8) top = r.top - mh - 4;
+          // 最后无条件钳到视口内：按钮可能在滚动容器的可视区之外，
+          // 此时 r.top 本身就 > vh，往上翻也还是看不见 —— 钳制能保证至少可见。
+          left = Math.max(8, Math.min(left, vw - mw - 8));
+          top = Math.max(8, Math.min(top, vh - mh - 8));
+          menu.style.left = Math.round(left) + 'px';
+          menu.style.top = Math.round(top) + 'px';
+        }
         return;
       }
       // 点菜单外任意处收起

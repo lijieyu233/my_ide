@@ -309,7 +309,15 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     // comm 是固定列、args 在最后（内部含空格），顺序不能换。
     '(ps -eo pid,pcpu,pmem,rss,etime,comm,args --sort=-pcpu 2>/dev/null | head -n 41) || true',
     'echo "' + OVERVIEW_MARK + 'du"',
-    '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 12) || true',
+    // 主目录下各一级目录的体积（2026-10-29 用户要求「不能显示所有目录吗」）。
+    // 原来 `head -n 12` 只留前 12 条，小目录全被截掉；改成 40 条覆盖通常的主目录。
+    // 同时补上 `du -xk --max-depth=1 /` 的根分区一级目录 —— 用户在「目录」页
+    // 想看的是「磁盘都被谁占了」，只列 HOME 会漏掉 /var、/usr 这些大户。
+    // 两段用 @@MYIDE-OVERVIEW:duroot 区分，解析侧合并。
+    '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 40) || true',
+    'echo "' + OVERVIEW_MARK + 'duroot"',
+    // 根目录一级：排除会重复统计的挂载点与虚拟文件系统，只保留真实目录
+    '(du -xk --max-depth=1 / 2>/dev/null | grep -Ev "^[0-9]+\\s+/(proc|sys|dev|run|snap|boot/efi)(/|$)" | sort -rn | head -n 20) || true',
     'echo "' + OVERVIEW_MARK + 'end"',
   ].join('\n');
 
@@ -527,11 +535,18 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
         startedAt: meta.startedAt || null, memory: meta.memory ?? null, enabled: meta.enabled ?? null,
       };
     }).filter(Boolean);
-    const du = String(parts.du || '').split('\n').map(line => {
+    // 目录体积：两段合并（HOME 一级 40 条 + 根分区一级 20 条）。
+    // 2026-10-29：原来只列 HOME 前 12 条，用户看不到全部目录，也看不到 /var、/usr
+    // 这些真正吃盘的系统目录。合并后按路径去重（HOME 本身可能等于某个根级目录）。
+    const parseDu = text => String(text || '').split('\n').map(line => {
       const m = /^(\d+)\s+(.+)$/.exec(line.trim());
       if (!m) return null;
       return { bytes: Number(m[1]) * 1024, path: m[2] };
     }).filter(Boolean);
+    const duSeen = new Set();
+    const du = [...parseDu(parts.du), ...parseDu(parts.duroot)]
+      .filter(d => (duSeen.has(d.path) ? false : (duSeen.add(d.path), true)))
+      .sort((a, b) => b.bytes - a.bytes);
     // 进程表（2026-10-28）：ps -eo pid,pcpu,pmem,rss,etime,comm,args
     // 用 args 而不是 comm 命名，才能看到完整命令行（java 带 -Xmx 那种）。
     // 2026-10-29 加 comm 作兜底：args 为空时（进程已退出 / 特殊进程）至少还有名字，

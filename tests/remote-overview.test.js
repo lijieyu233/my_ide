@@ -52,9 +52,13 @@ check('只画两张卡：资源监控 + 服务器对象',
   host.querySelectorAll('.remote-ov-card').length === 2);
 check('单列布局（不再有右侧列）',
   !!host.querySelector('.remote-ov-grid.single') && !host.querySelector('.remote-ov-col.side'));
-check('服务器对象卡内含七个分类',
-  ['Docker', '服务', '进程', '端口', '磁盘', '目录', '系统']
+// 2026-10-29：独立的「目录」分类并入「磁盘」（用户要求合并 —— 两者本来
+// 回答的是同一个问题：盘被谁占了）。分类数 7 → 6。
+check('服务器对象卡内含六个分类',
+  ['Docker', '服务', '进程', '端口', '磁盘', '系统']
     .every(name => new RegExp(name).test(host.querySelector('.remote-ops-segs')?.textContent || '')));
+check('不再有独立的「目录」分类',
+  !/目录/.test(host.querySelector('.remote-ops-segs')?.textContent || ''));
 check('三格摘要条（CPU/内存/磁盘）都有宽度',
   [...host.querySelectorAll('.remote-ov-mini-bar>i')].map(e => e.style.width).join(',') === '50%,40%,52%');
 check('CPU 由 /proc/stat 算出 50% 使用率', /50%/.test(host.querySelector('.remote-ov-mini').textContent));
