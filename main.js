@@ -233,6 +233,37 @@ function createWindow() {
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
   const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);}} };
+  // ── 宿主窗口不许被导航走（2026-10-29）────────────────────────────────
+  // 事故：用户点击 AI 回复里的普通 <a href="..."> 链接，整个窗口从
+  // file:///.../index.html 导航到外网地址 —— 应用界面全消失，只剩一片空白，
+  // 看起来像「白屏崩溃」（实测：getURL() 直接变成 https://example.com）。
+  // 原因是这里只监听了 did-start-navigation（事后清理 AI 状态），
+  // 没有任何 will-navigate 拦截。内置浏览器 view 那边有
+  // setWindowOpenHandler 保护，宿主窗口反而漏了。
+  //
+  // 处理策略与内置浏览器一致：http(s)/file 交给「内置浏览器新标签」打开，
+  // 其它协议（mailto: 等）交系统；一律 deny 掉窗口内导航。
+  const HOST_URL = 'file:///' + path.join(__dirname, 'renderer', 'index.html').replace(/\\/g, '/');
+  aiHost.on('will-navigate', (event, url) => {
+    // 允许留在应用自身的 index.html（含带 hash/query 的重载）
+    const sameDoc = String(url).split('#')[0].split('?')[0] === HOST_URL.split('#')[0].split('?')[0];
+    if (sameDoc) return;
+    event.preventDefault();
+    if (/^(https?|file):/i.test(url)) {
+      try { mainWindow?.webContents.send('browser:new-tab', { url }); } catch {}
+      return;
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) shell.openExternal(url).catch(() => {});
+  });
+  // 中键/ctrl+点击等也可能触发窗口打开，兜住
+  aiHost.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|file):/i.test(url)) {
+      try { mainWindow?.webContents.send('browser:new-tab', { url }); } catch {}
+      return { action: 'deny' };
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
   // 异步工作区写入结束后再销毁渲染进程，关闭窗口不能丢掉最后一个书签。

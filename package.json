@@ -67,6 +67,7 @@
     "test:startup": "node tests/startup.test.js && node tests/app-instance.test.js",
     "check:startup": "electron scripts/check-startup.js --disable-gpu --no-sandbox",
     "check:remote": "electron scripts/check-remote.js --disable-gpu --no-sandbox",
+    "check:host-navigation": "node scripts/run-electron-check.js check-host-navigation.js",
     "check:remote-ops": "node scripts/run-electron-check.js check-remote-ops.js",
     "check:instance": "electron scripts/check-instance.js --disable-gpu --no-sandbox",
     "check:ai-launch": "electron scripts/check-ai-launch.js --disable-gpu --no-sandbox",
