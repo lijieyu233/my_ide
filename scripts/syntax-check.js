@@ -37,18 +37,27 @@ if (fail) {
 }
 
 // ── 绿盾透明加密自检 ────────────────────────────────────────────────────
-// 这台机器装了 TsdEncryptMF（绿盾），文件在磁盘上可能是密文，**白名单进程
-// （node / git / electron）读到的却是明文**。所以：
-//   · bash / coreutils 里 `head` 看到 %TSD-Header 是正常现象，不代表损坏；
-//   · 真正要抓的是「损坏」——用恶意方式（cat >> 之类非白名单写入）把密文
-//     写进了文件，这时连白名单进程读出来也是乱码，CSS 解析出 0 条规则、
-//     界面静默变白板（实测过 renderer/remote.css）。
+// 这台机器装了「天锐绿盾 TSD」透明加密：同一个文件，受信进程（node / python /
+// 编辑器）读到明文，不受信进程（PowerShell / 打包后的 exe）读到
+// %TSD-Header-###% 开头的密文。**两种结果不同是正常现象，不能据此判断文件损坏。**
 //
-// 因此判据不能只看头 16 字节（透明加密下永远看不到），必须看**内容是否可用**：
-//   1. 全文里不能出现 %TSD-Header 标记（真损坏时它会以明文形式留在内容里）；
+// 所以：
+//   · bash 里 `head` 看到 %TSD-Header 不代表有问题（实测 renderer/remote.css
+//     就是这样，node 读出来是完好的 355 条规则）；
+//   · 这里查的是「真损坏」——某个非受信进程读到密文后把它**写进了文件**
+//     （典型：cat >> / Set-Content），此时连受信进程读出来也是垃圾：
+//     CSS 解析 0 条规则、界面静默变白板（实测踩过）。
+//
+// ⚠ 本段只是「廉价损坏哨兵」，不是 TSD 的权威校验：受信进程可能始终看到明文，
+//   真正的加密/解密确认必须走官方工具（npm run shield → OcularDecrypt.exe）。
+//   这一点是规范里点名的坑：自己写「检查文件头是不是 %TSD-Header」当最终验证
+//   属于**假闸门**。
+//
+// 判据（看内容是否可用，而不是看头 16 字节）：
+//   1. 内容**以** %TSD-Header 开头（密文被写进文件的症状）；
 //   2. 不能有 U+FFFD 替换字符（编码链路坏掉的典型症状，实测一次坏 179 个字符）；
 //   3. CSS 必须至少解析出规则块（0 条 = 白板）。
-// 2026-10-29：原来只查头 16 字节，对透明加密等于没查。
+// 2026-10-29：原来只查头 16 字节，对透明加密等于没查；覆盖面同时扩到主进程。
 const textAssets = [...files];
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (/\.(css|html)$/.test(f)) textAssets.push('renderer/' + f);
@@ -68,11 +77,17 @@ for (const f of [...new Set(textAssets)]) {
   if (problems.length) damaged.push(f + ' -> ' + problems.join('；'));
 }
 if (damaged.length) {
-  console.error('[syntax] ' + damaged.length + ' 个渲染资源已损坏（界面会失去样式/逻辑）:');
+  console.error('[syntax] ' + damaged.length + ' 个源文件已损坏（界面会失去样式/逻辑）:');
   for (const d of damaged) console.error('  - ' + d);
-  console.error('  解法：用管道法从 git 复原（别用 cat >> 追加，会把密文写进文件）：');
-  console.error('    git cat-file blob $(git rev-parse HEAD:<file>) | node -e "..." > %LOCALAPPDATA%/Temp/x');
-  console.error('    然后 cp 回原路径；或把仓库目录加入绿盾白名单。');
+  console.error('  先用绿盾官方工具做原地检测+解密（本机已接好）：');
+  console.error('    npm run shield');
+  console.error('  它调用 OcularDecrypt.exe，对仓库原地检测并解密；');
+  console.error('  工具找不到时手动指定路径：');
+  console.error('    node scripts/decrypt-shield.js <文件或目录>');
+  console.error('');
+  console.error('  ⚠ 别用 cat >> / PowerShell Set-Content 之类非受信写入去「修补」——');
+  console.error('    那些进程会读到密文并把它写进文件，正是这一步造成损坏。');
+  console.error('    改文件请用 node / python（受信进程）完成。');
   process.exit(1);
 }
 console.log('[syntax] ' + files.length + ' 个文件全部通过');
