@@ -90,6 +90,23 @@ window.MarkdownImages = (() => {
         if (!result?.ok) throw Error(result?.error || '复制图片失败'); toast('已复制图片');
       }, !!img.naturalWidth);
       if (options.resize) item('↔ 恢复默认大小', () => { if (options.resize(null) === false) throw Error('图片位置或文档状态已变化，请重试'); }, options.editable?.() !== false);
+      // 删除（2026-10-29 用户要求）。
+      // ⚠ 这个函数是图片右键菜单的**唯一**出口：它调用 stopPropagation()
+      //   把事件截住，外面 widget 上挂的 contextmenu 永远收不到 —— 之前把删除
+      //   加在 md-editor.js 的 widget 上，用户右键看到的仍是这个老菜单。
+      // options.removeImage：删除这张图的引用；options.removeLine：删掉整行。
+      // 两者都由调用方提供，这里只负责触发（不猜文档结构）。
+      if (options.removeImage) {
+        const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.append(sep);
+        item('🗑️ 删除这张图片', () => {
+          if (options.removeImage() === false) throw Error('图片位置或文档状态已变化，请重试');
+        }, options.editable?.() !== false);
+      }
+      if (options.removeLine) {
+        item('🗑️ 删除整行', () => {
+          if (options.removeLine() === false) throw Error('图片位置或文档状态已变化，请重试');
+        }, options.editable?.() !== false);
+      }
       menu.classList.remove('hidden');
       menu.style.left = Math.max(0, Math.min(e.clientX, innerWidth - menu.offsetWidth)) + 'px';
       menu.style.top = Math.max(0, Math.min(e.clientY, innerHeight - menu.offsetHeight)) + 'px';

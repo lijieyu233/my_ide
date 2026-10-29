@@ -350,122 +350,6 @@ window.MdEditor = (() => {
   // ---------- 图片 widget：![alt](src) → 内联 <img> ----------
   const imageViews = new WeakMap();
 
-  /**
-   * 图片的右键菜单（2026-10-29 用户要求）。
-   *
-   * 为什么需要：live 模式下图片是一个 widget，想删掉它原来的唯一办法是把光标
-   * 挪进那一行、按整行选再删 —— 而图片把光标挡在外面（见 ImgWidget 里那段注释
-   * 关于 ignoreEvent 的说明），操作起来很别扭。右键直接删是最符合直觉的入口。
-   *
-   * 删除的粒度分两种，都要给：
-   *   · 只删图片引用（保留所在行的其它文字）
-   *   · 整行删除（图片通常独占一行；删完不留空行）
-   * 两者都走真实 dispatch + 可撤销（userEvent 标记），不做文件删除 ——
-   * 用户在编辑器里期望的是「从文档里去掉」，不是「把磁盘上的图删了」。
-   * 真要删磁盘文件，风险太大且不可撤销，这里刻意不提供。
-   */
-  function openImageMenu(view, widget, wrap, event) {
-    const menu = document.getElementById('ctx-menu');
-    if (!menu) return;
-    // 快照：菜单是常驻 DOM，等用户点下某一项时文档可能已经变了，
-    // 用快照校验「还是同一张图、位置也没挪」，否则拒绝执行（防误删别的图）。
-    const snapshotRaw = widget.raw;
-    const snapshotFrom = widget.from;
-    const curDoc = view.state.doc.sliceString(snapshotFrom, snapshotFrom + snapshotRaw.length);
-    if (curDoc !== snapshotRaw) return;
-    const editable = widget.canResize && !view.state.readOnly && view.state.facet(EditorView.editable);
-
-    menu.replaceChildren();
-    const add = (label, fn, disabled) => {
-      const item = document.createElement('div');
-      item.className = 'ctx-item' + (disabled ? ' is-disabled' : '');
-      item.textContent = label;
-      if (disabled) { item.setAttribute('aria-disabled', 'true'); menu.append(item); return; }
-      item.onclick = () => {
-        menu.classList.add('hidden');
-        // 点击时再校验一次：位置/内容变了就不动（菜单开着的这几秒里用户可能改了文档）
-        const now = view.state.doc.sliceString(snapshotFrom, snapshotFrom + snapshotRaw.length);
-        if (now !== snapshotRaw || !view.state.facet(EditorView.editable) || view.state.readOnly) return;
-        fn();
-        view.focus();
-      };
-      menu.append(item);
-    };
-
-    // 该图片所在行是否「整行只有这张图」（含行首尾空白）
-    const line = view.state.doc.lineAt(snapshotFrom);
-    const onlyThis = line.text.trim() === snapshotRaw.trim();
-
-    add('🗑️ 删除这张图片', () => {
-      view.dispatch({
-        changes: { from: snapshotFrom, to: snapshotFrom + snapshotRaw.length, insert: '' },
-        selection: { anchor: Math.min(snapshotFrom, view.state.doc.length) },
-        userEvent: 'delete.image',
-      });
-    }, !editable);
-
-    // 图片独占一行时，「删除整行」才有意义；顺带把后面多余的一个空行也吃掉，
-    // 否则删完会留下一片越来越大的空白（用户文件里本来就大量空行）。
-    add('🗑️ 删除整行', () => {
-      // ⚠ 行范围必须在**执行时**重新取，不能用菜单打开时那份（2026-10-29）。
-      // 菜单是常驻 DOM，可能开着好几秒；期间文档一旦变化，旧的 line.to
-      // 就可能越过真实行尾，把后面一大段内容一起删掉。
-      // 用当前文档重算，并夹到文档长度之内。
-      const doc = view.state.doc;
-      const at = Math.min(snapshotFrom, doc.length);
-      const cur = doc.lineAt(at);
-      let from = cur.from, to = cur.to;
-      if (to < doc.length && doc.sliceString(to, to + 1) === '\n') to += 1;
-      from = Math.max(0, Math.min(from, doc.length));
-      to = Math.max(from, Math.min(to, doc.length));
-      view.dispatch({
-        changes: { from, to, insert: '' },
-        selection: { anchor: Math.min(from, view.state.doc.length) },
-        userEvent: 'delete.image',
-      });
-    }, !editable || !onlyThis);
-
-    const sep = document.createElement('div');
-    sep.className = 'ctx-sep';
-    menu.append(sep);
-
-    add('📋 复制图片引用', () => {
-      const text = snapshotRaw;
-      if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text);
-      else if (window.MI?.copyText) MI.copyText(text);
-      MI.toast?.('已复制图片引用', 'ok');
-    });
-    add('🔗 复制图片地址', () => {
-      const src = String(widget.src || '');
-      if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(src);
-      else if (window.MI?.copyText) MI.copyText(src);
-      MI.toast?.('已复制图片地址', 'ok');
-    });
-    add('🔍 全屏查看', () => {
-      const img = wrap.querySelector('img');
-      if (img && window.MI?.showImgLightbox) MI.showImgLightbox(img.src, widget.alt);
-    });
-
-    if (!editable) {
-      const hint = document.createElement('div');
-      hint.className = 'ctx-item is-disabled';
-      hint.textContent = '（只读模式：不能修改文档）';
-      menu.append(hint);
-    }
-
-    menu.classList.remove('hidden');
-    // 贴边修正：菜单常驻 DOM，先显示再量尺寸，避免超出视口
-    const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 200;
-    menu.style.left = Math.max(8, Math.min(event.clientX, window.innerWidth - mw - 8)) + 'px';
-    menu.style.top = Math.max(8, Math.min(event.clientY, window.innerHeight - mh - 8)) + 'px';
-    // 点空白处 / 按 Esc 收起（与表格菜单同一套习惯）
-    const close = (e) => {
-      if (menu.contains(e.target)) return;
-      menu.classList.add('hidden');
-      document.removeEventListener('pointerdown', close, true);
-    };
-    document.addEventListener('pointerdown', close, true);
-  }
 
   class ImgWidget extends WidgetType {
     constructor(src, alt, raw, from, editable, baseDir) { super(); Object.assign(this,{src,alt,raw,from,canResize:editable,baseDir}); }
@@ -504,14 +388,37 @@ window.MdEditor = (() => {
           const before=view.state.doc.toString();
           view.dispatch({changes:{from:this.from,to:this.from+this.raw.length,insert:model.resize(width)},userEvent:'input.image',annotations:Commands.isolateHistory.of('full')});
           return view.state.doc.toString()!==before || model.width===width;
-        }:undefined});
-      // 右键菜单（2026-10-29 用户要求）：删除这张图 / 复制引用 / 复制图片地址 / 整行删除。
-      // 复用全局 #ctx-menu（与表格、文件树同一套外观），不自造弹层。
-      wrap.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openImageMenu(view, this, wrap, event);
-      });
+        }:undefined,
+        // 删除（2026-10-29 用户要求）：必须走 MarkdownImages.bind 的这个口子。
+        // 它内部 stopPropagation() 了 contextmenu，widget 上另挂监听收不到事件 ——
+        // 之前就是这么错的：菜单加在 md-editor 里，用户右键看到的仍是老菜单。
+        removeImage: valid() ? () => {
+          view.dispatch({
+            changes: { from: this.from, to: this.from + this.raw.length, insert: '' },
+            selection: { anchor: Math.min(this.from, view.state.doc.length) },
+            userEvent: 'delete.image',
+          });
+          return true;
+        } : undefined,
+        removeLine: valid() ? () => {
+          // 行范围在执行时用当前文档重算，并夹到文档长度内 ——
+          // 菜单可能开着好几秒，期间文档一变旧的 to 就会越界，多删一大段。
+          const doc = view.state.doc;
+          const at = Math.min(this.from, doc.length);
+          const cur = doc.lineAt(at);
+          // 只有「整行就是这张图」时才算整行删除，否则删掉会把同行的文字也带走
+          if (cur.text.trim() !== this.raw.trim()) return false;
+          let from = cur.from, to = cur.to;
+          if (to < doc.length && doc.sliceString(to, to + 1) === '\n') to += 1;
+          from = Math.max(0, Math.min(from, doc.length));
+          to = Math.max(from, Math.min(to, doc.length));
+          view.dispatch({
+            changes: { from, to, insert: '' },
+            selection: { anchor: Math.min(from, view.state.doc.length) },
+            userEvent: 'delete.image',
+          });
+          return true;
+        } : undefined});
       return wrap;
     }
     destroy(wrap) { wrap._imageDispose?.(); }
