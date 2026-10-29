@@ -302,7 +302,12 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     'echo "' + OVERVIEW_MARK + 'procs"',
     // 完整进程表：之前「进程」分类拿监听端口的进程顶替，用户看到的不是真进程表。
     // 按 CPU 倒序取前 40 行，够定位问题进程；不拉全表以免输出过大。
-    '(ps -eo pid,pcpu,pmem,rss,etime,args --sort=-pcpu 2>/dev/null | head -n 41) || true',
+    // 2026-10-29：在 args 之前加了 comm。原因：args 来自 /proc/PID/cmdline，可能为空
+    // （进程刚好退出、或某些特殊进程），只有 args 时那一行退化成「未知进程 /
+    // （无命令行）」—— 用户拿着 PID 3036595 + 199% 却完全不知道它是什么。
+    // comm（/proc/PID/stat 的进程名）几乎总有值，作兜底。
+    // comm 是固定列、args 在最后（内部含空格），顺序不能换。
+    '(ps -eo pid,pcpu,pmem,rss,etime,comm,args --sort=-pcpu 2>/dev/null | head -n 41) || true',
     'echo "' + OVERVIEW_MARK + 'du"',
     '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 12) || true',
     'echo "' + OVERVIEW_MARK + 'end"',
@@ -527,27 +532,36 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
       if (!m) return null;
       return { bytes: Number(m[1]) * 1024, path: m[2] };
     }).filter(Boolean);
-    // 进程表（2026-10-28）：ps -eo pid,pcpu,pmem,rss,etime,args
-    // 用 args 而不是 comm，才能看到完整命令行（java 带 -Xmx 那种）。
-    // 内核线程的 args 形如 [kworker/1:1]，它们对用户没意义，标出来供前端过滤。
+    // 进程表（2026-10-28）：ps -eo pid,pcpu,pmem,rss,etime,comm,args
+    // 用 args 而不是 comm 命名，才能看到完整命令行（java 带 -Xmx 那种）。
+    // 2026-10-29 加 comm 作兜底：args 为空时（进程已退出 / 特殊进程）至少还有名字，
+    // 否则只显示「未知进程」，用户拿着 PID 却不知道是什么。
+    // 内核线程的 args 形如 [kworker/1:1]，标出来供前端分组/过滤。
     const procs = String(parts.procs || '').split('\n').slice(1).map(line => {
       const cols = line.trim().split(/\s+/);
-      // 内核线程的 args 可能为空（如 ksoftirqd），此时只有 5 列 —— 不能因此丢掉这一行。
-      if (cols.length < 5) return null;
-      const [pid, pcpu, pmem, rss, etime] = cols;
+      // 固定 6 列：pid pcpu pmem rss etime comm；args 是其余部分（可为空）
+      if (cols.length < 6) return null;
+      const [pid, pcpu, pmem, rss, etime, commRaw] = cols;
       if (!/^\d+$/.test(pid)) return null;
-      const args = cols.slice(5).join(' ');
-      // 没有 args 时无法判断它是什么，用 PID 占位，避免显示空名
-      const kernelThread = /^\[.*\]$/.test(args);
-      const basename = args ? (args.split(/\s+/)[0].split('/').pop() || args) : '未知进程';
+      const args = cols.slice(6).join(' ');
+      // ps 在字段取不到值时输出 `-`（不是空串），所以 `-` 要视同「没有」。
+      const commRawValue = String(commRaw || '').trim();
+      const comm = commRawValue === '-' ? '' : commRawValue;
+      const kernelThread = /^\[.*\]$/.test(args) || /^\[.*\]$/.test(comm);
+      // 命名优先级：命令行首段（最有用）→ comm → PID 占位。
+      // 「未知进程」这种没有信息量的占位不再出现，取而代之是能直接拿去查的 PID。
+      const basename = args ? (args.split(/\s+/)[0].split('/').pop() || args) : '';
+      const name = kernelThread ? (args || comm)
+        : (basename || comm || 'PID ' + pid);
       return {
         pid: Number(pid), cpu: Number(pcpu) || 0, mem: Number(pmem) || 0,
         rss: Number(rss) || 0, etime,
-        comm: kernelThread ? args : basename,
+        comm: name,
+        commRaw: comm,
         args: args || '(无命令行)',
         kernelThread,
-        // 没有 args 的多半是内核线程（ksoftirqd 等），前端默认过滤掉
-        unknown: !args,
+        // args 与 comm 都没有：留个标记，前端可据此提示「信息不全」
+        unknown: !args && !comm,
       };
     }).filter(Boolean);
 

@@ -72,10 +72,14 @@ async function start(root, options = {}) {
           'ssh.service|184320|enabled|Sat 2026-07-04 21:17:00 CST',
           'nginx.service|52936704|disabled|Wed 2026-09-30 20:03:35 CST',
           mark + 'procs',
-          '    PID %CPU %MEM   RSS     ELAPSED COMMAND',
-          '3036595  199  7.0 267036 3-14:11:40 ',
-          '2334016  3.6 27.2 1036768 13-19:32:23 /usr/bin/java -Xmx2G -jar server.jar nogui',
-          '2726004  2.7  0.0    44 27-20:10:20 [kworker/1:1]',
+          // 列序：pid pcpu pmem rss etime comm args（2026-10-29 起 comm 在 args 之前）
+          '    PID %CPU %MEM   RSS     ELAPSED COMMAND COMMAND',
+          // args 为空、comm 有值：应显示 comm，而不是「未知进程」
+          '3036595  199  7.0 267036 3-14:11:40 WebContent',
+          '2334016  3.6 27.2 1036768 13-19:32:23 java /usr/bin/java -Xmx2G -jar server.jar nogui',
+          '2726004  2.7  0.0    44 27-20:10:20 kworker/1:1 [kworker/1:1]',
+          // comm 也是占位符时：退化成「PID <pid>」，至少能直接拿去查
+          '3000001  0.5  0.1  1024 1:02:03 -',
           mark + 'du',
           '1048576\t/home/fixture/projects',
           '524288\t/home/fixture/downloads',

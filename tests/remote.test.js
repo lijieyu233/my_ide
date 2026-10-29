@@ -132,6 +132,14 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     check('概览：进程带完整命令行', ov.procs.some(p => /java -Xmx2G/.test(p.args)));
     check('概览：内核线程被标记', ov.procs.some(p => p.kernelThread === true && /kworker/.test(p.comm)));
     check('概览：空 args 的进程不被丢弃', ov.procs.some(p => p.pid === 3036595));
+    // 2026-10-29：args 为空时用 comm 兜底。
+    // 之前只取 args，那一行就显示成「未知进程 /（无命令行）」—— 用户拿着
+    // PID 3036595 + 199% 却完全不知道它是什么（截图反馈）。
+    check('概览：args 为空时用 comm 当名字',
+      ov.procs.some(p => p.pid === 3036595 && p.comm === 'WebContent'));
+    check('概览：comm 也只是占位符时退回 PID',
+      ov.procs.some(p => p.pid === 3000001 && /PID\s*3000001/.test(p.comm)));
+    check('概览：仍保留 commRaw 供排查', ov.procs.some(p => p.commRaw === 'java'));
     // 安全边界：只有会话 id，不接受命令。无效 id 必须明确报错 ——
     // 不能悄悄退回本地执行（那会把本机信息当成远程服务器的显示出去）。
     await assert.rejects(() => service.overview('不存在的会话'), /会话|断开/);

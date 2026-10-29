@@ -42,7 +42,7 @@ const overviewOut = [
   MARK + 'docker',
   ['demo-api', 'r/x:1', 'Up 2 days (healthy)'].join(TAB),
   ['stopped-one', 'r/y:1', 'Exited (1) 3 days ago'].join(TAB),
-  MARK + 'procs', 'PID %CPU %MEM RSS ELAPSED COMMAND', '923 9.2 0.2 196000 3-12:00 node',
+  MARK + 'procs', 'PID %CPU %MEM RSS ELAPSED COMMAND COMMAND', '923 9.2 0.2 196000 3-12:00 node node server.js',
   MARK + 'du', '1048576' + TAB + '/home/fixture/projects',
   MARK + 'end',
 ].join(NL) + NL;

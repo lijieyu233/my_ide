@@ -323,4 +323,28 @@ check('收起组的计数跟着更新（运行中 2 → 1）',
   /运行中1/.test([...host.querySelectorAll('.remote-ops-group')]
     .find(g => /运行中/.test(g.textContent))?.textContent.replace(/\s+/g, '') || ''));
 
+// ⑮ 表格横向滚动 + CPU 口径（2026-10-29，用户截图圈出的两处）
+// ① 表头与列表必须在同一个横向滚动容器里：列宽固定且 flex-shrink: 0，
+//    窗口窄时原来各列直接重叠（「内存端口」「运行时长 命令行」糊成一片）。
+panel.renderOverview(procSample, 'proc');
+const scroll = host.querySelector('.remote-ops-scroll');
+check('表头与列表在同一个横向滚动容器内',
+  !!scroll && !!scroll.querySelector('.remote-ops-thead') && !!scroll.querySelector('#remote-ops-list'));
+
+// ② ps 的 %CPU 按核心累计，可超 100%。数值照实显示，但 title 要说明「≈几核」，
+//    否则 199.0% 会被当成算错。
+panel.renderOverview({
+  ...procSample,
+  cpu: { cores: 4, load: [1, 1, 1], usage: { idle: 100, total: 400 } },
+  procs: [
+    { pid: 3036595, comm: 'WebContent', cpu: 199, mem: 7, rss: 261, etime: '4-07:09', args: '(无命令行)', kernelThread: false },
+  ],
+}, 'proc');
+const cpuCell = [...host.querySelectorAll('#remote-ops-list .remote-ops-td')]
+  .find(el => el.textContent === '199.0%');
+check('CPU 超过 100% 时数值照实显示', !!cpuCell);
+check('CPU 超 100% 的 title 说明「按核心累计」',
+  /≈\s*2\.0\s*核/.test(cpuCell?.title || '') && /共 4 核/.test(cpuCell?.title || ''),
+  cpuCell?.title);
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

@@ -1092,6 +1092,13 @@ window.RemotePanel = (() => {
     if (opsCat === 'proc') {
       return (ov.procs || []).map(pr => {
         const hot = pr.cpu >= 50 || pr.mem >= 50;
+        // ps 的 %CPU 是「按核心累计」的：多线程进程可超 100%，4 核满打满算 400%。
+        // 直接把 199.0% 摆出来会被当成算错（用户截图圈过它），
+        // 所以数值照实显示，tooltip 里补「≈2.0 核 / 共 4 核」把口径说清。
+        const cores = Number(ov.cpu?.cores) || 0;
+        const cpuTitle = pr.cpu > 100 && cores
+          ? pr.cpu.toFixed(1) + '% ≈ ' + (pr.cpu / 100).toFixed(1) + ' 核（共 ' + cores + ' 核；ps 按核心累计，可超 100%）'
+          : pr.cpu.toFixed(1) + '%';
         return {
           key: 'pid-' + pr.pid,
           name: pr.comm,
@@ -1104,6 +1111,8 @@ window.RemotePanel = (() => {
           group: pr.kernelThread ? '内核线程' : hot ? '高占用' : '运行中',
           keyText: 'CPU ' + pr.cpu.toFixed(1) + '%　内存 ' + pr.mem.toFixed(1) + '%',
           meta: pr.args,
+          // 单元格 title 覆盖（默认用单元格文本）；目前只 CPU 列需要解释口径
+          titles: { cpu: cpuTitle, args: pr.args },
           cells: {
             name: pr.comm,
             pid: String(pr.pid),
@@ -1373,10 +1382,13 @@ window.RemotePanel = (() => {
           + (c.mono ? ' is-mono' : '')
           + (c.fade ? ' is-fade' : '');
         const level = c.id === 'status' && r.badge ? ' data-level="' + (r.badge.level || 'off') + '"' : '';
+        // 该列若给了更详细的 title（如 CPU 的「199% ≈ 2.0 核，ps 按核心累计」），
+        // 用它替代默认的单元格文本 —— 数值本身不变，只是把口径说清。
+        const tip = (r.titles && r.titles[c.id]) || v;
         return '<span class="' + cls + '" style="'
           + (c.align ? 'text-align:' + c.align + ';' : '')
           + 'flex:' + colFlex(c) + '"' + level
-          + ' title="' + esc(v) + '">' + esc(v) + '</span>';
+          + ' title="' + esc(tip) + '">' + esc(v) + '</span>';
       }).join('');
 
       return '<div class="remote-ops-row' + (r.bad ? ' is-bad' : '') + '" role="row">'
@@ -1432,8 +1444,14 @@ window.RemotePanel = (() => {
     return '<div class="remote-ops">'
       + '<div class="remote-ops-segs">' + seg + '</div>'
       + toolbar
+      // 表头与列表放进同一个横向滚动容器（2026-10-29）：
+      // 列宽是固定值且不许收缩，窗口窄时原来会各列重叠
+      // （「内存端口」「运行时长 命令行」糊成一片）。现在一起横向滚动，
+      // 列宽保持稳定，数值列仍能纵向对齐比较。
+      + '<div class="remote-ops-scroll">'
       + head
       + '<div class="remote-ops-list" id="remote-ops-list">' + body + '</div>'
+      + '</div>'
       + '<div class="remote-ops-foot" id="remote-ops-state"></div>'
       + '</div>';
   }
