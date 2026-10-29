@@ -52,13 +52,15 @@ check('只画两张卡：资源监控 + 服务器对象',
   host.querySelectorAll('.remote-ov-card').length === 2);
 check('单列布局（不再有右侧列）',
   !!host.querySelector('.remote-ov-grid.single') && !host.querySelector('.remote-ov-col.side'));
-// 2026-10-29：独立的「目录」分类并入「磁盘」（用户要求合并 —— 两者本来
-// 回答的是同一个问题：盘被谁占了）。分类数 7 → 6。
-check('服务器对象卡内含六个分类',
-  ['Docker', '服务', '进程', '端口', '磁盘', '系统']
+// 2026-10-29：磁盘 / 目录两个分类都移除了（用户：「感觉还是看不出来什么东西，删掉吧」）。
+// 分区容量在顶部资源监控的磁盘条里已有数字，不必在列表里重复一遍。
+// 分类数 7 → 6（目录合并进磁盘）→ 5（磁盘整体移除）。
+check('服务器对象卡内含五个分类',
+  ['Docker', '服务', '进程', '端口', '系统']
     .every(name => new RegExp(name).test(host.querySelector('.remote-ops-segs')?.textContent || '')));
-check('不再有独立的「目录」分类',
-  !/目录/.test(host.querySelector('.remote-ops-segs')?.textContent || ''));
+check('不再有「目录」「磁盘」分类',
+  !/目录|磁盘/.test(host.querySelector('.remote-ops-segs')?.textContent || ''),
+  host.querySelector('.remote-ops-segs')?.textContent);
 check('三格摘要条（CPU/内存/磁盘）都有宽度',
   [...host.querySelectorAll('.remote-ov-mini-bar>i')].map(e => e.style.width).join(',') === '50%,40%,52%');
 check('CPU 由 /proc/stat 算出 50% 使用率', /50%/.test(host.querySelector('.remote-ov-mini').textContent));
@@ -96,14 +98,13 @@ check('网格是两列（1.15fr / .85fr）', /1\.15fr/.test(cssNow) && /[.\d]85f
 // 前置：前面几条测试会用「无 Docker」「空字段」等变体重渲染同一个 host，
 // 所以这里必须先用完整样本再渲染一次，否则读到的是残局（Docker 行就没了）。
 panel.renderOverview(sample);
-// 表格化后数据分散到各单元格：用表头 + 单元格文本一起判断
-// 2026-10-29：列名「占用」统一为「占比」（与「目录」分类保持一致）。
-check('磁盘分类含分区行与表头', (() => {
+// 2026-10-29：磁盘分类已整体移除（用户「感觉还是看不出来什么东西，删掉吧」）。
+// 原来这条断言验证磁盘页的分区行与表头；分类没了，改为验证「访问 disk 分类
+// 不会白屏」—— 兼容层会把它转到 docker，列表里仍应有行。
+check('访问已移除的 disk 分类不会白屏（兼容层转 docker）', (() => {
   panel.renderOverview(sample, 'disk');
-  const list = host.querySelector('.remote-ops-list')?.textContent || '';
-  const heads = host.querySelector('.remote-ops-thead')?.textContent || '';
-  const ok = list.includes('/') && /已用/.test(heads) && /占比/.test(heads);
-  panel.renderOverview(sample); return ok;
+  const rows = host.querySelectorAll('#remote-ops-list .remote-ops-row').length;
+  panel.renderOverview(sample); return rows >= 1;
 })());
 check('Docker 对象有运维按钮（日志/重启等）',
   host.querySelectorAll('[data-ops-run^="docker."]').length >= 1);
@@ -410,19 +411,16 @@ check('内核线程的命令行列留空（不显示占位符）',
   !/（无命令行）/.test(ktRow?.textContent || ''), ktRow?.textContent.slice(0, 80));
 
 // ⑱ 列名跨分类必须一致（2026-10-29 用户要求「把字段同步下名字」）
-// 同一个含义在不同分类里用不同名字，用户得自己猜是不是同一回事：
-// 服务写「已运行」、Docker 与进程写「运行时长」；磁盘写「占用」、目录写「占比」。
+// 同一个含义在不同分类里用不同名字，用户得自己猜是不是同一回事。
+// （磁盘 / 目录分类已在同日整体移除，这里只核对剩下的三类。）
 const headersFor = (cat) => {
-  const ov = { ...sample, docker: sample.docker, services: sample.services, procs: procSample.procs, du: sample.du,
-    disks: [{ fs: '/dev/sda1', mount: '/', total: 100, used: 50, percent: 50 }] };
+  const ov = { ...sample, docker: sample.docker, services: sample.services, procs: procSample.procs };
   panel.renderOverview(ov, cat);
   return [...host.querySelectorAll('.remote-ops-th')].map(e => e.textContent.replace(/\s+/g, '').replace(/[▾▴]/g, ''));
 };
 const hDocker = headersFor('docker');
 const hSvc = headersFor('svc');
 const hProc = headersFor('proc');
-const hDisk = headersFor('disk');
-const hDu = headersFor('du');
 
 check('Docker / 服务 / 进程 都用「运行时长」（不再有「已运行」）',
   hDocker.includes('运行时长') && hSvc.includes('运行时长') && hProc.includes('运行时长'),
@@ -431,9 +429,5 @@ check('不再出现列名「已运行」',
   ![...hDocker, ...hSvc, ...hProc].some(t => t.includes('已运行')));
 check('三个分类的「内存」列名一致',
   hDocker.includes('内存') && hSvc.includes('内存') && hProc.includes('内存'));
-check('磁盘与目录都用「占比」（不再有列名「占用」）',
-  hDisk.includes('占比') && hDu.includes('占比'), 'disk=' + hDisk.join('|') + ' du=' + hDu.join('|'));
-check('不再出现列名「占用」',
-  ![...hDisk, ...hDu].some(t => t === '占用'));
 
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

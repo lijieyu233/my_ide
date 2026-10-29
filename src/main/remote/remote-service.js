@@ -772,6 +772,42 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     opActions: () => Object.keys(Ops.ACTIONS),
     snapshot: () => ({ sessions: [...sessions.values()].map(sessionView), jobs: [...jobs.values()].map(jobView) }),
     localList: target => local.list(localPath(target || os.homedir())),
+    // 计算目录下每一项的大小（2026-10-29 文件页「算大小」）。
+    // 远程走 du，本地没有 du，这里在主进程递归统计 —— 放在主进程而不是渲染进程，
+    // 是因为大目录遍历会占满 CPU，渲染进程里做会让界面卡住。
+    // 限制：最多 2 万项、单次 20 秒，超时返回已算出的部分（部分结果比没有好）。
+    localSizes: async target => {
+      const root = localPath(target);
+      const out = {};
+      const deadline = Date.now() + 20000;
+      let visited = 0;
+      const walk = async (dir) => {
+        let total = 0;
+        let list;
+        try { list = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return 0; }
+        for (const entry of list) {
+          if (Date.now() > deadline || visited > 20000) return total;
+          visited++;
+          const full = path.join(dir, entry.name);
+          if (entry.isSymbolicLink()) continue;   // 不跟随符号链接，避免环
+          if (entry.isDirectory()) total += await walk(full);
+          else {
+            try { const st = await fs.promises.stat(full); total += st.size; } catch {}
+          }
+        }
+        return total;
+      };
+      let top;
+      try { top = await fs.promises.readdir(root, { withFileTypes: true }); }
+      catch (error) { return { error: String(error.message || error) }; }
+      for (const entry of top) {
+        const full = path.join(root, entry.name);
+        if (entry.isSymbolicLink()) continue;
+        if (entry.isDirectory()) out[full] = await walk(full);
+        else { try { const st = await fs.promises.stat(full); out[full] = st.size; } catch {} }
+      }
+      return { ok: true, data: out, truncated: visited > 20000 || Date.now() > deadline };
+    },
     localMkdir: target => fs.promises.mkdir(localPath(target)),
     // 新建空文件：用 'wx' 排他创建，已存在就报错（新建不是覆盖）。
     localCreateFile: async target => {

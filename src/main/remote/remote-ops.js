@@ -149,6 +149,13 @@ const ACTIONS = {
     read: true, timeout: LOG_TIMEOUT,
     build: a => 'du -xhd1 ' + q(need(a.path, PATH_RE, '路径')) + ' 2>/dev/null | sort -hr | head -n 30',
   },
+  // 单个目录/文件的总大小（2026-10-29 文件页「显示大小」按需计算）。
+  // 与 disk.usage 的区别：那个列子项（-d1），这个只要一个总数（-s、-b 输出字节）。
+  // 用 -b 而不是 -h：前端统一按字节格式化，免得再解析 "1.2G" 这种人类可读单位。
+  'disk.size': {
+    read: true, timeout: LOG_TIMEOUT,
+    build: a => 'du -sxb ' + q(need(a.path, PATH_RE, '路径')) + ' 2>/dev/null | cut -f1',
+  },
   'disk.bigFiles': {
     read: true, timeout: LOG_TIMEOUT,
     build: a => 'find ' + q(need(a.path, PATH_RE, '路径'))

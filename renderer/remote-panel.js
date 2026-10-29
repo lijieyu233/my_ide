@@ -6,7 +6,8 @@ window.RemotePanel = (() => {
   let profiles = [], version = '', selected = null, sid = null, activeTerm = null, visible = false, initialized = false, mode = 'terminal', connecting = false, loading = 0;
   const sessions = new Map(), terminals = new Map(), jobs = new Map();
   let fitFrame = 0, appearanceDirty = false;
-  const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0 }, remote: { path: '', entries: [], selected: new Set(), serial: 0 } };
+  // sizes：路径 → 字节。由「算大小」按钮填充（2026-10-29），刷新目录不丢。
+  const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map() }, remote: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map() } };
   const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').title = text; q('remote-notice').classList.toggle('error', error); };
   async function call(op, ...args) { const result = await api()[op](...args); if (!result?.ok) throw Error(result?.error || '远程操作未确认'); return result.data; }
   const attempt = fn => async event => { try { await fn(event); } catch (error) { notify(error.message, true); } };
@@ -917,19 +918,6 @@ window.RemotePanel = (() => {
       { id: 'pid', label: 'PID', width: '5.06rem', align: 'right' },
       { id: 'owner', label: '所属容器', width: '9.20rem', grow: true, fade: true },
     ],
-    disk: [
-      { id: 'name', label: '挂载点 / 项目', width: '12.88rem', grow: true, sortable: true },
-      { id: 'used', label: '已用', width: '6.44rem', align: 'right' },
-      { id: 'total', label: '总量', width: '6.44rem', align: 'right' },
-      // 与「目录」分类统一叫「占比」（原「占用」）—— 同一个概念两个名字
-      { id: 'percent', label: '占比', width: '4.60rem', align: 'right', sortable: true },
-      { id: 'note', label: '说明', width: '11.04rem', grow: true, fade: true },
-    ],
-    du: [
-      { id: 'name', label: '目录', width: '18.40rem', grow: true, sortable: true },
-      { id: 'size', label: '大小', width: '6.44rem', align: 'right', sortable: true },
-      { id: 'pct', label: '占比', width: '5.52rem', align: 'right' },
-    ],
     sys: [
       { id: 'name', label: '值', width: '18.40rem', grow: true },
       { id: 'field', label: '项目', width: '9.20rem' },
@@ -982,21 +970,6 @@ window.RemotePanel = (() => {
   ].filter(Boolean);
 
   // 磁盘分类不是「对象列表」，是「可清理项清单」：每项自带预计释放空间的探测动作。
-  const DISK_TARGETS = [
-    { key: 'apt', name: 'APT 包缓存', meta: '/var/cache/apt · 安装包残留',
-      action: 'disk.cleanApt', danger: true, probe: 'disk.aptCache' },
-    { key: 'journal', name: 'systemd 日志', meta: 'journalctl · 保留最近 200MB',
-      action: 'disk.vacuumJournal', args: { size: '200M' }, danger: true, probe: 'disk.journalSize' },
-    { key: 'docker-images', name: 'Docker 悬空镜像', meta: 'docker image prune · 未被引用的层',
-      action: 'docker.pruneImages', danger: true, probe: 'docker.df' },
-    // 「主目录占用排行」已删除（2026-10-29）：目录分类并进磁盘后，各目录的大小
-    // 已经逐行列出来了，再放一个「再点一次看排行」是重复入口 ——
-    // 用户正是觉得这类项「不知道意义在哪」。
-    // 保留「大文件」：它是唯一能回答「这些 GB 具体是哪个文件」的入口，
-    // 与目录（按目录聚合）不重复。
-    { key: 'bigfiles', name: '大于 100MB 的文件', meta: 'find · 找出具体是哪个文件占的',
-      action: 'disk.bigFiles', args: { path: '/home/ubuntu' }, kind: 'info' },
-  ];
 
   /** 每类的行数据：从概览结果里取，保持与列表一致。 */
   /**
@@ -1254,77 +1227,13 @@ window.RemotePanel = (() => {
 
     // ── 磁盘：分区 + 可清理项 ──
     if (opsCat === 'disk') {
-      const parts = (ov.disks || []).map(d => ({
-        key: 'part-' + d.mount, name: d.mount,
-        badge: { text: d.percent >= 90 ? '空间紧张' : '正常', level: d.percent >= 90 ? 'bad' : 'ok' },
-        cells: {
-          name: d.mount,
-          used: fmtBytes(d.used),
-          total: fmtBytes(d.total),
-          percent: d.percent + "%",
-          note: d.percent >= 90 ? "空间紧张" : "正常",
-        },
-        bad: d.percent >= 90,
-        keyText: d.percent + '%',
-        meta: fmtBytes(d.used) + ' / ' + fmtBytes(d.total) + ' 已用',
-        sub: d.fs,
-        state: d.percent >= 90 ? 'warn' : 'on',
-        args: {}, actions: [],
-      }));
-
-      // 目录占用（2026-10-29 用户要求「磁盘和目录合并成一个」+「不能显示所有目录吗」）。
-      // 原来「目录」是独立分类，只看 HOME 一级前 12 条；现在并进「磁盘」，
-      // 数据扩到 HOME 40 条 + 根分区 20 条，按大小倒序，一眼看出盘被谁占了。
-      // 「占比」以所在分区总量为分母（HOME 与根目录各按自己的分区算）。
-      const diskTotal = {};
-      for (const d of (ov.disks || [])) diskTotal[d.mount] = d.total;
-      const duTotal = (ov.du || []).reduce((s, d) => s + d.bytes, 0);
-      const dirs = (ov.du || []).map(d => {
-        const pctOfTotal = duTotal ? Math.round(d.bytes / duTotal * 100) : 0;
-        // 取「路径属于哪个挂载点」：最长前缀匹配（/home/ubuntu → /home 或 /）
-        let mount = '/';
-        for (const m of Object.keys(diskTotal)) {
-          if (m !== '/' && (d.path === m || d.path.startsWith(m + '/'))) {
-            if (m.length > mount.length) mount = m;
-          }
-        }
-        const total = diskTotal[mount] || 0;
-        const pctOfDisk = total ? Math.round(d.bytes / total * 100) : pctOfTotal;
-        return {
-          key: 'du-' + d.path, name: d.path,
-          badge: { text: fmtBytes(d.bytes), level: pctOfDisk >= 50 ? 'warn' : 'off' },
-          cells: {
-            name: d.path,
-            used: fmtBytes(d.bytes),
-            total: total ? fmtBytes(total) : '—',
-            percent: pctOfDisk + '%',
-            note: '目录 · ' + (total ? '占 ' + mount : '占已列目录'),
-          },
-          bad: false,
-          keyText: fmtBytes(d.bytes),
-          meta: 'du -x · ' + fmtBytes(d.bytes),
-          sub: '',
-          state: pctOfDisk >= 50 ? 'warn' : 'on',
-          args: { path: d.path },
-          actions: [{ label: '看排行', action: 'disk.usage', args: { path: d.path }, kind: 'info', primary: true }],
-        };
-      });
-
-      return parts.concat(dirs, DISK_TARGETS.map(t => ({
-        key: t.key, name: t.name,
-        cells: { name: t.name, used: "—", total: "—", percent: "—", note: t.meta },
-        badge: { text: t.kind === 'info' ? '查看' : '可清理', level: 'off' },
-        bad: false, keyText: '', meta: t.meta, sub: '',
-        state: 'on',
-        args: t.args || {},
-        actions: [{
-          label: t.kind === 'info' ? '查看' : '清理',
-          action: t.action, danger: !!t.danger,
-          kind: t.kind || null,
-          probe: t.probe || null,
-          primary: true,
-        }],
-      })));
+      // 「磁盘」分类已移除（2026-10-29 用户：「感觉还是看不出来什么东西，删掉吧」）。
+      // 分区容量在顶部「资源监控」的磁盘进度条里已经有一眼可见的数字；
+      // 这里再列一遍目录体积，既没有可操作的入口，也解决不了「哪个文件占了盘」——
+      // 那件事交给「文件」页与「大于 100MB 的文件」。
+      // 分支保留为兼容层：老的内存状态（opsCat 缓存在 listState 里）可能还是 disk。
+      opsCat = 'docker';
+      return opsRows(ov);
     }
 
     return [];
@@ -1373,17 +1282,14 @@ window.RemotePanel = (() => {
       svc: (ov.services || []).length,
       proc: (ov.procs || []).length,
       port: (ov.listen || []).length,
-      // 磁盘 = 分区数 + 目录数 + 清理项数（合并后的总量，与行数一致）
-      disk: (ov.disks || []).length + (ov.du || []).length + DISK_TARGETS.length,
       sys: 4,
     };
-    // 分类（2026-10-28）：原来右侧那些「只能看」的卡片并进来，
-    // 系统信息 / 监听端口 / 主目录都成了分类，一处看全、一处操作。
+    // 分类（2026-10-28）：原来右侧那些「只能看」的卡片并进来，一处看全、一处操作。
+    // 2026-10-29：磁盘 / 目录两个分类都移除 —— 用户「感觉还是看不出来什么东西」。
+    // 分区容量在顶部资源监控的磁盘条里已有数字；目录体积既没有可操作入口，
+    // 也回答不了「哪个文件占了盘」，那件事交给文件页与大文件扫描。
     const seg = [['docker', 'Docker'], ['svc', '服务'], ['proc', '进程'],
-      // 「目录」已并入「磁盘」（2026-10-29）：磁盘里既有分区行，也有各目录占用行。
-      // 两处割裂时用户不知道「目录」页的意义 —— 它们本来就是同一个问题：
-      // 盘被谁占了。
-      ['port', '端口'], ['disk', '磁盘'], ['sys', '系统']].map(([id, label]) =>
+      ['port', '端口'], ['sys', '系统']].map(([id, label]) =>
       '<button class="remote-ops-seg' + (opsCat === id ? ' active' : '') + '" data-ops-cat="' + id + '">'
       + label + '<em>' + counts[id] + '</em></button>').join('');
 
@@ -2092,7 +1998,16 @@ window.RemotePanel = (() => {
   function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
   const fileNames = new Intl.Collator(undefined, { numeric: true });
   function fileRow(pane, e, top) {
-    return `<button class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"${top === undefined ? '' : ' style="top:' + top + 'px"'}><span>${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span><small>${e.directory ? '目录' : displaySize(e.size)}</small></button>`;
+    // 目录大小：算过的显示真实数值，没算过显示「—」并提示可点「算大小」
+    // （2026-10-29：原来一律写「目录」两个字，完全看不出占用情况）。
+    const measured = pane.sizes.get(e.path);
+    const sizeText = e.directory
+      ? (measured != null ? displaySize(measured) : '—')
+      : displaySize(e.size);
+    const sizeTitle = e.directory
+      ? (measured != null ? displaySize(measured) + '（已计算）' : '未计算大小，点工具栏「算大小」')
+      : '';
+    return `<button class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"${top === undefined ? '' : ' style="top:' + top + 'px"'}><span>${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span><small${sizeTitle ? ' title="' + esc(sizeTitle) + '"' : ''}>${esc(sizeText)}</small></button>`;
   }
   function paintFiles(side) {
     const pane = panes[side], root = q('remote-' + side + '-pane'), list = root.querySelector('.remote-file-list');
@@ -2142,8 +2057,62 @@ window.RemotePanel = (() => {
     }
     for (const job of result.jobs) jobs.set(job.id, job); renderJobs(); q('remote-transfers').open = true;
   }
+  /**
+   * 算当前目录下每一项的大小（2026-10-29 用户要求「加一个计算当前目录下所有大小的按钮」）。
+   *
+   * 为什么是「按需」而不是自动：远程目录的大小必须递归 `du`，不能像本地那样
+   * 从 dirent 直接拿到。进目录就自动算的话，大目录（node_modules、.git）会让
+   * 每次切目录都卡几秒。所以做成显式按钮。
+   *
+   * 实现要点：远程用**一条** `du -sb` 加通配符算出全部子项，而不是每项发一次请求 ——
+   * 100 个目录发 100 次 SSH 往返要几十秒，一条命令只要一次。
+   * 结果缓存在 pane.sizes 里（按路径），刷新目录不会丢，避免重复算。
+   */
+  async function measurePane(side, pane) {
+    const items = pane.entries.filter(e => !e.link);
+    if (!items.length) { notify('这个目录是空的', true); return; }
+    const root = q('remote-' + side + '-pane');
+    const btn = root.querySelector('[data-action="measure"]');
+    const status = root.querySelector('.remote-file-status');
+    if (btn) { btn.disabled = true; btn.textContent = '计算中…'; }
+    if (status) status.textContent = '正在计算 ' + items.length + ' 项的大小…';
+    try {
+      if (side === 'local') {
+        // 本地：走主进程递归统计（大目录遍历放渲染进程会卡界面）
+        const result = await call('localSizes', pane.path);
+        for (const [p, bytes] of Object.entries(result?.data || {})) pane.sizes.set(p, bytes);
+        if (result?.truncated) notify('目录过大，已计算部分结果', true);
+      } else {
+        // 远程：逐个走白名单动作 disk.size（`du -sxb`，只读）。
+        // 为什么不用一条 shell 通配符命令一次算完：渲染层拿不到裸 exec
+        // （只有白名单动作这一条路，这是安全边界）。这里做并发限流 ——
+        // 一次 4 个，既压得住延迟也不会把 SSH 通道打满。
+        const queue = items.slice();
+        const worker = async () => {
+          while (queue.length) {
+            const entry = queue.shift();
+            try {
+              const out = await call('op', sid, 'disk.size', { path: entry.path });
+              const bytes = Number(String(out?.stdout || '').trim());
+              if (Number.isFinite(bytes) && bytes >= 0) pane.sizes.set(entry.path, bytes);
+            } catch { /* 无权限的单项目跳过，不影响其它项 */ }
+            if (status) status.textContent = '正在计算… ' + (items.length - queue.length) + '/' + items.length;
+          }
+        };
+        await Promise.all(Array.from({ length: 4 }, worker));
+      }
+      renderPane(side);
+      const missing = pane.entries.filter(e => !e.link && !pane.sizes.has(e.path)).length;
+      notify('已计算 ' + (items.length - missing) + ' 项大小' + (missing ? '（' + missing + ' 项无权限或失败）' : ''), missing > 0);
+    } catch (error) {
+      notify('计算大小失败：' + error.message, true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '算大小'; }
+    }
+  }
+
   function installFiles() {
-    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
+    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button><button class="vt-btn" data-action="measure" title="计算本目录下每一项的大小（远程目录要递归跑 du，稍慢）">算大小</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
     for (const side of ['local', 'remote']) {
       const root = q('remote-' + side + '-pane'), pane = panes[side];
       const list = root.querySelector('.remote-file-list'); list.onscroll = () => requestFilePaint(side);
@@ -2188,6 +2157,7 @@ window.RemotePanel = (() => {
         if (action === 'mkdir') { const name = await Modal.prompt('新建目录', '目录名称', ''); if (!name) return; if (/[\\/\0\r\n]/.test(name) || name === '.' || name === '..') throw Error('请输入目录名称，不能包含路径分隔符'); if (side === 'local') await call('localMkdir', joined(side, pane.path, name)); else await call('mkdir', sid, joined(side, pane.path, name)); }
         if (action === 'rename') { if (pane.selected.size !== 1) throw Error('请选择一个项目'); const target = [...pane.selected][0], name = await Modal.prompt('重命名', '新名称', pane.byPath.get(target)?.name); if (!name) return; if (side === 'local') await call('localRename', target, name); else await call('rename', sid, target, name); }
         if (action === 'remove') { if (!pane.selected.size) throw Error('请选择要删除的项目'); const paths = [...pane.selected]; if (!await Modal.confirm('删除文件', esc(paths.join('\n')) + '\n\n删除不可撤销；目录仅允许删除空目录。')) return; for (const target of paths) { if (side === 'local') await call('localRemove', target); else await call('removeFile', sid, target); } }
+        if (action === 'measure') { await measurePane(side, pane); return; }
         await browse(side, pane.path);
       });
       root.ondblclick = attempt(async event => { const row = event.target.closest('[data-path]'), entry = row && pane.byPath.get(row.dataset.path); if (entry?.directory && !entry.link) await browse(side, entry.path); });
