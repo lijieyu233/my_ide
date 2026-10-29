@@ -26,3 +26,4 @@ launch-check-report.txt
 launch-check.png
 # 临时补丁工作区（别人的 kiosk 页面 + node_modules + 走查截图，不属于本仓库）
 kiosk_patches/
+.malware-samples/
