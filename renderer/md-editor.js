@@ -390,7 +390,13 @@ window.MdEditor = (() => {
       return wrap;
     }
     destroy(wrap) { wrap._imageDispose?.(); }
-    ignoreEvent() { return true; }
+    // 点击图片时把光标交还给编辑器（2026-10-29 用户反馈「想上下移动图片很难」）。
+    // 原来返回 true 吞掉所有事件 → 光标进不到图片所在行，想用 Shift+End / Ctrl+X
+    // 整行剪切就只能靠鼠标拖选，几乎选不准，于是「移动图片」这个操作形同虚设。
+    // 现在返回 false：事件继续冒泡，CM6 会把光标落到图片所在的构造边界，
+    // Home → Shift+End → Ctrl+X → 移动 → Ctrl+V 这条标准流程能用。
+    // 图片本身的交互（点击全屏、拖拽缩放）在 toDOM 里各自绑了 DOM 监听，不受影响。
+    ignoreEvent() { return false; }
   }
 
   // ---------- 无序 bullet 圆点 widget：-/+/* + 空格 → • ----------
@@ -1662,6 +1668,10 @@ window.MdEditor = (() => {
             if (/^(HeaderMark|EmphasisMark|StrikethroughMark|CodeMark|LinkMark|QuoteMark)$/.test(name)) {
               // 围栏代码块内的 CodeMark：围栏行已被整行 replace 隐藏，跳过（防嵌套 replace 冲突）
               if (name === 'CodeMark' && parentName === 'FencedCode') return;
+              // 图片内部的 LinkMark 同样跳过（2026-10-29）：Image 已整段 replace 成 widget，
+              // 其内部 `![` `]` `(` `)` 标记再隐藏就是嵌套 replace，会与相邻图片的 widget 冲突
+              // （症状与 URL 那条完全相同：两张图相邻时后一张不显示）。
+              if (name === 'LinkMark' && parentName === 'Image') return;
               let show;
               if (name === 'HeaderMark' || name === 'QuoteMark') {
                 show = onLine(node.from); // 行级构造
@@ -1691,6 +1701,14 @@ window.MdEditor = (() => {
             //   3) 空文字链接 [](url)：URL 作为显示文字（Obsidian 行为）
             if (name === 'URL') {
               const pl = parent;
+              // ⚠ 图片内部的 URL 直接跳过，不生成任何装饰。
+              // 原因（2026-10-29，用户反馈「移动图片位置后图片消失」）：
+              //   Image 节点已被整段 Decoration.replace 成 ImgWidget，
+              //   它内部的 LinkMark/URL 子节点再叠加 mark/replace，就成了
+              //   「装饰落在被替换区间内」。单张图时 CM6 能容忍；一旦两张图相邻
+              //   （各自独占一行、只隔一个换行），后一张图的 widget 会被静默丢弃 ——
+              //   引用还在、文档也对，图就是不显示。语法树完全正常，所以极难定位。
+              if (pl && pl.name === 'Image') return;
               if (!(pl && (pl.name === 'Link' || pl.name === 'Autolink'))) {
                 decos.push(Decoration.mark({ class: 'cm-md-link' }).range(node.from, node.to));
                 return;
@@ -2135,7 +2153,35 @@ window.MdEditor = (() => {
           const items = [...(e.clipboardData ? e.clipboardData.items : [])];
           const imgs = items.filter((it) => it.kind === 'file' && /^image\//.test(it.type));
           const pasteImage=contextOf(view).onPasteImage;
-          if (!imgs.length || typeof pasteImage !== 'function') return false;
+          if (!imgs.length || typeof pasteImage !== 'function') {
+            // 文本粘贴：粘的是「整行 Markdown 构造」（图片/标题/列表项）时，
+            // 按整行插入，别接在光标所在的半截行后面（2026-10-29）。
+            // 场景：用户 Ctrl+X 剪走一行图片（选区 = 行内文本，不含行尾换行），
+            // 再把光标放到别处 Ctrl+V —— 默认行为是紧贴插入，两张图就挤成
+            // `![](b.png)![](a.png)` 一行。看着像「只贴上一张 / 图没了」。
+            // 只处理「剪贴板是单行完整构造且当前是空行/行首」的情况，其余交给 CM6，
+            // 避免影响正常的行内粘贴。
+            const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+            if (!text || !/^!\[[^\]]*\]\([^)]*\)\s*$/.test(text.trim()) || text.includes('\n')) return false;
+            const sel = view.state.selection.main;
+            if (!sel.empty) return false;                 // 有选区：正常替换
+            if (view.state.readOnly || (opts.canEdit && !opts.canEdit())) return false;
+            const line = view.state.doc.lineAt(sel.head);
+            // 只在「空行」或「行首」上做整体插入，避免打断用户写句子
+            const onEmptyLine = line.text.trim() === '';
+            const atLineStart = sel.head === line.from;
+            if (!onEmptyLine && !atLineStart) return false;
+            e.preventDefault();
+            const body = text.trim();
+            const insert = body + '\n\n';
+            view.dispatch({
+              changes: { from: onEmptyLine ? line.from : sel.head, to: onEmptyLine ? line.to : sel.head, insert },
+              selection: { anchor: (onEmptyLine ? line.from : sel.head) + insert.length },
+              scrollIntoView: true,
+              userEvent: 'input.paste',
+            });
+            return true;
+          }
           e.preventDefault();
           (async () => {
             const inserts = [];
@@ -2149,9 +2195,21 @@ window.MdEditor = (() => {
             }
             if (inserts.length && view.dom.isConnected && !view.state.readOnly && (!opts.canEdit||opts.canEdit())) {
               const pos = view.state.selection.main.head;
+              const docNow = view.state.doc;
+              // 让每张图独占一行（2026-10-29，用户反馈「粘贴新图片没反应」）。
+              // 旧实现固定插 `![](...)\n`：光标在行尾时，前一张图与这张之间没有换行，
+              // 两张图会挤在同一行（`![](b.png)![](a.png)`）—— 看着像「只贴上一张」。
+              // 现在按前后文补换行：前面不是行首/空行则前置换行，后面同样。
+              const line = docNow.lineAt(pos);
+              const atLineStart = pos === line.from;
+              const before = atLineStart ? '' : '\n';
+              const body = inserts.map(s => s.replace(/\n+$/, '')).join('\n');
+              const needAfter = pos < docNow.length;
+              const after = needAfter && docNow.sliceString(pos, Math.min(pos + 1, docNow.length)) !== '\n' ? '\n' : '';
+              const insert = before + body + (before || after ? '\n' : '');
               view.dispatch({
-                changes: { from: pos, insert: inserts.join('\n') },
-                selection: { anchor: pos + inserts.join('\n').length },
+                changes: { from: pos, insert },
+                selection: { anchor: pos + insert.length },
                 scrollIntoView: true,
               });
             }
