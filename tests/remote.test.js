@@ -127,6 +127,11 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
       !!sshSvc && sshSvc.memory === 184320);
     check('概览：服务带自启状态', !!sshSvc && sshSvc.enabled === true);
     check('概览：服务带启动时间', !!sshSvc && Number.isFinite(sshSvc.startedAt));
+    // 2026-10-29 回归：批量 systemctl show 会把 slice 累计内存算给成员单元。
+    // 夹具里 ssh.service 的内存是 184320（180KB），若采集改回批量查询，
+    // 这里会拿到别的值（或整个 slice 的 GB 级数值），断言就会失败。
+    check('概览：服务内存是该单元自身值（不是 slice 累计）',
+      !!sshSvc && sshSvc.memory === 184320 && sshSvc.memory < 10 * 1024 * 1024);
     const nginxSvc = ov.services.find(s => s.unit === 'nginx.service');
     check('概览：disabled 服务 enabled=false', !!nginxSvc && nginxSvc.enabled === false);
     check('概览：进程带完整命令行', ov.procs.some(p => /java -Xmx2G/.test(p.args)));

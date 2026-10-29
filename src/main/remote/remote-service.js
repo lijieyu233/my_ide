@@ -338,7 +338,11 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     // awk 把「属性块」重新压成一行 `unit|mem|state|timestamp`，
     // 解析侧完全不用改（保持每行一个服务的既有格式）。
     // 用不带 --value 的形式：带属性名才能可靠地按块归位，不依赖输出顺序。
-    '(systemctl show $(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk "{print \\$1}" | head -n 40) -p Id -p ActiveEnterTimestamp -p MemoryCurrent -p UnitFileState 2>/dev/null | awk -F= \'/^Id=/{if(u)print u"|"m"|"s"|"t; u=substr($0,4); m="";s="";t="";next} /^MemoryCurrent=/{m=substr($0,15)} /^UnitFileState=/{s=substr($0,15)} /^ActiveEnterTimestamp=/{t=substr($0,22)} END{if(u)print u"|"m"|"s"|"t}\') || true',
+    // ⚠ 2026-10-29 修：不能用一次 systemctl show 传多个单元。
+    // 那样返回的 MemoryCurrent 对某些单元是**整个 slice 的累计值**：
+    // 实测 getty@tty1 单独查是 172032（168KB），批量查却是 1157566464（1.1GB）。
+    // 逐个单元查才准确；40 个单元约 1.2 秒，可接受。
+    '(for u in $(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk "{print \\$1}" | head -n 40); do m=$(systemctl show "$u" -p MemoryCurrent --value 2>/dev/null); s=$(systemctl show "$u" -p UnitFileState --value 2>/dev/null); t=$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null); echo "$u|$m|$s|$t"; done) || true',
     'echo "' + OVERVIEW_MARK + 'procs"',
     // 完整进程表：之前「进程」分类拿监听端口的进程顶替，用户看到的不是真进程表。
     // 按 CPU 倒序取前 40 行，够定位问题进程；不拉全表以免输出过大。
