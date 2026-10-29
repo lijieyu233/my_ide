@@ -37,25 +37,40 @@ if (fail) {
 }
 
 // ── 绿盾透明加密自检 ────────────────────────────────────────────────────
-// 这台机器装了 TsdEncryptMF（绿盾），个别文件会被就地加密成 %TSD-Header-###% 密文。
-// 危害是静默的：JS 被加密 → new Function 报语法错（上面能拦住）；但 **CSS 被加密
-// 时没有任何报错**，浏览器只是解析出 0 条规则，整个界面变白板 —— 实测
-// renderer/remote.css 被加密后远程面板完全没有布局（工具栏/终端全挤在底部），
-// 排查了半天才发现是文件本身的问题。
-// 所以这里把「渲染层所有文本资源」的头字节都看一遍，命中就直接失败并给出解法。
-const textAssets = [];
-for (const f of files) if (f.startsWith('renderer/') && /\.(js|css|html)$/.test(f)) textAssets.push(f);
+// 这台机器装了 TsdEncryptMF（绿盾），文件在磁盘上可能是密文，**白名单进程
+// （node / git / electron）读到的却是明文**。所以：
+//   · bash / coreutils 里 `head` 看到 %TSD-Header 是正常现象，不代表损坏；
+//   · 真正要抓的是「损坏」——用恶意方式（cat >> 之类非白名单写入）把密文
+//     写进了文件，这时连白名单进程读出来也是乱码，CSS 解析出 0 条规则、
+//     界面静默变白板（实测过 renderer/remote.css）。
+//
+// 因此判据不能只看头 16 字节（透明加密下永远看不到），必须看**内容是否可用**：
+//   1. 全文里不能出现 %TSD-Header 标记（真损坏时它会以明文形式留在内容里）；
+//   2. 不能有 U+FFFD 替换字符（编码链路坏掉的典型症状，实测一次坏 179 个字符）；
+//   3. CSS 必须至少解析出规则块（0 条 = 白板）。
+// 2026-10-29：原来只查头 16 字节，对透明加密等于没查。
+const textAssets = [...files];
 for (const f of fs.readdirSync(path.join(root, 'renderer'))) {
   if (/\.(css|html)$/.test(f)) textAssets.push('renderer/' + f);
 }
-const encrypted = [...new Set(textAssets)].filter(f => {
-  try { return fs.readFileSync(path.join(root, f)).subarray(0, 16).toString('latin1').startsWith('%TSD-Header'); }
-  catch { return false; }
-});
-if (encrypted.length) {
-  console.error('[syntax] ' + encrypted.length + ' 个渲染资源被绿盾加密（界面会失去样式/逻辑）:');
-  for (const f of encrypted) console.error('  - ' + f);
-  console.error('  解法：用仓库里记录的管道法恢复（磁盘落盘会被再次加密）：');
+const damaged = [];
+for (const f of [...new Set(textAssets)]) {
+  let text;
+  try { text = fs.readFileSync(path.join(root, f), 'utf8'); } catch { continue; }
+  const problems = [];
+  // 只看偏移 0：真损坏（密文被写进文件）时内容**以**标记开头；
+  // 而 browser-upload / reader-worker / remote-service 这些文件是**正当引用**
+  // 这个字符串当守卫常量（检测到密文就拒绝操作），用 includes 会误报它们。
+  if (text.startsWith('%TSD-Header')) problems.push('文件内容以 %TSD 密文标记开头（被写坏了）');
+  const fffd = (text.match(/\uFFFD/g) || []).length;
+  if (fffd) problems.push('含 ' + fffd + ' 个 U+FFFD 替换字符');
+  if (/\.css$/.test(f) && !/\{/.test(text)) problems.push('CSS 解析出 0 条规则');
+  if (problems.length) damaged.push(f + ' -> ' + problems.join('；'));
+}
+if (damaged.length) {
+  console.error('[syntax] ' + damaged.length + ' 个渲染资源已损坏（界面会失去样式/逻辑）:');
+  for (const d of damaged) console.error('  - ' + d);
+  console.error('  解法：用管道法从 git 复原（别用 cat >> 追加，会把密文写进文件）：');
   console.error('    git cat-file blob $(git rev-parse HEAD:<file>) | node -e "..." > %LOCALAPPDATA%/Temp/x');
   console.error('    然后 cp 回原路径；或把仓库目录加入绿盾白名单。');
   process.exit(1);

@@ -206,7 +206,7 @@ window.ToolStrip = (() => {
       event.preventDefault();event.stopPropagation();emptyMenu(event.clientX,event.clientY);
     });
     strip.addEventListener('click',event=>{if(Date.now()<suppressed){event.preventDefault();event.stopImmediatePropagation();}},{capture:true});
-    // ── 右侧工具条（AI 助手）────────��──────────────────────────────────────
+    // ── 右侧工具条（AI 助手）────────────────────────────────────────────────
     // 与左侧同一套交互：右键设快捷键 / 拖拽排序 / 隐藏。
     // 右侧目前只有一个可配置按钮（tool-ai），所以没有「全隐藏兜底」按钮那种问题，
     // 但右键菜单必须给 —— 否则用户会以为这条是死的（截图里的问题）。
