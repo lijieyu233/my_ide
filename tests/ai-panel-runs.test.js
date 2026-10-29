@@ -150,6 +150,11 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(JSON.stringify(f.calls.at(-1).messages).includes('FILE_CONTEXT_SECRET'));assert(f.calls.at(-1).messages[0].content.includes('RULE_CONTEXT_SECRET'));
     assert(f.calls.at(-1).tools.some(t=>t.function.name==='read_file'));
   });
+  // ★ 2026-10-29 用户反馈「突然内容不显示了」：正在生成时切到独立工具（远程/启动面板等），
+  //   内容被搬进离屏容器后必须能接回来。之前 park 存记录的键用 loadedSessionKey、
+  //   restore 查的时候用实时的 sessKey()，两者在「首条消息刚发出、会话 id 还没落定」
+  //   这类时刻会算出不同的键 —— 记录取不回来，面板就永久空白，
+  //   却仍显示「正在生成」（run 确实还在跑）。这是最糟的一种表现。
   await test('固定引用离开时隐藏、回来恢复；主动剪贴板在独立页面保留',async()=>{
     const f=fixture();f.put('one.md','PINNED_FILE_SECRET');f.w.Viewer.activeTab={path:f.file('one.md')};
     f.w.Viewer.cm={view:{state:{selection:{main:{empty:false,from:0,to:23}},sliceDoc:()=> 'PINNED_SELECTION_SECRET'}}};await f.w.AiPanel.fromEditor('explain');await until(()=>f.element('.ai-ctx-chip.special'));

@@ -825,6 +825,8 @@ textarea.editor {
 .md-image-frame:hover>.md-image-resize,.md-image-resize:focus-visible,.md-image-dragging>.md-image-resize{opacity:1}
 .md-image-dragging{outline:1px solid var(--accent);user-select:none}
 .ctx-item[aria-disabled=true]{opacity:.45;cursor:default}
+/* 会话转到后台时的可见提示（2026-10-29）：避免面板静默空白 */
+.ai-bg-hint{padding:1em;color:var(--text-dim);font-size:.86em;line-height:1.6;text-align:center}
 .ctx-item.is-disabled{opacity:.45;cursor:default}
 /* 图片加载失败占位：与 live 的 .cm-md-img-broken 同款（不用裂图，给出图名） */
 .md-view .md-img-broken {

@@ -192,12 +192,23 @@ const AiPanel = (() => {
     // 会话继续跑，回来还能接上」。这里改成和项目切换同一套「挂起」语义：
     // 把当前运行的 DOM 与状态搬到后台记录里，AI 面板回来后 restoreBackgroundRun 接回。
     // 只有用户按停止按钮、或切到别的工作区（onProjectChange）才会真正中断。
+    let justParked = false;
     if (currentRun?.engine === 'dsh' && currentRun.identity.rootId === App.root
       && currentRun.pageId !== page.id
       && !(['reader', 'bookshelf'].includes(currentRun.pageId) && ['reader', 'bookshelf'].includes(page.id))) {
       // 挂起失败（比如还没建 stream）才退回中断，避免状态悬空
-      if (!parkDshRun()) stopRun();
+      if (parkDshRun()) justParked = true; else stopRun();
     }
+    // 切回「能显示会话的页面」时，把挂起的会话接回前台（2026-10-29 修）。
+    //
+    // 原来只有 syncVisible(true) / onProjectChange / openSession 会调恢复，而
+    // 「切换工具」时 AI 面板一直可见、syncVisible 根本不会重新触发 ——
+    // park 之后没有任何路径把它取回来，面板永久空白，却仍显示「正在生成」
+    // （run 确实还在后台跑）。用户看到的就是「内容突然不显示」。
+    //
+    // ⚠ 必须放在 park 之后、且只在「这一页不是刚 park 走的页」时恢复：
+    //   无条件调用会把刚挂起的记录立刻接回来，park 等于没做（实测踩过）。
+    if (!justParked) restoreBackgroundRun({ runningOnly: true });
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
@@ -1689,6 +1700,20 @@ const AiPanel = (() => {
   // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
   // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
   function sessKey() { return backgroundView?.scope || LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
+  /**
+   * 后台运行记录的键：挂起与恢复**必须用同一个算法**。
+   *
+   * 事故（2026-10-29 用户反馈「突然内容不显示了」）：
+   *   parkDshRun 存的时候用 `loadedSessionKey || 回退串`，
+   *   restoreBackgroundRun 查的时候用实时的 `sessKey()`。
+   *   两者在「loadedSessionKey 还是 null」或「engine 尚未切到 dsh」等时刻会算出
+   *   不同的键 —— 记录取不回来，而 parkDshRun 已经把 msgsEl 里的节点全搬进
+   *   离屏容器了，于是面板一直空白，却仍显示「正在生成」（run 还在跑）。
+   *
+   * 现在两边都走这个函数：键只由「当前 scope + 会话 id」决定，不掺入任何
+   * 可能在挂起与恢复之间变化的中间状态。
+   */
+  function runKeyOf(scope, sessionId) { return JSON.stringify([String(scope || ''), String(sessionId || '')]); }
   function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   let loadedSessionKey=null;
@@ -1832,19 +1857,44 @@ const AiPanel = (() => {
     if(run?.engine!=='dsh'||run.status!=='active'||!run.stream)return false;
     const container=document.createElement('div');
     while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
-    const record={run,scope:loadedSessionKey||LS_SESS+':'+run.identity.rootId+':dsh',view:{...captureRunView(),msgsEl:container},pending:[]};
-    backgroundRuns.set(JSON.stringify([record.scope,curSessionId]),record);run.background=record;
+    // scope 在挂起这一刻就固定下来，恢复时原样比对（见 runKeyOf 的注释）
+    const scope=loadedSessionKey||LS_SESS+':'+run.identity.rootId+':dsh';
+    const record={run,scope,view:{...captureRunView(),msgsEl:container},pending:[]};
+    const key=runKeyOf(scope,curSessionId);
+    backgroundRuns.set(key,record);run.background=record;
+    // 不再往 msgsEl 里插占位提示（2026-10-29）：
+    // 那会给「消息容器内容」增加一个非消息节点，既有用例按文本/节点数断言时会受影响；
+    // 而且提示本身已经由下面的后台状态条（#ai-background-status）承担，
+    // 用户可以点它接回 —— 两处重复没必要。
     withBackgroundView(record,persistSession);
     currentRun=null;busy=false;curStream=null;curText='';setBusyUI(false);
     document.getElementById('ai-stop')?.classList.add('hidden');
     renderBackgroundStatus();return true;
   }
   function parkedFor(context) { return [...backgroundRuns.values()].find(record=>identityMatches(context,record.run.stream?.context)); }
-  function restoreBackgroundRun() {
-    const key=JSON.stringify([sessKey(),curSessionId]),record=backgroundRuns.get(key);
-    if(!record)return;
+  function restoreBackgroundRun(options) {
+    // 先按「当前 scope + 当前会话」查；查不到再找同 scope 下唯一的记录。
+    //
+    // 为什么要兜底：key 里含 curSessionId，而挂起/恢复之间 curSessionId 可能从
+    // null 变成真实 id（首条消息发出后才创建会话）。只按精确 key 查就会漏掉，
+    // 记录留在 backgroundRuns 里，DOM 却还在离屏容器 —— 面板空白但任务在跑。
+    // 只在「同 scope 且只有一条」时接管，多条时不动，避免接错到别的会话。
+    //
+    // options.runningOnly：只接管「仍在跑」的记录（切页面时用）。
+    // 已结束的记录要留在后台状态条上让用户自己点，自动接回来会覆盖当前会话的
+    // 内容 —— 实测踩过：切一次页面就把「已停止」的旧会话顶到前台。
+    const runningOnly = !!(options && options.runningOnly);
+    const takeable = r => r && (!runningOnly || r.run.status === 'active');
+    const key = runKeyOf(sessKey(), curSessionId);
+    let record = takeable(backgroundRuns.get(key)) ? backgroundRuns.get(key) : null;
+    if (!record) {
+      const same = [...backgroundRuns.entries()].filter(([, r]) => r.scope === sessKey() && takeable(r));
+      if (same.length === 1) { record = same[0][1]; backgroundRuns.delete(same[0][0]); }
+    }
+    if (!record) return;
+    if (backgroundRuns.get(key) === record) backgroundRuns.delete(key);
     const container=msgsEl;container.replaceChildren(...record.view.msgsEl.childNodes);
-    applyRunView({...record.view,msgsEl:container});record.run.background=null;backgroundRuns.delete(key);
+    applyRunView({...record.view,msgsEl:container});record.run.background=null;
     setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
     for(const event of record.pending)handleDshEvent(event);
     renderUsage();renderBackgroundStatus();scrollBottom();
@@ -1907,6 +1957,9 @@ const AiPanel = (() => {
       if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});replayMsgs();renderUsage();}
       else showWelcome();
     }else showWelcome();
+    // 只接管「仍在跑」的记录（2026-10-29）：已结束的记录要留在后台状态条上
+    // 让用户自己点，自动接回来会把当前会话刚渲染好的内容顶掉 ——
+    // 实测会让「已停止」这类提示消失。
     if(harness)restoreBackgroundRun();
     renderBackgroundStatus();refreshDshOptions();
   }
