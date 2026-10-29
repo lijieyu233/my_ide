@@ -347,4 +347,61 @@ check('CPU 超 100% 的 title 说明「按核心累计」',
   /≈\s*2\.0\s*核/.test(cpuCell?.title || '') && /共 4 核/.test(cpuCell?.title || ''),
   cpuCell?.title);
 
+// ⑯ 「内存」列在三个分类里必须含义一致（2026-10-29 用户指出）
+// 原来 Docker/服务显示 34.8 MB，进程却显示 7.0% —— 同一个列名两种含义。
+// 现在统一为绝对大小；进程的百分比移到独立的「占比」列。
+const headerOf = () => [...host.querySelectorAll('.remote-ops-th')].map(e => e.textContent.replace(/\s+/g, ''));
+
+panel.renderOverview(badSample, 'docker');
+const dockerHead = headerOf();
+check('Docker 表头有「内存」列', dockerHead.some(t => t.startsWith('内存')), dockerHead.join('|'));
+
+panel.renderOverview({ ...badSample, services: badSample.services }, 'svc');
+const svcHead = headerOf();
+check('服务表头有「内存」列', svcHead.some(t => t.startsWith('内存')), svcHead.join('|'));
+
+// 进程样本必须带 rss（常驻字节）与 mem（百分比），否则「内存」列显示 —，
+// 就验证不到「这一列是大小而不是百分比」这件事。
+panel.renderOverview({
+  ...procSample,
+  procs: [{ pid: 42, comm: 'node', cpu: 88, mem: 9, rss: 1024 * 1024, etime: '3:12:40', args: 'node server.js' }],
+}, 'proc');
+const procHead = headerOf();
+check('进程表头同时有「内存」与「占比」两列',
+  procHead.some(t => t.startsWith('内存')) && procHead.some(t => t.startsWith('占比')), procHead.join('|'));
+
+// 进程「内存」列显示的是大小（含单位），不是百分比
+const procRow = host.querySelector('#remote-ops-list .remote-ops-row');
+const procCells = [...procRow.querySelectorAll('.remote-ops-td')].map(e => e.textContent.trim());
+check('进程「内存」列显示大小（带单位）',
+  procCells.some(t => /^\d+(\.\d+)?\s*(B|KB|MB|GB)$/.test(t)), procCells.join('|'));
+check('进程「占比」列显示百分比',
+  procCells.some(t => /^\d+(\.\d+)?%$/.test(t)), procCells.join('|'));
+
+// ⑰ 进程运行时长要中文化（ps 的 `4-11:00:23` → 「4 天 11 小时」）
+// 表头里 Docker/服务/进程都是中文时长，只有进程原来照搬 ps 的机器格式。
+panel.renderOverview({
+  ...procSample,
+  // 换个 pid：同键行会走「增量补丁」复用旧 DOM（结构没变），拿到的仍是上一段样本的文本，
+  // 这里要验证的是新数据渲染结果，所以让行键变化触发重建。
+  procs: [{ pid: 999001, comm: 'java', cpu: 1, mem: 5, rss: 1024 * 1024, etime: '116-2:00:00', args: 'java -jar x' }],
+}, 'proc');
+const etimeRow = host.querySelector('#remote-ops-list .remote-ops-row');
+// 按表头里「运行时长」的下标取单元格，别用「含天/小时」模糊查找 ——
+// 那样会命中别的列（比如内存 1 GB 里的单位）而误判。
+const etimeIdx = headerOf().indexOf('运行时长');
+const etimeCells = [...etimeRow.querySelectorAll('.remote-ops-td')];
+check('进程时长已中文化（116 天 2 小时）',
+  /116 天 2 小时/.test(etimeCells[etimeIdx]?.textContent || ''),
+  'idx=' + etimeIdx + ' text=' + (etimeCells[etimeIdx]?.textContent || ''));
+
+// 内核线程没有命令行时不再显示「（无命令行）」占位
+panel.renderOverview({
+  ...procSample,
+  procs: [{ pid: 7, comm: 'ksoftirqd/0', cpu: 199, mem: 7, rss: 264 * 1024, etime: '4-11:00:23', args: '', kernelThread: true }],
+}, 'proc');
+const ktRow = host.querySelector('#remote-ops-list .remote-ops-row');
+check('内核线程的命令行列留空（不显示占位符）',
+  !/（无命令行）/.test(ktRow?.textContent || ''), ktRow?.textContent.slice(0, 80));
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

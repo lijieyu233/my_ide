@@ -529,7 +529,37 @@ window.RemotePanel = (() => {
     const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60);
     if (d) return h ? d + ' 天 ' + h + ' 小时' : d + ' 天';
     if (h) return m ? h + ' 小时 ' + m + ' 分' : h + ' 小时';
+    // 不足 1 分钟不要显示「0 分」—— 进程刚启动时全变成「0 分」等于没信息
+    if (!m) return Math.max(1, Math.round(seconds)) + ' 秒';
     return m + ' 分';
+  };
+  /**
+   * ps 的 etime → 秒。
+   *
+   * etime 的格式是 `[[DD-]hh:]mm:ss`，例如：
+   *   `4-11:00:23`  → 4 天 11 小时
+   *   `14-16:23:46` → 14 天 16 小时
+   *   `3:12:40`     → 3 小时 12 分（没有天数段时是 hh:mm:ss）
+   *   `05:12`       → 5 分 12 秒（只有两段时是 mm:ss）
+   * 直接把这个机器格式摆进表格，会跟 Docker/服务的「116 天 2 小时」完全不搭
+   * （2026-10-29 用户截图指出的不一致），所以先转秒再用 fmtDuration 统一格式化。
+   */
+  const parseEtime = text => {
+    const s = String(text || '').trim();
+    if (!s) return null;
+    const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(s);
+    if (m) {
+      const days = Number(m[1] || 0), hh = Number(m[2] || 0), mm = Number(m[3] || 0), ss = Number(m[4] || 0);
+      return days * 86400 + hh * 3600 + mm * 60 + ss;
+    }
+    // 极短进程 ps 只给 `ss` 或 `mm:ss` 之外的纯秒数
+    if (/^\d+$/.test(s)) return Number(s);
+    return null;
+  };
+  /** 进程运行时长：机器格式 → 中文；解析不了就原样返回（不丢信息）。 */
+  const fmtEtime = text => {
+    const secs = parseEtime(text);
+    return secs == null ? (text || '—') : fmtDuration(secs);
   };
   const pct = (used, total) => !total ? 0 : Math.min(100, Math.max(0, Math.round(used / total * 100)));
   const level = p => p >= 90 ? 'critical' : p >= 75 ? 'warn' : 'ok';
@@ -844,28 +874,35 @@ window.RemotePanel = (() => {
     docker: [
       { id: 'name', label: '名称', width: '12.88rem', grow: true, sortable: true },
       { id: 'status', label: '状态', width: '5.98rem', align: 'left' },
-      { id: 'cpu', label: 'CPU', width: '5.06rem', align: 'right', sortable: true },
+      { id: 'cpu', label: 'CPU', width: '4.60rem', align: 'right', sortable: true },
+      // 「内存」统一表示**绝对大小**（2026-10-29 用户指出：同一个列名
+      // 在 Docker/服务里是 34.8 MB，到进程里却变成 7.0%，含义不一致）。
       { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
       { id: 'ports', label: '端口', width: '7.36rem' },
       { id: 'uptime', label: '运行时长', width: '5.98rem', align: 'right' },
-      { id: 'restarts', label: '重启', width: '3.68rem', align: 'right' },
-      { id: 'image', label: '镜像', width: '11.04rem', grow: true, fade: true },
+      // 「重启」整列几乎都是 —（多数容器没配重启策略），白占 3.68rem，收窄
+      { id: 'restarts', label: '重启', width: '3.00rem', align: 'right' },
+      { id: 'image', label: '镜像', width: '13.80rem', grow: true, fade: true },
     ],
     svc: [
       { id: 'name', label: '服务', width: '14.72rem', grow: true, sortable: true },
       { id: 'status', label: '状态', width: '5.52rem' },
       { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
-      { id: 'uptime', label: '已运行', width: '6.44rem', align: 'right' },
-      { id: 'enabled', label: '自启', width: '3.68rem', align: 'center' },
+      // 「已运行」要放得下「116 天 2 小时」，原来 6.44rem 会截断
+      { id: 'uptime', label: '已运行', width: '7.82rem', align: 'right' },
+      { id: 'enabled', label: '自启', width: '4.14rem', align: 'center' },
       { id: 'desc', label: '描述', width: '12.88rem', grow: true, fade: true },
     ],
     proc: [
       { id: 'name', label: '进程', width: '11.04rem', grow: true, sortable: true },
       { id: 'pid', label: 'PID', width: '5.06rem', align: 'right' },
-      { id: 'cpu', label: 'CPU', width: '5.06rem', align: 'right', sortable: true },
-      { id: 'mem', label: '内存', width: '5.06rem', align: 'right', sortable: true },
-      { id: 'rss', label: '常驻', width: '5.52rem', align: 'right', sortable: true },
-      { id: 'etime', label: '运行时长', width: '6.44rem', align: 'right' },
+      { id: 'cpu', label: 'CPU', width: '4.60rem', align: 'right', sortable: true },
+      // 进程的「内存」也改成绝对大小（原来是 7.0%），百分比单独成列「占比」——
+      // 这样三个分类的「内存」含义一致，都是大小。
+      { id: 'rss', label: '内存', width: '5.52rem', align: 'right', sortable: true },
+      { id: 'mem', label: '占比', width: '4.60rem', align: 'right', sortable: true },
+      // ps 的 etime 是「4-11:00:23」机器格式，转成中文再显示，列宽同步放宽
+      { id: 'etime', label: '运行时长', width: '7.36rem', align: 'right' },
       { id: 'args', label: '命令行', width: '14.72rem', grow: true, fade: true, mono: true },
     ],
     port: [
@@ -1102,7 +1139,7 @@ window.RemotePanel = (() => {
         return {
           key: 'pid-' + pr.pid,
           name: pr.comm,
-          cpuNum: pr.cpu, memNum: pr.mem,
+          cpuNum: pr.cpu, memNum: pr.mem, rssNum: pr.rss,
           badge: pr.kernelThread ? { text: '内核线程', level: 'off' }
             : hot ? { text: '高占用', level: 'warn' }
             : { text: '运行中', level: 'ok' },
@@ -1111,18 +1148,23 @@ window.RemotePanel = (() => {
           group: pr.kernelThread ? '内核线程' : hot ? '高占用' : '运行中',
           keyText: 'CPU ' + pr.cpu.toFixed(1) + '%　内存 ' + pr.mem.toFixed(1) + '%',
           meta: pr.args,
-          // 单元格 title 覆盖（默认用单元格文本）；目前只 CPU 列需要解释口径
+          // 单元格 title 覆盖（默认用单元格文本）：CPU 解释「按核心累计」口径，
+          // 命令行给全文（列里会被省略号截断）
           titles: { cpu: cpuTitle, args: pr.args },
           cells: {
             name: pr.comm,
             pid: String(pr.pid),
             cpu: pr.cpu.toFixed(1) + "%",
+            // 「内存」= 绝对大小（与 Docker/服务一致），百分比放到「占比」列
+            rss: pr.rss ? fmtBytes(pr.rss * 1024) : '—',
             mem: pr.mem.toFixed(1) + "%",
-            rss: fmtBytes(pr.rss * 1024),
-            etime: pr.etime,
-            args: pr.args,
+            // ps 的 `4-11:00:23` 转成「4 天 11 小时」再显示
+            etime: fmtEtime(pr.etime),
+            // 内核线程本来就没有命令行，显示「（无命令行）」是多余占位 ——
+            // 它的名字（ksoftirqd/0 之类）已经在第一列，这里留空即可。
+            args: pr.kernelThread ? '' : (pr.args || ''),
           },
-          sub: 'PID ' + pr.pid + ' · ' + fmtBytes(pr.rss * 1024) + ' · 运行 ' + pr.etime,
+          sub: 'PID ' + pr.pid + ' · ' + fmtBytes(pr.rss * 1024) + ' · 运行 ' + fmtEtime(pr.etime),
           state: hot ? 'warn' : 'on',
           args: { pid: String(pr.pid) },
           actions: [
@@ -1277,6 +1319,9 @@ window.RemotePanel = (() => {
       name: (a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN', { numeric: true }),
       cpu: (a, b) => (b.cpuNum || 0) - (a.cpuNum || 0),
       mem: (a, b) => (b.memNum || 0) - (a.memNum || 0),
+      // 进程的「内存」列（rss，绝对字节）与「占比」列（mem，百分比）分开排 ——
+      // 两列都挂 memKey 会变成同一个排序，用户点哪个都没区别。
+      rss: (a, b) => (b.rssNum || 0) - (a.rssNum || 0),
       status: (a, b) => (a.bad === b.bad ? 0 : a.bad ? -1 : 1),
     };
     const sortKey = st.sort || defaultSort(opsCat);
@@ -1796,8 +1841,10 @@ window.RemotePanel = (() => {
       if (th) {
         const [cat, colId] = th.dataset.opsSortcol.split(':');
         const st = listState[cat] || (listState[cat] = { q: '', sort: '', onlyBad: false });
-        // 映射列到排序键；点同一列再点一次切回默认
-        const map = { name: 'name', cpu: 'cpu', mem: 'mem', rss: 'mem', size: 'mem',
+        // 映射列到排序键；点同一列再点一次切回默认。
+        // rss 列（进程的「内存」，绝对大小）→ rss 排序键；
+        // mem 列（进程的「占比」/其它分类的「内存」）→ mem 排序键。
+        const map = { name: 'name', cpu: 'cpu', mem: 'mem', rss: 'rss', size: 'mem',
           percent: 'mem', port: 'name', restarts: 'mem' };
         const key = map[colId] || 'name';
         st.sort = st.sort === key ? '' : key;
