@@ -293,12 +293,29 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     // --no-stream 一次取快照，实测 11 个容器约 2.7 秒，可接受。
     '(docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" 2>/dev/null | head -n 20) || true',
     'echo "' + OVERVIEW_MARK + 'health"',
-    // 健康状态与重启次数：docker ps 的 Status 只给 healthy/unhealthy，
-    // 重启次数只能从 inspect 拿。逐个查会慢，限制前 20 个（实测约 300ms）。
-    '(for c in $(docker ps -a --format "{{.Names}}" 2>/dev/null | head -n 20); do echo "$c|"$(docker inspect --format "{{.State.Health.Status}}|{{.RestartCount}}" "$c" 2>/dev/null); done) || true',
+    // 健康状态与重启次数（2026-10-29 改成批量）。
+    //
+    // 原来是 `for c in $(...); do docker inspect ...; done` —— 每个容器一次
+    // docker 调用。注释里写的「实测约 300ms」是开发机（容器少）的数字；
+    // 用户那边 12 个容器 + 31 个服务，两个循环加起来就吃满了 8 秒采集预算，
+    // 整个概览页变成「采集超时（8s）」。
+    //
+    // 现在一条 docker inspect 吃下所有容器（它支持多参数），仍用 --format
+    // 输出「名字|健康|重启次数」的逐行格式 —— 解析侧不用改。
+    // docker inspect 的 --format 会对每个对象各输出一行。
+    '(docker inspect $(docker ps -a --format "{{.Names}}" 2>/dev/null | head -n 40) --format "{{.Name}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.RestartCount}}" 2>/dev/null | sed "s#^/##") || true',
     'echo "' + OVERVIEW_MARK + 'svcmeta"',
-    // 服务运行时长/内存/自启：list-units 不给这些，逐个 show 会变慢，只查前 30 个。
-    '(for u in $(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk "{print \$1}" | head -n 30); do echo "$u|"$(systemctl show "$u" -p ActiveEnterTimestamp -p MemoryCurrent -p UnitFileState --value 2>/dev/null | paste -sd"|"); done) || true',
+    // 服务运行时长/内存/自启（2026-10-29 改成批量）。
+    //
+    // 原来是 `for u in $(...); do systemctl show "$u" ...; done` —— 每个服务一次
+    // systemctl 调用。31 个服务就是 31 次进程启动，加上 docker 那个循环，
+    // 直接吃满 8 秒采集预算（用户那边整页变成「采集超时（8s）」）。
+    //
+    // 现在一条 systemctl 吃下所有单元，用 `-p Id` 作为每块的分隔标记，
+    // awk 把「属性块」重新压成一行 `unit|mem|state|timestamp`，
+    // 解析侧完全不用改（保持每行一个服务的既有格式）。
+    // 用不带 --value 的形式：带属性名才能可靠地按块归位，不依赖输出顺序。
+    '(systemctl show $(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk "{print \\$1}" | head -n 40) -p Id -p ActiveEnterTimestamp -p MemoryCurrent -p UnitFileState 2>/dev/null | awk -F= \'/^Id=/{if(u)print u"|"m"|"s"|"t; u=substr($0,4); m="";s="";t="";next} /^MemoryCurrent=/{m=substr($0,15)} /^UnitFileState=/{s=substr($0,15)} /^ActiveEnterTimestamp=/{t=substr($0,22)} END{if(u)print u"|"m"|"s"|"t}\') || true',
     'echo "' + OVERVIEW_MARK + 'procs"',
     // 完整进程表：之前「进程」分类拿监听端口的进程顶替，用户看到的不是真进程表。
     // 按 CPU 倒序取前 40 行，够定位问题进程；不拉全表以免输出过大。
@@ -308,16 +325,14 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     // comm（/proc/PID/stat 的进程名）几乎总有值，作兜底。
     // comm 是固定列、args 在最后（内部含空格），顺序不能换。
     '(ps -eo pid,pcpu,pmem,rss,etime,comm,args --sort=-pcpu 2>/dev/null | head -n 41) || true',
+    // ⚠ 不要在这里跑 `du -x /` 或 `du -x $HOME`（2026-10-29 事故）。
+    // 概览是每 5 秒刷一次、整条脚本只有 8 秒预算的采集；而 `du -x /` 要递归
+    // 扫描整个根分区，慢盘上几十秒都跑不完 —— 实测加进去后用户那边直接
+    // 「概览采集失败：采集超时（8s）」，整个概览页变成一行报错。
+    // 目录体积现在由文件页的「算大小」按需计算（走 disk.size 白名单动作），
+    // 概览里不再需要 du 数据（磁盘分类已移除）。
     'echo "' + OVERVIEW_MARK + 'du"',
-    // 主目录下各一级目录的体积（2026-10-29 用户要求「不能显示所有目录吗」）。
-    // 原来 `head -n 12` 只留前 12 条，小目录全被截掉；改成 40 条覆盖通常的主目录。
-    // 同时补上 `du -xk --max-depth=1 /` 的根分区一级目录 —— 用户在「目录」页
-    // 想看的是「磁盘都被谁占了」，只列 HOME 会漏掉 /var、/usr 这些大户。
-    // 两段用 @@MYIDE-OVERVIEW:duroot 区分，解析侧合并。
-    '(du -xk --max-depth=1 "$HOME" 2>/dev/null | sort -rn | head -n 40) || true',
-    'echo "' + OVERVIEW_MARK + 'duroot"',
-    // 根目录一级：排除会重复统计的挂载点与虚拟文件系统，只保留真实目录
-    '(du -xk --max-depth=1 / 2>/dev/null | grep -Ev "^[0-9]+\\s+/(proc|sys|dev|run|snap|boot/efi)(/|$)" | sort -rn | head -n 20) || true',
+    '(true) || true',
     'echo "' + OVERVIEW_MARK + 'end"',
   ].join('\n');
 

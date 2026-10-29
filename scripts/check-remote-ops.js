@@ -186,14 +186,11 @@ app.whenReady().then(async () => {
         const stopped=rows.find(r=>/stopped-one/.test(r.textContent));
         return !!stopped && [...stopped.querySelectorAll('.remote-ops-act')].some(b=>b.textContent.trim()==='启动')})()`));
 
-    await probe('document.querySelector(\'[data-ops-cat="disk"]\').click()');
-    await wait('document.querySelectorAll(".remote-ops-row").length >= 4');
-    check('磁盘分类列出可清理项', await probe('document.querySelectorAll(".remote-ops-row").length >= 4'));
-    await probe('[...document.querySelectorAll(".remote-ops-act")].find(b=>b.textContent.trim()==="清理").click()');
-    await wait('!!document.querySelector(".remote-ops-dlg h3")');
-    check('清理确认框显示预计可释放空间',
-      await probe('/预计可释放/.test(document.querySelector(".remote-ops-dlg-body").textContent)'));
-    await probe('document.querySelector(\'.remote-ops-dlg [data-dlg="0"]\').click()');
+    // 磁盘分类已移除（2026-10-29 用户：「感觉还是看不出来什么东西，删掉吧」），
+    // 对应的「清理项 / 预计可释放空间」两条用例一并去掉。
+    // 磁盘容量在顶部资源监控的磁盘条里仍然可见，这里补一条断言守住它。
+    check('资源监控里仍有磁盘用量条', await probe(
+      '(()=>{const t=document.querySelector(".remote-ov-minis")?.textContent||"";return /磁盘/.test(t)})()'));
 
     await probe('document.querySelector(\'[data-ops-cat="proc"]\').click()');
     await wait('document.querySelectorAll(".remote-ops-row").length >= 1');
