@@ -429,3 +429,32 @@
    否则 border/padding 的细微差异会让每列累积偏移。 */
 .remote-ops-thead, .remote-ops-row { box-sizing: border-box; }
 .remote-ops-th, .remote-ops-td { box-sizing: border-box; }
+
+/* ---------- 顶部告警带（2026-10-29 P1-2）---------- */
+/* 只在有异常时才有内容；空的时候整条不占高度，避免凭空多出一条空白 */
+.remote-ov-alert { display: flex; align-items: center; flex-wrap: wrap; gap: .4em;
+  padding: .45em .7em; margin: .1em 0 .2em; border-radius: .45em;
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  font-size: .82em; }
+.remote-ov-alert:empty { display: none; }
+.remote-ov-alert-ico { color: var(--red); font-size: 1.1em; line-height: 1; }
+.remote-ov-alert-item {
+  border: 0; background: transparent; padding: .1em .25em; border-radius: .25em;
+  color: var(--text-bright); font: inherit; cursor: pointer; text-align: left;
+}
+.remote-ov-alert-item:hover { background: color-mix(in srgb, var(--red) 20%, transparent); text-decoration: underline; }
+.remote-ov-alert-sep { color: var(--text-dim); }
+
+/* ---------- 列表分组头（服务 / 进程按状态分组）---------- */
+.remote-ops-group {
+  display: flex; align-items: center; gap: .45em; width: 100%;
+  padding: .42em .6em; margin: .15em 0;
+  border: 0; border-radius: .35em; background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-dim); font: inherit; font-size: .82em; cursor: pointer; text-align: left;
+}
+.remote-ops-group:hover { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
+.remote-ops-group-caret { width: 1em; text-align: center; font-size: .9em; }
+.remote-ops-group-name { font-weight: 600; }
+.remote-ops-group em { font-style: normal; opacity: .75; }
+.remote-ops-group.is-collapsed { color: var(--text-dim); opacity: .85; }

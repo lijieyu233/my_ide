@@ -185,5 +185,142 @@ check('onSave 走 saveOnce（避免与 keydown 重复写入）', /onSave:\s*\(\)
 check('保存按钮也走 saveOnce', /action === 'save'\) void saveOnce\(\)/.test(panelSrc));
 check('CodeMirror 不可用时有 textarea 兜底', /re-textarea/.test(panelSrc));
 
+// ⑫ 顶部告警带（2026-10-29 P1-2，方案 241 §3.5）
+// 只在有异常时出现；每项可点，点了切到对应分类并自动勾「只看异常」。
+const badSample = {
+  ...sample,
+  docker: [
+    { name: 'web', image: 'nginx:1.25', status: 'Up 3 days' },
+    { name: 'cron', image: 'busybox', status: 'Exited (1) 2 hours ago' },
+    { name: 'db', image: 'postgres:16', status: 'Up 1 day', health: 'unhealthy' },
+  ],
+  services: [
+    { unit: 'ssh.service', active: 'active', sub: 'running', description: 'ssh' },
+    { unit: 'bad.service', active: 'failed', sub: 'failed', description: 'broken' },
+  ],
+  disks: [{ fs: '/dev/sda1', mount: '/', total: 100 * 1024 ** 3, used: 95 * 1024 ** 3, percent: 95 }],
+};
+
+// 无异常时：槽位在但内容为空（CSS :empty 让整条不占高度）
+panel.renderOverview(sample);
+const quietBand = host.querySelector('#remote-ov-alert');
+check('无异常时告警带不显示任何项',
+  !!quietBand && quietBand.textContent.trim() === '' && quietBand.querySelectorAll('[data-alert-cat]').length === 0);
+
+panel.renderOverview(badSample);
+const band = host.querySelector('#remote-ov-alert');
+check('有异常时出现告警带', !!band && /⚠/.test(band.textContent || ''));
+// 异常容器：cron 非 0 退出 + db 不健康 = 2 个（web 正常不计）
+check('告警带统计 2 个容器异常', /2 个容器异常/.test(band.textContent));
+check('告警带统计 1 个服务失败', /1 个服务失败/.test(band.textContent));
+check('磁盘达到 90% 时进入告警带', /95%/.test(band.textContent) && /剩余/.test(band.textContent));
+check('每条告警可点（带 data-alert-cat）',
+  band.querySelectorAll('[data-alert-cat]').length === 3);
+
+// 点「容器异常」→ 切到 Docker 分类 + 自动勾上只看异常
+const bandDocker = [...band.querySelectorAll('[data-alert-cat]')].find(b => b.dataset.alertCat === 'docker');
+bandDocker.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+check('点告警项切到 Docker 分类',
+  /Docker/.test(host.querySelector('.remote-ops-segs .active')?.textContent || ''));
+check('点告警项自动勾上「只看异常」',
+  host.querySelector('[data-ops-onlybad]')?.checked === true);
+check('只看异常后列表只剩 2 条异常容器',
+  host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 2);
+
+// 告警带与列表的「异常」判据必须一致，否则会出现「说 2 个、点进去是空」
+check('告警带计数与筛选出的行数一致（2 = 2）',
+  /2 个容器异常/.test(host.querySelector('#remote-ov-alert').textContent)
+  && host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 2);
+
+// ⑬ 分组折叠（2026-10-29 P1-2，方案 241 §4.3）
+const svcSample = {
+  ...sample,
+  docker: [],
+  services: [
+    { unit: 'a.service', active: 'active', sub: 'running', description: 'A' },
+    { unit: 'b.service', active: 'active', sub: 'running', description: 'B' },
+    { unit: 'c.service', active: 'inactive', sub: 'dead', description: 'C' },
+    { unit: 'd.service', active: 'failed', sub: 'failed', description: 'D' },
+  ],
+};
+// 先把「服务」分类的只看异常关掉（上一步点告警时改的是 docker 的，这里保险起见重置）
+panel.renderOverview(svcSample, 'svc');
+const groupHeads = [...host.querySelectorAll('.remote-ops-group')];
+const groupText = groupHeads.map(g => g.textContent.replace(/\s+/g, ''));
+check('服务按状态分成三组（失败 / 运行中 / 已停止）', groupHeads.length === 3, );
+check('组名含失败、运行中、已停止',
+  groupText.some(t => /失败/.test(t)) && groupText.some(t => /运行中/.test(t)) && groupText.some(t => /已停止/.test(t)));
+check('异常组排在最前（问题一眼可见）', /失败/.test(groupText[0]));
+check('组头带成员计数', groupText.some(t => /运行中2/.test(t)));
+check('分组不影响行总数（4 条都在）',
+  host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 4);
+
+// 收起「运行中」组：行少 2 条，组头仍在（还能再展开）
+const runningHead = groupHeads.find(g => /运行中/.test(g.textContent));
+const runningKey = runningHead.dataset.opsGroup;
+runningHead.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+check('收起一组后该组的行消失',
+  host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 2);
+check('收起后组头依然在（可再展开）',
+  host.querySelectorAll('.remote-ops-group').length === 3);
+const collapsedHead = host.querySelector('[data-ops-group="' + runningKey + '"]');
+check('收起的组头标记为 is-collapsed', collapsedHead.classList.contains('is-collapsed'));
+check('收起的组头 aria-expanded=false', collapsedHead.getAttribute('aria-expanded') === 'false');
+
+// 再点一次展开
+collapsedHead.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+check('再点组头能展开回来',
+  host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 4);
+
+// 折叠状态按分类隔离：切到 Docker 不受影响，且 Docker 本身不分组
+panel.renderOverview(badSample, 'docker');
+check('Docker 分类不分组（没有组头）',
+  host.querySelectorAll('.remote-ops-group').length === 0);
+
+// 进程分类：内核线程默认收起（否则真实进程会被淹没）
+const procSample = {
+  ...sample,
+  docker: [],
+  services: [],
+  procs: [
+    { pid: 1, comm: 'systemd', cpu: 0.1, mem: 0.2, args: '/sbin/init' },
+    { pid: 2, comm: 'kthreadd', cpu: 0, mem: 0, args: '[kthreadd]', kernelThread: true },
+    { pid: 3, comm: 'kworker/0:0', cpu: 0, mem: 0, args: '[kworker/0:0]', kernelThread: true },
+    { pid: 42, comm: 'node', cpu: 88, mem: 9, args: 'node server.js' },
+  ],
+};
+panel.renderOverview(procSample, 'proc');
+const procGroups = [...host.querySelectorAll('.remote-ops-group')].map(g => g.textContent.replace(/\s+/g, ''));
+check('进程按状态分组（高占用 / 运行中 / 内核线程）', procGroups.length === 3);
+check('内核线程组默认收起',
+  host.querySelector('[data-ops-group="proc:内核线程"]')?.classList.contains('is-collapsed') === true);
+check('默认收起后只渲染非内核线程的 2 条',
+  host.querySelectorAll('#remote-ops-list .remote-ops-row').length === 2);
+
+// ⑭ 分组 + 增量刷新必须共存（2026-10-29）
+// 风险点：折叠的组不渲染行，若增量补丁拿「全量行」对比就会永远不相等，
+// 等于每次都全量重建 —— 「刷新不打断」直接失效。这里用「节点实例是否被保留」
+// 来证明走的是补丁路径，同时验证收起组的计数仍会更新。
+panel.renderOverview(svcSample, 'svc');
+const runningHead2 = [...host.querySelectorAll('.remote-ops-group')].find(g => /运行中/.test(g.textContent));
+runningHead2.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));   // 收起运行中组
+const beforeNode = host.querySelector('#remote-ops-list .remote-ops-row');
+beforeNode.__marker = 'keep-me';
+
+// 收起组里少了一个服务：可见行没变（都被收着），只有计数该变
+const svcSlim = {
+  ...svcSample,
+  services: [
+    { unit: 'a.service', active: 'active', sub: 'running', description: 'A' },
+    { unit: 'c.service', active: 'inactive', sub: 'dead', description: 'C' },
+    { unit: 'd.service', active: 'failed', sub: 'failed', description: 'D' },
+  ],
+};
+panel.renderOverview(svcSlim, 'svc');
+check('分组下结构未变时走增量补丁（节点实例被保留）',
+  host.querySelector('#remote-ops-list .remote-ops-row')?.__marker === 'keep-me');
+check('收起组的计数跟着更新（运行中 2 → 1）',
+  /运行中1/.test([...host.querySelectorAll('.remote-ops-group')]
+    .find(g => /运行中/.test(g.textContent))?.textContent.replace(/\s+/g, '') || ''));
 
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

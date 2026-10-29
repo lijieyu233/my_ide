@@ -636,6 +636,65 @@ window.RemotePanel = (() => {
       const total = (overviewLast && opsRows(overviewLast).length) || rows.length;
       count.textContent = rows.length === total ? '共 ' + total : '筛出 ' + rows.length + ' / 共 ' + total;
     }
+
+    // 分组头计数也要更新（2026-10-29）：折叠的组里数据变化时行不重建，
+    // 但「运行中 30」这类数字必须跟着变，否则收起的组会一直显示旧数量。
+    if (lastGroups) {
+      for (const node of host.querySelectorAll('[data-ops-group]')) {
+        const b = lastGroups.find(g => g.key === node.dataset.opsGroup);
+        if (!b) continue;
+        const em = node.querySelector('em');
+        if (em && em.textContent !== String(b.rows.length)) em.textContent = b.rows.length;
+        node.dataset.opsGroupCount = b.rows.length;
+      }
+    }
+
+    // 告警带随之更新（2026-10-29）：新出现/消失的异常要立刻反映，
+    // 否则「容器刚挂」这条要等到结构变化才显示出来。
+    const alertSlot = host.querySelector('#remote-ov-alert');
+    if (alertSlot) {
+      const inner = buildAlertInner(collectAlerts(overviewLast || {}));
+      if (alertSlot.dataset.sig !== inner) {
+        alertSlot.dataset.sig = inner;
+        alertSlot.innerHTML = inner;
+      }
+    }
+  }
+
+  /**
+   * 顶部告警带的数据（方案 241 §3.5）：只在有异常时返回条目。
+   *
+   * 判据与 opsRows 里「异常」的定义保持一致（不健康 / 非 0 退出 / 重启中 / 服务失败），
+   * 两处不能各写一套 —— 否则会出现「告警带说有 1 个容器异常，点进去只看异常却是空的」。
+   */
+  function collectAlerts(ov) {
+    const out = [];
+    const dockerBad = (c) => {
+      if (c.health === 'unhealthy') return true;
+      if (/Restarting|Dead/i.test(String(c.status || ''))) return true;
+      const m = /Exited \((\d+)\)/.exec(String(c.status || ''));
+      return !!m && m[1] !== '0';
+    };
+    const badDocker = (ov.docker || []).filter(dockerBad).length;
+    if (badDocker) out.push({ cat: 'docker', text: badDocker + ' 个容器异常' });
+    const badSvc = (ov.services || []).filter(s => s.sub === 'failed' || s.active === 'failed').length;
+    if (badSvc) out.push({ cat: 'svc', text: badSvc + ' 个服务失败' });
+    for (const d of ov.disks || []) {
+      if (!d.total) continue;
+      const percent = Math.round((d.used / d.total) * 100);
+      if (percent < 90) continue;
+      out.push({ cat: 'disk', text: (d.mount || '磁盘') + ' ' + percent + '%（剩余 ' + fmtBytes(Math.max(0, d.total - d.used)) + '）' });
+    }
+    return out;
+  }
+
+  /** 告警带 HTML；无异常时返回空串（整条不占位）。 */
+  function buildAlertInner(items) {
+    if (!items.length) return '';
+    return '<span class="remote-ov-alert-ico" aria-hidden="true">⚠</span>'
+      + items.map((a, i) => (i ? '<span class="remote-ov-alert-sep">·</span>' : '')
+        + '<button class="remote-ov-alert-item" data-alert-cat="' + esc(a.cat) + '">'
+        + esc(a.text) + '</button>').join('');
   }
 
   function renderOverview(ov, cat) {
@@ -717,7 +776,15 @@ window.RemotePanel = (() => {
     // 布局（2026-10-28 用户要求）：取消右侧列，所有信息都进「服务器对象」。
     // 之前是「左主区 + 右列卡片」，右列那些信息（系统/磁盘/端口/目录）只能看不能操作，
     // 与左侧运维台割裂；现在把它们各自变成运维台的一个分类，一处看全、一处操作。
-    const nextHtml = '<div class="remote-ov-grid single">' + monitor + opsCard + '</div>';
+    // 顶部告警带（2026-10-29 P1-2，方案 241 §3.5）：只在有异常时出现。
+    // 槽位常驻、内容按需填 —— 这样增量刷新时只改这一块，
+    // 列表骨架不动（滚动位置、展开的菜单都不受影响）。
+    const alertInner = buildAlertInner(collectAlerts(ov));
+    const alertSlot = '<div class="remote-ov-alert" id="remote-ov-alert"'
+      + (alertInner ? ' data-sig="' + esc(alertInner) + '"' : '') + '>'
+      + alertInner + '</div>';
+
+    const nextHtml = '<div class="remote-ov-grid single">' + monitor + alertSlot + opsCard + '</div>';
 
     // 增量更新（2026-10-28）：结构没变就不重建 DOM。
     // 原来每 5 秒 innerHTML 全量重建，导致：滚动位置跳回顶部、打开的「⋯」菜单被关掉、
@@ -742,6 +809,18 @@ window.RemotePanel = (() => {
   let opsCat = 'docker';
   // 每个分类各自记住「搜索词 / 排序 / 只看异常」，切回来不重置（2026-10-28）
   const listState = {};
+  // 分组折叠状态（2026-10-29 P1-2）：键是「分类:组名」，只记在内存里。
+  // 为什么不用 localStorage：折叠是「本次查看时的临时视点」，不是偏好；
+  // 下次打开服务器还沿用上次收起的组，反而会把异常藏起来。
+  const collapsedGroups = {};
+  // 哪些分类按状态分组（方案 241 §4.3：服务、进程按状态分组）
+  const GROUPED_CATS = new Set(['svc', 'proc']);
+  // 组的显示顺序：异常组永远在前 —— 用分组就是为了「问题一眼可见」，
+  // 把「失败」压到最下面等于白分。
+  const GROUP_ORDER = {
+    svc: ['失败', '运行中', '已停止'],
+    proc: ['高占用', '运行中', '内核线程'],
+  };
   /** 各分类的默认排序：按用户最关心的字段，而不是字母序 */
   const defaultSort = cat => ({
     docker: 'status',   // 异常优先
@@ -990,6 +1069,8 @@ window.RemotePanel = (() => {
           key: sv.unit, name: sv.unit,
           cpuNum: 0, memNum: sv.memory || 0,
           badge, bad: failed,
+          // 分组用（方案 241 §4.3）：失败 / 运行中 / 已停止
+          group: failed ? '失败' : running ? '运行中' : '已停止',
           keyText: key,
           meta: sv.description || sv.unit,
           cells: {
@@ -1019,6 +1100,8 @@ window.RemotePanel = (() => {
             : hot ? { text: '高占用', level: 'warn' }
             : { text: '运行中', level: 'ok' },
           bad: false,           // 进程高占用不算故障，用徽标提示即可
+          // 分组用（方案 241 §4.3）：内核线程单独成组，默认收起免得淹没真实进程
+          group: pr.kernelThread ? '内核线程' : hot ? '高占用' : '运行中',
           keyText: 'CPU ' + pr.cpu.toFixed(1) + '%　内存 ' + pr.mem.toFixed(1) + '%',
           meta: pr.args,
           cells: {
@@ -1158,6 +1241,8 @@ window.RemotePanel = (() => {
 
   // buildOpsPanel 渲染时把行数据留在这里，供增量补丁使用（同一份数据不重算）
   let lastOpsRows = [];
+  // 分组块（2026-10-29）：增量补丁用它更新「收起的组」里的计数
+  let lastGroups = null;
   // 资源摘要条的状态（百分比/配色/文案），同样供增量补丁更新
   let lastMeters = [];
 
@@ -1247,7 +1332,7 @@ window.RemotePanel = (() => {
         + '</div>'
       : '';
 
-    const body = rows.length ? rows.map(r => {
+    const rowHtml = r => {
       const btn = (o) =>
         '<button class="remote-ops-act' + (o.danger ? ' danger' : '') + '"'
         + ' data-ops-run="' + esc(o.action) + '"'
@@ -1298,9 +1383,52 @@ window.RemotePanel = (() => {
         + nameCell + otherCells
         + '<span class="remote-ops-td remote-ops-td-acts"><div class="remote-ops-acts">' + acts + '</div></span>'
         + '</div>';
-    }).join('') : '<div class="remote-empty">这一类没有可显示的对象。</div>';
+    };
 
-    lastOpsRows = rows;
+    // 分组折叠（2026-10-29 P1-2，方案 241 §4.3）：服务 / 进程按状态分组，组头可点收起。
+    // 折叠的组「行不进 DOM」而不是 CSS 隐藏 —— 行数直接变少，顺带减轻大列表负担；
+    // 增量补丁按「实际渲染的行」对齐（lastOpsRows 用 renderRows），不会错位。
+    let blocks = null;
+    let renderRows = rows;
+    if (GROUPED_CATS.has(opsCat) && rows.length) {
+      const buckets = new Map();
+      for (const r of rows) {
+        const g = r.group || '其他';
+        if (!buckets.has(g)) buckets.set(g, []);
+        buckets.get(g).push(r);
+      }
+      const order = GROUP_ORDER[opsCat] || [];
+      const names = [...buckets.keys()].sort((a, b) => {
+        const ia = order.indexOf(a), ib = order.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+      blocks = names.map(name => {
+        const key = opsCat + ':' + name;
+        // 内核线程默认收起：它们动辄几十上百条，且几乎没有可操作性，
+        // 全展开会把真实进程挤到看不见。用户手动展开过就按用户的来。
+        const fallback = name === '内核线程';
+        return { name, key, rows: buckets.get(name),
+          collapsed: collapsedGroups[key] === undefined ? fallback : !!collapsedGroups[key] };
+      });
+      renderRows = blocks.flatMap(b => (b.collapsed ? [] : b.rows));
+    }
+    lastGroups = blocks;
+
+    const groupHeader = b =>
+      '<button class="remote-ops-group' + (b.collapsed ? ' is-collapsed' : '') + '"'
+      + ' data-ops-group="' + esc(b.key) + '" data-ops-group-count="' + b.rows.length + '"'
+      + ' aria-expanded="' + (b.collapsed ? 'false' : 'true') + '">'
+      + '<span class="remote-ops-group-caret" aria-hidden="true">' + (b.collapsed ? '▸' : '▾') + '</span>'
+      + '<span class="remote-ops-group-name">' + esc(b.name) + '</span>'
+      + '<em>' + b.rows.length + '</em></button>';
+
+    // 有分组时即使全部收起也要渲染组头 —— 否则用户再也点不开
+    const body = blocks
+      ? blocks.map(b => groupHeader(b) + (b.collapsed ? '' : b.rows.map(rowHtml).join(''))).join('')
+      : (renderRows.length ? renderRows.map(rowHtml).join('')
+        : '<div class="remote-empty">这一类没有可显示的对象。</div>');
+
+    lastOpsRows = renderRows;
     return '<div class="remote-ops">'
       + '<div class="remote-ops-segs">' + seg + '</div>'
       + toolbar
@@ -1611,6 +1739,26 @@ window.RemotePanel = (() => {
       const cat = event.target.closest('[data-ops-cat]');
       if (cat) {
         opsCat = cat.dataset.opsCat;
+        if (overviewLast) renderOverview(overviewLast);
+        return;
+      }
+
+      // 告警带点击（2026-10-29）：切到对应分类并自动勾上「只看异常」。
+      // 从「看到问题」到「处理问题」一步到位，不用先自己切分类再勾筛选。
+      const alertBtn = event.target.closest('[data-alert-cat]');
+      if (alertBtn) {
+        opsCat = alertBtn.dataset.alertCat;
+        const st = listState[opsCat] || (listState[opsCat] = { q: '', sort: '', onlyBad: false });
+        st.onlyBad = true;
+        if (overviewLast) renderOverview(overviewLast);
+        return;
+      }
+
+      // 分组头折叠（2026-10-29）：点一下收起/展开该状态组
+      const groupHead = event.target.closest('[data-ops-group]');
+      if (groupHead) {
+        const key = groupHead.dataset.opsGroup;
+        collapsedGroups[key] = !collapsedGroups[key];
         if (overviewLast) renderOverview(overviewLast);
         return;
       }
