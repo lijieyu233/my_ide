@@ -80,8 +80,19 @@
 .remote-file-menu .ctx-item:disabled { opacity: .45; cursor: default; }
 .remote-file-menu .ctx-item.danger:hover:not(:disabled) { background: var(--red); }
 .remote-file-menu .ctx-sep { height: 1px; margin: 4px 2px; background: var(--border-pane); }
-.remote-file-list { flex:1; min-height:5em; overflow:auto; padding:.4em; }.remote-file { display:flex; align-items:center; gap:.6em; min-height:2.6em; padding:.6em; border:0; border-radius:.35em; background:none; color:var(--text); font:inherit; width:100%; text-align:left; cursor:pointer; }.remote-file:hover { background:var(--bg-hover); }.remote-file.selected { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--text-bright); }
-.remote-file>span:first-child { display:flex; color:var(--text-dim); }.remote-file.selected>span:first-child { color:var(--accent); }.remote-file-name { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:.92em; }.remote-file small { flex:0 0 auto; color:var(--text-dim); font-size:.78em; font-variant-numeric:tabular-nums; }
+.remote-file-list { flex:1; min-height:5em; overflow:auto; padding:.4em; }.remote-file { display:flex; align-items:center; gap:.6em; min-height:2.6em; padding:.6em; border:0; border-radius:.35em; background:none; color:var(--text); font:inherit; width:100%; box-sizing:border-box; text-align:left; cursor:pointer; }.remote-file:hover { background:var(--bg-hover); }.remote-file.selected { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--text-bright); }.remote-file:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; }
+.remote-file>.remote-file-icon { display:flex; color:var(--text-dim); }.remote-file.selected>.remote-file-icon { color:var(--accent); }.remote-file-name { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:.92em; }.remote-file small { flex:0 0 auto; color:var(--text-dim); font-size:.78em; font-variant-numeric:tabular-nums; }
+/* 行内「算大小」：常显但弱化（默认 .45，不抢「大小」列的注意力），悬停/选中/聚焦提亮。
+   不做成「纯 hover 才出现」—— 用户第一眼得看见「这一行可以单独算」，
+   藏起来等于没有（2026-10-29 用户明确要「单独计算按钮」）。
+   触屏没有 hover，:focus-within 保证键盘/触屏也能拿到。 */
+.remote-file-calc { flex:0 0 auto; padding:.15em .5em; border:1px solid color-mix(in srgb,var(--text) 12%,transparent); border-radius:.35em; background:transparent; color:var(--text-dim); font:inherit; font-size:.75em; line-height:1.5; cursor:pointer; opacity:.45; transition:opacity .12s, color .12s, border-color .12s; }
+.remote-file:hover .remote-file-calc, .remote-file.selected .remote-file-calc, .remote-file:focus-within .remote-file-calc, .remote-file-calc:focus-visible { opacity:1; }
+.remote-file-calc:hover:not(:disabled) { color:var(--text-bright); border-color:color-mix(in srgb,var(--accent) 60%,transparent); background:color-mix(in srgb,var(--accent) 12%,transparent); }
+/* 计算中：必须常显，否则按钮隐着就看不到「计算中…」这个唯一进度提示。
+   注意别写成 :disabled —— 断线时 controls() 会把所有按钮置灰，
+   用 :disabled 就会让一整列按钮突然全部冒出来。 */
+.remote-file-calc[aria-busy=true] { opacity:1; cursor:progress; color:var(--text-dim); }
 .remote-file-status { font-size:.78em; padding:.75em 1em; color:var(--text-dim); background:var(--bg-tabbar); overflow-wrap:anywhere; }
 #remote-transfers { flex:0 0 auto; border-top:1px solid color-mix(in srgb,var(--text) 8%,transparent); background:var(--bg-tabbar); max-height:12em; overflow:auto; }#remote-transfers summary { display:flex; align-items:center; flex-wrap:wrap; gap:.6em; min-height:2.62em; padding:.3em 7em .3em 1.23em; cursor:pointer; list-style:none; }#remote-transfers summary::before { content:""; width:.4em; height:.4em; border-right:1px solid var(--text-dim); border-bottom:1px solid var(--text-dim); transform:rotate(-45deg); margin-right:.25em; }#remote-transfers[open] summary::before { transform:rotate(45deg); }
 .remote-queue-title { display:flex; align-items:center; gap:.6em; font-weight:500; }#remote-transfer-count { padding:.15em .5em; border-radius:.35em; background:color-mix(in srgb,var(--text) 7%,transparent); color:var(--text-dim); font-size:.82em; font-variant-numeric:tabular-nums; }#remote-transfer-summary { flex:1; font-size:.8em; color:var(--text-dim); }#remote-main #remote-clear-transfers { font-size:.85em; min-height:1.8em; padding:.25em .5em; background:transparent; border-color:transparent; color:var(--text-dim); }

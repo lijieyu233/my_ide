@@ -95,6 +95,40 @@ const storage = {
     const clean = await service.op(sid, 'disk.cleanApt', {});
     check('磁盘清理执行成功', clean.ok === true && clean.code === 0);
 
+    // ⑦ disk.size（文件页「算大小」用的单项目大小，2026-10-29）
+    //    命令必须带虚拟文件系统短路 —— 否则 /proc 会报出 /proc/kcore 那 128TiB 的
+    //    名义大小（用户截图里就是 134217712.1 MB）。
+    server.control.execReply = [
+      // 一条规则覆盖两种情况：/proc 走虚拟文件系统空分支（什么都不输出），
+      // 普通目录走 du。用函数形式是因为两条命令都同时含 `du -sxb` 和 `case ... proc`。
+      { match: 'du -sxb', out: cmd => cmd.includes("'/proc'") ? '' : '7340032\n', code: 0 },
+    ];
+    server.control.execLog = [];
+    const size = await service.op(sid, 'disk.size', { path: '/home/fixture/projects' });
+    const sizeCmd = server.control.execLog.at(-1)?.command || '';
+    check('disk.size 是只读动作', size.read === true);
+    check('disk.size 用 -sxb 输出字节而非人类可读单位',
+      sizeCmd.includes('du -sxb') && !sizeCmd.includes('du -sh'));
+    check('disk.size 先判文件系统类型，proc 等虚拟 fs 跳过 du',
+      /stat -f -c %T/.test(sizeCmd) && /proc\|sysfs/.test(sizeCmd));
+    check('disk.size 正常返回字节数', String(size.stdout).trim() === '7340032');
+    // 虚拟文件系统：空输出。前端必须把空串当「算不出」而不是 0 ——
+    // 这条断言守的是「/proc 显示 0 B」这个更离谱的错误。
+    const virt = await service.op(sid, 'disk.size', { path: '/proc' });
+    check('虚拟文件系统返回空输出（前端据此显示 —）', String(virt.stdout).trim() === '');
+
+    // ⑧ 本地算大小：走主进程递归，不跟随符号链接
+    const tree = path.join(root, 'tree'), nested = path.join(tree, 'nested');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(tree, 'a.bin'), Buffer.alloc(1000));
+    fs.writeFileSync(path.join(nested, 'b.bin'), Buffer.alloc(2000));
+    const one = await service.localSize(tree);
+    check('localSize 递归统计一个目录', one.ok && one.data.bytes === 3000, String(one.data?.bytes));
+    const many = await service.localSizes(tree);
+    check('localSizes 一次算出目录下每一项',
+      many.ok && many.data[path.join(tree, 'a.bin')] === 1000 && many.data[nested] === 2000);
+    check('localSize 对不存在的路径报错而不是抛异常', !!(await service.localSize(path.join(tree, 'nope'))).error);
+
     console.log('\n运维动作端到端：' + passed + ' 通过 / ' + failed + ' 失败');
   } catch (e) {
     console.error('异常:', e.stack);

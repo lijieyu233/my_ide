@@ -11,6 +11,29 @@ const message = error => String(error?.message || error || '操作失败');
 const remotePath = value => { if (typeof value !== 'string' || !value.startsWith('/') || /[\0\r\n]/.test(value)) throw Error('远程路径必须是绝对路径'); return posix.normalize(value); };
 const localPath = value => { if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) throw Error('本地路径必须是绝对路径'); return path.resolve(value); };
 const nameOf = value => { if (!value || typeof value !== 'string' || /[\\/\0\r\n]/.test(value) || value === '.' || value === '..') throw Error('名称不能包含路径分隔符'); return value; };
+
+/**
+ * 递归统计一个目录的字节数（本地文件页「算大小」/ 行内「计算」共用）。
+ *
+ * 为什么放主进程：大目录遍历是同步密集 IO，在渲染进程里做会把界面卡死。
+ * 为什么带预算：node_modules、.git 这类目录能到几十万文件，不设上限的话
+ * 用户点一下要等半分钟且无法中断。超预算就返回已算出的部分（部分结果比没有好）。
+ * 为什么不跟随符号链接：Windows 的 junction / Linux 的软链可能成环。
+ */
+async function walkSize(dir, budget) {
+  let total = 0, list;
+  try { list = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of list) {
+    if (Date.now() > budget.deadline || budget.visited > 20000) return total;
+    budget.visited++;
+    const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) total += await walkSize(full, budget);
+    else { try { const st = await fs.promises.stat(full); total += st.size; } catch {} }
+  }
+  return total;
+}
+
 function createService({ file, crypto, verifyHost, emit = () => {}, clientFactory = () => new Client(), local = Local } = {}) {
   const sessions = new Map(), jobs = new Map(), terminalHistory = new Map(); let working = false, disposed = false;
   const read = () => {
@@ -794,34 +817,29 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
     localSizes: async target => {
       const root = localPath(target);
       const out = {};
-      const deadline = Date.now() + 20000;
-      let visited = 0;
-      const walk = async (dir) => {
-        let total = 0;
-        let list;
-        try { list = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return 0; }
-        for (const entry of list) {
-          if (Date.now() > deadline || visited > 20000) return total;
-          visited++;
-          const full = path.join(dir, entry.name);
-          if (entry.isSymbolicLink()) continue;   // 不跟随符号链接，避免环
-          if (entry.isDirectory()) total += await walk(full);
-          else {
-            try { const st = await fs.promises.stat(full); total += st.size; } catch {}
-          }
-        }
-        return total;
-      };
+      const budget = { visited: 0, deadline: Date.now() + 20000 };
       let top;
       try { top = await fs.promises.readdir(root, { withFileTypes: true }); }
       catch (error) { return { error: String(error.message || error) }; }
       for (const entry of top) {
         const full = path.join(root, entry.name);
         if (entry.isSymbolicLink()) continue;
-        if (entry.isDirectory()) out[full] = await walk(full);
+        if (entry.isDirectory()) out[full] = await walkSize(full, budget);
         else { try { const st = await fs.promises.stat(full); out[full] = st.size; } catch {} }
       }
-      return { ok: true, data: out, truncated: visited > 20000 || Date.now() > deadline };
+      return { ok: true, data: out, truncated: budget.visited > 20000 || Date.now() > budget.deadline };
+    },
+    // 单个目录/文件的大小（2026-10-29 文件页行内「计算」按钮）。
+    // 与 localSizes 的分工：那个算一整个目录里的**每一项**（工具栏「算大小」），
+    // 这个只算**一项**（行内按钮），共用同一套递归统计与预算。
+    // 符号链接返回 bytes:null —— 不跟随链接，避免环，也让界面显示「—」而不是 0。
+    localSize: async target => {
+      const root = localPath(target);
+      let st;
+      try { st = await fs.promises.lstat(root); } catch (error) { return { error: String(error.message || error) }; }
+      if (st.isSymbolicLink()) return { ok: true, data: { path: root, bytes: null } };
+      const bytes = st.isDirectory() ? await walkSize(root, { visited: 0, deadline: Date.now() + 20000 }) : st.size;
+      return { ok: true, data: { path: root, bytes } };
     },
     localMkdir: target => fs.promises.mkdir(localPath(target)),
     // 新建空文件：用 'wx' 排他创建，已存在就报错（新建不是覆盖）。

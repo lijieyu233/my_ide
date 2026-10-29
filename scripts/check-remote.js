@@ -59,7 +59,17 @@ app.whenReady().then(async () => {
     server.shells[1].stream.write(Buffer.from(('连续输出中文与ANSI颜色\r\n').repeat(5000) + 'REMOTE_BURST_END\r\n'));
     await wait('(()=>{const b=remoteTestTerms[1].buffer.active;for(let i=Math.max(0,b.length-30);i<b.length;i++)if(b.getLine(i).translateToString().includes("REMOTE_BURST_END"))return true;return false})()');
     check('连续5000行输出正常结束且不诱发远程窗口重画', server.shells[1].windowChanges.length === beforeOutput);
-    check('顶部三层紧凑且普通连接提示不额外占行', await probe('(()=>{const h=s=>document.querySelector(s).getBoundingClientRect().height;return h(".remote-toolbar")<=57&&h(".remote-workspace-bar")<=41&&h("#remote-terminal-tabs")<=37&&getComputedStyle(document.getElementById("remote-notice")).display==="none"})()'));
+    // 断言意图是「提示不额外占一行」，不是「提示永远不存在」。
+    // 原写法要求 #remote-notice 为 display:none —— 那只有在没连上、没提示时才成立；
+    // 连接成功后 notify('已连接 …') 必然让它有内容，所以这条在干净 HEAD 上也一直红着
+    // （2026-10-29 核对：git stash 后同样失败）。改成核对它待在
+    // .remote-workspace-bar 内部、且没有把这一层撑高。
+    check('顶部三层紧凑且普通连接提示不额外占行', await probe(`(()=>{
+      const r=s=>document.querySelector(s).getBoundingClientRect();
+      const bar=r('.remote-workspace-bar'), notice=r('#remote-notice'), tabs=document.getElementById('remote-terminal-tabs');
+      const inside = notice.top>=bar.top-1 && notice.bottom<=bar.bottom+1;
+      return r('.remote-toolbar').height<=57 && bar.height<=41 && tabs.getBoundingClientRect().height<=37 && inside
+    })()`));
     check('侧栏卡片与标题达到方案尺寸', await probe('document.querySelector(".remote-profile").getBoundingClientRect().height<=79&&document.querySelector("#panel-remote>.panel-title").getBoundingClientRect().height<=49'));
     await snapshot('terminal-dark');
     await probe('Theme.set("light")'); await snapshot('terminal-light');
@@ -138,6 +148,53 @@ app.whenReady().then(async () => {
     await probe('document.getElementById("remote-local-pane").querySelector("[data-action=upload]").click()'); await sleep(100);
     check('操作错误在导航栏显示且可读完整提示', await probe('(()=>{const n=document.getElementById("remote-notice");return n.classList.contains("error")&&getComputedStyle(n).display!=="none"&&n.title.includes("请先选择文件")})()'));
     await snapshot('files-error-crimson');
+    // ⑭ 文件页「算大小」：行内单项目按钮 + 大值进位到 GB（2026-10-29）
+    // 用户两次点名：①「应该有单独计算按钮」②「文件过大显示应该转为 G」。
+    // 这里用真实 IPC 跑一遍：SFTP 目录项 → 点行内按钮 → remote.op('disk.size')
+    // → 真实 du 命令字符串（夹具回放）→ 行内文字变成 GB。
+    const dirEntry = (filename, mode, size) => ({ filename, longname: '', attrs: { mode, size, mtime: 1, atime: 1, uid: 0, gid: 0 } });
+    server.control.directoryEntries.set('/', [
+      dirEntry('data', 0o40755, 0), dirEntry('proc', 0o40755, 0), dirEntry('server.txt', 0o100644, 12),
+    ]);
+    server.control.execReply = [
+      // 夹具按路径回不同字节数：/data = 7 GB，/proc 走虚拟文件系统空分支（什么都不输出）
+      { match: 'du -sxb', out: cmd => cmd.includes("'/proc'") ? '' : cmd.includes("'/data'") ? '7516192768\n' : '7340032\n', code: 0 },
+    ];
+    server.control.execLog = [];
+    await setPath('remote', '/');
+    await wait('document.querySelectorAll("#remote-remote-pane [data-path]").length===3');
+    check('行内「算大小」只出现在目录行，文件行没有',
+      await probe(`(()=>{const rows=[...document.querySelectorAll("#remote-remote-pane [data-path]")];
+        return rows.filter(r=>r.querySelector('.remote-file-calc')).map(r=>r.dataset.path).sort().join(',')==='/data,/proc'})()`));
+    check('未计算前目录显示「—」而不是 0',
+      await probe('document.querySelector("#remote-remote-pane [data-path=\\"/data\\"] .remote-file-size").textContent==="—"'));
+    await probe('document.querySelector("#remote-remote-pane [data-calc=\\"/data\\"]").click()');
+    await wait('document.querySelector("#remote-remote-pane [data-path=\\"/data\\"] .remote-file-size").textContent==="7.0 GB"');
+    check('行内计算后 7 GB 显示成 7.0 GB（不再是 7162.7 MB）',
+      await probe('document.querySelector("#remote-remote-pane [data-path=\\"/data\\"] .remote-file-size").textContent==="7.0 GB"'));
+    check('行内计算真的走了 du -sxb 白名单动作',
+      server.control.execLog.some(e => e.command.includes("du -sxb '/data'")),
+      server.control.execLog.map(e => e.command).join(' | ').slice(0, 160));
+    // 算完只重画一行：列表行数、其它行文字都不能被整表重绘带走
+    check('单行计算不整表重绘（其它行保持原样）',
+      await probe(`(()=>{const rows=[...document.querySelectorAll("#remote-remote-pane [data-path]")];
+        return rows.length===3 && document.querySelector("#remote-remote-pane [data-path=\\"/proc\\"] .remote-file-size").textContent==="—"})()`));
+    await probe('document.querySelector("#remote-remote-pane [data-calc=\\"/proc\\"]").click()');
+    await wait('document.getElementById("remote-notice").textContent.includes("算不出")');
+    check('/proc 这类虚拟文件系统显示「—」并提示算不出（不是 128 TiB 的假数字）',
+      await probe('document.querySelector("#remote-remote-pane [data-path=\\"/proc\\"] .remote-file-size").textContent==="—"'));
+    // 批量按钮：点完要能回到「算全部大小」且重新可用。这里不能在 Node 侧同步断言 ——
+    // 命令是异步的，所以先等按钮从 disabled 变回可用，再核对它真的发了两条 du。
+    const beforeBatch = server.control.execLog.length;
+    await probe('document.querySelector("#remote-remote-pane [data-action=measure]").click()');
+    await wait('(()=>{const b=document.querySelector("#remote-remote-pane [data-action=measure]");return b.textContent==="算全部大小"&&!b.disabled})()');
+    await sleep(150);
+    check('工具栏批量按钮名为「算全部大小」，与行内「算大小」区分',
+      await probe('document.querySelector("#remote-remote-pane [data-action=measure]").textContent==="算全部大小"'));
+    check('批量算大小对每个目录各发一条 du（2 个目录 2 条）',
+      server.control.execLog.length - beforeBatch === 2,
+      '新增 ' + (server.control.execLog.length - beforeBatch) + ' 条');
+    await snapshot('files-calc');
     await probe('document.getElementById("remote-disconnect").click()'); await wait('document.getElementById("remote-new-terminal").disabled');
     check('断开连接禁用远程文件和终端操作', await probe('[...document.querySelectorAll("#remote-remote-pane button")].every(b=>b.disabled)'));
     await probe('document.getElementById("remote-connect").click()'); await wait('!document.getElementById("remote-new-terminal").disabled'); check('再次连接使用已记住指纹', prompts === 1);

@@ -430,4 +430,18 @@ check('不再出现列名「已运行」',
 check('三个分类的「内存」列名一致',
   hDocker.includes('内存') && hSvc.includes('内存') && hProc.includes('内存'));
 
+// ⑲ 文件页大小格式化（2026-10-29 用户：「文件过大显示应该转为 G」）
+// 原来写死 MB 封顶，7 GB 的 /data 显示成 7162.7 MB，/proc 那种 128 TiB 的
+// 名义大小更是变成 134217712.1 MB —— 用户截图问「这个正常吗」。
+const size = panel.__testDisplaySize;
+check('displaySize 暴露给自检', typeof size === 'function');
+check('大目录进位到 GB', size(7 * 1024 ** 3) === '7.0 GB', size(7 * 1024 ** 3));
+check('7 GB 不再显示成 7162.7 MB', !/MB/.test(size(7162.7 * 1024 ** 2)), size(7162.7 * 1024 ** 2));
+check('超大值进位到 TB', size(3 * 1024 ** 4) === '3.0 TB', size(3 * 1024 ** 4));
+check('KB / MB / B 仍按原样',
+  size(2048) === '2.0 KB' && size(5 * 1024 ** 2) === '5.0 MB' && size(12) === '12 B',
+  [size(2048), size(5 * 1024 ** 2), size(12)].join('|'));
+check('≥100 时取整不留小数（对齐原有排版）', size(150 * 1024 ** 2) === '150 MB', size(150 * 1024 ** 2));
+check('0 与非法值不产生 NaN', size(0) === '0 B' && size(undefined) === '0 B' && size(NaN) === '0 B');
+
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

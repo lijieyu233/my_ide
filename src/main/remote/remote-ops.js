@@ -152,9 +152,20 @@ const ACTIONS = {
   // 单个目录/文件的总大小（2026-10-29 文件页「显示大小」按需计算）。
   // 与 disk.usage 的区别：那个列子项（-d1），这个只要一个总数（-s、-b 输出字节）。
   // 用 -b 而不是 -h：前端统一按字节格式化，免得再解析 "1.2G" 这种人类可读单位。
+  //
+  // 为什么先判文件系统类型：procfs / sysfs 这类虚拟文件系统里 `du` 拿到的是伪文件的
+  // 「名义大小」，不是真实占用 —— 实测 `/proc` 报出 134217712.1 MB，因为 /proc/kcore
+  // 是个 128TiB 的稀疏伪文件。这种数字给用户看纯属误导，所以虚拟文件系统直接输出空串，
+  // 界面显示「—」。stat -f 在 busybox 上可能不支持 -c，那就取不到类型、走 *) 分支照常 du。
   'disk.size': {
     read: true, timeout: LOG_TIMEOUT,
-    build: a => 'du -sxb ' + q(need(a.path, PATH_RE, '路径')) + ' 2>/dev/null | cut -f1',
+    build: a => {
+      const target = q(need(a.path, PATH_RE, '路径'));
+      return 'fstype=$(stat -f -c %T ' + target + ' 2>/dev/null); '
+        + 'case "$fstype" in proc|sysfs|devtmpfs|devpts|cgroup|cgroup2|debugfs|tracefs'
+        + '|securityfs|pstore|bpf|configfs|fusectl|mqueue|hugetlbfs|binfmt_misc) ;; '
+        + '*) du -sxb ' + target + ' 2>/dev/null | cut -f1 ;; esac';
+    },
   },
   'disk.bigFiles': {
     read: true, timeout: LOG_TIMEOUT,

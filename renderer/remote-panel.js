@@ -1995,19 +1995,42 @@ window.RemotePanel = (() => {
     }, 5000);
   }
 
-  function displaySize(value) { return value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : value >= 1024 ? (value / 1024).toFixed(1) + ' KB' : value + ' B'; }
+  // 大小格式化统一走 fmtBytes：B/KB/MB/GB/TB 自动进位。
+  // 2026-10-29 用户指出「文件过大显示应该转为 G」—— 原来写死 MB，
+  // 7 GB 的 /data 会显示成 7162.7 MB，/proc 那种更是夸张到 134217712.1 MB。
+  function displaySize(value) { return fmtBytes(value); }
   const fileNames = new Intl.Collator(undefined, { numeric: true });
   function fileRow(pane, e, top) {
-    // 目录大小：算过的显示真实数值，没算过显示「—」并提示可点「算大小」
-    // （2026-10-29：原来一律写「目录」两个字，完全看不出占用情况）。
+    // 目录大小：算过的显示真实数值，没算过显示「—」，并且**每一行自带**「算大小」按钮
+    // （2026-10-29 用户：「应该有单独计算按钮」—— 原来只有工具栏的批量按钮，
+    //  想单独看某一项就得把整个目录都算一遍，大目录要等几十秒）。
     const measured = pane.sizes.get(e.path);
     const sizeText = e.directory
       ? (measured != null ? displaySize(measured) : '—')
       : displaySize(e.size);
     const sizeTitle = e.directory
-      ? (measured != null ? displaySize(measured) + '（已计算）' : '未计算大小，点工具栏「算大小」')
+      ? (measured != null ? displaySize(measured) + '（已计算）' : '未计算大小，点右侧「算大小」')
       : '';
-    return `<button class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"${top === undefined ? '' : ' style="top:' + top + 'px"'}><span>${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span><small${sizeTitle ? ' title="' + esc(sizeTitle) + '"' : ''}>${esc(sizeText)}</small></button>`;
+    // 只有目录需要算：文件大小 dirent 里就有。符号链接不跟随（避免环），不给按钮。
+    const calc = e.directory && !e.link
+      ? `<button type="button" class="remote-file-calc" data-calc="${esc(e.path)}" title="算大小：递归统计这个目录的占用，目录越大越慢">算大小</button>`
+      : '';
+    // 行本身是 div 而不是 button：里面要放行内按钮，button 套 button 会被 HTML
+    // 解析器直接拆开（外层提前闭合），整行结构就散了。
+    return `<div class="remote-file${pane.selected.has(e.path) ? ' selected' : ''}" role="option" aria-selected="${pane.selected.has(e.path) ? 'true' : 'false'}" tabindex="-1" data-path="${esc(e.path)}" draggable="true" title="${esc(e.path)}"${top === undefined ? '' : ' style="top:' + top + 'px"'}><span class="remote-file-icon">${icons[e.directory ? 'folder' : 'file']}</span><span class="remote-file-name">${esc(e.name)}${e.link ? ' ↗' : ''}</span>${calc}<small class="remote-file-size"${sizeTitle ? ' title="' + esc(sizeTitle) + '"' : ''}>${esc(sizeText)}</small></div>`;
+  }
+  // 只重画一行：算完单个大小不能整表重绘 —— renderPane 会把 scrollTop 归零，
+  // 用户在大目录里点第 300 行会瞬间跳回顶部。
+  function repaintRow(side, path) {
+    const pane = panes[side], root = q('remote-' + side + '-pane');
+    const entry = pane.byPath?.get(path);
+    if (!root || !entry) return;
+    const row = [...root.querySelectorAll('[data-path]')].find(r => r.dataset.path === path);
+    if (!row) return;   // 虚拟列表里不在视口内：滚到时 paintFiles 会按新缓存重画
+    const top = pane.virtual ? parseFloat(row.style.top) : undefined;
+    const box = document.createElement('div');
+    box.innerHTML = fileRow(pane, entry, top);
+    row.replaceWith(box.firstElementChild);
   }
   function paintFiles(side) {
     const pane = panes[side], root = q('remote-' + side + '-pane'), list = root.querySelector('.remote-file-list');
@@ -2058,22 +2081,72 @@ window.RemotePanel = (() => {
     for (const job of result.jobs) jobs.set(job.id, job); renderJobs(); q('remote-transfers').open = true;
   }
   /**
-   * 算当前目录下每一项的大小（2026-10-29 用户要求「加一个计算当前目录下所有大小的按钮」）。
+   * 算**一项**的大小，返回字节数；算不出来返回 null。
+   *
+   * 本地走 localSize（主进程递归），远程走白名单动作 disk.size（`du -sxb`，只读）。
+   * ⚠ 空输出必须判成 null 而不是 0：远程对 procfs/sysfs 这类虚拟文件系统故意
+   * 什么都不输出（那里 du 拿到的是 /proc/kcore 这种伪文件的名义大小，实测
+   * 134217712 MB），Number('') === 0 会把它当成「0 字节」缓存下来。
+   */
+  async function sizeOf(side, path) {
+    if (side === 'local') {
+      const result = await call('localSize', path);
+      const bytes = result?.data?.bytes;
+      return Number.isFinite(bytes) ? bytes : null;
+    }
+    const out = await call('op', sid, 'disk.size', { path });
+    const text = String(out?.stdout || '').trim();
+    if (!text) return null;
+    const bytes = Number(text);
+    return Number.isFinite(bytes) && bytes >= 0 ? bytes : null;
+  }
+
+  // 行内「算大小」：只算这一项，算完只重画这一行。
+  // 按钮自身进入「计算中…」状态，用户能看出点的是哪一项、还在跑。
+  async function measureOne(side, entry, button) {
+    const pane = panes[side];
+    const status = q('remote-' + side + '-pane')?.querySelector('.remote-file-status');
+    const busy = on => { if (!button) return; button.disabled = on; button.setAttribute('aria-busy', String(on)); button.textContent = on ? '计算中…' : '算大小'; };
+    busy(true);
+    if (status) status.textContent = '正在计算 ' + entry.name + ' 的大小…';
+    try {
+      const bytes = await sizeOf(side, entry.path);
+      if (bytes == null) notify('算不出 ' + entry.name + ' 的大小（无权限，或不是真实文件系统）', true);
+      else { pane.sizes.set(entry.path, bytes); notify(entry.name + '：' + displaySize(bytes)); }
+      // 重画这一行会换掉按钮节点，busy(false) 作用在已脱离文档的旧节点上无副作用。
+      busy(false);
+      repaintRow(side, entry.path);
+    } catch (error) {
+      notify('计算大小失败：' + error.message, true);
+      busy(false);
+    } finally {
+      if (status) status.textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项';
+    }
+  }
+
+  /**
+   * 算当前目录下每一项的大小（工具栏「算大小」）。
    *
    * 为什么是「按需」而不是自动：远程目录的大小必须递归 `du`，不能像本地那样
    * 从 dirent 直接拿到。进目录就自动算的话，大目录（node_modules、.git）会让
-   * 每次切目录都卡几秒。所以做成显式按钮。
+   * 每次切目录都卡几秒。所以做成显式按钮 —— 只想看某一项就用行内的「算大小」。
    *
-   * 实现要点：远程用**一条** `du -sb` 加通配符算出全部子项，而不是每项发一次请求 ——
-   * 100 个目录发 100 次 SSH 往返要几十秒，一条命令只要一次。
+   * 实现要点：远程**逐项**走白名单动作（渲染层拿不到裸 exec，只有白名单这一条路，
+   * 这是安全边界），所以这里做并发限流：一次 4 个，既压得住延迟也不会打满 SSH 通道。
    * 结果缓存在 pane.sizes 里（按路径），刷新目录不会丢，避免重复算。
    */
   async function measurePane(side, pane) {
-    const items = pane.entries.filter(e => !e.link);
+    // 只算目录：文件的大小 dirent 里本来就有（fileRow 直接显示 e.size），
+    // 再对每个文件跑一次 du 是纯浪费 —— 100 个文件的目录要多发 100 条 SSH 往返。
+    const items = pane.entries.filter(e => e.directory && !e.link);
     if (!items.length) { notify('这个目录是空的', true); return; }
     const root = q('remote-' + side + '-pane');
     const btn = root.querySelector('[data-action="measure"]');
     const status = root.querySelector('.remote-file-status');
+    const list = root.querySelector('.remote-file-list');
+    // renderPane 会把 scrollTop 归零：批量算完在大目录里点一下就被弹回顶部，
+    // 用户还得重新滚回来找刚才看的那一项。记下来再还回去。
+    const keepScroll = list ? list.scrollTop : 0;
     if (btn) { btn.disabled = true; btn.textContent = '计算中…'; }
     if (status) status.textContent = '正在计算 ' + items.length + ' 项的大小…';
     try {
@@ -2083,18 +2156,13 @@ window.RemotePanel = (() => {
         for (const [p, bytes] of Object.entries(result?.data || {})) pane.sizes.set(p, bytes);
         if (result?.truncated) notify('目录过大，已计算部分结果', true);
       } else {
-        // 远程：逐个走白名单动作 disk.size（`du -sxb`，只读）。
-        // 为什么不用一条 shell 通配符命令一次算完：渲染层拿不到裸 exec
-        // （只有白名单动作这一条路，这是安全边界）。这里做并发限流 ——
-        // 一次 4 个，既压得住延迟也不会把 SSH 通道打满。
         const queue = items.slice();
         const worker = async () => {
           while (queue.length) {
             const entry = queue.shift();
             try {
-              const out = await call('op', sid, 'disk.size', { path: entry.path });
-              const bytes = Number(String(out?.stdout || '').trim());
-              if (Number.isFinite(bytes) && bytes >= 0) pane.sizes.set(entry.path, bytes);
+              const bytes = await sizeOf(side, entry.path);
+              if (bytes != null) pane.sizes.set(entry.path, bytes);
             } catch { /* 无权限的单项目跳过，不影响其它项 */ }
             if (status) status.textContent = '正在计算… ' + (items.length - queue.length) + '/' + items.length;
           }
@@ -2102,17 +2170,19 @@ window.RemotePanel = (() => {
         await Promise.all(Array.from({ length: 4 }, worker));
       }
       renderPane(side);
-      const missing = pane.entries.filter(e => !e.link && !pane.sizes.has(e.path)).length;
+      // renderPane 重置了 scrollTop；批量算完把它还回去，别把用户弹回顶部。
+      if (list && keepScroll) { list.scrollTop = keepScroll; paintFiles(side); }
+      const missing = items.filter(e => !pane.sizes.has(e.path)).length;
       notify('已计算 ' + (items.length - missing) + ' 项大小' + (missing ? '（' + missing + ' 项无权限或失败）' : ''), missing > 0);
     } catch (error) {
       notify('计算大小失败：' + error.message, true);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '算大小'; }
+      if (btn) { btn.disabled = false; btn.textContent = '算全部大小'; }
     }
   }
 
   function installFiles() {
-    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button><button class="vt-btn" data-action="measure" title="计算本目录下每一项的大小（远程目录要递归跑 du，稍慢）">算大小</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list"></div><div class="remote-file-status" role="status"></div></section>`).join('');
+    q('remote-files').innerHTML = ['local', 'remote'].map(side => `<section id="remote-${side}-pane" class="remote-file-pane" data-side="${side}"><div class="remote-file-heading"><span class="remote-pane-icon">${icons[side === 'local' ? 'computer' : 'server']}</span><div><strong>${side === 'local' ? '本地文件' : '远程文件'}</strong><small>${side === 'local' ? '你的电脑' : '当前服务器'}</small></div><span class="spacer"></span><button class="vt-btn remote-transfer-action" data-action="${side === 'local' ? 'upload' : 'download'}">${icons[side === 'local' ? 'upload' : 'download']}${side === 'local' ? '上传' : '下载'}</button></div><form class="remote-path-bar"><button type="button" class="vt-btn" data-action="up" title="上级目录" aria-label="上级目录">${icons.up}</button><input aria-label="${side === 'local' ? '本地路径' : '远程路径'}" autocomplete="off" spellcheck="false"><button type="submit" class="vt-btn">前往</button><button type="button" class="vt-btn" data-action="refresh">刷新</button></form><div class="remote-file-tools"><button class="vt-btn" data-action="mkdir">新建目录</button><button class="vt-btn" data-action="rename">重命名</button><button class="vt-btn" data-action="remove">删除</button><button class="vt-btn" data-action="measure" title="计算本目录下每一项的大小（远程目录要递归跑 du，稍慢）；只想算某一项就点那一行右侧的「算大小」">算全部大小</button></div><div class="remote-file-columns"><span>名称</span><span>大小</span></div><div class="remote-file-list" role="listbox" aria-label="${side === 'local' ? '本地文件' : '远程文件'}"></div><div class="remote-file-status" role="status"></div></section>`).join('');
     for (const side of ['local', 'remote']) {
       const root = q('remote-' + side + '-pane'), pane = panes[side];
       const list = root.querySelector('.remote-file-list'); list.onscroll = () => requestFilePaint(side);
@@ -2149,8 +2219,16 @@ window.RemotePanel = (() => {
         await editEntry(side, entry);
       }));
       root.onclick = attempt(async event => {
+        // 行内「算大小」按钮在行内部：必须比行点击先判，否则点它只会把行选中。
+        const calc = event.target.closest('[data-calc]');
+        if (calc) {
+          event.preventDefault(); event.stopPropagation();
+          const entry = pane.byPath.get(calc.dataset.calc);
+          if (entry) await measureOne(side, entry, calc);
+          return;
+        }
         const row = event.target.closest('[data-path]');
-        if (row) { if (!event.ctrlKey && !event.metaKey) pane.selected.clear(); if (pane.selected.has(row.dataset.path)) pane.selected.delete(row.dataset.path); else pane.selected.add(row.dataset.path); for (const r of root.querySelectorAll('[data-path]')) r.classList.toggle('selected', pane.selected.has(r.dataset.path)); root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项'; return; }
+        if (row) { if (!event.ctrlKey && !event.metaKey) pane.selected.clear(); if (pane.selected.has(row.dataset.path)) pane.selected.delete(row.dataset.path); else pane.selected.add(row.dataset.path); for (const r of root.querySelectorAll('[data-path]')) { const on = pane.selected.has(r.dataset.path); r.classList.toggle('selected', on); r.setAttribute('aria-selected', on ? 'true' : 'false'); } root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项'; return; }
         const action = event.target.closest('[data-action]')?.dataset.action; if (!action) return;
         if (action === 'up' || action === 'refresh') return browse(side, action === 'up' ? parent(side, pane.path) : pane.path);
         if (action === 'upload' || action === 'download') return enqueue(action, [...pane.selected]);
@@ -2274,5 +2352,7 @@ window.RemotePanel = (() => {
   return { init, syncVisible, refresh, showTerminal, getPageContext, renderOverview, loadOverview, openRemoteEditor, closeRemoteEditor,
     __renderOverviewHtml,
     // 仅自检用：单独打开日志抽屉，验证着色/筛选/行号，不依赖真实连接
-    __testOutput: (action, name, data) => showOpsOutput(action, name, data) };
+    __testOutput: (action, name, data) => showOpsOutput(action, name, data),
+    // 仅自检用：大小格式化是纯函数，单独验单位进位（GB/TB）不必造 128GB 的真实目录
+    __testDisplaySize: displaySize };
 })();
