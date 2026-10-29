@@ -825,6 +825,7 @@ textarea.editor {
 .md-image-frame:hover>.md-image-resize,.md-image-resize:focus-visible,.md-image-dragging>.md-image-resize{opacity:1}
 .md-image-dragging{outline:1px solid var(--accent);user-select:none}
 .ctx-item[aria-disabled=true]{opacity:.45;cursor:default}
+.ctx-item.is-disabled{opacity:.45;cursor:default}
 /* 图片加载失败占位：与 live 的 .cm-md-img-broken 同款（不用裂图，给出图名） */
 .md-view .md-img-broken {
   display: inline-block; padding: 0.31em 0.77em; border: 1px dashed var(--border-mid);
