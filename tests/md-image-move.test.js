@@ -65,4 +65,24 @@ check('整行粘贴只在空行或行首生效',
 check('整行粘贴带 userEvent 标记（便于历史/撤销区分）',
   /userEvent: 'input\.paste'/.test(pasteBlock));
 
+// ⑤ 空内容保护（2026-10-29 事故：用户的 md 被清空成 6 个换行）
+// 编辑器 state 某次变空后，3 秒自动保存把空内容写回了磁盘，原内容彻底丢失。
+// 现在保存前拦一道：原本有内容的文档不允许被「空白内容」静默覆盖。
+const viewerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'viewer.js'), 'utf8');
+check('保存前检查空内容（EMPTY_GUARD）',
+  /EMPTY_GUARD/.test(viewerSrc) && /__hadContent/.test(viewerSrc));
+check('读取文件时记录「原本有内容」',
+  (viewerSrc.match(/__hadContent = String\(r\.content \|\| ''\)\.trim\(\) !== ''/g) || []).length >= 2);
+check('空内容保护只在「原本有内容」时生效（空文件不误拦）',
+  /tab\.__hadContent && String\(tab\.content\)\.trim\(\) === ''/.test(viewerSrc));
+check('允许显式放行的场景（另存为/清空）', /__allowEmptySave/.test(viewerSrc));
+
+// ⑥ 「删除整行」的行范围必须在执行时重算
+// 菜单是常驻 DOM，开着几秒期间文档一旦变化，菜单打开时算好的 line.to
+// 可能越过真实行尾，把后面一大段一起删掉。
+check('删除整行在执行时重算行范围',
+  /const cur = doc\.lineAt\(at\);/.test(src) && /let from = cur\.from, to = cur\.to;/.test(src));
+check('删除整行把范围夹到文档长度内',
+  /to = Math\.max\(from, Math\.min\(to, doc\.length\)\)/.test(src));
+
 console.log('\nMarkdown 图片移动与粘贴：' + passed + ' 通过 / 0 失败');

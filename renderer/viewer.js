@@ -279,6 +279,9 @@ const Viewer = (() => {
         return { ok: false, errorCode: r.errorCode || 'READ_FAILED' };
       }
       tab.content = r.content; tab.encoding = r.encoding || encoding; tab.diskVersion = r.version;
+      // 记住「从磁盘读进来时本来就有内容」：保存前的空内容保护据此判断
+      // 「是不是把有内容的文件清空了」（见 saveSnapshot 里的 EMPTY_GUARD）。
+      tab.__hadContent = String(r.content || '').trim() !== ''; tab.__loadRevision = tab.editRevision;
       tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: false };
       tab.eol = r.textFormat && r.textFormat.eol;
       tab.error = null; tab.binary = false; tab.saveError = null; tab.saveErrorCode = null;
@@ -615,6 +618,8 @@ const Viewer = (() => {
     else if (r.binary) { tab.binary = true; tab.mode = 'error'; }
     else {
       tab.content = r.content;
+      // 同 loadTab：记录「读进来时是否有内容」，供保存前的空内容保护判断
+      tab.__hadContent = String(r.content || '').trim() !== ''; tab.__loadRevision = tab.editRevision;
       tab.diskVersion = r.version;
       tab.encoding = r.encoding || 'utf8';
       tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') };
@@ -893,6 +898,16 @@ const Viewer = (() => {
       if (!valid()) { MI.toast('文档或项目已变化，标签已保留，请重新关闭', 'err'); return false; }
       if (choice === 'save') {
         const results = await Promise.all(dirty.map(t => saveSnapshot(t, true)));
+        // 空内容保护导致的失败要单独给出路（2026-10-29）：
+        // 否则「保存」永远失败、dirty 永远为真，用户会卡在关不掉的状态里。
+        // 处理方式：明确告知「内容为空没保存」，并退回「放弃修改」的语义继续关闭 ——
+        // 磁盘上仍是原文件，损失最小。
+        const guarded = dirty.filter((t, i) => results[i] && results[i].errorCode === 'EMPTY_GUARD');
+        if (guarded.length && guarded.length === dirty.length && results.every(r => r.ok || r.errorCode === 'EMPTY_GUARD')) {
+          MI.toast('内容为空，未覆盖磁盘文件；已按「放弃修改」关闭：' + guarded.map(t => t.name).join('、'), 'err');
+          commitClose(selected, true);
+          return true;
+        }
         if (results.some(r => !r.ok) || dirty.some(t => t.dirty)) {
           MI.toast('部分文件未保存，所有标签已保留：' + dirty.filter((t,i) => !results[i].ok || t.dirty).map(t => t.name).join('、'), 'err');
           return false;
@@ -2044,6 +2059,22 @@ const Viewer = (() => {
       return Promise.resolve({ok:false,errorCode:'READ_ONLY',error,path:tab.path,tabId:tab.id});
     }
     if (!tab || tab.content == null) return Promise.resolve({ ok: false, errorCode: 'NO_CONTENT', error: '标签内容未就绪' });
+    // 空内容保护（2026-10-29 事故）：文档被「整个清空」时不允许静默写盘。
+    // 真实事故：用户的 md（标题 + 3 张图）变成了 6 个换行 —— 编辑器某次 state
+    // 变空后，3 秒自动保存把它写回了磁盘，原内容彻底丢失。
+    //
+    // 但「用户真的把全文删掉、想存成空文件」是合法操作，不能一律拦。
+    // 区分办法：看有没有真实的用户编辑痕迹 editRevision。
+    //   · 事故路径：state 异常变空，content 被赋值但没经过编辑事务 → revision 没动；
+    //   · 合法路径：用户选中全文 Delete / Ctrl+A 删除 → 走了 onChange → revision 前进。
+    // 所以只在「原本有内容 + 现在空白 + revision 相比载入时没有前进」时拦。
+    const revisionAdvanced = tab.editRevision !== tab.__loadRevision;
+    if (tab.__hadContent && String(tab.content).trim() === ''
+      && !revisionAdvanced && !tab.__allowEmptySave) {
+      const error = '文档内容为空且没有任何编辑操作，已阻止写盘以保护原文件（若确实要清空，请全选删除后再保存）';
+      if (!quiet) MI.toast(error, 'err');
+      return Promise.resolve({ ok: false, errorCode: 'EMPTY_GUARD', error, path: tab.path, tabId: tab.id });
+    }
     if (pathBusy(tab.path)) {
       if (!quiet) MI.toast('路径迁移正在进行，输入已保留；完成后请保存', 'err');
       return Promise.resolve({ok:false,errorCode:'PATH_BUSY',error:'路径迁移正在进行',path:tab.path,tabId:tab.id});

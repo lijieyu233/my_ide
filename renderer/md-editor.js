@@ -407,8 +407,17 @@ window.MdEditor = (() => {
     // 图片独占一行时，「删除整行」才有意义；顺带把后面多余的一个空行也吃掉，
     // 否则删完会留下一片越来越大的空白（用户文件里本来就大量空行）。
     add('🗑️ 删除整行', () => {
-      let from = line.from, to = line.to;
-      if (to < view.state.doc.length && view.state.doc.sliceString(to, to + 1) === '\n') to += 1;
+      // ⚠ 行范围必须在**执行时**重新取，不能用菜单打开时那份（2026-10-29）。
+      // 菜单是常驻 DOM，可能开着好几秒；期间文档一旦变化，旧的 line.to
+      // 就可能越过真实行尾，把后面一大段内容一起删掉。
+      // 用当前文档重算，并夹到文档长度之内。
+      const doc = view.state.doc;
+      const at = Math.min(snapshotFrom, doc.length);
+      const cur = doc.lineAt(at);
+      let from = cur.from, to = cur.to;
+      if (to < doc.length && doc.sliceString(to, to + 1) === '\n') to += 1;
+      from = Math.max(0, Math.min(from, doc.length));
+      to = Math.max(from, Math.min(to, doc.length));
       view.dispatch({
         changes: { from, to, insert: '' },
         selection: { anchor: Math.min(from, view.state.doc.length) },
