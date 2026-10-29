@@ -93,11 +93,12 @@ check('网格是两列（1.15fr / .85fr）', /1\.15fr/.test(cssNow) && /[.\d]85f
 // 所以这里必须先用完整样本再渲染一次，否则读到的是残局（Docker 行就没了）。
 panel.renderOverview(sample);
 // 表格化后数据分散到各单元格：用表头 + 单元格文本一起判断
+// 2026-10-29：列名「占用」统一为「占比」（与「目录」分类保持一致）。
 check('磁盘分类含分区行与表头', (() => {
   panel.renderOverview(sample, 'disk');
   const list = host.querySelector('.remote-ops-list')?.textContent || '';
   const heads = host.querySelector('.remote-ops-thead')?.textContent || '';
-  const ok = list.includes('/') && /已用/.test(heads) && /占用/.test(heads);
+  const ok = list.includes('/') && /已用/.test(heads) && /占比/.test(heads);
   panel.renderOverview(sample); return ok;
 })());
 check('Docker 对象有运维按钮（日志/重启等）',
@@ -403,5 +404,32 @@ panel.renderOverview({
 const ktRow = host.querySelector('#remote-ops-list .remote-ops-row');
 check('内核线程的命令行列留空（不显示占位符）',
   !/（无命令行）/.test(ktRow?.textContent || ''), ktRow?.textContent.slice(0, 80));
+
+// ⑱ 列名跨分类必须一致（2026-10-29 用户要求「把字段同步下名字」）
+// 同一个含义在不同分类里用不同名字，用户得自己猜是不是同一回事：
+// 服务写「已运行」、Docker 与进程写「运行时长」；磁盘写「占用」、目录写「占比」。
+const headersFor = (cat) => {
+  const ov = { ...sample, docker: sample.docker, services: sample.services, procs: procSample.procs, du: sample.du,
+    disks: [{ fs: '/dev/sda1', mount: '/', total: 100, used: 50, percent: 50 }] };
+  panel.renderOverview(ov, cat);
+  return [...host.querySelectorAll('.remote-ops-th')].map(e => e.textContent.replace(/\s+/g, '').replace(/[▾▴]/g, ''));
+};
+const hDocker = headersFor('docker');
+const hSvc = headersFor('svc');
+const hProc = headersFor('proc');
+const hDisk = headersFor('disk');
+const hDu = headersFor('du');
+
+check('Docker / 服务 / 进程 都用「运行时长」（不再有「已运行」）',
+  hDocker.includes('运行时长') && hSvc.includes('运行时长') && hProc.includes('运行时长'),
+  'docker=' + hDocker.join('|') + ' svc=' + hSvc.join('|') + ' proc=' + hProc.join('|'));
+check('不再出现列名「已运行」',
+  ![...hDocker, ...hSvc, ...hProc].some(t => t.includes('已运行')));
+check('三个分类的「内存」列名一致',
+  hDocker.includes('内存') && hSvc.includes('内存') && hProc.includes('内存'));
+check('磁盘与目录都用「占比」（不再有列名「占用」）',
+  hDisk.includes('占比') && hDu.includes('占比'), 'disk=' + hDisk.join('|') + ' du=' + hDu.join('|'));
+check('不再出现列名「占用」',
+  ![...hDisk, ...hDu].some(t => t === '占用'));
 
 console.log('远程概览：' + passed + ' 通过 / 0 失败');

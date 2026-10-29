@@ -869,14 +869,20 @@ window.RemotePanel = (() => {
    * 各归各位，宽度可控，还能按列排序。
    *
    * 列定义：{ id, label, width, align, sortable, cell(row) }
+   *
+   * ── 列名规范（2026-10-29 用户要求「把字段同步下名字」）──
+   * 同一个含义在各分类里必须用同一个名字。之前服务写「已运行」、Docker 与进程写
+   * 「运行时长」，用户得自己猜这是不是同一回事。现在统一：
+   *   运行时长   —— 对象已经运行了多久（Docker / 服务 / 进程）
+   *   内存       —— 占用内存的绝对大小（三个分类都是）
+   *   占比       —— 百分比形式（只在需要与绝对大小并列时出现）
+   * 交叉验证：改列名时全局搜一遍 label，别只看当前分类。
    */
   const tableColumns = cat => ({
     docker: [
       { id: 'name', label: '名称', width: '12.88rem', grow: true, sortable: true },
       { id: 'status', label: '状态', width: '5.98rem', align: 'left' },
       { id: 'cpu', label: 'CPU', width: '4.60rem', align: 'right', sortable: true },
-      // 「内存」统一表示**绝对大小**（2026-10-29 用户指出：同一个列名
-      // 在 Docker/服务里是 34.8 MB，到进程里却变成 7.0%，含义不一致）。
       { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
       { id: 'ports', label: '端口', width: '7.36rem' },
       { id: 'uptime', label: '运行时长', width: '5.98rem', align: 'right' },
@@ -888,8 +894,8 @@ window.RemotePanel = (() => {
       { id: 'name', label: '服务', width: '14.72rem', grow: true, sortable: true },
       { id: 'status', label: '状态', width: '5.52rem' },
       { id: 'mem', label: '内存', width: '5.98rem', align: 'right', sortable: true },
-      // 「已运行」要放得下「116 天 2 小时」，原来 6.44rem 会截断
-      { id: 'uptime', label: '已运行', width: '7.82rem', align: 'right' },
+      // 与 Docker / 进程统一叫「运行时长」（原「已运行」）
+      { id: 'uptime', label: '运行时长', width: '7.82rem', align: 'right' },
       { id: 'enabled', label: '自启', width: '4.14rem', align: 'center' },
       { id: 'desc', label: '描述', width: '12.88rem', grow: true, fade: true },
     ],
@@ -897,11 +903,9 @@ window.RemotePanel = (() => {
       { id: 'name', label: '进程', width: '11.04rem', grow: true, sortable: true },
       { id: 'pid', label: 'PID', width: '5.06rem', align: 'right' },
       { id: 'cpu', label: 'CPU', width: '4.60rem', align: 'right', sortable: true },
-      // 进程的「内存」也改成绝对大小（原来是 7.0%），百分比单独成列「占比」——
-      // 这样三个分类的「内存」含义一致，都是大小。
+      // 「内存」= 绝对大小，「占比」= 百分比；三个分类的「内存」含义一致
       { id: 'rss', label: '内存', width: '5.52rem', align: 'right', sortable: true },
       { id: 'mem', label: '占比', width: '4.60rem', align: 'right', sortable: true },
-      // ps 的 etime 是「4-11:00:23」机器格式，转成中文再显示，列宽同步放宽
       { id: 'etime', label: '运行时长', width: '7.36rem', align: 'right' },
       { id: 'args', label: '命令行', width: '14.72rem', grow: true, fade: true, mono: true },
     ],
@@ -917,7 +921,8 @@ window.RemotePanel = (() => {
       { id: 'name', label: '挂载点 / 项目', width: '12.88rem', grow: true, sortable: true },
       { id: 'used', label: '已用', width: '6.44rem', align: 'right' },
       { id: 'total', label: '总量', width: '6.44rem', align: 'right' },
-      { id: 'percent', label: '占用', width: '4.60rem', align: 'right', sortable: true },
+      // 与「目录」分类统一叫「占比」（原「占用」）—— 同一个概念两个名字
+      { id: 'percent', label: '占比', width: '4.60rem', align: 'right', sortable: true },
       { id: 'note', label: '说明', width: '11.04rem', grow: true, fade: true },
     ],
     du: [
@@ -935,13 +940,17 @@ window.RemotePanel = (() => {
    *  表头与单元格必须都走这个函数，否则会各算各的、彻底错位。 */
   const colFlex = c => (c.grow ? '1 1 ' + c.width : '0 0 ' + c.width);
 
-  /** 排序可选项（给下拉用） */
+  /**
+   * 排序可选项（给下拉用）。
+   * 标签与表头列名保持一致：表头写「内存」这里就别写「内存占用」，
+   * 否则用户要在两个词之间做一次翻译（2026-10-29 统一）。
+   */
   const sortOptions = cat => ({
-    docker: [['status', '异常优先'], ['name', '名称'], ['mem', '重启次数']],
+    docker: [['status', '异常优先'], ['name', '名称'], ['mem', '内存']],
     svc: [['status', '异常优先'], ['name', '名称'], ['mem', '内存']],
-    proc: [['cpu', 'CPU 占用'], ['mem', '内存占用'], ['name', '名称']],
-    port: [['name', '端口号'], ['mem', '无']],
-    disk: [['name', '挂载点']],
+    proc: [['cpu', 'CPU'], ['rss', '内存'], ['mem', '占比'], ['name', '名称']],
+    port: [['name', '端口号']],
+    disk: [['name', '挂载点'], ['percent', '占比']],
     du: [['mem', '大小'], ['name', '名称']],
     sys: [['name', '名称']],
   }[cat] || [['name', '名称']]);
