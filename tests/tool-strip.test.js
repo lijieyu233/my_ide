@@ -78,11 +78,21 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
  });
  await test('不能把图标全部藏光，侧栏开关不提供隐藏项',async f=>{
   const {w,q}=f;
-  const names=['project','outline','browser','bookshelf','remote','git','search','tasks','launch','quick-launch','log'];
-  for(const name of names)w.ToolStrip.hide(name);
-  assert.equal(w.ToolStrip.hiddenTools().length,names.length);
-  w.ToolStrip.hide('db');
-  assert(!w.ToolStrip.hiddenTools().includes('db'),'至少保留一个可见工具');
+  // 名单从 DOM 动态取，不写死。
+  // 原来写死了 11 个名字（把 'db' 留作最后一个可见），新增「剪贴板」按钮后
+  // 这 11 个之外还多一个可见项，于是「藏 db 应被拒绝」不再成立 ——
+  // 断言实际在考「名单有没有跟上新增工具」，不是考功能（实测踩过）。
+  const ids=[...q('#tool-strip').querySelectorAll('.tool-btn')]
+    .map(b=>b.id.replace(/^tool-/,'')).filter(n=>n&&n!=='sidebar');
+  assert(ids.length>=2,'工具条上至少有两个可隐藏的工具, got '+JSON.stringify(ids));
+  let refused=null;
+  for(const name of ids){
+    const before=w.ToolStrip.hiddenTools().length;
+    w.ToolStrip.hide(name);
+    if(w.ToolStrip.hiddenTools().length===before&&!refused)refused=name;
+  }
+  assert.equal(w.ToolStrip.hiddenTools().length,ids.length-1,'藏到只剩一个, got '+w.ToolStrip.hiddenTools().join(','));
+  assert(refused,'最后一个可见项必须拒绝隐藏, got '+refused);
   assert(f.notices.some(n=>/至少保留一个/.test(n[0])),'给出可理解的提示');
   f.fire('#tool-sidebar','contextmenu',{clientX:10,clientY:20});
   await tick();

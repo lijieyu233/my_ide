@@ -1997,7 +1997,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const menu = $(dom, '#ctx-menu');
     assert_(!menu.classList.contains('hidden'), '右键菜单出现');
     const items = $allIn(menu, '.ctx-item').map((x) => x.textContent);
-    assert_(items.includes('📋 复制文件') && items.includes('📌 粘贴到此处'), '菜单含复制/粘贴, got: ' + JSON.stringify(items));
+    assert_(items.includes('复制文件') && items.includes('粘贴到此处'), '菜单含复制/粘贴, got: ' + JSON.stringify(items));
+    // 图标改成了内联 SVG（2026-10-28 统一 icon 规范）：文案里不再带 emoji，
+    // 断言要盯住「每项都有图标槽」，否则以后漏图标也测不出来。
+    const withIcon = $allIn(menu, '.ctx-item.with-icon');
+    assert_(withIcon.length === items.length, '每项都有图标槽, got ' + withIcon.length + '/' + items.length);
+    assert_($allIn(menu, '.ctx-item-ic svg').length === items.length, '图标是内联 SVG');
   });
 
   await okAsync('右键运行 exe：exe 有「运行」项并调用 runFile，txt 无', async () => {
@@ -2013,13 +2018,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     };
     // exe：菜单含「▶ 运行」，点击 → runFile 收到完整路径
     const items = await openMenuOn(P + '/src/demo.exe');
-    assert_(items.includes('▶ 运行'), 'exe 右键菜单含「运行」, got: ' + JSON.stringify(items));
-    click($allIn(menu, '.ctx-item').find((x) => x.textContent === '▶ 运行'));
+    assert_(items.includes('运行'), 'exe 右键菜单含「运行」, got: ' + JSON.stringify(items));
+    click($allIn(menu, '.ctx-item').find((x) => x.textContent === '运行'));
     await tick(); await tick();
     assert_((calls.runFile || []).includes(P + '/src/demo.exe'), 'runFile 收到 exe 路径, got: ' + JSON.stringify(calls.runFile));
     // 负例：txt 不出现「运行」
     const items2 = await openMenuOn(P + '/notes.txt');
-    assert_(!items2.includes('▶ 运行'), 'txt 右键菜单无「运行」项, got: ' + JSON.stringify(items2));
+    assert_(!items2.includes('运行'), 'txt 右键菜单无「运行」项, got: ' + JSON.stringify(items2));
   });
 
   await okAsync('多项目：项目栏按钮 + 点击切换', async () => {
@@ -2789,7 +2794,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     srcRow.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await tick();
     const menuItems = $allIn($(dom, '#ctx-menu'), '.ctx-item').map((x) => x.textContent);
-    assert_(menuItems.includes('✨ 新建文件') && menuItems.includes('📁 新建文件夹'), '菜单含新建项');
+    assert_(menuItems.includes('新建文件') && menuItems.includes('新建文件夹'), '菜单含新建项, got: ' + JSON.stringify(menuItems));
     // 新建文件（Modal.prompt 输入）
     click($allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('新建文件')));
     await tick();
