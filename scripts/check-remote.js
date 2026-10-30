@@ -195,6 +195,38 @@ app.whenReady().then(async () => {
       server.control.execLog.length - beforeBatch === 2,
       '新增 ' + (server.control.execLog.length - beforeBatch) + ' 条');
     await snapshot('files-calc');
+    // ⑮ 文件页多选（2026-10-30 用户：「看下所有操作 尽量都支持多选」）
+    // 原来只有 Ctrl+点击单项切换，没有 Shift 范围；右键「复制路径」只复制右键那一项。
+    await setPath('remote', '/大目录');
+    await wait('document.querySelectorAll("#remote-remote-pane [data-path]").length>3');
+    const selCount = () => probe('Number((document.querySelector("#remote-remote-pane .remote-file-status").textContent.match(/已选 (\\d+) 项/)||[])[1])');
+    // Shift+点击：从第 1 行到第 5 行 = 5 项（锚点由前面的普通点击建立）
+    await probe(`(()=>{const r=p=>remoteTestRow(p);r('/大目录/文件-00000.txt').click();
+      const list=[...document.querySelectorAll('#remote-remote-pane [data-path]')];
+      list[5].dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}))})()`);
+    await sleep(120);
+    // 目录排在文件前，所以第 0 行是「末尾目录」，文件从第 1 行开始：
+    // 锚点 = 文件-00000（第 1 行），Shift+点第 5 行 = 文件-00004 → 1..5 共 5 项。
+    check('Shift+点击做范围多选（5 项）', await selCount() === 5,
+      '已选 ' + await selCount() + ' / ' + await probe('document.querySelector("#remote-remote-pane .remote-file-status").textContent'));
+    check('范围多选的行都带 selected 类',
+      await probe(`(()=>{const rows=[...document.querySelectorAll('#remote-remote-pane [data-path]')];
+        return rows.filter(r=>r.classList.contains('selected')).length===5})()`));
+    // 右键「复制路径（5 项）」：多选时必须标出项数，且真的复制整组
+    await probe('window.__clip="";navigator.clipboard.writeText=t=>{window.__clip=t;return Promise.resolve()};undefined;');
+    // 必须右键**已选中**的行：右键未选中行会重置为单选（这是刻意的防误删语义），
+    // 那样菜单就只剩单项，测不到多选标签。
+    await probe(`(()=>{const rows=[...document.querySelectorAll('#remote-remote-pane [data-path]')];
+      rows.find(r=>r.classList.contains('selected')).dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:40,clientY:40}))})()`);
+    await wait('!!document.querySelector(".remote-file-menu")');
+    const menuText = await probe('document.querySelector(".remote-file-menu").textContent');
+    check('多选右键菜单标出「复制路径（5 项）」与「删除（5 项）」',
+      /复制路径（5 项）/.test(menuText) && /删除（5 项）/.test(menuText), menuText);
+    await probe(`[...document.querySelectorAll('.remote-file-menu .ctx-item')].find(b=>b.textContent.includes('复制路径')).click()`);
+    await sleep(120);
+    check('多选复制路径真的复制了 5 行（不是只有右键那一项）',
+      await probe('window.__clip.split("\\n").length===5'), await probe('JSON.stringify(window.__clip||"")'));
+    await snapshot('files-multiselect');
     await probe('document.getElementById("remote-disconnect").click()'); await wait('document.getElementById("remote-new-terminal").disabled');
     check('断开连接禁用远程文件和终端操作', await probe('[...document.querySelectorAll("#remote-remote-pane button")].every(b=>b.disabled)'));
     await probe('document.getElementById("remote-connect").click()'); await wait('!document.getElementById("remote-new-terminal").disabled'); check('再次连接使用已记住指纹', prompts === 1);

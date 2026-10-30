@@ -7,7 +7,7 @@ window.RemotePanel = (() => {
   const sessions = new Map(), terminals = new Map(), jobs = new Map();
   let fitFrame = 0, appearanceDirty = false;
   // sizes：路径 → 字节。由「算大小」按钮填充（2026-10-29），刷新目录不丢。
-  const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map() }, remote: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map() } };
+  const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map(), anchor: null }, remote: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map(), anchor: null } };
   const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').title = text; q('remote-notice').classList.toggle('error', error); };
   async function call(op, ...args) { const result = await api()[op](...args); if (!result?.ok) throw Error(result?.error || '远程操作未确认'); return result.data; }
   const attempt = fn => async event => { try { await fn(event); } catch (error) { notify(error.message, true); } };
@@ -236,6 +236,11 @@ window.RemotePanel = (() => {
     const sep = () => { const d = document.createElement('div'); d.className = 'ctx-sep'; menu.append(d); };
     const isRemote = side === 'remote';
     const isFile = entry && !entry.directory;
+    // 多选（2026-10-30 用户：「看下所有操作 尽量都支持多选」）：
+    // 下载/上传/删除本来就走整组（enqueue / remove 读 pane.selected），
+    // 但「复制路径」只复制右键那一项 —— 选 10 个文件再复制，粘贴出来只有 1 行。
+    const multi = pane.selected.size > 1;
+    const cnt = multi ? '（' + pane.selected.size + ' 项）' : '';
 
     // ① 编辑 / 打开
     if (isFile) {
@@ -246,19 +251,24 @@ window.RemotePanel = (() => {
     if (isFile) {
       sep();
       if (isRemote) {
-        add(fileMenuIcons.download, '下载到本地…', () => transferSelected(side, 'download'));
+        add(fileMenuIcons.download, '下载到本地…' + cnt, () => transferSelected(side, 'download'));
       } else {
-        add(fileMenuIcons.upload, '上传到远程…', () => transferSelected(side, 'upload'));
+        add(fileMenuIcons.upload, '上传到远程…' + cnt, () => transferSelected(side, 'upload'));
       }
     }
     if (path) {
-      add(fileMenuIcons.copyPath, '复制路径', () => {
-        try { navigator.clipboard.writeText(path); notify('已复制路径', false); } catch { notify('复制失败', true); }
+      add(fileMenuIcons.copyPath, '复制路径' + cnt, () => {
+        // 多选时按行拼接（与文件树「复制完整路径」一致），粘贴到终端/脚本里可直接用
+        const text = multi ? [...pane.selected].join('\n') : path;
+        try {
+          navigator.clipboard.writeText(text);
+          notify(multi ? '已复制 ' + pane.selected.size + ' 个路径' : '已复制路径', false);
+        } catch { notify('复制失败', true); }
       });
     }
     sep();
     add(fileMenuIcons.rename, '重命名…', () => root.querySelector('[data-action="rename"]').click(), { disabled: pane.selected.size !== 1 });
-    add(fileMenuIcons.remove, '删除', () => root.querySelector('[data-action="remove"]').click(), { danger: true, disabled: !pane.selected.size });
+    add(fileMenuIcons.remove, '删除' + cnt, () => root.querySelector('[data-action="remove"]').click(), { danger: true, disabled: !pane.selected.size });
     sep();
     // 新建：右键空白处 = 建在当前目录；右键某个目录 = 建在那个目录里。
     // （右键一个文件时，建在它所在目录 —— 与 Windows 资源管理器一致）
@@ -316,6 +326,18 @@ window.RemotePanel = (() => {
       MI.toast('新建失败：' + ((error && error.message) || error), 'err');
       notify('新建失败：' + ((error && error.message) || error), true);
     }
+  }
+
+  // 只刷新选中态与计数（多选/范围选择时用；虚拟列表下不重建 DOM）
+  function paintSelection(side) {
+    const pane = panes[side], root = q('remote-' + side + '-pane');
+    if (!root) return;
+    for (const r of root.querySelectorAll('[data-path]')) {
+      const on = pane.selected.has(r.dataset.path);
+      r.classList.toggle('selected', on);
+      r.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项';
   }
 
   // 右键菜单里的「下载 / 上传」：作用对象是当前选中的那一批文件。
@@ -2065,7 +2087,7 @@ window.RemotePanel = (() => {
     try {
       const result = side === 'local' ? await call('localList', target) : await call('list', requestedSession, target);
       if (serial !== pane.serial || side === 'remote' && requestedSession !== sid) return;
-      pane.path = result.path; pane.entries = result.entries; pane.selected.clear(); renderPane(side);
+      pane.path = result.path; pane.entries = result.entries; pane.selected.clear(); pane.anchor = null; renderPane(side);
     } catch (error) { if (serial !== pane.serial) return; root.querySelector('.remote-file-status').textContent = '读取失败：' + error.message; throw error; }
   }
   const parent = (side, target) => { if (side === 'remote') return target.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; const value = target.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, ''); return /^[A-Za-z]:$/.test(value) ? value + '\\' : value || target; };
@@ -2205,8 +2227,8 @@ window.RemotePanel = (() => {
         event.preventDefault(); event.stopPropagation();
         if (row && !pane.selected.has(row.dataset.path)) {
           pane.selected.clear(); pane.selected.add(row.dataset.path);
-          for (const r of root.querySelectorAll('[data-path]')) r.classList.toggle('selected', pane.selected.has(r.dataset.path));
-          root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项';
+          pane.anchor = row.dataset.path;
+          paintSelection(side);
         }
         openFileMenu(side, event);
       });
@@ -2228,7 +2250,27 @@ window.RemotePanel = (() => {
           return;
         }
         const row = event.target.closest('[data-path]');
-        if (row) { if (!event.ctrlKey && !event.metaKey) pane.selected.clear(); if (pane.selected.has(row.dataset.path)) pane.selected.delete(row.dataset.path); else pane.selected.add(row.dataset.path); for (const r of root.querySelectorAll('[data-path]')) { const on = pane.selected.has(r.dataset.path); r.classList.toggle('selected', on); r.setAttribute('aria-selected', on ? 'true' : 'false'); } root.querySelector('.remote-file-status').textContent = pane.entries.length + ' 项 · 已选 ' + pane.selected.size + ' 项'; return; }
+        if (row) {
+          // Shift+点击 = 范围多选（与文件树一致；原来只有 Ctrl 点选，选 30 个文件要按 30 次）。
+          // 锚点是上一次普通/Ctrl 点击的行。
+          const path = row.dataset.path;
+          if (event.shiftKey && pane.anchor && pane.anchor !== path) {
+            const list = pane.ordered || pane.entries;
+            const a = list.findIndex(e => e.path === pane.anchor), b = list.findIndex(e => e.path === path);
+            if (a >= 0 && b >= 0) {
+              if (!event.ctrlKey && !event.metaKey) pane.selected.clear();
+              const [lo, hi] = a <= b ? [a, b] : [b, a];
+              for (let i = lo; i <= hi; i++) pane.selected.add(list[i].path);
+              paintSelection(side);
+              return;
+            }
+          }
+          if (!event.ctrlKey && !event.metaKey) pane.selected.clear();
+          if (pane.selected.has(path)) pane.selected.delete(path); else pane.selected.add(path);
+          pane.anchor = path;
+          paintSelection(side);
+          return;
+        }
         const action = event.target.closest('[data-action]')?.dataset.action; if (!action) return;
         if (action === 'up' || action === 'refresh') return browse(side, action === 'up' ? parent(side, pane.path) : pane.path);
         if (action === 'upload' || action === 'download') return enqueue(action, [...pane.selected]);

@@ -418,10 +418,17 @@ const GitLog = (() => {
     if (pathFilter) {
       const lf = await window.myIDE.git.logFile(project, pathFilter, limit);
       if(!valid())return;
+      // 多文件历史：标签显示「N 个文件」，悬停列出全部（最多 10 行，再多就是刷屏）
+      const paths = Array.isArray(pathFilter) ? pathFilter : [pathFilter];
       if (chip) {
         chip.classList.remove('hidden');
-        chip.textContent = '📁 ' + pathFilter.split(/[\\/]/).pop() + ' ✕';
-        chip.title = '文件历史：' + pathFilter + '（点击退出文件模式）';
+        chip.textContent = paths.length === 1
+          ? '📁 ' + paths[0].split(/[\\/]/).pop() + ' ✕'
+          : '📁 ' + paths.length + ' 个文件 ✕';
+        chip.title = paths.length === 1
+          ? '文件历史：' + paths[0] + '（点击退出文件模式）'
+          : '文件历史（' + paths.length + ' 个文件）：\n' + paths.slice(0, 10).join('\n')
+            + (paths.length > 10 ? '\n…还有 ' + (paths.length - 10) + ' 个' : '') + '\n（点击退出文件模式）';
         chip.onclick = () => { pathFilter = null; selOid = null; refresh(); };
       }
       if (!lf.isRepo) {
@@ -616,15 +623,22 @@ const GitLog = (() => {
     GitPanel.renderDiffView(r, '分支对比 ' + cmp.a + ' → ' + cmp.b);
   }
 
-  // 文件历史入口（树/标签页右键「显示历史」）：打开日志窗口并过滤到该文件
+  // 文件历史入口（树/标签页右键「显示历史」）：打开日志窗口并过滤到该文件。
+  // 多选（2026-10-30）：传数组 → 过滤到整组文件，与单文件共用同一条过滤链路
+  // （pathFilter 支持数组，logFile 侧也接受数组）。
   function showFileHistory(file) {
     if (!root || !file) return;
+    const list = (Array.isArray(file) ? file : [file]).filter(Boolean);
+    if (!list.length) return;
     selSeq++;diffRequest++;cancelSelection();
-    pathFilter = String(file).replace(/\\/g, '/');
-    // 相对化（树传相对路径，其它入口可能传绝对路径）
-    if (pathFilter.toLowerCase().startsWith(String(root).toLowerCase().replace(/\\/g, '/') + '/')) {
-      pathFilter = pathFilter.slice(String(root).replace(/\\/g, '/').length + 1);
-    }
+    const rel = (p) => {
+      let v = String(p).replace(/\\/g, '/');
+      // 相对化（树传绝对路径，其它入口可能传相对路径）
+      const base = String(root).replace(/\\/g, '/');
+      if (v.toLowerCase().startsWith(base.toLowerCase() + '/')) v = v.slice(base.length + 1);
+      return v;
+    };
+    pathFilter = list.length === 1 ? rel(list[0]) : list.map(rel);
     selOid = null;
     cmp = null; // 文件历史模式退出对比模式
     if (App.getTool() !== 'log') App.showTool('log');

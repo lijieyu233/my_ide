@@ -546,7 +546,13 @@ const Tree = (() => {
     rowEl.appendChild(cp);
 
     rowEl.addEventListener('click', async (e) => {
-      if (e.target === cp) { await copyPath(item.path); return; }
+      // 悬停出现的「复制路径」：多选时复制整组（与右键菜单一致），
+      // 否则选 10 个文件点它只得到 1 行，用户还得再走右键。
+      if (e.target === cp) {
+        if (isSelected(item.path) && selectedPaths.size > 1) await copyPath(getSelection().join('\n'));
+        else await copyPath(item.path);
+        return;
+      }
       rowEl.focus(); // 焦点进树行：Delete 删文件 / 方向键导航（否则焦点永远停在右侧编辑器）
       // Ctrl+点击：增减多选；Shift+点击：范围选择（均不打开文件/切目录）
       if (e.ctrlKey || e.metaKey) {
@@ -1097,9 +1103,29 @@ const Tree = (() => {
     ? '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + CTX_ICONS[name] + '</svg>'
     : '') + '</span>';
 
+  /**
+   * 选中集合 → 条目列表（含类型）。批量操作要区分目录/文件（导出、显示历史只对文件有意义），
+   * 而 selectedPaths 只存路径。从可见行/目录缓存里反查，查不到的按文件处理。
+   */
+  function selectedItems() {
+    const byPath = new Map();
+    for (const r of visibleRows) byPath.set(norm(r.item.path), r.item);
+    for (const dir of Object.keys(nodeCache)) {
+      for (const it of (nodeCache[dir] || [])) byPath.set(norm(it.path), it);
+    }
+    return getSelection().map((p) => byPath.get(norm(p)) || {
+      path: p, name: p.split(/[\\/]/).pop(), type: 'file',
+    });
+  }
+
   function showCtxMenu(x, y, item) {
     menu.innerHTML = '';
     const multi = selectedPaths.size > 1;
+    // 多选时作用对象是整组，单选时就是右键那一项。
+    // （右键已保证：右键项不在选中集里 → 先重置为单选，见 rowEl 的 contextmenu）
+    const targets = multi ? selectedItems() : [item];
+    const n = targets.length;
+    const files = targets.filter((t) => t.type === 'file');
     const mk = (label, fn, danger, icon) => {
       const d = document.createElement('div');
       // 复用全局 .ctx-item.with-icon + .ctx-item-ic 规范（styles.css 已定义），
@@ -1125,10 +1151,32 @@ const Tree = (() => {
 
     // 顺序按使用频率：运行/隐藏 → 新建 → 复制粘贴 → 重命名 → 定位 → 删除
     // 「打开」已去掉（单击即打开，菜单项无意义）
-    if (item.type === 'file' && !multi && canRun(item.name)) { mk('运行', () => runItem(item), false, 'run'); sepOpen = true; }
-    if (!multi) {
-      if (hiddenSet.has(norm(item.path))) { mk('取消隐藏', () => unhideItem(item), false, 'unhide'); sepOpen = true; }
-      else { mk('隐藏（仅本应用）', () => hideItem(item), false, 'hide'); sepOpen = true; }
+    //
+    // 多选支持（2026-10-30 用户：「这里没有多选隐藏，你看下所有操作 尽量都支持多选」）：
+    // 原来只有复制/回收站/复制路径/删除认多选，其余一律 `!multi` 直接不显示 ——
+    // 选中 5 个文件想一起隐藏或一起看历史，菜单里根本没有入口。
+    // 现在除「天然只能作用于单个目标」的项（新建/粘贴/重命名/作为项目打开，
+    // 它们都需要一个明确的落点）之外，全部对整组生效，并在标签上标出项数。
+    const cnt = multi ? '（' + n + ' 项）' : '';
+    const runnable = targets.filter((t) => t.type === 'file' && canRun(t.name));
+    if (runnable.length) {
+      mk(multi ? '运行' + cnt : '运行', () => {
+        if (!multi) { runItem(item); return; }
+        for (const t of runnable) runItem(t);
+        if (runnable.length < n) MI.toast('已运行 ' + runnable.length + ' 个可执行文件，' + (n - runnable.length) + ' 项不是可运行类型', 'ok');
+      }, false, 'run');
+      sepOpen = true;
+    }
+    // 隐藏 / 取消隐藏：按「是否全部已隐藏」决定显示哪一项。
+    // 混合状态给「隐藏」（把没隐藏的补上），这比按主选中项的单一状态判断更符合直觉。
+    {
+      const allHidden = targets.every((t) => hiddenSet.has(norm(t.path)));
+      if (allHidden) {
+        mk('取消隐藏' + cnt, () => unhideItems(targets.map((t) => t.path)), false, 'unhide');
+      } else {
+        mk('隐藏（仅本应用）' + cnt, () => hideItems(targets.map((t) => t.path)), false, 'hide');
+      }
+      sepOpen = true;
     }
 
     sep();   // ① 执行/可见性 ｜ 新建
@@ -1137,46 +1185,67 @@ const Tree = (() => {
     sepOpen = true;
 
     sep();   // ② 新建 ｜ 剪贴板与文件操作
-    mk('复制文件' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => copySelected(), false, 'copy');
+    mk('复制文件' + cnt, () => copySelected(), false, 'copy');
     mk('粘贴到此处', () => pasteTo(item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '')), false, 'paste');
     mk('恢复文件操作', () => showCopyRecovery(), false, 'undo');
-    mk('移到系统回收站', () => trashItems(multi?getSelection():[item.path]), false, 'trash');
+    mk('移到系统回收站' + cnt, () => trashItems(multi ? getSelection() : [item.path]), false, 'trash');
     if (!multi) mk('重命名', () => renameItem(item), false, 'rename');
     sepOpen = true;
 
     sep();   // ③ 文件操作 ｜ 定位与打开
-    mk('复制完整路径' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+    mk('复制完整路径' + cnt, () => {
       if (multi) copyPath(getSelection().join('\n'));
       else copyPath(item.path);
     }, false, 'path');
-    mk('在资源管理器中显示', () => window.myIDE.shell.showInFolder(item.path), false, 'reveal');
-    // 命令行打开：目录用自身，文件用所在目录（todo：添加右键命令行打开）
-    mk('在命令行中打开', () => {
-      const dir = item.type === 'dir' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '');
-      window.myIDE.shell.openTerminal(dir).then((r) => {
-        if (r && r.error) MI.toast(r.error, 'err');
-      });
+    mk('在资源管理器中显示' + cnt, () => {
+      if (!multi) { window.myIDE.shell.showInFolder(item.path); return; }
+      // 一次开一堆资源管理器窗口是灾难：按**所在目录**去重，每个目录只开一个窗口，
+      // 选中该目录里的第一个目标；封顶 8 个，超出的明确告知。
+      // （目录项按它自己的父目录分组 —— showItemInFolder 的语义是「在父目录里选中它」）
+      const groups = new Map();
+      for (const t of targets) {
+        const dir = t.path.replace(/[\\/][^\\/]+$/, '');
+        if (!groups.has(dir)) groups.set(dir, t.path);
+      }
+      const list = [...groups.values()].slice(0, 8);
+      for (const p of list) window.myIDE.shell.showInFolder(p);
+      if (groups.size > list.length) MI.toast('已打开 ' + list.length + ' 个目录，其余 ' + (groups.size - list.length) + ' 个未打开', 'err');
+    }, false, 'reveal');
+    // 命令行打开：目录用自身，文件用所在目录
+    mk('在命令行中打开' + cnt, () => {
+      const dirs = [...new Set(targets.map((t) => (t.type === 'dir' ? t.path : t.path.replace(/[\\/][^\\/]+$/, ''))))];
+      const open = multi ? dirs.slice(0, 8) : dirs;
+      for (const dir of open) {
+        window.myIDE.shell.openTerminal(dir).then((r) => {
+          if (r && r.error) MI.toast(r.error, 'err');
+        });
+      }
+      if (dirs.length > open.length) MI.toast('已打开 ' + open.length + ' 个终端，其余 ' + (dirs.length - open.length) + ' 个未打开', 'err');
     }, false, 'terminal');
     if (item.type === 'dir' && !multi) mk('作为项目打开', () => { if (window.App) App.openProject(item.path); }, false, 'project');
-    // Git 文件历史（PyCharm 式：日志窗口过滤到该文件）
-    if (item.type === 'file' && !multi && window.GitLog && GitLog.showFileHistory) {
-      mk('显示历史', () => GitLog.showFileHistory(item.path), false, 'history');
+    // Git 文件历史（PyCharm 式：日志窗口过滤到该文件；多选时过滤到整组文件）
+    if (files.length && window.GitLog && GitLog.showFileHistory) {
+      mk('显示历史' + cnt, () => GitLog.showFileHistory(files.length === 1 ? files[0].path : files.map((f) => f.path)), false, 'history');
     }
     // 导出为 HTML：文件树右键是最自然的入口（用户就是在这里找的，之前只加在
     // 标签页右键上，等于给了个他看不见的地方）。
     // 不要求先打开文件 —— 直接读盘拿内容，「项目树里右键一个 md 就能导」才成立。
-    if (item.type === 'file' && !multi && /\.(md|markdown)$/i.test(item.name || item.path) && window.MdExport) {
-      mk('导出为 HTML', async () => {
-        try {
-          const read = await window.myIDE.fs.readFile(item.path);
-          if (read?.error) throw Error(read.error);
-          await MdExport.exportTab({
-            path: item.path,
-            name: item.name || item.path.split(/[\\/]/).pop(),
-            content: read.content ?? '',
-          });
-        } catch (error) {
-          MI.toast('导出失败：' + ((error && error.message) || error), 'err');
+    // 多选：只挑 md，导出到各自源目录（nextToSource）—— 否则 N 个文件要弹 N 次保存框。
+    const mdFiles = targets.filter((t) => t.type === 'file' && /\.(md|markdown)$/i.test(t.name || t.path));
+    if (mdFiles.length && window.MdExport) {
+      mk('导出为 HTML' + (multi ? cnt : ''), async () => {
+        for (const f of mdFiles) {
+          try {
+            const read = await window.myIDE.fs.readFile(f.path);
+            if (read?.error) throw Error(read.error);
+            await MdExport.exportTab({
+              path: f.path,
+              name: f.name || f.path.split(/[\\/]/).pop(),
+              content: read.content ?? '',
+            }, multi ? { nextToSource: true } : {});
+          } catch (error) {
+            MI.toast('导出 ' + (f.name || f.path) + ' 失败：' + ((error && error.message) || error), 'err');
+          }
         }
       }, false, 'export');
     }
@@ -1188,7 +1257,7 @@ const Tree = (() => {
     sepOpen = true;
 
     sep();   // ④ 定位与打开 ｜ 删除
-    mk('删除' + (multi ? '（' + selectedPaths.size + ' 项）' : ''), () => {
+    mk('删除' + cnt, () => {
       if (multi) removeItems(getSelection());
       else removeItem(item);
     }, true, 'trash');
@@ -1199,19 +1268,31 @@ const Tree = (() => {
   }
 
   // ---------- 应用内隐藏 ----------
-  function hideItem(item) {
-    hiddenSet.add(norm(item.path));
+  // 批量版（2026-10-30）：一次写一次 localStorage、一次重渲染 ——
+  // 逐项调 hideItem 会把整棵树重画 N 遍，选 50 个文件就卡成幻灯片。
+  function hideItems(paths) {
+    const list = (paths || []).map(norm).filter(Boolean);
+    if (!list.length) return;
+    for (const p of list) hiddenSet.add(p);
     saveHidden();
     invalidateAll();
     render();
-    MI.toast('已隐藏 ' + item.name + '（👁 切换只看隐藏项 / 右键取消隐藏）', 'ok');
+    MI.toast('已隐藏 ' + list.length + ' 项（👁 切换只看隐藏项 / 右键取消隐藏）', 'ok');
+  }
+  function unhideItems(paths) {
+    const list = (paths || []).map(norm).filter(Boolean);
+    if (!list.length) return;
+    for (const p of list) hiddenSet.delete(p);
+    saveHidden();
+    invalidateAll();
+    render();
+    MI.toast('已取消隐藏 ' + list.length + ' 项', 'ok');
+  }
+  function hideItem(item) {
+    hideItems([item.path]);
   }
   function unhideItem(item) {
-    hiddenSet.delete(norm(item.path));
-    saveHidden();
-    invalidateAll();
-    render();
-    MI.toast('已取消隐藏 ' + item.name, 'ok');
+    unhideItems([item.path]);
   }
   function cycleHideMode() {
     hideMode = hideMode === 'normal' ? 'hidden' : hideMode === 'hidden' ? 'all' : 'normal';

@@ -1855,6 +1855,68 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     fakeExternal = [];
   });
 
+  await okAsync('多选右键：隐藏 / 取消隐藏 / 显示历史 / 导出 都对整组生效（2026-10-30）', async () => {
+    // 用户原话：「这里没有多选隐藏，你看下所有操作 尽量都支持多选」。
+    // 原来只有 复制/回收站/复制路径/删除 认多选，隐藏、显示历史、导出、资源管理器
+    // 一律 `!multi` 直接不显示 —— 选中一组文件时这些入口凭空消失。
+    dom.window.document.body.focus();
+    await tick();
+    const rows = () => $allIn($(dom, '#tree'), '.tree-row');
+    const rowOf = (p) => rows().find((r) => r.querySelector('.nm').title === p);
+    const ctrlClick = (el) => el.dispatchEvent(new el.ownerDocument.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    const menuLabels = () => $allIn($(dom, '#ctx-menu'), '.ctx-item').map((x) => x.textContent);
+    const rightClick = (el) => el.dispatchEvent(new el.ownerDocument.defaultView.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+
+    // 单选两项：README.md + notes.txt
+    click(rowOf(P + '/README.md'));
+    await tick();
+    ctrlClick(rowOf(P + '/notes.txt'));
+    await tick();
+    assert_(dom.window.Tree.selection.length === 2, '已多选 2 项, got ' + dom.window.Tree.selection.length);
+
+    rightClick(rowOf(P + '/README.md'));
+    await tick();
+    const labels = menuLabels();
+    // ① 隐藏：多选时必须出现，并标出项数
+    const hideEntry = $allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('隐藏（仅本应用）'));
+    assert_(hideEntry, '多选时菜单有「隐藏（仅本应用）」, got ' + JSON.stringify(labels));
+    assert_(hideEntry.textContent.includes('2 项'), '隐藏项标出 2 项, got ' + hideEntry.textContent);
+    // ② 显示历史：两个都是文件 → 出现且带项数
+    const histItem = $allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('显示历史'));
+    assert_(histItem && histItem.textContent.includes('2 项'), '多选文件有「显示历史（2 项）」, got ' + JSON.stringify(labels));
+    // ③ 资源管理器 / 命令行：多选也在
+    assert_(labels.some((t) => t.includes('在资源管理器中显示')), '多选时有「在资源管理器中显示」');
+    assert_(labels.some((t) => t.includes('在命令行中打开')), '多选时有「在命令行中打开」');
+
+    // 点「隐藏」→ 两项都应写入 hiddenSet（一次保存、一次重渲染）
+    click(hideEntry);
+    await tick(); await tick();
+    const hidden = JSON.parse(dom.window.localStorage.getItem('myide-hidden:' + P) || '[]').map((p) => p.replace(/\\/g, '/'));
+    assert_(hidden.includes(P + '/README.md') && hidden.includes(P + '/notes.txt'),
+      '两项都进入隐藏集合, got ' + JSON.stringify(hidden));
+
+    // 切到「仅隐藏」视角 → 多选这两项 → 菜单应变成「取消隐藏（2 项）」
+    click($(dom, '#tree-hide-mode'));
+    await tick(); await tick();
+    click(rowOf(P + '/README.md'));
+    await tick();
+    ctrlClick(rowOf(P + '/notes.txt'));
+    await tick();
+    rightClick(rowOf(P + '/README.md'));
+    await tick();
+    const un = $allIn($(dom, '#ctx-menu'), '.ctx-item').find((x) => x.textContent.includes('取消隐藏'));
+    assert_(un && un.textContent.includes('2 项'), '全隐藏时显示「取消隐藏（2 项）」, got ' + JSON.stringify(menuLabels()));
+    click(un);
+    await tick(); await tick();
+    const after = JSON.parse(dom.window.localStorage.getItem('myide-hidden:' + P) || '[]');
+    assert_(after.length === 0, '两项都取消隐藏, got ' + JSON.stringify(after));
+    // 收尾：切回常规视角
+    click($(dom, '#tree-hide-mode'));
+    await tick();
+    click($(dom, '#tree-hide-mode'));
+    await tick(); await tick();
+  });
+
   await okAsync('多选复制粘贴：Ctrl+点击多文件 → Ctrl+C → Ctrl+V 全部粘贴', async () => {
     dom.window.document.body.focus();
     await tick();

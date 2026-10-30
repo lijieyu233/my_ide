@@ -2081,26 +2081,59 @@ async function shelveDelete(dir, id) {
 }
 
 // ---------- 文件历史（log --follow 简化版：改动的提交，不含重命名追踪）----------
+/**
+ * 文件历史：只列出改动过这些文件的提交。
+ *
+ * file 可以是单个路径或路径数组（2026-10-30 文件树多选「显示历史」）。
+ * 数组语义是**并集**：任一文件在这个提交里有变化就算 —— 用户选一组文件，
+ * 想知道的是「这组东西是什么时候被改动的」，不是「同时改了全部这些文件」。
+ */
 async function logFile(dir, file, limit = 500) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { isRepo: false, error: '不是 Git 仓库', commits: [] };
-  const rel = posix(String(file).replace(/^[\\/]+/, ''));
+  const inputs = (Array.isArray(file) ? file : [file])
+    .map((f) => {
+      let v = String(f).replace(/\\/g, '/');
+      // 绝对路径要相对化（文件树传的是绝对路径，git 要的是仓库相对路径）。
+      // 注意先比对 root 再剥前导斜杠 —— 顺序反了会把盘符路径变成相对路径。
+      const base = String(root).replace(/\\/g, '/').replace(/\/+$/, '');
+      if (v.toLowerCase().startsWith(base.toLowerCase() + '/')) v = v.slice(base.length + 1);
+      return posix(v.replace(/^[\\/]+/, ''));
+    })
+    .filter(Boolean);
+  if (!inputs.length) return { isRepo: true, root, file: '', commits: [] };
+  const rel = inputs[0];
   try {
     const entries = await git.log({ fs, dir: root, depth: limit });
-    const oidCache = new Map(); // commitOid -> blobOid|null
-    const blobOidAt = async (commitOid) => {
-      if (oidCache.has(commitOid)) return oidCache.get(commitOid);
+    const oidCache = new Map(); // commitOid -> blobOid|null（按文件区分）
+    const blobOidAt = async (commitOid, path) => {
+      const key = commitOid + '\0' + path;
+      if (oidCache.has(key)) return oidCache.get(key);
       let v = null;
-      try { const r = await git.readBlob({ fs, dir: root, oid: commitOid, filepath: rel }); v = r.oid; } catch {}
-      oidCache.set(commitOid, v);
+      try { const r = await git.readBlob({ fs, dir: root, oid: commitOid, filepath: path }); v = r.oid; } catch {}
+      oidCache.set(key, v);
       return v;
+    };
+    // 任一文件在该提交里的 blob 与父提交不同 → 计入（并集）
+    // ⚠ 两个 null 要分清：
+    //   · 当前提交没有这个文件、父提交也没有 → 不是改动（否则「查一个不存在的文件的历史」
+    //     会把整个仓库的提交全返回回来，因为 null !== '\0' 恒真）
+    //   · 当前没有、父有 → 这是**删除**，必须计入
+    //   · 当前有、父没有 → 新增，计入
+    const changedAt = async (e, path) => {
+      const cOid = await blobOidAt(e.oid, path);
+      const hasParent = e.commit.parent && e.commit.parent[0];
+      const pOid = hasParent ? await blobOidAt(e.commit.parent[0], path) : null;
+      if (cOid === null && pOid === null) return false;
+      return cOid !== pOid;
     };
     const commits = [];
     for (const e of entries) {
-      const cOid = await blobOidAt(e.oid);
-      const hasParent = e.commit.parent && e.commit.parent[0];
-      const pVal = hasParent ? await blobOidAt(e.commit.parent[0]) : '\0'; // 首提交无父 → 必不等 → 视为新增
-      if (cOid !== pVal) {
+      let changed = false;
+      for (const path of inputs) {
+        if (await changedAt(e, path)) { changed = true; break; }
+      }
+      if (changed) {
         commits.push({
           oid: e.oid, short: e.oid.slice(0, 7),
           message: (e.commit.message || '').split('\n')[0],
@@ -2109,7 +2142,7 @@ async function logFile(dir, file, limit = 500) {
         });
       }
     }
-    return { isRepo: true, root, file: native(rel), commits };
+    return { isRepo: true, root, file: native(rel), files: inputs.map(native), commits };
   } catch (e) {
     if (String(e.message || e).includes('HEAD')) return { isRepo: true, commits: [], unborn: true, file: native(rel) };
     return { isRepo: true, error: String(e.message || e), commits: [], file: native(rel) };

@@ -493,6 +493,41 @@ fs.mkdirSync(repo);
     assert.ok(bl.lines[1].timestamp > 0, '行注解带时间戳');
   });
 
+  await okAsync('logFile：单文件历史 + 多文件历史取并集（2026-10-30 文件树多选）', async () => {
+    const repo = path.join(tmp, 'repo-logfile');
+    fs.mkdirSync(repo);
+    await G.initRepo(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a1\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b1\n');
+    await G.commit(repo, { message: 'both', files: ['a.txt', 'b.txt'] });
+    // 只改 a → 第二个提交
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a2\n');
+    await G.commit(repo, { message: 'only-a', files: ['a.txt'] });
+    // 只改 b → 第三个提交
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b2\n');
+    await G.commit(repo, { message: 'only-b', files: ['b.txt'] });
+
+    const one = await G.logFile(repo, 'a.txt', 50);
+    assert.ok(one.isRepo, '是 Git 仓库');
+    assert.deepStrictEqual(one.commits.map((c) => c.message), ['only-a', 'both'],
+      '单文件历史只含改过 a.txt 的提交, got ' + JSON.stringify(one.commits.map((c) => c.message)));
+
+    // 多文件：并集 —— only-a、only-b、both 三个都在
+    const both = await G.logFile(repo, ['a.txt', 'b.txt'], 50);
+    assert.deepStrictEqual(both.commits.map((c) => c.message), ['only-b', 'only-a', 'both'],
+      '多文件历史取并集（新→旧）, got ' + JSON.stringify(both.commits.map((c) => c.message)));
+    assert.deepStrictEqual(both.files, ['a.txt', 'b.txt'], '结果回带参与过滤的文件列表');
+
+    // 绝对路径也要能吃（树传的是绝对路径）
+    const abs = await G.logFile(repo, [path.join(repo, 'a.txt')], 50);
+    assert.deepStrictEqual(abs.commits.map((c) => c.message), ['only-a', 'both'], '绝对路径同样过滤正确');
+
+    // 没改过的文件 → 空列表（不是报错）
+    const none = await G.logFile(repo, ['never.txt'], 50);
+    assert.strictEqual(none.commits.length, 0, '没有历史时返回空列表');
+    assert.ok(!none.error, '空历史不是错误');
+  });
+
   await okAsync('cherry-pick：摘取提交到当前分支（改/增/删文件 + 脏工作区拒绝）', async () => {
     const repo5 = path.join(tmp, 'repo5');
     fs.mkdirSync(repo5);
