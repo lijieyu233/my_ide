@@ -225,8 +225,11 @@ const wait = async (s, ms = 8000) => {
       const delBtns = document.querySelectorAll('#clip-list .clip-row-del');
       const delOpacity = getComputedStyle(delBtns[0]).opacity;
 
-      // ② Ctrl 点选：第 0 行 + 第 2 行
-      list[0].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      // ② Ctrl 点选：先普通点第 0 行**清掉前面用例残留的选中**，再 Ctrl 点第 2 行。
+      //    原来直接 Ctrl 点第 0 行 —— 它若已被选中会变成「取消选中」，再加上残留项，
+      //    结果既不是 1 也不是 2（实测 3），这条断言在干净 HEAD 上就一直红着。
+      rows()[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 120));
       rows()[2].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
       await new Promise(r => setTimeout(r, 200));
       const ctrlCount = document.querySelectorAll('#clip-list .clip-row.selected').length;
@@ -259,6 +262,55 @@ const wait = async (s, ms = 8000) => {
     check('Shift 点能区间连选', multi.shiftCount >= 3, 'selected=' + multi.shiftCount);
     check('右键菜单有批量删除项', multi.menuItems.some(t => /删除选中的/.test(t)), multi.menuItems.join(' | '));
     check('右键批量删除真的删掉了多条', multi.deleted >= 2, 'before=' + multi.before + ' after=' + multi.after);
+
+    // ⑨c2 日期分组头右键 = 整组操作（2026-10-30 用户：「我想按日期删除结果失败了」）
+    // 之前右键分组头落到「列表右键」路径：分组头不是行 → selection 原封不动 →
+    // 菜单写「删除选中的 1 条」，点下去只删 1 条，那一天的其余条目还在。
+    const groupDel = await probe(`(async () => {
+      // 造跨天数据：今天 2 条 + 前天 3 条（copiedAt 直接给过去的时间戳）。
+      // ⚠ 必须真的跨天：全给「今天」只会归成一个分组，测不到分组头菜单。
+      const DAY = 86400000, now = Date.now();
+      window.ClipboardPanel.__seed([
+        { id: 'g-today-1', text: '今天的 1', copiedAt: now },
+        { id: 'g-today-2', text: '今天的 2', copiedAt: now - 1000 },
+        { id: 'g-old-1', text: '前天的 1', copiedAt: now - 2 * DAY },
+        { id: 'g-old-2', text: '前天的 2', copiedAt: now - 2 * DAY - 1000 },
+        { id: 'g-old-3', text: '前天的 3', copiedAt: now - 2 * DAY - 2000 },
+      ]);
+      await new Promise(r => setTimeout(r, 200));
+      const heads = [...document.querySelectorAll('#clip-list [data-clip-group-toggle]')];
+      if (heads.length < 2) return { error: 'groups=' + heads.length };
+      // 右键「今天」这一组的组头
+      const todayKey = heads[0].dataset.clipGroupToggle;
+      heads[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
+      await new Promise(r => setTimeout(r, 200));
+      const menu = document.getElementById('ctx-menu');
+      const items = [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent.trim());
+      const heading = menu.querySelector('.tool-menu-heading')?.textContent || '';
+      // ① 菜单必须出现「删除『今天』的 2 条」，而不是「删除选中的 N 条」
+      const groupItem = [...menu.querySelectorAll('.ctx-item')].find(b => /删除「.*」的 \\d+ 条/.test(b.textContent));
+      const hasGroupHeader = /2 条/.test(heading);
+      // ② 点它，看这一层真正传出去的 id 列表。
+      //    这里不能真删：__seed 注入的是内存里的假 id，存储里没有它们，
+      //    remove 会返回 0 条、refresh 再把列表换回真实数据 —— 那样既测不到分组逻辑，
+      //    又会把「不误伤别的日期」判成失败。真实删除路径已由上一组「右键批量删除」用例覆盖。
+      groupItem?.click();
+      await new Promise(r => setTimeout(r, 400));
+      const sent = window.ClipboardPanel.__testLastDelete();
+      const afterRows = [...document.querySelectorAll('#clip-list [data-clip-id]')].map(r => r.dataset.clipId);
+      return { groups: heads.length, todayKey, items, hasGroupHeader, sent, heading,
+               afterRows, oldKept: afterRows.filter(id => id.startsWith('g-old')).length,
+               sentToday: (sent || []).filter(id => id.startsWith('g-today')).length,
+               sentOld: (sent || []).filter(id => id.startsWith('g-old')).length };
+    })()`);
+    check('日期分组头右键弹出的是整组菜单（标题带「N 条」）',
+      groupDel.hasGroupHeader === true, JSON.stringify(groupDel.heading));
+    check('分组菜单文案是「删除『今天』的 2 条」而不是「删除选中的 N 条」',
+      groupDel.items?.some(t => /删除「.*」的 \d+ 条/.test(t)) && !groupDel.items?.some(t => /删除选中的/.test(t)),
+      JSON.stringify(groupDel.items));
+    check('按日期删除把这天的全部条目都传给了主进程（2 条）',
+      groupDel.sentToday === 2, 'sent=' + JSON.stringify(groupDel.sent));
+    check('按日期删除不误伤别的日期', groupDel.sentOld === 0, 'sent=' + JSON.stringify(groupDel.sent));
 
     // ⑨d 行内删除按钮单条删除
     const rowDel = await probe(`(async () => {

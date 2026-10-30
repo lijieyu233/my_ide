@@ -52,6 +52,8 @@ window.ClipboardPanel = (() => {
 // 单个选中（selectedId）仍然保留 —— 它决定右侧详情显示哪一条。
 let selection = new Set();
 let lastAnchorId = null;
+// 仅自检用：最近一次 deleteEntries 收到的 id 列表（见 deleteEntries 里的说明）
+let lastDeleteIds = [];
 
 function rowIndexMap() {
   const rows = visibleEntries();
@@ -217,6 +219,11 @@ function onRowClick(event) {
 async function deleteEntries(ids) {
   const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
   if (!list.length) return;
+  // 仅自检用：记录这一层真正要删的 id 列表。
+  // 为什么需要：自检要用 __seed 注入跨天假数据来验「按日期删除」，
+  // 那些 id 在真实存储里不存在（删不掉、refresh 后也观察不到），
+  // 只能看这一层到底把哪些 id 传了出去。
+  lastDeleteIds = list.slice();
   try {
     // 删之前先记下「被删条目的位置」，用来决定删完该选哪一条（2026-10-28）。
     // 之前用 keepSelection:false → 删完一个都不选中，右侧详情空白，
@@ -244,7 +251,7 @@ async function deleteEntries(ids) {
   } catch (error) { setState('删除失败：' + error.message); }
 }
 
-// 列表右键菜单：批量删除 / 复制 / 固定 / 全选。
+// 列表右键菜单：批量删除 / 复制 / 固定 / 全选；在**日期分组头**上右键则是整组操作。
 function openListMenu(event) {
   const row = event.target.closest('[data-clip-id]');
   event.preventDefault(); event.stopPropagation();
@@ -265,6 +272,53 @@ function openListMenu(event) {
     b.onclick = ev => { ev.stopPropagation(); menu.classList.add('hidden'); if (!disabled) fn(); };
     menu.append(b);
   };
+  const sepLine = () => { const d = document.createElement('div'); d.className = 'ctx-sep'; menu.append(d); };
+
+  /**
+   * 日期分组头的右键菜单（2026-10-30 用户：「我想按日期删除结果失败了」）。
+   *
+   * 之前右键分组头落到的是「列表右键」这条路径：分组头不是行，`row` 为 null，
+   * 于是 selection 原封不动 —— 菜单上写的是「删除选中的 1 条」（上一次的残留单选），
+   * 点下去只删掉 1 条，那一天的另外 40 条还在。用户看到的就是「按日期删除失败」。
+   *
+   * 现在分组头有自己的菜单，作用对象 = 这一天（当前筛选下）的全部条目。
+   */
+  // ⚠ 只能认**分组头按钮**，不能认 `.clip-group` 容器：
+  //   行本身在 .clip-group 里面，用容器判定的话右键任意一行都会被当成「右键分组」，
+  //   行的菜单（删除选中的 N 条）就再也出不来了。
+  const groupHeadBtn = event.target.closest('[data-clip-group-toggle]');
+  const groupKey = groupHeadBtn?.dataset.clipGroupToggle;
+  const groupRows = groupKey ? visibleEntries().filter(e => dayKeyOf(e.copiedAt) === groupKey) : [];
+  if (groupRows.length) {
+    const label = groupLabel(groupKey);
+    const head = document.createElement('div');
+    head.className = 'tool-menu-heading';
+    head.textContent = label + ' · ' + groupRows.length + ' 条';
+    menu.append(head);
+    const ids = groupRows.map(e => e.id);
+    const allPinned = groupRows.every(e => e.pinned);
+    add('删除「' + label + '」的 ' + ids.length + ' 条', () => void deleteEntries(ids));
+    add('复制「' + label + '」的 ' + ids.length + ' 条', () => void copySelection(groupRows));
+    add((allPinned ? '取消固定' : '固定') + '「' + label + '」的 ' + ids.length + ' 条', () => void pinSelection(groupRows));
+    sepLine();
+    add('选中这一天（' + ids.length + ' 条）', () => {
+      selection = new Set(ids);
+      lastAnchorId = ids[0] || null;
+      selectedId = ids[0] || null;
+      renderList(); renderDetail();
+    });
+    add('全选（当前筛选结果）', () => { selection = new Set(visibleEntries().map(e => e.id)); renderList(); });
+    add('取消选择', () => { selection.clear(); renderList(); }, !count);
+
+    menu.classList.remove('hidden');
+    const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 180;
+    menu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - mw - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - mh - 8)) + 'px';
+    const close = ev => { if (!menu.contains(ev.target)) { menu.classList.add('hidden'); document.removeEventListener('pointerdown', close, true); } };
+    document.addEventListener('pointerdown', close, true);
+    return;
+  }
+
   const head = document.createElement('div');
   head.className = 'tool-menu-heading';
   head.textContent = count > 1 ? '已选 ' + count + ' 条' : (row ? '剪贴板条目' : '剪贴板历史');
@@ -302,11 +356,13 @@ function openListMenu(event) {
  *     粘到资源管理器得到 N 个文件，粘到支持文件的程序（微信、飞书）也能一次收下。
  *     这是纯剪贴板位图无法做到的，但能真正满足「一次复制多张」。
  */
-async function copySelection() {
-  const picked = entries.filter(e => selection.has(e.id));
-  if (!picked.length) return;
-  const images = picked.filter(e => e.kind === 'image');
-  const texts = picked.filter(e => e.kind === 'text');
+async function copySelection(picked) {
+  // picked 显式传入时用它（日期分组头右键 = 「复制这一天的全部」，
+  // 不需要用户先把 58 条都选上）；否则取当前选中集合。
+  const list = Array.isArray(picked) ? picked : entries.filter(e => selection.has(e.id));
+  if (!list.length) return;
+  const images = list.filter(e => e.kind === 'image');
+  const texts = list.filter(e => e.kind === 'text');
   try {
     // ① 纯文字：保持原来的文本复制
     if (!images.length) {
@@ -335,18 +391,19 @@ async function copySelection() {
   } catch (error) { setState('复制失败：' + error.message); }
 }
 
-async function pinSelection() {
-  const picked = entries.filter(e => selection.has(e.id));
-  if (!picked.length) return;
+async function pinSelection(picked) {
+  // 同 copySelection：分组头右键传入这一天的全部条目
+  const list = Array.isArray(picked) ? picked : entries.filter(e => selection.has(e.id));
+  if (!list.length) return;
   // 以第一条的目标状态为准，整批统一（避免一半固定一半取消）
-  const target = !picked[0].pinned;
+  const target = !list[0].pinned;
   try {
-    for (const entry of picked) {
+    for (const entry of list) {
       const updated = await call('update', entry.id, { pinned: target });
       Object.assign(entry, updated);
     }
     renderList(); renderDetail();
-    setState(target ? '已固定 ' + picked.length + ' 条' : '已取消固定 ' + picked.length + ' 条');
+    setState(target ? '已固定 ' + list.length + ' 条' : '已取消固定 ' + list.length + ' 条');
   } catch (error) { setState('操作失败：' + error.message); }
 }
 
@@ -647,6 +704,8 @@ async function pinSelection() {
     __testSelect: ids => { selection = new Set(ids); renderList(); },
     __testCopy: () => copySelection(),
     __debugPick: () => ({ entryKinds: entries.map(e => e.id + ':' + e.kind), selected: [...selection] }),
+    // 仅自检用：最近一次批量删除收到的 id（验「按日期删除」传了整组）
+    __testLastDelete: () => lastDeleteIds.slice(),
     __testState: () => (document.getElementById('clip-state')?.textContent
       || document.getElementById('clip-list-state')?.textContent || '').trim() };
 })();
