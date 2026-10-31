@@ -188,16 +188,13 @@ const AiPanel = (() => {
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
     // 2026-10-28：切到别的工具页（项目/浏览器/数据库…）**不再中断 DSH 会话**。
-    // 原来的 stopRun() 会把正在跑的 Harness 任务直接掐死——用户只想要「离开页面时
-    // 会话继续跑，回来还能接上」。这里改成和项目切换同一套「挂起」语义：
-    // 把当前运行的 DOM 与状态搬到后台记录里，AI 面板回来后 restoreBackgroundRun 接回。
-    // 只有用户按停止按钮、或切到别的工作区（onProjectChange）才会真正中断。
+    // 2026-11-01 用户再次明确：只有停止按钮才允许中断，「其他任务操作都不中断」。
+    // 因此这里不再有 stopRun 回退 —— 挂起失败（流还没建立）也只是放手。
     let justParked = false;
     if (currentRun?.engine === 'dsh' && currentRun.identity.rootId === App.root
       && currentRun.pageId !== page.id
       && !(['reader', 'bookshelf'].includes(currentRun.pageId) && ['reader', 'bookshelf'].includes(page.id))) {
-      // 挂起失败（比如还没建 stream）才退回中断，避免状态悬空
-      if (parkDshRun()) justParked = true; else stopRun();
+      justParked = detachRun() === 'parked';
     }
     // 切回「能显示会话的页面」时，把挂起的会话接回前台（2026-10-29 修）。
     //
@@ -460,6 +457,9 @@ const AiPanel = (() => {
     const context={engine:getConfig().engine,rootId:currentRun?.identity.rootId||App.root||'',sessionId:curSessionId};
     Promise.resolve(window.myIDE.ai.clearSession(context)).catch(error=>MI.toast(error.message,'err'));
   }
+  // 挂起到后台的任务仍要保留这次会话的临时授权：切走就撤销，正在等授权的那一步会被判成
+  // 「确认已取消」——对用户来说又是一次「怎么突然停了」。只有真的离开（没在跑）才清。
+  function releaseSessionPermissions(detached) { if (detached !== 'parked') clearSessionPermissions(); }
   let authorityConfig = null;
   const authorityProjects = new Map();
   function receivePermissions(view) {
@@ -1004,11 +1004,9 @@ const AiPanel = (() => {
   function syncVisible(v) {
     if (panel) panel.classList.toggle('hidden', !v);
     // 2026-10-28：收起 AI 面板不再中断 DSH 会话。
-    // 原来一律 stopRun()，等于「看一眼别处就没了」；DSH 本来就支持后台跑，
-    // 挂起后在别的页面继续推进，回来 restoreBackgroundRun 接上即可。
+    // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
-      if (!parkDshRun()) stopRun();
-      clearSessionPermissions();
+      releaseSessionPermissions(detachRun());
     }
     if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();}
   }
@@ -1826,9 +1824,8 @@ const AiPanel = (() => {
     const se = loadSessions().find((x) => x.id === id);
     if (!se) { MI.toast('找不到该会话', 'err'); return; }
     // 2026-10-28：切到别的历史会话时，正在跑的 DSH 任务改为挂起而不是中断；
-    // 只有真的跑不起来（park 失败）才停，避免状态悬空。
-    if (!parkDshRun()) stopRun(true);
-    clearSessionPermissions();
+    // 2026-11-01 用户明确「切换会话不能中断」，因此不再有 stopRun 回退。
+    releaseSessionPermissions(detachRun());
     closeHist();
     msgs = repairToolHistory((se.msgs || []).slice());
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
@@ -1854,6 +1851,8 @@ const AiPanel = (() => {
   }
   function parkDshRun() {
     const run=currentRun;
+    // 只有「已经派发出去」的运行才能挂起：stream 存在 = 主进程已受理这次 prompt。
+    // 还没建 stream 的窗口里任务其实没开始跑，停掉不会丢任何已完成的工作。
     if(run?.engine!=='dsh'||run.status!=='active'||!run.stream)return false;
     const container=document.createElement('div');
     while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
@@ -1871,7 +1870,41 @@ const AiPanel = (() => {
     document.getElementById('ai-stop')?.classList.add('hidden');
     renderBackgroundStatus();return true;
   }
-  function parkedFor(context) { return [...backgroundRuns.values()].find(record=>identityMatches(context,record.run.stream?.context)); }
+  function parkedFor(context) { return [...backgroundRuns.values()].find(record=>record.run.stream&&identityMatches(context,record.run.stream.context)); }
+  /**
+   * 离开当前会话/页面/项目时「放手」，**不再中断原生任务**（2026-11-01 用户要求）。
+   *
+   * 用户原话：「我不希望我切换会话时中断 dsh 会话，只有我点击这个按钮（停止）才会主动中断，
+   * 其他我的任务操作都不中断。」
+   *
+   * 所以这里只有三种结果，一条 abort 都没有：
+   *   parked   —— 流已建立，整块视图搬进后台记录，回来接得上（原有能力）；
+   *   released —— 流还没建立，说明 prompt 还没发到主进程，直接放手不会丢任何已开始的工作；
+   *   none     —— 本来就没有在跑。
+   * 真正的 session/cancel 只保留在 stopRun（停止按钮、确认框里的「停止本次任务」）。
+   */
+  function detachRun() {
+    const run = currentRun;
+    if (!run) return 'none';
+    // 已经在停止（用户点过停止按钮）的任务：放手时要把本地状态让出来，
+    // 否则 busy 会一直为真，新会话连发都发不出去。停止本身已经由 stopRun 发出，不再重复中断。
+    if (run.status !== 'active') { releaseLocalRun(); return 'released'; }
+    // 普通 API 引擎没有后台记录机制，沿用原来的停止语义；用户要的是 DSH 不被掐断。
+    if (run.engine !== 'dsh') { stopRun(true); return 'stopped'; }
+    if (parkDshRun()) return 'parked';
+    // 流还没建立 = continueStream 尚未调用 chat，主进程根本没收到这次任务，
+    // 放手不会丢任何已开始的工作（continueStream 开头的 runIsLive 会直接返回）。
+    releaseLocalRun();
+    return 'released';
+  }
+  // 只清本地视角，不碰 controller、不发 abort：原生任务可能还在后台跑。
+  function releaseLocalRun() {
+    // 排队等结果的自我切换动作必须收口：视图已经让出去，没人会再派发它们。
+    for (const entry of currentRun?.aiTransitions?.splice(0) || []) entry.reject(Error('会话视图已切换，未执行排队动作'));
+    currentRun = null; busy = false; curStream = null; curText = '';
+    setBusyUI(false);
+    document.getElementById('ai-stop')?.classList.add('hidden');
+  }
   function restoreBackgroundRun(options) {
     // 先按「当前 scope + 当前会话」查；查不到再找同 scope 下唯一的记录。
     //
@@ -1887,7 +1920,10 @@ const AiPanel = (() => {
     const takeable = r => r && (!runningOnly || r.run.status === 'active');
     const key = runKeyOf(sessKey(), curSessionId);
     let record = takeable(backgroundRuns.get(key)) ? backgroundRuns.get(key) : null;
-    if (!record) {
+    // 兜底只在「刚离开同一会话」时用：会话 id 可能在挂起与恢复之间从 null 变成真实值。
+    // 用户明确切到**另一个**会话时不能顺手把旧任务接过来 —— 那正是「切会话」看起来像
+    // 停不下来的原因：新会话里突然出现上一个任务的内容。
+    if (!record && (!curSessionId || options?.allowScopeSwap)) {
       const same = [...backgroundRuns.entries()].filter(([, r]) => r.scope === sessKey() && takeable(r));
       if (same.length === 1) { record = same[0][1]; backgroundRuns.delete(same[0][0]); }
     }
@@ -1906,20 +1942,23 @@ const AiPanel = (() => {
     for(const record of backgroundRuns.values()){
       const button=document.createElement('button');button.className='tb-btn';
       const name=record.run.identity.rootId.split(/[\\/]/).filter(Boolean).at(-1)||'独立会话';
-      const waiting=record.pending.some(event=>event.type==='tool')||record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled)');
+      const waiting=record.pending.some(event=>event.type==='tool')||record.pending.some(event=>event.type==='permission'||event.type==='question')||!!record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled)');
       button.textContent=name+' · '+(record.run.status==='active'?(waiting?'等待返回处理':'后台运行'):record.run.status==='completed'?'后台已完成':'后台已结束');
       button.onclick=async()=>{await App.setRoot(record.run.identity.rootId);if(curSessionId!==record.run.identity.sessionId)openSession(record.run.identity.sessionId);};
       status.appendChild(button);
     }
   }
-  function beforeProjectChange(nextRoot) { if(currentRun?.identity.rootId!==nextRoot)parkDshRun(); }
+  function beforeProjectChange(nextRoot) { if(currentRun?.identity.rootId!==nextRoot)detachRun(); }
   // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
   function onProjectChange() {
     const nextKey=sessKey(),harness=getConfig().engine==='dsh';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
-    const retained=parkDshRun()||[...backgroundRuns.values()].some(record=>record.scope===loadedSessionKey&&record.view.curSessionId===curSessionId);
-    if(!retained)stopRun(true);
+    // 2026-11-01：切项目也不中断（用户要求「其他任务操作都不中断」）。
+    // 原任务是 DSH 就整块挂起在后台记录里，切回来或点后台状态条都能接上。
+    const detached = detachRun();
+    const retained = detached === 'parked'
+      || [...backgroundRuns.values()].some(record=>record.scope===loadedSessionKey&&record.view.curSessionId===curSessionId);
     loadedSessionKey=nextKey;
     if(!retained)clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
@@ -2716,8 +2755,9 @@ const AiPanel = (() => {
     renderImages();
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
-      stopRun(true);
-      clearSessionPermissions();
+      // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
+      // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
+      releaseSessionPermissions(detachRun());
       persistSession();          // 先把当前这轮存进历史，再开新的
       curSessionId = getConfig().engine==='dsh'?'s-'+window.crypto.randomUUID():null;
       rememberSession();

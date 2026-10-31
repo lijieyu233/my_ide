@@ -467,11 +467,28 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.hold=true;f.send('开始等待');await until(()=>f.calls.length===2);const context=f.calls[1].context;
     await f.w.AiPanel.setConfig({engine:'standard'});await f.dshEvent({type:'tool',context,call:writeCall('late.md')});assert.equal(f.writes.length,0);assert(f.aborts.length);assert.equal(f.w.AiPanel.getConfig().engine,'standard');
   });
-  await test('DSH页面状态只在项目页返回文件；项目执行中离开页面会停止',async()=>{
+  // 2026-11-01 用户要求：「只有点停止按钮才中断，其他任务操作都不中断」。
+  // 这条以前断言「离开页面会停止」——那是 2026-10-28 就已经废弃的旧行为（用例没跟着改，
+  // 在改动前就已经是红的）。现在的契约是：离开页面只挂起，不 abort，回来还能接上。
+  await test('DSH页面状态只在项目页返回文件；项目执行中离开页面只挂起不中断，回来接上',async()=>{
     const f=fixture();f.put('one.md','DSH_EDITOR_SECRET');f.w.Viewer.activeTab={path:f.file('one.md'),content:'DSH_EDITOR_SECRET',dirty:true};await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('读取编辑器');await until(()=>f.calls.length===1);
     await f.dshEvent({type:'tool',context:f.calls[0].context,call:{id:'state',name:'ide_state',args:{}}});assert(f.dshResults[0].result.text.includes('DSH_EDITOR_SECRET'));
-    f.w.App.showTool('launch');await until(()=>f.element('#ai-send').textContent==='➤');assert(f.aborts.length);
-    f.send('读取启动页面');await until(()=>f.calls.length===2);await f.dshEvent({type:'tool',context:f.calls[1].context,call:{id:'state2',name:'ide_state',args:{}}});assert(!f.dshResults.at(-1).result.text.includes('DSH_EDITOR_SECRET'));assert(f.dshResults.at(-1).result.text.includes('启动面板'));f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+    // 离开项目页 → 只挂起：不 abort、任务进后台状态条、输出继续累计
+    f.w.App.showTool('launch');await until(()=>f.element('#ai-send').textContent==='➤');
+    assert.equal(f.aborts.length,0,'离开页面不能中断原生任务');
+    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'任务进入后台并可见');
+    f.chunk(0,'离开期间继续输出');
+    // 回到项目页 → 接回同一段输出，仍然在跑
+    f.w.App.showTool('project');await until(()=>f.element('#ai-send').textContent==='⏹');
+    assert(f.text().includes('离开期间继续输出'),'回到原页面接上同一段输出');
+    assert.equal(f.aborts.length,0);
+    // 只有停止按钮会中断
+    f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.aborts.length,1);
+    // 启动页任务：ide_state 只回报当前页，不带项目编辑器正文
+    f.w.App.showTool('launch');f.hold=true;f.send('读取启动页面');await until(()=>f.calls.length===2);
+    await f.dshEvent({type:'tool',context:f.calls[1].context,call:{id:'state2',name:'ide_state',args:{}}});
+    assert(!f.dshResults.at(-1).result.text.includes('DSH_EDITOR_SECRET'));assert(f.dshResults.at(-1).result.text.includes('启动面板'));
+    f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
   });
   await test('Harness原生工具状态与确认显示在侧栏，停止后按钮失效且不二次派发文本工具',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh',baseUrl:'',model:''});f.hold=true;f.send('原生任务');await until(()=>f.calls.length===1);const context=f.calls[0].context;
@@ -506,5 +523,47 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh';f.w.localStorage.setItem(key,JSON.stringify([{id:'kept-native-ui',title:'原来的会话',msgs:[{role:'user',content:'旧问题'},{role:'assistant',content:'旧回答'}],ts:Date.now()}]));f.w.localStorage.setItem(key+':active','kept-native-ui');await f.w.AiPanel.setConfig({engine:'dsh'});assert(f.text().includes('旧回答'));f.send('继续原会话');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');assert.equal(f.calls[0].context.sessionId,'kept-native-ui');await tick();await tick();
   });
   await test('旧初始化遗留空选择不遮住最新历史，明确新建的空草稿才保留',async()=>{const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh';f.w.localStorage.setItem(key,JSON.stringify([{id:'real-history',title:'已有对话',msgs:[{role:'user',content:'应恢复的内容'}],ts:Date.now()}]));f.w.localStorage.setItem(key+':active','unrequested-empty');await f.w.AiPanel.setConfig({engine:'dsh'});assert(f.text().includes('应恢复的内容'));f.send('继续');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');assert.equal(f.calls[0].context.sessionId,'real-history');await tick();await tick();});
+  // 2026-11-01 用户要求：「我不希望切换会话时中断 dsh 会话，只有我点击这个（停止）按钮才会主动中断，
+  // 其他我的任务操作都不中断。」这条把「不该中断的入口」全部钉住：任何一个入口漏成 stopRun/abort
+  // 都会被这里的 aborts.length 断言抓住。
+  await test('Harness切换会话/新建/切项目/收起面板都不中断，只有停止按钮发取消',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
+    f.send('长任务');await until(()=>f.calls.length===1);const first=f.calls[0].context;
+
+    // ① 新建对话：任务转后台，不中断
+    f.element('#ai-new').click();await tick();
+    assert.equal(f.aborts.length,0,'新建对话不能中断');
+    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'旧任务进后台状态条');
+
+    // ② 从历史切回原会话：接回同一个任务，仍在跑
+    f.element('#ai-history').click();
+    const row=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('长任务'));
+    assert(row,'历史里能找到该会话');row.click();await tick();await tick();
+    assert.equal(f.element('#ai-send').textContent,'⏹','切回后仍显示正在运行');assert.equal(f.aborts.length,0);
+    assert.equal(JSON.stringify(f.w.AiPanel.__testParked()),JSON.stringify({backgroundRuns:0,currentRun:'active'}));
+
+    // ③ 再新建、切项目、收起面板、切工具页：全都不中断
+    f.element('#ai-new').click();await tick();assert.equal(f.aborts.length,0,'再次新建也不中断');
+    f.switchRoot(f.B);await tick();assert.equal(f.aborts.length,0,'切项目不中断');
+    f.w.AiPanel.syncVisible(false);await tick();assert.equal(f.aborts.length,0,'收起面板不中断');
+    f.w.App.showTool('launch');await tick();assert.equal(f.aborts.length,0,'切工具页不中断');
+    f.w.App.showTool('project');await tick();await tick();
+    assert.equal(f.aborts.length,0,'全部切换动作结束后仍未发过 cancel');
+    // ④ 回到 A 项目、从历史切回原会话：任务仍在后台跑，接回前没有任何 cancel
+    f.switchRoot(f.A);await tick();
+    assert.equal(f.aborts.length,0,'切回项目不中断');
+    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'任务一直在后台跑');
+    f.element('#ai-history').click();
+    const again=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('长任务'));
+    assert(again,'原会话仍在历史里');again.click();await tick();await tick();
+    await until(()=>f.element('#ai-send').textContent==='⏹');
+    assert.equal(f.aborts.length,0,'接回后台任务不中断');
+
+    // ⑤ 只有停止按钮发取消，取消的是这个仍在跑的原生任务
+    f.stop();
+    await until(()=>f.aborts.length===1);
+    assert.equal(f.aborts.length,1,'停止按钮恰好发一次取消');
+    assert.equal(f.aborts[0].requestId,first.requestId,'取消的是仍在跑的那个原生任务');
+  });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));
