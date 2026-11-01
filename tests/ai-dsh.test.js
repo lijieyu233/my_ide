@@ -17,6 +17,8 @@ function fixture({hold=false,permission=false,mcp=false,mapping=false}={}){
    if(method==='initialize')send({id:request.id,result:{protocolVersion:1,agentCapabilities:{mcpCapabilities:{http:true},sessionCapabilities:{resume:{},close:{}},promptCapabilities:{image:true}}}});
    else if(method==='session/new'||method==='session/resume'){const sid=params.sessionId||'native-'+ ++id;servers.set(sid,params.mcpServers[0]);send({id:request.id,result:{sessionId:sid,configOptions}});}
    else if(method==='session/set_config_option')send({id:request.id,result:{configOptions:[{...configOptions[0],currentValue:params.value}]}});
+   else if(method==='session/list')send({id:request.id,result:{items:[{sessionId:'session-a',updatedAt:1,running:true,agentAvailable:true,blank:false,cwd:'C:/proj',projections:{values:{title:'宿主里的标题'}}},{sessionId:'session-b',updatedAt:2,running:false,agentAvailable:false,blank:true,cwd:'C:/proj',projections:{values:{title:null}}}]}});
+   else if(method==='session/rename')send({id:request.id,result:{title:(params.request||params).title,seq:9}});
    else if(method==='session/prompt'){
     if(hold){pending.set(params.sessionId,request.id);continue;}
     update(params.sessionId,{sessionUpdate:'tool_call',toolCallId:'native-call',title:'read_file',rawInput:{path:'fixture.md'},status:'in_progress'});
@@ -74,6 +76,30 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
  await test('旧页面拆分映射迁移优先保留项目对话，跨页面重启不换会话或工作目录',async()=>{
   const c=context(),file=path.join(temp,'legacy-map.json'),id='native-project';fs.writeFileSync(file,JSON.stringify({[JSON.stringify([c.sessionId,c.rootId,'project',true])]:id,[JSON.stringify([c.sessionId,c.rootId,'browser',false])]:'native-browser'}));
   const f=fixture();const original=fs.readFileSync(file,'utf8');fs.copyFileSync(file,path.join(temp,'mapping.json'));const migrated=fixture({mapping:true});try{await migrated.service.chat({},[{role:'user',content:'继续当前浏览器'}],[],context(2,{id:'browser',projectContext:false}),()=>{},()=>{});const resumed=migrated.requests.find(r=>r.method==='session/resume');assert.equal(resumed.params.sessionId,id);assert.equal(resumed.params.cwd,c.rootId);assert(!migrated.requests.some(r=>r.method==='session/new'));assert(original.includes('native-browser'));}finally{await migrated.service.dispose();await f.service.dispose();}
+ });
+ // 2026-11-01 用户要求：①改名与 DSH 同步；②③ 会话运行/中断状态以宿主为准。
+ await test('会话目录与改名代理宿主，字段按宿主原样透出',async()=>{
+  const f=fixture();
+  try{
+   const items=await f.service.listSessions({});
+   assert.equal(items.length,2);
+   // 只断言契约字段：宿主原始对象还带 projections 等，归一化在 dsh-native 层做
+   assert.equal(items[0].sessionId,'session-a');assert.equal(items[0].running,true);assert.equal(items[0].blank,false);assert.equal(items[0].cwd,'C:/proj');assert.equal(items[0].updatedAt,1);
+   // title 归一化（null→''）在 dsh-native 的 listSessions 里做，由 dsh-native.test.js 覆盖；
+   // 这条走 ACP 假件，只断言 ai-dsh 的透传与请求形态。
+   assert.equal(items[1].sessionId,'session-b');assert.equal(items[1].running,false);
+   assert(f.requests.some(r=>r.method==='session/list'),'确实请求了宿主会话目录');
+   const renamed=await f.service.rename({},'session-a','新标题');
+   assert.equal(renamed.title,'新标题');assert.equal(renamed.sessionId,'session-a');
+   const req=f.requests.find(r=>r.method==='session/rename');
+   // ACP 假件把 rpc params 原样记录；真实的宿主包装形态（{request:{...}}）
+   // 由 dsh-native.test.js 按真实端点断言。
+   assert.equal(req.params.sessionId,'session-a');assert.equal(req.params.title,'新标题');
+   const before=f.requests.filter(r=>r.method==='session/rename').length;
+   await assert.rejects(()=>f.service.rename({},'session-a','   '),/1-120/);
+   await assert.rejects(()=>f.service.rename({},'session-a','x'.repeat(121)),/1-120/);
+   assert.equal(f.requests.filter(r=>r.method==='session/rename').length,before,'非法标题不发请求');
+  }finally{await f.service.dispose();}
  });
  console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
 }finally{fs.rmSync(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});

@@ -55,6 +55,9 @@ function fixture() {
     onDshEvent:fn=>{f.dshEvent=fn;},dshToolResult:async(context,id,result)=>{(f.dshResults||=[]).push({context,id,result});return {ok:true};},
     dshPermissionResult:async(context,id,optionId)=>{(f.dshPermissions||=[]).push({context,id,optionId});return {ok:true};},
     onPermissionsChanged:()=>{},onStopped:()=>{},
+    // 宿主会话目录：默认不提供（=走本地回退），用例可注入 f.dshCatalog
+    dshSessions: async () => (f.dshCatalog ? { ok: true, items: f.dshCatalog } : { ok: false, error: 'fixture: 无宿主目录' }),
+    dshRename: async (cfg, id, title) => { if (f.renameGate) return f.renameGate.promise; (f.renames ||= []).push({ id, title }); const hit = (f.dshCatalog || []).find(x => x.sessionId === id); if (hit) hit.title = title; return { ok: true, sessionId: id, title }; },
     chat: async (_cfg, messages, _tools, context) => {
       registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, tools:_tools, d }; calls.push(item); pending.push(d);
       if (f.script.length) d.resolve(f.script.shift());
@@ -605,6 +608,52 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await until(()=>f.aborts.length===1);
     assert.equal(f.aborts.length,1,'停止按钮恰好发一次取消');
     assert.equal(f.aborts[0].requestId,first.requestId,'取消的是仍在跑的那个原生任务');
+  });
+  // 用户三项要求（2026-11-01）：① 改名与 DSH 同步；② DSH 里发起的会话也要能看到并加入；
+  // ③ 在 DSH 里中断后 MyIDE 也要知道。三条都建立在「历史列表以宿主 session/list 为准」上。
+  await test('MyIDE 历史以 DSH 会话目录为准：标题、运行中、中断都能同步',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});
+    const root=f.A;
+    // 宿主目录里有一个「别人在 DSH 里发起、正在跑」的会话，MyIDE 本地完全没有它
+    f.dshCatalog=[
+      {sessionId:'session-dsh-live',title:'DSH 里发起的会话',running:true,blank:false,cwd:root,updatedAt:Date.now()},
+      {sessionId:'session-dsh-idle',title:'DSH 里跑完的会话',running:false,blank:false,cwd:root,updatedAt:Date.now()-60000},
+      {sessionId:'session-other-project',title:'别的项目',running:true,blank:false,cwd:'C:/elsewhere',updatedAt:Date.now()},
+    ];
+    // 面板先渲染本地数据，宿主目录回来后就地刷新行；这里轮询等刷新生效。
+    f.element('#ai-history').click();
+    for(let i=0;i<40&&![...f.w.document.querySelectorAll('.ai-hist-row')].some(r=>r.textContent.includes('DSH 里发起的会话'));i++){
+      await new Promise(r=>setTimeout(r,25));
+      if(i===6&&f.w.document.querySelector('.ai-hist-pop'))f.element('#ai-history').click(), f.element('#ai-history').click();
+    }
+    await until(()=>[...f.w.document.querySelectorAll('.ai-hist-row')].some(r=>r.textContent.includes('DSH 里发起的会话')));
+    const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
+    // ② DSH 里发起的会话要出现在 MyIDE 列表里
+    assert(rows().some(r=>r.textContent.includes('DSH 里发起的会话')),'DSH 发起的会话纳入列表');
+    // 别的项目的会话不能混进来（会带回错误上下文）
+    assert(!rows().some(r=>r.textContent.includes('别的项目')),'不混入其它项目会话');
+    // ③ running 取宿主实时值
+    const live=rows().find(r=>r.textContent.includes('DSH 里发起的会话'));
+    const idle=rows().find(r=>r.textContent.includes('DSH 里跑完的会话'));
+    assert(live.classList.contains('running')&&live.textContent.includes('运行中'),'宿主标记 running 的显示运行中');
+    assert(!idle.classList.contains('running'),'宿主已结束的不标运行中');
+    // 在 DSH 里中断：宿主列表变为 running=false，再开历史 → 标记必须跟着消失
+    f.dshCatalog[0].running=false;
+    f.element('#ai-history').click();
+    f.element('#ai-history').click();
+    await until(()=>{const r=[...f.w.document.querySelectorAll('.ai-hist-row')].find(x=>x.textContent.includes('DSH 里发起的会话'));return r&&!r.classList.contains('running');});
+    assert(true,'DSH 里中断后 MyIDE 的运行中标记同步消失');
+    // ① 改名写回宿主（不是只改本地）
+    f.w.Modal.prompt=async()=> '改过的标题';
+    // 面板此时仍开着（上一步切运行态就在里面），不要再点按钮——那会把它关掉。
+    if(!f.w.document.querySelector('.ai-hist-pop')) f.element('#ai-history').click();
+    await until(()=>[...f.w.document.querySelectorAll('.ai-hist-row')].length>0);
+    const target=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('DSH 里发起的会话'));
+    target.querySelector('[data-act="ren"]').click();
+    await until(()=>f.renames&&f.renames.length===1);
+    assert.equal(f.renames[0].id,'session-dsh-live');
+    assert.equal(f.renames[0].title,'改过的标题');
+    assert.equal(f.dshCatalog.find(x=>x.sessionId==='session-dsh-live').title,'改过的标题','改名落到宿主目录');
   });
   console.log('结果: ' + passed + ' 通过, 0 失败');
 })().catch(e => { console.error(e.stack); process.exitCode = 1; }).finally(() => fixtures.forEach(f => f.close()));

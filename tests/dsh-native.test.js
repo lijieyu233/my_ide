@@ -26,5 +26,29 @@ const id='myide-00000000-0000-4000-8000-000000000001';
  });
  await test('请求超时释放连接供重新发现，用户主动停止不关闭正常宿主连接',async()=>{for(const name of ['TimeoutError','AbortError']){const controller=new AbortController();controller.abort(new DOMException('stop',name));const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async()=>{throw controller.signal.reason;});await assert.rejects(rpc.http('http://127.0.0.1:12',{signal:controller.signal}));assert.equal(rpc.closed,name==='TimeoutError');rpc.close();}});
  await test('查看模型目录不创建会话或工作区，首次用户文本独立保留，不追加界面观察指令',async()=>{const endpoints=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{const envelope=JSON.parse(init.body);endpoints.push(envelope.method);return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:catalog}});});assert((await rpc.request('session/catalog',{})).configOptions.length);assert.deepEqual(endpoints,['session/modelCatalog']);assert.equal(rpc.sessions.size,0);const blocks=require('../src/main/dsh/ai-dsh').promptContent([{role:'user',content:'真正的问题'}],{id:'launch',projectContext:false});assert.equal(blocks[0].text,'真正的问题');assert.deepEqual(blocks,[{type:'text',text:'真正的问题'}]);rpc.close();});
+ await test('会话目录与改名的真实端点形态：list 用 _request、rename 用 request，字段归一化',async()=>{
+  const calls=[];
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
+   const value=envelope.method==='session/list'
+    ? {items:[
+        {sessionId:'session-a',updatedAt:11,running:true,agentAvailable:true,blank:false,cwd:'D:/proj',projections:{values:{title:'真实标题'}}},
+        {sessionId:'session-b',updatedAt:12,running:false,agentAvailable:false,blank:true,cwd:'D:/proj',projections:{values:{title:null}}},
+        {sessionId:'',updatedAt:1},
+      ]}
+    : {title:envelope.payload.args.request.title,seq:7};
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  const list=await rpc.request('session/list',{});
+  assert.deepEqual(calls[0],{method:'session/list',args:{_request:{}}},'list 必须用 _request（描述符要求）');
+  assert.equal(list.length,2,'无 sessionId 的项被丢弃');
+  assert.deepEqual(list[0],{sessionId:'session-a',title:'真实标题',running:true,blank:false,agentAvailable:true,cwd:'D:/proj',updatedAt:11});
+  // null 标题归一成空串：渲染层拿到 null 会显示成字面量
+  assert.equal(list[1].title,'');
+  const renamed=await rpc.request('session/rename',{sessionId:'session-a',title:'新标题'});
+  assert.deepEqual(calls[1],{method:'session/rename',args:{request:{sessionId:'session-a',title:'新标题'}}},'rename 必须用 request 包装');
+  assert.equal(renamed.ok,true);assert.equal(renamed.title,'新标题');assert.equal(renamed.seq,7);
+  rpc.close();
+ });
  console.log('原生DSH连接：'+count+' 通过 / 0 失败');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

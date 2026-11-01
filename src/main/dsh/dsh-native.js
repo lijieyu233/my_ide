@@ -110,6 +110,29 @@ class NativeRpc extends EventEmitter {
   async request(method,params){
     if(this.closed)throw Error('原生 DSH 连接已断开');
     if(method==='session/catalog')return {configOptions:configOptions(await this.call('session/modelCatalog'))};
+    // 宿主自己的会话目录：一次给出 title / running / cwd / updatedAt，
+    // 是「在 MyIDE 里看到 DSH 正在跑的会话」唯一可靠来源（2026-11-01 用户要求三项同步）。
+    // 注意 session/list 的 args 要写成 {_request:{}}，而 session/rename 要写成 {request:{...}}
+    // —— 两个端点的描述符不同，此处已按实测分别处理。
+    if(method==='session/list'){
+      const value=await this.call('session/list',{_request:{}});
+      return (value?.items||[]).map(item=>({
+        sessionId:String(item.sessionId||''),
+        title:item.projections?.values?.title||'',
+        running:item.running===true,
+        blank:item.blank===true,
+        agentAvailable:item.agentAvailable===true,
+        cwd:typeof item.cwd==='string'?item.cwd:'',
+        updatedAt:Number(item.updatedAt)||0,
+      })).filter(item=>item.sessionId);
+    }
+    if(method==='session/rename'){
+      const sessionId=String(params?.sessionId||''),title=String(params?.title||'').trim();
+      if(!sessionId)throw Error('缺少会话身份');
+      if(!title||title.length>120)throw Error('会话标题需为 1-120 个字符');
+      const value=await this.call('session/rename',{request:{sessionId,title}});
+      return {ok:true,title:String(value?.title??title),seq:Number(value?.seq)||0};
+    }
     if(method==='session/new'||method==='session/resume'){
       const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;if(!/^myide-[a-f0-9-]{36}$/.test(id))throw Error('这是旧 ACP 会话；请在侧栏新建原生会话');
       const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});

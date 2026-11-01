@@ -134,12 +134,34 @@ function createService(options={}){
       catch(error){if(attempt||!conn.rpc.closed)throw error;}
     }
   }
+  // 会话目录与改名：直接代理宿主，不经本地缓存。
+  // 用户要求（2026-11-01）：① 这里的名称与 DSH 同步；② DSH 里发起/运行的会话 MyIDE 要看得到；
+  // ③ 在 DSH 里中断会话 MyIDE 也要知道。三者都建立在「以宿主 session/list 为准」上。
+  async function listSessions(cfg){
+    const conn=await connect(cfg);
+    // 不限制 capabilities.native：session/list 走通用 typert 网关，两种连接都能应答。
+    // 字段归一化在 dsh-native 里做（那里知道宿主原始形状）；
+    // 这里再兜一层，保证调用方永远拿到数组。
+    const value=await conn.rpc.request('session/list',{});
+    if(Array.isArray(value))return value;
+    return Array.isArray(value?.items)?value.items:[];
+  }
+  async function rename(cfg,sessionId,title){
+    // 校验放在这一层：native 与 ACP 两条链路都要挡住空标题/超长标题，
+    // 否则非法值会一路发到宿主（实测 ACP 链路根本没有校验）。
+    const id=String(sessionId||''),next=String(title||'').trim();
+    if(!id)throw Error('缺少会话身份');
+    if(!next||next.length>120)throw Error('会话标题需为 1-120 个字符');
+    const conn=await connect(cfg);
+    const result=await conn.rpc.request('session/rename',{sessionId:id,title:next});
+    return {...result,sessionId:id};
+  }
   function dispose(){
     if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;
     server?.closeAllConnections();server?.close(()=>{});
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect};
+  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename};
 }
 module.exports={createService,IDE_STATE,promptContent};
