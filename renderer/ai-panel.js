@@ -54,6 +54,7 @@ const AiPanel = (() => {
   const runIsLive = run => runIsCurrent(run) && run.status === 'active';
   const cancelledTool = () => ({ ok: false, cancelled: true, text: '本次AI请求已停止或归属失效，未继续操作' });
   function beginRun() {
+    sessionLoadTicket++;
     const unique = () => window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
     if (!curSessionId) curSessionId = 's-' + unique();
     const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
@@ -1707,6 +1708,7 @@ const AiPanel = (() => {
   function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   let loadedSessionKey=null;
+  let sessionLoadTicket=0;
   function rememberSession(){if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
@@ -1726,8 +1728,9 @@ const AiPanel = (() => {
     const has = msgs.some((m) => m.role === 'user' || m.role === 'assistant');
     if (!has) return;
     if (!curSessionId) curSessionId = 's' + Date.now().toString(36);
-    const rest = loadSessions().filter((x) => x.id !== curSessionId);
-    rest.unshift({ id: curSessionId, ts: Date.now(), title: sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
+    const all = loadSessions(), previous = all.find(x => x.id === curSessionId);
+    const rest = all.filter((x) => x.id !== curSessionId);
+    rest.unshift({ ...previous, id: curSessionId, ts: Date.now(), title: ((previous?.renamed || getConfig().engine === 'dsh') && previous?.title) || sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
     rememberSession();
     if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
@@ -1790,29 +1793,30 @@ const AiPanel = (() => {
   // 也据此把「还没落盘但正在跑」的会话语补进列表 —— 见 sessionsForHist 的注释。
   function runningSessionIds() {
     const ids = new Set();
-    if (currentRun && currentRun.status === 'active' && currentRun.identity?.sessionId) ids.add(currentRun.identity.sessionId);
+    const root = (window.App && App.root) || '';
+    if (currentRun?.status === 'active' && currentRun.identity.rootId === root) ids.add(currentRun.identity.sessionId);
     for (const record of backgroundRuns.values()) {
-      if (record.run && record.run.status === 'active' && record.run.identity?.sessionId) ids.add(record.run.identity.sessionId);
+      if (record.scope === sessKey() && record.run?.status === 'active' && record.run.identity.rootId === root) ids.add(record.run.identity.sessionId);
     }
     return ids;
   }
   function parkedRecordOf(sessionId) {
-    for (const [key, record] of backgroundRuns) if (record.run?.identity?.sessionId === sessionId) return { key, record };
+    for (const [key, record] of backgroundRuns) if (record.scope === sessKey() && record.run?.identity?.sessionId === sessionId) return { key, record };
     return null;
   }
   // 宿主会话目录缓存：{ at, root, items }。
   // DSH 里发起/运行/中断的会话只能从这里知道（本地 localStorage 记不到别人发起的会话）。
   // 缓存带 root：切换项目后必须重新拉，否则会把上一个项目的会话列进来。
   let dshCatalog = { at: 0, root: '', items: [] };
+  let dshCatalogTicket = 0;
   async function refreshDshCatalog() {
     if (getConfig().engine !== 'dsh') return dshCatalog.items;
-    const root = (window.App && App.root) || '';
+    const root = (window.App && App.root) || '', ticket = ++dshCatalogTicket, scope = sessKey();
     try {
       const result = await window.myIDE.ai.dshSessions(getConfig());
-      // 注意 result.items（IPC 返回 {ok, items}），不是整个 result。
-      // 这里不再用 ticket 丢弃「迟到响应」：并发的两次刷新拿到的是同一份宿主目录，
-      // 丢哪一份都一样；反而 ticket 抢先自增会把唯一那次有效结果也丢掉（实测踩过）。
-      if (result?.ok) dshCatalog = { at: Date.now(), root, items: Array.isArray(result.items) ? result.items : [] };
+      // 慢的旧请求可能仍含“运行中”或旧项目数据，不能覆盖后来的目录。
+      if (result?.ok && ticket === dshCatalogTicket && scope === sessKey() && getConfig().engine === 'dsh')
+        dshCatalog = { at: Date.now(), root, items: Array.isArray(result.items) ? result.items : [] };
     } catch {}
     return dshCatalog.items;
   }
@@ -1821,9 +1825,16 @@ const AiPanel = (() => {
   function catalogUsable() {
     const root = (window.App && App.root) || '';
     if (!dshCatalog.at) return false;
-    return !dshCatalog.root || !root || pathKey(dshCatalog.root) === pathKey(root);
+    return getConfig().engine === 'dsh' && pathKey(dshCatalog.root) === pathKey(root);
   }
-  const catalogOf = sessionId => dshCatalog.items.find(item => item.sessionId === sessionId) || null;
+  const bindingsOf = item => (item.bindings || []).filter(binding => binding.scope !== 'reader' && pathKey(binding.rootId) === pathKey(window.App?.root));
+  function catalogOf(sessionId) {
+    if (!catalogUsable()) return null;
+    // 旧版曾把原生ID作为本地ID再次创建会话，形成 A→B→C；先查显式绑定，不能把 A 当回原来的原生 A。
+    return dshCatalog.items.find(item => bindingsOf(item).some(binding => binding.sessionId === sessionId))
+      || dshCatalog.items.find(item => item.sessionId === loadSessions().find(s => s.id === sessionId)?.hostId)
+      || dshCatalog.items.find(item => item.sessionId === sessionId || 'host:'+item.sessionId === sessionId) || null;
+  }
   /**
    * 历史列表的数据源（2026-11-01 用户三项要求）：
    *   ① 名称与 DSH 同步 → 标题优先取宿主目录里的 title；
@@ -1839,53 +1850,66 @@ const AiPanel = (() => {
     const all = [];
     const running = new Set();
     const root = (window.App && App.root) || '';
-
+    const live = runningSessionIds(), seen = new Set(), owners = new Map();
+    if (catalogUsable()) for (const item of dshCatalog.items) for (const binding of bindingsOf(item)) owners.set(binding.sessionId,item.sessionId);
+    for (const item of local) if (item.hostId && !owners.has(item.id)) owners.set(item.id,item.hostId);
     for (const item of (catalogUsable() ? dshCatalog.items : [])) {
-      // 只收当前项目下的会话：DSH 是按 cwd 分工作区的，混进别的项目会带回错误上下文。
-      if (item.cwd && root && pathKey(item.cwd) !== pathKey(root)) continue;
-      const known = byId.get(item.sessionId);
+      const aliases = [item.sessionId, ...bindingsOf(item).map(binding => binding.sessionId), ...local.filter(s => s.hostId === item.sessionId).map(s => s.id)]
+        .filter(id => !owners.has(id) || owners.get(id) === item.sessionId);
+      if (!aliases.length) aliases.push('host:'+item.sessionId);
+      // 没有 cwd 的未知会话不能当成所有项目共有；旧本地缓存也不能绕过真实归属。
+      if (!item.cwd || pathKey(item.cwd) !== pathKey(root)) { aliases.forEach(id => seen.add(id)); continue; }
+      const id = aliases.find(id => id === curSessionId) || aliases.find(id => live.has(id)) || aliases.find(id => byId.has(id)) || aliases[0];
+      aliases.forEach(id => seen.add(id));
+      const known = byId.get(id);
+      // DSH 侧栏隐藏未使用的空白记录；当前草稿和已有正文仍可返回，不能混入旧探测会话。
+      if (item.blank === true && !aliases.includes(curSessionId) && !aliases.some(id => live.has(id)) && !known?.msgs?.length) continue;
       const isRunning = item.running === true;
-      if (isRunning) running.add(item.sessionId);
+      if (isRunning) running.add(id);
       all.push({
-        id: item.sessionId,
+        id, hostId: item.sessionId,
         // 标题：宿主有就用宿主的（与 DSH 界面完全一致），否则退回本地标题
         title: item.title || known?.title || (item.blank ? '（空白会话）' : '（未命名会话）'),
         ts: item.updatedAt || known?.ts || 0,
         running: isRunning,
         cwd: item.cwd || '',
-        virtual: !known, // 没有本地正文时只能展示/改名，不能回放
+        virtual: !known,
       });
     }
     // 宿主目录里没有、但本地有（离线时发的会话）：仍列出来，避免历史突然消失
-    const seen = new Set(all.map(item => item.id));
     for (const item of local) {
       if (seen.has(item.id)) continue;
-      const isRunning = runningSessionIds().has(item.id);
+      const isRunning = live.has(item.id);
       if (isRunning) running.add(item.id);
       all.push({ ...item, running: isRunning, localOnly: true });
     }
     // 还在跑但两边都没有的（刚发出、宿主目录还没刷新）：补一条，否则切走就切不回来
-    for (const sessionId of runningSessionIds()) {
-      if (all.some(item => item.id === sessionId)) { running.add(sessionId); continue; }
+    for (const sessionId of live) {
+      if (seen.has(sessionId) || all.some(item => item.id === sessionId)) continue;
       const parked = parkedRecordOf(sessionId)?.record;
       const list = (sessionId === curSessionId ? msgs : parked?.view?.msgs) || [];
       all.unshift({ id: sessionId, title: list.length ? sessTitle(list) : '（运行中的新会话）', ts: Date.now(), running: true, virtual: true });
       running.add(sessionId);
     }
+    if (curSessionId && !seen.has(curSessionId) && !all.some(item => item.id === curSessionId))
+      all.unshift({id:curSessionId,title:msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
     all.sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0) || (b.ts || 0) - (a.ts || 0));
     return { all, running };
   }
   // 只往给定容器里写行内容：重建面板与就地刷新共用同一段渲染逻辑。
   function renderHistRows(pop, all, running) {
     let html = '<div class="ai-hist-head">历史会话<span class="ai-hist-n">' + all.length + '</span></div>';
+    if (curSessionId && !all.some(item => item.id === curSessionId) && catalogOf(curSessionId))
+      html += '<div class="ai-hist-empty">当前查看的会话属于其他工作区</div>';
     if (!all.length) html += '<div class="ai-hist-empty">还没有历史会话 —— 每轮对话结束会自动存一条</div>';
     for (const se of all) {
       const active = se.id === curSessionId;
       const isRunning = running.has(se.id);
       // 三态一眼分清：● 运行中（绿点+浅底）｜当前查看（左侧竖线）｜普通历史
-      html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(se.id) + '">' +
+      html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(se.id) + '"' + (active ? ' aria-current="true"' : '') + '>' +
         (isRunning ? '<span class="ai-hist-run" title="这个会话正在运行" aria-label="运行中"></span>' : '') +
         '<span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span>' +
+        (active ? '<span class="ai-hist-current">当前</span>' : '') +
         '<span class="ai-hist-ts">' + (isRunning ? '<em class="ai-hist-live">运行中</em>' : relTime(se.ts)) + '</span>' +
         '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button>' +
         '<button class="ai-hist-b" data-act="del" title="删除">\u2715</button></div>';
@@ -1907,7 +1931,9 @@ const AiPanel = (() => {
       if (!row) return;
       const id = row.dataset.id;
       const act = e.target.dataset && e.target.dataset.act;
-      const all2 = loadSessions();
+      const all2 = loadSessions(), scope = sessKey(), engine = getConfig().engine;
+      const target = sessionsForHist().all.find(item => item.id === id);
+      if (!target) return;
       const se = all2.find((x) => x.id === id);
       // 来自 DSH 目录、本地没有正文的会话（别人在 DSH 里发起的）也要能改名/切过去，
       // 所以这里不能 `if (!se) return`；删除仍只作用于本地记录。
@@ -1926,19 +1952,22 @@ const AiPanel = (() => {
         return;
       }
       if (act === 'ren') {
-        const current = all.find(x => x.id === id) || se;
+        const current = target;
         const nm = await Modal.prompt('重命名会话', '会话名称：', current?.title || '');
+        if (scope !== sessKey() || engine !== getConfig().engine) return;
         if (nm == null) return;
         const title = String(nm).trim().slice(0, 120);
         if (!title) return;
         // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
         // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
         if (getConfig().engine === 'dsh') {
-          const result = await window.myIDE.ai.dshRename(getConfig(), id, title).catch(error => ({ ok: false, error: error.message }));
+          const result = await window.myIDE.ai.dshRename(getConfig(), target.hostId || id, title).catch(error => ({ ok: false, error: error.message }));
+          if (scope !== sessKey() || engine !== getConfig().engine) return;
           if (!result?.ok) { MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
           await refreshDshCatalog();
         }
-        if (se) { se.title = title; saveSessions(all2); }
+        if (scope !== sessKey() || engine !== getConfig().engine) return;
+        if (se) { const latest=loadSessions();const item=latest.find(x=>x.id===id);if(item){item.title=title;item.renamed=true;saveSessions(latest);} }
         renderHist();
         MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
         return;
@@ -1954,6 +1983,8 @@ const AiPanel = (() => {
     });
   }
   function openSession(id) {
+    const ticket = ++sessionLoadTicket;
+    if (id === curSessionId && currentRun?.status === 'active' && currentRun.identity.rootId === (window.App?.root || '')) { closeHist(); return; }
     // 切到「正在后台跑」的会话时，不能去读已落盘的旧正文：
     // 那份记录可能是一轮之前保存的，直接 replay 会把后台已经累积的输出丢掉，
     // 还给用户一种「切回来怎么变了」的错觉。改为把后台记录整个接回前台。
@@ -1963,12 +1994,14 @@ const AiPanel = (() => {
       const rest = restoreBackgroundRun({ sessionId: id });
       if (rest) { rememberSession(); localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); closeHist(); MI.toast('已接回运行中的会话', 'ok'); return; }
     }
+    const host = catalogOf(id);
+    if (host && host.cwd && pathKey(host.cwd) === pathKey(window.App?.root)) { loadHostSession(id, host.sessionId, ticket); return; }
     const se = loadSessions().find((x) => x.id === id);
     if (!se) {
       // 本地没有正文 ≠ 没有这条会话：DSH 里发起的会话只存在于宿主目录。
       // 以前这里直接 toast「找不到该会话」，用户看到的就是「切过去还是空的」。
       // 现在从宿主把正文读回来渲染（用户要求：切过去要能看见他的输出）。
-      if (getConfig().engine === 'dsh') { loadHostSession(id); return; }
+      if (getConfig().engine === 'dsh') { loadHostSession(id, id, ticket); return; }
       MI.toast('找不到该会话', 'err'); return;
     }
     // 2026-10-28：切到别的历史会话时，正在跑的 DSH 任务改为挂起而不是中断；
@@ -1995,16 +2028,19 @@ const AiPanel = (() => {
    *   ③ 绑定：告诉主进程「这个项目的对话就是这个会话」，否则用户接着发的话会被
    *      派给本地那个 myide-* 会话 —— 宿主里那条历史永远收不到新消息。
    */
-  async function loadHostSession(id) {
+  async function loadHostSession(id, hostId, ticket) {
     const root = (window.App && App.root) || '';
     const page = currentPage();
     // 读取期间用户可能又切了项目/会话：epoch + id 双重校验，避免慢响应覆盖新选择。
     const epoch = pageEpoch;
-    const stillWanted = () => epoch === pageEpoch && ((window.App && App.root) || '') === root && currentPage().id === page.id;
+    const stillWanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && epoch === pageEpoch && ((window.App && App.root) || '') === root && currentPage().id === page.id;
     MI.toast('正在读取 DSH 会话…', 'ok');
-    const result = await window.myIDE.ai.dshHistory(getConfig(), id).catch(error => ({ ok: false, error: error.message }));
+    const result = await window.myIDE.ai.dshHistory(getConfig(), hostId).catch(error => ({ ok: false, error: error.message }));
     if (!stillWanted()) return;
     if (!result?.ok) { MI.toast('读取会话失败：' + (result?.error || '未返回成功'), 'err'); return; }
+    // 先绑定再读取模型选项，否则选项预取会以尚未绑定的身份创建另一条空会话。
+    const bound = await window.myIDE.ai.dshBind(getConfig(), { sessionId:id, rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, hostId).catch(error => ({ ok: false, error: error.message }));
+    if (!stillWanted()) return;
     releaseSessionPermissions(detachRun());
     closeHist();
     curSessionId = id;
@@ -2024,13 +2060,13 @@ const AiPanel = (() => {
     usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
     renderUsage();
     replayMsgs();
+    const old = loadSessions(), title = catalogOf(id)?.title || old.find(item => item.id === id)?.title || sessTitle(msgs);
+    saveSessions([{id,hostId,title,ts:Date.now(),msgs:msgs.slice(),usage:{...usageSum}}, ...old.filter(item => item.id !== id)]);
     refreshDshOptions();
     // 绑定失败不阻断阅读：正文已经在眼前了，只把后续能否续聊说清楚。
     // canContinue 由主进程探过连接器准入后如实给出 —— 宿主里发起的 session-*
     // 会被 `^myide-[a-f0-9-]{36}$` 白名单挡在 attach 之外（实测），
     // 所以不能只看 ok 就说「可直接继续对话」。
-    const bound = await window.myIDE.ai.dshBind(getConfig(), { rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, id).catch(error => ({ ok: false, error: error.message }));
-    if (!stillWanted()) return;
     if (!msgs.length) MI.toast('该会话没有可显示的消息', 'ok');
     else if (bound?.ok && bound.canContinue === false) {
       MI.toast('已载入正文（只读）。这条会话是在 DSH 里发起的，MyIDE 不能接着往里发消息；要续聊请在 DSH 里发。', 'ok');
@@ -2171,6 +2207,8 @@ const AiPanel = (() => {
     const nextKey=sessKey(),harness=getConfig().engine==='dsh';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
+    sessionLoadTicket++;
+    dshCatalogTicket++;
     // 2026-11-01：切项目也不中断（用户要求「其他任务操作都不中断」）。
     // 原任务是 DSH 就整块挂起在后台记录里，切回来或点后台状态条都能接上。
     const detached = detachRun();
@@ -2972,6 +3010,7 @@ const AiPanel = (() => {
     renderImages();
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
+      sessionLoadTicket++;
       // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
       // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
       releaseSessionPermissions(detachRun());

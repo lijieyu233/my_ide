@@ -143,8 +143,11 @@ function createService(options={}){
     // 字段归一化在 dsh-native 里做（那里知道宿主原始形状）；
     // 这里再兜一层，保证调用方永远拿到数组。
     const value=await conn.rpc.request('session/list',{});
-    if(Array.isArray(value))return value;
-    return Array.isArray(value?.items)?value.items:[];
+    const items=Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
+    // 渲染层用本地对话身份，宿主用原生身份；必须透出持久映射才能合并为同一行。
+    return items.map(item=>({...item,bindings:[...saved].filter(([,record])=>record.id===item.sessionId).map(([key])=>{
+      const [sessionId,rootId,scope]=JSON.parse(key);return {sessionId,rootId,scope:scope||'project'};
+    })}));
   }
   async function rename(cfg,sessionId,title){
     // 校验放在这一层：native 与 ACP 两条链路都要挡住空标题/超长标题，

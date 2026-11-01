@@ -3539,6 +3539,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 12px; cursor: pointer; }
 .ai-hist-row:hover { background: var(--bg-hover); }
 .ai-hist-row.cur { border-left: 2px solid var(--accent); }
+.ai-hist-current { flex-shrink: 0; color: var(--text-bright); font-size: .85em; font-weight: 600; }
 /* 运行中：左侧圆点 + 淡色底 + 「运行中」标签。三态区分（运行中 / 当前查看 / 普通历史），
    只靠左边竖线看不出「这个会话还在跑」，用户切换时就不知道该切回哪一条（开发文档-244）。 */
 .ai-hist-row.running { background: color-mix(in srgb, var(--accent) 10%, transparent); }

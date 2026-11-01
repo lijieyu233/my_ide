@@ -101,5 +101,13 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
    assert.equal(f.requests.filter(r=>r.method==='session/rename').length,before,'非法标题不发请求');
   }finally{await f.service.dispose();}
  });
+ await test('宿主目录透出持久身份映射，重启后仍能关联本地会话与项目',async()=>{
+  const file=path.join(temp,'alias-mapping.json'),nativeId='session-a';
+  fs.writeFileSync(file,JSON.stringify({[JSON.stringify(['local-A','C:/proj'])]:{id:nativeId,cwd:'C:/proj'},[JSON.stringify(['local-reader','C:/proj','reader'])]:{id:'session-b',cwd:temp}}));
+  const requests=[],service=createService({home:path.join(temp,'aliases-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>{
+   const rpc=new EventEmitter();rpc.closed=false;rpc.close=()=>{rpc.closed=true;rpc.emit('closed');};rpc.request=async(method,params)=>{requests.push(method);return [{sessionId:nativeId,cwd:'C:/proj'},{sessionId:'session-b',cwd:temp}];};return rpc;
+  }});
+  try{const items=await service.listSessions({});assert.deepEqual(items[0].bindings,[{sessionId:'local-A',rootId:'C:/proj',scope:'project'}]);assert.deepEqual(items[1].bindings,[{sessionId:'local-reader',rootId:'C:/proj',scope:'reader'}]);assert.deepEqual(requests,['session/list']);}finally{await service.dispose();}
+ });
  console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
 }finally{fs.rmSync(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});
