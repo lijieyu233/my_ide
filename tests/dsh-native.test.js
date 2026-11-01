@@ -50,5 +50,81 @@ const id='myide-00000000-0000-4000-8000-000000000001';
   assert.equal(renamed.ok,true);assert.equal(renamed.title,'新标题');assert.equal(renamed.seq,7);
   rpc.close();
  });
+ await test('历史正文：以 asOfSeq 为上界逐页向前翻，不越过游标',async()=>{
+  const calls=[];
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
+   const value=envelope.method==='session/projections'?{asOfSeq:120,values:{title:'x'}}
+    :envelope.method==='session/page'
+      // 两页：第一页 100-120，第二页 1-99（hasMore=false）
+      ? (envelope.payload.args.request.throughSeq>99
+        ? {records:Array.from({length:21},(_,i)=>({event:{seq:100+i,type:'step/start',data:{}}})),hasMore:true}
+        : {records:Array.from({length:99},(_,i)=>({event:{seq:i+1,type:'step/start',data:{}}})),hasMore:false})
+      : {};
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  const history=await rpc.request('session/history',{sessionId:'session-a'});
+  const pages=calls.filter(call=>call.method==='session/page');
+  assert.equal(pages[0].args.request.throughSeq,120,'第一页必须从宿主游标开始，不能随便给一个大数');
+  assert.equal(pages[1].args.request.throughSeq,99,'下一页从上一页首条 seq-1 继续');
+  assert.equal(pages[0].args.request.address.kind,'session');
+  assert.equal(history.records.length,120,'两页要拼成完整日志');
+  assert.equal(history.truncated,false);
+  rpc.close();
+ });
+ await test('折叠历史：系统注入的 user/message 不当用户发言，每条真实发言开一轮',()=>{
+  const {foldHistory}=require('../src/main/dsh/dsh-native');
+  const record=(seq,type,data)=>({event:{seq,type,data}});
+  const turns=foldHistory([
+   // 宿主把运行环境快照、技能清单也记成 user/message（实测单条 5KB）
+   record(1,'user/message',{source:{kind:'runtime-context'},content:[{type:'text',text:'Current runtime context. 快照'}]}),
+   record(2,'user/message',{source:{kind:'agent-instructions'},content:[{type:'text',text:'<system-reminder>\n规则'}]}),
+   record(3,'user/message',{source:{kind:'user'},content:[{type:'text',text:'第一个问题'}]}),
+   // 这条会话整场没有 turn/start：不能因此把整场折成一轮
+   record(4,'assistant/message',{message:{content:[{type:'text',text:'第一段回答'},{type:'tool-call',id:'c1',name:'ops_bash',arguments:'{}'}]}}),
+   record(5,'tool/result',{toolCallId:'c1',message:{content:[{type:'text',text:'输出'}]}}),
+   record(6,'user/message',{source:{kind:'user'},content:[{type:'text',text:'第二个问题'}]}),
+   record(7,'assistant/message',{message:{content:[{type:'text',text:'第二段回答'}]}}),
+   // 面板与宿主之间的消息通道不显示
+   record(8,'assistant/message',{message:{content:[{type:'tool-call',id:'c2',name:'mcp__myide__ide_state',arguments:'{}'}]}}),
+  ]);
+  assert.equal(turns.length,2,'两条真实用户发言应折成两轮');
+  assert.equal(turns[0].parts[0].text,'第一个问题');
+  assert.equal(turns[1].parts[0].text,'第二个问题');
+  assert(!JSON.stringify(turns).includes('Current runtime context'));
+  assert(!JSON.stringify(turns).includes('system-reminder'));
+  assert(!JSON.stringify(turns).includes('mcp__myide__ide_state'));
+  assert.equal(turns[0].parts.find(part=>part.kind==='tool').status,'completed');
+ });
+ await test('绑定既有宿主会话只接手目录里出现过的 id，不凭空造会话',async()=>{
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   const envelope=JSON.parse(init.body);
+   const value=envelope.method==='session/list'?{items:[{sessionId:'session-a',updatedAt:1,running:false,cwd:'D:/p',projections:{values:{title:'t'}}}]}:{};
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  await assert.rejects(rpc.request('session/resume',{sessionId:'session-unknown',existing:true}),/不在 DSH 的会话目录/);
+  await rpc.request('session/list',{});
+  assert(rpc.existing.has('session-a'),'目录里的会话要记进白名单');
+  rpc.close();
+ });
+ await test('连接器探测必须走 client-request 信封，扁平 body 会被判无效',async()=>{
+  // 事故（2026-11-01）：probeAttach 最初用 raw() 发扁平 body，插件的第一个校验就是信封，
+  // 于是永远回「MyIDE 连接请求无效」—— 判定逻辑把它当成「不是准入拒绝」，于是
+  // 宿主里发起的会话也被报成 canContinue=true，界面显示「可直接继续对话」，
+  // 用户真发消息时才失败。这条用例锁住信封形态。
+  const sent=[];
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+    sent.push({url,body:JSON.parse(init.body)});
+    return Response.json({type:'server-response',rpcId:sent.at(-1).body.rpcId,result:{ok:false,error:{message:'只允许绑定 MyIDE 创建的原生会话'}}});
+  });
+  const result=await rpc.probe('attach',{sessionId:'session-a',url:'http://127.0.0.1:1/mcp',headers:{}});
+  assert.equal(sent.length,1);
+  assert.equal(sent[0].body.type,'client-request','必须是 client-request 信封');
+  assert.equal(sent[0].body.method,'myide/attach','method 要带 myide/ 前缀');
+  assert.equal(sent[0].body.payload.args.request.sessionId,'session-a');
+  assert(/只允许绑定 MyIDE 创建的原生会话/.test(result.error.message),'准入拒绝要能被调用方读到');
+  assert.equal(result.ok,false);
+  rpc.close();
+ });
  console.log('原生DSH连接：'+count+' 通过 / 0 失败');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

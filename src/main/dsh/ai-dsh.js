@@ -156,12 +156,62 @@ function createService(options={}){
     const result=await conn.rpc.request('session/rename',{sessionId:id,title:next});
     return {...result,sessionId:id};
   }
+  /**
+   * 读取一条宿主会话的正文，折叠成「一轮一轮的用户发言 / 助手文字 / 工具行」。
+   *
+   * 用户反馈（2026-11-01）：「我切到这个会话，但是他的输出没有加载到我这里」——
+   * 历史列表能用宿主目录列出 DSH 里发起的会话，但点开时只有本地 localStorage
+   * 有正文；宿主侧的会话没有本地副本，面板就停在空白。这里补上真正的正文读取。
+   */
+  async function history(cfg,sessionId){
+    const id=String(sessionId||'');if(!id)throw Error('缺少会话身份');
+    const conn=await connect(cfg);
+    const value=await conn.rpc.request('session/history',{sessionId:id});
+    return {sessionId:id,turns:Array.isArray(value?.turns)?value.turns:[],count:Array.isArray(value?.records)?value.records.length:0,truncated:value?.truncated===true};
+  }
+  /**
+   * 把当前项目在 MyIDE 里的对话身份绑定到一条**已存在**的宿主会话上。
+   *
+   * 为什么需要：历史列表里的 DSH 会话如果只改界面上的 curSessionId，用户下一条消息
+   * 仍会被 attach() 派给「本地的 myide-* 会话」，看起来就是「切过去了但没接上」。
+   * 绑定后 saved[key] 指向真正的 sessionId，之后 prompt / 历史读取都落在同一条会话上。
+   */
+  async function bindSession(cfg,context,sessionId){
+    const id=String(sessionId||'');if(!id)throw Error('缺少会话身份');
+    const conn=await connect(cfg),key=keyOf(context);
+    const cwd=context.page?.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace');
+    // ⚠ 绑定成功 ≠ 能续聊：连接器（dsh-native-plugin.cjs）把 attach 准入写死成
+    // `^myide-[a-f0-9-]{36}$`，宿主里发起的 session-* 要到真正发消息时才被拒绝
+    // （实测报「只允许绑定 MyIDE 创建的原生会话」）。所以先探一次准入，
+    // 把结论如实带回渲染层，别让界面显示「可直接继续对话」而实际发不出去。
+    let canContinue=true,error='';
+    try{
+      if(conn.capabilities?.native)await probeAttach(conn,id);
+    }catch(cause){canContinue=false;error=cause.message;}
+    saved.set(key,{id,cwd});await persist();
+    // 连接级 sessions 里可能还挂着旧身份；清掉让它按新 id 重新 attach。
+    for(const item of sessions.values())if(item.key===key){item.id=id;item.cwd=cwd;item.attached=false;}
+    return {sessionId:id,cwd,canContinue,error};
+  }
+  /**
+   * 轻量探测连接器准入：不建 Agent、不发 prompt，只看它是否接受这个 sessionId。
+   *
+   * ⚠ 必须用 `client-request` 信封发（和 dsh-native.call 一样），不能直接 POST 扁平 body：
+   * 插件第一步就校验信封，扁平请求永远回「MyIDE 连接请求无效」，看起来像通过、
+   * 实际什么都没探到（实测踩过）。「not found」是另一回事（会话根本不在宿主里），
+   * 不当成准入拒绝。
+   */
+  async function probeAttach(conn,id){
+    const result=await conn.rpc.probe('attach',{sessionId:id,url:'http://127.0.0.1:1/mcp',headers:{Authorization:'Bearer probe','X-MyIDE-Session':'probe'}});
+    const failure=String(result?.error?.message||'');
+    if(/只允许绑定 MyIDE 创建的原生会话/.test(failure))throw Error(failure);
+  }
   function dispose(){
     if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;
     server?.closeAllConnections();server?.close(()=>{});
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename};
+  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession};
 }
 module.exports={createService,IDE_STATE,promptContent};

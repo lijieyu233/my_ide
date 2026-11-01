@@ -76,6 +76,74 @@ function selectionWithReasoning(catalog,selection,previous){
   if(efforts.length){next.reasoningEffort=[previous?.reasoningEffort,reasoning.defaultEffort,'high',...efforts.map(effort=>effort.id)].find(value=>efforts.some(effort=>effort.id===value));}
   return next;
 }
+/**
+ * 把 session/page 的原始事件折叠成渲染层能直接画的消息序列。
+ *
+ * 为什么放在主进程而不是渲染层：宿主的事件形状（turn/start、step/start、
+ * assistant/message、tool/call、tool/result…）是原生协议细节，渲染层只该看到
+ * 「一条用户发言 / 一段助手文字 / 一次工具调用」。这样历史回放和实时流可以
+ * 复用同一套 _dshTimeline 结构，不需要两套渲染。
+ *
+ * 只保留看得见的三类：用户文本、助手文本、工具行。turn/end 之后的事件属于下一轮，
+ * 由调用方按 turn 分条。
+ */
+function foldHistory(records){
+  const turns=[];
+  let current=null;
+  // 每条用户发言都开新的一轮：宿主不保证每条日志都有 turn/start（实测有的会话
+  // 完全没有这个事件），只靠它分组会把整场对话折成一轮，用户发言全挤在最前面。
+  const startTurn=turn=>{current={turn,parts:[],text:''};turns.push(current);return current;};
+  const ensure=()=>current||startTurn(0);
+  // 内置工具返回的正文常常是整段 JSON 或捕获的输出；历史回放里截断到一屏能接受的长度，
+  // 否则一次工具结果就能把整个历史撑成几十万字符（真实会话里见过 40KB+）。
+  const clip=(value,limit)=>{const text=String(value==null?'':value);return text.length>limit?text.slice(0,limit)+'…（已截断）':text;};
+  /**
+   * 哪些 user/message 不是用户打的字。
+   *
+   * 宿主会把运行环境快照、技能清单、项目规则以 user/message 记进日志
+   * （source.kind 分别是 agent-instructions 等，正文以「<system-reminder>」「Current runtime
+   * context」开头）。回放时把它们画成用户的发言气泡，等于把系统提示当成用户说过的话 ——
+   * 实测一条就有 5KB，列表里第一屏全是这些内容，用户真正的问题反而被顶到很下面。
+   */
+  const isInjected=data=>{
+    const kind=String(data?.source?.kind||'');
+    if(kind&&kind!=='user')return true;
+    const text=(Array.isArray(data?.content)?data.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
+    return /^\s*<(system-reminder|available_skills)\b/i.test(text)||/^Current runtime context\./i.test(text);
+  };
+  for(const record of records||[]){
+    const event=record?.event;if(!event||typeof event.type!=='string')continue;
+    const data=event.data;
+    if(event.type==='turn/start'){startTurn(Number(data?.turn)||0);continue;}
+    if(event.type==='user/message'){
+      if(isInjected(data))continue;
+      const text=(Array.isArray(data?.content)?data.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
+      if(text)startTurn(Number(data?.turn)||turns.length).parts.push({kind:'text',role:'user',text});
+      continue;
+    }
+    if(event.type==='assistant/message'){
+      const content=Array.isArray(data?.message?.content)?data.message.content:[];
+      for(const block of content){
+        if(block?.type==='text'&&block.text)ensure().parts.push({kind:'text',role:'assistant',text:block.text});
+        // MyIDE 自己的 MCP 工具（mcp__myide__*）在实时流里就不显示，历史也别显示：
+        // 那是面板与宿主之间的消息通道，不是用户要看的「模型干了什么」。
+        else if(block?.type==='tool-call'&&!/^mcp__myide__/.test(String(block.name||'')))ensure().parts.push({kind:'tool',call:{name:block.name||'工具',args:block.arguments??{}},callId:block.id||''});
+      }
+      continue;
+    }
+    if(event.type==='tool/result'){
+      const callId=data?.toolCallId||data?.message?.toolCallId||'';
+      if(!callId)continue;
+      const part=ensure().parts.findLast(item=>item.kind==='tool'&&item.callId===callId);
+      if(!part)continue;
+      part.status=data?.error||data?.message?.isError?'failed':'completed';
+      const output=(Array.isArray(data?.message?.content)?data.message.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
+      if(output)part.output=clip(output,4000);
+      continue;
+    }
+  }
+  return turns.map(item=>({turn:item.turn,parts:item.parts})).filter(item=>item.parts.length);
+}
 function configOptions(catalog,selected){
   const selection=selectionWithReasoning(catalog,selected||catalog.default),model=modelInfo(catalog,selection);
   const options=[{id:'model',name:'模型',type:'select',currentValue:JSON.stringify([selection.provider,selection.model]),options:catalog.groups.map(group=>({group:group.id,name:group.name,options:group.models.map(item=>({value:JSON.stringify([group.id,item.id]),name:item.name}))}))}];
@@ -88,7 +156,9 @@ function turnFailure(reason,lastError){
   return '原生 DSH 未完成：'+(reason?.kind||'unknown')+(code?' ['+String(code).slice(0,100)+']':'')+(message?' · '+String(message).slice(0,3000):'');
 }
 class NativeRpc extends EventEmitter {
-  constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;}
+  // existing：宿主会话目录里见过的 id 集合。session/resume 只肯接手这里面的会话，
+  // 免得拼错的 id 被宿主 create 成一条没人认领的幽灵会话。
+  constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;this.existing=new Set();}
   async http(url,init){
     try{const response=await this.fetch(url,init);if([401,403].includes(response.status))this.close();return response;}
     catch(error){if(!init.signal?.aborted||init.signal.reason?.name==='TimeoutError')this.close();throw error;}
@@ -100,6 +170,20 @@ class NativeRpc extends EventEmitter {
     if(!envelope.result?.ok)throw Error(envelope.result?.error?.message||'原生 DSH 操作失败');return envelope.result.value;
   }
   async raw(endpoint,data,signal){const response=await this.http(this.url+'/api/myide/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(15000)});if(!response.ok)throw Error('原生 DSH 连接器请求失败：HTTP '+response.status);return response;}
+  /**
+   * 按连接器的 `client-request` 信封发一次请求（只读探测用）。
+   *
+   * `raw()` 发的是扁平 body，只适合 /api/myide/answer、follow 这类自定义路由；
+   * attach 走 typert 风格的 register 路由，第一步就校验信封 —— 扁平请求永远回
+   * 「MyIDE 连接请求无效」，探测看起来全部通过，其实什么都没验证到（实测踩过）。
+   * 连接器最终回 HTTP 200 + result.ok=false，所以只解析 body，不按 HTTP 状态判成败。
+   */
+  async probe(endpoint,args){
+    const rpcId=crypto.randomUUID();
+    const response=await this.http(this.url+'/api/myide/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:'myide/'+endpoint,payload:{args:{request:args}}}),signal:AbortSignal.timeout(15000)});
+    const body=await response.json().catch(()=>null);
+    return body?.result||{ok:false,error:{message:'连接器无响应'}};
+  }
   notifyUpdate(id,update){this.emit('notification',{method:'session/update',params:{sessionId:id,update}});}
   async refreshOptions(id){
     const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
@@ -116,7 +200,7 @@ class NativeRpc extends EventEmitter {
     // —— 两个端点的描述符不同，此处已按实测分别处理。
     if(method==='session/list'){
       const value=await this.call('session/list',{_request:{}});
-      return (value?.items||[]).map(item=>({
+      const items=(value?.items||[]).map(item=>({
         sessionId:String(item.sessionId||''),
         title:item.projections?.values?.title||'',
         running:item.running===true,
@@ -125,6 +209,9 @@ class NativeRpc extends EventEmitter {
         cwd:typeof item.cwd==='string'?item.cwd:'',
         updatedAt:Number(item.updatedAt)||0,
       })).filter(item=>item.sessionId);
+      // 记下宿主认可的会话身份：session/resume 的 existing 分支只接受这里出现过的 id。
+      for(const item of items)this.existing.add(item.sessionId);
+      return items;
     }
     if(method==='session/rename'){
       const sessionId=String(params?.sessionId||''),title=String(params?.title||'').trim();
@@ -133,8 +220,47 @@ class NativeRpc extends EventEmitter {
       const value=await this.call('session/rename',{request:{sessionId,title}});
       return {ok:true,title:String(value?.title??title),seq:Number(value?.seq)||0};
     }
+    // 读取任意一条宿主会话的正文（历史回放用）。
+    //
+    // 为什么需要它：历史列表原先只看 MyIDE 自己的 localStorage，DSH 里发起的会话
+    // 点开只改了一个变量、面板还是空的 —— 用户说的「切到会话但他的输出没加载」。
+    // session/page 按 seq 从后向前翻页，一次 maxMessages 条消息；宿主不会因此
+    // 把冷会话激活成 Agent（README 明确「历史页可以在不激活 Agent 的情况下检查持久化」）。
+    if(method==='session/history'){
+      const sessionId=String(params?.sessionId||'');if(!sessionId)throw Error('缺少会话身份');
+      // throughSeq 的上界必须先向宿主问：用超过游标的值会被明确拒绝
+      // （实测 "session page through seq 9999 is past cursor 1452"）。
+      const projection=await this.call('session/projections',{request:{sessionId}});
+      let through=Number(projection?.asOfSeq);
+      if(!Number.isSafeInteger(through)||through<0)throw Error('该会话没有可回放的历史');
+      const records=[];const limit=Math.max(1,Number(params?.limit)||5000);
+      // 逐页向前翻，直到日志开头或达到预算。页数上限兜底：超大会话不能把内存吃穿。
+      // ⚠ 别把预算写死成 500 条：一次工具密集的会话单页就有 60 条事件、整场 1500+ 条，
+      //   预算太小会静默丢掉最早的对话（实测 515/1453，用户看到的「历史」从中间开始）。
+      for(let page=0;page<60&&through>0;page++){
+        const value=await this.call('session/page',{request:{address:{kind:'session',sessionId},throughSeq:through,maxMessages:50}});
+        const items=Array.isArray(value?.records)?value.records:[];
+        records.unshift(...items);
+        if(!value?.hasMore||!items.length||records.length>=limit)break;
+        const firstSeq=Number(items[0]?.event?.seq);
+        if(!Number.isSafeInteger(firstSeq))break;
+        through=firstSeq-1;
+      }
+      return {sessionId,records,turns:foldHistory(records),truncated:records.length>=limit};
+    }
     if(method==='session/new'||method==='session/resume'){
-      const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;if(!/^myide-[a-f0-9-]{36}$/.test(id))throw Error('这是旧 ACP 会话；请在侧栏新建原生会话');
+      // 2026-11-01 起允许绑定**宿主里已存在**的会话（在 DSH 里发起的那些）。
+      // 只放行「宿主目录里确实有」的 id：随便编一个 id 去 create 会在宿主里
+      // 造出一条幽灵会话，而 _request 里的 sessionId 会被当成新建身份。
+      if(method==='session/resume'&&params.existing===true){
+        if(!this.existing?.has(params.sessionId))throw Error('该会话已不在 DSH 的会话目录里，请刷新历史列表后重试');
+        return {sessionId:params.sessionId,...await this.refreshOptions(params.sessionId)};
+      }
+      const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;
+      // 2026-11-01 起历史列表能切到宿主里已存在的会话（session-* / 带前缀的老 id），
+      // 旧校验只认 myide-* 会把「切过去后继续发消息」直接挡死。仍拒绝空值和非字符串，
+      // 真正的存在性由上面的 existing 分支负责。
+      if(!id||typeof id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(id))throw Error('会话身份无效');
       const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});
       // 宿主只复用「还没开始过一轮」的空白会话；已聊过天的会话它会另铸一个 session-* 身份返回，调用方若忽略返回值，
       // 后续 attach 就落到一个从未激活的原身份上（表现为重启后一直「原生会话尚未激活」）。所以恢复时先看日志在不在，
@@ -209,4 +335,4 @@ async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetch
   }while(true);
   throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }
-module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure};
+module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory};

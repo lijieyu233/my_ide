@@ -832,6 +832,14 @@ ipcMain.handle('ai:dsh-sessions',async(event,cfg)=>{
 ipcMain.handle('ai:dsh-rename',async(event,cfg,sessionId,title)=>{
   try{aiSender(event);return {ok:true,...await DSH.rename(cfg,sessionId,title)};}catch(error){return {ok:false,error:error.message};}
 });
+// 历史正文：历史列表里的会话能点开、能把 DSH 那边已经发生的对话读回来。
+// 之前点一条只在 DSH 里存在的会话，界面只改了 curSessionId，正文永远空着。
+ipcMain.handle('ai:dsh-history',async(event,cfg,sessionId)=>{
+  try{aiSender(event);return {ok:true,...await DSH.history(cfg,sessionId)};}catch(error){return {ok:false,error:error.message};}
+});
+ipcMain.handle('ai:dsh-bind',async(event,cfg,state,sessionId)=>{
+  try{aiSender(event,state);return {ok:true,...await DSH.bindSession(cfg,{sessionId,...state},sessionId)};}catch(error){return {ok:false,error:error.message};}
+});
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }

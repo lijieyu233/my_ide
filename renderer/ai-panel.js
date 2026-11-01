@@ -1913,11 +1913,9 @@ const AiPanel = (() => {
       // 所以这里不能 `if (!se) return`；删除仍只作用于本地记录。
       if (!se && act === 'del') { MI.toast('该会话只在 DSH 中，MyIDE 没有本地副本可删', 'err'); return; }
       if (!se && act !== 'ren' && act !== 'del') {
-        // 直接切到宿主里的会话：登记为当前会话，正文由 DSH 侧继续承载。
-        curSessionId = id;
-        rememberSession();
-        renderHist();
-        MI.toast('已切换到 DSH 会话；发送消息即可继续', 'ok');
+        // 宿主里的会话（别人在 DSH 里发起的）：正文必须从宿主读回来，
+        // 只登记 curSessionId 会让面板停在空白 —— 这就是「切过去没加载」。
+        openSession(id);
         return;
       }
       if (act === 'del') {
@@ -1966,7 +1964,13 @@ const AiPanel = (() => {
       if (rest) { rememberSession(); localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); closeHist(); MI.toast('已接回运行中的会话', 'ok'); return; }
     }
     const se = loadSessions().find((x) => x.id === id);
-    if (!se) { MI.toast('找不到该会话', 'err'); return; }
+    if (!se) {
+      // 本地没有正文 ≠ 没有这条会话：DSH 里发起的会话只存在于宿主目录。
+      // 以前这里直接 toast「找不到该会话」，用户看到的就是「切过去还是空的」。
+      // 现在从宿主把正文读回来渲染（用户要求：切过去要能看见他的输出）。
+      if (getConfig().engine === 'dsh') { loadHostSession(id); return; }
+      MI.toast('找不到该会话', 'err'); return;
+    }
     // 2026-10-28：切到别的历史会话时，正在跑的 DSH 任务改为挂起而不是中断；
     // 2026-11-01 用户明确「切换会话不能中断」，因此不再有 stopRun 回退。
     releaseSessionPermissions(detachRun());
@@ -1981,6 +1985,59 @@ const AiPanel = (() => {
     replayMsgs();
     restoreBackgroundRun();
     MI.toast('已载入会话：' + se.title, 'ok');
+  }
+  /**
+   * 把宿主会话的正文读进来并渲染（历史列表里「只在 DSH 中存在」的那些）。
+   *
+   * 三件事必须一起做，少一件就是「切过去了但没接上」：
+   *   ① 正文：走 session/history 拉原始事件，主进程折叠成轮次后在这里还原成消息；
+   *   ② 身份：curSessionId 换成宿主会话 id 并记住，否则下次进面板又回到旧会话；
+   *   ③ 绑定：告诉主进程「这个项目的对话就是这个会话」，否则用户接着发的话会被
+   *      派给本地那个 myide-* 会话 —— 宿主里那条历史永远收不到新消息。
+   */
+  async function loadHostSession(id) {
+    const root = (window.App && App.root) || '';
+    const page = currentPage();
+    // 读取期间用户可能又切了项目/会话：epoch + id 双重校验，避免慢响应覆盖新选择。
+    const epoch = pageEpoch;
+    const stillWanted = () => epoch === pageEpoch && ((window.App && App.root) || '') === root && currentPage().id === page.id;
+    MI.toast('正在读取 DSH 会话…', 'ok');
+    const result = await window.myIDE.ai.dshHistory(getConfig(), id).catch(error => ({ ok: false, error: error.message }));
+    if (!stillWanted()) return;
+    if (!result?.ok) { MI.toast('读取会话失败：' + (result?.error || '未返回成功'), 'err'); return; }
+    releaseSessionPermissions(detachRun());
+    closeHist();
+    curSessionId = id;
+    rememberSession();
+    localStorage.removeItem(sessKey()+':draft');
+    const turns = Array.isArray(result.turns) ? result.turns : [];
+    // 换乘成渲染层一直用的历史形状：用户发言一条、助手文字一条、工具行一条。
+    // 复用 _dshTimeline，历史回放与实时流共用同一段渲染（replayMsgs 里已有分支）。
+    msgs = [];
+    for (const turn of turns) {
+      for (const part of turn.parts || []) {
+        if (part.kind === 'text' && part.role === 'user') msgs.push({ role: 'user', content: part.text, _text: part.text });
+        else if (part.kind === 'text') msgs.push({ role: 'assistant', content: part.text });
+        else if (part.kind === 'tool') msgs.push({ role: 'assistant', content: '', _dshTimeline: [{ kind: 'tool', call: part.call, status: part.status, output: part.output }] });
+      }
+    }
+    usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
+    renderUsage();
+    replayMsgs();
+    refreshDshOptions();
+    // 绑定失败不阻断阅读：正文已经在眼前了，只把后续能否续聊说清楚。
+    // canContinue 由主进程探过连接器准入后如实给出 —— 宿主里发起的 session-*
+    // 会被 `^myide-[a-f0-9-]{36}$` 白名单挡在 attach 之外（实测），
+    // 所以不能只看 ok 就说「可直接继续对话」。
+    const bound = await window.myIDE.ai.dshBind(getConfig(), { rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, id).catch(error => ({ ok: false, error: error.message }));
+    if (!stillWanted()) return;
+    if (!msgs.length) MI.toast('该会话没有可显示的消息', 'ok');
+    else if (bound?.ok && bound.canContinue === false) {
+      MI.toast('已载入正文（只读）。这条会话是在 DSH 里发起的，MyIDE 不能接着往里发消息；要续聊请在 DSH 里发。', 'ok');
+    } else if (!bound?.ok) {
+      MI.toast('已载入会话正文；未能绑定到 DSH，续聊可能不接这条历史：' + (bound?.error || ''), 'err');
+    } else MI.toast('已载入 DSH 会话，可直接继续对话', 'ok');
+    MI.log?.('INFO', 'ai.dsh', '会话正文已载入 ' + id + '：' + msgs.length + ' 条消息 / ' + turns.length + ' 轮');
   }
 
   // ---------- 切换项目 ----------
