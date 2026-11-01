@@ -187,25 +187,17 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
-    // 2026-10-28：切到别的工具页（项目/浏览器/数据库…）**不再中断 DSH 会话**。
-    // 2026-11-01 用户再次明确：只有停止按钮才允许中断，「其他任务操作都不中断」。
-    // 因此这里不再有 stopRun 回退 —— 挂起失败（流还没建立）也只是放手。
-    let justParked = false;
-    if (currentRun?.engine === 'dsh' && currentRun.identity.rootId === App.root
-      && currentRun.pageId !== page.id
-      && !(['reader', 'bookshelf'].includes(currentRun.pageId) && ['reader', 'bookshelf'].includes(page.id))) {
-      justParked = detachRun() === 'parked';
-    }
-    // 切回「能显示会话的页面」时，把挂起的会话接回前台（2026-10-29 修）。
+    // 2026-11-01 用户反馈：「切换侧边栏模块会开启新对话，旧会话在后台，这是不允许的，
+    // 只有切换项目才这样。」
     //
-    // 原来只有 syncVisible(true) / onProjectChange / openSession 会调恢复，而
-    // 「切换工具」时 AI 面板一直可见、syncVisible 根本不会重新触发 ——
-    // park 之后没有任何路径把它取回来，面板永久空白，却仍显示「正在生成」
-    // （run 确实还在后台跑）。用户看到的就是「内容突然不显示」。
+    // 根因：这里原来会 detachRun() → parkDshRun()，把 msgsEl 里所有节点搬进离屏容器、
+    // 再置 currentRun=null / busy=false；紧接着 restoreBackgroundRun 因为 justParked=true
+    // 被跳过 —— 面板被搬空且没人搬回来，于是「看起来像新开了一个对话」。
     //
-    // ⚠ 必须放在 park 之后、且只在「这一页不是刚 park 走的页」时恢复：
-    //   无条件调用会把刚挂起的记录立刻接回来，park 等于没做（实测踩过）。
-    if (!justParked) restoreBackgroundRun({ runningOnly: true });
+    // 侧边栏工具（项目/大纲/Git/任务/数据库/浏览器…）只是换主区视图，**会话本身没变**：
+    // 右侧 AI 面板还是同一个，历史、进行中的生成都该原样留着。页面身份只影响「下一条消息
+    // 附带什么上下文」（由 usesProjectContext() 在发送时决定），不需要动会话视图。
+    // 会话级的迁移（挂起/恢复）只在切换项目时发生，见 beforeProjectChange / onProjectChange。
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
@@ -1770,17 +1762,63 @@ const AiPanel = (() => {
     histPop = null;
   }
   function toggleHist() { if (histPop) closeHist(); else renderHist(); }
+  // 正在运行的会话 id（前台一个 + 后台任意多个）。历史列表据此打「运行中」标记，
+  // 也据此把「还没落盘但正在跑」的会话语补进列表 —— 见 sessionsForHist 的注释。
+  function runningSessionIds() {
+    const ids = new Set();
+    if (currentRun && currentRun.status === 'active' && currentRun.identity?.sessionId) ids.add(currentRun.identity.sessionId);
+    for (const record of backgroundRuns.values()) {
+      if (record.run && record.run.status === 'active' && record.run.identity?.sessionId) ids.add(record.run.identity.sessionId);
+    }
+    return ids;
+  }
+  function parkedRecordOf(sessionId) {
+    for (const [key, record] of backgroundRuns) if (record.run?.identity?.sessionId === sessionId) return { key, record };
+    return null;
+  }
+  /**
+   * 历史列表的数据源：已落盘会话 + 仍在运行但尚未落盘的会话。
+   *
+   * 为什么必须补后一种（2026-11-01 用户反馈「同一个项目好像不能开两个会话」）：
+   * persistSession 只在「一轮结束/挂起」时写盘，所以第二个会话在跑的时候列表里根本没有它。
+   * 用户从历史切走就再也切不回来（列表里找不到），表现就是「只能开一个会话」。
+   * 这里按 sessionId 合并，并在行首标出「运行中」。
+   */
+  function sessionsForHist() {
+    const all = loadSessions().filter(s => !s.archived);
+    const running = runningSessionIds();
+    const known = new Set(all.map(s => s.id));
+    for (const sessionId of running) {
+      if (known.has(sessionId)) continue;
+      const parked = parkedRecordOf(sessionId)?.record;
+      const view = sessionId === curSessionId ? { msgs } : parked?.view;
+      const list = view?.msgs || [];
+      all.unshift({
+        id: sessionId,
+        title: list.length ? sessTitle(list) : '（运行中的新会话）',
+        ts: Date.now(),
+        running: true,
+        virtual: true, // 还没落盘：只用于展示与切回，不写回 localStorage
+      });
+      known.add(sessionId);
+    }
+    return { all, running };
+  }
   function renderHist() {
     closeHist();
-    const all = loadSessions().filter(s=>!s.archived);
+    const { all, running } = sessionsForHist();
     const pop = document.createElement('div');
     pop.className = 'ai-hist-pop';
     let html = '<div class="ai-hist-head">历史会话<span class="ai-hist-n">' + all.length + '</span></div>';
     if (!all.length) html += '<div class="ai-hist-empty">还没有历史会话 —— 每轮对话结束会自动存一条</div>';
     for (const se of all) {
-      html += '<div class="ai-hist-row' + (se.id === curSessionId ? ' cur' : '') + '" data-id="' + esc(se.id) + '">' +
+      const active = se.id === curSessionId;
+      const isRunning = running.has(se.id);
+      // 三态一眼分清：● 运行中（绿点+浅底）｜当前查看（左侧竖线）｜普通历史
+      html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(se.id) + '">' +
+        (isRunning ? '<span class="ai-hist-run" title="这个会话正在运行" aria-label="运行中"></span>' : '') +
         '<span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span>' +
-        '<span class="ai-hist-ts">' + relTime(se.ts) + '</span>' +
+        '<span class="ai-hist-ts">' + (isRunning ? '<em class="ai-hist-live">运行中</em>' : relTime(se.ts)) + '</span>' +
         '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button>' +
         '<button class="ai-hist-b" data-act="del" title="删除">\u2715</button></div>';
     }
@@ -1821,6 +1859,15 @@ const AiPanel = (() => {
     });
   }
   function openSession(id) {
+    // 切到「正在后台跑」的会话时，不能去读已落盘的旧正文：
+    // 那份记录可能是一轮之前保存的，直接 replay 会把后台已经累积的输出丢掉，
+    // 还给用户一种「切回来怎么变了」的错觉。改为把后台记录整个接回前台。
+    const parked = parkedRecordOf(id);
+    if (parked) {
+      // 先把当前会话也挂起来，否则它的 DOM 会被这次接回顶掉。
+      const rest = restoreBackgroundRun({ sessionId: id });
+      if (rest) { rememberSession(); localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); closeHist(); MI.toast('已接回运行中的会话', 'ok'); return; }
+    }
     const se = loadSessions().find((x) => x.id === id);
     if (!se) { MI.toast('找不到该会话', 'err'); return; }
     // 2026-10-28：切到别的历史会话时，正在跑的 DSH 任务改为挂起而不是中断；
@@ -1918,6 +1965,21 @@ const AiPanel = (() => {
     // 内容 —— 实测踩过：切一次页面就把「已停止」的旧会话顶到前台。
     const runningOnly = !!(options && options.runningOnly);
     const takeable = r => r && (!runningOnly || r.run.status === 'active');
+    // 指定 sessionId：从历史列表点「运行中」的行时用，必须精确命中那个后台记录。
+    if (options?.sessionId) {
+      const hit = parkedRecordOf(options.sessionId);
+      if (!hit) return false;
+      const record = hit.record;
+      // 先把当前前台会话挂起，否则它的 DOM 会被这次接回顶掉。
+      if (currentRun && currentRun.status === 'active') detachRun();
+      backgroundRuns.delete(hit.key);
+      const container=msgsEl;container.replaceChildren(...record.view.msgsEl.childNodes);
+      applyRunView({...record.view,msgsEl:container});record.run.background=null;
+      setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
+      for(const event of record.pending)handleDshEvent(event);
+      renderUsage();renderBackgroundStatus();scrollBottom();
+      return true;
+    }
     const key = runKeyOf(sessKey(), curSessionId);
     let record = takeable(backgroundRuns.get(key)) ? backgroundRuns.get(key) : null;
     // 兜底只在「刚离开同一会话」时用：会话 id 可能在挂起与恢复之间从 null 变成真实值。
@@ -1927,13 +1989,14 @@ const AiPanel = (() => {
       const same = [...backgroundRuns.entries()].filter(([, r]) => r.scope === sessKey() && takeable(r));
       if (same.length === 1) { record = same[0][1]; backgroundRuns.delete(same[0][0]); }
     }
-    if (!record) return;
+    if (!record) return false;
     if (backgroundRuns.get(key) === record) backgroundRuns.delete(key);
     const container=msgsEl;container.replaceChildren(...record.view.msgsEl.childNodes);
     applyRunView({...record.view,msgsEl:container});record.run.background=null;
     setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
     for(const event of record.pending)handleDshEvent(event);
     renderUsage();renderBackgroundStatus();scrollBottom();
+    return true;
   }
   function renderBackgroundStatus() {
     let status=document.getElementById('ai-background-status');

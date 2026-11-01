@@ -467,20 +467,24 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.hold=true;f.send('开始等待');await until(()=>f.calls.length===2);const context=f.calls[1].context;
     await f.w.AiPanel.setConfig({engine:'standard'});await f.dshEvent({type:'tool',context,call:writeCall('late.md')});assert.equal(f.writes.length,0);assert(f.aborts.length);assert.equal(f.w.AiPanel.getConfig().engine,'standard');
   });
-  // 2026-11-01 用户要求：「只有点停止按钮才中断，其他任务操作都不中断」。
-  // 这条以前断言「离开页面会停止」——那是 2026-10-28 就已经废弃的旧行为（用例没跟着改，
-  // 在改动前就已经是红的）。现在的契约是：离开页面只挂起，不 abort，回来还能接上。
-  await test('DSH页面状态只在项目页返回文件；项目执行中离开页面只挂起不中断，回来接上',async()=>{
+  // 2026-11-01 用户两轮反馈合并后的契约：
+  //   ① 「只有点停止按钮才中断，其他任务操作都不中断」；
+  //   ② 「切换侧边栏模块会开启新对话、旧会话在后台，这是不允许的」——
+  //      切工具页不该动会话，面板要保持原样（历史仍在本会话里、仍显示正在跑）。
+  // 所以这条断言的是「不中断 + 不挪走」，不是旧版那条「切走就挂起」。
+  await test('DSH页面状态只在项目页返回文件；切工具页不中断也不挪走会话',async()=>{
     const f=fixture();f.put('one.md','DSH_EDITOR_SECRET');f.w.Viewer.activeTab={path:f.file('one.md'),content:'DSH_EDITOR_SECRET',dirty:true};await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('读取编辑器');await until(()=>f.calls.length===1);
     await f.dshEvent({type:'tool',context:f.calls[0].context,call:{id:'state',name:'ide_state',args:{}}});assert(f.dshResults[0].result.text.includes('DSH_EDITOR_SECRET'));
-    // 离开项目页 → 只挂起：不 abort、任务进后台状态条、输出继续累计
-    f.w.App.showTool('launch');await until(()=>f.element('#ai-send').textContent==='➤');
-    assert.equal(f.aborts.length,0,'离开页面不能中断原生任务');
-    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'任务进入后台并可见');
+    // 切到启动页：会话留在前台，不中断、不进后台
+    f.w.App.showTool('launch');await tick();
+    assert.equal(f.aborts.length,0,'切工具页不能中断原生任务');
+    assert.equal(f.element('#ai-send').textContent,'⏹','会话仍在跑，不该被挪进后台');
+    assert(!(f.element('#ai-background-status')||{textContent:''}).textContent.includes('后台运行'),'不该出现后台状态条');
+    assert(f.text().includes('读取编辑器'),'历史仍在本会话里，不该变成空白新对话');
+    // 切回来仍是同一个会话，输出连续
     f.chunk(0,'离开期间继续输出');
-    // 回到项目页 → 接回同一段输出，仍然在跑
-    f.w.App.showTool('project');await until(()=>f.element('#ai-send').textContent==='⏹');
-    assert(f.text().includes('离开期间继续输出'),'回到原页面接上同一段输出');
+    f.w.App.showTool('project');await tick();
+    assert(f.text().includes('离开期间继续输出'),'回到原页面输出连续');
     assert.equal(f.aborts.length,0);
     // 只有停止按钮会中断
     f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.aborts.length,1);
@@ -526,6 +530,43 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   // 2026-11-01 用户要求：「我不希望切换会话时中断 dsh 会话，只有我点击这个（停止）按钮才会主动中断，
   // 其他我的任务操作都不中断。」这条把「不该中断的入口」全部钉住：任何一个入口漏成 stopRun/abort
   // 都会被这里的 aborts.length 断言抓住。
+  // 2026-11-01 用户反馈：「同一个项目好像不能开两个会话，这也不行」+「要在这里加标识
+  // 哪个会话在运行中」。根因不是不能并发，而是 persistSession 只在一轮结束时写盘 ——
+  // 正在跑的第二会话根本不出现在历史列表里，切走就再也切不回来。
+  await test('同一项目可并行两个会话，历史列表标出运行中并能来回切回',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
+    f.send('会话A');await until(()=>f.calls.length===1);const aCtx=f.calls[0].context;
+    f.element('#ai-new').click();await tick();
+    f.send('会话B');await until(()=>f.calls.length===2);const bCtx=f.calls[1].context;
+    assert.notEqual(aCtx.sessionId,bCtx.sessionId,'同一项目要能开出两个不同会话');
+    assert.equal(f.aborts.length,0,'开第二个会话不能中断第一个');
+
+    // A 在后台继续产出
+    f.chunk(0,'A后台仍在跑');
+    // 历史列表必须同时列出两条，并且都标成运行中（正在跑但不能切回＝等于不能开两个会话）
+    f.element('#ai-history').click();
+    const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
+    assert.equal(rows().length,2,'历史列表应有两条：'+rows().map(r=>r.textContent.trim()));
+    assert(rows().every(r=>r.classList.contains('running')),'两条都在跑，都要标运行中');
+    assert(rows().every(r=>r.querySelector('.ai-hist-run')),'运行中要有圆点标识');
+    assert(rows().every(r=>r.textContent.includes('运行中')),'运行中要有文字标识');
+    assert.equal(rows().filter(r=>r.classList.contains('cur')).length,1,'当前查看的只有一条');
+
+    // 切回 A：接回后台那份（带着后台输出），不中断任何一方
+    rows().find(r=>r.textContent.includes('会话A')).click();await tick();await tick();
+    assert.equal(f.element('#ai-send').textContent,'⏹','切回后 A 仍在跑');
+    assert(f.text().includes('A后台仍在跑'),'接回后台已累积的输出');
+    assert.equal(f.aborts.length,0);
+
+    // 再切回 B：B 也还活着；只有一条在跑时不再误标另一条
+    f.element('#ai-history').click();
+    const rows2=rows();
+    assert.equal(rows2.length,2,'切走后两条仍都在列表里');
+    rows2.find(r=>r.textContent.includes('会话B')).click();await tick();await tick();
+    assert.equal(f.element('#ai-send').textContent,'⏹','B 也仍在跑');
+    assert.equal(f.aborts.length,0,'全程没有一次取消');
+    assert((f.element('#ai-background-status')||{textContent:''}).textContent.includes('后台运行'),'另一个会话在后台状态条可见');
+  });
   await test('Harness切换会话/新建/切项目/收起面板都不中断，只有停止按钮发取消',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
     f.send('长任务');await until(()=>f.calls.length===1);const first=f.calls[0].context;

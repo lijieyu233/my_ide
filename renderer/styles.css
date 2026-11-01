@@ -3539,6 +3539,20 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 12px; cursor: pointer; }
 .ai-hist-row:hover { background: var(--bg-hover); }
 .ai-hist-row.cur { border-left: 2px solid var(--accent); }
+/* 运行中：左侧圆点 + 淡色底 + 「运行中」标签。三态区分（运行中 / 当前查看 / 普通历史），
+   只靠左边竖线看不出「这个会话还在跑」，用户切换时就不知道该切回哪一条（开发文档-244）。 */
+.ai-hist-row.running { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ai-hist-row.running:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.ai-hist-run {
+  flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+  /* 用 --ok-text 而不是 --ok：后者不是主题变量（实测只有 .ai-edit-stat 里带兜底色写过） */
+  background: var(--ok-text, #4caf7d);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok-text, #4caf7d) 22%, transparent);
+  animation: ai-hist-run-pulse 1.8s ease-in-out infinite;
+}
+@keyframes ai-hist-run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .ai-hist-run { animation: none; } }
+.ai-hist-live { font-style: normal; color: var(--ok-text, #4caf7d); font-weight: 600; }
 .ai-hist-nm { flex: 1; min-width: 0; font-size: .92em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-hist-ts { font-size: .85em; color: var(--text-dim); flex-shrink: 0; }
 .ai-hist-b {
