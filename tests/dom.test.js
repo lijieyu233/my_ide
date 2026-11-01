@@ -111,7 +111,8 @@ calls.logAll = false;
 calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
-let fakeFsCbs = []; // fs:changed 订阅者（tree.js 重渲染 + viewer.js 标签重载都注册）
+let fakeFsCbs = [];
+let pathProgressCb = null; // fs:changed 订阅者（tree.js 重渲染 + viewer.js 标签重载都注册）
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
 let aiCalls = 0;    // chat 调用次数（重新生成 / 编辑重发这类"再问一次"的用例靠它计数）
 let aiLastMsgs = null; // 最近一次请求的 messages（校验项目规则/上下文是否真的拼进去了）
@@ -191,6 +192,7 @@ function makeDom() {
       fileVersion: async (p) => ({ absent: !FAKE_FS[p], version: FAKE_FS[p] ? { schema: 1, target: p, stamp: String(FAKE_FS[p].revision || 0), hash: String(FAKE_FS[p].content) } : { schema: 1, target: p, absent: true } }),
       readBuffer: async (p) => (FAKE_FS[p] ? { buffer: new ArrayBuffer(8) } : { error: 'not found' }),
       onChanged: (cb) => { fakeFsCbs.push(cb); },
+      onPathProgress: (cb) => { pathProgressCb = cb; return () => { pathProgressCb = null; }; },
       writeFile: async (p, content) => {
         if (!FAKE_FS[p]) {
           FAKE_FS[p] = { type: 'file', content };
@@ -551,6 +553,7 @@ async function loadApp(dom) {
   evalFile('plugin-loader.js');
   evalFile('preview-location.js');
   evalFile('pet.js');
+  evalFile('path-progress.js');
   evalFile('document-paths.js');
   evalFile('tree.js');
   evalFile('navigation-history.js');
@@ -10260,6 +10263,34 @@ assert_(panel, 'CM6 搜索面板出现');
     const buttons = [...w.document.querySelectorAll('.tk-store-state button')]; await T.setRoot(B); const count = writes.length;
     for (const button of buttons) await button.onclick(); await tick();
     assert_(T.storeMode === 'file' && T.saveResult === null && writes.length === count && !w.copiedTasks, '旧操作不能保存或复制新项目');
+  });
+  await okAsync('长任务进度：备份/删除按阶段显示，无总数走不确定态，结束收起', async () => {
+    const PP=dom.window.PathProgress; const box=$(dom,'#sb-progress'),label=$(dom,'#sb-progress-label'),count=$(dom,'#sb-progress-count'),bar=$(dom,'#sb-progress-bar');
+    // 没有进度消息时不占屏
+    assert_(box.classList.contains('hidden'),'初始不显示');
+    // 统计阶段：总数未知 → 不确定态，不能假装有百分比
+    assert_(typeof pathProgressCb==='function','进度监听已订阅');
+    PP.show({label:'删除',phase:'scanning',done:120,total:0});
+    assert_(!box.classList.contains('hidden'),'收到进度后显示');
+    assert_(box.classList.contains('indeterminate'),'无总数走不确定态');
+    assert_(label.textContent.includes('删除')&&label.textContent.includes('统计'),'阶段文案：'+label.textContent);
+    // 备份阶段：有总数 → 具体计数 + 百分比，并解释为什么慢
+    PP.show({label:'删除',phase:'backup',done:500,total:2000});
+    assert_(!box.classList.contains('indeterminate'),'有总数不再是动画态');
+    assert_(count.textContent==='500 / 2000','计数：'+count.textContent);
+    assert_(parseFloat(bar.style.width)===25,'宽度：'+bar.style.width);
+    assert_($(dom,'#sb-progress-hint').textContent.includes('备份'),'备份阶段解释原因');
+    // 阶段切换后标题跟着换，不会残留上一阶段的百分比
+    PP.show({label:'删除',phase:'delete',done:2000,total:2000});
+    assert_(label.textContent.includes('删除')&&!label.textContent.includes('备份'),'阶段切换：'+label.textContent);
+    assert_(parseFloat(bar.style.width)===100,'完成后满格：'+bar.style.width);
+    // 实删结束后浮层收起（主流程用 PathProgress.track 包住，失败/取消同样收起）
+    await g(dom,'PathProgress.hide(0)');
+    for(let i=0;i<6;i++)await new Promise(r=>setTimeout(r,15));
+    assert_(box.classList.contains('hidden'),'结束后收起');
+    assert_(!bar.style.width||parseFloat(bar.style.width)===0,'收起时复位进度条：'+bar.style.width);
+    // 浮层永不拦截点击（只是反馈）—— 必须用 window.getComputedStyle：Node 侧没有这个全局
+    assert_(dom.window.getComputedStyle(box).pointerEvents==='none','不拦截点击');
   });
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

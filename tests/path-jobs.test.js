@@ -24,6 +24,16 @@ const check=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
     let pulses=0;const timer=setInterval(()=>pulses++,10);
     try{const r=await Jobs.run('snapshot',[folder]);assert.equal(r.count,1001);assert(pulses>=2,'摘要期间调用方定时器必须继续运行');}finally{clearInterval(timer);}
   });
+  // 开发文档-243：进度必须能穿过 worker 边界（worker postMessage → path-jobs.onProgress → main.js IPC）。
+  await check('进度回调穿透worker且只上报本操作的阶段',async()=>{
+    const seen=[],project=path.join(temp,'progress-project'),cache=path.join(temp,'progress-cache'),dir=path.join(project,'progress-src');
+    fs.mkdirSync(dir,{recursive:true});for(let i=0;i<3;i++)fs.writeFileSync(path.join(dir,i+'.txt'),'x');
+    const prepared=await Jobs.run('copy:prepareDelete',[cache,project,[dir]],p=>seen.push(p));
+    assert(prepared.ok,JSON.stringify(prepared));assert(seen.length>=1,'prepare 阶段必须上报进度');
+    assert(seen.some(p=>p.phase==='backup'&&p.total===prepared.items),'备份阶段带完整项数');
+    const committed=await Jobs.run('copy:commitDelete',[cache,project,prepared.operationId],p=>seen.push(p));
+    assert(committed.ok);assert(seen.some(p=>p.phase==='delete'&&p.done===prepared.items),'删除进度最后一项等于总项数');
+  });
   await check('未知worker操作失败仍可再次请求',async()=>{
     await assert.rejects(()=>Jobs.run('unknown',[]),{code:'MOVE_FAILED'});assert((await Jobs.run('snapshot',[dest])).hash);
   });

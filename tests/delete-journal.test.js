@@ -63,5 +63,25 @@ try{
  check('删除/恢复完成阶段刷盘失败仍返回实际变更与恢复记录',()=>{
   for(const phase of ['delete','restore']){let active=false,flushes=0;const f=fixture({...Native,remove(...args){Native.remove(...args);if(phase==='delete')active=true;},publish(...args){Native.publish(...args);if(phase==='restore')active=true;}}),file=write(path.join(f.project,'source'),'原'),p=f.service.prepareDelete(f.project,[file]);if(phase==='restore')assert(f.service.commitDelete(f.project,p.operationId).ok);const fsync=fs.fsyncSync;fs.fsyncSync=(...args)=>{if(active&&++flushes===2)throw Object.assign(Error('phase-flush'),{code:'ENOSPC'});return fsync(...args);};let r;try{r=f.service[phase==='delete'?'commitDelete':'undoDelete'](f.project,p.operationId);}finally{fs.fsyncSync=fsync;}assert(!r.ok&&r.operationId===p.operationId&&r.changedPaths.includes(file));assert(createService(f.cache).undoDelete(f.project,p.operationId).ok);assert.equal(fs.readFileSync(file,'utf8'),'原');}
  });
+  // 开发文档-243：4078 项删除曾经 12 分钟零反馈，用户以为「删不掉」又点了一次。
+  // 现在备份/删除/恢复三个阶段都要上报 (phase, done, total)，界面据此画进度。
+  check('删除全程按阶段上报进度，总数覆盖每一项',()=>{
+    const events=[];const home=fs.mkdtempSync(path.join(temp,'progress-')),project=path.join(home,'project'),cache=path.join(home,'cache');fs.mkdirSync(project);
+    const service=createService(cache,Native,{report:(phase,done,total)=>events.push({phase,done,total})});
+    const dir=path.join(project,'dir'),files=[write(path.join(dir,'a'),'a'),write(path.join(dir,'sub','b'),'b'),write(path.join(dir,'sub','c'),'c')];
+    // prepareDelete 先扫描再备份：扫描阶段总数未知（0），备份阶段必须是完整项数
+    const p=service.prepareDelete(project,[dir]);assert(p.ok);
+    const scan=events.filter(e=>e.phase==='scanning');assert(scan.length>=1&&scan.every(e=>e.total===0),'扫描阶段不谎报总数');
+    const backup=events.filter(e=>e.phase==='backup');assert.equal(backup.at(-1).done,p.items,'备份进度最后一项等于总项数');assert(backup.every(e=>e.total===p.items));
+    events.length=0;
+    assert(service.commitDelete(project,p.operationId).ok);
+    const del=events.filter(e=>e.phase==='delete');assert(del.length>=1);assert.equal(del.at(-1).done,p.items);assert(del.every(e=>e.total===p.items));
+    events.length=0;
+    assert(service.undoDelete(project,p.operationId).ok);
+    const restore=events.filter(e=>e.phase==='restore');assert.equal(restore.at(-1).done,p.items);
+    for(const file of files)assert(fs.existsSync(file),'数据本身仍完整恢复');
+    // 节流：上报次数不超过项数级，不会把每个里程碑都刷成一条 IPC
+    assert(events.length<=p.items+2,'上报次数不超过项数级');
+  });
  console.log('结果: '+passed+' 通过, 0 失败');
 }finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-delete-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}

@@ -494,6 +494,12 @@
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden"></div>
 <div id="toast-wrap"></div>
+<!-- 长任务进度（删除/复制/恢复 4078 项要十几分钟）：固定在右下、不抢焦点、完成后自动收起 -->
+<div id="sb-progress" class="hidden" role="status" aria-live="polite">
+  <div class="sb-progress-head"><span id="sb-progress-label">删除</span><span id="sb-progress-count"></span></div>
+  <div class="sb-progress-track"><div id="sb-progress-bar"></div></div>
+  <div id="sb-progress-hint"></div>
+</div>
 
 <!-- 容错层必须排在最前：它在加载期就把「镜像里有、本地没有」的设置补回 localStorage，
      晚于 theme.js/tree.js 等就会读到空值（表现为主题/侧栏宽度先闪默认值再变）-->
@@ -511,6 +517,7 @@
 <script src="plugin-loader.js"></script>
 <script src="preview-location.js"></script>
 <script src="pet.js"></script>
+<script src="path-progress.js"></script>
 <script src="tree.js"></script>
 <script src="navigation-history.js"></script>
 <script src="tab-descriptions.js"></script>

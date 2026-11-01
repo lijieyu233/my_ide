@@ -94,6 +94,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
     watch: (p) => ipcRenderer.invoke('fs:watch', p),
     onChanged: (cb) => ipcRenderer.on('fs:changed', (_e, info) => cb(info)),
+    // 长任务进度（删除/复制/恢复/回收站）：{label,phase,done,total}
+    onPathProgress: (cb) => { const listener = (_e, info) => cb(info); ipcRenderer.on('fs:path-progress', listener); return () => ipcRenderer.removeListener('fs:path-progress', listener); },
   },
   log: {
     write: (level, tag, msg) => ipcRenderer.invoke('log:write', level, tag, msg),

@@ -846,7 +846,8 @@ const Tree = (() => {
       const result=await window.myIDE.fs.copyCommit(operationRoot,prepared.operationId,overwrite);
       return {...result,operationId:prepared.operationId,targets:prepared.targets};
     };
-    const result=window.Viewer?.withCopyChange?await Viewer.withCopyChange(movable,targets,perform):await perform();
+    const runOperation=()=>window.Viewer?.withCopyChange?Viewer.withCopyChange(movable,targets,perform):perform();
+    const result=await (window.PathProgress?PathProgress.track(runOperation):runOperation());
     if(result?.operationId&&result.published)pushUndo({type:'copy',operationId:result.operationId,projectRoot:operationRoot,targets:result.targets,label:actionLabel+' '+result.targets.length+' 项'});
     if(result?.cancelled){MI.toast('已取消'+actionLabel+(result.operationId?'；恢复记录已保留':''),'ok');return 0;}
     if(result?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
@@ -860,7 +861,8 @@ const Tree = (() => {
       if(rootPath!==operationRoot)return {error:'项目已切换，恢复未执行',errorCode:'PROJECT_CHANGED'};
       return record.kind==='delete'?window.myIDE.fs.deleteUndo(operationRoot,record.operationId):window.myIDE.fs.copyUndo(operationRoot,record.operationId);
     };
-    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],record.targets||[],perform,'恢复'):await perform();
+    const runOperation=()=>window.Viewer?.withCopyChange?Viewer.withCopyChange([],record.targets||[],perform,'恢复'):perform();
+    const r=await (window.PathProgress?PathProgress.track(runOperation):runOperation());
     if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
     if(r?.ok){for(let i=undoStack.length-1;i>=0;i--)if(undoStack[i].operationId===record.operationId)undoStack.splice(i,1);MI.toast('↩ 已恢复 '+record.label,'ok');}
     else if(!r?.cancelled)MI.toast('恢复未完成: '+(r?.error||'未返回成功')+'；记录已保留，可重试或导出','err');
@@ -1365,7 +1367,10 @@ const Tree = (() => {
       const result=systemTrash?await window.myIDE.fs.trashCommit(operationRoot,prepared):await window.myIDE.fs.deleteCommit(operationRoot,prepared.operationId);
       return {...result,kind:systemTrash?'trash':'delete',operationId:systemTrash?undefined:prepared.operationId,targets:prepared.targets};
     };
-    const r=window.Viewer?.withCopyChange?await Viewer.withCopyChange([],paths,perform,'删除'):await perform();
+    // 大目录删除要十几分钟（备份 + 逐项删），进度浮层由主进程 fs:path-progress 驱动；
+    // 这里只负责「操作结束一定收起」，否则失败/取消时浮层会永久挂在右下角。
+    const runOperation=()=>window.Viewer?.withCopyChange?Viewer.withCopyChange([],paths,perform,'删除'):perform();
+    const r=await (window.PathProgress?PathProgress.track(runOperation):runOperation());
     if(r?.operationId&&r.published)pushUndo({type:'delete',kind:'delete',operationId:r.operationId,targets:r.targets,projectRoot:operationRoot,label:'删除 '+r.targets.length+' 项'});
     if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
     if(r?.cancelled)return r;

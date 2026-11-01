@@ -1217,6 +1217,9 @@ const App = (() => {
     }
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('tool-sidebar-r').onclick = () => toggleRightSidebar();
+    // 长任务进度浮层（删除/复制/恢复）已在 path-progress.js 加载时自行订阅，这里只兜一次
+    // （attach 幂等），确保插件晚于脚本注入 myIDE.fs 时也能挂上。
+    window.PathProgress?.attach?.();
     window.ToolStrip?.init();
     document.getElementById('sb-branch').onclick = () => { if (root) GitPanel.openBranchDialog(); };
     document.getElementById('tree-collapse').onclick = () => Tree.collapseAll();

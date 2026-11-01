@@ -1816,6 +1816,33 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 #sb-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #sb-info b { color: var(--text); font-weight: 600; }
+
+/* ---------- 长任务进度（删除/复制/恢复） ---------- */
+/* 4078 项删除实测 12 分钟，原来界面毫无反馈 → 用户以为卡死又点了一次删除（开发文档-243）。
+   放右下角悬浮、不吃焦点、不挡操作；阶段切换时改标题，完成后淡出。 */
+#sb-progress {
+  position: fixed; right: 16px; bottom: 34px; z-index: 900;
+  min-width: 240px; max-width: 340px;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--btn-border);
+  border-radius: 6px;
+  background: var(--bg-title);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  font-size: 11px; color: var(--text-dim);
+  pointer-events: none; /* 只是反馈，不拦截点击 */
+}
+#sb-progress.hidden { display: none; }
+.sb-progress-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+#sb-progress-label { color: var(--text); font-weight: 600; }
+#sb-progress-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.sb-progress-track { height: 4px; border-radius: 2px; background: var(--border-mid); overflow: hidden; }
+#sb-progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+/* 统计/备份阶段总数未知时用不确定态，别假装有百分比 */
+#sb-progress.indeterminate #sb-progress-bar { width: 40%; animation: sb-progress-slide 1.4s ease-in-out infinite; }
+@keyframes sb-progress-slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { #sb-progress.indeterminate #sb-progress-bar { animation: none; width: 100%; opacity: .4; } }
+#sb-progress-hint { margin-top: 6px; line-height: 1.5; opacity: .85; }
+#sb-progress-hint:empty { display: none; }
 .sb-encoding { border: 0; background: transparent; color: inherit; font: inherit; padding: 0 3px; cursor: pointer; }
 .sb-encoding:hover, .sb-encoding:focus-visible { color: var(--text-bright); outline: 1px solid var(--accent); }
 .sb-encoding:disabled { cursor: default; }

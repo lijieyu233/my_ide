@@ -14,7 +14,7 @@ async function withRanges(ranges,perform){
   ranges.forEach(assertWritable);locks.add(ranges);
   try{return await perform();}finally{locks.delete(ranges);}
 }
-function run(op,args){
+function run(op,args,onProgress){
   if(active>=4)return Promise.reject(fail('PATH_BUSY','路径检查正在进行，请稍后重试'));
   active++;
   return new Promise((resolve,reject)=>{
@@ -22,7 +22,13 @@ function run(op,args){
     const finish=(error,result)=>{if(settled)return;settled=true;active--;error?reject(error):resolve(result);};
     try{worker=new Worker(path.join(__dirname,'path-worker.js'),{workerData:{op,args}});}
     catch(e){finish(e);return;}
-    worker.once('message',msg=>finish(msg.error?Object.assign(fail(msg.errorCode,msg.error),{committed:msg.committed,pendingPath:msg.pendingPath,cleanupError:msg.cleanupError}):null,msg.result));
+    // 进度消息与结果消息走同一条通道：必须用 on 而不是 once 分发，否则第一条进度
+    // 就会被 once('message') 当成结果消费掉，run() 直接 resolve(undefined) ——
+    // 实测表现是删除「成功」但拿不到 changedPaths/operationId（开发文档-243）。
+    worker.on('message',msg=>{
+      if(msg&&msg.progress){if(typeof onProgress==='function')try{onProgress(msg.progress);}catch{}return;}
+      finish(msg.error?Object.assign(fail(msg.errorCode,msg.error),{committed:msg.committed,pendingPath:msg.pendingPath,cleanupError:msg.cleanupError}):null,msg.result);
+    });
     worker.once('error',e=>finish(e));
     // 不因耗时强杀迁移worker：原生移动若已提交，超时不能谎报“源仍原位”。
     worker.once('exit',()=>{if(!settled)finish(fail('MOVE_UNCERTAIN','路径worker未返回结果，请核对源与目标后重试'));});

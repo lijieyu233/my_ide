@@ -980,34 +980,44 @@ ipcMain.handle('fs:move', (_e, src, destDir, condition) => pathResult(() => Path
 // 配额/阶段记录共用一条队列；原字节检查仍在worker，不能阻塞窗口或并发越过恢复预算。
 let copyTail=Promise.resolve();
 const copySerial=fn=>{const next=copyTail.catch(()=>{}).then(fn);copyTail=next;return next;};
-const copyRun=(op,...args)=>PathJobs.run('copy:'+op,[path.join(app.getPath('userData'),'file-operations'),...args]);
-const copyPrepare=(project,sources,dest)=>copySerial(()=>PathJobs.withRanges([...sources,dest],()=>copyRun('prepare',project,sources,dest)));
-const copyChange=(op,project,id,...args)=>copySerial(async()=>{const ranges=await copyRun('ranges',project,id);return PathJobs.withRanges(ranges,()=>copyRun(op,project,id,...args));});
-ipcMain.handle('fs:copyPrepare',(_e,project,sources,dest)=>pathResult(()=>copyPrepare(project,sources,dest)));
-ipcMain.handle('fs:copyCommit',(_e,project,id,overwrite)=>pathResult(()=>copyChange('commit',project,id,overwrite)));
-ipcMain.handle('fs:copyUndo',(_e,project,id)=>pathResult(()=>copyChange('undo',project,id)));
-ipcMain.handle('fs:deletePrepare',(_e,project,sources)=>pathResult(()=>copySerial(()=>PathJobs.withRanges([project,...sources],()=>copyRun('prepareDelete',project,sources)))));
-ipcMain.handle('fs:deleteCommit',(_e,project,id)=>pathResult(()=>copyChange('commitDelete',project,id)));
-ipcMain.handle('fs:deleteUndo',(_e,project,id)=>pathResult(()=>copyChange('undoDelete',project,id)));
-ipcMain.handle('fs:trashPlan',(_e,project,sources)=>pathResult(()=>PathJobs.withRanges([project,...sources],()=>copyRun('trashPlan',project,sources))));
-ipcMain.handle('fs:trashCommit',(_e,project,plan)=>pathResult(()=>PathJobs.withRanges([project,...(plan?.targets||[])],async()=>{
-  const checked=await copyRun('validateTrash',project,plan),changedPaths=[],uncertainPaths=[];let failure;
+// 进度只发给发起这次操作的那个渲染进程。4078 项删除实测 12 分钟毫无反馈
+// （用户以为「删不掉」又点了一次），所以备份/删除/恢复三个阶段都要能看见（开发文档-243）。
+const pathProgress=(sender,label)=>({phase,done,total})=>{
+  if(!sender||sender.isDestroyed())return;
+  try{sender.send('fs:path-progress',{label,phase,done,total});}catch{}
+};
+const copyRun=(sender,label,op,...args)=>PathJobs.run('copy:'+op,[path.join(app.getPath('userData'),'file-operations'),...args],pathProgress(sender,label));
+const copyPrepare=(sender,label,project,sources,dest)=>copySerial(()=>PathJobs.withRanges([...sources,dest],()=>copyRun(sender,label,'prepare',project,sources,dest)));
+const copyChange=(sender,label,op,project,id,...args)=>copySerial(async()=>{const ranges=await copyRun(sender,label,'ranges',project,id);return PathJobs.withRanges(ranges,()=>copyRun(sender,label,op,project,id,...args));});
+ipcMain.handle('fs:copyPrepare',(e,project,sources,dest)=>pathResult(()=>copyPrepare(e.sender,'复制',project,sources,dest)));
+ipcMain.handle('fs:copyCommit',(e,project,id,overwrite)=>pathResult(()=>copyChange(e.sender,'复制','commit',project,id,overwrite)));
+ipcMain.handle('fs:copyUndo',(e,project,id)=>pathResult(()=>copyChange(e.sender,'恢复','undo',project,id)));
+ipcMain.handle('fs:deletePrepare',(e,project,sources)=>pathResult(()=>copySerial(()=>PathJobs.withRanges([project,...sources],()=>copyRun(e.sender,'删除','prepareDelete',project,sources)))));
+ipcMain.handle('fs:deleteCommit',(e,project,id)=>pathResult(()=>copyChange(e.sender,'删除','commitDelete',project,id)));
+ipcMain.handle('fs:deleteUndo',(e,project,id)=>pathResult(()=>copyChange(e.sender,'恢复','undoDelete',project,id)));
+ipcMain.handle('fs:trashPlan',(e,project,sources)=>pathResult(()=>PathJobs.withRanges([project,...sources],()=>copyRun(e.sender,'','trashPlan',project,sources))));
+ipcMain.handle('fs:trashCommit',(e,project,plan)=>pathResult(()=>PathJobs.withRanges([project,...(plan?.targets||[])],async()=>{
+  const report=pathProgress(e.sender,'移到回收站');
+  const checked=await copyRun(e.sender,'','validateTrash',project,plan),changedPaths=[],uncertainPaths=[];let failure;
+  // 系统回收站按「项」走，项数少但每项可能是整个目录，同样要有进度。
+  let done=0;const total=checked.targets.length;report({phase:'trash',done,total});
   for(const p of checked.targets)try{
-    const entry=checked.versions.find(v=>v.path===p),current=await copyRun('trashPlan',project,[p]);
+    const entry=checked.versions.find(v=>v.path===p),current=await copyRun(e.sender,'','trashPlan',project,[p]);
     if(JSON.stringify(current.versions[0])!==JSON.stringify(entry)||JSON.stringify(current.projectIdentity)!==JSON.stringify(checked.projectIdentity))throw Object.assign(Error('回收站提交前对象已变化'),{code:'STALE_OPERATION'});
     // 系统可能移动部分后代后才拒绝；提交一旦开始，编辑器按整个目录核对，不能把拒绝等同零副作用。
     uncertainPaths.push(p);await shell.trashItem(path.resolve(p));changedPaths.push(p);uncertainPaths.pop();
+    report({phase:'trash',done:++done,total});
   }catch(e){failure=e;break;}
   return {ok:!failure,partial:!!failure,changedPaths:[...changedPaths,...uncertainPaths],completedPaths:changedPaths,uncertainPaths,targets:checked.targets,error:failure&&String(failure.message||failure),errorCode:failure?.code|| (failure?'TRASH_FAILED':undefined)};
 })));
-ipcMain.handle('fs:copyList',(_e,project)=>pathResult(()=>copySerial(async()=>({ok:true,records:await copyRun('list',project)}))));
-ipcMain.handle('fs:copyClear',(_e,project,id)=>pathResult(()=>copySerial(()=>copyRun('clear',project,id))));
-ipcMain.handle('fs:copyExport',async(_e,project,id)=>pathResult(async()=>{
+ipcMain.handle('fs:copyList',(e,project)=>pathResult(()=>copySerial(async()=>({ok:true,records:await copyRun(e.sender,'','list',project)}))));
+ipcMain.handle('fs:copyClear',(e,project,id)=>pathResult(()=>copySerial(()=>copyRun(e.sender,'','clear',project,id))));
+ipcMain.handle('fs:copyExport',async(e,project,id)=>pathResult(async()=>{
   const picked=await dialog.showOpenDialog({title:'导出文件操作恢复副本',properties:['openDirectory']});
   if(picked.canceled)return {cancelled:true};
-  return copySerial(()=>PathJobs.withRanges([picked.filePaths[0]],()=>copyRun('exportRecovery',project,id,picked.filePaths[0])));
+  return copySerial(()=>PathJobs.withRanges([picked.filePaths[0]],()=>copyRun(e.sender,'导出','exportRecovery',project,id,picked.filePaths[0])));
 }));
-ipcMain.handle('fs:copyOpen',(_e,id)=>pathResult(async()=>{const folder=await copyRun('location',id);const error=await shell.openPath(folder);return error?{error}:{ok:true};}));
+ipcMain.handle('fs:copyOpen',(_e,id)=>pathResult(async()=>{const folder=await copyRun(undefined,'','location',id);const error=await shell.openPath(folder);return error?{error}:{ok:true};}));
 
 ipcMain.handle('fs:remove', (_e, p) => {
   try {
@@ -1331,10 +1341,10 @@ ipcMain.handle('fs:checkExists', (_e, srcPaths, destDir) => {
   } catch { return []; }
 });
 // 复制文件/目录到目标目录（同名：默认返回 conflict 由前端确认；overwrite=true 直接覆盖）
-ipcMain.handle('fs:copy', (_e, src, destDir, overwrite) => pathResult(async()=>{
-  const prepared=await copyPrepare(destDir,[src],destDir);
+ipcMain.handle('fs:copy', (e, src, destDir, overwrite) => pathResult(async()=>{
+  const prepared=await copyPrepare(e.sender,'复制',destDir,[src],destDir);
   if(!prepared.ok)return prepared;
-  return copyChange('commit',destDir,prepared.operationId,!!overwrite);
+  return copyChange(e.sender,'复制','commit',destDir,prepared.operationId,!!overwrite);
 }));
 
 // ---------- IPC：Git（worker 线程执行，主进程不阻塞）----------
