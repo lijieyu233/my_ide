@@ -1259,6 +1259,9 @@ const BrowserPanel = (() => {
     visible = false;
     renderTabs();
     if(fullscreen||fullscreenWanted)setFullscreen(false);
+    // 页内全屏也是浏览器专属状态：离开浏览器就把侧栏还回去，
+    // 否则用户切去写代码会发现侧栏不见了、还以为是自己误触。
+    if(immersive)setImmersive(false);
     overlayHid = false; // 面板隐藏本身就摘了 view，状态复位
     clearOverlayImage();
     panel.classList.add('hidden');
@@ -1291,7 +1294,58 @@ const BrowserPanel = (() => {
     catch(error){if(fullscreenWanted===!!enabled){fullscreenWanted=false;applyFullscreen(false);MI.toast(error.message,'err');}return {error:error.message};}
   }
 
-  // ---------- 空状态（收藏 + 最近访问） ----------
+  // ---------- 页内全屏（收起左右侧边栏，网页占满宽度）----------
+  /**
+   * 与 F11 那个「浏览器全屏」是两件事，别混：
+   *   · F11 / bw-fullscreen = **系统级**全屏（窗口本身铺满屏幕，还会隐藏工具栏与状态栏）
+   *   · 这里 = **页内**全屏：窗口不动，只把左侧栏（项目树所在）和右侧栏（AI 面板所在）
+   *     收起来，让网页横向占满。用户要的是「看网页时别让侧栏占地方」，
+   *     而不是把整个窗口全屏 —— 后者会连标签栏和地址栏一起吃掉。
+   *
+   * 为什么用 App.toggleSidebar / toggleRightSidebar 而不是自己 toggle class：
+   * 收起侧栏不只是 display:none，还要翻转工具栏按钮图标、更新 title、
+   * 重排 tool-strip、通知 Search/AI 的可见性。这些逻辑只在 App 里有一份，
+   * 这里绕过它就会出现「侧栏收起了但按钮还显示『收起』」这种半状态。
+   *
+   * 记忆恢复：进入时记下两侧原本是收还是开，退出时按原样恢复 ——
+   * 不能一律展开，否则本来收着左栏的用户点一下就凭空多出一栏。
+   */
+  let immersive = false, immersivePrev = null;
+  function applyImmersive(enabled) {
+    const on = !!enabled;
+    if (on && !immersive) {
+      immersivePrev = {
+        left: document.body.classList.contains('sidebar-collapsed'),
+        right: document.body.classList.contains('rsb-collapsed'),
+      };
+    }
+    immersive = on;
+    const body = document.body;
+    if (on) {
+      // 两侧都收起；已收起的不要重复切（toggleSidebar(false) 会把它展开）
+      if (!immersivePrev.left) App.toggleSidebar(true);
+      if (!immersivePrev.right) App.toggleRightSidebar(true);
+    } else if (immersivePrev) {
+      // 按进入前的状态恢复：原本开着的展开回去，原本收着的保持收起
+      App.toggleSidebar(immersivePrev.left);
+      App.toggleRightSidebar(immersivePrev.right);
+    }
+    body.classList.toggle('browser-immersive', on);
+    const button = document.getElementById('bw-immersive');
+    if (button) {
+      button.classList.toggle('active', on);
+      button.setAttribute('aria-pressed', String(on));
+      button.title = on ? '退出页内全屏 (F10)' : '页内全屏：收起左右侧边栏，让网页占满宽度 (F10)';
+      button.setAttribute('aria-label', on ? '退出页内全屏' : '页内全屏');
+    }
+    // 侧栏一收，网页容器的 rect 立刻变了；原生 WebContentsView 不在 HTML 布局里，
+    // 必须显式重新上报 bounds，否则网页会停在旧位置（右边留一条空白）。
+    requestAnimationFrame(() => { syncBounds(); requestAnimationFrame(syncBounds); });
+  }
+  function setImmersive(enabled) {
+    if (enabled && !visible) return;
+    applyImmersive(enabled);
+  }
   function renderEmpty() {
     ensureDefaultFavs();
     const favWrap = document.getElementById('be-favs');
@@ -1810,6 +1864,7 @@ const BrowserPanel = (() => {
     document.getElementById('bw-fwd').onclick = forward;
     document.getElementById('bw-reload').onclick = reload;
     document.getElementById('bw-home').onclick = home;
+    document.getElementById('bw-immersive').onclick = () => setImmersive(!immersive);
     document.getElementById('bw-fullscreen').onclick = () => setFullscreen(!fullscreenWanted);
     document.getElementById('bw-open-default').onclick = openDefault;
     document.getElementById('bw-close').onclick = () => App.closeBrowser();
@@ -1867,7 +1922,10 @@ const BrowserPanel = (() => {
         const key=event.key.toLowerCase(); if(key==='t'){if(event.shiftKey)reopenTab();else newTab();}else if(key==='w')closeTabs([tabStore.active.id]);else cycleTab(event.shiftKey?-1:1);return;
       }
       if(event.key==='F11'&&!event.ctrlKey&&!event.altKey&&!event.shiftKey){event.preventDefault();event.stopImmediatePropagation();setFullscreen(!fullscreenWanted);}
+      else if(event.key==='F10'&&!event.ctrlKey&&!event.altKey&&!event.shiftKey){event.preventDefault();event.stopImmediatePropagation();setImmersive(!immersive);}
       else if(event.key==='Escape'&&fullscreenWanted&&ddEl.classList.contains('hidden')){event.preventDefault();event.stopImmediatePropagation();setFullscreen(false);}
+      // Esc 退出页内全屏：只在系统全屏没开着时才管，避免和上一行抢同一个键
+      else if(event.key==='Escape'&&!fullscreenWanted&&immersive&&ddEl.classList.contains('hidden')){event.preventDefault();event.stopImmediatePropagation();setImmersive(false);}
     },true);
     // 整窗缩放变化 → CSS↔DIP 映射改变，主进程换算 bounds 需重新上报
     if (window.myIDE && myIDE.win && myIDE.win.onZoom) {
@@ -1892,6 +1950,7 @@ const BrowserPanel = (() => {
         else if (cmd === 'reload') reload();
         else if (cmd === 'focus-url') { urlInput.focus(); urlInput.select(); }
         else if (cmd === 'fullscreen') setFullscreen(!fullscreenWanted);
+        else if (cmd === 'immersive') setImmersive(!immersive);
         else if (cmd === 'exit-fullscreen') setFullscreen(false);
       });
       // 主进程页面状态回推（url/title/loading/canBack/canFwd/progress/err）
@@ -1901,8 +1960,9 @@ const BrowserPanel = (() => {
 
   function aiOperation(operation,args={}) {
     if(operation==='tabs'||operation.startsWith('tab_'))return aiTabOperation(operation,args);
-    if(operation==='state')return {visible,fullscreen,colorScheme:darkMode,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
+    if(operation==='state')return {visible,fullscreen,immersive,colorScheme:darkMode,favorites:favs().slice(0,100),folders:folders().slice(0,100),favoritesTruncated:favs().length>100};
     if(operation==='fullscreen')return setFullscreen(args.enabled).then(result=>({...result,ok:!result.error,committed:!result.error}));
+    if(operation==='immersive'){setImmersive(!!args.enabled);return {ok:true,immersive};}
     if(operation==='color_scheme')return (async()=>{
       const result=await B().setColorScheme(args.scheme);if(!result?.ok)return {ok:false,error:result?.error||'网页显示设置未生效'};
       darkMode=args.scheme;renderDarkBtn();
@@ -1934,6 +1994,7 @@ const BrowserPanel = (() => {
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
     cycleDarkMode, get darkMode() { return darkMode; },
     setFullscreen,get fullscreen(){return fullscreen;},
+    setImmersive,get immersive(){return immersive;},
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

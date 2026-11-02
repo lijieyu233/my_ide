@@ -2637,6 +2637,11 @@ body.browser-fullscreen #browser-panel { position: fixed; inset: 0; }
 body.browser-fullscreen #toolbar, body.browser-fullscreen #statusbar,
 body.browser-fullscreen #tool-strip, body.browser-fullscreen #sidebar,
 body.browser-fullscreen #ai-panel, body.browser-fullscreen #pet { visibility: hidden; }
+/* 页内全屏（F10 / bw-immersive）：窗口不动，只收起左右侧栏让网页占满宽度。
+   与上面 browser-fullscreen（系统级全屏）是两回事，别合并 —— 那个会连工具栏和状态栏一起隐藏。
+   侧栏的 display 由 App.toggleSidebar 的 sidebar-collapsed / rsb-collapsed 控制，
+   这里只补一条：AI 面板收起后，它左侧那条拖拽条也不该留着一个 5px 的空隙。 */
+body.browser-immersive #ai-resize { display: none; }
 .bw-tab-strip { display: flex; align-items: center; flex-shrink: 0; gap: 4px; padding: 5px 8px 0; min-width: 0; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
 #bw-tabs { display: flex; gap: 3px; flex: 1 1 0; min-width: 0; height: 32px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
 #bw-tabs::-webkit-scrollbar { display: none; }
@@ -3084,6 +3089,9 @@ body.bw-group-dragging .bw-live-group-head { cursor: grabbing; }
 /* 网页深色按钮：图标随三态换（深色=月亮/浅色=太阳/跟随系统=显示器），只有明确深色才点亮 */
 #bw-dark svg.ic { width: 14px; height: 14px; }
 #bw-dark.active { color: var(--accent); }
+/* 页内全屏激活时按钮也要有可见反馈（和深色模式按钮同一套：只换色，不加边框，
+   工具栏一排按钮里多一个描边框会很吵） */
+#bw-immersive.active { color: var(--accent); }
 
 /* ---------- 代码文件编辑器（CM6 语法高亮，code-editor.js） ---------- */
 .editor-code-wrap { flex: 1; min-height: 0; overflow: hidden; }

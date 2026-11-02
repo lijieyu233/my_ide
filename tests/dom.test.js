@@ -4723,6 +4723,52 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('内置浏览器：打开和聚焦不展开建议，输入才展开，清空与Esc收起',async()=>{
     g(dom,'App.showTool("browser")');await tick();const input=$(dom,'#bw-url'),dropdown=$(dom,'#bw-dd');input.blur();input.focus();await tick();assert_(dropdown.classList.contains('hidden'),'单纯聚焦不展开');input.value='github';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(!dropdown.classList.contains('hidden'),'主动输入匹配项时展开');input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));await tick();assert_(dropdown.classList.contains('hidden'),'Esc关闭建议');input.focus();input.value='';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));assert_(dropdown.classList.contains('hidden'),'空输入不显示整份历史');g(dom,'App.showTool("project")');
   });
+  await okAsync('内置浏览器：页内全屏收起左右侧栏，退出按进入前状态恢复（2026-11-02）', async () => {
+    // 用户要的是「看网页时别让侧栏占地方」，不是把整个窗口全屏（F11 那个会连工具栏一起吃掉）。
+    // 与上一条用例的区别：browser-fullscreen 是系统级，browser-immersive 是页内。
+    g(dom, 'App.showTool("browser")'); await tick();
+    const body = () => dom.window.document.body;
+    const state = () => ({ left: body().classList.contains('sidebar-collapsed'), right: body().classList.contains('rsb-collapsed'), imm: body().classList.contains('browser-immersive') });
+    // ① 两侧原本都展开 → 点按钮应双双收起
+    g(dom, 'App.toggleSidebar(false);App.toggleRightSidebar(false)'); await tick();
+    const btn = $(dom, '#bw-immersive');
+    assert_(btn, '页内全屏按钮存在');
+    click(btn); await tick(); await tick();
+    let s = state();
+    assert_(s.left && s.right, '左右侧栏都收起, got ' + JSON.stringify(s));
+    assert_(s.imm, 'body 带 browser-immersive');
+    assert_(btn.getAttribute('aria-pressed') === 'true', '可读页内全屏状态');
+    assert_(/退出/.test(btn.title), '激活后 title 变成退出, got ' + btn.title);
+    // ② 系统级全屏不受影响（两件事不能串）
+    assert_(!body().classList.contains('browser-fullscreen'), '页内全屏不触发系统级全屏');
+    // ③ 再点一次 → 两侧按进入前（都展开）恢复
+    click(btn); await tick(); await tick();
+    s = state();
+    assert_(!s.left && !s.right && !s.imm, '退出后两侧恢复展开, got ' + JSON.stringify(s));
+    assert_(btn.getAttribute('aria-pressed') === 'false', '状态复位');
+    // ④ 进入前左侧本来就是收起的 → 退出后必须保持收起（不能凭空多出一栏）
+    g(dom, 'App.toggleSidebar(true);App.toggleRightSidebar(false)'); await tick();
+    click(btn); await tick(); await tick();
+    assert_(state().left && state().right, '进入时左侧已收起也要右侧一并收起');
+    click(btn); await tick(); await tick();
+    s = state();
+    assert_(s.left === true && s.right === false, '退出后回到进入前状态（左收右开）, got ' + JSON.stringify(s));
+    // ⑤ F10 快捷键切换；Esc 退出
+    g(dom, 'App.toggleSidebar(false);App.toggleRightSidebar(false)'); await tick();
+    key(dom, 'F10'); await tick(); await tick();
+    assert_(state().imm, 'F10 进入页内全屏');
+    key(dom, 'Escape'); await tick(); await tick();
+    assert_(!state().imm, 'Esc 退出页内全屏');
+    // ⑥ 离开浏览器自动退出（否则用户切去写代码会以为侧栏自己消失了）
+    key(dom, 'F10'); await tick(); await tick();
+    assert_(state().imm, '再次进入');
+    g(dom, 'App.showTool("project")'); await tick(); await tick();
+    s = state();
+    assert_(!s.imm && !s.left, '切页自动退出并恢复侧栏, got ' + JSON.stringify(s));
+    g(dom, 'App.showTool("browser")'); await tick();
+    click($(dom, '#tool-project')); await tick();
+  });
+
   await okAsync('内置浏览器：全屏按钮、F11、Esc与切页恢复，不改侧栏和AI开关',async()=>{
     g(dom,'App.showTool("browser")');await tick();const before=g(dom,'JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})'),btn=$(dom,'#bw-fullscreen');click(btn);await tick();assert_(dom.window.document.body.classList.contains('browser-fullscreen'),'按钮进入全屏');assert_(btn.getAttribute('aria-pressed')==='true','可读全屏状态');key(dom,'F11');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'F11退出');key(dom,'F11');await tick();key(dom,'Escape');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'Esc退出');click(btn);await tick();g(dom,'App.showTool("project")');await tick();assert_(!dom.window.document.body.classList.contains('browser-fullscreen'),'切页自动退出');assert_((calls.browserFullscreen||[]).at(-1)===false,'请求恢复窗口');assert_(g(dom,'JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})')===before,'无额外持久布局改变');click($(dom,'#tool-project'));await tick();
   });
