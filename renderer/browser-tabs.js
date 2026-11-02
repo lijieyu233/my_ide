@@ -7,7 +7,19 @@
 (function (host) {
   const SESSION = 'myide-browser-session:', GROUPS = 'myide-browser-tab-groups';
   const id = () => 'bt-' + (globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2));
-  const scopeKey = root => root ? String(root).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : '@global';
+  /**
+   * 存储作用域：**恒为 @global**（2026-11-02 用户要求）。
+   *
+   * 历史：原来是按项目路径分 key（`myide-browser-session:<项目路径>`），
+   * 切项目就换一套标签。用户明确否定：「不要按项目隔离，我希望切换项目对浏览器完全没影响」。
+   *
+   * 理由也站得住：浏览器是全局工具，不是项目的附属品。同一个人在不同项目间切换时，
+   * 正在查的文档、正在对的后台不会因为换了个文件夹就消失。
+   *
+   * ⚠ 保留这个函数（而不是删掉直接写死 '@global'）是为了让 `load(root)` 的调用点
+   * 不用全部改签名；root 参数现在被忽略。
+   */
+  const scopeKey = () => '@global';
   const validURL = url => typeof url === 'string' && (!url || /^(https?:|file:)/i.test(url));
   const copy = value => JSON.parse(JSON.stringify(value));
   // Edge 的组色板（8 色）。用固定枚举而不是自由取色，菜单里就一排圆点，
@@ -32,13 +44,34 @@
       state = { version: 1, tabs: [freshTab()], active: null, closed: [] }; state.active = state.tabs[0].id;
       try {
         const raw = storage.getItem(SESSION + scope);
-        if (!raw) return { ok: true };
+        if (!raw) { adoptLegacySession(root); return { ok: true }; }
         const parsed = JSON.parse(raw);
         if (parsed.version !== 1 || !Array.isArray(parsed.tabs) || !parsed.tabs.length || !parsed.tabs.every(validateTab) || !Array.isArray(parsed.closed) || !parsed.closed.every(validateTab) || new Set(parsed.tabs.map(t => t.id)).size !== parsed.tabs.length || !parsed.tabs.some(t => t.id === parsed.active)) throw Error('invalid');
         state = parsed;
         return { ok: true };
       } catch { blocked = true; return fail('浏览器标签记录无法读取，原记录已保留'); }
     };
+    /**
+     * 老数据迁移：作用域从「按项目」改成全局后，`@global` 还是空的，
+     * 而用户原来那批标签躺在 `myide-browser-session:<项目路径>` 里。
+     * 直接把当前项目的旧记录接管过来 —— 否则用户升级后第一次打开浏览器
+     * 会看到一个空白新标签页，以为历史全丢了。
+     *
+     * 只接管**当前项目**那一份（不是随便找一份）：用户此刻正在看的多半就是它。
+     * 其它项目的旧记录原样留着不动（不再读取，但也不删，删数据是不可逆的）。
+     */
+    function adoptLegacySession(root) {
+      if (!root) return;
+      const legacyKey = SESSION + String(root).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      try {
+        const raw = storage.getItem(legacyKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed.version !== 1 || !Array.isArray(parsed.tabs) || !parsed.tabs.length || !parsed.tabs.every(validateTab) || !Array.isArray(parsed.closed) || !parsed.closed.every(validateTab) || new Set(parsed.tabs.map(t => t.id)).size !== parsed.tabs.length || !parsed.tabs.some(t => t.id === parsed.active)) return;
+        state = parsed;
+        save();   // 写到 @global
+      } catch { /* 旧记录坏了就照常从空白开始，不阻断启动 */ }
+    }
     const active = () => state.tabs.find(t => t.id === state.active);
     // 组列表：只认 { id, name, color, folded }。旧的「快照组」带 tabs 数组，
     // 会被下面 cleanGroups 识别为待迁移数据（见 migrateLegacyGroups）。

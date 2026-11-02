@@ -16,7 +16,9 @@ function createService({getView,ensureView,panel,interactions,openExternal,artif
     const tabControl=operation.startsWith('tab_'),tabList=operation==='tabs';
     const tabSnapshot=tabControl?tabSnapshots.get(a.snapshot):null;
     if(tabControl&&!tabSnapshot)throw fail('BROWSER_TABS_CHANGED','请先读取browser_tabs并使用最新snapshot');
-    if(tabControl&&context.rootId&&tabSnapshot.scope!==String(context.rootId).replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase())throw fail('BROWSER_SCOPE_CHANGED','标签项目与本次AI项目不同');
+    // 项目校验已移除（2026-11-02）：浏览器标签改为全局作用域，不再属于某个项目。
+    // 原来的判断是 tabSnapshot.scope !== 归一化后的 rootId，而 scope 现在恒为 '@global'，
+    // 与任何真实项目路径都不相等 —— 留着会让 AI 每次调标签都报 BROWSER_SCOPE_CHANGED。
     const selected=tabControl&&a.tab_id?tabSnapshot.tabs.find(t=>t.id===a.tab_id):null;
     const group=tabControl&&a.group_id?tabSnapshot.groups.find(g=>g.id===a.group_id):null;
     if(tabControl&&a.tab_id&&!selected)throw fail('BROWSER_TAB_NOT_FOUND','请使用browser_tabs返回的标签ID');

@@ -28,11 +28,18 @@ async function test(name, run) { const f = fixture(); try { await run(f); passed
     w.BrowserPanel.activateTab(a); assert.equal(w.BrowserPanel.url, 'https://a.test/redirect'); assert.equal(calls.at(-1).url, null); assert.equal(calls.at(-1).id, a);
     w.BrowserPanel.closeTabs([b]); assert.equal(calls.find(c => c.op === 'close').ids[0], b); assert.equal(w.BrowserPanel.activeTabId, a);
   });
-  await test('新标签、关闭、重新打开和网页新窗口统一保存，跨项目隔离', async ({ w, calls, cmd, spawn, push }) => {
+  await test('新标签、关闭、重新打开和网页新窗口统一保存，切换项目不影响标签（2026-11-02）', async ({ w, calls, cmd, spawn, push }) => {
+    // 用户要求：「不要按项目隔离，我希望切换项目对浏览器完全没影响」。
+    // 原来这条断言的是「切到 B 项目只剩 1 个空白标签」—— 已随需求反转：
+    // 切项目后标签数量、活动项、URL 都必须原样保留。
     w.BrowserPanel.show(); w.BrowserPanel.setProject('D:/A'); w.BrowserPanel.go('https://a.test'); const a = w.BrowserPanel.activeTabId; spawn({ sourceTabId: a, url: 'https://child.test' }); assert.equal(w.BrowserPanel.tabs.length, 2);
     cmd('close-tab'); assert.equal(w.BrowserPanel.tabs.length, 1); cmd('reopen-tab'); assert.equal(w.BrowserPanel.tabs.length, 2); const reopened = w.BrowserPanel.activeTabId;
-    w.BrowserPanel.setProject('D:/B'); assert.equal(w.BrowserPanel.tabs.length, 1); assert.equal(w.BrowserPanel.url, ''); spawn({ sourceTabId: a, url: 'https://stale.test' }); assert.equal(w.BrowserPanel.tabs.length, 1);
-    push({tabId:a,navigated:true,url:'https://a.test/background',title:'A后台跳转'}); assert.equal(w.BrowserPanel.url,'');
+    const before = JSON.stringify({ tabs: w.BrowserPanel.tabs, active: w.BrowserPanel.activeTabId, url: w.BrowserPanel.url });
+    w.BrowserPanel.setProject('D:/B');
+    assert.equal(JSON.stringify({ tabs: w.BrowserPanel.tabs, active: w.BrowserPanel.activeTabId, url: w.BrowserPanel.url }), before, '切项目后标签、活动项、URL 全不变');
+    spawn({ sourceTabId: a, url: 'https://stale.test' }); assert.equal(w.BrowserPanel.tabs.length, 3, '切项目后新窗口仍能开标签');
+    w.BrowserPanel.closeTabs([w.BrowserPanel.tabs.at(-1).id]);
+    push({tabId:a,navigated:true,url:'https://a.test/background',title:'A后台跳转'}); assert.equal(w.BrowserPanel.tabs.find(t=>t.id===a).url,'https://a.test/background', '后台标签照样接收状态回推');
     w.BrowserPanel.setProject('D:/A'); assert.equal(w.BrowserPanel.tabs.length, 2); assert.equal(w.BrowserPanel.activeTabId, reopened); assert.equal(w.BrowserPanel.tabs.find(t=>t.id===a).url,'https://a.test/background');
     w.BrowserPanel.hide(); const count = calls.length; w.BrowserPanel.show(); assert.equal(calls.slice(count).filter(c => c.op === 'open').length, 1);
   });

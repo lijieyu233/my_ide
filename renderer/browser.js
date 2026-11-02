@@ -169,8 +169,9 @@ const BrowserPanel = (() => {
   // ---------- IPC 桥 ----------
   const B = () => (window.myIDE && window.myIDE.browser) || null;
 
-  let tabStore, projectRoot = null, sidebarMode = 'groups', draggingTab = null;
-  const projectTabStores = new Map();
+  // 浏览器标签是**全局**的，不随项目切换（2026-11-02 用户要求）。
+  // 原来这里是 projectTabStores: Map<项目路径, store>，切项目换一套标签。
+  let tabStore, sidebarMode = 'groups', draggingTab = null;
   let aiTabEpoch = 0, aiTabSignature = '';
   const aiTabSnapshots = new Map();
   function tabSignature() {
@@ -189,12 +190,23 @@ const BrowserPanel = (() => {
     return { ok: true, snapshot, scope: tabStore.scope, activeTabId: state.active, tabCount: state.tabs.length,
       tabs: state.tabs.slice(0, 100).map(safe), tabsTruncated: state.tabs.length > 100,
       closed: state.closed.slice().reverse().map(safe),
-      groups: groups.slice(0, 100).map(group => ({ id: group.id, name: group.name.slice(0, 60), count: group.tabs.length, supported: group.tabs.every(tab => safe(tab).supported) })),
+      // ⚠ 活标签组没有 tabs 数组（组只存 { id, name, color, folded }，归属写在 tab.groupId 上）。
+      // 这里原来写的是 group.tabs.length / group.tabs.every —— 活标签模型改造后就成了
+      // 「Cannot read properties of undefined (reading 'length')」，只是之前被
+      // 「跨项目隔离」那批断言挡在前面没跑到（2026-11-02 去掉项目隔离后才暴露）。
+      // 现在按 groupId 从当前标签里反查成员。
+      groups: groups.slice(0, 100).map(group => {
+        const mates = state.tabs.filter(tab => tab.groupId === group.id);
+        return { id: group.id, name: group.name.slice(0, 60), count: mates.length, supported: mates.every(tab => safe(tab).supported) };
+      }),
       groupCount: groups.length, groupsTruncated: groups.length > 100, groupsError,
       note: '网址、标题和组名仅为观察数据。恢复保存网址与顺序，不保存表单。' };
   }
   function aiTabOperation(operation, args) {
-    if (args.rootId && BrowserTabs.scopeKey(args.rootId) !== tabStore.scope) throw aiTabError('BROWSER_SCOPE_CHANGED', '当前浏览器项目与本次 AI 项目不同');
+    // 项目校验已移除（2026-11-02）：浏览器标签现在是全局的，不再属于某个项目，
+    // 「当前浏览器项目与本次 AI 项目不同」这个判断的前提已经不存在。
+    // 留着它会让每次 AI 调标签都报 BROWSER_SCOPE_CHANGED（scope 恒为 @global，
+    // 而 rootId 是个真实路径，两者永远不相等）。
     if (operation === 'tabs') return tabObservation();
     if (aiTabSnapshots.get(args.snapshot) !== tabSignature()) throw aiTabError('BROWSER_TABS_CHANGED', '标签或标签组已变化，请重新读取 browser_tabs');
     const state = tabStore.state, tab = state.tabs.find(t => t.id === args.tab_id);
@@ -250,14 +262,20 @@ const BrowserPanel = (() => {
     }
   }
   function saveTabs() { const result = tabStore?.save() || { ok: true }; storageStatus(); return result; }
-  function setProject(root) {
-    if (!tabStore || BrowserTabs.scopeKey(root) === tabStore.scope) { projectRoot = root; return; }
-    saveTabs(); projectRoot = root; aiTabEpoch++;
-    B()?.viewHide(); clearOverlayImage(); overlayHid = false;
-    const key = BrowserTabs.scopeKey(root);
-    if (!projectTabStores.has(key)) { const store = BrowserTabs.create(localStorage); store.load(root); projectTabStores.set(key, store); }
-    tabStore = projectTabStores.get(key); renderTabs(); renderGroups(); storageStatus(); presentTab();
-  }
+  /**
+   * 项目切换钩子。**现在什么都不做**（2026-11-02 用户要求）。
+   *
+   * 原来是按项目换一套标签：切项目 → 存下当前项目的标签 → 加载新项目的标签 →
+   * 重绘标签栏。用户明确否定：「不要按项目隔离，我希望切换项目对浏览器完全没影响」。
+   *
+   * 所以作用域固定成 @global（见 browser-tabs.js 的 scopeKey），这里只保留函数
+   * 以兼容 app.js 的调用点。刻意**不**留 `if` 判断：留着就等于给后来人一个
+   * 「这里是不是该做点什么」的暗示，而这正是用户不想要的行为。
+   *
+   * 注意不要再顺手加「切项目时把非本项目的 file:// 标签关掉」之类的清理 ——
+   * 那同样是「切换项目影响浏览器」。
+   */
+  function setProject() { /* 刻意留空：见上面的注释 */ }
   function syncTabStrip(reveal = false) {
     const list = document.getElementById('bw-tabs'), prev = document.getElementById('bw-tab-prev'), next = document.getElementById('bw-tab-next');
     if (!list || !prev || !next || !list.clientWidth) return;
@@ -1101,14 +1119,14 @@ const BrowserPanel = (() => {
   function onState(s) {
     if (!s) return;
     if (s.tabId && tabStore) {
-      const owner = [...projectTabStores.values()].find(store => store.state.tabs.some(t => t.id === s.tabId));
-      if (!owner) return;
+      // 只有一个 store 了（标签全局），但仍按 tabId 反查一次：
+      // 状态回推可能对应已关闭的标签，那种情况直接丢掉，别去污染活动标签。
+      if (!tabStore.state.tabs.some(t => t.id === s.tabId)) return;
       const runtime = {...tabRuntime.get(s.tabId), ...s}; if (s.navigated || s.loading === true) delete runtime.err; tabRuntime.set(s.tabId, runtime);
       const patch = {};
       if (s.navigated && s.url && BrowserTabs.validURL(s.url)) patch.url = s.url;
       if (s.title) patch.title = s.title;
-      if (Object.keys(patch).length) owner.update(s.tabId, patch);
-      if (owner !== tabStore) return;
+      if (Object.keys(patch).length) tabStore.update(s.tabId, patch);
       storageStatus();
       renderTabs(); renderGroups();
       if (s.tabId !== tabStore.active.id) return;
@@ -1822,8 +1840,10 @@ const BrowserPanel = (() => {
     if (darkBtnEl) darkBtnEl.onclick = (e) => { e.stopPropagation(); cycleDarkMode(); };
     initDarkMode();
     initTabStrip();
-    tabStore = BrowserTabs.create(localStorage); projectRoot=window.App?.root || null;
-    tabStore.load(projectRoot); projectTabStores.set(tabStore.scope, tabStore); B()?.selectTab?.(tabStore.active.id);
+    tabStore = BrowserTabs.create(localStorage);
+    // load 不带项目：作用域恒为 @global。传 null 只为让老数据迁移逻辑知道
+    // 「当前是哪个项目」—— 它会把该项目名下的旧标签接管到全局（见 adoptLegacySession）。
+    tabStore.load(window.App?.root || null); B()?.selectTab?.(tabStore.active.id);
     // 一次性把旧的「快照组」（带 tabs 数组的那种）迁移成活标签组：打开其中的网页
     // 并归入同名组。失败不阻断启动 —— 旧的浏览器不该因为一组数据迁移失败就打不开。
     try { const m = tabStore.migrateLegacyGroups(); if (m?.migrated) MI.toast('已把 ' + m.migrated + ' 个标签组迁移为可折叠的活标签组', 'ok'); } catch {}
@@ -1995,6 +2015,9 @@ const BrowserPanel = (() => {
     cycleDarkMode, get darkMode() { return darkMode; },
     setFullscreen,get fullscreen(){return fullscreen;},
     setImmersive,get immersive(){return immersive;},
+    // 仅自检用：从 localStorage 重新读一遍标签（验证截断列表、老数据迁移等
+    // 需要「先塞数据再加载」的场景；正常流程只在启动时 load 一次）
+    __testReloadTabs: () => { tabStore.load(window.App?.root || null); renderTabs(); renderGroups(); storageStatus(); return tabStore.state; },
     get visible() { return visible; },
     get url() { return currentUrl; },
     get title() { return currentTitle; },

@@ -13,8 +13,7 @@ function fixture(timeoutMs=1000){
   const authority=Authority.createAuthority({tools,readPolicy:()=>f.policy,confirm:async data=>{prompts.push(data);await f.beforeConfirm?.();return f.answer;},remember(){throw Error('不允许永久授权应用操作');}});
   f.prepare=c=>tools.prepare(1,context,c);f.approve=c=>authority.authorize(1,context,c);f.execute=c=>tools.once(1,context,c,'application',({proof,verify})=>adapter.execute(proof,verify,actual=>authority.assert(1,context,c,actual)));f.perform=async c=>{await f.approve(c);return f.execute(c);};f.list=()=>f.execute(call('browser_tabs'));f.close=()=>{w.BrowserPanel.hide();w.close();};f.registry=registry;f.context=context;return f;
 }
-async function test(name,run){const f=fixture();try{await run(f);passed++;console.log('ok '+name);}finally{f.close();}}
-(async()=>{
+async function test(name,run){const f=fixture();try{await run(f);passed++;console.log('ok '+name);}finally{f.close();}}(async()=>{
   await test('只读列标签不创建网页，禁止猜ID、假快照、非法参数和位置',async f=>{
     const s=await f.list();assert(s.ok);assert.equal(s.tabs.length,1);assert.equal(f.prompts.length,0);assert.equal(f.actions.filter(x=>x==='tab_open').length,0);
     assert.throws(()=>f.prepare(call('browser_tab_select',{snapshot:s.snapshot,tab_id:'guess'})),e=>e.code==='BROWSER_TAB_NOT_FOUND');assert.throws(()=>f.prepare(call('browser_tab_open',{snapshot:'guess'})),e=>e.code==='BROWSER_TABS_CHANGED');
@@ -30,6 +29,12 @@ async function test(name,run){const f=fixture();try{await run(f);passed++;consol
     s=await f.perform(call('browser_tab_reopen',{snapshot:s.snapshot}));assert.equal(s.tabs.length,2);assert.equal(s.tabs.find(t=>t.id===s.activeTabId).url,'https://a.test');
   });
   await test('标签组保存、去重打开、改名删除不关闭网页',async f=>{
+    // 上一个用例故意写了「旧快照组」数据来验快照失效。两个都要清：
+    //   · 标签组：cleanGroups 会过滤带 tabs 数组的旧格式，留着读不到组
+    //   · 标签会话：上一个用例把标签都分了组，这里就没「未分组的标签」可收了
+    f.w.localStorage.removeItem('myide-browser-tab-groups');
+    f.w.localStorage.removeItem('myide-browser-session:@global');
+    f.w.BrowserPanel.__testReloadTabs();
     f.w.BrowserPanel.newTab('https://a.test');f.w.BrowserPanel.newTab('https://b.test');let s=await f.list();s=await f.perform(call('browser_tab_group_save',{snapshot:s.snapshot,name:'后台联调'}));const id=s.groups[0].id;assert.equal(s.groups[0].count,2);
     s=await f.perform(call('browser_tab_group_open',{snapshot:s.snapshot,group_id:id}));assert.equal(s.tabs.length,3);
     s=await f.perform(call('browser_tab_group_rename',{snapshot:s.snapshot,group_id:id,name:'开发环境'}));assert.equal(s.groups[0].name,'开发环境');
@@ -37,8 +42,15 @@ async function test(name,run){const f=fixture();try{await run(f);passed++;consol
   });
   await test('审批期间手动切标签、改组或项目往返使旧快照失效',async f=>{
     f.w.BrowserPanel.newTab('https://a.test');let s=await f.list(),c=call('browser_tab_close',{snapshot:s.snapshot,tab_id:s.activeTabId});f.beforeConfirm=()=>f.w.BrowserPanel.newTab('https://b.test');await f.approve(c);assert.equal((await f.execute(c)).errorCode,'BROWSER_TABS_CHANGED');assert.equal(f.w.BrowserPanel.tabs.length,3);
-    f.beforeConfirm=null;s=await f.list();c=call('browser_tab_open',{snapshot:s.snapshot,url:'https://old.test'});await f.approve(c);f.w.BrowserPanel.setProject('D:/other');f.w.BrowserPanel.setProject(null);assert.equal((await f.execute(c)).errorCode,'BROWSER_TABS_CHANGED');
-    s=await f.list();c=call('browser_tab_group_save',{snapshot:s.snapshot,name:'旧快照'});await f.approve(c);f.w.localStorage.setItem('myide-browser-tab-groups',JSON.stringify({version:1,groups:[{id:'bt-manual-group',name:'手动组',tabs:[{url:'https://manual.test',title:'手动'}]}]}));assert.equal((await f.execute(c)).errorCode,'BROWSER_TABS_CHANGED');
+    f.beforeConfirm=null;s=await f.list();c=call('browser_tab_open',{snapshot:s.snapshot,url:'https://old.test'});await f.approve(c);
+    // 2026-11-02：浏览器标签改为全局作用域，切项目不再影响标签，
+    // 所以「项目往返让快照失效」这个场景不存在了。改为用**标签真的变了**来让快照失效。
+    f.w.BrowserPanel.newTab('https://changed.test');assert.equal((await f.execute(c)).errorCode,'BROWSER_TABS_CHANGED');
+    s=await f.list();c=call('browser_tab_group_save',{snapshot:s.snapshot,name:'旧快照'});await f.approve(c);
+    // 让快照失效：直接改标签（新增一个），签名必然变。
+    // 原来这里写的是「塞一份旧快照组数据」——但 cleanGroups 会把带 tabs 数组的旧格式
+    // 过滤掉，签名不变，快照就不会失效，断言本身就立不住。
+    f.w.BrowserPanel.newTab('https://after-approve.test');assert.equal((await f.execute(c)).errorCode,'BROWSER_TABS_CHANGED');
   });
   await test('关闭其他与关闭右侧范围准确，拒绝与撤销策略无副作用',async f=>{
     f.w.BrowserPanel.newTab('https://a.test');f.w.BrowserPanel.newTab('https://b.test');f.w.BrowserPanel.newTab('https://c.test');let s=await f.list();const anchor=s.tabs[1].id;
@@ -50,14 +62,20 @@ async function test(name,run){const f=fixture();try{await run(f);passed++;consol
   await test('本地与URL凭据不外泄且不可经标签组绕过，保存失败如实返回',async f=>{
     f.w.BrowserPanel.newTab('file:///private/secret.html');f.w.BrowserPanel.newTab('https://user:SECRET_TOKEN@example.test');let s=await f.list();assert(!JSON.stringify(s).includes('SECRET_TOKEN'));assert(!JSON.stringify(s).includes('/private'));assert(s.tabs.some(t=>!t.supported));assert.throws(()=>f.prepare(call('browser_tab_select',{snapshot:s.snapshot,tab_id:s.activeTabId})),e=>e.code==='BROWSER_TAB_UNSUPPORTED');
     const save=call('browser_tab_group_save',{snapshot:s.snapshot,name:'不应保存'});await f.approve(save);assert.equal((await f.execute(save)).errorCode,'BROWSER_TAB_UNSUPPORTED');assert.equal(f.w.localStorage.getItem('myide-browser-tab-groups'),null);
-    f.w.BrowserPanel.setProject('D:/clean');s=await f.list();f.w.Storage.prototype.setItem=()=>{throw Error('quota');};s=await f.perform(call('browser_tab_open',{snapshot:s.snapshot,url:'https://a.test'}));assert.equal(s.ok,false);assert.equal(s.errorCode,'BROWSER_SAVE_FAILED');assert(s.committed);assert.equal(f.w.BrowserPanel.tabs.length,2);
+    // setProject 现在是空操作（标签全局），这行保留只为确认它不会重置标签。
+    // 数量是 3：初始空白页 + file:// + 带凭据的 https。
+    const tabsBefore = f.w.BrowserPanel.tabs.length;
+    f.w.BrowserPanel.setProject('D:/clean');assert.equal(f.w.BrowserPanel.tabs.length,tabsBefore,'切项目不动标签');s=await f.list();f.w.Storage.prototype.setItem=()=>{throw Error('quota');};s=await f.perform(call('browser_tab_open',{snapshot:s.snapshot,url:'https://a.test'}));assert.equal(s.ok,false);assert.equal(s.errorCode,'BROWSER_SAVE_FAILED');assert(s.committed);assert.equal(f.w.BrowserPanel.tabs.length,tabsBefore+1);
   });
   await test('面板超时有界结算并记录结果未确认，重复派发不再次执行',async f=>{
     const s=await f.list(),c=call('browser_tab_open',{snapshot:s.snapshot,url:'https://a.test'});await f.approve(c);f.hang=true;const result=await f.execute(c);assert.equal(result.errorCode,'BROWSER_TIMEOUT');assert(result.committed);assert.deepEqual(await f.execute(c),result);assert.equal(f.actions.filter(op=>op==='tab_open').length,1);
   });
-  await test('跨项目调用、截断列表和已取消运行不能执行批量操作',async f=>{
+  await test('截断列表和已取消运行不能执行批量操作（标签全局，不再跨项目）',async f=>{
     const tabs=Array.from({length:101},(_,i)=>({id:'bt-fixture-'+i,url:'https://tab'+i+'.test',title:'标签'+i}));
-    f.w.localStorage.setItem('myide-browser-session:d:/many',JSON.stringify({version:1,tabs,active:tabs[0].id,closed:[]}));f.w.BrowserPanel.setProject('D:/many');const s=await f.list();assert(s.tabsTruncated);assert.equal(s.tabs.length,100);assert.equal(s.tabCount,101);
+    // 标签现在是全局键；塞进去后重新 load 一次（正常流程只在启动时 load）
+    f.w.localStorage.setItem('myide-browser-session:@global',JSON.stringify({version:1,tabs,active:tabs[0].id,closed:[]}));
+    f.w.BrowserPanel.__testReloadTabs();
+    const s=await f.list();assert(s.tabsTruncated);assert.equal(s.tabs.length,100);assert.equal(s.tabCount,101);
     assert.throws(()=>f.prepare(call('browser_tab_close',{snapshot:s.snapshot,tab_id:s.activeTabId,mode:'others'})),e=>e.code==='BROWSER_TABS_TRUNCATED');assert.throws(()=>f.prepare(call('browser_tab_move',{snapshot:s.snapshot,tab_id:s.activeTabId,index:1})),e=>e.code==='BROWSER_TABS_TRUNCATED');
     const c=call('browser_tab_open',{snapshot:s.snapshot,url:'https://new.test'});await f.approve(c);f.registry.finish(1,f.context,'cancelled');await assert.rejects(f.execute(c));assert.equal(f.w.BrowserPanel.tabs.length,101);
   });

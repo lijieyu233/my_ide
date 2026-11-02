@@ -3,11 +3,43 @@ const { createService } = require('../src/main/browser/browser-tab-views');
 const storage = () => { const map = new Map(); return { getItem: k => map.get(k) || null, setItem: (k, v) => map.set(k, v) }; };
 let passed = 0;
 function test(name, run) { run(); passed++; console.log('ok ' + name); }
-test('每个项目恢复顺序与活动标签，关闭列表也持久保留', () => {
+test('标签全局共享：切换项目不改变已打开标签与活动项（2026-11-02 用户要求）', () => {
+  // 用户原话：「不要按项目隔离，我希望切换项目对浏览器完全没影响」。
+  // 原来这里断言的是「每个项目恢复各自的标签」—— 已随需求反转。
   const disk = storage(), model = create(disk); model.load('D:\\ProjectA');
   const a = model.add('https://a.test', 'A'), b = model.add('https://b.test', 'B'); model.reorder(b.id, a.id); model.activate(a.id); model.close([b.id]);
-  const saved = model.state; const again = create(disk); again.load('d:/projecta/'); assert.deepEqual(again.state, saved); assert.equal(again.reopen().url, b.url);
-  again.load('D:/ProjectB'); assert.equal(again.state.tabs.length, 1); assert.equal(again.active.url, ''); again.add('https://other.test'); again.load('D:/ProjectA'); assert.equal(again.active.url, b.url);
+  const saved = model.state;
+  // 换项目：标签一个不少、活动项不变、关闭栈也在
+  model.load('D:/ProjectB');
+  assert.deepEqual(model.state, saved, '切项目后标签状态完全不变');
+  assert.equal(model.scope, '@global', '作用域恒为 @global');
+  // 再切一次也不变
+  model.load('D:/ProjectA/');
+  assert.deepEqual(model.state, saved);
+  assert.equal(model.reopen().url, b.url, '关闭栈跨项目仍在');
+  // 写入的是同一个全局键
+  assert.ok(disk.getItem('myide-browser-session:@global'), '落在全局键上');
+  assert.equal(disk.getItem('myide-browser-session:d:/projecta'), null, '不再按项目分键写入');
+});
+test('老数据迁移：全局键为空时接管当前项目名下的旧标签', () => {
+  // 作用域从「按项目」改成全局后，用户原来那批标签躺在旧键里。
+  // 不接管的话升级后第一次打开浏览器会看到空白页，以为历史全丢了。
+  const disk = storage();
+  const tabs = [{ id: 'bt-old-1', url: 'https://old.test', title: '旧标签' }];
+  disk.setItem('myide-browser-session:d:/projecta', JSON.stringify({ version: 1, tabs, active: 'bt-old-1', closed: [] }));
+  const model = create(disk); model.load('D:\\ProjectA');
+  assert.equal(model.state.tabs.length, 1, '接管了旧标签');
+  assert.equal(model.state.tabs[0].url, 'https://old.test');
+  assert.ok(disk.getItem('myide-browser-session:@global'), '已落到全局键');
+  // 别的项目的旧记录原样保留（不再读取，但也不删 —— 删数据不可逆）
+  assert.ok(disk.getItem('myide-browser-session:d:/projecta'));
+});
+test('全局键已有内容时不被旧项目记录覆盖', () => {
+  const disk = storage();
+  disk.setItem('myide-browser-session:@global', JSON.stringify({ version: 1, tabs: [{ id: 'bt-g', url: 'https://global.test', title: '全局' }], active: 'bt-g', closed: [] }));
+  disk.setItem('myide-browser-session:d:/projecta', JSON.stringify({ version: 1, tabs: [{ id: 'bt-old', url: 'https://old.test', title: '旧' }], active: 'bt-old', closed: [] }));
+  const model = create(disk); model.load('D:/ProjectA');
+  assert.equal(model.state.tabs[0].url, 'https://global.test', '全局键优先，不被旧记录盖掉');
 });
 test('关闭当前选择相邻项，最后一个关闭后仍能恢复，排序不改变活动项', () => {
   const model = create(storage()), a = model.add('https://a.test'), b = model.add('https://b.test'), c = model.add('https://c.test');
