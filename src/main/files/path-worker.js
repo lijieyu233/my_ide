@@ -13,7 +13,7 @@ try {
     parentPort.postMessage({result:service[method](...args.slice(1))});
   }else if(op.startsWith('copy:')){
     const method=op.slice(5);
-    if(!['prepare','commit','undo','prepareDelete','commitDelete','undoDelete','trashPlan','validateTrash','list','exportRecovery','clear','ranges','location'].includes(method))throw Error('未知恢复操作');
+    if(!['prepare','commit','undo','prepareDelete','commitDelete','undoDelete','trashPlan','validateTrash','list','exportRecovery','clear','clearFinished','ranges','location'].includes(method))throw Error('未知恢复操作');
     // 第三个参数才是 options：第二参是原生适配器，误传会把 {report} 当成 native（实测报 native.snapshot is not a function）。
     const service=require('./copy-journal').createService(args[0],undefined,{report});
     parentPort.postMessage({result:service[method](...args.slice(1))});

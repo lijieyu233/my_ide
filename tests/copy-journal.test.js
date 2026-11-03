@@ -54,6 +54,49 @@ try{
   const out=fs.mkdtempSync(path.join(temp,'export-')),r=f.service.exportRecovery(f.project,p.operationId,out);assert(r.ok);assert.equal(fs.readFileSync(path.join(r.path,'dir')+':private','utf8'),'目录流');assert(f.service.undo(f.project,p.operationId).ok);
   fs.mkdirSync(path.join(f.project,'dir'));assert.throws(()=>f.service.prepare(f.project,[src],f.project),{code:'UNSUPPORTED_METADATA'});
  });
+  // 2026-11-03 用户报「多选删除删不掉」，实测根因是这里：
+  // 已完成的记录不再需要原字节备份，但原实现把所有历史记录的 reservedBytes 全加起来，
+  // 攒满 256MiB 后每次删除/粘贴都报 RECOVERY_LIMIT，而 UI 只能一条条清。
+  check('已完成记录不再占用预算，攒满也不会挡住新操作',()=>{
+   // 用独立临时目录：这条要造 60 条记录，塞进共享的 temp 会让最后的 rmSync
+   // 撞上 Windows 文件锁（EPERM），把整个测试的退出码搞坏。
+   const own=fs.mkdtempSync(path.join(os.tmpdir(),'myide-budget-test-'));
+   try{
+     const project=path.join(own,'project'),source=path.join(own,'source'),cache=path.join(own,'recovery');
+     for(const d of [project,source])fs.mkdirSync(d,{recursive:true});
+     const service=createService(cache);
+     const src=write(path.join(source,'big'),'x'.repeat(1024));
+     for(let i=0;i<60;i++){
+       const p=service.prepare(project,[src],project);
+       assert(p.ok,'第 '+i+' 条准备失败：'+(p&&p.error));
+       assert(service.commit(project,p.operationId,true).ok);
+     }
+     const all=service.list(project);
+     assert.equal(all.length,60);
+     assert(all.every(r=>r.phase==='complete'),'全部已完成, got '+JSON.stringify([...new Set(all.map(r=>r.phase))]));
+     // 关键断言：完成了 60 条之后仍能开始新操作（旧实现这里必然 RECOVERY_LIMIT）
+     const next=service.prepare(project,[src],project);
+     assert(next.ok,'已完成记录不应挡住新操作：'+(next&&next.error));
+     assert.notEqual(next.errorCode,'RECOVERY_LIMIT');
+     const cleared=service.clearFinished(project);
+     assert(cleared.ok);
+     assert(cleared.cleared>=60,'至少清掉 60 条, got '+cleared.cleared);
+     assert(cleared.freedBytes>0,'回报释放字节数, got '+cleared.freedBytes);
+     const left=service.list(project);
+     assert.equal(left.length,1,'只剩未完成的那条, got '+left.length);
+     assert.equal(left[0].phase,'prepared');
+   }finally{try{fs.rmSync(own,{recursive:true,force:true});}catch{}}
+  });
+  check('批量清理保留未完成与有暂存项残留的记录',()=>{
+   const f=fixture(),src=write(path.join(f.source,'y'),'内容');
+   const done=f.service.prepare(f.project,[src],f.project);assert(f.service.commit(f.project,done.operationId,true).ok);
+   const pending=f.service.prepare(f.project,[src],f.project);
+   assert(pending.ok);
+   const r=f.service.clearFinished(f.project);
+   assert(r.ok);assert.equal(r.cleared,1,'只清已完成那条');assert.equal(r.kept,1,'保留未完成那条');
+   const left=f.service.list(f.project);
+   assert.equal(left.length,1);assert.equal(left[0].operationId,pending.operationId);
+  });
  check('只读新副本可撤销且清理原副本缓存，不改只读既有目标',()=>{
   const f=fixture(),src=write(path.join(f.source,'readonly'),'新'),dll=require('koffi').load('kernel32.dll'),attrs=dll.func('__stdcall','SetFileAttributesW','int',['str16','uint32']);assert(attrs(src,33));
   const p=f.service.prepare(f.project,[src],f.project);assert(p.ok);assert(f.service.commit(f.project,p.operationId,false).ok);assert(f.service.undo(f.project,p.operationId).ok);assert(f.service.clear(f.project,p.operationId).ok);
@@ -74,5 +117,4 @@ try{
   for(let i=0;i<50;i++){const p=f.service.prepare(f.project,[src],f.project);assert(p.ok);first=first||p.operationId;}
   assert.equal(f.service.list(f.project).length,50);assert.throws(()=>f.service.prepare(f.project,[src],f.project),{code:'RECOVERY_LIMIT'});assert.deepEqual(fs.readdirSync(f.project),[]);assert(f.service.clear(f.project,first).ok);assert(f.service.prepare(f.project,[src],f.project).ok);
  });
- console.log('结果: '+passed+' 通过, 0 失败');
-}finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-copy-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}
+ console.log('结果: '+passed+' 通过, 0 失败');}finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-copy-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}

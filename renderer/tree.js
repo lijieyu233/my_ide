@@ -881,6 +881,25 @@ const Tree = (() => {
       const note=document.createElement('p');note.textContent='覆盖或删除前的原字节与实际新增项按项目持久保留。恢复会核对当前版本；后来编辑的文件不会被旧记录删除或覆盖。';body.appendChild(note);
       if(!r?.ok){note.textContent=r?.error||'无法读取恢复记录';return;}
       if(!r.records.length){const empty=document.createElement('p');empty.textContent='当前项目没有恢复记录';body.appendChild(empty);}
+      // 批量清理（2026-11-03）：已完成记录会一直占着 256MiB 预算，攒满后所有删除/粘贴
+      // 都会被 RECOVERY_LIMIT 拒掉，而原来只能一条条点。这里一次清掉不需要保留的那些。
+      const finished=r.records.filter(x=>!['preparing','prepared','copying','deleting','undoing','restoring','partial','undo-partial','uncertain','corrupt'].includes(x.phase)&&!x.temporaryPaths?.length);
+      if(finished.length>1){
+        const bulk=document.createElement('div');bulk.className='copy-recovery-bulk';
+        const b=document.createElement('button');b.className='tb-btn';b.textContent='清理已完成记录（'+finished.length+' 条）';
+        b.title='只清理已完成、且没有暂存项残留的记录；未完成的会保留';
+        b.onclick=async()=>{
+          if(busy)return;
+          if(!await Modal.confirm('批量清理已完成记录','将清理 '+finished.length+' 条已完成记录的原字节副本，之后不能用它们撤销。\n\n磁盘上的文件不受影响；未完成/待核对的记录会保留。是否继续？'))return;
+          busy=true;b.disabled=true;
+          try{
+            const res=await window.myIDE.fs.copyClearFinished(operationRoot);
+            if(res?.ok)MI.toast('已清理 '+res.cleared+' 条'+(res.kept?'，保留 '+res.kept+' 条未完成记录':'')+(res.freedBytes?'，释放 '+Math.round(res.freedBytes/1048576)+' MB':''),'ok');
+            else MI.toast(res?.error||'批量清理失败','err');
+          }catch(e){MI.toast(String(e.message||e),'err');}finally{busy=false;await refresh();}
+        };
+        bulk.appendChild(b);body.appendChild(bulk);
+      }
       for(const record of r.records){
         const row=document.createElement('div');row.className='copy-recovery-row';
         const text=document.createElement('div');text.textContent=record.label+' · '+(phases[record.phase]||'结果待核对')+(record.createdAt?' · '+new Date(record.createdAt).toLocaleString():'');row.appendChild(text);

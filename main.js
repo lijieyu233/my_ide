@@ -1028,6 +1028,9 @@ ipcMain.handle('fs:trashCommit',(e,project,plan)=>pathResult(()=>PathJobs.withRa
 })));
 ipcMain.handle('fs:copyList',(e,project)=>pathResult(()=>copySerial(async()=>({ok:true,records:await copyRun(e.sender,'','list',project)}))));
 ipcMain.handle('fs:copyClear',(e,project,id)=>pathResult(()=>copySerial(()=>copyRun(e.sender,'','clear',project,id))));
+// 批量清理已完成记录（2026-11-03）：用户机器上 35 条 complete 记录占满 256MiB 预算，
+// 导致之后每次删除都报 RECOVERY_LIMIT，而 UI 只能一条条点清理。
+ipcMain.handle('fs:copyClearFinished',(e,project)=>pathResult(()=>copySerial(()=>copyRun(e.sender,'','clearFinished',project))));
 ipcMain.handle('fs:copyExport',async(e,project,id)=>pathResult(async()=>{
   const picked=await dialog.showOpenDialog({title:'导出文件操作恢复副本',properties:['openDirectory']});
   if(picked.canceled)return {cancelled:true};

@@ -4402,6 +4402,8 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .copy-recovery .m-body { max-height:65vh; overflow:auto; }
 .copy-recovery-row { border-top:1px solid var(--border); padding:12px 0; overflow-wrap:anywhere; }
 .copy-recovery-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+/* 批量清理入口：贴在说明下方、列表之前，一次性处理攒下来的已完成记录 */
+.copy-recovery-bulk { display:flex; gap:8px; margin:8px 0 4px; }
 
 #ai-dsh-options{display:flex;gap:6px;align-items:center;padding:4px 10px;color:var(--text-dim);font-size:11px}#ai-dsh-options select{background:var(--bg-input);color:var(--text);border:1px solid var(--btn-border);border-radius:4px;max-width:100px}#ai-dsh-info{margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ai-dsh-thought,.ai-dsh-permission,.ai-dsh-output{margin:6px 0;padding:8px;border:1px solid var(--btn-border);border-radius:6px;font-size:12px}.ai-dsh-permission{background:var(--bg-input)}.ai-dsh-permission button{margin-right:8px}.ai-dsh-thought pre,.ai-dsh-output pre,.ai-dsh-permission pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto;font:inherit;color:var(--text-dim)}

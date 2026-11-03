@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     copyList: (project) => ipcRenderer.invoke('fs:copyList', project),
     copyExport: (project, id) => ipcRenderer.invoke('fs:copyExport', project, id),
     copyClear: (project, id) => ipcRenderer.invoke('fs:copyClear', project, id),
+    copyClearFinished: (project) => ipcRenderer.invoke('fs:copyClearFinished', project),
     copyOpen: (id) => ipcRenderer.invoke('fs:copyOpen', id),
     pathSnapshot: (p) => ipcRenderer.invoke('fs:pathSnapshot', p),
     relocate: (p, target, condition) => ipcRenderer.invoke('fs:relocate', p, target, condition),

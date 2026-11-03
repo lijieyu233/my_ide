@@ -44,10 +44,40 @@ function createService(root,native=Native,options={}){
     const temporaryPaths=m.items.flatMap(r=>(m.kind==='delete'?['-restore.tmp']:['.tmp','-undo.tmp']).map(suffix=>path.join(path.dirname(r.target),'.myide-copy-'+m.id+'-'+r.index+suffix))).filter(p=>fs.existsSync(p));
     return {operationId:m.id,kind:m.kind,projectRoot:m.project,targets:m.targets,createdAt:m.createdAt,phase:m.truncated?'uncertain':m.phase,bytes:m.reservedBytes,published,remaining,temporaryPaths,label:(m.kind==='delete'?'删除 ':'')+m.targets.map(p=>path.basename(p)).slice(0,3).join('、'),hasChanges:published>0||temporaryPaths.length>0||['copying','deleting','partial','undo-partial'].includes(m.phase)};}
   function list(project){if(!fs.existsSync(root))return [];real(root,true);const entries=[];for(const id of fs.readdirSync(root).filter(n=>uuid.test(n))){try{const m=load(id);if(key(m.project)===key(project))entries.push(summary(m));}catch(e){entries.push({operationId:id,phase:'corrupt',label:'不可读取的恢复记录',error:String(e.message||e),projectRoot:project,remaining:1});}}return entries.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));}
+  /**
+   * 这条记录还需要占用预算吗？
+   *
+   * 为什么加这个（2026-11-03 用户报「多选删除删不掉」）：
+   * 原来 begin() 把所有历史记录的 reservedBytes 全加进去算预算，可**已完成的记录
+   * 根本不需要保留原字节备份** —— 那份备份只服务于「撤销」。实测用户机器上
+   * 35 条记录全部是 complete 状态，却占满了 256MiB，导致之后每次删除/粘贴都报
+   * RECOVERY_LIMIT，而 UI 上没有任何批量清理入口，用户完全没法自救。
+   *
+   * 判定用「还需要保留」而不是「是否完成」：撤销过的（undone）、纯 merge（没有
+   * 新写入）都不需要，剩下的按 phase 判。
+   */
+  function stillNeedsBudget(m){
+    const s=summary(m);
+    // 有暂存项残留 → 必须留着让用户核对，不能当垃圾清掉
+    if(s.temporaryPaths.length)return true;
+    if(m.phase==='undo-partial'||m.phase==='partial'||m.phase==='uncertain')return true;
+    // 这些状态说明操作还没收尾，原字节还有用
+    if(['preparing','prepared','copying','deleting','undoing','restoring'].includes(m.phase))return true;
+    // 已完成 / 已撤销 / 已恢复：不再需要备份
+    return false;
+  }
   function begin(m){
     fs.mkdirSync(root,{recursive:true});real(root,true);
-    const old=fs.readdirSync(root).filter(n=>uuid.test(n));let used=0;for(const id of old){try{used+=load(id).reservedBytes;}catch{throw fail('RECOVERY_CORRUPT','已有恢复记录不可读取，请先导出或处理');}}
-    if(old.length>=50||used+m.reservedBytes>maxBytes)throw fail('RECOVERY_LIMIT','恢复记录达到50条/256MiB预算，请先导出并明确清理旧记录');
+    const old=fs.readdirSync(root).filter(n=>uuid.test(n));let used=0,count=0;
+    for(const id of old){
+      let loaded;
+      try{loaded=load(id);}catch{throw fail('RECOVERY_CORRUPT','已有恢复记录不可读取，请先导出或处理');}
+      // 已完成的记录不计入预算，也不计入条数上限 —— 它们只是「撤销历史」，
+      // 和「还能不能开始新操作」无关。
+      if(!stillNeedsBudget(loaded))continue;
+      used+=loaded.reservedBytes;count++;
+    }
+    if(count>=50||used+m.reservedBytes>maxBytes)throw fail('RECOVERY_LIMIT','未完成的恢复记录已达 50 条 / 256MiB 预算，请先导出并清理；已完成的历史记录可在「恢复文件操作」里清理');
     const serialized=JSON.stringify({...m,checksum:digest(m)});if(Buffer.byteLength(serialized)>32*1024*1024)throw fail('COPY_LIMIT','操作清单超过32MiB预算');
     const folder=path.join(root,m.id);fs.mkdirSync(folder);const fd=fs.openSync(path.join(folder,'manifest.json'),'wx',0o600);try{fs.writeFileSync(fd,serialized);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   }
@@ -56,7 +86,12 @@ function createService(root,native=Native,options={}){
     if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','复制来源为空或超过10000项');
     const srcs=[...new Map(sources.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
     const targets=srcs.map(s=>path.join(destDir,path.basename(s)));if(new Set(targets.map(key)).size!==targets.length)throw fail('DEST_CONFLICT','多个来源具有同一目标名称，请分开复制并逐次确认');
-    if(srcs.some(s=>inside(s,destDir)||inside(s,root)||inside(root,s)||targets.some(t=>inside(root,t)||inside(t,root)||key(t)===key(s))))throw fail('INVALID_TARGET','目标不能位于源内，也不能复制恢复存储自身');
+    // 三种情况混在一句话里，用户看不出自己错在哪（2026-11-03 用户截图里
+    // 这条「目标不能位于源内，也不能复制恢复存储自身」就是他撞上的）。
+    // 拆开说：粘贴到源所在目录 = 复制到原地，这是最常见也最容易自己改的一种。
+    if(srcs.some(s=>key(path.dirname(s))===key(destDir)))throw fail('INVALID_TARGET','源文件已经在这个目录里，粘贴到原地不会有新文件；请选择别的目标目录');
+    if(srcs.some(s=>inside(s,destDir)))throw fail('INVALID_TARGET','不能把文件夹粘贴到它自己或它的子目录里');
+    if(srcs.some(s=>inside(s,root)||inside(root,s))||targets.some(t=>inside(root,t)||inside(t,root)))throw fail('INVALID_TARGET','恢复存储目录不能作为复制来源或目标');
     const items=[];let reservedBytes=0;
     function walk(source,target){if(items.length>=10000)throw fail('COPY_LIMIT','复制超过10000项');validateName(path.basename(source));const sourceVersion=native.snapshot(source),before=observed(target);
       if(before&&before.kind!==sourceVersion.kind)throw fail('DEST_CONFLICT','文件与文件夹类型冲突，未覆盖：'+path.basename(target));
@@ -265,7 +300,30 @@ function createService(root,native=Native,options={}){
     function validate(dir){real(dir,true);for(const name of fs.readdirSync(dir)){const p=path.join(dir,name),s=fs.lstatSync(p);if(s.isSymbolicLink()||s.isFile()&&s.nlink>1)throw fail('LINK_PATH','恢复目录含链接，未清理');if(s.isDirectory())validate(p);}}
     validate(folder);fs.rmSync(folder,{recursive:true,force:true});return {ok:true};
   }
+  /**
+   * 批量清理「已完成、不再需要保留原字节」的记录。
+   *
+   * 为什么需要：RECOVERY_LIMIT 的提示让用户「清理旧记录」，但原来只能一条条点
+   * 「清理记录」，35 条要点 35 次。用户实测就是卡在这里（2026-11-03）。
+   *
+   * 安全边界：只清 stillNeedsBudget() === false 的；有任何暂存项残留、
+   * 未完成、部分完成的记录一律跳过并如实回报数量 —— 那些是用户可能需要
+   * 核对的数据，不能替他决定删掉。
+   */
+  function clearFinished(project){
+    if(!fs.existsSync(root))return {ok:true,cleared:0,kept:0};
+    real(root,true);
+    const want=project?key(project):null;
+    let cleared=0,kept=0,freed=0;
+    for(const id of fs.readdirSync(root).filter(n=>uuid.test(n))){
+      let m;try{m=load(id);}catch{kept++;continue;}
+      if(want&&key(m.project)!==want){kept++;continue;}
+      if(stillNeedsBudget(m)){kept++;continue;}
+      try{const r=clear(m.project,id);if(r?.ok){cleared++;freed+=m.reservedBytes;}}catch{kept++;}
+    }
+    return {ok:true,cleared,kept,freedBytes:freed};
+  }
   function ranges(project,id){const m=load(id);validateProject(m,project);return [m.destDir,...m.sources];}
-  return {prepare,commit,undo,prepareDelete,commitDelete,undoDelete,trashPlan,validateTrash,list,exportRecovery,clear,ranges,location:home};
+  return {prepare,commit,undo,prepareDelete,commitDelete,undoDelete,trashPlan,validateTrash,list,exportRecovery,clear,clearFinished,stillNeedsBudget,ranges,location:home};
 }
 module.exports={createService};
