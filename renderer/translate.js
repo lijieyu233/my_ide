@@ -92,7 +92,7 @@ const Translate = (() => {
         <div class="tr-dst" id="tr-dst"></div>
       </div>
       <div class="m-foot">
-        <span class="tr-hint">Ctrl+Enter 翻译</span>
+        <span class="tr-hint">回车翻译 · Shift+Enter 换行</span>
         <button class="tb-btn" id="tr-copy">复制译文</button>
         <button class="tb-btn" id="tr-do">翻译</button>
         <button class="tb-btn m-ok" id="tr-close">关闭</button>
@@ -161,7 +161,13 @@ const Translate = (() => {
       MI.copyText(txt).then(() => MI.toast('已复制译文', 'ok'));
     };
     srcEl.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doTranslate(); }
+      // 回车直接翻译（2026-11-03 用户要求），Ctrl+Enter 保留。
+      // ⚠ 必须排除输入法组合态：中文输入时按回车是「上屏候选词」，
+      //   不排除的话打「你好」按回车就会直接触发翻译（isComposing / keyCode 229 是
+      //   Chromium 在组合态下的两种标记，两者都要判）。
+      // Shift+Enter 留给换行 —— 多行原文（尤其是粘贴的段落）需要它。
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); doTranslate(); }
       else if (e.key === 'Escape') { e.preventDefault(); closeBox(); }
     });
 

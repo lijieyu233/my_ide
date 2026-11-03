@@ -5256,6 +5256,45 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('翻译弹窗：回车直接翻译，Shift+Enter 换行，输入法组合态不误触发（2026-11-03）', async () => {
+    dom.window.localStorage.setItem('myide-translate-cfg', JSON.stringify({ baseUrl: 'http://stub', model: 'stub', target: '中文' }));
+    await g(dom, 'Translate.run("")');
+    await tick(); await tick();
+    const src = $(dom, '#tr-src');
+    const dst = $(dom, '#tr-dst');
+    const press = (init) => src.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }));
+
+    // ① 普通回车 = 翻译
+    src.value = '回车翻译';
+    src.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    press({});
+    await tick(); await tick();
+    assert_(dst.textContent === '译:回车翻译', '回车直接翻译, got: ' + JSON.stringify(dst.textContent));
+
+    // ② Shift+Enter 不翻译（留给换行）
+    src.value = '换行用';
+    src.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    press({ shiftKey: true });
+    await tick(); await tick();
+    assert_(dst.textContent === '', 'Shift+Enter 不触发翻译, got: ' + JSON.stringify(dst.textContent));
+
+    // ③ 输入法组合态的回车不翻译（中文输入时回车是上屏候选词）
+    src.value = '组合态';
+    src.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    press({ isComposing: true });
+    await tick(); await tick();
+    assert_(dst.textContent === '', 'isComposing 时不触发, got: ' + JSON.stringify(dst.textContent));
+    press({ keyCode: 229 });
+    await tick(); await tick();
+    assert_(dst.textContent === '', 'keyCode 229 时不触发, got: ' + JSON.stringify(dst.textContent));
+
+    // ④ 提示文案与新行为一致
+    assert_(/回车翻译/.test($(dom, '.tr-hint').textContent), '提示写着回车翻译, got: ' + $(dom, '.tr-hint').textContent);
+    assert_(/Shift\+Enter 换行/.test($(dom, '.tr-hint').textContent), '提示说明 Shift+Enter 换行');
+    await g(dom, 'Translate.closeBox()');
+    await tick();
+  });
+
   await okAsync('侧栏「项目」工具窗口只放项目树（上下分栏已取消）', async () => {
     // ⚠ 用 showTool 不用 switchTool：后者是"再点一次收起"的切换语义，
     //    项目面板已激活时会把侧栏整块收起来
