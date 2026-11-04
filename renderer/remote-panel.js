@@ -2027,13 +2027,22 @@ window.RemotePanel = (() => {
     // （2026-10-29 用户：「应该有单独计算按钮」—— 原来只有工具栏的批量按钮，
     //  想单独看某一项就得把整个目录都算一遍，大目录要等几十秒）。
     const measured = pane.sizes.get(e.path);
-    const sizeText = e.directory
-      ? (measured != null ? displaySize(measured) : '—')
-      : displaySize(e.size);
-    const sizeTitle = e.directory
-      ? (measured != null ? displaySize(measured) + '（已计算）' : '未计算大小，点右侧「算大小」')
-      : '';
-    // 只有目录需要算：文件大小 dirent 里就有。符号链接不跟随（避免环），不给按钮。
+    // 符号链接（2026-11-04）：
+    //   · 大小一律显示「—」。SFTP 的 attrs.size 对链接返回的是**目标路径字符串的长度**
+    //     （conda_Dy → 20 B），不是文件内容大小，当文件大小展示纯属误导。
+    //   · 指向目录的链接，directory 已被主进程改写成 true，图标/双击自然按目录走，
+    //     也能双击进去看内容（用户 /data 下 conda_Dy、heygem 这类正常配置）。
+    //   · 「算大小」仍不给：du 跟随链接会成环或统计到链接外的大片数据。
+    const sizeText = e.link
+      ? '—'
+      : e.directory
+        ? (measured != null ? displaySize(measured) : '—')
+        : displaySize(e.size);
+    const sizeTitle = e.link
+      ? (e.linkTarget?.directory ? '符号链接 → 目录（可双击进入）' : e.linkTarget === null ? '符号链接：目标不存在（悬空链接）' : '符号链接：不显示大小')
+      : e.directory
+        ? (measured != null ? displaySize(measured) + '（已计算）' : '未计算大小，点右侧「算大小」')
+        : '';
     const calc = e.directory && !e.link
       ? `<button type="button" class="remote-file-calc" data-calc="${esc(e.path)}" title="算大小：递归统计这个目录的占用，目录越大越慢">算大小</button>`
       : '';
@@ -2212,7 +2221,7 @@ window.RemotePanel = (() => {
       root.onkeydown = attempt(async event => {
         if (event.target !== list && !event.target.closest('[data-path]')) return;
         const path = event.target.closest('[data-path]')?.dataset.path || [...pane.selected].at(-1), index = pane.ordered.findIndex(e => e.path === path);
-        if (event.key === 'Enter') { const entry = pane.byPath.get(path); if (entry?.directory && !entry.link) { event.preventDefault(); event.stopPropagation(); await browse(side, entry.path); } return; }
+        if (event.key === 'Enter') { const entry = pane.byPath.get(path); if (entry?.directory) { event.preventDefault(); event.stopPropagation(); await browse(side, entry.path); } return; }
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? pane.ordered.length - 1 : event.key === 'ArrowDown' ? index + 1 : event.key === 'ArrowUp' ? index - 1 : -1;
         if (next < 0 || next >= pane.ordered.length || !['Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation(); const entry = pane.ordered[next];
@@ -2237,7 +2246,9 @@ window.RemotePanel = (() => {
         const row = event.target.closest('[data-path]'); if (!row) return;
         const entry = pane.byPath.get(row.dataset.path); if (!entry) return;
         event.preventDefault(); event.stopPropagation();
-        if (entry.directory) { if (!entry.link) await browse(side, entry.path); return; }
+        // 指向目录的符号链接也能进入（2026-11-04）。主进程 list() 已对链接补过一次
+        // stat，`entry.directory` 对"链接指向目录"也是 true，这里直接用即可。
+        if (entry.directory) { await browse(side, entry.path); return; }
         await editEntry(side, entry);
       }));
       root.onclick = attempt(async event => {
@@ -2280,7 +2291,7 @@ window.RemotePanel = (() => {
         if (action === 'measure') { await measurePane(side, pane); return; }
         await browse(side, pane.path);
       });
-      root.ondblclick = attempt(async event => { const row = event.target.closest('[data-path]'), entry = row && pane.byPath.get(row.dataset.path); if (entry?.directory && !entry.link) await browse(side, entry.path); });
+      root.ondblclick = attempt(async event => { const row = event.target.closest('[data-path]'), entry = row && pane.byPath.get(row.dataset.path); if (entry?.directory) await browse(side, entry.path); });
       root.ondragstart = event => { const row = event.target.closest('[data-path]'); if (!row) return; const paths = pane.selected.has(row.dataset.path) ? [...pane.selected] : [row.dataset.path]; event.dataTransfer.setData('application/x-myide-' + side, JSON.stringify({ paths, sid })); event.dataTransfer.effectAllowed = 'copy'; };
       root.ondragover = event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; };
       root.ondrop = attempt(async event => {

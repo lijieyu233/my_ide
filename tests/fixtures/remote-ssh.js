@@ -6,7 +6,9 @@ async function start(root, options = {}) {
   const key = options.key || generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
   const clients = new Set(), shells = [], control = { execReply: [], execLog: [], failWrite: false, delayWrite: 0, directoryEntries: new Map(), readDirBatchSize: 0, delayReadDir: 0, failReadDir: false, activeReads: 0, maxActiveReads: 0, readDirCalls: 0, closedDirs: 0 };
   const resolve = p => { const dest = path.resolve(root, '.' + path.posix.resolve('/', p)); if (dest !== root && !dest.startsWith(root + path.sep)) throw Error('越界'); return dest; };
-  const attrs = p => { const s = typeof p === 'number' ? fs.fstatSync(p) : fs.lstatSync(p); return { mode: s.mode, uid: 0, gid: 0, size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000) }; };
+  // follow=true 时走 statSync：SFTP 的 STAT 是跟随链接的，LSTAT 不跟随 ——
+  // 两者结果不同正是「判断符号链接指向目录还是文件」的依据（2026-11-04 远程文件面板）。
+  const attrs = (p, follow) => { const s = typeof p === 'number' ? fs.fstatSync(p) : (follow ? fs.statSync(p) : fs.lstatSync(p)); return { mode: s.mode, uid: 0, gid: 0, size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000) }; };
   const server = new Server({ hostKeys: [key] }, client => {
     clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
     client.on('authentication', ctx => { const publicKey = options.publicKey && utils.parseKey(options.publicKey); if (ctx.username === 'fixture' && (ctx.method === 'password' && ctx.password === 'fixture-secret' || ctx.method === 'publickey' && publicKey && ctx.key.data.equals(publicKey.getPublicSSH()) && (!ctx.signature || publicKey.verify(ctx.blob, ctx.signature, ctx.hashAlgo)))) ctx.accept(); else ctx.reject(); });
@@ -102,7 +104,7 @@ async function start(root, options = {}) {
         const handle = (id, value) => { const b = Buffer.alloc(4); b.writeUInt32BE(next++); handles.set(b.toString('hex'), value); sftp.handle(id, b); };
         const get = b => { const h = handles.get(b.toString('hex')); if (!h) throw Error('句柄无效'); return h; };
         wrap('REALPATH', (id, p) => sftp.name(id, [{ filename: path.posix.resolve('/', p), longname: p, attrs: attrs(resolve(p)) }]));
-        for (const op of ['STAT', 'LSTAT']) wrap(op, (id, p) => sftp.attrs(id, attrs(resolve(p))));
+        for (const op of ['STAT', 'LSTAT']) wrap(op, (id, p) => sftp.attrs(id, attrs(resolve(p), op === 'STAT')));
         wrap('OPENDIR', (id, p) => handle(id, { dir: resolve(p), offset: 0, entries: control.directoryEntries.get(path.posix.resolve('/', p)) }));
         wrap('READDIR', (id, h) => {
           const entry = get(h); entry.entries ||= fs.readdirSync(entry.dir).map(n => ({ filename: n, longname: n, attrs: attrs(path.join(entry.dir, n)) }));

@@ -184,7 +184,31 @@ function createService({ file, crypto, verifyHost, emit = () => {}, clientFactor
   }
   async function list(id, target) {
     const s = session(id), directory = remotePath(target), entries = await readDirectory(s, directory);
-    return { path: directory, entries: entries.map(e => ({ name: e.filename, path: posix.join(directory, e.filename), directory: e.attrs.isDirectory(), link: e.attrs.isSymbolicLink(), size: e.attrs.size, mtime: e.attrs.mtime, mode: e.attrs.mode })) };
+    const rows = entries.map(e => ({ name: e.filename, path: posix.join(directory, e.filename), directory: e.attrs.isDirectory(), link: e.attrs.isSymbolicLink(), size: e.attrs.size, mtime: e.attrs.mtime, mode: e.attrs.mode }));
+    // 指向目录的符号链接（2026-11-04）：lstat 对链接只回"这是链接"，`attrs.isDirectory()`
+    // 恒为 false，于是前端只能把它当文件、所有"进入目录"的入口都把它挡住 ——
+    // 用户 /data 下的 conda_Dy、heygem 这类正常配置就永远打不开。
+    //
+    // 这里对链接补一次 stat（**跟随**链接）拿到真实类型，只影响展示与"能否进入"，
+    // 不影响任何递归操作：「算大小」仍然跳过链接（du 跟链接会成环/爆量）。
+    // 并发 4 路 + 单个失败不拖累整批：链接可能指向不存在的目标（悬空链接）。
+    const links = rows.filter(r => r.link);
+    if (links.length) {
+      const queue = links.slice();
+      const worker = async () => {
+        while (queue.length) {
+          const row = queue.shift();
+          try {
+            const st = await request(s, 'stat', row.path);
+            row.linkTarget = { directory: st.isDirectory(), size: st.size };
+            // 指向目录的链接按目录展示：这样前端双击/virtually 一切"进目录"的判断都能复用
+            if (st.isDirectory()) row.directory = true;
+          } catch { row.linkTarget = null; }   // 悬空链接：保持未知
+        }
+      };
+      await Promise.all(Array.from({ length: 4 }, worker));
+    }
+    return { path: directory, entries: rows };
   }
   async function mkdir(id, target) { await request(session(id), 'mkdir', remotePath(target)); }
   // 新建空文件。用 flags:'wx' 排他创建 —— 目标已存在时明确报错，

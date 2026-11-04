@@ -37,6 +37,30 @@ async function finished(id) { await until(() => job(id)?.state !== 'queued' && j
     check('输入Ctrl+C与PTY尺寸传到服务器', server.shells[0].pty.rows === 31 && server.shells[1].input === '');
     service.closeTerminal(s.id, 'first'); await sleep(50); check('关闭单个终端保留另一会话', service.snapshot().sessions.find(v => v.id === second.id).state === 'connected');
     await service.mkdir(s.id, '/目录'); await service.rename(s.id, '/目录', '新目录'); check('中文目录新建重命名和列表', (await service.list(s.id, '/')).entries.some(e => e.name === '新目录')); await service.removeFile(s.id, '/新目录');
+    // 符号链接指向目录时，list 要能认出"这是个目录"（2026-11-04 用户 /data 下的
+    // conda_Dy、heygem 打不开）。LSTAT 对链接只回"这是链接"，必须再 STAT 一次跟随。
+    // Windows 上目录链接用 junction 建，跟 Linux 的 symlink 行为一致。
+    {
+      const linked = path.join(remote, '真实目录'); fs.mkdirSync(linked, { recursive: true }); fs.writeFileSync(path.join(linked, 'inside.txt'), 'x');
+      const linkPath = path.join(remote, '链接目录');
+      let made = false;
+      try { fs.symlinkSync(linked, linkPath, 'junction'); made = true; } catch {}
+      if (made) {
+        const rows = (await service.list(s.id, '/')).entries;
+        const row = rows.find(e => e.name === '链接目录');
+        check('符号链接条目被标为 link', !!row && row.link === true);
+        check('指向目录的符号链接 directory=true（可双击进入）', !!row && row.directory === true, row && JSON.stringify(row));
+        check('链接的目标类型被带回来', !!row && row.linkTarget && row.linkTarget.directory === true);
+        // 真的能读进去（这正是"看不到这些目录"要解决的问题）
+        const inner = await service.list(s.id, '/链接目录');
+        check('可以进入链接指向的目录并列出内容', inner.entries.some(e => e.name === 'inside.txt'), JSON.stringify(inner.entries.map(e => e.name)));
+        // 普通目录不受影响
+        const plain = (await service.list(s.id, '/')).entries.find(e => e.name === '真实目录');
+        check('普通目录仍 directory=true 且 link=false', !!plain && plain.directory === true && plain.link === false);
+        fs.unlinkSync(linkPath);
+      } else { console.log('  （跳过：当前环境无法创建目录链接）'); }
+      fs.rmSync(linked, { recursive: true, force: true });
+    }
     await assert.rejects(() => service.removeFile(s.id, '/'), /根目录/); check('拒绝删除远程根目录', fs.existsSync(remote));
     const source = path.join(local, '中文.bin'), bytes = crypto.randomBytes(170003); fs.writeFileSync(source, bytes);
     const uploaded = (await service.enqueue(s.id, 'upload', [source], '/')).jobs[0]; check('上传字节一致', (await finished(uploaded.id)).state === 'completed' && fs.readFileSync(path.join(remote, '中文.bin')).equals(bytes));
