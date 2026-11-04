@@ -49,6 +49,84 @@ const fixture=()=>{const root=fs.mkdtempSync(path.join(temp,'case-'));return {ro
     try{assert.throws(()=>service.undoCreate(root,r.path,r.after),{code:'EBUSY'});assert(fs.existsSync(r.path));}finally{assert(close(handle));}
     assert(service.undoCreate(root,r.path,r.after).ok);assert(!fs.existsSync(r.path));
   });
+  await check('占用瞬断会重试并成功（绿盾加密驱动 32/33 竞态）',()=>{
+    // 2026-11-04 用户「进行下文件操作老是失败」：这台机器装有绿盾透明加密
+    // （TFsdframe/TFsfltdrv/TsdEncrypt/TsdEncryptMF 四个过滤驱动），它会在文件
+    // 改名/替换的瞬间短暂持句柄，与 MoveFileExW 撞上就是 ERROR_SHARING_VIOLATION(32)。
+    // 原来只尝试一次，撞上就报错 —— 所以「老是失败」。
+    //
+    // ⚠ 构造要点：MoveFileExW 对**已存在**的目标返回 183(ALREADY_EXISTS)，不是 32。
+    //   要触发 32 必须让目标**不存在**、但它的**父目录**被独占占用。
+    const { createFile } = require('../src/main/files/file-replace-win');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-retry-'));
+    try {
+      const dll = require('koffi').load('kernel32.dll');
+      const open = dll.func('__stdcall','CreateFileW','void *',['str16','uint32','uint32','void *','uint32','uint32','void *']);
+      const close = dll.func('__stdcall','CloseHandle','int',['void *']);
+      // 准备：父目录 + 源文件；目标名不存在
+      const src = path.join(tmp, 'src.tmp'), dst = path.join(tmp, 'dst.txt');
+      fs.writeFileSync(src, 'x');
+      // 独占打开父目录（FILE_FLAG_BACKUP_SEMANTICS 0x02000000 才能开目录）
+      const dirHandle = open(path.toNamespacedPath(tmp), 0x80000000, 1, null, 3, 0x02000000, null);
+      const gotDir = !!(dirHandle && dirHandle !== -1n);
+      let err = null;
+      try { createFile(src, dst); } catch (e) { err = e; }
+      if (gotDir) {
+        assert(close(dirHandle));
+        if (err) {
+          // 父目录被占用 → 32/33，重试后仍失败必须报 EBUSY（可重试语义），不能是 CREATE_FAILED
+          assert.equal(err.code, 'EBUSY', '占用类失败应报 EBUSY, got ' + err.code + ' / win32=' + err.win32Code);
+          assert([32, 33].includes(err.win32Code), '应保留 32/33 原始码, got ' + err.win32Code);
+        }
+      } else if (dirHandle === -1n) {
+        console.log('  （跳过占用模拟：无法独占打开目录）');
+      }
+      // 无论上面如何，释放占用后必须能成功
+      if (!err || !fs.existsSync(dst)) {
+        fs.writeFileSync(src, 'x');
+        if (fs.existsSync(dst)) fs.unlinkSync(dst);
+        assert(createFile(src, dst).temporaryMoved, '释放占用后应能创建');
+        assert(fs.existsSync(dst));
+      }
+    } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} }
+  });
+  await check('绿盾竞态：32/33 自动退避重试，确定性错误不重试',()=>{
+    // 用可注入的 api 精确验证重试语义（真实 MoveFileExW 没法稳定造出 32：
+    // 目标已存在会先返回 183，而父目录被独占打开时它反而还能成功）。
+    const { createReplacer } = require('../src/main/files/file-replace-win');
+    const io = { existsSync: () => false, unlinkSync: () => {} };
+    const run = (failTimes, code) => {
+      let calls = 0;
+      const api = { getAttributes: () => 128, setAttributes: () => 1, lastError: () => code,
+        replace: () => { calls++; return calls > failTimes; } };
+      const t0 = Date.now();
+      let err = null;
+      try { createReplacer(api, io)('src.tmp', 'dst.txt'); } catch (e) { err = e; }
+      return { calls, ok: !err, code: err && err.code, ms: Date.now() - t0 };
+    };
+    // ① 一次就成：不该有任何额外等待
+    const fast = run(0, 32);
+    assert.equal(fast.ok, true); assert.equal(fast.calls, 1, '成功时只调用 1 次');
+    assert(fast.ms < 20, '成功路径不引入延迟, got ' + fast.ms + 'ms');
+    // ② 前两次撞上 32 → 第三次成功
+    const retried = run(2, 32);
+    assert.equal(retried.ok, true, '瞬时占用应重试后成功');
+    assert.equal(retried.calls, 3, '撞 2 次后第 3 次成功, got ' + retried.calls);
+    // ③ 一直占用 → 用尽重试后报 EBUSY 并保留原始 win32 码
+    const dead = run(99, 32);
+    assert.equal(dead.ok, false);
+    assert.equal(dead.calls, 6, '原始 1 次 + 重试 5 次, got ' + dead.calls);
+    assert.equal(dead.code, 'EBUSY', '占用类失败报 EBUSY（可重试语义）');
+    // ④ 确定性错误（EACCES=5）不重试：重试只是把错误延迟暴露
+    const denied = run(99, 5);
+    assert.equal(denied.ok, false);
+    assert.equal(denied.calls, 1, 'EACCES 不该重试, got ' + denied.calls);
+    assert.equal(denied.code, 'EACCES');
+    // ⑤ 33（锁冲突）同样算瞬时错误
+    const locked = run(1, 33);
+    assert.equal(locked.ok, true, '33 也应重试');
+    console.log('    重试耗时：1次=' + fast.ms + 'ms，撞2次=' + retried.ms + 'ms，全失败=' + dead.ms + 'ms');
+  });
   await check('缺失/篡改基线和项目根删除拒绝',()=>{
     const {root,service}=fixture(),r=service.create(root,root,'new','file');assert.throws(()=>service.undoCreate(root,r.path,null),{code:'VERSION_REQUIRED'});assert.throws(()=>service.undoCreate(root,r.path,{...r.after,bytes:1}),{code:'VERSION_REQUIRED'});assert.throws(()=>service.undoCreate(root,root,r.after),{code:'OUTSIDE_PROJECT'});assert(fs.existsSync(r.path));
   });

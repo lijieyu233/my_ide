@@ -5,6 +5,32 @@ const check=(name,fn)=>{fn();passed++;console.log('  ok '+name);};
 const fixture=()=>{const folder=fs.mkdtempSync(path.join(temp,'case-')),src=path.join(folder,'source');fs.mkdirSync(src);fs.mkdirSync(path.join(src,'sub'));fs.writeFileSync(path.join(src,'sub','a.txt'),'正文\r\n');fs.writeFileSync(path.join(src,'b.bin'),Buffer.from([0,255,1]));return {folder,src,file:path.join(src,'sub','a.txt'),dest:path.join(folder,'dest')};};
 try {
   check('文件/目录真实排他移动与原字节/文档新基线',()=>{const {src,file,dest}=fixture(),m=createMover(),base=FileWrite.readSnapshot(file);const r=m.relocate(src,dest,{expectedSource:m.snapshot(src),documents:[{path:file,version:base.version}]});assert(r.ok&&r.after&&r.documents.length===1);assert(!fs.existsSync(src));assert.equal(fs.readFileSync(path.join(dest,'sub','a.txt'),'utf8'),'正文\r\n');assert(FileWrite.sameVersion(r.documents[0].version,FileWrite.readSnapshot(path.join(dest,'sub','a.txt')).version));assert.deepEqual(fs.readFileSync(path.join(dest,'b.bin')),Buffer.from([0,255,1]));});
+  // 2026-11-04 用户「进行下文件操作老是失败 烦死了」的真正原因：
+  // relocate 的默认参数 `condition={}` 只在实参是 **undefined** 时生效，
+  // IPC 侧显式传 null（表示"没有前置条件"，重命名/移动都这么传）时它会被原样接住，
+  // 于是 `condition.expectedSource` 抛 TypeError，被包成 MOVE_FAILED。
+  // 实测真机连续 15 次重命名 0/15 成功，全是这个错。
+  check('condition 传 null 视为无前置条件（IPC 常见写法）',()=>{
+    const {src,dest}=fixture(),m=createMover();
+    assert(m.relocate(src,dest,null).ok,'null 条件也能迁移');
+    assert(m.relocate(dest,src,null).ok,'再迁回来同样可以');
+  });
+  check('condition 传非对象（字符串/数字/布尔/函数）也不崩',()=>{
+    for(const bad of [undefined,'x',0,false,()=>true]){
+      const {src,dest}=fixture(),m=createMover();
+      assert(m.relocate(src,dest,bad).ok,'condition=' + String(bad) + ' 应视为无条件');
+    }
+  });
+  check('rename/moveTo 在 condition=null 时不报 MOVE_FAILED',()=>{
+    const {folder,src}=fixture(),m=createMover();
+    const r=m.rename(path.join(src,'b.bin'),'c.bin',null);
+    assert(r.ok,'rename 传 null 应成功, got '+(r&&r.error));
+    assert(fs.existsSync(path.join(src,'c.bin')));
+    const dest=path.join(folder,'moved'); fs.mkdirSync(dest);
+    const r2=m.moveTo(path.join(src,'c.bin'),dest,null);
+    assert(r2.ok,'moveTo 传 null 应成功, got '+(r2&&r2.error));
+    assert(fs.existsSync(path.join(dest,'c.bin')));
+  });
   check('正常undo按原完整路径恢复，不另取名',()=>{const {src,dest}=fixture(),m=createMover(),r=m.relocate(src,dest);const undo=m.relocate(dest,src,{expectedSource:r.after});assert(undo.ok&&fs.existsSync(path.join(src,'sub','a.txt'))&&!fs.existsSync(dest));});
   check('同尺寸且mtime复原的后代修改使旧undo失效',()=>{const {src,dest}=fixture(),m=createMover(),r=m.relocate(src,dest),file=path.join(dest,'sub','a.txt'),st=fs.statSync(file);fs.writeFileSync(file,'修改\r\n');fs.utimesSync(file,st.atime,st.mtime);assert.throws(()=>m.relocate(dest,src,{expectedSource:r.after}),{code:'STALE_OPERATION'});assert.equal(fs.readFileSync(file,'utf8'),'修改\r\n');assert(!fs.existsSync(src));});
   check('已有目的保留两方，旧undo失败后可重试',()=>{const {src,dest}=fixture(),m=createMover(),r=m.relocate(src,dest);fs.mkdirSync(src);fs.writeFileSync(path.join(src,'external'),'keep');assert.throws(()=>m.relocate(dest,src,{expectedSource:r.after}),{code:'DEST_CONFLICT'});assert(fs.existsSync(dest));assert.equal(fs.readFileSync(path.join(src,'external'),'utf8'),'keep');fs.unlinkSync(path.join(src,'external'));fs.rmdirSync(src);assert(m.relocate(dest,src,{expectedSource:r.after}).ok);});

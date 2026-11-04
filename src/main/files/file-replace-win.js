@@ -22,12 +22,44 @@ function getNative() {
   return native;
 }
 
+/**
+ * 占用类错误的重试封装（2026-11-04 用户「进行下文件操作老是失败 烦死了」）。
+ *
+ * 背景：这台机器装了绿盾透明加密（TFsdframe / TFsfltdrv / TsdEncrypt / TsdEncryptMF
+ * 四个过滤驱动在跑）。它会在文件创建/改名/写入的瞬间短暂持有句柄做加密转换，
+ * 与 MoveFileExW / ReplaceFileW 撞上就是 ERROR_SHARING_VIOLATION(32)。
+ *
+ * 这不是权限问题（ACL 正常）、也不是代码写错 —— 是纯粹的**时序竞争**：
+ * 同一操作隔几十毫秒重试往往就成功了。原来是一次性尝试，撞上就报错，
+ * 于是「老是失败」。
+ *
+ * 所以对 32（共享冲突）/ 33（锁冲突）做有限退避重试：5 次、约 15+35+75+150+300ms。
+ * ⚠ 只重试这两种瞬时错误。EACCES(5)、EEXIST(183/80) 等**不重试** ——
+ * 那些是确定性失败，重试只是把错误延迟暴露，还会让用户多等一秒。
+ * 竞态窗口通常几十毫秒，重到 300ms 足够；再长就不如直接报错让用户重试。
+ */
+const TRANSIENT = new Set([32, 33]);
+const RETRY_DELAYS = [15, 35, 75, 150, 300];
+const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { const end = Date.now() + ms; while (Date.now() < end) {} } };
+/** 执行 attempt()，若返回的 win32 码是瞬时占用错误则退避重试。返回最后一次的 {ok, code}。 */
+function withRetry(attempt) {
+  let result = attempt();
+  for (const delay of RETRY_DELAYS) {
+    if (result.ok || !TRANSIENT.has(result.code)) return result;
+    sleepSync(delay);
+    result = attempt();
+  }
+  return result;
+}
+
 function createFile(source, target) {
   const api = getNative();
   // 不带REPLACE_EXISTING，既有目标必失败；FAT/exFAT没有硬链接，不能用linkSync创建发行版文件。
-  if (!api.move(path.toNamespacedPath(source), path.toNamespacedPath(target), 0)) {
-    const code = api.lastError();
-    throw Object.assign(Error('Windows文件创建失败（' + code + '）'), { code: [80, 183].includes(code) ? 'EEXIST' : code === 5 ? 'EACCES' : 'CREATE_FAILED', win32Code: code });
+  const from = path.toNamespacedPath(source), to = path.toNamespacedPath(target);
+  const result = withRetry(() => api.move(from, to, 0) ? { ok: true, code: 0 } : { ok: false, code: api.lastError() });
+  if (!result.ok) {
+    const code = result.code;
+    throw Object.assign(Error('Windows文件创建失败（' + code + '）'), { code: [80, 183].includes(code) ? 'EEXIST' : code === 5 ? 'EACCES' : TRANSIENT.has(code) ? 'EBUSY' : 'CREATE_FAILED', win32Code: code });
   }
   return { temporaryMoved: true };
 }
@@ -60,8 +92,12 @@ function createReplacer(api, io = fs) {
       }
     }
     // flags=0：不能为了“保存成功”而忽略ACL或元数据合并失败。
-    if (!bridge.replace(windowsPath(target), windowsPath(source), windowsPath(backup), 0, null, null)) {
-      const win32Code = bridge.lastError();
+    // 占用类错误（32/33）重试：绿盾加密驱动会在替换瞬间持句柄（见 withRetry 注释）。
+    const outcome = withRetry(() => bridge.replace(windowsPath(target), windowsPath(source), windowsPath(backup), 0, null, null)
+      ? { ok: true, code: 0 }
+      : { ok: false, code: bridge.lastError() });
+    if (!outcome.ok) {
+      const win32Code = outcome.code;
       const recoveryPath = io.existsSync(backup) ? backup : null;
       const preserveTemporary = win32Code === 1176 || win32Code === 1177;
       throw Object.assign(Error('Windows文件替换失败（' + win32Code + '），修改仍未保存'

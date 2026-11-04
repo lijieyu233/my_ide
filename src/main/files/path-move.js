@@ -33,7 +33,13 @@ function createMover(io = fs, moveNative) {
     }
     walk(absolute,'');return {schema:1,path:absolute,hash:hash.digest('hex'),count,bytes};
   }
-  function relocate(source,target,condition={}) {
+  function relocate(source,target,condition) {
+    // ⚠ condition 传 null 时必须归一成 {}（2026-11-04 实测）。
+    // 默认参数 `condition={}` 只在实参是 **undefined** 时生效，null 会原样传进来，
+    // 于是下面 `condition.expectedSource` 直接抛 TypeError，被上层包成
+    // MOVE_FAILED「Cannot read properties of null」—— 用户看到的就是「文件操作老是失败」。
+    // IPC 调用方（重命名/移动）常常显式传 null 表示「没有前置条件」，这条路径很常见。
+    if (!condition || typeof condition !== 'object') condition = {};
     const src=resolved(source),dest=path.resolve(target),parent=resolved(path.dirname(dest));
     if(inside(src,parent))throw fail('INVALID_TARGET','不能将目录移入自身或后代');
     if(key(src)===key(dest)&&src===dest) return {ok:true,path:dest,target:dest,noop:true};
