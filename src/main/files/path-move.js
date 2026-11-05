@@ -5,6 +5,16 @@ const key = (p) => process.platform === 'win32' ? path.resolve(p).toLowerCase() 
 const inside = (parent, child) => key(child) === key(parent) || key(child).startsWith(key(parent) + path.sep);
 const fail = (code, message) => Object.assign(Error(message), { code });
 const stamp = (s) => [s.dev,s.ino,s.mode,s.nlink,s.size,s.mtimeMs,s.ctimeMs].join(':');
+// 内容摘要（逐字节 SHA256）的字节上限。
+// 以前这里是硬拒绝：累计超过 256MiB 直接 MOVE_LIMIT「迁移摘要超过256MiB预算，尚未执行操作」。
+// 2026-11-05 实测踩到：611MB 的素材目录拖一下就报这条，用户只想要「把这个限制去掉」。
+// 一个目录能不能移动，本来也不该由它的体积决定。
+// 现在超预算的文件不再读内容，只把 stat 版本（dev/ino/mode/nlink/size/mtime/ctime）并进摘要，
+// 快照里记 contentHashed:false。仍然能发现的变化：增删、改名、大小、时间戳、目录项顺序。
+// 退化掉的只有「同尺寸 + mtime 被复原 + ctime 也被复原」的原地改写 —— 那需要提权工具才能做到。
+// 512MiB 是个折中：常见代码库/文档目录全部走内容摘要，几 GB 的素材目录只做 stat 摘要，
+// 不必为了一次移动把整盘读一遍。
+const CONTENT_HASH_BYTES = 512 * 1024 * 1024;
 function createMover(io = fs, moveNative) {
   const move = moveNative || ((source,target) => {
     if (process.platform !== 'win32') throw fail('UNSUPPORTED_MOVE', '当前平台尚未提供经过验证的排他目录移动');
@@ -16,7 +26,7 @@ function createMover(io = fs, moveNative) {
     return absolute;
   }
   function snapshot(source) {
-    const absolute=resolved(source), hash=createHash('sha256');let count=0,bytes=0;
+    const absolute=resolved(source), hash=createHash('sha256');let count=0,bytes=0,unhashed=0;
     const block=Buffer.alloc(64*1024);
     function walk(file, rel) {
       if(++count>10000)throw fail('MOVE_LIMIT','目录超过10000项，尚不能在此安全迁移');
@@ -25,13 +35,20 @@ function createMover(io = fs, moveNative) {
       hash.update(JSON.stringify([rel,stamp(s),s.isDirectory()?'dir':'file']));
       if(s.isDirectory()) { for(const name of io.readdirSync(file).sort())walk(path.join(file,name),path.posix.join(rel,name)); }
       else if(s.isFile()) {
-        bytes+=s.size;if(bytes>256*1024*1024)throw fail('MOVE_LIMIT','迁移摘要超过256MiB预算，尚未执行操作');
-        const fd=io.openSync(file,'r');try { let n;while((n=io.readSync(fd,block,0,block.length,null))>0)hash.update(block.subarray(0,n)); }
-        finally { io.closeSync(fd); }
+        bytes+=s.size;
+        // 超过内容摘要预算就不再逐字节读：stamp 已经在上面的 hash.update 里了，
+        // 这里只是不读内容。绝不因此拒绝迁移（见 CONTENT_HASH_BYTES 的注释）。
+        if(bytes>CONTENT_HASH_BYTES) unhashed++;
+        else {
+          const fd=io.openSync(file,'r');try { let n;while((n=io.readSync(fd,block,0,block.length,null))>0)hash.update(block.subarray(0,n)); }
+          finally { io.closeSync(fd); }
+        }
       } else throw fail('NOT_FILE','源包含不支持的文件类型');
       if(stamp(io.lstatSync(file))!==stamp(s))throw fail('STALE_OPERATION','源在读取期间已变化，请重试');
     }
-    walk(absolute,'');return {schema:1,path:absolute,hash:hash.digest('hex'),count,bytes};
+    walk(absolute,'');
+    // contentHashed:false 的调用方（relocate）不能用这份摘要去证明「内容没变」，只证明「同一批对象」。
+    return {schema:1,path:absolute,hash:hash.digest('hex'),count,bytes,contentHashed:unhashed===0,unhashed};
   }
   function relocate(source,target,condition) {
     // ⚠ condition 传 null 时必须归一成 {}（2026-11-04 实测）。
