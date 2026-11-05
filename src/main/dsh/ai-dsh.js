@@ -22,6 +22,9 @@ function promptContent(messages,page){
   }
   return blocks;
 }
+// 连接器（dsh-native-plugin.cjs）的 attach 准入写死成这个形状：只有 MyIDE 自己创建的会话
+// 才能挂上 MCP 桥、被继续发消息。宿主里发起的 session-* 永远过不去，所以它只能只读浏览。
+const NATIVE_ID=/^myide-[a-f0-9-]{36}$/;
 function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map();
   let connection=null,starting=null,server=null,token=null,disposed=false,loaded=false,disposal=null;
@@ -34,7 +37,10 @@ function createService(options={}){
   const keyOf=context=>JSON.stringify(['reader','bookshelf'].includes(context.page?.id)?[context.sessionId,context.rootId,'reader']:[context.sessionId,context.rootId]);
   async function load(){if(loaded)return;const file=mapping();if(file)try{
     const entries=Object.entries(JSON.parse(await fs.readFile(file,'utf8')));
-    for(const [key,value] of entries){const parts=JSON.parse(key);if(!Array.isArray(parts))continue;const canonical=JSON.stringify(parts[2]==='reader'?parts.slice(0,3):parts.slice(0,2));const record=typeof value==='string'?{id:value,cwd:parts[3]?parts[1]:path.join(home(),'myide-detached-workspace')}:value;if(typeof record?.id!=='string')continue;if(!saved.has(canonical)||parts.length===2||parts[2]==='project')saved.set(canonical,record);}
+    for(const [key,value] of entries){const parts=JSON.parse(key);if(!Array.isArray(parts))continue;const canonical=JSON.stringify(parts[2]==='reader'?parts.slice(0,3):parts.slice(0,2));const record=typeof value==='string'?{id:value,cwd:parts[3]?parts[1]:path.join(home(),'myide-detached-workspace')}:value;if(typeof record?.id!=='string')continue;
+      // 这里不做 id 形状过滤：ACP 链路（options.spawn）的会话 id 是宿主任意的 'native-*'，
+      // 按 myide-* 一刀切会把它的映射也丢掉。宿主会话的毒化项在 attach 时按真实准入结论处理。
+      if(!saved.has(canonical)||parts.length===2||parts[2]==='project')saved.set(canonical,record);}
   }catch(error){if(error.code!=='ENOENT')throw Error('Harness 会话映射读取失败');}loaded=true;}
   let saving=Promise.resolve();
   async function persist(){const file=mapping();if(!file)return;const data=JSON.stringify(Object.fromEntries(saved));saving=saving.catch(()=>{}).then(async()=>{await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file+'.tmp',data);await fs.rename(file+'.tmp',file);});await saving;}
@@ -101,7 +107,24 @@ function createService(options={}){
     session.tools=new Map([...tools,IDE_STATE].map(tool=>[tool.function.name,tool.function]));
     const cwd=session.cwd||(context.page.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace'));await fs.mkdir(cwd,{recursive:true});
     const mcpServers=[{type:'http',name:'myide',url:'http://127.0.0.1:'+server.address().port+'/mcp',headers:[{name:'Authorization',value:'Bearer '+token},{name:'X-MyIDE-Session',value:session.token}]}];
-    if(!session.attached){session.attaching ||= (async()=>{const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);session.id=response.sessionId||session.id;session.cwd=cwd;session.configOptions=response.configOptions||[];session.attached=true;saved.set(key,{id:session.id,cwd});await persist();})().finally(()=>{session.attaching=null;});await session.attaching;}
+    if(!session.attached){session.attaching ||= (async()=>{
+      const request=async()=>{const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);session.id=response.sessionId||session.id;session.cwd=cwd;session.configOptions=response.configOptions||[];session.attached=true;saved.set(key,{id:session.id,cwd});await persist();};
+      try{await request();}
+      catch(error){
+        // 宿主里发起的 session-* 过不了连接器准入。以前这里把错误原样抛出，而 session.id
+        // 又来自 saved —— 于是一个坏身份会让这个项目永久连不上，点「重新连接」也只是
+        // 重试同一个坏 id。现在降级成一条新的 MyIDE 会话继续工作，并把映射修正成合法身份。
+        // 那条宿主会话的正文仍可在历史列表里只读浏览（bindSession 已不再落盘）。
+        // 判定条件两选一：id 形状不合准入（宿主的 session-*），或连接器明确回了准入拒绝
+        // （连接器改版/插件不匹配时，形状合法的 id 也会被拒）。只对 resume 生效 ——
+        // session/new 失败必须原样抛出，不能吞成一次静默重试。
+        const resuming=!!session.id;
+        const rejected=resuming&&(!NATIVE_ID.test(session.id)||/只允许绑定 MyIDE 创建的原生会话/.test(error.message||''));
+        if(!rejected)throw error;
+        session.id=undefined;session.attached=false;saved.delete(key);await persist();
+        await request();
+      }
+    })().finally(()=>{session.attaching=null;});await session.attaching;}
     return {session,conn};
   }
   async function chat(cfg,messages,tools,context,onEvent,onTool){
@@ -191,9 +214,21 @@ function createService(options={}){
     try{
       if(conn.capabilities?.native)await probeAttach(conn,id);
     }catch(cause){canContinue=false;error=cause.message;}
-    saved.set(key,{id,cwd});await persist();
+    // 准入失败的会话是「只读浏览」，绝不能写进持久映射。
+    // 旧实现在这里无条件 saved.set + persist，于是把宿主会话 id 变成了这个项目的永久身份：
+    // 之后每次 attach 都拿它去 resume、每次都被拒，面板锁死在「DSH 连接失败」，
+    // 而 saved 里的坏 id 又不会被任何一次失败清掉 —— 只能手动删映射文件才能恢复
+    // （2026-11-05 实测，日志连刷 14 条「只允许绑定 MyIDE 创建的原生会话」）。
+    // ⚠ 只读分支也必须 persist：文件里可能已经躺着上一次写进去的毒化项，只清内存
+    //   等于没修，下次启动照样读回来（第一版就是漏了这一步，真机 E2E 才抓到）。
+    if(canContinue){saved.set(key,{id,cwd});await persist();}
+    else{const previous=saved.get(key);
+      // 只读浏览不该顺手把原本可续聊的 myide-* 绑定也抹掉：保持原样，让用户切回去还能续聊。
+      if(previous&&NATIVE_ID.test(previous.id))saved.set(key,previous);else saved.delete(key);
+      await persist();}
     // 连接级 sessions 里可能还挂着旧身份；清掉让它按新 id 重新 attach。
-    for(const item of sessions.values())if(item.key===key){item.id=id;item.cwd=cwd;item.attached=false;}
+    // 只读会话不动它：给它建状态等于给下一次 attach 备好一个必然被拒的 resume 目标。
+    if(canContinue)for(const item of sessions.values())if(item.key===key){item.id=id;item.cwd=cwd;item.attached=false;}
     return {sessionId:id,cwd,canContinue,error};
   }
   /**

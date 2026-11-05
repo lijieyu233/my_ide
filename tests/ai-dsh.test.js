@@ -109,5 +109,81 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
   }});
   try{const items=await service.listSessions({});assert.deepEqual(items[0].bindings,[{sessionId:'local-A',rootId:'C:/proj',scope:'project'}]);assert.deepEqual(items[1].bindings,[{sessionId:'local-reader',rootId:'C:/proj',scope:'reader'}]);assert.deepEqual(requests,['session/list']);}finally{await service.dispose();}
  });
+// 2026-11-05 事故：在历史列表点开一条「DSH 里发起的」会话后，MyIDE 把它的 session-* 身份
+// 无条件写进 dsh-native-sessions.json。之后每次 attach 都拿这个 id 去 resume，被连接器准入
+// 挡死（只允许 myide-*），面板永久停在「DSH 连接失败」，点重新连接也只是重试同一个坏 id。
+// 下面三条锁住「不再落盘」「坏映射自愈」「不误伤已有合法绑定」。
+const nativeFixture=({admission='只允许绑定 MyIDE 创建的原生会话',id='myide-11111111-1111-4111-8111-111111111111'}={})=>{
+ const requests=[],rpc=new EventEmitter();rpc.closed=false;rpc.close=()=>{rpc.closed=true;rpc.emit('closed');};
+ rpc.probe=async(method,params)=>(/^myide-/.test(params.sessionId)?{ok:true,value:{attached:true}}:{ok:false,error:{message:admission}});
+ rpc.request=async(method,params)=>{requests.push({method,params});
+  if(method==='session/resume'&&!/^myide-/.test(params.sessionId))throw Error(admission);
+  if(method==='session/new'||method==='session/resume')return {sessionId:params.sessionId||id,configOptions};
+  return {sessionId:id,configOptions};};
+ return {rpc,requests};
+};
+await test('绑定宿主会话只读浏览时不落盘，映射文件保持原样',async()=>{
+ const file=path.join(temp,'readonly-map.json'),native=nativeFixture();
+ fs.writeFileSync(file,JSON.stringify({[JSON.stringify(['local-A','C:/proj'])]:{id:'myide-22222222-2222-4222-8222-222222222222',cwd:'C:/proj'}}));
+ const before=fs.readFileSync(file,'utf8');
+ const service=createService({home:path.join(temp,'readonly-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ try{
+  const result=await service.bindSession({},{sessionId:'local-A',rootId:'C:/proj',page},{'session':'session-9e4d2c1b-0000-4000-8000-000000000001'});
+  assert.equal(result.canContinue,false);
+  assert(/只允许绑定/.test(result.error));
+  assert.equal(fs.readFileSync(file,'utf8'),before,'只读绑定绝不能改写映射文件');
+ }finally{await service.dispose();}
+});
+await test('映射里残留宿主会话身份时首次发送即自愈，不再拿它反复 resume',async()=>{
+ const file=path.join(temp,'heal-map.json'),native=nativeFixture();
+ // 事故现场原样：这条 session-* 就是毒化项
+ fs.writeFileSync(file,JSON.stringify({
+  [JSON.stringify(['local-A','C:/proj'])]:{id:'session-4d31e854-2e85-41f4-9a2b-28b049a9a3f0',cwd:'C:/proj'},
+  [JSON.stringify(['local-B','C:/proj'])]:{id:'myide-33333333-3333-4333-8333-333333333333',cwd:'C:/proj'},
+ }));
+ const service=createService({home:path.join(temp,'heal-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ try{
+  // local-A 这条毒化项不能把项目锁死：这次发送必须真的走到 session/prompt。
+  // （假宿主不回 turn/end，所以不校验 result.ok —— 这里只锁「没有卡在 resume 上」。）
+  // rootId 必须和映射里的键一致，否则改到的是另一条记录，测不到自愈。
+  await service.chat({},[{role:'user',content:'继续'}],[],{...context(),sessionId:'local-A',rootId:'C:/proj'},()=>{},()=>{});
+  assert(native.requests.some(r=>r.method==='session/new'),'应当降级成新建会话');
+  assert(native.requests.some(r=>r.method==='session/prompt'),'降级后要能真正发出消息');
+  const map=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert(!map[JSON.stringify(['local-A','C:/proj'])].id.startsWith('session-'),'毒化 id 应已被替换成 myide-*');
+  // 合法的 myide-* 绑定必须原样保留
+  assert.equal(map[JSON.stringify(['local-B','C:/proj'])].id,'myide-33333333-3333-4333-8333-333333333333');
+ }finally{await service.dispose();}
+});
+await test('resume 被准入拒绝时降级为新建会话，不把项目永久锁死在错误上',async()=>{
+ const file=path.join(temp,'degrade-map.json'),native=nativeFixture({id:'myide-44444444-4444-4444-8444-444444444444'});
+ // 形状合法但被连接器拒绝（连接器改版/插件不匹配）也要能自愈
+ fs.writeFileSync(file,JSON.stringify({[JSON.stringify(['local-C','C:/proj'])]:{id:'myide-55555555-5555-4555-8555-555555555555',cwd:'C:/proj'}}));
+ const service=createService({home:path.join(temp,'degrade-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>{
+  const rpc=native.rpc,original=rpc.request;
+  rpc.request=async(method,params)=>{if(method==='session/resume')throw Error('只允许绑定 MyIDE 创建的原生会话');return original(method,params);};
+  return rpc;
+ }});
+ try{
+  // 形状合法但被准入拒绝（连接器改版/插件不匹配）同样要自愈。
+  // 假宿主不回 turn/end，所以只锁「走到了 session/new + prompt」，不校验 result.ok。
+  await service.chat({},[{role:'user',content:'发消息'}],[],{...context(),sessionId:'local-C',rootId:'C:/proj'},()=>{},()=>{});
+  assert(native.requests.some(r=>r.method==='session/new'),'应当降级成新建会话');
+  assert(native.requests.some(r=>r.method==='session/prompt'),'降级后要能真正发出消息');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify(['local-C','C:/proj'])].id,'myide-44444444-4444-4444-8444-444444444444','映射应修正为新会话');
+ }finally{await service.dispose();}
+});
+await test('session/new 本身失败时原样抛出，不吞成降级',async()=>{
+ const file=path.join(temp,'newfail-map.json');
+ const service=createService({home:path.join(temp,'newfail-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>{
+  const rpc=new EventEmitter();rpc.closed=false;rpc.close=()=>{rpc.closed=true;rpc.emit('closed');};
+  rpc.request=async(method)=>{if(method==='session/new')throw Error('宿主拒绝了新建会话');return {configOptions};};
+  return rpc;
+ }});
+ try{
+  const result=await service.chat({},[{role:'user',content:'发消息'}],[],{...context(),sessionId:'local-D'},()=>{},()=>{});
+  assert(!result.ok);assert(/宿主拒绝了新建会话/.test(result.error));
+ }finally{await service.dispose();}
+});
  console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
 }finally{fs.rmSync(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});
