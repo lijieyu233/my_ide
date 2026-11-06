@@ -10,7 +10,7 @@ async function install({home,runtime}){
   if(previous!==source)await fs.writeFile(plugin,source);
   const patch=path.join(profile,'cordis.patch.yml');let text='';try{text=await fs.readFile(patch,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
   const root=path.join(path.dirname(runtime.executable),'resources','app.asar','dsh'),discovery=path.join(home,'myide-native.json');
-  const row={id:'myide-native-bridge',name:plugin,config:{runtimeRoot:root,discoveryFile:discovery}};
+  const row={id:'myide-native-bridge',name:plugin,config:{runtimeRoot:root,discoveryFile:discovery,revision}};
   // 旧实现只在缺少当前 revision 时往后追加一条同 id 的配置，插件每改一次就多一条，加载器却按第一条解析；
   // 结果用户 profile 里叠了多条（其中一条还是早期写坏的 runtimeRoot），改代码永远不生效、且一直报会话未激活。
   // 现在改为原地替换：所有 myide-native-bridge 条目统一指向本次的插件与路径，多余的重复条目一并去掉。
@@ -32,10 +32,11 @@ async function install({home,runtime}){
     // YAML 分支只动本插件自己的行块，其余字节（含 !!js 标签、注释）原样保留。
     // 必须写成顶层 `- insert:` 包装：顶层 `- id: xxx` 在 DSH 里是「覆盖已加载插件」的补丁，
     // 拿它声明一个新插件不会注册任何东西（实测：profile 里有条目但 myide-native.json 从不生成）。
-    const record=['- insert:','    - id: myide-native-bridge','      name: '+JSON.stringify(plugin),'      config:','        runtimeRoot: '+JSON.stringify(root),'        discoveryFile: '+JSON.stringify(discovery)].join('\n');
+    const record=['- insert:','    - id: myide-native-bridge','      name: '+JSON.stringify(plugin),'      config:','        runtimeRoot: '+JSON.stringify(root),'        discoveryFile: '+JSON.stringify(discovery),'        revision: '+JSON.stringify(revision)].join('\n');
     const {text:next,changed}=replaceEntry(text,record);
     if(changed){if(text)await backup(patch,directory);await writeAtomic(patch,next);}
   }
+  return {revision};
 }
 async function backup(patch,directory){
   await fs.copyFile(patch,path.join(directory,'desktop-patch-before-myide.yml'),require('fs').constants.COPYFILE_EXCL).catch(error=>{if(error.code!=='EEXIST')throw error;});
@@ -200,7 +201,8 @@ class NativeRpc extends EventEmitter {
     // —— 两个端点的描述符不同，此处已按实测分别处理。
     if(method==='session/list'){
       const value=await this.call('session/list',{_request:{}});
-      const items=(value?.items||[]).map(item=>({
+      // session/list 含 Mnemon 等子任务；DSH 主侧栏不把子任务当独立对话。
+      const items=(value?.items||[]).filter(item=>!item.projections?.values?.subagent).map(item=>({
         sessionId:String(item.sessionId||''),
         title:item.projections?.values?.title||'',
         running:item.running===true,
@@ -248,26 +250,21 @@ class NativeRpc extends EventEmitter {
       }
       return {sessionId,records,turns:foldHistory(records),truncated:records.length>=limit};
     }
+    if(method==='session/check')return this.call('myide/check',{request:{sessionId:params.sessionId,cwd:params.cwd}});
     if(method==='session/new'||method==='session/resume'){
-      // 2026-11-01 起允许绑定**宿主里已存在**的会话（在 DSH 里发起的那些）。
-      // 只放行「宿主目录里确实有」的 id：随便编一个 id 去 create 会在宿主里
-      // 造出一条幽灵会话，而 _request 里的 sessionId 会被当成新建身份。
-      if(method==='session/resume'&&params.existing===true){
-        if(!this.existing?.has(params.sessionId))throw Error('该会话已不在 DSH 的会话目录里，请刷新历史列表后重试');
-        return {sessionId:params.sessionId,...await this.refreshOptions(params.sessionId)};
-      }
+      if(method==='session/resume'&&params.existing===true&&!this.existing.has(params.sessionId))throw Error('该会话已不在 DSH 的会话目录里，请刷新历史列表后重试');
       const id=method==='session/new'?'myide-'+crypto.randomUUID():params.sessionId;
-      // 2026-11-01 起历史列表能切到宿主里已存在的会话（session-* / 带前缀的老 id），
-      // 旧校验只认 myide-* 会把「切过去后继续发消息」直接挡死。仍拒绝空值和非字符串，
-      // 真正的存在性由上面的 existing 分支负责。
       if(!id||typeof id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(id))throw Error('会话身份无效');
-      const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});
-      // 宿主只复用「还没开始过一轮」的空白会话；已聊过天的会话它会另铸一个 session-* 身份返回，调用方若忽略返回值，
-      // 后续 attach 就落到一个从未激活的原身份上（表现为重启后一直「原生会话尚未激活」）。所以恢复时先看日志在不在，
-      // 只有确实不存在才 create；宿主明确回了别的身份就直接失败，不再假装挂上。
-      const stored=method==='session/resume'&&await this.call('session/projections',{request:{sessionId:id}});
-      if(!stored){const created=await this.call('session/create',{request:{sessionId:id,workspaceId:workspace.workspaceId}});if(created?.sessionId&&created.sessionId!==id)throw Error('原生会话身份未被接受：'+created.sessionId);}
-      const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
+      if(method==='session/new'){
+        const {workspace}=await this.call('workspace/create',{request:{path:params.cwd}});
+        const created=await this.call('session/create',{request:{sessionId:id,workspaceId:workspace.workspaceId}});
+        if(created?.sessionId&&created.sessionId!==id)throw Error('原生会话身份未被接受：'+created.sessionId);
+      }else{
+        // resume 不是 create：不存在、被拒绝、工作区不符都明确失败，绝不另铸身份。
+        const stored=await this.call('session/projections',{request:{sessionId:id}});
+        if(!stored)throw Error('该会话已不在 DSH 的会话目录里，请刷新历史列表后重试');
+      }
+      const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,cwd:params.cwd,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
       return {sessionId:id,...await this.refreshOptions(id)};
     }
     const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
@@ -284,7 +281,7 @@ class NativeRpc extends EventEmitter {
   }
   async prompt(params,state){
     const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
-    const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',started=false,accepted=false,activeTurn=null,lastSeq=-1,lastError=null;
+    const reader=response.body.getReader(),decoder=new TextDecoder(),requestId=crypto.randomUUID();let buffer='',started=false,accepted=false,candidateTurn=null,activeTurn=null,lastSeq=-1,lastError=null;
     try{
       while(true){const {done,value}=await reader.read();if(done){this.close();throw Error('DSH 连接已断开；下次发送会重新连接，本次任务未确认完成');}buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
         let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
@@ -298,10 +295,12 @@ class NativeRpc extends EventEmitter {
           if(item.type==='snapshot'&&!accepted){
             lastSeq=item.cursor;accepted=true;
             const content=params.prompt.map(block=>block.type==='image'?{type:'image',mediaType:block.mimeType,data:block.data}:block);
-            await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId:crypto.randomUUID(),mode:'queue',content}},controller.signal);continue;
+            await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId,mode:'queue',content}},controller.signal);continue;
           }
           if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
-          if(event.type==='turn/start'){started=true;activeTurn=data.turn;}
+          if(event.type==='turn/start')candidateTurn=data.turn;
+          // 宿主可能已在跑/排队别轮；真正属于本次发送的是 source.rpcId，而不是第一个 turn/start。
+          if(event.type==='user/message'&&data.source?.kind==='user'&&data.source.rpcId===requestId){started=true;activeTurn=candidateTurn;}
           if(!started)continue;
           if(event.type==='agent/error'||event.type==='request/error')lastError=data.error||data;
           if(event.type==='assistant/message')for(const block of data.message.content||[]){if(block.type==='text')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_message_chunk',messageId:data.message.id,content:block});else if(block.type==='thinking')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:block.thinking||block.text||''}});}
@@ -319,9 +318,19 @@ class NativeRpc extends EventEmitter {
   reply(id,result){const item=this.answers.get(id);if(!item)return;this.answers.delete(id);const value=item.kind==='question'?result:item.kind==='permission'&&result.outcome?.outcome==='selected'&&result.outcome.optionId==='allow'?'allowed-once':'rejected';void this.raw('answer',{sessionId:item.sessionId,id:item.id,value}).then(response=>response.body?.cancel()).catch(error=>this.sessions.get(item.sessionId)?.controller?.abort(error));}
   close(){if(this.closed)return;this.closed=true;for(const state of this.sessions.values())state.controller?.abort();this.answers.clear();this.emit('closed');}
 }
+let upgradingBridge=null;
+async function reloadBridge(rpc){
+  if(!upgradingBridge)upgradingBridge=(async()=>{
+    // 只改 patch 或重复 enable(true) 会留下旧 fiber（真机仍回旧版白名单错误）。
+    // 只重载本连接器，不重启 DSH，也不触碰任何会话日志。
+    try{await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:false});}
+    finally{const result=await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:true});if(result?.application!=='applied')throw Error('连接器更新未生效，请重启 DSH 后重新连接');}
+  })().finally(()=>{upgradingBridge=null;});
+  return upgradingBridge;
+}
 async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetcher=fetch,waitMs=15000}){
-  if(!skipInstall)await install({home,runtime});
-  const deadline=Date.now()+waitMs;let issue='未找到 DSH 的连接信息';
+  const installed=!skipInstall&&await install({home,runtime});
+  const deadline=Date.now()+waitMs;let issue='未找到 DSH 的连接信息',upgradeAttempted=false;
   do{
     try{
       const info=JSON.parse(await fs.readFile(discoveryFile||path.join(home,'myide-native.json'),'utf8'));
@@ -330,8 +339,16 @@ async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetch
       const url=nativeUrl(info.url);issue='DSH 本机服务尚未响应';
       const response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(Math.max(1,Math.min(5000,deadline-Date.now())))}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
       if(response.status!==303||!cookie){issue='DSH 本机授权未成功（HTTP '+response.status+'）';throw Error(issue);}
-      return new NativeRpc(url.origin,cookie,fetcher);
-    }catch(error){if(error.code==='ENOENT')issue='未找到 DSH 的连接信息';if(Date.now()>=deadline)break;await pause(200);}
+      const rpc=new NativeRpc(url.origin,cookie,fetcher);
+      if(installed&&info.revision!==installed.revision){
+        issue='DSH 连接器更新尚未生效';
+        if(upgradeAttempted){rpc.close();throw Error(issue);}
+        upgradeAttempted=true;
+        try{await reloadBridge(rpc);}catch(error){error.bridgeUpgradeFailed=true;throw error;}finally{rpc.close();}
+        continue;
+      }
+      return rpc;
+    }catch(error){if(error.bridgeUpgradeFailed)throw error;if(error.code==='ENOENT')issue='未找到 DSH 的连接信息';if(Date.now()>=deadline)break;await pause(200);}
   }while(true);
   throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }

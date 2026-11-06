@@ -11,9 +11,28 @@ class MyIdeNativeBridge {
       const port=ctx.webServer.port;if(!Number.isInteger(port)||port<1||port>65535)throw Error('MyIDE 连接器等待原生 DSH 端口');
       const url=ctx.connection.authenticatedUrl('http://127.0.0.1:'+port);
       fs.mkdirSync(path.dirname(file),{recursive:true});
-      fs.writeFileSync(file,JSON.stringify({version:1,pid:process.pid,profile:ctx.get('profileContext')?.name||'',url,nonce}),{mode:0o600});
+      fs.writeFileSync(file,JSON.stringify({version:1,revision:config.revision,pid:process.pid,profile:ctx.get('profileContext')?.name||'',url,nonce}),{mode:0o600});
       return ()=>{try{if(JSON.parse(fs.readFileSync(file,'utf8')).nonce===nonce)fs.unlinkSync(file);}catch{}};
     });
+    // 准入查询必须无副作用：旧 probe 竟用假 MCP 地址调用 attach，会拆掉真实连接。
+    const checkSession=async request=>{
+      if(!request||typeof request.sessionId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(request.sessionId)||typeof request.cwd!=='string')throw Error('MyIDE 会话身份无效');
+      const {items}=await ctx.sessionController.list({});
+      const item=items.find(item=>item.sessionId===request.sessionId);
+      if(!item)throw Error('该会话已不在 DSH 的会话目录里');
+      if(item.projections?.values?.subagent)throw Error('不能接手子任务会话');
+      const [actual,expected]=await Promise.all([fs.promises.realpath(item.cwd),fs.promises.realpath(request.cwd)]);
+      if(actual!==expected)throw Error('该会话属于其他工作区');
+      return item;
+    };
+    ctx.connection.fetch.register({path:'/api/myide/check',methods:['POST'],requestBody:'buffered',fetch:async input=>{
+      let rpcId='invalid-request';try{
+        const envelope=await input.json();rpcId=envelope.rpcId;
+        if(envelope.type!=='client-request'||envelope.method!=='myide/check'||typeof rpcId!=='string')throw Error('MyIDE 连接请求无效');
+        await checkSession(envelope.payload?.args?.request);
+        return Response.json({type:'server-response',rpcId,result:{ok:true,value:{canContinue:true}}});
+      }catch(error){return Response.json({type:'server-response',rpcId,result:{ok:false,error:{code:'myide/check-failed',message:error.message,details:{}}}});}
+    }});
     ctx.connection.fetch.register({path:'/api/myide/attach',methods:['POST'],requestBody:'buffered',fetch:async input=>{
       let rpcId='invalid-request';
       const response=result=>Response.json({type:'server-response',rpcId,result});
@@ -22,7 +41,8 @@ class MyIdeNativeBridge {
         if(envelope.type!=='client-request'||envelope.method!=='myide/attach'||typeof rpcId!=='string')throw Error('MyIDE 连接请求无效');
         const payload=envelope.payload;
         const request=payload?.args?.request;
-        if(!request||Object.keys(request).some(key=>!['sessionId','url','headers'].includes(key))||!/^myide-[a-f0-9-]{36}$/.test(request.sessionId))throw Error('只允许绑定 MyIDE 创建的原生会话');
+        if(!request||Object.keys(request).some(key=>!['sessionId','cwd','url','headers'].includes(key)))throw Error('MyIDE 连接请求无效');
+        await checkSession(request);
         const target=new URL(request.url);
         if(target.protocol!=='http:'||target.hostname!=='127.0.0.1'||target.username||target.password||target.pathname!=='/mcp'||target.search||target.hash)throw Error('MyIDE MCP 必须是本机连接');
         if(!request.headers||Object.keys(request.headers).sort().join(',')!=='Authorization,X-MyIDE-Session'||Object.values(request.headers).some(value=>typeof value!=='string'||/[\r\n]/.test(value)))throw Error('MyIDE MCP 会话凭据无效');
@@ -40,15 +60,13 @@ class MyIdeNativeBridge {
     // DSH 重启后历史会话只有日志、没有 Agent；直接 get 拿不到就会误报「尚未激活」并让侧栏永久连不上。
     // sessionController.resolveAgent 是宿主自己的冷恢复入口，只有它会把持久化日志重新装配成 Agent。
     const activateAgent=async id=>{
-      if(!/^myide-[a-f0-9-]{36}$/.test(id))throw Error('不是 MyIDE 原生会话');
-      const live=ctx.agents.get(id);
-      if(live)return live;
+      // 由宿主恢复原身份；resolveAgent 自己会拒绝不存在或归子任务路由所有的会话。
       const found=await ctx.sessionController.resolveAgent(id);
       if(found?.error)throw found.error;
       if(!found?.agent)throw Error('原生会话尚未激活');
       return found.agent;
     };
-    const owned=id=>{const agent=ctx.agents.get(id);if(!/^myide-[a-f0-9-]{36}$/.test(id)||!agent||!bindings.has(agent))throw Error('不是已绑定的 MyIDE 会话');return agent;};
+    const owned=id=>{const agent=ctx.agents.get(id);if(!agent||!bindings.has(agent))throw Error('不是已绑定的 MyIDE 会话');return agent;};
     ctx.connection.fetch.register({path:'/api/myide/answer',methods:['POST'],requestBody:'buffered',fetch:async input=>{
       try{const {sessionId,id,value}=await input.json(),agent=owned(sessionId),item=pending.get(id);if(!item||item.agent!==agent)throw Error('此交互已结束');
         if(item.kind==='permission'&&!['allowed-once','rejected'].includes(value))throw Error('权限结果无效');

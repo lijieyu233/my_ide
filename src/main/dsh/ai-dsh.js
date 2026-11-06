@@ -22,11 +22,8 @@ function promptContent(messages,page){
   }
   return blocks;
 }
-// 连接器（dsh-native-plugin.cjs）的 attach 准入写死成这个形状：只有 MyIDE 自己创建的会话
-// 才能挂上 MCP 桥、被继续发消息。宿主里发起的 session-* 永远过不去，所以它只能只读浏览。
-const NATIVE_ID=/^myide-[a-f0-9-]{36}$/;
 function createService(options={}){
-  const runs=new Map(),sessions=new Map(),saved=new Map();
+  const runs=new Map(),sessions=new Map(),saved=new Map(),blocked=new Map(),identities=new Map();
   let connection=null,starting=null,server=null,token=null,disposed=false,loaded=false,disposal=null;
   const emit=(run,event)=>{if(!run.controller.signal.aborted)run.onEvent({...event,context:run.context});};
   const live=run=>{if(disposed||run.controller.signal.aborted)throw Error('Harness 请求已停止');};
@@ -34,7 +31,11 @@ function createService(options={}){
   const mapping=()=>options.mappingFile?.();
   // 页面只是本轮上下文，不能改变对话身份；项目仍隔离，防止把另一项目历史带进来。
   // 阅读页不能复用项目会话的历史与cwd，否则原生Harness会继续在后台项目中工作。
-  const keyOf=context=>JSON.stringify(['reader','bookshelf'].includes(context.page?.id)?[context.sessionId,context.rootId,'reader']:[context.sessionId,context.rootId]);
+  const reader=context=>['reader','bookshelf'].includes(context.page?.id);
+  const keyOf=context=>JSON.stringify(reader(context)?[context.sessionId,context.rootId,'reader']:[context.sessionId,context.rootId]);
+  const workspaceOf=context=>!reader(context)&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace');
+  // bind 与 attach 共用身份锁；不让慢的旧 attach 在改绑后覆盖映射或把运行中的 run.session 改名。
+  async function identity(key,task){const next=(identities.get(key)||Promise.resolve()).catch(()=>{}).then(task);identities.set(key,next);try{return await next;}finally{if(identities.get(key)===next)identities.delete(key);}}
   async function load(){if(loaded)return;const file=mapping();if(file)try{
     const entries=Object.entries(JSON.parse(await fs.readFile(file,'utf8')));
     for(const [key,value] of entries){const parts=JSON.parse(key);if(!Array.isArray(parts))continue;const canonical=JSON.stringify(parts[2]==='reader'?parts.slice(0,3):parts.slice(0,2));const record=typeof value==='string'?{id:value,cwd:parts[3]?parts[1]:path.join(home(),'myide-detached-workspace')}:value;if(typeof record?.id!=='string')continue;
@@ -83,14 +84,14 @@ function createService(options={}){
       if(child){child.stderr.setEncoding('utf8');child.stderr.on('data',()=>{});}
       own.rpc.on('closed',()=>{if(connection===own){connection=null;for(const item of sessions.values())item.attached=false;}});
       own.rpc.on('notification',notification=>{
-        if(notification.method==='myide/question'){const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId),run=session?.run;if(!run||run.controller.signal.aborted)return;const id=crypto.randomUUID();run.permissions.set(id,{id:notification.params.id,rpc:own.rpc,kind:'question'});emit(run,{type:'question',id,questions:notification.params.questions});return;}if(notification.method!=='session/update')return;const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId),run=session?.run,update=notification.params?.update;
+        if(notification.method==='myide/question'){const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId&&item.run),run=session?.run;if(!run||run.controller.signal.aborted)return;const id=crypto.randomUUID();run.permissions.set(id,{id:notification.params.id,rpc:own.rpc,kind:'question'});emit(run,{type:'question',id,questions:notification.params.questions});return;}if(notification.method!=='session/update')return;const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId&&item.run),run=session?.run,update=notification.params?.update;
         if(!run||run.controller.signal.aborted)return;
         if(update?.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text'){const delta=(run.lastMessage&&update.messageId&&run.lastMessage!==update.messageId?'\n\n':'')+update.content.text;run.lastMessage=update.messageId;run.text+=delta;emit(run,{type:'text',delta,messageId:update.messageId});}
         else if(update?.sessionUpdate==='config_option_update'){session.configOptions=update.configOptions;emit(run,{type:'config',configOptions:update.configOptions});}
         else if(update)emit(run,{type:'native',update});
       });
       own.rpc.on('request',request=>{
-        const session=[...sessions.values()].find(item=>item.id===request.params?.sessionId),run=session?.run;
+        const session=[...sessions.values()].find(item=>item.id===request.params?.sessionId&&item.run),run=session?.run;
         if(request.method!=='session/request_permission'){own.rpc.write({id:request.id,error:{code:-32601,message:'Unsupported client request'}});return;}
         if(!run||run.controller.signal.aborted){own.rpc.reply(request.id,{outcome:{outcome:'cancelled'}});return;}
         const id=crypto.randomUUID(),choices=(request.params.options||[]).filter(option=>['allow_once','reject_once'].includes(option.kind));
@@ -101,39 +102,38 @@ function createService(options={}){
       own.capabilities=initialized.agentCapabilities;}return own;
     })().catch(error=>{connection?.rpc.close();connection?.child?.kill();connection=null;throw error;}).finally(()=>{starting=null;});return starting;
   }
-  async function attach(cfg,context,tools){
-    const conn=await connect(cfg),key=keyOf(context);let session=sessions.get(key);
+  async function attach(cfg,context,tools,run){
+    const conn=await connect(cfg),key=keyOf(context);
+    return identity(key,async()=>{let session=sessions.get(key);
+    if(blocked.has(key))throw Error('此会话尚未绑定，不能发送或新建替代会话：'+blocked.get(key));
     if(!session){const record=saved.get(key);session={key,id:record?.id,cwd:record?.cwd,token:crypto.randomBytes(24).toString('hex'),tools:new Map(),attached:false,run:null};sessions.set(key,session);}
+    // 旧版曾把宿主 G 的本地身份绑到新建 H；这种冲突必须重新选择，不能继续发给 H。
+    const expected=String(context.sessionId||'').replace(/^host:/,'');
+    if(conn.capabilities?.native&&/^(session-|myide-)/.test(expected)&&!['reader','bookshelf'].includes(context.page?.id)&&session.id!==expected)throw Error('历史会话身份已失配，请从历史列表重新打开后再发送');
     session.tools=new Map([...tools,IDE_STATE].map(tool=>[tool.function.name,tool.function]));
-    const cwd=session.cwd||(context.page.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace'));await fs.mkdir(cwd,{recursive:true});
+    const cwd=session.cwd||workspaceOf(context);await fs.mkdir(cwd,{recursive:true});
     const mcpServers=[{type:'http',name:'myide',url:'http://127.0.0.1:'+server.address().port+'/mcp',headers:[{name:'Authorization',value:'Bearer '+token},{name:'X-MyIDE-Session',value:session.token}]}];
-    if(!session.attached){session.attaching ||= (async()=>{
-      const request=async()=>{const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);session.id=response.sessionId||session.id;session.cwd=cwd;session.configOptions=response.configOptions||[];session.attached=true;saved.set(key,{id:session.id,cwd});await persist();};
-      try{await request();}
-      catch(error){
-        // 宿主里发起的 session-* 过不了连接器准入。以前这里把错误原样抛出，而 session.id
-        // 又来自 saved —— 于是一个坏身份会让这个项目永久连不上，点「重新连接」也只是
-        // 重试同一个坏 id。现在降级成一条新的 MyIDE 会话继续工作，并把映射修正成合法身份。
-        // 那条宿主会话的正文仍可在历史列表里只读浏览（bindSession 已不再落盘）。
-        // 判定条件两选一：id 形状不合准入（宿主的 session-*），或连接器明确回了准入拒绝
-        // （连接器改版/插件不匹配时，形状合法的 id 也会被拒）。只对 resume 生效 ——
-        // session/new 失败必须原样抛出，不能吞成一次静默重试。
-        const resuming=!!session.id;
-        const rejected=resuming&&(!NATIVE_ID.test(session.id)||/只允许绑定 MyIDE 创建的原生会话/.test(error.message||''));
-        if(!rejected)throw error;
-        session.id=undefined;session.attached=false;saved.delete(key);await persist();
-        await request();
+    if(!session.attached){
+      for(const other of sessions.values())if(other!==session&&session.id&&other.id===session.id){
+        if(other.run||other.attaching)throw Error('此 DSH 会话正由另一个本地会话使用，请切回正在运行的会话');
+        other.attached=false;
       }
+      session.attaching ||= (async()=>{
+      const response=await conn.rpc.request(session.id?'session/resume':'session/new',{...(session.id?{sessionId:session.id}:{}),cwd,mcpServers},90000);
+      if(session.id&&response.sessionId&&response.sessionId!==session.id)throw Error('宿主返回了另一条会话，已拒绝继续发送');
+      session.id=response.sessionId||session.id;session.cwd=cwd;session.configOptions=response.configOptions||[];session.attached=true;
+      saved.set(key,{id:session.id,cwd});await persist();
     })().finally(()=>{session.attaching=null;});await session.attaching;}
+    if(run){live(run);if(session.run)throw Error('此 Harness 会话仍在停止上一轮，请稍后再试');session.run=run;run.session=session;run.conn=conn;}
     return {session,conn};
+    });
   }
   async function chat(cfg,messages,tools,context,onEvent,onTool){
     if(runs.has(context.requestId))throw Error('Harness 请求身份重复');
     const run={context,onEvent,onTool,controller:new AbortController(),tools:new Map(),permissions:new Map(),sequence:0,text:'',session:null};runs.set(context.requestId,run);
     const result=(status,extra={})=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'dsh',text:run.text,context,...extra});
     try{
-      emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools);live(run);
-      if(session.run)throw Error('此 Harness 会话仍在停止上一轮，请稍后再试');session.run=run;run.session=session;run.conn=conn;
+      emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools,run);live(run);
       emit(run,{type:'config',configOptions:session.configOptions});
       for(const [configId,value] of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]])if(value!==undefined&&value!==null&&session.configOptions.some(option=>option.id===configId&&option.currentValue!==value&&(option.options||[]).flatMap(choice=>choice.options||[choice]).some(choice=>choice.value===value))){const updated=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=updated.configOptions;live(run);emit(run,{type:'config',configOptions:updated.configOptions});}
       emit(run,{type:'status',text:'Harness 正在处理 · 原生工具与 MyIDE 工具已连接'});
@@ -148,6 +148,7 @@ function createService(options={}){
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
   async function inspect(cfg,context,tools,apply=false){
     const connection=await connect(cfg),key=keyOf(context);
+    if(blocked.has(key))throw Error('此会话尚未绑定：'+blocked.get(key));
     // 打开面板和页面切换只读取目录，第一次真正发送时才创建原生对话。
     if(!apply&&connection.capabilities?.native&&!sessions.has(key)&&!saved.has(key))return {ok:true,...await connection.rpc.request('session/catalog',{})};
     // 读取选项也检验宿主，不能把缓存目录当作仍然连接；只重试读取，不重发任务。
@@ -168,7 +169,11 @@ function createService(options={}){
     const value=await conn.rpc.request('session/list',{});
     const items=Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
     // 渲染层用本地对话身份，宿主用原生身份；必须透出持久映射才能合并为同一行。
-    return items.map(item=>({...item,bindings:[...saved].filter(([,record])=>record.id===item.sessionId).map(([key])=>{
+    const nativeIds=new Set(items.map(item=>item.sessionId));
+    return items.map(item=>({...item,bindings:[...saved].filter(([key,record])=>{
+      const [localId]=JSON.parse(key);
+      return record.id===item.sessionId&&(!nativeIds.has(localId)||localId===record.id);
+    }).map(([key])=>{
       const [sessionId,rootId,scope]=JSON.parse(key);return {sessionId,rootId,scope:scope||'project'};
     })}));
   }
@@ -205,44 +210,18 @@ function createService(options={}){
   async function bindSession(cfg,context,sessionId){
     const id=String(sessionId||'');if(!id)throw Error('缺少会话身份');
     const conn=await connect(cfg),key=keyOf(context);
-    const cwd=context.page?.projectContext&&context.rootId?context.rootId:path.join(home(),'myide-detached-workspace');
-    // ⚠ 绑定成功 ≠ 能续聊：连接器（dsh-native-plugin.cjs）把 attach 准入写死成
-    // `^myide-[a-f0-9-]{36}$`，宿主里发起的 session-* 要到真正发消息时才被拒绝
-    // （实测报「只允许绑定 MyIDE 创建的原生会话」）。所以先探一次准入，
-    // 把结论如实带回渲染层，别让界面显示「可直接继续对话」而实际发不出去。
+    return identity(key,async()=>{
+    const cwd=workspaceOf(context),current=sessions.get(key);
+    if(current?.run&&current.id!==id)throw Error('当前身份仍有任务运行，不能改绑到其他会话');
     let canContinue=true,error='';
-    try{
-      if(conn.capabilities?.native)await probeAttach(conn,id);
-    }catch(cause){canContinue=false;error=cause.message;}
-    // 准入失败的会话是「只读浏览」，绝不能写进持久映射。
-    // 旧实现在这里无条件 saved.set + persist，于是把宿主会话 id 变成了这个项目的永久身份：
-    // 之后每次 attach 都拿它去 resume、每次都被拒，面板锁死在「DSH 连接失败」，
-    // 而 saved 里的坏 id 又不会被任何一次失败清掉 —— 只能手动删映射文件才能恢复
-    // （2026-11-05 实测，日志连刷 14 条「只允许绑定 MyIDE 创建的原生会话」）。
-    // ⚠ 只读分支也必须 persist：文件里可能已经躺着上一次写进去的毒化项，只清内存
-    //   等于没修，下次启动照样读回来（第一版就是漏了这一步，真机 E2E 才抓到）。
-    if(canContinue){saved.set(key,{id,cwd});await persist();}
-    else{const previous=saved.get(key);
-      // 只读浏览不该顺手把原本可续聊的 myide-* 绑定也抹掉：保持原样，让用户切回去还能续聊。
-      if(previous&&NATIVE_ID.test(previous.id))saved.set(key,previous);else saved.delete(key);
-      await persist();}
-    // 连接级 sessions 里可能还挂着旧身份；清掉让它按新 id 重新 attach。
-    // 只读会话不动它：给它建状态等于给下一次 attach 备好一个必然被拒的 resume 目标。
-    if(canContinue)for(const item of sessions.values())if(item.key===key){item.id=id;item.cwd=cwd;item.attached=false;}
+    // 真正只读的检查，不再用假地址 attach；旧连接器缺少此入口时安全拒绝而不是另建对话。
+    try{if(conn.capabilities?.native){const result=await conn.rpc.request('session/check',{sessionId:id,cwd});if(result?.canContinue!==true)throw Error('DSH 连接器尚未确认会话绑定，请重新连接');}}
+    catch(cause){canContinue=false;error=cause.message;}
+    if(!canContinue){blocked.set(key,error);return {sessionId:id,cwd,canContinue,error};}
+    saved.set(key,{id,cwd});await persist();blocked.delete(key);
+    if(current){current.id=id;current.cwd=cwd;current.attached=false;}
     return {sessionId:id,cwd,canContinue,error};
-  }
-  /**
-   * 轻量探测连接器准入：不建 Agent、不发 prompt，只看它是否接受这个 sessionId。
-   *
-   * ⚠ 必须用 `client-request` 信封发（和 dsh-native.call 一样），不能直接 POST 扁平 body：
-   * 插件第一步就校验信封，扁平请求永远回「MyIDE 连接请求无效」，看起来像通过、
-   * 实际什么都没探到（实测踩过）。「not found」是另一回事（会话根本不在宿主里），
-   * 不当成准入拒绝。
-   */
-  async function probeAttach(conn,id){
-    const result=await conn.rpc.probe('attach',{sessionId:id,url:'http://127.0.0.1:1/mcp',headers:{Authorization:'Bearer probe','X-MyIDE-Session':'probe'}});
-    const failure=String(result?.error?.message||'');
-    if(/只允许绑定 MyIDE 创建的原生会话/.test(failure))throw Error(failure);
+    });
   }
   function dispose(){
     if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;

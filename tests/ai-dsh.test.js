@@ -109,68 +109,221 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
   }});
   try{const items=await service.listSessions({});assert.deepEqual(items[0].bindings,[{sessionId:'local-A',rootId:'C:/proj',scope:'project'}]);assert.deepEqual(items[1].bindings,[{sessionId:'local-reader',rootId:'C:/proj',scope:'reader'}]);assert.deepEqual(requests,['session/list']);}finally{await service.dispose();}
  });
-// 2026-11-05 事故：在历史列表点开一条「DSH 里发起的」会话后，MyIDE 把它的 session-* 身份
-// 无条件写进 dsh-native-sessions.json。之后每次 attach 都拿这个 id 去 resume，被连接器准入
-// 挡死（只允许 myide-*），面板永久停在「DSH 连接失败」，点重新连接也只是重试同一个坏 id。
-// 下面三条锁住「不再落盘」「坏映射自愈」「不误伤已有合法绑定」。
-const nativeFixture=({admission='只允许绑定 MyIDE 创建的原生会话',id='myide-11111111-1111-4111-8111-111111111111'}={})=>{
+// 真实事故已证实：只加载宿主正文却未锁发送，失败后自动 new 会把旧身份改绑到新会话。
+// 这里是注入 RPC 的单元回归，不替代真实 Electron + DSH 的身份与正文验收。
+const nativeFixture=({check={canContinue:true},checkError,resumeError,id='myide-11111111-1111-4111-8111-111111111111',resumeId}={})=>{
  const requests=[],rpc=new EventEmitter();rpc.closed=false;rpc.close=()=>{rpc.closed=true;rpc.emit('closed');};
- rpc.probe=async(method,params)=>(/^myide-/.test(params.sessionId)?{ok:true,value:{attached:true}}:{ok:false,error:{message:admission}});
+ rpc.probe=async()=>{assert.fail('绑定检查不能用假地址 attach 探测');};
  rpc.request=async(method,params)=>{requests.push({method,params});
-  if(method==='session/resume'&&!/^myide-/.test(params.sessionId))throw Error(admission);
-  if(method==='session/new'||method==='session/resume')return {sessionId:params.sessionId||id,configOptions};
+  if(method==='session/check'){if(checkError)throw Error(checkError);return check;}
+  if(method==='session/resume'&&resumeError)throw Error(resumeError);
+  if(method==='session/new'||method==='session/resume')return {sessionId:resumeId||params.sessionId||id,configOptions};
+  if(method==='session/prompt')return {stopReason:'end_turn'};
   return {sessionId:id,configOptions};};
  return {rpc,requests};
 };
-await test('绑定宿主会话只读浏览时不落盘，映射文件保持原样',async()=>{
- const file=path.join(temp,'readonly-map.json'),native=nativeFixture();
- fs.writeFileSync(file,JSON.stringify({[JSON.stringify(['local-A','C:/proj'])]:{id:'myide-22222222-2222-4222-8222-222222222222',cwd:'C:/proj'}}));
+await test('同 key 的 bind 等待旧 attach，不能把活动 H 改成 G 或让旧结果回写映射',async()=>{
+ const gate=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+ const within=promise=>{let timer;return Promise.race([promise,new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(Error('身份竞态夹具等待超时')),3000);})]).finally(()=>clearTimeout(timer));};
+ const enteredAttach=gate(),releaseAttach=gate(),enteredPrompt=gate(),releasePrompt=gate();
+ const file=path.join(temp,'identity-race-map.json'),H='myide-active-H',G='session-selected-G',native=nativeFixture(),c={...context(),sessionId:'local-identity-race'},key=JSON.stringify([c.sessionId,temp]);
+ fs.writeFileSync(file,JSON.stringify({[key]:{id:H,cwd:temp}}));
+ const original=native.rpc.request;native.rpc.request=async(method,params)=>{
+  const response=await original(method,params);
+  if(method==='session/resume'&&params.sessionId===H){enteredAttach.resolve();await releaseAttach.promise;}
+  if(method==='session/prompt'&&params.sessionId===H){enteredPrompt.resolve();await releasePrompt.promise;}
+  return response;
+ };
+ const service=createService({home:path.join(temp,'identity-race-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ let oldChat,binding;
+ try{
+  oldChat=service.chat({},[{role:'user',content:'H 的旧请求'}],[],c,()=>{},()=>{});await within(enteredAttach.promise);
+  // 明确把 bind 排在未完成的旧 attach 后面，不依赖真实网络或偶然时序触发竞态。
+  binding=service.bindSession({},c,G).then(value=>({value}),error=>({error}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(native.requests.map(r=>r.method),['session/resume'],'旧 attach 持锁时不能提前 check 或改绑');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[key].id,H);
+  releaseAttach.resolve();
+  const refused=await within(binding);assert(refused.error);assert.match(refused.error.message,/仍有任务运行/);
+  await within(enteredPrompt.promise);
+  assert.equal(native.requests.filter(r=>r.method==='session/check').length,0,'run 必须在身份锁释放前发布，不能让 bind 趁空隙通过');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[key].id,H);
+  native.rpc.emit('notification',{method:'session/update',params:{sessionId:H,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'H 仍在原会话'}}}});
+  releasePrompt.resolve();const answer=await oldChat;assert.equal(answer.ok,true);assert.equal(answer.text,'H 仍在原会话');
+  assert.equal(native.requests.find(r=>r.method==='session/prompt').params.sessionId,H);
+  // 旧任务结束后才允许显式接手 G；后续发送和持久映射都不能被旧 H 的异步结果回毒。
+  assert.equal((await service.bindSession({},c,G)).canContinue,true);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[key].id,G);
+  assert.equal((await service.chat({},[{role:'user',content:'继续 G'}],[],{...c,requestId:'identity-race-next',generation:2},()=>{},()=>{})).ok,true);
+  assert.deepEqual(native.requests.filter(r=>r.method==='session/resume').map(r=>r.params.sessionId),[H,G]);
+  assert.deepEqual(native.requests.filter(r=>r.method==='session/prompt').map(r=>r.params.sessionId),[H,G]);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[key].id,G);assert(!native.requests.some(r=>r.method==='session/new'));
+ }finally{
+  releaseAttach.resolve();releasePrompt.resolve();await Promise.all([oldChat,binding]);await service.dispose();
+ }
+});
+await test('同 nativeId 的别名不能抢占 attaching/run，空闲接手后旧别名须重新挂载且事件只给活动 run',async()=>{
+ const gate=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+ const within=promise=>{let timer;return Promise.race([promise,new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(Error('别名竞态夹具等待超时')),3000);})]).finally(()=>clearTimeout(timer));};
+ const enteredAttach=gate(),releaseAttach=gate(),enteredPrompt=gate(),releasePrompt=gate(),shared='myide-shared-alias';
+ const A={...context(),sessionId:'local-alias-A'},B={...context(2),sessionId:'local-alias-B'},file=path.join(temp,'native-alias-race.json');
+ const mappings=Object.fromEntries([A,B].map(c=>[JSON.stringify([c.sessionId,temp]),{id:shared,cwd:temp}]));fs.writeFileSync(file,JSON.stringify(mappings));
+ const native=nativeFixture(),original=native.rpc.request,replies=[];let resumes=0,prompts=0;
+ native.rpc.reply=(id,result)=>replies.push({id,result});
+ native.rpc.request=async(method,params)=>{
+  const response=await original(method,params);
+  if(method==='session/resume'&&++resumes===1){enteredAttach.resolve();await releaseAttach.promise;}
+  if(method==='session/prompt'){
+   const n=++prompts;
+   native.rpc.emit('notification',{method:'session/update',params:{sessionId:shared,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'active-alias-'+n}}}});
+   native.rpc.emit('request',{id:800+n,method:'session/request_permission',params:{sessionId:shared,options:[{optionId:'no',kind:'reject_once',name:'拒绝'}]}});
+   native.rpc.emit('notification',{method:'myide/question',params:{sessionId:shared,id:'question-'+n,questions:[]}});
+   if(n===1){enteredPrompt.resolve();await releasePrompt.promise;}
+  }
+  return response;
+ };
+ const service=createService({home:path.join(temp,'native-alias-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ const onEvent=c=>event=>{if(event.type==='permission')assert.equal(service.permissionResult(c,event.id,'no').ok,true);if(event.type==='question')assert.equal(service.questionResult(c,event.id,[]).ok,true);};
+ const chat=c=>service.chat({},[{role:'user',content:'别名续聊'}],[],c,onEvent(c),()=>{});let first;
+ try{
+  first=chat(A);await within(enteredAttach.promise);
+  const duringAttach=await chat(B);assert.equal(duringAttach.ok,false);assert.match(duringAttach.error,/另一个本地会话/);
+  await assert.rejects(service.inspect({},B,[]),/另一个本地会话/);assert.deepEqual(native.requests.map(r=>r.method),['session/resume']);
+  releaseAttach.resolve();await within(enteredPrompt.promise);
+  const duringRun=await chat({...B,requestId:'alias-B-running',generation:3});assert.equal(duringRun.ok,false);assert.match(duringRun.error,/另一个本地会话/);
+  await assert.rejects(service.inspect({},B,[]),/另一个本地会话/);assert.equal(resumes,1);assert.equal(prompts,1);
+  releasePrompt.resolve();const doneA=await first;assert.equal(doneA.ok,true);assert.equal(doneA.text,'active-alias-1');
+  const doneB=await chat({...B,requestId:'alias-B-takeover',generation:4});assert.equal(doneB.ok,true);assert.equal(doneB.text,'active-alias-2');
+  const againA=await chat({...A,requestId:'alias-A-takeover',generation:5});assert.equal(againA.ok,true);assert.equal(againA.text,'active-alias-3');
+  const attached=native.requests.filter(r=>r.method==='session/resume');assert.equal(attached.length,3);assert(attached.every(r=>r.params.sessionId===shared));
+  const token=r=>r.params.mcpServers[0].headers.find(h=>h.name==='X-MyIDE-Session').value;
+  assert.notEqual(token(attached[0]),token(attached[1]));assert.equal(token(attached[0]),token(attached[2]),'A 不能误用已被 B 替换的 MCP fiber');
+  assert.deepEqual(replies.filter(r=>typeof r.id==='number').map(r=>r.id),[801,802,803]);assert.deepEqual(replies.filter(r=>typeof r.id==='string').map(r=>r.id),['question-1','question-2','question-3']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),mappings);assert(!native.requests.some(r=>r.method==='session/new'));
+ }finally{releaseAttach.resolve();releasePrompt.resolve();await first;await service.dispose();}
+});
+await test('启动和浏览器页首次聊天使用项目 root cwd，返回项目页继续同一原生身份',async()=>{
+ for(const id of ['launch','browser']){
+  const file=path.join(temp,'first-page-'+id+'.json'),nativeId='myide-first-'+id,native=nativeFixture({id:nativeId}),c={...context(1,{id,projectContext:false}),sessionId:'local-first-'+id};
+  const service=createService({home:path.join(temp,'first-page-home-'+id),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   assert.equal((await service.chat({},[{role:'user',content:'首次在工具页聊天'}],[],c,()=>{},()=>{})).ok,true);
+   const created=native.requests.filter(r=>r.method==='session/new');assert.equal(created.length,1);assert.equal(created[0].params.cwd,temp);
+   assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify([c.sessionId,temp])],{id:nativeId,cwd:temp});
+   assert.equal((await service.chat({},[{role:'user',content:'返回项目继续'}],[],{...c,requestId:'first-page-project-'+id,generation:2,page},()=>{},()=>{})).ok,true);
+   const prompts=native.requests.filter(r=>r.method==='session/prompt');assert.equal(prompts.length,2);assert(prompts.every(r=>r.params.sessionId===nativeId));
+   assert.equal(native.requests.filter(r=>r.method==='session/new').length,1);assert(!native.requests.some(r=>r.method==='session/resume'));
+   assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify([c.sessionId,temp])],{id:nativeId,cwd:temp});
+  }finally{await service.dispose();}
+ }
+});
+await test('拒绝绑定后发送与模型检查都被阻断，不新建替代会话且保留原映射',async()=>{
+ const file=path.join(temp,'readonly-map.json'),native=nativeFixture({checkError:'该会话属于其他工作区'}),c={...context(),sessionId:'local-A'};
+ fs.writeFileSync(file,JSON.stringify({[JSON.stringify([c.sessionId,c.rootId])]:{id:'myide-original',cwd:temp}}));
  const before=fs.readFileSync(file,'utf8');
  const service=createService({home:path.join(temp,'readonly-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
  try{
-  const result=await service.bindSession({},{sessionId:'local-A',rootId:'C:/proj',page},{'session':'session-9e4d2c1b-0000-4000-8000-000000000001'});
-  assert.equal(result.canContinue,false);
-  assert(/只允许绑定/.test(result.error));
-  assert.equal(fs.readFileSync(file,'utf8'),before,'只读绑定绝不能改写映射文件');
+  const result=await service.bindSession({},c,'session-host');
+  assert.equal(result.canContinue,false);assert.match(result.error,/其他工作区/);
+  assert.deepEqual(native.requests,[{method:'session/check',params:{sessionId:'session-host',cwd:temp}}]);
+  const answer=await service.chat({},[{role:'user',content:'继续'}],[],c,()=>{},()=>{});
+  assert.equal(answer.ok,false);assert.equal(answer.status,'failed');assert.match(answer.error,/尚未绑定/);
+  for(const apply of [false,true])await assert.rejects(service.inspect({},c,[],apply),/尚未绑定/);
+  assert.equal(native.requests.length,1,'拒绝后不 resume、new、prompt 或偷偷刷新模型');
+  assert.equal(fs.readFileSync(file,'utf8'),before,'失败不能改写原有映射');
  }finally{await service.dispose();}
 });
-await test('映射里残留宿主会话身份时首次发送即自愈，不再拿它反复 resume',async()=>{
- const file=path.join(temp,'heal-map.json'),native=nativeFixture();
- // 事故现场原样：这条 session-* 就是毒化项
- fs.writeFileSync(file,JSON.stringify({
-  [JSON.stringify(['local-A','C:/proj'])]:{id:'session-4d31e854-2e85-41f4-9a2b-28b049a9a3f0',cwd:'C:/proj'},
-  [JSON.stringify(['local-B','C:/proj'])]:{id:'myide-33333333-3333-4333-8333-333333333333',cwd:'C:/proj'},
- }));
- const service=createService({home:path.join(temp,'heal-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+await test('无旧映射时也只接受 canContinue 严格等于 true，检查和发送均不绕过 blocked',async()=>{
+ for(const [index,check]of [null,{},true,{canContinue:false},{canContinue:'true'},{ok:true}].entries()){
+  const file=path.join(temp,'unconfirmed-map-'+index+'.json'),native=nativeFixture({check}),c={...context(index),sessionId:'unconfirmed-'+index};
+  const service=createService({home:path.join(temp,'unconfirmed-home-'+index),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   assert.equal((await service.bindSession({},c,'session-host')).canContinue,false);
+   for(const apply of [false,true])await assert.rejects(service.inspect({},c,[],apply),/尚未绑定/);
+   const answer=await service.chat({},[{role:'user',content:'不能另开'}],[],c,()=>{},()=>{});
+   assert.equal(answer.ok,false);assert.match(answer.error,/尚未绑定/);
+   assert.deepEqual(native.requests.map(r=>r.method),['session/check']);assert.equal(fs.existsSync(file),false);
+  }finally{await service.dispose();}
+ }
+});
+await test('成功绑定 session-* 先只读检查，发送才 resume 且连续两轮保持同一宿主身份',async()=>{
+ const file=path.join(temp,'host-bind-map.json'),id='session-4d31e854-2e85-41f4-9a2b-28b049a9a3f0',native=nativeFixture(),c={...context(),sessionId:id};
+ const service=createService({home:path.join(temp,'host-bind-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
  try{
-  // local-A 这条毒化项不能把项目锁死：这次发送必须真的走到 session/prompt。
-  // （假宿主不回 turn/end，所以不校验 result.ok —— 这里只锁「没有卡在 resume 上」。）
-  // rootId 必须和映射里的键一致，否则改到的是另一条记录，测不到自愈。
-  await service.chat({},[{role:'user',content:'继续'}],[],{...context(),sessionId:'local-A',rootId:'C:/proj'},()=>{},()=>{});
-  assert(native.requests.some(r=>r.method==='session/new'),'应当降级成新建会话');
-  assert(native.requests.some(r=>r.method==='session/prompt'),'降级后要能真正发出消息');
-  const map=JSON.parse(fs.readFileSync(file,'utf8'));
-  assert(!map[JSON.stringify(['local-A','C:/proj'])].id.startsWith('session-'),'毒化 id 应已被替换成 myide-*');
-  // 合法的 myide-* 绑定必须原样保留
-  assert.equal(map[JSON.stringify(['local-B','C:/proj'])].id,'myide-33333333-3333-4333-8333-333333333333');
+  assert.equal((await service.bindSession({},c,id)).canContinue,true);
+  assert.deepEqual(native.requests,[{method:'session/check',params:{sessionId:id,cwd:temp}}]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify([id,temp])],{id,cwd:temp});
+  for(let generation=1;generation<=2;generation++){
+   const result=await service.chat({},[{role:'user',content:'继续'+generation}],[],{...c,requestId:'host-'+generation,generation},()=>{},()=>{});
+   assert.equal(result.ok,true);assert.equal(result.complete,true);
+  }
+  const resumes=native.requests.filter(r=>r.method==='session/resume'),prompts=native.requests.filter(r=>r.method==='session/prompt');
+  assert.equal(resumes.length,1);assert.equal(resumes[0].params.sessionId,id);assert.equal(resumes[0].params.cwd,temp);assert(resumes[0].params.mcpServers[0].url.endsWith('/mcp'));
+  assert.equal(prompts.length,2);assert(prompts.every(r=>r.params.sessionId===id));assert(!native.requests.some(r=>r.method==='session/new'));
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify([id,temp])].id,id);
  }finally{await service.dispose();}
 });
-await test('resume 被准入拒绝时降级为新建会话，不把项目永久锁死在错误上',async()=>{
- const file=path.join(temp,'degrade-map.json'),native=nativeFixture({id:'myide-44444444-4444-4444-8444-444444444444'});
- // 形状合法但被连接器拒绝（连接器改版/插件不匹配）也要能自愈
- fs.writeFileSync(file,JSON.stringify({[JSON.stringify(['local-C','C:/proj'])]:{id:'myide-55555555-5555-4555-8555-555555555555',cwd:'C:/proj'}}));
- const service=createService({home:path.join(temp,'degrade-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>{
-  const rpc=native.rpc,original=rpc.request;
-  rpc.request=async(method,params)=>{if(method==='session/resume')throw Error('只允许绑定 MyIDE 创建的原生会话');return original(method,params);};
-  return rpc;
- }});
+await test('启动和浏览器页绑定仍使用当前项目 cwd，后续发送不另建 detached 会话',async()=>{
+ for(const id of ['launch','browser']){
+  const file=path.join(temp,'page-bind-'+id+'.json'),native=nativeFixture(),c=context(1,{id,projectContext:false});
+  const service=createService({home:path.join(temp,'page-bind-home-'+id),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   const bound=await service.bindSession({},c,'session-existing');assert.equal(bound.canContinue,true);assert.equal(bound.cwd,temp);
+   assert.deepEqual(native.requests,[{method:'session/check',params:{sessionId:'session-existing',cwd:temp}}]);
+   const answer=await service.chat({},[{role:'user',content:'继续'}],[],c,()=>{},()=>{});assert.equal(answer.ok,true);
+   const resumed=native.requests.find(r=>r.method==='session/resume');assert.equal(resumed.params.cwd,temp);assert.equal(resumed.params.sessionId,'session-existing');
+   assert(!native.requests.some(r=>r.method==='session/new'));assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify([c.sessionId,temp])],{id:'session-existing',cwd:temp});
+  }finally{await service.dispose();}
+ }
+});
+await test('拒绝绑定可经再次成功检查解锁，未确认前不丢失原映射',async()=>{
+ const file=path.join(temp,'rebind-map.json'),check={canContinue:false},native=nativeFixture({check}),c={...context(),sessionId:'local-rebind'};
+ const service=createService({home:path.join(temp,'rebind-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
  try{
-  // 形状合法但被准入拒绝（连接器改版/插件不匹配）同样要自愈。
-  // 假宿主不回 turn/end，所以只锁「走到了 session/new + prompt」，不校验 result.ok。
-  await service.chat({},[{role:'user',content:'发消息'}],[],{...context(),sessionId:'local-C',rootId:'C:/proj'},()=>{},()=>{});
-  assert(native.requests.some(r=>r.method==='session/new'),'应当降级成新建会话');
-  assert(native.requests.some(r=>r.method==='session/prompt'),'降级后要能真正发出消息');
-  assert.equal(JSON.parse(fs.readFileSync(file,'utf8'))[JSON.stringify(['local-C','C:/proj'])].id,'myide-44444444-4444-4444-8444-444444444444','映射应修正为新会话');
+  assert.equal((await service.bindSession({},c,'session-host')).canContinue,false);assert.equal(fs.existsSync(file),false);
+  check.canContinue=true;assert.equal((await service.bindSession({},c,'session-host')).canContinue,true);
+  const answer=await service.chat({},[{role:'user',content:'现在继续'}],[],c,()=>{},()=>{});assert.equal(answer.ok,true);
+  assert.equal(native.requests.find(r=>r.method==='session/resume').params.sessionId,'session-host');assert(!native.requests.some(r=>r.method==='session/new'));
+ }finally{await service.dispose();}
+});
+await test('持久宿主或 MyIDE 身份 resume 被拒绝时返回错误，保留身份而非自动 new',async()=>{
+ for(const [index,id]of ['session-4d31e854-2e85-41f4-9a2b-28b049a9a3f0','myide-55555555-5555-4555-8555-555555555555'].entries()){
+  const file=path.join(temp,'resume-failed-'+index+'.json'),native=nativeFixture({resumeError:'该会话已不在 DSH 的会话目录里'}),c={...context(),sessionId:'local-resume-'+index};
+  fs.writeFileSync(file,JSON.stringify({[JSON.stringify([c.sessionId,c.rootId])]:{id,cwd:temp},[JSON.stringify(['other',temp])]:{id:'myide-unrelated',cwd:temp}}));
+  const before=fs.readFileSync(file,'utf8'),service=createService({home:path.join(temp,'resume-failed-home-'+index),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   for(let generation=1;generation<=2;generation++){
+    const answer=await service.chat({},[{role:'user',content:'继续'}],[],{...c,requestId:'retry-'+generation,generation},()=>{},()=>{});
+    assert.equal(answer.ok,false);assert.equal(answer.status,'failed');assert.match(answer.error,/不在 DSH/);
+   }
+   await assert.rejects(service.inspect({},c,[]),/不在 DSH/);
+   assert.equal(native.requests.length,3);assert(native.requests.every(r=>r.method==='session/resume'&&r.params.sessionId===id));
+   assert.equal(fs.readFileSync(file,'utf8'),before,'失败和重试都不能替换原身份或改写其他映射');
+  }finally{await service.dispose();}
+ }
+});
+await test('resume 返回另一个身份时拒绝发送并保持原映射',async()=>{
+ const file=path.join(temp,'wrong-resume-map.json'),native=nativeFixture({resumeId:'myide-replacement'}),c={...context(),sessionId:'local-wrong-resume'};
+ fs.writeFileSync(file,JSON.stringify({[JSON.stringify([c.sessionId,c.rootId])]:{id:'session-original',cwd:temp}}));
+ const before=fs.readFileSync(file,'utf8'),service=createService({home:path.join(temp,'wrong-resume-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ try{
+  const answer=await service.chat({},[{role:'user',content:'继续'}],[],c,()=>{},()=>{});assert.equal(answer.ok,false);assert.match(answer.error,/另一条会话/);
+  assert.deepEqual(native.requests.map(r=>r.method),['session/resume']);assert.equal(fs.readFileSync(file,'utf8'),before);
+ }finally{await service.dispose();}
+});
+await test('现存宿主身份不能作为另一条宿主会话的别名，正常本地绑定仍透出',async()=>{
+ const file=path.join(temp,'conflicting-aliases.json'),original={
+  [JSON.stringify(['session-original',temp])]:{id:'myide-replacement',cwd:temp},
+  [JSON.stringify(['myide-replacement',temp])]:{id:'myide-replacement',cwd:temp},
+  [JSON.stringify(['local-legitimate',temp])]:{id:'myide-replacement',cwd:temp},
+ };
+ fs.writeFileSync(file,JSON.stringify(original));const native=nativeFixture();
+ native.rpc.request=async(method,params)=>{native.requests.push({method,params});return [{sessionId:'session-original',cwd:temp},{sessionId:'myide-replacement',cwd:temp}];};
+ const service=createService({home:path.join(temp,'conflicting-aliases-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+ try{
+  const items=await service.listSessions({});assert.deepEqual(items[0].bindings,[]);
+  assert.deepEqual(items[1].bindings,[{sessionId:'myide-replacement',rootId:temp,scope:'project'},{sessionId:'local-legitimate',rootId:temp,scope:'project'}]);
+  assert.deepEqual(native.requests.map(r=>r.method),['session/list']);assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),original);
  }finally{await service.dispose();}
 });
 await test('session/new 本身失败时原样抛出，不吞成降级',async()=>{
