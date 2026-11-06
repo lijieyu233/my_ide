@@ -23,7 +23,7 @@ function promptContent(messages,page){
   return blocks;
 }
 function createService(options={}){
-  const runs=new Map(),sessions=new Map(),saved=new Map(),blocked=new Map(),identities=new Map();
+  const runs=new Map(),sessions=new Map(),saved=new Map(),blocked=new Map(),identities=new Map(),observers=new Set();
   let connection=null,starting=null,server=null,token=null,disposed=false,loaded=false,disposal=null;
   const emit=(run,event)=>{if(!run.controller.signal.aborted)run.onEvent({...event,context:run.context});};
   const live=run=>{if(disposed||run.controller.signal.aborted)throw Error('Harness 请求已停止');};
@@ -223,12 +223,19 @@ function createService(options={}){
     return {sessionId:id,cwd,canContinue,error};
     });
   }
+  async function watch(cfg,state,onState,signal){
+    const conn=await connect(cfg);
+    if(!conn.capabilities?.native)throw Error('当前连接不支持宿主实时订阅');
+    const cwd=state.scope==='reader'||!state.rootId?path.join(home(),'myide-detached-workspace'):state.rootId;
+    const handle=await require('./dsh-session-watch').observe(conn.rpc,{hostId:state.hostId,cwd},onState,signal,require('./dsh-native').foldHistory);
+    observers.add(handle);handle.completion.finally(()=>observers.delete(handle));return handle;
+  }
   function dispose(){
-    if(disposal)return disposal;disposed=true;for(const id of runs.keys())abort(id);const own=connection;connection=null;
+    if(disposal)return disposal;disposed=true;for(const observer of observers)observer.close();observers.clear();for(const id of runs.keys())abort(id);const own=connection;connection=null;
     server?.closeAllConnections();server?.close(()=>{});
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession};
+  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession,watch};
 }
 module.exports={createService,IDE_STATE,promptContent};

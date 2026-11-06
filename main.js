@@ -840,6 +840,38 @@ ipcMain.handle('ai:dsh-history',async(event,cfg,sessionId)=>{
 ipcMain.handle('ai:dsh-bind',async(event,cfg,state,sessionId)=>{
   try{aiSender(event,state);return {ok:true,...await DSH.bindSession(cfg,{sessionId,...state},sessionId)};}catch(error){return {ok:false,error:error.message};}
 });
+// 外部 DSH 轮次没有本地 aiRuns 身份：独立观察通道只展示宿主状态，不能冒充一次 chat。
+const dshWatches=new Map();
+const dshWatchKey=(sender,id)=>JSON.stringify([sender.id,id]);
+const dshWatchPage=async sender=>sender.executeJavaScript('({rootId:App.root||"",scope:["reader","bookshelf"].includes(App.getPageContext().id)?"reader":"project",sessionId:AiPanel.aiState().current})');
+async function ownedDshWatch(event,id){
+  aiSender(event);const slot=dshWatches.get(dshWatchKey(event.sender,id));
+  if(!slot||slot.controller.signal.aborted||!slot.handle)throw Error('DSH 实时订阅已过期');
+  const page=await dshWatchPage(event.sender);
+  if(page.rootId!==slot.state.rootId||page.scope!==slot.state.scope||page.sessionId!==slot.state.sessionId)throw Error('会话视图已变化，请重新选择后操作');
+  return slot;
+}
+ipcMain.handle('ai:dsh-watch',async(event,cfg,state)=>{
+  let slot,key;
+  try{
+    aiSender(event);
+    if(!state||['watchId','hostId','sessionId'].some(k=>typeof state[k]!=='string'||!state[k]||state[k].length>200)||typeof state.rootId!=='string'||!['project','reader'].includes(state.scope))throw Error('DSH 实时订阅身份无效');
+    const page=await dshWatchPage(event.sender);
+    if(page.rootId!==state.rootId||page.scope!==state.scope||page.sessionId!==state.sessionId)throw Error('会话视图已变化，未建立旧订阅');
+    key=dshWatchKey(event.sender,state.watchId);
+    if(dshWatches.has(key))throw Error('DSH 实时订阅身份重复');
+    slot={state:{watchId:state.watchId,sessionId:state.sessionId,hostId:state.hostId,rootId:state.rootId,scope:state.scope},controller:new AbortController(),handle:null};dshWatches.set(key,slot);
+    const close=()=>{slot.controller.abort();slot.handle?.close();dshWatches.delete(key);event.sender.removeListener('destroyed',close);};slot.close=close;
+    event.sender.once('destroyed',close);
+    slot.enrich=value=>({...value,...slot.state});
+    slot.handle=await DSH.watch(cfg,state,value=>{if(!slot.controller.signal.aborted&&!event.sender.isDestroyed())event.sender.send('ai:dsh-watch',slot.enrich(value));},slot.controller.signal);
+    if(slot.controller.signal.aborted){slot.handle.close();throw Error('DSH 实时订阅已解除');}
+    return {ok:true,watchId:state.watchId};
+  }catch(error){slot?.close?.();return {ok:false,error:error.message};}
+});
+ipcMain.handle('ai:dsh-unwatch',(event,id)=>{try{aiSender(event);dshWatches.get(dshWatchKey(event.sender,id))?.close();return {ok:true};}catch(error){return {ok:false,error:error.message};}});
+ipcMain.handle('ai:dsh-sync',async(event,id)=>{try{const slot=await ownedDshWatch(event,id);return {ok:true,state:slot.enrich(await slot.handle.sync())};}catch(error){return {ok:false,error:error.message};}});
+ipcMain.handle('ai:dsh-host-control',async(event,id,action)=>{try{const slot=await ownedDshWatch(event,id);if(!action||Object.keys(action).some(k=>!['operation','runId','id','answers','optionId'].includes(k)))throw Error('会话操作参数无效');return {ok:true,...await slot.handle.control(action)};}catch(error){return {ok:false,error:error.message};}});
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }

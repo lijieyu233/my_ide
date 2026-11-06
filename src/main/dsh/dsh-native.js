@@ -1,7 +1,7 @@
 const fs=require('fs/promises'),path=require('path'),os=require('os'),crypto=require('crypto'),{EventEmitter}=require('events');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function nativeUrl(value){const url=new URL(value);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.pathname!=='/'||!url.port)throw Error('原生 DSH 连接地址无效');return url;}
-async function install({home,runtime}){
+async function install({home,runtime,disabled=false}){
   const profile=path.join(home,'profiles','desktop'),manifest=JSON.parse(await fs.readFile(path.join(profile,'package.json'),'utf8'));
   if(!manifest.dsh?.profile?.bundles?.includes('@deepseek-ai/dsh-web-app'))throw Error('桌面 DSH profile 不提供原生会话服务');
   const directory=path.join(home,'myide'),source=await fs.readFile(path.join(__dirname,'dsh-native-plugin.cjs'),'utf8');
@@ -10,7 +10,7 @@ async function install({home,runtime}){
   if(previous!==source)await fs.writeFile(plugin,source);
   const patch=path.join(profile,'cordis.patch.yml');let text='';try{text=await fs.readFile(patch,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
   const root=path.join(path.dirname(runtime.executable),'resources','app.asar','dsh'),discovery=path.join(home,'myide-native.json');
-  const row={id:'myide-native-bridge',name:plugin,config:{runtimeRoot:root,discoveryFile:discovery,revision}};
+  const row={id:'myide-native-bridge',name:plugin,...disabled?{disabled:true}:{},config:{runtimeRoot:root,discoveryFile:discovery,revision}};
   // 旧实现只在缺少当前 revision 时往后追加一条同 id 的配置，插件每改一次就多一条，加载器却按第一条解析；
   // 结果用户 profile 里叠了多条（其中一条还是早期写坏的 runtimeRoot），改代码永远不生效、且一直报会话未激活。
   // 现在改为原地替换：所有 myide-native-bridge 条目统一指向本次的插件与路径，多余的重复条目一并去掉。
@@ -32,7 +32,7 @@ async function install({home,runtime}){
     // YAML 分支只动本插件自己的行块，其余字节（含 !!js 标签、注释）原样保留。
     // 必须写成顶层 `- insert:` 包装：顶层 `- id: xxx` 在 DSH 里是「覆盖已加载插件」的补丁，
     // 拿它声明一个新插件不会注册任何东西（实测：profile 里有条目但 myide-native.json 从不生成）。
-    const record=['- insert:','    - id: myide-native-bridge','      name: '+JSON.stringify(plugin),'      config:','        runtimeRoot: '+JSON.stringify(root),'        discoveryFile: '+JSON.stringify(discovery),'        revision: '+JSON.stringify(revision)].join('\n');
+    const record=['- insert:','    - id: myide-native-bridge','      name: '+JSON.stringify(plugin),...disabled?['      disabled: true']:[],'      config:','        runtimeRoot: '+JSON.stringify(root),'        discoveryFile: '+JSON.stringify(discovery),'        revision: '+JSON.stringify(revision)].join('\n');
     const {text:next,changed}=replaceEntry(text,record);
     if(changed){if(text)await backup(patch,directory);await writeAtomic(patch,next);}
   }
@@ -318,17 +318,50 @@ class NativeRpc extends EventEmitter {
   reply(id,result){const item=this.answers.get(id);if(!item)return;this.answers.delete(id);const value=item.kind==='question'?result:item.kind==='permission'&&result.outcome?.outcome==='selected'&&result.outcome.optionId==='allow'?'allowed-once':'rejected';void this.raw('answer',{sessionId:item.sessionId,id:item.id,value}).then(response=>response.body?.cancel()).catch(error=>this.sessions.get(item.sessionId)?.controller?.abort(error));}
   close(){if(this.closed)return;this.closed=true;for(const state of this.sessions.values())state.controller?.abort();this.answers.clear();this.emit('closed');}
 }
-let upgradingBridge=null;
-async function reloadBridge(rpc){
-  if(!upgradingBridge)upgradingBridge=(async()=>{
-    // 只改 patch 或重复 enable(true) 会留下旧 fiber（真机仍回旧版白名单错误）。
-    // 只重载本连接器，不重启 DSH，也不触碰任何会话日志。
-    try{await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:false});}
-    finally{const result=await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:true});if(result?.application!=='applied')throw Error('连接器更新未生效，请重启 DSH 后重新连接');}
-  })().finally(()=>{upgradingBridge=null;});
-  return upgradingBridge;
+const bridgeConnections=new Map();
+async function bridgeHealth(rpc,deadline=Date.now()+3000){
+  try{
+    const response=await rpc.raw('health',{},AbortSignal.timeout(Math.max(1,Math.min(3000,deadline-Date.now()))));
+    return await response.json();
+  }catch{return undefined;}
 }
-async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetcher=fetch,waitMs=15000}){
+const healthyBridge=(health,revision)=>health?.revision===revision&&health.capabilities?.observe===true;
+const upgradeError=result=>Object.assign(Error('连接器更新未生效：'+JSON.stringify({application:result?.application,restartReason:result?.restartReason,warnings:result?.warnings,error:result?.error})),{bridgeManagerResult:result});
+async function waitBridge(check,deadline,message){
+  do{if(await check())return;if(Date.now()>=deadline)throw Error(message);await pause(Math.min(200,deadline-Date.now()));}while(true);
+}
+async function reloadBridge(rpc,{home,runtime,revision,deadline}){
+  let failure;
+  const remaining=()=>AbortSignal.timeout(Math.max(1,deadline-Date.now()));
+  try{const result=await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:false},remaining());if(result?.application!=='applied')failure=upgradeError(result);}
+  catch(error){failure=error;}
+  finally{
+    try{const result=await rpc.call('pluginManager/setPluginEnabled',{id:'include:myide-native-bridge',enabled:true},remaining());if(result?.application!=='applied')failure=upgradeError(result);}
+    catch(error){failure=error;}
+    finally{if(failure)await install({home,runtime});}
+  }
+  if(!failure)return;
+  if(healthyBridge(await bridgeHealth(rpc,deadline),revision))return;
+  if(failure.bridgeManagerResult?.application!=='failed'||failure.bridgeManagerResult?.error?.code!=='unaddressable')throw failure;
+  // 部分原生 Loader 条目虽 active 却不可被 manager 寻址；只切本桥自己的 patch，不动其它插件或会话。
+  // 必须先真正停掉旧 fiber 再恢复；metadata 改名/active 不能证明旧路由已经被替换。
+  try{
+    await install({home,runtime,disabled:true});
+    await waitBridge(async()=>{
+      const inventory=await rpc.call('pluginInventory/list',{},remaining());
+      return inventory.entries?.some(row=>row.entryId==='include:myide-native-bridge'&&row.enabled===false);
+    },deadline,'连接器旧实例尚未停用；已恢复启用配置，请稍后重新连接');
+  }finally{await install({home,runtime});}
+  await waitBridge(async()=>healthyBridge(await bridgeHealth(rpc,deadline),revision),deadline,'连接器旁听路由尚未就绪，请稍后重新连接');
+}
+async function connectNative(options){
+  if(options.skipInstall)return connectNativeOnce(options);
+  // 同进程的窗口/面板可能同时连接；不要让第二次 install 把第一次停用中的桥抢先改回启用。
+  const key=path.resolve(options.home),previous=bridgeConnections.get(key),operation=Promise.resolve(previous).catch(()=>{}).then(()=>connectNativeOnce(options));
+  bridgeConnections.set(key,operation);
+  try{return await operation;}finally{if(bridgeConnections.get(key)===operation)bridgeConnections.delete(key);}
+}
+async function connectNativeOnce({home,runtime,skipInstall=false,discoveryFile,fetcher=fetch,waitMs=15000}){
   const installed=!skipInstall&&await install({home,runtime});
   const deadline=Date.now()+waitMs;let issue='未找到 DSH 的连接信息',upgradeAttempted=false;
   do{
@@ -340,11 +373,11 @@ async function connectNative({home,runtime,skipInstall=false,discoveryFile,fetch
       const response=await fetcher(url.href,{redirect:'manual',signal:AbortSignal.timeout(Math.max(1,Math.min(5000,deadline-Date.now())))}),cookie=response.headers.get('set-cookie')?.split(';')[0];await response.body?.cancel();
       if(response.status!==303||!cookie){issue='DSH 本机授权未成功（HTTP '+response.status+'）';throw Error(issue);}
       const rpc=new NativeRpc(url.origin,cookie,fetcher);
-      if(installed&&info.revision!==installed.revision){
-        issue='DSH 连接器更新尚未生效';
+      if(installed&&!healthyBridge(await bridgeHealth(rpc,deadline),installed.revision)){
+        issue='DSH 连接器更新尚未生效（真实旁听健康检查未通过）';
         if(upgradeAttempted){rpc.close();throw Error(issue);}
         upgradeAttempted=true;
-        try{await reloadBridge(rpc);}catch(error){error.bridgeUpgradeFailed=true;throw error;}finally{rpc.close();}
+        try{await reloadBridge(rpc,{home,runtime,revision:installed.revision,deadline});}catch(error){error.bridgeUpgradeFailed=true;throw error;}finally{rpc.close();}
         continue;
       }
       return rpc;

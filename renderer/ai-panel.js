@@ -61,6 +61,7 @@ const AiPanel = (() => {
     const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
       rootId: (window.App && App.root) || '', generation: ++generation }), engine:getConfig().engine==='dsh'?'dsh':'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
     currentRun = run;
+    suspendDshWatchForOwn();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
     run.notice = createRunState();
     setRunState(run, '正在生成');
@@ -136,6 +137,7 @@ const AiPanel = (() => {
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
+    reconcileDshAfterOwn(run).catch(() => {});
   }
   function stopRun(invalidate = false) {
     const run = currentRun;
@@ -173,6 +175,7 @@ const AiPanel = (() => {
   let curSessionId = null;   // 当前会话 id（历史会话列表用）
   // 正文身份与可续聊身份必须一起确认；只读/加载中不能退回 inspect 自动创建另一条会话。
   let dshSessionAccess = null;
+  let dshWatch = null, dshWatchGeneration = 0;
   const dshScope = () => ['reader','bookshelf'].includes(currentPage().id) ? 'reader' : 'project';
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
@@ -215,6 +218,7 @@ const AiPanel = (() => {
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
     renderChips(); renderUsage();
+    if (dshWatch && (!dshWatchWanted(dshWatch) || dshScopeMismatch())) resetDshWatch();
     if (page.projectContext) followActive();
     refreshDshOptions();
   }
@@ -942,7 +946,7 @@ const AiPanel = (() => {
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
   async function setConfig(c) {
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
-    if(switching){persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
+    if(switching){resetDshWatch();persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
     const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
     let result = { ok: true };
@@ -971,6 +975,8 @@ const AiPanel = (() => {
       const info=document.getElementById('ai-dsh-info');if(info){info.textContent=dshScopeError();info.title='当前历史保持只读，回到原页面可继续；这里不会自动创建替代会话';}
       return;
     }
+    // 断开的 follow 可能已永久失效；只在用户明确重连时换订阅，普通界面刷新不循环重启。
+    if(retry && dshWatch?.state?.connected === false)resetDshWatch();
     if(dshSessionAccess && dshSessionAccess.state !== 'ready'){
       if(retry || dshSessionAccess.state === 'loading' && dshSessionAccess.epoch !== pageEpoch)
         await restoreDshSession(curSessionId,++sessionLoadTicket);
@@ -988,6 +994,10 @@ const AiPanel = (() => {
     if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));if(info){info.textContent='DSH 已连接';info.title=result.sessionId?'当前 DSH 会话：'+result.sessionId:'首次发送消息时创建 DSH 会话';}}
     else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
     refreshModelSel();
+    if (result?.ok) {
+      if (result.sessionId && dshSessionAccess?.state === 'ready') dshSessionAccess.hostId = result.sessionId;
+      await ensureDshWatch();
+    }
   }
 
   // 面板头部模型切换器：当前模型 + 服务商预设模型列表
@@ -1024,9 +1034,10 @@ const AiPanel = (() => {
     // 2026-10-28：收起 AI 面板不再中断 DSH 会话。
     // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
+      resetDshWatch();
       releaseSessionPermissions(detachRun());
     }
-    if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();}
+    if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();ensureDshWatch();}
   }
 
   // ---------- 消息渲染 ----------
@@ -1698,14 +1709,15 @@ const AiPanel = (() => {
 
   function setBusyUI(b) {
     if (backgroundView) return;
+    const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
     if (sendBtn) {
-      sendBtn.disabled = !b && !dshCanSend();
-      sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b ? '⏹' : '➤') + '</span>';
-      sendBtn.title = b ? '停止生成' : '发送（Enter）';
-      sendBtn.setAttribute('aria-label', b ? '停止生成' : '发送消息');
+      sendBtn.disabled = stopping || !b && !dshCanSend();
+      sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
+      sendBtn.title = b ? '停止生成' : external ? '停止 DSH 当前会话（Enter 可继续发送）' : '发送（Enter）';
+      sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
     }
-    const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.onclick = () => stopRun();
+    const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
   }
 
   // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
@@ -1894,7 +1906,8 @@ const AiPanel = (() => {
       const known = byId.get(id);
       // DSH 侧栏隐藏未使用的空白记录；当前草稿和已有正文仍可返回，不能混入旧探测会话。
       if (item.blank === true && !aliases.includes(curSessionId) && !aliases.some(id => live.has(id)) && !known?.msgs?.length) continue;
-      const isRunning = item.running === true;
+      const observed = dshWatch && dshWatchWanted(dshWatch) && dshWatch.hostId === item.sessionId ? dshWatch.state : null;
+      const isRunning = observed?.connected !== false && observed ? observed.running === true : item.running === true;
       if (isRunning) running.add(id);
       all.push({
         id, hostId: item.sessionId,
@@ -1976,7 +1989,7 @@ const AiPanel = (() => {
       }
       if (act === 'del') {
         saveSessions(all2.filter((x) => x.id !== id));
-        if (id === curSessionId) { stopRun(true); clearSessionPermissions(); curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
+        if (id === curSessionId) { resetDshWatch();stopRun(true);clearSessionPermissions();curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
         renderHist();
         MI.toast('已删除该会话', 'ok');
         return;
@@ -2018,6 +2031,7 @@ const AiPanel = (() => {
     // 切到「正在后台跑」的会话时，不能去读已落盘的旧正文：
     // 那份记录可能是一轮之前保存的，直接 replay 会把后台已经累积的输出丢掉，
     // 还给用户一种「切回来怎么变了」的错觉。改为把后台记录整个接回前台。
+    resetDshWatch();
     const parked = parkedRecordOf(id);
     if (parked) {
       // 先把当前会话也挂起来，否则它的 DOM 会被这次接回顶掉。
@@ -2063,7 +2077,215 @@ const AiPanel = (() => {
    *   ③ 绑定：告诉主进程「这个项目的对话就是这个会话」，否则用户接着发的话会被
    *      派给本地那个 myide-* 会话 —— 宿主里那条历史永远收不到新消息。
    */
+  // 观察宿主运行与本地 own-run 分开：历史快照不是流，不得覆盖已派发的工具和未落盘的回复。
+  function dshOwnRun() {
+    return currentRun?.engine === 'dsh' && ['active','stopping'].includes(currentRun.status)
+      && currentRun.identity.sessionId === curSessionId;
+  }
+  function dshWatchWanted(watch) {
+    return dshWatch === watch && watch.generation === dshWatchGeneration && getConfig().engine === 'dsh'
+      && curSessionId === watch.sessionId && pathKey(window.App?.root) === pathKey(watch.rootId)
+      && dshScope() === watch.scope && !dshScopeMismatch();
+  }
+  function clearDshWatchTransient(watch) {
+    if (!watch) return;
+    for (const entry of watch.pending.values()) { entry.active = false; entry.element.remove(); }
+    watch.pending.clear();
+    watch.preview?.remove(); watch.preview = null;
+    watch.thinking?.remove(); watch.thinking = null;
+    watch.interactionNotice?.remove(); watch.interactionNotice = null;
+    if (watch.notice?.timer) clearInterval(watch.notice.timer);
+    if (watch.notice?.hideTimer) clearTimeout(watch.notice.hideTimer);
+  }
+  function resetDshWatch() {
+    const watch = dshWatch;
+    dshWatch = null; dshWatchGeneration++;
+    clearDshWatchTransient(watch);
+    if (watch) Promise.resolve(window.myIDE.ai.dshUnwatch?.(watch.watchId)).catch(() => {});
+    if (!backgroundView && !dshOwnRun()) {
+      document.getElementById('ai-runstate')?.classList.add('hidden');
+      document.getElementById('ai-stop')?.classList.add('hidden');
+      setBusyUI(busy);
+    }
+  }
+  function dshTurnsMessages(turns) {
+    const list = [];
+    for (const turn of turns || []) for (const part of turn.parts || []) {
+      if (part.kind === 'text' && part.role === 'user') list.push({role:'user',content:part.text,_text:part.text});
+      else if (part.kind === 'text') list.push({role:'assistant',content:part.text});
+      else if (part.kind === 'tool') list.push({role:'assistant',content:'',_dshTimeline:[{kind:'tool',call:part.call,status:part.status,output:part.output}]});
+    }
+    return list;
+  }
+  function updateDshWatchStatus(watch) {
+    if (!dshWatchWanted(watch) || dshOwnRun() || backgroundView) return;
+    const state = watch.state;
+    if (!state) return;
+    watch.notice ||= createRunState();
+    clearTimeout(currentRun?.notice?.hideTimer);
+    if (state.connected === false) {
+      if (watch.notice.timer) { clearInterval(watch.notice.timer); watch.notice.timer = null; }
+      clearTimeout(watch.notice.hideTimer);
+      watch.notice.element?.classList.remove('hidden','running');
+      if (watch.notice.textEl) watch.notice.textEl.textContent = state.error || 'DSH 连接中断，运行状态待确认';
+    } else if (state.running) {
+      setRunState(watch, watch.stopping ? '正在停止 DSH 会话' : state.questions?.length ? 'DSH 等待回答' : state.permissions?.length ? 'DSH 等待授权' : state.preview?.thinking ? '深度求索' : 'DSH 正在生成');
+    } else if (watch.wasRunning) setRunState(watch, 'DSH 已结束本轮生成', true);
+    watch.wasRunning = state.running === true;
+    setBusyUI(busy);
+  }
+  function dshObservedRunning() {
+    return !!dshWatch && dshWatchWanted(dshWatch) && dshWatch.state?.connected !== false && dshWatch.state?.running === true;
+  }
+  async function stopDshHost() {
+    const watch = dshWatch, state = watch?.state;
+    if (!watch || !dshWatchWanted(watch) || !state?.running || state.connected === false || watch.stopping) return;
+    watch.stopping = true; updateDshWatchStatus(watch);
+    const result = await Promise.resolve(window.myIDE.ai.dshHostControl(watch.watchId,{operation:'stop',runId:state.runId})).catch(error => ({ok:false,error:error.message}));
+    if (!dshWatchWanted(watch)) return;
+    if (!result?.ok) MI.toast(result?.error || 'DSH 停止未确认', 'err');
+    await syncDshWatch(watch);
+    if (dshWatchWanted(watch)) { watch.stopping = false; updateDshWatchStatus(watch); }
+  }
+  function stopVisibleRun() {
+    if (dshOwnRun() || currentRun?.status === 'active') stopRun();
+    else if (dshObservedRunning()) return stopDshHost();
+  }
+  function renderDshWatchPending(watch) {
+    const state = watch.state, alive = new Set();
+    const valid = entry => entry.active && dshWatchWanted(watch) && !dshOwnRun()
+      && !watch.needsSync && watch.state?.connected !== false && watch.pending.get(entry.key) === entry;
+    const submit = async (entry, action) => {
+      if (!valid(entry) || entry.submitting) return;
+      entry.submitting = true;
+      for (const button of entry.element.querySelectorAll('button')) button.disabled = true;
+      const result = await Promise.resolve(window.myIDE.ai.dshHostControl(watch.watchId,action)).catch(error => ({ok:false,error:error.message}));
+      if (!valid(entry)) return;
+      if (result?.ok) { entry.active = false; entry.element.remove(); }
+      else { entry.submitting = false;for (const button of entry.element.querySelectorAll('button')) button.disabled = false; MI.toast(result?.error || '请求已结束或回答未被接受','err'); }
+      await syncDshWatch(watch);
+    };
+    if (state.connected !== false) for (const [kind,items] of [['question',state.questions],['permission',state.permissions]]) for (const item of items || []) {
+      const key = kind + ':' + item.id; alive.add(key);
+      let entry = watch.pending.get(key);
+      if (!entry) {
+        const box = document.createElement(kind === 'question' ? 'form' : 'div');
+        box.className = 'ai-dsh-permission ai-dsh-watch-pending' + (kind === 'question' ? ' ai-dsh-question' : '');
+        entry = {key,element:box,active:true}; watch.pending.set(key,entry);
+        if (kind === 'question') {
+          const fields = [];
+          for (const question of item.questions || []) {
+            const group = document.createElement('fieldset'), legend = document.createElement('legend'); legend.textContent = question.question; group.appendChild(legend);
+            if (question.detail) { const detail = document.createElement('pre'); detail.textContent = question.detail; group.appendChild(detail); }
+            const choices = [];
+            for (const option of question.options || []) {
+              const label = document.createElement('label'), input = document.createElement('input');
+              input.type = question.multiSelect ? 'checkbox' : 'radio'; input.name = watch.watchId + ':' + item.id + ':' + question.id; input.value = option.label;
+              label.append(input,document.createTextNode(option.label)); if (option.description) label.title = option.description; group.appendChild(label); choices.push(input);
+            }
+            const custom = document.createElement('textarea'); custom.placeholder = '填写补充回答'; custom.rows = 2; group.appendChild(custom); box.appendChild(group); fields.push({question,choices,custom});
+          }
+          const button = document.createElement('button'); button.type = 'submit'; button.className = 'tb-btn'; button.textContent = '提交回答'; box.appendChild(button);
+          box.onsubmit = event => {
+            event.preventDefault();
+            if (!valid(entry)) return;
+            const answers = fields.map(field => ({id:field.question.id,selected:field.choices.filter(input => input.checked).map(input => input.value),...(field.custom.value.trim()?{custom:field.custom.value.trim()}:{})}));
+            if (answers.some(answer => !answer.selected.length && !answer.custom)) { MI.toast('请回答每个问题','err'); return; }
+            return submit(entry,{operation:'answer',id:item.id,answers});
+          };
+        } else {
+          const title = document.createElement('strong'); title.textContent = item.title || 'DSH 原生工具请求授权'; box.appendChild(title);
+          for (const option of item.options || []) {
+            const button = document.createElement('button'); button.className = 'tb-btn'; button.textContent = option.name || (option.kind === 'allow_once' ? '本次允许' : '拒绝');
+            button.onclick = () => submit(entry,{operation:'permission',id:item.id,optionId:option.optionId}); box.appendChild(button);
+          }
+        }
+      }
+      if (entry.active && entry.element.parentNode !== msgsEl) msgsEl.appendChild(entry.element);
+    }
+    for (const [key,entry] of watch.pending) if (!alive.has(key)) { entry.active = false; entry.element.remove(); watch.pending.delete(key); }
+    watch.interactionNotice?.remove(); watch.interactionNotice = null;
+    if (state.interactionNotice) { watch.interactionNotice = addMsg('assistant',state.interactionNotice); }
+  }
+  function renderDshWatch(watch) {
+    if (!dshWatchWanted(watch) || backgroundView || dshOwnRun() || !watch.state) return;
+    const state = watch.state;
+    if (state.connected === false) { renderDshWatchPending(watch); updateDshWatchStatus(watch); return; }
+    if (watch.needsSync) return;
+    // 保留同一请求的表单节点和已填答案；history replay 不能把输入中途清空。
+    const key = JSON.stringify(state.turns || []);
+    if (watch.renderKey !== key) {
+      for (const entry of watch.pending.values()) entry.element.remove();
+      msgs = dshTurnsMessages(state.turns); replayMsgs(); watch.renderKey = key;
+      persistSession(); renderUsage();
+    }
+    watch.preview?.remove(); watch.preview = null;
+    watch.thinking?.remove(); watch.thinking = null;
+    if (state.preview?.text) watch.preview = addMsg('assistant',state.preview.text);
+    if (state.preview?.thinking) {
+      const detail = document.createElement('details'), title = document.createElement('summary'), body = document.createElement('pre');
+      detail.className = 'ai-dsh-thought'; title.textContent = 'Harness 思考'; body.textContent = state.preview.thinking; detail.append(title,body); msgsEl.appendChild(detail); watch.thinking = detail;
+    }
+    renderDshWatchPending(watch); updateDshWatchStatus(watch); scrollBottom();
+  }
+  function receiveDshWatch(state) {
+    const watch = dshWatch;
+    if (!watch || !dshWatchWanted(watch) || state?.watchId !== watch.watchId || state.sessionId !== watch.sessionId
+      || state.hostId !== watch.hostId || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope
+      || !Number.isFinite(state.revision) || state.revision <= watch.revision) return;
+    watch.revision = state.revision; watch.state = state;
+    if (catalogUsable()) { const item = dshCatalog.items.find(item => item.sessionId === watch.hostId); if (item) { if (state.connected !== false) item.running = state.running; if (state.title) item.title = state.title; } }
+    refreshHistInPlace();
+    if (watch.needsSync && !dshOwnRun() && state.connected !== false) { syncDshWatch(watch); return; }
+    renderDshWatch(watch);
+  }
+  async function syncDshWatch(watch = dshWatch) {
+    if (!watch || !dshWatchWanted(watch) || dshOwnRun()) return;
+    if (watch.syncing) return watch.syncing;
+    const ticket = watch.syncTicket;
+    const pending = (async () => {
+      const result = await Promise.resolve(window.myIDE.ai.dshSync(watch.watchId)).catch(error => ({ok:false,error:error.message}));
+      if (!dshWatchWanted(watch) || dshOwnRun() || ticket !== watch.syncTicket) return;
+      const state = result?.state;
+      if (!result?.ok || !state || state.watchId !== watch.watchId || state.sessionId !== watch.sessionId || state.hostId !== watch.hostId
+        || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope || !Number.isFinite(state.revision)) return;
+      if (state.revision >= watch.revision) { watch.revision = state.revision; watch.state = state; }
+      if (watch.state.connected === false) { renderDshWatch(watch); return; }
+      watch.needsSync = false; watch.renderKey = null; renderDshWatch(watch); refreshHistInPlace();
+    })();
+    watch.syncing = pending;
+    try { await pending; } finally { if (watch.syncing === pending) watch.syncing = null; }
+  }
+  async function ensureDshWatch(sync = false) {
+    if (!window.myIDE.ai.dshWatch || getConfig().engine !== 'dsh' || !curSessionId || dshScopeMismatch()
+      || dshSessionAccess?.state !== 'ready' || panel?.classList.contains('hidden')) return;
+    const hostId = dshSessionAccess.hostId || catalogOf(curSessionId)?.sessionId || loadSessions().find(item => item.id === curSessionId)?.hostId
+      || (/^(session-|myide-|host:)/.test(curSessionId) ? curSessionId.replace(/^host:/,'') : '');
+    if (!hostId) return;
+    if (dshWatch && dshWatchWanted(dshWatch) && dshWatch.hostId === hostId) { if (sync) { dshWatch.needsSync = true; await syncDshWatch(); } return; }
+    resetDshWatch();
+    const watch = {watchId:'watch-'+window.crypto.randomUUID(),sessionId:curSessionId,hostId,rootId:window.App?.root||'',scope:dshScope(),generation:dshWatchGeneration,
+      revision:-1,state:null,pending:new Map(),renderKey:null,needsSync:sync,syncTicket:0};
+    dshWatch = watch;
+    const result = await Promise.resolve(window.myIDE.ai.dshWatch(getConfig(),{watchId:watch.watchId,sessionId:watch.sessionId,hostId,rootId:watch.rootId,scope:watch.scope})).catch(error => ({ok:false,error:error.message}));
+    if (!dshWatchWanted(watch)) { Promise.resolve(window.myIDE.ai.dshUnwatch(watch.watchId)).catch(() => {}); return; }
+    if (!result?.ok) { resetDshWatch(); MI.toast(result?.error || 'DSH 实时订阅失败','err'); return; }
+    if (sync) await syncDshWatch(watch);
+  }
+  function suspendDshWatchForOwn() {
+    if (!dshWatch || !dshWatchWanted(dshWatch)) return;
+    dshWatch.needsSync = true; dshWatch.syncTicket++; dshWatch.syncing = null;
+    clearDshWatchTransient(dshWatch);
+  }
+  async function reconcileDshAfterOwn(run) {
+    if (backgroundView || run.engine !== 'dsh' || run.identity.sessionId !== curSessionId || pathKey(run.identity.rootId) !== pathKey(window.App?.root)) return;
+    if (dshWatch && dshWatchWanted(dshWatch)) { dshWatch.needsSync = true; await syncDshWatch(); return; }
+    const selected = curSessionId, root = window.App?.root, scope = dshScope(), generation = dshWatchGeneration;
+    await refreshDshCatalog();
+    if (selected === curSessionId && root === window.App?.root && scope === dshScope() && generation === dshWatchGeneration) await ensureDshWatch(true);
+  }
   function beginDshSessionLoad(id,hostId) {
+    resetDshWatch();
     // 选择一变就放开旧视图并锁住发送；不能等网络返回后才切身份，让新输入仍落到上一条。
     releaseSessionPermissions(detachRun());
     closeHist();dshOptionsTicket++;dshOptionsState='loading';
@@ -2120,14 +2342,7 @@ const AiPanel = (() => {
     const turns = Array.isArray(result.turns) ? result.turns : [];
     // 换乘成渲染层一直用的历史形状：用户发言一条、助手文字一条、工具行一条。
     // 复用 _dshTimeline，历史回放与实时流共用同一段渲染（replayMsgs 里已有分支）。
-    msgs = [];
-    for (const turn of turns) {
-      for (const part of turn.parts || []) {
-        if (part.kind === 'text' && part.role === 'user') msgs.push({ role: 'user', content: part.text, _text: part.text });
-        else if (part.kind === 'text') msgs.push({ role: 'assistant', content: part.text });
-        else if (part.kind === 'tool') msgs.push({ role: 'assistant', content: '', _dshTimeline: [{ kind: 'tool', call: part.call, status: part.status, output: part.output }] });
-      }
-    }
+    msgs = dshTurnsMessages(turns);
     usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
     renderUsage();
     replayMsgs();
@@ -2136,6 +2351,7 @@ const AiPanel = (() => {
     // 失败关闭：不能在只读分支调用 inspect，让它为这份正文暗中新建/恢复另一条宿主会话。
     if(canContinue){
       await refreshDshOptions();
+      if(stillWanted())await ensureDshWatch();
       if(stillWanted())MI.toast(msgs.length?'已载入 DSH 会话，可直接继续对话':'该会话没有可显示的消息','ok');
     }else{
       blockDshSession(dshSessionAccess.error);
@@ -2237,6 +2453,7 @@ const AiPanel = (() => {
       setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
       for(const event of record.pending)handleDshEvent(event);
       renderUsage();renderBackgroundStatus();scrollBottom();
+      ensureDshWatch(record.run.status !== 'active');
       return true;
     }
     const key = runKeyOf(sessKey(), curSessionId);
@@ -2255,6 +2472,7 @@ const AiPanel = (() => {
     setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
     for(const event of record.pending)handleDshEvent(event);
     renderUsage();renderBackgroundStatus();scrollBottom();
+    ensureDshWatch(record.run.status !== 'active');
     return true;
   }
   function renderBackgroundStatus() {
@@ -2270,12 +2488,13 @@ const AiPanel = (() => {
       status.appendChild(button);
     }
   }
-  function beforeProjectChange(nextRoot) { if(currentRun?.identity.rootId!==nextRoot)detachRun(); }
+  function beforeProjectChange(nextRoot) { if(pathKey(window.App?.root)!==pathKey(nextRoot))resetDshWatch();if(currentRun?.identity.rootId!==nextRoot)detachRun(); }
   // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
   function onProjectChange() {
     const nextKey=sessKey(),harness=getConfig().engine==='dsh';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
+    resetDshWatch();
     sessionLoadTicket++;
     dshCatalogTicket++;
     // 2026-11-01：切项目也不中断（用户要求「其他任务操作都不中断」）。
@@ -3045,6 +3264,8 @@ const AiPanel = (() => {
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({dshReasoning:event.target.value});});
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
+    const offDshWatch = window.myIDE.ai.onDshWatch?.(receiveDshWatch);
+    window.addEventListener('beforeunload',()=>{resetDshWatch();offDshWatch?.();},{once:true});
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
     window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
@@ -3060,7 +3281,7 @@ const AiPanel = (() => {
     };
     if (sendBtn) {
       sendBtn.onclick = () => {
-        if (busy) { stopRun(); return; }
+        if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
         send();
       };
     }
@@ -3090,6 +3311,7 @@ const AiPanel = (() => {
     renderImages();
     const newBtn = document.getElementById('ai-new');
     if (newBtn) newBtn.onclick = () => {
+      resetDshWatch();
       sessionLoadTicket++;
       // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
       // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
@@ -3225,6 +3447,7 @@ const AiPanel = (() => {
     const cfg=getConfig(),runs=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].filter((r,i,a)=>r&&a.indexOf(r)===i&&r.identity.rootId===((window.App&&App.root)||''));
     const sessions=loadSessions().map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
     return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg.dshModel,requestedReasoning:cfg.dshReasoning,reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
+      dshWatch:dshWatch&&dshWatchWanted(dshWatch)?{watchId:dshWatch.watchId,hostId:dshWatch.hostId,scope:dshWatch.scope,revision:dshWatch.revision,cursor:dshWatch.state?.cursor,running:dshWatch.state?.running,connected:dshWatch.state?.connected,runId:dshWatch.state?.runId,syncPending:dshWatch.needsSync}:null,
       models:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
       reasoningOptions:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,dshSession:dshSessionAccess?{...dshSessionAccess,canSend:dshCanSend(),currentScope:dshScope(),scopeMessage:dshScopeMismatch()?dshScopeError():''}:null,sessions,
       tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),

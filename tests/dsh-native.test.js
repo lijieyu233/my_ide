@@ -223,15 +223,16 @@ async function bridgeFixture(){
  await test('发现的活跃 revision 与安装一致时直接连接，不重载插件或提交任务',async()=>{
   const f=await bridgeFixture(),calls=[];try{
    await f.discover(f.revision);
-   const rpc=await connectNative({...f,waitMs:1000,fetcher:async(url,init)=>{calls.push({url,init});assert.equal(init.body,undefined);return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}});
-   try{assert.equal(rpc.url,'http://127.0.0.1:1234');assert.equal(calls.length,1);}finally{rpc.close();}
+   const rpc=await connectNative({...f,waitMs:1000,fetcher:async(url,init)=>{calls.push({url,init});if(url.endsWith('/myide/health'))return Response.json({revision:f.revision,capabilities:{observe:true}});assert.equal(init.body,undefined);return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}});
+   try{assert.equal(rpc.url,'http://127.0.0.1:1234');assert.equal(calls.length,2);assert(calls[1].url.endsWith('/myide/health'));}finally{rpc.close();}
   }finally{await f.dispose();}
  });
  await test('旧 revision 只重载本桥 false→true，并从更新后的发现地址重连',async()=>{
   const f=await bridgeFixture(),auth=[],calls=[];try{
    await f.discover('old-revision');
    const rpc=await connectNative({...f,waitMs:1000,fetcher:async(url,init)=>{
-    if(!init.body){auth.push(url);return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
+    if(url.endsWith('/myide/health'))return new URL(url).port==='5678'?Response.json({revision:f.revision,capabilities:{observe:true}}):new Response('not found',{status:404});
+     if(!init.body){auth.push(url);return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
     const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
     if(envelope.payload.args.enabled)await f.discover(f.revision,5678);
     return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{application:'applied',changed:true}}});
@@ -247,7 +248,8 @@ async function bridgeFixture(){
    const f=await bridgeFixture(),calls=[];let authentications=0;try{
     await f.discover('old-revision');
     await assert.rejects(connectNative({...f,waitMs:1000,fetcher:async(url,init)=>{
-     if(!init.body){authentications++;return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
+     if(url.endsWith('/myide/health'))return new Response('not found',{status:404});
+      if(!init.body){authentications++;return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
      const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
      const result=failing==='disable'&&!envelope.payload.args.enabled?{ok:false,error:{message:'unit disable failed'}}:{ok:true,value:{application:failing==='enable'?'deferred':'applied'}};
      return Response.json({type:'server-response',rpcId:envelope.rpcId,result});
@@ -261,12 +263,77 @@ async function bridgeFixture(){
   const f=await bridgeFixture(),calls=[];let authentications=0;try{
    await f.discover('old-revision');
    await assert.rejects(connectNative({...f,waitMs:0,fetcher:async(url,init)=>{
-    if(!init.body){authentications++;return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
+    if(url.endsWith('/myide/health'))return new Response('not found',{status:404});
+      if(!init.body){authentications++;return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});}
     const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
     return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{application:'applied',changed:false}}});
    }}),/连接器更新尚未生效/);
    assert.equal(authentications,2);assert.deepEqual(calls.map(call=>call.args.enabled),[false,true]);
   }finally{await f.dispose();}
  });
- console.log('原生DSH连接：'+count+' 通过 / 0 失败');
+ await test('install disabled:true 在 JSON/YAML 都只停用自身且幂等，恢复后原字节不变',async()=>{
+   for(const original of ['- id: another\n  disabled: false\n',JSON.stringify([{id:'another',disabled:false}])]){
+    const f=await bridgeFixture();try{
+     const file=path.join(f.home,'profiles/desktop/cordis.patch.yml');await fs.writeFile(file,original);await install(f);const baseline=await fs.readFile(file,'utf8');
+     await install({...f,disabled:true});const disabled=await fs.readFile(file,'utf8');await install({...f,disabled:true});assert.equal(await fs.readFile(file,'utf8'),disabled);
+     if(original.startsWith('[')){const rows=JSON.parse(disabled);assert.deepEqual(rows[0],JSON.parse(original)[0]);assert.equal(rows.at(-1).insert[0].disabled,true);}else{assert(disabled.startsWith(original));assert.match(disabled,/      disabled: true/);}
+     await install(f);assert.equal(await fs.readFile(file,'utf8'),baseline);
+    }finally{await f.dispose();}
+   }
+  });
+  await test('manager unaddressable 且路由缺 health 才切自身 patch，等 inventory 停用和真实 health',async()=>{
+   for(const json of [false,true]){
+    const f=await bridgeFixture(),calls=[];let stopped=false,healthy=false;try{
+     if(json)await fs.writeFile(path.join(f.home,'profiles/desktop/cordis.patch.yml'),JSON.stringify([{id:'another-plugin',disabled:false}]));await install(f);
+     await f.discover(f.revision);const file=path.join(f.home,'profiles/desktop/cordis.patch.yml'),baseline=await fs.readFile(file,'utf8');
+     const isDisabled=async()=>{const text=await fs.readFile(file,'utf8');return json?JSON.parse(text).at(-1).insert[0].disabled===true:/disabled: true/.test(text);};
+     const rpc=await connectNative({...f,waitMs:2000,fetcher:async(url,init)=>{
+      if(!init.body)return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});
+      if(url.endsWith('/myide/health')){if(stopped&&!await isDisabled())healthy=true;return healthy?Response.json({revision:f.revision,capabilities:{observe:true}}):new Response('not found',{status:404});}
+      const envelope=JSON.parse(init.body);calls.push(envelope.method);let value;
+      if(envelope.method==='pluginInventory/list'){stopped=await isDisabled();value={entries:[{entryId:'include:myide-native-bridge',enabled:!stopped},{entryId:'another-plugin',enabled:true}]};}
+      else{assert.deepEqual(envelope.payload.args,{id:'include:myide-native-bridge',enabled:calls.length===2});value={application:'failed',error:{code:'unaddressable'}};}
+      return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+     }});
+     try{assert(stopped&&healthy);assert.deepEqual(calls,['pluginManager/setPluginEnabled','pluginManager/setPluginEnabled','pluginInventory/list']);assert.equal(await fs.readFile(file,'utf8'),baseline);}finally{rpc.close();}
+    }finally{await f.dispose();}
+   }
+  });
+  await test('fallback 停用等待失败仍 finally 恢复启用，零其它插件或会话命令',async()=>{
+   const f=await bridgeFixture(),calls=[];try{
+    await f.discover(f.revision);const file=path.join(f.home,'profiles/desktop/cordis.patch.yml'),baseline=await fs.readFile(file,'utf8');
+    await assert.rejects(connectNative({...f,waitMs:0,fetcher:async(url,init)=>{
+     if(!init.body)return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});
+     if(url.endsWith('/myide/health'))return new Response('not found',{status:404});
+     const envelope=JSON.parse(init.body);calls.push(envelope.method);const value=envelope.method==='pluginInventory/list'?{entries:[{entryId:'include:myide-native-bridge',enabled:true}]}:{application:'failed',error:{code:'unaddressable'}};
+     return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+    }}),/旧实例尚未停用/);
+    assert.equal(await fs.readFile(file,'utf8'),baseline);assert.deepEqual(calls,['pluginManager/setPluginEnabled','pluginManager/setPluginEnabled','pluginInventory/list']);
+   }finally{await f.dispose();}
+  });
+  await test('两个同时连接的面板按 home 串行部署，真实 health 已好时第二个不再切插件',async()=>{
+   const f=await bridgeFixture(),calls=[];let healthy=false;try{
+    await f.discover('old-revision');const options={...f,waitMs:1000,fetcher:async(url,init)=>{
+     if(!init.body)return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});
+     if(url.endsWith('/myide/health'))return healthy?Response.json({revision:f.revision,capabilities:{observe:true}}):new Response('not found',{status:404});
+     const envelope=JSON.parse(init.body);calls.push(envelope.method);if(envelope.payload.args.enabled)healthy=true;
+     return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{application:'applied'}}});
+    }};
+    const [a,b]=await Promise.all([connectNative(options),connectNative(options)]);try{assert.notEqual(a,b);assert.deepEqual(calls,['pluginManager/setPluginEnabled','pluginManager/setPluginEnabled']);}finally{a.close();b.close();}
+   }finally{await f.dispose();}
+  });
+  await test('manager 恢复 enable 请求失败时仍还原本桥文件配置，不遗留 disabled',async()=>{
+   const f=await bridgeFixture();try{
+    await f.discover(f.revision);const file=path.join(f.home,'profiles/desktop/cordis.patch.yml'),baseline=await fs.readFile(file,'utf8');
+    await assert.rejects(connectNative({...f,waitMs:1000,fetcher:async(url,init)=>{
+     if(!init.body)return new Response(null,{status:303,headers:{'set-cookie':'unit-cookie; HttpOnly'}});
+     if(url.endsWith('/myide/health'))return new Response('not found',{status:404});
+     const envelope=JSON.parse(init.body);assert.equal(envelope.method,'pluginManager/setPluginEnabled');
+     if(!envelope.payload.args.enabled){await install({...f,disabled:true});return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{application:'applied'}}});}
+     return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:false,error:{message:'unit enable transport failed'}}});
+    }}),/unit enable transport failed/);
+    assert.equal(await fs.readFile(file,'utf8'),baseline);
+   }finally{await f.dispose();}
+  });
+  console.log('原生DSH连接：'+count+' 通过 / 0 失败');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

@@ -20,7 +20,7 @@ class MyIdeNativeBridge {
       const {items}=await ctx.sessionController.list({});
       const item=items.find(item=>item.sessionId===request.sessionId);
       if(!item)throw Error('该会话已不在 DSH 的会话目录里');
-      if(item.projections?.values?.subagent)throw Error('不能接手子任务会话');
+      if(item.origin==='subagent'||item.projections?.values?.subagent)throw Error('不能接手子任务会话');
       const [actual,expected]=await Promise.all([fs.promises.realpath(item.cwd),fs.promises.realpath(request.cwd)]);
       if(actual!==expected)throw Error('该会话属于其他工作区');
       return item;
@@ -32,6 +32,164 @@ class MyIdeNativeBridge {
         await checkSession(envelope.payload?.args?.request);
         return Response.json({type:'server-response',rpcId,result:{ok:true,value:{canContinue:true}}});
       }catch(error){return Response.json({type:'server-response',rpcId,result:{ok:false,error:{code:'myide/check-failed',message:error.message,details:{}}}});}
+    }});
+    // 旁听不沿用 own-run 的 feeds：多个窗口可以观察同一 DSH 会话，关闭旁听也不能替用户停掉 Agent。
+    const observers=new Set(),interactions=new Map();
+    const liveRoot=id=>{
+      const agent=ctx.agents.get(id);
+      return agent?.id===id&&ctx.agents.roots?.().includes(agent)?agent:undefined;
+    };
+    const projectionValues=id=>{
+      const agent=ctx.agents.get(id),projections=ctx.get('sessionProjections');
+      return agent&&projections?.snapshot?projections.snapshot(agent.session,['userQuestions','inbox']).values:undefined;
+    };
+    const questionView=(id,fallback)=>projectionValues(id)?.userQuestions??fallback;
+    const validAnswers=(questions,answers)=>Array.isArray(questions)&&Array.isArray(answers)&&questions.length===answers.length&&new Set(answers.map(answer=>answer?.id)).size===answers.length&&answers.every(answer=>{
+      if(!answer||typeof answer!=='object'||Array.isArray(answer)||Object.keys(answer).some(key=>!['id','selected','custom'].includes(key)))return false;
+      const question=questions.find(question=>question.id===answer.id);
+      return question&&Array.isArray(answer.selected)&&new Set(answer.selected).size===answer.selected.length&&answer.selected.every(label=>typeof label==='string'&&question.options?.some(option=>option.label===label))&&(question.multiSelect===true||answer.selected.length<=1)&&(answer.custom===undefined||typeof answer.custom==='string'&&answer.custom.length<=8192)&&(answer.selected.length>0||!!answer.custom?.trim());
+    });
+    const publishInteractions=observer=>{
+      if(observer.closed)return;
+      const questions=[],permissions=[],routedCalls=new Set(),routedApprovals=[];
+      for(const item of interactions.values()){
+        if(item.sessionId!==observer.sessionId||!item.clients.size)continue;
+        if(item.kind==='question'){
+          questions.push({id:item.id,questions:item.questions});
+          if(item.callId)routedCalls.add(item.callId);
+        }else{
+          permissions.push({id:item.id,title:item.title,options:[{optionId:'allowed-once',name:'允许一次'},{optionId:'rejected',name:'拒绝'}]});
+          routedApprovals.push(item);
+        }
+      }
+      const values=projectionValues(observer.sessionId),projected=values?.userQuestions??observer.questionProjection,service=ctx.get('userQuestions');
+      const queued=new Set([...(values?.inbox?.['next-step']??[]),...(values?.inbox?.['next-turn']??[])].filter(message=>message?.source?.kind==='user-question-reply').map(message=>message.source.callId));
+      let unavailable=observer.interactionUnavailable;
+      for(const row of projected?.active??[]){
+        if(routedCalls.has(row.callId)||row.state==='continued'&&queued.has(row.callId))continue;
+        if(row.state==='continued'&&typeof service?.answer==='function'&&liveRoot(observer.sessionId)){
+          if(!questions.some(question=>question.id==='continued:'+row.callId))questions.push({id:'continued:'+row.callId,questions:row.questions});
+        }else unavailable=true;
+      }
+      for(const audit of observer.approvals.values())if(!routedApprovals.some(item=>audit.callId?item.callId===audit.callId:item.toolName===audit.toolName))unavailable=true;
+      const state={type:'interactions',questions,permissions,...unavailable?{interactionNotice:'部分原生交互暂不可接手，请回 DSH 回答。'}:{}},signature=JSON.stringify(state);
+      if(signature!==observer.interactionSignature){observer.interactionSignature=signature;observer.push(state);}
+    };
+    const publishFor=id=>{for(const observer of observers)if(observer.sessionId===id)publishInteractions(observer);};
+    const retire=(item)=>{if(interactions.get(item.id)!==item)return;interactions.delete(item.id);publishFor(item.sessionId);};
+    const status=(id,running)=>{for(const observer of observers)if(observer.sessionId===id)observer.push({type:'status',running:running===true});};
+    ctx.effect(()=>ctx.on('api-session/status',status));
+    ctx.effect(()=>()=>{for(const observer of [...observers])observer.close();});
+    ctx.connection.fetch.register({path:'/api/myide/observe',methods:['POST'],requestBody:'buffered',fetch:async input=>{
+      try{
+        const request=await input.json();
+        if(!request||Object.keys(request).some(key=>!['sessionId','cwd'].includes(key)))throw Error('MyIDE 旁听请求无效');
+        const item=await checkSession(request),controller=new AbortController(),iterators=new Set();
+        let output;
+        const observer={sessionId:request.sessionId,closed:false,clientId:undefined,questionProjection:item.projections?.values?.userQuestions,approvals:new Map(),interactionUnavailable:false,push:value=>{if(!observer.closed)output.enqueue(Buffer.from(JSON.stringify(value)+'\n'));}};
+        const dropInteractionClient=()=>{
+          observer.clientId=undefined;
+          for(const route of [...interactions.values()])if(route.clients.delete(observer)&&!route.clients.size)retire(route);
+        };
+        const close=()=>{
+          if(observer.closed)return;observer.closed=true;controller.abort();input.signal?.removeEventListener('abort',close);observers.delete(observer);
+          dropInteractionClient();
+          for(const iterator of iterators)Promise.resolve(iterator.return?.()).catch(()=>{});
+          try{output.close();}catch{}
+        };
+        observer.close=close;
+        const consume=async(source,accept)=>{
+          const iterator=source[Symbol.asyncIterator]();iterators.add(iterator);
+          try{while(!observer.closed){const step=await iterator.next();if(step.done)break;accept(step.value);}}
+          finally{iterators.delete(iterator);await iterator.return?.();}
+        };
+        const audit=event=>{
+          if(event?.type==='approval/asked')observer.approvals.set(event.data.id,event.data);
+          else if(event?.type==='approval/decided')observer.approvals.delete(event.data.id);
+        };
+        const events=async()=>{
+          if(typeof ctx.typertGateway.wireStream?.open!=='function'||typeof ctx.typertGateway.dispatchRpc!=='function'){
+            observer.interactionUnavailable=true;publishInteractions(observer);return;
+          }
+          // $events 是宿主给本地 transport 的公开入口，会重放已有问题；不调用 next，也不注册抢占 DSH 的 answerer。
+          const source=await ctx.typertGateway.wireStream.open('$events',{args:{}},undefined,ctx.connection.browserPeer,controller.signal);
+          try{await consume(source,frame=>{
+            if(frame.type==='ready'){observer.clientId=frame.clientId;return;}
+            if(frame.type==='cancel'){
+              const route=interactions.get(frame.eventId);
+              if(route?.clients.has(observer))retire(route);
+              return;
+            }
+            if(frame.type!=='waterfall'||frame.agentId!==observer.sessionId||!observer.clientId)return;
+            const kind=frame.event==='user-questions/request'?'question':frame.event==='approval/request'?'permission':undefined;
+            if(!kind||typeof frame.eventId!=='string'||!frame.eventId)return;
+            const data=frame.request;
+            if(!data||kind==='question'&&(!Array.isArray(data.questions)||!data.questions.length)){observer.interactionUnavailable=true;publishInteractions(observer);return;}
+            let route=interactions.get(frame.eventId);
+            if(route&&route.sessionId!==observer.sessionId)return;
+            if(!route){
+              route={id:frame.eventId,sessionId:observer.sessionId,kind,clients:new Set(),questions:data.questions,callId:kind==='question'?data.wait?.callId:data.callId,toolName:data.toolName,title:data.reason||('工具 '+String(data.toolName||'')+' 请求权限'),busy:false};
+              interactions.set(route.id,route);
+            }
+            route.clients.add(observer);publishFor(observer.sessionId);
+          });}finally{dropInteractionClient();}
+        };
+        const stream=new ReadableStream({start(sink){
+          output=sink;observers.add(observer);input.signal?.addEventListener('abort',close,{once:true});
+          observer.push({type:'status',running:item.running===true});publishInteractions(observer);
+          if(input.signal?.aborted){close();return;}
+          (async()=>{try{
+            const source=await ctx.typertGateway.stream({namespace:'session',method:'follow',peer:ctx.connection.browserPeer,args:{request:{address:{kind:'session',sessionId:request.sessionId},maxMessages:5000,assistantStream:true}},signal:controller.signal});
+            await consume(source,frame=>{
+              if(frame.type==='snapshot'){
+                observer.questionProjection=frame.projections?.values?.userQuestions;observer.approvals.clear();
+                for(const record of frame.records??[])audit(record.event);
+              }else if(frame.type==='event')audit(frame.event);
+              observer.push({type:'session',value:frame});if(frame.type!=='assistant-stream')publishInteractions(observer);
+            });
+            if(!observer.closed)observer.push({type:'failure',error:'原生 DSH 旁听已结束，请重新连接。'});
+          }catch(error){if(!observer.closed)observer.push({type:'failure',error:error.message});}finally{close();}})();
+          events().then(()=>{if(!observer.closed){observer.interactionUnavailable=true;publishInteractions(observer);}},()=>{if(!observer.closed){observer.interactionUnavailable=true;publishInteractions(observer);}});
+        },cancel:close});
+        return new Response(stream,{headers:{'Content-Type':'application/x-ndjson','Cache-Control':'no-store'}});
+      }catch(error){return Response.json({ok:false,error:error.message},{status:400});}
+    }});
+    ctx.connection.fetch.register({path:'/api/myide/control',methods:['POST'],requestBody:'buffered',fetch:async input=>{
+      let rpcId='invalid-request';
+      const response=result=>Response.json({type:'server-response',rpcId,result});
+      try{
+        const envelope=await input.json();rpcId=envelope.rpcId;
+        if(envelope.type!=='client-request'||envelope.method!=='myide/control'||typeof rpcId!=='string')throw Error('MyIDE 控制请求无效');
+        const request=envelope.payload?.args?.request;
+        if(!request||Object.keys(request).some(key=>!['sessionId','cwd','operation','runId','id','answers','optionId'].includes(key)))throw Error('MyIDE 控制请求无效');
+        const item=await checkSession(request),agent=liveRoot(request.sessionId);
+        if(!agent)throw Error('原生会话当前不可控制');
+        if(request.operation==='stop'){
+          const boundary=agent.session.snapshotEvents().findLast(event=>event.type==='turn/start'||event.type==='turn/end');
+          if(!item.running||agent.status!=='running'||boundary?.type!=='turn/start'||typeof request.runId!=='string'||request.runId!==String(boundary.seq))throw Error('该轮运行已结束或已更换，请刷新后重试');
+          const value=await ctx.sessionController.cancel({sessionId:request.sessionId});
+          return response({ok:true,value});
+        }
+        if(!['answer','permission'].includes(request.operation)||typeof request.id!=='string')throw Error('MyIDE 控制操作无效');
+        if(request.operation==='answer'&&request.id.startsWith('continued:')){
+          const callId=request.id.slice('continued:'.length),question=questionView(request.sessionId)?.active?.find(row=>row.callId===callId&&row.state==='continued'),service=ctx.get('userQuestions');
+          if(!question||typeof service?.answer!=='function')throw Error('此交互已结束');
+          if(!validAnswers(question.questions,request.answers))throw Error('问题答案无效');
+          if(!await service.answer(agent,callId,{answers:request.answers}))throw Error('此交互已结束');
+          publishFor(request.sessionId);return response({ok:true,value:{accepted:true}});
+        }
+        const route=interactions.get(request.id),kind=request.operation==='answer'?'question':'permission';
+        const observer=route&&[...route.clients].find(client=>!client.closed&&client.clientId);
+        if(!route||route.busy||route.sessionId!==request.sessionId||route.kind!==kind||!observer)throw Error('此交互已结束');
+        if(kind==='question'&&!validAnswers(route.questions,request.answers))throw Error('问题答案无效');
+        if(kind==='permission'&&!['allowed-once','rejected'].includes(request.optionId))throw Error('权限结果无效');
+        route.busy=true;
+        try{
+          const result=await ctx.typertGateway.dispatchRpc('$events/result',{args:{clientId:observer.clientId,eventId:route.id,outcome:{kind:'result',value:kind==='question'?{answers:request.answers}:request.optionId}}},input.signal,ctx.connection.browserPeer);
+          if(!result.ok)throw Error(result.error?.message||'原生交互回答失败');
+          retire(route);return response({ok:true,value:{accepted:true}});
+        }finally{route.busy=false;}
+      }catch(error){return response({ok:false,error:{code:'myide/control-failed',message:error.message,details:{}}});}
     }});
     ctx.connection.fetch.register({path:'/api/myide/attach',methods:['POST'],requestBody:'buffered',fetch:async input=>{
       let rpcId='invalid-request';
@@ -79,6 +237,8 @@ class MyIdeNativeBridge {
     ctx.connection.fetch.register({path:'/api/myide/follow',methods:['POST'],requestBody:'buffered',fetch:async input=>{
       try{return await follow(input);}catch(error){return Response.json({ok:false,error:error.message},{status:400});}
     }});
+    // 放在 observe/control 等路由注册之后：Loader 的 active/新文件名不能替代真实 handler 健康证明。
+    ctx.connection.fetch.register({path:'/api/myide/health',methods:['POST'],requestBody:'buffered',fetch:async()=>Response.json({revision:config.revision,capabilities:{observe:true}})});
     async function follow(input){
       const {sessionId}=await input.json(),agent=owned(sessionId);if(feeds.has(agent))throw Error('该会话已有 MyIDE 订阅');
       const controller=new AbortController();const abort=()=>controller.abort();input.signal.addEventListener('abort',abort,{once:true});
