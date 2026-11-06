@@ -17,6 +17,9 @@ const PathProgress = (() => {
     trash: '移到回收站',
     copy: '复制',
     restore: '恢复',
+    // 重命名/移动走快速路径时也会遍历目录做 stat 清单（大目录秒级以上）。
+    // 复用 scanning 的文案会显示成「统计项目」，与用户看到的「改个名字」对不上，所以单列。
+    moving: '核对目录项',
   };
   let box, labelEl, countEl, barEl, hintEl;
   let hideTimer = null;
@@ -72,6 +75,7 @@ const PathProgress = (() => {
     // 提示只在真正开始处理时说清楚「为什么这么慢」，避免每帧重排
     hintEl.textContent = info.phase === 'backup' ? '先把原字节备份进恢复目录，之后可用「恢复文件操作」找回'
       : info.phase === 'scanning' ? '正在统计项数与体积，大目录需要几秒'
+      : info.phase === 'moving' ? '正在核对目录项，文件多时需要几秒'
       : '';
   }
 

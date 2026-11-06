@@ -55,6 +55,31 @@ try {
   check('超预算快照仍能发现同尺寸改写以外的一切变化',()=>{const {src}=fixture();const io=Object.assign(Object.create(fs),{lstatSync(p){const s=fs.lstatSync(p);if(s.isFile())return Object.assign(Object.create(s),{size:513*1024*1024});return s;},openSync(p,...a){if(String(p).endsWith('b.bin'))throw Error('不得读取');return fs.openSync(p,...a);}});const m=createMover(io),before=m.snapshot(src);fs.writeFileSync(path.join(src,'new.txt'),'x');const added=m.snapshot(src);assert.equal(added.count,before.count+1,'新增文件必须计入项数');assert.notEqual(added.hash,before.hash,'新增文件必须改变摘要');fs.unlinkSync(path.join(src,'new.txt'));const renamed=path.join(src,'sub','a.txt');fs.renameSync(renamed,path.join(src,'sub','b.txt'));assert.notEqual(m.snapshot(src).hash,before.hash,'改名必须改变摘要');});
   check('超预算源在迁移期间被改写时二次摘要仍能拦住',()=>{const {src,dest}=fixture();const io=Object.assign(Object.create(fs),{lstatSync(p){const s=fs.lstatSync(p);if(s.isFile())return Object.assign(Object.create(s),{size:513*1024*1024});return s;},openSync(p,...a){if(String(p).endsWith('b.bin'))throw Error('不得读取');return fs.openSync(p,...a);}});const m=createMover(io);const before=m.snapshot(src);fs.writeFileSync(path.join(src,'sub','a.txt'),'改动\r\n');assert.throws(()=>m.relocate(src,dest,{expectedSource:before}),{code:'STALE_OPERATION'});assert(fs.existsSync(src)&&!fs.existsSync(dest));});
   check('提交后核对失败返回迁移事实，不假报源仍原位',()=>{const {src,dest}=fixture(),m=createMover(fs,(source,target)=>{require('../src/main/files/file-replace-win').createFile(source,target);fs.writeFileSync(path.join(target,'new-link-target'),'x');fs.symlinkSync(path.join(target,'sub'),path.join(target,'alias'),'junction');});const r=m.relocate(src,dest);assert(r.ok&&r.warning&&!r.after&&!fs.existsSync(src)&&fs.existsSync(dest));});
+  // 2026-11-06：重命名/移动走快速路径（不读文件内容），必须由调用方显式要求。
+  // 默认保持原语义，否则撤销拿 after 当内容摘要会永远报「源已变化」。
+  check('快速路径只在显式 fast:true 时启用，且不读文件内容',()=>{
+    const {src,dest}=fixture();
+    // 用假 io 证明「一次都没读文件内容」：任何 openSync 都视为失败。
+    const io=Object.assign(Object.create(fs),{openSync(p,...a){throw Error('快速路径不得读取文件内容：'+p);}});
+    const m=createMover(io),r=m.relocate(src,dest,{fast:true});
+    assert(r.ok&&r.fast===true,'fast:true 应走快速路径');
+    assert.equal(r.after.verified,'identity','弱基线必须显式标记');
+    assert(fs.existsSync(dest)&&!fs.existsSync(src));
+  });
+  check('未传 fast 时仍产出可做撤销前置条件的内容摘要',()=>{
+    const {src,dest}=fixture(),m=createMover();
+    const r=m.relocate(src,dest);
+    assert.equal(r.fast,undefined,'默认不走快速路径');
+    assert.equal(typeof r.after.hash,'string');
+    // 摘要必须能与 snapshot 互认（撤销靠它判断内容是否被改）。
+    assert.equal(m.snapshot(dest).hash,r.after.hash,'after 应等于目标的真实快照');
+  });
+  check('快速路径产出的弱基线不能冒充内容摘要',()=>{
+    const {src,dest}=fixture(),m=createMover();
+    const r=m.relocate(src,dest,{fast:true});
+    // 弱基线没有可用于比对的 hash 语义：拿它当 expectedSource 必须被拒，而不是静默放行。
+    assert.throws(()=>m.relocate(dest,src,{expectedSource:r.after}),{code:'STALE_OPERATION'});
+  });
 }catch(e){console.error(e);process.exitCode=1;}
 finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-path-move-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}
 console.log('结果: '+passed+' 通过, '+(process.exitCode?1:0)+' 失败');

@@ -20,6 +20,16 @@ try {
   }else{
   const service = ['create','undoCreate'].includes(op) ? require('./path-create') : mover;
   if(!['snapshot','rename','moveTo','relocate','create','undoCreate'].includes(op))throw Error('未知路径操作');
-  parentPort.postMessage({result:service[op](...args)});
+  // 重命名/移动也在遍历目录（快速路径的 stat 清单），大目录同样要秒级以上。
+  // 把同一个 report 注入 condition，让 mover 在遍历途中报进度（见开发文档-243 的同一套节流）。
+  const strip=(value,index)=>{
+    if(!Array.isArray(args)||args.length<=index||!args[index]||typeof args[index]!=='object')return args;
+    const next=args.slice();next[index]={...next[index],report};return next;
+  };
+  const call=op==='rename'?service.rename(...strip(args,2))
+    :op==='relocate'?service.relocate(...strip(args,2))
+    :op==='moveTo'?service.moveTo(...strip(args,2))
+    :service[op](...args);
+  parentPort.postMessage({result:call});
   }
 }catch(e){parentPort.postMessage({error:String(e.message||e),errorCode:e.code||'MOVE_FAILED',committed:e.committed,pendingPath:e.pendingPath,cleanupError:e.cleanupError});}

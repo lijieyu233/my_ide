@@ -1002,19 +1002,24 @@ const Tree = (() => {
     if (!rootPath) return;
     const srcs = Array.isArray(sources) ? sources : [sources];
     let ok = 0;
-    for (const src of srcs) {
-      if (!src || norm(src) === norm(destDir) || isInside(src, destDir)) continue;
-      const oldDir = src.replace(/[\\/][^\\/]+$/, '');
-      // 自动另名的最终路径由main选择；锁目标目录才能覆盖准备期间未知的后缀名。
-      const targetRange=destDir;
-      const r = await performPathChange(src,targetRange,(condition)=>window.myIDE.fs.move(src,destDir,condition));
-      if (r.ok) {
-        if(!r.noop)pushUndo({ type: 'move', oldPath: src, newPath: r.target, oldDir, after: r.after, label: src.split(/[\\/]/).pop() + ' 的移动' });
-        ok++;
-      } else {
-        MI.toast('移动失败: ' + (r.error || src), 'err');
+    // 与重命名同理：移动大目录同样要遍历条目，全程要有浮层和 busy 态。
+    for (const src of srcs) markBusy(src, true);
+    try {
+      for (const src of srcs) {
+        if (!src || norm(src) === norm(destDir) || isInside(src, destDir)) continue;
+        const oldDir = src.replace(/[\\/][^\\/]+$/, '');
+        // 自动另名的最终路径由main选择；锁目标目录才能覆盖准备期间未知的后缀名。
+        const targetRange=destDir;
+        const run=()=>performPathChange(src,targetRange,(condition)=>window.myIDE.fs.move(src,destDir,condition),undefined,{fast:true});
+        const r = await (window.PathProgress?PathProgress.track(run):run());
+        if (r.ok) {
+          if(!r.noop)pushUndo({ type: 'move', oldPath: src, newPath: r.target, oldDir, after: r.after, label: src.split(/[\\/]/).pop() + ' 的移动' });
+          ok++;
+        } else {
+          MI.toast('移动失败: ' + (r.error || src), 'err');
+        }
       }
-    }
+    } finally { for (const src of srcs) markBusy(src, false); }
     if (ok) {
       invalidateAll();
       render();
@@ -1034,19 +1039,23 @@ const Tree = (() => {
     const dirs=[...expanded].map(map);expanded.clear();dirs.forEach(p=>expanded.add(p));
     copiedPaths=copiedPaths.map(map);saveHidden();invalidateAll();
   }
-  async function performPathChange(source,targetRange,operation,expectedSource) {
+  async function performPathChange(source,targetRange,operation,expectedSource,options) {
     const operationRoot=rootPath;
     if(DocumentPaths.key(source)===DocumentPaths.key(operationRoot))return {error:'请先打开父目录，再移动或重命名此项目文件夹',errorCode:'PROJECT_ROOT'};
     const perform=async(documents=[],openTargets=[])=>{
       if(rootPath!==operationRoot)return {error:'项目已切换，路径操作未执行',errorCode:'PROJECT_CHANGED'};
       let snapshot=expectedSource;
-      if(!snapshot) {
+      // fast 模式（重命名/移动）：不预取全量内容快照。
+      // 这一步原来会对整个目录做一次完整哈希 —— 5000 个文件要 3.5 秒，纯粹是为了
+      // 给 operation 一个 expectedSource；而主进程的快速路径自己会在移动前后各比对一次
+      // stat 清单，能挡住并发增删改。多做一次全量哈希等于把省下的时间又还回去（实测）。
+      if(!snapshot&&!options?.fast) {
         const r=await window.myIDE.fs.pathSnapshot(source);
         if(!r?.snapshot)return r||{error:'源版本读取失败'};
         snapshot=r.snapshot;
       }
       if(rootPath!==operationRoot)return {error:'项目已切换，路径操作未执行',errorCode:'PROJECT_CHANGED'};
-      const r=await operation({expectedSource:snapshot,documents,openTargets});
+      const r=await operation({...(snapshot?{expectedSource:snapshot}:{}),...(options?.fast?{fast:true}:{}),documents,openTargets});
       if(r?.ok&&!r.noop&&rootPath===operationRoot)remapTree(source,r.newPath||r.path||r.target);
       if(r?.warning)MI.toast(r.warning+'；输入仍保留，请通过保存恢复继续', 'err');
       return r;
@@ -1070,7 +1079,9 @@ const Tree = (() => {
       const operationRoot=rootPath;
       try {
         const perform=()=>rootPath===operationRoot?window.myIDE.fs.undoCreate(latest.projectRoot,latest.path,latest.after):{error:'项目已切换，未撤销',errorCode:'PROJECT_CHANGED'};
-        const r=window.Viewer?.withCreatedPathRemoval?await Viewer.withCreatedPathRemoval(latest.path,perform):await perform();
+        // 撤销新建要删掉刚建的目录（可能已有内容），同样给浮层。
+        const run=()=>window.Viewer?.withCreatedPathRemoval?Viewer.withCreatedPathRemoval(latest.path,perform):perform();
+        const r=await (window.PathProgress?PathProgress.track(run):run());
         if(!r?.ok){MI.toast('撤销失败: '+(r?.error||'未返回成功')+'；记录已保留，可重试','err');return;}
         const i=undoStack.indexOf(latest);if(i>=0)undoStack.splice(i,1);
         if(rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
@@ -1083,7 +1094,16 @@ const Tree = (() => {
       if(!latest.oldPath||!latest.after){MI.toast('迁移后的版本未能核对，撤销记录已保留，请先核对磁盘', 'err');return;}
       undoBusy=true;
       try {
-        const r=await performPathChange(latest.newPath,latest.oldPath,(condition)=>window.myIDE.fs.relocate(latest.newPath,latest.oldPath,condition),latest.after);
+        // 重命名为了速度只做了 stat 清单（after.verified==='identity'），那份指纹不足以
+        // 证明「内容没被改过」。撤销是必须较真的时刻，这里按需补算一次真正的内容摘要
+        // （把读全盘从「每次重命名」推迟到「用户真的按了 Ctrl+Z」）。
+        let expected=latest.after;
+        if(expected.verified==='identity'){
+          const snap=await window.myIDE.fs.pathSnapshot(latest.newPath);
+          if(!snap?.snapshot){MI.toast('撤销前无法核对磁盘版本，记录已保留','err');return;}
+          expected=snap.snapshot;
+        }
+        const r=await performPathChange(latest.newPath,latest.oldPath,(condition)=>window.myIDE.fs.relocate(latest.newPath,latest.oldPath,condition),expected);
         if(!r?.ok){MI.toast('撤销失败: '+(r?.error||'未返回成功')+'；记录已保留，可重试', 'err');return;}
         const i=undoStack.indexOf(latest);if(i>=0)undoStack.splice(i,1);
         invalidateAll();render();App.refreshGit();MI.toast('↩ 已撤销 '+latest.label, 'ok');
@@ -1116,7 +1136,11 @@ const Tree = (() => {
     const target=baseDir+'\\'+name;
     if(window.Viewer?.openTabs?.some(t=>DocumentPaths.contains(target,t.path))){MI.toast('新建位置有已打开文档，请先处理保存恢复','err');return;}
     let r;
-    try { r=await window.myIDE.fs.createItem(operationRoot,baseDir,name,type); }
+    try {
+      // 新建本身很快，但在网络盘/大目录里也可能卡住；统一走浮层，避免「点了没反应」。
+      const run=()=>window.myIDE.fs.createItem(operationRoot,baseDir,name,type);
+      r=await (window.PathProgress?PathProgress.track(run):run());
+    }
     catch(e){MI.toast('创建失败: '+String(e.message||e),'err');return;}
     if(!r?.ok){MI.toast('创建失败: '+(r?.error||'未返回成功')+(r?.pendingPath?'；临时项已保留：'+r.pendingPath:''),'err');return;}
     pushUndo({type:'create',path:r.path,projectRoot:operationRoot,after:r.after,label:'新建 '+name});
@@ -1383,13 +1407,36 @@ const Tree = (() => {
     if (!name || name === item.name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，重命名未执行', 'err');return;}
     const targetRange=item.path.replace(/[\\/][^\\/]+$/, '')+'/'+name;
-    const r = await performPathChange(item.path,targetRange,(condition)=>window.myIDE.fs.rename(item.path,name,condition));
+    // 大目录重命名要遍历全部条目做 stat 清单（5000 项原来要 20 秒），期间必须有反馈，
+    // 否则用户以为没点上会重复提交。浮层复用删除那套（path-progress.js）。
+    markBusy(item.path, true);
+    let r;
+    try {
+      const run=()=>performPathChange(item.path,targetRange,(condition)=>window.myIDE.fs.rename(item.path,name,condition),undefined,{fast:true});
+      r=await (window.PathProgress?PathProgress.track(run):run());
+    } finally { markBusy(item.path, false); }
     if (r.ok) {
       if(!r.noop)pushUndo({ type: 'rename', oldPath: item.path, newPath: r.path, after:r.after, oldName: item.name, label: item.name + ' 的重命名' });
       invalidateAll(); MI.toast('已重命名为 ' + name, 'ok'); render(); App.refreshGit();
     }
     else MI.toast('重命名失败: ' + r.error, 'err');
     return r;
+  }
+  /**
+   * 把某个路径标成「正在处理」的视觉态（半透明、不响应点击）。
+   *
+   * 为什么需要：重命名/移动都是异步的，结果回来前界面毫无变化。文件多时要好几秒，
+   * 用户会以为没点上而重复触发（实测重复删除就是这么来的）。
+   * 这里只做瞬时提示，不参与业务判断；render() 重建 DOM 后自然丢失，正好收尾。
+   */
+  function markBusy(targetPath, busy) {
+    if (!targetPath) return;
+    for (const node of document.querySelectorAll('[data-path]')) {
+      if (node.dataset.path !== targetPath) continue;
+      node.classList.toggle('busy', !!busy);
+      if (busy) node.setAttribute('aria-busy', 'true');
+      else node.removeAttribute('aria-busy');
+    }
   }
 
   async function removeItem(item) {
@@ -1637,7 +1684,11 @@ const Tree = (() => {
     const target=relative(args.path||'.');
     if(args.operation==='create') {if(!args.name||!args.type)return fail('INVALID_TOOL_ARGS','缺少名称或类型');return await createItem({path:target,type:'dir'},args.type,args.name)||fail('CREATE_FAILED','创建未完成，原内容已保留');}
     if(args.operation==='rename') {if(!args.name)return fail('INVALID_TOOL_ARGS','缺少新名称');return await renameItem({path:target,name:target.split('/').pop()},args.name)||fail('RENAME_FAILED','重命名未完成');}
-    if(args.operation==='move') {const directory=relative(args.destination),next=directory+'/'+target.split('/').pop();const r=await performPathChange(target,next,condition=>myIDE.fs.move(target,directory,condition));if(r?.ok){if(!r.noop)pushUndo({type:'move',oldPath:target,newPath:r.path,after:r.after,label:'AI移动'});invalidateAll();await render();App.refreshGit();}return r;}
+    if(args.operation==='move') {const directory=relative(args.destination),next=directory+'/'+target.split('/').pop();
+      // AI 触发的移动同样要有浮层：用户看不到进度就不知道 AI 在干什么。
+      const run=()=>performPathChange(target,next,condition=>myIDE.fs.move(target,directory,condition),undefined,{fast:true});
+      const r=await (window.PathProgress?PathProgress.track(run):run());
+      if(r?.ok){if(!r.noop)pushUndo({type:'move',oldPath:target,newPath:r.path,after:r.after,label:'AI移动'});invalidateAll();await render();App.refreshGit();}return r;}
     if(args.operation==='delete')return removeItems([target],false,true);
     if(args.operation==='copy') {const directory=relative(args.destination),operationRoot=rootPath,targets=[directory+'/'+target.split('/').pop()];
       const perform=async dirty=>{if(dirty?.length)return fail('UNSAVED_CHANGES','相关标签有未保存内容，已保留');const prepared=await myIDE.fs.copyPrepare(operationRoot,[target],directory);if(!prepared?.ok)return prepared;if(prepared.conflicts?.length)return {...fail('COPY_CONFLICT','目标已存在，未覆盖'),conflicts:prepared.conflicts};if(rootPath!==operationRoot)return fail('PROJECT_CHANGED','项目已切换');return {...await myIDE.fs.copyCommit(operationRoot,prepared.operationId,false),operationId:prepared.operationId,targets:prepared.targets};};
