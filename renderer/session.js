@@ -133,7 +133,7 @@ const Session = (() => {
         updateEntry(entry, tab);
       } catch (error) { entry.status = 'failed'; entry.error = error.message; }
     };
-    if (Array.isArray(list)) list.forEach((it, i) => add(it, '标签 ' + (i + 1)));
+    if (Array.isArray(list)) Viewer.batchTabs(() => list.forEach((it, i) => add(it, '标签 ' + (i + 1))));
     if (!current(run)) return;
     let target = null;
     if (state.active != null) {

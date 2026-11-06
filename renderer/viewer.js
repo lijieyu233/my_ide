@@ -1255,7 +1255,21 @@ const Viewer = (() => {
     else if(e.key==='Tab'){if(!e.shiftKey){e.preventDefault();e.stopImmediatePropagation();const owner=paneFor(tab);if(owner)focusPane(owner);focusEditor();}}
     else if(e.key==='Delete'){e.preventDefault();e.stopImmediatePropagation();closePaneTab(paneFor(tab),tab);}
   },true);
+  let tabBatchDepth = 0, tabRenderPending = false;
+  // 只合并同步登记；不能把活动文件的异步读取也圈住，否则加载期间标签栏无法更新。
+  function batchTabs(callback) {
+    tabBatchDepth++;
+    try { return callback(); }
+    finally {
+      tabBatchDepth--;
+      if (!tabBatchDepth && tabRenderPending) {
+        tabRenderPending = false;
+        renderTabs();
+      }
+    }
+  }
   function renderTabs() {
+    if (tabBatchDepth) { tabRenderPending = true; return; }
     cancelDrag(false);
     const oldFocus=document.activeElement,oldTab=oldFocus?.closest?.('.tab'),focusId=Number(oldTab?.dataset.tabId),wasTabFocus=!!oldTab,wasAll=oldFocus?.classList.contains('tab-all');
     const descriptors=TabDescriptions.describe(tabs,window.App?.root);
@@ -2357,7 +2371,7 @@ const Viewer = (() => {
 
   return {
     editorFor:tab=>cmApi?.__tab===tab?cmApi:paneLayout?.groups.find(group=>group.cm?.__tab===tab)?.cm,
-    splitEditor, moveTabToPane, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
+    splitEditor, moveTabToPane, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, batchTabs, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
     zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),

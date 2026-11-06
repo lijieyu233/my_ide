@@ -1041,8 +1041,10 @@ const AiPanel = (() => {
   }
 
   // ---------- 消息渲染 ----------
+  // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
+  let replayDepth = 0;
   function scrollBottom() {
-    if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+    if (msgsEl && !replayDepth) msgsEl.scrollTop = msgsEl.scrollHeight;
   }
 
   function renderMd(text) {
@@ -1773,28 +1775,32 @@ const AiPanel = (() => {
     if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
   }
   function replayMsgs() {
-    msgsEl.innerHTML = '';
-    lastUserAt = null;
-    if (!msgs.length) { showWelcome(); return; }
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i];
-      if(Array.isArray(m._dshTimeline)){
-        for(const part of m._dshTimeline){if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));else if(part.kind==='tool'&&part.call)renderDshActivity(part);}
-        continue;
+    replayDepth++;
+    try {
+      msgsEl.innerHTML = '';
+      lastUserAt = null;
+      if (!msgs.length) { showWelcome(); return; }
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        if(Array.isArray(m._dshTimeline)){
+          for(const part of m._dshTimeline){if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));else if(part.kind==='tool'&&part.call)renderDshActivity(part);}
+          continue;
+        }
+        if (m._dshTool || m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
+        if (m.role === 'user') {
+          const t = m._text || (typeof m.content === 'string' ? m.content : '（含图片的消息）');
+          const row = addMsg('user', t, { imgs: m._imgs || [] });
+          if (m._ui) row.dataset.mid = m._ui;
+          lastUserAt = i;
+        } else if (m.role === 'assistant') {
+          const row = addMsg('assistant', m.content || '');
+          decorateCodeBlocks(row);
+        }
       }
-      if (m._dshTool || m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
-      if (m.role === 'user') {
-        const t = m._text || (typeof m.content === 'string' ? m.content : '（含图片的消息）');
-        const row = addMsg('user', t, { imgs: m._imgs || [] });
-        if (m._ui) row.dataset.mid = m._ui;
-        lastUserAt = i;
-      } else if (m.role === 'assistant') {
-        const row = addMsg('assistant', m.content || '');
-        decorateCodeBlocks(row);
-      }
+      if (lastUserAt != null) markRegen();
+    } finally {
+      if (!--replayDepth) scrollBottom();
     }
-    if (lastUserAt != null) markRegen();
-    scrollBottom();
   }
   let histPop = null;
   function closeHist() {
@@ -1870,7 +1876,8 @@ const AiPanel = (() => {
     // 原生 ID 不能被历史错误映射吞成别条会话的本地别名；正文保存的 hostId 也优先于 saved bindings。
     const exact=dshCatalog.items.find(item => item.sessionId === sessionId || 'host:'+item.sessionId === sessionId);
     if(exact || /^(session-|myide-|host:)/.test(sessionId))return exact||null;
-    return dshCatalog.items.find(item => item.sessionId === loadSessions().find(s => s.id === sessionId)?.hostId)
+    const savedHostId = loadSessions().find(s => s.id === sessionId)?.hostId;
+    return dshCatalog.items.find(item => item.sessionId === savedHostId)
       || dshCatalog.items.find(item => bindingsOf(item).some(binding => binding.sessionId === sessionId)) || null;
   }
   /**
@@ -2540,17 +2547,20 @@ const AiPanel = (() => {
       saved=all.find(item=>item.id===active)||(draft!==active||!active?all[0]:null);
       curSessionId=saved?.id||active||null;
       rememberSession();
-      if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});replayMsgs();renderUsage();}
-      else showWelcome();
-    }else showWelcome();
+      if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});}
+    }
     // 只接管「仍在跑」的记录（2026-10-29）：已结束的记录要留在后台状态条上
     // 让用户自己点，自动接回来会把当前会话刚渲染好的内容顶掉 ——
     // 实测会让「已停止」这类提示消失。
     const restored=harness&&restoreBackgroundRun();
     renderBackgroundStatus();
+    // 宿主恢复会立即清空消息区；先回放数千条缓存只会白建DOM，身份无法确认时仍由恢复分支回放只读缓存。
     if(harness&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
       restoreDshSession(curSessionId,sessionLoadTicket);
-    else refreshDshOptions();
+    else {
+      if(!restored){if(saved)replayMsgs();else showWelcome();renderUsage();}
+      refreshDshOptions();
+    }
   }
 
   // ---------- 项目规则文件 ----------

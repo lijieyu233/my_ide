@@ -10,7 +10,7 @@ async function until(fn) { for (let n = 0; n < 200; n++) { if (fn()) return; awa
 const writeCall = (path = 'one.md', content = 'MODEL', id = 'w1') => ({ id, name: 'write_file', args: { path, content } });
 const reply = (...calls) => ({ ok: true, status: 'completed', complete: true, finishReason: calls.length ? 'tool_calls' : 'stop', text: '', toolCalls: calls });
 const fixtures = []; let passed = 0;
-function fixture() {
+function fixture(inspectReplay = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-ai-panel-run-')), A = path.join(dir, 'A'), B = path.join(dir, 'B');
   [A, B].forEach(p => fs.mkdirSync(p)); const created = new Set();
   const file = (name, root = A) => path.join(root, name);
@@ -94,7 +94,9 @@ function fixture() {
     run: async (cmd, cwd, context, call) => { registry.assert(1, context, cwd); ToolContract.assertCommand(cmd,cwd,context,call); authority.assert(1,context,call,{target:path.resolve(cwd),command:cmd}); commands.push(cmd); return { ok: true, text: 'fixture' }; },
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
-  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(source); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
+  // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
+  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = list => { msgs = list; replayMsgs(); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf;\n  return {aiAfterResult,') : source;
+  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -129,6 +131,64 @@ function fixture() {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('500条文字与工具历史同步按序全量回放，只在末尾读取一次布局且实时消息仍自动滚动',async()=>{
+    const f=fixture(true),container=f.element('#ai-msgs');let reads=0;
+    Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
+    const history=Array.from({length:500},(_,i)=>i%4===0?{role:'user',content:'消息'+i,_ui:'m'+i}
+      :i%4===1?{role:'assistant',content:'消息'+i}
+      :{role:'assistant',content:'',_dshTimeline:i%4===2?[{kind:'text',text:'消息'+i}]:[{kind:'tool',call:{name:'read_file',args:{path:'消息'+i}},status:'completed',output:'输出'+i}]});
+    f.w.__testReplay(history);
+    assert.equal(reads,1);assert.equal(container.scrollTop,10000);assert.equal(container.children.length,500);
+    [...container.children].forEach((row,i)=>{assert(row.querySelector(i%4===3?'.ai-tool-tx':'.ai-md').textContent.endsWith('消息'+i));if(i%4===0)assert.equal(row.dataset.mid,'m'+i);if(i%4===3)assert(row.textContent.includes('输出'+i));});
+    f.w.__testAddMsg('assistant','实时文字');assert.equal(reads,2);assert.equal(container.scrollTop,10020);
+    f.w.__testToolRow({name:'read_file',args:{path:'实时工具'}});assert.equal(reads,3);assert.equal(container.scrollTop,10040);
+    f.w.__testReplay([]);assert.equal(reads,4);assert(container.querySelector('.ai-welcome'));
+  });
+  await test('嵌套回放不提前读取布局，渲染异常后finally恢复实时滚动',async()=>{
+    const f=fixture(true),container=f.element('#ai-msgs'),append=container.appendChild.bind(container);let reads=0,nested=false;
+    Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
+    container.appendChild=node=>{if(!nested){nested=true;f.w.__testReplay([{role:'assistant',content:'内层'}]);assert.equal(reads,0);}return append(node);};
+    f.w.__testReplay([{role:'assistant',content:'',_dshTimeline:[{kind:'text',text:'外层文字'},{kind:'tool',call:{name:'read_file',args:{path:'外层工具'}}}]}]);
+    assert.equal(reads,1);assert.equal(container.children.length,3);assert(container.children[0].textContent.includes('内层'));assert(container.children[1].textContent.includes('外层文字'));assert(container.children[2].textContent.includes('外层工具'));
+    container.appendChild=()=>{throw Error('fixture replay failed');};
+    assert.throws(()=>f.w.__testReplay([{role:'assistant',content:'异常'}]),/fixture replay failed/);assert.equal(reads,2);
+    container.appendChild=append;f.w.__testAddMsg('assistant','异常后实时消息');assert.equal(reads,3);assert.equal(container.scrollTop,20);
+  });
+  await test('catalog别名查找只读取一次本地历史，exact与原生ID优先级不变',async()=>{
+    const f=fixture(true),key='myide-ai-sessions:'+f.A+':dsh';await f.w.AiPanel.setConfig({engine:'dsh'});
+    f.w.localStorage.setItem(key,JSON.stringify([{id:'s-alias',hostId:'host-correct',msgs:[]},{id:'session-native',hostId:'host-wrong',msgs:[]}]));
+    f.dshCatalog=[...Array.from({length:100},(_,i)=>({sessionId:'unrelated-'+i,cwd:f.A})),{sessionId:'host-correct',cwd:f.A},{sessionId:'session-native',cwd:f.A},{sessionId:'host-wrong',cwd:f.A,bindings:[{sessionId:'s-alias',rootId:f.A,scope:'project'},{sessionId:'session-missing',rootId:f.A,scope:'project'}]}];
+    f.element('#ai-history').click();await tick();await tick();
+    const proto=f.w.Storage.prototype,get=proto.getItem;let reads=0;proto.getItem=function(k){if(k===key)reads++;return get.call(this,k);};
+    try{
+      assert.equal(f.w.__testCatalogOf('s-alias').sessionId,'host-correct');assert.equal(reads,1);
+      reads=0;assert.equal(f.w.__testCatalogOf('session-native').sessionId,'session-native');assert.equal(f.w.__testCatalogOf('host:session-native').sessionId,'session-native');assert.equal(f.w.__testCatalogOf('session-missing'),null);assert.equal(reads,0);
+    }finally{proto.getItem=get;}
+  });
+  await test('宿主恢复不预建即将废弃的缓存DOM，身份确认失败仍完整回放只读缓存且不改存档',async()=>{
+    const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh',gate=defer(),container=f.element('#ai-msgs'),append=container.appendChild.bind(container);let cachedRows=0;
+    container.appendChild=node=>{if(node.textContent.includes('缓存消息'))cachedRows++;return append(node);};
+    const history=Array.from({length:500},(_,i)=>({role:i%2?'assistant':'user',content:'缓存消息'+i})),raw=JSON.stringify([{id:'s-cached-offline',msgs:history}]);
+    f.w.localStorage.setItem(key,raw);f.w.localStorage.setItem(key+':active','s-cached-offline');f.catalogRead=()=>gate.promise;
+    await f.w.AiPanel.setConfig({engine:'dsh'});
+    assert.equal(cachedRows,0);assert.equal(container.children.length,1);assert(f.text().includes('正在读取并确认'));assert(!f.text().includes('缓存消息'));assert(f.element('#ai-send').disabled);assert.equal(f.w.localStorage.getItem(key),raw);
+    gate.resolve({ok:false,error:'fixture: 离线目录'});await until(()=>f.w.AiPanel.aiState().dshSession?.state==='blocked'&&f.text().includes('缓存消息499'));
+    assert.equal(cachedRows,500);assert.equal(container.children.length,500);assert(f.text().includes('缓存消息0'));assert.equal(f.w.localStorage.getItem(key),raw);assert(f.element('#ai-send').disabled);assert.equal(f.calls.length,0);
+  });
+  await test('项目切回优先接回后台原DOM，不预回放本地副本也不丢后台新增输出',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('保留后台原节点');await until(()=>f.calls.length===1);f.chunk(0,'前台文字');
+    const container=f.element('#ai-msgs'),rows=[...container.children],append=container.appendChild.bind(container);f.switchRoot(f.B);f.chunk(0,'后台追加文字');let appended=0;
+    container.appendChild=node=>{appended++;return append(node);};f.switchRoot(f.A);
+    assert.equal(appended,0);assert.deepEqual([...container.children],rows);assert(f.text().includes('前台文字后台追加文字'));assert.equal(f.aborts.length,0);assert.equal(f.element('#ai-send').textContent,'⏹');
+    f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
+  await test('无需宿主恢复的已保存空草稿仍同步回放欢迎页与usage，不另开会话',async()=>{
+    const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh',id='s-saved-draft',container=f.element('#ai-msgs');let reads=0;
+    const raw=JSON.stringify([{id,msgs:[],usage:{in:321,out:12}}]);f.w.localStorage.setItem(key,raw);f.w.localStorage.setItem(key+':active',id);f.w.localStorage.setItem(key+':draft',id);
+    Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return 100;}});await f.w.AiPanel.setConfig({engine:'dsh'});
+    assert.equal(reads,1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(f.element('#ai-usage').textContent.includes('Σ 输入 321'));assert(f.element('#ai-usage').textContent.includes('输出 12'));
+    assert.equal(f.historyReads?.length||0,0);assert.equal(f.w.localStorage.getItem(key),raw);assert.equal(f.w.localStorage.getItem(key+':draft'),id);
+  });
   await test('Harness在项目恢复前进入后台，恢复期间隐藏面板也不取消且迟到输出保留',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('恢复期间继续');await until(()=>f.calls.length===1);
     f.w.AiPanel.beforeProjectChange(f.B);f.w.App.root=f.B;f.w.AiPanel.syncVisible(false);f.w.AiPanel.onPageChange();

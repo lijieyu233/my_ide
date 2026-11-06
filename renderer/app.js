@@ -1055,11 +1055,9 @@ const App = (() => {
     pushRecent(p);
     renderEmptyRecent();
     await rememberActiveProject(p);
-    // 打开耗时埋点（>800ms 记日志，定位大项目卡顿）
-    setTimeout(() => {
-      const ms = performance.now() - t0;
-      if (ms > 800) MI.log('PERF', 'app.setRoot', ms.toFixed(0) + 'ms ' + p);
-    }, 1500);
+    // 只记录实际激活耗时；延后 1500ms 再取时钟会把定时器和后台任务也误算进项目切换。
+    const ms = performance.now() - t0;
+    if (ms > 800) MI.log('PERF', 'app.setRoot', ms.toFixed(0) + 'ms ' + p);
   }
 
   // ---------- 刷新 ----------
