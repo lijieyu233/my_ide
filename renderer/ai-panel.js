@@ -848,69 +848,123 @@ const AiPanel = (() => {
     return rows;
   }
 
-  // 分组只移动原卡片；执行中持有的 row、输出展开态和事件处理不能因为折叠而失效。
+  // DSH 的过程区混合收纳工具与思考；只追加原节点，live 引用、事件和展开选择不能失效。
   const toolRows = new WeakMap(), toolGroups = new WeakMap();
-  let replayToolGroupChoices = null;
+  let replayToolGroupChoices = null, replayActivityPosition = null;
+  const activityTitles = { read:'已读取文件', readImage:'已读取图片', search:'已搜索代码', write:'已写入文件', edit:'已编辑文件', commands:'已执行命令', code:'已运行代码', webSearch:'已搜索网页', webFetch:'已读取网页', subagents:'已创建子智能体', plan:'已更新计划', thinking:'已完成分析', tools:'已调用工具' };
+  const activityIcons = {
+    read:'M4 2h5l3 3v9H4zM9 2v3h3M6 8h4M6 11h4', readImage:'M2 3h12v10H2zM3 11l3-4 3 3 2-2 2 3M10 5h.01',
+    search:'M10 10l4 4M7 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10', webSearch:'M10 10l4 4M7 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10', webFetch:'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12M8 2c-3 3-3 9 0 12 3-3 3-9 0-12',
+    write:'M11 2l3 3-8 8-3 1 1-3zM9 4l3 3', edit:'M3 4h9l-2-2m2 2-2 2M13 12H4l2-2m-2 2 2 2',
+    thinking:'M5 11V9a4 4 0 1 1 6 0v2M5 11h6M6 14h4M6 5l2 2 2-2', subagents:'M3 3h4v4H3zM9 10h4v4H9zM5 7v5h4M9 3h4v4H9zM7 5h2',
+    plan:'M3 2h10v12H3zM5 5h1M8 5h3M5 8h1M8 8h3M5 11h1M8 11h3',
+    tools:'M2 3h12v10H2zM4 6l2 2-2 2M8 10h3'
+  };
+  const firstActivityLine = value => String(value ?? '').split(/\r?\n/, 1)[0].trim();
+  function toolPresentation(call) {
+    const name = String(call.name || ''), short = name.split('.').pop();
+    let args = call.args;
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {description:args}; } }
+    args = args && typeof args === 'object' ? args : {};
+    const pick = (...keys) => { for (const key of keys) if (typeof args[key] === 'string' && args[key]) return firstActivityLine(args[key]); return ''; };
+    let kind = 'tools', label = '工具调用', detail = pick('description','command','path','file_path','query','pattern','program','name','url','objective');
+    if (['read','read_file','ops_read_files'].includes(short)) { kind='read';label='读取';detail=pick('file_path','path') || firstActivityLine(args.files?.map(file=>file.path || file.file_path).filter(Boolean).join(', ')); }
+    else if (short === 'read_image') { kind='readImage';label='读取图片';detail=pick('file_path','path'); }
+    else if (['grep','search_files'].includes(short)) { kind='search';label='搜索文件内容';detail=pick('pattern','query'); }
+    else if (['glob','list_files'].includes(short)) { kind='search';label=short==='glob'?'查找文件':'列出文件';detail=pick('pattern','path'); }
+    else if (['write','write_file'].includes(short)) { kind='write';label='写入';detail=pick('file_path','path'); }
+    else if (['edit','replace_edit','apply_patch'].includes(short)) { kind='edit';label='编辑';detail=pick('file_path','path','description'); }
+    else if (['bash','pwsh','run_command','exec_command','write_stdin'].includes(short) || short.startsWith('terminal_')) { kind='commands';label='执行命令';detail=pick('description','command','cmd'); }
+    else if (short === 'run_code') { kind='code';label='运行代码'; }
+    else if (short === 'web_search') { kind='webSearch';label='搜索网页';detail=pick('description','query') || firstActivityLine(args.queries?.join(', ')); }
+    else if (short === 'web_fetch') { kind='webFetch';label='读取网页';detail=pick('url'); }
+    else if (short === 'subagent' || short.startsWith('subagent_')) { kind='subagents';label='创建子智能体';detail=pick('description','prompt'); }
+    else if (['todo_write','create_goal','update_goal','get_goal'].includes(short)) { kind='plan';label='计划与待办'; }
+    if (kind === 'tools') detail = [name,detail].filter(Boolean).join(' · ');
+    return {kind,label,detail};
+  }
+  function activityKey(kind, id) {
+    const last = toolGroups.get(msgsEl.lastElementChild);
+    return JSON.stringify(id ? ['id',kind,id] : ['position',kind,replayActivityPosition ?? [msgsEl.childElementCount,last?.total || 0]]);
+  }
   function paintToolGroup(group) {
     const data = toolGroups.get(group), counts = data.counts;
     const state = counts.running ? 'running' : counts.failed ? 'failed' : counts.unknown ? 'unknown' : 'completed';
     group.dataset.state = state;
-    data.count.textContent = data.total + ' 次';
+    // 类别数有固定上界；不扫描成员，更不在每条 append 后触发布局。
+    const ranked = [...data.categories].sort((a,b)=>b[1]-a[1]);
+    data.label.textContent = ranked.slice(0,3).map(([kind])=>activityTitles[kind]).join('，') + (ranked.length>3?'等':'') || activityTitles.thinking;
     data.status.dataset.state = state;
-    data.status.textContent = (state === 'running' ? '正在执行' : state === 'unknown' ? '未确认完成' : state === 'completed' ? '已完成' : '')
+    data.status.textContent = (state === 'running' ? '正在执行' : state === 'unknown' ? '未确认完成' : '')
       + (counts.failed ? (state === 'running' ? ' · ' : '') + counts.failed + ' 次失败' : '');
   }
-  function appendToolGroupRow(group, row) {
-    const data = toolGroups.get(group), member = toolRows.get(row);
-    data.items.appendChild(row); member.group = group;
-    data.total++; data.counts[member.state]++;
+  function sealActivityGroup() {
+    const data = toolGroups.get(msgsEl.lastElementChild);
+    if (data) data.closed = true; // 已回答的表单会移除，但这个分界不能随 DOM 一起消失。
   }
   function appendToolRow(row) {
-    const last = msgsEl.lastElementChild;
-    // 只看紧邻节点，不跨正文、其他工具或交互表单搜索；长历史也不会每条重新扫描整个 DOM。
-    if (last?.dataset.toolName !== row.dataset.toolName || !toolRows.has(last) && !toolGroups.has(last)) {
-      msgsEl.appendChild(row); return;
-    }
-    let group = last;
-    if (!toolGroups.has(last)) {
-      const first = toolRows.get(last);
+    const member = toolRows.get(row), last = msgsEl.lastElementChild;
+    let group = toolGroups.has(last) && !toolGroups.get(last).closed ? last : null;
+    if (!group) {
       group = document.createElement('details'); group.className = 'ai-tool-group';
-      group.dataset.toolName = row.dataset.toolName; group.dataset.groupKey = first.key;
-      group.open = replayToolGroupChoices?.get(first.key) === true;
+      group.dataset.groupKey = member.key;
+      group.open = replayToolGroupChoices?.get('group:' + member.key) === true;
       const summary = document.createElement('summary'); summary.className = 'ai-tool-group-summary';
-      summary.innerHTML = first.icon;
-      const label = document.createElement('span'); label.className = 'ai-tool-group-label'; label.textContent = first.label;
-      const count = document.createElement('span'); count.className = 'ai-tool-group-count';
+      const label = document.createElement('span'); label.className = 'ai-tool-group-label';
       const status = document.createElement('span'); status.className = 'ai-tool-group-status';
-      summary.append(label, count, status);
+      summary.append(label, status);
       const items = document.createElement('div'); items.className = 'ai-tool-group-items'; group.append(summary, items);
-      toolGroups.set(group, { items, count, status, total: 0, counts: { running: 0, completed: 0, failed: 0, unknown: 0 } });
-      last.replaceWith(group); appendToolGroupRow(group, last);
+      toolGroups.set(group, { items, label, status, total:0, categories:new Map(), counts:{running:0,completed:0,failed:0,unknown:0} });
+      msgsEl.appendChild(group);
     }
-    appendToolGroupRow(group, row); paintToolGroup(group);
+    const data = toolGroups.get(group);
+    data.items.appendChild(row); member.group = group;
+    data.total++; data.counts[member.state]++;
+    if (member.kind) data.categories.set(member.kind,(data.categories.get(member.kind)||0)+1);
+    paintToolGroup(group);
+  }
+  function createActivityRow(className, label, detail, key, kind, state = 'running') {
+    const row = document.createElement('details'); row.className = className;
+    row.dataset.activityKey = key; row.dataset.state = state;
+    row.open = replayToolGroupChoices?.get('row:' + key) === true;
+    const summary = document.createElement('summary'); summary.className = 'ai-tool-summary';
+    const icon = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + (activityIcons[kind] || activityIcons.tools) + '"/></svg>';
+    const ic = document.createElement('span'); ic.className = 'ai-tool-ic'; ic.innerHTML = icon;
+    const title = document.createElement('span'); title.className = 'ai-tool-label'; title.textContent = label;
+    const tx = document.createElement('span'); tx.className = 'ai-tool-tx'; tx.textContent = detail ? ' · ' + detail : '';
+    const st = document.createElement('span'); st.className = 'ai-tool-st'; st.textContent = state === 'running' ? '…' : '';
+    const body = document.createElement('div'); body.className = 'ai-tool-body';
+    summary.append(ic,title,tx,st); row.append(summary,body);
+    toolRows.set(row,{icon,key,kind,state,group:null,body,tx});
+    appendToolRow(row);
+    return row;
   }
 
-  // 工具活动行（消息流里的紧凑状态条）
   function renderToolRow(call, toolId) {
-    const icons = { list_files: 'M2 5V3h4l2 2h6v8H2z', read_file: 'M4 2h5l3 3v9H4zM9 2v3h3M6 8h4M6 11h4', search_files: 'M10 10l4 4M7 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10', write_file: 'M11 2l3 3-8 8-3 1 1-3zM9 4l3 3', replace_edit: 'M3 4h9l-2-2m2 2-2 2M13 12H4l2-2m-2 2 2 2', run_command: 'M2 3h12v10H2zM4 6l2 2-2 2M8 10h3' };
-    const labels = { list_files: '列出文件', read_file: '读取文件', search_files: '搜索文件', write_file: '写入文件', replace_edit: '替换内容', run_command: '执行命令' };
-    const row = document.createElement('div');
-    row.className = 'ai-tool';
+    const model = toolPresentation(call), id = toolId || call.id || call.toolCallId;
+    const row = createActivityRow('ai-tool',model.label,model.detail,activityKey(call.name,id),model.kind);
     row.dataset.toolName = call.name;
-    const arg = (call.args && (call.args.path || call.args.query || call.args.program || call.args.name || call.args.command || call.args.terminal || call.args.session || call.args.url || call.args.element || call.args.direction)) || '';
-    const toolLabel=(call.name==='ide_state'?'查看当前页面':null)||window.AiWorkbenchTools?.labels[call.name]||window.AiProjectTools?.labels[call.name]||window.AiLaunchTools?.labels[call.name]||window.AiSshTools?.labels[call.name]||window.AiBrowserTools?.labels[call.name]||labels[call.name]||call.name;
-    const icon='<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="'+(icons[call.name]||icons.run_command)+'"/></svg>';
-    row.innerHTML = '<span class="ai-tool-ic">' + icon + '</span>' +
-      '<span class="ai-tool-tx">' + esc(toolLabel + ' ' + arg) + '</span>' +
-      '<span class="ai-tool-st">…</span>';
-    const id = toolId || call.id || call.toolCallId;
     if (id) row.dataset.toolCallId = id;
-    row.dataset.state = 'running';
-    toolRows.set(row, { label: toolLabel, icon, state: 'running', group: null,
-      key: JSON.stringify(id ? ['id', call.name, id] : ['position', call.name, msgsEl.childElementCount]) });
-    appendToolRow(row);
+    const input = document.createElement('pre'); input.className = 'ai-tool-input';
+    input.textContent = typeof call.args === 'string' ? call.args : JSON.stringify(call.args ?? {},null,2);
+    toolRows.get(row).body.appendChild(input);
     scrollBottom();
     return row;
+  }
+  function renderDshThought(part, id) {
+    const row = createActivityRow('ai-dsh-thought',part.kind === 'projection' ? '计划与待办' : '思考',firstActivityLine(part.text),activityKey(part.kind,id || part.id),part.kind === 'projection' ? 'plan' : 'thinking','completed');
+    const body = document.createElement('pre'); body.textContent = part.text || ''; toolRows.get(row).body.appendChild(body);
+    return row;
+  }
+  function removeDshThought(row) {
+    if (!row) return;
+    const member=toolRows.get(row), group=member?.group, data=toolGroups.get(group);
+    row.remove();
+    if (data) {
+      data.total--;data.counts[member.state]--;
+      if(member.kind){const count=data.categories.get(member.kind)-1;if(count)data.categories.set(member.kind,count);else data.categories.delete(member.kind);}
+      if(!data.total)group.remove();else paintToolGroup(group);
+    }
   }
   function setToolState(row, ok, note, state = ok ? 'completed' : 'failed') {
     if (!row) return;
@@ -960,7 +1014,7 @@ const AiPanel = (() => {
         setToolState(row, r.ok, (c.name === 'write_file' || c.name === 'replace_edit') ? (r.ok ? '已应用' : '已拒绝') : '');
         // 工具返回的原文挂到 title 上：显示"已拒绝"时，鼠标悬停就能看到到底是权限拒绝、
         // 还是 search 没匹配上（否则用户只能看到一个笼统的"已拒绝"）
-        if (row) row.title = String((r && r.text) || '');
+        if (row) { row.title = String((r && r.text) || ''); setDshToolOutput(row, row.title); }
         if (native) msgs.push({ role: 'tool', tool_call_id: c.id, name: c.name, content: r.text || '' });
         else msgs.push({ role: 'user', _toolName:c.name, content: '<tool_results>\n<result tool="' + c.name + '">\n' + (r.text || '') + '\n</result>\n</tool_results>' });
         run.results?.add(c.id);
@@ -1686,14 +1740,14 @@ const AiPanel = (() => {
     let detail = row.querySelector('.ai-dsh-output');
     if (!detail) {
       detail = document.createElement('details'); detail.className = 'ai-dsh-output';
+      detail.open = replayToolGroupChoices?.get('output:' + row.dataset.activityKey) !== false;
       const summary = document.createElement('summary'); summary.textContent = '工具输出';
-      detail.append(summary, document.createElement('pre')); row.appendChild(detail);
+      detail.append(summary, document.createElement('pre')); (toolRows.get(row)?.body || row).appendChild(detail);
     }
     detail.querySelector('pre').textContent = output;
   }
   function renderDshActivity(part, toolId){
     const row=renderToolRow(part.call, toolId);
-    row.querySelector('.ai-tool-ic').innerHTML='<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6l2 2-2 2m4 0h2"/></svg>';
     if(part.status)setDshToolState(row,part.status);
     setDshToolOutput(row,part.output);
     return row;
@@ -1850,10 +1904,10 @@ const AiPanel = (() => {
     if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
   }
   function replayMsgs(preserveToolGroups = false) {
-    const previousChoices = replayToolGroupChoices;
-    // watch 的全量快照会重建卡片，只在这次回放里按首条工具 ID（旧记录用位置）接回用户选择，不写历史。
-    replayToolGroupChoices = preserveToolGroups ? new Map(Array.from(msgsEl.querySelectorAll('.ai-tool-group'),
-      group => [group.dataset.groupKey, group.open])) : null;
+    const previousChoices = replayToolGroupChoices, previousPosition = replayActivityPosition;
+    // 一次扫描同时接回外组、内行和输出的本地选择；不进历史，也不按摘要文本猜测身份。
+    replayToolGroupChoices = preserveToolGroups ? new Map(Array.from(msgsEl.querySelectorAll('.ai-tool-group, details[data-activity-key], .ai-dsh-output'),
+      node => [node.classList.contains('ai-tool-group') ? 'group:' + node.dataset.groupKey : node.classList.contains('ai-dsh-output') ? 'output:' + node.closest('[data-activity-key]')?.dataset.activityKey : 'row:' + node.dataset.activityKey, node.open])) : null;
     replayDepth++;
     try {
       msgsEl.innerHTML = '';
@@ -1862,7 +1916,12 @@ const AiPanel = (() => {
       for (let i = 0; i < msgs.length; i++) {
         const m = msgs[i];
         if(Array.isArray(m._dshTimeline)){
-          for(const part of m._dshTimeline){if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));else if(part.kind==='tool'&&part.call)renderDshActivity(part);}
+          for(let j=0;j<m._dshTimeline.length;j++){
+            const part=m._dshTimeline[j];replayActivityPosition=[i,j];
+            if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));
+            else if(part.kind==='tool'&&part.call)renderDshActivity(part);
+            else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);
+          }
           continue;
         }
         if (m._dshTool || m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
@@ -1878,7 +1937,7 @@ const AiPanel = (() => {
       }
       if (lastUserAt != null) markRegen();
     } finally {
-      replayToolGroupChoices = previousChoices;
+      replayToolGroupChoices = previousChoices; replayActivityPosition = previousPosition;
       if (!--replayDepth) scrollBottom();
     }
   }
@@ -2179,7 +2238,7 @@ const AiPanel = (() => {
     for (const entry of watch.pending.values()) { entry.active = false; entry.element.remove(); }
     watch.pending.clear();
     watch.preview?.remove(); watch.preview = null;
-    watch.thinking?.remove(); watch.thinking = null;
+    removeDshThought(watch.thinking); watch.thinking = null;
     watch.interactionNotice?.remove(); watch.interactionNotice = null;
     if (watch.notice?.timer) clearInterval(watch.notice.timer);
     if (watch.notice?.hideTimer) clearTimeout(watch.notice.hideTimer);
@@ -2201,6 +2260,7 @@ const AiPanel = (() => {
       if (part.kind === 'text' && part.role === 'user') list.push({role:'user',content:part.text,_text:part.text});
       else if (part.kind === 'text') list.push({role:'assistant',content:part.text});
       else if (part.kind === 'tool') list.push({role:'assistant',content:'',_dshTimeline:[{kind:'tool',call:part.call,status:part.status,output:part.output}]});
+      else if (['thought','reasoning','projection'].includes(part.kind)) list.push({role:'assistant',content:'',_dshTimeline:[part]});
     }
     return list;
   }
@@ -2300,6 +2360,7 @@ const AiPanel = (() => {
     if (state.connected === false) { renderDshWatchPending(watch); updateDshWatchStatus(watch); return; }
     if (watch.needsSync) return;
     // 保留同一请求的表单节点和已填答案；history replay 不能把输入中途清空。
+    const thinkingOpen=watch.thinking?.open, thinkingGroupOpen=toolRows.get(watch.thinking)?.group.open;
     const key = JSON.stringify(state.turns || []);
     if (watch.renderKey !== key) {
       for (const entry of watch.pending.values()) entry.element.remove();
@@ -2307,12 +2368,13 @@ const AiPanel = (() => {
       persistSession(); renderUsage();
     }
     watch.preview?.remove(); watch.preview = null;
-    watch.thinking?.remove(); watch.thinking = null;
-    if (state.preview?.text) watch.preview = addMsg('assistant',state.preview.text);
+    removeDshThought(watch.thinking); watch.thinking = null;
     if (state.preview?.thinking) {
-      const detail = document.createElement('details'), title = document.createElement('summary'), body = document.createElement('pre');
-      detail.className = 'ai-dsh-thought'; title.textContent = 'Harness 思考'; body.textContent = state.preview.thinking; detail.append(title,body); msgsEl.appendChild(detail); watch.thinking = detail;
+      watch.thinking=renderDshThought({kind:'thought',text:state.preview.thinking},'watch:'+watch.watchId);
+      if(thinkingOpen !== undefined)watch.thinking.open=thinkingOpen;
+      if(thinkingGroupOpen !== undefined)toolRows.get(watch.thinking).group.open=thinkingGroupOpen;
     }
+    if (state.preview?.text) watch.preview = addMsg('assistant',state.preview.text);
     renderDshWatchPending(watch); updateDshWatchStatus(watch); scrollBottom();
   }
   function receiveDshWatch(state) {
@@ -3290,7 +3352,7 @@ const AiPanel = (() => {
     if(event.type==='status'){setRunState(run,event.text);return;}
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
     if(event.type==='question'){
-      sealDshSegment(run);
+      sealDshSegment(run); sealActivityGroup();
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
       for(const question of event.questions||[]){
         const group=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=question.question;group.appendChild(title);
@@ -3309,12 +3371,17 @@ const AiPanel = (() => {
     if(event.type==='native'){
       const update=event.update;
       if(update.sessionUpdate==='agent_thought_chunk'&&update.content?.text){
-        run.thought ||= document.createElement('details');if(!msgsEl.contains(run.thought)){sealDshSegment(run);run.thought.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 思考';run.thought.appendChild(title);const body=document.createElement('pre');run.thought.appendChild(body);msgsEl.appendChild(run.thought);}
-        run.thought.querySelector('pre').textContent+=update.content.text;setRunState(run,'深度求索');
+        sealDshSegment(run);
+        const group=toolRows.get(run.thought)?.group;
+        if(!group || group!==msgsEl.lastElementChild || toolGroups.get(group).closed || toolGroups.get(group).items.lastElementChild!==run.thought){
+          run.thoughtPart={kind:'thought',text:''};run.stream.timeline.push(run.thoughtPart);run.thought=renderDshThought(run.thoughtPart);
+        }
+        run.thoughtPart.text+=update.content.text;
+        run.thought.querySelector('pre').textContent=run.thoughtPart.text;toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run,'深度求索');
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
-        if(!entry){sealDshSegment(run);const call={name:update.title||'DSH 原生工具',args:update.rawInput||{}};const activity={kind:'tool',call};const row=call.name.startsWith('mcp__myide__')?null:renderDshActivity(activity,update.toolCallId);if(row)run.stream.timeline.push(activity);entry={row,call,activity};run.dshRows.set(update.toolCallId,entry);}
+        if(!entry){sealDshSegment(run);const call={id:update.toolCallId,name:update.title||'DSH 原生工具',args:update.rawInput||{}};const activity={kind:'tool',call};const row=call.name.startsWith('mcp__myide__')?null:renderDshActivity(activity,update.toolCallId);if(row)run.stream.timeline.push(activity);entry={row,call,activity};run.dshRows.set(update.toolCallId,entry);}
         if(update.status)entry.activity.status=update.status;
         if(update.status)setDshToolState(entry.row,update.status);
         const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
@@ -3323,12 +3390,15 @@ const AiPanel = (() => {
       }
       if(update.sessionUpdate==='usage_update'&&!backgroundView&&!dshScopeMismatch())document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
       if(update.sessionUpdate==='myide_projection'){
-        run.projection ||= document.createElement('details');if(!msgsEl.contains(run.projection)){sealDshSegment(run);run.projection.className='ai-dsh-thought';const title=document.createElement('summary');title.textContent='Harness 计划与待办';run.projection.appendChild(title);run.projection.appendChild(document.createElement('pre'));msgsEl.appendChild(run.projection);}run.projection.querySelector('pre').textContent=JSON.stringify(update.event.data,null,2);
+        sealDshSegment(run);
+        const group=toolRows.get(run.projection)?.group;
+        if(!group || group!==msgsEl.lastElementChild || toolGroups.get(group).closed){run.projectionPart={kind:'projection',text:''};run.stream.timeline.push(run.projectionPart);run.projection=renderDshThought(run.projectionPart);}
+        run.projectionPart.text=JSON.stringify(update.event?.data ?? {},null,2);run.projection.querySelector('pre').textContent=run.projectionPart.text;toolRows.get(run.projection).tx.textContent=' · '+firstActivityLine(run.projectionPart.text);
       }
       return;
     }
     if(event.type==='permission'){
-      sealDshSegment(run);
+      sealDshSegment(run); sealActivityGroup();
       const box=document.createElement('div');box.className='ai-dsh-permission';const call=run.dshRows?.get(event.toolCall?.toolCallId)?.call;
       const title=document.createElement('strong');title.textContent='DSH 原生工具请求授权';const body=document.createElement('pre');body.textContent=(call?.name||event.toolCall?.title||'工具')+'\n'+JSON.stringify(call?.args||event.toolCall?.rawInput||{},null,2);box.append(title,body);msgsEl.appendChild(box);
       const close=()=>{for(const button of box.querySelectorAll('button'))button.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
