@@ -4494,6 +4494,20 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel { color-scheme: light; }
 .ai-tool-st { font-size: .81em; }
 .ai-tool .ai-dsh-output { margin: 8px 0 0; padding: 8px 10px; flex-basis: 100%; width: 100%; border-color: var(--ui-line); background: var(--bg-panel); }
 .ai-tool:has(.ai-dsh-output) { flex-wrap: wrap; }
+/* 同名连续调用只占一行；原卡片和输出仍留在可键盘展开的原生 details 内。 */
+.ai-tool-group { margin: 7px 0; border: 1px solid var(--ui-line); border-radius: 6px; background: color-mix(in srgb, var(--bg-input) 65%, var(--bg-panel)); }
+.ai-tool-group-summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 9px 10px; color: var(--text-dim); cursor: pointer; list-style: none; user-select: none; }
+.ai-tool-group-summary::-webkit-details-marker { display: none; }
+.ai-tool-group-summary::before { content: ''; flex: none; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); margin-right: 3px; transition: transform .12s; }
+.ai-tool-group[open] > .ai-tool-group-summary::before { transform: rotate(45deg); }
+.ai-tool-group-summary:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; border-radius: 5px; }
+.ai-tool-group-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-tool-group-count { flex: none; color: var(--text-dim); font-size: .9em; }
+.ai-tool-group-status { margin-left: auto; flex: none; font-size: .81em; }
+.ai-tool-group-status.ok, .ai-tool-group-status[data-state="completed"] { color: var(--ok, #98c379); }
+.ai-tool-group-status.err, .ai-tool-group-status[data-state="failed"] { color: var(--danger, #e06c75); }
+.ai-tool-group-items { padding: 0 8px 8px; border-top: 1px solid var(--ui-line); }
+.ai-tool-group-items > .ai-tool { margin: 7px 0 0; }
 .ai-dsh-thought { color: var(--text-dim); background: transparent; border-color: var(--border-pane); }
 .ai-dsh-thought summary, .ai-dsh-output summary { cursor: pointer; font-size: .92em; }
 .ai-edit, .ai-confirm { border-color: var(--ui-line); }

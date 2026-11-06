@@ -95,7 +95,7 @@ function fixture(inspectReplay = false) {
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
   // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
-  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = list => { msgs = list; replayMsgs(); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf;\n  return {aiAfterResult,') : source;
+  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf;\n  return {aiAfterResult,') : source;
   w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
@@ -131,6 +131,44 @@ function fixture(inspectReplay = false) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('连续同名工具第二条才默认折叠，展开保留原卡片/输出/事件，第三条不收回已打开分组',async()=>{
+    const f=fixture(true),container=f.element('#ai-msgs');container.replaceChildren();
+    const first=f.w.__testToolRow({id:'one',name:'ops_bash',args:{command:'first'}});
+    assert.equal(container.children.length,1);assert.equal(first.parentNode,container);assert(!container.querySelector('.ai-tool-group'));
+    const output=f.w.document.createElement('details');output.className='ai-dsh-output';output.open=true;output.textContent='原始输出';first.appendChild(output);
+    let clicks=0;first.onclick=()=>{clicks++;};
+    const second=f.w.__testToolRow({id:'two',name:'ops_bash',args:{command:'second'}}),group=container.querySelector('.ai-tool-group');
+    assert(group);assert.equal(group.open,false);assert.equal(group.dataset.toolName,'ops_bash');assert.equal(group.classList.contains('ai-tool'),false);
+    const summary=group.querySelector(':scope > summary.ai-tool-group-summary'),items=group.querySelector(':scope > .ai-tool-group-items');
+    assert(summary.querySelector('svg.ic'));assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'ops_bash');assert.equal(summary.querySelector('.ai-tool-group-count').textContent,'2 次');assert.equal(summary.classList.contains('ai-tool'),false);
+    assert.deepEqual([...items.children],[first,second]);assert.equal(first.querySelector('.ai-dsh-output'),output);assert(output.open);
+    summary.click();assert(group.open);first.click();assert.equal(clicks,1);
+    let scans=0;const query=container.querySelectorAll.bind(container);container.querySelectorAll=(...args)=>{scans++;return query(...args);};
+    const third=f.w.__testToolRow({id:'three',name:'ops_bash',args:{command:'third'}});
+    assert.equal(scans,0);assert.equal(container.lastElementChild,group);assert(group.open);assert.equal(summary.querySelector('.ai-tool-group-count').textContent,'3 次');assert.deepEqual([...items.children],[first,second,third]);assert.equal(container.querySelectorAll('.ai-tool').length,3);
+    summary.click();assert.equal(group.open,false);assert.equal(f.calls.length,0);assert.equal(f.commands.length,0);
+  });
+  await test('历史分组不跨正文/用户/异名工具，所有原始卡片与独立输出顺序不变且不执行操作',async()=>{
+    const f=fixture(true),tool=(id,name='ops_bash')=>({kind:'tool',call:{id,name,args:{command:'命令'+id}},status:'completed',output:'输出'+id});
+    const parts=[tool('1'),tool('2'),{kind:'text',text:'正文分隔'},tool('3'),tool('4','read_file'),tool('5'),tool('6')];
+    const history=[{role:'assistant',content:'',_dshTimeline:parts},{role:'user',content:'用户分隔'},{role:'assistant',content:'',_dshTimeline:[tool('7'),tool('8')]}],original=JSON.stringify(history);
+    f.w.__testReplay(history);const container=f.element('#ai-msgs'),groups=container.querySelectorAll('.ai-tool-group');
+    assert.equal(groups.length,3);assert([...groups].every(group=>!group.open&&group.dataset.state==='completed'));
+    assert.deepEqual([...container.children].map(row=>row.classList.contains('ai-tool-group')?'group':row.classList.contains('ai-tool')?row.dataset.toolName:row.querySelector('.ai-md').textContent),['group','正文分隔','ops_bash','read_file','group','用户分隔','group']);
+    const cards=[...container.querySelectorAll('.ai-tool')];assert.deepEqual(cards.map(row=>row.dataset.toolCallId),['1','2','3','4','5','6','7','8']);assert.deepEqual(cards.map(row=>row.querySelector('.ai-dsh-output pre').textContent),['输出1','输出2','输出3','输出4','输出5','输出6','输出7','输出8']);
+    assert.equal(JSON.stringify(history),original);assert.equal(f.calls.length,0);assert.equal(f.writes.length,0);assert.equal(f.commands.length,0);
+  });
+  await test('重复工具大批量回放仅一次布局与零逐卡片全DOM扫描，位置key也保留watch式展开选择',async()=>{
+    const f=fixture(true),container=f.element('#ai-msgs');let reads=0,scans=0;const query=container.querySelectorAll.bind(container);
+    Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return 1234;}});
+    container.querySelectorAll=(...args)=>{scans++;return query(...args);};
+    const history=[{role:'assistant',content:'',_dshTimeline:Array.from({length:500},(_,i)=>({kind:'tool',call:{name:'ops_bash',args:{command:'历史命令'+i}},status:'completed',output:'完整输出'+i}))}];
+    f.w.__testReplay(history);assert.equal(reads,1);assert.equal(scans,0);assert.equal(container.children.length,1);assert.equal(query('.ai-tool').length,500);
+    const group=container.firstElementChild;group.open=true;
+    history[0]._dshTimeline.push({kind:'tool',call:{name:'ops_bash',args:{command:'新增'}},status:'in_progress',output:'新增输出'});
+    f.w.__testReplay(history,true);assert.equal(reads,2);assert.equal(scans,1);assert(container.firstElementChild.open);assert.equal(query('.ai-tool').length,501);assert.equal(container.firstElementChild.dataset.state,'running');
+    assert.equal(query('.ai-dsh-output pre')[0].textContent,'完整输出0');assert.equal(query('.ai-dsh-output pre')[499].textContent,'完整输出499');
+  });
   await test('500条文字与工具历史同步按序全量回放，只在末尾读取一次布局且实时消息仍自动滚动',async()=>{
     const f=fixture(true),container=f.element('#ai-msgs');let reads=0;
     Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
@@ -544,6 +582,33 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const saved=JSON.parse(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'))[0];assert.equal(saved.msgs.findLast(m=>m._dshTimeline)._dshTimeline.length,5);
     f.switchRoot(f.B);f.switchRoot(f.A);await until(()=>f.w.AiPanel.aiState().dshSession?.state==='blocked');assert.deepEqual(rows(),['分析这个项目','先查看项目','tool','再核对页面','tool','最终分析结论']);assert(f.text().includes('真实读取结果'));assert.equal(f.calls.length,1);assert.equal(f.commands.length,0);
   });
+  await test('Harness原生重复工具live更新仍命中同一row，汇总running优先并保留失败/展开/独立输出',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('连续命令');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    const update=(id,status,output,initial=false)=>f.dshEvent({type:'native',context,update:{sessionUpdate:initial?'tool_call':'tool_call_update',toolCallId:id,...(initial?{title:'ops_bash',rawInput:{command:'命令'+id}}:{}),status,...(output?{content:[{content:{text:output}}]}:{})}});
+    await update('live-one','failed','失败输出',true);const first=f.element('.ai-tool'),detail=first.querySelector('.ai-dsh-output');detail.open=true;
+    await update('live-two','in_progress','运行输出',true);const group=f.element('.ai-tool-group'),summary=group.querySelector('.ai-tool-group-summary'),second=group.querySelectorAll('.ai-tool')[1];
+    assert.equal(group.open,false);assert.equal(group.dataset.state,'running');assert(summary.textContent.includes('正在执行'));assert(summary.textContent.includes('1 次失败'));summary.click();assert(group.open);
+    await update('live-two','completed','第二条完成输出');assert.equal(group.querySelectorAll('.ai-tool')[1],second);assert.equal(second.querySelector('.ai-tool-st').classList.contains('ok'),true);assert.equal(group.dataset.state,'failed');assert(!summary.querySelector('.ai-tool-group-status').textContent.includes('已完成'));assert(group.open);
+    await update('live-one','failed','第一条新输出');assert.equal(group.querySelector('.ai-tool'),first);assert.equal(first.querySelector('.ai-dsh-output'),detail);assert(detail.open);assert.equal(detail.querySelector('pre').textContent,'第一条新输出');assert.equal(summary.querySelector('.ai-tool-group-status').textContent,'1 次失败');
+    await update('live-three','in_progress','第三条输出',true);assert.equal(f.element('.ai-tool-group'),group);assert(group.open);assert.equal(summary.querySelector('.ai-tool-group-count').textContent,'3 次');assert.equal(group.dataset.state,'running');
+    await update('live-three','completed');assert.equal(group.dataset.state,'failed');assert.equal(group.querySelectorAll('.ai-tool').length,3);assert.deepEqual([...group.querySelectorAll('.ai-dsh-output pre')].map(row=>row.textContent),['第一条新输出','第二条完成输出','第三条输出']);
+    await update('live-one','in_progress');assert.equal(group.dataset.state,'running');assert(!first.querySelector('.ai-tool-st').classList.contains('err'));await update('live-one','completed');assert.equal(group.dataset.state,'completed');assert.equal(summary.querySelector('.ai-tool-group-status').textContent,'已完成');
+    f.chunk(0,'工具后的正文');await update('live-four','completed','不跨正文',true);assert.equal(f.element('#ai-msgs').lastElementChild.dataset.toolCallId,'live-four');assert.equal(f.element('#ai-msgs').querySelectorAll('.ai-tool-group').length,1);
+    f.done(0,{ok:true,text:'工具后的正文'});await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.calls.length,1);assert.equal(f.commands.length,0);assert.equal(f.writes.length,0);
+  });
+  await test('Harness重复MyIDE工具live与后台分组保留原DOM，权限和问题始终在折叠组外原通道',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('连续查看页面');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    const call=id=>({id,name:'ide_state',args:{}});
+    await f.dshEvent({type:'tool',context,call:call('own-one')});const first=f.element('.ai-tool');
+    await f.dshEvent({type:'tool',context,call:call('own-two')});const group=f.element('.ai-tool-group');assert.equal(group.open,false);assert.equal(group.dataset.state,'completed');assert.equal(group.querySelector('.ai-tool'),first);assert.equal(group.querySelectorAll('.ai-dsh-output').length,2);group.open=true;
+    await f.dshEvent({type:'permission',context,id:'group-permission',toolCall:{title:'需确认'},options:[{kind:'allow_once',optionId:'allow'}]});
+    const permission=f.element('.ai-dsh-permission');assert.equal(permission.parentNode,f.element('#ai-msgs'));assert(!permission.closest('.ai-tool-group'));permission.querySelector('button').click();await until(()=>f.dshPermissions?.length===1);
+    f.w.myIDE.ai.dshQuestionResult=async(_context,id,answers)=>{f.questionReply={id,answers};return {ok:true};};
+    await f.dshEvent({type:'question',context,id:'group-question',questions:[{id:'q',question:'是否继续',options:[{label:'继续'}]}]});const question=f.element('.ai-dsh-question');assert.equal(question.parentNode,f.element('#ai-msgs'));assert(!question.closest('.ai-tool-group'));question.querySelector('input').checked=true;question.dispatchEvent(new f.w.Event('submit',{cancelable:true}));await until(()=>f.questionReply&&!f.element('.ai-dsh-question'));assert(!f.element('.ai-dsh-question'));
+    f.switchRoot(f.B);await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'bg-one',title:'ops_bash',status:'completed',content:[{content:{text:'后台1'}}]}});await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'bg-two',title:'ops_bash',status:'in_progress',content:[{content:{text:'后台2'}}]}});
+    assert(!f.element('.ai-tool-group'));f.switchRoot(f.A);const groups=[...f.element('#ai-msgs').querySelectorAll('.ai-tool-group')];assert.equal(groups.length,2);assert.equal(groups[0],group);assert(group.open);assert.equal(groups[0].querySelector('.ai-tool'),first);assert.equal(groups[1].open,false);assert.equal(groups[1].dataset.state,'running');
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call_update',toolCallId:'bg-two',status:'completed'}});assert.equal(groups[1].dataset.state,'completed');assert.equal(f.dshResults.length,2);assert.equal(f.calls.length,1);assert.equal(f.commands.length,0);f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
   await test('Harness仅调工具后停止，状态显示在活动之后；迟到文字不改变时间线',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('仅查看');await until(()=>f.calls.length===1);const context=f.calls[0].context;
     await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'one',title:'read',rawInput:{},status:'in_progress'}});f.stop();await until(()=>f.element('#ai-send').textContent==='➤');f.rawChunk({context,delta:'迟到结论'});assert(!f.text().includes('迟到结论'));
@@ -948,6 +1013,19 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await f.dshEvent({type:'config',context,configOptions:[{id:'model',currentValue:'fixture',options:[{value:'fixture',name:'fixture'}]}]});
     assert(f.element('#ai-dsh-info').textContent.includes('阅读页使用独立对话'));assert(f.element('#ai-model').disabled);assert.equal(f.send('不能另建'),false);
     f.done(0,{ok:true,text:'原任务完成'});assert(f.element('#ai-send').disabled);f.w.App.showTool('project');assert(!f.element('#ai-send').disabled);assert.equal(f.w.AiPanel.aiState().dshSession.canSend,true);
+  });
+  await test('宿主watch全量replay按稳定工具ID保留展开/收起选择，新增第三条和pending不隐藏也不重跑',async()=>{
+    const f=fixture();f.enableWatch();await f.openHost();
+    const tool=(id,status='completed')=>({kind:'tool',call:{id,name:'ops_bash',args:{command:'宿主命令'+id}},status,output:'宿主输出'+id});
+    const question={id:'outside-group',questions:[{id:'q1',question:'等待回答',options:[{label:'继续'}]}]};
+    const parts=[{kind:'text',role:'user',text:'宿主请求'},tool('host-one','failed'),tool('host-two','in_progress')];
+    f.watchPush({running:true,turns:[{parts}],questions:[question]});let group=f.element('.ai-tool-group');assert.equal(group.open,false);assert.equal(group.dataset.state,'running');assert(group.querySelector('.ai-tool-group-status').textContent.includes('1 次失败'));group.querySelector('summary').click();assert(group.open);
+    const form=f.element('.ai-dsh-watch-pending');form.querySelector('textarea').value='未提交输入';assert.equal(form.parentNode,f.element('#ai-msgs'));assert(!form.closest('.ai-tool-group'));
+    const updated=[{kind:'text',role:'assistant',text:'前插正文使位置变化'},parts[0],tool('host-one','failed'),tool('host-two'),tool('host-three')];
+    f.watchPush({turns:[{parts:updated}]});group=f.element('.ai-tool-group');assert(group.open);assert.equal(group.querySelector('.ai-tool-group-count').textContent,'3 次');assert.equal(group.dataset.state,'failed');assert.equal(f.element('.ai-dsh-watch-pending'),form);assert.equal(form.querySelector('textarea').value,'未提交输入');
+    assert.deepEqual([...group.querySelectorAll('.ai-tool')].map(row=>row.dataset.toolCallId),['host-one','host-two','host-three']);assert.deepEqual([...group.querySelectorAll('.ai-dsh-output pre')].map(row=>row.textContent),['宿主输出host-one','宿主输出host-two','宿主输出host-three']);
+    group.querySelector('summary').click();assert.equal(group.open,false);updated[2]=tool('host-one');f.watchPush({turns:[{parts:updated}],questions:[]});group=f.element('.ai-tool-group');assert.equal(group.open,false);assert.equal(group.dataset.state,'completed');assert(!f.element('.ai-dsh-watch-pending'));
+    const saved=f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh');assert(!saved.includes('groupKey'));assert(!saved.includes('ai-tool-group'));assert.equal(f.calls.length,0);assert.equal(f.commands.length,0);assert.equal(f.writes.length,0);assert.equal(f.hostControls.length,0);
   });
   await test('宿主watch持续同步正文与未提交预览，外部运行不伪造own-run且Enter仍可续聊',async()=>{
     const f=fixture();f.enableWatch();const route=await f.openHost();
