@@ -938,8 +938,42 @@ const Tree = (() => {
     let sources = await window.myIDE.clip.getFiles();
     // 兜底：系统剪贴板完全无文件数据时才用内部记录（剪贴板被清/损坏的极端情况）
     if (!sources.length) sources = copiedPaths.slice();
-    if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
+    if (!sources.length) {
+      // 没有文件路径时先看是不是「一张截图」——QQ/微信/系统截图贴进来的是图片，
+      // 不是文件路径。以前这里直接报「剪贴板中没有文件」，用户以为图没截上
+      // （2026-11-05 实测：剪贴板 formats=["image/png"]，paste 事件的 types=["Files"]，
+      //  items=["file:image/png"]，但 getFiles() 返回 [] → 报错，图片内容从未被读取）。
+      if (await pasteClipboardImage(destDir)) return;
+      MI.toast('剪贴板中没有文件', 'err');
+      return;
+    }
     await copyInto(sources, destDir, '粘贴');
+  }
+
+  // 剪贴板里是图片时落盘：优先落成截图文件放进目标目录（用户的直觉是「贴到这儿」）。
+  // 主进程读字节（渲染进程拿不到剪贴板图片），命名与 Markdown 贴图同一套规则。
+  // 返回 true 表示「已经处理过（成功或已报错）」，调用方不要再报「剪贴板中没有文件」。
+  async function pasteClipboardImage(destDir) {
+    let r;
+    try { r = await window.myIDE.clip.readImage(); } catch { return false; }
+    if (!r?.ok || r.empty || !r.png) return false;
+    const name = '截图-' + timestampName() + '.png';
+    const target = destDir.replace(/[\\/]+$/, '') + '\\' + name;
+    try {
+      const w = await window.myIDE.fs.writeBinary(target, r.png);
+      if (!w || (w.error && !w.ok)) { MI.toast('粘贴截图失败: ' + ((w && w.error) || '写入未确认'), 'err'); return true; }
+      invalidateAll(); render(); App.refreshGit();
+      MI.toast('✅ 已粘贴截图 ' + name, 'ok');
+      return true;
+    } catch (e) {
+      MI.toast('粘贴截图失败: ' + String((e && e.message) || e), 'err');
+      return true;
+    }
+  }
+  // 截图文件名的时间戳：20261105-184733
+  function timestampName() {
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
   }
 
   // ---------- 拖拽移动 / 撤销 ----------
@@ -1366,8 +1400,13 @@ const Tree = (() => {
       const stillHere=()=>rootPath===operationRoot;
       if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
       let prepared;
+      // 目标在磁盘上已经不存在（例如对同一条路径重复删除）：删除是幂等操作，
+      // 主进程会直接回 ok + changedPaths。这里立刻当作已完成返回，不进确认框、
+      // 不建恢复记录、也不去 commit 一个不存在的 operationId（2026-11-05 实测的报错来源）。
+      const settled=result=>result?.ok&&!result.targets?.length;
       if(!systemTrash){prepared=await window.myIDE.fs.deletePrepare(operationRoot,paths);
         if(!stillHere())return {error:'项目已切换，删除未执行；恢复记录已保留',errorCode:'PROJECT_CHANGED'};
+        if(settled(prepared))return {...prepared,kind:'delete',targets:[],changedPaths:prepared.changedPaths||paths};
         if(!prepared?.ok){
           if(!await Modal.confirm('删除未执行',(prepared?.error||'原字节备份未成功')+'\n\n当前内容仍保留。可以改用系统回收站，之后从系统回收站恢复，本应用Ctrl+Z不能撤销该方式。是否改用？'))return prepared;
           systemTrash=true;
@@ -1375,6 +1414,7 @@ const Tree = (() => {
       }
       if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
       if(systemTrash)prepared=await window.myIDE.fs.trashPlan(operationRoot,paths);
+      if(settled(prepared))return {...prepared,kind:systemTrash?'trash':'delete',targets:[],changedPaths:prepared.changedPaths||paths};
       if(!prepared?.ok)return prepared;
       if(!stillHere())return {error:'项目已切换，删除未执行',errorCode:'PROJECT_CHANGED'};
       const show=prepared.targets.slice(0,5).map(p=>p.split(/[\\/]/).pop()).join('、');
@@ -1394,6 +1434,9 @@ const Tree = (() => {
     if(r?.changedPaths?.length&&rootPath===operationRoot){invalidateAll();render();App.refreshGit();}
     if(r?.cancelled)return r;
     if(!r?.ok){MI.toast('删除未完成: '+(r?.error||'未返回成功')+(r?.kind==='trash'?'；请核对系统回收站与原路径':'；恢复记录已保留，可从「恢复文件操作」核对'),'err');return r;}
+    // targets 为空 = 这些路径在磁盘上本来就不在了（重复删除）。别说成「已删除 N 项」，
+    // 更别提「Ctrl+Z 可恢复」——压根没有可恢复的东西。
+    if(!r.targets?.length){MI.toast('这些项已经不在磁盘上了，已刷新列表','ok');return r;}
     MI.toast('已'+(r.kind==='trash'?'移到系统回收站':'删除')+' '+r.targets.length+' 项'+(r.kind==='trash'?'（从系统回收站恢复）':'（Ctrl+Z 可恢复）')+(rootPath!==operationRoot?'（原项目）':''),'ok');return r;
   }
   const trashItems=paths=>removeItems(paths,true);

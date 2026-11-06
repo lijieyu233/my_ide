@@ -23,6 +23,13 @@ function createService(root,native=Native,options={}){
   const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
   function real(p,dir){const absolute=path.resolve(p);if(key(fs.realpathSync(absolute))!==key(absolute)||fs.lstatSync(absolute).isSymbolicLink())throw fail('LINK_PATH','链接或目录别名暂不能安全复制/恢复');if(dir&&!fs.statSync(absolute).isDirectory())throw fail('NOT_DIRECTORY','目标必须是已有目录');return absolute;}
   function observed(p){try{return native.snapshot(real(p));}catch(e){if(e.code==='ENOENT')return null;throw e;}}
+  // 删除专用：目标已经不存在不算失败。
+  // 2026-11-05 实测：对一条已经删掉的路径再点一次删除，prepareDelete 的 real() 直接抛
+  // 「ENOENT: no such file or directory, lstat ...」，界面上却显示成「删除未完成」，
+  // 还附带「恢复记录已保留」这句与事实不符的通用文案 —— 用户以为删除失败，其实早就删掉了。
+  // 删除是幂等操作：目标不在就等于已完成，应当刷新树让它消失，而不是报错。
+  // 只放宽 ENOENT；链接、权限、占用等仍然照常失败，不能借这个口子吞掉真问题。
+  function exists(p){try{fs.lstatSync(p);return true;}catch(e){if(e.code==='ENOENT')return false;throw e;}}
   function check(p,expected,dir=false){const now=observed(p);if(expected?!native.same(expected,now,dir):!!now)throw fail('STALE_OPERATION','复制/恢复对象已经变化：'+path.basename(p));return now;}
   function home(id){if(!uuid.test(String(id)))throw fail('INVALID_OPERATION','无效恢复记录');const folder=path.join(root,id);real(folder,true);return folder;}
   function append(id,event){const fd=fs.openSync(path.join(home(id),'events.jsonl'),'a');try{const b=Buffer.from(JSON.stringify({event,checksum:digest(event)})+'\n');for(let off=0;off<b.length;){const n=fs.writeSync(fd,b,off,b.length-off,null);if(!n)throw fail('EIO','恢复日志写入未推进');off+=n;}fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
@@ -197,7 +204,12 @@ function createService(root,native=Native,options={}){
   function prepareDelete(project,sources){
     project=real(project,true);
     if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','删除选择为空或超过10000项');
-    const selected=[...new Map(sources.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
+    // 已经不在磁盘上的路径先摘掉：删除是幂等的，目标没了就是「已经删掉了」。
+    // 剩下一个都没有时直接返回成功，让调用方刷新树把陈旧条目清掉
+    // （见 exists() 上的实测说明）。全部消失 = 无需备份、无需恢复记录。
+    const present=sources.filter(p=>exists(p)),gone=sources.length-present.length;
+    if(!present.length)return {ok:true,items:0,targets:[],sources:[],changedPaths:sources.slice(),alreadyGone:gone};
+    const selected=[...new Map(present.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
     if(selected.some(p=>!inside(project,p)||key(project)===key(p)||inside(p,root)||inside(root,p)))throw fail('OUTSIDE_PROJECT','只能删除项目子项，不能删除项目根或恢复存储');
     const items=[],parents={},projectVersion=native.snapshot(project);let reservedBytes=0;
     for(const p of selected)for(let parent=path.dirname(p);key(parent)!==key(project);parent=path.dirname(parent))if(!parents[parent])parents[parent]=native.snapshot(real(parent,true));
@@ -215,7 +227,10 @@ function createService(root,native=Native,options={}){
       // 删除前必须先整份备份原字节，4078 项实测这一步就占了大半时间（开发文档-243）。
       let done=0;progress('backup',0,items.length,true);
       for(const r of items){check(r.source,r.before,r.before.kind==='dir');const storedBefore=native.clone(r.source,ref(m.id,r.index,'before'),r.before);check(r.source,r.before,r.before.kind==='dir');event(m,r,{storedBefore});progress('backup',++done,items.length);}
-      append(m.id,{phase:'prepared'});m.phase='prepared';return {...summary(m),ok:true,items:items.length};
+      append(m.id,{phase:'prepared'});m.phase='prepared';
+      // alreadyGone 只是如实回报「这些路径本来就不在了」，让调用方把它们一并当作已删除刷新掉；
+      // 它不改变本次删除的成功语义。
+      return {...summary(m),ok:true,items:items.length,alreadyGone:gone,changedPaths:selected};
     }catch(e){append(m.id,{phase:'prepare-failed'});m.phase='prepare-failed';return {...summary(m),error:String(e.message||e),errorCode:e.code||'DELETE_FAILED'};}
   }
   function deletion(project,id){const m=load(id);if(m.kind!=='delete')throw fail('INVALID_OPERATION','此记录不是删除操作');validateProject(m,project);
@@ -224,7 +239,10 @@ function createService(root,native=Native,options={}){
   }
   function trashPlan(project,sources){
     project=real(project,true);if(!Array.isArray(sources)||!sources.length||sources.length>10000)throw fail('COPY_LIMIT','回收站选择为空或超过10000项');
-    const targets=[...new Map(sources.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
+    // 同 prepareDelete：已经不在磁盘上的路径不算失败（删除/移走都是幂等操作）。
+    const present=sources.filter(p=>exists(p)),gone=sources.length-present.length;
+    if(!present.length)return {ok:true,projectRoot:project,targets:[],projectIdentity:null,versions:[],alreadyGone:gone,changedPaths:sources.slice()};
+    const targets=[...new Map(present.map(p=>{const s=real(p);return [key(s),s];})).values()].filter((s,_i,a)=>!a.some(other=>other!==s&&inside(other,s)));
     if(targets.some(p=>!inside(project,p)||key(project)===key(p)||inside(p,root)||inside(root,p)))throw fail('OUTSIDE_PROJECT','只能移走项目子项，不能移走项目根或恢复存储');
     const identity=p=>{const st=fs.lstatSync(p,{bigint:true});return [st.dev.toString(),st.ino.toString()];};
     const versions=targets.map(source=>{validateName(path.basename(source));const hash=createHash('sha256');let count=0;
@@ -298,7 +316,15 @@ function createService(root,native=Native,options={}){
   function clear(project,id){const m=load(id);if(key(project)!==key(m.project))throw fail('PROJECT_CHANGED','清理归属不匹配');const folder=home(id);
     if(summary(m).temporaryPaths.length)throw fail('RECOVERY_UNCERTAIN','项目中仍有保留的暂存项，请先按记录中的完整路径核对处理；恢复来源未清理');
     function validate(dir){real(dir,true);for(const name of fs.readdirSync(dir)){const p=path.join(dir,name),s=fs.lstatSync(p);if(s.isSymbolicLink()||s.isFile()&&s.nlink>1)throw fail('LINK_PATH','恢复目录含链接，未清理');if(s.isDirectory())validate(p);}}
-    validate(folder);fs.rmSync(folder,{recursive:true,force:true});return {ok:true};
+    validate(folder);
+    // 备份副本会原样保留源文件的只读属性（这是保真的必要行为），而 rmSync 删不掉只读文件：
+    // 直接删会抛 EPERM「Permission denied」，用户点「清理记录」就失败。
+    // 清理的对象是本应用自己写的恢复缓存，先摘掉只读位再删是安全的（2026-11-05 实测）。
+    try{fs.rmSync(folder,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
+    catch(error){if(error.code!=='EPERM'&&error.code!=='EACCES')throw error;
+      function unseal(dir){for(const name of fs.readdirSync(dir)){const p=path.join(dir,name);let s;try{s=fs.lstatSync(p);}catch{continue;}if(s.isDirectory())unseal(p);else if(s.isFile())try{fs.chmodSync(p,0o666);}catch{}}}
+      unseal(folder);fs.rmSync(folder,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
+    return {ok:true};
   }
   /**
    * 批量清理「已完成、不再需要保留原字节」的记录。

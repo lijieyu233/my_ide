@@ -101,6 +101,8 @@ try{
   const f=fixture(),src=write(path.join(f.source,'readonly'),'新'),dll=require('koffi').load('kernel32.dll'),attrs=dll.func('__stdcall','SetFileAttributesW','int',['str16','uint32']);assert(attrs(src,33));
   const p=f.service.prepare(f.project,[src],f.project);assert(p.ok);assert(f.service.commit(f.project,p.operationId,false).ok);assert(f.service.undo(f.project,p.operationId).ok);assert(f.service.clear(f.project,p.operationId).ok);
   const target=write(path.join(f.project,'readonly'),'原');assert(attrs(target,33));assert.throws(()=>f.service.prepare(f.project,[src],f.project),{code:'EACCES'});assert.equal(fs.readFileSync(target,'utf8'),'原');assert(attrs(src,32));assert(attrs(target,32));
+  // 恢复只读位之后缓存目录才可删；这里单独兜底，避免只读文件残留让整轮测试崩掉。
+  try{fs.rmSync(path.join(f.cache),{recursive:true,force:true,maxRetries:5,retryDelay:100});}catch{}
  });
  check('清单校验错误阻止新发布、日志篡改阻止撤销',()=>{
   const f=fixture(),src=write(path.join(f.source,'x'),'新'),p=f.service.prepare(f.project,[src],f.project),manifest=path.join(f.cache,p.operationId,'manifest.json'),old=fs.readFileSync(manifest,'utf8');fs.writeFileSync(manifest,old.replace('"kind":"copy"','"kind":"oops"'));assert.throws(()=>f.service.commit(f.project,p.operationId,false),{code:'RECOVERY_CORRUPT'});assert(!fs.existsSync(path.join(f.project,'x')));fs.writeFileSync(manifest,old);assert(f.service.commit(f.project,p.operationId,false).ok);
@@ -117,4 +119,52 @@ try{
   for(let i=0;i<50;i++){const p=f.service.prepare(f.project,[src],f.project);assert(p.ok);first=first||p.operationId;}
   assert.equal(f.service.list(f.project).length,50);assert.throws(()=>f.service.prepare(f.project,[src],f.project),{code:'RECOVERY_LIMIT'});assert.deepEqual(fs.readdirSync(f.project),[]);assert(f.service.clear(f.project,first).ok);assert(f.service.prepare(f.project,[src],f.project).ok);
  });
- console.log('结果: '+passed+' 通过, 0 失败');}finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-copy-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}
+ // 2026-11-05 实测：对一条已经删掉的路径再点一次删除，prepareDelete 的 real() 抛
+ // 「ENOENT: no such file or directory, lstat ...」，界面显示「删除未完成」，
+ // 用户以为没删掉。删除是幂等操作，目标不在就等于已完成。
+ check('删除目标已不存在时幂等成功，不抛ENOENT也不建恢复记录',()=>{
+  const f=fixture(),file=write(path.join(f.project,'技术索引.md'),'内容');
+  const first=f.service.prepareDelete(f.project,[file]);assert(first.ok);assert(f.service.commitDelete(f.project,first.operationId).ok);
+  assert(!fs.existsSync(file),'第一次应当真的删掉');
+  const before=f.service.list(f.project).length;
+  // 同一路径再删一次：必须成功返回，而不是 ENOENT
+  const again=f.service.prepareDelete(f.project,[file]);
+  assert.equal(again.ok,true,'重复删除不该报错');
+  assert.deepEqual(again.targets,[],'没有可删对象');
+  assert.equal(again.alreadyGone,1,'如实回报已经不存在');
+  assert.deepEqual(again.changedPaths,[file],'要带回路径让树刷新掉陈旧条目');
+  assert.equal(f.service.list(f.project).length,before,'不该为已消失的目标新建恢复记录');
+ });
+ check('部分路径已消失时只删剩下的，并回报消失项',()=>{
+  const f=fixture(),gone=path.join(f.project,'已删.md'),live=write(path.join(f.project,'还在.md'),'x');
+  const p=f.service.prepareDelete(f.project,[gone,live]);
+  assert(p.ok);assert.equal(p.alreadyGone,1);assert.deepEqual(p.targets,[live]);
+  assert(f.service.commitDelete(f.project,p.operationId).ok);
+  assert(!fs.existsSync(live),'剩下的正常删除');
+  assert.equal(fs.readdirSync(f.project).length,0);
+ });
+ check('回收站计划对已不存在目标同样幂等',()=>{
+  const f=fixture(),file=write(path.join(f.project,'走.md'),'x');
+  const plan=f.service.trashPlan(f.project,[file]);assert(plan.ok);assert.deepEqual(plan.targets,[file]);
+  const gone=path.join(f.project,'早就没了.md');
+  const again=f.service.trashPlan(f.project,[gone]);
+  assert(again.ok);assert.deepEqual(again.targets,[]);assert.equal(again.alreadyGone,1);assert.deepEqual(again.changedPaths,[gone]);
+ });
+ check('删除仍对真实错误报错，不把权限/占用问题当成已删除',()=>{
+  const f=fixture(),file=write(path.join(f.project,'锁.md'),'原始');
+  const p=f.service.prepareDelete(f.project,[file]);assert(p.ok);
+  // 准备后内容被改写 → 必须仍然失败，不能因为幂等改造被吞掉。
+  // commitDelete 既可能返回 ok:false，也可能直接抛 STALE_OPERATION，两种都算拒绝。
+  write(file,'后来内容');
+  let rejected=false;
+  try{const r=f.service.commitDelete(f.project,p.operationId);if(!r.ok)rejected=true;}catch(e){if(e.code==='STALE_OPERATION')rejected=true;else throw e;}
+  assert(rejected,'对象已变化必须失败');
+  assert(fs.existsSync(file),'不能误删已变化的内容');
+  assert.equal(fs.readFileSync(file,'utf8'),'后来内容');
+ });
+ console.log('结果: '+passed+' 通过, 0 失败');}finally{if(path.dirname(path.resolve(temp))!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-copy-test-'))throw Error('Unsafe cleanup');// 清理失败不能吃掉测试结论：第 17 条（预算/批量清理）会留下仍被占用的句柄，
+// 之前 rmSync 在这里抛 EPERM，整个脚本崩溃，后面所有用例都没机会跑
+// （2026-11-05 实测：稳定卡在 17 项，新增的删除用例永远执行不到）。
+// 清理是收尾动作，失败只提示、不影响通过/失败判定。
+try{fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+catch(e){console.log('  （临时目录未能完全清理：'+e.code+'，不影响结果）');}}
