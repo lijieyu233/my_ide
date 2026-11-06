@@ -2914,7 +2914,11 @@ const AiPanel = (() => {
         const custom=document.createElement('textarea');custom.placeholder='填写补充回答';custom.rows=2;group.appendChild(custom);box.appendChild(group);fields.push({question,choices,custom});
       }
       const button=document.createElement('button');button.type='submit';button.className='tb-btn';button.textContent='提交回答';box.appendChild(button);msgsEl.appendChild(box);
-      const close=()=>{for(const control of box.querySelectorAll('button,input,textarea'))control.disabled=true;};run.controller.signal.addEventListener('abort',close,{once:true});
+      // 回答完（或本轮被中止）必须把整块表单从对话里摘掉，只置灰是不够的：
+      // 以前只 disabled，提交后表单一直挂在消息流里，下面还接着显示「正在生成」——
+      // 用户以为没提交成功、或者以为它还在等问题（2026-11-06 反馈「提交后就别一直显示了」）。
+      // 与下面的 permission 弹窗保持同一套收尾（那个一直是 remove），两处行为不该分叉。
+      const close=()=>{for(const control of box.querySelectorAll('button,input,textarea'))control.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
       box.onsubmit=async eventSubmit=>{eventSubmit.preventDefault();if(!runIsLive(run))return close();const answers=fields.map(field=>({id:field.question.id,selected:field.choices.filter(input=>input.checked).map(input=>input.value),...(field.custom.value.trim()?{custom:field.custom.value.trim()}:{})}));if(answers.some(answer=>!answer.selected.length&&!answer.custom)){MI.toast('请回答每个问题','err');return;}button.disabled=true;const result=await window.myIDE.ai.dshQuestionResult(event.context,event.id,answers);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}else{button.disabled=false;MI.toast('问题已结束或回答未被接受','err');}};scrollBottom();return;
     }
     if(event.type==='native'){
