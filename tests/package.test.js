@@ -33,6 +33,12 @@ async function test(name, fn) {
     production.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/quick-launch-service.js', 'src/main/launch/quick-launch-app.js', 'src/main/ai/ai-tool-contract.js', 'src/main/ai/ai-tool-execution.js', 'src/main/ai/ai-path-lease-win.js');
     production.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js', 'src/main/browser/html-preview.js', 'src/main/dsh/dsh-runtime.js', 'src/main/dsh/ai-dsh.js', 'src/main/dsh/ai-dsh-rpc.js');
     production.push("src/main/remote/remote-service.js", "src/main/remote/remote-ipc.js", "src/main/remote/remote-local.js");
+    // main.js 直接 require 的另五个模块。checkPackage 从 main.js 递归解析 require，
+    // 漏掉任何一个都会报「缺少运行时文件」——而这份夹具是手工维护的 production 数组，
+    // 之前没跟上 main.js，导致 test:package 在干净 HEAD 上就一直失败（2026-11-06 实测）。
+    production.push('src/main/remote/remote-fs.js', 'src/main/remote/remote-ops.js',
+      'src/main/clipboard/clipboard-ipc.js', 'src/main/clipboard/clipboard-store.js',
+      'src/main/clipboard/cos-upload.js', 'src/main/clipboard/image-fetch.js');
     production.push('src/main/ai/ai-project-tools.js','src/main/ai/ai-owner-router.js','src/main/browser/browser-tab-views.js','src/main/browser/browser-color-scheme.js','src/main/browser/browser-context-menu.js');
     production.push('src/main/browser/tool-shortcuts.js');
     production.push('src/main/reader/reader-notes.js','src/main/reader/reader-workspace.js','src/main/reader/reader-service.js','src/main/reader/reader-worker.js','src/main/files/file-read.js','src/main/browser/browser-interactions.js','src/main/browser/browser-frames.js','src/main/browser/browser-upload.js','src/main/browser/browser-capture.js');
