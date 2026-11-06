@@ -111,6 +111,9 @@ calls.logAll = false;
 calls.logDepth = null;
 let fakePluginCb = null; // 插件热重载回调
 let fakeExternal = []; // 模拟系统剪贴板的外部文件
+// 剪贴板里的图片（模拟 QQ 截图）：主进程 clip:readImage 的替身。null = 剪贴板没有图片。
+let fakeClipImage = null;
+let fakeWrittenBinary = []; // writeBinary 调用记录（粘贴截图落盘）
 let fakeFsCbs = [];
 let pathProgressCb = null; // fs:changed 订阅者（tree.js 重渲染 + viewer.js 标签重载都注册）
 let aiScript = []; // AI chat 应答脚本（Agent 用例注入 tool_call 回合）
@@ -204,6 +207,16 @@ function makeDom() {
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
+      // 粘贴截图落盘（tree.js pasteClipboardImage）：渲染层只传 base64，这里记下目标路径与字节数。
+      writeBinary: async (p, base64) => {
+        const bytes = Buffer.from(String(base64 || ''), 'base64');
+        fakeWrittenBinary.push({ path: p, bytes: bytes.length });
+        FAKE_FS[p] = { type: 'file', content: '', binary: bytes };
+        const parts = p.split('/');
+        const parent = parts.slice(0, -1).join('/');
+        if (FAKE_FS[parent] && FAKE_FS[parent].type === 'dir' && !FAKE_FS[parent].children.includes(p)) FAKE_FS[parent].children.push(p);
+        return { ok: true };
+      },
       deletePrepare: async(project,paths)=>{
         paths=paths.map(normMove);const targets=[...new Set(paths)].filter(p=>!paths.some(other=>other!==p&&p.startsWith(other+'/')));
         const rows=Object.keys(FAKE_FS).filter(p=>targets.some(t=>p===t||p.startsWith(t+'/'))).sort((a,b)=>a.split('/').length-b.split('/').length||a.localeCompare(b)).map(p=>({target:p,before:entryClone(FAKE_FS[p]),hash:fakeSnapshot(p).hash,deleted:false}));
@@ -335,6 +348,7 @@ function makeDom() {
       copyFiles: async (paths, move) => { fakeCopied = paths.slice(); fakeCopiedMove = move; return true; },
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
       readText: async () => ({ ok: true, text: fakeClipText }),
+      readImage: async () => (fakeClipImage ? { ok: true, empty: false, png: fakeClipImage, width: 4, height: 4 } : { ok: true, empty: true }),
     },
     fsCopy: async (src, destDir, overwrite) => {
       const name = src.split('/').pop();
@@ -1856,6 +1870,89 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     assert_(FAKE_FS[P + '/src/from-explorer.txt'], '外部文件粘贴成功');
     fakeExternal = [];
+  });
+
+  // 2026-11-05 用户反馈：「我用 qq 截图再粘贴就会爆出这种错误」（toast = 剪贴板中没有文件）。
+  // 真机取证结论：QQ 截图后剪贴板 formats=["image/png"]，paste 事件 types=["Files"]、
+  // items=["file:image/png"]，但 clip.getFiles() 返回 [] —— 于是 pasteTo 直接报错，
+  // 图片内容从来没被任何人读过。修复后：没有文件路径时先问主进程要图片字节。
+  await okAsync('剪贴板是截图时粘贴落成截图文件，不再报「剪贴板中没有文件」', async () => {
+    dom.window.Tree.__testClearCopied();
+    const dirRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    click(dirRow);
+    await tick();
+    fakeExternal = [];
+    fakeClipImage = Buffer.from('fake-png-bytes').toString('base64');
+    fakeWrittenBinary = [];
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick(); await tick();
+    assert_(fakeWrittenBinary.length === 1, '应写入一张截图，实际 ' + fakeWrittenBinary.length);
+    const written = fakeWrittenBinary[0];
+    const normPath = (p) => p.replace(/\\/g, '/');
+    assert_(normPath(written.path).startsWith(P + '/src/截图-') && written.path.endsWith('.png'), '落盘路径：' + written.path);
+    assert_(written.bytes > 0, '写入的是真实字节');
+    const toasts = [...dom.window.document.querySelectorAll('#toast-wrap .toast')].map((t) => t.textContent);
+    assert_(!toasts.some((t) => /剪贴板中没有文件/.test(t)), '不应报「剪贴板中没有文件」：' + JSON.stringify(toasts));
+    assert_(toasts.some((t) => /已粘贴截图/.test(t)), '应提示已粘贴截图：' + JSON.stringify(toasts));
+    fakeClipImage = null;
+  });
+
+  // 关键回归：用户「复制过文件 → QQ 截图 → Ctrl+V」时，粘贴的必须是刚截的图，
+  // 不能因为 copiedPaths 还留着上一批文件就把旧文件又粘一遍、把截图静默吞掉。
+  await okAsync('复制过文件之后再截图粘贴，粘的是截图不是旧文件', async () => {
+    dom.window.Tree.__testClearCopied();
+    const fileRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/notes.txt');
+    click(fileRow);
+    await tick();
+    key(dom, 'c', { ctrl: true });   // 先把 copiedPaths 填上（含真实文件路径）
+    await tick();
+    const dirRow = $allIn($(dom, '#tree'), '.tree-row').find((r) => r.querySelector('.nm').title === P + '/src');
+    click(dirRow);
+    await tick();
+    fakeExternal = [];               // 系统剪贴板已换成截图，没有文件路径
+    fakeClipImage = Buffer.from('png-bytes').toString('base64');
+    fakeWrittenBinary = [];
+    dom.window.document.getElementById('toast-wrap').replaceChildren();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick(); await tick();
+    assert_(fakeWrittenBinary.length === 1, '截图应落盘，实际 writeBinary 调用 ' + fakeWrittenBinary.length + ' 次');
+    assert_(!FAKE_FS[P + '/src/notes.txt'], '不能把上一次复制的旧文件粘到目标目录');
+    const toasts = [...dom.window.document.querySelectorAll('#toast-wrap .toast')].map((t) => t.textContent);
+    assert_(toasts.some((t) => /已粘贴截图/.test(t)), '应提示已粘贴截图：' + JSON.stringify(toasts));
+    fakeClipImage = null;
+    dom.window.Tree.__testClearCopied();
+  });
+
+  await okAsync('剪贴板既无文件也无图片时仍明确报错（不静默失败）', async () => {
+    dom.window.Tree.__testClearCopied();
+    fakeExternal = [];
+    fakeClipImage = null;
+    fakeWrittenBinary = [];
+    dom.window.document.getElementById('toast-wrap').replaceChildren();
+    key(dom, 'v', { ctrl: true });
+    await tick(); await tick(); await tick();
+    assert_(fakeWrittenBinary.length === 0, '不应写入任何文件');
+    const toasts = [...dom.window.document.querySelectorAll('#toast-wrap .toast')].map((t) => t.textContent);
+    assert_(toasts.some((t) => /剪贴板中没有文件/.test(t)), '应保留原报错：' + JSON.stringify(toasts));
+  });
+
+  await okAsync('剪贴板是图片时不走文件复制通道（不把图片当成文件路径）', async () => {
+    dom.window.Tree.__testClearCopied();
+    fakeExternal = [];
+    fakeClipImage = Buffer.from('png').toString('base64');
+    fakeWrittenBinary = [];
+    const calls = [];
+    const fsApi = dom.window.myIDE.fs;
+    const original = fsApi.copyPrepare;
+    fsApi.copyPrepare = async (...args) => { calls.push(args); return original(...args); };
+    try {
+      key(dom, 'v', { ctrl: true });
+      await tick(); await tick(); await tick();
+    } finally { fsApi.copyPrepare = original; }
+    assert_(calls.length === 0, '图片粘贴不该调用 copyPrepare，实际 ' + calls.length + ' 次');
+    assert_(fakeWrittenBinary.length === 1, '应走 writeBinary 落盘');
+    fakeClipImage = null;
+    dom.window.Tree.__testClearCopied();
   });
 
   await okAsync('多选右键：隐藏 / 取消隐藏 / 显示历史 / 导出 都对整组生效（2026-10-30）', async () => {

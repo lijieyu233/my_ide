@@ -1196,6 +1196,20 @@ ipcMain.handle('clip:readText', () => {
   try { return { ok: true, text: clipboard.readText() || '' }; } catch (e) { return { ok: false, error: String(e) }; }
 });
 
+// 读剪贴板里的图片（2026-11-05）：QQ/微信截图、系统截图工具贴进编辑器/AI 面板时要先拿到字节。
+// 渲染进程只能从 paste 事件的 clipboardData 里拿图，而「在文件树/面板空白处按 Ctrl+V」时
+// 那条 paste 事件根本不触发（快捷键处理已经把 Ctrl+V 接管成「粘贴文件」并 preventDefault），
+// 所以这条路径必须由主进程按需读系统剪贴板。
+// 返回 base64 而不是 Buffer：渲染层的 fs.writeBinary 收的就是 base64 字符串，少一次转换。
+ipcMain.handle('clip:readImage', () => {
+  try {
+    const image = clipboard.readImage();
+    if (!image || image.isEmpty()) return { ok: true, empty: true };
+    const size = image.getSize();
+    return { ok: true, empty: false, png: image.toPNG().toString('base64'), width: size.width, height: size.height };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+
 // 文件复制：写系统剪贴板双轨
 // 1) Electron 同步写 text + FileNameW（应用内直读快路径，立即生效）
 // 2) PowerShell .NET DataObject 异步覆盖写标准格式（SetFileDropList 自动写 FileDrop(CF_HDROP) + FileNameW + FileName）

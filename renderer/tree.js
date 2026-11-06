@@ -936,17 +936,21 @@ const Tree = (() => {
     }
     // 优先系统剪贴板（应用内 / 资源管理器复制的完整列表，主进程已修复外部多文件读取）
     let sources = await window.myIDE.clip.getFiles();
-    // 兜底：系统剪贴板完全无文件数据时才用内部记录（剪贴板被清/损坏的极端情况）
-    if (!sources.length) sources = copiedPaths.slice();
     if (!sources.length) {
       // 没有文件路径时先看是不是「一张截图」——QQ/微信/系统截图贴进来的是图片，
       // 不是文件路径。以前这里直接报「剪贴板中没有文件」，用户以为图没截上
       // （2026-11-05 实测：剪贴板 formats=["image/png"]，paste 事件的 types=["Files"]，
       //  items=["file:image/png"]，但 getFiles() 返回 [] → 报错，图片内容从未被读取）。
+      //
+      // ⚠ 顺序很关键：图片要排在 copiedPaths 兜底**前面**。
+      // copiedPaths 是上一次 Ctrl+C 留下的内存记录，剪贴板换成截图后它并不会清空；
+      // 若让兜底先命中，用户「复制过文件 → QQ 截图 → Ctrl+V」就会粘出上一批旧文件，
+      // 截图静默丢失（2026-11-06 由 DOM 用例暴露）。
+      // 剪贴板里有图片本身就是「用户刚截了图」的确证，旧记录应当让位。
       if (await pasteClipboardImage(destDir)) return;
-      MI.toast('剪贴板中没有文件', 'err');
-      return;
+      sources = copiedPaths.slice();
     }
+    if (!sources.length) { MI.toast('剪贴板中没有文件', 'err'); return; }
     await copyInto(sources, destDir, '粘贴');
   }
 
@@ -1684,6 +1688,9 @@ const Tree = (() => {
     get selectedType() { return selectedType; },
     get selection() { return getSelection(); },
     copySelected, cutSelected, pasteTo, getPasteTarget, reveal,
+    // 仅自检用：清掉「上次 Ctrl+C 留下的内存记录」，让粘贴用例从确定状态开始
+    // （真实用户每次 Ctrl+C 都会重设它，测试里连跑多个用例则需要显式复位）。
+    __testClearCopied: () => { copiedPaths = []; cutMode = false; },
     renameItem,
     createItem, copyInto, showCopyRecovery, removeItem, removeItems, trashItems,
     // 快捷键入口：对当前选中项重命名（无选中时提示）

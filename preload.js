@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     copyImageFiles: (paths) => ipcRenderer.invoke('clip:copyFiles', paths, false),
     getFiles: () => ipcRenderer.invoke('clip:getFiles'),
     readText: () => ipcRenderer.invoke('clip:readText'),
+    // 剪贴板里的图片（截图工具贴图）：返回 PNG 字节，渲染层再包成 File 走既有贴图管线。
+    readImage: () => ipcRenderer.invoke('clip:readImage'),
   },
   // 剪贴板历史：自动采集的文字与图片。所有操作走 clipboard-history:* 一组 IPC，
   // 监听只在 MyIDE 进程存活期间进行（开关状态存在主进程的 settings.watch 里）。
