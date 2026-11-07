@@ -179,10 +179,11 @@ const AiPanel = (() => {
   const dshScope = () => ['reader','bookshelf'].includes(currentPage().id) ? 'reader' : 'project';
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
-  const dshCanSend = () => getConfig().engine !== 'dsh' || !dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch();
+  const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
+  const dshCanSend = () => getConfig().engine !== 'dsh' || (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
   function rejectDshSend() {
     if (dshCanSend()) return false;
-    MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess.error || '当前会话只读，无法确认续聊身份，请重新连接或新建对话', 'err');
+    MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess?.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess && dshSessionAccess.state !== 'ready' ? dshSessionAccess.error || '当前会话只读，无法确认续聊身份，请重新连接或新建对话' : '原模型不可用，请先选择可用模型后再发送', 'err');
     return true;
   }
 
@@ -1084,6 +1085,12 @@ const AiPanel = (() => {
     if(other.engine==='dsh')refreshDshOptions();return result;
   }
 
+  function showDshConnectedInfo(sessionId) {
+    if(backgroundView || dshScopeMismatch())return;
+    const info=document.getElementById('ai-dsh-info'),model=dshConfigOptions.find(option=>option.id==='model');
+    if(info){info.textContent=dshModelUnavailable()?'DSH 已连接 · 原模型不可用':'DSH 已连接';info.title=dshModelUnavailable()?model.unavailableReason||'原模型不可用，请选择可用模型':sessionId?'当前 DSH 会话：'+sessionId:'首次发送消息时创建 DSH 会话';}
+  }
+
   async function refreshDshOptions(apply=false,retry=false){
     if(getConfig().engine!=='dsh'||panel?.classList.contains('hidden'))return;
     // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
@@ -1104,15 +1111,15 @@ const AiPanel = (() => {
     setBusyUI(busy);
     if(!window.myIDE.ai.dshOptions)return;
     const own=++dshOptionsTicket,page=currentPage(),root=window.App?.root||'';
-    dshOptionsState='loading';refreshModelSel();
+    dshOptionsState='loading';refreshModelSel();setBusyUI(busy);
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 DSH…';info.title='读取桌面 DSH 的实际模型与推理选项';}
     if(!curSessionId){curSessionId='s-'+(window.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2));rememberSession();}
     const sessionId=curSessionId;let result;
     try{result=await window.myIDE.ai.dshOptions(getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!isProjectTool(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
     if(own!==dshOptionsTicket||getConfig().engine!=='dsh'||curSessionId!==sessionId||window.App?.root!==root||currentPage().id!==page.id)return;
-    if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));if(info){info.textContent='DSH 已连接';info.title=result.sessionId?'当前 DSH 会话：'+result.sessionId:'首次发送消息时创建 DSH 会话';}}
+    if(result?.ok){dshOptionsState='ready';dshConfigOptions=result.configOptions||[];MI.log?.('INFO','ai.dsh','连接成功，模型 '+(dshConfigOptions.find(option=>option.id==='model')?.currentValue||'未提供')+'，会话 '+(result.sessionId||'首次发送时创建'));showDshConnectedInfo(result.sessionId || dshSessionAccess?.hostId);}
     else{dshOptionsState='error';MI.log?.('WARN','ai.dsh',result?.error||'Harness 未连接');if(info){info.textContent='DSH 连接失败';info.title=result?.error||'Harness 未连接';}}
-    refreshModelSel();
+    refreshModelSel();setBusyUI(busy);
     if (result?.ok) {
       if (result.sessionId && dshSessionAccess?.state === 'ready') dshSessionAccess.hostId = result.sessionId;
       await ensureDshWatch();
@@ -1130,9 +1137,10 @@ const AiPanel = (() => {
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready'&&!dshScopeMismatch();sel.disabled=!ready;
-      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
-      sel.value=choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
-      const reasoning=dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
+      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
+      // 下架的是这条宿主会话的旧选择；全局缓存中另一个可用模型不能伪装成它已被替换。
+      sel.value=!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
+      const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
       if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
       const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;
       return;
@@ -1843,7 +1851,7 @@ const AiPanel = (() => {
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
     if (sendBtn) {
-      sendBtn.disabled = stopping || !b && !dshCanSend();
+      sendBtn.disabled = stopping || !b && !external && !dshCanSend();
       sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
       sendBtn.title = b ? '停止生成' : external ? '停止 DSH 当前会话（Enter 可继续发送）' : '发送（Enter）';
       sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
@@ -2273,12 +2281,20 @@ const AiPanel = (() => {
     watch.notice ||= createRunState();
     clearTimeout(currentRun?.notice?.hideTimer);
     if (state.connected === false) {
+      watch.disconnectedNotice = true;
       if (watch.notice.timer) { clearInterval(watch.notice.timer); watch.notice.timer = null; }
       clearTimeout(watch.notice.hideTimer);
       watch.notice.element?.classList.remove('hidden','running');
       if (watch.notice.textEl) watch.notice.textEl.textContent = state.error || 'DSH 连接中断，运行状态待确认';
     } else if (state.running) {
+      watch.disconnectedNotice = false;
       setRunState(watch, watch.stopping ? '正在停止 DSH 会话' : state.questions?.length ? 'DSH 等待回答' : state.permissions?.length ? 'DSH 等待授权' : state.preview?.thinking ? '深度求索' : 'DSH 正在生成');
+    } else if (watch.disconnectedNotice) {
+      // 重连到空闲态只撤回断线提示；没有新一轮生成，不能伪报“已完成”。
+      watch.disconnectedNotice = false;
+      clearTimeout(watch.notice.hideTimer);
+      watch.notice.element?.classList.add('hidden');
+      if (watch.notice.textEl) watch.notice.textEl.textContent = '';
     } else if (watch.wasRunning) setRunState(watch, 'DSH 已结束本轮生成', true);
     watch.wasRunning = state.running === true;
     setBusyUI(busy);
@@ -3352,7 +3368,7 @@ const AiPanel = (() => {
   async function handleDshEventCurrent(event){
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){setRunState(run,event.text);return;}
-    if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];refreshModelSel();return;}
+    if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='question'){
       sealDshSegment(run); sealActivityGroup();
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
@@ -3390,7 +3406,7 @@ const AiPanel = (() => {
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;setDshToolOutput(entry.row,output);}
         setRunState(run,'执行 '+(entry.call.name||'工具'));
       }
-      if(update.sessionUpdate==='usage_update'&&!backgroundView&&!dshScopeMismatch())document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
+      if(update.sessionUpdate==='usage_update'&&!backgroundView&&!dshScopeMismatch()&&!dshModelUnavailable())document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
       if(update.sessionUpdate==='myide_projection'){
         sealDshSegment(run);
         const group=toolRows.get(run.projection)?.group;
@@ -3437,8 +3453,14 @@ const AiPanel = (() => {
     const modelSel = document.getElementById('ai-model');
     if (modelSel) modelSel.onchange = async () => {
       const m = modelSel.value;
-      if (!m) return;
-      try { await setConfig(getConfig().engine==='dsh'?{dshModel:m}:{model:m}); MI.toast('已切换模型：' + m, 'ok'); }
+      if (!m || modelSel.selectedOptions[0]?.disabled) return;
+      try {
+        const dsh=getConfig().engine==='dsh';
+        // 旧强度属于失效模型/全局缓存；恢复时由 Native 为用户所选目标模型验证实际允许值。
+        await setConfig(dsh?{dshModel:m,...(dshModelUnavailable()?{dshReasoning:undefined}:{})}:{model:m});
+        if(dsh)await refreshDshOptions(true);
+        MI.toast('已切换模型：' + m, 'ok');
+      }
       catch (error) { refreshModelSel(); MI.toast(error.message, 'err'); }
     };
     if (sendBtn) {
@@ -3610,7 +3632,7 @@ const AiPanel = (() => {
     const sessions=loadSessions().map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
     return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg.dshModel,requestedReasoning:cfg.dshReasoning,reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
       dshWatch:dshWatch&&dshWatchWanted(dshWatch)?{watchId:dshWatch.watchId,hostId:dshWatch.hostId,scope:dshWatch.scope,revision:dshWatch.revision,cursor:dshWatch.state?.cursor,running:dshWatch.state?.running,connected:dshWatch.state?.connected,runId:dshWatch.state?.runId,syncPending:dshWatch.needsSync}:null,
-      models:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
+      models:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name,disabled:!!o.disabled})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
       reasoningOptions:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,dshSession:dshSessionAccess?{...dshSessionAccess,canSend:dshCanSend(),currentScope:dshScope(),scopeMessage:dshScopeMismatch()?dshScopeError():''}:null,sessions,
       tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
       context:ctxFiles.map(f=>({id:f.path,path:f.path,characters:String(f.content||'').length,auto:!!f.auto,pinned:!!f.pin,directory:!!f.isDir})),attachments:pendingImages.map((_,i)=>({id:'image-'+i,kind:'image',ready:true})),budget:{characters:MAX_CTX,attached:ctxFiles.reduce((n,f)=>n+String(f.content||'').length,0)}};
@@ -3622,7 +3644,7 @@ const AiPanel = (() => {
     if(a.operation==='stop'&&a.task!==currentRun?.identity.requestId){const record=[...backgroundRuns.values()].find(r=>r.run.identity.requestId===a.task&&r.run.identity.rootId===(App.root||''));if(!record)F('TASK_NOT_FOUND','任务不属于当前项目');const r=await myIDE.ai.abort(record.run.stream.context);if(!r?.ok)F('STOP_UNCONFIRMED',r?.error||'未确认停止');withBackgroundView(record,()=>{record.run.controller.abort();endRun(record.run,'cancelled');});return {ok:true,committed:true,task:a.task,status:record.run.status};}
     if(a.operation==='stop'&&!a.task)F('INVALID_TOOL_ARGS','停止必须明确指定任务ID');
     if(['switch','archive'].includes(a.operation)&&!loadSessions().some(s=>s.id===a.session))F('SESSION_NOT_FOUND','会话不属于当前项目');
-    if(a.operation==='model'){const st=aiState();if(a.model&&!st.models.some(m=>m.id===a.model))F('MODEL_UNAVAILABLE','模型不在当前后端实际选项中');if(a.reasoning&&!st.reasoningOptions.some(o=>o.id===a.reasoning))F('REASONING_UNAVAILABLE','推理强度不可用');}
+    if(a.operation==='model'){const st=aiState();if(a.model&&!st.models.some(m=>m.id===a.model&&!m.disabled))F('MODEL_UNAVAILABLE','模型不在当前后端实际选项中');if(a.reasoning&&!st.reasoningOptions.some(o=>o.id===a.reasoning))F('REASONING_UNAVAILABLE','推理强度不可用');}
     const perform=async()=>{
       const scope=sessKey();
       if(a.operation==='new'){document.getElementById('ai-new').click();if(!curSessionId)curSessionId='s-'+crypto.randomUUID();saveSessions([{id:curSessionId,title:'新会话',ts:Date.now(),msgs:[],usage:{...usageSum}},...loadSessions()]);}
@@ -3630,7 +3652,7 @@ const AiPanel = (() => {
       else if(a.operation==='archive'){persistSession();const all=loadSessions();if(curSessionId===a.session)document.getElementById('ai-new').click();const item=all.find(s=>s.id===a.session);item.archived=true;saveSessions(all);}
       else if(a.operation==='stop'){stopRun();for(let n=0;n<200&&currentRun?.status==='stopping';n++)await new Promise(r=>setTimeout(r,25));if(currentRun?.status==='stopping')F('STOP_UNCONFIRMED','停止尚未结算');}
       else if(a.operation==='reconnect'){if(getConfig().engine!=='dsh')F('ENGINE_MISMATCH','当前不是DSH模式');if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions(false,true);if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
-      else if(a.operation==='model'){await setConfig(getConfig().engine==='dsh'?{...(a.model?{dshModel:a.model}:{}),...(a.reasoning?{dshReasoning:a.reasoning}:{})}:{model:a.model||getConfig().model});if(getConfig().engine==='dsh'){App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
+      else if(a.operation==='model'){await setConfig(getConfig().engine==='dsh'?{...(a.model?{dshModel:a.model,...(dshModelUnavailable()?{dshReasoning:undefined}:{})}:{}),...(a.reasoning?{dshReasoning:a.reasoning}:{})}:{model:a.model||getConfig().model});if(getConfig().engine==='dsh'){App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
       if(['new','switch','archive'].includes(a.operation)){if(sessKey()!==scope)F('PROJECT_CHANGED','会话范围已变化');const persisted=loadSessions();if(a.operation==='new'&&!persisted.some(s=>s.id===curSessionId)||a.operation==='archive'&&!persisted.some(s=>s.id===a.session&&s.archived)||a.operation==='switch'&&curSessionId!==a.session)F('SESSION_SAVE_FAILED','会话变更尚未确认持久化');}
       return {ok:true,committed:true,...aiState()};
     };

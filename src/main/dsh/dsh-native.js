@@ -69,8 +69,11 @@ function stripPlugin(lines){
   return out;
 }
 function modelInfo(catalog,selection){return catalog.groups.flatMap(group=>group.models.map(item=>({...item,provider:group.id}))).find(item=>item.provider===selection.provider&&item.id===selection.model);}
+function unavailableModelReason(selection){return '原模型已不可用 · '+selection.provider+' / '+selection.model;}
 function selectionWithReasoning(catalog,selection,previous){
-  const next={...selection},reasoning=modelInfo(catalog,next)?.reasoning,efforts=reasoning?.efforts||[];
+  const next={...selection},model=modelInfo(catalog,next);
+  if(!model)throw Error(unavailableModelReason(next)+'，请选择可用模型');
+  const reasoning=model.reasoning,efforts=reasoning?.efforts||[];
   if(next.reasoningEffort){if(!efforts.some(effort=>effort.id===next.reasoningEffort))throw Error('当前模型不支持推理强度 '+next.reasoningEffort+'，请重新选择');return next;}
   // WorkBuddy 的目录可能只声明允许值，没有 defaultEffort；省略强度会让适配器发出被上游拒绝的默认请求。
   // 模型切换优先保留仍可用的明确选择，否则使用目录默认，再从已公布值选择；不合成新的强度。
@@ -146,8 +149,12 @@ function foldHistory(records){
   return turns.map(item=>({turn:item.turn,parts:item.parts})).filter(item=>item.parts.length);
 }
 function configOptions(catalog,selected){
-  const selection=selectionWithReasoning(catalog,selected||catalog.default),model=modelInfo(catalog,selection);
-  const options=[{id:'model',name:'模型',type:'select',currentValue:JSON.stringify([selection.provider,selection.model]),options:catalog.groups.map(group=>({group:group.id,name:group.name,options:group.models.map(item=>({value:JSON.stringify([group.id,item.id]),name:item.name}))}))}];
+  if(!catalog.groups.some(group=>group.models.length))throw Error('原生 DSH 当前没有可用模型，请检查宿主模型配置');
+  const current=selected||catalog.default,model=modelInfo(catalog,current),selection=model?selectionWithReasoning(catalog,current):current;
+  const option={id:'model',name:'模型',type:'select',currentValue:JSON.stringify([selection.provider,selection.model]),available:!!model,options:catalog.groups.map(group=>({group:group.id,name:group.name,options:group.models.map(item=>({value:JSON.stringify([group.id,item.id]),name:item.name}))}))};
+  // 宿主保留的历史模型可能已下架；目录必须仍可打开，让用户明确改选，而不是替用户换默认模型。
+  if(!model){const reason=unavailableModelReason(selection);option.unavailableReason=reason+'，请选择可用模型';option.options.unshift({group:'current-session',name:'当前会话',options:[{value:option.currentValue,name:reason,disabled:true}]});}
+  const options=[option];
   if(model?.reasoning?.efforts.length)options.push({id:'reasoning_effort',name:'推理',type:'select',currentValue:selection.reasoningEffort,options:model.reasoning.efforts.map(effort=>({value:effort.id,name:effort.name}))});
   return options;
 }
@@ -188,7 +195,8 @@ class NativeRpc extends EventEmitter {
   notifyUpdate(id,update){this.emit('notification',{method:'session/update',params:{sessionId:id,update}});}
   async refreshOptions(id){
     const catalog=await this.call('session/modelCatalog'),projection=await this.call('session/projections',{request:{sessionId:id}}),selected=projection?.values?.modelSelection?.next||projection?.values?.modelSelection?.lastUsed||catalog.default;
-    const normalized=selectionWithReasoning(catalog,selected);
+    // 失效历史选择只读保留：既不能把缺失模型误报为推理强度错误，也不能在查看目录时改写它。
+    const normalized=modelInfo(catalog,selected)?selectionWithReasoning(catalog,selected):{...selected};
     if(normalized.reasoningEffort!==selected.reasoningEffort)await this.call('session/selectModel',{request:{sessionId:id,...normalized}});
     const previous=this.sessions.get(id);this.sessions.set(id,{...previous,catalog,selected:normalized});return {configOptions:configOptions(catalog,normalized)};
   }
@@ -271,7 +279,7 @@ class NativeRpc extends EventEmitter {
     if(method==='session/config_options')return this.refreshOptions(params.sessionId);
     if(method==='session/set_config_option'){
       let selected={...state.selected};
-      if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);if(!state.catalog.groups.some(group=>group.id===provider&&group.models.some(item=>item.id===model)))throw Error('该模型不在原生 DSH 目录中');selected=selectionWithReasoning(state.catalog,{provider,model},state.selected);}
+      if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);selected=selectionWithReasoning(state.catalog,{provider,model},state.selected);}
       else if(params.configId==='reasoning_effort'){delete selected.reasoningEffort;if(params.value)selected.reasoningEffort=params.value;selected=selectionWithReasoning(state.catalog,selected,state.selected);}
       else throw Error('不支持的原生会话选项');
       const result=await this.call('session/selectModel',{request:{sessionId:params.sessionId,...selected}});state.selected=result.selected;return {configOptions:configOptions(state.catalog,state.selected)};
@@ -280,6 +288,8 @@ class NativeRpc extends EventEmitter {
     throw Error('不支持的原生 DSH 操作：'+method);
   }
   async prompt(params,state){
+    if(!state.catalog||!state.selected)throw Error('原生会话模型信息缺失，请重新连接');
+    if(!modelInfo(state.catalog,state.selected))throw Error(unavailableModelReason(state.selected)+'，请选择可用模型');
     const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
     const reader=response.body.getReader(),decoder=new TextDecoder(),requestId=crypto.randomUUID();let buffer='',started=false,accepted=false,candidateTurn=null,activeTurn=null,lastSeq=-1,lastError=null;
     try{

@@ -2,6 +2,11 @@ const assert=require('assert/strict'),fs=require('fs/promises'),path=require('pa
 const {install,nativeUrl,configOptions,NativeRpc,selectionWithReasoning,turnFailure,connectNative}=require('../src/main/dsh/dsh-native');
 let count=0;const test=async(name,fn)=>{await fn();console.log('PASS '+name);count++;};
 const catalog={default:{provider:'desktop-plugin',model:'native-v4.1',reasoningEffort:'high'},groups:[{id:'desktop-plugin',name:'原生插件',models:[{id:'native-v4.1',name:'原生模型',reasoning:{efforts:[{id:'high',name:'High'}],defaultEffort:'high'}}]}]};
+const missingSelection=Object.freeze({provider:'workbuddy-global',model:'deepseek-v4.1-flash',reasoningEffort:'high'});
+const recoveryCatalog={default:{provider:'openai-codex',model:'gpt-6.1-sol',reasoningEffort:'xhigh'},groups:[
+ {id:'workbuddy-global',name:'WorkBuddy',models:[{id:'available',name:'可用模型',reasoning:{efforts:[{id:'low',name:'Low'},{id:'high',name:'High'}],defaultEffort:'low'}}]},
+ {id:'openai-codex',name:'Codex',models:[{id:'gpt-6.1-sol',name:'可用默认模型',reasoning:{efforts:[{id:'xhigh',name:'XHigh'}],defaultEffort:'xhigh'}},{id:'no-reasoning',name:'无推理选项模型'}]},
+]};
 const id='myide-00000000-0000-4000-8000-000000000001';
 const mcpServers=[{url:'http://127.0.0.1:99/mcp',headers:[{name:'Authorization',value:'Bearer fixture'},{name:'X-MyIDE-Session',value:'session'}]}];
 // fetch 注入只锁 RPC 契约，不能据此宣称真实 Electron / DSH 已通过验收。
@@ -31,7 +36,7 @@ async function bridgeFixture(){
     if(kind!=='disconnect')events.push(event(8,'turn/end',{turn:2,reason:kind==='error'?{kind,error:{code:'INVALID_REQUEST',message:'400: 模型不支持该思考强度，请调整'}}:{kind}}));
     write(events);output.close();return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{accepted:true}}});
    });
-   rpc.sessions.set(id,{});const emitted=[];rpc.on('notification',value=>emitted.push(value));
+   rpc.sessions.set(id,{catalog,selected:catalog.default});const emitted=[];rpc.on('notification',value=>emitted.push(value));
    try{
     const pending=rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'generic task'}]});
     if(kind==='completed')assert.equal((await pending).stopReason,'end_turn');else await assert.rejects(pending,kind==='error'?error=>error.message.includes('INVALID_REQUEST')&&error.message.includes('模型不支持该思考强度'):undefined);
@@ -54,7 +59,7 @@ async function bridgeFixture(){
    ]);
    submitted();return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{accepted:true}}});
   });
-  rpc.sessions.set(id,{});const emitted=[];rpc.on('notification',value=>emitted.push(value));
+  rpc.sessions.set(id,{catalog,selected:catalog.default});const emitted=[];rpc.on('notification',value=>emitted.push(value));
   const pending=rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'本次请求'}]}).then(value=>{settled=true;return {value};},error=>{settled=true;return {error};});
   try{
    await ready;await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false,'别轮 completed/error 不能提前结束本请求');assert.deepEqual(emitted,[],'别人的文字不能转发到本轮');
@@ -113,6 +118,120 @@ async function bridgeFixture(){
  });
  await test('刷新模型选项读取宿主真实选择，连接失效不继续展示缓存为成功',async()=>{
   let alive=true;const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{if(!alive)throw TypeError('fetch failed');const envelope=JSON.parse(init.body),value=envelope.method==='session/modelCatalog'?catalog:{values:{modelSelection:{next:catalog.default}}};return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});});rpc.sessions.set(id,{catalog,selected:catalog.default});assert.equal((await rpc.request('session/config_options',{sessionId:id})).configOptions[0].currentValue,JSON.stringify(['desktop-plugin','native-v4.1']));alive=false;await assert.rejects(rpc.request('session/config_options',{sessionId:id}));assert(rpc.closed);
+ });
+ await test('缺失模型先报确切身份不可用，不把历史 high 误报为推理强度错误',()=>{
+  for(const selected of [missingSelection,{...missingSelection,provider:'removed-provider'}]){
+   assert.throws(()=>selectionWithReasoning(recoveryCatalog,selected),error=>error.message.includes('原模型已不可用')&&error.message.includes(selected.provider+' / '+selected.model)&&!error.message.includes('不支持推理强度'));
+  }
+  assert.throws(()=>selectionWithReasoning(recoveryCatalog,{provider:'workbuddy-global',model:'available',reasoningEffort:'xhigh'}),/不支持推理强度 xhigh/);
+  assert.throws(()=>configOptions(recoveryCatalog,{provider:'workbuddy-global',model:'available',reasoningEffort:'xhigh'}),/不支持推理强度 xhigh/,'真实存在模型的非法强度仍严格校验');
+ });
+ await test('失效模型目录保留旧 pair 的禁用占位和真实目录，不展示无效推理强度或改动输入',()=>{
+  const before=JSON.stringify(recoveryCatalog),options=configOptions(recoveryCatalog,missingSelection),option=options[0],pair=JSON.stringify([missingSelection.provider,missingSelection.model]);
+  assert.equal(options.length,1);assert.equal(option.id,'model');assert.equal(option.currentValue,pair);assert.equal(option.available,false);
+  assert.match(option.unavailableReason,/workbuddy-global \/ deepseek-v4\.1-flash/);
+  assert.deepEqual(option.options[0],{group:'current-session',name:'当前会话',options:[{value:pair,name:'原模型已不可用 · workbuddy-global / deepseek-v4.1-flash',disabled:true}]});
+  assert.deepEqual(option.options.slice(1).map(group=>group.group),['workbuddy-global','openai-codex']);
+  assert(option.options.flatMap(group=>group.options).some(item=>item.value===JSON.stringify(['workbuddy-global','available'])&&!item.disabled));
+  assert.equal(missingSelection.reasoningEffort,'high');assert.equal(JSON.stringify(recoveryCatalog),before);
+  assert.equal(configOptions(recoveryCatalog)[0].available,true);
+ });
+ await test('刷新 next 或 lastUsed 的失效历史选择可读目录且零 selectModel，不回落宿主默认',async()=>{
+  for(const modelSelection of [{next:missingSelection,lastUsed:recoveryCatalog.default},{lastUsed:missingSelection}]){
+   const calls=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+    const envelope=JSON.parse(init.body);calls.push(envelope.method);
+    const value=envelope.method==='session/modelCatalog'?recoveryCatalog:{values:{modelSelection}};
+    return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+   });
+   try{
+    const marker={};rpc.sessions.set(id,{catalog:recoveryCatalog,selected:recoveryCatalog.default,marker});
+    const result=await rpc.request('session/config_options',{sessionId:id});
+    assert.equal(result.configOptions[0].currentValue,JSON.stringify([missingSelection.provider,missingSelection.model]));assert.equal(result.configOptions[0].available,false);
+    assert.deepEqual(rpc.sessions.get(id).selected,missingSelection);assert.equal(rpc.sessions.get(id).marker,marker);assert.equal(rpc.closed,false);
+    assert.deepEqual(calls,['session/modelCatalog','session/projections']);
+   }finally{rpc.close();}
+  }
+ });
+ await test('失效模型 resume 保留原 ID 和 MCP attach，不创建会话、不自动改用默认模型',async()=>{
+  const calls=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
+   const value=envelope.method==='session/modelCatalog'?recoveryCatalog:envelope.method==='session/projections'?{values:{modelSelection:{next:missingSelection,lastUsed:missingSelection}}}:{};
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  try{
+   rpc.existing.add(id);
+   const result=await rpc.request('session/resume',{sessionId:id,existing:true,cwd:'D:/fixture-workspace',mcpServers});
+   assert.equal(result.sessionId,id);assert.equal(result.configOptions[0].available,false);assert.deepEqual(rpc.sessions.get(id).selected,missingSelection);
+   assert.deepEqual(calls.map(call=>call.method),['session/projections','myide/attach','session/modelCatalog','session/projections']);
+   assert.deepEqual(calls[1].args,{request:{sessionId:id,cwd:'D:/fixture-workspace',url:mcpServers[0].url,headers:{Authorization:'Bearer fixture','X-MyIDE-Session':'session'}}});
+  }finally{rpc.close();}
+ });
+ await test('明确选择失效占位或为存在模型选择非法强度都拒绝且零写',async()=>{
+  const calls=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{calls.push(url);throw Error('unexpected host write');});
+  try{
+   const state={catalog:recoveryCatalog,selected:missingSelection};rpc.sessions.set(id,state);
+   await assert.rejects(rpc.request('session/set_config_option',{sessionId:id,configId:'model',value:JSON.stringify([missingSelection.provider,missingSelection.model])}),/原模型已不可用.*workbuddy-global \/ deepseek/);
+   await assert.rejects(rpc.request('session/set_config_option',{sessionId:id,configId:'reasoning_effort',value:'high'}),/原模型已不可用/);
+   assert.equal(state.selected,missingSelection);
+   state.selected={provider:'workbuddy-global',model:'available',reasoningEffort:'high'};
+   await assert.rejects(rpc.request('session/set_config_option',{sessionId:id,configId:'reasoning_effort',value:'xhigh'}),/不支持推理强度 xhigh/);
+   assert.equal(state.selected.reasoningEffort,'high');assert.deepEqual(calls,[]);
+  }finally{rpc.close();}
+ });
+ await test('明确改选可用模型才写 selectModel，安全继承或使用目录默认强度，无推理模型不带旧 high',async()=>{
+  for(const expected of [{provider:'workbuddy-global',model:'available',reasoningEffort:'high'},recoveryCatalog.default,{provider:'openai-codex',model:'no-reasoning'}]){
+   const calls=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+    const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
+    const {sessionId,...selected}=envelope.payload.args.request;
+    return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:{selected}}});
+   });
+   try{
+    rpc.sessions.set(id,{catalog:recoveryCatalog,selected:missingSelection});
+    const result=await rpc.request('session/set_config_option',{sessionId:id,configId:'model',value:JSON.stringify([expected.provider,expected.model])});
+    assert.deepEqual(calls,[{method:'session/selectModel',args:{request:{sessionId:id,...expected}}}]);assert.deepEqual(rpc.sessions.get(id).selected,expected);
+    assert.equal(result.configOptions[0].available,true);assert.equal(result.configOptions[0].unavailableReason,undefined);
+    assert(!result.configOptions[0].options.flatMap(group=>group.options).some(option=>option.disabled));
+    assert.equal(result.configOptions.find(option=>option.id==='reasoning_effort')?.currentValue,expected.reasoningEffort);
+   }finally{rpc.close();}
+  }
+ });
+ await test('失效选择发送在 follow 前拒绝且零 prompt，明确改选后不自动重发、仅新发送正常执行',async()=>{
+  const calls=[],event=(seq,type,data)=>({type:'session',value:{type:'event',event:{seq,type,data}}});let output;
+  const write=frames=>output.enqueue(Buffer.from(frames.map(frame=>JSON.stringify(frame)).join('\n')+'\n'));
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   if(url.endsWith('/myide/follow')){calls.push({method:'follow'});return new Response(new ReadableStream({start(controller){output=controller;write([{type:'session',value:{type:'snapshot',cursor:0,records:[]}}]);}}));}
+   const envelope=JSON.parse(init.body),request=envelope.payload.args.request;calls.push({method:envelope.method,args:envelope.payload.args});let value;
+   if(envelope.method==='session/selectModel'){const {sessionId,...selected}=request;value={selected};}
+   else{
+    assert.equal(envelope.method,'session/prompt');assert.deepEqual(request.content,[{type:'text',text:'用户明确重新发送'}]);
+    write([event(1,'turn/start',{turn:1}),event(2,'user/message',{source:{kind:'user',rpcId:request.requestId},content:request.content}),event(3,'assistant/message',{message:{id:'reply',content:[{type:'text',text:'新请求回答'}]}}),event(4,'turn/end',{turn:1,reason:{kind:'completed'}})]);output.close();value={accepted:true};
+   }
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  try{
+   const state={catalog:recoveryCatalog,selected:missingSelection};rpc.sessions.set(id,state);
+   await assert.rejects(rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'此前失败的任务'}]}),error=>error.message.includes('原模型已不可用 · workbuddy-global / deepseek-v4.1-flash')&&!error.message.includes('不支持推理强度'));
+   assert.deepEqual(calls,[]);assert.equal(state.controller,undefined);assert.equal(state.selected,missingSelection);assert.equal(rpc.closed,false);
+   await rpc.request('session/set_config_option',{sessionId:id,configId:'model',value:JSON.stringify(['workbuddy-global','available'])});
+   assert.deepEqual(calls.map(call=>call.method),['session/selectModel'],'改选本身不重发之前的任务');
+   const result=await rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'用户明确重新发送'}]});assert.equal(result.stopReason,'end_turn');
+   assert.deepEqual(calls.map(call=>call.method),['session/selectModel','follow','session/prompt']);assert.equal(state.controller,null);
+  }finally{rpc.close();}
+ });
+ await test('完全没有可用模型时明确失败，不制造占位目录或写默认模型',async()=>{
+  const empty={...recoveryCatalog,groups:recoveryCatalog.groups.map(group=>({...group,models:[]}))},calls=[];
+  assert.throws(()=>configOptions(empty,missingSelection),/没有可用模型/);
+  const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
+   const envelope=JSON.parse(init.body);calls.push(envelope.method);const value=envelope.method==='session/modelCatalog'?empty:{values:{modelSelection:{next:recoveryCatalog.default}}};
+   return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+  });
+  try{
+   rpc.sessions.set(id,{catalog:recoveryCatalog,selected:recoveryCatalog.default});
+   await assert.rejects(rpc.request('session/config_options',{sessionId:id}),/没有可用模型/);
+   assert.deepEqual(rpc.sessions.get(id).selected,recoveryCatalog.default);assert.deepEqual(rpc.sessions.get(id).catalog,empty);
+   await assert.rejects(rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'不可发送'}]}),/原模型已不可用.*openai-codex \/ gpt-6\.1-sol/);
+   assert.deepEqual(calls,['session/modelCatalog','session/projections'],'目录清空后不能继续使用旧缓存打开 follow 或提交 prompt');
+  }finally{rpc.close();}
  });
  await test('请求超时释放连接供重新发现，用户主动停止不关闭正常宿主连接',async()=>{for(const name of ['TimeoutError','AbortError']){const controller=new AbortController();controller.abort(new DOMException('stop',name));const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async()=>{throw controller.signal.reason;});await assert.rejects(rpc.http('http://127.0.0.1:12',{signal:controller.signal}));assert.equal(rpc.closed,name==='TimeoutError');rpc.close();}});
  await test('查看模型目录不创建会话或工作区，首次用户文本独立保留，不追加界面观察指令',async()=>{const endpoints=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{const envelope=JSON.parse(init.body);endpoints.push(envelope.method);return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:catalog}});});assert((await rpc.request('session/catalog',{})).configOptions.length);assert.deepEqual(endpoints,['session/modelCatalog']);assert.equal(rpc.sessions.size,0);const blocks=require('../src/main/dsh/ai-dsh').promptContent([{role:'user',content:'真正的问题'}],{id:'launch',projectContext:false});assert.equal(blocks[0].text,'真正的问题');assert.deepEqual(blocks,[{type:'text',text:'真正的问题'}]);rpc.close();});

@@ -122,6 +122,27 @@ const nativeFixture=({check={canContinue:true},checkError,resumeError,id='myide-
   return {sessionId:id,configOptions};};
  return {rpc,requests};
 };
+await test('原会话模型下架不能借全局缓存自动换模型或发送，显式改选只改配置且保留身份',async()=>{
+  const native=nativeFixture(),id='session-removed-model',c={...context(81),sessionId:id};
+  const stale=[{id:'model',type:'select',currentValue:'removed-model',available:false,unavailableReason:'原模型已不可用，请先选择可用模型',options:[{value:'removed-model',name:'已下架',disabled:true},{value:'native-other',name:'可用模型'}]}];
+  let actual=stale;native.rpc.request=async(method,params)=>{native.requests.push({method,params});
+   if(method==='session/check')return {canContinue:true};
+   if(method==='session/set_config_option'){actual=[{...configOptions[0],currentValue:params.value}];return {sessionId:id,configOptions:actual};}
+   if(method==='session/prompt')return {stopReason:'end_turn'};
+   return {sessionId:params?.sessionId||id,configOptions:actual};
+  };
+  const service=createService({home:path.join(temp,'removed-model-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   assert((await service.bindSession({},c,id)).canContinue);
+   const answer=await service.chat({dshModel:'native-other'},[{role:'user',content:'不得自动提交的请求'}],[],c,()=>{},()=>{});
+   assert.equal(answer.ok,false);assert.match(answer.error,/原模型已不可用/);assert(!native.requests.some(r=>['session/new','session/prompt','session/set_config_option'].includes(r.method)));
+   const options=await service.inspect({},c,[]);assert.equal(options.ok,true);assert.equal(options.configOptions[0].currentValue,'removed-model');assert.equal(options.configOptions[0].available,false);
+   const selected=await service.inspect({dshModel:'native-other'},c,[],true);assert.equal(selected.ok,true);assert.equal(selected.configOptions[0].currentValue,'native-other');
+   assert.equal(native.requests.filter(r=>r.method==='session/set_config_option').length,1);assert(!native.requests.some(r=>r.method==='session/prompt'||r.method==='session/new'));
+   assert((await service.chat({},[{role:'user',content:'改选后用户明确的新请求'}],[],{...c,requestId:'r-82'},()=>{},()=>{})).ok);
+   assert.equal(native.requests.find(r=>r.method==='session/prompt').params.sessionId,id);assert.equal(native.requests.filter(r=>r.method==='session/prompt').length,1);
+  }finally{await service.dispose();}
+ });
 await test('同 key 的 bind 等待旧 attach，不能把活动 H 改成 G 或让旧结果回写映射',async()=>{
  const gate=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
  const within=promise=>{let timer;return Promise.race([promise,new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(Error('身份竞态夹具等待超时')),3000);})]).finally(()=>clearTimeout(timer));};

@@ -10,6 +10,11 @@ async function until(fn) { for (let n = 0; n < 200; n++) { if (fn()) return; awa
 const writeCall = (path = 'one.md', content = 'MODEL', id = 'w1') => ({ id, name: 'write_file', args: { path, content } });
 const reply = (...calls) => ({ ok: true, status: 'completed', complete: true, finishReason: calls.length ? 'tool_calls' : 'stop', text: '', toolCalls: calls });
 const fixtures = []; let passed = 0;
+const retiredModel = JSON.stringify(['fixture-provider','retired-model']), availableModel = JSON.stringify(['fixture-provider','available-model']);
+const unavailableReason = '原模型 fixture-provider / retired-model 已不可用，请选择当前可用模型后继续原会话';
+const unavailableOptions = (grouped = false) => [{id:'model',available:false,unavailableReason,currentValue:retiredModel,
+  options:grouped?[{name:'fixture-provider',options:[{value:retiredModel,name:'原模型（不可用）',disabled:true},{value:availableModel,name:'可用模型'}]}]:[{value:retiredModel,name:'原模型（不可用）',disabled:true},{value:availableModel,name:'可用模型'}]}];
+const availableOptions = () => [{id:'model',currentValue:availableModel,options:[{value:availableModel,name:'可用模型'}]}];
 function fixture(inspectReplay = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-ai-panel-run-')), A = path.join(dir, 'A'), B = path.join(dir, 'B');
   [A, B].forEach(p => fs.mkdirSync(p)); const created = new Set();
@@ -700,6 +705,49 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(),pending=defer();let inspections=0;f.w.myIDE.ai.dshOptions=async()=>{inspections++;return inspections<=2?pending.promise:{ok:true,configOptions:[{id:'model',currentValue:'actual',options:[{value:'actual',name:'实际DSH模型'}]},{id:'reasoning_effort',currentValue:'high',options:[{value:'high',name:'High'}]}]};};
     f.element('#ai-panel').classList.remove('hidden');await f.w.AiPanel.setConfig({engine:'dsh'});assert(f.element('#ai-model').disabled);assert(!f.element('#ai-model').textContent.includes('默认'));assert(f.element('#ai-dsh-reasoning').classList.contains('hidden'));pending.resolve({ok:false,error:'DSH未启动'});await tick();await tick();assert.equal(f.element('#ai-dsh-info').textContent,'DSH 连接失败');assert(!f.element('#ai-dsh-reconnect').disabled);f.element('#ai-dsh-reconnect').click();await until(()=>f.element('#ai-model').value==='actual');assert(!f.element('#ai-model').disabled);assert.equal(f.element('#ai-dsh-reasoning').value,'high');assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接');assert.equal(f.calls.length,0);await tick();await tick();
   });
+  await test('原模型不可用仍ready并保留宿主历史和watch，flat/grouped占位selected且不采纳全局缓存',async()=>{
+    for(const grouped of [false,true]){
+      const f=fixture();f.enableWatch();await f.w.AiPanel.setConfig({dshModel:availableModel,dshReasoning:'xhigh'});
+      const options=[];f.w.myIDE.ai.dshOptions=async(cfg,id,_tools,apply)=>{options.push({cfg,id,apply});return {ok:true,sessionId:'session-unavailable-'+grouped,configOptions:unavailableOptions(grouped)};};
+      const route=await f.openHost('session-unavailable-'+grouped,'旧模型的宿主历史仍可读');await until(()=>f.w.AiPanel.aiState().dshState==='ready');
+      const state=f.w.AiPanel.aiState(),selector=f.element('#ai-model');assert.equal(state.dshSession.state,'ready');assert.equal(state.dshSession.canSend,false);assert.equal(state.current,route.sessionId);assert.equal(state.dshSession.hostId,route.hostId);assert.equal(state.dshWatch.watchId,route.watchId);assert(f.text().includes('旧模型的宿主历史仍可读'));
+      assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接 · 原模型不可用');assert.equal(f.element('#ai-dsh-info').title,unavailableReason);assert(!selector.disabled);assert.equal(selector.value,retiredModel);assert.equal(selector.options.length,2);assert(selector.selectedOptions[0].disabled);assert(![...selector.options].find(o=>o.value===availableModel).disabled);assert(state.models.find(o=>o.id===retiredModel).disabled);assert(!state.models.find(o=>o.id===availableModel).disabled);
+      assert(f.element('#ai-dsh-reasoning').classList.contains('hidden'));assert(f.element('label[for="ai-dsh-reasoning"]').classList.contains('hidden'));assert.equal(f.element('#ai-dsh-reasoning').options.length,0);assert(f.element('#ai-send').disabled);
+      const toasts=[];f.w.MI.toast=text=>toasts.push(text);const before=f.element('#ai-msgs').innerHTML;f.element('#ai-input').value='不可静默排队的旧任务';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));f.element('#ai-send').onclick();assert.equal(f.send('程序入口也应拒绝'),false);await tick();
+      assert.equal(f.element('#ai-msgs').innerHTML,before);assert.equal(f.element('#ai-input').value,'不可静默排队的旧任务');assert(toasts.every(text=>text.includes('选择可用模型')));assert.equal(toasts.length,3);assert.equal(f.calls.length,0);assert(options.every(o=>!o.apply&&o.id===route.sessionId));assert.equal(f.binds.length,1);assert.equal(f.w.AiPanel.getConfig().dshModel,availableModel);assert.equal(f.w.AiPanel.getConfig().dshReasoning,'xhigh');
+    }
+  });
+  await test('明确选择可用模型仅apply一次且清旧推理，loading期间仍禁发，确认后原session可发但不重发历史',async()=>{
+    const f=fixture(),gate=defer(),options=[];f.enableWatch();await f.w.AiPanel.setConfig({dshModel:availableModel,dshReasoning:'xhigh'});
+    f.w.myIDE.ai.dshOptions=async(cfg,id,_tools,apply)=>{options.push({cfg,id,apply});return apply?gate.promise:{ok:true,configOptions:unavailableOptions(true)};};
+    const route=await f.openHost('session-unavailable-recover','以前的任务不要重发');await until(()=>f.w.AiPanel.aiState().dshState==='ready');
+    const selector=f.element('#ai-model'),binds=f.binds.length,watchCount=f.watches.length;await selector.onchange();assert.equal(options.filter(o=>o.apply).length,0);assert.equal(f.w.AiPanel.getConfig().dshReasoning,'xhigh');
+    f.w.AiWorkbench={fail(code,text){throw Object.assign(Error(text),{code});}};
+    await assert.rejects(f.w.AiPanel.aiControl({args:{operation:'model',model:retiredModel}},{}),error=>error.code==='MODEL_UNAVAILABLE');assert.equal(options.filter(o=>o.apply).length,0);
+    selector.value=availableModel;const selection=selector.onchange();await until(()=>options.some(o=>o.apply));assert.equal(f.w.AiPanel.aiState().dshState,'loading');assert.equal(f.w.AiPanel.aiState().dshSession.canSend,false);assert(f.element('#ai-send').disabled);assert.equal(selector.value,retiredModel);assert.equal(f.w.AiPanel.getConfig().dshReasoning,undefined);assert.equal(options.find(o=>o.apply).cfg.dshReasoning,undefined);assert.equal(options.find(o=>o.apply).id,route.sessionId);
+    const before=f.element('#ai-msgs').innerHTML;f.element('#ai-input').value='确认前不允许发送';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));assert.equal(f.send('确认前程序入口'),false);assert.equal(f.calls.length,0);assert.equal(f.element('#ai-msgs').innerHTML,before);
+    gate.resolve({ok:true,configOptions:availableOptions()});await selection;await tick();assert.equal(options.filter(o=>o.apply).length,1);assert.equal(f.w.AiPanel.aiState().dshState,'ready');assert.equal(f.w.AiPanel.aiState().dshSession.canSend,true);assert(!f.element('#ai-send').disabled);assert.equal(selector.value,availableModel);assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接');assert(!f.element('#ai-dsh-info').title.includes('不可用'));assert(f.element('#ai-dsh-reasoning').classList.contains('hidden'));assert.equal(f.element('#ai-dsh-reasoning').value,'');assert.equal(f.w.AiPanel.getConfig().dshReasoning,undefined);assert(!Object.hasOwn(JSON.parse(f.w.localStorage.getItem('myide-ai-cfg')),'dshReasoning'));
+    assert.equal(f.calls.length,0);assert.equal(f.element('#ai-msgs').innerHTML,before);assert.equal(f.w.AiPanel.aiState().current,route.sessionId);assert.equal(f.w.AiPanel.aiState().dshSession.hostId,route.hostId);assert.equal(f.w.AiPanel.aiState().dshWatch.watchId,route.watchId);assert.equal(f.watches.length,watchCount);assert.equal(f.binds.length,binds);
+    assert.equal(f.send('用户明确发送的新任务'),true);await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');assert.equal(f.calls[0].context.sessionId,route.sessionId);assert.equal(f.w.AiPanel.aiState().dshSession.hostId,route.hostId);assert(!f.calls[0].messages.some(m=>String(m.content).includes('确认前不允许发送')));
+  });
+  await test('旧模型不可用不妨碍停止宿主外部running，Enter仍不能发送且scope保护优先',async()=>{
+    const f=fixture();f.enableWatch();f.w.myIDE.ai.dshOptions=async()=>({ok:true,configOptions:unavailableOptions()});const route=await f.openHost('session-unavailable-running');await until(()=>f.w.AiPanel.aiState().dshState==='ready');
+    f.watchPush({running:true,runId:'host-running'});assert.equal(f.element('#ai-send').textContent,'⏹');assert(!f.element('#ai-send').disabled);assert(!f.element('#ai-stop').disabled);
+    const toasts=[];f.w.MI.toast=text=>toasts.push(text);f.element('#ai-input').value='Enter不能绕过不可用模型';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();assert.equal(f.calls.length,0);assert.equal(f.hostControls.length,0);assert(toasts.at(-1).includes('选择可用模型'));
+    f.hostControl=(watchId)=>{const state=f.watchStates.get(watchId);f.watchStates.set(watchId,{...state,revision:state.revision+1,running:false});return {ok:true};};f.stop();await until(()=>f.hostControls.length===1&&f.element('#ai-send').textContent==='➤');assert.equal(f.hostControls[0].watchId,route.watchId);assert.equal(f.hostControls[0].action.operation,'stop');assert.equal(f.hostControls[0].action.runId,'host-running');assert(f.element('#ai-send').disabled);assert.equal(f.calls.length,0);
+    f.w.App.showTool('reader');assert.equal(f.send('scope不能被模型恢复放开'),false);assert(toasts.at(-1).includes('阅读页使用独立对话'));assert(f.element('#ai-model').disabled);assert.equal(f.w.AiPanel.aiState().dshSession.hostId,route.hostId);assert.equal(f.calls.length,0);
+  });
+  await test('config事件同步原模型不可用提示与禁发，usage不掩盖原因且失败后不重发',async()=>{
+    const f=fixture();f.w.App.showAi();f.w.myIDE.ai.dshOptions=async()=>({ok:true,configOptions:availableOptions()});await f.w.AiPanel.setConfig({engine:'dsh'});await until(()=>f.w.AiPanel.aiState().dshState==='ready');f.hold=true;f.send('配置事件前的显式请求');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    await f.dshEvent({type:'config',context,configOptions:unavailableOptions()});assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接 · 原模型不可用');assert.equal(f.element('#ai-dsh-info').title,unavailableReason);assert.equal(f.element('#ai-model').value,retiredModel);assert(f.element('#ai-model').selectedOptions[0].disabled);assert(!f.element('#ai-send').disabled);assert.equal(f.w.AiPanel.aiState().dshSession.canSend,false);
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'usage_update',used:100,size:1000}});assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接 · 原模型不可用');f.done(0,{ok:false,error:'原模型不可用'});await until(()=>f.element('#ai-send').textContent==='➤');assert(f.element('#ai-send').disabled);assert.equal(f.w.AiPanel.aiState().dshState,'ready');const before=f.element('#ai-msgs').innerHTML;assert.equal(f.send('不要自动另开会话'),false);assert.equal(f.element('#ai-msgs').innerHTML,before);assert.equal(f.calls.length,1);assert.equal(f.w.AiPanel.aiState().current,context.sessionId);
+  });
+  await test('空reasoning和无model选项不伪造默认或自动apply，正常宿主模型也不写全局选择',async()=>{
+    for(const configOptions of [[],[...availableOptions(),{id:'reasoning_effort',currentValue:'',options:[]}]]){
+      const f=fixture(),options=[];f.w.App.showAi();f.w.myIDE.ai.dshOptions=async(cfg,id,_tools,apply)=>{options.push({cfg,id,apply});return {ok:true,configOptions};};await f.w.AiPanel.setConfig({engine:'dsh'});await until(()=>f.w.AiPanel.aiState().dshState==='ready');await tick();
+      assert(f.element('#ai-dsh-reasoning').classList.contains('hidden'));assert.equal(f.element('#ai-dsh-reasoning').value,'');assert.equal(f.w.AiPanel.getConfig().dshModel,undefined);assert.equal(f.w.AiPanel.getConfig().dshReasoning,undefined);assert(options.every(o=>!o.apply&&!o.cfg.dshModel&&!o.cfg.dshReasoning));assert.equal(f.calls.length,0);assert(!f.element('#ai-model').textContent.includes('默认'));assert.equal(f.element('#ai-model').value,configOptions.length?availableModel:'');assert.equal(f.element('#ai-dsh-info').textContent,'DSH 已连接');
+    }
+  });
   await test('Harness重复项目通知和项目切回恢复当前会话，主动新建才换身份',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.send('保持这一段');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');const first=f.calls[0].context.sessionId;
     f.w.AiPanel.onProjectChange();assert(f.text().includes('保持这一段'));f.send('同项目继续');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');assert.equal(f.calls[1].context.sessionId,first);
@@ -1169,6 +1217,17 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.writes.length,0);assert.equal(f.commands.length,0);assert.equal(f.dshResults?.length||0,0);assert(!fs.existsSync(f.file('must-not-execute.md')));
     f.watchPush({turns:[],permissions:[],questions:[{id:'unanswered',questions:[]}],connected:false,error:'本地host已断线',interactionNotice:'请回DSH处理这个请求'});
     assert(!f.element('.ai-dsh-watch-pending'));assert(f.text().includes('本地host已断线'));assert(f.text().includes('请回DSH处理这个请求'));assert(f.text().includes('宿主自己执行'));assert(f.element('#ai-stop').classList.contains('hidden'));
+  });
+  await test('watch断流后重连idle立即撤下旧错误而不伪报完成，running恢复和own提示不被误隐藏',async()=>{
+    for(const running of [false,true]){
+      const f=fixture();f.enableWatch();f.watchStart=()=>{f.watchPush({connected:false,running});return {ok:true};};const route=await f.openHost('session-reconnected-idle-'+running),notice=f.element('#ai-runstate'),text=notice.querySelector('.ai-run-text');
+      assert(!notice.classList.contains('hidden'));assert(text.textContent.includes('DSH 连接中断，运行状态待确认'));
+      f.watchPush({connected:true,running:false});assert.equal(f.w.AiPanel.aiState().dshWatch.connected,true);assert(notice.classList.contains('hidden'));assert.equal(text.textContent,'');assert(!f.text().includes('DSH 已结束本轮生成'));assert.equal(f.w.AiPanel.aiState().dshWatch.watchId,route.watchId);assert.equal(f.watches.length,1);assert.equal(f.calls.length+f.hostControls.length+f.aborts.length,0);
+      f.watchPush({connected:false,running:false,error:'fixture断流'});assert(text.textContent.includes('fixture断流'));f.watchPush({connected:true,running:true});assert(!notice.classList.contains('hidden'));assert(notice.classList.contains('running'));assert(text.textContent.includes('DSH 正在生成'));assert(!text.textContent.includes('fixture断流'));f.watchPush({running:false});assert(!notice.classList.contains('hidden'));assert.equal(text.textContent,'DSH 已结束本轮生成');
+    }
+    const f=fixture();f.enableWatch();await f.openHost('session-own-notice-kept');f.watchPush({connected:true,running:false});f.hold=true;f.send('own提示仍属于own任务');await until(()=>f.calls.length===1);const notice=f.element('#ai-runstate'),text=notice.querySelector('.ai-run-text'),activeText=text.textContent;
+    f.watchPush({connected:false,running:false,error:'own期间的断线帧'});f.watchPush({connected:true,running:false});assert(!notice.classList.contains('hidden'));assert.equal(text.textContent,activeText);assert.equal(f.w.AiPanel.__testRun().status,'active');
+    f.done(0,{ok:true,text:'own已完成'});await until(()=>f.syncs.length===1&&f.w.AiPanel.aiState().dshWatch.syncPending===false);assert(!notice.classList.contains('hidden'));assert.equal(text.textContent,'已完成');f.watchPush({connected:true,running:false});assert(!notice.classList.contains('hidden'));assert.equal(text.textContent,'已完成');
   });
   await test('断线watch不因普通刷新循环重启，显式点击重连创建同宿主新订阅并拒绝旧帧',async()=>{
     const f=fixture();f.enableWatch();let options=0;

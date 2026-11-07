@@ -135,6 +135,9 @@ function createService(options={}){
     try{
       emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools,run);live(run);
       emit(run,{type:'config',configOptions:session.configOptions});
+      // 旧会话的模型下架后，不能把全局缓存的另一项目模型当成这次明确改选而自动重发任务。
+      const model=session.configOptions.find(option=>option.id==='model');
+      if(model?.available===false)throw Error(model.unavailableReason||'原会话模型已不可用，请先选择可用模型；未发送本次请求');
       for(const [configId,value] of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]])if(value!==undefined&&value!==null&&session.configOptions.some(option=>option.id===configId&&option.currentValue!==value&&(option.options||[]).flatMap(choice=>choice.options||[choice]).some(choice=>choice.value===value))){const updated=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=updated.configOptions;live(run);emit(run,{type:'config',configOptions:updated.configOptions});}
       emit(run,{type:'status',text:'Harness 正在处理 · 原生工具与 MyIDE 工具已连接'});
       const answer=await conn.rpc.request('session/prompt',{sessionId:session.id,prompt},0);live(run);
