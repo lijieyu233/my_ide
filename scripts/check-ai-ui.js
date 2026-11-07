@@ -24,7 +24,12 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
   await js('AiPanel.setConfig({engine:"standard",baseUrl:"http://fixture.invalid",model:"DeepSeek-V4.1-Flash · 标准模型"});App.setAiOpen(true);true');
   await test('模型位于底部输入卡片，连接设置位于顶部，输入提示与发送图标完整',async()=>{
     assert(await js('!!document.querySelector(".ai-input-box .ai-model-row #ai-model")&&!document.querySelector(".ai-head #ai-model")'));
-    assert(await js('document.getElementById("ai-session-origin").previousElementSibling.classList.contains("ai-session-controls")&&document.getElementById("ai-msgs").previousElementSibling.id==="ai-session-preview-bar"&&document.querySelector(".ai-session-controls").previousElementSibling.classList.contains("ai-head")&&document.getElementById("ai-usage").closest(".ai-input-bar")'));
+    assert(await js('!!document.querySelector(".ai-panel-header > .ai-head + .ai-session-controls #ai-session-origin")&&document.getElementById("ai-msgs").previousElementSibling.id==="ai-session-preview-bar"&&document.getElementById("ai-session-preview-bar").previousElementSibling.classList.contains("ai-panel-header")&&!document.getElementById("ai-usage")&&!!document.querySelector(".ai-input-box #ai-context-details svg")&&document.getElementById("ai-context-details").getAttribute("aria-label")==="上下文占用"'));
+    assert(await js('(()=>{const h=document.querySelector(".ai-panel-header").getBoundingClientRect(),t=document.querySelector(".ai-head").getBoundingClientRect(),c=document.querySelector(".ai-session-controls").getBoundingClientRect();return Math.abs(t.height-24)<1&&c.top>=t.bottom&&c.bottom<=h.bottom&&h.height<=64})()'));
+    assert(await js('document.getElementById("ai-session-origin").textContent.trim()==="项目示例"&&document.getElementById("ai-session-origin").title.includes(App.root)'));
+    await js('document.getElementById("ai-context-details").click()');
+    assert(await js('!!document.querySelector("#modal-mask .ai-context-usage")&&document.querySelector("#modal-mask .ai-context-usage").textContent.includes("上下文约")&&!!document.querySelector("#modal-mask .ai-bd-row")'));
+    await js('document.getElementById("cb-x").click()');
     assert(await js('document.getElementById("ai-model").getBoundingClientRect().width>120'));
     assert(await js('document.getElementById("ai-input").getBoundingClientRect().height>=50&&!!document.querySelector("#ai-send svg")'));
     assert(await js('document.getElementById("ai-input").title.includes("Shift")&&!document.querySelector(".ai-session-settings")&&!!document.querySelector(".ai-input-box #ai-perm")'));
@@ -56,6 +61,8 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     for(const width of [620,320]){
       await js(`document.getElementById('ai-panel').style.width='${width}px';true`);
       await sleep(100);
+      win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});
+      await until(()=>js('getComputedStyle(document.querySelector(".ai-user .ai-msg-acts")).opacity==="0"'));
       const height=await js('document.querySelector(".ai-user").getBoundingClientRect().height');
       assert(await js('getComputedStyle(document.querySelector(".ai-user .ai-msg-acts")).opacity==="0"'));
       const hover=await js('(()=>{const r=document.querySelector(".ai-user .ai-md").getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()');
@@ -79,7 +86,8 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     for(const width of [320,380,520]){
       await js(`document.getElementById('ai-panel').style.width='${width}px';document.body.style.setProperty('--tool-font','16px');true`);await sleep(80);
       assert(await js('document.getElementById("ai-panel").scrollWidth<=document.getElementById("ai-panel").clientWidth'));
-      assert(await js('[...document.querySelectorAll(".ai-head button:not(.hidden)")].every(el=>el.getBoundingClientRect().right<=document.getElementById("ai-panel").getBoundingClientRect().right)'));
+      assert(await js('[...document.querySelectorAll(".ai-panel-header button:not(.hidden)")].filter(el=>el.getClientRects().length).every(el=>{const r=el.getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect();return r.left>=p.left&&r.right<=p.right})'));
+      assert(await js('(()=>{const h=document.querySelector(".ai-panel-header").getBoundingClientRect(),t=document.querySelector(".ai-head").getBoundingClientRect(),c=document.querySelector(".ai-session-controls").getBoundingClientRect(),o=document.getElementById("ai-session-origin").getBoundingClientRect();return Math.abs(t.height-24)<1&&h.height<=64&&c.top>=t.bottom&&c.bottom<=h.bottom&&o.left>=c.left&&o.right<=c.right})()'));
       assert(await js('(()=>{const m=document.getElementById("ai-model").getBoundingClientRect(),r=document.getElementById("ai-dsh-reasoning").getBoundingClientRect(),s=document.getElementById("ai-send").getBoundingClientRect(),i=document.getElementById("ai-input").getBoundingClientRect();return m.top>=i.bottom&&m.right<=r.left&&r.right<=s.left&&s.right<=document.querySelector(".ai-input-box").getBoundingClientRect().right})()'));
       assert(await js('(()=>{const e=document.getElementById("ai-engine"),c=getComputedStyle(e);return e.clientHeight-parseFloat(c.paddingTop)-parseFloat(c.paddingBottom)>=parseFloat(c.fontSize)})()'));
     }

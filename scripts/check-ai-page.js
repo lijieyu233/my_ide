@@ -63,7 +63,7 @@ const watchdog=setTimeout(()=>{console.error('页面上下文取证超时');clea
     const body=await ask('现在操作远程服务器');const wire=JSON.stringify(body.messages);
     for(const secret of ['OLD_ATTACHMENT_SECRET','OLD_ARGS_SECRET','OLD_RESULT_SECRET','OLD_ORPHAN_SECRET','FILE_PAGE_SECRET','RULE_PAGE_SECRET'])assert(!wire.includes(secret),secret);
     assert(wire.includes('之前的问题'));assert(body.messages.some(m=>m.role==='tool'&&m.tool_call_id==='old-write'));
-    assert(await js('document.getElementById("ai-usage").textContent.includes("当前：远程服务器（未附带项目文件）")'));
+    assert(await js('!document.getElementById("ai-usage")&&document.getElementById("ai-context-details").title.includes("远程服务器（未附带项目文件）")&&document.getElementById("ai-session-origin").title.includes("远程服务器（未附带项目文件）")'));
     assert(!win.isVisible());await sleep(350);win.webContents.debugger.attach('1.3');
     const screenshot=await Promise.race([win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true}),sleep(4000).then(()=>{throw Error('截图超时');})]);
     fs.writeFileSync(path.join(repo,'.ui-check-trash','ai-page-panel.png'),Buffer.from(screenshot.data,'base64'));

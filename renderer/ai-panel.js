@@ -266,25 +266,20 @@ const AiPanel = (() => {
     return 0;
   }
   function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+  function contextUsageText() {
+    const parts = ['上下文约 ' + fmtK(estTokens()) + ' tok（估算）'];
+    if (Number.isFinite(usageSum.dshUsed) && Number.isFinite(usageSum.dshSize)) parts.push('DSH 原生上下文 ' + fmtK(usageSum.dshUsed) + ' / ' + fmtK(usageSum.dshSize) + ' tok');
+    if (usageSum.in || usageSum.out) {
+      parts.push('Σ 输入 ' + fmtK(usageSum.in), '输出 ' + fmtK(usageSum.out));
+      if (usageSum.cacheHit || usageSum.cacheMiss) parts.push('缓存命中 ' + Math.round(usageSum.cacheHit / (usageSum.cacheHit + usageSum.cacheMiss) * 100) + '%（' + fmtK(usageSum.cacheHit) + ' tok）');
+    }
+    return parts.join(' · ');
+  }
   function renderUsage() {
     if (backgroundView) return;
-    const el = document.getElementById('ai-usage');
-    if (!el) return;
-    const page = currentPage();
-    if (dshSessionAccess?.preview) { el.textContent='只读预览 · 会话工程：'+sessionRootLabel(dshSessionAccess.rootDir)+' · 不附带当前工程文件';el.title=dshSessionAccess.rootDir;return; }
-    const parts = ['当前：' + page.name + (page.projectContext ? '' : '（未附带项目文件）'), '上下文 ~' + fmtK(estTokens()) + ' tok'];
-    if (usageSum.in || usageSum.out) {
-      parts.push('Σ 输入 ' + fmtK(usageSum.in));
-      parts.push('输出 ' + fmtK(usageSum.out));
-      if (usageSum.cacheHit || usageSum.cacheMiss) {
-        const pct = Math.round((usageSum.cacheHit / (usageSum.cacheHit + usageSum.cacheMiss)) * 100);
-        parts.push('缓存命中 ' + pct + '%（' + fmtK(usageSum.cacheHit) + ' tok）');
-      }
-    }
-    el.textContent = parts.join(' · ');
-    el.title = usageSum.cacheHit
-      ? 'DeepSeek 上下文缓存：命中的 token 按缓存价计费（约 1/10 价格），miss 部分按原价'
-      : '上下文为字符数估算值；接入模型返回 usage 后显示精确统计';
+    const el = document.getElementById('ai-context-details'), page = currentPage();
+    if (el) { el.title = '上下文占用 · ' + (dshSessionAccess?.preview ? '只读预览，不附带当前工程文件' : page.name + (page.projectContext ? '' : '（未附带项目文件）')); el.disabled = !!dshSessionAccess?.preview; }
+    renderSessionOrigin();
   }
   function addUsage(u) {
     if (!u) return;
@@ -297,7 +292,7 @@ const AiPanel = (() => {
 
   // ---------- 上下文预算明细 ----------
   // 「上下文 ~12k tok」这种单个数字没法指导行动：用户想知道「谁在占地方、要不要摘掉」。
-  // VS Code Copilot 会把每条上下文的占比列出来，这里照做（点用量条弹出）。
+  // 数字按需放在明细里；输入区只保留一个入口，不再常驻占用一行。
   function showCtxBreakdown() {
     const estOf = (n) => Math.round(n / 3.2);
     const rows = [];
@@ -321,7 +316,8 @@ const AiPanel = (() => {
       '<div class="m-body" style="overflow:auto">' +
       '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">' +
         '当前上下文约 <b>' + fmtK(estTokens()) + ' tok</b>（按字符数估算；接入模型返回 usage 后以真实值为准）。' +
-        '附带的文件每条消息都会重发一次 —— 太大就摘掉一些。</div>';
+        '附带的文件每条消息都会重发一次 —— 太大就摘掉一些。</div>' +
+        '<p class="ai-context-usage">' + esc(contextUsageText()) + '</p>';
     for (const r of rows) {
       const pct = Math.max(2, Math.round((r.weight / maxW) * 100));
       html += '<div class="ai-bd-row">' +
@@ -1901,7 +1897,7 @@ const AiPanel = (() => {
     if (backgroundView) return;
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
-    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.textContent=dshSessionAccess?.preview?'刷新预览':'重新连接';reconnect.title=dshSessionAccess?.preview?'重新读取这条会话的只读历史，不绑定或续聊':'重新连接 DSH，保留会话，不重发任务';}
+    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label',dshSessionAccess?.preview?'刷新只读预览':'重新连接 DSH');reconnect.title=dshSessionAccess?.preview?'重新读取这条会话的只读历史，不绑定或续聊':'重新连接 DSH，保留会话，不重发任务';}
     if (sendBtn) {
       sendBtn.disabled = stopping || !b && !external && !dshCanSend();
       sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
@@ -2049,9 +2045,11 @@ const AiPanel = (() => {
     const origin = document.getElementById('ai-session-origin'), bar = document.getElementById('ai-session-preview-bar');
     const dsh = getConfig().engine === 'dsh', preview = dshSessionAccess?.preview;
     if (origin) {
-      origin.classList.toggle('hidden', !dsh);
-      const root = window.App?.root || '';
-      origin.innerHTML = '<span title="'+esc(root)+'">IDE 工程：<b>'+esc(sessionRootLabel(root))+'</b></span><span class="ai-origin-scope">'+(preview ? '会话归属：'+esc(sessionRootLabel(dshSessionAccess.rootDir)) : '当前工程会话')+'</span>';
+      const root = window.App?.root || '', page = currentPage(), external = dsh && preview;
+      origin.classList.remove('hidden');origin.dataset.preview = String(!!external);
+      const label = external ? sessionRootLabel(dshSessionAccess.rootDir) : page.projectContext ? sessionRootLabel(root) : page.name;
+      origin.title = external ? '跨工程只读预览 · 会话工程：'+dshSessionAccess.rootDir+'\nIDE 工程：'+root : page.projectContext ? '当前工程：'+(root || '未打开工程') : page.name+'（未附带项目文件）';
+      origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(external ? '<span class="ai-origin-scope">只读 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
     }
     if (bar) {
       bar.classList.toggle('hidden', !dsh || !preview);
@@ -2255,9 +2253,8 @@ const AiPanel = (() => {
       '<label class="ai-hist-search-label"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="m10 10 4 4"/></svg><input class="ai-hist-search" type="search" placeholder="搜索会话或工作区" aria-label="搜索会话或工作区"/></label>' +
       '<div class="ai-hist-status" role="status" aria-live="polite"></div><div class="ai-hist-rows"></div><div class="ai-hist-foot">只切换 AI 视图，不切换 IDE 工程。<br>跨工程先只读预览，后台任务继续运行。</div>';
     renderHistRows(pop, all, running);
-    const origin = document.getElementById('ai-session-origin'), controls = panel.querySelector('.ai-session-controls');
-    const anchor = origin && !origin.classList.contains('hidden') ? origin : controls || panel.querySelector('.ai-head');
-    const top = anchor ? anchor.offsetTop + anchor.offsetHeight : 32;
+    const anchor = panel.querySelector('.ai-panel-header') || panel.querySelector('.ai-head');
+    const top = anchor ? anchor.getBoundingClientRect().bottom - panel.getBoundingClientRect().top : 32;
     panel.style.setProperty('--ai-history-top',top+'px');
     panel.appendChild(pop);
     histPop = pop; panel.classList.add('ai-history-open');
@@ -2817,7 +2814,7 @@ const AiPanel = (() => {
   }
   function renderBackgroundStatus() {
     let status=document.getElementById('ai-background-status');
-    if(!status){status=document.createElement('div');status.id='ai-background-status';status.className='ai-run-state';document.getElementById('ai-usage')?.after(status);}
+    if(!status){status=document.createElement('div');status.id='ai-background-status';status.className='ai-run-state';document.getElementById('ai-runstate')?.after(status);}
     status.replaceChildren();status.classList.toggle('hidden',!backgroundRuns.size);
     for(const record of backgroundRuns.values()){
       const button=document.createElement('button');button.className='tb-btn';
@@ -3579,7 +3576,10 @@ const AiPanel = (() => {
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;setDshToolOutput(entry.row,output);}
         setRunState(run,'执行 '+(entry.call.name||'工具'));
       }
-      if(update.sessionUpdate==='usage_update'&&!backgroundView&&!dshScopeMismatch()&&!dshModelUnavailable())document.getElementById('ai-dsh-info').textContent='DSH 上下文 '+fmtK(update.used)+' / '+fmtK(update.size)+' tok';
+      // 用量归当前请求/后台视图所有，只在明细呈现，不能再覆写顶部连接状态。
+      if(update.sessionUpdate==='usage_update' && Number.isFinite(update.used) && Number.isFinite(update.size) && update.used>=0 && update.size>0){
+        usageSum.dshUsed=update.used;usageSum.dshSize=update.size;
+      }
       if(update.sessionUpdate==='myide_projection'){
         sealDshSegment(run);
         const group=toolRows.get(run.projection)?.group;
@@ -3622,7 +3622,7 @@ const AiPanel = (() => {
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     if (!panel) return;
     showWelcome();
-    refreshModelSel();refreshDshOptions();
+    refreshModelSel();renderUsage();refreshDshOptions();
     const modelSel = document.getElementById('ai-model');
     if (modelSel) modelSel.onchange = async () => {
       const m = modelSel.value;
@@ -3706,12 +3706,8 @@ const AiPanel = (() => {
     });
     if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); togglePermPop(); };
     syncPermBtn();
-    const usageEl = document.getElementById('ai-usage');
-    if (usageEl) {
-      usageEl.classList.add('clickable');
-      usageEl.title = '点击查看上下文都被什么占用了';
-      usageEl.onclick = showCtxBreakdown;
-    }
+    const contextDetails = document.getElementById('ai-context-details');
+    if (contextDetails) contextDetails.onclick = showCtxBreakdown;
     const cfgBtn = document.getElementById('ai-cfg');
     if (cfgBtn) cfgBtn.onclick = () => { Settings.open('ai'); };
     initDrop(); // 拖文件进面板 = 加进上下文

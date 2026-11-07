@@ -2890,11 +2890,18 @@ module.exports = {
     add('两侧宽度有效且主区分配没有超出窗口', sbW >= 0 && aiW >= 0 && sbW + aiW <= window.innerWidth,
       '侧栏=' + sbW + ' AI=' + aiW + ' 窗口=' + window.innerWidth);
 
-    // 三处面板标题行等高（侧栏 / 标签栏 / AI 助手）—— 交界处的横向底线必须对齐
+    // AI 头部已合并成两行，不再要求它与侧栏/标签栏的单行标题等高。
     const hh = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
     const vt = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);
-    const h3 = [hh('#tabbar'), vt ? Math.round(vt.getBoundingClientRect().height) : -1, hh('.ai-head')];
-    add('侧栏标题 / 标签栏 / AI 助手标题 三行等高', h3.every((x) => x > 0) && new Set(h3).size === 1, h3.join(' / '));
+    const singleHeads = [hh('#tabbar'), vt ? Math.round(vt.getBoundingClientRect().height) : -1];
+    add('侧栏标题 / 标签栏 单行等高', singleHeads.every((x) => x > 0) && new Set(singleHeads).size === 1, singleHeads.join(' / '));
+    const aiHeader = q('.ai-panel-header'), aiToolbar = q('.ai-head'), aiControls = q('.ai-session-controls');
+    const headRect = aiHeader?.getBoundingClientRect(), toolbarRect = aiToolbar?.getBoundingClientRect(), controlsRect = aiControls?.getBoundingClientRect();
+    add('AI 两行共用紧凑头部，工具行24px且整体不超过64px',
+      !!headRect && Math.abs(toolbarRect.height - 24) < 1 && controlsRect.top >= toolbarRect.bottom && controlsRect.bottom <= headRect.bottom && headRect.height <= 64,
+      '整体=' + hh('.ai-panel-header') + ' 工具=' + hh('.ai-head') + ' 模式/工程=' + hh('.ai-session-controls'));
+    add('工程归属与模式同属第二行，不再保留usage条',
+      !!q('.ai-panel-header > .ai-head + .ai-session-controls #ai-session-origin') && !q('#ai-usage') && !!q('.ai-input-box #ai-context-details svg'));
 
     const hoverRect = q('.ai-quick .ai-quick-btn');
     return {
@@ -3122,13 +3129,17 @@ module.exports = {
       }
       add('「Git 变更」把未提交改动带进来', got, 'chips=' + chipTx());
     }
-    // ③ 上下文预算明细
-    q('#ai-usage').click();
+    // ③ 上下文预算按需打开，移除常驻行但不丢明细功能。
+    const contextDetails = q('#ai-context-details');
+    add('上下文占用有可访问的图标入口，旧usage DOM已移除',
+      !!contextDetails && contextDetails.getAttribute('aria-label') === '上下文占用' && !!contextDetails.querySelector('svg') && !q('#ai-usage'));
+    contextDetails.click();
     await sleep(400);
     const bd = qa('#modal-mask .ai-bd-row');
-    add('点用量条 → 列出每条上下文占多少', bd.length >= 2,
+    add('点上下文占用 → 列出每条上下文占多少', bd.length >= 2,
       bd.length + ' 行：' + bd.slice(0, 3).map((x) => x.textContent.replace(/\s+/g, ' ').slice(0, 24)).join(' / '));
-    add('有占比条（一眼看出谁占地方）', qa('#modal-mask .ai-bd-bar').length >= 2);
+    add('明细仍显示上下文估算与占比条',
+      !!q('#modal-mask .ai-context-usage') && q('#modal-mask .ai-context-usage').textContent.includes('上下文约') && qa('#modal-mask .ai-bd-bar').length >= 2);
     if (q('#cb-x')) { q('#cb-x').click(); await sleep(300); }
     // ④ 固定：跨新对话保留
     const selChip = qa('#ai-chips .ai-ctx-chip').find((c) => c.textContent.includes('当前选区'));

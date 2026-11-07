@@ -47,7 +47,7 @@ function fixture(inspectReplay = false) {
     getPageContext(){const tool=f.shownTool || 'project',names={remote:'远程服务器',launch:'启动面板',db:'数据库',browser:'内置浏览器',tasks:'任务','quick-launch':'快捷启动',reader:'阅读页',bookshelf:'书架'};
       const independent=!!names[tool],projectContext=!!this.root&&!independent;
       return {id:independent?tool:projectContext?'project':'welcome',name:names[tool]||(projectContext?'项目':'欢迎页'),projectContext};} };w.LaunchPanel={isOpen:()=>f.shownTool==='launch',selectEntry:async id=>selected.push(id)};
-  w.Viewer = { activeTab: null }; w.MI = { toast() {}, log() {} }; w.Settings = { open() {} }; w.Modal = { show() {}, hide() {} };
+  w.Viewer = { activeTab: null }; w.MI = { toast() {}, log() {} }; w.Settings = { open() {} }; w.Modal = { show(box) { const mask=w.document.getElementById('modal-mask');mask.replaceChildren(box);mask.classList.remove('hidden'); }, hide() { const mask=w.document.getElementById('modal-mask');mask.replaceChildren();mask.classList.add('hidden'); } };
   w.myIDE = { fs: { readFile: read, readDir: async () => [], grep: async () => ({ results: [] }), writeFile: async (p, content, format, condition) => {
     try { return FileWrite.atomicWrite(path.resolve(p), TextFormat.encodeText(content, format || { encoding: 'utf8', bom: false }), condition); } catch (e) { return { error: e.message }; }
   }, remove: async p => { fs.unlinkSync(p); return { ok: true }; } }, ai: {
@@ -136,6 +136,18 @@ function fixture(inspectReplay = false) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('三层头部归并一个容器，移除用量行但保留明细入口和页面来源',async()=>{
+    const f=fixture();await tick();const header=f.element('.ai-panel-header');assert(header);assert.equal(header.querySelectorAll('.ai-head').length,1);assert.equal(header.querySelectorAll('.ai-session-controls').length,1);assert(header.contains(f.element('#ai-session-origin')));assert(!f.element('#ai-usage'));assert(f.element('#ai-context-details'));
+    assert.equal(f.element('#ai-session-origin b').textContent,'A');assert(f.element('#ai-session-origin').title.includes(f.A));assert(!f.element('#ai-session-origin').textContent.includes('当前工程会话'));
+    f.w.App.showTool('browser');assert(f.element('#ai-context-details').title.includes('未附带项目文件'));f.element('#ai-context-details').click();assert(f.element('#cb-x'));assert(f.element('.ai-context-usage').textContent.includes('上下文约'));f.element('#cb-x').click();assert.equal(f.calls.length,0);
+  });
+  await test('原生上下文预算只进明细，后台用量不覆写当前会话或顶部连接状态',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('A预算');await until(()=>f.calls.length===1);const a=f.calls[0].context,info=f.element('#ai-dsh-info').textContent;
+    await f.dshEvent({type:'native',context:a,update:{sessionUpdate:'usage_update',used:1600,size:64000}});assert.equal(f.element('#ai-dsh-info').textContent,info);assert(!f.element('#ai-usage'));
+    f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('DSH 原生上下文 1.6k / 64.0k tok'));f.element('#cb-x').click();
+    f.switchRoot(f.B);await f.dshEvent({type:'native',context:a,update:{sessionUpdate:'usage_update',used:3200,size:64000}});f.element('#ai-context-details').click();assert(!f.element('.ai-context-usage').textContent.includes('DSH 原生上下文'));f.element('#cb-x').click();
+    f.switchRoot(f.A);await f.dshEvent({type:'native',context:a,update:{sessionUpdate:'usage_update',used:-1,size:NaN}});f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('DSH 原生上下文 3.2k / 64.0k tok'));f.element('#cb-x').click();assert.equal(f.aborts.length,0);f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
   await test('单项即紧凑原生details，混合活动追加同组且保留原行/参数/事件/独立展开',async()=>{
     const f=fixture(true),container=f.element('#ai-msgs');container.replaceChildren();
     const first=f.w.__testToolRow({id:'one',name:'ops_bash',args:{command:'raw command',description:'<b>描述优先</b>\n第二行'}}),group=container.firstElementChild;
@@ -273,7 +285,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh',id='s-saved-draft',container=f.element('#ai-msgs');let reads=0;
     const raw=JSON.stringify([{id,msgs:[],usage:{in:321,out:12}}]);f.w.localStorage.setItem(key,raw);f.w.localStorage.setItem(key+':active',id);f.w.localStorage.setItem(key+':draft',id);
     Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return 100;}});await f.w.AiPanel.setConfig({engine:'dsh'});
-    assert.equal(reads,1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(f.element('#ai-usage').textContent.includes('Σ 输入 321'));assert(f.element('#ai-usage').textContent.includes('输出 12'));
+    assert.equal(reads,1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(!f.element('#ai-usage'));f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('Σ 输入 321'));assert(f.element('.ai-context-usage').textContent.includes('输出 12'));f.element('#cb-x').click();
     assert.equal(f.historyReads?.length||0,0);assert.equal(f.w.localStorage.getItem(key),raw);assert.equal(f.w.localStorage.getItem(key+':draft'),id);
   });
   await test('Harness在项目恢复前进入后台，恢复期间隐藏面板也不取消且迟到输出保留',async()=>{
@@ -315,7 +327,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(f.element('.ai-ctx-chip.follow'));f.send('解释当前页面');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');
     assert(JSON.stringify(f.calls[0].messages).includes('FILE_CONTEXT_SECRET'));assert(f.calls[0].messages[0].content.includes('RULE_CONTEXT_SECRET'));
     for(const page of ['remote','launch','db','browser','tasks','quick-launch']){
-      f.w.App.showTool(page);assert(!f.element('.ai-ctx-chip'));assert(f.element('#ai-usage').textContent.includes('未附带项目文件'));
+      f.w.App.showTool(page);assert(!f.element('.ai-ctx-chip'));assert(!f.element('#ai-usage'));assert(f.element('#ai-context-details').title.includes('未附带项目文件'));assert(f.element('#ai-session-origin').title.includes('未附带项目文件'));
       const n=f.calls.length;f.send('我现在在哪个页面');await until(()=>f.calls.length>n&&f.element('#ai-send').textContent==='➤');
       const body=f.calls.at(-1);assert(body.messages[0].content.includes('"id":"'+page+'"'));const wire=JSON.stringify(body.messages);
       assert(!wire.includes('FILE_CONTEXT_SECRET'));assert(!wire.includes('RULE_CONTEXT_SECRET'));assert(wire.includes('解释当前页面'));
@@ -1035,7 +1047,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('预览读取失败后刷新仍只调全局只读历史，成功后不误显示DSH未连接',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();let reads=0;
     f.dshCatalog=[{sessionId:'session-preview-retry',title:'可重试的预览',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=async(cfg,id)=>{assert.equal(cfg.catalogScope,'all');assert.equal(cfg.catalogRoot,f.B);return ++reads===1?{ok:false,error:'临时读取失败'}:{ok:true,sessionId:id,readOnly:true,rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'预览恢复成功'}]}]};};
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview-retry"]').click();await tick();await tick();assert(f.text().includes('临时读取失败'));assert.equal(f.element('#ai-dsh-reconnect').textContent,'刷新预览');
+    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview-retry"]').click();await tick();await tick();assert(f.text().includes('临时读取失败'));assert.equal(f.element('#ai-dsh-reconnect').getAttribute('aria-label'),'刷新只读预览');assert(f.element('#ai-dsh-reconnect svg'));
     f.element('#ai-dsh-reconnect').click();await until(()=>f.w.AiPanel.aiState().dshSession?.state==='preview');assert(f.text().includes('预览恢复成功'));assert(f.element('#ai-model').textContent.includes('只读预览'));assert(f.element('#ai-model').disabled);assert.equal(reads,2);assert.equal(f.binds?.length||0,0);assert.equal(f.aborts.length,0);
   });
   await test('全局目录失败保留搜索与已有记录并允许重试，关闭不留下外部监听器',async()=>{
