@@ -140,15 +140,44 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(true),container=f.element('#ai-msgs');container.replaceChildren();
     const first=f.w.__testToolRow({id:'one',name:'ops_bash',args:{command:'raw command',description:'<b>描述优先</b>\n第二行'}}),group=container.firstElementChild;
     assert.equal(container.children.length,1);assert.equal(group.tagName,'DETAILS');assert.equal(group.className,'ai-tool-group');assert(!group.open);assert.equal(first.tagName,'DETAILS');assert(!first.open);
-    const summary=group.querySelector(':scope > summary.ai-tool-group-summary'),items=group.querySelector(':scope > .ai-tool-group-items'),head=first.firstElementChild;
+    const summary=group.querySelector(':scope > summary.ai-tool-group-summary'),items=group.querySelector('.ai-tool-group-list'),head=first.firstElementChild;
     assert.equal(head.tagName,'SUMMARY');assert(head.classList.contains('ai-tool-summary'));assert(head.querySelector('.ai-tool-ic svg.ic'));assert.equal(head.querySelector('.ai-tool-label').textContent,'工具调用');assert.equal(head.querySelector('.ai-tool-tx').textContent,' · ops_bash · <b>描述优先</b>');assert(!head.querySelector('b'));assert(head.querySelector('.ai-tool-st'));
-    assert.equal(first.querySelector('.ai-tool-body > .ai-tool-input').textContent,JSON.stringify({command:'raw command',description:'<b>描述优先</b>\n第二行'},null,2));assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'已调用工具');assert(!summary.querySelector('.ai-tool-group-count'));
+    assert.equal(first.querySelector('.ai-tool-body > .ai-tool-input').textContent,JSON.stringify({command:'raw command',description:'<b>描述优先</b>\n第二行'},null,2));assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'正在分析请求');assert(!summary.querySelector('.ai-tool-group-count'));
     summary.click();head.click();assert(group.open);assert(first.open);let clicks=0;first.addEventListener('fixture',()=>clicks++);
     let scans=0;const query=container.querySelectorAll.bind(container);container.querySelectorAll=(...args)=>{scans++;return query(...args);};
     const second=f.w.__testToolRow({id:'two',name:'read_file',args:{file_path:'README.md'}}),third=f.w.__testToolRow({id:'three',name:'grep',args:{pattern:'safe.*'}});
     assert.equal(scans,0);assert.equal(container.lastElementChild,group);assert(group.open);assert(first.open);assert(!second.open);assert.deepEqual([...items.children],[first,second,third]);assert.equal(query('.ai-tool-group').length,1);
-    assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'已调用工具，已读取文件，已搜索代码');assert.equal(second.querySelector('.ai-tool-label').textContent,'读取');assert.equal(second.querySelector('.ai-tool-tx').textContent,' · README.md');assert.equal(third.querySelector('.ai-tool-label').textContent,'搜索文件内容');
+    assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'正在分析请求');assert(summary.querySelector('.ai-tool-group-icon svg'));assert.equal(second.querySelector('.ai-tool-label').textContent,'读取');assert.equal(second.querySelector('.ai-tool-tx').textContent,' · README.md');assert.equal(third.querySelector('.ai-tool-label').textContent,'搜索文件内容');
     first.dispatchEvent(new f.w.Event('fixture'));assert.equal(clicks,1);summary.click();assert(!group.open);assert(first.open);assert.equal(f.calls.length,0);assert.equal(f.commands.length,0);
+  });
+  await test('活跃请求即使工具已完成仍显示正在分析，正文边界后完成，收尾更新全部阶段',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('检查统一分析阶段');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'tool_call',toolCallId:'already-done',title:'read',rawInput:{file_path:'fixture.js'},status:'completed'}});
+    const first=f.element('.ai-tool-group');assert(!first.open);assert.equal(first.dataset.state,'completed');assert.equal(first.dataset.phase,'running');assert.equal(first.querySelector('.ai-tool-group-label').textContent,'正在分析请求');
+    f.chunk(0,'独立正文，不并入过程列表');assert.equal(first.querySelector('.ai-tool-group-label').textContent,'已完成分析');assert(!first.textContent.includes('独立正文'));
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'继续分析'}}});const second=f.element('#ai-msgs').querySelectorAll('.ai-tool-group')[1];assert(!second.open);assert.equal(second.querySelector('.ai-tool-group-label').textContent,'正在分析请求');
+    f.done(0,{ok:true,text:'独立正文，不并入过程列表'});await until(()=>f.element('#ai-send').textContent==='➤');assert([...f.element('#ai-msgs').querySelectorAll('.ai-tool-group-label')].every(label=>label.textContent==='已完成分析'));
+  });
+  await test('运行组滚动仅在跟随时定位末尾，用户上翻后新活动不抢走阅读位置',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});let resize;f.w.ResizeObserver=class{constructor(callback){resize=callback;}observe(){}disconnect(){}};
+    f.hold=true;f.send('分析滚动');await until(()=>f.calls.length===1);const context=f.calls[0].context;
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'思考中'}}});const group=f.element('.ai-tool-group'),scroll=group.querySelector('.ai-tool-group-items');Object.defineProperty(scroll,'scrollHeight',{value:600,configurable:true});Object.defineProperty(scroll,'clientHeight',{value:200,configurable:true});
+    group.open=true;group.dispatchEvent(new f.w.Event('toggle'));assert.equal(scroll.scrollTop,600);
+    scroll.scrollTop=80;scroll.dispatchEvent(new f.w.Event('wheel'));resize();assert.equal(scroll.scrollTop,80);
+    scroll.scrollTop=400;scroll.dispatchEvent(new f.w.Event('scroll'));resize();assert.equal(scroll.scrollTop,600);
+    group.open=false;scroll.scrollTop=90;resize();assert.equal(scroll.scrollTop,90);assert.equal(f.aborts.length,0);
+  });
+  await test('过程尺寸观察随后台原DOM迁移，清新会话不误断开后台，最终清理时释放',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const observers=[];f.w.ResizeObserver=class{constructor(){this.disconnected=0;observers.push(this);}observe(){}disconnect(){this.disconnected++;}};
+    f.hold=true;f.send('保持后台过程');await until(()=>f.calls.length===1);const context=f.calls[0].context,id=f.w.AiPanel.aiState().current;
+    await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'后台思考'}}});const group=f.element('.ai-tool-group');assert.equal(observers.length,1);
+    f.element('#ai-new').click();assert.equal(observers[0].disconnected,0);f.element('#ai-history').click();await tick();await tick();f.element('[data-id="'+id+'"]').click();await tick();assert.equal(f.element('.ai-tool-group'),group);assert.equal(observers[0].disconnected,0);
+    f.stop();await until(()=>f.element('#ai-send').textContent==='➤');f.element('#ai-new').click();assert.equal(observers[0].disconnected,1);assert.equal(f.aborts.length,1);
+  });
+  await test('宿主全量回放保留组内阅读滚动位置，不把已上翻的读者重置回开头或末尾',async()=>{
+    const f=fixture(true),history=[{role:'assistant',content:'',_dshTimeline:Array.from({length:20},(_,i)=>({kind:'tool',call:{id:'scroll-'+i,name:'read',args:{file_path:'file-'+i+'.js'}},status:'completed'}))}];
+    f.w.__testReplay(history);let group=f.element('.ai-tool-group');group.open=true;await tick();const scroll=group.querySelector('.ai-tool-group-items');scroll.scrollTop=90;scroll.dispatchEvent(new f.w.Event('wheel'));
+    f.w.__testReplay(history,true);group=f.element('.ai-tool-group');assert(group.open);await until(()=>group.querySelector('.ai-tool-group-items').scrollTop===90);assert.equal(f.calls.length,0);
   });
   await test('混合历史活动不跨正文/用户，原始参数与独立输出顺序不变且不执行操作',async()=>{
     const f=fixture(true),tool=(id,name='ops_bash')=>({kind:'tool',call:{id,name,args:{command:'命令'+id}},status:'completed',output:'输出'+id});
@@ -194,11 +223,11 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.throws(()=>f.w.__testReplay([{role:'assistant',content:'异常'}]),/fixture replay failed/);assert.equal(reads,2);
     container.appendChild=append;f.w.__testAddMsg('assistant','异常后实时消息');assert.equal(reads,3);assert.equal(container.scrollTop,20);
   });
-  await test('过程区标题按工具类别次数排序、同数保持出现序、前三类后加等且摘要取各类参数',async()=>{
+  await test('过程区统一分析标题，类别只在混合活动行显示，摘要与原始详情均保留',async()=>{
     const f=fixture(true),tool=(id,name,args)=>({kind:'tool',call:{id,name,args},status:'completed',output:'输出'+id});
     const parts=[tool('t','ops_bash',{description:'简短命令说明',command:'不优先显示'}),tool('r1','read',{file_path:'one.js',path:'fallback.js'}),tool('s','grep',{pattern:'needle',description:'不是pattern'}),tool('a','subagent',{description:'独立分析',prompt:'较长提示'}),tool('r2','ops_read_files',{files:[{path:'two.js'},{path:'three.js'}]}),tool('t2','unlisted_tool',{description:'未知工具摘要'}),tool('r3','read_file',{path:'four.js'}),{kind:'thought',text:'第一行思考\n完整思考仍保留'}];
     f.w.__testReplay([{role:'assistant',content:'',_dshTimeline:parts}]);const group=f.element('.ai-tool-group'),rows=[...group.querySelectorAll('.ai-tool')];
-    assert.equal(group.querySelector('.ai-tool-group-label').textContent,'已读取文件，已调用工具，已搜索代码等');assert.equal(group.querySelectorAll('.ai-tool-group').length,0);assert.equal(rows[1].querySelector('.ai-tool-tx').textContent,' · one.js');assert.equal(rows[2].querySelector('.ai-tool-tx').textContent,' · needle');assert.equal(rows[3].querySelector('.ai-tool-label').textContent,'创建子智能体');assert.equal(rows[3].querySelector('.ai-tool-tx').textContent,' · 独立分析');assert.equal(rows[4].querySelector('.ai-tool-tx').textContent,' · two.js, three.js');
+    assert.equal(group.querySelector('.ai-tool-group-label').textContent,'已完成分析');assert.equal(group.querySelectorAll('.ai-tool-group').length,0);assert.equal(rows[1].querySelector('.ai-tool-tx').textContent,' · one.js');assert.equal(rows[2].querySelector('.ai-tool-tx').textContent,' · needle');assert.equal(rows[3].querySelector('.ai-tool-label').textContent,'创建子智能体');assert.equal(rows[3].querySelector('.ai-tool-tx').textContent,' · 独立分析');assert.equal(rows[4].querySelector('.ai-tool-tx').textContent,' · two.js, three.js');
     const thought=group.querySelector('.ai-dsh-thought');assert.equal(thought.firstElementChild.className,'ai-tool-summary');assert.equal(thought.querySelector('.ai-tool-label').textContent,'思考');assert.equal(thought.querySelector('.ai-tool-tx').textContent,' · 第一行思考');assert.equal(thought.querySelector('pre').textContent,'第一行思考\n完整思考仍保留');assert(!thought.open);assert(!group.open);assert.equal(f.calls.length+f.writes.length+f.commands.length,0);
   });
   await test('replay只按稳定调用身份接回内外展开，不把旧选择套给同名同摘要的新调用',async()=>{
@@ -210,7 +239,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   });
   await test('普通agentStep也输出紧凑行与原始参数/结果，异类工具连续执行仍同组',async()=>{
     const f=fixture();f.put('plain.md','普通读取输出');f.script.push(reply({id:'plain-read',name:'read_file',args:{path:'plain.md'}},{id:'plain-list',name:'list_files',args:{path:'.'}}),{ok:true,text:'执行后的正文'});f.send();await until(()=>f.element('#ai-send').textContent==='➤');
-    const groups=[...f.element('#ai-msgs').querySelectorAll('.ai-tool-group')];assert.equal(groups.length,1);const rows=[...groups[0].querySelectorAll('.ai-tool')];assert.equal(rows.length,2);assert(rows.every(row=>row.tagName==='DETAILS'&&!row.open));assert(rows.every(row=>row.querySelector('.ai-tool-body > .ai-tool-input')));assert(rows.every(row=>row.querySelector('.ai-tool-body > .ai-dsh-output').open));assert(rows[0].querySelector('.ai-dsh-output pre').textContent.includes('普通读取输出'));assert.equal(groups[0].querySelector('.ai-tool-group-label').textContent,'已读取文件，已搜索代码');assert.equal(f.commands.length+f.writes.length,0);
+    const groups=[...f.element('#ai-msgs').querySelectorAll('.ai-tool-group')];assert.equal(groups.length,1);const rows=[...groups[0].querySelectorAll('.ai-tool')];assert.equal(rows.length,2);assert(rows.every(row=>row.tagName==='DETAILS'&&!row.open));assert(rows.every(row=>row.querySelector('.ai-tool-body > .ai-tool-input')));assert(rows.every(row=>row.querySelector('.ai-tool-body > .ai-dsh-output').open));assert(rows[0].querySelector('.ai-dsh-output pre').textContent.includes('普通读取输出'));assert.equal(groups[0].querySelector('.ai-tool-group-label').textContent,'已完成分析');assert.equal(f.commands.length+f.writes.length,0);
   });
   await test('catalog别名查找只读取一次本地历史，exact与原生ID优先级不变',async()=>{
     const f=fixture(true),key='myide-ai-sessions:'+f.A+':dsh';await f.w.AiPanel.setConfig({engine:'dsh'});
@@ -611,7 +640,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   });
   await test('Harness思考/工具/搜索/计划共用过程区，正文后新建思考且持久回放不重排或接收失效身份',async()=>{
     const f=fixture(true);await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('混合执行过程');await until(()=>f.calls.length===1);const context=f.calls[0].context,native=update=>f.dshEvent({type:'native',context,update});
-    await native({sessionUpdate:'agent_thought_chunk',content:{text:'第一段分析\n完整推理'}});const first=f.element('.ai-dsh-thought'),group=first.closest('.ai-tool-group');assert.equal(group.querySelector('.ai-tool-group-label').textContent,'已完成分析');group.open=true;first.firstElementChild.click();assert(first.open);
+    await native({sessionUpdate:'agent_thought_chunk',content:{text:'第一段分析\n完整推理'}});const first=f.element('.ai-dsh-thought'),group=first.closest('.ai-tool-group');assert.equal(group.querySelector('.ai-tool-group-label').textContent,'正在分析请求');group.open=true;first.firstElementChild.click();assert(first.open);
     await native({sessionUpdate:'agent_thought_chunk',content:{text:'后续'}});assert.equal(f.element('.ai-dsh-thought'),first);assert.equal(first.querySelector('.ai-tool-tx').textContent,' · 第一段分析');assert(first.querySelector('pre').textContent.endsWith('后续'));
     await native({sessionUpdate:'tool_call',toolCallId:'mixed-read',title:'read',rawInput:{file_path:'mixed.js'},status:'completed',content:[{content:{text:'读取结果'}}]});
     await native({sessionUpdate:'tool_call',toolCallId:'mixed-grep',title:'grep',rawInput:{pattern:'pattern'},status:'failed',content:[{content:{text:'搜索失败'}}]});
@@ -628,10 +657,10 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const update=(id,status,output,initial=false)=>f.dshEvent({type:'native',context,update:{sessionUpdate:initial?'tool_call':'tool_call_update',toolCallId:id,...(initial?{title:'ops_bash',rawInput:{command:'命令'+id}}:{}),status,...(output?{content:[{content:{text:output}}]}:{})}});
     await update('live-one','failed','失败输出',true);const first=f.element('.ai-tool'),detail=first.querySelector('.ai-dsh-output');detail.open=true;
     await update('live-two','in_progress','运行输出',true);const group=f.element('.ai-tool-group'),summary=group.querySelector('.ai-tool-group-summary'),second=group.querySelectorAll('.ai-tool')[1];
-    assert.equal(group.open,false);assert.equal(group.dataset.state,'running');assert(summary.textContent.includes('正在执行'));assert(summary.textContent.includes('1 次失败'));summary.click();assert(group.open);
+    assert.equal(group.open,false);assert.equal(group.dataset.state,'running');assert(summary.textContent.includes('正在分析请求'));assert(summary.textContent.includes('1 次失败'));summary.click();assert(group.open);
     await update('live-two','completed','第二条完成输出');assert.equal(group.querySelectorAll('.ai-tool')[1],second);assert.equal(second.querySelector('.ai-tool-st').classList.contains('ok'),true);assert.equal(group.dataset.state,'failed');assert(!summary.querySelector('.ai-tool-group-status').textContent.includes('已完成'));assert(group.open);
     await update('live-one','failed','第一条新输出');assert.equal(group.querySelector('.ai-tool'),first);assert.equal(first.querySelector('.ai-dsh-output'),detail);assert(detail.open);assert.equal(detail.querySelector('pre').textContent,'第一条新输出');assert.equal(summary.querySelector('.ai-tool-group-status').textContent,'1 次失败');
-    await update('live-three','in_progress','第三条输出',true);assert.equal(f.element('.ai-tool-group'),group);assert(group.open);assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'已调用工具');assert.equal(group.dataset.state,'running');
+    await update('live-three','in_progress','第三条输出',true);assert.equal(f.element('.ai-tool-group'),group);assert(group.open);assert.equal(summary.querySelector('.ai-tool-group-label').textContent,'正在分析请求');assert.equal(group.dataset.state,'running');
     await update('live-three','completed');assert.equal(group.dataset.state,'failed');assert.equal(group.querySelectorAll('.ai-tool').length,3);assert.deepEqual([...group.querySelectorAll('.ai-dsh-output pre')].map(row=>row.textContent),['第一条新输出','第二条完成输出','第三条输出']);
     await update('live-one','in_progress');assert.equal(group.dataset.state,'running');assert(!first.querySelector('.ai-tool-st').classList.contains('err'));await update('live-one','completed');assert.equal(group.dataset.state,'completed');assert.equal(summary.querySelector('.ai-tool-group-status').textContent,'');
     f.chunk(0,'工具后的正文');await update('live-four','completed','不跨正文',true);assert.equal(f.element('#ai-msgs').lastElementChild.querySelector('.ai-tool').dataset.toolCallId,'live-four');assert.equal(f.element('#ai-msgs').querySelectorAll('.ai-tool-group').length,2);
@@ -1198,7 +1227,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.watchPush({running:true,turns:[{parts}],questions:[question]});let group=f.element('.ai-tool-group');assert.equal(group.open,false);assert.equal(group.dataset.state,'running');assert(group.querySelector('.ai-tool-group-status').textContent.includes('1 次失败'));group.querySelector('summary').click();assert(group.open);group.querySelector('.ai-tool > summary').click();assert(group.querySelector('.ai-tool').open);group.querySelector('.ai-dsh-output').open=false;
     const form=f.element('.ai-dsh-watch-pending');form.querySelector('textarea').value='未提交输入';assert.equal(form.parentNode,f.element('#ai-msgs'));assert(!form.closest('.ai-tool-group'));
     const updated=[{kind:'text',role:'assistant',text:'前插正文使位置变化'},parts[0],tool('host-one','failed'),tool('host-two'),tool('host-three')];
-    f.watchPush({turns:[{parts:updated}]});group=f.element('.ai-tool-group');assert(group.open);assert.equal(group.querySelector('.ai-tool-group-label').textContent,'已调用工具');assert.equal(group.dataset.state,'failed');assert.equal(f.element('.ai-dsh-watch-pending'),form);assert.equal(form.querySelector('textarea').value,'未提交输入');
+    f.watchPush({turns:[{parts:updated}]});group=f.element('.ai-tool-group');assert(group.open);assert.equal(group.querySelector('.ai-tool-group-label').textContent,'已完成分析');assert.equal(group.dataset.state,'failed');assert.equal(f.element('.ai-dsh-watch-pending'),form);assert.equal(form.querySelector('textarea').value,'未提交输入');
     assert(group.querySelector('.ai-tool').open);assert(!group.querySelectorAll('.ai-tool')[1].open);assert(!group.querySelector('.ai-dsh-output').open);assert.deepEqual([...group.querySelectorAll('.ai-tool')].map(row=>row.dataset.toolCallId),['host-one','host-two','host-three']);assert.deepEqual([...group.querySelectorAll('.ai-dsh-output pre')].map(row=>row.textContent),['宿主输出host-one','宿主输出host-two','宿主输出host-three']);
     group.querySelector('summary').click();assert.equal(group.open,false);updated[2]=tool('host-one');f.watchPush({turns:[{parts:updated}],questions:[]});group=f.element('.ai-tool-group');assert.equal(group.open,false);assert.equal(group.dataset.state,'completed');assert(!f.element('.ai-dsh-watch-pending'));
     const saved=f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh');assert(!saved.includes('groupKey'));assert(!saved.includes('ai-tool-group'));assert.equal(f.calls.length,0);assert.equal(f.commands.length,0);assert.equal(f.writes.length,0);assert.equal(f.hostControls.length,0);
