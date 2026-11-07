@@ -582,6 +582,13 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.writes.length,0);f.send('继续');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');
     for(const id of ['w1','pending-two'])assert(f.calls[1].messages.some(m=>m.role==='tool'&&m.tool_call_id===id&&m.content.includes('实际执行状态未确认')));
   });
+  await test('普通助手的SSH提示也允许独立客户端，不要求先在MyIDE建立连接',async()=>{
+    const f=fixture();f.hold=true;f.send('核对SSH能力说明，不执行连接');await until(()=>f.calls.length===1);
+    const system=f.calls[0].messages.find(message=>message.role==='system').content;
+    assert(system.includes('不是连接服务器的唯一方式'));assert(system.includes('通过 run_command 调用本地 SSH 客户端或使用其他 SSH 工具连接服务器'));assert(system.includes('不要求用户先在 MyIDE 页面连接'));
+    assert(!system.includes('没有连接时让用户在远程服务器页面连接'));assert(system.includes('未建立远程连接的普通本地命令不能冒称远程执行'));
+    assert.equal(f.commands.length,0);assert.equal(f.writes.length,0);
+  });
   await test('Harness发送分析项目仅保留原话，自动打开脚本与界面提示不拼入；显式剪贴板分离',async()=>{
     const f=fixture();f.put('查看AI玩家.cmd','ssh remote "curl status"');f.w.Viewer.activeTab={path:f.file('查看AI玩家.cmd')};await f.w.AiPanel.setConfig({engine:'dsh'});
     await f.w.AiPanel.followActive();f.send('分析这个项目');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');

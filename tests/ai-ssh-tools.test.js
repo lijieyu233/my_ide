@@ -17,6 +17,8 @@ const test=async(name,fn)=>{await fn();passed++;console.log('ok '+name);};
 (async()=>{server=await start(temp);
  await test('六个SSH模型工具同源，游标、等待时间、未知字段和终端控制字符拒绝',()=>{
   assert.equal(Names.tools.length,6);for(const t of Names.tools)assert(Contract.isApplication(t.function.name));
+   const description=Names.tools.find(t=>t.function.name==='ssh_sessions').function.description;
+   assert.match(description,/不妨碍使用本地 SSH 客户端或其他 SSH 工具连接服务器/);assert.match(description,/不要求先在 MyIDE 页面连接/);assert.doesNotMatch(description,/没有连接时请用户先在远程服务器页面连接/);
   for(const command of ['', 'a\rb', 'a\nb', '\x03','echo \x1b[31m'])assert.throws(()=>Contract.validate(call('ssh_terminal_execute',{session:'s',terminal:'t',command})));
   for(const args of [{cursor:-1},{cursor:1.1},{cursor:'0'},{wait_ms:2001},{wait_ms:-1},{pid:123}])assert.throws(()=>Contract.validate(call('ssh_terminal_read',{session:'s',terminal:'t',...args})));
  });
