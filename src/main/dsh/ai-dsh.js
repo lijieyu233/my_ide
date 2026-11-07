@@ -1,5 +1,12 @@
 const fs=require('fs/promises'),path=require('path'),os=require('os'),http=require('http'),crypto=require('crypto');
 const {Rpc}=require('./ai-dsh-rpc'),{resolveRuntime}=require('./dsh-runtime');
+const {absoluteCatalogRoot,catalogEntry}=require('./dsh-native');
+const catalogItems=value=>Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
+function assertNotCatalogConfig(cfg){if(cfg?.catalogScope!==undefined||cfg?.catalogRoot!==undefined)throw Error('全局会话目录参数仅可用于只读目录与历史预览，不能绑定、发送或操作会话');}
+function catalogScope(cfg){
+  if(cfg?.catalogScope!==undefined&&cfg.catalogScope!=='all')throw Error('会话目录范围无效');
+  return cfg?.catalogScope==='all';
+}
 const IDE_STATE={type:'function',function:{name:'ide_state',description:'读取 MyIDE 当前页面、当前项目和未保存的编辑内容。独立页面不返回后台项目文件。管理程序用 launch_*，操作已连接的 SSH 用 ssh_*，操作内置浏览器用 browser_*，不要用本地 Shell 冒充这些操作。',parameters:{type:'object',properties:{},additionalProperties:false}}};
 const same=(a,b)=>a&&b&&['requestId','sessionId','rootId','generation','round'].every(k=>a[k]===b[k]);
 function promptContent(messages,page){
@@ -133,6 +140,7 @@ function createService(options={}){
     const run={context,onEvent,onTool,controller:new AbortController(),tools:new Map(),permissions:new Map(),sequence:0,text:'',session:null};runs.set(context.requestId,run);
     const result=(status,extra={})=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'dsh',text:run.text,context,...extra});
     try{
+      assertNotCatalogConfig(cfg);
       emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools,run);live(run);
       emit(run,{type:'config',configOptions:session.configOptions});
       // 旧会话的模型下架后，不能把全局缓存的另一项目模型当成这次明确改选而自动重发任务。
@@ -150,6 +158,7 @@ function createService(options={}){
   function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
   async function inspect(cfg,context,tools,apply=false){
+    assertNotCatalogConfig(cfg);
     const connection=await connect(cfg),key=keyOf(context);
     if(blocked.has(key))throw Error('此会话尚未绑定：'+blocked.get(key));
     // 打开面板和页面切换只读取目录，第一次真正发送时才创建原生对话。
@@ -165,12 +174,15 @@ function createService(options={}){
   // 用户要求（2026-11-01）：① 这里的名称与 DSH 同步；② DSH 里发起/运行的会话 MyIDE 要看得到；
   // ③ 在 DSH 里中断会话 MyIDE 也要知道。三者都建立在「以宿主 session/list 为准」上。
   async function listSessions(cfg){
+    const all=catalogScope(cfg);
+    if(cfg?.catalogRoot!==undefined)throw Error('目录查询不能指定历史预览目录');
     const conn=await connect(cfg);
-    // 不限制 capabilities.native：session/list 走通用 typert 网关，两种连接都能应答。
-    // 字段归一化在 dsh-native 里做（那里知道宿主原始形状）；
-    // 这里再兜一层，保证调用方永远拿到数组。
+    if(all&&!conn.capabilities?.native)throw Error('全局会话目录仅支持已认证的本机原生 DSH 连接');
+    // 原接口已列出同一宿主的所有主会话，项目过滤原在 renderer；all 不另找服务或读取磁盘历史。
+    // 默认路径仍兼容注入 ACP 的协议单测，显式全局读取只允许本机原生认证连接。
+    // 归属字段统一从宿主 cwd 生成，不能把 saved 里的项目别名误当真实工作目录。
     const value=await conn.rpc.request('session/list',{});
-    const items=Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
+    const items=catalogItems(value).map(catalogEntry);
     // 渲染层用本地对话身份，宿主用原生身份；必须透出持久映射才能合并为同一行。
     const nativeIds=new Set(items.map(item=>item.sessionId));
     return items.map(item=>({...item,bindings:[...saved].filter(([key,record])=>{
@@ -181,6 +193,7 @@ function createService(options={}){
     })}));
   }
   async function rename(cfg,sessionId,title){
+    assertNotCatalogConfig(cfg);
     // 校验放在这一层：native 与 ACP 两条链路都要挡住空标题/超长标题，
     // 否则非法值会一路发到宿主（实测 ACP 链路根本没有校验）。
     const id=String(sessionId||''),next=String(title||'').trim();
@@ -199,9 +212,25 @@ function createService(options={}){
    */
   async function history(cfg,sessionId){
     const id=String(sessionId||'');if(!id)throw Error('缺少会话身份');
-    const conn=await connect(cfg);
+    const all=catalogScope(cfg),rootDir=absoluteCatalogRoot(cfg?.catalogRoot);
+    if(all&&(!rootDir||typeof sessionId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(sessionId)))throw Error('全局历史预览需要真实会话身份与绝对目录');
+    if(!all&&cfg?.catalogRoot!==undefined)throw Error('跨工作区历史仅可通过全局只读预览读取');
+    const conn=await connect(cfg);let location={};
+    if(all){
+      if(!conn.capabilities?.native)throw Error('全局历史预览仅支持已认证的本机原生 DSH 连接');
+      // 每次以同一已认证连接的最新目录核实归属；不能信任 renderer、旧缓存或 saved 映射。
+      // 全程不 check/attach/resume，避免预览拆掉正在运行的 MCP 或持久写入错误的别名。
+      const entries=catalogItems(await conn.rpc.request('session/list',{}));
+      const item=entries.find(item=>item.sessionId===id&&item.origin!=='subagent'&&!item.projections?.values?.subagent);
+      if(!item)throw Error('该会话已不在 DSH 的主会话目录里，请刷新后重试');
+      location=catalogEntry(item);
+      const key=value=>/^[A-Za-z]:[\\/]/.test(value)||/^\\\\/.test(value)?value.toLowerCase():value;
+      if(!location.rootDir||key(location.rootDir)!==key(rootDir))throw Error('会话真实目录与预览目录不符，未读取历史');
+      location={hostId:id,rootId:location.rootId,rootDir:location.rootDir,workspaceName:location.workspaceName,readOnly:true};
+    }
     const value=await conn.rpc.request('session/history',{sessionId:id});
-    return {sessionId:id,turns:Array.isArray(value?.turns)?value.turns:[],count:Array.isArray(value?.records)?value.records.length:0,truncated:value?.truncated===true};
+    if(value?.sessionId&&value.sessionId!==id)throw Error('宿主返回了另一条会话，已拒绝加载历史');
+    return {sessionId:id,...location,turns:Array.isArray(value?.turns)?value.turns:[],count:Array.isArray(value?.records)?value.records.length:0,truncated:value?.truncated===true};
   }
   /**
    * 把当前项目在 MyIDE 里的对话身份绑定到一条**已存在**的宿主会话上。
@@ -211,6 +240,7 @@ function createService(options={}){
    * 绑定后 saved[key] 指向真正的 sessionId，之后 prompt / 历史读取都落在同一条会话上。
    */
   async function bindSession(cfg,context,sessionId){
+    assertNotCatalogConfig(cfg);
     const id=String(sessionId||'');if(!id)throw Error('缺少会话身份');
     const conn=await connect(cfg),key=keyOf(context);
     return identity(key,async()=>{
@@ -227,6 +257,7 @@ function createService(options={}){
     });
   }
   async function watch(cfg,state,onState,signal){
+    assertNotCatalogConfig(cfg);
     const conn=await connect(cfg);
     if(!conn.capabilities?.native)throw Error('当前连接不支持宿主实时订阅');
     const cwd=state.scope==='reader'||!state.rootId?path.join(home(),'myide-detached-workspace'):state.rootId;

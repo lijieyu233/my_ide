@@ -3536,13 +3536,45 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border: none; border-radius: 50%;
 }
 
-/* 历史会话下拉 */
+/* 会话导航只覆盖 AI 区域，不参与 IDE 主区的 flex 布局或改变编辑器宽度。 */
+#ai-history.vt-btn { width: auto; padding: 0 5px; gap: 4px; display: inline-flex; align-items: center; }
+#ai-history[aria-expanded="true"] { color: var(--accent); background: var(--bg-hover); }
+#ai-panel.ai-history-open::after { content: ''; position: absolute; left: 0; right: 0; top: var(--ai-history-top, 64px); bottom: 0; background: rgba(0,0,0,.2); z-index: 55; pointer-events: none; }
+.ai-session-origin { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 3px 10px; padding: 5px 12px; flex-shrink: 0; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: .78em; }
+.ai-session-origin > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-session-origin b { font-weight: 500; color: var(--text); }
+.ai-origin-scope { color: var(--accent); }
+.ai-session-preview-bar { padding: 7px 12px; font-size: .78em; color: var(--text-dim); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel)); }
+.ai-session-preview-bar button { display: inline-block; margin: 4px 0 0; border: 1px solid var(--border-mid); border-radius: 4px; padding: 2px 6px; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }
 .ai-hist-pop {
-  position: absolute; top: 32px; right: 8px; z-index: 60;
-  width: min(340px, calc(100% - 16px)); min-width: 260px; max-height: 60vh; overflow: auto;
+  position: absolute; top: var(--ai-history-top, 64px); bottom: 0; left: 0; z-index: 60;
+  width: min(306px, calc(100% - 22px)); min-width: 0; max-width: 100%; overflow: hidden;
+  display: flex; flex-direction: column;
   background: var(--bg-panel, var(--bg-input)); border: 1px solid var(--menu-border, var(--border-mid));
-  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  border-left: 0; border-bottom: 0; border-radius: 0 6px 0 0; box-shadow: 8px 0 24px rgba(0,0,0,.3);
 }
+.ai-hist-tabs { display: flex; gap: 4px; padding: 8px 10px 5px; flex-shrink: 0; }
+.ai-hist-tabs button { background: transparent; color: var(--text-dim); padding: 4px 8px; font: inherit; font-size: .8em; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.ai-hist-tabs button.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, var(--bg-panel)); }
+.ai-hist-tabs button:disabled { opacity: .4; cursor: default; }
+.ai-hist-search-label { position: relative; display: flex; align-items: center; margin: 5px 10px 8px; flex-shrink: 0; }
+.ai-hist-search-label > svg.ic { position: absolute; left: 7px; width: 12px; height: 12px; color: var(--text-dim); pointer-events: none; }
+.ai-hist-search { background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); width: 100%; min-width: 0; padding: 6px 7px 6px 25px; font: inherit; font-size: .8em; }
+.ai-hist-search:focus { outline: 1px solid var(--accent); }
+.ai-hist-status { font-size: .75em; color: var(--text-dim); padding: 0 10px 7px; overflow-wrap: anywhere; flex-shrink: 0; }
+.ai-hist-status:empty { display: none; }
+.ai-hist-status.error { color: var(--danger); }
+.ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 0 4px 8px; }
+.ai-hist-group-title { display: flex; align-items: center; gap: 6px; font-size: .76em; color: var(--text-dim); padding: 11px 6px 6px; }
+.ai-hist-group-title > svg.ic { width: 12px; height: 12px; flex-shrink: 0; }
+.ai-hist-group-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-hist-group-title small { margin-left: auto; font-size: .83em; opacity: .7; flex-shrink: 0; }
+.ai-hist-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.ai-hist-meta { color: var(--text-dim); font-size: .73em; opacity: .8; }
+.ai-hist-foot { padding: 9px 11px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: .74em; line-height: 1.8; flex-shrink: 0; }
+.ai-hist-row[aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
+.ai-hist-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
 .ai-hist-head {
   position: sticky; top: 0; display: flex; align-items: center; gap: 6px;
   padding: 7px 12px; font-size: .85em; color: var(--text-dim);

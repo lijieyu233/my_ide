@@ -1,5 +1,16 @@
 const fs=require('fs/promises'),path=require('path'),os=require('os'),crypto=require('crypto'),{EventEmitter}=require('events');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// 目录归属只能来自宿主 cwd；相对路径/空 cwd 不能借当前项目补全，否则预览会冒用另一项目身份。
+function absoluteCatalogRoot(value){
+  if(typeof value!=='string'||!value||value.includes('\0'))return '';
+  const windows=/^[A-Za-z]:[\\/]/.test(value)||/^\\\\/.test(value),flavor=windows?path.win32:path.posix;
+  return flavor.isAbsolute(value)?flavor.normalize(value):'';
+}
+function catalogEntry(item){
+  const cwd=typeof item.cwd==='string'?item.cwd:'',rootDir=absoluteCatalogRoot(cwd);
+  const flavor=/^[A-Za-z]:[\\/]/.test(rootDir)||/^\\\\/.test(rootDir)?path.win32:path.posix;
+  return {...item,hostId:String(item.sessionId||''),rootId:cwd,rootDir,workspaceName:rootDir?(flavor.basename(rootDir)||rootDir):''};
+}
 function nativeUrl(value){const url=new URL(value);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.pathname!=='/'||!url.port)throw Error('原生 DSH 连接地址无效');return url;}
 async function install({home,runtime,disabled=false}){
   const profile=path.join(home,'profiles','desktop'),manifest=JSON.parse(await fs.readFile(path.join(profile,'package.json'),'utf8'));
@@ -167,12 +178,12 @@ class NativeRpc extends EventEmitter {
   // existing：宿主会话目录里见过的 id 集合。session/resume 只肯接手这里面的会话，
   // 免得拼错的 id 被宿主 create 成一条没人认领的幽灵会话。
   constructor(url,cookie,fetcher=fetch){super();this.url=url;this.cookie=cookie;this.fetch=fetcher;this.closed=false;this.sessions=new Map();this.answers=new Map();this.sequence=0;this.existing=new Set();}
-  async http(url,init){
-    try{const response=await this.fetch(url,init);if([401,403].includes(response.status))this.close();return response;}
-    catch(error){if(!init.signal?.aborted||init.signal.reason?.name==='TimeoutError')this.close();throw error;}
+  async http(url,init,{preserveConnection=false}={}){
+    try{const response=await this.fetch(url,init);if(!preserveConnection&&[401,403].includes(response.status))this.close();return response;}
+    catch(error){if(!preserveConnection&&(!init.signal?.aborted||init.signal.reason?.name==='TimeoutError'))this.close();throw error;}
   }
-  async call(endpoint,args={},signal){
-    const rpcId=crypto.randomUUID(),response=await this.http(this.url+'/api/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}}),signal:signal||AbortSignal.timeout(15000)});
+  async call(endpoint,args={},signal,transport){
+    const rpcId=crypto.randomUUID(),response=await this.http(this.url+'/api/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}}),signal:signal||AbortSignal.timeout(15000)},transport);
     if(!response.ok)throw Error('原生 DSH 请求失败：HTTP '+response.status);
     const envelope=await response.json();if(envelope.rpcId!==rpcId||envelope.type!=='server-response')throw Error('原生 DSH 协议不匹配');
     if(!envelope.result?.ok)throw Error(envelope.result?.error?.message||'原生 DSH 操作失败');return envelope.result.value;
@@ -208,9 +219,10 @@ class NativeRpc extends EventEmitter {
     // 注意 session/list 的 args 要写成 {_request:{}}，而 session/rename 要写成 {request:{...}}
     // —— 两个端点的描述符不同，此处已按实测分别处理。
     if(method==='session/list'){
-      const value=await this.call('session/list',{_request:{}});
+      // 目录/预览和后台 follow 共用连接；单次只读请求失败不能顺带 abort 所有 Agent。
+      const value=await this.call('session/list',{_request:{}},undefined,{preserveConnection:true});
       // session/list 含 Mnemon 等子任务；DSH 主侧栏不把子任务当独立对话。
-      const items=(value?.items||[]).filter(item=>!item.projections?.values?.subagent).map(item=>({
+      const items=(value?.items||[]).filter(item=>item.origin!=='subagent'&&!item.projections?.values?.subagent).map(item=>catalogEntry({
         sessionId:String(item.sessionId||''),
         title:item.projections?.values?.title||'',
         running:item.running===true,
@@ -240,7 +252,7 @@ class NativeRpc extends EventEmitter {
       const sessionId=String(params?.sessionId||'');if(!sessionId)throw Error('缺少会话身份');
       // throughSeq 的上界必须先向宿主问：用超过游标的值会被明确拒绝
       // （实测 "session page through seq 9999 is past cursor 1452"）。
-      const projection=await this.call('session/projections',{request:{sessionId}});
+      const projection=await this.call('session/projections',{request:{sessionId}},undefined,{preserveConnection:true});
       let through=Number(projection?.asOfSeq);
       if(!Number.isSafeInteger(through)||through<0)throw Error('该会话没有可回放的历史');
       const records=[];const limit=Math.max(1,Number(params?.limit)||5000);
@@ -248,7 +260,7 @@ class NativeRpc extends EventEmitter {
       // ⚠ 别把预算写死成 500 条：一次工具密集的会话单页就有 60 条事件、整场 1500+ 条，
       //   预算太小会静默丢掉最早的对话（实测 515/1453，用户看到的「历史」从中间开始）。
       for(let page=0;page<60&&through>0;page++){
-        const value=await this.call('session/page',{request:{address:{kind:'session',sessionId},throughSeq:through,maxMessages:50}});
+        const value=await this.call('session/page',{request:{address:{kind:'session',sessionId},throughSeq:through,maxMessages:50}},undefined,{preserveConnection:true});
         const items=Array.isArray(value?.records)?value.records:[];
         records.unshift(...items);
         if(!value?.hasMore||!items.length||records.length>=limit)break;
@@ -395,4 +407,4 @@ async function connectNativeOnce({home,runtime,skipInstall=false,discoveryFile,f
   }while(true);
   throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }
-module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory};
+module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory,absoluteCatalogRoot,catalogEntry};

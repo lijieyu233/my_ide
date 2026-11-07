@@ -24,7 +24,7 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
   await js('AiPanel.setConfig({engine:"standard",baseUrl:"http://fixture.invalid",model:"DeepSeek-V4.1-Flash · 标准模型"});App.setAiOpen(true);true');
   await test('模型位于底部输入卡片，连接设置位于顶部，输入提示与发送图标完整',async()=>{
     assert(await js('!!document.querySelector(".ai-input-box .ai-model-row #ai-model")&&!document.querySelector(".ai-head #ai-model")'));
-    assert(await js('document.getElementById("ai-msgs").previousElementSibling.classList.contains("ai-session-controls")&&document.querySelector(".ai-session-controls").previousElementSibling.classList.contains("ai-head")&&document.getElementById("ai-usage").closest(".ai-input-bar")'));
+    assert(await js('document.getElementById("ai-session-origin").previousElementSibling.classList.contains("ai-session-controls")&&document.getElementById("ai-msgs").previousElementSibling.id==="ai-session-preview-bar"&&document.querySelector(".ai-session-controls").previousElementSibling.classList.contains("ai-head")&&document.getElementById("ai-usage").closest(".ai-input-bar")'));
     assert(await js('document.getElementById("ai-model").getBoundingClientRect().width>120'));
     assert(await js('document.getElementById("ai-input").getBoundingClientRect().height>=50&&!!document.querySelector("#ai-send svg")'));
     assert(await js('document.getElementById("ai-input").title.includes("Shift")&&!document.querySelector(".ai-session-settings")&&!!document.querySelector(".ai-input-box #ai-perm")'));
@@ -46,7 +46,7 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     assert(await js('document.getElementById("ai-send").textContent==="⏹"&&!!document.querySelector("#ai-send svg rect")&&document.getElementById("ai-send").getAttribute("aria-label")==="停止生成"'));
     await capture('ai-ui-generating.png');releaseReply();await until(()=>js('document.getElementById("ai-send").textContent==="➤"'));
     assert(await js('!!document.querySelector(".ai-tool-st.ok")&&document.querySelector(".ai-assistant").textContent.includes("检查结果")'));
-    assert(await js('!!document.querySelector(".ai-tool-ic svg")&&document.querySelector(".ai-tool-tx").textContent.includes("读取文件")'));
+    assert(await js('!!document.querySelector(".ai-tool-ic svg")&&document.querySelector(".ai-tool-label").textContent.includes("读取")&&document.querySelector(".ai-tool-tx").textContent.includes("README.md")'));
     assert(await js('!!document.querySelector("#ai-send svg")&&document.getElementById("ai-send").getAttribute("aria-label")==="发送消息"'));
     await capture('ai-ui-conversation.png');
   });

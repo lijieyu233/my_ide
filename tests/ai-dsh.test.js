@@ -359,5 +359,79 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
   assert(!result.ok);assert(/宿主拒绝了新建会话/.test(result.error));
  }finally{await service.dispose();}
 });
- console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
+ await test('全局目录复用本机宿主列表，真实 cwd 不被映射替换，未知归属不猜根目录或 running',async()=>{
+  const file=path.join(temp,'global-catalog-map.json'),original={
+   [JSON.stringify(['local-current',temp])]:{id:'session-current',cwd:temp},
+   [JSON.stringify(['local-wrong-root',temp])]:{id:'session-foreign',cwd:temp},
+  };fs.writeFileSync(file,JSON.stringify(original));
+  const native=nativeFixture(),items=[{sessionId:'session-current',cwd:temp,running:true},{sessionId:'session-foreign',cwd:'D:/other workspace/project B',running:false},{sessionId:'legacy.host-v1',cwd:'relative/root'}];
+  native.rpc.request=async(method,params)=>{native.requests.push({method,params});assert.equal(method,'session/list');return {items};};
+  const service=createService({home:path.join(temp,'global-catalog-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   const all=await service.listSessions({catalogScope:'all'}),normal=await service.listSessions({});assert.deepEqual(normal,all);assert.equal(all.length,3);
+   assert.equal(all[1].hostId,'session-foreign');assert.equal(all[1].rootId,items[1].cwd);assert.equal(all[1].cwd,items[1].cwd);assert.equal(all[1].rootDir,path.win32.normalize(items[1].cwd));assert.equal(all[1].workspaceName,'project B');
+   assert.equal(all[2].rootDir,'');assert.equal(all[2].workspaceName,'');assert.notEqual(all[2].running,true);
+   assert.deepEqual(native.requests,[{method:'session/list',params:{}},{method:'session/list',params:{}}]);assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),original);
+  }finally{await service.dispose();}
+ });
+ await test('跨 root 正文只核实最新目录后只读回放，保留实际宿主身份且不写映射或 attach',async()=>{
+  const file=path.join(temp,'global-history-map.json'),native=nativeFixture(),original={[JSON.stringify(['local-current',temp])]:{id:'myide-original',cwd:temp}};fs.writeFileSync(file,JSON.stringify(original));
+  const turns=[{turn:1,parts:[{kind:'text',role:'assistant',text:'其他工作区正文'}]}],cwd='D:/foreign workspace/project';
+  native.rpc.request=async(method,params)=>{native.requests.push({method,params});if(method==='session/list')return [{sessionId:'legacy.host-v1',cwd}];assert.equal(method,'session/history');return {sessionId:params.sessionId,turns,records:[{}],truncated:true};};
+  const service=createService({home:path.join(temp,'global-history-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   const result=await service.history({catalogScope:'all',catalogRoot:path.win32.normalize(cwd)},'legacy.host-v1');
+   assert.equal(result.sessionId,'legacy.host-v1');assert.equal(result.hostId,'legacy.host-v1');assert.equal(result.rootId,cwd);assert.equal(result.rootDir,path.win32.normalize(cwd));assert.equal(result.readOnly,true);assert.deepEqual(result.turns,turns);assert.equal(result.count,1);assert.equal(result.truncated,true);
+   assert.deepEqual(native.requests,[{method:'session/list',params:{}},{method:'session/history',params:{sessionId:'legacy.host-v1'}}]);assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),original);
+  }finally{await service.dispose();}
+ });
+ await test('全局预览拒绝缺失、错误、相对或伪造根目录及本地别名，未核实前不读正文',async()=>{
+  const native=nativeFixture();let items=[{sessionId:'session-foreign',cwd:'D:/real-root',rootDir:'D:/forged-root'},{sessionId:'session-unknown',cwd:''},{sessionId:'session-child',cwd:'D:/real-root',origin:'subagent'}];
+  native.rpc.request=async(method,params)=>{native.requests.push({method,params});assert.equal(method,'session/list');return items;};
+  const service=createService({home:path.join(temp,'invalid-preview-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   for(const [cfg,id] of [
+    [{catalogScope:'all'},'session-foreign'],[{catalogScope:'all',catalogRoot:'relative/root'},'session-foreign'],
+    [{catalogRoot:'D:/real-root'},'session-foreign'],[{catalogScope:'current',catalogRoot:'D:/real-root'},'session-foreign'],
+    [{catalogScope:'all',catalogRoot:'D:/forged-root'},'session-foreign'],[{catalogScope:'all',catalogRoot:'D:/real-root'},'local-alias'],
+    [{catalogScope:'all',catalogRoot:'D:/real-root'},'session-child'],[{catalogScope:'all',catalogRoot:'D:/real-root'},'session-unknown'],
+    [{catalogScope:'all',catalogRoot:'D:/real-root'},'host:session-foreign'],
+   ])await assert.rejects(service.history(cfg,id));
+   items=[];await assert.rejects(service.history({catalogScope:'all',catalogRoot:'D:/real-root'},'session-foreign'),/不在 DSH/);
+   assert(native.requests.every(request=>request.method==='session/list'));
+  }finally{await service.dispose();}
+ });
+ await test('全局参数不能沿用到发送、绑定、改名、模型应用或带控制权的旁听，零宿主副作用',async()=>{
+  const native=nativeFixture(),service=createService({home:path.join(temp,'catalog-rights-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  try{
+   for(const cfg of [{catalogScope:'all'},{catalogScope:'all',catalogRoot:temp},{catalogRoot:temp}]){
+    const result=await service.chat(cfg,[{role:'user',content:'不应发送'}],[],context(),()=>{},()=>{});assert.equal(result.ok,false);assert.equal(result.status,'failed');assert.match(result.error,/仅可用于只读/);
+    await assert.rejects(service.bindSession(cfg,context(),'session-other'),/仅可用于只读/);await assert.rejects(service.rename(cfg,'session-other','不能改名'),/仅可用于只读/);
+    for(const apply of [false,true])await assert.rejects(service.inspect(cfg,context(),[],apply),/仅可用于只读/);
+    await assert.rejects(service.watch(cfg,{rootId:temp,hostId:'session-other'},()=>{}),/仅可用于只读/);
+   }
+   assert.deepEqual(native.requests,[]);
+  }finally{await service.dispose();}
+  const acp=fixture();try{await assert.rejects(acp.service.listSessions({catalogScope:'all'}),/本机原生/);await assert.rejects(acp.service.history({catalogScope:'all',catalogRoot:temp},'session-other'),/本机原生/);assert(!acp.requests.some(request=>['session/list','session/history'].includes(request.method)));}finally{await acp.service.dispose();}
+ });
+ await test('全局目录与foreign正文读取成功或失败均不抢占后台run，后续chunk及原生身份保持',async()=>{
+  const file=path.join(temp,'catalog-background-map.json'),native=nativeFixture({id:'myide-background'}),original=native.rpc.request;
+  let entered,release,failed=false,settled=false;const ready=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  native.rpc.request=async(method,params)=>{
+   if(method==='session/list'){native.requests.push({method,params});if(failed)throw Error('目录暂时不可用');return [{sessionId:'session-foreign',cwd:'D:/foreign',running:false},{sessionId:'myide-background',cwd:temp,running:true}];}
+   if(method==='session/history'){native.requests.push({method,params});return {sessionId:params.sessionId,turns:[],records:[]};}
+   const result=await original(method,params);if(method==='session/prompt'){entered();await gate;}return result;
+  };
+  native.rpc.notify=(method,params)=>{native.requests.push({method,params});assert.fail('目录/预览不能 cancel 后台任务');};
+  const service=createService({home:path.join(temp,'catalog-background-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc}),c=context();let pending;
+  try{
+   pending=service.chat({},[{role:'user',content:'后台请求'}],[],c,()=>{},()=>{}).then(result=>{settled=true;return result;});await ready;const before=fs.readFileSync(file,'utf8');
+   await service.listSessions({catalogScope:'all'});await service.history({catalogScope:'all',catalogRoot:'D:/foreign'},'session-foreign');
+   failed=true;await assert.rejects(service.listSessions({catalogScope:'all'}),/暂时不可用/);await assert.rejects(service.history({catalogScope:'all',catalogRoot:'D:/foreign'},'session-foreign'),/暂时不可用/);
+   assert.equal(settled,false);assert.equal(native.rpc.closed,false);assert.equal(fs.readFileSync(file,'utf8'),before);assert.equal(native.requests.filter(r=>['session/new','session/resume'].includes(r.method)).length,1);
+   native.rpc.emit('notification',{method:'session/update',params:{sessionId:'myide-background',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'后台仍在原会话输出'}}}});
+   release();const answer=await pending;assert.equal(answer.ok,true);assert.equal(answer.text,'后台仍在原会话输出');assert.equal(native.requests.find(r=>r.method==='session/prompt').params.sessionId,'myide-background');
+  }finally{release();await pending;await service.dispose();}
+ });
+  console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
 }finally{fs.rmSync(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});

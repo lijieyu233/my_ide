@@ -2788,8 +2788,8 @@ module.exports = {
       !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
       title ? JSON.stringify(title.textContent) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏 6 个会话按钮全为 SVG 且无文字（权限移入输入卡片）',
-      tb.length === 6 && tb.every((b) => b.querySelector('svg') && !b.textContent.trim()),
+    add('顶栏6个入口保留SVG，会话入口明确命名，其余按钮保持紧凑',
+      tb.length === 6 && tb.every((b) => b.querySelector('svg') && (b.id === 'ai-history' ? b.textContent.trim() === '会话' : !b.textContent.trim())),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
     const stop = q('#ai-stop');
     add('停止入口名称可访问，空闲时隐藏且保留5个会话入口',

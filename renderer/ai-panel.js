@@ -269,6 +269,7 @@ const AiPanel = (() => {
     const el = document.getElementById('ai-usage');
     if (!el) return;
     const page = currentPage();
+    if (dshSessionAccess?.preview) { el.textContent='只读预览 · 会话工程：'+sessionRootLabel(dshSessionAccess.rootDir)+' · 不附带当前工程文件';el.title=dshSessionAccess.rootDir;return; }
     const parts = ['当前：' + page.name + (page.projectContext ? '' : '（未附带项目文件）'), '上下文 ~' + fmtK(estTokens()) + ' tok'];
     if (usageSum.in || usageSum.out) {
       parts.push('Σ 输入 ' + fmtK(usageSum.in));
@@ -1095,6 +1096,12 @@ const AiPanel = (() => {
     if(getConfig().engine!=='dsh'||panel?.classList.contains('hidden'))return;
     // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
+    if (dshSessionAccess?.preview) {
+      if (retry) { await openHostPreview({hostId:dshSessionAccess.hostId,rootDir:dshSessionAccess.rootDir,title:dshSessionAccess.title}); return; }
+      dshOptionsTicket++; dshOptionsState='error'; refreshModelSel(); setBusyUI(false);
+      const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 跨工程只读预览';info.title='不会绑定到当前工程或为预览创建新的 DSH 会话';}
+      return;
+    }
     // 阅读页的主进程身份隔离为 reader key；不能拿项目正文经 inspect/发送悄悄新建一条替代会话。
     if(dshScopeMismatch()){
       dshOptionsTicket++;dshOptionsState='error';refreshModelSel();setBusyUI(busy);
@@ -1137,7 +1144,7 @@ const AiPanel = (() => {
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready'&&!dshScopeMismatch();sel.disabled=!ready;
-      sel.innerHTML=choices.length?choices.map(option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
+      sel.innerHTML=dshSessionAccess?.preview?'<option value="">只读预览 · 不加载模型选项</option>':choices.length?choices.map(option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
       // 下架的是这条宿主会话的旧选择；全局缓存中另一个可用模型不能伪装成它已被替换。
       sel.value=!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
       const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
@@ -1848,8 +1855,9 @@ const AiPanel = (() => {
 
   function setBusyUI(b) {
     if (backgroundView) return;
+    renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
-    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=b||dshOptionsState==='loading';
+    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.textContent=dshSessionAccess?.preview?'刷新预览':'重新连接';reconnect.title=dshSessionAccess?.preview?'重新读取这条会话的只读历史，不绑定或续聊':'重新连接 DSH，保留会话，不重发任务';}
     if (sendBtn) {
       sendBtn.disabled = stopping || !b && !external && !dshCanSend();
       sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
@@ -1885,7 +1893,7 @@ const AiPanel = (() => {
   function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
   let loadedSessionKey=null;
   let sessionLoadTicket=0;
-  function rememberSession(){if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
+  function rememberSession(){if(dshSessionAccess?.preview)return;if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
     const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
@@ -1901,6 +1909,8 @@ const AiPanel = (() => {
     return (dt.getMonth() + 1) + '-' + dt.getDate();
   }
   function persistSession() {
+    // 跨工程正文只是临时预览，不能写进当前项目历史或覆盖其 active/draft 身份。
+    if (dshSessionAccess?.preview) return;
     const has = msgs.some((m) => m.role === 'user' || m.role === 'assistant');
     if (!has) return;
     if (!curSessionId) curSessionId = 's' + Date.now().toString(36);
@@ -1949,10 +1959,15 @@ const AiPanel = (() => {
       if (!--replayDepth) scrollBottom();
     }
   }
-  let histPop = null;
+  let histPop = null, histScope = 'current', histQuery = '', histOutside = null;
+  let histLoading = false, histError = '';
   function closeHist() {
     if (histPop && histPop.parentNode) histPop.parentNode.removeChild(histPop);
     histPop = null;
+    panel?.classList.remove('ai-history-open');
+    document.getElementById('ai-history')?.setAttribute('aria-expanded','false');
+    if (histOutside) document.removeEventListener('mousedown', histOutside);
+    histOutside = null;
   }
   function toggleHist() {
     if (histPop) { closeHist(); return; }
@@ -1979,6 +1994,36 @@ const AiPanel = (() => {
     renderHistRows(histPop, all, running);
     return true;
   }
+  function sessionRootLabel(root) { return String(root || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '未打开工程'; }
+  function renderSessionOrigin() {
+    if (backgroundView) return;
+    const origin = document.getElementById('ai-session-origin'), bar = document.getElementById('ai-session-preview-bar');
+    const dsh = getConfig().engine === 'dsh', preview = dshSessionAccess?.preview;
+    if (origin) {
+      origin.classList.toggle('hidden', !dsh);
+      const root = window.App?.root || '';
+      origin.innerHTML = '<span title="'+esc(root)+'">IDE 工程：<b>'+esc(sessionRootLabel(root))+'</b></span><span class="ai-origin-scope">'+(preview ? '会话归属：'+esc(sessionRootLabel(dshSessionAccess.rootDir)) : '当前工程会话')+'</span>';
+    }
+    if (bar) {
+      bar.classList.toggle('hidden', !dsh || !preview);
+      bar.innerHTML = preview ? '<span>跨工程只读预览 · 不切换 IDE 工程，不使用当前工程文件或权限。</span><button id="ai-session-open-project" type="button">打开所属工程</button>' : '';
+      const button = bar.querySelector('button');
+      if (button) button.onclick = async () => {
+        const access = dshSessionAccess, root = window.App?.root || '', id = curSessionId;
+        const accepted = await Modal.confirm('打开会话所属工程', '当前工程：'+root+'\n会话工程：'+access.rootDir+'\n\n确认后才切换工程；有未保存内容时仍按原有保护流程处理。');
+        if (!accepted || dshSessionAccess !== access || curSessionId !== id || (window.App?.root || '') !== root) return;
+        try {
+          const opened = await App.setRoot(access.rootDir);
+          if (opened !== false && pathKey(window.App?.root) === pathKey(access.rootDir)) openSession(access.hostId);
+        } catch (error) { MI.toast('未切换工程：'+(error?.message || '项目打开失败'),'err'); }
+      };
+    }
+    if (inputEl) {
+      if (preview) { inputEl.dataset.sessionPreview = 'true'; inputEl.placeholder = '跨工程只读预览：不使用当前工程文件或权限'; }
+      else if (inputEl.dataset.sessionPreview) { delete inputEl.dataset.sessionPreview; inputEl.placeholder = '发送消息，@ 引用文件，/ 使用命令'; }
+      inputEl.readOnly = !!preview;
+    }
+  }
   // 正在运行的会话 id（前台一个 + 后台任意多个）。历史列表据此打「运行中」标记，
   // 也据此把「还没落盘但正在跑」的会话语补进列表 —— 见 sessionsForHist 的注释。
   function runningSessionIds() {
@@ -2002,12 +2047,16 @@ const AiPanel = (() => {
   async function refreshDshCatalog() {
     if (getConfig().engine !== 'dsh') return dshCatalog.items;
     const root = (window.App && App.root) || '', ticket = ++dshCatalogTicket, scope = sessKey();
+    histLoading = true; histError = ''; refreshHistInPlace();
     try {
-      const result = await window.myIDE.ai.dshSessions(getConfig());
+      const result = await window.myIDE.ai.dshSessions({...getConfig(), catalogScope:'all'});
       // 慢的旧请求可能仍含“运行中”或旧项目数据，不能覆盖后来的目录。
-      if (result?.ok && ticket === dshCatalogTicket && scope === sessKey() && getConfig().engine === 'dsh')
-        dshCatalog = { at: Date.now(), root, items: Array.isArray(result.items) ? result.items : [] };
-    } catch {}
+      if (ticket === dshCatalogTicket && scope === sessKey() && getConfig().engine === 'dsh') {
+        if (result?.ok) dshCatalog = { at: Date.now(), root, items: Array.isArray(result.items) ? result.items : [] };
+        else histError = result?.error || '未能读取 DSH 会话目录';
+      }
+    } catch (error) { if (ticket === dshCatalogTicket && scope === sessKey()) histError = error?.message || 'DSH 会话目录读取失败'; }
+    finally { if (ticket === dshCatalogTicket) { histLoading = false; refreshHistInPlace(); } }
     return dshCatalog.items;
   }
   // 目录只对同一个项目有效：换了项目就当没缓存（下次打开历史会重新拉）。
@@ -2088,8 +2137,17 @@ const AiPanel = (() => {
       all.unshift({ id: sessionId, title: list.length ? sessTitle(list) : '（运行中的新会话）', ts: Date.now(), running: true, virtual: true });
       running.add(sessionId);
     }
-    if (curSessionId && !seen.has(curSessionId) && !all.some(item => item.id === curSessionId))
+    if (curSessionId && !dshSessionAccess?.preview && !seen.has(curSessionId) && !all.some(item => item.id === curSessionId))
       all.unshift({id:curSessionId,title:msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
+    for (const item of all) { item.rootDir ||= root; item.cwd ||= root; }
+    if (histScope === 'all' && catalogUsable()) for (const item of dshCatalog.items) {
+      if (item.cwd && pathKey(item.cwd) === pathKey(root) || item.blank === true) continue;
+      const rootDir = item.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(item.cwd || '') ? item.cwd : '');
+      const id = 'host:' + item.sessionId;
+      if (item.running === true) running.add(id);
+      all.push({id,hostId:item.sessionId,title:item.title || '（未命名会话）',ts:item.updatedAt || 0,
+        cwd:item.cwd || '',rootDir,foreign:true,unknownRoot:!rootDir,running:item.running===true,virtual:true});
+    }
     // 当前查看是主导航，运行只是独立状态；不能让后台任务抢到“选中项”的首位和视觉权重。
     all.sort((a, b) => Number(b.id === curSessionId) - Number(a.id === curSessionId)
       || Number(!!b.running) - Number(!!a.running) || (b.ts || 0) - (a.ts || 0));
@@ -2097,35 +2155,75 @@ const AiPanel = (() => {
   }
   // 只往给定容器里写行内容：重建面板与就地刷新共用同一段渲染逻辑。
   function renderHistRows(pop, all, running) {
-    let html = '<div class="ai-hist-head">历史会话<span class="ai-hist-n">' + all.length + '</span></div>';
+    const query = histQuery.trim().toLocaleLowerCase();
+    const shown = all.filter(item => !query || [item.title,item.cwd,item.rootDir].join(' ').toLocaleLowerCase().includes(query));
+    const container = pop.querySelector('.ai-hist-rows');
+    if (!container) return;
+    const count = pop.querySelector('.ai-hist-n'); if (count) count.textContent = shown.length + (query ? ' / ' + all.length : '');
+    const dsh = getConfig().engine === 'dsh';
+    const foot = pop.querySelector('.ai-hist-foot'); if (foot) foot.textContent = dsh ? '只切换 AI 视图，不切换 IDE 工程。跨工程先只读预览，后台任务继续运行。' : '普通助手仅显示当前工程历史；切到 DSH 模式后可查看全部工作区。';
+    for (const button of pop.querySelectorAll('[data-hist-scope]')) {
+      button.classList.toggle('active',button.dataset.histScope === histScope);
+      button.setAttribute('aria-pressed', String(button.dataset.histScope === histScope));
+      if (button.dataset.histScope === 'all') button.disabled = !dsh;
+    }
+    const status = pop.querySelector('.ai-hist-status');
+    if (status) { status.textContent = histError ? '目录更新失败，显示已有记录：' + histError : histLoading ? '正在读取 DSH 会话目录…' : ''; status.classList.toggle('error',!!histError); }
+    let html = '';
     if (curSessionId && !all.some(item => item.id === curSessionId) && catalogOf(curSessionId))
       html += '<div class="ai-hist-empty">当前查看的会话属于其他工作区</div>';
-    if (!all.length) html += '<div class="ai-hist-empty">还没有历史会话 —— 每轮对话结束会自动存一条</div>';
-    for (const se of all) {
-      const active = se.id === curSessionId;
-      const isRunning = running.has(se.id);
-      // 勾选、底色和“当前查看”只属于当前项；后台运行收进右侧状态，不再像被选中。
-      html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(se.id) + '"' + (active ? ' aria-current="true"' : '') + '>' +
-        '<span class="ai-hist-select" aria-hidden="true">' + (active ? '<svg class="ic" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>' : '') + '</span>' +
-        '<span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span>' +
-        (active ? '<span class="ai-hist-current">当前查看</span>' : '') +
-        '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><em class="ai-hist-live">' + (active ? '运行中' : '后台运行中') + '</em>' : relTime(se.ts)) + '</span>' +
-        '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button>' +
-        '<button class="ai-hist-b" data-act="del" title="删除">\u2715</button></div>';
+    if (!shown.length) html += '<div class="ai-hist-empty">' + (query ? '没有匹配的会话' : histLoading ? '正在读取会话…' : '还没有历史会话 —— 每轮对话结束会自动存一条') + '</div>';
+    const groups = new Map();
+    for (const item of shown) { const key = item.unknownRoot ? '' : pathKey(item.rootDir); if (!groups.has(key)) groups.set(key,[]); groups.get(key).push(item); }
+    const groupEntries = [...groups.entries()].sort(([a],[b]) => Number(b === pathKey(window.App?.root)) - Number(a === pathKey(window.App?.root)));
+    for (const [, items] of groupEntries) {
+      const first = items[0], groupRoot = first.unknownRoot ? '' : first.rootDir;
+      html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"><div class="ai-hist-group-title" title="' + esc(groupRoot || '宿主未提供可验证的绝对目录') + '"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5V3h5l2 2h5v8H2z"/></svg><span>' + esc(first.unknownRoot ? '归属未确认' : sessionRootLabel(groupRoot)) + '</span><small>' + (pathKey(groupRoot) === pathKey(window.App?.root) ? 'IDE 当前工程' : first.unknownRoot ? '不可打开' : '其他工作区') + '</small></div>';
+      for (const se of items) {
+        const active = se.id === curSessionId, isRunning = running.has(se.id);
+        html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + (se.foreign ? ' foreign' : '') + '" data-id="' + esc(se.id) + '" data-root="' + esc(se.rootDir || '') + '" role="button" tabindex="' + (se.unknownRoot ? '-1' : '0') + '"' + (se.unknownRoot ? ' aria-disabled="true"' : '') + (active ? ' aria-current="true"' : '') + '>' +
+          '<span class="ai-hist-select" aria-hidden="true">' + (active ? '<svg class="ic" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>' : '') + '</span>' +
+          '<span class="ai-hist-copy"><span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span><span class="ai-hist-meta">' + (se.unknownRoot ? '工作区未经确认' : se.foreign ? 'DSH · 跨工程只读预览' : se.localOnly ? 'MyIDE 本地记录' : dsh ? 'DSH · 当前工程' : 'MyIDE') + '</span></span>' +
+          (active ? '<span class="ai-hist-current">当前查看</span>' : '') +
+          '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><em class="ai-hist-live">' + (active ? '运行中' : '后台运行中') + '</em>' : se.ts ? relTime(se.ts) : '时间未知') + '</span>' +
+          (se.foreign ? '' : '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button><button class="ai-hist-b" data-act="del" title="删除">\u2715</button>') + '</div>';
+      }
+      html += '</section>';
     }
-    pop.innerHTML = html;
+    const top = container.scrollTop; container.innerHTML = html; container.scrollTop = top;
   }
   function renderHist() {
     closeHist();
+    if (getConfig().engine !== 'dsh') histScope = 'current';
     // 每次重建都要重挂「点外部关闭」监听；旧面板的监听器会在下一次 mousedown 时
     // 发现 histPop 已经是新节点而把自己摘掉，因此不会误关新面板。
     const { all, running } = sessionsForHist();
     const pop = document.createElement('div');
     pop.className = 'ai-hist-pop';
+    pop.setAttribute('role','dialog'); pop.setAttribute('aria-label','会话导航');
+    pop.innerHTML = '<div class="ai-hist-head"><strong>会话</strong><span class="ai-hist-n"></span><button class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 7a5 5 0 1 0-1 4M13 3v4H9"/></svg></button><button class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>' +
+      '<div class="ai-hist-tabs"><button type="button" data-hist-scope="current">当前工程</button><button type="button" data-hist-scope="all">全部 DSH</button></div>' +
+      '<label class="ai-hist-search-label"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="m10 10 4 4"/></svg><input class="ai-hist-search" type="search" placeholder="搜索会话或工作区" aria-label="搜索会话或工作区"/></label>' +
+      '<div class="ai-hist-status" role="status" aria-live="polite"></div><div class="ai-hist-rows"></div><div class="ai-hist-foot">只切换 AI 视图，不切换 IDE 工程。<br>跨工程先只读预览，后台任务继续运行。</div>';
     renderHistRows(pop, all, running);
+    const origin = document.getElementById('ai-session-origin'), controls = panel.querySelector('.ai-session-controls');
+    const anchor = origin && !origin.classList.contains('hidden') ? origin : controls || panel.querySelector('.ai-head');
+    const top = anchor ? anchor.offsetTop + anchor.offsetHeight : 32;
+    panel.style.setProperty('--ai-history-top',top+'px');
     panel.appendChild(pop);
-    histPop = pop;
+    histPop = pop; panel.classList.add('ai-history-open');
+    document.getElementById('ai-history')?.setAttribute('aria-expanded','true');
+    const search = pop.querySelector('.ai-hist-search'); search.value = histQuery;
+    search.addEventListener('input', () => { histQuery = search.value; refreshHistInPlace(); });
+    pop.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeHist(); document.getElementById('ai-history')?.focus(); }
+      else if (['Enter',' '].includes(event.key) && event.target.classList.contains('ai-hist-row')) { event.preventDefault(); event.target.click(); }
+    });
     pop.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-hist-close]')) { closeHist(); return; }
+      if (e.target.closest('[data-hist-refresh]')) { await refreshDshCatalog(); return; }
+      const tab = e.target.closest('[data-hist-scope]');
+      if (tab) { if (tab.disabled) return; histScope = tab.dataset.histScope; refreshHistInPlace(); if (!catalogUsable()) await refreshDshCatalog(); return; }
       const row = e.target.closest && e.target.closest('.ai-hist-row');
       if (!row) return;
       const id = row.dataset.id;
@@ -2133,6 +2231,8 @@ const AiPanel = (() => {
       const all2 = loadSessions(), scope = sessKey(), engine = getConfig().engine;
       const target = sessionsForHist().all.find(item => item.id === id);
       if (!target) return;
+      if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开','err'); return; }
+      if (target.foreign) { if (!act) openHostPreview(target); return; }
       const se = all2.find((x) => x.id === id);
       // 来自 DSH 目录、本地没有正文的会话（别人在 DSH 里发起的）也要能改名/切过去，
       // 所以这里不能 `if (!se) return`；删除仍只作用于本地记录。
@@ -2173,13 +2273,30 @@ const AiPanel = (() => {
       }
       openSession(id);
     });
-    document.addEventListener('mousedown', function onOut(ev) {
-      if (!histPop) { document.removeEventListener('mousedown', onOut); return; }
-      if (!histPop.contains(ev.target) && ev.target.id !== 'ai-history' && !ev.target.closest('#ai-history')) {
-        closeHist();
-        document.removeEventListener('mousedown', onOut);
-      }
-    });
+    histOutside = ev => {
+      if (histPop && !histPop.contains(ev.target) && !ev.target.closest('#ai-history')) closeHist();
+    };
+    document.addEventListener('mousedown', histOutside);
+  }
+  async function openHostPreview(target) {
+    if (!target.rootDir || pathKey(target.rootDir) === pathKey(window.App?.root)) return;
+    const ticket = ++sessionLoadTicket, root = window.App?.root || '';
+    const hostId = target.hostId, id = 'host:' + hostId;
+    beginDshSessionLoad(id,hostId,target);
+    // 只读历史不依赖当前工具页权限：同工程换页不能把慢响应丢弃后永久卡在 loading。
+    const wanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && curSessionId === id && dshSessionAccess?.preview && (window.App?.root || '') === root;
+    const result = await window.myIDE.ai.dshHistory({...getConfig(),catalogScope:'all',catalogRoot:target.rootDir},hostId).catch(error => ({ok:false,error:error.message}));
+    if (!wanted()) return false;
+    if (!result?.ok || result.readOnly !== true || pathKey(result.rootDir) !== pathKey(target.rootDir) || result.sessionId !== hostId) {
+      const message = '跨工程正文读取失败：' + (result?.error || '宿主未确认会话归属');
+      blockDshSession(message); msgsEl.innerHTML=''; addMsg('assistant',message); return false;
+    }
+    msgs=dshTurnsMessages(Array.isArray(result.turns)?result.turns:[]);
+    dshSessionAccess={...dshSessionAccess,state:'preview',error:'当前为其他工作区的只读预览，请明确打开所属工程后续聊'};
+    dshConfigOptions=[];dshOptionsState='error';usageSum={in:0,out:0,cacheHit:0,cacheMiss:0};
+    replayMsgs();renderUsage();refreshModelSel();setBusyUI(false);renderBackgroundStatus();
+    const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 跨工程只读预览';info.title=target.rootDir;}
+    return true;
   }
   function openSession(id) {
     const ticket = ++sessionLoadTicket;
@@ -2195,6 +2312,12 @@ const AiPanel = (() => {
       if (rest) { rememberSession(); localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); closeHist(); MI.toast('已接回运行中的会话', 'ok'); return; }
     }
     const host = catalogOf(id);
+    if (host && (!host.cwd || pathKey(host.cwd) !== pathKey(window.App?.root))) {
+      const rootDir = host.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(host.cwd || '') ? host.cwd : '');
+      if (rootDir) openHostPreview({hostId:host.sessionId,rootDir,title:host.title});
+      else { closeHist(); MI.toast('宿主未确认会话工作区，不能在当前工程打开','err'); }
+      return;
+    }
     if (host && host.cwd && pathKey(host.cwd) === pathKey(window.App?.root)) { loadHostSession(id, host.sessionId, ticket); return; }
     const se = loadSessions().find((x) => x.id === id);
     if (getConfig().engine === 'dsh' && se && (se.hostId || se.msgs?.length || /^(session-|myide-|host:)/.test(id))) {
@@ -2451,13 +2574,13 @@ const AiPanel = (() => {
     await refreshDshCatalog();
     if (selected === curSessionId && root === window.App?.root && scope === dshScope() && generation === dshWatchGeneration) await ensureDshWatch(true);
   }
-  function beginDshSessionLoad(id,hostId) {
+  function beginDshSessionLoad(id,hostId,preview = null) {
     resetDshWatch();
     // 选择一变就放开旧视图并锁住发送；不能等网络返回后才切身份，让新输入仍落到上一条。
     releaseSessionPermissions(detachRun());
     closeHist();dshOptionsTicket++;dshOptionsState='loading';
     curSessionId=id;
-    dshSessionAccess={sessionId:id,hostId:hostId||'',state:'loading',scope:dshScope(),epoch:pageEpoch,error:''};
+    dshSessionAccess={sessionId:id,hostId:hostId||'',state:'loading',scope:dshScope(),epoch:pageEpoch,error:'',...(preview ? {preview:true,rootDir:preview.rootDir,title:preview.title} : {})};
     rememberSession();
     msgs=[];usageSum={in:0,out:0,cacheHit:0,cacheMiss:0};lastUserAt=null;
     msgsEl.innerHTML='';addMsg('assistant','正在读取并确认 DSH 会话…');

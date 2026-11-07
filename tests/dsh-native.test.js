@@ -1,5 +1,5 @@
 const assert=require('assert/strict'),fs=require('fs/promises'),path=require('path'),os=require('os');
-const {install,nativeUrl,configOptions,NativeRpc,selectionWithReasoning,turnFailure,connectNative}=require('../src/main/dsh/dsh-native');
+const {install,nativeUrl,configOptions,NativeRpc,selectionWithReasoning,turnFailure,connectNative,absoluteCatalogRoot,catalogEntry}=require('../src/main/dsh/dsh-native');
 let count=0;const test=async(name,fn)=>{await fn();console.log('PASS '+name);count++;};
 const catalog={default:{provider:'desktop-plugin',model:'native-v4.1',reasoningEffort:'high'},groups:[{id:'desktop-plugin',name:'原生插件',models:[{id:'native-v4.1',name:'原生模型',reasoning:{efforts:[{id:'high',name:'High'}],defaultEffort:'high'}}]}]};
 const missingSelection=Object.freeze({provider:'workbuddy-global',model:'deepseek-v4.1-flash',reasoningEffort:'high'});
@@ -235,7 +235,54 @@ async function bridgeFixture(){
  });
  await test('请求超时释放连接供重新发现，用户主动停止不关闭正常宿主连接',async()=>{for(const name of ['TimeoutError','AbortError']){const controller=new AbortController();controller.abort(new DOMException('stop',name));const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async()=>{throw controller.signal.reason;});await assert.rejects(rpc.http('http://127.0.0.1:12',{signal:controller.signal}));assert.equal(rpc.closed,name==='TimeoutError');rpc.close();}});
  await test('查看模型目录不创建会话或工作区，首次用户文本独立保留，不追加界面观察指令',async()=>{const endpoints=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{const envelope=JSON.parse(init.body);endpoints.push(envelope.method);return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value:catalog}});});assert((await rpc.request('session/catalog',{})).configOptions.length);assert.deepEqual(endpoints,['session/modelCatalog']);assert.equal(rpc.sessions.size,0);const blocks=require('../src/main/dsh/ai-dsh').promptContent([{role:'user',content:'真正的问题'}],{id:'launch',projectContext:false});assert.equal(blocks[0].text,'真正的问题');assert.deepEqual(blocks,[{type:'text',text:'真正的问题'}]);rpc.close();});
- await test('会话目录与改名的真实端点形态：list 用 _request、rename 用 request，字段归一化',async()=>{
+ await test('后台 follow 与目录/历史共享认证连接：成功、HTTP错误、超时和网络失败不抢占run或伪报running',async()=>{
+   const calls=[],event=(seq,type,data)=>({type:'session',value:{type:'event',event:{seq,type,data}}});
+   let output,requestId,entered,failedEndpoint='',failure,settled=false,cancelled=false,streamDone=false;
+   const ready=new Promise(resolve=>{entered=resolve;}),write=frames=>output.enqueue(Buffer.from(frames.map(frame=>JSON.stringify(frame)).join('\n')+'\n'));
+   const rpc=new NativeRpc('http://127.0.0.1:12','local-auth-cookie',async(url,init)=>{
+    assert.equal(init.headers.Cookie,'local-auth-cookie');assert.equal(new URL(url).hostname,'127.0.0.1');
+    if(url.endsWith('/myide/follow'))return new Response(new ReadableStream({start(controller){output=controller;write([{type:'session',value:{type:'snapshot',cursor:0,records:[]}}]);},cancel(){cancelled=true;}}));
+    const envelope=JSON.parse(init.body),method=envelope.method;calls.push(method);
+    if(method===failedEndpoint){
+     if(typeof failure==='number')return new Response('read unavailable',{status:failure});
+     throw failure==='timeout'?new DOMException('read deadline','TimeoutError'):TypeError('read network failed');
+    }
+    let value;
+    if(method==='session/prompt'){
+     requestId=envelope.payload.args.request.requestId;write([event(1,'turn/start',{turn:1}),event(2,'user/message',{source:{kind:'user',rpcId:requestId}})]);entered();value={accepted:true};
+    }else if(method==='session/list')value={items:[{sessionId:id,cwd:'D:/active',running:true},{sessionId:'session-foreign',cwd:'D:/foreign',running:'unknown'},{sessionId:'session-unknown'}]};
+    else if(method==='session/projections')value={asOfSeq:1};
+    else if(method==='session/page')value={records:[{event:{seq:1,type:'assistant/message',data:{message:{content:[{type:'text',text:'只读正文'}]}}}}],hasMore:false};
+    else assert.fail('读取不能调用控制或创建端点：'+method);
+    return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+   });
+   const state={catalog,selected:catalog.default};rpc.sessions.set(id,state);const emitted=[];rpc.on('notification',value=>emitted.push(value));
+   const pending=rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'后台任务'}]}).then(value=>{settled=true;return {value};},error=>{settled=true;return {error};});
+   try{
+    await ready;const controller=state.controller,items=await rpc.request('session/list',{});assert.equal(items[0].running,true);assert.equal(items[1].running,false);assert.equal(items[2].running,false);
+    const history=await rpc.request('session/history',{sessionId:'session-foreign'});assert.equal(history.turns[0].parts[0].text,'只读正文');
+    for(const endpoint of ['session/list','session/projections','session/page'])for(const mode of [500,401,403,'timeout','network']){
+     failedEndpoint=endpoint;failure=mode;
+     await assert.rejects(rpc.request(endpoint==='session/list'?'session/list':'session/history',{sessionId:'session-foreign'}));
+     assert.equal(settled,false);assert.equal(rpc.closed,false);assert.equal(state.controller,controller);assert.equal(controller.signal.aborted,false);assert.equal(cancelled,false);
+    }
+    failedEndpoint='';assert.equal((await rpc.request('session/list',{}))[1].running,false);assert.equal(rpc.sessions.size,1);assert.equal(rpc.sessions.get(id),state);
+    write([event(3,'assistant/message',{message:{id:'background-answer',content:[{type:'text',text:'后台继续完成'}]}}),event(4,'turn/end',{turn:1,reason:{kind:'completed'}})]);output.close();streamDone=true;
+    const result=await pending;assert.ifError(result.error);assert.equal(result.value.stopReason,'end_turn');assert.deepEqual(emitted.map(value=>value.params.update.content.text),['后台继续完成']);
+    assert.equal(calls.filter(method=>method==='session/prompt').length,1);assert(!calls.some(method=>/cancel|attach|create|selectModel/.test(method)));
+   }finally{if(!streamDone)output?.close();await pending;rpc.close();}
+  });
+  await test('目录根路径仅来自绝对 cwd，保留原 rootId 与真实 hostId，不把未知归属猜成当前项目',()=>{
+   for(const cwd of ['D:/projects/项目 A','D:\\projects\\项目 A','/tmp/project-a','/']){
+    const item=catalogEntry({sessionId:'legacy.host-v1',hostId:'forged',cwd,rootDir:'D:/forged',rootId:'forged'});
+    assert.equal(item.hostId,'legacy.host-v1');assert.equal(item.rootId,cwd);assert.equal(item.cwd,cwd);assert.equal(item.rootDir,absoluteCatalogRoot(cwd));assert(item.workspaceName);
+   }
+   assert.equal(catalogEntry({sessionId:id,cwd:'D:/projects/项目 A/'}).workspaceName,'项目 A');
+   for(const cwd of ['',undefined,'relative/project','D:relative','\\root-relative','ssh://company/project','file:///D:/project','D:/bad\0path']){
+    const item=catalogEntry({sessionId:id,cwd,rootDir:'D:/forged'});assert.equal(item.rootDir,'');assert.equal(item.workspaceName,'');assert.equal(item.rootId,cwd||'');
+   }
+  });
+  await test('会话目录与改名的真实端点形态：list 用 _request、rename 用 request，字段归一化',async()=>{
   const calls=[];
   const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
    const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
@@ -245,7 +292,8 @@ async function bridgeFixture(){
         {sessionId:'session-b',updatedAt:12,running:false,agentAvailable:false,blank:true,cwd:'D:/proj',projections:{values:{title:null,subagent:null}}},
         {sessionId:'session-mnemon',updatedAt:13,running:true,cwd:'D:/proj',projections:{values:{title:'Mnemon 委托结果',subagent:{parentSessionId:'session-a'}}}},
         {sessionId:'session-child',updatedAt:14,running:false,cwd:'D:/proj',projections:{values:{subagent:{}}}},
-        {sessionId:'',updatedAt:1},
+        {sessionId:'session-origin-child',origin:'subagent',cwd:'D:/proj'},
+         {sessionId:'',updatedAt:1},
       ]}
     : {title:envelope.payload.args.request.title,seq:7};
    return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
@@ -254,7 +302,7 @@ async function bridgeFixture(){
   assert.deepEqual(calls[0],{method:'session/list',args:{_request:{}}},'list 必须用 _request（描述符要求）');
   assert.equal(list.length,2,'无 sessionId 和 Mnemon 等子任务都不能混入主会话');
   assert.deepEqual([...rpc.existing],['session-a','session-b'],'子任务不能进入可接手目录');
-  assert.deepEqual(list[0],{sessionId:'session-a',title:'真实标题',running:true,blank:false,agentAvailable:true,cwd:'D:/proj',updatedAt:11});
+  assert.deepEqual(list[0],{sessionId:'session-a',hostId:'session-a',rootId:'D:/proj',rootDir:path.win32.normalize('D:/proj'),workspaceName:'proj',title:'真实标题',running:true,blank:false,agentAvailable:true,cwd:'D:/proj',updatedAt:11});
   // null 标题归一成空串：渲染层拿到 null 会显示成字面量
   assert.equal(list[1].title,'');
   const renamed=await rpc.request('session/rename',{sessionId:'session-a',title:'新标题'});
