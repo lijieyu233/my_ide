@@ -390,7 +390,7 @@ fs.mkdirSync(repo);
     const wdir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-worker-'));
     const call = (op, args) => new Promise((resolve, reject) => {
       const w = new Worker(path.join(__dirname, '..', 'src/main/git/git-worker.js'));
-      w.on('message', (m) => { w.terminate(); resolve(m.error ? { error: m.error } : m.result); });
+      w.once('message', async (m) => { try { await w.terminate(); resolve(m.error ? { error: m.error } : m.result); } catch (e) { reject(e); } });
       w.on('error', reject);
       w.postMessage({ id: 1, op, args });
     });
@@ -402,7 +402,12 @@ fs.mkdirSync(repo);
     const r3 = await call('status', [wdir]);
     assert.strictEqual(r3.isRepo, true);
     assert.strictEqual(r3.changed.length, 0);
-    fs.rmSync(wdir, { recursive: true, force: true });
+    const resolved = path.resolve(wdir);
+    assert.strictEqual(path.dirname(resolved), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(resolved).startsWith('myide-worker-'));
+    // Node 24/Windows 的同步递归 rm 会在只读 Git object 上报 EPERM；异步 rm 正确处理只读属性。
+    await fs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    assert.ok(!fs.existsSync(resolved), 'worker 退出后必须实际清理全部夹具');
   });
 
   await okAsync('.gitignore：未跟踪被过滤，已跟踪照常显示，否定规则生效', async () => {
@@ -871,15 +876,21 @@ fs.mkdirSync(repo);
   await okAsync('M3 hunk：暂存 → 回退 → 取消暂存（真实仓库，双区差异各自成立）', async () => {
     const rp = path.join(tmp, 'repo-hunk');
     fs.mkdirSync(rp);
-    await G.initRepo(rp);
+    assert.ok((await G.initRepo(rp)).ok, 'hunk 夹具仓库初始化失败');
     const base = Array.from({ length: 20 }, (_, i) => 'line ' + (i + 1)).join('\n') + '\n';
     fs.writeFileSync(path.join(rp, 'h.txt'), base);
-    await G.commit(rp, { message: 'base', files: ['h.txt'] });
+    const setupCommit = await G.commit(rp, { message: 'base', files: ['h.txt'] });
+    assert.ok(setupCommit.ok, 'hunk 夹具基线提交失败: ' + JSON.stringify(setupCommit));
     // 两处改动隔得够远 → 必然切成两块
     fs.writeFileSync(path.join(rp, 'h.txt'), base.replace('line 2\n', 'line 2 CHANGED\n').replace('line 18\n', 'line 18 CHANGED\n'));
 
-    let du = await G.diffUnstaged(rp, 'h.txt');
-    assert.strictEqual(du.hunks.length, 2, '未暂存差异分成 2 块，got ' + (du.hunks || []).length);
+    const checkedDiff = (d, label) => {
+      assert.ok(!d.error, label + '失败: ' + JSON.stringify(d));
+      assert.ok(Array.isArray(d.hunks) && d.snapshot?.snapshotId, label + '缺少可操作快照: ' + JSON.stringify(d));
+      return d;
+    };
+    let du = checkedDiff(await G.diffUnstaged(rp, 'h.txt'), '初始未暂存差异');
+    assert.strictEqual(du.hunks.length, 2, '未暂存差异分成 2 块，got ' + du.hunks.length);
 
     const selection=(d)=>({snapshotId:d.snapshot.snapshotId,hunkId:d.hunks[0].hunkId,operationId:require('crypto').randomUUID()});
     const r1 = await G.stageHunk(rp, 'h.txt', selection(du));           // 只暂存第 1 块
@@ -887,11 +898,11 @@ fs.mkdirSync(repo);
     let c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
     assert.strictEqual(c && c.status, '*modified', '暂存一块后应是「暂存+未暂存」，got ' + (c && c.status));
 
-    const ds = await G.diffStaged(rp, 'h.txt');
+    const ds = checkedDiff(await G.diffStaged(rp, 'h.txt'), '暂存后的已暂存差异');
     assert.strictEqual(ds.hunks.length, 1, '已暂存差异只剩 1 块，got ' + ds.hunks.length);
     assert.ok(ds.newText.includes('line 2 CHANGED') && !ds.newText.includes('line 18 CHANGED'),
       '已暂存的是第 1 块');
-    du = await G.diffUnstaged(rp, 'h.txt');
+    du = checkedDiff(await G.diffUnstaged(rp, 'h.txt'), '暂存后的未暂存差异');
     assert.strictEqual(du.hunks.length, 1, '未暂存差异只剩 1 块，got ' + du.hunks.length);
     assert.ok(du.oldText.includes('line 2 CHANGED'), '未暂存差异的基线是 index（已含第 1 块）');
 
@@ -902,7 +913,7 @@ fs.mkdirSync(repo);
     assert.ok(wt.includes('line 2 CHANGED'), '工作区第 1 块保持（与 index 一致）');
 
     const wtBefore = fs.readFileSync(path.join(rp, 'h.txt'), 'utf8');
-    const ru = await G.unstageHunk(rp, 'h.txt', selection(await G.diffStaged(rp,'h.txt')));         // 取消暂存第 1 块
+    const ru = await G.unstageHunk(rp, 'h.txt', selection(checkedDiff(await G.diffStaged(rp,'h.txt'), '回退后的已暂存差异'))); // 取消暂存第 1 块
     assert.ok(ru.ok, 'unstageHunk 失败: ' + (ru.error || ''));
     c = (await G.status(rp)).changed.find((x) => x.file === 'h.txt');
     assert.ok(!c || c.status === 'modified', '取消暂存后回到「未暂存」，got ' + (c && c.status));
@@ -1399,9 +1410,10 @@ fs.mkdirSync(repo);
   await okAsync('status：矩阵走查偶发抛错时重试一次（不把读失败当成没有变更）', async () => {
     const repo = path.join(tmp, 'repo-status-retry');
     fs.mkdirSync(repo);
-    await G.initRepo(repo);
+    assert.ok((await G.initRepo(repo)).ok, '状态重试夹具初始化失败');
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
-    await G.commit(repo, { message: 'init', files: ['a.txt'] });
+    const setupCommit = await G.commit(repo, { message: 'init', files: ['a.txt'] });
+    assert.ok(setupCommit.ok, '状态重试夹具基线提交失败: ' + JSON.stringify(setupCommit));
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a changed\n');
     const NATIVE=require('../src/main/git/git-native'),orig = NATIVE.run;
     let calls = 0;
@@ -1411,7 +1423,8 @@ fs.mkdirSync(repo);
     };
     try {
       const st = await G.status(repo, { force:true });
-      assert.strictEqual(calls, 2, '应该恰好重试一次，实际调用 ' + calls + ' 次');
+      assert.strictEqual(st.completeness, 'complete', '重试未完成：' + JSON.stringify(st.errors));
+      assert.strictEqual(calls, 2, '应该恰好重试一次，实际调用 ' + calls + ' 次；errors=' + JSON.stringify(st.errors));
       assert.ok(!st.error, '重试成功后不该报错: ' + st.error);
       assert.ok((st.tracked || []).includes('a.txt'), '重试后 tracked 清单应包含 a.txt（被 git 管理的文件）');
       assert.ok((st.changed || []).some((c) => c.file === 'a.txt'), '重试后变更列表应有 a.txt');
@@ -1543,11 +1556,10 @@ fs.mkdirSync(repo);
     }
   }
 
-  // ⚠ 清理**不能用 rmSync**：本机 NODE_OPTIONS 注入了 safe-delete 垫片，递归删除会被接管
-  //   （实测在 npm run 下直接挂住不返回 —— 同样的代码直跑 node 却正常，最容易踩的假死）。
-  //   改成 rename 到同盘的回收站目录（renameSync 不被垫片拦），留给系统临时目录自己回收。
-  const trash = path.join(os.tmpdir(), 'myide-git-test-trash-' + Date.now());
-  try { fs.renameSync(tmp, trash); } catch (e) { console.log('  (清理失败，留着不管: ' + e.message + ')'); }
+  // Windows Git object 带只读属性；异步 rm 负责处理属性后删除，不再留下整份回收夹具。
+  assert.strictEqual(path.dirname(path.resolve(tmp)), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(tmp).startsWith('myide-test-'));
+  await fs.promises.rm(tmp, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   console.log('');
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);

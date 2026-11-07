@@ -41,7 +41,7 @@
     "test:copy": "node tests/copy-journal.test.js",
     "test:delete": "node tests/delete-journal.test.js",
     "test:hunks": "node tests/git-hunks.test.js",
-    "test:status": "node tests/git-status.test.js",
+    "test:status": "node tests/git-status-concurrency.test.js && node tests/git-status.test.js",
     "test:search": "node tests/search.test.js",
     "test:tasks": "node tests/task-recovery.test.js && node tests/task-recovery-dom.test.js",
     "test:ai": "npm run test:workbench && node tests/ai-owner-router.test.js && node tests/ai-project-tools.test.js && node tests/dsh-native.test.js && node tests/dsh-native-plugin.test.js && node tests/dsh-session-watch.test.js && node tests/browser-subtitles.test.js && node tests/ai-dsh.test.js && node tests/ai-runs.test.js && node tests/ai-tool-contract.test.js && node tests/ai-tool-execution.test.js && node tests/ai-tool-authority.test.js && node tests/ai-permission-store.test.js && node tests/ai-approval-ui.test.js && node tests/ai-panel-runs.test.js && node tests/ai-launch-tools.test.js && node tests/ai-ssh-tools.test.js && node tests/ai-browser-tools.test.js && node tests/ai-browser-tabs.test.js && node tests/ai-browser-extra.test.js && node tests/ai-browser-frames.test.js && node tests/ai-browser-interactions.test.js",

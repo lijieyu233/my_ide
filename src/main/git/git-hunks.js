@@ -11,7 +11,24 @@ function createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText}){
  async function context(dir,file){const root=await findRoot(dir);if(!root)throw fail('NOT_REPO','不是Git仓库');const real=fs.realpathSync(root),abs=path.resolve(path.isAbsolute(file)?file:path.join(real,file)),rel=path.relative(real,abs).split(path.sep).join('/');const protectedRel=process.platform==='win32'?rel.toLowerCase():rel;if(!rel||rel==='..'||rel.startsWith('../')||path.isAbsolute(rel)||protectedRel==='.git'||protectedRel.startsWith('.git/'))throw fail('OUTSIDE_REPO','差异路径不属于仓库文件');if(key(real)!==key(root))throw fail('LINK_PATH','仓库别名暂不支持块操作');return {root:real,abs,rel,gitdir:resolveGitDir(real),project:path.resolve(dir)};}
  async function attributes(c){
   const local=[];for(let p=path.dirname(c.abs);;p=path.dirname(p)){local.push(read(path.join(p,'.gitattributes')).version);if(key(p)===key(c.root))break;}local.push(read(path.join(c.gitdir,'info','attributes')).version,read(path.join(c.gitdir,'config')).version);
-  const info=await NativeGit.info(false);if(info.git?.available){const options={cwd:c.root,env:{GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'},exe:info.git.exe};const [attrs,config]=await Promise.all([NativeGit.run(['check-attr','--all','-z','--',c.rel],options),NativeGit.run(['config','--null','--list','--show-origin'],options)]);if(!attrs.ok||!config.ok)throw fail('ATTRIBUTES_UNAVAILABLE','Git属性或配置读取失败，未授予块操作');return fingerprint({local,attrs:hash(attrs.stdout),config:hash(config.stdout),exe:info.git.exe});}
+  // 属性/配置查询只读且幂等，短暂子进程故障仅重试一次；仍由 state 前后核对决定能否发快照。
+   const info=await NativeGit.info(false);
+   if(info.git?.available){
+    const options={cwd:c.root,env:{GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'},exe:info.git.exe};
+    const inspect=async args=>{
+     for(let attempt=0;attempt<2;attempt++){
+      const result=await NativeGit.run(args,options);
+      if(result.ok||attempt===1)return result;
+      await new Promise(resolve=>setTimeout(resolve,90));
+     }
+    };
+    const [attrs,config]=await Promise.all([inspect(['check-attr','--all','-z','--',c.rel]),inspect(['config','--null','--list','--show-origin'])]);
+    if(!attrs.ok||!config.ok){
+     const result=attrs.ok?config:attrs,phase=attrs.ok?'config':'check-attr',detail=String(result.error||'exit '+result.code).split('\n')[0].slice(0,300);
+     throw fail('ATTRIBUTES_UNAVAILABLE','Git属性或配置读取失败（'+phase+'：'+detail+'），未授予块操作');
+    }
+    return fingerprint({local,attrs:hash(attrs.stdout),config:hash(config.stdout),exe:info.git.exe});
+   }
   for(const p of [process.env.GIT_CONFIG_GLOBAL||path.join(os.homedir(),'.gitconfig'),path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'git','config')])local.push(read(p).version);return fingerprint({local,backend:'iso'});
  }
  async function state(c){let headOid=null;try{headOid=await git.resolveRef({fs,dir:c.root,ref:'HEAD'});}catch(e){if(!['NotFoundError','ResolveRefError'].includes(e.code))throw e;}

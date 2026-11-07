@@ -42,12 +42,15 @@ function createStatus({findRoot,resolveGitDir,jsStatus}){
    //   命中时只发 status(+并行 rev-parse)；未命中才补 ls-files，语义与原来完全一致。
    const key=root+'\n'+cacheKey(before.version),cached=trackedCache.get(root);
    const hit=!!cached&&cached.key===key;
-   const [output,lsOutput,actualHead]=await Promise.all([
+   // 某一命令先失败也要等待同批读取结束；否则 finally 会删掉它们仍在使用的私有 index。
+    const settled=await Promise.allSettled([
     run(['-c','core.splitIndex=false','-c','core.fsmonitor=false','-c','core.untrackedCache=false','status','--porcelain=v2','-z','--branch','--untracked-files=all','--ignore-submodules=none','--renames']),
     hit?null:run(['ls-files','--cached','-z']),
     Native.run(['rev-parse','--verify','HEAD'],{...options,raw:false}),
    ]);
-   const parsed=parsePorcelain(output);parsed.tracked=[...new Set([...(hit?cached.list:nulRecords(lsOutput).map(checkPath)),...parsed.tracked])].sort();
+   const failed=settled.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    const [output,lsOutput,actualHead]=settled.map(result=>result.value);
+    const parsed=parsePorcelain(output);parsed.tracked=[...new Set([...(hit?cached.list:nulRecords(lsOutput).map(checkPath)),...parsed.tracked])].sort();
    if(!hit)rememberTracked(root,key,parsed.tracked);
    // status 的 stat 快径会把 LF→CRLF 的尺寸变化列为 M，即使 clean 后 blob 相同。
    // 用原生 diff 的属性语义核实这些候选；不能全局删 CR，也不能覆盖用户 index 来刷新 stat。
