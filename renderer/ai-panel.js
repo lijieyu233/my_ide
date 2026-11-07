@@ -7,6 +7,40 @@ const AiPanel = (() => {
   const sendBtn = document.getElementById('ai-send');
 
   const LS_CFG = 'myide-ai-cfg';
+  const LS_FONT = 'myide-ai-font-size', AI_FONT_DEFAULT = 13, AI_FONT_MIN = 11, AI_FONT_MAX = 22;
+  let aiFontSize = AI_FONT_DEFAULT, readingPop = null, readingOutside = null;
+  function applyAiFont(size, save = false) {
+    const number = Number(size);
+    aiFontSize = Number.isInteger(number) ? Math.max(AI_FONT_MIN, Math.min(AI_FONT_MAX, number)) : AI_FONT_DEFAULT;
+    panel?.style.setProperty('--ai-font-size', aiFontSize + 'px');
+    if (save) try { localStorage.setItem(LS_FONT, String(aiFontSize)); } catch { MI.toast('字号已调整，但未能保存；重启后可能恢复默认值', 'err'); }
+    const value = readingPop?.querySelector('#ai-font-value');if(value)value.textContent = aiFontSize + ' px';
+    const minus = readingPop?.querySelector('#ai-font-dec'), plus = readingPop?.querySelector('#ai-font-inc');
+    if(minus)minus.disabled = aiFontSize === AI_FONT_MIN;if(plus)plus.disabled = aiFontSize === AI_FONT_MAX;
+    if(save)autoGrowInput();
+  }
+  function closeReadingSettings(focus = false) {
+    readingPop?.remove();readingPop = null;
+    if(readingOutside){document.removeEventListener('pointerdown',readingOutside);readingOutside=null;}
+    const trigger=document.getElementById('ai-reading-settings');trigger?.setAttribute('aria-expanded','false');
+    if(focus)trigger?.focus();
+  }
+  function toggleReadingSettings(event) {
+    event?.stopPropagation();
+    if(readingPop){closeReadingSettings();return;}
+    closeHist();
+    const box=document.createElement('div');box.className='ai-reading-pop';box.setAttribute('role','dialog');box.setAttribute('aria-label','AI 助手字号');
+    box.innerHTML='<strong>AI 助手字号</strong><div class="ai-font-controls"><button id="ai-font-dec" type="button" aria-label="减小 AI 助手字号">−</button><output id="ai-font-value" aria-live="polite"></output><button id="ai-font-inc" type="button" aria-label="增大 AI 助手字号">＋</button><button id="ai-font-reset" type="button">重置</button></div><p>只调整对话和输入文字，不影响侧栏或编辑器。</p>';
+    panel.appendChild(box);readingPop=box;applyAiFont(aiFontSize);
+    box.querySelector('#ai-font-dec').onclick=()=>applyAiFont(aiFontSize-1,true);
+    box.querySelector('#ai-font-inc').onclick=()=>applyAiFont(aiFontSize+1,true);
+    box.querySelector('#ai-font-reset').onclick=()=>applyAiFont(AI_FONT_DEFAULT,true);
+    box.addEventListener('keydown',key=>{if(key.key==='Escape'){key.preventDefault();key.stopPropagation();closeReadingSettings(true);}});
+    document.getElementById('ai-reading-settings')?.setAttribute('aria-expanded','true');
+    box.querySelector(aiFontSize===AI_FONT_MAX?'#ai-font-dec':'#ai-font-inc').focus();
+    readingOutside=click=>{if(!box.contains(click.target)&&!click.target.closest('#ai-reading-settings'))closeReadingSettings();};
+    document.addEventListener('pointerdown',readingOutside);
+  }
   // 沿用用户已保存的宽度；不再拒绝旧范围之外的值或把 0px 当成缺失。
   const LS_W = 'myide-ai-width:v2';
   // 与 App.LAYOUT.ai 同源；ai-panel.js 在 app.js 之前加载，init 时才读得到，
@@ -102,6 +136,7 @@ const AiPanel = (() => {
       if (notice.timer) { clearInterval(notice.timer); notice.timer = null; }
       notice.textEl.textContent = label;
       notice.element.classList.remove('running');
+      notice.element.dataset.outcome = run.status === 'failed' ? 'failed' : run.status === 'cancelled' ? 'stopped' : ['incomplete','limited'].includes(run.status) ? 'unknown' : 'completed';
       delete notice.startedAt;
       // 终态留一小会儿再收起，避免刚完成就消失看不到结果
       clearTimeout(notice.hideTimer);
@@ -120,7 +155,7 @@ const AiPanel = (() => {
       notice.textEl.textContent = label + '，用时 ' + elapsedText(Date.now() - notice.startedAt) + '…';
     };
     paint();
-    notice.element.classList.add('running');
+    notice.element.classList.add('running');notice.element.dataset.outcome = 'running';
     if (!notice.timer) notice.timer = setInterval(paint, 1000);
   }
   function settlePendingTools(run, text) {
@@ -895,6 +930,7 @@ const AiPanel = (() => {
     const running = !data.closed && (active || state === 'running');
     group.dataset.state = state;
     group.dataset.phase = running ? 'running' : 'closed';
+    group.dataset.outcome = running ? 'running' : interrupted && !data.closed ? 'stopped' : counts.failed ? 'failed' : unknown ? 'unknown' : 'completed';
     // 按截图统一分析阶段标题；工具自身的失败/未知状态单独保留，不等同于请求已结束。
     data.label.textContent = running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析';
     data.status.dataset.state = state;
@@ -1206,6 +1242,7 @@ const AiPanel = (() => {
     // 2026-10-28：收起 AI 面板不再中断 DSH 会话。
     // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
+      closeReadingSettings();
       resetDshWatch();
       releaseSessionPermissions(detachRun());
     }
@@ -1958,6 +1995,7 @@ const AiPanel = (() => {
     const rest = all.filter((x) => x.id !== curSessionId);
     rest.unshift({ ...previous, id: curSessionId, ts: Date.now(), title: ((previous?.renamed || getConfig().engine === 'dsh') && previous?.title) || sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
+    if(!backgroundView)renderCurrentSessionTitle();
     rememberSession();
     if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
   }
@@ -2015,6 +2053,7 @@ const AiPanel = (() => {
     histOutside = null;
   }
   function toggleHist() {
+    closeReadingSettings();
     if (histPop) { closeHist(); return; }
     // 先渲染本地已知的，再拉一次宿主目录后刷新内容：DSH 里刚发起/刚中断的会话
     // 只有在 refreshDshCatalog() 之后才会进列表（用户要求②③）。
@@ -2040,8 +2079,16 @@ const AiPanel = (() => {
     return true;
   }
   function sessionRootLabel(root) { return String(root || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '未打开工程'; }
+  function renderCurrentSessionTitle() {
+    const label=document.getElementById('ai-current-session');if(!label)return;
+    const saved=loadSessions().find(item=>item.id===curSessionId);
+    const native=getConfig().engine==='dsh' && catalogUsable() ? catalogOf(curSessionId) : null;
+    const title=dshSessionAccess?.preview ? dshSessionAccess.title : native?.title || saved?.title || sessTitle(msgs);
+    label.textContent=title || '新对话';label.title=label.textContent;
+  }
   function renderSessionOrigin() {
     if (backgroundView) return;
+    renderCurrentSessionTitle();
     const origin = document.getElementById('ai-session-origin'), bar = document.getElementById('ai-session-preview-bar');
     const dsh = getConfig().engine === 'dsh', preview = dshSessionAccess?.preview;
     if (origin) {
@@ -2103,7 +2150,7 @@ const AiPanel = (() => {
         else histError = result?.error || '未能读取 DSH 会话目录';
       }
     } catch (error) { if (ticket === dshCatalogTicket && scope === sessKey()) histError = error?.message || 'DSH 会话目录读取失败'; }
-    finally { if (ticket === dshCatalogTicket) { histLoading = false; refreshHistInPlace(); } }
+    finally { if (ticket === dshCatalogTicket) { histLoading = false; refreshHistInPlace();if(!backgroundView)renderCurrentSessionTitle(); } }
     return dshCatalog.items;
   }
   // 目录只对同一个项目有效：换了项目就当没缓存（下次打开历史会重新拉）。
@@ -2313,7 +2360,7 @@ const AiPanel = (() => {
         }
         if (scope !== sessKey() || engine !== getConfig().engine) return;
         if (se) { const latest=loadSessions();const item=latest.find(x=>x.id===id);if(item){item.title=title;item.renamed=true;saveSessions(latest);} }
-        renderHist();
+        renderHist();renderCurrentSessionTitle();
         MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
         return;
       }
@@ -3621,6 +3668,11 @@ const AiPanel = (() => {
     window.myIDE.ai.onStopped(context=>{if(identityMatches(context,currentRun?.stream?.context))stopRun();});
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
     if (!panel) return;
+    let savedFont;try{savedFont=localStorage.getItem(LS_FONT);}catch{}
+    applyAiFont(savedFont == null || savedFont.trim() === '' ? AI_FONT_DEFAULT : savedFont);
+    document.getElementById('ai-reading-settings')?.addEventListener('click',toggleReadingSettings);
+    // 目录树的全局 Enter/Space 导航不能抢走 AI 按钮和原生 disclosure 的键盘操作。
+    panel?.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)&&event.target.closest('button,summary,select'))event.stopPropagation();});
     showWelcome();
     refreshModelSel();renderUsage();refreshDshOptions();
     const modelSel = document.getElementById('ai-model');

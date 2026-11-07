@@ -440,12 +440,13 @@
     <div id="ai-resize" title="拖动调整宽度"></div>
     <div class="ai-panel-header">
     <div class="ai-head">
-      <span class="ai-title"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg>AI 助手</span>
+      <button id="ai-history" class="vt-btn" title="会话：当前工程 / 全部 DSH" aria-label="会话" aria-expanded="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M6 2v12m3-8h3m-3 4h3"/></svg></button>
+      <span class="ai-title" aria-label="AI 助手当前会话"><span id="ai-current-session">新对话</span></span>
       <span class="panel-title-actions">
         <button id="ai-stop" class="vt-btn hidden" title="停止本次任务" aria-label="停止本次任务"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
-        <button id="ai-history" class="vt-btn" title="会话：当前工程 / 全部 DSH" aria-label="会话" aria-expanded="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M6 2v12m3-8h3m-3 4h3"/></svg><span>会话</span></button>
         <button id="ai-undo" class="vt-btn" title="撤销最近一次 AI 写入（可连点回滚多步）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 7.7a4 4 0 1 1 1.2 2.6"/><path d="M4.2 4.4v3.3h3.3"/></svg></button>
         <button id="ai-new" class="vt-btn" title="开始新对话（清空当前会话）"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2"/></svg></button>
+        <button id="ai-reading-settings" class="vt-btn" title="独立调整 AI 助手字号" aria-label="AI 助手字号" aria-expanded="false" aria-haspopup="dialog"><span aria-hidden="true">Aa</span></button>
         <button id="ai-cfg" class="vt-btn" title="AI 模型配置"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 2v1.4M8 12.6V14M2 8h1.4M12.6 8H14M3.8 3.8l1 1M11.2 11.2l1 1M12.2 3.8l-1 1M4.8 11.2l-1 1"/></svg></button>
         <button id="ai-close" class="vt-btn" title="收起 AI 助手 (Ctrl+Shift+A)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
       </span>
@@ -495,7 +496,7 @@
     <button id="tool-ai" class="tool-btn" title="AI 助手 (Alt+1 / Ctrl+8)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 1.8l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9L2.4 5.8l2.9-1.1z"/><path d="M11.9 9l.65 1.75L14.3 11.4l-1.75.65L11.9 13.8l-.65-1.75L9.5 11.4l1.75-.65z"/></svg></button>
   </div>
 </div>
-<footer id="statusbar"><span id="sb-info"></span><span id="sb-branch"></span><span id="sb-tool-font" class="sb-font" title="侧栏 / 工具窗口 / 右侧 AI 面板字号（目录树 · 大纲 · 提交 · 数据库 · 任务 · 依赖图 · Git 日志 · AI 对话）"><span class="sb-font-tag">侧栏</span><button id="sb-tf-dec" title="减小侧栏字号">−</button><span id="sb-tf-val">13</span><button id="sb-tf-inc" title="增大侧栏字号">＋</button></span><span id="sb-font" class="sb-font" title="编辑区字号（Ctrl+= / Ctrl+-）"><span class="sb-font-tag">编辑</span><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-ver" title="当前运行版本"></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
+<footer id="statusbar"><span id="sb-info"></span><span id="sb-branch"></span><span id="sb-tool-font" class="sb-font" title="侧栏 / 工具窗口字号（目录树 · 大纲 · 提交 · 数据库 · 任务 · 依赖图 · Git 日志）；AI 对话字号在 AI 面板 Aa 中独立调整"><span class="sb-font-tag">侧栏</span><button id="sb-tf-dec" title="减小侧栏字号">−</button><span id="sb-tf-val">13</span><button id="sb-tf-inc" title="增大侧栏字号">＋</button></span><span id="sb-font" class="sb-font" title="编辑区字号（Ctrl+= / Ctrl+-）"><span class="sb-font-tag">编辑</span><button id="sb-font-dec" title="减小字号">−</button><span id="sb-font-val">13</span><button id="sb-font-inc" title="增大字号">＋</button></span><span id="sb-ver" title="当前运行版本"></span><span id="sb-bgop" title="背景图透明度（设置背景图后显示）"><input id="sb-bgop-range" type="range" min="5" max="50" step="1" value="15"></span></footer>
 <div id="ctx-menu" class="hidden"></div>
 <div id="modal-mask" class="hidden"></div>
 <div id="toast-wrap"></div>

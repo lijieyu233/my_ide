@@ -15,12 +15,13 @@ const unavailableReason = '原模型 fixture-provider / retired-model 已不可�
 const unavailableOptions = (grouped = false) => [{id:'model',available:false,unavailableReason,currentValue:retiredModel,
   options:grouped?[{name:'fixture-provider',options:[{value:retiredModel,name:'原模型（不可用）',disabled:true},{value:availableModel,name:'可用模型'}]}]:[{value:retiredModel,name:'原模型（不可用）',disabled:true},{value:availableModel,name:'可用模型'}]}];
 const availableOptions = () => [{id:'model',currentValue:availableModel,options:[{value:availableModel,name:'可用模型'}]}];
-function fixture(inspectReplay = false) {
+function fixture(inspectReplay = false, fontPreference) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-ai-panel-run-')), A = path.join(dir, 'A'), B = path.join(dir, 'B');
   [A, B].forEach(p => fs.mkdirSync(p)); const created = new Set();
   const file = (name, root = A) => path.join(root, name);
   const put = (name, value = 'ORIGINAL', root = A) => { const p = file(name, root); fs.writeFileSync(p, value); created.add(p); };
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost' }), w = dom.window;
+  if(fontPreference!==undefined)w.localStorage.setItem('myide-ai-font-size',String(fontPreference));
   const registry = createRegistry(), calls = [], writes = [], commands = [], aborts = [], pending = [];
   const launchFile=path.join(dir,'launch.json');fs.writeFileSync(launchFile,JSON.stringify({entries:[{id:'program',name:'测试服务',category:'自定义',cwd:A,command:'node service.js',port:0}],apiOrigins:[],keepOnExit:true}));created.add(launchFile);
   const actions=[],selected=[];
@@ -136,6 +137,23 @@ function fixture(inspectReplay = false) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('独立字号有界恢复、真实±交互、Escape和外部关闭，不修改侧栏变量或活动DOM',async()=>{
+    for(const [stored,expected] of [[undefined,13],['',13],['bad',13],['Infinity',13],['14.5',13],['99',22],['1',11],['16',16]]){const f=fixture(false,stored);assert.equal(f.element('#ai-panel').style.getPropertyValue('--ai-font-size'),expected+'px');}
+    const f=fixture(),panel=f.element('#ai-panel'),input=f.element('#ai-input'),msgs=f.element('#ai-msgs');f.w.document.documentElement.style.setProperty('--tool-font','17px');f.element('#ai-reading-settings').click();const pop=f.element('.ai-reading-pop');assert(pop);assert.equal(parseInt(f.element('#ai-font-value').textContent),13);
+    for(let i=0;i<20;i++)f.element('#ai-font-inc').click();assert.equal(panel.style.getPropertyValue('--ai-font-size'),'22px');assert(f.element('#ai-font-inc').disabled);assert.equal(f.w.localStorage.getItem('myide-ai-font-size'),'22');
+    for(let i=0;i<20;i++)f.element('#ai-font-dec').click();assert.equal(panel.style.getPropertyValue('--ai-font-size'),'11px');assert(f.element('#ai-font-dec').disabled);f.element('#ai-font-reset').click();assert.equal(panel.style.getPropertyValue('--ai-font-size'),'13px');assert.equal(f.w.document.documentElement.style.getPropertyValue('--tool-font'),'17px');assert.equal(f.element('#ai-msgs'),msgs);assert.equal(f.element('#ai-input'),input);assert.equal(f.aborts.length,0);
+    let leaked=0;f.w.document.addEventListener('keydown',()=>leaked++);const enter=new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});f.element('#ai-font-inc').dispatchEvent(enter);assert.equal(leaked,0);assert.equal(enter.defaultPrevented,false);
+    pop.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert(!f.element('.ai-reading-pop'));assert.equal(f.w.document.activeElement,f.element('#ai-reading-settings'));f.element('#ai-reading-settings').click();input.dispatchEvent(new f.w.Event('pointerdown',{bubbles:true}));assert(!f.element('.ai-reading-pop'));
+  });
+  await test('会话开关在最左，标题跟随本地保存/宿主目录与改名，不将后台标题串到前台',async()=>{
+    const f=fixture();assert.equal(f.element('.ai-head').firstElementChild,f.element('#ai-history'));assert(f.element('#ai-current-session').textContent);f.send('本地会话原名');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');f.w.Modal.prompt=async()=> '本地会话新名';f.element('#ai-history').click();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'本地会话新名');f.element('[data-hist-close]').click();f.enableWatch();await f.openHost('session-title-fixture');
+    f.dshCatalog[0].title='原生会话名完整展示';f.element('#ai-history').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'原生会话名完整展示');assert.equal(f.element('#ai-current-session').title,'原生会话名完整展示');f.element('[data-hist-close]').click();
+    f.w.Modal.prompt=async()=> '新的原生会话名';f.element('#ai-history').click();await tick();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'新的原生会话名');
+  });
+  await test('进行中和终态有独立状态标识，失败/停止不伪完成且不会继续动效',async()=>{
+    for(const end of ['completed','cancelled','failed']){const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('动画状态');await until(()=>f.calls.length===1);const context=f.calls[0].context;await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'正在分析'}}});const group=f.element('.ai-tool-group'),run=f.element('#ai-runstate');assert.equal(group.dataset.phase,'running');assert.equal(group.dataset.outcome,'running');assert.equal(run.dataset.outcome,'running');assert(run.classList.contains('running'));
+      if(end==='cancelled')f.stop();else f.done(0,end==='failed'?{error:'fixture failure'}:{ok:true,text:''});await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(group.dataset.phase,'closed');assert(!run.classList.contains('running'));assert.equal(run.dataset.outcome,end==='cancelled'?'stopped':end);assert.notEqual(group.dataset.outcome,'running');if(end==='failed')assert(f.element('.ai-err'));}
+  });
   await test('三层头部归并一个容器，移除用量行但保留明细入口和页面来源',async()=>{
     const f=fixture();await tick();const header=f.element('.ai-panel-header');assert(header);assert.equal(header.querySelectorAll('.ai-head').length,1);assert.equal(header.querySelectorAll('.ai-session-controls').length,1);assert(header.contains(f.element('#ai-session-origin')));assert(!f.element('#ai-usage'));assert(f.element('#ai-context-details'));
     assert.equal(f.element('#ai-session-origin b').textContent,'A');assert(f.element('#ai-session-origin').title.includes(f.A));assert(!f.element('#ai-session-origin').textContent.includes('当前工程会话'));

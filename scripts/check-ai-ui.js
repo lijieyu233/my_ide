@@ -83,9 +83,17 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     const beforeReads=optionReads;await js('document.getElementById("ai-dsh-reconnect").click()');await until(()=>optionReads>beforeReads);await until(()=>js('document.getElementById("ai-dsh-info").textContent.includes("已连接")'));assert.equal(calls,2);
     await js('AiPanel.setConfig({dshModel:"deepseek-v4-flash",dshReasoning:"high"})');
     await capture('ai-ui-harness.png');
+    assert(await js('document.querySelector(".ai-head #ai-reading-settings")?.textContent.trim()==="Aa"'));
+    await js('document.getElementById("ai-reading-settings").click();document.getElementById("ai-font-reset").click();for(let i=0;i<3;i++)document.getElementById("ai-font-inc").click();document.getElementById("ai-reading-settings").click();true');
+    assert(await js('document.getElementById("ai-panel").style.getPropertyValue("--ai-font-size")==="16px"&&parseFloat(getComputedStyle(document.getElementById("ai-input")).fontSize)===16'));
+    const headerFont=await js('getComputedStyle(document.querySelector(".ai-head")).fontSize');
     for(const width of [320,380,520]){
       await js(`document.getElementById('ai-panel').style.width='${width}px';document.body.style.setProperty('--tool-font','16px');true`);await sleep(80);
       assert(await js('document.getElementById("ai-panel").scrollWidth<=document.getElementById("ai-panel").clientWidth'));
+      assert.equal(await js('getComputedStyle(document.querySelector(".ai-head")).fontSize'),headerFont);
+      await js('document.getElementById("ai-reading-settings").click();true');
+      assert(await js('(()=>{const b=document.getElementById("ai-reading-settings"),r=document.querySelector(".ai-reading-pop")?.getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect();return b.getAttribute("aria-expanded")==="true"&&r&&r.width>0&&r.left>=p.left&&r.right<=p.right&&parseInt(document.getElementById("ai-font-value").textContent,10)===16})()'));
+      await js('document.getElementById("ai-reading-settings").click();true');
       assert(await js('[...document.querySelectorAll(".ai-panel-header button:not(.hidden)")].filter(el=>el.getClientRects().length).every(el=>{const r=el.getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect();return r.left>=p.left&&r.right<=p.right})'));
       assert(await js('(()=>{const h=document.querySelector(".ai-panel-header").getBoundingClientRect(),t=document.querySelector(".ai-head").getBoundingClientRect(),c=document.querySelector(".ai-session-controls").getBoundingClientRect(),o=document.getElementById("ai-session-origin").getBoundingClientRect();return Math.abs(t.height-24)<1&&h.height<=64&&c.top>=t.bottom&&c.bottom<=h.bottom&&o.left>=c.left&&o.right<=c.right})()'));
       assert(await js('(()=>{const m=document.getElementById("ai-model").getBoundingClientRect(),r=document.getElementById("ai-dsh-reasoning").getBoundingClientRect(),s=document.getElementById("ai-send").getBoundingClientRect(),i=document.getElementById("ai-input").getBoundingClientRect();return m.top>=i.bottom&&m.right<=r.left&&r.right<=s.left&&s.right<=document.querySelector(".ai-input-box").getBoundingClientRect().right})()'));

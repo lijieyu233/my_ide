@@ -1,8 +1,10 @@
 // 隐藏生产窗口 + 真实 preload/IPC；timeline、watch、模型回复均为 fixture，不连接真实 DSH/模型/SSH。
 // node scripts/run-electron-check.js check-ai-activity.js
+// 仅独立字号/截图/reload：node scripts/run-electron-check.js check-ai-activity.js --reading-only（90秒上限）
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert/strict');
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const repo = path.resolve(__dirname, '..');
+const readingOnly = process.argv.includes('--reading-only');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-ai-activity-'));
 const home = path.join(temp, 'home'), project = path.join(temp, 'fixture-project'), foreignProject = path.join(temp, 'foreign-project');
 const output = path.join(repo, '.ui-check-trash', 'ai-activity-' + process.pid);
@@ -21,7 +23,7 @@ require('../main');
 require('../src/main/launch/launch-service').saveConfig({ apiOrigins: [], entries: [], keepOnExit: false });
 
 let win, watchRoute, watchState, pendingChat, fixtureLiveTurns, terminalState, failure = null, passed = 0, closing = false, chatCalls = 0;
-const captures = [], checks = [], geometry = [], panelGeometry = [], controlChecks = [], hostControls = [], permissionReplies = [], forbidden = [], ipcCalls = [];
+const captures = [], checks = [], failedChecks = [], geometry = [], panelGeometry = [], controlChecks = [], readingChecks = [], hostControls = [], permissionReplies = [], forbidden = [], ipcCalls = [];
 const hostId = 'session-activity-fixture', foreignHostId = 'session-layout-foreign';
 const options = [{ id: 'model', currentValue: 'fixture', options: [{ value: 'fixture', name: 'Activity fixture (offline)' }] }];
 const handle = (name, fn) => { ipcMain.removeHandler(name); ipcMain.handle(name, fn); };
@@ -70,8 +72,15 @@ async function until(fn, description = 'fixture condition') {
 }
 const page = (fn, argument = null) => win.webContents.executeJavaScript('(' + fn.toString() + ')(' + JSON.stringify(argument) + ')');
 async function settled() { await page(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
-async function test(name, fn) {
-  console.log('CHECK ' + name); await fn(); passed++; checks.push(name); console.log('PASS ' + name);
+async function test(name, fn, collectFailure = false) {
+  console.log('CHECK ' + name);
+  try { await fn(); passed++; checks.push(name); console.log('PASS ' + name); }
+  catch (error) {
+    if (!collectFailure) throw error;
+    // 键盘入口独立于后续字体证据：失败必须退出非零，但不能吞掉14/20px与reload验收。
+    const detail = { name, message: error?.message || String(error), stack: error?.stack };
+    failedChecks.push(detail); failure ||= detail; console.error('FAIL ' + name + '\n' + detail.stack);
+  }
 }
 async function capture(name) {
   if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
@@ -122,11 +131,13 @@ async function panelMetrics() {
     const textStyle = node => {
       if (!node) return null;
       const style = getComputedStyle(node), bg = background(node), color = over(rgba(style.color), bg), a = luminance(color), b = luminance(bg);
-      return { fontSize: parseFloat(style.fontSize), color: style.color, background: bg, contrast: (Math.max(a, b) + .05) / (Math.min(a, b) + .05), accent: color.slice(0, 3).every((v, i) => Math.abs(v - accent[i]) < 2) };
+      return { fontSize: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight), letterSpacing: style.letterSpacing, wordSpacing: style.wordSpacing,
+        marginTop: parseFloat(style.marginTop), marginBottom: parseFloat(style.marginBottom), fontWeight: style.fontWeight, color: style.color, rgb: color.slice(0, 3), background: bg,
+        luminance: a, contrast: (Math.max(a, b) + .05) / (Math.min(a, b) + .05), accent: color.slice(0, 3).every((v, i) => Math.abs(v - accent[i]) < 2) };
     };
     const body = panel.querySelector('.ai-assistant .ai-md p, .ai-assistant .ai-md');
     const activity = [...panel.querySelectorAll('.ai-tool-group-summary, .ai-tool-summary, .ai-tool-label, .ai-tool-tx')].filter(shown);
-    const controls = ['ai-engine', 'ai-dsh-reconnect', 'ai-history', 'ai-new', 'ai-cfg', 'ai-close'].map(id => {
+    const controls = ['ai-engine', 'ai-dsh-reconnect', 'ai-reading-settings', 'ai-history', 'ai-new', 'ai-cfg', 'ai-close'].map(id => {
       const node = document.getElementById(id), r = rect(node), hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       return { id, shown: shown(node), disabled: node?.disabled, rect: r, hit: !!hit && (hit === node || node.contains(hit)) };
     });
@@ -139,7 +150,18 @@ async function panelMetrics() {
       headerContains: !!header && ['.ai-head', '.ai-session-controls', '#ai-session-origin'].every(selector => header.contains(panel.querySelector(selector))),
       headerOverflow: !!header && header.scrollWidth > header.clientWidth, panelOverflow: panel.scrollWidth > panel.clientWidth, separators, controls,
       origin: { text: origin?.textContent.trim(), icon: !!origin?.querySelector('svg.ic'), titles: [origin, ...origin?.querySelectorAll('[title]') || []].map(node => node?.title).filter(Boolean) },
-      body: textStyle(body), activity: activity.map(textStyle), titleIcon: textStyle(panel.querySelector('.ai-title svg.ic')), info: textStyle(document.getElementById('ai-dsh-info')),
+      body: textStyle(body), activity: activity.map(textStyle), titleIcon: textStyle(panel.querySelector('.ai-title svg.ic') || panel.querySelector('.ai-title')), info: textStyle(document.getElementById('ai-dsh-info')),
+      currentSession: { text: document.getElementById('ai-current-session')?.textContent.trim(), title: document.getElementById('ai-current-session')?.title,
+        historyFirst: panel.querySelector('.ai-head')?.firstElementChild?.id === 'ai-history' },
+      semantic: { body: textStyle(body), strong: textStyle(panel.querySelector('.ai-assistant .ai-md strong')), code: textStyle(panel.querySelector('.ai-assistant .ai-md :not(pre) > code')),
+        link: textStyle(panel.querySelector('.ai-assistant .ai-md a')), process: textStyle(panel.querySelector('.ai-tool-label')), thought: textStyle(panel.querySelector('.ai-dsh-thought .ai-tool-label')) },
+      spacing: [...panel.querySelectorAll('.ai-assistant .ai-md p, .ai-assistant .ai-md li, .ai-assistant .ai-md ul')].map(textStyle),
+      syntax: [...panel.querySelectorAll('.ai-md pre code [class*="hljs-"]')].map(node => ({ className: node.className, ...textStyle(node) })),
+      status: [...panel.querySelectorAll('.ai-tool')].map(node => ({ state: node.dataset.state, label: node.querySelector('.ai-tool-st')?.textContent, shown: shown(node.querySelector('.ai-tool-st')), style: textStyle(node.querySelector('.ai-tool-st')),
+        signalShown: shown(node.dataset.state === 'running' ? node.closest('.ai-tool-group').querySelector('.ai-tool-group-icon') : node.querySelector('.ai-tool-ic')),
+        signal: textStyle(node.dataset.state === 'running' ? node.closest('.ai-tool-group').querySelector('.ai-tool-group-icon') : node.querySelector('.ai-tool-ic')) })),
+      tokens: Object.fromEntries(['body', 'strong', 'code', 'link', 'process', 'running', 'success', 'warning', 'error'].map(name => { const css = getComputedStyle(panel).getPropertyValue('--ai-' + name + '-text').trim(); return [name, { css, rgb: css ? rgba(css).slice(0, 3) : null }]; })),
+      aiFontSize: parseFloat(getComputedStyle(panel).getPropertyValue('--ai-font-size')), input: textStyle(document.getElementById('ai-input')),
       bodyFontSize: parseFloat(getComputedStyle(document.body).fontSize), fixedText, usageExists: !!document.getElementById('ai-usage') };
   });
 }
@@ -147,9 +169,103 @@ function assertNoUsage(metrics) {
   assert.equal(metrics.usageExists, false, '#ai-usage must be removed, not merely hidden');
   assert(!/(?:上下文\s*[~≈\d]|Σ\s*输入|缓存命中|当前[：:]\s*(?:项目|工程|阅读|终端|启动|数据库|浏览器))/.test(metrics.fixedText.join(' ')), 'Removed usage row must not return as permanent context text: ' + JSON.stringify(metrics.fixedText));
 }
+// 只读真实布局/字体；不能用一段覆盖CSS制造“字号独立”的假通过。
+async function surroundingMetrics() {
+  return page(() => ({
+    fonts: Object.fromEntries(['#toolbar', '#sidebar', '#tree .tree-row', '#viewer .cm-content', '#tabbar', '.ai-panel-header', '#ai-engine', '#ai-reading-settings'].map(selector => {
+      const node = document.querySelector(selector); if (!node) throw Error('Missing font-isolation target: ' + selector);
+      const style = getComputedStyle(node), r = node.getBoundingClientRect();
+      return [selector, { fontSize: style.fontSize, letterSpacing: style.letterSpacing, x: r.x, y: r.y, width: r.width, height: r.height }];
+    })),
+    globals: Object.fromEntries(['myide-tool-font', 'myide-tree-font', 'myide-editor-font'].map(key => [key, localStorage.getItem(key)])),
+    toolFont: getComputedStyle(document.documentElement).getPropertyValue('--tool-font').trim(),
+    editorFont: getComputedStyle(document.documentElement).getPropertyValue('--editor-font-size').trim()
+  }));
+}
+function assertSurroundings(before, after) {
+  assert.deepEqual(after.globals, before.globals, 'AI controls must not write global/sidebar/editor font storage');
+  assert.equal(after.toolFont, before.toolFont); assert.equal(after.editorFont, before.editorFont);
+  for (const [selector, prior] of Object.entries(before.fonts)) {
+    assert.equal(after.fonts[selector].fontSize, prior.fontSize, selector + ' font changed with AI-only setting');
+    assert.equal(after.fonts[selector].letterSpacing, prior.letterSpacing);
+    for (const axis of ['x', 'y', 'width', 'height']) assert(Math.abs(after.fonts[selector][axis] - prior[axis]) <= 1, selector + '.' + axis + ' changed: ' + JSON.stringify({ before, after }));
+  }
+}
+async function readingSize(size, close = true) {
+  const result = await page(({ size, close }) => {
+    const trigger = document.getElementById('ai-reading-settings');
+    if (!document.querySelector('.ai-reading-pop')) trigger.click();
+    const current = () => parseInt(document.getElementById('ai-font-value').textContent, 10);
+    for (let attempt = 0; current() !== size && attempt < 24; attempt++) document.getElementById(current() < size ? 'ai-font-inc' : 'ai-font-dec').click();
+    const result = { displayed: current(), stored: localStorage.getItem('myide-ai-font-size'), css: parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')) };
+    if (close) trigger.click();
+    return result;
+  }, { size, close });
+  await settled(); assert.equal(result.displayed, size); assert.equal(result.css, size); assert.equal(result.stored, String(size)); return result;
+}
+async function keypress(keyCode, modifiers = []) {
+  // 隐藏窗口没有OS焦点；CDP仍执行Chromium默认button/Tab行为，不伪造DOM click或keydown。
+  if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
+  const key = keyCode === 'Space' ? ' ' : keyCode, number = { Enter: 13, Tab: 9, Escape: 27, Space: 32 }[keyCode];
+  const input = { key, code: keyCode, windowsVirtualKeyCode: number, modifiers: modifiers.includes('shift') ? 8 : 0 };
+  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...input, ...(keyCode === 'Enter' ? { text: '\r' } : keyCode === 'Space' ? { text: ' ' } : {}) });
+  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...input });
+  await settled();
+}
+function assertNormalSpacing(style, label, line = false) {
+  assert(style && ['normal', '0px'].includes(style.letterSpacing) && ['normal', '0px'].includes(style.wordSpacing), label + ' must not track letters/words: ' + JSON.stringify(style));
+  if (line) assert(Math.abs(style.lineHeight / style.fontSize - 1.65) < .015, label + ' line-height must be 1.65: ' + JSON.stringify(style));
+}
+// 聚焦分支复用真实生产页/离线watch，补取字体证据而不重复已通过的历史与后台流程。
+async function runReadingOnly() {
+  const sample = [
+    { kind: 'text', role: 'user', text: 'Offline fixture：AI 独立阅读字号' },
+    { kind: 'thought', id: 'reading-only-thought', text: '过程使用次要灰，不抢正文。' },
+    { kind: 'tool', call: { id: 'reading-only-tool', name: 'read', args: { file_path: 'offline-fixture.js' } }, status: 'completed', output: '仅为离线合成状态，没有执行工具。' },
+    { kind: 'text', role: 'assistant', text: '这是 **离线 fixture**，不是模型回复。[阅读说明](https://example.invalid/fixture) 与 `fontSize` 各有语义色。\n\n第二段保持正常字距，AI 字号独立于侧栏和编辑器。\n\n- 正文柔和，粗体清晰\n- 过程次要灰，成功状态为绿\n\n```js\nconst reading = "offline fixture";\n```' }
+  ];
+  fixtureLiveTurns = [{ parts: sample }]; await pushWatch({ running: false, turns: fixtureLiveTurns });
+  await page(() => { document.querySelector('.ai-tool-group').open = true; });
+  for (const theme of ['crimson', 'light']) {
+    await page(theme => { Theme.set(theme); document.getElementById('ai-panel').style.width = '650px'; }, theme);
+    if (await page(() => parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')) !== 13)) await readingSize(13);
+    await settled(); const baseline = await surroundingMetrics(), beforeLayout = await layout();
+    for (const size of [14, 20]) await test('offline reading-only ' + theme + ' / ' + size + 'px：独立字体/矩形/三宽与真实截图', async () => {
+      await page(() => { document.getElementById('ai-panel').style.width = '650px'; }); await readingSize(size);
+      assertSurroundings(baseline, await surroundingMetrics()); await sameLayout(beforeLayout);
+      for (const width of [380, 650, 300]) {
+        await page(width => { document.getElementById('ai-panel').style.width = width + 'px'; document.getElementById('ai-msgs').scrollTop = 0; }, width); await settled();
+        const metrics = await panelMetrics();
+        const actual = { theme, size, width, body: metrics.body.fontSize, input: metrics.input.fontSize, process: metrics.activity.map(style => style.fontSize), bodyWeight: metrics.body.fontWeight, strongWeight: metrics.semantic.strong.fontWeight, codeWeight: metrics.semantic.code.fontWeight, header: metrics.header };
+        readingChecks.push({ focusedMatrix: actual }); console.log('READING_COMPUTED ' + JSON.stringify(actual));
+        assert.equal(actual.body, size); assert.equal(actual.input, size); assert(actual.process.length > 0 && actual.process.every(font => font === size - 1));
+        assert(!metrics.panelOverflow && !metrics.headerOverflow && metrics.controls.every(control => control.shown && control.hit && !control.disabled && control.rect.left >= metrics.panel.left && control.rect.right <= metrics.panel.right));
+        assertNormalSpacing(metrics.body, 'focused body', true); assertNormalSpacing(metrics.input, 'focused input', true);
+        assert.equal(chatCalls, 0); assert.equal(forbidden.length, 0);
+        if (width === 650) await capture('offline-fixture-reading-' + theme + '-' + size + 'px');
+      }
+    });
+  }
+  await test('offline reading-only 真实page reload保留17px且0chat/网络/全局字号写入', async () => {
+    await page(() => { document.getElementById('ai-panel').style.width = '650px'; }); await readingSize(17);
+    const globals = (await surroundingMetrics()).globals;
+    await new Promise((resolve, reject) => {
+      const fail = (_event, code, description) => { win.webContents.removeListener('did-finish-load', done); reject(Error('Reload failed: ' + code + ' ' + description)); };
+      const done = () => { win.webContents.removeListener('did-fail-load', fail); resolve(); };
+      win.webContents.once('did-finish-load', done); win.webContents.once('did-fail-load', fail); win.webContents.reload();
+    });
+    await until(() => page(() => typeof AiPanel !== 'undefined' && parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')) === 17 && !!document.querySelector('.ai-assistant .ai-md p')), 'focused reload restores 17px and offline body');
+    const restored = await page(() => ({ stored: localStorage.getItem('myide-ai-font-size'), css: parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')), body: parseFloat(getComputedStyle(document.querySelector('.ai-assistant .ai-md p')).fontSize), input: parseFloat(getComputedStyle(document.getElementById('ai-input')).fontSize), navigation: performance.getEntriesByType('navigation')[0]?.type,
+      globals: Object.fromEntries(['myide-tool-font', 'myide-tree-font', 'myide-editor-font'].map(key => [key, localStorage.getItem(key)])) }));
+    readingChecks.push({ focusedReload: restored }); console.log('READING_RELOAD ' + JSON.stringify(restored));
+    assert.equal(restored.stored, '17'); for (const field of ['css', 'body', 'input']) assert.equal(restored[field], 17); assert.equal(restored.navigation, 'reload'); assert.deepEqual(restored.globals, globals);
+    assert.equal(chatCalls, 0); assert.equal(forbidden.length, 0); assert(BrowserWindow.getAllWindows().every(window => !window.isVisible()));
+  });
+  console.log('AI reading-only hidden Electron fixture: ' + passed + ' passed / 0 failed (0 chat/network/model/SSH)'); cleanup(0);
+}
 function cleanup(code) {
   if (closing) return; closing = true; clearTimeout(watchdog);
-  const report = { fixture: true, network: 'none; synthetic timeline/native/watch IPC only', isolatedHome: home, isolatedUserData: app.getPath('userData'), passed, failed: code ? 1 : 0, failure, checks, geometry, panelGeometry, controlChecks, terminalState, captures, chatCalls, hostControls, permissionReplies, forbidden, ipcCalls };
+  const report = { fixture: true, readingOnly, network: 'none; synthetic timeline/native/watch IPC only', isolatedHome: home, isolatedUserData: app.getPath('userData'), passed, failed: code ? Math.max(1, failedChecks.length) : 0, failure, checks, failedChecks, geometry, panelGeometry, controlChecks, readingChecks, terminalState, captures, chatCalls, hostControls, permissionReplies, forbidden, ipcCalls };
   fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
   console.log('ACTIVITY_FIXTURE_REPORT ' + path.join(output, 'report.json'));
   // Chromium profile 的锁随 app.exit 才释放；独立隐藏 janitor 只删本次 mkdtemp 的精确目录。
@@ -161,7 +277,7 @@ function cleanup(code) {
   app.exit(code);
 }
 // 新增六格布局与抽屉取证会串行capture；给总取证留预算，单个状态等待仍严格20秒。
-const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdog'); cleanup(2); }, 300000);
+const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdog'); cleanup(2); }, readingOnly ? 90000 : 300000);
 
 (async () => {
   await app.whenReady();
@@ -185,6 +301,7 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     };
   }, { project, editorFile, hostId });
   await until(() => watchRoute && page(() => AiPanel.aiState().dshSession?.state === 'ready'), 'fixture watch subscription');
+  if (readingOnly) { await runReadingOnly(); return; }
 
   await test('fixture 引擎选择/原生连接/重新连接与上下文明细入口仍可操作', async () => {
     const before = await layout();
@@ -297,12 +414,14 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
       // 先取图再断言，失败时也保留真实布局，禁止靠放宽阈值隐藏紧凑布局回归。
       await capture('fixture-layout-' + theme + '-' + width);
       assert(metrics.headerContains, 'Unified header must contain original head, controls and origin');
+      assert(metrics.currentSession.historyFirst && metrics.currentSession.text && metrics.currentSession.text !== 'AI 助手' && metrics.currentSession.title === metrics.currentSession.text, 'History toggle must be leftmost, with actual session name and full title: ' + JSON.stringify(metrics.currentSession));
       assert(Math.abs(metrics.panel.width - width) <= 1 && !metrics.panelOverflow && !metrics.headerOverflow, JSON.stringify(metrics));
       assert(metrics.header.height <= (width === 300 ? 76 : width === 380 ? 72 : 64), 'Header too tall: ' + metrics.header.height);
       assert(metrics.separators[0].bottom === 1 && metrics.separators.slice(1).every(border => border.bottom === 0 && border.top === 0), 'Only the unified header may draw its bottom separator: ' + JSON.stringify(metrics.separators));
       assert.equal(metrics.origin.text, path.basename(project)); assert(metrics.origin.icon && metrics.origin.titles.some(title => title.includes(project)), JSON.stringify(metrics.origin));
-      assert(metrics.body && metrics.body.fontSize >= 13.5 && metrics.body.fontSize <= 14.5 && metrics.body.contrast >= 4.5, JSON.stringify(metrics.body));
-      assert(metrics.activity.length > 4 && metrics.activity.every(style => style.fontSize >= 12 && style.fontSize <= 13 && style.fontSize < metrics.body.fontSize && style.contrast >= 4.5 && !style.accent), JSON.stringify(metrics.activity));
+      assert.equal(metrics.aiFontSize, 13, 'Independent AI reading default comes from computed --ai-font-size, not --tool-font');
+      assert(metrics.body && metrics.body.fontSize === metrics.aiFontSize && metrics.body.contrast >= 4.5, JSON.stringify(metrics.body));
+      assert(metrics.activity.length > 4 && metrics.activity.every(style => style.fontSize === metrics.aiFontSize - 1 && style.contrast >= 4.5 && !style.accent), 'Default body/process must be computed 13px/12px: ' + JSON.stringify(metrics.activity));
       assert.equal(metrics.bodyFontSize, 13, 'AI-local typography must not change the global 13px sidebar default');
       assert(!metrics.body.accent && !metrics.titleIcon.accent && !metrics.info.accent, 'Accent must not tint ordinary body/status/icon text');
       assert(metrics.controls.every(control => control.shown && !control.disabled && control.hit && control.rect.left >= metrics.panel.left && control.rect.right <= metrics.panel.right), 'Header controls must remain reachable: ' + JSON.stringify(metrics.controls));
@@ -370,6 +489,25 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     await until(() => permissionReplies.length === 1, 'native fixture permission reply');
     await native({ sessionUpdate: 'tool_call', toolCallId: 'fixture-after-body', title: 'subagent', rawInput: { description: 'Fixture 子智能体结果' }, status: 'completed' });
     assert.equal(await page(() => document.querySelectorAll('.ai-tool-group').length), 2);
+  });
+
+  await test('offline fixture 活动标题与底部running真实动画推进，reduced-motion禁用', async () => {
+    if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] }); await settled();
+    const animated = () => page(() => ['.ai-tool-group[data-phase="running"] > summary', '#ai-runstate'].map(selector => {
+      const node = document.querySelector(selector);
+      return { selector, text: node?.textContent, phase: node?.closest('.ai-tool-group')?.dataset.phase, outcome: node?.dataset.outcome,
+        animations: node ? node.getAnimations({ subtree: true }).map(animation => ({ name: animation.animationName, time: animation.currentTime, state: animation.playState })) : [] };
+    }));
+    const before = await animated(); await sleep(90); const after = await animated();
+    assert(before.every(node => node.animations.some(animation => animation.name && animation.state === 'running')), JSON.stringify(before));
+    assert(after.every((node, index) => node.animations.some(animation => animation.time > (before[index].animations.find(prior => prior.name === animation.name)?.time ?? Infinity))), 'Real animation timelines must advance: ' + JSON.stringify({ before, after }));
+    if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await settled(); const reduced = await animated();
+    assert(reduced.every(node => node.animations.length === 0), 'Reduced motion must remove shimmer/breath animations: ' + JSON.stringify(reduced));
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    readingChecks.push({ animation: { before, after, reduced } });
   });
 
   await test('fixture 删除usage后后台恢复/跨工程只读/原生状态/输入与消息滚动保全', async () => {
@@ -453,16 +591,168 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     await page(() => { document.getElementById('ai-panel').style.width = '650px'; Theme.set('crimson'); }); await settled();
     await capture('fixture-native-completed');
   });
+  await test('offline fixture completed终态标题与底部状态无运行残留动画', async () => {
+    const result = await page(() => ({ groups: [...document.querySelectorAll('.ai-tool-group')].map(node => ({ phase: node.dataset.phase, state: node.dataset.state, animations: node.getAnimations({ subtree: true }).length })),
+      run: { outcome: document.getElementById('ai-runstate').dataset.outcome, animations: document.getElementById('ai-runstate').getAnimations({ subtree: true }).length } }));
+    assert(result.groups.length > 0 && result.groups.every(node => node.phase !== 'running' && node.state === 'completed' && node.animations === 0), JSON.stringify(result));
+    assert.equal(result.run.outcome, 'completed'); assert.equal(result.run.animations, 0); readingChecks.push({ completedAnimation: result });
+  });
   // 单独给人工review保留短正文；长参数fixture只承担溢出回归，不能代替可读的产品全景。
-  await pushWatch({ running: false, turns: [{ parts: [
-    { kind: 'text', role: 'user', text: '离线布局示例（fixture）：这次 AI 侧栏有什么变化？' },
+  const readingParts = [
+    { kind: 'text', role: 'user', text: 'Offline fixture：AI 阅读示例' },
+    { kind: 'thought', id: 'fixture-reading-thought', text: '思考与工具使用次要灰，不抢正文层级。' },
     tool('fixture-layout-preview', 'read', { call: { id: 'fixture-layout-preview', name: 'read', args: { file_path: 'panel-layout.js' } }, output: '离线合成数据；未实际读取或执行工具。' }),
-    { kind: 'text', role: 'assistant', text: '顶部已合并成紧凑的一体头部：会话工具、引擎连接和工程来源放在同一外框中。这是 **离线 fixture 排版示例**，不是实际模型输出。\n\n正文与过程记录使用独立的中性文字层级，在深色和浅色主题下都更容易阅读；输入和消息区域继续保留原有操作。\n\n- 当前工程只显示文件夹和工程名\n- 跨工程会话明确标记为只读预览\n- 后台任务仍可一键接回\n\n```js\nconst panel = {\n  compactHeader: true,\n  contextUsageRow: false\n};\n```' }
-  ] }] });
+    { kind: 'text', role: 'assistant', text: '这是 **离线 fixture**，不是模型回复。[阅读说明](https://example.invalid/fixture) 与 `fontSize` 各有语义色。\n\n第二段保持正常字距，AI 字号独立于侧栏和编辑器。\n\n- 正文柔和，粗体更清晰\n- 过程次要灰，成功有真实状态\n\n```js\nconst reading = "offline fixture";\n```' }
+  ];
+  await pushWatch({ running: false, turns: [{ parts: readingParts }] });
   for (const theme of ['crimson', 'light']) for (const width of [380, 650]) {
     await page(({ theme, width }) => { Theme.set(theme); document.getElementById('ai-panel').style.width = width + 'px'; document.getElementById('ai-msgs').scrollTop = 0; const input = document.getElementById('ai-input'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); }, { theme, width });
     await settled(); await capture('fixture-layout-preview-' + theme + '-' + width);
   }
-  console.log('AI activity hidden Electron fixture: ' + passed + ' passed / 0 failed (no real network/model/SSH)');
-  cleanup(0);
+  for (const theme of ['crimson', 'light']) {
+    await test('offline fixture ' + theme + ' 至少五种语义色/对比度/正常字距/紧凑段落与syntax保留', async () => {
+      await page(theme => { Theme.set(theme); document.querySelector('.ai-tool-group').open = true; }, theme); await settled();
+      const metrics = await panelMetrics(), semantic = metrics.semantic;
+      for (const [name, style] of Object.entries(semantic)) {
+        assert(style && style.contrast >= 4.5, name + ' WCAG contrast below 4.5: ' + JSON.stringify(style));
+        assertNormalSpacing(style, name, ['body', 'strong', 'link'].includes(name));
+        if (name !== 'thought') assert.deepEqual(style.rgb, metrics.tokens[name].rgb, 'Real ' + name + ' must use its semantic token');
+      }
+      assert(new Set(['body', 'strong', 'code', 'link', 'process'].map(name => semantic[name].rgb.join(','))).size >= 5, 'Require semantic hierarchy, not arbitrary rainbow colors: ' + JSON.stringify(semantic));
+      assert(theme === 'light' ? semantic.strong.luminance < semantic.body.luminance : semantic.strong.luminance > semantic.body.luminance, 'Body must be softer than strong emphasis');
+      assert(semantic.strong.fontWeight >= 600); assertNormalSpacing(metrics.input, 'input', true);
+      assert(metrics.spacing.length >= 5 && metrics.spacing.every(style => style.marginTop <= metrics.aiFontSize * .5 && style.marginBottom <= metrics.aiFontSize * .5), 'Paragraph/list gaps must stay compact: ' + JSON.stringify(metrics.spacing));
+      for (const style of metrics.spacing) assertNormalSpacing(style, 'paragraph/list', true);
+      assert(metrics.syntax.length > 0 && metrics.syntax.some(style => style.rgb.join(',') !== semantic.code.rgb.join(',')), 'Existing hljs token syntax must survive AI inline-code coloring: ' + JSON.stringify(metrics.syntax));
+      readingChecks.push({ theme, semantic, spacing: metrics.spacing, syntax: metrics.syntax });
+    });
+    await test('offline fixture ' + theme + ' 真实running/success/warning/failed文案与状态语义色不误标', async () => {
+      const states = [
+        { status: 'in_progress', state: 'running', token: 'running', label: '正在执行' },
+        { status: 'completed', state: 'completed', token: 'success', label: '已完成' },
+        { status: 'unknown', state: 'unknown', token: 'warning', label: '未确认完成' },
+        { status: 'failed', state: 'failed', token: 'error', label: '失败' }
+      ];
+      for (const expected of states) {
+        await pushWatch({ running: expected.state === 'running', turns: [{ parts: [tool('fixture-semantic-status', 'read', { status: expected.status })] }] });
+        await page(() => { document.querySelector('.ai-tool-group').open = true; }); await settled();
+        const metrics = await panelMetrics(), actual = metrics.status[0];
+        assert.equal(actual?.state, expected.state); assert(actual.label.includes(expected.label), JSON.stringify({ expected, actual }));
+        assert(actual.signalShown, 'Actual status semantic indicator must remain visible: ' + JSON.stringify(actual));
+        assert(actual.signal.contrast >= 4.5); assert.deepEqual(actual.signal.rgb, metrics.tokens[expected.token].rgb, JSON.stringify({ expected, actual, token: metrics.tokens[expected.token] }));
+        if (actual.shown) { assert(actual.style.contrast >= 4.5); assert.deepEqual(actual.style.rgb, metrics.tokens[expected.token].rgb); }
+        if (expected.state !== 'failed') assert(!actual.label.includes('失败'));
+        if (['running', 'unknown'].includes(expected.state)) assert(!/^✓|已完成$/.test(actual.label));
+        const group = await page(() => { const node = document.querySelector('.ai-tool-group'); return { state: node.dataset.state, text: node.querySelector(':scope > summary').textContent, animations: node.getAnimations({ subtree: true }).length }; });
+        assert.equal(group.state, expected.state); if (expected.state === 'failed') assert(group.text.includes('失败'));
+        if (expected.state !== 'running') assert.equal(group.animations, 0, 'Terminal status must not keep running animation');
+        readingChecks.push({ theme, expected, actual, group });
+      }
+      await pushWatch({ running: false, turns: [{ parts: readingParts }] });
+    });
+  }
+
+  await test('offline fixture Aa局部popover键盘Enter/Space/Tab/Escape与焦点/外点关闭', async () => {
+    // 首次启用focus emulation会重置旧焦点，必须先启用，再选择真实待操作button。
+    if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }); await settled();
+    await page(() => { Theme.set('crimson'); document.getElementById('ai-panel').style.width = '650px'; document.getElementById('ai-reading-settings').focus(); });
+    const focusTrace = await page(() => ({ active: document.activeElement.id, hasFocus: document.hasFocus(), visible: document.visibilityState, expanded: document.getElementById('ai-reading-settings').getAttribute('aria-expanded') }));
+    console.log('KEYBOARD_FOCUS_TRACE ' + JSON.stringify(focusTrace)); readingChecks.push({ keyboardBeforeEnter: focusTrace });
+    assert.equal(focusTrace.active, 'ai-reading-settings'); assert(focusTrace.hasFocus, 'Hidden Chromium focus emulation must be active before Enter');
+    const trigger = await page(() => { const node = document.getElementById('ai-reading-settings'); return { tag: node.tagName, text: node.textContent.trim(), label: node.getAttribute('aria-label') || node.title, popup: node.getAttribute('aria-haspopup') }; });
+    assert.equal(trigger.tag, 'BUTTON'); assert.equal(trigger.text, 'Aa'); assert(trigger.label && trigger.popup);
+    await keypress('Enter');
+    const opened = await page(() => {
+      const pop = document.querySelector('.ai-reading-pop'), panel = document.getElementById('ai-panel'), r = pop?.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      return { attached: pop?.parentElement === panel, expanded: document.getElementById('ai-reading-settings').getAttribute('aria-expanded'), focus: document.activeElement.id,
+        rect: r && { left: r.left, right: r.right, top: r.top, bottom: r.bottom }, panel: { left: p.left, right: p.right, top: p.top, bottom: p.bottom }, value: document.getElementById('ai-font-value')?.tagName };
+    });
+    assert(opened.attached && opened.expanded === 'true' && ['ai-font-dec', 'ai-font-inc'].includes(opened.focus), JSON.stringify(opened)); assert.equal(opened.value, 'OUTPUT');
+    assert(opened.rect.left >= opened.panel.left && opened.rect.right <= opened.panel.right && opened.rect.top >= opened.panel.top && opened.rect.bottom <= opened.panel.bottom);
+    if (opened.focus === 'ai-font-inc') await keypress('Tab', ['shift']);
+    assert.equal(await page(() => document.activeElement.id), 'ai-font-dec');
+    await keypress('Tab'); assert.equal(await page(() => document.activeElement.id), 'ai-font-inc');
+    await keypress('Tab'); assert.equal(await page(() => document.activeElement.id), 'ai-font-reset');
+    await keypress('Tab', ['shift']); assert.equal(await page(() => document.activeElement.id), 'ai-font-inc');
+    await keypress('Escape'); assert(await page(() => !document.querySelector('.ai-reading-pop') && document.activeElement.id === 'ai-reading-settings' && document.getElementById('ai-reading-settings').getAttribute('aria-expanded') === 'false'));
+    await keypress('Space'); assert(await page(() => !!document.querySelector('.ai-reading-pop')));
+    const outside = await page(() => { const r = document.getElementById('ai-msgs').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height * .8 }; });
+    for (const type of ['mousePressed', 'mouseReleased']) await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...outside, button: 'left', clickCount: 1 });
+    await settled();
+    assert(await page(() => !document.querySelector('.ai-reading-pop'))); readingChecks.push({ keyboard: { trigger, opened, chromiumKeys: ['Enter', 'Tab', 'Shift+Tab', 'Escape', 'Space'] } });
+  }, true);
+
+  await test('offline fixture AI字号11..22边界disabled/reset且全局toolbar/sidebar/editor/header字体与矩形不变', async () => {
+    const before = await surroundingMetrics(), beforeLayout = await layout(), beforeCalls = chatCalls;
+    for (const size of [11, 22]) {
+      await readingSize(size, false);
+      const result = await page(size => {
+        const boundary = document.getElementById(size === 11 ? 'ai-font-dec' : 'ai-font-inc'), other = document.getElementById(size === 11 ? 'ai-font-inc' : 'ai-font-dec');
+        boundary.click(); const value = parseInt(document.getElementById('ai-font-value').textContent, 10);
+        return { disabled: boundary.disabled, otherEnabled: !other.disabled, value };
+      }, size);
+      assert(result.disabled && result.otherEnabled && result.value === size, JSON.stringify(result));
+      const metrics = await panelMetrics(); assert.equal(metrics.body.fontSize, size); assert.equal(metrics.input.fontSize, size);
+      assertSurroundings(before, await surroundingMetrics()); await sameLayout(beforeLayout);
+      readingChecks.push({ boundary: { size, ...result } });
+    }
+    await page(() => { document.getElementById('ai-font-reset').click(); }); await settled();
+    const reset = await panelMetrics(); assert.equal(reset.aiFontSize, 13); assert.equal(reset.body.fontSize, 13); assert.equal(reset.input.fontSize, 13);
+    assert(await page(() => parseInt(document.getElementById('ai-font-value').textContent, 10) === 13 && !document.getElementById('ai-font-dec').disabled && !document.getElementById('ai-font-inc').disabled));
+    await page(() => document.getElementById('ai-reading-settings').click());
+    assertSurroundings(before, await surroundingMetrics()); assert.equal(chatCalls, beforeCalls); assert.equal(forbidden.length, 0);
+  });
+
+  await test('offline fixture 左下全局sb-tf±确实生效但不影响AI正文/过程/input与AI存储', async () => {
+    await page(() => { document.querySelector('.ai-tool-group').open = true; }); await settled();
+    const before = await panelMetrics(), surroundings = await surroundingMetrics(), beforeAIStored = await page(() => localStorage.getItem('myide-ai-font-size'));
+    for (const id of ['sb-tf-inc', 'sb-tf-dec']) {
+      await page(id => document.getElementById(id).click(), id); await settled();
+      const after = await panelMetrics();
+      assert.equal(after.body.fontSize, before.body.fontSize); assert.equal(after.input.fontSize, before.input.fontSize);
+      assert.deepEqual(after.activity.map(style => style.fontSize), before.activity.map(style => style.fontSize));
+      assert.equal(await page(() => localStorage.getItem('myide-ai-font-size')), beforeAIStored);
+      const globals = await surroundingMetrics(); assert.equal(globals.editorFont, surroundings.editorFont);
+      if (id === 'sb-tf-inc') { assert.notEqual(globals.toolFont, surroundings.toolFont); assert.notEqual(globals.fonts['#tree .tree-row'].fontSize, surroundings.fonts['#tree .tree-row'].fontSize); }
+    }
+    await page(values => { for (const [key, value] of Object.entries(values)) if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); }, surroundings.globals);
+    readingChecks.push({ globalFontIsolation: true, body: before.body.fontSize, process: before.activity[0]?.fontSize, input: before.input.fontSize });
+  });
+
+  for (const theme of ['crimson', 'light']) for (const size of [14, 20]) {
+    await test('offline fixture ' + theme + ' / ' + size + 'px真实短sample截图与380/650正文及300头部不溢出', async () => {
+      await page(theme => Theme.set(theme), theme); await readingSize(size);
+      for (const width of [380, 650, 300]) {
+        await page(width => { document.getElementById('ai-panel').style.width = width + 'px'; document.getElementById('ai-msgs').scrollTop = 0; document.querySelector('.ai-tool-group').open = true; }, width); await settled();
+        const metrics = await panelMetrics();
+        assert(!metrics.panelOverflow && !metrics.headerOverflow && metrics.controls.every(control => control.shown && control.hit && !control.disabled && control.rect.left >= metrics.panel.left && control.rect.right <= metrics.panel.right), JSON.stringify({ theme, size, width, metrics }));
+        assert.equal(metrics.body.fontSize, size); assert.equal(metrics.input.fontSize, size);
+        assert(metrics.activity.length > 0 && metrics.activity.every(style => style.fontSize === size - 1), 'Process font must follow only independent AI size: ' + JSON.stringify(metrics.activity));
+        assertNormalSpacing(metrics.body, 'resized body', true);
+        if (width === 650) await capture('offline-fixture-reading-' + theme + '-' + size + 'px');
+        readingChecks.push({ screenshotMatrix: { theme, size, width, header: metrics.header, body: metrics.body.fontSize, process: metrics.activity[0]?.fontSize } });
+      }
+    });
+  }
+
+  await test('offline fixture 真page reload保留AI字号20且无chat/network或全局存储改动', async () => {
+    await page(() => { document.getElementById('ai-panel').style.width = '650px'; }); await settled();
+    const beforeCalls = chatCalls, globals = (await surroundingMetrics()).globals;
+    fixtureLiveTurns = [{ parts: readingParts }]; watchState = { ...watchState, turns: fixtureLiveTurns, running: false };
+    await new Promise((resolve, reject) => {
+      const fail = (_event, code, description) => { win.webContents.removeListener('did-finish-load', done); reject(Error('Reload failed: ' + code + ' ' + description)); };
+      const done = () => { win.webContents.removeListener('did-fail-load', fail); resolve(); };
+      win.webContents.once('did-finish-load', done); win.webContents.once('did-fail-load', fail); win.webContents.reload();
+    });
+    await until(() => page(() => typeof AiPanel !== 'undefined' && !!document.getElementById('ai-reading-settings') && parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')) === 20), 'independent AI font restored after true reload');
+    const restored = await page(() => ({ stored: localStorage.getItem('myide-ai-font-size'), css: parseFloat(getComputedStyle(document.getElementById('ai-panel')).getPropertyValue('--ai-font-size')),
+      input: parseFloat(getComputedStyle(document.getElementById('ai-input')).fontSize), navigation: performance.getEntriesByType('navigation')[0]?.type,
+      globals: Object.fromEntries(['myide-tool-font', 'myide-tree-font', 'myide-editor-font'].map(key => [key, localStorage.getItem(key)])) }));
+    assert.equal(restored.stored, '20'); assert.equal(restored.css, 20); assert.equal(restored.input, 20); assert.equal(restored.navigation, 'reload'); assert.deepEqual(restored.globals, globals);
+    assert.equal(chatCalls, beforeCalls); assert.equal(forbidden.length, 0); assert(BrowserWindow.getAllWindows().every(window => !window.isVisible()));
+    readingChecks.push({ truePageReload: restored });
+  });
+  console.log('AI activity hidden Electron fixture: ' + passed + ' passed / ' + failedChecks.length + ' failed (no real network/model/SSH)');
+  cleanup(failedChecks.length ? 1 : 0);
 })().catch(error => { failure = { message: error?.message || String(error), stack: error?.stack }; console.error(error?.stack || String(error)); cleanup(1); });

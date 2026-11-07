@@ -2618,6 +2618,9 @@ module.exports = {
       return el ? Math.round(parseFloat(getComputedStyle(el).fontSize) * 100) / 100 : null;
     };
     const before = SAMPLES.map(([l, s]) => ({ l, s, v: sizeOf(s) }));
+    // AI 阅读有独立设置，不能再以「右侧栏也属于工具窗口」要求它跟随状态栏缩放。
+    const aiBefore = ['#ai-input', '.ai-head'].map(s => ({ s, node: q(s), v: sizeOf(s) }));
+    const aiFontBefore = q('#ai-panel')?.style.getPropertyValue('--ai-font-size');
     const miss = before.filter((b) => b.v == null);
     add('采样点齐全', miss.length === 0, miss.length ? '缺失：' + miss.map((m) => m.l).join(',') : before.length + ' 处');
     if (miss.length) return { R };
@@ -2628,9 +2631,12 @@ module.exports = {
     await sleep(500);
     const pairs = before.map((b) => ({ ...b, a: sizeOf(b.s) }));
     const stuck = pairs.filter((x) => Math.abs(x.a - x.v) < 0.01);
-    add('字号 +3 后面板内部文字全部跟着变', stuck.length === 0,
+    add('侧栏字号 +3 后原面板采样全部跟着变（不含 AI）', stuck.length === 0,
       stuck.length ? '没变：' + stuck.map((x) => x.l).join(', ')
                    : pairs.map((x) => x.l + ' ' + x.v + '→' + x.a).join(' | '));
+    add('全局侧栏字号变化不影响 AI 阅读和头部',
+      q('#ai-panel')?.style.getPropertyValue('--ai-font-size') === aiFontBefore && aiBefore.every(b => b.node && q(b.s) === b.node && Math.abs(sizeOf(b.s) - b.v) < 0.01),
+      aiBefore.map(b => b.s + ' ' + b.v + '→' + sizeOf(b.s)).join(' | '));
     const ratio = pairs[0].v ? pairs[0].a / pairs[0].v : 0;
     add('放大比例符合 16/13', ratio > 1.15 && ratio < 1.35, 'ratio=' + ratio.toFixed(3));
     const dec = q('#sb-tf-dec');
@@ -2783,13 +2789,18 @@ module.exports = {
     add('渲染出 4 个场景入口', quick.length === 4, quick.map((b) => b.textContent).join(' | '));
     add('场景入口都带 tooltip', quick.length === 4 && quick.every((b) => !!b.title));
 
-    const title = q('.ai-head .ai-title');
-    add('顶栏标题 = SVG 图标 + 文字（无 emoji）',
-      !!title && !!title.querySelector('svg') && !EMOJI.test(title.textContent),
-      title ? JSON.stringify(title.textContent) : '');
+    const title = q('.ai-head .ai-title'), history = q('#ai-history'), currentTitle = q('.ai-head .ai-title #ai-current-session');
+    add('顶栏最左是可访问的 SVG 会话入口，当前会话名完整保留在 title',
+      !!history && q('.ai-head > button:first-child') === history && q('.ai-head button') === history
+      && !!history.querySelector('svg') && history.getAttribute('aria-label') === '会话' && !!history.title
+      && !!title && !!currentTitle && !!currentTitle.textContent.trim() && currentTitle.title === currentTitle.textContent,
+      currentTitle ? JSON.stringify({ text: currentTitle.textContent, title: currentTitle.title }) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
-    add('顶栏6个入口保留SVG，会话入口明确命名，其余按钮保持紧凑',
-      tb.length === 6 && tb.every((b) => b.querySelector('svg') && (b.id === 'ai-history' ? b.textContent.trim() === '会话' : !b.textContent.trim())),
+    add('顶栏右侧保留停止与五个操作入口，Aa 明确文字，其余使用 SVG',
+      tb.map(b => b.id).join(',') === 'ai-stop,ai-undo,ai-new,ai-reading-settings,ai-cfg,ai-close'
+      && tb.every(b => b.id === 'ai-reading-settings'
+        ? b.textContent.trim() === 'Aa' && !b.querySelector('svg') && b.getAttribute('aria-label') === 'AI 助手字号'
+        : !!b.querySelector('svg') && !b.textContent.trim()),
       tb.map((b) => String(b.title).split('（')[0]).join(' | '));
     const stop = q('#ai-stop');
     add('停止入口名称可访问，空闲时隐藏且保留5个会话入口',

@@ -4094,8 +4094,12 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('工具窗口字号统一：状态栏 A−/A+ 一处驱动所有面板（含右侧 AI 面板）', async () => {
+  await okAsync('工具窗口字号：状态栏 A−/A+ 驱动侧栏，AI 阅读字号保持独立', async () => {
     const doc = dom.window.document;
+    const aiPanel = $(dom, '#ai-panel'), aiMsgs = $(dom, '#ai-msgs'), aiInput = $(dom, '#ai-input');
+    const aiFont = aiPanel.style.getPropertyValue('--ai-font-size');
+    const aiStored = dom.window.localStorage.getItem('myide-ai-font-size');
+    const aiInputValue = aiInput.value, aiMarkup = aiMsgs.innerHTML;
     // 1) 各面板标题栏的旧 A−/A+ 按钮已全部拆除
     assert_(!doc.querySelector('.fc-dec, .fc-inc, #tree-font-dec, #tree-font-inc'), '无残留的各面板字体按钮');
     // 2) 状态栏最左侧的统一控件存在
@@ -4113,13 +4117,63 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(av === Math.min(18, bv + 1), '--tool-font 增大: ' + before + ' → ' + after);
     assert_(val.textContent === String(av), '状态栏读数同步: ' + val.textContent);
     assert_(dom.window.localStorage.getItem('myide-tool-font') === String(av), '持久化到 myide-tool-font');
-    // 4) 左侧栏 / 右侧 AI 面板都以 --tool-font 为基准（CSS 挂了变量；jsdom 无级联计算，查样式文本）
+    // jsdom 不解析 var() 的实际字体；全局交互必须不改 AI 的独立变量、存储或原阅读节点。
     const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8').replace(/\s+/g, ' ');
-    assert_(/#sidebar \{[^}]*--tool-font/.test(cssSrc), '左侧栏以 --tool-font 为字号基准');
-    assert_(/#ai-panel \{[^}]*--tool-font/.test(cssSrc), '右侧 AI 面板以 --tool-font 为字号基准');
+    assert_(/#sidebar \{[^}]*--tool-font/.test(cssSrc), '左侧栏仍以 --tool-font 为字号基准');
+    assert_(aiPanel.style.getPropertyValue('--ai-font-size') === aiFont && dom.window.localStorage.getItem('myide-ai-font-size') === aiStored, '全局字号变化不改 AI 阅读字号和持久化');
+    assert_($(dom, '#ai-msgs') === aiMsgs && $(dom, '#ai-input') === aiInput && aiMsgs.innerHTML === aiMarkup && aiInput.value === aiInputValue, '全局字号变化不重建 AI 阅读内容');
     // 5) 还原默认 13，不影响后续用例
     while (parseInt(dom.window.document.documentElement.style.getPropertyValue('--tool-font'), 10) > 13) { click(dec); await tick(); }
     assert_(dom.window.document.documentElement.style.getPropertyValue('--tool-font') === '13px', '还原 13px');
+  });
+
+  await okAsync('AI 独立阅读字号：Aa 调节、任务不受影响、持久化恢复与默认 13', async () => {
+    const doc = dom.window.document, panel = $(dom, '#ai-panel');
+    const originalStateCallbacks = { ...stateCb };
+    const toggle = $(dom, '#ai-reading-settings');
+    assert_(toggle && toggle.textContent.trim() === 'Aa', '头部有独立 Aa 阅读设置入口');
+    click(toggle); await tick();
+    const pop = $(dom, '.ai-reading-pop');
+    assert_(pop && !pop.classList.contains('hidden') && dom.window.getComputedStyle(pop).display !== 'none', '点击 Aa 展开阅读设置');
+    const dec = $(dom, '#ai-font-dec'), inc = $(dom, '#ai-font-inc'), val = $(dom, '#ai-font-value'), reset = $(dom, '#ai-font-reset');
+    assert_(dec && inc && val && reset, '独立字号 ± / 当前数值 / 恢复默认齐全');
+    const rootStyle = doc.documentElement.style.cssText, bodyStyle = doc.body.style.cssText;
+    const untouched = ['.ai-panel-header', '#sidebar', '#viewer'].map(sel => {
+      const node = $(dom, sel); return { sel, node, style: node.getAttribute('style'), font: dom.window.getComputedStyle(node).fontSize };
+    });
+    const msgs = $(dom, '#ai-msgs'), input = $(dom, '#ai-input'), originalValue = input.value;
+    const probe = doc.createElement('div'); probe.className = 'ai-msg ai-assistant'; probe.textContent = '独立字号阅读样本'; msgs.appendChild(probe);
+    const activity = doc.createElement('div'); activity.className = 'ai-activity-group'; activity.textContent = '活动阅读样本'; msgs.appendChild(activity);
+    const originalAbort = dom.window.myIDE.ai.abort; let aborts = 0;
+    dom.window.myIDE.ai.abort = async (...args) => { aborts++; return originalAbort(...args); };
+    let restored;
+    try {
+      click(reset); await tick();
+      assert_(panel.style.getPropertyValue('--ai-font-size') === '13px' && parseInt(val.textContent, 10) === 13, '默认阅读字号为 13');
+      const run = g(dom, 'AiPanel.__testBeginRun()');
+      try {
+        click(inc); click(inc); click(inc); click(inc); click(dec); await tick();
+        assert_(panel.style.getPropertyValue('--ai-font-size') === '16px' && parseInt(val.textContent, 10) === 16, '真实 ± 点击把独立阅读变量与读数调到 16');
+        assert_(dom.window.localStorage.getItem('myide-ai-font-size') === '16', '独立字号持久化到 myide-ai-font-size');
+        assert_(g(dom, 'AiPanel.__testRun()') === run && run.status === 'active' && !run.controller.signal.aborted && aborts === 0, '调节字号不停止或替换进行中任务');
+        assert_(doc.documentElement.style.cssText === rootStyle && doc.body.style.cssText === bodyStyle, 'AI 阅读缩放不修改全局或编辑器字号变量');
+        assert_(untouched.every(({sel,node,style,font}) => $(dom, sel) === node && node.getAttribute('style') === style && dom.window.getComputedStyle(node).fontSize === font), 'header / sidebar / editor 原节点和字号不变');
+        assert_($(dom, '#ai-msgs') === msgs && $(dom, '#ai-input') === input && probe.parentNode === msgs && activity.parentNode === msgs && input.value === originalValue, '阅读缩放保留消息、活动、输入框和文本，不以重绘冒充缩放');
+      } finally { g(dom, 'AiPanel.__testFinish(AiPanel.__testRun())'); }
+      // 用新窗口重新初始化验证读取持久化，不只检查 CSS 源码或同一内存值。
+      restored = makeDom(); restored.window.localStorage.setItem('myide-ai-font-size', '16');
+      await loadApp(restored); click($(restored, '#ai-reading-settings')); await tick();
+      assert_($(restored, '#ai-panel').style.getPropertyValue('--ai-font-size') === '16px' && parseInt($(restored, '#ai-font-value').textContent, 10) === 16, '新窗口继承保存的 16，而不是回退全局字号');
+      click(reset); await tick();
+      assert_(panel.style.getPropertyValue('--ai-font-size') === '13px' && parseInt(val.textContent, 10) === 13, '恢复默认回到独立 13');
+      assert_(['13', null].includes(dom.window.localStorage.getItem('myide-ai-font-size')), '恢复默认不会保留 16 的旧存储');
+    } finally {
+      dom.window.myIDE.ai.abort = originalAbort; probe.remove(); activity.remove();
+      if (restored) restored.window.close();
+      for (const key of Object.keys(stateCb)) delete stateCb[key];
+      Object.assign(stateCb, originalStateCallbacks);
+      if (!pop.classList.contains('hidden') && dom.window.getComputedStyle(pop).display !== 'none') click(toggle);
+    }
   });
 
   await okAsync('主题自定义强调色：setAccent 生效 + 空值恢复默认', async () => {
