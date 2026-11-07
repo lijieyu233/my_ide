@@ -3539,7 +3539,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* 历史会话下拉 */
 .ai-hist-pop {
   position: absolute; top: 32px; right: 8px; z-index: 60;
-  min-width: 260px; max-width: 340px; max-height: 60vh; overflow: auto;
+  width: min(340px, calc(100% - 16px)); min-width: 260px; max-height: 60vh; overflow: auto;
   background: var(--bg-panel, var(--bg-input)); border: 1px solid var(--menu-border, var(--border-mid));
   border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
 }
@@ -3550,14 +3550,15 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .ai-hist-n { margin-left: auto; color: var(--accent); }
 .ai-hist-empty { padding: 12px; font-size: .92em; color: var(--text-dim); }
-.ai-hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 12px; cursor: pointer; }
+.ai-hist-row { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-left: 2px solid transparent; cursor: pointer; background: transparent; }
 .ai-hist-row:hover { background: var(--bg-hover); }
-.ai-hist-row.cur { border-left: 2px solid var(--accent); }
-.ai-hist-current { flex-shrink: 0; color: var(--text-bright); font-size: .85em; font-weight: 600; }
-/* 运行中：左侧圆点 + 淡色底 + 「运行中」标签。三态区分（运行中 / 当前查看 / 普通历史），
-   只靠左边竖线看不出「这个会话还在跑」，用户切换时就不知道该切回哪一条（开发文档-244）。 */
-.ai-hist-row.running { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.ai-hist-row.running:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.ai-hist-row.cur { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel)); }
+.ai-hist-row.cur:hover { background: color-mix(in srgb, var(--accent) 21%, var(--bg-panel)); }
+.ai-hist-select { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; color: var(--accent); }
+.ai-hist-select svg.ic { width: 14px; height: 14px; }
+.ai-hist-row.cur .ai-hist-nm { color: var(--text-bright); font-weight: 600; }
+.ai-hist-current { flex-shrink: 0; color: var(--accent); font-size: .8em; font-weight: 600; white-space: nowrap; }
+/* 运行态只占右侧绿点和文字；绝不使用选中底色，避免误把后台会话当成当前会话。 */
 .ai-hist-run {
   flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
   /* 用 --ok-text 而不是 --ok：后者不是主题变量（实测只有 .ai-edit-stat 里带兜底色写过） */
@@ -3569,7 +3570,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .ai-hist-run { animation: none; } }
 .ai-hist-live { font-style: normal; color: var(--ok-text, #4caf7d); font-weight: 600; }
 .ai-hist-nm { flex: 1; min-width: 0; font-size: .92em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-hist-ts { font-size: .85em; color: var(--text-dim); flex-shrink: 0; }
+.ai-hist-ts { display: inline-flex; align-items: center; gap: 5px; font-size: .85em; color: var(--text-dim); flex-shrink: 0; }
 .ai-hist-b {
   flex-shrink: 0; width: 20px; height: 20px; padding: 0; line-height: 1; cursor: pointer;
   font-size: .85em; color: var(--text-dim); background: transparent;

@@ -752,6 +752,24 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.aborts.length,0,'全程没有一次取消');
     assert((f.element('#ai-background-status')||{textContent:''}).textContent.includes('后台运行'),'另一个会话在后台状态条可见');
   });
+  await test('当前查看置顶且独占勾选，后台运行只在状态栏标记，切换后选中身份同步',async()=>{
+    const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
+    f.send('后台长任务');await until(()=>f.calls.length===1);const background=f.calls[0].context.sessionId;
+    f.element('#ai-new').click();f.hold=false;f.send('当前已结束的对话');await until(()=>f.calls.length===2&&f.element('#ai-send').textContent==='➤');const selected=f.calls[1].context.sessionId;
+    f.dshCatalog=[
+      {sessionId:'host-background',title:'后台长任务',cwd:f.A,running:true,updatedAt:Date.now(),bindings:[{sessionId:background,rootId:f.A,scope:'project'}]},
+      {sessionId:'host-selected',title:'当前已结束的对话',cwd:f.A,running:false,updatedAt:1,bindings:[{sessionId:selected,rootId:f.A,scope:'project'}]}
+    ];
+    const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
+    f.element('#ai-history').click();await until(()=>rows().length===2&&rows().some(r=>r.textContent.includes('后台运行中')));
+    assert.equal(rows()[0].dataset.id,selected);assert(rows()[0].classList.contains('cur'));assert.equal(rows()[0].getAttribute('aria-current'),'true');
+    assert.equal(rows()[0].querySelector('.ai-hist-current').textContent,'当前查看');assert(rows()[0].querySelector('.ai-hist-select svg'));assert(!rows()[0].querySelector('.ai-hist-run'));
+    const other=rows()[1];assert.equal(other.dataset.id,background);assert(!other.hasAttribute('aria-current'));assert(!other.querySelector('.ai-hist-current'));assert(!other.querySelector('.ai-hist-select svg'));
+    assert.equal(other.querySelector('.ai-hist-live').textContent,'后台运行中');assert(other.querySelector('.ai-hist-ts .ai-hist-run'));assert.equal(rows().filter(r=>r.querySelector('.ai-hist-select svg')).length,1);
+    other.click();await tick();await tick();f.element('#ai-history').click();await tick();await tick();
+    assert.equal(rows()[0].dataset.id,background);assert.equal(rows()[0].querySelector('.ai-hist-current').textContent,'当前查看');assert.equal(rows()[0].querySelector('.ai-hist-live').textContent,'运行中');
+    assert.equal(rows().filter(r=>r.hasAttribute('aria-current')).length,1);assert.equal(rows().filter(r=>r.querySelector('.ai-hist-select svg')).length,1);assert.equal(f.aborts.length,0);assert.equal(f.calls.length,2);
+  });
   await test('Harness切换会话/新建/切项目/收起面板都不中断，只有停止按钮发取消',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
     f.send('长任务');await until(()=>f.calls.length===1);const first=f.calls[0].context;

@@ -2082,7 +2082,9 @@ const AiPanel = (() => {
     }
     if (curSessionId && !seen.has(curSessionId) && !all.some(item => item.id === curSessionId))
       all.unshift({id:curSessionId,title:msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
-    all.sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0) || (b.ts || 0) - (a.ts || 0));
+    // 当前查看是主导航，运行只是独立状态；不能让后台任务抢到“选中项”的首位和视觉权重。
+    all.sort((a, b) => Number(b.id === curSessionId) - Number(a.id === curSessionId)
+      || Number(!!b.running) - Number(!!a.running) || (b.ts || 0) - (a.ts || 0));
     return { all, running };
   }
   // 只往给定容器里写行内容：重建面板与就地刷新共用同一段渲染逻辑。
@@ -2094,12 +2096,12 @@ const AiPanel = (() => {
     for (const se of all) {
       const active = se.id === curSessionId;
       const isRunning = running.has(se.id);
-      // 三态一眼分清：● 运行中（绿点+浅底）｜当前查看（左侧竖线）｜普通历史
+      // 勾选、底色和“当前查看”只属于当前项；后台运行收进右侧状态，不再像被选中。
       html += '<div class="ai-hist-row' + (active ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(se.id) + '"' + (active ? ' aria-current="true"' : '') + '>' +
-        (isRunning ? '<span class="ai-hist-run" title="这个会话正在运行" aria-label="运行中"></span>' : '') +
+        '<span class="ai-hist-select" aria-hidden="true">' + (active ? '<svg class="ic" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>' : '') + '</span>' +
         '<span class="ai-hist-nm" title="' + esc(se.title) + '">' + esc(se.title) + '</span>' +
-        (active ? '<span class="ai-hist-current">当前</span>' : '') +
-        '<span class="ai-hist-ts">' + (isRunning ? '<em class="ai-hist-live">运行中</em>' : relTime(se.ts)) + '</span>' +
+        (active ? '<span class="ai-hist-current">当前查看</span>' : '') +
+        '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><em class="ai-hist-live">' + (active ? '运行中' : '后台运行中') + '</em>' : relTime(se.ts)) + '</span>' +
         '<button class="ai-hist-b" data-act="ren" title="重命名">\u270E</button>' +
         '<button class="ai-hist-b" data-act="del" title="删除">\u2715</button></div>';
     }
