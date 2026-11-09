@@ -1,6 +1,7 @@
 const fs=require('fs/promises'),path=require('path'),os=require('os'),http=require('http'),crypto=require('crypto');
 const {Rpc}=require('./ai-dsh-rpc'),{resolveRuntime}=require('./dsh-runtime');
 const {absoluteCatalogRoot,catalogEntry}=require('./dsh-native');
+const {queueAction}=require('./dsh-session-watch');
 const catalogItems=value=>Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
 function assertNotCatalogConfig(cfg){if(cfg?.catalogScope!==undefined||cfg?.catalogRoot!==undefined)throw Error('全局会话目录参数仅可用于只读目录与历史预览，不能绑定、发送或操作会话');}
 function catalogScope(cfg){
@@ -67,6 +68,8 @@ function createService(options={}){
       else if(request.method==='tools/list')result={tools:[...(session?.tools||new Map()).values()].map(tool=>({name:tool.name,description:tool.description,inputSchema:tool.parameters}))};
       else if(request.method==='tools/call'){
         if(!run)throw Error('当前会话没有正在运行的 MyIDE 请求');live(run);
+         // 一个输入组可跨多个宿主轮次等待；等待期间别的客户端 turn 不能借用本组 MCP 身份。
+         if(run.conn?.capabilities?.native&&run.nativeActive!==true)throw Error('当前宿主轮次不属于此 MyIDE 输入组');
         if(!session.tools.has(request.params?.name))throw Error('工具未向当前页面开放');
         const call={id:run.context.requestId+':dsh:'+ ++run.sequence,name:request.params.name,args:request.params.arguments||{}};
         const response=await new Promise((resolve,reject)=>{run.tools.set(call.id,{resolve,reject});try{run.onTool({context:run.context,call});}catch(error){run.tools.delete(call.id);reject(error);}});live(run);
@@ -93,6 +96,7 @@ function createService(options={}){
       own.rpc.on('notification',notification=>{
         if(notification.method==='myide/question'){const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId&&item.run),run=session?.run;if(!run||run.controller.signal.aborted)return;const id=crypto.randomUUID();run.permissions.set(id,{id:notification.params.id,rpc:own.rpc,kind:'question'});emit(run,{type:'question',id,questions:notification.params.questions});return;}if(notification.method!=='session/update')return;const session=[...sessions.values()].find(item=>item.id===notification.params?.sessionId&&item.run),run=session?.run,update=notification.params?.update;
         if(!run||run.controller.signal.aborted)return;
+        if(update?.sessionUpdate==='myide_input_state')run.nativeActive=update.active===true;
         if(update?.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text'){const delta=(run.lastMessage&&update.messageId&&run.lastMessage!==update.messageId?'\n\n':'')+update.content.text;run.lastMessage=update.messageId;run.text+=delta;emit(run,{type:'text',delta,messageId:update.messageId});}
         else if(update?.sessionUpdate==='config_option_update'){session.configOptions=update.configOptions;emit(run,{type:'config',configOptions:update.configOptions});}
         else if(update)emit(run,{type:'native',update});
@@ -137,26 +141,52 @@ function createService(options={}){
   }
   async function chat(cfg,messages,tools,context,onEvent,onTool){
     if(runs.has(context.requestId))throw Error('Harness 请求身份重复');
-    const run={context,onEvent,onTool,controller:new AbortController(),tools:new Map(),permissions:new Map(),sequence:0,text:'',session:null};runs.set(context.requestId,run);
+    const run={context,onEvent,onTool,controller:new AbortController(),tools:new Map(),permissions:new Map(),sequence:0,text:'',session:null,nativeActive:false};runs.set(context.requestId,run);
     const result=(status,extra={})=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'dsh',text:run.text,context,...extra});
     try{
       assertNotCatalogConfig(cfg);
       emit(run,{type:'status',text:'正在连接本机 Harness'});const prompt=promptContent(messages,context.page),{session,conn}=await attach(cfg,context,tools,run);live(run);
+      if(context.expectedHostId&&context.expectedHostId!==session.id)throw Error('原生输入宿主会话归属已变化');
+      if(cfg.dshInputMode!==undefined&&!conn.capabilities?.native)throw Error('当前连接不支持原生输入队列或插入');
+      if(cfg.dshInputMode!==undefined&&!['queue','steer'].includes(cfg.dshInputMode))throw Error('原生输入模式无效');
       emit(run,{type:'config',configOptions:session.configOptions});
       // 旧会话的模型下架后，不能把全局缓存的另一项目模型当成这次明确改选而自动重发任务。
       const model=session.configOptions.find(option=>option.id==='model');
       if(model?.available===false)throw Error(model.unavailableReason||'原会话模型已不可用，请先选择可用模型；未发送本次请求');
       for(const [configId,value] of [['model',cfg.dshModel],['reasoning_effort',cfg.dshReasoning]])if(value!==undefined&&value!==null&&session.configOptions.some(option=>option.id===configId&&option.currentValue!==value&&(option.options||[]).flatMap(choice=>choice.options||[choice]).some(choice=>choice.value===value))){const updated=await conn.rpc.request('session/set_config_option',{sessionId:session.id,configId,value});session.configOptions=updated.configOptions;live(run);emit(run,{type:'config',configOptions:updated.configOptions});}
       emit(run,{type:'status',text:'Harness 正在处理 · 原生工具与 MyIDE 工具已连接'});
-      const answer=await conn.rpc.request('session/prompt',{sessionId:session.id,prompt},0);live(run);
+      const answer=await conn.rpc.request('session/prompt',{sessionId:session.id,prompt,...(cfg.dshInputMode!==undefined?{inputMode:cfg.dshInputMode,expectedRunId:cfg.expectedRunId}: {})},0);live(run);
       return result(answer.stopReason==='end_turn'?'completed':answer.stopReason==='cancelled'?'aborted':'incomplete',{...(answer.stopReason==='end_turn'?{}:{message:'Harness 未正常完成：'+answer.stopReason})});
     }catch(error){return result(run.controller.signal.aborted?'aborted':'failed',{error:run.controller.signal.aborted?undefined:error.message});}
     finally{clearTimeout(run.cancelTimer);for(const pending of run.tools.values())pending.reject(Error('Harness 请求已结束'));for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});if(run.session?.run===run)run.session.run=null;runs.delete(context.requestId);}
   }
+  const samePage=(a,b)=>!!a&&!!b&&a.id===b.id&&a.projectContext===b.projectContext;
+  function ownedInputRun(context){
+    const run=runs.get(context?.requestId);
+    if(!run||!same(run.context,context)||!samePage(run.context.page,context.page))throw Error('原生输入运行或页面归属已变化');
+    live(run);
+    if(!run.conn?.capabilities?.native)throw Error('当前连接不支持原生输入队列或插入');
+    if(!run.session||run.session.run!==run||run.conn.rpc.closed)throw Error('原生输入会话尚未连接或已结束');
+    return run;
+  }
+  function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
+  async function submitInput(context,requestId,mode,messages){
+    const run=ownedInputRun(context);
+    if(typeof requestId!=='string'||!requestId||requestId.length>200||!['queue','steer'].includes(mode))throw Error('原生输入身份或模式无效');
+    if(!Array.isArray(messages)||messages.length!==1||messages[0]?.role!=='user')throw Error('原生补充输入只接受一条用户消息');
+    const prompt=promptContent(messages,context.page);live(run);
+    const result=await run.conn.rpc.request('session/input',{sessionId:run.session.id,requestId,mode,prompt});
+    if(result?.accepted!==true)throw Error('原生 DSH 未确认接受输入');
+    return result;
+  }
+  async function inputQueue(context){const run=ownedInputRun(context);return run.conn.rpc.request('session/input_queue',{sessionId:run.session.id});}
+  async function updateQueue(context,action){const run=ownedInputRun(context),result=await run.conn.rpc.request('session/update_queue',{sessionId:run.session.id,...queueAction(action)});if(result?.accepted!==true)throw Error('原生 DSH 未确认队列操作');return result;}
   function toolResult(context,callId,result){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const pending=run.tools.get(callId);if(!pending)return {ok:false};run.tools.delete(callId);pending.resolve({ok:result?.ok===true,text:String(result?.text||'')});return {ok:true};}
   function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||permission.kind==='question'||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
   function questionResult(context,id,answers){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const item=run.permissions.get(id);if(item?.kind!=='question'||!Array.isArray(answers))return {ok:false};run.permissions.delete(id);item.rpc.reply(item.id,{answers});return {ok:true};}
-  function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}return true;}
+  function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.controller.abort();for(const pending of run.tools.values())pending.reject(Error('Harness 请求已停止'));run.tools.clear();for(const permission of run.permissions.values())if(!permission.rpc.closed)permission.rpc.reply(permission.id,{outcome:{outcome:'cancelled'}});run.permissions.clear();if(run.session&&run.conn&&!run.conn.rpc.closed){run.conn.rpc.notify('session/cancel',{sessionId:run.session.id});
+      // Native 连接由多个后台会话共享，撤回宿主队列可能超过五秒；不能把单个输入组的停止升级成关闭所有会话。
+      if(!run.conn.capabilities?.native){run.cancelTimer=setTimeout(()=>{run.conn.rpc.close(Error('Harness 未在取消后停稳，连接已关闭'));run.conn.child?.kill();},5000);run.cancelTimer.unref();}}return true;}
   async function inspect(cfg,context,tools,apply=false){
     assertNotCatalogConfig(cfg);
     const connection=await connect(cfg),key=keyOf(context);
@@ -272,6 +302,6 @@ function createService(options={}){
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession,watch};
+  return {chat,hasRun,submitInput,inputQueue,updateQueue,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession,watch};
 }
 module.exports={createService,IDE_STATE,promptContent};

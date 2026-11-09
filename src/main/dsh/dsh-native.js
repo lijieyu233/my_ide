@@ -174,6 +174,20 @@ function turnFailure(reason,lastError){
   const code=reason?.error?.code||lastError?.code;
   return '原生 DSH 未完成：'+(reason?.kind||'unknown')+(code?' ['+String(code).slice(0,100)+']':'')+(message?' · '+String(message).slice(0,3000):'');
 }
+function inputContent(prompt){
+  if(!Array.isArray(prompt)||!prompt.length)throw Error('输入内容不能为空');
+  const content=prompt.map(block=>block?.type==='image'?{type:'image',mediaType:block.mimeType||block.mediaType,data:block.data,...block.name?{name:block.name}:{}}:block);
+  if(!content.some(block=>block?.type==='text'&&typeof block.text==='string'&&block.text.trim()||['image','file'].includes(block?.type)))throw Error('输入内容不能为空');
+  return content;
+}
+function inputQueueView(state,asOfSeq=null){
+  const source=state?.inputQueue||(Array.isArray(state?.['next-turn'])&&Array.isArray(state?.['next-step'])?{...state,asOfSeq}:null),batch=state?.inputBatch;
+  return {available:!!source,asOfSeq:source?.asOfSeq??null,items:source?['next-turn','next-step'].flatMap(target=>source[target].filter(message=>typeof message?.id==='string').map(message=>({
+    id:message.id,requestId:message.source?.kind==='user'&&typeof message.source.rpcId==='string'?message.source.rpcId:null,mode:target==='next-turn'?'queue':'steer',
+    text:(message.content||[]).filter(block=>block.type==='text').map(block=>block.text).join('\n'),editable:Array.isArray(message.content)&&message.content.every(block=>block.type==='text'),
+    owned:message.source?.kind==='user'&&!!batch?.requests.has(message.source.rpcId),
+  }))):[]};
+}
 class NativeRpc extends EventEmitter {
   // existing：宿主会话目录里见过的 id 集合。session/resume 只肯接手这里面的会话，
   // 免得拼错的 id 被宿主 create 成一条没人认领的幽灵会话。
@@ -186,7 +200,7 @@ class NativeRpc extends EventEmitter {
     const rpcId=crypto.randomUUID(),response=await this.http(this.url+'/api/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}}),signal:signal||AbortSignal.timeout(15000)},transport);
     if(!response.ok)throw Error('原生 DSH 请求失败：HTTP '+response.status);
     const envelope=await response.json();if(envelope.rpcId!==rpcId||envelope.type!=='server-response')throw Error('原生 DSH 协议不匹配');
-    if(!envelope.result?.ok)throw Error(envelope.result?.error?.message||'原生 DSH 操作失败');return envelope.result.value;
+    if(!envelope.result?.ok)throw Object.assign(Error(envelope.result?.error?.message||'原生 DSH 操作失败'),{code:envelope.result?.error?.code,nativeRejected:true});return envelope.result.value;
   }
   async raw(endpoint,data,signal){const response=await this.http(this.url+'/api/myide/'+endpoint,{method:'POST',headers:{Cookie:this.cookie,'Content-Type':'application/json'},body:JSON.stringify(data),signal:signal||AbortSignal.timeout(15000)});if(!response.ok)throw Error('原生 DSH 连接器请求失败：HTTP '+response.status);return response;}
   /**
@@ -285,8 +299,12 @@ class NativeRpc extends EventEmitter {
         if(!stored)throw Error('该会话已不在 DSH 的会话目录里，请刷新历史列表后重试');
       }
       const mcp=params.mcpServers[0];await this.call('myide/attach',{request:{sessionId:id,cwd:params.cwd,url:mcp.url,headers:Object.fromEntries(mcp.headers.map(header=>[header.name,header.value]))}});
-      return {sessionId:id,...await this.refreshOptions(id)};
+      const options=await this.refreshOptions(id);this.sessions.get(id).cwd=params.cwd;
+      return {sessionId:id,...options};
     }
+    // 已验证归属的旁听队列不需要 attach，更不能为了只读查询创建会话或切换模型。
+    if(method==='session/input_queue')return this.readInputQueue(params.sessionId,this.sessions.get(params.sessionId)||{});
+    if(method==='session/update_queue')return this.updateInputQueue(params,this.sessions.get(params.sessionId)||{externalQueue:true});
     const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
     if(method==='session/config_options')return this.refreshOptions(params.sessionId);
     if(method==='session/set_config_option'){
@@ -296,47 +314,175 @@ class NativeRpc extends EventEmitter {
       else throw Error('不支持的原生会话选项');
       const result=await this.call('session/selectModel',{request:{sessionId:params.sessionId,...selected}});state.selected=result.selected;return {configOptions:configOptions(state.catalog,state.selected)};
     }
+    if(method==='session/input')return this.input(params,state);
     if(method==='session/prompt')return this.prompt(params,state);
     throw Error('不支持的原生 DSH 操作：'+method);
+  }
+  setInputQueue(state,inbox,asOfSeq){
+    if(!inbox||!Array.isArray(inbox['next-turn'])||!Array.isArray(inbox['next-step']))return false;
+    if(state.inputQueue&&Number.isSafeInteger(asOfSeq)&&asOfSeq<state.inputQueue.asOfSeq)return false;
+    state.inputQueue={asOfSeq:Number.isSafeInteger(asOfSeq)?asOfSeq:null,'next-turn':[...inbox['next-turn']],'next-step':[...inbox['next-step']]};return true;
+  }
+  publishInputState(sessionId,state,consumedRequestId,consumedContent){
+    const batch=state.inputBatch;if(!batch)return;
+    this.notifyUpdate(sessionId,{sessionUpdate:'myide_input_state',active:!batch.stopping&&batch.activeTurn!==null,ready:batch.ready===true&&!batch.closed&&!batch.stopping,queue:inputQueueView(state),...consumedRequestId?{consumedRequestId,...Array.isArray(consumedContent)?{consumedContent}:{}}:{}});
+    batch.wake?.();
+  }
+  async readInputQueue(sessionId,state){
+    let value;try{value=await this.call('session/projections',{request:{sessionId}},undefined,{preserveConnection:true});}catch(error){state.inputQueue=null;throw error;}
+    const inbox=value?.values?.inbox;
+    if(value?.kind==='migration-required'||!Array.isArray(inbox?.['next-turn'])||!Array.isArray(inbox?.['next-step']))state.inputQueue=null;
+    else this.setInputQueue(state,inbox,value?.asOfSeq);
+    return inputQueueView(state);
+  }
+  async input(params,state){
+    const batch=state.inputBatch,mode=params.mode;
+    if(!['queue','steer'].includes(mode))throw Error('输入方式无效');
+    if(typeof params.requestId!=='string'||!params.requestId||params.requestId.length>200)throw Error('输入请求身份无效');
+    const content=inputContent(params.prompt),signature=JSON.stringify({mode,content});
+    const previous=state.inputAdmissions?.get(params.requestId);
+    if(previous){if(previous.signature!==signature)throw Error('同一输入请求身份不能更换内容或方式');return previous.promise;}
+    if(!batch||batch.stopping||batch.closed||!batch.ready)throw Error('本次运行已结束或尚未就绪，输入草稿已保留');
+    if(mode==='steer'&&batch.activeTurn===null)throw Error('当前没有可插入的本组运行，输入草稿已保留');
+    const entry={requestId:params.requestId,status:'admitting'};batch.requests.set(params.requestId,entry);
+    // 先登记再提交：turn/end 与 HTTP 回执可交错，不能把仍在准入中的用户输入丢在旧 run 身后。
+    const admission={signature,promise:null};state.inputAdmissions??=new Map();state.inputAdmissions.set(params.requestId,admission);
+    admission.promise=(async()=>{
+      try{
+        const value=await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId:params.requestId,mode,content}},undefined,{preserveConnection:true});
+        if(value?.accepted!==true)throw Error('原生 DSH 未确认接受输入');
+        if(entry.status==='admitting')entry.status='pending';
+        let queue;try{queue=await this.readInputQueue(params.sessionId,state);}catch(error){queue={available:false,asOfSeq:null,items:[],error:error.message};}
+        this.publishInputState(params.sessionId,state);return {accepted:true,requestId:params.requestId,queue};
+      }catch(error){
+        if(entry.status==='admitting'){
+          entry.status=error.nativeRejected?'failed':'unknown';
+          if(entry.status==='unknown')try{const queue=await this.readInputQueue(params.sessionId,state);if(queue.items.some(item=>item.requestId===params.requestId))entry.status='pending';}catch{}
+        }
+        this.publishInputState(params.sessionId,state);throw error;
+      }
+    })();
+    return admission.promise;
+  }
+  async updateInputQueue(params,state){
+    const action=params.action,batch=state.inputBatch;
+    if(typeof params.itemId!=='string'||!params.itemId||!action||!['edit','remove','steer'].includes(action.kind))throw Error('队列操作无效');
+    if(action.kind==='edit'&&(!Array.isArray(action.content)||action.content.some(block=>block?.type!=='text')||!action.content.some(block=>typeof block.text==='string'&&block.text.trim())))throw Error('队列编辑仅支持非空文本');
+    if(action.kind==='steer'&&!state.externalQueue&&(!batch||batch.stopping||batch.activeTurn===null))throw Error('当前没有可插入的本组运行');
+    const before=await this.readInputQueue(params.sessionId,state),item=before.items.find(item=>item.id===params.itemId);
+    if(!item)throw Error('排队输入已被消费或移除，请刷新后重试');
+    if(action.kind==='edit'&&!item.editable)throw Error('包含附件的排队输入不能按纯文本编辑');
+    const value=await this.call('session/updateQueue',{request:{sessionId:params.sessionId,itemId:params.itemId,action}},undefined,{preserveConnection:true});
+    if(value?.accepted!==true)throw Error('原生 DSH 未确认队列操作');
+    if(action.kind==='remove'&&item.owned){const entry=batch.requests.get(item.requestId);if(entry&&['admitting','pending','unknown'].includes(entry.status))entry.status='removed';}
+    let queue;try{queue=await this.readInputQueue(params.sessionId,state);}catch(error){queue={available:false,asOfSeq:null,items:[],error:error.message};}
+    this.publishInputState(params.sessionId,state);return {accepted:true,queue};
+  }
+  cancelInputBatch(sessionId,state){
+    const batch=state?.inputBatch;if(!batch||batch.cancelPromise)return batch?.cancelPromise;
+    batch.stopping=true;this.publishInputState(sessionId,state);
+    batch.cancelPromise=(async()=>{
+      await Promise.allSettled([...batch.requests.keys()].map(id=>state.inputAdmissions?.get(id)?.promise));
+      const queue=await this.readInputQueue(sessionId,state);
+      if(!queue.available)throw Error('无法读取原生队列，未确认撤回排队输入');
+      for(const item of queue.items.filter(item=>item.owned)){
+        const entry=batch.requests.get(item.requestId);if(entry?.status==='consumed'||entry?.status==='done')continue;
+        const result=await this.call('session/updateQueue',{request:{sessionId,itemId:item.id,action:{kind:'remove'}}},undefined,{preserveConnection:true});
+        if(result?.accepted!==true)throw Error('原生 DSH 未确认撤回排队输入');entry.status='removed';
+      }
+      await this.readInputQueue(sessionId,state);
+      // 先撤回再停止：abort 后才入队的 wakeup 会重新开 turn；无 runId 的 cancel 又可能误伤外部接棒者。
+      if(batch.activeTurn!==null&&batch.activeTurn!==batch.borrowedTurn){
+        if(!state.cwd||batch.currentTurnSeq===null)throw Error('无法确认当前运行归属，未停止原生 DSH');
+        const value=await this.call('myide/control',{request:{sessionId,cwd:state.cwd,operation:'stop',runId:String(batch.currentTurnSeq)}},undefined,{preserveConnection:true});
+        if(value?.accepted!==true)throw Error('原生 DSH 未确认停止');
+      }
+    })().catch(error=>{batch.cancelError=error;}).finally(()=>{batch.cancelDone=true;this.publishInputState(sessionId,state);batch.controller.abort();});
+    return batch.cancelPromise;
   }
   async prompt(params,state){
     if(!state.catalog||!state.selected)throw Error('原生会话模型信息缺失，请重新连接');
     if(!modelInfo(state.catalog,state.selected))throw Error(unavailableModelReason(state.selected)+'，请选择可用模型');
-    const controller=new AbortController();state.controller=controller;const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);
-    const reader=response.body.getReader(),decoder=new TextDecoder(),requestId=crypto.randomUUID();let buffer='',started=false,accepted=false,candidateTurn=null,activeTurn=null,lastSeq=-1,lastError=null;
+    if(state.inputBatch&&!state.inputBatch.closed)throw Error('该会话已有本组运行，请使用排队输入');
+    const mode=params.inputMode??'queue',content=inputContent(params.prompt),requestId=params.requestId||crypto.randomUUID();
+    if(!['queue','steer'].includes(mode))throw Error('输入方式无效');
+    const controller=new AbortController(),batch={controller,requests:new Map([[requestId,{requestId,status:'admitting'}]]),activeTurn:null,currentTurn:null,currentTurnSeq:null,ready:false,closed:false,stopping:false};
+    state.controller=controller;state.inputBatch=batch;state.inputQueue=null;state.inputAdmissions=new Map();let reader,buffer='',snapshot=false,lastSeq=-1,lastError=null,readPending;
+    const decoder=new TextDecoder(),finished=()=>batch.ready&&batch.activeTurn===null&&[...batch.requests.values()].every(entry=>['done','removed','failed'].includes(entry.status));
+    this.publishInputState(params.sessionId,state);
     try{
-      while(true){const {done,value}=await reader.read();if(done){this.close();throw Error('DSH 连接已断开；下次发送会重新连接，本次任务未确认完成');}buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
+      const response=await this.raw('follow',{sessionId:params.sessionId},controller.signal);reader=response.body.getReader();
+      while(true){
+        if(batch.cancelDone){if(batch.cancelError)throw batch.cancelError;return {stopReason:'cancelled'};}
+        if(!batch.stopping&&finished())return {stopReason:'end_turn'};
+        let resume;const changed=new Promise(resolve=>{resume=resolve;});batch.wake=resume;
+        readPending??=reader.read().then(value=>({read:value}));
+        const next=await Promise.race([readPending,changed.then(()=>({changed:true}))]);batch.wake=null;
+        if(next.changed)continue;
+        readPending=null;const {done,value}=next.read;
+        if(done){this.close();throw Error('DSH 连接已断开；下次发送会重新连接，本次任务未确认完成');}
+        buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
         let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
           if(frame.type==='failure')throw Error(frame.error);
           if(frame.type==='permission'||frame.type==='question'){
+            if(batch.stopping||batch.activeTurn===null)continue;
             const id=++this.sequence;this.answers.set(id,{sessionId:params.sessionId,id:frame.id,kind:frame.type});
             if(frame.type==='permission')this.emit('request',{id,method:'session/request_permission',params:{sessionId:params.sessionId,toolCall:{title:frame.request.kind||'原生操作',rawInput:frame.request},options:[{optionId:'allow',kind:'allow_once',name:'本次允许'},{optionId:'reject',kind:'reject_once',name:'拒绝'}]}});
             else this.emit('notification',{method:'myide/question',params:{sessionId:params.sessionId,id,questions:frame.request.questions}});continue;
           }
           const item=frame.value;if(frame.type!=='session'||!item)continue;
-          if(item.type==='snapshot'&&!accepted){
-            lastSeq=item.cursor;accepted=true;
-            const content=params.prompt.map(block=>block.type==='image'?{type:'image',mediaType:block.mimeType,data:block.data}:block);
-            await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId,mode:'queue',content}},controller.signal);continue;
+          if(item.type==='snapshot'&&!snapshot){
+            lastSeq=item.cursor;snapshot=true;this.setInputQueue(state,item.projections?.values?.inbox,item.cursor);
+            // steer 可以沿用 snapshot 内已开始的 turn；之后未必再有一个 turn/start。
+            for(const record of item.records||[]){const event=record.event;if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;}else if(event?.type==='turn/end'){batch.currentTurn=null;batch.currentTurnSeq=null;}}
+            if(mode==='steer'&&batch.currentTurnSeq===null){
+              const expected=Number(params.expectedRunId),records=item.records||[],boundary=records.findLast(record=>record.event?.type==='turn/start'||record.event?.type==='turn/end');
+              if(!boundary&&Number.isSafeInteger(expected)&&expected>=0&&expected<=item.cursor){
+                const page=await this.call('session/page',{request:{address:{kind:'session',sessionId:params.sessionId},throughSeq:expected,maxMessages:1}},undefined,{preserveConnection:true});
+                const event=page?.records?.findLast(record=>record.event?.seq===expected)?.event;
+                if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;}
+              }
+            }
+            if(mode==='steer'&&(batch.currentTurnSeq===null||String(params.expectedRunId)!==String(batch.currentTurnSeq)))throw Error('原生运行已结束或已更换，未插入输入');
+            if(mode==='steer')batch.borrowedTurn=batch.currentTurn;
+            if(batch.stopping)continue;
+            const admission=this.call('session/prompt',{request:{sessionId:params.sessionId,requestId,mode,content}},undefined,{preserveConnection:true}).then(value=>{
+              if(value?.accepted!==true)throw Error('原生 DSH 未确认接受输入');return {accepted:true,requestId,queue:inputQueueView(state)};
+            });
+            state.inputAdmissions.set(requestId,{signature:JSON.stringify({mode,content}),promise:admission});
+            await admission;
+            batch.requests.get(requestId).status='pending';batch.ready=true;this.publishInputState(params.sessionId,state);continue;
           }
           if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
-          if(event.type==='turn/start')candidateTurn=data.turn;
-          // 宿主可能已在跑/排队别轮；真正属于本次发送的是 source.rpcId，而不是第一个 turn/start。
-          if(event.type==='user/message'&&data.source?.kind==='user'&&data.source.rpcId===requestId){started=true;activeTurn=candidateTurn;}
-          if(!started)continue;
+          if(event.type==='agent/inbox/spliced'&&state.inputQueue){const queue=state.inputQueue,target=data.target;if(Array.isArray(queue[target])&&(queue.asOfSeq===null||event.seq>queue.asOfSeq)){queue[target].splice(data.start,data.removedCount||0,...(data.inserted||[]));queue.asOfSeq=event.seq;this.publishInputState(params.sessionId,state);}continue;}
+          if(event.type==='turn/start'){batch.currentTurn=data.turn;batch.currentTurnSeq=event.seq;batch.activeTurn=null;lastError=null;this.publishInputState(params.sessionId,state);}
+          if(event.type==='user/message'&&data.source?.kind==='user'){
+            const entry=batch.requests.get(data.source.rpcId);
+            if(entry&&!['removed','failed'].includes(entry.status)){
+              entry.status='consumed';entry.turn=batch.currentTurn??data.turn;batch.activeTurn=entry.turn??null;
+              this.publishInputState(params.sessionId,state,data.source.rpcId,data.content);
+            }
+          }
+          if(event.type==='turn/end'){
+            const owned=batch.activeTurn===data.turn;
+            if(owned){for(const entry of batch.requests.values())if(entry.status==='consumed'&&entry.turn===data.turn)entry.status='done';batch.activeTurn=null;}
+            batch.currentTurn=null;batch.currentTurnSeq=null;this.publishInputState(params.sessionId,state);
+            if(owned&&!batch.stopping){if(data.reason.kind==='interrupted'||data.reason.kind==='aborted'&&data.reason.reason?.kind==='user')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error(turnFailure(data.reason,lastError));}
+            continue;
+          }
+          if(batch.activeTurn===null||batch.stopping)continue;
           if(event.type==='agent/error'||event.type==='request/error')lastError=data.error||data;
           if(event.type==='assistant/message')for(const block of data.message.content||[]){if(block.type==='text')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_message_chunk',messageId:data.message.id,content:block});else if(block.type==='thinking')this.notifyUpdate(params.sessionId,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:block.thinking||block.text||''}});}
           if(event.type==='tool/call')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call',toolCallId:data.callId,title:data.name,rawInput:data.arguments,status:'in_progress'});
           if(event.type==='tool/result')this.notifyUpdate(params.sessionId,{sessionUpdate:'tool_call_update',toolCallId:data.message.toolCallId,status:data.error||data.message.isError?'failed':'completed',content:(data.message.content||[]).map(content=>({type:'content',content}))});
           if(/^(todo|plan)\//.test(event.type))this.notifyUpdate(params.sessionId,{sessionUpdate:'myide_projection',event});
           if(event.type==='request/context')this.notifyUpdate(params.sessionId,{sessionUpdate:'usage_update',used:data.inputTokens||0,size:data.contextWindow||0});
-          if(event.type==='turn/end'&&data.turn===activeTurn){if(data.reason.kind==='interrupted'||data.reason.kind==='aborted'&&data.reason.reason?.kind==='user')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error(turnFailure(data.reason,lastError));return {stopReason:'end_turn'};}
         }
       }
-    }catch(error){if(!controller.signal.aborted&&error instanceof TypeError)this.close();throw error;}
-    finally{controller.abort();await reader.cancel().catch(()=>{});state.controller=null;for(const [id,item] of this.answers)if(item.sessionId===params.sessionId)this.answers.delete(id);}
+    }catch(error){if(batch.stopping){await batch.cancelPromise;if(batch.cancelError)throw batch.cancelError;return {stopReason:'cancelled'};}if(!controller.signal.aborted&&error instanceof TypeError)this.close();throw error;}
+    finally{batch.activeTurn=null;batch.closed=true;this.publishInputState(params.sessionId,state);controller.abort();await reader?.cancel().catch(()=>{});state.controller=null;for(const [id,item] of this.answers)if(item.sessionId===params.sessionId)this.answers.delete(id);}
   }
-  notify(method,params){if(method==='session/cancel')this.call('session/cancel',{request:{sessionId:params.sessionId}}).catch(error=>this.sessions.get(params.sessionId)?.controller?.abort(error));}
+  notify(method,params){if(method==='session/cancel'){const state=this.sessions.get(params.sessionId);if(state?.inputBatch&&!state.inputBatch.closed)this.cancelInputBatch(params.sessionId,state);}}
   reply(id,result){const item=this.answers.get(id);if(!item)return;this.answers.delete(id);const value=item.kind==='question'?result:item.kind==='permission'&&result.outcome?.outcome==='selected'&&result.outcome.optionId==='allow'?'allowed-once':'rejected';void this.raw('answer',{sessionId:item.sessionId,id:item.id,value}).then(response=>response.body?.cancel()).catch(error=>this.sessions.get(item.sessionId)?.controller?.abort(error));}
   close(){if(this.closed)return;this.closed=true;for(const state of this.sessions.values())state.controller?.abort();this.answers.clear();this.emit('closed');}
 }
@@ -407,4 +553,4 @@ async function connectNativeOnce({home,runtime,skipInstall=false,discoveryFile,f
   }while(true);
   throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }
-module.exports={connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory,absoluteCatalogRoot,catalogEntry};
+module.exports={inputQueueView,connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory,absoluteCatalogRoot,catalogEntry};

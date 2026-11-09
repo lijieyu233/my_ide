@@ -17,6 +17,33 @@ async function bridgeFixture(){
  const discover=(activeRevision,port=1234)=>fs.writeFile(path.join(home,'myide-native.json'),JSON.stringify({version:1,profile:'desktop',pid:process.pid,revision:activeRevision,url:'http://127.0.0.1:'+port+'/?token=unit-only'}));
  return {home,runtime,revision,discover,dispose:()=>fs.rm(home,{recursive:true,force:true})};
 }
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+async function until(check){for(let attempt=0;attempt<100;attempt++){if(check())return;await tick();}assert.fail('fixture condition did not settle');}
+function inputFixture(options={}){
+ let output,seq=options.cursor||0,done=false;const calls=[],updates=[],inbox={'next-turn':[],'next-step':[]};
+ const send=(type,data)=>output.enqueue(Buffer.from(JSON.stringify({type:'session',value:{type:'event',event:{seq:++seq,type,data}}})+'\n'));
+ const splice=(target,start,removedCount,inserted)=>{inbox[target].splice(start,removedCount,...inserted);send('agent/inbox/spliced',{target,start,removedCount,inserted});};
+ const rpc=new NativeRpc('http://127.0.0.1:12','fixture-cookie',async(url,init)=>{
+  if(url.endsWith('/myide/follow')){calls.push({method:'follow'});return new Response(new ReadableStream({start(controller){output=controller;output.enqueue(Buffer.from(JSON.stringify({type:'session',value:{type:'snapshot',cursor:seq,records:options.records||[],projections:{values:{inbox}}}})+'\n'));}}));}
+  const envelope=JSON.parse(init.body),request=envelope.payload.args.request;calls.push({method:envelope.method,request});let value;
+  if(envelope.method==='session/prompt'){
+   if(options.admit)await options.admit(request);
+   const target=request.mode==='queue'?'next-turn':'next-step',message={id:'item-'+request.requestId,source:{kind:'user',rpcId:request.requestId},content:request.content};
+   splice(target,inbox[target].length,0,[message]);value={accepted:true};
+  }else if(envelope.method==='session/projections')value={kind:'sequenced',asOfSeq:seq,values:{inbox}};
+  else if(envelope.method==='session/updateQueue'){
+   const target=['next-turn','next-step'].find(target=>inbox[target].some(item=>item.id===request.itemId));if(!target)throw Error('queued item is no longer pending');
+   const index=inbox[target].findIndex(item=>item.id===request.itemId),message=inbox[target][index];
+   splice(target,index,1,request.action.kind==='edit'?[{...message,content:request.action.content}]:[]);
+   if(request.action.kind==='steer')splice('next-step',inbox['next-step'].length,0,[message]);value={accepted:true};
+  }else if(envelope.method==='myide/control')value={accepted:true};else throw Error('unexpected fixture endpoint '+envelope.method);
+  return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});
+ });
+ const state={catalog,selected:catalog.default,cwd:'D:/fixture'};rpc.sessions.set(id,state);rpc.on('notification',item=>updates.push(item.params.update));
+ const consume=requestId=>{const target=['next-turn','next-step'].find(target=>inbox[target].some(item=>item.source.rpcId===requestId));assert(target,'pending fixture request '+requestId);const index=inbox[target].findIndex(item=>item.source.rpcId===requestId),message=inbox[target][index];splice(target,index,1,[]);send('user/message',message);};
+ const start=async(params={})=>{const pending=rpc.request('session/prompt',{sessionId:id,requestId:'initial',prompt:[{type:'text',text:'initial'}],...params});pending.catch(()=>{});await until(()=>state.inputBatch?.ready||state.inputBatch?.closed);return {pending};};
+ return {rpc,state,calls,updates,inbox,send,consume,start,close(){if(!done){done=true;try{output?.close();}catch{}}rpc.close();}};
+}
 (async()=>{
  await test('原生连接只接受本机HTTP服务，拒绝凭据、远程、本地文件',()=>{assert.equal(nativeUrl('http://127.0.0.1:1234/?token=test').port,'1234');for(const url of ['http://evil.test:1234/','http://user:pass@127.0.0.1:12/','file:///x','http://127.0.0.1:12/api'])assert.throws(()=>nativeUrl(url));});
  await test('原生模型目录保留插件提供方与推理配置，不用ACP默认模型',()=>{const options=configOptions(catalog);assert.equal(options[0].currentValue,JSON.stringify(['desktop-plugin','native-v4.1']));assert.equal(options[1].currentValue,'high');});
@@ -62,10 +89,10 @@ async function bridgeFixture(){
   rpc.sessions.set(id,{catalog,selected:catalog.default});const emitted=[];rpc.on('notification',value=>emitted.push(value));
   const pending=rpc.request('session/prompt',{sessionId:id,prompt:[{type:'text',text:'本次请求'}]}).then(value=>{settled=true;return {value};},error=>{settled=true;return {error};});
   try{
-   await ready;await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false,'别轮 completed/error 不能提前结束本请求');assert.deepEqual(emitted,[],'别人的文字不能转发到本轮');
+   await ready;await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false,'别轮 completed/error 不能提前结束本请求');assert.deepEqual(emitted.filter(item=>item.params.update.sessionUpdate!=='myide_input_state'),[],'别人的文字不能转发到本轮');
    write([event(13,'turn/start',{turn:3}),event(14,'user/message',{source:{kind:'user',rpcId:requestId}}),event(15,'assistant/message',{message:{id:'ours',content:[{type:'text',text:'OWN_OUTPUT'}]}}),event(16,'turn/end',{turn:3,reason:{kind:'completed'}})]);
    const result=await pending;assert.ifError(result.error);assert.equal(result.value.stopReason,'end_turn');
-   assert.deepEqual(emitted.map(item=>item.params.update.content.text),['OWN_OUTPUT']);
+   assert.deepEqual(emitted.filter(item=>item.params.update.content).map(item=>item.params.update.content.text),['OWN_OUTPUT']);
   }finally{if(!closed){closed=true;output?.close();}await pending;rpc.close();}
  });
  await test('宿主断开后释放旧连接，后续会话可重新发现，不自动重放命令',async()=>{let calls=0;const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async()=>{calls++;throw TypeError('fetch failed');});let closed=0;rpc.on('closed',()=>closed++);await assert.rejects(rpc.call('session/list'));assert(rpc.closed);assert.equal(closed,1);assert.equal(calls,1);});
@@ -268,7 +295,7 @@ async function bridgeFixture(){
     }
     failedEndpoint='';assert.equal((await rpc.request('session/list',{}))[1].running,false);assert.equal(rpc.sessions.size,1);assert.equal(rpc.sessions.get(id),state);
     write([event(3,'assistant/message',{message:{id:'background-answer',content:[{type:'text',text:'后台继续完成'}]}}),event(4,'turn/end',{turn:1,reason:{kind:'completed'}})]);output.close();streamDone=true;
-    const result=await pending;assert.ifError(result.error);assert.equal(result.value.stopReason,'end_turn');assert.deepEqual(emitted.map(value=>value.params.update.content.text),['后台继续完成']);
+    const result=await pending;assert.ifError(result.error);assert.equal(result.value.stopReason,'end_turn');assert.deepEqual(emitted.filter(value=>value.params.update.content).map(value=>value.params.update.content.text),['后台继续完成']);
     assert.equal(calls.filter(method=>method==='session/prompt').length,1);assert(!calls.some(method=>/cancel|attach|create|selectModel/.test(method)));
    }finally{if(!streamDone)output?.close();await pending;rpc.close();}
   });
@@ -502,5 +529,104 @@ async function bridgeFixture(){
     assert.equal(await fs.readFile(file,'utf8'),baseline);
    }finally{await f.dispose();}
   });
-  console.log('原生DSH连接：'+count+' 通过 / 0 失败');
+  await test('持续输入组：两个queue加一个steer跨turn只有一follow，外来turn不授权',async()=>{
+    const f=inputFixture();let pending,settled=false;try{
+     ({pending}=await f.start());pending.finally(()=>{settled=true;}).catch(()=>{});
+     await assert.rejects(f.rpc.request('session/input',{sessionId:id,requestId:'early-steer',mode:'steer',prompt:[{type:'text',text:'too early'}]}),/没有可插入/);
+     f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     for(const requestId of ['queue-1','queue-2']){const result=await f.rpc.request('session/input',{sessionId:id,requestId,mode:'queue',prompt:[{type:'text',text:requestId}]});assert.equal(result.accepted,true);assert.equal(result.requestId,requestId);assert.equal(result.messageId,undefined);assert(result.queue.items.some(item=>item.requestId===requestId&&item.owned));}
+     await f.rpc.request('session/input',{sessionId:id,requestId:'steer-1',mode:'steer',prompt:[{type:'text',text:'steer'}]});f.consume('steer-1');f.send('turn/end',{turn:1,reason:{kind:'completed'}});
+     f.send('turn/start',{turn:2});f.send('user/message',{source:{kind:'user',rpcId:'foreign'}});f.send('assistant/message',{message:{content:[{type:'text',text:'FOREIGN'}]}});await tick();
+     assert.equal(f.state.inputBatch.activeTurn,null);assert.equal(settled,false);assert.equal(f.updates.at(-1).active,false);
+     f.send('turn/end',{turn:2,reason:{kind:'error'}});f.send('turn/start',{turn:3});f.consume('queue-1');f.send('turn/end',{turn:3,reason:{kind:'completed'}});await tick();assert.equal(settled,false);
+     f.send('turn/start',{turn:4});f.consume('queue-2');f.send('assistant/message',{message:{id:'ours',content:[{type:'text',text:'OURS'}]}});f.send('turn/end',{turn:4,reason:{kind:'completed'}});
+     assert.equal((await pending).stopReason,'end_turn');assert.equal(f.calls.filter(call=>call.method==='follow').length,1);assert.equal(f.calls.filter(call=>call.method==='session/prompt').length,4);assert(!f.calls.some(call=>/cancel|control/.test(call.method)));assert(!JSON.stringify(f.updates).includes('FOREIGN'));assert(f.updates.some(update=>update.consumedRequestId==='steer-1'));
+    }finally{f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('同requestId并发顺序重试只准入一次，明确失败不吞不重发',async()=>{
+    let release;const gate=new Promise(resolve=>{release=resolve;}),f=inputFixture({admit:request=>request.requestId==='dedup'?gate:request.requestId==='failed'?Promise.reject(Object.assign(Error('native intake failure'),{nativeRejected:true})):undefined});let pending;try{
+     ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     const params={sessionId:id,requestId:'dedup',mode:'queue',prompt:[{type:'text',text:'one'}]},a=f.rpc.request('session/input',params),b=f.rpc.request('session/input',params);await tick();assert.equal(f.calls.filter(call=>call.request?.requestId==='dedup').length,1);release();assert.deepEqual(await a,await b);assert.deepEqual(await f.rpc.request('session/input',params),await a);
+     await assert.rejects(f.rpc.request('session/input',{...params,prompt:[{type:'text',text:'changed'}]}),/不能更换/);
+     const failure={...params,requestId:'failed'};await assert.rejects(f.rpc.request('session/input',failure),/native intake failure/);await assert.rejects(f.rpc.request('session/input',failure),/native intake failure/);assert.equal(f.calls.filter(call=>call.request?.requestId==='failed').length,1);
+     f.send('turn/end',{turn:1,reason:{kind:'completed'}});f.send('turn/start',{turn:2});f.consume('dedup');f.send('turn/end',{turn:2,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');
+    }finally{release();f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('删除最后pending输入解除尾等，不伪造turn或自动drain',async()=>{
+    const f=inputFixture();let pending,settled=false;try{
+     ({pending}=await f.start());pending.finally(()=>{settled=true;}).catch(()=>{});f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     const result=await f.rpc.request('session/input',{sessionId:id,requestId:'remove-me',mode:'queue',prompt:[{type:'text',text:'remove'}]});const item=result.queue.items.find(item=>item.requestId==='remove-me');
+     f.send('turn/end',{turn:1,reason:{kind:'completed'}});await tick();assert.equal(settled,false);
+     const removed=await f.rpc.request('session/update_queue',{sessionId:id,itemId:item.id,action:{kind:'remove'}});assert.equal(removed.accepted,true);assert.equal(removed.queue.items.length,0);assert.equal((await pending).stopReason,'end_turn');
+    }finally{f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('watch初次steer seed现有turn，expectedRunId不符零prompt',async()=>{
+    for(const expectedRunId of ['10','wrong']){const f=inputFixture({cursor:10,records:[{event:{seq:10,type:'turn/start',data:{turn:8}}}]});let pending;try{
+     ({pending}=await f.start({inputMode:'steer',expectedRunId}));
+     if(expectedRunId==='wrong'){await assert.rejects(pending,/已结束或已更换/);assert.equal(f.calls.filter(call=>call.method==='session/prompt').length,0);}
+     else{f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===8);f.send('turn/end',{turn:8,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');assert.equal(f.calls.find(call=>call.method==='session/prompt').request.mode,'steer');}
+    }finally{f.close();if(pending)await pending.catch(()=>{});}}
+   });
+   await test('Stop先撤本组pending再精确停own，外来turn不发停止',async()=>{
+    for(const foreign of [false,true]){const f=inputFixture();let pending;try{
+     ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     await f.rpc.request('session/input',{sessionId:id,requestId:'withdraw',mode:'queue',prompt:[{type:'text',text:'withdraw'}]});
+     if(foreign){f.send('turn/end',{turn:1,reason:{kind:'completed'}});f.send('turn/start',{turn:2});f.send('user/message',{source:{kind:'user',rpcId:'not-ours'}});await until(()=>f.state.inputBatch.currentTurn===2);}
+     f.rpc.notify('session/cancel',{sessionId:id});assert.equal((await pending).stopReason,'cancelled');const methods=f.calls.map(call=>call.method);assert(!methods.includes('session/cancel'));assert.equal(f.inbox['next-turn'].length,0);
+     const control=f.calls.find(call=>call.method==='myide/control');if(foreign)assert.equal(control,undefined);else{assert.equal(control.request.runId,'2');assert.equal(control.request.cwd,'D:/fixture');assert(methods.indexOf('session/updateQueue')<methods.indexOf('myide/control'));}
+    }finally{f.close();if(pending)await pending.catch(()=>{});}}
+   });
+   await test('不明准入结果保留unknown且不重发；Stop仍安全结束',async()=>{
+    const f=inputFixture({admit:request=>request.requestId==='unknown'?Promise.reject(new DOMException('intake timeout','TimeoutError')):undefined});let pending,settled=false;try{
+     ({pending}=await f.start());pending.finally(()=>{settled=true;}).catch(()=>{});f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     const params={sessionId:id,requestId:'unknown',mode:'queue',prompt:[{type:'text',text:'unknown'}]};await assert.rejects(f.rpc.request('session/input',params),/intake timeout/);assert.equal(f.state.inputBatch.requests.get('unknown').status,'unknown');
+     f.send('turn/end',{turn:1,reason:{kind:'completed'}});await tick();assert.equal(settled,false);await assert.rejects(f.rpc.request('session/input',params),/intake timeout/);assert.equal(f.calls.filter(call=>call.request?.requestId==='unknown').length,1);
+     f.rpc.notify('session/cancel',{sessionId:id});assert.equal((await pending).stopReason,'cancelled');assert(!f.calls.some(call=>/control|cancel/.test(call.method)));
+    }finally{f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('Stop借用watch steer不取消原turn，停止中的admission完成后先撤回',async()=>{
+    const borrowed=inputFixture({cursor:10,records:[{event:{seq:10,type:'turn/start',data:{turn:8}}}]});let pending;try{
+     ({pending}=await borrowed.start({inputMode:'steer',expectedRunId:'10'}));borrowed.consume('initial');await until(()=>borrowed.state.inputBatch.activeTurn===8);borrowed.rpc.notify('session/cancel',{sessionId:id});assert.equal((await pending).stopReason,'cancelled');assert(!borrowed.calls.some(call=>/control|cancel/.test(call.method)));
+    }finally{borrowed.close();if(pending)await pending.catch(()=>{});}
+    let release;const gate=new Promise(resolve=>{release=resolve;}),f=inputFixture({admit:request=>request.requestId==='late'?gate:undefined});pending=null;try{
+     ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     const input=f.rpc.request('session/input',{sessionId:id,requestId:'late',mode:'queue',prompt:[{type:'text',text:'late'}]});await tick();f.rpc.notify('session/cancel',{sessionId:id});await tick();assert(!f.calls.some(call=>call.method==='myide/control'));release();assert.equal((await input).accepted,true);assert.equal((await pending).stopReason,'cancelled');assert.equal(f.inbox['next-turn'].length,0);assert(!f.calls.some(call=>call.method==='session/cancel'));
+    }finally{release();f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('外部watch队列读取编辑移除不要求attach，缺inbox不假设空队列',async()=>{
+    const calls=[],message={id:'external-item',source:{kind:'user',rpcId:'external-rpc'},content:[{type:'text',text:'external'}]},inbox={'next-turn':[message],'next-step':[]};let available=true;
+    const rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{const envelope=JSON.parse(init.body),request=envelope.payload.args.request;calls.push(envelope.method);let value;if(envelope.method==='session/projections')value={kind:'sequenced',asOfSeq:10,values:available?{inbox}:{}};else{assert.equal(envelope.method,'session/updateQueue');if(request.action.kind==='remove')inbox['next-turn']=[];else inbox['next-turn'][0].content=request.action.content;value={accepted:true};}return Response.json({type:'server-response',rpcId:envelope.rpcId,result:{ok:true,value}});});
+    try{
+     const queue=await rpc.request('session/input_queue',{sessionId:'external'});assert.equal(queue.available,true);assert.equal(queue.items[0].owned,false);assert.equal(queue.items[0].requestId,'external-rpc');assert.equal(rpc.sessions.size,0);
+     const edited=await rpc.request('session/update_queue',{sessionId:'external',itemId:'external-item',action:{kind:'edit',content:[{type:'text',text:'edited'}]}});assert.equal(edited.queue.items[0].text,'edited');
+     assert.equal((await rpc.request('session/update_queue',{sessionId:'external',itemId:'external-item',action:{kind:'remove'}})).queue.items.length,0);available=false;assert.equal((await rpc.request('session/input_queue',{sessionId:'external'})).available,false);assert(calls.every(method=>['session/projections','session/updateQueue'].includes(method)));
+     const {inputQueueView}=require('../src/main/dsh/dsh-native');assert.equal(inputQueueView(inbox,10).available,true);assert.equal(inputQueueView(undefined).available,false);
+    }finally{rpc.close();}
+   });
+   await test('队列文本编辑不能清除附件，拒绝时零updateQueue写入',async()=>{
+    const f=inputFixture();let pending;try{
+     ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+     const result=await f.rpc.request('session/input',{sessionId:id,requestId:'attachment',mode:'queue',prompt:[{type:'text',text:'with file'},{type:'file',receiptId:'fixture-file'}]}),item=result.queue.items.find(item=>item.requestId==='attachment');assert.equal(item.editable,false);
+     const before=f.calls.filter(call=>call.method==='session/updateQueue').length;await assert.rejects(f.rpc.request('session/update_queue',{sessionId:id,itemId:item.id,action:{kind:'edit',content:[{type:'text',text:'erase file'}]}}),/包含附件/);assert.equal(f.calls.filter(call=>call.method==='session/updateQueue').length,before);assert.equal(f.inbox['next-turn'][0].content[1].type,'file');
+     f.send('turn/end',{turn:1,reason:{kind:'completed'}});await f.rpc.request('session/update_queue',{sessionId:id,itemId:item.id,action:{kind:'remove'}});assert.equal((await pending).stopReason,'end_turn');
+    }finally{f.close();if(pending)await pending.catch(()=>{});}
+   });
+   await test('输入组ready仅在初始Native回执后true，初始和终态false',async()=>{
+     let release;const gate=new Promise(resolve=>{release=resolve;}),f=inputFixture({admit:request=>request.requestId==='initial'?gate:undefined});let pending;
+     try{
+      pending=f.rpc.request('session/prompt',{sessionId:id,requestId:'initial',prompt:[{type:'text',text:'initial'}]});pending.catch(()=>{});await until(()=>f.calls.some(call=>call.method==='session/prompt'));
+      assert.equal(f.updates[0].ready,false);assert.equal(f.updates[0].active,false);assert(!f.updates.some(update=>update.ready===true));release();await until(()=>f.state.inputBatch.ready);assert.equal(f.updates.at(-1).ready,true);
+      f.send('turn/start',{turn:1});f.consume('initial');f.send('turn/end',{turn:1,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');assert.equal(f.updates.at(-1).ready,false);
+     }finally{release();f.close();if(pending)await pending.catch(()=>{});}
+    });
+    await test('消费通知取Native实际content而非旧草稿，不转发foreign内容',async()=>{
+      const f=inputFixture();let pending;try{
+       ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+       const result=await f.rpc.request('session/input',{sessionId:id,requestId:'edited-input',mode:'queue',prompt:[{type:'text',text:'original draft'}]}),item=result.queue.items.find(item=>item.requestId==='edited-input');
+       await f.rpc.request('session/update_queue',{sessionId:id,itemId:item.id,action:{kind:'edit',content:[{type:'text',text:'actual edited content'}]}});
+       f.send('turn/end',{turn:1,reason:{kind:'completed'}});f.send('turn/start',{turn:2});f.send('user/message',{source:{kind:'user',rpcId:'foreign-input'},content:[{type:'text',text:'foreign content'}]});f.send('turn/end',{turn:2,reason:{kind:'completed'}});f.send('turn/start',{turn:3});f.consume('edited-input');f.send('turn/end',{turn:3,reason:{kind:'completed'}});
+       assert.equal((await pending).stopReason,'end_turn');assert.deepEqual(f.updates.find(update=>update.consumedRequestId==='edited-input').consumedContent,[{type:'text',text:'actual edited content'}]);assert(!f.updates.some(update=>update.consumedRequestId==='foreign-input'||JSON.stringify(update.consumedContent||'').includes('foreign content')));
+      }finally{f.close();if(pending)await pending.catch(()=>{});}
+     });
+     console.log('原生DSH连接：'+count+' 通过 / 0 失败');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

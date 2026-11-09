@@ -781,11 +781,31 @@ const aiSender = (e,context) => {
     throw Object.assign(Error('AI请求来源无效'), { code: 'INVALID_AI_SENDER' });
   return aiOwners.owner(e.sender.id,context);
 };
+const dshChatAdmissions=new Set();
+const dshPageMatches=(a,b)=>!!a&&!!b&&a.id===b.id&&a.projectContext===b.projectContext;
+async function dshInputPage(event,context,page){
+  const state=await event.sender.executeJavaScript('({rootId:App.root||"",page:App.getPageContext(),sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
+  if(state.engine!=='dsh'||state.rootId!==context.rootId||state.sessionId!==context.sessionId||!dshPageMatches(state.page,page))throw Error('原生输入的项目、会话或页面已变化');
+  return state.page;
+}
 ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
+  const requestedPage=context?.page;
+  let nativeStart=null,dshAdmission=null;
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
     aiSender(e);
+    if(cfg?.engine==='dsh'){
+      const admission=JSON.stringify([e.sender.id,context?.rootId,context?.sessionId]);
+      if(dshChatAdmissions.has(admission)||DSH.hasRun(context))throw Error('当前 DSH 任务仍在运行，请使用排队或插入而非新建运行');
+      dshChatAdmissions.add(admission);dshAdmission=admission;
+      if(cfg.dshInputMode!==undefined){
+        if(!['queue','steer'].includes(cfg.dshInputMode))throw Error('原生输入模式无效');
+        const slot=await ownedDshWatch(e,cfg.dshWatchId);
+        if(slot.state.rootId!==context.rootId||slot.state.sessionId!==context.sessionId||slot.latest?.connected===false||!slot.latest?.running||typeof cfg.expectedRunId!=='string'||cfg.expectedRunId!==slot.latest.runId)throw Error('DSH 目标轮次已变化，未发送旧输入');
+        nativeStart={page:await dshInputPage(e,context,requestedPage),hostId:slot.state.hostId};
+      }
+    }
     await aiPermissionsBridge.initialize(e.sender);
     aiOwners.register(e.sender.id,context,cfg?.engine);
     const start = aiRuns.begin(aiSender(e,context), context); record = start.record; context = record.context;
@@ -793,16 +813,17 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
     if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e,context));
     aiPermissionsBridge.newSession(aiSender(e,context), context);
     if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
-  } catch (error) { return { error: error.message, errorCode: error.code, context }; }
+  } catch (error) { if(dshAdmission)dshChatAdmissions.delete(dshAdmission);return { error: error.message, errorCode: error.code, context }; }
   let r;
   if(cfg?.engine==='dsh'){
     try{
-      const page=await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e,context),context);
-      r=await DSH.chat(cfg,messages,tools||[],{...context,page},event=>{
+      const page=nativeStart?await dshInputPage(e,context,nativeStart.page):await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e,context),context);
+      r=await DSH.chat(cfg,messages,tools||[],{...context,page,...(nativeStart?{expectedHostId:nativeStart.hostId}: {})},event=>{
         if(record.status!=='active')return;
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:dsh-event',{...event,context});
       },event=>{try{aiRuns.assert(aiSender(e,context),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'dsh',context};}
+    finally{if(dshAdmission)dshChatAdmissions.delete(dshAdmission);}
   }else r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
   }, tools, context);
@@ -843,12 +864,12 @@ ipcMain.handle('ai:dsh-bind',async(event,cfg,state,sessionId)=>{
 // 外部 DSH 轮次没有本地 aiRuns 身份：独立观察通道只展示宿主状态，不能冒充一次 chat。
 const dshWatches=new Map();
 const dshWatchKey=(sender,id)=>JSON.stringify([sender.id,id]);
-const dshWatchPage=async sender=>sender.executeJavaScript('({rootId:App.root||"",scope:["reader","bookshelf"].includes(App.getPageContext().id)?"reader":"project",sessionId:AiPanel.aiState().current})');
+const dshWatchPage=async sender=>sender.executeJavaScript('({rootId:App.root||"",scope:["reader","bookshelf"].includes(App.getPageContext().id)?"reader":"project",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
 async function ownedDshWatch(event,id){
   aiSender(event);const slot=dshWatches.get(dshWatchKey(event.sender,id));
   if(!slot||slot.controller.signal.aborted||!slot.handle)throw Error('DSH 实时订阅已过期');
   const page=await dshWatchPage(event.sender);
-  if(page.rootId!==slot.state.rootId||page.scope!==slot.state.scope||page.sessionId!==slot.state.sessionId)throw Error('会话视图已变化，请重新选择后操作');
+  if(page.engine!=='dsh'||page.rootId!==slot.state.rootId||page.scope!==slot.state.scope||page.sessionId!==slot.state.sessionId)throw Error('会话视图已变化，请重新选择后操作');
   return slot;
 }
 ipcMain.handle('ai:dsh-watch',async(event,cfg,state)=>{
@@ -857,13 +878,13 @@ ipcMain.handle('ai:dsh-watch',async(event,cfg,state)=>{
     aiSender(event);
     if(!state||['watchId','hostId','sessionId'].some(k=>typeof state[k]!=='string'||!state[k]||state[k].length>200)||typeof state.rootId!=='string'||!['project','reader'].includes(state.scope))throw Error('DSH 实时订阅身份无效');
     const page=await dshWatchPage(event.sender);
-    if(page.rootId!==state.rootId||page.scope!==state.scope||page.sessionId!==state.sessionId)throw Error('会话视图已变化，未建立旧订阅');
+    if(page.engine!=='dsh'||page.rootId!==state.rootId||page.scope!==state.scope||page.sessionId!==state.sessionId)throw Error('会话视图已变化，未建立旧订阅');
     key=dshWatchKey(event.sender,state.watchId);
     if(dshWatches.has(key))throw Error('DSH 实时订阅身份重复');
     slot={state:{watchId:state.watchId,sessionId:state.sessionId,hostId:state.hostId,rootId:state.rootId,scope:state.scope},controller:new AbortController(),handle:null};dshWatches.set(key,slot);
     const close=()=>{slot.controller.abort();slot.handle?.close();dshWatches.delete(key);event.sender.removeListener('destroyed',close);};slot.close=close;
     event.sender.once('destroyed',close);
-    slot.enrich=value=>({...value,...slot.state});
+    slot.enrich=value=>{slot.latest={...slot.latest,...value};return {...value,...slot.state};};
     slot.handle=await DSH.watch(cfg,state,value=>{if(!slot.controller.signal.aborted&&!event.sender.isDestroyed())event.sender.send('ai:dsh-watch',slot.enrich(value));},slot.controller.signal);
     if(slot.controller.signal.aborted){slot.handle.close();throw Error('DSH 实时订阅已解除');}
     return {ok:true,watchId:state.watchId};
@@ -872,6 +893,37 @@ ipcMain.handle('ai:dsh-watch',async(event,cfg,state)=>{
 ipcMain.handle('ai:dsh-unwatch',(event,id)=>{try{aiSender(event);dshWatches.get(dshWatchKey(event.sender,id))?.close();return {ok:true};}catch(error){return {ok:false,error:error.message};}});
 ipcMain.handle('ai:dsh-sync',async(event,id)=>{try{const slot=await ownedDshWatch(event,id);return {ok:true,state:slot.enrich(await slot.handle.sync())};}catch(error){return {ok:false,error:error.message};}});
 ipcMain.handle('ai:dsh-host-control',async(event,id,action)=>{try{const slot=await ownedDshWatch(event,id);if(!action||Object.keys(action).some(k=>!['operation','runId','id','answers','optionId'].includes(k)))throw Error('会话操作参数无效');return {ok:true,...await slot.handle.control(action)};}catch(error){return {ok:false,error:error.message};}});
+async function ownedDshInput(event,cfg,target){
+  aiSender(event);
+  if(cfg?.engine!=='dsh'||!target||!['run','watch'].includes(target.kind))throw Error('原生输入目标无效');
+  if(target.kind==='watch'){
+    const slot=await ownedDshWatch(event,target.watchId);
+    if(slot.latest?.connected===false)throw Error('DSH 实时订阅未连接');
+    if(target.runId!==undefined&&target.runId!==slot.latest?.runId)throw Error('DSH 目标轮次已变化');
+    return {slot};
+  }
+  const context=target.context;
+  aiRuns.assert(aiSender(event,context),context);
+  const page=await dshInputPage(event,context,target.page);
+  aiRuns.assert(aiSender(event,context),context);
+  return {context:{...context,page}};
+}
+ipcMain.handle('ai:dsh-input',async(event,cfg,target,input)=>{
+  try{
+    const owned=await ownedDshInput(event,cfg,target);
+    if(!owned.context)throw Error('外部运行的新输入须建立独立 MyIDE 运行');
+    if(!input||Object.keys(input).some(key=>!['requestId','mode','messages'].includes(key)))throw Error('原生输入参数无效');
+    return {ok:true,accepted:true,...await DSH.submitInput(owned.context,input.requestId,input.mode,input.messages)};
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
+ipcMain.handle('ai:dsh-queue',async(event,cfg,target)=>{
+  try{const owned=await ownedDshInput(event,cfg,target);return {ok:true,queue:owned.context?await DSH.inputQueue(owned.context):await owned.slot.handle.inputQueue()};}
+  catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
+ipcMain.handle('ai:dsh-queue-update',async(event,cfg,target,action)=>{
+  try{const owned=await ownedDshInput(event,cfg,target);return {ok:true,accepted:true,...await (owned.context?DSH.updateQueue(owned.context,action):owned.slot.handle.updateQueue(action))};}
+  catch(error){return {ok:false,error:error.message,errorCode:error.code};}
+});
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }

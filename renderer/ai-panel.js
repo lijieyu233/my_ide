@@ -169,10 +169,12 @@ const AiPanel = (() => {
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
     run.status = status;
     for (const group of run.activityGroups || []) paintToolGroup(group);
-    setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? '已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
+    setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
+    for(const [id,item] of nativeInputRequests)if(item.run===run){if(item.rendered)nativeInputRequests.delete(id);else if(item.accepted&&!item.error)item.error='本次运行已结束，但这条消息尚未确认被消费。请先刷新原生队列确认，再决定是否恢复草稿。';}
+    renderNativeInputUI();
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
     reconcileDshAfterOwn(run).catch(() => {});
   }
@@ -1107,7 +1109,7 @@ const AiPanel = (() => {
   // 自动续流（Agent 循环的下一轮回复；用户消息已在 msgs 里）
   async function continueStream(run) {
     if (!runIsLive(run)) return;
-    const cfg = getConfig();
+    const cfg = {...getConfig(),...(run.inputTransport||{})};
     curStream = addMsg('assistant', '');
     curStream.dataset.mid = 'a' + (++uiSeq);
     curText = '';
@@ -1118,7 +1120,7 @@ const AiPanel = (() => {
       ...(run.engine==='dsh'?{timeline:[],segment:null,afterActivity:false}: {}) };
     run.stream = stream;
     let r;
-    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), stream.context); }
+    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), {...stream.context,page:run.initialInputDraft?.page||{...currentPage()}}); }
     catch (error) { r = { error: String(error), context: stream.context }; }
     if (run.background) {
       withBackgroundView(run.background,()=>finishStream(r?.error || r?.text || stream.text,!!r?.error,r,run,stream));
@@ -1486,8 +1488,9 @@ const AiPanel = (() => {
     const f = item.getAsFile();
     if (!f) return;
     if (f.size > 4 * 1024 * 1024) { MI.toast('图片超过 4MB，先压缩一下再贴（大图又贵又慢）', 'err'); return; }
-    const fr = new FileReader();
+    const fr = new FileReader(),scope=inputViewKey();
     fr.onload = () => {
+      if(scope!==inputViewKey())return;
       pendingImages.push(String(fr.result || ''));
       renderImages();
       MI.toast('已附上图片，发送时一并给模型（需要模型支持看图）', 'ok');
@@ -1764,7 +1767,100 @@ const AiPanel = (() => {
     return out;
   }
 
-  async function send() {
+  const nativeInputRequests=new Map();let nativeInputPending=false,nativeQueueReadTicket=0,inputDraftRevision=0;
+  function inputScopeKey(){return JSON.stringify([sessKey(),curSessionId,currentPage().id]);}
+  function inputViewKey(){return JSON.stringify([inputScopeKey(),pageEpoch]);}
+  function nativeInputTarget(){
+    if(getConfig().engine!=='dsh'||dshSessionAccess?.preview||dshScopeMismatch()||!dshCanSend()||historyReplayJob)return null;
+    if(dshOwnRun())return runIsLive(currentRun)&&currentRun.stream&&currentPage().id===currentRun.pageId?{kind:'run',context:{...currentRun.stream.context},page:{...currentPage()}}:null;
+    if(dshWatch&&dshWatchWanted(dshWatch)&&!dshWatch.stopping&&dshWatch.state?.connected!==false)
+      return {kind:'watch',watchId:dshWatch.watchId,runId:dshWatch.state?.runId||''};
+    return null;
+  }
+  function nativeQueueSource(){return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;}
+  function freezeInputDraft(){
+    const text=(inputEl.value||'').trim();if(!text)return null;
+    const files=effectiveCtxFiles().filter(file=>!file.auto).map(file=>({...file})),imgs=pendingImages.slice();
+    return {key:inputViewKey(),scope:inputScopeKey(),page:{...currentPage()},revision:inputDraftRevision,raw:inputEl.value,text,imgs,message:{role:'user',content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_dshAttachments:files.map(file=>({path:file.path,kind:file.special==='clip'?'clipboard':file.isDir?'directory':'file',content:file.content}))}};
+  }
+  function clearAcceptedDraft(draft){
+    if(!draft||draft.cleared||draft.key!==inputViewKey())return;
+    draft.cleared=true;
+    if(inputEl.value===draft.raw&&inputDraftRevision===draft.revision)inputEl.value='';
+    // 只消费提交时那批图片，等待回执期间新贴入的附件必须保留。
+    for(const image of draft.imgs){const index=pendingImages.indexOf(image);if(index>=0)pendingImages.splice(index,1);}
+    autoGrowInput();renderImages();
+  }
+  function showConsumedInput(run,requestId,consumedContent){
+    const item=nativeInputRequests.get(requestId);if(!item||item.rendered||item.run!==run)return;
+    item.rendered=true;sealDshSegment(run);sealActivityGroup();
+    const stream=run.stream;
+    if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
+    stream.timeline=[];stream.partText='';
+    const actualText=Array.isArray(consumedContent)?consumedContent.find(block=>block?.type==='text')?.text:undefined;
+    const text=typeof actualText==='string'?actualText:item.draft.text,imgs=Array.isArray(consumedContent)&&!consumedContent.some(block=>block?.type==='image')?[]:item.draft.imgs;
+    const user={...item.draft.message,content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
+    clearAcceptedDraft(item.draft);if(item.accepted)nativeInputRequests.delete(requestId);
+  }
+  function renderNativeInputUI(){
+    if(backgroundView)return;
+    const running=getConfig().engine==='dsh'&&(busy||dshObservedRunning()),target=nativeInputTarget(),queue=nativeQueueSource();
+    const actions=document.getElementById('ai-running-input-actions');actions?.classList.toggle('hidden',!running);
+    const ready=!!target&&!nativeInputPending&&!!inputEl.value.trim()&&(target.kind==='run'?currentRun.inputReady===true:queue?.available===true);
+    const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
+    if(queueButton)queueButton.disabled=!ready;
+    if(steerButton)steerButton.disabled=!ready||(target.kind==='run'?!currentRun.inputActive:!dshWatch?.state?.running);
+    const box=document.getElementById('ai-input-queue');if(!box)return;
+    const failed=[...nativeInputRequests.values()].filter(item=>item.draft.scope===inputScopeKey()&&item.error),items=queue?.available?queue.items||[]:[];
+    box.classList.toggle('hidden',!running&&!items.length&&!failed.length);box.replaceChildren();if(box.classList.contains('hidden'))return;
+    const head=document.createElement('div');head.className='ai-queue-head';const label=document.createElement('span');label.textContent=nativeInputPending?'正在提交补充消息…':items.length?'待发 '+items.length+' 条':queue?.available?'暂无待发消息':'正在确认原生队列';head.appendChild(label);
+    const refresh=document.createElement('button');refresh.type='button';refresh.className='ai-queue-action';refresh.textContent='刷新';refresh.disabled=!target||nativeInputPending;refresh.onclick=()=>refreshNativeQueue();head.appendChild(refresh);box.appendChild(head);
+    for(const item of items){
+      const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;
+      const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
+      const add=(name,kind,disabled=false)=>{const button=document.createElement('button');button.type='button';button.className='ai-queue-action';button.textContent=name;button.disabled=!target||nativeInputPending||disabled;button.dataset.queueAction=kind;button.onclick=()=>updateNativeQueue(item,kind);row.appendChild(button);};
+      if(item.editable)add('编辑','edit');if(item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);add('撤回','remove');box.appendChild(row);
+    }
+    for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
+  }
+  function acceptNativeQueue(result,target){
+    if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
+    else if(dshWatch?.watchId===target.watchId)dshWatch.state={...dshWatch.state,queue:result.queue};
+    renderNativeInputUI();
+  }
+  async function refreshNativeQueue(){
+    const target=nativeInputTarget();if(!target||!window.myIDE.ai.dshQueue)return;
+    const key=inputViewKey(),ticket=++nativeQueueReadTicket;
+    try{const result=await window.myIDE.ai.dshQueue(getConfig(),target);if(key!==inputViewKey()||ticket!==nativeQueueReadTicket)return;if(!result?.ok)throw Error(result?.error||'原生队列读取失败');acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}
+  }
+  function editQueueText(text){
+    return new Promise(resolve=>{const box=document.createElement('div');box.innerHTML='<div class="m-head">编辑待发消息</div><div class="m-body"><textarea class="ai-queue-editor" aria-label="待发消息内容"></textarea></div><div class="m-foot"><button class="tb-btn" data-cancel>取消</button><button class="tb-btn m-ok" data-save>保存</button></div>';const area=box.querySelector('textarea');area.value=text;let done=false;const finish=value=>{if(done)return;done=true;Modal.hide();resolve(value);};box.onModalHide=()=>{if(!done){done=true;resolve(null);}};box.querySelector('[data-cancel]').onclick=()=>finish(null);box.querySelector('[data-save]').onclick=()=>finish(area.value);box.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();finish(null);}});Modal.show(box);area.focus();});
+  }
+  async function updateNativeQueue(item,kind){
+    const target=nativeInputTarget(),key=inputViewKey();if(!target||nativeInputPending||!window.myIDE.ai.dshQueueUpdate)return;
+    let text;if(kind==='edit'){text=await editQueueText(item.text);if(text==null)return;if(!text.trim()){MI.toast('待发消息不能为空','err');return;}if(key!==inputViewKey())return;}
+    nativeInputPending=true;renderNativeInputUI();
+    try{const result=await window.myIDE.ai.dshQueueUpdate(getConfig(),target,{itemId:item.id,kind,...(kind==='edit'?{text}: {})});if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生队列未确认修改');const pending=nativeInputRequests.get(item.requestId);if(pending&&kind==='edit'){pending.draft={...pending.draft,text,raw:text,imgs:[],message:{role:'user',content:text,_text:text,_imgs:[],_dshAttachments:[]}};}if(pending&&kind==='remove')nativeInputRequests.delete(item.requestId);if(key===inputViewKey())acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}finally{nativeInputPending=false;renderNativeInputUI();}
+  }
+  async function submitRunningInput(mode='queue'){
+    if(nativeInputPending)return;
+    if(rejectDshSend())return;
+    const target=nativeInputTarget(),draft=freezeInputDraft();if(!target||!draft)return;
+    if(target.kind==='watch'){
+      if(!dshObservedRunning()||nativeQueueSource()?.available!==true)return;
+      return send({dshWatchId:target.watchId,dshInputMode:mode,expectedRunId:target.runId,draft});
+    }
+    const run=currentRun;if(!run.inputReady||mode==='steer'&&!run.inputActive||!window.myIDE.ai.dshInput)return;
+    const requestId='myide-input-'+window.crypto.randomUUID(),item={requestId,draft,run,rendered:false};nativeInputRequests.set(requestId,item);nativeInputPending=true;renderNativeInputUI();
+    try{
+      const result=await window.myIDE.ai.dshInput(getConfig(),target,{requestId,mode,messages:[draft.message]});
+      if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生 DSH 未确认接受消息');
+      item.accepted=true;clearAcceptedDraft(draft);
+      if(runIsCurrent(run))acceptNativeQueue(result,target);else run.inputQueue=result.queue;
+    }catch(error){if(!item.rendered){item.error=error.message;if(draft.key===inputViewKey())MI.toast('补充消息未确认接受，草稿已保留：'+error.message,'err');}}
+    finally{if(item.rendered)nativeInputRequests.delete(requestId);else if(run.status!=='active'&&!item.error)item.error='消息接受与运行结束同时发生，消费状态未知。请先刷新原生队列确认，再决定是否恢复草稿。';nativeInputPending=false;renderNativeInputUI();}
+  }
+  async function send(inputOptions) {
     if (busy || rejectDshSend()) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
@@ -1777,26 +1873,27 @@ const AiPanel = (() => {
     busy = true;
     setBusyUI(true);
     const run = beginRun();
+    if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
     await followActive();
     if (!runIsLive(run)) return;
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
     compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
     renderUsage();
-    inputEl.value = '';
-    autoGrowInput();   // 发完缩回 1 行
+    if(!run.initialInputDraft)inputEl.value = '';
+    autoGrowInput();   // 运行中补充保留草稿，收到原生接受回执后再消费。
     // 清空欢迎语
     const w = msgsEl.querySelector('.ai-welcome');
     if (w) w.remove();
     // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
     let content = text;
-    const files = effectiveCtxFiles().filter(f=>cfg.engine!=='dsh'||!f.auto);
+    const files = run.initialInputDraft?run.initialInputDraft.message._dshAttachments.map(f=>({path:f.path,content:f.content,special:f.kind==='clipboard'?'clip':undefined,isDir:f.kind==='directory'})):effectiveCtxFiles().filter(f=>cfg.engine!=='dsh'||!f.auto);
     if (files.length && cfg.engine!=='dsh') {
       const blocks = files.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
       content = blocks.join('\n\n') + '\n\n' + text;
     }
-    const imgs = pendingImages.slice();
-    pendingImages = [];
+    const imgs = run.initialInputDraft?run.initialInputDraft.imgs.slice():pendingImages.slice();
+    if(!run.initialInputDraft)pendingImages = [];
     renderImages();
     if (imgs.length) {
       // 多模态消息：文本 + 图片（OpenAI 兼容格式；不支持看图的模型会忽略图片部分）
@@ -1831,7 +1928,7 @@ const AiPanel = (() => {
       stream.element=addMsg('assistant','');curStream=stream.element;stream.segment=null;stream.afterActivity=false;
     }
     if(!stream.segment){stream.segment={kind:'text',text:''};stream.timeline.push(stream.segment);}
-    stream.messageId=messageId||stream.messageId;stream.segment.text+=delta;stream.text+=delta;curText=stream.text;
+    stream.messageId=messageId||stream.messageId;stream.segment.text+=delta;stream.text+=delta;stream.partText=(stream.partText||'')+delta;curText=stream.text;
     stream.element.querySelector('.ai-md').innerHTML=renderMd(stream.segment.text);
     const segment=stream.segment;stream.element.querySelector('.ai-copy').onclick=()=>MI.copyText(segment.text);
     return stream.element.querySelector('.ai-md');
@@ -1864,7 +1961,7 @@ const AiPanel = (() => {
       stream.timeline.push({kind:'text',text:note});
     }
     for(const row of msgsEl.querySelectorAll('.ai-msg.ai-assistant'))decorateCodeBlocks(row);
-    if(stream.timeline.length)msgs.push({role:'assistant',content:stream.text,_dshTimeline:stream.timeline});
+    if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
     curStream=null;curText='';scrollBottom();
     endRun(run,isErr?'failed':r?.aborted?'cancelled':complete?'completed':'incomplete');
   }
@@ -1947,10 +2044,11 @@ const AiPanel = (() => {
     if (sendBtn) {
       sendBtn.disabled = stopping || !b && !external && !dshCanSend();
       sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-      sendBtn.title = b ? '停止生成' : external ? '停止 DSH 当前会话（Enter 可继续发送）' : '发送（Enter）';
+      sendBtn.title = b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
       sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
     }
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
+    renderNativeInputUI();
   }
 
   // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
@@ -3674,6 +3772,12 @@ const AiPanel = (() => {
     const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){setRunState(run,event.text);return;}
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
+    if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
+      const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;
+      if((update.ready===true||update.consumedRequestId)&&run.initialInputDraft&&!run.initialInputAccepted){run.initialInputAccepted=true;clearAcceptedDraft(run.initialInputDraft);}
+      if(update.consumedRequestId)showConsumedInput(run,update.consumedRequestId,update.consumedContent);
+      renderNativeInputUI();return;
+    }
     if(event.type==='question'){
       sealDshSegment(run); sealActivityGroup();
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
@@ -3789,7 +3893,7 @@ const AiPanel = (() => {
       // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
       inputEl.addEventListener('focus', () => { followActive(); });
       inputEl.addEventListener('input', () => {
-        autoGrowInput();
+        inputDraftRevision++;autoGrowInput();renderNativeInputUI();
         if (onInputSlash()) return;   // 打 / 开头 = 命令补全
         onInputMention();             // 否则看是不是 @ 引用
       });
@@ -3798,11 +3902,14 @@ const AiPanel = (() => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
-          if (!busy) send();
+          if(getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
+          else if (!busy) send();
         }
       });
       inputEl.addEventListener('paste', onPasteImage);
     }
+    document.getElementById('ai-queue-submit')?.addEventListener('click',()=>submitRunningInput('queue'));
+    document.getElementById('ai-steer-submit')?.addEventListener('click',()=>submitRunningInput('steer'));
     const histBtn = document.getElementById('ai-history');
     if (histBtn) histBtn.onclick = (e) => { e.stopPropagation(); toggleHist(); };
     renderImages();

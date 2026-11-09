@@ -466,5 +466,96 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
    release();const answer=await pending;assert.equal(answer.ok,true);assert.equal(answer.text,'后台仍在原会话输出');assert.equal(native.requests.find(r=>r.method==='session/prompt').params.sessionId,'myide-background');
   }finally{release();await pending;await service.dispose();}
  });
+  await test('原生补充输入复用活跃身份、独立附件封装，旧身份与跨页被拒绝且不重建会话',async()=>{
+    const native=nativeFixture({id:'myide-input-service'}),original=native.rpc.request,c=context(501);let ready,release;
+    const opened=new Promise(resolve=>{ready=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+    const queue={available:true,asOfSeq:12,items:[{id:'inbox-1',requestId:'input-1',mode:'queue',text:'补充',editable:true,owned:true}]};
+    native.rpc.request=async(method,params)=>{
+      if(method==='session/prompt'){native.requests.push({method,params});ready();await gate;return {stopReason:'end_turn'};}
+      if(['session/input','session/input_queue','session/update_queue'].includes(method)){native.requests.push({method,params});return method==='session/input_queue'?queue:{accepted:true,requestId:params.requestId,queue};}
+      return original(method,params);
+    };
+    const service=createService({home:path.join(temp,'input-service-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});let pending;
+    try{
+      pending=service.chat({dshInputMode:'queue',expectedRunId:'old-turn'},[{role:'user',content:'首条'}],[],c,()=>{},()=>{});await opened;
+      const first=native.requests.find(item=>item.method==='session/prompt');assert.equal(first.params.inputMode,'queue');assert.equal(first.params.expectedRunId,'old-turn');
+      const message={role:'user',content:[{type:'text',text:'补充'},{type:'image_url',image_url:{url:'data:image/png;base64,YQ=='}}],_dshAttachments:[{path:'fixture.md',kind:'file',content:'参考'}]};
+      assert((await service.submitInput(c,'input-1','queue',[message])).accepted);const input=native.requests.find(item=>item.method==='session/input');assert.equal(input.params.sessionId,'myide-input-service');assert.equal(input.params.prompt.length,3);assert.equal(input.params.prompt[1].type,'image');assert.match(input.params.prompt[2].text,/参考资料/);
+      assert.deepEqual(await service.inputQueue(c),queue);assert((await service.updateQueue(c,{itemId:'inbox-1',kind:'edit',text:'改后'})).accepted);
+      assert.deepEqual(native.requests.find(item=>item.method==='session/update_queue').params.action,{kind:'edit',content:[{type:'text',text:'改后'}]});
+      for(const wrong of [{...c,generation:500},{...c,sessionId:'other'},{...c,rootId:path.join(temp,'other')},{...c,page:{id:'browser',projectContext:false}}])await assert.rejects(service.submitInput(wrong,'wrong','queue',[message]),/归属/);
+      await assert.rejects(service.submitInput(c,'bad','stop',[message]),/模式/);await assert.rejects(service.submitInput(c,'bad','queue',[{role:'assistant',content:'bad'}]),/用户消息/);
+      release();assert((await pending).ok);await assert.rejects(service.inputQueue(c),/归属/);assert.equal(native.requests.filter(item=>['session/new','session/resume'].includes(item.method)).length,1);assert(!native.requests.some(item=>item.method==='session/cancel'));
+    }finally{release();await pending;await service.dispose();}
+  });
+  await test('原生输入组间隙禁止MCP借权，消费激活后才派发，结束后仍不可复用',async()=>{
+    const native=nativeFixture({id:'myide-input-mcp'}),original=native.rpc.request,c=context(502);let ready,release,server;
+    const opened=new Promise(resolve=>{ready=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+    native.rpc.request=async(method,params)=>{if(method==='session/new')server=params.mcpServers[0];if(method==='session/prompt'){ready();await gate;return {stopReason:'end_turn'};}return original(method,params);};
+    const service=createService({home:path.join(temp,'input-mcp-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});let pending,calls=0;
+    const state=active=>native.rpc.emit('notification',{method:'session/update',params:{sessionId:'myide-input-mcp',update:{sessionUpdate:'myide_input_state',active,queue:{available:false,items:[]}}}});
+    try{
+      pending=service.chat({},[{role:'user',content:'首条'}],[],c,()=>{},({call})=>{calls++;assert(service.toolResult(c,call.id,{ok:true,text:'合法轮次'}).ok);});await opened;
+      assert((await httpCall(server,'tools/call',{name:'ide_state',arguments:{}})).error);assert.equal(calls,0);
+      state(true);assert.equal((await httpCall(server,'tools/call',{name:'ide_state',arguments:{}})).result.isError,false);assert.equal(calls,1);
+      state(false);assert((await httpCall(server,'tools/call',{name:'ide_state',arguments:{}})).error);assert.equal(calls,1);
+      release();await pending;state(true);assert((await httpCall(server,'tools/call',{name:'ide_state',arguments:{}})).error);assert.equal(calls,1);
+    }finally{release();await pending;await service.dispose();}
+  });
+  await test('ACP连接明确拒绝补充输入与队列操作，不退回新prompt',async()=>{
+    const f=fixture({hold:true}),c=context(503);let pending;try{
+      pending=f.service.chat({},[{role:'user',content:'首条'}],[],c,()=>{},()=>{});while(!f.requests.some(item=>item.method==='session/prompt'))await wait();
+      await assert.rejects(f.service.submitInput(c,'input-acp','queue',[{role:'user',content:'补充'}]),/不支持/);await assert.rejects(f.service.inputQueue(c),/不支持/);await assert.rejects(f.service.updateQueue(c,{itemId:'x',kind:'remove'}),/不支持/);
+      assert.equal(f.requests.filter(item=>item.method==='session/prompt').length,1);f.service.abort(c.requestId);await pending;
+    }finally{f.service.abort(c.requestId);await pending;await f.service.dispose();}
+  });
+  await test('主进程窄IPC核验sender、活跃run与页面；watch首次输入核验轮次且不取消外部任务',async()=>{
+    const vm=require('vm'),source=fs.readFileSync(path.join(__dirname,'../main.js'),'utf8'),handlers=new Map(),calls=[],aborts=[];
+    const sender=new EventEmitter();sender.id=71;sender.mainFrame={processId:1,routingId:2};sender.isDestroyed=()=>false;sender.send=()=>{};
+    const current={rootId:temp,page,sessionId:'ipc-own',engine:'dsh'},event={sender,senderFrame:{...sender.mainFrame}};sender.executeJavaScript=async expression=>expression==='App.getPageContext()'?current.page:{...current,scope:['reader','bookshelf'].includes(current.page.id)?'reader':'project'};
+    let open,release,hold=true;const entered=new Promise(resolve=>{open=resolve;}),gate=new Promise(resolve=>{release=resolve;}),queue={available:true,asOfSeq:1,items:[]};
+    const dsh={hasRun:()=>false,abort:id=>aborts.push(id),chat:async(cfg,messages,tools,c)=>{calls.push({kind:'chat',cfg,c});open();if(hold)await gate;return {ok:true,status:'completed',complete:true,context:c};},
+      submitInput:async(c,id,mode,messages)=>{calls.push({kind:'input',c,id,mode,messages});return {accepted:true,requestId:id,queue};},inputQueue:async()=>queue,updateQueue:async()=>({accepted:true,queue}),
+      watch:async(cfg,state,push)=>{push({connected:true,running:true,runId:'external-turn',revision:1,turns:[],queue});return {close(){},inputQueue:async()=>queue,updateQueue:async()=>({accepted:true,queue})};}};
+    const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),DSH:dsh,AI:{abortChat:id=>aborts.push(id)},
+      aiTools:{bind(){}},aiPermissionsBridge:{initialize:async()=>{},cancel(){},newSession(){}},cancelAiSearch(){},AbortController,console};
+    vm.runInNewContext(source.slice(source.indexOf('// AI 助手：流式对话'),source.indexOf("ipcMain.handle('ai:abort'")),sandbox);
+    const invoke=(name,...args)=>handlers.get(name)(event,...args),c={...context(601),sessionId:'ipc-own'},target={kind:'run',context:c,page};let pending;
+    try{
+      pending=invoke('ai:chat',{engine:'dsh'},[{role:'user',content:'首条'}],[],c);await entered;
+      assert.equal((await invoke('ai:chat',{engine:'dsh'},[{role:'user',content:'替代'}],[],{...c,requestId:'replaced',generation:602})).error.includes('仍在运行'),true);assert.deepEqual(aborts,[]);
+      const input={requestId:'ipc-input',mode:'queue',messages:[{role:'user',content:'补充'}]};assert.equal((await invoke('ai:dsh-input',{engine:'dsh'},target,input)).accepted,true);assert.equal(calls.filter(item=>item.kind==='chat').length,1);assert.equal(calls.filter(item=>item.kind==='input').length,1);
+      assert.equal((await invoke('ai:dsh-input',{engine:'dsh'},{...target,page:{id:'browser',projectContext:false}},input)).ok,false);
+      assert.equal((await invoke('ai:dsh-input',{engine:'dsh'},{...target,context:{...c,requestId:'wrong'}},input)).ok,false);
+      assert.equal((await handlers.get('ai:dsh-input')({...event,senderFrame:{processId:9,routingId:2}},{engine:'dsh'},target,input)).ok,false);
+      assert.equal((await invoke('ai:dsh-queue',{engine:'dsh'},target)).ok,true);assert.equal((await invoke('ai:dsh-queue-update',{engine:'dsh'},target,{itemId:'x',kind:'remove'})).accepted,true);
+      release();await pending;hold=false;current.sessionId='ipc-external';const external={...context(603),sessionId:current.sessionId};
+      assert.equal((await invoke('ai:dsh-watch',{engine:'dsh'},{watchId:'ipc-watch',hostId:'session-external',sessionId:current.sessionId,rootId:temp,scope:'project'})).ok,true);
+      assert.equal((await invoke('ai:dsh-queue',{engine:'dsh'},{kind:'watch',watchId:'ipc-watch',runId:'wrong'})).ok,false);
+      current.engine='standard';assert.equal((await invoke('ai:dsh-queue',{engine:'dsh'},{kind:'watch',watchId:'ipc-watch',runId:'external-turn'})).ok,false);current.engine='dsh';
+      assert((await invoke('ai:chat',{engine:'dsh',dshWatchId:'ipc-watch',dshInputMode:'queue',expectedRunId:'wrong'},[{role:'user',content:'外部补充'}],[],external)).error);
+      const result=await invoke('ai:chat',{engine:'dsh',dshWatchId:'ipc-watch',dshInputMode:'steer',expectedRunId:'external-turn'},[{role:'user',content:'外部补充'}],[],external);assert.equal(result.ok,true);assert.equal(calls.at(-1).c.expectedHostId,'session-external');assert.deepEqual(aborts,[]);
+    }finally{release();await pending;}
+  });
+  await test('原生A取消慢队列gate不安排五秒关闭共享RPC，B后台会话仍可正常完成',async()=>{
+    const native=nativeFixture(),original=native.rpc.request,pending=new Map();let sessions=0,fallbackTimers=0;
+    native.rpc.request=async(method,params)=>{
+      if(method==='session/new')return {sessionId:'myide-shared-cancel-'+(++sessions),configOptions};
+      if(method==='session/prompt'){native.requests.push({method,params});return new Promise(resolve=>pending.set(params.sessionId,resolve));}
+      return original(method,params);
+    };
+    native.rpc.notify=(method,params)=>native.requests.push({method,params});
+    const service=createService({home:path.join(temp,'shared-cancel-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+    const a=service.chat({},[{role:'user',content:'A'}],[],{...context(701),sessionId:'local-A'},()=>{},()=>{}),b=service.chat({},[{role:'user',content:'B'}],[],{...context(702),sessionId:'local-B'},()=>{},()=>{});
+    try{
+      while(pending.size<2)await wait();
+      const originalTimer=global.setTimeout;
+      try{global.setTimeout=(callback,ms,...args)=>{if(ms===5000)fallbackTimers++;return originalTimer(callback,ms,...args);};assert(service.abort('r-701'));}finally{global.setTimeout=originalTimer;}
+      assert.equal(fallbackTimers,0,'Native取消不能安排共享连接关闭兜底');assert.equal(native.rpc.closed,false);
+      const cancelled=native.requests.find(item=>item.method==='session/cancel');assert(cancelled);const other=[...pending.keys()].find(id=>id!==cancelled.params.sessionId);
+      pending.get(other)({stopReason:'end_turn'});pending.delete(other);assert((await b).ok);assert.equal(native.rpc.closed,false);
+      pending.get(cancelled.params.sessionId)({stopReason:'cancelled'});pending.delete(cancelled.params.sessionId);assert((await a).aborted);assert.equal(native.rpc.closed,false);
+    }finally{for(const resolve of pending.values())resolve({stopReason:'cancelled'});await Promise.all([a,b]);await service.dispose();}
+  });
   console.log('Harness侧栏宿主：'+passed+' 通过 / 0 失败');
 }finally{fs.rmSync(temp,{recursive:true,force:true});}})().catch(error=>{console.error(error.stack);process.exitCode=1;});

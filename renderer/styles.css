@@ -4629,6 +4629,21 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 .ai-input-box:focus-within { border-color: var(--ui-line); box-shadow: none; }
 #ai-input { flex: none; width: 100%; height: 50px; min-height: 50px; padding: 0; font-size: var(--ai-font-size, 13px); line-height: 1.65; letter-spacing: 0; word-spacing: 0; }
 #ai-input::placeholder { color: var(--text-dim); opacity: .9; }
+.ai-running-input-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; color: var(--ai-process-text); font-size: 11px; }
+.ai-running-input-actions > span { flex: 1; min-width: 0; font-size: 10px; }
+.ai-running-input-actions .tb-btn { flex: none; padding: 3px 9px; font-size: 12px; border-radius: 6px; }
+.ai-running-input-actions #ai-steer-submit { color: var(--ai-link-text); }
+.ai-input-queue { flex: 0 1 auto; width: 100%; min-width: 0; max-height: 154px; overflow: auto; border: 1px solid var(--ui-line); border-radius: 8px; padding: 5px 8px; box-sizing: border-box; color: var(--ai-body-text); font-size: 12px; }
+.ai-queue-head { display: flex; align-items: center; gap: 8px; color: var(--ai-process-text); min-height: 22px; }
+.ai-queue-head > span { flex: 1; }
+.ai-queue-item { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; border-top: 1px solid var(--ui-line); }
+.ai-queue-mode { color: var(--ai-process-text); font-size: 10px; flex: none; }
+.ai-queue-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ai-queue-action { flex: none; padding: 2px 4px; border: 0; border-radius: 4px; background: transparent; color: var(--ai-link-text); cursor: pointer; font: inherit; font-size: 11px; }
+.ai-queue-action:hover:not(:disabled) { background: var(--bg-hover); }
+.ai-queue-action:disabled { opacity: .4; cursor: default; }
+.ai-queue-failed { color: var(--ai-warning-text); }
+.ai-queue-editor { box-sizing: border-box; width: 100%; min-width: min(420px, 70vw); min-height: 150px; padding: 8px; color: var(--text); background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 5px; font: inherit; resize: vertical; }
 .ai-compose-actions { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .ai-compose-tools { display: flex; align-items: center; gap: 6px; flex: none; }
 #ai-attach, #ai-perm { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 4px; border: 0; border-radius: 14px; background: transparent; color: var(--text-dim); cursor: pointer; font: inherit; font-size: .85em; }

@@ -468,11 +468,13 @@
       <!-- 上下文就一条线：跟随的当前文件 / 固定项 / @ 引用都在这一行里横向滚动，
            不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
       <div id="ai-chips" class="hidden"></div>
+      <section id="ai-input-queue" class="ai-input-queue hidden" aria-label="DSH 待发消息"></section>
       <div class="ai-input-row">
         <!-- 输入框与发送按钮是同一个卡片：按钮在框内右下角。
              以前是「两个并排的框」，多行输入时输入框长高、按钮留在 38px，高度看着就不齐。 -->
         <div class="ai-input-box">
           <div id="ai-images" class="hidden"></div>
+          <div id="ai-running-input-actions" class="ai-running-input-actions hidden"><span>Enter 排队 · Alt+Enter 插入</span><button id="ai-queue-submit" type="button" class="tb-btn" title="本轮结束后按顺序处理，不停止当前任务">排队</button><button id="ai-steer-submit" type="button" class="tb-btn" title="在当前任务下一步安全边界补充要求，不中断正在执行的工具">插入</button></div>
           <textarea id="ai-input" rows="2" placeholder="发送消息，@ 引用文件，/ 使用命令" title="Enter 发送 · Shift + Enter 换行 · 可粘贴或拖入截图" aria-label="发送给 AI 助手的消息" spellcheck="false"></textarea>
           <div class="ai-compose-actions">
             <div class="ai-compose-tools">

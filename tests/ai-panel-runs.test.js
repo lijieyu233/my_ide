@@ -68,7 +68,7 @@ function fixture(inspectReplay = false, fontPreference) {
     dshBind: async (_cfg,state,id) => { (f.binds||=[]).push({state,id});return {ok:true}; },
     dshRename: async (cfg, id, title) => { if (f.renameGate) return f.renameGate.promise; (f.renames ||= []).push({ id, title }); const hit = (f.dshCatalog || []).find(x => x.sessionId === id); if (hit) hit.title = title; return { ok: true, sessionId: id, title }; },
     chat: async (_cfg, messages, _tools, context) => {
-      registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, tools:_tools, d }; calls.push(item); pending.push(d);
+      registry.begin(1, context); toolService.bind(1,context); const d = defer(), item = { context, messages, cfg:_cfg, tools:_tools, d }; calls.push(item); pending.push(d);
       if (f.script.length) d.resolve(f.script.shift());
       else if (!f.hold) d.resolve({ ok: true, text: '总结' });
       const result = await d.promise;
@@ -101,7 +101,7 @@ function fixture(inspectReplay = false, fontPreference) {
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
   // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
-  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf; window.__testLoadSessions = loadSessions; window.__testReplayHistory = (list, wanted, preserve) => { msgs = list; return replayHistory(wanted, preserve); };\n  return {aiAfterResult,') : source;
+  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf; window.__testLoadSessions = loadSessions; window.__testReplayHistory = (list, wanted, preserve) => { msgs = list; return replayHistory(wanted, preserve); }; window.__testAddContext = addCtx; window.__testInputImages = (images) => images ? (pendingImages = images) : pendingImages;\n  return {aiAfterResult,') : source;
   w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
@@ -132,11 +132,50 @@ function fixture(inspectReplay = false, fontPreference) {
       return f.watches.at(-1);
     };
   };
+  f.enableInputs=()=>{
+    f.inputs=[];f.queueUpdates=[];f.queueItems=[];
+    w.myIDE.ai.dshInput=async(cfg,target,input)=>{f.inputs.push({cfg,target,input});if(f.onInput)return f.onInput(cfg,target,input);f.queueItems.push({id:'item-'+f.inputs.length,requestId:input.requestId,mode:input.mode,text:input.messages[0]._text,editable:true,owned:true});return {ok:true,accepted:true,requestId:input.requestId,queue:{available:true,items:f.queueItems.slice()}};};
+    w.myIDE.ai.dshQueue=async()=>({ok:true,queue:{available:true,items:f.queueItems.slice()}});
+    w.myIDE.ai.dshQueueUpdate=async(cfg,target,action)=>{f.queueUpdates.push({cfg,target,action});if(f.onQueueUpdate)return f.onQueueUpdate(cfg,target,action);const item=f.queueItems.find(item=>item.id===action.itemId);if(!item)return {ok:false,error:'已消费'};if(action.kind==='remove')f.queueItems=f.queueItems.filter(row=>row!==item);if(action.kind==='edit')item.text=action.text;if(action.kind==='steer')item.mode='steer';return {ok:true,accepted:true,queue:{available:true,items:f.queueItems.slice()}};};
+    f.inputState=(patch={})=>f.dshEvent({type:'native',context:f.calls.at(-1).context,update:{sessionUpdate:'myide_input_state',ready:true,active:true,queue:{available:true,items:f.queueItems.slice()},...patch}});
+    f.type=text=>{f.element('#ai-input').value=text;f.element('#ai-input').dispatchEvent(new w.Event('input',{bubbles:true}));};
+  };
   f.rememberWrite = () => policyStore.remember(1,{context:{rootId:A,sessionId:'test'},call:{name:'write_file'},scope:'project'},new AbortController().signal,()=>{});
   fixtures.push(f); return f;
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('运行中原生排队与插入不重建chat、不取消任务，接受回执前保留草稿并防重复提交',async()=>{
+    const f=fixture();f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('第一轮');await until(()=>f.calls.length===1);f.type('等待接受的排队消息');assert(f.element('#ai-queue-submit').disabled);await f.inputState({ready:false,active:false});assert(f.element('#ai-queue-submit').disabled);await f.inputState();assert(!f.element('#ai-queue-submit').disabled);
+    const gate=defer();f.onInput=()=>gate.promise;f.element('#ai-queue-submit').click();assert.equal(f.inputs.length,1);assert.equal(f.inputs[0].input.mode,'queue');assert.equal(f.inputs[0].target.kind,'run');assert.equal(f.inputs[0].target.context.requestId,f.calls[0].context.requestId);assert.equal(f.element('#ai-input').value,'等待接受的排队消息');f.element('#ai-queue-submit').click();assert.equal(f.inputs.length,1);f.type('回执期间新草稿');gate.resolve({ok:true,accepted:true,queue:{available:true,items:[]}});await tick();assert.equal(f.element('#ai-input').value,'回执期间新草稿');assert.equal(f.calls.length,1);assert.equal(f.aborts.length,0);
+    f.onInput=null;f.type('插入补充');f.element('#ai-steer-submit').click();await tick();assert.equal(f.inputs[1].input.mode,'steer');assert.equal(f.element('#ai-input').value,'');assert.equal(f.calls.length,1);assert.equal(f.aborts.length,0);assert(f.element('#ai-input-queue').textContent.includes('插入补充'));
+  });
+  await test('排队冻结显式上下文和图片，回执只消费提交图片，失败不清草稿且可以恢复',async()=>{
+    const f=fixture(true);f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('任务');await until(()=>f.calls.length===1);await f.inputState();f.w.__testAddContext({path:f.A+'/reference.txt',content:'提交时的原始文件内容'});f.w.__testInputImages(['data:image/png;base64,AAAA']);f.type('带附件排队');const gate=defer();f.onInput=()=>gate.promise;f.element('#ai-queue-submit').click();f.w.__testInputImages(['data:image/png;base64,AAAA','data:image/png;base64,BBBB']);assert.equal(f.inputs[0].input.messages[0]._dshAttachments[0].content,'提交时的原始文件内容');assert.equal(f.inputs[0].input.messages[0].content[1].image_url.url,'data:image/png;base64,AAAA');gate.resolve({ok:true,accepted:true,queue:{available:true,items:[]}});await tick();assert.deepEqual([...f.w.__testInputImages()],['data:image/png;base64,BBBB']);
+    f.type('失败后必须保留');f.onInput=async()=>({ok:false,error:'网络断开，接受状态未知'});f.element('#ai-queue-submit').click();await tick();assert.equal(f.element('#ai-input').value,'失败后必须保留');assert(f.element('.ai-queue-failed'));assert.equal(f.inputs.length,2);assert.equal(f.calls.length,1);assert.equal(f.aborts.length,0);f.element('.ai-queue-failed button').click();await tick();assert(!f.element('.ai-queue-failed'));
+  });
+  await test('原生消费后按真实顺序插入用户消息与assistant历史，不把排队误当已执行',async()=>{
+    const f=fixture();f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('初始用户');await until(()=>f.calls.length===1);await f.inputState();f.chunk(0,'第一段助手');f.type('第二个用户补充');f.element('#ai-queue-submit').click();await tick();assert(![...f.element('#ai-msgs').querySelectorAll('.ai-user')].some(row=>row.textContent.includes('第二个用户补充')));
+    const id=f.inputs[0].input.requestId;f.queueItems=[];await f.inputState({consumedRequestId:id});await f.inputState({consumedRequestId:id});f.chunk(0,'第二段助手');f.done(0,{ok:true,text:'第一段助手第二段助手'});await until(()=>f.element('#ai-send').textContent==='➤');const rows=[...f.element('#ai-msgs').querySelectorAll('.ai-msg')].map(row=>row.querySelector('.ai-md').textContent);assert.deepEqual(rows,['初始用户','第一段助手','第二个用户补充','第二段助手']);const saved=JSON.parse(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'))[0];assert.deepEqual(saved.msgs.map(m=>m.role),['user','assistant','user','assistant']);assert.equal(saved.msgs[1].content,'第一段助手');assert.equal(saved.msgs[3].content,'第二段助手');assert.equal(f.aborts.length,0);
+  });
+  await test('队列编辑多行、撤回和提升为插入只走原生update，不触发prompt或abort',async()=>{
+    const f=fixture();f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('任务');await until(()=>f.calls.length===1);await f.inputState();f.type('第一条');f.element('#ai-queue-submit').click();await tick();f.element('[data-queue-action="edit"]').click();await tick();f.element('.ai-queue-editor').value='编辑第一行\n编辑第二行';f.element('[data-save]').click();await tick();await tick();assert.equal(f.queueItems[0].text,'编辑第一行\n编辑第二行');f.element('[data-queue-action="steer"]').click();await tick();assert.equal(f.queueItems[0].mode,'steer');assert(f.element('.ai-queue-mode').textContent.includes('下一步'));f.element('[data-queue-action="remove"]').click();await tick();assert.equal(f.queueItems.length,0);assert.deepEqual(f.queueUpdates.map(row=>row.action.kind),['edit','steer','remove']);assert.equal(f.inputs.length,1);assert.equal(f.calls.length,1);assert.equal(f.aborts.length,0);
+  });
+  await test('迟到补充回执不清新项目输入或显示旧队列，切回可接原后台而不取消',async()=>{
+    const f=fixture();f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('A任务');await until(()=>f.calls.length===1);await f.inputState();const gate=defer();f.onInput=()=>gate.promise;f.type('A排队原稿');f.element('#ai-queue-submit').click();f.switchRoot(f.B);f.type('B项目输入');gate.resolve({ok:true,accepted:true,queue:{available:true,items:[{id:'A-only',mode:'queue',text:'不得串到B',editable:true}]}});await tick();assert.equal(f.element('#ai-input').value,'B项目输入');assert(!f.element('#ai-input-queue').textContent.includes('不得串到B'));assert.equal(f.aborts.length,0);f.switchRoot(f.A);assert(f.element('#ai-input-queue').textContent.includes('不得串到B'));assert.equal(f.calls.length,1);
+  });
+  await test('只读、其他页面、未确认能力和普通引擎不伪装可插入；IME与ShiftEnter不提交',async()=>{
+    const f=fixture();f.enableInputs();f.type('普通引擎草稿');assert(f.element('#ai-running-input-actions').classList.contains('hidden'));await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('任务');await until(()=>f.calls.length===1);await f.inputState();f.type('快捷键');f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));assert.equal(f.inputs.length,0);f.w.App.showTool('browser');f.type('不得跨页面补充');assert(f.element('#ai-queue-submit').disabled);assert(f.element('#ai-steer-submit').disabled);f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();assert.equal(f.inputs.length,0);assert.equal(f.aborts.length,0);
+  });
+  await test('停止或终态不丢弃已接受但未消费的消息，显式撤回后不伪造执行历史',async()=>{
+    const f=fixture();f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('任务');await until(()=>f.calls.length===1);await f.inputState();f.type('尚未消费的排队原文');f.element('#ai-queue-submit').click();await tick();assert.equal(f.element('#ai-input').value,'');f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert(f.element('.ai-queue-failed').textContent.includes('尚未消费的排队原文'));assert(![...f.element('#ai-msgs').querySelectorAll('.ai-user')].some(row=>row.textContent.includes('尚未消费的排队原文')));f.element('.ai-queue-failed button').click();await tick();assert.equal(f.element('#ai-input').value,'尚未消费的排队原文');assert.equal(f.calls.length,1);
+  });
+  await test('外部首次插入携冻结页面，原生准入ready之前不得清草稿或写永久配置',async()=>{
+    const f=fixture();f.enableWatch();await f.openHost();f.watchPush({running:true,runId:'precise-turn',queue:{available:true,items:[]}});f.hold=true;f.element('#ai-input').value='外部插入原稿';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',altKey:true,bubbles:true}));await until(()=>f.calls.length===1);const call=f.calls[0];assert.equal(call.context.page.id,'project');assert.equal(call.context.page.projectContext,true);assert.equal(call.cfg.dshInputMode,'steer');assert.equal(call.cfg.expectedRunId,'precise-turn');assert.equal(f.w.AiPanel.getConfig().dshInputMode,undefined);await f.dshEvent({type:'native',context:call.context,update:{sessionUpdate:'myide_input_state',ready:false,active:false,queue:{available:false,items:[]}}});assert.equal(f.element('#ai-input').value,'外部插入原稿');f.done(0,{error:'宿主拒绝插入'});await until(()=>f.element('#ai-send').textContent==='⏹');assert.equal(f.element('#ai-input').value,'外部插入原稿');assert.equal(f.hostControls.length+f.aborts.length,0);
+  });
+  await test('实际消费文本优先于旧草稿，重复消费事件与图片清理均幂等',async()=>{
+    const f=fixture(true);f.enableInputs();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('任务');await until(()=>f.calls.length===1);await f.inputState();f.w.__testInputImages(['data:image/png;base64,AAAA']);f.type('旧排队文案');f.element('#ai-queue-submit').click();await tick();const id=f.inputs[0].input.requestId;f.w.__testInputImages(['data:image/png;base64,AAAA']);await f.inputState({consumedRequestId:id,consumedContent:[{type:'text',text:'宿主已编辑的新文案'}]});await f.inputState({consumedRequestId:id,consumedContent:[{type:'text',text:'宿主已编辑的新文案'}]});assert.equal([...f.element('#ai-msgs').querySelectorAll('.ai-user')].filter(row=>row.textContent.includes('宿主已编辑的新文案')).length,1);assert(!f.element('#ai-msgs').textContent.includes('旧排队文案'));assert.deepEqual([...f.w.__testInputImages()],['data:image/png;base64,AAAA']);assert.equal(f.calls.length,1);assert.equal(f.aborts.length,0);
+  });
   await test('独立字号有界恢复、真实±交互、Escape和外部关闭，不修改侧栏变量或活动DOM',async()=>{
     for(const [stored,expected] of [[undefined,13],['',13],['bad',13],['Infinity',13],['14.5',13],['99',22],['1',11],['16',16]]){const f=fixture(false,stored);assert.equal(f.element('#ai-panel').style.getPropertyValue('--ai-font-size'),expected+'px');}
     const f=fixture(),panel=f.element('#ai-panel'),input=f.element('#ai-input'),msgs=f.element('#ai-msgs');f.w.document.documentElement.style.setProperty('--tool-font','17px');f.element('#ai-reading-settings').click();const pop=f.element('.ai-reading-pop');assert(pop);assert.equal(parseInt(f.element('#ai-font-value').textContent),13);
@@ -1312,13 +1351,13 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   });
   await test('宿主watch持续同步正文与未提交预览，外部运行不伪造own-run且Enter仍可续聊',async()=>{
     const f=fixture();f.enableWatch();const route=await f.openHost();
-    f.watchPush({running:true,runId:'turn-1',cursor:'12',turns:[{parts:[{kind:'text',role:'user',text:'DSH新发1'}]}],preview:{text:'宿主实时回复',thinking:'宿主正在思考'}});
+    f.watchPush({running:true,runId:'turn-1',cursor:'12',queue:{available:true,items:[]},turns:[{parts:[{kind:'text',role:'user',text:'DSH新发1'}]}],preview:{text:'宿主实时回复',thinking:'宿主正在思考'}});
     assert(f.text().includes('DSH新发1'));assert(f.text().includes('宿主实时回复'));assert(f.text().includes('宿主正在思考'));
     assert.equal(f.w.AiPanel.__testRun(),null);assert.equal(f.w.AiPanel.aiState().dshWatch.hostId,route.hostId);
     assert.equal(f.element('#ai-send').textContent,'⏹');assert(!f.element('#ai-stop').classList.contains('hidden'));
     assert(!f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh').includes('宿主实时回复'));
     f.hold=true;f.element('#ai-input').value='同会话排队';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
-    await until(()=>f.calls.length===1);assert.equal(f.calls[0].context.sessionId,route.sessionId);assert.equal(f.hostControls.length,0);assert.equal(f.unwatches.length,0);
+    await until(()=>f.calls.length===1);assert.equal(f.calls[0].context.sessionId,route.sessionId);assert.equal(f.calls[0].cfg.dshWatchId,route.watchId);assert.equal(f.calls[0].cfg.dshInputMode,'queue');assert.equal(f.calls[0].cfg.expectedRunId,'turn-1');assert.equal(f.hostControls.length,0);assert.equal(f.unwatches.length,0);assert.equal(f.element('#ai-input').value,'同会话排队');await f.dshEvent({type:'native',context:f.calls[0].context,update:{sessionUpdate:'myide_input_state',ready:true,active:true,queue:{available:true,items:[]}}});assert.equal(f.element('#ai-input').value,'');
     f.chunk(0,'own实时输出');assert(f.text().includes('own实时输出'));assert(!f.text().includes('宿主实时回复'));
   });
   await test('watch在bind与options后建立，首帧可早于invoke返回且revision与四项归属拦住迟到污染',async()=>{

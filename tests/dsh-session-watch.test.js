@@ -263,6 +263,37 @@ test('sync 等待正文游标期间断流立即拒绝，不留下 10 秒 waiter 
  });
 });
 
+test('宿主队列由snapshot/projection/splice推进，historyUnchanged仍携带真实队列且未知不伪空',()=>using({initial:[snapshot(1,[],{projections:{asOfSeq:1,values:{title:'宿主标题',inbox:{'next-turn':[{id:'queued-1',source:{kind:'user',rpcId:'input-1'},content:[text('第一条')]}],'next-step':[]}}}})]},async f=>{
+  await f.start();assert.equal(f.latest.queue.available,true);assert.equal(f.latest.queue.items[0].text,'第一条');assert.equal(f.latest.queue.items[0].owned,false);
+  f.write(event(2,'agent/inbox/spliced',{target:'next-turn',start:0,removedCount:1,inserted:[]}),event(3,'agent/inbox/spliced',{target:'next-step',start:0,removedCount:0,inserted:[{id:'queued-2',source:{kind:'user',rpcId:'input-2'},content:[text('插入'),{type:'image',data:'YQ=='}]}]}));
+  await f.wait(state=>state.queue.items[0]?.id==='queued-2');assert.equal(f.latest.queue.items[0].mode,'steer');assert.equal(f.latest.queue.items[0].editable,false);
+  f.write(session({type:'projection',key:'inbox',asOfSeq:4,value:{'next-turn':[],'next-step':[]}}));await f.wait(state=>state.queue.asOfSeq===4);assert.equal(f.latest.queue.available,true);assert.deepEqual(f.latest.queue.items,[]);assert.equal(f.rawStates.at(-1).historyUnchanged,true);
+  f.write(session({type:'projection',key:'inbox',asOfSeq:3,value:{'next-turn':[{id:'old',content:[text('旧')]}],'next-step':[]}}));await nextTick();assert.deepEqual(f.latest.queue.items,[]);
+  assert.deepEqual(f.calls.map(item=>item.endpoint),['observe']);
+}));
+test('无inbox能力时queue不可用，断线不允许队列写入',()=>using({initial:[snapshot(1,[])]},async f=>{
+  const handle=await f.start();assert.equal(f.latest.queue.available,false);assert.deepEqual(f.latest.queue.items,[]);f.end();await handle.completion;await assert.rejects(handle.inputQueue(),/未连接/);await assert.rejects(handle.updateQueue({itemId:'x',kind:'remove'}),/未连接/);assert.equal(f.calls.length,1);
+}));
+test('watch队列编辑/移除显式回宿主并回读，不执行prompt且含图不能文本编辑',async()=>{
+  let inbox={'next-turn':[{id:'queued',source:{kind:'user',rpcId:'external'},content:[text('旧文字')]}],'next-step':[]},seq=1;
+  await using({initial:[{type:'status',running:true},snapshot(1,[])],call:async(endpoint,args)=>{
+    if(endpoint==='session/projections')return {asOfSeq:seq,values:{inbox}};
+    assert.equal(endpoint,'session/updateQueue');assert.equal(args.request.sessionId,params.hostId);assert.equal(args.request.itemId,'queued');
+    const action=args.request.action;if(action.kind==='edit')inbox['next-turn'][0].content=action.content;else if(action.kind==='remove')inbox['next-turn']=[];seq++;return {accepted:true};
+  }},async f=>{
+    const handle=await f.start();assert.equal((await handle.inputQueue()).items[0].text,'旧文字');
+    const edited=await handle.updateQueue({itemId:'queued',kind:'edit',text:'新文字'});assert.equal(edited.accepted,true);assert.equal(edited.queue.items[0].text,'新文字');
+    inbox['next-turn'][0].content.push({type:'image',data:'YQ=='});await assert.rejects(handle.updateQueue({itemId:'queued',kind:'edit',text:'丢图'}),/含附件/);
+    const removed=await handle.updateQueue({itemId:'queued',kind:'remove'});assert.deepEqual(removed.queue.items,[]);assert(!f.calls.some(item=>item.endpoint==='session/prompt'||item.endpoint==='session/cancel'));
+    await assert.rejects(handle.updateQueue({itemId:'queued',kind:'remove',sessionId:'forged'}),/参数/);
+  });
+});
+
+test('真实inbox append省略removedCount按零删除处理，不把有效队列误标不可用',()=>using({initial:[snapshot(1,[],{projections:{asOfSeq:1,values:{inbox:{'next-turn':[],'next-step':[]}}}})]},async f=>{
+  await f.start();f.write(event(2,'agent/inbox/spliced',{target:'next-turn',start:0,inserted:[{id:'append-no-delete',source:{kind:'user',rpcId:'append-input'},content:[text('追加待发')]}]}));
+  const state=await f.wait(state=>state.cursor===2);assert.equal(state.queue.available,true);assert.equal(state.queue.items.length,1);assert.equal(state.queue.items[0].id,'append-no-delete');assert.equal(state.queue.items[0].text,'追加待发');assert.equal(state.queue.asOfSeq,2);
+}));
+
 (async()=>{
  let passed=0,failed=0;
  for(const {name,fn} of tests){
