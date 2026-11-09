@@ -1476,10 +1476,9 @@ let gitSeq = 0;
 const gitPending = new Map();
 function gitCall(op, ...args) {
   return new Promise((resolve) => {
-    if (!gitWorker) { // 回退：worker 不可用时主进程直跑
-      G[op](...args).then((r) => resolve(r)).catch((e) => resolve({ error: String((e && e.message) || e) }));
-      return;
-    }
+    // worker 失败后也不能把大差异/历史运算搬回 UI 主进程；新请求只尝试重建执行环境，不重放旧操作。
+    if(!gitWorker)startGitWorker();
+    if(!gitWorker){resolve({ok:false,errorCode:'GIT_WORKER_UNAVAILABLE',error:'Git执行进程不可用，请重试；本次操作未派发。'});return;}
     const id = ++gitSeq;
     gitPending.set(id, resolve);
     try{gitWorker.postMessage({ id, op, args });}catch(e){gitPending.delete(id);resolve({ok:false,errorCode:'GIT_WORKER_UNAVAILABLE',error:String(e.message||e)});}
@@ -1497,7 +1496,7 @@ function startGitWorker() {
       if (r) { gitPending.delete(msg.id); r(msg.error ? { error: msg.error } : msg.result); }
     });
     gitWorker.on('error', (e) => {
-      console.error('git worker error, fallback to main:', e);
+      console.error('git worker error; pending operations require verification:', e);
       unavailable();
     });
   } catch (e) {

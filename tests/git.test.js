@@ -136,6 +136,13 @@ async function indexText(repo, file) {
   return Buffer.from(blob).toString('utf8');
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-test-'));
+// Git 夹具不能依赖或改写用户全局配置；外部 attributes/ignore 也会污染无原生 Git 时的能力判定。
+os.homedir = () => tmp;
+process.env.HOME = process.env.USERPROFILE = tmp;
+process.env.GIT_CONFIG_GLOBAL = path.join(tmp, 'global.gitconfig');
+process.env.GIT_CONFIG_NOSYSTEM = '1';
+fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '');
+require('../src/main/git/git-native').setConfigPath(path.join(tmp, 'native-config.json'));
 const repo = path.join(tmp, 'repo');
 fs.mkdirSync(repo);
 
@@ -1451,10 +1458,11 @@ fs.mkdirSync(repo);
     fs.writeFileSync(path.join(repo, 'del-index.txt'), 'x\n');
     fs.writeFileSync(path.join(repo, 'src', 'nested.txt'), 'n\n');
     fs.writeFileSync(path.join(repo, 'ignored-dir', 'tracked-inside.txt'), 'keep\n');
-    await G.commit(repo, {
+    const baseCommit = await G.commit(repo, {
       message: 'base',
       files: ['.gitignore', 'clean.txt', 'mod.txt', 'stage.txt', 'both.txt', 'del-work.txt', 'del-index.txt', 'src/nested.txt', 'ignored-dir/tracked-inside.txt'],
     });
+    assert.ok(baseCommit.ok, '状态对拍夹具的基线提交失败：'+JSON.stringify(baseCommit));
     // 变更一波（原生 git 造出真实的暂存 / 删除状态）
     // ⚠ mod.txt 的新内容故意用不同尺寸：同秒+同尺寸的修改会命中 isomorphic statusMatrix 的
     //   stat 缓存（racy-git 已知缺陷，MEMORY 有记）→ legacy 漏报；快速路径有 racy 规则会抓到。

@@ -481,7 +481,8 @@ async function resolveCustom(repo, file, content) {
 // 语义与 `git.add --force` 对齐（PyCharm 勾选被忽略的文件 = 强制加入）；
 // 路径统一走 `--` 分隔，杜绝以 `-` 开头的文件名被当成选项。
 async function addPath(repo, file, force) {
-  const lookup=await run(['--literal-pathspecs','ls-files','--cached','-z','--',file],{cwd:repo,env:NO_EDIT});
+  // 只读索引查询的瞬时失败也要重试；否则新仓库的一次 ls-files 失败会被误当成后续 status/Shelve 故障。
+  const lookup=await runRetry(['--literal-pathspecs','ls-files','--cached','-z','--',file],{cwd:repo,env:NO_EDIT});
   if(!lookup.ok)return {ok:false,error:lookup.stderr.trim()||lookup.error};
   const args = ['--literal-pathspecs','add'];
   // isomorphic 写过的同尺寸 stat 可能被 git add 信任；已跟踪文件必须重新 clean/hash。

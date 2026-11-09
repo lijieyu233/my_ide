@@ -2582,7 +2582,8 @@ const GitPanel = (() => {
     const fileBox = document.createElement('div');
     fileBox.className = 'diff-file';
     if(r.loading||r.message){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=r.loading?'正在加载差异…':r.message;fileBox.appendChild(msg);return fileBox;}
-    if(r.readOnlyReason){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=r.readOnlyReason;fileBox.appendChild(msg);}
+    const restricted=r.readOnlyReason||(r.hunks||[]).find(h=>h.incomplete||h.eofChanged)?.readOnlyReason;
+    if(restricted){const msg=document.createElement('div');msg.className='diff-msg';msg.textContent=restricted;fileBox.appendChild(msg);}
     if (!(opts && opts.hideTitle)) {
       const title = document.createElement('div');
       title.className = 'diff-file-title';
@@ -2625,7 +2626,8 @@ const GitPanel = (() => {
       const sep = document.createElement('tr');
       sep.className = 'diff-hunk-gap';
       sep.innerHTML = `<td colspan="4">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@<span class="hint"></span></td>`;
-      if (act && act.onHunk && !r.readOnlyReason) {
+      if(h.incomplete){const notice=document.createElement('span');notice.className='diff-limit-note';notice.textContent=' · 未精确对齐，不计入增删';notice.title=h.reason||restricted||'';sep.querySelector('td').appendChild(notice);}
+      if (act && act.onHunk && !restricted && !h.incomplete && !h.eofChanged) {
         // 多文件视图里每个文件的侧可能不同（有的已暂存、有的没有）→ 先用结果自带的 side，
         // 没有再按文件解析（同一个文件「已暂存 + 未暂存」两块并排时，只能靠 r.side 区分）
         const side = r.side || (act.sideOf ? act.sideOf(r.file) : act.side);
@@ -2661,7 +2663,8 @@ const GitPanel = (() => {
         for(;rendered<end;rendered++){
           const row=h.rows[rendered],tr=document.createElement('tr');
           const oldCls=row.type==='add'?'empty':row.type,newCls=row.type==='del'?'empty':row.type;
-          for(const [cls,text]of [['old '+oldCls,row.aText],['ln',row.aNum||''],['num',row.bNum||''],['new '+newCls,row.bText]]){const td=document.createElement('td');td.className=cls;td.textContent=text??'';tr.appendChild(td);}
+          for(const [cls,text,noEof]of [['old '+oldCls,row.aText,row.aNoNewline],['ln',row.aNum||''],['num',row.bNum||''],['new '+newCls,row.bText,row.bNoNewline]]){const td=document.createElement('td');td.className=cls;td.textContent=text??'';if(noEof){const note=document.createElement('span');note.className='diff-eof-note';note.textContent=' ⏎ 无末尾换行';td.appendChild(note);}tr.appendChild(td);}
+           if(row.type==='unresolved'){tr.className='diff-unresolved-row';tr.title='此区域未能精确对齐，两侧原文不代表逐行相等';}
           rows.push(tr);fragment.appendChild(tr);
         }
         table.insertBefore(fragment,anchor);anchor.hidden=rendered>=h.rows.length;
@@ -2699,10 +2702,11 @@ const GitPanel = (() => {
 
     const adds = list.reduce((n, r) => n + countAdd(r.hunks), 0);
     const dels = list.reduce((n, r) => n + countDel(r.hunks), 0);
+    const limited=list.some(r=>r.completeness==='incomplete'||r.hunks?.some(h=>h.incomplete));
     const head = document.createElement('div');
     head.className = 'diff-head';
     head.innerHTML = `<span class="df-path">${esc(list.length === 1 ? list[0].file : list.length + ' 个文件')}</span>` +
-      `<span class="df-meta">${esc(label || '')} · +${adds} / -${dels}</span>`;
+      `<span class="df-meta">${esc(label || '')} · ${limited?'已确认 ':''}+${adds} / -${dels}${limited?' · 另有未决区域':''}</span>`;
     head.appendChild(makeHunkNav());
     if(act?.onHunk){const operationRoot=root,epoch=rootGeneration,seq=diffSeq;const reload=document.createElement('button');reload.className='vt-btn diff-refresh';reload.textContent='刷新差异';reload.onclick=async()=>{if(root!==operationRoot||rootGeneration!==epoch||diffSeq!==seq)return;reload.disabled=true;await refresh();if(root!==operationRoot||rootGeneration!==epoch||diffSeq!==seq)return;if(new Set(list.map(r=>r.file)).size>1){await diffChecked(new Set(list.map(r=>r.file)));return;}const c=state?.changed?.find(c=>c.file===list[0].file);if(c)await showFileDiff(c);else{closeDiffView();MI.toast('文件已无差异','ok');}};head.appendChild(reload);}
     // 关闭对比视图：回到编辑器（PyCharm 式 ✕，不再用「返回」）

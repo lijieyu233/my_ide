@@ -880,111 +880,8 @@ function isBinaryText(t) {
   return typeof t === 'string' && t.indexOf('\0') !== -1;
 }
 
-// ---------- 行级 Diff（Myers O(ND)）----------
-const DIFF_MAX_LINES = 4000; // 超过此行数放弃精确对齐，避免 O(N·M) 卡死
-
-function linesOf(t) {
-  if (t === '') return [];
-  const arr = t.split('\n');
-  if (arr[arr.length - 1] === '') arr.pop();
-  return arr;
-}
-
-function diffLines(aText, bText) {
-  const a = linesOf(aText), b = linesOf(bText);
-  const N = a.length, M = b.length;
-  const MAX = N + M;
-  const OFF = MAX + 1;
-  const v = new Int32Array(2 * MAX + 2);
-  const trace = [];
-  let found = false;
-  for (let d = 0; d <= MAX && !found; d++) {
-    const row = new Int32Array(2 * MAX + 2);
-    for (let k = -d; k <= d; k += 2) {
-      const idx = k + OFF;
-      let x;
-      if (k === -d || (k !== d && v[idx - 1] < v[idx + 1])) x = v[idx + 1];
-      else x = v[idx - 1] + 1;
-      let y = x - k;
-      while (x < N && y < M && a[x] === b[y]) { x++; y++; }
-      v[idx] = x; row[idx] = x;
-      if (x >= N && y >= M) { trace.push(row); found = true; break; }
-    }
-    if (!found) trace.push(row);
-  }
-  const ops = [];
-  let x = N, y = M;
-  for (let d = trace.length - 1; d >= 0; d--) {
-    const k = x - y;
-    const idx = k + OFF;
-    let prevX, prevY;
-    if (d === 0) { prevX = 0; prevY = 0; }
-    else {
-      const prevRow = trace[d - 1];
-      let prevK;
-      if (k === -d || (k !== d && prevRow[idx - 1] < prevRow[idx + 1])) prevK = k + 1;
-      else prevK = k - 1;
-      prevX = prevRow[prevK + OFF];
-      prevY = prevX - prevK;
-    }
-    while (x > prevX && y > prevY) { ops.push({ type: 'ctx', aLine: x - 1, bLine: y - 1 }); x--; y--; }
-    if (x > prevX) { ops.push({ type: 'del', aLine: x - 1 }); x--; }
-    else if (y > prevY) { ops.push({ type: 'add', bLine: y - 1 }); y--; }
-  }
-  ops.reverse();
-  return ops;
-}
-
-// 超大文件降级：不做对齐，全部显示为 del + add（线性时间，不卡）
-function coarseHunks(a, b) {
-  const rows = [];
-  for (let i = 0; i < a.length; i++) rows.push({ type: 'del', aText: a[i], bText: '', aNum: i + 1, bNum: 0 });
-  for (let j = 0; j < b.length; j++) rows.push({ type: 'add', aText: '', bText: b[j], aNum: 0, bNum: j + 1 });
-  return [{
-    oldStart: 1, oldLines: a.length, newStart: 1, newLines: b.length, rows, coarse: true,
-  }];
-}
-
-function buildHunks(aText, bText, ctx = 3) {
-  const a = linesOf(aText), b = linesOf(bText);
-  if (a.length > DIFF_MAX_LINES || b.length > DIFF_MAX_LINES) return coarseHunks(a, b);
-  const ops = diffLines(aText, bText);
-  if (!ops.some((o) => o.type !== 'ctx')) return [];
-  // 分块规则与 git 一致：**两处改动之间隔了 > 2×ctx 行未改动内容就断成两块**。
-  // ⚠ 老实现是"从第一处改动一路吃到最后一处"，一个文件永远只有 1 块 —— 那样 M3 的
-  //   hunk 级暂存就成了"整文件暂存"，等于没做。（改动 ≤ 2×ctx 行时仍合成一块，与 git 相同）
-  const changeIdx = [];
-  for (let i = 0; i < ops.length; i++) if (ops[i].type !== 'ctx') changeIdx.push(i);
-  const groups = [];
-  let cur = [changeIdx[0]];
-  for (let k = 1; k < changeIdx.length; k++) {
-    let gap = 0;
-    for (let i = changeIdx[k - 1] + 1; i < changeIdx[k]; i++) if (ops[i].type === 'ctx') gap++;
-    if (gap > ctx * 2) { groups.push(cur); cur = []; }
-    cur.push(changeIdx[k]);
-  }
-  groups.push(cur);
-  const hunks = [];
-  for (const g of groups) {
-    const first = ops[g[0]], last = ops[g[g.length - 1]];
-    const rows = [];
-    const ctxHead = ops.filter((o) => o.type === 'ctx' && o.aLine < first.aLine).slice(-ctx);
-    const ctxTail = ops.filter((o) => o.type === 'ctx' && o.aLine > last.aLine).slice(0, ctx);
-    for (const o of [...ctxHead, ...g.map((i) => ops[i]), ...ctxTail]) {
-      if (o.type === 'ctx') rows.push({ type: 'ctx', aText: a[o.aLine] ?? '', bText: b[o.bLine] ?? '', aNum: o.aLine + 1, bNum: o.bLine + 1 });
-      else if (o.type === 'del') rows.push({ type: 'del', aText: a[o.aLine] ?? '', bText: '', aNum: o.aLine + 1, bNum: 0 });
-      else rows.push({ type: 'add', aText: '', bText: b[o.bLine] ?? '', aNum: 0, bNum: o.bLine + 1 });
-    }
-    const aStart = rows.find((r) => r.aNum)?.aNum ?? 0;
-    const bStart = rows.find((r) => r.bNum)?.bNum ?? 0;
-    hunks.push({
-      oldStart: aStart, oldLines: rows.filter((r) => r.aNum).length,
-      newStart: bStart, newLines: rows.filter((r) => r.bNum).length,
-      rows,
-    });
-  }
-  return hunks;
-}
+// 行数阈值会把大文件小改伪报为整份替换；按稳定锚点分区并给高复杂度未决段独立预算。
+const { linesOf, diffLines, buildHunks } = require('./git-line-diff');
 
 // ---------- 对比：工作区 vs HEAD ----------
 async function diffWorkdir(dir, file) {
@@ -1122,9 +1019,17 @@ async function diffCommit(dir, oid, file) {
     if (oldText === null && newText === null) return { error: '文件中不存在于该提交' };
     if (oldText === newText) return { file, unchanged: true };
     if (isBinaryText(oldText) || isBinaryText(newText)) return { file, binary: true };
-    return { file, oldText: oldText ?? '', newText: newText ?? '', hunks: buildHunks(oldText ?? '', newText ?? '') };
+    const hunks = buildHunks(oldText ?? '', newText ?? '');
+    const unresolvedRanges = hunks.filter(h => h.incomplete).map(h => ({ oldStart: h.oldStart, oldLines: h.oldLines, newStart: h.newStart, newLines: h.newLines, reasonCode: h.reasonCode, reason: h.reason }));
+    const readOnly = hunks.find(h => h.readOnlyReason);
+    // 同一路径只计算一次：超预算是局部未决，不再用另一轮整文件粗替换掩盖原因。
+    return { file, oldText: oldText ?? '', newText: newText ?? '', hunks,
+      completeness: unresolvedRanges.length ? 'incomplete' : 'complete',
+      ...(readOnly ? { readOnlyReason: readOnly.readOnlyReason, reasonCode: readOnly.reasonCode } : {}),
+      ...(unresolvedRanges.length ? { unresolvedRanges } : {}),
+    };
   } catch (e) {
-    return { error: String(e.message || e) };
+    return { error: String(e.message || e), ...(e.code ? { errorCode: e.code } : {}) };
   }
 }
 

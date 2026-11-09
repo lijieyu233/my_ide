@@ -53,7 +53,10 @@ function createHunks({git,findRoot,resolveGitDir,hunkify,applyHunkToText}){
    if(changed){if(fingerprint(serial(before))!==fingerprint(serial(await state(c))))throw fail('STALE_DIFF','读取期间版本变化');return {file:path.relative(c.root,c.abs),side,base:side==='staged'?'head':'index',...hunkify(text(a).replace(/\r/g,'␍'),text(b).replace(/\r/g,'␍')),unchanged:false,readOnlyReason:'原始行尾差异（␍ 表示 CR）。此类块写入尚未支持，可按整份文件处理。'};}
   }
   const after=await state(c);if(fingerprint(serial(before))!==fingerprint(serial(after)))throw fail('STALE_DIFF','读取期间Git或工作区版本已变化，请刷新差异');
-  const id=crypto.randomUUID(),snapshot={snapshotId:id,root:c.root,project:c.project,path:c.rel,side,generation:++generation,...serial(before),indexOid:entry?.oid||null,indexMode:entry?.mode||null,oldExists:a!=null,newExists:b!=null,oldEof:a?.at(-1)===10,newEof:b?.at(-1)===10};
+  const unresolved=h.hunks.filter(row=>row.incomplete),eofChanged=(a?.at(-1)===10)!==(b?.at(-1)===10);
+   // 未精确对齐和行尾语义未实现的块只能展示；不能把受限结果包装成可写入的版本授权。
+   if(unresolved.length||eofChanged)return {file:path.relative(c.root,c.abs),side,base:side==='staged'?'head':'index',...h,unchanged:false,completeness:unresolved.length?'incomplete':'complete',unresolvedRanges:unresolved.map(row=>({oldStart:row.oldStart,oldLines:row.oldLines,newStart:row.newStart,newLines:row.newLines})),readOnlyReason:unresolved.length?'部分区域超过精确对齐预算，未决行不计入增删；请使用整文件操作或外部差异工具。':'末尾换行变化暂不支持按块写入，请按整份文件处理。'};
+   const id=crypto.randomUUID(),snapshot={snapshotId:id,root:c.root,project:c.project,path:c.rel,side,generation:++generation,...serial(before),indexOid:entry?.oid||null,indexMode:entry?.mode||null,oldExists:a!=null,newExists:b!=null,oldEof:a?.at(-1)===10,newEof:b?.at(-1)===10};
   const hunks=h.hunks.map((row,i)=>({...row,hunkId:fingerprint([id,i,row])})),r={...c,id,at:Date.now(),state:before,snapshot,entry,headBytes,indexBytes,rawText:text(before.workBytes),hunks,size:(a?.length||0)+(b?.length||0)+(before.indexBytes?.length||0)+Buffer.byteLength(JSON.stringify(hunks))};
   r.size=(before.workBytes?.length||0)+(before.indexBytes?.length||0)+(indexBytes?.length||0)+(headBytes?.length||0)+Buffer.byteLength(r.rawText)+Buffer.byteLength(h.oldText)+Buffer.byteLength(h.newText)+Buffer.byteLength(JSON.stringify(hunks));
   if(r.size>limit)throw fail('DIFF_LIMIT','差异快照超过64MiB预算');views.set(id,r);held+=r.size;prune();
