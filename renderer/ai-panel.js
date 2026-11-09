@@ -1220,9 +1220,16 @@ const AiPanel = (() => {
     if(cfg.engine==='dsh'){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready'&&!dshScopeMismatch();sel.disabled=!ready;
-      sel.innerHTML=dshSessionAccess?.preview?'<option value="">只读预览 · 不加载模型选项</option>':choices.length?choices.map(option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>').join(''):'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
+      const optionHtml=option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>';
+      // 目录已带原生分类；只在查找选中值时展开，展示保留来源，不能按同名模型去重。
+      const groupedHtml=(model?.options||[]).map(option=>Array.isArray(option.options)
+        ?option.options.length?'<optgroup label="'+esc(option.name||option.group||'模型')+'" data-group="'+esc(option.group||'')+'">'+option.options.map(optionHtml).join('')+'</optgroup>':''
+        :optionHtml(option)).join('');
+      sel.innerHTML=dshSessionAccess?.preview?'<option value="">只读预览 · 不加载模型选项</option>':choices.length?groupedHtml:'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
       // 下架的是这条宿主会话的旧选择；全局缓存中另一个可用模型不能伪装成它已被替换。
-      sel.value=!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用';
+      sel.value=!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';
+      const selectedGroup=sel.selectedOptions[0]?.parentElement;
+      sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用'+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
       const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
       if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
       const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;

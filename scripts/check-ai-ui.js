@@ -1,11 +1,12 @@
 // 独立配置的隐藏生产窗口，模型/DSH 响应为夹具，不连接用户服务。
 const fs=require('fs'),os=require('os'),path=require('path'),assert=require('assert/strict');
-const {app,BrowserWindow,ipcMain}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-ui-')),home=path.join(temp,'home'),project=path.join(temp,'项目示例');
+const {app,BrowserWindow,ipcMain,clipboard,nativeImage}=require('electron'),repo=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-ui-')),home=path.join(temp,'home'),project=path.join(temp,'项目示例');
 fs.mkdirSync(home);fs.mkdirSync(project);fs.writeFileSync(path.join(project,'README.md'),'# 界面验证\n\n保留当前主题。');
 process.env.HOME=home;process.env.USERPROFILE=home;os.homedir=()=>home;app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
+clipboard.readText=clipboard.readHTML=clipboard.readRTF=()=>'';clipboard.readImage=()=>nativeImage.createEmpty();clipboard.availableFormats=()=>[];clipboard.readBuffer=()=>Buffer.alloc(0);
 app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 let optionReads=0;
-ipcMain.removeHandler('ai:dsh-options');ipcMain.handle('ai:dsh-options',async()=>{optionReads++;return {ok:true,sessionId:'fixture',configOptions:[{id:'model',currentValue:'deepseek-v4-flash',options:[{value:'deepseek-v4-flash',name:'DeepSeek-V4.1-Flash · 标准模型'},{value:'deepseek-v4-pro',name:'DeepSeek-V4.1-Pro'}]},{id:'reasoning_effort',currentValue:'high',options:[{value:'high',name:'High'},{value:'medium',name:'Medium'}]}]};});
+ipcMain.removeHandler('ai:dsh-options');ipcMain.handle('ai:dsh-options',async()=>{optionReads++;return {ok:true,sessionId:'fixture',configOptions:[{id:'model',currentValue:'deepseek-v4-flash',options:[{group:'deepseek',name:'DeepSeek',options:[{value:'deepseek-v4-flash',name:'DeepSeek-V4.1-Flash · 标准模型'},{value:'deepseek-v4-pro',name:'DeepSeek-V4.1-Pro'}]},{group:'deepseek-account',name:'DeepSeek Account',options:[{value:JSON.stringify(['deepseek-account','flash']),name:'DeepSeek-V4.1-Flash'}]},{group:'workbuddy',name:'WorkBuddy',options:[{value:JSON.stringify(['workbuddy','flash']),name:'DeepSeek-V4.1-Flash · x0.11'}]},{group:'workbuddy-global',name:'WorkBuddy Global',options:[{value:JSON.stringify(['workbuddy-global','max']),name:'Max · x1.33'}]}]},{id:'reasoning_effort',currentValue:'high',options:[{value:'high',name:'High'},{value:'medium',name:'Medium'}]}]};});
 let calls=0,win,passed=0,closing=false,releaseReply;
 require('../src/main/ai/ai-service').init({fetch:async()=>{
   const delta=++calls===1?{tool_calls:[{index:0,id:'read-fixture',type:'function',function:{name:'read_file',arguments:'{"path":"README.md"}'}}]}:{content:'已阅读项目说明。\n\n## 检查结果\n\n- 主题保持一致\n- 控件位置正常\n\n```js\nconst ready = true;\n```'};
@@ -103,6 +104,18 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     await js('Theme.set("light");true');await capture('ai-ui-light.png');assert(!win.isVisible());
     assert(await js('(()=>{const r=document.querySelector(".ai-session-controls").getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect(),m=document.getElementById("ai-msgs").getBoundingClientRect();return r.width>0&&r.left>=p.left&&r.right<=p.right&&r.bottom<=m.top})()'));await capture('ai-ui-connection-settings.png');
     await js('AiPanel.setConfig({engine:"standard"})');assert(await js('document.querySelector(".ai-dsh-status").classList.contains("hidden")&&document.getElementById("ai-dsh-options").classList.contains("hidden")'));
+  });
+  await test('DSH模型下拉保留原生分类、同名来源及选中值',async()=>{
+    await js('Theme.set("crimson");AiPanel.setConfig({engine:"dsh"});App.setAiOpen(true);document.getElementById("ai-panel").style.width="620px";true');
+    await until(()=>js('document.querySelectorAll("#ai-model optgroup").length===4&&!document.getElementById("ai-model").disabled'));
+    const groups=await js('[...document.querySelectorAll("#ai-model optgroup")].map(g=>({label:g.label,id:g.dataset.group,values:[...g.children].map(o=>o.value)}))');
+    assert.deepEqual(groups.map(g=>g.label),['DeepSeek','DeepSeek Account','WorkBuddy','WorkBuddy Global']);assert.equal(groups[1].values[0],JSON.stringify(['deepseek-account','flash']));assert.equal(groups[2].values[0],JSON.stringify(['workbuddy','flash']));
+    const before=await js('({value:document.getElementById("ai-model").value,cfg:localStorage.getItem("myide-ai-cfg")})');assert(await js('document.getElementById("ai-model").selectedOptions[0].parentElement.label==="DeepSeek"&&document.getElementById("ai-model").title.includes("当前分类：DeepSeek")'));
+    // 原生弹出菜单不属于网页截图表面；仅取证时将同一个select临时展开为listbox，绝不伪造分组DOM。
+    const presentation=await js('(()=>{const s=document.getElementById("ai-model"),old={style:s.getAttribute("style"),size:s.getAttribute("size")};s.size=12;Object.assign(s.style,{position:"fixed",right:"60px",bottom:"158px",width:"330px",height:"auto",maxHeight:"360px",padding:"6px",background:"var(--bg-panel)",border:"1px solid var(--border-mid)",zIndex:"100"});return old})()');
+    await capture('ai-ui-dsh-model-categories.png');await js('Theme.set("light");true');await capture('ai-ui-dsh-model-categories-light.png');
+    await js('(()=>{const s=document.getElementById("ai-model"),old='+JSON.stringify(presentation)+';for(const key of ["style","size"])if(old[key]===null)s.removeAttribute(key);else s.setAttribute(key,old[key]);})()');
+    assert.equal(await js('document.getElementById("ai-model").value'),before.value);assert.equal(await js('localStorage.getItem("myide-ai-cfg")'),before.cfg);assert.equal(calls,2);assert(!win.isVisible());
   });
   console.log('AI UI 真实窗口：'+passed+' 通过 / 0 失败');cleanup(0);
 })().catch(error=>{console.error(error?.stack||String(error));cleanup(1);});
