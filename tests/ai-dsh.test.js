@@ -122,6 +122,26 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
   }});
   try{const items=await service.listSessions({});assert.deepEqual(items[0].bindings,[{sessionId:'local-A',rootId:'C:/proj',scope:'project'}]);assert.deepEqual(items[1].bindings,[{sessionId:'local-reader',rootId:'C:/proj',scope:'reader'}]);assert.deepEqual(requests,['session/list']);}finally{await service.dispose();}
  });
+  await test('大目录映射合并每个身份只解析一次，保持项目与阅读绑定顺序',async()=>{
+   const file=path.join(temp,'linear-catalog-mapping.json'),mapping={},expected=new Map();
+   for(let index=0;index<300;index++){
+    const hostId='session-scale-'+index%150,sessionId='local-scale-'+index,rootId='C:/scale/'+index,scope=index%2?'reader':'project';
+    mapping[JSON.stringify(scope==='reader'?[sessionId,rootId,scope]:[sessionId,rootId])]={id:hostId,cwd:rootId};
+    if(!expected.has(hostId))expected.set(hostId,[]);expected.get(hostId).push({sessionId,rootId,scope});
+   }
+   fs.writeFileSync(file,JSON.stringify(mapping));
+   const directory=Array.from({length:500},(_,index)=>({sessionId:'session-scale-'+index,cwd:'C:/scale'}));
+   const rpc=new EventEmitter();rpc.closed=false;rpc.close=()=>{rpc.closed=true;rpc.emit('closed');};rpc.request=async method=>{assert.equal(method,'session/list');return directory;};
+   const service=createService({home:path.join(temp,'linear-catalog-home'),mappingFile:()=>file,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>rpc});
+   const originalParse=JSON.parse,keys=new Set(Object.keys(mapping));let parses=0;
+   try{
+    await service.listSessions({});
+    JSON.parse=function(value,...rest){if(keys.has(value))parses++;return originalParse.call(this,value,...rest);};
+    const items=await service.listSessions({});
+    assert.equal(parses,keys.size,'目录扩展不能让每个映射随宿主会话数重复解析');
+    for(const item of items)assert.deepEqual(item.bindings,expected.get(item.sessionId)||[]);
+   }finally{JSON.parse=originalParse;await service.dispose();}
+  });
 // 真实事故已证实：只加载宿主正文却未锁发送，失败后自动 new 会把旧身份改绑到新会话。
 // 这里是注入 RPC 的单元回归，不替代真实 Electron + DSH 的身份与正文验收。
 const nativeFixture=({check={canContinue:true},checkError,resumeError,id='myide-11111111-1111-4111-8111-111111111111',resumeId}={})=>{

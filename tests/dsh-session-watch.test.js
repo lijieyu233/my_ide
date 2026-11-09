@@ -24,7 +24,7 @@ const visible=state=>state.turns.flatMap(turn=>turn.parts);
 const assistantTexts=state=>visible(state).filter(part=>part.kind==='text'&&part.role==='assistant').map(part=>part.text);
 
 function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError}={}){
- const calls=[],states=[],waiters=new Set(),selection=new AbortController();
+ const calls=[],states=[],rawStates=[],waiters=new Set(),selection=new AbortController();
  let output,transportOpen=true,transportSignal,transportAbort,handle,opening,cancelled=0;
  const body=new ReadableStream({
   start(controller){output=controller;},
@@ -55,12 +55,15 @@ function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError}={})
   close(){calls.push({kind:'close'});throw Error('解除观察不应关闭共享 RPC');},
  };
  const onState=state=>{
-  const copy=structuredClone(state);states.push(copy);
+  const copy=structuredClone(state);rawStates.push(structuredClone(state));
+  if(copy.historyUnchanged===true){assert(!Object.hasOwn(copy,'turns'));copy.turns=states.at(-1)?.turns||[];}
+  else assert(Array.isArray(copy.turns),'未标记的状态必须携带完整历史');
+  states.push({...copy});
   for(const waiter of [...waiters])if(waiter.predicate(copy)){waiters.delete(waiter);clearTimeout(waiter.timer);waiter.resolve(copy);}
  };
  for(const frame of initial)write(frame);
  return {
-  calls,states,selection,write,writeBytes,end,fail,
+  calls,states,rawStates,selection,write,writeBytes,end,fail,
   get signal(){return transportSignal;},get cancelled(){return cancelled;},
   get latest(){return states.at(-1);},
   start(signal=selection.signal){
@@ -104,6 +107,28 @@ test('snapshot 与 event 共用 seq 游标，重叠记录只折叠一次，观�
  assert.deepEqual(visible(state).filter(part=>part.role==='user').map(part=>part.text),['GUI 原问题','DSH GUI 新消息']);
  assert.deepEqual(f.calls,[{kind:'raw',endpoint:'observe',args:{sessionId:params.hostId,cwd:params.cwd}}]);
  assert(state.revision>f.states[0].revision);
+}));
+
+test('百次 preview 只发未改历史标记，durable 与 sync 保留完整快照，断线不丢已知正文',()=>using({initial:[snapshot(2,[user(1,1,'原问题'),assistant(2,1,'已知正文')])],projection:{asOfSeq:4,values:{title:'同步标题'}}},async f=>{
+ const handle=await f.start(),first=f.rawStates[0];
+ assert(Array.isArray(first.turns));assert.equal(first.historyUnchanged,undefined);
+ const frames=[stream({type:'start',attemptId:'preview-only',turn:2})];
+ for(let index=0;index<100;index++)frames.push(stream({type:'chunk',attemptId:'preview-only',index,chunk:{type:'text-delta',text:'x'}}),{type:'status',running:true});
+ f.write(...frames);await f.wait(state=>state.preview?.text.length===100);
+ const previews=f.rawStates.slice(1);assert.equal(previews.length,100);
+ for(const state of previews){assert.equal(state.historyUnchanged,true);assert(!Object.hasOwn(state,'turns'));}
+ assert.deepEqual(assistantTexts(f.latest),['已知正文']);
+ f.write(session(assistant(3,2,'新落盘正文')),event(4,'turn/end',{turn:2}));
+ await f.wait(state=>state.cursor===4);const durable=f.rawStates.at(-1);
+ assert(Array.isArray(durable.turns));assert.equal(durable.historyUnchanged,undefined);assert.deepEqual(assistantTexts(durable),['已知正文','新落盘正文']);
+ const synced=await handle.sync();assert(Array.isArray(synced.turns));assert.equal(synced.historyUnchanged,undefined);assert.deepEqual(assistantTexts(synced),['已知正文','新落盘正文']);
+ f.write({type:'failure',error:'合成断线'});await deadline(handle.completion,'partial 断线');
+ assert.equal(f.rawStates.at(-1).historyUnchanged,true);assert(!Object.hasOwn(f.rawStates.at(-1),'turns'));assert.equal(f.latest.connected,false);assert.deepEqual(assistantTexts(f.latest),['已知正文','新落盘正文']);
+}));
+
+test('重复空 snapshot 显式清空旧历史，不带 historyUnchanged 标记',()=>using({initial:[snapshot(2,[user(1,1,'旧问题'),assistant(2,1,'旧正文')])]},async f=>{
+ await f.start();f.write(snapshot(2,[]));await f.wait(state=>state.turns.length===0);
+ const empty=f.rawStates.at(-1);assert.deepEqual(empty.turns,[]);assert.equal(empty.historyUnchanged,undefined);
 }));
 
 test('NDJSON 任意字节分片、中文 UTF-8 跨片及同片多行保持完整正文',()=>using({},async f=>{

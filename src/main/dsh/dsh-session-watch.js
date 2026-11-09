@@ -19,7 +19,13 @@ async function observe(rpc,params,onState,signal,foldHistory){
     if(dirty){turns=foldHistory([...records.values()].sort((a,b)=>a.event.seq-b.event.seq));dirty=false;}
     return {cursor,revision:++revision,connected,running,runId,title,turns,preview:attempt?{text:attempt.text,thinking:attempt.thinking}:null,questions,permissions,interactionNotice,...failure?{error:failure}:{}};
   }
-  function publish(){clearTimeout(timer);timer=null;if(!closed)onState(view());}
+  function publish(){
+    clearTimeout(timer);timer=null;if(closed)return;
+    const historyUnchanged=!dirty,state=view();
+    // 预览逐字更新不能反复跨 IPC 复制整份历史；显式标记让消费者区分「沿用」与空历史。
+    if(historyUnchanged){delete state.turns;state.historyUnchanged=true;}
+    onState(state);
+  }
   function changed(immediate=false){if(immediate)publish();else if(!timer){timer=setTimeout(publish,40);timer.unref?.();}}
   function settleWaiters(){for(const waiter of [...waiters])if(cursor>=waiter.cursor){waiters.delete(waiter);clearTimeout(waiter.timer);waiter.resolve();}}
   function add(record,historical=false){
@@ -34,7 +40,7 @@ async function observe(rpc,params,onState,signal,foldHistory){
   function chunk(value){if(!attempt||!value)return;if(value.type==='text-delta')attempt.text+=String(value.text||'');else if(value.type==='reasoning-delta')attempt.thinking+=String(value.text||'');}
   function session(item){
     if(item.type==='snapshot'){
-      records.clear();for(const record of item.records||[])add(record,true);cursor=Math.max(cursor,Number(item.cursor)||0);
+      records.clear();dirty=true;for(const record of item.records||[])add(record,true);cursor=Math.max(cursor,Number(item.cursor)||0);
       title=item.projections?.values?.title||title;
       const lastStart=[...records.values()].reverse().find(r=>r.event.type==='turn/start');runId=lastStart?String(lastStart.event.seq):runId;
       const opening=item.assistantStream?.activeAttempt;

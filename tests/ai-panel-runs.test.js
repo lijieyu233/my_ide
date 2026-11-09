@@ -101,7 +101,7 @@ function fixture(inspectReplay = false, fontPreference) {
     onChunk: fn => { onChunk = fn; }, onDone: fn => { onDone = fn; },
   } };
   // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
-  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf;\n  return {aiAfterResult,') : source;
+  const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf; window.__testLoadSessions = loadSessions; window.__testReplayHistory = (list, wanted, preserve) => { msgs = list; return replayHistory(wanted, preserve); };\n  return {aiAfterResult,') : source;
   w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
@@ -298,6 +298,35 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     container.appendChild=node=>{appended++;return append(node);};f.switchRoot(f.A);
     assert.equal(appended,0);assert.deepEqual([...container.children],rows);assert(f.text().includes('前台文字后台追加文字'));assert.equal(f.aborts.length,0);assert.equal(f.element('#ai-send').textContent,'⏹');
     f.stop();await until(()=>f.element('#ai-send').textContent==='➤');
+  });
+  await test('大历史分批让出事件循环，全部消息顺序保留且只在最终结算布局',async()=>{
+    const f=fixture(true),container=f.element('#ai-msgs');let reads=0;Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
+    const history=Array.from({length:240},(_,i)=>({role:i%2?'assistant':'user',content:'分批消息'+i}));
+    const pending=f.w.__testReplayHistory(history,()=>true);assert(container.children.length>0&&container.children.length<240);const atTick=await new Promise(resolve=>setTimeout(()=>resolve(container.children.length),0));assert(atTick<240);assert(await pending);assert.equal(container.children.length,240);assert.equal(reads,1);[...container.children].forEach((row,i)=>assert(row.textContent.includes('分批消息'+i)));assert.equal(f.calls.length+f.aborts.length,0);
+  });
+  await test('回放保存折叠状态不测量关闭的details，避免每组强制布局',async()=>{
+    const f=fixture(true),history=Array.from({length:90},(_,i)=>i%2?{role:'user',content:'分界'+i}:{role:'assistant',content:'',_dshTimeline:[{kind:'tool',call:{id:'closed-'+i,name:'read_file',args:{path:'a.js'}},status:'completed',output:'完整输出'}]});f.w.__testReplay(history);
+    let reads=0;for(const group of f.element('#ai-msgs').querySelectorAll('.ai-tool-group'))Object.defineProperty(group.querySelector('.ai-tool-group-items'),'scrollTop',{configurable:true,get(){reads++;throw Error('不能测量折叠组');}});
+    assert(await f.w.__testReplayHistory(history,()=>true,true));assert.equal(reads,0);assert.equal(f.element('#ai-msgs').querySelectorAll('.ai-tool').length,45);
+  });
+  await test('大watch纯追加保留原DOM，旧内容改变仍重放并保留折叠与全部消息',async()=>{
+    const f=fixture();f.enableWatch();await f.openHost();const parts=Array.from({length:100},(_,i)=>[{kind:'text',role:'user',text:'历史用户'+i},{kind:'tool',call:{id:'large-'+i,name:'read_file',args:{path:'a.js'}},status:'completed',output:'工具'+i},{kind:'text',role:'assistant',text:'历史正文'+i}]).flat();f.watchPush({turns:[{parts}],running:true});await until(()=>f.text().includes('历史正文99'));await tick();
+    const first=f.element('.ai-user'),group=f.element('.ai-tool-group');group.open=true;group.querySelector('.ai-tool').open=true;await tick();f.watchPush({turns:[{parts:[...parts,{kind:'text',role:'assistant',text:'新增尾部sentinel'}]}],running:true});await until(()=>f.text().includes('新增尾部sentinel'));assert.equal(f.element('.ai-user'),first);assert.equal(f.element('.ai-tool-group'),group);assert(group.open);assert(group.querySelector('.ai-tool').open);
+    f.watchPush({turns:[{parts:[{...parts[0],text:'已更新的最早用户正文'},...parts.slice(1),{kind:'text',role:'assistant',text:'完整重放尾部sentinel'}]}],running:true});await until(()=>f.text().includes('完整重放尾部sentinel'));await tick();assert.notEqual(f.element('.ai-user'),first);assert(f.text().includes('已更新的最早用户正文'));assert(f.element('.ai-tool-group').open);assert(f.element('.ai-tool-group .ai-tool').open);assert.equal(f.element('#ai-msgs').querySelectorAll('.ai-msg,.ai-tool').length,301);assert.equal(f.calls.length+f.aborts.length,0);
+  });
+  await test('大历史回放中切项目立即停止剩余批次，旧正文不回填且不取消后台任务',async()=>{
+    const f=fixture(true);await f.w.AiPanel.setConfig({engine:'dsh'});const root=f.A;
+    const pending=f.w.__testReplayHistory(Array.from({length:400},(_,i)=>({role:'assistant',content:'旧项目批次'+i})),()=>f.w.App.root===root);assert(f.element('#ai-msgs').children.length<400);f.switchRoot(f.B);assert.equal(await pending,false);assert(!f.text().includes('旧项目批次'));assert.equal(f.aborts.length+f.calls.length,0);
+  });
+  await test('本地大历史未改时只解析一次，外部覆盖可失效且元数据修改不污染缓存',async()=>{
+    const f=fixture(true),key='myide-ai-sessions:'+f.A,raw=JSON.stringify([{id:'parse-cache',title:'原名',msgs:Array.from({length:200},(_,i)=>({role:'user',content:'缓存消息'+i}))}]);f.w.localStorage.setItem(key,raw);const parse=f.w.JSON.parse;let count=0;f.w.JSON.parse=function(text,...args){if(text===raw)count++;return parse.call(this,text,...args);};
+    try{for(let i=0;i<20;i++)assert.equal(f.w.__testLoadSessions()[0].id,'parse-cache');assert.equal(count,1);f.w.__testLoadSessions()[0].title='不能污染';assert.equal(f.w.__testLoadSessions()[0].title,'原名');f.w.localStorage.setItem(key,JSON.stringify([{id:'replacement',msgs:[]}]));assert.equal(f.w.__testLoadSessions()[0].id,'replacement');}finally{f.w.JSON.parse=parse;}
+  });
+  await test('watch仅明确historyUnchanged沿用原历史，预览不序列化/重建，显式空历史仍清空',async()=>{
+    const f=fixture();f.enableWatch();await f.openHost();const route=f.watches.at(-1),turns=[{parts:[{kind:'text',role:'user',text:'保留历史用户'},{kind:'text',role:'assistant',text:'保留历史正文'}]}];f.watchPush({turns,running:true});const row=f.element('.ai-user'),stringify=f.w.JSON.stringify;let serializations=0;f.w.JSON.stringify=function(value,...args){if(value===turns)serializations++;return stringify.call(this,value,...args);};
+    try{for(let i=0;i<30;i++){const previous=f.watchStates.get(route.watchId),full={...previous,revision:previous.revision+1,preview:{text:'实时预览'+i}};f.watchStates.set(route.watchId,full);const partial={...full,historyUnchanged:true};delete partial.turns;f.watchEvent(partial);}assert.equal(f.element('.ai-user'),row);assert(f.text().includes('保留历史正文'));assert(f.text().includes('实时预览29'));assert.equal(serializations,0);
+      const state=f.watchStates.get(route.watchId),invalid={...state,revision:state.revision+1};delete invalid.turns;delete invalid.historyUnchanged;f.watchEvent(invalid);assert.equal(f.w.AiPanel.aiState().dshWatch.revision,state.revision);f.watchPush({turns:[],preview:null,running:false});assert(!f.text().includes('保留历史正文'));assert(!f.element('.ai-user'));assert.equal(f.calls.length+f.aborts.length,0);
+    }finally{f.w.JSON.stringify=stringify;}
   });
   await test('无需宿主恢复的已保存空草稿仍同步回放欢迎页与usage，不另开会话',async()=>{
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh',id='s-saved-draft',container=f.element('#ai-msgs');let reads=0;

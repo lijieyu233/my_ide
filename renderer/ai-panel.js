@@ -217,7 +217,7 @@ const AiPanel = (() => {
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = () => getConfig().engine !== 'dsh' || (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
+  const dshCanSend = () => getConfig().engine !== 'dsh' || !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
   function rejectDshSend() {
     if (dshCanSend()) return false;
     MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess?.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess && dshSessionAccess.state !== 'ready' ? dshSessionAccess.error || '当前会话只读，无法确认续聊身份，请重新连接或新建对话' : '原模型不可用，请先选择可用模型后再发送', 'err');
@@ -947,6 +947,7 @@ const AiPanel = (() => {
     else activityObservers.delete(to);
   }
   function clearMessageView() {
+    if (!backgroundView && historyReplayJob) { historyReplayJob.cancelled = true; historyReplayJob = null; }
     const observers = activityObservers.get(msgsEl);
     if (observers) { for (const observer of observers) observer.disconnect(); observers.clear(); }
     msgsEl.replaceChildren();
@@ -954,10 +955,11 @@ const AiPanel = (() => {
   function observeActivityGroup(group, data) {
     const { scrollport, items } = data;
     data.follow = data.restoredScroll?.follow ?? true;
+    data.scrollTop = data.restoredScroll?.top || 0;
     const interrupt = () => { data.follow = false; };
     for (const type of ['wheel','touchstart','pointerdown']) scrollport.addEventListener(type,interrupt,{passive:true});
     scrollport.addEventListener('keydown',event => { if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key)) interrupt(); });
-    scrollport.addEventListener('scroll', () => { data.follow = scrollport.scrollHeight - scrollport.clientHeight - scrollport.scrollTop <= 1; },{passive:true});
+    scrollport.addEventListener('scroll', () => { if(group.open){data.scrollTop=scrollport.scrollTop;data.follow = scrollport.scrollHeight - scrollport.clientHeight - data.scrollTop <= 1;} },{passive:true});
     group.addEventListener('toggle', () => {
       if (!group.open) return;
       if (data.restoredScroll) { const saved=data.restoredScroll;delete data.restoredScroll;data.follow=saved.follow;scrollport.scrollTop=saved.top;return; }
@@ -1251,7 +1253,7 @@ const AiPanel = (() => {
 
   // ---------- 消息渲染 ----------
   // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
-  let replayDepth = 0;
+  let replayDepth = 0, historyReplayJob = null;
   function scrollBottom() {
     if (msgsEl && !replayDepth) msgsEl.scrollTop = msgsEl.scrollHeight;
   }
@@ -1966,8 +1968,16 @@ const AiPanel = (() => {
    * 可能在挂起与恢复之间变化的中间状态。
    */
   function runKeyOf(scope, sessionId) { return JSON.stringify([String(scope || ''), String(sessionId || '')]); }
-  function loadSessions() { try { return JSON.parse(localStorage.getItem(sessKey()) || '[]') || []; } catch { return []; } }
-  function saveSessions(a) { try { localStorage.setItem(sessKey(), JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} }
+  const sessionCache = new Map();
+  function loadSessions() {
+    try {
+      const key=sessKey(),raw=localStorage.getItem(key)||'[]';let entry=sessionCache.get(key);
+      // 顶部名称、目录别名和状态刷新会反复读同一份大历史；原始值未变就不重复解析正文。
+      if(!entry||entry.raw!==raw){const value=JSON.parse(raw);entry={raw,list:Array.isArray(value)?value:[]};sessionCache.set(key,entry);if(sessionCache.size>4)sessionCache.delete(sessionCache.keys().next().value);}
+      return entry.list.map(item=>({...item}));
+    } catch { return []; }
+  }
+  function saveSessions(a) { const key=sessKey();try { localStorage.setItem(key, JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} finally {sessionCache.delete(key);} }
   let loadedSessionKey=null;
   let sessionLoadTicket=0;
   function rememberSession(){if(dshSessionAccess?.preview)return;if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
@@ -2001,13 +2011,13 @@ const AiPanel = (() => {
   }
   function replayMsgs(preserveToolGroups = false) {
     const previousChoices = replayToolGroupChoices, previousPosition = replayActivityPosition;
-    // 一次扫描同时接回外组、内行和输出的本地选择；不进历史，也不按摘要文本猜测身份。
+    // 一次扫描接回本地选择；折叠details只取滚动缓存，测量其scrollTop会逐组强制布局。
     replayToolGroupChoices = preserveToolGroups ? new Map() : null;
     if (preserveToolGroups) for (const node of msgsEl.querySelectorAll('.ai-tool-group, details[data-activity-key], .ai-dsh-output')) {
       const group = node.classList.contains('ai-tool-group');
       const key = group ? 'group:'+node.dataset.groupKey : node.classList.contains('ai-dsh-output') ? 'output:'+node.closest('[data-activity-key]')?.dataset.activityKey : 'row:'+node.dataset.activityKey;
       replayToolGroupChoices.set(key,node.open);
-      if (group) { const data=toolGroups.get(node);if(data)replayToolGroupChoices.set('scroll:'+node.dataset.groupKey,{top:data.scrollport.scrollTop,follow:data.follow}); }
+      if (group) { const data=toolGroups.get(node);if(data)replayToolGroupChoices.set('scroll:'+node.dataset.groupKey,{top:node.open?data.scrollport.scrollTop:data.scrollTop||0,follow:data.follow}); }
     }
     replayDepth++;
     try {
@@ -2041,6 +2051,46 @@ const AiPanel = (() => {
       replayToolGroupChoices = previousChoices; replayActivityPosition = previousPosition;
       if (!--replayDepth) scrollBottom();
     }
+  }
+  const historyNeedsYield=list=>list.length>80||list.some(m=>(m._dshTimeline?.length||0)>80||String(m.content||'').length>64000);
+  async function replayHistory(wanted, preserveToolGroups = false, appendFrom = 0) {
+    if(!wanted())return false;
+    const list=msgs,container=msgsEl;
+    if(!historyNeedsYield(list)){replayMsgs(preserveToolGroups);return wanted();}
+    const choices=preserveToolGroups&&!appendFrom?new Map():null;
+    if(choices)for(const node of container.querySelectorAll('.ai-tool-group, details[data-activity-key], .ai-dsh-output')){
+      const group=node.classList.contains('ai-tool-group');
+      const key=group?'group:'+node.dataset.groupKey:node.classList.contains('ai-dsh-output')?'output:'+node.closest('[data-activity-key]')?.dataset.activityKey:'row:'+node.dataset.activityKey;
+      choices.set(key,node.open);if(group){const data=toolGroups.get(node);if(data)choices.set('scroll:'+node.dataset.groupKey,{top:node.open?data.scrollport.scrollTop:data.scrollTop||0,follow:data.follow});}
+    }
+    if(!appendFrom){clearMessageView();lastUserAt=null;}
+    const job={cancelled:false};historyReplayJob=job;setBusyUI(busy);
+    const valid=()=>!job.cancelled&&historyReplayJob===job&&msgs===list&&msgsEl===container&&wanted();
+    // 每个批次单独持有 replay 全局态；让出线程时后台任务仍能正常接收输出、滚动和切项目。
+    function* entries(){for(let i=appendFrom;i<list.length;i++){const m=list[i];if(Array.isArray(m._dshTimeline)){for(let j=0;j<m._dshTimeline.length;j++)yield {m,i,part:m._dshTimeline[j],j};}else yield {m,i};}}
+    const iterator=entries();let done=false;
+    try{
+      while(!done){
+        if(!valid())return false;
+        const previousChoices=replayToolGroupChoices,previousPosition=replayActivityPosition,start=performance.now();
+        replayToolGroupChoices=choices;replayDepth++;
+        try{
+          for(let count=0;count<24;count++){
+            const next=iterator.next();if(next.done){done=true;break;}
+            const {m,i,part,j}=next.value;
+            if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
+            else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
+              if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
+              else if(m.role==='assistant')addMsg('assistant',m.content||'');
+            }
+            if(performance.now()-start>=8)break;
+          }
+        }finally{replayDepth--;replayToolGroupChoices=previousChoices;replayActivityPosition=previousPosition;}
+        if(!done)await new Promise(resolve=>setTimeout(resolve,0));
+      }
+      if(!valid())return false;
+      if(lastUserAt!=null)markRegen();scrollBottom();return true;
+    }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
   let histPop = null, histScope = 'current', histQuery = '', histOutside = null;
   let histLoading = false, histError = '';
@@ -2387,7 +2437,8 @@ const AiPanel = (() => {
     msgs=dshTurnsMessages(Array.isArray(result.turns)?result.turns:[]);
     dshSessionAccess={...dshSessionAccess,state:'preview',error:'当前为其他工作区的只读预览，请明确打开所属工程后续聊'};
     dshConfigOptions=[];dshOptionsState='error';usageSum={in:0,out:0,cacheHit:0,cacheMiss:0};
-    replayMsgs();renderUsage();refreshModelSel();setBusyUI(false);renderBackgroundStatus();
+    if(!await replayHistory(wanted))return false;
+    renderUsage();refreshModelSel();setBusyUI(false);renderBackgroundStatus();
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 跨工程只读预览';info.title=target.rootDir;}
     return true;
   }
@@ -2593,14 +2644,34 @@ const AiPanel = (() => {
     const state = watch.state;
     if (state.connected === false) { renderDshWatchPending(watch); updateDshWatchStatus(watch); return; }
     if (watch.needsSync) return;
-    // 保留同一请求的表单节点和已填答案；history replay 不能把输入中途清空。
-    const thinkingOpen=watch.thinking?.open, thinkingGroupOpen=toolRows.get(watch.thinking)?.group.open;
-    const key = JSON.stringify(state.turns || []);
-    if (watch.renderKey !== key) {
-      for (const entry of watch.pending.values()) entry.element.remove();
-      msgs = dshTurnsMessages(state.turns); replayMsgs(true); watch.renderKey = key;
-      persistSession(); renderUsage();
+    if (watch.replaying) { updateDshWatchStatus(watch); return; }
+    // 明确的 historyUnchanged 合并后复用原数组：流式预览不再每40ms序列化整份历史。
+    if (watch.renderedTurns !== state.turns || watch.renderKey === null) {
+      const key=JSON.stringify(state.turns||[]);watch.renderedTurns=state.turns;
+      if(watch.renderKey!==key){
+        const next=dshTurnsMessages(state.turns),keys=next.map(m=>JSON.stringify(m)),large=historyNeedsYield(next);
+        const samePrefix=large&&watch.viewMessages===msgs&&watch.messageKeys?.length===msgs.length&&msgs.length>0&&watch.messageKeys.length<=keys.length&&watch.messageKeys.every((value,i)=>value===keys[i]);
+        const appendFrom=samePrefix?msgs.length:0,unchanged=samePrefix&&appendFrom===next.length;
+        msgs=next;watch.renderKey=key;watch.messageKeys=keys;watch.viewMessages=msgs;
+        // 旁听的首帧常与已载正文相同，后续通常只追加。不要为补一行拆掉上千个已有节点。
+        if(!unchanged){
+          for(const entry of watch.pending.values())entry.element.remove();
+          if(appendFrom){watch.preview?.remove();watch.preview=null;watch.thinkingChoice={open:watch.thinking?.open,group:toolRows.get(watch.thinking)?.group.open};removeDshThought(watch.thinking);watch.thinking=null;}
+          if(large){
+            watch.replaying=true;
+            replayHistory(()=>dshWatchWanted(watch)&&!dshOwnRun(),!appendFrom,appendFrom).then(complete=>{
+              watch.replaying=false;if(!complete)return;
+              persistSession();renderUsage();renderDshWatch(watch);
+            }).catch(error=>{watch.replaying=false;if(dshWatchWanted(watch)){blockDshSession('会话显示失败：'+error.message);MI.toast('会话显示失败：'+error.message,'err');}});
+            updateDshWatchStatus(watch);return;
+          }
+          replayMsgs(true);persistSession();renderUsage();
+        }
+      }
     }
+    // 保留同一请求的表单节点和已填答案；history replay 不能把输入中途清空。
+    const thinkingOpen=watch.thinkingChoice?.open??watch.thinking?.open, thinkingGroupOpen=watch.thinkingChoice?.group??toolRows.get(watch.thinking)?.group.open;
+    delete watch.thinkingChoice;
     watch.preview?.remove(); watch.preview = null;
     removeDshThought(watch.thinking); watch.thinking = null;
     if (state.preview?.thinking) {
@@ -2611,13 +2682,19 @@ const AiPanel = (() => {
     if (state.preview?.text) watch.preview = addMsg('assistant',state.preview.text);
     renderDshWatchPending(watch); updateDshWatchStatus(watch); scrollBottom();
   }
+  function mergeDshWatchHistory(watch,state) {
+    if(Object.hasOwn(state,'turns'))return Array.isArray(state.turns)?state:null;
+    if(state.historyUnchanged===true)return {...state,turns:watch.state?.turns||[]};
+    return null;
+  }
   function receiveDshWatch(state) {
     const watch = dshWatch;
     if (!watch || !dshWatchWanted(watch) || state?.watchId !== watch.watchId || state.sessionId !== watch.sessionId
       || state.hostId !== watch.hostId || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope
       || !Number.isFinite(state.revision) || state.revision <= watch.revision) return;
+    state=mergeDshWatchHistory(watch,state);if(!state)return;
     watch.revision = state.revision; watch.state = state;
-    if (catalogUsable()) { const item = dshCatalog.items.find(item => item.sessionId === watch.hostId); if (item) { if (state.connected !== false) item.running = state.running; if (state.title) item.title = state.title; } }
+    if (catalogUsable()) { const item = dshCatalog.items.find(item => item.sessionId === watch.hostId); if (item) { if (state.connected !== false) item.running = state.running; if (state.title&&item.title!==state.title) {item.title=state.title;renderCurrentSessionTitle();} } }
     refreshHistInPlace();
     if (watch.needsSync && !dshOwnRun() && state.connected !== false) { syncDshWatch(watch); return; }
     renderDshWatch(watch);
@@ -2629,9 +2706,10 @@ const AiPanel = (() => {
     const pending = (async () => {
       const result = await Promise.resolve(window.myIDE.ai.dshSync(watch.watchId)).catch(error => ({ok:false,error:error.message}));
       if (!dshWatchWanted(watch) || dshOwnRun() || ticket !== watch.syncTicket) return;
-      const state = result?.state;
+      let state = result?.state;
       if (!result?.ok || !state || state.watchId !== watch.watchId || state.sessionId !== watch.sessionId || state.hostId !== watch.hostId
         || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope || !Number.isFinite(state.revision)) return;
+      state=mergeDshWatchHistory(watch,state);if(!state)return;
       if (state.revision >= watch.revision) { watch.revision = state.revision; watch.state = state; }
       if (watch.state.connected === false) { renderDshWatch(watch); return; }
       watch.needsSync = false; watch.renderKey = null; renderDshWatch(watch); refreshHistInPlace();
@@ -2649,6 +2727,7 @@ const AiPanel = (() => {
     resetDshWatch();
     const watch = {watchId:'watch-'+window.crypto.randomUUID(),sessionId:curSessionId,hostId,rootId:window.App?.root||'',scope:dshScope(),generation:dshWatchGeneration,
       revision:-1,state:null,pending:new Map(),renderKey:null,needsSync:sync,syncTicket:0};
+    if(!dshOwnRun()&&!historyReplayJob){watch.viewMessages=msgs;watch.messageKeys=msgs.map(m=>JSON.stringify(m));}
     dshWatch = watch;
     const result = await Promise.resolve(window.myIDE.ai.dshWatch(getConfig(),{watchId:watch.watchId,sessionId:watch.sessionId,hostId,rootId:watch.rootId,scope:watch.scope})).catch(error => ({ok:false,error:error.message}));
     if (!dshWatchWanted(watch)) { Promise.resolve(window.myIDE.ai.dshUnwatch(watch.watchId)).catch(() => {}); return; }
@@ -2658,6 +2737,7 @@ const AiPanel = (() => {
   function suspendDshWatchForOwn() {
     if (!dshWatch || !dshWatchWanted(dshWatch)) return;
     dshWatch.needsSync = true; dshWatch.syncTicket++; dshWatch.syncing = null;
+    dshWatch.viewMessages=null;dshWatch.messageKeys=null;
     clearDshWatchTransient(dshWatch);
   }
   async function reconcileDshAfterOwn(run) {
@@ -2698,7 +2778,8 @@ const AiPanel = (() => {
     const hostId=nativeId || host?.sessionId || saved?.hostId;
     if(hostId)return loadHostSession(id,hostId,ticket);
     blockDshSession('无法确认这条历史的 DSH 会话身份，请重新连接或新建对话');
-    msgs=repairToolHistory((saved?.msgs||[]).slice());replayMsgs();
+    msgs=repairToolHistory((saved?.msgs||[]).slice());
+    await replayHistory(()=>ticket===sessionLoadTicket&&root===(window.App?.root||'')&&epoch===pageEpoch);
     return false;
   }
   async function loadHostSession(id, hostId, ticket) {
@@ -2719,16 +2800,16 @@ const AiPanel = (() => {
     const bound = await window.myIDE.ai.dshBind(getConfig(), { sessionId:id, rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, hostId).catch(error => ({ ok: false, error: error.message }));
     if (!stillWanted()) return;
     const canContinue=bound?.ok===true && bound.canContinue!==false;
-    dshSessionAccess={...dshSessionAccess,state:canContinue?'ready':'blocked',error:canContinue?'':bound?.error||'未能确认当前 DSH 会话可续聊，请重新连接或新建对话'};
-    setBusyUI(false);
-    localStorage.removeItem(sessKey()+':draft');
+    const accessError=canContinue?'':bound?.error||'未能确认当前 DSH 会话可续聊，请重新连接或新建对话';
     const turns = Array.isArray(result.turns) ? result.turns : [];
     // 换乘成渲染层一直用的历史形状：用户发言一条、助手文字一条、工具行一条。
     // 复用 _dshTimeline，历史回放与实时流共用同一段渲染（replayMsgs 里已有分支）。
     msgs = dshTurnsMessages(turns);
     usageSum = { in: 0, out: 0, cacheHit: 0, cacheMiss: 0 };
     renderUsage();
-    replayMsgs();
+    if(!await replayHistory(stillWanted))return false;
+    dshSessionAccess={...dshSessionAccess,state:canContinue?'ready':'blocked',error:accessError};
+    setBusyUI(false);localStorage.removeItem(sessKey()+':draft');
     const old = loadSessions(), title = catalogOf(id)?.title || old.find(item => item.id === id)?.title || sessTitle(msgs);
     saveSessions([{id,hostId,title,ts:Date.now(),msgs:msgs.slice(),usage:{...usageSum}}, ...old.filter(item => item.id !== id)]);
     // 失败关闭：不能在只读分支调用 inspect，让它为这份正文暗中新建/恢复另一条宿主会话。
@@ -2924,7 +3005,7 @@ const AiPanel = (() => {
       saved=all.find(item=>item.id===active)||(draft!==active||!active?all[0]:null);
       curSessionId=saved?.id||active||null;
       rememberSession();
-      if(saved){msgs=repairToolHistory((saved.msgs||[]).slice());usageSum=Object.assign(usageSum,saved.usage||{});}
+      if(saved)usageSum=Object.assign(usageSum,saved.usage||{});
     }
     // 只接管「仍在跑」的记录（2026-10-29）：已结束的记录要留在后台状态条上
     // 让用户自己点，自动接回来会把当前会话刚渲染好的内容顶掉 ——
