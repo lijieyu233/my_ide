@@ -2942,7 +2942,7 @@ module.exports = {
 
     // 自检环境没有真 API key → 指向本地假服务（这样验证的仍是真实链路，不是打桩的 DOM）
     // baseUrl 只用来让面板认为「已配置」，实际请求被主进程的桩接管
-    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    await window.__aiApprovalProbe.configure({ engine:'standard', baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
     await window.Viewer.openFile(dir + '\\' + FILE);
     await sleep(700);
     window.App.setAiOpen(true);
@@ -2960,7 +2960,7 @@ module.exports = {
 
     const yes = await waitFor(() => q('#dw-yes'), 20000);
     add('它要动文件之前，先给我看 diff 让我决定（没有偷偷改）', !!yes);
-    if (yes) yes.click();
+    if (yes) await yes.click();
 
     const card = await waitFor(() => {
       const all = qa('#ai-msgs .ai-edit');
@@ -2988,6 +2988,7 @@ module.exports = {
       }
 
     }
+    add('工具续轮完成后恢复发送状态',!!await waitFor(()=>q('#ai-send').getAttribute('aria-label')==='发送消息',20000));
     return { R, hover: fb ? { x: Math.round(fb.getBoundingClientRect().left + 60), y: Math.round(fb.getBoundingClientRect().top + 10) } : undefined };
   },
 
@@ -3036,7 +3037,7 @@ module.exports = {
       return e;
     };
 
-    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
+    await window.__aiApprovalProbe.configure({ engine:'standard', baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm' });
     window.App.setAiOpen(true);
     await sleep(400);
     if (q('#ai-new')) { q('#ai-new').click(); await sleep(300); }
@@ -3062,16 +3063,19 @@ module.exports = {
     const always = await waitFor(() => q('#dw-always'), 25000);
     add('改文件前的确认弹窗，多了一个「本项目内都允许」的出口', !!always,
       always ? String(always.textContent).trim() : '没看到这个按钮');
-    if (always) always.click();
+    if (always) await always.click();
     const c1 = await waitFor(() => qa('#ai-msgs .ai-edit').pop(), 25000);
     add('第一次改完，出现改动卡片', !!c1, c1 ? String(c1.textContent).replace(/\s+/g, ' ').slice(0, 36) : '(没有)');
 
+    // 卡片在工具应用后即出现，不等同于模型续轮已收尾；此时发送键仍是停止。
+    if(!await waitFor(()=>q('#ai-send').getAttribute('aria-label')==='发送消息',20000))throw Error('第一次工具调用尚未完成，不能把停止键当发送');
     // —— ③ 第二次改同一个文件：不该再问 ——
     q('#ai-input').value = '第二次改这个文件';
     q('#ai-send').click();
     const c2 = await waitFor(() => (qa('#ai-msgs .ai-edit').length >= 2 ? true : null), 25000);
     add('记住授权后，第二次改文件不再弹确认，直接改完', !!c2 && !q('#dw-always'),
       c2 ? '改动卡片共 ' + qa('#ai-msgs .ai-edit').length + ' 张' : '第二张卡片没出现');
+    add('第二次工具续轮完成且未误触停止',!!await waitFor(()=>q('#ai-send').getAttribute('aria-label')==='发送消息',20000));
     return { R };
   },
   // ---------- AI 助手：能力对齐（@ 特殊来源 / 斜杠命令 / 历史会话 / 代码块插入 / 危险命令闸）----------
@@ -3088,7 +3092,7 @@ module.exports = {
       return rows.length ? String(rows[rows.length - 1].textContent).replace(/\s+/g, ' ').slice(0, 50) : '(无回复)';
     };
     // 本步骤自带配置（前面的步骤把 permRun 设成了 deny，会掩盖危险命令闸）
-    await window.__aiApprovalProbe.configure({ baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm', permRun: 'confirm', allowPaths: [], denyCmds: [] });
+    await window.__aiApprovalProbe.configure({ engine:'standard', baseUrl: 'http://stub.local/v1', model: 'stub', apiKey: 'x', permWrite: 'confirm', permRun: 'confirm', allowPaths: [], denyCmds: [] });
     if (window.App && App.showAi) App.showAi();
     await sleep(400);
     await window.Viewer.openFile(dir + '\\_ui_outline.md');
@@ -3103,11 +3107,11 @@ module.exports = {
       try { inp.setSelectionRange(v.length, v.length); } catch {}
       inp.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const ask = async (text, waitMs) => {
-      type(text);
-      await sleep(200);
-      q('#ai-send').click();
-      await sleep(waitMs || 1800);
+    const waitFor=async(fn,label)=>{const deadline=Date.now()+20000;while(Date.now()<deadline){if(fn())return;await sleep(40);}throw Error(label);};
+    const waitIdle=()=>waitFor(()=>q('#ai-send').getAttribute('aria-label')==='发送消息','前一轮未结束，拒绝将停止键当发送键');
+    const ask = async (text) => {
+      await waitIdle();type(text);q('#ai-send').click();
+      await waitFor(()=>q('#dw-yes')||q('#cr-yes')||q('#ai-send').getAttribute('aria-label')==='发送消息','未收到模型终态或可信工具确认');
     };
     // ① @ 菜单：特殊来源排最前
     type('@');
@@ -3208,26 +3212,23 @@ module.exports = {
     add('内置危险命令判定为 danger（不受 /yolo 影响）',
       window.AiPanel && AiPanel.runNeedsConfirm && AiPanel.runNeedsConfirm('rm -rf node_modules') === 'danger',
       window.AiPanel && AiPanel.runNeedsConfirm ? String(AiPanel.runNeedsConfirm('rm -rf node_modules')) : 'n/a');
-    // 路径白名单：只放行你点头过的目录，其余照问。
-    // 注意先把 /yolo 的效果摘掉再验，否则测到的是 sessionPerm 而不是白名单。
-    const saveW = AiPanel.sessionPerm.write;
-    const savePerms = AiPanel.loadPerms();
-    AiPanel.sessionPerm.write = false;
-    await AiPanel.savePerms({});                       // 前面的步骤可能点过「本项目内都允许」，先清掉
-    await window.__aiApprovalProbe.configure({ allowPaths: ['docs/**'] });
-    add('写入白名单：docs/** 放行、其他路径仍要问',
-      AiPanel.writeNeedsConfirm('docs/a.md') === 'no' && AiPanel.writeNeedsConfirm('src/a.js') === 'yes',
-      'docs/a.md=' + AiPanel.writeNeedsConfirm('docs/a.md') + ' · src/a.js=' + AiPanel.writeNeedsConfirm('src/a.js'));
-    await window.__aiApprovalProbe.configure({ allowPaths: [] });
-    AiPanel.sessionPerm.write = saveW;
-    AiPanel.savePerms(savePerms || {});
     await ask('危险命令', 2400);
     const lastUser = (() => { const rs = qa('#ai-msgs .ai-msg.ai-user'); return rs.length ? String(rs[rs.length - 1].textContent).slice(-16) : '(无)'; })();
     add('危险命令仍然弹确认（/yolo 也不豁免）', !!q('#cr-yes'),
       q('#cr-yes') ? q('#cr-yes').textContent : ('没弹窗 · 末条回复=' + lastReply() + ' · 末条用户消息=' + lastUser
         + ' · 判定=' + (window.AiPanel && AiPanel.runNeedsConfirm ? AiPanel.runNeedsConfirm('rm -rf node_modules') : 'n/a')));
     add('危险命令不给「总是允许」', !q('#cr-always'));
-    if (q('#cr-no')) { q('#cr-no').click(); await sleep(400); }
+    if (q('#cr-no')) await q('#cr-no').click();
+    await waitIdle();
+    // 危险命令先在 /yolo 仍生效时验证。新对话通过真实入口清掉临时授权，再撤记忆授权测白名单。
+    q('#ai-new').click();await waitIdle();
+    await waitFor(()=>!AiPanel.sessionPerm.write&&!AiPanel.sessionPerm.run,'新对话未撤销临时授权');
+    await AiPanel.savePerms({});
+    await window.__aiApprovalProbe.configure({allowPaths:['docs/**']});
+    add('写入白名单：docs/** 放行、其他路径仍要问',
+      AiPanel.writeNeedsConfirm('docs/a.md')==='no'&&AiPanel.writeNeedsConfirm('src/a.js')==='yes',
+      'docs/a.md='+AiPanel.writeNeedsConfirm('docs/a.md')+' · src/a.js='+AiPanel.writeNeedsConfirm('src/a.js'));
+    await window.__aiApprovalProbe.configure({allowPaths:[]});
     // ⑨ 项目规则文件
     const rules = await (window.AiPanel && AiPanel.loadProjectRules ? AiPanel.loadProjectRules(true) : Promise.resolve(''));
     add('读到项目规则文件 .myide/ai-rules.md', !!rules && String(rules).includes('变更列表'), String(rules).slice(0, 40));
@@ -3254,15 +3255,15 @@ module.exports = {
     if (pseg.length) {
       const seg0 = () => qa('.ai-perm-pop .ai-seg')[0];   // 每次重查：切档会重渲染浮层
       seg0().querySelectorAll('button')[1].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
-      await sleep(300);
+      await waitFor(()=>AiPanel.permWrite()==='auto','确认后自动档位未生效');
       add('点「自动」档位真的切了', AiPanel.permWrite() === 'auto', 'permWrite=' + AiPanel.permWrite());
       seg0().querySelectorAll('button')[0].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
-      await sleep(300);
+      await waitFor(()=>AiPanel.permWrite()==='confirm','确认后未恢复每次确认档位');
       add('能改回「每次确认」', AiPanel.permWrite() === 'confirm', 'permWrite=' + AiPanel.permWrite());
     }
     if (q('#ai-perm')) { q('#ai-perm').click(); await sleep(300); }
     add('权限浮层可收起', !q('.ai-perm-pop'));
-    // ⑫ 改动确认：贴在面板底部的浮层，不再用居中大模态把编辑器整个盖住
+    // ⑫ 改动确认在独立受信视图，不能靠模型可修改的宿主 DOM 冒充批准页。
     q('#ai-new').click();
     await sleep(350);
     await AiPanel.savePerms({});
@@ -3270,14 +3271,15 @@ module.exports = {
     await window.__aiApprovalProbe.configure({ permWrite: 'confirm', permRun: 'confirm', allowPaths: [] });
     await ask('第一次改', 2800);
     const cf = q('.ai-confirm');
-    add('改动确认是贴面板底部的浮层（不是居中大模态）', !!cf,
-      cf ? '浮层在' + (q('#ai-panel .ai-confirm') ? '面板内' : '面板外') : ('没出现 · 末条回复=' + lastReply()));
+    add('改动确认来自独立受信视图而非宿主伪造节点', !!cf&&!document.querySelector('.ai-confirm'),
+      cf ? '真实批准页已打开，宿主 DOM 不含批准节点' : ('没出现 · 末条回复=' + lastReply()));
     add('弹浮层时没有全屏遮罩（编辑器不被盖住）', !q('#modal-mask:not(.hidden)'));
     add('浮层里有文件名 + 加减行数', !!cf && !!cf.querySelector('.ai-cf-nm') && !!cf.querySelector('.ai-cf-stat'),
       cf && cf.querySelector('.ai-cf-nm') ? cf.querySelector('.ai-cf-nm').textContent + ' · ' + cf.querySelector('.ai-cf-stat').textContent : '');
     add('diff 直接铺在浮层里（不用再点开）', !!cf && !!cf.querySelector('.ai-cf-body .d-add'));
     add('有「收起 / 展开 diff」折叠按钮', !!q('#dw-fold'));
-    if (q('#dw-no')) { q('#dw-no').click(); await sleep(400); }
+    if (q('#dw-no')) await q('#dw-no').click();
+    await waitIdle();
     add('拒绝后浮层收起', !q('.ai-confirm'));
     // 再弹一次并留着：自检产物是给人看的，浮层到底长什么样得能看见（步骤结束后才截图）
     await ask('第一次改', 2800);

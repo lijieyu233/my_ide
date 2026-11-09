@@ -10,7 +10,7 @@ const resources = ['package.json', 'build/icon.png', 'renderer/index.html',
   'renderer/vendor/xlsx.min.js', 'renderer/vendor/pptx-preview.min.js',
   'node_modules/sql.js/dist/sql-wasm.wasm'];
 // 这些入口只在源码自检模式调用，不能为了让静态扫描通过而把开发脚本打入发行包。
-const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js']);
+const developmentImports = new Set(['scripts/check-ui-steps.js', 'scripts/ui-fixtures.js', 'scripts/ai-approval-test-probe.js', 'scripts/ai-check-model-fixture.js']);
 runtimeFiles.push('src/main/reader/reader-service.js','src/main/reader/reader-worker.js');
 runtimeFiles.push('src/main/ai/ai-workbench-tools.js','src/main/db/ai-query-jobs.js','src/main/db/ai-query-worker.js');
 runtimeFiles.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js');

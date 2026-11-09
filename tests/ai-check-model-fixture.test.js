@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),{reply,sse}=require('../scripts/ai-check-model-fixture');
+let passed=0;const test=(name,fn)=>{fn();passed++;console.log('PASS '+name);};
+test('最新用户是多模态时不回退去处理旧文本消息',()=>{const result=reply([{role:'user',content:'给我一段代码'},{role:'assistant',content:'旧示例'},{role:'user',content:[{type:'text',text:'危险命令'},{type:'image_url',image_url:{url:'data:image/png;base64,AAAA'}}]}]);assert.equal(result.toolCalls[0].name,'run_command');});
+test('引用文件内的旧关键词不能覆盖最后的明确测试指令',()=>{for(const instruction of ['第一次改这个文件','第二次改这个文件','危险命令']){const result=reply([{role:'user',content:'（文件 context.md 的内容：）\n```\n给我一段代码\n第一次改\n危险命令\n```\n\n'+instruction}]);assert.equal(result.toolCalls[0].name,instruction==='危险命令'?'run_command':'write_file');if(instruction.startsWith('第二次'))assert(result.toolCalls[0].args.content.startsWith('第二版'));}});
+test('当前问代码时不会重复执行历史用户的危险命令',()=>{const result=reply([{role:'user',content:'危险命令'},{role:'user',content:'给我一段代码'}]);assert.deepEqual(result.toolCalls,[]);assert(result.text.includes('```js'));});
+test('tool结果只收尾一次，不将历史指令再派发',()=>{for(const last of [{role:'tool',content:'写入成功'},{role:'user',content:'<tool_results>\n完成\n</tool_results>'}]){const result=reply([{role:'user',content:'第一次改'},last]);assert.deepEqual(result.toolCalls,[]);assert.equal(result.text,'好了，改完了。');}});
+test('普通用户文本包含tool_results但不是结果帧时不误判收尾',()=>{const result=reply([{role:'user',content:'引用文字 <tool_results>\n\n危险命令'}]);assert.equal(result.toolCalls[0].name,'run_command');});
+test('空文本图片消息不回头选择旧代码示例',()=>{const result=reply([{role:'user',content:'给我一段代码'},{role:'user',content:[{type:'image_url',image_url:{url:'data:image/png;base64,AAAA'}}]}]);assert.equal(result.toolCalls[0].name,'replace_edit');});
+test('SSE夹具保留原生调用锚点、参数和正确终态',()=>{const wire=sse([{role:'user',content:'第二次改'}]),event=JSON.parse(wire.split('\n')[0].slice(6));assert.equal(event.choices[0].finish_reason,'tool_calls');const call=event.choices[0].delta.tool_calls[0];assert.equal(call.id,'w2');assert.equal(JSON.parse(call.function.arguments).path,'_ui_perm.md');assert(wire.endsWith('data: [DONE]\n\n'));});
+console.log('AI离线模型夹具：'+passed+' 通过 / 0 失败');

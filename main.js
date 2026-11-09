@@ -218,7 +218,7 @@ function createWindow() {
     show: !HIDDEN_WINDOW,
     skipTaskbar: HIDDEN_WINDOW,
     webPreferences: {
-      additionalArguments: UI_CHECK ? ['--ai-approval-test'] : [],
+      additionalArguments: UI_CHECK || process.argv.includes('--check-ai-flow') ? ['--ai-approval-test'] : [],
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
@@ -1851,7 +1851,6 @@ app.whenReady().then(() => {
       const approvalProbe = require('./scripts/ai-approval-test-probe');
       approvalProbe.install({ ipcMain, webContents: require('electron').webContents, win: mainWindow });
       await mainWindow.webContents.executeJavaScript('(' + approvalProbe.renderer.toString() + ')()');
-      let stubRound = 0;
       // 翻译插件（llm:chat）同样打桩：自检要验「未选中文本也能弹窗 / 手动填文本能翻」，
       // 不能真去连 LLM（没配 key 会报错并弹设置页，步骤就跑偏了）
       ipcMain.removeHandler('llm:chat');
@@ -1866,33 +1865,9 @@ app.whenReady().then(() => {
         aiTools.bind(aiSender(e,context),context);
         aiPermissionsBridge.newSession(aiSender(e,context), context);
         const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, ch === 'ai:chunk' ? { delta: d, context } : { ...d, context }); } catch {} };
-        // 按「用户这轮说了什么」分派动作（不靠轮次计数，多个自检步骤才能各说各话）
-        const msgs = Array.isArray(messages) ? messages : [];
-        const last = msgs[msgs.length - 1] || {};
-        const toolDone = last.role === 'tool'
-          || (typeof last.content === 'string' && last.content.indexOf('<tool_results>') >= 0);
-        let r;
-        if (toolDone) {
-          const t = '好了，改完了。';
-          for (const ch of t) send('ai:chunk', ch); // 逐字符流式，跟真实请求一样的观感
-          r = { ok: true, text: t, toolCalls: [] };
-        } else {
-          const u = [...msgs].reverse().find((m) => m.role === 'user' && typeof m.content === 'string');
-          const ut = (u && u.content) || '';
-          if (ut.indexOf('危险命令') >= 0) {
-            r = { ok: true, text: '', toolCalls: [{ id: 'd1', name: 'run_command', args: { command: 'rm -rf node_modules' } }] };
-          } else if (ut.indexOf('给我一段代码') >= 0) {
-            const t2 = '给你一个例子：\n\n```js\nconst a = 1;\nconsole.log(a);\n```\n\n需要的话我可以插到光标处。';
-            for (const ch of t2) send('ai:chunk', ch);
-            r = { ok: true, text: t2, toolCalls: [] };
-          } else if (ut.indexOf('第一次改') >= 0) {
-            r = { ok: true, text: '', toolCalls: [{ id: 'w1', name: 'write_file', args: { path: '_ui_perm.md', content: '第一版内容\n第二行\n' } }] };
-          } else if (ut.indexOf('第二次改') >= 0) {
-            r = { ok: true, text: '', toolCalls: [{ id: 'w2', name: 'write_file', args: { path: '_ui_perm.md', content: '第二版内容\n第二行\n' } }] };
-          } else {
-            r = { ok: true, text: '', toolCalls: [{ id: 'c1', name: 'replace_edit', args: { path: '_ui_outline.md', search: '## 二级 B', replace: '## 二级 B（备注）' } }] };
-          }
-        }
+        // 与独立 AI 全链验收共用夹具，不能因引用文本或旧消息里的关键词误派工具。
+        const r=require('./scripts/ai-check-model-fixture').reply(messages);
+        for(const ch of r.text)send('ai:chunk',ch);
         const terminal = { ...r, status: 'completed', complete: true, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop' };
         send('ai:done', terminal);
         return { ...terminal, context };

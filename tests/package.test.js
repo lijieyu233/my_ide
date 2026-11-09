@@ -31,7 +31,7 @@ async function test(name, fn) {
       'src/main/git/git-ops.js', 'src/main/db/db-service.js', 'src/main/ai/ai-service.js', 'src/main/launch/launch-ops.js', 'src/main/launch/launch-service.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js'];
     production.push('src/main/ai/ai-workbench-tools.js','src/main/db/ai-query-jobs.js','src/main/db/ai-query-worker.js');
     production.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/quick-launch-service.js', 'src/main/launch/quick-launch-app.js', 'src/main/ai/ai-tool-contract.js', 'src/main/ai/ai-tool-execution.js', 'src/main/ai/ai-path-lease-win.js');
-    production.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js', 'src/main/browser/html-preview.js', 'src/main/dsh/dsh-runtime.js', 'src/main/dsh/ai-dsh.js', 'src/main/dsh/ai-dsh-rpc.js');
+    production.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js', 'src/main/browser/html-preview.js', 'src/main/dsh/dsh-runtime.js', 'src/main/dsh/ai-dsh.js', 'src/main/dsh/ai-dsh-rpc.js', 'src/main/dsh/dsh-session-watch.js');
     production.push("src/main/remote/remote-service.js", "src/main/remote/remote-ipc.js", "src/main/remote/remote-local.js");
     // main.js 直接 require 的另五个模块。checkPackage 从 main.js 递归解析 require，
     // 漏掉任何一个都会报「缺少运行时文件」——而这份夹具是手工维护的 production 数组，
@@ -99,7 +99,7 @@ async function test(name, fn) {
       assert.throws(() => checkPackage(archive), /missing-icon/);
     });
     put('renderer/styles.css');
-    for (const [i, file] of ['docs/private.md', 'tests/fixture.js', '.ui-check-trash/secret.txt',
+    for (const [i, file] of ['docs/private.md', 'tests/fixture.js', 'scripts/ai-check-model-fixture.js', '.ui-check-trash/secret.txt',
       '.env', 'sample.db', 'launch.json', 'node_modules/electron/package.json', 'node_modules/jsdom/package.json'].entries()) {
       put(file, 'fixture-marker');
       const archive = await pack('forbidden-' + i);
