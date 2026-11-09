@@ -4494,6 +4494,12 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel {
 .ai-engine-row, .ai-model-row { display: flex; align-items: center; gap: 0; padding: 0; border: 0; min-width: 0; font-size: .9em; color: var(--text-dim); }
 .ai-model-row { flex: 0 1 320px; }
 #ai-model, #ai-engine { width: 100%; max-width: none; min-width: 0; margin: 0; padding: 4px 5px; height: 28px; font: inherit; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 5px; text-overflow: ellipsis; cursor: pointer; }
+/* 原生弹出列表不能继承透明底色，否则鼠标离开 select 后 Windows 会回退到白底。 */
+#ai-model option, #ai-model optgroup,
+#ai-engine option, #ai-engine optgroup,
+#ai-dsh-options select option, #ai-dsh-options select optgroup {
+  background-color: var(--bg-input); color: var(--text);
+}
 #ai-model:hover, #ai-engine:hover, #ai-dsh-reasoning:hover { background: var(--btn-hover); }
 #ai-model:focus-visible, #ai-engine:focus-visible, #ai-dsh-reasoning:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 #ai-dsh-options { padding: 0; gap: 0; flex: none; font-size: .9em; }

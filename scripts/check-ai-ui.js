@@ -37,6 +37,21 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     assert(await js('document.querySelector(".ai-welcome").textContent.includes("整理你的文档")&&!document.querySelector(".ai-welcome").textContent.includes("还没配置")'));
     await capture('ai-ui-standard.png');
   });
+  await test('模型下拉选项与分组在鼠标移出后仍保持主题底色',async()=>{
+    await js('document.getElementById("ai-model").insertAdjacentHTML("beforeend",\'<optgroup label="主题检查"><option value="theme-check">主题检查模型</option></optgroup>\');true');
+    for(const theme of ['dark','crimson','graphite','light','pink']){
+      await js(`Theme.set(${JSON.stringify(theme)});true`);
+      const point=await js('(()=>{const r=document.getElementById("ai-model").getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()');
+      for(const position of [point,{x:0,y:0}]){
+        win.webContents.sendInputEvent({type:'mouseMove',...position});await sleep(50);
+        const colors=await js('(()=>{const probe=document.createElement("span");probe.style.cssText="background:var(--bg-input);color:var(--text)";document.getElementById("ai-panel").append(probe);const expected=getComputedStyle(probe),result={background:expected.backgroundColor,color:expected.color,options:[...document.querySelectorAll("#ai-model option,#ai-model optgroup")].map(el=>{const c=getComputedStyle(el);return {background:c.backgroundColor,color:c.color}})};probe.remove();return result})()');
+        assert(colors.options.length>1);
+        for(const option of colors.options){assert.equal(option.background,colors.background,theme);assert.equal(option.color,colors.color,theme);}
+      }
+    }
+    await js('document.getElementById("ai-model").lastElementChild.remove();Theme.set("crimson");true');
+    await capture('ai-ui-model-theme.png');
+  });
   await test('多行输入增长并可清空恢复，发送按钮保持在框内',async()=>{
     const height=await js('document.querySelector(".ai-input-box").getBoundingClientRect().height');
     await js('const el=document.getElementById("ai-input");el.value="第一行\\n第二行\\n第三行\\n第四行";el.dispatchEvent(new Event("input"));true');
