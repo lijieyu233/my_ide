@@ -102,12 +102,24 @@ function selectionWithReasoning(catalog,selection,previous){
  * 只保留看得见的三类：用户文本、助手文本、工具行。turn/end 之后的事件属于下一轮，
  * 由调用方按 turn 分条。
  */
+function historyUserText(data){
+  const kind=String(data?.source?.kind||'');
+  if(kind&&kind!=='user')return '';
+  const text=(Array.isArray(data?.content)?data.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
+  return /^\s*<(system-reminder|available_skills)\b/i.test(text)||/^Current runtime context\./i.test(text)?'':text;
+}
+function historyEventVisible(event){
+  if(event.type==='user/message')return !!historyUserText(event.data);
+  if(event.type==='assistant/message')return (Array.isArray(event.data?.message?.content)?event.data.message.content:[]).some(block=>block?.type==='text'&&block.text||block?.type==='tool-call'&&!/^mcp__myide__/.test(String(block.name||'')));
+  return event.type==='tool/result'&&!!(event.data?.toolCallId||event.data?.message?.toolCallId);
+}
 function foldHistory(records){
   const turns=[];
   let current=null;
   // 每条用户发言都开新的一轮：宿主不保证每条日志都有 turn/start（实测有的会话
   // 完全没有这个事件），只靠它分组会把整场对话折成一轮，用户发言全挤在最前面。
-  const startTurn=turn=>{current={turn,parts:[],text:''};turns.push(current);return current;};
+  // 一轮内工具可并发，结果按调用顺序到达时反向找 parts 会退化为平方；索引只属于当前轮。
+  const startTurn=turn=>{current={turn,parts:[],tools:new Map()};turns.push(current);return current;};
   const ensure=()=>current||startTurn(0);
   // 内置工具返回的正文常常是整段 JSON 或捕获的输出；历史回放里截断到一屏能接受的长度，
   // 否则一次工具结果就能把整个历史撑成几十万字符（真实会话里见过 40KB+）。
@@ -120,19 +132,12 @@ function foldHistory(records){
    * context」开头）。回放时把它们画成用户的发言气泡，等于把系统提示当成用户说过的话 ——
    * 实测一条就有 5KB，列表里第一屏全是这些内容，用户真正的问题反而被顶到很下面。
    */
-  const isInjected=data=>{
-    const kind=String(data?.source?.kind||'');
-    if(kind&&kind!=='user')return true;
-    const text=(Array.isArray(data?.content)?data.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
-    return /^\s*<(system-reminder|available_skills)\b/i.test(text)||/^Current runtime context\./i.test(text);
-  };
   for(const record of records||[]){
     const event=record?.event;if(!event||typeof event.type!=='string')continue;
     const data=event.data;
     if(event.type==='turn/start'){startTurn(Number(data?.turn)||0);continue;}
     if(event.type==='user/message'){
-      if(isInjected(data))continue;
-      const text=(Array.isArray(data?.content)?data.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
+      const text=historyUserText(data);
       if(text)startTurn(Number(data?.turn)||turns.length).parts.push({kind:'text',role:'user',text});
       continue;
     }
@@ -142,14 +147,17 @@ function foldHistory(records){
         if(block?.type==='text'&&block.text)ensure().parts.push({kind:'text',role:'assistant',text:block.text});
         // MyIDE 自己的 MCP 工具（mcp__myide__*）在实时流里就不显示，历史也别显示：
         // 那是面板与宿主之间的消息通道，不是用户要看的「模型干了什么」。
-        else if(block?.type==='tool-call'&&!/^mcp__myide__/.test(String(block.name||'')))ensure().parts.push({kind:'tool',call:{name:block.name||'工具',args:block.arguments??{}},callId:block.id||''});
+        else if(block?.type==='tool-call'&&!/^mcp__myide__/.test(String(block.name||''))){
+          const part={kind:'tool',call:{name:block.name||'工具',args:block.arguments??{}},callId:block.id||''},turn=ensure();
+          turn.parts.push(part);turn.tools.set(part.callId,part);
+        }
       }
       continue;
     }
     if(event.type==='tool/result'){
       const callId=data?.toolCallId||data?.message?.toolCallId||'';
       if(!callId)continue;
-      const part=ensure().parts.findLast(item=>item.kind==='tool'&&item.callId===callId);
+      const part=ensure().tools.get(callId);
       if(!part)continue;
       part.status=data?.error||data?.message?.isError?'failed':'completed';
       const output=(Array.isArray(data?.message?.content)?data.message.content:[]).filter(block=>block?.type==='text').map(block=>block.text).join('\n');
@@ -408,7 +416,7 @@ class NativeRpc extends EventEmitter {
     if(!['queue','steer'].includes(mode))throw Error('输入方式无效');
     const controller=new AbortController(),batch={controller,requests:new Map([[requestId,{requestId,status:'admitting'}]]),activeTurn:null,currentTurn:null,currentTurnSeq:null,currentTurnStartedAt:null,ready:false,closed:false,stopping:false};
     const eventTime=event=>typeof event?.time==='number'&&Number.isFinite(event.time)&&event.time>=0?event.time:null;
-    state.controller=controller;state.inputBatch=batch;state.inputQueue=null;state.inputAdmissions=new Map();let reader,buffer='',snapshot=false,lastSeq=-1,lastError=null,readPending;
+    state.controller=controller;state.inputBatch=batch;state.inputQueue=null;state.inputAdmissions=new Map();let reader,fragments=[],bufferedBytes=0,snapshot=false,lastSeq=-1,lastError=null,readPending;
     const decoder=new TextDecoder(),finished=()=>batch.ready&&batch.activeTurn===null&&[...batch.requests.values()].every(entry=>['done','removed','failed'].includes(entry.status));
     this.publishInputState(params.sessionId,state);
     try{
@@ -422,8 +430,14 @@ class NativeRpc extends EventEmitter {
         if(next.changed)continue;
         readPending=null;const {done,value}=next.read;
         if(done){this.close();throw Error('DSH 连接已断开；下次发送会重新连接，本次任务未确认完成');}
-        buffer+=decoder.decode(value,{stream:true});if(Buffer.byteLength(buffer)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
-        let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
+        const decoded=decoder.decode(value,{stream:true});let start=0,end;
+        // follow 与 observe 一样只扫描新片段；预算按单帧而非一次 read 的所有合法消息之和计算。
+        // 此处不增加跨任务 yield，保持 user/message 激活到后续 MCP 调用的原有顺序。
+        while((end=decoded.indexOf('\n',start))>=0){
+          const piece=decoded.slice(start,end);start=end+1;
+          if(bufferedBytes+Buffer.byteLength(piece)>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');
+          const line=fragments.length?fragments.join('')+piece:piece;fragments=[];bufferedBytes=0;
+          if(!line)continue;const frame=JSON.parse(line);
           if(frame.type==='failure')throw Error(frame.error);
           if(frame.type==='permission'||frame.type==='question'){
             if(batch.stopping||batch.activeTurn===null)continue;
@@ -479,6 +493,7 @@ class NativeRpc extends EventEmitter {
           if(/^(todo|plan)\//.test(event.type))this.notifyUpdate(params.sessionId,{sessionUpdate:'myide_projection',event});
           if(event.type==='request/context')this.notifyUpdate(params.sessionId,{sessionUpdate:'usage_update',used:data.inputTokens||0,size:data.contextWindow||0});
         }
+        if(start<decoded.length){const rest=decoded.slice(start);bufferedBytes+=Buffer.byteLength(rest);if(bufferedBytes>16*1024*1024)throw Error('原生 DSH 消息超过读取预算');fragments.push(rest);}
       }
     }catch(error){if(batch.stopping){await batch.cancelPromise;if(batch.cancelError)throw batch.cancelError;return {stopReason:'cancelled'};}if(!controller.signal.aborted&&error instanceof TypeError)this.close();throw error;}
     finally{batch.activeTurn=null;batch.closed=true;this.publishInputState(params.sessionId,state);controller.abort();await reader?.cancel().catch(()=>{});state.controller=null;for(const [id,item] of this.answers)if(item.sessionId===params.sessionId)this.answers.delete(id);}
@@ -554,4 +569,4 @@ async function connectNativeOnce({home,runtime,skipInstall=false,discoveryFile,f
   }while(true);
   throw Error(issue+'。请确认 DeepSeek Harness 桌面程序已打开，然后点击「重新连接」。');
 }
-module.exports={inputQueueView,connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory,absoluteCatalogRoot,catalogEntry};
+module.exports={inputQueueView,connectNative,NativeRpc,install,nativeUrl,configOptions,selectionWithReasoning,turnFailure,foldHistory,historyEventVisible,absoluteCatalogRoot,catalogEntry};

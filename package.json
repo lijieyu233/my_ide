@@ -30,6 +30,7 @@
     "check:ui-polish": "electron scripts/check-ui-polish.js --disable-gpu --no-sandbox",
     "check:ai-ui": "electron scripts/check-ai-ui.js --disable-gpu --no-sandbox",
     "check:ai-flow": "node scripts/run-electron-check.js check-ai-flow.js",
+    "check:ai-stream": "node scripts/run-electron-check.js check-ai-stream-responsiveness.js",
     "check:md-geometry": "electron scripts/check-md-geometry.js --disable-gpu --no-sandbox",
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
     "check:md-table": "electron scripts/check-md-table.js --disable-gpu --no-sandbox",

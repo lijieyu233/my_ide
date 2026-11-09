@@ -3350,6 +3350,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   color: var(--text);
 }
 /* 消息内 markdown（沿用 .md-view 排版基调） */
+.ai-md.ai-stream-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-md p { margin: 6px 0; }
 .ai-md h1, .ai-md h2, .ai-md h3, .ai-md h4 { color: var(--text-bright); margin: 12px 0 6px; line-height: 1.3; }
 .ai-md h1 { font-size: 1.38em; } .ai-md h2 { font-size: 1.23em; } .ai-md h3 { font-size: 1.08em; } .ai-md h4 { font-size: 1em; }

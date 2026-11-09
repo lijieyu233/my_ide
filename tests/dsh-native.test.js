@@ -43,7 +43,7 @@ function inputFixture(options={}){
  const state={catalog,selected:catalog.default,cwd:'D:/fixture'};rpc.sessions.set(id,state);rpc.on('notification',item=>updates.push(item.params.update));
  const consume=requestId=>{const target=['next-turn','next-step'].find(target=>inbox[target].some(item=>item.source.rpcId===requestId));assert(target,'pending fixture request '+requestId);const index=inbox[target].findIndex(item=>item.source.rpcId===requestId),message=inbox[target][index];splice(target,index,1,[]);send('user/message',message);};
  const start=async(params={})=>{const pending=rpc.request('session/prompt',{sessionId:id,requestId:'initial',prompt:[{type:'text',text:'initial'}],...params});pending.catch(()=>{});await until(()=>state.inputBatch?.ready||state.inputBatch?.closed);return {pending};};
- return {rpc,state,calls,updates,inbox,send,consume,start,close(){if(!done){done=true;try{output?.close();}catch{}}rpc.close();}};
+ return {rpc,state,calls,updates,inbox,send,consume,start,writeBytes:bytes=>output.enqueue(bytes),close(){if(!done){done=true;try{output?.close();}catch{}}rpc.close();}};
 }
 (async()=>{
  await test('原生连接只接受本机HTTP服务，拒绝凭据、远程、本地文件',()=>{assert.equal(nativeUrl('http://127.0.0.1:1234/?token=test').port,'1234');for(const url of ['http://evil.test:1234/','http://user:pass@127.0.0.1:12/','file:///x','http://127.0.0.1:12/api'])assert.throws(()=>nativeUrl(url));});
@@ -384,7 +384,22 @@ function inputFixture(options={}){
   assert(!JSON.stringify(turns).includes('mcp__myide__ide_state'));
   assert.equal(turns[0].parts.find(part=>part.kind==='tool').status,'completed');
  });
- await test('existing:true 先要求目录认可，恢复时仍带 cwd 连接真实 MCP，绝不跳过 attach',async()=>{
+ await test('工具索引保留同轮并发结果顺序、同id最后调用及跨轮隔离，不扫描parts',()=>{
+   const {foldHistory}=require('../src/main/dsh/dsh-native'),records=[];
+   const add=(type,data)=>records.push({event:{seq:records.length+1,type,data}});
+   add('turn/start',{turn:1});
+   for(let i=0;i<3000;i++)add('assistant/message',{message:{content:[{type:'tool-call',id:'c'+i,name:'fixture',arguments:{i}}]}});
+   for(let i=0;i<3000;i++)add('tool/result',{toolCallId:'c'+i,message:{content:[{type:'text',text:'output-'+i}]}});
+   add('assistant/message',{message:{content:[{type:'tool-call',id:'same',name:'old'},{type:'tool-call',id:'same',name:'latest'}]}});
+   add('tool/result',{toolCallId:'same',error:true,message:{content:[{type:'text',text:'last only'}]}});
+   add('turn/start',{turn:2});add('tool/result',{toolCallId:'c0',message:{content:[{type:'text',text:'must not overwrite'}]}});
+   const original=Array.prototype.findLast;let turns;
+   try{Array.prototype.findLast=function(){throw Error('fold must not linearly search parts');};turns=foldHistory(records);}finally{Array.prototype.findLast=original;}
+   assert.equal(turns.length,1);assert.equal(turns[0].parts.length,3002);
+   for(let i=0;i<3000;i++){assert.equal(turns[0].parts[i].callId,'c'+i);assert.equal(turns[0].parts[i].output,'output-'+i);}
+   assert.equal(turns[0].parts[3000].status,undefined);assert.equal(turns[0].parts[3001].status,'failed');assert.equal(turns[0].parts[3001].output,'last only');
+  });
+  await test('existing:true 先要求目录认可，恢复时仍带 cwd 连接真实 MCP，绝不跳过 attach',async()=>{
   const calls=[],rpc=new NativeRpc('http://127.0.0.1:12','cookie',async(url,init)=>{
    const envelope=JSON.parse(init.body);calls.push({method:envelope.method,args:envelope.payload.args});
    const value=envelope.method==='session/list'?{items:[{sessionId:'session-a',updatedAt:1,running:false,cwd:'D:/p',projections:{values:{title:'t'}}}]}:envelope.method==='session/modelCatalog'?catalog:envelope.method==='session/projections'?{values:{}}:{};
@@ -653,5 +668,31 @@ function inputFixture(options={}){
        assert.equal((await pending).stopReason,'end_turn');assert.deepEqual(f.updates.find(update=>update.consumedRequestId==='edited-input').consumedContent,[{type:'text',text:'actual edited content'}]);assert(!f.updates.some(update=>update.consumedRequestId==='foreign-input'||JSON.stringify(update.consumedContent||'').includes('foreign content')));
       }finally{f.close();if(pending)await pending.catch(()=>{});}
      });
-     console.log('原生DSH连接：'+count+' 通过 / 0 失败');
+     await test('Native follow 多MiB中文正文64KiB跨片完整保留，active归属不变',async()=>{
+       const f=inputFixture();let pending;try{
+        ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+        const content='中文🧪'.repeat(300000),frame=(seq,type,data)=>({type:'session',value:{type:'event',event:{seq,type,data}}});
+        const bytes=Buffer.from(JSON.stringify(frame(100,'assistant/message',{message:{id:'big-chinese',content:[{type:'text',text:content}]}}))+'\n'+JSON.stringify(frame(101,'turn/end',{turn:1,reason:{kind:'completed'}}))+'\n');
+        for(let offset=0;offset<bytes.length;offset+=65536)f.writeBytes(bytes.subarray(offset,offset+65536));
+        assert.equal((await pending).stopReason,'end_turn');assert.deepEqual(f.updates.filter(update=>update.sessionUpdate==='agent_message_chunk').map(update=>update.content.text),[content]);assert.equal(f.calls.filter(call=>call.method==='session/prompt').length,1);
+       }finally{f.close();if(pending)await pending.catch(()=>{});}
+      });
+      await test('Native follow 同read多帧总量超过16MiB不误拒，按帧保留完整内容顺序',async()=>{
+       const f=inputFixture();let pending;try{
+        ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+        const content='x'.repeat(9*1024*1024),frame=(seq,type,data)=>({type:'session',value:{type:'event',event:{seq,type,data}}}),frames=[];
+        for(let i=0;i<2;i++)frames.push(frame(100+i,'assistant/message',{message:{id:'large-'+i,content:[{type:'text',text:content+i}]}}));
+        frames.push(frame(102,'turn/end',{turn:1,reason:{kind:'completed'}}));const bytes=Buffer.from(frames.map(value=>JSON.stringify(value)).join('\n')+'\n');assert(bytes.length>16*1024*1024);f.writeBytes(bytes);
+        assert.equal((await pending).stopReason,'end_turn');const updates=f.updates.filter(update=>update.sessionUpdate==='agent_message_chunk');assert.deepEqual(updates.map(update=>update.messageId),['large-0','large-1']);assert.equal(updates[0].content.text,content+'0');assert.equal(updates[1].content.text,content+'1');
+       }finally{f.close();if(pending)await pending.catch(()=>{});}
+      });
+      await test('Native follow 真正单帧超过16MiB无论完整或跨片都拒绝，不发送截断正文',async()=>{
+       for(const fragmented of [false,true]){const f=inputFixture();let pending;try{
+        ({pending}=await f.start());f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
+        const bytes=Buffer.from(JSON.stringify({type:'session',value:{type:'event',event:{seq:100,type:'assistant/message',data:{message:{content:[{type:'text',text:'x'.repeat(16*1024*1024)}]}}}}})+'\n'),rejected=assert.rejects(pending,/读取预算/);
+        if(fragmented)for(let offset=0;offset<bytes.length;offset+=65536)f.writeBytes(bytes.subarray(offset,offset+65536));else f.writeBytes(bytes);
+        await rejected;assert(!f.updates.some(update=>update.sessionUpdate==='agent_message_chunk'));assert.equal(f.state.inputBatch.closed,true);
+       }finally{f.close();if(pending)await pending.catch(()=>{});}}
+      });
+      console.log('原生DSH连接：'+count+' 通过 / 0 失败');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

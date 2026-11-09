@@ -169,6 +169,8 @@ const AiPanel = (() => {
     if (!runIsCurrent(run)) return;
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
     run.status = status;
+    if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
+    if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     for (const group of run.activityGroups || []) paintToolGroup(group);
     setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
@@ -897,7 +899,7 @@ const AiPanel = (() => {
     plan:'M3 2h10v12H3zM5 5h1M8 5h3M5 8h1M8 8h3M5 11h1M8 11h3',
     tools:'M2 3h12v10H2zM4 6l2 2-2 2M8 10h3'
   };
-  const firstActivityLine = value => String(value ?? '').split(/\r?\n/, 1)[0].trim();
+  const firstActivityLine = value => String(value ?? '').slice(0,512).split(/\r?\n/,1)[0].trim();
   function toolPresentation(call) {
     const name = String(call.name || ''), short = name.split('.').pop();
     let args = call.args;
@@ -1040,6 +1042,7 @@ const AiPanel = (() => {
   }
   function removeDshThought(row) {
     if (!row) return;
+    cancelLiveText(row.querySelector('pre'));
     const member=toolRows.get(row), group=member?.group, data=toolGroups.get(group);
     row.remove();
     if (data) {
@@ -1264,9 +1267,33 @@ const AiPanel = (() => {
   // ---------- 消息渲染 ----------
   // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
   let replayDepth = 0, historyReplayJob = null;
+  const pendingScrolls=new WeakSet();
   function scrollBottom() {
-    if (msgsEl && !replayDepth) msgsEl.scrollTop = msgsEl.scrollHeight;
+    const box=msgsEl;
+    if(!box||replayDepth||backgroundView||!box.isConnected||pendingScrolls.has(box))return;
+    // 流式突发不能逐条读取scrollHeight，否则每个chunk都迫使整栏重新布局。
+    pendingScrolls.add(box);setTimeout(()=>{pendingScrolls.delete(box);if(box===msgsEl&&!backgroundView&&box.isConnected&&!replayDepth)box.scrollTop=box.scrollHeight;},16);
   }
+  const livePaints=new WeakMap(),LIVE_TEXT_LIMIT=8192;
+  function paintLiveText(row,text,{final=false,plain=false,cursor=false}={}){
+    let state=livePaints.get(row);if(!state){state={timer:null,text:null,plain,cursor};livePaints.set(row,state);}
+    if(state.text===text&&state.plain===plain&&state.cursor===cursor&&(!final||state.final))return;
+    state.text=text;state.plain=plain;state.cursor=cursor;state.final=final;
+    const paint=()=>{
+      state.timer=null;const md=row.querySelector('.ai-md')||row;
+      // 长回复尚未完成时仅显示原文；反复全量Markdown解析和自动识别代码是秒级卡顿源。
+      const raw=state.plain||!final&&state.text.length>LIVE_TEXT_LIMIT;
+      if(raw){if(!md.classList.contains('ai-stream-plain'))md.replaceChildren();md.classList.add('ai-stream-plain');if(!md.firstChild)md.appendChild(document.createTextNode(state.text));else md.firstChild.textContent=state.text;}
+      else{md.classList.remove('ai-stream-plain');md.innerHTML=renderMd(state.text);}
+      md.querySelector('.ai-cursor')?.remove();if(state.cursor&&!final){const dot=document.createElement('span');dot.className='ai-cursor';md.appendChild(dot);}
+      if(final&&!plain)decorateCodeBlocks(row);if(row.isConnected&&msgsEl.contains(row))scrollBottom();
+    };
+    if(final){if(state.timer)clearTimeout(state.timer);paint();return;}
+    if(text.length<=LIVE_TEXT_LIMIT&&!state.timer){paint();return;}
+    if(!state.timer)state.timer=setTimeout(paint,40);
+  }
+  function finishLiveText(row){const state=livePaints.get(row);if(state)paintLiveText(row,state.text,{final:true,plain:state.plain});}
+  function cancelLiveText(row){const state=livePaints.get(row);if(state?.timer)clearTimeout(state.timer);livePaints.delete(row);}
 
   function renderMd(text) {
     try {
@@ -1281,8 +1308,12 @@ const AiPanel = (() => {
     const div = document.createElement('div');
     div.innerHTML = html;
     if (window.hljs) {
+      let budget=16000;
       div.querySelectorAll('pre code').forEach((b) => {
-        try { hljs.highlightElement(b); } catch {}
+        const size=b.textContent.length;
+        // 高亮只是装饰：大代码块/无语言自动检测会占满UI线程，保留完整原文而不猜语言。
+        if(size>4000||size>budget||![...b.classList].some(name=>name.startsWith('language-')&&window.hljs.getLanguage?.(name.slice(9))))return;
+        budget-=size;try { hljs.highlightElement(b); } catch {}
       });
     }
     return div.innerHTML;
@@ -1916,8 +1947,8 @@ const AiPanel = (() => {
   }
 
   function sealDshSegment(run){
-    const stream=run.stream;if(!stream)return;
-    stream.element.querySelector('.ai-cursor')?.remove();
+    const stream=run.stream;if(!stream||stream.afterActivity)return;
+    finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
     if(!stream.segment?.text)stream.element.remove();
     stream.afterActivity=true;
   }
@@ -1925,12 +1956,12 @@ const AiPanel = (() => {
     const stream=run.stream;
     if(stream.afterActivity || stream.segment && messageId && stream.messageId && stream.messageId!==messageId){
       sealActivityGroup();
-      stream.element.querySelector('.ai-cursor')?.remove();
+      finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
       stream.element=addMsg('assistant','');curStream=stream.element;stream.segment=null;stream.afterActivity=false;
     }
     if(!stream.segment){stream.segment={kind:'text',text:''};stream.timeline.push(stream.segment);}
     stream.messageId=messageId||stream.messageId;stream.segment.text+=delta;stream.text+=delta;stream.partText=(stream.partText||'')+delta;curText=stream.text;
-    stream.element.querySelector('.ai-md').innerHTML=renderMd(stream.segment.text);
+    paintLiveText(stream.element,stream.segment.text,{cursor:true});
     const segment=stream.segment;stream.element.querySelector('.ai-copy').onclick=()=>MI.copyText(segment.text);
     return stream.element.querySelector('.ai-md');
   }
@@ -1954,7 +1985,8 @@ const AiPanel = (() => {
   function finishDshReply(text,isErr,r,run,stream,complete,warning){
     if(!stream.text && r?.text)appendDshText(run,r.text);
     else if(!stream.text && !isErr && text)appendDshText(run,text);
-    stream.element.querySelector('.ai-cursor')?.remove();
+    finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
+    if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     if(!stream.segment?.text)stream.element.remove();
     if(isErr || !complete){
       const note=r?.error||warning||(r?.aborted?'已停止生成':'回复未完成');
@@ -1973,7 +2005,8 @@ const AiPanel = (() => {
     if (!runIsLive(run) || !stream || stream.finished || run.stream !== stream || !identityMatches(r?.context, stream.context)) return;
     stream.finished = true;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
-    const md = curStream.querySelector('.ai-md');
+    if(run.engine!=='dsh')cancelLiveText(curStream);
+    const md = curStream.querySelector('.ai-md');if(run.engine!=='dsh')md.classList.remove('ai-stream-plain');
     let complete = r?.status === 'completed' && r?.complete === true && r?.ok === true && !r?.aborted
       && ['stop', 'tool_calls'].includes(r?.finishReason)
       && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
@@ -2620,8 +2653,8 @@ const AiPanel = (() => {
     if (!watch) return;
     for (const entry of watch.pending.values()) { entry.active = false; entry.element.remove(); }
     watch.pending.clear();
-    watch.preview?.remove(); watch.preview = null;
-    removeDshThought(watch.thinking); watch.thinking = null;
+    if(watch.preview){cancelLiveText(watch.preview);watch.preview.remove();}watch.preview=null;
+    if(watch.thinking)cancelLiveText(watch.thinking.querySelector('pre'));removeDshThought(watch.thinking);watch.thinking=null;
     watch.interactionNotice?.remove(); watch.interactionNotice = null;
     if (watch.notice?.timer) {clearInterval(watch.notice.timer);watch.notice.timer=null;}
     if (watch.notice?.hideTimer) {clearTimeout(watch.notice.hideTimer);watch.notice.hideTimer=null;}
@@ -2788,14 +2821,21 @@ const AiPanel = (() => {
     // 保留同一请求的表单节点和已填答案；history replay 不能把输入中途清空。
     const thinkingOpen=watch.thinkingChoice?.open??watch.thinking?.open, thinkingGroupOpen=watch.thinkingChoice?.group??toolRows.get(watch.thinking)?.group.open;
     delete watch.thinkingChoice;
-    watch.preview?.remove(); watch.preview = null;
-    removeDshThought(watch.thinking); watch.thinking = null;
-    if (state.preview?.thinking) {
-      watch.thinking=renderDshThought({kind:'thought',text:state.preview.thinking},'watch:'+watch.watchId,state.running === true ? 'running' : 'completed');
-      if(thinkingOpen !== undefined)watch.thinking.open=thinkingOpen;
-      if(thinkingGroupOpen !== undefined)toolRows.get(watch.thinking).group.open=thinkingGroupOpen;
-    }
-    if (state.preview?.text) watch.preview = addMsg('assistant',state.preview.text);
+    if(state.preview?.thinking){
+      if(!watch.thinking||!msgsEl.contains(watch.thinking)){
+        watch.thinking=renderDshThought({kind:'thought',text:''},'watch:'+watch.watchId,state.running===true?'running':'completed');
+        if(thinkingOpen!==undefined)watch.thinking.open=thinkingOpen;
+        if(thinkingGroupOpen!==undefined)toolRows.get(watch.thinking).group.open=thinkingGroupOpen;
+      }
+      paintLiveText(watch.thinking.querySelector('pre'),state.preview.thinking,{plain:true,final:state.running!==true});
+      const member=toolRows.get(watch.thinking);member.tx.textContent=' · '+firstActivityLine(state.preview.thinking);
+      const status=state.running?'running':'completed';if(member.state!==status)setDshToolState(watch.thinking,state.running?'in_progress':'completed');
+    }else{if(watch.thinking)cancelLiveText(watch.thinking.querySelector('pre'));removeDshThought(watch.thinking);watch.thinking=null;}
+    if(state.preview?.text){
+      if(!watch.preview||!msgsEl.contains(watch.preview)){sealActivityGroup();watch.preview=addMsg('assistant','');}
+      watch.previewText=state.preview.text;const previewWatch=watch;watch.preview.querySelector('.ai-copy').onclick=()=>MI.copyText(previewWatch.previewText);
+      paintLiveText(watch.preview,state.preview.text,{final:state.running!==true});
+    }else{if(watch.preview){cancelLiveText(watch.preview);watch.preview.remove();}watch.preview=null;watch.previewText='';}
     renderDshWatchPending(watch); updateDshWatchStatus(watch); scrollBottom();
   }
   function mergeDshWatchHistory(watch,state) {
@@ -3824,7 +3864,7 @@ const AiPanel = (() => {
           run.thoughtPart={kind:'thought',text:''};run.stream.timeline.push(run.thoughtPart);run.thought=renderDshThought(run.thoughtPart);
         }
         run.thoughtPart.text+=update.content.text;
-        run.thought.querySelector('pre').textContent=run.thoughtPart.text;toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run,'深度求索');
+        paintLiveText(run.thought.querySelector('pre'),run.thoughtPart.text,{plain:true});toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run,'深度求索');
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
@@ -3991,10 +4031,7 @@ const AiPanel = (() => {
       if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
       let md;
       if(run.engine==='dsh')md=appendDshText(run,event.delta,event.messageId);
-      else{stream.text += event.delta;curText = stream.text;md = curStream.querySelector('.ai-md');md.innerHTML = renderMd(curText);}
-      const d = document.createElement('span');
-      d.className = 'ai-cursor';
-      md.appendChild(d);
+      else{stream.text += event.delta;curText = stream.text;md = curStream.querySelector('.ai-md');paintLiveText(curStream,curText,{cursor:true});}
       scrollBottom();
     }
     window.myIDE.ai.onChunk(receiveChunk);

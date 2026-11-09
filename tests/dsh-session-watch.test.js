@@ -23,7 +23,7 @@ const stream=frame=>session({type:'assistant-stream',frame});
 const visible=state=>state.turns.flatMap(turn=>turn.parts);
 const assistantTexts=state=>visible(state).filter(part=>part.kind==='text'&&part.role==='assistant').map(part=>part.text);
 
-function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError}={}){
+function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError,fold=foldHistory}={}){
  const calls=[],states=[],rawStates=[],waiters=new Set(),selection=new AbortController();
  let output,transportOpen=true,transportSignal,transportAbort,handle,opening,cancelled=0;
  const body=new ReadableStream({
@@ -69,7 +69,7 @@ function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError}={})
   get latest(){return states.at(-1);},
   start(signal=selection.signal){
    assert(!opening,'每个 fixture 只打开一条订阅');
-   opening=observe(rpc,params,onState,signal,foldHistory);
+   opening=observe(rpc,params,onState,signal,fold);
    opening.then(value=>{handle=value;},()=>{});
    return opening;
   },
@@ -316,6 +316,39 @@ test('计时缺失或非法time不猜时间，已结束snapshot不给旧起点',
  const started=record(1,'turn/start',{turn:1});started.event.time=123;
  await using({initial:[{type:'status',running:true},snapshot(2,[record(2,'turn/end',{turn:1}),started])]},async f=>{await f.start();assert.equal(f.latest.runStartedAt,null);assert.equal(f.latest.runId,'');assert.equal(f.latest.running,true);});
 });
+
+test('不可见durable/status/interactions不重折历史，turn边界延后保留且注入不冒充用户',async()=>{
+ let folds=0;const initial=[user(1,1,'原问题'),assistant(2,1,'原回答')];
+ await using({initial:[snapshot(2,initial)],fold:records=>{folds++;return foldHistory(records);}},async f=>{
+  const handle=await f.start();assert.equal(folds,1);
+  f.write(event(3,'turn/start',{turn:2}),event(4,'step/start',{turn:2}),event(5,'user/message',{source:{kind:'future-injected'},content:[text('不是用户')]}),event(6,'user/message',{content:[text('<system-reminder>不是用户')]}),event(7,'assistant/message',{message:{content:[{type:'tool-call',id:'hidden',name:'mcp__myide__ide_state'}]}}),{type:'status',running:true},{type:'interactions',questions:[],permissions:[]});
+  await f.wait(state=>state.cursor===7);assert.equal(folds,1);assert(f.rawStates.slice(1).every(state=>state.historyUnchanged&&!Object.hasOwn(state,'turns')));
+  f.write(session(assistant(8,2,'第二轮正文')),event(9,'turn/end',{turn:2}));
+  await f.wait(state=>state.cursor===9);assert.equal(folds,2);assert.deepEqual(f.latest.turns.map(turn=>turn.turn),[1,2]);assert.deepEqual(assistantTexts(f.latest),['原回答','第二轮正文']);assert(!JSON.stringify(f.latest.turns).includes('不是用户'));
+  const synced=await handle.sync();assert.equal(synced.turns[1].parts[0].text,'第二轮正文');
+ });
+});
+
+test('单个read内千帧突发在最终状态前让出主线程，游标与正文顺序不丢',()=>using({initial:[snapshot(1,[user(1,1,'问题')])]},async f=>{
+ await f.start();let final=false,heartbeatBeforeFinal=false;
+ const heartbeat=nextTick().then(()=>{heartbeatBeforeFinal=!final;});
+ const frames=[];for(let seq=2;seq<=1000;seq++)frames.push(event(seq,'step/start',{turn:1}));
+ frames.push(session(assistant(1001,1,'末尾完整正文')),event(1002,'turn/end',{turn:1}));f.write(...frames);
+ await f.wait(state=>state.cursor===1002);final=true;await heartbeat;
+ assert.equal(heartbeatBeforeFinal,true,'不能用连续Promise微任务独占整个事件突发');assert.deepEqual(assistantTexts(f.latest),['末尾完整正文']);
+}));
+
+test('多MiB单帧按64KiB及中文跨片解析，原始可见助手正文不截断',()=>using({},async f=>{
+ const pending=f.start(),content='中文🧪'.repeat(150000),bytes=Buffer.from(JSON.stringify(snapshot(1,[assistant(1,1,content)]))+'\n');
+ for(let offset=0;offset<bytes.length;offset+=65536)f.writeBytes(bytes.subarray(offset,offset+65536));
+ await deadline(pending,'大帧ready');assert.deepEqual(assistantTexts(f.latest),[content]);assert.equal(f.latest.connected,true);
+}));
+
+test('跨片未完成巨帧仍受32MiB预算限制，不把预算错误变成ready',()=>using({},async f=>{
+ const pending=f.start(),rejected=assert.rejects(pending,/读取预算/),piece=Buffer.alloc(1024*1024,120);
+ for(let i=0;i<33;i++)f.writeBytes(piece);
+ await deadline(rejected,'巨帧预算拒绝');assert.equal(f.latest.connected,false);
+}));
 
 (async()=>{
  let passed=0,failed=0;

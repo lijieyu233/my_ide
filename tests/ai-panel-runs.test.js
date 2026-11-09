@@ -146,6 +146,23 @@ function fixture(inspectReplay = false, fontPreference) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('长流只合并重绘且完整保存原文，连续思考不会反复final解析上一段正文',async()=>{
+    const f=fixture();f.hold=true;await f.w.AiPanel.setConfig({engine:'dsh'});f.send('长流任务');await until(()=>f.calls.length===1);let parses=0;f.w.marked={parse:text=>{parses++;return '<p>'+text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</p>';}};
+    const chunk='正文保持原样'.repeat(32),text=chunk.repeat(128)+'BODY_FINAL';for(let i=0;i<128;i++)f.chunk(0,chunk);f.chunk(0,'BODY_FINAL');assert(parses<=Math.ceil(8192/chunk.length));const beforeThought=parses;
+    for(let i=0;i<80;i++)await f.dshEvent({type:'native',context:f.calls[0].context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'思考完整内容\n'.repeat(32)}}});
+    assert.equal(parses,beforeThought+1);assert.equal(f.element('.ai-assistant .ai-md').textContent,text);const thought=f.element('.ai-dsh-thought');await until(()=>thought.querySelector('pre').textContent.length===80*'思考完整内容\n'.repeat(32).length);assert(!f.element('.ai-assistant .ai-md').classList.contains('ai-stream-plain'));f.done(0,{ok:true,text});await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(parses,beforeThought+1);const saved=JSON.parse(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'))[0];assert.equal(saved.msgs.at(-1)._dshTimeline[0].text,text);assert.equal(saved.msgs.at(-1)._dshTimeline[1].text,'思考完整内容\n'.repeat(32*80));assert.equal(f.aborts.length,0);
+  });
+  await test('长流未重绘即停止也落下最后片段，迟到定时器不恢复运行光标',async()=>{
+    const f=fixture();f.hold=true;await f.w.AiPanel.setConfig({engine:'dsh'});f.send('停止长流');await until(()=>f.calls.length===1);const text='完整停止前内容'.repeat(1500)+'LAST_BEFORE_STOP';f.chunk(0,text);f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert(f.element('#ai-msgs').textContent.includes('LAST_BEFORE_STOP'));await new Promise(resolve=>f.w.setTimeout(resolve,60));assert(!f.element('.ai-cursor'));assert.equal(f.calls.length,1);
+  });
+  await test('旁听预览复用正文与思考节点，展开选择和复制始终对应最新原文',async()=>{
+    const f=fixture();f.enableWatch();await f.openHost();f.watchPush({running:true,preview:{text:'初始正文',thinking:'初始思考'}});const body=f.element('.ai-assistant'),thought=f.element('.ai-dsh-thought');thought.open=true;const group=thought.closest('.ai-tool-group');group.open=true;let copied;f.w.MI.copyText=text=>copied=text;
+    for(let i=0;i<40;i++){const {turns,...state}=f.watchStates.values().next().value;f.watchEvent({...state,historyUnchanged:true,revision:100+i,preview:{text:'新正文'+i,thinking:'新思考'+i}});}
+    assert.equal(f.element('.ai-dsh-thought'),thought);assert(thought.open);assert(group.open);assert(f.element('#ai-msgs').textContent.includes('新正文39'));assert(thought.querySelector('pre').textContent.includes('新思考39'));f.element('#ai-msgs .ai-assistant:last-child .ai-copy').click();assert.equal(copied,'新正文39');assert.equal(f.calls.length+f.aborts.length,0);
+  });
+  await test('大代码块和未知语言保留全文但不自动猜高亮，小型明确语言仍高亮',async()=>{
+    const f=fixture(true);let highlights=0;f.w.hljs={getLanguage:name=>name==='js',highlightElement:()=>highlights++};f.w.marked={parse:text=>'<pre><code class="language-js">'+text+'</code></pre>'};const long='x'.repeat(20000);f.w.__testAddMsg('assistant',long);assert.equal(highlights,0);assert.equal(f.element('.ai-assistant code').textContent,long);f.w.__testAddMsg('assistant','const ready = true;');assert.equal(highlights,1);f.w.marked.parse=text=>'<pre><code>'+text+'</code></pre>';f.w.__testAddMsg('assistant','unknown syntax');assert.equal(highlights,1);assert.equal(f.element('#ai-msgs').querySelectorAll('.ai-code-acts').length,3);
+  });
   await test('整轮计时不随阶段重置，定时器刷新最新阶段而不是旧闭包标签',async()=>{
     const f=fixture();f.fakeClock();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('计时任务');await until(()=>f.calls.length===1);const run=f.w.AiPanel.__testRun(),start=run.notice.startedAt,context=f.calls[0].context;f.advance(1068000);await f.dshEvent({type:'status',context,text:'正在执行工具'});assert.equal(run.notice.startedAt,start);assert(f.element('.ai-run-text').textContent.includes('17 分 48 秒'));f.advance(1000);assert(f.element('.ai-run-text').textContent.startsWith('正在执行工具'));assert(f.element('.ai-run-text').textContent.includes('17 分 49 秒'));await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'继续分析'}}});f.advance(1000);assert(f.element('.ai-run-text').textContent.startsWith('深度求索'));assert(f.element('.ai-run-text').textContent.includes('17 分 50 秒'));assert.equal(run.notice.startedAt,start);assert.equal(f.intervalCount(),1);
   });
@@ -286,10 +303,10 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return 1234;}});
     container.querySelectorAll=(...args)=>{scans++;return query(...args);};
     const history=[{role:'assistant',content:'',_dshTimeline:Array.from({length:500},(_,i)=>({kind:'tool',call:{name:'ops_bash',args:{command:'历史命令'+i}},status:'completed',output:'完整输出'+i}))}];
-    f.w.__testReplay(history);assert.equal(reads,1);assert.equal(scans,0);assert.equal(container.children.length,1);assert.equal(query('.ai-tool').length,500);
+    f.w.__testReplay(history);assert.equal(reads,0);await until(()=>reads===1);assert.equal(scans,0);assert.equal(container.children.length,1);assert.equal(query('.ai-tool').length,500);
     const group=container.firstElementChild;group.open=true;const initialRows=query('.ai-tool');initialRows[0].open=true;initialRows[499].open=true;initialRows[0].querySelector('.ai-dsh-output').open=false;
     history[0]._dshTimeline.push({kind:'tool',call:{name:'ops_bash',args:{command:'新增'}},status:'in_progress',output:'新增输出'});
-    f.w.__testReplay(history,true);assert.equal(reads,2);assert.equal(scans,1);assert(container.firstElementChild.open);assert.equal(query('.ai-tool').length,501);assert.equal(container.firstElementChild.dataset.state,'running');
+    f.w.__testReplay(history,true);await until(()=>reads===2);assert.equal(scans,1);assert(container.firstElementChild.open);assert.equal(query('.ai-tool').length,501);assert.equal(container.firstElementChild.dataset.state,'running');
     assert.equal(query('.ai-dsh-output pre')[0].textContent,'完整输出0');assert.equal(query('.ai-dsh-output pre')[499].textContent,'完整输出499');assert(query('.ai-tool')[0].open);assert(query('.ai-tool')[499].open);assert(!query('.ai-tool')[1].open);assert(!query('.ai-dsh-output')[0].open);assert(query('.ai-dsh-output')[1].open);
   });
   await test('500条文字与工具历史同步按序全量回放，只在末尾读取一次布局且实时消息仍自动滚动',async()=>{
@@ -299,21 +316,21 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       :i%4===1?{role:'assistant',content:'消息'+i}
       :{role:'assistant',content:'',_dshTimeline:i%4===2?[{kind:'text',text:'消息'+i}]:[{kind:'tool',call:{name:'read_file',args:{path:'消息'+i}},status:'completed',output:'输出'+i}]});
     f.w.__testReplay(history);
-    assert.equal(reads,1);assert.equal(container.scrollTop,10000);assert.equal(container.children.length,500);
+    await until(()=>reads===1);assert.equal(container.scrollTop,10000);assert.equal(container.children.length,500);
     [...container.children].forEach((row,i)=>{assert(row.querySelector(i%4===3?'.ai-tool-tx':'.ai-md').textContent.endsWith('消息'+i));if(i%4===0)assert.equal(row.dataset.mid,'m'+i);if(i%4===3)assert(row.textContent.includes('输出'+i));});
-    f.w.__testAddMsg('assistant','实时文字');assert.equal(reads,2);assert.equal(container.scrollTop,10020);
-    f.w.__testToolRow({name:'read_file',args:{path:'实时工具'}});assert.equal(reads,3);assert.equal(container.scrollTop,10040);
-    f.w.__testReplay([]);assert.equal(reads,4);assert(container.querySelector('.ai-welcome'));
+    f.w.__testAddMsg('assistant','实时文字');await until(()=>reads===2);assert.equal(container.scrollTop,10020);
+    f.w.__testToolRow({name:'read_file',args:{path:'实时工具'}});await until(()=>reads===3);assert.equal(container.scrollTop,10040);
+    f.w.__testReplay([]);await until(()=>reads===4);assert(container.querySelector('.ai-welcome'));
   });
   await test('嵌套回放不提前读取布局，渲染异常后finally恢复实时滚动',async()=>{
     const f=fixture(true),container=f.element('#ai-msgs'),append=container.appendChild.bind(container);let reads=0,nested=false;
     Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
     container.appendChild=node=>{if(!nested){nested=true;f.w.__testReplay([{role:'assistant',content:'内层'}]);assert.equal(reads,0);}return append(node);};
     f.w.__testReplay([{role:'assistant',content:'',_dshTimeline:[{kind:'text',text:'外层文字'},{kind:'tool',call:{name:'read_file',args:{path:'外层工具'}}}]}]);
-    assert.equal(reads,1);assert.equal(container.children.length,3);assert(container.children[0].textContent.includes('内层'));assert(container.children[1].textContent.includes('外层文字'));assert(container.children[2].textContent.includes('外层工具'));
+    await until(()=>reads===1);assert.equal(container.children.length,3);assert(container.children[0].textContent.includes('内层'));assert(container.children[1].textContent.includes('外层文字'));assert(container.children[2].textContent.includes('外层工具'));
     container.appendChild=()=>{throw Error('fixture replay failed');};
-    assert.throws(()=>f.w.__testReplay([{role:'assistant',content:'异常'}]),/fixture replay failed/);assert.equal(reads,2);
-    container.appendChild=append;f.w.__testAddMsg('assistant','异常后实时消息');assert.equal(reads,3);assert.equal(container.scrollTop,20);
+    assert.throws(()=>f.w.__testReplay([{role:'assistant',content:'异常'}]),/fixture replay failed/);await until(()=>reads===2);
+    container.appendChild=append;f.w.__testAddMsg('assistant','异常后实时消息');await until(()=>reads===3);assert.equal(container.scrollTop,20);
   });
   await test('过程区统一分析标题，类别只在混合活动行显示，摘要与原始详情均保留',async()=>{
     const f=fixture(true),tool=(id,name,args)=>({kind:'tool',call:{id,name,args},status:'completed',output:'输出'+id});
@@ -364,7 +381,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('大历史分批让出事件循环，全部消息顺序保留且只在最终结算布局',async()=>{
     const f=fixture(true),container=f.element('#ai-msgs');let reads=0;Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return container.children.length*20;}});
     const history=Array.from({length:240},(_,i)=>({role:i%2?'assistant':'user',content:'分批消息'+i}));
-    const pending=f.w.__testReplayHistory(history,()=>true);assert(container.children.length>0&&container.children.length<240);const atTick=await new Promise(resolve=>setTimeout(()=>resolve(container.children.length),0));assert(atTick<240);assert(await pending);assert.equal(container.children.length,240);assert.equal(reads,1);[...container.children].forEach((row,i)=>assert(row.textContent.includes('分批消息'+i)));assert.equal(f.calls.length+f.aborts.length,0);
+    const pending=f.w.__testReplayHistory(history,()=>true);assert(container.children.length>0&&container.children.length<240);const atTick=await new Promise(resolve=>setTimeout(()=>resolve(container.children.length),0));assert(atTick<240);assert(await pending);assert.equal(container.children.length,240);await until(()=>reads===1);[...container.children].forEach((row,i)=>assert(row.textContent.includes('分批消息'+i)));assert.equal(f.calls.length+f.aborts.length,0);
   });
   await test('回放保存折叠状态不测量关闭的details，避免每组强制布局',async()=>{
     const f=fixture(true),history=Array.from({length:90},(_,i)=>i%2?{role:'user',content:'分界'+i}:{role:'assistant',content:'',_dshTimeline:[{kind:'tool',call:{id:'closed-'+i,name:'read_file',args:{path:'a.js'}},status:'completed',output:'完整输出'}]});f.w.__testReplay(history);
@@ -394,7 +411,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh',id='s-saved-draft',container=f.element('#ai-msgs');let reads=0;
     const raw=JSON.stringify([{id,msgs:[],usage:{in:321,out:12}}]);f.w.localStorage.setItem(key,raw);f.w.localStorage.setItem(key+':active',id);f.w.localStorage.setItem(key+':draft',id);
     Object.defineProperty(container,'scrollHeight',{configurable:true,get(){reads++;return 100;}});await f.w.AiPanel.setConfig({engine:'dsh'});
-    assert.equal(reads,1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(!f.element('#ai-usage'));f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('Σ 输入 321'));assert(f.element('.ai-context-usage').textContent.includes('输出 12'));f.element('#cb-x').click();
+    await until(()=>reads===1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(!f.element('#ai-usage'));f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('Σ 输入 321'));assert(f.element('.ai-context-usage').textContent.includes('输出 12'));f.element('#cb-x').click();
     assert.equal(f.historyReads?.length||0,0);assert.equal(f.w.localStorage.getItem(key),raw);assert.equal(f.w.localStorage.getItem(key+':draft'),id);
   });
   await test('Harness在项目恢复前进入后台，恢复期间隐藏面板也不取消且迟到输出保留',async()=>{
