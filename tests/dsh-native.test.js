@@ -21,7 +21,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(check){for(let attempt=0;attempt<100;attempt++){if(check())return;await tick();}assert.fail('fixture condition did not settle');}
 function inputFixture(options={}){
  let output,seq=options.cursor||0,done=false;const calls=[],updates=[],inbox={'next-turn':[],'next-step':[]};
- const send=(type,data)=>output.enqueue(Buffer.from(JSON.stringify({type:'session',value:{type:'event',event:{seq:++seq,type,data}}})+'\n'));
+ const send=(type,data,time)=>output.enqueue(Buffer.from(JSON.stringify({type:'session',value:{type:'event',event:{seq:++seq,type,data,...time!==undefined?{time}:{}}}})+'\n'));
  const splice=(target,start,removedCount,inserted)=>{inbox[target].splice(start,removedCount,...inserted);send('agent/inbox/spliced',{target,start,removedCount,inserted});};
  const rpc=new NativeRpc('http://127.0.0.1:12','fixture-cookie',async(url,init)=>{
   if(url.endsWith('/myide/follow')){calls.push({method:'follow'});return new Response(new ReadableStream({start(controller){output=controller;output.enqueue(Buffer.from(JSON.stringify({type:'session',value:{type:'snapshot',cursor:seq,records:options.records||[],projections:{values:{inbox}}}})+'\n'));}}));}
@@ -31,6 +31,7 @@ function inputFixture(options={}){
    const target=request.mode==='queue'?'next-turn':'next-step',message={id:'item-'+request.requestId,source:{kind:'user',rpcId:request.requestId},content:request.content};
    splice(target,inbox[target].length,0,[message]);value={accepted:true};
   }else if(envelope.method==='session/projections')value={kind:'sequenced',asOfSeq:seq,values:{inbox}};
+   else if(envelope.method==='session/page'&&options.page)value=options.page;
   else if(envelope.method==='session/updateQueue'){
    const target=['next-turn','next-step'].find(target=>inbox[target].some(item=>item.id===request.itemId));if(!target)throw Error('queued item is no longer pending');
    const index=inbox[target].findIndex(item=>item.id===request.itemId),message=inbox[target][index];
@@ -560,7 +561,31 @@ function inputFixture(options={}){
      const removed=await f.rpc.request('session/update_queue',{sessionId:id,itemId:item.id,action:{kind:'remove'}});assert.equal(removed.accepted,true);assert.equal(removed.queue.items.length,0);assert.equal((await pending).stopReason,'end_turn');
     }finally{f.close();if(pending)await pending.catch(()=>{});}
    });
-   await test('watch初次steer seed现有turn，expectedRunId不符零prompt',async()=>{
+   await test('Native计时透传未结束snapshot与新turn起点，不改输入归属',async()=>{
+     const startedAt=Date.now()-17*60*1000,f=inputFixture({cursor:10,records:[{event:{seq:10,type:'turn/start',time:startedAt,data:{turn:8}}},{event:{seq:9,type:'turn/end',data:{turn:7}}}]});let pending;
+     try{
+      ({pending}=await f.start({inputMode:'steer',expectedRunId:'10'}));assert.equal(f.updates.at(-1).runId,'10');assert.equal(f.updates.at(-1).runStartedAt,startedAt);assert.equal(f.updates.at(-1).active,false);
+      f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===8);assert.equal(f.updates.at(-1).runStartedAt,startedAt);
+      await f.rpc.request('session/input',{sessionId:id,requestId:'next-clock',mode:'queue',prompt:[{type:'text',text:'next'}]});
+      f.send('turn/end',{turn:8,reason:{kind:'completed'}});await until(()=>f.state.inputBatch.currentTurn===null);assert.equal(f.updates.at(-1).runStartedAt,null);assert.equal(f.updates.at(-1).runId,null);
+      f.send('turn/start',{turn:9},startedAt+1000);f.consume('next-clock');await until(()=>f.state.inputBatch.activeTurn===9);assert.equal(f.updates.at(-1).runStartedAt,startedAt+1000);assert.notEqual(f.updates.at(-1).runId,'10');
+      f.send('turn/end',{turn:9,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');assert.equal(f.updates.at(-1).runStartedAt,null);
+     }finally{f.close();if(pending)await pending.catch(()=>{});}
+    });
+    await test('Native空snapshot从精确throughSeq页面恢复steer起点',async()=>{
+     const startedAt=Date.now()-17*60*1000,f=inputFixture({cursor:10,page:{records:[{event:{seq:10,type:'turn/start',time:startedAt,data:{turn:8}}}]}});let pending;
+     try{
+      ({pending}=await f.start({inputMode:'steer',expectedRunId:'10'}));assert.equal(f.updates.at(-1).runStartedAt,startedAt);assert.equal(f.updates.at(-1).runId,'10');assert.equal(f.calls.find(call=>call.method==='session/page').request.throughSeq,10);
+      f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===8);f.send('turn/end',{turn:8,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');
+     }finally{f.close();if(pending)await pending.catch(()=>{});}
+    });
+    await test('Native计时缺少或非法time不猜开始，ready及active语义不变',async()=>{
+     for(const time of [undefined,null,'123',-1]){const f=inputFixture();let pending;try{
+      ({pending}=await f.start());f.send('turn/start',{turn:1},time);f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);const update=f.updates.at(-1);assert.equal(update.runStartedAt,null);assert.equal(update.active,true);assert.equal(update.ready,true);
+      f.send('turn/end',{turn:1,reason:{kind:'completed'}});assert.equal((await pending).stopReason,'end_turn');
+     }finally{f.close();if(pending)await pending.catch(()=>{});}}
+    });
+    await test('watch初次steer seed现有turn，expectedRunId不符零prompt',async()=>{
     for(const expectedRunId of ['10','wrong']){const f=inputFixture({cursor:10,records:[{event:{seq:10,type:'turn/start',data:{turn:8}}}]});let pending;try{
      ({pending}=await f.start({inputMode:'steer',expectedRunId}));
      if(expectedRunId==='wrong'){await assert.rejects(pending,/已结束或已更换/);assert.equal(f.calls.filter(call=>call.method==='session/prompt').length,0);}

@@ -17,7 +17,8 @@ async function observe(rpc,params,onState,signal,foldHistory){
   const controller=new AbortController(),abort=()=>{controller.abort();readyReject?.(Error('DSH 实时订阅已解除'));};
   signal?.addEventListener('abort',abort,{once:true});
   const records=new Map(),waiters=new Set();let cursor=-1,revision=0,connected=false,running=false,runId='',title='',questions=[],permissions=[],interactionNotice='',attempt=null,turns=[],dirty=true,timer=null,closed=false,failure='';
-  let inputQueue=null;
+  let inputQueue=null,runStartedAt=null,hostRunning=null;
+  const eventTime=event=>typeof event?.time==='number'&&Number.isFinite(event.time)&&event.time>=0?event.time:null;
   const queueView=()=>require('./dsh-native').inputQueueView({inputQueue});
   function setQueue(inbox,asOfSeq){
     if(!inbox||!Array.isArray(inbox['next-turn'])||!Array.isArray(inbox['next-step']))return false;
@@ -30,7 +31,7 @@ async function observe(rpc,params,onState,signal,foldHistory){
   const readyTimer=setTimeout(()=>{readyReject(Error('DSH 实时订阅未返回快照'));controller.abort();},15000);readyTimer.unref?.();
   function view(){
     if(dirty){turns=foldHistory([...records.values()].sort((a,b)=>a.event.seq-b.event.seq));dirty=false;}
-    return {cursor,revision:++revision,connected,running,runId,title,turns,queue:queueView(),preview:attempt?{text:attempt.text,thinking:attempt.thinking}:null,questions,permissions,interactionNotice,...failure?{error:failure}:{}};
+    return {cursor,revision:++revision,connected,running,runId,runStartedAt,title,turns,queue:queueView(),preview:attempt?{text:attempt.text,thinking:attempt.thinking}:null,questions,permissions,interactionNotice,...failure?{error:failure}:{}};
   }
   function publish(){
     clearTimeout(timer);timer=null;if(closed)return;
@@ -45,8 +46,9 @@ async function observe(rpc,params,onState,signal,foldHistory){
     const event=record?.event;if(!Number.isSafeInteger(event?.seq))return;
     if(records.has(event.seq))return;
     records.set(event.seq,record);cursor=Math.max(cursor,event.seq);dirty=true;
-    if(!historical&&event.type==='turn/start'){running=true;runId=String(event.seq);}
-    if(!historical&&event.type==='turn/end')running=false;
+    if(!historical&&event.type==='turn/start'){running=true;runId=String(event.seq);runStartedAt=eventTime(event);}
+    // turn 结束不等于宿主 Agent 停止；自动续轮的间隙未必再发一个 running:true。
+    if(!historical&&event.type==='turn/end'){running=hostRunning===true;runStartedAt=null;}
     if(!historical&&event.type==='agent/inbox/spliced'&&inputQueue){
       const data=event.data,target=data?.target,items=inputQueue[target],removedCount=data?.removedCount??0;
       if(Array.isArray(items)&&(!Number.isSafeInteger(inputQueue.asOfSeq)||event.seq>inputQueue.asOfSeq)){
@@ -63,7 +65,12 @@ async function observe(rpc,params,onState,signal,foldHistory){
       records.clear();dirty=true;for(const record of item.records||[])add(record,true);cursor=Math.max(cursor,Number(item.cursor)||0);
       title=item.projections?.values?.title||title;
       inputQueue=null;setQueue(item.projections?.values?.inbox,item.projections?.asOfSeq??item.cursor);
-      const lastStart=[...records.values()].reverse().find(r=>r.event.type==='turn/start');runId=lastStart?String(lastStart.event.seq):runId;
+      let lastStart=null;
+      for(const record of [...records.values()].sort((a,b)=>a.event.seq-b.event.seq)){
+        if(record.event.type==='turn/start')lastStart=record.event;
+        else if(record.event.type==='turn/end')lastStart=null;
+      }
+      runId=lastStart?String(lastStart.seq):'';runStartedAt=eventTime(lastStart);
       const opening=item.assistantStream?.activeAttempt;
       attempt=opening?{id:opening.attemptId,nextIndex:opening.nextIndex,turn:opening.turn,step:opening.step,text:'',thinking:''}:null;
       if(opening)for(const value of compactChunks(opening.stream))chunk(value);
@@ -98,7 +105,7 @@ async function observe(rpc,params,onState,signal,foldHistory){
           const frame=JSON.parse(line);
           if(frame.type==='failure')throw Error(frame.error||'DSH 实时订阅失败');
           if(frame.type==='session')session(frame.value);
-          else if(frame.type==='status'){running=frame.running===true;if(frame.runId)runId=frame.runId;changed(true);}
+          else if(frame.type==='status'){hostRunning=frame.running===true;running=hostRunning;if(frame.runId)runId=frame.runId;changed(true);}
           else if(frame.type==='interactions'){questions=frame.questions||[];permissions=frame.permissions||[];interactionNotice=frame.interactionNotice||'';changed(true);}
         }
       }
@@ -110,14 +117,14 @@ async function observe(rpc,params,onState,signal,foldHistory){
   const handle={
     async sync(){
       if(!connected||controller.signal.aborted)throw Error(failure||'DSH 实时订阅未连接');
-      const projection=await rpc.call('session/projections',{request:{sessionId:params.hostId}}),target=Number(projection?.asOfSeq);
+      const projection=await rpc.call('session/projections',{request:{sessionId:params.hostId}},undefined,{preserveConnection:true}),target=Number(projection?.asOfSeq);
       if(!Number.isSafeInteger(target))throw Error('DSH 未返回有效会话游标');
       if(cursor<target)await new Promise((resolve,reject)=>{const waiter={cursor:target,resolve,reject};waiter.timer=setTimeout(()=>{waiters.delete(waiter);reject(Error('DSH 实时正文尚未追上宿主游标'));},10000);waiters.add(waiter);});
       title=projection?.values?.title||title;if(!setQueue(projection?.values?.inbox,target)&&!projection?.values?.inbox)inputQueue=null;publish();return view();
     },
     async inputQueue(){
       if(!connected||controller.signal.aborted)throw Error('DSH 实时订阅未连接');
-      const value=await rpc.call('session/projections',{request:{sessionId:params.hostId}});
+      const value=await rpc.call('session/projections',{request:{sessionId:params.hostId}},undefined,{preserveConnection:true});
       if(!setQueue(value?.values?.inbox,value?.asOfSeq)&&!value?.values?.inbox)inputQueue=null;
       publish();return queueView();
     },

@@ -110,9 +110,10 @@ const AiPanel = (() => {
    *   ② 位置不对（DSH 固定在输入框上方，不跟着消息滚）
    * 因此改为复用 index.html 里的 #ai-runstate 单例节点，只更新文字与显隐。
    */
+  let activeRunNotice=null;
   function createRunState() {
     const element = document.getElementById('ai-runstate');
-    return { element, textEl: element?.querySelector('.ai-run-text') || null, startedAt: 0, timer: null, label: '' };
+    return { element, textEl: element?.querySelector('.ai-run-text') || null, startedAt: null, clockKey: null, timer: null, label: '' };
   }
 
   /** 计时文案：不足 60 秒显示「N 秒」，超过显示「M 分 S 秒」。 */
@@ -126,36 +127,36 @@ const AiPanel = (() => {
   /**
    * 更新状态文案并驱动计时。
    * @param {object} run  当前运行
-   * @param {string} label 动作描述，如「深度求索」「正在生成」；含「用时」时不再自动追加
+   * @param {string} label 当前阶段；计时属于整轮运行，不能随阶段文字变化重置
    * @param {boolean} [stop] 停止计时（进入终态时由 endRun 调用）
    */
   function setRunState(run, label, stop) {
     const notice = run?.notice;
     if (!notice || !notice.element || !notice.textEl) return;
+    const visible=()=>!backgroundView&&(currentRun===run&&!run.background||dshWatch===run&&dshWatchWanted(run)&&!dshOwnRun());
+    notice.label=label;
     if (stop) {
       if (notice.timer) { clearInterval(notice.timer); notice.timer = null; }
-      notice.textEl.textContent = label;
+      clearTimeout(notice.hideTimer);notice.startedAt=null;
+      if(!visible())return;
+      activeRunNotice=notice;notice.textEl.textContent = label;
       notice.element.classList.remove('running');
       notice.element.dataset.outcome = run.status === 'failed' ? 'failed' : run.status === 'cancelled' ? 'stopped' : ['incomplete','limited'].includes(run.status) ? 'unknown' : 'completed';
-      delete notice.startedAt;
-      // 终态留一小会儿再收起，避免刚完成就消失看不到结果
-      clearTimeout(notice.hideTimer);
-      notice.hideTimer = setTimeout(() => { notice.element.classList.add('hidden'); }, 2500);
+      notice.hideTimer = setTimeout(() => { if(visible()&&activeRunNotice===notice)notice.element.classList.add('hidden'); }, 2500);
       return;
     }
-    // 首次进入某个动作时重置起点；动作切换（如从思考切到执行工具）重新计时更直观
-    if (notice.label !== label || !notice.startedAt) {
-      notice.label = label;
-      notice.startedAt = Date.now();
-    }
+    const clockKey=run.timingKey||run.identity?.requestId||'observed';
+    const source=Number.isFinite(run.timingStartedAt)&&run.timingStartedAt>=0?run.timingStartedAt:null;
+    // 同一轮的思考、工具和等待共用起点；重连时优先接回宿主事件时间，而不是从观察时重新算。
+    if(notice.clockKey!==clockKey||!Number.isFinite(notice.startedAt)){notice.clockKey=clockKey;notice.startedAt=source??Date.now();notice.clockFromHost=source!==null;}
+    else if(source!==null){notice.startedAt=source;notice.clockFromHost=true;}
     clearTimeout(notice.hideTimer);
-    notice.element.classList.remove('hidden');
     const paint = () => {
-      if (!notice.startedAt) return;
-      notice.textEl.textContent = label + '，用时 ' + elapsedText(Date.now() - notice.startedAt) + '…';
+      if(!Number.isFinite(notice.startedAt)||!visible())return;
+      activeRunNotice=notice;notice.element.classList.remove('hidden');notice.element.classList.add('running');notice.element.dataset.outcome='running';
+      notice.textEl.textContent=notice.label+'，'+(run.timingObserved&&!notice.clockFromHost?'已观察 ':'用时 ')+elapsedText(Date.now()-notice.startedAt)+'…';
     };
     paint();
-    notice.element.classList.add('running');notice.element.dataset.outcome = 'running';
     if (!notice.timer) notice.timer = setInterval(paint, 1000);
   }
   function settlePendingTools(run, text) {
@@ -2622,8 +2623,8 @@ const AiPanel = (() => {
     watch.preview?.remove(); watch.preview = null;
     removeDshThought(watch.thinking); watch.thinking = null;
     watch.interactionNotice?.remove(); watch.interactionNotice = null;
-    if (watch.notice?.timer) clearInterval(watch.notice.timer);
-    if (watch.notice?.hideTimer) clearTimeout(watch.notice.hideTimer);
+    if (watch.notice?.timer) {clearInterval(watch.notice.timer);watch.notice.timer=null;}
+    if (watch.notice?.hideTimer) {clearTimeout(watch.notice.hideTimer);watch.notice.hideTimer=null;}
   }
   function resetDshWatch() {
     const watch = dshWatch;
@@ -2653,14 +2654,24 @@ const AiPanel = (() => {
     watch.notice ||= createRunState();
     clearTimeout(currentRun?.notice?.hideTimer);
     if (state.connected === false) {
-      watch.disconnectedNotice = true;
+      watch.disconnectedNotice = true;activeRunNotice=watch.notice;
       if (watch.notice.timer) { clearInterval(watch.notice.timer); watch.notice.timer = null; }
       clearTimeout(watch.notice.hideTimer);
       watch.notice.element?.classList.remove('hidden','running');
       if (watch.notice.textEl) watch.notice.textEl.textContent = state.error || 'DSH 连接中断，运行状态待确认';
     } else if (state.running) {
       watch.disconnectedNotice = false;
-      setRunState(watch, watch.stopping ? '正在停止 DSH 会话' : state.questions?.length ? 'DSH 等待回答' : state.permissions?.length ? 'DSH 等待授权' : state.preview?.thinking ? '深度求索' : 'DSH 正在生成');
+      watch.timingKey=state.runId||watch.watchId;
+      watch.timingStartedAt=Number.isFinite(state.runStartedAt)&&state.runStartedAt>=0?state.runStartedAt:null;
+      watch.timingObserved=watch.timingStartedAt===null;
+      const label=watch.stopping?'正在停止 DSH 会话':state.questions?.length?'DSH 等待回答':state.permissions?.length?'DSH 等待授权':state.preview?.thinking?'深度求索':'DSH 正在生成';
+      setRunState(watch,label+(watch.needsSync?watch.syncError?' · 正文同步失败，请重连':' · 正在同步正文':''));
+    } else if (watch.needsSync&&watch.syncError) {
+      activeRunNotice=watch.notice;
+      if(watch.notice.timer){clearInterval(watch.notice.timer);watch.notice.timer=null;}
+      clearTimeout(watch.notice.hideTimer);watch.notice.element?.classList.remove('hidden','running');
+      if(watch.notice.element)watch.notice.element.dataset.outcome='unknown';
+      if(watch.notice.textEl)watch.notice.textEl.textContent='DSH 正文同步失败，运行状态待确认，请重新连接';
     } else if (watch.disconnectedNotice) {
       // 重连到空闲态只撤回断线提示；没有新一轮生成，不能伪报“已完成”。
       watch.disconnectedNotice = false;
@@ -2748,7 +2759,7 @@ const AiPanel = (() => {
     if (!dshWatchWanted(watch) || backgroundView || dshOwnRun() || !watch.state) return;
     const state = watch.state;
     if (state.connected === false) { renderDshWatchPending(watch); updateDshWatchStatus(watch); return; }
-    if (watch.needsSync) return;
+    if (watch.needsSync) {updateDshWatchStatus(watch);return;}
     if (watch.replaying) { updateDshWatchStatus(watch); return; }
     // 明确的 historyUnchanged 合并后复用原数组：流式预览不再每40ms序列化整份历史。
     if (watch.renderedTurns !== state.turns || watch.renderKey === null) {
@@ -2801,7 +2812,7 @@ const AiPanel = (() => {
     watch.revision = state.revision; watch.state = state;
     if (catalogUsable()) { const item = dshCatalog.items.find(item => item.sessionId === watch.hostId); if (item) { if (state.connected !== false) item.running = state.running; if (state.title&&item.title!==state.title) {item.title=state.title;renderCurrentSessionTitle();} } }
     refreshHistInPlace();
-    if (watch.needsSync && !dshOwnRun() && state.connected !== false) { syncDshWatch(watch); return; }
+    if (watch.needsSync && !dshOwnRun() && state.connected !== false) { updateDshWatchStatus(watch);syncDshWatch(watch);return; }
     renderDshWatch(watch);
   }
   async function syncDshWatch(watch = dshWatch) {
@@ -2813,11 +2824,11 @@ const AiPanel = (() => {
       if (!dshWatchWanted(watch) || dshOwnRun() || ticket !== watch.syncTicket) return;
       let state = result?.state;
       if (!result?.ok || !state || state.watchId !== watch.watchId || state.sessionId !== watch.sessionId || state.hostId !== watch.hostId
-        || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope || !Number.isFinite(state.revision)) return;
+        || pathKey(state.rootId) !== pathKey(watch.rootId) || state.scope !== watch.scope || !Number.isFinite(state.revision)) {watch.syncError=result?.error||'未取得有效会话同步快照';updateDshWatchStatus(watch);return;}
       state=mergeDshWatchHistory(watch,state);if(!state)return;
       if (state.revision >= watch.revision) { watch.revision = state.revision; watch.state = state; }
       if (watch.state.connected === false) { renderDshWatch(watch); return; }
-      watch.needsSync = false; watch.renderKey = null; renderDshWatch(watch); refreshHistInPlace();
+      watch.needsSync = false;watch.syncError=''; watch.renderKey = null; renderDshWatch(watch); refreshHistInPlace();
     })();
     watch.syncing = pending;
     try { await pending; } finally { if (watch.syncing === pending) watch.syncing = null; }
@@ -2828,7 +2839,7 @@ const AiPanel = (() => {
     const hostId = dshSessionAccess.hostId || catalogOf(curSessionId)?.sessionId || loadSessions().find(item => item.id === curSessionId)?.hostId
       || (/^(session-|myide-|host:)/.test(curSessionId) ? curSessionId.replace(/^host:/,'') : '');
     if (!hostId) return;
-    if (dshWatch && dshWatchWanted(dshWatch) && dshWatch.hostId === hostId) { if (sync) { dshWatch.needsSync = true; await syncDshWatch(); } return; }
+    if (dshWatch && dshWatchWanted(dshWatch) && dshWatch.hostId === hostId) { if (sync) { dshWatch.needsSync = true;updateDshWatchStatus(dshWatch); await syncDshWatch(); } return; }
     resetDshWatch();
     const watch = {watchId:'watch-'+window.crypto.randomUUID(),sessionId:curSessionId,hostId,rootId:window.App?.root||'',scope:dshScope(),generation:dshWatchGeneration,
       revision:-1,state:null,pending:new Map(),renderKey:null,needsSync:sync,syncTicket:0};
@@ -2847,7 +2858,7 @@ const AiPanel = (() => {
   }
   async function reconcileDshAfterOwn(run) {
     if (backgroundView || run.engine !== 'dsh' || run.identity.sessionId !== curSessionId || pathKey(run.identity.rootId) !== pathKey(window.App?.root)) return;
-    if (dshWatch && dshWatchWanted(dshWatch)) { dshWatch.needsSync = true; await syncDshWatch(); return; }
+    if (dshWatch && dshWatchWanted(dshWatch)) { dshWatch.needsSync = true;updateDshWatchStatus(dshWatch); await syncDshWatch(); return; }
     const selected = curSessionId, root = window.App?.root, scope = dshScope(), generation = dshWatchGeneration;
     await refreshDshCatalog();
     if (selected === curSessionId && root === window.App?.root && scope === dshScope() && generation === dshWatchGeneration) await ensureDshWatch(true);
@@ -2945,6 +2956,9 @@ const AiPanel = (() => {
     // 只有「已经派发出去」的运行才能挂起：stream 存在 = 主进程已受理这次 prompt。
     // 还没建 stream 的窗口里任务其实没开始跑，停掉不会丢任何已完成的工作。
     if(run?.engine!=='dsh'||run.status!=='active'||!run.stream)return false;
+    if(run.notice?.timer){clearInterval(run.notice.timer);run.notice.timer=null;}
+    if(run.notice?.hideTimer){clearTimeout(run.notice.hideTimer);run.notice.hideTimer=null;}
+    if(activeRunNotice===run.notice)run.notice.element?.classList.add('hidden');
     const container=document.createElement('div');
     while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
     moveActivityObservers(msgsEl,container);
@@ -2993,6 +3007,9 @@ const AiPanel = (() => {
   function releaseLocalRun() {
     // 排队等结果的自我切换动作必须收口：视图已经让出去，没人会再派发它们。
     for (const entry of currentRun?.aiTransitions?.splice(0) || []) entry.reject(Error('会话视图已切换，未执行排队动作'));
+    if(currentRun?.notice?.timer){clearInterval(currentRun.notice.timer);currentRun.notice.timer=null;}
+    if(currentRun?.notice?.hideTimer){clearTimeout(currentRun.notice.hideTimer);currentRun.notice.hideTimer=null;}
+    if(currentRun?.notice&&activeRunNotice===currentRun.notice)currentRun.notice.element?.classList.add('hidden');
     currentRun = null; busy = false; curStream = null; curText = '';
     setBusyUI(false);
     document.getElementById('ai-stop')?.classList.add('hidden');
@@ -3020,6 +3037,7 @@ const AiPanel = (() => {
       backgroundRuns.delete(hit.key);
       const container=msgsEl;moveActivityObservers(record.view.msgsEl,container);container.replaceChildren(...record.view.msgsEl.childNodes);
       applyRunView({...record.view,msgsEl:container});record.run.background=null;
+      if(record.run.notice)setRunState(record.run,record.run.notice.label||'正在生成',record.run.status!=='active');
       setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
       for(const event of record.pending)handleDshEvent(event);
       renderUsage();renderBackgroundStatus();scrollBottom();
@@ -3039,6 +3057,7 @@ const AiPanel = (() => {
     if (backgroundRuns.get(key) === record) backgroundRuns.delete(key);
     const container=msgsEl;moveActivityObservers(record.view.msgsEl,container);container.replaceChildren(...record.view.msgsEl.childNodes);
     applyRunView({...record.view,msgsEl:container});record.run.background=null;
+    if(record.run.notice)setRunState(record.run,record.run.notice.label||'正在生成',record.run.status!=='active');
     setBusyUI(busy);document.getElementById('ai-stop')?.classList.toggle('hidden',!busy);
     for(const event of record.pending)handleDshEvent(event);
     renderUsage();renderBackgroundStatus();scrollBottom();
@@ -3774,6 +3793,7 @@ const AiPanel = (() => {
     if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;
+      if(update.active===true&&typeof update.runId==='string'){run.timingKey='native:'+update.runId;run.timingStartedAt=Number.isFinite(update.runStartedAt)&&update.runStartedAt>=0?update.runStartedAt:null;setRunState(run,run.notice?.label||'正在生成');}
       if((update.ready===true||update.consumedRequestId)&&run.initialInputDraft&&!run.initialInputAccepted){run.initialInputAccepted=true;clearAcceptedDraft(run.initialInputDraft);}
       if(update.consumedRequestId)showConsumedInput(run,update.consumedRequestId,update.consumedContent);
       renderNativeInputUI();return;

@@ -325,7 +325,7 @@ class NativeRpc extends EventEmitter {
   }
   publishInputState(sessionId,state,consumedRequestId,consumedContent){
     const batch=state.inputBatch;if(!batch)return;
-    this.notifyUpdate(sessionId,{sessionUpdate:'myide_input_state',active:!batch.stopping&&batch.activeTurn!==null,ready:batch.ready===true&&!batch.closed&&!batch.stopping,queue:inputQueueView(state),...consumedRequestId?{consumedRequestId,...Array.isArray(consumedContent)?{consumedContent}:{}}:{}});
+    this.notifyUpdate(sessionId,{sessionUpdate:'myide_input_state',active:!batch.stopping&&batch.activeTurn!==null,ready:batch.ready===true&&!batch.closed&&!batch.stopping,runId:batch.currentTurnSeq===null?null:String(batch.currentTurnSeq),runStartedAt:batch.currentTurnStartedAt??null,queue:inputQueueView(state),...consumedRequestId?{consumedRequestId,...Array.isArray(consumedContent)?{consumedContent}:{}}:{}});
     batch.wake?.();
   }
   async readInputQueue(sessionId,state){
@@ -406,7 +406,8 @@ class NativeRpc extends EventEmitter {
     if(state.inputBatch&&!state.inputBatch.closed)throw Error('该会话已有本组运行，请使用排队输入');
     const mode=params.inputMode??'queue',content=inputContent(params.prompt),requestId=params.requestId||crypto.randomUUID();
     if(!['queue','steer'].includes(mode))throw Error('输入方式无效');
-    const controller=new AbortController(),batch={controller,requests:new Map([[requestId,{requestId,status:'admitting'}]]),activeTurn:null,currentTurn:null,currentTurnSeq:null,ready:false,closed:false,stopping:false};
+    const controller=new AbortController(),batch={controller,requests:new Map([[requestId,{requestId,status:'admitting'}]]),activeTurn:null,currentTurn:null,currentTurnSeq:null,currentTurnStartedAt:null,ready:false,closed:false,stopping:false};
+    const eventTime=event=>typeof event?.time==='number'&&Number.isFinite(event.time)&&event.time>=0?event.time:null;
     state.controller=controller;state.inputBatch=batch;state.inputQueue=null;state.inputAdmissions=new Map();let reader,buffer='',snapshot=false,lastSeq=-1,lastError=null,readPending;
     const decoder=new TextDecoder(),finished=()=>batch.ready&&batch.activeTurn===null&&[...batch.requests.values()].every(entry=>['done','removed','failed'].includes(entry.status));
     this.publishInputState(params.sessionId,state);
@@ -434,13 +435,13 @@ class NativeRpc extends EventEmitter {
           if(item.type==='snapshot'&&!snapshot){
             lastSeq=item.cursor;snapshot=true;this.setInputQueue(state,item.projections?.values?.inbox,item.cursor);
             // steer 可以沿用 snapshot 内已开始的 turn；之后未必再有一个 turn/start。
-            for(const record of item.records||[]){const event=record.event;if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;}else if(event?.type==='turn/end'){batch.currentTurn=null;batch.currentTurnSeq=null;}}
+            for(const record of [...(item.records||[])].sort((a,b)=>(a.event?.seq??0)-(b.event?.seq??0))){const event=record.event;if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;batch.currentTurnStartedAt=eventTime(event);}else if(event?.type==='turn/end'){batch.currentTurn=null;batch.currentTurnSeq=null;batch.currentTurnStartedAt=null;}}
             if(mode==='steer'&&batch.currentTurnSeq===null){
               const expected=Number(params.expectedRunId),records=item.records||[],boundary=records.findLast(record=>record.event?.type==='turn/start'||record.event?.type==='turn/end');
               if(!boundary&&Number.isSafeInteger(expected)&&expected>=0&&expected<=item.cursor){
                 const page=await this.call('session/page',{request:{address:{kind:'session',sessionId:params.sessionId},throughSeq:expected,maxMessages:1}},undefined,{preserveConnection:true});
                 const event=page?.records?.findLast(record=>record.event?.seq===expected)?.event;
-                if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;}
+                if(event?.type==='turn/start'){batch.currentTurn=event.data.turn;batch.currentTurnSeq=event.seq;batch.currentTurnStartedAt=eventTime(event);}
               }
             }
             if(mode==='steer'&&(batch.currentTurnSeq===null||String(params.expectedRunId)!==String(batch.currentTurnSeq)))throw Error('原生运行已结束或已更换，未插入输入');
@@ -455,7 +456,7 @@ class NativeRpc extends EventEmitter {
           }
           if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
           if(event.type==='agent/inbox/spliced'&&state.inputQueue){const queue=state.inputQueue,target=data.target;if(Array.isArray(queue[target])&&(queue.asOfSeq===null||event.seq>queue.asOfSeq)){queue[target].splice(data.start,data.removedCount||0,...(data.inserted||[]));queue.asOfSeq=event.seq;this.publishInputState(params.sessionId,state);}continue;}
-          if(event.type==='turn/start'){batch.currentTurn=data.turn;batch.currentTurnSeq=event.seq;batch.activeTurn=null;lastError=null;this.publishInputState(params.sessionId,state);}
+          if(event.type==='turn/start'){batch.currentTurn=data.turn;batch.currentTurnSeq=event.seq;batch.currentTurnStartedAt=eventTime(event);batch.activeTurn=null;lastError=null;this.publishInputState(params.sessionId,state);}
           if(event.type==='user/message'&&data.source?.kind==='user'){
             const entry=batch.requests.get(data.source.rpcId);
             if(entry&&!['removed','failed'].includes(entry.status)){
@@ -466,7 +467,7 @@ class NativeRpc extends EventEmitter {
           if(event.type==='turn/end'){
             const owned=batch.activeTurn===data.turn;
             if(owned){for(const entry of batch.requests.values())if(entry.status==='consumed'&&entry.turn===data.turn)entry.status='done';batch.activeTurn=null;}
-            batch.currentTurn=null;batch.currentTurnSeq=null;this.publishInputState(params.sessionId,state);
+            batch.currentTurn=null;batch.currentTurnSeq=null;batch.currentTurnStartedAt=null;this.publishInputState(params.sessionId,state);
             if(owned&&!batch.stopping){if(data.reason.kind==='interrupted'||data.reason.kind==='aborted'&&data.reason.reason?.kind==='user')return {stopReason:'cancelled'};if(data.reason.kind!=='completed')throw Error(turnFailure(data.reason,lastError));}
             continue;
           }

@@ -43,7 +43,8 @@ function fixture({initial=[],projection={asOfSeq:0,values:{}},call,rawError}={})
    if(signal.aborted){transportAbort();throw signal.reason;}
    return new Response(body,{headers:{'Content-Type':'application/x-ndjson'}});
   },
-  async call(endpoint,args){
+  async call(endpoint,args,_signal,transport){
+    if(endpoint==='session/projections')assert.equal(transport?.preserveConnection,true,'旁听只读失败不能中断其他本机运行');
    calls.push({kind:'call',endpoint,args:structuredClone(args)});
    if(call)return call(endpoint,args);
    if(endpoint==='session/projections')return structuredClone(projection);
@@ -293,6 +294,28 @@ test('真实inbox append省略removedCount按零删除处理，不把有效队�
   await f.start();f.write(event(2,'agent/inbox/spliced',{target:'next-turn',start:0,inserted:[{id:'append-no-delete',source:{kind:'user',rpcId:'append-input'},content:[text('追加待发')]}]}));
   const state=await f.wait(state=>state.cursor===2);assert.equal(state.queue.available,true);assert.equal(state.queue.items.length,1);assert.equal(state.queue.items[0].id,'append-no-delete');assert.equal(state.queue.items[0].text,'追加待发');assert.equal(state.queue.asOfSeq,2);
 }));
+
+test('宿主status running跨turn间隙保持，直到明确idle且不靠重复true事件',()=>using({initial:[{type:'status',running:true},snapshot(1,[record(1,'turn/start',{turn:1})])]},async f=>{
+ await f.start();f.write(event(2,'turn/end',{turn:1}));await f.wait(state=>state.cursor===2);assert.equal(f.latest.running,true,'单轮结束不能把仍运行的宿主标空闲');
+ f.write(event(3,'turn/start',{turn:2}),event(4,'step/start',{turn:2,step:1}));await f.wait(state=>state.cursor===4);assert.equal(f.latest.running,true);assert.equal(f.latest.runId,'3');
+ f.write({type:'status',running:false});await f.wait(state=>!state.running);assert.equal(f.latest.connected,true);
+}));
+
+test('计时恢复只认未结束turn的event.time，preview和status不重置宿主起点',()=>{
+ const startedAt=Date.now()-17*60*1000,started=record(5,'turn/start',{turn:2});started.event.time=startedAt;
+ return using({initial:[{type:'status',running:true},snapshot(6,[user(6,2,'当前轮'),started,record(4,'turn/end',{turn:1}),record(1,'turn/start',{turn:1})])]},async f=>{
+  await f.start();assert.equal(f.latest.runId,'5');assert.equal(f.latest.runStartedAt,startedAt);
+  f.write(stream({type:'start',attemptId:'clock',turn:2}),stream({type:'chunk',attemptId:'clock',index:0,chunk:{type:'text-delta',text:'阶段变化'}}),{type:'status',running:true});
+  await f.wait(state=>state.preview?.text==='阶段变化');assert.equal(f.latest.runStartedAt,startedAt);
+  f.write(event(7,'turn/end',{turn:2}));await f.wait(state=>state.cursor===7);assert.equal(f.latest.runStartedAt,null);
+  const next=record(8,'turn/start',{turn:3});next.event.time=startedAt+1000;f.write(session(next));await f.wait(state=>state.cursor===8);assert.equal(f.latest.runId,'8');assert.equal(f.latest.runStartedAt,startedAt+1000);
+ });
+});
+test('计时缺失或非法time不猜时间，已结束snapshot不给旧起点',async()=>{
+ for(const time of [undefined,null,'123',-1]){const started=record(1,'turn/start',{turn:1});started.event.time=time;await using({initial:[snapshot(1,[started])]},async f=>{await f.start();assert.equal(f.latest.runStartedAt,null);});}
+ const started=record(1,'turn/start',{turn:1});started.event.time=123;
+ await using({initial:[{type:'status',running:true},snapshot(2,[record(2,'turn/end',{turn:1}),started])]},async f=>{await f.start();assert.equal(f.latest.runStartedAt,null);assert.equal(f.latest.runId,'');assert.equal(f.latest.running,true);});
+});
 
 (async()=>{
  let passed=0,failed=0;
