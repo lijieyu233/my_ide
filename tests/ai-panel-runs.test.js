@@ -102,7 +102,7 @@ function fixture(inspectReplay = false, fontPreference) {
   } };
   // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
   const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf; window.__testSetRunState = setRunState; window.__testLoadSessions = loadSessions; window.__testReplayHistory = (list, wanted, preserve) => { msgs = list; return replayHistory(wanted, preserve); }; window.__testAddContext = addCtx; window.__testInputImages = (images) => images ? (pendingImages = images) : pendingImages;\n  return {aiAfterResult,') : source;
-  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture' });
+  w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture', autoIdeContext:true, injectMyideRules:true });
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -146,6 +146,23 @@ function fixture(inspectReplay = false, fontPreference) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('两个注入开关独立生效且关闭不附带当前文件，显式资料与用户提示保留',async()=>{
+    for(const autoIdeContext of [false,true])for(const injectMyideRules of [false,true]){
+      const f=fixture(true);f.put('active.md','AUTO_FILE_SENTINEL');f.w.Viewer.activeTab={path:f.file('active.md')};
+      await f.w.AiPanel.setConfig({autoIdeContext,injectMyideRules,systemPrompt:'USER_SYSTEM_SENTINEL'});
+      await f.w.AiPanel.followActive();f.w.__testAddContext({path:f.file('reference.md'),content:'EXPLICIT_FILE_SENTINEL'});f.hold=true;f.send('USER_MESSAGE_SENTINEL');await until(()=>f.calls.length===1);
+      const payload=JSON.stringify(f.calls[0].messages);
+      assert(payload.includes('EXPLICIT_FILE_SENTINEL'));
+      assert.equal(payload.includes('AUTO_FILE_SENTINEL'),autoIdeContext);
+      assert.equal(payload.includes('# 当前 MyIDE 页面'),autoIdeContext);
+      assert.equal(payload.includes('USER_SYSTEM_SENTINEL'),true);
+      assert.equal(payload.includes('USER_MESSAGE_SENTINEL'),true);
+      const system=f.calls[0].messages.find(m=>m.role==='system').content;
+      assert.equal(system.includes('你是'),injectMyideRules);
+      assert.equal(f.w.AiPanel.getConfig().autoIdeContext,autoIdeContext);
+      assert.equal(f.w.AiPanel.getConfig().injectMyideRules,injectMyideRules);f.stop();
+    }
+  });
   await test('长流只合并重绘且完整保存原文，连续思考不会反复final解析上一段正文',async()=>{
     const f=fixture();f.hold=true;await f.w.AiPanel.setConfig({engine:'dsh'});f.send('长流任务');await until(()=>f.calls.length===1);let parses=0;f.w.marked={parse:text=>{parses++;return '<p>'+text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</p>';}};
     const chunk='正文保持原样'.repeat(32),text=chunk.repeat(128)+'BODY_FINAL';for(let i=0;i<128;i++)f.chunk(0,chunk);f.chunk(0,'BODY_FINAL');assert(parses<=Math.ceil(8192/chunk.length));const beforeThought=parses;

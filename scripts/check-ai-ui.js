@@ -37,6 +37,12 @@ const watchdog=setTimeout(()=>cleanup(2),120000);
     assert(await js('document.querySelector(".ai-welcome").textContent.includes("整理你的文档")&&!document.querySelector(".ai-welcome").textContent.includes("还没配置")'));
     await capture('ai-ui-standard.png');
   });
+  await test('AI设置提供两个默认关闭的独立注入开关',async()=>{
+    await js('Settings.open("ai");true');
+    assert(await js('!document.getElementById("ai-cfg-auto-context").checked&&!document.getElementById("ai-cfg-inject-rules").checked'));
+    await capture('ai-ui-injection-settings.png');
+    await js('Modal.hide();true');
+  });
   await test('模型下拉选项与分组在鼠标移出后仍保持主题底色',async()=>{
     await js('document.getElementById("ai-model").insertAdjacentHTML("beforeend",\'<optgroup label="主题检查"><option value="theme-check">主题检查模型</option></optgroup>\');true');
     for(const theme of ['dark','crimson','graphite','light','pink']){

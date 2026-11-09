@@ -743,6 +743,11 @@ const Settings = (() => {
         </div>
       </div>
       <div class="set-form">
+        <h3 class="set-section-title">自动上下文与提示注入</h3>
+        <label class="set-toggle"><input id="ai-cfg-auto-context" type="checkbox" ${cfg.autoIdeContext === true ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">自动附带 IDE 状态和当前文件</span><span class="set-toggle-note">关闭后不自动附带页面状态或读取当前文件；手动选择的附件仍会发送。</span></span></label>
+        <label class="set-toggle"><input id="ai-cfg-inject-rules" type="checkbox" ${cfg.injectMyideRules === true ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">附加 MyIDE 操作规则和 MCP 使用说明</span><span class="set-toggle-note">关闭后不附加内置助手规则、自动项目规则或 MCP 服务器说明。工具权限和模型服务自身规则不变；已进入历史的内容不会被删除，建议新建会话。</span></span></label>
+      </div>
+      <div class="set-form">
         <h3 class="set-section-title">模型与服务</h3>
         <label class="m-label">服务商</label>
         <select id="ai-cfg-prov">
@@ -828,6 +833,8 @@ const Settings = (() => {
         model: modelInput.value.trim(),
         systemPrompt: document.getElementById('ai-cfg-sys').value,
         inlineComplete: document.getElementById('ai-cfg-inline').checked,
+        autoIdeContext: document.getElementById('ai-cfg-auto-context').checked,
+        injectMyideRules: document.getElementById('ai-cfg-inject-rules').checked,
         permWrite: document.getElementById('ai-cfg-permw').value,
         permRun: document.getElementById('ai-cfg-permr').value,
         allowPaths: document.getElementById('ai-cfg-allow').value.split('\n').map((x) => x.trim()).filter(Boolean),

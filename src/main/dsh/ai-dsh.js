@@ -75,6 +75,7 @@ function createService(options={}){
         const response=await new Promise((resolve,reject)=>{run.tools.set(call.id,{resolve,reject});try{run.onTool({context:run.context,call});}catch(error){run.tools.delete(call.id);reject(error);}});live(run);
         result={isError:!response.ok,content:[{type:'text',text:String(response.text||'无返回内容').slice(0,100000)}]};
       }else return finish(200,{jsonrpc:'2.0',id:request.id,error:{code:-32601,message:'不支持的 MCP 方法'}});
+      if(request.method==='initialize' && session?.injectMyideRules!==true)delete result.instructions;
       finish(200,{jsonrpc:'2.0',id:request.id,result});
     }catch(error){finish(200,{jsonrpc:'2.0',id:request?.id??null,error:{code:-32603,message:error.message}});}
   }
@@ -121,6 +122,13 @@ function createService(options={}){
     // 旧版曾把宿主 G 的本地身份绑到新建 H；这种冲突必须重新选择，不能继续发给 H。
     const expected=String(context.sessionId||'').replace(/^host:/,'');
     if(conn.capabilities?.native&&/^(session-|myide-)/.test(expected)&&!['reader','bookshelf'].includes(context.page?.id)&&session.id!==expected)throw Error('历史会话身份已失配，请从历史列表重新打开后再发送');
+    const injectMyideRules=cfg.injectMyideRules===true;
+    // MCP clients cache initialize.instructions by endpoint/header identity.
+    if(session.injectMyideRules!==injectMyideRules){
+      if(session.run)throw Error('当前会话仍在运行，提示注入设置将在本轮结束后应用');
+      session.token=crypto.randomBytes(24).toString('hex');session.attached=false;
+      session.injectMyideRules=injectMyideRules;
+    }
     session.tools=new Map([...tools,IDE_STATE].map(tool=>[tool.function.name,tool.function]));
     const cwd=session.cwd||workspaceOf(context);await fs.mkdir(cwd,{recursive:true});
     const mcpServers=[{type:'http',name:'myide',url:'http://127.0.0.1:'+server.address().port+'/mcp',headers:[{name:'Authorization',value:'Bearer '+token},{name:'X-MyIDE-Session',value:session.token}]}];

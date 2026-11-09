@@ -60,9 +60,25 @@ let passed=0;async function test(name,fn){await fn();passed++;console.log('PASS 
  await test('原生 ACP 启动不禁用工具、不覆盖模型提示词；同一对话复用会话，只追加新请求',async()=>{const f=fixture();try{const events=[];for(let n=1;n<3;n++)assert((await f.service.chat({},[{role:'system',content:'普通助手限制'},{role:'user',content:'旧请求'},{role:'assistant',content:'旧工具结果'},{role:'user',content:'请求'+n}],[],context(n),e=>events.push(e),()=>{})).ok);assert.equal(f.starts,1);assert.deepEqual(f.invocation.args,['native-cli.js','--profile','acp']);assert.equal(f.invocation.options.env.MYIDE_DSH_API_KEY,undefined);assert.equal(f.requests.filter(r=>r.method==='session/new').length,1);assert.equal(f.requests.filter(r=>r.method==='session/close').length,0);const prompts=f.requests.filter(r=>r.method==='session/prompt');assert(!JSON.stringify(prompts).includes('旧请求'));assert(!JSON.stringify(prompts).includes('普通助手限制'));assert(events.some(e=>e.type==='native'&&e.update.sessionUpdate==='tool_call_update'));}finally{f.service.dispose();}});
  await test('阅读页与书架复用独立原生会话，返回项目复用原会话',async()=>{const f=fixture();try{for(const [n,p]of [[1,page],[2,{id:'reader',name:'阅读器',projectContext:false}],[3,page],[4,{id:'bookshelf',name:'书架',projectContext:false}]])assert((await f.service.chat({},[{role:'user',content:'测试'}],[],context(n,p),()=>{},()=>{})).ok);const created=f.requests.filter(r=>r.method==='session/new');assert.equal(created.length,2);assert.equal(created[0].params.cwd,temp);assert.notEqual(created[1].params.cwd,temp);assert(created[1].params.cwd.endsWith('myide-detached-workspace'));const prompts=f.requests.filter(r=>r.method==='session/prompt');assert.equal(prompts[0].params.sessionId,prompts[2].params.sessionId);assert.notEqual(prompts[0].params.sessionId,prompts[1].params.sessionId);assert.equal(prompts[3].params.sessionId,prompts[1].params.sessionId);}finally{await f.service.dispose();}});
  await test('MyIDE MCP 调用返回真实结果，拒绝错误归属和重复回包',async()=>{const f=fixture({mcp:true});try{let calls=0;const c=context();const result=await f.service.chat({},[{role:'user',content:'当前页面'}],[],c,()=>{},({call})=>{calls++;assert.equal(f.service.toolResult({...c,generation:99},call.id,{ok:true,text:'伪结果'}).ok,false);assert(f.service.toolResult(c,call.id,{ok:true,text:'MyIDE当前项目页面'}).ok);assert.equal(f.service.toolResult(c,call.id,{ok:true}).ok,false);});assert(result.ok);assert.equal(calls,1);assert.equal(result.text,'MyIDE当前项目页面');const listing=await httpCall([...f.servers.values()][0],'tools/list');assert(listing.result.tools.some(t=>t.name==='ide_state'));}finally{f.service.dispose();}});
+ await test('默认关闭MCP说明且不移除可用工具',async()=>{
+  const f=fixture();try{
+   await f.service.chat({},[{role:'user',content:'hello'}],[],context(),()=>{},()=>{});
+   const server=[...f.servers.values()][0];
+   assert(!Object.hasOwn((await httpCall(server,'initialize')).result,'instructions'));
+   assert((await httpCall(server,'tools/list')).result.tools.some(t=>t.name==='ide_state'));
+   const id=[...f.servers.keys()][0];
+   await f.service.chat({injectMyideRules:true},[{role:'user',content:'enable'}],[],context(2),()=>{},()=>{});
+   const enabled=f.servers.get(id);assert(enabled);assert.notDeepEqual(enabled.headers,server.headers);
+   assert((await httpCall(enabled,'initialize')).result.instructions);
+   await f.service.chat({injectMyideRules:false},[{role:'user',content:'disable'}],[],context(3),()=>{},()=>{});
+   const disabled=f.servers.get(id);assert.notDeepEqual(disabled.headers,enabled.headers);
+   assert(!Object.hasOwn((await httpCall(disabled,'initialize')).result,'instructions'));
+   assert.equal(f.servers.size,1);
+  }finally{await f.service.dispose();}
+ });
  await test('MCP initialize与工具说明允许独立SSH连接，不把MyIDE终端设为唯一通道',async()=>{
   const f=fixture();try{
-   await f.service.chat({},[{role:'user',content:'读取连接说明，不连接任何服务器'}],[],context(),()=>{},()=>{});
+   await f.service.chat({injectMyideRules:true},[{role:'user',content:'读取连接说明，不连接任何服务器'}],[],context(),()=>{},()=>{});
    const server=[...f.servers.values()][0],initialized=await httpCall(server,'initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'policy-test',version:'1'}});
    assert(!initialized.error);const instructions=initialized.result.instructions;
    assert.match(instructions,/不是连接服务器的唯一方式/);assert.match(instructions,/本地 SSH 客户端或其他 SSH 工具连接服务器/);assert.match(instructions,/不要求先在 MyIDE 页面建立连接/);
