@@ -56,7 +56,7 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     const next=context('codex-next',3);second=invoke('ai:chat',cfg,[],[],next);await settled();assert(pending.has(next.requestId));assert(aborts.filter(id=>id===c.requestId).length>=2,'替换旧运行也中断Codex');
     pending.get(next.requestId).resolve({ok:true,context:next});assert.equal((await second).ok,true);
     assert.equal((await invoke('ai:finish',next)).ok,true);assert.equal((await invoke('ai:codex-question-result',next,'late-question',{})).ok,false);
-    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose()])'));
+    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),shieldDecrypt.dispose()])'));
     console.log('Codex主进程IPC：来源、三引擎归属、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');
   }finally{for(const item of pending.values())item.resolve({ok:false,aborted:true});await Promise.all([first,second]);}
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

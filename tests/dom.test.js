@@ -10536,6 +10536,35 @@ assert_(panel, 'CM6 搜索面板出现');
     // 浮层永不拦截点击（只是反馈）—— 必须用 window.getComputedStyle：Node 侧没有这个全局
     assert_(dom.window.getComputedStyle(box).pointerEvents==='none','不拦截点击');
   });
+  await okAsync('绿盾右键：仅单个本地文件显示，目录、多选、远程文件不出现',async()=>{
+    const f=makeDom();try{await loadApp(f);await g(f,'App.setRoot('+JSON.stringify(P)+')');f.window.myIDE.fs.decryptShield=async()=>({ok:false,code:'CANCELLED'});const item={path:P+'/notes.txt',name:'notes.txt',type:'file'};
+      f.window.Tree.__testCtx(10,10,item);assert_($$(f,'.ctx-label').some(el=>el.textContent==='绿盾解密'),'单文件有入口');assert_($$(f,'.ctx-item').find(el=>el.textContent==='绿盾解密').querySelector('svg.ic'),'复用线性图标');
+      f.window.Tree.__testCtx(10,10,{path:P+'/src',name:'src',type:'dir'});assert_(!$$(f,'.ctx-label').some(el=>el.textContent==='绿盾解密'),'不解密目录');f.window.Tree.__testCtx(10,10,{...item,path:'remote://session/a.txt'});assert_(!$$(f,'.ctx-label').some(el=>el.textContent==='绿盾解密'),'不处理远程文件');
+      const rows=$$(f,'.tree-row[data-path]');rows.find(r=>r.dataset.path===P+'/notes.txt').dispatchEvent(new f.window.MouseEvent('click',{bubbles:true,ctrlKey:true}));rows.find(r=>r.dataset.path===P+'/README.md').dispatchEvent(new f.window.MouseEvent('click',{bubbles:true,ctrlKey:true}));f.window.Tree.__testCtx(10,10,item);assert_(!$$(f,'.ctx-label').some(el=>el.textContent==='绿盾解密'),'不暗自批量处理');
+    }finally{f.window.close();}
+  });
+  await okAsync('绿盾处理：未保存先拒绝，完成可恢复错误页，处理中输入不被磁盘重载覆盖',async()=>{
+    const f=makeDom(),file=P+'/notes.txt',original={...FAKE_FS[file]};try{await loadApp(f);await g(f,'App.setRoot('+JSON.stringify(P)+')');await f.window.Viewer.openFile(file);const tab=f.window.Viewer.activeTab,item={path:file,name:'notes.txt',type:'file'};let submitted=0,release;
+      const invoke=()=>{f.window.Tree.__testCtx(10,10,item);$$(f,'.ctx-item').find(el=>el.textContent==='绿盾解密').click();};
+      f.window.myIDE.fs.decryptShield=async()=>{submitted++;return {ok:true,verified:false,message:'绿盾工具已完成，请以绿盾客户端状态为准',changedPaths:[file]};};tab.dirty=true;tab.content='KEEP_UNSAVED';invoke();await tick();assert_(submitted===0&&tab.content==='KEEP_UNSAVED','不保存、不覆盖未保存输入');
+      tab.dirty=false;tab.error='加密文件读取失败';tab.mode='error';tab.content=null;FAKE_FS[file].content='DECRYPT_TEST_TEXT';invoke();for(let i=0;i<30&&tab.mode==='error';i++)await tick();assert_(submitted===1&&tab.mode==='edit'&&tab.error===null&&tab.content==='DECRYPT_TEST_TEXT','错误页从磁盘恢复正常编辑');
+      f.window.myIDE.fs.decryptShield=async()=>{submitted++;return new Promise(resolve=>{release=resolve;});};invoke();for(let i=0;i<30&&!release;i++)await tick();assert_(!!release,'处理中');tab.content='NEW_INPUT_WHILE_DECRYPTING';tab.dirty=true;tab.editRevision++;FAKE_FS[file].content='CHANGED_ON_DISK';release({ok:true,verified:false,message:'工具已完成',changedPaths:[file]});await tick();await tick();assert_(tab.content==='NEW_INPUT_WHILE_DECRYPTING'&&tab.dirty&&tab.saveErrorCode==='VERSION_CONFLICT','新输入保留，不能迟到覆盖');
+    }finally{FAKE_FS[file]=original;f.window.close();}
+  });
+  await okAsync('绿盾分屏：非活动错误页立即恢复，正常页和恢复页均可直接继续输入',async()=>{
+    for(const errorPage of [false,true]){const f=makeDom(),file=P+'/notes.txt',original={...FAKE_FS[file]};try{
+      f.window.eval(fs.readFileSync(path.join(__dirname,'../renderer/editor-panes.js'),'utf8'));await loadApp(f);await g(f,'App.setRoot('+JSON.stringify(P)+')');await f.window.Viewer.openFile(file);const target=f.window.Viewer.activeTab;
+      if(errorPage){target.error='合成加密错误';target.mode='error';f.window.Viewer.renderActive();}
+      assert_(f.window.Viewer.splitEditor('horizontal'),'拆分成功');await f.window.Viewer.openFile(P+'/README.md');assert_(f.window.Viewer.activeTab.path===P+'/README.md','焦点在另一文件');
+      f.window.myIDE.fs.decryptShield=async()=>{FAKE_FS[file].content='REBOUND_AFTER_SHIELD';return {ok:true,verified:false,changedPaths:[file]};};f.window.Tree.__testCtx(10,10,{path:file,name:'notes.txt',type:'file'});$$(f,'.ctx-item').find(el=>el.textContent==='绿盾解密').click();for(let i=0;i<50&&target.content!=='REBOUND_AFTER_SHIELD';i++)await tick();await tick();
+      const left=$$(f,'.editor-pane-view')[0];assert_(left.textContent.includes('REBOUND_AFTER_SHIELD'),'非活动分屏已重建');assert_(f.window.Viewer.activeTab.path===P+'/README.md','重建不抢另一分屏');f.window.Viewer.focusPaneByIndex(0);const api=f.window.Viewer.editorFor(target);
+      if(api?.view){api.view.dispatch({changes:{from:0,insert:'EDITABLE_'}});assert_(target.content.startsWith('EDITABLE_'),'新generation编辑scope可直接输入');}
+      else{const ta=left.querySelector('textarea.editor');assert_(!!ta,'错误页已变成编辑器');ta.value='EDITABLE_'+ta.value;ta.dispatchEvent(new f.window.Event('input',{bubbles:true}));assert_(target.content.startsWith('EDITABLE_'),'textarea可继续输入');}
+    }finally{FAKE_FS[file]=original;
+      // 分屏的CM测量还可能排着microtask；提前销毁jsdom会在错误报告器访问已清空的location。
+      process.once('exit',()=>f.window.close());
+    }}
+  });
   console.log('结果: ' + passed + ' 通过, ' + failed + ' 失败');
   process.exit(failed ? 1 : 0);
 })();

@@ -1166,6 +1166,7 @@ const Tree = (() => {
    */
   const CTX_ICONS = {
     run: '<path d="M5 3.4l7 4.6-7 4.6z"/>',
+    shield: '<path d="M8 1.8 13.2 4v3.8c0 3.1-2.6 5.3-5.2 6.4-2.6-1.1-5.2-3.3-5.2-6.4V4z"/><path d="m5.6 8 1.6 1.6 3.4-3.4"/>',
     hide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/>',
     unhide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/><path d="M2.4 2.4l11.2 11.2"/>',
     file: '<path d="M9 1.8H4.6a1 1 0 0 0-1 1v10.4a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V5.2z"/><path d="M9 1.8v3.4h3.4"/>',
@@ -1199,6 +1200,28 @@ const Tree = (() => {
     return getSelection().map((p) => byPath.get(norm(p)) || {
       path: p, name: p.split(/[\\/]/).pop(), type: 'file',
     });
+  }
+
+  const shieldPending=new Set();
+  window.myIDE?.fs?.onShieldProgress?.(state=>{if(state&&shieldPending.has(norm(state.path)))MI.toast(state.message||'绿盾处理结果尚未确认，当前文件保持锁定','err');});
+  async function decryptShieldFile(item){
+    const project=rootPath,target=item.path,key=norm(target);
+    if(shieldPending.has(key)){MI.toast('当前文件正在等待绿盾处理，请勿重复提交','err');return;}
+    shieldPending.add(key);
+    try{
+      const perform=async dirty=>{
+        if(norm(rootPath)!==norm(project))return {ok:false,error:'项目已变化，未执行绿盾解密'};
+        if(dirty?.length||(window.Viewer?.openTabs||[]).some(t=>norm(t.path)===key&&(t.dirty||t.formatBusy)))return {ok:false,error:'文件有未保存的修改，请先保存或另存后再解密'};
+        MI.toast('等待绿盾解密确认；只处理当前文件','ok');
+        return await window.myIDE.fs.decryptShield(project,target);
+      };
+      const result=window.Viewer?.withCopyChange?await Viewer.withCopyChange([target],[target],perform,'绿盾解密'):await perform([]);
+      if(result?.code==='CANCELLED'||result?.errorCode==='CANCELLED')return;
+      if(result?.changedPaths?.length&&norm(rootPath)===norm(project)){invalidateAll();await render();window.App?.refreshGit?.();}
+      if(!result?.ok){MI.toast(result?.error||result?.message||'绿盾工具未确认完成，请核对文件状态','err');return;}
+      MI.toast(result.message||'绿盾工具已完成，请以绿盾客户端状态为准','ok');
+    }catch(error){MI.toast('绿盾解密未完成：'+String(error.message||error),'err');}
+    finally{shieldPending.delete(key);}
   }
 
   function showCtxMenu(x, y, item) {
@@ -1249,6 +1272,9 @@ const Tree = (() => {
         if (runnable.length < n) MI.toast('已运行 ' + runnable.length + ' 个可执行文件，' + (n - runnable.length) + ' 项不是可运行类型', 'ok');
       }, false, 'run');
       sepOpen = true;
+    }
+    if(!multi&&item.type==='file'&&!/^remote:\/\//i.test(item.path)&&window.myIDE?.fs?.decryptShield){
+      mk('绿盾解密',()=>decryptShieldFile(item),false,'shield');sepOpen=true;
     }
     // 隐藏 / 取消隐藏：按「是否全部已隐藏」决定显示哪一项。
     // 混合状态给「隐藏」（把没隐藏的补上），这比按主选中项的单一状态判断更符合直觉。

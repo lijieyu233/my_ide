@@ -70,6 +70,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     fileVersion: (p) => ipcRenderer.invoke('fs:fileVersion', p),
     // 文件大小（状态栏）：只 stat 不读内容，大文件也无开销
     fileSize: (p) => ipcRenderer.invoke('fs:fileSize', p),
+    decryptShield: (project, p) => ipcRenderer.invoke('fs:shield-decrypt', project, p),
+    onShieldProgress: cb => { const listener = (_e, state) => cb(state); ipcRenderer.on('fs:shield-progress', listener); return () => ipcRenderer.removeListener('fs:shield-progress', listener); },
     writeFile: (p, c, enc, condition) => ipcRenderer.invoke('fs:writeFile', p, c, enc, condition),
     writeBinary: (p, b64) => ipcRenderer.invoke('fs:writeBinary', p, b64),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),

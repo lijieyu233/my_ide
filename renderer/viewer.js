@@ -2247,10 +2247,17 @@ const Viewer = (() => {
       const revisions=new Map(affected.map(t=>[t,t.editRevision]));
       const result=await perform(affected.filter(t=>tabs.includes(t)&&t.dirty).map(t=>({path:t.path,target:contains(t.path,writeRanges)})));
       const changed=result?.changedPaths||[];
+      const rebindShieldPanes=(tab,recovered=false)=>{
+        if(action!=='绿盾解密'||!paneLayout?.visible)return;
+        if(recovered)for(const group of paneLayout.groups)if(group.modes.get(tab.id)==='error')group.modes.set(tab.id,tab.mode);
+        // generation已变化，只同步文字会留下拒绝后续输入的旧scope；错误页也没有可同步的编辑器。
+        for(const group of paneLayout.groups)if(group!==activePane&&group.tabId===tab.id)renderPane(group,tab);
+      };
       for(const t of affected.filter(t=>tabs.includes(t)&&contains(t.path,changed))) {
         t.pathGeneration=(t.pathGeneration||0)+1;
         // 磁盘发布改变了版本身份；重新绑定当前编辑器，保留dirty输入仍能继续编辑。
         if(t===currentTab())renderView();
+        rebindShieldPanes(t);
         const keepInput=()=>{t.saveError=(result.ok?'磁盘文件已'+action:'磁盘操作未完成')+'，输入仍保留，请比较磁盘或另存副本';t.saveErrorCode='VERSION_CONFLICT';};
         if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
         const originalPath=t.path,generation=t.pathGeneration;
@@ -2259,7 +2266,14 @@ const Viewer = (() => {
         // 等待复制/重载仍允许输入；迟到的磁盘正文不能覆盖这个窗口内的新输入。
         if(t.dirty||t.editRevision!==revisions.get(t)){keepInput();continue;}
         if(r.errorCode==='ENOENT'){doClose(tabs.indexOf(t));continue;}
-        if(r.error||r.binary||r.tooLarge||r.content==null){t.saveError=r.error||'复制/恢复后暂不能重载，请重新打开';t.saveErrorCode='VERSION_CONFLICT';continue;}
+        if(r.error||r.binary||r.tooLarge||r.content==null){t.saveError=r.error||action+'后暂不能重载，请重新打开';t.saveErrorCode='VERSION_CONFLICT';continue;}
+        // 解密前的错误页也必须能恢复；仍沿用上面的revision核验，不能覆盖等待中的新输入。
+        const recoveredShieldError=action==='绿盾解密'&&(t.error||t.mode==='error');
+        if(recoveredShieldError){
+          t.error=null;t.binary=false;t.tooLarge=false;
+          let pref='live';try{pref=localStorage.getItem('myide-md-mode')||'live';}catch{}
+          t.mode=MD_EXTS.has(extOf(t.name))?(['live','split','source','preview'].includes(pref)?pref:'live'):extOf(t.name)==='json'?'edit':PREVIEW_EXTS.has(extOf(t.name))?'preview':'edit';
+        }
         t.content=r.content;t.diskVersion=r.version;t.textFormat=r.textFormat;t.encoding=r.encoding||t.encoding;t.eol=r.textFormat?.eol;
         t.saveError=null;t.saveErrorCode=null;t.cmState=null;
         if(t===currentTab()) {
@@ -2268,7 +2282,7 @@ const Viewer = (() => {
           updateFormatStatus(t);window.App?.refreshOutline(t);
         }else renderVisibleTab(t,true);
         syncPaneDocument(t);
-        syncPaneDocument(t);
+        rebindShieldPanes(t,recoveredShieldError);
       }
       renderTabs();return result;
     }catch(e){return {error:String(e.message||e),errorCode:e.code||'COPY_FAILED'};}

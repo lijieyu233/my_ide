@@ -37,6 +37,7 @@ const aiTools = require('./src/main/ai/ai-tool-execution').createService(aiRuns,
 const FileWrite = require('./src/main/files/file-write');
 const FileRead = require('./src/main/files/file-read');
 const PathJobs = require('./src/main/files/path-jobs');
+const shieldDecrypt = require('./src/main/files/shield-decrypt').createService({onStatus:state=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('fs:shield-progress',state);}});
 const TextFormat = require('./src/main/files/text-format');
 const searchService = require('./src/main/search/search-service').createSearchService();
 const aiSearchJobs=new Map();
@@ -1103,6 +1104,26 @@ ipcMain.handle('fs:createItem', (_e, project, parent, name, type) => pathResult(
 }));
 ipcMain.handle('fs:undoCreate', (_e, project, p, after) => pathResult(() => PathJobs.withMove(p,p,()=>PathJobs.run('undoCreate',[project,p,after]))));
 ipcMain.handle('fs:pathSnapshot', (_e, p) => pathResult(async () => ({ snapshot: await PathJobs.run('snapshot',[p]) })));
+// 不通过终端拼接命令，也不以“受信进程能读到明文”冒充绿盾解密成功。
+ipcMain.handle('fs:shield-decrypt',async(event,project,target)=>{
+  try{
+    if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的文件操作来源');
+    const key=p=>typeof p==='string'?(process.platform==='win32'?path.resolve(p).toLowerCase():path.resolve(p)):'';
+    if(typeof project!=='string'||!path.isAbsolute(project)||typeof target!=='string'||!path.isAbsolute(target))throw Error('请选择当前项目中的本地文件');
+    const checkView=async()=>{
+      const state=await event.sender.executeJavaScript('({root:window.App?.root||"",tabs:(window.Viewer?.openTabs||[]).map(t=>({path:t.path,dirty:!!t.dirty,formatBusy:!!t.formatBusy}))})');
+      if(key(state.root)!==key(project))throw Error('项目已经切换，未执行绿盾解密');
+      if(state.tabs.some(tab=>key(tab.path)===key(target)&&(tab.dirty||tab.formatBusy)))throw Error('文件有未保存的修改或正在切换编码，请完成后再解密');
+    };
+    await checkView();
+    const result=await PathJobs.withRanges([target],()=>shieldDecrypt.decrypt(project,target,async info=>{
+      await checkView();
+      const decision=await dialog.showMessageBox(mainWindow,{type:'warning',title:'绿盾解密',message:'使用本机绿盾解密工具处理当前文件？',detail:'文件：'+info.path+'\n工具：'+info.tool+'\n\n工具会原地处理此文件，不递归目录。此工具未验证发布者签名，请只在信任它且已获得解密授权时继续；MyIDE 不绕过绿盾权限。',buttons:['取消','解密当前文件'],defaultId:0,cancelId:0,noLink:true});
+      if(decision.response!==1)return false;await checkView();return true;
+    }));
+    return result.ok?result:{...result,error:result.message||'绿盾解密未完成',errorCode:result.code||'SHIELD_FAILED'};
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code||'SHIELD_REJECTED',changedPaths:[]};}
+});
 ipcMain.handle('fs:relocate', (e, p, target, condition) => pathResult(() => PathJobs.withMove(p,target,()=>PathJobs.run('relocate',[p,target,condition],pathProgress(e.sender,'移动')))));
 // 重命名/移动走快速路径（condition.fast）：只做 stat 清单，不读文件内容。
 // 实测 5000 个文件的目录重命名从 20 秒降到 3.6 秒左右；代价是返回的 after 只是弱基线，
@@ -2177,5 +2198,5 @@ app.whenReady().then(() => {
 });
 
 const launchExit = require('./src/main/launch/launch-exit').createExitCoordinator({ app, service: launchService, dialog,
-  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
+  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),shieldDecrypt.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });
