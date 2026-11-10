@@ -29,6 +29,7 @@ const G = require('./src/main/git/git-service');
 const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');
 const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
+const CODEX=require('./src/main/codex/ai-codex').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json')});
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
 const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');
@@ -127,7 +128,7 @@ if (!HIDDEN_WINDOW) require('./src/main/app/app-instance').claim({ app, getWindo
 const aiPermissionsBridge = require('./src/main/ai/ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: (event,context) => aiSender(event,context), windowFor: owner => mainWindow && mainWindow.webContents.id === aiOwners.host(owner) ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
-  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
+  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
 });
 
 function loadState() {
@@ -232,7 +233,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);cancelAiSearch(context.requestId);}} };
+  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);cancelAiSearch(context.requestId);}} };
   // ── 宿主窗口不许被导航走（2026-10-29）────────────────────────────────
   // 事故：用户点击 AI 回复里的普通 <a href="..."> 链接，整个窗口从
   // file:///.../index.html 导航到外网地址 —— 应用界面全消失，只剩一片空白，
@@ -812,7 +813,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
     aiTools.bind(aiSender(e,context), context);
     if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e,context));
     aiPermissionsBridge.newSession(aiSender(e,context), context);
-    if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
+    if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId);CODEX.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { if(dshAdmission)dshChatAdmissions.delete(dshAdmission);return { error: error.message, errorCode: error.code, context }; }
   let r;
   if(cfg?.engine==='dsh'){
@@ -824,12 +825,43 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       },event=>{try{aiRuns.assert(aiSender(e,context),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'dsh',context};}
     finally{if(dshAdmission)dshChatAdmissions.delete(dshAdmission);}
+  }else if(cfg?.engine==='codex'){
+    try{
+      const page=await e.sender.executeJavaScript('App.getPageContext()');assertCodexRun(e,context);
+      // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
+      context={...context,page};
+      r=await CODEX.chat(cfg,messages,tools||[],context,event=>{
+        try{assertCodexRun(e,context);}catch{return;}
+        if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});
+      },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{CODEX.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
+    }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'codex',context};}
   }else r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
   }, tools, context);
   if (record.status !== 'active') r = { ...r, ok: false, status: 'aborted', complete: false, aborted: true, cancelled: true, toolCalls: [] };
   send('ai:done', r);
   return r;
+});
+function assertCodexRun(event,context){
+  const record=aiRuns.assert(aiSender(event,context),context);
+  if(aiOwners.engine(event.sender.id,context)!=='codex')throw Error('不是当前 Codex 运行');
+  return record;
+}
+ipcMain.handle('ai:codex-tool-result',(event,context,id,result)=>{try{assertCodexRun(event,context);return CODEX.toolResult(context,id,result);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-permission-result',(event,context,id,optionId)=>{try{assertCodexRun(event,context);return CODEX.permissionResult(context,id,optionId);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-question-result',(event,context,id,answers)=>{try{assertCodexRun(event,context);return CODEX.questionResult(context,id,answers);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-options',async(event,cfg,sessionId,tools,apply)=>{
+  try{
+    aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Codex 会话身份无效');
+    const state=await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||"",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
+    if(state.engine!=='codex'||state.sessionId!==sessionId||cfg?.engine!=='codex')throw Error('Codex 会话视图已变化');
+    aiSender(event,{engine:'codex',rootId:state.rootId,sessionId});
+    const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
+    return await CODEX.inspect(cfg,{sessionId,rootId:state.rootId,page:state.page},allowed,apply===true);
+  }catch(error){return {ok:false,error:error.message};}
+});
+ipcMain.handle('ai:codex-status',async(event,launcher)=>{
+  try{aiSender(event);return await CODEX.status(launcher);}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
@@ -925,7 +957,7 @@ ipcMain.handle('ai:dsh-queue-update',async(event,cfg,target,action)=>{
   catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
+  try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
@@ -2145,5 +2177,5 @@ app.whenReady().then(() => {
 });
 
 const launchExit = require('./src/main/launch/launch-exit').createExitCoordinator({ app, service: launchService, dialog,
-  getWindow: () => mainWindow, beforeQuit: () => DSH.dispose(), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
+  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

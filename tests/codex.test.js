@@ -1,0 +1,139 @@
+const assert=require('assert/strict'),fs=require('fs'),os=require('os'),path=require('path');
+const {EventEmitter}=require('events'),{PassThrough}=require('stream');
+const {createService,promptContent}=require('../src/main/codex/ai-codex');
+const {Rpc}=require('../src/main/codex/codex-rpc'),{resolveRuntime}=require('../src/main/codex/codex-runtime');
+const temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-test-')));
+async function until(predicate){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('Codex fixture await timeout');await new Promise(resolve=>setTimeout(resolve,5));}}
+const page={id:'project',projectContext:true};
+const context=(n=1,extra={})=>({requestId:'codex-request-'+n,sessionId:'local-codex',rootId:temp,generation:n,round:0,page,...extra});
+const models=[{id:'m1',model:'native-model',displayName:'原生模型',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'中'},{reasoningEffort:'high',description:'高'}]},{id:'m2',model:'other-model',displayName:'另一模型',isDefault:false,defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high',description:'高'}]}];
+const user=text=>[{role:'user',content:text}];
+function child(){const c=new EventEmitter();c.stdin=new PassThrough();c.stdout=new PassThrough();c.stderr=new PassThrough();c.exitCode=null;c.kill=()=>{c.exitCode=0;c.emit('exit',0);};return c;}
+function fixture(config={}){
+ const requests=[],children=[],threads=new Map(),turns=new Map(),pending=new Map();let counter=0,sequence=0,service,invocation;
+ const home=path.join(temp,'profile-'+Math.random().toString(36).slice(2)),map=config.map;
+ const send=(c,value)=>c.stdout.write(JSON.stringify(value)+'\n');
+ const notify=(c,method,params)=>send(c,{method,params});
+ const complete=(c,threadId,turnId,text='原生 Codex 回复',status='completed')=>{
+  notify(c,'item/agentMessage/delta',{threadId,turnId,itemId:'message-'+turnId,delta:text});
+  notify(c,'turn/completed',{threadId,turn:{id:turnId,status}});
+ };
+ service=createService({homeDir:()=>home,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
+  const c=child();children.push(c);invocation={exe,args,opts};
+  c.stdin.on('data',data=>{for(const line of data.toString().trim().split('\n')){
+   const r=JSON.parse(line);requests.push(r);const p=r.params||{};
+   if(r.method==='initialize'){send(c,{id:r.id,result:{userAgent:'codex-fixture/1'}});}
+   else if(r.method==='account/gatewayOAuth/read'){if(config.unsupportedGateway)send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});else send(c,{id:r.id,result:config.gateway||{providerId:'openai',providerName:'OpenAI',required:false,status:null}});}
+    else if(r.method==='account/read')send(c,{id:r.id,result:config.account||{account:{type:'chatgpt',email:'private@example.invalid',planType:'plus',accessToken:'never-expose-token'},requiresOpenaiAuth:true}});
+   else if(r.method==='model/list')send(c,{id:r.id,result:{data:config.models||models,nextCursor:null}});
+   else if(r.method==='thread/start'||r.method==='thread/resume'){
+    const id=r.method==='thread/start'?'thread-'+ ++counter:p.threadId,savedCwd=config.map&&fs.existsSync(config.map)?Object.values(JSON.parse(fs.readFileSync(config.map,'utf8'))).find(v=>v.id===id)?.cwd:null,cwd=config.wrongCwd||p.cwd||threads.get(id)?.cwd||savedCwd||temp,model=r.method==='thread/start'?(p.model||'native-model'):(config.resumeModel||'native-model');threads.set(id,{id,cwd,model});
+    send(c,{id:r.id,result:{thread:{id:config.wrongId?'wrong-id':id,cwd},cwd,model,reasoningEffort:'medium'}});
+   }else if(r.method==='turn/start'){
+    const id='turn-'+ ++sequence,threadId=p.threadId;turns.set(threadId,id);send(c,{id:r.id,result:{turn:{id,status:'inProgress'}}});
+    if(config.hold)continue;
+    if(config.mode){const serverId='server-'+id;pending.set(serverId,{c,threadId,id,mode:config.mode});
+     if(config.mode==='mixed')notify(c,'item/reasoning/summaryTextDelta',{threadId,turnId:id,itemId:'thought',delta:'before'});
+     if(['tool','mixed'].includes(config.mode))send(c,{id:serverId,method:'item/tool/call',params:{threadId,turnId:id,callId:'call-'+id,tool:'ide_state',arguments:{}}});
+     else if(config.mode==='approval')send(c,{id:serverId,method:'item/commandExecution/requestApproval',params:{threadId,turnId:id,itemId:'command-'+id,command:'echo test',cwd:temp,reason:'test',startedAtMs:0,networkApprovalContext:config.networkContext,availableDecisions:config.availableDecisions||['accept','acceptForSession','decline']}});
+     else if(config.mode==='fileApproval'){notify(c,'item/started',{threadId,turnId:id,item:{id:'file-'+id,type:'fileChange',status:'inProgress',changes:[{path:'example.txt',kind:{type:'update'},diff:'-old\n+new'}]}});send(c,{id:serverId,method:'item/fileChange/requestApproval',params:{threadId,turnId:id,itemId:'file-'+id,reason:'edit'}});}
+     else if(config.mode==='question')send(c,{id:serverId,method:'item/tool/requestUserInput',params:{threadId,turnId:id,itemId:'q-'+id,questions:[{id:'question1',header:'选择',question:'继续吗？',isSecret:config.secretQuestion===true,options:[{label:'继续',description:'只继续本次'}]}]}});
+     else if(config.mode==='permissions')send(c,{id:serverId,method:'item/permissions/requestApproval',params:{threadId,turnId:id,itemId:'perm-'+id,permissions:{network:{enabled:true}}}});
+    if(config.mode==='mixed')notify(c,'item/agentMessage/delta',{threadId,turnId:id,itemId:'early',delta:'after'});
+    }else{
+     notify(c,'item/started',{threadId,turnId:id,item:{id:'native-command-'+id,type:'commandExecution',command:'echo native'}});
+     notify(c,'item/completed',{threadId,turnId:id,item:{id:'native-command-'+id,type:'commandExecution',status:'completed',aggregatedOutput:'native output'}});
+     notify(c,'item/reasoning/summaryTextDelta',{threadId,turnId:id,itemId:'reason-'+id,delta:'思考片段'});
+     complete(c,threadId,id);
+    }
+   }else if(r.method==='turn/interrupt'){
+    if(!config.delayedStop)notify(c,'turn/completed',{threadId:p.threadId,turn:{id:p.turnId,status:'interrupted'}});
+    send(c,{id:r.id,result:{}});
+   }else if(!r.method&&pending.has(r.id)){const item=pending.get(r.id);pending.delete(r.id);complete(c,item.threadId,item.id);}
+  }});return c;
+ }});
+ return {service,requests,children,threads,turns,pending,home,get invocation(){return invocation;},send(value){send(children.at(-1),value);},complete(threadId,id,text,status){complete(children.at(-1),threadId,id,text,status);}};
+}
+let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
+(async()=>{try{
+ await test('仅完成正文和流式最后补齐都完整显示，重复完成通知不重复文字',async()=>{
+  for(const prefix of ['', '开头']){const f=fixture({hold:true});try{const events=[],pending=f.service.chat({},user('完整正文'),[],context(),event=>events.push(event),()=>{});await until(()=>f.turns.size===1);const [threadId,turnId]=[...f.turns][0],params={threadId,turnId};if(prefix)f.send({method:'item/agentMessage/delta',params:{...params,itemId:'message-final',delta:prefix}});for(let n=0;n<2;n++)f.send({method:'item/completed',params:{...params,item:{type:'agentMessage',id:'message-final',text:prefix+'完整末尾'}}});f.send({method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}});const r=await pending;assert(r.ok,r.error);assert.equal(r.text,prefix+'完整末尾');assert.equal(events.filter(e=>e.type==='text').map(e=>e.delta).join(''),r.text);}finally{await f.service.dispose();}}
+ });
+ await test('协议兼容有无jsonrpc，支持UTF8分片/CRLF和多行，超限/错误关闭待处理请求',async()=>{
+  const c=child(),rpc=new Rpc(c,{maxLineBytes:300}),notifications=[];rpc.on('notification',n=>notifications.push(n));
+  const p=rpc.request('ping',{},1000);c.stdout.write('{"id":1,"result":{"ok":true}}\r');c.stdout.write('\n{"jsonrpc":"2.0","method":"note","params":{"text":"中文"}}\n');assert.deepEqual(await p,{ok:true});assert.equal(notifications[0].params.text,'中文');
+  const waiting=rpc.request('pending',{},1000);c.stdout.write('x'.repeat(301));await assert.rejects(waiting,/过大/);assert(rpc.closed);
+ });
+ await test('服务端错误正文和stderr密钥不会泄露',async()=>{const c=child(),rpc=new Rpc(c);const p=rpc.request('test',{},1000);c.stderr.write('Bearer secret-token private@example.invalid');c.stdout.write('{"id":1,"error":{"code":-32000,"message":"secret-token private@example.invalid"}}\n');await assert.rejects(p,e=>!e.message.includes('secret-token')&&!e.message.includes('private@'));rpc.close();});
+ await test('RPC请求超时删除pending，未知响应不污染下一个请求',async()=>{const c=child(),rpc=new Rpc(c);await assert.rejects(rpc.request('timeout',{},5),/超时/);assert.equal(rpc.pending.size,0);c.stdout.write('{"id":1,"result":{}}\n');rpc.close();});
+ await test('安装发现从版本化Codex目录寻找原生CLI，不硬编码hash或打开窗口',async()=>{
+  const local=path.join(temp,'local'),exe=path.join(local,'OpenAI','Codex','bin','any-version','codex.exe');fs.mkdirSync(path.dirname(exe),{recursive:true});fs.writeFileSync(exe,'never execute fixture');
+  const r=await resolveRuntime('',{env:{LOCALAPPDATA:local},home:temp});assert.equal(r.executable,exe);assert.deepEqual(r.args,[]);
+  await assert.rejects(resolveRuntime('relative.exe',{env:{},home:temp}),/请选择/);
+  await assert.rejects(resolveRuntime('',{env:{LOCALAPPDATA:path.join(temp,'none')},home:temp}),e=>e.code==='CODEX_INSTALL_NOT_FOUND');
+ });
+ await test('npm wrapper只解析已验证官方包，不执行cmd字符串',async()=>{
+  const directory=path.join(temp,'npm'),wrapper=path.join(directory,'codex.cmd'),root=path.join(directory,'node_modules','@openai','codex');fs.mkdirSync(path.join(root,'bin'),{recursive:true});fs.writeFileSync(wrapper,'echo do not execute');fs.writeFileSync(path.join(root,'bin','codex.js'),'fixture');fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'@openai/codex'}));
+  const r=await resolveRuntime(wrapper,{env:{},executable:'node-fixture'});assert.equal(r.executable,'node-fixture');assert(r.args[0].endsWith(path.join('bin','codex.js')));assert.equal(r.env.ELECTRON_RUN_AS_NODE,'1');
+  fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'untrusted'}));await assert.rejects(resolveRuntime(wrapper,{env:{}}),/请选择/);
+ });
+ await test('inspect只initialize/model/account，账号仅type，不创建线程/turn，隔离HOME',async()=>{
+  const f=fixture();try{const r=await f.service.inspect({},context(),[]);assert(r.ok&&r.loggedIn);assert.deepEqual(r.account,{type:'chatgpt'});assert(!JSON.stringify(r).includes('private@'));assert(!JSON.stringify(r).includes('never-expose'));assert.equal(r.models[0].model,'native-model');assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));assert.deepEqual(f.invocation.args,['app-server','--stdio']);assert.equal(f.invocation.opts.shell,false);assert(f.invocation.opts.windowsHide);assert.equal(f.invocation.opts.env.CODEX_HOME,f.home);assert(f.requests.some(r=>r.method==='initialized'));assert.equal(f.requests.find(r=>r.method==='initialize').params.capabilities.experimentalApi,true);}finally{await f.service.dispose();}
+ });
+ await test('account null且requiresAuth时发送前明确要求官方登录，不偷建线程',async()=>{const f=fixture({account:{account:null,requiresOpenaiAuth:true}});try{const r=await f.service.chat({},user('x'),[],context(),()=>{},()=>{});assert(!r.ok&&r.error.includes('尚未登录'));assert(!f.requests.some(r=>r.method==='thread/start'));}finally{await f.service.dispose();}});
+ await test('原生Agent多轮只送最新输入，不重放历史，native工具仅显示不重复执行',async()=>{
+  const f=fixture();try{const events=[];let tools=0;for(let i=1;i<=2;i++){const r=await f.service.chat({codexModel:'native-model',codexReasoning:'high'},[{role:'user',content:'旧输入'},{role:'assistant',content:'旧工具结果'},...user('新输入'+i)],[],context(i),e=>events.push(e),()=>tools++);assert(r.ok,r.error);assert.equal(r.text,'原生 Codex 回复');}assert.equal(f.children.length,1);assert.equal(f.requests.filter(r=>r.method==='thread/start').length,1);assert.equal(tools,0);const starts=f.requests.filter(r=>r.method==='turn/start');assert(!JSON.stringify(starts).includes('旧输入'));assert.equal(starts[0].params.effort,'high');const thread=f.requests.find(r=>r.method==='thread/start');assert.equal(thread.params.sandbox,'read-only');assert.equal(thread.params.approvalPolicy,'on-request');assert.equal(thread.params.approvalsReviewer,'user');assert.equal(thread.params.allowProviderModelFallback,false);assert.equal(thread.params.dynamicTools.find(t=>t.name==='ide_state').type,'function');assert(events.some(e=>e.update?.sessionUpdate==='agent_thought_chunk'));assert(events.some(e=>e.update?.sessionUpdate==='tool_call_update'));}finally{await f.service.dispose();}
+ });
+ await test('dynamicTools server request与turn响应同chunk仍正确绑定，只接受完整归属一次回包',async()=>{
+  const f=fixture({mode:'tool'});try{const c=context();let calls=0;const r=await f.service.chat({},user('工具'),[],c,()=>{},({call,context:owner})=>{calls++;assert.deepEqual(owner,c);assert.equal(f.service.toolResult({...c,generation:99},call.id,{ok:true,text:'错'}).ok,false);assert.equal(f.service.toolResult({...c,page:{id:'reader'}},call.id,{ok:true}).ok,false);assert(f.service.toolResult(c,call.id,{ok:true,text:'真正结果'}).ok);assert.equal(f.service.toolResult(c,call.id,{ok:true}).ok,false);});assert(r.ok);assert.equal(calls,1);const response=f.requests.find(r=>r.id==='server-turn-1');assert.deepEqual(response.result,{contentItems:[{type:'inputText',text:'真正结果'}],success:true});}finally{await f.service.dispose();}
+ });
+ await test('原生审批只展示allow_once/reject_once，拒绝always/旧页面/重复答案',async()=>{
+  const f=fixture({mode:'approval'});try{const c=context(),r=await f.service.chat({},user('命令'),[],c,event=>{if(event.type==='permission'){assert.deepEqual(event.options.map(o=>o.kind),['allow_once','reject_once']);assert.equal(f.service.permissionResult(c,event.id,'acceptForSession').ok,false);assert.equal(f.service.permissionResult({...c,generation:3},event.id,'allow_once').ok,false);assert(f.service.permissionResult(c,event.id,'reject_once').ok);assert.equal(f.service.permissionResult(c,event.id,'allow_once').ok,false);}},()=>{});assert(r.ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{decision:'decline'});}finally{await f.service.dispose();}
+ });
+ await test('requestUserInput按questionid转换官方answers字典，拒绝旧请求与未知选项',async()=>{
+  const f=fixture({mode:'question'});try{const c=context(),r=await f.service.chat({},user('问题'),[],c,e=>{if(e.type==='question'){assert.equal(f.service.questionResult(c,e.id,[{id:'question1',selected:['未知']}]).ok,false);assert(f.service.questionResult(c,e.id,[{id:'question1',selected:['继续'],custom:'补充'}]).ok);assert.equal(f.service.questionResult(c,e.id,[]).ok,false);}},()=>{});assert(r.ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{answers:{question1:{answers:['继续','补充']}}});}finally{await f.service.dispose();}
+ });
+ await test('整轮/会话permissions扩权没有伪装成单次授权，默认明确拒绝',async()=>{const f=fixture({mode:'permissions'});try{assert((await f.service.chat({},user('x'),[],context(),()=>{},()=>{})).ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{permissions:{},scope:'turn'});}finally{await f.service.dispose();}});
+ await test('重启持久映射精确resume同线程，全球cfg不覆原生实际模型',async()=>{
+  const map=path.join(temp,'resume.json'),f=fixture({map});try{assert((await f.service.chat({},user('首轮'),[],context(),()=>{},()=>{})).ok);}finally{await f.service.dispose();}
+  const next=fixture({map,resumeModel:'other-model'});try{const events=[],r=await next.service.chat({codexModel:'native-model',codexReasoning:'medium'},user('继续'),[],context(2),e=>events.push(e),()=>{});assert(!r.ok&&r.error.includes('思考强度'));assert(!next.requests.some(r=>r.method==='thread/start'));assert.equal(next.requests.find(r=>r.method==='thread/resume').params.threadId,'thread-1');assert(!next.requests.find(r=>r.method==='thread/resume').params.model);assert(!next.requests.some(r=>r.method==='turn/start'));}finally{await next.service.dispose();}
+ });
+ await test('下架模型不会偷偷换global选择；明确apply新model后仅一次turn改选',async()=>{
+  const map=path.join(temp,'unavailable.json'),first=fixture({map});try{assert((await first.service.chat({},user('首轮'),[],context(),()=>{},()=>{})).ok);}finally{await first.service.dispose();}
+  const f=fixture({map,models:[models[1]],resumeModel:'native-model'});try{let r=await f.service.chat({codexModel:'other-model'},user('不该发送'),[],context(2),()=>{},()=>{});assert(!r.ok);assert(!f.requests.some(r=>r.method==='turn/start'));await f.service.inspect({codexModel:'other-model',codexReasoning:'high'},context(3),[],true);r=await f.service.chat({codexModel:'native-model'},user('明确改选后'),[],context(3),()=>{},()=>{});assert(r.ok,r.error);assert.equal(f.requests.find(r=>r.method==='turn/start').params.model,'other-model');}finally{await f.service.dispose();}
+ });
+ await test('scope与项目隔离：阅读/书架cwd绝不借后台项目，回项目复用原线程',async()=>{
+  const f=fixture();try{for(const [n,p]of [[1,page],[2,{id:'reader',projectContext:false}],[3,page],[4,{id:'bookshelf',projectContext:false}]])assert((await f.service.chat({},user('x'),[],context(n,{page:p}),()=>{},()=>{})).ok);const starts=f.requests.filter(r=>r.method==='thread/start'),turn=f.requests.filter(r=>r.method==='turn/start');assert.equal(starts.length,2);assert.equal(starts[0].params.cwd,temp);assert.notEqual(starts[1].params.cwd,temp);assert.equal(turn[0].params.threadId,turn[2].params.threadId);assert.equal(turn[1].params.threadId,turn[3].params.threadId);}finally{await f.service.dispose();}
+ });
+ await test('持久身份/返回id/返回cwd不一致必须失败，不新建替代线程',async()=>{
+  const map=path.join(temp,'wrong-id.json'),first=fixture({map});try{await first.service.chat({},user('首轮'),[],context(),()=>{},()=>{});}finally{await first.service.dispose();}
+  const f=fixture({map,wrongId:true});try{const r=await f.service.chat({},user('继续'),[],context(2),()=>{},()=>{});assert(!r.ok&&r.error.includes('不匹配'));assert.equal(f.requests.filter(r=>r.method==='thread/start').length,0);assert.equal(f.requests.filter(r=>r.method==='turn/start').length,0);}finally{await f.service.dispose();}
+  const bad=fixture({map});try{const r=await bad.service.chat({},user('继续'),[],context(4,{expectedThreadId:'other-thread'}),()=>{},()=>{});assert(!r.ok&&/身份失配|不匹配/.test(r.error));assert(!bad.requests.some(r=>r.method==='thread/start'||r.method==='thread/resume'));}finally{await bad.service.dispose();}
+ });
+ await test('两会话并发按thread+turn隔离，停止一条不销毁另一条或共享child',async()=>{
+  const f=fixture({hold:true});try{const a=context(1),b=context(2,{sessionId:'local-second'}),ea=[],eb=[];
+   const pa=f.service.chat({},user('A'),[],a,e=>ea.push(e),()=>{}),pb=f.service.chat({},user('B'),[],b,e=>eb.push(e),()=>{});
+   await until(()=>f.turns.size===2);
+   assert.equal(f.turns.size,2);assert(f.service.abort(a.requestId));assert((await pa).aborted);assert.equal(f.children[0].exitCode,null);
+   const startA=f.requests.find(r=>r.method==='turn/start'&&r.params.input[0].text==='A'),startB=f.requests.find(r=>r.method==='turn/start'&&r.params.input[0].text==='B');
+   f.complete(startA.params.threadId,f.turns.get(startA.params.threadId),'过期文本');f.complete(startB.params.threadId,f.turns.get(startB.params.threadId),'B真回复');const rb=await pb;assert(rb.ok);assert.equal(rb.text,'B真回复');assert(!ea.some(e=>e.delta==='过期文本'));assert(!eb.some(e=>e.delta==='过期文本'));
+  }finally{await f.service.dispose();}
+ });
+ await test('中断已接受未完成时锁住原线程，迟到完成才允许继续且不换线程',async()=>{
+  const f=fixture({hold:true,delayedStop:true});try{const c=context(),p=f.service.chat({},user('x'),[],c,()=>{},()=>{});await until(()=>f.turns.size>0);f.service.abort(c.requestId);assert((await p).aborted);const blocked=await f.service.chat({},user('仍停止中'),[],context(2),()=>{},()=>{});assert(!blocked.ok&&blocked.error.includes('停止中'));f.complete('thread-1','turn-1','late','interrupted');const next=f.service.chat({},user('恢复'),[],context(3),()=>{},()=>{});await until(()=>f.turns.get('thread-1')==='turn-2');f.complete('thread-1','turn-2');assert((await next).ok);assert.equal(f.requests.filter(r=>r.method==='thread/start').length,1);}finally{await f.service.dispose();}
+ });
+ await test('输入支持本地图片，阅读页不偷附项目文件，旧历史不回放',()=>{const blocks=promptContent([{role:'user',content:'旧'},...user('新')],page);assert.equal(blocks[0].text,'新');assert.deepEqual(blocks[0].text_elements,[]);assert.equal(promptContent([{role:'user',content:[{type:'image_url',image_url:{url:'data:image/png;base64,YQ=='}}]}],page)[0].type,'image');assert.throws(()=>promptContent([{role:'user',content:[{type:'image_url',image_url:{url:'https://example.invalid/a.png'}}]}],page),/本地/);assert.equal(promptContent([{role:'user',content:'读书',_dshAttachments:[{path:'secret',kind:'file',content:'project file'}]}],{projectContext:false}).length,1);});
+ await test('混合thought/serverrequest/text早期消息按到达顺序回放，持久化等待不打乱顺序',async()=>{
+  const f=fixture({mode:'mixed',map:path.join(temp,'mixed-order.json')});try{const order=[],c=context();const r=await f.service.chat({},user('mixed'),[],c,e=>{if(e.update?.sessionUpdate==='agent_thought_chunk')order.push('thought');if(e.type==='text')order.push(e.delta);},({call})=>{order.push('tool');f.service.toolResult(c,call.id,{ok:true,text:'ok'});});assert(r.ok,r.error);assert.deepEqual(order,['thought','tool','after','原生 Codex 回复']);}finally{await f.service.dispose();}
+ });
+ await test('秘密问题不送普通表单，不向用户索取口令/Token',async()=>{const f=fixture({mode:'question',secretQuestion:true});try{const events=[],r=await f.service.chat({},user('secret'),[],context(),e=>events.push(e),()=>{});assert(r.ok);assert(!events.some(e=>e.type==='question'));assert(events.some(e=>e.type==='status'&&e.text.includes('秘密信息')));assert(f.requests.find(r=>r.id==='server-turn-1').error);}finally{await f.service.dispose();}});
+ await test('服务端没有提供accept时不能伪造允许选项',async()=>{const f=fixture({mode:'approval',availableDecisions:['decline']});try{const c=context(),r=await f.service.chat({},user('command'),[],c,e=>{if(e.type==='permission'){assert.deepEqual(e.options.map(x=>x.kind),['reject_once']);assert.equal(f.service.permissionResult(c,e.id,'allow_once').ok,false);f.service.permissionResult(c,e.id,'reject_once');}},()=>{});assert(r.ok);}finally{await f.service.dispose();}});
+ await test('执行超时请求中断且未完成前锁住该线程，不自动新建或重发',async()=>{const f=fixture({hold:true,delayedStop:true,turnTimeoutMs:20});try{const r=await f.service.chat({},user('timeout'),[],context(),()=>{},()=>{});assert(!r.ok&&r.error.includes('超时'));assert(f.requests.some(r=>r.method==='turn/interrupt'));const next=await f.service.chat({},user('retry'),[],context(2),()=>{},()=>{});assert(!next.ok&&next.error.includes('停止中'));assert.equal(f.requests.filter(r=>r.method==='turn/start').length,1);}finally{await f.service.dispose();}});
+ await test('发送前停止不会创建原生线程，后续仍可正常发送',async()=>{const f=fixture();try{const c=context(),p=f.service.chat({},user('cancel-before-connect'),[],c,()=>{},()=>{});assert(f.service.abort(c.requestId));assert((await p).aborted);assert(!f.requests.some(r=>r.method==='thread/start'));assert((await f.service.chat({},user('next'),[],context(2),()=>{},()=>{})).ok);}finally{await f.service.dispose();}});
+ await test('近4MiB合法帧逐KiB分片只扫描新片，换行才组装并释放缓存',async()=>{const c=child(),rpc=new Rpc(c),text='x'.repeat(4*1024*1024-256),frame=JSON.stringify({method:'large',params:{text}})+'\n';let received=0;rpc.on('notification',r=>{received=r.params.text.length;});for(let i=0;i<frame.length;i+=1024)c.stdout.write(frame.slice(i,i+1024));assert.equal(received,text.length);assert.equal(rpc.bufferedBytes,0);assert.equal(rpc.fragments.length,0);assert(!rpc.closed);rpc.close();});
+ await test('gateway显式登录能力未就绪时绝不读取模型或发起login/browser',async()=>{const f=fixture({gateway:{providerId:'fixture',providerName:'fixture',required:true,status:'notReady'}});try{await assert.rejects(f.service.inspect({},context(),[]),/不会自动打开/);assert.equal(f.requests.find(r=>r.method==='initialize').params.capabilities.explicitGatewayOauth,true);assert(!f.requests.some(r=>r.method==='model/list'||r.method==='account/gatewayOAuth/login'));assert.equal(f.children.length,1);}finally{await f.service.dispose();}});
+ await test('旧server忽略capability且没有gatewayprobe时明确升级，不降级到自动OAuth',async()=>{const f=fixture({unsupportedGateway:true});try{await assert.rejects(f.service.inspect({},context(),[]),/更新兼容版本/);assert(!f.requests.some(r=>r.method==='model/list'||r.method==='account/gatewayOAuth/login'));}finally{await f.service.dispose();}});
+ await test('首次返回错误cwd的身份被持久阻断，重试/重启不得偷偷newthread兜底',async()=>{const wrong=path.join(temp,'wrong-root');fs.mkdirSync(wrong,{recursive:true});const map=path.join(temp,'blocked.json'),f=fixture({map,wrongCwd:wrong});try{for(let i=0;i<2;i++){const r=await f.service.chat({},user('wrong'),[],context(i+1),()=>{},()=>{});assert(!r.ok&&r.error.includes('不匹配'));}assert.equal(f.requests.filter(r=>r.method==='thread/start').length,1);assert(!f.requests.some(r=>r.method==='turn/start'));}finally{await f.service.dispose();}const next=fixture({map});try{const r=await next.service.chat({},user('still blocked'),[],context(3),()=>{},()=>{});assert(!r.ok&&r.error.includes('不匹配'));assert(!next.requests.some(r=>r.method==='thread/start'||r.method==='thread/resume'));}finally{await next.service.dispose();}});
+ await test('文件修改单次确认带原生路径diff，deferred网络确认显示目标host/protocol',async()=>{for(const config of [{mode:'fileApproval'},{mode:'approval',networkContext:{host:'example.invalid',protocol:'https'}}]){const f=fixture(config);try{const c=context(),r=await f.service.chat({},user('confirm'),[],c,e=>{if(e.type==='permission'){if(config.mode==='fileApproval'){assert.equal(e.toolCall.rawInput.changes[0].path,'example.txt');assert.equal(e.toolCall.rawInput.changes[0].diff,'-old\n+new');}else assert.deepEqual(e.toolCall.rawInput.network,{host:'example.invalid',protocol:'https'});f.service.permissionResult(c,e.id,'reject_once');}},()=>{});assert(r.ok);}finally{await f.service.dispose();}}});
+ console.log('Codex: '+count+' passed');
+ }catch(error){console.error(error);process.exitCode=1;}finally{assert(path.isAbsolute(temp)&&path.basename(temp).startsWith('myide-codex-test-'));fs.rmSync(temp,{recursive:true,force:true});}})();

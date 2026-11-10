@@ -724,7 +724,7 @@ const Settings = (() => {
     const f = document.getElementById('set-keys-filter');
     if (f) f.remove();
     document.getElementById('set-title').textContent = 'AI 助手（模型配置）';
-    document.getElementById('set-hint').textContent = '选择服务商后只需填 API Key（Ollama 本地无需 Key）；Ctrl+8 打开右侧对话面板';
+    document.getElementById('set-hint').textContent = '普通助手使用服务商配置；DSH / Codex 使用本机原生连接。Ctrl+8 打开右侧对话面板';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
     const cfg = window.AiPanel ? AiPanel.getConfig() : {};
@@ -734,12 +734,18 @@ const Settings = (() => {
       <div class="set-form">
         <h3 class="set-section-title">运行方式</h3>
         <label class="m-label">执行模式</label>
-        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option></select>
+        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option><option value="codex">Codex（原生连接）</option></select>
         <div id="ai-cfg-dsh-wrap" class="hidden">
           <label class="m-label" style="margin-top:8px">DSH 启动器（桌面版 dsh.cmd，留空自动使用本机安装）</label>
           <input id="ai-cfg-dsh" type="text" value="${esc(cfg.dshPath||'')}" placeholder="DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" spellcheck="false">
           <div class="set-button-row"><button id="ai-dsh-pick" class="tb-btn">选择启动器</button><button id="ai-dsh-detect" class="tb-btn">检查安装</button></div><span id="ai-dsh-status" class="set-note" role="status"></span>
           <div class="set-note">侧栏连接本机 Harness，使用原生会话、工具、Skills 和插件；通过 MCP 操作 MyIDE。模型与推理选项由 Harness 返回。原生操作遵循 Harness 权限，MyIDE 操作仍遵循本应用权限；下方模型配置仅用于普通助手。</div>
+        </div>
+        <div id="ai-cfg-codex-wrap" class="hidden">
+          <label class="m-label" for="ai-cfg-codex" style="margin-top:8px">Codex 启动器（留空使用本机安装）</label>
+          <input id="ai-cfg-codex" type="text" value="${esc(cfg.codexPath||'')}" placeholder="codex.cmd / codex.exe" spellcheck="false">
+          <div class="set-button-row"><button id="ai-codex-pick" class="tb-btn">选择启动器</button><button id="ai-codex-detect" class="tb-btn">检查安装</button></div><span id="ai-codex-status" class="set-note" role="status"></span>
+          <div class="set-note">使用本机 Codex 已有登录态，无需普通助手的 API Key；请先在 Codex 完成登录。模型与推理选项由 Codex 返回，不修改本机 Codex 配置。Codex 原生工具从只读沙箱开始，命令或文件的单次原生审批与 MyIDE 工具审批独立；不支持 DSH 外部旁听、排队或插入。</div>
         </div>
       </div>
       <div class="set-form">
@@ -803,8 +809,15 @@ const Settings = (() => {
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
         </div>`;
     const provSel = document.getElementById('ai-cfg-prov');
-    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=cfg.engine==='dsh'?'dsh':'standard';
-    const syncEngine=()=>document.getElementById('ai-cfg-dsh-wrap').classList.toggle('hidden',engineSel.value!=='dsh');engineSel.onchange=syncEngine;syncEngine();
+    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex'].includes(cfg.engine)?cfg.engine:'standard';
+    const syncEngine=()=>{for(const engine of ['dsh','codex'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engineSel.value!==engine);};engineSel.onchange=syncEngine;syncEngine();
+    document.getElementById('ai-codex-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 Codex 启动器',[{name:'Codex 启动器',extensions:['cmd','exe','ps1']}]);if(file)document.getElementById('ai-cfg-codex').value=file;};
+    const checkCodex=async()=>{
+      const status=document.getElementById('ai-codex-status'),button=document.getElementById('ai-codex-detect');if(button.disabled)return;button.disabled=true;status.textContent='正在检查本机 Codex…';
+      try{const result=await window.myIDE.ai.codexStatus(document.getElementById('ai-cfg-codex').value.trim());status.textContent=result.ok?'已找到本机 Codex'+(result.version?'：'+result.version:''):result.error||'未找到可用的 Codex';}
+      catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+    };
+    document.getElementById('ai-codex-detect').onclick=checkCodex;
     document.getElementById('ai-dsh-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 DSH 启动器',[{name:'DSH 启动器',extensions:['cmd']}]);if(file)document.getElementById('ai-cfg-dsh').value=file;};
     document.getElementById('ai-dsh-detect').onclick=async()=>{const status=document.getElementById('ai-dsh-status');status.textContent='正在检查';try{const result=await window.myIDE.ai.dshStatus(document.getElementById('ai-cfg-dsh').value.trim());status.textContent=result.ok?'已找到本机 DSH':result.error;}catch(error){status.textContent=error.message;}};
     const urlInput = document.getElementById('ai-cfg-url');
@@ -827,6 +840,7 @@ const Settings = (() => {
       try { await AiPanel.setConfig({
         engine:engineSel.value,
         dshPath:document.getElementById('ai-cfg-dsh').value.trim(),
+        codexPath:document.getElementById('ai-cfg-codex').value.trim(),
         provider: provSel.value,
         baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),
@@ -879,6 +893,8 @@ const Settings = (() => {
     };
     renderPerms();
     document.getElementById('ai-cfg-test').onclick = async () => {
+      if(engineSel.value==='codex'){await checkCodex();return;}
+      if(engineSel.value==='dsh'){document.getElementById('ai-dsh-detect').click();return;}
       const c = { baseUrl: urlInput.value.trim(), apiKey: document.getElementById('ai-cfg-key').value.trim(), model: modelInput.value.trim() };
       if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }
       MI.toast('测试中…', 'ok');

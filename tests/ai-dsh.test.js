@@ -533,7 +533,7 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
     const dsh={hasRun:()=>false,abort:id=>aborts.push(id),chat:async(cfg,messages,tools,c)=>{calls.push({kind:'chat',cfg,c});open();if(hold)await gate;return {ok:true,status:'completed',complete:true,context:c};},
       submitInput:async(c,id,mode,messages)=>{calls.push({kind:'input',c,id,mode,messages});return {accepted:true,requestId:id,queue};},inputQueue:async()=>queue,updateQueue:async()=>({accepted:true,queue}),
       watch:async(cfg,state,push)=>{push({connected:true,running:true,runId:'external-turn',revision:1,turns:[],queue});return {close(){},inputQueue:async()=>queue,updateQueue:async()=>({accepted:true,queue})};}};
-    const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),DSH:dsh,AI:{abortChat:id=>aborts.push(id)},
+    const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),DSH:dsh,CODEX:{abort(){}},AI:{abortChat:id=>aborts.push(id)},
       aiTools:{bind(){}},aiPermissionsBridge:{initialize:async()=>{},cancel(){},newSession(){}},cancelAiSearch(){},AbortController,console};
     vm.runInNewContext(source.slice(source.indexOf('// AI 助手：流式对话'),source.indexOf("ipcMain.handle('ai:abort'")),sandbox);
     const invoke=(name,...args)=>handlers.get(name)(event,...args),c={...context(601),sessionId:'ipc-own'},target={kind:'run',context:c,page};let pending;

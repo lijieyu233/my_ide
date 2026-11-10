@@ -251,6 +251,12 @@ contextBridge.exposeInMainWorld('myIDE', {
     ...(process.argv.includes('--ai-approval-test') ? { testing: { snapshot: () => ipcRenderer.invoke('ai:testApprovalSnapshot'), click: (id,selector) => ipcRenderer.invoke('ai:testApprovalClick',id,selector) } } : {}),
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling
     chat: (cfg, messages, tools, context) => ipcRenderer.invoke('ai:chat', cfg, messages, tools, context),
+    codexToolResult:(context,id,result)=>ipcRenderer.invoke('ai:codex-tool-result',context,id,result),
+    codexPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:codex-permission-result',context,id,optionId),
+    codexQuestionResult:(context,id,answers)=>ipcRenderer.invoke('ai:codex-question-result',context,id,answers),
+    onCodexEvent:callback=>{const listener=(_event,value)=>callback(value);ipcRenderer.on('ai:codex-event',listener);return ()=>ipcRenderer.removeListener('ai:codex-event',listener);},
+    codexOptions:(cfg,sessionId,tools,apply)=>ipcRenderer.invoke('ai:codex-options',cfg,sessionId,tools,apply),
+    codexStatus:launcher=>ipcRenderer.invoke('ai:codex-status',launcher),
     dshToolResult:(context,id,result)=>ipcRenderer.invoke('ai:dsh-tool-result',context,id,result),
     dshPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:dsh-permission-result',context,id,optionId),
     dshQuestionResult: (context,id,answers) => ipcRenderer.invoke('ai:dsh-question-result',context,id,answers),

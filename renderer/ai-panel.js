@@ -72,6 +72,11 @@ const AiPanel = (() => {
     return null;
   }
 
+  const nativeEngine = engine => ['dsh','codex'].includes(engine ?? getConfig().engine);
+  const nativeLabel = engine => (engine ?? getConfig().engine)==='codex'?'Codex':'DSH';
+  const nativeModelKey = () => getConfig().engine==='codex'?'codexModel':'dshModel';
+  const nativeReasoningKey = () => getConfig().engine==='codex'?'codexReasoning':'dshReasoning';
+  const nativeCall = (engine,method,...args) => window.myIDE.ai[(engine==='codex'?'codex':'dsh')+method](...args);
   let dshConfigOptions=[],dshOptionsTicket=0,dshOptionsState='idle';
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
@@ -91,9 +96,9 @@ const AiPanel = (() => {
     sessionLoadTicket++;
     const unique = () => window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
     if (!curSessionId) curSessionId = 's-' + unique();
-    if(getConfig().engine==='dsh'&&!dshSessionAccess)dshSessionAccess={sessionId:curSessionId,hostId:'',state:'ready',scope:dshScope(),epoch:pageEpoch,error:''};
+    if(nativeEngine()&&!dshSessionAccess)dshSessionAccess={sessionId:curSessionId,hostId:'',state:'ready',scope:dshScope(),epoch:pageEpoch,error:''};
     const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
-      rootId: (window.App && App.root) || '', generation: ++generation }), engine:getConfig().engine==='dsh'?'dsh':'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
+      rootId: (window.App && App.root) || '', generation: ++generation }), engine:nativeEngine()?getConfig().engine:'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
     currentRun = run;
     suspendDshWatchForOwn();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
@@ -172,7 +177,7 @@ const AiPanel = (() => {
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     for (const group of run.activityGroups || []) paintToolGroup(group);
-    setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
+    setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
@@ -191,11 +196,11 @@ const AiPanel = (() => {
       if (run.stream && !run.stream.finished) {
         run.stream.finished = true;
         const text = run.stream.text;
-        if(run.engine==='dsh'){
+        if(nativeEngine(run.engine)){
           sealDshSegment(run);addMsg('assistant','已停止生成');run.stream.timeline.push({kind:'text',text:'已停止生成'});
         }else run.stream.element.querySelector('.ai-md').innerHTML = renderMd(text) + '<p class="ai-err">已停止生成</p>';
         if (run.identity.rootId === ((window.App && App.root) || '') && (text||run.stream.timeline?.length)) msgs.push({ role: 'assistant', content: text,
-          ...(run.engine==='dsh'?{_dshTimeline:run.stream.timeline}: {}) });
+          ...(nativeEngine(run.engine)?{_dshTimeline:run.stream.timeline}: {}) });
       }
       if (sendBtn) { sendBtn.disabled = true; sendBtn.title = '正在停止'; }
       const context = run.stream?.context || { ...run.identity, round: 0 };
@@ -222,7 +227,7 @@ const AiPanel = (() => {
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = () => getConfig().engine !== 'dsh' || !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
+  const dshCanSend = () => !nativeEngine() || (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
   function rejectDshSend() {
     if (dshCanSend()) return false;
     MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess?.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess && dshSessionAccess.state !== 'ready' ? dshSessionAccess.error || '当前会话只读，无法确认续聊身份，请重新连接或新建对话' : '原模型不可用，请先选择可用模型后再发送', 'err');
@@ -246,6 +251,7 @@ const AiPanel = (() => {
     const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
+    if(getConfig().engine==='codex'&&loadedSessionKey!==sessKey()){onProjectChange();return;}
     // 2026-11-01 用户反馈：「切换侧边栏模块会开启新对话，旧会话在后台，这是不允许的，
     // 只有切换项目才这样。」
     //
@@ -996,7 +1002,7 @@ const AiPanel = (() => {
       summary.append(icon, label, status);
       const scrollport = document.createElement('div'); scrollport.className = 'ai-tool-group-items';
       const items = document.createElement('div'); items.className = 'ai-tool-group-list'; scrollport.appendChild(items);group.append(summary, scrollport);
-      const owner = !replayDepth && currentRun?.engine === 'dsh' && currentRun.status === 'active' ? currentRun : null;
+      const owner = !replayDepth && nativeEngine(currentRun?.engine||'standard') && currentRun.status === 'active' ? currentRun : null;
       const data = { items, scrollport, label, status, owner, restoredScroll:replayToolGroupChoices?.get('scroll:'+member.key), total:0, counts:{running:0,completed:0,failed:0,unknown:0} };
       toolGroups.set(group,data); observeActivityGroup(group,data);
       if (owner) { owner.activityGroups ||= new Set(); owner.activityGroups.add(group); }
@@ -1121,7 +1127,7 @@ const AiPanel = (() => {
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
     const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false,
-      ...(run.engine==='dsh'?{timeline:[],segment:null,afterActivity:false}: {}) };
+      ...(nativeEngine(run.engine)?{timeline:[],segment:null,afterActivity:false}: {}) };
     run.stream = stream;
     let r;
     try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), {...stream.context,page:run.initialInputDraft?.page||{...currentPage()}}); }
@@ -1152,7 +1158,7 @@ const AiPanel = (() => {
     const injectionChanged=Object.hasOwn(c||{},'injectMyideRules')&&c.injectMyideRules!==previousConfig.injectMyideRules;
     const contextChanged=Object.hasOwn(c||{},'autoIdeContext')&&c.autoIdeContext!==previousConfig.autoIdeContext;
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
-    if(switching){resetDshWatch();persistSession();stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
+    if(switching){resetDshWatch();persistSession();if(currentRun?.engine==='codex')detachRun();else stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
     const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
     let result = { ok: true };
@@ -1170,16 +1176,34 @@ const AiPanel = (() => {
     if (!msgs.length && !busy && msgsEl?.querySelector('.ai-welcome')) { msgsEl.querySelector('.ai-welcome').remove(); showWelcome(); }
     if(contextChanged&&other.autoIdeContext!==true){ctxFiles=ctxFiles.filter(f=>!f.auto);followPath=null;renderChips();}
     if(injectionChanged&&other.injectMyideRules!==true){rulesRequest++;rulesText='';rulesFile='';rulesRoot=null;}
-    if(other.engine==='dsh'||getConfig().engine==='dsh'&&injectionChanged)refreshDshOptions();return result;
+    if(nativeEngine(other.engine||'standard')||nativeEngine()&&injectionChanged)refreshDshOptions();return result;
   }
 
   function showDshConnectedInfo(sessionId) {
     if(backgroundView || dshScopeMismatch())return;
+    if(getConfig().engine==='codex'){const info=document.getElementById('ai-dsh-info');if(info){info.textContent=dshModelUnavailable()?'Codex 原模型不可用':'Codex 已连接';info.title=sessionId?'当前 Codex 会话：'+sessionId:'首次发送时创建原生 Codex 会话；不读取或复制认证信息';}return;}
     const info=document.getElementById('ai-dsh-info'),model=dshConfigOptions.find(option=>option.id==='model');
     if(info){info.textContent=dshModelUnavailable()?'DSH 已连接 · 原模型不可用':'DSH 已连接';info.title=dshModelUnavailable()?model.unavailableReason||'原模型不可用，请选择可用模型':sessionId?'当前 DSH 会话：'+sessionId:'首次发送消息时创建 DSH 会话';}
   }
 
+  async function refreshCodexOptions(apply=false){
+    if(getConfig().engine!=='codex'||panel?.classList.contains('hidden'))return;
+    if(loadedSessionKey!==sessKey()){onProjectChange();return;}
+    if(!curSessionId){curSessionId='s-'+window.crypto.randomUUID();rememberSession();}
+    const ticket=++dshOptionsTicket,sessionId=curSessionId,root=window.App?.root||'',page=currentPage(),epoch=pageEpoch;
+    dshOptionsState='loading';refreshModelSel();setBusyUI(busy);
+    const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 Codex…';info.title='读取本机 Codex app-server 的实际模型与登录状态，不发送任务';}
+    let result;try{result=await nativeCall('codex','Options',getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!isProjectTool(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
+    if(ticket!==dshOptionsTicket||getConfig().engine!=='codex'||root!==(window.App?.root||'')||sessionId!==curSessionId||epoch!==pageEpoch)return;
+    const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
+    dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
+    if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
+    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.ok?'Codex 原生沙箱：只读，单次操作审批；MyIDE 工具仍需独立授权。不旁听其他客户端，也不模拟 DSH 排队。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
+    if(result?.ok)dshSessionAccess={sessionId,hostId:result.sessionId||'',state:'ready',scope:dshScope(),epoch,error:''};
+    refreshModelSel();setBusyUI(busy);
+  }
   async function refreshDshOptions(apply=false,retry=false){
+    if(getConfig().engine==='codex')return refreshCodexOptions(apply);
     if(getConfig().engine!=='dsh'||panel?.classList.contains('hidden'))return;
     // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
@@ -1225,24 +1249,24 @@ const AiPanel = (() => {
     const sel = document.getElementById('ai-model');
     if (!sel) return;
     const cfg = getConfig();
-    const engine=document.getElementById('ai-engine');if(engine)engine.value=cfg.engine==='dsh'?'dsh':'standard';
-    document.getElementById('ai-dsh-options')?.classList.toggle('hidden',cfg.engine!=='dsh');
-    document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',cfg.engine!=='dsh');
-    if(cfg.engine==='dsh'){
+    const engine=document.getElementById('ai-engine');if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
+    document.getElementById('ai-dsh-options')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
+    document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
+    if(nativeEngine(cfg.engine)){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
-      const ready=dshOptionsState==='ready'&&!dshScopeMismatch();sel.disabled=!ready;
+      const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy);sel.disabled=!ready;
       const optionHtml=option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>';
       // 目录已带原生分类；只在查找选中值时展开，展示保留来源，不能按同名模型去重。
       const groupedHtml=(model?.options||[]).map(option=>Array.isArray(option.options)
         ?option.options.length?'<optgroup label="'+esc(option.name||option.group||'模型')+'" data-group="'+esc(option.group||'')+'">'+option.options.map(optionHtml).join('')+'</optgroup>':''
         :optionHtml(option)).join('');
-      sel.innerHTML=dshSessionAccess?.preview?'<option value="">只读预览 · 不加载模型选项</option>':choices.length?groupedHtml:'<option value="">'+(dshOptionsState==='loading'?'正在连接 DSH…':'DSH 未连接')+'</option>';
+      sel.innerHTML=dshSessionAccess?.preview?'<option value="">只读预览 · 不加载模型选项</option>':choices.length?groupedHtml:'<option value="">'+(dshOptionsState==='loading'?'正在连接 '+nativeLabel()+'…':nativeLabel()+' 未连接')+'</option>';
       // 下架的是这条宿主会话的旧选择；全局缓存中另一个可用模型不能伪装成它已被替换。
-      sel.value=!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg.dshModel)?cfg.dshModel:model?.currentValue||'';
+      sel.value=cfg.engine==='codex'?model?.currentValue||'':!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg[nativeModelKey()])?cfg[nativeModelKey()]:model?.currentValue||'';
       const selectedGroup=sel.selectedOptions[0]?.parentElement;
-      sel.title='模型来自正在运行的桌面 DSH，与其原生插件和配置共用'+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
+      sel.title=(cfg.engine==='codex'?'模型来自本机 Codex app-server；登录与原生沙箱由 Codex 管理':'模型来自正在运行的桌面 DSH，与其原生插件和配置共用')+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
       const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
-      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=reasoning?.options?.some(choice=>choice.value===cfg.dshReasoning)?cfg.dshReasoning:reasoning?.currentValue||'';}
+      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=cfg.engine==='codex'?reasoning?.currentValue||'':reasoning?.options?.some(choice=>choice.value===cfg[nativeReasoningKey()])?cfg[nativeReasoningKey()]:reasoning?.currentValue||'';}
       const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;
       return;
     }
@@ -1365,9 +1389,9 @@ const AiPanel = (() => {
       acts.appendChild(cp);
       const eb = document.createElement('button');
       eb.className = 'ai-act-btn';
-      eb.setAttribute('aria-label',getConfig().engine==='dsh'?'复制并继续':'编辑并重发');
+      eb.setAttribute('aria-label',nativeEngine()?'复制并继续':'编辑并重发');
       eb.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3.5l3 3M3 10l7.5-7.5a1.4 1.4 0 012 2L5 12l-3 1z"/></svg>';
-      eb.title = getConfig().engine==='dsh'?'复制到输入框；修改后追加为新消息，原生历史保留':'把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
+      eb.title = nativeEngine()?'复制到输入框；修改后追加为新消息，原生历史保留':'把这条消息放回输入框，改完重新发送（这条之后的对话会被丢弃）';
       eb.onclick = () => editUserMsg(row.dataset.mid);
       acts.appendChild(eb);
       row.appendChild(acts);
@@ -1445,7 +1469,7 @@ const AiPanel = (() => {
   function markRegen() {
     if (backgroundView) return;
     removeRegen();
-    if (getConfig().engine==='dsh'||busy || lastUserAt == null || lastUserAt >= msgs.length) return;
+    if (nativeEngine()||busy || lastUserAt == null || lastUserAt >= msgs.length) return;
     const rows = [...msgsEl.querySelectorAll('.ai-msg.ai-assistant')];
     const last = rows[rows.length - 1];
     if (!last) return;
@@ -1459,9 +1483,9 @@ const AiPanel = (() => {
   async function regenerate() {
     if (busy) { MI.toast('正在生成中…', 'err'); return; }
     if (lastUserAt == null || lastUserAt >= msgs.length) { MI.toast('没有可重新生成的回复', 'err'); return; }
+    if(nativeEngine()){const message=msgs[lastUserAt];inputEl.value=message._text||String(message.content||'');pendingImages=(message._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     msgs.length = lastUserAt + 1;             // 保留那条用户消息，丢掉之后的
     const keep = msgs[lastUserAt] && msgs[lastUserAt]._ui;
-    if(getConfig().engine==='dsh'){inputEl.value=text;pendingImages=(msgs[idx]._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     const rows = [...msgsEl.children].filter(row => row.matches('.ai-msg, .ai-tool, .ai-tool-group'));
     const at = rows.findIndex((r) => r.dataset.mid === keep);
     for (let i = rows.length - 1; i > at; i--) rows[i].remove(); // 改动卡片留着（文件确实改了，撤销入口不能丢）
@@ -1479,7 +1503,7 @@ const AiPanel = (() => {
     const text = msgs[idx]._text || (typeof msgs[idx].content === 'string' ? msgs[idx].content : '');
     const rows = [...msgsEl.children].filter(row => row.matches('.ai-msg, .ai-tool, .ai-tool-group'));
     // ACP 不提供历史回退；本地删气泡不能伪装成原生会话已经回滚。
-    if(getConfig().engine==='dsh'){inputEl.value=text;pendingImages=(msgs[idx]._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
+    if(nativeEngine()){inputEl.value=text;pendingImages=(msgs[idx]._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     const at = rows.findIndex((r) => r.dataset.mid === mid);
     msgs.length = idx;                        // 这条及其之后全部丢弃（重发会重新生成）
     for (let i = rows.length - 1; i >= at && at >= 0; i--) rows[i].remove();
@@ -1581,9 +1605,9 @@ const AiPanel = (() => {
     w.className = 'ai-welcome';
     const card = document.createElement('div');
     card.className = 'ai-card';
-    if (cfg.engine === 'dsh') {
+    if (nativeEngine(cfg.engine)) {
       card.innerHTML = '<div class="ai-card-ic">' + AI_IC + '</div>' +
-        '<div class="ai-card-title">DeepSeek Harness</div>' +
+        '<div class="ai-card-title">'+(cfg.engine==='codex'?'Codex':'DeepSeek Harness')+'</div>' +
         '<div class="ai-card-sub">描述目标，或拖入文件与截图，开始一个任务。</div>';
     } else if (!cfg.baseUrl) {
       card.innerHTML =
@@ -1774,7 +1798,7 @@ const AiPanel = (() => {
     return repaired;
   }
   function buildMessages(summaryOnly=false) {
-    if(getConfig().engine==='dsh'){
+    if(nativeEngine()){
       const latest=msgs.findLast(m=>m.role==='user');
       // 原生会话已有历史；这里只发送本次原话和明确选中的资料，不拼接自动跟随文件、系统提示或旧工具。
       return latest?[{role:'user',content:latest._text!==undefined
@@ -1903,7 +1927,7 @@ const AiPanel = (() => {
     const text = (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
-    if (cfg.engine!=='dsh'&&(!cfg.baseUrl || !cfg.model)) {
+    if (!nativeEngine(cfg.engine)&&(!cfg.baseUrl || !cfg.model)) {
       MI.toast('请先配置服务地址与模型', 'err');
       Settings.open('ai');
       return;
@@ -1925,8 +1949,8 @@ const AiPanel = (() => {
     if (w) w.remove();
     // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
     let content = text;
-    const files = run.initialInputDraft?run.initialInputDraft.message._dshAttachments.map(f=>({path:f.path,content:f.content,special:f.kind==='clipboard'?'clip':undefined,isDir:f.kind==='directory'})):effectiveCtxFiles().filter(f=>cfg.engine!=='dsh'||!f.auto);
-    if (files.length && cfg.engine!=='dsh') {
+    const files = run.initialInputDraft?run.initialInputDraft.message._dshAttachments.map(f=>({path:f.path,content:f.content,special:f.kind==='clipboard'?'clip':undefined,isDir:f.kind==='directory'})):effectiveCtxFiles().filter(f=>!nativeEngine(cfg.engine)||!f.auto);
+    if (files.length && !nativeEngine(cfg.engine)) {
       const blocks = files.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
       content = blocks.join('\n\n') + '\n\n' + text;
     }
@@ -1945,7 +1969,7 @@ const AiPanel = (() => {
     const contextFreeText = clips.concat(text).join('\n\n');
     const hasProjectContext = files.some(f=>f.special !== 'clip');
     msgs.push({ role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
-      ...(cfg.engine==='dsh'?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
+      ...(nativeEngine(cfg.engine)?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
       _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:imgs.length
         ? [{type:'text',text:contextFreeText}].concat(imgs.map(url=>({type:'image_url',image_url:{url}}))) : contextFreeText} : {}) });
 
@@ -2011,16 +2035,16 @@ const AiPanel = (() => {
     if (!runIsLive(run) || !stream || stream.finished || run.stream !== stream || !identityMatches(r?.context, stream.context)) return;
     stream.finished = true;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
-    if(run.engine!=='dsh')cancelLiveText(curStream);
-    const md = curStream.querySelector('.ai-md');if(run.engine!=='dsh')md.classList.remove('ai-stream-plain');
+    if(!nativeEngine(run.engine))cancelLiveText(curStream);
+    const md = curStream.querySelector('.ai-md');if(!nativeEngine(run.engine))md.classList.remove('ai-stream-plain');
     let complete = r?.status === 'completed' && r?.complete === true && r?.ok === true && !r?.aborted
       && ['stop', 'tool_calls'].includes(r?.finishReason)
       && (r.finishReason === 'tool_calls') === !!r.toolCalls?.length;
     let warning = r?.message || r?.error || (!complete && !r?.aborted ? '回复终态无效，未执行工具' : '');
     // DSH文本与工具交错到达，收尾不能把总文本重新塞回最初气泡，破坏实际发生顺序。
-    if(run.engine==='dsh')return finishDshReply(text,isErr,r,run,stream,complete,warning);
+    if(nativeEngine(run.engine))return finishDshReply(text,isErr,r,run,stream,complete,warning);
     let textCalls = [];
-    if (run.engine!=='dsh' && !isErr && complete && r.finishReason === 'stop' && text) {
+    if (!nativeEngine(run.engine) && !isErr && complete && r.finishReason === 'stop' && text) {
       try { textCalls = parseToolCalls(text).map((c, index) => ({ ...c, id: stream.context.requestId + ':' + stream.context.round + ':' + index })); }
       catch { complete = false; warning = '文本工具块或参数未完整完成，未执行工具'; }
     }
@@ -2080,11 +2104,12 @@ const AiPanel = (() => {
     if (backgroundView) return;
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
-    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label',dshSessionAccess?.preview?'刷新只读预览':'重新连接 DSH');reconnect.title=dshSessionAccess?.preview?'重新读取这条会话的只读历史，不绑定或续聊':'重新连接 DSH，保留会话，不重发任务';}
+    if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}
+    const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label',dshSessionAccess?.preview?'刷新只读预览':'重新连接 '+nativeLabel());reconnect.title=dshSessionAccess?.preview?'重新读取这条会话的只读历史，不绑定或续聊':'重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     if (sendBtn) {
       sendBtn.disabled = stopping || !b && !external && !dshCanSend();
       sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-      sendBtn.title = b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+      sendBtn.title = b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
       sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
     }
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
@@ -2098,7 +2123,7 @@ const AiPanel = (() => {
   const SESS_LIMIT = 30;
   // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
   // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
-  function sessKey() { return backgroundView?.scope || LS_SESS + ':' + ((window.App && App.root) || '')+(getConfig().engine==='dsh'?':dsh':''); }
+  function sessKey() { return backgroundView?.scope || LS_SESS + ':' + ((window.App && App.root) || '')+(nativeEngine()?':'+getConfig().engine+(getConfig().engine==='codex'&&dshScope()==='reader'?':reader':''):''); }
   /**
    * 后台运行记录的键：挂起与恢复**必须用同一个算法**。
    *
@@ -2125,7 +2150,7 @@ const AiPanel = (() => {
   function saveSessions(a) { const key=sessKey();try { localStorage.setItem(key, JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} finally {sessionCache.delete(key);} }
   let loadedSessionKey=null;
   let sessionLoadTicket=0;
-  function rememberSession(){if(dshSessionAccess?.preview)return;if((backgroundView||getConfig().engine==='dsh')&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
+  function rememberSession(){if(dshSessionAccess?.preview)return;if((backgroundView||nativeEngine())&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
   function sessTitle(list) {
     const first = (list || []).find((m) => m.role === 'user');
     const t = (first && (first._text || (typeof first.content === 'string' ? first.content : ''))) || '';
@@ -2148,11 +2173,11 @@ const AiPanel = (() => {
     if (!curSessionId) curSessionId = 's' + Date.now().toString(36);
     const all = loadSessions(), previous = all.find(x => x.id === curSessionId);
     const rest = all.filter((x) => x.id !== curSessionId);
-    rest.unshift({ ...previous, id: curSessionId, ts: Date.now(), title: ((previous?.renamed || getConfig().engine === 'dsh') && previous?.title) || sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
+    rest.unshift({ ...previous, id: curSessionId, ts: Date.now(), title: ((previous?.renamed || nativeEngine()) && previous?.title) || sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
     if(!backgroundView)renderCurrentSessionTitle();
     rememberSession();
-    if(backgroundView||getConfig().engine==='dsh')localStorage.removeItem(sessKey()+':draft');
+    if(backgroundView||nativeEngine())localStorage.removeItem(sessKey()+':draft');
   }
   function replayMsgs(preserveToolGroups = false) {
     const previousChoices = replayToolGroupChoices, previousPosition = replayActivityPosition;
@@ -2450,7 +2475,7 @@ const AiPanel = (() => {
     if (!container) return;
     const count = pop.querySelector('.ai-hist-n'); if (count) count.textContent = shown.length + (query ? ' / ' + all.length : '');
     const dsh = getConfig().engine === 'dsh';
-    const foot = pop.querySelector('.ai-hist-foot'); if (foot) foot.textContent = dsh ? '只切换 AI 视图，不切换 IDE 工程。跨工程先只读预览，后台任务继续运行。' : '普通助手仅显示当前工程历史；切到 DSH 模式后可查看全部工作区。';
+    const foot = pop.querySelector('.ai-hist-foot'); if (foot) foot.textContent = dsh ? '只切换 AI 视图，不切换 IDE 工程。跨工程先只读预览，后台任务继续运行。' : getConfig().engine==='codex'?'Codex 仅显示此工程在 MyIDE 中的会话；继续使用原生线程，不旁听其他客户端。':'普通助手仅显示当前工程历史；切到 DSH 模式后可查看全部工作区。';
     for (const button of pop.querySelectorAll('[data-hist-scope]')) {
       button.classList.toggle('active',button.dataset.histScope === histScope);
       button.setAttribute('aria-pressed', String(button.dataset.histScope === histScope));
@@ -3001,7 +3026,7 @@ const AiPanel = (() => {
     const run=currentRun;
     // 只有「已经派发出去」的运行才能挂起：stream 存在 = 主进程已受理这次 prompt。
     // 还没建 stream 的窗口里任务其实没开始跑，停掉不会丢任何已完成的工作。
-    if(run?.engine!=='dsh'||run.status!=='active'||!run.stream)return false;
+    if(!run||!nativeEngine(run.engine)||run.status!=='active'||!run.stream)return false;
     if(run.notice?.timer){clearInterval(run.notice.timer);run.notice.timer=null;}
     if(run.notice?.hideTimer){clearTimeout(run.notice.hideTimer);run.notice.hideTimer=null;}
     if(activeRunNotice===run.notice)run.notice.element?.classList.add('hidden');
@@ -3009,7 +3034,7 @@ const AiPanel = (() => {
     while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
     moveActivityObservers(msgsEl,container);
     // scope 在挂起这一刻就固定下来，恢复时原样比对（见 runKeyOf 的注释）
-    const scope=loadedSessionKey||LS_SESS+':'+run.identity.rootId+':dsh';
+    const scope=loadedSessionKey||LS_SESS+':'+run.identity.rootId+':'+run.engine;
     const record={run,scope,view:{...captureRunView(),msgsEl:container},pending:[]};
     const key=runKeyOf(scope,curSessionId);
     backgroundRuns.set(key,record);run.background=record;
@@ -3042,7 +3067,7 @@ const AiPanel = (() => {
     // 否则 busy 会一直为真，新会话连发都发不出去。停止本身已经由 stopRun 发出，不再重复中断。
     if (run.status !== 'active') { releaseLocalRun(); return 'released'; }
     // 普通 API 引擎没有后台记录机制，沿用原来的停止语义；用户要的是 DSH 不被掐断。
-    if (run.engine !== 'dsh') { stopRun(true); return 'stopped'; }
+    if (!nativeEngine(run.engine)) { stopRun(true); return 'stopped'; }
     if (parkDshRun()) return 'parked';
     // 流还没建立 = continueStream 尚未调用 chat，主进程根本没收到这次任务，
     // 放手不会丢任何已开始的工作（continueStream 开头的 runIsLive 会直接返回）。
@@ -3119,14 +3144,14 @@ const AiPanel = (() => {
       const name=record.run.identity.rootId.split(/[\\/]/).filter(Boolean).at(-1)||'独立会话';
       const waiting=record.pending.some(event=>event.type==='tool')||record.pending.some(event=>event.type==='permission'||event.type==='question')||!!record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled)');
       button.textContent=name+' · '+(record.run.status==='active'?(waiting?'等待返回处理':'后台运行'):record.run.status==='completed'?'后台已完成':'后台已结束');
-      button.onclick=async()=>{await App.setRoot(record.run.identity.rootId);if(curSessionId!==record.run.identity.sessionId)openSession(record.run.identity.sessionId);};
+      button.onclick=async()=>{if(getConfig().engine!==record.run.engine)await setConfig({engine:record.run.engine});await App.setRoot(record.run.identity.rootId);if(curSessionId!==record.run.identity.sessionId)openSession(record.run.identity.sessionId);};
       status.appendChild(button);
     }
   }
   function beforeProjectChange(nextRoot) { if(pathKey(window.App?.root)!==pathKey(nextRoot))resetDshWatch();if(currentRun?.identity.rootId!==nextRoot)detachRun(); }
   // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
   function onProjectChange() {
-    const nextKey=sessKey(),harness=getConfig().engine==='dsh';
+    const nextKey=sessKey(),harness=nativeEngine(),codex=getConfig().engine==='codex';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
     resetDshWatch();
@@ -3183,10 +3208,10 @@ const AiPanel = (() => {
     const restored=harness&&restoreBackgroundRun();
     renderBackgroundStatus();
     // 宿主恢复会立即清空消息区；先回放数千条缓存只会白建DOM，身份无法确认时仍由恢复分支回放只读缓存。
-    if(harness&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
+    if(harness&&!codex&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
       restoreDshSession(curSessionId,sessionLoadTicket);
     else {
-      if(!restored){if(saved)replayMsgs();else showWelcome();renderUsage();}
+      if(!restored){if(saved){msgs=saved.msgs||[];replayMsgs();}else showWelcome();renderUsage();}
       refreshDshOptions();
     }
   }
@@ -3236,8 +3261,8 @@ const AiPanel = (() => {
     return task.promise;
   }
   async function refreshFollow() {
-    if(getConfig().engine==='dsh'){
-      // Harness通过ide_state读取当前文件；隐藏自动附件，避免显示已附带却没有发送的资料。
+    if(nativeEngine()){
+      // 原生引擎通过ide_state读取当前文件；隐藏自动附件，避免显示已附带却没有发送的资料。
       ctxFiles=ctxFiles.filter(f=>!f.auto);followPath=null;renderChips();return;
     }
     const epoch = pageEpoch;
@@ -3835,9 +3860,9 @@ const AiPanel = (() => {
     return handleDshEventCurrent(event);
   }
   async function handleDshEventCurrent(event){
-    const run=currentRun;if(!runIsLive(run)||run.engine!=='dsh'||!identityMatches(event.context,run.stream?.context))return;
+    const run=currentRun;if(!runIsLive(run)||!nativeEngine(run.engine)||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){setRunState(run,event.text);return;}
-    if(event.type==='config'){dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
+    if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;
       if(update.active===true&&typeof update.runId==='string'){run.timingKey='native:'+update.runId;run.timingStartedAt=Number.isFinite(update.runStartedAt)&&update.runStartedAt>=0?update.runStartedAt:null;setRunState(run,run.notice?.label||'正在生成');}
@@ -3860,7 +3885,7 @@ const AiPanel = (() => {
       // 用户以为没提交成功、或者以为它还在等问题（2026-11-06 反馈「提交后就别一直显示了」）。
       // 与下面的 permission 弹窗保持同一套收尾（那个一直是 remove），两处行为不该分叉。
       const close=()=>{for(const control of box.querySelectorAll('button,input,textarea'))control.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
-      box.onsubmit=async eventSubmit=>{eventSubmit.preventDefault();if(!runIsLive(run))return close();const answers=fields.map(field=>({id:field.question.id,selected:field.choices.filter(input=>input.checked).map(input=>input.value),...(field.custom.value.trim()?{custom:field.custom.value.trim()}:{})}));if(answers.some(answer=>!answer.selected.length&&!answer.custom)){MI.toast('请回答每个问题','err');return;}button.disabled=true;const result=await window.myIDE.ai.dshQuestionResult(event.context,event.id,answers);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}else{button.disabled=false;MI.toast('问题已结束或回答未被接受','err');}};scrollBottom();return;
+      box.onsubmit=async eventSubmit=>{eventSubmit.preventDefault();if(!runIsLive(run))return close();const answers=fields.map(field=>({id:field.question.id,selected:field.choices.filter(input=>input.checked).map(input=>input.value),...(field.custom.value.trim()?{custom:field.custom.value.trim()}:{})}));if(answers.some(answer=>!answer.selected.length&&!answer.custom)){MI.toast('请回答每个问题','err');return;}button.disabled=true;const result=await nativeCall(run.engine,'QuestionResult',event.context,event.id,answers);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}else{button.disabled=false;MI.toast('问题已结束或回答未被接受','err');}};scrollBottom();return;
     }
     if(event.type==='native'){
       const update=event.update;
@@ -3897,9 +3922,9 @@ const AiPanel = (() => {
     if(event.type==='permission'){
       sealDshSegment(run); sealActivityGroup();
       const box=document.createElement('div');box.className='ai-dsh-permission';const call=run.dshRows?.get(event.toolCall?.toolCallId)?.call;
-      const title=document.createElement('strong');title.textContent='DSH 原生工具请求授权';const body=document.createElement('pre');body.textContent=(call?.name||event.toolCall?.title||'工具')+'\n'+JSON.stringify(call?.args||event.toolCall?.rawInput||{},null,2);box.append(title,body);msgsEl.appendChild(box);
+      const title=document.createElement('strong');title.textContent=nativeLabel(run.engine)+' 原生工具请求授权';const body=document.createElement('pre');body.textContent=(event.toolCall?.title||call?.name||'工具')+'\n'+JSON.stringify(event.toolCall?.rawInput??call?.args??{},null,2);box.append(title,body);msgsEl.appendChild(box);
       const close=()=>{for(const button of box.querySelectorAll('button'))button.disabled=true;box.remove();};run.controller.signal.addEventListener('abort',close,{once:true});
-      for(const option of event.options||[]){const button=document.createElement('button');button.className='tb-btn';button.textContent=option.kind==='allow_once'?'本次允许':'拒绝';button.onclick=async()=>{if(!runIsLive(run))return close();const result=await window.myIDE.ai.dshPermissionResult(event.context,event.id,option.optionId);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}};box.appendChild(button);}scrollBottom();return;
+      for(const option of event.options||[]){const button=document.createElement('button');button.className='tb-btn';button.textContent=option.kind==='allow_once'?'本次允许':'拒绝';button.onclick=async()=>{if(!runIsLive(run))return close();const result=await nativeCall(run.engine,'PermissionResult',event.context,event.id,option.optionId);if(result?.ok){close();run.controller.signal.removeEventListener('abort',close);}};box.appendChild(button);}scrollBottom();return;
     }
     if(event.type!=='tool')return;
     const call=event.call;let row,result;
@@ -3913,14 +3938,15 @@ const AiPanel = (() => {
     activity.status=result.ok?'completed':'failed';activity.output=String(result.text||'').slice(0,30000);
     setToolState(row,result.ok,result.ok?'已完成':'已拒绝');if(row){row.title=String(result.text||'');setDshToolOutput(row,activity.output);}
     if(runIsLive(run))msgs.push({role:'assistant',_dshTool:true,_projectTool:isProjectTool(call.name)||(call.name==='ide_state'&&usesProjectContext()),content:'（Harness 已执行工具记录，不重放）\n'+JSON.stringify({name:call.name,args:call.args,ok:result.ok})+'\n'+String(result.text||'').slice(0,30000)});
-    try{const receipt=await window.myIDE.ai.dshToolResult(event.context,call.id,result);if(!receipt?.ok)throw Error('DSH未接收工具结果');await aiDrainTransitions(run);}catch{for(const entry of run.aiTransitions?.splice(0)||[])entry.reject(Error('工具结果未确认回送，未执行会话切换'));if(runIsLive(run))stopRun();}
+    try{const receipt=await nativeCall(run.engine,'ToolResult',event.context,call.id,result);if(!receipt?.ok)throw Error('DSH未接收工具结果');await aiDrainTransitions(run);}catch{for(const entry of run.aiTransitions?.splice(0)||[])entry.reject(Error('工具结果未确认回送，未执行会话切换'));if(runIsLive(run))stopRun();}
   }
 
   function init() {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
-    document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({dshReasoning:event.target.value});});
+    document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({[nativeReasoningKey()]:event.target.value});if(getConfig().engine==='codex')await refreshDshOptions(true);});
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
+    window.myIDE.ai.onCodexEvent?.(handleDshEvent);
     const offDshWatch = window.myIDE.ai.onDshWatch?.(receiveDshWatch);
     window.addEventListener('beforeunload',()=>{resetDshWatch();offDshWatch?.();},{once:true});
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
@@ -3939,9 +3965,9 @@ const AiPanel = (() => {
       const m = modelSel.value;
       if (!m || modelSel.selectedOptions[0]?.disabled) return;
       try {
-        const dsh=getConfig().engine==='dsh';
+        const dsh=nativeEngine();
         // 旧强度属于失效模型/全局缓存；恢复时由 Native 为用户所选目标模型验证实际允许值。
-        await setConfig(dsh?{dshModel:m,...(dshModelUnavailable()?{dshReasoning:undefined}:{})}:{model:m});
+        await setConfig(dsh?{[nativeModelKey()]:m,...(dshModelUnavailable()?{[nativeReasoningKey()]:undefined}:{})}:{model:m});
         if(dsh)await refreshDshOptions(true);
         MI.toast('已切换模型：' + m, 'ok');
       }
@@ -3988,11 +4014,11 @@ const AiPanel = (() => {
       // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
       releaseSessionPermissions(detachRun());
       persistSession();          // 先把当前这轮存进历史，再开新的
-      curSessionId = getConfig().engine==='dsh'?'s-'+window.crypto.randomUUID():null;
+      curSessionId = nativeEngine()?'s-'+window.crypto.randomUUID():null;
       dshSessionAccess=null;dshOptionsTicket++;dshOptionsState='idle';
       refreshModelSel();setBusyUI(false);
       rememberSession();
-      if(getConfig().engine==='dsh')localStorage.setItem(sessKey()+':draft',curSessionId);
+      if(nativeEngine())localStorage.setItem(sessKey()+':draft',curSessionId);
       lastUserAt = null;
       pendingImages = [];
       renderImages();
@@ -4037,7 +4063,7 @@ const AiPanel = (() => {
       const run = currentRun, stream = run?.stream;
       if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
       let md;
-      if(run.engine==='dsh')md=appendDshText(run,event.delta,event.messageId);
+      if(nativeEngine(run.engine))md=appendDshText(run,event.delta,event.messageId);
       else{stream.text += event.delta;curText = stream.text;md = curStream.querySelector('.ai-md');paintLiveText(curStream,curText,{cursor:true});}
       scrollBottom();
     }
@@ -4110,10 +4136,10 @@ const AiPanel = (() => {
   function aiState(){
     const cfg=getConfig(),runs=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].filter((r,i,a)=>r&&a.indexOf(r)===i&&r.identity.rootId===((window.App&&App.root)||''));
     const sessions=loadSessions().map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
-    return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg.dshModel,requestedReasoning:cfg.dshReasoning,reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
+    return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg[nativeModelKey()],requestedReasoning:cfg[nativeReasoningKey()],reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
       dshWatch:dshWatch&&dshWatchWanted(dshWatch)?{watchId:dshWatch.watchId,hostId:dshWatch.hostId,scope:dshWatch.scope,revision:dshWatch.revision,cursor:dshWatch.state?.cursor,running:dshWatch.state?.running,connected:dshWatch.state?.connected,runId:dshWatch.state?.runId,syncPending:dshWatch.needsSync}:null,
-      models:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name,disabled:!!o.disabled})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
-      reasoningOptions:cfg.engine==='dsh'?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,dshSession:dshSessionAccess?{...dshSessionAccess,canSend:dshCanSend(),currentScope:dshScope(),scopeMessage:dshScopeMismatch()?dshScopeError():''}:null,sessions,
+      models:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name,disabled:!!o.disabled})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
+      reasoningOptions:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,dshSession:dshSessionAccess?{...dshSessionAccess,canSend:dshCanSend(),currentScope:dshScope(),scopeMessage:dshScopeMismatch()?dshScopeError():''}:null,sessions,
       tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
       context:ctxFiles.map(f=>({id:f.path,path:f.path,characters:String(f.content||'').length,auto:!!f.auto,pinned:!!f.pin,directory:!!f.isDir})),attachments:pendingImages.map((_,i)=>({id:'image-'+i,kind:'image',ready:true})),budget:{characters:MAX_CTX,attached:ctxFiles.reduce((n,f)=>n+String(f.content||'').length,0)}};
   }
@@ -4131,8 +4157,8 @@ const AiPanel = (() => {
       else if(a.operation==='switch'){persistSession();openSession(a.session);}
       else if(a.operation==='archive'){persistSession();const all=loadSessions();if(curSessionId===a.session)document.getElementById('ai-new').click();const item=all.find(s=>s.id===a.session);item.archived=true;saveSessions(all);}
       else if(a.operation==='stop'){stopRun();for(let n=0;n<200&&currentRun?.status==='stopping';n++)await new Promise(r=>setTimeout(r,25));if(currentRun?.status==='stopping')F('STOP_UNCONFIRMED','停止尚未结算');}
-      else if(a.operation==='reconnect'){if(getConfig().engine!=='dsh')F('ENGINE_MISMATCH','当前不是DSH模式');if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions(false,true);if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
-      else if(a.operation==='model'){await setConfig(getConfig().engine==='dsh'?{...(a.model?{dshModel:a.model,...(dshModelUnavailable()?{dshReasoning:undefined}:{})}:{}),...(a.reasoning?{dshReasoning:a.reasoning}:{})}:{model:a.model||getConfig().model});if(getConfig().engine==='dsh'){App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
+      else if(a.operation==='reconnect'){if(!nativeEngine())F('ENGINE_MISMATCH','当前不是原生连接模式');if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions(false,true);if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
+      else if(a.operation==='model'){await setConfig(nativeEngine()?{...(a.model?{[nativeModelKey()]:a.model,...(dshModelUnavailable()?{[nativeReasoningKey()]:undefined}:{})}:{}),...(a.reasoning?{[nativeReasoningKey()]:a.reasoning}:{})}:{model:a.model||getConfig().model});if(nativeEngine()){ App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
       if(['new','switch','archive'].includes(a.operation)){if(sessKey()!==scope)F('PROJECT_CHANGED','会话范围已变化');const persisted=loadSessions();if(a.operation==='new'&&!persisted.some(s=>s.id===curSessionId)||a.operation==='archive'&&!persisted.some(s=>s.id===a.session&&s.archived)||a.operation==='switch'&&curSessionId!==a.session)F('SESSION_SAVE_FAILED','会话变更尚未确认持久化');}
       return {ok:true,committed:true,...aiState()};
     };
