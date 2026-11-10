@@ -33,7 +33,7 @@ class Rpc extends EventEmitter {
       }else{
         const pending=this.pending.get(message.id);if(!pending)continue;
         this.pending.delete(message.id);clearTimeout(pending.timer);
-        if(message.error){const error=Error('Codex 请求失败：'+pending.method);error.code=Number.isInteger(message.error.code)?message.error.code:undefined;pending.reject(error);}
+        if(message.error){const error=Error('Codex 请求失败：'+pending.method);error.code=Number.isInteger(message.error.code)?message.error.code:undefined;error.rpcResponseReceived=true;pending.reject(error);}
         else if(Object.hasOwn(message,'result'))pending.resolve(message.result);
         else pending.reject(Error('Codex 响应缺少 result'));
       }

@@ -103,7 +103,9 @@ const AiPanel = (() => {
     suspendDshWatchForOwn();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
     run.notice = createRunState();
-    setRunState(run, '正在生成');
+    if(run.engine==='codex'){run.nativeState={phase:'connecting',threadId:null,turnId:null,assistantCharacters:0,lastEventAt:Date.now()};if(run.notice.element){run.notice.element.dataset.nativePhase='connecting';run.notice.element.title='正在连接 Codex，尚未确认消息受理';}}
+    else if(run.notice.element){delete run.notice.element.dataset.nativePhase;run.notice.element.removeAttribute('title');}
+    setRunState(run,run.engine==='codex'?'正在连接 Codex · 尚未确认消息受理':'正在生成');
     return run;
   }
 
@@ -174,6 +176,7 @@ const AiPanel = (() => {
     if (!runIsCurrent(run)) return;
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
     run.status = status;
+    if(run.engine==='codex'&&run.nativeState){run.nativeState.localStatus=status;run.nativeState.endedAt=Date.now();}
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     for (const group of run.activityGroups || []) paintToolGroup(group);
@@ -3861,7 +3864,18 @@ const AiPanel = (() => {
   }
   async function handleDshEventCurrent(event){
     const run=currentRun;if(!runIsLive(run)||!nativeEngine(run.engine)||!identityMatches(event.context,run.stream?.context))return;
-    if(event.type==='status'){setRunState(run,event.text);return;}
+    if(event.type==='status'){
+      if(run.engine==='codex'){
+        const previous=run.nativeState||{};run.nativeState={...previous,lastEventAt:Date.now()};
+        for(const [field,key]of [['phase','phase'],['nativeThreadId','threadId'],['turnId','turnId'],['errorCode','errorCode']])if(typeof event[field]==='string')run.nativeState[key]=event[field].slice(0,200);
+        if(Number.isInteger(event.httpStatusCode))run.nativeState.httpStatusCode=event.httpStatusCode;
+        if(Number.isInteger(event.rpcErrorCode))run.nativeState.rpcErrorCode=event.rpcErrorCode;
+        if(Number.isSafeInteger(event.retryCount)&&event.retryCount>=0)run.nativeState.retryCount=event.retryCount;
+        if(typeof event.willRetry==='boolean')run.nativeState.willRetry=event.willRetry;
+        const box=run.notice?.element;if(box){box.dataset.nativePhase=run.nativeState.phase||'connecting';box.title='Codex 阶段：'+(run.nativeState.phase||'connecting')+'\n原生线程：'+(run.nativeState.threadId||'尚未确认')+'\n原生轮次：'+(run.nativeState.turnId||'尚未确认');}
+      }
+      setRunState(run,event.text);return;
+    }
     if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;
@@ -4063,6 +4077,10 @@ const AiPanel = (() => {
       const run = currentRun, stream = run?.stream;
       if (!runIsLive(run) || !stream || stream.finished || !identityMatches(event?.context, stream.context) || typeof event.delta !== 'string') return;
       let md;
+      if(run.engine==='codex'){
+        run.nativeState={...(run.nativeState||{}),phase:'generating',willRetry:false,assistantCharacters:(run.nativeState?.assistantCharacters||0)+event.delta.length,lastEventAt:Date.now()};
+        if(run.notice?.element)run.notice.element.dataset.nativePhase='generating';setRunState(run,'Codex 正在回复');
+      }
       if(nativeEngine(run.engine))md=appendDshText(run,event.delta,event.messageId);
       else{stream.text += event.delta;curText = stream.text;md = curStream.querySelector('.ai-md');paintLiveText(curStream,curText,{cursor:true});}
       scrollBottom();
@@ -4140,7 +4158,7 @@ const AiPanel = (() => {
       dshWatch:dshWatch&&dshWatchWanted(dshWatch)?{watchId:dshWatch.watchId,hostId:dshWatch.hostId,scope:dshWatch.scope,revision:dshWatch.revision,cursor:dshWatch.state?.cursor,running:dshWatch.state?.running,connected:dshWatch.state?.connected,runId:dshWatch.state?.runId,syncPending:dshWatch.needsSync}:null,
       models:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name,disabled:!!o.disabled})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
       reasoningOptions:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='reasoning_effort')?.options||[]).map(o=>({id:o.value,name:o.name})):[],dshState:dshOptionsState,dshSession:dshSessionAccess?{...dshSessionAccess,canSend:dshCanSend(),currentScope:dshScope(),scopeMessage:dshScopeMismatch()?dshScopeError():''}:null,sessions,
-      tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
+      tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,...(r.engine==='codex'?{native:{...(r.nativeState||{}),localStatus:r.status}}:{}),pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
       context:ctxFiles.map(f=>({id:f.path,path:f.path,characters:String(f.content||'').length,auto:!!f.auto,pinned:!!f.pin,directory:!!f.isDir})),attachments:pendingImages.map((_,i)=>({id:'image-'+i,kind:'image',ready:true})),budget:{characters:MAX_CTX,attached:ctxFiles.reduce((n,f)=>n+String(f.content||'').length,0)}};
   }
   async function aiInspect(a={}){const result=aiState();if(a.task){const run=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].find(r=>r?.identity.requestId===a.task&&r.identity.rootId===(App.root||''));if(!run)AiWorkbench.fail('TASK_NOT_FOUND','任务不属于当前项目');const text=run.stream?.text||'';result.output={task:a.task,offset:a.offset||0,total:text.length,text:text.slice(a.offset||0,(a.offset||0)+(a.limit||10000)),status:run.status};}result.controlJobs=AiWorkbench.jobList('ai').filter(j=>j.root===(App.root||''));return result;}

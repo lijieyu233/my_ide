@@ -33,6 +33,7 @@
     "check:ai-flow": "node scripts/run-electron-check.js check-ai-flow.js",
     "check:ai-stream": "node scripts/run-electron-check.js check-ai-stream-responsiveness.js",
     "check:ai-codex": "node scripts/run-electron-check.js check-ai-codex.js",
+    "check:ai-codex-live": "node scripts/check-ai-codex-live.js",
     "check:md-geometry": "electron scripts/check-md-geometry.js --disable-gpu --no-sandbox",
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
     "check:md-table": "electron scripts/check-md-table.js --disable-gpu --no-sandbox",

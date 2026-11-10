@@ -36,4 +36,6 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   }
   let received;const unsubscribe=api.ai.onCodexEvent(value=>{received=value;});const value={type:'native'};ipc.emit('ai:codex-event',{},value);assert.equal(received,value);unsubscribe();assert.equal(ipc.listenerCount('ai:codex-event'),0);
   console.log('Codex预加载桥：独立IPC与可注销事件监听通过');
+  const liveFile=path.resolve(__dirname,'../scripts/check-ai-codex-live.js'),{spawnSync}=require('child_process');
+  const guarded=spawnSync(process.execPath,['-e','require("child_process").spawn=()=>{throw Error("Native process must not start without explicit opt-in")};require('+JSON.stringify(liveFile)+');'],{encoding:'utf8',timeout:10000});assert.equal(guarded.status,2,guarded.stderr);assert.equal(guarded.stdout,'');assert.match(guarded.stderr,/--confirm-live-model/);console.log('Codex真实模型自检默认拒绝运行，不启动CLI、不自动消费额度通过');
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

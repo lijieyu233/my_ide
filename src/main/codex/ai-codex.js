@@ -6,6 +6,12 @@ const reader=context=>['reader','bookshelf'].includes(context?.page?.id);
 const valueOf=value=>typeof value==='function'?value():value;
 const norm=value=>process.platform==='win32'?path.normalize(value).toLowerCase():path.normalize(value);
 const redact=value=>String(value??'').replace(/\bBearer\s+[^\s"']+/gi,'Bearer [redacted]').replace(/\b(?:sk|sess)-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*["']?)[^\s,"'}]+/gi,'$1[redacted]').slice(0,100000);
+// Only protocol-owned categories reach the UI; server message/details may contain credentials, URLs or account data.
+function safeError(error){
+  const labels={contextWindowExceeded:'上下文窗口已满',sessionBudgetExceeded:'会话预算已用尽',usageLimitExceeded:'使用额度已用尽',rateLimitExceeded:'请求限流',flexUnavailable:'服务暂不可用',serverOverloaded:'服务繁忙',modelNotFound:'模型不可用',policyCapacityUnavailable:'策略容量不可用',cyberPolicy:'安全策略阻止',misalignmentPolicyViolation:'安全策略阻止',tooManyDenials:'权限请求被多次拒绝',internalServerError:'服务内部错误',unauthorized:'认证失败',badRequest:'请求不兼容',threadRollbackFailed:'会话回滚失败',sandboxError:'沙箱执行失败',other:'原生服务错误',httpConnectionFailed:'HTTP 连接失败',responseStreamConnectionFailed:'回复流连接失败',responseStreamDisconnected:'回复流中断',responseTooManyFailedAttempts:'通信重试已耗尽',activeTurnNotSteerable:'当前轮次无法追加输入'};
+  const info=error?.codexErrorInfo,code=typeof info==='string'&&Object.hasOwn(labels,info)?info:info&&typeof info==='object'?Object.keys(labels).find(key=>Object.hasOwn(info,key)):'other',safeCode=code||'other',http=info&&typeof info==='object'?info[safeCode]?.httpStatusCode:null,httpStatusCode=Number.isInteger(http)&&([401,403,404,429].includes(http)||http>=500&&http<=599)?http:undefined;
+  return {errorCode:safeCode,...(httpStatusCode?{httpStatusCode}:{}),error:'Codex '+labels[safeCode]+(httpStatusCode?'（HTTP '+httpStatusCode+'）':'')+'；不会自动重发本次请求'};
+}
 async function canonical(value){if(!value)return '';if(typeof value!=='string'||!path.isAbsolute(value))throw Error('Codex 工作目录必须为绝对路径');try{return await fs.realpath(value);}catch{throw Error('Codex 工作目录不存在或不可访问');}}
 function promptContent(messages,page={}){
   const latest=messages.findLast(message=>message.role==='user');if(!latest)throw Error('没有用户请求');
@@ -61,7 +67,24 @@ function createService(options={}){
   }
   async function locked(key,task){const next=(locks.get(key)||Promise.resolve()).catch(()=>{}).then(task);locks.set(key,next);try{return await next;}finally{if(locks.get(key)===next)locks.delete(key);}}
   function reply(conn,id,result){if(!conn.rpc.closed)try{conn.rpc.reply(id,result);}catch{}}
-  function resolveRun(run,result){if(run.settled)return;run.settled=true;run.resolveDone(result);}
+  function statusEvent(run,phase,text,extra={}){emit(run,{type:'status',phase,text,...(run.session?.id?{nativeThreadId:run.session.id}:{}),...(run.turnId?{turnId:run.turnId}:{}),...extra});}
+  function resolveRun(run,result){if(run.settled)return;run.settled=true;clearTimeout(run.timer);clearTimeout(run.warningTimer);run.resolveDone(result);}
+  function activity(run){
+    clearTimeout(run.timer);clearTimeout(run.warningTimer);
+    // Waiting for a MyIDE tool or a human decision is not a dead native connection.
+    if(run.settled||run.aborted||run.expired||!run.turnId||run.tools.size||run.permissions.size)return;
+    const timeout=options.turnTimeoutMs||5*60*1000,warning=options.idleWarningMs??65000;
+    if(warning>0&&warning<timeout)run.warningTimer=setTimeout(()=>statusEvent(run,'inactive','Codex 本轮仍未结束，暂未收到新的原生活动；可继续等待或手动停止'),warning);
+    run.timer=setTimeout(()=>{run.expired=true;interrupt(run);resolveRun(run,{status:'timeout'});},timeout);
+  }
+  function generating(run){if(!run.generating){run.generating=true;statusEvent(run,'generating','已收到 Codex 原生活动，正在生成或执行工具');}}
+  function finishTurn(run,turn){
+    for(const item of turn?.items||[])if(item.type==='agentMessage')notification(run.conn,{method:'item/completed',params:{threadId:run.session.id,turnId:run.turnId,item}},true);
+    if(run.settled)return;
+    const failure=turn?.status==='failed'||turn?.error?safeError(turn?.error):null;
+    if(failure)statusEvent(run,'error',failure.error,{errorCode:failure.errorCode,...(failure.httpStatusCode?{httpStatusCode:failure.httpStatusCode}:{})});
+    resolveRun(run,{status:failure?'failed':turn?.status||'failed',...(failure||{})});
+  }
   function discardPending(run){
     for(const item of run.tools.values())reply(run.conn,item.serverId,{contentItems:[{type:'inputText',text:'MyIDE request ended'}],success:false});run.tools.clear();
     for(const item of run.permissions.values())reply(run.conn,item.serverId,item.kind==='question'?{answers:{}}:{decision:'cancel'});run.permissions.clear();
@@ -78,8 +101,17 @@ function createService(options={}){
     const run=session.run;if(!run||run.conn!==conn||!run.accepting||run.settled)return;
     if(run.buffering&&!replaying){enqueue(run,'notification',message);return;}
     if(tid!==run.turnId)return;
-    if(message.method==='turn/completed'){resolveRun(run,{status:p.turn?.status||'failed'});return;}
+    activity(run);
+    if(message.method==='turn/completed'){finishTurn(run,p.turn);return;}
     if(run.aborted)return;
+    if(message.method==='turn/started'){run.nativeStarted=true;statusEvent(run,'accepted','Codex 原生 turn/started 已确认');return;}
+    if(message.method==='error'){
+      const failure=safeError(p.error);run.lastError=failure;
+      if(p.willRetry===true){run.retryCount=(run.retryCount||0)+1;run.generating=false;}
+      statusEvent(run,p.willRetry===true?'retrying':'error',p.willRetry===true?failure.error.split('；')[0]+'，正在重试连接（第 '+run.retryCount+' 次；当前为通信重试，非新增回复）':failure.error,{errorCode:failure.errorCode,...(failure.httpStatusCode?{httpStatusCode:failure.httpStatusCode}:{}),...(run.retryCount?{retryCount:run.retryCount}:{}),willRetry:p.willRetry===true});
+      if(p.willRetry===false){run.session.stopping=run.turnId;resolveRun(run,{status:'failed',...failure});}return;
+    }
+    if(['item/agentMessage/delta','item/reasoning/summaryTextDelta','item/reasoning/textDelta','item/commandExecution/outputDelta'].includes(message.method)||['item/started','item/completed'].includes(message.method)&&p.item?.type!=='userMessage')generating(run);
     if(message.method==='item/agentMessage/delta'&&typeof p.delta==='string'){run.messageText.set(p.itemId,(run.messageText.get(p.itemId)||'')+p.delta);run.text+=p.delta;emit(run,{type:'text',delta:p.delta,messageId:p.itemId});}
     else if(['item/reasoning/summaryTextDelta','item/reasoning/textDelta'].includes(message.method))emit(run,{type:'native',update:{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:String(p.delta||'')}}});
     else if(['item/started','item/completed'].includes(message.method)){
@@ -105,6 +137,7 @@ function createService(options={}){
     // awaiting turn/start continuation runs. Bind them only after its real id.
     if(run&&!run.aborted&&run.accepting&&run.buffering&&!replaying){enqueue(run,'request',request);return;}
     if(!run||run.aborted||run.expired||run.settled||!run.turnId||p.turnId!==run.turnId){conn.rpc.reject(request.id);return;}
+    activity(run);
     if(request.method==='item/tool/call'){
       if(p.namespace||!session.allowed.has(p.tool)||typeof p.callId!=='string'){reply(conn,request.id,{contentItems:[{type:'inputText',text:'Tool not exposed to this MyIDE page'}],success:false});return;}
       const id=run.context.requestId+':codex:'+crypto.randomUUID(),call={id,name:p.tool,args:p.arguments??{}};
@@ -125,6 +158,7 @@ function createService(options={}){
       // The first version has no UI for that broader authority: explicitly deny.
       reply(conn,request.id,{permissions:{},scope:'turn'});emit(run,{type:'status',text:'已拒绝 Codex 的整轮/会话扩权；当前仅支持命令或文件的单次确认'});
     }else conn.rpc.reject(request.id);
+    activity(run);
   }
   async function connect(cfg={}){
     if(disposed)throw Error('Codex 连接已关闭');const launcher=cfg.codexPath||'';
@@ -192,25 +226,27 @@ function createService(options={}){
     const run={context,onEvent,onTool,aborted:false,tools:new Map(),permissions:new Map(),nativeItems:new Map(),messageText:new Map(),text:'',queue:[],queuedBytes:0,buffering:true,accepting:false,settled:false};run.done=new Promise(resolve=>{run.resolveDone=resolve;});runs.set(context.requestId,run);
     const result=(status,error)=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'codex',text:run.text,context,...(error?{error}:{})});
     try{
-      const input=promptContent(messages,context.page),info=await identity(context);live(run);emit(run,{type:'status',text:'正在连接本机 Codex app-server'});
-      const conn=await connect(cfg),data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
-      const {session,model,effort,pending}=await attach(conn,cfg,context,tools,run,data,info);live(run);
-      emit(run,{type:'config',configOptions:configOptions(data.models,model,effort)});emit(run,{type:'status',text:'Codex 正在处理 · 原生工具与 MyIDE 工具已连接'});
+      const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
+      const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
+      statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');const {session,model,effort,pending}=await attach(conn,cfg,context,tools,run,data,info);live(run);
+      emit(run,{type:'config',configOptions:configOptions(data.models,model,effort)});statusEvent(run,'submitting','正在提交本轮输入，等待 Codex 原生确认');
       run.accepting=true;
       const started=await conn.rpc.request('turn/start',{threadId:session.id,input,...(pending?{model}:{}),...(effort?{effort}:{}),approvalPolicy:'on-request',approvalsReviewer:'user'},options.requestTimeoutMs||45000);
-      if(typeof started.turn?.id!=='string')throw Error('Codex 未返回有效 turn 身份；不会重发本次请求');run.turnId=started.turn.id;
+      if(typeof started?.turn?.id!=='string')throw Error('Codex 未返回有效 turn 身份；不会重发本次请求');run.turnId=started.turn.id;statusEvent(run,'accepted','Codex 原生已确认接受本轮，等待回复或工具活动');activity(run);
       session.model=model;session.effort=effort;saved.set(info.key,{id:session.id,cwd:info.cwd,model,effort,toolNames:session.toolNames});if(pendingChoices.get(info.key)===pending)pendingChoices.delete(info.key);await persist();
       while(run.queue.length){const {kind,message}=run.queue.shift();if(kind==='request')serverRequest(conn,message,true);else notification(conn,message,true);}run.buffering=false;run.queuedBytes=0;
+      if(['completed','failed','interrupted'].includes(started.turn.status)&&!run.settled)finishTurn(run,started.turn);
       if(run.aborted&&!run.settled)interrupt(run);
-      run.timer=setTimeout(()=>{run.expired=true;interrupt(run);resolveRun(run,{status:'timeout'});},options.turnTimeoutMs||30*60*1000);
       const answer=await run.done;
-      if(run.expired)return result('failed','Codex 执行超时，已请求中断；未停止前不能继续发送');
-      return run.aborted?result('aborted'):answer.status==='completed'?result('completed'):result(answer.status==='interrupted'?'aborted':'failed',answer.status==='timeout'?'Codex 执行超时，已请求中断':'Codex 未正常完成本轮，请检查原生连接；不会自动重发');
+      if(run.expired)return result('failed','Codex 长时间无原生活动，执行超时，已请求中断；未停止前不能继续发送');
+      return run.aborted?result('aborted'):answer.status==='completed'?result('completed'):Object.assign(result(answer.status==='interrupted'?'aborted':'failed',answer.error||'Codex 未正常完成本轮，请检查原生连接；不会自动重发'),answer.errorCode?{errorCode:answer.errorCode,...(answer.httpStatusCode?{httpStatusCode:answer.httpStatusCode}:{})}:{});
     }catch(error){
-      if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session)run.session.stopping='unknown';}
-      return result(run.aborted?'aborted':'failed',run.aborted?undefined:error.message);
+      if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!error.rpcResponseReceived)run.session.stopping='unknown';}
+      const message=error.rpcResponseReceived?'Codex 原生请求已拒绝'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'；不会自动重发本次请求':error.message;
+      if(!run.aborted)statusEvent(run,'error',message,{...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{})});
+      return result(run.aborted?'aborted':'failed',run.aborted?undefined:message);
     }
-    finally{clearTimeout(run.timer);discardPending(run);if(run.session?.run===run)run.session.run=null;runs.delete(context.requestId);}
+    finally{clearTimeout(run.timer);clearTimeout(run.warningTimer);discardPending(run);if(run.session?.run===run)run.session.run=null;runs.delete(context.requestId);}
   }
   function interrupt(run){
     if(!run.turnId||!run.conn||run.conn.rpc.closed||run.interrupting||run.settled)return;
@@ -219,12 +255,12 @@ function createService(options={}){
   }
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.aborted=true;discardPending(run);interrupt(run);return true;}
   function owned(context){const run=runs.get(context?.requestId);return run&&!run.aborted&&!run.expired&&!run.settled&&same(run.context,context)?run:null;}
-  function toolResult(context,id,result){const run=owned(context),pending=run?.tools.get(id);if(!pending)return {ok:false};run.tools.delete(id);reply(run.conn,pending.serverId,{contentItems:[{type:'inputText',text:String(result?.text||'无返回内容').slice(0,100000)}],success:result?.ok===true});return {ok:true};}
-  function permissionResult(context,id,optionId){const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='approval'||!pending.choices.some(c=>c.optionId===optionId))return {ok:false};run.permissions.delete(id);reply(run.conn,pending.serverId,{decision:optionId==='allow_once'?'accept':'decline'});return {ok:true};}
+  function toolResult(context,id,result){const run=owned(context),pending=run?.tools.get(id);if(!pending)return {ok:false};run.tools.delete(id);activity(run);reply(run.conn,pending.serverId,{contentItems:[{type:'inputText',text:String(result?.text||'无返回内容').slice(0,100000)}],success:result?.ok===true});return {ok:true};}
+  function permissionResult(context,id,optionId){const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='approval'||!pending.choices.some(c=>c.optionId===optionId))return {ok:false};run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{decision:optionId==='allow_once'?'accept':'decline'});return {ok:true};}
   function questionResult(context,id,answers){
     const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='question'||!Array.isArray(answers)||answers.length!==pending.questions.length)return {ok:false};
     const converted=Object.create(null),seen=new Set();for(const answer of answers){const question=pending.questions.find(q=>q.id===answer?.id);if(!question||seen.has(answer.id)||!Array.isArray(answer.selected)||answer.selected.some(v=>typeof v!=='string'||!(question.options||[]).some(o=>o.label===v))||answer.selected.length>1||answer.custom!==undefined&&typeof answer.custom!=='string')return {ok:false};seen.add(answer.id);const values=[...answer.selected,...(answer.custom?[answer.custom]:[])];if(!values.length||values.some(v=>v.length>20000))return {ok:false};converted[answer.id]={answers:values};}
-    run.permissions.delete(id);reply(run.conn,pending.serverId,{answers:converted});return {ok:true};
+    run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{answers:converted});return {ok:true};
   }
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}

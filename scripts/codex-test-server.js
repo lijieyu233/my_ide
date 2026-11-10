@@ -1,13 +1,14 @@
 // Offline app-server fixture. Never starts Codex, reads credentials, or executes displayed native tools.
 const {EventEmitter}=require('events'),{PassThrough,Writable}=require('stream');
 function createServer(){
- const threads=new Map(),requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
+ const control={resumeRetry:null},threads=new Map(),requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
  const models=[{id:'offline-codex',model:'offline-codex',displayName:'Codex offline fixture',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'medium'},{reasoningEffort:'high',description:'high'}]}];
  function spawn(){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();children.add(child);let buffer='',ended=false;const waiting=new Map();
   const send=message=>{if(!ended)child.stdout.write(JSON.stringify(message)+'\n');},reply=(id,result)=>send({id,result}),notice=(method,params)=>send({method,params});
   const ask=(method,params,done)=>{const id=++serverSeq;waiting.set(id,done);send({id,method,params});};
   const finish=(thread,turn,text)=>{notice('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:'answer-'+turn.id,delta:text});notice('turn/completed',{threadId:thread.id,turn:{id:turn.id,status:'completed'}});thread.running=false;};
   const operate=(thread,turn,input)=>{const base={threadId:thread.id,turnId:turn.id};
+   if(input.includes('RETRY_CODEX')){for(let i=0;i<4;i++)notice('error',{...base,error:{codexErrorInfo:'responseStreamDisconnected',message:'SENSITIVE_ERROR_MUST_NOT_APPEAR'},willRetry:true});control.resumeRetry=()=>{control.resumeRetry=null;operate(thread,turn,input.replace('RETRY_CODEX',''));};return;}
    notice('item/agentMessage/delta',{...base,itemId:'intro-'+turn.id,delta:'离线 Codex 已开始。'});notice('item/reasoning/summaryTextDelta',{...base,itemId:'reason-'+turn.id,delta:'合成思考：只验证连接，不调用模型。'});
    if(input.includes('HOLD_CODEX'))return;
    notice('item/started',{...base,item:{id:'native-'+turn.id,type:'commandExecution',command:'synthetic-display-only',cwd:thread.cwd,status:'inProgress'}});
@@ -31,6 +32,6 @@ function createServer(){
   child.stdin=new Writable({write(data,encoding,done){try{buffer+=data.toString();let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(line)handle(JSON.parse(line));}done();}catch(error){done(error);}}});
   child.kill=()=>{if(ended)return;ended=true;children.delete(child);setImmediate(()=>child.emit('exit',0));};return child;
  }
- return {spawn,threads,requests,receipts,children};
+ return {spawn,threads,requests,receipts,children,control};
 }
 module.exports={createServer};
