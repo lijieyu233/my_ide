@@ -182,7 +182,8 @@ const Shortcuts = (() => {
       e.preventDefault();e.stopImmediatePropagation();execute(id);return;
     }
     if(e.target.closest?.('#remote-terminal-panes'))return;
-    if (['md-task', 'md-table'].includes(id)) {
+    if (['md-task', 'md-table', 'md-line-up', 'md-line-down'].includes(id)) {
+      if (id.startsWith('md-line-') && e.target.closest?.('.cm-md-cell-editor')) return;
       const tab = window.Viewer?.activeTab, cm = window.Viewer?.cm;
       const editorTarget = cm?.__tab === tab && cm.view?.contentDOM.contains(e.target) || tab?.ta === e.target;
       if (editorTarget && !window.Modal?.stack.length && availability(id).enabled) {
@@ -275,7 +276,7 @@ const Shortcuts = (() => {
     if (e.defaultPrevented) return; // textarea 等已自行处理
     const id = keyMap[combo];
     if (!id) return;
-    if (['md-task', 'md-table'].includes(id)) return; // 仅编辑区捕获，不改动搜索框、其他工具或只读视图。
+    if (['md-task', 'md-table', 'md-line-up', 'md-line-down'].includes(id)) return; // 仅编辑区捕获，不改动搜索框、其他工具或只读视图。
     e.preventDefault();
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
@@ -418,6 +419,12 @@ for (const [id, kind, key, desc] of [['md-task', 'task', 'ctrl+l', '创建待办
   Shortcuts.register(id, { desc, keys: [key], category: 'Markdown', scope: 'Markdown 编辑区', palette: true,
     requiresDocument: true, requiresText: true, bindingGuard: combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo),
     isEnabled: ctx => Viewer.markdownInsertState(ctx), run: ctx => Viewer.insertMarkdown(kind, ctx) });
+}
+for (const [id, direction, combo, desc] of [['md-line-up', -1, 'ctrl+shift+arrowup', '整行上移'], ['md-line-down', 1, 'ctrl+shift+arrowdown', '整行下移']]) {
+  Shortcuts.register(id, { desc, keys: [combo], category: 'Markdown', scope: 'Markdown 编辑区', palette: true,
+    aliases: ['move line', '移动行'], requiresDocument: true, requiresText: true,
+    bindingGuard: combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo),
+    isEnabled: ctx => Viewer.markdownInsertState(ctx), run: ctx => Viewer.moveMarkdownLines(direction, ctx) });
 }
 Shortcuts.load();
 

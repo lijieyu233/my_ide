@@ -69,12 +69,15 @@
       });
       field.history = CM.Commands.invertedEffects.of((tr) => {
         const before = endings(tr.startState.field(field)), after = endings(tr.state.field(field));
-        return JSON.stringify(before) === JSON.stringify(after) ? [] : [restorePattern.of(before)];
+        // 整行移动虽保持行尾序列不变，逆向changes仍会重建邻行；undo/redo也须显式恢复原模式。
+        const explicit = tr.effects.some(effect => effect.is(reset) || effect.is(restorePattern));
+        return !explicit && JSON.stringify(before) === JSON.stringify(after) ? [] : [restorePattern.of(before)];
       });
     }
     return [source.of(raw || ''), field, field.history];
   }
   const api = { normalized, endings, reconcile, extension,
+    preserveEndings: (raw, text) => restore(normalized(text), endings(raw)),
     raw: (state) => state.field(field), reset: (text) => reset.of(text) };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TextLines = api;

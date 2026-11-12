@@ -2160,6 +2160,41 @@ window.MdEditor = (() => {
     throw Error('未知Markdown插入动作');
   }
 
+  function lineMoveSpec(state, direction) {
+    if (state.readOnly || ![-1, 1].includes(direction)) return null;
+    const blocks = [], ranges = [...state.selection.ranges], changes = [];
+    for (let index = 0; index < ranges.length; index++) {
+      const range = ranges[index], first = state.doc.lineAt(range.from);
+      let last = state.doc.lineAt(range.to);
+      if (!range.empty && range.to === last.from) last = state.doc.lineAt(range.to - 1);
+      const previous = blocks.at(-1);
+      if (previous && first.from <= previous.to + 1) { previous.to = last.to; previous.indices.push(index); }
+      else blocks.push({from: first.from, to: last.to, indices: [index]});
+    }
+    for (const block of blocks) {
+      if (direction < 0 ? block.from === 0 : block.to === state.doc.length) continue;
+      const neighbor = state.doc.lineAt(direction < 0 ? block.from - 1 : block.to + 1), size = neighbor.length + 1;
+      if (direction < 0) changes.push({from: neighbor.from, to: block.from}, {from: block.to, insert: '\n' + neighbor.text});
+      else changes.push({from: block.to, to: neighbor.to}, {from: block.from, insert: neighbor.text + '\n'});
+      for (const index of block.indices) {
+        const range = ranges[index], shift = position => Math.min(state.doc.length, position + direction * size);
+        ranges[index] = State.EditorSelection.range(shift(range.anchor), shift(range.head));
+      }
+    }
+    if (!changes.length) return null;
+    // CM原生移动会丢弃贴顶/底的多光标；保留不动的range，并让一次按键成为独立撤销步骤。
+    return {changes: state.changes(changes), selection: State.EditorSelection.create(ranges, state.selection.mainIndex),
+      scrollIntoView: true, userEvent: 'move.line', annotations: Commands.isolateHistory.of('full')};
+  }
+  function lineMovePlan(text, anchor, head, direction) {
+    const state = EditorState.create({doc: text, selection: {anchor, head}}), spec = lineMoveSpec(state, direction);
+    if (!spec) return null;
+    let from = state.doc.length, to = 0;
+    spec.changes.iterChangedRanges((start, end) => { from = Math.min(from, start); to = Math.max(to, end); });
+    const next = spec.changes.apply(state.doc), range = spec.selection.main;
+    return {from, to, insert: next.sliceString(from, to), anchor: range.anchor, head: range.head};
+  }
+
   // ---------- Live Preview 开关（Compartment） ----------
   const liveComp = new Compartment();
 
@@ -2343,6 +2378,12 @@ window.MdEditor = (() => {
           selection: { anchor: plan.anchor, head: plan.head }, scrollIntoView: true, userEvent: 'input.markdown' });
         view.focus(); focusTableEditor(view); return true;
       },
+      moveLines(direction) {
+        if (view.state.readOnly || !view.state.facet(EditorView.editable) || opts.canEdit && !opts.canEdit()) return false;
+        const spec = lineMoveSpec(view.state, direction); if (!spec) return false;
+        const raw = TextLines.preserveEndings(TextLines.raw(view.state), spec.changes.apply(view.state.doc).toString());
+        view.dispatch({...spec, effects: TextLines.reset(raw)});view.focus();return true;
+      },
       getValue() { return view.state.doc.toString(); },
       getState() { return view.state; },
       setValue(text) {
@@ -2428,5 +2469,5 @@ window.MdEditor = (() => {
     return meta ? { icon: meta[0], title: meta[1], cls: CALLOUT_CLS[t] || 'co-note' } : null;
   };
 
-  return { create, insertion, resolveImgSrc, invalidateWikiIndex, loadWikiFiles };
+  return { create, insertion, lineMovePlan, resolveImgSrc, invalidateWikiIndex, loadWikiFiles };
 })();

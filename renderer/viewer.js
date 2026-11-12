@@ -1611,10 +1611,12 @@ const Viewer = (() => {
       // 用户滚预览 → 暂停跟随 800ms（避免双向抖动）
       let previewScrolling = false;
       let previewScrollTimer = null;
-      ta.addEventListener('input', () => {
+      ta.addEventListener('input', (event) => {
         if (tab.__extLoading||tab.__syncing) return;
         if(!ownsEditor()||tab.ta!==ta){ta.value=tab.content||'';return;}
-        const change=mapTextChange(tab.content,ta.value);tab.content = TextLines.reconcile(tab.content || '', ta.value);
+        const change=mapTextChange(tab.content,ta.value);
+        const preserve = ta.__movingLines || ta.__movedLines && ['historyUndo','historyRedo'].includes(event.inputType);
+        tab.content = (preserve ? TextLines.preserveEndings(tab.content || '', ta.value) : null) ?? TextLines.reconcile(tab.content || '', ta.value);
         markEdited(tab,change);syncPaneDocument(tab);
         scheduleAutosave(); // 自动保存：停止输入 3 秒后写盘
         reportPos();
@@ -2351,7 +2353,8 @@ const Viewer = (() => {
     if (!tab || !/\.(md|markdown)$/i.test(tab.name)) return '请先打开Markdown文件';
     if (ctx && (ctx.documentId !== tab.id || ctx.revision !== tab.editRevision)) return '文档已改变，请重新选择命令';
     if (tab.content == null || tab.error || tab.binary || tab.tooLarge || tab.formatBusy || pathBusy(tab.path)) return '文档暂不可编辑';
-    if (['live', 'source'].includes(tab.mode) && cmApi?.__tab === tab && cmApi.view.dom.isConnected && !cmApi.view.state.readOnly) return true;
+    if (['browser-panel','db-panel','tasks-dag-panel','remote-panel','quick-launch-panel','bookshelf-panel'].some(id=>{const element=document.getElementById(id);return element&&!element.classList.contains('hidden');})) return '请先回到编辑区';
+    if (['live', 'source'].includes(tab.mode) && cmApi?.__tab === tab && cmApi.view.dom.isConnected && !cmApi.view.state.readOnly && cmApi.view.state.facet(CM6.View.EditorView.editable)) return true;
     if (['split', 'edit'].includes(tab.mode) && tab.ta?.isConnected && !tab.ta.readOnly) return true;
     return '请切换到Markdown编辑视图';
   }
@@ -2367,6 +2370,24 @@ const Viewer = (() => {
       ta.setRangeText(plan.insert, plan.from, plan.to, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
     ta.setSelectionRange(plan.anchor, plan.head); return true;
+  }
+
+  function moveMarkdownLines(direction, ctx) {
+    const allowed = markdownInsertState(ctx); if (allowed !== true) throw Error(allowed);
+    const tab = currentTab();
+    if (cmApi?.__tab === tab && ['live','source'].includes(tab.mode)) return cmApi.moveLines(direction);
+    const ta = tab.ta, backwards = ta.selectionDirection === 'backward';
+    const plan = MdEditor.lineMovePlan(ta.value, backwards ? ta.selectionEnd : ta.selectionStart, backwards ? ta.selectionStart : ta.selectionEnd, direction);
+    if (!plan) return false;
+    const before = ta.value, original = {from: ta.selectionStart, to: ta.selectionEnd, direction: ta.selectionDirection};
+    ta.focus();ta.setSelectionRange(plan.from, plan.to);ta.__movingLines = true;
+    try {
+      // Chromium的单次编辑命令保留原生撤销栈；不整份赋value，也不以不支持撤销的fallback冒充完成。
+      if (!document.execCommand?.('insertText', false, plan.insert)) { ta.setSelectionRange(original.from, original.to, original.direction);return false; }
+      if (ta.value !== before) ta.__movedLines = true;
+    } finally { ta.__movingLines = false; }
+    ta.setSelectionRange(Math.min(plan.anchor, plan.head), Math.max(plan.anchor, plan.head), plan.anchor > plan.head ? 'backward' : 'forward');
+    return true;
   }
 
   async function leaveReader(tab=currentTab()){
@@ -2386,7 +2407,7 @@ const Viewer = (() => {
   return {
     editorFor:tab=>cmApi?.__tab===tab?cmApi:paneLayout?.groups.find(group=>group.cm?.__tab===tab)?.cm,
     splitEditor, moveTabToPane, collapsePanes, paneState, restorePanes, focusPaneByIndex, leaveReader, openFile, navigateTo, closeTab, closeAll, activate, addLazyTab, batchTabs, saveTab, saveAllDirty, openFind, recentFiles, revealLine, navigateToHit, captureLocation, restoreLocation, focusTab, focusEditor, reopenClosed, setPinned, closeUnpinned, closeOthers, keepTab, previewEnabled, setPreviewEnabled,
-    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
+    zoomFont, applyFontSize, syncFontLabel, toggleMdMode, markdownInsertState, insertMarkdown, moveMarkdownLines, refreshSelectionStatus, renamed, withPathChange, withCreatedPathRemoval, withCopyChange, toggleBlame, showEncoding, saveWithEncoding, reopenWithEncoding, showSaveRecovery, saveCopy,
     get cm() { return cmApi; },
     renderActive: () => renderView(),
     syncEmptyState,
