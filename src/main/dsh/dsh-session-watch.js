@@ -150,13 +150,16 @@ async function observe(rpc,params,onState,signal,foldHistory){
       if(!connected||controller.signal.aborted)throw Error('DSH 实时订阅未连接');
       const update=queueAction(action),expectedRunId=runId;
       if(update.action.kind==='steer'&&!running)throw Error('当前没有可插入的宿主运行');
-      const before=await this.inputQueue(),item=before.items.find(item=>item.id===update.itemId);
+      const before=update.action.kind==='steer'?queueView():await this.inputQueue();
+      const item=before.items.find(item=>item.id===update.itemId);
       if(!connected||controller.signal.aborted)throw Error('DSH 实时订阅未连接');
       if(update.action.kind==='steer'&&(!running||runId!==expectedRunId))throw Error('DSH 目标轮次已变化');
       if(!before.available||!item)throw Error('排队输入已被消费或队列不可用');
+      if(update.action.kind==='steer'&&item.mode!=='queue')throw Error('消息已插入当前轮次');
       if(update.action.kind==='edit'&&!item.editable)throw Error('含附件的排队输入不能仅编辑文字');
-      const value=await rpc.call('session/updateQueue',{request:{sessionId:params.hostId,...update}});
+      const value=await rpc.call('session/updateQueue',{request:{sessionId:params.hostId,...update}},undefined,{preserveConnection:true});
       if(value?.accepted!==true)throw Error('DSH 未确认队列操作');
+      if(update.action.kind==='steer')return {accepted:true};
       return {accepted:true,queue:await this.inputQueue()};
     },
     async control(action){

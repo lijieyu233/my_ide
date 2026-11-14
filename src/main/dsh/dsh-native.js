@@ -190,7 +190,7 @@ function inputContent(prompt){
 }
 function inputQueueView(state,asOfSeq=null){
   const source=state?.inputQueue||(Array.isArray(state?.['next-turn'])&&Array.isArray(state?.['next-step'])?{...state,asOfSeq}:null),batch=state?.inputBatch;
-  return {available:!!source,asOfSeq:source?.asOfSeq??null,items:source?['next-turn','next-step'].flatMap(target=>source[target].filter(message=>typeof message?.id==='string').map(message=>({
+  return {available:!!source,asOfSeq:source?.asOfSeq??null,items:source?['next-turn','next-step'].flatMap(target=>source[target].filter(message=>typeof message?.id==='string'&&message.source?.kind!=='user-approval').map(message=>({
     id:message.id,requestId:message.source?.kind==='user'&&typeof message.source.rpcId==='string'?message.source.rpcId:null,mode:target==='next-turn'?'queue':'steer',
     text:(message.content||[]).filter(block=>block.type==='text').map(block=>block.text).join('\n'),editable:Array.isArray(message.content)&&message.content.every(block=>block.type==='text'),
     owned:message.source?.kind==='user'&&!!batch?.requests.has(message.source.rpcId),
@@ -360,6 +360,11 @@ class NativeRpc extends EventEmitter {
         const value=await this.call('session/prompt',{request:{sessionId:params.sessionId,requestId:params.requestId,mode,content}},undefined,{preserveConnection:true});
         if(value?.accepted!==true)throw Error('原生 DSH 未确认接受输入');
         if(entry.status==='admitting')entry.status='pending';
+        if(mode==='steer'){
+          // Follow 会推送队列变化，宿主的投影读取无须阻塞回执。
+          this.publishInputState(params.sessionId,state);
+          return {accepted:true,requestId:params.requestId};
+        }
         let queue;try{queue=await this.readInputQueue(params.sessionId,state);}catch(error){queue={available:false,asOfSeq:null,items:[],error:error.message};}
         this.publishInputState(params.sessionId,state);return {accepted:true,requestId:params.requestId,queue};
       }catch(error){
@@ -377,11 +382,15 @@ class NativeRpc extends EventEmitter {
     if(typeof params.itemId!=='string'||!params.itemId||!action||!['edit','remove','steer'].includes(action.kind))throw Error('队列操作无效');
     if(action.kind==='edit'&&(!Array.isArray(action.content)||action.content.some(block=>block?.type!=='text')||!action.content.some(block=>typeof block.text==='string'&&block.text.trim())))throw Error('队列编辑仅支持非空文本');
     if(action.kind==='steer'&&!state.externalQueue&&(!batch||batch.stopping||batch.activeTurn===null))throw Error('当前没有可插入的本组运行');
-    const before=await this.readInputQueue(params.sessionId,state),item=before.items.find(item=>item.id===params.itemId);
+    const before=action.kind==='steer'&&state.inputQueue?inputQueueView(state):await this.readInputQueue(params.sessionId,state);
+    const item=before.items.find(item=>item.id===params.itemId);
     if(!item)throw Error('排队输入已被消费或移除，请刷新后重试');
+    if(action.kind==='steer'&&item.mode!=='queue')throw Error('消息已插入当前轮次');
+    if(action.kind==='steer'&&!state.externalQueue&&(batch.stopping||batch.activeTurn===null))throw Error('当前没有可插入的本组运行');
     if(action.kind==='edit'&&!item.editable)throw Error('包含附件的排队输入不能按纯文本编辑');
     const value=await this.call('session/updateQueue',{request:{sessionId:params.sessionId,itemId:params.itemId,action}},undefined,{preserveConnection:true});
     if(value?.accepted!==true)throw Error('原生 DSH 未确认队列操作');
+    if(action.kind==='steer')return {accepted:true};
     if(action.kind==='remove'&&item.owned){const entry=batch.requests.get(item.requestId);if(entry&&['admitting','pending','unknown'].includes(entry.status))entry.status='removed';}
     let queue;try{queue=await this.readInputQueue(params.sessionId,state);}catch(error){queue={available:false,asOfSeq:null,items:[],error:error.message};}
     this.publishInputState(params.sessionId,state);return {accepted:true,queue};
@@ -467,6 +476,10 @@ class NativeRpc extends EventEmitter {
             state.inputAdmissions.set(requestId,{signature:JSON.stringify({mode,content}),promise:admission});
             await admission;
             batch.requests.get(requestId).status='pending';batch.ready=true;this.publishInputState(params.sessionId,state);continue;
+          }
+          if(item.type==='projection'&&item.key==='inbox'){
+            if(this.setInputQueue(state,item.value,item.asOfSeq??item.seq??lastSeq))this.publishInputState(params.sessionId,state);
+            continue;
           }
           if(item.type!=='event'||item.event.seq<=lastSeq)continue;const event=item.event;lastSeq=event.seq;const data=event.data;
           if(event.type==='agent/inbox/spliced'&&state.inputQueue){const queue=state.inputQueue,target=data.target;if(Array.isArray(queue[target])&&(queue.asOfSeq===null||event.seq>queue.asOfSeq)){queue[target].splice(data.start,data.removedCount||0,...(data.inserted||[]));queue.asOfSeq=event.seq;this.publishInputState(params.sessionId,state);}continue;}

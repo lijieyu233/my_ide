@@ -551,7 +551,12 @@ function inputFixture(options={}){
      await assert.rejects(f.rpc.request('session/input',{sessionId:id,requestId:'early-steer',mode:'steer',prompt:[{type:'text',text:'too early'}]}),/没有可插入/);
      f.send('turn/start',{turn:1});f.consume('initial');await until(()=>f.state.inputBatch.activeTurn===1);
      for(const requestId of ['queue-1','queue-2']){const result=await f.rpc.request('session/input',{sessionId:id,requestId,mode:'queue',prompt:[{type:'text',text:requestId}]});assert.equal(result.accepted,true);assert.equal(result.requestId,requestId);assert.equal(result.messageId,undefined);assert(result.queue.items.some(item=>item.requestId===requestId&&item.owned));}
-     await f.rpc.request('session/input',{sessionId:id,requestId:'steer-1',mode:'steer',prompt:[{type:'text',text:'steer'}]});f.consume('steer-1');f.send('turn/end',{turn:1,reason:{kind:'completed'}});
+      const beforeSteer=f.calls.length;
+      const inserted=await f.rpc.request('session/input',{sessionId:id,requestId:'steer-1',mode:'steer',prompt:[{type:'text',text:'steer'}]});
+      assert.equal(inserted.accepted,true);
+      assert.deepEqual(f.calls.slice(beforeSteer).map(call=>call.method),['session/prompt']);
+      await until(()=>f.updates.at(-1).queue.items.some(item=>item.requestId==='steer-1'&&item.mode==='steer'));
+      f.consume('steer-1');f.send('turn/end',{turn:1,reason:{kind:'completed'}});
      f.send('turn/start',{turn:2});f.send('user/message',{source:{kind:'user',rpcId:'foreign'}});f.send('assistant/message',{message:{content:[{type:'text',text:'FOREIGN'}]}});await tick();
      assert.equal(f.state.inputBatch.activeTurn,null);assert.equal(settled,false);assert.equal(f.updates.at(-1).active,false);
      f.send('turn/end',{turn:2,reason:{kind:'error'}});f.send('turn/start',{turn:3});f.consume('queue-1');f.send('turn/end',{turn:3,reason:{kind:'completed'}});await tick();assert.equal(settled,false);

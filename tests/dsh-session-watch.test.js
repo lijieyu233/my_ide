@@ -275,6 +275,24 @@ test('宿主队列由snapshot/projection/splice推进，historyUnchanged仍携�
 test('无inbox能力时queue不可用，断线不允许队列写入',()=>using({initial:[snapshot(1,[])]},async f=>{
   const handle=await f.start();assert.equal(f.latest.queue.available,false);assert.deepEqual(f.latest.queue.items,[]);f.end();await handle.completion;await assert.rejects(handle.inputQueue(),/未连接/);await assert.rejects(handle.updateQueue({itemId:'x',kind:'remove'}),/未连接/);assert.equal(f.calls.length,1);
 }));
+test('待发消息插入只等待宿主写入，队列由原生事件推进',()=>{
+  const queued={id:'queued',source:{kind:'user',rpcId:'external'},content:[text('插入消息')]};
+  const notice={id:'notice',source:{kind:'user-approval'},content:[text('内置权限通知')]};
+  const inbox={'next-turn':[queued],'next-step':[notice]};
+  return using({initial:[{type:'status',running:true},snapshot(1,[],{projections:{values:{inbox}}})],call:async endpoint=>{
+    assert.equal(endpoint,'session/updateQueue');
+    return {accepted:true};
+  }},async f=>{
+    const handle=await f.start();
+    assert.deepEqual(f.latest.queue.items.map(item=>item.id),['queued']);
+    assert.deepEqual(await handle.updateQueue({itemId:'queued',kind:'steer'}),{accepted:true});
+    assert.deepEqual(f.calls.map(call=>call.endpoint),['observe','session/updateQueue']);
+    f.write(event(2,'agent/inbox/spliced',{target:'next-turn',start:0,removedCount:1,inserted:[]}),
+      event(3,'agent/inbox/spliced',{target:'next-step',start:1,inserted:[queued]}));
+    await f.wait(state=>state.queue.items[0]?.mode==='steer');
+    assert.deepEqual(f.latest.queue.items.map(item=>item.id),['queued']);
+  });
+});
 test('watch队列编辑/移除显式回宿主并回读，不执行prompt且含图不能文本编辑',async()=>{
   let inbox={'next-turn':[{id:'queued',source:{kind:'user',rpcId:'external'},content:[text('旧文字')]}],'next-step':[]},seq=1;
   await using({initial:[{type:'status',running:true},snapshot(1,[])],call:async(endpoint,args)=>{

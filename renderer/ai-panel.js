@@ -1889,6 +1889,7 @@ const AiPanel = (() => {
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
   }
   function acceptNativeQueue(result,target){
+    if(!result.queue)return;
     if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
     else if(dshWatch?.watchId===target.watchId)dshWatch.state={...dshWatch.state,queue:result.queue};
     renderNativeInputUI();
@@ -1921,7 +1922,7 @@ const AiPanel = (() => {
       const result=await window.myIDE.ai.dshInput(getConfig(),target,{requestId,mode,messages:[draft.message]});
       if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生 DSH 未确认接受消息');
       item.accepted=true;clearAcceptedDraft(draft);
-      if(runIsCurrent(run))acceptNativeQueue(result,target);else run.inputQueue=result.queue;
+      if(runIsCurrent(run))acceptNativeQueue(result,target);else if(result.queue)run.inputQueue=result.queue;
     }catch(error){if(!item.rendered){item.error=error.message;if(draft.key===inputViewKey())MI.toast('补充消息未确认接受，草稿已保留：'+error.message,'err');}}
     finally{if(item.rendered)nativeInputRequests.delete(requestId);else if(run.status!=='active'&&!item.error)item.error='消息接受与运行结束同时发生，消费状态未知。请先刷新原生队列确认，再决定是否恢复草稿。';nativeInputPending=false;renderNativeInputUI();}
   }
@@ -1939,11 +1940,11 @@ const AiPanel = (() => {
     setBusyUI(true);
     const run = beginRun();
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
-    await followActive();
+    if (!run.initialInputDraft) await followActive();
     if (!runIsLive(run)) return;
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
-    compressHistory(); // 超限时先压缩旧工具结果，防止上下文撑爆
+    if (!run.initialInputDraft) compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
     renderUsage();
     if(!run.initialInputDraft)inputEl.value = '';
     autoGrowInput();   // 运行中补充保留草稿，收到原生接受回执后再消费。
