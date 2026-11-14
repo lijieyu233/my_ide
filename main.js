@@ -957,6 +957,14 @@ ipcMain.handle('ai:dsh-queue-update',async(event,cfg,target,action)=>{
   try{const owned=await ownedDshInput(event,cfg,target);return {ok:true,accepted:true,...await (owned.context?DSH.updateQueue(owned.context,action):owned.slot.handle.updateQueue(action))};}
   catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
+ipcMain.handle('ai:dsh-permission-presets',async(event,target,preset)=>{
+  try{
+    if(preset!==undefined&&(typeof preset!=='string'||!/^[\w-]{1,80}$/.test(preset)))throw Error('DSH 权限档位无效');
+    const owned=await ownedDshInput(event,{engine:'dsh'},target);
+    const state=await (owned.context?DSH.permissionPresets(owned.context,preset):owned.slot.handle.permissionPresets(preset));
+    return {ok:true,...state};
+  }catch(error){return {ok:false,error:error.message};}
+});
 ipcMain.handle('ai:abort', (e, context) => {
   try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }

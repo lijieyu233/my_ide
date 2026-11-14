@@ -603,20 +603,41 @@ const AiPanel = (() => {
   // 用户的原话：「能不能预先给权限，不用每一个修改都要确认」。
   // 以前只能钻进 设置 → AI 助手 改下拉，改完也不知道生效没。现在一个按钮摊开：
   // 两个维度的档位（改文件 / 执行命令）+ 本项目已记住的授权（看得见、清得掉）。
-  let permPop = null;
+  const dshPermissionLabels = {
+    'read-only': '仅可查看',
+    'workspace-write': '工作区内修改',
+    'danger-full-access': '完全权限',
+    auto: '自动审批',
+    custom: '自定义权限',
+  };
+  let permPop = null, dshPermissionSelection = null;
+  function nativePermissionTarget() {
+    if (dshSessionAccess?.preview || dshScopeMismatch()) return null;
+    if (dshWatch && dshWatchWanted(dshWatch) && dshWatch.state?.connected === true)
+      return {kind:'watch', watchId:dshWatch.watchId};
+    return nativeInputTarget();
+  }
   function closePermPop() {
     if (permPop && permPop.parentNode) permPop.parentNode.removeChild(permPop);
     permPop = null;
+    document.getElementById('ai-perm')?.setAttribute('aria-expanded','false');
   }
   function syncPermBtn() {
     const b = document.getElementById('ai-perm');
     if (!b) return;
+    const label = b.querySelector('.ai-perm-text');
+    if (getConfig().engine === 'dsh') {
+      const preset = nativePermissionTarget() && dshPermissionSelection?.key === inputScopeKey() ? dshPermissionSelection : null;
+      b.classList.remove('on');
+      b.title = preset ? 'DSH 会话权限：' + preset.label : '当前 DSH 会话权限';
+      if (label) label.textContent = preset?.label || 'DSH 权限';
+      return;
+    }
     const auto = permWrite() === 'auto' || !!loadPerms().write;
     b.classList.toggle('on', auto);
     b.title = '访问权限：改文件 ' + ({ confirm: '每次确认', auto: '自动应用', deny: '禁止' }[permWrite()] || '')
       + ' · 命令 ' + ({ confirm: '每次确认', auto: '自动执行', deny: '禁止' }[permRun()] || '')
       + (auto ? '（已开启自动应用）' : '');
-    const label=b.querySelector('.ai-perm-text');
     if(label)label.textContent=permWrite()==='auto'&&permRun()==='auto'?'自动执行':permWrite()==='deny'&&permRun()==='deny'?'只读':permWrite()==='confirm'&&permRun()==='confirm'?'每次确认':'自定义权限';
   }
   function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
@@ -629,6 +650,9 @@ const AiPanel = (() => {
     };
     const pop = document.createElement('div');
     pop.className = 'ai-perm-pop';
+    const engine = getConfig().engine;
+    const native = engine === 'dsh';
+    pop.dataset.scope = inputViewKey();
     let html =
       '<div class="ai-perm-sec"><span class="ai-perm-lb">改文件</span>' + segHtml('permWrite', permWrite()) + '</div>' +
       '<div class="ai-perm-sec"><span class="ai-perm-lb">执行命令</span>' + segHtml('permRun', permRun()) + '</div>' +
@@ -647,9 +671,9 @@ const AiPanel = (() => {
           '<button class="tb-btn" data-clear="' + esc(it.k) + '">清除</button></div>';
       }
       html += '</div>';
-    } else {
-      html += '<div class="ai-perm-note">还没有记住任何授权。</div>';
     }
+    if (native) html = '<div class="ai-native-permissions"></div><details class="ai-perm-local"><summary>MyIDE 工具权限</summary>' + html + '</details>';
+    if (engine === 'codex') html = '<div class="ai-perm-lb">Codex 原生工具 · 按操作确认</div><div class="ai-perm-lb">MyIDE 工具权限</div>' + html;
     pop.innerHTML = html;
     panel.appendChild(pop);
     // 权限入口位于输入卡片，浮层应从按钮上方展开，而不是仍锚在旧标题栏。
@@ -657,6 +681,8 @@ const AiPanel = (() => {
     pop.style.top='auto';pop.style.bottom=Math.max(8,bounds.bottom-anchor.top+8)+'px';
     pop.style.left=Math.max(8,Math.min(anchor.left-bounds.left,bounds.width-pop.offsetWidth-8))+'px';pop.style.right='auto';
     permPop = pop;
+    document.getElementById('ai-perm')?.setAttribute('aria-expanded','true');
+    if (native) renderDshPermissionPresets(pop);
     pop.addEventListener('click', async (e) => {
       const t = e.target;
       if (t.disabled) return;
@@ -665,7 +691,8 @@ const AiPanel = (() => {
       if (t.dataset && t.dataset.set) {
         const i = t.dataset.set.indexOf(':');
         await setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
-        renderPermPop(); syncPermBtn();
+        if (permPop === pop) renderPermPop();
+        syncPermBtn();
         const k = t.dataset.set.slice(0, i);
         MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
         return;
@@ -678,7 +705,8 @@ const AiPanel = (() => {
         else if (k === 'run') delete np.run;
         else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
         await savePerms(np);
-        renderPermPop(); syncPermBtn();
+        if (permPop === pop) renderPermPop();
+        syncPermBtn();
         MI.toast('已清除该授权（下次会重新询问）', 'ok');
       }
       } catch (error) { MI.toast(error.message, 'err'); } finally { t.disabled = false; }
@@ -690,6 +718,70 @@ const AiPanel = (() => {
         document.removeEventListener('mousedown', onOut);
       }
     });
+  }
+
+  async function renderDshPermissionPresets(pop) {
+    const section = pop.querySelector('.ai-native-permissions');
+    const key = inputViewKey(), scope = inputScopeKey(), target = nativePermissionTarget();
+    const stillCurrent = () => key === inputViewKey() && getConfig().engine === 'dsh';
+    const labelFor = (value, options) => dshPermissionLabels[value] || options.find(option => option.value === value)?.name || value;
+    function show(state) {
+      const {currentValue, options} = state;
+      dshPermissionSelection = {key:scope, label:labelFor(currentValue, options)};
+      syncPermBtn();
+      if (permPop !== pop) return;
+      section.replaceChildren();
+      for (const option of options) {
+        const button = document.createElement('button');
+        const label = labelFor(option.value, options), selected = option.value === currentValue;
+        button.type = 'button';
+        button.textContent = label;
+        button.setAttribute('aria-pressed', String(selected));
+        if (selected) button.dataset.selected = '';
+        button.onclick = async () => {
+          if (selected || !stillCurrent() || permPop !== pop) return;
+          const buttons = [...section.querySelectorAll('button')];
+          buttons.forEach(entry => { entry.disabled = true; });
+          try {
+            if (!['read-only','workspace-write'].includes(option.value) && !await Modal.confirm(
+              '切换到' + label, option.description || '将此权限档位应用到当前 DSH 会话？'
+            )) return;
+            if (!stillCurrent()) return;
+            const activeTarget = nativePermissionTarget();
+            if (!activeTarget) throw Error('当前 DSH 会话已断开');
+            const result = await window.myIDE.ai.dshPermissionPresets(activeTarget, option.value);
+            if (!stillCurrent()) return;
+            if (!result?.ok) throw Error(result?.error || 'DSH 权限设置失败');
+            if (permPop && permPop !== pop && permPop.dataset.scope === key) closePermPop();
+            show(result);
+          } catch (error) {
+            if (stillCurrent()) MI.toast(error.message, 'err');
+          } finally {
+            buttons.forEach(entry => { entry.disabled = false; });
+          }
+        };
+        section.appendChild(button);
+      }
+      if (!options.some(option => option.value === currentValue)) {
+        const status = document.createElement('div');
+        status.className = 'ai-perm-note';
+        status.textContent = '当前：' + labelFor(currentValue, options);
+        section.appendChild(status);
+      }
+    }
+    if (!target) {
+      section.textContent = '连接 DSH 会话后可设置权限';
+      return;
+    }
+    section.textContent = '正在读取 DSH 权限…';
+    try {
+      const state = await window.myIDE.ai.dshPermissionPresets(target);
+      if (!stillCurrent() || permPop !== pop) return;
+      if (!state?.ok) throw Error(state?.error || '无法读取 DSH 权限');
+      show(state);
+    } catch (error) {
+      if (stillCurrent() && permPop === pop) section.textContent = error.message;
+    }
   }
 
   async function executeTool(call, run) {
@@ -2106,6 +2198,8 @@ const AiPanel = (() => {
 
   function setBusyUI(b) {
     if (backgroundView) return;
+    if (permPop && permPop.dataset.scope !== inputViewKey()) closePermPop();
+    syncPermBtn();
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}

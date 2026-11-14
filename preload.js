@@ -271,6 +271,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     dshHistory:(cfg,sessionId)=>ipcRenderer.invoke('ai:dsh-history',cfg,sessionId),
     dshBind:(cfg,state,sessionId)=>ipcRenderer.invoke('ai:dsh-bind',cfg,state,sessionId),
     dshWatch:(cfg,state)=>ipcRenderer.invoke('ai:dsh-watch',cfg,state),
+    dshPermissionPresets:(target,preset)=>ipcRenderer.invoke('ai:dsh-permission-presets',target,preset),
     dshUnwatch:watchId=>ipcRenderer.invoke('ai:dsh-unwatch',watchId),
     dshSync:watchId=>ipcRenderer.invoke('ai:dsh-sync',watchId),
     dshHostControl:(watchId,action)=>ipcRenderer.invoke('ai:dsh-host-control',watchId,action),

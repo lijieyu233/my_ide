@@ -74,7 +74,30 @@ async function test(name,fn){console.log("CHECK",name);await fn();passed++;conso
   assert(!fs.existsSync(path.join(app.getPath('userData'),'dsh-native-sessions.json')),'仅查看模型列表不能建立原生会话');
   await task('读取当前编辑器','MYIDE_EDITOR_STATE_OK');assert((await js('return document.getElementById("ai-msgs").innerText;')).includes('UNSAVED_FIXTURE'));
  });
- await test('续聊由原生会话保留；第二次模型请求不重新拼接对话与旧工具',async()=>{const before=requests.length;await task('第二轮继续','CONTINUED_NATIVE_SESSION');assert(requests[before].messages.some(message=>message.role==='tool'));assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('读取当前编辑器')).length,1);assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('第二轮继续')).length,1);});
+  await test('权限菜单通过宿主切换当前会话档位并重新读取，MyIDE 工具规则独立',async()=>{
+   await until(()=>js('return AiPanel.aiState().dshWatch?.connected===true;'));
+   const buttons='[...document.querySelectorAll(".ai-native-permissions button")]';
+   const open=async()=>{await js('document.getElementById("ai-perm").click()');await until(()=>js('return '+buttons+'.length>1;'),5000);};
+   const selected=()=>js('return '+buttons+'.find(button=>button.getAttribute("aria-pressed")==="true")?.textContent;');
+   const before=requests.length,local=await js('return [AiPanel.permWrite(),AiPanel.permRun()];');
+   await open();
+   const original=await selected();
+   const change=async label=>{
+    await js('const confirm=Modal.confirm;Modal.confirm=async()=>true;try{'+buttons+'.find(button=>button.textContent==='+JSON.stringify(label)+').click()}finally{Modal.confirm=confirm}');
+    await until(async()=>await selected()===label,5000);
+   };
+   await change(original==='完全权限'?'工作区内修改':'完全权限');
+   const changed=await selected();
+   await js('document.getElementById("ai-perm").click()');await open();assert.equal(await selected(),changed);
+   if(!win.webContents.debugger.isAttached())win.webContents.debugger.attach('1.3');
+   const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});
+   fs.writeFileSync(path.join(repo,'.ui-check-trash','dsh-permissions.png'),Buffer.from(shot.data,'base64'));
+   await change(original);
+   await js('document.getElementById("ai-perm").click()');
+   assert.deepEqual(await js('return [AiPanel.permWrite(),AiPanel.permRun()];'),local);
+   assert.equal(requests.length,before);
+  });
+  await test('续聊由原生会话保留；第二次模型请求不重新拼接对话与旧工具',async()=>{const before=requests.length;await task('第二轮继续','CONTINUED_NATIVE_SESSION');assert(requests[before].messages.some(message=>message.role==='tool'));assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('读取当前编辑器')).length,1);assert.equal(requests[before].messages.filter(message=>message.role==='user'&&JSON.stringify(message.content).includes('第二轮继续')).length,1);});
  await test('原生文件工具可用，未被 MyIDE 限制列表移除',async()=>{await task('原生读文件','NATIVE_FILE_READ_OK');assert(nativeRead);});
  await test('项目与大纲工具通过原生DSH MCP调用真实界面接口',async()=>{await task('项目树控制验证','NATIVE_PROJECT_TREE_OK');await task('项目大纲控制验证','NATIVE_OUTLINE_OK');});
  await test('切换启动页后不附带后台文件；MCP 可读取当前页面与真实启动配置',async()=>{

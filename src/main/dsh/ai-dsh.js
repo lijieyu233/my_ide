@@ -188,6 +188,10 @@ function createService(options={}){
     return result;
   }
   async function inputQueue(context){const run=ownedInputRun(context);return run.conn.rpc.request('session/input_queue',{sessionId:run.session.id});}
+  function permissionPresets(context,preset){
+    const run=ownedInputRun(context);
+    return run.conn.rpc.permissionPresets(run.session.id,preset,run.controller.signal);
+  }
   async function updateQueue(context,action){const run=ownedInputRun(context),result=await run.conn.rpc.request('session/update_queue',{sessionId:run.session.id,...queueAction(action)});if(result?.accepted!==true)throw Error('原生 DSH 未确认队列操作');return result;}
   function toolResult(context,callId,result){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const pending=run.tools.get(callId);if(!pending)return {ok:false};run.tools.delete(callId);pending.resolve({ok:result?.ok===true,text:String(result?.text||'')});return {ok:true};}
   function permissionResult(context,id,optionId){const run=runs.get(context.requestId);if(!run||!same(run.context,context)||run.controller.signal.aborted)return {ok:false};const permission=run.permissions.get(id);if(!permission||permission.kind==='question'||!permission.choices.some(choice=>choice.optionId===optionId))return {ok:false};run.permissions.delete(id);permission.rpc.reply(permission.id,{outcome:{outcome:'selected',optionId}});return {ok:true};}
@@ -310,6 +314,6 @@ function createService(options={}){
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,hasRun,submitInput,inputQueue,updateQueue,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession,watch};
+  return {chat,hasRun,submitInput,inputQueue,updateQueue,permissionPresets,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,rename,history,bindSession,watch};
 }
 module.exports={createService,IDE_STATE,promptContent};

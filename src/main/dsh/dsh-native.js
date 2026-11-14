@@ -233,6 +233,22 @@ class NativeRpc extends EventEmitter {
     if(normalized.reasoningEffort!==selected.reasoningEffort)await this.call('session/selectModel',{request:{sessionId:id,...normalized}});
     const previous=this.sessions.get(id);this.sessions.set(id,{...previous,catalog,selected:normalized});return {configOptions:configOptions(catalog,normalized)};
   }
+  async permissionPresets(sessionId, preset, signal){
+    const transport={preserveConnection:true};
+    const catalog=await this.call('permissionPresets/catalog',{},signal,transport);
+    const options=(catalog?.options||[]).filter(option=>typeof option.value==='string'&&typeof option.name==='string');
+    if(preset!==undefined){
+      if(!options.some(option=>option.value===preset))throw Error('DSH 不支持此权限档位');
+      const execution=await this.call('commands/execute',{
+        agentId:sessionId,line:'/permission '+preset,submittedAttachments:[],
+      },signal,transport);
+      if(execution?.result?.kind!=='success')throw Error(execution?.result?.text||'DSH 未接受权限设置');
+    }
+    const projection=await this.call('session/projections',{request:{sessionId}},signal,transport);
+    const currentValue=projection?.values?.permissions?.currentValue;
+    if(typeof currentValue!=='string'||(preset!==undefined&&currentValue!==preset))throw Error('DSH 未确认会话权限档位');
+    return {currentValue,options};
+  }
   async request(method,params){
     if(this.closed)throw Error('原生 DSH 连接已断开');
     if(method==='session/catalog')return {configOptions:configOptions(await this.call('session/modelCatalog'))};

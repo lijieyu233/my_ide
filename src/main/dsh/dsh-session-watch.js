@@ -167,6 +167,10 @@ async function observe(rpc,params,onState,signal,foldHistory){
       if(!['stop','answer','permission'].includes(action?.operation))throw Error('不支持的会话操作');
       return rpc.call('myide/control',{request:{sessionId:params.hostId,cwd:params.cwd,...action}});
     },
+    permissionPresets(preset){
+      if(!connected||controller.signal.aborted)throw Error('DSH 实时订阅未连接');
+      return rpc.permissionPresets(params.hostId,preset,controller.signal);
+    },
     close(){if(closed)return;closed=true;clearTimeout(timer);clearTimeout(readyTimer);signal?.removeEventListener('abort',abort);controller.abort();readyReject(Error('DSH 实时订阅已解除'));},
     completion,
   };

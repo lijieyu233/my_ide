@@ -4100,6 +4100,18 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .ai-perm-item > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-perm-item .tb-btn { padding: 2px 8px; font-size: .88em; }
 .ai-perm-note { font-size: .84em; color: var(--text-dim); line-height: 1.5; margin-top: 6px; }
+.ai-native-permissions { display: grid; gap: 2px; }
+.ai-native-permissions button {
+  display: flex; align-items: center; justify-content: space-between; text-align: left;
+  padding: 6px 8px; border: none; border-radius: 5px;
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+.ai-native-permissions button:hover, .ai-native-permissions button[data-selected] { background: var(--btn-hover); }
+.ai-native-permissions button[data-selected]::after { content: "✓"; margin-left: 10px; }
+.ai-native-permissions button:disabled { cursor: default; opacity: .65; }
+.ai-perm-local { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.ai-perm-local summary { cursor: pointer; color: var(--text-dim); }
+.ai-perm-local[open] summary { margin-bottom: 8px; }
 
 /* ---------- AI 面板：改动 / 命令确认浮层（贴面板底部，不遮编辑器）---------- */
 .ai-confirm {
