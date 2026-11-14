@@ -79,6 +79,7 @@ function run(args, { cwd, timeout = 15000, input = null, exe = null, env = null,
       stdout: raw ? Buffer.from(stdout || '') : String(stdout || ''),
       stderr: String(stderr || ''),
       error: err ? String(err.message || err) : '',
+      ...(err?.killed ? { timedOut: true } : {}),
     });
     try {
       child = execFile(bin, args, {

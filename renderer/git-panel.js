@@ -625,7 +625,7 @@ const GitPanel = (() => {
     const remote = r.remote || opts?.remote;
     const branch = r.branch || state?.branch;
     const target = remote && branch ? remote + '/' + branch : null;
-    const detail = r.code === 'AUTH' ? r.error : null;
+    const detail = r.detail && r.detail !== r.error ? r.detail : (r.code === 'AUTH' ? r.error : null);
     const error = r.code === 'AUTH'
       ? '远程拒绝推送。请核对认证或分支写入权限。'
       : safeSyncText(r.error);

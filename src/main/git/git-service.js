@@ -1255,10 +1255,10 @@ function friendlyNetError(e, pr) {
 
 // GitLab 对不带 .git 后缀的 http(s) 远程会 301 重定向到 .git 地址，isomorphic-git 不跟随重定向 → 报 404。
 // 这里在 404 时自动把远程 URL 规范化（补 .git，写回 git config）重试一次；仍失败则还原 URL 报原错误。
-// op 闭包内 git.fetch/push 按 remote 名从 config 重新解析 URL，addRemote(force) 更新后重试即生效。
+// fetch 按 remote 名重新解析配置；显式传 URL 的调用使用本次尝试的地址。
 async function withRemoteUrlFix(root, pr, op) {
   try {
-    return await op();
+    return await op(pr.url);
   } catch (e) {
     const msg = String((e && e.message) || e);
     const fixable = /404/.test(msg) && pr && pr.url && /^https?:/i.test(pr.url) && !/\.git\/?$/.test(pr.url);
@@ -1266,7 +1266,7 @@ async function withRemoteUrlFix(root, pr, op) {
     const fixedUrl = pr.url.replace(/\/+$/, '') + '.git';
     await git.addRemote({ fs, dir: root, remote: pr.name, url: fixedUrl, force: true });
     try {
-      const r = await op();
+      const r = await op(fixedUrl);
       return Object.assign({}, r, { urlFixed: true, fixedUrl });
     } catch (e2) {
       await git.addRemote({ fs, dir: root, remote: pr.name, url: pr.url, force: true }); // 还原，避免误改无关 404
@@ -1581,40 +1581,59 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
   }
   if (!pr) pr = await primaryRemote(root);
   if (!pr?.url) return { ok: false, code: 'REMOTE_MISSING', error: '未配置远程仓库' };
-  const fail = (code, error) => ({ ok: false, code, error, remote: pr.name, branch });
-  // SSH 远程 isomorphic-git 不支持 → 走原生 git（重复 push 是幂等 no-op，允许重试抖动的失败）
-  if (needNativeRemote(pr.url)) {
-    const N = require('./git-native');
-    const args = ['push'];
-    if (force) args.push('--force');
-    args.push(pr.name, branch);
-    const r = await N.runRetry(args, { cwd: root, timeout: 120000, env: N.NO_EDIT });
-    if (r.ok) return { ok: true, remote: pr.name, branch, force: !!force };
-    const msg = r.stderr.trim() || r.error || 'push 失败';
-    if (/fetch first|behind|non-fast-forward/i.test(msg)) {
-      return fail('PUSH_BEHIND', '远程有新提交，请先拉取再推送。');
+  const success = { ok: true, remote: pr.name, branch, force: !!force };
+  const ref = 'refs/heads/' + branch;
+  const configuredPushUrl = await git.getConfig({ fs, dir: root, path: 'remote.' + pr.name + '.pushurl' });
+  const pushUrl = configuredPushUrl || pr.url;
+  const host = hostOf(pushUrl);
+  const hasAppCredential = !!(auth?.[host]?.username || auth?.username || auth?.['*']?.username);
+  const nativeOnly = needNativeRemote(pushUrl);
+  function fail(raw, phase, timedOut = false) {
+    const detail = String(raw || 'Git 未返回推送结果').replace(/(https?:\/\/)[^\s/@]+@/gi, '$1***@');
+    let code = 'PUSH_FAILED', error = detail;
+    if (timedOut || /timed? out|timeout|too slow/i.test(detail)) {
+      code = 'PUSH_TIMEOUT';
+      error = phase === 'connect' ? '连接推送服务超时。请检查网络后重试。' :
+        '推送等待超时，远端是否已收到提交尚未确认。可重试普通推送。';
+    } else if (/fetch first|\bbehind\b|non[- ]fast[- ]forward|not[- ]fast[- ]forward/i.test(detail)) {
+      code = 'PUSH_BEHIND'; error = '远程有新提交，请先拉取再推送。';
+    } else if (/pre-receive hook declined|protected branch/i.test(detail)) {
+      code = 'PUSH_REJECTED'; error = '服务端拒绝推送 ' + branch + '，请检查分支保护或提交规则。';
+    } else if (/authentication failed|could not read (?:username|password)|permission denied|(?:HTTP Error:|returned error:)\s*40[13]/i.test(detail)) {
+      code = 'AUTH'; error = friendlyNetError({message: detail}, {url: pushUrl});
     }
-    return fail(/Permission denied/i.test(msg) ? 'AUTH' : 'PUSH_FAILED', msg);
+    return { ok: false, code, error, detail, remote: pr.name, branch };
+  }
+  const native = nativeOnly || (!hasAppCredential && (await nativeGit.info(false).catch(() => null))?.git?.available);
+  if (native) {
+    // 系统凭证走与命令行相同的打包、上传、代理和凭证助手。
+    const args = [
+      '-c', 'http.lowSpeedLimit=1', '-c', 'http.lowSpeedTime=120',
+      'push', '--no-mirror', '--no-follow-tags', '--recurse-submodules=no', ...(force ? ['--force'] : []), '--', pr.name, ref + ':' + ref,
+    ];
+    const env = { ...nativeGit.NO_EDIT, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
+    const r = await nativeGit.run(args, { cwd: root, timeout: 600000, env });
+    return r.ok ? success : fail(r.stderr.trim() || r.error, 'push', r.timedOut);
+  }
+  let phase = 'connect';
+  async function pushWithAppClient(url) {
+    const onAuth = onAuthOf(auth, url, root);
+    const client = await httpFor(root, url);
+    await git.push({
+      fs, dir: root, remote: pr.name, ref, remoteRef: ref, url,
+      http: { request: request => {
+        phase = request.method === 'POST' ? 'upload' : 'connect';
+        const timeout = phase === 'upload' ? 120000 : 20000;
+        return client.request({ ...request, fetchOptions: { ...request.fetchOptions, timeout } });
+      } },
+      force: !!force, onAuth, onAuthFailure: onAuth,
+    });
+    return success;
   }
   try {
-    return await withRemoteUrlFix(root, pr, async () => {
-      const onAuth = onAuthOf(auth, pr.url, root);
-      await git.push({
-        fs, dir: root, http: await httpFor(root, pr.url), remote: pr.name, ref: branch,
-        force: !!force, onAuth, onAuthFailure: onAuth,
-      });
-      return { ok: true, remote: pr.name, branch, force: !!force };
-    });
+    return configuredPushUrl ? await pushWithAppClient(pushUrl) : await withRemoteUrlFix(root, pr, pushWithAppClient);
   } catch (e) {
-    const msg = String(e.message || e);
-    if (/HTTP Error: 40[13]/.test(msg)) return fail('AUTH', friendlyNetError(e, pr));
-    if (/fetch first|behind|non[- ]fast[- ]forward/i.test(msg)) {
-      return fail('PUSH_BEHIND', '远程有新提交，请先拉取再推送。');
-    }
-    if (msg.includes('pre-receive hook declined')) {
-      return fail('PUSH_REJECTED', '服务端拒绝推送 ' + branch + '，请检查分支保护或提交规则。');
-    }
-    return fail('PUSH_FAILED', msg);
+    return fail(e.message || e, phase);
   }
 }
 

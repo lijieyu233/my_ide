@@ -808,6 +808,48 @@ fs.mkdirSync(repo);
     assert.strictEqual(lr.remotes.length, 2, '配置 2 个远程后列表为 2');
   });
 
+  await okAsync('HTTP 推送按凭证来源选择客户端并锁定目标，超时不自动重发', async () => {
+    const repo = path.join(tmp, 'push-routing');
+    fs.mkdirSync(repo);
+    await G.initRepo(repo);
+    fs.writeFileSync(path.join(repo, 'file.txt'), 'push fixture\n');
+    assert((await G.commit(repo, { message: 'initial', files: ['file.txt'] })).ok);
+    await G.addRemote(repo, { name: 'origin', url: 'https://git.example.test/repo.git' });
+    const iso = require('isomorphic-git');
+    const native = require('../src/main/git/git-native');
+    const { run, info } = native;
+    const isoPush = iso.push;
+    let called = 0;
+    try {
+      native.info = async () => ({ git: { available: true } });
+      native.run = async (args, opts) => {
+        called++;
+        assert.deepEqual(args.slice(-2), ['origin', 'refs/heads/main:refs/heads/main']);
+        assert(args.includes('http.lowSpeedTime=120'));
+        assert(!args.includes('--force'));
+        assert.equal(opts.env.GIT_TERMINAL_PROMPT, '0');
+        return { ok: false, stderr: 'error: RPC failed; Operation timed out', error: '' };
+      };
+      iso.push = async () => assert.fail('系统凭证推送不应经过 JS 客户端');
+      const result = await G.pushRemote(repo);
+      assert.equal(result.code, 'PUSH_TIMEOUT');
+      assert.equal(called, 1);
+
+      const auth = { 'git.example.test': { username: 'myide-user', password: 'fixture-token' } };
+      iso.push = async ({ onAuth, ref, remoteRef }) => {
+        assert.equal(ref, 'refs/heads/main');
+        assert.equal(remoteRef, ref);
+        assert.deepEqual(await onAuth(), auth['git.example.test']);
+      };
+      assert((await G.pushRemote(repo, { auth })).ok);
+      assert.equal(called, 1);
+    } finally {
+      native.run = run;
+      native.info = info;
+      iso.push = isoPush;
+    }
+  });
+
   // ---------- 提交事务：勾选集合决定"这次提交带走什么"，但不许动用户的暂存区 ----------
   // 场景来自 M1 需求原文：HEAD A=a0 B=b0；用户在终端 `git add A`（index A=a1）；
   // 工作区 A=a1 B=b1；IDE 只勾 B 提交 → 新 HEAD 里 A 仍是 a0、B 是 b1，且 **A 依然留在暂存区**。
