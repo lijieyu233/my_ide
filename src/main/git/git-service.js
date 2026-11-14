@@ -1210,32 +1210,36 @@ function systemCredentialFill(url, root) { return nativeGit.credentialFill(url, 
 // 候选优先级：host 匹配的渲染层凭证 > 远程 URL 内嵌凭证 > 系统 Git 凭证管理器 > '*' 兜底凭证。
 // 注意 '*' 兜底（早期全局单份凭证迁移而来）可能是为其他主机存的，排在系统凭证之后，
 // 避免它毒害本可用系统凭证成功的推送（GitHub/GitLab 多主机混用场景）。
-function onAuthOf(auth, remoteUrl, root) {
+function onAuthOf(auth, remoteUrl, root, used = () => {}) {
   const host = hostOf(remoteUrl);
   const cands = [];
   if (auth) {
-    if (host && auth[host] && auth[host].username) cands.push(auth[host]);
-    if (auth.username) cands.push(auth); // 兼容旧平铺格式 {username,password}
+    if (host && auth[host] && auth[host].username) cands.push([auth[host], 'myide']);
+    if (auth.username) cands.push([auth, 'legacy']); // 兼容旧平铺格式 {username,password}
   }
   if (remoteUrl) { // URL 内嵌凭证（isomorphic-git 不解析 URL userinfo，这里代为生效）
     try {
       const u = new URL(remoteUrl);
-      if (u.username) cands.push({ username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') });
+      if (u.username) cands.push([{ username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') }, 'url']);
     } catch {}
   }
   const star = auth && auth['*'] && auth['*'].username ? auth['*'] : null;
+  const supply = (cred, source) => {
+    used(source);
+    return { username: cred.username, password: cred.password || '' };
+  };
   let i = 0, sysTried = false, starTried = false;
   return async () => {
     while (i < cands.length) {
-      const c = cands[i++];
-      if (c && c.username) return { username: c.username, password: c.password || '' };
+      const [cred, source] = cands[i++];
+      if (cred?.username) return supply(cred, source);
     }
     if (!sysTried) {
       sysTried = true;
       const sys = await systemCredentialFill(remoteUrl, root); // 系统 Git 凭证（命令行存过的）
-      if (sys && sys.username) return sys;
+      if (sys?.username) return supply(sys, 'system');
     }
-    if (!starTried && star) { starTried = true; return { username: star.username, password: star.password || '' }; }
+    if (!starTried && star) { starTried = true; return supply(star, 'legacy'); }
     return null; // 候选耗尽：isomorphic-git 停止重试，外层统一转友好报错
   };
 }
@@ -1358,13 +1362,25 @@ async function checkRemote(dir, { name, auth } = {}) {
     const remotes = await git.listRemotes({ fs, dir: root });
     const url = remotes.find(remote => remote.remote === name)?.url;
     if (!url || needNativeRemote(url)) return { ok: false, error: '此验证适用于 HTTP(S) 远程仓库' };
+    const endpoint = new URL(url);
+    const saved = auth?.[endpoint.host];
     const http = await httpFor(root, url);
-    const onAuth = onAuthOf(auth, url, root);
+    let authSource = endpoint.username || endpoint.password ? 'url' : 'anonymous';
+    let headers;
+    let onAuth;
+    if (saved?.username) {
+      // 用户刚保存凭证时，验证这一份。旧地址凭证或系统凭证成功会掩盖新凭证填错。
+      endpoint.username = endpoint.password = '';
+      headers = { Authorization: 'Basic ' + Buffer.from(saved.username + ':' + (saved.password || '')).toString('base64') };
+      authSource = 'myide';
+    } else {
+      onAuth = onAuthOf(auth, url, root, source => { authSource = source; });
+    }
     await git.listServerRefs({
-      url, forPush: true, protocolVersion: 1, onAuth, onAuthFailure: onAuth,
+      url: saved?.username ? endpoint.href : url, headers, forPush: true, protocolVersion: 1, onAuth, onAuthFailure: onAuth,
       http: { request: request => http.request({ ...request, fetchOptions: { timeout: 12000, maxRedirects: 0 } }) },
     });
-    return { ok: true };
+    return { ok: true, authSource };
   } catch (error) {
     const message = String(error.message || error);
     if (/HTTP Error: 40[13]/i.test(message)) return { ok: false, error: '推送服务拒绝访问，请检查用户名、令牌和仓库写入权限。' };

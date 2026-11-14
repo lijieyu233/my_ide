@@ -1477,6 +1477,8 @@ textarea.editor {
 .rm-auth[open] .rm-auth-summary { display: none; }
 #rm-auth-form { margin-top: 16px; }
 .rm-credentials { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
+.rm-credentials[hidden], .rm-auth-foot button[hidden] { display: none; }
+#rm-auth-note { margin: 0; }
 .rm-auth-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .rm-auth-foot .rm-form-actions { margin-left: auto; flex-wrap: wrap; }
 #rm-check-result:not([hidden]) { padding: 8px 10px; background: var(--bg-panel); border-radius: 4px; }

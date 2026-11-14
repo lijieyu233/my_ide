@@ -42,7 +42,16 @@ async function test(name, run) {
   });
   await test('远程地址遮蔽密码，跨主机切换保留草稿与已保存认证', async ({ w, q }) => {
     await q('#cd-remote').onclick(); assert(!q('#br-box').textContent.includes('secret')); assert(q('#rm-auth-summary').textContent.includes('地址或系统')); assert(!q('#rm-auth').open); assert(q('#rm-add-form').hidden);
-    q('.rm-config').click(); assert(q('#rm-auth').open); q('#rm-user').value = 'alice'; q('#rm-pass').value = 'draft-one';
+    q('.rm-config').click(); assert(q('#rm-auth').open); assert(q('#rm-credentials').hidden);
+    assert.match(q('#rm-auth-note').textContent, /地址已带凭证/);
+    w.myIDE.git.checkRemote = async () => ({ ok: true, authSource: 'url' });
+    await q('#rm-check').onclick();
+    assert.match(q('#rm-check-result').textContent, /仓库地址中的凭证/);
+    w.myIDE.git.checkRemote = async () => ({ ok: true, authSource: 'anonymous' });
+    await q('#rm-check').onclick();
+    assert.match(q('#rm-check-result').textContent, /本次未使用凭证/);
+    q('#rm-edit-auth').click(); assert(!q('#rm-credentials').hidden);
+    q('#rm-user').value = 'alice'; q('#rm-pass').value = 'draft-one';
     const host = h => { q('#rm-host').value = h; q('#rm-host').dispatchEvent(new w.Event('change')); };
     host('other.test'); q('#rm-user').value = 'bob'; q('#rm-pass').value = 'draft-two'; host('git.test'); assert.equal(q('#rm-pass').value, 'draft-one');
     q('#rm-auth-form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); host('other.test'); assert.equal(q('#rm-pass').value, 'draft-two'); host('git.test'); assert.equal(q('#rm-user').value, 'alice'); assert(q('#rm-auth-note').textContent.includes('已保存'));
@@ -78,6 +87,7 @@ async function test(name, run) {
     assert.equal(q('#rm-host').value, 'mirror.test:3000');
     assert.equal(q('#rm-auth').closest('.rm-item').dataset.remote, 'mirror');
     assert(q('#rm-auth').open);
+    assert(!q('#rm-credentials').hidden);
     q('#rm-user').value = 'alice';
     q('#rm-pass').value = 'test-token';
     q('#rm-auth-form').dispatchEvent(new w.Event('submit', { cancelable: true }));
@@ -86,10 +96,10 @@ async function test(name, run) {
       assert.equal(root, 'C:/repo');
       assert.equal(args.name, 'mirror');
       assert.equal(args.auth['mirror.test:3000'].password, 'test-token');
-      return { ok: true };
+      return { ok: true, authSource: 'myide' };
     };
     await q('#rm-check').onclick();
-    assert.match(q('#rm-check-result').textContent, /已连接推送服务/);
+    assert.match(q('#rm-check-result').textContent, /本次携带MyIDE 保存的凭证/);
     w.myIDE.git.listPushCommits = async (root, remote) => {
       assert.equal(root, 'C:/repo');
       assert.equal(remote, 'mirror');
