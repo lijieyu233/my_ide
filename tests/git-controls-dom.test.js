@@ -61,5 +61,69 @@ async function test(name, run) {
     await q('#cd-remote').onclick(); q('#rm-user').value = 'user'; w.Storage.prototype.setItem = () => { throw Error('disk full'); }; q('#rm-auth-form').dispatchEvent(new w.Event('submit', { cancelable: true })); assert(notices.some(t => t.includes('保存失败'))); assert(!notices.some(t => t.startsWith('已保存')));
     let removed = false; w.myIDE.git.removeRemote = async () => { removed = true; return { ok: true }; }; w.Modal.confirm = async () => { w.GitPanel.rootDir = 'C:/other'; return true; }; await q('.rm-del').onclick(); assert(!removed);
   });
+  await test('推送认证失败打开对应仓库，保存后验证连接，重试回到同一目标的预览', async ({ w, q }) => {
+    w.myIDE.git.listRemotes = async () => ({ remotes: [
+      { name: 'origin', url: 'https://origin.test/project.git' },
+      { name: 'mirror', url: 'https://mirror.test:3000/project.git' }
+    ] });
+    let pushes = 0;
+    w.myIDE.git.push = async () => {
+      pushes++;
+      return { ok: false, code: 'AUTH', remote: 'mirror', branch: 'dev', error: '认证失败' };
+    };
+    await w.GitPanel.doPush(true, { remote: 'mirror' });
+    const notice = q('#cd-sync-status');
+    assert(notice.textContent.includes('mirror/dev'));
+    await notice.querySelector('button').onclick();
+    assert.equal(q('#rm-host').value, 'mirror.test:3000');
+    assert.equal(q('#rm-auth').closest('.rm-item').dataset.remote, 'mirror');
+    assert(q('#rm-auth').open);
+    q('#rm-user').value = 'alice';
+    q('#rm-pass').value = 'test-token';
+    q('#rm-auth-form').dispatchEvent(new w.Event('submit', { cancelable: true }));
+    assert.equal(q('[data-remote="mirror"] .rm-cred').textContent, '已保存凭证');
+    w.myIDE.git.checkRemote = async (root, args) => {
+      assert.equal(root, 'C:/repo');
+      assert.equal(args.name, 'mirror');
+      assert.equal(args.auth['mirror.test:3000'].password, 'test-token');
+      return { ok: true };
+    };
+    await q('#rm-check').onclick();
+    assert.match(q('#rm-check-result').textContent, /已连接推送服务/);
+    w.myIDE.git.listPushCommits = async (root, remote) => {
+      assert.equal(root, 'C:/repo');
+      assert.equal(remote, 'mirror');
+      return { ok: true, remote, branch: 'dev', count: 1, commits: [] };
+    };
+    const retry = [...notice.querySelectorAll('button')].find(button => button.textContent === '重试推送');
+    await retry.onclick();
+    assert(q('#pp-box').textContent.includes('mirror/dev'));
+    assert.equal(pushes, 1);
+  });
+  await test('编辑已有仓库地址时保留远程名并提交旧地址，新增同名不会覆盖', async ({ w, q }) => {
+    const original = 'https://user:secret@git.test/repo.git';
+    let writes = 0;
+    w.myIDE.git.addRemote = async (root, options) => {
+      writes++;
+      assert.equal(root, 'C:/repo');
+      assert.equal(options.name, 'origin');
+      assert.equal(options.previousUrl, original);
+      assert.equal(options.url, 'https://git.test/new.git');
+      return { ok: true };
+    };
+    await w.GitPanel.openRemoteDialog();
+    q('#rm-toggle-add').click();
+    q('#rm-name').value = 'origin';
+    q('#rm-url').value = 'https://git.test/new.git';
+    await q('#rm-add-form').onsubmit({ preventDefault() {} });
+    assert.equal(writes, 0);
+    q('.rm-edit').click();
+    assert(q('#rm-name').readOnly);
+    assert.equal(q('#rm-url').value, 'https://git.test/repo.git');
+    q('#rm-url').value = 'https://git.test/new.git';
+    await q('#rm-add-form').onsubmit({ preventDefault() {} });
+    assert.equal(writes, 1);
+    await w.GitPanel.refresh();
+  });
   console.log('Git操作入口 ' + passed + ' 通过 / 0 失败');
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });

@@ -479,6 +479,7 @@ function makeDom() {
       }),
       addRemote: async () => ({ ok: true }),
       removeRemote: async () => ({ ok: true }),
+      checkRemote: async () => ({ ok: true }),
       fetch: async () => ({ ok: true }),
       pull: async (d, opts) => { calls.pull.push(opts || {}); return { ok: true }; },
       push: async () => ({ ok: true }),

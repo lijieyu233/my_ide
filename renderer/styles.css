@@ -1107,7 +1107,7 @@ textarea.editor {
 @container (max-width:320px) { #cd-toolbar-host #cd-diff span { display:none; } }
 .git-sync-target { color: var(--text-dim); font-size: .9em; margin-top: 5px; overflow-wrap: anywhere; }
 #cd-sync-status { margin: 0 8px 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 4px; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
-#cd-sync-status[data-kind="error"] { border-color: var(--warn, #c98c3f); }
+#cd-sync-status[data-kind="error"], #cd-sync-status[data-kind="push-error"] { border-color: var(--warn, #c98c3f); }
 #cd-sync-status pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; max-height: 120px; overflow: auto; margin: 6px 0; user-select: text; }
 #cd-sync-status details { margin-top: 5px; }
 #cd-sync-status .git-sync-actions { margin-top: 7px; }
@@ -1442,12 +1442,15 @@ textarea.editor {
 .rm-item .rm-name { color: var(--text-bright); font-weight: 600; overflow-wrap: anywhere; }
 .rm-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .rm-cred { font-size: .8em; color: var(--text-dim); white-space: nowrap; }
-.rm-del { font: inherit; font-size: .9em; color: var(--text-dim); border: 0; background: transparent; cursor: pointer; padding: 4px; border-radius: 4px; }
+.rm-del, .rm-edit { font: inherit; font-size: .9em; color: var(--text-dim); border: 0; background: transparent; cursor: pointer; padding: 4px; border-radius: 4px; }
+.rm-edit:hover { color: var(--text-bright); background: var(--bg-hover); }
 .rm-del:hover { color: var(--red); background: var(--bg-hover); }
 .rm-item-url { margin-top: 8px; font-size: .92em; line-height: 1.6; color: var(--text-dim); overflow-wrap: anywhere; user-select: text; }
 .rm-item-url .rm-host { color: var(--text); }
 .rm-empty { font-size: .95em; color: var(--text-dim); text-align: center; padding: 24px 12px; border: 1px dashed var(--border); border-radius: 8px; }
-.rm-branches { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.rm-branch-list { margin-top: 8px; color: var(--text-dim); font-size: .9em; }
+.rm-branch-list summary { cursor: pointer; width: fit-content; }
+.rm-branches { padding: 4px 0 0 12px; }
 .rm-br { display: flex; align-items: center; gap: 7px; font-size: .9em; padding: 3px 0; color: var(--text-dim); }
 .rm-br-dot { width: 12px; text-align: center; color: var(--text-dim); }
 .rm-br-head { color: var(--text-bright); }
@@ -1463,7 +1466,8 @@ textarea.editor {
 .rm-form input:focus { border-color: var(--accent); }
 .rm-add-fields { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 12px; }
 .rm-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.rm-auth { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+.rm-auth { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.rm-auth:not([open]) { display: none; }
 .rm-auth summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; gap: 12px; }
 .rm-auth summary::-webkit-details-marker { display: none; }
 .rm-auth summary strong { display: block; color: var(--text-bright); font-size: 1em; font-weight: 600; }
@@ -1473,7 +1477,9 @@ textarea.editor {
 .rm-auth[open] .rm-auth-summary { display: none; }
 #rm-auth-form { margin-top: 16px; }
 .rm-credentials { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
-.rm-auth-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 2px; }
+.rm-auth-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.rm-auth-foot .rm-form-actions { margin-left: auto; flex-wrap: wrap; }
+#rm-check-result:not([hidden]) { padding: 8px 10px; background: var(--bg-panel); border-radius: 4px; }
 .rm-note { font-size: .9em; color: var(--text-dim); line-height: 1.5; }
 .git-remote-dialog button:focus-visible, .rm-auth summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 600px) { .rm-credentials, .rm-add-fields { grid-template-columns: minmax(0,1fr); } .rm-item-head { flex-wrap: wrap; } .rm-auth-foot { align-items: flex-start; } }

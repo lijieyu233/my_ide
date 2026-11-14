@@ -224,10 +224,11 @@ const GitPanel = (() => {
   }
   function maskRemote(u) {
     const p = splitRemote(u);
-    return p.scheme + (p.cred ? p.cred.split(':')[0] + ':***@' : '') + p.host + (p.path ? '/' + p.path : '');
+    return p.scheme + p.host + (p.path ? '/' + p.path : '');
   }
+  const httpRemote = url => /^https?:\/\//i.test(url);
 
-  async function openRemoteDialog() {
+  async function openRemoteDialog({ remote, target, authenticate = false } = {}) {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return; }
     const operationRoot = root, epoch = rootGeneration;
     const valid = () => root === operationRoot && rootGeneration === epoch;
@@ -240,7 +241,9 @@ const GitPanel = (() => {
     box.id = 'br-box'; box.className = 'git-remote-dialog';
     Modal.show(box);
     const primary = (r.remotes || []).find(x => x.name === 'origin') || (r.remotes || [])[0];
-    let activeHost = (primary && hostOfUrl(primary.url)) || Object.keys(getGitAuthMap()).find(h => h !== '*') || '';
+    let activeRemote = (r.remotes || []).find(x => x.name === remote) || (!remote ? primary : null);
+    let activeHost = activeRemote && httpRemote(activeRemote.url) ? hostOfUrl(activeRemote.url) || '' : '';
+    let editingRemote = null, testing = false;
     // 主机草稿与已保存配置分开，切换时保留尚未保存的输入。
     const drafts = new Map();
     const credential = h => drafts.get(h) || getGitAuthMap()[h] || {};
@@ -250,29 +253,31 @@ const GitPanel = (() => {
       <div class="m-head">远程仓库 <button class="x" id="rm-x" aria-label="关闭远程仓库">×</button></div>
       <div class="m-body">
         <section class="rm-section">
-          <div class="rm-section-head"><div><h3>连接的仓库</h3><p class="rm-cap">拉取与推送使用这里的地址</p></div><button class="tb-btn" id="rm-toggle-add" aria-expanded="false">添加仓库</button></div>
+          <div class="rm-section-head"><div><h3>连接的仓库</h3><p class="rm-cap" id="rm-target"></p></div><button class="tb-btn" id="rm-toggle-add" aria-expanded="false">添加仓库</button></div>
           <div id="rm-list"></div>
           <form id="rm-add-form" class="rm-form" hidden>
-            <div class="rm-add-fields"><label>远程名称<input id="rm-name" value="origin" spellcheck="false" required></label><label>仓库地址<input id="rm-url" placeholder="https://git.example.com/用户/仓库.git" spellcheck="false" required></label></div>
+            <div class="rm-add-fields"><label>远程名称<input id="rm-name" value="origin" spellcheck="false" required></label><label>克隆地址<input id="rm-url" placeholder="从仓库页面复制克隆地址" spellcheck="false" required></label></div>
             <div class="rm-form-actions"><button type="button" class="tb-btn" id="rm-cancel-add">取消</button><button class="tb-btn primary" id="rm-add" type="submit">添加仓库</button></div>
           </form>
         </section>
         <details class="rm-auth" id="rm-auth">
           <summary><span><strong>连接认证</strong><span class="rm-auth-summary" id="rm-auth-summary"></span></span><span class="rm-chevron">⌄</span></summary>
-          <p class="rm-cap">仅在需要单独指定账号时填写；认证按主机保存。</p>
+          <p class="rm-cap">认证按主机和端口保存，令牌需有仓库写入权限。</p>
           <form id="rm-auth-form" class="rm-form">
             <label>主机<input id="rm-host" list="rm-hosts" spellcheck="false" placeholder="git.example.com:3000" value="${attr(activeHost)}" required></label><datalist id="rm-hosts"></datalist>
             <div class="rm-credentials"><label>用户名<input id="rm-user" spellcheck="false" autocomplete="off" value="${attr(first.username || '')}" required></label><label>密码 / 访问令牌<input id="rm-pass" type="password" autocomplete="off" value="${attr(first.password || '')}"></label></div>
-            <div class="rm-auth-foot"><span id="rm-auth-note" class="rm-note" role="status"></span><button class="tb-btn primary" id="rm-save-auth" type="submit">保存认证</button></div>
+            <div class="rm-auth-foot"><span id="rm-auth-note" class="rm-note" role="status"></span><div class="rm-form-actions"><button class="tb-btn" id="rm-check" type="button">验证推送连接</button><button class="tb-btn primary" id="rm-save-auth" type="submit">保存认证</button></div></div>
+            <div id="rm-check-result" class="rm-note" role="status" hidden></div>
           </form>
         </details>
       </div>`;
     const q = selector => box.querySelector(selector);
     const showAuthNote = h => {
       const saved = getGitAuthMap();
-      q('#rm-auth-note').textContent = saved[h] ? '已保存本机配置，连接时验证' : '未单独配置，使用地址或系统认证';
-      q('#rm-auth-summary').textContent = saved[h] ? '已保存 · ' + h : '使用地址或系统认证';
+      q('#rm-auth-note').textContent = saved[h] ? '已保存到本机，可验证连接' : '未在 MyIDE 保存凭证';
+      q('#rm-auth-summary').textContent = saved[h] ? '已保存凭证' : '使用地址或系统认证';
       q('#rm-hosts').replaceChildren(...[...new Set([...(r.remotes || []).map(x => hostOfUrl(x.url)), ...Object.keys(saved)])].filter(x => x && x !== '*').map(h => { const o = document.createElement('option'); o.value = h; return o; }));
+      q('#rm-check').disabled = testing || !activeRemote || !httpRemote(activeRemote.url) || h !== hostOfUrl(activeRemote.url);
     };
     const rememberDraft = () => drafts.set(activeHost, { username: q('#rm-user').value, password: q('#rm-pass').value });
     const selectHost = h => {
@@ -280,44 +285,97 @@ const GitPanel = (() => {
       q('#rm-host').value = h;
       const c = credential(h);
       q('#rm-user').value = c.username || ''; q('#rm-pass').value = c.password || '';
+      q('#rm-check-result').hidden = true;
       showAuthNote(h);
     };
     q('#rm-host').onchange = () => selectHost(q('#rm-host').value.trim());
     showAuthNote(activeHost);
     q('#rm-x').onclick = () => Modal.hide();
-    const toggleAdd = show => {
-      q('#rm-add-form').hidden = !show; q('#rm-toggle-add').setAttribute('aria-expanded', String(show));
-      if (show) { q('#rm-name').value = (r.remotes || []).some(x => x.name === 'origin') ? '' : 'origin'; q('#rm-url').focus(); }
+    const toggleAdd = (show, edit = null) => {
+      editingRemote = edit;
+      const form = q('#rm-add-form');
+      const row = edit && [...q('#rm-list').children].find(item => item.dataset.remote === edit.name);
+      if (row) row.appendChild(form);
+      else q('#rm-list').after(form);
+      form.hidden = !show;
+      q('#rm-toggle-add').setAttribute('aria-expanded', String(show && !edit));
+      if (show) {
+        q('#rm-name').value = edit?.name || ((r.remotes || []).some(x => x.name === 'origin') ? '' : 'origin');
+        q('#rm-name').readOnly = !!edit;
+        q('#rm-url').value = edit ? (httpRemote(edit.url) ? maskRemote(edit.url) : edit.url) : '';
+        q('#rm-add').textContent = edit ? '保存地址' : '添加仓库';
+        q('#rm-url').focus();
+      }
     };
-    q('#rm-toggle-add').onclick = () => toggleAdd(q('#rm-add-form').hidden);
+    q('#rm-toggle-add').onclick = () => {
+      if (!q('#rm-add').disabled && !testing) toggleAdd(q('#rm-add-form').hidden || !!editingRemote);
+    };
     q('#rm-cancel-add').onclick = () => toggleAdd(false);
+    const authSection = q('#rm-auth');
+    function renderAuthStatuses() {
+      const saved = getGitAuthMap();
+      for (const row of q('#rm-list').children) {
+        const rm = (r.remotes || []).find(item => item.name === row.dataset.remote);
+        if (!rm) continue;
+        const status = row.querySelector('.rm-cred');
+        status.textContent = !httpRemote(rm.url) ? '系统 Git' : saved[hostOfUrl(rm.url)] ? '已保存凭证' :
+          splitRemote(rm.url).hasCred ? '使用地址中的凭证' : '使用系统认证';
+      }
+    }
+    function openAuth(rm, row) {
+      if (testing || !httpRemote(rm.url)) return;
+      activeRemote = rm;
+      row.appendChild(authSection);
+      selectHost(hostOfUrl(rm.url) || '');
+      authSection.hidden = false;
+      authSection.open = true;
+      q('#rm-user').focus();
+    }
     const renderList = remotes => {
-      const list = q('#rm-list'); list.replaceChildren();
+      const list = q('#rm-list');
+      if (list.contains(authSection)) list.after(authSection);
+      if (list.contains(q('#rm-add-form'))) toggleAdd(false);
+      authSection.open = false;
+      authSection.hidden = true;
+      const preferred = remotes.find(x => x.name === 'origin') || remotes[0];
+      q('#rm-target').textContent = target && remotes.some(item => item.name === remote) ? '操作目标 ' + target :
+        preferred && state?.branch && state.branch !== '(无提交)'
+        ? '默认推送到 ' + preferred.name + '/' + state.branch
+        : preferred ? '已绑定 ' + preferred.name : '添加克隆地址后可拉取和推送';
+      list.replaceChildren();
       if (!remotes.length) { const empty = document.createElement('div'); empty.className = 'rm-empty'; empty.textContent = '尚未连接远程仓库'; list.append(empty); toggleAdd(true); }
       for (const rm of remotes) {
         const sp = splitRemote(rm.url), row = document.createElement('article'); row.className = 'rm-item';
-        row.innerHTML = '<div class="rm-item-head"><span class="rm-name"></span><span class="rm-cred">地址包含认证</span><span class="rm-acts"><button class="rm-config tb-btn">认证</button><button class="rm-del" title="移除本机的远程连接">移除</button></span></div><div class="rm-item-url"><span class="rm-host"></span><span class="rm-path"></span></div><div class="rm-branches"></div>';
+        row.dataset.remote = rm.name;
+        row.innerHTML = '<div class="rm-item-head"><span class="rm-name"></span><span class="rm-cred"></span><span class="rm-acts"><button class="rm-edit">编辑地址</button><button class="rm-config tb-btn">配置认证</button><button class="rm-del rm-remove" title="移除本机的远程连接">移除</button></span></div><div class="rm-item-url"><span class="rm-host"></span><span class="rm-path"></span></div><details class="rm-branch-list"><summary>远程分支</summary><div class="rm-branches"></div></details>';
         row.querySelector('.rm-name').textContent = rm.name;
-        if (!sp.hasCred) row.querySelector('.rm-cred').remove();
         row.querySelector('.rm-host').textContent = sp.host || '';
         row.querySelector('.rm-path').textContent = sp.path ? ' / ' + sp.path : '';
         row.querySelector('.rm-item-url').title = '完整地址（凭证已打码）：' + maskRemote(rm.url);
-        row.querySelector('.rm-config').onclick = () => { selectHost(hostOfUrl(rm.url) || ''); q('#rm-auth').open = true; q('#rm-user').focus(); };
-        row.querySelector('.rm-del').onclick = async () => {
-          const button = row.querySelector('.rm-del');
-          if (!valid() || button.disabled) return;
+        const config = row.querySelector('.rm-config');
+        config.hidden = !httpRemote(rm.url);
+        config.onclick = () => { if (valid()) openAuth(rm, row); };
+        row.querySelector('.rm-edit').onclick = () => { if (valid() && !testing && !q('#rm-add').disabled) toggleAdd(true, rm); };
+        row.querySelector('.rm-remove').onclick = async () => {
+          const button = row.querySelector('.rm-remove');
+          if (!valid() || testing || button.disabled) return;
           button.disabled = true;
           try {
             const yes = await Modal.confirm('移除远程连接', '移除「' + rm.name + '」？远端仓库和本地文件均保留。');
-            if (!yes || !valid()) return;
+            if (!yes || !valid() || !box.isConnected) return;
             const dr = await window.myIDE.git.removeRemote(operationRoot, rm.name);
             if (!valid() || !box.isConnected) return;
             if (dr.ok) {
               MI.toast('已移除 ' + rm.name, 'ok');
               const rr = await window.myIDE.git.listRemotes(operationRoot);
-              if (valid() && box.isConnected) {
+            if (valid() && box.isConnected) {
                 if (rr.error) MI.toast('远程仓库读取失败: ' + safeSyncText(rr.error), 'err');
-                else { r.remotes = rr.remotes || []; renderList(r.remotes); }
+                else {
+                  r.remotes = rr.remotes || [];
+                  if (activeRemote?.name === rm.name) { activeRemote = null; selectHost(''); }
+                  if (editingRemote?.name === rm.name) toggleAdd(false);
+                  renderList(r.remotes);
+                }
                 refresh();
               }
             } else MI.toast('移除失败: ' + safeSyncText(dr.error), 'err');
@@ -331,37 +389,96 @@ const GitPanel = (() => {
           el.querySelector('.rm-br-name').textContent = branch.name; el.querySelector('.rm-br-oid').textContent = branch.oid || ''; branches.append(el);
         }
         if (!(rm.branches || []).length) branches.innerHTML = '<div class="rm-br-empty">拉取后显示远程分支</div>';
+        row.querySelector('.rm-branch-list > summary').textContent = '远程分支' + (rm.branches?.length ? ' · ' + rm.branches.length : '');
+        if (httpRemote(rm.url) && rm.name === activeRemote?.name) {
+          row.appendChild(authSection);
+          authSection.hidden = false;
+        }
         list.append(row);
       }
+      renderAuthStatuses();
     };
     renderList(r.remotes || []);
+    if (authenticate && activeRemote && httpRemote(activeRemote.url)) {
+      const row = [...q('#rm-list').children].find(item => item.dataset.remote === activeRemote.name);
+      if (row) openAuth(activeRemote, row);
+    }
     q('#rm-add-form').onsubmit = async e => {
-      e.preventDefault(); if (!valid() || q('#rm-add').disabled) return;
+      e.preventDefault(); if (!valid() || testing || q('#rm-add').disabled) return;
       const name = q('#rm-name').value.trim(), url = q('#rm-url').value.trim();
       if (!name || !url) { MI.toast('请填写远程名称和仓库地址', 'err'); return; }
+      const previous = editingRemote;
+      if (!previous && (r.remotes || []).some(item => item.name === name)) {
+        MI.toast('已存在同名仓库，请使用「编辑地址」', 'err');
+        return;
+      }
+      if (httpRemote(url) && splitRemote(url).hasCred) {
+        MI.toast('请填写不含凭证的克隆地址，再单独配置认证', 'err');
+        return;
+      }
       q('#rm-add').disabled = true;
       try {
-        const ar = await window.myIDE.git.addRemote(operationRoot, { name, url });
+        const ar = await window.myIDE.git.addRemote(operationRoot, { name, url, ...(previous ? { previousUrl: previous.url } : {}) });
         if (!valid() || !box.isConnected) return;
         if (ar.ok) {
-          MI.toast('已添加远程 ' + name, 'ok'); q('#rm-url').value = ''; toggleAdd(false);
+          MI.toast(previous ? '已更新仓库地址' : '已添加远程 ' + name, 'ok'); q('#rm-url').value = ''; toggleAdd(false);
           const rr = await window.myIDE.git.listRemotes(operationRoot);
           if (valid() && box.isConnected) {
             if (rr.error) MI.toast('远程仓库读取失败: ' + safeSyncText(rr.error), 'err');
-            else { r.remotes = rr.remotes || []; renderList(r.remotes); }
+            else {
+              r.remotes = rr.remotes || [];
+              activeRemote = r.remotes.find(item => item.name === name);
+              renderList(r.remotes);
+              const config = [...q('#rm-list').children].find(row => row.dataset.remote === name)?.querySelector('.rm-config');
+              config?.click();
+            }
             refresh();
           }
         }
-        else MI.toast('添加失败: ' + safeSyncText(ar.error), 'err');
-      } catch (error) { if (valid() && box.isConnected) MI.toast('添加失败: ' + safeSyncText(error.message), 'err'); }
+        else MI.toast('保存仓库失败：' + safeSyncText(ar.error), 'err');
+      } catch (error) { if (valid() && box.isConnected) MI.toast('保存仓库失败：' + safeSyncText(error.message), 'err'); }
       finally { q('#rm-add').disabled = false; }
     };
     q('#rm-auth-form').onsubmit = e => {
-      e.preventDefault(); if (!valid()) return;
+      e.preventDefault(); if (!valid() || testing) return;
       const host = q('#rm-host').value.trim(), username = q('#rm-user').value.trim(), password = q('#rm-pass').value;
       if (!host || /[\/\s]/.test(host) || !username) { MI.toast('请填写有效主机和用户名', 'err'); return; }
-      try { saveGitAuthMap(host, { username, password }); drafts.set(host, { username, password }); activeHost = host; showAuthNote(host); MI.toast('已保存 ' + host + ' 的认证', 'ok'); }
+      try {
+        saveGitAuthMap(host, { username, password });
+        drafts.set(host, { username, password }); activeHost = host;
+        q('#rm-check-result').hidden = true;
+        renderAuthStatuses();
+        showAuthNote(host);
+        MI.toast('已保存 ' + host + ' 的认证', 'ok');
+      }
       catch { MI.toast('本机认证保存失败，请重试', 'err'); }
+    };
+    q('#rm-check').onclick = async () => {
+      if (!valid() || testing || !activeRemote || !httpRemote(activeRemote.url)) return;
+      const target = activeRemote, host = hostOfUrl(target.url);
+      if (!host || q('#rm-host').value.trim() !== host) return;
+      const saved = getGitAuthMap(), credential = saved[host] || {};
+      if (q('#rm-user').value.trim() !== (credential.username || '') || q('#rm-pass').value !== (credential.password || '')) {
+        MI.toast('请先保存认证，再验证连接', 'err');
+        return;
+      }
+      const result = q('#rm-check-result');
+      testing = true;
+      q('#rm-check').disabled = true;
+      q('#rm-save-auth').disabled = true;
+      result.hidden = false;
+      result.textContent = '正在验证 ' + target.name + ' 的推送连接…';
+      try {
+        const receipt = await window.myIDE.git.checkRemote(operationRoot, { name: target.name, auth: saved });
+        if (!valid() || !box.isConnected || target !== activeRemote || host !== activeHost) return;
+        result.textContent = receipt?.ok ? '已连接推送服务。分支权限在实际推送时检查。' : safeSyncText(receipt?.error || '未能验证连接');
+      } catch (error) {
+        if (valid() && box.isConnected && target === activeRemote && host === activeHost) result.textContent = safeSyncText(error.message);
+      } finally {
+        testing = false;
+        q('#rm-save-auth').disabled = false;
+        showAuthNote(activeHost);
+      }
     };
   }
 
@@ -379,10 +496,38 @@ const GitPanel = (() => {
     if (!notice) return;
     box.dataset.kind=notice.kind;
     const summary=document.createElement('div');summary.textContent=notice.text;box.appendChild(summary);
-    if(notice.target){const target=document.createElement('div');target.className='git-sync-target';target.textContent='更新目标：'+safeSyncText(notice.target);box.appendChild(target);}
-    if(notice.kind==='error'){
+    if(notice.target){const target=document.createElement('div');target.className='git-sync-target';target.textContent='目标：'+safeSyncText(notice.target);box.appendChild(target);}
+    if (notice.kind === 'error' || notice.kind === 'push-error') {
+      const operationRoot = root, epoch = rootGeneration;
       const actions=document.createElement('div');actions.className='git-sync-actions';
-      for(const [text,fn] of [['重试拉取',()=>doPull(notice.strategy)],['远程设置',()=>openRemoteDialog()]]){const b=document.createElement('button');b.className='tb-btn';b.textContent=text;b.onclick=fn;actions.append(b);}box.append(actions);
+      const configure = ['配置认证', () => openRemoteDialog({ remote: notice.remote, target: notice.target, authenticate: true })];
+      const settings = ['远程设置', () => openRemoteDialog({ remote: notice.remote, target: notice.target })];
+      const retryPull = ['重试拉取', () => doPull(notice.strategy)];
+      let choices;
+      if (notice.code === 'PULL_TARGET_CHANGED') {
+        choices = [settings];
+      } else if (notice.kind === 'error') {
+        choices = [notice.code === 'AUTH' ? configure : settings, retryPull];
+      } else if (notice.code === 'REMOTE_MISSING') {
+        choices = [settings];
+      } else {
+        const retryPush = ['重试推送', () => openPushPreview(notice.remote)];
+        const primary = notice.code === 'PUSH_BEHIND'
+          ? ['先拉取', () => doPull('ff', notice.target)]
+          : notice.code === 'AUTH' ? configure : settings;
+        choices = [primary, retryPush];
+      }
+      for (const [label, act] of choices) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tb-btn';
+        button.textContent = label;
+        button.onclick = () => {
+          if (root === operationRoot && rootGeneration === epoch && box.contains(button)) return act();
+        };
+        actions.append(button);
+      }
+      box.append(actions);
     }
     if(notice.detail){const details=document.createElement('details'),label=document.createElement('summary'),pre=document.createElement('pre');label.textContent='查看详细信息';pre.textContent=safeSyncText(notice.detail);details.append(label,pre);box.append(details);}
   }
@@ -394,7 +539,7 @@ const GitPanel = (() => {
     { key: 'merge', label: '拉取并合并（分叉时建合并提交）', title: 'fetch + merge：保留两条历史，出冲突进解决流程' },
     { key: 'rebase', label: '拉取并变基（把本地提交重放上去）', title: 'fetch + rebase：历史线性，出冲突进解决流程' },
   ];
-  async function doPull(strategy) {
+  async function doPull(strategy, expectedTarget) {
     if (!root || syncing) return;
     if (window.Viewer?.openTabs?.some(t=>t.dirty)) {
       showSyncNotice({kind:'error',text:'有文件尚未保存，请先保存后再拉取，避免远程更新与编辑中的内容冲突。',strategy:strategy||'ff'});return;
@@ -403,12 +548,12 @@ const GitPanel = (() => {
     syncing = true;
     showSyncNotice({kind:'busy',text:'正在拉取最新代码…'});
     let r;
-    try { r=await window.myIDE.git.pull(operationRoot, { auth: getGitAuthMap(), strategy:strategy||'ff' }); }
+    try { r=await window.myIDE.git.pull(operationRoot, { auth: getGitAuthMap(), strategy:strategy||'ff', ...(expectedTarget ? { expectedTarget } : {}) }); }
     catch(e) {r={ok:false,error:'拉取未完成，请重试。',detail:String(e.message||e)};}
     finally {syncing=false;}
     if(root!==operationRoot||rootGeneration!==generation){showSyncNotice(null);return;}
     r=r||{ok:false,error:'Git未返回拉取结果，请重试。'};
-    if (!r.ok) { showSyncNotice({kind:'error',text:safeSyncText(r.error),detail:r.detail,target:r.target,strategy:strategy||'ff'}); await refresh(); return; }
+    if (!r.ok) { showSyncNotice({kind:'error',code:r.code,text:safeSyncText(r.error),detail:r.detail,target:r.target,remote:r.remote,strategy:strategy||'ff'}); await refresh(); return; }
     await refresh();
     if(root!==operationRoot||rootGeneration!==generation)return;
     showSyncNotice({kind:r.conflict?'error':'ok',text:r.conflict?'更新遇到冲突，请在下方「解决冲突」中处理。':r.upToDate?'已经是最新代码，无需更新。':'最新代码已拉取。',target:r.target,strategy:strategy||'ff'});
@@ -445,25 +590,37 @@ const GitPanel = (() => {
     finally {syncing=false;}
     if(root!==operationRoot||rootGeneration!==generation){showSyncNotice(null);return false;}
     r=r||{ok:false,error:'Git未返回推送结果'};
-    showSyncNotice({kind:r.ok?'ok':'push-error',text:r.ok?'已推送提交。':'推送失败：'+safeSyncText(r.error)});
+    const remote = r.remote || opts?.remote;
+    const branch = r.branch || state?.branch;
+    const target = remote && branch ? remote + '/' + branch : null;
+    const detail = r.code === 'AUTH' ? r.error : null;
+    const error = r.code === 'AUTH'
+      ? '远程拒绝推送。请核对认证或分支写入权限。'
+      : safeSyncText(r.error);
+    showSyncNotice({kind:r.ok?'ok':'push-error',code:r.code,remote,target,detail,text:r.ok?'已推送提交。':'推送失败：'+error});
     if (r.ok) {
       MI.toast('✅ 已' + (r.lease ? '安全强推（--force-with-lease）到 ' : r.force ? '强制推送到 ' : '推送到 ')
         + (r.remote || '远程') + (r.urlFixed ? '（远程 URL 已自动补 .git）' : ''), 'ok');
       refresh();
       return true;
     }
-    MI.toast('推送失败: ' + r.error, 'err');
+    MI.toast('推送失败：' + error, 'err');
     return false;
   }
 
   // ---------- Push 预览弹窗（待推送提交清单 → 确认推送） ----------
-  async function openPushPreview() {
+  async function openPushPreview(remote) {
     if (!root) { MI.toast('请先打开一个文件夹', 'err'); return false; }
     if (syncing) return false;
     const operationRoot=root,generation=rootGeneration;
-    const p = await gitSafe('listPushCommits',operationRoot);
+    const p = await gitSafe('listPushCommits',operationRoot,remote);
     if(root!==operationRoot||rootGeneration!==generation)return false;
-    if (!p.ok) { MI.toast(p.error || '当前无可推送的提交', 'err'); return false; }
+    if (!p.ok || p.configured === false) {
+      const error = safeSyncText(p.configured === false ? '未配置远程仓库地址' : p.error || '当前无可推送的提交');
+      if (p.code === 'REMOTE_MISSING' || /未配置远程/.test(error)) showSyncNotice({kind:'push-error',code:'REMOTE_MISSING',text:error});
+      MI.toast(error, 'err');
+      return false;
+    }
     const box = document.createElement('div');
     box.id = 'pp-box';
     Modal.show(box);

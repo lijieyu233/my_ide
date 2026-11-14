@@ -1324,11 +1324,12 @@ async function listRemotes(dir) {
   }
 }
 
-async function addRemote(dir, { name, url }) {
+async function addRemote(dir, { name, url, previousUrl }) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   if (!name || !/^[A-Za-z0-9._-]+$/.test(name)) return { ok: false, error: '远程名不合法' };
-  if (!url || !/\S/.test(url)) return { ok: false, error: 'URL 不能为空' };
+  if (typeof url !== 'string' || !url.trim() || /[\x00-\x1f]/.test(url)) return { ok: false, error: '仓库地址无效' };
+  if (previousUrl !== undefined && typeof previousUrl !== 'string') return { ok: false, error: '原仓库地址无效' };
   // 🔴 Windows 本地路径 / UNC 里的反斜杠必须先规范成正斜杠：git config 把 `\` 当转义符，
   //   原样写进 .git/config 会让**所有原生 git 命令**报 `bad config line N` —— status / push /
   //   merge / rebase / 冲突处理 / pre-commit 钩子全线失效，而且报错完全看不懂。
@@ -1336,10 +1337,38 @@ async function addRemote(dir, { name, url }) {
   //   ⚠ 只对"没有 scheme"的输入做（本地路径 / UNC / scp-like），http(s)、ssh、git+ssh 原样保留。
   if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) url = url.replace(/\\/g, '/');
   try {
-    await git.addRemote({ fs, dir: root, remote: name, url, force: true });
+    if (previousUrl === undefined) {
+      await git.addRemote({ fs, dir: root, remote: name, url });
+    } else {
+      const configPath = 'remote.' + name + '.url';
+      const current = await git.getConfig({ fs, dir: root, path: configPath });
+      if (current !== previousUrl) return { ok: false, error: '仓库地址已变化，请重新打开远程设置' };
+      await git.setConfig({ fs, dir: root, path: configPath, value: url });
+    }
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
+  }
+}
+
+async function checkRemote(dir, { name, auth } = {}) {
+  const { yes, root } = await isRepo(dir);
+  if (!yes) return { ok: false, error: '不是 Git 仓库' };
+  try {
+    const remotes = await git.listRemotes({ fs, dir: root });
+    const url = remotes.find(remote => remote.remote === name)?.url;
+    if (!url || needNativeRemote(url)) return { ok: false, error: '此验证适用于 HTTP(S) 远程仓库' };
+    const http = await httpFor(root, url);
+    const onAuth = onAuthOf(auth, url, root);
+    await git.listServerRefs({
+      url, forPush: true, protocolVersion: 1, onAuth, onAuthFailure: onAuth,
+      http: { request: request => http.request({ ...request, fetchOptions: { timeout: 12000, maxRedirects: 0 } }) },
+    });
+    return { ok: true };
+  } catch (error) {
+    const message = String(error.message || error);
+    if (/HTTP Error: 40[13]/i.test(message)) return { ok: false, error: '推送服务拒绝访问，请检查用户名、令牌和仓库写入权限。' };
+    return { ok: false, error: message };
   }
 }
 
@@ -1359,7 +1388,7 @@ async function fetchRemote(dir, { auth } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const pr = await primaryRemote(root);
-  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  if (!pr?.url) return { ok: false, error: '未配置远程仓库' };
   // SSH 远程 isomorphic-git 不支持 → 走原生 git（fetch 幂等，允许重试一次抖动的失败）
   if (needNativeRemote(pr.url)) {
     const N = require('./git-native');
@@ -1400,7 +1429,7 @@ async function fetchRemote(dir, { auth } = {}) {
 //   为什么 fetch 不一起交给原生：应用「远程仓库」弹窗里存的凭证是经 `auth` 传进来的，
 //   只有 isomorphic 这条路认；原生 git 只认系统凭证助手（gh CLI），
 //   用户若只在弹窗里填过 token，整条拉取就会拉不动。代理同理（后端已注入 CONNECT 隧道）。
-async function pullRemote(dir, { auth, strategy } = {}) {
+async function pullRemote(dir, { auth, strategy, expectedTarget } = {}) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
@@ -1411,6 +1440,9 @@ async function pullRemote(dir, { auth, strategy } = {}) {
   const info = await nativeGit.info(false).catch(() => null);
   const host = hostOf(pr.url);
   const explicitAuth = auth && ((auth[host] && auth[host].username) || auth.username || (auth['*'] && auth['*'].username));
+  const targetMismatch = target => expectedTarget && target !== expectedTarget
+    ? { ok: false, code: 'PULL_TARGET_CHANGED', remote: pr.name, target, error: '当前拉取目标与推送目标不同。请检查分支的上游设置。' }
+    : null;
   // 默认复用命令行的网络栈；现场同仓库CLI成功而JS隧道在TLS握手前断开。
   // 用户单独保存的令牌仍走原有认证链，不能因切换后端而丢失其凭证。
   if (info?.git?.available && !explicitAuth && !/^https?:\/\/[^/]*@/i.test(pr.url)) {
@@ -1421,6 +1453,8 @@ async function pullRemote(dir, { auth, strategy } = {}) {
       remote = configuredRemote; ref = configuredRef;
     }
     const target = remote + '/' + ref.replace(/^refs\/heads\//, '');
+    const mismatch = targetMismatch(target);
+    if (mismatch) return mismatch;
     const env = {...nativeGit.NO_EDIT, GCM_INTERACTIVE:'never', GIT_TERMINAL_PROMPT:'0'};
     const fail = (result, phase) => {
       const detail = String(result.stderr?.trim() || result.stdout?.trim() || result.error || 'Git未返回结果')
@@ -1431,7 +1465,7 @@ async function pullRemote(dir, { auth, strategy } = {}) {
       else if (/Authentication failed|could not read Username|could not read Password|401|403|Permission denied/i.test(detail)) {code='AUTH';error='远程登录失败。请打开「远程设置」检查账号或访问令牌。';}
       else if (/resolve host|connect|TLS|SSL|timed out|timeout|network/i.test(detail)) {code='NETWORK';error='无法连接远程仓库。请检查网络或Git代理，然后重试。';}
       else if (/MERGE_HEAD|unmerged|resolve your current index|rebase.*progress/i.test(detail)) {code='UNFINISHED';error='上一次合并或变基尚未完成，请先处理面板中的冲突。';}
-      return {ok:false, strategy:strat, code, error, detail, target, phase};
+      return {ok:false, strategy:strat, code, error, detail, target, phase, remote};
     };
     const before = await nativeGit.run(['rev-parse','HEAD'], {cwd:root,env});
     // 明确只取当前分支的上游，不把抓取所有分支后的任意FETCH_HEAD当作更新目标。
@@ -1450,6 +1484,8 @@ async function pullRemote(dir, { auth, strategy } = {}) {
     if (!merged.ok) return fail({error:merged.error},strat);
     return {...merged,ok:true,strategy:strat,target};
   }
+  const mismatch = targetMismatch(pr.name + '/' + branch);
+  if (mismatch) return mismatch;
   // SSH 远程 isomorphic 完全不支持 → 不进这个分支，直接落到下面的原生 git 流程（语义等价）
   if (strat === 'ff' && !needNativeRemote(pr.url)) {
     try {
@@ -1485,7 +1521,7 @@ async function pullRemote(dir, { auth, strategy } = {}) {
       });
     } catch (e) {
       const msg = String(e.message || e);
-      if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
+      if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, code: 'AUTH', remote: pr.name, target: pr.name + '/' + branch, error: friendlyNetError(e, pr) };
       if (msg.includes('fast-forward') || msg.includes('Not a fast-forward')) {
         return { ok: false, error: '本地与远程已分叉：请换「拉取并合并 / 拉取并变基」，或先处理本地更改' };
       }
@@ -1524,10 +1560,12 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
   if (remote) {
     const list = await git.listRemotes({ fs, dir: root }).catch(() => []);
     const hit = list.find((r) => r.remote === remote);
-    if (hit) pr = { name: hit.remote, url: hit.url };
+    if (!hit) return { ok: false, code: 'REMOTE_MISSING', remote, error: '未配置远程仓库「' + remote + '」，请检查推送目标。' };
+    pr = { name: hit.remote, url: hit.url };
   }
-  if (!pr) pr = await primaryRemote(root); // 未指定 / 指定的远程不存在 → 回退主远程
-  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  if (!pr) pr = await primaryRemote(root);
+  if (!pr?.url) return { ok: false, code: 'REMOTE_MISSING', error: '未配置远程仓库' };
+  const fail = (code, error) => ({ ok: false, code, error, remote: pr.name, branch });
   // SSH 远程 isomorphic-git 不支持 → 走原生 git（重复 push 是幂等 no-op，允许重试抖动的失败）
   if (needNativeRemote(pr.url)) {
     const N = require('./git-native');
@@ -1538,9 +1576,9 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
     if (r.ok) return { ok: true, remote: pr.name, branch, force: !!force };
     const msg = r.stderr.trim() || r.error || 'push 失败';
     if (/fetch first|behind|non-fast-forward/i.test(msg)) {
-      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+      return fail('PUSH_BEHIND', '远程有新提交，请先拉取再推送。');
     }
-    return { ok: false, error: msg };
+    return fail(/Permission denied/i.test(msg) ? 'AUTH' : 'PUSH_FAILED', msg);
   }
   try {
     return await withRemoteUrlFix(root, pr, async () => {
@@ -1553,14 +1591,14 @@ async function pushRemote(dir, { auth, remote, force } = {}) {
     });
   } catch (e) {
     const msg = String(e.message || e);
-    if (/HTTP Error: 40[13]/.test(msg)) return { ok: false, error: friendlyNetError(e, pr) };
-    if (msg.includes('fetch first') || msg.includes('behind')) {
-      return { ok: false, error: '远程有新提交，请先拉取（⬇）再推送' };
+    if (/HTTP Error: 40[13]/.test(msg)) return fail('AUTH', friendlyNetError(e, pr));
+    if (/fetch first|behind|non[- ]fast[- ]forward/i.test(msg)) {
+      return fail('PUSH_BEHIND', '远程有新提交，请先拉取再推送。');
     }
     if (msg.includes('pre-receive hook declined')) {
-      return { ok: false, error: '服务端拒绝推送 ' + branch + '：多为受保护分支（需权限或走合并请求），也可能是提交信息不符合服务端钩子要求' };
+      return fail('PUSH_REJECTED', '服务端拒绝推送 ' + branch + '，请检查分支保护或提交规则。');
     }
-    return { ok: false, error: msg };
+    return fail('PUSH_FAILED', msg);
   }
 }
 
@@ -1668,15 +1706,16 @@ async function aheadBehind(dir, opts = {}) {
 }
 
 // Push 预览：列出本地领先远程跟踪分支的待推送提交（HEAD → refs/remotes/<remote>/<branch>，纯本地 refs，无网络）
-async function listPushCommits(dir) {
+async function listPushCommits(dir, remote) {
   const { yes, root } = await isRepo(dir);
   if (!yes) return { ok: false, error: '不是 Git 仓库' };
   const branch = await currentBranch(root);
   if (!branch || branch === '(无提交)') return { ok: false, error: '当前无可推送的提交' };
   const head = await git.resolveRef({ fs, dir: root, ref: 'HEAD' }).catch(() => null);
   if (!head) return { ok: false, error: '当前无可推送的提交' };
-  const pr = await primaryRemote(root);
-  if (!pr) return { ok: false, error: '未配置远程仓库' };
+  const configured = remote ? (await git.listRemotes({ fs, dir: root })).find(item => item.remote === remote) : null;
+  const pr = remote ? { name: remote, url: configured?.url } : await primaryRemote(root);
+  if (!pr || remote && !pr.url) return { ok: false, code: 'REMOTE_MISSING', error: '未配置推送目标，请检查远程仓库地址。' };
   // ⚠ 同上走三级兜底：拿不到远端 oid 时会把**已推送过**的提交也列成待推送（还标 first:true），
   //   本机 refs/remotes 不落地就是这种情况。
   const upstream = await remoteOid(root, pr.name, branch, pr.url);
@@ -1703,7 +1742,7 @@ async function listPushCommits(dir) {
   if (!upstream && !commits.length) return { ok: false, error: '当前无可推送的提交' };
   // 时间正序展示（旧→新，推送顺序）
   commits.reverse();
-  return { ok: true, branch, remote: pr.name, remoteUrl: pr.url, first: !upstream, count: commits.length, commits };
+  return { ok: true, branch, remote: pr.name, remoteUrl: pr.url, configured: !!pr.url, first: !upstream, count: commits.length, commits };
 }
 
 // 从 from 出发沿父链 BFS、不越过 stop，统计未到达 stop 的提交数（上限保护）
@@ -2130,7 +2169,7 @@ module.exports = {
   diffWorkdir, diffCommit, diffRefs, compareRefs, commitFiles, diffLines, buildHunks, linesOf, matrixToStatus,
   // M3：双区差异 + hunk 级暂存/取消暂存/回退（+ 供测试直接验的纯拼接函数）
   diffUnstaged, diffStaged, stageHunk, unstageHunk, revertHunk, applyHunkToText,
-  listRemotes, addRemote, removeRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
+  listRemotes, addRemote, removeRemote, checkRemote, fetchRemote, pullRemote, pushRemote, aheadBehind,
   listTags, createTag, revertCommit, cherryPick, listPushCommits,
   shelveCreate, shelveList, shelveApply, shelveDelete, logFile, blame,
   addToGitignore, removeFromGitignore, listIgnored,
