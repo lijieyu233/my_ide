@@ -10285,7 +10285,50 @@ assert_(panel, 'CM6 搜索面板出现');
     const tab=viewer.activeTab,old=tab.path;viewer.cm.setValue('保留输入');viewer.renamed(P.toLowerCase().replace(/\//g,'\\'),P+'/Case',[{oldPath:old,version:{...tab.diskVersion,target:P+'/Case/notes.txt'}}]);
     assert_(tab.path===P+'/Case/notes.txt'&&tab.dirty&&tab.content==='保留输入','Windows大小写和分隔符规则');
   });
+  await saveCase('新建文件没写扩展名自动补 .md；目录、已带扩展名和点开头文件名不变',async(d,viewer)=>{
+    const tree=d.window.Tree;
+    const created=[];const bridge=d.window.myIDE.fs.createItem;
+    d.window.myIDE.fs.createItem=async(project,parent,name,type)=>{created.push({name,type});return bridge(project,parent,name,type);};
+    try{
+      d.window.Modal.prompt=async()=> '周记';await tree.createItem({path:P,type:'dir'},'file');
+      assert_(created.at(-1).name==='周记.md','无扩展名补 .md，实际传: '+created.at(-1).name);
+      assert_(FAKE_FS[P+'/周记.md']&&viewer.activeTab.path===P+'/周记.md','补后缀后按实际路径创建并打开');
+      d.window.Modal.prompt=async()=> 'already.markdown';await tree.createItem({path:P,type:'dir'},'file');
+      assert_(created.at(-1).name==='already.markdown','已有扩展名不重复补');
+      d.window.Modal.prompt=async()=> '.env';await tree.createItem({path:P,type:'dir'},'file');
+      assert_(created.at(-1).name==='.env','点开头的点文件不被改成 .env.md');
+      d.window.Modal.prompt=async()=> 'plain dir';await tree.createItem({path:P,type:'dir'},'dir');
+      assert_(created.at(-1).name==='plain dir','文件夹名称不补后缀');
+      d.window.Modal.prompt=async()=> '  ';await tree.createItem({path:P,type:'dir'},'file');
+      assert_(created.length===4,'空白名称不创建任何项');
+    }finally{d.window.myIDE.fs.createItem=bridge;}
+  });
+
   console.log('');
+  await saveCase('Shift+F6 重命名：优先树选中项，未选中时退回当前文件；远程文件不冒充本地',async(d,viewer)=>{
+    const tree=d.window.Tree,shortcuts=d.window.Shortcuts;
+    const binding=shortcuts.bindings().find(b=>b.id==='rename-file');
+    assert_(binding&&binding.effectiveCombos.includes('shift+f6'),'Shift+F6 已绑定 rename-file: '+JSON.stringify(binding&&binding.effectiveCombos));
+    const prompted=[];const prompt=d.window.Modal.prompt;d.window.Modal.prompt=async(_title,_label,value)=>{prompted.push(value);return null;};
+    try{
+      await viewer.openFile(P+'/src/app.js');await tree.refresh();
+      shortcuts.execute('rename-file');await new Promise(r=>setTimeout(r,30));
+      assert_(prompted.at(-1)==='app.js','未选中树项时用当前文件名: '+prompted.at(-1));
+      const row=[...d.window.document.querySelectorAll('#tree .tree-row')].find(x=>x.dataset.path===P+'/README.md');
+      row.dispatchEvent(new d.window.MouseEvent('click',{bubbles:true}));
+      shortcuts.execute('rename-file');await new Promise(r=>setTimeout(r,30));
+      assert_(prompted.at(-1)==='README.md','有树选中项时优先选中项: '+prompted.at(-1));
+      // 远程虚拟路径不在项目树里：退回当前文件时必须拒绝，不能拿本机路径去重命名远端。
+      const remoteTab={id:9001,name:'远.txt',path:'remote://s1/远.txt',mode:'edit',content:'',dirty:false,editRevision:0};
+      const realActive=Object.getOwnPropertyDescriptor(d.window.Viewer,'activeTab');
+      Object.defineProperty(d.window.Viewer,'activeTab',{configurable:true,get:()=>remoteTab});
+      // 树选中项优先；关键是不能把 remote:// 路径当成可重命名的本地文件。
+      try{prompted.length=0;shortcuts.execute('rename-file');await new Promise(r=>setTimeout(r,30));assert_(!prompted.some(name=>String(name).includes('remote')),'从不拿远程文件重命名: '+JSON.stringify(prompted));}
+      finally{delete d.window.Viewer.activeTab;if(realActive)Object.defineProperty(d.window.Viewer,'activeTab',realActive);}
+    }finally{d.window.Modal.prompt=prompt;d.window.Viewer.openTabs.pop();}
+  });
+  console.log('');
+ console.log('');
   await saveCase('同名文件/非空目录新建拒绝不产生误删undo',async(d,_viewer,bridge)=>{
     const originalChild=FAKE_FS[P+'/src/app.js'].content,originalFile=FAKE_FS[P+'/notes.txt'].content;
     const tree=d.window.Tree;d.window.Modal.prompt=async()=> 'src';

@@ -1125,12 +1125,22 @@ const Tree = (() => {
   }
 
   // ---------- 新建文件/文件夹 ----------
+  // 新建文件不写扩展名时补 .md：MyIDE 主要写 Markdown，裸名字建出来的无后缀文件
+  // 只能当纯文本打开，用户每次都要自己补。目录、已有扩展名、`.env` 这类点文件都不改。
+  const defaultFileName = name => {
+    if (typeof name !== 'string') return name;
+    const clean = name.trim();
+    return clean && !clean.includes('.') ? clean + '.md' : name;
+  };
+
   async function createItem(anchor, type, suppliedName) {
     if (!rootPath) return;
     const operationRoot=rootPath;
     const baseDir = anchor.type === 'dir' ? anchor.path : anchor.path.replace(/[\\/][^\\/]+$/, '');
     const label = type === 'dir' ? '新建文件夹' : '新建文件';
-    const name = suppliedName ?? await Modal.prompt(label, '名称：', '');
+    let name = suppliedName ?? await Modal.prompt(label, '名称：', '');
+    if (typeof name === 'string' && !name.trim()) return;
+    if (type === 'file') name = defaultFileName(name);
     if (!name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，新建未执行','err');return;}
     const target=baseDir+'\\'+name;
@@ -1518,6 +1528,13 @@ const Tree = (() => {
   }
   const trashItems=paths=>removeItems(paths,true);
 
+  // Shift+F6 没在树里选中东西时，退回当前打开的本地文件；远程虚拟路径不可重命名。
+  function currentFileItem() {
+    const tab = window.Viewer?.activeTab;
+    if (!tab?.path || /^remote:\/\//i.test(tab.path) || !rootPath) return null;
+    if (!DocumentPaths.contains(rootPath, tab.path)) return null;
+    return { path: tab.path, name: tab.path.split(/[\\/]/).pop(), type: 'file' };
+  }
   function fileIcon(name) {
     const ext = name.split('.').pop().toLowerCase();
     if (['md', 'markdown'].includes(ext)) return '📝';
@@ -1770,10 +1787,13 @@ const Tree = (() => {
     __testClearCopied: () => { copiedPaths = []; cutMode = false; },
     renameItem,
     createItem, copyInto, showCopyRecovery, removeItem, removeItems, trashItems,
-    // 快捷键入口：对当前选中项重命名（无选中时提示）
+    // 快捷键入口：对当前选中项重命名；没有树选中项时用当前打开的文件（Shift+F6，PyCharm 同款）。
     renameSelected() {
-      if (!selectedPath || selectedType === null) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }
-      renameItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType });
+      const item = selectedPath && selectedType !== null
+        ? { path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType }
+        : currentFileItem();
+      if (!item) { MI.toast('请先在目录树中选择要重命名的文件/文件夹', 'err'); return; }
+      renameItem(item);
     },
     set showHidden(v) { showHidden = v; invalidateAll(); if (rootPath) render(); },
     // 由 App.applyToolFont 统一下发（绝对值，px），不再自行持久化：单一数据源在 App 侧
