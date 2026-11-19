@@ -75,7 +75,7 @@ window.DrawioCanvas = (() => {
     return images;
   }
 
-  function mount(parent, { canvas, isCurrent, onChange, onDispose, viewState }) {
+  function mount(parent, { canvas, isCurrent, onChange, onSave, onDispose, viewState }) {
     const panel = document.createElement('div');
     panel.className = 'diagram-canvas-panel';
     const toolbar = document.createElement('div');
@@ -143,6 +143,10 @@ window.DrawioCanvas = (() => {
       addText(position((selected?.x ?? view.x) + 24, (selected?.y ?? view.y) + 24));
     });
     const editing = group('编辑');
+    button(editing, '保存', '保存画布（Ctrl+S）', () => {
+      finishText();
+      onSave();
+    });
     const undoButton = button(editing, '撤销', '撤销（Ctrl+Z）', () => history(undo, redo));
     const redoButton = button(editing, '重做', '重做（Ctrl+Y）', () => history(redo, undo));
     const deleteButton = button(editing, '删除元素', '删除选中项（Delete）', removeSelected);

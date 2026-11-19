@@ -1893,6 +1893,7 @@ const Viewer = (() => {
           storeXml(xml);
           return true;
         },
+        onSave: () => { if (ownsDiagram()) void saveSnapshot(tab, false); },
         onDispose,
       });
       tab.diagramView = panel;

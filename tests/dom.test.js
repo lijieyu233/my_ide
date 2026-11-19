@@ -1200,12 +1200,22 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       grid.checked = false;
       grid.dispatchEvent(new w.Event('change', { bubbles: true }));
       const standard = w.Viewer.activeTab;
-      assert((await w.Viewer.saveTab(w.Viewer.openTabs.indexOf(standard))).ok);
+      const savedColor = w.DrawioCanvas.read(standard.content).background;
+      click($(d, 'button[aria-label="保存画布（Ctrl+S）"]'));
+      for (let i = 0; i < 20 && standard.dirty; i++) await tick();
+      assert(!standard.dirty);
       const disk = new w.DOMParser().parseFromString(FAKE_FS[standardFile].content, 'application/xml');
       assert.equal(disk.querySelector('diagram').getAttribute('id'), 'prior');
       assert.equal(disk.querySelector('mxGraphModel').getAttribute('pageWidth'), '760');
+      assert.equal(disk.querySelector('mxGraphModel').getAttribute('background'), savedColor);
       assert.equal(disk.querySelector('mxCell[id=line]').getAttribute('target'), 'b');
       assert.equal(w.DrawioCanvas.read(FAKE_FS[standardFile].content).grid, false);
+      assert(await w.Viewer.closeTab(w.Viewer.openTabs.indexOf(standard)));
+      await w.Viewer.openFile(standardFile);
+      assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, savedColor);
+      const sample = w.document.createElement('div');
+      sample.style.backgroundColor = savedColor;
+      assert.equal($(d, '.diagram-canvas-board').style.backgroundColor, sample.style.backgroundColor);
 
       FAKE_FS[legacyFile] = { type: 'file', content: legacyContent };
       await w.Viewer.openFile(legacyFile);
