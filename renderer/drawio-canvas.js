@@ -4,6 +4,7 @@ window.DrawioCanvas = (() => {
   const sides = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'];
   const directions = { n: [0.5, 0], e: [1, 0.5], s: [0.5, 1], w: [0, 0.5] };
   const styleKey = 'myide-drawio-default-styles';
+  const backgroundColorsKey = 'myide-drawio-background-colors';
   const cleanText = value => value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/g, '');
   const turn = (x, y, degrees) => {
     const a = degrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
@@ -22,6 +23,18 @@ window.DrawioCanvas = (() => {
       }
       return result;
     } catch { return {}; }
+  }
+  function normalizeBackgroundColor(value) {
+    const hex = value.trim().toLowerCase().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/.test(hex)) return '#' + [...hex].map(c => c + c).join('');
+    return /^[0-9a-f]{6}$/.test(hex) ? '#' + hex : null;
+  }
+  function savedBackgroundColors() {
+    try {
+      const colors = JSON.parse(localStorage.getItem(backgroundColorsKey) || '[]');
+      if (!Array.isArray(colors)) return [];
+      return [...new Set(colors.filter(color => typeof color === 'string').map(normalizeBackgroundColor).filter(Boolean))];
+    } catch { return []; }
   }
   const maxBytes = 8 * 1024 * 1024;
   const formats = new Map([
@@ -158,14 +171,13 @@ window.DrawioCanvas = (() => {
     const appearance = group('画布外观');
     appearance.classList.add('diagram-canvas-appearance');
     const backgroundButton = button(appearance, '背景', '画布背景', () => {
-      const open = backgroundPanel.hidden;
-      backgroundPanel.hidden = !open;
-      backgroundButton.setAttribute('aria-expanded', String(open));
-      if (open) {
-        colorInput.value = background;
-        colorInput.setCustomValidity('');
-        colorPicker.set(background);
-      }
+      if (!backgroundPanel.hidden) { closeBackground(); return; }
+      backgroundPanel.hidden = false;
+      backgroundButton.setAttribute('aria-expanded', 'true');
+      colorInput.value = background;
+      colorInput.setCustomValidity('');
+      colorPicker.set(background);
+      renderBackgroundFavorites(savedBackgroundColors());
     });
     backgroundButton.setAttribute('aria-expanded', 'false');
     const swatch = document.createElement('span');
@@ -175,15 +187,19 @@ window.DrawioCanvas = (() => {
     const backgroundPanel = document.createElement('div');
     backgroundPanel.className = 'diagram-canvas-palette';
     backgroundPanel.hidden = true;
+    function addColorChoice(container, color, label) {
+      const choice = button(container, '', label, () => applyBackground(color));
+      choice.dataset.color = color;
+      choice.style.backgroundColor = color;
+      choice.setAttribute('aria-pressed', String(color === background.toLowerCase()));
+    }
     const palette = document.createElement('div');
     palette.className = 'diagram-canvas-colors';
     for (const [name, color] of [
       ['白', '#ffffff'], ['浅灰', '#f6f7fa'], ['米色', '#fff3d9'], ['浅蓝', '#dfebfa'],
       ['浅绿', '#dcefe1'], ['浅粉', '#f9e2e9'], ['深灰', '#252d38'], ['黑', '#14171c'],
     ]) {
-      const choice = button(palette, '', name + '色背景', () => applyBackground(color));
-      choice.dataset.color = color;
-      choice.style.backgroundColor = color;
+      addColorChoice(palette, color, name + '色背景');
     }
     const custom = document.createElement('div');
     custom.className = 'diagram-canvas-custom-color';
@@ -194,14 +210,28 @@ window.DrawioCanvas = (() => {
     colorInput.maxLength = 7;
     colorInput.setAttribute('aria-label', '自定义背景色');
     colorInput.placeholder = '#RRGGBB';
-    colorInput.oninput = () => colorInput.setCustomValidity('');
+    colorInput.oninput = () => {
+      colorInput.setCustomValidity('');
+      syncFavoriteButton();
+    };
     custom.append(colorInput);
     button(custom, '应用', '应用背景色', () => applyBackground(colorInput.value));
     const colorPicker = DrawioColorPicker.create(color => {
       board.style.backgroundColor = color || background;
       colorInput.value = color || background;
+      syncFavoriteButton();
     }, color => applyBackground(color, true));
-    backgroundPanel.append(colorPicker.root, palette, custom);
+    const favoriteHeader = document.createElement('div');
+    favoriteHeader.className = 'diagram-canvas-favorites-header';
+    const favoriteTitle = document.createElement('span');
+    favoriteTitle.textContent = '收藏色';
+    favoriteHeader.append(favoriteTitle);
+    const favoriteButton = button(favoriteHeader, '收藏当前色', '收藏当前色', toggleBackgroundFavorite);
+    const favorites = document.createElement('div');
+    favorites.className = 'diagram-canvas-colors diagram-canvas-favorites';
+    favorites.setAttribute('role', 'group');
+    favorites.setAttribute('aria-label', '收藏的背景色');
+    backgroundPanel.append(colorPicker.root, palette, custom, favoriteHeader, favorites);
     appearance.append(backgroundPanel);
     button(appearance, '还原', '还原打开文件时的背景', () => change(() => { background = canvas.background; }));
     const gridInput = control(appearance, '网格', 'checkbox', input => change(() => { grid = input.checked; }));
@@ -251,18 +281,46 @@ window.DrawioCanvas = (() => {
       backgroundButton.setAttribute('aria-expanded', 'false');
       board.style.backgroundColor = background;
     }
+    function syncFavoriteButton() {
+      const color = normalizeBackgroundColor(colorInput.value);
+      const saved = [...favorites.children].some(choice => choice.dataset.color === color);
+      const label = saved ? '取消收藏' : '收藏当前色';
+      favoriteButton.textContent = favoriteButton.title = label;
+      favoriteButton.setAttribute('aria-label', label);
+      favoriteButton.disabled = !color;
+    }
+    function renderBackgroundFavorites(colors) {
+      favorites.replaceChildren();
+      for (const color of colors) addColorChoice(favorites, color, '应用收藏色 ' + color);
+      syncFavoriteButton();
+    }
+    function toggleBackgroundFavorite() {
+      const color = normalizeBackgroundColor(colorInput.value);
+      if (!color) return;
+      const colors = savedBackgroundColors();
+      const next = colors.includes(color) ? colors.filter(value => value !== color) : [color, ...colors];
+      try {
+        localStorage.setItem(backgroundColorsKey, JSON.stringify(next));
+      } catch {
+        MI.toast('无法保存背景色收藏', 'err');
+        return;
+      }
+      renderBackgroundFavorites(next);
+    }
     function applyBackground(input, keepOpen = false) {
-      let color = input.trim().toLowerCase();
-      if (!color.startsWith('#')) color = '#' + color;
-      if (/^#[0-9a-f]{3}$/.test(color)) color = '#' + [...color.slice(1)].map(c => c + c).join('');
-      if (!/^#[0-9a-f]{6}$/.test(color)) {
+      const color = normalizeBackgroundColor(input);
+      if (!color) {
         colorInput.setCustomValidity('请输入 3 位或 6 位十六进制颜色');
         colorInput.reportValidity?.();
         return;
       }
       if (!keepOpen) closeBackground();
       if (color !== background) change(() => { background = color; }, !keepOpen);
-      if (keepOpen) { colorInput.value = background; colorPicker.set(background); }
+      if (keepOpen) {
+        colorInput.value = background;
+        colorPicker.set(background);
+        syncFavoriteButton();
+      }
     }
     backgroundPanel.onkeydown = event => {
       if (event.isComposing) return;
@@ -331,7 +389,9 @@ window.DrawioCanvas = (() => {
       redoButton.disabled = !redo.length;
       deleteButton.disabled = !selected;
       swatch.style.backgroundColor = background;
-      for (const choice of palette.children) choice.setAttribute('aria-pressed', String(choice.dataset.color === background));
+      for (const choice of [...palette.children, ...favorites.children]) {
+        choice.setAttribute('aria-pressed', String(choice.dataset.color === background.toLowerCase()));
+      }
       gridInput.checked = grid;
       board.style.backgroundColor = background;
       board.classList.toggle('show-grid', grid);

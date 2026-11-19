@@ -508,6 +508,13 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   width: 74px; padding: 2px 4px; color: var(--text); background: var(--bg-input);
   border: 1px solid var(--border); border-radius: 3px; font: inherit;
 }
+.diagram-canvas-favorites-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+  color: var(--text); font-size: 12px;
+}
+.diagram-canvas-favorites { margin-top: 4px; padding: 3px; max-height: 92px; overflow-y: auto; }
+.diagram-canvas-favorites:empty { display: none; }
 .diagram-color-picker { width: 166px; margin-bottom: 8px; }
 .diagram-color-plane {
   position: relative; height: 104px; border-radius: 4px; cursor: crosshair; touch-action: none;

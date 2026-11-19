@@ -1217,6 +1217,34 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       sample.style.backgroundColor = savedColor;
       assert.equal($(d, '.diagram-canvas-board').style.backgroundColor, sample.style.backgroundColor);
 
+      click($(d, 'button[aria-label="画布背景"]'));
+      const originalXml = w.Viewer.activeTab.content;
+      const colorField = $(d, 'input[aria-label="自定义背景色"]');
+      const favorite = $(d, 'button[aria-label="收藏当前色"]');
+      colorField.value = 'oops';
+      colorField.dispatchEvent(new w.Event('input', { bubbles: true }));
+      assert(favorite.disabled);
+      colorField.value = '#AbC';
+      colorField.dispatchEvent(new w.Event('input', { bubbles: true }));
+      click(favorite);
+      assert.equal(w.Viewer.activeTab.content, originalXml);
+      assert.equal(favorite.textContent, '取消收藏');
+      assert($(d, 'button[aria-label="应用收藏色 #aabbcc"]'));
+
+      await w.Viewer.openFile(file);
+      const other = w.Viewer.activeTab;
+      const otherBackground = w.DrawioCanvas.read(other.content).background;
+      click($(d, 'button[aria-label="画布背景"]'));
+      click($(d, 'button[aria-label="应用收藏色 #aabbcc"]'));
+      assert.equal(w.DrawioCanvas.read(other.content).background, '#aabbcc');
+      click($(d, 'button[aria-label="画布背景"]'));
+      assert.equal($(d, 'button[aria-label="应用收藏色 #aabbcc"]').getAttribute('aria-pressed'), 'true');
+      click($(d, 'button[aria-label="取消收藏"]'));
+      assert(!$(d, 'button[aria-label="应用收藏色 #aabbcc"]'));
+      assert.equal(w.DrawioCanvas.read(other.content).background, '#aabbcc');
+      click($(d, 'button[aria-label="撤销（Ctrl+Z）"]'));
+      assert.equal(w.DrawioCanvas.read(other.content).background, otherBackground);
+
       FAKE_FS[legacyFile] = { type: 'file', content: legacyContent };
       await w.Viewer.openFile(legacyFile);
       const tab = w.Viewer.activeTab;
