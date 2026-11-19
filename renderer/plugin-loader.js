@@ -352,7 +352,8 @@ MI.createZoomer = function (opts) {
     else if (e.key === '0') { e.preventDefault(); fit(); }
     else if (e.key === '1') { e.preventDefault(); reset(); }
   };
-  if (opts.keys) window.addEventListener('keydown', onKey);
+  const keyTarget = opts.keys === true ? window : opts.keys || null;
+  keyTarget?.addEventListener('keydown', onKey);
 
   function destroy() {
     stage.removeEventListener('wheel', onWheel);
@@ -360,7 +361,7 @@ MI.createZoomer = function (opts) {
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
     if (opts.dblclick) el.removeEventListener('dblclick', onDblClick);
-    if (opts.keys) window.removeEventListener('keydown', onKey);
+    keyTarget?.removeEventListener('keydown', onKey);
     if (ro) { try { ro.disconnect(); } catch {} }
   }
 
@@ -396,13 +397,15 @@ MI.buildImageViewer = function (src, alt) {
   return root;
 };
 
-// ---------- 图片全屏查看（lightbox）：md 预览 / Live Preview / 图片查看器共用 ----------
+// ---------- 图片全屏查看：Markdown / 图片查看器 / 图文画布共用 ----------
 // 滚轮缩放、拖拽平移、双击切换、Esc / 点击空白关闭；同一时刻只有一个实例
-MI.showImgLightbox = function (src, alt) {
-  const old = document.querySelector('.img-lightbox');
-  if (old) old.remove();
-  const box = document.createElement('div');
+let closeImgLightbox = null;
+MI.showImgLightbox = function (src, alt, onClose) {
+  closeImgLightbox?.();
+  const origin = document.activeElement;
+  const box = document.createElement('dialog');
   box.className = 'img-lightbox';
+  box.setAttribute('aria-label', '图片预览');
   const stage = document.createElement('div');
   stage.className = 'img-stage img-lb-stage';
   const img = document.createElement('img');
@@ -419,21 +422,31 @@ MI.showImgLightbox = function (src, alt) {
   tip.textContent = '滚轮滚动 · Ctrl+滚轮缩放 · 拖动平移 · 双击切换 · Esc 关闭';
   box.appendChild(tip);
   document.body.appendChild(box);
+  if (typeof box.showModal === 'function') box.showModal();
+  else box.setAttribute('open', '');
   function close() {
-    box.remove();
-    window.removeEventListener('keydown', onKey);
+    if (closeImgLightbox !== close) return;
+    closeImgLightbox = null;
     z.destroy();
+    box.remove();
+    if (origin?.isConnected) origin.focus({ preventScroll: true });
+    onClose?.();
   }
-  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
   const z = MI.createZoomer({
-    stage, el: img, bar, initial: 'fit', keys: true, dblclick: true,
-    extra: [['✕ 关闭', '关闭（Esc）', () => close()]],
+    stage, el: img, bar, initial: 'fit', keys: box, dblclick: true,
+    extra: [['✕ 关闭', '关闭（Esc）', close]],
   });
+  closeImgLightbox = close;
   img.addEventListener('load', () => z.refresh(true));
   // 点空白关闭（图本身是拖拽起点，不算空白）
   stage.addEventListener('click', (e) => { if (e.target === stage) close(); });
-  window.addEventListener('keydown', onKey);
-  return z;
+  box.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  box.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+  bar.querySelector('button').focus({ preventScroll: true });
+  return Object.assign(z, { close });
 };
 
 // ---------- SVG（mermaid 图）全屏查看 ----------

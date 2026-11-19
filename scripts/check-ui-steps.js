@@ -1905,7 +1905,7 @@ module.exports = {
     const R = [];
     const add = (n, ok, d) => R.push({ name: n, ok: !!ok, detail: d == null ? '' : String(d) });
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await sleep(300);
     add('Esc 关闭浮层', !document.querySelector('.img-lightbox'));
     return { R };

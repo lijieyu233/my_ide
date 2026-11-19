@@ -1133,11 +1133,28 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       await tick();
       assert.equal($$(d, '.diagram-canvas-item.text').length, 1);
       assert((await w.Viewer.saveTab(w.Viewer.openTabs.indexOf(w.Viewer.activeTab))).ok);
-      menuFor($(d, '.diagram-canvas-item.image'));
+      const image = $(d, '.diagram-canvas-item.image img');
+      const beforePreview = w.Viewer.activeTab.content;
+      menuFor(image);
       assert(action('裁剪…') && action('替换图片…') && action('复制为 SVG'));
-      $(d, '.diagram-context-menu button').dispatchEvent(new w.KeyboardEvent('keydown', {
+      click(action('放大查看'));
+      await tick();
+      const preview = $(d, '.img-lightbox');
+      assert.equal(preview.querySelector('img').src, image.src);
+      assert(preview.contains(w.document.activeElement));
+      for (const key of ['1', '+', 'Delete']) w.document.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', {
+        key, bubbles: true, cancelable: true,
+      }));
+      assert.equal(preview.querySelector('.zoom-pct').textContent, '125%');
+      assert.equal(w.Viewer.activeTab.content, beforePreview);
+      w.document.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', {
         key: 'Escape', bubbles: true, cancelable: true,
       }));
+      assert(!$(d, '.img-lightbox'));
+      assert.equal(w.document.activeElement, $(d, '.diagram-canvas-board'));
+      image.dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
+      assert($(d, '.img-lightbox'));
+      click($$(d, '.img-lightbox button').find(button => button.textContent.includes('关闭')));
       const reopenedBoard = $(d, '.diagram-canvas-board');
       assert(parseInt($(d, '.diagram-canvas-item.text').style.left) < 0);
       reopenedBoard.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
@@ -8290,7 +8307,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(lb, '全屏浮层打开');
     assert_($allIn(lb, '.zoom-bar .zoom-btn').some((b) => b.textContent.includes('关闭')), '浮层有关闭按钮');
     // Esc 关闭
-    dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    dom.window.document.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await tick();
     assert_(!$(dom, '.img-lightbox'), 'Esc 关闭全屏浮层');
   });

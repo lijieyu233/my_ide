@@ -175,7 +175,7 @@ const Shortcuts = (() => {
   window.addEventListener('blur',()=>{navigationComposing=null;});
   // 工具跳转先于编辑器/终端处理，避免内部 stopPropagation 吞键；其余位置导航仍沿同一注册表判断。
   document.addEventListener('keydown',e=>{
-    if(composing(e)||captureCb||e.defaultPrevented)return;
+    if(composing(e)||captureCb||e.defaultPrevented||e.target.closest?.('.img-lightbox'))return;
     const id=keyMap[comboOf(e)];
     if (registry[id]?.toolJump) {
       if (window.Modal?.stack.length) return;

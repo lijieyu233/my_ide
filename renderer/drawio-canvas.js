@@ -93,7 +93,7 @@ window.DrawioCanvas = (() => {
     parent.append(panel);
 
     let { items, background, grid } = canvas;
-    let selected = null, pasteBusy = false, zoom = viewState?.zoom || 1, textSession = null;
+    let selected = null, pasteBusy = false, zoom = viewState?.zoom || 1, textSession = null, imagePreview = null;
     let originX = viewState?.originX || 0, originY = viewState?.originY || 0;
     let spaceDown = false, cancelGesture = null, disposed = false, revision = 0, connector = null;
     const undo = viewState?.undo || [], redo = viewState?.redo || [];
@@ -232,6 +232,15 @@ window.DrawioCanvas = (() => {
       const limit = Math.min(1, 100000 / Math.max(width, height));
       change(() => updateImageSize(selected, width, height, limit));
     });
+    const previewButton = button(sizeTools, '放大查看', '放大查看图片（Enter）', () => previewImage(selected));
+
+    function previewImage(item) {
+      if (!isCurrent() || item?.type !== 'image') return;
+      const image = nodes.get(item.id)?.querySelector('img');
+      if (!image) return;
+      closeBackground();
+      imagePreview = MI.showImgLightbox(image.src, image.alt, () => { imagePreview = null; });
+    }
 
     function closeBackground() {
       backgroundPanel.hidden = true;
@@ -337,6 +346,7 @@ window.DrawioCanvas = (() => {
         widthInput.title = heightInput.title = isImage ? '以像素计，调整时保持图片比例' : '以像素计，可单独调整宽度或高度';
         originalSize.hidden = !isImage;
         originalSize.disabled = !isImage || !!selected.locked || !nodes.get(selected.id)?.querySelector('img')?.naturalWidth;
+        previewButton.hidden = !isImage;
       }
       deleteButton.disabled = !selected || !!selected.locked;
       for (const input of [fontInput, fontColorInput, widthInput, heightInput]) input.disabled = !!selected?.locked;
@@ -611,6 +621,7 @@ window.DrawioCanvas = (() => {
       const vertices = items.filter(value => value.type !== 'edge'), index = vertices.indexOf(item);
       const chosenPort = portAt(item, point);
       contextMenu.open(x, y, [
+        isImage ? [action('放大查看', () => previewImage(item), 'Enter')] : [],
         [action('删除', removeSelected, 'Delete', disabled, true)],
         [action('剪切', () => copyObject(item, true), 'Ctrl+X', disabled),
           action('复制', () => copyObject(item), 'Ctrl+C'),
@@ -784,6 +795,7 @@ window.DrawioCanvas = (() => {
     }
     function add(item) {
       const element = document.createElement('div');
+      let pressedImage = false;
       element.className = 'diagram-canvas-item ' + item.type;
       place(element, item);
       if (item.type === 'image') {
@@ -793,6 +805,9 @@ window.DrawioCanvas = (() => {
         image.onload = () => { if (selected === item) syncTools(); };
         image.src = 'data:' + item.mime + ';base64,' + item.data;
         element.append(image);
+        element.ondblclick = event => {
+          if (event.target === image || event.target === element && pressedImage) previewImage(item);
+        };
       } else {
         const label = document.createElement('span');
         label.className = 'diagram-item-label';
@@ -841,6 +856,8 @@ window.DrawioCanvas = (() => {
         openContext(event.clientX, event.clientY, item);
       };
       element.onpointerdown = event => {
+        // 图片本身不接收指针事件，捕获指针也会把缩放手柄的双击重定向到元素。
+        pressedImage = item.type === 'image' && event.button === 0 && event.target === element && !connector && !spaceDown;
         if (event.button !== 0 || spaceDown || cancelGesture || event.target.tagName === 'TEXTAREA' ||
           event.target.classList.contains('diagram-canvas-connect')) return;
         if (endConnection(item)) return;
@@ -1023,9 +1040,10 @@ window.DrawioCanvas = (() => {
         event.preventDefault();
         spaceDown = true;
         board.classList.add('pan');
-      } else if (event.key === 'Enter' && event.target === board && selected && selected.type !== 'image') {
+      } else if (event.key === 'Enter' && event.target === board && selected) {
         event.preventDefault();
-        editText(selected);
+        if (selected.type === 'image') previewImage(selected);
+        else editText(selected);
       } else if (event.key === 'Delete') {
         event.preventDefault();
         event.stopPropagation();
@@ -1059,6 +1077,7 @@ window.DrawioCanvas = (() => {
     panel.focusEditor = focus;
     panel.previewDispose = () => {
       disposed = true;
+      imagePreview?.close();
       resize?.disconnect();
       contextMenu.dispose();
       document.removeEventListener('pointerdown', dismissBackground);

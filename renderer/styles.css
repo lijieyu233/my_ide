@@ -1019,6 +1019,10 @@ textarea.editor {
   position: fixed; inset: 0; z-index: 9999; background: rgba(0, 0, 0, .88);
   display: flex;
 }
+.img-lightbox {
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  box-sizing: border-box; margin: 0; padding: 0; border: 0;
+}
 .img-lb-stage, .svg-fs-stage { flex: 1; min-height: 0; cursor: zoom-out; }
 .img-lb-stage > img { box-shadow: 0 8px 40px rgba(0, 0, 0, .5); border: none; }
 .img-lb-bar, .svg-fs-bar { bottom: 46px; }
