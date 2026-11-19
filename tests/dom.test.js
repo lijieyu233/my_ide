@@ -574,6 +574,7 @@ async function loadApp(dom) {
   evalFile('navigation-history.js');
   evalFile('tab-descriptions.js');
   evalFile('closed-tabs.js');
+  evalFile('drawio-canvas-document.js');
   evalFile('drawio-canvas.js');
   evalFile('drawio-editor.js');
   evalFile('viewer.js');
@@ -1039,7 +1040,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
   await okAsync('draw.io：本地粘贴多图和文字落盘，原有画布显式联网', async () => {
     const d = makeDom(), w = d.window, file = P + '/流程.DRAWIO';
     const legacyFile = P + '/已有流程.drawio';
-    const legacyContent = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>';
+    const legacyContent = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="ellipse" vertex="1" parent="1" style="ellipse;"><mxGeometry x="2" y="3" width="30" height="40" as="geometry"/></mxCell></root></mxGraphModel>';
+    const standardFile = P + '/标准图表.drawio';
+    const standardContent = '<mxfile host="embed.diagrams.net"><diagram id="prior" name="表一"><mxGraphModel grid="1" pageWidth="760"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="line" source="a" target="b" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;"><mxGeometry relative="1" as="geometry"/></mxCell><mxCell id="a" parent="1" vertex="1" value="图 A" style="rounded=0;whiteSpace=wrap;html=1;"><mxGeometry x="100" y="40" width="120" height="60" as="geometry"/></mxCell><mxCell id="b" parent="1" vertex="1"><mxGeometry x="260" y="40" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
     const xml = '<mxfile><diagram name="流程"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>';
     const origin = 'https://embed.diagrams.net';
     const messages = [];
@@ -1080,6 +1083,32 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       assert.equal($$(d, '.diagram-canvas-item img').length, 2);
       assert.equal($(d, '.diagram-canvas-item.text').textContent, annotation);
       assert(!$(d, '.drawio-editor iframe'));
+
+      FAKE_FS[standardFile] = { type: 'file', content: standardContent };
+      await w.Viewer.openFile(standardFile);
+      assert.equal($$(d, '.diagram-canvas-item.rectangle').length, 2);
+      assert.equal($$(d, '.diagram-canvas-edges path').length, 1);
+      assert(!$(d, '.drawio-editor iframe'));
+      click($(d, 'button[aria-label="放大画布"]'));
+      assert.equal($(d, 'button[aria-label="实际大小（100%）"]').textContent, '110%');
+      const background = $(d, '[aria-label="画布外观"] input[type=color]');
+      background.value = '#112244';
+      background.dispatchEvent(new w.Event('change', { bubbles: true }));
+      assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#112244');
+      click($(d, 'button[aria-label="撤销（Ctrl+Z）"]'));
+      assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#ffffff');
+      click($(d, 'button[aria-label="重做（Ctrl+Y）"]'));
+      assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#112244');
+      const grid = $(d, '[aria-label="画布外观"] input[type=checkbox]');
+      grid.checked = false;
+      grid.dispatchEvent(new w.Event('change', { bubbles: true }));
+      const standard = w.Viewer.activeTab;
+      assert((await w.Viewer.saveTab(w.Viewer.openTabs.indexOf(standard))).ok);
+      const disk = new w.DOMParser().parseFromString(FAKE_FS[standardFile].content, 'application/xml');
+      assert.equal(disk.querySelector('diagram').getAttribute('id'), 'prior');
+      assert.equal(disk.querySelector('mxGraphModel').getAttribute('pageWidth'), '760');
+      assert.equal(disk.querySelector('mxCell[id=line]').getAttribute('target'), 'b');
+      assert.equal(w.DrawioCanvas.read(FAKE_FS[standardFile].content).grid, false);
 
       FAKE_FS[legacyFile] = { type: 'file', content: legacyContent };
       await w.Viewer.openFile(legacyFile);
@@ -1147,6 +1176,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       pathProgressCb = previousPathProgress;
       delete FAKE_FS[file];
       delete FAKE_FS[legacyFile];
+      delete FAKE_FS[standardFile];
       FAKE_FS[P].children = FAKE_FS[P].children.filter(p => p !== file);
     }
   });

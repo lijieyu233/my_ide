@@ -482,17 +482,29 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .drawio-notice p { margin: 0 0 12px; }
 .drawio-notice[hidden], .drawio-notice button[hidden] { display: none; }
 .diagram-canvas-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.diagram-canvas-toolbar { display: flex; gap: 8px; padding: 6px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+.diagram-canvas-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  padding: 7px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+}
+.diagram-canvas-tools { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.diagram-canvas-tools[hidden] { display: none; }
+.diagram-canvas-tools label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 12px; }
+.diagram-canvas-tools input[type=color] { width: 24px; height: 21px; padding: 2px; cursor: pointer; border: 1px solid var(--border); background: var(--bg-input); border-radius: 3px; }
+.diagram-canvas-tools input[type=number] { width: 47px; padding: 1px 3px; color: var(--text); background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; }
+.diagram-canvas-tools .vt-btn:disabled { opacity: .4; cursor: default; }
 .diagram-canvas-scroll { flex: 1; min-height: 0; overflow: auto; }
 .diagram-canvas-board {
-  position: relative; min-width: 100%; min-height: 100%; outline: none;
-  background-color: #f6f7fa;
-  background-image: radial-gradient(#aab3c2 1px, transparent 1px);
-  background-size: 20px 20px;
+  position: relative; outline: none; touch-action: none; background-color: #f6f7fa;
 }
+.diagram-canvas-board.show-grid { background-image: radial-gradient(#80808066 1px, transparent 1px); background-size: 20px 20px; }
+.diagram-canvas-board.pan, .diagram-canvas-board.pan .diagram-canvas-item { cursor: grab; }
+.diagram-canvas-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .diagram-canvas-item { position: absolute; display: block; cursor: move; user-select: none; touch-action: none; }
 .diagram-canvas-item.selected { outline: 2px solid #367bea; z-index: 1; }
 .diagram-canvas-item.image img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.diagram-canvas-resize { display: none; position: absolute; z-index: 2; right: -5px; bottom: -5px; width: 11px; height: 11px; background: #367bea; border: 1px solid #fff; border-radius: 2px; cursor: nwse-resize; }
+.diagram-canvas-item.selected .diagram-canvas-resize { display: block; }
+.diagram-canvas-item.rectangle { display: grid; place-items: center; padding: 5px; border: 1px solid; text-align: center; white-space: pre-wrap; }
 .diagram-canvas-item.text {
   z-index: 2; padding: 6px 8px; color: #222; background: #fffdf0; border-radius: 3px;
   font: 16px/1.45 system-ui, sans-serif; white-space: pre-wrap; overflow-wrap: anywhere;
@@ -501,7 +513,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .diagram-canvas-item.text.selected { z-index: 3; }
 .diagram-canvas-item textarea {
   position: absolute; inset: 0; width: 100%; height: 100%; padding: 6px 8px;
-  border: 0; outline: none; resize: none; font: inherit; background: #fffdf0; color: inherit;
+  border: 0; outline: none; resize: none; font: inherit; background: inherit; color: inherit;
 }
 /* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
    所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */

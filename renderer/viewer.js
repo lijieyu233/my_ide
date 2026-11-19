@@ -1860,7 +1860,13 @@ const Viewer = (() => {
     let panel;
     const ownsDiagram = () => MI.activeRoot === root && tabs.includes(tab) && tab.path === path &&
       host.contains(panel) && tab.diagramView === panel;
-    const onDispose = () => { if (tab.diagramView === panel) delete tab.diagramView; };
+    let canvasXml = tab.content;
+    const onDispose = state => {
+      if (tab.diagramView !== panel) return;
+      if (state && canvasXml === tab.content) tab.diagramCanvasView = { xml: canvasXml, ...state };
+      else delete tab.diagramCanvasView;
+      delete tab.diagramView;
+    };
     const storeXml = xml => {
       if (xml === tab.content) return;
       tab.content = xml;
@@ -1877,11 +1883,13 @@ const Viewer = (() => {
         return;
       }
       panel = DrawioCanvas.mount(host, {
-        items: canvas.items,
+        canvas,
+        viewState: tab.diagramCanvasView?.xml === tab.content ? tab.diagramCanvasView : null,
         isCurrent: ownsDiagram,
         onChange: (xml, limit) => {
           const bytes = tab.encoding.startsWith('utf16') ? xml.length * 2 + 2 : new Blob([xml]).size + 3;
           if (bytes > limit) return false;
+          canvasXml = xml;
           storeXml(xml);
           return true;
         },
