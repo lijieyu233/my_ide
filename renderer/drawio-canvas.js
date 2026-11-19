@@ -1,5 +1,28 @@
 window.DrawioCanvas = (() => {
-  const { coordinate, worldCoordinate, textColorDefault, textBackgroundDefault } = DrawioCanvasDocument;
+  const { coordinate, worldCoordinate, angle, points, textColorDefault, textBackgroundDefault } = DrawioCanvasDocument;
+  const assets = DrawioCanvasAssets;
+  const sides = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'];
+  const directions = { n: [0.5, 0], e: [1, 0.5], s: [0.5, 1], w: [0, 0.5] };
+  const styleKey = 'myide-drawio-default-styles';
+  const cleanText = value => value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/g, '');
+  const turn = (x, y, degrees) => {
+    const a = degrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    return [c * x - s * y, s * x + c * y];
+  };
+  function defaultStyle(type) {
+    try {
+      const value = JSON.parse(localStorage.getItem(styleKey) || '{}')?.[type] || {};
+      const hex = s => /^#[0-9a-f]{6}$/i.test(s || '');
+      const result = {};
+      if (Number.isFinite(value.opacity)) result.opacity = Math.max(0, Math.min(100, value.opacity));
+      if (type === 'text') {
+        if (Number.isFinite(value.fontSize)) result.fontSize = Math.max(8, Math.min(96, value.fontSize));
+        if (hex(value.color)) result.color = value.color;
+        if (hex(value.fill)) result.fill = value.fill;
+      }
+      return result;
+    } catch { return {}; }
+  }
   const maxBytes = 8 * 1024 * 1024;
   const formats = new Map([
     ['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
@@ -72,10 +95,11 @@ window.DrawioCanvas = (() => {
     let { items, background, grid } = canvas;
     let selected = null, pasteBusy = false, zoom = viewState?.zoom || 1, textSession = null;
     let originX = viewState?.originX || 0, originY = viewState?.originY || 0;
-    let spaceDown = false, cancelGesture = null, disposed = false;
+    let spaceDown = false, cancelGesture = null, disposed = false, revision = 0, connector = null;
     const undo = viewState?.undo || [], redo = viewState?.redo || [];
     const nodes = new Map();
     const focus = () => board.focus({ preventScroll: true });
+    const contextMenu = DrawioCanvasMenu.create(focus);
     const position = (x, y) => ({ x: worldCoordinate(x), y: worldCoordinate(y) });
     const camera = () => ({
       x: originX + viewport.scrollLeft / zoom, y: originY + viewport.scrollTop / zoom,
@@ -136,6 +160,7 @@ window.DrawioCanvas = (() => {
       if (open) {
         colorInput.value = background;
         colorInput.setCustomValidity('');
+        colorPicker.set(background);
       }
     });
     backgroundButton.setAttribute('aria-expanded', 'false');
@@ -168,7 +193,11 @@ window.DrawioCanvas = (() => {
     colorInput.oninput = () => colorInput.setCustomValidity('');
     custom.append(colorInput);
     button(custom, '应用', '应用背景色', () => applyBackground(colorInput.value));
-    backgroundPanel.append(palette, custom);
+    const colorPicker = DrawioColorPicker.create(color => {
+      board.style.backgroundColor = color || background;
+      colorInput.value = color || background;
+    }, color => applyBackground(color, true));
+    backgroundPanel.append(colorPicker.root, palette, custom);
     appearance.append(backgroundPanel);
     button(appearance, '还原', '还原打开文件时的背景', () => change(() => { background = canvas.background; }));
     const gridInput = control(appearance, '网格', 'checkbox', input => change(() => { grid = input.checked; }));
@@ -179,9 +208,9 @@ window.DrawioCanvas = (() => {
     fontInput.min = '8';
     fontInput.max = '96';
     const fontColorInput = control(textTools, '文字颜色', 'color', input => updateFont({ color: input.value }));
-    const imageTools = group('图片尺寸');
-    const widthInput = control(imageTools, '宽', 'number', input => resizeSelectedImage('width', input.value));
-    const heightInput = control(imageTools, '高', 'number', input => resizeSelectedImage('height', input.value));
+    const sizeTools = group('元素尺寸');
+    const widthInput = control(sizeTools, '宽', 'number', input => resizeSelected('width', input.value));
+    const heightInput = control(sizeTools, '高', 'number', input => resizeSelected('height', input.value));
     for (const [input, label] of [[widthInput, '图片宽度'], [heightInput, '图片高度']]) {
       input.min = '1';
       input.max = '100000';
@@ -196,7 +225,7 @@ window.DrawioCanvas = (() => {
         }
       });
     }
-    const originalSize = button(imageTools, '原始大小', '恢复图片原始大小', () => {
+    const originalSize = button(sizeTools, '原始大小', '恢复图片原始大小', () => {
       const image = nodes.get(selected?.id)?.querySelector('img');
       if (!image?.naturalWidth || !image.naturalHeight) return;
       const { naturalWidth: width, naturalHeight: height } = image;
@@ -207,8 +236,9 @@ window.DrawioCanvas = (() => {
     function closeBackground() {
       backgroundPanel.hidden = true;
       backgroundButton.setAttribute('aria-expanded', 'false');
+      board.style.backgroundColor = background;
     }
-    function applyBackground(input) {
+    function applyBackground(input, keepOpen = false) {
       let color = input.trim().toLowerCase();
       if (!color.startsWith('#')) color = '#' + color;
       if (/^#[0-9a-f]{3}$/.test(color)) color = '#' + [...color.slice(1)].map(c => c + c).join('');
@@ -217,9 +247,9 @@ window.DrawioCanvas = (() => {
         colorInput.reportValidity?.();
         return;
       }
-      closeBackground();
-      if (color === background) focus();
-      else change(() => { background = color; });
+      if (!keepOpen) closeBackground();
+      if (color !== background) change(() => { background = color; }, !keepOpen);
+      if (keepOpen) { colorInput.value = background; colorPicker.set(background); }
     }
     backgroundPanel.onkeydown = event => {
       if (event.isComposing) return;
@@ -243,10 +273,13 @@ window.DrawioCanvas = (() => {
       let left = 0, top = 0, right = 0, bottom = 0;
       for (const item of items) {
         if (item.type === 'edge') continue;
-        left = Math.min(left, item.x);
-        top = Math.min(top, item.y);
-        right = Math.max(right, item.x + item.width);
-        bottom = Math.max(bottom, item.y + item.height);
+        const [c, s] = turn(1, 0, item.rotation || 0).map(Math.abs);
+        const dx = (item.width * c + item.height * s) / 2, dy = (item.width * s + item.height * c) / 2;
+        const x = item.x + item.width / 2, y = item.y + item.height / 2;
+        left = Math.min(left, x - dx);
+        top = Math.min(top, y - dy);
+        right = Math.max(right, x + dx);
+        bottom = Math.max(bottom, y + dy);
       }
       return { left, top, right, bottom };
     }
@@ -294,12 +327,19 @@ window.DrawioCanvas = (() => {
         fontInput.value = selected.fontSize;
         fontColorInput.value = selected.color;
       }
-      imageTools.hidden = selected?.type !== 'image';
-      if (!imageTools.hidden) {
+      sizeTools.hidden = !selected;
+      if (!sizeTools.hidden) {
+        const isImage = selected.type === 'image', subject = isImage ? '图片' : selected.type === 'text' ? '文本框' : '矩形';
         widthInput.value = selected.width;
         heightInput.value = selected.height;
-        originalSize.disabled = !nodes.get(selected.id)?.querySelector('img')?.naturalWidth;
+        widthInput.setAttribute('aria-label', subject + '宽度');
+        heightInput.setAttribute('aria-label', subject + '高度');
+        widthInput.title = heightInput.title = isImage ? '以像素计，调整时保持图片比例' : '以像素计，可单独调整宽度或高度';
+        originalSize.hidden = !isImage;
+        originalSize.disabled = !isImage || !!selected.locked || !nodes.get(selected.id)?.querySelector('img')?.naturalWidth;
       }
+      deleteButton.disabled = !selected || !!selected.locked;
+      for (const input of [fontInput, fontColorInput, widthInput, heightInput]) input.disabled = !!selected?.locked;
     }
     function select(item) {
       nodes.get(selected?.id)?.classList.remove('selected');
@@ -312,7 +352,10 @@ window.DrawioCanvas = (() => {
 
     function save() {
       if (!isCurrent()) return false;
-      if (onChange(DrawioCanvasDocument.serialize(canvas, state()), maxBytes)) return true;
+      if (onChange(DrawioCanvasDocument.serialize(canvas, state()), maxBytes)) {
+        revision++;
+        return true;
+      }
       MI.toast('图文画布超过 8 MiB，请缩小图片或分到另一个画布', 'err');
       return false;
     }
@@ -332,7 +375,7 @@ window.DrawioCanvas = (() => {
       fit();
       drawEdges();
     }
-    function change(update) {
+    function change(update, restoreFocus = true) {
       cancelGesture?.();
       finishText();
       const before = state();
@@ -340,7 +383,7 @@ window.DrawioCanvas = (() => {
       if (save()) remember(before);
       else restore(before);
       syncTools();
-      focus();
+      if (restoreFocus) focus();
     }
     function history(from, to) {
       cancelGesture?.();
@@ -357,7 +400,7 @@ window.DrawioCanvas = (() => {
       focus();
     }
     function removeSelected() {
-      if (!selected) return;
+      if (!selected || selected.locked) return;
       change(() => {
         const id = selected?.id;
         items = items.filter(item => item.id !== id && item.source !== id && item.target !== id);
@@ -365,7 +408,7 @@ window.DrawioCanvas = (() => {
       });
     }
     function updateFont(values) {
-      if (!selected || textTools.hidden) return;
+      if (!selected || selected.locked || textTools.hidden) return;
       change(() => {
         if (!selected) return;
         Object.assign(selected, { ...values, fontChanged: true });
@@ -388,8 +431,8 @@ window.DrawioCanvas = (() => {
       fit();
       drawEdges();
     }
-    function resizeSelectedImage(dimension, value) {
-      if (selected?.type !== 'image') return;
+    function resizeSelected(dimension, value) {
+      if (!selected || selected.locked) return;
       const next = Number(value);
       if (!value || !Number.isFinite(next) || next < 1) {
         syncTools();
@@ -397,7 +440,208 @@ window.DrawioCanvas = (() => {
       }
       if (next === selected[dimension]) return;
       const { width, height } = selected, factor = next / selected[dimension];
-      change(() => updateImageSize(selected, width, height, factor));
+      change(() => {
+        if (selected.type === 'image') updateImageSize(selected, width, height, factor);
+        else {
+          selected[dimension] = coordinate(Math.max(18, next));
+          place(nodes.get(selected.id), selected);
+          fit();
+          drawEdges();
+        }
+      });
+    }
+
+    function atPointer(x, y) {
+      const rect = board.getBoundingClientRect();
+      return position(originX + (x - rect.left) / zoom, originY + (y - rect.top) / zoom);
+    }
+    function portAt(item, point) {
+      const [x, y] = turn(point.x - (item.x + item.width / 2), point.y - (item.y + item.height / 2), -(item.rotation || 0));
+      return [x / item.width + 0.5, y / item.height + 0.5].map(value => Math.max(0, Math.min(1, Math.round(value * 100) / 100)));
+    }
+    function insertCopy(item, point = position(item.x + 24, item.y + 24)) {
+      change(() => {
+        const copy = { ...item, ...point, id: crypto.randomUUID(), locked: false, lockChanged: true };
+        items.push(copy);
+        add(copy);
+        select(copy);
+        fit();
+      });
+    }
+    const matching = (item, version) => isCurrent() && items.includes(item) && revision === version;
+    async function copyObject(item, cut = false) {
+      if (!item || cut && item.locked) return;
+      const version = revision;
+      if (!await window.myIDE.clip.copy(assets.pack(item))) throw Error('剪贴板暂不可用');
+      if (cut && matching(item, version)) {
+        select(item);
+        removeSelected();
+      }
+    }
+    function order(item, target) {
+      const vertices = items.filter(value => value.type !== 'edge');
+      const current = vertices.indexOf(item);
+      if (target === current || target < 0 || target >= vertices.length) return;
+      change(() => {
+        vertices.splice(current, 1);
+        vertices.splice(target, 0, item);
+        let i = 0;
+        items = items.map(value => value.type === 'edge' ? value : vertices[i++]);
+        restore(state());
+      });
+    }
+    function saveDefault(item) {
+      let styles;
+      try { styles = JSON.parse(localStorage.getItem(styleKey) || '{}') || {}; } catch { styles = {}; }
+      const { opacity, fontSize, color, fill, type } = item;
+      styles[type === 'rectangle' ? 'text' : type] = { opacity: opacity ?? 100, fontSize, color, fill };
+      localStorage.setItem(styleKey, JSON.stringify(styles));
+      MI.toast('默认样式已设置', 'ok');
+    }
+    async function editStyle(item) {
+      const version = revision;
+      const numeric = (min, max) => ({ min, max, step: 1, required: '' });
+      const fields = [
+        ['rotation', '旋转角度', 'number', item.rotation || 0, numeric(0, 359)],
+        ['opacity', '不透明度（%）', 'number', item.opacity ?? 100, numeric(0, 100)],
+      ];
+      if (item.type !== 'image') fields.push(
+        ['fontSize', '字号', 'number', item.fontSize, numeric(8, 96)],
+        ['color', '文字颜色', 'color', item.color],
+        ['fill', '填充颜色', 'color', item.fill],
+      );
+      const result = await DrawioCanvasMenu.form('编辑样式', fields);
+      if (!result || !matching(item, version)) return;
+      change(() => {
+        Object.assign(item, { rotation: angle(result.rotation), opacity: +result.opacity, appearanceChanged: true });
+        if (item.type !== 'image') Object.assign(item, { fontSize: +result.fontSize, color: result.color,
+          fill: result.fill, fontChanged: true, fillChanged: true });
+        place(nodes.get(item.id), item);
+        fit();
+        drawEdges();
+      });
+    }
+    const webLink = value => {
+      try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
+    };
+    async function editProperty(item, key, heading, label, type) {
+      const version = revision;
+      const result = await DrawioCanvasMenu.form(heading, [['value', label, type, item[key], { maxlength: 16000 }]], {
+        validate: values => key === 'link' && values.value.trim() && !webLink(values.value.trim()) ? '请输入有效的 HTTP 或 HTTPS 链接' : '',
+      });
+      if (result && matching(item, version)) change(() => { item[key] = cleanText(result.value.trim()); });
+    }
+    async function replaceImage(item) {
+      const version = revision;
+      const file = await window.myIDE.fs.pickFile('替换画布图片', [{ name: '图片', extensions: [...formats.keys()] }]);
+      if (!file || !matching(item, version)) return;
+      const mime = mimeOf(file);
+      if (!mime) throw Error('请选择支持的图片格式');
+      const result = await window.myIDE.fs.readBuffer(file);
+      if (!result.buffer) throw Error(result.error || '图片太大或无法读取');
+      const image = await decodeImage(new Blob([result.buffer], { type: mime }));
+      if (matching(item, version)) updateImage(item, { mime, data: image.data });
+    }
+    function updateImage(item, values) {
+      change(() => {
+        Object.assign(item, values, { imageChanged: true });
+        restore(state());
+      });
+    }
+    async function cropImage(item) {
+      const version = revision, result = await assets.crop(item);
+      if (result && matching(item, version)) updateImage(item, result);
+    }
+    async function editPoints(item) {
+      const version = revision;
+      const value = (item.points || []).map(point => point.join(', ')).join('\n');
+      const parse = source => source.trim() ? source.trim().split(/\n/).map(row => row.trim().split(/\s*,\s*/).map(part =>
+        part ? Number(part) : NaN)) : [];
+      const result = await DrawioCanvasMenu.form('编辑连接点', [['value', '每行一个连接点，横纵坐标范围为 0–1', 'textarea', value]], {
+        validate: values => {
+          const list = parse(values.value);
+          return points(JSON.stringify(list)).length === list.length ? '' : '请输入有效的连接点，最多 32 个';
+        },
+      });
+      if (result && matching(item, version)) setPoints(item, parse(result.value));
+    }
+    function setPoints(item, list) {
+      change(() => { item.points = list; restore(state()); });
+    }
+    function connect(item, start = null) {
+      connector = { item, start };
+      board.classList.add('connecting');
+      MI.toast('请选择连线的目标元素', 'ok');
+    }
+    function stopConnect() {
+      connector = null;
+      board.classList.remove('connecting');
+    }
+    function endConnection(target, end = null) {
+      if (!connector) return false;
+      const { item, start } = connector;
+      if (item === target) return true;
+      stopConnect();
+      if (!items.includes(item)) return true;
+      change(() => {
+        items.push({ id: crypto.randomUUID(), type: 'edge', source: item.id, target: target.id, start, end,
+          stroke: '#4b5563', arrow: true, orthogonal: true });
+        drawEdges();
+      });
+      return true;
+    }
+    function openContext(x, y, item) {
+      cancelGesture?.();
+      finishText();
+      closeBackground();
+      if (item && !items.includes(item)) item = null;
+      const point = atPointer(x, y);
+      select(item);
+      const action = (label, run, shortcut, disabled = false, danger = false) => ({ label, run, shortcut, disabled, danger });
+      if (!item) {
+        const scratch = assets.scratchItems().map(entry => action('插入便签 · ' + entry.label, () => insertCopy(assets.unpack(entry.data), point)));
+        contextMenu.open(x, y, [
+          [action('粘贴', () => paste([], point), 'Ctrl+V'), action('添加文字', () => addText(point))],
+          [action('撤销', () => history(undo, redo), 'Ctrl+Z', !undo.length), action('重做', () => history(redo, undo), 'Ctrl+Y', !redo.length)],
+          scratch,
+        ]);
+        return;
+      }
+      const disabled = !!item.locked, isImage = item.type === 'image';
+      const vertices = items.filter(value => value.type !== 'edge'), index = vertices.indexOf(item);
+      const chosenPort = portAt(item, point);
+      contextMenu.open(x, y, [
+        [action('删除', removeSelected, 'Delete', disabled, true)],
+        [action('剪切', () => copyObject(item, true), 'Ctrl+X', disabled),
+          action('复制', () => copyObject(item), 'Ctrl+C'),
+          action('复制为图像', async () => {
+            if (!await window.myIDE.clip.writePng(await assets.renderPng(item))) throw Error('复制图像失败');
+            MI.toast('图像已复制', 'ok');
+          }),
+          action('复制为 SVG', async () => {
+            if (!await window.myIDE.clip.copy(assets.makeSvg(item).xml)) throw Error('复制 SVG 失败');
+            MI.toast('SVG 已复制', 'ok');
+          }),
+          action('创建副本', () => insertCopy(item), 'Ctrl+D')],
+        [action(item.locked ? '解锁' : '锁定', () => change(() => {
+          Object.assign(item, { locked: !item.locked, lockChanged: true });
+          place(nodes.get(item.id), item);
+        })), action('设置为默认样式', () => saveDefault(item))],
+        [action('移至最前', () => order(item, vertices.length - 1), '', disabled || index === vertices.length - 1),
+          action('移至最后', () => order(item, 0), '', disabled || index === 0),
+          action('上移一层', () => order(item, index + 1), '', disabled || index === vertices.length - 1),
+          action('下移一层', () => order(item, index - 1), '', disabled || index === 0)],
+        [action('编辑样式…', () => editStyle(item), '', disabled), action('编辑数据…', () => editProperty(item, 'dataText', '编辑数据', '元素数据', 'textarea'), '', disabled),
+          action('编辑链接…', () => editProperty(item, 'link', '编辑链接', '链接地址', 'text'), '', disabled),
+          ...(webLink(item.link) ? [action('打开链接', () => window.myIDE.shell.openExternal(item.link))] : [])],
+        isImage ? [action('替换图片…', () => replaceImage(item), '', disabled), action('裁剪…', () => cropImage(item), '', disabled)] :
+          [action('编辑文字', () => editText(item), 'Enter', disabled)],
+        [action('连接到元素', () => connect(item), '', disabled), action('添加连接点', () => {
+          if ((item.points || []).length >= 32) throw Error('连接点最多 32 个');
+          setPoints(item, [...(item.points || []), chosenPort]);
+        }, '', disabled), action('编辑连接点…', () => editPoints(item), '', disabled)],
+        [action('添加到便签本', () => { assets.addScratch(item, assets.pack(item)); MI.toast('已添加到便签本', 'ok'); })],
+      ]);
     }
 
     function drawEdges() {
@@ -408,10 +652,14 @@ window.DrawioCanvas = (() => {
         const bx = b.x + b.width / 2, by = b.y + b.height / 2;
         const horizontal = Math.abs(bx - ax) >= Math.abs(by - ay);
         const direction = horizontal ? Math.sign(bx - ax) || 1 : Math.sign(by - ay) || 1;
-        const start = horizontal ? [ax + direction * a.width / 2, ay] : [ax, ay + direction * a.height / 2];
-        const end = horizontal ? [bx - direction * b.width / 2, by] : [bx, by - direction * b.height / 2];
-        const via = horizontal ? [[(start[0] + end[0]) / 2, ay], [(start[0] + end[0]) / 2, by]] :
-          [[ax, (start[1] + end[1]) / 2], [bx, (start[1] + end[1]) / 2]];
+        const port = (item, point) => {
+          const [x, y] = turn((point[0] - 0.5) * item.width, (point[1] - 0.5) * item.height, item.rotation || 0);
+          return [item.x + item.width / 2 + x, item.y + item.height / 2 + y];
+        };
+        const start = port(a, edge.start || (horizontal ? [(1 + direction) / 2, 0.5] : [0.5, (1 + direction) / 2]));
+        const end = port(b, edge.end || (horizontal ? [(1 - direction) / 2, 0.5] : [0.5, (1 - direction) / 2]));
+        const via = horizontal ? [[(start[0] + end[0]) / 2, start[1]], [(start[0] + end[0]) / 2, end[1]]] :
+          [[start[0], (start[1] + end[1]) / 2], [end[0], (start[1] + end[1]) / 2]];
         const points = [start, ...(edge.orthogonal ? via : []), end];
         const path = document.createElementNS(svgNS, 'path');
         const [x, y] = end;
@@ -430,10 +678,14 @@ window.DrawioCanvas = (() => {
     function place(element, item) {
       Object.assign(element.style, {
         left: item.x + 'px', top: item.y + 'px', width: item.width + 'px', height: item.height + 'px',
+        transform: item.rotation ? 'rotate(' + item.rotation + 'deg)' : '',
       });
+      element.style.setProperty('--diagram-opacity', (item.opacity ?? 100) / 100);
+      element.classList.toggle('locked', !!item.locked);
       if (item.type === 'image') return;
       Object.assign(element.style, {
-        fontSize: item.fontSize + 'px', color: item.color, backgroundColor: item.fill,
+        fontSize: item.fontSize + 'px', color: item.color,
+        backgroundColor: 'color-mix(in srgb, ' + item.fill + ' ' + (item.opacity ?? 100) + '%, transparent)',
         borderColor: item.stroke || '', borderRadius: item.rounded ? '8px' : '',
       });
     }
@@ -441,7 +693,7 @@ window.DrawioCanvas = (() => {
       if (textSession) textSession.input.blur();
     }
     function editText(item) {
-      if (textSession?.item === item) return;
+      if (item.locked || textSession?.item === item) return;
       finishText();
       select(item);
       const element = nodes.get(item.id);
@@ -451,14 +703,15 @@ window.DrawioCanvas = (() => {
       input.value = item.text;
       input.setAttribute('aria-label', '文字标注');
       input.placeholder = '输入文字';
-      element.replaceChildren(input);
+      const label = element.querySelector('.diagram-item-label');
+      label.replaceChildren(input);
       textSession = { input, item };
       input.oninput = () => {
         const previous = { text: item.text, height: item.height };
-        item.text = input.value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/g, '');
+        item.text = cleanText(input.value);
         if (item.type === 'text') {
           input.style.height = '0px';
-          item.height = coordinate(Math.max(42, input.scrollHeight, Math.ceil(item.fontSize * 1.45) * item.text.split('\n').length + 12));
+          item.height = coordinate(Math.max(42, input.scrollHeight, previous.height, Math.ceil(item.fontSize * 1.45) * item.text.split('\n').length + 12));
           input.style.height = '';
         }
         if (!save()) {
@@ -480,7 +733,7 @@ window.DrawioCanvas = (() => {
           element.remove();
           select(null);
           fit();
-        } else element.textContent = item.text;
+        } else label.textContent = item.text;
       };
       input.onkeydown = event => {
         if (!event.isComposing && (event.key === 'Escape' || (event.key === 'Enter' && (event.ctrlKey || event.metaKey)))) {
@@ -495,7 +748,7 @@ window.DrawioCanvas = (() => {
       const id = event.pointerId;
       let scrollTimer = 0, pointer = event;
       element.setPointerCapture(id);
-      const move = () => update(pointer.clientX - event.clientX, pointer.clientY - event.clientY);
+      const move = () => update(pointer.clientX - event.clientX, pointer.clientY - event.clientY, pointer);
       function scroll() {
         scrollTimer = 0;
         const rect = viewport.getBoundingClientRect(), margin = 28;
@@ -533,43 +786,106 @@ window.DrawioCanvas = (() => {
       const element = document.createElement('div');
       element.className = 'diagram-canvas-item ' + item.type;
       place(element, item);
-      let handle;
       if (item.type === 'image') {
         const image = document.createElement('img');
         image.alt = '画布图片';
         image.draggable = false;
         image.onload = () => { if (selected === item) syncTools(); };
         image.src = 'data:' + item.mime + ';base64,' + item.data;
-        handle = document.createElement('span');
-        handle.className = 'diagram-canvas-resize';
-        handle.title = '拖动调整图片大小（保持比例）';
-        element.append(image, handle);
+        element.append(image);
       } else {
-        element.textContent = item.text;
+        const label = document.createElement('span');
+        label.className = 'diagram-item-label';
+        label.textContent = item.text;
+        element.append(label);
         element.ondblclick = () => editText(item);
       }
+      for (const side of sides) {
+        const handle = document.createElement('span');
+        handle.className = 'diagram-canvas-resize';
+        handle.dataset.resize = side;
+        handle.title = item.type === 'image' ? '拖动调整图片大小（保持比例）' : '拖动调整文本框大小';
+        element.append(handle);
+      }
+      const rotate = document.createElement('span');
+      rotate.className = 'diagram-canvas-rotate';
+      rotate.title = '拖动旋转，Shift 按 15° 吸附';
+      element.append(rotate);
+      for (const [side, point] of Object.entries(directions)) {
+        const arrow = document.createElement('span');
+        arrow.className = 'diagram-canvas-connect';
+        arrow.dataset.side = side;
+        arrow.title = '从此方向连接到元素';
+        arrow.onclick = event => {
+          event.stopPropagation();
+          if (!item.locked) { focus(); connect(item, point); }
+        };
+        element.append(arrow);
+      }
+      for (const point of item.points || []) {
+        const port = document.createElement('span');
+        port.className = 'diagram-canvas-port';
+        port.style.left = point[0] * 100 + '%';
+        port.style.top = point[1] * 100 + '%';
+        port.title = '连接点';
+        port.onpointerdown = event => {
+          if (event.button !== 0) return;
+          event.stopPropagation();
+          if (!endConnection(item, point) && !item.locked) { focus(); connect(item, point); }
+        };
+        element.append(port);
+      }
+      element.oncontextmenu = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openContext(event.clientX, event.clientY, item);
+      };
       element.onpointerdown = event => {
-        if (event.button !== 0 || spaceDown || cancelGesture || event.target.tagName === 'TEXTAREA') return;
+        if (event.button !== 0 || spaceDown || cancelGesture || event.target.tagName === 'TEXTAREA' ||
+          event.target.classList.contains('diagram-canvas-connect')) return;
+        if (endConnection(item)) return;
         focus();
         select(item);
-        const resizing = event.target === handle;
-        const { x, y, width, height } = item, before = state(), origin = camera();
-        trackPointer(element, event, (dx, dy) => {
+        if (item.locked) return;
+        const side = event.target.dataset.resize, rotating = event.target === rotate;
+        const { x, y, width, height, rotation, appearanceChanged } = item, before = state(), origin = camera();
+        const degrees = rotation || 0, cx = x + width / 2, cy = y + height / 2;
+        const pointerAngle = pointer => {
+          const p = atPointer(pointer.clientX, pointer.clientY);
+          return Math.atan2(p.y - cy, p.x - cx) * 180 / Math.PI;
+        };
+        const startAngle = rotating ? pointerAngle(event) : 0;
+        trackPointer(element, event, (dx, dy, pointer) => {
           const current = camera();
           dx = dx / zoom + current.x - origin.x;
           dy = dy / zoom + current.y - origin.y;
-          if (resizing) {
-            const factor = Math.abs(dx / width) > Math.abs(dy / height) ? 1 + dx / width : 1 + dy / height;
-            updateImageSize(item, width, height, factor);
+          if (rotating) {
+            const next = degrees + pointerAngle(pointer) - startAngle;
+            item.rotation = angle(pointer.shiftKey ? Math.round(next / 15) * 15 : next);
+            item.appearanceChanged = item.rotation !== degrees || appearanceChanged;
+          } else if (side) {
+            const [localX, localY] = turn(dx, dy, -degrees);
+            const sx = side.includes('e') ? 1 : side.includes('w') ? -1 : 0;
+            const sy = side.includes('s') ? 1 : side.includes('n') ? -1 : 0;
+            if (item.type === 'image' || pointer.shiftKey) {
+              const rx = sx * localX / width, ry = sy * localY / height;
+              const delta = sx && (!sy || Math.abs(rx) >= Math.abs(ry)) ? rx : ry;
+              const factor = Math.max(1 / Math.min(width, height), Math.min(100000 / Math.max(width, height), 1 + delta));
+              item.width = Math.round(width * factor);
+              item.height = Math.round(height * factor);
+            } else {
+              item.width = coordinate(Math.max(18, width + sx * localX));
+              item.height = coordinate(Math.max(18, height + sy * localY));
+            }
+            const [shiftX, shiftY] = turn(sx * (item.width - width) / 2, sy * (item.height - height) / 2, degrees);
+            Object.assign(item, position(cx + shiftX - item.width / 2, cy + shiftY - item.height / 2));
             syncTools();
-          } else {
-            Object.assign(item, position(x + dx, y + dy));
-            place(element, item);
-            drawEdges();
-          }
+          } else Object.assign(item, position(x + dx, y + dy));
+          place(element, item);
+          drawEdges();
         }, cancelled => {
-          const changed = x !== item.x || y !== item.y || width !== item.width || height !== item.height;
-          if (cancelled || (changed && !save())) Object.assign(item, { x, y, width, height });
+          const changed = x !== item.x || y !== item.y || width !== item.width || height !== item.height || (item.rotation || 0) !== degrees;
+          if (cancelled || (changed && !save())) Object.assign(item, { x, y, width, height, rotation, appearanceChanged });
           else if (changed) remember(before);
           place(element, item);
           fit();
@@ -584,16 +900,23 @@ window.DrawioCanvas = (() => {
       if (!isCurrent()) return;
       finishText();
       const item = { id: crypto.randomUUID(), type: 'text', text: '', width: 240, height: 42,
-        fontSize: 16, color: textColorDefault, fill: textBackgroundDefault, ...where };
+        fontSize: 16, color: textColorDefault, fill: textBackgroundDefault, ...defaultStyle('text'), ...where };
       items.push(item);
       add(item);
       fit();
       editText(item);
     }
-    async function paste(files = []) {
+    async function paste(files = [], where = null) {
       if (pasteBusy || !isCurrent()) return;
       pasteBusy = pasteButton.disabled = true;
       try {
+        const text = files.length ? '' : (await window.myIDE.clip.readText?.())?.text || '';
+        const copied = assets.unpack(text);
+        if (copied && isCurrent()) {
+          const view = camera();
+          insertCopy(copied, where || position(view.x + 24, view.y + 24));
+          return;
+        }
         const images = files.length ? await readBatch(files, decodeImage) : await clipboardImages();
         if (!isCurrent()) return;
         if (!images.length) {
@@ -603,12 +926,12 @@ window.DrawioCanvas = (() => {
         cancelGesture?.();
         finishText();
         const before = state();
-        const view = camera();
-        let y = Math.max(view.y + 32, bounds().bottom + 24);
+        const view = camera(), style = defaultStyle('image');
+        let y = where ? where.y : Math.max(view.y + 32, bounds().bottom + 24);
         const additions = images.map(image => {
           const scale = Math.min(1, 600 / image.width, 400 / image.height);
           const height = Math.max(1, Math.round(image.height * scale));
-          const item = { ...image, id: crypto.randomUUID(), type: 'image', ...position(view.x + 32, y),
+          const item = { ...image, ...style, id: crypto.randomUUID(), type: 'image', ...position(where?.x ?? view.x + 32, y),
             width: Math.max(1, Math.round(image.width * scale)), height };
           y += height + 24;
           return item;
@@ -632,8 +955,13 @@ window.DrawioCanvas = (() => {
     }
     board.ondblclick = event => {
       if (event.target !== board) return;
-      const rect = board.getBoundingClientRect();
-      addText(position(originX + (event.clientX - rect.left) / zoom, originY + (event.clientY - rect.top) / zoom));
+      addText(atPointer(event.clientX, event.clientY));
+    };
+    board.oncontextmenu = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      stopConnect();
+      openContext(event.clientX, event.clientY, null);
     };
     board.onpointerdown = event => {
       if ((spaceDown && event.button === 0 || event.button === 1) && !cancelGesture) {
@@ -644,6 +972,7 @@ window.DrawioCanvas = (() => {
           fit({ x: start.x - dx / zoom, y: start.y - dy / zoom });
         }, () => {});
       } else if (event.target === board && event.button === 0) {
+        stopConnect();
         focus();
         select(null);
       }
@@ -674,8 +1003,22 @@ window.DrawioCanvas = (() => {
         event.stopPropagation();
         const backward = command === 'z' && !event.shiftKey;
         history(backward ? undo : redo, backward ? redo : undo);
-      } else if (command === 'c' || command === 'x') {
+      } else if (command === 'c' || command === 'x' || command === 'd') {
+        event.preventDefault();
         event.stopPropagation();
+        if (selected) {
+          if (command === 'd') insertCopy(selected);
+          else void copyObject(selected, command === 'x').catch(error => MI.toast(error.message, 'err'));
+        }
+      } else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = (nodes.get(selected?.id) || viewport).getBoundingClientRect();
+        openContext(rect.left + 16, rect.top + 16, selected);
+      } else if (event.key === 'Escape' && connector) {
+        event.preventDefault();
+        event.stopPropagation();
+        stopConnect();
       } else if (event.key === ' ' && event.target === board) {
         event.preventDefault();
         spaceDown = true;
@@ -687,7 +1030,7 @@ window.DrawioCanvas = (() => {
         event.preventDefault();
         event.stopPropagation();
         removeSelected();
-      } else if (event.target === board && selected && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      } else if (event.target === board && selected && !selected.locked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault();
         event.stopPropagation();
         const step = event.shiftKey ? 10 : 1;
@@ -717,6 +1060,7 @@ window.DrawioCanvas = (() => {
     panel.previewDispose = () => {
       disposed = true;
       resize?.disconnect();
+      contextMenu.dispose();
       document.removeEventListener('pointerdown', dismissBackground);
       cancelGesture?.();
       onDispose({ zoom, originX, originY, left: viewport.scrollLeft, top: viewport.scrollTop, undo, redo });

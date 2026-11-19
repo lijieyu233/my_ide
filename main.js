@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeTheme, safeStorage, protocol } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeImage, nativeTheme, safeStorage, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -1340,6 +1340,16 @@ ipcMain.handle('clip:copyImageAt', (event, x, y) => {
   } catch(error) { return {ok:false,error:error.message}; }
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
+ipcMain.handle('clip:writePng', (event, png) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
+    typeof png !== 'string' || png.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(png)) return false;
+  const bytes = Buffer.from(png, 'base64');
+  if (!bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return false;
+  const image = nativeImage.createFromBuffer(bytes);
+  if (image.isEmpty()) return false;
+  clipboard.writeImage(image);
+  return true;
+});
 
 // 读剪贴板文本（AI 助手的「@剪贴板」上下文来源；渲染进程没有直接读的能力）
 ipcMain.handle('clip:readText', () => {

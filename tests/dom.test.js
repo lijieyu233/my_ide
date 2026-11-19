@@ -575,6 +575,9 @@ async function loadApp(dom) {
   evalFile('tab-descriptions.js');
   evalFile('closed-tabs.js');
   evalFile('drawio-canvas-document.js');
+  evalFile('drawio-canvas-menu.js');
+  evalFile('drawio-color-picker.js');
+  evalFile('drawio-canvas-assets.js');
   evalFile('drawio-canvas.js');
   evalFile('drawio-editor.js');
   evalFile('viewer.js');
@@ -1104,6 +1107,37 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       assert.equal($$(d, '.diagram-canvas-item img').length, 2);
       assert.equal($(d, '.diagram-canvas-item.text').textContent, annotation);
       assert(!$(d, '.drawio-editor iframe'));
+      const menuFor = element => element.dispatchEvent(new w.MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 60, clientY: 80,
+      }));
+      const action = label => $$(d, '.diagram-context-menu:not([hidden]) button').find(button =>
+        button.firstChild?.textContent === label);
+      const note = $(d, '.diagram-canvas-item.text');
+      menuFor(note);
+      assert.equal($$(d, '.diagram-canvas-item.text.selected [data-resize]').length, 8);
+      assert(action('编辑文字') && action('编辑样式…') && action('移至最前'));
+      assert(!action('裁剪…'));
+      click(action('创建副本'));
+      await tick();
+      assert.equal($$(d, '.diagram-canvas-item.text').length, 2);
+      menuFor($(d, '.diagram-canvas-item.text.selected'));
+      click(action('锁定'));
+      await tick();
+      assert($(d, '.diagram-canvas-item.text.selected.locked'));
+      menuFor($(d, '.diagram-canvas-item.text.selected'));
+      assert(action('删除').disabled);
+      click(action('解锁'));
+      await tick();
+      menuFor($(d, '.diagram-canvas-item.text.selected'));
+      click(action('删除'));
+      await tick();
+      assert.equal($$(d, '.diagram-canvas-item.text').length, 1);
+      assert((await w.Viewer.saveTab(w.Viewer.openTabs.indexOf(w.Viewer.activeTab))).ok);
+      menuFor($(d, '.diagram-canvas-item.image'));
+      assert(action('裁剪…') && action('替换图片…') && action('复制为 SVG'));
+      $(d, '.diagram-context-menu button').dispatchEvent(new w.KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      }));
       const reopenedBoard = $(d, '.diagram-canvas-board');
       assert(parseInt($(d, '.diagram-canvas-item.text').style.left) < 0);
       reopenedBoard.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
@@ -1137,6 +1171,14 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#dfebfa');
       click($(d, 'button[aria-label="重做（Ctrl+Y）"]'));
       assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#112244');
+      click($(d, 'button[aria-label="画布背景"]'));
+      const hue = $(d, 'input[aria-label="色相"]');
+      hue.value = '112';
+      hue.dispatchEvent(new w.Event('input', { bubbles: true }));
+      assert.equal(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#112244');
+      hue.dispatchEvent(new w.Event('change', { bubbles: true }));
+      assert.notEqual(w.DrawioCanvas.read(w.Viewer.activeTab.content).background, '#112244');
+      click($(d, 'button[aria-label="画布背景"]'));
       const grid = $(d, '[aria-label="画布外观"] input[type=checkbox]');
       grid.checked = false;
       grid.dispatchEvent(new w.Event('change', { bubbles: true }));

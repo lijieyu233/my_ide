@@ -7,6 +7,20 @@ window.DrawioCanvasDocument = (() => {
   const coordinate = value => Math.min(100000, Math.max(0, Math.round(value)));
   const worldCoordinate = value => Math.min(100000, Math.max(-100000, Math.round(value)));
   const color = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
+  const angle = value => Number.isFinite(+value) ? ((Math.round(+value) % 360) + 360) % 360 : 0;
+  const ratio = value => Math.max(0, Math.min(1, Number(value)));
+  const connectionPoint = (style, key) => {
+    const x = style.get(key + 'X'), y = style.get(key + 'Y');
+    return x != null && y != null && Number.isFinite(+x) && Number.isFinite(+y) ? [ratio(x), ratio(y)] : null;
+  };
+  function points(value) {
+    try {
+      const result = JSON.parse(value || '[]');
+      if (Array.isArray(result)) return result.slice(0, 32).filter(point =>
+        Array.isArray(point) && point.length === 2 && point.every(n => Number.isFinite(n) && n >= 0 && n <= 1));
+    } catch {}
+    return [];
+  }
   const entries = style => new Map((style || '').replace(/;base64,/g, ',').split(';').filter(Boolean).map(part => {
     const split = part.indexOf('=');
     return split < 0 ? [part, null] : [part.slice(0, split), part.slice(split + 1)];
@@ -54,15 +68,21 @@ window.DrawioCanvasDocument = (() => {
         if (!source || !target || geometry.children.length || value ||
           ![undefined, 'orthogonalEdgeStyle'].includes(style.get('edgeStyle'))) return unsupported;
         items.push({ id, type: 'edge', source, target, cell, stroke: color(style.get('strokeColor'), '#4b5563'),
-          arrow: (style.get('endArrow') || 'classic') !== 'none', orthogonal: style.has('edgeStyle') });
+          arrow: (style.get('endArrow') || 'classic') !== 'none', orthogonal: style.has('edgeStyle'),
+          start: connectionPoint(style, 'exit'), end: connectionPoint(style, 'entry') });
         continue;
       }
       if (cell.getAttribute('vertex') !== '1' || geometry.children.length || geometry.getAttribute('relative') === '1' ||
-        style.has('rotation') || style.has('sketch')) return unsupported;
+        style.has('sketch')) return unsupported;
       const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(name => Number(geometry.getAttribute(name)));
       if (![x, y].every(n => Number.isFinite(n) && Math.abs(n) <= 100000) ||
         ![width, height].every(n => Number.isFinite(n) && n >= 1 && n <= 100000)) return unsupported;
-      const bounds = { id, cell, x, y, width, height };
+      const opacity = style.get('opacity');
+      const bounds = { id, cell, x, y, width, height, rotation: angle(style.get('rotation')),
+        opacity: opacity != null && Number.isFinite(+opacity) ? ratio(+opacity / 100) * 100 : 100,
+        locked: ['movable', 'resizable', 'editable', 'rotatable'].every(key => style.get(key) === '0'),
+        dataText: cell.getAttribute('myideData') || '', link: cell.getAttribute('myideLink') || '',
+        points: points(cell.getAttribute('myidePoints')) };
       const shape = style.get('shape');
       const image = shape === 'image' && inlineImage.exec(style.get('image') || '');
       if (image && !value) {
@@ -113,40 +133,75 @@ window.DrawioCanvasDocument = (() => {
     for (const item of items) {
       if (item.type === 'text' && !item.text && !item.cell) continue;
       const cell = item.cell ? root.appendChild(doc.importNode(item.cell, true)) :
-        append(root, 'mxCell', { id: item.id, vertex: 1, parent: 1 });
-      if (item.type === 'edge') continue;
+        append(root, 'mxCell', { id: item.id, parent: 1 });
+      if (cell.getAttribute('id') !== item.id) cell.setAttribute('id', item.id);
+      if (item.type === 'edge') {
+        if (!item.cell) {
+          cell.setAttribute('edge', '1');
+          cell.setAttribute('source', item.source);
+          cell.setAttribute('target', item.target);
+          const anchors = [['exit', item.start], ['entry', item.end]].map(([key, point]) =>
+            point ? key + 'X=' + point[0] + ';' + key + 'Y=' + point[1] + ';' : '').join('');
+          cell.setAttribute('style', 'edgeStyle=orthogonalEdgeStyle;' + anchors);
+          append(cell, 'mxGeometry', { relative: 1, as: 'geometry' });
+        }
+        continue;
+      }
+      if (!item.cell) cell.setAttribute('vertex', '1');
       const geometry = cell.firstElementChild || append(cell, 'mxGeometry', { as: 'geometry' });
       for (const key of ['x', 'y', 'width', 'height']) {
         if (Number(geometry.getAttribute(key)) !== item[key] || !item.cell) geometry.setAttribute(key, item[key]);
       }
-      if (!item.cell && item.type === 'image') {
-        cell.setAttribute('style', 'shape=image;imageAspect=0;aspect=fixed;image=data:' + item.mime + ',' + item.data + ';');
-      }
-      if (item.type !== 'text' && item.type !== 'rectangle') continue;
       const original = cell.getAttribute('value') || '';
       const style = entries(cell.getAttribute('style'));
-      if (!item.cell) {
+      if (item.type === 'image' && (!item.cell || item.imageChanged)) {
+        style.set('shape', 'image');
+        style.set('imageAspect', '0');
+        style.set('aspect', 'fixed');
+        style.set('image', 'data:' + item.mime + ',' + item.data);
+      }
+      if (!item.cell && item.type === 'text') {
         style.set('text', null);
         style.set('align', 'left');
         style.set('verticalAlign', 'top');
         style.set('whiteSpace', 'wrap');
         style.set('fillColor', item.fill);
       }
-      const textChanged = !item.cell || item.text !== plainText(original, style.get('html') === '1');
+      const hasText = item.type !== 'image';
+      const textChanged = hasText && (!item.cell || item.text !== plainText(original, style.get('html') === '1'));
       if (textChanged) {
         cell.setAttribute('value', item.text);
         style.set('html', '0');
       }
-      if (!item.cell || item.fontChanged) {
+      if (hasText && (!item.cell || item.fontChanged)) {
         style.set('fontSize', item.fontSize);
         style.set('fontColor', item.color);
       }
-      if (textChanged || item.fontChanged) {
+      if (hasText && item.fillChanged) style.set('fillColor', item.fill);
+      const changedStyle = !item.cell || item.appearanceChanged;
+      if (changedStyle) {
+        if (item.rotation) style.set('rotation', item.rotation);
+        else style.delete('rotation');
+        if (item.opacity != null && item.opacity !== 100) style.set('opacity', item.opacity);
+        else style.delete('opacity');
+      }
+      if (item.lockChanged || !item.cell && item.locked) {
+        for (const key of ['movable', 'resizable', 'editable', 'rotatable']) {
+          if (item.locked) style.set(key, '0');
+          else style.delete(key);
+        }
+      }
+      for (const [name, value] of [['myideData', item.dataText], ['myideLink', item.link],
+        ['myidePoints', item.points?.length ? JSON.stringify(item.points) : '']]) {
+        if (value) cell.setAttribute(name, value);
+        else if (cell.hasAttribute(name)) cell.removeAttribute(name);
+      }
+      if (changedStyle || textChanged || item.fontChanged || item.fillChanged || item.lockChanged || item.imageChanged) {
         cell.setAttribute('style', [...style].map(([key, value]) => value === null ? key : key + '=' + value).join(';') + ';');
       }
     }
     return new XMLSerializer().serializeToString(doc);
   }
 
-  return { read, serialize, coordinate, worldCoordinate, backgroundDefault, textColorDefault, textBackgroundDefault };
+  return { read, serialize, coordinate, worldCoordinate, angle, points, backgroundDefault, textColorDefault, textBackgroundDefault };
 })();

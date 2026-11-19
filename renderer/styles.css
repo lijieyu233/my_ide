@@ -487,7 +487,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   padding: 7px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
 }
 .diagram-canvas-tools { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-.diagram-canvas-tools[hidden] { display: none; }
+.diagram-canvas-tools[hidden], .diagram-canvas-tools button[hidden] { display: none; }
 .diagram-canvas-tools label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 12px; }
 .diagram-canvas-tools input[type=color] { width: 24px; height: 21px; padding: 2px; cursor: pointer; border: 1px solid var(--border); background: var(--bg-input); border-radius: 3px; }
 .diagram-canvas-tools input[type=number] { width: 47px; padding: 1px 3px; color: var(--text); background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; }
@@ -508,6 +508,20 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   width: 74px; padding: 2px 4px; color: var(--text); background: var(--bg-input);
   border: 1px solid var(--border); border-radius: 3px; font: inherit;
 }
+.diagram-color-picker { width: 166px; margin-bottom: 8px; }
+.diagram-color-plane {
+  position: relative; height: 104px; border-radius: 4px; cursor: crosshair; touch-action: none;
+  background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, var(--picker-hue, #f00));
+}
+.diagram-color-plane span {
+  position: absolute; width: 11px; height: 11px; border: 2px solid #fff; border-radius: 50%;
+  transform: translate(-50%, -50%); box-shadow: 0 0 0 1px #000a; pointer-events: none;
+}
+.diagram-color-hue {
+  width: 100%; height: 10px; margin: 10px 0 3px; appearance: none; border-radius: 4px; cursor: pointer;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.diagram-color-hue::-webkit-slider-thumb { appearance: none; width: 11px; height: 15px; border: 2px solid #fff; border-radius: 3px; background: #0005; box-shadow: 0 0 0 1px #0009; }
 .diagram-canvas-scroll { flex: 1; min-height: 0; overflow: auto; }
 .diagram-canvas-board {
   position: relative; outline: none; touch-action: none; background-color: #f6f7fa;
@@ -516,23 +530,78 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .diagram-canvas-board.pan, .diagram-canvas-board.pan .diagram-canvas-item { cursor: grab; }
 .diagram-canvas-content { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
 .diagram-canvas-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
-.diagram-canvas-item { position: absolute; display: block; cursor: move; user-select: none; touch-action: none; pointer-events: auto; }
-.diagram-canvas-item.selected { outline: 2px solid #367bea; z-index: 1; }
-.diagram-canvas-item.image img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
-.diagram-canvas-resize { display: none; position: absolute; z-index: 2; right: -7px; bottom: -7px; width: 19px; height: 19px; cursor: nwse-resize; }
-.diagram-canvas-resize::after { content: ''; position: absolute; inset: 3px; background: #367bea; border: 1px solid #fff; border-radius: 2px; }
-.diagram-canvas-item.selected .diagram-canvas-resize { display: block; }
+.diagram-canvas-item { position: absolute; z-index: 1; display: block; cursor: move; user-select: none; touch-action: none; pointer-events: auto; }
+.diagram-canvas-item.selected { outline: 1px dashed #35b9eb; }
+.diagram-canvas-item.locked { cursor: default; }
+.diagram-canvas-item.locked.selected { outline-color: #8893a4; }
+.diagram-canvas-item.image img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; opacity: var(--diagram-opacity, 1); }
+.diagram-canvas-resize, .diagram-canvas-rotate, .diagram-canvas-connect, .diagram-canvas-port {
+  display: none; position: absolute; z-index: 2; width: 18px; height: 18px; transform: translate(-50%, -50%);
+}
+.diagram-canvas-resize { left: var(--handle-x); top: var(--handle-y); cursor: var(--handle-cursor); }
+.diagram-canvas-resize::after, .diagram-canvas-port::after {
+  content: ''; position: absolute; inset: 4px; background: #29aedd; border: 1px solid #ebfaff; border-radius: 50%;
+}
+.diagram-canvas-resize[data-resize=nw] { --handle-x: 0%; --handle-y: 0%; --handle-cursor: nwse-resize; }
+.diagram-canvas-resize[data-resize=n]  { --handle-x: 50%; --handle-y: 0%; --handle-cursor: ns-resize; }
+.diagram-canvas-resize[data-resize=ne] { --handle-x: 100%; --handle-y: 0%; --handle-cursor: nesw-resize; }
+.diagram-canvas-resize[data-resize=w]  { --handle-x: 0%; --handle-y: 50%; --handle-cursor: ew-resize; }
+.diagram-canvas-resize[data-resize=e]  { --handle-x: 100%; --handle-y: 50%; --handle-cursor: ew-resize; }
+.diagram-canvas-resize[data-resize=sw] { --handle-x: 0%; --handle-y: 100%; --handle-cursor: nesw-resize; }
+.diagram-canvas-resize[data-resize=s]  { --handle-x: 50%; --handle-y: 100%; --handle-cursor: ns-resize; }
+.diagram-canvas-resize[data-resize=se] { --handle-x: 100%; --handle-y: 100%; --handle-cursor: nwse-resize; }
+.diagram-canvas-rotate { left: calc(100% + 16px); top: -17px; cursor: grab; }
+.diagram-canvas-rotate::after { content: ''; position: absolute; inset: 3px; border: 2px solid #29aedd; border-right-color: transparent; border-radius: 50%; }
+.diagram-canvas-rotate::before { content: ''; position: absolute; right: 2px; top: 2px; border: 3px solid transparent; border-top-color: #29aedd; transform: rotate(-25deg); }
+.diagram-canvas-connect { left: var(--port-x); top: var(--port-y); cursor: crosshair; opacity: .72; }
+.diagram-canvas-connect::after { content: ''; position: absolute; width: 8px; height: 8px; left: 5px; top: 5px; border: solid #29aedd; border-width: 2px 2px 0 0; transform: rotate(var(--port-angle)); }
+.diagram-canvas-connect[data-side=n] { --port-x: 50%; --port-y: -20px; --port-angle: -45deg; }
+.diagram-canvas-connect[data-side=e] { --port-x: calc(100% + 20px); --port-y: 50%; --port-angle: 45deg; }
+.diagram-canvas-connect[data-side=s] { --port-x: 50%; --port-y: calc(100% + 20px); --port-angle: 135deg; }
+.diagram-canvas-connect[data-side=w] { --port-x: -20px; --port-y: 50%; --port-angle: 225deg; }
+.diagram-canvas-connect:hover { opacity: 1; }
+.diagram-canvas-port { cursor: crosshair; }
+.diagram-canvas-port::after { background: #98d35c; inset: 5px; }
+.diagram-canvas-item.selected:not(.locked) :is(.diagram-canvas-resize,.diagram-canvas-rotate,.diagram-canvas-connect,.diagram-canvas-port),
+.diagram-canvas-board.connecting .diagram-canvas-port { display: block; }
+.diagram-canvas-item:has(textarea) :is(.diagram-canvas-resize,.diagram-canvas-rotate,.diagram-canvas-connect,.diagram-canvas-port) { visibility: hidden; }
 .diagram-canvas-item.rectangle { display: grid; place-items: center; padding: 5px; border: 1px solid; text-align: center; white-space: pre-wrap; }
 .diagram-canvas-item.text {
-  z-index: 2; padding: 6px 8px; color: #222; background: #fffdf0; border-radius: 3px;
+  padding: 6px 8px; color: #222; background: #fffdf0; border-radius: 3px;
   font: 16px/1.45 system-ui, sans-serif; white-space: pre-wrap; overflow-wrap: anywhere;
   box-shadow: 0 1px 3px #0002;
 }
-.diagram-canvas-item.text.selected { z-index: 3; }
+.diagram-item-label { display: block; max-width: 100%; max-height: 100%; overflow: hidden; overflow-wrap: anywhere; opacity: var(--diagram-opacity, 1); }
+.diagram-item-label:has(textarea) { overflow: visible; opacity: 1; }
 .diagram-canvas-item textarea {
   position: absolute; inset: 0; width: 100%; height: 100%; padding: 6px 8px;
   border: 0; outline: none; resize: none; font: inherit; background: inherit; color: inherit;
 }
+.diagram-context-menu {
+  position: fixed; z-index: 215; width: 210px; max-width: calc(100vw - 12px); max-height: min(76vh, 590px);
+  overflow-y: auto; overscroll-behavior: contain; padding: 4px; color: var(--text);
+  background: var(--bg-panel); border: 1px solid var(--ui-line); border-radius: 7px; box-shadow: 0 8px 24px #0005;
+}
+.diagram-context-menu[hidden] { display: none; }
+.diagram-context-menu [role=group]+[role=group] { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 3px; }
+.diagram-context-menu button {
+  display: flex; align-items: center; justify-content: space-between; text-align: left;
+  width: 100%; min-height: 25px; padding: 3px 8px; background: transparent; color: inherit;
+  border: 0; border-radius: 4px; cursor: pointer; font: inherit;
+}
+.diagram-context-menu button:not(:disabled):is(:hover,:focus-visible) { outline: none; background: var(--bg-hover); color: var(--text-bright); }
+.diagram-context-menu button.danger { color: var(--red); }
+.diagram-context-menu button:disabled { opacity: .42; cursor: default; }
+.diagram-context-menu kbd { color: var(--text-dim); font: inherit; font-size: .86em; margin-left: 4px; }
+.diagram-options .m-body { display: grid; gap: 8px; }
+.diagram-option { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(100px, 1.3fr); gap: 8px; align-items: center; }
+.diagram-option input, .diagram-option textarea {
+  width: 100%; color: var(--text); background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 5px;
+}
+.diagram-option textarea { min-height: 90px; }
+.diagram-crop-surface { position: relative; display: inline-flex; max-width: 100%; justify-self: center; cursor: crosshair; touch-action: none; overflow: hidden; }
+.diagram-crop-preview { display: block; max-width: 100%; max-height: 240px; pointer-events: none; }
+.diagram-crop-surface span { position: absolute; border: 1px dashed #39bced; box-shadow: 0 0 0 1000px #0006; pointer-events: none; }
 /* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
    所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
 :is(#viewer,.editor-pane-view) > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */

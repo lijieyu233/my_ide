@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   clip: {
     copyImageAt: (x, y) => ipcRenderer.invoke('clip:copyImageAt', x, y),
     copy: (t) => ipcRenderer.invoke('clip:copy', t),
+    writePng: (png) => ipcRenderer.invoke('clip:writePng', png),
     // 把历史图片真正写回系统剪贴板（此前渲染层调的 copyImageBase64 并不存在）
     copyImage: (id) => ipcRenderer.invoke('clipboard-history:copyImage', id),
     copyFiles: (paths, move) => ipcRenderer.invoke('clip:copyFiles', paths, move),
