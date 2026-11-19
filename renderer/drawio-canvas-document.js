@@ -5,6 +5,7 @@ window.DrawioCanvasDocument = (() => {
   const marker = 'image-text-v1';
   const inlineImage = /^data:(image\/(?:png|jpeg|gif|webp|bmp))(?:;base64)?,([A-Za-z0-9+/=]+)$/;
   const coordinate = value => Math.min(100000, Math.max(0, Math.round(value)));
+  const worldCoordinate = value => Math.min(100000, Math.max(-100000, Math.round(value)));
   const color = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
   const entries = style => new Map((style || '').replace(/;base64,/g, ',').split(';').filter(Boolean).map(part => {
     const split = part.indexOf('=');
@@ -59,7 +60,8 @@ window.DrawioCanvasDocument = (() => {
       if (cell.getAttribute('vertex') !== '1' || geometry.children.length || geometry.getAttribute('relative') === '1' ||
         style.has('rotation') || style.has('sketch')) return unsupported;
       const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(name => Number(geometry.getAttribute(name)));
-      if (![x, y, width, height].every(n => Number.isFinite(n) && n >= 0 && n <= 100000) || width < 1 || height < 1) return unsupported;
+      if (![x, y].every(n => Number.isFinite(n) && Math.abs(n) <= 100000) ||
+        ![width, height].every(n => Number.isFinite(n) && n >= 1 && n <= 100000)) return unsupported;
       const bounds = { id, cell, x, y, width, height };
       const shape = style.get('shape');
       const image = shape === 'image' && inlineImage.exec(style.get('image') || '');
@@ -146,5 +148,5 @@ window.DrawioCanvasDocument = (() => {
     return new XMLSerializer().serializeToString(doc);
   }
 
-  return { read, serialize, coordinate, backgroundDefault, textColorDefault, textBackgroundDefault };
+  return { read, serialize, coordinate, worldCoordinate, backgroundDefault, textColorDefault, textBackgroundDefault };
 })();

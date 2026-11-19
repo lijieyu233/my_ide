@@ -1620,18 +1620,23 @@ const Tree = (() => {
     }
     if (key === 'Enter') {
       if (item.type === 'dir') toggleDir(item);
-      else Viewer.openFile(item.path).then(() => setTimeout(() => { const r = rowElOf(item.path); if (r) r.focus(); }, 0));
+      else Viewer.openFile(item.path).then(() => setTimeout(() => {
+        if (window.Viewer?.activeTab?.diagramView?.focusEditor) return;
+        const row = rowElOf(item.path);
+        if (row) row.focus();
+      }, 0));
     }
   }
   // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）
   document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.isComposing) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Delete'].includes(e.key)) return;
     // 有弹窗打开（设置 / 确认框等）时方向键归弹窗，目录树不接管
     if (window.Modal && Modal.stack.length) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    if (t && t.closest && t.closest('.cm-editor')) return;
+    if (t?.closest?.('.cm-editor,.diagram-canvas-panel')) return;
     // 侧栏收起或项目面板隐藏时导航无意义
     if (document.body.classList.contains('sidebar-collapsed')) return;
     const panel = document.getElementById('panel-project');
@@ -1640,9 +1645,9 @@ const Tree = (() => {
       // Enter 只在已有树选中时生效（避免劫持全局 Enter）
       if (!selectedPath) return;
     }
-    // Delete：删除当前选中的文件/文件夹（多选时批量删）
+    // 打开文档也会高亮树节点，只有键盘焦点在树中时 Delete 才属于文件操作。
     if (e.key === 'Delete') {
-      if (!selectedPath) return;
+      if (!selectedPath || !el.contains(t)) return;
       e.preventDefault();
       if (selectedPaths.size > 1) removeItems(getSelection());
       else removeItem({ path: selectedPath, name: selectedPath.split(/[\\/]/).pop(), type: selectedType || 'file' });

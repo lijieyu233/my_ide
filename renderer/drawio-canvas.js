@@ -1,5 +1,5 @@
 window.DrawioCanvas = (() => {
-  const { coordinate, textColorDefault, textBackgroundDefault } = DrawioCanvasDocument;
+  const { coordinate, worldCoordinate, textColorDefault, textBackgroundDefault } = DrawioCanvasDocument;
   const maxBytes = 8 * 1024 * 1024;
   const formats = new Map([
     ['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
@@ -58,8 +58,11 @@ window.DrawioCanvas = (() => {
     const toolbar = document.createElement('div');
     toolbar.className = 'diagram-canvas-toolbar';
     const viewport = document.createElement('div'), board = document.createElement('div');
+    const layer = document.createElement('div');
     viewport.className = 'diagram-canvas-scroll';
     board.className = 'diagram-canvas-board';
+    layer.className = 'diagram-canvas-content';
+    board.append(layer);
     board.tabIndex = 0;
     board.setAttribute('aria-label', '图文画布');
     viewport.append(board);
@@ -68,11 +71,15 @@ window.DrawioCanvas = (() => {
 
     let { items, background, grid } = canvas;
     let selected = null, pasteBusy = false, zoom = viewState?.zoom || 1, textSession = null;
+    let originX = viewState?.originX || 0, originY = viewState?.originY || 0;
     let spaceDown = false, cancelGesture = null, disposed = false;
     const undo = viewState?.undo || [], redo = viewState?.redo || [];
     const nodes = new Map();
     const focus = () => board.focus({ preventScroll: true });
-    const position = (x, y) => ({ x: coordinate(x), y: coordinate(y) });
+    const position = (x, y) => ({ x: worldCoordinate(x), y: worldCoordinate(y) });
+    const camera = () => ({
+      x: originX + viewport.scrollLeft / zoom, y: originY + viewport.scrollTop / zoom,
+    });
     const svgNS = 'http://www.w3.org/2000/svg';
     const wireLayer = document.createElementNS(svgNS, 'svg');
     wireLayer.classList.add('diagram-canvas-edges');
@@ -108,19 +115,61 @@ window.DrawioCanvas = (() => {
     const insertion = group('插入');
     const pasteButton = button(insertion, '粘贴图片', '粘贴图片（Ctrl+V）', () => void paste());
     button(insertion, '添加文字', '添加文字', () => {
-      addText(position((selected?.x ?? viewport.scrollLeft / zoom) + 24, (selected?.y ?? viewport.scrollTop / zoom) + 24));
+      const view = camera();
+      addText(position((selected?.x ?? view.x) + 24, (selected?.y ?? view.y) + 24));
     });
     const editing = group('编辑');
     const undoButton = button(editing, '撤销', '撤销（Ctrl+Z）', () => history(undo, redo));
     const redoButton = button(editing, '重做', '重做（Ctrl+Y）', () => history(redo, undo));
-    const deleteButton = button(editing, '删除', '删除选中项（Delete）', removeSelected);
+    const deleteButton = button(editing, '删除元素', '删除选中项（Delete）', removeSelected);
     const view = group('画布视图');
     button(view, '−', '缩小画布', () => setZoom(zoom - 0.1));
     const zoomButton = button(view, '', '实际大小（100%）', () => setZoom(1));
     button(view, '+', '放大画布', () => setZoom(zoom + 0.1));
     button(view, '适应', '适应内容', fitContent);
     const appearance = group('画布外观');
-    const backgroundInput = control(appearance, '背景', 'color', input => change(() => { background = input.value; }));
+    appearance.classList.add('diagram-canvas-appearance');
+    const backgroundButton = button(appearance, '背景', '画布背景', () => {
+      const open = backgroundPanel.hidden;
+      backgroundPanel.hidden = !open;
+      backgroundButton.setAttribute('aria-expanded', String(open));
+      if (open) {
+        colorInput.value = background;
+        colorInput.setCustomValidity('');
+      }
+    });
+    backgroundButton.setAttribute('aria-expanded', 'false');
+    const swatch = document.createElement('span');
+    swatch.className = 'diagram-canvas-swatch';
+    swatch.setAttribute('aria-hidden', 'true');
+    backgroundButton.append(swatch);
+    const backgroundPanel = document.createElement('div');
+    backgroundPanel.className = 'diagram-canvas-palette';
+    backgroundPanel.hidden = true;
+    const palette = document.createElement('div');
+    palette.className = 'diagram-canvas-colors';
+    for (const [name, color] of [
+      ['白', '#ffffff'], ['浅灰', '#f6f7fa'], ['米色', '#fff3d9'], ['浅蓝', '#dfebfa'],
+      ['浅绿', '#dcefe1'], ['浅粉', '#f9e2e9'], ['深灰', '#252d38'], ['黑', '#14171c'],
+    ]) {
+      const choice = button(palette, '', name + '色背景', () => applyBackground(color));
+      choice.dataset.color = color;
+      choice.style.backgroundColor = color;
+    }
+    const custom = document.createElement('div');
+    custom.className = 'diagram-canvas-custom-color';
+    const colorInput = document.createElement('input');
+    colorInput.type = 'text';
+    colorInput.autocomplete = 'off';
+    colorInput.spellcheck = false;
+    colorInput.maxLength = 7;
+    colorInput.setAttribute('aria-label', '自定义背景色');
+    colorInput.placeholder = '#RRGGBB';
+    colorInput.oninput = () => colorInput.setCustomValidity('');
+    custom.append(colorInput);
+    button(custom, '应用', '应用背景色', () => applyBackground(colorInput.value));
+    backgroundPanel.append(palette, custom);
+    appearance.append(backgroundPanel);
     button(appearance, '还原', '还原打开文件时的背景', () => change(() => { background = canvas.background; }));
     const gridInput = control(appearance, '网格', 'checkbox', input => change(() => { grid = input.checked; }));
     const textTools = group('文字样式');
@@ -130,44 +179,113 @@ window.DrawioCanvas = (() => {
     fontInput.min = '8';
     fontInput.max = '96';
     const fontColorInput = control(textTools, '文字颜色', 'color', input => updateFont({ color: input.value }));
+    const imageTools = group('图片尺寸');
+    const widthInput = control(imageTools, '宽', 'number', input => resizeSelectedImage('width', input.value));
+    const heightInput = control(imageTools, '高', 'number', input => resizeSelectedImage('height', input.value));
+    for (const [input, label] of [[widthInput, '图片宽度'], [heightInput, '图片高度']]) {
+      input.min = '1';
+      input.max = '100000';
+      input.setAttribute('aria-label', label);
+      input.title = '以像素计，调整时保持图片比例';
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.stopPropagation();
+          input.blur();
+          focus();
+        }
+      });
+    }
+    const originalSize = button(imageTools, '原始大小', '恢复图片原始大小', () => {
+      const image = nodes.get(selected?.id)?.querySelector('img');
+      if (!image?.naturalWidth || !image.naturalHeight) return;
+      const { naturalWidth: width, naturalHeight: height } = image;
+      const limit = Math.min(1, 100000 / Math.max(width, height));
+      change(() => updateImageSize(selected, width, height, limit));
+    });
+
+    function closeBackground() {
+      backgroundPanel.hidden = true;
+      backgroundButton.setAttribute('aria-expanded', 'false');
+    }
+    function applyBackground(input) {
+      let color = input.trim().toLowerCase();
+      if (!color.startsWith('#')) color = '#' + color;
+      if (/^#[0-9a-f]{3}$/.test(color)) color = '#' + [...color.slice(1)].map(c => c + c).join('');
+      if (!/^#[0-9a-f]{6}$/.test(color)) {
+        colorInput.setCustomValidity('请输入 3 位或 6 位十六进制颜色');
+        colorInput.reportValidity?.();
+        return;
+      }
+      closeBackground();
+      if (color === background) focus();
+      else change(() => { background = color; });
+    }
+    backgroundPanel.onkeydown = event => {
+      if (event.isComposing) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeBackground();
+        backgroundButton.focus();
+      } else if (event.key === 'Enter' && event.target === colorInput) {
+        event.preventDefault();
+        event.stopPropagation();
+        applyBackground(colorInput.value);
+      }
+    };
+    const dismissBackground = event => {
+      if (!backgroundPanel.hidden && !backgroundPanel.contains(event.target) && !backgroundButton.contains(event.target)) closeBackground();
+    };
+    document.addEventListener('pointerdown', dismissBackground);
 
     function bounds() {
-      let width = 0, height = 0;
+      let left = 0, top = 0, right = 0, bottom = 0;
       for (const item of items) {
         if (item.type === 'edge') continue;
-        width = Math.max(width, item.x + item.width);
-        height = Math.max(height, item.y + item.height);
+        left = Math.min(left, item.x);
+        top = Math.min(top, item.y);
+        right = Math.max(right, item.x + item.width);
+        bottom = Math.max(bottom, item.y + item.height);
       }
-      return { width, height };
+      return { left, top, right, bottom };
     }
-    function fit() {
-      const { width, height } = bounds();
-      board.style.width = Math.max(viewport.clientWidth / zoom, width + 48) + 'px';
-      board.style.height = Math.max(viewport.clientHeight / zoom, height + 48) + 'px';
+    function fit(point = camera()) {
+      // 滚动坐标始终为正，画布坐标可在原点左侧和上方继续扩展。
+      const { left, top, right, bottom } = bounds();
+      const x = Math.min(100000, Math.max(-100048, point.x));
+      const y = Math.min(100000, Math.max(-100048, point.y));
+      originX = Math.min(originX, x, left < 0 ? left - 48 : 0);
+      originY = Math.min(originY, y, top < 0 ? top - 48 : 0);
+      layer.style.transform = 'translate(' + -originX + 'px,' + -originY + 'px)';
+      board.style.width = Math.ceil(Math.max(x + viewport.clientWidth / zoom, right + 48) - originX) + 'px';
+      board.style.height = Math.ceil(Math.max(y + viewport.clientHeight / zoom, bottom + 48) - originY) + 'px';
       board.style.zoom = zoom;
+      viewport.scrollLeft = (x - originX) * zoom;
+      viewport.scrollTop = (y - originY) * zoom;
       zoomButton.textContent = Math.round(zoom * 100) + '%';
     }
     function setZoom(value, x = viewport.clientWidth / 2, y = viewport.clientHeight / 2) {
       cancelGesture?.();
       const old = zoom;
+      const current = camera();
       zoom = Math.min(4, Math.max(0.1, Math.round(value * 100) / 100));
-      const left = (viewport.scrollLeft + x) / old, top = (viewport.scrollTop + y) / old;
-      fit();
-      viewport.scrollLeft = left * zoom - x;
-      viewport.scrollTop = top * zoom - y;
+      fit({ x: current.x + x / old - x / zoom, y: current.y + y / old - y / zoom });
       if (!textSession) focus();
     }
     function fitContent() {
-      const { width, height } = bounds();
-      const ratio = Math.min(viewport.clientWidth / (width + 40), viewport.clientHeight / (height + 40), 2);
+      const { left, top, right, bottom } = bounds();
+      const width = right - left, height = bottom - top;
+      const ratio = Math.min(viewport.clientWidth / (width + 48), viewport.clientHeight / (height + 48), 2);
       setZoom(width && height ? ratio : 1, 0, 0);
-      viewport.scrollTo?.(0, 0);
+      fit({ x: left < 0 ? left - 24 : 0, y: top < 0 ? top - 24 : 0 });
     }
     function syncTools() {
       undoButton.disabled = !undo.length;
       redoButton.disabled = !redo.length;
       deleteButton.disabled = !selected;
-      backgroundInput.value = background;
+      swatch.style.backgroundColor = background;
+      for (const choice of palette.children) choice.setAttribute('aria-pressed', String(choice.dataset.color === background));
       gridInput.checked = grid;
       board.style.backgroundColor = background;
       board.classList.toggle('show-grid', grid);
@@ -175,6 +293,12 @@ window.DrawioCanvas = (() => {
       if (!textTools.hidden) {
         fontInput.value = selected.fontSize;
         fontColorInput.value = selected.color;
+      }
+      imageTools.hidden = selected?.type !== 'image';
+      if (!imageTools.hidden) {
+        widthInput.value = selected.width;
+        heightInput.value = selected.height;
+        originalSize.disabled = !nodes.get(selected.id)?.querySelector('img')?.naturalWidth;
       }
     }
     function select(item) {
@@ -202,7 +326,7 @@ window.DrawioCanvas = (() => {
       ({ background, grid } = snapshot);
       items = snapshot.items.map(item => ({ ...item }));
       nodes.clear();
-      board.replaceChildren(wireLayer);
+      layer.replaceChildren(wireLayer);
       items.filter(item => item.type !== 'edge').forEach(add);
       select(items.find(item => item.id === snapshot.selected) || null);
       fit();
@@ -255,6 +379,25 @@ window.DrawioCanvas = (() => {
           fit();
         }
       });
+    }
+    function updateImageSize(item, width, height, factor) {
+      const ratio = Math.max(1 / Math.min(width, height), Math.min(100000 / Math.max(width, height), factor));
+      item.width = Math.round(width * ratio);
+      item.height = Math.round(height * ratio);
+      place(nodes.get(item.id), item);
+      fit();
+      drawEdges();
+    }
+    function resizeSelectedImage(dimension, value) {
+      if (selected?.type !== 'image') return;
+      const next = Number(value);
+      if (!value || !Number.isFinite(next) || next < 1) {
+        syncTools();
+        return;
+      }
+      if (next === selected[dimension]) return;
+      const { width, height } = selected, factor = next / selected[dimension];
+      change(() => updateImageSize(selected, width, height, factor));
     }
 
     function drawEdges() {
@@ -348,18 +491,39 @@ window.DrawioCanvas = (() => {
       };
       input.focus();
     }
-    function trackPointer(element, event, update, finish) {
+    function trackPointer(element, event, update, finish, scrollAtEdge = false) {
       const id = event.pointerId;
+      let scrollTimer = 0, pointer = event;
       element.setPointerCapture(id);
+      const move = () => update(pointer.clientX - event.clientX, pointer.clientY - event.clientY);
+      function scroll() {
+        scrollTimer = 0;
+        const rect = viewport.getBoundingClientRect(), margin = 28;
+        const speed = (point, start, end) => {
+          if (point < start + margin) return -Math.min(20, (start + margin - point) / 2);
+          if (point > end - margin) return Math.min(20, (point - end + margin) / 2);
+          return 0;
+        };
+        const dx = speed(pointer.clientX, rect.left, rect.right), dy = speed(pointer.clientY, rect.top, rect.bottom);
+        if (!dx && !dy) return;
+        const current = camera();
+        fit({ x: current.x + dx / zoom, y: current.y + dy / zoom });
+        move();
+        scrollTimer = setTimeout(scroll, 16);
+      }
       const stop = cancelled => {
+        clearTimeout(scrollTimer);
         element.onpointermove = element.onpointerup = element.onpointercancel = element.onlostpointercapture = null;
         cancelGesture = null;
         if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
         finish(cancelled);
       };
       cancelGesture = () => stop(true);
-      element.onpointermove = move => {
-        if (move.pointerId === id) update(move.clientX - event.clientX, move.clientY - event.clientY);
+      element.onpointermove = next => {
+        if (next.pointerId !== id) return;
+        pointer = next;
+        if (scrollAtEdge && !scrollTimer) scrollTimer = setTimeout(scroll, 16);
+        move();
       };
       element.onpointerup = end => { if (end.pointerId === id) stop(false); };
       element.onpointercancel = end => { if (end.pointerId === id) stop(true); };
@@ -374,6 +538,7 @@ window.DrawioCanvas = (() => {
         const image = document.createElement('img');
         image.alt = '画布图片';
         image.draggable = false;
+        image.onload = () => { if (selected === item) syncTools(); };
         image.src = 'data:' + item.mime + ';base64,' + item.data;
         handle = document.createElement('span');
         handle.className = 'diagram-canvas-resize';
@@ -388,16 +553,20 @@ window.DrawioCanvas = (() => {
         focus();
         select(item);
         const resizing = event.target === handle;
-        const { x, y, width, height } = item, before = state();
+        const { x, y, width, height } = item, before = state(), origin = camera();
         trackPointer(element, event, (dx, dy) => {
+          const current = camera();
+          dx = dx / zoom + current.x - origin.x;
+          dy = dy / zoom + current.y - origin.y;
           if (resizing) {
-            const factor = Math.max(10 / Math.min(width, height), Math.min(100000 / Math.max(width, height),
-              Math.abs(dx / width) > Math.abs(dy / height) ? 1 + dx / zoom / width : 1 + dy / zoom / height));
-            item.width = Math.round(width * factor);
-            item.height = Math.round(height * factor);
-          } else Object.assign(item, position(x + dx / zoom, y + dy / zoom));
-          place(element, item);
-          drawEdges();
+            const factor = Math.abs(dx / width) > Math.abs(dy / height) ? 1 + dx / width : 1 + dy / height;
+            updateImageSize(item, width, height, factor);
+            syncTools();
+          } else {
+            Object.assign(item, position(x + dx, y + dy));
+            place(element, item);
+            drawEdges();
+          }
         }, cancelled => {
           const changed = x !== item.x || y !== item.y || width !== item.width || height !== item.height;
           if (cancelled || (changed && !save())) Object.assign(item, { x, y, width, height });
@@ -405,10 +574,11 @@ window.DrawioCanvas = (() => {
           place(element, item);
           fit();
           drawEdges();
-        });
+          syncTools();
+        }, true);
       };
       nodes.set(item.id, element);
-      board.append(element);
+      layer.append(element);
     }
     function addText(where) {
       if (!isCurrent()) return;
@@ -433,11 +603,12 @@ window.DrawioCanvas = (() => {
         cancelGesture?.();
         finishText();
         const before = state();
-        let y = Math.max(32, bounds().height + 24);
+        const view = camera();
+        let y = Math.max(view.y + 32, bounds().bottom + 24);
         const additions = images.map(image => {
           const scale = Math.min(1, 600 / image.width, 400 / image.height);
           const height = Math.max(1, Math.round(image.height * scale));
-          const item = { ...image, id: crypto.randomUUID(), type: 'image', ...position(32, y),
+          const item = { ...image, id: crypto.randomUUID(), type: 'image', ...position(view.x + 32, y),
             width: Math.max(1, Math.round(image.width * scale)), height };
           y += height + 24;
           return item;
@@ -462,18 +633,20 @@ window.DrawioCanvas = (() => {
     board.ondblclick = event => {
       if (event.target !== board) return;
       const rect = board.getBoundingClientRect();
-      addText(position((event.clientX - rect.left) / zoom, (event.clientY - rect.top) / zoom));
+      addText(position(originX + (event.clientX - rect.left) / zoom, originY + (event.clientY - rect.top) / zoom));
     };
     board.onpointerdown = event => {
       if ((spaceDown && event.button === 0 || event.button === 1) && !cancelGesture) {
         event.preventDefault();
         focus();
-        const left = viewport.scrollLeft, top = viewport.scrollTop;
+        const start = camera();
         trackPointer(board, event, (dx, dy) => {
-          viewport.scrollLeft = left - dx;
-          viewport.scrollTop = top - dy;
+          fit({ x: start.x - dx / zoom, y: start.y - dy / zoom });
         }, () => {});
-      } else if (event.target === board && event.button === 0) select(null);
+      } else if (event.target === board && event.button === 0) {
+        focus();
+        select(null);
+      }
     };
     viewport.addEventListener('wheel', event => {
       if (!event.ctrlKey && !event.metaKey) return;
@@ -510,9 +683,22 @@ window.DrawioCanvas = (() => {
       } else if (event.key === 'Enter' && event.target === board && selected && selected.type !== 'image') {
         event.preventDefault();
         editText(selected);
-      } else if (event.key === 'Delete' && selected) {
+      } else if (event.key === 'Delete') {
         event.preventDefault();
+        event.stopPropagation();
         removeSelected();
+      } else if (event.target === board && selected && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const step = event.shiftKey ? 10 : 1;
+        const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+        const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+        change(() => {
+          Object.assign(selected, position(selected.x + dx, selected.y + dy));
+          place(nodes.get(selected.id), selected);
+          fit();
+          drawEdges();
+        });
       }
     };
     const stopPan = () => { spaceDown = false; board.classList.remove('pan'); };
@@ -520,8 +706,7 @@ window.DrawioCanvas = (() => {
     board.onkeyup = event => { if (event.key === ' ') stopPan(); };
     restore({ items, background, grid });
     if (viewState) {
-      viewport.scrollLeft = viewState.left;
-      viewport.scrollTop = viewState.top;
+      fit({ x: originX + viewState.left / zoom, y: originY + viewState.top / zoom });
     }
     let resize;
     if (typeof ResizeObserver === 'function') {
@@ -532,8 +717,9 @@ window.DrawioCanvas = (() => {
     panel.previewDispose = () => {
       disposed = true;
       resize?.disconnect();
+      document.removeEventListener('pointerdown', dismissBackground);
       cancelGesture?.();
-      onDispose({ zoom, left: viewport.scrollLeft, top: viewport.scrollTop, undo, redo });
+      onDispose({ zoom, originX, originY, left: viewport.scrollLeft, top: viewport.scrollTop, undo, redo });
     };
     return panel;
   }
