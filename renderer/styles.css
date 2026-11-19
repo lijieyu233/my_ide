@@ -476,6 +476,11 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 :is(#viewer,.editor-pane-view) { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 /* 独占一行，避免被旧 CM6 搜索面板的层级盖住只读身份提示。 */
 .viewer-loading { flex-shrink: 0; padding: 8px 12px; background: var(--panel-strong); color: var(--text); border-bottom: 1px solid var(--border); }
+.drawio-editor { position: relative; flex: 1; min-height: 0; }
+.drawio-editor iframe { display: block; width: 100%; height: 100%; border: 0; }
+.drawio-notice { position: absolute; inset: 0; z-index: 1; background: var(--bg); }
+.drawio-notice p { margin: 0 0 12px; }
+.drawio-notice[hidden], .drawio-notice button[hidden] { display: none; }
 /* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
    所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
 :is(#viewer,.editor-pane-view) > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */

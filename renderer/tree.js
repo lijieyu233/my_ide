@@ -1137,9 +1137,14 @@ const Tree = (() => {
     if (!rootPath) return;
     const operationRoot=rootPath;
     const baseDir = anchor.type === 'dir' ? anchor.path : anchor.path.replace(/[\\/][^\\/]+$/, '');
-    const label = type === 'dir' ? '新建文件夹' : '新建文件';
+    const label = type === 'drawio' ? '新建 draw.io 图表' : type === 'dir' ? '新建文件夹' : '新建文件';
     let name = suppliedName ?? await Modal.prompt(label, '名称：', '');
     if (typeof name === 'string' && !name.trim()) return;
+    if (type === 'drawio' && typeof name === 'string') {
+      name = name.trim();
+      if (!/\.drawio$/i.test(name)) name += '.drawio';
+    }
+    if (type === 'drawio') type = 'file';
     if (type === 'file') name = defaultFileName(name);
     if (!name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，新建未执行','err');return;}
@@ -1180,6 +1185,7 @@ const Tree = (() => {
     hide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/>',
     unhide: '<path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.7"/><path d="M2.4 2.4l11.2 11.2"/>',
     file: '<path d="M9 1.8H4.6a1 1 0 0 0-1 1v10.4a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V5.2z"/><path d="M9 1.8v3.4h3.4"/>',
+    diagram: '<rect x="2" y="2" width="5" height="4" rx=".7"/><rect x="9" y="10" width="5" height="4" rx=".7"/><path d="M4.5 6v6H9"/>',
     folder: '<path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/>',
     copy: '<rect x="5.4" y="5.4" width="8" height="8" rx="1"/><path d="M10.6 5.4V3.2a1 1 0 0 0-1-1H3.2a1 1 0 0 0-1 1v6.4a1 1 0 0 0 1 1h2.2"/>',
     paste: '<path d="M6 2.6h4M5.2 4.2H3.6a1 1 0 0 0-1 1v8.2a1 1 0 0 0 1 1h8.8a1 1 0 0 0 1-1V5.2a1 1 0 0 0-1-1h-1.6"/><rect x="5.6" y="1.6" width="4.8" height="2.6" rx=".8"/>',
@@ -1300,6 +1306,7 @@ const Tree = (() => {
 
     sep();   // ① 执行/可见性 ｜ 新建
     mk('新建文件', () => createItem(item, 'file'), false, 'file');
+    mk('新建 draw.io 图表', () => createItem(item, 'drawio'), false, 'diagram');
     mk('新建文件夹', () => createItem(item, 'dir'), false, 'folder');
     sepOpen = true;
 
@@ -1763,7 +1770,7 @@ const Tree = (() => {
       } else {
         anchor = { type: 'dir', path: rootPath };
       }
-      return createItem(anchor, type === 'dir' ? 'dir' : 'file');
+      return createItem(anchor, type === 'dir' || type === 'drawio' ? type : 'file');
     },
     // 仅自检用：让右键菜单的图标/对齐可被稳定验证
     __testCtx: (x, y, item) => showCtxMenu(x, y, item),

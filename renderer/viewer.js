@@ -74,8 +74,7 @@ const Viewer = (() => {
     }
     usePane(original);renderTabs();
   }
-  function renderVisibleTab(tab,external=false){
-    if(external){syncPaneDocument(tab);return;}
+  function renderVisibleTab(tab){
     const group=paneLayout?.groups.find(g=>g!==activePane&&g.tabId===tab.id);if(!group)return;
     renderPane(group,tab);
   }
@@ -86,10 +85,12 @@ const Viewer = (() => {
     if(!paneLayout?.visible){
       storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes});
       const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn,states:activePane.states,modes:activePane.modes});activePane=groups[0];tabActions=activePane.actions;
-      paneLayout.setOrientation(orientation);groups[1].tabIds=[tab.id];groups[1].modes.set(tab.id,tab.mode);
+      // 同一图表只有一个写入画布，避免两个跨域编辑器各自提交完整 XML。
+      const secondTab = isDrawio(tab.name) ? null : tab;
+      paneLayout.setOrientation(orientation);groups[1].tabIds=secondTab?[tab.id]:[];groups[1].modes.set(tab.id,tab.mode);
       const initial=groups[0].states.get(tab.id);if(initial)groups[1].states.set(tab.id,{...initial});
       if(move){groups[1].tabIds=[];renderPane(groups[1],null);moveTabToPane(tab,1,true);}
-      else{renderPane(groups[1],tab);focusPane(groups[1]);focusEditor();}
+      else{renderPane(groups[1],secondTab);focusPane(groups[1]);focusEditor();}
     }else paneLayout.setOrientation(orientation);
     renderTabs();window.Session?.save();return true;
   }
@@ -131,6 +132,7 @@ const Viewer = (() => {
     const root=App.root,initial=currentTab(),revision=initial?.editRevision;
     const ids=state.panes.map(item=>item.path==null?null:tabs.find(tab=>DocumentPaths.key(tab.path)===DocumentPaths.key(item.path)));
     if(ids.some(tab=>tab===undefined))throw Error('分屏文件已关闭或记录重复');
+    if(ids[0]&&ids[0]===ids[1]&&isDrawio(ids[0].name))ids[1-state.active]=null;
     for(const tab of ids.filter(Boolean)){
       if(tab.reader)return;
       if(tab.lazy){tab.lazy=false;tab.loadPromise=loadTab(tab,true);}
@@ -142,6 +144,7 @@ const Viewer = (() => {
     for(let i=0;i<2;i++){
       const paths=Array.isArray(state.panes[i].tabs)?state.panes[i].tabs:[state.panes[i].path].filter(Boolean);
       paneLayout.groups[i].tabIds=paths.map(path=>tabs.find(t=>DocumentPaths.key(t.path)===DocumentPaths.key(path))?.id).filter(Boolean);
+      if(ids[1-i]&&isDrawio(ids[1-i].name))paneLayout.groups[i].tabIds=paneLayout.groups[i].tabIds.filter(id=>id!==ids[1-i].id);
       if(ids[i]&&!paneLayout.groups[i].tabIds.includes(ids[i].id))paneLayout.groups[i].tabIds.push(ids[i].id);
     }
     for(let i=0;i<2;i++)renderPane(paneLayout.groups[i],ids[i]||null);
@@ -208,6 +211,17 @@ const Viewer = (() => {
   let saveTimer = null;
 
   function extOf(name) { return (name.split('.').pop() || '').toLowerCase(); }
+  function isDrawio(name) { return /\.drawio$/i.test(name); }
+  function defaultTextMode(name) {
+    if (isDrawio(name)) return 'drawio';
+    const ext = extOf(name);
+    if (MD_EXTS.has(ext)) {
+      let pref = 'live';
+      try { pref = localStorage.getItem('myide-md-mode') || 'live'; } catch {}
+      return ['live', 'split', 'source', 'preview'].includes(pref) ? pref : 'live';
+    }
+    return ext !== 'json' && PREVIEW_EXTS.has(ext) ? 'preview' : 'edit';
+  }
   function formatLabel(tab) {
     const format = tab.textFormat || { encoding: tab.encoding || 'utf8' };
     const names = { utf8: 'UTF-8', utf16le: 'UTF-16LE', utf16be: 'UTF-16BE', gbk: 'GBK' };
@@ -287,12 +301,12 @@ const Viewer = (() => {
       tab.error = null; tab.binary = false; tab.saveError = null; tab.saveErrorCode = null;
       tab.editRevision++; tab.savedRevision = tab.editRevision;
       tab.cmState = null; tab.ta = null;
-      if (tab.mode === 'error') tab.mode = MD_EXTS.has(extOf(tab.name)) ? 'source' : 'edit';
+      if (tab.mode === 'error') tab.mode = isDrawio(tab.name) ? 'drawio' : MD_EXTS.has(extOf(tab.name)) ? 'source' : 'edit';
       if (tab === currentTab()) {
         // renderView会保存旧state；重新解码必须丢弃绑定旧正文的历史，再重建。
         if (cmApi && cmApi.__tab === tab) { cmApi.destroy(); cmApi = null; }
         renderView();
-      }else renderVisibleTab(tab,'reset');
+      }
       syncPaneDocument(tab);renderTabs(); updateFormatStatus(tab);
       return { ok: true };
     } catch (e) {
@@ -471,7 +485,7 @@ const Viewer = (() => {
     if(!existing&&pendingPreview?.isCurrent()&&!pendingPreview.settled&&DocumentPaths.key(pendingPreview.path)===DocumentPaths.key(path)){
       if(options.intent!=='browse')pendingPreview.keep=true;return pendingPreview.promise;
     }
-    if(options.intent==='browse'&&previewEnabled()&&!existing&&!options.reader&&!window.Reader?.archive(path))return openPreviewFile(path,options);
+    if(options.intent==='browse'&&previewEnabled()&&!existing&&!options.reader&&!isDrawio(path)&&!window.Reader?.archive(path))return openPreviewFile(path,options);
     previewSequence++;previewFeedback='';
     if(pathBusy(path)){MI.toast('路径迁移正在进行，请完成后再打开', 'err');return;}
     // 占据主区的工具窗口（浏览器 / 任务依赖图）会盖住编辑区：打开文件先让位（PyCharm 式）
@@ -624,15 +638,7 @@ const Viewer = (() => {
       tab.encoding = r.encoding || 'utf8';
       tab.textFormat = r.textFormat || { encoding: tab.encoding, bom: tab.encoding.startsWith('utf16') };
       tab.eol = r.textFormat ? r.textFormat.eol : r.content && r.content.includes('\r\n') ? 'CRLF' : null;
-      // Markdown 默认「实时预览」（Obsidian 式块编辑）；其他可预览格式走纯预览
-      if (MD_EXTS.has(extOf(tab.name))) {
-        // 模式全局统一：记住上次使用的 md 模式，切换标签/新开文件不再重置
-        let pref = 'live';
-        try { pref = localStorage.getItem('myide-md-mode') || 'live'; } catch {}
-        tab.mode = ['live', 'split', 'source', 'preview'].includes(pref) ? pref : 'live';
-      } else {
-        tab.mode = extOf(tab.name)==='json'?'edit':PREVIEW_EXTS.has(extOf(tab.name)) ? 'preview' : 'edit';
-      }
+      tab.mode = defaultTextMode(tab.name);
     }
     if(!detached)renderTabs();
     if(tab===currentTab())renderView();else renderVisibleTab(tab);
@@ -650,6 +656,12 @@ const Viewer = (() => {
     if(target.reader&&paneLayout?.visible)collapsePanes(activePane,true);
     if (['browser','quick-launch','bookshelf','remote'].includes(window.App?.getTool())) App.backToEditor();
     previewSequence++;previewFeedback='';
+    const otherDrawioPane = isDrawio(target.name) && paneLayout?.groups.find(group => group !== activePane && group.tabId === target.id);
+    if (otherDrawioPane) {
+      focusPane(otherDrawioPane);
+      revealTab(target.id);
+      return;
+    }
     storePane();
     const owner=paneFor(target);
     if(paneLayout?.visible&&!activePane.tabIds.includes(target.id))activePane.tabIds.push(target.id);
@@ -1152,6 +1164,23 @@ const Viewer = (() => {
       ex.title = '导出为单文件 HTML，保存在当前 md 所在目录（同名 .html）';
       ex.onclick = (e) => { e.stopPropagation(); if (window.MdExport) void MdExport.exportTab(tab, { nextToSource: true }); };
       acts.appendChild(ex);
+    } else if (isDrawio(tab.name) && ['drawio', 'edit'].includes(tab.mode)) {
+      const source = tab.mode === 'drawio';
+      const toggle = document.createElement('button');
+      toggle.className = 'vt-btn drawio-mode-toggle';
+      toggle.innerHTML = source ? ACT_IC.code + '查看源码' : ACT_IC.edit + 'draw.io 画布';
+      toggle.onclick = () => {
+        if (!source) {
+          const other = paneLayout?.groups.find(group => group !== activePane && group.tabIds.includes(tab.id));
+          if (other) {
+            other.tabIds = other.tabIds.filter(id => id !== tab.id);
+            if (other.tabId === tab.id) renderPane(other, null);
+          }
+        }
+        tab.mode = source ? 'edit' : 'drawio';
+        renderView();
+      };
+      acts.append(toggle);
     } else if (tab.htmlDiskPreview) {
       const label=document.createElement('span');label.className='vt-note';label.textContent='只读预览 · '+fmtSize(tab.size);acts.appendChild(label);
       const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);
@@ -1546,6 +1575,11 @@ const Viewer = (() => {
       return;
     }
 
+    if (tab.mode === 'drawio') {
+      renderDrawio(tab);
+      return;
+    }
+
     if (tab.mode === 'live') {
       tab.ta = null;
       renderMarkdownCm(tab, true);
@@ -1821,6 +1855,31 @@ const Viewer = (() => {
   }
 
   // ---------- 代码文件编辑（CodeMirror 6 + 语法高亮） ----------
+  function renderDrawio(tab) {
+    const host = viewer, root = MI.activeRoot, path = tab.path;
+    const ownsDiagram = () => MI.activeRoot === root && tabs.includes(tab) && tab.path === path &&
+      host.contains(panel) && tab.diagramView === panel;
+    const panel = DrawioEditor.mount(host, {
+      getXml: () => tab.content,
+      title: tab.name,
+      onFocus: () => {
+        const group = paneLayout?.groups.find(group => group.view === host);
+        if (group && ownsDiagram()) focusPane(group);
+      },
+      onChange: (xml, save) => {
+        if (!ownsDiagram()) return;
+        if (xml !== tab.content) {
+          tab.content = xml;
+          markEdited(tab);
+          scheduleAutosave();
+        }
+        if (save) void saveSnapshot(tab, false);
+      },
+      onDispose: () => { if (tab.diagramView === panel) delete tab.diagramView; },
+    });
+    tab.diagramView = panel;
+  }
+
   function renderCodeCm(tab) {
     const wrap = document.createElement('div');
     wrap.className = 'editor-code-wrap';
@@ -2048,7 +2107,7 @@ const Viewer = (() => {
         const state=api.view.state,spec={changes:changes&&changes.length===state.doc.length?changes:{from:0,to:state.doc.length,insert:tab.content},effects:TextLines.reset(tab.content)};
         api.view.update([state.update(spec)]);rememberPaneEditor(group,api);
       }else if(stored){const state=stored.state;stored.state=state.update({changes:changes&&changes.length===state.doc.length?changes:{from:0,to:state.doc.length,insert:tab.content},effects:TextLines.reset(tab.content)}).state;}
-      if(group.tabId===tab.id&&!api){const ta=group.view.querySelector('textarea.editor');if(ta){const start=ta.selectionStart,end=ta.selectionEnd;ta.value=tab.content;ta.setSelectionRange(Math.min(start,ta.value.length),Math.min(end,ta.value.length));ta.__refreshDocument?.();}else if(group.modes.get(tab.id)==='preview')renderPane(group,tab);}
+      if(group.tabId===tab.id&&!api){const ta=group.view.querySelector('textarea.editor');if(ta){const start=ta.selectionStart,end=ta.selectionEnd;ta.value=tab.content;ta.setSelectionRange(Math.min(start,ta.value.length),Math.min(end,ta.value.length));ta.__refreshDocument?.();}else if(group.modes.get(tab.id)==='preview'||group!==activePane&&group.modes.get(tab.id)==='drawio')renderPane(group,tab);}
     }}finally{tab.__syncing=false;}
   }
   function markEdited(tab,map) {
@@ -2127,6 +2186,7 @@ const Viewer = (() => {
             tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
           }
           updateFormatStatus(tab);
+          tab.diagramView?.setSaveStatus(tab.dirty ? '还有未保存的修改' : '已保存到项目文件', tab.dirty);
           // 保存后磁盘大小会变（尤其压缩/编码转换），重新 stat 一次
           if (tab === currentTab()) refreshFileSize(tab);
           renderTabs();
@@ -2138,6 +2198,7 @@ const Viewer = (() => {
           tab.saveError = result.error;
           tab.saveErrorCode = result.errorCode;
           tab.dirty = true;
+          tab.diagramView?.setSaveStatus('保存失败，请在 MyIDE 中检查文件状态', true);
           renderTabs();
           MI.log('ERROR', 'viewer.save', '写入失败 ' + snapshot.path + ' → ' + result.error);
         }
@@ -2170,8 +2231,13 @@ const Viewer = (() => {
     for (const t of tabs) {
       if (DocumentPaths.contains(oldPath,t.path)) {
         const before=t.path, known=documents.find(doc=>DocumentPaths.key(doc.oldPath)===DocumentPaths.key(before));
+        const wasDrawio = isDrawio(t.name);
         t.path = DocumentPaths.map(before,oldPath,newPath);
         t.name = t.path.split(/[\\/]/).pop();
+        if (wasDrawio && !isDrawio(t.name) && t.mode === 'drawio') {
+          t.mode = 'edit';
+          for (const group of paneLayout?.groups || [activePane]) group.modes.set(t.id, t.mode);
+        }
         t.pathGeneration = (t.pathGeneration || 0) + 1;
         t.editRevision++; t.savedRevision++;
         t.diskVersion = known?.version || null;
@@ -2273,8 +2339,7 @@ const Viewer = (() => {
         const recoveredShieldError=action==='绿盾解密'&&(t.error||t.mode==='error');
         if(recoveredShieldError){
           t.error=null;t.binary=false;t.tooLarge=false;
-          let pref='live';try{pref=localStorage.getItem('myide-md-mode')||'live';}catch{}
-          t.mode=MD_EXTS.has(extOf(t.name))?(['live','split','source','preview'].includes(pref)?pref:'live'):extOf(t.name)==='json'?'edit':PREVIEW_EXTS.has(extOf(t.name))?'preview':'edit';
+          t.mode=defaultTextMode(t.name);
         }
         t.content=r.content;t.diskVersion=r.version;t.textFormat=r.textFormat;t.encoding=r.encoding||t.encoding;t.eol=r.textFormat?.eol;
         t.saveError=null;t.saveErrorCode=null;t.cmState=null;
@@ -2282,7 +2347,7 @@ const Viewer = (() => {
           if(cmApi?.__tab===t){t.__extLoading=true;try{cmApi.setValue(r.content);}finally{t.__extLoading=false;}}
           else if(t.ta){t.ta.value=r.content;if(findState?.tab===t)findState.refresh();}else renderView();
           updateFormatStatus(t);window.App?.refreshOutline(t);
-        }else renderVisibleTab(t,true);
+        }
         syncPaneDocument(t);
         rebindShieldPanes(t,recoveredShieldError);
       }
@@ -2341,7 +2406,7 @@ const Viewer = (() => {
           }
           updateFormatStatus(t);
           if (window.App) App.refreshOutline(t);
-        }else renderVisibleTab(t,true);
+        }
         syncPaneDocument(t);
       } catch {}
     }

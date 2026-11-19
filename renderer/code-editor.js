@@ -37,7 +37,7 @@ window.CodeEditor = (() => {
       case 'ts': case 'tsx': return CodeLangs.javascript({ typescript: true });
       case 'json': return CodeLangs.json();
       case 'css': case 'scss': case 'less': return CodeLangs.css();
-      case 'html': case 'htm': case 'xml': case 'svg': case 'vue': case 'svelte': return CodeLangs.html();
+      case 'html': case 'htm': case 'xml': case 'drawio': case 'svg': case 'vue': case 'svelte': return CodeLangs.html();
       case 'py': return CodeLangs.python();
       case 'java': return CodeLangs.java();
       case 'c': case 'h': case 'cpp': case 'hpp': return CodeLangs.cpp();

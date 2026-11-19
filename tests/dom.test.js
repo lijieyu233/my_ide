@@ -574,6 +574,7 @@ async function loadApp(dom) {
   evalFile('navigation-history.js');
   evalFile('tab-descriptions.js');
   evalFile('closed-tabs.js');
+  evalFile('drawio-editor.js');
   evalFile('viewer.js');
   evalFile('tab-picker.js');
   evalFile('outline.js');
@@ -1032,6 +1033,86 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'r', { ctrl: true });
     await tick(); await tick();
     ok('Ctrl+R 无异常', () => {});
+  });
+
+  await okAsync('draw.io：新建、隔离画布消息、冲突恢复与源码切换', async () => {
+    const d = makeDom(), w = d.window, file = P + '/流程.DRAWIO';
+    const xml = '<mxfile><diagram name="流程"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>';
+    const origin = 'https://embed.diagrams.net';
+    const messages = [];
+    const fsCallbackCount = fakeFsCbs.length, previousStateCallbacks = { ...stateCb };
+    const previousPathProgress = pathProgressCb;
+    w.myIDE.plugins.onChanged = () => {};
+    try {
+      await loadApp(d);
+      await w.App.setRoot(P);
+      w.Modal.prompt = async title => { assert.equal(title, '新建 draw.io 图表'); return '流程.DRAWIO'; };
+      assert((await w.Tree.createItemAt('drawio')).ok);
+      const tab = w.Viewer.activeTab, frame = $(d, '.drawio-editor iframe');
+      assert.equal(tab.path, file);
+      assert.equal(tab.mode, 'drawio');
+      assert.equal(FAKE_FS[file].content, '');
+      assert.equal(new URL(frame.src).origin, origin);
+      assert(!frame.getAttribute('sandbox').includes('allow-top-navigation'));
+      const peer = frame.contentWindow;
+      peer.postMessage = (data, target) => messages.push({ ...JSON.parse(data), target });
+      const send = (data, source = peer, from = origin) => {
+        w.dispatchEvent(new w.MessageEvent('message', { source, origin: from, data: JSON.stringify(data) }));
+      };
+      send({ event: 'init' }, w);
+      send({ event: 'init' }, peer, 'https://example.com');
+      send({ event: 'save', xml });
+      assert.equal(messages.length, 0);
+      assert.equal(tab.content, '');
+      send({ event: 'init' });
+      assert.equal(messages[0].target, origin);
+      assert.equal(messages[0].action, 'load');
+      assert.equal(messages[0].autosave, 1);
+      assert.match(messages[0].xml, /^<mxGraphModel>/);
+      send({ event: 'load' });
+      send({ event: 'save', xml: '<mxfile>' });
+      assert.equal(tab.content, '');
+      send({ event: 'autosave', xml });
+      assert.equal(tab.content, xml);
+      assert(tab.dirty);
+      const bridge = w.myIDE.fs, write = bridge.writeFile, diskVersion = tab.diskVersion;
+      bridge.writeFile = async () => ({ error: '文件已变化', errorCode: 'VERSION_CONFLICT' });
+      send({ event: 'save', xml });
+      await tick();
+      assert(tab.dirty);
+      assert.equal(tab.saveErrorCode, 'VERSION_CONFLICT');
+      assert.equal(FAKE_FS[file].content, '');
+      assert.equal(messages.at(-1).modified, true);
+      bridge.writeFile = async (target, content, format, options) => {
+        assert.equal(target, file);
+        assert.equal(options.expectedVersion, diskVersion);
+        return write(target, content, format, options);
+      };
+      send({ event: 'save', xml });
+      await tick();
+      assert.equal(FAKE_FS[file].content, xml);
+      assert(!tab.dirty);
+      assert.equal(messages.at(-1).modified, false);
+      click($(d, '.drawio-mode-toggle'));
+      assert.equal(w.Viewer.cm.getValue(), xml);
+      send({ event: 'autosave', xml: '<mxGraphModel><root/></mxGraphModel>' });
+      assert.equal(tab.content, xml);
+      click($(d, '.drawio-mode-toggle'));
+      assert.notEqual($(d, '.drawio-editor iframe'), frame);
+      assert(await w.Viewer.closeTab(w.Viewer.openTabs.indexOf(tab)));
+      await w.Viewer.openFile(file);
+      assert.equal(w.Viewer.activeTab.content, xml);
+      assert.equal(w.Viewer.activeTab.mode, 'drawio');
+    } finally {
+      w.Viewer.closeAll();
+      await tick();
+      w.close();
+      fakeFsCbs.splice(fsCallbackCount);
+      Object.assign(stateCb, previousStateCallbacks);
+      pathProgressCb = previousPathProgress;
+      delete FAKE_FS[file];
+      FAKE_FS[P].children = FAKE_FS[P].children.filter(p => p !== file);
+    }
   });
 
   await okAsync('HTML 预览：iframe 渲染', async () => {

@@ -460,6 +460,7 @@ for (const binding of Shortcuts.bindings()) {
 }
 Shortcuts.register('theme-settings', { desc: '主题设置', keys: [], palette: true, category: '工作台', aliases: ['theme', '颜色', '主题配置'], run: () => Settings.open('theme') });
 Shortcuts.register('search-panel', { desc: '在侧栏搜索内容', keys: [], palette: true, category: '项目', aliases: ['search panel', '常驻搜索'], requiresProject: true, run: () => Search.showDock() });
+Shortcuts.register('tree-new-drawio', { desc: '新建 draw.io 图表', keys: [], palette: true, category: '项目', aliases: ['draw.io', 'diagrams.net', '流程图'], requiresProject: true, run: () => Tree.createItemAt('drawio') });
 Shortcuts.register('all-tabs', { desc: '全部打开的标签', keys: [], palette: true, category: '文件', aliases: ['open tabs', '标签列表'], requiresDocument: true, run:ctx=>TabPicker.open(ctx.invoker) });
 Shortcuts.register('focus-tabs', { desc: '聚焦文件标签', keys: [], palette: true, category: '文件', aliases: ['focus tabs', '标签栏'], requiresDocument: true, run:()=>Viewer.focusTab() });
 Shortcuts.register('reopen-closed-file',{desc:'重新打开关闭的文件',keys:[],palette:true,category:'文件',aliases:['reopen closed','误关','重开文件'],requiresProject:true,
