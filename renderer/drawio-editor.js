@@ -2,7 +2,6 @@ window.DrawioEditor = (() => {
   const origin = 'https://embed.diagrams.net';
   const url = origin + '/?embed=1&proto=json&lang=zh&spin=1&lockdown=1&plugins=0' +
     '&suppressNewWindows=1&noExitBtn=1&saveAndExit=0&modified=unsavedChanges&keepmodified=1';
-  const emptyDiagram = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>';
 
   function isDiagram(xml) {
     if (typeof xml !== 'string' || !xml.trim()) return false;
@@ -22,7 +21,7 @@ window.DrawioEditor = (() => {
     status.setAttribute('role', 'status');
     const retry = document.createElement('button');
     retry.className = 'vt-btn';
-    retry.textContent = '重试加载';
+    retry.textContent = '打开在线 draw.io';
     notice.append(status, retry);
     panel.append(notice);
     parent.append(panel);
@@ -55,6 +54,7 @@ window.DrawioEditor = (() => {
       }
       notice.hidden = false;
       status.textContent = '正在连接 draw.io…';
+      retry.textContent = '重试加载';
       retry.hidden = true;
       frame = document.createElement('iframe');
       frame.title = 'draw.io 画布';
@@ -75,8 +75,7 @@ window.DrawioEditor = (() => {
         loadingPeer = event.source;
         ready = false;
         waitForEditor();
-        const xml = getXml();
-        send({ action: 'load', xml: xml.trim() ? xml : emptyDiagram, title, autosave: 1 });
+        send({ action: 'load', xml: getXml(), title, autosave: 1 });
       } else if (message?.event === 'load' && loadingPeer === event.source) {
         if (message.error) {
           showError('draw.io 无法打开图表。可切换到「查看源码」检查内容。', true);
@@ -108,7 +107,7 @@ window.DrawioEditor = (() => {
       if (ready) send({ action: 'status', message, modified });
     };
     retry.onclick = start;
-    start();
+    status.textContent = '此文件使用 draw.io 图表格式，可切换到「查看源码」或打开在线编辑器。';
     return panel;
   }
 

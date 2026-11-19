@@ -574,6 +574,7 @@ async function loadApp(dom) {
   evalFile('navigation-history.js');
   evalFile('tab-descriptions.js');
   evalFile('closed-tabs.js');
+  evalFile('drawio-canvas.js');
   evalFile('drawio-editor.js');
   evalFile('viewer.js');
   evalFile('tab-picker.js');
@@ -1035,8 +1036,10 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     ok('Ctrl+R 无异常', () => {});
   });
 
-  await okAsync('draw.io：新建、隔离画布消息、冲突恢复与源码切换', async () => {
+  await okAsync('draw.io：本地粘贴多图和文字落盘，原有画布显式联网', async () => {
     const d = makeDom(), w = d.window, file = P + '/流程.DRAWIO';
+    const legacyFile = P + '/已有流程.drawio';
+    const legacyContent = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>';
     const xml = '<mxfile><diagram name="流程"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>';
     const origin = 'https://embed.diagrams.net';
     const messages = [];
@@ -1048,10 +1051,42 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       await w.App.setRoot(P);
       w.Modal.prompt = async title => { assert.equal(title, '新建 draw.io 图表'); return '流程.DRAWIO'; };
       assert((await w.Tree.createItemAt('drawio')).ok);
-      const tab = w.Viewer.activeTab, frame = $(d, '.drawio-editor iframe');
-      assert.equal(tab.path, file);
-      assert.equal(tab.mode, 'drawio');
+      assert.equal(w.Viewer.activeTab.path, file);
       assert.equal(FAKE_FS[file].content, '');
+      assert(!$(d, '.drawio-editor iframe'));
+      const paths = [P + '/附件一.png', P + '/附件二.jpg'];
+      w.myIDE.clip.readImage = async () => ({ ok: true, empty: true });
+      w.myIDE.clip.getFiles = async () => paths;
+      w.myIDE.fs.readBuffer = async p => ({ buffer: new w.Uint8Array([paths.indexOf(p) + 1, 2, 3]).buffer });
+      w.Image.prototype.decode = async () => {};
+      Object.defineProperty(w.Image.prototype, 'naturalWidth', { get: () => 80 });
+      Object.defineProperty(w.Image.prototype, 'naturalHeight', { get: () => 60 });
+      const board = $(d, '.diagram-canvas-board');
+      board.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true }));
+      for (let i = 0; i < 20 && !$$(d, '.diagram-canvas-item img').length; i++) await tick();
+      assert.equal($$(d, '.diagram-canvas-item img').length, 2);
+      assert($$(d, '.diagram-canvas-item img')[1].src.startsWith('data:image/jpeg;base64,'));
+      click($$(d, '.diagram-canvas-toolbar button')[1]);
+      const input = $(d, '.diagram-canvas-item textarea'), annotation = '图片 <一> & "说明"\n第二行';
+      input.value = annotation;
+      input.dispatchEvent(new w.Event('input', { bubbles: true }));
+      input.blur();
+      const local = w.Viewer.activeTab;
+      assert(local.dirty);
+      assert((await w.Viewer.saveTab(w.Viewer.openTabs.indexOf(local))).ok);
+      assert.equal(w.DrawioCanvas.read(FAKE_FS[file].content).items[2].text, annotation);
+      assert(await w.Viewer.closeTab(w.Viewer.openTabs.indexOf(local)));
+      await w.Viewer.openFile(file);
+      assert.equal($$(d, '.diagram-canvas-item img').length, 2);
+      assert.equal($(d, '.diagram-canvas-item.text').textContent, annotation);
+      assert(!$(d, '.drawio-editor iframe'));
+
+      FAKE_FS[legacyFile] = { type: 'file', content: legacyContent };
+      await w.Viewer.openFile(legacyFile);
+      const tab = w.Viewer.activeTab;
+      assert(!$(d, '.drawio-editor iframe'));
+      click($(d, '.drawio-notice button'));
+      const frame = $(d, '.drawio-editor iframe');
       assert.equal(new URL(frame.src).origin, origin);
       assert(!frame.getAttribute('sandbox').includes('allow-top-navigation'));
       const peer = frame.contentWindow;
@@ -1063,7 +1098,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       send({ event: 'init' }, peer, 'https://example.com');
       send({ event: 'save', xml });
       assert.equal(messages.length, 0);
-      assert.equal(tab.content, '');
+      assert.equal(tab.content, legacyContent);
       send({ event: 'init' });
       assert.equal(messages[0].target, origin);
       assert.equal(messages[0].action, 'load');
@@ -1071,7 +1106,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       assert.match(messages[0].xml, /^<mxGraphModel>/);
       send({ event: 'load' });
       send({ event: 'save', xml: '<mxfile>' });
-      assert.equal(tab.content, '');
+      assert.equal(tab.content, legacyContent);
       send({ event: 'autosave', xml });
       assert.equal(tab.content, xml);
       assert(tab.dirty);
@@ -1081,16 +1116,16 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       await tick();
       assert(tab.dirty);
       assert.equal(tab.saveErrorCode, 'VERSION_CONFLICT');
-      assert.equal(FAKE_FS[file].content, '');
+      assert.equal(FAKE_FS[legacyFile].content, legacyContent);
       assert.equal(messages.at(-1).modified, true);
       bridge.writeFile = async (target, content, format, options) => {
-        assert.equal(target, file);
+        assert.equal(target, legacyFile);
         assert.equal(options.expectedVersion, diskVersion);
         return write(target, content, format, options);
       };
       send({ event: 'save', xml });
       await tick();
-      assert.equal(FAKE_FS[file].content, xml);
+      assert.equal(FAKE_FS[legacyFile].content, xml);
       assert(!tab.dirty);
       assert.equal(messages.at(-1).modified, false);
       click($(d, '.drawio-mode-toggle'));
@@ -1100,7 +1135,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       click($(d, '.drawio-mode-toggle'));
       assert.notEqual($(d, '.drawio-editor iframe'), frame);
       assert(await w.Viewer.closeTab(w.Viewer.openTabs.indexOf(tab)));
-      await w.Viewer.openFile(file);
+      await w.Viewer.openFile(legacyFile);
       assert.equal(w.Viewer.activeTab.content, xml);
       assert.equal(w.Viewer.activeTab.mode, 'drawio');
     } finally {
@@ -1111,6 +1146,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       Object.assign(stateCb, previousStateCallbacks);
       pathProgressCb = previousPathProgress;
       delete FAKE_FS[file];
+      delete FAKE_FS[legacyFile];
       FAKE_FS[P].children = FAKE_FS[P].children.filter(p => p !== file);
     }
   });

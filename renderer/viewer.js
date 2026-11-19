@@ -1244,6 +1244,7 @@ const Viewer = (() => {
   function focusEditor(){
     if(cmApi?.__tab===currentTab()&&cmApi.view?.dom.isConnected)cmApi.focus();
     else if(currentTab()?.ta?.isConnected)currentTab().ta.focus({preventScroll:true});
+    else if(currentTab()?.diagramView?.focusEditor)currentTab().diagramView.focusEditor();
     else viewer.focus({preventScroll:true});
   }
   function tabButton(id){return (paneLayout?.visible?activePane.strip:tabScroll).querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]')||document.querySelector('[role="tab"][data-tab-id="'+Number(id)+'"]');}
@@ -1854,12 +1855,47 @@ const Viewer = (() => {
     scheduleEditorFocus(cmApi,tab);
   }
 
-  // ---------- 代码文件编辑（CodeMirror 6 + 语法高亮） ----------
   function renderDrawio(tab) {
     const host = viewer, root = MI.activeRoot, path = tab.path;
+    let panel;
     const ownsDiagram = () => MI.activeRoot === root && tabs.includes(tab) && tab.path === path &&
       host.contains(panel) && tab.diagramView === panel;
-    const panel = DrawioEditor.mount(host, {
+    const onDispose = () => { if (tab.diagramView === panel) delete tab.diagramView; };
+    const storeXml = xml => {
+      if (xml === tab.content) return;
+      tab.content = xml;
+      markEdited(tab);
+      scheduleAutosave();
+    };
+    const canvas = DrawioCanvas.read(tab.content);
+    if (canvas) {
+      if (!canvas.items) {
+        const message = document.createElement('div');
+        message.className = 'viewer-msg';
+        message.textContent = '图文画布包含无法读取的内容。可通过「查看源码」检查原文件。';
+        host.append(message);
+        return;
+      }
+      panel = DrawioCanvas.mount(host, {
+        items: canvas.items,
+        isCurrent: ownsDiagram,
+        onChange: (xml, limit) => {
+          const bytes = tab.encoding.startsWith('utf16') ? xml.length * 2 + 2 : new Blob([xml]).size + 3;
+          if (bytes > limit) return false;
+          storeXml(xml);
+          return true;
+        },
+        onDispose,
+      });
+      tab.diagramView = panel;
+      const origin = document.activeElement;
+      setTimeout(() => {
+        if (ownsDiagram() && currentTab() === tab && !window.Modal?.stack?.length &&
+          (document.activeElement === origin || document.activeElement === document.body)) panel.focusEditor();
+      }, 0);
+      return;
+    }
+    panel = DrawioEditor.mount(host, {
       getXml: () => tab.content,
       title: tab.name,
       onFocus: () => {
@@ -1868,18 +1904,15 @@ const Viewer = (() => {
       },
       onChange: (xml, save) => {
         if (!ownsDiagram()) return;
-        if (xml !== tab.content) {
-          tab.content = xml;
-          markEdited(tab);
-          scheduleAutosave();
-        }
+        storeXml(xml);
         if (save) void saveSnapshot(tab, false);
       },
-      onDispose: () => { if (tab.diagramView === panel) delete tab.diagramView; },
+      onDispose,
     });
     tab.diagramView = panel;
   }
 
+  // ---------- 代码文件编辑（CodeMirror 6 + 语法高亮） ----------
   function renderCodeCm(tab) {
     const wrap = document.createElement('div');
     wrap.className = 'editor-code-wrap';
@@ -2186,7 +2219,7 @@ const Viewer = (() => {
             tab.textFormat = r.textFormat; tab.encoding = r.textFormat.encoding; tab.eol = r.textFormat.eol;
           }
           updateFormatStatus(tab);
-          tab.diagramView?.setSaveStatus(tab.dirty ? '还有未保存的修改' : '已保存到项目文件', tab.dirty);
+          tab.diagramView?.setSaveStatus?.(tab.dirty ? '还有未保存的修改' : '已保存到项目文件', tab.dirty);
           // 保存后磁盘大小会变（尤其压缩/编码转换），重新 stat 一次
           if (tab === currentTab()) refreshFileSize(tab);
           renderTabs();
@@ -2198,7 +2231,7 @@ const Viewer = (() => {
           tab.saveError = result.error;
           tab.saveErrorCode = result.errorCode;
           tab.dirty = true;
-          tab.diagramView?.setSaveStatus('保存失败，请在 MyIDE 中检查文件状态', true);
+          tab.diagramView?.setSaveStatus?.('保存失败，请在 MyIDE 中检查文件状态', true);
           renderTabs();
           MI.log('ERROR', 'viewer.save', '写入失败 ' + snapshot.path + ' → ' + result.error);
         }
