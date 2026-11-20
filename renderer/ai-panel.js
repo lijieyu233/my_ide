@@ -1382,6 +1382,7 @@ const AiPanel = (() => {
     // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
       closeReadingSettings();
+      closeReplyLinkMenu?.();
       resetDshWatch();
       releaseSessionPermissions(detachRun());
     }
@@ -1389,6 +1390,99 @@ const AiPanel = (() => {
   }
 
   // ---------- 消息渲染 ----------
+  let closeReplyLinkMenu = null;
+  const replyAnchor = event => event.target.closest?.('.ai-assistant .ai-md a[href]');
+  function replyLinkTarget(href) {
+    try {
+      if (/^(https?:\/\/|mailto:)/i.test(href)) return { url: new URL(href).href };
+      const fileUrl = /^file:\/\//i.test(href) ? new URL(href) : null;
+      const rawPath = fileUrl ? fileUrl.pathname : href.split(/[?#]/, 1)[0];
+      let path = decodeURIComponent(rawPath).replaceAll('\\', '/').replace(/^\/(?=[a-z]:\/)/i, '');
+      if (fileUrl?.hostname) path = '//' + fileUrl.hostname + path;
+      const position = /:(\d+)(?::\d+)?$/.exec(path);
+      if (position && /[/.]/.test(path.slice(0, position.index))) path = path.slice(0, position.index);
+      if (!path || /[:\u0000-\u001f]/.test(path.replace(/^[a-z]:\//i, ''))) return null;
+      const line = Number(position?.[1] || /#L(\d+)\b/i.exec(href)?.[1]);
+      if (/^(\/|[a-z]:\/)/i.test(path)) return { path, line };
+      const root = dshSessionAccess?.preview ? dshSessionAccess.rootDir : window.App?.root;
+      const local = resolveInRoot(path, root || '');
+      return local?.rel ? { path: local.root.replaceAll('\\', '/') + '/' + local.rel, line } : null;
+    } catch { return null; }
+  }
+  async function openReplyLink(target) {
+    if (target.path) {
+      const result = await Viewer.openFile(target.path);
+      if (result?.ok && Number.isSafeInteger(target.line) && target.line > 0 &&
+          DocumentPaths.key(Viewer.activeTab?.path) === DocumentPaths.key(target.path)) Viewer.revealLine(target.line);
+    } else if (target.url.startsWith('mailto:')) {
+      await window.myIDE.shell.openExternal(target.url);
+    } else {
+      App.showTool('browser');
+      BrowserPanel.newTab(target.url);
+    }
+  }
+  function showReplyLinkMenu(anchor, x, y) {
+    closeReplyLinkMenu?.();
+    const href = anchor.getAttribute('href').trim(), target = replyLinkTarget(href);
+    const menu = document.getElementById('ctx-menu');
+    if (!target || !menu) return;
+    const root = window.App?.root;
+    const group = document.createElement('div');
+    group.setAttribute('role', 'menu');
+    group.setAttribute('aria-label', '回复链接操作');
+    const events = new AbortController();
+    const close = (restore = false) => {
+      events.abort();
+      if (closeReplyLinkMenu === close) closeReplyLinkMenu = null;
+      if (group.parentElement !== menu) return;
+      group.remove();
+      menu.classList.add('hidden');
+      if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
+    };
+    closeReplyLinkMenu = close;
+    const action = (label, run) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ctx-item';
+      button.tabIndex = -1;
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.onclick = async () => {
+        const current = group.parentElement === menu && window.App?.root === root &&
+          msgsEl.contains(anchor) && anchor.getAttribute('href')?.trim() === href;
+        close(true);
+        if (!current) return;
+        try { await run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
+      };
+      group.append(button);
+    };
+    action(target.path ? '打开文件' : '打开链接', () => openReplyLink(target));
+    action(target.path ? '复制文件路径' : '复制链接地址', async () => {
+      if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
+      MI.toast(target.path ? '已复制文件路径' : '已复制链接地址', 'ok');
+    });
+    if (target.path) action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(target.path));
+    group.onkeydown = event => {
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') event.preventDefault();
+        event.stopPropagation();
+        close(true);
+      } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        event.stopPropagation();
+        const items = [...group.children], index = items.indexOf(document.activeElement);
+        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+      } else if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
+    };
+    menu.replaceChildren(group);
+    menu.classList.remove('hidden');
+    menu.style.left = Math.max(0, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+    group.firstElementChild.focus({ preventScroll: true });
+    document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
+    window.addEventListener('blur', () => close(), { signal: events.signal });
+  }
+
   // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
   let replayDepth = 0, historyReplayJob = null;
   const pendingScrolls=new WeakSet();
@@ -3263,7 +3357,7 @@ const AiPanel = (() => {
     loadedSessionKey=nextKey;
     if(!retained)clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
-    closeMention(); closeHist(); closeSlash(); closePermPop();
+    closeMention(); closeHist(); closeSlash(); closePermPop(); closeReplyLinkMenu?.();
     msgs = [];
     curSessionId = null;
     dshSessionAccess = null;
@@ -4065,6 +4159,29 @@ const AiPanel = (() => {
     let savedFont;try{savedFont=localStorage.getItem(LS_FONT);}catch{}
     applyAiFont(savedFont == null || savedFont.trim() === '' ? AI_FONT_DEFAULT : savedFont);
     document.getElementById('ai-reading-settings')?.addEventListener('click',toggleReadingSettings);
+    msgsEl?.addEventListener('click', event => {
+      const href = replyAnchor(event)?.getAttribute('href')?.trim();
+      if (!href || href.startsWith('#')) return;
+      event.preventDefault();
+      const target = replyLinkTarget(href);
+      if (target) openReplyLink(target).catch(error => MI.toast(error.message || String(error), 'err'));
+      else MI.toast('无法打开此链接', 'err');
+    });
+    msgsEl?.addEventListener('contextmenu', event => {
+      const anchor = replyAnchor(event);
+      if (!anchor) return;
+      event.preventDefault();
+      showReplyLinkMenu(anchor, event.clientX, event.clientY);
+    });
+    msgsEl?.addEventListener('keydown', event => {
+      if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+      const anchor = replyAnchor(event);
+      if (!anchor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = anchor.getBoundingClientRect();
+      showReplyLinkMenu(anchor, rect.left, rect.bottom);
+    });
     // 目录树的全局 Enter/Space 导航不能抢走 AI 按钮和原生 disclosure 的键盘操作。
     panel?.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)&&event.target.closest('button,summary,select'))event.stopPropagation();});
     showWelcome();

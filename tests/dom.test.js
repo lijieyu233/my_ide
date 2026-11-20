@@ -5955,6 +5955,57 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
   });
 
+  await okAsync('AI 回复链接可右键打开本地文件和网页，或复制地址', async () => {
+    const d = makeDom(), w = d.window;
+    const local = P + '/docs/咨询记录 重设计.html';
+    const web = 'https://example.com/record?id=42';
+    FAKE_FS[local] = { type: 'file', content: '<h1>记录预览</h1>' };
+    try {
+      await loadApp(d);
+      await w.App.setRoot(P);
+      click($(d, '#tool-ai'));
+      const msg = $(d, '#ai-msgs');
+      msg.innerHTML = '<div class="ai-assistant"><div class="ai-md">' + w.marked.parse(
+        '[**咨询记录**](docs/%E5%92%A8%E8%AF%A2%E8%AE%B0%E5%BD%95%20%E9%87%8D%E8%AE%BE%E8%AE%A1.html) · [网页](' + web + ')'
+      ) + '</div></div>';
+      const [fileLink, webLink] = msg.querySelectorAll('a');
+      const action = name => $$(d, '#ctx-menu:not(.hidden) [role="menuitem"]').find(item => item.textContent === name);
+      const rightClick = node => node.dispatchEvent(new w.MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 80, clientY: 100,
+      }));
+      rightClick(fileLink.firstElementChild);
+      assert(action('打开文件') && action('在资源管理器中显示'));
+      click(action('复制文件路径'));
+      await tick();
+      assert.equal(calls.copy.at(-1), local);
+      fileLink.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }));
+      assert.equal(w.document.activeElement, action('打开文件'));
+      action('打开文件').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      assert.equal(w.document.activeElement, fileLink);
+      rightClick(fileLink);
+      click(action('打开文件'));
+      for (let i = 0; i < 20 && w.Viewer.activeTab?.path !== local; i++) await tick();
+      assert.equal(w.Viewer.activeTab?.path, local);
+      rightClick(webLink);
+      click(action('复制链接地址'));
+      await tick();
+      assert.equal(calls.copy.at(-1), web);
+      const opened = [];
+      w.BrowserPanel.newTab = url => opened.push(url);
+      rightClick(webLink);
+      click(action('打开链接'));
+      assert.deepEqual(opened, [web]);
+      const unsafe = w.document.createElement('a');
+      unsafe.href = 'javascript:123';
+      msg.querySelector('.ai-md').append(unsafe);
+      rightClick(unsafe);
+      assert(!$(d, '#ctx-menu:not(.hidden) [aria-label="回复链接操作"]'));
+    } finally {
+      delete FAKE_FS[local];
+      w.close();
+    }
+  });
+
   await okAsync('只读文本选区里的 Ctrl+C 不触发文件复制（AI 对话里选字，粘出来却是文件路径）', async () => {
     // 复现用户 2026-09-27 的反馈：在 AI 回复里拖选一段字按 Ctrl+C —— 只读区没有 focus 概念，
     // activeElement 仍是 body（不是 editable），旧逻辑于是把 Ctrl+C 交给了 copy-files，
