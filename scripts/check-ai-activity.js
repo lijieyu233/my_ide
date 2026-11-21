@@ -137,7 +137,7 @@ async function panelMetrics() {
     };
     const body = panel.querySelector('.ai-assistant .ai-md p, .ai-assistant .ai-md');
     const activity = [...panel.querySelectorAll('.ai-tool-group-summary, .ai-tool-summary, .ai-tool-label, .ai-tool-tx')].filter(shown);
-    const controls = ['ai-engine', 'ai-dsh-reconnect', 'ai-reading-settings', 'ai-history', 'ai-new', 'ai-cfg', 'ai-close'].map(id => {
+    const controls = ['ai-engine', 'ai-dsh-reconnect', 'ai-reading-settings', 'ai-new', 'ai-cfg', 'ai-close'].map(id => {
       const node = document.getElementById(id), r = rect(node), hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       return { id, shown: shown(node), disabled: node?.disabled, rect: r, hit: !!hit && (hit === node || node.contains(hit)) };
     });
@@ -145,14 +145,14 @@ async function panelMetrics() {
     const origin = document.getElementById('ai-session-origin');
     const fixedText = [];
     const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
-    for (let node; (node = walker.nextNode());) if (node.textContent.trim() && shown(node.parentElement) && !node.parentElement.closest('#ai-msgs, #ai-chips, .ai-hist-pop, [role="tooltip"], .tooltip, .ai-tooltip, .ai-mention-pop, .ai-slash-pop, .ai-perm-pop')) fixedText.push(node.textContent.trim());
+    for (let node; (node = walker.nextNode());) if (node.textContent.trim() && shown(node.parentElement) && !node.parentElement.closest('#ai-msgs, #ai-chips, [role="tooltip"], .tooltip, .ai-tooltip, .ai-mention-pop, .ai-slash-pop, .ai-perm-pop')) fixedText.push(node.textContent.trim());
     return { panel: rect(panel), header: rect(header), messageBox: rect(document.getElementById('ai-msgs')), inputBox: rect(document.getElementById('ai-input')), inputBar: rect(panel.querySelector('#ai-input-bar, .ai-input-bar')),
       headerContains: !!header && ['.ai-head', '.ai-session-controls', '#ai-session-origin'].every(selector => header.contains(panel.querySelector(selector))),
       headerOverflow: !!header && header.scrollWidth > header.clientWidth, panelOverflow: panel.scrollWidth > panel.clientWidth, separators, controls,
       origin: { text: origin?.textContent.trim(), icon: !!origin?.querySelector('svg.ic'), titles: [origin, ...origin?.querySelectorAll('[title]') || []].map(node => node?.title).filter(Boolean) },
       body: textStyle(body), activity: activity.map(textStyle), titleIcon: textStyle(panel.querySelector('.ai-title svg.ic') || panel.querySelector('.ai-title')), info: textStyle(document.getElementById('ai-dsh-info')),
       currentSession: { text: document.getElementById('ai-current-session')?.textContent.trim(), title: document.getElementById('ai-current-session')?.title,
-        historyFirst: panel.querySelector('.ai-head')?.firstElementChild?.id === 'ai-history' },
+        titleFirst: panel.querySelector('.ai-head')?.firstElementChild?.classList.contains('ai-title') },
       semantic: { body: textStyle(body), strong: textStyle(panel.querySelector('.ai-assistant .ai-md strong')), code: textStyle(panel.querySelector('.ai-assistant .ai-md :not(pre) > code')),
         link: textStyle(panel.querySelector('.ai-assistant .ai-md a')), process: textStyle(panel.querySelector('.ai-tool-label')), thought: textStyle(panel.querySelector('.ai-dsh-thought .ai-tool-label')) },
       spacing: [...panel.querySelectorAll('.ai-assistant .ai-md p, .ai-assistant .ai-md li, .ai-assistant .ai-md ul')].map(textStyle),
@@ -414,7 +414,7 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
       // 先取图再断言，失败时也保留真实布局，禁止靠放宽阈值隐藏紧凑布局回归。
       await capture('fixture-layout-' + theme + '-' + width);
       assert(metrics.headerContains, 'Unified header must contain original head, controls and origin');
-      assert(metrics.currentSession.historyFirst && metrics.currentSession.text && metrics.currentSession.text !== 'AI 助手' && metrics.currentSession.title === metrics.currentSession.text, 'History toggle must be leftmost, with actual session name and full title: ' + JSON.stringify(metrics.currentSession));
+      assert(metrics.currentSession.titleFirst && metrics.currentSession.text && metrics.currentSession.text !== 'AI 助手' && metrics.currentSession.title === metrics.currentSession.text, 'Header starts with the actual session name and exposes its full title: ' + JSON.stringify(metrics.currentSession));
       assert(Math.abs(metrics.panel.width - width) <= 1 && !metrics.panelOverflow && !metrics.headerOverflow, JSON.stringify(metrics));
       assert(metrics.header.height <= (width === 300 ? 76 : width === 380 ? 72 : 64), 'Header too tall: ' + metrics.header.height);
       assert(metrics.separators[0].bottom === 1 && metrics.separators.slice(1).every(border => border.bottom === 0 && border.top === 0), 'Only the unified header may draw its bottom separator: ' + JSON.stringify(metrics.separators));
@@ -427,17 +427,17 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
       assert(metrics.controls.every(control => control.shown && !control.disabled && control.hit && control.rect.left >= metrics.panel.left && control.rect.right <= metrics.panel.right), 'Header controls must remain reachable: ' + JSON.stringify(metrics.controls));
       assert(metrics.messageBox.top >= metrics.header.bottom && metrics.messageBox.height > 100 && metrics.inputBox.height > 0 && metrics.inputBar.bottom <= metrics.panel.bottom + 1, JSON.stringify(metrics));
       assertNoUsage(metrics);
-      await page(() => document.getElementById('ai-history').click()); await settled();
-      const drawer = await page(() => {
-        const pop = document.querySelector('.ai-hist-pop'), header = document.querySelector('.ai-panel-header'), panel = document.getElementById('ai-panel');
-        const r = pop?.getBoundingClientRect(), p = panel.getBoundingClientRect();
-        return { open: document.getElementById('ai-history').getAttribute('aria-expanded'), top: r?.top, bottom: r?.bottom, left: r?.left, right: r?.right, headerBottom: header.getBoundingClientRect().bottom, panel: { left: p.left, right: p.right, bottom: p.bottom }, allEnabled: !pop?.querySelector('[data-hist-scope="all"]').disabled };
+      await page(() => App.showTool('sessions')); await settled();
+      const sidebar = await page(() => {
+        const dock = document.querySelector('#panel-sessions .ai-hist-dock'), r = dock.getBoundingClientRect();
+        const chat = document.getElementById('ai-panel').getBoundingClientRect();
+        return { open: document.getElementById('tool-sessions').getAttribute('aria-pressed'),
+          fits: r.width > 0 && r.right <= chat.left && dock.scrollWidth <= dock.clientWidth,
+          allEnabled: !dock.querySelector('[data-hist-scope="all"]').disabled, duplicate: !!document.getElementById('ai-history') };
       });
-      assert.equal(drawer.open, 'true'); assert(drawer.allEnabled && drawer.top >= drawer.headerBottom - 1 && drawer.left >= drawer.panel.left && drawer.right <= drawer.panel.right && drawer.bottom <= drawer.panel.bottom, JSON.stringify(drawer));
-      await capture('fixture-layout-' + theme + '-' + width + '-drawer');
-      await page(() => document.querySelector('[data-hist-close]').click());
-      assert(await page(() => !document.querySelector('.ai-hist-pop') && document.getElementById('ai-history').getAttribute('aria-expanded') === 'false'));
-      await sameLayout(baseline);
+      assert(sidebar.open === 'true' && sidebar.fits && sidebar.allEnabled && !sidebar.duplicate, JSON.stringify(sidebar));
+      await capture('fixture-layout-' + theme + '-' + width + '-sessions');
+      await page(tool => { if (tool) App.showTool(tool); else App.hideSideTool('sessions'); }, baseline.tool);      await sameLayout(baseline);
     });
   }
 
@@ -534,11 +534,11 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     await until(() => page(id => AiPanel.aiState().current === id && AiPanel.__testParked().backgroundRuns === 0, original), 'background button restores exact run');
     assert(await page(() => document.querySelector('.ai-tool-group') === window.__layoutOriginalGroup && document.getElementById('ai-msgs').textContent.includes('FIXTURE_BACKGROUND_APPEND')));
 
-    await page(() => document.getElementById('ai-history').click());
-    await until(() => page(() => !!document.querySelector('.ai-hist-pop [data-hist-scope="all"]')), 'session drawer');
+    await page(() => App.showTool('sessions'));
+    await until(() => page(() => !!document.querySelector('#panel-sessions [data-hist-scope="all"]')), 'session sidebar');
     await page(() => document.querySelector('[data-hist-scope="all"]').click());
     await until(() => page(id => !!document.querySelector('[data-id="host:' + id + '"]'), foreignHostId), 'foreign session catalog fixture');
-    await page(id => document.querySelector('[data-id="host:' + id + '"]').click(), foreignHostId);
+    await page(id => document.querySelector('[data-id="host:' + id + '"] [data-act="preview"]').click(), foreignHostId);
     await until(() => page(() => AiPanel.aiState().dshSession?.state === 'preview'), 'verified readonly preview');
     const callsBeforePreviewActions = { options: ipcCalls.filter(call => call === 'options').length, binds: ipcCalls.filter(call => call === 'bind').length, watches: ipcCalls.filter(call => call === 'watch').length };
     const preview = await page(({ project, foreignProject, original }) => {
@@ -569,7 +569,9 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     });
     assert(restored.sameDOM && restored.text.includes('FIXTURE_BACKGROUND_APPEND') && restored.input === 'FIXTURE_INPUT_STILL_EDITABLE' && !restored.inputDisabled && restored.previewHidden && restored.scrollable, JSON.stringify(restored));
     assert.equal(chatCalls, 1); assert.equal(ipcCalls.filter(call => call === 'abort').length, 0); assert.equal(hostControls.length, 0);
-    controlChecks.push({ parked, preview, restored }); await sameLayout(before);
+    controlChecks.push({ parked, preview, restored });
+    await page(tool => { if (tool) App.showTool(tool); else App.hideSideTool('sessions'); }, before.tool);
+    await sameLayout(before);
     await capture('fixture-background-restored');
   });
 

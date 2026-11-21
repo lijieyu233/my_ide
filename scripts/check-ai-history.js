@@ -46,7 +46,7 @@ const watchdog=setTimeout(()=>{console.error('历史消息取证超时');cleanup
   });
   await test('历史会话中缺失结果自动修复，实际状态标为未确认，不重跑旧操作',async()=>{
     const history=[{role:'user',content:'把表格文字去掉'},{role:'assistant',content:'',tool_calls:[call('old-a','launch_add',{name:'旧程序',cwd:temp,command:'node old.js'}),call('old-b','launch_list')]},{role:'tool',tool_call_id:'old-b',content:'已有结果保留'},{role:'user',content:'没完成啊'}];
-    await js('localStorage.setItem("myide-ai-sessions:",'+JSON.stringify(JSON.stringify([{id:'broken-session',title:'旧损坏会话',ts:Date.now(),msgs:history}]))+');document.getElementById("ai-history").click();document.querySelector(\'[data-id="broken-session"]\').click();true');
+    await js('localStorage.setItem("myide-ai-sessions:",'+JSON.stringify(JSON.stringify([{id:'broken-session',title:'旧损坏会话',ts:Date.now(),msgs:history}]))+');App.showTool("sessions");document.querySelector(\'[data-id="broken-session"]\').click();true');
     await ask('继续');const body=requests.at(-1);assert(body.messages.some(m=>m.role==='tool'&&m.tool_call_id==='old-a'&&m.content.includes('实际执行状态未确认')));
     assert(body.messages.some(m=>m.role==='tool'&&m.tool_call_id==='old-b'&&m.content==='已有结果保留'));assert.equal(launch.loadConfig().entries.length,0);assert(!win.isVisible());
     await sleep(350);win.webContents.debugger.attach('1.3');const screenshot=await Promise.race([win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true}),sleep(4000).then(()=>{throw Error('截图超时');})]);fs.writeFileSync(path.join(repo,'.ui-check-trash','ai-history-panel.png'),Buffer.from(screenshot.data,'base64'));

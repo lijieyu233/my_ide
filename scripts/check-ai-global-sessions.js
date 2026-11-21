@@ -127,7 +127,7 @@ async function electronCheck() {
   async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name); }
   async function capture(name) {
     // 只截AI导航区域；真实会话标题、工作区名称和正文全部遮蔽，不让取证产物泄露用户资料。
-    await js('(()=>{const style=document.createElement("style");style.id="global-check-redaction";style.textContent="#ai-msgs{visibility:hidden!important}#ai-usage,.toast,.toasts,[class*=toast]{visibility:hidden!important}.ai-hist-nm{font-size:0!important}.ai-hist-nm::after{content:\\"真实会话（标题已遮蔽）\\";font-size:12px}.ai-hist-group-title>span,#ai-session-origin b{font-size:0!important}.ai-hist-group-title>span::after,#ai-session-origin b::after{content:\\"真实工程\\";font-size:12px}.ai-origin-scope{font-size:0!important}.ai-origin-scope::after{content:\\"会话归属：已验证工程\\";font-size:12px}";document.head.appendChild(style);return true})()');
+    await js('(()=>{const style=document.createElement("style");style.id="global-check-redaction";style.textContent="#ai-msgs{visibility:hidden!important}#ai-usage,.toast,.toasts,[class*=toast]{visibility:hidden!important}.ai-hist-nm{font-size:0!important}.ai-hist-nm::after{content:\\"真实会话（标题已遮蔽）\\";font-size:12px}.ai-hist-workspace-name,#ai-session-origin b{font-size:0!important}.ai-hist-workspace-name::after,#ai-session-origin b::after{content:\\"真实工程\\";font-size:12px}.ai-origin-scope{font-size:0!important}.ai-origin-scope::after{content:\\"会话归属：已验证工程\\";font-size:12px}";document.head.appendChild(style);return true})()');
     try {
       if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
       const bounds = await js('(()=>{const r=document.getElementById("ai-panel").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()');
@@ -157,9 +157,9 @@ async function electronCheck() {
       const wrong = await js('myIDE.ai.dshHistory({engine:"dsh",catalogScope:"all",catalogRoot:App.root},' + JSON.stringify(actual.other.sessionId) + ')');
       assert.equal(wrong?.ok, false, '宿主核实归属，不信renderer伪造root');
     });
-    await test('右侧会话抽屉：当前/全部DSH、真实工作区分组和搜索', async () => {
-      await js('document.getElementById("ai-history").click();true');
-      await until(() => js('!!document.querySelector("#ai-panel .ai-hist-pop .ai-hist-tabs [data-hist-scope=all]")'), '抽屉契约');
+    await test('左侧会话：按当前工程筛选、按真实工作区分组和搜索', async () => {
+      await js('App.showTool("sessions");document.querySelector("[data-hist-scope=current]").click();true');
+      await until(() => js('!!document.querySelector("#panel-sessions .ai-hist-tabs [data-hist-scope=all]")'), '左侧会话筛选');
       await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(selectedRoot.root) + ')'), '当前工程真实会话');
       const currentRoots = await js('[...document.querySelectorAll(".ai-hist-row")].map(row=>row.dataset.root)');
       assert(currentRoots.every(root => key(root) === key(selectedRoot.root)), '当前工程标签不得显示跨root会话');
@@ -177,26 +177,20 @@ async function electronCheck() {
       await until(() => js('document.querySelectorAll(".ai-hist-row").length>0'), '清空搜索');
       await capture('ai-global-sessions-navigation-redacted.png');
     });
-    await test('380/600侧栏抽屉不改变主区尺寸，顶部与行内容均不溢出', async () => {
-      const shell = '(()=>Object.fromEntries(["main","content","viewer"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [id,[r.x,r.y,r.width,r.height].map(n=>Math.round(n*100)/100)]})))()';
-      for (const width of [380, 600]) {
-        await js('document.querySelector("[data-hist-close]")?.click();document.getElementById("ai-panel").style.width="' + width + 'px";true');
-        await sleep(120); const before = await js(shell);
-        await js('document.getElementById("ai-history").click();true');
-        await until(() => js('!!document.querySelector(".ai-hist-pop")&&document.querySelectorAll(".ai-hist-row").length>0'), '布局抽屉');
-        assert.equal(JSON.stringify(await js(shell)) === JSON.stringify(before), true, '开抽屉不得挤动主区或编辑区：' + width);
-        assert(await js('(()=>{const pop=document.querySelector(".ai-hist-pop"),r=pop.getBoundingClientRect(),p=document.getElementById("ai-panel").getBoundingClientRect(),origin=document.getElementById("ai-session-origin").getBoundingClientRect();return r.left>=p.left&&r.right<=p.right&&r.top>=origin.bottom-1&&[...pop.querySelectorAll(".ai-hist-row")].every(row=>row.scrollWidth<=row.clientWidth)})()'), '抽屉顶部或会话行溢出：' + width);
+    await test('左侧会话在宽、窄栏下均无行溢出，聊天区无重复抽屉', async () => {
+      for (const width of [240, 380]) {
+        await js('App.resizeColumn("sidebar",' + width + ');true');
+        await sleep(120);
+        assert(await js('(()=>{const dock=document.querySelector("#panel-sessions .ai-hist-dock"),r=dock.getBoundingClientRect(),p=document.getElementById("sidebar").getBoundingClientRect();return r.width>0&&r.left>=p.left&&r.right<=p.right&&dock.scrollWidth<=dock.clientWidth&&!document.getElementById("ai-history")&&[...dock.querySelectorAll(".ai-hist-row")].every(row=>row.scrollWidth<=row.clientWidth)})()'), '会话布局溢出：' + width);
         await capture('ai-global-sessions-navigation-' + width + '-redacted.png');
       }
-      await js('document.getElementById("ai-panel").style.width="380px";true');
-    });
-    await test('跨工程历史仅预览：root与当前active不变，禁止bind/watch/options/prompt', async () => {
+    });    await test('跨工程历史仅预览：root与当前active不变，禁止bind/watch/options/prompt', async () => {
       const before = await js('({root:App.root,active:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh:active"),saved:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh"),shell:["main","content","viewer"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})');
       const requests = { ...audit.requests }, services = { ...audit.service }, violations = audit.blocked.length;
       const target = await js('(()=>{const rows=[...document.querySelectorAll(".ai-hist-row")];return rows.find(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + '&&(row.dataset.id===' + JSON.stringify(actual.other.sessionId) + '||row.dataset.id===' + JSON.stringify('host:' + actual.other.sessionId) + '))?.dataset.id})()');
       assert(target, '必须点击真实目录选定会话，不能以本地fixture替代');
       assert(await js('(()=>{const row=[...document.querySelectorAll(".ai-hist-row")].find(row=>row.dataset.id===' + JSON.stringify(target) + ');return !row.querySelector("[data-act=ren],[data-act=del]")})()'), '异工程行不得提供改名删除');
-      await js('[...document.querySelectorAll(".ai-hist-row")].find(row=>row.dataset.id===' + JSON.stringify(target) + ').click();true');
+      await js('[...document.querySelectorAll(".ai-hist-row")].find(row=>row.dataset.id===' + JSON.stringify(target) + ').querySelector("[data-act=preview]").click();true');
       await until(() => js('AiPanel.aiState().dshSession?.state==="preview"'), '跨工程只读预览', 60000);
       assert(await js('document.getElementById("ai-send").disabled&&!!document.getElementById("ai-session-origin")&&!document.getElementById("ai-session-preview-bar").classList.contains("hidden")&&!!document.getElementById("ai-session-open-project")'));
       assert(await js('document.getElementById("ai-msgs").textContent.length>0'), '真实宿主正文应有回放');

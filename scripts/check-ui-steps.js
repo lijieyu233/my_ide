@@ -2803,11 +2803,10 @@ module.exports = {
     add('渲染出 4 个场景入口', quick.length === 4, quick.map((b) => b.textContent).join(' | '));
     add('场景入口都带 tooltip', quick.length === 4 && quick.every((b) => !!b.title));
 
-    const title = q('.ai-head .ai-title'), history = q('#ai-history'), currentTitle = q('.ai-head .ai-title #ai-current-session');
-    add('顶栏最左是可访问的 SVG 会话入口，当前会话名完整保留在 title',
-      !!history && q('.ai-head > button:first-child') === history && q('.ai-head button') === history
-      && !!history.querySelector('svg') && history.getAttribute('aria-label') === '会话' && !!history.title
-      && !!title && !!currentTitle && !!currentTitle.textContent.trim() && currentTitle.title === currentTitle.textContent,
+    const history = q('#tool-sessions'), currentTitle = q('.ai-head .ai-title #ai-current-session');
+    add('左侧提供会话导航，右侧标题显示完整的当前会话名',
+      history?.getAttribute('aria-controls') === 'panel-sessions' && !q('#ai-history')
+      && !!currentTitle?.textContent.trim() && currentTitle.title === currentTitle.textContent,
       currentTitle ? JSON.stringify({ text: currentTitle.textContent, title: currentTitle.title }) : '');
     const tb = qa('.ai-head .panel-title-actions .vt-btn');
     add('顶栏右侧保留停止与五个操作入口，Aa 明确文字，其余使用 SVG',
@@ -3202,12 +3201,22 @@ module.exports = {
     add('/yolo 选完就把本次对话放行', !!(window.AiPanel && AiPanel.sessionPerm && AiPanel.sessionPerm.write),
       JSON.stringify(window.AiPanel ? AiPanel.sessionPerm : {}));
     // ⑥ 历史会话
-    add('顶栏有「历史会话」按钮', !!q('#ai-history'));
-    q('#ai-history').click();
-    await sleep(350);
-    add('历史下拉能打开', !!q('.ai-hist-pop'),
-      q('.ai-hist-pop') ? q('.ai-hist-pop').textContent.replace(/\s+/g, ' ').slice(0, 46) : '');
-    if (q('#ai-history')) { q('#ai-history').click(); await sleep(250); }
+    const previousTool = App.getTool();
+    App.showTool('sessions');
+    await sleep(250);
+    const sidebar = q('#panel-sessions');
+    const workspace = sidebar.querySelector('[data-hist-toggle]');
+    add('左侧会话提供新会话、搜索和项目跳转', !sidebar.classList.contains('hidden') &&
+      !!sidebar.querySelector('[data-hist-new]') && !!sidebar.querySelector('.ai-hist-search') &&
+      !!sidebar.querySelector('[data-project-picker]') && !q('#ai-panel .ai-hist-dock'));
+    if (workspace) {
+      const expanded = workspace.getAttribute('aria-expanded');
+      workspace.click();
+      add('工作区可折叠和展开', workspace.getAttribute('aria-expanded') !== expanded);
+      workspace.click();
+    }
+    if (previousTool) App.showTool(previousTool);
+    else App.hideSideTool('sessions');
     add('输入区有贴图缩略图容器（贴图直接进下一条消息）', !!q('#ai-images'));
     // ⑦ 代码块 → 插入编辑器
     const docLen = () => { try { const v = window.Viewer.cm && window.Viewer.cm.view; return v ? v.state.doc.length : -1; } catch (e) { return -1; } };

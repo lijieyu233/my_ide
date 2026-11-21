@@ -44,7 +44,7 @@ function fixture(inspectReplay = false, fontPreference) {
     try { const s = FileWrite.readSnapshot(p); if (s.absent) return { error: 'not found', errorCode: 'ENOENT', version: s.version }; return { ...TextFormat.decodeText(s.bytes), version: s.version }; }
     catch (e) { return { error: e.message, errorCode: e.code }; }
   };
-  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {},showTool(tool){f.shownTool=tool;w.AiPanel?.onPageChange();},getTool(){return f.shownTool;},
+  w.App = { root: A, showAi() { w.document.getElementById('ai-panel').classList.remove('hidden'); }, refreshAll() {},showTool(tool){f.shownTool=tool;w.document.getElementById('panel-sessions').classList.toggle('hidden', tool!=='sessions');w.AiPanel?.syncSessionSidebar(tool==='sessions');w.AiPanel?.onPageChange();},hideSideTool(tool){if(f.shownTool===tool)this.showTool('project');},getTool(){return f.shownTool;},
     getPageContext(){const tool=f.shownTool || 'project',names={remote:'远程服务器',launch:'启动面板',db:'数据库',browser:'内置浏览器',tasks:'任务','quick-launch':'快捷启动',reader:'阅读页',bookshelf:'书架'};
       const independent=!!names[tool],projectContext=!!this.root&&!independent;
       return {id:independent?tool:projectContext?'project':'welcome',name:names[tool]||(projectContext?'项目':'欢迎页'),projectContext};} };w.LaunchPanel={isOpen:()=>f.shownTool==='launch',selectEntry:async id=>selected.push(id)};
@@ -108,6 +108,12 @@ function fixture(inspectReplay = false, fontPreference) {
   // 私有回放入口只在夹具内暴露，避免为了布局读计数给生产面板增加测试API。
   const panelSource = inspectReplay ? source.replace('  return {aiAfterResult,', '  window.__testReplay = (list, preserve) => { msgs = list; replayMsgs(preserve); }; window.__testAddMsg = addMsg; window.__testToolRow = renderToolRow; window.__testCatalogOf = catalogOf; window.__testSetRunState = setRunState; window.__testLoadSessions = loadSessions; window.__testReplayHistory = (list, wanted, preserve) => { msgs = list; return replayHistory(wanted, preserve); }; window.__testAddContext = addCtx; window.__testInputImages = (images) => images ? (pendingImages = images) : pendingImages;\n  return {aiAfterResult,') : source;
   w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-launch-tools.js'),'utf8'));w.eval(fs.readFileSync(path.join(__dirname,'../renderer/ai-browser-tools.js'),'utf8'));w.eval(panelSource); w.AiPanel.init(); w.AiPanel.setConfig({ baseUrl: 'http://fixture.invalid', model: 'fixture', autoIdeContext:true, injectMyideRules:true });
+  w.AiPanel.onPageChange();
+  f.openSessions = (scope = 'current') => {
+    if (f.shownTool === 'sessions') w.App.hideSideTool('sessions');
+    w.App.showTool('sessions');
+    w.document.querySelector('[data-hist-scope="'+scope+'"]').click();
+  };
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -279,9 +285,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     pop.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert(!f.element('.ai-reading-pop'));assert.equal(f.w.document.activeElement,f.element('#ai-reading-settings'));f.element('#ai-reading-settings').click();input.dispatchEvent(new f.w.Event('pointerdown',{bubbles:true}));assert(!f.element('.ai-reading-pop'));
   });
   await test('会话开关在最左，标题跟随本地保存/宿主目录与改名，不将后台标题串到前台',async()=>{
-    const f=fixture();assert.equal(f.element('.ai-head').firstElementChild,f.element('#ai-history'));assert(f.element('#ai-current-session').textContent);f.send('本地会话原名');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');f.w.Modal.prompt=async()=> '本地会话新名';f.element('#ai-history').click();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'本地会话新名');f.element('[data-hist-close]').click();f.enableWatch();await f.openHost('session-title-fixture');
-    f.dshCatalog[0].title='原生会话名完整展示';f.element('#ai-history').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'原生会话名完整展示');assert.equal(f.element('#ai-current-session').title,'原生会话名完整展示');f.element('[data-hist-close]').click();
-    f.w.Modal.prompt=async()=> '新的原生会话名';f.element('#ai-history').click();await tick();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'新的原生会话名');
+    const f=fixture();assert(!f.element('#ai-history'));assert(f.element('#ai-current-session').textContent);f.send('本地会话原名');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');f.w.Modal.prompt=async()=> '本地会话新名';f.openSessions();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'本地会话新名');f.element('[data-hist-close]').click();f.enableWatch();await f.openHost('session-title-fixture');
+    f.dshCatalog[0].title='原生会话名完整展示';f.openSessions();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'原生会话名完整展示');assert.equal(f.element('#ai-current-session').title,'原生会话名完整展示');f.element('[data-hist-close]').click();
+    f.w.Modal.prompt=async()=> '新的原生会话名';f.openSessions();await tick();await tick();f.element('[data-act="ren"]').click();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'新的原生会话名');
   });
   await test('进行中和终态有独立状态标识，失败/停止不伪完成且不会继续动效',async()=>{
     for(const end of ['completed','cancelled','failed']){const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('动画状态');await until(()=>f.calls.length===1);const context=f.calls[0].context;await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'正在分析'}}});const group=f.element('.ai-tool-group'),run=f.element('#ai-runstate');assert.equal(group.dataset.phase,'running');assert.equal(group.dataset.outcome,'running');assert.equal(run.dataset.outcome,'running');assert(run.classList.contains('running'));
@@ -334,7 +340,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const observers=[];f.w.ResizeObserver=class{constructor(){this.disconnected=0;observers.push(this);}observe(){}disconnect(){this.disconnected++;}};
     f.hold=true;f.send('保持后台过程');await until(()=>f.calls.length===1);const context=f.calls[0].context,id=f.w.AiPanel.aiState().current;
     await f.dshEvent({type:'native',context,update:{sessionUpdate:'agent_thought_chunk',content:{text:'后台思考'}}});const group=f.element('.ai-tool-group');assert.equal(observers.length,1);
-    f.element('#ai-new').click();assert.equal(observers[0].disconnected,0);f.element('#ai-history').click();await tick();await tick();f.element('[data-id="'+id+'"]').click();await tick();assert.equal(f.element('.ai-tool-group'),group);assert.equal(observers[0].disconnected,0);
+    f.element('#ai-new').click();assert.equal(observers[0].disconnected,0);f.openSessions();await tick();await tick();f.element('[data-id="'+id+'"]').click();await tick();assert.equal(f.element('.ai-tool-group'),group);assert.equal(observers[0].disconnected,0);
     f.stop();await until(()=>f.element('#ai-send').textContent==='➤');f.element('#ai-new').click();assert.equal(observers[0].disconnected,1);assert.equal(f.aborts.length,1);
   });
   await test('宿主全量回放保留组内阅读滚动位置，不把已上翻的读者重置回开头或末尾',async()=>{
@@ -408,7 +414,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(true),key='myide-ai-sessions:'+f.A+':dsh';await f.w.AiPanel.setConfig({engine:'dsh'});
     f.w.localStorage.setItem(key,JSON.stringify([{id:'s-alias',hostId:'host-correct',msgs:[]},{id:'session-native',hostId:'host-wrong',msgs:[]}]));
     f.dshCatalog=[...Array.from({length:100},(_,i)=>({sessionId:'unrelated-'+i,cwd:f.A})),{sessionId:'host-correct',cwd:f.A},{sessionId:'session-native',cwd:f.A},{sessionId:'host-wrong',cwd:f.A,bindings:[{sessionId:'s-alias',rootId:f.A,scope:'project'},{sessionId:'session-missing',rootId:f.A,scope:'project'}]}];
-    f.element('#ai-history').click();await tick();await tick();
+    f.openSessions();await tick();await tick();
     const proto=f.w.Storage.prototype,get=proto.getItem;let reads=0;proto.getItem=function(k){if(k===key)reads++;return get.call(this,k);};
     try{
       assert.equal(f.w.__testCatalogOf('s-alias').sessionId,'host-correct');assert.equal(reads,1);
@@ -790,7 +796,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture();const calls=[writeCall('one.md','OLD','old-missing'),writeCall('two.md','REAL','old-done')];f.put('one.md');f.put('two.md','REAL');
     const history=[{role:'user',content:'旧任务'},{role:'assistant',content:'',tool_calls:calls.map(c=>({id:c.id,type:'function',function:{name:c.name,arguments:JSON.stringify(c.args)}}))},{role:'tool',tool_call_id:'old-done',content:'已应用 REAL'},{role:'user',content:'没完成啊'},{role:'tool',tool_call_id:'orphan',content:'孤立结果'}];
     f.w.localStorage.setItem('myide-ai-sessions:'+f.A,JSON.stringify([{id:'broken',title:'损坏会话',msgs:history,ts:Date.now()}]));
-    f.element('#ai-history').click();f.element('[data-id="broken"]').click();f.send('继续');
+    f.openSessions();f.element('[data-id="broken"]').click();f.send('继续');
     await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');const sent=f.calls[0].messages;
     assert(sent.some(m=>m.role==='tool'&&m.tool_call_id==='old-missing'&&m.content.includes('实际执行状态未确认')));
     assert(sent.some(m=>m.role==='tool'&&m.tool_call_id==='old-done'&&m.content==='已应用 REAL'));assert(!sent.some(m=>m.role==='tool'&&m.tool_call_id==='orphan'));
@@ -1016,7 +1022,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     // A 在后台继续产出
     f.chunk(0,'A后台仍在跑');
     // 历史列表必须同时列出两条，并且都标成运行中（正在跑但不能切回＝等于不能开两个会话）
-    f.element('#ai-history').click();
+    f.openSessions();
     const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
     assert.equal(rows().length,2,'历史列表应有两条：'+rows().map(r=>r.textContent.trim()));
     assert(rows().every(r=>r.classList.contains('running')),'两条都在跑，都要标运行中');
@@ -1031,7 +1037,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.aborts.length,0);
 
     // 再切回 B：B 也还活着；只有一条在跑时不再误标另一条
-    f.element('#ai-history').click();
+    f.openSessions();
     const rows2=rows();
     assert.equal(rows2.length,2,'切走后两条仍都在列表里');
     rows2.find(r=>r.textContent.includes('会话B')).click();await tick();await tick();
@@ -1048,14 +1054,14 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       {sessionId:'host-selected',title:'当前已结束的对话',cwd:f.A,running:false,updatedAt:1,bindings:[{sessionId:selected,rootId:f.A,scope:'project'}]}
     ];
     const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
-    f.element('#ai-history').click();await until(()=>rows().length===2&&rows().some(r=>r.textContent.includes('后台运行中')));
+    f.openSessions();await until(()=>rows().length===2&&rows().some(r=>r.textContent.includes('后台运行中')));
     assert.equal(rows()[0].dataset.id,selected);assert(rows()[0].classList.contains('cur'));assert.equal(rows()[0].getAttribute('aria-current'),'true');
-    assert.equal(rows()[0].querySelector('.ai-hist-current').textContent,'当前查看');assert(rows()[0].querySelector('.ai-hist-select svg'));assert(!rows()[0].querySelector('.ai-hist-run'));
-    const other=rows()[1];assert.equal(other.dataset.id,background);assert(!other.hasAttribute('aria-current'));assert(!other.querySelector('.ai-hist-current'));assert(!other.querySelector('.ai-hist-select svg'));
-    assert.equal(other.querySelector('.ai-hist-live').textContent,'后台运行中');assert(other.querySelector('.ai-hist-ts .ai-hist-run'));assert.equal(rows().filter(r=>r.querySelector('.ai-hist-select svg')).length,1);
-    other.click();await tick();await tick();f.element('#ai-history').click();await tick();await tick();
-    assert.equal(rows()[0].dataset.id,background);assert.equal(rows()[0].querySelector('.ai-hist-current').textContent,'当前查看');assert.equal(rows()[0].querySelector('.ai-hist-live').textContent,'运行中');
-    assert.equal(rows().filter(r=>r.hasAttribute('aria-current')).length,1);assert.equal(rows().filter(r=>r.querySelector('.ai-hist-select svg')).length,1);assert.equal(f.aborts.length,0);assert.equal(f.calls.length,2);
+    assert(!rows()[0].querySelector('.ai-hist-run'));
+    const other=rows()[1];assert.equal(other.dataset.id,background);assert(!other.hasAttribute('aria-current'));
+    assert.equal(other.querySelector('.ai-hist-live').textContent,'后台运行中');assert(other.querySelector('.ai-hist-ts .ai-hist-run'));
+    other.click();await tick();await tick();f.openSessions();await tick();await tick();
+    assert.equal(rows()[0].dataset.id,background);assert.equal(rows()[0].getAttribute('aria-current'),'true');assert.equal(rows()[0].querySelector('.ai-hist-live').textContent,'运行中');
+    assert.equal(rows().filter(r=>r.hasAttribute('aria-current')).length,1);assert.equal(f.aborts.length,0);assert.equal(f.calls.length,2);
   });
   await test('Harness切换会话/新建/切项目/收起面板都不中断，只有停止按钮发取消',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
@@ -1067,7 +1073,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(f.element('#ai-background-status').textContent.includes('后台运行'),'旧任务进后台状态条');
 
     // ② 从历史切回原会话：接回同一个任务，仍在跑
-    f.element('#ai-history').click();
+    f.openSessions();
     const row=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('长任务'));
     assert(row,'历史里能找到该会话');row.click();await tick();await tick();
     assert.equal(f.element('#ai-send').textContent,'⏹','切回后仍显示正在运行');assert.equal(f.aborts.length,0);
@@ -1084,7 +1090,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.switchRoot(f.A);await tick();
     assert.equal(f.aborts.length,0,'切回项目不中断');
     assert(f.element('#ai-background-status').textContent.includes('后台运行'),'任务一直在后台跑');
-    f.element('#ai-history').click();
+    f.openSessions();
     const again=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('长任务'));
     assert(again,'原会话仍在历史里');again.click();await tick();await tick();
     await until(()=>f.element('#ai-send').textContent==='⏹');
@@ -1108,10 +1114,10 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       {sessionId:'session-other-project',title:'别的项目',running:true,blank:false,cwd:'C:/elsewhere',updatedAt:Date.now()},
     ];
     // 面板先渲染本地数据，宿主目录回来后就地刷新行；这里轮询等刷新生效。
-    f.element('#ai-history').click();
+    f.openSessions();
     for(let i=0;i<40&&![...f.w.document.querySelectorAll('.ai-hist-row')].some(r=>r.textContent.includes('DSH 里发起的会话'));i++){
       await new Promise(r=>setTimeout(r,25));
-      if(i===6&&f.w.document.querySelector('.ai-hist-pop'))f.element('#ai-history').click(), f.element('#ai-history').click();
+      if(i===6)f.openSessions();
     }
     await until(()=>[...f.w.document.querySelectorAll('.ai-hist-row')].some(r=>r.textContent.includes('DSH 里发起的会话')));
     const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
@@ -1126,14 +1132,11 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(!idle.classList.contains('running'),'宿主已结束的不标运行中');
     // 在 DSH 里中断：宿主列表变为 running=false，再开历史 → 标记必须跟着消失
     f.dshCatalog[0].running=false;
-    f.element('#ai-history').click();
-    f.element('#ai-history').click();
+    f.openSessions();
     await until(()=>{const r=[...f.w.document.querySelectorAll('.ai-hist-row')].find(x=>x.textContent.includes('DSH 里发起的会话'));return r&&!r.classList.contains('running');});
     assert(true,'DSH 里中断后 MyIDE 的运行中标记同步消失');
     // ① 改名写回宿主（不是只改本地）
     f.w.Modal.prompt=async()=> '改过的标题';
-    // 面板此时仍开着（上一步切运行态就在里面），不要再点按钮——那会把它关掉。
-    if(!f.w.document.querySelector('.ai-hist-pop')) f.element('#ai-history').click();
     await until(()=>[...f.w.document.querySelectorAll('.ai-hist-row')].length>0);
     const target=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('DSH 里发起的会话'));
     target.querySelector('[data-act="ren"]').click();
@@ -1147,23 +1150,23 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.send('A独有任务');await until(()=>f.calls.length===1);f.switchRoot(f.B);
     f.send('B独有任务');await until(()=>f.calls.length===2);
     f.dshCatalog=[{sessionId:'host-A',title:'宿主A',cwd:f.A,running:true},{sessionId:'unknown',title:'未知项目',cwd:'',running:true}];
-    f.element('#ai-history').click();await tick();await tick();
+    f.openSessions();await tick();await tick();
     assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,1);
     assert(f.element('.ai-hist-row').textContent.includes('B独有任务'));
-    f.switchRoot('');f.element('#ai-history').click();await tick();await tick();
-    assert(!f.element('.ai-hist-pop').textContent.includes('A独有任务'));
-    assert(!f.element('.ai-hist-pop').textContent.includes('B独有任务'));
-    assert(!f.element('.ai-hist-pop').textContent.includes('未知项目'));
+    f.switchRoot('');f.openSessions();await tick();await tick();
+    assert(!f.element('.ai-hist-dock').textContent.includes('A独有任务'));
+    assert(!f.element('.ai-hist-dock').textContent.includes('B独有任务'));
+    assert(!f.element('.ai-hist-dock').textContent.includes('未知项目'));
     assert.equal(f.aborts.length,0);
   });
   await test('本地与原生会话合为一项：当前与运行标记对应同一身份，改名写原生id',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
     f.send('本地标题');await until(()=>f.calls.length===1);const id=f.calls[0].context.sessionId;
     f.dshCatalog=[{sessionId:'host-same',title:'DSH标题',cwd:f.A.toUpperCase()+'/',running:true,bindings:[{sessionId:id,rootId:f.A,scope:'project'}]}];
-    f.element('#ai-history').click();await tick();await tick();
+    f.openSessions();await tick();await tick();
     const rows=f.w.document.querySelectorAll('.ai-hist-row');assert.equal(rows.length,1);
     assert.equal(rows[0].dataset.id,id);assert(rows[0].textContent.includes('DSH标题'));
-    assert(rows[0].textContent.includes('当前'));assert(rows[0].textContent.includes('运行中'));
+    assert(rows[0].textContent.includes('运行中'));
     assert.equal(rows[0].getAttribute('aria-current'),'true');
     f.w.Modal.prompt=async()=> '同步新标题';rows[0].querySelector('[data-act="ren"]').click();
     await until(()=>f.renames?.length===1);assert.equal(f.renames[0].id,'host-same');
@@ -1174,23 +1177,29 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const key='myide-ai-sessions:'+f.A+':dsh';
     f.w.localStorage.setItem(key,JSON.stringify([{id:'stale',title:'污染缓存',msgs:[]}]));
     f.dshCatalog=[{sessionId:'host-other',title:'真实归属B',cwd:f.B,bindings:[{sessionId:'stale',rootId:f.A,scope:'project'}]}];
-    f.element('#ai-history').click();await tick();await tick();
+    f.openSessions();await tick();await tick();
     const rows=f.w.document.querySelectorAll('.ai-hist-row');assert.equal(rows.length,1);
-    assert(rows[0].textContent.includes('新会话'));assert(rows[0].textContent.includes('当前'));
+    assert(rows[0].textContent.includes('新会话'));
     assert.equal(rows[0].getAttribute('aria-current'),'true');
   });
-  await test('全局抽屉按真实工程分组并搜索，当前工程标签仍隔离，未知归属不能打开',async()=>{
+  await test('左侧会话可折叠、按真实工程搜索，当前工程隔离，未分组无法打开',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});
     f.dshCatalog=[{sessionId:'session-own',title:'本工程会话',cwd:f.A,rootDir:f.A},{sessionId:'session-foreign',title:'其他工程会话',cwd:f.B,rootDir:f.B,running:true},{sessionId:'session-unknown',title:'归属未知',cwd:''},{sessionId:'session-unused',title:'空白不显示',cwd:f.B,rootDir:f.B,blank:true}];
-    f.element('#ai-history').click();await tick();await tick();
+    f.openSessions();await tick();await tick();
     assert(!f.element('[data-id="host:session-foreign"]'));f.element('[data-hist-scope="all"]').click();
     const groups=f.w.document.querySelectorAll('.ai-hist-group');assert.equal(groups.length,3);
-    const foreign=f.element('[data-id="host:session-foreign"]');assert.equal(foreign.dataset.root,f.B);assert(foreign.textContent.includes('后台运行中'));assert(!foreign.querySelector('[data-act]'));
-    const search=f.element('.ai-hist-search');search.value='其他工程';search.dispatchEvent(new f.w.Event('input'));assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,1);
+    const foreign=f.element('[data-id="host:session-foreign"]');assert.equal(foreign.dataset.root,f.B);assert(foreign.textContent.includes('后台运行中'));assert(!foreign.querySelector('[data-act="ren"],[data-act="del"]'));
+    const group = foreign.closest('.ai-hist-group');
+    group.querySelector('[data-hist-toggle]').click();
+    assert(group.querySelector('.ai-hist-items').hidden);
+    const search = f.element('.ai-hist-search');
+    search.value='其他工程'; search.dispatchEvent(new f.w.Event('input'));
+    assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,1);
+    assert.equal(f.element('[data-hist-toggle]').getAttribute('aria-expanded'),'true');
     search.value='不存在的搜索';search.dispatchEvent(new f.w.Event('input'));assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,0);
-    search.value='';search.dispatchEvent(new f.w.Event('input'));f.element('[data-id="host:session-unknown"]').click();assert(!f.historyReads?.length);assert.equal(f.w.App.root,f.A);
+    search.value='';search.dispatchEvent(new f.w.Event('input'));assert(f.element('[data-id="host:session-foreign"]').closest('.ai-hist-items').hidden);f.element('[data-id="host:session-unknown"]').click();assert(!f.historyReads?.length);assert.equal(f.w.App.root,f.A);
     f.element('[data-hist-scope="current"]').click();assert(!f.element('[data-id="host:session-foreign"]'));
-    f.element('.ai-hist-search').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert(!f.element('.ai-hist-pop'));assert.equal(f.element('#ai-history').getAttribute('aria-expanded'),'false');
+    f.element('.ai-hist-search').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert(f.element('#panel-sessions').classList.contains('hidden'));assert(!f.element('#ai-panel .ai-hist-dock'));
   });
   await test('跨工程正文只读且不覆盖active或绑定模型watch，后台输出继续并可返回原DOM',async()=>{
     const f=fixture();f.hold=true;await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();
@@ -1199,7 +1208,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const original=f.w.AiPanel.aiState().current,key='myide-ai-sessions:'+f.A+':dsh';
     f.dshCatalog=[{sessionId:'session-preview',title:'其他工程',cwd:f.B,rootDir:f.B}];
     f.w.myIDE.ai.dshHistory=async(cfg,id)=>{assert.equal(cfg.catalogScope,'all');assert.equal(cfg.catalogRoot,f.B);assert.equal(id,'session-preview');return {ok:true,sessionId:id,readOnly:true,rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'其他工程预览正文'}]}]};};
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview"]').click();
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview"] [data-act="preview"]').click();
     await until(()=>f.w.AiPanel.aiState().dshSession?.state==='preview');
     const saved=f.w.localStorage.getItem(key),active=f.w.localStorage.getItem(key+':active'),reads=optionReads;
     assert.equal(active,original);assert(!saved.includes('其他工程预览正文'));assert.equal(f.w.App.root,f.A);assert.equal(f.binds?.length||0,0);
@@ -1207,7 +1216,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(await f.send('禁止发送'),false);f.element('#ai-input').value='回车不能发送';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
     f.chunk(0,'后台新增输出');await tick();assert(f.text().includes('其他工程预览正文'));assert(!f.text().includes('后台新增输出'));assert.equal(f.aborts.length,0);
     f.element('#ai-dsh-reconnect').click();await tick();assert.equal(optionReads,reads);assert.equal(f.calls.length,1);assert.equal(f.w.localStorage.getItem(key+':active'),original);
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="current"]').click();f.element('[data-id="'+original+'"]').click();await tick();
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="current"]').click();f.element('[data-id="'+original+'"]').click();await tick();
     assert(f.text().includes('后台新增输出'));assert(!f.element('#ai-input').readOnly);assert(f.element('#ai-session-preview-bar').classList.contains('hidden'));assert.equal(f.aborts.length,0);
   });
   await test('左侧会话按所属工程续聊，保留 IDE 工程及草稿，项目跳转独立触发', async () => {
@@ -1266,8 +1275,8 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('跨工程历史慢返回被新选择作废，新建不会把预览持久到当前项目',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const slow=defer();
     f.dshCatalog=[{sessionId:'session-foreign',title:'慢预览',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=()=>slow.promise;
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"]').click();
-    assert(f.element('#ai-send').disabled);f.element('#ai-new').click();const active=f.w.AiPanel.aiState().current;
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"] [data-act="preview"]').click();
+    assert(f.element('#ai-send').disabled);f.element('[data-hist-new]').click();assert.equal(f.w.document.activeElement, f.element('#ai-input'));const active=f.w.AiPanel.aiState().current;
     slow.resolve({ok:true,readOnly:true,sessionId:'session-foreign',rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'不能回填的其他项目正文'}]}]});await tick();await tick();
     assert.equal(f.w.AiPanel.aiState().current,active);assert(!f.text().includes('不能回填'));assert(!f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh')?.includes('session-foreign'));assert.equal(f.binds?.length||0,0);
   });
@@ -1275,7 +1284,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     for(const tool of ['tasks','reader']){
       const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();const pending=defer();
       f.dshCatalog=[{sessionId:'session-foreign',title:'跨工程慢历史',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=()=>pending.promise;
-      f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"]').click();f.w.App.showTool(tool);
+      f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"] [data-act="preview"]').click();f.w.App.showTool(tool);
       pending.resolve({ok:true,sessionId:'session-foreign',readOnly:true,rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'只读正文仍可查看'}]}]});
       await until(()=>f.w.AiPanel.aiState().dshSession?.state==='preview');assert(f.text().includes('只读正文仍可查看'));assert(f.element('#ai-send').disabled);assert.equal(f.binds?.length||0,0);assert.equal(f.w.App.root,f.A);assert.equal(f.aborts.length,0);
     }
@@ -1284,26 +1293,26 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     for(const mismatch of [{rootDir:'wrong'},{sessionId:'different'},{readOnly:false}]){
       const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();let options=0;f.w.myIDE.ai.dshOptions=async()=>{options++;return {ok:true,configOptions:[]};};
       f.dshCatalog=[{sessionId:'session-foreign',title:'不匹配正文',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=async()=>({ok:true,rootDir:f.B,sessionId:'session-foreign',readOnly:true,turns:[{parts:[{kind:'text',role:'assistant',text:'不可信正文'}]}],...mismatch});
-      f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"]').click();await tick();await tick();
+      f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"] [data-act="preview"]').click();await tick();await tick();
       assert(!f.text().includes('不可信正文'));assert(f.element('#ai-send').disabled);const before=options;f.element('#ai-dsh-reconnect').click();await tick();assert.equal(options,before);assert.equal(f.binds?.length||0,0);assert.equal(f.aborts.length,0);
     }
   });
   await test('预览读取失败后刷新仍只调全局只读历史，成功后不误显示DSH未连接',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();let reads=0;
     f.dshCatalog=[{sessionId:'session-preview-retry',title:'可重试的预览',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=async(cfg,id)=>{assert.equal(cfg.catalogScope,'all');assert.equal(cfg.catalogRoot,f.B);return ++reads===1?{ok:false,error:'临时读取失败'}:{ok:true,sessionId:id,readOnly:true,rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'预览恢复成功'}]}]};};
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview-retry"]').click();await tick();await tick();assert(f.text().includes('临时读取失败'));assert.equal(f.element('#ai-dsh-reconnect').getAttribute('aria-label'),'刷新只读预览');assert(f.element('#ai-dsh-reconnect svg'));
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-preview-retry"] [data-act="preview"]').click();await tick();await tick();assert(f.text().includes('临时读取失败'));assert.equal(f.element('#ai-dsh-reconnect').getAttribute('aria-label'),'刷新只读预览');assert(f.element('#ai-dsh-reconnect svg'));
     f.element('#ai-dsh-reconnect').click();await until(()=>f.w.AiPanel.aiState().dshSession?.state==='preview');assert(f.text().includes('预览恢复成功'));assert(f.element('#ai-model').textContent.includes('只读预览'));assert(f.element('#ai-model').disabled);assert.equal(reads,2);assert.equal(f.binds?.length||0,0);assert.equal(f.aborts.length,0);
   });
   await test('全局目录失败保留搜索与已有记录并允许重试，关闭不留下外部监听器',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.dshCatalog=[{sessionId:'session-foreign',title:'目录项目',cwd:f.B,rootDir:f.B}];
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();const pop=f.element('.ai-hist-pop'),input=f.element('.ai-hist-search');input.value='目录';input.dispatchEvent(new f.w.Event('input'));
-    f.catalogRead=async()=>({ok:false,error:'网络暂时不可用'});f.element('[data-hist-refresh]').click();await tick();await tick();assert.equal(f.element('.ai-hist-pop'),pop);assert.equal(input.value,'目录');assert(f.element('.ai-hist-status').textContent.includes('网络暂时不可用'));assert(f.element('[data-id="host:session-foreign"]'));
-    f.catalogRead=async()=>({ok:true,items:f.dshCatalog});f.element('[data-hist-refresh]').click();await tick();await tick();assert(!f.element('.ai-hist-status').textContent);f.element('[data-hist-close]').click();assert(!f.element('.ai-hist-pop'));assert.equal(f.aborts.length,0);
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();const pop=f.element('.ai-hist-dock'),input=f.element('.ai-hist-search');input.value='目录';input.dispatchEvent(new f.w.Event('input'));
+    f.catalogRead=async()=>({ok:false,error:'网络暂时不可用'});f.element('[data-hist-refresh]').click();await tick();await tick();assert.equal(f.element('.ai-hist-dock'),pop);assert.equal(input.value,'目录');assert(f.element('.ai-hist-status').textContent.includes('网络暂时不可用'));assert(f.element('[data-id="host:session-foreign"]'));
+    f.catalogRead=async()=>({ok:true,items:f.dshCatalog});f.element('[data-hist-refresh]').click();await tick();await tick();assert(!f.element('.ai-hist-status').textContent);f.element('[data-hist-close]').click();assert(f.element('#panel-sessions').classList.contains('hidden'));assert.equal(f.aborts.length,0);
   });
   await test('打开所属工程须明确确认，取消或确认期间选择变化不切工程',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const confirm=defer(),switched=[];f.w.Modal.confirm=()=>confirm.promise;f.w.App.setRoot=async root=>switched.push(root);
     f.dshCatalog=[{sessionId:'session-foreign',title:'预览',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=async()=>({ok:true,rootDir:f.B,sessionId:'session-foreign',readOnly:true,turns:[]});
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"]').click();await tick();await tick();
+    f.openSessions();await tick();await tick();f.element('[data-hist-scope="all"]').click();f.element('[data-id="host:session-foreign"] [data-act="preview"]').click();await tick();await tick();
     f.element('#ai-session-open-project').click();assert.equal(switched.length,0);f.element('#ai-new').click();confirm.resolve(true);await tick();assert.equal(switched.length,0);assert.equal(f.w.App.root,f.A);
   });
   await test('宿主历史优先刷新正文，绑定完成后才预取选项，重开不显示旧本地副本',async()=>{
@@ -1315,9 +1324,10 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.w.myIDE.ai.dshBind=async(cfg,state,id)=>{steps.push('bind:'+id);assert.equal(state.sessionId,'local-cached');return {ok:true};};
     f.w.myIDE.ai.dshOptions=async(cfg,id)=>{steps.push('options:'+id);return {ok:true,configOptions:[]};};
     f.w.App.showAi();
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-id="local-cached"]').click();
-    await until(()=>f.text().includes('最新原生正文'));
-    assert(!f.text().includes('过期本地正文'));assert.equal(steps.slice(0,3).join(','),'history:host-cached,bind:host-cached,options:local-cached');
+    f.openSessions();await tick();await tick();f.element('[data-id="local-cached"]').click();
+    await until(()=>f.text().includes('最新原生正文') && steps.includes('options:local-cached'));
+    const loadedAt = steps.indexOf('history:host-cached');
+    assert(!f.text().includes('过期本地正文'));assert.equal(steps.slice(loadedAt,loadedAt+3).join(','),'history:host-cached,bind:host-cached,options:local-cached');
     const saved=JSON.parse(f.w.localStorage.getItem(key)).find(item=>item.id==='local-cached');
     assert.equal(saved.hostId,'host-cached');assert.equal(saved.title,'DSH现名');assert(JSON.stringify(saved.msgs).includes('最新原生正文'));
   });
@@ -1326,7 +1336,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.dshCatalog=['slow','fast'].map(id=>({sessionId:id,title:id,cwd:f.A}));
     f.w.myIDE.ai.dshHistory=async(cfg,id)=>id==='slow'?slow.promise:{ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'后选正文'}]}]};
     f.w.myIDE.ai.dshBind=async(cfg,state,id)=>{binds.push(id);return {ok:true};};
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-id="slow"]').click();f.element('#ai-history').click();await tick();await tick();f.element('[data-id="fast"]').click();
+    f.openSessions();await tick();await tick();f.element('[data-id="slow"]').click();f.openSessions();await tick();await tick();f.element('[data-id="fast"]').click();
     await until(()=>f.text().includes('后选正文'));slow.resolve({ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'迟到正文'}]}]});await tick();await tick();
     assert(f.text().includes('后选正文'));assert(!f.text().includes('迟到正文'));assert.deepEqual(binds,['fast']);
   });
@@ -1335,7 +1345,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const slow=defer();let binds=0;
       f.dshCatalog=[{sessionId:'slow',title:'慢历史',cwd:f.A}];f.w.myIDE.ai.dshHistory=()=>slow.promise;
       f.w.myIDE.ai.dshBind=async()=>{binds++;return {ok:true};};
-      f.element('#ai-history').click();await tick();await tick();f.element('[data-id="slow"]').click();
+      f.openSessions();await tick();await tick();f.element('[data-id="slow"]').click();
       if(action==='new')f.element('#ai-new').click();else f.switchRoot(f.B);
       slow.resolve({ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'旧项目迟到历史'}]}]});await tick();await tick();
       assert(!f.text().includes('旧项目迟到历史'));assert.equal(binds,0);
@@ -1344,13 +1354,16 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('并发目录刷新按最新请求更新，跨项目迟到目录不能回填',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const old=defer(),fresh=defer();let n=0;
     f.catalogRead=()=>++n===1?old.promise:fresh.promise;
-    f.element('#ai-history').click();f.element('#ai-history').click();f.element('#ai-history').click();
+    f.openSessions();f.openSessions();f.openSessions();
     fresh.resolve({ok:true,items:[{sessionId:'latest',title:'最新目录',cwd:f.A}]});await tick();await tick();
     old.resolve({ok:true,items:[{sessionId:'outdated',title:'过期目录',cwd:f.A}]});await tick();await tick();
-    assert(f.element('.ai-hist-pop').textContent.includes('最新目录'));assert(!f.element('.ai-hist-pop').textContent.includes('过期目录'));
-    const late=defer();f.catalogRead=()=>late.promise;f.element('#ai-history').click();f.element('#ai-history').click();f.switchRoot(f.B);
+    assert(f.element('.ai-hist-dock').textContent.includes('最新目录'));assert(!f.element('.ai-hist-dock').textContent.includes('过期目录'));
+    const late=defer();
+    f.catalogRead=()=>f.w.App.root===f.A ? late.promise : Promise.resolve({ok:true,items:[{sessionId:'next',title:'B 项目目录',cwd:f.B}]});
+    f.openSessions();f.switchRoot(f.B);
+    await until(()=>f.element('.ai-hist-dock').textContent.includes('B 项目目录'));
     late.resolve({ok:true,items:[{sessionId:'wrong',title:'跨项目目录',cwd:f.B}]});await tick();await tick();
-    f.element('#ai-history').click();assert(!f.element('.ai-hist-pop').textContent.includes('跨项目目录'));
+    assert(!f.element('.ai-hist-dock').textContent.includes('跨项目目录'));
   });
   await test('旧映射把原生ID指向别条会话时，原生身份不被吞并且当前只标一条',async()=>{
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh';
@@ -1362,7 +1375,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       {sessionId:'host-new',title:'第三条',cwd:f.A,bindings:[{sessionId:'host-middle',rootId:f.A,scope:'project'}]},
     ];
     const reads=[];f.w.myIDE.ai.dshHistory=async(cfg,id)=>{reads.push(id);return {ok:true,turns:[]};};f.w.myIDE.ai.dshBind=async()=>({ok:true});
-    f.element('#ai-history').click();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
+    f.openSessions();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
     assert.equal(rows.length,3);assert.equal(new Set(rows.map(r=>r.dataset.id)).size,3);assert.equal(rows.filter(r=>r.classList.contains('cur')).length,1);
     assert(rows.find(r=>r.classList.contains('cur')).textContent.includes('第二条'));
     rows.find(r=>r.textContent.includes('第二条')).click();await tick();await tick();assert.deepEqual(reads,['host-middle']);
@@ -1371,21 +1384,21 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh';
     f.w.localStorage.setItem(key,JSON.stringify([{id:'detached-local',msgs:[]}]));f.w.localStorage.setItem(key+':active','detached-local');
     await f.w.AiPanel.setConfig({engine:'dsh'});f.dshCatalog=[{sessionId:'detached-host',cwd:'C:/detached',bindings:[{sessionId:'detached-local',rootId:f.A,scope:'project'}]}];
-    f.element('#ai-history').click();await tick();await tick();assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,0);
-    assert(f.element('.ai-hist-pop').textContent.includes('当前查看的会话属于其他工作区'));
+    f.openSessions();await tick();await tick();assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,0);
+    assert(f.element('.ai-hist-dock').textContent.includes('当前查看的会话属于其他工作区'));
   });
   await test('点击前台正在运行的当前会话保持实时流，不重新读取或绑定历史',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('当前任务');await until(()=>f.calls.length===1);
     const id=f.calls[0].context.sessionId;f.dshCatalog=[{sessionId:'host-current',title:'当前任务',cwd:f.A,running:true,bindings:[{sessionId:id,rootId:f.A,scope:'project'}]}];
     let reads=0;f.w.myIDE.ai.dshHistory=async()=>{reads++;return {ok:true,turns:[]};};
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-id="'+id+'"]').click();
+    f.openSessions();await tick();await tick();f.element('[data-id="'+id+'"]').click();
     f.chunk(0,'实时流仍在');assert(f.text().includes('实时流仍在'));assert.equal(f.element('#ai-send').textContent,'⏹');
     assert.equal(reads,0);assert.equal(f.aborts.length,0);assert.equal(f.w.AiPanel.__testParked().backgroundRuns,0);
   });
   await test('过滤DSH侧栏不显示的未使用空白会话，明确新建的当前草稿仍保留',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.element('#ai-new').click();const key='myide-ai-sessions:'+f.A+':dsh',id=f.w.localStorage.getItem(key+':active');
     f.dshCatalog=[{sessionId:'unused',title:'旧空白探测',cwd:f.A,blank:true},{sessionId:'normal',title:'正常历史',cwd:f.A,blank:false},{sessionId:'host-draft',title:'当前草稿',cwd:f.A,blank:true,bindings:[{sessionId:id,rootId:f.A,scope:'project'}]}];
-    f.element('#ai-history').click();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
+    f.openSessions();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
     assert.equal(rows.length,2);assert(!rows.some(row=>row.textContent.includes('旧空白探测')));assert(rows.find(row=>row.classList.contains('cur')).textContent.includes('当前草稿'));
   });
   await test('原生会话ID不服从错误saved别名，启动先读宿主正文并绑定同一身份再发送',async()=>{
@@ -1400,7 +1413,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await until(()=>f.w.AiPanel.aiState().dshSession?.state==='ready');
     assert.deepEqual(f.historyReads,[id]);assert.equal(f.binds[0].id,id);assert.equal(f.binds[0].state.sessionId,id);
     assert(f.text().includes('原生问候正文'));assert(!f.text().includes('上次错误混杂'));assert.deepEqual(options,[id]);
-    f.element('#ai-history').click();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
+    f.openSessions();await tick();await tick();const rows=[...f.w.document.querySelectorAll('.ai-hist-row')];
     assert.equal(rows.length,2);assert(rows.find(row=>row.classList.contains('cur')).textContent.includes('你好问候'));
     assert(!rows.find(row=>row.textContent.includes('Single Digit Message')).classList.contains('cur'));
     assert(f.send('同一条继续'));await until(()=>f.calls.length===1);assert.equal(f.calls[0].context.sessionId,id);assert.equal(f.calls[0].messages[0].content,'同一条继续');
@@ -1412,14 +1425,14 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.hostHistory={'host-correct':{ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'正确宿主正文'}]}]}};
     await f.w.AiPanel.setConfig({engine:'dsh'});await until(()=>f.w.AiPanel.aiState().dshSession?.state==='ready');
     assert.deepEqual(f.historyReads,['host-correct']);assert.equal(f.binds[0].id,'host-correct');
-    f.element('#ai-history').click();await tick();await tick();const current=f.element('.ai-hist-row.cur');assert.equal(current.dataset.id,id);assert(current.textContent.includes('正确会话'));assert(f.text().includes('正确宿主正文'));
+    f.openSessions();await tick();await tick();const current=f.element('.ai-hist-row.cur');assert.equal(current.dataset.id,id);assert(current.textContent.includes('正确会话'));assert(f.text().includes('正确宿主正文'));
   });
   await test('绑定失败或只读失败关闭发送且不inspect，显式重连重新绑定后才放行',async()=>{
     for(const failure of [{ok:false,error:'绑定失败'},{ok:true,canContinue:false,error:'只能只读'}]){
       const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.w.App.showAi();
       const id='session-readonly';f.dshCatalog=[{sessionId:id,title:'只读历史',cwd:f.A}];f.hostHistory={[id]:{ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'只读正文'}]}]}};
       let options=0,allowed=false;f.w.myIDE.ai.dshOptions=async()=>{options++;return {ok:true,configOptions:[]};};f.w.myIDE.ai.dshBind=async()=>allowed?{ok:true,canContinue:true}:failure;
-      f.element('#ai-history').click();await tick();await tick();f.element('[data-id="'+id+'"]').click();await until(()=>f.w.AiPanel.aiState().dshSession?.state==='blocked');
+      f.openSessions();await tick();await tick();f.element('[data-id="'+id+'"]').click();await until(()=>f.w.AiPanel.aiState().dshSession?.state==='blocked');
       assert(f.text().includes('只读正文'));assert(f.element('#ai-send').disabled);assert.equal(f.send('不能静默开新会话'),false);
       f.element('#ai-input').value='回车也不能发';f.element('#ai-input').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
       f.w.AiPanel.syncVisible(true);await tick();await tick();assert.equal(options,0);assert.equal(f.calls.length,0);
@@ -1431,7 +1444,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('上一条正在运行');await until(()=>f.calls.length===1);const old=f.calls[0].context;
     const history=defer(),binding=defer(),id='session-slow-target';f.dshCatalog=[{sessionId:id,title:'新选择',cwd:f.A}];
     f.w.myIDE.ai.dshHistory=()=>history.promise;f.w.myIDE.ai.dshBind=()=>binding.promise;
-    f.element('#ai-history').click();await tick();await tick();f.element('[data-id="'+id+'"]').click();
+    f.openSessions();await tick();await tick();f.element('[data-id="'+id+'"]').click();
     assert.equal(f.w.AiPanel.aiState().current,id);assert(f.element('#ai-send').disabled);assert.equal(f.send('读取中别发旧会话'),false);
     f.rawChunk({context:old,delta:'旧任务迟到文字'});assert(!f.text().includes('旧任务迟到文字'));assert.equal(f.aborts.length,0);
     history.resolve({ok:true,turns:[{parts:[{kind:'text',role:'assistant',text:'目标正文'}]}]});await tick();await tick();
@@ -1558,7 +1571,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       if(action==='engine')await f.w.AiPanel.setConfig({engine:'standard'});
       if(action==='switch'){
         f.dshCatalog.push({sessionId:'session-next',title:'下一条',cwd:f.A});f.hostHistory['session-next']={ok:true,turns:[]};
-        f.element('#ai-history').click();await tick();await tick();f.element('[data-id="session-next"]').click();
+        f.openSessions();await tick();await tick();f.element('[data-id="session-next"]').click();
       }
       await until(()=>f.unwatches.includes(route.watchId));assert.equal(f.hostControls.length,0,action);assert.equal(f.aborts.length,0,action);
       f.watchPush({turns:[{parts:[{kind:'text',role:'assistant',text:'旧watch迟到'}]}]},0);assert(!f.text().includes('旧watch迟到'),action);

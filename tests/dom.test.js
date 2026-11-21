@@ -8874,14 +8874,14 @@ assert_(panel, 'CM6 搜索面板出现');
     // 历史会话：每轮结束自动存
     const sess = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
     assert_(!!sess && String(sess).includes('换个问法'), '历史会话自动保存了这轮: ' + String(sess).slice(0, 60));
-    click($(dom, '#ai-history'));
+    click($(dom, '#tool-sessions'));
     await tick(); await tick();
-    const hrows = $allIn($(dom, '.ai-hist-pop'), '.ai-hist-row');
-    assert_(hrows.length >= 1, '历史下拉列出会话: ' + hrows.length);
-    assert_($(dom, '.ai-hist-pop').textContent.includes('换个问法'), '标题取第一条用户发言');
-    assert_($allIn($(dom, '.ai-hist-pop'), '.ai-hist-b').length >= 2, '每行有重命名 / 删除');
+    const hrows = $allIn($(dom, '.ai-hist-dock'), '.ai-hist-row');
+    assert_(hrows.length >= 1, '左侧列出会话: ' + hrows.length);
+    assert_($(dom, '.ai-hist-dock').textContent.includes('换个问法'), '标题取第一条用户发言');
+    assert_(hrows[0].querySelector('[data-act="ren"]') && hrows[0].querySelector('[data-act="del"]'), '本地会话可重命名和删除');
     // 载入会话
-    click(hrows[0]);
+    click(hrows[0].querySelector('.ai-hist-open'));
     await tick(); await tick();
     assert_($allIn($(dom, '#ai-msgs'), '.ai-msg').length >= 2, '载入后对话被重放: ' + $allIn($(dom, '#ai-msgs'), '.ai-msg').length);
     assert_($allIn($(dom, '#ai-msgs'), '.ai-code-acts').length === 0 || true, '重放不报错');
@@ -9093,10 +9093,10 @@ assert_(panel, 'CM6 搜索面板出现');
     // 切回去：历史还在（会话跟项目走，不是被删了）
     await g(dom, 'App.openProject(' + JSON.stringify(P) + ')');
     await tick(); await tick();
-    click($(dom, '#ai-history'));
+    click($(dom, '#tool-sessions'));
     await tick(); await tick();
-    assert_($(dom, '.ai-hist-pop').textContent.includes('A 项目的私事'), '切回 A 项目还能翻到当时的会话');
-    click($(dom, '#ai-history'));
+    assert_($(dom, '.ai-hist-dock').textContent.includes('A 项目的私事'), '切回 A 项目还能翻到当时的会话');
+    click($(dom, '#tool-sessions'));
     await tick();
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];

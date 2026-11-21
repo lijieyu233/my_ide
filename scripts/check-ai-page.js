@@ -59,7 +59,7 @@ const watchdog=setTimeout(()=>{console.error('页面上下文取证超时');clea
       {role:'assistant',content:'',tool_calls:[{id:'old-write',type:'function',function:{name:'write_file',arguments:JSON.stringify({path:'old.md',content:'OLD_ARGS_SECRET'})}}]},
       {role:'tool',tool_call_id:'old-write',content:'OLD_RESULT_SECRET'},
       {role:'tool',tool_call_id:'orphan-read',name:'read_file',content:'OLD_ORPHAN_SECRET'}];
-    await js('localStorage.setItem("myide-ai-sessions:"+App.root,'+JSON.stringify(JSON.stringify([{id:'page-history',title:'页面验证',ts:Date.now(),msgs:history}]))+');document.getElementById("ai-history").click();document.querySelector(\'[data-id="page-history"]\').click();App.showTool("remote");true');
+    await js('localStorage.setItem("myide-ai-sessions:"+App.root,'+JSON.stringify(JSON.stringify([{id:'page-history',title:'页面验证',ts:Date.now(),msgs:history}]))+');App.showTool("sessions");document.querySelector(\'[data-id="page-history"]\').click();App.showTool("remote");true');
     const body=await ask('现在操作远程服务器');const wire=JSON.stringify(body.messages);
     for(const secret of ['OLD_ATTACHMENT_SECRET','OLD_ARGS_SECRET','OLD_RESULT_SECRET','OLD_ORPHAN_SECRET','FILE_PAGE_SECRET','RULE_PAGE_SECRET'])assert(!wire.includes(secret),secret);
     assert(wire.includes('之前的问题'));assert(body.messages.some(m=>m.role==='tool'&&m.tool_call_id==='old-write'));
