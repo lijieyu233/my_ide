@@ -211,11 +211,39 @@ function createService(options={}){
       .filter(item => norm(item.rootDir) !== detachedRoot);
   }
 
+  async function projectThreadRoot(thread) {
+    const rootDir = await canonical(thread.cwd);
+    if (norm(rootDir) === norm(await canonical(workspace()))) throw Error('此 Codex 会话属于独立阅读页');
+    return rootDir;
+  }
+
   async function openHistory(cfg, threadId) {
     const conn = await connect(cfg), request = historyRequest(conn);
     const thread = await history.readProjectThread(request, threadId);
-    const rootDir = await canonical(thread.cwd);
-    if (norm(rootDir) === norm(await canonical(workspace()))) throw Error('此 Codex 会话属于独立阅读页');
+    return adoptHistory(request, thread, await projectThreadRoot(thread));
+  }
+
+  async function forkHistory(cfg, threadId) {
+    const conn = await connect(cfg), request = historyRequest(conn);
+    const thread = await history.readProjectThread(request, threadId);
+    const rootDir = await projectThreadRoot(thread);
+    const fork = await request('thread/fork', {
+      threadId, excludeTurns: true, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'read-only',
+    });
+    const branched = fork.thread;
+    if (!history.isProjectThread(branched) || branched.id === threadId || branched.forkedFromId !== threadId ||
+      norm(await canonical(branched.cwd)) !== norm(rootDir)) throw Error('Codex 分叉身份校验失败');
+    const title = history.threadSummary(thread).title.slice(0, 112) + '（分叉）';
+    try {
+      await request('thread/name/set', { threadId: branched.id, name: title });
+      branched.name = title;
+    } catch {}
+    try { return await adoptHistory(request, branched, rootDir); }
+    catch { throw Error('分叉已创建，请刷新会话栏后打开。'); }
+  }
+
+  async function adoptHistory(request, thread, rootDir) {
+    const threadId = thread.id;
     const localId = localHistoryId(threadId, rootDir);
     const key = JSON.stringify([localId, norm(rootDir), 'project']);
     const messages = await history.readMessages(request, thread);
@@ -295,12 +323,31 @@ function createService(options={}){
       if(run.expired)return result('failed','Codex 长时间无原生活动，执行超时，已请求中断；未停止前不能继续发送');
       return run.aborted?result('aborted'):answer.status==='completed'?result('completed'):Object.assign(result(answer.status==='interrupted'?'aborted':'failed',answer.error||'Codex 未正常完成本轮，请检查原生连接；不会自动重发'),answer.errorCode?{errorCode:answer.errorCode,...(answer.httpStatusCode?{httpStatusCode:answer.httpStatusCode}:{})}:{});
     }catch(error){
-      if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!error.rpcResponseReceived)run.session.stopping='unknown';}
-      const message=error.rpcResponseReceived?'Codex 原生请求已拒绝'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'；不会自动重发本次请求':error.message;
-      if(!run.aborted)statusEvent(run,'error',message,{...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{})});
-      return result(run.aborted?'aborted':'failed',run.aborted?undefined:message);
+      const rejectedBeforeTurn = !run.accepting || (!run.turnId && (error.rpcResponseReceived === true || error.rpcNotSent === true));
+      if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!rejectedBeforeTurn)run.session.stopping='unknown';}
+      const stages={'thread/resume':'恢复原会话','thread/start':'创建会话','turn/start':'发送消息','thread/list':'核对会话','thread/read':'读取会话','thread/turns/list':'核对轮次','account/read':'读取账号','model/list':'读取模型'};
+      const message=error.kind==='threadInUse'?'会话由另一 Codex 进程占用。退出占用端后重试，或右键会话选择「分叉」。':error.rpcResponseReceived?
+        'Codex '+(stages[error.rpcMethod]||'原生请求')+'失败'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'。':error.message;
+      const rejection={...(error.kind?{errorCode:error.kind}:{}),...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{}),
+        ...(error.rpcMethod?{rpcMethod:error.rpcMethod}:{}),rejectedBeforeTurn};
+      if(!run.aborted)statusEvent(run,'error',message,rejection);
+      return {...result(run.aborted?'aborted':'failed',run.aborted?undefined:message),...rejection};
     }
-    finally{clearTimeout(run.timer);clearTimeout(run.warningTimer);discardPending(run);if(run.session?.run===run)run.session.run=null;runs.delete(context.requestId);}
+    finally {
+      clearTimeout(run.timer); clearTimeout(run.warningTimer); discardPending(run);
+      const session = run.session;
+      if (session?.run === run) {
+        if (session.external && session.attached && !session.stopping && !session.conn.rpc.closed) {
+          // Imported threads only need our writer while a MyIDE turn is in flight.
+          try {
+            const release = await session.conn.rpc.request('thread/unsubscribe', { threadId: session.id }, 2000);
+            if (['unsubscribed', 'notLoaded', 'notSubscribed'].includes(release.status)) session.attached = false;
+          } catch {}
+        }
+        session.run = null;
+      }
+      runs.delete(context.requestId);
+    }
   }
   function interrupt(run){
     if(!run.turnId||!run.conn||run.conn.rpc.closed||run.interrupting||run.settled)return;
@@ -319,6 +366,6 @@ function createService(options={}){
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,openHistory,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,openHistory,forkHistory,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

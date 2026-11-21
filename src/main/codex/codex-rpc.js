@@ -1,4 +1,5 @@
 const {EventEmitter}=require('events');
+const notSent = error => Object.assign(error, { rpcNotSent: true });
 
 // Codex app-server uses newline-delimited JSON, not LSP Content-Length framing.
 // It may omit jsonrpc; diagnostics and arbitrary server error bodies never reach UI.
@@ -33,7 +34,16 @@ class Rpc extends EventEmitter {
       }else{
         const pending=this.pending.get(message.id);if(!pending)continue;
         this.pending.delete(message.id);clearTimeout(pending.timer);
-        if(message.error){const error=Error('Codex 请求失败：'+pending.method);error.code=Number.isInteger(message.error.code)?message.error.code:undefined;error.rpcResponseReceived=true;pending.reject(error);}
+        if(message.error){
+          const error=Error('Codex 请求失败：'+pending.method);
+          error.code=Number.isInteger(message.error.code)?message.error.code:undefined;
+          error.rpcMethod=pending.method;
+          error.rpcResponseReceived=true;
+          // Codex reports the exclusive writer conflict via a text-only JSON-RPC error.
+          if(pending.method==='thread/resume'&&error.code===-32600&&
+            /\bthread [0-9a-f-]{36} already has an active writer\b/i.test(message.error.message||'')) error.kind='threadInUse';
+          pending.reject(error);
+        }
         else if(Object.hasOwn(message,'result'))pending.resolve(message.result);
         else pending.reject(Error('Codex 响应缺少 result'));
       }
@@ -46,12 +56,12 @@ class Rpc extends EventEmitter {
     this.child.stdin.write(line,error=>{if(error)this.close(Error('Codex 标准输入写入失败'));});
   }
   request(method,params={},timeout=45000){
-    if(this.closed)return Promise.reject(Error('Codex 通信已关闭'));
-    if(this.pending.size>=this.maxPending)return Promise.reject(Error('Codex 待处理请求过多'));
+    if(this.closed)return Promise.reject(notSent(Error('Codex 通信已关闭')));
+    if(this.pending.size>=this.maxPending)return Promise.reject(notSent(Error('Codex 待处理请求过多')));
     return new Promise((resolve,reject)=>{
       const id=++this.sequence,timer=timeout>0?setTimeout(()=>{this.pending.delete(id);reject(Error('Codex 请求超时：'+method));},timeout):null;
       this.pending.set(id,{resolve,reject,timer,method});
-      try{this.write({id,method,params});}catch(error){clearTimeout(timer);this.pending.delete(id);reject(error);}
+      try{this.write({id,method,params});}catch(error){clearTimeout(timer);this.pending.delete(id);reject(notSent(error));}
     });
   }
   notify(method,params){this.write({method,...(params===undefined?{}:{params})});}

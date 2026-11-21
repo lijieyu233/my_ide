@@ -262,6 +262,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     codexOptions:(cfg,sessionId,tools,apply)=>ipcRenderer.invoke('ai:codex-options',cfg,sessionId,tools,apply),
     codexSessions:cfg=>ipcRenderer.invoke('ai:codex-sessions',cfg),
     codexHistory:(cfg,threadId)=>ipcRenderer.invoke('ai:codex-history',cfg,threadId),
+    codexFork:(cfg,threadId)=>ipcRenderer.invoke('ai:codex-fork',cfg,threadId),
     codexStatus:launcher=>ipcRenderer.invoke('ai:codex-status',launcher),
     dshToolResult:(context,id,result)=>ipcRenderer.invoke('ai:dsh-tool-result',context,id,result),
     dshPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:dsh-permission-result',context,id,optionId),

@@ -888,6 +888,12 @@ ipcMain.handle('ai:codex-history',async (event, cfg, threadId) => {
     return { ok: true, ...await CODEX.openHistory(cfg, threadId) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+ipcMain.handle('ai:codex-fork',async (event, cfg, threadId) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await CODEX.forkHistory(cfg, threadId) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 ipcMain.handle('ai:codex-status',async(event,launcher)=>{
   try{aiSender(event);return await CODEX.status(launcher);}catch(error){return {ok:false,error:error.message};}
 });

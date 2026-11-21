@@ -36,10 +36,40 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex sidebar opens saved history in its original project without opening a native turn',fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  check('switching projects reuses the Codex session catalog',fixture.requests.filter(r=>r.method==='thread/list'&&!r.params.includedThreadIds).length===1);
  await capture('codex-history-sidebar');
+ const original=fixture.threads.get(externalId);
+ original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
+ await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('另一 Codex 进程占用')),'writer conflict message');
+ check('a writer conflict restores the original draft and dispatches no turn or fork',
+   await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&[...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
+   !fixture.requests.some(r=>r.method==='thread/fork'||r.method==='turn/start'&&r.params.threadId===externalId));
+ original.writerLocked=false;
+ await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===externalId),'external continuation');
  check('Codex sidebar continuation resumes the exact thread without replaying the old prompt',fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话');
  await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt'&&r.params.threadId===externalId),'external interrupt');
+ await until(()=>js(()=>AiPanel.__testParked().currentRun!=='active'),'original stopped after retry');
+ original.writerLocked=true;
+ await js(()=>AiPanel.ask('HOLD_CODEX 接着讨论'));
+ await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('进程占用')),'original writer locked again');
+ const beforeFork=fixture.requests.filter(r=>r.method==='turn/start').length;
+ await js(()=>{
+   const row=[...document.querySelectorAll('.ai-hist-nm')].find(el=>el.textContent==='桌面 Codex 外部会话').closest('button');
+   row.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
+   [...document.querySelectorAll('#ctx-menu button')].find(el=>el.textContent==='分叉').click();
+ });
+ const forkId='019caa00-0000-7000-8000-000000000004';
+ await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',forkId),'native fork opened');
+ check('manual fork opens copied history as a separate session, preserving the draft',
+   fixture.requests.filter(r=>r.method==='thread/fork'&&r.params.threadId===externalId).length===1&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===beforeFork&&
+   await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'&&document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER')&&document.getElementById('ai-current-session').textContent.endsWith('（分叉）')));
+ await capture('codex-writer-fork');
+ await js(()=>{document.getElementById('ai-send').click();return true;});
+ await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===forkId),'continue fork');
+ check('the stored draft goes to the fork only on explicit send',fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===forkId).params.input[0].text==='HOLD_CODEX 接着讨论');
+ await js(()=>{document.getElementById('ai-send').click();return true;});
+ await until(()=>fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===forkId),'release fork subscription after interrupt');
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});

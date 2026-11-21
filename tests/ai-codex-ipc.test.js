@@ -11,6 +11,7 @@ const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher
   inspect:async(cfg,context,tools,apply)=>{calls.push({kind:'inspect',cfg,context,tools,apply});return {ok:true,configOptions:[]};},
   listHistory:async()=>[{threadId:'fixture-thread'}],
   openHistory:async(_cfg, threadId)=>({threadId,messages:[]}),
+  forkHistory:async(_cfg, threadId)=>({threadId:'fork-'+threadId,messages:[]}),
   toolResult:(...args)=>result('tool',...args),permissionResult:(...args)=>result('permission',...args),questionResult:(...args)=>result('question',...args),
   chat:async(cfg,messages,tools,context,onEvent,onTool)=>{calls.push({kind:'chat',cfg,context});return new Promise(resolve=>pending.set(context.requestId,{context,onEvent,onTool,resolve}));}};
 const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},
@@ -35,10 +36,13 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     const fake={...event,senderFrame:{processId:3,routingId:99}};
     assert.equal((await handlers.get('ai:codex-status')(fake,'fixture.cmd')).ok,false);
     assert.equal((await handlers.get('ai:codex-history')(fake,cfg,'fixture-thread')).ok,false);
+    assert.equal((await handlers.get('ai:codex-fork')(fake,cfg,'fixture-thread')).ok,false);
     assert.equal((await invoke('ai:codex-sessions',cfg)).items[0].threadId,'fixture-thread');
     assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread')).threadId,'fixture-thread');
+    assert.equal((await invoke('ai:codex-fork',cfg,'fixture-thread')).threadId,'fork-fixture-thread');
     state.engine='dsh';
     assert.equal((await invoke('ai:codex-sessions',cfg)).ok,false);
+    assert.equal((await invoke('ai:codex-fork',cfg,'fixture-thread')).ok,false);
     assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread')).ok,false);
     state.engine='codex';
     assert((await handlers.get('ai:chat')(fake,cfg,[],[],c)).error);assert.equal(pending.size,0);

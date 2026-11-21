@@ -41,7 +41,20 @@ function createServer(){
     return reply(message.id,{data:[{status:t.running?'inProgress':'completed'}],nextCursor:null});
    }
    if(message.method==='thread/start'){const t={id:'offline-thread-'+ ++threadSeq,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
-   if(message.method==='thread/resume'){const t=threads.get(p.threadId);if(!t)return send({id:message.id,error:{code:-32000,message:'Unknown synthetic thread'}});return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
+   if(message.method==='thread/resume'){
+    const t=threads.get(p.threadId);
+    if(!t)return send({id:message.id,error:{code:-32000,message:'Unknown synthetic thread'}});
+    if(t.writerLocked)return send({id:message.id,error:{code:-32600,message:'thread '+t.id+' already has an active writer'}});
+    return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});
+   }
+   if(message.method==='thread/fork'){
+    const source=threads.get(p.threadId),id='019caa00-0000-7000-8000-000000000004';
+    const fork={...source,id,forkedFromId:source.id,writerLocked:false,running:false};
+    threads.set(id,fork);
+    return reply(message.id,{thread:fork,cwd:fork.cwd,model:fork.model});
+   }
+   if(message.method==='thread/name/set'){threads.get(p.threadId).name=p.name;return reply(message.id,{});}
+   if(message.method==='thread/unsubscribe')return reply(message.id,{status:'unsubscribed'});
    if(message.method==='turn/start'){const t=threads.get(p.threadId),turn={id:'offline-turn-'+ ++turnSeq};t.turn=turn;t.running=true;reply(message.id,{turn:{id:turn.id,status:'inProgress'}});setImmediate(()=>operate(t,turn,(p.input||[]).map(i=>i.text||'').join(' ')));return;}
    if(message.method==='turn/interrupt'){const t=threads.get(p.threadId);reply(message.id,{});if(t){t.running=false;notice('turn/completed',{threadId:t.id,turn:{id:p.turnId,status:'interrupted'}});}return;}
    send({id:message.id,error:{code:-32601,message:'Unsupported synthetic method'}});

@@ -2183,12 +2183,16 @@ const AiPanel = (() => {
     setBusyUI(true);
     const run = beginRun();
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
-    if (!run.initialInputDraft) await followActive();
+    if (!run.initialInputDraft && cfg.engine !== 'codex') await followActive();
     if (!runIsLive(run)) return;
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
     if (!run.initialInputDraft) compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
     renderUsage();
+    if (cfg.engine === 'codex') {
+      msgsEl.querySelector('.ai-codex-rejected')?.remove();
+      run.codexDraft = { key: inputViewKey(), revision: inputDraftRevision, raw: inputEl.value, images: pendingImages.slice() };
+    }
     if(!run.initialInputDraft)inputEl.value = '';
     autoGrowInput();   // 运行中补充保留草稿，收到原生接受回执后再消费。
     // 清空欢迎语
@@ -2215,10 +2219,12 @@ const AiPanel = (() => {
     const clips = files.filter(f=>f.special === 'clip').map(f=>'（剪贴板内容：）\n' + f.content);
     const contextFreeText = clips.concat(text).join('\n\n');
     const hasProjectContext = files.some(f=>f.special !== 'clip');
-    msgs.push({ role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
+    const userMessage = { role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
       ...(nativeEngine(cfg.engine)?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
       _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:imgs.length
-        ? [{type:'text',text:contextFreeText}].concat(imgs.map(url=>({type:'image_url',image_url:{url}}))) : contextFreeText} : {}) });
+        ? [{type:'text',text:contextFreeText}].concat(imgs.map(url=>({type:'image_url',image_url:{url}}))) : contextFreeText} : {}) };
+    msgs.push(userMessage);
+    if (run.codexDraft) Object.assign(run.codexDraft, { message: userMessage, row: urow });
 
     await continueStream(run);
   }
@@ -2259,7 +2265,21 @@ const AiPanel = (() => {
     setDshToolOutput(row,part.output);
     return row;
   }
+  function recoverRejectedCodexDraft(run, result) {
+    const draft = run.codexDraft;
+    if (!result?.rejectedBeforeTurn || !draft || backgroundView || draft.key !== inputViewKey() ||
+      inputEl.value || inputDraftRevision !== draft.revision) return false;
+    inputEl.value = draft.raw;
+    pendingImages.unshift(...draft.images);
+    msgs = msgs.filter(message => message !== draft.message);
+    draft.row.remove();
+    lastUserAt = msgs.findLastIndex(message => message.role === 'user');
+    autoGrowInput(); renderImages();
+    return true;
+  }
+
   function finishDshReply(text,isErr,r,run,stream,complete,warning){
+    const restoredDraft = recoverRejectedCodexDraft(run, r);
     if(!stream.text && r?.text)appendDshText(run,r.text);
     else if(!stream.text && !isErr && text)appendDshText(run,text);
     finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
@@ -2268,7 +2288,8 @@ const AiPanel = (() => {
     if(isErr || !complete){
       const note=r?.error||warning||(r?.aborted?'已停止生成':'回复未完成');
       const row=addMsg('assistant',note);row.querySelector('.ai-md').classList.add('ai-err');
-      stream.timeline.push({kind:'text',text:note});
+      if (restoredDraft) row.classList.add('ai-codex-rejected');
+      else stream.timeline.push({kind:'text',text:note});
     }
     for(const row of msgsEl.querySelectorAll('.ai-msg.ai-assistant'))decorateCodeBlocks(row);
     if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
@@ -2574,6 +2595,7 @@ const AiPanel = (() => {
   }
   let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
   let codexOpenIntent = 0;
+  const codexForksInFlight = new Set();
   const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
 
   function refreshCodexCatalog() {
@@ -3268,6 +3290,7 @@ const AiPanel = (() => {
     const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
     const actions = target.codexThreadId ? [
       action('open', '打开会话'),
+      { label: '分叉', run: () => openCodexHistory(target, true) },
       { label: '复制会话 ID', run: () => MI.copyText(target.codexThreadId) },
     ] : [action('ren', '重命名')];
     if (target.foreign) actions.unshift(action('open', '打开会话'));
@@ -3386,18 +3409,21 @@ const AiPanel = (() => {
     else blockDshSession(dshSessionAccess.error);
     return ready;
   }
-  async function openCodexHistory(target) {
+  async function openCodexHistory(target, fork = false) {
+    const threadId = target.codexThreadId;
+    if (fork && codexForksInFlight.has(threadId)) return;
     const intent = ++codexOpenIntent, ticket = sessionLoadTicket;
     const current = () => intent === codexOpenIntent && codexProjectHistory();
     const showingRun = id => id === curSessionId && currentRun?.status === 'active' || parkedRecordOf(id)?.record.run.status === 'active';
-    if (pathKey(target.rootDir) === pathKey(window.App?.root) && showingRun(target.id)) {
+    if (!fork && pathKey(target.rootDir) === pathKey(window.App?.root) && showingRun(target.id)) {
       openSession(target.id);
       return;
     }
+    if (fork) { codexForksInFlight.add(threadId); App.showAi(); }
     try {
-      const result = await window.myIDE.ai.codexHistory(getConfig(), target.codexThreadId);
+      const result = await (fork ? window.myIDE.ai.codexFork(getConfig(), threadId) : window.myIDE.ai.codexHistory(getConfig(), threadId));
       if (!current() || ticket !== sessionLoadTicket) return;
-      if (!result?.ok) throw Error(result?.error || '无法打开 Codex 会话');
+      if (!result?.ok) throw Error(result?.error || (fork ? '无法分叉 Codex 会话' : '无法打开 Codex 会话'));
       if (pathKey(result.rootDir) !== pathKey(window.App?.root)) {
         if (!await App.openProject(result.rootDir)) return;
         if (!current() || pathKey(result.rootDir) !== pathKey(window.App?.root)) return;
@@ -3408,13 +3434,19 @@ const AiPanel = (() => {
         saveSessions([{ ...previous, id: result.localId, title: result.title, ts: result.ts,
           msgs: result.messages }, ...all.filter(item => item.id !== result.localId)]);
       }
-      const cached = codexCatalog?.items.find(item => item.threadId === result.threadId);
-      if (cached) Object.assign(cached, { rootDir: result.rootDir, localId: result.localId, ts: result.ts, title: result.title });
+      if (codexCatalog?.launcher === (getConfig().codexPath || '')) {
+        const { threadId, rootDir, localId, ts, title } = result;
+        const cached = codexCatalog.items.find(item => item.threadId === threadId);
+        if (cached) Object.assign(cached, { rootDir, localId, ts, title });
+        else codexCatalog.items.unshift({ threadId, rootDir, localId, ts, title });
+      }
       openSession(result.localId, false);
       renderCurrentSessionTitle();
       refreshHistInPlace();
     } catch (error) {
       if (current()) MI.toast(error.message, 'err');
+    } finally {
+      if (fork) codexForksInFlight.delete(threadId);
     }
   }
 
@@ -4693,7 +4725,7 @@ const AiPanel = (() => {
     if(event.type==='status'){
       if(run.engine==='codex'){
         const previous=run.nativeState||{};run.nativeState={...previous,lastEventAt:Date.now()};
-        for(const [field,key]of [['phase','phase'],['nativeThreadId','threadId'],['turnId','turnId'],['errorCode','errorCode']])if(typeof event[field]==='string')run.nativeState[key]=event[field].slice(0,200);
+        for(const [field,key]of [['phase','phase'],['nativeThreadId','threadId'],['turnId','turnId'],['errorCode','errorCode'],['rpcMethod','rpcMethod']])if(typeof event[field]==='string')run.nativeState[key]=event[field].slice(0,200);
         if(Number.isInteger(event.httpStatusCode))run.nativeState.httpStatusCode=event.httpStatusCode;
         if(Number.isInteger(event.rpcErrorCode))run.nativeState.rpcErrorCode=event.rpcErrorCode;
         if(Number.isSafeInteger(event.retryCount)&&event.retryCount>=0)run.nativeState.retryCount=event.retryCount;

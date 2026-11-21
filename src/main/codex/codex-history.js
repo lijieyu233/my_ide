@@ -73,7 +73,7 @@ function assertIdle(thread, latestTurn) {
 async function assertThreadIdle(request, thread) {
   assertIdle(thread);
   if (thread.historyMode === 'paginated') {
-    const result = await request('thread/turns/list', { threadId: thread.id, limit: 1, sortDirection: 'desc' });
+    const result = await request('thread/turns/list', { threadId: thread.id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
     if (!Array.isArray(result?.data)) throw Error('无法核对 Codex 会话的最新轮次');
     assertIdle(thread, result.data[0]);
   } else {
@@ -110,4 +110,4 @@ async function readMessages(request, thread) {
   return messages.reverse();
 }
 
-module.exports = { listProjectThreads, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };
+module.exports = { isProjectThread, listProjectThreads, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };

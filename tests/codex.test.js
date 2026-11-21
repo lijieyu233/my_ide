@@ -39,6 +39,7 @@ function fixture(config={}){
        [{item:{type:'agentMessage',text:'旧回答'}},{item:{type:'commandExecution',command:'never-rerun'}}];
      send(c,{id:r.id,result:{data,nextCursor:p.cursor?null:'older'}});
    }else if(r.method==='thread/turns/list'&&config.history){
+     assert.equal(p.itemsView,'notLoaded');
      send(c,{id:r.id,result:{data:[{status:config.activeHistory?'inProgress':'completed'}],nextCursor:null}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
     const id=r.method==='thread/start'?'thread-'+ ++counter:p.threadId,savedCwd=config.map&&fs.existsSync(config.map)?Object.values(JSON.parse(fs.readFileSync(config.map,'utf8'))).find(v=>v.id===id)?.cwd:null,cwd=config.wrongCwd||p.cwd||threads.get(id)?.cwd||savedCwd||temp,model=r.method==='thread/start'?(p.model||'native-model'):(config.resumeModel||'native-model');threads.set(id,{id,cwd,model});
@@ -112,6 +113,15 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   const waiting=rpc.request('pending',{},1000);c.stdout.write('x'.repeat(301));await assert.rejects(waiting,/过大/);assert(rpc.closed);
  });
  await test('服务端错误正文和stderr密钥不会泄露',async()=>{const c=child(),rpc=new Rpc(c);const p=rpc.request('test',{},1000);c.stderr.write('Bearer secret-token private@example.invalid');c.stdout.write('{"id":1,"error":{"code":-32000,"message":"secret-token private@example.invalid"}}\n');await assert.rejects(p,e=>!e.message.includes('secret-token')&&!e.message.includes('private@'));rpc.close();});
+ await test('本地未写出的超限请求与原生写入锁冲突保持可区分',async()=>{
+  const c=child(),rpc=new Rpc(c,{maxLineBytes:360});
+  await assert.rejects(rpc.request('turn/start',{input:'x'.repeat(400)}),error=>error.rpcNotSent===true&&!error.rpcResponseReceived);
+  assert(!rpc.closed&&rpc.pending.size===0);
+  const pending=rpc.request('thread/resume',{},1000);
+  c.stdout.write(JSON.stringify({id:2,error:{code:-32600,message:'thread 019caa00-0000-7000-8000-000000000001 already has an active writer'}})+'\n');
+  await assert.rejects(pending,error=>error.kind==='threadInUse'&&error.rpcMethod==='thread/resume'&&!error.message.includes('019caa00'));
+  rpc.close();
+ });
  await test('RPC请求超时删除pending，未知响应不污染下一个请求',async()=>{const c=child(),rpc=new Rpc(c);await assert.rejects(rpc.request('timeout',{},5),/超时/);assert.equal(rpc.pending.size,0);c.stdout.write('{"id":1,"result":{}}\n');rpc.close();});
  await test('安装发现从版本化Codex目录寻找原生CLI，不硬编码hash或打开窗口',async()=>{
   const local=path.join(temp,'local'),exe=path.join(local,'OpenAI','Codex','bin','any-version','codex.exe');fs.mkdirSync(path.dirname(exe),{recursive:true});fs.writeFileSync(exe,'never execute fixture');
