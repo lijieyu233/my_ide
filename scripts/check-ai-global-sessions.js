@@ -16,19 +16,23 @@ async function connect() {
   const request = rpc.request.bind(rpc), call = rpc.call.bind(rpc);
   rpc.request = (method, args) => {
     count(audit.requests, method);
-    if (!['session/list', 'session/history', 'session/catalog'].includes(method)) {
+    if (!['session/list', 'session/history', 'session/catalog', 'session/check', 'session/config_options'].includes(method)) {
       audit.blocked.push(method); throw Error('只读验证拦截宿主操作：' + method);
     }
     return request(method, args);
   };
   rpc.call = (method, args, signal) => {
     count(audit.calls, method);
-    if (!['session/list', 'session/projections', 'session/page', 'session/modelCatalog'].includes(method)) {
+    if (!['session/list', 'session/projections', 'session/page', 'session/modelCatalog', 'myide/check'].includes(method)) {
       audit.blocked.push(method); throw Error('只读验证拦截RPC：' + method);
     }
     return call(method, args, signal);
   };
-  rpc.raw = async method => { audit.blocked.push('raw:' + method); throw Error('只读验证禁止旁听/交互通道'); };
+  const raw = rpc.raw.bind(rpc);
+  rpc.raw = (method, ...args) => {
+    if (method === 'observe') { count(audit.calls, 'raw:observe'); return raw(method, ...args); }
+    audit.blocked.push('raw:' + method); throw Error('只读验证禁止交互通道');
+  };
   rpc.notify = method => { audit.blocked.push('notify:' + method); throw Error('只读验证禁止通知'); };
   return rpc;
 }
@@ -200,9 +204,10 @@ async function electronCheck() {
         assert(await js('(()=>{const dock=document.querySelector("#panel-sessions .ai-hist-dock"),r=dock.getBoundingClientRect(),p=document.getElementById("sidebar").getBoundingClientRect();return r.width>0&&r.left>=p.left&&r.right<=p.right&&dock.scrollWidth<=dock.clientWidth&&!document.getElementById("ai-history")&&[...dock.querySelectorAll(".ai-hist-row")].every(row=>row.scrollWidth<=row.clientWidth)})()'), '会话布局溢出：' + width);
         await capture('ai-global-sessions-navigation-' + width + '-redacted.png', 'panel-sessions');
       }
-    });    await test('跨工程历史仅预览：root与当前active不变，禁止bind/watch/options/prompt', async () => {
-      const before = await js('({root:App.root,active:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh:active"),saved:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh"),shell:["main","content","viewer"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})');
-      const requests = { ...audit.requests }, services = { ...audit.service }, violations = audit.blocked.length;
+    });
+    await test('右键可打开和重命名，跨工程会话保持原项目与会话缓存', async () => {
+      const snapshot = '({root:App.root,active:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh:active"),saved:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh")})';
+      const before = await js(snapshot), binds = audit.service.bindSession || 0;
       const target = await js('(()=>{const rows=[...document.querySelectorAll(".ai-hist-row")];return rows.find(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + '&&(row.dataset.id===' + JSON.stringify(actual.other.sessionId) + '||row.dataset.id===' + JSON.stringify('host:' + actual.other.sessionId) + '))?.dataset.id})()');
       assert(target, '必须点击真实目录选定会话，不能以本地fixture替代');
       assert(await js(`(() => {
@@ -212,24 +217,27 @@ async function electronCheck() {
         if (row.closest('.ai-hist-items').hidden) group.querySelector('[data-hist-toggle]').click();
         row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
         const menu = document.querySelector('#ctx-menu:not(.hidden)');
-        return row.querySelectorAll('button').length === 1 && !!menu?.querySelector('[data-act=preview]') && !menu.querySelector('[data-act=ren],[data-act=del]');
-      })()`), '异工程会话右键仅可只读预览');
-      await js('document.querySelector("#ctx-menu [data-act=preview]").click();true');
-      await until(() => js('AiPanel.aiState().dshSession?.state==="preview"'), '跨工程只读预览', 60000);
-      assert(await js('document.getElementById("ai-send").disabled&&!!document.getElementById("ai-session-origin")&&!document.getElementById("ai-session-preview-bar").classList.contains("hidden")&&!!document.getElementById("ai-session-open-project")'));
+        return row.querySelectorAll('button').length === 1 && !!menu?.querySelector('[data-act=open]') && !!menu.querySelector('[data-act=ren]');
+      })()`), '异工程会话应可直接打开和重命名');
+      await js('document.querySelector("#ctx-menu [data-act=open]").click();true');
+      await until(() => js('AiPanel.aiState().dshSession?.state==="ready"&&!document.getElementById("ai-input").readOnly'), '跨工程会话可续聊', 60000);
+      assert(await js('!document.getElementById("ai-send").disabled&&!!document.getElementById("ai-session-open-project")'));
       assert(await js('document.getElementById("ai-msgs").textContent.length>0'), '真实宿主正文应有回放');
-      await capture('ai-global-sessions-preview-redacted.png');
+      const view = await js('AiPanel.dshView()');
+      assert.equal(view.foreignHostId, actual.other.sessionId);
+      assert.equal(key(view.rootId), key(actual.other.cwd));
+      assert.deepEqual(await js(snapshot), before);
+      assert.equal(audit.service.bindSession, binds + 1);
+      assert(!audit.service.chat);
+      await capture('ai-global-sessions-open-redacted.png');
+    });
+    await test('打开所属工程直接切换并选中原会话', async () => {
       await js('document.getElementById("ai-session-open-project").click();true');
-      await until(() => js('!!document.getElementById("cf-no")'), '打开工程必须明确确认');
-      assert.equal(await js('App.root'), before.root); await js('document.getElementById("cf-no").click();true');
-      assert.equal(await js('App.root'), before.root, '取消确认不得切换工程');
-      assert.equal(await js('AiPanel.ask("只读验证：禁止发送此文本")'), false);
-      await js('const input=document.getElementById("ai-input");input.value="只读验证：回车也禁止发送";input.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}));true');
-      const after = await js('({root:App.root,active:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh:active"),saved:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh"),shell:["main","content","viewer"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})');
-      assert.equal(JSON.stringify(after) === JSON.stringify(before), true, '浏览外工程不切root、不覆盖当前工程会话缓存');
-      assert.equal(audit.blocked.length, violations); assert.equal(audit.requests['session/catalog'] || 0, requests['session/catalog'] || 0);
-      assert.equal(JSON.stringify(audit.service), JSON.stringify(services), '跨root预览不触发inspect/bind/watch/chat/abort');
-      assert((audit.requests['session/history'] || 0) > (requests['session/history'] || 0));
+      assert(!await js('!!document.getElementById("cf-yes")'), '项目跳转无额外确认');
+      await until(async () => {
+        const view = await js('({root:App.root,...AiPanel.dshView()})');
+        return key(view.root) === key(actual.other.cwd) && view.sessionId === actual.other.sessionId && !view.foreignHostId;
+      }, '切到会话所属项目');
     });
     await test('真实窗口始终隐藏、无原生弹窗、无凭据读取或任何宿主写操作', async () => {
       assert(BrowserWindow.getAllWindows().every(w => !w.isVisible())); assert.equal(audit.visible, 0); assert.equal(audit.dialogs, 0); assert.equal(audit.credentialReads, 0); assert.deepEqual(audit.blocked, []);

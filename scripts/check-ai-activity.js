@@ -26,8 +26,11 @@ let win, watchRoute, watchState, pendingChat, fixtureLiveTurns, terminalState, f
 const captures = [], checks = [], failedChecks = [], geometry = [], panelGeometry = [], controlChecks = [], readingChecks = [], hostControls = [], permissionReplies = [], forbidden = [], ipcCalls = [];
 const hostId = 'session-activity-fixture', foreignHostId = 'session-layout-foreign';
 const options = [{ id: 'model', currentValue: 'fixture', options: [{ value: 'fixture', name: 'Activity fixture (offline)' }] }];
+const foreignTurns = [{ parts: [{ kind: 'text', role: 'assistant', text: 'FIXTURE_FOREIGN_BODY' }] }];
 const handle = (name, fn) => { ipcMain.removeHandler(name); ipcMain.handle(name, fn); };
-handle('ai:dsh-options', async () => { ipcCalls.push('options'); return { ok: true, sessionId: hostId, configOptions: options }; });
+handle('ai:dsh-options', async (_event, _config, _id, _tools, _apply, external) => {
+  ipcCalls.push('options'); return { ok: true, sessionId: external || hostId, configOptions: options };
+});
 handle('ai:dsh-status', async () => ({ ok: true, launcher: 'fixture-only' }));
 handle('ai:dsh-sessions', async () => ({ ok: true, items: [
   { sessionId: hostId, title: 'Activity fixture', cwd: project, rootDir: project },
@@ -37,11 +40,18 @@ handle('ai:dsh-history', async (_event, config, id) => {
   ipcCalls.push('history:' + id);
   if (config.catalogScope === 'all') {
     assert.equal(config.catalogRoot, foreignProject); assert.equal(id, foreignHostId);
-    return { ok: true, sessionId: id, readOnly: true, rootDir: foreignProject, turns: [{ parts: [{ kind: 'text', role: 'assistant', text: 'FIXTURE_FOREIGN_READONLY_BODY' }] }] };
+    return { ok: true, sessionId: id, readOnly: true, rootDir: foreignProject, turns: foreignTurns };
   }
   return { ok: true, turns: fixtureLiveTurns || [{ parts: [{ kind: 'text', role: 'user', text: '离线活动 fixture' }] }] };
 });
-handle('ai:dsh-bind', async () => { ipcCalls.push('bind'); return { ok: true }; });
+handle('ai:dsh-bind', async (_event, _config, route, id) => {
+  if (id === foreignHostId) {
+    assert.equal(route.rootId, foreignProject);
+    assert.equal(route.foreignHostId, id);
+    assert.equal(route.page.projectContext, false);
+  }
+  ipcCalls.push('bind'); return { ok: true, canContinue: true };
+});
 handle('ai:dsh-watch', async (_event, _config, route) => {
   ipcCalls.push('watch'); watchRoute = route;
   watchState = { ...route, revision: 0, cursor: '0', connected: true, running: false, turns: fixtureLiveTurns || [], questions: [], permissions: [] };
@@ -534,6 +544,7 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     await until(() => page(id => AiPanel.aiState().current === id && AiPanel.__testParked().backgroundRuns === 0, original), 'background button restores exact run');
     assert(await page(() => document.querySelector('.ai-tool-group') === window.__layoutOriginalGroup && document.getElementById('ai-msgs').textContent.includes('FIXTURE_BACKGROUND_APPEND')));
 
+    const bindsBefore = ipcCalls.filter(call => call === 'bind').length;
     await page(() => App.showTool('sessions'));
     await until(() => page(id => !!document.querySelector('[data-id="host:' + id + '"]'), foreignHostId), 'foreign session catalog fixture');
     await page(id => {
@@ -541,30 +552,26 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
       if (group.hidden) document.querySelector('[data-hist-other]').click();
       if (row.closest('.ai-hist-items').hidden) group.querySelector('[data-hist-toggle]').click();
       row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
-      document.querySelector('#ctx-menu:not(.hidden) [data-act="preview"]').click();
+      document.querySelector('#ctx-menu:not(.hidden) [data-act="open"]').click();
     }, foreignHostId);
-    await until(() => page(() => AiPanel.aiState().dshSession?.state === 'preview'), 'verified readonly preview');
-    const callsBeforePreviewActions = { options: ipcCalls.filter(call => call === 'options').length, binds: ipcCalls.filter(call => call === 'bind').length, watches: ipcCalls.filter(call => call === 'watch').length };
-    const preview = await page(({ project, foreignProject, original }) => {
+    await until(() => page(() => AiPanel.aiState().dshSession?.state === 'ready' && !document.getElementById('ai-send').disabled), 'foreign session is interactive');
+    const foreign = await page(({ project, foreignProject, original }) => {
       const bar = document.getElementById('ai-session-preview-bar'), origin = document.getElementById('ai-session-origin');
       const key = 'myide-ai-sessions:' + project + ':dsh';
-      return { root: App.root, text: document.getElementById('ai-msgs').textContent, readonly: document.getElementById('ai-input').readOnly, sendDisabled: document.getElementById('ai-send').disabled,
-        previewBar: window.__activityShown(bar) && /只读/.test(bar.textContent), openProjectButton: !!bar.querySelector('#ai-session-open-project'),
-        source: origin.textContent, sourcePath: [origin, ...origin.querySelectorAll('[title]')].some(node => node.title.includes(foreignProject)),
-        activeUnchanged: localStorage.getItem(key + ':active') === original, notPersisted: !localStorage.getItem(key)?.includes('FIXTURE_FOREIGN_READONLY_BODY'), askRejected: AiPanel.ask('FIXTURE_PREVIEW_MUST_NOT_SEND') === false };
+      return { root: App.root, text: document.getElementById('ai-msgs').textContent, readOnly: document.getElementById('ai-input').readOnly,
+        openProjectButton: window.__activityShown(bar) && !!bar.querySelector('#ai-session-open-project'),
+        source: origin.textContent, sourcePath: origin.title.includes(foreignProject),
+        activeUnchanged: localStorage.getItem(key + ':active') === original, notPersisted: !localStorage.getItem(key)?.includes('FIXTURE_FOREIGN_BODY') };
     }, { project, foreignProject, original });
-    assert.equal(preview.root, project); assert(preview.readonly && preview.sendDisabled && preview.previewBar && preview.openProjectButton && preview.sourcePath, JSON.stringify(preview));
-    assert(preview.source.includes(path.basename(foreignProject)) && /来源|会话|只读|预览|→/.test(preview.source), JSON.stringify(preview));
-    assert(preview.text.includes('FIXTURE_FOREIGN_READONLY_BODY') && !preview.text.includes('FIXTURE_BACKGROUND_APPEND') && preview.activeUnchanged && preview.notPersisted && preview.askRejected, JSON.stringify(preview));
-    await page(() => { document.getElementById('ai-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); document.getElementById('ai-dsh-reconnect').click(); });
-    await settled(); assertNoUsage(await panelMetrics());
-    assert.equal(ipcCalls.filter(call => call === 'options').length, callsBeforePreviewActions.options);
-    assert.equal(ipcCalls.filter(call => call === 'bind').length, callsBeforePreviewActions.binds);
-    assert.equal(ipcCalls.filter(call => call === 'watch').length, callsBeforePreviewActions.watches);
-    await capture('fixture-foreign-readonly');
-    assert((await backgroundStatus()).button, 'Recovery remains reachable while foreign readonly preview is open');
+    assert.equal(foreign.root, project);
+    assert(!foreign.readOnly && foreign.openProjectButton && foreign.sourcePath && foreign.source.includes(path.basename(foreignProject)), JSON.stringify(foreign));
+    assert(foreign.text.includes('FIXTURE_FOREIGN_BODY') && !foreign.text.includes('FIXTURE_BACKGROUND_APPEND') && foreign.activeUnchanged && foreign.notPersisted, JSON.stringify(foreign));
+    assert.equal(ipcCalls.filter(call => call === 'bind').length, bindsBefore + 1);
+    assertNoUsage(await panelMetrics());
+    await capture('fixture-foreign-session');
+    assert((await backgroundStatus()).button, 'Recovery remains reachable while a foreign session is open');
     await page(() => document.querySelector('#ai-background-status button').click());
-    await until(() => page(id => AiPanel.aiState().current === id && !document.getElementById('ai-input').readOnly && AiPanel.__testParked().backgroundRuns === 0, original), 'recover original run from foreign preview');
+    await until(() => page(id => AiPanel.aiState().current === id && !document.getElementById('ai-input').readOnly && AiPanel.__testParked().backgroundRuns === 0, original), 'recover original run from foreign session');
     const restored = await page(() => {
       const input = document.getElementById('ai-input'), messages = document.getElementById('ai-msgs');
       input.value = 'FIXTURE_INPUT_STILL_EDITABLE'; input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -573,7 +580,7 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     });
     assert(restored.sameDOM && restored.text.includes('FIXTURE_BACKGROUND_APPEND') && restored.input === 'FIXTURE_INPUT_STILL_EDITABLE' && !restored.inputDisabled && restored.previewHidden && restored.scrollable, JSON.stringify(restored));
     assert.equal(chatCalls, 1); assert.equal(ipcCalls.filter(call => call === 'abort').length, 0); assert.equal(hostControls.length, 0);
-    controlChecks.push({ parked, preview, restored });
+    controlChecks.push({ parked, foreign, restored });
     await page(tool => { if (tool) App.showTool(tool); else App.hideSideTool('sessions'); }, before.tool);
     await sameLayout(before);
     await capture('fixture-background-restored');
