@@ -186,8 +186,16 @@ async function electronCheck() {
       const requests = { ...audit.requests }, services = { ...audit.service }, violations = audit.blocked.length;
       const target = await js('(()=>{const rows=[...document.querySelectorAll(".ai-hist-row")];return rows.find(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + '&&(row.dataset.id===' + JSON.stringify(actual.other.sessionId) + '||row.dataset.id===' + JSON.stringify('host:' + actual.other.sessionId) + '))?.dataset.id})()');
       assert(target, '必须点击真实目录选定会话，不能以本地fixture替代');
-      assert(await js('(()=>{const row=[...document.querySelectorAll(".ai-hist-row")].find(row=>row.dataset.id===' + JSON.stringify(target) + ');return !row.querySelector("[data-act=ren],[data-act=del]")})()'), '异工程行不得提供改名删除');
-      await js('[...document.querySelectorAll(".ai-hist-row")].find(row=>row.dataset.id===' + JSON.stringify(target) + ').querySelector("[data-act=preview]").click();true');
+      assert(await js(`(() => {
+        const row = [...document.querySelectorAll('.ai-hist-row')].find(row => row.dataset.id === ${JSON.stringify(target)});
+        const group = row.closest('.ai-hist-group');
+        if (group.hidden) document.querySelector('[data-hist-other]').click();
+        if (row.closest('.ai-hist-items').hidden) group.querySelector('[data-hist-toggle]').click();
+        row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+        const menu = document.querySelector('#ctx-menu:not(.hidden)');
+        return row.querySelectorAll('button').length === 1 && !!menu?.querySelector('[data-act=preview]') && !menu.querySelector('[data-act=ren],[data-act=del]');
+      })()`), '异工程会话右键仅可只读预览');
+      await js('document.querySelector("#ctx-menu [data-act=preview]").click();true');
       await until(() => js('AiPanel.aiState().dshSession?.state==="preview"'), '跨工程只读预览', 60000);
       assert(await js('document.getElementById("ai-send").disabled&&!!document.getElementById("ai-session-origin")&&!document.getElementById("ai-session-preview-bar").classList.contains("hidden")&&!!document.getElementById("ai-session-open-project")'));
       assert(await js('document.getElementById("ai-msgs").textContent.length>0'), '真实宿主正文应有回放');

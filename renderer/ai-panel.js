@@ -1389,7 +1389,7 @@ const AiPanel = (() => {
     // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
       closeReadingSettings();
-      closeReplyLinkMenu?.();
+      if (aiContextMenu?.kind === 'reply') aiContextMenu.close();
       resetDshWatch();
       releaseSessionPermissions(detachRun());
     }
@@ -1397,7 +1397,7 @@ const AiPanel = (() => {
   }
 
   // ---------- 消息渲染 ----------
-  let closeReplyLinkMenu = null;
+  let aiContextMenu = null;
   const replyAnchor = event => event.target.closest?.('.ai-assistant .ai-md a[href]');
   function replyLinkTarget(href) {
     try {
@@ -1428,47 +1428,39 @@ const AiPanel = (() => {
       BrowserPanel.newTab(target.url);
     }
   }
-  function showReplyLinkMenu(anchor, x, y) {
-    closeReplyLinkMenu?.();
-    const href = anchor.getAttribute('href').trim(), target = replyLinkTarget(href);
+  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions }) {
+    aiContextMenu?.close();
     const menu = document.getElementById('ctx-menu');
-    if (!target || !menu) return;
-    const root = window.App?.root;
+    if (!menu) return;
     const group = document.createElement('div');
     group.setAttribute('role', 'menu');
-    group.setAttribute('aria-label', '回复链接操作');
+    group.setAttribute('aria-label', label);
     const events = new AbortController();
     const close = (restore = false) => {
       events.abort();
-      if (closeReplyLinkMenu === close) closeReplyLinkMenu = null;
+      if (aiContextMenu?.close === close) aiContextMenu = null;
       if (group.parentElement !== menu) return;
       group.remove();
       menu.classList.add('hidden');
       if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
     };
-    closeReplyLinkMenu = close;
-    const action = (label, run) => {
+    aiContextMenu = { kind, anchor, close };
+    for (const { label, run, key } of actions) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'ctx-item';
       button.tabIndex = -1;
       button.setAttribute('role', 'menuitem');
       button.textContent = label;
+      if (key) button.dataset.act = key;
       button.onclick = async () => {
-        const current = group.parentElement === menu && window.App?.root === root &&
-          msgsEl.contains(anchor) && anchor.getAttribute('href')?.trim() === href;
+        const current = group.parentElement === menu && !menu.classList.contains('hidden') && isCurrent();
         close(true);
         if (!current) return;
         try { await run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
       };
       group.append(button);
-    };
-    action(target.path ? '打开文件' : '打开链接', () => openReplyLink(target));
-    action(target.path ? '复制文件路径' : '复制链接地址', async () => {
-      if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
-      MI.toast(target.path ? '已复制文件路径' : '已复制链接地址', 'ok');
-    });
-    if (target.path) action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(target.path));
+    }
     group.onkeydown = event => {
       if (event.key === 'Escape' || event.key === 'Tab') {
         if (event.key === 'Escape') event.preventDefault();
@@ -1488,6 +1480,24 @@ const AiPanel = (() => {
     group.firstElementChild.focus({ preventScroll: true });
     document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
     window.addEventListener('blur', () => close(), { signal: events.signal });
+  }
+
+  function showReplyLinkMenu(anchor, x, y) {
+    const href = anchor.getAttribute('href').trim(), target = replyLinkTarget(href);
+    if (!target) return;
+    const root = window.App?.root;
+    const actions = [
+      { label: target.path ? '打开文件' : '打开链接', run: () => openReplyLink(target) },
+      { label: target.path ? '复制文件路径' : '复制链接地址', run: async () => {
+        if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
+        MI.toast(target.path ? '已复制文件路径' : '已复制链接地址', 'ok');
+      } },
+    ];
+    if (target.path) actions.push({ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(target.path) });
+    showAiContextMenu(anchor, x, y, {
+      kind: 'reply', label: '回复链接操作', actions,
+      isCurrent: () => window.App?.root === root && msgsEl.contains(anchor) && anchor.getAttribute('href')?.trim() === href,
+    });
   }
 
   // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
@@ -2468,6 +2478,7 @@ const AiPanel = (() => {
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
     const { all, running } = sessionsForHist();
     renderHistRows(histSidebar, all, running);
+    if (aiContextMenu?.kind === 'session' && !aiContextMenu.anchor.isConnected) aiContextMenu.close();
     return true;
   }
   function sessionRootLabel(root) { return String(root || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '未打开工程'; }
@@ -2745,17 +2756,11 @@ const AiPanel = (() => {
         const time = session.ts ? relTime(session.ts) : '';
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
         groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
-          (selected ? ' aria-current="true"' : '') + '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : '') + '>' +
+          (selected ? ' aria-current="true"' : '') + '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') + '>' +
           '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
           '<span class="ai-hist-nm" title="' + esc(session.title) + '">' + esc(session.title) + '</span>' +
           (hint ? '<span class="ai-hist-hint" title="' + hint + '" aria-label="' + hint + '">' + historyIcon('M8 7v4M8 5h.01M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z') + '</span>' : '') +
-          '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><span class="ai-hist-live">' + state + '</span>' : time) + '</span></button>' +
-          (session.unknownRoot ? '' : '<div class="ai-hist-actions">' + (session.foreign
-            ? '<button type="button" class="ai-hist-b" data-act="preview" aria-label="只读预览会话" title="只读预览">' + historyIcon('M1 8s3-4 7-4 7 4 7 4-3 4-7 4-7-4-7-4zM10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0z') + '</button>'
-            :
-            '<button type="button" class="ai-hist-b" data-act="ren" aria-label="重命名会话" title="重命名">' + historyIcon('m3 10-1 4 4-1 7-7-3-3zM8.5 4.5l3 3') + '</button>' +
-            (session.virtual ? '' : '<button type="button" class="ai-hist-b" data-act="del" aria-label="删除本地会话记录" title="删除本地记录">' + historyIcon('M3 4h10M6 4V2h4v2M5 4l.5 10h5L11 4M7 7v4m2-4v4') + '</button>')) +
-            '</div>') + '</div>';
+          '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><span class="ai-hist-live">' + state + '</span>' : time) + '</span></button></div>';
       }
       groupHtml += '</div></section>';
       if (isOther) {
@@ -2821,7 +2826,7 @@ const AiPanel = (() => {
       return;
     }
     const nextRow = row && [...nextGroup?.querySelectorAll('.ai-hist-row') || []].find(item => item.dataset.id === row.dataset.id);
-    const selector = focus.dataset.act ? '[data-act="' + focus.dataset.act + '"]' : row ? '.ai-hist-open' : focus.hasAttribute('data-hist-jump') ? '[data-hist-jump]' : '[data-hist-toggle]';
+    const selector = row ? '.ai-hist-open' : focus.hasAttribute('data-hist-jump') ? '[data-hist-jump]' : '[data-hist-toggle]';
     const nextFocus = (row ? nextRow : nextGroup)?.querySelector(selector);
     (nextFocus || nextGroup?.querySelector('[data-hist-toggle]') || histSidebar.querySelector('[data-project-picker]')).focus({ preventScroll: true });
   }
@@ -2829,7 +2834,10 @@ const AiPanel = (() => {
   function syncSessionSidebar(visible) {
     if (visible === histSidebarVisible) return;
     histSidebarVisible = visible;
-    if (!visible) return;
+    if (!visible) {
+      if (aiContextMenu?.kind === 'session') aiContextMenu.close();
+      return;
+    }
     if (!histSidebar) mountSessionSidebar();
     refreshHistInPlace();
     if (getConfig().engine === 'dsh') ensureDshCatalog();
@@ -2847,8 +2855,26 @@ const AiPanel = (() => {
       '<div class="ai-hist-status" role="status"></div><div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);
 
+    sidebar.addEventListener('contextmenu', event => {
+      const row = event.target.closest('.ai-hist-row');
+      if (row && showHistorySessionMenu(row, event.clientX, event.clientY)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
     sidebar.addEventListener('keydown', event => {
-      if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        const row = event.target.closest('.ai-hist-row');
+        if (!row) return;
+        const rect = event.target.getBoundingClientRect();
+        if (showHistorySessionMenu(row, rect.left, rect.bottom)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (event.key !== 'Escape') return;
       const menu = document.getElementById('ctx-menu');
       if (menu && !menu.classList.contains('hidden')) return;
       event.preventDefault();
@@ -2903,61 +2929,77 @@ const AiPanel = (() => {
         return;
       }
       const row = sender.closest('.ai-hist-row');
-      if (!row) return;
-      const id = row.dataset.id;
-      const act = sender.closest('[data-act]')?.dataset.act;
-      const all2 = loadSessions(), scope = sessKey(), engine = getConfig().engine;
-      const target = sessionsForHist().all.find(item => item.id === id);
-      if (!target) return;
-      if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开','err'); return; }
-      if (target.foreign) {
-        if (act && act !== 'preview') return;
-        App.showAi();
-        openHostPreview(target, act !== 'preview');
-        return;
-      }
-      if (!act) App.showAi();
-      const se = all2.find((x) => x.id === id);
-      // 来自 DSH 目录、本地没有正文的会话（别人在 DSH 里发起的）也要能改名/切过去，
-      // 所以这里不能 `if (!se) return`；删除仍只作用于本地记录。
-      if (!se && act === 'del') { MI.toast('该会话只在 DSH 中，MyIDE 没有本地副本可删', 'err'); return; }
-      if (!se && act !== 'ren' && act !== 'del') {
-        // 宿主里的会话（别人在 DSH 里发起的）：正文必须从宿主读回来，
-        // 只登记 curSessionId 会让面板停在空白 —— 这就是「切过去没加载」。
-        openSession(id);
-        return;
-      }
-      if (act === 'del') {
-        saveSessions(all2.filter((x) => x.id !== id));
-        if (id === curSessionId) { resetDshWatch();stopRun(true);clearSessionPermissions();curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
-        refreshHistInPlace();
-        MI.toast('已删除该会话', 'ok');
-        return;
-      }
-      if (act === 'ren') {
-        const current = target;
-        const nm = await Modal.prompt('重命名会话', '会话名称：', current?.title || '');
-        if (scope !== sessKey() || engine !== getConfig().engine) return;
-        if (nm == null) return;
-        const title = String(nm).trim().slice(0, 120);
-        if (!title) return;
-        // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
-        // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
-        if (getConfig().engine === 'dsh') {
-          const result = await window.myIDE.ai.dshRename(getConfig(), target.hostId || id, title).catch(error => ({ ok: false, error: error.message }));
-          if (scope !== sessKey() || engine !== getConfig().engine) return;
-          if (!result?.ok) { MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
-          await refreshDshCatalog();
-        }
-        if (scope !== sessKey() || engine !== getConfig().engine) return;
-        if (se) { const latest=loadSessions();const item=latest.find(x=>x.id===id);if(item){item.title=title;item.renamed=true;saveSessions(latest);} }
-        refreshHistInPlace();renderCurrentSessionTitle();
-        MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
-        return;
-      }
-      openSession(id);
+      const target = row && findHistorySession(row);
+      if (target) await actOnHistorySession(target);
     });
   }
+
+  function findHistorySession(row) {
+    return sessionsForHist().all.find(item => item.id === row.dataset.id && pathKey(item.rootDir) === pathKey(row.dataset.root));
+  }
+
+  function showHistorySessionMenu(row, x, y) {
+    const anchor = row.querySelector('.ai-hist-open');
+    if (!histSidebarVisible || anchor.disabled || anchor.closest('[hidden], .hidden')) return false;
+    const target = findHistorySession(row);
+    if (!target || target.unknownRoot) return false;
+    const scope = sessKey(), engine = getConfig().engine;
+    const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key) });
+    const actions = target.foreign ? [action('preview', '只读预览')] : [action('ren', '重命名')];
+    if (!target.foreign && !target.virtual) actions.push(action('del', '删除本地记录'));
+    showAiContextMenu(anchor, x, y, {
+      kind: 'session', label: '会话操作', actions,
+      isCurrent: () => histSidebarVisible && anchor.isConnected && !anchor.closest('[hidden], .hidden') &&
+        scope === sessKey() && engine === getConfig().engine,
+    });
+    return true;
+  }
+
+  async function actOnHistorySession(target, act) {
+    const { id } = target;
+    if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开', 'err'); return; }
+    if (target.foreign) {
+      App.showAi();
+      openHostPreview(target, act !== 'preview');
+      return;
+    }
+    if (!act) {
+      App.showAi();
+      openSession(id);
+      return;
+    }
+    const all2 = loadSessions(), scope = sessKey(), engine = getConfig().engine;
+    const se = all2.find(item => item.id === id);
+    if (act === 'del') {
+      if (!se) { MI.toast('该会话只在 DSH 中，MyIDE 没有本地副本可删', 'err'); return; }
+      saveSessions(all2.filter((x) => x.id !== id));
+      if (id === curSessionId) { resetDshWatch();stopRun(true);clearSessionPermissions();curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
+      refreshHistInPlace();
+      MI.toast('已删除该会话', 'ok');
+      return;
+    }
+    if (act === 'ren') {
+      const nm = await Modal.prompt('重命名会话', '会话名称：', target.title || '');
+      if (scope !== sessKey() || engine !== getConfig().engine) return;
+      if (nm == null) return;
+      const title = String(nm).trim().slice(0, 120);
+      if (!title) return;
+      // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
+      // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
+      if (getConfig().engine === 'dsh') {
+        const result = await window.myIDE.ai.dshRename(getConfig(), target.hostId || id, title).catch(error => ({ ok: false, error: error.message }));
+        if (scope !== sessKey() || engine !== getConfig().engine) return;
+        if (!result?.ok) { MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
+        await refreshDshCatalog();
+      }
+      if (scope !== sessKey() || engine !== getConfig().engine) return;
+      if (se) { const latest=loadSessions();const item=latest.find(x=>x.id===id);if(item){item.title=title;item.renamed=true;saveSessions(latest);} }
+      refreshHistInPlace();renderCurrentSessionTitle();
+      MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
+      return;
+    }
+  }
+
   function foreignParked(hostId, root) {
     if (!root) return null;
     for (const [key, record] of backgroundRuns) {
@@ -3583,7 +3625,7 @@ const AiPanel = (() => {
     loadedSessionKey=nextKey;
     if(!retained)clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
-    closeMention(); closeSlash(); closePermPop(); closeReplyLinkMenu?.();
+    closeMention(); closeSlash(); closePermPop(); aiContextMenu?.close();
     msgs = [];
     curSessionId = null;
     dshSessionAccess = null;

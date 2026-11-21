@@ -8847,7 +8847,11 @@ assert_(panel, 'CM6 搜索面板出现');
     const hrows = $allIn($(dom, '.ai-hist-dock'), '.ai-hist-row');
     assert_(hrows.length >= 1, '左侧列出会话: ' + hrows.length);
     assert_($(dom, '.ai-hist-dock').textContent.includes('换个问法'), '标题取第一条用户发言');
-    assert_(hrows[0].querySelector('[data-act="ren"]') && hrows[0].querySelector('[data-act="del"]'), '本地会话可重命名和删除');
+    assert_(hrows[0].querySelectorAll('button').length === 1, '会话行仅显示打开入口');
+    hrows[0].querySelector('.ai-hist-open').dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+    const menu = $(dom, '#ctx-menu:not(.hidden)');
+    assert_(menu?.querySelector('[data-act="ren"]') && menu.querySelector('[data-act="del"]'), '右键菜单可重命名和删除本地记录');
+    dom.window.document.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     // 载入会话
     click(hrows[0].querySelector('.ai-hist-open'));
     await tick(); await tick();

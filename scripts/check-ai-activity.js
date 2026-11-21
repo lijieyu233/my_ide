@@ -538,7 +538,13 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     await until(() => page(() => !!document.querySelector('#panel-sessions [data-hist-scope="all"]')), 'session sidebar');
     await page(() => document.querySelector('[data-hist-scope="all"]').click());
     await until(() => page(id => !!document.querySelector('[data-id="host:' + id + '"]'), foreignHostId), 'foreign session catalog fixture');
-    await page(id => document.querySelector('[data-id="host:' + id + '"] [data-act="preview"]').click(), foreignHostId);
+    await page(id => {
+      const row = document.querySelector('[data-id="host:' + id + '"]'), group = row.closest('.ai-hist-group');
+      if (group.hidden) document.querySelector('[data-hist-other]').click();
+      if (row.closest('.ai-hist-items').hidden) group.querySelector('[data-hist-toggle]').click();
+      row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+      document.querySelector('#ctx-menu:not(.hidden) [data-act="preview"]').click();
+    }, foreignHostId);
     await until(() => page(() => AiPanel.aiState().dshSession?.state === 'preview'), 'verified readonly preview');
     const callsBeforePreviewActions = { options: ipcCalls.filter(call => call === 'options').length, binds: ipcCalls.filter(call => call === 'bind').length, watches: ipcCalls.filter(call => call === 'watch').length };
     const preview = await page(({ project, foreignProject, original }) => {
