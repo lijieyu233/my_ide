@@ -1523,17 +1523,25 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f=fixture(), nested=path.join(f.A,'child'), arch='session-archived', id='session-parent';
     const archivedSessionIds=[arch], pinnedSessionIds=[], calls=[];
     f.w.App.getProjects=()=>[{path:f.A}];
-    f.catalogRead=async()=>({ok:true,archivedSessionIds,pinnedSessionIds,workspaces:[
+    const catalog={ok:true,archivedSessionIds,pinnedSessionIds,workspaces:[
       {id:'work-a',rootDir:f.A,title:'父工作区',sessionIds:[id,arch]},
       {id:'work-child',rootDir:nested,title:'子工作区',sessionIds:['session-child']},
     ],items:[
       {sessionId:id,title:'父级任务',cwd:f.A,updatedAt:20},
       {sessionId:arch,title:'已归档问题',cwd:f.A,updatedAt:10},
       {sessionId:'session-child',title:'子级任务',cwd:nested,updatedAt:30},
-    ]});
+    ]};
+    let nextRefresh;
+    f.catalogRead=async()=>{
+      const pending=nextRefresh;
+      nextRefresh=null;
+      if(pending)await pending.promise;
+      return catalog;
+    };
     f.w.myIDE.ai.dshWorkspace=async(_cfg,operation,target)=>{
       calls.push({operation,target});
       if(operation==='pin')pinnedSessionIds.push(target.id);
+      if(operation==='unpin')pinnedSessionIds.splice(pinnedSessionIds.indexOf(target.id),1);
       if(operation==='unarchive')archivedSessionIds.splice(archivedSessionIds.indexOf(target.id),1);
       return {ok:true};
     };
@@ -1546,8 +1554,18 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       assert(option,'菜单缺少 '+label);
       option.click();
     };
-    choose('置顶会话',()=>f.sessionMenu(f.element('[data-id="'+id+'"]')));
-    await until(()=>f.element('[data-id="'+id+'"][data-pinned]'));
+    const row=()=>f.element('[data-id="'+id+'"]');
+    async function holdRefresh(label){
+      const group=row().closest('.ai-hist-group'), pending=defer();
+      nextRefresh=pending;
+      choose(label,()=>f.sessionMenu(row()));
+      await until(()=>f.element('[data-hist-refresh]').disabled);
+      assert.equal(f.element('.ai-hist-status').textContent,'');
+      assert.equal(row().closest('.ai-hist-group'),group);
+      pending.resolve();
+    }
+    await holdRefresh('置顶会话');
+    await until(()=>row().hasAttribute('data-pinned'));
     assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{operation:'pin',target:{id,rootDir:f.A}});
     choose('按工作区树');
     const child=()=>f.element('[data-id="host:session-child"]').closest('.ai-hist-group');
@@ -1557,6 +1575,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     choose('单列表');
     assert(f.element('[data-flat-history]'));assert(!f.element('.ai-hist-group-head'));
     assert.equal(f.element('.ai-hist-row').dataset.id,id);
+    await holdRefresh('取消置顶');
+    await until(()=>!row().hasAttribute('data-pinned'));
+    assert.equal(f.element('.ai-hist-row').dataset.id,'host:session-child');
     choose('仅显示已归档');
     assert.deepEqual([...f.w.document.querySelectorAll('.ai-hist-row')].map(row=>row.dataset.id),[arch]);
     choose('取消归档',()=>f.sessionMenu(f.element('[data-id="'+arch+'"]')));
