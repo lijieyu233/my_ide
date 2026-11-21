@@ -157,7 +157,7 @@ async function electronCheck() {
       const wrong = await js('myIDE.ai.dshHistory({engine:"dsh",catalogScope:"all",catalogRoot:App.root},' + JSON.stringify(actual.other.sessionId) + ')');
       assert.equal(wrong?.ok, false, '宿主核实归属，不信renderer伪造root');
     });
-    await test('左侧会话：按当前工程筛选、按真实工作区分组和搜索', async () => {
+    await test('左侧会话：按当前工程筛选和按真实工作区分组', async () => {
       await js('App.showTool("sessions");document.querySelector("[data-hist-scope=current]").click();true');
       await until(() => js('!!document.querySelector("#panel-sessions .ai-hist-tabs [data-hist-scope=all]")'), '左侧会话筛选');
       await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(selectedRoot.root) + ')'), '当前工程真实会话');
@@ -167,14 +167,7 @@ async function electronCheck() {
       await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + ')'), '真实跨root行');
       const roots = await js('[...document.querySelectorAll(".ai-hist-group[data-root]")].map(group=>group.dataset.root)');
       assert(roots.some(root => key(root) === key(selectedRoot.root))); assert(roots.some(root => key(root) === key(actual.other.cwd)));
-      const query = path.basename(actual.other.cwd);
-      await js('const input=document.querySelector(".ai-hist-search");input.value=' + JSON.stringify(query) + ';input.dispatchEvent(new Event("input",{bubbles:true}));true');
-      await until(() => js('document.querySelectorAll(".ai-hist-row").length>0'), '搜索结果');
-      assert(await js('[...document.querySelectorAll(".ai-hist-row")].every(row=>row.textContent.toLowerCase().includes(' + JSON.stringify(query.toLowerCase()) + ')||row.dataset.root.toLowerCase().includes(' + JSON.stringify(query.toLowerCase()) + '))'));
-      await js('const input=document.querySelector(".ai-hist-search");input.value="__myide_no_real_match_970413__";input.dispatchEvent(new Event("input",{bubbles:true}));true');
-      await until(() => js('document.querySelectorAll(".ai-hist-row").length===0'), '空搜索结果');
-      await js('const input=document.querySelector(".ai-hist-search");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');
-      await until(() => js('document.querySelectorAll(".ai-hist-row").length>0'), '清空搜索');
+      assert(await js('(()=>{const group=[...document.querySelectorAll(".ai-hist-group")].find(item=>item.dataset.root===' + JSON.stringify(actual.other.cwd) + ');const toggle=group.querySelector("[data-hist-toggle]"),items=group.querySelector(".ai-hist-items");const before=items.hidden;toggle.click();const changed=items.hidden!==before;toggle.click();return changed&&items.hidden===before;})()'));
       await capture('ai-global-sessions-navigation-redacted.png');
     });
     await test('左侧会话在宽、窄栏下均无行溢出，聊天区无重复抽屉', async () => {

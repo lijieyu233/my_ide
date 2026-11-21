@@ -3703,33 +3703,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-dock { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .ai-hist-dock [hidden] { display: none; }
 .ai-hist-head { display: flex; align-items: center; gap: 3px; min-height: 36px; padding: 4px 9px 4px 12px; border-bottom: 1px solid var(--ui-line); }
-.ai-hist-head strong { color: var(--text-bright); font-weight: 600; }
-.ai-hist-n { margin-left: auto; padding-right: 4px; color: var(--text-dim); font-size: .8em; font-variant-numeric: tabular-nums; }
-.ai-hist-controls { display: grid; gap: 8px; padding: 10px 10px 6px; flex: none; }
-.ai-hist-new, .ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open {
+.ai-hist-head strong { margin-right: auto; color: var(--text-bright); font-weight: 600; }
+.ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open {
   color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer;
 }
-.ai-hist-new {
-  display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px;
-  padding: 4px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
-  background: color-mix(in srgb, var(--accent) 11%, var(--bg-panel)); color: var(--text-bright);
-}
-.ai-hist-new:hover { background: color-mix(in srgb, var(--accent) 18%, var(--bg-panel)); }
-.ai-hist-new svg.ic { width: 14px; height: 14px; color: var(--accent); }
-.ai-hist-search-label { position: relative; display: flex; align-items: center; min-width: 0; }
-.ai-hist-search-label > svg.ic { position: absolute; left: 8px; width: 13px; height: 13px; color: var(--text-dim); pointer-events: none; }
-.ai-hist-search {
-  background: var(--bg-input); border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
-  color: var(--text); width: 100%; min-width: 0; min-height: 30px; padding: 3px 7px 3px 27px; font: inherit; font-size: .9em;
-}
-.ai-hist-search::placeholder { color: var(--text-dim); }
-.ai-hist-tabs { display: flex; gap: 4px; }
+.ai-hist-tabs { display: flex; flex: none; gap: 4px; padding: 8px 10px 5px; }
 .ai-hist-tabs button {
   padding: 4px 7px; border-radius: var(--ui-radius); font-size: .84em; color: var(--text-dim);
 }
 .ai-hist-tabs button:hover, .ai-hist-b:hover { background: var(--bg-hover); color: var(--text-bright); }
 .ai-hist-tabs button.active { background: var(--bg-selected); color: var(--text-bright); }
-.ai-hist-dock :is(button,input):focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ai-hist-dock button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ai-hist-status { font-size: .83em; color: var(--text-dim); padding: 0 11px 7px; overflow-wrap: anywhere; flex-shrink: 0; }
 .ai-hist-status:empty { display: none; }
 .ai-hist-status.error { color: var(--danger); }

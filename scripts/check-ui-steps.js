@@ -3206,9 +3206,9 @@ module.exports = {
     await sleep(250);
     const sidebar = q('#panel-sessions');
     const workspace = sidebar.querySelector('[data-hist-toggle]');
-    add('左侧会话提供新会话、搜索和项目跳转', !sidebar.classList.contains('hidden') &&
-      !!sidebar.querySelector('[data-hist-new]') && !!sidebar.querySelector('.ai-hist-search') &&
-      !!sidebar.querySelector('[data-project-picker]') && !q('#ai-panel .ai-hist-dock'));
+    add('左侧会话标题下直接显示工作区筛选，保留项目跳转', !sidebar.classList.contains('hidden') &&
+      !!sidebar.querySelector('[data-hist-scope="current"]') && !!sidebar.querySelector('[data-project-picker]') &&
+      !sidebar.querySelector('input,[data-hist-new],[title="会话数"]'));
     if (workspace) {
       const expanded = workspace.getAttribute('aria-expanded');
       workspace.click();

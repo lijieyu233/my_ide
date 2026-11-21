@@ -2457,7 +2457,7 @@ const AiPanel = (() => {
       if(lastUserAt!=null)markRegen();scrollBottom();return true;
     }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
-  let histSidebar = null, histSidebarVisible = false, histScope = 'all', histQuery = '';
+  let histSidebar = null, histSidebarVisible = false, histScope = 'all';
   let histLoading = false, histError = '';
   const expandedWorkspaces = new Map();
   function refreshHistInPlace() {
@@ -2644,10 +2644,7 @@ const AiPanel = (() => {
   const historyRowsMarkup = new WeakMap();
 
   function renderHistRows(sidebar, all, running) {
-    const query = histQuery.trim().toLocaleLowerCase();
-    const shown = all.filter(item => !query || [item.title, item.cwd, item.rootDir, item.unknownRoot ? '未分组' : ''].join(' ').toLocaleLowerCase().includes(query));
     const rows = sidebar.querySelector('.ai-hist-rows');
-    sidebar.querySelector('.ai-hist-n').textContent = query ? shown.length + ' / ' + all.length : all.length;
     const dsh = getConfig().engine === 'dsh';
     const status = sidebar.querySelector('.ai-hist-status');
     const refresh = sidebar.querySelector('[data-hist-refresh]');
@@ -2667,7 +2664,7 @@ const AiPanel = (() => {
 
     const groups = new Map();
     const root = pathKey(window.App?.root);
-    for (const session of shown) {
+    for (const session of all) {
       const key = session.unknownRoot ? null : pathKey(session.rootDir);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
@@ -2680,7 +2677,7 @@ const AiPanel = (() => {
       const active = session => session.foreign
         ? dshSessionAccess?.hostId === session.hostId && pathKey(dshSessionAccess.rootDir) === key
         : !dshSessionAccess?.foreign && !dshSessionAccess?.preview && session.id === curSessionId;
-      const expanded = Boolean(query) || (expandedWorkspaces.get(key) ?? (current || items.some(session => active(session) || running.has(session.id))));
+      const expanded = expandedWorkspaces.get(key) ?? (current || items.some(session => active(session) || running.has(session.id)));
       const groupName = first.unknownRoot ? '未分组' : sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + groupIndex++;
       html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' + (first.unknownRoot ? ' data-unassigned' : '') + '>' +
@@ -2710,7 +2707,7 @@ const AiPanel = (() => {
       }
       html += '</div></section>';
     }
-    if (!shown.length && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">' + (query ? '没有匹配的会话' : '暂无会话') + '</div>';
+    if (!all.length && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">暂无会话</div>';
     if (historyRowsMarkup.get(rows) === html) return;
     replaceHistoryRows(rows, html);
     historyRowsMarkup.set(rows, html);
@@ -2728,7 +2725,7 @@ const AiPanel = (() => {
     const nextRow = row && [...nextGroup?.querySelectorAll('.ai-hist-row') || []].find(item => item.dataset.id === row.dataset.id);
     const selector = focus.dataset.act ? '[data-act="' + focus.dataset.act + '"]' : row ? '.ai-hist-open' : focus.hasAttribute('data-hist-jump') ? '[data-hist-jump]' : '[data-hist-toggle]';
     const nextFocus = (row ? nextRow : nextGroup)?.querySelector(selector);
-    (nextFocus || nextGroup?.querySelector('[data-hist-toggle]') || histSidebar.querySelector('.ai-hist-search')).focus({ preventScroll: true });
+    (nextFocus || nextGroup?.querySelector('[data-hist-toggle]') || histSidebar.querySelector('[data-project-picker]')).focus({ preventScroll: true });
   }
 
   function syncSessionSidebar(visible) {
@@ -2744,32 +2741,22 @@ const AiPanel = (() => {
     const sidebar = document.createElement('div');
     histSidebar = sidebar;
     sidebar.className = 'ai-hist-dock';
-    sidebar.innerHTML = '<div class="ai-hist-head"><strong>会话</strong><span class="ai-hist-n" title="会话数"></span>' +
+    sidebar.innerHTML = '<div class="ai-hist-head"><strong>会话</strong>' +
       '<button type="button" class="ai-hist-b" data-project-picker title="切换项目" aria-label="切换项目">' + historyIcon('M2 5V3h5l2 2h5v8H2zM6 9h4m-2-2 2 2-2 2') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></div>' +
-      '<div class="ai-hist-controls"><button type="button" class="ai-hist-new" data-hist-new title="在当前工程新建会话">' + historyIcon('M8 3v10M3 8h10') + '<span>新会话</span></button>' +
-      '<label class="ai-hist-search-label"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="m10 10 4 4"/></svg><input class="ai-hist-search" type="search" placeholder="搜索会话或工作区" aria-label="搜索会话或工作区"/></label>' +
-      '<div class="ai-hist-tabs"><button type="button" data-hist-scope="all">全部工作区</button><button type="button" data-hist-scope="current">当前工程</button></div></div>' +
+      '<div class="ai-hist-tabs"><button type="button" data-hist-scope="all">全部工作区</button><button type="button" data-hist-scope="current">当前工程</button></div>' +
       '<div class="ai-hist-status" role="status"></div><div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);
 
-    const search = sidebar.querySelector('.ai-hist-search');
-    search.value = histQuery;
-    search.addEventListener('input', () => { histQuery = search.value; refreshHistInPlace(); });
     sidebar.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
       const menu = document.getElementById('ctx-menu');
       if (menu && !menu.classList.contains('hidden')) return;
       event.preventDefault();
       event.stopPropagation();
-      if (event.target === search && histQuery) {
-        search.value = histQuery = '';
-        refreshHistInPlace();
-      } else {
-        App.hideSideTool('sessions');
-        document.getElementById('tool-sessions')?.focus();
-      }
+      App.hideSideTool('sessions');
+      document.getElementById('tool-sessions')?.focus();
     });
     sidebar.addEventListener('click', async event => {
       const sender = event.target;
@@ -2778,7 +2765,6 @@ const AiPanel = (() => {
         document.getElementById('tool-sessions')?.focus();
         return;
       }
-      if (sender.closest('[data-hist-new]')) { App.showAi(); startNewSession(); inputEl?.focus(); return; }
       const picker = sender.closest('[data-project-picker]');
       if (picker) { event.stopPropagation(); App.showProjMenu(picker, true, () => App.showTool('sessions')); return; }
       const jump = sender.closest('[data-hist-jump]');
@@ -2802,7 +2788,7 @@ const AiPanel = (() => {
         const items = group.querySelector('.ai-hist-items');
         items.hidden = !items.hidden;
         toggle.setAttribute('aria-expanded', String(!items.hidden));
-        if (!histQuery.trim()) expandedWorkspaces.set(group.hasAttribute('data-unassigned') ? null : pathKey(group.dataset.root), !items.hidden);
+        expandedWorkspaces.set(group.hasAttribute('data-unassigned') ? null : pathKey(group.dataset.root), !items.hidden);
         historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
         return;
       }
