@@ -669,6 +669,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
   await okAsync('项目栏「已打开」随标签更新，并按文件名或路径筛选', async () => {
     const toggle = $(dom, '#tree-open-only');
+    const projectView = $(dom, '[data-tree-view="project"]');
+    const count = $(dom, '#tree-open-count');
     const input = $(dom, '#tree-search');
     const rows = () => $$(dom, '#tree .tree-open-file');
     const paths = () => rows().map(row => row.dataset.path);
@@ -677,8 +679,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     };
     try {
+      assert_(count.textContent === '2', '项目文件视图也显示已打开数量');
       toggle.click();
       assert_(toggle.getAttribute('aria-pressed') === 'true', '筛选已开启');
+      assert_(projectView.getAttribute('aria-pressed') === 'false', '当前只选中已打开视图');
+      assert_($(dom, '.tree-hide-control').hidden && $(dom, '#tree-expand').disabled, '平铺视图隐藏隐藏项并禁用目录操作');
       assert_(paths().join('|') === [P + '/README.md', P + '/notes.txt'].join('|'), '只显示已打开的文件');
       assert_(rows()[0].getAttribute('aria-current') === 'true', '标记当前标签');
       rows()[1].click();
@@ -687,6 +692,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       g(dom, `Viewer.addLazyTab(${JSON.stringify(P + '/src/app.js')})`);
       g(dom, `Viewer.addLazyTab(${JSON.stringify(P + '-other/src/app.js')})`);
       assert_(paths().length === 3 && paths().includes(P + '/src/app.js'), '包含懒恢复标签，排除其他项目的文件');
+      assert_(count.textContent === '3', '数量排除其他项目的文件');
       query('src\\app');
       assert_(paths().length === 1 && paths()[0] === P + '/src/app.js', '搜索框匹配相对路径');
       await g(dom, `Viewer.closeTab(Viewer.openTabs.findIndex(tab => tab.name === 'app.js'))`);
@@ -696,13 +702,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       g(dom, 'Viewer.closeAll()');
       query('');
       assert_(rows().length === 0 && $(dom, '#tree').textContent.includes('没有已打开'), '关闭全部后显示空状态');
+      assert_(count.textContent === '0', '关闭全部后数量归零');
     } finally {
       query('');
-      if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+      projectView.click();
       await g(dom, `Viewer.openFile(${JSON.stringify(P + '/README.md')})`);
       await tick();
     }
     assert_($$(dom, '#tree .tree-row').some(row => row.dataset.path === P + '/data.csv'), '关闭筛选恢复普通目录树');
+    assert_(!$(dom, '.tree-hide-control').hidden && !$(dom, '#tree-expand').disabled, '返回目录树时恢复隐藏项和目录操作');
   });
 
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
@@ -2286,6 +2294,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
 
     // 切到「仅隐藏」视角 → 多选这两项 → 菜单应变成「取消隐藏（2 项）」
     click($(dom, '#tree-hide-mode'));
+    click($(dom, '[data-hide-mode="hidden"]'));
     await tick(); await tick();
     click(rowOf(P + '/README.md'));
     await tick();
@@ -2301,8 +2310,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(after.length === 0, '两项都取消隐藏, got ' + JSON.stringify(after));
     // 收尾：切回常规视角
     click($(dom, '#tree-hide-mode'));
-    await tick();
-    click($(dom, '#tree-hide-mode'));
+    click($(dom, '[data-hide-mode="normal"]'));
     await tick(); await tick();
   });
 
@@ -4836,9 +4844,10 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     const titles = () => $allIn($(dom, '#tree'), '.tree-row').map((r) => (r.querySelector('.nm') || {}).title).filter(Boolean);
     assert_(titles().includes(P + '/notes.txt'), '前提：常规视图能看到未跟踪的 notes.txt');
-    await g(dom, 'Tree.setGitOnly(true)');
-    await tick(); await tick();
     const btn = $(dom, '#tree-git-only');
+    const projectView = $(dom, '[data-tree-view="project"]');
+    btn.click();
+    await tick(); await tick();
     assert_(g(dom, 'Tree.gitOnly') === true, '视图已打开（Tree.gitOnly）');
     assert_(btn && btn.classList.contains('active'), '头部按钮进入高亮态');
     assert_(btn && btn.getAttribute('aria-pressed') === 'true', '按钮 aria-pressed=true');
@@ -4848,7 +4857,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!t.includes(P + '/notes.txt'), '未跟踪文件被隐藏（notes.txt）: ' + JSON.stringify(t));
     assert_(t.includes(P + '/src'), '含被跟踪文件的目录保留（src）');
     // 还原（后续用例依赖"全量树"）：关掉视图 + 清掉持久化
-    await g(dom, 'Tree.setGitOnly(false)');
+    projectView.click();
     await tick(); await tick();
     assert_(titles().includes(P + '/notes.txt'), '关闭后未跟踪文件回到列表');
     assert_(g(dom, 'localStorage.getItem("myide-tree-git-only")') === '0', '关闭状态已持久化');
@@ -5844,19 +5853,17 @@ assert_(panel, 'CM6 搜索面板出现');
     if (x) { click(x); await tick(); await tick(); await tick(); }
   });
 
-  await okAsync('目录树三态隐藏按钮：文字标识当前视角', async () => {
+  await okAsync('目录树隐藏项菜单：可直接选三种状态并保留当前选项', async () => {
     const btn = $(dom, '#tree-hide-mode');
-    assert_(btn, '三态按钮存在');
-    assert_(btn.textContent === '常规', '默认视角显示「常规」, got ' + btn.textContent);
-    assert_(btn.classList.contains('hm-normal'), '常规态样式类');
-    click(btn); await tick();
-    assert_(btn.textContent === '仅隐藏', '切换后显示「仅隐藏」, got ' + btn.textContent);
-    assert_(btn.classList.contains('hm-hidden'), '仅隐藏态样式类');
-    click(btn); await tick();
-    assert_(btn.textContent === '全部', '再切显示「全部」, got ' + btn.textContent);
-    assert_(btn.classList.contains('hm-all'), '全部态样式类');
-    click(btn); await tick();
-    assert_(btn.textContent === '常规', '回到常规');
+    const menu = $(dom, '#tree-hide-menu');
+    for (const [mode, label] of [['hidden', '仅隐藏'], ['all', '含隐藏'], ['normal', '隐藏项']]) {
+      btn.click();
+      assert_(!menu.hidden && btn.getAttribute('aria-expanded') === 'true', '打开隐藏项菜单');
+      const option = $(dom, '[data-hide-mode="' + mode + '"]');
+      option.click();
+      assert_(menu.hidden && option.getAttribute('aria-pressed') === 'true', '选择后关闭并记录当前状态');
+      assert_(btn.querySelector('span').textContent === label, '按钮显示' + label);
+    }
   });
 
   await okAsync('弹窗打开时方向键归弹窗：设置页 ↑↓ 切换分类', async () => {

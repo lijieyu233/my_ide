@@ -2,7 +2,7 @@
 const Tree = (() => {
   const el = document.getElementById('tree');
   let rootPath = null;
-  let openFilesOnly = false, openFilesKey = null;
+  let openFilesKey = null;
   let showHidden = false;
   // ---------- 应用内隐藏（三态视图）----------
   // hiddenSet：右键「隐藏」的项（仅本应用生效，存 localStorage 按项目隔离）
@@ -118,19 +118,19 @@ const Tree = (() => {
   // 语义 = 「被 git 管理的文件」：存在于 HEAD 或 index（等价 `git ls-files`），
   // 未跟踪 / 被 .gitignore 忽略的文件连同没有跟踪文件的目录一起隐藏。
   // 清单由 GitPanel 的 status() 结果下发（见 setGitStatus 第二个参数），本模块不再单独探测。
-  let gitOnly = false;
-  try { gitOnly = localStorage.getItem('myide-tree-git-only') === '1'; } catch {}
-  let gitIsRepo = false;        // 当前项目是不是 Git 仓库（非仓库时该视图不生效，按钮置灰）
+  let fileView = 'project';
+  try { if (localStorage.getItem('myide-tree-git-only') === '1') fileView = 'git'; } catch {}
+  const isOpenView = () => fileView === 'open';
+  let gitIsRepo = null;
   let gitTrackedKnown = false;  // 跟踪清单是否真的拿到了（status 报错时是 false —— **未知 ≠ 空**：
                                 // 未知却按"空"过滤 = 整棵树凭空消失，比不过滤更糟）
   let gitSig = '';              // 跟踪集合签名（变了才重建缓存，避免每次 git 刷新都重画整棵树）
   let gitTracked = new Set();   // 规范路径 → 被跟踪的文件
   let gitTrackedDirs = new Set(); // 含被跟踪文件的目录（含各级祖先）
-  function saveGitOnly() { try { localStorage.setItem('myide-tree-git-only', gitOnly ? '1' : '0'); } catch {} }
   // 数据齐了才敢过滤
   const gitReady = () => gitIsRepo && gitTrackedKnown;
   // 过滤当前是否真的生效（用户开了开关 + 仓库 + 清单到手）
-  const gitActive = () => gitOnly && gitReady();
+  const gitActive = () => fileView === 'git' && gitReady();
 
   const norm = (p) => String(p == null ? '' : p).replace(/\\/g, '/');
   // 选中判定用规范化路径（Windows 大小写/分隔符差异不再导致高亮错位）
@@ -172,32 +172,46 @@ const Tree = (() => {
     }
     return true;
   }
-  // 三态视角切换的姊妹按钮：只显示 Git 跟踪的文件（开关式，不是三态）
-  function toggleGitOnly(force) {
-    const next = typeof force === 'boolean' ? force : !gitOnly;
-    if (next === gitOnly) { applyGitOnlyBtn(); return; }
-    gitOnly = next;
-    saveGitOnly();
-    applyGitOnlyBtn();
-    render(); // 过滤在视图层：缓存是全量的，切换零 IPC
-    MI.toast(!gitOnly ? '视图：显示全部文件'
-      : gitActive() ? '视图：只显示 Git 跟踪的文件（未跟踪 / 被忽略的已隐藏）'
-        : gitIsRepo ? '视图：只显示 Git 跟踪的文件（还没拿到 Git 状态，稍后自动生效）'
-          : '视图：只显示 Git 跟踪的文件（当前项目不是 Git 仓库，切到 Git 项目后生效）', 'ok');
-    // 状态还没到（刚开项目就点了）→ 主动拉一次，免得用户对着空树等
-    if (gitOnly && !gitTrackedKnown && window.App && App.refreshGit) App.refreshGit();
+  function setFileView(next) {
+    if (next === fileView) return;
+    const wasOpen = isOpenView();
+    fileView = next;
+    if (!isOpenView()) {
+      try { localStorage.setItem('myide-tree-git-only', next === 'git' ? '1' : '0'); } catch {}
+    }
+    applyFileView();
+    if (wasOpen || isOpenView()) {
+      openFilesKey = null;
+      updateTreeSearch(true);
+    } else render();
+    if (next === 'git' && rootPath && !gitReady()) {
+      MI.toast(gitIsRepo === false ? '当前项目不是 Git 仓库，暂时显示项目文件'
+        : '正在获取 Git 跟踪清单，暂时显示项目文件', 'ok');
+      if (gitIsRepo !== false) window.App?.refreshGit?.();
+    }
   }
-  function applyGitOnlyBtn() {
+  function applyFileView() {
+    for (const button of document.querySelectorAll('[data-tree-view]')) {
+      const active = button.dataset.treeView === fileView;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+    const hideControl = document.querySelector('.tree-hide-control');
+    if (hideControl) hideControl.hidden = isOpenView();
+    const input = document.getElementById('tree-search');
+    if (input) {
+      input.placeholder = isOpenView() ? '在已打开文件中查找…' : '文件名或相对路径…';
+      input.title = '在当前视图查找文件名或相对路径';
+    }
+    applyGitViewStatus();
+    updateTreeActions();
+  }
+  function applyGitViewStatus() {
     const btn = document.getElementById('tree-git-only');
     if (!btn) return;
-    btn.classList.toggle('active', gitOnly);
-    btn.classList.toggle('disabled', !gitReady());
-    btn.setAttribute('aria-pressed', gitOnly ? 'true' : 'false');
-    btn.title = !gitReady()
-      ? '只显示 Git 跟踪的文件（' + (gitIsRepo ? '当前拿不到 Git 状态' : '当前项目不是 Git 仓库') + '）'
-      : gitOnly
-        ? '当前：只显示 Git 跟踪的文件\n点击 → 显示全部文件'
-        : '只显示 Git 跟踪的文件\n（隐藏未跟踪 / 被 .gitignore 忽略的文件）';
+    btn.title = gitReady() ? '只显示 Git 跟踪的文件'
+      : gitIsRepo === false ? '当前项目不是 Git 仓库'
+        : 'Git 跟踪清单暂不可用';
   }
   function setGitStatus(map, info) {
     // 失败结果不能替代同一项目已有的可信跟踪清单，否则过滤会突然藏掉整棵树。
@@ -211,10 +225,10 @@ const Tree = (() => {
     // 清单缺失（status 报错 / 老调用方）→ 标为"未知"，宁可不生效也不清空整棵树
     gitTrackedKnown = Array.isArray(st.tracked);
     const trackedChanged = setTracked(gitTrackedKnown ? st.tracked : [], st.root || rootPath);
-    applyGitOnlyBtn();
+    applyGitViewStatus();
     // 过滤生效时，清单或仓库状态一变就得重画（否则列表还是旧的）—— render 里自带重新着色。
     // 缓存是全量的（过滤在视图层）→ 只需重画，不必失效重读
-    if (gitOnly && (trackedChanged || wasRepo !== gitIsRepo || wasKnown !== gitTrackedKnown)) {
+    if (fileView === 'git' && (trackedChanged || wasRepo !== gitIsRepo || wasKnown !== gitTrackedKnown)) {
       render();
       return;
     }
@@ -243,13 +257,14 @@ const Tree = (() => {
     applyTreeFont();
     // 换项目 → 上一份跟踪清单已不代表当前项目（未知 ≠ 空：直接按"未知"处理，
     // 否则新项目会先拿旧清单过滤一下 → 用户看到闪一下空树）。新状态到达后自然生效
-    gitIsRepo = false;
+    gitIsRepo = null;
     gitTrackedKnown = false;
-    applyGitOnlyBtn();
+    applyGitViewStatus();
     // 主进程递归监听目录变化（外部增删改 → 自动刷新树）
     if (p && window.myIDE && window.myIDE.fs.watch) {
       try { window.myIDE.fs.watch(p); } catch {}
     }
+    if (!isOpenView()) syncOpenFiles();
     render();
   }
 
@@ -327,13 +342,14 @@ const Tree = (() => {
   // 串行化：并发 render（展开/粘贴连续触发）按序执行，防止旧数据覆盖新数据
   let renderChain = Promise.resolve();
   function render() {
-    if (openFilesOnly) return syncOpenFiles();
+    updateTreeActions();
+    if (isOpenView()) return syncOpenFiles();
     if (rootPath && searchState && searchState.q) return renderSearch();
     renderChain = renderChain.then(doRender).catch(() => {});
     return renderChain;
   }
   async function doRender() {
-    if (openFilesOnly) return;
+    if (isOpenView()) return;
     // 搜索态：平铺显示匹配行（忽略展开态）—— renderSearch 自己会清空并重画
     if (rootPath && searchState && searchState.q) { renderSearch(); return; }
     if (!rootPath) { el.innerHTML = ''; el.onscroll = null; visibleRows = []; return; }
@@ -342,10 +358,10 @@ const Tree = (() => {
     //   中间浏览器会把**空树**绘制一帧，看起来就是"切换文件时闪一下"。
     const renderingRoot = rootPath;
     await loadDir(renderingRoot);
-    if (rootPath !== renderingRoot || searchState || openFilesOnly) return;
+    if (rootPath !== renderingRoot || searchState || isOpenView()) return;
     // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
     const expandedDirs = [...expanded];
-    for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState || openFilesOnly) return; }
+    for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState || isOpenView()) return; }
     const rows = buildRows();
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
     el.innerHTML = '';
@@ -411,11 +427,14 @@ const Tree = (() => {
   }
 
   function syncOpenFiles() {
-    if (!openFilesOnly) return;
-    const query = norm(document.getElementById('tree-search').value.trim()).toLowerCase();
     const prefix = DocumentPaths.key(rootPath) + '/';
-    const files = (window.Viewer?.openTabs || [])
-      .filter(tab => rootPath && DocumentPaths.key(tab.path).startsWith(prefix))
+    const tabs = rootPath ? (window.Viewer?.openTabs || [])
+      .filter(tab => DocumentPaths.key(tab.path).startsWith(prefix)) : [];
+    const count = document.getElementById('tree-open-count');
+    if (count && count.textContent !== String(tabs.length)) count.textContent = String(tabs.length);
+    if (!isOpenView()) return;
+    const query = norm(document.getElementById('tree-search').value.trim()).toLowerCase();
+    const files = tabs
       .map(tab => ({ path: tab.path, name: tab.name, rel: norm(tab.path).slice(prefix.length) }))
       .filter(file => file.rel.toLowerCase().includes(query));
     const key = JSON.stringify([rootPath, query, files.map(file => file.path)]);
@@ -430,7 +449,7 @@ const Tree = (() => {
         row.type = 'button';
         row.classList.add('tree-open-file');
         row.onclick = () => {
-          if (openFilesOnly && row.isConnected) Viewer.openFile(file.path, { intent: 'browse', reveal: false });
+          if (isOpenView() && row.isConnected) Viewer.openFile(file.path, { intent: 'browse', reveal: false });
         };
         el.append(row);
         if (file.path === focused) row.focus({ preventScroll: true });
@@ -462,7 +481,7 @@ const Tree = (() => {
   // ---------- 目录树搜索（平铺匹配行，回车/点击打开）----------
   let searchState = null, fileIndex = null, searchDeb = null, searchComposing = false;
   let searchIdx = 0;
-  const searchCurrent = state => !openFilesOnly && searchState === state && rootPath === state.root && !searchComposing
+  const searchCurrent = state => !isOpenView() && searchState === state && rootPath === state.root && !searchComposing
     && document.getElementById('tree-search').value.trim() === state.q;
   const searchUsable = state => searchCurrent(state) && !state.loading && !!state.files && !state.error;
   function searchNotice(message, retryState = null) {
@@ -518,7 +537,7 @@ const Tree = (() => {
     if (searchIdx >= hits.length) searchIdx = 0;
     state.selectedPath = hits[searchIdx] && hits[searchIdx].path;
     searchNotice('当前项目：' + state.root + '\n文件名/相对路径 · ' + (hideMode === 'all' ? '包含隐藏项' : hideMode === 'hidden' ? '仅应用内隐藏项' : '排除应用内隐藏项') + (!includeDots ? ' · 排除点号项' : '')
-      + ' · 排除.git/node_modules' + (gitActive() ? ' · 仅Git跟踪文件' : gitOnly ? ' · Git过滤未生效（清单不可用或非仓库）' : '')
+      + ' · 排除.git/node_modules' + (gitActive() ? ' · 仅Git跟踪文件' : fileView === 'git' ? ' · Git过滤未生效（清单不可用或非仓库）' : '')
       + '\n匹配 ' + matches.length + ' 项，显示 ' + hits.length + ' 项' + (state.truncated ? '；索引达到50000项上限，结果不完整，请缩小项目范围。' : ''));
     visibleRows = hits.map(f => ({ item: { name: f.name, path: f.path, type: 'file' }, depth: 0 }));
     if (!hits.length) {
@@ -747,7 +766,7 @@ const Tree = (() => {
 
   // 树定位：展开目录链 + 高亮目标文件（打开文件后调用）
   async function reveal(filePath) {
-    if (!rootPath || !filePath || openFilesOnly) return;
+    if (!rootPath || !filePath || isOpenView()) return;
     const norm = (p) => String(p).replace(/\\/g, '/');
     const rootN = norm(rootPath);
     const fileN = norm(filePath);
@@ -833,7 +852,7 @@ const Tree = (() => {
   }
   // 只切换已有行的 selected 类（虚拟滚动下也轻量）
   function applySelection() {
-    if (openFilesOnly) return;
+    if (isOpenView()) return;
     el.querySelectorAll('.tree-row').forEach((r) => {
       const p = r.dataset.path || ((r.querySelector('.nm') || {}).title || '');
       r.classList.toggle('selected', !!p && isSelected(p));
@@ -1461,7 +1480,7 @@ const Tree = (() => {
     saveHidden();
     invalidateAll();
     render();
-    MI.toast('已隐藏 ' + list.length + ' 项（👁 切换只看隐藏项 / 右键取消隐藏）', 'ok');
+    MI.toast('已隐藏 ' + list.length + ' 项，可通过「隐藏项」查看', 'ok');
   }
   function unhideItems(paths) {
     const list = (paths || []).map(norm).filter(Boolean);
@@ -1479,24 +1498,23 @@ const Tree = (() => {
     unhideItems([item.path]);
   }
   function cycleHideMode() {
-    hideMode = hideMode === 'normal' ? 'hidden' : hideMode === 'hidden' ? 'all' : 'normal';
+    setHideMode(hideMode === 'normal' ? 'hidden' : hideMode === 'hidden' ? 'all' : 'normal');
+  }
+  function setHideMode(mode) {
+    if (mode === hideMode) return;
+    hideMode = mode;
     applyHideModeBtn();
     invalidateAll();
     render();
-    MI.toast({ normal: '视图：常规（不显示隐藏项）', hidden: '视图：只看隐藏项', all: '视图：全部显示' }[hideMode], 'ok');
   }
-  // 三态按钮：文字 + 颜色双重标识当前视角（👁 emoji 三态难以分辨）
   function applyHideModeBtn() {
     const btn = document.getElementById('tree-hide-mode');
     if (!btn) return;
-    const conf = {
-      normal: { text: '常规', cls: 'hm-normal', tip: '当前视角：常规（不显示隐藏项）\n点击 → 只看隐藏项' },
-      hidden: { text: '仅隐藏', cls: 'hm-hidden', tip: '当前视角：只看隐藏项\n点击 → 全部显示' },
-      all:    { text: '全部', cls: 'hm-all', tip: '当前视角：全部显示（含隐藏项）\n点击 → 恢复常规' },
-    }[hideMode];
-    btn.textContent = conf.text;
-    btn.className = 'vt-btn hide-mode-btn ' + conf.cls;
-    btn.title = conf.tip;
+    btn.querySelector('span').textContent = { normal: '隐藏项', hidden: '仅隐藏', all: '含隐藏' }[hideMode];
+    btn.classList.toggle('active', hideMode !== 'normal');
+    for (const option of document.querySelectorAll('#tree-hide-menu button')) {
+      option.setAttribute('aria-pressed', String(option.dataset.hideMode === hideMode));
+    }
   }
   function hideCtxMenu() { menu.classList.add('hidden'); }
   document.addEventListener('click', (e) => { if (!menu.contains(e.target)) hideCtxMenu(); });
@@ -1687,7 +1705,7 @@ const Tree = (() => {
   }
   // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）
   document.addEventListener('keydown', (e) => {
-    if (openFilesOnly || e.defaultPrevented || e.isComposing || e.target?.closest?.('#tree-head button')) return;
+    if (isOpenView() || e.defaultPrevented || e.isComposing || e.target?.closest?.('#tree-head button, #panel-project > .panel-title button')) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Delete'].includes(e.key)) return;
     // 有弹窗打开（设置 / 确认框等）时方向键归弹窗，目录树不接管
@@ -1715,31 +1733,41 @@ const Tree = (() => {
     keyNav(e.key);
   });
 
-  // ---------- 目录树头部控件（搜索 / 字号 / 三态隐藏）----------
+  function updateTreeActions() {
+    const sort = document.getElementById('tree-sort');
+    if (sort) sort.disabled = isOpenView();
+    for (const id of ['tree-collapse', 'tree-expand']) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = isOpenView() || Boolean(searchState);
+    }
+  }
+
+  function updateTreeSearch(immediate = false) {
+    const q = document.getElementById('tree-search')?.value.trim();
+    clearTimeout(searchDeb);
+    searchIdx = 0;
+    searchState = !isOpenView() && q && rootPath ? { q, root: rootPath, files: null, limit: 200, loading: false, error: '' } : null;
+    updateTreeActions();
+    if (!searchState) {
+      if (!searchComposing) render();
+      return;
+    }
+    if (immediate && !searchComposing) return renderSearch();
+    searchNotice(searchComposing ? '正在输入，完成中文组合后检索文件名/相对路径。' : '等待检索当前项目：' + rootPath);
+    if (!searchComposing) searchDeb = setTimeout(renderSearch, 160);
+  }
+
+  // ---------- 项目面板顶部控件 ----------
   (function bindHead() {
     const searchInput = document.getElementById('tree-search');
     if (searchInput) {
-      searchInput.placeholder = '文件名或相对路径…'; searchInput.title = '检索当前项目的文件名或相对路径；查找正文请使用「搜索内容」';
-      const schedule = () => {
-        const q = searchInput.value.trim();
-        clearTimeout(searchDeb); searchIdx = 0;
-        if (openFilesOnly) {
-          searchState = null;
-          if (!searchComposing) syncOpenFiles();
-          return;
-        }
-        searchState = q && rootPath ? { q, root: rootPath, files: null, limit: 200, loading: false, error: '' } : null;
-        if (!searchState) { render(); return; }
-        searchNotice(searchComposing ? '正在输入，完成中文组合后检索文件名/相对路径。' : '等待检索当前项目：' + rootPath);
-        if (!searchComposing) searchDeb = setTimeout(() => renderSearch(), 160);
-      };
-      searchInput.addEventListener('input', schedule);
+      searchInput.addEventListener('input', () => updateTreeSearch());
       searchInput.addEventListener('compositionstart', () => { searchComposing = true; clearTimeout(searchDeb); });
-      searchInput.addEventListener('compositionend', () => { searchComposing = false; schedule(); });
+      searchInput.addEventListener('compositionend', () => { searchComposing = false; updateTreeSearch(); });
       searchInput.addEventListener('keydown', (e) => {
         if (searchComposing || e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Escape') { e.preventDefault(); endSearch(); searchInput.blur(); return; }
-        if (openFilesOnly) {
+        if (isOpenView()) {
           const first = el.querySelector('.tree-open-file');
           if (e.key === 'Enter' && first) { e.preventDefault(); first.click(); }
           if (e.key === 'ArrowDown' && first) { e.preventDefault(); first.focus(); }
@@ -1768,23 +1796,45 @@ const Tree = (() => {
           try { rows[next].scrollIntoView({ block: 'nearest' }); } catch {}
         }
       });
-      const openOnlyButton = document.getElementById('tree-open-only');
-      if (openOnlyButton) openOnlyButton.onclick = () => {
-        openFilesOnly = !openFilesOnly;
-        openFilesKey = null;
-        openOnlyButton.classList.toggle('active', openFilesOnly);
-        openOnlyButton.setAttribute('aria-pressed', String(openFilesOnly));
-        for (const button of document.querySelectorAll('.tree-head-actions button:not(#tree-open-only)')) {
-          button.disabled = openFilesOnly;
-        }
-        searchInput.placeholder = openFilesOnly ? '筛选已打开文件…' : '文件名或相对路径…';
-        schedule();
-      };
     }
+    for (const button of document.querySelectorAll('[data-tree-view]')) {
+      button.onclick = () => setFileView(button.dataset.treeView);
+    }
+    applyFileView();
     const hm = document.getElementById('tree-hide-mode');
-    if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
-    const go = document.getElementById('tree-git-only');
-    if (go) { applyGitOnlyBtn(); go.onclick = () => toggleGitOnly(); }
+    const hideMenu = document.getElementById('tree-hide-menu');
+    if (hm && hideMenu) {
+      const control = hm.parentElement;
+      const showHideMenu = (show) => {
+        hideMenu.hidden = !show;
+        hm.setAttribute('aria-expanded', String(show));
+      };
+      applyHideModeBtn();
+      hm.onclick = () => {
+        showHideMenu(hideMenu.hidden);
+        if (!hideMenu.hidden) hideMenu.querySelector('[aria-pressed="true"]').focus();
+      };
+      for (const option of hideMenu.querySelectorAll('button')) {
+        option.onclick = () => {
+          setHideMode(option.dataset.hideMode);
+          showHideMenu(false);
+          hm.focus();
+        };
+      }
+      document.addEventListener('click', (e) => {
+        if (!hideMenu.hidden && !control.contains(e.target)) showHideMenu(false);
+      }, true);
+      control.addEventListener('focusout', (e) => {
+        if (!hideMenu.hidden && e.relatedTarget && !control.contains(e.relatedTarget)) showHideMenu(false);
+      });
+      control.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || hideMenu.hidden) return;
+        e.preventDefault();
+        e.stopPropagation();
+        showHideMenu(false);
+        hm.focus();
+      });
+    }
     // 排序菜单（复用全局 ctx-menu popover；当前模式标 ●）
     const sb = document.getElementById('tree-sort');
     if (sb) {
@@ -1899,10 +1949,9 @@ const Tree = (() => {
     },
     get font() { return treeFontSize; },
     cycleHideMode,
-    // 只看 Git 跟踪的文件（视图开关；setGitOnly(bool) 供设置页/自检调用）
-    setGitOnly: (v) => toggleGitOnly(!!v),
-    get gitOnly() { return gitOnly; },
-    get gitIsRepo() { return gitIsRepo; },
+    setGitOnly: (v) => setFileView(v ? 'git' : 'project'),
+    get gitOnly() { return fileView === 'git'; },
+    get gitIsRepo() { return gitIsRepo === true; },
     // 自检/调试用：跟踪清单是否可用 + 条数（区分「未知」与「空」）
     get gitTrackedCount() { return gitTrackedKnown ? gitTracked.size : -1; },
     endSearch,

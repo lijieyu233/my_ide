@@ -214,14 +214,17 @@ module.exports = {
     add('搜索框 placeholder 无 emoji', !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(q('#tree-search').placeholder), q('#tree-search').placeholder);
     add('搜索框静态无描边（focus 才描主色）', getComputedStyle(q('#tree-search')).borderTopColor === 'rgba(0, 0, 0, 0)',
       getComputedStyle(q('#tree-search')).borderTopColor);
-    const btns = qa('#tree-head .vt-btn');
+    const btns = qa('#tree-head .vt-btn, #panel-project > .panel-title .vt-btn');
     const bordered = btns.filter((b) => getComputedStyle(b).borderTopStyle !== 'none');
     add('工具条按钮全部去边框', bordered.length === 0, bordered.length ? bordered.length + ' 个仍有边框' : btns.length + ' 个均无边框');
     add('图标按钮是内联 SVG（非 emoji/符号）', ['tree-sort', 'tree-collapse', 'tree-expand'].every((id) => {
       const el = document.getElementById(id);
-      return el && el.querySelector('svg');
+      return el && el.querySelector('svg') && el.closest('#panel-project > .panel-title');
     }), 'sort/collapse/expand');
-    add('三态视角按钮保留文字（可读性）', /常规|仅隐藏|全部/.test(q('#tree-hide-mode').textContent), q('#tree-hide-mode').textContent);
+    add('搜索下方有三个直达视图和独立的隐藏项入口',
+      qa('.tree-views button').map(button => button.dataset.treeView).join(',') === 'project,open,git'
+        && q('.tree-viewbar').getBoundingClientRect().top >= q('#tree-search').getBoundingClientRect().bottom
+        && q('#tree-hide-mode span').textContent === '隐藏项', '项目文件 / 已打开 / Git 跟踪');
 
     // ---------- 切换文件不该让整棵树重建 ----------
     // 重建 = 先清空 DOM 再 await 加载目录 → 中间会白一帧，用户看到的"闪"就是它。
@@ -249,6 +252,13 @@ module.exports = {
         '根行同节点=' + (rootRow0 === q('#tree').firstElementChild) + ' 旧行仍在=' + !!(rowA2 && rowA2.isConnected));
       const sel = qa('#tree .tree-row.selected').map((r) => ((r.querySelector('.nm') || {}).title) || '');
       add('切换后高亮跟到新文件', sel.some((t) => t.endsWith('_ui_outline.md')), sel.join(' | ').slice(0, 90));
+      q('#tree-open-only').click();
+      const opened = qa('#tree .tree-open-file');
+      add('已打开一键切换且数量与文件列表一致', opened.length >= 2
+        && q('#tree-open-count').textContent === String(opened.length)
+        && q('#tree-open-only').getAttribute('aria-pressed') === 'true', opened.length);
+      q('[data-tree-view="project"]').click();
+      await sleep2(100);
     }
 
     const r = head.getBoundingClientRect();
@@ -263,7 +273,7 @@ module.exports = {
     const qa = (s) => [...document.querySelectorAll(s)];
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const btn = q('#tree-git-only');
-    add('树头出现「只看 Git 文件」按钮（内联 SVG，非 emoji）', !!btn && !!btn.querySelector('svg'), btn ? btn.className : 'no-btn');
+    add('树头出现「Git 跟踪」视图', btn?.textContent === 'Git 跟踪', btn?.textContent);
     add('按钮初始未激活 + aria-pressed=false（可访问性）',
       !!btn && !btn.classList.contains('active') && btn.getAttribute('aria-pressed') === 'false',
       btn ? btn.className + ' pressed=' + btn.getAttribute('aria-pressed') : 'no-btn');
@@ -335,10 +345,10 @@ module.exports = {
       add('拿不到 Git 状态时视图不生效（树保持全量，不当成"空清单"过滤）',
         after.length === before.length, before.length + ' → ' + after.length + ' | ' + diag);
     }
-    // ⚠ 收尾必须关掉：否则后续步骤面对的是被过滤过的树（级联失败源头）
-    if (btn) btn.click();
+    // 后续自检使用项目文件视图。
+    q('[data-tree-view="project"]').click();
     await sleep(800);
-    add('再点一次恢复全量视图（开关可逆 + 持久化回写）',
+    add('切回项目文件恢复目录树（持久化回写）',
       files().length === before.length && localStorage.getItem('myide-tree-git-only') === '0',
       files().length + ' vs ' + before.length + ' ls=' + localStorage.getItem('myide-tree-git-only'));
     const r = btn ? btn.getBoundingClientRect() : q('#tree-head').getBoundingClientRect();
