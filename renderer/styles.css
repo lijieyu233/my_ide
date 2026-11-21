@@ -1850,18 +1850,16 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 /* ---------- 弹窗 ---------- */
 #modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100;
-  display: flex; align-items: center; justify-content: center;
+  display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center;
 }
 #modal-mask.hidden { display: none; }
+/* 将嵌套弹窗叠放在同一格，打开确认框时不会挤动底层面板。 */
+#modal-mask > .modal-panel { grid-area: 1 / 1; isolation: isolate; }
 /* 文本选区统一成主题色的半透明 tint（编辑器已单独设 .cm-selectionBackground，
    这里管的是正文预览 / AI 消息 / 输入框这些走原生 ::selection 的地方）。
    默认的操作系统蓝在暗色主题里非常突兀，也是"选中很奇怪"观感的一部分。 */
 ::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
-/* 这里曾有 #modal-box（旧版 Modal 的固定容器）—— 它已经不再被任何代码使用，
-   但一直留在 #modal-mask 里当一个空 flex 子项，宽 560px，把真正的弹窗整体挤偏。
-   Modal.show 是「把面板 appendChild 进 mask」，mask 自身就是居中的 flex 容器，
-   不需要中间层。已删除（自检有断言守着：mask 里只能有 1 个子节点）。 */
 /* 所有弹窗统一不透明面板样式（Modal.show 把 box 直接挂到 mask 下） */
 .modal-panel {
   width: 560px; max-width: 92vw; max-height: 84vh;

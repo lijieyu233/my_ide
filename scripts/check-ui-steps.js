@@ -864,6 +864,20 @@ module.exports = {
       !q('#modal-box') && mask.children.length === 1,
       'children=' + mask.children.length);
 
+    const pending = window.Modal.confirm('确认', '检查弹窗叠层');
+    const cancel = q('#cf-no');
+    const confirmation = cancel.closest('.modal-panel');
+    const parent = box.getBoundingClientRect();
+    const centerX = mR.left + mR.width / 2, centerY = mR.top + mR.height / 2;
+    const nested = confirmation.getBoundingClientRect();
+    add('打开嵌套弹窗时底层面板保持原位', parent.x === bR.x && parent.y === bR.y && parent.width === bR.width);
+    add('嵌套弹窗居中覆盖底层面板',
+      Math.abs(nested.left + nested.width / 2 - centerX) <= 1 &&
+      Math.abs(nested.top + nested.height / 2 - centerY) <= 1 &&
+      confirmation.contains(document.elementFromPoint(centerX, centerY)));
+    cancel.click();
+    add('取消确认时只关闭上层弹窗', (await pending) === false && box.isConnected && mask.children.length === 1);
+
     // ③ 自己填文本 → 点「翻译」→ 出结果
     src.value = '页面设置';
     q('#tr-do').click();
