@@ -37,6 +37,30 @@ async function test(name,run){const f=fixture();try{await run(f);passed++;consol
     f.policy={revision:1,run:'auto'};const c=call('browser_open_external');f.answer.approved=false;const r=await f.perform(c).catch(e=>({errorCode:e.code}));assert(r.errorCode);assert(f.prompts.at(-1).effect.forceConfirm);
     const other=fixture();try{const snapshot=await other.list();await other.perform(call('browser_tab_open',{snapshot:snapshot.snapshot,url:'https://example.test'}));other.beforeConfirm=async()=>{other.beforeConfirm=null;await other.perform(call('browser_tab_open',{snapshot:(await other.list()).snapshot,url:'https://changed.test'}));};await assert.rejects(other.approve(call('browser_open_external')),e=>e.code==='BROWSER_PAGE_CHANGED');}finally{other.close();}
   });
+  await test('本机截图不弹窗，切页后原批准失效，外站截图与禁止档仍受核对',async f=>{
+    const open=async url=>f.perform(call('browser_tab_open',{snapshot:(await f.list()).snapshot,url}));
+    let savedCapture;
+    for(const url of ['http://127.0.0.1:8899/preview','http://localhost/preview','http://[::1]/preview']){
+      await open(url);
+      const prompts=f.prompts.length;
+      savedCapture=call('browser_capture');
+      assert((await f.approve(savedCapture)).approved);
+      assert.equal(f.prompts.length,prompts);
+    }
+    f.answer={approved:false,scope:'once'};
+    await assert.rejects(f.approve(call('browser_open_external')),e=>e.code==='AI_PERMISSION_DENIED');
+    f.policy={revision:1,run:'deny'};
+    const before=f.prompts.length;
+    await assert.rejects(f.approve(call('browser_capture')),e=>e.code==='AI_PERMISSION_DENIED');
+    assert.equal(f.prompts.length,before);
+    f.policy={revision:2,run:'auto'};
+    f.answer={approved:true,scope:'once'};
+    await open('http://127.0.0.1.example.test/preview');
+    assert.equal((await f.execute(savedCapture)).errorCode,'BROWSER_PAGE_CHANGED');
+    f.answer={approved:false,scope:'once'};
+    await assert.rejects(f.approve(call('browser_capture')),e=>e.code==='AI_PERMISSION_DENIED');
+    assert.equal(f.prompts.at(-1).call.name,'browser_capture');
+  });
   await test('截图范围与超时有界，未经批准不能写文件，相同调用仅保存一次',async f=>{
     const os=require('os'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'myide-capture-test-')),wc=new EventEmitter();let count=0;
     const view={webContents:wc};Object.assign(wc,{id:99,isDestroyed:()=>false,getURL:()=> 'https://capture.test/',getTitle:()=>'',isLoading:()=>false,navigationHistory:{canGoBack:()=>false,canGoForward:()=>false},executeJavaScriptInIsolatedWorld:async()=>({width:320,height:200}),capturePage:async rect=>{count++;return {isEmpty:()=>false,toPNG:()=>Buffer.from('PNG fixture'),getSize:()=>({width:rect.width,height:rect.height})}}});

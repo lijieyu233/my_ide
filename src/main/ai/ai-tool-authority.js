@@ -48,9 +48,21 @@ async function cancellable(fn, signal) {
   try { return await Promise.race([Promise.resolve().then(fn), cancelled]); }
   finally { signal.removeEventListener('abort', rejectCancel); }
 }
+function isLoopbackCapture(call, effect) {
+  if (!effect.browser || call.name !== 'browser_capture') return false;
+  try {
+    const { protocol, hostname, username, password } = new URL(effect.url);
+    return ['http:', 'https:'].includes(protocol) && !username && !password &&
+      ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
 function decision(p, call, effect) {
   if (effect.application) {
     if (p[effect.kind] === 'deny') return 'deny';
+    // 截图仍核对主进程记录的当前页与调用，避免用本机页面的批准截取跳转后的页面。
+    if (isLoopbackCapture(call, effect)) return 'auto';
     if(effect.forceConfirm)return 'danger';
     if (effect.kind === 'run' && (dangerous(effect.command) || p.denyCommands.some(s => effect.command.trim().toLowerCase().startsWith(s.trim().toLowerCase())))) return 'danger';
     // 启动配置属于整台机器；项目文件白名单和项目授权不能自动放行机器级程序操作。

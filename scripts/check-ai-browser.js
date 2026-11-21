@@ -72,10 +72,29 @@ async function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdo
   await page.executeJavaScript('(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector("h1"));getSelection().removeAllRanges();getSelection().addRange(r);})()');
   queue=[()=>call('browser_selection'),body=>{assert.equal(last(body).text,'中文网页验证');return call('browser_color_scheme',{scheme:'light'});},()=>call('browser_state'),body=>{assert.equal(last(body).colorScheme,'light');return call('browser_fullscreen',{enabled:true});},()=>call('browser_state'),body=>{assert(last(body).fullscreen);return call('browser_fullscreen',{enabled:false});},()=>call('browser_open_external')];await drive('读取选区，浅色显示，进入退出全屏，交给默认浏览器');assert.equal(openedExternal.at(-1),url+'/one');assert(!win.isVisible());
  });
- await test('真实离屏网页视口截图与区域截图生成有效PNG',async()=>{
+ await test('本机真实离屏网页视口和区域免弹窗生成有效PNG',async()=>{
   const captureWin=new BrowserWindow({show:false,skipTaskbar:true,width:400,height:300,webPreferences:{offscreen:true}});
-  try{await captureWin.loadURL(url+'/one');await sleep(200);const capture=require('../src/main/browser/browser-capture').capture;
-   for(const rect of [{},{x:10,y:10,width:100,height:80}]){const r=await capture(captureWin.webContents,rect,{directory:path.join(temp,'shots'),verify:()=>{assert(!captureWin.isVisible());}});const image=require('electron').nativeImage.createFromPath(r.path);assert(!image.isEmpty());assert.equal(image.getSize().width,r.width);if(rect.width)assert.equal(r.width,100);}
+  try{
+   await captureWin.loadURL(url+'/one');await sleep(200);
+   const registry=require('../src/main/ai/ai-runs').createRegistry();
+   const context={requestId:'native-capture',sessionId:'native-capture',rootId:'',generation:1,round:0};
+   const adapter=require('../src/main/ai/ai-browser-tools').createService({
+    getView:()=>captureWin,artifactDirectory:()=>path.join(temp,'shots'),
+   });
+   const tools=require('../src/main/ai/ai-tool-execution').createService(registry,{application:(c,ctx)=>adapter.prepare(c,ctx)});
+   const authority=require('../src/main/ai/ai-tool-authority').createAuthority({
+    tools,readPolicy:()=>({revision:0,run:'confirm'}),confirm:()=>assert.fail('本机截图不应请求弹窗确认'),remember:()=>assert.fail('截图不应写入永久权限'),
+   });
+   registry.begin(1,context);tools.bind(1,context);
+   for(const args of [{},{x:10,y:10,width:100,height:80}]){
+    const screenshot={id:'capture-'+Object.keys(args).length,name:'browser_capture',args};
+    assert((await authority.authorize(1,context,screenshot)).approved);
+    const r=await tools.once(1,context,screenshot,'application',({proof,verify})=>
+      adapter.execute(proof,verify,actual=>authority.assert(1,context,screenshot,actual)));
+    assert(r.ok,r.error);assert(!captureWin.isVisible());
+    const image=require('electron').nativeImage.createFromPath(r.path);
+    assert(!image.isEmpty());assert.equal(image.getSize().width,r.width);if(args.width)assert.equal(r.width,args.width);
+   }
   }finally{captureWin.destroy();}
  });
  await test('真实同源跨源框架读取与操作，隐藏框架拒绝，开放Shadow DOM可读可点',async()=>{
