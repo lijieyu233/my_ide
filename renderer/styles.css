@@ -639,9 +639,14 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .diagram-crop-surface { position: relative; display: inline-flex; max-width: 100%; justify-self: center; cursor: crosshair; touch-action: none; overflow: hidden; }
 .diagram-crop-preview { display: block; max-width: 100%; max-height: 240px; pointer-events: none; }
 .diagram-crop-surface span { position: absolute; border: 1px dashed #39bced; box-shadow: 0 0 0 1000px #0006; pointer-events: none; }
-/* ⚠ 这里曾经写 max-width: none —— 选择器优先级比 .md-view 高，把正文列宽上限整个压掉了，
-   所以"设了 max-width 却一直是满宽"。正文列宽统一交给 .md-view 自己管。 */
-:is(#viewer,.editor-pane-view) > .md-view { flex: 1; overflow: auto; } /* 列宽由 .md-view 自己管（见下） */
+/* 滚动区贴齐编辑区，宽窗口的多余空间留在正文两侧。 */
+:is(#viewer,.editor-pane-view) {
+  --md-reading-padding: max(34px, calc((100% - var(--md-reading-width, 820px)) / 2 + 34px));
+}
+:is(#viewer,.editor-pane-view) > .md-view {
+  flex: 1; overflow: auto; max-width: none;
+  padding-inline: var(--md-reading-padding);
+}
 .editor-wrap { flex: 1; display: flex; min-height: 0; } /* 不限 #viewer 直接子级：分屏内同样生效 */
 .editor-wrap .editor-gutter {
   width: 46px; flex-shrink: 0; overflow: hidden;
@@ -666,19 +671,11 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .md-split .md-split-preview .md-view { max-width: none; padding: 16px 20px; }
 
 /* ---------- Markdown 实时预览（Obsidian 式块编辑器） ---------- */
-/* 正文档位：列宽上限 + 左右内边距一律挂在这里，`.cm-content` 只留上下内边距。
-   ⚠ 为什么左右内边距不能写在 .cm-content 上：CM6 画整行选区矩形时，横向边界取
-   `.cm-content` 的**边框盒** + 首个 `.cm-line` 的 padding，**不扣 content 自己的左右
-   padding**（实测它只读 .cm-line 的 paddingLeft/Right）→ content 带横向内边距时，选区色块
-   会比正文列左右各宽出这一段，也就是用户原话「选中 UI 覆盖的范围不对」。
-   888 的由来（⚠ 别写成"正文列 820 + 68"）：`.md-view` 的盒子是 820、内边距 34×2 →
-   它里面的**正文列是 752**；实时预览这边要让正文列也 = 752，于是盒子上限 = 752 + 34×2 = 820。
-   两端同宽时，正文列左边界两边实测一致（两种模式同一列位置）。 */
+/* CM6 以 .cm-content 边框盒和行内边距定位选区，横向留白放在滚动区。 */
 :is(#viewer,.editor-pane-view) > .editor-cm-wrap > .cm-editor > .cm-scroller {
-  width: 100%; max-width: 820px; align-self: center; padding: 0 34px 0 44px;
-  /* CM6 图层以 scroller 的外边界换算坐标，但 absolute 图层的原点在左 gutter 内侧。
-     stable both-edges 会让光标/选区统一右移 10px。只在右侧预留滚动条，左侧以普通
-     padding 补齐全局 10px 滚动条宽度，保留原来的正文列宽与居中位置。 */
+  width: 100%; padding-block: 0;
+  /* 左侧用 10px 内边距对应预览的滚动槽，保持光标和选区的坐标原点。 */
+  padding-inline: calc(var(--md-reading-padding) + 10px) var(--md-reading-padding);
   scrollbar-gutter: stable;
 }
 :is(#viewer,.editor-pane-view) > .md-live { flex: 1; overflow: auto; width: 100%; }
@@ -810,13 +807,6 @@ textarea.editor {
 .viewer-msg .big-ic { font-size: 34px; margin-bottom: 10px; }
 
 /* Markdown 渲染 */
-/* 正文列：给一个明确的可读宽度，并在编辑区里居中 —— 内容"浮在工作区里"，而不是铺满。
-   满宽时一行要横向扫很远，眼睛累、读起来也显"满"（用户原话："横向元素太长"）。
-   内边距比原来各多 10px 左右，标题上下的间距同步加大。 */
-/* ⚠ 定宽写法：`margin: 0 auto` 在 flex 容器里会让元素变成 fit-content（跟随内容宽窄），
-   实测编辑区 582 时列宽只有 417、换一篇文档又变成另一个宽度。
-   width:100% + max-width 给确定宽度；居中：#viewer 是 flex 用 align-self，
-   非 flex 的父容器（分屏预览）靠 margin auto。 */
 /* ⚠ 正文基准字号必须与实时预览同源（--editor-font-size），下面所有字号/间距一律用 em：
    踩过的坑（用户原话「实时预览和预览差别非常大、实时预览根本没法看、样式非常差」）——
    编辑区字号设到 17px 时，live 正文跟随变量变成 17px，而标题写死 21/18/15/14/12.5px 不动，
@@ -2037,7 +2027,11 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, trans
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
-body.has-bg :is(#viewer,.editor-pane-view) > .md-view,
+body.has-bg :is(#viewer,.editor-pane-view) > .md-view {
+  --md-reading-bg: color-mix(in srgb, var(--bg) 88%, transparent);
+  background: linear-gradient(var(--md-reading-bg), var(--md-reading-bg))
+    center / min(100%, var(--md-reading-width, 820px)) 100% no-repeat;
+}
 body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
 body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transparent); }
@@ -4837,9 +4831,6 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
   /* 用户可主动压到零宽；控件裁在本栏内，不能盖住编辑区或右侧工具入口。 */
   #ai-panel > :not(#ai-resize):not(#ai-msgs) { overflow: hidden; }
 }
-
-/* AI阅读设置与两种Markdown视图共用变量，默认不改变原有列宽。 */
-:is(#viewer,.editor-pane-view) > .md-view, :is(#viewer,.editor-pane-view) > .editor-cm-wrap > .cm-editor > .cm-scroller { max-width: var(--md-reading-width, 820px); }
 
 /* 编辑组是文档布局，与Markdown源码/预览对照相互独立。 */
 #editor-panes{flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;position:relative}

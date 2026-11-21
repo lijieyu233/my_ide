@@ -754,10 +754,12 @@ module.exports = {
       await waitFor(() => q('#viewer .cm-content') || q('#viewer .md-view'), 8000);
       await sleep(350);
     }
-    async function wrapCheck(mode, label) {
+    function wrapCheck(label) {
       const sc = q('#viewer .cm-scroller');
-      const colW = sc ? Math.round(sc.getBoundingClientRect().width) : -1;
-      add(label + '：正文列限宽生效（≤ 876px）', colW > 0 && colW <= 877, '列宽=' + colW);
+      const colW = Math.round(sc?.querySelector('.cm-content')?.getBoundingClientRect().width ?? -1);
+      add(label + '：正文列限宽生效', colW > 0 && colW <= 752, '列宽=' + colW);
+      add(label + '：滚动条贴齐编辑区右侧', !!sc
+        && Math.abs(sc.getBoundingClientRect().right - q('#viewer').getBoundingClientRect().right) <= 1, '');
       add(label + '：长行在列内折行，没有横向溢出', !!sc && overflow(sc) <= 1,
         '溢出=' + overflow(sc) + 'px（scrollWidth=' + (sc ? sc.scrollWidth : -1) + '）');
       const hs = [...document.querySelectorAll('#viewer .cm-line')]
@@ -770,9 +772,9 @@ module.exports = {
     }
 
     await openIn('live');
-    await wrapCheck('live', 'Live Preview');
+    wrapCheck('Live Preview');
     await openIn('source');
-    await wrapCheck('source', '源码模式');
+    wrapCheck('源码模式');
 
     // 静态预览：表格是真实 <table>，允许它自己横向滚动，但不能撑破正文列
     await openIn('preview');
@@ -1966,19 +1968,22 @@ module.exports = {
       const mv = q('#viewer > .md-view') || q('.md-view');
       const ed = q('#viewer');
       const mvR = mv.getBoundingClientRect(), edR = ed.getBoundingClientRect();
-      const lGap = Math.round(mvR.left - edR.left), rGap = Math.round(edR.right - mvR.right);
-      add('正文列有可读宽度上限（<= 860px，不再满宽铺开）', mvR.width <= 860,
-        '列宽=' + Math.round(mvR.width) + ' 编辑区=' + Math.round(edR.width));
-      add('编辑区变宽时列宽被上限托住（不是跟着内容缩水）',
-        edR.width <= 860 || mvR.width >= 700,
-        '编辑区=' + Math.round(edR.width) + ' 列宽=' + Math.round(mvR.width));
+      const style = getComputedStyle(mv);
+      const left = mvR.left + mv.clientLeft + parseFloat(style.paddingLeft);
+      const right = mvR.left + mv.clientLeft + mv.clientWidth - parseFloat(style.paddingRight);
+      const colW = Math.round(right - left);
+      const lGap = Math.round(left - edR.left), rGap = Math.round(edR.right - right);
+      add('滚动条贴齐编辑区右侧', Math.abs(mvR.right - edR.right) <= 1, '右侧间距=' + (edR.right - mvR.right));
+      add('正文列有可读宽度上限', colW > 0 && colW <= 752, '列宽=' + colW + ' 编辑区=' + Math.round(edR.width));
+      add('编辑区变宽时列宽保持稳定', edR.width <= 860 || colW >= 700,
+        '编辑区=' + Math.round(edR.width) + ' 列宽=' + colW);
       add('正文列在编辑区里居中（左右留白对称）', Math.abs(lGap - rGap) <= 2, '左=' + lGap + ' 右=' + rGap);
       add('正文两侧留白足够（呼吸区，不贴边）',
         edR.width <= 860 || Math.min(lGap, rGap) >= 60, '左=' + lGap + ' 右=' + rGap);
       const bR = box.getBoundingClientRect();
       add('流程图块不超出正文列（不再铺满整宽 / 贴窗口边）',
-        bR.left >= mvR.left - 1 && bR.right <= mvR.right + 1,
-        '块=' + Math.round(bR.left) + '~' + Math.round(bR.right) + ' 列=' + Math.round(mvR.left) + '~' + Math.round(mvR.right));
+        bR.left >= left - 1 && bR.right <= right + 1,
+        '块=' + Math.round(bR.left) + '~' + Math.round(bR.right) + ' 列=' + Math.round(left) + '~' + Math.round(right));
       const boxLum = lum(parseC(getComputedStyle(box).backgroundColor));
       add('流程图底色贴近正文（不是页面中间的大黑块）',
         boxLum >= 0 && Math.abs(boxLum - pageBgLum()) <= 12,

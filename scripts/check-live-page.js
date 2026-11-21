@@ -452,11 +452,12 @@
   // 这里把两边的计算样式逐项对比锁死：以后谁再把 px 写回去，这里立刻红。
   {
     // 预览侧：临时把 .md-view 渲染到屏幕外（仍有布局 → 计算样式有效），不切模式即可同屏对比
-    // ⚠ 容器宽度必须取「编辑区实际宽度」：固定 900px 时预览会拿到满 820 的列宽，而 live 那边
-    //   受编辑区实际宽度限制（实测 800 → 正文列 732）→ 会量出一个假差异
+    // 预览与实时预览使用等宽编辑区，才能比较正文左右边界。
     const tmp = document.createElement('div');
-    const editorW = (() => { const e = document.querySelector('.editor-cm-wrap'); return e ? Math.round(e.getBoundingClientRect().width) : 900; })();
-    tmp.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + (editorW || 900) + 'px;';
+    tmp.className = 'editor-pane-view';
+    const editor = q('.editor-cm-wrap');
+    const editorW = editor.getBoundingClientRect().width;
+    tmp.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + editorW + 'px;height:' + editor.clientHeight + 'px;';
     document.body.appendChild(tmp);
     let pv = null;
     try {
@@ -570,18 +571,18 @@
       }
       api.gotoLine(1); await sleep(300);
       const cw = document.querySelector('.cm-content');
-      // 正文档位现在挂在 scroller 上（`.cm-content` 不能吃横向内边距 —— 那会让 CM6 的
-      // 整行选区矩形比正文列宽出这段，见 md-editor.js baseTheme 的注释）
-      const sc = q('.editor-cm-wrap .cm-scroller');
-      // live 把左侧滚动条 gutter 换成等宽普通 padding，避免 CM6 图层原点偏移。
-      // 比较时扣掉这一段补偿；仍检查左右基础间距、列宽上限与预览同源。
-      const gutter = sc.offsetWidth - sc.clientWidth - num(sc, 'border-left-width') - num(sc, 'border-right-width');
-      const baseLeft = num(sc, 'padding-left') - gutter;
-      add('一致性: 正文列宽上限与左右基础间距同源（扣除滚动条补偿）',
-        num(sc, 'max-width') === num(pv, 'max-width') && num(sc, 'max-width') > 0
-        && Math.abs(baseLeft - num(pv, 'padding-left')) <= 1 && num(sc, 'padding-right') === num(pv, 'padding-right'),
-        'live=' + show(sc, 'max-width') + '/' + baseLeft + 'px/' + show(sc, 'padding-right') + ' gutter=' + gutter
-        + ' preview=' + show(pv, 'max-width') + '/' + show(pv, 'padding-left') + '/' + show(pv, 'padding-right'));
+      const sc = editor.querySelector('.cm-scroller');
+      const liveLeft = cw.getBoundingClientRect().left - sc.getBoundingClientRect().left;
+      const liveWidth = cw.getBoundingClientRect().width;
+      const previewLeft = pv.clientLeft + num(pv, 'padding-left');
+      const previewWidth = pv.clientWidth - num(pv, 'padding-left') - num(pv, 'padding-right');
+      add('一致性: 两种模式正文列宽与左边界对齐',
+        previewWidth > 0 && Math.abs(liveWidth - previewWidth) <= 1 && Math.abs(liveLeft - previewLeft) <= 1,
+        'live=' + liveLeft + '/' + liveWidth + ' preview=' + previewLeft + '/' + previewWidth);
+      add('一致性: 两种模式的滚动条贴齐编辑区右侧',
+        Math.abs(sc.getBoundingClientRect().right - editor.getBoundingClientRect().right) <= 1
+        && Math.abs(pv.getBoundingClientRect().right - tmp.getBoundingClientRect().right) <= 1,
+        '滚动区宽度 live=' + sc.offsetWidth + ' preview=' + pv.offsetWidth + ' 编辑区=' + editorW);
       add('一致性: .cm-content 不吃横向内边距（否则选区色块会宽出这段）',
         num(cw, 'padding-left') === 0 && num(cw, 'padding-right') === 0,
         'content=' + show(cw, 'padding-left') + '/' + show(cw, 'padding-right'));
