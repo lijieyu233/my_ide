@@ -112,6 +112,24 @@ body {
 .tb-btn.big { padding: 8px 18px; font-size: 14px; margin-top: 14px; }
 /* 纯图标按钮：定宽定高、图标居中（文字按钮与图标按钮混排时基线一致） */
 .tb-btn.tb-ic { padding: 0; width: 26px; height: 22px; justify-content: center; }
+.tb-btn.tb-theme-picker { height: 22px; gap: 0; padding: 0 3px 0 5px; }
+.tb-btn.tb-theme-picker .theme-picker-arrow { width: 11px; }
+#theme-menu:not([hidden]) {
+  position: fixed; z-index: 160; width: min(202px, calc(100vw - 16px));
+  max-height: calc(100vh - 54px); overflow: auto; padding: 4px;
+  border: 1px solid var(--menu-border, var(--ui-line)); border-radius: var(--ui-radius);
+  background: var(--bg-panel); box-shadow: 0 6px 18px var(--shadow, #0003);
+  -webkit-app-region: no-drag;
+}
+#theme-menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px;
+  background: transparent; color: var(--text); border: 0; border-radius: 4px;
+  text-align: left; font: inherit; cursor: pointer;
+}
+#theme-menu button:hover, #theme-menu button:focus-visible { background: var(--bg-hover); }
+#theme-menu [aria-checked='true'] { color: var(--accent); background: var(--bg-selected); }
+#theme-menu [aria-checked='true']::after { content: '✓'; margin-left: auto; }
+#theme-menu .set-theme-swatch { width: 17px; height: 15px; }
 /* 工具栏分组分隔线：功能按钮组 / 窗口控制组 */
 .tb-sep { width: 1px; height: 16px; background: var(--border-mid); flex-shrink: 0; opacity: .8; }
 
@@ -2349,23 +2367,26 @@ body.theme-light .qo-item.sel .sr-text { color: #444; }
   background: var(--bg-panel); border-radius: 4px; line-height: 1.6;
 }
 
-.theme-options { display: flex; gap: 10px; }
+.theme-options {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 118px), 1fr)); gap: 10px;
+}
+.theme-card { position: relative; min-width: 0; }
 .theme-opt {
-  flex: 1; padding: 16px 0; font-size: 13px;
-  background: var(--bg-input); color: var(--text);
-  border: 2px solid var(--btn-border); border-radius: 6px; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 100%; height: 100%; padding: 9px 8px; font: inherit; font-size: 12px;
+  background: var(--bg-input); color: var(--text-bright);
+  border: 1px solid var(--ui-line); border-radius: 6px; cursor: pointer;
 }
 .theme-opt:hover { border-color: var(--accent); }
-.theme-opt.sel { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); }
-/* 用户自定义主题卡片（可删除） */
-.theme-options.user-themes { margin-top: 8px; flex-wrap: wrap; }
-.theme-opt.ut { flex: 1 1 calc(50% - 6px); padding: 9px 0; position: relative; }
-.theme-opt .ut-del {
-  position: absolute; top: -1px; right: -1px; width: 16px; height: 16px; line-height: 14px;
-  font-size: 12px; text-align: center; border-radius: 4px;
-  color: var(--text-dim); cursor: pointer;
+.theme-opt.sel { border-color: var(--accent); background: var(--bg-selected); }
+.theme-opt-name, .theme-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-opt-name { width: 100%; padding: 0 13px; line-height: 17px; }
+.theme-card > .ut-del {
+  position: absolute; right: 6px; bottom: 7px; width: 20px; height: 20px; padding: 0;
+  font-size: 13px; border: 1px solid transparent; border-radius: 4px;
+  color: var(--text-dim); background: transparent; cursor: pointer;
 }
-.theme-opt .ut-del:hover { color: #fff; background: var(--red); }
+.theme-card > .ut-del:hover { color: var(--text-bright); background: var(--bg-hover); }
 .bg-fit-opts { display: flex; gap: 8px; }
 .bg-fit-opt {
   flex: 1; padding: 6px 0; font-size: 12px;
@@ -2492,14 +2513,16 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .set-button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
 .set-button-row:last-child { margin-bottom: 0; }
 .set-hint-path, .st-line, .st-dim, .git-native-line, .git-native-tip, #ai-dsh-status { overflow-wrap: anywhere; }
-.set-form .theme-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
-.set-form .theme-opt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px 8px; font-size: 12px; border-width: 1px; color: var(--text-bright); }
-.set-theme-swatch { width: 100%; height: 26px; border: 1px solid var(--ui-line); border-radius: 4px; background: var(--swatch-bg); box-shadow: inset 0 -3px var(--swatch-accent); }
-.theme-opt[data-th="dark"] { --swatch-bg: #212121; --swatch-accent: #4f9cd6; }
-.theme-opt[data-th="light"] { --swatch-bg: #f5f5f5; --swatch-accent: #007acc; }
-.theme-opt[data-th="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
-.theme-opt[data-th="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
-.theme-opt[data-th="graphite"] { --swatch-bg: #212121; --swatch-accent: #d9687d; }
+.set-theme-swatch {
+  display: block; flex-shrink: 0; width: 100%; height: 25px;
+  border: 1px solid var(--ui-line); border-radius: 4px;
+  background: var(--swatch-bg, var(--bg-panel)); box-shadow: inset 0 -3px var(--swatch-accent, var(--accent));
+}
+.set-theme-swatch[data-theme-base="dark"] { --swatch-bg: #212121; --swatch-accent: #4f9cd6; }
+.set-theme-swatch[data-theme-base="light"] { --swatch-bg: #f5f5f5; --swatch-accent: #007acc; }
+.set-theme-swatch[data-theme-base="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
+.set-theme-swatch[data-theme-base="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
+.set-theme-swatch[data-theme-base="graphite"] { --swatch-bg: #212121; --swatch-accent: #d9687d; }
 .set-appearance-links:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px; }
 .set-appearance-links .tb-btn { padding: 4px 8px; }
 #set-list .set-section-title[id^="set-appearance-"] { scroll-margin-top: 12px; }
@@ -2518,7 +2541,6 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .git-native-caps .cap { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 @media (max-width: 560px) {
   .set-form, .set-sec { padding: 12px; }
-  .set-form .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .set-toggle { padding: 9px; gap: 8px; }
 }
 

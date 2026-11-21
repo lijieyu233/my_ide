@@ -1176,7 +1176,7 @@ const App = (() => {
       }));
     });
     const actionButtons = { 'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-commands': 'command-palette',
-      'btn-search': 'search', 'btn-settings': 'settings', 'btn-theme': 'theme', 'btn-help': 'help' };
+      'btn-search': 'search', 'btn-settings': 'settings', 'btn-help': 'help' };
     const syncActionButtons = () => {
       const bindings = new Map(Shortcuts.bindings().map(binding => [binding.id, binding]));
       for (const [buttonId, actionId] of Object.entries(actionButtons)) {
@@ -1188,6 +1188,7 @@ const App = (() => {
       Shortcuts.execute(actionId).then(result => { if (result.disabled) MI.toast(result.error, 'err'); });
     };
     Shortcuts.onChanged(syncActionButtons); syncActionButtons();
+    Theme.initPicker(document.getElementById('btn-theme'));
     // 状态栏字号控件：− / + 调整文档区字号
     const fDec = document.getElementById('sb-font-dec');
     const fInc = document.getElementById('sb-font-inc');

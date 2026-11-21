@@ -438,12 +438,6 @@ const Settings = (() => {
   function renderTheme(list) {
     if (!list.isConnected) return;
     const colorsOpen = list.querySelector('#set-custom-colors')?.open;
-    const cur = Theme.current();
-    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    // 用户自定义主题卡片（可应用 / 可删除）
-    const userThemes = Theme.getUserThemes ? Theme.getUserThemes() : [];
-    const utBtns = userThemes.map((ut) => `
-      <button class="theme-opt ut ${cur === 'user:' + ut.id ? 'sel' : ''}" data-ut="${esc(ut.id)}" title="点击应用 · × 删除">${esc(ut.name)}<span class="ut-del" title="删除该主题">×</span></button>`).join('');
     // 动态自定义：在当前主题上逐项调整核心颜色（按分组渲染）
     const custom = Theme.getCustom ? Theme.getCustom() : { accent: Theme.getAccent ? Theme.getAccent() : '' };
     const fields = Theme.getFields ? Theme.getFields() : { accent: { label: '强调色', group: '' } };
@@ -487,14 +481,7 @@ const Settings = (() => {
     list.innerHTML = `
       <div class="set-form">
         <h3 class="set-section-title" id="set-appearance-theme" tabindex="-1">界面主题</h3>
-        <div class="theme-options">
-          <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark"><span class="set-theme-swatch" aria-hidden="true"></span>深色</button>
-          <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light"><span class="set-theme-swatch" aria-hidden="true"></span>浅色</button>
-          <button class="theme-opt ${cur === 'pink' ? 'sel' : ''}" data-th="pink"><span class="set-theme-swatch" aria-hidden="true"></span>粉红</button>
-          <button class="theme-opt ${cur === 'crimson' ? 'sel' : ''}" data-th="crimson"><span class="set-theme-swatch" aria-hidden="true"></span>深红</button>
-          <button class="theme-opt ${cur === 'graphite' ? 'sel' : ''}" data-th="graphite"><span class="set-theme-swatch" aria-hidden="true"></span>石墨</button>
-        </div>
-        ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
+        <div class="theme-options" role="group" aria-label="界面主题"></div>
       </div>
       <details class="set-form" id="set-custom-colors" ${colorsOpen ? 'open' : ''}>
         <summary class="set-section-title">自定义配色</summary>
@@ -504,32 +491,39 @@ const Settings = (() => {
           <button class="tb-btn" id="custom-theme-reset-all">全部恢复主题默认</button>
         </div>
       </details>`;
-    // 内置主题：点击应用并重绘（用户主题卡片高亮同步）
-    list.querySelectorAll('.theme-opt:not(.ut)').forEach((b) => {
-      b.onclick = () => {
-        Theme.set(b.dataset.th);
+    const grid = list.querySelector('.theme-options');
+    for (const choice of Theme.choices()) {
+      const card = document.createElement('div'); card.className = 'theme-card';
+      const button = document.createElement('button');
+      const selected = choice.id === Theme.current();
+      button.type = 'button'; button.className = 'theme-opt';
+      button.classList.toggle('sel', selected); button.classList.toggle('ut', !!choice.userId);
+      if (choice.userId) button.dataset.ut = choice.userId; else button.dataset.th = choice.id;
+      button.setAttribute('aria-pressed',String(selected)); button.title = choice.name;
+      const label = document.createElement('span'); label.className = 'theme-opt-name'; label.textContent = choice.name;
+      button.append(Theme.makeSwatch(choice), label); card.appendChild(button);
+      button.onclick = () => {
+        if (choice.id === Theme.current()) return;
+        const focus = document.activeElement === button;
+        Theme.set(choice.id);
         renderTheme(list);
-        MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
+        if (focus) list.querySelector('.theme-opt.sel')?.focus({preventScroll:true});
+        MI.toast('已切换为「' + choice.name + '」主题','ok');
       };
-    });
-    // 用户主题：点击应用 / × 删除
-    list.querySelectorAll('.theme-opt.ut').forEach((b) => {
-      b.onclick = () => {
-        Theme.set('user:' + b.dataset.ut);
-        renderTheme(list);
-        MI.toast('已切换为「' + Theme.name('user:' + b.dataset.ut) + '」主题', 'ok');
-      };
-      const del = b.querySelector('.ut-del');
-      del.onclick = async (e) => {
-        e.stopPropagation();
-        const nm = Theme.name('user:' + b.dataset.ut);
-        const yes = await Modal.confirm('删除主题', '确定删除自定义主题「' + nm + '」吗？');
-        if (!yes) return;
-        Theme.removeUserTheme(b.dataset.ut);
-        renderTheme(list);
-        MI.toast('已删除「' + nm + '」', 'ok');
-      };
-    });
+      if (choice.userId) {
+        const del = document.createElement('button');
+        del.type = 'button'; del.className = 'ut-del'; del.textContent = '×';
+        del.title = '删除主题'; del.setAttribute('aria-label','删除主题「' + choice.name + '」');
+        del.onclick = async () => {
+          if (!await Modal.confirm('删除主题','确定删除自定义主题「' + choice.name + '」吗？')) return;
+          Theme.removeUserTheme(choice.userId);
+          renderTheme(list);
+          MI.toast('已删除「' + choice.name + '」','ok');
+        };
+        card.appendChild(del);
+      }
+      grid.appendChild(card);
+    }
     // 保存为自定义主题（快照当前 base + 配色）
     const saveBtn = list.querySelector('#ut-save');
     if (saveBtn) {

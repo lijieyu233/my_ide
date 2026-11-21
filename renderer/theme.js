@@ -153,6 +153,88 @@ const Theme = (() => {
   }
   function getUserThemes() { return userThemes().filter((t) => t && t.id); }
 
+  function choices() {
+    return [
+      ...ORDER.map(id => ({ id, name: name(id), base: id })),
+      ...getUserThemes().map(theme => ({
+        id: 'user:' + theme.id, name: theme.name || '自定义主题',
+        base: ORDER.includes(theme.base) ? theme.base : 'dark',
+        userId: theme.id, colors: theme.colors,
+      })),
+    ];
+  }
+  function makeSwatch(choice) {
+    const swatch = document.createElement('span');
+    swatch.className = 'set-theme-swatch';
+    swatch.dataset.themeBase = choice.base;
+    swatch.setAttribute('aria-hidden','true');
+    for (const [property, color] of [['--swatch-bg', choice.colors?.bgPanel || choice.colors?.bg], ['--swatch-accent', choice.colors?.accent]]) {
+      if (typeof color === 'string' && /^#[0-9a-f]{3,8}$/i.test(color)) swatch.style.setProperty(property, color);
+    }
+    return swatch;
+  }
+  function initPicker(trigger) {
+    const menu = document.createElement('div');
+    menu.id = 'theme-menu';
+    menu.hidden = true;
+    menu.setAttribute('role','menu');
+    menu.setAttribute('aria-label','选择主题');
+    document.body.appendChild(menu);
+    const close = (restoreFocus = false) => {
+      if (menu.hidden) return;
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded','false');
+      if (restoreFocus) trigger.focus({preventScroll:true});
+    };
+    const open = () => {
+      const buttons = choices().map(choice => {
+        const item = document.createElement('button');
+        item.type = 'button'; item.dataset.theme = choice.id; item.tabIndex = -1;
+        item.setAttribute('role','menuitemradio');
+        item.setAttribute('aria-checked',String(choice.id === current()));
+        const label = document.createElement('span');
+        label.className = 'theme-menu-name'; label.textContent = choice.name; item.title = choice.name;
+        item.append(makeSwatch(choice), label);
+        item.onclick = () => {
+          if (choice.id !== current()) {
+            set(choice.id);
+            window.MI?.toast('已切换为「' + name(current()) + '」主题','ok');
+          }
+          close(true);
+        };
+        return item;
+      });
+      menu.replaceChildren(...buttons);
+      const bounds = trigger.getBoundingClientRect();
+      menu.style.top = (bounds.bottom + 6) + 'px';
+      menu.style.right = Math.max(8, window.innerWidth - bounds.right) + 'px';
+      menu.hidden = false;
+      trigger.setAttribute('aria-expanded','true');
+      (buttons.find(item => item.dataset.theme === current()) || buttons[0])?.focus();
+    };
+    trigger.onclick = () => { if (menu.hidden) open(); else close(true); };
+    trigger.addEventListener('keydown', event => {
+      if (!['ArrowDown','ArrowUp'].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation(); open();
+    });
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return; }
+      if (event.key === 'Tab') { close(true); return; }
+      if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      const items = [...menu.children], index = items.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    });
+    const dismissOutside = event => {
+      if (!trigger.contains(event.target) && !menu.contains(event.target)) close();
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('focusin', dismissOutside);
+    window.addEventListener('resize', () => close());
+    window.addEventListener('blur', () => close());
+  }
   // ---------- 兼容旧接口（强调色） ----------
   function setAccent(color) { pick('accent', color); }
   function getAccent() { return getCustom().accent; }
@@ -174,7 +256,7 @@ const Theme = (() => {
   return {
     toggle, set, current, name, init,
     setAccent, getAccent, pick, clearCustom, getCustom, getFields,
-    addUserTheme, removeUserTheme, getUserThemes,
+    addUserTheme, removeUserTheme, getUserThemes, choices, makeSwatch, initPicker,
   };
 })();
 

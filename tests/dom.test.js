@@ -3457,12 +3457,31 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
+  await okAsync('工具栏主题下拉直接选择内置和自定义主题', async () => {
+    const trigger = $(dom, '#btn-theme');
+    g(dom, 'Theme.set("dark")');
+    const id = g(dom, 'Theme.addUserTheme("下拉测试主题")');
+    click(trigger);
+    const menu = $(dom, '#theme-menu');
+    assert_(!menu.hidden && trigger.getAttribute('aria-expanded') === 'true', '点击打开下拉');
+    assert_(g(dom, 'Theme.current()') === 'dark', '打开下拉时主题未切换');
+    assert_(menu.querySelector('[aria-checked=true]').dataset.theme === 'dark', '显示当前主题');
+    click(menu.querySelector('[data-theme="user:' + id + '"]'));
+    assert_(g(dom, 'Theme.current()') === 'user:' + id && menu.hidden, '直接切到自定义主题');
+    click(trigger);
+    assert_(menu.querySelector('[aria-checked=true]').dataset.theme === 'user:' + id, '重新打开时同步选中');
+    menu.querySelector('[aria-checked=true]').dispatchEvent(new dom.window.KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true}));
+    assert_(menu.hidden && dom.window.document.activeElement === trigger, 'Esc关闭并返回按钮');
+    g(dom, 'Theme.removeUserTheme(' + JSON.stringify(id) + '); Theme.set("dark")');
+  });
+
   await okAsync('设置页外观合并主题和其他外观设置 + 空状态最近项目', async () => {
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
     click($(dom, '.set-cat[data-cat=font]'));
     await tick();
     assert_($(dom, '.theme-opt'), '主题选项出现');
+    assert_($allIn($(dom, '#set-list'), '.theme-options').length === 1, '内置和自定义主题使用同一网格');
     assert_(!$(dom, '.set-cat[data-cat=theme]') && $(dom, '#set-title').textContent === '外观', '外观为唯一侧栏入口');
     const fontSize = $(dom, '#font-size-range');
     assert_(fontSize && $(dom, '#bg-pick') && $(dom, '#pet-enable'), '同页包含字号、背景和玩偶');
@@ -4610,7 +4629,7 @@ assert_(panel, 'CM6 搜索面板出现');
     const card2 = $allIn(dom.window.document, '.theme-opt.ut').find((b) => b.textContent.includes('我的新主题'));
     assert_(card2, '新主题卡片出现');
     // 删除（Modal.confirm 流程）
-    click(card2.querySelector('.ut-del'));
+    click(card2.closest('.theme-card').querySelector('.ut-del'));
     await tick();
     assert_($(dom, '#cf-yes'), '删除确认弹窗出现');
     click($(dom, '#cf-yes'));
