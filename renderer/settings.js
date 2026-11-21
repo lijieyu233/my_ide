@@ -45,13 +45,18 @@ const Settings = (() => {
           <button type="button" class="set-cat" data-cat="git">${icon('M5 4v8m6-8v3c0 2-6 1-6 3M5 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2m0 10a1 1 0 1 0 0 2 1 1 0 0 0 0-2m6-10a1 1 0 1 0 0 2 1 1 0 0 0 0-2')} Git</button>
           <button type="button" class="set-cat" data-cat="translate">${icon('M2 3h8M6 2v1M4 3c0 4 2 5 5 6M8 3c0 4-2 5-6 6m7 4 2.5-7L14 13m-4-2h3')} 翻译</button>
           <button type="button" class="set-cat" data-cat="ai">${icon('M8 2l1.7 4.3L14 8l-4.3 1.7L8 14l-1.7-4.3L2 8l4.3-1.7z')} AI 助手</button>
-          <button type="button" class="set-cat" data-cat="theme">${icon('M8 2a6 6 0 1 0 0 12c2 0 0-3 2-3h2a3 3 0 0 0 2-3 6 6 0 0 0-6-6M5 5h.1M8 4.5h.1M11 6h.1M4 8h.1')} 主题</button>
           <button type="button" class="set-cat" data-cat="storage">${icon('M3 2h8l2 2v10H3zM5 2v4h5V2M5 14v-4h6v4')} 本地设置</button>
         </nav>
         <div class="set-main" id="set-main">
           <div class="set-toolbar">
             <span class="set-title" id="set-title">快捷键（点击按键可修改）</span>
             <span class="spacer"></span>
+            <nav class="set-appearance-links" id="set-appearance-links" aria-label="外观页面分区" hidden>
+              <button type="button" class="tb-btn" data-target="theme">主题</button>
+              <button type="button" class="tb-btn" data-target="font">字号</button>
+              <button type="button" class="tb-btn" data-target="background">背景</button>
+              <button type="button" class="tb-btn" data-target="pet">玩偶</button>
+            </nav>
             <button class="tb-btn" id="set-reset-all">恢复全部默认</button>
           </div>
           <div id="set-list"></div>
@@ -77,21 +82,20 @@ const Settings = (() => {
       $all('.set-cat').forEach((x) => { x.classList.remove('active'); x.removeAttribute('aria-current'); });
       cat.classList.add('active');
       cat.setAttribute('aria-current', 'page');
+      box.querySelector('#set-appearance-links').hidden = cat.dataset.cat !== 'font';
       if (cat.dataset.cat === 'keys') renderKeys();
       else if (cat.dataset.cat === 'markdown') renderKeys();
-      else if (cat.dataset.cat === 'font') renderFont();
+      else if (cat.dataset.cat === 'font') renderAppearance();
       else if (cat.dataset.cat === 'editor') renderEditor();
       else if (cat.dataset.cat === 'git') renderGit();
       else if (cat.dataset.cat === 'translate') renderTranslate();
       else if (cat.dataset.cat === 'ai') renderAi();
-      else if (cat.dataset.cat === 'theme') renderTheme();
       else if (cat.dataset.cat === 'storage') renderStorage();
     };
     // 初始分类（如 translate.js 未配置时直接跳到翻译配置）
-    if (initCat) {
-      const el = box.querySelector('.set-cat[data-cat="' + initCat + '"]');
-      if (el) switchCat(el);
-    }
+    const category = initCat === 'theme' ? 'font' : initCat;
+    const initialTab = category && box.querySelector('.set-cat[data-cat="' + category + '"]');
+    if (initialTab) switchCat(initialTab);
     $all('.set-cat[data-cat]').forEach((cat) => { cat.onclick = () => switchCat(cat); });
     // ↑↓ 在分类间移动（document 级监听：焦点不必在弹窗内；仅设置页为栈顶面板时生效）
     const onKey = (e) => {
@@ -122,7 +126,7 @@ const Settings = (() => {
       else if (!keysCurrent(box) && listening) cancelListening(box);
     });
     mo.observe(document.body, { childList: true, subtree: true });
-    if (!initCat) renderKeys(); // 指定初始分类时 switchCat 已渲染，勿覆盖
+    if (!initialTab) renderKeys();
     box.querySelector('.set-cat.active')?.setAttribute('aria-current', 'page');
     return box;
   }
@@ -156,7 +160,7 @@ const Settings = (() => {
     renderList();
   }
 
-  // ---------- 外观视图（字体大小） ----------
+  // ---------- 编辑器视图 ----------
   function renderEditor(){
     document.getElementById('set-keys-filter')?.remove();document.getElementById('set-title').textContent='编辑器';document.getElementById('set-reset-all').classList.add('hidden');
     document.getElementById('set-hint').textContent='默认保持普通标签；关闭预览标签会保留已经打开的文件';
@@ -265,13 +269,28 @@ const Settings = (() => {
     };
     refreshHint();
   }
-  function renderFont() {
-    const f = document.getElementById('set-keys-filter');
-    if (f) f.remove(); // 快捷键过滤框不属于本视图
-    document.getElementById('set-title').textContent = '外观（字体大小 · 背景图 · 玩偶）';
-    document.getElementById('set-hint').textContent = '字号只调整文档编辑区；背景支持本地图片或内置渐变，透明度可调';
+  function renderAppearance() {
+    document.getElementById('set-keys-filter')?.remove();
+    document.getElementById('set-title').textContent = '外观';
+    document.getElementById('set-hint').textContent = '外观设置即时生效并保存';
     document.getElementById('set-reset-all').classList.add('hidden');
     const list = document.getElementById('set-list');
+    const theme = document.createElement('div');
+    const options = document.createElement('div');
+    list.replaceChildren(theme, options);
+    renderTheme(theme);
+    renderAppearanceOptions(options);
+    list.scrollTop = 0;
+    document.getElementById('set-appearance-links').onclick = event => {
+      const target = event.target.closest('button[data-target]')?.dataset.target;
+      if (!target) return;
+      const heading = list.querySelector('#set-appearance-' + target);
+      heading.scrollIntoView?.({ block: 'start' });
+      heading.focus({ preventScroll: true });
+    };
+  }
+
+  function renderAppearanceOptions(list) {
     let size = 13;
     try { size = parseInt(localStorage.getItem('myide-editor-font') || '13', 10) || 13; } catch {}
     const bg = window.Bg ? Bg.get() : { path: '', opacity: 0.15 };
@@ -280,7 +299,7 @@ const Settings = (() => {
     const GRAD_NAMES = { dusk: '暮色', ocean: '深海', forest: '墨绿', ember: '暖霞', galaxy: '星空', blossom: '粉黛' };
     list.innerHTML = `
       <div class="set-form">
-        <h3 class="set-section-title">编辑区字号</h3>
+        <h3 class="set-section-title" id="set-appearance-font" tabindex="-1">编辑区字号</h3>
         <label class="m-label" for="font-size-range">字体大小 <span class="set-value"><span id="font-size-val">${size}</span> px</span></label>
         <input id="font-size-range" type="range" min="10" max="20" step="1" value="${size}" style="width:100%">
         <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:11px;margin-top:2px">
@@ -291,7 +310,7 @@ const Settings = (() => {
         </div>
       </div>
       <div class="set-form">
-        <h3 class="set-section-title">背景图片</h3>
+        <h3 class="set-section-title" id="set-appearance-background" tabindex="-1">背景图片</h3>
         <div class="set-button-row">
           <button class="tb-btn m-ok" id="bg-pick">${icon('M2 3h12v10H2zM2 10l3-3 3 3 2-2 4 4M10 5h.1')} 选择图片…</button>
           <button class="tb-btn" id="bg-clear">清除</button>
@@ -328,7 +347,7 @@ const Settings = (() => {
         </select>
       </div>
       <div class="set-form">
-        <h3 class="set-section-title">桌面玩偶</h3>
+        <h3 class="set-section-title" id="set-appearance-pet" tabindex="-1">桌面玩偶</h3>
         <label class="set-toggle" for="pet-enable">
           <input type="checkbox" id="pet-enable" ${window.Pet && Pet.isOn() ? 'checked' : ''}>
           <span class="set-toggle-copy"><span class="set-toggle-title">显示右下角玩偶</span><span class="set-toggle-note">点击玩偶可以切换形象。</span></span>
@@ -416,14 +435,9 @@ const Settings = (() => {
     }
   }
 
-  // ---------- 主题视图 ----------
-  function renderTheme() {
-    const f = document.getElementById('set-keys-filter');
-    if (f) f.remove(); // 快捷键过滤框不属于本视图
-    document.getElementById('set-title').textContent = '主题';
-    document.getElementById('set-hint').textContent = '选择或自定义界面配色，即时生效并保存';
-    document.getElementById('set-reset-all').classList.add('hidden');
-    const list = document.getElementById('set-list');
+  function renderTheme(list) {
+    if (!list.isConnected) return;
+    const colorsOpen = list.querySelector('#set-custom-colors')?.open;
     const cur = Theme.current();
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     // 用户自定义主题卡片（可应用 / 可删除）
@@ -472,7 +486,7 @@ const Settings = (() => {
       </div>`).join('');
     list.innerHTML = `
       <div class="set-form">
-        <h3 class="set-section-title">界面主题</h3>
+        <h3 class="set-section-title" id="set-appearance-theme" tabindex="-1">界面主题</h3>
         <div class="theme-options">
           <button class="theme-opt ${cur === 'dark' ? 'sel' : ''}" data-th="dark"><span class="set-theme-swatch" aria-hidden="true"></span>深色</button>
           <button class="theme-opt ${cur === 'light' ? 'sel' : ''}" data-th="light"><span class="set-theme-swatch" aria-hidden="true"></span>浅色</button>
@@ -482,29 +496,27 @@ const Settings = (() => {
         </div>
         ${userThemes.length ? `<div class="theme-options user-themes">${utBtns}</div>` : ''}
       </div>
-      <div class="set-form">
-        <h3 class="set-section-title">自定义配色</h3>
-        <p class="set-note">在当前主题上调色，立即生效并保存。</p>
+      <details class="set-form" id="set-custom-colors" ${colorsOpen ? 'open' : ''}>
+        <summary class="set-section-title">自定义配色</summary>
         ${colorRows}
         <div class="set-button-row">
           <button class="tb-btn m-ok" id="ut-save">${icon('M3 2h8l2 2v10H3zM5 2v4h5V2M5 14v-4h6v4')} 保存为自定义主题</button>
           <button class="tb-btn" id="custom-theme-reset-all">全部恢复主题默认</button>
         </div>
-        <div style="color:var(--text-dim);font-size:11px;margin-top:6px">调色立即生效并保存；「保存为自定义主题」后可在上方卡片中应用或删除</div>
-      </div>`;
+      </details>`;
     // 内置主题：点击应用并重绘（用户主题卡片高亮同步）
-    $all('.theme-opt:not(.ut)').forEach((b) => {
+    list.querySelectorAll('.theme-opt:not(.ut)').forEach((b) => {
       b.onclick = () => {
         Theme.set(b.dataset.th);
-        renderTheme();
+        renderTheme(list);
         MI.toast('已切换为' + Theme.name(b.dataset.th) + '主题', 'ok');
       };
     });
     // 用户主题：点击应用 / × 删除
-    $all('.theme-opt.ut').forEach((b) => {
+    list.querySelectorAll('.theme-opt.ut').forEach((b) => {
       b.onclick = () => {
         Theme.set('user:' + b.dataset.ut);
-        renderTheme();
+        renderTheme(list);
         MI.toast('已切换为「' + Theme.name('user:' + b.dataset.ut) + '」主题', 'ok');
       };
       const del = b.querySelector('.ut-del');
@@ -514,24 +526,24 @@ const Settings = (() => {
         const yes = await Modal.confirm('删除主题', '确定删除自定义主题「' + nm + '」吗？');
         if (!yes) return;
         Theme.removeUserTheme(b.dataset.ut);
-        renderTheme();
+        renderTheme(list);
         MI.toast('已删除「' + nm + '」', 'ok');
       };
     });
     // 保存为自定义主题（快照当前 base + 配色）
-    const saveBtn = document.getElementById('ut-save');
+    const saveBtn = list.querySelector('#ut-save');
     if (saveBtn) {
       saveBtn.onclick = async () => {
         const nm = await Modal.prompt('保存为自定义主题', '主题名称：', '我的主题');
         if (!nm || !nm.trim()) return;
         const id = Theme.addUserTheme(nm.trim());
         Theme.set('user:' + id);
-        renderTheme();
+        renderTheme(list);
         MI.toast('已保存自定义主题「' + nm.trim() + '」', 'ok');
       };
     }
     // 逐项调色：input 即时生效；× 恢复该项预设
-    $all('.custom-theme-row').forEach((row) => {
+    list.querySelectorAll('.custom-theme-row').forEach((row) => {
       const key = row.dataset.field;
       const input = row.querySelector('.ct-color');
       const reset = row.querySelector('.ct-reset');
@@ -542,12 +554,12 @@ const Settings = (() => {
         MI.toast(fields[key].label + ' 已恢复主题默认', 'ok');
       };
     });
-    const resetAll = document.getElementById('custom-theme-reset-all');
+    const resetAll = list.querySelector('#custom-theme-reset-all');
     if (resetAll) {
       resetAll.onclick = () => {
         Theme.clearCustom();
         // 表单回填预设默认色
-        $all('.custom-theme-row').forEach((row) => {
+        list.querySelectorAll('.custom-theme-row').forEach((row) => {
           const k = row.dataset.field;
           row.querySelector('.ct-color').value = currentColor(k);
         });

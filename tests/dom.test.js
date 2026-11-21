@@ -3457,17 +3457,22 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  await okAsync('设置页主题分类 + 空状态最近项目', async () => {
-    // 主题分类
+  await okAsync('设置页外观合并主题和其他外观设置 + 空状态最近项目', async () => {
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
-    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
+    click($(dom, '.set-cat[data-cat=font]'));
     await tick();
     assert_($(dom, '.theme-opt'), '主题选项出现');
+    assert_(!$(dom, '.set-cat[data-cat=theme]') && $(dom, '#set-title').textContent === '外观', '外观为唯一侧栏入口');
+    const fontSize = $(dom, '#font-size-range');
+    assert_(fontSize && $(dom, '#bg-pick') && $(dom, '#pet-enable'), '同页包含字号、背景和玩偶');
     assert_($allIn(dom.window.document, '.theme-opt').find((b) => b.classList.contains('sel')).textContent.includes('深色'), '当前主题高亮');
     click($allIn(dom.window.document, '.theme-opt').find((b) => b.dataset.th === 'light'));
     await tick();
     assert_($(dom, 'body').classList.contains('theme-light'), '浅色即时生效');
+    assert_($(dom, '#font-size-range') === fontSize, '切换主题保持其余外观控件');
+    click($(dom, '#set-appearance-links [data-target=background]'));
+    assert_(dom.window.document.activeElement?.id === 'set-appearance-background', '分区导航到背景设置');
     click($(dom, '#set-x'));
     await tick();
     // 恢复深色（避免影响后续）
@@ -4495,8 +4500,12 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('设置页动态自定义主题 UI：调色即时生效 + 逐项恢复', async () => {
     key(dom, 'S', { ctrl: true, alt: true }); // Ctrl+Alt+S 打开设置
     await tick();
-    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
+    click($(dom, '.set-cat[data-cat=font]'));
     await tick();
+    const colors = $(dom, '#set-custom-colors');
+    assert_(colors && !colors.open, '自定义配色默认收起');
+    colors.querySelector('summary').click();
+    assert_(colors.open, '点击标题展开配色');
     const rows = $allIn(dom.window.document, '.custom-theme-row');
     assert_(rows.length >= 16, '动态自定义表单 ≥ 16 项, got ' + rows.length);
     assert_($allIn(dom.window.document, '.ct-group-title').length >= 4, '按分组渲染 ≥ 4 组');
@@ -4580,7 +4589,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
     key(dom, 'S', { ctrl: true, alt: true });
     await tick();
-    click($allIn($(dom, '#set-box'), '.set-cat').find((x) => x.textContent.includes('主题')));
+    click($(dom, '.set-cat[data-cat=font]'));
     await tick();
     let card = $allIn(dom.window.document, '.theme-opt.ut').find((b) => b.textContent.includes('预设橙'));
     assert_(card, '用户主题卡片出现');
@@ -4590,6 +4599,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(String(g(dom, 'Theme.current()')).indexOf('user:') === 0, '点击卡片应用用户主题');
     assert_($allIn(dom.window.document, '.theme-opt.ut').some((b) => b.classList.contains('sel')), '应用后卡片高亮');
     // 保存为自定义主题（Modal.prompt 流程）
+    $(dom, '#set-custom-colors summary').click();
     click($(dom, '#ut-save'));
     await tick();
     const input = $(dom, '#pf-input');
@@ -9547,7 +9557,7 @@ assert_(panel, 'CM6 搜索面板出现');
     w.CommandPalette.open();const input=cpQuery(w,'搜索内容'),row=w.document.querySelector('.cp-item');
     assert.equal(row.getAttribute('aria-disabled'),'true');assert(w.document.querySelector('#command-status').textContent.includes('先打开一个项目'));
     qoKey(w,input,'Enter');row.click();assert.equal(calls,0);assert(w.document.querySelector('#command-box'));
-    cpQuery(w,'主题设置');qoKey(w,input,'Enter');await tick();assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'theme');assert(!w.document.querySelector('#command-box'));
+    cpQuery(w,'主题设置');qoKey(w,input,'Enter');await tick();assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'font');assert(!w.document.querySelector('#command-box'));
     } finally { while(d.window.Modal?.stack.length)d.window.Modal.hide();await tick();d.window.close(); }
   });
   await saveCase('命令执行复核文件身份和路径代次，旧行不能保存另一标签',async(d,viewer,bridge)=>{
@@ -9617,7 +9627,7 @@ assert_(panel, 'CM6 搜索面板出现');
   await saveCase('命令到原搜索和主题设置交接焦点，ARIA选择有对应可读结果',async(d)=>{
     const w=d.window;w.CommandPalette.open();let input=cpQuery(w,'主题设置'),row=w.document.getElementById(input.getAttribute('aria-activedescendant'));
     assert(row&&row.getAttribute('role')==='option'&&row.getAttribute('aria-selected')==='true');assert.equal(input.getAttribute('aria-controls'),'command-list');
-    qoKey(w,input,'Enter');assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'theme');assert(w.document.activeElement.closest('#set-box'));w.Modal.hide();
+    qoKey(w,input,'Enter');assert.equal(w.document.querySelector('.set-cat.active').dataset.cat,'font');assert(w.document.activeElement.closest('#set-box'));w.Modal.hide();
     w.CommandPalette.open();input=cpQuery(w,'搜索内容');qoKey(w,input,'Enter');assert(w.document.activeElement.closest('#sr-box'));assert(!w.document.querySelector('#command-box'));
   });
   await saveCase('快速打开最近项方向键/回车和路径别名去重，点击不依赖悬停',async(d,viewer)=>{

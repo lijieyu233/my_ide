@@ -2500,6 +2500,10 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .theme-opt[data-th="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
 .theme-opt[data-th="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
 .theme-opt[data-th="graphite"] { --swatch-bg: #212121; --swatch-accent: #d9687d; }
+.set-appearance-links:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px; }
+.set-appearance-links .tb-btn { padding: 4px 8px; }
+#set-list .set-section-title[id^="set-appearance-"] { scroll-margin-top: 12px; }
+#set-custom-colors > summary { margin: 0; cursor: pointer; }
 .set-form .ct-group { margin-top: 18px; }
 .set-form .ct-group-title { font-size: 12px; padding-bottom: 8px; border-color: var(--ui-line); color: var(--text-bright); }
 .set-form .custom-theme-row { min-height: 42px; border-bottom: 1px solid var(--border-pane); gap: 12px; }
