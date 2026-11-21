@@ -1422,7 +1422,13 @@ const AiPanel = (() => {
       BrowserPanel.newTab(target.url);
     }
   }
-  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions }) {
+  function positionAiContextMenu(menu, x, y, alignEnd = false) {
+    const left = alignEnd ? x - menu.offsetWidth : x;
+    menu.style.left = Math.max(0, Math.min(left, innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
+  }
+
+  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions, alignEnd }) {
     aiContextMenu?.close();
     const menu = document.getElementById('ctx-menu');
     if (!menu) return;
@@ -1439,39 +1445,79 @@ const AiPanel = (() => {
       if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
     };
     aiContextMenu = { kind, anchor, close };
-    for (const { label, run, key } of actions) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'ctx-item';
-      button.tabIndex = -1;
-      button.setAttribute('role', 'menuitem');
-      button.textContent = label;
-      if (key) button.dataset.act = key;
-      button.onclick = async () => {
-        const current = group.parentElement === menu && !menu.classList.contains('hidden') && isCurrent();
-        close(true);
-        if (!current) return;
-        try { await run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
-      };
-      group.append(button);
+    let parentAction = null;
+    const canSelect = () => group.parentElement === menu && !menu.classList.contains('hidden') && isCurrent();
+    const back = () => { const previous = parentAction; parentAction = null; renderActions(actions, previous); };
+    function renderActions(items, focusAction = null) {
+      group.replaceChildren();
+      group.setAttribute('aria-label', parentAction?.label || label);
+      let nextFocus;
+      const entries = parentAction ? [{ label: '‹ ' + parentAction.label, back: true }, ...items] : items;
+      for (const item of entries) {
+        if (item.separatorBefore) {
+          const separator = document.createElement('div');
+          separator.className = 'ctx-sep';
+          separator.setAttribute('role', 'separator');
+          group.append(separator);
+        }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'ctx-item';
+        button.tabIndex = -1;
+        button.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
+        if (item.key) button.dataset.act = item.key;
+        if (item.children) button.setAttribute('aria-haspopup', 'menu');
+        if (item.checked !== undefined) button.setAttribute('aria-checked', String(item.checked));
+        if (item.back) button.setAttribute('aria-label', '返回' + label);
+        if (item.children || item.checked) {
+          button.classList.add('with-icon');
+          const title = document.createElement('span');
+          title.textContent = item.label;
+          const marker = document.createElement('span');
+          marker.className = 'ctx-sub-caret';
+          marker.setAttribute('aria-hidden', 'true');
+          marker.textContent = item.children ? '›' : '✓';
+          button.append(title, marker);
+        } else button.textContent = item.label;
+        button.onclick = async event => {
+          // 切换子菜单会移除旧按钮，避免全局点击监听将这次操作当作点在菜单外。
+          event.stopPropagation();
+          if (!canSelect()) { close(true); return; }
+          if (item.back) { back(); return; }
+          if (item.children) { parentAction = item; renderActions(item.children); return; }
+          close(true);
+          try { await item.run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
+        };
+        group.append(button);
+        if (item === focusAction || item.checked) nextFocus = button;
+      }
+      positionAiContextMenu(menu, x, y, alignEnd);
+      menu.scrollTop = 0;
+      (nextFocus || group.querySelector('button')).focus({ preventScroll: true });
     }
     group.onkeydown = event => {
-      if (event.key === 'Escape' || event.key === 'Tab') {
+      if (parentAction && (event.key === 'ArrowLeft' || event.key === 'Escape')) {
+        event.preventDefault();
+        event.stopPropagation();
+        back();
+      } else if (event.key === 'ArrowRight' && document.activeElement?.getAttribute('aria-haspopup') === 'menu') {
+        event.preventDefault();
+        event.stopPropagation();
+        document.activeElement.click();
+      } else if (event.key === 'Escape' || event.key === 'Tab') {
         if (event.key === 'Escape') event.preventDefault();
         event.stopPropagation();
         close(true);
       } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         event.preventDefault();
         event.stopPropagation();
-        const items = [...group.children], index = items.indexOf(document.activeElement);
+        const items = [...group.querySelectorAll('button')], index = items.indexOf(document.activeElement);
         items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
       } else if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
     };
     menu.replaceChildren(group);
     menu.classList.remove('hidden');
-    menu.style.left = Math.max(0, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
-    menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
-    group.firstElementChild.focus({ preventScroll: true });
+    renderActions(actions);
     document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
     window.addEventListener('blur', () => close(), { signal: events.signal });
   }
@@ -2678,6 +2724,7 @@ const AiPanel = (() => {
     sort: [['recent', '最近更新'], ['manual', '手动排序']],
     archive: [['active', '隐藏已归档'], ['all', '全部对话（显示已归档）'], ['archived', '仅显示已归档']],
   };
+  const historyLabels = { group: '分组方式', sort: '排序方式', archive: '归档显示' };
   const historyPrefs = { group: 'workspace', sort: 'recent', archive: 'active' };
   try {
     const stored = JSON.parse(localStorage.getItem(historyPreferencesKey));
@@ -2744,32 +2791,108 @@ const AiPanel = (() => {
     else await openForeignSession(host);
   }
 
-  function showHistoryOptions(anchor) {
-    const options = [{ label: '搜索会话', run: async () => {
-      const value = await Modal.prompt('搜索会话', '会话名称', historySearch);
-      if (value == null) return;
-      historySearch = value.trim();
+  function startHistorySearch() {
+    const header = histSidebar.querySelector('.ai-hist-head');
+    const title = header.querySelector('[data-hist-title]'), actions = header.querySelector('.panel-title-actions');
+    if (header.querySelector('[data-hist-search]')) return;
+    const search = document.createElement('div');
+    search.className = 'ai-hist-search';
+    search.setAttribute('data-hist-search', '');
+    search.innerHTML = '<input type="text" role="searchbox" aria-label="搜索会话" placeholder="搜索会话" autocomplete="off">' +
+      '<button type="button" class="ai-hist-b" data-hist-search-close aria-label="关闭搜索" title="关闭搜索">' +
+      historyIcon('m4 4 8 8m0-8-8 8') + '</button>';
+    title.hidden = actions.hidden = true;
+    header.append(search);
+    const input = search.querySelector('input');
+    input.value = historySearch;
+    input.addEventListener('input', () => {
+      historySearch = input.value.trim();
       refreshHistInPlace();
-    } }];
-    if (historySearch) options.push({ label: '清除搜索', run: () => { historySearch = ''; refreshHistInPlace(); } });
+    });
+    input.focus();
+  }
+
+  function endHistorySearch(restoreFocus = false) {
+    const search = histSidebar?.querySelector('[data-hist-search]');
+    if (!search) return false;
+    search.remove();
+    historySearch = '';
+    histSidebar.querySelector('[data-hist-title]').hidden = false;
+    histSidebar.querySelector('.panel-title-actions').hidden = false;
+    refreshHistInPlace();
+    if (restoreFocus) histSidebar.querySelector('[data-hist-options]').focus({ preventScroll: true });
+    return true;
+  }
+
+  function editHistoryName(anchor, label, value) {
+    const menu = document.getElementById('ctx-menu');
+    if (!anchor?.isConnected || !menu) return Promise.resolve(null);
+    aiContextMenu?.close();
+    return new Promise(resolve => {
+      const form = document.createElement('form');
+      form.className = 'ai-hist-name-form';
+      form.innerHTML = '<input type="text" maxlength="120" required autocomplete="off"><button type="submit" class="tb-btn">确定</button>';
+      form.setAttribute('aria-label', label);
+      const input = form.querySelector('input');
+      input.value = value;
+      input.setAttribute('aria-label', label);
+      const events = new AbortController();
+      const close = () => finish(null);
+      const finish = (result, restore = false) => {
+        events.abort();
+        if (aiContextMenu?.close === close) aiContextMenu = null;
+        if (form.parentElement === menu) {
+          form.remove();
+          menu.classList.add('hidden');
+          if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
+        }
+        resolve(result);
+      };
+      aiContextMenu = { kind: 'session', anchor, close };
+      form.onsubmit = event => {
+        event.preventDefault();
+        if (anchor.isConnected && form.parentElement === menu && !menu.classList.contains('hidden')) finish(input.value, true);
+        else finish(null);
+      };
+      form.onkeydown = event => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(null, true); }
+        if (event.key === 'Enter') event.stopPropagation();
+      };
+      document.addEventListener('pointerdown', event => { if (!form.contains(event.target)) close(); }, { capture: true, signal: events.signal });
+      window.addEventListener('blur', close, { signal: events.signal });
+      menu.replaceChildren(form);
+      menu.classList.remove('hidden');
+      const rect = anchor.getBoundingClientRect();
+      positionAiContextMenu(menu, rect.left, rect.bottom);
+      input.focus({ preventScroll: true });
+      input.select();
+    });
+  }
+
+  function showHistoryOptions(anchor) {
+    const options = [{ label: '搜索会话', run: startHistorySearch }];
     if (getConfig().engine === 'dsh') {
       options.push({ label: '添加 DSH 工作区…', run: async () => {
         const rootDir = await window.myIDE.fs.openFolder();
         if (rootDir && getConfig().engine === 'dsh') await manageHistory('add', { rootDir });
       } });
       for (const [key, choices] of Object.entries(historyChoices)) {
-        for (const [value, label] of choices) options.push({
-          label: (historyPrefs[key] === value ? '✓ ' : '') + label,
-          run: () => {
-            historyPrefs[key] = value;
-            localStorage.setItem(historyPreferencesKey, JSON.stringify(historyPrefs));
-            refreshHistInPlace();
-          },
+        options.push({
+          key, label: historyLabels[key], separatorBefore: key === 'group',
+          children: choices.map(([value, label]) => ({
+            label, checked: historyPrefs[key] === value,
+            run: () => {
+              historyPrefs[key] = value;
+              localStorage.setItem(historyPreferencesKey, JSON.stringify(historyPrefs));
+              refreshHistInPlace();
+            },
+          })),
         });
       }
     }
     const rect = anchor.getBoundingClientRect();
-    showAiContextMenu(anchor, rect.left, rect.bottom, { kind: 'session', label: '会话列表选项', actions: options,
+    showAiContextMenu(anchor, rect.right, rect.bottom, { kind: 'session', label: '会话列表选项', actions: options, alignEnd: true,
       isCurrent: () => histSidebarVisible && anchor.isConnected });
   }
 
@@ -2779,17 +2902,17 @@ const AiPanel = (() => {
     const anchor = head.querySelector('[data-hist-toggle]:enabled, [data-hist-jump]') || head.querySelector('button');
     const scope = sessKey(), engine = getConfig().engine;
     const current = () => histSidebarVisible && anchor.isConnected && scope === sessKey() && engine === getConfig().engine;
-    const actions = [{ label: '在文件资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
+    const actions = [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
     if (engine === 'dsh') {
       const workspace = catalogUsable() && dshCatalog.workspaces.get(pathKey(rootDir));
       const run = (operation, extra) => manageHistory(operation, { rootDir, ...extra });
-      actions.unshift({ label: '在此工作区新建会话', run: () => run('new') });
+      actions.unshift({ label: '新建会话', run: () => run('new') });
       if (!workspace) actions.push({ label: '添加到 DSH 工作区', run: () => run('add') });
       else {
-        actions.push({ label: '重命名工作区', run: async () => {
-          const title = (await Modal.prompt('重命名工作区', '工作区名称', workspace.title || sessionRootLabel(rootDir)))?.trim();
+        actions.push({ label: '重命名', run: async () => {
+          const title = (await editHistoryName(anchor, '工作区名称', workspace.title || sessionRootLabel(rootDir)))?.trim();
           if (title && current()) await run('renameWorkspace', { title });
-        } }, { label: '删除 DSH 工作区', run: async () => {
+        } }, { label: '删除', run: async () => {
           const accepted = await Modal.confirm('删除 DSH 工作区', '从 DSH 移除「' + (workspace.title || sessionRootLabel(rootDir)) + '」的工作区登记？');
           if (accepted && current()) await run('removeWorkspace');
         } });
@@ -2976,6 +3099,7 @@ const AiPanel = (() => {
     histSidebarVisible = visible;
     if (!visible) {
       if (aiContextMenu?.kind === 'session') aiContextMenu.close();
+      endHistorySearch();
       return;
     }
     if (!histSidebar) mountSessionSidebar();
@@ -2987,7 +3111,7 @@ const AiPanel = (() => {
     const sidebar = document.createElement('div');
     histSidebar = sidebar;
     sidebar.className = 'ai-hist-dock';
-    sidebar.innerHTML = '<div class="panel-title ai-hist-head">会话<span class="panel-title-actions">' +
+    sidebar.innerHTML = '<div class="panel-title ai-hist-head"><span data-hist-title>会话</span><span class="panel-title-actions">' +
       '<button type="button" class="ai-hist-b" data-project-picker title="切换项目" aria-label="切换项目">' + historyIcon('M2 5V3h5l2 2h5v8H2zM6 9h4m-2-2 2 2-2 2') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-options title="会话列表选项" aria-label="会话列表选项" aria-haspopup="menu">' + historyIcon('M3 8h.01M8 8h.01M13 8h.01') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
@@ -3016,11 +3140,13 @@ const AiPanel = (() => {
       if (menu && !menu.classList.contains('hidden')) return;
       event.preventDefault();
       event.stopPropagation();
+      if (endHistorySearch(true)) return;
       App.hideSideTool('sessions');
       document.getElementById('tool-sessions')?.focus();
     });
     sidebar.addEventListener('click', async event => {
       const sender = event.target;
+      if (sender.closest('[data-hist-search-close]')) { endHistorySearch(true); return; }
       if (sender.closest('[data-hist-close]')) {
         App.hideSideTool('sessions');
         document.getElementById('tool-sessions')?.focus();
@@ -3083,7 +3209,7 @@ const AiPanel = (() => {
     const target = findHistorySession(row);
     if (!target || target.unknownRoot) return false;
     const scope = sessKey(), engine = getConfig().engine;
-    const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key) });
+    const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
     const actions = [action('ren', '重命名')];
     if (target.foreign) actions.unshift(action('open', '打开会话'));
     if (!target.foreign && !target.virtual) actions.push(action('del', '删除本地记录'));
@@ -3115,7 +3241,7 @@ const AiPanel = (() => {
     return true;
   }
 
-  async function actOnHistorySession(target, act) {
+  async function actOnHistorySession(target, act, anchor) {
     const { id } = target;
     if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开', 'err'); return; }
     if (!act || act === 'open') {
@@ -3135,7 +3261,7 @@ const AiPanel = (() => {
       return;
     }
     if (act === 'ren') {
-      const nm = await Modal.prompt('重命名会话', '会话名称：', target.title || '');
+      const nm = await editHistoryName(anchor, '会话名称', target.title || '');
       if (scope !== sessKey() || engine !== getConfig().engine) return;
       if (nm == null) return;
       const title = String(nm).trim().slice(0, 120);

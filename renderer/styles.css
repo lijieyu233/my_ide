@@ -3685,6 +3685,15 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #panel-sessions { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ai-hist-dock { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .ai-hist-dock [hidden] { display: none; }
+.ai-hist-search { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; }
+.ai-hist-search input, .ai-hist-name-form input {
+  flex: 1; width: 0; min-width: 0; height: 23px; box-sizing: border-box;
+  padding: 0 6px; background: var(--bg-input, var(--bg)); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--ui-radius); font: inherit;
+}
+.ai-hist-search input:focus, .ai-hist-name-form input:focus { border-color: var(--accent); outline: none; }
+.ai-hist-name-form { display: flex; align-items: center; gap: 6px; width: 230px; padding: 4px 8px; max-width: calc(100vw - 32px); }
+.ai-hist-name-form button { flex: none; }
 .ai-hist-b, .ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle {
   color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer;
 }

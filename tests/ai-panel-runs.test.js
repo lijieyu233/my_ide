@@ -122,6 +122,16 @@ function fixture(inspectReplay = false, fontPreference) {
     return f.element('#ctx-menu:not(.hidden) [role="menu"]');
   };
   f.sessionAction = (act, row) => f.sessionMenu(row).querySelector('[data-act="' + act + '"]').click();
+  f.submitHistoryName = title => {
+    const form = f.element('#ctx-menu:not(.hidden) .ai-hist-name-form');
+    assert(form);
+    form.querySelector('input').value = title;
+    form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  };
+  f.renameSession = (title, row) => {
+    f.sessionAction('ren', row);
+    f.submitHistoryName(title);
+  };
   f.send = text => w.AiPanel.ask(text || '处理任务'); f.stop = () => w.document.getElementById('ai-send').click();
   f.chunk = (i, delta) => onChunk({ context: calls[i].context, delta }); f.done = (i, r) => onDone({ status: r.error ? 'failed' : 'completed', complete: !r.error, finishReason: r.toolCalls?.length ? 'tool_calls' : 'stop', ...r, context: calls[i].context });
   f.rawChunk = event => onChunk(event); f.rawDone = result => onDone(result);
@@ -293,9 +303,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     pop.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert(!f.element('.ai-reading-pop'));assert.equal(f.w.document.activeElement,f.element('#ai-reading-settings'));f.element('#ai-reading-settings').click();input.dispatchEvent(new f.w.Event('pointerdown',{bubbles:true}));assert(!f.element('.ai-reading-pop'));
   });
   await test('会话开关在最左，标题跟随本地保存/宿主目录与改名，不将后台标题串到前台',async()=>{
-    const f=fixture();assert(!f.element('#ai-history'));assert(f.element('#ai-current-session').textContent);f.send('本地会话原名');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');f.w.Modal.prompt=async()=> '本地会话新名';f.openSessions();await tick();f.sessionAction('ren');await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'本地会话新名');f.element('[data-hist-close]').click();f.enableWatch();await f.openHost('session-title-fixture');
+    const f=fixture();assert(!f.element('#ai-history'));assert(f.element('#ai-current-session').textContent);f.send('本地会话原名');await until(()=>f.calls.length===1&&f.element('#ai-send').textContent==='➤');f.openSessions();await tick();f.renameSession('本地会话新名');await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'本地会话新名');f.element('[data-hist-close]').click();f.enableWatch();await f.openHost('session-title-fixture');
     f.dshCatalog[0].title='原生会话名完整展示';f.openSessions();await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'原生会话名完整展示');assert.equal(f.element('#ai-current-session').title,'原生会话名完整展示');f.element('[data-hist-close]').click();
-    f.w.Modal.prompt=async()=> '新的原生会话名';f.openSessions();await tick();await tick();f.sessionAction('ren');await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'新的原生会话名');
+    f.openSessions();await tick();await tick();f.renameSession('新的原生会话名');await tick();await tick();assert.equal(f.element('#ai-current-session').textContent,'新的原生会话名');
   });
   await test('会话操作只在文字菜单，支持键盘和删除本地记录，切工程关闭旧菜单', async () => {
     const f = fixture();
@@ -1178,10 +1188,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await until(()=>{const r=[...f.w.document.querySelectorAll('.ai-hist-row')].find(x=>x.textContent.includes('DSH 里发起的会话'));return r&&!r.classList.contains('running');});
     assert(true,'DSH 里中断后 MyIDE 的运行中标记同步消失');
     // ① 改名写回宿主（不是只改本地）
-    f.w.Modal.prompt=async()=> '改过的标题';
     await until(()=>[...f.w.document.querySelectorAll('.ai-hist-row')].length>0);
     const target=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('DSH 里发起的会话'));
-    f.sessionAction('ren',target);
+    f.renameSession('改过的标题',target);
     await until(()=>f.renames&&f.renames.length===1);
     assert.equal(f.renames[0].id,'session-dsh-live');
     assert.equal(f.renames[0].title,'改过的标题');
@@ -1211,7 +1220,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(rows[0].dataset.id,id);assert(rows[0].textContent.includes('DSH标题'));
     assert(rows[0].textContent.includes('运行中'));
     assert.equal(rows[0].getAttribute('aria-current'),'true');
-    f.w.Modal.prompt=async()=> '同步新标题';f.sessionAction('ren',rows[0]);
+    f.renameSession('同步新标题',rows[0]);
     await until(()=>f.renames?.length===1);assert.equal(f.renames[0].id,'host-same');
     assert.equal(f.aborts.length,0);
   });
@@ -1269,8 +1278,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(f.binds.at(-1).state.rootId,f.B);
     assert(!f.element('#ai-input').readOnly);
     assert(f.element('#ai-session-open-project'));
-    f.w.Modal.prompt=async()=> '跨工程新标题';
-    f.sessionAction('ren',foreign());
+    f.renameSession('跨工程新标题',foreign());
     await until(()=>f.element('#ai-current-session').textContent==='跨工程新标题');
     assert.deepEqual(f.renames,[{id:hostId,title:'跨工程新标题'}]);
     f.chunk(0,'后台新增输出');await tick();
@@ -1543,18 +1551,49 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       if(operation==='pin')pinnedSessionIds.push(target.id);
       if(operation==='unpin')pinnedSessionIds.splice(pinnedSessionIds.indexOf(target.id),1);
       if(operation==='unarchive')archivedSessionIds.splice(archivedSessionIds.indexOf(target.id),1);
+      if(operation==='renameWorkspace')catalog.workspaces.find(workspace=>workspace.rootDir===target.rootDir).title=target.title;
       return {ok:true};
     };
     await f.w.AiPanel.setConfig({engine:'dsh'});f.openSessions();
     await until(()=>f.element('[data-id="'+id+'"]'));
-    const choose=(label,start)=>{
-      start ? start() : f.element('[data-hist-options]').click();
-      const items=[...f.w.document.querySelectorAll('#ctx-menu:not(.hidden) [role="menuitem"]')];
-      const option=items.find(item=>item.textContent.replace(/^✓ /,'')===label);
+    const menu=()=>f.element('#ctx-menu:not(.hidden) [role="menu"]');
+    const menuLabel=item=>item.querySelector('span')?.textContent||item.textContent;
+    const options=f.element('[data-hist-options]'), contextMenu=f.element('#ctx-menu');
+    f.w.document.addEventListener('click',event=>{
+      if(!contextMenu.contains(event.target))contextMenu.classList.add('hidden');
+    });
+    options.click();
+    assert.deepEqual([...menu().querySelectorAll('button')].map(menuLabel),
+      ['搜索会话','添加 DSH 工作区…','分组方式','排序方式','归档显示']);
+    const key=(name)=>f.w.document.activeElement.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:name,bubbles:true,cancelable:true}));
+    menu().querySelector('[data-act="group"]').focus();
+    key('ArrowRight');
+    assert.equal(menu().getAttribute('aria-label'),'分组方式');
+    assert.equal(menuLabel(f.w.document.activeElement),'按工作区');
+    assert.equal(f.w.document.activeElement.getAttribute('aria-checked'),'true');
+    key('Escape');
+    assert.equal(menu().getAttribute('aria-label'),'会话列表选项');
+    assert.equal(f.w.document.activeElement.dataset.act,'group');
+    key('Escape');
+    assert.equal(f.w.document.activeElement,options);
+    const choose=(label,start,section)=>{
+      start ? start() : options.click();
+      if (section) menu().querySelector('[data-act="'+section+'"]').click();
+      const option=[...menu().querySelectorAll('button')].find(item=>menuLabel(item)===label);
       assert(option,'菜单缺少 '+label);
       option.click();
     };
     const row=()=>f.element('[data-id="'+id+'"]');
+    const workspaceMenu=()=>row().closest('.ai-hist-group').querySelector('.ai-hist-group-head')
+      .dispatchEvent(new f.w.MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2}));
+    workspaceMenu();
+    assert.deepEqual([...menu().querySelectorAll('button')].map(menuLabel),
+      ['新建会话','在资源管理器中显示','重命名','删除']);
+    choose('重命名',workspaceMenu);
+    assert(f.element('.ai-hist-name-form input'));
+    f.submitHistoryName('父工作区新名称');
+    await until(()=>f.element('[aria-current="location"] .ai-hist-workspace-name').textContent==='父工作区新名称');
+    assert.equal(calls.shift().operation,'renameWorkspace');
     async function holdRefresh(label){
       const group=row().closest('.ai-hist-group'), pending=defer();
       nextRefresh=pending;
@@ -1567,27 +1606,32 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await holdRefresh('置顶会话');
     await until(()=>row().hasAttribute('data-pinned'));
     assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{operation:'pin',target:{id,rootDir:f.A}});
-    choose('按工作区树');
+    choose('按工作区树',null,'group');
     const child=()=>f.element('[data-id="host:session-child"]').closest('.ai-hist-group');
     assert.equal(child().style.paddingInlineStart,'14px');
     f.element('[data-hist-toggle][aria-current="location"]').click();assert(child().hidden);
     f.element('[data-hist-toggle][aria-current="location"]').click();assert(!child().hidden);
-    choose('单列表');
+    choose('单列表',null,'group');
     assert(f.element('[data-flat-history]'));assert(!f.element('.ai-hist-group-head'));
     assert.equal(f.element('.ai-hist-row').dataset.id,id);
     await holdRefresh('取消置顶');
     await until(()=>!row().hasAttribute('data-pinned'));
     assert.equal(f.element('.ai-hist-row').dataset.id,'host:session-child');
-    choose('仅显示已归档');
+    choose('仅显示已归档',null,'archive');
     assert.deepEqual([...f.w.document.querySelectorAll('.ai-hist-row')].map(row=>row.dataset.id),[arch]);
     choose('取消归档',()=>f.sessionMenu(f.element('[data-id="'+arch+'"]')));
     await until(()=>!f.element('[data-id="'+arch+'"]'));
-    choose('隐藏已归档');
-    f.w.Modal.prompt=async()=> '子级';
+    choose('隐藏已归档',null,'archive');
     choose('搜索会话');
-    await until(()=>!f.element('[data-id="'+id+'"]'));
+    const search=f.element('.ai-hist-head [role="searchbox"]');
+    assert.equal(f.w.document.activeElement,search);
+    search.value='子级';
+    search.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+    assert(!f.element('[data-id="'+id+'"]'));
     assert(f.element('[data-id="host:session-child"]'));
-    choose('清除搜索');
+    key('Escape');
+    assert(!f.element('.ai-hist-head [role="searchbox"]'));
+    assert.equal(f.w.document.activeElement,options);
     assert(f.element('[data-id="'+id+'"]'));
   });
   await test('没有 DSH 会话的已打开项目也能从会话栏跳转', async () => {
