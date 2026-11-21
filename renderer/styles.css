@@ -3720,30 +3720,28 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 2px 7px 10px; }
 .ai-hist-group + .ai-hist-group { margin-top: 3px; }
 .ai-hist-group-head { display: flex; align-items: center; min-width: 0; padding-right: 3px; border-radius: var(--ui-radius); }
-.ai-hist-group-head:hover, .ai-hist-group-head:focus-within { background: var(--bg-hover); }
 .ai-hist-group-title {
   display: flex; align-items: center; gap: 6px; min-height: 32px; flex: 1; min-width: 0;
-  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left; color: var(--text-bright);
+  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left;
 }
 .ai-hist-group-title > svg.ic { width: 14px; height: 14px; flex: none; color: var(--text-dim); }
 .ai-hist-chevron { display: inline-flex; color: var(--text-dim); }
 .ai-hist-chevron svg.ic { width: 10px; height: 10px; }
 .ai-hist-group-title[aria-expanded="true"] .ai-hist-chevron { transform: rotate(90deg); }
-.ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.ai-hist-workspace-current { color: var(--accent); font-size: .78em; white-space: nowrap; }
+.ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-hist-workspace-current { color: var(--text-dim); font-size: .78em; white-space: nowrap; }
 .ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; font-variant-numeric: tabular-nums; }
-.ai-hist-items { margin: 1px 0 5px 12px; padding-left: 5px; border-left: 1px solid var(--ui-line); }
+/* 会话文字从工作区名称向右缩进一级。 */
+.ai-hist-items { margin: 1px 0 5px 48px; }
 .ai-hist-empty { padding: 12px 6px; font-size: .88em; color: var(--text-dim); }
 .ai-hist-row { position: relative; display: flex; align-items: center; min-width: 0; min-height: 30px; border-radius: var(--ui-radius); }
-.ai-hist-row:hover, .ai-hist-row:focus-within { background: var(--bg-hover); }
-.ai-hist-row.cur { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
+.ai-hist-row.cur { background: var(--bg-selected); }
 .ai-hist-open {
   display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; min-height: 30px;
-  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left; font-size: .92em;
+  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left;
 }
 .ai-hist-open:disabled { color: var(--text-dim); cursor: default; }
 .ai-hist-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-hist-row.cur .ai-hist-nm { color: var(--text-bright); font-weight: 600; }
 .ai-hist-hint { display: inline-flex; color: var(--text-dim); }
 .ai-hist-hint svg.ic { width: 12px; height: 12px; }
 .ai-hist-ts { display: inline-flex; align-items: center; gap: 4px; font-size: .9em; color: var(--text-dim); flex: none; white-space: nowrap; }
