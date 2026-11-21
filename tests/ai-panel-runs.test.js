@@ -1232,7 +1232,8 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const groups=f.w.document.querySelectorAll('.ai-hist-group');assert.equal(groups.length,3);
     const foreign=f.element('[data-id="host:session-foreign"]');assert.equal(foreign.dataset.root,f.B);assert(foreign.textContent.includes('后台运行中'));assert.equal(foreign.querySelectorAll('button').length,1);
     const foreignMenu=f.sessionMenu(foreign);
-    assert.deepEqual([...foreignMenu.querySelectorAll('[role="menuitem"]')].map(item=>item.textContent),['打开会话','重命名']);
+    assert.deepEqual([...foreignMenu.querySelectorAll('[role="menuitem"]')].map(item=>item.textContent),
+      ['打开会话','重命名','置顶会话','分叉会话','复制 Session ID','在文件资源管理器中显示','在 VS Code 中打开','归档会话']);
     f.w.document.activeElement.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
     const group = foreign.closest('.ai-hist-group');
     group.querySelector('[data-hist-toggle]').click();
@@ -1517,6 +1518,56 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     empty.querySelector('[data-hist-jump]').click();
     await until(()=>f.w.App.root===dshEmpty);
     assert.equal(f.w.App.getTool(),'sessions');
+  });
+  await test('会话列表选项支持搜索、树形与单列表，右键置顶归档跟随 DSH', async () => {
+    const f=fixture(), nested=path.join(f.A,'child'), arch='session-archived', id='session-parent';
+    const archivedSessionIds=[arch], pinnedSessionIds=[], calls=[];
+    f.w.App.getProjects=()=>[{path:f.A}];
+    f.catalogRead=async()=>({ok:true,archivedSessionIds,pinnedSessionIds,workspaces:[
+      {id:'work-a',rootDir:f.A,title:'父工作区',sessionIds:[id,arch]},
+      {id:'work-child',rootDir:nested,title:'子工作区',sessionIds:['session-child']},
+    ],items:[
+      {sessionId:id,title:'父级任务',cwd:f.A,updatedAt:20},
+      {sessionId:arch,title:'已归档问题',cwd:f.A,updatedAt:10},
+      {sessionId:'session-child',title:'子级任务',cwd:nested,updatedAt:30},
+    ]});
+    f.w.myIDE.ai.dshWorkspace=async(_cfg,operation,target)=>{
+      calls.push({operation,target});
+      if(operation==='pin')pinnedSessionIds.push(target.id);
+      if(operation==='unarchive')archivedSessionIds.splice(archivedSessionIds.indexOf(target.id),1);
+      return {ok:true};
+    };
+    await f.w.AiPanel.setConfig({engine:'dsh'});f.openSessions();
+    await until(()=>f.element('[data-id="'+id+'"]'));
+    const choose=(label,start)=>{
+      start ? start() : f.element('[data-hist-options]').click();
+      const items=[...f.w.document.querySelectorAll('#ctx-menu:not(.hidden) [role="menuitem"]')];
+      const option=items.find(item=>item.textContent.replace(/^✓ /,'')===label);
+      assert(option,'菜单缺少 '+label);
+      option.click();
+    };
+    choose('置顶会话',()=>f.sessionMenu(f.element('[data-id="'+id+'"]')));
+    await until(()=>f.element('[data-id="'+id+'"][data-pinned]'));
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{operation:'pin',target:{id,rootDir:f.A}});
+    choose('按工作区树');
+    const child=()=>f.element('[data-id="host:session-child"]').closest('.ai-hist-group');
+    assert.equal(child().style.paddingInlineStart,'14px');
+    f.element('[data-hist-toggle][aria-current="location"]').click();assert(child().hidden);
+    f.element('[data-hist-toggle][aria-current="location"]').click();assert(!child().hidden);
+    choose('单列表');
+    assert(f.element('[data-flat-history]'));assert(!f.element('.ai-hist-group-head'));
+    assert.equal(f.element('.ai-hist-row').dataset.id,id);
+    choose('仅显示已归档');
+    assert.deepEqual([...f.w.document.querySelectorAll('.ai-hist-row')].map(row=>row.dataset.id),[arch]);
+    choose('取消归档',()=>f.sessionMenu(f.element('[data-id="'+arch+'"]')));
+    await until(()=>!f.element('[data-id="'+arch+'"]'));
+    choose('隐藏已归档');
+    f.w.Modal.prompt=async()=> '子级';
+    choose('搜索会话');
+    await until(()=>!f.element('[data-id="'+id+'"]'));
+    assert(f.element('[data-id="host:session-child"]'));
+    choose('清除搜索');
+    assert(f.element('[data-id="'+id+'"]'));
   });
   await test('没有 DSH 会话的已打开项目也能从会话栏跳转', async () => {
     const f = fixture();

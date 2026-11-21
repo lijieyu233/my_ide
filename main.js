@@ -901,6 +901,9 @@ ipcMain.handle('ai:dsh-sessions',async(event,cfg)=>{
     return {ok:true, items, ...registry};
   } catch (error) { return {ok:false, error:error.message}; }
 });
+ipcMain.handle('ai:dsh-workspace',async(event,cfg,operation,target)=>{
+  try{aiSender(event);return {ok:true,...await DSH.manageWorkspace(cfg,operation,target)};}catch(error){return {ok:false,error:error.message};}
+});
 ipcMain.handle('ai:dsh-rename',async(event,cfg,sessionId,title)=>{
   try{aiSender(event);return {ok:true,...await DSH.rename(cfg,sessionId,title)};}catch(error){return {ok:false,error:error.message};}
 });

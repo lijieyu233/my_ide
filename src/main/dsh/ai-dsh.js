@@ -3,6 +3,7 @@ const {Rpc}=require('./ai-dsh-rpc'),{resolveRuntime}=require('./dsh-runtime');
 const {absoluteCatalogRoot,catalogEntry}=require('./dsh-native');
 const {queueAction}=require('./dsh-session-watch');
 const catalogItems=value=>Array.isArray(value)?value:Array.isArray(value?.items)?value.items:[];
+const directoryKey = value => (process.platform === 'win32' ? value.toLowerCase() : value).replace(/[\\/]+$/, '');
 function assertNotCatalogConfig(cfg){if(cfg?.catalogScope!==undefined||cfg?.catalogRoot!==undefined)throw Error('全局会话目录参数仅可用于只读目录与历史预览，不能绑定、发送或操作会话');}
 function catalogScope(cfg){
   if(cfg?.catalogScope!==undefined&&cfg.catalogScope!=='all')throw Error('会话目录范围无效');
@@ -248,7 +249,7 @@ function createService(options={}){
       if (error.code === 'ENOENT') return null;
       throw error;
     });
-    if (record === null) return { workspaces: [], archivedSessionIds: [] };
+    if (record === null) return { workspaces: [], archivedSessionIds: [], pinnedSessionIds: [] };
     const { unit, global, tables } = JSON.parse(record);
     if (unit?.name !== 'workspace' || !global ||
         (global.archivedSessionIds !== undefined && !Array.isArray(global.archivedSessionIds)) ||
@@ -259,9 +260,70 @@ function createService(options={}){
     for (const id of new Set(global.workspaceIds || [])) {
       if (typeof id !== 'string' || !id) continue;
       const entry = tables?.workspaces?.[id], rootDir = absoluteCatalogRoot(entry?.path);
-      if (rootDir) workspaces.push({ rootDir, title: typeof entry.title === 'string' ? entry.title : '' });
+      if (rootDir) workspaces.push({
+        id, rootDir, title: typeof entry.title === 'string' ? entry.title : '',
+        createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
+        sessionIds: Array.isArray(entry.sessionIds) ? entry.sessionIds.filter(id => typeof id === 'string') : [],
+      });
     }
-    return { workspaces, archivedSessionIds: (global.archivedSessionIds || []).filter(id => typeof id === 'string' && id) };
+    const sessionIds = value => Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : [];
+    return { workspaces, archivedSessionIds: sessionIds(global.archivedSessionIds), pinnedSessionIds: sessionIds(global.pinnedSessionIds) };
+  }
+  async function manageWorkspace(cfg, operation, { rootDir: directory, id, before, title } = {}) {
+    assertNotCatalogConfig(cfg);
+    const rootDir = absoluteCatalogRoot(directory);
+    if (!rootDir) throw Error('需要有效的项目目录');
+    const conn = await connect(cfg);
+    if (!conn.capabilities?.native) throw Error('工作区管理需要本机 DSH 连接');
+    const call = (method, request) => conn.rpc.call(method, { request });
+
+    if (operation === 'add' || operation === 'new') {
+      if (!(await fs.stat(rootDir)).isDirectory()) throw Error('项目目录不可用');
+      const { workspace } = await call('workspace/create', { path: rootDir });
+      if (operation === 'add') return {};
+      const session = await call('session/create', { workspaceId: workspace.workspaceId });
+      return { sessionId: session.sessionId, rootDir: workspace.path };
+    }
+
+    const { workspaces } = await workspaceRegistry();
+    const workspace = workspaces.find(item => directoryKey(item.rootDir) === directoryKey(rootDir));
+    if (operation === 'renameWorkspace' || operation === 'removeWorkspace' || operation === 'moveWorkspace' || operation === 'moveSession') {
+      if (!workspace) throw Error('工作区已变更，请刷新后重试');
+      const workspaceId = workspace.id;
+      if (operation === 'renameWorkspace') {
+        const next = typeof title === 'string' ? title.trim() : '';
+        if (!next || next.length > 120) throw Error('工作区名称需为 1-120 个字符');
+        await call('workspace/rename', { workspaceId, title: next });
+      } else if (operation === 'removeWorkspace') {
+        await call('workspace/delete', { workspaceId });
+      } else if (operation === 'moveWorkspace') {
+        if (before !== undefined && !workspaces.some(item => item.id === before)) throw Error('目标工作区已变更');
+        await call('workspace/insertBefore', { workspaceId, beforeWorkspaceId: before });
+      } else {
+        if (!workspace.sessionIds.includes(id) || (before !== undefined && !workspace.sessionIds.includes(before))) {
+          throw Error('会话排序已变更，请刷新后重试');
+        }
+        await call('workspace/insertSessionBefore', { workspaceId, sessionId: id, beforeSessionId: before });
+      }
+      return {};
+    }
+
+    const methods = {
+      pin: 'workspace/pinSession', unpin: 'workspace/unpinSession',
+      archive: 'workspace/archiveSession', unarchive: 'workspace/unarchiveSession', fork: 'session/fork',
+    };
+    if (!Object.hasOwn(methods, operation) && operation !== 'editor') throw Error('未知的工作区操作');
+    if (typeof id !== 'string' || !id) throw Error('缺少会话身份');
+    const location = await verifiedCatalogLocation(conn, id, rootDir);
+    if (operation === 'editor') {
+      const apps = await call('session/workspacePathApplications', { path: location.rootDir });
+      const vscode = Array.isArray(apps) && apps.find(app => /^(VS Code|Visual Studio Code)$/i.test(app.name));
+      if (!vscode) throw Error('未找到 VS Code');
+      await call('session/openWorkspacePath', { path: location.rootDir, application: vscode.id });
+      return {};
+    }
+    const result = await call(methods[operation], { sessionId: id });
+    return operation === 'fork' ? { sessionId: result.sessionId, rootDir: location.rootDir } : {};
   }
   async function listSessions(cfg){
     const all=catalogScope(cfg);
@@ -308,8 +370,7 @@ function createService(options={}){
     const item = entries.find(item=>item.sessionId===id && item.origin!=='subagent' && !item.projections?.values?.subagent);
     if(!item)throw Error('该会话已不在 DSH 的主会话目录里，请刷新后重试');
     const location = catalogEntry(item);
-    const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
-    if(!location.rootDir || key(location.rootDir)!==key(rootDir))throw Error('会话真实目录与所选工程不符');
+    if(!location.rootDir || directoryKey(location.rootDir)!==directoryKey(rootDir))throw Error('会话真实目录与所选工程不符');
     return location;
   }
   async function history(cfg,sessionId){
@@ -368,6 +429,6 @@ function createService(options={}){
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,hasRun,submitInput,inputQueue,updateQueue,permissionPresets,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,workspaceRegistry,rename,history,bindSession,watch};
+  return {chat,hasRun,submitInput,inputQueue,updateQueue,permissionPresets,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,workspaceRegistry,manageWorkspace,rename,history,bindSession,watch};
 }
 module.exports={createService,IDE_STATE,promptContent};

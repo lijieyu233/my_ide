@@ -412,7 +412,7 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
   const home=path.join(temp,'workspace-registry-home');
   const storage=path.join(home,'storages'),file=path.join(storage,'workspace.json');
   const service=createService({home});
-  const empty={workspaces:[],archivedSessionIds:[]};
+  const empty={workspaces:[],archivedSessionIds:[],pinnedSessionIds:[]};
   assert.deepEqual(await service.workspaceRegistry(),empty);
   fs.mkdirSync(storage,{recursive:true});
   const a=path.join(temp,'A'), b=path.join(temp,'B');
@@ -427,16 +427,62 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
   const content=JSON.stringify(workspace);
   fs.writeFileSync(file,content);
   assert.deepEqual(await service.workspaceRegistry(),{
-    workspaces:[{rootDir:b,title:'B 的名称'},{rootDir:a,title:'A 的名称'}],archivedSessionIds:['session-archived'],
+    workspaces:[
+      {id:'b',rootDir:b,title:'B 的名称',createdAt:'',sessionIds:[]},
+      {id:'a',rootDir:a,title:'A 的名称',createdAt:'',sessionIds:['session-active']},
+    ],archivedSessionIds:['session-archived'],pinnedSessionIds:['session-pinned'],
   });
   assert.equal(fs.readFileSync(file,'utf8'),content);
   delete workspace.global.workspaceIds;
   delete workspace.global.archivedSessionIds;
+  delete workspace.global.pinnedSessionIds;
   fs.writeFileSync(file,JSON.stringify(workspace));
   assert.deepEqual(await service.workspaceRegistry(),empty);
   workspace.global.archivedSessionIds='invalid';
   fs.writeFileSync(file,JSON.stringify(workspace));
   await assert.rejects(service.workspaceRegistry(),/工作区配置无法读取/);
+ });
+ await test('工作区动作走原生登记和会话归属，分叉和新建返回宿主身份',async()=>{
+  const home=path.join(temp,'workspace-actions'), storage=path.join(home,'storages');
+  fs.mkdirSync(storage,{recursive:true});
+  fs.writeFileSync(path.join(storage,'workspace.json'),JSON.stringify({
+    unit:{name:'workspace',version:2},global:{workspaceIds:['work']},
+    tables:{workspaces:{work:{path:temp,title:'原名称',sessionIds:['session-old','session-next']}}},
+  }));
+  const native=nativeFixture(),calls=[];
+  native.rpc.request=async method=>{
+    assert.equal(method,'session/list');
+    return [{sessionId:'session-old',cwd:temp}];
+  };
+  native.rpc.call=async(method,{request})=>{
+    calls.push({method,request});
+    if(method==='workspace/create')return {workspace:{workspaceId:'work',path:temp}};
+    if(method==='session/fork'||method==='session/create')return {sessionId:'session-returned'};
+    if(method==='session/workspacePathApplications')return [{id:'code',name:'VS Code'}];
+    return {};
+  };
+  const service=createService({home,resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+  const rootDir=temp,id='session-old';
+  try{
+    assert.deepEqual(await service.manageWorkspace({},'new',{rootDir}),{sessionId:'session-returned',rootDir});
+    assert.deepEqual(await service.manageWorkspace({},'fork',{rootDir,id}),{sessionId:'session-returned',rootDir});
+    for(const operation of ['pin','unpin','archive','unarchive','editor'])await service.manageWorkspace({},operation,{rootDir,id});
+    await service.manageWorkspace({},'renameWorkspace',{rootDir,title:' 新名称 '});
+    await service.manageWorkspace({},'moveSession',{rootDir,id,before:'session-next'});
+    await service.manageWorkspace({},'moveWorkspace',{rootDir});
+    await service.manageWorkspace({},'removeWorkspace',{rootDir});
+    assert.deepEqual(calls.map(item=>item.method),[
+      'workspace/create','session/create','session/fork','workspace/pinSession','workspace/unpinSession','workspace/archiveSession',
+      'workspace/unarchiveSession','session/workspacePathApplications','session/openWorkspacePath','workspace/rename',
+      'workspace/insertSessionBefore','workspace/insertBefore','workspace/delete',
+    ]);
+    assert.deepEqual(calls[5].request,{sessionId:id});
+    assert.deepEqual(calls[8].request,{path:rootDir,application:'code'});
+    assert.deepEqual(calls[9].request,{workspaceId:'work',title:'新名称'});
+    await assert.rejects(service.manageWorkspace({},'pin',{rootDir:path.join(temp,'other'),id}),/目录/);
+    await assert.rejects(service.manageWorkspace({},'moveSession',{rootDir,id,before:'another'}),/排序/);
+    assert.equal(calls.length,13);
+  }finally{await service.dispose();}
  });
  await test('全局目录复用本机宿主列表，真实 cwd 不被映射替换，未知归属不猜根目录或 running',async()=>{
   const file=path.join(temp,'global-catalog-map.json'),original={

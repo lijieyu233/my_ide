@@ -268,6 +268,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     dshOptions:(cfg,sessionId,tools,apply,foreignHostId)=>ipcRenderer.invoke('ai:dsh-options',cfg,sessionId,tools,apply,foreignHostId),
     // 宿主会话目录（标题/运行中/cwd）：历史列表以它为准，改名写回宿主
     dshSessions:(cfg)=>ipcRenderer.invoke('ai:dsh-sessions',cfg),
+    dshWorkspace:(cfg,operation,target)=>ipcRenderer.invoke('ai:dsh-workspace',cfg,operation,target),
     dshRename:(cfg,sessionId,title)=>ipcRenderer.invoke('ai:dsh-rename',cfg,sessionId,title),
     // 历史正文 + 绑定既有会话：DSH 里发起的会话点开后要真的能读到对话
     dshHistory:(cfg,sessionId)=>ipcRenderer.invoke('ai:dsh-history',cfg,sessionId),
