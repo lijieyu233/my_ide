@@ -265,7 +265,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     dshPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:dsh-permission-result',context,id,optionId),
     dshQuestionResult: (context,id,answers) => ipcRenderer.invoke('ai:dsh-question-result',context,id,answers),
     onDshEvent:callback=>ipcRenderer.on('ai:dsh-event',(_event,value)=>callback(value)),
-    dshOptions:(cfg,sessionId,tools,apply)=>ipcRenderer.invoke('ai:dsh-options',cfg,sessionId,tools,apply),
+    dshOptions:(cfg,sessionId,tools,apply,foreignHostId)=>ipcRenderer.invoke('ai:dsh-options',cfg,sessionId,tools,apply,foreignHostId),
     // 宿主会话目录（标题/运行中/cwd）：历史列表以它为准，改名写回宿主
     dshSessions:(cfg)=>ipcRenderer.invoke('ai:dsh-sessions',cfg),
     dshRename:(cfg,sessionId,title)=>ipcRenderer.invoke('ai:dsh-rename',cfg,sessionId,title),

@@ -329,8 +329,8 @@ class NativeRpc extends EventEmitter {
     // 已验证归属的旁听队列不需要 attach，更不能为了只读查询创建会话或切换模型。
     if(method==='session/input_queue')return this.readInputQueue(params.sessionId,this.sessions.get(params.sessionId)||{});
     if(method==='session/update_queue')return this.updateInputQueue(params,this.sessions.get(params.sessionId)||{externalQueue:true});
-    const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
     if(method==='session/config_options')return this.refreshOptions(params.sessionId);
+    const state=this.sessions.get(params.sessionId);if(!state)throw Error('原生会话未连接');
     if(method==='session/set_config_option'){
       let selected={...state.selected};
       if(params.configId==='model'){const [provider,model]=JSON.parse(params.value);selected=selectionWithReasoning(state.catalog,{provider,model},state.selected);}

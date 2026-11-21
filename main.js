@@ -786,18 +786,26 @@ const aiSender = (e,context) => {
 const dshChatAdmissions=new Set();
 const dshPageMatches=(a,b)=>!!a&&!!b&&a.id===b.id&&a.projectContext===b.projectContext;
 async function dshInputPage(event,context,page){
-  const state=await event.sender.executeJavaScript('({rootId:App.root||"",page:App.getPageContext(),sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
+  const state=await event.sender.executeJavaScript('AiPanel.dshView()');
   if(state.engine!=='dsh'||state.rootId!==context.rootId||state.sessionId!==context.sessionId||!dshPageMatches(state.page,page))throw Error('原生输入的项目、会话或页面已变化');
   return state.page;
 }
+async function dshForeignView(event, context, hostId, access = 'ready') {
+  const view = await event.sender.executeJavaScript('AiPanel.dshView()');
+  if (view.engine !== 'dsh' || view.access !== access || view.foreignHostId !== hostId
+      || (context.rootId !== undefined && view.rootId !== context.rootId) || view.sessionId !== context.sessionId || view.page?.projectContext !== false)
+    throw Error('跨工程会话归属已变化');
+  return view;
+}
 ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
-  const requestedPage=context?.page;
+  const requestedPage=context?.page, foreignHostId=context?.foreignHostId;
   let nativeStart=null,dshAdmission=null;
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
     aiSender(e);
     if(cfg?.engine==='dsh'){
+      if (foreignHostId) await dshForeignView(e,context,foreignHostId);
       const admission=JSON.stringify([e.sender.id,context?.rootId,context?.sessionId]);
       if(dshChatAdmissions.has(admission)||DSH.hasRun(context))throw Error('当前 DSH 任务仍在运行，请使用排队或插入而非新建运行');
       dshChatAdmissions.add(admission);dshAdmission=admission;
@@ -819,8 +827,10 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   let r;
   if(cfg?.engine==='dsh'){
     try{
-      const page=nativeStart?await dshInputPage(e,context,nativeStart.page):await e.sender.executeJavaScript('App.getPageContext()');aiRuns.assert(aiSender(e,context),context);
-      r=await DSH.chat(cfg,messages,tools||[],{...context,page,...(nativeStart?{expectedHostId:nativeStart.hostId}: {})},event=>{
+      const page = foreignHostId ? (await dshForeignView(e,context,foreignHostId)).page
+        : nativeStart ? await dshInputPage(e,context,nativeStart.page) : await e.sender.executeJavaScript('App.getPageContext()');
+      aiRuns.assert(aiSender(e,context),context);
+      r=await DSH.chat(cfg,messages,foreignHostId ? [] : tools||[],{...context,page,...(foreignHostId ? {foreign:true,expectedHostId:foreignHostId} : nativeStart ? {expectedHostId:nativeStart.hostId} : {})},event=>{
         if(record.status!=='active')return;
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:dsh-event',{...event,context});
       },event=>{try{aiRuns.assert(aiSender(e,context),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
@@ -867,9 +877,13 @@ ipcMain.handle('ai:codex-status',async(event,launcher)=>{
 ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-question-result',(event,context,id,answers)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.questionResult(context,id,answers);}catch{return {ok:false};}});
-ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools,apply)=>{
+ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools,apply,foreignHostId)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Harness 会话身份无效');
+    if (foreignHostId) {
+      const view = await dshForeignView(event,{sessionId},foreignHostId);
+      return await DSH.inspect(cfg,{...view,foreign:true,expectedHostId:foreignHostId},[],apply===true);
+    }
     const state=await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||""})');
     const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
     return await DSH.inspect(cfg,{sessionId,...state},allowed,apply===true);
@@ -892,12 +906,19 @@ ipcMain.handle('ai:dsh-history',async(event,cfg,sessionId)=>{
   try{aiSender(event);return {ok:true,...await DSH.history(cfg,sessionId)};}catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('ai:dsh-bind',async(event,cfg,state,sessionId)=>{
-  try{aiSender(event,state);return {ok:true,...await DSH.bindSession(cfg,{sessionId,...state},sessionId)};}catch(error){return {ok:false,error:error.message};}
+  try {
+    aiSender(event,state);
+    if (state?.foreignHostId) {
+      const view = await dshForeignView(event,state,sessionId,'loading');
+      return {ok:true,...await DSH.bindSession(cfg,{...view,foreign:true},sessionId)};
+    }
+    return {ok:true,...await DSH.bindSession(cfg,{sessionId,...state},sessionId)};
+  } catch(error) { return {ok:false,error:error.message}; }
 });
 // 外部 DSH 轮次没有本地 aiRuns 身份：独立观察通道只展示宿主状态，不能冒充一次 chat。
 const dshWatches=new Map();
 const dshWatchKey=(sender,id)=>JSON.stringify([sender.id,id]);
-const dshWatchPage=async sender=>sender.executeJavaScript('({rootId:App.root||"",scope:["reader","bookshelf"].includes(App.getPageContext().id)?"reader":"project",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
+const dshWatchPage=sender=>sender.executeJavaScript('AiPanel.dshView()');
 async function ownedDshWatch(event,id){
   aiSender(event);const slot=dshWatches.get(dshWatchKey(event.sender,id));
   if(!slot||slot.controller.signal.aborted||!slot.handle)throw Error('DSH 实时订阅已过期');
@@ -911,7 +932,7 @@ ipcMain.handle('ai:dsh-watch',async(event,cfg,state)=>{
     aiSender(event);
     if(!state||['watchId','hostId','sessionId'].some(k=>typeof state[k]!=='string'||!state[k]||state[k].length>200)||typeof state.rootId!=='string'||!['project','reader'].includes(state.scope))throw Error('DSH 实时订阅身份无效');
     const page=await dshWatchPage(event.sender);
-    if(page.engine!=='dsh'||page.rootId!==state.rootId||page.scope!==state.scope||page.sessionId!==state.sessionId)throw Error('会话视图已变化，未建立旧订阅');
+    if(page.engine!=='dsh'||page.rootId!==state.rootId||page.scope!==state.scope||page.sessionId!==state.sessionId || page.foreignHostId && (page.access!=='ready'||page.foreignHostId!==state.hostId))throw Error('会话视图已变化，未建立旧订阅');
     key=dshWatchKey(event.sender,state.watchId);
     if(dshWatches.has(key))throw Error('DSH 实时订阅身份重复');
     slot={state:{watchId:state.watchId,sessionId:state.sessionId,hostId:state.hostId,rootId:state.rootId,scope:state.scope},controller:new AbortController(),handle:null};dshWatches.set(key,slot);

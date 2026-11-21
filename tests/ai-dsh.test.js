@@ -463,6 +463,33 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
   }finally{await service.dispose();}
   const acp=fixture();try{await assert.rejects(acp.service.listSessions({catalogScope:'all'}),/本机原生/);await assert.rejects(acp.service.history({catalogScope:'all',catalogRoot:temp},'session-other'),/本机原生/);assert(!acp.requests.some(request=>['session/list','session/history'].includes(request.method)));}finally{await acp.service.dispose();}
  });
+ await test('跨工程绑定重新核实宿主目录，选项不抢占宿主连接，续聊只发到原会话', async () => {
+   const id='session-foreign-scope', native=nativeFixture({id}), original=native.rpc.request;
+   const root=path.join(temp,'foreign-scope'); fs.mkdirSync(root);
+   let directory=root;
+   native.rpc.request=async(method,params)=>{
+     if(method==='session/list'){native.requests.push({method,params});return [{sessionId:id,cwd:directory}];}
+     return original(method,params);
+   };
+   const service=createService({home:path.join(temp,'foreign-scope-home'),resolveRuntime:async()=>({executable:'fixture'}),connectNative:async()=>native.rpc});
+   const contextB={...context(655),sessionId:'host:'+id,rootId:root,page:{id:'project',projectContext:false},foreign:true,expectedHostId:id};
+   try {
+     await assert.rejects(service.bindSession({}, {...contextB,rootId:temp},id),/会话真实目录/);
+     assert((await service.bindSession({},contextB,id)).canContinue);
+     assert((await service.inspect({},contextB,[])).ok);
+     assert(!native.requests.some(entry=>['session/new','session/resume','session/prompt'].includes(entry.method)));
+     const message=[{role:'user',content:'继续谈这个工程'}];
+     const result=await service.chat({},message,[],contextB,()=>{},()=>{}); assert(result.ok,result.error);
+     const resumed=native.requests.find(entry=>entry.method==='session/resume');
+     const sent=native.requests.find(entry=>entry.method==='session/prompt');
+     assert.equal(resumed.params.sessionId,id); assert.equal(resumed.params.cwd,root); assert.equal(sent.params.sessionId,id);
+     assert(!native.requests.some(entry=>entry.method==='session/new'));
+     directory=temp;
+     const stale=await service.chat({},message,[],{...contextB,requestId:'r-656'},()=>{},()=>{});
+     assert(!stale.ok); assert.match(stale.error,/会话真实目录/);
+     assert.equal(native.requests.filter(entry=>entry.method==='session/prompt').length,1);
+   } finally { await service.dispose(); }
+ });
  await test('全局目录与foreign正文读取成功或失败均不抢占后台run，后续chunk及原生身份保持',async()=>{
   const file=path.join(temp,'catalog-background-map.json'),native=nativeFixture({id:'myide-background'}),original=native.rpc.request;
   let entered,release,failed=false,settled=false;const ready=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});

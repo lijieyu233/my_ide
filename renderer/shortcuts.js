@@ -344,6 +344,7 @@ Shortcuts.register('next-tab', { desc: '切换到下一个标签', keys: ['ctrl+
 for (const [id, name, label] of [['tool-bookshelf','bookshelf','书架'],['tool-remote','remote','远程服务器'],['tool-clipboard','clipboard','剪贴板历史'],['tool-launch','launch','启动面板']]) {
   Shortcuts.register(id,{desc:'工具窗口：'+label,keys:[],palette:true,category:'工作台',run:()=>App.showTool(name)});
 }
+Shortcuts.register('tool-sessions', { desc: '工具窗口：会话', keys: [], palette: true, category: '工作台', aliases: ['sessions', '会话导航'], run: () => App.showTool('sessions') });
 Shortcuts.register('tool-project', { desc: '工具窗口：项目', keys: ['ctrl+1'], run: () => App.showTool('project') });
 Shortcuts.register('tool-outline', { desc: '工具窗口：大纲', keys: ['ctrl+2'], run: () => App.showTool('outline') });
 Shortcuts.register('git-log', { desc: 'Git 日志窗口', keys: ['alt+9', 'ctrl+5'], run: () => App.showTool('log') });

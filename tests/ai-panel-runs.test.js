@@ -1210,6 +1210,59 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.element('#ai-history').click();await tick();await tick();f.element('[data-hist-scope="current"]').click();f.element('[data-id="'+original+'"]').click();await tick();
     assert(f.text().includes('后台新增输出'));assert(!f.element('#ai-input').readOnly);assert(f.element('#ai-session-preview-bar').classList.contains('hidden'));assert.equal(f.aborts.length,0);
   });
+  await test('左侧会话按所属工程续聊，保留 IDE 工程及草稿，项目跳转独立触发', async () => {
+    const f = fixture(true);
+    const hostId = 'session-sidebar-foreign';
+    f.dshCatalog = [{sessionId:hostId,title:'B 设计对话',cwd:f.B,rootDir:f.B}];
+    f.w.myIDE.ai.dshHistory = async (config,id) => {
+      if (id !== hostId) return {ok:false,error:'夹具无 A 宿主历史'};
+      assert.equal(config.catalogRoot,f.B);
+      return {ok:true,sessionId:id,readOnly:true,rootDir:f.B,turns:[{parts:[{kind:'text',role:'assistant',text:'B 的原会话'}]}]};
+    };
+    f.w.myIDE.ai.dshBind = async (_config,state,id) => {
+      assert.equal(state.rootId,f.B); assert.equal(state.foreignHostId,id);
+      assert.equal(id,hostId); assert.equal(state.page.projectContext,false);
+      return {ok:true,canContinue:true,sessionId:id,cwd:f.B};
+    };
+    f.w.myIDE.ai.dshOptions = async (_config,_id,tools,_apply,external) => {
+      if (external) { assert.equal(external,hostId); assert.equal(tools.length,0); }
+      return {ok:true,configOptions:availableOptions()};
+    };
+    f.w.App.showAi();
+    await f.w.AiPanel.setConfig({engine:'dsh'});
+    await until(() => f.w.AiPanel.aiState().current);
+    const key = 'myide-ai-sessions:'+f.A+':dsh:active', original = f.w.localStorage.getItem(key);
+    const input = f.element('#ai-input'); input.value = 'A 未发送的草稿';
+    f.w.__testAddContext({path:f.file('secret.md'),content:'A 的编辑器上下文'});
+    const jumps = [];
+    f.w.App.openProject = async root => { jumps.push(root); f.switchRoot(root); return true; };
+    let picker;
+    f.w.App.showProjMenu = (anchor,focus) => { picker = {anchor,focus}; };
+    f.w.AiPanel.syncSessionSidebar(true);
+    const dock = f.element('#panel-sessions');
+    await until(() => dock.querySelector('[data-id="host:'+hostId+'"]'));
+    dock.querySelector('[data-project-picker]').click(); assert.equal(picker.focus,true);
+    dock.querySelector('[data-id="host:'+hostId+'"]').click();
+    await until(() => f.w.AiPanel.dshView().access === 'ready' && !input.readOnly);
+    assert.equal(f.w.App.root,f.A); assert.equal(input.value,''); assert(f.text().includes('B 的原会话'));
+    assert.equal(f.w.localStorage.getItem(key),original);
+    f.hold = true; f.send('继续 B 的讨论');
+    await until(() => f.calls.length === 1);
+    const sent = f.calls[0];
+    assert.equal(sent.context.rootId,f.B); assert.equal(sent.context.foreignHostId,hostId);
+    assert.equal(sent.tools.length,0); assert(!JSON.stringify(sent.messages).includes('A 的编辑器上下文'));
+    assert.deepEqual(jumps,[]);
+    assert(original);
+    dock.querySelector('[data-id="'+original+'"]').click();
+    await until(() => f.w.AiPanel.dshView().rootId === f.A);
+    assert.equal(input.value,'A 未发送的草稿');
+    dock.querySelector('[data-id="host:'+hostId+'"]').click();
+    await until(() => f.w.AiPanel.dshView().rootId === f.B);
+    f.chunk(0,'B 新增输出'); await until(() => f.text().includes('B 新增输出'));
+    assert.equal(f.aborts.length,0);
+    dock.querySelector('[data-hist-jump]').click(); await until(() => jumps.length === 1 && f.w.App.root === f.B);
+    assert.deepEqual(jumps,[f.B]);
+  });
   await test('跨工程历史慢返回被新选择作废，新建不会把预览持久到当前项目',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});const slow=defer();
     f.dshCatalog=[{sessionId:'session-foreign',title:'慢预览',cwd:f.B,rootDir:f.B}];f.w.myIDE.ai.dshHistory=()=>slow.promise;

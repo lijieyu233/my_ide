@@ -119,8 +119,8 @@ const App = (() => {
   // activeTool：project/outline/git/tasks/db/browser/log 七选一（null=全收起）
   // sideTool：browser/log 激活期间侧栏保留的面板（project/outline/git/tasks 四选一）
   // aiOpen：AI 右侧面板独立开关——不与左侧任何工具互斥（可边看项目树边对话）
-  const ALL_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'clipboard', 'browser', 'log', 'quick-launch', 'bookshelf'];
-  const SIDE_TOOLS = ['project', 'outline', 'search', 'git', 'tasks', 'launch'];
+  const ALL_TOOLS = ['project', 'sessions', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'clipboard', 'browser', 'log', 'quick-launch', 'bookshelf'];
+  const SIDE_TOOLS = ['project', 'sessions', 'outline', 'search', 'git', 'tasks', 'launch'];
   let activeTool = 'project';
   let sideTool = 'project';
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
@@ -250,6 +250,7 @@ const App = (() => {
       if (b) b.classList.toggle('active', activeTool === t);
     }
     document.getElementById('tool-bookshelf')?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
+    document.getElementById('tool-sessions')?.setAttribute('aria-pressed',String(activeTool==='sessions'&&!sideCollapsed));
     const aiBtn = document.getElementById('tool-ai');
     if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
@@ -259,10 +260,11 @@ const App = (() => {
     if (activeTool === 'browser') sidePanel = 'browser';
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
-    for (const t of ['project', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser']) {
+    for (const t of ['project', 'sessions', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser']) {
       const p = document.getElementById('panel-' + t);
       if (p) p.classList.toggle('hidden', sideCollapsed || sidePanel !== t);
     }
+    window.AiPanel?.syncSessionSidebar?.(!sideCollapsed && sidePanel === 'sessions' && !document.body.classList.contains('sidebar-collapsed'));
     window.Search?.syncVisible(!sideCollapsed && sidePanel==='search' && !document.body.classList.contains('sidebar-collapsed'));
     // 数据库工具是「侧栏 + 右侧数据区」双区联动：激活时右侧显示数据/SQL，切换走则隐藏
     const dbContent = document.getElementById('db-panel');
@@ -356,7 +358,7 @@ const App = (() => {
   function getTool() { return activeTool; }
   // 独立工具主区会遮住编辑器；侧栏搜索/大纲仍属于项目工作区。
   function getPageContext() {
-    const names = { project:'项目', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
+    const names = { project:'项目', sessions:'会话', outline:'大纲', search:'搜索', git:'Git', tasks:'任务',
       launch:'启动面板', db:'数据库', remote:'远程服务器', browser:'内置浏览器', log:'Git 日志', 'quick-launch':'快捷启动',bookshelf:'书架' };
     const independent = ['tasks','launch','db','remote','clipboard','browser','quick-launch','bookshelf'].includes(activeTool);
     const book=window.Viewer?.activeTab;
@@ -673,7 +675,7 @@ const App = (() => {
     state.menu.classList.add('hidden'); state.menu.classList.remove('project-picker');
     if (restore) (state.anchor.isConnected ? state.anchor : document.querySelector('.proj-all') || document.getElementById('btn-open')).focus();
   }
-  function showProjMenu(anchor, focusInput = false) {
+  function showProjMenu(anchor, focusInput = false, onOpened) {
     clearTimeout(projMenuTimer);
     if (projectMenuCurrent(projMenuState)) { if (focusInput) projMenuState.input.focus(); return; }
     projMenuState?.cleanup?.(); projMenuState = null;
@@ -692,7 +694,7 @@ const App = (() => {
     const actions = document.createElement('div'); actions.className = 'project-picker-actions'; footer.append(actions);
     const keyHint = document.createElement('div'); keyHint.className = 'project-picker-key-hint'; keyHint.textContent = '↑ ↓ 选择　Enter 打开'; footer.append(keyHint);
     const action = (label, run) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item'; button.textContent = label; button.onclick = run; actions.append(button); };
-    action('打开项目…', () => { closeProjMenuNow(); openFolder(); });
+    action('打开项目…', async () => { closeProjMenuNow(); if (await openFolder()) onOpened?.(); });
     if (root) {
       const currentPath = root;
       action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) status.textContent = '复制失败；完整路径：' + currentPath; } });
@@ -710,7 +712,11 @@ const App = (() => {
       try {
         const opened = await openProject(p);
         if (!projectMenuCurrent(state)) return;
-        if (opened) { closeProjMenuNow(); document.querySelector('#project-bar .proj-btn.active')?.focus(); }
+        if (opened) {
+          closeProjMenuNow();
+          if (onOpened) onOpened();
+          else document.querySelector('#project-bar .proj-btn.active')?.focus();
+        }
         else status.textContent = '未切换项目，原项目和标签已保留；检查项目位置或保存后可重试。';
       } catch (error) { if (projectMenuCurrent(state)) status.textContent = '打开失败：' + (error.message || error) + '；可重试。'; }
       finally { state.busy = false; if (projectMenuCurrent(state)) { if (input.value !== query) render(); else list.querySelectorAll('button').forEach(button => { button.removeAttribute('aria-disabled'); button.disabled = false; }); } }
@@ -1009,7 +1015,7 @@ const App = (() => {
   // ---------- 打开文件夹 ----------
   async function openFolder() {
     const p = await window.myIDE.fs.openFolder();
-    if (p) await openProject(p);
+    return p ? openProject(p) : false;
   }
 
   async function projectAvailable(p) {
@@ -1191,6 +1197,7 @@ const App = (() => {
     }
     Viewer.syncFontLabel();
     applyToolFont(); // 侧栏字号：脚本在 body 末尾、DOM 已就绪，这里再同步一次数值显示
+    document.getElementById('tool-sessions').onclick = () => switchTool('sessions');
     document.getElementById('tool-project').onclick = () => switchTool('project');
     document.getElementById('tool-outline').onclick = () => switchTool('outline');
     document.getElementById('tool-search').onclick = () => { switchTool('search'); if(getTool()==='search')Search.focusDock(); };
@@ -1253,7 +1260,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, removeProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, LAYOUT, resizeColumn, saveColumnWidths,
+    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },
