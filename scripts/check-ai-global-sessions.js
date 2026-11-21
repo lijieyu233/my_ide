@@ -168,6 +168,7 @@ async function electronCheck() {
       const roots = await js('[...document.querySelectorAll(".ai-hist-group[data-root]")].map(group=>group.dataset.root)');
       assert(roots.some(root => key(root) === key(selectedRoot.root))); assert(roots.some(root => key(root) === key(actual.other.cwd)));
       assert(await js('(()=>{const group=[...document.querySelectorAll(".ai-hist-group")].find(item=>item.dataset.root===' + JSON.stringify(actual.other.cwd) + ');const toggle=group.querySelector("[data-hist-toggle]"),items=group.querySelector(".ai-hist-items");const before=items.hidden;toggle.click();const changed=items.hidden!==before;toggle.click();return changed&&items.hidden===before;})()'));
+      await js('const toggle=document.querySelector("[data-hist-other][aria-expanded=false]");if(toggle)toggle.click();true');
       await capture('ai-global-sessions-navigation-redacted.png');
     });
     await test('左侧会话在宽、窄栏下均无行溢出，聊天区无重复抽屉', async () => {

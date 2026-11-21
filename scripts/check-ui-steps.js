@@ -3177,7 +3177,7 @@ module.exports = {
     App.showTool('sessions');
     await sleep(250);
     const sidebar = q('#panel-sessions');
-    const workspace = sidebar.querySelector('[data-hist-toggle]:not(:disabled)');
+    const workspace = sidebar.querySelector('.ai-hist-group:not([hidden]) [data-hist-toggle]:not(:disabled)');
     add('左侧会话标题下直接显示工作区筛选，保留项目跳转', !sidebar.classList.contains('hidden') &&
       !!sidebar.querySelector('[data-hist-scope="current"]') && !!sidebar.querySelector('[data-project-picker]') &&
       !sidebar.querySelector('input,[data-hist-new],[title="会话数"]'));
@@ -3186,9 +3186,10 @@ module.exports = {
       workspace.getBoundingClientRect().height === parseFloat(getComputedStyle(treeItem).height) &&
       sidebar.querySelector('.panel-title').getBoundingClientRect().height === parseFloat(getComputedStyle(q('#panel-project .panel-title')).minHeight));
     if (workspace) {
-      const expanded = workspace.getAttribute('aria-expanded');
+      const expanded = workspace.getAttribute('aria-expanded'), icon = workspace.querySelector('.ai-hist-workspace-icon path');
+      const iconBefore = icon?.getAttribute('d');
       workspace.click();
-      add('工作区可折叠和展开', workspace.getAttribute('aria-expanded') !== expanded);
+      add('工作区展开和折叠使用文件夹图标', workspace.getAttribute('aria-expanded') !== expanded && !!iconBefore && icon.getAttribute('d') !== iconBefore);
       workspace.click();
     }
     if (previousTool) App.showTool(previousTool);

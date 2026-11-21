@@ -1360,6 +1360,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('切换工程复用全局目录，保留分组顺序、折叠和无关节点', async () => {
     const f = fixture();
     const third = f.A + '-third';
+    f.w.App.getProjects = () => [{path:f.A}, {path:f.B}];
     const groups = () => [...f.w.document.querySelectorAll('.ai-hist-group')];
     let reads = 0;
     f.catalogRead = async () => {
@@ -1375,10 +1376,23 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await until(() => groups().length === 3);
     assert.equal(reads,1);
     const [groupA, groupB, untouched] = groups();
+    const other = f.element('[data-hist-other]');
+    assert(untouched.hidden);
+    assert.equal(other.getAttribute('aria-expanded'),'false');
+    assert(other.getAttribute('aria-controls').split(' ').includes(untouched.id));
+    other.focus();
+    other.click();
+    assert(!untouched.hidden);
+    assert.equal(f.w.document.activeElement,other);
+    other.click();
+    assert(untouched.hidden);
     const order = groups().map(group => group.dataset.root);
     const sidebarRows = f.element('.ai-hist-rows');
     sidebarRows.scrollTop = 65;
+    const folder = groupA.querySelector('.ai-hist-workspace-icon path');
+    const openPath = folder.getAttribute('d');
     groupA.querySelector('[data-hist-toggle]').click();
+    assert.notEqual(folder.getAttribute('d'),openPath);
     assert(groupA.querySelector('.ai-hist-items').hidden);
     assert(groupB.querySelector('.ai-hist-items').hidden);
 
@@ -1450,12 +1464,12 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert(rows.find(r=>r.classList.contains('cur')).textContent.includes('第二条'));
     rows.find(r=>r.textContent.includes('第二条')).click();await tick();await tick();assert.deepEqual(reads,['host-middle']);
   });
-  await test('旧当前选择实际属于独立工作区时，明确提示归属且不假标项目会话',async()=>{
+  await test('旧当前选择属于独立工作区时，项目列表不误收录该会话',async()=>{
     const f=fixture(),key='myide-ai-sessions:'+f.A+':dsh';
     f.w.localStorage.setItem(key,JSON.stringify([{id:'detached-local',msgs:[]}]));f.w.localStorage.setItem(key+':active','detached-local');
     await f.w.AiPanel.setConfig({engine:'dsh'});f.dshCatalog=[{sessionId:'detached-host',cwd:'C:/detached',bindings:[{sessionId:'detached-local',rootId:f.A,scope:'project'}]}];
     f.openSessions();await tick();await tick();assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,0);
-    assert(f.element('.ai-hist-dock').textContent.includes('当前查看的会话属于其他工作区'));
+    assert.equal(f.element('.ai-hist-status').textContent,'');
   });
   await test('点击前台正在运行的当前会话保持实时流，不重新读取或绑定历史',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('当前任务');await until(()=>f.calls.length===1);

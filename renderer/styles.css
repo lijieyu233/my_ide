@@ -356,7 +356,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   height: var(--tree-row-h, 22px); color: var(--text);
   white-space: nowrap;
 }
-.tree-row:hover, .outline-item:hover, .ai-hist-group-head:hover, .ai-hist-row:hover {
+.tree-row:hover, .outline-item:hover, .ai-hist-group-head:hover, .ai-hist-row:hover, .ai-hist-other-toggle:hover {
   background: var(--bg-hover);
 }
 .tree-row.selected { background: var(--bg-selected); color: #fff; }
@@ -1155,8 +1155,8 @@ textarea.editor {
 }
 .ol-arrow { height: 100%; cursor: pointer; user-select: none; }
 .ol-arrow svg.ic, .ai-hist-chevron svg.ic { width: 12px; height: 12px; }
-.ol-arrow.closed svg.ic, .ai-hist-group-title[aria-expanded="false"] .ai-hist-chevron svg.ic { transform: rotate(-90deg); }
-.outline-item:hover .ol-arrow, .ai-hist-group-head:hover .ai-hist-chevron { color: var(--text-bright); }
+.ol-arrow.closed svg.ic, .ai-hist-other-toggle[aria-expanded="false"] .ai-hist-chevron svg.ic { transform: rotate(-90deg); }
+.outline-item:hover .ol-arrow { color: var(--text-bright); }
 .ol-arrow.ol-pad { cursor: inherit; }
 
 /* ---------- Git 提交对话框（PyCharm 式 Ctrl+K：左上文件树 · 左下提交信息 · 右侧 diff） ---------- */
@@ -3685,7 +3685,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #panel-sessions { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ai-hist-dock { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .ai-hist-dock [hidden] { display: none; }
-.ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open {
+.ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle {
   color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer;
 }
 .ai-hist-tabs { display: flex; flex: none; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border-pane); }
@@ -3701,32 +3701,44 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
 .ai-hist-group-head, .ai-hist-row { display: flex; align-items: center; min-width: 0; height: var(--sidebar-tree-row-height); }
 .ai-hist-group-head { padding-right: 8px; }
-.ai-hist-group-title, .ai-hist-open {
+.ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle {
   display: flex; align-items: center; gap: var(--sidebar-tree-gap); flex: 1; min-width: 0; height: 100%;
   text-align: left;
 }
 .ai-hist-group-title { padding: 0 0 0 var(--sidebar-tree-gutter); }
 .ai-hist-group-title:disabled { cursor: default; }
-.ai-hist-group-title:disabled .ai-hist-chevron { visibility: hidden; }
+.ai-hist-workspace-icon, .ai-hist-session-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: var(--sidebar-tree-icon-width); color: var(--text-dim);
+}
+.ai-hist-workspace-icon svg.ic { width: 14px; height: 14px; }
+.ai-hist-session-icon svg.ic { width: 12px; height: 12px; }
+.ai-hist-other-toggle {
+  width: 100%; height: var(--sidebar-tree-row-height); margin-top: 4px;
+  padding-inline: var(--sidebar-tree-gutter) 8px; color: var(--text-dim);
+}
 .ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sidebar-tree-branch); }
 .ai-hist-group-head:hover .ai-hist-workspace-name { color: var(--sidebar-tree-branch-hover); }
 .ai-hist-workspace-current, .ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; white-space: nowrap; }
 .ai-hist-workspace-count { font-variant-numeric: tabular-nums; }
+.ai-hist-group-head:not(:hover, :focus-within) .ai-hist-workspace-count { display: none; }
+.ai-hist-group-head:has(.ai-hist-group-title:enabled):not(:hover, :focus-within) [data-hist-jump] { opacity: 0; pointer-events: none; }
 .ai-hist-empty { padding: 12px 8px; font-size: .88em; color: var(--text-dim); }
 .ai-hist-row { position: relative; }
-.ai-hist-open { padding-inline: calc(var(--sidebar-tree-text-inset) + var(--sidebar-tree-indent)) 8px; }
+.ai-hist-open { padding-inline: calc(var(--sidebar-tree-gutter) + var(--sidebar-tree-indent)) 8px; }
 .ai-hist-row.cur { background: var(--sidebar-tree-selected); color: var(--text-bright); }
 .ai-hist-open:disabled { color: var(--text-dim); cursor: default; }
 .ai-hist-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-hist-hint { display: inline-flex; color: var(--text-dim); }
 .ai-hist-hint svg.ic { width: 12px; height: 12px; }
 .ai-hist-ts { display: inline-flex; align-items: center; gap: 4px; font-size: .9em; color: var(--text-dim); flex: none; white-space: nowrap; }
-.ai-hist-run { width: 6px; height: 6px; border-radius: 50%; background: var(--ok-text, #4caf7d); }
+.ai-hist-ts:empty, .ai-hist-row:not(.cur, .running, :hover, :focus-within) .ai-hist-ts { display: none; }
+.ai-hist-run { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok-text, #4caf7d); }
 .ai-hist-live { color: var(--ok-text, #4caf7d); }
 .ai-hist-actions { position: absolute; inset: 0 2px 0 auto; display: flex; align-items: center; opacity: 0; pointer-events: none; }
 .ai-hist-row:is(:hover,:focus-within) .ai-hist-actions { opacity: 1; pointer-events: auto; }
-.ai-hist-row:is(:hover,:focus-within) .ai-hist-open:has(+ .ai-hist-actions) { padding-right: 48px; }
-.ai-hist-row:is(:hover,:focus-within) .ai-hist-open:has(+ .ai-hist-actions) .ai-hist-ts { visibility: hidden; width: 0; overflow: hidden; }
+.ai-hist-row:is(:hover, :focus-within) .ai-hist-open:has(+ .ai-hist-actions) { padding-inline-end: 48px; }
+.ai-hist-row:is(:hover, :focus-within) .ai-hist-open:has(+ .ai-hist-actions > :only-child) { padding-inline-end: 26px; }
 .ai-hist-b { display: grid; place-items: center; flex: none; width: 22px; height: 24px; padding: 0; color: var(--text-dim); border-radius: var(--ui-radius); }
 .ai-hist-b svg.ic { width: 13px; height: 13px; }
 .ai-hist-rows .ai-hist-b { height: var(--sidebar-tree-row-height); }

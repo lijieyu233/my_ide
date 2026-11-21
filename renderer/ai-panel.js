@@ -2463,6 +2463,7 @@ const AiPanel = (() => {
   }
   let histSidebar = null, histSidebarVisible = false, histScope = 'all';
   const historyWorkspaces = new Map();
+  let otherWorkspacesExpanded;
   function refreshHistInPlace() {
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
     const { all, running } = sessionsForHist();
@@ -2660,7 +2661,9 @@ const AiPanel = (() => {
   }
   const historyScope = () => getConfig().engine === 'dsh' ? histScope : 'current';
   const historyIcon = path => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + path + '"/></svg>';
+  const historyFolderPath = expanded => expanded ? 'M3 6V3h4l2 2h4v1m-10 0h12l-2 7H2z' : 'M2 5V3h4l2 2h6v8H2z';
   const historyRowsMarkup = new WeakMap();
+  const otherWorkspacesKey = Symbol();
 
   function openWorkspaceRoots() {
     return new Map((window.App?.getProjects?.() || []).map(project => [pathKey(project.path), project.path]).filter(([key]) => key));
@@ -2682,9 +2685,7 @@ const AiPanel = (() => {
       button.setAttribute('aria-pressed', String(active));
       button.disabled = !dsh;
     }
-    const viewingOther = dsh && historyScope() === 'current' && curSessionId && !all.some(item => item.id === curSessionId) && catalogOf(curSessionId);
-    status.textContent = !dsh ? '' : histError ? '目录更新失败：' + histError : histLoading ? '正在读取 DSH 会话…'
-      : viewingOther ? '当前查看的会话属于其他工作区' : '';
+    status.textContent = !dsh ? '' : histError ? '目录更新失败：' + histError : histLoading ? '正在读取 DSH 会话…' : '';
     status.classList.toggle('error', dsh && !!histError);
 
     const groups = new Map();
@@ -2694,14 +2695,19 @@ const AiPanel = (() => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    const opened = historyScope() === 'all' ? openWorkspaceRoots() : new Map();
+    const showAll = historyScope() === 'all';
+    const opened = showAll ? openWorkspaceRoots() : new Map();
     for (const key of opened.keys()) {
       if (!groups.has(key)) groups.set(key, []);
     }
     const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
     const entries = [...groups].sort(([a], [b]) => order(a) - order(b) || Number(b === root) - Number(a === root));
-    let html = '';
+    const isOtherWorkspace = key => showAll && key !== root && !opened.has(key);
+    const showOther = otherWorkspacesExpanded ?? entries.every(([key]) => isOtherWorkspace(key));
+    const otherIds = [];
+    let html = '', otherHtml = '', otherRunning = false;
     for (const [key, items] of entries) {
+      const isOther = isOtherWorkspace(key);
       const unassigned = key === null;
       const groupRoot = unassigned ? '' : items[0]?.rootDir || opened.get(key) || '';
       const current = !unassigned && key === root;
@@ -2716,9 +2722,11 @@ const AiPanel = (() => {
       const expanded = items.length > 0 && wasExpanded;
       const groupName = unassigned ? '未分组' : sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
-      html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' + (unassigned ? ' data-unassigned' : '') + '>' +
+      const groupId = 'ai-hist-workspace-' + index;
+      let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
+        (unassigned ? ' data-unassigned' : '') + (isOther && !showOther ? ' hidden' : '') + '>' +
         '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (items.length ? '' : ' disabled') + ' title="' + esc(groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
-        '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span>' +
+        '<span class="ai-hist-workspace-icon">' + historyIcon(historyFolderPath(expanded)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
         (current ? '<span class="ai-hist-workspace-current">当前</span>' : '') +
         '<span class="ai-hist-workspace-count">' + items.length + '</span></button>' +
@@ -2729,8 +2737,9 @@ const AiPanel = (() => {
         const state = selected ? '运行中' : '后台运行中';
         const time = session.ts ? relTime(session.ts) : '';
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
-        html += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
+        groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
           (selected ? ' aria-current="true"' : '') + '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : '') + '>' +
+          '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
           '<span class="ai-hist-nm" title="' + esc(session.title) + '">' + esc(session.title) + '</span>' +
           (hint ? '<span class="ai-hist-hint" title="' + hint + '" aria-label="' + hint + '">' + historyIcon('M8 7v4M8 5h.01M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z') + '</span>' : '') +
           '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><span class="ai-hist-live">' + state + '</span>' : time) + '</span></button>' +
@@ -2741,7 +2750,20 @@ const AiPanel = (() => {
             (session.virtual ? '' : '<button type="button" class="ai-hist-b" data-act="del" aria-label="删除本地会话记录" title="删除本地记录">' + historyIcon('M3 4h10M6 4V2h4v2M5 4l.5 10h5L11 4M7 7v4m2-4v4') + '</button>')) +
             '</div>') + '</div>';
       }
-      html += '</div></section>';
+      groupHtml += '</div></section>';
+      if (isOther) {
+        otherHtml += groupHtml;
+        otherIds.push(groupId);
+        if (items.some(session => running.has(session.id))) otherRunning = true;
+      } else {
+        html += groupHtml;
+      }
+    }
+    if (otherIds.length) {
+      html += '<button type="button" class="ai-hist-other-toggle" data-hist-other aria-expanded="' + showOther +
+        '" aria-controls="' + otherIds.join(' ') + '"' + (otherRunning ? ' aria-label="其他工作区，有会话正在运行"' : '') + '>' +
+        '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span><span>其他工作区</span>' +
+        (otherRunning ? '<span class="ai-hist-run" title="有会话正在运行" aria-hidden="true"></span>' : '') + '</button>' + otherHtml;
     }
     if (!groups.size && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">暂无会话</div>';
     if (historyRowsMarkup.get(rows) === html) return;
@@ -2750,13 +2772,16 @@ const AiPanel = (() => {
   }
 
   function historyGroupKey(group) {
+    if (group.hasAttribute('data-hist-other')) return otherWorkspacesKey;
     if (!group.hasAttribute('data-root')) return undefined;
     return group.hasAttribute('data-unassigned') ? null : pathKey(group.dataset.root);
   }
 
   function replaceHistoryRows(rows, html) {
     const focus = document.activeElement;
-    const group = rows.contains(focus) ? focus.closest('.ai-hist-group') : null;
+    const focusInRows = rows.contains(focus);
+    const group = focusInRows ? focus.closest('.ai-hist-group') : null;
+    const otherToggleFocused = focusInRows && focus.hasAttribute('data-hist-other');
     const row = group && focus.closest('.ai-hist-row');
     const top = rows.scrollTop;
     const template = document.createElement('template');
@@ -2777,8 +2802,17 @@ const AiPanel = (() => {
     }
     for (const obsolete of previous.values()) obsolete.remove();
     rows.scrollTop = top;
-    if (!group || document.activeElement === focus) return;
+    if (document.activeElement === focus) return;
+    if (otherToggleFocused) {
+      rows.querySelector('[data-hist-other]')?.focus({ preventScroll: true });
+      return;
+    }
+    if (!group) return;
     const nextGroup = [...rows.children].find(item => historyGroupKey(item) === historyGroupKey(group));
+    if (nextGroup?.hidden) {
+      rows.querySelector('[data-hist-other]')?.focus({ preventScroll: true });
+      return;
+    }
     const nextRow = row && [...nextGroup?.querySelectorAll('.ai-hist-row') || []].find(item => item.dataset.id === row.dataset.id);
     const selector = focus.dataset.act ? '[data-act="' + focus.dataset.act + '"]' : row ? '.ai-hist-open' : focus.hasAttribute('data-hist-jump') ? '[data-hist-jump]' : '[data-hist-toggle]';
     const nextFocus = (row ? nextRow : nextGroup)?.querySelector(selector);
@@ -2840,6 +2874,16 @@ const AiPanel = (() => {
         await ensureDshCatalog();
         return;
       }
+      const otherToggle = sender.closest('[data-hist-other]');
+      if (otherToggle) {
+        otherWorkspacesExpanded = otherToggle.getAttribute('aria-expanded') !== 'true';
+        otherToggle.setAttribute('aria-expanded', String(otherWorkspacesExpanded));
+        for (const id of otherToggle.getAttribute('aria-controls').split(' ')) {
+          document.getElementById(id).hidden = !otherWorkspacesExpanded;
+        }
+        historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
+        return;
+      }
       const toggle = sender.closest('[data-hist-toggle]');
       if (toggle) {
         const group = toggle.closest('.ai-hist-group');
@@ -2847,6 +2891,7 @@ const AiPanel = (() => {
         items.hidden = !items.hidden;
         toggle.setAttribute('aria-expanded', String(!items.hidden));
         historyWorkspaces.get(historyGroupKey(group)).expanded = !items.hidden;
+        toggle.querySelector('.ai-hist-workspace-icon path').setAttribute('d', historyFolderPath(!items.hidden));
         historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
         return;
       }
