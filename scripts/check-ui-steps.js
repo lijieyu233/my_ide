@@ -3205,7 +3205,7 @@ module.exports = {
     App.showTool('sessions');
     await sleep(250);
     const sidebar = q('#panel-sessions');
-    const workspace = sidebar.querySelector('[data-hist-toggle]');
+    const workspace = sidebar.querySelector('[data-hist-toggle]:not(:disabled)');
     add('左侧会话标题下直接显示工作区筛选，保留项目跳转', !sidebar.classList.contains('hidden') &&
       !!sidebar.querySelector('[data-hist-scope="current"]') && !!sidebar.querySelector('[data-project-picker]') &&
       !sidebar.querySelector('input,[data-hist-new],[title="会话数"]'));

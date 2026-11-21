@@ -253,7 +253,7 @@ function createService(options={}){
     const items=catalogItems(value).map(catalogEntry);
     // 渲染层用本地对话身份，宿主用原生身份；必须透出持久映射才能合并为同一行。
     const nativeIds=new Set(items.map(item=>item.sessionId)),bindingsByHost=new Map();
-    // 切换项目会刷新整个宿主目录；每个映射只解析一次，避免目录数×映射数在主线程重复扫描。
+    // 每个绑定只解析一次，避免读取全局目录时在主线程重复扫描。
     for(const [key,record] of saved){
       const [sessionId,rootId,scope]=JSON.parse(key);
       if(nativeIds.has(sessionId)&&sessionId!==record.id)continue;

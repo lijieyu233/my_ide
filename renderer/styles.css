@@ -3724,6 +3724,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: flex; align-items: center; gap: 6px; min-height: 32px; flex: 1; min-width: 0;
   padding: 3px 6px; border-radius: var(--ui-radius); text-align: left;
 }
+.ai-hist-group-title:disabled { cursor: default; }
+.ai-hist-group-title:disabled .ai-hist-chevron { visibility: hidden; }
 .ai-hist-group-title > svg.ic { width: 14px; height: 14px; flex: none; color: var(--text-dim); }
 .ai-hist-chevron { display: inline-flex; color: var(--text-dim); }
 .ai-hist-chevron svg.ic { width: 10px; height: 10px; }

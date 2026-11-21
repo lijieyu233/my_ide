@@ -1269,6 +1269,10 @@ const AiPanel = (() => {
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
     if(switching)onProjectChange();
+    if(histSidebarVisible && getConfig().engine==='dsh' && (switching || (previousConfig.dshPath||'')!==(getConfig().dshPath||''))){
+      refreshHistInPlace();
+      ensureDshCatalog();
+    }
     refreshModelSel();
     // 空会话的引导也应跟着配置刷新，避免模型已选好却仍提示“还没配置”。
     if (!msgs.length && !busy && msgsEl?.querySelector('.ai-welcome')) { msgsEl.querySelector('.ai-welcome').remove(); showWelcome(); }
@@ -1321,7 +1325,7 @@ const AiPanel = (() => {
     if(retry && dshWatch?.state?.connected === false)resetDshWatch();
     if(dshSessionAccess && dshSessionAccess.state !== 'ready'){
       if(retry || dshSessionAccess.state === 'loading' && dshSessionAccess.epoch !== pageEpoch)
-        await (dshSessionAccess.foreign ? openHostPreview(dshSessionAccess,true) : restoreDshSession(curSessionId,++sessionLoadTicket));
+        await (dshSessionAccess.foreign ? openHostPreview(dshSessionAccess,true) : restoreDshSession(curSessionId,++sessionLoadTicket,retry));
       return;
     }
     setBusyUI(busy);
@@ -2458,8 +2462,7 @@ const AiPanel = (() => {
     }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
   let histSidebar = null, histSidebarVisible = false, histScope = 'all';
-  let histLoading = false, histError = '';
-  const expandedWorkspaces = new Map();
+  const historyWorkspaces = new Map();
   function refreshHistInPlace() {
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
     const { all, running } = sessionsForHist();
@@ -2526,29 +2529,42 @@ const AiPanel = (() => {
   // 宿主会话目录缓存：{ at, root, items }。
   // DSH 里发起/运行/中断的会话只能从这里知道（本地 localStorage 记不到别人发起的会话）。
   // 缓存带 root：切换项目后必须重新拉，否则会把上一个项目的会话列进来。
-  let dshCatalog = { at: 0, root: '', items: [] };
-  let dshCatalogTicket = 0;
-  async function refreshDshCatalog() {
-    if (getConfig().engine !== 'dsh') return dshCatalog.items;
-    const root = (window.App && App.root) || '', ticket = ++dshCatalogTicket, scope = sessKey();
-    histLoading = true; histError = ''; refreshHistInPlace();
-    try {
-      const result = await window.myIDE.ai.dshSessions({...getConfig(), catalogScope:'all'});
-      // 慢的旧请求可能仍含“运行中”或旧项目数据，不能覆盖后来的目录。
-      if (ticket === dshCatalogTicket && scope === sessKey() && getConfig().engine === 'dsh') {
-        if (result?.ok) dshCatalog = { at: Date.now(), root, items: Array.isArray(result.items) ? result.items : [] };
-        else histError = result?.error || '未能读取 DSH 会话目录';
+  let dshCatalog = { launcher: null, items: [] }, dshCatalogRequest = null, dshCatalogError = null;
+  // DSH 返回整个宿主的会话；项目归属在渲染时判断，缓存只随连接来源变化。
+  function refreshDshCatalog() {
+    const config = getConfig(), launcher = config.dshPath || '';
+    if (config.engine !== 'dsh') return;
+    if (dshCatalogRequest?.launcher === launcher) return dshCatalogRequest.promise;
+    const request = { launcher };
+    dshCatalogRequest = request;
+    dshCatalogError = null;
+    refreshHistInPlace();
+    request.promise = (async () => {
+      try {
+        const result = await window.myIDE.ai.dshSessions({...config, catalogScope:'all'});
+        if (dshCatalogRequest !== request) return;
+        if (result?.ok) dshCatalog = { launcher, items: Array.isArray(result.items) ? result.items : [] };
+        else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
+      } catch (error) {
+        if (dshCatalogRequest === request) dshCatalogError = { launcher, message: error?.message || 'DSH 会话目录读取失败' };
+      } finally {
+        if (dshCatalogRequest === request) {
+          dshCatalogRequest = null;
+          refreshHistInPlace();
+          if (!backgroundView) renderCurrentSessionTitle();
+        }
       }
-    } catch (error) { if (ticket === dshCatalogTicket && scope === sessKey()) histError = error?.message || 'DSH 会话目录读取失败'; }
-    finally { if (ticket === dshCatalogTicket) { histLoading = false; refreshHistInPlace();if(!backgroundView)renderCurrentSessionTitle(); } }
-    return dshCatalog.items;
+    })();
+    return request.promise;
   }
-  // 目录只对同一个项目有效：换了项目就当没缓存（下次打开历史会重新拉）。
+  function ensureDshCatalog() {
+    const config = getConfig();
+    if (config.engine === 'dsh' && !catalogUsable()) return refreshDshCatalog();
+  }
   const pathKey = p => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   function catalogUsable() {
-    const root = (window.App && App.root) || '';
-    if (!dshCatalog.at) return false;
-    return getConfig().engine === 'dsh' && pathKey(dshCatalog.root) === pathKey(root);
+    const config = getConfig();
+    return config.engine === 'dsh' && dshCatalog.launcher === (config.dshPath || '');
   }
   const bindingsOf = item => (item.bindings || []).filter(binding => binding.scope !== 'reader' && pathKey(binding.rootId) === pathKey(window.App?.root));
   function catalogOf(sessionId) {
@@ -2576,13 +2592,14 @@ const AiPanel = (() => {
     const running = new Set();
     const root = (window.App && App.root) || '';
     const live = runningSessionIds(), seen = new Set(), owners = new Map();
-    const hostIds = new Set((catalogUsable() ? dshCatalog.items : []).map(item => item.sessionId));
+    const catalog = catalogUsable() ? dshCatalog.items : [];
+    const hostIds = new Set(catalog.map(item => item.sessionId));
     for (const id of hostIds) owners.set(id,id);
     for (const item of local) if (/^(session-|myide-)/.test(item.id)) owners.set(item.id,item.id);
-    if (catalogUsable()) for (const item of dshCatalog.items) for (const binding of bindingsOf(item))
+    for (const item of catalog) for (const binding of bindingsOf(item))
       if (!hostIds.has(binding.sessionId) && !/^(session-|myide-)/.test(binding.sessionId)) owners.set(binding.sessionId,item.sessionId);
     for (const item of local) if (item.hostId && !hostIds.has(item.id) && !/^(session-|myide-)/.test(item.id)) owners.set(item.id,item.hostId);
-    for (const item of (catalogUsable() ? dshCatalog.items : [])) {
+    for (const item of catalog) {
       const aliases = [item.sessionId, ...bindingsOf(item).map(binding => binding.sessionId), ...local.filter(s => s.hostId === item.sessionId).map(s => s.id)]
         .filter(id => !owners.has(id) || owners.get(id) === item.sessionId);
       if (!aliases.length) aliases.push('host:'+item.sessionId);
@@ -2625,7 +2642,7 @@ const AiPanel = (() => {
     if (localSelection && !seen.has(localSelection) && !all.some(item => item.id === localSelection))
       all.unshift({id:localSelection,title:localSelection===curSessionId&&msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
     for (const item of all) { item.rootDir ||= root; item.cwd ||= root; }
-    if (historyScope() === 'all' && catalogUsable()) for (const item of dshCatalog.items) {
+    if (historyScope() === 'all') for (const item of catalog) {
       if (item.cwd && pathKey(item.cwd) === pathKey(root) || item.blank === true) continue;
       const rootDir = item.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(item.cwd || '') ? item.cwd : '');
       const id = 'host:' + item.sessionId;
@@ -2634,18 +2651,26 @@ const AiPanel = (() => {
       all.push({id,hostId:item.sessionId,title:item.title || '（未命名会话）',ts:item.updatedAt || 0,
         cwd:item.cwd || '',rootDir,foreign:true,unknownRoot:!rootDir,running:running.has(id),virtual:true});
     }
-    // 当前查看是主导航，运行只是独立状态；不能让后台任务抢到“选中项”的首位和视觉权重。
-    all.sort((a, b) => Number(b.id === curSessionId) - Number(a.id === curSessionId)
-      || Number(!!b.running) - Number(!!a.running) || (b.ts || 0) - (a.ts || 0));
+    // 全部工作区列表按时间排列，避免当前会话换到别的项目时行顺序跟着跳动。
+    const currentOnly = historyScope() === 'current';
+    all.sort((a, b) => (currentOnly ? Number(b.id === curSessionId) - Number(a.id === curSessionId)
+      || Number(!!b.running) - Number(!!a.running) : 0) || (b.ts || 0) - (a.ts || 0)
+      || String(a.hostId || a.id || '').localeCompare(String(b.hostId || b.id || '')));
     return { all, running };
   }
   const historyScope = () => getConfig().engine === 'dsh' ? histScope : 'current';
   const historyIcon = path => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + path + '"/></svg>';
   const historyRowsMarkup = new WeakMap();
 
+  function openWorkspaceRoots() {
+    return new Map((window.App?.getProjects?.() || []).map(project => [pathKey(project.path), project.path]).filter(([key]) => key));
+  }
+
   function renderHistRows(sidebar, all, running) {
     const rows = sidebar.querySelector('.ai-hist-rows');
-    const dsh = getConfig().engine === 'dsh';
+    const config = getConfig(), dsh = config.engine === 'dsh', launcher = config.dshPath || '';
+    const histLoading = dshCatalogRequest?.launcher === launcher;
+    const histError = dshCatalogError?.launcher === launcher ? dshCatalogError.message : '';
     const status = sidebar.querySelector('.ai-hist-status');
     const refresh = sidebar.querySelector('[data-hist-refresh]');
     refresh.hidden = !dsh;
@@ -2669,19 +2694,30 @@ const AiPanel = (() => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    const entries = [...groups].sort(([a], [b]) => Number(b === root) - Number(a === root));
-    let html = '', groupIndex = 0;
+    const opened = historyScope() === 'all' ? openWorkspaceRoots() : new Map();
+    for (const key of opened.keys()) {
+      if (!groups.has(key)) groups.set(key, []);
+    }
+    const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
+    const entries = [...groups].sort(([a], [b]) => order(a) - order(b) || Number(b === root) - Number(a === root));
+    let html = '';
     for (const [key, items] of entries) {
-      const first = items[0], groupRoot = first.unknownRoot ? '' : first.rootDir;
-      const current = !first.unknownRoot && key === root;
+      const unassigned = key === null;
+      const groupRoot = unassigned ? '' : items[0]?.rootDir || opened.get(key) || '';
+      const current = !unassigned && key === root;
       const active = session => session.foreign
         ? dshSessionAccess?.hostId === session.hostId && pathKey(dshSessionAccess.rootDir) === key
         : !dshSessionAccess?.foreign && !dshSessionAccess?.preview && session.id === curSessionId;
-      const expanded = expandedWorkspaces.get(key) ?? (current || items.some(session => active(session) || running.has(session.id)));
-      const groupName = first.unknownRoot ? '未分组' : sessionRootLabel(groupRoot);
-      const childId = 'ai-hist-items-' + groupIndex++;
-      html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' + (first.unknownRoot ? ' data-unassigned' : '') + '>' +
-        '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '" title="' + esc(groupRoot || (first.unknownRoot ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
+      if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
+        index: historyWorkspaces.size,
+        expanded: current || items.some(session => active(session) || running.has(session.id)),
+      });
+      const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
+      const expanded = items.length > 0 && wasExpanded;
+      const groupName = unassigned ? '未分组' : sessionRootLabel(groupRoot);
+      const childId = 'ai-hist-items-' + index;
+      html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' + (unassigned ? ' data-unassigned' : '') + '>' +
+        '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (items.length ? '' : ' disabled') + ' title="' + esc(groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-chevron">' + historyIcon('m6 4 4 4-4 4') + '</span>' + historyIcon('M2 5V3h5l2 2h5v8H2z') +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
         (current ? '<span class="ai-hist-workspace-current">当前</span>' : '') +
@@ -2707,10 +2743,15 @@ const AiPanel = (() => {
       }
       html += '</div></section>';
     }
-    if (!all.length && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">暂无会话</div>';
+    if (!groups.size && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">暂无会话</div>';
     if (historyRowsMarkup.get(rows) === html) return;
     replaceHistoryRows(rows, html);
     historyRowsMarkup.set(rows, html);
+  }
+
+  function historyGroupKey(group) {
+    if (!group.hasAttribute('data-root')) return undefined;
+    return group.hasAttribute('data-unassigned') ? null : pathKey(group.dataset.root);
   }
 
   function replaceHistoryRows(rows, html) {
@@ -2718,10 +2759,26 @@ const AiPanel = (() => {
     const group = rows.contains(focus) ? focus.closest('.ai-hist-group') : null;
     const row = group && focus.closest('.ai-hist-row');
     const top = rows.scrollTop;
-    rows.innerHTML = html;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const previous = new Map([...rows.children].map(node => [historyGroupKey(node), node]));
+    let cursor = rows.firstElementChild;
+    for (const desired of [...template.content.children]) {
+      const key = historyGroupKey(desired);
+      const existing = previous.get(key);
+      const next = existing?.isEqualNode(desired) ? existing : desired;
+      if (existing && next !== existing) {
+        if (cursor === existing) cursor = existing.nextElementSibling;
+        existing.remove();
+      }
+      if (next !== cursor) rows.insertBefore(next, cursor);
+      cursor = next.nextElementSibling;
+      previous.delete(key);
+    }
+    for (const obsolete of previous.values()) obsolete.remove();
     rows.scrollTop = top;
-    if (!group) return;
-    const nextGroup = [...rows.children].find(item => item.dataset.root === group.dataset.root && item.hasAttribute('data-unassigned') === group.hasAttribute('data-unassigned'));
+    if (!group || document.activeElement === focus) return;
+    const nextGroup = [...rows.children].find(item => historyGroupKey(item) === historyGroupKey(group));
     const nextRow = row && [...nextGroup?.querySelectorAll('.ai-hist-row') || []].find(item => item.dataset.id === row.dataset.id);
     const selector = focus.dataset.act ? '[data-act="' + focus.dataset.act + '"]' : row ? '.ai-hist-open' : focus.hasAttribute('data-hist-jump') ? '[data-hist-jump]' : '[data-hist-toggle]';
     const nextFocus = (row ? nextRow : nextGroup)?.querySelector(selector);
@@ -2734,7 +2791,7 @@ const AiPanel = (() => {
     if (!visible) return;
     if (!histSidebar) mountSessionSidebar();
     refreshHistInPlace();
-    if (getConfig().engine === 'dsh') refreshDshCatalog();
+    if (getConfig().engine === 'dsh') ensureDshCatalog();
   }
 
   function mountSessionSidebar() {
@@ -2769,8 +2826,9 @@ const AiPanel = (() => {
       if (picker) { event.stopPropagation(); App.showProjMenu(picker, true, () => App.showTool('sessions')); return; }
       const jump = sender.closest('[data-hist-jump]');
       if (jump) {
-        const root = jump.dataset.histJump;
-        if (sessionsForHist().all.some(item => !item.unknownRoot && item.rootDir === root) && await App.openProject(root).catch(() => false)) App.showTool('sessions');
+        const root = jump.dataset.histJump, key = pathKey(root);
+        const known = openWorkspaceRoots().has(key) || sessionsForHist().all.some(item => !item.unknownRoot && pathKey(item.rootDir) === key);
+        if (known && await App.openProject(root).catch(() => false)) App.showTool('sessions');
         return;
       }
       if (sender.closest('[data-hist-refresh]')) { await refreshDshCatalog(); return; }
@@ -2779,7 +2837,7 @@ const AiPanel = (() => {
         if (scopeButton.disabled || scopeButton.dataset.histScope === histScope) return;
         histScope = scopeButton.dataset.histScope;
         refreshHistInPlace();
-        if (!catalogUsable()) await refreshDshCatalog();
+        await ensureDshCatalog();
         return;
       }
       const toggle = sender.closest('[data-hist-toggle]');
@@ -2788,7 +2846,7 @@ const AiPanel = (() => {
         const items = group.querySelector('.ai-hist-items');
         items.hidden = !items.hidden;
         toggle.setAttribute('aria-expanded', String(!items.hidden));
-        expandedWorkspaces.set(group.hasAttribute('data-unassigned') ? null : pathKey(group.dataset.root), !items.hidden);
+        historyWorkspaces.get(historyGroupKey(group)).expanded = !items.hidden;
         historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
         return;
       }
@@ -3252,10 +3310,10 @@ const AiPanel = (() => {
     dshOptionsState='error';refreshModelSel();setBusyUI(false);
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 会话只读';info.title=error;}
   }
-  async function restoreDshSession(id,ticket) {
+  async function restoreDshSession(id,ticket,retry = false) {
     const root=window.App?.root||'',epoch=pageEpoch;
     beginDshSessionLoad(id,'');
-    await refreshDshCatalog();
+    await (retry ? refreshDshCatalog() : ensureDshCatalog());
     if(ticket!==sessionLoadTicket||getConfig().engine!=='dsh'||root!==(window.App?.root||'')||epoch!==pageEpoch)return false;
     const saved=loadSessions().find(item=>item.id===id),host=catalogOf(id);
     if(host&&(!host.cwd||pathKey(host.cwd)!==pathKey(root))){
@@ -3464,7 +3522,6 @@ const AiPanel = (() => {
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
     resetDshWatch();
     sessionLoadTicket++;
-    dshCatalogTicket++;
     // 2026-11-01：切项目也不中断（用户要求「其他任务操作都不中断」）。
     // 原任务是 DSH 就整块挂起在后台记录里，切回来或点后台状态条都能接上。
     const detached = detachRun();
@@ -3516,7 +3573,6 @@ const AiPanel = (() => {
     // 实测会让「已停止」这类提示消失。
     const restored=harness&&restoreBackgroundRun();
     renderBackgroundStatus();
-    if (histSidebarVisible) { refreshHistInPlace(); if (getConfig().engine === 'dsh') refreshDshCatalog(); }
     // 宿主恢复会立即清空消息区；先回放数千条缓存只会白建DOM，身份无法确认时仍由恢复分支回放只读缓存。
     if(harness&&!codex&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
       restoreDshSession(curSessionId,sessionLoadTicket);
@@ -4539,6 +4595,6 @@ const AiPanel = (() => {
   };
   const __testParked = () => ({ backgroundRuns: backgroundRuns.size, currentRun: currentRun ? currentRun.status : null });
 
-  return {aiAfterResult,aiState,aiInspect,aiControl,dshView,syncSessionSidebar, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange, __testBeginRun, __testRun, __testFinish, __testInjectDshRun, __testParked };
+  return {aiAfterResult,aiState,aiInspect,aiControl,dshView,syncSessionSidebar,onProjectsChange:refreshHistInPlace, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange, __testBeginRun, __testRun, __testFinish, __testInjectDshRun, __testParked };
 })();
 window.AiPanel = AiPanel;

@@ -226,14 +226,14 @@ const App = (() => {
     if (!root) return;
     try { localStorage.setItem(TOOL_STATE_PREFIX + root, JSON.stringify({ activeTool, sideTool })); } catch {}
   }
-  function restoreToolState() {
+  function restoreToolState(keepSessions) {
     browserReturn = null; // 跨项目恢复不能携带上一项目的来源页面。
     if (!root) return;
     let st = null;
     try { st = JSON.parse(localStorage.getItem(TOOL_STATE_PREFIX + root) || 'null'); } catch {}
-    const at = st && ALL_TOOLS.includes(st.activeTool) ? st.activeTool
+    const at = keepSessions ? 'sessions' : st && ALL_TOOLS.includes(st.activeTool) ? st.activeTool
       : (st && st.activeTool === null ? null : 'project'); // 无记录默认项目面板
-    sideTool = st && SIDE_TOOLS.includes(st.sideTool) ? st.sideTool : 'project';
+    sideTool = keepSessions ? 'sessions' : st && SIDE_TOOLS.includes(st.sideTool) ? st.sideTool : 'project';
     const prev = activeTool;
     activeTool = at;
     sideCollapsed = false;
@@ -840,6 +840,7 @@ const App = (() => {
       projects = projects.filter((p) => p.path !== prPath);
       saveProjects();
       renderProjectBar();
+      window.AiPanel?.onProjectsChange?.();
       renderEmptyRecent();
       return true;
     });
@@ -1055,7 +1056,10 @@ const App = (() => {
     renderProjectBar();
     renderEmptyRecent();
     await Session.restore();
-    restoreToolState(); // 各项目记忆自己的工具窗口状态
+    const sessionsPanel = document.getElementById('panel-sessions');
+    const keepSessions = sessionsPanel && !sessionsPanel.classList.contains('hidden') &&
+      !document.body.classList.contains('sidebar-collapsed');
+    restoreToolState(keepSessions);
     if (window.AiPanel && AiPanel.onProjectChange) AiPanel.onProjectChange(); // AI 会话跟着项目走
     // 选择目录和预检都不算激活；原项目的保存/恢复流程结束后才更新成功记录。
     pushRecent(p);
