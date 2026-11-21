@@ -1,6 +1,6 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert/strict');
 const { createRegistry } = require('../src/main/ai/ai-runs'), { createService } = require('../src/main/ai/ai-tool-execution');
-const { createAuthority, policy } = require('../src/main/ai/ai-tool-authority');
+const { createAuthority, decision, policy } = require('../src/main/ai/ai-tool-authority');
 let passed = 0; const fixtures = [];
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { resolve, promise }; };
 const tick = () => new Promise(r => setImmediate(r));
@@ -66,6 +66,33 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const f = fixture({ run: 'auto', rememberedRun: true, commands: ['node'], denyCommands: ['custom'] });
     for (const command of ['node --version && del one.md', 'git reset --hard', 'custom --flag']) { await f.authorize(f.command(command, command)); assert(f.prompts.at(-1).view.danger); }
     assert.equal(f.prompts.length, 3);
+  });
+  await test('完全权限允许清空和危险命令，仍绑定具体内容、目标与权限版本', async () => {
+    const f = fixture({ write: 'full', run: 'full', denyCommands: ['custom'] });
+    const wipe = f.write('wipe', ''), actual = await f.actual(wipe);
+    assert((await f.authorize(wipe)).ok);
+    f.authority.assert(1, f.context, wipe, actual);
+    assert.throws(() => f.authority.assert(1, f.context, wipe, { ...actual, content: 'different' }), e => e.code === 'INVALID_AI_APPROVAL');
+    for (const command of ['git reset --hard', 'custom --flag']) {
+      const call = f.command(command, command);
+      assert((await f.authorize(call)).ok);
+      f.authority.assert(1, f.context, call, { target: f.root, command });
+    }
+    assert.equal(f.prompts.length, 0);
+    f.policy = { write: 'auto', run: 'auto', denyCommands: ['custom'] };
+    assert.throws(() => f.authority.assert(1, f.context, wipe, actual), e => e.code === 'AI_POLICY_CHANGED');
+    await f.authorize(f.command('restored', 'custom --flag'));
+    assert(f.prompts.at(-1).view.danger);
+  });
+  await test('应用操作按类别启用完全权限，另一类的禁止或逐次确认继续生效', () => {
+    const write = { application: true, kind: 'write', forceConfirm: true };
+    const run = { application: true, kind: 'run', forceConfirm: true };
+    const withFullWrite = policy({ revision: 0, write: 'full', run: 'deny' });
+    assert.equal(decision(withFullWrite, {}, write), 'auto');
+    assert.equal(decision(withFullWrite, {}, run), 'deny');
+    const withFullRun = policy({ revision: 0, write: 'auto', run: 'full' });
+    assert.equal(decision(withFullRun, {}, write), 'danger');
+    assert.equal(decision(withFullRun, {}, run), 'auto');
   });
   await test('命令记忆按词边界，正常node命令免问而nodeevil需确认', async () => {
     const f = fixture({ commands: ['node'] }); const c = f.command(); await f.authorize(c);

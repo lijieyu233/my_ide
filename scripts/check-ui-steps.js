@@ -3248,15 +3248,19 @@ module.exports = {
     add('输入卡片有「访问权限」入口（不用钻设置页改下拉）', !!q('.ai-input-box #ai-perm'));
     if (q('#ai-perm')) { q('#ai-perm').click(); await sleep(400); }
     const pseg = qa('.ai-perm-pop .ai-seg');
-    add('权限浮层：两个维度 × 三档（每次确认 / 自动 / 禁止）',
-      pseg.length === 2 && qa('.ai-perm-pop .ai-seg button').length === 6,
+    add('权限浮层：改文件和执行命令各有四档',
+      pseg.length === 2 && pseg.every(seg => Array.from(seg.querySelectorAll('button')).map(b => b.textContent).join('/') === '每次确认/自动/完全权限/禁止'),
       pseg.length + ' 组 / ' + qa('.ai-perm-pop .ai-seg button').length + ' 个档位');
-    add('权限浮层写明危险命令不豁免', !!q('.ai-perm-pop .ai-perm-note'));
+    add('权限浮层说明自动和完全权限的确认区别', qa('.ai-perm-pop .ai-perm-note').some(note => note.textContent.includes('完全权限')));
     if (pseg.length) {
       const seg0 = () => qa('.ai-perm-pop .ai-seg')[0];   // 每次重查：切档会重渲染浮层
       seg0().querySelectorAll('button')[1].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
       await waitFor(()=>AiPanel.permWrite()==='auto','确认后自动档位未生效');
       add('点「自动」档位真的切了', AiPanel.permWrite() === 'auto', 'permWrite=' + AiPanel.permWrite());
+      q('.ai-perm-pop [data-set="permWrite:full"]').click();
+      await window.__aiApprovalProbe.approve('更改 AI 访问权限');
+      await waitFor(()=>q('.ai-perm-pop [data-set="permWrite:full"]')?.getAttribute('aria-pressed')==='true','完全权限未显示为已选');
+      add('选择改文件的完全权限只更改该类别', AiPanel.permWrite() === 'full' && AiPanel.permRun() === 'confirm');
       seg0().querySelectorAll('button')[0].click(); await window.__aiApprovalProbe.approve('更改 AI 访问权限');
       await waitFor(()=>AiPanel.permWrite()==='confirm','确认后未恢复每次确认档位');
       add('能改回「每次确认」', AiPanel.permWrite() === 'confirm', 'permWrite=' + AiPanel.permWrite());

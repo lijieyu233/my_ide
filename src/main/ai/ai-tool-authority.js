@@ -14,7 +14,7 @@ function policy(input = {}) {
   if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw fail('INVALID_AI_POLICY', 'AI权限缺少有效代次');
   const mode = value => {
     if (value == null) return 'confirm';
-    if (!['confirm', 'auto', 'deny'].includes(value)) throw fail('INVALID_AI_POLICY', 'AI权限档位无效');
+    if (!['confirm', 'auto', 'full', 'deny'].includes(value)) throw fail('INVALID_AI_POLICY', 'AI权限档位无效');
     return value;
   };
   const list = value => {
@@ -59,23 +59,23 @@ function isLoopbackCapture(call, effect) {
   }
 }
 function decision(p, call, effect) {
+  const mode = p[effect.kind];
+  if (mode === 'deny') return 'deny';
+  if (mode === 'full') return 'auto';
   if (effect.application) {
-    if (p[effect.kind] === 'deny') return 'deny';
     // 截图仍核对主进程记录的当前页与调用，避免用本机页面的批准截取跳转后的页面。
     if (isLoopbackCapture(call, effect)) return 'auto';
     if(effect.forceConfirm)return 'danger';
     if (effect.kind === 'run' && (dangerous(effect.command) || p.denyCommands.some(s => effect.command.trim().toLowerCase().startsWith(s.trim().toLowerCase())))) return 'danger';
     // 启动配置属于整台机器；项目文件白名单和项目授权不能自动放行机器级程序操作。
-    return p[effect.kind] === 'auto' ? 'auto' : 'confirm';
+    return mode === 'auto' ? 'auto' : 'confirm';
   }
   if (effect.kind === 'write') {
-    if (p.write === 'deny') return 'deny';
     if (effect.wipe) return 'danger';
-    return p.write === 'auto' || p.rememberedWrite || p.sessionWrite || p.allowPaths.some(g => glob(g, call.args.path)) ? 'auto' : 'confirm';
+    return mode === 'auto' || p.rememberedWrite || p.sessionWrite || p.allowPaths.some(g => glob(g, call.args.path)) ? 'auto' : 'confirm';
   }
-  if (p.run === 'deny') return 'deny';
   if (dangerous(call.args.command) || p.denyCommands.some(s => call.args.command.trim().toLowerCase().startsWith(s.trim().toLowerCase()))) return 'danger';
-  return p.run === 'auto' || p.rememberedRun || p.sessionRun || p.commands.some(s => prefix(call.args.command.trim(), s.trim())) ? 'auto' : 'confirm';
+  return mode === 'auto' || p.rememberedRun || p.sessionRun || p.commands.some(s => prefix(call.args.command.trim(), s.trim())) ? 'auto' : 'confirm';
 }
 
 function createAuthority({ tools, readPolicy, confirm, remember }) {

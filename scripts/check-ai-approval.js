@@ -29,6 +29,27 @@ const write=tool=>invoke('writeFile',[c,target,tool.args.content,undefined,{expe
   await test('确认取消不改原策略；真实批准后保存且旧批准即时失效',async()=>{const tool=call('write_file',{path:'one.md',content:'OLD'}),a=await request('authorize',[c,tool]);await click(a.prompt.wc,'#accept');assert((await a.promise).ok);const cfg={permWrite:'deny',permRun:'confirm',allowPaths:[],denyCmds:[]};let r=await request('updatePermissions',[project,cfg]);await click(r.prompt.wc,'#reject');assert(!(await r.promise).ok);assert.equal((await invoke('permissions',[project])).config.permWrite,'confirm');r=await request('updatePermissions',[project,cfg]);await click(r.prompt.wc,'#accept');assert((await r.promise).ok);const w=await write(tool);assert.equal(w.errorCode,'AI_APPROVAL_REQUIRED');assert.equal(fs.readFileSync(target,'utf8'),'APPROVED');const denied=await invoke('authorize',[c,call('write_file',{path:'one.md',content:'DENIED'})]);assert.equal(denied.errorCode,'AI_PERMISSION_DENIED');});
   await test('会话放行要真实确认，禁止档优先；关闭清会话后普通命令重新询问',async()=>{let r=await request('grantSession',[{rootId:project,sessionId:c.sessionId}]);await click(r.prompt.wc,'#accept');assert((await r.promise).ok);assert.equal((await invoke('authorize',[c,call('write_file',{path:'one.md',content:'BLOCK'})])).errorCode,'AI_PERMISSION_DENIED');assert((await invoke('authorize',[c,call('run_command',{command:'node --version'})])).ok);await invoke('clearSession',[]);r=await request('authorize',[c,call('run_command',{command:'node --version'})]);await click(r.prompt.wc,'#reject');assert.equal((await r.promise).errorCode,'AI_PERMISSION_DENIED');});
   await test('命令前缀记忆来自可信按钮，撤销后重新询问',async()=>{const tool=call('run_command',{command:'node --version'}),r=await request('authorize',[c,tool]);await click(r.prompt.wc,'#always');assert((await r.promise).ok);assert.deepEqual((await invoke('permissions',[project])).permissions.cmds,['node']);assert((await invoke('run',['node --version',project,c,tool])).ok);assert((await invoke('authorize',[c,call('run_command',{command:'node --version'})])).ok);await invoke('forgetPermission',[project,'cmd:node']);const next=await request('authorize',[c,call('run_command',{command:'node --version'})]);await click(next.prompt.wc,'#reject');assert(!(await next.promise).ok);});
+  await test('可信确认启用完全权限，直接清空测试文件并批准危险命令', async () => {
+    const cfg = { permWrite: 'full', permRun: 'full', allowPaths: [], denyCmds: ['node'] };
+    const rejected = await request('updatePermissions', [project, cfg]);
+    const note = await rejected.prompt.wc.executeJavaScript('document.getElementById("note").textContent');
+    assert(note.includes('所有项目') && note.includes('清空文件') && note.includes('执行危险命令'));
+    await click(rejected.prompt.wc, '#reject');
+    assert.equal((await rejected.promise).config.permWrite, 'deny');
+    const accepted = await request('updatePermissions', [project, cfg]);
+    await click(accepted.prompt.wc, '#accept');
+    assert.deepEqual((await accepted.promise).config, cfg);
+
+    prompt = null;
+    const wipe = call('write_file', { path: 'one.md', content: '' });
+    assert((await invoke('authorize', [c, wipe])).ok);
+    assert((await write(wipe)).ok);
+    assert.equal(fs.readFileSync(target, 'utf8'), '');
+    for (const command of ['git reset --hard', 'node --version']) {
+      assert((await invoke('authorize', [c, call('run_command', { command })])).ok);
+    }
+    assert.equal(prompt, null);
+  });
   await test('窗口与独立确认始终隐藏，未使用真实用户配置',async()=>{assert(!win.isVisible());assert(app.getPath('userData').startsWith(temp));assert.equal(webContents.getAllWebContents().filter(w=>w.getURL().includes('ai-approval.html')).length,0);});
   console.log('AI独立授权真实IPC：'+passed+' 通过 / 0 失败');app.exit(0);
 })().catch(error=>{console.error(error.stack);app.exit(1);});

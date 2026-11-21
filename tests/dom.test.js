@@ -8971,7 +8971,10 @@ assert_(panel, 'CM6 搜索面板出现');
     const pop = $(dom, '.ai-perm-pop');
     assert_(!!pop, '点开权限浮层');
     assert_($allIn(pop, '.ai-seg').length === 2, '两个维度：改文件 / 执行命令');
-    assert_($allIn(pop, '.ai-seg button').length === 6, '每维度三档（每次确认 / 自动 / 禁止）: ' + $allIn(pop, '.ai-seg button').length);
+    for (const segment of $allIn(pop, '.ai-seg')) {
+      const labels = Array.from(segment.querySelectorAll('button'), button => button.textContent);
+      assert_(labels.join('/') === '每次确认/自动/完全权限/禁止', '每个维度有四个权限档位');
+    }
     // 改文件 → 自动
     click($allIn(pop, '.ai-seg')[0].querySelectorAll('button')[1]);
     await tick();

@@ -40,7 +40,9 @@ function createStore(file, options = {}) {
   function initialize(legacy = {}) {
     load(); if (state) return;
     const next = defaults(), cfg = legacy.config || {};
-    next.config = { write: cfg.permWrite || 'confirm', run: cfg.permRun || 'confirm', allowPaths: cfg.allowPaths || [], denyCommands: cfg.denyCmds || [] };
+    // 旧渲染层缓存没有可信确认凭据，丢失权限文件后不能靠它恢复完全权限。
+    const legacyMode = mode => !mode || mode === 'full' ? 'confirm' : mode;
+    next.config = { write: legacyMode(cfg.permWrite), run: legacyMode(cfg.permRun), allowPaths: cfg.allowPaths || [], denyCommands: cfg.denyCmds || [] };
     const projects = legacy.projects || [];
     if (!Array.isArray(projects) || projects.length > 2048) throw fail('INVALID_AI_POLICY', '旧项目授权超过预算');
     for (const entry of projects) {

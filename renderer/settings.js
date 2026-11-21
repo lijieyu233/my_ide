@@ -782,25 +782,26 @@ const Settings = (() => {
         <select id="ai-cfg-permw">
           <option value="confirm" ${(!cfg.permWrite || cfg.permWrite === 'confirm') ? 'selected' : ''}>每次确认（弹 diff 预览，默认）</option>
           <option value="auto" ${cfg.permWrite === 'auto' ? 'selected' : ''}>自动应用（不弹窗，⚠ 慎选）</option>
+          <option value="full" ${cfg.permWrite === 'full' ? 'selected' : ''}>完全权限（含清空文件）</option>
           <option value="deny" ${cfg.permWrite === 'deny' ? 'selected' : ''}>禁止写入（只读模式）</option>
         </select>
         <label class="m-label" style="margin-top:8px">执行命令</label>
         <select id="ai-cfg-permr">
           <option value="confirm" ${(!cfg.permRun || cfg.permRun === 'confirm') ? 'selected' : ''}>每次弹窗确认（默认）</option>
           <option value="auto" ${cfg.permRun === 'auto' ? 'selected' : ''}>自动执行（普通命令不问，⚠ 慎选）</option>
+          <option value="full" ${cfg.permRun === 'full' ? 'selected' : ''}>完全权限（含危险命令）</option>
           <option value="deny" ${cfg.permRun === 'deny' ? 'selected' : ''}>禁止执行命令</option>
         </select>
         <label class="m-label" style="margin-top:10px">写入白名单 —— 这些路径不再询问（每行一条，支持 docs/** 与 *.md）</label>
         <textarea id="ai-cfg-allow" rows="3" placeholder="docs/**&#10;*.md" spellcheck="false"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.allowPaths || []).join('\n'))}</textarea>
-        <label class="m-label" style="margin-top:8px">命令黑名单 —— 这些命令永远要确认（每行一条前缀）</label>
+        <label class="m-label" style="margin-top:8px">需确认的命令前缀（每行一条，执行命令设为「完全权限」时停用）</label>
         <textarea id="ai-cfg-deny" rows="2" placeholder="npm publish&#10;docker" spellcheck="false"
           style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none;resize:vertical;font-family:inherit">${esc((cfg.denyCmds || []).join('\n'))}</textarea>
         <div class="set-note set-callout">
           这些档位在 AI 面板顶部的「访问权限」按钮里也能直接切换，不必每次进设置页。<br>
           启动面板的程序配置跟随文件写入权限，启动、停止和重启跟随执行命令权限；项目授权不放行程序操作。<br>
-          破坏性命令（rm / del / rmdir / git reset --hard / git push --force 等）始终要确认，不受白名单、「自动」档与「记住授权」影响；
-          把已有文件内容清空也单独保护，必须点一次确认。
+          「自动」仍会确认清空文件和危险命令。「完全权限」会跳过所选类别的 MyIDE 工具确认。
         </div>
         <div id="ai-cfg-perms"></div>
       </div>

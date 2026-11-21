@@ -4,6 +4,16 @@ const test=async(name,fn)=>{await fn();passed++;console.log('  ok '+name);};
 function fixture(options){const root=fs.mkdtempSync(path.join(os.tmpdir(),'myide-ai-policy-'));roots.push(root);const file=path.join(root,'policy.json'),context={rootId:root,sessionId:'session'};return {root,file,context,store:createStore(file,options)};}
 (async()=>{
   await test('首次迁移已有档位/白名单/项目命令，重载保留，不改旧来源',()=>{const f=fixture(),legacy={config:{permWrite:'auto',permRun:'deny',allowPaths:['docs/**']},projects:[{root:f.root,permissions:{write:true,cmds:['node']}}]},before=JSON.stringify(legacy);f.store.initialize(legacy);const p=f.store.read(1,f.context);assert.equal(p.write,'auto');assert.equal(p.run,'deny');assert(p.rememberedWrite);assert.deepEqual(p.commands,['node']);assert.equal(JSON.stringify(legacy),before);const reloaded=createStore(f.file);assert(reloaded.initialized());reloaded.initialize({config:{permWrite:'deny'}});assert.equal(reloaded.read(1,f.context).write,'auto');});
+  await test('完全权限从主进程存储恢复，旧渲染层缓存不能授予', () => {
+    const f = fixture(), config = { permWrite: 'full', permRun: 'full', allowPaths: [], denyCmds: ['custom'] };
+    f.store.initialize({ config });
+    const initial = f.store.view(f.root);
+    assert.equal(initial.config.permWrite, 'confirm');
+    assert.equal(initial.config.permRun, 'confirm');
+    f.store.updateConfig(config, initial.revision);
+    assert.deepEqual(createStore(f.file).view(f.root).config, config);
+    assert.equal(createStore(f.file).read(1, f.context).run, 'full');
+  });
   await test('损坏/非法UTF8/未知格式不退默认值，不覆盖原件',()=>{for(const body of [Buffer.from('{broken'),Buffer.from([0xff]),Buffer.from(JSON.stringify({schema:5})),Buffer.alloc(2*1024*1024+1)]){const f=fixture();fs.writeFileSync(f.file,body);assert.throws(()=>f.store.initialize({}));assert.deepEqual(fs.readFileSync(f.file),body);assert.throws(()=>f.store.read(1,f.context));}});
   await test('权限发布失败保留旧内存、旧档位和旧磁盘，不能虚报保存',()=>{const f=fixture();f.store.initialize({});const original=fs.readFileSync(f.file);const broken=createStore(f.file,{writer:()=>{throw Object.assign(Error('fixture'),{code:'EIO'});}});broken.initialize({});assert.throws(()=>broken.updateConfig({permWrite:'auto',permRun:'auto',allowPaths:[],denyCmds:[]},0),e=>e.code==='EIO');assert.equal(broken.read(1,f.context).write,'confirm');assert.deepEqual(fs.readFileSync(f.file),original);});
   await test('外部或另一实例改权限后，旧保存和旧内存权限都拒绝，不覆盖新内容',()=>{const f=fixture();f.store.initialize({});const other=createStore(f.file);other.initialize({});other.updateConfig({permWrite:'deny',permRun:'deny',allowPaths:[],denyCmds:[]},0);const bytes=fs.readFileSync(f.file);assert.throws(()=>f.store.updateConfig({permWrite:'auto',permRun:'auto',allowPaths:[],denyCmds:[]},0),e=>e.code==='VERSION_CONFLICT');assert.deepEqual(fs.readFileSync(f.file),bytes);assert.throws(()=>f.store.read(1,f.context),e=>e.code==='VERSION_CONFLICT');});

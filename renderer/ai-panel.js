@@ -495,15 +495,14 @@ const AiPanel = (() => {
   }
 
   // ---------- 访问权限（设置 → AI 助手，多种档位）----------
-  // permWrite：'confirm' 每次弹 diff 确认（默认）| 'auto' 自动应用（不弹窗）| 'deny' 禁止写入
-  // permRun：'confirm' 每条命令弹窗确认（默认）| 'deny' 禁止执行命令
+  const myidePermissionLabels = { confirm: '每次确认', auto: '自动', full: '完全权限', deny: '禁止' };
   function permWrite() {
     const v = getConfig().permWrite;
-    return ['confirm', 'auto', 'deny'].includes(v) ? v : 'confirm';
+    return Object.hasOwn(myidePermissionLabels, v) ? v : 'confirm';
   }
   function permRun() {
     const v = getConfig().permRun;
-    return ['confirm', 'auto', 'deny'].includes(v) ? v : 'confirm';
+    return Object.hasOwn(myidePermissionLabels, v) ? v : 'confirm';
   }
 
   // ---------- 授权记忆：确认过一次就别再问（否则跑一次测试要点十几次）----------
@@ -543,8 +542,7 @@ const AiPanel = (() => {
     }
   }
   function cmdPrefixOf(cmd) { return String(cmd || '').trim().split(/\s+/)[0] || ''; }
-  // 危险命令永远要问一次：路径白名单 / 记住授权 / /yolo 都不豁免。
-  // （Cursor 的 deny 优先级高于 allow，同一条规矩：能一键放行「改文件」，但不能一键放行 rm。）
+  // 白名单、记住授权和 /yolo 只放行普通命令；危险命令免确认需要单独选择完全权限。
   const DANGER_TOKENS = ['rm', 'rmdir', 'rd', 'del', 'erase', 'format', 'diskpart', 'dd', 'shutdown', 'reboot',
     'taskkill', 'kill', 'pkill', 'chmod', 'chown', 'takeown', 'icacls', 'reg'];
   const DANGER_SEQ = ['git clean', 'git reset --hard', 'git reset --keep', 'git push --force', 'git push -f',
@@ -580,7 +578,7 @@ const AiPanel = (() => {
   function writeNeedsConfirm(rel) {
     const base = permWrite();
     if (base === 'deny') return 'deny';
-    if (base === 'auto') return 'no';
+    if (base === 'auto' || base === 'full') return 'no';
     if (sessionPerm.write || loadPerms().write) return 'no';
     if (rel && pathAllowed(rel)) return 'no';   // 只放行你点头过的目录，避免「一处放心 = 全项目放行」
     return 'yes';
@@ -588,6 +586,7 @@ const AiPanel = (() => {
   function runNeedsConfirm(cmd) {
     const base = permRun();
     if (base === 'deny') return 'deny';
+    if (base === 'full') return 'no';
     const t = String(cmd || '').trim();
     const lc = t.toLowerCase();
     if (dangerousCmd(t)) return 'danger';                                    // 内置危险命令
@@ -633,20 +632,18 @@ const AiPanel = (() => {
       if (label) label.textContent = preset?.label || 'DSH 权限';
       return;
     }
-    const auto = permWrite() === 'auto' || !!loadPerms().write;
-    b.classList.toggle('on', auto);
-    b.title = '访问权限：改文件 ' + ({ confirm: '每次确认', auto: '自动应用', deny: '禁止' }[permWrite()] || '')
-      + ' · 命令 ' + ({ confirm: '每次确认', auto: '自动执行', deny: '禁止' }[permRun()] || '')
-      + (auto ? '（已开启自动应用）' : '');
-    if(label)label.textContent=permWrite()==='auto'&&permRun()==='auto'?'自动执行':permWrite()==='deny'&&permRun()==='deny'?'只读':permWrite()==='confirm'&&permRun()==='confirm'?'每次确认':'自定义权限';
+    const write = permWrite(), run = permRun();
+    b.classList.toggle('on', [write, run].some(mode => mode === 'auto' || mode === 'full') || !!loadPerms().write);
+    b.title = '访问权限：改文件 ' + myidePermissionLabels[write] + ' · 执行命令 ' + myidePermissionLabels[run];
+    const summary = { ...myidePermissionLabels, auto: '自动执行', deny: '只读' };
+    if (label) label.textContent = write === run ? summary[write] : '自定义权限';
   }
   function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
-  function renderPermPop() {
+  function renderPermPop(localOpen = false) {
     closePermPop();
     const segHtml = (key, cur) => {
-      const opts = [{ v: 'confirm', t: '每次确认' }, { v: 'auto', t: '自动' }, { v: 'deny', t: '禁止' }];
-      return '<div class="ai-seg">' + opts.map((o) =>
-        '<button data-set="' + key + ':' + o.v + '" class="' + (o.v === cur ? 'on' : '') + '">' + o.t + '</button>').join('') + '</div>';
+      return '<div class="ai-seg">' + Object.entries(myidePermissionLabels).map(([mode, label]) =>
+        '<button data-set="' + key + ':' + mode + '" class="' + (mode === cur ? 'on' : '') + '" aria-pressed="' + (mode === cur) + '">' + label + '</button>').join('') + '</div>';
     };
     const pop = document.createElement('div');
     pop.className = 'ai-perm-pop';
@@ -657,7 +654,7 @@ const AiPanel = (() => {
       '<div class="ai-perm-sec"><span class="ai-perm-lb">改文件</span>' + segHtml('permWrite', permWrite()) + '</div>' +
       '<div class="ai-perm-sec"><span class="ai-perm-lb">执行命令</span>' + segHtml('permRun', permRun()) + '</div>' +
       '<div class="ai-perm-note">程序配置跟随「改文件」权限；启动、停止和重启跟随「执行命令」权限。项目授权不放行程序操作。</div>' +
-      '<div class="ai-perm-note">选「自动」后不再逐次弹确认；但危险命令（rm / del / git reset --hard…）与「把文件清空」始终要单独点一次。</div>';
+      '<div class="ai-perm-note">「自动」仍会确认清空文件和危险命令。「完全权限」会跳过所选类别的工具确认。</div>';
     const p = loadPerms();
     const items = [];
     if (p.write) items.push({ k: 'write', t: '本项目改文件不再询问' });
@@ -672,7 +669,7 @@ const AiPanel = (() => {
       }
       html += '</div>';
     }
-    if (native) html = '<div class="ai-native-permissions"></div><details class="ai-perm-local"><summary>MyIDE 工具权限</summary>' + html + '</details>';
+    if (native) html = '<div class="ai-native-permissions"></div><details class="ai-perm-local"' + (localOpen ? ' open' : '') + '><summary>MyIDE 工具权限</summary>' + html + '</details>';
     if (engine === 'codex') html = '<div class="ai-perm-lb">Codex 原生工具 · 按操作确认</div><div class="ai-perm-lb">MyIDE 工具权限</div>' + html;
     pop.innerHTML = html;
     panel.appendChild(pop);
@@ -691,7 +688,7 @@ const AiPanel = (() => {
       if (t.dataset && t.dataset.set) {
         const i = t.dataset.set.indexOf(':');
         await setConfig({ [t.dataset.set.slice(0, i)]: t.dataset.set.slice(i + 1) });
-        if (permPop === pop) renderPermPop();
+        if (permPop === pop) renderPermPop(pop.querySelector('.ai-perm-local')?.open);
         syncPermBtn();
         const k = t.dataset.set.slice(0, i);
         MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
@@ -705,7 +702,7 @@ const AiPanel = (() => {
         else if (k === 'run') delete np.run;
         else if (k.indexOf('cmd:') === 0) np.cmds = (np.cmds || []).filter((x) => x !== k.slice(4));
         await savePerms(np);
-        if (permPop === pop) renderPermPop();
+        if (permPop === pop) renderPermPop(pop.querySelector('.ai-perm-local')?.open);
         syncPermBtn();
         MI.toast('已清除该授权（下次会重新询问）', 'ok');
       }
