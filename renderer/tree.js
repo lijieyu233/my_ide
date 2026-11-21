@@ -2,6 +2,7 @@
 const Tree = (() => {
   const el = document.getElementById('tree');
   let rootPath = null;
+  let openFilesOnly = false, openFilesKey = null;
   let showHidden = false;
   // ---------- 应用内隐藏（三态视图）----------
   // hiddenSet：右键「隐藏」的项（仅本应用生效，存 localStorage 按项目隔离）
@@ -326,11 +327,13 @@ const Tree = (() => {
   // 串行化：并发 render（展开/粘贴连续触发）按序执行，防止旧数据覆盖新数据
   let renderChain = Promise.resolve();
   function render() {
+    if (openFilesOnly) return syncOpenFiles();
     if (rootPath && searchState && searchState.q) return renderSearch();
     renderChain = renderChain.then(doRender).catch(() => {});
     return renderChain;
   }
   async function doRender() {
+    if (openFilesOnly) return;
     // 搜索态：平铺显示匹配行（忽略展开态）—— renderSearch 自己会清空并重画
     if (rootPath && searchState && searchState.q) { renderSearch(); return; }
     if (!rootPath) { el.innerHTML = ''; el.onscroll = null; visibleRows = []; return; }
@@ -339,10 +342,10 @@ const Tree = (() => {
     //   中间浏览器会把**空树**绘制一帧，看起来就是"切换文件时闪一下"。
     const renderingRoot = rootPath;
     await loadDir(renderingRoot);
-    if (rootPath !== renderingRoot || searchState) return;
+    if (rootPath !== renderingRoot || searchState || openFilesOnly) return;
     // 缓存失效后重载所有展开目录（否则展开态显示 ▼ 但无子行）
     const expandedDirs = [...expanded];
-    for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState) return; }
+    for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState || openFilesOnly) return; }
     const rows = buildRows();
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
     el.innerHTML = '';
@@ -387,10 +390,79 @@ const Tree = (() => {
     paint();
   }
 
+  function makeFileResult(file, selected, tag = 'div') {
+    const row = document.createElement(tag);
+    row.className = 'tree-row tree-search-row' + (selected ? ' selected' : '');
+    row.dataset.path = file.path;
+    row.title = file.path;
+    const icon = document.createElement('span');
+    icon.className = 'ic';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = window.App?.ftIcon ? App.ftIcon(file.name) : fileIcon(file.name);
+    const name = document.createElement('span');
+    name.className = 'nm';
+    name.textContent = file.name;
+    name.title = file.path;
+    const rel = document.createElement('span');
+    rel.className = 'tree-search-rel';
+    rel.textContent = file.rel;
+    row.append(icon, name, rel);
+    return row;
+  }
+
+  function syncOpenFiles() {
+    if (!openFilesOnly) return;
+    const query = norm(document.getElementById('tree-search').value.trim()).toLowerCase();
+    const prefix = DocumentPaths.key(rootPath) + '/';
+    const files = (window.Viewer?.openTabs || [])
+      .filter(tab => rootPath && DocumentPaths.key(tab.path).startsWith(prefix))
+      .map(tab => ({ path: tab.path, name: tab.name, rel: norm(tab.path).slice(prefix.length) }))
+      .filter(file => file.rel.toLowerCase().includes(query));
+    const key = JSON.stringify([rootPath, query, files.map(file => file.path)]);
+    if (key !== openFilesKey) {
+      openFilesKey = key;
+      const focused = document.activeElement?.closest('.tree-open-file')?.dataset.path;
+      el.replaceChildren();
+      el.onscroll = null;
+      visibleRows = [];
+      for (const file of files) {
+        const row = makeFileResult({ ...file, rel: file.rel.slice(0, Math.max(0, file.rel.lastIndexOf('/'))) }, false, 'button');
+        row.type = 'button';
+        row.classList.add('tree-open-file');
+        row.onclick = () => {
+          if (openFilesOnly && row.isConnected) Viewer.openFile(file.path, { intent: 'browse', reveal: false });
+        };
+        el.append(row);
+        if (file.path === focused) row.focus({ preventScroll: true });
+      }
+      if (!files.length) {
+        const empty = document.createElement('div');
+        empty.className = 'tree-search-empty';
+        empty.setAttribute('role', 'status');
+        empty.textContent = query ? '没有匹配的已打开文件' : '当前项目没有已打开的文件';
+        el.append(empty);
+      }
+    }
+    const activePath = window.Viewer?.activeTab?.path;
+    const active = DocumentPaths.key(activePath);
+    let hasActiveRow = false;
+    for (const row of el.querySelectorAll('.tree-open-file')) {
+      const current = DocumentPaths.key(row.dataset.path) === active;
+      row.classList.toggle('selected', current);
+      if (current) {
+        hasActiveRow = true;
+        row.setAttribute('aria-current', 'true');
+      }
+      else row.removeAttribute('aria-current');
+    }
+    if (hasActiveRow) select(activePath, 'file');
+    else { selectedPaths.clear(); selectedPath = selectedType = anchorPath = null; }
+  }
+
   // ---------- 目录树搜索（平铺匹配行，回车/点击打开）----------
   let searchState = null, fileIndex = null, searchDeb = null, searchComposing = false;
   let searchIdx = 0;
-  const searchCurrent = state => searchState === state && rootPath === state.root && !searchComposing
+  const searchCurrent = state => !openFilesOnly && searchState === state && rootPath === state.root && !searchComposing
     && document.getElementById('tree-search').value.trim() === state.q;
   const searchUsable = state => searchCurrent(state) && !state.loading && !!state.files && !state.error;
   function searchNotice(message, retryState = null) {
@@ -454,22 +526,7 @@ const Tree = (() => {
       return;
     }
     hits.forEach((f, i) => {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'tree-row tree-search-row' + (i === searchIdx ? ' selected' : '');
-      const ic = document.createElement('span');
-      ic.className = 'ic';
-      ic.innerHTML = (window.App && App.ftIcon) ? App.ftIcon(f.name) : fileIcon(f.name);
-      rowEl.appendChild(ic);
-      const nm = document.createElement('span');
-      nm.className = 'nm';
-      nm.textContent = f.name;
-      nm.title = f.path;
-      rowEl.appendChild(nm);
-      const rel = document.createElement('span');
-      rel.className = 'tree-search-rel';
-      rel.textContent = f.rel;
-      rowEl.appendChild(rel);
-      rowEl.dataset.path = f.path;
+      const rowEl = makeFileResult(f, i === searchIdx);
       rowEl.onclick = e => {
         if (!searchUsable(state)) return;
         searchIdx = i; state.selectedPath = f.path;
@@ -690,7 +747,7 @@ const Tree = (() => {
 
   // 树定位：展开目录链 + 高亮目标文件（打开文件后调用）
   async function reveal(filePath) {
-    if (!rootPath || !filePath) return;
+    if (!rootPath || !filePath || openFilesOnly) return;
     const norm = (p) => String(p).replace(/\\/g, '/');
     const rootN = norm(rootPath);
     const fileN = norm(filePath);
@@ -776,6 +833,7 @@ const Tree = (() => {
   }
   // 只切换已有行的 selected 类（虚拟滚动下也轻量）
   function applySelection() {
+    if (openFilesOnly) return;
     el.querySelectorAll('.tree-row').forEach((r) => {
       const p = r.dataset.path || ((r.querySelector('.nm') || {}).title || '');
       r.classList.toggle('selected', !!p && isSelected(p));
@@ -1629,7 +1687,7 @@ const Tree = (() => {
   }
   // 无输入焦点时接管方向键（输入框 / CM6 编辑器内不干扰）
   document.addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || e.isComposing) return;
+    if (openFilesOnly || e.defaultPrevented || e.isComposing || e.target?.closest?.('#tree-head button')) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Delete'].includes(e.key)) return;
     // 有弹窗打开（设置 / 确认框等）时方向键归弹窗，目录树不接管
@@ -1665,6 +1723,11 @@ const Tree = (() => {
       const schedule = () => {
         const q = searchInput.value.trim();
         clearTimeout(searchDeb); searchIdx = 0;
+        if (openFilesOnly) {
+          searchState = null;
+          if (!searchComposing) syncOpenFiles();
+          return;
+        }
         searchState = q && rootPath ? { q, root: rootPath, files: null, limit: 200, loading: false, error: '' } : null;
         if (!searchState) { render(); return; }
         searchNotice(searchComposing ? '正在输入，完成中文组合后检索文件名/相对路径。' : '等待检索当前项目：' + rootPath);
@@ -1676,6 +1739,12 @@ const Tree = (() => {
       searchInput.addEventListener('keydown', (e) => {
         if (searchComposing || e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Escape') { e.preventDefault(); endSearch(); searchInput.blur(); return; }
+        if (openFilesOnly) {
+          const first = el.querySelector('.tree-open-file');
+          if (e.key === 'Enter' && first) { e.preventDefault(); first.click(); }
+          if (e.key === 'ArrowDown' && first) { e.preventDefault(); first.focus(); }
+          return;
+        }
         if (e.key === 'Enter') {
           e.preventDefault();
           if (!searchState || !searchUsable(searchState)) return;
@@ -1699,6 +1768,18 @@ const Tree = (() => {
           try { rows[next].scrollIntoView({ block: 'nearest' }); } catch {}
         }
       });
+      const openOnlyButton = document.getElementById('tree-open-only');
+      if (openOnlyButton) openOnlyButton.onclick = () => {
+        openFilesOnly = !openFilesOnly;
+        openFilesKey = null;
+        openOnlyButton.classList.toggle('active', openFilesOnly);
+        openOnlyButton.setAttribute('aria-pressed', String(openFilesOnly));
+        for (const button of document.querySelectorAll('.tree-head-actions button:not(#tree-open-only)')) {
+          button.disabled = openFilesOnly;
+        }
+        searchInput.placeholder = openFilesOnly ? '筛选已打开文件…' : '文件名或相对路径…';
+        schedule();
+      };
     }
     const hm = document.getElementById('tree-hide-mode');
     if (hm) { applyHideModeBtn(); hm.onclick = () => cycleHideMode(); }
@@ -1753,7 +1834,7 @@ const Tree = (() => {
   }
 
   return {
-    setRoot, render, select, collapseAll, expandAll, setGitStatus, aiControl,
+    setRoot, render, select, collapseAll, expandAll, setGitStatus, aiControl, syncOpenFiles,
     /**
      * 在当前选中项处新建文件/文件夹（供 Alt+Enter 调用，2026-10-28）。
      * 目标位置规则与右键菜单一致：

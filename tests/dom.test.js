@@ -667,6 +667,44 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(($(dom, '.tab.active .tname') || {}).textContent === 'README.md', '收尾：切回 README.md');
   });
 
+  await okAsync('项目栏「已打开」随标签更新，并按文件名或路径筛选', async () => {
+    const toggle = $(dom, '#tree-open-only');
+    const input = $(dom, '#tree-search');
+    const rows = () => $$(dom, '#tree .tree-open-file');
+    const paths = () => rows().map(row => row.dataset.path);
+    const query = value => {
+      input.value = value;
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    };
+    try {
+      toggle.click();
+      assert_(toggle.getAttribute('aria-pressed') === 'true', '筛选已开启');
+      assert_(paths().join('|') === [P + '/README.md', P + '/notes.txt'].join('|'), '只显示已打开的文件');
+      assert_(rows()[0].getAttribute('aria-current') === 'true', '标记当前标签');
+      rows()[1].click();
+      await tick();
+      assert_(rows()[1].getAttribute('aria-current') === 'true', '点击切换标签并更新高亮');
+      g(dom, `Viewer.addLazyTab(${JSON.stringify(P + '/src/app.js')})`);
+      g(dom, `Viewer.addLazyTab(${JSON.stringify(P + '-other/src/app.js')})`);
+      assert_(paths().length === 3 && paths().includes(P + '/src/app.js'), '包含懒恢复标签，排除其他项目的文件');
+      query('src\\app');
+      assert_(paths().length === 1 && paths()[0] === P + '/src/app.js', '搜索框匹配相对路径');
+      await g(dom, `Viewer.closeTab(Viewer.openTabs.findIndex(tab => tab.name === 'app.js'))`);
+      assert_(rows().length === 0 && $(dom, '#tree').textContent.includes('没有匹配'), '关闭标签后同步移除');
+      query('readme');
+      assert_(paths().length === 1 && paths()[0] === P + '/README.md', '搜索框匹配文件名');
+      g(dom, 'Viewer.closeAll()');
+      query('');
+      assert_(rows().length === 0 && $(dom, '#tree').textContent.includes('没有已打开'), '关闭全部后显示空状态');
+    } finally {
+      query('');
+      if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+      await g(dom, `Viewer.openFile(${JSON.stringify(P + '/README.md')})`);
+      await tick();
+    }
+    assert_($$(dom, '#tree .tree-row').some(row => row.dataset.path === P + '/data.csv'), '关闭筛选恢复普通目录树');
+  });
+
   await okAsync('Markdown 渲染 → .md-view 且标题/加粗/代码块生效', async () => {
     // md 默认 live（CM6），先切「◉ 预览」再断言渲染
     click($allIn($(dom, '#tab-actions'), 'button').find((b) => b.textContent.trim() === '预览'));

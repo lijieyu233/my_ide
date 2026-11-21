@@ -1366,6 +1366,7 @@ const Viewer = (() => {
     if(wasTabFocus)focusTab(tabs.some(tab=>tab.id===focusId)?focusId:activeTabId);
     else if(wasAll)document.querySelector('#tab-scroll .tab-all,.editor-pane-tabs .tab-all')?.focus({preventScroll:true});
     syncEmptyState();
+    window.Tree?.syncOpenFiles?.();
     if (window.Session) Session.save();
   }
 

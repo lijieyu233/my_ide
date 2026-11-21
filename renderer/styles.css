@@ -338,8 +338,11 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 #tree-head .vt-btn.disabled { opacity: .4; }
 #tree-head .vt-btn.disabled:hover { background: transparent; color: var(--text-dim); }
 #tree-head .hide-mode-btn { padding: 0 6px; }
+#tree-head #tree-open-only { white-space: nowrap; }
 /* 搜索结果行 + 空态 */
 .tree-row.tree-search-row { color: var(--text); }
+.tree-row.tree-open-file { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; }
+.tree-row.tree-open-file:hover { background: var(--bg-hover); }
 .tree-row.tree-search-row .tree-search-rel {
   color: var(--text-dim); font-size: .77em; margin-left: 6px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%;
