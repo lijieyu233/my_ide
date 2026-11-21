@@ -2718,7 +2718,7 @@ const AiPanel = (() => {
       const childId = 'ai-hist-items-' + index;
       html += '<section class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' + (unassigned ? ' data-unassigned' : '') + '>' +
         '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (items.length ? '' : ' disabled') + ' title="' + esc(groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
-        '<span class="ai-hist-chevron">' + historyIcon('m6 4 4 4-4 4') + '</span>' + historyIcon('M2 5V3h5l2 2h5v8H2z') +
+        '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
         (current ? '<span class="ai-hist-workspace-current">当前</span>' : '') +
         '<span class="ai-hist-workspace-count">' + items.length + '</span></button>' +
@@ -2798,10 +2798,10 @@ const AiPanel = (() => {
     const sidebar = document.createElement('div');
     histSidebar = sidebar;
     sidebar.className = 'ai-hist-dock';
-    sidebar.innerHTML = '<div class="ai-hist-head"><strong>会话</strong>' +
+    sidebar.innerHTML = '<div class="panel-title ai-hist-head">会话<span class="panel-title-actions">' +
       '<button type="button" class="ai-hist-b" data-project-picker title="切换项目" aria-label="切换项目">' + historyIcon('M2 5V3h5l2 2h5v8H2zM6 9h4m-2-2 2 2-2 2') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
-      '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></div>' +
+      '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></span></div>' +
       '<div class="ai-hist-tabs"><button type="button" data-hist-scope="all">全部工作区</button><button type="button" data-hist-scope="current">当前工程</button></div>' +
       '<div class="ai-hist-status" role="status"></div><div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);

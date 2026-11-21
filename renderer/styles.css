@@ -265,6 +265,16 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
    原来左右各有一条 accent 竖线 —— 同一个按钮两个选中指示，是噪音。 */
 
 #sidebar {
+  /* 项目树、大纲和会话栏使用同一套行高和缩进。行高与 Tree.rowH() 的四舍五入一致。 */
+  --sidebar-tree-row-height: round(nearest, calc(var(--tool-font, 13px) * 1.7), 1px);
+  --sidebar-tree-gutter: 4px;
+  --sidebar-tree-indent: 14px;
+  --sidebar-tree-icon-width: 18px;
+  --sidebar-tree-gap: 4px;
+  --sidebar-tree-text-inset: calc(var(--sidebar-tree-gutter) + var(--sidebar-tree-icon-width) + var(--sidebar-tree-gap));
+  --sidebar-tree-branch: color-mix(in srgb, var(--accent) 44%, var(--text));
+  --sidebar-tree-branch-hover: color-mix(in srgb, var(--accent) 78%, var(--text-bright));
+  --sidebar-tree-selected: color-mix(in srgb, var(--text) 9%, transparent);
   /* 默认宽度与 App.LAYOUT 同源；flex 只在窗口空间不足时收缩，不设置阅读宽度下限。 */
   width: 340px; min-width: 0; max-width: none; flex-shrink: 1;
   background: var(--bg-panel);
@@ -341,12 +351,14 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* ---------- 文件树 ---------- */
 .tree-node { line-height: 22px; white-space: nowrap; }
 .tree-row {
-  display: flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: var(--sidebar-tree-gap);
   padding-right: 8px; cursor: default;
   height: var(--tree-row-h, 22px); color: var(--text);
   white-space: nowrap;
 }
-.tree-row:hover { background: var(--bg-hover); }
+.tree-row:hover, .outline-item:hover, .ai-hist-group-head:hover, .ai-hist-row:hover {
+  background: var(--bg-hover);
+}
 .tree-row.selected { background: var(--bg-selected); color: #fff; }
 /* 剪切待粘贴：半透明（资源管理器剪切反馈语义） */
 .tree-row.cut-pending { opacity: 0.45; }
@@ -360,7 +372,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* 图标列固定宽度：目录三角与文件图标同列对齐，名称起点一致。
    图标一律内联 SVG（原来文件图标是 emoji —— 不同字号的宽度与基线都不一致，一列看下来就"乱"）。 */
 .tree-row .ic {
-  width: 18px; flex-shrink: 0;
+  width: var(--sidebar-tree-icon-width); flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .tree-row .ic svg { width: 14px; height: 14px; }
@@ -369,8 +381,8 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tree-row .ic.ic-dir svg { width: 12px; height: 12px; }
 .tree-row:hover .ic.ic-dir { color: var(--text-bright); }
 /* 目录名偏蓝、文件名保持高亮：PyCharm 就是靠这个把「容器」和「内容」一眼分开 */
-.tree-row .nm-dir { color: color-mix(in srgb, var(--accent) 44%, var(--text)); }
-.tree-row:hover .nm-dir { color: color-mix(in srgb, var(--accent) 78%, var(--text-bright)); }
+.tree-row .nm-dir { color: var(--sidebar-tree-branch); }
+.tree-row:hover .nm-dir { color: var(--sidebar-tree-branch-hover); }
 .tree-row .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; white-space: nowrap; }
 
 .tree-row .path-copy { visibility: hidden; font-size: .85em; color: var(--text-dim); cursor: pointer; }
@@ -1121,60 +1133,31 @@ textarea.editor {
 /* HTML 预览 */
 .html-frame { width: 100%; height: 100%; border: none; background: #fff; }
 
-/* ---------- 大纲面板（对齐 PyCharm Structure）---------- */
-#outline { flex: 1; overflow: auto; padding: 2px 0 10px; min-height: 0; }
-/* 过滤行：直接复用文件树那套 .tree-search-wrap（内嵌放大镜 / 静态无边框 / focus 才描主色），
-   这里只把它的 flex:1（在 #tree-head 里是"撑满剩余宽度"）改回不伸缩，并给一圈内边距。 */
-#outline-filter { flex: none; padding: 5px 8px 4px; }
+/* ---------- 大纲 ---------- */
+#outline { flex: 1; overflow: auto; padding: 4px 0; min-height: 0; }
+#outline-filter { display: flex; flex: none; padding: 5px 8px; border-bottom: 1px solid var(--border-pane); font-size: .92em; }
 #outline-filter[hidden] { display: none; }
-#outline-filter input[type="text"] { font-size: .92em; padding-top: 4px; padding-bottom: 4px; }
 .outline-list { display: flex; flex-direction: column; }
-/* 行：固定箭头列 + 文本，整行可点；字号跟随面板 --tool-font（1em 继承） */
 .outline-item {
-  display: flex; align-items: center; gap: 2px;
-  height: 1.9em; padding-right: 8px;
-  font-size: 1em; color: var(--text);
-  cursor: pointer; white-space: nowrap; overflow: hidden;
+  display: flex; align-items: center; gap: var(--sidebar-tree-gap);
+  height: var(--sidebar-tree-row-height); flex: none;
+  padding-inline: calc(var(--sidebar-tree-gutter) + var(--outline-depth, 0) * var(--sidebar-tree-indent)) 8px;
+  color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden;
 }
-.outline-item:hover { background: var(--bg-hover); }
-/* 选中态本体在文件末尾统一（.outline-item.key-nav-sel：弱底 + 2px 主色左线），
-   这里只补箭头：**不能写死 #fff** —— 浅色主题的选中底是浅蓝，白箭头直接消失（旧实现的老毛病）。 */
-.outline-item.key-nav-sel .ol-arrow { color: var(--text-bright); }
-.outline-item.key-nav-sel .ol-arrow:hover { background: color-mix(in srgb, var(--text) 16%, transparent); }
-/* 层级区分：**只降对比、不缩字号**（PyCharm 各层级字号一致）。
-   ⚠ 实测（crimson 主题）旧规则下 H1/H2 同为 --text、H3/H4/H5/H6 四级同为 --text-dim
-   → 六个层级压成两档，一屏看下去"哪层是哪层"完全分不出；而且 H3+ 与箭头同色，
-   三角和文字糊在一起。现在按层级分四档，每档都从主题变量混出来（不写死颜色，换主题自动跟随）：
-     H1 = --text-bright（最亮，唯一的顶层）
-     H2 = --text
-     H3 = --text 与 --text-dim 之间（过渡档，避免 H2→H3 掉得太狠）
-     H4+ = --text-dim（最弱，深层级本来就该退后）
-   缩进仍按 (level-1)*13+4 递进，颜色只是补充信号。 */
-.outline-item.lv2 { color: var(--text); }
-.outline-item.lv3 { color: color-mix(in srgb, var(--text) 62%, var(--text-dim)); }
-.outline-item.lv4, .outline-item.lv5, .outline-item.lv6 { color: var(--text-dim); }
-/* H1 是文档标题、也是唯一的顶层：给它最亮色 + 轻微字重，一眼能定位"这篇在讲什么"。
-   只加颜色不加粗体以外的装饰（避免又变成"一屏多个焦点"）。 */
-.outline-item:not([class*=' lv']) { color: var(--text-bright); font-weight: 500; }
-.outline-item.ol-hidden { display: none; }
-/* 被「过滤标题」筛掉的行走独立的类：ol-hidden 专表"被祖先收起"，
-   两者共用一个类的话，applyFilter 与 syncFromEditor 会互相把状态翻回去。 */
-.outline-item.ol-filtered { display: none; }
-.outline-item .ol-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 箭头列：独占点击区（点箭头只折叠、点文本只跳转）；叶子行留空占位、不画符号。
-   ⚠ 三角改内联 SVG 后，宽度要给够 —— svg.ic 本身是 16px，这里用 1em 列宽 + 居中，
-   并靠 `.closed` 旋转表示折叠态（不做两套路径）。 */
-.ol-arrow {
-  width: 1.15em; flex: none; height: 1.15em;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--text-dim); cursor: pointer; user-select: none;
-  border-radius: 3px;
+.outline-item.ol-branch { color: var(--sidebar-tree-branch); }
+.outline-item.ol-branch:hover:not(.key-nav-sel) { color: var(--sidebar-tree-branch-hover); }
+.outline-item.ol-hidden, .outline-item.ol-filtered { display: none; }
+.outline-item .ol-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.ol-arrow, .ai-hist-chevron {
+  width: var(--sidebar-tree-icon-width); flex: none;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--text-dim);
 }
-.ol-arrow svg.ic { width: 1em; height: 1em; transition: transform .12s ease; }
-.ol-arrow.closed svg.ic { transform: rotate(-90deg); }
-.ol-arrow:hover { color: var(--text-bright); background: var(--bg-hover); }
+.ol-arrow { height: 100%; cursor: pointer; user-select: none; }
+.ol-arrow svg.ic, .ai-hist-chevron svg.ic { width: 12px; height: 12px; }
+.ol-arrow.closed svg.ic, .ai-hist-group-title[aria-expanded="false"] .ai-hist-chevron svg.ic { transform: rotate(-90deg); }
+.outline-item:hover .ol-arrow, .ai-hist-group-head:hover .ai-hist-chevron { color: var(--text-bright); }
 .ol-arrow.ol-pad { cursor: inherit; }
-.ol-arrow.ol-pad:hover { background: transparent; color: inherit; }
 
 /* ---------- Git 提交对话框（PyCharm 式 Ctrl+K：左上文件树 · 左下提交信息 · 右侧 diff） ---------- */
 #panel-project, #panel-outline, #panel-db, #panel-browser {
@@ -3702,12 +3685,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #panel-sessions { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ai-hist-dock { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .ai-hist-dock [hidden] { display: none; }
-.ai-hist-head { display: flex; align-items: center; gap: 3px; min-height: 36px; padding: 4px 9px 4px 12px; border-bottom: 1px solid var(--ui-line); }
-.ai-hist-head strong { margin-right: auto; color: var(--text-bright); font-weight: 600; }
 .ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open {
   color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer;
 }
-.ai-hist-tabs { display: flex; flex: none; gap: 4px; padding: 8px 10px 5px; }
+.ai-hist-tabs { display: flex; flex: none; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border-pane); }
 .ai-hist-tabs button {
   padding: 4px 7px; border-radius: var(--ui-radius); font-size: .84em; color: var(--text-dim);
 }
@@ -3717,31 +3698,24 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-status { font-size: .83em; color: var(--text-dim); padding: 0 11px 7px; overflow-wrap: anywhere; flex-shrink: 0; }
 .ai-hist-status:empty { display: none; }
 .ai-hist-status.error { color: var(--danger); }
-.ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 2px 7px 10px; }
-.ai-hist-group + .ai-hist-group { margin-top: 3px; }
-.ai-hist-group-head { display: flex; align-items: center; min-width: 0; padding-right: 3px; border-radius: var(--ui-radius); }
-.ai-hist-group-title {
-  display: flex; align-items: center; gap: 6px; min-height: 32px; flex: 1; min-width: 0;
-  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left;
+.ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
+.ai-hist-group-head, .ai-hist-row { display: flex; align-items: center; min-width: 0; height: var(--sidebar-tree-row-height); }
+.ai-hist-group-head { padding-right: 8px; }
+.ai-hist-group-title, .ai-hist-open {
+  display: flex; align-items: center; gap: var(--sidebar-tree-gap); flex: 1; min-width: 0; height: 100%;
+  text-align: left;
 }
+.ai-hist-group-title { padding: 0 0 0 var(--sidebar-tree-gutter); }
 .ai-hist-group-title:disabled { cursor: default; }
 .ai-hist-group-title:disabled .ai-hist-chevron { visibility: hidden; }
-.ai-hist-group-title > svg.ic { width: 14px; height: 14px; flex: none; color: var(--text-dim); }
-.ai-hist-chevron { display: inline-flex; color: var(--text-dim); }
-.ai-hist-chevron svg.ic { width: 10px; height: 10px; }
-.ai-hist-group-title[aria-expanded="true"] .ai-hist-chevron { transform: rotate(90deg); }
-.ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-hist-workspace-current { color: var(--text-dim); font-size: .78em; white-space: nowrap; }
-.ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; font-variant-numeric: tabular-nums; }
-/* 会话文字从工作区名称向右缩进一级。 */
-.ai-hist-items { margin: 1px 0 5px 48px; }
-.ai-hist-empty { padding: 12px 6px; font-size: .88em; color: var(--text-dim); }
-.ai-hist-row { position: relative; display: flex; align-items: center; min-width: 0; min-height: 30px; border-radius: var(--ui-radius); }
-.ai-hist-row.cur { background: var(--bg-selected); }
-.ai-hist-open {
-  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; min-height: 30px;
-  padding: 3px 6px; border-radius: var(--ui-radius); text-align: left;
-}
+.ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sidebar-tree-branch); }
+.ai-hist-group-head:hover .ai-hist-workspace-name { color: var(--sidebar-tree-branch-hover); }
+.ai-hist-workspace-current, .ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; white-space: nowrap; }
+.ai-hist-workspace-count { font-variant-numeric: tabular-nums; }
+.ai-hist-empty { padding: 12px 8px; font-size: .88em; color: var(--text-dim); }
+.ai-hist-row { position: relative; }
+.ai-hist-open { padding-inline: calc(var(--sidebar-tree-text-inset) + var(--sidebar-tree-indent)) 8px; }
+.ai-hist-row.cur { background: var(--sidebar-tree-selected); color: var(--text-bright); }
 .ai-hist-open:disabled { color: var(--text-dim); cursor: default; }
 .ai-hist-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-hist-hint { display: inline-flex; color: var(--text-dim); }
@@ -3755,6 +3729,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-row:is(:hover,:focus-within) .ai-hist-open:has(+ .ai-hist-actions) .ai-hist-ts { visibility: hidden; width: 0; overflow: hidden; }
 .ai-hist-b { display: grid; place-items: center; flex: none; width: 22px; height: 24px; padding: 0; color: var(--text-dim); border-radius: var(--ui-radius); }
 .ai-hist-b svg.ic { width: 13px; height: 13px; }
+.ai-hist-rows .ai-hist-b { height: var(--sidebar-tree-row-height); }
 .ai-hist-b:disabled { opacity: .5; cursor: default; }
 
 body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparent); }
@@ -4313,7 +4288,7 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
    现在把强调权按层级分配：当前编辑文件（标签）最强 → 侧栏当前项（弱底 + 竖线）中等 → hover 最弱。 */
 .tree-row, .outline-item { position: relative; }
 .tree-row.selected, .outline-item.key-nav-sel {
-  background: color-mix(in srgb, var(--text) 9%, transparent);
+  background: var(--sidebar-tree-selected);
   color: var(--text-bright);
 }
 .tree-row.selected::before, .outline-item.key-nav-sel::before {

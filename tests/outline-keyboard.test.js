@@ -31,5 +31,9 @@ test('空树及非Markdown按键不吞、不异常、无旧ARIA目标',f=>{f.foc
 test('隐藏面板不接管，即使旧树仍持有焦点',f=>{f.focus();f.w.document.getElementById('panel-outline').classList.add('hidden');assert(!f.key('ArrowDown').defaultPrevented);assert.equal(f.selected(),'根');});
 test('Enter使用原导航合同且正文完全不变',f=>{const before=f.w.Viewer.activeTab.content;f.focus();f.key('ArrowDown');f.key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(f.calls)),[{documentId:'doc1',revision:0,path:'C:/project/中文.md',line:5,headingIndex:1}]);assert.equal(f.w.Viewer.activeTab.content,before);});
 test('点击折叠箭头获得树焦点但不跳转',f=>{f.rows()[0].querySelector('.ol-arrow').click();assert.equal(f.w.document.activeElement,f.el);assert.equal(f.calls.length,0);assert.equal(f.selected(),'根');assert.equal(f.rows()[0].getAttribute('aria-expanded'),'false');});
+test('跳级标题按实际父子层级缩进',f=>{
+  assert.deepEqual(f.rows().map(row=>row.getAttribute('aria-level')),['1','2','3','2','1']);
+  assert.deepEqual(f.rows().map(row=>row.style.getPropertyValue('--outline-depth')),['0','1','2','1','0']);
+},'## 一级根节点\n#### 直接子节\n###### 孙节\n### 同层子节\n## 另一根节点\n');
 test('选中/展开ARIA与可见选项和活动后代一致',f=>{f.focus();assert.equal(f.el.getAttribute('role'),'tree');assert.equal(f.rows()[1].getAttribute('aria-level'),'2');assert.equal(f.rows()[3].hasAttribute('aria-expanded'),false);f.key('ArrowDown');assert.equal(f.rows().filter(r=>r.getAttribute('aria-selected')==='true').length,1);assert.equal(f.el.getAttribute('aria-activedescendant'),f.rows()[1].id);});
 console.log('大纲键盘：'+passed+' 通过 / '+failed+' 失败');process.exitCode=failed?1:0;

@@ -1480,11 +1480,11 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick(); await tick();
     vis = $allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden'));
     assert_(vis.length === 4, '展开全部恢复 4 个: ' + vis.length);
-    const rowJia = $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'));
+    const rowJia = $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.getAttribute('aria-level') === '2');
     rowJia.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
     await tick(); await tick();
     assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 3, '双击「甲」收起其子层（给了一个大点击目标）');
-    $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.classList.contains('lv2'))
+    $allIn(ol, '.outline-item').find((r) => r.textContent.includes('甲') && r.getAttribute('aria-level') === '2')
       .dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
     await tick(); await tick();
     assert_($allIn(ol, '.outline-item').filter((r) => !r.classList.contains('ol-hidden')).length === 4, '再双击「甲」展开回去');
@@ -1503,11 +1503,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     dom.window.localStorage.removeItem('myide-outline-collapsed');
   });
 
-  await okAsync('大纲：三角用内联 SVG（不再用 ▾▸ 字符）+ 层级颜色分档', async () => {
-    // 起因：用户截图反馈「这里的页面不好看」。实测两个真实缺陷：
-    //   ① 三角是 ▾/▸ 字符 —— 与文件树/启动面板（早已迁 SVG）不一致，且字号基线不受控；
-    //   ② 层级颜色**只分两档**：H1/H2 同为 --text、H3~H6 四级同为 --text-dim，
-    //      六个层级压成两档，一屏看下去分不清哪层是哪层（还和箭头同色）。
+  await okAsync('大纲：折叠箭头、分支与叶子样式对齐项目树', async () => {
     FAKE_FS[P + '/lv.md'] = { type: 'file', mtime: 9500, ctime: 9500, size: 120,
       content: '# 根标题\n\n## 二级\n\n### 三级\n\n#### 四级\n\n##### 五级\n' };
     await g(dom, 'Viewer.openFile("' + P + '/lv.md")');
@@ -1524,40 +1520,15 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_($allIn(ol, '.ol-arrow.ol-pad').every((p) => !p.querySelector('svg')),
       '叶子行占位不画三角（同旧行为，只是从"空文本"变成"无 svg"）');
 
-    // ② 层级颜色：至少 3 档不同（旧实现只有 2 档）
-    // ⚠ jsdom 不解析 CSS 变量与 color-mix()，getComputedStyle 会原样返回 `var(--x)` /
-    //   `color-mix(...)` 字符串（实测，真 Chromium 才会算成 rgb）。所以这里**不能按 rgb 比亮度**，
-    //   改为断言"用的颜色来源不同档"——真机上的最终色值由 `--check-ui` 的大纲步骤截图把关。
-    const srcOf = (r) => dom.window.getComputedStyle(r).color.replace(/\s+/g, ' ').trim();
-    const rows5 = (lv) => (lv === 1
-      ? items.find((x) => !/lv\d/.test(x.className))
-      : items.find((x) => x.classList.contains('lv' + lv)));
-    const levels = [1, 2, 3, 4, 5].map((lv) => (rows5(lv) ? srcOf(rows5(lv)) : null));
-    assert_(levels.every(Boolean), '五个层级都能取到颜色: ' + JSON.stringify(levels));
-    const distinct = new Set(levels).size;
-    assert_(distinct >= 3, '层级颜色至少分 3 档（旧实现仅 2 档，H3~H6 全同色）: ' + distinct + ' → ' + JSON.stringify(levels));
-    // H1 用最亮变量、H4+ 用最暗变量，且两者不同（旧实现 H1/H2 同色）
-    assert_(levels[0] !== levels[1], 'H1 与 H2 不同档（旧实现两层同为 --text）: ' + levels[0] + ' vs ' + levels[1]);
-    assert_(levels[2] !== levels[1] && levels[2] !== levels[3],
-      'H3 是独立过渡档（既不同于 H2 也不同于 H4）: ' + levels[2]);
-    assert_(levels[1] !== levels[3], 'H2 与 H4 不同档: ' + levels[1] + ' vs ' + levels[3]);
-    // 各层级字号仍然一致（PyCharm 约定：只降对比、不缩字号）
-    const fonts = new Set(items.map((r) => dom.window.getComputedStyle(r).fontSize));
-    assert_(fonts.size === 1, '各层级字号一致（只降对比不缩字号）: ' + [...fonts].join(','));
-    // 缩进仍逐级递进（颜色只是补充信号，主信号是缩进）
-    const padL = items.map((r) => parseFloat(dom.window.getComputedStyle(r).paddingLeft));
-    assert_(padL[0] < padL[1] && padL[1] < padL[2] && padL[2] < padL[3] && padL[3] < padL[4],
-      '缩进逐级递进: ' + padL.join(' < '));
-    // H1 独有字重（顶层可一眼定位）
-    const w1 = dom.window.getComputedStyle(rows5(1)).fontWeight;
-    assert_(Number(w1) >= 500, 'H1 有更重字重以突出顶层: ' + w1);
+    const branch = items.filter(row => row.classList.contains('ol-branch'));
+    assert_(branch.length === 4 && !items[4].classList.contains('ol-branch'), '子层决定分支样式');
+    const fonts = new Set(items.map(row => dom.window.getComputedStyle(row).fontSize));
+    assert_(fonts.size === 1, '各层级字号一致');
+    const depths = items.map(row => row.style.getPropertyValue('--outline-depth'));
+    assert_(depths.join(',') === '0,1,2,3,4', '缩进逐级递进: ' + depths.join(','));
   });
 
-  await okAsync('大纲：过滤标题 + 跟随光标 + 缩进随字号缩放（em）', async () => {
-    // 三个真实缺口（用户截图反馈"大纲还有优化点吗"）：
-    //   ① 文件树早有搜索框，大纲没有 → 长文档只能滚；
-    //   ② 大纲→编辑器是单向的，编辑区滚到中段时看不出"我在哪一节"；
-    //   ③ 缩进写死 13px，而面板字号走 --tool-font（状态栏 A−/A+）→ 字号一变层级台阶比例就失真。
+  await okAsync('大纲：过滤标题、跟随光标与父子缩进', async () => {
     // 结构刻意让命中和未命中分属两条分支：「证据附录」在「依据与未纳入事项」下，
     // 「时间统计」是另一条 H2 —— 祖先链补齐只能补命中项那一条，不能把旁支一起留下。
     FAKE_FS[P + '/flt.md'] = { type: 'file', mtime: 9600, ctime: 9600, size: 120,
@@ -1574,11 +1545,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       .map(texts);
     assert_(rows().length === 5, '解析出 5 个标题, got ' + rows().length);
 
-    // ③ 缩进必须是 em（随 --tool-font 缩放），且每级恰好 1em
-    const pad = rows().map((r) => r.style.paddingLeft);
-    assert_(pad.every((v) => /em$/.test(v)), '缩进用 em 而不是 px（字号调节后层级比例不变）: ' + pad.join(','));
-    assert_(Math.abs(parseFloat(pad[1]) - parseFloat(pad[0]) - 1) < 1e-6,
-      '相邻层级台阶 = 1em: ' + pad[0] + ' → ' + pad[1]);
+    const depths = rows().map(row => row.style.getPropertyValue('--outline-depth'));
+    assert_(depths.join(',') === '0,1,2,1,2', '同层级使用同一缩进: ' + depths.join(','));
 
     // ② 跟随光标：编辑器行号 → 高亮对应章节（不重建树）
     const sel = () => $allIn(ol, '.key-nav-sel').map(texts).join(',');

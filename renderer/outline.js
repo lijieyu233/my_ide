@@ -308,9 +308,8 @@ const Outline = (() => {
     if (!wrap) {
       wrap = document.createElement('div');
       wrap.id = 'outline-filter';
-      wrap.className = 'tree-search-wrap';
-      wrap.innerHTML = IC_SEARCH +
-        '<input id="outline-search" type="text" placeholder="过滤标题…" autocomplete="off" spellcheck="false" aria-label="过滤大纲标题">';
+      wrap.innerHTML = '<span class="tree-search-wrap">' + IC_SEARCH +
+        '<input id="outline-search" type="text" placeholder="过滤标题…" autocomplete="off" spellcheck="false" aria-label="过滤大纲标题"></span>';
       panel.insertBefore(wrap, el);   // 标题栏之下、树之上
       const input = wrap.querySelector('input');
       input.value = filterText;
@@ -454,24 +453,24 @@ const Outline = (() => {
 
     const wrap = document.createElement('div');
     wrap.className = 'outline-list';
+    const ancestorLevels = [];
     headings.forEach((h, i) => {
+      while (ancestorLevels.length && ancestorLevels.at(-1) >= h.level) ancestorLevels.pop();
+      const depth = ancestorLevels.length;
+      ancestorLevels.push(h.level);
       const [cs, ce] = childrenRange(i);
       const hasKids = ce > cs;
       // JSON 大纲隐藏了普通字段；没有结构子项仍可能有正文可折叠，不能当作无操作的叶子。
       const toggleable = hasKids||hasJsonFold(i);
       const isCol = collapsed.has(hKey(h));
       const row = document.createElement('div');
-      row.className = 'outline-item' + (h.level > 1 ? ' lv' + h.level : '');
-      // 缩进：箭头列固定宽度，文本起点按层级递进（PyCharm 同款）。
-      // ⚠ 必须用 em：面板字号是 --tool-font（状态栏 A−/A+ 改），行高与箭头列都是 em ——
-      //   原来这里写死 13px，字号调到 18px 时一级台阶只剩 0.72em，六个层级渐渐挤成一片。
-      //   0.5em 的基数是给箭头留出的左内边（原来 4px 让 ▾ 直接压在面板边缘 / 选中竖线上）。
-      row.style.paddingLeft = ((h.level - 1) + 0.5) + 'em';
+      row.className = 'outline-item' + (toggleable ? ' ol-branch' : '');
+      row.style.setProperty('--outline-depth', String(depth));
       row.title = h.text + '\n右键：复制 / 折叠本级或本级及内部 · 双击：'+(leafFold(i)?'折叠/展开本级':'大纲列表折叠展开');
       row.dataset.idx = String(i);
       row.id = 'outline-heading-' + i;
       row.setAttribute('role', 'treeitem');
-      row.setAttribute('aria-level', String(h.level));
+      row.setAttribute('aria-level', String(depth + 1));
       row.setAttribute('aria-selected', 'false');
       if (toggleable) row.setAttribute('aria-expanded', String(!isCol));
       if (isHidden(i)) row.classList.add('ol-hidden');
@@ -480,9 +479,6 @@ const Outline = (() => {
       const arrow = document.createElement('span');
       arrow.className = 'ol-arrow' + (toggleable ? (isCol ? ' closed' : '') : ' ol-pad');
       if (toggleable) {
-        // 三角用内联 SVG（同文件树 / 启动面板）：▾▸ 字符的字号与基线不受控，
-        // 混在一列里会随字号变粗变笨重，宽度也对不齐 —— 实测 16px 下 13.6px 字形撑不满 1.15em 列。
-        // 折叠态由 CSS 的 `.closed svg` 旋转 -90° 表示（不做两套路径，旋转动画也更顺）。
         arrow.innerHTML = ICO_CHEV;
         arrow.title = leafFold(i)?(isCol?'展开本级':'折叠本级'):(isCol?'展开子级':'收起子级');
         arrow.onclick = (ev) => { ev.stopPropagation(); el.focus(); toggleCollapse(i); };
