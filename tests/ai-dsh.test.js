@@ -408,6 +408,24 @@ await test('session/new 本身失败时原样抛出，不吞成降级',async()=>
   assert(!result.ok);assert(/宿主拒绝了新建会话/.test(result.error));
  }finally{await service.dispose();}
 });
+ await test('只读取得 DSH 持久归档状态，兼容没有归档字段的旧工作区',async()=>{
+  const home=path.join(temp,'workspace-archive-home');
+  const storage=path.join(home,'storages'),file=path.join(storage,'workspace.json');
+  const service=createService({home});
+  assert.deepEqual(await service.archivedSessionIds(),[]);
+  fs.mkdirSync(storage,{recursive:true});
+  const workspace={unit:{name:'workspace',version:2},global:{workspaceIds:[],archivedSessionIds:['session-archived'],pinnedSessionIds:['session-pinned']},tables:{}};
+  const archivedContent=JSON.stringify(workspace);
+  fs.writeFileSync(file,archivedContent);
+  assert.deepEqual(await service.archivedSessionIds(),['session-archived']);
+  assert.equal(fs.readFileSync(file,'utf8'),archivedContent);
+  delete workspace.global.archivedSessionIds;
+  fs.writeFileSync(file,JSON.stringify(workspace));
+  assert.deepEqual(await service.archivedSessionIds(),[]);
+  workspace.global.archivedSessionIds='invalid';
+  fs.writeFileSync(file,JSON.stringify(workspace));
+  await assert.rejects(service.archivedSessionIds(),/归档状态无法读取/);
+ });
  await test('全局目录复用本机宿主列表，真实 cwd 不被映射替换，未知归属不猜根目录或 running',async()=>{
   const file=path.join(temp,'global-catalog-map.json'),original={
    [JSON.stringify(['local-current',temp])]:{id:'session-current',cwd:temp},

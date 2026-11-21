@@ -1471,6 +1471,32 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.openSessions();await tick();await tick();assert.equal(f.w.document.querySelectorAll('.ai-hist-row').length,0);
     assert.equal(f.element('.ai-hist-status').textContent,'');
   });
+  await test('DSH 已归档会话、外部工作区记录和本地别名都不会出现在目录', async () => {
+    const f=fixture(), key='myide-ai-sessions:'+f.A+':dsh';
+    const own='session-archived', other='session-archived-other', missing='session-archived-missing';
+    let archivedSessionIds=[own,other,missing];
+    f.w.localStorage.setItem(key, JSON.stringify([
+      {id:'old-alias',title:'归档会话旧别名',msgs:[]},
+      {id:'missing-alias',hostId:missing,title:'归档会话旧副本',msgs:[]},
+    ]));
+    f.catalogRead=async()=>({ok:true,archivedSessionIds,items:[
+      {sessionId:'session-normal',title:'保留的会话',cwd:f.A},
+      {sessionId:own,title:'已归档会话',cwd:f.A,bindings:[{sessionId:'old-alias',rootId:f.A,scope:'project'}]},
+      {sessionId:other,title:'已归档其他工作区会话',cwd:f.B},
+    ]});
+    await f.w.AiPanel.setConfig({engine:'dsh'});
+    f.w.App.showTool('sessions');
+    await until(()=>f.element('[data-id="session-normal"]') && !f.element('[data-hist-refresh]').disabled);
+    const keys=()=>[...f.w.document.querySelectorAll('.ai-hist-row')].map(row=>row.dataset.id);
+    assert(!keys().some(id=>[own,'old-alias','missing-alias','host:'+other].includes(id)));
+    f.element('[data-hist-scope="current"]').click();
+    assert(!keys().some(id=>[own,'old-alias','missing-alias'].includes(id)));
+    archivedSessionIds=[own,missing]; // DSH 恢复了另一个工作区的会话。
+    f.element('[data-hist-scope="all"]').click();
+    f.element('[data-hist-refresh]').click();
+    await until(()=>keys().includes('host:'+other));
+    assert(!keys().some(id=>[own,'old-alias','missing-alias'].includes(id)));
+  });
   await test('点击前台正在运行的当前会话保持实时流，不重新读取或绑定历史',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('当前任务');await until(()=>f.calls.length===1);
     const id=f.calls[0].context.sessionId;f.dshCatalog=[{sessionId:'host-current',title:'当前任务',cwd:f.A,running:true,bindings:[{sessionId:id,rootId:f.A,scope:'project'}]}];

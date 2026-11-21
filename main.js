@@ -895,7 +895,11 @@ ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
 // 宿主会话目录：MyIDE 的「历史会话」以它为准（用户要求与 DSH 双向一致）。
 // 只读 + 改名两个入口；不改 MyIDE 自己的 localStorage 记录，避免两份数据打架。
 ipcMain.handle('ai:dsh-sessions',async(event,cfg)=>{
-  try{aiSender(event);const items=await DSH.listSessions(cfg);return {ok:true,items};}catch(error){return {ok:false,error:error.message};}
+  try {
+    aiSender(event);
+    const [items, archivedSessionIds] = await Promise.all([DSH.listSessions(cfg), DSH.archivedSessionIds()]);
+    return {ok:true, items, archivedSessionIds};
+  } catch (error) { return {ok:false, error:error.message}; }
 });
 ipcMain.handle('ai:dsh-rename',async(event,cfg,sessionId,title)=>{
   try{aiSender(event);return {ok:true,...await DSH.rename(cfg,sessionId,title)};}catch(error){return {ok:false,error:error.message};}

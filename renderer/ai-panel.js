@@ -2530,7 +2530,7 @@ const AiPanel = (() => {
   // 宿主会话目录缓存：{ at, root, items }。
   // DSH 里发起/运行/中断的会话只能从这里知道（本地 localStorage 记不到别人发起的会话）。
   // 缓存带 root：切换项目后必须重新拉，否则会把上一个项目的会话列进来。
-  let dshCatalog = { launcher: null, items: [] }, dshCatalogRequest = null, dshCatalogError = null;
+  let dshCatalog = { launcher: null, items: [], archivedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
   // DSH 返回整个宿主的会话；项目归属在渲染时判断，缓存只随连接来源变化。
   function refreshDshCatalog() {
     const config = getConfig(), launcher = config.dshPath || '';
@@ -2544,7 +2544,11 @@ const AiPanel = (() => {
       try {
         const result = await window.myIDE.ai.dshSessions({...config, catalogScope:'all'});
         if (dshCatalogRequest !== request) return;
-        if (result?.ok) dshCatalog = { launcher, items: Array.isArray(result.items) ? result.items : [] };
+        if (result?.ok) dshCatalog = {
+          launcher,
+          items: Array.isArray(result.items) ? result.items : [],
+          archivedIds: new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : []),
+        };
         else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
       } catch (error) {
         if (dshCatalogRequest === request) dshCatalogError = { launcher, message: error?.message || 'DSH 会话目录读取失败' };
@@ -2593,8 +2597,12 @@ const AiPanel = (() => {
     const running = new Set();
     const root = (window.App && App.root) || '';
     const live = runningSessionIds(), seen = new Set(), owners = new Map();
-    const catalog = catalogUsable() ? dshCatalog.items : [];
+    const hostCatalog = catalogUsable() ? dshCatalog : null;
+    const catalog = hostCatalog?.items || [];
+    const archived = hostCatalog?.archivedIds || new Set();
     const hostIds = new Set(catalog.map(item => item.sessionId));
+    for (const id of archived) { seen.add(id); seen.add('host:' + id); }
+    for (const item of local) if (!hostIds.has(item.id) && archived.has(item.hostId)) seen.add(item.id);
     for (const id of hostIds) owners.set(id,id);
     for (const item of local) if (/^(session-|myide-)/.test(item.id)) owners.set(item.id,item.id);
     for (const item of catalog) for (const binding of bindingsOf(item))
@@ -2605,7 +2613,7 @@ const AiPanel = (() => {
         .filter(id => !owners.has(id) || owners.get(id) === item.sessionId);
       if (!aliases.length) aliases.push('host:'+item.sessionId);
       // 没有 cwd 的未知会话不能当成所有项目共有；旧本地缓存也不能绕过真实归属。
-      if (!item.cwd || pathKey(item.cwd) !== pathKey(root)) { aliases.forEach(id => seen.add(id)); continue; }
+      if (archived.has(item.sessionId) || !item.cwd || pathKey(item.cwd) !== pathKey(root)) { aliases.forEach(id => seen.add(id)); continue; }
       const id = aliases.find(id => id === curSessionId) || aliases.find(id => live.has(id)) || aliases.find(id => byId.has(id)) || aliases[0];
       aliases.forEach(id => seen.add(id));
       const known = byId.get(id);
@@ -2644,7 +2652,7 @@ const AiPanel = (() => {
       all.unshift({id:localSelection,title:localSelection===curSessionId&&msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
     for (const item of all) { item.rootDir ||= root; item.cwd ||= root; }
     if (historyScope() === 'all') for (const item of catalog) {
-      if (item.cwd && pathKey(item.cwd) === pathKey(root) || item.blank === true) continue;
+      if (archived.has(item.sessionId) || (item.cwd && pathKey(item.cwd) === pathKey(root)) || item.blank === true) continue;
       const rootDir = item.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(item.cwd || '') ? item.cwd : '');
       const id = 'host:' + item.sessionId;
        if (item.running === true || currentRun?.status === 'active' && dshSessionAccess?.hostId === item.sessionId

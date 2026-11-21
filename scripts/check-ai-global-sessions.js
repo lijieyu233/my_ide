@@ -46,7 +46,10 @@ function realProject(root) {
   try { return fs.statSync(root).isDirectory(); } catch { return false; }
 }
 async function discover() {
-  const connection = await connect(), items = await connection.request('session/list', {}), groups = new Map();
+  const connection = await connect(), groups = new Map();
+  const service = require('../src/main/dsh/ai-dsh').createService({home:realHome});
+  const archived = new Set(await service.archivedSessionIds());
+  const items = (await connection.request('session/list', {})).filter(item => !archived.has(item.sessionId));
   for (const item of items) {
     if (!groups.has(key(item.cwd))) groups.set(key(item.cwd), { root: item.cwd, count: 0, nonblank: 0, running: 0 });
     const group = groups.get(key(item.cwd)); group.count++; group.nonblank += !item.blank; group.running += item.running;
