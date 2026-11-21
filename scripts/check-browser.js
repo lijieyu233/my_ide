@@ -54,6 +54,18 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('const input=document.getElementById("bw-url");input.focus();input.value="fixture";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===0);assert(!(await js('document.getElementById("bw-dd").classList.contains("hidden")')));assert(await js('document.querySelector(".bw-dd-item").textContent.includes("fixture 收藏")'));await capture('browser-ui-suggestions.png');
     await js('const input=document.getElementById("bw-url");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===1);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
   });
+  await test('主题下拉在原生网页上方可用，关闭后恢复同一个网页', async () => {
+    const pageId = page.id;
+    await js('document.querySelector("#btn-theme").click();true');
+    await until(() => win.contentView.children.length === 0);
+    assert(await js('!document.querySelector("#theme-menu").hidden && document.activeElement.getAttribute("role")==="menuitemradio"'));
+    await js('document.querySelector("#theme-menu [data-theme=light]").click();true');
+    await until(() => win.contentView.children.length === 1);
+    assert.equal(win.contentView.children[0].webContents.id,pageId);
+    assert.equal(page.getURL(),url+'/');
+    assert(await js('Theme.current()==="light"&&document.querySelector("#theme-menu").hidden'));
+    await js('Theme.set("crimson");true');
+  });
   await test('网页选区经原生右键菜单翻译，复用设置，弹窗不被原生网页盖住',async()=>{
     let request;
     ipcMain.removeHandler('llm:chat');ipcMain.handle('llm:chat',(_event,cfg,messages)=>{request={cfg,messages};return {text:'Keep the current page after exiting fullscreen.'};});

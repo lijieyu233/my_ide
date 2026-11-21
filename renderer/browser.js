@@ -1084,6 +1084,7 @@ const BrowserPanel = (() => {
   // WebContentsView 是原生层，永远盖在窗口 HTML 之上：Modal 弹窗 / ctx-menu 右键菜单
   // 落到网页区域就被整个盖住（实测：「新建收藏文件夹」弹窗只剩侧栏边上一条）。
   // 通用规避：任何浮层可见期间摘掉 view（实例保留），全部关闭后挂回。
+  const themePickerOpen = () => document.getElementById('theme-menu')?.hidden === false;
   function overlayOpen() {
     const mask = document.getElementById('modal-mask');
     const menu = document.getElementById('ctx-menu');
@@ -1092,7 +1093,7 @@ const BrowserPanel = (() => {
     return !!(mask && !mask.classList.contains('hidden'))
       || !!(menu && !menu.classList.contains('hidden'))
       || !!(sub && !sub.classList.contains('hidden'))
-      || !!(ddEl && !ddEl.classList.contains('hidden'));
+      || !!(ddEl && !ddEl.classList.contains('hidden')) || themePickerOpen();
   }
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
   let overlayRevision=0,overlayImage=null;
@@ -1103,7 +1104,7 @@ const BrowserPanel = (() => {
     if (overlayOpen()) {
       if (!overlayHid) {
         overlayHid=true;const revision=++overlayRevision;
-        Promise.resolve(b.viewHide({snapshot:true,focus:!ddEl||ddEl.classList.contains('hidden')})).then(result=>{
+        Promise.resolve(b.viewHide({snapshot:true,focus:!themePickerOpen()&&(!ddEl||ddEl.classList.contains('hidden'))})).then(result=>{
           if(revision!==overlayRevision||!visible||!overlayHid||!overlayOpen()||!result?.image)return;
           overlayImage?.remove();overlayImage=document.createElement('img');overlayImage.className='bw-overlay-snapshot';overlayImage.alt='';overlayImage.setAttribute('aria-hidden','true');overlayImage.src=result.image;viewEl.append(overlayImage);
         }).catch(()=>{});
@@ -1935,6 +1936,8 @@ const BrowserPanel = (() => {
     if (maskEl) overlayMo.observe(maskEl, { attributes: true, attributeFilter: ['class'] });
     if (menuEl) overlayMo.observe(menuEl, { attributes: true, attributeFilter: ['class'] });
     if (ddEl) overlayMo.observe(ddEl, { attributes: true, attributeFilter: ['class'] });
+    const themeMenu = document.getElementById('theme-menu');
+    if (themeMenu) overlayMo.observe(themeMenu, { attributes: true, attributeFilter: ['hidden'] });
     document.addEventListener('keydown',event=>{
       if(!visible||event.isComposing||[document.getElementById('modal-mask'),document.getElementById('ctx-menu')].some(el=>el&&!el.classList.contains('hidden')))return;
       if(event.ctrlKey&&!event.altKey&&['t','w','tab'].includes(event.key.toLowerCase())) {
