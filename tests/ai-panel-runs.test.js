@@ -1407,7 +1407,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(groups()[2],untouched);
     assert(groups().slice(0,2).every(group => group.querySelector('.ai-hist-items').hidden));
     assert.equal(sidebarRows.scrollTop,65);
-    assert.equal(f.element('.ai-hist-workspace-current').closest('.ai-hist-group').dataset.root,f.B);
+    assert.equal(f.element('.ai-hist-group-title[aria-current="location"]').closest('.ai-hist-group').dataset.root,f.B);
     f.element('[data-hist-scope="current"]').click();
     assert.deepEqual(groups().map(group => group.dataset.root),[f.B]);
     f.element('[data-hist-scope="all"]').click();
@@ -1427,8 +1427,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.equal(empty.querySelector('.ai-hist-workspace-count').textContent,'0');
     empty.querySelector('[data-hist-jump]').click();
     await until(() => f.w.App.root === f.B);
-    const current = f.element('.ai-hist-workspace-current').closest('.ai-hist-group');
+    const current = f.element('.ai-hist-group-title[aria-current="location"]').closest('.ai-hist-group');
     assert.equal(current.dataset.root,f.B);
+    assert(!current.querySelector('[data-hist-toggle]').textContent.includes('当前'));
     assert.equal(f.w.App.getTool(),'sessions');
   });
   await test('全局目录请求在跨工程时复用，切换启动器后旧目录不能覆盖新结果', async () => {

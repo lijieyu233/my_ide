@@ -3719,8 +3719,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .ai-hist-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sidebar-tree-branch); }
 .ai-hist-group-head:hover .ai-hist-workspace-name { color: var(--sidebar-tree-branch-hover); }
-.ai-hist-workspace-current, .ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; white-space: nowrap; }
-.ai-hist-workspace-count { font-variant-numeric: tabular-nums; }
+.ai-hist-workspace-count { color: var(--text-dim); font-size: .8em; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ai-hist-group-head:not(:hover, :focus-within) .ai-hist-workspace-count { display: none; }
 .ai-hist-group-head:has(.ai-hist-group-title:enabled):not(:hover, :focus-within) [data-hist-jump] { opacity: 0; pointer-events: none; }
 .ai-hist-empty { padding: 12px 8px; font-size: .88em; color: var(--text-dim); }

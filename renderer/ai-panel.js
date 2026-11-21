@@ -2733,10 +2733,9 @@ const AiPanel = (() => {
       const groupId = 'ai-hist-workspace-' + index;
       let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
         (unassigned ? ' data-unassigned' : '') + (isOther && !showOther ? ' hidden' : '') + '>' +
-        '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (items.length ? '' : ' disabled') + ' title="' + esc(groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
+        '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') + (items.length ? '' : ' disabled') + ' title="' + esc(groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-workspace-icon">' + historyIcon(historyFolderPath(expanded)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
-        (current ? '<span class="ai-hist-workspace-current">当前</span>' : '') +
         '<span class="ai-hist-workspace-count">' + items.length + '</span></button>' +
         (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
         '</div><div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
