@@ -2471,7 +2471,7 @@ const AiPanel = (() => {
       if(lastUserAt!=null)markRegen();scrollBottom();return true;
     }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
-  let histSidebar = null, histSidebarVisible = false, histScope = 'all';
+  let histSidebar = null, histSidebarVisible = false;
   const historyWorkspaces = new Map();
   let otherWorkspacesExpanded;
   function refreshHistInPlace() {
@@ -2660,7 +2660,7 @@ const AiPanel = (() => {
     if (localSelection && !seen.has(localSelection) && !all.some(item => item.id === localSelection))
       all.unshift({id:localSelection,title:localSelection===curSessionId&&msgs.length?sessTitle(msgs):'新会话',ts:Date.now()});
     for (const item of all) { item.rootDir ||= root; item.cwd ||= root; }
-    if (historyScope() === 'all') for (const item of catalog) {
+    for (const item of catalog) {
       if (archived.has(item.sessionId) || (item.cwd && pathKey(item.cwd) === pathKey(root)) || item.blank === true) continue;
       const rootDir = item.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(item.cwd || '') ? item.cwd : '');
       const id = 'host:' + item.sessionId;
@@ -2670,13 +2670,12 @@ const AiPanel = (() => {
         cwd:item.cwd || '',rootDir,foreign:true,unknownRoot:!rootDir,running:running.has(id),virtual:true});
     }
     // 全部工作区列表按时间排列，避免当前会话换到别的项目时行顺序跟着跳动。
-    const currentOnly = historyScope() === 'current';
+    const currentOnly = getConfig().engine !== 'dsh';
     all.sort((a, b) => (currentOnly ? Number(b.id === curSessionId) - Number(a.id === curSessionId)
       || Number(!!b.running) - Number(!!a.running) : 0) || (b.ts || 0) - (a.ts || 0)
       || String(a.hostId || a.id || '').localeCompare(String(b.hostId || b.id || '')));
     return { all, running };
   }
-  const historyScope = () => getConfig().engine === 'dsh' ? histScope : 'current';
   const historyIcon = path => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + path + '"/></svg>';
   const historyFolderPath = expanded => expanded ? 'M3 6V3h4l2 2h4v1m-10 0h12l-2 7H2z' : 'M2 5V3h4l2 2h6v8H2z';
   const historyRowsMarkup = new WeakMap();
@@ -2695,13 +2694,6 @@ const AiPanel = (() => {
     const refresh = sidebar.querySelector('[data-hist-refresh]');
     refresh.hidden = !dsh;
     refresh.disabled = histLoading;
-    sidebar.querySelector('.ai-hist-tabs').hidden = !dsh;
-    for (const button of sidebar.querySelectorAll('[data-hist-scope]')) {
-      const active = button.dataset.histScope === historyScope();
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-pressed', String(active));
-      button.disabled = !dsh;
-    }
     status.textContent = !dsh ? '' : histError ? '目录更新失败：' + histError : histLoading ? '正在读取 DSH 会话…' : '';
     status.classList.toggle('error', dsh && !!histError);
 
@@ -2712,18 +2704,14 @@ const AiPanel = (() => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    const showAll = historyScope() === 'all';
-    const opened = showAll ? openWorkspaceRoots() : new Map();
+    const opened = dsh ? openWorkspaceRoots() : new Map();
     const registered = catalogUsable() ? dshCatalog.workspaces : new Map();
-    for (const key of opened.keys()) {
-      if (!groups.has(key)) groups.set(key, []);
-    }
-    if (showAll) for (const key of registered.keys()) {
+    for (const key of [...opened.keys(), ...registered.keys()]) {
       if (!groups.has(key)) groups.set(key, []);
     }
     const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
     const entries = [...groups].sort(([a], [b]) => order(a) - order(b) || Number(b === root) - Number(a === root));
-    const isOtherWorkspace = key => showAll && key !== root && !opened.has(key) && !registered.has(key);
+    const isOtherWorkspace = key => dsh && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = otherWorkspacesExpanded ?? entries.every(([key]) => isOtherWorkspace(key));
     const otherIds = [];
     let html = '', otherHtml = '', otherRunning = false;
@@ -2854,7 +2842,6 @@ const AiPanel = (() => {
       '<button type="button" class="ai-hist-b" data-project-picker title="切换项目" aria-label="切换项目">' + historyIcon('M2 5V3h5l2 2h5v8H2zM6 9h4m-2-2 2 2-2 2') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></span></div>' +
-      '<div class="ai-hist-tabs"><button type="button" data-hist-scope="all">全部工作区</button><button type="button" data-hist-scope="current">当前工程</button></div>' +
       '<div class="ai-hist-status" role="status"></div><div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);
 
@@ -2904,14 +2891,6 @@ const AiPanel = (() => {
         return;
       }
       if (sender.closest('[data-hist-refresh]')) { await refreshDshCatalog(); return; }
-      const scopeButton = sender.closest('[data-hist-scope]');
-      if (scopeButton) {
-        if (scopeButton.disabled || scopeButton.dataset.histScope === histScope) return;
-        histScope = scopeButton.dataset.histScope;
-        refreshHistInPlace();
-        await ensureDshCatalog();
-        return;
-      }
       const otherToggle = sender.closest('[data-hist-other]');
       if (otherToggle) {
         otherWorkspacesExpanded = otherToggle.getAttribute('aria-expanded') !== 'true';

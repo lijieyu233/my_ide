@@ -91,7 +91,7 @@ function launchElectron() {
   });
 }
 async function electronCheck() {
-  const { app, BrowserWindow, dialog } = require('electron'), temp = process.env.MYIDE_GLOBAL_CHECK_TEMP;
+  const { app, BrowserWindow, dialog, nativeImage } = require('electron'), temp = process.env.MYIDE_GLOBAL_CHECK_TEMP;
   assert(temp && path.dirname(path.resolve(temp)) === path.resolve(os.tmpdir()) && path.basename(temp).startsWith('myide-global-sessions-'), '请通过node包装器运行，以便退出后释放并清理profile');
   const home = path.join(temp, 'home'); fs.mkdirSync(home, { recursive: true });
   process.env.HOME = home; process.env.USERPROFILE = home; process.env.DSH_HOME = path.join(home, '.dsh'); os.homedir = () => home;
@@ -129,14 +129,23 @@ async function electronCheck() {
   };
   async function until(fn, label, ms = 30000) { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return; await sleep(40); } throw Error('等待超时：' + label); }
   async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name); }
-  async function capture(name) {
+  async function capture(name, panelId = 'ai-panel') {
     // 只截AI导航区域；真实会话标题、工作区名称和正文全部遮蔽，不让取证产物泄露用户资料。
     await js('(()=>{const style=document.createElement("style");style.id="global-check-redaction";style.textContent="#ai-msgs{visibility:hidden!important}#ai-usage,.toast,.toasts,[class*=toast]{visibility:hidden!important}.ai-hist-nm{font-size:0!important}.ai-hist-nm::after{content:\\"真实会话（标题已遮蔽）\\";font-size:12px}.ai-hist-workspace-name,#ai-session-origin b{font-size:0!important}.ai-hist-workspace-name::after,#ai-session-origin b::after{content:\\"真实工程\\";font-size:12px}.ai-origin-scope{font-size:0!important}.ai-origin-scope::after{content:\\"会话归属：已验证工程\\";font-size:12px}";document.head.appendChild(style);return true})()');
     try {
       if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
-      const bounds = await js('(()=>{const r=document.getElementById("ai-panel").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()');
-      const shot = await win.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface: true, clip: bounds });
-      fs.writeFileSync(path.join(repo, '.ui-check-trash', name), Buffer.from(shot.data, 'base64'));
+      const bounds = await js('(()=>{const r=document.getElementById(' + JSON.stringify(panelId) + ').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,windowWidth:innerWidth,windowHeight:innerHeight}})()');
+      // 隐藏窗口的 CDP clip 可能一直等绘制帧。整帧截图只留内存，落盘前裁到脱敏面板。
+      const shot = await win.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface: true });
+      const image = nativeImage.createFromBuffer(Buffer.from(shot.data, 'base64'));
+      const { width, height } = image.getSize();
+      const scaleX = width / bounds.windowWidth, scaleY = height / bounds.windowHeight;
+      const cropped = image.crop({
+        x: Math.ceil(bounds.x * scaleX), y: Math.ceil(bounds.y * scaleY),
+        width: Math.floor(bounds.width * scaleX), height: Math.floor(bounds.height * scaleY),
+      });
+      assert(!cropped.isEmpty(), '脱敏面板截图不能为空');
+      fs.writeFileSync(path.join(repo, '.ui-check-trash', name), cropped.toPNG());
       console.log('REDACTED_SCREENSHOT .ui-check-trash/' + name);
     } finally { await js('document.getElementById("global-check-redaction")?.remove();true'); }
   }
@@ -153,6 +162,9 @@ async function electronCheck() {
     await app.whenReady();
     await until(() => { win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('renderer/index.html') && !w.webContents.isLoading()); return !!win; }, '真实MyIDE页面');
     assert(!win.isVisible()); win.setContentSize(1440, 900);
+    const ideOnly = path.join(temp, 'MyIDE 测试工程');
+    fs.mkdirSync(ideOnly);
+    assert(await js('App.openProject(' + JSON.stringify(ideOnly) + ')'));
     await js('(async()=>{await App.setRoot(' + JSON.stringify(selectedRoot.root) + ');App.showTool("project");await AiPanel.setConfig({engine:"dsh"});App.showAi();return true})()');
     await test('真实IPC全部目录返回当前和另一工程，伪造历史归属被拒绝', async () => {
       const result = await js('myIDE.ai.dshSessions({engine:"dsh",rootDir:App.root,catalogScope:"all"})');
@@ -162,26 +174,31 @@ async function electronCheck() {
       const wrong = await js('myIDE.ai.dshHistory({engine:"dsh",catalogScope:"all",catalogRoot:App.root},' + JSON.stringify(actual.other.sessionId) + ')');
       assert.equal(wrong?.ok, false, '宿主核实归属，不信renderer伪造root');
     });
-    await test('左侧会话：按当前工程筛选和按真实工作区分组', async () => {
-      await js('App.showTool("sessions");document.querySelector("[data-hist-scope=current]").click();true');
-      await until(() => js('!!document.querySelector("#panel-sessions .ai-hist-tabs [data-hist-scope=all]")'), '左侧会话筛选');
-      await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(selectedRoot.root) + ')'), '当前工程真实会话');
-      const currentRoots = await js('[...document.querySelectorAll(".ai-hist-row")].map(row=>row.dataset.root)');
-      assert(currentRoots.every(root => key(root) === key(selectedRoot.root)), '当前工程标签不得显示跨root会话');
-      await js('document.querySelector(".ai-hist-tabs [data-hist-scope=all]").click();true');
-      await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + ')'), '真实跨root行');
-      const roots = await js('[...document.querySelectorAll(".ai-hist-group[data-root]")].map(group=>group.dataset.root)');
-      assert(roots.some(root => key(root) === key(selectedRoot.root))); assert(roots.some(root => key(root) === key(actual.other.cwd)));
-      assert(await js('(()=>{const group=[...document.querySelectorAll(".ai-hist-group")].find(item=>item.dataset.root===' + JSON.stringify(actual.other.cwd) + ');const toggle=group.querySelector("[data-hist-toggle]"),items=group.querySelector(".ai-hist-items");const before=items.hidden;toggle.click();const changed=items.hidden!==before;toggle.click();return changed&&items.hidden===before;})()'));
-      await js('const toggle=document.querySelector("[data-hist-other][aria-expanded=false]");if(toggle)toggle.click();true');
-      await capture('ai-global-sessions-navigation-redacted.png');
+    await test('左侧会话直接合并本机已打开项目与 DSH 工作区，按目录去重', async () => {
+      await js('App.showTool("sessions");true');
+      await until(() => js('[...document.querySelectorAll(".ai-hist-row")].some(row=>row.dataset.root===' + JSON.stringify(actual.other.cwd) + ')'), '真实跨工程会话');
+      const roots = await js('[...document.querySelectorAll(".ai-hist-group:not([hidden])")].map(group => group.dataset.root)');
+      assert(roots.some(root => key(root) === key(ideOnly)), '无 DSH 会话的已打开项目应显示');
+      for (const { rootDir } of actual.workspaces) assert(roots.some(root => key(root) === key(rootDir)), 'DSH 登记工作区应直接显示');
+      assert.equal(new Set(roots.map(key)).size, roots.length, '同路径工作区应合并');
+      assert(await js('!document.querySelector("#panel-sessions .ai-hist-tabs")'));
+      assert(await js(`(() => {
+        const row = [...document.querySelectorAll('.ai-hist-row')].find(item => item.dataset.root === ${JSON.stringify(actual.other.cwd)});
+        const group = row.closest('.ai-hist-group'), items = group.querySelector('.ai-hist-items');
+        const toggle = group.querySelector('[data-hist-toggle]'), before = items.hidden;
+        toggle.click();
+        const changed = items.hidden !== before;
+        toggle.click();
+        return changed && items.hidden === before;
+      })()`));
+      await capture('ai-global-sessions-navigation-redacted.png', 'panel-sessions');
     });
     await test('左侧会话在宽、窄栏下均无行溢出，聊天区无重复抽屉', async () => {
       for (const width of [240, 380]) {
         await js('App.resizeColumn("sidebar",' + width + ');true');
         await sleep(120);
         assert(await js('(()=>{const dock=document.querySelector("#panel-sessions .ai-hist-dock"),r=dock.getBoundingClientRect(),p=document.getElementById("sidebar").getBoundingClientRect();return r.width>0&&r.left>=p.left&&r.right<=p.right&&dock.scrollWidth<=dock.clientWidth&&!document.getElementById("ai-history")&&[...dock.querySelectorAll(".ai-hist-row")].every(row=>row.scrollWidth<=row.clientWidth)})()'), '会话布局溢出：' + width);
-        await capture('ai-global-sessions-navigation-' + width + '-redacted.png');
+        await capture('ai-global-sessions-navigation-' + width + '-redacted.png', 'panel-sessions');
       }
     });    await test('跨工程历史仅预览：root与当前active不变，禁止bind/watch/options/prompt', async () => {
       const before = await js('({root:App.root,active:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh:active"),saved:localStorage.getItem("myide-ai-sessions:"+App.root+":dsh"),shell:["main","content","viewer"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})');

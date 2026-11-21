@@ -3685,15 +3685,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 #panel-sessions { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ai-hist-dock { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .ai-hist-dock [hidden] { display: none; }
-.ai-hist-tabs button, .ai-hist-b, .ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle {
+.ai-hist-b, .ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle {
   color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer;
 }
-.ai-hist-tabs { display: flex; flex: none; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border-pane); }
-.ai-hist-tabs button {
-  padding: 4px 7px; border-radius: var(--ui-radius); font-size: .84em; color: var(--text-dim);
-}
-.ai-hist-tabs button:hover, .ai-hist-b:hover { background: var(--bg-hover); color: var(--text-bright); }
-.ai-hist-tabs button.active { background: var(--bg-selected); color: var(--text-bright); }
+.ai-hist-b:hover { background: var(--bg-hover); color: var(--text-bright); }
 .ai-hist-dock button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ai-hist-status { font-size: .83em; color: var(--text-dim); padding: 0 11px 7px; overflow-wrap: anywhere; flex-shrink: 0; }
 .ai-hist-status:empty { display: none; }

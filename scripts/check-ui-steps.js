@@ -3178,9 +3178,9 @@ module.exports = {
     await sleep(250);
     const sidebar = q('#panel-sessions');
     const workspace = sidebar.querySelector('.ai-hist-group:not([hidden]) [data-hist-toggle]:not(:disabled)');
-    add('左侧会话标题下直接显示工作区筛选，保留项目跳转', !sidebar.classList.contains('hidden') &&
-      !!sidebar.querySelector('[data-hist-scope="current"]') && !!sidebar.querySelector('[data-project-picker]') &&
-      !sidebar.querySelector('input,[data-hist-new],[title="会话数"]'));
+    add('左侧会话直接显示项目列表，保留项目跳转', !sidebar.classList.contains('hidden') &&
+      !!sidebar.querySelector('[data-project-picker]') && !!sidebar.querySelector('.ai-hist-group:not([hidden])') &&
+      !sidebar.querySelector('input,.ai-hist-tabs,[data-hist-new],[title="会话数"]'));
     const treeItem = q('#tree .tree-row');
     add('会话栏标题和工作区行高对齐项目树', !!workspace && !!treeItem &&
       workspace.getBoundingClientRect().height === parseFloat(getComputedStyle(treeItem).height) &&

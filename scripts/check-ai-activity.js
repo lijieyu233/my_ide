@@ -433,9 +433,9 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
         const chat = document.getElementById('ai-panel').getBoundingClientRect();
         return { open: document.getElementById('tool-sessions').getAttribute('aria-pressed'),
           fits: r.width > 0 && r.right <= chat.left && dock.scrollWidth <= dock.clientWidth,
-          allEnabled: !dock.querySelector('[data-hist-scope="all"]').disabled, duplicate: !!document.getElementById('ai-history') };
+          noFilter: !dock.querySelector('.ai-hist-tabs'), duplicate: !!document.getElementById('ai-history') };
       });
-      assert(sidebar.open === 'true' && sidebar.fits && sidebar.allEnabled && !sidebar.duplicate, JSON.stringify(sidebar));
+      assert(sidebar.open === 'true' && sidebar.fits && sidebar.noFilter && !sidebar.duplicate, JSON.stringify(sidebar));
       await capture('fixture-layout-' + theme + '-' + width + '-sessions');
       await page(tool => { if (tool) App.showTool(tool); else App.hideSideTool('sessions'); }, baseline.tool);      await sameLayout(baseline);
     });
@@ -535,8 +535,6 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     assert(await page(() => document.querySelector('.ai-tool-group') === window.__layoutOriginalGroup && document.getElementById('ai-msgs').textContent.includes('FIXTURE_BACKGROUND_APPEND')));
 
     await page(() => App.showTool('sessions'));
-    await until(() => page(() => !!document.querySelector('#panel-sessions [data-hist-scope="all"]')), 'session sidebar');
-    await page(() => document.querySelector('[data-hist-scope="all"]').click());
     await until(() => page(id => !!document.querySelector('[data-id="host:' + id + '"]'), foreignHostId), 'foreign session catalog fixture');
     await page(id => {
       const row = document.querySelector('[data-id="host:' + id + '"]'), group = row.closest('.ai-hist-group');
