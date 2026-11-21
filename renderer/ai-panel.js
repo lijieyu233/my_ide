@@ -1269,9 +1269,9 @@ const AiPanel = (() => {
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
     if(switching)onProjectChange();
-    if(histSidebarVisible && getConfig().engine==='dsh' && (switching || (previousConfig.dshPath||'')!==(getConfig().dshPath||''))){
+    if (histSidebarVisible && (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath)) {
       refreshHistInPlace();
-      ensureDshCatalog();
+      ensureHistoryCatalog();
     }
     refreshModelSel();
     // 空会话的引导也应跟着配置刷新，避免模型已选好却仍提示“还没配置”。
@@ -2572,6 +2572,42 @@ const AiPanel = (() => {
     for (const [key, record] of backgroundRuns) if (record.scope === sessKey() && record.run?.identity?.sessionId === sessionId) return { key, record };
     return null;
   }
+  let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
+  let codexOpenIntent = 0;
+  const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
+
+  function refreshCodexCatalog() {
+    if (!codexProjectHistory()) return;
+    const { codexPath = '', engine } = getConfig();
+    if (codexCatalogRequest?.launcher === codexPath) return codexCatalogRequest.promise;
+
+    const request = { launcher: codexPath };
+    codexCatalogRequest = request;
+    codexCatalogError = null;
+    refreshHistInPlace();
+    request.promise = (async () => {
+      try {
+        const result = await window.myIDE.ai.codexSessions({ engine, codexPath });
+        if (codexCatalogRequest !== request) return;
+        if (!result?.ok) throw Error(result?.error || '无法读取 Codex 会话');
+        codexCatalog = { launcher: codexPath, items: result.items };
+      } catch (error) {
+        if (codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
+      } finally {
+        if (codexCatalogRequest === request) {
+          codexCatalogRequest = null;
+          refreshHistInPlace();
+        }
+      }
+    })();
+    return request.promise;
+  }
+
+  function ensureHistoryCatalog() {
+    if (getConfig().engine === 'dsh') return ensureDshCatalog();
+    if (codexProjectHistory() && codexCatalog?.launcher !== (getConfig().codexPath || '')) return refreshCodexCatalog();
+  }
+
   // DSH 会话和工作区共用宿主目录，切换 IDE 项目不重读。
   let dshCatalog = { launcher: null, items: [], workspaces: new Map(), archivedIds: new Set(), pinnedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
   function refreshDshCatalog() {
@@ -2706,6 +2742,19 @@ const AiPanel = (() => {
       all.push({id,hostId:item.sessionId,title:item.title || '（未命名会话）',ts:item.updatedAt || 0,
         cwd:item.cwd || '',rootDir,archived:archived.has(item.sessionId),foreign:true,unknownRoot:!rootDir,running:running.has(id),virtual:true});
     }
+    if (codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '')) {
+      const currentRows = new Map(all.map(item => [item.id, item]));
+      const archivedLocalIds = new Set(loadSessions().filter(item => item.archived).map(item => item.id));
+      for (const item of codexCatalog.items) {
+        const here = pathKey(item.rootDir) === pathKey(root);
+        if (here && archivedLocalIds.has(item.localId)) continue;
+        const native = { id: item.localId, codexThreadId: item.threadId, title: item.title,
+          rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
+        const localRow = here && currentRows.get(item.localId);
+        if (localRow) Object.assign(localRow, native);
+        else all.push(native);
+      }
+    }
     // 全部工作区列表按时间排列，避免当前会话换到别的项目时行顺序跟着跳动。
     const currentOnly = getConfig().engine !== 'dsh';
     all.sort((a, b) => (currentOnly ? Number(b.id === curSessionId) - Number(a.id === curSessionId)
@@ -2737,7 +2786,8 @@ const AiPanel = (() => {
   function isHistorySessionSelected(session) {
     return session.foreign
       ? dshSessionAccess?.hostId === session.hostId && pathKey(dshSessionAccess.rootDir) === pathKey(session.rootDir)
-      : !dshSessionAccess?.foreign && session.id === curSessionId;
+      : !dshSessionAccess?.foreign && session.id === curSessionId &&
+        (!session.codexThreadId || pathKey(session.rootDir) === pathKey(window.App?.root));
   }
 
   function defaultHistoryExpanded(key, items, root, running) {
@@ -2939,15 +2989,18 @@ const AiPanel = (() => {
 
   function renderHistRows(sidebar, all, running) {
     const rows = sidebar.querySelector('.ai-hist-rows');
-    const config = getConfig(), dsh = config.engine === 'dsh', launcher = config.dshPath || '';
-    const histLoading = dshCatalogRequest?.launcher === launcher;
-    const histError = dshCatalogError?.launcher === launcher ? dshCatalogError.message : '';
+    const config = getConfig(), dsh = config.engine === 'dsh', codex = codexProjectHistory();
+    const launcher = (codex ? config.codexPath : config.dshPath) || '';
+    const request = codex ? codexCatalogRequest : dshCatalogRequest;
+    const error = codex ? codexCatalogError : dshCatalogError;
+    const histLoading = request?.launcher === launcher;
+    const histError = error?.launcher === launcher ? error.message : '';
     const status = sidebar.querySelector('.ai-hist-status');
     const refresh = sidebar.querySelector('[data-hist-refresh]');
-    refresh.hidden = !dsh;
+    refresh.hidden = !dsh && !codex;
     refresh.disabled = histLoading;
-    status.textContent = dsh && histError ? '目录更新失败：' + histError : '';
-    status.classList.toggle('error', dsh && !!histError);
+    status.textContent = (dsh || codex) && histError ? '目录更新失败：' + histError : '';
+    status.classList.toggle('error', (dsh || codex) && !!histError);
 
     const groups = new Map();
     const root = pathKey(window.App?.root);
@@ -2960,7 +3013,7 @@ const AiPanel = (() => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    const opened = dsh ? openWorkspaceRoots() : new Map();
+    const opened = dsh || codex ? openWorkspaceRoots() : new Map();
     const registered = catalogUsable() ? dshCatalog.workspaces : new Map();
     if (!flat && !narrow) {
       for (const key of [...opened.keys(), ...registered.keys()]) {
@@ -3039,7 +3092,7 @@ const AiPanel = (() => {
         '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span><span>其他工作区</span>' +
         (otherRunning ? '<span class="ai-hist-run" title="有会话正在运行" aria-hidden="true"></span>' : '') + '</button>' + otherHtml;
     }
-    if (!groups.size && (!dsh || !histLoading)) html = '<div class="ai-hist-empty">暂无会话</div>';
+    if (!groups.size && !histLoading) html = '<div class="ai-hist-empty">暂无会话</div>';
     if (historyRowsMarkup.get(rows) === html) return;
     replaceHistoryRows(rows, html);
     historyRowsMarkup.set(rows, html);
@@ -3104,7 +3157,7 @@ const AiPanel = (() => {
     }
     if (!histSidebar) mountSessionSidebar();
     refreshHistInPlace();
-    if (getConfig().engine === 'dsh') ensureDshCatalog();
+    ensureHistoryCatalog();
   }
 
   function mountSessionSidebar() {
@@ -3165,7 +3218,10 @@ const AiPanel = (() => {
       }
       const options = sender.closest('[data-hist-options]');
       if (options) { event.stopPropagation(); showHistoryOptions(options); return; }
-      if (sender.closest('[data-hist-refresh]')) { await refreshDshCatalog(); return; }
+      if (sender.closest('[data-hist-refresh]')) {
+        await (getConfig().engine === 'codex' ? refreshCodexCatalog() : refreshDshCatalog());
+        return;
+      }
       const otherToggle = sender.closest('[data-hist-other]');
       if (otherToggle) {
         otherWorkspacesExpanded = otherToggle.getAttribute('aria-expanded') !== 'true';
@@ -3210,7 +3266,10 @@ const AiPanel = (() => {
     if (!target || target.unknownRoot) return false;
     const scope = sessKey(), engine = getConfig().engine;
     const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
-    const actions = [action('ren', '重命名')];
+    const actions = target.codexThreadId ? [
+      action('open', '打开会话'),
+      { label: '复制会话 ID', run: () => MI.copyText(target.codexThreadId) },
+    ] : [action('ren', '重命名')];
     if (target.foreign) actions.unshift(action('open', '打开会话'));
     if (!target.foreign && !target.virtual) actions.push(action('del', '删除本地记录'));
     if (engine === 'dsh' && target.hostId && !target.localOnly) {
@@ -3246,8 +3305,9 @@ const AiPanel = (() => {
     if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开', 'err'); return; }
     if (!act || act === 'open') {
       App.showAi();
-      if (target.foreign) await openForeignSession(target);
-      else openSession(id);
+      if (target.codexThreadId) await openCodexHistory(target);
+      else if (target.foreign) await openForeignSession(target);
+      else { codexOpenIntent++; openSession(id); }
       return;
     }
     const all2 = loadSessions(), scope = sessKey(), engine = getConfig().engine;
@@ -3326,7 +3386,39 @@ const AiPanel = (() => {
     else blockDshSession(dshSessionAccess.error);
     return ready;
   }
-  function openSession(id) {
+  async function openCodexHistory(target) {
+    const intent = ++codexOpenIntent, ticket = sessionLoadTicket;
+    const current = () => intent === codexOpenIntent && codexProjectHistory();
+    const showingRun = id => id === curSessionId && currentRun?.status === 'active' || parkedRecordOf(id)?.record.run.status === 'active';
+    if (pathKey(target.rootDir) === pathKey(window.App?.root) && showingRun(target.id)) {
+      openSession(target.id);
+      return;
+    }
+    try {
+      const result = await window.myIDE.ai.codexHistory(getConfig(), target.codexThreadId);
+      if (!current() || ticket !== sessionLoadTicket) return;
+      if (!result?.ok) throw Error(result?.error || '无法打开 Codex 会话');
+      if (pathKey(result.rootDir) !== pathKey(window.App?.root)) {
+        if (!await App.openProject(result.rootDir)) return;
+        if (!current() || pathKey(result.rootDir) !== pathKey(window.App?.root)) return;
+        App.showTool('sessions');
+      }
+      if (!showingRun(result.localId)) {
+        const all = loadSessions(), previous = all.find(item => item.id === result.localId);
+        saveSessions([{ ...previous, id: result.localId, title: result.title, ts: result.ts,
+          msgs: result.messages }, ...all.filter(item => item.id !== result.localId)]);
+      }
+      const cached = codexCatalog?.items.find(item => item.threadId === result.threadId);
+      if (cached) Object.assign(cached, { rootDir: result.rootDir, localId: result.localId, ts: result.ts, title: result.title });
+      openSession(result.localId, false);
+      renderCurrentSessionTitle();
+      refreshHistInPlace();
+    } catch (error) {
+      if (current()) MI.toast(error.message, 'err');
+    }
+  }
+
+  function openSession(id, showNotice = true) {
     const ticket = ++sessionLoadTicket;
     if (id === curSessionId && currentRun?.status === 'active' && currentRun.identity.rootId === (window.App?.root || '')) return;
     // 切到「正在后台跑」的会话时，不能去读已落盘的旧正文：
@@ -3374,7 +3466,7 @@ const AiPanel = (() => {
     renderUsage();
     replayMsgs();
     restoreBackgroundRun();
-    MI.toast('已载入会话：' + se.title, 'ok');
+    if (showNotice) MI.toast('已载入会话：' + se.title, 'ok');
   }
   /**
    * 把宿主会话的正文读进来并渲染（历史列表里「只在 DSH 中存在」的那些）。

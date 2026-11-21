@@ -23,6 +23,23 @@ function createServer(){
    if(message.method==='account/read')return reply(message.id,{account:{type:'apiKey'},requiresOpenaiAuth:false});
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
+   if(message.method==='thread/list'){
+    if(p.currentAccountOnly!==true)throw Error('Synthetic catalog requires account scope');
+    const data=[...threads.values()].filter(t=>!p.includedThreadIds||p.includedThreadIds.includes(t.id));
+    return reply(message.id,{data,nextCursor:null});
+   }
+   if(message.method==='thread/read'){
+    const t=threads.get(p.threadId);
+    return reply(message.id,{thread:{...t,status:{type:t.running?'active':'notLoaded'}}});
+   }
+   if(message.method==='thread/items/list'){
+    const t=threads.get(p.threadId);
+    return reply(message.id,{data:t.items.toReversed().map(item=>({item})),nextCursor:null});
+   }
+   if(message.method==='thread/turns/list'){
+    const t=threads.get(p.threadId);
+    return reply(message.id,{data:[{status:t.running?'inProgress':'completed'}],nextCursor:null});
+   }
    if(message.method==='thread/start'){const t={id:'offline-thread-'+ ++threadSeq,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
    if(message.method==='thread/resume'){const t=threads.get(p.threadId);if(!t)return send({id:message.id,error:{code:-32000,message:'Unknown synthetic thread'}});return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
    if(message.method==='turn/start'){const t=threads.get(p.threadId),turn={id:'offline-turn-'+ ++turnSeq};t.turn=turn;t.running=true;reply(message.id,{turn:{id:turn.id,status:'inProgress'}});setImmediate(()=>operate(t,turn,(p.input||[]).map(i=>i.text||'').join(' ')));return;}

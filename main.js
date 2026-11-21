@@ -871,6 +871,23 @@ ipcMain.handle('ai:codex-options',async(event,cfg,sessionId,tools,apply)=>{
     return await CODEX.inspect(cfg,{sessionId,rootId:state.rootId,page:state.page},allowed,apply===true);
   }catch(error){return {ok:false,error:error.message};}
 });
+async function codexHistoryConfig(event, cfg) {
+  aiSender(event);
+  const engine = await event.sender.executeJavaScript('AiPanel.getConfig().engine');
+  if (engine !== 'codex' || cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
+}
+ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    return { ok: true, items: await CODEX.listHistory(cfg) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle('ai:codex-history',async (event, cfg, threadId) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await CODEX.openHistory(cfg, threadId) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 ipcMain.handle('ai:codex-status',async(event,launcher)=>{
   try{aiSender(event);return await CODEX.status(launcher);}catch(error){return {ok:false,error:error.message};}
 });
