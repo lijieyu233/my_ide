@@ -2538,11 +2538,8 @@ const AiPanel = (() => {
     for (const [key, record] of backgroundRuns) if (record.scope === sessKey() && record.run?.identity?.sessionId === sessionId) return { key, record };
     return null;
   }
-  // 宿主会话目录缓存：{ at, root, items }。
-  // DSH 里发起/运行/中断的会话只能从这里知道（本地 localStorage 记不到别人发起的会话）。
-  // 缓存带 root：切换项目后必须重新拉，否则会把上一个项目的会话列进来。
-  let dshCatalog = { launcher: null, items: [], archivedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
-  // DSH 返回整个宿主的会话；项目归属在渲染时判断，缓存只随连接来源变化。
+  // DSH 会话和工作区共用宿主目录，切换 IDE 项目不重读。
+  let dshCatalog = { launcher: null, items: [], workspaces: new Map(), archivedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
   function refreshDshCatalog() {
     const config = getConfig(), launcher = config.dshPath || '';
     if (config.engine !== 'dsh') return;
@@ -2558,6 +2555,7 @@ const AiPanel = (() => {
         if (result?.ok) dshCatalog = {
           launcher,
           items: Array.isArray(result.items) ? result.items : [],
+          workspaces: new Map((Array.isArray(result.workspaces) ? result.workspaces : []).map(workspace => [pathKey(workspace.rootDir), workspace])),
           archivedIds: new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : []),
         };
         else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
@@ -2716,19 +2714,24 @@ const AiPanel = (() => {
     }
     const showAll = historyScope() === 'all';
     const opened = showAll ? openWorkspaceRoots() : new Map();
+    const registered = catalogUsable() ? dshCatalog.workspaces : new Map();
     for (const key of opened.keys()) {
+      if (!groups.has(key)) groups.set(key, []);
+    }
+    if (showAll) for (const key of registered.keys()) {
       if (!groups.has(key)) groups.set(key, []);
     }
     const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
     const entries = [...groups].sort(([a], [b]) => order(a) - order(b) || Number(b === root) - Number(a === root));
-    const isOtherWorkspace = key => showAll && key !== root && !opened.has(key);
+    const isOtherWorkspace = key => showAll && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = otherWorkspacesExpanded ?? entries.every(([key]) => isOtherWorkspace(key));
     const otherIds = [];
     let html = '', otherHtml = '', otherRunning = false;
     for (const [key, items] of entries) {
       const isOther = isOtherWorkspace(key);
       const unassigned = key === null;
-      const groupRoot = unassigned ? '' : items[0]?.rootDir || opened.get(key) || '';
+      const workspace = registered.get(key);
+      const groupRoot = unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
       const current = !unassigned && key === root;
       const active = session => session.foreign
         ? dshSessionAccess?.hostId === session.hostId && pathKey(dshSessionAccess.rootDir) === key
@@ -2739,7 +2742,7 @@ const AiPanel = (() => {
       });
       const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
       const expanded = items.length > 0 && wasExpanded;
-      const groupName = unassigned ? '未分组' : sessionRootLabel(groupRoot);
+      const groupName = unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
       let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
@@ -2894,7 +2897,9 @@ const AiPanel = (() => {
       const jump = sender.closest('[data-hist-jump]');
       if (jump) {
         const root = jump.dataset.histJump, key = pathKey(root);
-        const known = openWorkspaceRoots().has(key) || sessionsForHist().all.some(item => !item.unknownRoot && pathKey(item.rootDir) === key);
+        const registered = catalogUsable() && dshCatalog.workspaces.has(key);
+        const known = registered || openWorkspaceRoots().has(key) ||
+          sessionsForHist().all.some(item => !item.unknownRoot && pathKey(item.rootDir) === key);
         if (known && await App.openProject(root).catch(() => false)) App.showTool('sessions');
         return;
       }

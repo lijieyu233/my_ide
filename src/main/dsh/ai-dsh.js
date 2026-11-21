@@ -241,19 +241,27 @@ function createService(options={}){
   // 会话目录与改名：直接代理宿主，不经本地缓存。
   // 用户要求（2026-11-01）：① 这里的名称与 DSH 同步；② DSH 里发起/运行的会话 MyIDE 要看得到；
   // ③ 在 DSH 里中断会话 MyIDE 也要知道。三者都建立在「以宿主 session/list 为准」上。
-  async function archivedSessionIds() {
-    // 归档属于 DSH 的 Workspace registry，全局目录本身没有携带这个状态。
+  async function workspaceRegistry() {
+    // 已登记的工作区和归档状态独立于 session/list，空工作区仅在注册表里存在。
     const file = path.join(home(), 'storages', 'workspace.json');
     const record = await fs.readFile(file, 'utf8').catch(error => {
       if (error.code === 'ENOENT') return null;
       throw error;
     });
-    if (record === null) return [];
-    const { unit, global } = JSON.parse(record);
-    if (unit?.name !== 'workspace' || !global || (global.archivedSessionIds !== undefined && !Array.isArray(global.archivedSessionIds))) {
-      throw Error('DSH 工作区归档状态无法读取');
+    if (record === null) return { workspaces: [], archivedSessionIds: [] };
+    const { unit, global, tables } = JSON.parse(record);
+    if (unit?.name !== 'workspace' || !global ||
+        (global.archivedSessionIds !== undefined && !Array.isArray(global.archivedSessionIds)) ||
+        (global.workspaceIds !== undefined && !Array.isArray(global.workspaceIds))) {
+      throw Error('DSH 工作区配置无法读取');
     }
-    return (global.archivedSessionIds || []).filter(id => typeof id === 'string' && id);
+    const workspaces = [];
+    for (const id of new Set(global.workspaceIds || [])) {
+      if (typeof id !== 'string' || !id) continue;
+      const entry = tables?.workspaces?.[id], rootDir = absoluteCatalogRoot(entry?.path);
+      if (rootDir) workspaces.push({ rootDir, title: typeof entry.title === 'string' ? entry.title : '' });
+    }
+    return { workspaces, archivedSessionIds: (global.archivedSessionIds || []).filter(id => typeof id === 'string' && id) };
   }
   async function listSessions(cfg){
     const all=catalogScope(cfg);
@@ -360,6 +368,6 @@ function createService(options={}){
     // stdin EOF 让官方 profile 停稳并 flush；仅对未退出的自有进程使用有界兜底。
     if(own&&!own.child){own.rpc.close();disposal=Promise.resolve();return disposal;}disposal=own?new Promise(resolve=>{if(own.child.exitCode!==null)return resolve();const timer=setTimeout(()=>{own.child.kill();resolve();},2000);own.child.once('exit',()=>{clearTimeout(timer);resolve();});own.rpc.close();own.child.stdin.end();}):Promise.resolve();return disposal;
   }
-  return {chat,hasRun,submitInput,inputQueue,updateQueue,permissionPresets,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,archivedSessionIds,rename,history,bindSession,watch};
+  return {chat,hasRun,submitInput,inputQueue,updateQueue,permissionPresets,toolResult,permissionResult,questionResult,abort,dispose,inspect,listSessions,workspaceRegistry,rename,history,bindSession,watch};
 }
 module.exports={createService,IDE_STATE,promptContent};

@@ -897,8 +897,8 @@ ipcMain.handle('ai:dsh-status',async(event,launcher)=>{
 ipcMain.handle('ai:dsh-sessions',async(event,cfg)=>{
   try {
     aiSender(event);
-    const [items, archivedSessionIds] = await Promise.all([DSH.listSessions(cfg), DSH.archivedSessionIds()]);
-    return {ok:true, items, archivedSessionIds};
+    const [items, registry] = await Promise.all([DSH.listSessions(cfg), DSH.workspaceRegistry()]);
+    return {ok:true, items, ...registry};
   } catch (error) { return {ok:false, error:error.message}; }
 });
 ipcMain.handle('ai:dsh-rename',async(event,cfg,sessionId,title)=>{

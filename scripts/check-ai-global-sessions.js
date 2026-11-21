@@ -48,7 +48,8 @@ function realProject(root) {
 async function discover() {
   const connection = await connect(), groups = new Map();
   const service = require('../src/main/dsh/ai-dsh').createService({home:realHome});
-  const archived = new Set(await service.archivedSessionIds());
+  const registry = await service.workspaceRegistry();
+  const archived = new Set(registry.archivedSessionIds);
   const items = (await connection.request('session/list', {})).filter(item => !archived.has(item.sessionId));
   for (const item of items) {
     if (!groups.has(key(item.cwd))) groups.set(key(item.cwd), { root: item.cwd, count: 0, nonblank: 0, running: 0 });
@@ -74,7 +75,7 @@ async function discover() {
   }
   const own = await withVisibleHistory(current), other = await withVisibleHistory(foreign);
   console.log('REAL_HISTORY_METADATA ' + JSON.stringify(histories));
-  return { items, own, other };
+  return { items, own, other, workspaces: registry.workspaces };
 }
 async function catalogOnly() { try { await discover(); assert.deepEqual(audit.blocked, []); console.log('READ_ONLY_AUDIT ' + JSON.stringify(audit)); } finally { rpc?.close(); } }
 function launchElectron() {
@@ -113,7 +114,7 @@ async function electronCheck() {
   });
   const service = require('../src/main/dsh/ai-dsh'), create = service.createService;
   service.createService = options => {
-    const instance = create({ ...options, resolveRuntime: async () => ({}), connectNative: connect });
+    const instance = create({ ...options, home: realHome, resolveRuntime: async () => ({}), connectNative: connect });
     for (const method of ['inspect', 'bindSession', 'watch', 'chat', 'abort']) {
       const perform = instance[method].bind(instance);
       instance[method] = (...args) => { count(audit.service, method); return perform(...args); };
@@ -156,6 +157,7 @@ async function electronCheck() {
     await test('真实IPC全部目录返回当前和另一工程，伪造历史归属被拒绝', async () => {
       const result = await js('myIDE.ai.dshSessions({engine:"dsh",rootDir:App.root,catalogScope:"all"})');
       assert(result?.ok, '全部目录IPC失败');
+      assert.deepEqual(result.workspaces, actual.workspaces, '工作区须由真实注册表返回');
       assert(result.items.some(item => item.sessionId === actual.own.sessionId)); assert(result.items.some(item => item.sessionId === actual.other.sessionId));
       const wrong = await js('myIDE.ai.dshHistory({engine:"dsh",catalogScope:"all",catalogRoot:App.root},' + JSON.stringify(actual.other.sessionId) + ')');
       assert.equal(wrong?.ok, false, '宿主核实归属，不信renderer伪造root');

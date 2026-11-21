@@ -1458,6 +1458,35 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     assert.deepEqual(groups().map(group => group.dataset.root),order);
     assert.equal(reads,1);
   });
+  await test('MyIDE 已打开项目和 DSH 工作区直接合并，同路径去重且保留空工作区', async () => {
+    const f=fixture(), dshOnly=path.join(f.dir,'dsh-only'), dshEmpty=path.join(f.dir,'dsh-empty');
+    const dshSpelling=f.A.toUpperCase().replaceAll('\\','/')+'/';
+    f.w.App.getProjects=()=>[{path:f.A},{path:f.B}];
+    f.w.App.openProject=async root=>{f.switchRoot(root);return true;};
+    f.catalogRead=async()=>({ok:true,workspaces:[
+      {rootDir:dshSpelling,title:'共享工作区'},
+      {rootDir:dshOnly,title:'DSH 已登记'},
+      {rootDir:dshEmpty,title:'DSH 空工作区'},
+    ],items:[
+      {sessionId:'session-own',title:'当前会话',cwd:f.A},
+      {sessionId:'session-foreign',title:'跨项目会话',cwd:dshOnly},
+      {sessionId:'session-other',title:'未登记目录会话',cwd:path.join(f.dir,'other')},
+    ]});
+    await f.w.AiPanel.setConfig({engine:'dsh'});
+    f.openSessions('all');
+    await until(()=>f.element('[data-id="host:session-foreign"]'));
+    const groups=()=>[...f.w.document.querySelectorAll('.ai-hist-group:not([hidden])')];
+    assert.equal(groups().length,4);
+    const names=groups().map(group=>group.querySelector('.ai-hist-workspace-name').textContent);
+    assert.deepEqual([...names].sort(),['B','共享工作区','DSH 已登记','DSH 空工作区'].sort());
+    assert(!f.element('[data-id="host:session-foreign"]').closest('.ai-hist-group').hidden);
+    assert(f.element('[data-id="host:session-other"]').closest('.ai-hist-group').hidden);
+    const empty=groups().find(group=>group.dataset.root===dshEmpty);
+    assert(empty.querySelector('[data-hist-toggle]').disabled);
+    empty.querySelector('[data-hist-jump]').click();
+    await until(()=>f.w.App.root===dshEmpty);
+    assert.equal(f.w.App.getTool(),'sessions');
+  });
   await test('没有 DSH 会话的已打开项目也能从会话栏跳转', async () => {
     const f = fixture();
     f.w.App.getProjects = () => [{path:f.A}, {path:f.B}];
