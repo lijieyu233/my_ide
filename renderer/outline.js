@@ -227,7 +227,7 @@ const Outline = (() => {
     if(enabled&&(!ownsDocument()||!cm?.fold||cm.__tab!==Viewer.activeTab)){MI.toast('请先切换到可折叠的编辑视图','err');return false;}
     syncEnabled=!!enabled;
     try { localStorage.setItem(SYNC_KEY,String(syncEnabled)); } catch {}
-    mountHeaderActions();
+    mountFilter();
     if(syncEnabled)syncFromEditor(cm.view);
     return true;
   }
@@ -243,21 +243,12 @@ const Outline = (() => {
     }
   }
 
-  // ---------- 面板标题栏动作（展开全部 / 收起全部）----------
-  // 双折线（chevrons）而不是「+ / −」：这对按钮贴着标题文字，裸十字会被读成「新建」、
-  // 裸横线会被读成「删除 / 收起面板」（文件树那两个带方框的 ± 才是那个语义，别混）。
-  // 上下叠两条折线在 VS Code / GitHub 里就是「全部展开 / 全部收起」的固定画法。
-  // ⚠ 两条折线之间必须留 ≥ 1 个 viewBox 单位的空隙：早先 4.4/7.8/8.6/12 那一版两线首尾相接，
-  //   渲染成 14px 后糊成一个 "X"/单箭头（截图 8 倍放大实测），完全读不出是"两条折线"。
-  // 展开 / 收起全部：统一取 icons.js 那一份（与项目树、Git 面板、搜索面板同图）。
-  // 原来这里画的是另一种双箭头（间距更窄、角度更陡），和 Git 面板并排看像两个不同功能。
+  // 大纲与项目树共用双箭头图标，便于辨认展开和收起操作。
   const IC_EXPAND = (window.Icons || {}).expandAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 6.1 8 3.7l2.4 2.4"/><path d="M5.6 9.9 8 12.3l2.4-2.4"/></svg>';
   const IC_COLLAPSE = (window.Icons || {}).collapseAll || '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 8h6" opacity=".55"/><path d="M5.6 3.7 8 6.1l2.4-2.4"/><path d="M5.6 12.3 8 9.9l2.4 2.4"/></svg>';
   const IC_SYNC = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h9M9 2l3 3-3 3M13 11H4m3-3-3 3 3 3"/></svg>';
-  function mountHeaderActions() {
-    const t = panel && panel.querySelector('.panel-title');
-    if (!t) return;
-    let box=t.querySelector('.panel-title-actions');
+  function mountFilterActions(toolbar) {
+    let box = toolbar.querySelector('.panel-title-actions');
     if(box){updateSyncButton(box);return;}
     box = document.createElement('span');
     box.className = 'panel-title-actions';
@@ -273,7 +264,7 @@ const Outline = (() => {
     };
     mk(IC_EXPAND, '展开全部章节', () => setAllCollapsed(false));
     mk(IC_COLLAPSE, '收起全部章节', () => setAllCollapsed(true));
-    t.appendChild(box);
+    toolbar.appendChild(box);
     updateSyncButton(box);
   }
   function updateSyncButton(box) {
@@ -308,6 +299,7 @@ const Outline = (() => {
     if (!wrap) {
       wrap = document.createElement('div');
       wrap.id = 'outline-filter';
+      wrap.hidden = true;
       wrap.innerHTML = '<span class="tree-search-wrap">' + IC_SEARCH +
         '<input id="outline-search" type="text" placeholder="过滤标题…" autocomplete="off" spellcheck="false" aria-label="过滤大纲标题"></span>';
       panel.insertBefore(wrap, el);   // 标题栏之下、树之上
@@ -328,6 +320,7 @@ const Outline = (() => {
         }
       });
     }
+    mountFilterActions(wrap);
     return wrap;
   }
   function setFilter(v) {
@@ -423,15 +416,14 @@ const Outline = (() => {
     el.removeAttribute('aria-activedescendant');
     headings = [];
     owner=tab?{documentId:tab.id,revision:tab.editRevision,path:tab.path}:null;
-    if(tab?.reader){owner=null;const title=document.querySelector('#panel-outline .panel-title');if(title?.firstChild?.nodeType===3)title.firstChild.textContent='阅读目录';document.querySelector('#panel-outline .panel-title-actions')?.setAttribute('hidden','');document.querySelector('#outline-filter')?.setAttribute('hidden','');window.Reader?.renderOutline(el,tab);return;}
+    if(tab?.reader){owner=null;const title=document.querySelector('#panel-outline .panel-title');if(title?.firstChild?.nodeType===3)title.firstChild.textContent='阅读目录';document.querySelector('#outline-filter')?.setAttribute('hidden','');window.Reader?.renderOutline(el,tab);return;}
     const readerTitle=document.querySelector('#panel-outline .panel-title');if(readerTitle?.firstChild?.nodeType===3)readerTitle.firstChild.textContent='大纲';
-    document.querySelector('#panel-outline .panel-title-actions')?.removeAttribute('hidden');
     loadCollapsed();
-    mountHeaderActions();
+    const filter = mountFilter();
     const isMd = tab && /\.(md|markdown)$/i.test(tab.name || ''),isJson=tab&&/\.json$/i.test(tab.name||'');
     if (!isMd&&!isJson) {
       selIdx = -1; selKey = '';
-      document.querySelector('#outline-filter')?.setAttribute('hidden','');
+      filter?.setAttribute('hidden','');
       renderEmpty(tab ? '当前文件没有大纲' : '打开 Markdown 或 JSON 文件查看大纲');
       return;
     }
@@ -440,11 +432,11 @@ const Outline = (() => {
     if (!headings.length) {
       selIdx = -1; selKey = '';
       setFilter('');
-      document.querySelector('#outline-filter')?.setAttribute('hidden','');
+      filter?.setAttribute('hidden','');
       renderEmpty(isJson?'未找到可识别的 JSON 结构':'未找到标题');
       return;
     }
-    mountFilter()?.removeAttribute('hidden');
+    filter?.removeAttribute('hidden');
     // 内容变化后行号/文本对不上 → 丢弃失效的收起 key
     const validKeys = new Set(headings.map(hKey));
     let pruned = false;

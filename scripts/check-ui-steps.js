@@ -2681,10 +2681,15 @@ module.exports = {
     add('大纲渲染出 6 个标题（一级 / 二级A / 三级A1 / 四级A1a / 五级A1a1 / 二级B）', rows.length === 6, 'rows=' + rows.length);
     if (rows.length !== 6) return { R };
 
-    const act = qa('#panel-outline .panel-title-actions .vt-btn');
-    add('顶栏 2 个图标按钮（展开全部 / 收起全部）',
-      act.length === 2 && act.every((b) => b.querySelector('svg') && !b.textContent.trim()),
-      act.map((b) => b.title).join(' | '));
+    const act = qa('#outline-filter .panel-title-actions .vt-btn');
+    const input = q('#outline-search').getBoundingClientRect();
+    const title = q('#panel-outline .panel-title');
+    add('展开和收起按钮在过滤框同一行的右侧',
+      act.length === 2 && !title.querySelector('button') && act.every((button) => {
+        const rect = button.getBoundingClientRect();
+        return !!button.querySelector('svg') && rect.left >= input.right
+          && Math.abs(rect.top + rect.height / 2 - input.top - input.height / 2) <= 1;
+      }), act.map((b) => b.title).join(' | '));
     add('旧的「全展 / H1..H4」工具条已移除（语义易误读）', !q('.outline-tools'));
 
     const arrows = qa('#outline .ol-arrow:not(.ol-pad)');
@@ -2734,13 +2739,13 @@ module.exports = {
     rows[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await sleep(450);
     add('双击标题行折叠其子层（小箭头之外的大目标）', visNow() < before, before + ' → ' + visNow());
-    qa('#panel-outline .panel-title-actions .vt-btn')[0].click();
+    act[0].click();
     await sleep(450);
-    add('顶栏「展开全部」恢复 6 个', visNow() === 6, 'visible=' + visNow());
-    qa('#panel-outline .panel-title-actions .vt-btn')[1].click();
+    add('过滤行「展开全部」恢复 6 个', visNow() === 6, 'visible=' + visNow());
+    act[1].click();
     await sleep(450);
-    add('顶栏「收起全部」只留 H1', visNow() === 1, 'visible=' + visNow());
-    qa('#panel-outline .panel-title-actions .vt-btn')[0].click();
+    add('过滤行「收起全部」只留 H1', visNow() === 1, 'visible=' + visNow());
+    act[0].click();
     await sleep(350);
     const r1 = qa('#outline .outline-item')[1];
     return { R, hover: { x: Math.round(r1.getBoundingClientRect().left + 50), y: Math.round(r1.getBoundingClientRect().top + r1.getBoundingClientRect().height / 2) } };

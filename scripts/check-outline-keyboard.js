@@ -32,14 +32,25 @@ app.whenReady().then(async()=>{try{
  check('Enter按现有导航准确进入第五逻辑行',await run('Viewer.activeTab.path==='+JSON.stringify(file)+'&&Viewer.cm.view.state.doc.lineAt(Viewer.cm.view.state.selection.main.head).number===5'));
  check('Enter把焦点交给正文，退出大纲接管',await run('!!document.activeElement.closest(".cm-editor")'));
  const selected=await run('document.querySelector("#outline .key-nav-sel").textContent');await key('DOWN');check('正文方向键不改变大纲选择',await run('document.querySelector("#outline .key-nav-sel").textContent==='+JSON.stringify(selected)));
- await run('document.querySelector("#panel-outline .panel-title-actions button").focus()');await key('DOWN');check('标题栏按钮方向键不改变大纲选择',await run('document.querySelector("#outline .key-nav-sel").textContent==='+JSON.stringify(selected)));
- // 大纲之前就是标题栏第二按钮，真实Tab将焦点交给稳定树入口。
- await run('document.querySelectorAll("#panel-outline .panel-title-actions button")[1].focus()');await key('TAB');check('Tab从标题栏进入大纲树',await run('document.activeElement.id==="outline"'));await key('TAB',['shift']);check('Shift+Tab退回标题栏而非锁住焦点',await run('document.activeElement===document.querySelectorAll("#panel-outline .panel-title-actions button")[1]'));
+ await run('document.querySelector("#panel-outline .panel-title-actions button").focus()');await key('DOWN');check('过滤行按钮方向键不改变大纲选择',await run('document.querySelector("#outline .key-nav-sel").textContent==='+JSON.stringify(selected)));
+ // 最后一个过滤行按钮后是大纲树，Tab 可以顺序进入。
+ await run('document.querySelectorAll("#panel-outline .panel-title-actions button")[1].focus()');await key('TAB');check('Tab从过滤行进入大纲树',await run('document.activeElement.id==="outline"'));await key('TAB',['shift']);check('Shift+Tab退回过滤行按钮',await run('document.activeElement===document.querySelectorAll("#panel-outline .panel-title-actions button")[1]'));
  await run('document.getElementById("outline").focus();document.getElementById("outline").dispatchEvent(new CompositionEvent("compositionstart",{bubbles:true}))');await key('RETURN');await key('DOWN');check('合成compositionstart期间实际Chromium确认/方向键不跳转',await run('document.activeElement.id==="outline"&&document.querySelector("#outline .key-nav-sel").textContent==='+JSON.stringify(selected)));
  await run('document.getElementById("outline").dispatchEvent(new CompositionEvent("compositionend",{bubbles:true}))');await key('HOME');await key('LEFT');await key('RIGHT');
  check('输入结束后方向键恢复，树焦点重绘仍保留',await run('document.activeElement.id==="outline"&&document.querySelectorAll("#outline .ol-hidden").length===0'));
  await capture('outline-keyboard');win.setMinimumSize(0,0);win.setContentSize(780,720);await run('document.documentElement.style.setProperty("--tool-font","18px")');
  check('实际780px窗口与18px侧栏字号生效',await run('innerWidth===780&&getComputedStyle(document.getElementById("outline")).fontSize==="18px"'));
+ check('窄窗口中过滤框和两个按钮同排且按钮贴右',await run(`(() => {
+   const row = document.querySelector('#outline-filter');
+   const title = document.querySelector('#panel-outline .panel-title');
+   const input = document.querySelector('#outline-search').getBoundingClientRect();
+   const buttons = [...row.querySelectorAll('button')];
+   return !title.querySelector('button') && buttons.length === 2 && buttons.every(button => {
+     const rect = button.getBoundingClientRect();
+     return rect.left >= input.right && rect.right <= row.getBoundingClientRect().right
+       && Math.abs(rect.top + rect.height / 2 - input.top - input.height / 2) <= 1;
+   });
+ })()`));
  check('窄窗口18px树入口与选中章节可见',await run('(()=>{const el=document.getElementById("outline"),r=el.getBoundingClientRect(),s=el.querySelector(".key-nav-sel").getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth&&s.top>=r.top&&s.bottom<=r.bottom})()'));await capture('outline-narrow');
  check('查看和键盘导航均未改磁盘原字节',fs.readFileSync(file).equals(text));check('正文仍未修改且内容与加载时一致',await run('!Viewer.activeTab.dirty&&Viewer.activeTab.content.replace(/\\r\\n/g,"\\n")==='+JSON.stringify(text.toString().replace(/\r\n/g,'\n'))));
  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed,failed:0,home,output,keyboard:'webContents.sendInputEvent; composition lifecycle synthetic; no OS IME/screen reader'},null,2));console.log('隐藏生产大纲键盘：'+passed+' 通过 / 0 失败；截图：'+output);app.exit(0);
