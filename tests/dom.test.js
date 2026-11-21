@@ -5952,6 +5952,33 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#tool-ai').classList.contains('active'), '按钮取消高亮');
   });
 
+  await okAsync('AI 助手：右侧栏收起后，星形按钮和快捷键都能直接打开面板', async () => {
+    const sidebarButton = $(dom, '#tool-sidebar-r');
+    const aiButton = $(dom, '#tool-ai');
+    const panel = $(dom, '#ai-panel');
+    const currentTool = dom.window.App.getTool();
+
+    click(aiButton);
+    assert_(!panel.classList.contains('hidden'), '首次点击打开 AI');
+    click(sidebarButton);
+    assert_(panel.classList.contains('hidden'), '右侧栏收起时隐藏 AI');
+    assert_(!aiButton.classList.contains('active'), '隐藏后取消高亮');
+    click(aiButton);
+    assert_(!sidebarButton.classList.contains('collapsed'), '星形按钮同时展开右侧栏');
+    assert_(!panel.classList.contains('hidden'), '首次点击恢复 AI');
+    assert_(aiButton.getAttribute('aria-expanded') === 'true', '可读面板展开状态');
+
+    click(aiButton);
+    assert_(panel.classList.contains('hidden'), '再次点击收起 AI');
+    click(sidebarButton);
+    key(dom, '8', { ctrl: true });
+    assert_(!panel.classList.contains('hidden'), '右侧栏和 AI 均收起时快捷键仍可打开');
+    key(dom, '8', { ctrl: true });
+    assert_(!panel.classList.contains('hidden'), '重复按显示快捷键保持面板打开');
+    assert_(dom.window.App.getTool() === currentTool, '当前工作区保持不变');
+    click($(dom, '#ai-close'));
+  });
+
   await okAsync('AI 回复链接可右键打开本地文件和网页，或复制地址', async () => {
     const d = makeDom(), w = d.window;
     const local = P + '/docs/咨询记录 重设计.html';

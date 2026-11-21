@@ -198,10 +198,21 @@ const App = (() => {
     try { localStorage.setItem('myide-ai-open', aiOpen ? '1' : '0'); } catch {}
     renderToolStrip();
   }
-  // 按钮点击：再点收起（与左侧工具按钮同款交互）
-  function toggleAi() { setAiOpen(!aiOpen); }
-  // 快捷键 Ctrl+8：始终打开（不因已开而收起）
-  function showAi() { if (!aiOpen) setAiOpen(true); }
+  function isRightSidebarCollapsed() {
+    return document.body.classList.contains('rsb-collapsed');
+  }
+  function isAiVisible() { return aiOpen && !isRightSidebarCollapsed(); }
+
+  function toggleAi() {
+    if (isAiVisible()) setAiOpen(false);
+    else showAi();
+  }
+  function showAi() {
+    if (isAiVisible()) return;
+    // 右侧栏收起时保留了 AI 的打开状态，显式打开要同时解除收起。
+    if (isRightSidebarCollapsed()) setRightSidebarCollapsed(false);
+    setAiOpen(true);
+  }
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
@@ -244,15 +255,13 @@ const App = (() => {
   }
 
   function renderToolStrip() {
-    // 按钮互斥高亮（AI 独立，单独判 aiOpen）
+    // 互斥工具的按钮高亮，AI 面板独立处理。
     for (const t of ALL_TOOLS) {
       const b = document.getElementById('tool-' + t);
       if (b) b.classList.toggle('active', activeTool === t);
     }
     document.getElementById('tool-bookshelf')?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
     document.getElementById('tool-sessions')?.setAttribute('aria-pressed',String(activeTool==='sessions'&&!sideCollapsed));
-    const aiBtn = document.getElementById('tool-ai');
-    if (aiBtn) aiBtn.classList.toggle('active', aiOpen);
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
     let sidePanel = sideTool;
     if (activeTool === 'db') sidePanel = 'db';
@@ -278,10 +287,15 @@ const App = (() => {
     if (launchMain) launchMain.classList.toggle('hidden', activeTool !== 'launch');
     if (window.DbPanel) DbPanel.syncVisible(activeTool === 'db');
     // AI 助手右侧停靠面板：独立开关，不影响左侧任何工具；右侧栏整体收起（Alt+`）时隐藏
-    const rsbCollapsed = document.body.classList.contains('rsb-collapsed');
+    const aiVisible = isAiVisible();
+    const aiBtn = document.getElementById('tool-ai');
+    if (aiBtn) {
+      aiBtn.classList.toggle('active', aiVisible);
+      aiBtn.setAttribute('aria-expanded', String(aiVisible));
+    }
     const aiEl = document.getElementById('ai-panel');
-    if (aiEl) aiEl.classList.toggle('hidden', !aiOpen || rsbCollapsed);
-    if (window.AiPanel) AiPanel.syncVisible(aiOpen && !rsbCollapsed);
+    if (aiEl) aiEl.classList.toggle('hidden', !aiVisible);
+    if (window.AiPanel) AiPanel.syncVisible(aiVisible);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
@@ -344,14 +358,17 @@ const App = (() => {
   }
 
   // ---------- 右侧栏整体收起 / 展开（AI 面板所在右栏，Alt+`） ----------
-  function toggleRightSidebar(force) {
-    const collapsed = typeof force === 'boolean' ? force : !document.body.classList.contains('rsb-collapsed');
+  function setRightSidebarCollapsed(collapsed) {
     document.body.classList.toggle('rsb-collapsed', collapsed);
     const btn = document.getElementById('tool-sidebar-r');
     if (btn) {
       btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS
       btn.title = (collapsed ? '展开' : '收起') + '右侧栏 (Alt+`)';
     }
+  }
+
+  function toggleRightSidebar(force) {
+    setRightSidebarCollapsed(typeof force === 'boolean' ? force : !isRightSidebarCollapsed());
     renderToolStrip();
   }
 
