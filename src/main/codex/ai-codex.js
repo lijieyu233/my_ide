@@ -491,7 +491,7 @@ function createService(options={}){
     if(runs.has(context.requestId))throw Error('Codex 请求身份重复');
     const run={context,onEvent,onTool,aborted:false,tools:new Map(),permissions:new Map(),nativeItems:new Map(),messageText:new Map(),text:'',queue:[],queuedBytes:0,buffering:true,accepting:false,settled:false};run.done=new Promise(resolve=>{run.resolveDone=resolve;});runs.set(context.requestId,run);
     const result=(status,error)=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'codex',text:run.text,context,...(error?{error}:{})});
-    let queueing = false;
+    let queueing = false, canQueueOnConflict = false;
     try{
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
@@ -518,24 +518,19 @@ function createService(options={}){
       let attached;
       try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
       catch (error) {
-        // An idle Desktop can hold the writer. Queue only after verifying an active turn.
+        // Desktop can retain the writer while idle. Its durable queue preserves input without taking ownership.
         const writerConflict = error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
           error.rpcResponseReceived === true;
         const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
-        if (cfg.codexContinueTurnId || (!writerConflict && error.kind !== 'threadBusy') || !queueAllowed || info.scope !== 'project' ||
+        if (cfg.codexContinueTurnId || (!writerConflict && error.kind !== 'threadBusy') || info.scope !== 'project' ||
             !binding?.id || binding.blocked || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
         const request = historyRequest(conn);
         if (writerConflict) {
-          let running = false;
-          try {
-            const native = await history.readProjectThread(request, binding.id);
-            if (norm(await projectThreadRoot(native)) !== norm(info.cwd)) throw error;
-            await history.assertThreadIdle(request, native);
-          } catch (probeError) {
-            running = probeError.kind === 'threadBusy';
-          }
-          if (!running) throw error;
+          const native = await history.readProjectThread(request, binding.id);
+          if (norm(await projectThreadRoot(native)) !== norm(info.cwd)) throw error;
         }
+        canQueueOnConflict = true;
+        if (!queueAllowed) throw error;
         live(run);
         queueing = true;
         const clientUserMessageId = 'myide-input-' + crypto.randomUUID();
@@ -564,7 +559,7 @@ function createService(options={}){
         error.kind==='threadInUse'?'原会话正在 Codex 中打开':error.rpcResponseReceived?
         'Codex '+(stages[error.rpcMethod]||'原生请求')+'失败'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'。':error.message;
       const rejection={...(error.kind?{errorCode:error.kind}:{}),...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{}),
-        ...(error.rpcMethod?{rpcMethod:error.rpcMethod}:{}),rejectedBeforeTurn};
+        ...(error.rpcMethod?{rpcMethod:error.rpcMethod}:{}),rejectedBeforeTurn,...(canQueueOnConflict&&!queueing?{canQueueOnConflict:true}:{})};
       if(!run.aborted && error.kind !== 'threadInUse')statusEvent(run,'error',message,rejection);
       return {...result(run.aborted?'aborted':'failed',run.aborted?undefined:message),...rejection};
     }
@@ -604,10 +599,11 @@ function createService(options={}){
   }
 
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer', 'effort'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'effort', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
     let conn, threadId, record, thread, info;
     if (target.run) {
+      if (action.kind === 'openDesktop') throw Error('请等当前轮次结束');
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
       info = run.session;
@@ -623,6 +619,7 @@ function createService(options={}){
       if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       thread = listed;
       threadId = record.id;
+      if (action.kind === 'openDesktop') return { ok: true, desktopThreadId: threadId };
       if (action.kind === 'queue') {
         const request = historyRequest(conn);
         try {

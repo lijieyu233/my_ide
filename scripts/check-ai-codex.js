@@ -88,12 +88,13 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const historyImageSelector='#ai-msgs .ai-user .ai-image-preview';
  const draftImageSelector='#ai-images .ai-image-preview';
  await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,historyImageSelector),'loaded image from Codex history');
- await js(base64=>{
+ const pasteComposerImage=()=>js(base64=>{
    const bytes=Uint8Array.from(atob(base64),char=>char.charCodeAt(0));
    const data=new DataTransfer();
    data.items.add(new File([bytes],'draft.png',{type:'image/png'}));
    document.getElementById('ai-input').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
  },fs.readFileSync(picture).toString('base64'));
+ await pasteComposerImage();
  await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,draftImageSelector),'loaded image pasted into Codex composer');
  const copyPoints=[], originalCopy=win.webContents.copyImageAt;
  // Keep the real clipboard untouched while verifying the exact Chromium copy target.
@@ -286,7 +287,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const beforeRestrictedQueue=fixture.requests.filter(r=>r.method==='thread/queue/add').length;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-runstate').textContent.includes('正在 Codex 中打开')),'writer conflict stays in the composer');
- await until(()=>js(()=>!document.getElementById('ai-send').disabled&&document.getElementById('ai-send').title==='发送（Enter）'&&
+ await until(()=>js(()=>!document.getElementById('ai-send').disabled&&document.getElementById('ai-send').title.includes('沿用原会话权限')&&
    document.getElementById('ai-send').getAttribute('aria-label')==='发送消息'&&document.querySelector('#ai-send svg')),'same send arrow after native writer conflict');
  check('A protected send restores the draft without a red history entry or automatic delegation',
    await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&!document.querySelector('.ai-codex-rejected')&&
@@ -294,19 +295,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    fixture.requests.filter(r=>r.method==='thread/queue/add').length===beforeRestrictedQueue&&
    !fixture.requests.some(r=>r.method==='thread/fork'||r.method==='turn/start'&&r.params.threadId===externalId));
  await capture('codex-occupied-draft');
- const resumesBeforeRetry=fixture.requests.filter(r=>r.method==='thread/resume'&&r.params.threadId===externalId).length;
  const enter=()=>js(()=>document.getElementById('ai-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
  await enter();
- await until(()=>fixture.requests.filter(r=>r.method==='thread/resume'&&r.params.threadId===externalId).length>resumesBeforeRetry&&
-   js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'),
-   'retry on the idle writer preserves the draft');
- check('Enter on an idle thread held by Codex never adds a pending message',
-   fixture.requests.filter(r=>r.method==='thread/queue/add').length===beforeRestrictedQueue);
- original.desktopRunning=true;
- await until(()=>js(()=>!!document.querySelector('.ai-hist-row.cur.running')),'catalog sees the new external turn');
- await enter();
- await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('HOLD_CODEX 续接桌面会话')),'Enter queues during an active external turn');
- original.desktopRunning=false;
+ await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('HOLD_CODEX 续接桌面会话')),'explicit Enter queues on the idle original writer');
+ check('Enter authorizes one native pending input on the same idle writer',
+   fixture.requests.filter(r=>r.method==='thread/queue/add').length===beforeRestrictedQueue+1&&
+   original.inputQueue.length===1);
  const claimedSubmission=original.inputQueue.shift();
  await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-mode')?.textContent==='确认中'),
    'a removed queue item waits for the exact native message');
@@ -403,10 +397,19 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await capture('codex-permission-full');
  const directCount=fixture.requests.filter(r=>r.method==='turn/start').length;
  original.writerLocked=true;
+ await pasteComposerImage();
+ await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,draftImageSelector),'attachment is ready before sending to the idle writer');
  await js(()=>{document.getElementById('ai-perm').click();return AiPanel.ask('空闲但仍占用');});
- await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='空闲但仍占用'),'idle writer conflict preserves full-access draft');
- check('Full access does not queue an idle session that still has a writer',
-   !fixture.requests.some(r=>r.method==='thread/queue/add'&&r.params.input[0].text==='空闲但仍占用'));
+ await until(()=>js(()=>AiPanel.__testParked().currentRun==='queued'&&document.getElementById('ai-input-queue').textContent.includes('空闲但仍占用')),'idle writer accepted the full-access pending message');
+ const idleQueue=fixture.requests.filter(r=>r.method==='thread/queue/add'&&r.params.input[0].text==='空闲但仍占用');
+ check('Full access queues the text and image once on the idle original writer',
+   idleQueue.length===1&&idleQueue[0].params.threadId===externalId&&idleQueue[0].params.input[1]?.type==='image'&&
+   await js(selector=>!document.getElementById('ai-input').value&&!document.querySelector(selector),draftImageSelector));
+ await js(()=>[...document.querySelectorAll('#ai-input-queue button')].find(b=>b.textContent==='在 Codex 中打开').click());
+ await until(()=>desktopLinks.includes('codex://threads/'+externalId),'pending action opens the exact native conversation');
+ await capture('codex-idle-writer-queue');
+ await js(()=>document.querySelector('#ai-input-queue [data-queue-action="remove"]').click());
+ await until(()=>!original.inputQueue.length,'idle writer submission can be withdrawn');
  original.running=true;
  await js(()=>AiPanel.ask('自动排队到原会话'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='queued'&&document.getElementById('ai-input-queue').textContent.includes('自动排队到原会话')),'confirmed running turn queues under full access');

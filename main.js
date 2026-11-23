@@ -890,7 +890,11 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
       assertCodexRun(event, run);
       target = { ...target, run };
     }
-    return await CODEX.changeInput(cfg, state, target, action);
+    const result = await CODEX.changeInput(cfg, state, target, action);
+    if (action?.kind === 'openDesktop' && result.desktopThreadId) {
+      await shell.openExternal('codex://threads/' + result.desktopThreadId);
+    }
+    return result;
   } catch (error) {
     const message = error.code === -32601 ? '本机 Codex 版本暂不支持此操作'
       : error.rpcResponseReceived ? 'Codex 拒绝了此操作' : error.message;

@@ -2279,6 +2279,15 @@ const AiPanel = (() => {
     box.classList.toggle('hidden',(!running||codex)&&!items.length&&!failed.length);box.replaceChildren();if(box.classList.contains('hidden'))return;
     const head=document.createElement('div');head.className='ai-queue-head';const label=document.createElement('span');label.textContent=nativeInputPending?'正在提交补充消息…':items.length?'待发 '+items.length+' 条':queue?.available?'暂无待发消息':'正在确认原生队列';head.appendChild(label);
     const refresh=document.createElement('button');refresh.type='button';refresh.className='ai-queue-action';refresh.textContent='刷新';refresh.disabled=!target||nativeInputPending;refresh.onclick=()=>refreshNativeQueue();head.appendChild(refresh);box.appendChild(head);
+    if (codex && target?.threadId && !running && items.some(item => !item.syncing)) {
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'ai-queue-action';
+      open.textContent = '在 Codex 中打开';
+      open.disabled = nativeInputPending;
+      open.onclick = () => updateNativeQueue(null, 'openDesktop');
+      head.insertBefore(open, refresh);
+    }
     for(const item of items){
       const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;
       const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.syncing?'确认中':item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
@@ -2356,8 +2365,9 @@ const AiPanel = (() => {
     if (target.kind === 'codex') {
       try {
         nativeInputPending = true; renderNativeInputUI();
-        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind, itemId: item.id });
-        if (!result?.ok) throw Error(result?.error || '撤回失败');
+        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind, itemId: item?.id });
+        if (!result?.ok) throw Error(result?.error || (kind === 'openDesktop' ? '无法打开 Codex 会话' : '撤回失败'));
+        if (kind === 'openDesktop') return;
         if (key === inputViewKey()) {
           if (codexQueue?.key === key) codexQueue.receipts.delete(item.id);
           await refreshNativeQueue();
@@ -2581,12 +2591,14 @@ const AiPanel = (() => {
         nativeInputRequests.set(run.identity.requestId, { run,
           draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
       }
-      if (!backgroundView) codexBusyDraft = result.errorCode === 'threadBusy'
+      if (!backgroundView) codexBusyDraft = result.canQueueOnConflict
         ? { key: draft.key, revision: draft.revision, raw: draft.raw } : null;
     }
     stream.element.remove();
-    if (occupied) run.codexInputStatus = result.errorCode === 'threadBusy'
-      ? '原会话仍在运行，草稿已保留' : '原会话正在 Codex 中打开，请在那边关闭会话后重试';
+    if (occupied) {
+      const owner = result.errorCode === 'threadBusy' ? '原会话仍在运行' : '原会话正在 Codex 中打开';
+      run.codexInputStatus = owner + (result.canQueueOnConflict ? '，再按发送可加入待发' : '，草稿已保留');
+    }
     endRun(run, queued ? 'queued' : 'occupied');
     if (!backgroundView) void refreshNativeQueue(true);
     return true;
