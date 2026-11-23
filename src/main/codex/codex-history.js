@@ -3,6 +3,7 @@ const path = require('node:path');
 const nativeId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const accountThreads = {
   currentAccountOnly: true,
+  useStateDbOnly: true,
   sourceKinds: ['cli', 'vscode', 'appServer'],
   sortKey: 'updated_at',
 };
@@ -18,7 +19,10 @@ function isProjectThread(thread) {
 }
 
 function threadSummary(thread) {
-  const title = [thread.name, thread.preview].find(text => typeof text === 'string' && text.trim());
+  let title = [thread.name, thread.preview].find(text => typeof text === 'string' && text.trim());
+  if (title?.startsWith('# Files mentioned by the user:') && title.includes('## My request:')) {
+    title = title.slice(title.indexOf('## My request:') + '## My request:'.length).trim() || thread.cwd;
+  }
   return {
     threadId: thread.id,
     projectId: typeof thread.projectId === 'string' ? thread.projectId : null,
@@ -66,7 +70,7 @@ async function listProjectThreads(request) {
   await pages(request, 'thread/list', accountThreads, 100, maxThreadPages, data => {
     for (const thread of data) {
       if (isProjectThread(thread) && !threads.has(thread.id)) {
-        threads.set(thread.id, threadSummary(thread));
+        threads.set(thread.id, { ...threadSummary(thread), rolloutPath: thread.path, running: thread.status?.type === 'active' });
       }
     }
   });

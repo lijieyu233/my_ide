@@ -235,8 +235,9 @@ const AiPanel = (() => {
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = () => !nativeEngine() || (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
+  const dshCanSend = () => !nativeEngine() || !codexObservedRunning() && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
   function rejectDshSend() {
+    if (codexObservedRunning()) return true;
     if (dshCanSend()) return false;
     MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess?.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess && dshSessionAccess.state !== 'ready' ? dshSessionAccess.error || '无法确认续聊身份，请重新连接或新建对话' : '原模型不可用，请先选择可用模型后再发送', 'err');
     return true;
@@ -1269,7 +1270,7 @@ const AiPanel = (() => {
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
     if(switching)onProjectChange();
-    if (histSidebarVisible && (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath)) {
+    if (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath) {
       refreshHistInPlace();
       syncHistoryCatalog();
     }
@@ -1388,6 +1389,7 @@ const AiPanel = (() => {
       releaseSessionPermissions(detachRun());
     }
     if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();ensureDshWatch();}
+    if (getConfig().engine === 'codex') syncHistoryCatalog();
   }
 
   // ---------- 消息渲染 ----------
@@ -2374,13 +2376,20 @@ const AiPanel = (() => {
     syncPermBtn();
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
+    const codexExternal = !b && codexObservedRunning();
     if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     if (sendBtn) {
-      sendBtn.disabled = stopping || !b && !external && !dshCanSend();
-      sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-      sendBtn.title = b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
-      sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
+      sendBtn.disabled = codexExternal || stopping || !b && !external && !dshCanSend();
+      if (codexExternal) {
+        sendBtn.innerHTML = '<span class="ai-hist-run" aria-hidden="true"></span>';
+        sendBtn.title = '此会话正在 Codex 中运行';
+        sendBtn.setAttribute('aria-label', sendBtn.title);
+      } else {
+        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
+        sendBtn.title = b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+        sendBtn.setAttribute('aria-label', b || external ? '停止生成' : '发送消息');
+      }
     }
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
     renderNativeInputUI();
@@ -2599,23 +2608,30 @@ const AiPanel = (() => {
   const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
   const currentCodexCatalog = () => codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '') ? codexCatalog : null;
 
-  function refreshCodexCatalog() {
+  function codexObservedRunning() {
+    const root = pathKey(window.App?.root);
+    return currentCodexCatalog()?.items.some(item => item.running && item.localId === curSessionId && pathKey(item.rootDir) === root) === true;
+  }
+
+  function refreshCodexCatalog({ background = false } = {}) {
     if (!codexProjectHistory()) return;
     const config = getConfig(), codexPath = config.codexPath || '';
     if (codexCatalogRequest?.launcher === codexPath) return codexCatalogRequest.promise;
 
-    const request = { launcher: codexPath };
+    const request = { launcher: codexPath, background };
     codexCatalogRequest = request;
-    codexCatalogError = null;
-    refreshHistInPlace();
+    if (!background) { codexCatalogError = null; refreshHistInPlace(); }
     request.promise = (async () => {
       try {
         const result = await window.myIDE.ai.codexSessions({ engine: 'codex', codexPath });
         if (codexCatalogRequest !== request) return;
         if (!result?.ok) throw Error(result?.error || '无法读取 Codex 会话');
+        const wasRunning = codexObservedRunning();
+        codexCatalogError = null;
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
+        if (wasRunning !== codexObservedRunning()) setBusyUI(busy);
       } catch (error) {
-        if (codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
+        if (!background && codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
       } finally {
         if (codexCatalogRequest === request) {
           codexCatalogRequest = null;
@@ -2626,19 +2642,25 @@ const AiPanel = (() => {
     return request.promise;
   }
 
-  let dshCatalogRefreshTimer = null;
+  let historyCatalogTimer = null;
+  function visibleHistoryRefresh() {
+    if (histSidebarVisible && getConfig().engine === 'dsh') return refreshDshCatalog;
+    if (codexProjectHistory() && (histSidebarVisible || panel && !panel.classList.contains('hidden'))) return refreshCodexCatalog;
+    return null;
+  }
+
   function syncHistoryCatalog() {
-    if (histSidebarVisible && getConfig().engine === 'dsh') {
-      // DSH 可在另一个窗口新建会话，侧栏打开时持续更新宿主目录。
-      dshCatalogRefreshTimer ??= setInterval(() => {
-        if (!document.hidden) refreshDshCatalog({ background: true });
-      }, 5000);
-      return refreshDshCatalog({ background: catalogUsable() });
+    const refresh = visibleHistoryRefresh();
+    if (!refresh) {
+      clearInterval(historyCatalogTimer);
+      historyCatalogTimer = null;
+      return;
     }
-    clearInterval(dshCatalogRefreshTimer);
-    dshCatalogRefreshTimer = null;
-    if (!histSidebarVisible) return;
-    if (codexProjectHistory() && codexCatalog?.launcher !== (getConfig().codexPath || '')) return refreshCodexCatalog();
+    historyCatalogTimer ??= setInterval(() => {
+      if (!document.hidden) visibleHistoryRefresh()?.({ background: true });
+    }, 5000);
+    if (refresh === refreshDshCatalog) return refresh({ background: catalogUsable() });
+    if (!currentCodexCatalog()) return refresh();
   }
 
   // DSH 会话和工作区共用宿主目录，切换 IDE 项目不重读。
@@ -2788,6 +2810,7 @@ const AiPanel = (() => {
         if (here && archivedLocalIds.has(item.localId)) continue;
         const native = { id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId, title: item.title,
           rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
+        if (item.running) running.add(item.localId);
         const localRow = here && currentRows.get(item.localId);
         if (localRow) Object.assign(localRow, native);
         else all.push(native);
@@ -3472,7 +3495,7 @@ const AiPanel = (() => {
       if (catalog) {
         const { threadId, projectId, rootDir, localId, ts, title } = result;
         const cached = catalog.items.find(item => item.threadId === threadId);
-        if (cached) Object.assign(cached, { projectId, rootDir, localId, ts, title });
+        if (cached) Object.assign(cached, { rootDir, localId, ts, title });
         else catalog.items.unshift({ threadId, projectId, rootDir, localId, ts, title });
       }
       openSession(result.localId, false);

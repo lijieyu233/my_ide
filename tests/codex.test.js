@@ -32,6 +32,7 @@ function fixture(config={}){
    }
    else if(r.method==='thread/list'&&config.history){
      assert.equal(p.currentAccountOnly,true);
+     assert.equal(p.useStateDbOnly,true);
      const entries=p.includedThreadIds?config.history.filter(t=>p.includedThreadIds.includes(t.id)):config.history;
      send(c,{id:r.id,result:{data:entries,nextCursor:null}});
    }else if(r.method==='thread/read'&&config.history){
@@ -77,6 +78,33 @@ function fixture(config={}){
 }
 let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
 (async()=>{try{
+ await test('按桌面端本地项目归属补齐会话，滚动读取外部轮次开始和结束',async()=>{
+  const desktop=require('../src/main/codex/codex-desktop-state');
+  const id='019caa00-0000-7000-8000-000000000010',home=path.join(temp,'desktop-status'),logs=path.join(home,'sessions');
+  fs.mkdirSync(logs,{recursive:true});
+  const state={
+    'app-server-project-id-by-legacy-project-id-by-host':{machine:{legacy:'registered'}},
+    'thread-project-assignments':{[id]:{projectKind:'local',projectId:'legacy'},remote:{projectKind:'local',projectId:'legacy'}},
+    'thread-project-membership-host-ids':{[id]:'local',remote:'other'},
+  };
+  fs.writeFileSync(path.join(home,'.codex-global-state.json'),JSON.stringify(state));
+  assert.deepEqual([...desktop.projectAssignments([{id:'registered'}],await desktop.readDesktopState(home))],[[id,'registered']]);
+  const file=path.join(logs,'rollout-2026-11-23T01-00-00-'+id+'.jsonl'),probe=desktop.createDesktopStatusReader();
+  const record=type=>JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type}})+'\n';
+  fs.writeFileSync(file,record('task_started')+'x'.repeat(600000)+'\n');
+  const item={threadId:id,rolloutPath:file};
+  assert.equal(await probe(home,item),true);
+  fs.appendFileSync(file,record('item_completed'));
+  assert.equal(await probe(home,item),true);
+  fs.appendFileSync(file,record('task_complete'));
+  assert.equal(await probe(home,item),false);
+  fs.appendFileSync(file,record('task_started'));
+  assert.equal(await probe(home,item),true);
+  const earlier=new Date(Date.now()-10*60*1000);
+  fs.utimesSync(file,earlier,earlier);
+  assert.equal(await probe(home,item),false);
+  assert.equal(await probe(path.join(temp,'other-codex-home'),item),false);
+ });
  await test('从当前账号读取 Codex 原生历史，续聊只恢复同一个线程',async()=>{
   const id='019caa00-0000-7000-8000-000000000001',history=[{id,projectId:'desktop-a',cwd:temp,name:'外部会话',model:'native-model',historyMode:'paginated',status:{type:'notLoaded'}}];
   const config={history,projects:[{id:'desktop-a',name:'桌面项目',roots:[{path:temp}]}],map:path.join(temp,'external-history.json')};
