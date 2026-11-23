@@ -130,10 +130,23 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  }));
  await until(()=>js(()=>document.getElementById('ai-codex-activity')?.textContent==='正在整理图片预览'&&
    document.querySelector('#ai-msgs img[alt="查看了 1 张图片"]')?.naturalWidth>0),'desktop activity title and image preview');
- check('Codex mirrors the current native summary and viewed image with a static send control',await js(()=>
-   getComputedStyle(document.getElementById('ai-send')).animationName==='none'&&
-   !document.getElementById('ai-msgs').textContent.includes('不得显示这段原始内容')));
- await capture('codex-desktop-running');
+ const debuggerSession=win.webContents.debugger;
+ debuggerSession.attach('1.3');
+ try {
+   const setMotion=value=>debuggerSession.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value}]});
+   await setMotion('no-preference');
+   check('Active Codex title shimmers while the send control remains still',await js(()=>
+     getComputedStyle(document.querySelector('#ai-codex-activity .ai-run-text')).animationName==='ai-text-shimmer'&&
+     getComputedStyle(document.getElementById('ai-send')).animationName==='none'&&
+     !document.getElementById('ai-msgs').textContent.includes('不得显示这段原始内容')));
+   await capture('codex-desktop-running');
+   await setMotion('reduce');
+   check('Codex activity respects reduced motion',await js(()=>
+     getComputedStyle(document.querySelector('#ai-codex-activity .ai-run-text')).animationName==='none'));
+ } finally {
+   await debuggerSession.sendCommand('Emulation.setEmulatedMedia',{features:[]});
+   debuggerSession.detach();
+ }
  command.status='completed';
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
